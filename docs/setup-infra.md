@@ -49,7 +49,7 @@ conn_limit(technic_migration) — небольшой (миграции one-off),
   {
     "CORSRules": [
       {
-        "AllowedOrigins": ["https://portal.example.ru"],
+        "AllowedOrigins": ["https://auto.su10.ru"],
         "AllowedMethods": ["PUT", "GET", "HEAD"],
         "AllowedHeaders": ["content-type"],
         "ExposeHeaders": ["ETag"],
