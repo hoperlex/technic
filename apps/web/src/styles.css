@@ -1,0 +1,24 @@
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+/* Табы на всю высоту: скроллится только тело таблицы, панель вкладок закреплена */
+.full-height-tabs.ant-tabs {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.full-height-tabs .ant-tabs-content-holder {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+.full-height-tabs .ant-tabs-content {
+  height: 100%;
+}
+.full-height-tabs .ant-tabs-tabpane {
+  height: 100%;
+}

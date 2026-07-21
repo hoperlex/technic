@@ -1,0 +1,17 @@
+# API-сервис (Fastify, запуск через tsx). Образ на glibc (Debian) —
+# требуется для prebuilt @node-rs/argon2.
+FROM node:24-bookworm-slim
+
+ENV PNPM_HOME=/pnpm
+ENV PATH=$PNPM_HOME:$PATH
+RUN corepack enable
+
+WORKDIR /app
+# Копируем весь монорепо (node_modules/dist исключены .dockerignore)
+COPY . .
+# Если pnpm-lock.yaml закоммичен — установка воспроизводима; иначе создаётся.
+RUN pnpm install --prod=false
+
+ENV NODE_ENV=production
+EXPOSE 3000
+CMD ["pnpm", "--filter", "@technic/api", "start"]

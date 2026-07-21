@@ -1,0 +1,76 @@
+# Production Compose (single-VPS). Запуск: docker compose -p technic-portal up -d
+# Секреты — во внешнем env-файле (ENV_FILE), вне git и вне образа.
+# Миграции — отдельным шагом: docker compose -p technic-portal run --rm migrate
+name: technic-portal
+
+x-common-env: &common-env
+  env_file:
+    - ${ENV_FILE:-/etc/technic-portal/prod.env}
+  environment:
+    NODE_ENV: production
+
+services:
+  api:
+    <<: *common-env
+    image: ${REGISTRY:-technic}/technic-api:${TAG:-latest}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+    volumes:
+      - /etc/technic-portal/certs:/etc/technic-portal/certs:ro
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://localhost:3000/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks: [internal]
+
+  worker:
+    <<: *common-env
+    image: ${REGISTRY:-technic}/technic-worker:${TAG:-latest}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.worker
+    volumes:
+      - /etc/technic-portal/certs:/etc/technic-portal/certs:ro
+    restart: unless-stopped
+    depends_on: [api]
+    networks: [internal]
+
+  web:
+    image: ${REGISTRY:-technic}/technic-web:${TAG:-latest}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.web
+    depends_on: [api]
+    # Слушает только localhost — наружу проксирует edge-nginx хоста
+    ports:
+      - '127.0.0.1:8080:80'
+    restart: unless-stopped
+    networks: [internal]
+
+  # Одноразовый шаг миграций (не поднимается с `up` — только через `run`):
+  migrate:
+    <<: *common-env
+    image: ${REGISTRY:-technic}/technic-api:${TAG:-latest}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+    volumes:
+      - /etc/technic-portal/certs:/etc/technic-portal/certs:ro
+    command: ['pnpm', '--filter', '@technic/api', 'db:migrate']
+    restart: 'no'
+    profiles: [tools]
+    networks: [internal]
+
+networks:
+  internal:
+    driver: bridge

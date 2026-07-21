@@ -1,0 +1,14 @@
+# Frontend: сборка SPA (Vite) → отдача статики + прокси /api через nginx.
+FROM node:24-bookworm-slim AS build
+ENV PNPM_HOME=/pnpm
+ENV PATH=$PNPM_HOME:$PATH
+RUN corepack enable
+WORKDIR /app
+COPY . .
+RUN pnpm install --prod=false
+RUN pnpm --filter @technic/web build
+
+FROM nginx:1.27-alpine
+COPY deploy/nginx/spa.conf /etc/nginx/conf.d/default.conf
+COPY --from=build /app/apps/web/dist /usr/share/nginx/html
+EXPOSE 80

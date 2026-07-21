@@ -1,0 +1,13 @@
+# Worker (фоновые задачи PostgreSQL + S3 cleanup).
+FROM node:24-bookworm-slim
+
+ENV PNPM_HOME=/pnpm
+ENV PATH=$PNPM_HOME:$PATH
+RUN corepack enable
+
+WORKDIR /app
+COPY . .
+RUN pnpm install --prod=false
+
+ENV NODE_ENV=production
+CMD ["pnpm", "--filter", "@technic/worker", "start"]

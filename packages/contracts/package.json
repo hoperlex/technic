@@ -1,0 +1,21 @@
+{
+  "name": "@technic/contracts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "types": "./src/index.ts",
+  "scripts": {
+    "build": "echo \"contracts: source package, no build\"",
+    "typecheck": "tsc --noEmit",
+    "test": "echo \"contracts: no tests\""
+  },
+  "dependencies": {
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "typescript": "6.0.3"
+  }
+}
