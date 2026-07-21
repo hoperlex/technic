@@ -14,7 +14,8 @@ x-common-env: &common-env
     TRUST_PROXY: ${TRUST_PROXY:-true}
 
 services:
-  api:
+  # Имена сервисов = DNS-алиасы. Короткие `api`/`web` на edge конфликтуют с zakupki.
+  technic-api:
     <<: *common-env
     image: technic-api:${TAG:-latest}
     container_name: technic-api
@@ -36,11 +37,10 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
-    # Только internal: на edge короткий DNS-алиас `api` конфликтует с zakupki-api.
-    # Снаружи API доступен через technic-web (/api → technic-api).
+    # Только internal: снаружи API через technic-web (/api → technic-api).
     networks: [internal]
 
-  worker:
+  technic-worker:
     <<: *common-env
     image: technic-worker:${TAG:-latest}
     container_name: technic-worker
@@ -50,16 +50,16 @@ services:
     volumes:
       - /etc/technic-portal/certs:/etc/technic-portal/certs:ro
     restart: unless-stopped
-    depends_on: [api]
+    depends_on: [technic-api]
     networks: [internal]
 
-  web:
+  technic-web:
     image: technic-web:${TAG:-latest}
     container_name: technic-web
     build:
       context: ..
       dockerfile: deploy/Dockerfile.web
-    depends_on: [api]
+    depends_on: [technic-api]
     # Без host-ports: снаружи только infra-nginx через сеть edge
     restart: unless-stopped
     networks: [internal, edge]

@@ -10,11 +10,11 @@
 # 3. миграции (отдельный шаг, one-off):
 docker compose -p technic-portal --profile tools run --rm migrate
 # 4. обновить API:
-docker compose -p technic-portal up -d api
+docker compose -p technic-portal up -d technic-api
 # 5. health check:
 curl -fsS http://127.0.0.1:8080/api/v1/health/ready
 # 6. обновить worker и web:
-docker compose -p technic-portal up -d worker web
+docker compose -p technic-portal up -d technic-worker technic-web
 # 7. smoke-тесты (логин, список заявок)
 # 8. deployment report (тег образа, коммит, миграции, время)
 ```
@@ -47,11 +47,11 @@ API при старте падает с понятной ошибкой, есл�
 
 ```bash
 # Логи сервисов
-docker compose -p technic-portal logs -f api
-docker compose -p technic-portal logs -f worker
+docker compose -p technic-portal logs -f technic-api
+docker compose -p technic-portal logs -f technic-worker
 
 # Перезапуск только API (portal-scoped, не трогает другие проекты)
-docker compose -p technic-portal restart api
+docker compose -p technic-portal restart technic-api
 
 # Просмотр застрявших задач
 psql "$DATABASE_URL" -c "select id,type,status,attempts,last_error from jobs where status in ('failed','dead') order by updated_at desc limit 50;"
