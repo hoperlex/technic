@@ -36,7 +36,9 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
-    networks: [internal, edge]
+    # Только internal: на edge короткий DNS-алиас `api` конфликтует с zakupki-api.
+    # Снаружи API доступен через technic-web (/api → technic-api).
+    networks: [internal]
 
   worker:
     <<: *common-env
