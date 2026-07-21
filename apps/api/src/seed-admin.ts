@@ -15,8 +15,8 @@ async function main(): Promise<void> {
     console.error('Использование: ADMIN_EMAIL=.. ADMIN_PASSWORD=.. [ADMIN_NAME=..] pnpm seed:admin');
     process.exit(1);
   }
-  if (password.length < 10) {
-    console.error('Пароль должен быть не короче 10 символов.');
+  if (password.length < 8) {
+    console.error('Пароль должен быть не короче 8 символов.');
     process.exit(1);
   }
 

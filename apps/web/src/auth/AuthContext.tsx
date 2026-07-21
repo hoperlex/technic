@@ -17,6 +17,20 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
+/** Один bootstrap на вкладку: React StrictMode иначе дважды ротирует refresh → reuse detection → разлогин. */
+let bootstrapPromise: Promise<AuthUser | null> | null = null;
+
+function bootstrapAuth(): Promise<AuthUser | null> {
+  if (!bootstrapPromise) {
+    bootstrapPromise = (async () => {
+      const ok = await refreshSession();
+      if (!ok) return null;
+      return authApi.me();
+    })().catch(() => null);
+  }
+  return bootstrapPromise;
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [status, setStatus] = useState<Status>('loading');
@@ -24,20 +38,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const ok = await refreshSession();
-      if (!ok) {
-        if (!cancelled) setStatus('unauthenticated');
+      const me = await bootstrapAuth();
+      if (cancelled) return;
+      if (!me) {
+        setStatus('unauthenticated');
         return;
       }
-      try {
-        const me = await authApi.me();
-        if (!cancelled) {
-          setUser(me);
-          setStatus('authenticated');
-        }
-      } catch {
-        if (!cancelled) setStatus('unauthenticated');
-      }
+      setUser(me);
+      setStatus('authenticated');
     })();
     return () => {
       cancelled = true;
@@ -50,12 +58,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       status,
       async login(email, password) {
         const res = await authApi.login({ email, password });
+        bootstrapPromise = Promise.resolve(res.user);
         setUser(res.user);
         setStatus('authenticated');
         return res.user;
       },
       async logout() {
         await authApi.logout().catch(() => {});
+        bootstrapPromise = Promise.resolve(null);
         setUser(null);
         setStatus('unauthenticated');
       },

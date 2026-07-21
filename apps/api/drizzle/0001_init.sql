@@ -18,7 +18,9 @@ CREATE TABLE construction_objects (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE UNIQUE INDEX construction_objects_code_unique ON construction_objects (code);
-CREATE INDEX construction_objects_name_trgm ON construction_objects USING gin (name gin_trgm_ops);
+-- GIN/pg_trgm: в Yandex Managed включается в консоли кластера, не через SQL.
+-- Пока btree (поиск — ILIKE); после включения pg_trgm можно заменить на gin_trgm_ops.
+CREATE INDEX construction_objects_name_trgm ON construction_objects (name);
 
 CREATE TABLE container_types (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -46,7 +48,7 @@ CREATE TABLE users (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE UNIQUE INDEX users_email_unique ON users (email);
-CREATE INDEX users_full_name_trgm ON users USING gin (full_name gin_trgm_ops);
+CREATE INDEX users_full_name_trgm ON users (full_name);
 
 CREATE TABLE refresh_sessions (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

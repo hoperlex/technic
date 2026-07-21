@@ -1,18 +1,23 @@
-# Production Compose (single-VPS). Запуск: docker compose -p technic-portal up -d
-# Секреты — во внешнем env-файле (ENV_FILE), вне git и вне образа.
-# Миграции — отдельным шагом: docker compose -p technic-portal run --rm migrate
-name: technic-portal
+# Production Compose — изоляция как у zakupki/estimat/billhub.
+# Запуск на VPS из /opt/portals/technic:
+#   docker compose -f deploy/docker-compose.yml -p technic up -d
+# Секреты: /etc/technic-portal/prod.env (root:docker, 0640), вне git и образа.
+# Миграции: docker compose -p technic --profile tools run --rm migrate
+# Seed admin:  docker compose -p technic --profile tools run --rm seed
+name: technic
 
 x-common-env: &common-env
   env_file:
     - ${ENV_FILE:-/etc/technic-portal/prod.env}
   environment:
     NODE_ENV: production
+    TRUST_PROXY: ${TRUST_PROXY:-true}
 
 services:
   api:
     <<: *common-env
-    image: ${REGISTRY:-technic}/technic-api:${TAG:-latest}
+    image: technic-api:${TAG:-latest}
+    container_name: technic-api
     build:
       context: ..
       dockerfile: deploy/Dockerfile.api
@@ -25,17 +30,18 @@ services:
           'CMD',
           'node',
           '-e',
-          "fetch('http://localhost:3000/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+          "fetch('http://127.0.0.1:3000/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
         ]
       interval: 30s
       timeout: 5s
       retries: 5
-      start_period: 15s
-    networks: [internal]
+      start_period: 20s
+    networks: [internal, edge]
 
   worker:
     <<: *common-env
-    image: ${REGISTRY:-technic}/technic-worker:${TAG:-latest}
+    image: technic-worker:${TAG:-latest}
+    container_name: technic-worker
     build:
       context: ..
       dockerfile: deploy/Dockerfile.worker
@@ -46,21 +52,19 @@ services:
     networks: [internal]
 
   web:
-    image: ${REGISTRY:-technic}/technic-web:${TAG:-latest}
+    image: technic-web:${TAG:-latest}
+    container_name: technic-web
     build:
       context: ..
       dockerfile: deploy/Dockerfile.web
     depends_on: [api]
-    # Слушает только localhost — наружу проксирует edge-nginx хоста
-    ports:
-      - '127.0.0.1:8080:80'
+    # Без host-ports: снаружи только infra-nginx через сеть edge
     restart: unless-stopped
-    networks: [internal]
+    networks: [internal, edge]
 
-  # Одноразовый шаг миграций (не поднимается с `up` — только через `run`):
   migrate:
     <<: *common-env
-    image: ${REGISTRY:-technic}/technic-api:${TAG:-latest}
+    image: technic-api:${TAG:-latest}
     build:
       context: ..
       dockerfile: deploy/Dockerfile.api
@@ -71,6 +75,19 @@ services:
     profiles: [tools]
     networks: [internal]
 
+  seed:
+    <<: *common-env
+    image: technic-api:${TAG:-latest}
+    volumes:
+      - /etc/technic-portal/certs:/etc/technic-portal/certs:ro
+    # ADMIN_EMAIL / ADMIN_PASSWORD передаются через -e при run
+    command: ['pnpm', '--filter', '@technic/api', 'seed:admin']
+    restart: 'no'
+    profiles: [tools]
+    networks: [internal]
+
 networks:
   internal:
     driver: bridge
+  edge:
+    external: true
