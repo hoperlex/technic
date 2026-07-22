@@ -11,14 +11,14 @@ body,
   flex-direction: column;
   height: 100%;
 }
-.full-height-tabs .ant-tabs-content-holder {
+.full-height-tabs .ant-tabs-body-holder {
   flex: 1 1 auto;
   min-height: 0;
   overflow: hidden;
 }
-.full-height-tabs .ant-tabs-content {
+.full-height-tabs .ant-tabs-body {
   height: 100%;
 }
-.full-height-tabs .ant-tabs-tabpane {
+.full-height-tabs .ant-tabs-content {
   height: 100%;
 }
