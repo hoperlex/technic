@@ -1,10 +1,11 @@
 import { useState } from 'react';
-import { App, Button, Drawer, Form, Input, InputNumber, Space, Switch } from 'antd';
+import { App, Button, Form, Input, InputNumber, Space, Switch } from 'antd';
 import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ContainerTypeDto, CreateContainerTypeInput } from '@technic/contracts';
 import { containerTypesApi } from '../../api/resources';
 import { DataTable } from '../../components/DataTable';
+import { FormModal } from '../../components/FormModal';
 import { PageTableLayout } from '../../components/PageTableLayout';
 import { actionsColumn, boolBadgeColumn, textColumn } from '../../components/columns';
 import { useListParams } from '../../hooks/useListParams';
@@ -114,25 +115,23 @@ export function ContainerTypesTab() {
         pageSize={params.pageSize}
         onChange={onTableChange}
       />
-      <Drawer
+      <FormModal
         title={record ? 'Редактирование типа' : 'Новый тип'}
         open={open}
-        onClose={() => setOpen(false)}
+        onCancel={() => setOpen(false)}
+        onSubmit={() => form.submit()}
+        confirmLoading={saveMut.isPending}
         width={480}
-        extra={
-          <Space>
-            <Button onClick={() => setOpen(false)}>Отмена</Button>
-            <Button type="primary" loading={saveMut.isPending} onClick={() => form.submit()}>
-              Сохранить
-            </Button>
-          </Space>
-        }
       >
         <Form form={form} layout="vertical" onFinish={(v) => saveMut.mutate(v)}>
           <Form.Item name="code" label="Код" rules={[{ required: true, message: 'Укажите код' }]}>
             <Input />
           </Form.Item>
-          <Form.Item name="name" label="Название" rules={[{ required: true, message: 'Укажите название' }]}>
+          <Form.Item
+            name="name"
+            label="Название"
+            rules={[{ required: true, message: 'Укажите название' }]}
+          >
             <Input />
           </Form.Item>
           <Form.Item name="sortOrder" label="Порядок сортировки">
@@ -142,7 +141,7 @@ export function ContainerTypesTab() {
             <Switch />
           </Form.Item>
         </Form>
-      </Drawer>
+      </FormModal>
     </PageTableLayout>
   );
 }

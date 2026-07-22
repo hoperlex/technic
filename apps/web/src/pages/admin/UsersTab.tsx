@@ -1,21 +1,11 @@
 import { useState } from 'react';
-import {
-  App,
-  Button,
-  Drawer,
-  Dropdown,
-  Form,
-  Input,
-  Modal,
-  Select,
-  Space,
-  Switch,
-} from 'antd';
+import { App, Button, Dropdown, Form, Input, Select, Switch } from 'antd';
 import { MoreOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ROLES, roleColors, roleLabels, type UserDto } from '@technic/contracts';
 import { objectsApi, usersApi } from '../../api/resources';
 import { DataTable } from '../../components/DataTable';
+import { FormModal } from '../../components/FormModal';
 import { PageTableLayout } from '../../components/PageTableLayout';
 import { actionsColumn, badgeColumn, boolBadgeColumn, textColumn } from '../../components/columns';
 import { useListParams } from '../../hooks/useListParams';
@@ -54,9 +44,18 @@ export function UsersTab() {
   const { data: objects } = useQuery({
     queryKey: ['objects', 'for-select'],
     queryFn: () =>
-      objectsApi.list({ page: 1, pageSize: 500, isActive: 'true', sortBy: 'name', sortOrder: 'asc' }),
+      objectsApi.list({
+        page: 1,
+        pageSize: 500,
+        isActive: 'true',
+        sortBy: 'name',
+        sortOrder: 'asc',
+      }),
   });
-  const objectOptions = (objects?.items ?? []).map((o) => ({ value: o.id, label: `${o.code} — ${o.name}` }));
+  const objectOptions = (objects?.items ?? []).map((o) => ({
+    value: o.id,
+    label: `${o.code} — ${o.name}`,
+  }));
   const roleOptions = ROLES.map((r) => ({ value: r, label: roleLabels[r] }));
 
   const [open, setOpen] = useState(false);
@@ -90,7 +89,8 @@ export function UsersTab() {
     mutationFn: (values: UserFormValues) => {
       const payload = {
         ...values,
-        constructionObjectId: values.role === 'shtab' ? values.constructionObjectId ?? null : null,
+        constructionObjectId:
+          values.role === 'shtab' ? (values.constructionObjectId ?? null) : null,
       };
       if (record) {
         const { password: _pw, email: _email, ...rest } = payload;
@@ -125,7 +125,8 @@ export function UsersTab() {
   });
 
   const passwordMut = useMutation({
-    mutationFn: (v: { id: string; newPassword: string }) => usersApi.setPassword(v.id, v.newPassword),
+    mutationFn: (v: { id: string; newPassword: string }) =>
+      usersApi.setPassword(v.id, v.newPassword),
     onSuccess: () => {
       message.success('Пароль изменён. Пользователь должен сменить его при входе.');
       setPwUser(null);
@@ -225,19 +226,13 @@ export function UsersTab() {
         onChange={onTableChange}
       />
 
-      <Drawer
+      <FormModal
         title={record ? 'Редактирование пользователя' : 'Новый пользователь'}
         open={open}
-        onClose={() => setOpen(false)}
+        onCancel={() => setOpen(false)}
+        onSubmit={() => form.submit()}
+        confirmLoading={saveMut.isPending}
         width={480}
-        extra={
-          <Space>
-            <Button onClick={() => setOpen(false)}>Отмена</Button>
-            <Button type="primary" loading={saveMut.isPending} onClick={() => form.submit()}>
-              Сохранить
-            </Button>
-          </Space>
-        }
       >
         <Form form={form} layout="vertical" onFinish={(v) => saveMut.mutate(v)}>
           <Form.Item
@@ -247,10 +242,18 @@ export function UsersTab() {
           >
             <Input disabled={!!record} />
           </Form.Item>
-          <Form.Item name="fullName" label="ФИО" rules={[{ required: true, message: 'Укажите ФИО' }]}>
+          <Form.Item
+            name="fullName"
+            label="ФИО"
+            rules={[{ required: true, message: 'Укажите ФИО' }]}
+          >
             <Input />
           </Form.Item>
-          <Form.Item name="role" label="Роль" rules={[{ required: true, message: 'Выберите роль' }]}>
+          <Form.Item
+            name="role"
+            label="Роль"
+            rules={[{ required: true, message: 'Выберите роль' }]}
+          >
             <Select options={roleOptions} />
           </Form.Item>
           {watchRole === 'shtab' ? (
@@ -275,21 +278,22 @@ export function UsersTab() {
             <Switch />
           </Form.Item>
         </Form>
-      </Drawer>
+      </FormModal>
 
-      <Modal
+      <FormModal
         title={`Смена пароля: ${pwUser?.email ?? ''}`}
         open={!!pwUser}
         onCancel={() => setPwUser(null)}
-        onOk={() => pwForm.submit()}
-        okText="Сохранить"
-        cancelText="Отмена"
+        onSubmit={() => pwForm.submit()}
         confirmLoading={passwordMut.isPending}
+        width={520}
       >
         <Form
           form={pwForm}
           layout="vertical"
-          onFinish={(v) => pwUser && passwordMut.mutate({ id: pwUser.id, newPassword: v.newPassword })}
+          onFinish={(v) =>
+            pwUser && passwordMut.mutate({ id: pwUser.id, newPassword: v.newPassword })
+          }
         >
           <Form.Item
             name="newPassword"
@@ -299,7 +303,7 @@ export function UsersTab() {
             <Input.Password autoComplete="new-password" />
           </Form.Item>
         </Form>
-      </Modal>
+      </FormModal>
     </PageTableLayout>
   );
 }

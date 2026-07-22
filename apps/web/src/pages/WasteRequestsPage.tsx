@@ -3,20 +3,20 @@ import {
   App,
   Button,
   DatePicker,
-  Drawer,
+  Dropdown,
   Form,
   Input,
   List,
   Popover,
   Select,
   Space,
-  Switch,
   Tag,
   Typography,
   Upload,
 } from 'antd';
 import {
   DeleteOutlined,
+  DownOutlined,
   EditOutlined,
   PaperClipOutlined,
   PlusOutlined,
@@ -44,6 +44,7 @@ import {
   type WasteRequestUpdatePayload,
 } from '../api/resources';
 import { DataTable } from '../components/DataTable';
+import { FormModal } from '../components/FormModal';
 import { PageTableLayout } from '../components/PageTableLayout';
 import { actionsColumn, badgeColumn, textColumn } from '../components/columns';
 import { useListParams } from '../hooks/useListParams';
@@ -76,11 +77,9 @@ export function WasteRequestsPage() {
   const isShtab = hasRole('shtab');
   const isAdmin = hasRole('admin');
 
-  const [showDeleted, setShowDeleted] = useState(false);
-  const { params, setParams, onTableChange } = useListParams<{
+  const { params, onTableChange } = useListParams<{
     status?: string;
     requestType?: string;
-    includeDeleted?: string;
   }>(
     {},
     {
@@ -100,7 +99,13 @@ export function WasteRequestsPage() {
   const { data: objects } = useQuery({
     queryKey: ['objects', 'for-select'],
     queryFn: () =>
-      objectsApi.list({ page: 1, pageSize: 500, isActive: 'true', sortBy: 'name', sortOrder: 'asc' }),
+      objectsApi.list({
+        page: 1,
+        pageSize: 500,
+        isActive: 'true',
+        sortBy: 'name',
+        sortOrder: 'asc',
+      }),
   });
   const { data: types } = useQuery({
     queryKey: ['container-types', 'for-select'],
@@ -113,7 +118,10 @@ export function WasteRequestsPage() {
         sortOrder: 'asc',
       }),
   });
-  const objectOptions = (objects?.items ?? []).map((o) => ({ value: o.id, label: `${o.code} — ${o.name}` }));
+  const objectOptions = (objects?.items ?? []).map((o) => ({
+    value: o.id,
+    label: `${o.code} — ${o.name}`,
+  }));
   const typeOptions = (types?.items ?? []).map((t) => ({ value: t.id, label: t.name }));
   const requestTypeOptions = REQUEST_TYPES.map((t) => ({ value: t, label: requestTypeLabels[t] }));
 
@@ -254,19 +262,38 @@ export function WasteRequestsPage() {
 
   const StatusCell = ({ r }: { r: WasteRequestDto }) => {
     const transitions = requestStatusTransitions[r.status];
+    const badge = (
+      <Tag color={requestStatusColors[r.status]} style={{ marginInlineEnd: 0 }}>
+        {requestStatusLabels[r.status]}
+      </Tag>
+    );
     if (!canChangeStatus || r.deletedAt || transitions.length === 0) {
-      return <Tag color={requestStatusColors[r.status]}>{requestStatusLabels[r.status]}</Tag>;
+      return badge;
     }
-    const options = [r.status, ...transitions].map((s) => ({ value: s, label: requestStatusLabels[s] }));
+    const pending = statusMut.isPending && statusMut.variables?.id === r.id;
     return (
-      <Select
-        size="small"
-        value={r.status}
-        options={options}
-        style={{ minWidth: 140 }}
-        loading={statusMut.isPending}
-        onChange={(status) => statusMut.mutate({ id: r.id, status, version: r.version })}
-      />
+      <Dropdown
+        trigger={['click']}
+        disabled={pending}
+        menu={{
+          items: transitions.map((s) => ({ key: s, label: requestStatusLabels[s] })),
+          onClick: ({ key }) =>
+            statusMut.mutate({ id: r.id, status: key as RequestStatus, version: r.version }),
+        }}
+      >
+        <Button
+          type="text"
+          size="small"
+          loading={pending}
+          aria-label="Изменить статус"
+          style={{ padding: 0, height: 'auto', border: 'none' }}
+        >
+          <Space size={4}>
+            {badge}
+            <DownOutlined style={{ fontSize: 10, color: 'rgba(0,0,0,0.45)' }} />
+          </Space>
+        </Button>
+      </Dropdown>
     );
   };
 
@@ -283,7 +310,12 @@ export function WasteRequestsPage() {
             renderItem={(f) => (
               <List.Item
                 actions={[
-                  <Button key="dl" type="link" size="small" onClick={() => void filesApi.download(f.id)}>
+                  <Button
+                    key="dl"
+                    type="link"
+                    size="small"
+                    onClick={() => void filesApi.download(f.id)}
+                  >
                     Скачать
                   </Button>,
                 ]}
@@ -366,7 +398,12 @@ export function WasteRequestsPage() {
       const allowed = canModify(r);
       return (
         <Space>
-          <Button size="small" icon={<EditOutlined />} disabled={!allowed} onClick={() => openEdit(r)} />
+          <Button
+            size="small"
+            icon={<EditOutlined />}
+            disabled={!allowed}
+            onClick={() => openEdit(r)}
+          />
           <Button
             size="small"
             danger
@@ -383,23 +420,9 @@ export function WasteRequestsPage() {
     <PageTableLayout
       title="Вывоз мусора"
       extra={
-        <Space>
-          {isAdmin ? (
-            <Space size={4}>
-              <span>Архив</span>
-              <Switch
-                checked={showDeleted}
-                onChange={(v) => {
-                  setShowDeleted(v);
-                  setParams((p) => ({ ...p, includeDeleted: v ? 'true' : undefined, page: 1 }));
-                }}
-              />
-            </Space>
-          ) : null}
-          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-            Создать заявку
-          </Button>
-        </Space>
+        <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
+          Создать заявку
+        </Button>
       }
     >
       <DataTable<WasteRequestDto>
@@ -412,19 +435,13 @@ export function WasteRequestsPage() {
         onChange={onTableChange}
       />
 
-      <Drawer
+      <FormModal
         title={record ? 'Редактирование заявки' : 'Новая заявка'}
         open={open}
-        onClose={() => setOpen(false)}
+        onCancel={() => setOpen(false)}
+        onSubmit={() => form.submit()}
+        confirmLoading={saveMut.isPending}
         width={520}
-        extra={
-          <Space>
-            <Button onClick={() => setOpen(false)}>Отмена</Button>
-            <Button type="primary" loading={saveMut.isPending} onClick={() => form.submit()}>
-              Сохранить
-            </Button>
-          </Space>
-        }
       >
         <Form form={form} layout="vertical" onFinish={(v) => saveMut.mutate(v)}>
           <Form.Item
@@ -432,7 +449,12 @@ export function WasteRequestsPage() {
             label="Объект строительства"
             rules={[{ required: true, message: 'Выберите объект' }]}
           >
-            <Select options={objectOptions} showSearch optionFilterProp="label" disabled={isShtab} />
+            <Select
+              options={objectOptions}
+              showSearch
+              optionFilterProp="label"
+              disabled={isShtab}
+            />
           </Form.Item>
           <Form.Item
             name="containerTypeId"
@@ -492,7 +514,13 @@ export function WasteRequestsPage() {
               renderItem={(f) => (
                 <List.Item
                   actions={[
-                    <Button key="rm" type="link" danger size="small" onClick={() => void removeFile(f)}>
+                    <Button
+                      key="rm"
+                      type="link"
+                      danger
+                      size="small"
+                      onClick={() => void removeFile(f)}
+                    >
                       Удалить
                     </Button>,
                   ]}
@@ -508,7 +536,7 @@ export function WasteRequestsPage() {
             />
           </Form.Item>
         </Form>
-      </Drawer>
+      </FormModal>
     </PageTableLayout>
   );
 }
