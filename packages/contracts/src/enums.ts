@@ -55,20 +55,25 @@ export function canTransitionStatus(from: RequestStatus, to: RequestStatus): boo
   return requestStatusTransitions[from].includes(to);
 }
 
-// ── Типы заявок (хардкод) ──
-export const REQUEST_TYPES = ['onetime', 'weekly'] as const;
+// ── Типы заявок (операции с контейнерами / вывоз) ──
+export const REQUEST_TYPES = ['container_install', 'container_replace', 'waste_removal'] as const;
 export const requestTypeSchema = z.enum(REQUEST_TYPES);
 export type RequestType = (typeof REQUEST_TYPES)[number];
 
 export const requestTypeLabels: Record<RequestType, string> = {
-  onetime: 'Разовая',
-  weekly: 'Недельная',
+  container_install: 'Установка контейнера',
+  container_replace: 'Замена контейнера',
+  waste_removal: 'Вывоз мусора',
 };
 
 export const requestTypeColors: Record<RequestType, string> = {
-  onetime: 'default',
-  weekly: 'purple',
+  container_install: 'green',
+  container_replace: 'gold',
+  waste_removal: 'blue',
 };
+
+/** Минимальный объём вывоза мусора (м³). */
+export const MIN_WASTE_VOLUME_M3 = 8;
 
 // ── Типы контейнеров (управляемый справочник; данные в БД) ──
 export const CONTAINER_TYPE_SEED = [
@@ -76,8 +81,12 @@ export const CONTAINER_TYPE_SEED = [
   { code: 'container_20', name: 'Контейнер 20 м³', sortOrder: 20 },
   { code: 'container_27', name: 'Контейнер 27 м³', sortOrder: 30 },
   { code: 'container_25_heavy', name: 'Контейнер 25 м³ для тяжёлых грузов', sortOrder: 40 },
-  { code: 'dump_truck_25', name: 'Самосвал 25 м³', sortOrder: 50 },
-  { code: 'dump_truck_36', name: 'Самосвал 36 м³', sortOrder: 60 },
+] as const;
+
+// ── Типы машин (самосвалы; управляемый справочник) ──
+export const MACHINE_TYPE_SEED = [
+  { code: 'dump_truck_25', name: 'Самосвал 25 м³', sortOrder: 10 },
+  { code: 'dump_truck_36', name: 'Самосвал 36 м³', sortOrder: 20 },
 ] as const;
 
 // ── Статусы файлов ──

@@ -17,6 +17,8 @@ import authRoutes from './routes/auth';
 import usersRoutes from './routes/users';
 import objectsRoutes from './routes/objects';
 import containerTypesRoutes from './routes/container-types';
+import machineTypesRoutes from './routes/machine-types';
+import containersRoutes from './routes/containers';
 import wasteRequestsRoutes from './routes/waste-requests';
 import filesRoutes from './routes/files';
 import auditRoutes from './routes/audit';
@@ -53,6 +55,8 @@ export async function buildApp() {
   await app.register(usersRoutes, { prefix: '/api/v1/users' });
   await app.register(objectsRoutes, { prefix: '/api/v1/objects' });
   await app.register(containerTypesRoutes, { prefix: '/api/v1/container-types' });
+  await app.register(machineTypesRoutes, { prefix: '/api/v1/machine-types' });
+  await app.register(containersRoutes, { prefix: '/api/v1/containers' });
   await app.register(wasteRequestsRoutes, { prefix: '/api/v1/waste-requests' });
   await app.register(filesRoutes, { prefix: '/api/v1/files' });
   await app.register(auditRoutes, { prefix: '/api/v1/audit' });

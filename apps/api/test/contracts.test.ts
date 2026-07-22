@@ -47,7 +47,7 @@ describe('createWasteRequestSchema', () => {
     const parsed = createWasteRequestSchema.parse({
       objectId: '11111111-1111-4111-8111-111111111111',
       containerTypeId: '22222222-2222-4222-8222-222222222222',
-      requestType: 'onetime',
+      requestType: 'container_install',
       deliveryAt: '2026-08-01T10:00:00.000Z',
     });
     expect(parsed.deliveryAt).toBeInstanceOf(Date);

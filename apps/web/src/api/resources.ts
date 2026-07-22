@@ -1,15 +1,21 @@
 import type {
+  ContainerDto,
   ContainerTypeDto,
+  CreateContainerInput,
   CreateContainerTypeInput,
+  CreateMachineTypeInput,
   CreateObjectInput,
   CreateUserInput,
   DownloadUrlDto,
   FileDto,
   ListResult,
+  MachineTypeDto,
   ObjectDto,
   RequestStatus,
   RequestType,
+  UpdateContainerInput,
   UpdateContainerTypeInput,
+  UpdateMachineTypeInput,
   UpdateObjectInput,
   UpdateUserInput,
   UploadSessionDto,
@@ -47,10 +53,31 @@ export const containerTypesApi = {
   remove: (id: string) => apiFetch<ContainerTypeDto>(`/container-types/${id}`, { method: 'DELETE' }),
 };
 
+export const machineTypesApi = {
+  list: (q: Query) => apiFetch<ListResult<MachineTypeDto>>('/machine-types', { query: q }),
+  create: (body: CreateMachineTypeInput) =>
+    apiFetch<MachineTypeDto>('/machine-types', { method: 'POST', body }),
+  update: (id: string, body: UpdateMachineTypeInput) =>
+    apiFetch<MachineTypeDto>(`/machine-types/${id}`, { method: 'PATCH', body }),
+  remove: (id: string) => apiFetch<MachineTypeDto>(`/machine-types/${id}`, { method: 'DELETE' }),
+};
+
+export const containersApi = {
+  list: (q: Query) => apiFetch<ListResult<ContainerDto>>('/containers', { query: q }),
+  create: (body: CreateContainerInput) =>
+    apiFetch<ContainerDto>('/containers', { method: 'POST', body }),
+  update: (id: string, body: UpdateContainerInput) =>
+    apiFetch<ContainerDto>(`/containers/${id}`, { method: 'PATCH', body }),
+  remove: (id: string) => apiFetch<ContainerDto>(`/containers/${id}`, { method: 'DELETE' }),
+};
+
 export interface WasteRequestPayload {
   objectId: string;
-  containerTypeId: string;
   requestType: RequestType;
+  containerTypeId?: string;
+  containerId?: string;
+  machineTypeId?: string;
+  volumeM3?: number;
   deliveryAt: string;
   comment?: string;
   fileIds?: string[];
@@ -58,8 +85,11 @@ export interface WasteRequestPayload {
 
 export interface WasteRequestUpdatePayload {
   objectId?: string;
-  containerTypeId?: string;
   requestType?: RequestType;
+  containerTypeId?: string | null;
+  containerId?: string | null;
+  machineTypeId?: string | null;
+  volumeM3?: number | null;
   deliveryAt?: string;
   comment?: string;
   addFileIds?: string[];

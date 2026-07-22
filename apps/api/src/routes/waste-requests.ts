@@ -7,6 +7,8 @@ import {
   changeWasteRequestStatusSchema,
   createWasteRequestSchema,
   type FileDto,
+  MIN_WASTE_VOLUME_M3,
+  type RequestType,
   updateWasteRequestSchema,
   type WasteRequestDto,
   wasteRequestListQuerySchema,
@@ -15,9 +17,11 @@ import { config } from '../config';
 import { db } from '../db/client';
 import {
   constructionObjects,
+  containers,
   containerTypes,
   files,
   jobs,
+  machineTypes,
   requestFiles,
   requestStatusHistory,
   users,
@@ -41,9 +45,14 @@ const requestSelect = {
   objectId: wasteRequests.objectId,
   objectCode: constructionObjects.code,
   objectName: constructionObjects.name,
+  requestType: wasteRequests.requestType,
   containerTypeId: wasteRequests.containerTypeId,
   containerTypeName: containerTypes.name,
-  requestType: wasteRequests.requestType,
+  containerId: wasteRequests.containerId,
+  containerLabel: containers.label,
+  machineTypeId: wasteRequests.machineTypeId,
+  machineTypeName: machineTypes.name,
+  volumeM3: wasteRequests.volumeM3,
   deliveryAt: wasteRequests.deliveryAt,
   comment: wasteRequests.comment,
   status: wasteRequests.status,
@@ -94,9 +103,14 @@ function toDto(r: RequestRow, fileList: FileDto[]): WasteRequestDto {
     objectId: r.objectId,
     objectCode: r.objectCode,
     objectName: r.objectName,
+    requestType: r.requestType,
     containerTypeId: r.containerTypeId,
     containerTypeName: r.containerTypeName,
-    requestType: r.requestType,
+    containerId: r.containerId,
+    containerLabel: r.containerLabel,
+    machineTypeId: r.machineTypeId,
+    machineTypeName: r.machineTypeName,
+    volumeM3: r.volumeM3,
     deliveryAt: r.deliveryAt.toISOString(),
     comment: r.comment,
     status: r.status,
@@ -115,8 +129,71 @@ function baseQuery() {
     .select(requestSelect)
     .from(wasteRequests)
     .innerJoin(constructionObjects, eq(wasteRequests.objectId, constructionObjects.id))
-    .innerJoin(containerTypes, eq(wasteRequests.containerTypeId, containerTypes.id))
+    // тип контейнера/машины/контейнер опциональны в зависимости от типа заявки
+    .leftJoin(containerTypes, eq(wasteRequests.containerTypeId, containerTypes.id))
+    .leftJoin(containers, eq(wasteRequests.containerId, containers.id))
+    .leftJoin(machineTypes, eq(wasteRequests.machineTypeId, machineTypes.id))
     .innerJoin(users, eq(wasteRequests.createdBy, users.id));
+}
+
+/** Нормализованный набор «предметных» колонок заявки. */
+interface RequestSubject {
+  containerTypeId: string | null;
+  containerId: string | null;
+  machineTypeId: string | null;
+  volumeM3: number | null;
+}
+
+/**
+ * Проверяет и нормализует поля заявки по её типу: для замены — сверяет контейнер
+ * с объектом и денормализует его тип; лишние поля обнуляет.
+ */
+async function resolveSubject(
+  tx: Tx,
+  input: {
+    requestType: RequestType;
+    objectId: string;
+    containerTypeId: string | null;
+    containerId: string | null;
+    machineTypeId: string | null;
+    volumeM3: number | null;
+  },
+): Promise<RequestSubject> {
+  if (input.requestType === 'container_install') {
+    if (!input.containerTypeId) throw err.badRequest('Выберите тип контейнера');
+    const [ct] = await tx
+      .select({ id: containerTypes.id })
+      .from(containerTypes)
+      .where(eq(containerTypes.id, input.containerTypeId));
+    if (!ct) throw err.badRequest('Тип контейнера не найден');
+    return { containerTypeId: input.containerTypeId, containerId: null, machineTypeId: null, volumeM3: null };
+  }
+
+  if (input.requestType === 'container_replace') {
+    if (!input.containerId) throw err.badRequest('Выберите контейнер');
+    const [c] = await tx
+      .select({ id: containers.id, objectId: containers.objectId, typeId: containers.containerTypeId })
+      .from(containers)
+      .where(eq(containers.id, input.containerId));
+    if (!c) throw err.badRequest('Контейнер не найден');
+    if (c.objectId !== input.objectId) {
+      throw err.badRequest('Контейнер не относится к выбранному объекту');
+    }
+    return { containerTypeId: c.typeId, containerId: c.id, machineTypeId: null, volumeM3: null };
+  }
+
+  // waste_removal
+  if (!input.machineTypeId) throw err.badRequest('Выберите тип машины');
+  const [mt] = await tx
+    .select({ id: machineTypes.id })
+    .from(machineTypes)
+    .where(eq(machineTypes.id, input.machineTypeId));
+  if (!mt) throw err.badRequest('Тип машины не найден');
+  if (input.volumeM3 == null) throw err.badRequest('Укажите объём');
+  if (input.volumeM3 < MIN_WASTE_VOLUME_M3) {
+    throw err.badRequest(`Объём не меньше ${MIN_WASTE_VOLUME_M3} м³`);
+  }
+  return { containerTypeId: null, containerId: null, machineTypeId: input.machineTypeId, volumeM3: input.volumeM3 };
 }
 
 async function getRequestDto(id: string): Promise<WasteRequestDto | null> {
@@ -254,12 +331,20 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
     const body = req.body;
     assertShtabScope(p, body.objectId);
     const created = await db.transaction(async (tx) => {
+      const subject = await resolveSubject(tx, {
+        requestType: body.requestType,
+        objectId: body.objectId,
+        containerTypeId: body.containerTypeId ?? null,
+        containerId: body.containerId ?? null,
+        machineTypeId: body.machineTypeId ?? null,
+        volumeM3: body.volumeM3 ?? null,
+      });
       const [row] = await tx
         .insert(wasteRequests)
         .values({
           objectId: body.objectId,
-          containerTypeId: body.containerTypeId,
           requestType: body.requestType,
+          ...subject,
           deliveryAt: body.deliveryAt,
           comment: body.comment,
           status: 'new',
@@ -300,13 +385,25 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       }
       if (body.objectId) assertShtabScope(p, body.objectId);
 
+      const rt = body.requestType ?? existing.requestType;
+      const objectId = body.objectId ?? existing.objectId;
       await db.transaction(async (tx) => {
+        const subject = await resolveSubject(tx, {
+          requestType: rt,
+          objectId,
+          containerTypeId:
+            body.containerTypeId !== undefined ? body.containerTypeId : existing.containerTypeId,
+          containerId: body.containerId !== undefined ? body.containerId : existing.containerId,
+          machineTypeId:
+            body.machineTypeId !== undefined ? body.machineTypeId : existing.machineTypeId,
+          volumeM3: body.volumeM3 !== undefined ? body.volumeM3 : existing.volumeM3,
+        });
         const [updated] = await tx
           .update(wasteRequests)
           .set({
-            objectId: body.objectId ?? existing.objectId,
-            containerTypeId: body.containerTypeId ?? existing.containerTypeId,
-            requestType: body.requestType ?? existing.requestType,
+            objectId,
+            requestType: rt,
+            ...subject,
             deliveryAt: body.deliveryAt ?? existing.deliveryAt,
             comment: body.comment ?? existing.comment,
             updatedBy: p.id,

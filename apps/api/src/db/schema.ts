@@ -33,7 +33,11 @@ export const requestStatusEnum = pgEnum('request_status', [
   'done',
   'cancelled',
 ]);
-export const requestTypeEnum = pgEnum('request_type', ['onetime', 'weekly']);
+export const requestTypeEnum = pgEnum('request_type', [
+  'container_install',
+  'container_replace',
+  'waste_removal',
+]);
 export const fileStatusEnum = pgEnum('file_status', ['pending', 'active', 'deleted']);
 export const jobStatusEnum = pgEnum('job_status', ['pending', 'running', 'done', 'failed', 'dead']);
 
@@ -70,6 +74,44 @@ export const containerTypes = pgTable(
   },
   (t) => ({
     codeUnique: uniqueIndex('container_types_code_unique').on(t.code),
+  }),
+);
+
+// ── Справочник: типы машин (самосвалы) ──
+export const machineTypes = pgTable(
+  'machine_types',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    code: text('code').notNull(),
+    name: text('name').notNull(),
+    sortOrder: integer('sort_order').notNull().default(100),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    codeUnique: uniqueIndex('machine_types_code_unique').on(t.code),
+  }),
+);
+
+// ── Экземпляры контейнеров на объектах ──
+export const containers = pgTable(
+  'containers',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    objectId: uuid('object_id')
+      .notNull()
+      .references(() => constructionObjects.id, { onDelete: 'cascade' }),
+    containerTypeId: uuid('container_type_id')
+      .notNull()
+      .references(() => containerTypes.id, { onDelete: 'restrict' }),
+    label: text('label').notNull().default(''),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    objectIdx: index('containers_object_idx').on(t.objectId),
   }),
 );
 
@@ -153,10 +195,18 @@ export const wasteRequests = pgTable(
     objectId: uuid('object_id')
       .notNull()
       .references(() => constructionObjects.id, { onDelete: 'restrict' }),
-    containerTypeId: uuid('container_type_id')
-      .notNull()
-      .references(() => containerTypes.id, { onDelete: 'restrict' }),
     requestType: requestTypeEnum('request_type').notNull(),
+    // container_install / container_replace: тип контейнера (для замены денормализуется из container)
+    containerTypeId: uuid('container_type_id').references(() => containerTypes.id, {
+      onDelete: 'restrict',
+    }),
+    // container_replace: конкретный экземпляр контейнера объекта
+    containerId: uuid('container_id').references(() => containers.id, { onDelete: 'set null' }),
+    // waste_removal: тип машины и объём
+    machineTypeId: uuid('machine_type_id').references(() => machineTypes.id, {
+      onDelete: 'restrict',
+    }),
+    volumeM3: integer('volume_m3'),
     deliveryAt: timestamp('delivery_at', { withTimezone: true }).notNull(),
     comment: text('comment').notNull().default(''),
     status: requestStatusEnum('status').notNull().default('new'),
@@ -247,4 +297,6 @@ export type WasteRequestRow = typeof wasteRequests.$inferSelect;
 export type FileRow = typeof files.$inferSelect;
 export type ObjectRow = typeof constructionObjects.$inferSelect;
 export type ContainerTypeRow = typeof containerTypes.$inferSelect;
+export type MachineTypeRow = typeof machineTypes.$inferSelect;
+export type ContainerRow = typeof containers.$inferSelect;
 export type JobRow = typeof jobs.$inferSelect;
