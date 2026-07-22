@@ -2,7 +2,7 @@
 
 ## 1. Секреты и ключи
 
-Секреты хранятся в host env-файле вне git и docker-образа: `/etc/technic-portal/prod.env` (`root:root`, `0600`). Шаблон — `.env.example` в корне репозитория.
+Секреты хранятся в host env-файле вне git и docker-образа: `/etc/technic-portal/prod.env` (`root:docker`, `0640`). Шаблон — `.env.example` в корне репозитория.
 
 ### Ed25519-ключи для access-JWT
 
@@ -58,11 +58,19 @@ conn_limit(technic_migration) — небольшой (миграции one-off),
     ]
   }
   ```
-- CSP на edge-nginx должен разрешать `connect-src https://s3.cloud.ru https://*.s3.cloud.ru` (см. `deploy/nginx/portal.conf.example`).
+- CSP на edge-nginx должен разрешать `connect-src https://s3.cloud.ru https://*.s3.cloud.ru` (см. `deploy/nginx/technic.conf`).
 
-## 4. Edge-nginx (хост)
+## 4. Edge-nginx (`infra-nginx`)
 
-На VPS уже есть host-nginx других проектов — конкурирующий не поднимаем. Добавить vhost по образцу `deploy/nginx/portal.conf.example`: TLS termination + `proxy_pass http://127.0.0.1:8080` (контейнер `web`). Порты 80/443 — только у host-nginx; контейнеры наружу не публикуются.
+На VPS edge — общий Docker-контейнер **`infra-nginx`** (сеть `edge`, порты 80/443).
+Отдельный host-nginx для technic не поднимаем. Vhost кладётся только в
+`/opt/infra/nginx/conf.d/technic.conf` (шаблон — `deploy/nginx/technic.conf`;
+краткий пример — `deploy/nginx/portal.conf.example`).
+
+- TLS termination в `infra-nginx`; certs — `/opt/infra/nginx/certbot/conf` (`infra-certbot`, webroot).
+- `proxy_pass` на `technic-web:80` через Docker DNS (`resolver 127.0.0.11`), не на `127.0.0.1`.
+- Контейнеры technic host-ports не публикуют; соседние vhost в `conf.d/` не трогать.
+- Публичный origin: `https://auto.su10.ru` (`PUBLIC_ORIGIN` в `/etc/technic-portal/prod.env`).
 
 ## 5. Локальная разработка
 

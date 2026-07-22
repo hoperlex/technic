@@ -1,0 +1,28 @@
+---
+description: SSH access to corpsu VPS (89.232.188.170) for technic / auto portal
+alwaysApply: true
+---
+
+# Corpsu VPS access (technic)
+
+Host: `89.232.188.170`. User: `corpsu`. Site: technic portal — **https://auto.su10.ru** (edge: `infra-nginx` → `technic-web`).
+
+## Connect (Windows PowerShell)
+
+- SSH alias in `~/.ssh/config`: **`ya_claude1`** (not `corpsu`)
+- IdentityFile: `~/.ssh/ed25519_kg_217`
+- Passphrase: DPAPI `%USERPROFILE%\.cursor-secrets\vps_corpsu_passphrase.dpapi`
+- Do not ask the user to paste the passphrase in chat
+
+```powershell
+# Ensure ssh-agent running, decrypt DPAPI, ssh-add via SSH_ASKPASS (ephemeral temp files), then:
+ssh -o BatchMode=yes -o ConnectTimeout=15 ya_claude1 "..."
+```
+
+## Deploy notes
+
+- Edge: Docker `infra-nginx` + conf in `/opt/infra/nginx/conf.d/technic.conf` only for this app
+- App: `/opt/portals/technic`, compose project `technic` (`technic-web` / `technic-api` / `technic-worker`)
+- Secrets: `/etc/technic-portal/prod.env` — never print values; after env edits use `docker compose ... up -d --force-recreate` (plain `restart` keeps old env)
+- Certs: `/opt/infra/nginx/certbot/conf` via `infra-certbot` (webroot)
+- Never touch sibling vhosts (`zakupki`, `estimat`, `billhub`, `keycloak`) or run global destructive Docker commands

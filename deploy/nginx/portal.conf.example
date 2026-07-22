@@ -1,36 +1,50 @@
-# Пример vhost для EDGE-nginx на хосте (TLS termination, §23).
-# Проксирует на контейнер web (127.0.0.1:8080). Файл кладётся в
-# /etc/nginx/sites-available и не конфликтует с другими проектами на VPS.
+# Пример / канон edge-vhost для infra-nginx (Docker), не host-nginx.
+# На VPS живой файл: /opt/infra/nginx/conf.d/technic.conf
+# Шаблон в репо: deploy/nginx/technic.conf (держит nip.io→auto.su10.ru redirect).
+#
+# Установка / обновление:
+#   sudo cp deploy/nginx/technic.conf /opt/infra/nginx/conf.d/technic.conf
+#   docker exec infra-nginx nginx -t && docker exec infra-nginx nginx -s reload
+#
+# Порты 80/443 слушает только контейнер infra-nginx (сеть edge).
+# technic-web без host-ports; proxy_pass по Docker DNS на technic-web:80.
+# Соседние vhost (zakupki, estimat, billhub, keycloak) не трогать.
+#
+# Упрощённый фрагмент (без legacy nip.io) — для справки:
 
 server {
-  listen 80;
-  server_name auto.su10.ru;
-  return 301 https://$host$request_uri;
+    listen 80;
+    server_name auto.su10.ru;
+    location /.well-known/acme-challenge/ { root /var/www/certbot; }
+    location / { return 301 https://auto.su10.ru$request_uri; }
 }
 
 server {
-  listen 443 ssl;
-  http2 on;
-  server_name auto.su10.ru;
+    listen 443 ssl;
+    http2 on;
+    server_name auto.su10.ru;
 
-  ssl_certificate     /etc/letsencrypt/live/auto.su10.ru/fullchain.pem;
-  ssl_certificate_key /etc/letsencrypt/live/auto.su10.ru/privkey.pem;
+    ssl_certificate     /etc/letsencrypt/live/auto.su10.ru/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/auto.su10.ru/privkey.pem;
 
-  client_max_body_size 2m;
+    add_header Strict-Transport-Security "max-age=63072000" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; script-src 'self'; connect-src 'self' https://s3.cloud.ru https://*.s3.cloud.ru" always;
 
-  add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
-  add_header X-Content-Type-Options nosniff always;
-  add_header X-Frame-Options DENY always;
-  add_header Referrer-Policy strict-origin-when-cross-origin always;
-  # connect-src включает cloud.ru для presigned upload/download напрямую из браузера
-  add_header Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; script-src 'self'; connect-src 'self' https://s3.cloud.ru https://*.s3.cloud.ru" always;
+    client_max_body_size 2m;
 
-  location / {
-    proxy_pass http://127.0.0.1:8080;
-    proxy_http_version 1.1;
-    proxy_set_header Host $host;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto https;
-  }
+    resolver 127.0.0.11 valid=30s ipv6=off;
+    set $web technic-web;
+
+    location / {
+        proxy_pass http://$web:80;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+    }
 }
