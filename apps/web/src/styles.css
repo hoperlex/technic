@@ -22,3 +22,47 @@ body,
 .full-height-tabs .ant-tabs-content {
   height: 100%;
 }
+
+/* Блок аккаунта внизу боковой панели */
+.sider-account {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.sider-account:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+.sider-account--collapsed {
+  justify-content: center;
+  padding: 8px 0;
+}
+
+/* Узкая кнопка сворачивания по правому краю боковой панели */
+.sider-toggle {
+  flex: 0 0 16px;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  background: transparent;
+  transition: background 0.15s ease;
+}
+.sider-toggle:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+.sider-toggle-arrow {
+  user-select: none;
+  -webkit-user-select: none;
+  color: rgba(0, 0, 0, 0.25);
+  font-size: 14px;
+  line-height: 1;
+  transition: color 0.15s ease;
+}
+.sider-toggle:hover .sider-toggle-arrow {
+  color: rgba(0, 0, 0, 0.65);
+}

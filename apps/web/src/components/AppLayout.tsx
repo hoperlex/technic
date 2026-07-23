@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { Avatar, Dropdown, Layout, Menu, type MenuProps, Typography } from 'antd';
 import {
   DatabaseOutlined,
@@ -11,12 +12,13 @@ import { Outlet, useLocation, useNavigate } from 'react-router';
 import { roleLabels } from '@technic/contracts';
 import { useAuth } from '../auth/AuthContext';
 
-const { Header, Sider, Content } = Layout;
+const { Sider, Content } = Layout;
 
 export function AppLayout() {
   const { user, logout, hasRole } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+  const [collapsed, setCollapsed] = useState(false);
 
   const items: MenuProps['items'] = [
     { key: '/waste', icon: <FileTextOutlined />, label: 'Вывоз мусора' },
@@ -45,41 +47,80 @@ export function AppLayout() {
 
   return (
     <Layout style={{ height: '100vh' }}>
-      <Sider theme="light" width={230} style={{ borderInlineEnd: '1px solid rgba(0,0,0,0.06)' }}>
-        <div style={{ height: 56, display: 'flex', alignItems: 'center', padding: '0 16px', fontWeight: 600, fontSize: 16 }}>
-          Портал
+      <Sider
+        theme="light"
+        width={230}
+        collapsedWidth={64}
+        collapsible
+        collapsed={collapsed}
+        trigger={null}
+        style={{ borderInlineEnd: '1px solid rgba(0,0,0,0.06)' }}
+      >
+        <div style={{ height: '100%', display: 'flex', flexDirection: 'row' }}>
+          <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+            {!collapsed && (
+              <div
+                style={{
+                  height: 56,
+                  display: 'flex',
+                  alignItems: 'center',
+                  padding: '0 16px',
+                  fontWeight: 600,
+                  fontSize: 16,
+                }}
+              >
+                Портал
+              </div>
+            )}
+            <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
+              {!collapsed && (
+                <Menu
+                  mode="inline"
+                  selectedKeys={[selectedKey]}
+                  items={items}
+                  onClick={({ key }) => navigate(key)}
+                  style={{ borderInlineEnd: 'none' }}
+                />
+              )}
+            </div>
+            <div style={{ borderTop: '1px solid rgba(0,0,0,0.06)', padding: 8 }}>
+              <Dropdown menu={userMenu} trigger={['click']} placement="topLeft">
+                <div className={`sider-account${collapsed ? ' sider-account--collapsed' : ''}`}>
+                  <Avatar size="small" icon={<UserOutlined />} />
+                  {!collapsed && (
+                    <div style={{ lineHeight: 1.2, minWidth: 0 }}>
+                      <div
+                        style={{
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {user?.fullName}
+                      </div>
+                      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                        {user?.role ? roleLabels[user.role] : '—'}
+                      </Typography.Text>
+                    </div>
+                  )}
+                </div>
+              </Dropdown>
+            </div>
+          </div>
+          <div
+            className="sider-toggle"
+            role="button"
+            aria-label={collapsed ? 'Развернуть меню' : 'Свернуть меню'}
+            onClick={() => setCollapsed((v) => !v)}
+          >
+            <span className="sider-toggle-arrow">{collapsed ? '›' : '‹'}</span>
+          </div>
         </div>
-        <Menu
-          mode="inline"
-          selectedKeys={[selectedKey]}
-          items={items}
-          onClick={({ key }) => navigate(key)}
-          style={{ borderInlineEnd: 'none' }}
-        />
       </Sider>
       <Layout>
-        <Header
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'flex-end',
-            padding: '0 16px',
-            borderBottom: '1px solid rgba(0,0,0,0.06)',
-          }}
+        <Content
+          style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden', padding: 16 }}
         >
-          <Dropdown menu={userMenu} trigger={['click']}>
-            <div style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
-              <Avatar size="small" icon={<UserOutlined />} />
-              <div style={{ lineHeight: 1.2 }}>
-                <div>{user?.fullName}</div>
-                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  {user?.role ? roleLabels[user.role] : '—'}
-                </Typography.Text>
-              </div>
-            </div>
-          </Dropdown>
-        </Header>
-        <Content style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden', padding: 16 }}>
           <Outlet />
         </Content>
       </Layout>
