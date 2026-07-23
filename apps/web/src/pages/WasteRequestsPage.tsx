@@ -199,29 +199,22 @@ function RequestsTab() {
   const watchObjectId = Form.useWatch('objectId', form);
   const watchRequestType = Form.useWatch('requestType', form);
 
-  // Установленные контейнеры объекта — заявки установки (любой статус, кроме «Отменена»).
-  const { data: installRequests } = useQuery({
-    queryKey: ['waste-requests', 'installs-for-object', watchObjectId],
-    queryFn: () =>
-      wasteRequestsApi.list({
-        objectId: watchObjectId,
-        requestType: 'container_install',
-        pageSize: 500,
-        sortBy: 'deliveryAt',
-        sortOrder: 'desc',
-      }),
+  // Наличие контейнеров на объекте (view: установки − снятия). Для «Замены» и «Снятия».
+  const { data: presentData } = useQuery({
+    queryKey: ['waste-requests', 'present-for-object', watchObjectId],
+    queryFn: () => wasteRequestsApi.present({ objectId: watchObjectId, pageSize: 500 }),
     enabled: !!watchObjectId,
   });
-  // Уникальные типы контейнеров, установленных на объекте (по заявкам установки, кроме отменённых).
-  const installedTypeMap = new Map<string, string>();
-  for (const r of installRequests?.items ?? []) {
-    if (r.deletedAt || r.status === 'cancelled' || !r.containerTypeId) continue;
-    if (!installedTypeMap.has(r.containerTypeId)) {
-      installedTypeMap.set(r.containerTypeId, r.containerTypeName ?? 'Контейнер');
+  // Уникальные присутствующие типы контейнеров на объекте.
+  const presentTypeMap = new Map<string, string>();
+  for (const r of presentData?.items ?? []) {
+    if (!r.containerTypeId) continue;
+    if (!presentTypeMap.has(r.containerTypeId)) {
+      presentTypeMap.set(r.containerTypeId, r.containerTypeName ?? 'Контейнер');
     }
   }
-  const installedTypeOptions = [...installedTypeMap].map(([value, label]) => ({ value, label }));
-  const objectHasInstalls = installedTypeOptions.length > 0;
+  const presentTypeOptions = [...presentTypeMap].map(([value, label]) => ({ value, label }));
+  const objectHasPresent = presentTypeOptions.length > 0;
 
   const openCreate = () => {
     setRecord(null);
@@ -655,16 +648,31 @@ function RequestsTab() {
               name="containerTypeId"
               label="Тип заменяемого контейнера"
               rules={[{ required: true, message: 'Выберите тип контейнера для замены' }]}
-              extra={
-                !objectHasInstalls ? 'На объекте нет установленных контейнеров' : undefined
-              }
+              extra={!objectHasPresent ? 'На объекте нет контейнеров' : undefined}
             >
               <Select
-                options={installedTypeOptions}
+                options={presentTypeOptions}
                 showSearch
                 optionFilterProp="label"
-                placeholder="Тип, установленный на объекте"
-                notFoundContent="Нет установленных контейнеров"
+                placeholder="Тип, присутствующий на объекте"
+                notFoundContent="Нет контейнеров на объекте"
+              />
+            </Form.Item>
+          )}
+
+          {watchRequestType === 'container_removal' && (
+            <Form.Item
+              name="containerTypeId"
+              label="Тип снимаемого контейнера"
+              rules={[{ required: true, message: 'Выберите тип контейнера для снятия' }]}
+              extra={!objectHasPresent ? 'На объекте нет контейнеров' : undefined}
+            >
+              <Select
+                options={presentTypeOptions}
+                showSearch
+                optionFilterProp="label"
+                placeholder="Тип, присутствующий на объекте"
+                notFoundContent="Нет контейнеров на объекте"
               />
             </Form.Item>
           )}

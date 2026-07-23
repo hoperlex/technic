@@ -19,13 +19,8 @@ export function OnSiteTab() {
   );
 
   const { data, isFetching } = useQuery({
-    queryKey: ['waste-requests', 'on-site', params],
-    queryFn: () =>
-      wasteRequestsApi.list({
-        ...params,
-        requestType: 'container_install',
-        excludeCancelled: 'true',
-      }),
+    queryKey: ['waste-requests', 'present', params],
+    queryFn: () => wasteRequestsApi.present(params),
   });
 
   const columns = [

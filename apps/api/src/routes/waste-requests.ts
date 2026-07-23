@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
-import { and, count, eq, gte, inArray, isNull, lte, ne } from 'drizzle-orm';
+import { and, count, eq, gte, inArray, isNull, lte } from 'drizzle-orm';
 import {
   canTransitionStatus,
   changeWasteRequestStatusSchema,
@@ -20,6 +20,7 @@ import {
   containerTypes,
   files,
   jobs,
+  presentContainers,
   requestFiles,
   requestStatusHistory,
   users,
@@ -132,10 +133,29 @@ interface RequestSubject {
   volumeM3: number | null;
 }
 
+/** Присутствует ли контейнер этого типа на объекте (по view наличия present_containers). */
+async function isTypePresent(
+  tx: Tx,
+  objectId: string,
+  containerTypeId: string,
+): Promise<boolean> {
+  const [row] = await tx
+    .select({ id: presentContainers.id })
+    .from(presentContainers)
+    .where(
+      and(
+        eq(presentContainers.objectId, objectId),
+        eq(presentContainers.containerTypeId, containerTypeId),
+      ),
+    )
+    .limit(1);
+  return !!row;
+}
+
 /**
  * Проверяет и нормализует поля заявки по её типу:
  *  - установка — сверяет тип контейнера (type='cont');
- *  - замена — сверяет, что тип установлен на объекте (есть заявка установки этого типа, кроме cancelled);
+ *  - замена/снятие — сверяет, что контейнер этого типа присутствует на объекте (view наличия);
  *  - вывоз — сверяет тип из справочника (любой: машина или контейнер) + объём.
  * Лишние поля обнуляет.
  */
@@ -161,21 +181,17 @@ async function resolveSubject(
 
   if (input.requestType === 'container_replace') {
     if (!input.containerTypeId) throw err.badRequest('Выберите тип контейнера для замены');
-    // тип должен быть установлен на объекте: есть заявка установки этого типа (кроме отменённой/удалённой)
-    const [inst] = await tx
-      .select({ id: wasteRequests.id })
-      .from(wasteRequests)
-      .where(
-        and(
-          eq(wasteRequests.objectId, input.objectId),
-          eq(wasteRequests.requestType, 'container_install'),
-          eq(wasteRequests.containerTypeId, input.containerTypeId),
-          isNull(wasteRequests.deletedAt),
-          ne(wasteRequests.status, 'cancelled'),
-        ),
-      )
-      .limit(1);
-    if (!inst) throw err.badRequest('На объекте нет установленного контейнера этого типа');
+    if (!(await isTypePresent(tx, input.objectId, input.containerTypeId))) {
+      throw err.badRequest('На объекте нет контейнера этого типа для замены');
+    }
+    return { containerTypeId: input.containerTypeId, volumeM3: null };
+  }
+
+  if (input.requestType === 'container_removal') {
+    if (!input.containerTypeId) throw err.badRequest('Выберите тип контейнера для снятия');
+    if (!(await isTypePresent(tx, input.objectId, input.containerTypeId))) {
+      throw err.badRequest('На объекте нет контейнера этого типа для снятия');
+    }
     return { containerTypeId: input.containerTypeId, volumeM3: null };
   }
 
@@ -280,7 +296,6 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       q.containerTypeId ? eq(wasteRequests.containerTypeId, q.containerTypeId) : undefined,
       q.requestType ? eq(wasteRequests.requestType, q.requestType) : undefined,
       q.num ? eq(wasteRequests.num, q.num) : undefined,
-      q.excludeCancelled ? ne(wasteRequests.status, 'cancelled') : undefined,
       q.deliveryFrom ? gte(wasteRequests.deliveryAt, q.deliveryFrom) : undefined,
       q.deliveryTo ? lte(wasteRequests.deliveryAt, q.deliveryTo) : undefined,
       searchCondition(q.search, [
@@ -295,6 +310,43 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       requestType: wasteRequests.requestType,
       deliveryAt: wasteRequests.deliveryAt,
       status: wasteRequests.status,
+      createdAt: wasteRequests.createdAt,
+    };
+    const p2 = pageParams(q);
+    const rows = await baseQuery()
+      .where(where)
+      .orderBy(orderByFrom(sortCols, q.sortBy, q.sortOrder, 'createdAt'))
+      .limit(p2.limit)
+      .offset(p2.offset);
+    const [totalRow] = await db
+      .select({ c: count() })
+      .from(wasteRequests)
+      .innerJoin(constructionObjects, eq(wasteRequests.objectId, constructionObjects.id))
+      .where(where);
+    const filesMap = await filesByRequestIds(rows.map((row) => row.id));
+    return {
+      items: rows.map((row) => toDto(row, filesMap.get(row.id) ?? [])),
+      total: Number(totalRow!.c),
+      page: p2.page,
+      pageSize: p2.pageSize,
+    };
+  });
+
+  // Наличие контейнеров на площадках (view present_containers): присутствующие заявки установки.
+  r.get('/present', { ...auth, schema: { querystring: wasteRequestListQuerySchema } }, async (req) => {
+    const p = requirePrincipal(req);
+    const q = req.query;
+    const where = and(
+      isNull(wasteRequests.deletedAt),
+      requestVisibilityWhere(p),
+      inArray(wasteRequests.id, db.select({ id: presentContainers.id }).from(presentContainers)),
+      q.objectId ? eq(wasteRequests.objectId, q.objectId) : undefined,
+      searchCondition(q.search, [constructionObjects.name, constructionObjects.code]),
+    );
+    const sortCols = {
+      objectName: constructionObjects.name,
+      containerTypeName: containerTypes.name,
+      deliveryAt: wasteRequests.deliveryAt,
       createdAt: wasteRequests.createdAt,
     };
     const p2 = pageParams(q);

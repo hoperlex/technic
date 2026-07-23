@@ -76,6 +76,23 @@ describe('createWasteRequestSchema', () => {
     ).toThrow();
   });
 
+  it('снятие требует containerTypeId', () => {
+    expect(() =>
+      createWasteRequestSchema.parse({
+        objectId: '11111111-1111-4111-8111-111111111111',
+        requestType: 'container_removal',
+        deliveryAt: '2026-08-01T10:00:00.000Z',
+      }),
+    ).toThrow();
+    const parsed = createWasteRequestSchema.parse({
+      objectId: '11111111-1111-4111-8111-111111111111',
+      requestType: 'container_removal',
+      containerTypeId: '22222222-2222-4222-8222-222222222222',
+      deliveryAt: '2026-08-01T10:00:00.000Z',
+    });
+    expect(parsed.requestType).toBe('container_removal');
+  });
+
   it('вывоз требует тип машины и объём', () => {
     const ok = createWasteRequestSchema.parse({
       objectId: '11111111-1111-4111-8111-111111111111',

@@ -8,6 +8,7 @@ import {
   jsonb,
   pgEnum,
   pgTable,
+  pgView,
   primaryKey,
   text,
   timestamp,
@@ -36,6 +37,7 @@ export const requestStatusEnum = pgEnum('request_status', [
 export const requestTypeEnum = pgEnum('request_type', [
   'container_install',
   'container_replace',
+  'container_removal',
   'waste_removal',
 ]);
 export const containerKindEnum = pgEnum('container_kind', ['cont', 'truck']);
@@ -190,6 +192,14 @@ export const wasteRequests = pgTable(
     createdAtIdx: index('waste_requests_created_at_idx').on(t.createdAt),
   }),
 );
+
+// ── Наличие контейнеров на площадках (view, создаётся миграцией 0007) ──
+// Возвращает id «присутствующих» заявок установки: установки минус снятия по типу (FIFO по num).
+export const presentContainers = pgView('present_containers', {
+  id: uuid('id'),
+  objectId: uuid('object_id'),
+  containerTypeId: uuid('container_type_id'),
+}).existing();
 
 // ── Связь заявка ↔ файлы (ссылочная целостность) ──
 export const requestFiles = pgTable(

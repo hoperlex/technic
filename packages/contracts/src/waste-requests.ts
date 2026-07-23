@@ -26,11 +26,6 @@ export const wasteRequestListQuerySchema = baseListQuery(WASTE_REQUEST_SORT_FIEL
     .enum(['true', 'false'])
     .optional()
     .transform((v) => v === 'true'),
-  // вкладка «На объекте»: исключить отменённые заявки
-  excludeCancelled: z
-    .enum(['true', 'false'])
-    .optional()
-    .transform((v) => v === 'true'),
 });
 
 const volumeSchema = z.coerce.number().int().min(MIN_WASTE_VOLUME_M3);
@@ -38,7 +33,8 @@ const volumeSchema = z.coerce.number().int().min(MIN_WASTE_VOLUME_M3);
 /**
  * Поля заявки зависят от типа операции:
  *  - container_install → containerTypeId (тип контейнера из справочника, type='cont');
- *  - container_replace → containerTypeId (тип, установленный на этом объекте);
+ *  - container_replace → containerTypeId (тип, присутствующий на этом объекте);
+ *  - container_removal → containerTypeId (тип, присутствующий на этом объекте);
  *  - waste_removal     → containerTypeId (тип машины или контейнера) + volumeM3.
  * Кросс-полевые требования проверяет superRefine.
  */
@@ -61,6 +57,13 @@ export const createWasteRequestSchema = z
         code: 'custom',
         path: ['containerTypeId'],
         message: 'Выберите тип контейнера для замены',
+      });
+    }
+    if (v.requestType === 'container_removal' && !v.containerTypeId) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['containerTypeId'],
+        message: 'Выберите тип контейнера для снятия',
       });
     }
     if (v.requestType === 'waste_removal') {

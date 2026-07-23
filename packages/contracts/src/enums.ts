@@ -56,29 +56,34 @@ export function canTransitionStatus(from: RequestStatus, to: RequestStatus): boo
 }
 
 // ── Типы заявок (операции с контейнерами / вывоз) ──
-export const REQUEST_TYPES = ['container_install', 'container_replace', 'waste_removal'] as const;
+export const REQUEST_TYPES = [
+  'container_install',
+  'container_replace',
+  'container_removal',
+  'waste_removal',
+] as const;
 export const requestTypeSchema = z.enum(REQUEST_TYPES);
 export type RequestType = (typeof REQUEST_TYPES)[number];
 
 export const requestTypeLabels: Record<RequestType, string> = {
   container_install: 'Установка контейнера',
   container_replace: 'Замена контейнера',
+  container_removal: 'Снятие контейнера',
   waste_removal: 'Вывоз мусора',
 };
 
 export const requestTypeColors: Record<RequestType, string> = {
   container_install: 'green',
   container_replace: 'gold',
+  container_removal: 'volcano',
   waste_removal: 'blue',
 };
 
-/**
- * Буква типа заявки для человекочитаемого номера (№ = «<number>-<буква>»).
- * TODO: при добавлении типа «Снятие контейнера» → 'Сн'.
- */
+/** Буква типа заявки для человекочитаемого номера (№ = «<num>-<буква>»). */
 export const requestTypeShort: Record<RequestType, string> = {
   container_install: 'У',
   container_replace: 'З',
+  container_removal: 'Сн',
   waste_removal: 'ВМ',
 };
 

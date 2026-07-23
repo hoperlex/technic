@@ -71,6 +71,9 @@ export interface WasteRequestUpdatePayload {
 
 export const wasteRequestsApi = {
   list: (q: Query) => apiFetch<ListResult<WasteRequestDto>>('/waste-requests', { query: q }),
+  /** Наличие контейнеров на площадках (присутствующие заявки установки). */
+  present: (q: Query) =>
+    apiFetch<ListResult<WasteRequestDto>>('/waste-requests/present', { query: q }),
   get: (id: string) => apiFetch<WasteRequestDto>(`/waste-requests/${id}`),
   create: (body: WasteRequestPayload) =>
     apiFetch<WasteRequestDto>('/waste-requests', { method: 'POST', body }),
