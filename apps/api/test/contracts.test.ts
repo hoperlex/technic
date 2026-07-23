@@ -66,7 +66,7 @@ describe('createWasteRequestSchema', () => {
     ).toThrow();
   });
 
-  it('замена требует installRequestId', () => {
+  it('замена требует containerTypeId', () => {
     expect(() =>
       createWasteRequestSchema.parse({
         objectId: '11111111-1111-4111-8111-111111111111',
