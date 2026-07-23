@@ -43,11 +43,15 @@ export const requestStatusColors: Record<RequestStatus, string> = {
   cancelled: 'red',
 };
 
-/** Разрешённые переходы статусов (терминальные не переоткрываются). */
+/**
+ * Разрешённые переходы статусов: из любого статуса можно перейти в любой другой
+ * (в т.ч. с нарушением хронологии, напр. «Выполнена» → «Новая»). Исключение —
+ * «Отменена»: она неизменна (терминальна).
+ */
 export const requestStatusTransitions: Record<RequestStatus, RequestStatus[]> = {
-  new: ['confirmed', 'cancelled'],
-  confirmed: ['done', 'cancelled'],
-  done: [],
+  new: ['confirmed', 'done', 'cancelled'],
+  confirmed: ['new', 'done', 'cancelled'],
+  done: ['new', 'confirmed', 'cancelled'],
   cancelled: [],
 };
 

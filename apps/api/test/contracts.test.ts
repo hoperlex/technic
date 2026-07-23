@@ -14,11 +14,14 @@ describe('статусы заявок', () => {
     expect(canTransitionStatus('confirmed', 'cancelled')).toBe(true);
   });
 
-  it('запрещает переходы из терминальных статусов', () => {
-    expect(requestStatusTransitions.done).toEqual([]);
+  it('«Отменена» неизменна, остальные переходят в любой статус', () => {
+    // отменённую заявку нельзя переоткрыть
     expect(requestStatusTransitions.cancelled).toEqual([]);
-    expect(canTransitionStatus('done', 'new')).toBe(false);
-    expect(canTransitionStatus('new', 'done')).toBe(false);
+    expect(canTransitionStatus('cancelled', 'new')).toBe(false);
+    // из прочих статусов — в любой другой, в т.ч. с нарушением хронологии
+    expect(canTransitionStatus('done', 'new')).toBe(true);
+    expect(canTransitionStatus('new', 'done')).toBe(true);
+    expect(canTransitionStatus('done', 'cancelled')).toBe(true);
   });
 });
 
