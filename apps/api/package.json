@@ -11,6 +11,8 @@
     "build": "echo \"api: tsx runtime, no build\"",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/migrate.ts",
+    "db:migrate:check": "tsx src/db/migrate.ts check",
+    "db:migrate:status": "tsx src/db/migrate.ts status",
     "seed:admin": "tsx src/seed-admin.ts"
   },
   "dependencies": {

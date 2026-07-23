@@ -143,3 +143,7 @@ vite.config.ts.timestamp-*
 .vite/
 
 temp/
+
+# Маркер задеплоенного коммита (пишется ручными деплоями на VPS). В git не нужен;
+# также исключён из build-context в .dockerignore (иначе COPY . . бьёт кэш сборки).
+.deployed-sha

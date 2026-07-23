@@ -6,28 +6,59 @@
 (вне git). На VPS есть другие проекты — не трогать их compose/vhost и не запускать
 глобальные destructive-команды.
 
-## Деплой
+## Деплой (`deploy-auto`)
 
-Сейчас образы собираются на VPS (`technic-api|web|worker:latest`). При появлении
-реестра достаточно задать `TAG` и `image:` из registry — команды те же.
+Штатный деплой — одной командой `deploy-auto` (из любого каталога VPS; симлинк в
+`/usr/local/bin`, скрипт — `deploy/deploy-auto.sh`). Делает: `git pull` ветки **main**
+(с проверкой `HEAD == origin/main`) → сборку `technic-*:<sha>` → бэкап БД перед миграциями →
+авто-накат новых миграций → `up -d` → health-гейт `:latest`. Portal-scoped: соседние
+порталы/`infra-nginx` не трогает, `docker rmi` — только по whitelist `technic-*`, без
+`docker system prune -a`/`down --volumes`.
+
+```bash
+deploy-auto                 # обычный деплой (main): pull → build → миграции → up → health
+deploy-auto --skip-migrate  # деплой кода без наката миграций (даже если есть pending)
+deploy-auto --previous      # быстрый откат кода на предыдущий SHA (без пересборки); схему НЕ трогает
+deploy-auto --restore-db    # восстановление БД из последнего дампа (destructive, TTY-подтверждение)
+deploy-auto --status        # read-only: релизы, образы, статус миграций, бэкапы, диск
+deploy-auto --no-prune      # без чистки образов/кэша (ротация бэкапов — всегда)
+```
+
+**Git-流:** деплоится только ветка **main**; перед деплоем код должен быть в `origin/main`
+(скрипт откажет при ветке ≠ main или `HEAD ≠ origin/main` → `git checkout main` + push).
+
+**Бэкапы (keep-2):** перед накатом миграций — `pg_dump -Fc` в
+`/var/lib/technic/deploy/db-backups` (2 последних `<utc>-<sha>.dump` + `.meta`, плюс 1
+аварийный `prerestore-*`); снимок `prod.env`+CA+vhost в `config-backups` (2 последних).
+Ротация идёт всегда, даже при `--no-prune`. Бэкапы содержат ПДн/секреты — каталоги 700/600.
+
+**Откат:** `--previous` возвращает прошлый код без пересборки, но схему НЕ откатывает;
+согласованный откат — `deploy-auto --previous --restore-db`. Важно: `pg_restore --clean`
+не гарантирует полный откат схемы (объекты новее дампа могут остаться) — authoritative
+schema-откат — **Yandex Managed PG PITR** (метку времени печатает `--restore-db`). Отсюда
+правило: **миграции backwards-compatible** — после применённых миграций/`up -d` скрипт
+авто-отката кода НЕ делает.
+
+### One-time setup (однократно на VPS)
+
+```bash
+sudo ln -sfn /opt/portals/technic/deploy/deploy-auto.sh /usr/local/bin/deploy-auto
+# каталоги /var/lib/technic/... скрипт создаёт сам (sudo install при первом запуске)
+```
+
+`prod.env` должен быть **root:docker 0640**: владелец `corpsu` (в группе docker) обязан его
+читать — это нужно и compose `env_file`, и снимку конфига. Значение из `.env.example`
+(root:root 0600) устарело — канонично **0640 root:docker**.
+
+### Ручной путь (fallback, если `deploy-auto` недоступен)
 
 ```bash
 cd /opt/portals/technic
-
-# 1. preflight: /etc/technic-portal/prod.env, certs, DNS auto.su10.ru
-# 2. (при обновлении кода) синхронизировать дерево / собрать образы
-# 3. миграции (one-off):
 docker compose -f deploy/docker-compose.yml -p technic --profile tools run --rm migrate
-
-# 4. обновить сервисы (после правки prod.env — --force-recreate, иначе env не подхватится):
 docker compose -f deploy/docker-compose.yml -p technic up -d --force-recreate technic-api
 docker compose -f deploy/docker-compose.yml -p technic up -d technic-worker technic-web
-
-# 5. health (внутри api; снаружи /health не проксируется web-nginx):
 docker exec technic-api node -e "fetch('http://127.0.0.1:3000/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 curl -fsSI https://auto.su10.ru/
-
-# 6. smoke: логин, список заявок
 ```
 
 Edge-vhost (только при смене домена/TLS):

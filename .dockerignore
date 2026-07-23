@@ -8,3 +8,5 @@ temp
 **/.env.*
 !**/.env.example
 *.log
+# Маркер деплоя в корне репо — не должен попадать в build-context (иначе COPY . . инвалидирует кэш)
+.deployed-sha

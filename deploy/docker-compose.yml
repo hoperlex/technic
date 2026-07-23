@@ -88,6 +88,27 @@ services:
     profiles: [tools]
     networks: [internal]
 
+  # pg_dump/pg_restore для deploy-auto (бэкап БД перед миграциями, restore).
+  # Запускается ТОЛЬКО через `run --rm` (deploy-auto подставляет команду); default-команда
+  # безобидна, чтобы `up` с профилем tools ничего не поднимал вечно. postgres:17 = мажор
+  # сервера Yandex Managed PG. От UID/GID владельца — дампы ложатся в db-backups (700, root
+  # не нужен). $DATABASE_MIGRATION_URL раскрывается ВНУТРИ контейнера — секрета в argv нет.
+  db-tools:
+    image: postgres:17
+    env_file:
+      - ${ENV_FILE:-/etc/technic-portal/prod.env}
+    environment:
+      PGSSLMODE: verify-full
+      PGSSLROOTCERT: /etc/technic-portal/certs/yandex-root.crt
+    user: '${AUTO_DEPLOY_UID:-0}:${AUTO_DEPLOY_GID:-0}'
+    volumes:
+      - /etc/technic-portal/certs:/etc/technic-portal/certs:ro
+      - ${AUTO_BACKUP_DIR:-/var/lib/technic/deploy/db-backups}:/backups
+    command: ['true']
+    restart: 'no'
+    profiles: [tools]
+    networks: [internal]
+
 networks:
   internal:
     driver: bridge
