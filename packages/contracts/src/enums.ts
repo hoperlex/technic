@@ -75,18 +75,29 @@ export const requestTypeColors: Record<RequestType, string> = {
 /** Минимальный объём вывоза мусора (м³). */
 export const MIN_WASTE_VOLUME_M3 = 8;
 
-// ── Типы контейнеров (управляемый справочник; данные в БД) ──
-export const CONTAINER_TYPE_SEED = [
-  { code: 'container_8', name: 'Контейнер 8 м³', sortOrder: 10 },
-  { code: 'container_20', name: 'Контейнер 20 м³', sortOrder: 20 },
-  { code: 'container_27', name: 'Контейнер 27 м³', sortOrder: 30 },
-  { code: 'container_25_heavy', name: 'Контейнер 25 м³ для тяжёлых грузов', sortOrder: 40 },
-] as const;
+// ── Вид записи справочника: контейнер или самосвал ──
+export const CONTAINER_KINDS = ['cont', 'truck'] as const;
+export const containerKindSchema = z.enum(CONTAINER_KINDS);
+export type ContainerKind = (typeof CONTAINER_KINDS)[number];
 
-// ── Типы машин (самосвалы; управляемый справочник) ──
-export const MACHINE_TYPE_SEED = [
-  { code: 'dump_truck_25', name: 'Самосвал 25 м³', sortOrder: 10 },
-  { code: 'dump_truck_36', name: 'Самосвал 36 м³', sortOrder: 20 },
+export const containerKindLabels: Record<ContainerKind, string> = {
+  cont: 'Контейнер',
+  truck: 'Самосвал',
+};
+
+export const containerKindColors: Record<ContainerKind, string> = {
+  cont: 'blue',
+  truck: 'orange',
+};
+
+// ── Типы контейнеров и машин (единый справочник; данные в БД) ──
+export const CONTAINER_TYPE_SEED = [
+  { code: 'container_8', name: 'Контейнер 8 м³', sortOrder: 10, type: 'cont' },
+  { code: 'container_20', name: 'Контейнер 20 м³', sortOrder: 20, type: 'cont' },
+  { code: 'container_27', name: 'Контейнер 27 м³', sortOrder: 30, type: 'cont' },
+  { code: 'container_25_heavy', name: 'Контейнер 25 м³ для тяжёлых грузов', sortOrder: 40, type: 'cont' },
+  { code: 'dump_truck_25', name: 'Самосвал 25 м³', sortOrder: 50, type: 'truck' },
+  { code: 'dump_truck_36', name: 'Самосвал 36 м³', sortOrder: 60, type: 'truck' },
 ] as const;
 
 // ── Статусы файлов ──

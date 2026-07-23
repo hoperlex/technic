@@ -1,24 +1,35 @@
 import { useState } from 'react';
-import { App, Button, Form, Input, InputNumber, Space, Switch } from 'antd';
+import { App, Button, Form, Input, InputNumber, Select, Space, Switch } from 'antd';
 import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { ContainerTypeDto, CreateContainerTypeInput } from '@technic/contracts';
+import {
+  CONTAINER_KINDS,
+  containerKindColors,
+  containerKindLabels,
+  type ContainerTypeDto,
+  type CreateContainerTypeInput,
+} from '@technic/contracts';
 import { containerTypesApi } from '../../api/resources';
 import { DataTable } from '../../components/DataTable';
 import { FormModal } from '../../components/FormModal';
 import { PageTableLayout } from '../../components/PageTableLayout';
-import { actionsColumn, boolBadgeColumn, textColumn } from '../../components/columns';
+import { actionsColumn, badgeColumn, boolBadgeColumn, textColumn } from '../../components/columns';
 import { useListParams } from '../../hooks/useListParams';
 import { errorMessage } from '../../utils/format';
+
+const kindOptions = CONTAINER_KINDS.map((k) => ({ value: k, label: containerKindLabels[k] }));
 
 export function ContainerTypesTab() {
   const { message, modal } = App.useApp();
   const qc = useQueryClient();
-  const { params, onTableChange } = useListParams<{ isActive?: string }>(
+  const { params, onTableChange } = useListParams<{ isActive?: string; type?: string }>(
     {},
     {
       searchKeys: ['code', 'name'],
-      mapFilters: (f) => ({ isActive: f.isActive?.[0] as string | undefined }),
+      mapFilters: (f) => ({
+        isActive: f.isActive?.[0] as string | undefined,
+        type: f.type?.[0] as string | undefined,
+      }),
     },
   );
   const { data, isFetching } = useQuery({
@@ -33,7 +44,7 @@ export function ContainerTypesTab() {
   const openCreate = () => {
     setRecord(null);
     form.resetFields();
-    form.setFieldsValue({ isActive: true, sortOrder: 100 } as CreateContainerTypeInput);
+    form.setFieldsValue({ isActive: true, sortOrder: 100, type: 'cont' } as CreateContainerTypeInput);
     setOpen(true);
   };
   const openEdit = (r: ContainerTypeDto) => {
@@ -74,6 +85,15 @@ export function ContainerTypesTab() {
   const columns = [
     textColumn<ContainerTypeDto>({ key: 'code', title: 'Код', dataIndex: 'code', width: 200 }),
     textColumn<ContainerTypeDto>({ key: 'name', title: 'Название', dataIndex: 'name' }),
+    badgeColumn<ContainerTypeDto>({
+      key: 'type',
+      title: 'Тип',
+      dataIndex: 'type',
+      labels: containerKindLabels,
+      colors: containerKindColors,
+      filters: true,
+      width: 140,
+    }),
     textColumn<ContainerTypeDto>({
       key: 'sortOrder',
       title: 'Порядок',
@@ -133,6 +153,9 @@ export function ContainerTypesTab() {
             rules={[{ required: true, message: 'Укажите название' }]}
           >
             <Input />
+          </Form.Item>
+          <Form.Item name="type" label="Тип" rules={[{ required: true, message: 'Выберите тип' }]}>
+            <Select options={kindOptions} />
           </Form.Item>
           <Form.Item name="sortOrder" label="Порядок сортировки">
             <InputNumber style={{ width: '100%' }} min={0} />

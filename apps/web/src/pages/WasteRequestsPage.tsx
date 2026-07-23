@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import {
-  Alert,
   App,
   Button,
   DatePicker,
@@ -41,9 +40,7 @@ import {
 } from '@technic/contracts';
 import {
   containerTypesApi,
-  containersApi,
   filesApi,
-  machineTypesApi,
   objectsApi,
   wasteRequestsApi,
   type WasteRequestPayload,
@@ -71,8 +68,7 @@ interface RequestFormValues {
   objectId: string;
   requestType: RequestType;
   containerTypeId?: string;
-  containerId?: string;
-  machineTypeId?: string;
+  installRequestId?: string;
   volumeM3?: number;
   deliveryAt: Dayjs;
   comment?: string;
@@ -81,13 +77,10 @@ interface RequestFormValues {
 /** Человекочитаемое описание предмета заявки для колонки списка. */
 function requestSubject(r: WasteRequestDto): string {
   if (r.requestType === 'waste_removal') {
-    const parts = [r.machineTypeName, r.volumeM3 != null ? `${r.volumeM3} м³` : null].filter(Boolean);
+    const parts = [r.containerTypeName, r.volumeM3 != null ? `${r.volumeM3} м³` : null].filter(Boolean);
     return parts.length ? parts.join(', ') : '—';
   }
-  if (r.requestType === 'container_replace') {
-    if (!r.containerTypeName) return '—';
-    return r.containerLabel ? `${r.containerTypeName} — ${r.containerLabel}` : r.containerTypeName;
-  }
+  // container_install / container_replace — тип контейнера
   return r.containerTypeName ?? '—';
 }
 
@@ -129,23 +122,25 @@ export function WasteRequestsPage() {
         sortOrder: 'asc',
       }),
   });
-  const { data: types } = useQuery({
-    queryKey: ['container-types', 'for-select'],
+  const { data: contTypes } = useQuery({
+    queryKey: ['container-types', 'for-select', 'cont'],
     queryFn: () =>
       containerTypesApi.list({
         page: 1,
         pageSize: 500,
+        type: 'cont',
         isActive: 'true',
         sortBy: 'sortOrder',
         sortOrder: 'asc',
       }),
   });
-  const { data: machines } = useQuery({
-    queryKey: ['machine-types', 'for-select'],
+  const { data: truckTypes } = useQuery({
+    queryKey: ['container-types', 'for-select', 'truck'],
     queryFn: () =>
-      machineTypesApi.list({
+      containerTypesApi.list({
         page: 1,
         pageSize: 500,
+        type: 'truck',
         isActive: 'true',
         sortBy: 'sortOrder',
         sortOrder: 'asc',
@@ -155,8 +150,8 @@ export function WasteRequestsPage() {
     value: o.id,
     label: `${o.code} — ${o.name}`,
   }));
-  const typeOptions = (types?.items ?? []).map((t) => ({ value: t.id, label: t.name }));
-  const machineOptions = (machines?.items ?? []).map((m) => ({ value: m.id, label: m.name }));
+  const contTypeOptions = (contTypes?.items ?? []).map((t) => ({ value: t.id, label: t.name }));
+  const truckTypeOptions = (truckTypes?.items ?? []).map((t) => ({ value: t.id, label: t.name }));
   const requestTypeOptions = REQUEST_TYPES.map((t) => ({ value: t, label: requestTypeLabels[t] }));
 
   const [open, setOpen] = useState(false);
@@ -169,24 +164,26 @@ export function WasteRequestsPage() {
   const watchObjectId = Form.useWatch('objectId', form);
   const watchRequestType = Form.useWatch('requestType', form);
 
-  // Контейнеры выбранного объекта — для «Замены» и проверки площадки при «Вывозе».
-  const { data: objectContainers } = useQuery({
-    queryKey: ['containers', 'for-object', watchObjectId],
+  // Установленные контейнеры объекта — заявки установки в статусе «Подтверждена»/«Выполнена».
+  const { data: installRequests } = useQuery({
+    queryKey: ['waste-requests', 'installs-for-object', watchObjectId],
     queryFn: () =>
-      containersApi.list({
+      wasteRequestsApi.list({
         objectId: watchObjectId,
-        isActive: 'true',
+        requestType: 'container_install',
         pageSize: 500,
-        sortBy: 'containerTypeName',
-        sortOrder: 'asc',
+        sortBy: 'deliveryAt',
+        sortOrder: 'desc',
       }),
     enabled: !!watchObjectId,
   });
-  const containerInstanceOptions = (objectContainers?.items ?? []).map((c) => ({
-    value: c.id,
-    label: c.label ? `${c.containerTypeName} — ${c.label}` : c.containerTypeName,
-  }));
-  const objectHasContainers = (objectContainers?.items?.length ?? 0) > 0;
+  const installOptions = (installRequests?.items ?? [])
+    .filter((r) => !r.deletedAt && (r.status === 'confirmed' || r.status === 'done'))
+    .map((r) => ({
+      value: r.id,
+      label: `${r.containerTypeName ?? 'Контейнер'} — от ${formatDateTime(r.deliveryAt)}`,
+    }));
+  const objectHasInstalls = installOptions.length > 0;
 
   const openCreate = () => {
     setRecord(null);
@@ -207,8 +204,7 @@ export function WasteRequestsPage() {
       objectId: r.objectId,
       requestType: r.requestType,
       containerTypeId: r.containerTypeId ?? undefined,
-      containerId: r.containerId ?? undefined,
-      machineTypeId: r.machineTypeId ?? undefined,
+      installRequestId: r.installRequestId ?? undefined,
       volumeM3: r.volumeM3 ?? undefined,
       deliveryAt: dayjs(r.deliveryAt),
       comment: r.comment,
@@ -220,14 +216,13 @@ export function WasteRequestsPage() {
   const handleRequestTypeChange = () => {
     form.setFieldsValue({
       containerTypeId: undefined,
-      containerId: undefined,
-      machineTypeId: undefined,
+      installRequestId: undefined,
       volumeM3: undefined,
     });
   };
   // Смена объекта сбрасывает выбранный контейнер (он принадлежит прежнему объекту).
   const handleObjectChange = () => {
-    form.setFieldsValue({ containerId: undefined });
+    form.setFieldsValue({ installRequestId: undefined });
   };
 
   const handleUpload = async (file: File) => {
@@ -260,9 +255,11 @@ export function WasteRequestsPage() {
         objectId: values.objectId,
         requestType: values.requestType,
         containerTypeId:
-          values.requestType === 'container_install' ? values.containerTypeId : undefined,
-        containerId: values.requestType === 'container_replace' ? values.containerId : undefined,
-        machineTypeId: values.requestType === 'waste_removal' ? values.machineTypeId : undefined,
+          values.requestType === 'container_install' || values.requestType === 'waste_removal'
+            ? values.containerTypeId
+            : undefined,
+        installRequestId:
+          values.requestType === 'container_replace' ? values.installRequestId : undefined,
         volumeM3: values.requestType === 'waste_removal' ? values.volumeM3 : undefined,
         deliveryAt: values.deliveryAt.toISOString(),
         comment: values.comment ?? '',
@@ -553,23 +550,27 @@ export function WasteRequestsPage() {
               label="Тип контейнера"
               rules={[{ required: true, message: 'Выберите тип контейнера' }]}
             >
-              <Select options={typeOptions} showSearch optionFilterProp="label" />
+              <Select options={contTypeOptions} showSearch optionFilterProp="label" />
             </Form.Item>
           )}
 
           {watchRequestType === 'container_replace' && (
             <Form.Item
-              name="containerId"
-              label="Тип контейнера"
-              rules={[{ required: true, message: 'Выберите контейнер' }]}
-              extra={!objectHasContainers ? 'На объекте нет привязанных контейнеров' : undefined}
+              name="installRequestId"
+              label="Заменяемый контейнер"
+              rules={[{ required: true, message: 'Выберите контейнер для замены' }]}
+              extra={
+                !objectHasInstalls
+                  ? 'На объекте нет установленных контейнеров (нужна заявка установки в статусе «Подтверждена»/«Выполнена»)'
+                  : undefined
+              }
             >
               <Select
-                options={containerInstanceOptions}
+                options={installOptions}
                 showSearch
                 optionFilterProp="label"
-                placeholder="Контейнер на объекте"
-                notFoundContent="На объекте нет контейнеров"
+                placeholder="Установленный контейнер"
+                notFoundContent="Нет установленных контейнеров"
               />
             </Form.Item>
           )}
@@ -595,20 +596,12 @@ export function WasteRequestsPage() {
                 />
               </Form.Item>
               <Form.Item
-                name="machineTypeId"
+                name="containerTypeId"
                 label="Тип машины"
                 rules={[{ required: true, message: 'Выберите тип машины' }]}
               >
-                <Select options={machineOptions} showSearch optionFilterProp="label" />
+                <Select options={truckTypeOptions} showSearch optionFilterProp="label" />
               </Form.Item>
-              {!objectHasContainers && (
-                <Alert
-                  type="warning"
-                  showIcon
-                  message="На объекте нет привязанных контейнеров"
-                  style={{ marginBottom: 16 }}
-                />
-              )}
             </>
           )}
           <Form.Item

@@ -20,6 +20,7 @@ function toDto(r: ContainerTypeRow): ContainerTypeDto {
     id: r.id,
     code: r.code,
     name: r.name,
+    type: r.type,
     sortOrder: r.sortOrder,
     isActive: r.isActive,
     createdAt: r.createdAt.toISOString(),
@@ -40,11 +41,13 @@ export default async function containerTypesRoutes(app: FastifyInstance): Promis
       const q = req.query;
       const where = and(
         q.isActive === undefined ? undefined : eq(containerTypes.isActive, q.isActive),
+        q.type ? eq(containerTypes.type, q.type) : undefined,
         searchCondition(q.search, [containerTypes.code, containerTypes.name]),
       );
       const sortCols = {
         code: containerTypes.code,
         name: containerTypes.name,
+        type: containerTypes.type,
         sortOrder: containerTypes.sortOrder,
         isActive: containerTypes.isActive,
       };

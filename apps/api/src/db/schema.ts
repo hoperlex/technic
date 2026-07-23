@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm';
 import {
+  type AnyPgColumn,
   bigint,
   boolean,
   customType,
@@ -38,6 +39,7 @@ export const requestTypeEnum = pgEnum('request_type', [
   'container_replace',
   'waste_removal',
 ]);
+export const containerKindEnum = pgEnum('container_kind', ['cont', 'truck']);
 export const fileStatusEnum = pgEnum('file_status', ['pending', 'active', 'deleted']);
 export const jobStatusEnum = pgEnum('job_status', ['pending', 'running', 'done', 'failed', 'dead']);
 
@@ -60,13 +62,14 @@ export const constructionObjects = pgTable(
   }),
 );
 
-// ── Справочник: типы контейнеров/машин ──
+// ── Справочник: типы контейнеров и машин (различаются колонкой type) ──
 export const containerTypes = pgTable(
   'container_types',
   {
     id: uuid('id').primaryKey().defaultRandom(),
     code: text('code').notNull(),
     name: text('name').notNull(),
+    type: containerKindEnum('type').notNull().default('cont'),
     sortOrder: integer('sort_order').notNull().default(100),
     isActive: boolean('is_active').notNull().default(true),
     createdAt: createdAt(),
@@ -74,44 +77,6 @@ export const containerTypes = pgTable(
   },
   (t) => ({
     codeUnique: uniqueIndex('container_types_code_unique').on(t.code),
-  }),
-);
-
-// ── Справочник: типы машин (самосвалы) ──
-export const machineTypes = pgTable(
-  'machine_types',
-  {
-    id: uuid('id').primaryKey().defaultRandom(),
-    code: text('code').notNull(),
-    name: text('name').notNull(),
-    sortOrder: integer('sort_order').notNull().default(100),
-    isActive: boolean('is_active').notNull().default(true),
-    createdAt: createdAt(),
-    updatedAt: updatedAt(),
-  },
-  (t) => ({
-    codeUnique: uniqueIndex('machine_types_code_unique').on(t.code),
-  }),
-);
-
-// ── Экземпляры контейнеров на объектах ──
-export const containers = pgTable(
-  'containers',
-  {
-    id: uuid('id').primaryKey().defaultRandom(),
-    objectId: uuid('object_id')
-      .notNull()
-      .references(() => constructionObjects.id, { onDelete: 'cascade' }),
-    containerTypeId: uuid('container_type_id')
-      .notNull()
-      .references(() => containerTypes.id, { onDelete: 'restrict' }),
-    label: text('label').notNull().default(''),
-    isActive: boolean('is_active').notNull().default(true),
-    createdAt: createdAt(),
-    updatedAt: updatedAt(),
-  },
-  (t) => ({
-    objectIdx: index('containers_object_idx').on(t.objectId),
   }),
 );
 
@@ -196,16 +161,16 @@ export const wasteRequests = pgTable(
       .notNull()
       .references(() => constructionObjects.id, { onDelete: 'restrict' }),
     requestType: requestTypeEnum('request_type').notNull(),
-    // container_install / container_replace: тип контейнера (для замены денормализуется из container)
+    // container_install → тип контейнера (type='cont'); waste_removal → тип самосвала (type='truck');
+    // container_replace → денормализуется из заявки установки
     containerTypeId: uuid('container_type_id').references(() => containerTypes.id, {
       onDelete: 'restrict',
     }),
-    // container_replace: конкретный экземпляр контейнера объекта
-    containerId: uuid('container_id').references(() => containers.id, { onDelete: 'set null' }),
-    // waste_removal: тип машины и объём
-    machineTypeId: uuid('machine_type_id').references(() => machineTypes.id, {
-      onDelete: 'restrict',
+    // container_replace: ссылка на заявку установки заменяемого контейнера
+    installRequestId: uuid('install_request_id').references((): AnyPgColumn => wasteRequests.id, {
+      onDelete: 'set null',
     }),
+    // waste_removal: объём
     volumeM3: integer('volume_m3'),
     deliveryAt: timestamp('delivery_at', { withTimezone: true }).notNull(),
     comment: text('comment').notNull().default(''),
@@ -297,6 +262,4 @@ export type WasteRequestRow = typeof wasteRequests.$inferSelect;
 export type FileRow = typeof files.$inferSelect;
 export type ObjectRow = typeof constructionObjects.$inferSelect;
 export type ContainerTypeRow = typeof containerTypes.$inferSelect;
-export type MachineTypeRow = typeof machineTypes.$inferSelect;
-export type ContainerRow = typeof containers.$inferSelect;
 export type JobRow = typeof jobs.$inferSelect;

@@ -65,4 +65,33 @@ describe('createWasteRequestSchema', () => {
       }),
     ).toThrow();
   });
+
+  it('замена требует installRequestId', () => {
+    expect(() =>
+      createWasteRequestSchema.parse({
+        objectId: '11111111-1111-4111-8111-111111111111',
+        requestType: 'container_replace',
+        deliveryAt: '2026-08-01T10:00:00.000Z',
+      }),
+    ).toThrow();
+  });
+
+  it('вывоз требует тип машины и объём', () => {
+    const ok = createWasteRequestSchema.parse({
+      objectId: '11111111-1111-4111-8111-111111111111',
+      requestType: 'waste_removal',
+      containerTypeId: '22222222-2222-4222-8222-222222222222',
+      volumeM3: 20,
+      deliveryAt: '2026-08-01T10:00:00.000Z',
+    });
+    expect(ok.volumeM3).toBe(20);
+    expect(() =>
+      createWasteRequestSchema.parse({
+        objectId: '11111111-1111-4111-8111-111111111111',
+        requestType: 'waste_removal',
+        containerTypeId: '22222222-2222-4222-8222-222222222222',
+        deliveryAt: '2026-08-01T10:00:00.000Z',
+      }),
+    ).toThrow();
+  });
 });

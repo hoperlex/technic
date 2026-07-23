@@ -1,7 +1,6 @@
 import { Tabs } from 'antd';
 import { ObjectsTab } from './directories/ObjectsTab';
 import { ContainerTypesTab } from './directories/ContainerTypesTab';
-import { MachineTypesTab } from './directories/MachineTypesTab';
 
 export function DirectoriesPage() {
   return (
@@ -12,7 +11,6 @@ export function DirectoriesPage() {
         items={[
           { key: 'objects', label: 'Объекты', children: <ObjectsTab /> },
           { key: 'types', label: 'Типы контейнеров', children: <ContainerTypesTab /> },
-          { key: 'machines', label: 'Типы машин', children: <MachineTypesTab /> },
         ]}
       />
     </div>

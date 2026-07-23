@@ -17,11 +17,9 @@ import { config } from '../config';
 import { db } from '../db/client';
 import {
   constructionObjects,
-  containers,
   containerTypes,
   files,
   jobs,
-  machineTypes,
   requestFiles,
   requestStatusHistory,
   users,
@@ -48,10 +46,7 @@ const requestSelect = {
   requestType: wasteRequests.requestType,
   containerTypeId: wasteRequests.containerTypeId,
   containerTypeName: containerTypes.name,
-  containerId: wasteRequests.containerId,
-  containerLabel: containers.label,
-  machineTypeId: wasteRequests.machineTypeId,
-  machineTypeName: machineTypes.name,
+  installRequestId: wasteRequests.installRequestId,
   volumeM3: wasteRequests.volumeM3,
   deliveryAt: wasteRequests.deliveryAt,
   comment: wasteRequests.comment,
@@ -106,10 +101,7 @@ function toDto(r: RequestRow, fileList: FileDto[]): WasteRequestDto {
     requestType: r.requestType,
     containerTypeId: r.containerTypeId,
     containerTypeName: r.containerTypeName,
-    containerId: r.containerId,
-    containerLabel: r.containerLabel,
-    machineTypeId: r.machineTypeId,
-    machineTypeName: r.machineTypeName,
+    installRequestId: r.installRequestId,
     volumeM3: r.volumeM3,
     deliveryAt: r.deliveryAt.toISOString(),
     comment: r.comment,
@@ -129,24 +121,26 @@ function baseQuery() {
     .select(requestSelect)
     .from(wasteRequests)
     .innerJoin(constructionObjects, eq(wasteRequests.objectId, constructionObjects.id))
-    // тип контейнера/машины/контейнер опциональны в зависимости от типа заявки
+    // тип контейнера/машины опционален в зависимости от типа заявки
     .leftJoin(containerTypes, eq(wasteRequests.containerTypeId, containerTypes.id))
-    .leftJoin(containers, eq(wasteRequests.containerId, containers.id))
-    .leftJoin(machineTypes, eq(wasteRequests.machineTypeId, machineTypes.id))
     .innerJoin(users, eq(wasteRequests.createdBy, users.id));
 }
 
 /** Нормализованный набор «предметных» колонок заявки. */
 interface RequestSubject {
   containerTypeId: string | null;
-  containerId: string | null;
-  machineTypeId: string | null;
+  installRequestId: string | null;
   volumeM3: number | null;
 }
 
+/** Статусы заявки установки, при которых контейнер считается «установленным» и доступным для замены. */
+const REPLACEABLE_STATUSES = ['confirmed', 'done'] as const;
+
 /**
- * Проверяет и нормализует поля заявки по её типу: для замены — сверяет контейнер
- * с объектом и денормализует его тип; лишние поля обнуляет.
+ * Проверяет и нормализует поля заявки по её типу:
+ *  - установка/вывоз — сверяет тип из справочника (cont/truck);
+ *  - замена — сверяет заявку установки (тот же объект, статус confirmed/done) и денормализует её тип.
+ * Лишние поля обнуляет.
  */
 async function resolveSubject(
   tx: Tx,
@@ -154,46 +148,59 @@ async function resolveSubject(
     requestType: RequestType;
     objectId: string;
     containerTypeId: string | null;
-    containerId: string | null;
-    machineTypeId: string | null;
+    installRequestId: string | null;
     volumeM3: number | null;
   },
 ): Promise<RequestSubject> {
   if (input.requestType === 'container_install') {
     if (!input.containerTypeId) throw err.badRequest('Выберите тип контейнера');
     const [ct] = await tx
-      .select({ id: containerTypes.id })
+      .select({ type: containerTypes.type })
       .from(containerTypes)
       .where(eq(containerTypes.id, input.containerTypeId));
     if (!ct) throw err.badRequest('Тип контейнера не найден');
-    return { containerTypeId: input.containerTypeId, containerId: null, machineTypeId: null, volumeM3: null };
+    if (ct.type !== 'cont') throw err.badRequest('Для установки нужен тип контейнера');
+    return { containerTypeId: input.containerTypeId, installRequestId: null, volumeM3: null };
   }
 
   if (input.requestType === 'container_replace') {
-    if (!input.containerId) throw err.badRequest('Выберите контейнер');
-    const [c] = await tx
-      .select({ id: containers.id, objectId: containers.objectId, typeId: containers.containerTypeId })
-      .from(containers)
-      .where(eq(containers.id, input.containerId));
-    if (!c) throw err.badRequest('Контейнер не найден');
-    if (c.objectId !== input.objectId) {
+    if (!input.installRequestId) throw err.badRequest('Выберите контейнер для замены');
+    const [src] = await tx
+      .select({
+        requestType: wasteRequests.requestType,
+        objectId: wasteRequests.objectId,
+        status: wasteRequests.status,
+        containerTypeId: wasteRequests.containerTypeId,
+        deletedAt: wasteRequests.deletedAt,
+      })
+      .from(wasteRequests)
+      .where(eq(wasteRequests.id, input.installRequestId));
+    if (!src || src.deletedAt || src.requestType !== 'container_install') {
+      throw err.badRequest('Заявка установки не найдена');
+    }
+    if (src.objectId !== input.objectId) {
       throw err.badRequest('Контейнер не относится к выбранному объекту');
     }
-    return { containerTypeId: c.typeId, containerId: c.id, machineTypeId: null, volumeM3: null };
+    if (!REPLACEABLE_STATUSES.includes(src.status as (typeof REPLACEABLE_STATUSES)[number])) {
+      throw err.badRequest('Заменять можно только подтверждённый или выполненный контейнер');
+    }
+    // container_type_id денормализуем из заявки установки для отображения.
+    return { containerTypeId: src.containerTypeId, installRequestId: input.installRequestId, volumeM3: null };
   }
 
   // waste_removal
-  if (!input.machineTypeId) throw err.badRequest('Выберите тип машины');
+  if (!input.containerTypeId) throw err.badRequest('Выберите тип машины');
   const [mt] = await tx
-    .select({ id: machineTypes.id })
-    .from(machineTypes)
-    .where(eq(machineTypes.id, input.machineTypeId));
+    .select({ type: containerTypes.type })
+    .from(containerTypes)
+    .where(eq(containerTypes.id, input.containerTypeId));
   if (!mt) throw err.badRequest('Тип машины не найден');
+  if (mt.type !== 'truck') throw err.badRequest('Для вывоза нужен тип машины (самосвал)');
   if (input.volumeM3 == null) throw err.badRequest('Укажите объём');
   if (input.volumeM3 < MIN_WASTE_VOLUME_M3) {
     throw err.badRequest(`Объём не меньше ${MIN_WASTE_VOLUME_M3} м³`);
   }
-  return { containerTypeId: null, containerId: null, machineTypeId: input.machineTypeId, volumeM3: input.volumeM3 };
+  return { containerTypeId: input.containerTypeId, installRequestId: null, volumeM3: input.volumeM3 };
 }
 
 async function getRequestDto(id: string): Promise<WasteRequestDto | null> {
@@ -335,8 +342,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         requestType: body.requestType,
         objectId: body.objectId,
         containerTypeId: body.containerTypeId ?? null,
-        containerId: body.containerId ?? null,
-        machineTypeId: body.machineTypeId ?? null,
+        installRequestId: body.installRequestId ?? null,
         volumeM3: body.volumeM3 ?? null,
       });
       const [row] = await tx
@@ -393,9 +399,8 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
           objectId,
           containerTypeId:
             body.containerTypeId !== undefined ? body.containerTypeId : existing.containerTypeId,
-          containerId: body.containerId !== undefined ? body.containerId : existing.containerId,
-          machineTypeId:
-            body.machineTypeId !== undefined ? body.machineTypeId : existing.machineTypeId,
+          installRequestId:
+            body.installRequestId !== undefined ? body.installRequestId : existing.installRequestId,
           volumeM3: body.volumeM3 !== undefined ? body.volumeM3 : existing.volumeM3,
         });
         const [updated] = await tx

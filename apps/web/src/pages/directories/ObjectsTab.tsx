@@ -1,136 +1,15 @@
 import { useState } from 'react';
-import { App, Button, Divider, Form, Input, List, Select, Space, Switch, Tag, Typography } from 'antd';
+import { App, Button, Form, Input, Space, Switch } from 'antd';
 import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { ContainerDto, CreateObjectInput, ObjectDto } from '@technic/contracts';
-import { containerTypesApi, containersApi, objectsApi } from '../../api/resources';
+import type { CreateObjectInput, ObjectDto } from '@technic/contracts';
+import { objectsApi } from '../../api/resources';
 import { DataTable } from '../../components/DataTable';
 import { FormModal } from '../../components/FormModal';
 import { PageTableLayout } from '../../components/PageTableLayout';
 import { actionsColumn, boolBadgeColumn, textColumn } from '../../components/columns';
 import { useListParams } from '../../hooks/useListParams';
 import { errorMessage } from '../../utils/format';
-
-/** Управление экземплярами контейнеров на объекте (внутри карточки объекта). */
-function ObjectContainers({ objectId }: { objectId: string }) {
-  const { message, modal } = App.useApp();
-  const qc = useQueryClient();
-  const [addForm] = Form.useForm<{ containerTypeId: string; label?: string }>();
-
-  const { data: list, isFetching } = useQuery({
-    queryKey: ['containers', objectId],
-    queryFn: () =>
-      containersApi.list({
-        objectId,
-        pageSize: 500,
-        sortBy: 'containerTypeName',
-        sortOrder: 'asc',
-      }),
-  });
-  const { data: types } = useQuery({
-    queryKey: ['container-types', 'for-select'],
-    queryFn: () =>
-      containerTypesApi.list({
-        isActive: 'true',
-        pageSize: 500,
-        sortBy: 'sortOrder',
-        sortOrder: 'asc',
-      }),
-  });
-  const typeOptions = (types?.items ?? []).map((t) => ({ value: t.id, label: t.name }));
-
-  const invalidate = () => qc.invalidateQueries({ queryKey: ['containers', objectId] });
-
-  const addMut = useMutation({
-    mutationFn: (v: { containerTypeId: string; label?: string }) =>
-      containersApi.create({
-        objectId,
-        containerTypeId: v.containerTypeId,
-        label: v.label ?? '',
-        isActive: true,
-      }),
-    onSuccess: () => {
-      message.success('Контейнер добавлен');
-      addForm.resetFields();
-      void invalidate();
-    },
-    onError: (e) => message.error(errorMessage(e)),
-  });
-
-  const removeMut = useMutation({
-    mutationFn: (id: string) => containersApi.remove(id),
-    onSuccess: () => {
-      message.success('Контейнер убран');
-      void invalidate();
-    },
-    onError: (e) => message.error(errorMessage(e)),
-  });
-
-  const confirmRemove = (c: ContainerDto) =>
-    modal.confirm({
-      title: 'Убрать контейнер с объекта?',
-      content: c.label ? `${c.containerTypeName} — ${c.label}` : c.containerTypeName,
-      okText: 'Убрать',
-      okButtonProps: { danger: true },
-      cancelText: 'Отмена',
-      onOk: () => removeMut.mutateAsync(c.id),
-    });
-
-  return (
-    <div>
-      <Form
-        form={addForm}
-        layout="inline"
-        onFinish={(v) => addMut.mutate(v)}
-        style={{ marginBottom: 12, rowGap: 8 }}
-      >
-        <Form.Item
-          name="containerTypeId"
-          rules={[{ required: true, message: 'Тип' }]}
-          style={{ flex: 1, minWidth: 180 }}
-        >
-          <Select
-            options={typeOptions}
-            placeholder="Тип контейнера"
-            showSearch
-            optionFilterProp="label"
-          />
-        </Form.Item>
-        <Form.Item name="label" style={{ flex: 1, minWidth: 140 }}>
-          <Input placeholder="Инв. № / метка (необязательно)" />
-        </Form.Item>
-        <Form.Item>
-          <Button type="primary" htmlType="submit" icon={<PlusOutlined />} loading={addMut.isPending}>
-            Добавить
-          </Button>
-        </Form.Item>
-      </Form>
-      <List
-        size="small"
-        loading={isFetching}
-        locale={{ emptyText: 'Контейнеров нет' }}
-        dataSource={list?.items ?? []}
-        renderItem={(c) => (
-          <List.Item
-            actions={[
-              c.isActive ? (
-                <Button key="rm" type="link" danger size="small" onClick={() => confirmRemove(c)}>
-                  Убрать
-                </Button>
-              ) : (
-                <Tag key="inactive">убран</Tag>
-              ),
-            ]}
-          >
-            <Typography.Text delete={!c.isActive}>
-              {c.label ? `${c.containerTypeName} — ${c.label}` : c.containerTypeName}
-            </Typography.Text>
-          </List.Item>
-        )}
-      />
-    </div>
-  );
-}
 
 export function ObjectsTab() {
   const { message, modal } = App.useApp();
@@ -256,17 +135,6 @@ export function ObjectsTab() {
             <Switch />
           </Form.Item>
         </Form>
-        <Divider style={{ margin: '8px 0 16px' }} />
-        <Typography.Title level={5} style={{ marginTop: 0 }}>
-          Контейнеры на объекте
-        </Typography.Title>
-        {record ? (
-          <ObjectContainers objectId={record.id} />
-        ) : (
-          <Typography.Text type="secondary">
-            Сохраните объект, затем откройте его на редактирование, чтобы добавить контейнеры.
-          </Typography.Text>
-        )}
       </FormModal>
     </PageTableLayout>
   );
