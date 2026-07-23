@@ -13,6 +13,7 @@ import {
   Space,
   Tabs,
   Tag,
+  TimePicker,
   Tooltip,
   Typography,
   Upload,
@@ -74,7 +75,8 @@ interface RequestFormValues {
   requestType: RequestType;
   containerTypeId?: string;
   volumeM3?: number;
-  deliveryAt: Dayjs;
+  deliveryDate: Dayjs;
+  deliveryTime: Dayjs;
   comment?: string;
 }
 
@@ -222,7 +224,8 @@ function RequestsTab() {
       requestType: r.requestType,
       containerTypeId: r.containerTypeId ?? undefined,
       volumeM3: r.volumeM3 ?? undefined,
-      deliveryAt: dayjs(r.deliveryAt),
+      deliveryDate: dayjs(r.deliveryAt),
+      deliveryTime: dayjs(r.deliveryAt),
       comment: r.comment,
     });
     setOpen(true);
@@ -266,13 +269,19 @@ function RequestsTab() {
 
   const saveMut = useMutation({
     mutationFn: (values: RequestFormValues) => {
+      // Собираем дату и время доставки из двух полей.
+      const deliveryAt = values.deliveryDate
+        .hour(values.deliveryTime.hour())
+        .minute(values.deliveryTime.minute())
+        .second(0)
+        .millisecond(0);
       const base = {
         objectId: values.objectId,
         requestType: values.requestType,
         // все три типа заявки ссылаются на тип из справочника
         containerTypeId: values.containerTypeId,
         volumeM3: values.requestType === 'waste_removal' ? values.volumeM3 : undefined,
-        deliveryAt: values.deliveryAt.toISOString(),
+        deliveryAt: deliveryAt.toISOString(),
         comment: values.comment ?? '',
       };
       if (record) {
@@ -647,18 +656,34 @@ function RequestsTab() {
               </Form.Item>
             </>
           )}
-          <Form.Item
-            name="deliveryAt"
-            label="Дата и время доставки"
-            rules={[{ required: true, message: 'Укажите дату и время' }]}
-          >
-            <DatePicker
-              showTime
-              format="DD.MM.YYYY HH:mm"
-              style={{ width: '100%' }}
-              placeholder="Выберите дату и время"
-            />
-          </Form.Item>
+          <div style={{ display: 'flex', gap: 12 }}>
+            <Form.Item
+              name="deliveryDate"
+              label="Дата доставки"
+              rules={[{ required: true, message: 'Укажите дату' }]}
+              style={{ flex: 1 }}
+            >
+              <DatePicker
+                format="DD.MM.YYYY"
+                style={{ width: '100%' }}
+                placeholder="дд.мм.гггг"
+              />
+            </Form.Item>
+            <Form.Item
+              name="deliveryTime"
+              label="Время"
+              rules={[{ required: true, message: 'Укажите время' }]}
+              style={{ width: 130 }}
+            >
+              <TimePicker
+                format="HH:mm"
+                minuteStep={5}
+                needConfirm={false}
+                style={{ width: '100%' }}
+                placeholder="чч:мм"
+              />
+            </Form.Item>
+          </div>
           <Form.Item name="comment" label="Комментарий">
             <Input.TextArea rows={3} maxLength={2000} showCount />
           </Form.Item>
