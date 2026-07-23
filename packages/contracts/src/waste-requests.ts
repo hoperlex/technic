@@ -24,6 +24,11 @@ export const wasteRequestListQuerySchema = baseListQuery(WASTE_REQUEST_SORT_FIEL
     .enum(['true', 'false'])
     .optional()
     .transform((v) => v === 'true'),
+  // вкладка «На объекте»: исключить отменённые заявки
+  excludeCancelled: z
+    .enum(['true', 'false'])
+    .optional()
+    .transform((v) => v === 'true'),
 });
 
 const volumeSchema = z.coerce.number().int().min(MIN_WASTE_VOLUME_M3);

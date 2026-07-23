@@ -11,6 +11,7 @@ import {
   Popover,
   Select,
   Space,
+  Tabs,
   Tag,
   Tooltip,
   Typography,
@@ -56,6 +57,7 @@ import { actionsColumn, badgeColumn, textColumn } from '../components/columns';
 import { useListParams } from '../hooks/useListParams';
 import { useAuth } from '../auth/AuthContext';
 import { errorMessage, formatBytes, formatDate, formatDateTime } from '../utils/format';
+import { OnSiteTab } from './waste/OnSiteTab';
 
 const FILE_MAX_SIZE = 52_428_800; // 50 МБ
 const FILE_MAX_COUNT = 20;
@@ -87,6 +89,21 @@ function requestSubject(r: WasteRequestDto): string {
 }
 
 export function WasteRequestsPage() {
+  return (
+    <div style={{ height: '100%' }}>
+      <Tabs
+        className="full-height-tabs"
+        defaultActiveKey="requests"
+        items={[
+          { key: 'requests', label: 'Заявки', children: <RequestsTab /> },
+          { key: 'on-site', label: 'На объекте', children: <OnSiteTab /> },
+        ]}
+      />
+    </div>
+  );
+}
+
+function RequestsTab() {
   const { message, modal } = App.useApp();
   const qc = useQueryClient();
   const { user, hasRole } = useAuth();
@@ -521,7 +538,6 @@ export function WasteRequestsPage() {
 
   return (
     <PageTableLayout
-      title="Вывоз мусора"
       extra={
         <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
           Создать заявку
