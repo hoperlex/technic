@@ -11,6 +11,7 @@ import {
 import { Outlet, useLocation, useNavigate } from 'react-router';
 import { roleLabels } from '@technic/contracts';
 import { useAuth } from '../auth/AuthContext';
+import { PortalLogo } from './PortalLogo';
 
 const { Sider, Content } = Layout;
 
@@ -58,20 +59,19 @@ export function AppLayout() {
       >
         <div style={{ height: '100%', display: 'flex', flexDirection: 'row' }}>
           <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-            {!collapsed && (
-              <div
-                style={{
-                  height: 56,
-                  display: 'flex',
-                  alignItems: 'center',
-                  padding: '0 16px',
-                  fontWeight: 600,
-                  fontSize: 16,
-                }}
-              >
-                Портал
-              </div>
-            )}
+            <div
+              style={{
+                height: 56,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 10,
+                padding: collapsed ? 0 : '0 16px',
+                justifyContent: collapsed ? 'center' : 'flex-start',
+              }}
+            >
+              <PortalLogo size={28} />
+              {!collapsed && <span style={{ fontWeight: 600, fontSize: 16 }}>Портал</span>}
+            </div>
             <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
               {collapsed ? (
                 <div className="sider-mini-nav">
