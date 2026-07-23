@@ -51,7 +51,6 @@ export interface WasteRequestPayload {
   objectId: string;
   requestType: RequestType;
   containerTypeId?: string;
-  installRequestId?: string;
   volumeM3?: number;
   deliveryAt: string;
   comment?: string;
@@ -62,7 +61,6 @@ export interface WasteRequestUpdatePayload {
   objectId?: string;
   requestType?: RequestType;
   containerTypeId?: string | null;
-  installRequestId?: string | null;
   volumeM3?: number | null;
   deliveryAt?: string;
   comment?: string;

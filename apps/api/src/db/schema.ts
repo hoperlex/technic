@@ -1,6 +1,5 @@
 import { sql } from 'drizzle-orm';
 import {
-  type AnyPgColumn,
   bigint,
   boolean,
   customType,
@@ -161,14 +160,10 @@ export const wasteRequests = pgTable(
       .notNull()
       .references(() => constructionObjects.id, { onDelete: 'restrict' }),
     requestType: requestTypeEnum('request_type').notNull(),
-    // container_install → тип контейнера (type='cont'); waste_removal → тип самосвала (type='truck');
-    // container_replace → денормализуется из заявки установки
+    // container_install → тип контейнера (type='cont'); container_replace → тип, установленный
+    // на объекте; waste_removal → тип машины/контейнера
     containerTypeId: uuid('container_type_id').references(() => containerTypes.id, {
       onDelete: 'restrict',
-    }),
-    // container_replace: ссылка на заявку установки заменяемого контейнера
-    installRequestId: uuid('install_request_id').references((): AnyPgColumn => wasteRequests.id, {
-      onDelete: 'set null',
     }),
     // waste_removal: объём
     volumeM3: integer('volume_m3'),

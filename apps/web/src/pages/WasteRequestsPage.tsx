@@ -11,7 +11,10 @@ import {
   Popover,
   Select,
   Space,
+  Tabs,
   Tag,
+  TimePicker,
+  Tooltip,
   Typography,
   Upload,
 } from 'antd';
@@ -27,6 +30,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import dayjs, { type Dayjs } from 'dayjs';
 import {
+  containerKindLabels,
   MIN_WASTE_VOLUME_M3,
   REQUEST_TYPES,
   type RequestStatus,
@@ -36,6 +40,7 @@ import {
   requestStatusTransitions,
   requestTypeColors,
   requestTypeLabels,
+  requestTypeShort,
   type WasteRequestDto,
 } from '@technic/contracts';
 import {
@@ -52,7 +57,8 @@ import { PageTableLayout } from '../components/PageTableLayout';
 import { actionsColumn, badgeColumn, textColumn } from '../components/columns';
 import { useListParams } from '../hooks/useListParams';
 import { useAuth } from '../auth/AuthContext';
-import { errorMessage, formatBytes, formatDateTime } from '../utils/format';
+import { errorMessage, formatBytes, formatDate, formatDateTime } from '../utils/format';
+import { OnSiteTab } from './waste/OnSiteTab';
 
 const FILE_MAX_SIZE = 52_428_800; // 50 МБ
 const FILE_MAX_COUNT = 20;
@@ -68,9 +74,9 @@ interface RequestFormValues {
   objectId: string;
   requestType: RequestType;
   containerTypeId?: string;
-  installRequestId?: string;
   volumeM3?: number;
-  deliveryAt: Dayjs;
+  deliveryDate: Dayjs;
+  deliveryTime: Dayjs;
   comment?: string;
 }
 
@@ -85,6 +91,21 @@ function requestSubject(r: WasteRequestDto): string {
 }
 
 export function WasteRequestsPage() {
+  return (
+    <div style={{ height: '100%' }}>
+      <Tabs
+        className="full-height-tabs"
+        defaultActiveKey="requests"
+        items={[
+          { key: 'requests', label: 'Заявки', children: <RequestsTab /> },
+          { key: 'on-site', label: 'На объекте', children: <OnSiteTab /> },
+        ]}
+      />
+    </div>
+  );
+}
+
+function RequestsTab() {
   const { message, modal } = App.useApp();
   const qc = useQueryClient();
   const { user, hasRole } = useAuth();
@@ -122,25 +143,12 @@ export function WasteRequestsPage() {
         sortOrder: 'asc',
       }),
   });
-  const { data: contTypes } = useQuery({
-    queryKey: ['container-types', 'for-select', 'cont'],
+  const { data: types } = useQuery({
+    queryKey: ['container-types', 'for-select'],
     queryFn: () =>
       containerTypesApi.list({
         page: 1,
         pageSize: 500,
-        type: 'cont',
-        isActive: 'true',
-        sortBy: 'sortOrder',
-        sortOrder: 'asc',
-      }),
-  });
-  const { data: truckTypes } = useQuery({
-    queryKey: ['container-types', 'for-select', 'truck'],
-    queryFn: () =>
-      containerTypesApi.list({
-        page: 1,
-        pageSize: 500,
-        type: 'truck',
         isActive: 'true',
         sortBy: 'sortOrder',
         sortOrder: 'asc',
@@ -150,8 +158,16 @@ export function WasteRequestsPage() {
     value: o.id,
     label: `${o.code} — ${o.name}`,
   }));
-  const contTypeOptions = (contTypes?.items ?? []).map((t) => ({ value: t.id, label: t.name }));
-  const truckTypeOptions = (truckTypes?.items ?? []).map((t) => ({ value: t.id, label: t.name }));
+  const allTypes = types?.items ?? [];
+  // Установка — только контейнеры (type='cont').
+  const contTypeOptions = allTypes
+    .filter((t) => t.type === 'cont')
+    .map((t) => ({ value: t.id, label: t.name }));
+  // Вывоз — любой тип (машина или контейнер), с пометкой вида.
+  const allTypeOptions = allTypes.map((t) => ({
+    value: t.id,
+    label: `${t.name} (${containerKindLabels[t.type]})`,
+  }));
   const requestTypeOptions = REQUEST_TYPES.map((t) => ({ value: t, label: requestTypeLabels[t] }));
 
   const [open, setOpen] = useState(false);
@@ -164,7 +180,7 @@ export function WasteRequestsPage() {
   const watchObjectId = Form.useWatch('objectId', form);
   const watchRequestType = Form.useWatch('requestType', form);
 
-  // Установленные контейнеры объекта — заявки установки в статусе «Подтверждена»/«Выполнена».
+  // Установленные контейнеры объекта — заявки установки (любой статус, кроме «Отменена»).
   const { data: installRequests } = useQuery({
     queryKey: ['waste-requests', 'installs-for-object', watchObjectId],
     queryFn: () =>
@@ -177,13 +193,16 @@ export function WasteRequestsPage() {
       }),
     enabled: !!watchObjectId,
   });
-  const installOptions = (installRequests?.items ?? [])
-    .filter((r) => !r.deletedAt && (r.status === 'confirmed' || r.status === 'done'))
-    .map((r) => ({
-      value: r.id,
-      label: `${r.containerTypeName ?? 'Контейнер'} — от ${formatDateTime(r.deliveryAt)}`,
-    }));
-  const objectHasInstalls = installOptions.length > 0;
+  // Уникальные типы контейнеров, установленных на объекте (по заявкам установки, кроме отменённых).
+  const installedTypeMap = new Map<string, string>();
+  for (const r of installRequests?.items ?? []) {
+    if (r.deletedAt || r.status === 'cancelled' || !r.containerTypeId) continue;
+    if (!installedTypeMap.has(r.containerTypeId)) {
+      installedTypeMap.set(r.containerTypeId, r.containerTypeName ?? 'Контейнер');
+    }
+  }
+  const installedTypeOptions = [...installedTypeMap].map(([value, label]) => ({ value, label }));
+  const objectHasInstalls = installedTypeOptions.length > 0;
 
   const openCreate = () => {
     setRecord(null);
@@ -204,9 +223,9 @@ export function WasteRequestsPage() {
       objectId: r.objectId,
       requestType: r.requestType,
       containerTypeId: r.containerTypeId ?? undefined,
-      installRequestId: r.installRequestId ?? undefined,
       volumeM3: r.volumeM3 ?? undefined,
-      deliveryAt: dayjs(r.deliveryAt),
+      deliveryDate: dayjs(r.deliveryAt),
+      deliveryTime: dayjs(r.deliveryAt),
       comment: r.comment,
     });
     setOpen(true);
@@ -216,13 +235,12 @@ export function WasteRequestsPage() {
   const handleRequestTypeChange = () => {
     form.setFieldsValue({
       containerTypeId: undefined,
-      installRequestId: undefined,
       volumeM3: undefined,
     });
   };
-  // Смена объекта сбрасывает выбранный контейнер (он принадлежит прежнему объекту).
+  // Смена объекта сбрасывает тип: для «Замены» список зависит от установок объекта.
   const handleObjectChange = () => {
-    form.setFieldsValue({ installRequestId: undefined });
+    form.setFieldsValue({ containerTypeId: undefined });
   };
 
   const handleUpload = async (file: File) => {
@@ -251,17 +269,19 @@ export function WasteRequestsPage() {
 
   const saveMut = useMutation({
     mutationFn: (values: RequestFormValues) => {
+      // Собираем дату и время доставки из двух полей.
+      const deliveryAt = values.deliveryDate
+        .hour(values.deliveryTime.hour())
+        .minute(values.deliveryTime.minute())
+        .second(0)
+        .millisecond(0);
       const base = {
         objectId: values.objectId,
         requestType: values.requestType,
-        containerTypeId:
-          values.requestType === 'container_install' || values.requestType === 'waste_removal'
-            ? values.containerTypeId
-            : undefined,
-        installRequestId:
-          values.requestType === 'container_replace' ? values.installRequestId : undefined,
+        // все три типа заявки ссылаются на тип из справочника
+        containerTypeId: values.containerTypeId,
         volumeM3: values.requestType === 'waste_removal' ? values.volumeM3 : undefined,
-        deliveryAt: values.deliveryAt.toISOString(),
+        deliveryAt: deliveryAt.toISOString(),
         comment: values.comment ?? '',
       };
       if (record) {
@@ -410,7 +430,26 @@ export function WasteRequestsPage() {
   };
 
   const columns = [
+    {
+      key: 'no',
+      title: '№',
+      dataIndex: 'id',
+      width: 300,
+      render: (_v: unknown, r: WasteRequestDto) => (
+        <Typography.Text copyable style={{ fontSize: 12 }}>
+          {`${r.id}/${requestTypeShort[r.requestType]}`}
+        </Typography.Text>
+      ),
+    },
     textColumn<WasteRequestDto>({ key: 'objectName', title: 'Объект', dataIndex: 'objectName' }),
+    textColumn<WasteRequestDto>({
+      key: 'createdByName',
+      title: 'Автор',
+      dataIndex: 'createdByName',
+      sortable: false,
+      searchable: false,
+      width: 170,
+    }),
     {
       key: 'containerTypeName',
       title: 'Контейнер / машина',
@@ -427,14 +466,26 @@ export function WasteRequestsPage() {
       filters: true,
       width: 140,
     }),
-    textColumn<WasteRequestDto>({
-      key: 'deliveryAt',
-      title: 'Дата и время доставки',
-      dataIndex: 'deliveryAt',
-      searchable: false,
-      width: 190,
-      render: (v) => formatDateTime(v as string),
-    }),
+    {
+      key: 'createdAt',
+      title: (
+        <div style={{ lineHeight: 1.2 }}>
+          <div>Дата созд.</div>
+          <div>Доставки</div>
+        </div>
+      ),
+      dataIndex: 'createdAt',
+      width: 150,
+      sorter: true,
+      render: (_v: unknown, r: WasteRequestDto) => (
+        <div style={{ lineHeight: 1.35, whiteSpace: 'nowrap' }}>
+          <div>{formatDate(r.createdAt)}</div>
+          <Typography.Text style={{ color: '#1677ff' }}>
+            {formatDateTime(r.deliveryAt)}
+          </Typography.Text>
+        </div>
+      ),
+    },
     {
       key: 'status',
       title: 'Статус',
@@ -462,16 +513,20 @@ export function WasteRequestsPage() {
     actionsColumn<WasteRequestDto>((r) => {
       if (r.deletedAt) {
         return isAdmin ? (
-          <Button size="small" icon={<ReloadOutlined />} onClick={() => restoreMut.mutate(r.id)}>
-            Восстановить
-          </Button>
+          <Tooltip title="Восстановить">
+            <Button
+              size="small"
+              icon={<ReloadOutlined />}
+              onClick={() => restoreMut.mutate(r.id)}
+            />
+          </Tooltip>
         ) : (
           <Tag>в архиве</Tag>
         );
       }
       const allowed = canModify(r);
       return (
-        <Space>
+        <Space size={4}>
           <Button
             size="small"
             icon={<EditOutlined />}
@@ -487,12 +542,11 @@ export function WasteRequestsPage() {
           />
         </Space>
       );
-    }, 150),
+    }, 90),
   ];
 
   return (
     <PageTableLayout
-      title="Вывоз мусора"
       extra={
         <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
           Создать заявку
@@ -556,20 +610,18 @@ export function WasteRequestsPage() {
 
           {watchRequestType === 'container_replace' && (
             <Form.Item
-              name="installRequestId"
-              label="Заменяемый контейнер"
-              rules={[{ required: true, message: 'Выберите контейнер для замены' }]}
+              name="containerTypeId"
+              label="Тип заменяемого контейнера"
+              rules={[{ required: true, message: 'Выберите тип контейнера для замены' }]}
               extra={
-                !objectHasInstalls
-                  ? 'На объекте нет установленных контейнеров (нужна заявка установки в статусе «Подтверждена»/«Выполнена»)'
-                  : undefined
+                !objectHasInstalls ? 'На объекте нет установленных контейнеров' : undefined
               }
             >
               <Select
-                options={installOptions}
+                options={installedTypeOptions}
                 showSearch
                 optionFilterProp="label"
-                placeholder="Установленный контейнер"
+                placeholder="Тип, установленный на объекте"
                 notFoundContent="Нет установленных контейнеров"
               />
             </Form.Item>
@@ -597,25 +649,41 @@ export function WasteRequestsPage() {
               </Form.Item>
               <Form.Item
                 name="containerTypeId"
-                label="Тип машины"
-                rules={[{ required: true, message: 'Выберите тип машины' }]}
+                label="Тип машины/контейнера"
+                rules={[{ required: true, message: 'Выберите тип машины/контейнера' }]}
               >
-                <Select options={truckTypeOptions} showSearch optionFilterProp="label" />
+                <Select options={allTypeOptions} showSearch optionFilterProp="label" />
               </Form.Item>
             </>
           )}
-          <Form.Item
-            name="deliveryAt"
-            label="Дата и время доставки"
-            rules={[{ required: true, message: 'Укажите дату и время' }]}
-          >
-            <DatePicker
-              showTime
-              format="DD.MM.YYYY HH:mm"
-              style={{ width: '100%' }}
-              placeholder="Выберите дату и время"
-            />
-          </Form.Item>
+          <div style={{ display: 'flex', gap: 12 }}>
+            <Form.Item
+              name="deliveryDate"
+              label="Дата доставки"
+              rules={[{ required: true, message: 'Укажите дату' }]}
+              style={{ flex: 1 }}
+            >
+              <DatePicker
+                format="DD.MM.YYYY"
+                style={{ width: '100%' }}
+                placeholder="дд.мм.гггг"
+              />
+            </Form.Item>
+            <Form.Item
+              name="deliveryTime"
+              label="Время"
+              rules={[{ required: true, message: 'Укажите время' }]}
+              style={{ width: 130 }}
+            >
+              <TimePicker
+                format="HH:mm"
+                minuteStep={5}
+                needConfirm={false}
+                style={{ width: '100%' }}
+                placeholder="чч:мм"
+              />
+            </Form.Item>
+          </div>
           <Form.Item name="comment" label="Комментарий">
             <Input.TextArea rows={3} maxLength={2000} showCount />
           </Form.Item>

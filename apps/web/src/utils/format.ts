@@ -7,6 +7,12 @@ export function formatDateTime(iso: string | null | undefined): string {
   return dayjs(iso).tz(MOSCOW_TZ).format('DD.MM.YYYY HH:mm');
 }
 
+/** Только дата, без времени. */
+export function formatDate(iso: string | null | undefined): string {
+  if (!iso) return '—';
+  return dayjs(iso).tz(MOSCOW_TZ).format('DD.MM.YYYY');
+}
+
 export function formatBytes(n: number): string {
   if (n < 1024) return `${n} Б`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} КБ`;
