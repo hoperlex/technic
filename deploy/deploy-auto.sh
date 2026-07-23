@@ -566,6 +566,8 @@ REMOTE_SHA="$(git_c rev-parse origin/main)"
 COMMIT_SHA="$(git_c rev-parse --short HEAD)"
 # Экспорт ДО любого compose-вызова: иначе ${TAG:-latest} подставит СТАРЫЙ образ.
 export TAG="$COMMIT_SHA"
+# Вшивается в web-бандл и version.json — клиент детектит новую версию и предлагает перезагрузку.
+export BUILD_ID="$COMMIT_SHA"
 TARGET_TAG="$COMMIT_SHA"
 log "commit: $COMMIT_SHA (теги образов technic-*:$COMMIT_SHA)"
 

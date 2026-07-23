@@ -59,6 +59,9 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile.web
+      # Короткий commit SHA — вшивается в бандл и version.json (детект новой версии у клиента).
+      args:
+        BUILD_ID: ${BUILD_ID:-}
     depends_on: [technic-api]
     # Без host-ports: снаружи только infra-nginx через сеть edge
     restart: unless-stopped

@@ -6,6 +6,13 @@ RUN corepack enable
 WORKDIR /app
 COPY . .
 RUN pnpm install --prod=false
+# BUILD_ID (короткий commit SHA) вшивается в бандл и version.json → детект новой версии у клиента.
+# deploy-auto пробрасывает его через compose build.args. ARG после install — меняется только слой сборки.
+ARG BUILD_ID=
+ENV BUILD_ID=$BUILD_ID
+# Предупреждение (не ошибка): без BUILD_ID version.json получит нестабильный таймстамп.
+# Не hard-fail — чтобы локальный `docker compose build` без deploy-auto не ломался.
+RUN [ -n "$BUILD_ID" ] || echo "WARN: BUILD_ID не задан — используется таймстамп сборки"
 RUN pnpm --filter @technic/web build
 
 FROM nginx:1.27-alpine
