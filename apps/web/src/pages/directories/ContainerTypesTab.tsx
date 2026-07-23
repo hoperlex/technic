@@ -83,7 +83,6 @@ export function ContainerTypesTab() {
     });
 
   const columns = [
-    textColumn<ContainerTypeDto>({ key: 'code', title: 'Код', dataIndex: 'code', width: 200 }),
     textColumn<ContainerTypeDto>({ key: 'name', title: 'Название', dataIndex: 'name' }),
     badgeColumn<ContainerTypeDto>({
       key: 'type',
@@ -93,13 +92,6 @@ export function ContainerTypesTab() {
       colors: containerKindColors,
       filters: true,
       width: 140,
-    }),
-    textColumn<ContainerTypeDto>({
-      key: 'sortOrder',
-      title: 'Порядок',
-      dataIndex: 'sortOrder',
-      searchable: false,
-      width: 120,
     }),
     boolBadgeColumn<ContainerTypeDto>({
       key: 'isActive',
