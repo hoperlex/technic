@@ -12,6 +12,7 @@ import {
   Select,
   Space,
   Tag,
+  Tooltip,
   Typography,
   Upload,
 } from 'antd';
@@ -54,7 +55,7 @@ import { PageTableLayout } from '../components/PageTableLayout';
 import { actionsColumn, badgeColumn, textColumn } from '../components/columns';
 import { useListParams } from '../hooks/useListParams';
 import { useAuth } from '../auth/AuthContext';
-import { errorMessage, formatBytes, formatDateTime } from '../utils/format';
+import { errorMessage, formatBytes, formatDate, formatDateTime } from '../utils/format';
 
 const FILE_MAX_SIZE = 52_428_800; // 50 МБ
 const FILE_MAX_COUNT = 20;
@@ -415,6 +416,14 @@ export function WasteRequestsPage() {
       ),
     },
     textColumn<WasteRequestDto>({ key: 'objectName', title: 'Объект', dataIndex: 'objectName' }),
+    textColumn<WasteRequestDto>({
+      key: 'createdByName',
+      title: 'Автор',
+      dataIndex: 'createdByName',
+      sortable: false,
+      searchable: false,
+      width: 170,
+    }),
     {
       key: 'containerTypeName',
       title: 'Контейнер / машина',
@@ -431,14 +440,26 @@ export function WasteRequestsPage() {
       filters: true,
       width: 140,
     }),
-    textColumn<WasteRequestDto>({
-      key: 'deliveryAt',
-      title: 'Дата и время доставки',
-      dataIndex: 'deliveryAt',
-      searchable: false,
-      width: 190,
-      render: (v) => formatDateTime(v as string),
-    }),
+    {
+      key: 'createdAt',
+      title: (
+        <div style={{ lineHeight: 1.2 }}>
+          <div>Дата созд.</div>
+          <div>Доставки</div>
+        </div>
+      ),
+      dataIndex: 'createdAt',
+      width: 150,
+      sorter: true,
+      render: (_v: unknown, r: WasteRequestDto) => (
+        <div style={{ lineHeight: 1.35, whiteSpace: 'nowrap' }}>
+          <div>{formatDate(r.createdAt)}</div>
+          <Typography.Text style={{ color: '#1677ff' }}>
+            {formatDateTime(r.deliveryAt)}
+          </Typography.Text>
+        </div>
+      ),
+    },
     {
       key: 'status',
       title: 'Статус',
@@ -466,16 +487,20 @@ export function WasteRequestsPage() {
     actionsColumn<WasteRequestDto>((r) => {
       if (r.deletedAt) {
         return isAdmin ? (
-          <Button size="small" icon={<ReloadOutlined />} onClick={() => restoreMut.mutate(r.id)}>
-            Восстановить
-          </Button>
+          <Tooltip title="Восстановить">
+            <Button
+              size="small"
+              icon={<ReloadOutlined />}
+              onClick={() => restoreMut.mutate(r.id)}
+            />
+          </Tooltip>
         ) : (
           <Tag>в архиве</Tag>
         );
       }
       const allowed = canModify(r);
       return (
-        <Space>
+        <Space size={4}>
           <Button
             size="small"
             icon={<EditOutlined />}
@@ -491,7 +516,7 @@ export function WasteRequestsPage() {
           />
         </Space>
       );
-    }, 150),
+    }, 90),
   ];
 
   return (
