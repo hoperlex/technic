@@ -40,6 +40,7 @@ const S3_DELETE_DELAY_MS = 30 * 24 * 60 * 60 * 1000;
 
 const requestSelect = {
   id: wasteRequests.id,
+  num: wasteRequests.num,
   objectId: wasteRequests.objectId,
   objectCode: constructionObjects.code,
   objectName: constructionObjects.name,
@@ -94,6 +95,7 @@ async function filesByRequestIds(ids: string[]): Promise<Map<string, FileDto[]>>
 function toDto(r: RequestRow, fileList: FileDto[]): WasteRequestDto {
   return {
     id: r.id,
+    num: r.num,
     objectId: r.objectId,
     objectCode: r.objectCode,
     objectName: r.objectName,

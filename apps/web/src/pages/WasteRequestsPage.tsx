@@ -433,13 +433,9 @@ function RequestsTab() {
     {
       key: 'no',
       title: '№',
-      dataIndex: 'id',
-      width: 300,
-      render: (_v: unknown, r: WasteRequestDto) => (
-        <Typography.Text copyable style={{ fontSize: 12 }}>
-          {`${r.id}/${requestTypeShort[r.requestType]}`}
-        </Typography.Text>
-      ),
+      dataIndex: 'num',
+      width: 90,
+      render: (_v: unknown, r: WasteRequestDto) => `${r.num}-${requestTypeShort[r.requestType]}`,
     },
     textColumn<WasteRequestDto>({ key: 'objectName', title: 'Объект', dataIndex: 'objectName' }),
     textColumn<WasteRequestDto>({

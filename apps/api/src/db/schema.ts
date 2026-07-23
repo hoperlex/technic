@@ -156,6 +156,8 @@ export const wasteRequests = pgTable(
   'waste_requests',
   {
     id: uuid('id').primaryKey().defaultRandom(),
+    // Сквозной человекочитаемый номер (отображается как «<num>-<буква типа>»).
+    num: integer('num').generatedAlwaysAsIdentity(),
     objectId: uuid('object_id')
       .notNull()
       .references(() => constructionObjects.id, { onDelete: 'restrict' }),
@@ -181,6 +183,7 @@ export const wasteRequests = pgTable(
     updatedAt: updatedAt(),
   },
   (t) => ({
+    numUnique: uniqueIndex('waste_requests_num_unique').on(t.num),
     statusIdx: index('waste_requests_status_idx').on(t.status),
     objectIdx: index('waste_requests_object_idx').on(t.objectId),
     deliveryIdx: index('waste_requests_delivery_idx').on(t.deliveryAt),

@@ -72,11 +72,14 @@ export const requestTypeColors: Record<RequestType, string> = {
   waste_removal: 'blue',
 };
 
-/** Короткая аббревиатура типа заявки для человекочитаемого номера (№ = id/аббр). */
+/**
+ * Буква типа заявки для человекочитаемого номера (№ = «<number>-<буква>»).
+ * TODO: при добавлении типа «Снятие контейнера» → 'Сн'.
+ */
 export const requestTypeShort: Record<RequestType, string> = {
-  container_install: 'ук',
-  container_replace: 'зк',
-  waste_removal: 'вм',
+  container_install: 'У',
+  container_replace: 'З',
+  waste_removal: 'ВМ',
 };
 
 /** Минимальный объём вывоза мусора (м³). */

@@ -97,6 +97,8 @@ export type ChangeWasteRequestStatusInput = z.infer<typeof changeWasteRequestSta
 
 export interface WasteRequestDto {
   id: string;
+  /** Сквозной человекочитаемый номер (отображается как «<num>-<буква типа>»). */
+  num: number;
   objectId: string;
   objectCode: string;
   objectName: string;
