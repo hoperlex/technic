@@ -279,6 +279,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       q.objectId ? eq(wasteRequests.objectId, q.objectId) : undefined,
       q.containerTypeId ? eq(wasteRequests.containerTypeId, q.containerTypeId) : undefined,
       q.requestType ? eq(wasteRequests.requestType, q.requestType) : undefined,
+      q.num ? eq(wasteRequests.num, q.num) : undefined,
       q.excludeCancelled ? ne(wasteRequests.status, 'cancelled') : undefined,
       q.deliveryFrom ? gte(wasteRequests.deliveryAt, q.deliveryFrom) : undefined,
       q.deliveryTo ? lte(wasteRequests.deliveryAt, q.deliveryTo) : undefined,

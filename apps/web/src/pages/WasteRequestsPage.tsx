@@ -113,19 +113,38 @@ function RequestsTab() {
   const isShtab = hasRole('shtab');
   const isAdmin = hasRole('admin');
 
-  const { params, onTableChange } = useListParams<{
+  // Для штаба фильтр по объекту зафиксирован на его объекте.
+  const shtabObjectId = isShtab ? (user?.constructionObjectId ?? '') : '';
+
+  const { params, setParams, onTableChange } = useListParams<{
     status?: string;
     requestType?: string;
+    objectId?: string;
+    num?: number;
   }>(
-    {},
+    { objectId: shtabObjectId || undefined },
     {
-      searchKeys: ['objectName', 'comment'],
+      searchKeys: ['comment'],
       mapFilters: (f) => ({
         status: f.status?.[0] as string | undefined,
         requestType: f.requestType?.[0] as string | undefined,
       }),
     },
   );
+
+  // Внешние фильтры над таблицей (только на вкладке «Заявки»).
+  const [objectFilter, setObjectFilter] = useState(shtabObjectId);
+  const [numInput, setNumInput] = useState('');
+  const applyObjectFilter = (v: string) => {
+    setObjectFilter(v);
+    setParams((p) => ({ ...p, page: 1, objectId: v || undefined }));
+  };
+  const applyNumFilter = (raw: string) => {
+    setNumInput(raw);
+    // из «123-У» берём числовую часть (num уникален; суффикс — только отображение)
+    const digits = raw.match(/\d+/)?.[0];
+    setParams((p) => ({ ...p, page: 1, num: digits ? Number(digits) : undefined }));
+  };
 
   const { data, isFetching } = useQuery({
     queryKey: ['waste-requests', params],
@@ -437,7 +456,12 @@ function RequestsTab() {
       width: 90,
       render: (_v: unknown, r: WasteRequestDto) => `${r.num}-${requestTypeShort[r.requestType]}`,
     },
-    textColumn<WasteRequestDto>({ key: 'objectName', title: 'Объект', dataIndex: 'objectName' }),
+    textColumn<WasteRequestDto>({
+      key: 'objectName',
+      title: 'Объект',
+      dataIndex: 'objectName',
+      searchable: false,
+    }),
     textColumn<WasteRequestDto>({
       key: 'createdByName',
       title: 'Автор',
@@ -541,8 +565,30 @@ function RequestsTab() {
     }, 90),
   ];
 
+  const filters = (
+    <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+      <Select
+        style={{ width: 260 }}
+        value={objectFilter}
+        onChange={applyObjectFilter}
+        options={[{ value: '', label: 'Все объекты' }, ...objectOptions]}
+        showSearch
+        optionFilterProp="label"
+        disabled={isShtab}
+      />
+      <Input
+        style={{ width: 180 }}
+        allowClear
+        placeholder="Поиск по № заявки"
+        value={numInput}
+        onChange={(e) => applyNumFilter(e.target.value)}
+      />
+    </div>
+  );
+
   return (
     <PageTableLayout
+      filters={filters}
       extra={
         <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
           Создать заявку

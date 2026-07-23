@@ -18,6 +18,8 @@ export const wasteRequestListQuerySchema = baseListQuery(WASTE_REQUEST_SORT_FIEL
   objectId: uuidSchema.optional(),
   containerTypeId: uuidSchema.optional(),
   requestType: requestTypeSchema.optional(),
+  // поиск по сквозному номеру заявки (точное совпадение)
+  num: z.coerce.number().int().positive().optional(),
   deliveryFrom: z.coerce.date().optional(),
   deliveryTo: z.coerce.date().optional(),
   includeDeleted: z

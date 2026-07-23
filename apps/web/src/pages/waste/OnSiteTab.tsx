@@ -1,3 +1,4 @@
+import { Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import { requestTypeShort, type WasteRequestDto } from '@technic/contracts';
 import { wasteRequestsApi } from '../../api/resources';
@@ -57,7 +58,9 @@ export function OnSiteTab() {
       title: '№ заявки установки',
       dataIndex: 'num',
       width: 150,
-      render: (_v: unknown, r: WasteRequestDto) => `${r.num}-${requestTypeShort[r.requestType]}`,
+      render: (_v: unknown, r: WasteRequestDto) => (
+        <Typography.Text copyable>{`${r.num}-${requestTypeShort[r.requestType]}`}</Typography.Text>
+      ),
     },
   ];
 
