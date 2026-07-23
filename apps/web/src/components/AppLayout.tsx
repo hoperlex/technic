@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Avatar, Dropdown, Layout, Menu, type MenuProps, Typography } from 'antd';
 import {
   DatabaseOutlined,
@@ -20,7 +20,7 @@ export function AppLayout() {
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(false);
 
-  const items: MenuProps['items'] = [
+  const navItems: { key: string; icon: ReactNode; label: string }[] = [
     { key: '/waste', icon: <FileTextOutlined />, label: 'Вывоз мусора' },
     ...(hasRole('admin', 'manager')
       ? [{ key: '/directories', icon: <DatabaseOutlined />, label: 'Справочники' }]
@@ -73,11 +73,28 @@ export function AppLayout() {
               </div>
             )}
             <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
-              {!collapsed && (
+              {collapsed ? (
+                <div className="sider-mini-nav">
+                  {navItems.map((it) => (
+                    <button
+                      key={it.key}
+                      type="button"
+                      className={`sider-mini-item${
+                        selectedKey === it.key ? ' sider-mini-item--active' : ''
+                      }`}
+                      onClick={() => navigate(it.key)}
+                      title={it.label}
+                      aria-label={it.label}
+                    >
+                      {it.icon}
+                    </button>
+                  ))}
+                </div>
+              ) : (
                 <Menu
                   mode="inline"
                   selectedKeys={[selectedKey]}
-                  items={items}
+                  items={navItems}
                   onClick={({ key }) => navigate(key)}
                   style={{ borderInlineEnd: 'none' }}
                 />

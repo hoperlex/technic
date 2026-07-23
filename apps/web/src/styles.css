@@ -41,6 +41,38 @@ body,
   padding: 8px 0;
 }
 
+/* Свёрнутая навигация: иконки пунктов с круглым выделением активного (под аватар) */
+.sider-mini-nav {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0;
+}
+.sider-mini-item {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: rgba(0, 0, 0, 0.65);
+  font-size: 16px;
+  line-height: 1;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.sider-mini-item:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+.sider-mini-item--active {
+  background: #e6f4ff;
+  color: #1677ff;
+}
+
 /* Узкая кнопка сворачивания по правому краю боковой панели */
 .sider-toggle {
   flex: 0 0 16px;
