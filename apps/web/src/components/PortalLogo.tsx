@@ -1,4 +1,4 @@
-/** Логотип «Портал»: синий круг с заглавной «П» (вариант A). Вектор — чёткий в любом размере. */
+/** Логотип «Заказ Автотехники»: синий круг с заглавной «А». Вектор — чёткий в любом размере. */
 export function PortalLogo({ size = 28 }: { size?: number }) {
   return (
     <svg
@@ -10,7 +10,7 @@ export function PortalLogo({ size = 28 }: { size?: number }) {
     >
       <circle cx="32" cy="32" r="32" fill="#1677ff" />
       <path
-        d="M22 46 V24 a3 3 0 0 1 3-3 h14 a3 3 0 0 1 3 3 V46"
+        d="M22 46 L32 20 L42 46 M25 38 H39"
         fill="none"
         stroke="#fff"
         strokeWidth="7.5"

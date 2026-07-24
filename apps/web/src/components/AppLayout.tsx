@@ -74,7 +74,21 @@ export function AppLayout() {
               }}
             >
               <PortalLogo size={28} />
-              {!collapsed && <span style={{ fontWeight: 600, fontSize: 16 }}>Портал</span>}
+              {!collapsed && (
+                <span
+                  style={{
+                    fontWeight: 600,
+                    fontSize: 14,
+                    lineHeight: 1.05,
+                    textAlign: 'right',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  Заказ
+                  <br />
+                  Автотехники
+                </span>
+              )}
             </div>
             <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
               {collapsed ? (
