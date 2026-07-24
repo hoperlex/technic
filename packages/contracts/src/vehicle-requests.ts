@@ -37,6 +37,32 @@ const commentSchema = z.string().trim().max(2000);
 const locationSchema = z.string().trim().min(1).max(1000);
 const fileIdsSchema = z.array(uuidSchema).max(20);
 
+// ── Адрес: метаданные верификации (DaData «Подсказки») ──
+// Каноническая строка адреса хранится отдельно (loadingLocation/unloadingLocation);
+// здесь — только происхождение и ФИАС/гео. Мягкая модель (ADR 0005): backend доверяет
+// `fiasId` из подсказки, внешних вызовов в write-path нет; `manual` помечается, не блокируется.
+export const ADDRESS_SOURCES = ['resolved', 'manual', 'object'] as const;
+export const addressSourceSchema = z.enum(ADDRESS_SOURCES);
+export type AddressSource = (typeof ADDRESS_SOURCES)[number];
+
+/** Метаданные адреса. `fiasId` — не строго UUID (DaData отдаёт разные GUID), поэтому просто строка. */
+export const addressMetaSchema = z
+  .object({
+    source: addressSourceSchema,
+    fiasId: z.string().trim().min(1).max(64).nullable().optional(),
+    fiasLevel: z.number().int().min(-1).max(99).nullable().optional(),
+    geoLat: z.number().min(-90).max(90).nullable().optional(),
+    geoLon: z.number().min(-180).max(180).nullable().optional(),
+  })
+  .strict();
+export type AddressMeta = z.infer<typeof addressMetaSchema>;
+
+/** Адрес верифицирован: выбран из справочника объектов или из подсказок DaData (с ФИАС). */
+export function isAddressVerified(meta: AddressMeta | null | undefined): boolean {
+  if (!meta) return false;
+  return meta.source === 'object' || (meta.source === 'resolved' && !!meta.fiasId);
+}
+
 /** Дата без времени, строго YYYY-MM-DD (не преобразуется через JS Date). */
 const dateOnlySchema = z
   .string()
@@ -87,6 +113,8 @@ export const createFreightTransportRequestSchema = z
     weightTons: amountSchema.nullable().optional(),
     loadingLocation: locationSchema,
     unloadingLocation: locationSchema,
+    loadingAddress: addressMetaSchema.nullable().optional(),
+    unloadingAddress: addressMetaSchema.nullable().optional(),
     comment: commentSchema.optional().default(''),
     fileIds: fileIdsSchema.optional().default([]),
   })
@@ -145,6 +173,8 @@ export const updateFreightTransportRequestSchema = z
     weightTons: amountSchema.nullable().optional(),
     loadingLocation: locationSchema.optional(),
     unloadingLocation: locationSchema.optional(),
+    loadingAddress: addressMetaSchema.nullable().optional(),
+    unloadingAddress: addressMetaSchema.nullable().optional(),
     comment: commentSchema.optional(),
     addFileIds: fileIdsSchema.optional(),
     removeFileIds: z.array(uuidSchema).optional(),
@@ -166,12 +196,7 @@ export const changeVehicleRequestStatusSchema = z
 export type ChangeVehicleRequestStatusInput = z.infer<typeof changeVehicleRequestStatusSchema>;
 
 // ── Список ──
-export const VEHICLE_REQUEST_SORT_FIELDS = [
-  'num',
-  'objectName',
-  'status',
-  'createdAt',
-] as const;
+export const VEHICLE_REQUEST_SORT_FIELDS = ['num', 'objectName', 'status', 'createdAt'] as const;
 
 export const vehicleRequestListQuerySchema = baseListQuery(VEHICLE_REQUEST_SORT_FIELDS).extend({
   // Обязателен: список всегда в контексте вкладки (спецтехника/грузоперевозки).
@@ -241,6 +266,10 @@ export interface FreightTransportRequestDto extends VehicleRequestBaseDto {
   weightTons: number | null;
   loadingLocation: string;
   unloadingLocation: string;
+  /** Метаданные верификации адреса погрузки (null = не верифицирован / введён вручную). */
+  loadingAddress: AddressMeta | null;
+  /** Метаданные верификации адреса разгрузки. */
+  unloadingAddress: AddressMeta | null;
 }
 
 export type VehicleRequestDto = SpecialEquipmentRequestDto | FreightTransportRequestDto;

@@ -78,6 +78,8 @@ const requestSelect = {
   weightTons: freightTransportRequestDetails.weightTons,
   loadingLocation: freightTransportRequestDetails.loadingLocation,
   unloadingLocation: freightTransportRequestDetails.unloadingLocation,
+  loadingAddress: freightTransportRequestDetails.loadingAddress,
+  unloadingAddress: freightTransportRequestDetails.unloadingAddress,
 };
 
 function baseQuery() {
@@ -182,6 +184,8 @@ function toDto(r: RequestRow, fileList: FileDto[]): VehicleRequestDto {
     weightTons: toNum(r.weightTons),
     loadingLocation: r.loadingLocation ?? '',
     unloadingLocation: r.unloadingLocation ?? '',
+    loadingAddress: r.loadingAddress ?? null,
+    unloadingAddress: r.unloadingAddress ?? null,
   };
 }
 
@@ -415,6 +419,8 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           weightTons: numToDb(body.weightTons),
           loadingLocation: body.loadingLocation,
           unloadingLocation: body.unloadingLocation,
+          loadingAddress: body.loadingAddress ?? null,
+          unloadingAddress: body.unloadingAddress ?? null,
         });
       }
       await tx.insert(vehicleRequestStatusHistory).values({
@@ -507,7 +513,8 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
             .where(eq(freightTransportRequestDetails.requestId, id));
           const scheduledAt = body.scheduledAt ? new Date(body.scheduledAt) : ex!.scheduledAt;
           const volumeM3 = body.volumeM3 !== undefined ? numToDb(body.volumeM3) : ex!.volumeM3;
-          const weightTons = body.weightTons !== undefined ? numToDb(body.weightTons) : ex!.weightTons;
+          const weightTons =
+            body.weightTons !== undefined ? numToDb(body.weightTons) : ex!.weightTons;
           if (volumeM3 == null && weightTons == null) {
             throw err.badRequest('Укажите объём или массу');
           }
@@ -519,6 +526,11 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
               weightTons,
               loadingLocation: body.loadingLocation ?? ex!.loadingLocation,
               unloadingLocation: body.unloadingLocation ?? ex!.unloadingLocation,
+              // Метаданные адреса шлются вместе со строкой; null явно сбрасывает верификацию.
+              loadingAddress:
+                body.loadingAddress !== undefined ? body.loadingAddress : ex!.loadingAddress,
+              unloadingAddress:
+                body.unloadingAddress !== undefined ? body.unloadingAddress : ex!.unloadingAddress,
             })
             .where(eq(freightTransportRequestDetails.requestId, id));
         }

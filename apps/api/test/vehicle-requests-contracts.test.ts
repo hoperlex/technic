@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  addressMetaSchema,
   changeVehicleRequestStatusSchema,
   createVehicleRequestSchema,
   formatVehicleRequestNumber,
+  isAddressVerified,
   parseVehicleRequestNumberSearch,
   updateVehicleRequestSchema,
   vehicleRequestListQuerySchema,
@@ -56,13 +58,13 @@ describe('vehicle-requests: строгость схем (.strict)', () => {
       createVehicleRequestSchema.parse({ ...special, scheduledAt: '2026-07-25T14:30:00+03:00' }),
     ).toThrow();
     expect(() => createVehicleRequestSchema.parse({ ...special, volumeM3: 5 })).toThrow();
-    expect(() =>
-      createVehicleRequestSchema.parse({ ...special, loadingLocation: 'x' }),
-    ).toThrow();
+    expect(() => createVehicleRequestSchema.parse({ ...special, loadingLocation: 'x' })).toThrow();
   });
 
   it('грузоперевозка отклоняет special-поля', () => {
-    expect(() => createVehicleRequestSchema.parse({ ...freight, dateFrom: '2026-07-25' })).toThrow();
+    expect(() =>
+      createVehicleRequestSchema.parse({ ...freight, dateFrom: '2026-07-25' }),
+    ).toThrow();
     expect(() => createVehicleRequestSchema.parse({ ...freight, dateTo: '2026-07-26' })).toThrow();
   });
 });
@@ -70,7 +72,11 @@ describe('vehicle-requests: строгость схем (.strict)', () => {
 describe('vehicle-requests: кросс-поля и валидация значений', () => {
   it('dateTo не раньше dateFrom', () => {
     expect(() =>
-      createVehicleRequestSchema.parse({ ...special, dateFrom: '2026-07-25', dateTo: '2026-07-24' }),
+      createVehicleRequestSchema.parse({
+        ...special,
+        dateFrom: '2026-07-25',
+        dateTo: '2026-07-24',
+      }),
     ).toThrow();
     const ok = createVehicleRequestSchema.parse({
       ...special,
@@ -81,8 +87,12 @@ describe('vehicle-requests: кросс-поля и валидация значе
   });
 
   it('спецтехника: некорректная дата отклоняется', () => {
-    expect(() => createVehicleRequestSchema.parse({ ...special, dateFrom: '2026-13-40' })).toThrow();
-    expect(() => createVehicleRequestSchema.parse({ ...special, dateFrom: '25-07-2026' })).toThrow();
+    expect(() =>
+      createVehicleRequestSchema.parse({ ...special, dateFrom: '2026-13-40' }),
+    ).toThrow();
+    expect(() =>
+      createVehicleRequestSchema.parse({ ...special, dateFrom: '25-07-2026' }),
+    ).toThrow();
   });
 
   it('грузоперевозка требует объём или массу', () => {
@@ -111,7 +121,10 @@ describe('vehicle-requests: кросс-поля и валидация значе
 describe('vehicle-requests: обновление', () => {
   it('требует version и requestType', () => {
     expect(() =>
-      updateVehicleRequestSchema.parse({ requestType: 'special_equipment', dateFrom: '2026-07-25' }),
+      updateVehicleRequestSchema.parse({
+        requestType: 'special_equipment',
+        dateFrom: '2026-07-25',
+      }),
     ).toThrow();
     const ok = updateVehicleRequestSchema.parse({
       requestType: 'special_equipment',
@@ -136,6 +149,41 @@ describe('vehicle-requests: обновление', () => {
     expect(changeVehicleRequestStatusSchema.parse({ status: 'confirmed', version: 2 }).status).toBe(
       'confirmed',
     );
+  });
+});
+
+describe('vehicle-requests: адрес (DaData, ADR 0005)', () => {
+  const resolved = {
+    source: 'resolved' as const,
+    fiasId: '0c5b2444-70a0-4932-980c-b4dc0d3f02b5',
+    fiasLevel: 8,
+    geoLat: 55.75,
+    geoLon: 37.61,
+  };
+
+  it('freight парсится без метаданных адреса (обратная совместимость)', () => {
+    const v = createVehicleRequestSchema.parse(freight);
+    if (v.requestType !== 'freight_transport') throw new Error('unreachable');
+    expect(v.loadingAddress ?? null).toBeNull();
+  });
+
+  it('freight принимает метаданные адреса', () => {
+    const v = createVehicleRequestSchema.parse({ ...freight, loadingAddress: resolved });
+    if (v.requestType !== 'freight_transport') throw new Error('unreachable');
+    expect(v.loadingAddress?.fiasId).toBe(resolved.fiasId);
+  });
+
+  it('addressMeta strict: лишние поля отклоняются', () => {
+    expect(() => addressMetaSchema.parse({ ...resolved, city: 'Москва' })).toThrow();
+    expect(() => addressMetaSchema.parse({ source: 'bogus' })).toThrow();
+  });
+
+  it('isAddressVerified: resolved+fiasId и object — верифицированы; manual и null — нет', () => {
+    expect(isAddressVerified(resolved)).toBe(true);
+    expect(isAddressVerified({ source: 'object' })).toBe(true);
+    expect(isAddressVerified({ source: 'resolved', fiasId: null })).toBe(false);
+    expect(isAddressVerified({ source: 'manual' })).toBe(false);
+    expect(isAddressVerified(null)).toBe(false);
   });
 });
 

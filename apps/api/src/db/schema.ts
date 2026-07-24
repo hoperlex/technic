@@ -20,6 +20,7 @@ import {
   uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
+import type { AddressMeta } from '@technic/contracts';
 
 /** case-insensitive text (расширение citext включается ops-ом до миграций). */
 const citext = customType<{ data: string }>({
@@ -68,8 +69,7 @@ export const constructionObjects = pgTable(
   },
   (t) => ({
     codeUnique: uniqueIndex('construction_objects_code_unique').on(t.code),
-    nameTrgm: index('construction_objects_name_trgm')
-      .using('gin', sql`${t.name} gin_trgm_ops`),
+    nameTrgm: index('construction_objects_name_trgm').using('gin', sql`${t.name} gin_trgm_ops`),
   }),
 );
 
@@ -203,10 +203,9 @@ export const users = pgTable(
     fullName: text('full_name').notNull(),
     passwordHash: text('password_hash').notNull(),
     role: roleEnum('role'), // назначается администратором; до активации может быть null
-    constructionObjectId: uuid('construction_object_id').references(
-      () => constructionObjects.id,
-      { onDelete: 'set null' },
-    ),
+    constructionObjectId: uuid('construction_object_id').references(() => constructionObjects.id, {
+      onDelete: 'set null',
+    }),
     isActive: boolean('is_active').notNull().default(false),
     mustChangePassword: boolean('must_change_password').notNull().default(false),
     authVersion: integer('auth_version').notNull().default(0),
@@ -420,6 +419,9 @@ export const freightTransportRequestDetails = pgTable(
     weightTons: numeric('weight_tons', { precision: 12, scale: 3 }),
     loadingLocation: text('loading_location').notNull(),
     unloadingLocation: text('unloading_location').notNull(),
+    // Метаданные верификации адреса (DaData «Подсказки», ADR 0005); NULL = введён вручную.
+    loadingAddress: jsonb('loading_address').$type<AddressMeta>(),
+    unloadingAddress: jsonb('unloading_address').$type<AddressMeta>(),
   },
   (t) => ({
     volumePositive: check(
@@ -492,7 +494,9 @@ export const jobs = pgTable(
   {
     id: uuid('id').primaryKey().defaultRandom(),
     type: text('type').notNull(),
-    payload: jsonb('payload').notNull().default(sql`'{}'::jsonb`),
+    payload: jsonb('payload')
+      .notNull()
+      .default(sql`'{}'::jsonb`),
     status: jobStatusEnum('status').notNull().default('pending'),
     attempts: integer('attempts').notNull().default(0),
     maxAttempts: integer('max_attempts').notNull().default(5),
@@ -515,7 +519,9 @@ export const auditLog = pgTable('audit_log', {
   action: text('action').notNull(),
   entityType: text('entity_type'),
   entityId: text('entity_id'),
-  metadata: jsonb('metadata').notNull().default(sql`'{}'::jsonb`),
+  metadata: jsonb('metadata')
+    .notNull()
+    .default(sql`'{}'::jsonb`),
   createdAt: createdAt(),
 });
 
@@ -528,8 +534,6 @@ export type VehicleKindRow = typeof vehicleKinds.$inferSelect;
 export type VehicleTypeRow = typeof vehicleTypes.$inferSelect;
 export type VehicleTypeSourceMappingRow = typeof vehicleTypeSourceMappings.$inferSelect;
 export type VehicleRequestRow = typeof vehicleRequests.$inferSelect;
-export type SpecialEquipmentRequestDetailsRow =
-  typeof specialEquipmentRequestDetails.$inferSelect;
-export type FreightTransportRequestDetailsRow =
-  typeof freightTransportRequestDetails.$inferSelect;
+export type SpecialEquipmentRequestDetailsRow = typeof specialEquipmentRequestDetails.$inferSelect;
+export type FreightTransportRequestDetailsRow = typeof freightTransportRequestDetails.$inferSelect;
 export type JobRow = typeof jobs.$inferSelect;
