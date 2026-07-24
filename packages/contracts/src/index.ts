@@ -6,5 +6,6 @@ export * from './objects';
 export * from './container-types';
 export * from './vehicle-kinds';
 export * from './vehicle-types';
+export * from './vehicle-type-source-mappings';
 export * from './files';
 export * from './waste-requests';

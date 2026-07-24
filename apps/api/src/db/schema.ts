@@ -146,6 +146,41 @@ export const vehicleTypes = pgTable(
   }),
 );
 
+// ── Сопоставление исходных наименований «Тип ТС» → тип/подтип классификатора ──
+export const vehicleTypeSourceMappings = pgTable(
+  'vehicle_type_source_mappings',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    sourceCode: text('source_code').notNull(),
+    sourceName: text('source_name').notNull(),
+    normalizedSourceName: text('normalized_source_name').notNull(),
+    vehicleTypeId: uuid('vehicle_type_id')
+      .notNull()
+      .references(() => vehicleTypes.id, { onDelete: 'restrict' }),
+    resolutionStrategy: text('resolution_strategy').notNull(),
+    requiresInstanceResolution: boolean('requires_instance_resolution').notNull().default(false),
+    comment: text('comment').notNull().default(''),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    sourceUnique: uniqueIndex('vehicle_type_source_mappings_source_unique').on(
+      t.sourceCode,
+      t.normalizedSourceName,
+    ),
+    strategyCheck: check(
+      'vehicle_type_source_mappings_strategy_check',
+      sql`${t.resolutionStrategy} in ('direct', 'by_model', 'by_registry')`,
+    ),
+    sourceNameNotBlank: check(
+      'vehicle_type_source_mappings_source_name_not_blank',
+      sql`btrim(${t.sourceName}) <> ''`,
+    ),
+    typeIdx: index('vehicle_type_source_mappings_type_idx').on(t.vehicleTypeId),
+  }),
+);
+
 // ── Пользователи ──
 export const users = pgTable(
   'users',
@@ -337,4 +372,5 @@ export type ObjectRow = typeof constructionObjects.$inferSelect;
 export type ContainerTypeRow = typeof containerTypes.$inferSelect;
 export type VehicleKindRow = typeof vehicleKinds.$inferSelect;
 export type VehicleTypeRow = typeof vehicleTypes.$inferSelect;
+export type VehicleTypeSourceMappingRow = typeof vehicleTypeSourceMappings.$inferSelect;
 export type JobRow = typeof jobs.$inferSelect;
