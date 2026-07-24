@@ -12,16 +12,28 @@ export const containerTypeListQuerySchema = baseListQuery(CONTAINER_TYPE_SORT_FI
     .transform((v) => (v === undefined ? undefined : v === 'true')),
 });
 
-export const createContainerTypeSchema = z.object({
-  code: z.string().trim().min(1).max(50),
-  name: z.string().trim().min(1).max(255),
-  type: containerKindSchema.default('cont'),
-  sortOrder: z.coerce.number().int().default(100),
-  isActive: z.boolean().default(true),
-});
+export const createContainerTypeSchema = z
+  .object({
+    code: z.string().trim().min(1).max(50),
+    name: z.string().trim().min(1).max(255),
+    type: containerKindSchema.default('cont'),
+    sortOrder: z.coerce.number().int().default(100),
+    isActive: z.boolean().default(true),
+  })
+  .strict();
 export type CreateContainerTypeInput = z.infer<typeof createContainerTypeSchema>;
 
-export const updateContainerTypeSchema = createContainerTypeSchema.partial();
+// `code` — стабильный системный идентификатор, неизменяем после создания
+// (единый принцип со справочником типов/подтипов ТС). Удаления нет: деактивация
+// через isActive.
+export const updateContainerTypeSchema = z
+  .object({
+    name: z.string().trim().min(1).max(255).optional(),
+    type: containerKindSchema.optional(),
+    sortOrder: z.coerce.number().int().optional(),
+    isActive: z.boolean().optional(),
+  })
+  .strict();
 export type UpdateContainerTypeInput = z.infer<typeof updateContainerTypeSchema>;
 
 export interface ContainerTypeDto {

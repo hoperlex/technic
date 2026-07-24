@@ -135,6 +135,12 @@ export const vehicleTypes = pgTable(
       'vehicle_types_no_self_parent',
       sql`${t.parentId} is null or ${t.parentId} <> ${t.id}`,
     ),
+    // Тип (parent_id IS NULL) — невыбираемый; подтип — выбираемый (этап 2.1).
+    levelSelectable: check(
+      'vehicle_types_level_selectable_check',
+      sql`(${t.parentId} is null and ${t.isSelectable} = false) or (${t.parentId} is not null and ${t.isSelectable} = true)`,
+    ),
+    codeFormat: check('vehicle_types_code_format_check', sql`${t.code} ~ '^[a-z][a-z0-9_]*$'`),
     codeNotBlank: check('vehicle_types_code_not_blank', sql`btrim(${t.code}) <> ''`),
     nameNotBlank: check('vehicle_types_name_not_blank', sql`btrim(${t.name}) <> ''`),
     kindActiveSortIdx: index('vehicle_types_kind_active_sort_idx').on(

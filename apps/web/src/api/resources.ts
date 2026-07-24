@@ -3,6 +3,7 @@ import type {
   CreateContainerTypeInput,
   CreateObjectInput,
   CreateUserInput,
+  CreateVehicleTypeInput,
   DownloadUrlDto,
   FileDto,
   ListResult,
@@ -12,8 +13,11 @@ import type {
   UpdateContainerTypeInput,
   UpdateObjectInput,
   UpdateUserInput,
+  UpdateVehicleTypeInput,
   UploadSessionDto,
   UserDto,
+  VehicleKindDto,
+  VehicleTypeDto,
   WasteRequestDto,
 } from '@technic/contracts';
 import { apiFetch } from './client';
@@ -42,9 +46,22 @@ export const containerTypesApi = {
   list: (q: Query) => apiFetch<ListResult<ContainerTypeDto>>('/container-types', { query: q }),
   create: (body: CreateContainerTypeInput) =>
     apiFetch<ContainerTypeDto>('/container-types', { method: 'POST', body }),
+  // Удаления нет: деактивация через update({ isActive: false }).
   update: (id: string, body: UpdateContainerTypeInput) =>
     apiFetch<ContainerTypeDto>(`/container-types/${id}`, { method: 'PATCH', body }),
-  remove: (id: string) => apiFetch<ContainerTypeDto>(`/container-types/${id}`, { method: 'DELETE' }),
+};
+
+export const vehicleKindsApi = {
+  list: (q: Query) => apiFetch<ListResult<VehicleKindDto>>('/vehicle-kinds', { query: q }),
+};
+
+export const vehicleTypesApi = {
+  list: (q: Query) => apiFetch<ListResult<VehicleTypeDto>>('/vehicle-types', { query: q }),
+  create: (body: CreateVehicleTypeInput) =>
+    apiFetch<VehicleTypeDto>('/vehicle-types', { method: 'POST', body }),
+  // Только описательные поля (типа) + isActive (подтипа). Структурные поля неизменяемы.
+  update: (id: string, body: UpdateVehicleTypeInput) =>
+    apiFetch<VehicleTypeDto>(`/vehicle-types/${id}`, { method: 'PATCH', body }),
 };
 
 export interface WasteRequestPayload {

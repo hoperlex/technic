@@ -18,6 +18,8 @@ export const err = {
     new AppError(409, 'version_conflict', m),
   badRequest: (m = 'Некорректный запрос', fields?: Record<string, string>) =>
     new AppError(400, 'bad_request', m, fields),
+  unprocessable: (m = 'Некорректная структура запроса', fields?: Record<string, string>) =>
+    new AppError(422, 'unprocessable_entity', m, fields),
   validation: (fields: Record<string, string>) =>
     new AppError(400, 'validation_error', 'Ошибка валидации', fields),
   inactive: (m = 'Аккаунт не активирован') => new AppError(403, 'account_inactive', m),

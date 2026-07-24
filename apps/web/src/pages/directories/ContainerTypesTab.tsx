@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { App, Button, Form, Input, InputNumber, Select, Space, Switch } from 'antd';
-import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
+import { EditOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   CONTAINER_KINDS,
@@ -9,11 +9,12 @@ import {
   type ContainerTypeDto,
   type CreateContainerTypeInput,
 } from '@technic/contracts';
+import type { TableColumnType } from 'antd';
 import { containerTypesApi } from '../../api/resources';
 import { DataTable } from '../../components/DataTable';
 import { FormModal } from '../../components/FormModal';
 import { PageTableLayout } from '../../components/PageTableLayout';
-import { actionsColumn, badgeColumn, boolBadgeColumn, textColumn } from '../../components/columns';
+import { actionsColumn, badgeColumn, textColumn } from '../../components/columns';
 import { useListParams } from '../../hooks/useListParams';
 import { errorMessage } from '../../utils/format';
 
@@ -64,23 +65,46 @@ export function ContainerTypesTab() {
     onError: (e) => message.error(errorMessage(e)),
   });
 
-  const removeMut = useMutation({
-    mutationFn: (id: string) => containerTypesApi.remove(id),
-    onSuccess: () => {
-      message.success('Тип деактивирован');
+  // Удаления нет: деактивация через isActive (единый принцип со справочником ТС).
+  const toggleMut = useMutation({
+    mutationFn: ({ id, isActive }: { id: string; isActive: boolean }) =>
+      containerTypesApi.update(id, { isActive }),
+    onSuccess: (_d, v) => {
+      message.success(v.isActive ? 'Активирован' : 'Деактивирован');
       void qc.invalidateQueries({ queryKey: ['container-types'] });
     },
     onError: (e) => message.error(errorMessage(e)),
   });
 
-  const confirmDelete = (r: ContainerTypeDto) =>
+  const onToggleActive = (r: ContainerTypeDto, next: boolean) => {
+    if (next) {
+      toggleMut.mutate({ id: r.id, isActive: true });
+      return;
+    }
     modal.confirm({
       title: `Деактивировать тип «${r.name}»?`,
       okText: 'Деактивировать',
       okButtonProps: { danger: true },
       cancelText: 'Отмена',
-      onOk: () => removeMut.mutateAsync(r.id),
+      onOk: () => toggleMut.mutateAsync({ id: r.id, isActive: false }),
     });
+  };
+
+  const activeColumn: TableColumnType<ContainerTypeDto> = {
+    key: 'isActive',
+    title: 'Активен',
+    dataIndex: 'isActive',
+    width: 120,
+    sorter: true,
+    filters: [
+      { text: 'Да', value: 'true' },
+      { text: 'Нет', value: 'false' },
+    ],
+    filterMultiple: false,
+    render: (v: boolean, r) => (
+      <Switch size="small" checked={v} loading={toggleMut.isPending} onChange={(n) => onToggleActive(r, n)} />
+    ),
+  };
 
   const columns = [
     textColumn<ContainerTypeDto>({ key: 'name', title: 'Название', dataIndex: 'name' }),
@@ -93,19 +117,10 @@ export function ContainerTypesTab() {
       filters: true,
       width: 140,
     }),
-    boolBadgeColumn<ContainerTypeDto>({
-      key: 'isActive',
-      title: 'Активен',
-      dataIndex: 'isActive',
-      trueText: 'Да',
-      falseText: 'Нет',
-      filters: true,
-      width: 120,
-    }),
+    activeColumn,
     actionsColumn<ContainerTypeDto>((r) => (
       <Space>
         <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)} />
-        <Button size="small" danger icon={<DeleteOutlined />} onClick={() => confirmDelete(r)} />
       </Space>
     )),
   ];
@@ -137,7 +152,8 @@ export function ContainerTypesTab() {
       >
         <Form form={form} layout="vertical" onFinish={(v) => saveMut.mutate(v)}>
           <Form.Item name="code" label="Код" rules={[{ required: true, message: 'Укажите код' }]}>
-            <Input />
+            {/* Код — стабильный идентификатор, неизменяем после создания. */}
+            <Input disabled={!!record} />
           </Form.Item>
           <Form.Item
             name="name"

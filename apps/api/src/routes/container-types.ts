@@ -105,33 +105,20 @@ export default async function containerTypesRoutes(app: FastifyInstance): Promis
         .where(eq(containerTypes.id, req.params.id))
         .returning();
       if (!updated) throw err.notFound('Тип контейнера не найден');
+      // Удаления нет: деактивация — через isActive=false (единый принцип со справочником ТС).
+      const action =
+        req.body.isActive === false
+          ? 'container_type.deactivate'
+          : req.body.isActive === true
+            ? 'container_type.activate'
+            : 'container_type.update';
       await writeAudit({
         actorUserId: requirePrincipal(req).id,
-        action: 'container_type.update',
+        action,
         entityType: 'container_type',
         entityId: req.params.id,
       });
       return toDto(updated);
-    },
-  );
-
-  r.delete(
-    '/:id',
-    { preHandler: [app.authenticate, canWrite], schema: { params: idParams } },
-    async (req) => {
-      const [row] = await db
-        .update(containerTypes)
-        .set({ isActive: false, updatedAt: new Date() })
-        .where(eq(containerTypes.id, req.params.id))
-        .returning();
-      if (!row) throw err.notFound('Тип контейнера не найден');
-      await writeAudit({
-        actorUserId: requirePrincipal(req).id,
-        action: 'container_type.deactivate',
-        entityType: 'container_type',
-        entityId: req.params.id,
-      });
-      return toDto(row);
     },
   );
 }
