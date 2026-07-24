@@ -2,7 +2,9 @@ import { sql } from 'drizzle-orm';
 import {
   bigint,
   boolean,
+  check,
   customType,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -12,6 +14,7 @@ import {
   primaryKey,
   text,
   timestamp,
+  unique,
   uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
@@ -78,6 +81,68 @@ export const containerTypes = pgTable(
   },
   (t) => ({
     codeUnique: uniqueIndex('container_types_code_unique').on(t.code),
+  }),
+);
+
+// ── Классификатор ТС: виды (справочник) ──
+export const vehicleKinds = pgTable(
+  'vehicle_kinds',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    code: text('code').notNull(),
+    name: text('name').notNull(),
+    sortOrder: integer('sort_order').notNull().default(100),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    codeUnique: uniqueIndex('vehicle_kinds_code_unique').on(t.code),
+    codeNotBlank: check('vehicle_kinds_code_not_blank', sql`btrim(${t.code}) <> ''`),
+    nameNotBlank: check('vehicle_kinds_name_not_blank', sql`btrim(${t.name}) <> ''`),
+  }),
+);
+
+// ── Классификатор ТС: типы/подтипы (иерархия в одной таблице) ──
+// parent_id — родитель (NULL у верхнего типа). Составной FK (parent_id, kind_id)
+// гарантирует, что родитель и дочерний тип относятся к одному виду.
+export const vehicleTypes = pgTable(
+  'vehicle_types',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    kindId: uuid('kind_id')
+      .notNull()
+      .references(() => vehicleKinds.id, { onDelete: 'restrict' }),
+    parentId: uuid('parent_id'),
+    code: text('code').notNull(),
+    name: text('name').notNull(),
+    description: text('description').notNull().default(''),
+    isSelectable: boolean('is_selectable').notNull().default(true),
+    sortOrder: integer('sort_order').notNull().default(100),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    codeUnique: uniqueIndex('vehicle_types_code_unique').on(t.code),
+    idKindUnique: unique('vehicle_types_id_kind_unique').on(t.id, t.kindId),
+    parentSameKind: foreignKey({
+      columns: [t.parentId, t.kindId],
+      foreignColumns: [t.id, t.kindId],
+      name: 'vehicle_types_parent_same_kind',
+    }).onDelete('restrict'),
+    noSelfParent: check(
+      'vehicle_types_no_self_parent',
+      sql`${t.parentId} is null or ${t.parentId} <> ${t.id}`,
+    ),
+    codeNotBlank: check('vehicle_types_code_not_blank', sql`btrim(${t.code}) <> ''`),
+    nameNotBlank: check('vehicle_types_name_not_blank', sql`btrim(${t.name}) <> ''`),
+    kindActiveSortIdx: index('vehicle_types_kind_active_sort_idx').on(
+      t.kindId,
+      t.isActive,
+      t.sortOrder,
+    ),
+    parentIdx: index('vehicle_types_parent_idx').on(t.parentId),
   }),
 );
 
@@ -270,4 +335,6 @@ export type WasteRequestRow = typeof wasteRequests.$inferSelect;
 export type FileRow = typeof files.$inferSelect;
 export type ObjectRow = typeof constructionObjects.$inferSelect;
 export type ContainerTypeRow = typeof containerTypes.$inferSelect;
+export type VehicleKindRow = typeof vehicleKinds.$inferSelect;
+export type VehicleTypeRow = typeof vehicleTypes.$inferSelect;
 export type JobRow = typeof jobs.$inferSelect;

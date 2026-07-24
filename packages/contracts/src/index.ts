@@ -4,5 +4,7 @@ export * from './auth';
 export * from './users';
 export * from './objects';
 export * from './container-types';
+export * from './vehicle-kinds';
+export * from './vehicle-types';
 export * from './files';
 export * from './waste-requests';

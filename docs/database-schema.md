@@ -8,6 +8,8 @@ SQL-first миграции: `apps/api/drizzle/*.sql`, применяются `ap
 - **refresh_sessions** — opaque refresh-токены: `token_hash`, `family_id`, ротация (`replaced_by`, `revoked_at`), reuse detection.
 - **construction_objects** — справочник объектов: `code` (unique), `name`, `address`, `is_active`. GIN-trgm по `name`.
 - **container_types** — справочник типов контейнеров/машин (управляется менеджером): `code` (unique), `name`, `sort_order`, `is_active`. Seed — 6 значений.
+- **vehicle_kinds** — виды ТС (верхний уровень): `code` (unique), `name`, `sort_order`, `is_active`. Seed — «Спецтехника», «Грузоперевозки». Таблицей, а не enum (расширяемо).
+- **vehicle_types** — иерархический справочник типов/подтипов ТС в одной таблице: `kind_id` (FK, restrict), `parent_id` (self), `code` (unique), `name`, `description`, `is_selectable`, `sort_order`, `is_active`. Составной FK `(parent_id, kind_id)` держит родителя и дочерний тип в одном виде; глубина 2 уровня и `is_selectable` — на уровне приложения. Обоснование — `docs/adr/0001-vehicle-classification.md`.
 - **waste_requests** — заявки: FK `object_id`, `container_type_id`; `request_type` (`onetime|weekly`), `delivery_at` (UTC), `comment`, `status` (`new|confirmed|done|cancelled`), `version` (optimistic lock), `created_by/updated_by/deleted_by`, `deleted_at` (soft-delete).
 - **request_files** — связь заявка↔файл (PK `(request_id, file_id)`, каскад).
 - **request_status_history** — история смены статусов.
