@@ -6,6 +6,19 @@ import { logger } from './logger';
 async function main(): Promise<void> {
   assertSigningKey(config); // startup check: приватный ключ обязателен для api
 
+  // Диагностика S3 (без секретов): позволяет заметить, что runtime использует не тот
+  // bucket/endpoint (напр. `auto` вместо `technic-portal-files`). Ключи НЕ логируем.
+  logger.info(
+    {
+      s3Endpoint: config.s3.endpoint,
+      s3Region: config.s3.region,
+      s3Bucket: config.s3.bucket,
+      s3ForcePathStyle: config.s3.forcePathStyle,
+      s3UploadTtl: config.s3.uploadUrlTtl,
+    },
+    'S3 конфигурация',
+  );
+
   try {
     await pingDb();
   } catch (e) {

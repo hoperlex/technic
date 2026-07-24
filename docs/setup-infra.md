@@ -43,21 +43,52 @@ conn_limit(technic_migration) — небольшой (миграции one-off),
 
 - Endpoint `https://s3.cloud.ru`, region `ru-central-1`, **virtual-hosted-style** (`S3_FORCE_PATH_STYLE=false`).
 - Имя бакета — DNS-совместимое (нижний регистр, без точек), напр. `technic-portal-files`.
+  ⚠️ Проверь `S3_BUCKET` в проде: symptom-URL вида `https://auto.s3.cloud.ru/...` означает, что
+  runtime использует bucket `auto` вместо ожидаемого (при старте API/worker пишут `S3 конфигурация` в лог — см. runbook).
 - Приватный бакет, SSE, отдельный IAM AK/SK минимальных прав (`S3_ACCESS_KEY_ID` в формате `<tenant_id>:<key_id>`).
-- **CORS на бакете** (браузер грузит файлы напрямую по presigned PUT):
-  ```json
-  {
-    "CORSRules": [
-      {
-        "AllowedOrigins": ["https://auto.su10.ru"],
-        "AllowedMethods": ["PUT", "GET", "HEAD"],
-        "AllowedHeaders": ["content-type"],
-        "ExposeHeaders": ["ETag"],
-        "MaxAgeSeconds": 3000
-      }
-    ]
-  }
-  ```
+  **Бакет остаётся приватным** — CORS не делает объекты публичными и **не заменяет IAM и подпись URL** (presigned).
+
+### CORS — на самом бакете cloud.ru (не в nginx и не в Fastify)
+
+Браузер грузит файлы **напрямую** по presigned PUT в `*.s3.cloud.ru`, поэтому preflight (OPTIONS)
+обрабатывает **cloud.ru**, а не наш nginx/Fastify. Добавлять CORS в nginx/Fastify бессмысленно —
+их в этом запросе нет. CORS настраивается **на бакете**:
+
+```json
+{
+  "CORSRules": [
+    {
+      "AllowedOrigins": ["https://auto.su10.ru"],
+      "AllowedMethods": ["PUT", "GET", "HEAD"],
+      "AllowedHeaders": ["*"],
+      "ExposeHeaders": ["ETag", "x-amz-request-id"],
+      "MaxAgeSeconds": 3000
+    }
+  ]
+}
+```
+
+- `AllowedHeaders: ["*"]` — **на этапе диагностики** (принять любые заголовки клиента). После стабилизации
+  можно сузить (при отключённом авто-checksum достаточно `content-type`).
+- Presigned URL **не должен содержать** `x-amz-checksum-crc32` / `x-amz-sdk-checksum-algorithm` — это
+  чинится в коде (`requestChecksumCalculation/responseChecksumValidation: 'WHEN_REQUIRED'`,
+  см. `apps/api/src/lib/s3-client.ts`), иначе браузер шлёт лишние `x-amz-*` заголовки и preflight падает.
+
+Команды (aws-cli; креды бакета — через переменные окружения, не в командной строке):
+
+```bash
+export AWS_ACCESS_KEY_ID='<tenant_id>:<key_id>'
+export AWS_SECRET_ACCESS_KEY='<secret>'
+export AWS_DEFAULT_REGION='ru-central-1'
+
+# Текущая CORS-политика бакета
+aws s3api get-bucket-cors --endpoint-url https://s3.cloud.ru --bucket technic-portal-files
+
+# Установить/обновить CORS-политику (cors.json — JSON выше)
+aws s3api put-bucket-cors --endpoint-url https://s3.cloud.ru --bucket technic-portal-files \
+  --cors-configuration file://cors.json
+```
+
 - CSP на edge-nginx должен разрешать `connect-src https://s3.cloud.ru https://*.s3.cloud.ru` (см. `deploy/nginx/technic.conf`).
 
 ## 4. Edge-nginx (`infra-nginx`)

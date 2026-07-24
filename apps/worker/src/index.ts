@@ -46,8 +46,22 @@ const s3 = new S3Client({
     accessKeyId: required('S3_ACCESS_KEY_ID'),
     secretAccessKey: required('S3_SECRET_ACCESS_KEY'),
   },
+  // Отключаем авто-checksum AWS SDK v3 (см. apps/api/src/lib/s3-client.ts).
+  requestChecksumCalculation: 'WHEN_REQUIRED',
+  responseChecksumValidation: 'WHEN_REQUIRED',
 });
 const bucket = required('S3_BUCKET');
+
+// Диагностика: без секретов; помогает заметить неверный bucket/endpoint в проде.
+logger.info(
+  {
+    s3Endpoint: process.env.S3_ENDPOINT,
+    s3Region: process.env.S3_REGION ?? 'ru-central-1',
+    s3Bucket: bucket,
+    s3ForcePathStyle: (process.env.S3_FORCE_PATH_STYLE ?? 'false') === 'true',
+  },
+  'S3 конфигурация worker',
+);
 
 async function deleteObject(objectKey: string): Promise<void> {
   try {

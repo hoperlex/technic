@@ -1,23 +1,15 @@
 import { extname } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import {
-  DeleteObjectCommand,
-  GetObjectCommand,
-  HeadObjectCommand,
-  PutObjectCommand,
-  S3Client,
-} from '@aws-sdk/client-s3';
-import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { DeleteObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
 import { config } from '../config';
+import { createS3Client, presignGetUrl, presignPutUrl } from './s3-client';
 
-export const s3 = new S3Client({
+export const s3 = createS3Client({
   region: config.s3.region,
   endpoint: config.s3.endpoint,
   forcePathStyle: config.s3.forcePathStyle,
-  credentials: {
-    accessKeyId: config.s3.accessKeyId,
-    secretAccessKey: config.s3.secretAccessKey,
-  },
+  accessKeyId: config.s3.accessKeyId,
+  secretAccessKey: config.s3.secretAccessKey,
 });
 
 /** object key генерируется backend (не конкатенацией пользовательского ввода, §15). */
@@ -31,23 +23,21 @@ export function buildObjectKey(filename: string): string {
 }
 
 export function presignPut(objectKey: string, contentType: string): Promise<string> {
-  const cmd = new PutObjectCommand({
-    Bucket: config.s3.bucket,
-    Key: objectKey,
-    ContentType: contentType,
+  return presignPutUrl(s3, {
+    bucket: config.s3.bucket,
+    key: objectKey,
+    contentType,
+    expiresIn: config.s3.uploadUrlTtl,
   });
-  return getSignedUrl(s3, cmd, { expiresIn: config.s3.uploadUrlTtl });
 }
 
 export function presignGet(objectKey: string, filename?: string): Promise<string> {
-  const cmd = new GetObjectCommand({
-    Bucket: config.s3.bucket,
-    Key: objectKey,
-    ResponseContentDisposition: filename
-      ? `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`
-      : undefined,
+  return presignGetUrl(s3, {
+    bucket: config.s3.bucket,
+    key: objectKey,
+    filename,
+    expiresIn: config.s3.downloadUrlTtl,
   });
-  return getSignedUrl(s3, cmd, { expiresIn: config.s3.downloadUrlTtl });
 }
 
 export async function headObject(
