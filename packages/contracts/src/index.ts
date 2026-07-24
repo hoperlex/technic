@@ -9,3 +9,4 @@ export * from './vehicle-types';
 export * from './vehicle-type-source-mappings';
 export * from './files';
 export * from './waste-requests';
+export * from './vehicle-requests';
