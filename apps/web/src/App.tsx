@@ -6,6 +6,7 @@ import { LoginPage } from './pages/LoginPage';
 import { RegisterPage } from './pages/RegisterPage';
 import { ChangePasswordPage } from './pages/ChangePasswordPage';
 import { WasteRequestsPage } from './pages/WasteRequestsPage';
+import { VehicleRequestsPage } from './pages/VehicleRequestsPage';
 import { DirectoriesPage } from './pages/DirectoriesPage';
 import { AdministrationPage } from './pages/AdministrationPage';
 
@@ -21,6 +22,7 @@ export default function App() {
           <Route element={<AppLayout />}>
             <Route index element={<Navigate to="/waste" replace />} />
             <Route path="/waste" element={<WasteRequestsPage />} />
+            <Route path="/vehicle-requests" element={<VehicleRequestsPage />} />
             <Route element={<RequireRole roles={['admin', 'manager']} />}>
               <Route path="/directories" element={<DirectoriesPage />} />
             </Route>

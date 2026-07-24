@@ -3,6 +3,7 @@ import type {
   CreateContainerTypeInput,
   CreateObjectInput,
   CreateUserInput,
+  CreateVehicleRequestInput,
   CreateVehicleTypeInput,
   DownloadUrlDto,
   FileDto,
@@ -13,10 +14,12 @@ import type {
   UpdateContainerTypeInput,
   UpdateObjectInput,
   UpdateUserInput,
+  UpdateVehicleRequestInput,
   UpdateVehicleTypeInput,
   UploadSessionDto,
   UserDto,
   VehicleKindDto,
+  VehicleRequestDto,
   VehicleTypeDto,
   WasteRequestDto,
 } from '@technic/contracts';
@@ -62,6 +65,24 @@ export const vehicleTypesApi = {
   // Только описательные поля (типа) + isActive (подтипа). Структурные поля неизменяемы.
   update: (id: string, body: UpdateVehicleTypeInput) =>
     apiFetch<VehicleTypeDto>(`/vehicle-types/${id}`, { method: 'PATCH', body }),
+};
+
+export const vehicleRequestsApi = {
+  list: (q: Query) => apiFetch<ListResult<VehicleRequestDto>>('/vehicle-requests', { query: q }),
+  get: (id: string) => apiFetch<VehicleRequestDto>(`/vehicle-requests/${id}`),
+  create: (body: CreateVehicleRequestInput) =>
+    apiFetch<VehicleRequestDto>('/vehicle-requests', { method: 'POST', body }),
+  update: (id: string, body: UpdateVehicleRequestInput) =>
+    apiFetch<VehicleRequestDto>(`/vehicle-requests/${id}`, { method: 'PATCH', body }),
+  changeStatus: (id: string, status: RequestStatus, version: number) =>
+    apiFetch<VehicleRequestDto>(`/vehicle-requests/${id}/status`, {
+      method: 'PATCH',
+      body: { status, version },
+    }),
+  remove: (id: string) =>
+    apiFetch<{ ok: boolean; mode: string }>(`/vehicle-requests/${id}`, { method: 'DELETE' }),
+  restore: (id: string) =>
+    apiFetch<VehicleRequestDto>(`/vehicle-requests/${id}/restore`, { method: 'POST' }),
 };
 
 export interface WasteRequestPayload {

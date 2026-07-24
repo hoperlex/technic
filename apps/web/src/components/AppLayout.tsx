@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from 'react';
 import { Avatar, Dropdown, Layout, Menu, type MenuProps, Typography } from 'antd';
 import {
+  CarOutlined,
   DatabaseOutlined,
   FileTextOutlined,
   KeyOutlined,
@@ -23,6 +24,7 @@ export function AppLayout() {
 
   const navItems: { key: string; icon: ReactNode; label: string }[] = [
     { key: '/waste', icon: <FileTextOutlined />, label: 'Вывоз мусора' },
+    { key: '/vehicle-requests', icon: <CarOutlined />, label: 'Заказ ТС' },
     ...(hasRole('admin', 'manager')
       ? [{ key: '/directories', icon: <DatabaseOutlined />, label: 'Справочники' }]
       : []),
@@ -32,7 +34,9 @@ export function AppLayout() {
   ];
 
   const selectedKey =
-    ['/waste', '/directories', '/admin'].find((k) => location.pathname.startsWith(k)) ?? '/waste';
+    ['/waste', '/vehicle-requests', '/directories', '/admin'].find((k) =>
+      location.pathname.startsWith(k),
+    ) ?? '/waste';
 
   const userMenu: MenuProps = {
     items: [
