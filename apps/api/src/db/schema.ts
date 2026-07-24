@@ -4,10 +4,12 @@ import {
   boolean,
   check,
   customType,
+  date,
   foreignKey,
   index,
   integer,
   jsonb,
+  numeric,
   pgEnum,
   pgTable,
   pgView,
@@ -46,6 +48,11 @@ export const requestTypeEnum = pgEnum('request_type', [
 export const containerKindEnum = pgEnum('container_kind', ['cont', 'truck']);
 export const fileStatusEnum = pgEnum('file_status', ['pending', 'active', 'deleted']);
 export const jobStatusEnum = pgEnum('job_status', ['pending', 'running', 'done', 'failed', 'dead']);
+// Тип заявки на технику: заказ спецтехники / грузоперевозка (отдельно от request_type мусора).
+export const vehicleRequestTypeEnum = pgEnum('vehicle_request_type', [
+  'special_equipment',
+  'freight_transport',
+]);
 
 // ── Справочник: объекты строительства ──
 export const constructionObjects = pgTable(
@@ -338,6 +345,147 @@ export const requestStatusHistory = pgTable('request_status_history', {
   changedAt: timestamp('changed_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
+// ── Заявки на технику (заказ спецтехники / грузоперевозки) ──
+// Единая base-таблица + две detail-таблицы (по типу). «Ровно одна деталь нужного
+// типа» на этапе каркаса обеспечивается сервисной транзакцией; constraint-триггер —
+// в бэклоге (аддитивная миграция, форму таблиц не меняет).
+export const vehicleRequests = pgTable(
+  'vehicle_requests',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    // Сквозной человекочитаемый номер (отображается как «ТС-000123»).
+    num: integer('num').generatedAlwaysAsIdentity(),
+    requestType: vehicleRequestTypeEnum('request_type').notNull(),
+    objectId: uuid('object_id')
+      .notNull()
+      .references(() => constructionObjects.id, { onDelete: 'restrict' }),
+    // Конечный выбираемый подтип ТС (level=subtype). В API — vehicleSubtypeId.
+    vehicleTypeId: uuid('vehicle_type_id')
+      .notNull()
+      .references(() => vehicleTypes.id, { onDelete: 'restrict' }),
+    status: requestStatusEnum('status').notNull().default('new'),
+    comment: text('comment').notNull().default(''),
+    createdBy: uuid('created_by')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    updatedBy: uuid('updated_by').references(() => users.id, { onDelete: 'set null' }),
+    deletedBy: uuid('deleted_by').references(() => users.id, { onDelete: 'set null' }),
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
+    version: integer('version').notNull().default(0),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    numUnique: uniqueIndex('vehicle_requests_num_unique').on(t.num),
+    objectIdx: index('vehicle_requests_object_idx').on(t.objectId),
+    typeIdx: index('vehicle_requests_request_type_idx').on(t.requestType),
+    statusIdx: index('vehicle_requests_status_idx').on(t.status),
+    vehicleTypeIdx: index('vehicle_requests_vehicle_type_idx').on(t.vehicleTypeId),
+    createdAtIdx: index('vehicle_requests_created_at_idx').on(t.createdAt),
+    deletedAtIdx: index('vehicle_requests_deleted_at_idx').on(t.deletedAt),
+    objectStatusIdx: index('vehicle_requests_object_status_idx').on(t.objectId, t.status),
+    typeStatusIdx: index('vehicle_requests_type_status_idx').on(t.requestType, t.status),
+  }),
+);
+
+// Детали заказа спецтехники: период date-only (без времени; date_to пусто = один день).
+export const specialEquipmentRequestDetails = pgTable(
+  'special_equipment_request_details',
+  {
+    requestId: uuid('request_id')
+      .primaryKey()
+      .references(() => vehicleRequests.id, { onDelete: 'cascade' }),
+    dateFrom: date('date_from', { mode: 'string' }).notNull(),
+    dateTo: date('date_to', { mode: 'string' }),
+  },
+  (t) => ({
+    dateOrder: check(
+      'special_equipment_date_order_check',
+      sql`${t.dateTo} is null or ${t.dateTo} >= ${t.dateFrom}`,
+    ),
+    dateFromIdx: index('special_equipment_date_from_idx').on(t.dateFrom),
+    dateToIdx: index('special_equipment_date_to_idx').on(t.dateTo),
+  }),
+);
+
+// Детали грузоперевозки: дата-время (timestamptz) + объём/масса (numeric) + места.
+export const freightTransportRequestDetails = pgTable(
+  'freight_transport_request_details',
+  {
+    requestId: uuid('request_id')
+      .primaryKey()
+      .references(() => vehicleRequests.id, { onDelete: 'cascade' }),
+    scheduledAt: timestamp('scheduled_at', { withTimezone: true }).notNull(),
+    volumeM3: numeric('volume_m3', { precision: 12, scale: 3 }),
+    weightTons: numeric('weight_tons', { precision: 12, scale: 3 }),
+    loadingLocation: text('loading_location').notNull(),
+    unloadingLocation: text('unloading_location').notNull(),
+  },
+  (t) => ({
+    volumePositive: check(
+      'freight_volume_positive_check',
+      sql`${t.volumeM3} is null or ${t.volumeM3} > 0`,
+    ),
+    weightPositive: check(
+      'freight_weight_positive_check',
+      sql`${t.weightTons} is null or ${t.weightTons} > 0`,
+    ),
+    volumeOrWeight: check(
+      'freight_volume_or_weight_check',
+      sql`${t.volumeM3} is not null or ${t.weightTons} is not null`,
+    ),
+    loadingNotBlank: check(
+      'freight_loading_not_blank_check',
+      sql`btrim(${t.loadingLocation}) <> ''`,
+    ),
+    unloadingNotBlank: check(
+      'freight_unloading_not_blank_check',
+      sql`btrim(${t.unloadingLocation}) <> ''`,
+    ),
+    scheduledIdx: index('freight_scheduled_at_idx').on(t.scheduledAt),
+  }),
+);
+
+// Связь заявка ТС ↔ файлы. UNIQUE(file_id) — файл не в двух заявках ТС; кросс-модульную
+// уникальность с «Вывозом мусора» обеспечивает общий файловый сервис.
+export const vehicleRequestFiles = pgTable(
+  'vehicle_request_files',
+  {
+    vehicleRequestId: uuid('vehicle_request_id')
+      .notNull()
+      .references(() => vehicleRequests.id, { onDelete: 'cascade' }),
+    fileId: uuid('file_id')
+      .notNull()
+      .references(() => files.id, { onDelete: 'cascade' }),
+    addedAt: timestamp('added_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.vehicleRequestId, t.fileId] }),
+    fileUnique: uniqueIndex('vehicle_request_files_file_unique').on(t.fileId),
+  }),
+);
+
+// История статусов заявки ТС.
+export const vehicleRequestStatusHistory = pgTable(
+  'vehicle_request_status_history',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    vehicleRequestId: uuid('vehicle_request_id')
+      .notNull()
+      .references(() => vehicleRequests.id, { onDelete: 'cascade' }),
+    fromStatus: requestStatusEnum('from_status'),
+    toStatus: requestStatusEnum('to_status').notNull(),
+    changedBy: uuid('changed_by')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    changedAt: timestamp('changed_at', { withTimezone: true }).notNull().defaultNow(),
+    comment: text('comment').notNull().default(''),
+  },
+  (t) => ({
+    requestIdx: index('vehicle_request_status_history_request_idx').on(t.vehicleRequestId),
+  }),
+);
+
 // ── Фоновые задачи (outbox, §16) ──
 export const jobs = pgTable(
   'jobs',
@@ -379,4 +527,9 @@ export type ContainerTypeRow = typeof containerTypes.$inferSelect;
 export type VehicleKindRow = typeof vehicleKinds.$inferSelect;
 export type VehicleTypeRow = typeof vehicleTypes.$inferSelect;
 export type VehicleTypeSourceMappingRow = typeof vehicleTypeSourceMappings.$inferSelect;
+export type VehicleRequestRow = typeof vehicleRequests.$inferSelect;
+export type SpecialEquipmentRequestDetailsRow =
+  typeof specialEquipmentRequestDetails.$inferSelect;
+export type FreightTransportRequestDetailsRow =
+  typeof freightTransportRequestDetails.$inferSelect;
 export type JobRow = typeof jobs.$inferSelect;
