@@ -13,13 +13,11 @@ import {
   type WasteRequestDto,
   wasteRequestListQuerySchema,
 } from '@technic/contracts';
-import { config } from '../config';
 import { db } from '../db/client';
 import {
   constructionObjects,
   containerTypes,
   files,
-  jobs,
   presentContainers,
   requestFiles,
   requestStatusHistory,
@@ -29,15 +27,19 @@ import {
 import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
-import type { Principal } from '../auth/principal';
-import { canChangeStatus, requestVisibilityWhere } from '../lib/access';
+import { assertShtabScope, canChangeStatus, requestVisibilityWhere } from '../lib/access';
 import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
-import { JOB_DELETE_S3_OBJECT } from '../lib/jobs';
+import {
+  assertFilesAttachable,
+  assertTotalWithinLimit,
+  hardDeleteFiles,
+  markFilesActive,
+  scheduleFilesDeletion,
+} from '../services/request-files';
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 const idParams = z.object({ id: z.string().uuid() });
-const S3_DELETE_DELAY_MS = 30 * 24 * 60 * 60 * 1000;
 
 const requestSelect = {
   id: wasteRequests.id,
@@ -224,32 +226,16 @@ async function linkFiles(
   enforceTotal = false,
 ): Promise<void> {
   if (fileIds.length === 0) return;
-  if (fileIds.length > config.files.maxPerRequest) {
-    throw err.badRequest(`Не более ${config.files.maxPerRequest} файлов`);
-  }
-  const rows = await tx
-    .select()
-    .from(files)
-    .where(and(inArray(files.id, fileIds), eq(files.uploadedBy, uploaderId), isNull(files.deletedAt)));
-  if (rows.length !== fileIds.length) {
-    throw err.badRequest('Некоторые файлы недоступны или не принадлежат вам');
-  }
-  const already = await tx
-    .select({ fileId: requestFiles.fileId })
-    .from(requestFiles)
-    .where(inArray(requestFiles.fileId, fileIds));
-  if (already.length > 0) throw err.badRequest('Файл уже прикреплён к заявке');
+  await assertFilesAttachable(tx, fileIds, uploaderId);
   if (enforceTotal) {
     const [c] = await tx
       .select({ c: count() })
       .from(requestFiles)
       .where(eq(requestFiles.requestId, requestId));
-    if (Number(c!.c) + fileIds.length > config.files.maxPerRequest) {
-      throw err.badRequest(`Не более ${config.files.maxPerRequest} файлов на заявку`);
-    }
+    assertTotalWithinLimit(Number(c!.c), fileIds.length);
   }
   await tx.insert(requestFiles).values(fileIds.map((fileId) => ({ requestId, fileId })));
-  await tx.update(files).set({ status: 'active' }).where(inArray(files.id, fileIds));
+  await markFilesActive(tx, fileIds);
 }
 
 async function unlinkFiles(tx: Tx, requestId: string, fileIds: string[]): Promise<void> {
@@ -264,20 +250,7 @@ async function unlinkFiles(tx: Tx, requestId: string, fileIds: string[]): Promis
   await tx
     .delete(requestFiles)
     .where(and(eq(requestFiles.requestId, requestId), inArray(requestFiles.fileId, ids)));
-  await tx.update(files).set({ status: 'deleted', deletedAt: new Date() }).where(inArray(files.id, ids));
-  for (const l of linked) {
-    await tx.insert(jobs).values({
-      type: JOB_DELETE_S3_OBJECT,
-      payload: { objectKey: l.objectKey },
-      nextRunAt: new Date(Date.now() + S3_DELETE_DELAY_MS),
-    });
-  }
-}
-
-function assertShtabScope(p: Principal, objectId: string): void {
-  if (p.role === 'shtab' && objectId !== p.constructionObjectId) {
-    throw err.forbidden('Штаб работает только со своим объектом');
-  }
+  await scheduleFilesDeletion(tx, linked, false);
 }
 
 export default async function wasteRequestsRoutes(app: FastifyInstance): Promise<void> {
@@ -290,7 +263,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
     const showDeleted = q.includeDeleted && p.role === 'admin';
     const where = and(
       showDeleted ? undefined : isNull(wasteRequests.deletedAt),
-      requestVisibilityWhere(p),
+      requestVisibilityWhere(p, wasteRequests.objectId),
       q.status ? eq(wasteRequests.status, q.status) : undefined,
       q.objectId ? eq(wasteRequests.objectId, q.objectId) : undefined,
       q.containerTypeId ? eq(wasteRequests.containerTypeId, q.containerTypeId) : undefined,
@@ -338,7 +311,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
     const q = req.query;
     const where = and(
       isNull(wasteRequests.deletedAt),
-      requestVisibilityWhere(p),
+      requestVisibilityWhere(p, wasteRequests.objectId),
       inArray(wasteRequests.id, db.select({ id: presentContainers.id }).from(presentContainers)),
       q.objectId ? eq(wasteRequests.objectId, q.objectId) : undefined,
       searchCondition(q.search, [constructionObjects.name, constructionObjects.code]),
@@ -532,16 +505,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
           .innerJoin(files, eq(requestFiles.fileId, files.id))
           .where(eq(requestFiles.requestId, id));
         await tx.delete(wasteRequests).where(eq(wasteRequests.id, id));
-        if (linked.length > 0) {
-          await tx.delete(files).where(inArray(files.id, linked.map((l) => l.id)));
-          for (const l of linked) {
-            await tx.insert(jobs).values({
-              type: JOB_DELETE_S3_OBJECT,
-              payload: { objectKey: l.objectKey },
-              nextRunAt: new Date(),
-            });
-          }
-        }
+        await hardDeleteFiles(tx, linked);
       });
       await writeAudit({
         actorUserId: p.id,

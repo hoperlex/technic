@@ -5,10 +5,18 @@ import { and, eq, isNull } from 'drizzle-orm';
 import { createUploadSessionSchema, type FileDto } from '@technic/contracts';
 import { config } from '../config';
 import { db } from '../db/client';
-import { files, type FileRow, requestFiles, wasteRequests } from '../db/schema';
+import {
+  files,
+  type FileRow,
+  requestFiles,
+  vehicleRequestFiles,
+  vehicleRequests,
+  wasteRequests,
+} from '../db/schema';
 import { err } from '../lib/errors';
 import { requirePrincipal } from '../auth/plugin';
 import { requestVisibilityWhere } from '../lib/access';
+import { isFileLinked } from '../services/request-files';
 import type { Principal } from '../auth/principal';
 import { buildObjectKey, deleteObject, headObject, presignGet, presignPut } from '../lib/s3';
 import { enqueueJob, JOB_DELETE_S3_OBJECT } from '../lib/jobs';
@@ -42,13 +50,33 @@ export async function softDeleteFile(fileId: string, objectKey: string): Promise
 
 async function canAccessFile(p: Principal, fileId: string, uploadedBy: string | null): Promise<boolean> {
   if (uploadedBy && uploadedBy === p.id) return true;
-  const rows = await db
+  // Доступ через связанную не удалённую заявку любого модуля, видимую пользователю.
+  const waste = await db
     .select({ id: wasteRequests.id })
     .from(requestFiles)
     .innerJoin(wasteRequests, eq(requestFiles.requestId, wasteRequests.id))
-    .where(and(eq(requestFiles.fileId, fileId), isNull(wasteRequests.deletedAt), requestVisibilityWhere(p)))
+    .where(
+      and(
+        eq(requestFiles.fileId, fileId),
+        isNull(wasteRequests.deletedAt),
+        requestVisibilityWhere(p, wasteRequests.objectId),
+      ),
+    )
     .limit(1);
-  return rows.length > 0;
+  if (waste.length > 0) return true;
+  const vehicle = await db
+    .select({ id: vehicleRequests.id })
+    .from(vehicleRequestFiles)
+    .innerJoin(vehicleRequests, eq(vehicleRequestFiles.vehicleRequestId, vehicleRequests.id))
+    .where(
+      and(
+        eq(vehicleRequestFiles.fileId, fileId),
+        isNull(vehicleRequests.deletedAt),
+        requestVisibilityWhere(p, vehicleRequests.objectId),
+      ),
+    )
+    .limit(1);
+  return vehicle.length > 0;
 }
 
 export default async function filesRoutes(app: FastifyInstance): Promise<void> {
@@ -122,6 +150,10 @@ export default async function filesRoutes(app: FastifyInstance): Promise<void> {
       p.role === 'dispatcher' ||
       file.uploadedBy === p.id;
     if (!canManage) throw err.forbidden();
+    // Прикреплённый к заявке файл удаляется только через редактирование заявки.
+    if (await isFileLinked(file.id)) {
+      throw err.conflict('Файл прикреплён к заявке — удалите его через редактирование заявки');
+    }
     await softDeleteFile(file.id, file.objectKey);
     return { ok: true };
   });
