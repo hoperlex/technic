@@ -14,6 +14,11 @@ SQL-first миграции: `apps/api/drizzle/*.sql`, применяются `ap
 - **waste_requests** — заявки: FK `object_id`, `container_type_id`; `request_type` (`onetime|weekly`), `delivery_at` (UTC), `comment`, `status` (`new|confirmed|done|cancelled`), `version` (optimistic lock), `created_by/updated_by/deleted_by`, `deleted_at` (soft-delete).
 - **request_files** — связь заявка↔файл (PK `(request_id, file_id)`, каскад).
 - **request_status_history** — история смены статусов.
+- **vehicle_requests** — заявки на технику (модуль «Заказ ТС», миграция `0012`): `num` (identity, отображается «ТС-000123»), `request_type` (`special_equipment|freight_transport`, enum `vehicle_request_type`), FK `object_id`, `vehicle_type_id` (конечный подтип классификатора), `status` (общий enum `request_status`), `comment`, `version` (optimistic lock), `created_by/updated_by/deleted_by`, `deleted_at` (soft-delete). Целостность «ровно одна деталь нужного типа» — сервисной транзакцией (constraint-триггер в бэклоге).
+- **special_equipment_request_details** — детали заказа спецтехники (PK=FK `request_id`, каскад): `date_from`, `date_to` (date-only; CHECK `date_to >= date_from`).
+- **freight_transport_request_details** — детали грузоперевозки (PK=FK `request_id`, каскад): `scheduled_at` (timestamptz), `volume_m3`/`weight_tons` (`numeric(12,3)`; CHECK >0 и хотя бы одно задано), `loading_location`/`unloading_location` (CHECK not-blank).
+- **vehicle_request_files** — связь заявка ТС↔файл (PK `(vehicle_request_id, file_id)`, каскад; UNIQUE `file_id` — файл не в двух заявках ТС; кросс-модульную уникальность с «Мусором» держит общий файловый сервис `services/request-files.ts`).
+- **vehicle_request_status_history** — история статусов заявки ТС (+ `comment`).
 - **files** — метаданные файлов в S3: `object_key` (unique), `filename`, `content_type`, `size`, `status` (`pending|active|deleted`), `scan_status` (резерв под ClamAV, этап 2), `uploaded_by`, `deleted_at`.
 - **jobs** — outbox фоновых задач (§16): `type`, `payload`, `status`, `attempts/max_attempts`, `next_run_at`, `locked_by/locked_until`, атомарный захват `FOR UPDATE SKIP LOCKED`.
 - **audit_log** — append-only аудит критичных действий (§22).
