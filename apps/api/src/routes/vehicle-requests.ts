@@ -2,7 +2,6 @@ import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { and, asc, count, eq, gte, inArray, isNull, lte, sql, type SQL } from 'drizzle-orm';
-import { alias } from 'drizzle-orm/pg-core';
 import {
   canTransitionStatus,
   changeVehicleRequestStatusSchema,
@@ -50,8 +49,6 @@ const KIND_BY_REQUEST_TYPE: Record<VehicleRequestType, string> = {
   freight_transport: 'freight_transport',
 };
 
-const parentType = alias(vehicleTypes, 'parent_type');
-
 const requestSelect = {
   id: vehicleRequests.id,
   num: vehicleRequests.num,
@@ -62,11 +59,6 @@ const requestSelect = {
   // Плоская модель (ADR 0005): тип ТС — напрямую vehicle_type_id.
   vehicleTypeId: vehicleRequests.vehicleTypeId,
   vehicleTypeName: vehicleTypes.name,
-  // Переходные поля (Фаза 1) для старого фронта: подтип = та же колонка, родитель — через self-join.
-  vehicleSubtypeId: vehicleRequests.vehicleTypeId,
-  vehicleSubtypeName: vehicleTypes.name,
-  parentTypeId: vehicleTypes.parentId,
-  parentTypeName: parentType.name,
   status: vehicleRequests.status,
   comment: vehicleRequests.comment,
   version: vehicleRequests.version,
@@ -90,7 +82,6 @@ function baseQuery() {
     .from(vehicleRequests)
     .innerJoin(constructionObjects, eq(vehicleRequests.objectId, constructionObjects.id))
     .innerJoin(vehicleTypes, eq(vehicleRequests.vehicleTypeId, vehicleTypes.id))
-    .leftJoin(parentType, eq(vehicleTypes.parentId, parentType.id))
     .innerJoin(users, eq(vehicleRequests.createdBy, users.id))
     .leftJoin(
       specialEquipmentRequestDetails,
@@ -157,12 +148,6 @@ function toDto(r: RequestRow, fileList: FileDto[]): VehicleRequestDto {
     objectName: r.objectName,
     vehicleTypeId: r.vehicleTypeId,
     vehicleTypeName: r.vehicleTypeName,
-    // Переходные поля (Фаза 1) для старого фронта. Плоский тип: parentId=null → показываем сам тип,
-    // чтобы старые колонки «Тип/Подтип ТС» остались осмысленными.
-    parentTypeId: r.parentTypeId ?? r.vehicleTypeId,
-    parentTypeName: r.parentTypeName ?? r.vehicleTypeName,
-    vehicleSubtypeId: r.vehicleSubtypeId,
-    vehicleSubtypeName: r.vehicleSubtypeName,
     status: r.status,
     comment: r.comment,
     files: fileList,
@@ -209,37 +194,8 @@ async function assertObjectActive(tx: Tx, objectId: string): Promise<void> {
 }
 
 /**
- * Проверяет, что выбран конечный выбираемый активный подтип нужного вида (§10).
- * Родительский тип, неактивный/невыбираемый подтип, чужой вид — отклоняются.
- */
-async function resolveVehicleSubtype(
-  tx: Tx,
-  subtypeId: string,
-  requestType: VehicleRequestType,
-): Promise<void> {
-  const [row] = await tx
-    .select({
-      parentId: vehicleTypes.parentId,
-      isActive: vehicleTypes.isActive,
-      isSelectable: vehicleTypes.isSelectable,
-      kindCode: vehicleKinds.code,
-    })
-    .from(vehicleTypes)
-    .innerJoin(vehicleKinds, eq(vehicleTypes.kindId, vehicleKinds.id))
-    .where(eq(vehicleTypes.id, subtypeId));
-  if (!row) throw err.badRequest('Подтип ТС не найден');
-  if (row.parentId === null || !row.isSelectable) {
-    throw err.unprocessable('Выберите конечный подтип ТС, а не тип');
-  }
-  if (!row.isActive) throw err.badRequest('Подтип ТС неактивен');
-  if (row.kindCode !== KIND_BY_REQUEST_TYPE[requestType]) {
-    throw err.unprocessable('Подтип ТС не относится к выбранному виду заявки');
-  }
-}
-
-/**
- * Плоская модель (ADR 0005): выбран активный плоский тип (parent_id NULL, is_selectable),
- * активного вида, совпадающего с типом заявки. Иначе — отказ.
+ * Плоская модель (ADR 0005): выбран активный тип ТС активного вида, совпадающего с типом
+ * заявки. Иначе — отказ.
  */
 async function resolveVehicleType(
   tx: Tx,
@@ -248,8 +204,6 @@ async function resolveVehicleType(
 ): Promise<void> {
   const [row] = await tx
     .select({
-      parentId: vehicleTypes.parentId,
-      isSelectable: vehicleTypes.isSelectable,
       isActive: vehicleTypes.isActive,
       kindCode: vehicleKinds.code,
       kindActive: vehicleKinds.isActive,
@@ -258,9 +212,6 @@ async function resolveVehicleType(
     .innerJoin(vehicleKinds, eq(vehicleTypes.kindId, vehicleKinds.id))
     .where(eq(vehicleTypes.id, typeId));
   if (!row) throw err.badRequest('Тип ТС не найден');
-  if (row.parentId !== null || !row.isSelectable) {
-    throw err.unprocessable('Выберите плоский тип ТС');
-  }
   if (!row.isActive) throw err.badRequest('Тип ТС неактивен');
   if (!row.kindActive) throw err.badRequest('Вид ТС неактивен');
   if (row.kindCode !== KIND_BY_REQUEST_TYPE[requestType]) {
@@ -359,10 +310,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       requestVisibilityWhere(p, vehicleRequests.objectId),
       q.status ? eq(vehicleRequests.status, q.status) : undefined,
       q.objectId ? eq(vehicleRequests.objectId, q.objectId) : undefined,
-      // Плоский фильтр (Фаза 1) + старые подтип/родитель.
       q.vehicleTypeId ? eq(vehicleRequests.vehicleTypeId, q.vehicleTypeId) : undefined,
-      q.vehicleSubtypeId ? eq(vehicleRequests.vehicleTypeId, q.vehicleSubtypeId) : undefined,
-      q.parentTypeId ? eq(vehicleTypes.parentId, q.parentTypeId) : undefined,
       q.num ? eq(vehicleRequests.num, q.num) : undefined,
       ...dateFilters(q.requestType, q.dateFrom, q.dateTo),
       searchCondition(q.search, [
@@ -390,7 +338,6 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
     const [totalRow] = await db
       .select({ c: count() })
       .from(vehicleRequests)
-      .innerJoin(vehicleTypes, eq(vehicleRequests.vehicleTypeId, vehicleTypes.id))
       .innerJoin(constructionObjects, eq(vehicleRequests.objectId, constructionObjects.id))
       .leftJoin(
         specialEquipmentRequestDetails,
@@ -426,21 +373,15 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
     const body = req.body;
     assertShtabScope(p, body.objectId);
 
-    // Переходный период (ADR 0005): новый клиент шлёт vehicleTypeId (плоский тип), старый —
-    // vehicleSubtypeId (подтип). Контракт гарантирует ровно одно; оба пишутся в vehicle_type_id.
-    const typeId = body.vehicleTypeId ?? body.vehicleSubtypeId;
-    if (!typeId) throw err.badRequest('Не указан тип ТС');
-
     const createdId = await db.transaction(async (tx) => {
       await assertObjectActive(tx, body.objectId);
-      if (body.vehicleTypeId) await resolveVehicleType(tx, body.vehicleTypeId, body.requestType);
-      else await resolveVehicleSubtype(tx, typeId, body.requestType);
+      await resolveVehicleType(tx, body.vehicleTypeId, body.requestType);
       const [row] = await tx
         .insert(vehicleRequests)
         .values({
           requestType: body.requestType,
           objectId: body.objectId,
-          vehicleTypeId: typeId,
+          vehicleTypeId: body.vehicleTypeId,
           status: 'new',
           comment: body.comment,
           createdBy: p.id,
@@ -481,7 +422,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       metadata: {
         requestType: body.requestType,
         objectId: body.objectId,
-        vehicleTypeId: typeId,
+        vehicleTypeId: body.vehicleTypeId,
       },
     });
     reply.code(201);
@@ -507,8 +448,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       }
 
       const objectId = body.objectId ?? existing.objectId;
-      // Тип ТС меняем новым vehicleTypeId (плоский) или старым vehicleSubtypeId (переходный период).
-      const nextTypeId = body.vehicleTypeId ?? body.vehicleSubtypeId ?? existing.vehicleTypeId;
+      const nextTypeId = body.vehicleTypeId ?? existing.vehicleTypeId;
 
       await db.transaction(async (tx) => {
         if (body.objectId && body.objectId !== existing.objectId) {
@@ -517,8 +457,6 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         }
         if (body.vehicleTypeId && body.vehicleTypeId !== existing.vehicleTypeId) {
           await resolveVehicleType(tx, body.vehicleTypeId, existing.requestType);
-        } else if (body.vehicleSubtypeId && body.vehicleSubtypeId !== existing.vehicleTypeId) {
-          await resolveVehicleSubtype(tx, body.vehicleSubtypeId, existing.requestType);
         }
 
         const [updated] = await tx

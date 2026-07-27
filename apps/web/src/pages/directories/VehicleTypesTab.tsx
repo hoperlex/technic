@@ -29,7 +29,6 @@ interface VtParams {
   pageSize: number;
   sortBy: string;
   sortOrder: 'asc' | 'desc';
-  view: 'flat';
   search?: string;
   kindId?: string;
   isActive?: string;
@@ -58,7 +57,6 @@ export function VehicleTypesTab() {
     pageSize: 50,
     sortBy: 'sortOrder',
     sortOrder: 'asc',
-    view: 'flat',
   });
   const patchParams = (patch: Partial<VtParams>) => setParams((p) => ({ ...p, ...patch, page: 1 }));
 
@@ -125,7 +123,6 @@ export function VehicleTypesTab() {
       return;
     }
     const create: CreateVehicleTypeInput = {
-      level: 'flat',
       kindId: v.kindId!,
       code: v.code!,
       name: v.name!,

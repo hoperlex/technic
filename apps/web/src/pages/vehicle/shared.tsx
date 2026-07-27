@@ -198,7 +198,6 @@ export function VehicleTypeSelect({ kindCode }: { kindCode: string }) {
     queryKey: ['vehicle-types', 'flat', kindId],
     queryFn: () =>
       vehicleTypesApi.list({
-        view: 'flat',
         kindId,
         isActive: 'true',
         pageSize: 500,

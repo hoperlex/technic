@@ -65,16 +65,12 @@ const amountSchema = z
   );
 
 // ── Создание (discriminatedUnion по requestType, strict) ──
-// Переходный период к плоскому классификатору (ADR 0005, Фаза 1): новый клиент шлёт
-// `vehicleTypeId` (плоский тип), старый — `vehicleSubtypeId` (подтип). Ровно одно из полей
-// обязательно — проверяет superRefine у createVehicleRequestSchema. Оба записываются в
-// vehicle_requests.vehicle_type_id; backend валидирует соответствующей resolve-функцией.
+// Заявка ссылается на плоский тип ТС (ADR 0005): vehicleTypeId.
 export const createSpecialEquipmentRequestSchema = z
   .object({
     requestType: z.literal('special_equipment'),
     objectId: uuidSchema,
-    vehicleTypeId: uuidSchema.optional(),
-    vehicleSubtypeId: uuidSchema.optional(),
+    vehicleTypeId: uuidSchema,
     dateFrom: dateOnlySchema,
     dateTo: dateOnlySchema.nullable().optional(),
     comment: commentSchema.optional().default(''),
@@ -86,8 +82,7 @@ export const createFreightTransportRequestSchema = z
   .object({
     requestType: z.literal('freight_transport'),
     objectId: uuidSchema,
-    vehicleTypeId: uuidSchema.optional(),
-    vehicleSubtypeId: uuidSchema.optional(),
+    vehicleTypeId: uuidSchema,
     scheduledAt: scheduledAtSchema,
     volumeM3: amountSchema.nullable().optional(),
     weightTons: amountSchema.nullable().optional(),
@@ -104,14 +99,6 @@ export const createVehicleRequestSchema = z
     createFreightTransportRequestSchema,
   ])
   .superRefine((v, ctx) => {
-    // Ровно одно из vehicleTypeId / vehicleSubtypeId (переходный период, ADR 0005).
-    if (!v.vehicleTypeId === !v.vehicleSubtypeId) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['vehicleTypeId'],
-        message: 'Укажите тип ТС (ровно одно из полей: vehicleTypeId или vehicleSubtypeId)',
-      });
-    }
     if (v.requestType === 'special_equipment') {
       if (v.dateTo && v.dateTo < v.dateFrom) {
         ctx.addIssue({
@@ -140,7 +127,6 @@ export const updateSpecialEquipmentRequestSchema = z
     version: z.number().int().nonnegative(),
     objectId: uuidSchema.optional(),
     vehicleTypeId: uuidSchema.optional(),
-    vehicleSubtypeId: uuidSchema.optional(),
     dateFrom: dateOnlySchema.optional(),
     dateTo: dateOnlySchema.nullable().optional(),
     comment: commentSchema.optional(),
@@ -155,7 +141,6 @@ export const updateFreightTransportRequestSchema = z
     version: z.number().int().nonnegative(),
     objectId: uuidSchema.optional(),
     vehicleTypeId: uuidSchema.optional(),
-    vehicleSubtypeId: uuidSchema.optional(),
     scheduledAt: scheduledAtSchema.optional(),
     volumeM3: amountSchema.nullable().optional(),
     weightTons: amountSchema.nullable().optional(),
@@ -167,21 +152,10 @@ export const updateFreightTransportRequestSchema = z
   })
   .strict();
 
-export const updateVehicleRequestSchema = z
-  .discriminatedUnion('requestType', [
-    updateSpecialEquipmentRequestSchema,
-    updateFreightTransportRequestSchema,
-  ])
-  .superRefine((v, ctx) => {
-    // Тип ТС меняем максимум одним полем (переходный период, ADR 0005).
-    if (v.vehicleTypeId && v.vehicleSubtypeId) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['vehicleTypeId'],
-        message: 'Укажите только одно поле типа ТС (vehicleTypeId или vehicleSubtypeId)',
-      });
-    }
-  });
+export const updateVehicleRequestSchema = z.discriminatedUnion('requestType', [
+  updateSpecialEquipmentRequestSchema,
+  updateFreightTransportRequestSchema,
+]);
 export type UpdateVehicleRequestInput = z.infer<typeof updateVehicleRequestSchema>;
 
 export const changeVehicleRequestStatusSchema = z
@@ -200,10 +174,7 @@ export const vehicleRequestListQuerySchema = baseListQuery(VEHICLE_REQUEST_SORT_
   requestType: vehicleRequestTypeSchema,
   status: requestStatusSchema.optional(),
   objectId: uuidSchema.optional(),
-  // Новый плоский фильтр (Фаза 1) + старые подтип/родитель — совместимость на переходный период.
   vehicleTypeId: uuidSchema.optional(),
-  vehicleSubtypeId: uuidSchema.optional(),
-  parentTypeId: uuidSchema.optional(),
   num: z.coerce.number().int().positive().optional(),
   // Календарный диапазон (YYYY-MM-DD): для спецтехники — пересечение периодов,
   // для грузоперевозки — день в Europe/Moscow (интерпретирует backend).
@@ -236,15 +207,6 @@ export interface VehicleRequestBaseDto {
   /** Тип ТС (физически vehicle_requests.vehicle_type_id). Плоская модель (ADR 0005). */
   vehicleTypeId: string;
   vehicleTypeName: string;
-  /**
-   * Поля переходного периода (Фаза 1) для старого фронта. Для плоского типа дублируют
-   * vehicleTypeId/Name (parentType* — тоже, чтобы старая колонка «Тип ТС» осталась осмысленной).
-   * Удаляются в фазе 3.
-   */
-  parentTypeId: string;
-  parentTypeName: string;
-  vehicleSubtypeId: string;
-  vehicleSubtypeName: string;
 
   status: RequestStatus;
   comment: string;

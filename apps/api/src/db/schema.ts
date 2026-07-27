@@ -5,7 +5,6 @@ import {
   check,
   customType,
   date,
-  foreignKey,
   index,
   integer,
   jsonb,
@@ -16,7 +15,6 @@ import {
   primaryKey,
   text,
   timestamp,
-  unique,
   uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
@@ -68,8 +66,7 @@ export const constructionObjects = pgTable(
   },
   (t) => ({
     codeUnique: uniqueIndex('construction_objects_code_unique').on(t.code),
-    nameTrgm: index('construction_objects_name_trgm')
-      .using('gin', sql`${t.name} gin_trgm_ops`),
+    nameTrgm: index('construction_objects_name_trgm').using('gin', sql`${t.name} gin_trgm_ops`),
   }),
 );
 
@@ -110,9 +107,8 @@ export const vehicleKinds = pgTable(
   }),
 );
 
-// ── Классификатор ТС: типы/подтипы (иерархия в одной таблице) ──
-// parent_id — родитель (NULL у верхнего типа). Составной FK (parent_id, kind_id)
-// гарантирует, что родитель и дочерний тип относятся к одному виду.
+// ── Классификатор ТС: плоский справочник типов (ADR 0005) ──
+// Один уровень: тип ссылается на вид (kind_id). Иерархия/подтипы/source-mappings сняты (0014).
 export const vehicleTypes = pgTable(
   'vehicle_types',
   {
@@ -120,11 +116,9 @@ export const vehicleTypes = pgTable(
     kindId: uuid('kind_id')
       .notNull()
       .references(() => vehicleKinds.id, { onDelete: 'restrict' }),
-    parentId: uuid('parent_id'),
     code: text('code').notNull(),
     name: text('name').notNull(),
     description: text('description').notNull().default(''),
-    isSelectable: boolean('is_selectable').notNull().default(true),
     sortOrder: integer('sort_order').notNull().default(100),
     isActive: boolean('is_active').notNull().default(true),
     createdAt: createdAt(),
@@ -132,21 +126,6 @@ export const vehicleTypes = pgTable(
   },
   (t) => ({
     codeUnique: uniqueIndex('vehicle_types_code_unique').on(t.code),
-    idKindUnique: unique('vehicle_types_id_kind_unique').on(t.id, t.kindId),
-    parentSameKind: foreignKey({
-      columns: [t.parentId, t.kindId],
-      foreignColumns: [t.id, t.kindId],
-      name: 'vehicle_types_parent_same_kind',
-    }).onDelete('restrict'),
-    noSelfParent: check(
-      'vehicle_types_no_self_parent',
-      sql`${t.parentId} is null or ${t.parentId} <> ${t.id}`,
-    ),
-    // Тип (parent_id IS NULL) — невыбираемый; подтип — выбираемый (этап 2.1).
-    levelSelectable: check(
-      'vehicle_types_level_selectable_check',
-      sql`(${t.parentId} is null and ${t.isSelectable} = false) or (${t.parentId} is not null and ${t.isSelectable} = true)`,
-    ),
     codeFormat: check('vehicle_types_code_format_check', sql`${t.code} ~ '^[a-z][a-z0-9_]*$'`),
     codeNotBlank: check('vehicle_types_code_not_blank', sql`btrim(${t.code}) <> ''`),
     nameNotBlank: check('vehicle_types_name_not_blank', sql`btrim(${t.name}) <> ''`),
@@ -155,42 +134,6 @@ export const vehicleTypes = pgTable(
       t.isActive,
       t.sortOrder,
     ),
-    parentIdx: index('vehicle_types_parent_idx').on(t.parentId),
-  }),
-);
-
-// ── Сопоставление исходных наименований «Тип ТС» → тип/подтип классификатора ──
-export const vehicleTypeSourceMappings = pgTable(
-  'vehicle_type_source_mappings',
-  {
-    id: uuid('id').primaryKey().defaultRandom(),
-    sourceCode: text('source_code').notNull(),
-    sourceName: text('source_name').notNull(),
-    normalizedSourceName: text('normalized_source_name').notNull(),
-    vehicleTypeId: uuid('vehicle_type_id')
-      .notNull()
-      .references(() => vehicleTypes.id, { onDelete: 'restrict' }),
-    resolutionStrategy: text('resolution_strategy').notNull(),
-    requiresInstanceResolution: boolean('requires_instance_resolution').notNull().default(false),
-    comment: text('comment').notNull().default(''),
-    isActive: boolean('is_active').notNull().default(true),
-    createdAt: createdAt(),
-    updatedAt: updatedAt(),
-  },
-  (t) => ({
-    sourceUnique: uniqueIndex('vehicle_type_source_mappings_source_unique').on(
-      t.sourceCode,
-      t.normalizedSourceName,
-    ),
-    strategyCheck: check(
-      'vehicle_type_source_mappings_strategy_check',
-      sql`${t.resolutionStrategy} in ('direct', 'by_model', 'by_registry')`,
-    ),
-    sourceNameNotBlank: check(
-      'vehicle_type_source_mappings_source_name_not_blank',
-      sql`btrim(${t.sourceName}) <> ''`,
-    ),
-    typeIdx: index('vehicle_type_source_mappings_type_idx').on(t.vehicleTypeId),
   }),
 );
 
@@ -203,10 +146,9 @@ export const users = pgTable(
     fullName: text('full_name').notNull(),
     passwordHash: text('password_hash').notNull(),
     role: roleEnum('role'), // назначается администратором; до активации может быть null
-    constructionObjectId: uuid('construction_object_id').references(
-      () => constructionObjects.id,
-      { onDelete: 'set null' },
-    ),
+    constructionObjectId: uuid('construction_object_id').references(() => constructionObjects.id, {
+      onDelete: 'set null',
+    }),
     isActive: boolean('is_active').notNull().default(false),
     mustChangePassword: boolean('must_change_password').notNull().default(false),
     authVersion: integer('auth_version').notNull().default(0),
@@ -492,7 +434,9 @@ export const jobs = pgTable(
   {
     id: uuid('id').primaryKey().defaultRandom(),
     type: text('type').notNull(),
-    payload: jsonb('payload').notNull().default(sql`'{}'::jsonb`),
+    payload: jsonb('payload')
+      .notNull()
+      .default(sql`'{}'::jsonb`),
     status: jobStatusEnum('status').notNull().default('pending'),
     attempts: integer('attempts').notNull().default(0),
     maxAttempts: integer('max_attempts').notNull().default(5),
@@ -515,7 +459,9 @@ export const auditLog = pgTable('audit_log', {
   action: text('action').notNull(),
   entityType: text('entity_type'),
   entityId: text('entity_id'),
-  metadata: jsonb('metadata').notNull().default(sql`'{}'::jsonb`),
+  metadata: jsonb('metadata')
+    .notNull()
+    .default(sql`'{}'::jsonb`),
   createdAt: createdAt(),
 });
 
@@ -526,10 +472,7 @@ export type ObjectRow = typeof constructionObjects.$inferSelect;
 export type ContainerTypeRow = typeof containerTypes.$inferSelect;
 export type VehicleKindRow = typeof vehicleKinds.$inferSelect;
 export type VehicleTypeRow = typeof vehicleTypes.$inferSelect;
-export type VehicleTypeSourceMappingRow = typeof vehicleTypeSourceMappings.$inferSelect;
 export type VehicleRequestRow = typeof vehicleRequests.$inferSelect;
-export type SpecialEquipmentRequestDetailsRow =
-  typeof specialEquipmentRequestDetails.$inferSelect;
-export type FreightTransportRequestDetailsRow =
-  typeof freightTransportRequestDetails.$inferSelect;
+export type SpecialEquipmentRequestDetailsRow = typeof specialEquipmentRequestDetails.$inferSelect;
+export type FreightTransportRequestDetailsRow = typeof freightTransportRequestDetails.$inferSelect;
 export type JobRow = typeof jobs.$inferSelect;

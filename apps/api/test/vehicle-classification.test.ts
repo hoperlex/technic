@@ -2,14 +2,12 @@ import { describe, expect, it } from 'vitest';
 import {
   createVehicleKindSchema,
   createVehicleTypeSchema,
-  updateParentTypeSchema,
-  updateSubtypeSchema,
+  updateVehicleTypeSchema,
   vehicleTypeCodeSchema,
   vehicleTypeListQuerySchema,
 } from '@technic/contracts';
 
 const KIND_ID = '11111111-1111-4111-8111-111111111111';
-const PARENT_ID = '22222222-2222-4222-8222-222222222222';
 
 describe('vehicle_kinds contracts', () => {
   it('дефолты и парсинг', () => {
@@ -24,97 +22,37 @@ describe('vehicle_kinds contracts', () => {
   });
 });
 
-describe('vehicle_types: создание (discriminatedUnion по level)', () => {
-  it('тип создаётся без родителя, с дефолтами', () => {
+describe('vehicle_types: создание (плоская модель, ADR 0005)', () => {
+  it('тип создаётся с дефолтами', () => {
     const t = createVehicleTypeSchema.parse({
-      level: 'type',
       kindId: KIND_ID,
-      code: 'cranes',
-      name: 'Краны',
+      code: 'truck_cranes',
+      name: 'Автокраны',
     });
-    expect(t.level).toBe('type');
-    if (t.level !== 'type') throw new Error('unreachable');
     expect(t.kindId).toBe(KIND_ID);
     expect(t.description).toBe('');
     expect(t.sortOrder).toBe(100);
+    expect(t.isActive).toBe(true);
   });
 
-  it('тип НЕ принимает parentId/isSelectable/isActive (strict)', () => {
+  it('kindId обязателен', () => {
     expect(() =>
-      createVehicleTypeSchema.parse({
-        level: 'type',
-        kindId: KIND_ID,
-        code: 'cranes',
-        name: 'Краны',
-        parentId: PARENT_ID,
-      }),
-    ).toThrow();
-    expect(() =>
-      createVehicleTypeSchema.parse({
-        level: 'type',
-        kindId: KIND_ID,
-        code: 'cranes',
-        name: 'Краны',
-        isSelectable: true,
-      }),
-    ).toThrow();
-    expect(() =>
-      createVehicleTypeSchema.parse({
-        level: 'type',
-        kindId: KIND_ID,
-        code: 'cranes',
-        name: 'Краны',
-        isActive: true,
-      }),
+      createVehicleTypeSchema.parse({ code: 'truck_cranes', name: 'Автокраны' }),
     ).toThrow();
   });
 
-  it('подтип требует parentId', () => {
-    expect(() =>
-      createVehicleTypeSchema.parse({ level: 'subtype', code: 'truck_crane', name: 'Автокран' }),
-    ).toThrow();
-  });
-
-  it('подтип НЕ принимает kindId/isSelectable (strict), но принимает isActive', () => {
-    expect(() =>
-      createVehicleTypeSchema.parse({
-        level: 'subtype',
-        parentId: PARENT_ID,
-        kindId: KIND_ID,
-        code: 'truck_crane',
-        name: 'Автокран',
-      }),
-    ).toThrow();
-    expect(() =>
-      createVehicleTypeSchema.parse({
-        level: 'subtype',
-        parentId: PARENT_ID,
-        code: 'truck_crane',
-        name: 'Автокран',
-        isSelectable: true,
-      }),
-    ).toThrow();
-    const ok = createVehicleTypeSchema.parse({
-      level: 'subtype',
-      parentId: PARENT_ID,
-      code: 'truck_crane',
-      name: 'Автокран',
-      isActive: false,
-    });
-    if (ok.level !== 'subtype') throw new Error('unreachable');
-    expect(ok.isActive).toBe(false);
-  });
-
-  it('требует level (без него union не проходит)', () => {
-    expect(() =>
-      createVehicleTypeSchema.parse({ kindId: KIND_ID, code: 'cranes', name: 'Краны' }),
-    ).toThrow();
+  it('структурные/чужие поля отклоняются (strict)', () => {
+    for (const bad of [{ parentId: KIND_ID }, { level: 'flat' }, { isSelectable: true }]) {
+      expect(() =>
+        createVehicleTypeSchema.parse({ kindId: KIND_ID, code: 'x', name: 'X', ...bad }),
+      ).toThrow();
+    }
   });
 });
 
 describe('vehicle_types: код (^[a-z][a-z0-9_]*$)', () => {
   it('валидные коды', () => {
-    for (const c of ['cranes', 'truck_crane', 'light_kmu_truck', 'a1']) {
+    for (const c of ['truck_cranes', 'dump_trucks', 'passenger_cars', 'a1']) {
       expect(vehicleTypeCodeSchema.parse(c)).toBe(c);
     }
   });
@@ -126,33 +64,27 @@ describe('vehicle_types: код (^[a-z][a-z0-9_]*$)', () => {
 });
 
 describe('vehicle_types: обновление (strict, без структурных полей)', () => {
-  it('updateParentTypeSchema принимает только name/description/sortOrder', () => {
-    const ok = updateParentTypeSchema.parse({ name: 'Краны 2', sortOrder: 15 });
-    expect(ok.name).toBe('Краны 2');
-    for (const bad of [{ code: 'x' }, { kindId: KIND_ID }, { parentId: PARENT_ID }, { isActive: true }, { isSelectable: false }, { level: 'type' }]) {
-      expect(() => updateParentTypeSchema.parse(bad)).toThrow();
-    }
-  });
-
-  it('updateSubtypeSchema принимает name/description/sortOrder/isActive, но не структурные', () => {
-    const ok = updateSubtypeSchema.parse({ name: 'Автокран 2', isActive: false });
+  it('принимает name/description/sortOrder/isActive', () => {
+    const ok = updateVehicleTypeSchema.parse({ name: 'Автокраны 2', isActive: false });
+    expect(ok.name).toBe('Автокраны 2');
     expect(ok.isActive).toBe(false);
-    for (const bad of [{ code: 'x' }, { kindId: KIND_ID }, { parentId: PARENT_ID }, { isSelectable: true }, { level: 'subtype' }]) {
-      expect(() => updateSubtypeSchema.parse(bad)).toThrow();
+  });
+  it('структурные ключи (code/kindId/parentId/level) отклоняются', () => {
+    for (const bad of [
+      { code: 'x' },
+      { kindId: KIND_ID },
+      { parentId: KIND_ID },
+      { level: 'flat' },
+    ]) {
+      expect(() => updateVehicleTypeSchema.parse(bad)).toThrow();
     }
   });
 });
 
 describe('vehicle_types: list-query', () => {
-  it('view по умолчанию list; level/isActive парсятся', () => {
-    const q = vehicleTypeListQuerySchema.parse({ level: 'subtype', isActive: 'false' });
-    expect(q.view).toBe('list');
-    expect(q.level).toBe('subtype');
+  it('kindId/isActive парсятся', () => {
+    const q = vehicleTypeListQuerySchema.parse({ kindId: KIND_ID, isActive: 'false' });
+    expect(q.kindId).toBe(KIND_ID);
     expect(q.isActive).toBe(false);
-  });
-  it('view=hierarchy принимается', () => {
-    const q = vehicleTypeListQuerySchema.parse({ view: 'hierarchy', pageSize: 500 });
-    expect(q.view).toBe('hierarchy');
-    expect(q.pageSize).toBe(500);
   });
 });

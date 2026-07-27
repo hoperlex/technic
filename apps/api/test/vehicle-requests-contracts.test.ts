@@ -9,19 +9,18 @@ import {
 } from '@technic/contracts';
 
 const OBJ = '11111111-1111-4111-8111-111111111111';
-const SUB = '22222222-2222-4222-8222-222222222222';
 const TYPE = '33333333-3333-4333-8333-333333333333';
 
 const special = {
   requestType: 'special_equipment' as const,
   objectId: OBJ,
-  vehicleSubtypeId: SUB,
+  vehicleTypeId: TYPE,
   dateFrom: '2026-07-25',
 };
 const freight = {
   requestType: 'freight_transport' as const,
   objectId: OBJ,
-  vehicleSubtypeId: SUB,
+  vehicleTypeId: TYPE,
   scheduledAt: '2026-07-25T14:30:00+03:00',
   volumeM3: 12.5,
   loadingLocation: 'Склад А',
@@ -31,7 +30,7 @@ const freight = {
 describe('vehicle-requests: создание — discriminator', () => {
   it('без requestType union не проходит', () => {
     expect(() =>
-      createVehicleRequestSchema.parse({ objectId: OBJ, vehicleSubtypeId: SUB }),
+      createVehicleRequestSchema.parse({ objectId: OBJ, vehicleTypeId: TYPE }),
     ).toThrow();
   });
 
@@ -51,32 +50,15 @@ describe('vehicle-requests: создание — discriminator', () => {
   });
 });
 
-describe('vehicle-requests: тип ТС — переходный период (ADR 0005, Фаза 1)', () => {
-  it('vehicleTypeId (плоский) — валидно, как синоним подтипа', () => {
-    const { vehicleSubtypeId: _s, ...noSub } = special;
-    const v = createVehicleRequestSchema.parse({ ...noSub, vehicleTypeId: TYPE });
-    if (v.requestType !== 'special_equipment') throw new Error('unreachable');
-    expect(v.vehicleTypeId).toBe(TYPE);
+describe('vehicle-requests: тип ТС (плоская модель, ADR 0005)', () => {
+  it('vehicleTypeId обязателен при создании', () => {
+    const { vehicleTypeId: _t, ...noType } = special;
+    expect(() => createVehicleRequestSchema.parse(noType)).toThrow();
   });
 
-  it('оба поля сразу — отклоняется', () => {
-    expect(() => createVehicleRequestSchema.parse({ ...special, vehicleTypeId: TYPE })).toThrow();
-  });
-
-  it('ни одного поля типа — отклоняется', () => {
-    const { vehicleSubtypeId: _s, ...noRef } = special;
-    expect(() => createVehicleRequestSchema.parse(noRef)).toThrow();
-  });
-
-  it('обновление: оба поля типа сразу — отклоняется', () => {
-    expect(() =>
-      updateVehicleRequestSchema.parse({
-        requestType: 'special_equipment',
-        version: 1,
-        vehicleTypeId: TYPE,
-        vehicleSubtypeId: SUB,
-      }),
-    ).toThrow();
+  it('устаревший vehicleSubtypeId отклоняется (strict)', () => {
+    const { vehicleTypeId: _t, ...noType } = special;
+    expect(() => createVehicleRequestSchema.parse({ ...noType, vehicleSubtypeId: TYPE })).toThrow();
   });
 });
 
