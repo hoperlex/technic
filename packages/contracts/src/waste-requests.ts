@@ -1,5 +1,10 @@
 import { z } from 'zod';
-import { MIN_WASTE_VOLUME_M3, requestStatusSchema, requestTypeSchema } from './enums';
+import {
+  MIN_WASTE_VOLUME_M3,
+  requestStatusSchema,
+  requestTypeSchema,
+  statusChangeRequiresReason,
+} from './enums';
 import type { RequestStatus, RequestType } from './enums';
 import { baseListQuery, uuidSchema } from './common';
 import type { FileDto } from './files';
@@ -12,6 +17,7 @@ export const WASTE_REQUEST_SORT_FIELDS = [
   'requestType',
   'deliveryAt',
   'status',
+  'operatorName',
   'createdAt',
 ] as const;
 
@@ -20,6 +26,8 @@ export const wasteRequestListQuerySchema = baseListQuery(WASTE_REQUEST_SORT_FIEL
   objectId: uuidSchema.optional(),
   containerTypeId: uuidSchema.optional(),
   requestType: requestTypeSchema.optional(),
+  /** Заявки, назначенные конкретному оператору вывоза (ADR 0010). */
+  operatorCounterpartyId: uuidSchema.optional(),
   // поиск по сквозному номеру заявки (точное совпадение)
   num: z.coerce.number().int().positive().optional(),
   deliveryFrom: z.coerce.date().optional(),
@@ -48,6 +56,8 @@ export const createWasteRequestSchema = z
     containerTypeId: uuidSchema.optional(),
     wasteTypeId: uuidSchema.optional(),
     volumeM3: volumeSchema.optional(),
+    /** Кто вывозит: контрагент с типом «Оператор». Можно назначить позже (ADR 0010). */
+    operatorCounterpartyId: uuidSchema.optional(),
     deliveryAt: z.coerce.date(),
     /**
      * Время доставки не задано: `deliveryAt` несёт только дату (00:00 МСК), а рабочее окно
@@ -110,6 +120,7 @@ export const updateWasteRequestSchema = z
     containerTypeId: uuidSchema.nullable().optional(),
     wasteTypeId: uuidSchema.nullable().optional(),
     volumeM3: volumeSchema.nullable().optional(),
+    operatorCounterpartyId: uuidSchema.nullable().optional(),
     deliveryAt: z.coerce.date().optional(),
     deliveryTimeUnspecified: z.boolean().optional(),
     comment: z.string().trim().max(2000).optional(),
@@ -124,10 +135,31 @@ export const updateWasteRequestSchema = z
   });
 export type UpdateWasteRequestInput = z.infer<typeof updateWasteRequestSchema>;
 
-export const changeWasteRequestStatusSchema = z.object({
-  status: requestStatusSchema,
+/**
+ * Назначение оператора вывоза — отдельная операция (ADR 0010): предмет заявки при ней не
+ * пересчитывается. Через общий PATCH это было бы невозможно — он заново проверяет наличие
+ * контейнера на объекте и подбирает тариф, а к смене исполнителя это отношения не имеет.
+ */
+export const assignWasteOperatorSchema = z.object({
+  /** null — снять назначение (заявка снова «без оператора»). */
+  operatorCounterpartyId: uuidSchema.nullable(),
   version: z.number().int().nonnegative(),
 });
+export type AssignWasteOperatorInput = z.infer<typeof assignWasteOperatorSchema>;
+
+// Комментарий к смене статуса пишется в историю (request_status_history.comment).
+// При отмене он обязателен и играет роль причины — см. statusChangeRequiresReason.
+export const changeWasteRequestStatusSchema = z
+  .object({
+    status: requestStatusSchema,
+    comment: z.string().trim().max(2000).optional().default(''),
+    version: z.number().int().nonnegative(),
+  })
+  .superRefine((v, ctx) => {
+    if (statusChangeRequiresReason(v.status) && !v.comment) {
+      ctx.addIssue({ code: 'custom', path: ['comment'], message: 'Укажите причину отмены' });
+    }
+  });
 export type ChangeWasteRequestStatusInput = z.infer<typeof changeWasteRequestStatusSchema>;
 
 export interface WasteRequestDto {
@@ -149,11 +181,16 @@ export interface WasteRequestDto {
   pricePerM3: number | null;
   /** Сумма = объём × цена (считает БД). */
   amount: number | null;
+  /** Оператор вывоза (контрагент): кто выполняет заявку. NULL — ещё не назначен (ADR 0010). */
+  operatorCounterpartyId: string | null;
+  operatorName: string | null;
   deliveryAt: string;
   /** Время доставки не задано — в `deliveryAt` значима только дата (00:00 МСК). */
   deliveryTimeUnspecified: boolean;
   comment: string;
   status: RequestStatus;
+  /** Причина отмены из истории статусов; заполнена только у отменённых заявок. */
+  cancelReason: string | null;
   files: FileDto[];
   version: number;
   createdBy: string;

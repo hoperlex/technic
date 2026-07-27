@@ -1,27 +1,58 @@
 import { describe, expect, it } from 'vitest';
 import {
+  allowedStatusTransitions,
   baseListQuery,
   canTransitionStatus,
+  changeWasteRequestStatusSchema,
   createWasteRequestSchema,
   requestStatusTransitions,
 } from '@technic/contracts';
 
 describe('статусы заявок', () => {
-  it('разрешает корректные переходы', () => {
-    expect(canTransitionStatus('new', 'confirmed')).toBe(true);
-    expect(canTransitionStatus('new', 'cancelled')).toBe(true);
-    expect(canTransitionStatus('confirmed', 'done')).toBe(true);
-    expect(canTransitionStatus('confirmed', 'cancelled')).toBe(true);
+  it('линейный цикл доступен ролям, ведущим заявки', () => {
+    expect(canTransitionStatus('new', 'confirmed', 'dispatcher')).toBe(true);
+    expect(canTransitionStatus('confirmed', 'done', 'dispatcher')).toBe(true);
+    expect(canTransitionStatus('new', 'cancelled', 'dispatcher')).toBe(true);
+    expect(canTransitionStatus('confirmed', 'cancelled', 'manager')).toBe(true);
   });
 
-  it('«Отменена» неизменна, остальные переходят в любой статус', () => {
-    // отменённую заявку нельзя переоткрыть
+  it('хронологию нарушать нельзя, закрытые статусы терминальны', () => {
+    expect(canTransitionStatus('new', 'done', 'dispatcher')).toBe(false);
+    expect(canTransitionStatus('confirmed', 'new', 'manager')).toBe(false);
+    expect(requestStatusTransitions.done).toEqual([]);
     expect(requestStatusTransitions.cancelled).toEqual([]);
-    expect(canTransitionStatus('cancelled', 'new')).toBe(false);
-    // из прочих статусов — в любой другой, в т.ч. с нарушением хронологии
-    expect(canTransitionStatus('done', 'new')).toBe(true);
-    expect(canTransitionStatus('new', 'done')).toBe(true);
-    expect(canTransitionStatus('done', 'cancelled')).toBe(true);
+  });
+
+  it('откат закрытой заявки — только администратору', () => {
+    expect(canTransitionStatus('done', 'confirmed', 'admin')).toBe(true);
+    expect(canTransitionStatus('cancelled', 'new', 'admin')).toBe(true);
+    expect(canTransitionStatus('done', 'confirmed', 'manager')).toBe(false);
+    expect(canTransitionStatus('cancelled', 'new', 'dispatcher')).toBe(false);
+  });
+
+  it('роли без ведения заявок статусы не меняют', () => {
+    expect(allowedStatusTransitions('new', 'shtab')).toEqual([]);
+    expect(canTransitionStatus('new', 'confirmed', 'shtab')).toBe(false);
+  });
+
+  it('отмена требует причины, прочие переходы — нет', () => {
+    expect(() =>
+      changeWasteRequestStatusSchema.parse({ status: 'cancelled', version: 1 }),
+    ).toThrow();
+    // пробелы причиной не считаются (comment проходит trim)
+    expect(() =>
+      changeWasteRequestStatusSchema.parse({ status: 'cancelled', comment: '   ', version: 1 }),
+    ).toThrow();
+    expect(
+      changeWasteRequestStatusSchema.parse({
+        status: 'cancelled',
+        comment: 'Объект закрыт',
+        version: 1,
+      }).comment,
+    ).toBe('Объект закрыт');
+    expect(changeWasteRequestStatusSchema.parse({ status: 'confirmed', version: 1 }).comment).toBe(
+      '',
+    );
   });
 });
 

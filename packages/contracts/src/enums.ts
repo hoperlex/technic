@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 // ── Роли ──
-export const ROLES = ['admin', 'manager', 'dispatcher', 'shtab'] as const;
+export const ROLES = ['admin', 'manager', 'dispatcher', 'shtab', 'operator'] as const;
 export const roleSchema = z.enum(ROLES);
 export type Role = (typeof ROLES)[number];
 
@@ -10,6 +10,7 @@ export const roleLabels: Record<Role, string> = {
   manager: 'Менеджер',
   dispatcher: 'Диспетчер',
   shtab: 'Штаб',
+  operator: 'Оператор (вывоз мусора)',
 };
 
 export const roleColors: Record<Role, string> = {
@@ -17,11 +18,12 @@ export const roleColors: Record<Role, string> = {
   manager: 'geekblue',
   dispatcher: 'cyan',
   shtab: 'orange',
+  operator: 'green',
 };
 
 /** Роли, которым доступна страница «Справочники». */
 export const REFERENCE_MANAGER_ROLES: readonly Role[] = ['admin', 'manager'];
-/** Роли, которые меняют статусы заявок. */
+/** Роли, которые ведут заявки: создают, редактируют и меняют статусы без ограничения оператора. */
 export const STATUS_CHANGE_ROLES: readonly Role[] = ['admin', 'manager', 'dispatcher'];
 
 // ── Статусы заявки ──
@@ -29,9 +31,10 @@ export const REQUEST_STATUSES = ['new', 'confirmed', 'done', 'cancelled'] as con
 export const requestStatusSchema = z.enum(REQUEST_STATUSES);
 export type RequestStatus = (typeof REQUEST_STATUSES)[number];
 
+// Значение `confirmed` осталось от прежней формулировки статуса; переименовалась только подпись.
 export const requestStatusLabels: Record<RequestStatus, string> = {
   new: 'Новая',
-  confirmed: 'Подтверждена',
+  confirmed: 'В работе',
   done: 'Выполнена',
   cancelled: 'Отменена',
 };
@@ -44,19 +47,57 @@ export const requestStatusColors: Record<RequestStatus, string> = {
 };
 
 /**
- * Разрешённые переходы статусов: из любого статуса можно перейти в любой другой
- * (в т.ч. с нарушением хронологии, напр. «Выполнена» → «Новая»). Исключение —
- * «Отменена»: она неизменна (терминальна).
+ * Рабочий цикл заявки линейный: «Новая» → «В работе» → «Выполнена». Отменить можно только
+ * незакрытую заявку; «Выполнена» и «Отменена» терминальны — назад заявку не возвращают.
  */
 export const requestStatusTransitions: Record<RequestStatus, RequestStatus[]> = {
-  new: ['confirmed', 'done', 'cancelled'],
-  confirmed: ['new', 'done', 'cancelled'],
-  done: ['new', 'confirmed', 'cancelled'],
+  new: ['confirmed', 'cancelled'],
+  confirmed: ['done', 'cancelled'],
+  done: [],
   cancelled: [],
 };
 
-export function canTransitionStatus(from: RequestStatus, to: RequestStatus): boolean {
-  return requestStatusTransitions[from].includes(to);
+/**
+ * Откат закрытой заявки — право администратора: закрыли или отменили по ошибке, а завести
+ * новую заявку вместо исправления означало бы потерять её номер и историю.
+ */
+export const requestStatusRollbacks: Record<RequestStatus, RequestStatus[]> = {
+  new: [],
+  confirmed: [],
+  done: ['confirmed'],
+  cancelled: ['new'],
+};
+
+/**
+ * Единственный переход оператора (ADR 0010): взятую в работу заявку закрывает тот, кто её
+ * выполнил. Подтверждать, отменять и откатывать заявки оператор не может — это решения заказчика.
+ */
+export const OPERATOR_STATUS_TRANSITIONS: Record<RequestStatus, RequestStatus[]> = {
+  new: [],
+  confirmed: ['done'],
+  done: [],
+  cancelled: [],
+};
+
+/** Статусы, доступные роли из текущего статуса (пустой список — смена статуса запрещена). */
+export function allowedStatusTransitions(from: RequestStatus, role: Role): RequestStatus[] {
+  if (role === 'operator') return OPERATOR_STATUS_TRANSITIONS[from];
+  if (!STATUS_CHANGE_ROLES.includes(role)) return [];
+  return role === 'admin'
+    ? [...requestStatusTransitions[from], ...requestStatusRollbacks[from]]
+    : requestStatusTransitions[from];
+}
+
+export function canTransitionStatus(from: RequestStatus, to: RequestStatus, role: Role): boolean {
+  return allowedStatusTransitions(from, role).includes(to);
+}
+
+/**
+ * Отмена заявки требует причины: заявка закрывается без результата, и без объяснения
+ * ни автор, ни следующий диспетчер не поймут, почему.
+ */
+export function statusChangeRequiresReason(to: RequestStatus): boolean {
+  return to === 'cancelled';
 }
 
 // ── Типы заявок (операции с контейнерами / вывоз) ──

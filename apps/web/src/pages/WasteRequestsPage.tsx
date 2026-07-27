@@ -29,6 +29,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import dayjs, { type Dayjs } from 'dayjs';
 import {
+  allowedStatusTransitions,
   containerKindLabels,
   MIN_WASTE_VOLUME_M3,
   REQUEST_TYPES,
@@ -36,7 +37,7 @@ import {
   type RequestType,
   requestStatusColors,
   requestStatusLabels,
-  requestStatusTransitions,
+  statusChangeRequiresReason,
   requestTypeColors,
   requestTypeLabels,
   requestTypeShort,
@@ -49,6 +50,7 @@ import {
 } from '@technic/contracts';
 import {
   containerTypesApi,
+  counterpartiesApi,
   filesApi,
   objectsApi,
   wasteRequestsApi,
@@ -57,6 +59,7 @@ import {
   type WasteRequestPayload,
   type WasteRequestUpdatePayload,
 } from '../api/resources';
+import { CancelReasonModal } from '../components/CancelReasonModal';
 import { DataTable } from '../components/DataTable';
 import { FormModal } from '../components/FormModal';
 import { PageTableLayout } from '../components/PageTableLayout';
@@ -92,6 +95,8 @@ interface RequestFormValues {
   containerTypeId?: string;
   wasteTypeId?: string;
   volumeM3?: number;
+  /** Оператор вывоза (контрагент); можно не выбирать — назначается при переводе в работу. */
+  operatorCounterpartyId?: string;
   deliveryDate: Dayjs;
   /** Необязательное время в виде `HH:mm`; пусто — «на эту дату, время не важно». */
   deliveryTime?: string;
@@ -130,9 +135,12 @@ function RequestsTab() {
   const { message, modal } = App.useApp();
   const qc = useQueryClient();
   const { user, hasRole } = useAuth();
-  const canChangeStatus = hasRole('admin', 'manager', 'dispatcher');
   const isShtab = hasRole('shtab');
   const isAdmin = hasRole('admin');
+  // Оператор вывоза видит только свои заявки и только закрывает их: заводить, править и
+  // удалять заявки, как и назначать исполнителя, он не может (ADR 0010).
+  const isOperator = hasRole('operator');
+  const canAssignOperator = hasRole('admin', 'manager', 'dispatcher');
 
   // Для штаба фильтр по объекту зафиксирован на его объекте.
   const shtabObjectId = isShtab ? (user?.constructionObjectId ?? '') : '';
@@ -224,6 +232,40 @@ function RequestsTab() {
   });
   const wasteTypeOptions = (wasteTypes?.items ?? []).map((w) => ({ value: w.id, label: w.name }));
 
+  // Операторы вывоза — контрагенты соответствующего типа (ADR 0010). Оператору этот список
+  // не нужен: исполнителя он не выбирает.
+  const { data: operatorsData } = useQuery({
+    queryKey: ['counterparties', 'operators-for-select'],
+    queryFn: () =>
+      counterpartiesApi.list({
+        page: 1,
+        pageSize: 500,
+        type: 'operator',
+        isActive: 'true',
+        sortBy: 'name',
+        sortOrder: 'asc',
+      }),
+    enabled: canAssignOperator,
+  });
+  /**
+   * Исполнителя выбираем среди операторов, привязанных к объекту заявки (ADR 0010). Правило
+   * повторяет серверное: объект, у которого операторы не заведены, список не сужает — иначе на
+   * новом объекте выбрать было бы некого. Уже назначенный оператор остаётся в списке, даже если
+   * привязку сняли: иначе форма показала бы вместо него идентификатор.
+   */
+  const operatorOptionsFor = (
+    objectId: string | undefined,
+    assigned?: { id: string | null; name: string | null },
+  ) => {
+    const all = operatorsData?.items ?? [];
+    const linked = objectId ? all.filter((c) => c.objects.some((o) => o.id === objectId)) : [];
+    const options = (linked.length > 0 ? linked : all).map((c) => ({ value: c.id, label: c.name }));
+    if (assigned?.id && !options.some((o) => o.value === assigned.id)) {
+      options.unshift({ value: assigned.id, label: assigned.name ?? assigned.id });
+    }
+    return options;
+  };
+
   const [open, setOpen] = useState(false);
   const [record, setRecord] = useState<WasteRequestDto | null>(null);
   const [form] = Form.useForm<RequestFormValues>();
@@ -239,6 +281,12 @@ function RequestsTab() {
 
   // Тарифицируемые операции: замена, снятие, вывоз. Установка нового контейнера цены не имеет.
   const isPriced = watchRequestType ? isPricedRequestType(watchRequestType) : false;
+
+  // Выбор исполнителя в форме следует за выбранным объектом: сменили объект — сменился список.
+  const formOperatorOptions = operatorOptionsFor(watchObjectId, {
+    id: record?.operatorCounterpartyId ?? null,
+    name: record?.operatorName ?? null,
+  });
 
   // Предпросмотр цены: тариф подбирает сервер по паре «тип мусора × техника», чтобы форма и
   // расчёт при сохранении не разошлись. 404 (тарифа нет) — штатный ответ, не ошибка ввода.
@@ -325,6 +373,7 @@ function RequestsTab() {
       containerTypeId: r.containerTypeId ?? undefined,
       wasteTypeId: r.wasteTypeId ?? undefined,
       volumeM3: r.volumeM3 ?? undefined,
+      operatorCounterpartyId: r.operatorCounterpartyId ?? undefined,
       deliveryDate: dayjs(r.deliveryAt).tz(MOSCOW_TZ),
       // Время не задано — поле остаётся пустым (в deliveryAt лежит полночь МСК).
       deliveryTime: r.deliveryTimeUnspecified
@@ -389,6 +438,8 @@ function RequestsTab() {
         // Тип мусора и объём — только у тарифицируемых операций (ADR 0009).
         wasteTypeId: isPricedRequestType(values.requestType) ? values.wasteTypeId : undefined,
         volumeM3: isPricedRequestType(values.requestType) ? values.volumeM3 : undefined,
+        // Исполнителя назначает диспетчер; у остальных ролей поля в форме нет (ADR 0010).
+        operatorCounterpartyId: canAssignOperator ? values.operatorCounterpartyId : undefined,
         deliveryAt: deliveryAt.toISOString(),
         deliveryTimeUnspecified: time === undefined,
         comment: values.comment ?? '',
@@ -396,6 +447,10 @@ function RequestsTab() {
       if (record) {
         const payload: WasteRequestUpdatePayload = {
           ...base,
+          // Пустое поле у диспетчера означает «снять исполнителя» — это null, а не «не менять».
+          operatorCounterpartyId: canAssignOperator
+            ? (values.operatorCounterpartyId ?? null)
+            : undefined,
           addFileIds: files.filter((f) => f.isNew).map((f) => f.id),
           removeFileIds: removedIds,
           version: record.version,
@@ -416,15 +471,75 @@ function RequestsTab() {
     onError: (e) => message.error(errorMessage(e)),
   });
 
+  // Переход в работу и отмена проходят через модальные окна — оба требуют ввода
+  // (оператор вывоза, причина отмены), поэтому целевая заявка хранится в состоянии.
+  const [operatorTarget, setOperatorTarget] = useState<WasteRequestDto | null>(null);
+  const [cancelTarget, setCancelTarget] = useState<WasteRequestDto | null>(null);
+  const [operatorForm] = Form.useForm<{ operatorCounterpartyId: string }>();
+  // Список в модальном окне назначения сужается по объекту той заявки, которую переводят в работу.
+  const assignOperatorOptions = operatorOptionsFor(operatorTarget?.objectId, {
+    id: operatorTarget?.operatorCounterpartyId ?? null,
+    name: operatorTarget?.operatorName ?? null,
+  });
+
   const statusMut = useMutation({
-    mutationFn: (v: { id: string; status: RequestStatus; version: number }) =>
-      wasteRequestsApi.changeStatus(v.id, v.status, v.version),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ['waste-requests'] }),
+    mutationFn: (v: { id: string; status: RequestStatus; version: number; comment?: string }) =>
+      wasteRequestsApi.changeStatus(v.id, v.status, v.version, v.comment),
+    onSuccess: () => {
+      setOperatorTarget(null);
+      setCancelTarget(null);
+      void qc.invalidateQueries({ queryKey: ['waste-requests'] });
+    },
     onError: (e) => {
       message.error(errorMessage(e));
       void qc.invalidateQueries({ queryKey: ['waste-requests'] });
     },
   });
+
+  /**
+   * Перевод в работу назначает исполнителя: с этого момента заявку видит оператор, который её
+   * выполняет (ADR 0010). Два запроса подряд — назначение меняет версию заявки, поэтому статус
+   * переводится уже по обновлённой версии.
+   */
+  const startWorkMut = useMutation({
+    mutationFn: async (v: { r: WasteRequestDto; operatorCounterpartyId: string }) => {
+      const assigned = await wasteRequestsApi.assignOperator(
+        v.r.id,
+        v.operatorCounterpartyId,
+        v.r.version,
+      );
+      return wasteRequestsApi.changeStatus(assigned.id, 'confirmed', assigned.version);
+    },
+    onSuccess: () => {
+      setOperatorTarget(null);
+      void qc.invalidateQueries({ queryKey: ['waste-requests'] });
+    },
+    onError: (e) => {
+      message.error(errorMessage(e));
+      void qc.invalidateQueries({ queryKey: ['waste-requests'] });
+    },
+  });
+
+  /**
+   * Перевод в работу — через назначение оператора вывоза; отмена — через обязательную причину.
+   * Остальные переходы (в т.ч. «Выполнена» у оператора) выполняются сразу.
+   */
+  const requestStatusChange = (r: WasteRequestDto, status: RequestStatus) => {
+    if (statusChangeRequiresReason(status)) {
+      setCancelTarget(r);
+      return;
+    }
+    if (r.status === 'new' && status === 'confirmed') {
+      operatorForm.resetFields();
+      // Исполнитель мог быть выбран заранее в самой заявке — тогда окно только подтверждает его.
+      operatorForm.setFieldsValue({
+        operatorCounterpartyId: r.operatorCounterpartyId ?? undefined,
+      });
+      setOperatorTarget(r);
+      return;
+    }
+    statusMut.mutate({ id: r.id, status, version: r.version });
+  };
 
   const removeMut = useMutation({
     mutationFn: (id: string) => wasteRequestsApi.remove(id),
@@ -446,6 +561,8 @@ function RequestsTab() {
 
   const canModify = (r: WasteRequestDto): boolean => {
     if (r.deletedAt) return false;
+    // Оператор — исполнитель: заявку он только читает и закрывает (ADR 0010).
+    if (isOperator) return false;
     if (isShtab) return r.status === 'new';
     return true;
   };
@@ -464,13 +581,20 @@ function RequestsTab() {
     });
 
   const StatusCell = ({ r }: { r: WasteRequestDto }) => {
-    const transitions = requestStatusTransitions[r.status];
-    const badge = (
+    // Набор переходов зависит от роли: линейный цикл для всех, откаты — только администратору.
+    const transitions = user?.role ? allowedStatusTransitions(r.status, user.role) : [];
+    const tag = (
       <Tag color={requestStatusColors[r.status]} style={{ marginInlineEnd: 0 }}>
         {requestStatusLabels[r.status]}
       </Tag>
     );
-    if (!canChangeStatus || r.deletedAt || transitions.length === 0) {
+    // Причина отмены — в подсказке на теге: в таблице для неё нет колонки, а знать её нужно.
+    const badge = r.cancelReason ? (
+      <Tooltip title={`Причина отмены: ${r.cancelReason}`}>{tag}</Tooltip>
+    ) : (
+      tag
+    );
+    if (r.deletedAt || transitions.length === 0) {
       return badge;
     }
     const pending = statusMut.isPending && statusMut.variables?.id === r.id;
@@ -480,8 +604,7 @@ function RequestsTab() {
         disabled={pending}
         menu={{
           items: transitions.map((s) => ({ key: s, label: requestStatusLabels[s] })),
-          onClick: ({ key }) =>
-            statusMut.mutate({ id: r.id, status: key as RequestStatus, version: r.version }),
+          onClick: ({ key }) => requestStatusChange(r, key as RequestStatus),
         }}
       >
         <Button
@@ -630,6 +753,14 @@ function RequestsTab() {
       ),
     },
     {
+      key: 'operatorName',
+      title: 'Оператор',
+      dataIndex: 'operatorName',
+      width: 180,
+      sorter: true,
+      render: (_v: unknown, r: WasteRequestDto) => r.operatorName ?? '—',
+    },
+    {
       key: 'status',
       title: 'Статус',
       dataIndex: 'status',
@@ -713,9 +844,11 @@ function RequestsTab() {
     <PageTableLayout
       filters={filters}
       extra={
-        <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-          Создать заявку
-        </Button>
+        isOperator ? null : (
+          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
+            Создать заявку
+          </Button>
+        )
       }
     >
       <DataTable<WasteRequestDto>
@@ -728,6 +861,61 @@ function RequestsTab() {
         onChange={onTableChange}
       />
 
+      {/* Назначение оператора вывоза при переводе заявки в работу: исполнитель обязателен —
+          именно по нему заявка попадает в список своего оператора (ADR 0010). */}
+      <FormModal
+        title="Назначение оператора вывоза мусора"
+        open={!!operatorTarget}
+        onCancel={() => setOperatorTarget(null)}
+        onSubmit={() => operatorForm.submit()}
+        confirmLoading={startWorkMut.isPending}
+        okText="В работу"
+        width={480}
+      >
+        <Form
+          form={operatorForm}
+          layout="vertical"
+          onFinish={(v: { operatorCounterpartyId: string }) =>
+            operatorTarget &&
+            startWorkMut.mutate({
+              r: operatorTarget,
+              operatorCounterpartyId: v.operatorCounterpartyId,
+            })
+          }
+        >
+          <Form.Item
+            name="operatorCounterpartyId"
+            label="Оператор вывоза"
+            rules={[{ required: true, message: 'Выберите оператора' }]}
+            extra={
+              assignOperatorOptions.length === 0
+                ? 'Нет активных контрагентов типа «Оператор» — заведите его в справочнике'
+                : 'Оператор увидит заявку в своём списке и сможет отметить её выполненной'
+            }
+          >
+            <Select options={assignOperatorOptions} showSearch optionFilterProp="label" />
+          </Form.Item>
+        </Form>
+      </FormModal>
+
+      <CancelReasonModal
+        open={!!cancelTarget}
+        subject={
+          cancelTarget ? `№ ${cancelTarget.num}-${requestTypeShort[cancelTarget.requestType]}` : ''
+        }
+        confirmLoading={statusMut.isPending}
+        onCancel={() => setCancelTarget(null)}
+        onSubmit={(reason) =>
+          cancelTarget &&
+          statusMut.mutate({
+            id: cancelTarget.id,
+            status: 'cancelled',
+            version: cancelTarget.version,
+            comment: reason,
+          })
+        }
+      />
+
       <FormModal
         title={record ? 'Редактирование заявки' : 'Новая заявка'}
         open={open}
@@ -736,7 +924,21 @@ function RequestsTab() {
         confirmLoading={saveMut.isPending}
         width={520}
       >
-        <Form form={form} layout="vertical" onFinish={(v) => saveMut.mutate(v)}>
+        <Form
+          form={form}
+          layout="vertical"
+          onFinish={(v) => saveMut.mutate(v)}
+          // Смена объекта может сделать выбранного исполнителя недопустимым — снимаем его сразу,
+          // а не отказом сервера при сохранении.
+          onValuesChange={(changed: Partial<RequestFormValues>) => {
+            if (!changed.objectId) return;
+            const selected = form.getFieldValue('operatorCounterpartyId') as string | undefined;
+            const allowed = operatorOptionsFor(changed.objectId);
+            if (selected && !allowed.some((o) => o.value === selected)) {
+              form.setFieldValue('operatorCounterpartyId', undefined);
+            }
+          }}
+        >
           <Form.Item
             name="objectId"
             label="Объект строительства"
@@ -852,6 +1054,27 @@ function RequestsTab() {
                 <Input readOnly value={amountPreview == null ? '—' : formatMoney(amountPreview)} />
               </Form.Item>
             </div>
+          )}
+          {/* Исполнителя можно выбрать заранее; если нет — его спросят при переводе в работу. */}
+          {canAssignOperator && (
+            <Form.Item
+              name="operatorCounterpartyId"
+              label="Оператор вывоза"
+              tooltip="Контрагент, который выполняет заявку; он увидит её в своём списке"
+              extra={
+                formOperatorOptions.length === 0
+                  ? 'Нет активных контрагентов типа «Оператор» — заведите его в справочнике'
+                  : undefined
+              }
+            >
+              <Select
+                options={formOperatorOptions}
+                showSearch
+                allowClear
+                optionFilterProp="label"
+                placeholder="Можно назначить позже"
+              />
+            </Form.Item>
           )}
           <div style={{ display: 'flex', gap: 12 }}>
             <Form.Item

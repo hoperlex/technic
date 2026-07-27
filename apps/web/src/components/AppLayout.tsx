@@ -24,7 +24,10 @@ export function AppLayout() {
 
   const navItems: { key: string; icon: ReactNode; label: string }[] = [
     { key: '/waste', icon: <FileTextOutlined />, label: 'Вывоз мусора' },
-    { key: '/vehicle-requests', icon: <CarOutlined />, label: 'Заказ ТС' },
+    // Оператор вывоза — внешний перевозчик: заказ ТС к его работе отношения не имеет (ADR 0010).
+    ...(hasRole('operator')
+      ? []
+      : [{ key: '/vehicle-requests', icon: <CarOutlined />, label: 'Заказ ТС' }]),
     ...(hasRole('admin', 'manager')
       ? [{ key: '/directories', icon: <DatabaseOutlined />, label: 'Справочники' }]
       : []),

@@ -20,6 +20,7 @@ import {
   normalizeTimeInput,
   parseVehicleRequestNumberSearch,
   type RequestStatus,
+  statusChangeRequiresReason,
   VEHICLE_REQUEST_TYPES,
   type VehicleRequestDto,
   type VehicleRequestType,
@@ -27,6 +28,7 @@ import {
   vehicleRequestTypeLabels,
 } from '@technic/contracts';
 import { vehicleRequestsApi } from '../../api/resources';
+import { CancelReasonModal } from '../../components/CancelReasonModal';
 import { DataTable } from '../../components/DataTable';
 import { FormModal } from '../../components/FormModal';
 import { PageTableLayout } from '../../components/PageTableLayout';
@@ -104,7 +106,6 @@ export function VehicleRequestsTab() {
   const { message, modal } = App.useApp();
   const { hasRole } = useAuth();
   const qc = useQueryClient();
-  const canChangeStatus = hasRole('admin', 'manager', 'dispatcher');
   const isAdmin = hasRole('admin');
   const isShtab = hasRole('shtab');
 
@@ -303,15 +304,27 @@ export function VehicleRequestsTab() {
     saveMut.mutate(v);
   };
 
+  // Отмена заявки требует причины — она вводится в отдельном окне.
+  const [cancelTarget, setCancelTarget] = useState<VehicleRequestDto | null>(null);
+
   const statusMut = useMutation({
-    mutationFn: (v: { id: string; status: RequestStatus; version: number }) =>
-      vehicleRequestsApi.changeStatus(v.id, v.status, v.version),
+    mutationFn: (v: { id: string; status: RequestStatus; version: number; comment?: string }) =>
+      vehicleRequestsApi.changeStatus(v.id, v.status, v.version, v.comment),
     onSuccess: () => {
       message.success('Статус изменён');
+      setCancelTarget(null);
       void qc.invalidateQueries({ queryKey: ['vehicle-requests'] });
     },
     onError: (e) => message.error(errorMessage(e)),
   });
+
+  const requestStatusChange = (r: VehicleRequestDto, status: RequestStatus) => {
+    if (statusChangeRequiresReason(status)) {
+      setCancelTarget(r);
+      return;
+    }
+    statusMut.mutate({ id: r.id, status, version: r.version });
+  };
 
   const removeMut = useMutation({
     mutationFn: (id: string) => vehicleRequestsApi.remove(id),
@@ -430,9 +443,9 @@ export function VehicleRequestsTab() {
         <StatusCell
           status={r.status}
           deleted={!!r.deletedAt}
-          canChange={canChangeStatus}
+          cancelReason={r.cancelReason}
           pending={statusMut.isPending && statusMut.variables?.id === r.id}
-          onChange={(status) => statusMut.mutate({ id: r.id, status, version: r.version })}
+          onChange={(status) => requestStatusChange(r, status)}
         />
       ),
     },
@@ -644,6 +657,22 @@ export function VehicleRequestsTab() {
           </Form.Item>
         </Form>
       </FormModal>
+
+      <CancelReasonModal
+        open={!!cancelTarget}
+        subject={cancelTarget ? `№ ${cancelTarget.displayNumber}` : ''}
+        confirmLoading={statusMut.isPending}
+        onCancel={() => setCancelTarget(null)}
+        onSubmit={(reason) =>
+          cancelTarget &&
+          statusMut.mutate({
+            id: cancelTarget.id,
+            status: 'cancelled',
+            version: cancelTarget.version,
+            comment: reason,
+          })
+        }
+      />
     </PageTableLayout>
   );
 }

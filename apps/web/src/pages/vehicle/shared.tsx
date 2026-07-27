@@ -1,15 +1,28 @@
 import { useState } from 'react';
-import { App, Button, Dropdown, Form, List, Popover, Select, Tag, Typography, Upload } from 'antd';
+import {
+  App,
+  Button,
+  Dropdown,
+  Form,
+  List,
+  Popover,
+  Select,
+  Tag,
+  Tooltip,
+  Typography,
+  Upload,
+} from 'antd';
 import { DownOutlined, UploadOutlined } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
 import {
+  allowedStatusTransitions,
   type FileDto,
   type RequestStatus,
   requestStatusColors,
   requestStatusLabels,
-  requestStatusTransitions,
 } from '@technic/contracts';
 import { filesApi, objectsApi, vehicleTypesApi } from '../../api/resources';
+import { useAuth } from '../../auth/AuthContext';
 import { errorMessage, formatBytes } from '../../utils/format';
 
 export const FILE_MAX_COUNT = 20;
@@ -117,23 +130,31 @@ export function FileEditor({ editor }: { editor: ReturnType<typeof useFileEditor
   );
 }
 
-/** Ячейка статуса: дропдаун переходов (для управляющих ролей) либо тег. */
+/** Ячейка статуса: дропдаун доступных роли переходов либо тег. */
 export function StatusCell({
   status,
   deleted,
-  canChange,
+  cancelReason,
   pending,
   onChange,
 }: {
   status: RequestStatus;
   deleted: boolean;
-  canChange: boolean;
+  /** Причина отмены — подсказкой на теге (колонки под неё в таблице нет). */
+  cancelReason?: string | null;
   pending: boolean;
   onChange: (s: RequestStatus) => void;
 }) {
-  const transitions = requestStatusTransitions[status];
-  const tag = <Tag color={requestStatusColors[status]}>{requestStatusLabels[status]}</Tag>;
-  if (!canChange || deleted || transitions.length === 0) return tag;
+  const { user } = useAuth();
+  // Линейный цикл доступен ведущим заявки ролям, откаты закрытых заявок — только админу.
+  const transitions = user?.role ? allowedStatusTransitions(status, user.role) : [];
+  const plain = <Tag color={requestStatusColors[status]}>{requestStatusLabels[status]}</Tag>;
+  const tag = cancelReason ? (
+    <Tooltip title={`Причина отмены: ${cancelReason}`}>{plain}</Tooltip>
+  ) : (
+    plain
+  );
+  if (deleted || transitions.length === 0) return tag;
   return (
     <Dropdown
       trigger={['click']}

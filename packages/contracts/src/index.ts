@@ -4,6 +4,7 @@ export * from './time';
 export * from './auth';
 export * from './users';
 export * from './objects';
+export * from './counterparties';
 export * from './container-types';
 export * from './vehicle-kinds';
 export * from './vehicle-types';

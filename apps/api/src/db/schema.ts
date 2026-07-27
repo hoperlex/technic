@@ -33,7 +33,7 @@ const createdAt = () => timestamp('created_at', { withTimezone: true }).notNull(
 const updatedAt = () => timestamp('updated_at', { withTimezone: true }).notNull().defaultNow();
 
 // ── Enums ──
-export const roleEnum = pgEnum('role', ['admin', 'manager', 'dispatcher', 'shtab']);
+export const roleEnum = pgEnum('role', ['admin', 'manager', 'dispatcher', 'shtab', 'operator']);
 export const requestStatusEnum = pgEnum('request_status', [
   'new',
   'confirmed',
@@ -68,6 +68,12 @@ export const vehicleStatusEnum = pgEnum('vehicle_status', [
   'inactive',
   'maintenance',
   'retired',
+]);
+// Роль контрагента в проекте (ADR 0010): у записи он один.
+export const counterpartyTypeEnum = pgEnum('counterparty_type', [
+  'general_contractor',
+  'contractor',
+  'operator',
 ]);
 
 // ── Справочник: объекты строительства ──
@@ -341,6 +347,12 @@ export const users = pgTable(
     isActive: boolean('is_active').notNull().default(false),
     mustChangePassword: boolean('must_change_password').notNull().default(false),
     authVersion: integer('auth_version').notNull().default(0),
+    // Контрагент учётки (ADR 0010): для роли «Оператор» задаёт область видимости — заявки,
+    // назначенные этому контрагенту. Обязателен при role='operator' (CHECK, миграция 0023).
+    // FK → counterparties.id ON DELETE RESTRICT объявлен миграцией 0022; здесь ссылка не
+    // типизирована, чтобы не создавать цикл users ↔ counterparties (у контрагента поля аудита
+    // ссылаются на users) — тот же приём, что и с personId.
+    counterpartyId: uuid('counterparty_id'),
     // Физлицо, которому принадлежит учётка (ADR 0008). FK → persons.id ON DELETE SET NULL
     // объявлен миграцией 0018; здесь ссылка не типизирована, чтобы не создавать цикл
     // users ↔ persons (persons ссылается на users в полях аудита). Аналогично
@@ -381,6 +393,101 @@ export const refreshSessions = pgTable(
     tokenHashIdx: uniqueIndex('refresh_sessions_token_hash_unique').on(t.tokenHash),
     userIdx: index('refresh_sessions_user_idx').on(t.userId),
     familyIdx: index('refresh_sessions_family_idx').on(t.familyId),
+  }),
+);
+
+// ── Контрагенты (ADR 0010, миграция 0022) ──
+// Генподрядчики, подрядчики и операторы вывоза мусора в одной таблице: различает их только тип,
+// набор полей одинаков. Идентичность — ИНН (одна живая запись на ИНН), поэтому тип у записи один:
+// организация в другой роли — это смена типа, а не вторая запись.
+// normalizedName считает БД (counterparty_name_normalize); поиск идёт через ту же функцию —
+// приём из vehicleModels, чтобы нормализация не расходилась между приложением и индексом.
+export const counterparties = pgTable(
+  'counterparties',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    type: counterpartyTypeEnum('type').notNull(),
+    name: text('name').notNull(),
+    normalizedName: text('normalized_name').generatedAlwaysAs(
+      sql`counterparty_name_normalize(name)`,
+    ),
+    inn: text('inn').notNull(),
+    comment: text('comment').notNull().default(''),
+    isActive: boolean('is_active').notNull().default(true),
+    createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+    updatedBy: uuid('updated_by').references(() => users.id, { onDelete: 'set null' }),
+    deletedBy: uuid('deleted_by').references(() => users.id, { onDelete: 'set null' }),
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    nameNotBlank: check(
+      'counterparties_name_not_blank_check',
+      sql`counterparty_name_normalize(${t.name}) <> ''`,
+    ),
+    // 10 знаков у организации, 12 — у ИП/физлица. Контрольную сумму проверяет сервис.
+    innFormat: check('counterparties_inn_format_check', sql`${t.inn} ~ '^([0-9]{10}|[0-9]{12})$'`),
+    innUnique: uniqueIndex('counterparties_inn_unique')
+      .on(t.inn)
+      .where(sql`${t.deletedAt} IS NULL`),
+    typeActiveIdx: index('counterparties_type_active_idx')
+      .on(t.type, t.isActive)
+      .where(sql`${t.deletedAt} IS NULL`),
+    nameTrgm: index('counterparties_name_trgm').using('gin', sql`${t.name} gin_trgm_ops`),
+    normalizedNameIdx: index('counterparties_normalized_name_idx').on(t.normalizedName),
+    deletedAtIdx: index('counterparties_deleted_at_idx').on(t.deletedAt),
+  }),
+);
+
+// ── Синонимы наименования контрагента ──
+// «Как пишут в накладных и выгрузках»: под одним ИНН организация встречается под разными
+// наименованиями. Основное наименование здесь не дублируется — поиск объединяет два источника.
+// Нормализованный синоним уникален глобально: он существует ради однозначного ответа
+// «чьё это наименование», и один текст не может указывать на двух контрагентов.
+export const counterpartySynonyms = pgTable(
+  'counterparty_synonyms',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    counterpartyId: uuid('counterparty_id')
+      .notNull()
+      .references(() => counterparties.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    normalizedName: text('normalized_name').generatedAlwaysAs(
+      sql`counterparty_name_normalize(name)`,
+    ),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    nameNotBlank: check(
+      'counterparty_synonyms_name_not_blank_check',
+      sql`counterparty_name_normalize(${t.name}) <> ''`,
+    ),
+    nameUnique: uniqueIndex('counterparty_synonyms_name_unique').on(t.normalizedName),
+    counterpartyIdx: index('counterparty_synonyms_counterparty_idx').on(t.counterpartyId),
+    nameTrgm: index('counterparty_synonyms_name_trgm').using('gin', sql`${t.name} gin_trgm_ops`),
+  }),
+);
+
+// ── Операторы вывоза на объекте (ADR 0010, миграция 0027) ──
+// Многие-ко-многим: на объекте работает несколько операторов, оператор обслуживает несколько
+// объектов. Связь сужает выбор исполнителя заявки вывоза; требование «тип контрагента =
+// operator» держит сервис (как и у wasteRequests.operatorCounterpartyId).
+export const constructionObjectOperators = pgTable(
+  'construction_object_operators',
+  {
+    constructionObjectId: uuid('construction_object_id')
+      .notNull()
+      .references(() => constructionObjects.id, { onDelete: 'cascade' }),
+    counterpartyId: uuid('counterparty_id')
+      .notNull()
+      .references(() => counterparties.id, { onDelete: 'cascade' }),
+    createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.constructionObjectId, t.counterpartyId] }),
+    counterpartyIdx: index('construction_object_operators_counterparty_idx').on(t.counterpartyId),
   }),
 );
 
@@ -441,6 +548,12 @@ export const wasteRequests = pgTable(
     deliveryTimeUnspecified: boolean('delivery_time_unspecified').notNull().default(false),
     comment: text('comment').notNull().default(''),
     status: requestStatusEnum('status').notNull().default('new'),
+    // Кто вывозит (ADR 0010): контрагент-оператор, назначенный менеджером/диспетчером. NULL —
+    // оператор ещё не выбран. Он же определяет, кто из операторов видит заявку. Тип контрагента
+    // (operator) проверяет сервис: составной FK потребовал бы хранить тип в самой заявке.
+    operatorCounterpartyId: uuid('operator_counterparty_id').references(() => counterparties.id, {
+      onDelete: 'restrict',
+    }),
     createdBy: uuid('created_by')
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
@@ -454,6 +567,9 @@ export const wasteRequests = pgTable(
   (t) => ({
     numUnique: uniqueIndex('waste_requests_num_unique').on(t.num),
     statusIdx: index('waste_requests_status_idx').on(t.status),
+    operatorIdx: index('waste_requests_operator_idx')
+      .on(t.operatorCounterpartyId)
+      .where(sql`${t.operatorCounterpartyId} IS NOT NULL`),
     objectIdx: index('waste_requests_object_idx').on(t.objectId),
     deliveryIdx: index('waste_requests_delivery_idx').on(t.deliveryAt),
     createdAtIdx: index('waste_requests_created_at_idx').on(t.createdAt),
@@ -512,6 +628,8 @@ export const requestStatusHistory = pgTable('request_status_history', {
     .notNull()
     .references(() => users.id, { onDelete: 'restrict' }),
   changedAt: timestamp('changed_at', { withTimezone: true }).notNull().defaultNow(),
+  // Комментарий к переходу; при отмене — обязательная причина (миграция 0024).
+  comment: text('comment').notNull().default(''),
 });
 
 // ── Заявки на технику (заказ спецтехники / грузоперевозки) ──
@@ -1035,6 +1153,9 @@ export type VehicleRow = typeof vehicles.$inferSelect;
 export type VehicleRequestRow = typeof vehicleRequests.$inferSelect;
 export type SpecialEquipmentRequestDetailsRow = typeof specialEquipmentRequestDetails.$inferSelect;
 export type FreightTransportRequestDetailsRow = typeof freightTransportRequestDetails.$inferSelect;
+export type CounterpartyRow = typeof counterparties.$inferSelect;
+export type CounterpartySynonymRow = typeof counterpartySynonyms.$inferSelect;
+export type ObjectOperatorRow = typeof constructionObjectOperators.$inferSelect;
 export type PersonRow = typeof persons.$inferSelect;
 export type PersonEmploymentRow = typeof personEmployments.$inferSelect;
 export type SpecializationRow = typeof specializations.$inferSelect;

@@ -22,7 +22,10 @@ export default function App() {
           <Route element={<AppLayout />}>
             <Route index element={<Navigate to="/waste" replace />} />
             <Route path="/waste" element={<WasteRequestsPage />} />
-            <Route path="/vehicle-requests" element={<VehicleRequestsPage />} />
+            {/* Оператору вывоза модуль «Заказ ТС» недоступен (ADR 0010). */}
+            <Route element={<RequireRole roles={['admin', 'manager', 'dispatcher', 'shtab']} />}>
+              <Route path="/vehicle-requests" element={<VehicleRequestsPage />} />
+            </Route>
             <Route element={<RequireRole roles={['admin', 'manager']} />}>
               <Route path="/directories" element={<DirectoriesPage />} />
             </Route>

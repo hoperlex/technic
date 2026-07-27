@@ -26,10 +26,16 @@ export const createUserSchema = z
     password: z.string().min(10).max(200),
     isActive: z.boolean().default(true),
     constructionObjectId: uuidSchema.nullish(),
+    /** Контрагент учётки: обязателен для «Оператора» — задаёт, чьи заявки он видит (ADR 0010). */
+    counterpartyId: uuidSchema.nullish(),
   })
   .refine((v) => v.role !== 'shtab' || !!v.constructionObjectId, {
     message: 'Для роли «Штаб» обязателен объект',
     path: ['constructionObjectId'],
+  })
+  .refine((v) => v.role !== 'operator' || !!v.counterpartyId, {
+    message: 'Для роли «Оператор» обязателен контрагент',
+    path: ['counterpartyId'],
   });
 export type CreateUserInput = z.infer<typeof createUserSchema>;
 
@@ -38,6 +44,7 @@ export const updateUserSchema = z.object({
   role: roleSchema.optional(),
   isActive: z.boolean().optional(),
   constructionObjectId: uuidSchema.nullish(),
+  counterpartyId: uuidSchema.nullish(),
 });
 export type UpdateUserInput = z.infer<typeof updateUserSchema>;
 
@@ -54,6 +61,8 @@ export interface UserDto {
   mustChangePassword: boolean;
   constructionObjectId: string | null;
   constructionObjectName: string | null;
+  counterpartyId: string | null;
+  counterpartyName: string | null;
   createdAt: string;
   updatedAt: string;
 }

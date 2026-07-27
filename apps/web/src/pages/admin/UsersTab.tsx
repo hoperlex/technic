@@ -3,7 +3,7 @@ import { App, Button, Dropdown, Form, Input, Select, Space, Switch } from 'antd'
 import { MoreOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ROLES, roleColors, roleLabels, type UserDto } from '@technic/contracts';
-import { objectsApi, usersApi } from '../../api/resources';
+import { counterpartiesApi, objectsApi, usersApi } from '../../api/resources';
 import { DataTable } from '../../components/DataTable';
 import { FormModal } from '../../components/FormModal';
 import { PageTableLayout } from '../../components/PageTableLayout';
@@ -19,6 +19,8 @@ interface UserFormValues {
   role: (typeof ROLES)[number];
   password?: string;
   constructionObjectId?: string | null;
+  /** Контрагент учётки: обязателен для роли «Оператор» (ADR 0010). */
+  counterpartyId?: string | null;
   isActive: boolean;
 }
 
@@ -53,9 +55,26 @@ export function UsersTab() {
         sortOrder: 'asc',
       }),
   });
+  // Оператора привязываем только к контрагентам-операторам: у подрядчика заявок на вывоз нет.
+  const { data: operators } = useQuery({
+    queryKey: ['counterparties', 'operators-for-select'],
+    queryFn: () =>
+      counterpartiesApi.list({
+        page: 1,
+        pageSize: 500,
+        type: 'operator',
+        isActive: 'true',
+        sortBy: 'name',
+        sortOrder: 'asc',
+      }),
+  });
   const objectOptions = (objects?.items ?? []).map((o) => ({
     value: o.id,
     label: `${o.code} — ${o.name}`,
+  }));
+  const operatorOptions = (operators?.items ?? []).map((c) => ({
+    value: c.id,
+    label: `${c.name} (ИНН ${c.inn})`,
   }));
   const roleOptions = ROLES.map((r) => ({ value: r, label: roleLabels[r] }));
 
@@ -83,6 +102,7 @@ export function UsersTab() {
       // а активация без осознанно выбранной роли запрещена — пусть выберет администратор.
       role: r.role ?? undefined,
       constructionObjectId: r.constructionObjectId,
+      counterpartyId: r.counterpartyId,
       isActive: r.isActive,
     });
     setOpen(true);
@@ -94,6 +114,7 @@ export function UsersTab() {
         ...values,
         constructionObjectId:
           values.role === 'shtab' ? (values.constructionObjectId ?? null) : null,
+        counterpartyId: values.role === 'operator' ? (values.counterpartyId ?? null) : null,
       };
       if (record) {
         const { password: _pw, email: _email, ...rest } = payload;
@@ -211,6 +232,14 @@ export function UsersTab() {
       sortable: false,
       render: (v) => (v ? String(v) : '—'),
     }),
+    textColumn<UserDto>({
+      key: 'counterpartyName',
+      title: 'Контрагент (Оператор)',
+      dataIndex: 'counterpartyName',
+      searchable: false,
+      sortable: false,
+      render: (v) => (v ? String(v) : '—'),
+    }),
     boolBadgeColumn<UserDto>({
       key: 'isActive',
       title: 'Активен',
@@ -285,6 +314,21 @@ export function UsersTab() {
               rules={[{ required: true, message: 'Выберите объект' }]}
             >
               <Select options={objectOptions} showSearch optionFilterProp="label" />
+            </Form.Item>
+          ) : null}
+          {watchRole === 'operator' ? (
+            <Form.Item
+              name="counterpartyId"
+              label="Контрагент (для роли «Оператор»)"
+              tooltip="Оператор видит только заявки, назначенные этому контрагенту"
+              rules={[{ required: true, message: 'Выберите контрагента' }]}
+              extra={
+                operatorOptions.length === 0
+                  ? 'Нет активных контрагентов типа «Оператор» — заведите его в справочнике'
+                  : undefined
+              }
+            >
+              <Select options={operatorOptions} showSearch optionFilterProp="label" />
             </Form.Item>
           ) : null}
           {!record ? (

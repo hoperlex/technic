@@ -15,7 +15,7 @@ import {
 } from '../db/schema';
 import { err } from '../lib/errors';
 import { requirePrincipal } from '../auth/plugin';
-import { requestVisibilityWhere } from '../lib/access';
+import { operatorVisibilityWhere, requestVisibilityWhere } from '../lib/access';
 import { isFileLinked } from '../services/request-files';
 import type { Principal } from '../auth/principal';
 import { buildObjectKey, deleteObject, headObject, presignGet, presignPut } from '../lib/s3';
@@ -60,10 +60,13 @@ async function canAccessFile(p: Principal, fileId: string, uploadedBy: string | 
         eq(requestFiles.fileId, fileId),
         isNull(wasteRequests.deletedAt),
         requestVisibilityWhere(p, wasteRequests.objectId),
+        operatorVisibilityWhere(p, wasteRequests.operatorCounterpartyId),
       ),
     )
     .limit(1);
   if (waste.length > 0) return true;
+  // Заказ ТС оператору недоступен целиком (ADR 0010) — значит и вложения его заявок.
+  if (p.role === 'operator') return false;
   const vehicle = await db
     .select({ id: vehicleRequests.id })
     .from(vehicleRequestFiles)

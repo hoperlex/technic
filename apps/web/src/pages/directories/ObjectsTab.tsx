@@ -1,9 +1,9 @@
 import { useState } from 'react';
-import { App, Button, Form, Input, Space, Switch } from 'antd';
+import { App, Button, Form, Input, Select, Space, Switch, Typography } from 'antd';
 import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { CreateObjectInput, ObjectDto } from '@technic/contracts';
-import { objectsApi } from '../../api/resources';
+import { counterpartiesApi, objectsApi } from '../../api/resources';
 import { AddressAutoComplete } from '../../components/AddressAutoComplete';
 import { DataTable } from '../../components/DataTable';
 import { FormModal } from '../../components/FormModal';
@@ -27,6 +27,22 @@ export function ObjectsTab() {
     queryFn: () => objectsApi.list(params),
   });
 
+  // Операторы вывоза для привязки (ADR 0010). Неактивных из списка не убираем: привязка
+  // описывает сотрудничество с объектом, а не готовность взять заявку прямо сейчас, — иначе
+  // уже заведённая привязка осталась бы в форме без наименования.
+  const { data: operatorsData } = useQuery({
+    queryKey: ['counterparties', 'operators-for-objects'],
+    queryFn: () =>
+      counterpartiesApi.list({
+        page: 1,
+        pageSize: 500,
+        type: 'operator',
+        sortBy: 'name',
+        sortOrder: 'asc',
+      }),
+  });
+  const operatorOptions = (operatorsData?.items ?? []).map((c) => ({ value: c.id, label: c.name }));
+
   const [open, setOpen] = useState(false);
   const [record, setRecord] = useState<ObjectDto | null>(null);
   const [form] = Form.useForm<CreateObjectInput>();
@@ -34,12 +50,19 @@ export function ObjectsTab() {
   const openCreate = () => {
     setRecord(null);
     form.resetFields();
-    form.setFieldsValue({ isActive: true } as CreateObjectInput);
+    form.setFieldsValue({ isActive: true, operatorIds: [] } as Partial<CreateObjectInput>);
     setOpen(true);
   };
   const openEdit = (r: ObjectDto) => {
     setRecord(r);
-    form.setFieldsValue(r);
+    form.resetFields();
+    form.setFieldsValue({
+      code: r.code,
+      name: r.name,
+      address: r.address,
+      isActive: r.isActive,
+      operatorIds: r.operators.map((o) => o.id),
+    });
     setOpen(true);
   };
 
@@ -49,6 +72,8 @@ export function ObjectsTab() {
     onSuccess: () => {
       message.success('Сохранено');
       void qc.invalidateQueries({ queryKey: ['objects'] });
+      // Та же привязка видна в карточке контрагента — его список тоже устарел.
+      void qc.invalidateQueries({ queryKey: ['counterparties'] });
       setOpen(false);
     },
     onError: (e) => message.error(errorMessage(e)),
@@ -76,6 +101,21 @@ export function ObjectsTab() {
     textColumn<ObjectDto>({ key: 'code', title: 'Код', dataIndex: 'code', width: 160 }),
     textColumn<ObjectDto>({ key: 'name', title: 'Название', dataIndex: 'name' }),
     textColumn<ObjectDto>({ key: 'address', title: 'Адрес', dataIndex: 'address', ellipsis: true }),
+    textColumn<ObjectDto>({
+      key: 'operators',
+      title: 'Операторы вывоза',
+      dataIndex: 'operators',
+      sortable: false,
+      searchable: false,
+      width: 260,
+      render: (_v, r) =>
+        r.operators.length === 0 ? (
+          // Пустой список — не ошибка: он просто не сужает выбор исполнителя в заявке.
+          <Typography.Text type="secondary">Все</Typography.Text>
+        ) : (
+          r.operators.map((o) => o.name).join(' · ')
+        ),
+    }),
     boolBadgeColumn<ObjectDto>({
       key: 'isActive',
       title: 'Активен',
@@ -131,6 +171,20 @@ export function ObjectsTab() {
           </Form.Item>
           <Form.Item name="address" label="Адрес">
             <AddressAutoComplete placeholder="Начните вводить адрес" maxLength={500} />
+          </Form.Item>
+          <Form.Item
+            name="operatorIds"
+            label="Операторы вывоза"
+            tooltip="Контрагенты, которые вывозят мусор с объекта; из них выбирается исполнитель заявки"
+            extra="Пусто — в заявке доступны все операторы"
+          >
+            <Select
+              mode="multiple"
+              options={operatorOptions}
+              showSearch
+              optionFilterProp="label"
+              placeholder="Не ограничивать"
+            />
           </Form.Item>
           <Form.Item name="isActive" label="Активен" valuePropName="checked">
             <Switch />

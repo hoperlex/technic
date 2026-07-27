@@ -11,6 +11,8 @@ export interface Principal {
   isActive: boolean;
   mustChangePassword: boolean;
   constructionObjectId: string | null;
+  /** Контрагент учётки (ADR 0010): у роли «Оператор» задаёт, чьи заявки ему видны. */
+  counterpartyId: string | null;
   authVersion: number;
 }
 
@@ -29,6 +31,7 @@ export async function loadPrincipal(userId: string): Promise<Principal | null> {
     isActive: u.isActive,
     mustChangePassword: u.mustChangePassword,
     constructionObjectId: u.constructionObjectId,
+    counterpartyId: u.counterpartyId,
     authVersion: u.authVersion,
   };
 }

@@ -173,6 +173,19 @@ describe('vehicle-requests: обновление', () => {
       'confirmed',
     );
   });
+
+  it('отмена требует причины', () => {
+    expect(() =>
+      changeVehicleRequestStatusSchema.parse({ status: 'cancelled', version: 2 }),
+    ).toThrow();
+    expect(
+      changeVehicleRequestStatusSchema.parse({
+        status: 'cancelled',
+        comment: 'Техника не нужна',
+        version: 2,
+      }).comment,
+    ).toBe('Техника не нужна');
+  });
 });
 
 describe('vehicle-requests: адрес (DaData, ADR 0006 — жёсткая модель)', () => {

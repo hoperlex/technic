@@ -3,7 +3,6 @@ import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { and, asc, count, eq, gte, inArray, isNull, lte, or, sql, type SQL } from 'drizzle-orm';
 import {
-  canTransitionStatus,
   changeVehicleRequestStatusSchema,
   createVehicleRequestSchema,
   type FileDto,
@@ -29,7 +28,12 @@ import {
 import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
-import { assertShtabScope, canChangeStatus, requestVisibilityWhere } from '../lib/access';
+import {
+  assertShtabScope,
+  assertTransitionAllowed,
+  canChangeStatus,
+  requestVisibilityWhere,
+} from '../lib/access';
 import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
 import {
   assertFilesAttachable,
@@ -61,6 +65,15 @@ const requestSelect = {
   vehicleTypeName: vehicleTypes.name,
   status: vehicleRequests.status,
   comment: vehicleRequests.comment,
+  // Причина отмены живёт в истории статусов; актуальна последняя и только у отменённых заявок.
+  cancelReason: sql<string | null>`
+    CASE WHEN ${vehicleRequests.status} = 'cancelled' THEN (
+      SELECT h.comment
+      FROM ${vehicleRequestStatusHistory} h
+      WHERE h.vehicle_request_id = ${vehicleRequests.id} AND h.to_status = 'cancelled'
+      ORDER BY h.changed_at DESC
+      LIMIT 1
+    ) END`.as('cancel_reason'),
   version: vehicleRequests.version,
   createdBy: vehicleRequests.createdBy,
   createdByName: users.fullName,
@@ -153,6 +166,7 @@ function toDto(r: RequestRow, fileList: FileDto[]): VehicleRequestDto {
     vehicleTypeName: r.vehicleTypeName,
     status: r.status,
     comment: r.comment,
+    cancelReason: r.cancelReason || null,
     files: fileList,
     version: r.version,
     createdBy: r.createdBy,
@@ -326,7 +340,11 @@ function dateFilters(
 
 export default async function vehicleRequestsRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
-  const auth = { preHandler: [app.authenticate] };
+  // Модуль «Заказ ТС» оператору вывоза мусора недоступен целиком (ADR 0010): роли перечислены
+  // явно, чтобы новая роль по умолчанию не получала доступ.
+  const auth = {
+    preHandler: [app.authenticate, app.requireRoles('admin', 'manager', 'dispatcher', 'shtab')],
+  };
 
   // ── Список (единый по обоим типам; requestType — необязательное сужение) ──
   r.get('/', { ...auth, schema: { querystring: vehicleRequestListQuerySchema } }, async (req) => {
@@ -573,16 +591,14 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
     async (req) => {
       const p = requirePrincipal(req);
       if (!canChangeStatus(p)) throw err.forbidden('Недостаточно прав для смены статуса');
-      const { status, version } = req.body;
+      const { status, comment, version } = req.body;
       const [existing] = await db
         .select()
         .from(vehicleRequests)
         .where(eq(vehicleRequests.id, req.params.id));
       if (!existing || existing.deletedAt) throw err.notFound('Заявка не найдена');
       if (existing.status === status) return (await getDto(existing.id))!;
-      if (!canTransitionStatus(existing.status, status)) {
-        throw err.badRequest(`Недопустимый переход статуса: ${existing.status} → ${status}`);
-      }
+      assertTransitionAllowed(existing.status, status, p.role);
       await db.transaction(async (tx) => {
         const [updated] = await tx
           .update(vehicleRequests)
@@ -595,6 +611,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           fromStatus: existing.status,
           toStatus: status,
           changedBy: p.id,
+          comment,
         });
       });
       await writeAudit({
@@ -602,7 +619,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         action: 'vehicle_request.status',
         entityType: 'vehicle_request',
         entityId: existing.id,
-        metadata: { from: existing.status, to: status },
+        metadata: { from: existing.status, to: status, comment },
       });
       return (await getDto(existing.id))!;
     },

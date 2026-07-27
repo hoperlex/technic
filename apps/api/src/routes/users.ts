@@ -10,7 +10,7 @@ import {
   type UserDto,
 } from '@technic/contracts';
 import { db } from '../db/client';
-import { constructionObjects, users } from '../db/schema';
+import { constructionObjects, counterparties, users } from '../db/schema';
 import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
@@ -29,6 +29,8 @@ interface UserRowJoined {
   mustChangePassword: boolean;
   constructionObjectId: string | null;
   objectName: string | null;
+  counterpartyId: string | null;
+  counterpartyName: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -43,6 +45,8 @@ function toDto(r: UserRowJoined): UserDto {
     mustChangePassword: r.mustChangePassword,
     constructionObjectId: r.constructionObjectId,
     constructionObjectName: r.objectName,
+    counterpartyId: r.counterpartyId,
+    counterpartyName: r.counterpartyName,
     createdAt: r.createdAt.toISOString(),
     updatedAt: r.updatedAt.toISOString(),
   };
@@ -57,17 +61,56 @@ const selectCols = {
   mustChangePassword: users.mustChangePassword,
   constructionObjectId: users.constructionObjectId,
   objectName: constructionObjects.name,
+  counterpartyId: users.counterpartyId,
+  counterpartyName: counterparties.name,
   createdAt: users.createdAt,
   updatedAt: users.updatedAt,
 };
 
-async function fetchUserDto(id: string): Promise<UserDto | null> {
-  const [row] = await db
+function usersQuery() {
+  return db
     .select(selectCols)
     .from(users)
     .leftJoin(constructionObjects, eq(users.constructionObjectId, constructionObjects.id))
-    .where(eq(users.id, id));
+    .leftJoin(counterparties, eq(users.counterpartyId, counterparties.id));
+}
+
+async function fetchUserDto(id: string): Promise<UserDto | null> {
+  const [row] = await usersQuery().where(eq(users.id, id));
   return row ? toDto(row) : null;
+}
+
+/**
+ * Контрагент учётки (ADR 0010). Для «Оператора» он обязателен и обязан быть оператором вывоза:
+ * учётка подрядчика с ролью оператора видела бы чужие заявки. Для остальных ролей поле пустое —
+ * область видимости у них задаётся иначе (объект у «Штаба») или не ограничена.
+ */
+async function resolveCounterpartyId(
+  role: UserDto['role'],
+  counterpartyId: string | null | undefined,
+): Promise<string | null> {
+  if (role !== 'operator') return null;
+  if (!counterpartyId) {
+    throw err.badRequest('Для роли «Оператор» обязателен контрагент', {
+      counterpartyId: 'Выберите контрагента',
+    });
+  }
+  const [cp] = await db
+    .select({
+      type: counterparties.type,
+      isActive: counterparties.isActive,
+      deletedAt: counterparties.deletedAt,
+    })
+    .from(counterparties)
+    .where(eq(counterparties.id, counterpartyId));
+  if (!cp || cp.deletedAt) throw err.badRequest('Контрагент не найден');
+  if (cp.type !== 'operator') {
+    throw err.badRequest('Учётку оператора можно привязать только к контрагенту-оператору', {
+      counterpartyId: 'Нужен контрагент типа «Оператор»',
+    });
+  }
+  if (!cp.isActive) throw err.badRequest('Контрагент неактивен');
+  return counterpartyId;
 }
 
 export default async function usersRoutes(app: FastifyInstance): Promise<void> {
@@ -92,10 +135,7 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
     };
     const p = pageParams(q);
     const [rows, totalRows] = await Promise.all([
-      db
-        .select(selectCols)
-        .from(users)
-        .leftJoin(constructionObjects, eq(users.constructionObjectId, constructionObjects.id))
+      usersQuery()
         .where(where)
         .orderBy(orderByFrom(sortCols, q.sortBy, q.sortOrder, 'createdAt'))
         .limit(p.limit)
@@ -115,6 +155,7 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
     const dup = await db.select({ id: users.id }).from(users).where(eq(users.email, body.email));
     if (dup.length > 0) throw err.conflict('Пользователь с таким email уже существует');
     const passwordHash = await hashPassword(body.password);
+    const counterpartyId = await resolveCounterpartyId(body.role, body.counterpartyId);
     const [created] = await db
       .insert(users)
       .values({
@@ -124,6 +165,7 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
         passwordHash,
         isActive: body.isActive,
         constructionObjectId: body.constructionObjectId ?? null,
+        counterpartyId,
       })
       .returning({ id: users.id });
     await writeAudit({
@@ -168,6 +210,10 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
         constructionObjectId: 'Укажите объект',
       });
     }
+    const nextCounterpartyId = await resolveCounterpartyId(
+      nextRole,
+      body.counterpartyId !== undefined ? body.counterpartyId : existing.counterpartyId,
+    );
 
     const roleChanged = body.role !== undefined && body.role !== existing.role;
     const deactivated = body.isActive === false && existing.isActive;
@@ -180,6 +226,7 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
         role: nextRole,
         isActive: body.isActive ?? existing.isActive,
         constructionObjectId: nextObjectId ?? null,
+        counterpartyId: nextCounterpartyId,
         authVersion: bumpAuth ? existing.authVersion + 1 : existing.authVersion,
         updatedAt: new Date(),
       })

@@ -1,6 +1,8 @@
 import type {
   ContainerTypeDto,
+  CounterpartyDto,
   CreateContainerTypeInput,
+  CreateCounterpartyInput,
   CreateObjectInput,
   CreateUserInput,
   CreateVehicleInput,
@@ -13,6 +15,7 @@ import type {
   RequestStatus,
   RequestType,
   UpdateContainerTypeInput,
+  UpdateCounterpartyInput,
   UpdateObjectInput,
   UpdateUserInput,
   UpdateVehicleInput,
@@ -50,6 +53,17 @@ export const objectsApi = {
   update: (id: string, body: UpdateObjectInput) =>
     apiFetch<ObjectDto>(`/objects/${id}`, { method: 'PATCH', body }),
   remove: (id: string) => apiFetch<ObjectDto>(`/objects/${id}`, { method: 'DELETE' }),
+};
+
+export const counterpartiesApi = {
+  list: (q: Query) => apiFetch<ListResult<CounterpartyDto>>('/counterparties', { query: q }),
+  create: (body: CreateCounterpartyInput) =>
+    apiFetch<CounterpartyDto>('/counterparties', { method: 'POST', body }),
+  update: (id: string, body: UpdateCounterpartyInput) =>
+    apiFetch<CounterpartyDto>(`/counterparties/${id}`, { method: 'PATCH', body }),
+  remove: (id: string) => apiFetch<{ ok: boolean }>(`/counterparties/${id}`, { method: 'DELETE' }),
+  restore: (id: string) =>
+    apiFetch<CounterpartyDto>(`/counterparties/${id}/restore`, { method: 'POST' }),
 };
 
 export const containerTypesApi = {
@@ -94,10 +108,11 @@ export const vehicleRequestsApi = {
     apiFetch<VehicleRequestDto>('/vehicle-requests', { method: 'POST', body }),
   update: (id: string, body: UpdateVehicleRequestInput) =>
     apiFetch<VehicleRequestDto>(`/vehicle-requests/${id}`, { method: 'PATCH', body }),
-  changeStatus: (id: string, status: RequestStatus, version: number) =>
+  /** `comment` уходит в историю статусов; при отмене это обязательная причина. */
+  changeStatus: (id: string, status: RequestStatus, version: number, comment = '') =>
     apiFetch<VehicleRequestDto>(`/vehicle-requests/${id}/status`, {
       method: 'PATCH',
-      body: { status, version },
+      body: { status, comment, version },
     }),
   remove: (id: string) =>
     apiFetch<{ ok: boolean; mode: string }>(`/vehicle-requests/${id}`, { method: 'DELETE' }),
@@ -111,6 +126,8 @@ export interface WasteRequestPayload {
   containerTypeId?: string;
   wasteTypeId?: string;
   volumeM3?: number;
+  /** Контрагент-оператор вывоза; можно назначить позже (ADR 0010). */
+  operatorCounterpartyId?: string;
   deliveryAt: string;
   comment?: string;
   fileIds?: string[];
@@ -122,6 +139,7 @@ export interface WasteRequestUpdatePayload {
   containerTypeId?: string | null;
   wasteTypeId?: string | null;
   volumeM3?: number | null;
+  operatorCounterpartyId?: string | null;
   deliveryAt?: string;
   comment?: string;
   addFileIds?: string[];
@@ -152,10 +170,17 @@ export const wasteRequestsApi = {
     apiFetch<WasteRequestDto>('/waste-requests', { method: 'POST', body }),
   update: (id: string, body: WasteRequestUpdatePayload) =>
     apiFetch<WasteRequestDto>(`/waste-requests/${id}`, { method: 'PATCH', body }),
-  changeStatus: (id: string, status: RequestStatus, version: number) =>
+  /** Назначение/снятие оператора вывоза; предмет заявки и тариф не пересчитываются (ADR 0010). */
+  assignOperator: (id: string, operatorCounterpartyId: string | null, version: number) =>
+    apiFetch<WasteRequestDto>(`/waste-requests/${id}/operator`, {
+      method: 'PATCH',
+      body: { operatorCounterpartyId, version },
+    }),
+  /** `comment` уходит в историю статусов; при отмене это обязательная причина. */
+  changeStatus: (id: string, status: RequestStatus, version: number, comment = '') =>
     apiFetch<WasteRequestDto>(`/waste-requests/${id}/status`, {
       method: 'PATCH',
-      body: { status, version },
+      body: { status, comment, version },
     }),
   remove: (id: string) =>
     apiFetch<{ ok: boolean; mode: string }>(`/waste-requests/${id}`, { method: 'DELETE' }),

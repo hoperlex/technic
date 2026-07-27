@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { requestStatusSchema } from './enums';
+import { requestStatusSchema, statusChangeRequiresReason } from './enums';
 import type { RequestStatus } from './enums';
 import { baseListQuery, uuidSchema } from './common';
 import type { FileDto } from './files';
@@ -237,12 +237,20 @@ export const updateVehicleRequestSchema = z
   });
 export type UpdateVehicleRequestInput = z.infer<typeof updateVehicleRequestSchema>;
 
+// Комментарий пишется в историю (vehicle_request_status_history.comment); при отмене
+// он обязателен и играет роль причины — как и у заявок на вывоз мусора.
 export const changeVehicleRequestStatusSchema = z
   .object({
     status: requestStatusSchema,
+    comment: commentSchema.optional().default(''),
     version: z.number().int().nonnegative(),
   })
-  .strict();
+  .strict()
+  .superRefine((v, ctx) => {
+    if (statusChangeRequiresReason(v.status) && !v.comment) {
+      ctx.addIssue({ code: 'custom', path: ['comment'], message: 'Укажите причину отмены' });
+    }
+  });
 export type ChangeVehicleRequestStatusInput = z.infer<typeof changeVehicleRequestStatusSchema>;
 
 // ── Список ──
@@ -290,6 +298,8 @@ export interface VehicleRequestBaseDto {
 
   status: RequestStatus;
   comment: string;
+  /** Причина отмены из истории статусов; заполнена только у отменённых заявок. */
+  cancelReason: string | null;
   files: FileDto[];
   version: number;
 

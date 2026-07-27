@@ -1,9 +1,9 @@
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
-import { and, count, eq, gte, inArray, isNull, lte } from 'drizzle-orm';
+import { and, count, eq, gte, inArray, isNull, lte, sql } from 'drizzle-orm';
 import {
-  canTransitionStatus,
+  assignWasteOperatorSchema,
   changeWasteRequestStatusSchema,
   createWasteRequestSchema,
   type FileDto,
@@ -17,6 +17,7 @@ import { db } from '../db/client';
 import {
   constructionObjects,
   containerTypes,
+  counterparties,
   files,
   presentContainers,
   requestFiles,
@@ -28,7 +29,16 @@ import {
 import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
-import { assertShtabScope, canChangeStatus, requestVisibilityWhere } from '../lib/access';
+import {
+  assertNotOperator,
+  assertOperatorScope,
+  assertShtabScope,
+  assertTransitionAllowed,
+  canChangeStatus,
+  canManageRequests,
+  operatorVisibilityWhere,
+  requestVisibilityWhere,
+} from '../lib/access';
 import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
 import {
   assertFilesAttachable,
@@ -38,6 +48,7 @@ import {
   scheduleFilesDeletion,
 } from '../services/request-files';
 import { priceWasteRequest, toNum } from '../services/waste-pricing';
+import { assertOperatorServesObject } from '../services/object-operators';
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -61,6 +72,19 @@ const requestSelect = {
   deliveryTimeUnspecified: wasteRequests.deliveryTimeUnspecified,
   comment: wasteRequests.comment,
   status: wasteRequests.status,
+  // Причина отмены живёт в истории статусов; в списке нужна последняя и только у отменённых
+  // заявок — после отката администратором прежняя причина к текущему статусу не относится.
+  cancelReason: sql<string | null>`
+    CASE WHEN ${wasteRequests.status} = 'cancelled' THEN (
+      SELECT h.comment
+      FROM ${requestStatusHistory} h
+      WHERE h.request_id = ${wasteRequests.id} AND h.to_status = 'cancelled'
+      ORDER BY h.changed_at DESC
+      LIMIT 1
+    ) END`.as('cancel_reason'),
+  // Кто вывозит (ADR 0010): контрагент-оператор; он же определяет видимость заявки для оператора.
+  operatorCounterpartyId: wasteRequests.operatorCounterpartyId,
+  operatorName: counterparties.name,
   version: wasteRequests.version,
   createdBy: wasteRequests.createdBy,
   createdByName: users.fullName,
@@ -117,10 +141,14 @@ function toDto(r: RequestRow, fileList: FileDto[]): WasteRequestDto {
     volumeM3: r.volumeM3,
     pricePerM3: toNum(r.pricePerM3),
     amount: toNum(r.amount),
+    operatorCounterpartyId: r.operatorCounterpartyId,
+    operatorName: r.operatorName,
     deliveryAt: r.deliveryAt.toISOString(),
     deliveryTimeUnspecified: r.deliveryTimeUnspecified,
     comment: r.comment,
     status: r.status,
+    // Пустой комментарий отмены (история до миграции 0024) читается как «причина не указана».
+    cancelReason: r.cancelReason || null,
     files: fileList,
     version: r.version,
     createdBy: r.createdBy,
@@ -131,8 +159,9 @@ function toDto(r: RequestRow, fileList: FileDto[]): WasteRequestDto {
   };
 }
 
-// Оба справочника присоединяются left join: тип контейнера/машины опционален в зависимости от
-// типа заявки, а тип мусора есть только у тарифицируемых операций (ADR 0009).
+// Справочники присоединяются left join: тип контейнера/машины опционален в зависимости от типа
+// заявки, тип мусора есть только у тарифицируемых операций (ADR 0009), а оператор может быть
+// ещё не назначен (ADR 0010).
 function baseQuery() {
   return db
     .select(requestSelect)
@@ -140,7 +169,36 @@ function baseQuery() {
     .innerJoin(constructionObjects, eq(wasteRequests.objectId, constructionObjects.id))
     .leftJoin(containerTypes, eq(wasteRequests.containerTypeId, containerTypes.id))
     .leftJoin(wasteTypes, eq(wasteRequests.wasteTypeId, wasteTypes.id))
+    .leftJoin(counterparties, eq(wasteRequests.operatorCounterpartyId, counterparties.id))
     .innerJoin(users, eq(wasteRequests.createdBy, users.id));
+}
+
+/**
+ * Оператор заявки — контрагент типа «Оператор» (ADR 0010). Подрядчик в этом поле означал бы,
+ * что заявку увидит не тот, кто её выполняет: видимость оператора считается по этой колонке.
+ */
+async function assertOperatorAssignable(
+  tx: Tx,
+  counterpartyId: string,
+  objectId: string,
+): Promise<void> {
+  const [cp] = await tx
+    .select({
+      type: counterparties.type,
+      isActive: counterparties.isActive,
+      deletedAt: counterparties.deletedAt,
+    })
+    .from(counterparties)
+    .where(eq(counterparties.id, counterpartyId));
+  if (!cp || cp.deletedAt) throw err.badRequest('Контрагент не найден');
+  if (cp.type !== 'operator') {
+    throw err.badRequest('Оператором заявки может быть только контрагент типа «Оператор»', {
+      operatorCounterpartyId: 'Нужен контрагент типа «Оператор»',
+    });
+  }
+  if (!cp.isActive) throw err.badRequest('Контрагент неактивен');
+  // Исполнитель должен работать на объекте заявки (ADR 0010, миграция 0027).
+  await assertOperatorServesObject(tx, objectId, counterpartyId);
 }
 
 /** Нормализованный набор «предметных» колонок заявки, включая снимок цены (ADR 0009). */
@@ -304,9 +362,13 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
     const where = and(
       showDeleted ? undefined : isNull(wasteRequests.deletedAt),
       requestVisibilityWhere(p, wasteRequests.objectId),
+      operatorVisibilityWhere(p, wasteRequests.operatorCounterpartyId),
       q.status ? eq(wasteRequests.status, q.status) : undefined,
       q.objectId ? eq(wasteRequests.objectId, q.objectId) : undefined,
       q.containerTypeId ? eq(wasteRequests.containerTypeId, q.containerTypeId) : undefined,
+      q.operatorCounterpartyId
+        ? eq(wasteRequests.operatorCounterpartyId, q.operatorCounterpartyId)
+        : undefined,
       q.requestType ? eq(wasteRequests.requestType, q.requestType) : undefined,
       q.num ? eq(wasteRequests.num, q.num) : undefined,
       q.deliveryFrom ? gte(wasteRequests.deliveryAt, q.deliveryFrom) : undefined,
@@ -324,6 +386,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       requestType: wasteRequests.requestType,
       deliveryAt: wasteRequests.deliveryAt,
       status: wasteRequests.status,
+      operatorName: counterparties.name,
       createdAt: wasteRequests.createdAt,
     };
     const p2 = pageParams(q);
@@ -356,6 +419,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       const where = and(
         isNull(wasteRequests.deletedAt),
         requestVisibilityWhere(p, wasteRequests.objectId),
+        operatorVisibilityWhere(p, wasteRequests.operatorCounterpartyId),
         inArray(wasteRequests.id, db.select({ id: presentContainers.id }).from(presentContainers)),
         q.objectId ? eq(wasteRequests.objectId, q.objectId) : undefined,
         searchCondition(q.search, [constructionObjects.name, constructionObjects.code]),
@@ -392,12 +456,15 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
     const dto = await getRequestDto(req.params.id);
     if (!dto) throw err.notFound('Заявка не найдена');
     assertShtabScope(p, dto.objectId);
+    assertOperatorScope(p, dto.operatorCounterpartyId);
     return dto;
   });
 
   r.post('/', { ...auth, schema: { body: createWasteRequestSchema } }, async (req, reply) => {
     const p = requirePrincipal(req);
     const body = req.body;
+    // Оператор — исполнитель, а не заказчик: заявки он только просматривает и закрывает (ADR 0010).
+    assertNotOperator(p, 'Оператор не может создавать заявки');
     assertShtabScope(p, body.objectId);
     const created = await db.transaction(async (tx) => {
       const subject = await resolveSubject(tx, {
@@ -407,12 +474,16 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         wasteTypeId: body.wasteTypeId ?? null,
         volumeM3: body.volumeM3 ?? null,
       });
+      if (body.operatorCounterpartyId) {
+        await assertOperatorAssignable(tx, body.operatorCounterpartyId, body.objectId);
+      }
       const [row] = await tx
         .insert(wasteRequests)
         .values({
           objectId: body.objectId,
           requestType: body.requestType,
           ...subject,
+          operatorCounterpartyId: body.operatorCounterpartyId ?? null,
           deliveryAt: body.deliveryAt,
           deliveryTimeUnspecified: body.deliveryTimeUnspecified,
           comment: body.comment,
@@ -448,6 +519,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       const body = req.body;
       const [existing] = await db.select().from(wasteRequests).where(eq(wasteRequests.id, id));
       if (!existing || existing.deletedAt) throw err.notFound('Заявка не найдена');
+      assertNotOperator(p, 'Оператор не может редактировать заявки');
       assertShtabScope(p, existing.objectId);
       if (p.role === 'shtab' && existing.status !== 'new') {
         throw err.forbidden('Штаб может редактировать заявку только в статусе «Новая»');
@@ -456,6 +528,10 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
 
       const rt = body.requestType ?? existing.requestType;
       const objectId = body.objectId ?? existing.objectId;
+      const operatorCounterpartyId =
+        body.operatorCounterpartyId !== undefined
+          ? body.operatorCounterpartyId
+          : existing.operatorCounterpartyId;
       await db.transaction(async (tx) => {
         const subject = await resolveSubject(tx, {
           requestType: rt,
@@ -465,12 +541,22 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
           wasteTypeId: body.wasteTypeId !== undefined ? body.wasteTypeId : existing.wasteTypeId,
           volumeM3: body.volumeM3 !== undefined ? body.volumeM3 : existing.volumeM3,
         });
+        // Проверяем и при переносе заявки на другой объект: пара «оператор — объект» могла
+        // разойтись, даже если исполнителя не меняли.
+        if (
+          operatorCounterpartyId &&
+          (operatorCounterpartyId !== existing.operatorCounterpartyId ||
+            objectId !== existing.objectId)
+        ) {
+          await assertOperatorAssignable(tx, operatorCounterpartyId, objectId);
+        }
         const [updated] = await tx
           .update(wasteRequests)
           .set({
             objectId,
             requestType: rt,
             ...subject,
+            operatorCounterpartyId,
             deliveryAt: body.deliveryAt ?? existing.deliveryAt,
             // Признак меняется только вместе с датой — иначе остаётся прежним.
             deliveryTimeUnspecified: body.deliveryAt
@@ -497,22 +583,63 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
     },
   );
 
+  // Назначение (или снятие) оператора вывоза — отдельно от общего PATCH: тот пересчитывает
+  // предмет заявки и тариф, а смена исполнителя предмета не касается (ADR 0010).
+  r.patch(
+    '/:id/operator',
+    { ...auth, schema: { params: idParams, body: assignWasteOperatorSchema } },
+    async (req) => {
+      const p = requirePrincipal(req);
+      if (!canManageRequests(p)) throw err.forbidden('Оператора назначает диспетчер или менеджер');
+      const { operatorCounterpartyId, version } = req.body;
+      const [existing] = await db
+        .select()
+        .from(wasteRequests)
+        .where(eq(wasteRequests.id, req.params.id));
+      if (!existing || existing.deletedAt) throw err.notFound('Заявка не найдена');
+      await db.transaction(async (tx) => {
+        if (operatorCounterpartyId) {
+          await assertOperatorAssignable(tx, operatorCounterpartyId, existing.objectId);
+        }
+        const [updated] = await tx
+          .update(wasteRequests)
+          .set({
+            operatorCounterpartyId,
+            updatedBy: p.id,
+            version: existing.version + 1,
+            updatedAt: new Date(),
+          })
+          .where(and(eq(wasteRequests.id, existing.id), eq(wasteRequests.version, version)))
+          .returning({ id: wasteRequests.id });
+        if (!updated) throw err.conflict();
+      });
+      await writeAudit({
+        actorUserId: p.id,
+        action: 'waste_request.assign_operator',
+        entityType: 'waste_request',
+        entityId: existing.id,
+        metadata: { operatorCounterpartyId },
+      });
+      return (await getRequestDto(existing.id))!;
+    },
+  );
+
   r.patch(
     '/:id/status',
     { ...auth, schema: { params: idParams, body: changeWasteRequestStatusSchema } },
     async (req) => {
       const p = requirePrincipal(req);
       if (!canChangeStatus(p)) throw err.forbidden('Недостаточно прав для смены статуса');
-      const { status, version } = req.body;
+      const { status, comment, version } = req.body;
       const [existing] = await db
         .select()
         .from(wasteRequests)
         .where(eq(wasteRequests.id, req.params.id));
       if (!existing || existing.deletedAt) throw err.notFound('Заявка не найдена');
+      assertShtabScope(p, existing.objectId);
+      assertOperatorScope(p, existing.operatorCounterpartyId);
       if (existing.status === status) return (await getRequestDto(existing.id))!;
-      if (!canTransitionStatus(existing.status, status)) {
-        throw err.badRequest(`Недопустимый переход статуса: ${existing.status} → ${status}`);
-      }
+      assertTransitionAllowed(existing.status, status, p.role);
       await db.transaction(async (tx) => {
         const [updated] = await tx
           .update(wasteRequests)
@@ -525,6 +652,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
           fromStatus: existing.status,
           toStatus: status,
           changedBy: p.id,
+          comment,
         });
       });
       await writeAudit({
@@ -532,7 +660,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         action: 'waste_request.status',
         entityType: 'waste_request',
         entityId: existing.id,
-        metadata: { from: existing.status, to: status },
+        metadata: { from: existing.status, to: status, comment },
       });
       return (await getRequestDto(existing.id))!;
     },
@@ -543,6 +671,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
     const { id } = req.params;
     const [existing] = await db.select().from(wasteRequests).where(eq(wasteRequests.id, id));
     if (!existing || existing.deletedAt) throw err.notFound('Заявка не найдена');
+    assertNotOperator(p, 'Оператор не может удалять заявки');
     assertShtabScope(p, existing.objectId);
     if (p.role === 'shtab' && existing.status !== 'new') {
       throw err.forbidden('Штаб может удалять заявку только в статусе «Новая»');
