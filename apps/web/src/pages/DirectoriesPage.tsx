@@ -12,7 +12,7 @@ export function DirectoriesPage() {
         items={[
           { key: 'objects', label: 'Объекты', children: <ObjectsTab /> },
           { key: 'types', label: 'Типы контейнеров', children: <ContainerTypesTab /> },
-          { key: 'vehicle-types', label: 'Типы/подтипы ТС', children: <VehicleTypesTab /> },
+          { key: 'vehicle-types', label: 'Типы ТС', children: <VehicleTypesTab /> },
         ]}
       />
     </div>
