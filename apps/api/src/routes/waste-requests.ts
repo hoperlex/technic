@@ -7,6 +7,7 @@ import {
   changeWasteRequestStatusSchema,
   createWasteRequestSchema,
   type FileDto,
+  isPricedRequestType,
   MIN_WASTE_VOLUME_M3,
   type RequestType,
   updateWasteRequestSchema,
@@ -600,15 +601,36 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         if (body.deleteVehicleIds?.length && p.role !== 'admin') {
           throw err.forbidden('Удалить машину насовсем может только администратор');
         }
-        if (body.addVehicles?.length) await insertVehicles(tx, id, body.addVehicles, p.id);
+        if (body.addVehicles?.length) {
+          if (!isPricedRequestType(rt)) {
+            throw err.badRequest(
+              'Установка нового контейнера вывоза не содержит — машины не нужны',
+              {
+                vehicles: 'Для установки машины не заполняются',
+              },
+            );
+          }
+          await insertVehicles(tx, id, body.addVehicles, p.id);
+        }
         if (body.markDeletedVehicleIds?.length) {
           await markVehiclesDeleted(tx, id, body.markDeletedVehicleIds, p.id);
         }
         if (body.restoreVehicleIds?.length) await restoreVehicles(tx, id, body.restoreVehicleIds);
         if (body.deleteVehicleIds?.length) await hardDeleteVehicles(tx, id, body.deleteVehicleIds);
+        // Смена типа на установку оставила бы машины у заявки, у которой вывоза нет.
+        if (!isPricedRequestType(rt) && (await countActiveVehicles(tx, id)) > 0) {
+          throw err.badRequest(
+            'У установки нового контейнера не может быть машин — снимите их перед сменой типа',
+            { requestType: 'Сначала снимите машины' },
+          );
+        }
         // Выполненная заявка без единой машины означала бы вывоз без подтверждения — то же
-        // требование, что и при закрытии.
-        if (existing.status === 'done' && (await countActiveVehicles(tx, id)) === 0) {
+        // требование, что и при закрытии (у установки вывоза нет, поэтому её не касается).
+        if (
+          existing.status === 'done' &&
+          isPricedRequestType(rt) &&
+          (await countActiveVehicles(tx, id)) === 0
+        ) {
           throw err.badRequest('У выполненной заявки должна остаться хотя бы одна машина', {
             vehicles: 'Оставьте хотя бы одну машину',
           });
@@ -685,12 +707,25 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         // Закрытие заявки — это предъявление факта вывоза: машины заводятся тем же запросом,
         // и «Выполнена» без единой машины не проходит. При повторном закрытии (после отката
         // администратором) хватает уже заведённых — заново их вносить не нужно (ADR 0011).
+        // Установка нового контейнера вывоза не содержит (ADR 0009), поэтому машин у неё нет:
+        // ни требования, ни возможности их приложить.
         if (status === 'done') {
-          await insertVehicles(tx, existing.id, vehicles, p.id);
-          if ((await countActiveVehicles(tx, existing.id)) === 0) {
-            throw err.badRequest('Укажите хотя бы одну машину с объёмом вывоза', {
-              vehicles: 'Добавьте машину',
-            });
+          if (!isPricedRequestType(existing.requestType)) {
+            if (vehicles.length > 0) {
+              throw err.badRequest(
+                'Установка нового контейнера вывоза не содержит — машины не нужны',
+                {
+                  vehicles: 'Для установки машины не заполняются',
+                },
+              );
+            }
+          } else {
+            await insertVehicles(tx, existing.id, vehicles, p.id);
+            if ((await countActiveVehicles(tx, existing.id)) === 0) {
+              throw err.badRequest('Укажите хотя бы одну машину с объёмом вывоза', {
+                vehicles: 'Добавьте машину',
+              });
+            }
           }
         }
         const [updated] = await tx

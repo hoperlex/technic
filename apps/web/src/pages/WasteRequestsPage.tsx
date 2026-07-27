@@ -605,9 +605,13 @@ function RequestsTab() {
     }
     if (status === 'done') {
       // Уже заведённых машин хватает (повторное закрытие после отката) — тогда окно открывается
-      // пустым и просто подтверждает факт; иначе первая строка предлагается сразу.
+      // пустым и просто подтверждает факт; иначе первая строка предлагается сразу. У установки
+      // нового контейнера вывоза нет, поэтому машин ей не нужно вовсе (ADR 0009/0011).
       const hasVehicles = r.vehicles.some((v) => !v.isDeleted);
-      setDoneDrafts(hasVehicles ? [] : [emptyVehicleDraft(r.containerTypeId ?? undefined)]);
+      const needsVehicles = isPricedRequestType(r.requestType);
+      setDoneDrafts(
+        needsVehicles && !hasVehicles ? [emptyVehicleDraft(r.containerTypeId ?? undefined)] : [],
+      );
       setDoneTarget(r);
       return;
     }
@@ -622,7 +626,8 @@ function RequestsTab() {
       return;
     }
     const activeExisting = doneTarget.vehicles.filter((v) => !v.isDeleted).length;
-    if (activeExisting + doneDrafts.length === 0) {
+    // Машины подтверждают вывоз; у установки нового контейнера вывоза нет — закрывается без них.
+    if (isPricedRequestType(doneTarget.requestType) && activeExisting + doneDrafts.length === 0) {
       message.warning('Добавьте хотя бы одну машину');
       return;
     }
@@ -992,9 +997,14 @@ function RequestsTab() {
       </FormModal>
 
       {/* Закрытие заявки: факт вывоза предъявляется машинами и талонами (ADR 0011). Сверка
-          с заявленным объёмом — подсказка, расхождение сохранению не мешает. */}
+          с заявленным объёмом — подсказка, расхождение сохранению не мешает. У установки
+          нового контейнера вывоза нет — окно только подтверждает выполнение. */}
       <FormModal
-        title="Прикрепление талона(ов)"
+        title={
+          doneTarget && !isPricedRequestType(doneTarget.requestType)
+            ? 'Заявка выполнена'
+            : 'Прикрепление талона(ов)'
+        }
         open={!!doneTarget}
         onCancel={() => {
           setDoneTarget(null);
@@ -1029,20 +1039,31 @@ function RequestsTab() {
                 )}
               />
             )}
-            <WasteVehiclesEditor
-              value={doneDrafts}
-              onChange={setDoneDrafts}
-              typeOptions={allTypeOptions}
-              defaultContainerTypeId={doneTarget.containerTypeId ?? undefined}
-              existingCount={doneTarget.vehicles.filter((v) => !v.isDeleted).length}
-            />
-            <VolumeSummary
-              planned={doneTarget.volumeM3}
-              actual={
-                sumDraftVolume(doneDrafts) +
-                doneTarget.vehicles.reduce((acc, v) => (v.isDeleted ? acc : acc + v.volumeM3), 0)
-              }
-            />
+            {isPricedRequestType(doneTarget.requestType) ? (
+              <>
+                <WasteVehiclesEditor
+                  value={doneDrafts}
+                  onChange={setDoneDrafts}
+                  typeOptions={allTypeOptions}
+                  defaultContainerTypeId={doneTarget.containerTypeId ?? undefined}
+                  existingCount={doneTarget.vehicles.filter((v) => !v.isDeleted).length}
+                />
+                <VolumeSummary
+                  planned={doneTarget.volumeM3}
+                  actual={
+                    sumDraftVolume(doneDrafts) +
+                    doneTarget.vehicles.reduce(
+                      (acc, v) => (v.isDeleted ? acc : acc + v.volumeM3),
+                      0,
+                    )
+                  }
+                />
+              </>
+            ) : (
+              <Typography.Text>
+                Установка нового контейнера вывоза не содержит — машины и талоны для неё не нужны.
+              </Typography.Text>
+            )}
           </div>
         )}
       </FormModal>
@@ -1263,8 +1284,9 @@ function RequestsTab() {
           </Form.Item>
 
           {/* Машины и талоны (ADR 0011). Заведённые строки удаляет только администратор,
-              остальным доступна пометка: ошибочно снятый талон иначе не заметить. */}
-          {record && (
+              остальным доступна пометка: ошибочно снятый талон иначе не заметить.
+              У установки нового контейнера вывоза нет — блок ей не показывается. */}
+          {record && isPriced && (
             <Form.Item label="Машины и талоны">
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {record.vehicles.length > 0 && (
