@@ -419,7 +419,7 @@ export const freightTransportRequestDetails = pgTable(
     weightTons: numeric('weight_tons', { precision: 12, scale: 3 }),
     loadingLocation: text('loading_location').notNull(),
     unloadingLocation: text('unloading_location').notNull(),
-    // Метаданные верификации адреса (DaData «Подсказки», ADR 0005); NULL = введён вручную.
+    // Метаданные верификации адреса (DaData «Подсказки», ADR 0006); NULL = введён вручную.
     loadingAddress: jsonb('loading_address').$type<AddressMeta>(),
     unloadingAddress: jsonb('unloading_address').$type<AddressMeta>(),
   },

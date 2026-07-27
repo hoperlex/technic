@@ -4,7 +4,7 @@ import { CheckCircleTwoTone, WarningTwoTone } from '@ant-design/icons';
 import { type AddressMeta, isAddressVerified } from '@technic/contracts';
 import { type DadataSuggestion, dadataEnabled, suggestAddress } from '../../api/dadata';
 
-/** Подсказка DaData → метаданные адреса (ADR 0005). */
+/** Подсказка DaData → метаданные адреса (ADR 0006). */
 function toMeta(s: DadataSuggestion): AddressMeta {
   const level = s.data.fias_level != null ? Number(s.data.fias_level) : NaN;
   const lat = s.data.geo_lat != null ? Number(s.data.geo_lat) : NaN;

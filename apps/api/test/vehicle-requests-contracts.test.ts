@@ -152,7 +152,7 @@ describe('vehicle-requests: обновление', () => {
   });
 });
 
-describe('vehicle-requests: адрес (DaData, ADR 0005)', () => {
+describe('vehicle-requests: адрес (DaData, ADR 0006)', () => {
   const resolved = {
     source: 'resolved' as const,
     fiasId: '0c5b2444-70a0-4932-980c-b4dc0d3f02b5',

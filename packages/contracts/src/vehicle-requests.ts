@@ -39,7 +39,7 @@ const fileIdsSchema = z.array(uuidSchema).max(20);
 
 // ── Адрес: метаданные верификации (DaData «Подсказки») ──
 // Каноническая строка адреса хранится отдельно (loadingLocation/unloadingLocation);
-// здесь — только происхождение и ФИАС/гео. Мягкая модель (ADR 0005): backend доверяет
+// здесь — только происхождение и ФИАС/гео. Мягкая модель (ADR 0006): backend доверяет
 // `fiasId` из подсказки, внешних вызовов в write-path нет; `manual` помечается, не блокируется.
 export const ADDRESS_SOURCES = ['resolved', 'manual', 'object'] as const;
 export const addressSourceSchema = z.enum(ADDRESS_SOURCES);
