@@ -54,6 +54,14 @@ export const vehicleRequestTypeEnum = pgEnum('vehicle_request_type', [
   'special_equipment',
   'freight_transport',
 ]);
+// Тип трудовых отношений физлица с организацией (ADR 0008).
+export const employmentTypeEnum = pgEnum('employment_type', ['staff', 'contractor', 'temporary']);
+// Статус проверки документа работника (ADR 0008); отделён от срока действия документа.
+export const credentialVerificationStatusEnum = pgEnum('credential_verification_status', [
+  'unverified',
+  'verified',
+  'rejected',
+]);
 // Состояние конкретного ТС (ADR 0007).
 export const vehicleStatusEnum = pgEnum('vehicle_status', [
   'active',
@@ -259,6 +267,11 @@ export const users = pgTable(
     isActive: boolean('is_active').notNull().default(false),
     mustChangePassword: boolean('must_change_password').notNull().default(false),
     authVersion: integer('auth_version').notNull().default(0),
+    // Физлицо, которому принадлежит учётка (ADR 0008). FK → persons.id ON DELETE SET NULL
+    // объявлен миграцией 0018; здесь ссылка не типизирована, чтобы не создавать цикл
+    // users ↔ persons (persons ссылается на users в полях аудита). Аналогично
+    // refreshSessions.replacedBy. Пока связь не установлена, ФИО учётки живёт в users.fullName.
+    personId: uuid('person_id'),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -266,6 +279,10 @@ export const users = pgTable(
   (t) => ({
     emailUnique: uniqueIndex('users_email_unique').on(t.email),
     fullNameTrgm: index('users_full_name_trgm').using('gin', sql`${t.fullName} gin_trgm_ops`),
+    // Одна учётная запись на человека.
+    personUnique: uniqueIndex('users_person_unique')
+      .on(t.personId)
+      .where(sql`${t.personId} IS NOT NULL`),
   }),
 );
 
@@ -538,6 +555,330 @@ export const vehicleRequestStatusHistory = pgTable(
   }),
 );
 
+// ── Физические лица (ADR 0008, миграция 0018) ──
+// Базовая сущность человека: только универсальные сведения. Должность, специализация,
+// работодатель и категории прав здесь НЕ хранятся — для них отдельные таблицы ниже.
+// Учётная запись (users) отделена: человек без доступа в портал — норма.
+export const persons = pgTable(
+  'persons',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    lastName: text('last_name').notNull(),
+    firstName: text('first_name').notNull(),
+    middleName: text('middle_name').notNull().default(''),
+    // Считает БД (STORED): второй точки правды по ФИО нет, поиск идёт по этой же колонке.
+    fullName: text('full_name')
+      .notNull()
+      .generatedAlwaysAs(sql`btrim(last_name || ' ' || first_name || ' ' || middle_name)`),
+    birthDate: date('birth_date', { mode: 'string' }),
+    phone: text('phone').notNull().default(''),
+    email: citext('email').notNull().default(''),
+    comment: text('comment').notNull().default(''),
+    createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+    updatedBy: uuid('updated_by').references(() => users.id, { onDelete: 'set null' }),
+    deletedBy: uuid('deleted_by').references(() => users.id, { onDelete: 'set null' }),
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
+    version: integer('version').notNull().default(0),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    lastNameNotBlank: check('persons_last_name_not_blank', sql`btrim(${t.lastName}) <> ''`),
+    firstNameNotBlank: check('persons_first_name_not_blank', sql`btrim(${t.firstName}) <> ''`),
+    // Верхняя граница даты рождения — на уровне сервиса: CURRENT_DATE не IMMUTABLE и в CHECK запрещён.
+    birthDateSane: check(
+      'persons_birth_date_sane_check',
+      sql`${t.birthDate} IS NULL OR ${t.birthDate} >= DATE '1900-01-01'`,
+    ),
+    // Поиск по ФИО и предупреждение о вероятных дублях; жёсткого UNIQUE на человека нет.
+    fullNameTrgm: index('persons_full_name_trgm').using('gin', sql`${t.fullName} gin_trgm_ops`),
+    deletedAtIdx: index('persons_deleted_at_idx').on(t.deletedAt),
+    phoneIdx: index('persons_phone_idx')
+      .on(t.phone)
+      .where(sql`${t.phone} <> ''`),
+  }),
+);
+
+// ── Трудовые отношения (история) ──
+// Активность работника выводится отсюда (ended_on IS NULL); отдельного флага в persons нет.
+// Работодатель — строкой: справочник организаций появится вместе с подрядной техникой.
+export const personEmployments = pgTable(
+  'person_employments',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    personId: uuid('person_id')
+      .notNull()
+      .references(() => persons.id, { onDelete: 'cascade' }),
+    employmentType: employmentTypeEnum('employment_type').notNull().default('staff'),
+    employerName: text('employer_name').notNull().default(''),
+    personnelNo: text('personnel_no').notNull().default(''),
+    jobTitle: text('job_title').notNull().default(''),
+    startedOn: date('started_on', { mode: 'string' })
+      .notNull()
+      .default(sql`CURRENT_DATE`),
+    endedOn: date('ended_on', { mode: 'string' }),
+    comment: text('comment').notNull().default(''),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    dateOrder: check(
+      'person_employments_date_order_check',
+      sql`${t.endedOn} IS NULL OR ${t.endedOn} >= ${t.startedOn}`,
+    ),
+    personIdx: index('person_employments_person_idx').on(t.personId),
+    activeIdx: index('person_employments_active_idx')
+      .on(t.personId)
+      .where(sql`${t.endedOn} IS NULL`),
+    // Табельный уникален среди действующих отношений работодателя (после увольнения переиспользуем).
+    personnelNoUnique: uniqueIndex('person_employments_personnel_no_unique')
+      .on(t.employerName, t.personnelNo)
+      .where(sql`${t.personnelNo} <> '' AND ${t.endedOn} IS NULL`),
+  }),
+);
+
+// ── Справочник специализаций ──
+// Какую работу человек может выполнять. Это НЕ право по документу: категории — ниже.
+// Таблица создаётся пустой (миграция 0018 без сида).
+export const specializations = pgTable(
+  'specializations',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    code: text('code').notNull(),
+    name: text('name').notNull(),
+    description: text('description').notNull().default(''),
+    sortOrder: integer('sort_order').notNull().default(100),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    codeUnique: uniqueIndex('specializations_code_unique').on(t.code),
+    codeFormat: check('specializations_code_format_check', sql`${t.code} ~ '^[a-z][a-z0-9_]*$'`),
+    nameNotBlank: check('specializations_name_not_blank', sql`btrim(${t.name}) <> ''`),
+  }),
+);
+
+// ── Специализации человека ──
+// Несколько одновременно, с периодом действия. Водитель — это выборка по code='driver'
+// с ended_on IS NULL; отдельных таблиц drivers/driver_profiles нет.
+export const personSpecializations = pgTable(
+  'person_specializations',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    personId: uuid('person_id')
+      .notNull()
+      .references(() => persons.id, { onDelete: 'cascade' }),
+    specializationId: uuid('specialization_id')
+      .notNull()
+      .references(() => specializations.id, { onDelete: 'restrict' }),
+    isPrimary: boolean('is_primary').notNull().default(false),
+    startedOn: date('started_on', { mode: 'string' })
+      .notNull()
+      .default(sql`CURRENT_DATE`),
+    endedOn: date('ended_on', { mode: 'string' }),
+    comment: text('comment').notNull().default(''),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    dateOrder: check(
+      'person_specializations_date_order_check',
+      sql`${t.endedOn} IS NULL OR ${t.endedOn} >= ${t.startedOn}`,
+    ),
+    activeUnique: uniqueIndex('person_specializations_active_unique')
+      .on(t.personId, t.specializationId)
+      .where(sql`${t.endedOn} IS NULL`),
+    // Не более одной действующей основной специализации на человека.
+    primaryUnique: uniqueIndex('person_specializations_primary_unique')
+      .on(t.personId)
+      .where(sql`${t.isPrimary} AND ${t.endedOn} IS NULL`),
+    specializationIdx: index('person_specializations_specialization_idx')
+      .on(t.specializationId)
+      .where(sql`${t.endedOn} IS NULL`),
+  }),
+);
+
+// ── Справочник видов документов (ADR 0008, миграция 0019) ──
+// Уровень «система квалификации» не заводится: «C» водительского и «C» тракториста разводятся
+// принадлежностью категории к виду документа. Таблица создаётся пустой.
+export const credentialTypes = pgTable(
+  'credential_types',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    code: text('code').notNull(),
+    name: text('name').notNull(),
+    description: text('description').notNull().default(''),
+    // false — документ без категорий (медзаключение, свидетельство об обучении).
+    hasCategories: boolean('has_categories').notNull().default(true),
+    // false — бессрочный документ.
+    expiryRequired: boolean('expiry_required').notNull().default(true),
+    sortOrder: integer('sort_order').notNull().default(100),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    codeUnique: uniqueIndex('credential_types_code_unique').on(t.code),
+    codeFormat: check('credential_types_code_format_check', sql`${t.code} ~ '^[a-z][a-z0-9_]*$'`),
+    nameNotBlank: check('credential_types_name_not_blank', sql`btrim(${t.name}) <> ''`),
+  }),
+);
+
+// ── Справочник категорий (квалификаций) ──
+// Категория принадлежит виду документа; код уникален внутри вида, но не глобально.
+export const qualificationCategories = pgTable(
+  'qualification_categories',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    credentialTypeId: uuid('credential_type_id')
+      .notNull()
+      .references(() => credentialTypes.id, { onDelete: 'restrict' }),
+    code: text('code').notNull(),
+    name: text('name').notNull(),
+    description: text('description').notNull().default(''),
+    sortOrder: integer('sort_order').notNull().default(100),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    // Цель составного FK из personCredentialCategories — см. categoryFk там.
+    idTypeUnique: unique('qualification_categories_id_type_unique').on(t.id, t.credentialTypeId),
+    codeUnique: uniqueIndex('qualification_categories_code_unique').on(t.credentialTypeId, t.code),
+    codeFormat: check(
+      'qualification_categories_code_format_check',
+      sql`${t.code} ~ '^[a-z][a-z0-9_]*$'`,
+    ),
+    nameNotBlank: check('qualification_categories_name_not_blank', sql`btrim(${t.name}) <> ''`),
+  }),
+);
+
+// ── Документы конкретных людей ──
+// Новый документ не перезаписывает старый — история сохраняется. Проверка (verificationStatus)
+// отделена от срока действия, аннулирование (revokedAt) — от удаления записи (deletedAt).
+export const personCredentials = pgTable(
+  'person_credentials',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    personId: uuid('person_id')
+      .notNull()
+      .references(() => persons.id, { onDelete: 'cascade' }),
+    credentialTypeId: uuid('credential_type_id')
+      .notNull()
+      .references(() => credentialTypes.id, { onDelete: 'restrict' }),
+    series: text('series').notNull().default(''),
+    number: text('number').notNull().default(''),
+    issuedOn: date('issued_on', { mode: 'string' }),
+    expiresOn: date('expires_on', { mode: 'string' }),
+    issuedBy: text('issued_by').notNull().default(''),
+    verificationStatus: credentialVerificationStatusEnum('verification_status')
+      .notNull()
+      .default('unverified'),
+    verifiedBy: uuid('verified_by').references(() => users.id, { onDelete: 'set null' }),
+    verifiedAt: timestamp('verified_at', { withTimezone: true }),
+    verificationComment: text('verification_comment').notNull().default(''),
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+    revokeReason: text('revoke_reason').notNull().default(''),
+    comment: text('comment').notNull().default(''),
+    createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+    updatedBy: uuid('updated_by').references(() => users.id, { onDelete: 'set null' }),
+    deletedBy: uuid('deleted_by').references(() => users.id, { onDelete: 'set null' }),
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
+    version: integer('version').notNull().default(0),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    // Цель составного FK из personCredentialCategories — см. credentialFk там.
+    idTypeUnique: unique('person_credentials_id_type_unique').on(t.id, t.credentialTypeId),
+    dateOrder: check(
+      'person_credentials_date_order_check',
+      sql`${t.expiresOn} IS NULL OR ${t.issuedOn} IS NULL OR ${t.expiresOn} >= ${t.issuedOn}`,
+    ),
+    // Проверка — учётное действие: у проверенного/отклонённого известно, когда это было.
+    verifiedAtCheck: check(
+      'person_credentials_verified_at_check',
+      sql`(${t.verificationStatus} = 'unverified') = (${t.verifiedAt} IS NULL)`,
+    ),
+    personIdx: index('person_credentials_person_idx')
+      .on(t.personId)
+      .where(sql`${t.deletedAt} IS NULL`),
+    typeIdx: index('person_credentials_type_idx').on(t.credentialTypeId),
+    verificationIdx: index('person_credentials_verification_idx')
+      .on(t.verificationStatus)
+      .where(sql`${t.deletedAt} IS NULL`),
+    // Под отчёт по истекающим документам и напоминания через outbox jobs.
+    expiresIdx: index('person_credentials_expires_idx')
+      .on(t.expiresOn)
+      .where(sql`${t.deletedAt} IS NULL AND ${t.revokedAt} IS NULL`),
+    numberUnique: uniqueIndex('person_credentials_number_unique')
+      .on(t.credentialTypeId, t.series, t.number)
+      .where(sql`${t.number} <> '' AND ${t.deletedAt} IS NULL`),
+  }),
+);
+
+// ── Категории, открытые конкретным документом ──
+// credentialTypeId денормализован ради двух составных FK: категория обязана принадлежать тому же
+// виду документа, что и сам документ («C» тракториста не встанет в водительское удостоверение).
+// Собственные сроки категории сужают срок документа, но не продлевают его.
+export const personCredentialCategories = pgTable(
+  'person_credential_categories',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    credentialId: uuid('credential_id').notNull(),
+    qualificationCategoryId: uuid('qualification_category_id').notNull(),
+    credentialTypeId: uuid('credential_type_id').notNull(),
+    validFrom: date('valid_from', { mode: 'string' }),
+    validTo: date('valid_to', { mode: 'string' }),
+    restrictions: text('restrictions').notNull().default(''),
+    comment: text('comment').notNull().default(''),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    credentialFk: foreignKey({
+      columns: [t.credentialId, t.credentialTypeId],
+      foreignColumns: [personCredentials.id, personCredentials.credentialTypeId],
+      name: 'person_credential_categories_credential_fk',
+    }).onDelete('cascade'),
+    categoryFk: foreignKey({
+      columns: [t.qualificationCategoryId, t.credentialTypeId],
+      foreignColumns: [qualificationCategories.id, qualificationCategories.credentialTypeId],
+      name: 'person_credential_categories_category_fk',
+    }).onDelete('restrict'),
+    dateOrder: check(
+      'person_credential_categories_date_order_check',
+      sql`${t.validTo} IS NULL OR ${t.validFrom} IS NULL OR ${t.validTo} >= ${t.validFrom}`,
+    ),
+    credentialCategoryUnique: uniqueIndex('person_credential_categories_unique').on(
+      t.credentialId,
+      t.qualificationCategoryId,
+    ),
+    categoryIdx: index('person_credential_categories_category_idx').on(t.qualificationCategoryId),
+  }),
+);
+
+// ── Сканы документа ──
+// У одного документа может быть несколько файлов. UNIQUE(file_id) — файл не в двух документах
+// (паттерн vehicleRequestFiles).
+export const personCredentialFiles = pgTable(
+  'person_credential_files',
+  {
+    credentialId: uuid('credential_id')
+      .notNull()
+      .references(() => personCredentials.id, { onDelete: 'cascade' }),
+    fileId: uuid('file_id')
+      .notNull()
+      .references(() => files.id, { onDelete: 'cascade' }),
+    addedAt: timestamp('added_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.credentialId, t.fileId] }),
+    fileUnique: uniqueIndex('person_credential_files_file_unique').on(t.fileId),
+  }),
+);
+
 // ── Фоновые задачи (outbox, §16) ──
 export const jobs = pgTable(
   'jobs',
@@ -587,4 +928,12 @@ export type VehicleRow = typeof vehicles.$inferSelect;
 export type VehicleRequestRow = typeof vehicleRequests.$inferSelect;
 export type SpecialEquipmentRequestDetailsRow = typeof specialEquipmentRequestDetails.$inferSelect;
 export type FreightTransportRequestDetailsRow = typeof freightTransportRequestDetails.$inferSelect;
+export type PersonRow = typeof persons.$inferSelect;
+export type PersonEmploymentRow = typeof personEmployments.$inferSelect;
+export type SpecializationRow = typeof specializations.$inferSelect;
+export type PersonSpecializationRow = typeof personSpecializations.$inferSelect;
+export type CredentialTypeRow = typeof credentialTypes.$inferSelect;
+export type QualificationCategoryRow = typeof qualificationCategories.$inferSelect;
+export type PersonCredentialRow = typeof personCredentials.$inferSelect;
+export type PersonCredentialCategoryRow = typeof personCredentialCategories.$inferSelect;
 export type JobRow = typeof jobs.$inferSelect;
