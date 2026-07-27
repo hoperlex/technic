@@ -5,6 +5,7 @@ import {
   check,
   customType,
   date,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -15,6 +16,7 @@ import {
   primaryKey,
   text,
   timestamp,
+  unique,
   uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
@@ -51,6 +53,13 @@ export const jobStatusEnum = pgEnum('job_status', ['pending', 'running', 'done',
 export const vehicleRequestTypeEnum = pgEnum('vehicle_request_type', [
   'special_equipment',
   'freight_transport',
+]);
+// Состояние конкретного ТС (ADR 0007).
+export const vehicleStatusEnum = pgEnum('vehicle_status', [
+  'active',
+  'inactive',
+  'maintenance',
+  'retired',
 ]);
 
 // ── Справочник: объекты строительства ──
@@ -135,6 +144,103 @@ export const vehicleTypes = pgTable(
       t.isActive,
       t.sortOrder,
     ),
+  }),
+);
+
+// ── Справочник «Марка/модель» (ADR 0007) ──
+// Одна запись = одно наименование марки/модели («Mustang 2700V», «МАЗ 6501В5»). Отдельной сущности
+// марки (vehicle_makes) нет: изготовитель — текст. Модель принадлежит плоскому типу ТС.
+// normalized_name считает БД (vehicle_model_normalize); поиск идёт через ту же функцию, чтобы
+// нормализация не расходилась между приложением и индексом.
+export const vehicleModels = pgTable(
+  'vehicle_models',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    vehicleTypeId: uuid('vehicle_type_id')
+      .notNull()
+      .references(() => vehicleTypes.id, { onDelete: 'restrict' }),
+    name: text('name').notNull(),
+    normalizedName: text('normalized_name').generatedAlwaysAs(sql`vehicle_model_normalize(name)`),
+    description: text('description').notNull().default(''),
+    manufacturerName: text('manufacturer_name').notNull().default(''),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    nameNotBlank: check(
+      'vehicle_models_name_not_blank_check',
+      sql`vehicle_model_normalize(${t.name}) <> ''`,
+    ),
+    // Цель составного FK из vehicles — см. vehicles.modelTypeFk.
+    idTypeUnique: unique('vehicle_models_id_type_unique').on(t.id, t.vehicleTypeId),
+    typeNameUnique: uniqueIndex('vehicle_models_type_name_unique').on(
+      t.vehicleTypeId,
+      t.normalizedName,
+    ),
+    typeActiveIdx: index('vehicle_models_type_active_idx').on(t.vehicleTypeId, t.isActive),
+    normalizedNameIdx: index('vehicle_models_normalized_name_idx').on(t.normalizedName),
+  }),
+);
+
+// ── Конкретные ТС (ADR 0007) ──
+// Тип хранится явно (известен всегда), марка/модель — опциональна (в источнике есть машины без марки).
+// Согласованность обеспечивает составной FK на (vehicle_models.id, vehicle_models.vehicle_type_id):
+// при NULL-модели он не проверяется (MATCH SIMPLE), при заполненной — запрещает расхождение типов.
+export const vehicles = pgTable(
+  'vehicles',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    vehicleTypeId: uuid('vehicle_type_id')
+      .notNull()
+      .references(() => vehicleTypes.id, { onDelete: 'restrict' }),
+    vehicleModelId: uuid('vehicle_model_id'),
+    registrationNumber: text('registration_number'),
+    registrationNumberNormalized: text('registration_number_normalized').generatedAlwaysAs(
+      sql`vehicle_reg_normalize(registration_number)`,
+    ),
+    inventoryNumber: text('inventory_number'),
+    serialNumber: text('serial_number'),
+    passportNumber: text('passport_number'),
+    manufacturerName: text('manufacturer_name').notNull().default(''),
+    manufacturedOn: date('manufactured_on'),
+    status: vehicleStatusEnum('status').notNull().default('active'),
+    sourceName: text('source_name').notNull().default(''),
+    note: text('note').notNull().default(''),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
+  },
+  (t) => ({
+    modelTypeFk: foreignKey({
+      columns: [t.vehicleModelId, t.vehicleTypeId],
+      foreignColumns: [vehicleModels.id, vehicleModels.vehicleTypeId],
+      name: 'vehicles_model_type_fk',
+    }).onDelete('restrict'),
+    registrationNumberNotBlank: check(
+      'vehicles_registration_number_not_blank_check',
+      sql`${t.registrationNumber} IS NULL OR btrim(${t.registrationNumber}) <> ''`,
+    ),
+    inventoryNumberNotBlank: check(
+      'vehicles_inventory_number_not_blank_check',
+      sql`${t.inventoryNumber} IS NULL OR btrim(${t.inventoryNumber}) <> ''`,
+    ),
+    serialNumberNotBlank: check(
+      'vehicles_serial_number_not_blank_check',
+      sql`${t.serialNumber} IS NULL OR btrim(${t.serialNumber}) <> ''`,
+    ),
+    passportNumberNotBlank: check(
+      'vehicles_passport_number_not_blank_check',
+      sql`${t.passportNumber} IS NULL OR btrim(${t.passportNumber}) <> ''`,
+    ),
+    registrationNumberUnique: uniqueIndex('vehicles_registration_number_unique')
+      .on(t.registrationNumberNormalized)
+      .where(sql`${t.registrationNumberNormalized} IS NOT NULL AND ${t.deletedAt} IS NULL`),
+    typeStatusIdx: index('vehicles_type_status_idx').on(t.vehicleTypeId, t.status),
+    modelIdx: index('vehicles_model_idx').on(t.vehicleModelId),
+    inventoryNumberIdx: index('vehicles_inventory_number_idx').on(t.inventoryNumber),
+    serialNumberIdx: index('vehicles_serial_number_idx').on(t.serialNumber),
+    deletedAtIdx: index('vehicles_deleted_at_idx').on(t.deletedAt),
   }),
 );
 
@@ -476,6 +582,8 @@ export type ObjectRow = typeof constructionObjects.$inferSelect;
 export type ContainerTypeRow = typeof containerTypes.$inferSelect;
 export type VehicleKindRow = typeof vehicleKinds.$inferSelect;
 export type VehicleTypeRow = typeof vehicleTypes.$inferSelect;
+export type VehicleModelRow = typeof vehicleModels.$inferSelect;
+export type VehicleRow = typeof vehicles.$inferSelect;
 export type VehicleRequestRow = typeof vehicleRequests.$inferSelect;
 export type SpecialEquipmentRequestDetailsRow = typeof specialEquipmentRequestDetails.$inferSelect;
 export type FreightTransportRequestDetailsRow = typeof freightTransportRequestDetails.$inferSelect;
