@@ -16,8 +16,9 @@ describe('привязка «объект ↔ оператор вывоза»', 
   });
 
   it('правится с обеих сторон одним и тем же приёмом — полным списком', () => {
-    expect(createObjectSchema.parse({ code: 'АЛ13', name: 'ЖК ALIA', operatorIds: [OPERATOR_ID] }))
-      .toMatchObject({ operatorIds: [OPERATOR_ID] });
+    expect(
+      createObjectSchema.parse({ code: 'АЛ13', name: 'ЖК ALIA', operatorIds: [OPERATOR_ID] }),
+    ).toMatchObject({ operatorIds: [OPERATOR_ID] });
     expect(
       createCounterpartySchema.parse({
         type: 'operator',

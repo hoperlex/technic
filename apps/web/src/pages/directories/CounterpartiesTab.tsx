@@ -64,8 +64,7 @@ export function CounterpartiesTab() {
   // а привязка без наименования в форме выглядела бы как чужой идентификатор.
   const { data: objectsData } = useQuery({
     queryKey: ['objects', 'for-counterparties'],
-    queryFn: () =>
-      objectsApi.list({ page: 1, pageSize: 500, sortBy: 'name', sortOrder: 'asc' }),
+    queryFn: () => objectsApi.list({ page: 1, pageSize: 500, sortBy: 'name', sortOrder: 'asc' }),
   });
   const objectOptions = (objectsData?.items ?? []).map((o) => ({
     value: o.id,
@@ -184,8 +183,7 @@ export function CounterpartiesTab() {
       searchable: false,
       width: 220,
       // Заполняется только у операторов; у остальных типов колонка намеренно пуста.
-      render: (_v, r) =>
-        r.objects.length === 0 ? '—' : r.objects.map((o) => o.code).join(' · '),
+      render: (_v, r) => (r.objects.length === 0 ? '—' : r.objects.map((o) => o.code).join(' · ')),
     }),
     textColumn<CounterpartyDto>({
       key: 'comment',

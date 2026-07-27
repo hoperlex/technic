@@ -347,7 +347,8 @@ export default async function counterpartiesRoutes(app: FastifyInstance): Promis
           .where(eq(counterparties.id, id));
         if (body.synonyms !== undefined) await replaceSynonyms(tx, id, body.synonyms);
         // Отсутствие поля — «не трогать привязки»: их правят и из карточки объекта.
-        if (body.objectIds !== undefined) await replaceOperatorObjects(tx, id, body.objectIds, p.id);
+        if (body.objectIds !== undefined)
+          await replaceOperatorObjects(tx, id, body.objectIds, p.id);
       });
       await writeAudit({
         actorUserId: p.id,
