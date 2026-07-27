@@ -55,6 +55,7 @@ import { DataTable } from '../components/DataTable';
 import { FormModal } from '../components/FormModal';
 import { PageTableLayout } from '../components/PageTableLayout';
 import { actionsColumn, badgeColumn, textColumn } from '../components/columns';
+import { UserAvatar } from '../components/UserAvatar';
 import { useListParams } from '../hooks/useListParams';
 import { useAuth } from '../auth/AuthContext';
 import { errorMessage, formatBytes, formatDate, formatDateTime } from '../utils/format';
@@ -462,6 +463,12 @@ function RequestsTab() {
       sortable: false,
       searchable: false,
       width: 170,
+      render: (_v, r) => (
+        <Space size={8}>
+          <UserAvatar name={r.createdByName} size="small" />
+          <span>{r.createdByName}</span>
+        </Space>
+      ),
     }),
     {
       key: 'containerTypeName',

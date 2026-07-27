@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react';
-import { Avatar, Dropdown, Layout, Menu, type MenuProps, Typography } from 'antd';
+import { Dropdown, Layout, Menu, type MenuProps, Typography } from 'antd';
 import {
   CarOutlined,
   DatabaseOutlined,
@@ -7,12 +7,12 @@ import {
   KeyOutlined,
   LogoutOutlined,
   TeamOutlined,
-  UserOutlined,
 } from '@ant-design/icons';
 import { Outlet, useLocation, useNavigate } from 'react-router';
 import { roleLabels } from '@technic/contracts';
 import { useAuth } from '../auth/AuthContext';
 import { PortalLogo } from './PortalLogo';
+import { UserAvatar } from './UserAvatar';
 
 const { Sider, Content } = Layout;
 
@@ -121,7 +121,7 @@ export function AppLayout() {
             <div style={{ borderTop: '1px solid rgba(0,0,0,0.06)', padding: 8 }}>
               <Dropdown menu={userMenu} trigger={['click']} placement="topLeft">
                 <div className={`sider-account${collapsed ? ' sider-account--collapsed' : ''}`}>
-                  <Avatar size="small" icon={<UserOutlined />} />
+                  <UserAvatar name={user?.fullName} size="small" />
                   {!collapsed && (
                     <div style={{ lineHeight: 1.2, minWidth: 0 }}>
                       <div

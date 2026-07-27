@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { App, Button, Dropdown, Form, Input, Select, Switch } from 'antd';
+import { App, Button, Dropdown, Form, Input, Select, Space, Switch } from 'antd';
 import { MoreOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ROLES, roleColors, roleLabels, type UserDto } from '@technic/contracts';
@@ -10,6 +10,7 @@ import { PageTableLayout } from '../../components/PageTableLayout';
 import { actionsColumn, badgeColumn, boolBadgeColumn, textColumn } from '../../components/columns';
 import { useListParams } from '../../hooks/useListParams';
 import { useAuth } from '../../auth/AuthContext';
+import { UserAvatar } from '../../components/UserAvatar';
 import { errorMessage } from '../../utils/format';
 
 interface UserFormValues {
@@ -171,7 +172,17 @@ export function UsersTab() {
 
   const columns = [
     textColumn<UserDto>({ key: 'email', title: 'Email', dataIndex: 'email', width: 220 }),
-    textColumn<UserDto>({ key: 'fullName', title: 'ФИО', dataIndex: 'fullName' }),
+    textColumn<UserDto>({
+      key: 'fullName',
+      title: 'ФИО',
+      dataIndex: 'fullName',
+      render: (_v, r) => (
+        <Space size={8}>
+          <UserAvatar name={r.fullName} size="small" />
+          <span>{r.fullName}</span>
+        </Space>
+      ),
+    }),
     badgeColumn<UserDto>({
       key: 'role',
       title: 'Роль',
