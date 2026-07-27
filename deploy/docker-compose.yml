@@ -62,6 +62,8 @@ services:
       # Короткий commit SHA — вшивается в бандл и version.json (детект новой версии у клиента).
       args:
         BUILD_ID: ${BUILD_ID:-}
+        # Токен DaData «Подсказки» (build-time). Пусто → веб без подсказок адресов (ADR 0006).
+        VITE_DADATA_SUGGEST_TOKEN: ${VITE_DADATA_SUGGEST_TOKEN:-}
     depends_on: [technic-api]
     # Без host-ports: снаружи только infra-nginx через сеть edge
     restart: unless-stopped

@@ -568,6 +568,9 @@ COMMIT_SHA="$(git_c rev-parse --short HEAD)"
 export TAG="$COMMIT_SHA"
 # Вшивается в web-бандл и version.json — клиент детектит новую версию и предлагает перезагрузку.
 export BUILD_ID="$COMMIT_SHA"
+# VITE_DADATA_SUGGEST_TOKEN — build-time: значение берём из prod.env в shell-окружение ДО
+# compose build (build.args читают env, не env_file). Пусто → веб соберётся без подсказок адресов.
+export VITE_DADATA_SUGGEST_TOKEN="$(sed -n 's/^VITE_DADATA_SUGGEST_TOKEN=//p' "$PROD_ENV" | tail -n1)"
 TARGET_TAG="$COMMIT_SHA"
 log "commit: $COMMIT_SHA (теги образов technic-*:$COMMIT_SHA)"
 
