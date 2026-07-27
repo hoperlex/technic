@@ -31,6 +31,7 @@ import { UserAvatar } from '../../components/UserAvatar';
 import { useListParams } from '../../hooks/useListParams';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage, formatDateTime } from '../../utils/format';
+import { isPastDate, startOfToday } from '../../utils/date';
 import { MOSCOW_TZ } from '../../theme';
 import {
   FileEditor,
@@ -100,6 +101,8 @@ export function FreightTransportRequestsTab() {
   const openCreate = () => {
     setRecord(null);
     form.resetFields();
+    // Дата отправки по умолчанию — сегодня.
+    form.setFieldsValue({ scheduledDate: startOfToday() });
     setLoadingMeta(null);
     setUnloadingMeta(null);
     editor.reset([]);
@@ -429,7 +432,7 @@ export function FreightTransportRequestsTab() {
               label="Дата"
               rules={[{ required: true, message: 'Укажите дату' }]}
             >
-              <DatePicker format="DD.MM.YYYY" style={{ width: '100%' }} />
+              <DatePicker format="DD.MM.YYYY" style={{ width: '100%' }} disabledDate={isPastDate} />
             </Form.Item>
             <Form.Item
               name="scheduledTime"

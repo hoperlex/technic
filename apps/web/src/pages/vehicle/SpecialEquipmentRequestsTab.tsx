@@ -27,6 +27,7 @@ import { UserAvatar } from '../../components/UserAvatar';
 import { useListParams } from '../../hooks/useListParams';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
+import { isPastDate, startOfToday } from '../../utils/date';
 import {
   FileEditor,
   FilesCell,
@@ -84,6 +85,8 @@ export function SpecialEquipmentRequestsTab() {
   const openCreate = () => {
     setRecord(null);
     form.resetFields();
+    // Дата начала по умолчанию — сегодня.
+    form.setFieldsValue({ dateFrom: startOfToday() });
     editor.reset([]);
     setOpen(true);
   };
@@ -347,10 +350,10 @@ export function SpecialEquipmentRequestsTab() {
             label="Дата начала"
             rules={[{ required: true, message: 'Укажите дату начала' }]}
           >
-            <DatePicker format="DD.MM.YYYY" style={{ width: '100%' }} />
+            <DatePicker format="DD.MM.YYYY" style={{ width: '100%' }} disabledDate={isPastDate} />
           </Form.Item>
           <Form.Item name="dateTo" label="Дата окончания (необязательно)">
-            <DatePicker format="DD.MM.YYYY" style={{ width: '100%' }} />
+            <DatePicker format="DD.MM.YYYY" style={{ width: '100%' }} disabledDate={isPastDate} />
           </Form.Item>
           <Form.Item name="comment" label="Комментарий">
             <Input.TextArea rows={2} maxLength={2000} />

@@ -59,6 +59,7 @@ import { UserAvatar } from '../components/UserAvatar';
 import { useListParams } from '../hooks/useListParams';
 import { useAuth } from '../auth/AuthContext';
 import { errorMessage, formatBytes, formatDate, formatDateTime } from '../utils/format';
+import { isPastDate, startOfToday } from '../utils/date';
 import { OnSiteTab } from './waste/OnSiteTab';
 
 const FILE_MAX_SIZE = 52_428_800; // 50 МБ
@@ -222,6 +223,8 @@ function RequestsTab() {
     setFiles([]);
     setRemovedIds([]);
     form.resetFields();
+    // Дата доставки по умолчанию — сегодня.
+    form.setFieldsValue({ deliveryDate: startOfToday() } as Partial<RequestFormValues>);
     if (isShtab && user?.constructionObjectId) {
       form.setFieldsValue({ objectId: user.constructionObjectId } as Partial<RequestFormValues>);
     }
@@ -723,6 +726,7 @@ function RequestsTab() {
                 format="DD.MM.YYYY"
                 style={{ width: '100%' }}
                 placeholder="дд.мм.гггг"
+                disabledDate={isPastDate}
               />
             </Form.Item>
             <Form.Item
