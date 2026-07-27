@@ -53,8 +53,16 @@ export function AddressAutoComplete({
     abort.current = ctrl;
     suggestAddress(text, 8, ctrl.signal)
       .then((list) => setOptions(list.map((s) => ({ value: s.value, meta: toMeta(s) }))))
-      // Сеть/лимит/CSP — тихо: поле продолжает работать как обычный ввод.
-      .catch(() => undefined);
+      .catch((e: unknown) => {
+        // Сеть/лимит/CSP/доменное ограничение ключа: поле продолжает работать как обычный ввод.
+        // AbortError — это штатная отмена предыдущего запроса при вводе, её не логируем.
+        if ((e as { name?: string })?.name !== 'AbortError') {
+          console.warn(
+            '[AddressAutoComplete] запрос подсказок DaData не удался — деградация в обычный ввод:',
+            e,
+          );
+        }
+      });
   }, []);
 
   const handleSearch = (text: string) => {

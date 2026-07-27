@@ -6,6 +6,13 @@
 const ENDPOINT = 'https://suggestions.dadata.ru/suggestions/api/4_1/rs/suggest/address';
 const TOKEN = (import.meta.env.VITE_DADATA_SUGGEST_TOKEN as string | undefined)?.trim();
 
+if (!TOKEN) {
+  // Диагностика деградации: без токена подсказки отключены на всех адресных полях.
+  console.warn(
+    '[dadata] VITE_DADATA_SUGGEST_TOKEN не задан на сборке — подсказки адресов отключены, поля адреса работают как обычный ввод.',
+  );
+}
+
 /** Подсказки доступны только при заданном токене; иначе поле работает как обычный ввод. */
 export function dadataEnabled(): boolean {
   return !!TOKEN;
