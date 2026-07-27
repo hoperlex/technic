@@ -79,7 +79,9 @@ export function UsersTab() {
     form.setFieldsValue({
       email: r.email,
       fullName: r.fullName,
-      role: (r.role ?? 'dispatcher') as UserFormValues['role'],
+      // Роль по умолчанию не подставляем: у зарегистрировавшегося самостоятельно её нет,
+      // а активация без осознанно выбранной роли запрещена — пусть выберет администратор.
+      role: r.role ?? undefined,
       constructionObjectId: r.constructionObjectId,
       isActive: r.isActive,
     });
@@ -155,7 +157,16 @@ export function UsersTab() {
           pwForm.resetFields();
           setPwUser(r);
         }
-        if (key === 'toggle') void toggleActiveMut.mutate(r);
+        // Активация без роли запрещена (сервер её отклонит): у самостоятельно
+        // зарегистрировавшегося пользователя роли нет, поэтому активируем через форму.
+        if (key === 'toggle') {
+          if (!r.isActive && !r.role) {
+            message.info('Назначьте роль — без неё учётку активировать нельзя');
+            openEdit(r);
+          } else {
+            void toggleActiveMut.mutate(r);
+          }
+        }
         if (key === 'delete') {
           modal.confirm({
             title: `Удалить пользователя ${r.email}?`,

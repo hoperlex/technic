@@ -153,6 +153,12 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const nextRole = body.role ?? existing.role;
+    // Активная учётка без роли не попадает ни под одно ограничение доступа: проверки
+    // сформулированы от конкретных ролей («штаб — свой объект», «оператор — свой контрагент»),
+    // и учётка без роли видит все заявки вывоза. Роль назначается вместе с активацией.
+    if ((body.isActive ?? existing.isActive) && !nextRole) {
+      throw err.badRequest('Нельзя активировать учётку без роли', { role: 'Выберите роль' });
+    }
     const nextObjectId =
       body.constructionObjectId !== undefined
         ? body.constructionObjectId
