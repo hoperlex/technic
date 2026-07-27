@@ -486,7 +486,9 @@ function RequestsTab() {
       labels: requestTypeLabels,
       colors: requestTypeColors,
       filters: true,
-      width: 140,
+      // Названия типов развёрнутые («Замена полного контейнера на пустой») — под 140px тег
+      // разъезжался на три строки.
+      width: 210,
     }),
     {
       key: 'createdAt',

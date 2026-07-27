@@ -70,10 +70,10 @@ export const requestTypeSchema = z.enum(REQUEST_TYPES);
 export type RequestType = (typeof REQUEST_TYPES)[number];
 
 export const requestTypeLabels: Record<RequestType, string> = {
-  container_install: 'Установка контейнера',
-  container_replace: 'Замена контейнера',
-  container_removal: 'Снятие контейнера',
-  waste_removal: 'Вывоз мусора',
+  container_install: 'Установка нового контейнера',
+  container_replace: 'Замена полного контейнера на пустой',
+  container_removal: 'Снятие контейнера (вывоз без замены)',
+  waste_removal: 'Вывоз мусора (самосвалами)',
 };
 
 export const requestTypeColors: Record<RequestType, string> = {
