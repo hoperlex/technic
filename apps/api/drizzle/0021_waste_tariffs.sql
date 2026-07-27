@@ -109,14 +109,34 @@ SELECT id, 'truck', 700, 'п.7 Перевозка ОССиГ' FROM waste_types W
 INSERT INTO waste_tariffs (waste_type_id, container_kind, price_per_m3, note)
 SELECT id, 'cont', 1100, 'п.8 Вывоз древесных отходов контейнерами' FROM waste_types WHERE code = 'wood_waste';
 
+-- Guard: тарифы вставляются через SELECT по кодам справочника, и незнакомый код дал бы не ошибку,
+-- а молча неполный прайс — заявка на такую пару просто не тарифицировалась бы.
+DO $$
+DECLARE
+  tariffs int;
+  per_container int;
+BEGIN
+  SELECT count(*) INTO tariffs FROM waste_tariffs;
+  SELECT count(*) INTO per_container FROM waste_tariffs WHERE is_per_container;
+  IF tariffs <> 10 OR per_container <> 1 THEN
+    RAISE EXCEPTION
+      'Прайс наполнен не полностью: тарифов %, из них «за контейнер» % (ожидалось 10 и 1). Проверьте коды в container_types (нужен container_8) и waste_types.',
+      tariffs, per_container;
+  END IF;
+END $$;
+
 -- 4. Заявка: что вывозим и по какой цене. Все поля nullable — заявки, созданные до тарификации,
 --    остаются без цены; обязательность для новых заявок держит сервис (зависит от типа операции).
 ALTER TABLE waste_requests
   ADD COLUMN waste_type_id uuid REFERENCES waste_types (id) ON DELETE RESTRICT,
   ADD COLUMN waste_tariff_id uuid REFERENCES waste_tariffs (id) ON DELETE RESTRICT,
-  ADD COLUMN price_per_m3 numeric(12, 2),
-  -- Сумма — производная от объёма и цены, поэтому вычисляется БД: разойтись с множителями
-  -- она не может, а пересчитывать её в приложении негде забыть.
+  ADD COLUMN price_per_m3 numeric(12, 2);
+
+-- Сумма — производная от объёма и цены, поэтому вычисляется БД: разойтись с множителями она не
+-- может, а пересчитывать её в приложении негде забыть. Отдельным оператором: выражение
+-- generated-колонки разбирается по текущему описанию таблицы, и price_per_m3, добавленный в том же
+-- ALTER TABLE, анализатору ещё не виден.
+ALTER TABLE waste_requests
   ADD COLUMN amount numeric(14, 2) GENERATED ALWAYS AS (round(volume_m3 * price_per_m3, 2)) STORED;
 
 -- Установка нового контейнера не тарифицируется: вывоза мусора в этой операции нет.
