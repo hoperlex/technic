@@ -12,10 +12,11 @@ import {
 } from 'antd';
 import { EditOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type {
-  CreateVehicleTypeInput,
-  UpdateVehicleTypeInput,
-  VehicleTypeDto,
+import {
+  DEFAULT_PAGE_SIZE,
+  type CreateVehicleTypeInput,
+  type UpdateVehicleTypeInput,
+  type VehicleTypeDto,
 } from '@technic/contracts';
 import { vehicleKindsApi, vehicleTypesApi } from '../../api/resources';
 import { DataTable, type TableChange } from '../../components/DataTable';
@@ -52,9 +53,11 @@ export function VehicleTypesTab() {
   const { message, modal } = App.useApp();
   const qc = useQueryClient();
 
+  // pageSize берём из контракта: сервер принимает только PAGE_SIZES (100/200/500),
+  // произвольное значение отклоняется валидацией querystring и список не грузится.
   const [params, setParams] = useState<VtParams>({
     page: 1,
-    pageSize: 50,
+    pageSize: DEFAULT_PAGE_SIZE,
     sortBy: 'sortOrder',
     sortOrder: 'asc',
   });
