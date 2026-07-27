@@ -43,7 +43,7 @@ import {
   type EditorFile,
 } from './shared';
 import { CreateRequestButton } from './CreateRequestButton';
-import { AddressAutoComplete, AddressCell } from './AddressAutoComplete';
+import { AddressAutoComplete, AddressCell } from '../../components/AddressAutoComplete';
 
 interface FormValues {
   objectId: string;

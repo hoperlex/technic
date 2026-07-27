@@ -4,6 +4,7 @@ import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { CreateObjectInput, ObjectDto } from '@technic/contracts';
 import { objectsApi } from '../../api/resources';
+import { AddressAutoComplete } from '../../components/AddressAutoComplete';
 import { DataTable } from '../../components/DataTable';
 import { FormModal } from '../../components/FormModal';
 import { PageTableLayout } from '../../components/PageTableLayout';
@@ -129,7 +130,7 @@ export function ObjectsTab() {
             <Input />
           </Form.Item>
           <Form.Item name="address" label="Адрес">
-            <Input />
+            <AddressAutoComplete placeholder="Начните вводить адрес" maxLength={500} />
           </Form.Item>
           <Form.Item name="isActive" label="Активен" valuePropName="checked">
             <Switch />
