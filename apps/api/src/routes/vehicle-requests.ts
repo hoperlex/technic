@@ -74,6 +74,8 @@ const requestSelect = {
   weightTons: freightTransportRequestDetails.weightTons,
   loadingLocation: freightTransportRequestDetails.loadingLocation,
   unloadingLocation: freightTransportRequestDetails.unloadingLocation,
+  loadingAddress: freightTransportRequestDetails.loadingAddress,
+  unloadingAddress: freightTransportRequestDetails.unloadingAddress,
 };
 
 function baseQuery() {
@@ -174,6 +176,8 @@ function toDto(r: RequestRow, fileList: FileDto[]): VehicleRequestDto {
     weightTons: toNum(r.weightTons),
     loadingLocation: r.loadingLocation ?? '',
     unloadingLocation: r.unloadingLocation ?? '',
+    loadingAddress: r.loadingAddress ?? null,
+    unloadingAddress: r.unloadingAddress ?? null,
   };
 }
 
@@ -402,6 +406,8 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           weightTons: numToDb(body.weightTons),
           loadingLocation: body.loadingLocation,
           unloadingLocation: body.unloadingLocation,
+          loadingAddress: body.loadingAddress ?? null,
+          unloadingAddress: body.unloadingAddress ?? null,
         });
       }
       await tx.insert(vehicleRequestStatusHistory).values({
@@ -507,6 +513,11 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
               weightTons,
               loadingLocation: body.loadingLocation ?? ex!.loadingLocation,
               unloadingLocation: body.unloadingLocation ?? ex!.unloadingLocation,
+              // Метаданные адреса шлются вместе со строкой; null явно сбрасывает верификацию.
+              loadingAddress:
+                body.loadingAddress !== undefined ? body.loadingAddress : ex!.loadingAddress,
+              unloadingAddress:
+                body.unloadingAddress !== undefined ? body.unloadingAddress : ex!.unloadingAddress,
             })
             .where(eq(freightTransportRequestDetails.requestId, id));
         }

@@ -16,6 +16,7 @@ import { EditOutlined, DeleteOutlined, ReloadOutlined } from '@ant-design/icons'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import dayjs, { type Dayjs } from 'dayjs';
 import {
+  type AddressMeta,
   type FreightTransportRequestDto,
   parseVehicleRequestNumberSearch,
   type RequestStatus,
@@ -41,6 +42,7 @@ import {
   type EditorFile,
 } from './shared';
 import { CreateRequestButton } from './CreateRequestButton';
+import { AddressAutoComplete, AddressCell } from './AddressAutoComplete';
 
 interface FormValues {
   objectId: string;
@@ -90,10 +92,15 @@ export function FreightTransportRequestsTab() {
   const [record, setRecord] = useState<FreightTransportRequestDto | null>(null);
   const [form] = Form.useForm<FormValues>();
   const editor = useFileEditor();
+  // Метаданные верификации адресов держим вне формы (значение — объект, не строка).
+  const [loadingMeta, setLoadingMeta] = useState<AddressMeta | null>(null);
+  const [unloadingMeta, setUnloadingMeta] = useState<AddressMeta | null>(null);
 
   const openCreate = () => {
     setRecord(null);
     form.resetFields();
+    setLoadingMeta(null);
+    setUnloadingMeta(null);
     editor.reset([]);
     setOpen(true);
   };
@@ -102,6 +109,8 @@ export function FreightTransportRequestsTab() {
   const openEdit = (r: FreightTransportRequestDto) => {
     setRecord(r);
     form.resetFields();
+    setLoadingMeta(r.loadingAddress);
+    setUnloadingMeta(r.unloadingAddress);
     const at = dayjs.tz(r.scheduledAt, MOSCOW_TZ);
     form.setFieldsValue({
       objectId: r.objectId,
@@ -138,6 +147,8 @@ export function FreightTransportRequestsTab() {
         weightTons: v.weightTons ?? null,
         loadingLocation: v.loadingLocation,
         unloadingLocation: v.unloadingLocation,
+        loadingAddress: loadingMeta,
+        unloadingAddress: unloadingMeta,
         comment: v.comment ?? '',
       };
       return record
@@ -256,22 +267,18 @@ export function FreightTransportRequestsTab() {
       width: 140,
       render: (_v, r) => amountLabel(r.volumeM3, r.weightTons),
     },
-    textColumn({
+    {
       key: 'loadingLocation',
       title: 'Погрузка',
-      dataIndex: 'loadingLocation',
-      sortable: false,
-      searchable: false,
       ellipsis: true,
-    }),
-    textColumn({
+      render: (_v, r) => <AddressCell text={r.loadingLocation} meta={r.loadingAddress} />,
+    },
+    {
       key: 'unloadingLocation',
       title: 'Разгрузка',
-      dataIndex: 'unloadingLocation',
-      sortable: false,
-      searchable: false,
       ellipsis: true,
-    }),
+      render: (_v, r) => <AddressCell text={r.unloadingLocation} meta={r.unloadingAddress} />,
+    },
     {
       key: 'status',
       title: 'Статус',
@@ -426,14 +433,20 @@ export function FreightTransportRequestsTab() {
             label="Место погрузки"
             rules={[{ required: true, message: 'Укажите место погрузки' }]}
           >
-            <Input maxLength={1000} />
+            <AddressAutoComplete
+              placeholder="Начните вводить адрес"
+              onMetaChange={setLoadingMeta}
+            />
           </Form.Item>
           <Form.Item
             name="unloadingLocation"
             label="Место разгрузки"
             rules={[{ required: true, message: 'Укажите место разгрузки' }]}
           >
-            <Input maxLength={1000} />
+            <AddressAutoComplete
+              placeholder="Начните вводить адрес"
+              onMetaChange={setUnloadingMeta}
+            />
           </Form.Item>
           <Form.Item name="comment" label="Комментарий">
             <Input.TextArea rows={2} maxLength={2000} />
