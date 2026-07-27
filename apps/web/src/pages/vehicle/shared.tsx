@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { App, Button, Dropdown, Form, List, Popover, Select, Tag, Typography, Upload } from 'antd';
 import { DownOutlined, UploadOutlined } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
+import { useSearchParams } from 'react-router';
 import {
   type FileDto,
   type RequestStatus,
@@ -36,6 +37,38 @@ export function useObjectOptions() {
       }),
   });
   return (data?.items ?? []).map((o) => ({ value: o.id, label: `${o.code} — ${o.name}` }));
+}
+
+/** Вкладки раздела «Заказ ТС», на которых создаются заявки (ключи совпадают с ?tab=). */
+export type CreatableTab = 'special-equipment' | 'freight-transport';
+
+/**
+ * Открывает форму создания, если на вкладку пришли с ?new=1 — кнопкой «Создать заявку»
+ * с соседней вкладки. Параметр снимается сразу (replace), поэтому F5 и «назад»
+ * форму не переоткрывают; ref-страж гасит повторный прогон эффекта в StrictMode.
+ *
+ * Сверка с ?tab обязательна: antd Tabs не размонтирует показанные панели, и без неё
+ * форму открыла бы и соседняя (скрытая) вкладка — её модалка всплыла бы через портал.
+ */
+export function useOpenCreateFromQuery(tab: CreatableTab, openCreate: () => void) {
+  const [sp, setSp] = useSearchParams();
+  const latest = useRef(openCreate);
+  latest.current = openCreate;
+  const handled = useRef(false);
+  const requested = sp.get('new') === '1' && sp.get('tab') === tab;
+
+  useEffect(() => {
+    if (!requested) {
+      handled.current = false;
+      return;
+    }
+    if (handled.current) return;
+    handled.current = true;
+    const next = new URLSearchParams(sp);
+    next.delete('new');
+    setSp(next, { replace: true });
+    latest.current();
+  }, [requested, sp, setSp]);
 }
 
 /** Редактор прикреплённых файлов (загрузка в S3 + список add/remove). */

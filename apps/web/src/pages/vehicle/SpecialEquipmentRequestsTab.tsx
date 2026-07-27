@@ -10,7 +10,7 @@ import {
   Tag,
   type TableColumnType,
 } from 'antd';
-import { EditOutlined, DeleteOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
+import { EditOutlined, DeleteOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import dayjs, { type Dayjs } from 'dayjs';
 import {
@@ -23,6 +23,7 @@ import { DataTable } from '../../components/DataTable';
 import { FormModal } from '../../components/FormModal';
 import { PageTableLayout } from '../../components/PageTableLayout';
 import { actionsColumn, textColumn } from '../../components/columns';
+import { UserAvatar } from '../../components/UserAvatar';
 import { useListParams } from '../../hooks/useListParams';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
@@ -33,8 +34,10 @@ import {
   VehicleTypeSelect,
   useFileEditor,
   useObjectOptions,
+  useOpenCreateFromQuery,
   type EditorFile,
 } from './shared';
+import { CreateRequestButton } from './CreateRequestButton';
 
 interface FormValues {
   objectId: string;
@@ -84,6 +87,8 @@ export function SpecialEquipmentRequestsTab() {
     editor.reset([]);
     setOpen(true);
   };
+  useOpenCreateFromQuery('special-equipment', openCreate);
+
   const openEdit = (r: SpecialEquipmentRequestDto) => {
     setRecord(r);
     form.resetFields();
@@ -189,6 +194,20 @@ export function SpecialEquipmentRequestsTab() {
       width: 120,
     }),
     textColumn({ key: 'objectName', title: 'Объект', dataIndex: 'objectName', searchable: false }),
+    textColumn<SpecialEquipmentRequestDto>({
+      key: 'createdByName',
+      title: 'Автор',
+      dataIndex: 'createdByName',
+      sortable: false,
+      searchable: false,
+      width: 170,
+      render: (_v, r) => (
+        <Space size={8}>
+          <UserAvatar name={r.createdByName} size="small" />
+          <span>{r.createdByName}</span>
+        </Space>
+      ),
+    }),
     textColumn({
       key: 'vehicleTypeName',
       title: 'Тип ТС',
@@ -290,11 +309,7 @@ export function SpecialEquipmentRequestsTab() {
   return (
     <PageTableLayout
       filters={filters}
-      extra={
-        <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-          Заказать спецтехнику
-        </Button>
-      }
+      extra={<CreateRequestButton current="special-equipment" onCreateHere={openCreate} />}
     >
       <DataTable<SpecialEquipmentRequestDto>
         columns={columns}
@@ -306,7 +321,7 @@ export function SpecialEquipmentRequestsTab() {
         onChange={onTableChange}
       />
       <FormModal
-        title={record ? `Заявка ${record.displayNumber}` : 'Заказ спецтехники'}
+        title={record ? `Заявка ${record.displayNumber}` : 'Новая заявка на спецтехнику'}
         open={open}
         onCancel={() => setOpen(false)}
         onSubmit={() => form.submit()}
