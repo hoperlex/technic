@@ -460,7 +460,6 @@ function RequestsTab() {
       key: 'createdByName',
       title: 'Автор',
       dataIndex: 'createdByName',
-      sortable: false,
       searchable: false,
       width: 170,
       render: (_v, r) => (

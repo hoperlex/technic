@@ -279,6 +279,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
     );
     const sortCols = {
       objectName: constructionObjects.name,
+      createdByName: users.fullName,
       containerTypeName: containerTypes.name,
       requestType: wasteRequests.requestType,
       deliveryAt: wasteRequests.deliveryAt,
