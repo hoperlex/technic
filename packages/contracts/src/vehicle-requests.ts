@@ -38,9 +38,10 @@ const locationSchema = z.string().trim().min(1).max(1000);
 const fileIdsSchema = z.array(uuidSchema).max(20);
 
 // ── Адрес: метаданные верификации (DaData «Подсказки») ──
-// Каноническая строка адреса хранится отдельно (loadingLocation/unloadingLocation);
-// здесь — только происхождение и ФИАС/гео. Мягкая модель (ADR 0006): backend доверяет
-// `fiasId` из подсказки, внешних вызовов в write-path нет; `manual` помечается, не блокируется.
+// Каноническая строка адреса — в loadingLocation/unloadingLocation; здесь происхождение
+// и ФИАС/гео. Жёсткая модель (ADR 0006): адрес погрузки/разгрузки ОБЯЗАТЕЛЕН и должен быть
+// верифицирован (resolved+ФИАС либо object); неверифицированный/`manual` ввод на запись НЕ
+// принимается. `manual` остаётся в enum только для чтения легаси-строк.
 export const ADDRESS_SOURCES = ['resolved', 'manual', 'object'] as const;
 export const addressSourceSchema = z.enum(ADDRESS_SOURCES);
 export type AddressSource = (typeof ADDRESS_SOURCES)[number];
@@ -62,6 +63,14 @@ export function isAddressVerified(meta: AddressMeta | null | undefined): boolean
   if (!meta) return false;
   return meta.source === 'object' || (meta.source === 'resolved' && !!meta.fiasId);
 }
+
+/**
+ * Верифицированный адрес для записи (жёсткая модель, ADR 0006): принимаем только адрес,
+ * выбранный из подсказки DaData (resolved + ФИАС) либо из справочника объектов (object).
+ */
+export const verifiedAddressMetaSchema = addressMetaSchema.refine(isAddressVerified, {
+  message: 'Адрес должен быть выбран из подсказок (верифицирован)',
+});
 
 /** Дата без времени, строго YYYY-MM-DD (не преобразуется через JS Date). */
 const dateOnlySchema = z
@@ -114,8 +123,8 @@ export const createFreightTransportRequestSchema = z
     weightTons: amountSchema.nullable().optional(),
     loadingLocation: locationSchema,
     unloadingLocation: locationSchema,
-    loadingAddress: addressMetaSchema.nullable().optional(),
-    unloadingAddress: addressMetaSchema.nullable().optional(),
+    loadingAddress: verifiedAddressMetaSchema,
+    unloadingAddress: verifiedAddressMetaSchema,
     comment: commentSchema.optional().default(''),
     fileIds: fileIdsSchema.optional().default([]),
   })
@@ -174,18 +183,38 @@ export const updateFreightTransportRequestSchema = z
     weightTons: amountSchema.nullable().optional(),
     loadingLocation: locationSchema.optional(),
     unloadingLocation: locationSchema.optional(),
-    loadingAddress: addressMetaSchema.nullable().optional(),
-    unloadingAddress: addressMetaSchema.nullable().optional(),
+    loadingAddress: verifiedAddressMetaSchema.optional(),
+    unloadingAddress: verifiedAddressMetaSchema.optional(),
     comment: commentSchema.optional(),
     addFileIds: fileIdsSchema.optional(),
     removeFileIds: z.array(uuidSchema).optional(),
   })
   .strict();
 
-export const updateVehicleRequestSchema = z.discriminatedUnion('requestType', [
-  updateSpecialEquipmentRequestSchema,
-  updateFreightTransportRequestSchema,
-]);
+export const updateVehicleRequestSchema = z
+  .discriminatedUnion('requestType', [
+    updateSpecialEquipmentRequestSchema,
+    updateFreightTransportRequestSchema,
+  ])
+  .superRefine((v, ctx) => {
+    // Жёсткая модель (ADR 0006): строка адреса и его метаданные передаются вместе.
+    if (v.requestType === 'freight_transport') {
+      if ((v.loadingLocation === undefined) !== (v.loadingAddress === undefined)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['loadingAddress'],
+          message: 'Адрес и строка погрузки передаются вместе',
+        });
+      }
+      if ((v.unloadingLocation === undefined) !== (v.unloadingAddress === undefined)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['unloadingAddress'],
+          message: 'Адрес и строка разгрузки передаются вместе',
+        });
+      }
+    }
+  });
 export type UpdateVehicleRequestInput = z.infer<typeof updateVehicleRequestSchema>;
 
 export const changeVehicleRequestStatusSchema = z

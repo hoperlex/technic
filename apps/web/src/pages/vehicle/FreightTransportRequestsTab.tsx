@@ -18,6 +18,7 @@ import dayjs, { type Dayjs } from 'dayjs';
 import {
   type AddressMeta,
   type FreightTransportRequestDto,
+  isAddressVerified,
   parseVehicleRequestNumberSearch,
   type RequestStatus,
 } from '@technic/contracts';
@@ -147,8 +148,9 @@ export function FreightTransportRequestsTab() {
         weightTons: v.weightTons ?? null,
         loadingLocation: v.loadingLocation,
         unloadingLocation: v.unloadingLocation,
-        loadingAddress: loadingMeta,
-        unloadingAddress: unloadingMeta,
+        // onFinish гарантирует, что оба адреса верифицированы (жёсткая модель, ADR 0006).
+        loadingAddress: loadingMeta!,
+        unloadingAddress: unloadingMeta!,
         comment: v.comment ?? '',
       };
       return record
@@ -176,6 +178,20 @@ export function FreightTransportRequestsTab() {
   const onFinish = (v: FormValues) => {
     if (v.volumeM3 == null && v.weightTons == null) {
       message.error('Укажите объём или массу');
+      return;
+    }
+    // Жёсткая модель (ADR 0006): адрес погрузки/разгрузки обязателен и должен быть выбран
+    // из подсказок DaData (верифицирован). Неверифицированный ввод сохранять нельзя.
+    const fields: { name: keyof FormValues; errors: string[] }[] = [];
+    if (!isAddressVerified(loadingMeta)) {
+      fields.push({ name: 'loadingLocation', errors: ['Выберите адрес из подсказок'] });
+    }
+    if (!isAddressVerified(unloadingMeta)) {
+      fields.push({ name: 'unloadingLocation', errors: ['Выберите адрес из подсказок'] });
+    }
+    if (fields.length) {
+      form.setFields(fields);
+      message.error('Адрес погрузки и разгрузки нужно выбрать из подсказок DaData');
       return;
     }
     saveMut.mutate(v);

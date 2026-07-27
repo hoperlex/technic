@@ -13,6 +13,15 @@ import {
 const OBJ = '11111111-1111-4111-8111-111111111111';
 const TYPE = '33333333-3333-4333-8333-333333333333';
 
+// Верифицированный адрес (resolved + ФИАС) — обязателен для грузоперевозки (ADR 0006).
+const resolvedMeta = {
+  source: 'resolved' as const,
+  fiasId: '0c5b2444-70a0-4932-980c-b4dc0d3f02b5',
+  fiasLevel: 8,
+  geoLat: 55.75,
+  geoLon: 37.61,
+};
+
 const special = {
   requestType: 'special_equipment' as const,
   objectId: OBJ,
@@ -27,6 +36,8 @@ const freight = {
   volumeM3: 12.5,
   loadingLocation: 'Склад А',
   unloadingLocation: 'Объект Б',
+  loadingAddress: resolvedMeta,
+  unloadingAddress: resolvedMeta,
 };
 
 describe('vehicle-requests: создание — discriminator', () => {
@@ -164,34 +175,55 @@ describe('vehicle-requests: обновление', () => {
   });
 });
 
-describe('vehicle-requests: адрес (DaData, ADR 0006)', () => {
-  const resolved = {
-    source: 'resolved' as const,
-    fiasId: '0c5b2444-70a0-4932-980c-b4dc0d3f02b5',
-    fiasLevel: 8,
-    geoLat: 55.75,
-    geoLon: 37.61,
-  };
-
-  it('freight парсится без метаданных адреса (обратная совместимость)', () => {
-    const v = createVehicleRequestSchema.parse(freight);
-    if (v.requestType !== 'freight_transport') throw new Error('unreachable');
-    expect(v.loadingAddress ?? null).toBeNull();
+describe('vehicle-requests: адрес (DaData, ADR 0006 — жёсткая модель)', () => {
+  it('freight требует верифицированный адрес: без адреса — отклоняется', () => {
+    const { loadingAddress: _l, unloadingAddress: _u, ...noAddr } = freight;
+    expect(() => createVehicleRequestSchema.parse(noAddr)).toThrow();
+    // задана только погрузка — разгрузка тоже обязательна
+    expect(() =>
+      createVehicleRequestSchema.parse({ ...noAddr, loadingAddress: resolvedMeta }),
+    ).toThrow();
   });
 
-  it('freight принимает метаданные адреса', () => {
-    const v = createVehicleRequestSchema.parse({ ...freight, loadingAddress: resolved });
+  it('freight отклоняет неверифицированный адрес (manual / resolved без ФИАС)', () => {
+    expect(() =>
+      createVehicleRequestSchema.parse({ ...freight, loadingAddress: { source: 'manual' } }),
+    ).toThrow();
+    expect(() =>
+      createVehicleRequestSchema.parse({
+        ...freight,
+        loadingAddress: { source: 'resolved', fiasId: null },
+      }),
+    ).toThrow();
+  });
+
+  it('freight принимает верифицированный адрес (resolved + ФИАС)', () => {
+    const v = createVehicleRequestSchema.parse(freight);
     if (v.requestType !== 'freight_transport') throw new Error('unreachable');
-    expect(v.loadingAddress?.fiasId).toBe(resolved.fiasId);
+    expect(v.loadingAddress?.fiasId).toBe(resolvedMeta.fiasId);
+    expect(v.unloadingAddress?.fiasId).toBe(resolvedMeta.fiasId);
+  });
+
+  it('update: строка адреса и метаданные передаются вместе', () => {
+    const base = { requestType: 'freight_transport' as const, version: 1 };
+    expect(() =>
+      updateVehicleRequestSchema.parse({ ...base, loadingLocation: 'Новый склад' }),
+    ).toThrow();
+    const ok = updateVehicleRequestSchema.parse({
+      ...base,
+      loadingLocation: 'Новый склад',
+      loadingAddress: resolvedMeta,
+    });
+    expect(ok.requestType).toBe('freight_transport');
   });
 
   it('addressMeta strict: лишние поля отклоняются', () => {
-    expect(() => addressMetaSchema.parse({ ...resolved, city: 'Москва' })).toThrow();
+    expect(() => addressMetaSchema.parse({ ...resolvedMeta, city: 'Москва' })).toThrow();
     expect(() => addressMetaSchema.parse({ source: 'bogus' })).toThrow();
   });
 
   it('isAddressVerified: resolved+fiasId и object — верифицированы; manual и null — нет', () => {
-    expect(isAddressVerified(resolved)).toBe(true);
+    expect(isAddressVerified(resolvedMeta)).toBe(true);
     expect(isAddressVerified({ source: 'object' })).toBe(true);
     expect(isAddressVerified({ source: 'resolved', fiasId: null })).toBe(false);
     expect(isAddressVerified({ source: 'manual' })).toBe(false);
