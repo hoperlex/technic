@@ -10,6 +10,7 @@ import {
 
 const OBJ = '11111111-1111-4111-8111-111111111111';
 const SUB = '22222222-2222-4222-8222-222222222222';
+const TYPE = '33333333-3333-4333-8333-333333333333';
 
 const special = {
   requestType: 'special_equipment' as const,
@@ -50,19 +51,48 @@ describe('vehicle-requests: создание — discriminator', () => {
   });
 });
 
+describe('vehicle-requests: тип ТС — переходный период (ADR 0005, Фаза 1)', () => {
+  it('vehicleTypeId (плоский) — валидно, как синоним подтипа', () => {
+    const { vehicleSubtypeId: _s, ...noSub } = special;
+    const v = createVehicleRequestSchema.parse({ ...noSub, vehicleTypeId: TYPE });
+    if (v.requestType !== 'special_equipment') throw new Error('unreachable');
+    expect(v.vehicleTypeId).toBe(TYPE);
+  });
+
+  it('оба поля сразу — отклоняется', () => {
+    expect(() => createVehicleRequestSchema.parse({ ...special, vehicleTypeId: TYPE })).toThrow();
+  });
+
+  it('ни одного поля типа — отклоняется', () => {
+    const { vehicleSubtypeId: _s, ...noRef } = special;
+    expect(() => createVehicleRequestSchema.parse(noRef)).toThrow();
+  });
+
+  it('обновление: оба поля типа сразу — отклоняется', () => {
+    expect(() =>
+      updateVehicleRequestSchema.parse({
+        requestType: 'special_equipment',
+        version: 1,
+        vehicleTypeId: TYPE,
+        vehicleSubtypeId: SUB,
+      }),
+    ).toThrow();
+  });
+});
+
 describe('vehicle-requests: строгость схем (.strict)', () => {
   it('спецтехника отклоняет freight-поля', () => {
     expect(() =>
       createVehicleRequestSchema.parse({ ...special, scheduledAt: '2026-07-25T14:30:00+03:00' }),
     ).toThrow();
     expect(() => createVehicleRequestSchema.parse({ ...special, volumeM3: 5 })).toThrow();
-    expect(() =>
-      createVehicleRequestSchema.parse({ ...special, loadingLocation: 'x' }),
-    ).toThrow();
+    expect(() => createVehicleRequestSchema.parse({ ...special, loadingLocation: 'x' })).toThrow();
   });
 
   it('грузоперевозка отклоняет special-поля', () => {
-    expect(() => createVehicleRequestSchema.parse({ ...freight, dateFrom: '2026-07-25' })).toThrow();
+    expect(() =>
+      createVehicleRequestSchema.parse({ ...freight, dateFrom: '2026-07-25' }),
+    ).toThrow();
     expect(() => createVehicleRequestSchema.parse({ ...freight, dateTo: '2026-07-26' })).toThrow();
   });
 });
@@ -70,7 +100,11 @@ describe('vehicle-requests: строгость схем (.strict)', () => {
 describe('vehicle-requests: кросс-поля и валидация значений', () => {
   it('dateTo не раньше dateFrom', () => {
     expect(() =>
-      createVehicleRequestSchema.parse({ ...special, dateFrom: '2026-07-25', dateTo: '2026-07-24' }),
+      createVehicleRequestSchema.parse({
+        ...special,
+        dateFrom: '2026-07-25',
+        dateTo: '2026-07-24',
+      }),
     ).toThrow();
     const ok = createVehicleRequestSchema.parse({
       ...special,
@@ -81,8 +115,12 @@ describe('vehicle-requests: кросс-поля и валидация значе
   });
 
   it('спецтехника: некорректная дата отклоняется', () => {
-    expect(() => createVehicleRequestSchema.parse({ ...special, dateFrom: '2026-13-40' })).toThrow();
-    expect(() => createVehicleRequestSchema.parse({ ...special, dateFrom: '25-07-2026' })).toThrow();
+    expect(() =>
+      createVehicleRequestSchema.parse({ ...special, dateFrom: '2026-13-40' }),
+    ).toThrow();
+    expect(() =>
+      createVehicleRequestSchema.parse({ ...special, dateFrom: '25-07-2026' }),
+    ).toThrow();
   });
 
   it('грузоперевозка требует объём или массу', () => {
@@ -111,7 +149,10 @@ describe('vehicle-requests: кросс-поля и валидация значе
 describe('vehicle-requests: обновление', () => {
   it('требует version и requestType', () => {
     expect(() =>
-      updateVehicleRequestSchema.parse({ requestType: 'special_equipment', dateFrom: '2026-07-25' }),
+      updateVehicleRequestSchema.parse({
+        requestType: 'special_equipment',
+        dateFrom: '2026-07-25',
+      }),
     ).toThrow();
     const ok = updateVehicleRequestSchema.parse({
       requestType: 'special_equipment',

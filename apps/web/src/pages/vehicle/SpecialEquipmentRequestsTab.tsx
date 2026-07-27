@@ -1,5 +1,15 @@
 import { useState } from 'react';
-import { App, Button, DatePicker, Form, Input, Select, Space, Tag, type TableColumnType } from 'antd';
+import {
+  App,
+  Button,
+  DatePicker,
+  Form,
+  Input,
+  Select,
+  Space,
+  Tag,
+  type TableColumnType,
+} from 'antd';
 import { EditOutlined, DeleteOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import dayjs, { type Dayjs } from 'dayjs';
@@ -20,7 +30,7 @@ import {
   FileEditor,
   FilesCell,
   StatusCell,
-  VehicleSubtypeSelect,
+  VehicleTypeSelect,
   useFileEditor,
   useObjectOptions,
   type EditorFile,
@@ -28,8 +38,7 @@ import {
 
 interface FormValues {
   objectId: string;
-  parentTypeId: string;
-  vehicleSubtypeId: string;
+  vehicleTypeId: string;
   dateFrom: Dayjs;
   dateTo?: Dayjs | null;
   comment?: string;
@@ -50,7 +59,10 @@ export function SpecialEquipmentRequestsTab() {
     status?: string;
   }>(
     { requestType: 'special_equipment' },
-    { searchKeys: ['comment'], mapFilters: (f) => ({ status: f.status?.[0] as string | undefined }) },
+    {
+      searchKeys: ['comment'],
+      mapFilters: (f) => ({ status: f.status?.[0] as string | undefined }),
+    },
   );
 
   const { data, isFetching } = useQuery({
@@ -77,14 +89,18 @@ export function SpecialEquipmentRequestsTab() {
     form.resetFields();
     form.setFieldsValue({
       objectId: r.objectId,
-      parentTypeId: r.parentTypeId,
-      vehicleSubtypeId: r.vehicleSubtypeId,
+      vehicleTypeId: r.vehicleTypeId,
       dateFrom: dayjs(r.dateFrom),
       dateTo: r.dateTo ? dayjs(r.dateTo) : null,
       comment: r.comment,
     });
     editor.reset(
-      r.files.map((f): EditorFile => ({ id: f.id, filename: f.filename, size: f.size, isNew: false })),
+      r.files.map((f): EditorFile => ({
+        id: f.id,
+        filename: f.filename,
+        size: f.size,
+        isNew: false,
+      })),
     );
     setOpen(true);
   };
@@ -93,7 +109,7 @@ export function SpecialEquipmentRequestsTab() {
     mutationFn: (v: FormValues) => {
       const base = {
         objectId: v.objectId,
-        vehicleSubtypeId: v.vehicleSubtypeId,
+        vehicleTypeId: v.vehicleTypeId,
         dateFrom: v.dateFrom.format('YYYY-MM-DD'),
         dateTo: v.dateTo ? v.dateTo.format('YYYY-MM-DD') : null,
         comment: v.comment ?? '',
@@ -174,16 +190,9 @@ export function SpecialEquipmentRequestsTab() {
     }),
     textColumn({ key: 'objectName', title: 'Объект', dataIndex: 'objectName', searchable: false }),
     textColumn({
-      key: 'parentTypeName',
+      key: 'vehicleTypeName',
       title: 'Тип ТС',
-      dataIndex: 'parentTypeName',
-      sortable: false,
-      searchable: false,
-    }),
-    textColumn({
-      key: 'vehicleSubtypeName',
-      title: 'Подтип ТС',
-      dataIndex: 'vehicleSubtypeName',
+      dataIndex: 'vehicleTypeName',
       sortable: false,
       searchable: false,
     }),
@@ -191,7 +200,8 @@ export function SpecialEquipmentRequestsTab() {
       key: 'period',
       title: 'Период',
       width: 190,
-      render: (_v, r) => (r.dateTo ? `${fmtDate(r.dateFrom)} – ${fmtDate(r.dateTo)}` : fmtDate(r.dateFrom)),
+      render: (_v, r) =>
+        r.dateTo ? `${fmtDate(r.dateFrom)} – ${fmtDate(r.dateTo)}` : fmtDate(r.dateFrom),
     },
     {
       key: 'status',
@@ -304,10 +314,19 @@ export function SpecialEquipmentRequestsTab() {
         width={560}
       >
         <Form form={form} layout="vertical" onFinish={(v) => saveMut.mutate(v)}>
-          <Form.Item name="objectId" label="Объект" rules={[{ required: true, message: 'Выберите объект' }]}>
-            <Select options={objectOptions} showSearch optionFilterProp="label" placeholder="Объект" />
+          <Form.Item
+            name="objectId"
+            label="Объект"
+            rules={[{ required: true, message: 'Выберите объект' }]}
+          >
+            <Select
+              options={objectOptions}
+              showSearch
+              optionFilterProp="label"
+              placeholder="Объект"
+            />
           </Form.Item>
-          <VehicleSubtypeSelect form={form} kindCode="special_equipment" />
+          <VehicleTypeSelect kindCode="special_equipment" />
           <Form.Item
             name="dateFrom"
             label="Дата начала"

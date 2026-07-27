@@ -121,6 +121,9 @@ export default async function vehicleTypesRoutes(app: FastifyInstance): Promise<
           : q.level === 'subtype'
             ? isNotNull(vehicleTypes.parentId)
             : undefined,
+        // Плоский режим (ADR 0005, Фаза 1): только новые плоские типы (parent_id NULL, is_selectable).
+        q.view === 'flat' ? isNull(vehicleTypes.parentId) : undefined,
+        q.view === 'flat' ? eq(vehicleTypes.isSelectable, true) : undefined,
         q.isActive === undefined ? undefined : eq(vehicleTypes.isActive, q.isActive),
         searchCondition(q.search, [vehicleTypes.code, vehicleTypes.name]),
       );
@@ -170,15 +173,11 @@ export default async function vehicleTypesRoutes(app: FastifyInstance): Promise<
   );
 
   // ── Одна запись ──
-  r.get(
-    '/:id',
-    { preHandler: [app.authenticate], schema: { params: idParams } },
-    async (req) => {
-      const dto = await getDtoById(req.params.id);
-      if (!dto) throw err.notFound('Тип не найден');
-      return dto;
-    },
-  );
+  r.get('/:id', { preHandler: [app.authenticate], schema: { params: idParams } }, async (req) => {
+    const dto = await getDtoById(req.params.id);
+    if (!dto) throw err.notFound('Тип не найден');
+    return dto;
+  });
 
   // ── Создание (discriminatedUnion по level) ──
   r.post(
@@ -215,6 +214,39 @@ export default async function vehicleTypesRoutes(app: FastifyInstance): Promise<
           entityType: 'vehicle_type',
           entityId: createdId,
           metadata: { code: body.code, kindId: body.kindId, parentId: null, level: 'type' },
+        });
+      } else if (body.level === 'flat') {
+        // Плоский тип (ADR 0005): parentId=null, isSelectable=true, активностью управляем напрямую.
+        const dup = await db
+          .select({ id: vehicleTypes.id })
+          .from(vehicleTypes)
+          .where(eq(vehicleTypes.code, body.code));
+        if (dup.length > 0) throw err.conflict('Тип с таким кодом уже существует');
+        const [created] = await db
+          .insert(vehicleTypes)
+          .values({
+            kindId: body.kindId,
+            parentId: null,
+            code: body.code,
+            name: body.name,
+            description: body.description,
+            isSelectable: true,
+            isActive: body.isActive,
+            sortOrder: body.sortOrder,
+          })
+          .returning({ id: vehicleTypes.id });
+        createdId = created!.id;
+        await writeAudit({
+          actorUserId: actor,
+          action: 'vehicle_type.create',
+          entityType: 'vehicle_type',
+          entityId: createdId,
+          metadata: {
+            code: body.code,
+            kindId: body.kindId,
+            level: 'flat',
+            isActive: body.isActive,
+          },
         });
       } else {
         createdId = await db.transaction(async (tx) => {
@@ -291,8 +323,8 @@ export default async function vehicleTypesRoutes(app: FastifyInstance): Promise<
           .for('update');
         if (!row) throw err.notFound('Тип не найден');
 
-        if (row.parentId === null) {
-          // Тип: только name/description/sortOrder. isActive/структурные поля запрещены.
+        if (row.parentId === null && !row.isSelectable) {
+          // Старый родительский тип (невыбираемый): только name/description/sortOrder.
           const parsed = updateParentTypeSchema.safeParse(req.body);
           if (!parsed.success) {
             throw err.badRequest(
@@ -315,11 +347,11 @@ export default async function vehicleTypesRoutes(app: FastifyInstance): Promise<
           };
         }
 
-        // Подтип: name/description/sortOrder/isActive.
+        // Плоский тип или подтип: name/description/sortOrder/isActive.
         const parsed = updateSubtypeSchema.safeParse(req.body);
         if (!parsed.success) {
           throw err.badRequest(
-            'Для подтипа можно менять только name, description, sortOrder, isActive',
+            'Можно менять только name, description, sortOrder, isActive',
             fieldsFromZod(parsed.error),
           );
         }
@@ -332,7 +364,8 @@ export default async function vehicleTypesRoutes(app: FastifyInstance): Promise<
         const activeChanged =
           parsed.data.isActive !== undefined && parsed.data.isActive !== row.isActive;
         if (activeChanged) {
-          await recomputeParentActive(tx, row.parentId);
+          // Пересчёт активности родителя — только для подтипа; у плоского типа родителя нет.
+          if (row.parentId !== null) await recomputeParentActive(tx, row.parentId);
           action = parsed.data.isActive ? 'vehicle_type.activate' : 'vehicle_type.deactivate';
         }
         return {

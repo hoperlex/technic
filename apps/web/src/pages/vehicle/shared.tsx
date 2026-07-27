@@ -1,17 +1,5 @@
 import { useState } from 'react';
-import {
-  App,
-  Button,
-  Dropdown,
-  Form,
-  List,
-  Popover,
-  Select,
-  Tag,
-  Typography,
-  Upload,
-  type FormInstance,
-} from 'antd';
+import { App, Button, Dropdown, Form, List, Popover, Select, Tag, Typography, Upload } from 'antd';
 import { DownOutlined, UploadOutlined } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
 import {
@@ -39,7 +27,13 @@ export function useObjectOptions() {
   const { data } = useQuery({
     queryKey: ['objects', 'for-select'],
     queryFn: () =>
-      objectsApi.list({ page: 1, pageSize: 500, isActive: 'true', sortBy: 'name', sortOrder: 'asc' }),
+      objectsApi.list({
+        page: 1,
+        pageSize: 500,
+        isActive: 'true',
+        sortBy: 'name',
+        sortOrder: 'asc',
+      }),
   });
   return (data?.items ?? []).map((o) => ({ value: o.id, label: `${o.code} — ${o.name}` }));
 }
@@ -190,81 +184,44 @@ export function FilesCell({ files }: { files: FileDto[] }) {
 }
 
 /**
- * Зависимый выбор Тип ТС → Подтип ТС в форме. Тип фильтруется по виду вкладки
- * (kindCode), подтипы — по выбранному типу. В API уходит только vehicleSubtypeId.
+ * Выбор типа ТС (плоская модель, ADR 0005). Активные типы фильтруются по виду
+ * вкладки (kindCode). В API уходит vehicleTypeId.
  */
-export function VehicleSubtypeSelect({
-  form,
-  kindCode,
-}: {
-  form: FormInstance;
-  kindCode: string;
-}) {
+export function VehicleTypeSelect({ kindCode }: { kindCode: string }) {
   const { data: kindsData } = useQuery({
     queryKey: ['vehicle-kinds'],
     queryFn: () => vehicleKindsApi.list({ pageSize: 500 }),
   });
   const kindId = kindsData?.items.find((k) => k.code === kindCode)?.id;
 
-  const { data: typesData } = useQuery({
-    queryKey: ['vehicle-types', 'types', kindId],
+  const { data: typesData, isFetching } = useQuery({
+    queryKey: ['vehicle-types', 'flat', kindId],
     queryFn: () =>
       vehicleTypesApi.list({
-        level: 'type',
+        view: 'flat',
         kindId,
-        view: 'list',
+        isActive: 'true',
         pageSize: 500,
         sortBy: 'sortOrder',
         sortOrder: 'asc',
       }),
     enabled: !!kindId,
   });
-  const typeOptions = (typesData?.items ?? [])
-    .filter((t) => t.isActive)
-    .map((t) => ({ value: t.id, label: t.name }));
-
-  const parentTypeId = Form.useWatch('parentTypeId', form) as string | undefined;
-  const { data: subsData, isFetching: subsFetching } = useQuery({
-    queryKey: ['vehicle-types', 'subtypes', parentTypeId],
-    queryFn: () =>
-      vehicleTypesApi.list({
-        level: 'subtype',
-        parentId: parentTypeId,
-        isActive: 'true',
-        view: 'list',
-        pageSize: 500,
-        sortBy: 'sortOrder',
-        sortOrder: 'asc',
-      }),
-    enabled: !!parentTypeId,
-  });
-  const subOptions = (subsData?.items ?? []).map((s) => ({ value: s.id, label: s.name }));
+  const typeOptions = (typesData?.items ?? []).map((t) => ({ value: t.id, label: t.name }));
 
   return (
-    <>
-      <Form.Item name="parentTypeId" label="Тип ТС" rules={[{ required: true, message: 'Выберите тип' }]}>
-        <Select
-          options={typeOptions}
-          showSearch
-          optionFilterProp="label"
-          placeholder="Выберите тип"
-          onChange={() => form.setFieldValue('vehicleSubtypeId', undefined)}
-        />
-      </Form.Item>
-      <Form.Item
-        name="vehicleSubtypeId"
-        label="Подтип ТС"
-        rules={[{ required: true, message: 'Выберите подтип' }]}
-      >
-        <Select
-          options={subOptions}
-          showSearch
-          optionFilterProp="label"
-          disabled={!parentTypeId}
-          loading={subsFetching}
-          placeholder={parentTypeId ? 'Выберите подтип' : 'Сначала выберите тип'}
-        />
-      </Form.Item>
-    </>
+    <Form.Item
+      name="vehicleTypeId"
+      label="Тип ТС"
+      rules={[{ required: true, message: 'Выберите тип' }]}
+    >
+      <Select
+        options={typeOptions}
+        showSearch
+        optionFilterProp="label"
+        loading={isFetching}
+        placeholder="Выберите тип"
+      />
+    </Form.Item>
   );
 }

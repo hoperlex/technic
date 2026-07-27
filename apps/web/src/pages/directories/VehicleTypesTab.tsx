@@ -5,11 +5,9 @@ import {
   Form,
   Input,
   InputNumber,
-  Radio,
   Select,
   Space,
   Switch,
-  Tag,
   type TableColumnType,
 } from 'antd';
 import { EditOutlined, PlusOutlined } from '@ant-design/icons';
@@ -29,21 +27,18 @@ import { errorMessage } from '../../utils/format';
 interface VtParams {
   page: number;
   pageSize: number;
+  sortBy: string;
   sortOrder: 'asc' | 'desc';
-  sortBy?: string;
-  view: 'hierarchy';
+  view: 'flat';
   search?: string;
   kindId?: string;
-  level?: 'type' | 'subtype';
   isActive?: string;
   // объект параметров пригоден как query для apiFetch
   [key: string]: unknown;
 }
 
 interface VtFormValues {
-  level: 'type' | 'subtype';
   kindId?: string;
-  parentId?: string;
   code?: string;
   name?: string;
   description?: string;
@@ -53,16 +48,17 @@ interface VtFormValues {
 
 const CODE_PATTERN = /^[a-z][a-z0-9_]*$/;
 
+// Плоский справочник типов ТС (ADR 0005): один уровень, без подтипов/иерархии.
 export function VehicleTypesTab() {
   const { message, modal } = App.useApp();
   const qc = useQueryClient();
 
-  // Иерархический режим: родитель и его подтипы идут подряд, весь справочник на одной странице.
   const [params, setParams] = useState<VtParams>({
     page: 1,
-    pageSize: 500,
+    pageSize: 50,
+    sortBy: 'sortOrder',
     sortOrder: 'asc',
-    view: 'hierarchy',
+    view: 'flat',
   });
   const patchParams = (patch: Partial<VtParams>) => setParams((p) => ({ ...p, ...patch, page: 1 }));
 
@@ -81,39 +77,18 @@ export function VehicleTypesTab() {
   const [record, setRecord] = useState<VehicleTypeDto | null>(null);
   const [form] = Form.useForm<VtFormValues>();
   const isEdit = !!record;
-  const watchLevel = Form.useWatch('level', form);
-  const watchKindId = Form.useWatch('kindId', form);
-  const level: 'type' | 'subtype' = isEdit ? record!.level : (watchLevel ?? 'type');
-
-  // Родительские типы для формы подтипа — только выбранного вида (kindId — фильтр формы).
-  const { data: parentsData, isFetching: parentsFetching } = useQuery({
-    queryKey: ['vehicle-types', 'parents', watchKindId],
-    queryFn: () =>
-      vehicleTypesApi.list({
-        level: 'type',
-        kindId: watchKindId,
-        view: 'list',
-        pageSize: 500,
-        sortBy: 'sortOrder',
-        sortOrder: 'asc',
-      }),
-    enabled: !isEdit && level === 'subtype' && !!watchKindId,
-  });
-  const parentOptions = (parentsData?.items ?? []).map((t) => ({ value: t.id, label: t.name }));
 
   const openCreate = () => {
     setRecord(null);
     form.resetFields();
-    form.setFieldsValue({ level: 'type', sortOrder: 100, isActive: true });
+    form.setFieldsValue({ sortOrder: 100, isActive: true });
     setOpen(true);
   };
   const openEdit = (r: VehicleTypeDto) => {
     setRecord(r);
     form.resetFields();
     form.setFieldsValue({
-      level: r.level,
       kindId: r.kindId,
-      parentId: r.parentId ?? undefined,
       code: r.code,
       name: r.name,
       description: r.description,
@@ -124,8 +99,12 @@ export function VehicleTypesTab() {
   };
 
   const saveMut = useMutation({
-    mutationFn: (arg: { create: CreateVehicleTypeInput } | { id: string; body: UpdateVehicleTypeInput }) =>
-      'create' in arg ? vehicleTypesApi.create(arg.create) : vehicleTypesApi.update(arg.id, arg.body),
+    mutationFn: (
+      arg: { create: CreateVehicleTypeInput } | { id: string; body: UpdateVehicleTypeInput },
+    ) =>
+      'create' in arg
+        ? vehicleTypesApi.create(arg.create)
+        : vehicleTypesApi.update(arg.id, arg.body),
     onSuccess: () => {
       message.success('Сохранено');
       void qc.invalidateQueries({ queryKey: ['vehicle-types'] });
@@ -136,46 +115,33 @@ export function VehicleTypesTab() {
 
   const submit = (v: VtFormValues) => {
     if (isEdit) {
-      const body: UpdateVehicleTypeInput =
-        record!.level === 'type'
-          ? { name: v.name, description: v.description ?? '', sortOrder: v.sortOrder }
-          : {
-              name: v.name,
-              description: v.description ?? '',
-              sortOrder: v.sortOrder,
-              isActive: v.isActive,
-            };
+      const body: UpdateVehicleTypeInput = {
+        name: v.name,
+        description: v.description ?? '',
+        sortOrder: v.sortOrder,
+        isActive: v.isActive,
+      };
       saveMut.mutate({ id: record!.id, body });
       return;
     }
-    const create: CreateVehicleTypeInput =
-      v.level === 'type'
-        ? {
-            level: 'type',
-            kindId: v.kindId!,
-            code: v.code!,
-            name: v.name!,
-            description: v.description ?? '',
-            sortOrder: v.sortOrder ?? 100,
-          }
-        : {
-            level: 'subtype',
-            parentId: v.parentId!,
-            code: v.code!,
-            name: v.name!,
-            description: v.description ?? '',
-            sortOrder: v.sortOrder ?? 100,
-            isActive: v.isActive ?? true,
-          };
+    const create: CreateVehicleTypeInput = {
+      level: 'flat',
+      kindId: v.kindId!,
+      code: v.code!,
+      name: v.name!,
+      description: v.description ?? '',
+      sortOrder: v.sortOrder ?? 100,
+      isActive: v.isActive ?? true,
+    };
     saveMut.mutate({ create });
   };
 
-  // Активация/деактивация подтипа — инлайн (§20). Деактивация — с подтверждением.
+  // Активация/деактивация — инлайн; деактивация с подтверждением.
   const toggleMut = useMutation({
     mutationFn: ({ id, isActive }: { id: string; isActive: boolean }) =>
       vehicleTypesApi.update(id, { isActive }),
     onSuccess: (_d, v) => {
-      message.success(v.isActive ? 'Подтип активирован' : 'Подтип деактивирован');
+      message.success(v.isActive ? 'Тип активирован' : 'Тип деактивирован');
       void qc.invalidateQueries({ queryKey: ['vehicle-types'] });
     },
     onError: (e) => message.error(errorMessage(e)),
@@ -186,7 +152,7 @@ export function VehicleTypesTab() {
       return;
     }
     modal.confirm({
-      title: `Деактивировать подтип «${r.name}»?`,
+      title: `Деактивировать тип «${r.name}»?`,
       okText: 'Деактивировать',
       okButtonProps: { danger: true },
       cancelText: 'Отмена',
@@ -197,20 +163,7 @@ export function VehicleTypesTab() {
   const onTableChange = (c: TableChange) =>
     setParams((p) => ({ ...p, page: c.page, pageSize: c.pageSize }));
 
-  // Колонки строго: Вид → Тип → Подтип → Активен → Действия (§17).
-  const activeColumn: TableColumnType<VehicleTypeDto> = {
-    key: 'isActive',
-    title: 'Активен',
-    dataIndex: 'isActive',
-    width: 110,
-    render: (v: boolean, r) =>
-      r.level === 'subtype' ? (
-        <Switch size="small" checked={v} loading={toggleMut.isPending} onChange={(n) => onToggleActive(r, n)} />
-      ) : (
-        <Tag color={v ? 'green' : 'default'}>{v ? 'Да' : 'Нет'}</Tag>
-      ),
-  };
-
+  // Колонки: Вид → Тип → Активен → Действия.
   const columns: TableColumnType<VehicleTypeDto>[] = [
     textColumn<VehicleTypeDto>({
       key: 'kindName',
@@ -218,29 +171,31 @@ export function VehicleTypesTab() {
       dataIndex: 'kindName',
       sortable: false,
       searchable: false,
-      width: 160,
+      width: 200,
     }),
     textColumn<VehicleTypeDto>({
-      key: 'typeName',
+      key: 'name',
       title: 'Тип',
       dataIndex: 'name',
       sortable: false,
       searchable: false,
-      render: (_v, r) => (r.level === 'type' ? r.name : (r.parentName ?? '—')),
     }),
-    textColumn<VehicleTypeDto>({
-      key: 'subtypeName',
-      title: 'Подтип',
-      dataIndex: 'name',
-      sortable: false,
-      searchable: false,
-      render: (_v, r) => (r.level === 'type' ? '—' : r.name),
-    }),
-    activeColumn,
+    {
+      key: 'isActive',
+      title: 'Активен',
+      dataIndex: 'isActive',
+      width: 110,
+      render: (v: boolean, r) => (
+        <Switch
+          size="small"
+          checked={v}
+          loading={toggleMut.isPending}
+          onChange={(n) => onToggleActive(r, n)}
+        />
+      ),
+    },
     actionsColumn<VehicleTypeDto>((r) => (
-      <Space>
-        <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)} />
-      </Space>
+      <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)} />
     )),
   ];
 
@@ -256,21 +211,10 @@ export function VehicleTypesTab() {
       <Select
         allowClear
         placeholder="Вид"
-        style={{ width: 180 }}
+        style={{ width: 200 }}
         options={kindOptions}
         value={params.kindId}
         onChange={(v) => patchParams({ kindId: v })}
-      />
-      <Select
-        allowClear
-        placeholder="Уровень"
-        style={{ width: 140 }}
-        options={[
-          { value: 'type', label: 'Тип' },
-          { value: 'subtype', label: 'Подтип' },
-        ]}
-        value={params.level}
-        onChange={(v) => patchParams({ level: v })}
       />
       <Select
         allowClear
@@ -315,13 +259,7 @@ export function VehicleTypesTab() {
         onChange={onTableChange}
       />
       <FormModal
-        title={
-          isEdit
-            ? record!.level === 'type'
-              ? 'Редактирование типа'
-              : 'Редактирование подтипа'
-            : 'Новая запись'
-        }
+        title={isEdit ? 'Редактирование типа' : 'Новый тип ТС'}
         open={open}
         onCancel={() => setOpen(false)}
         onSubmit={() => form.submit()}
@@ -329,58 +267,28 @@ export function VehicleTypesTab() {
         width={520}
       >
         <Form form={form} layout="vertical" onFinish={submit}>
-          {!isEdit && (
-            <Form.Item name="level" label="Уровень" rules={[{ required: true }]}>
-              <Radio.Group onChange={() => form.setFieldValue('parentId', undefined)}>
-                <Radio value="type">Тип</Radio>
-                <Radio value="subtype">Подтип</Radio>
-              </Radio.Group>
-            </Form.Item>
-          )}
-
           {isEdit ? (
             <Form.Item label="Вид">
               <Input value={record!.kindName} disabled />
             </Form.Item>
           ) : (
-            <Form.Item name="kindId" label="Вид" rules={[{ required: true, message: 'Выберите вид' }]}>
-              <Select
-                options={kindOptions}
-                placeholder="Выберите вид"
-                onChange={() => form.setFieldValue('parentId', undefined)}
-              />
+            <Form.Item
+              name="kindId"
+              label="Вид"
+              rules={[{ required: true, message: 'Выберите вид' }]}
+            >
+              <Select options={kindOptions} placeholder="Выберите вид" />
             </Form.Item>
           )}
 
-          {level === 'subtype' &&
-            (isEdit ? (
-              <Form.Item label="Родительский тип">
-                <Input value={record!.parentName ?? ''} disabled />
-              </Form.Item>
-            ) : (
-              <Form.Item
-                name="parentId"
-                label="Родительский тип"
-                rules={[{ required: true, message: 'Выберите тип' }]}
-              >
-                <Select
-                  options={parentOptions}
-                  disabled={!watchKindId}
-                  loading={parentsFetching}
-                  placeholder={watchKindId ? 'Выберите тип' : 'Сначала выберите вид'}
-                  notFoundContent={watchKindId ? 'Нет типов для вида' : null}
-                />
-              </Form.Item>
-            ))}
-
           <Form.Item name="code" label="Код" rules={codeRules}>
             {/* Код — стабильный системный идентификатор, неизменяем после создания. */}
-            <Input disabled={isEdit} placeholder="например truck_crane" />
+            <Input disabled={isEdit} placeholder="например truck_cranes" />
           </Form.Item>
 
           <Form.Item
             name="name"
-            label={level === 'type' ? 'Наименование типа' : 'Наименование подтипа'}
+            label="Наименование типа"
             rules={[{ required: true, message: 'Укажите наименование' }]}
           >
             <Input />
@@ -394,11 +302,9 @@ export function VehicleTypesTab() {
             <InputNumber style={{ width: '100%' }} min={0} />
           </Form.Item>
 
-          {level === 'subtype' && (
-            <Form.Item name="isActive" label="Активен" valuePropName="checked">
-              <Switch />
-            </Form.Item>
-          )}
+          <Form.Item name="isActive" label="Активен" valuePropName="checked">
+            <Switch />
+          </Form.Item>
         </Form>
       </FormModal>
     </PageTableLayout>

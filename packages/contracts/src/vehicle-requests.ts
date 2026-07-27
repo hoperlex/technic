@@ -65,11 +65,16 @@ const amountSchema = z
   );
 
 // ── Создание (discriminatedUnion по requestType, strict) ──
+// Переходный период к плоскому классификатору (ADR 0005, Фаза 1): новый клиент шлёт
+// `vehicleTypeId` (плоский тип), старый — `vehicleSubtypeId` (подтип). Ровно одно из полей
+// обязательно — проверяет superRefine у createVehicleRequestSchema. Оба записываются в
+// vehicle_requests.vehicle_type_id; backend валидирует соответствующей resolve-функцией.
 export const createSpecialEquipmentRequestSchema = z
   .object({
     requestType: z.literal('special_equipment'),
     objectId: uuidSchema,
-    vehicleSubtypeId: uuidSchema,
+    vehicleTypeId: uuidSchema.optional(),
+    vehicleSubtypeId: uuidSchema.optional(),
     dateFrom: dateOnlySchema,
     dateTo: dateOnlySchema.nullable().optional(),
     comment: commentSchema.optional().default(''),
@@ -81,7 +86,8 @@ export const createFreightTransportRequestSchema = z
   .object({
     requestType: z.literal('freight_transport'),
     objectId: uuidSchema,
-    vehicleSubtypeId: uuidSchema,
+    vehicleTypeId: uuidSchema.optional(),
+    vehicleSubtypeId: uuidSchema.optional(),
     scheduledAt: scheduledAtSchema,
     volumeM3: amountSchema.nullable().optional(),
     weightTons: amountSchema.nullable().optional(),
@@ -98,6 +104,14 @@ export const createVehicleRequestSchema = z
     createFreightTransportRequestSchema,
   ])
   .superRefine((v, ctx) => {
+    // Ровно одно из vehicleTypeId / vehicleSubtypeId (переходный период, ADR 0005).
+    if (!v.vehicleTypeId === !v.vehicleSubtypeId) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['vehicleTypeId'],
+        message: 'Укажите тип ТС (ровно одно из полей: vehicleTypeId или vehicleSubtypeId)',
+      });
+    }
     if (v.requestType === 'special_equipment') {
       if (v.dateTo && v.dateTo < v.dateFrom) {
         ctx.addIssue({
@@ -125,6 +139,7 @@ export const updateSpecialEquipmentRequestSchema = z
     requestType: z.literal('special_equipment'),
     version: z.number().int().nonnegative(),
     objectId: uuidSchema.optional(),
+    vehicleTypeId: uuidSchema.optional(),
     vehicleSubtypeId: uuidSchema.optional(),
     dateFrom: dateOnlySchema.optional(),
     dateTo: dateOnlySchema.nullable().optional(),
@@ -139,6 +154,7 @@ export const updateFreightTransportRequestSchema = z
     requestType: z.literal('freight_transport'),
     version: z.number().int().nonnegative(),
     objectId: uuidSchema.optional(),
+    vehicleTypeId: uuidSchema.optional(),
     vehicleSubtypeId: uuidSchema.optional(),
     scheduledAt: scheduledAtSchema.optional(),
     volumeM3: amountSchema.nullable().optional(),
@@ -151,10 +167,21 @@ export const updateFreightTransportRequestSchema = z
   })
   .strict();
 
-export const updateVehicleRequestSchema = z.discriminatedUnion('requestType', [
-  updateSpecialEquipmentRequestSchema,
-  updateFreightTransportRequestSchema,
-]);
+export const updateVehicleRequestSchema = z
+  .discriminatedUnion('requestType', [
+    updateSpecialEquipmentRequestSchema,
+    updateFreightTransportRequestSchema,
+  ])
+  .superRefine((v, ctx) => {
+    // Тип ТС меняем максимум одним полем (переходный период, ADR 0005).
+    if (v.vehicleTypeId && v.vehicleSubtypeId) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['vehicleTypeId'],
+        message: 'Укажите только одно поле типа ТС (vehicleTypeId или vehicleSubtypeId)',
+      });
+    }
+  });
 export type UpdateVehicleRequestInput = z.infer<typeof updateVehicleRequestSchema>;
 
 export const changeVehicleRequestStatusSchema = z
@@ -166,18 +193,15 @@ export const changeVehicleRequestStatusSchema = z
 export type ChangeVehicleRequestStatusInput = z.infer<typeof changeVehicleRequestStatusSchema>;
 
 // ── Список ──
-export const VEHICLE_REQUEST_SORT_FIELDS = [
-  'num',
-  'objectName',
-  'status',
-  'createdAt',
-] as const;
+export const VEHICLE_REQUEST_SORT_FIELDS = ['num', 'objectName', 'status', 'createdAt'] as const;
 
 export const vehicleRequestListQuerySchema = baseListQuery(VEHICLE_REQUEST_SORT_FIELDS).extend({
   // Обязателен: список всегда в контексте вкладки (спецтехника/грузоперевозки).
   requestType: vehicleRequestTypeSchema,
   status: requestStatusSchema.optional(),
   objectId: uuidSchema.optional(),
+  // Новый плоский фильтр (Фаза 1) + старые подтип/родитель — совместимость на переходный период.
+  vehicleTypeId: uuidSchema.optional(),
   vehicleSubtypeId: uuidSchema.optional(),
   parentTypeId: uuidSchema.optional(),
   num: z.coerce.number().int().positive().optional(),
@@ -209,10 +233,16 @@ export interface VehicleRequestBaseDto {
   objectCode: string;
   objectName: string;
 
-  /** Родительский тип ТС (через JOIN от подтипа) — для отображения/фильтра. */
+  /** Тип ТС (физически vehicle_requests.vehicle_type_id). Плоская модель (ADR 0005). */
+  vehicleTypeId: string;
+  vehicleTypeName: string;
+  /**
+   * Поля переходного периода (Фаза 1) для старого фронта. Для плоского типа дублируют
+   * vehicleTypeId/Name (parentType* — тоже, чтобы старая колонка «Тип ТС» осталась осмысленной).
+   * Удаляются в фазе 3.
+   */
   parentTypeId: string;
   parentTypeName: string;
-  /** Конечный выбираемый подтип (физически vehicle_requests.vehicle_type_id). */
   vehicleSubtypeId: string;
   vehicleSubtypeName: string;
 

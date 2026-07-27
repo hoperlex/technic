@@ -33,7 +33,7 @@ import {
   FileEditor,
   FilesCell,
   StatusCell,
-  VehicleSubtypeSelect,
+  VehicleTypeSelect,
   useFileEditor,
   useObjectOptions,
   type EditorFile,
@@ -41,8 +41,7 @@ import {
 
 interface FormValues {
   objectId: string;
-  parentTypeId: string;
-  vehicleSubtypeId: string;
+  vehicleTypeId: string;
   scheduledDate: Dayjs;
   scheduledTime: Dayjs;
   volumeM3?: number | null;
@@ -70,7 +69,10 @@ export function FreightTransportRequestsTab() {
     status?: string;
   }>(
     { requestType: 'freight_transport' },
-    { searchKeys: ['comment'], mapFilters: (f) => ({ status: f.status?.[0] as string | undefined }) },
+    {
+      searchKeys: ['comment'],
+      mapFilters: (f) => ({ status: f.status?.[0] as string | undefined }),
+    },
   );
 
   const { data, isFetching } = useQuery({
@@ -98,8 +100,7 @@ export function FreightTransportRequestsTab() {
     const at = dayjs.tz(r.scheduledAt, MOSCOW_TZ);
     form.setFieldsValue({
       objectId: r.objectId,
-      parentTypeId: r.parentTypeId,
-      vehicleSubtypeId: r.vehicleSubtypeId,
+      vehicleTypeId: r.vehicleTypeId,
       scheduledDate: at,
       scheduledTime: at,
       volumeM3: r.volumeM3,
@@ -109,7 +110,12 @@ export function FreightTransportRequestsTab() {
       comment: r.comment,
     });
     editor.reset(
-      r.files.map((f): EditorFile => ({ id: f.id, filename: f.filename, size: f.size, isNew: false })),
+      r.files.map((f): EditorFile => ({
+        id: f.id,
+        filename: f.filename,
+        size: f.size,
+        isNew: false,
+      })),
     );
     setOpen(true);
   };
@@ -121,7 +127,7 @@ export function FreightTransportRequestsTab() {
         .format('YYYY-MM-DDTHH:mm:ssZ');
       const base = {
         objectId: v.objectId,
-        vehicleSubtypeId: v.vehicleSubtypeId,
+        vehicleTypeId: v.vehicleTypeId,
         scheduledAt,
         volumeM3: v.volumeM3 ?? null,
         weightTons: v.weightTons ?? null,
@@ -213,16 +219,9 @@ export function FreightTransportRequestsTab() {
     }),
     textColumn({ key: 'objectName', title: 'Объект', dataIndex: 'objectName', searchable: false }),
     textColumn({
-      key: 'parentTypeName',
+      key: 'vehicleTypeName',
       title: 'Тип ТС',
-      dataIndex: 'parentTypeName',
-      sortable: false,
-      searchable: false,
-    }),
-    textColumn({
-      key: 'vehicleSubtypeName',
-      title: 'Подтип ТС',
-      dataIndex: 'vehicleSubtypeName',
+      dataIndex: 'vehicleTypeName',
       sortable: false,
       searchable: false,
     }),
@@ -365,10 +364,19 @@ export function FreightTransportRequestsTab() {
         width={560}
       >
         <Form form={form} layout="vertical" onFinish={onFinish}>
-          <Form.Item name="objectId" label="Объект" rules={[{ required: true, message: 'Выберите объект' }]}>
-            <Select options={objectOptions} showSearch optionFilterProp="label" placeholder="Объект" />
+          <Form.Item
+            name="objectId"
+            label="Объект"
+            rules={[{ required: true, message: 'Выберите объект' }]}
+          >
+            <Select
+              options={objectOptions}
+              showSearch
+              optionFilterProp="label"
+              placeholder="Объект"
+            />
           </Form.Item>
-          <VehicleSubtypeSelect form={form} kindCode="freight_transport" />
+          <VehicleTypeSelect kindCode="freight_transport" />
           <Space style={{ width: '100%' }} size="middle">
             <Form.Item name="volumeM3" label="Объём, м³" style={{ flex: 1 }}>
               <InputNumber style={{ width: '100%' }} min={0} step={0.1} />
@@ -390,7 +398,12 @@ export function FreightTransportRequestsTab() {
               label="Время (МСК)"
               rules={[{ required: true, message: 'Укажите время' }]}
             >
-              <TimePicker format="HH:mm" minuteStep={5} needConfirm={false} style={{ width: '100%' }} />
+              <TimePicker
+                format="HH:mm"
+                minuteStep={5}
+                needConfirm={false}
+                style={{ width: '100%' }}
+              />
             </Form.Item>
           </Space>
           <Form.Item

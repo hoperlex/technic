@@ -8,8 +8,14 @@ export const VEHICLE_TYPE_LEVELS = ['type', 'subtype'] as const;
 export const vehicleTypeLevelSchema = z.enum(VEHICLE_TYPE_LEVELS);
 export type VehicleTypeLevel = (typeof VEHICLE_TYPE_LEVELS)[number];
 
-/** Режим выдачи списка: плоский или иерархический (родитель + его подтипы рядом). */
-export const VEHICLE_TYPE_VIEWS = ['list', 'hierarchy'] as const;
+/**
+ * Режим выдачи списка:
+ * - `list` — плоский список всех строк (тип+подтип), пагинация/сортировка;
+ * - `hierarchy` — родитель и его подтипы идут подряд (старый справочник);
+ * - `flat` — только новые плоские типы (`parent_id IS NULL AND is_selectable`),
+ *   Фаза 1 перехода к плоскому классификатору (ADR 0005).
+ */
+export const VEHICLE_TYPE_VIEWS = ['list', 'hierarchy', 'flat'] as const;
 export const vehicleTypeViewSchema = z.enum(VEHICLE_TYPE_VIEWS);
 export type VehicleTypeView = (typeof VEHICLE_TYPE_VIEWS)[number];
 
@@ -61,12 +67,28 @@ export const createSubtypeSchema = z
   })
   .strict();
 
+// Плоский тип (ADR 0005): клиент шлёт kindId; backend ставит parentId=null, isSelectable=true.
+// Единственный «выбираемый» верхний уровень новой модели; активностью управляют напрямую.
+export const createFlatTypeSchema = z
+  .object({
+    level: z.literal('flat'),
+    kindId: uuidSchema,
+    code: vehicleTypeCodeSchema,
+    name: z.string().trim().min(1).max(255),
+    description: z.string().trim().max(1000).optional().default(''),
+    sortOrder: z.coerce.number().int().optional().default(100),
+    isActive: z.boolean().optional().default(true),
+  })
+  .strict();
+
 export const createVehicleTypeSchema = z.discriminatedUnion('level', [
   createParentTypeSchema,
   createSubtypeSchema,
+  createFlatTypeSchema,
 ]);
 export type CreateParentTypeInput = z.infer<typeof createParentTypeSchema>;
 export type CreateSubtypeInput = z.infer<typeof createSubtypeSchema>;
+export type CreateFlatTypeInput = z.infer<typeof createFlatTypeSchema>;
 export type CreateVehicleTypeInput = z.infer<typeof createVehicleTypeSchema>;
 
 // ── Обновление: только описательные поля. Структурные ключи неизменяемы. ──
