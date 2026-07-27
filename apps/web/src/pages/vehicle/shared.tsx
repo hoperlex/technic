@@ -1,8 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { App, Button, Dropdown, Form, List, Popover, Select, Tag, Typography, Upload } from 'antd';
 import { DownOutlined, UploadOutlined } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
-import { useSearchParams } from 'react-router';
 import {
   type FileDto,
   type RequestStatus,
@@ -10,7 +9,7 @@ import {
   requestStatusLabels,
   requestStatusTransitions,
 } from '@technic/contracts';
-import { filesApi, objectsApi, vehicleKindsApi, vehicleTypesApi } from '../../api/resources';
+import { filesApi, objectsApi, vehicleTypesApi } from '../../api/resources';
 import { errorMessage, formatBytes } from '../../utils/format';
 
 export const FILE_MAX_COUNT = 20;
@@ -37,38 +36,6 @@ export function useObjectOptions() {
       }),
   });
   return (data?.items ?? []).map((o) => ({ value: o.id, label: `${o.code} — ${o.name}` }));
-}
-
-/** Вкладки раздела «Заказ ТС», на которых создаются заявки (ключи совпадают с ?tab=). */
-export type CreatableTab = 'special-equipment' | 'freight-transport';
-
-/**
- * Открывает форму создания, если на вкладку пришли с ?new=1 — кнопкой «Создать заявку»
- * с соседней вкладки. Параметр снимается сразу (replace), поэтому F5 и «назад»
- * форму не переоткрывают; ref-страж гасит повторный прогон эффекта в StrictMode.
- *
- * Сверка с ?tab обязательна: antd Tabs не размонтирует показанные панели, и без неё
- * форму открыла бы и соседняя (скрытая) вкладка — её модалка всплыла бы через портал.
- */
-export function useOpenCreateFromQuery(tab: CreatableTab, openCreate: () => void) {
-  const [sp, setSp] = useSearchParams();
-  const latest = useRef(openCreate);
-  latest.current = openCreate;
-  const handled = useRef(false);
-  const requested = sp.get('new') === '1' && sp.get('tab') === tab;
-
-  useEffect(() => {
-    if (!requested) {
-      handled.current = false;
-      return;
-    }
-    if (handled.current) return;
-    handled.current = true;
-    const next = new URLSearchParams(sp);
-    next.delete('new');
-    setSp(next, { replace: true });
-    latest.current();
-  }, [requested, sp, setSp]);
 }
 
 /** Редактор прикреплённых файлов (загрузка в S3 + список add/remove). */
@@ -217,42 +184,63 @@ export function FilesCell({ files }: { files: FileDto[] }) {
 }
 
 /**
- * Выбор типа ТС (плоская модель, ADR 0005). Активные типы фильтруются по виду
- * вкладки (kindCode). В API уходит vehicleTypeId.
+ * Все активные типы ТС (плоская модель, ADR 0005), сгруппированные по виду.
+ *
+ * Вид ТС — он же тип заявки: коды `vehicle_kinds` совпадают с `vehicle_request_type`
+ * (`special_equipment` / `freight_transport`). Поэтому выбранный тип ТС однозначно
+ * задаёт, какая это заявка, и отдельный переключатель типа в форме не нужен.
  */
-export function VehicleTypeSelect({ kindCode }: { kindCode: string }) {
-  const { data: kindsData } = useQuery({
-    queryKey: ['vehicle-kinds'],
-    queryFn: () => vehicleKindsApi.list({ pageSize: 500 }),
-  });
-  const kindId = kindsData?.items.find((k) => k.code === kindCode)?.id;
-
-  const { data: typesData, isFetching } = useQuery({
-    queryKey: ['vehicle-types', 'flat', kindId],
+export function useVehicleTypes() {
+  const { data, isFetching } = useQuery({
+    queryKey: ['vehicle-types', 'flat', 'all-kinds'],
     queryFn: () =>
       vehicleTypesApi.list({
-        kindId,
         isActive: 'true',
         pageSize: 500,
         sortBy: 'sortOrder',
         sortOrder: 'asc',
       }),
-    enabled: !!kindId,
   });
-  const typeOptions = (typesData?.items ?? []).map((t) => ({ value: t.id, label: t.name }));
+  const items = data?.items ?? [];
 
+  const kindByTypeId = new Map(items.map((t) => [t.id, t.kindCode]));
+  const groups: { label: string; options: { value: string; label: string }[] }[] = [];
+  for (const t of items) {
+    let group = groups.find((g) => g.label === t.kindName);
+    if (!group) {
+      group = { label: t.kindName, options: [] };
+      groups.push(group);
+    }
+    group.options.push({ value: t.id, label: t.name });
+  }
+
+  return { kindByTypeId, groups, loading: isFetching };
+}
+
+/** Выбор типа ТС: список сгруппирован по виду, в API уходит vehicleTypeId. */
+export function VehicleTypeSelect({
+  groups,
+  loading,
+  onChange,
+}: {
+  groups: { label: string; options: { value: string; label: string }[] }[];
+  loading: boolean;
+  onChange?: (typeId: string) => void;
+}) {
   return (
     <Form.Item
       name="vehicleTypeId"
       label="Тип ТС"
+      tooltip="Вид техники определяет, какие поля заявки нужно заполнить"
       rules={[{ required: true, message: 'Выберите тип' }]}
     >
       <Select
-        options={typeOptions}
+        options={groups}
         showSearch
         optionFilterProp="label"
-        loading={isFetching}
+        loading={loading}
         placeholder="Выберите тип"
+        onChange={onChange}
       />
     </Form.Item>
   );

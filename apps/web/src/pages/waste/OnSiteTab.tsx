@@ -6,7 +6,7 @@ import { DataTable } from '../../components/DataTable';
 import { PageTableLayout } from '../../components/PageTableLayout';
 import { textColumn } from '../../components/columns';
 import { useListParams } from '../../hooks/useListParams';
-import { formatDate, formatDateTime } from '../../utils/format';
+import { formatDate, formatDateTimeMaybe } from '../../utils/format';
 
 /**
  * Контейнеры, присутствующие или планируемые на площадках — производный вид
@@ -46,7 +46,7 @@ export function OnSiteTab() {
       dataIndex: 'deliveryAt',
       searchable: false,
       width: 190,
-      render: (v) => formatDateTime(v as string),
+      render: (v, r) => formatDateTimeMaybe(v as string, r.deliveryTimeUnspecified),
     }),
     {
       key: 'no',

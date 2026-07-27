@@ -19,8 +19,12 @@ import objectsRoutes from './routes/objects';
 import containerTypesRoutes from './routes/container-types';
 import vehicleKindsRoutes from './routes/vehicle-kinds';
 import vehicleTypesRoutes from './routes/vehicle-types';
+import vehicleModelsRoutes from './routes/vehicle-models';
+import vehiclesRoutes from './routes/vehicles';
 import vehicleRequestsRoutes from './routes/vehicle-requests';
 import wasteRequestsRoutes from './routes/waste-requests';
+import wasteTypesRoutes from './routes/waste-types';
+import wasteTariffsRoutes from './routes/waste-tariffs';
 import filesRoutes from './routes/files';
 import auditRoutes from './routes/audit';
 
@@ -58,8 +62,12 @@ export async function buildApp() {
   await app.register(containerTypesRoutes, { prefix: '/api/v1/container-types' });
   await app.register(vehicleKindsRoutes, { prefix: '/api/v1/vehicle-kinds' });
   await app.register(vehicleTypesRoutes, { prefix: '/api/v1/vehicle-types' });
+  await app.register(vehicleModelsRoutes, { prefix: '/api/v1/vehicle-models' });
+  await app.register(vehiclesRoutes, { prefix: '/api/v1/vehicles' });
   await app.register(vehicleRequestsRoutes, { prefix: '/api/v1/vehicle-requests' });
   await app.register(wasteRequestsRoutes, { prefix: '/api/v1/waste-requests' });
+  await app.register(wasteTypesRoutes, { prefix: '/api/v1/waste-types' });
+  await app.register(wasteTariffsRoutes, { prefix: '/api/v1/waste-tariffs' });
   await app.register(filesRoutes, { prefix: '/api/v1/files' });
   await app.register(auditRoutes, { prefix: '/api/v1/audit' });
 

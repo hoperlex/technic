@@ -232,11 +232,15 @@ describe('vehicle-requests: адрес (DaData, ADR 0006 — жёсткая мо
 });
 
 describe('vehicle-requests: список и номер', () => {
-  it('requestType обязателен в list-query', () => {
-    expect(() => vehicleRequestListQuerySchema.parse({})).toThrow();
-    const q = vehicleRequestListQuerySchema.parse({ requestType: 'special_equipment' });
-    expect(q.requestType).toBe('special_equipment');
-    expect(q.includeDeleted).toBe(false);
+  it('requestType в list-query необязателен: без него — единый список обоих типов', () => {
+    const all = vehicleRequestListQuerySchema.parse({});
+    expect(all.requestType).toBeUndefined();
+    expect(all.includeDeleted).toBe(false);
+
+    const one = vehicleRequestListQuerySchema.parse({ requestType: 'special_equipment' });
+    expect(one.requestType).toBe('special_equipment');
+
+    expect(() => vehicleRequestListQuerySchema.parse({ requestType: 'unknown' })).toThrow();
   });
 
   it('формат и разбор номера', () => {

@@ -13,7 +13,6 @@ import {
   Space,
   Tabs,
   Tag,
-  TimePicker,
   Tooltip,
   Typography,
   Upload,
@@ -41,6 +40,11 @@ import {
   requestTypeColors,
   requestTypeLabels,
   requestTypeShort,
+  normalizeTimeInput,
+  calcWasteAmount,
+  isPricedRequestType,
+  isVolumeAllowed,
+  volumeStepMessage,
   type WasteRequestDto,
 } from '@technic/contracts';
 import {
@@ -48,6 +52,8 @@ import {
   filesApi,
   objectsApi,
   wasteRequestsApi,
+  wasteTariffsApi,
+  wasteTypesApi,
   type WasteRequestPayload,
   type WasteRequestUpdatePayload,
 } from '../api/resources';
@@ -55,10 +61,18 @@ import { DataTable } from '../components/DataTable';
 import { FormModal } from '../components/FormModal';
 import { PageTableLayout } from '../components/PageTableLayout';
 import { actionsColumn, badgeColumn, textColumn } from '../components/columns';
+import { TimeInput, optionalWorkTimeRule } from '../components/TimeInput';
 import { UserAvatar } from '../components/UserAvatar';
 import { useListParams } from '../hooks/useListParams';
 import { useAuth } from '../auth/AuthContext';
-import { errorMessage, formatBytes, formatDate, formatDateTime } from '../utils/format';
+import { MOSCOW_TZ } from '../theme';
+import {
+  errorMessage,
+  formatBytes,
+  formatDate,
+  formatDateTimeMaybe,
+  formatMoney,
+} from '../utils/format';
 import { isPastDate, startOfToday } from '../utils/date';
 import { OnSiteTab } from './waste/OnSiteTab';
 
@@ -76,19 +90,24 @@ interface RequestFormValues {
   objectId: string;
   requestType: RequestType;
   containerTypeId?: string;
+  wasteTypeId?: string;
   volumeM3?: number;
   deliveryDate: Dayjs;
-  deliveryTime: Dayjs;
+  /** Необязательное время в виде `HH:mm`; пусто — «на эту дату, время не важно». */
+  deliveryTime?: string;
   comment?: string;
 }
 
 /** Человекочитаемое описание предмета заявки для колонки списка. */
 function requestSubject(r: WasteRequestDto): string {
-  if (r.requestType === 'waste_removal') {
-    const parts = [r.containerTypeName, r.volumeM3 != null ? `${r.volumeM3} м³` : null].filter(Boolean);
+  // У тарифицируемых операций объём — часть предмета заявки: он определяет сумму (ADR 0009).
+  if (isPricedRequestType(r.requestType)) {
+    const parts = [r.containerTypeName, r.volumeM3 != null ? `${r.volumeM3} м³` : null].filter(
+      Boolean,
+    );
     return parts.length ? parts.join(', ') : '—';
   }
-  // container_install / container_replace — тип контейнера
+  // container_install — только тип контейнера
   return r.containerTypeName ?? '—';
 }
 
@@ -191,6 +210,20 @@ function RequestsTab() {
   }));
   const requestTypeOptions = REQUEST_TYPES.map((t) => ({ value: t, label: requestTypeLabels[t] }));
 
+  // Типы мусора — для тарифицируемых операций (замена / снятие / вывоз), ADR 0009.
+  const { data: wasteTypes } = useQuery({
+    queryKey: ['waste-types', 'for-select'],
+    queryFn: () =>
+      wasteTypesApi.list({
+        page: 1,
+        pageSize: 500,
+        isActive: 'true',
+        sortBy: 'sortOrder',
+        sortOrder: 'asc',
+      }),
+  });
+  const wasteTypeOptions = (wasteTypes?.items ?? []).map((w) => ({ value: w.id, label: w.name }));
+
   const [open, setOpen] = useState(false);
   const [record, setRecord] = useState<WasteRequestDto | null>(null);
   const [form] = Form.useForm<RequestFormValues>();
@@ -200,6 +233,26 @@ function RequestsTab() {
 
   const watchObjectId = Form.useWatch('objectId', form);
   const watchRequestType = Form.useWatch('requestType', form);
+  const watchContainerTypeId = Form.useWatch('containerTypeId', form);
+  const watchWasteTypeId = Form.useWatch('wasteTypeId', form);
+  const watchVolumeM3 = Form.useWatch('volumeM3', form);
+
+  // Тарифицируемые операции: замена, снятие, вывоз. Установка нового контейнера цены не имеет.
+  const isPriced = watchRequestType ? isPricedRequestType(watchRequestType) : false;
+
+  // Предпросмотр цены: тариф подбирает сервер по паре «тип мусора × техника», чтобы форма и
+  // расчёт при сохранении не разошлись. 404 (тарифа нет) — штатный ответ, не ошибка ввода.
+  const { data: tariff, isError: tariffMissing } = useQuery({
+    queryKey: ['waste-tariffs', 'resolve', watchWasteTypeId, watchContainerTypeId],
+    queryFn: () => wasteTariffsApi.resolve(watchWasteTypeId!, watchContainerTypeId!),
+    enabled: isPriced && !!watchWasteTypeId && !!watchContainerTypeId,
+    retry: false,
+  });
+  const volumeStepM3 = tariff?.volumeStepM3 ?? null;
+  const amountPreview =
+    tariff && watchVolumeM3 != null && isVolumeAllowed(watchVolumeM3, volumeStepM3)
+      ? calcWasteAmount(watchVolumeM3, tariff.pricePerM3)
+      : null;
 
   // Наличие контейнеров на объекте (view: установки − снятия). Для «Замены» и «Снятия».
   const { data: presentData } = useQuery({
@@ -217,6 +270,37 @@ function RequestsTab() {
   }
   const presentTypeOptions = [...presentTypeMap].map(([value, label]) => ({ value, label }));
   const objectHasPresent = presentTypeOptions.length > 0;
+
+  // Первое поле тарифицируемой строки: для замены и снятия выбор ограничен контейнерами,
+  // которые сейчас стоят на объекте; для вывоза — весь справочник (машины и контейнеры).
+  const fromObjectField = {
+    options: presentTypeOptions,
+    placeholder: 'Тип, присутствующий на объекте',
+    fromObject: true,
+  };
+  const subjectFieldByType = {
+    container_replace: {
+      label: 'Тип заменяемого контейнера',
+      message: 'Выберите тип контейнера для замены',
+      ...fromObjectField,
+    },
+    container_removal: {
+      label: 'Тип снимаемого контейнера',
+      message: 'Выберите тип контейнера для снятия',
+      ...fromObjectField,
+    },
+    waste_removal: {
+      label: 'Тип машины/контейнера',
+      message: 'Выберите тип машины/контейнера',
+      options: allTypeOptions,
+      placeholder: 'Чем вывозим',
+      fromObject: false,
+    },
+  } as const;
+  const subjectField =
+    watchRequestType && watchRequestType !== 'container_install'
+      ? subjectFieldByType[watchRequestType]
+      : null;
 
   const openCreate = () => {
     setRecord(null);
@@ -239,9 +323,13 @@ function RequestsTab() {
       objectId: r.objectId,
       requestType: r.requestType,
       containerTypeId: r.containerTypeId ?? undefined,
+      wasteTypeId: r.wasteTypeId ?? undefined,
       volumeM3: r.volumeM3 ?? undefined,
-      deliveryDate: dayjs(r.deliveryAt),
-      deliveryTime: dayjs(r.deliveryAt),
+      deliveryDate: dayjs(r.deliveryAt).tz(MOSCOW_TZ),
+      // Время не задано — поле остаётся пустым (в deliveryAt лежит полночь МСК).
+      deliveryTime: r.deliveryTimeUnspecified
+        ? undefined
+        : dayjs(r.deliveryAt).tz(MOSCOW_TZ).format('HH:mm'),
       comment: r.comment,
     });
     setOpen(true);
@@ -251,6 +339,7 @@ function RequestsTab() {
   const handleRequestTypeChange = () => {
     form.setFieldsValue({
       containerTypeId: undefined,
+      wasteTypeId: undefined,
       volumeM3: undefined,
     });
   };
@@ -285,19 +374,23 @@ function RequestsTab() {
 
   const saveMut = useMutation({
     mutationFn: (values: RequestFormValues) => {
-      // Собираем дату и время доставки из двух полей.
-      const deliveryAt = values.deliveryDate
-        .hour(values.deliveryTime.hour())
-        .minute(values.deliveryTime.minute())
-        .second(0)
-        .millisecond(0);
+      // Дата и время собираются в МСК — в этом же поясе сервер проверяет рабочее окно.
+      // Время не задано → полночь МСК + признак: заявка «на дату», без конкретного часа.
+      const time = normalizeTimeInput(values.deliveryTime ?? '');
+      const deliveryAt = dayjs.tz(
+        `${values.deliveryDate.format('YYYY-MM-DD')} ${time ?? '00:00'}`,
+        MOSCOW_TZ,
+      );
       const base = {
         objectId: values.objectId,
         requestType: values.requestType,
-        // все три типа заявки ссылаются на тип из справочника
+        // все четыре типа заявки ссылаются на тип из справочника
         containerTypeId: values.containerTypeId,
-        volumeM3: values.requestType === 'waste_removal' ? values.volumeM3 : undefined,
+        // Тип мусора и объём — только у тарифицируемых операций (ADR 0009).
+        wasteTypeId: isPricedRequestType(values.requestType) ? values.wasteTypeId : undefined,
+        volumeM3: isPricedRequestType(values.requestType) ? values.volumeM3 : undefined,
         deliveryAt: deliveryAt.toISOString(),
+        deliveryTimeUnspecified: time === undefined,
         comment: values.comment ?? '',
       };
       if (record) {
@@ -479,6 +572,32 @@ function RequestsTab() {
       width: 240,
       render: (_v: unknown, r: WasteRequestDto) => requestSubject(r),
     },
+    {
+      key: 'wasteTypeName',
+      title: 'Тип мусора',
+      dataIndex: 'wasteTypeName',
+      width: 170,
+      render: (_v: unknown, r: WasteRequestDto) => r.wasteTypeName ?? '—',
+    },
+    {
+      key: 'amount',
+      title: 'Стоимость',
+      dataIndex: 'amount',
+      width: 130,
+      align: 'right' as const,
+      // Цена за м³ — под суммой: без неё непонятно, почему одинаковый объём стоит по-разному.
+      render: (_v: unknown, r: WasteRequestDto) =>
+        r.amount == null ? (
+          '—'
+        ) : (
+          <div style={{ lineHeight: 1.3 }}>
+            <div>{formatMoney(r.amount)}</div>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {formatMoney(r.pricePerM3)}/м³
+            </Typography.Text>
+          </div>
+        ),
+    },
     badgeColumn<WasteRequestDto>({
       key: 'requestType',
       title: 'Тип заявки',
@@ -505,7 +624,7 @@ function RequestsTab() {
         <div style={{ lineHeight: 1.35, whiteSpace: 'nowrap' }}>
           <div>{formatDate(r.createdAt)}</div>
           <Typography.Text style={{ color: '#1677ff' }}>
-            {formatDateTime(r.deliveryAt)}
+            {formatDateTimeMaybe(r.deliveryAt, r.deliveryTimeUnspecified)}
           </Typography.Text>
         </div>
       ),
@@ -654,42 +773,44 @@ function RequestsTab() {
             </Form.Item>
           )}
 
-          {watchRequestType === 'container_replace' && (
-            <Form.Item
-              name="containerTypeId"
-              label="Тип заменяемого контейнера"
-              rules={[{ required: true, message: 'Выберите тип контейнера для замены' }]}
-              extra={!objectHasPresent ? 'На объекте нет контейнеров' : undefined}
-            >
-              <Select
-                options={presentTypeOptions}
-                showSearch
-                optionFilterProp="label"
-                placeholder="Тип, присутствующий на объекте"
-                notFoundContent="Нет контейнеров на объекте"
-              />
-            </Form.Item>
-          )}
-
-          {watchRequestType === 'container_removal' && (
-            <Form.Item
-              name="containerTypeId"
-              label="Тип снимаемого контейнера"
-              rules={[{ required: true, message: 'Выберите тип контейнера для снятия' }]}
-              extra={!objectHasPresent ? 'На объекте нет контейнеров' : undefined}
-            >
-              <Select
-                options={presentTypeOptions}
-                showSearch
-                optionFilterProp="label"
-                placeholder="Тип, присутствующий на объекте"
-                notFoundContent="Нет контейнеров на объекте"
-              />
-            </Form.Item>
-          )}
-
-          {watchRequestType === 'waste_removal' && (
-            <>
+          {/* Тарифицируемые операции: техника, что вывозим, сколько и почём — одной строкой,
+              потому что цена осмысленна только как произведение этих полей (ADR 0009). */}
+          {isPriced && subjectField && (
+            <div style={{ display: 'flex', gap: 12 }}>
+              <Form.Item
+                name="containerTypeId"
+                label={subjectField.label}
+                rules={[{ required: true, message: subjectField.message }]}
+                extra={
+                  subjectField.fromObject && !objectHasPresent
+                    ? 'На объекте нет контейнеров'
+                    : undefined
+                }
+                style={{ flex: 3, minWidth: 0 }}
+              >
+                <Select
+                  options={subjectField.options}
+                  showSearch
+                  optionFilterProp="label"
+                  placeholder={subjectField.placeholder}
+                  notFoundContent={
+                    subjectField.fromObject ? 'Нет контейнеров на объекте' : undefined
+                  }
+                />
+              </Form.Item>
+              <Form.Item
+                name="wasteTypeId"
+                label="Тип мусора"
+                rules={[{ required: true, message: 'Выберите тип мусора' }]}
+                style={{ flex: 3, minWidth: 0 }}
+              >
+                <Select
+                  options={wasteTypeOptions}
+                  showSearch
+                  optionFilterProp="label"
+                  placeholder="Что вывозим"
+                />
+              </Form.Item>
               <Form.Item
                 name="volumeM3"
                 label="Объём, м³"
@@ -700,22 +821,37 @@ function RequestsTab() {
                     min: MIN_WASTE_VOLUME_M3,
                     message: `Не менее ${MIN_WASTE_VOLUME_M3} м³`,
                   },
+                  {
+                    // Тариф «за контейнер» тарифицирует контейнер целиком: половину не вывозят.
+                    validator: (_rule, v: number | undefined) =>
+                      v == null || isVolumeAllowed(v, volumeStepM3)
+                        ? Promise.resolve()
+                        : Promise.reject(new Error(volumeStepMessage(volumeStepM3!))),
+                  },
                 ]}
+                style={{ flex: 2, minWidth: 0 }}
               >
                 <InputNumber
                   min={MIN_WASTE_VOLUME_M3}
+                  step={volumeStepM3 ?? 1}
                   style={{ width: '100%' }}
-                  placeholder="Например, 20"
+                  placeholder={volumeStepM3 ? `Кратно ${volumeStepM3}` : 'Например, 20'}
                 />
               </Form.Item>
               <Form.Item
-                name="containerTypeId"
-                label="Тип машины/контейнера"
-                rules={[{ required: true, message: 'Выберите тип машины/контейнера' }]}
+                label="Стоимость"
+                extra={
+                  tariffMissing
+                    ? 'Тариф не задан'
+                    : tariff
+                      ? `${formatMoney(tariff.pricePerM3)}/м³`
+                      : undefined
+                }
+                style={{ flex: 2, minWidth: 0 }}
               >
-                <Select options={allTypeOptions} showSearch optionFilterProp="label" />
+                <Input readOnly value={amountPreview == null ? '—' : formatMoney(amountPreview)} />
               </Form.Item>
-            </>
+            </div>
           )}
           <div style={{ display: 'flex', gap: 12 }}>
             <Form.Item
@@ -734,16 +870,11 @@ function RequestsTab() {
             <Form.Item
               name="deliveryTime"
               label="Время"
-              rules={[{ required: true, message: 'Укажите время' }]}
+              tooltip="Необязательно. Рабочее окно — с 07:00 до 21:00"
+              rules={[optionalWorkTimeRule]}
               style={{ width: 130 }}
             >
-              <TimePicker
-                format="HH:mm"
-                minuteStep={5}
-                needConfirm={false}
-                style={{ width: '100%' }}
-                placeholder="чч:мм"
-              />
+              <TimeInput />
             </Form.Item>
           </div>
           <Form.Item name="comment" label="Комментарий">

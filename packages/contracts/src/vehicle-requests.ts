@@ -3,6 +3,7 @@ import { requestStatusSchema } from './enums';
 import type { RequestStatus } from './enums';
 import { baseListQuery, uuidSchema } from './common';
 import type { FileDto } from './files';
+import { WORK_TIME_MESSAGE, isWithinWorkTimeAt } from './time';
 
 // ── Тип заявки на технику ──
 export const VEHICLE_REQUEST_TYPES = ['special_equipment', 'freight_transport'] as const;
@@ -119,6 +120,11 @@ export const createFreightTransportRequestSchema = z
     objectId: uuidSchema,
     vehicleTypeId: uuidSchema,
     scheduledAt: scheduledAtSchema,
+    /**
+     * Время подачи не задано: `scheduledAt` несёт только дату (00:00 МСК), рабочее окно
+     * не проверяется. Дата и время в БД остаются одним timestamptz.
+     */
+    scheduledTimeUnspecified: z.boolean().optional().default(false),
     volumeM3: amountSchema.nullable().optional(),
     weightTons: amountSchema.nullable().optional(),
     loadingLocation: locationSchema,
@@ -144,8 +150,13 @@ export const createVehicleRequestSchema = z
           message: 'Дата окончания раньше даты начала',
         });
       }
-    } else if (v.volumeM3 == null && v.weightTons == null) {
-      ctx.addIssue({ code: 'custom', path: ['volumeM3'], message: 'Укажите объём или массу' });
+    } else {
+      if (v.volumeM3 == null && v.weightTons == null) {
+        ctx.addIssue({ code: 'custom', path: ['volumeM3'], message: 'Укажите объём или массу' });
+      }
+      if (!v.scheduledTimeUnspecified && !isWithinWorkTimeAt(new Date(v.scheduledAt))) {
+        ctx.addIssue({ code: 'custom', path: ['scheduledAt'], message: WORK_TIME_MESSAGE });
+      }
     }
   });
 export type CreateSpecialEquipmentRequestInput = z.infer<
@@ -179,6 +190,8 @@ export const updateFreightTransportRequestSchema = z
     objectId: uuidSchema.optional(),
     vehicleTypeId: uuidSchema.optional(),
     scheduledAt: scheduledAtSchema.optional(),
+    // Передаётся вместе со `scheduledAt` — рабочее окно проверяется только при заданном времени.
+    scheduledTimeUnspecified: z.boolean().optional(),
     volumeM3: amountSchema.nullable().optional(),
     weightTons: amountSchema.nullable().optional(),
     loadingLocation: locationSchema.optional(),
@@ -213,6 +226,13 @@ export const updateVehicleRequestSchema = z
           message: 'Адрес и строка разгрузки передаются вместе',
         });
       }
+      if (
+        v.scheduledAt !== undefined &&
+        v.scheduledTimeUnspecified !== true &&
+        !isWithinWorkTimeAt(new Date(v.scheduledAt))
+      ) {
+        ctx.addIssue({ code: 'custom', path: ['scheduledAt'], message: WORK_TIME_MESSAGE });
+      }
     }
   });
 export type UpdateVehicleRequestInput = z.infer<typeof updateVehicleRequestSchema>;
@@ -229,8 +249,9 @@ export type ChangeVehicleRequestStatusInput = z.infer<typeof changeVehicleReques
 export const VEHICLE_REQUEST_SORT_FIELDS = ['num', 'objectName', 'status', 'createdAt'] as const;
 
 export const vehicleRequestListQuerySchema = baseListQuery(VEHICLE_REQUEST_SORT_FIELDS).extend({
-  // Обязателен: список всегда в контексте вкладки (спецтехника/грузоперевозки).
-  requestType: vehicleRequestTypeSchema,
+  // Необязателен: раздел «Заказ автотехники» — единый список обоих типов.
+  // Задан — список сужается до одного типа (фильтр в интерфейсе, вкладка «На объекте»).
+  requestType: vehicleRequestTypeSchema.optional(),
   status: requestStatusSchema.optional(),
   objectId: uuidSchema.optional(),
   vehicleTypeId: uuidSchema.optional(),
@@ -288,6 +309,8 @@ export interface SpecialEquipmentRequestDto extends VehicleRequestBaseDto {
 export interface FreightTransportRequestDto extends VehicleRequestBaseDto {
   requestType: 'freight_transport';
   scheduledAt: string;
+  /** Время подачи не задано — в `scheduledAt` значима только дата (00:00 МСК). */
+  scheduledTimeUnspecified: boolean;
   volumeM3: number | null;
   weightTons: number | null;
   loadingLocation: string;

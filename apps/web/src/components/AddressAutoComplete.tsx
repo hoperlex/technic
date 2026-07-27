@@ -27,6 +27,8 @@ interface AddressAutoCompleteProps {
   onMetaChange?: (meta: AddressMeta | null) => void;
   placeholder?: string;
   maxLength?: number;
+  /** Поле неприменимо к выбранному виду заявки — ввод и подсказки выключены. */
+  disabled?: boolean;
 }
 
 /**
@@ -41,6 +43,7 @@ export function AddressAutoComplete({
   onMetaChange,
   placeholder,
   maxLength = 1000,
+  disabled,
 }: AddressAutoCompleteProps) {
   const [options, setOptions] = useState<{ value: string; meta: AddressMeta }[]>([]);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -84,12 +87,13 @@ export function AddressAutoComplete({
     <AutoComplete
       value={value}
       style={{ width: '100%' }}
-      options={enabled ? options.map((o) => ({ value: o.value })) : []}
-      onSearch={enabled ? handleSearch : undefined}
+      options={enabled && !disabled ? options.map((o) => ({ value: o.value })) : []}
+      onSearch={enabled && !disabled ? handleSearch : undefined}
       onChange={handleChange}
+      disabled={disabled}
       filterOption={false}
     >
-      <Input maxLength={maxLength} placeholder={placeholder} />
+      <Input maxLength={maxLength} placeholder={placeholder} disabled={disabled} />
     </AutoComplete>
   );
 }

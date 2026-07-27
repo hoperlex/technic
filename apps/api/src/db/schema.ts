@@ -96,6 +96,9 @@ export const containerTypes = pgTable(
     code: text('code').notNull(),
     name: text('name').notNull(),
     type: containerKindEnum('type').notNull().default('cont'),
+    // Вместимость (ADR 0009): база расчёта стоимости и проверки кратности объёма для тарифов,
+    // объявленных «за контейнер». Nullable — у новых записей справочника может быть не задана.
+    volumeM3: integer('volume_m3'),
     sortOrder: integer('sort_order').notNull().default(100),
     isActive: boolean('is_active').notNull().default(true),
     createdAt: createdAt(),
@@ -103,6 +106,77 @@ export const containerTypes = pgTable(
   },
   (t) => ({
     codeUnique: uniqueIndex('container_types_code_unique').on(t.code),
+    volumePositive: check(
+      'container_types_volume_positive_check',
+      sql`${t.volumeM3} IS NULL OR ${t.volumeM3} > 0`,
+    ),
+  }),
+);
+
+// ── Справочник типов мусора (ADR 0009) ──
+// «Что вывозим»: строительные отходы, бетонный бой, грунт, ОССиГ, древесные отходы.
+// «Чем вывозим» — container_types; цена задаётся на пару (см. wasteTariffs).
+export const wasteTypes = pgTable(
+  'waste_types',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    code: text('code').notNull(),
+    name: text('name').notNull(),
+    description: text('description').notNull().default(''),
+    sortOrder: integer('sort_order').notNull().default(100),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    codeUnique: uniqueIndex('waste_types_code_unique').on(t.code),
+    codeFormat: check('waste_types_code_format_check', sql`${t.code} ~ '^[a-z][a-z0-9_]*$'`),
+    nameNotBlank: check('waste_types_name_not_blank_check', sql`btrim(${t.name}) <> ''`),
+  }),
+);
+
+// ── Прайс вывоза мусора (ADR 0009) ──
+// Тариф задаётся либо для конкретного типа контейнера/машины, либо для вида техники целиком;
+// при расчёте точное совпадение по типу побеждает тариф вида. Цена всегда за 1 м³: позиция
+// «15 000 ₽ за контейнер 8 м³» хранится как 1875 ₽/м³ + isPerContainer (кратность объёма).
+export const wasteTariffs = pgTable(
+  'waste_tariffs',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    wasteTypeId: uuid('waste_type_id')
+      .notNull()
+      .references(() => wasteTypes.id, { onDelete: 'restrict' }),
+    containerTypeId: uuid('container_type_id').references(() => containerTypes.id, {
+      onDelete: 'restrict',
+    }),
+    containerKind: containerKindEnum('container_kind'),
+    pricePerM3: numeric('price_per_m3', { precision: 12, scale: 2 }).notNull(),
+    pricePerContainer: numeric('price_per_container', { precision: 12, scale: 2 }),
+    isPerContainer: boolean('is_per_container').notNull().default(false),
+    note: text('note').notNull().default(''),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    target: check(
+      'waste_tariffs_target_check',
+      sql`(${t.containerTypeId} IS NOT NULL AND ${t.containerKind} IS NULL)
+          OR (${t.containerTypeId} IS NULL AND ${t.containerKind} IS NOT NULL)`,
+    ),
+    pricePositive: check('waste_tariffs_price_positive_check', sql`${t.pricePerM3} > 0`),
+    perContainer: check(
+      'waste_tariffs_per_container_check',
+      sql`NOT ${t.isPerContainer}
+          OR (${t.containerTypeId} IS NOT NULL AND ${t.pricePerContainer} IS NOT NULL)`,
+    ),
+    typeContainerUnique: uniqueIndex('waste_tariffs_type_container_unique')
+      .on(t.wasteTypeId, t.containerTypeId)
+      .where(sql`${t.containerTypeId} IS NOT NULL`),
+    typeKindUnique: uniqueIndex('waste_tariffs_type_kind_unique')
+      .on(t.wasteTypeId, t.containerKind)
+      .where(sql`${t.containerKind} IS NOT NULL`),
+    wasteTypeIdx: index('waste_tariffs_waste_type_idx').on(t.wasteTypeId),
   }),
 );
 
@@ -348,9 +422,23 @@ export const wasteRequests = pgTable(
     containerTypeId: uuid('container_type_id').references(() => containerTypes.id, {
       onDelete: 'restrict',
     }),
-    // waste_removal: объём
+    // Объём вывоза (ADR 0009): waste_removal, container_replace, container_removal.
     volumeM3: integer('volume_m3'),
+    // Что вывозим и по какой цене. Тариф и цена — снимок на момент сохранения заявки:
+    // изменение прайса не переписывает суммы уже оформленных заявок.
+    wasteTypeId: uuid('waste_type_id').references(() => wasteTypes.id, { onDelete: 'restrict' }),
+    wasteTariffId: uuid('waste_tariff_id').references(() => wasteTariffs.id, {
+      onDelete: 'restrict',
+    }),
+    pricePerM3: numeric('price_per_m3', { precision: 12, scale: 2 }),
+    // Сумма считается БД (GENERATED): производная от объёма и цены не может с ними разойтись.
+    amount: numeric('amount', { precision: 14, scale: 2 }).generatedAlwaysAs(
+      sql`round(volume_m3 * price_per_m3, 2)`,
+    ),
     deliveryAt: timestamp('delivery_at', { withTimezone: true }).notNull(),
+    // Время не задано — в deliveryAt значима только дата (00:00 МСК). Инвариант держит
+    // приложение: CHECK невозможен, приведение timestamptz к времени суток не IMMUTABLE (0020).
+    deliveryTimeUnspecified: boolean('delivery_time_unspecified').notNull().default(false),
     comment: text('comment').notNull().default(''),
     status: requestStatusEnum('status').notNull().default('new'),
     createdBy: uuid('created_by')
@@ -369,6 +457,21 @@ export const wasteRequests = pgTable(
     objectIdx: index('waste_requests_object_idx').on(t.objectId),
     deliveryIdx: index('waste_requests_delivery_idx').on(t.deliveryAt),
     createdAtIdx: index('waste_requests_created_at_idx').on(t.createdAt),
+    wasteTypeIdx: index('waste_requests_waste_type_idx').on(t.wasteTypeId),
+    // Установка нового контейнера не тарифицируется: вывоза мусора в этой операции нет.
+    installNoPricing: check(
+      'waste_requests_install_no_pricing_check',
+      sql`${t.requestType} <> 'container_install'
+          OR (${t.wasteTypeId} IS NULL AND ${t.wasteTariffId} IS NULL AND ${t.pricePerM3} IS NULL)`,
+    ),
+    priceSnapshot: check(
+      'waste_requests_price_snapshot_check',
+      sql`(${t.wasteTariffId} IS NULL) = (${t.pricePerM3} IS NULL)`,
+    ),
+    pricePositive: check(
+      'waste_requests_price_positive_check',
+      sql`${t.pricePerM3} IS NULL OR ${t.pricePerM3} > 0`,
+    ),
   }),
 );
 
@@ -482,6 +585,8 @@ export const freightTransportRequestDetails = pgTable(
       .primaryKey()
       .references(() => vehicleRequests.id, { onDelete: 'cascade' }),
     scheduledAt: timestamp('scheduled_at', { withTimezone: true }).notNull(),
+    // Время не задано — в scheduledAt значима только дата (00:00 МСК). См. 0020.
+    scheduledTimeUnspecified: boolean('scheduled_time_unspecified').notNull().default(false),
     volumeM3: numeric('volume_m3', { precision: 12, scale: 3 }),
     weightTons: numeric('weight_tons', { precision: 12, scale: 3 }),
     loadingLocation: text('loading_location').notNull(),
@@ -921,6 +1026,8 @@ export type WasteRequestRow = typeof wasteRequests.$inferSelect;
 export type FileRow = typeof files.$inferSelect;
 export type ObjectRow = typeof constructionObjects.$inferSelect;
 export type ContainerTypeRow = typeof containerTypes.$inferSelect;
+export type WasteTypeRow = typeof wasteTypes.$inferSelect;
+export type WasteTariffRow = typeof wasteTariffs.$inferSelect;
 export type VehicleKindRow = typeof vehicleKinds.$inferSelect;
 export type VehicleTypeRow = typeof vehicleTypes.$inferSelect;
 export type VehicleModelRow = typeof vehicleModels.$inferSelect;

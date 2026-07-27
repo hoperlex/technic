@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
-import { and, asc, count, eq, gte, inArray, isNull, lte, sql, type SQL } from 'drizzle-orm';
+import { and, asc, count, eq, gte, inArray, isNull, lte, or, sql, type SQL } from 'drizzle-orm';
 import {
   canTransitionStatus,
   changeVehicleRequestStatusSchema,
@@ -70,6 +70,7 @@ const requestSelect = {
   dateFrom: specialEquipmentRequestDetails.dateFrom,
   dateTo: specialEquipmentRequestDetails.dateTo,
   scheduledAt: freightTransportRequestDetails.scheduledAt,
+  scheduledTimeUnspecified: freightTransportRequestDetails.scheduledTimeUnspecified,
   volumeM3: freightTransportRequestDetails.volumeM3,
   weightTons: freightTransportRequestDetails.weightTons,
   loadingLocation: freightTransportRequestDetails.loadingLocation,
@@ -172,6 +173,7 @@ function toDto(r: RequestRow, fileList: FileDto[]): VehicleRequestDto {
     ...base,
     requestType: 'freight_transport',
     scheduledAt: r.scheduledAt ? r.scheduledAt.toISOString() : '',
+    scheduledTimeUnspecified: r.scheduledTimeUnspecified ?? false,
     volumeM3: toNum(r.volumeM3),
     weightTons: toNum(r.weightTons),
     loadingLocation: r.loadingLocation ?? '',
@@ -270,46 +272,69 @@ async function detachFiles(tx: Tx, vehicleRequestId: string, fileIds: string[]):
   await scheduleFilesDeletion(tx, linked, false);
 }
 
-/** Календарный диапазон (YYYY-MM-DD): спец — пересечение периодов; freight — день в Europe/Moscow. */
-function dateFilters(
-  requestType: VehicleRequestType,
+/** Спецтехника: пересечение периодов. */
+function specialDateConds(
   dateFrom: string | undefined,
   dateTo: string | undefined,
 ): (SQL | undefined)[] {
   const conds: (SQL | undefined)[] = [];
-  if (requestType === 'special_equipment') {
-    if (dateTo) conds.push(sql`${specialEquipmentRequestDetails.dateFrom} <= ${dateTo}::date`);
-    if (dateFrom) {
-      conds.push(
-        sql`coalesce(${specialEquipmentRequestDetails.dateTo}, ${specialEquipmentRequestDetails.dateFrom}) >= ${dateFrom}::date`,
-      );
-    }
-  } else {
-    if (dateFrom) {
-      conds.push(
-        gte(freightTransportRequestDetails.scheduledAt, new Date(`${dateFrom}T00:00:00.000+03:00`)),
-      );
-    }
-    if (dateTo) {
-      conds.push(
-        lte(freightTransportRequestDetails.scheduledAt, new Date(`${dateTo}T23:59:59.999+03:00`)),
-      );
-    }
+  if (dateTo) conds.push(sql`${specialEquipmentRequestDetails.dateFrom} <= ${dateTo}::date`);
+  if (dateFrom) {
+    conds.push(
+      sql`coalesce(${specialEquipmentRequestDetails.dateTo}, ${specialEquipmentRequestDetails.dateFrom}) >= ${dateFrom}::date`,
+    );
   }
   return conds;
+}
+
+/** Грузоперевозка: день в Europe/Moscow. */
+function freightDateConds(
+  dateFrom: string | undefined,
+  dateTo: string | undefined,
+): (SQL | undefined)[] {
+  const conds: (SQL | undefined)[] = [];
+  if (dateFrom) {
+    conds.push(
+      gte(freightTransportRequestDetails.scheduledAt, new Date(`${dateFrom}T00:00:00.000+03:00`)),
+    );
+  }
+  if (dateTo) {
+    conds.push(
+      lte(freightTransportRequestDetails.scheduledAt, new Date(`${dateTo}T23:59:59.999+03:00`)),
+    );
+  }
+  return conds;
+}
+
+/**
+ * Календарный диапазон (YYYY-MM-DD). Тип задан — правило своего типа; тип не задан
+ * (единый список «Заказ автотехники») — строка проходит, если попадает в диапазон по
+ * своему типу: OR двух правил, каждое отсекает чужие строки по NULL в detail-колонках.
+ */
+function dateFilters(
+  requestType: VehicleRequestType | undefined,
+  dateFrom: string | undefined,
+  dateTo: string | undefined,
+): (SQL | undefined)[] {
+  if (!dateFrom && !dateTo) return [];
+  if (requestType === 'special_equipment') return specialDateConds(dateFrom, dateTo);
+  if (requestType === 'freight_transport') return freightDateConds(dateFrom, dateTo);
+  return [
+    or(and(...specialDateConds(dateFrom, dateTo)), and(...freightDateConds(dateFrom, dateTo))),
+  ];
 }
 
 export default async function vehicleRequestsRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
   const auth = { preHandler: [app.authenticate] };
 
-  // ── Список (в контексте вкладки: requestType обязателен) ──
+  // ── Список (единый по обоим типам; requestType — необязательное сужение) ──
   r.get('/', { ...auth, schema: { querystring: vehicleRequestListQuerySchema } }, async (req) => {
     const p = requirePrincipal(req);
     const q = req.query;
     const showDeleted = q.includeDeleted && p.role === 'admin';
     const where = and(
-      eq(vehicleRequests.requestType, q.requestType),
+      q.requestType ? eq(vehicleRequests.requestType, q.requestType) : undefined,
       showDeleted ? undefined : isNull(vehicleRequests.deletedAt),
       requestVisibilityWhere(p, vehicleRequests.objectId),
       q.status ? eq(vehicleRequests.status, q.status) : undefined,
@@ -402,6 +427,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         await tx.insert(freightTransportRequestDetails).values({
           requestId: id,
           scheduledAt: new Date(body.scheduledAt),
+          scheduledTimeUnspecified: body.scheduledTimeUnspecified,
           volumeM3: numToDb(body.volumeM3),
           weightTons: numToDb(body.weightTons),
           loadingLocation: body.loadingLocation,
@@ -509,6 +535,10 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
             .update(freightTransportRequestDetails)
             .set({
               scheduledAt,
+              // Признак меняется только вместе с датой — иначе остаётся прежним.
+              scheduledTimeUnspecified: body.scheduledAt
+                ? (body.scheduledTimeUnspecified ?? false)
+                : ex!.scheduledTimeUnspecified,
               volumeM3,
               weightTons,
               loadingLocation: body.loadingLocation ?? ex!.loadingLocation,

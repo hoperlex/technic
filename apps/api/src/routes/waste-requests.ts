@@ -23,6 +23,7 @@ import {
   requestStatusHistory,
   users,
   wasteRequests,
+  wasteTypes,
 } from '../db/schema';
 import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
@@ -36,6 +37,7 @@ import {
   markFilesActive,
   scheduleFilesDeletion,
 } from '../services/request-files';
+import { priceWasteRequest, toNum } from '../services/waste-pricing';
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -50,8 +52,13 @@ const requestSelect = {
   requestType: wasteRequests.requestType,
   containerTypeId: wasteRequests.containerTypeId,
   containerTypeName: containerTypes.name,
+  wasteTypeId: wasteRequests.wasteTypeId,
+  wasteTypeName: wasteTypes.name,
   volumeM3: wasteRequests.volumeM3,
+  pricePerM3: wasteRequests.pricePerM3,
+  amount: wasteRequests.amount,
   deliveryAt: wasteRequests.deliveryAt,
+  deliveryTimeUnspecified: wasteRequests.deliveryTimeUnspecified,
   comment: wasteRequests.comment,
   status: wasteRequests.status,
   version: wasteRequests.version,
@@ -105,8 +112,13 @@ function toDto(r: RequestRow, fileList: FileDto[]): WasteRequestDto {
     requestType: r.requestType,
     containerTypeId: r.containerTypeId,
     containerTypeName: r.containerTypeName,
+    wasteTypeId: r.wasteTypeId,
+    wasteTypeName: r.wasteTypeName,
     volumeM3: r.volumeM3,
+    pricePerM3: toNum(r.pricePerM3),
+    amount: toNum(r.amount),
     deliveryAt: r.deliveryAt.toISOString(),
+    deliveryTimeUnspecified: r.deliveryTimeUnspecified,
     comment: r.comment,
     status: r.status,
     files: fileList,
@@ -119,28 +131,29 @@ function toDto(r: RequestRow, fileList: FileDto[]): WasteRequestDto {
   };
 }
 
+// Оба справочника присоединяются left join: тип контейнера/машины опционален в зависимости от
+// типа заявки, а тип мусора есть только у тарифицируемых операций (ADR 0009).
 function baseQuery() {
   return db
     .select(requestSelect)
     .from(wasteRequests)
     .innerJoin(constructionObjects, eq(wasteRequests.objectId, constructionObjects.id))
-    // тип контейнера/машины опционален в зависимости от типа заявки
     .leftJoin(containerTypes, eq(wasteRequests.containerTypeId, containerTypes.id))
+    .leftJoin(wasteTypes, eq(wasteRequests.wasteTypeId, wasteTypes.id))
     .innerJoin(users, eq(wasteRequests.createdBy, users.id));
 }
 
-/** Нормализованный набор «предметных» колонок заявки. */
+/** Нормализованный набор «предметных» колонок заявки, включая снимок цены (ADR 0009). */
 interface RequestSubject {
   containerTypeId: string | null;
+  wasteTypeId: string | null;
   volumeM3: number | null;
+  wasteTariffId: string | null;
+  pricePerM3: string | null;
 }
 
 /** Присутствует ли контейнер этого типа на объекте (по view наличия present_containers). */
-async function isTypePresent(
-  tx: Tx,
-  objectId: string,
-  containerTypeId: string,
-): Promise<boolean> {
+async function isTypePresent(tx: Tx, objectId: string, containerTypeId: string): Promise<boolean> {
   const [row] = await tx
     .select({ id: presentContainers.id })
     .from(presentContainers)
@@ -156,10 +169,11 @@ async function isTypePresent(
 
 /**
  * Проверяет и нормализует поля заявки по её типу:
- *  - установка — сверяет тип контейнера (type='cont');
+ *  - установка — сверяет тип контейнера (type='cont'), тарификации нет;
  *  - замена/снятие — сверяет, что контейнер этого типа присутствует на объекте (view наличия);
- *  - вывоз — сверяет тип из справочника (любой: машина или контейнер) + объём.
- * Лишние поля обнуляет.
+ *  - вывоз — сверяет тип из справочника (любой: машина или контейнер).
+ * Для тарифицируемых операций (замена/снятие/вывоз) дополнительно требует тип мусора и объём,
+ * подбирает тариф и возвращает снимок цены (ADR 0009). Лишние поля обнуляет.
  */
 async function resolveSubject(
   tx: Tx,
@@ -167,6 +181,7 @@ async function resolveSubject(
     requestType: RequestType;
     objectId: string;
     containerTypeId: string | null;
+    wasteTypeId: string | null;
     volumeM3: number | null;
   },
 ): Promise<RequestSubject> {
@@ -178,7 +193,13 @@ async function resolveSubject(
       .where(eq(containerTypes.id, input.containerTypeId));
     if (!ct) throw err.badRequest('Тип контейнера не найден');
     if (ct.type !== 'cont') throw err.badRequest('Для установки нужен тип контейнера');
-    return { containerTypeId: input.containerTypeId, volumeM3: null };
+    return {
+      containerTypeId: input.containerTypeId,
+      wasteTypeId: null,
+      volumeM3: null,
+      wasteTariffId: null,
+      pricePerM3: null,
+    };
   }
 
   if (input.requestType === 'container_replace') {
@@ -186,29 +207,48 @@ async function resolveSubject(
     if (!(await isTypePresent(tx, input.objectId, input.containerTypeId))) {
       throw err.badRequest('На объекте нет контейнера этого типа для замены');
     }
-    return { containerTypeId: input.containerTypeId, volumeM3: null };
-  }
-
-  if (input.requestType === 'container_removal') {
+  } else if (input.requestType === 'container_removal') {
     if (!input.containerTypeId) throw err.badRequest('Выберите тип контейнера для снятия');
     if (!(await isTypePresent(tx, input.objectId, input.containerTypeId))) {
       throw err.badRequest('На объекте нет контейнера этого типа для снятия');
     }
-    return { containerTypeId: input.containerTypeId, volumeM3: null };
+  } else {
+    // waste_removal — принимаем любой тип из справочника (машина или контейнер)
+    if (!input.containerTypeId) throw err.badRequest('Выберите тип машины/контейнера');
+    const [mt] = await tx
+      .select({ id: containerTypes.id })
+      .from(containerTypes)
+      .where(eq(containerTypes.id, input.containerTypeId));
+    if (!mt) throw err.badRequest('Тип не найден');
   }
 
-  // waste_removal — принимаем любой тип из справочника (машина или контейнер)
-  if (!input.containerTypeId) throw err.badRequest('Выберите тип машины/контейнера');
-  const [mt] = await tx
-    .select({ id: containerTypes.id })
-    .from(containerTypes)
-    .where(eq(containerTypes.id, input.containerTypeId));
-  if (!mt) throw err.badRequest('Тип не найден');
+  // Тарифицируемые операции: объём и тип мусора обязательны, цена берётся из прайса.
+  if (!input.wasteTypeId) throw err.badRequest('Выберите тип мусора');
   if (input.volumeM3 == null) throw err.badRequest('Укажите объём');
   if (input.volumeM3 < MIN_WASTE_VOLUME_M3) {
     throw err.badRequest(`Объём не меньше ${MIN_WASTE_VOLUME_M3} м³`);
   }
-  return { containerTypeId: input.containerTypeId, volumeM3: input.volumeM3 };
+  const [wt] = await tx
+    .select({ id: wasteTypes.id, isActive: wasteTypes.isActive })
+    .from(wasteTypes)
+    .where(eq(wasteTypes.id, input.wasteTypeId));
+  if (!wt) throw err.badRequest('Тип мусора не найден');
+  if (!wt.isActive) throw err.badRequest('Тип мусора неактивен');
+
+  const pricing = await priceWasteRequest({
+    requestType: input.requestType,
+    wasteTypeId: input.wasteTypeId,
+    containerTypeId: input.containerTypeId,
+    volumeM3: input.volumeM3,
+  });
+
+  return {
+    containerTypeId: input.containerTypeId,
+    wasteTypeId: input.wasteTypeId,
+    volumeM3: input.volumeM3,
+    wasteTariffId: pricing.wasteTariffId,
+    pricePerM3: pricing.pricePerM3,
+  };
 }
 
 async function getRequestDto(id: string): Promise<WasteRequestDto | null> {
@@ -307,41 +347,45 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
   });
 
   // Наличие контейнеров на площадках (view present_containers): присутствующие заявки установки.
-  r.get('/present', { ...auth, schema: { querystring: wasteRequestListQuerySchema } }, async (req) => {
-    const p = requirePrincipal(req);
-    const q = req.query;
-    const where = and(
-      isNull(wasteRequests.deletedAt),
-      requestVisibilityWhere(p, wasteRequests.objectId),
-      inArray(wasteRequests.id, db.select({ id: presentContainers.id }).from(presentContainers)),
-      q.objectId ? eq(wasteRequests.objectId, q.objectId) : undefined,
-      searchCondition(q.search, [constructionObjects.name, constructionObjects.code]),
-    );
-    const sortCols = {
-      objectName: constructionObjects.name,
-      containerTypeName: containerTypes.name,
-      deliveryAt: wasteRequests.deliveryAt,
-      createdAt: wasteRequests.createdAt,
-    };
-    const p2 = pageParams(q);
-    const rows = await baseQuery()
-      .where(where)
-      .orderBy(orderByFrom(sortCols, q.sortBy, q.sortOrder, 'createdAt'))
-      .limit(p2.limit)
-      .offset(p2.offset);
-    const [totalRow] = await db
-      .select({ c: count() })
-      .from(wasteRequests)
-      .innerJoin(constructionObjects, eq(wasteRequests.objectId, constructionObjects.id))
-      .where(where);
-    const filesMap = await filesByRequestIds(rows.map((row) => row.id));
-    return {
-      items: rows.map((row) => toDto(row, filesMap.get(row.id) ?? [])),
-      total: Number(totalRow!.c),
-      page: p2.page,
-      pageSize: p2.pageSize,
-    };
-  });
+  r.get(
+    '/present',
+    { ...auth, schema: { querystring: wasteRequestListQuerySchema } },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const q = req.query;
+      const where = and(
+        isNull(wasteRequests.deletedAt),
+        requestVisibilityWhere(p, wasteRequests.objectId),
+        inArray(wasteRequests.id, db.select({ id: presentContainers.id }).from(presentContainers)),
+        q.objectId ? eq(wasteRequests.objectId, q.objectId) : undefined,
+        searchCondition(q.search, [constructionObjects.name, constructionObjects.code]),
+      );
+      const sortCols = {
+        objectName: constructionObjects.name,
+        containerTypeName: containerTypes.name,
+        deliveryAt: wasteRequests.deliveryAt,
+        createdAt: wasteRequests.createdAt,
+      };
+      const p2 = pageParams(q);
+      const rows = await baseQuery()
+        .where(where)
+        .orderBy(orderByFrom(sortCols, q.sortBy, q.sortOrder, 'createdAt'))
+        .limit(p2.limit)
+        .offset(p2.offset);
+      const [totalRow] = await db
+        .select({ c: count() })
+        .from(wasteRequests)
+        .innerJoin(constructionObjects, eq(wasteRequests.objectId, constructionObjects.id))
+        .where(where);
+      const filesMap = await filesByRequestIds(rows.map((row) => row.id));
+      return {
+        items: rows.map((row) => toDto(row, filesMap.get(row.id) ?? [])),
+        total: Number(totalRow!.c),
+        page: p2.page,
+        pageSize: p2.pageSize,
+      };
+    },
+  );
 
   r.get('/:id', { ...auth, schema: { params: idParams } }, async (req) => {
     const p = requirePrincipal(req);
@@ -360,6 +404,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         requestType: body.requestType,
         objectId: body.objectId,
         containerTypeId: body.containerTypeId ?? null,
+        wasteTypeId: body.wasteTypeId ?? null,
         volumeM3: body.volumeM3 ?? null,
       });
       const [row] = await tx
@@ -369,6 +414,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
           requestType: body.requestType,
           ...subject,
           deliveryAt: body.deliveryAt,
+          deliveryTimeUnspecified: body.deliveryTimeUnspecified,
           comment: body.comment,
           status: 'new',
           createdBy: p.id,
@@ -416,6 +462,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
           objectId,
           containerTypeId:
             body.containerTypeId !== undefined ? body.containerTypeId : existing.containerTypeId,
+          wasteTypeId: body.wasteTypeId !== undefined ? body.wasteTypeId : existing.wasteTypeId,
           volumeM3: body.volumeM3 !== undefined ? body.volumeM3 : existing.volumeM3,
         });
         const [updated] = await tx
@@ -425,6 +472,10 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
             requestType: rt,
             ...subject,
             deliveryAt: body.deliveryAt ?? existing.deliveryAt,
+            // Признак меняется только вместе с датой — иначе остаётся прежним.
+            deliveryTimeUnspecified: body.deliveryAt
+              ? (body.deliveryTimeUnspecified ?? false)
+              : existing.deliveryTimeUnspecified,
             comment: body.comment ?? existing.comment,
             updatedBy: p.id,
             version: existing.version + 1,
@@ -519,7 +570,12 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
 
     await db
       .update(wasteRequests)
-      .set({ deletedAt: new Date(), deletedBy: p.id, version: existing.version + 1, updatedAt: new Date() })
+      .set({
+        deletedAt: new Date(),
+        deletedBy: p.id,
+        version: existing.version + 1,
+        updatedAt: new Date(),
+      })
       .where(eq(wasteRequests.id, id));
     await writeAudit({
       actorUserId: p.id,

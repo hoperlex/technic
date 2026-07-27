@@ -9,28 +9,34 @@ import {
   Select,
   Space,
   Tag,
-  TimePicker,
   type TableColumnType,
 } from 'antd';
-import { EditOutlined, DeleteOutlined, ReloadOutlined } from '@ant-design/icons';
+import { DeleteOutlined, EditOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import dayjs, { type Dayjs } from 'dayjs';
 import {
   type AddressMeta,
-  type FreightTransportRequestDto,
   isAddressVerified,
+  normalizeTimeInput,
   parseVehicleRequestNumberSearch,
   type RequestStatus,
+  VEHICLE_REQUEST_TYPES,
+  type VehicleRequestDto,
+  type VehicleRequestType,
+  vehicleRequestTypeColors,
+  vehicleRequestTypeLabels,
 } from '@technic/contracts';
 import { vehicleRequestsApi } from '../../api/resources';
 import { DataTable } from '../../components/DataTable';
 import { FormModal } from '../../components/FormModal';
 import { PageTableLayout } from '../../components/PageTableLayout';
-import { actionsColumn, textColumn } from '../../components/columns';
+import { actionsColumn, badgeColumn, textColumn } from '../../components/columns';
+import { TimeInput, optionalWorkTimeRule } from '../../components/TimeInput';
 import { UserAvatar } from '../../components/UserAvatar';
+import { AddressAutoComplete, AddressCell } from '../../components/AddressAutoComplete';
 import { useListParams } from '../../hooks/useListParams';
 import { useAuth } from '../../auth/AuthContext';
-import { errorMessage, formatDateTime } from '../../utils/format';
+import { errorMessage, formatDateTimeMaybe } from '../../utils/format';
 import { isPastDate, startOfToday } from '../../utils/date';
 import { MOSCOW_TZ } from '../../theme';
 import {
@@ -40,30 +46,61 @@ import {
   VehicleTypeSelect,
   useFileEditor,
   useObjectOptions,
-  useOpenCreateFromQuery,
+  useVehicleTypes,
   type EditorFile,
 } from './shared';
-import { CreateRequestButton } from './CreateRequestButton';
-import { AddressAutoComplete, AddressCell } from '../../components/AddressAutoComplete';
 
+/**
+ * Единая форма заявки на автотехнику. Тип заявки не выбирается отдельно — его задаёт
+ * вид выбранного типа ТС (коды vehicle_kinds совпадают с vehicle_request_type).
+ * Поля обоих типов видны всегда; неприменимые к выбранному виду выключены и не заполняются.
+ */
 interface FormValues {
   objectId: string;
   vehicleTypeId: string;
-  scheduledDate: Dayjs;
-  scheduledTime: Dayjs;
+  // Спецтехника: период работы (date-only).
+  dateFrom?: Dayjs | null;
+  dateTo?: Dayjs | null;
+  // Грузоперевозка: дата + необязательное время `HH:mm`, объём/масса, адреса.
+  scheduledDate?: Dayjs | null;
+  scheduledTime?: string;
   volumeM3?: number | null;
   weightTons?: number | null;
-  loadingLocation: string;
-  unloadingLocation: string;
+  loadingLocation?: string;
+  unloadingLocation?: string;
   comment?: string;
 }
 
-function amountLabel(volume: number | null, weight: number | null): string {
-  const parts = [volume != null ? `${volume} м³` : null, weight != null ? `${weight} т` : null];
+const SPECIAL_FIELDS = ['dateFrom', 'dateTo'] as const;
+const FREIGHT_FIELDS = [
+  'scheduledDate',
+  'scheduledTime',
+  'volumeM3',
+  'weightTons',
+  'loadingLocation',
+  'unloadingLocation',
+] as const;
+
+const fmtDate = (s: string) => dayjs(s).format('DD.MM.YYYY');
+
+/** Колонка «Срок»: у спецтехники это период, у грузоперевозки — дата (и время, если задано). */
+function termLabel(r: VehicleRequestDto): string {
+  if (r.requestType === 'special_equipment') {
+    return r.dateTo ? `${fmtDate(r.dateFrom)} – ${fmtDate(r.dateTo)}` : fmtDate(r.dateFrom);
+  }
+  return formatDateTimeMaybe(r.scheduledAt, r.scheduledTimeUnspecified);
+}
+
+function amountLabel(r: VehicleRequestDto): string {
+  if (r.requestType !== 'freight_transport') return '—';
+  const parts = [
+    r.volumeM3 != null ? `${r.volumeM3} м³` : null,
+    r.weightTons != null ? `${r.weightTons} т` : null,
+  ];
   return parts.filter(Boolean).join(' / ') || '—';
 }
 
-export function FreightTransportRequestsTab() {
+export function VehicleRequestsTab() {
   const { message, modal } = App.useApp();
   const { hasRole } = useAuth();
   const qc = useQueryClient();
@@ -71,62 +108,104 @@ export function FreightTransportRequestsTab() {
   const isAdmin = hasRole('admin');
   const isShtab = hasRole('shtab');
 
+  // requestType не задан — список обоих типов; фильтр в шапке сужает до одного.
   const { params, setParams, onTableChange } = useListParams<{
-    requestType: 'freight_transport';
+    requestType?: string;
     status?: string;
   }>(
-    { requestType: 'freight_transport' },
+    {},
     {
       searchKeys: ['comment'],
-      mapFilters: (f) => ({ status: f.status?.[0] as string | undefined }),
+      mapFilters: (f) => ({
+        status: f.status?.[0] as string | undefined,
+        requestType: f.requestType?.[0] as string | undefined,
+      }),
     },
   );
 
   const { data, isFetching } = useQuery({
-    queryKey: ['vehicle-requests', 'freight-transport', params],
+    queryKey: ['vehicle-requests', 'all', params],
     queryFn: () => vehicleRequestsApi.list(params),
   });
-  const items = (data?.items ?? []) as FreightTransportRequestDto[];
+  const items = data?.items ?? [];
 
   const objectOptions = useObjectOptions();
+  const { kindByTypeId, groups, loading: typesLoading } = useVehicleTypes();
 
   const [open, setOpen] = useState(false);
-  const [record, setRecord] = useState<FreightTransportRequestDto | null>(null);
+  const [record, setRecord] = useState<VehicleRequestDto | null>(null);
   const [form] = Form.useForm<FormValues>();
   const editor = useFileEditor();
   // Метаданные верификации адресов держим вне формы (значение — объект, не строка).
   const [loadingMeta, setLoadingMeta] = useState<AddressMeta | null>(null);
   const [unloadingMeta, setUnloadingMeta] = useState<AddressMeta | null>(null);
 
+  // Тип заявки выводится из вида выбранного ТС.
+  const watchTypeId = Form.useWatch('vehicleTypeId', form);
+  const kind = watchTypeId ? kindByTypeId.get(watchTypeId) : undefined;
+  const isSpecial = kind === 'special_equipment';
+  const isFreight = kind === 'freight_transport';
+
+  // Тип заявки менять нельзя (сервер отклонит) — при редактировании оставляем только свой вид.
+  const typeGroups = record
+    ? groups.filter((g) => g.options.some((o) => kindByTypeId.get(o.value) === record.requestType))
+    : groups;
+
+  /** Смена типа ТС: поля чужого вида очищаем, своей дате подставляем сегодня. */
+  const handleTypeChange = (typeId: string) => {
+    const next = kindByTypeId.get(typeId);
+    if (next === 'special_equipment') {
+      form.resetFields([...FREIGHT_FIELDS]);
+      setLoadingMeta(null);
+      setUnloadingMeta(null);
+      if (!form.getFieldValue('dateFrom')) form.setFieldsValue({ dateFrom: startOfToday() });
+    } else if (next === 'freight_transport') {
+      form.resetFields([...SPECIAL_FIELDS]);
+      if (!form.getFieldValue('scheduledDate')) {
+        form.setFieldsValue({ scheduledDate: startOfToday() });
+      }
+    }
+  };
+
   const openCreate = () => {
     setRecord(null);
     form.resetFields();
-    // Дата отправки по умолчанию — сегодня.
-    form.setFieldsValue({ scheduledDate: startOfToday() });
     setLoadingMeta(null);
     setUnloadingMeta(null);
     editor.reset([]);
     setOpen(true);
   };
-  useOpenCreateFromQuery('freight-transport', openCreate);
 
-  const openEdit = (r: FreightTransportRequestDto) => {
+  const openEdit = (r: VehicleRequestDto) => {
     setRecord(r);
     form.resetFields();
-    setLoadingMeta(r.loadingAddress);
-    setUnloadingMeta(r.unloadingAddress);
-    const at = dayjs.tz(r.scheduledAt, MOSCOW_TZ);
-    form.setFieldsValue({
-      objectId: r.objectId,
-      vehicleTypeId: r.vehicleTypeId,
-      scheduledDate: at,
-      scheduledTime: at,
-      volumeM3: r.volumeM3,
-      weightTons: r.weightTons,
-      loadingLocation: r.loadingLocation,
-      unloadingLocation: r.unloadingLocation,
-      comment: r.comment,
-    });
+    if (r.requestType === 'special_equipment') {
+      setLoadingMeta(null);
+      setUnloadingMeta(null);
+      form.setFieldsValue({
+        objectId: r.objectId,
+        vehicleTypeId: r.vehicleTypeId,
+        dateFrom: dayjs(r.dateFrom),
+        dateTo: r.dateTo ? dayjs(r.dateTo) : null,
+        comment: r.comment,
+      });
+    } else {
+      setLoadingMeta(r.loadingAddress);
+      setUnloadingMeta(r.unloadingAddress);
+      const at = dayjs.tz(r.scheduledAt, MOSCOW_TZ);
+      form.setFieldsValue({
+        objectId: r.objectId,
+        vehicleTypeId: r.vehicleTypeId,
+        scheduledDate: at,
+        // Время не задано — поле остаётся пустым (в scheduledAt лежит полночь МСК).
+        scheduledTime: r.scheduledTimeUnspecified ? undefined : at.format('HH:mm'),
+        volumeM3: r.volumeM3,
+        weightTons: r.weightTons,
+        loadingLocation: r.loadingLocation,
+        unloadingLocation: r.unloadingLocation,
+        comment: r.comment,
+      });
+    }
     editor.reset(
       r.files.map((f): EditorFile => ({
         id: f.id,
@@ -140,35 +219,54 @@ export function FreightTransportRequestsTab() {
 
   const saveMut = useMutation({
     mutationFn: (v: FormValues) => {
-      const scheduledAt = dayjs
-        .tz(`${v.scheduledDate.format('YYYY-MM-DD')} ${v.scheduledTime.format('HH:mm')}`, MOSCOW_TZ)
-        .format('YYYY-MM-DDTHH:mm:ssZ');
-      const base = {
+      const common = {
         objectId: v.objectId,
         vehicleTypeId: v.vehicleTypeId,
+        comment: v.comment ?? '',
+      };
+      if (isSpecial) {
+        const base = {
+          requestType: 'special_equipment' as const,
+          ...common,
+          dateFrom: v.dateFrom!.format('YYYY-MM-DD'),
+          dateTo: v.dateTo ? v.dateTo.format('YYYY-MM-DD') : null,
+        };
+        return record
+          ? vehicleRequestsApi.update(record.id, {
+              ...base,
+              version: record.version,
+              addFileIds: editor.newFileIds(),
+              removeFileIds: editor.removedIds,
+            })
+          : vehicleRequestsApi.create({ ...base, fileIds: editor.newFileIds() });
+      }
+
+      // Время не задано → полночь МСК + признак: заявка «на дату», без конкретного часа.
+      const time = normalizeTimeInput(v.scheduledTime ?? '');
+      const scheduledAt = dayjs
+        .tz(`${v.scheduledDate!.format('YYYY-MM-DD')} ${time ?? '00:00'}`, MOSCOW_TZ)
+        .format('YYYY-MM-DDTHH:mm:ssZ');
+      const base = {
+        requestType: 'freight_transport' as const,
+        ...common,
         scheduledAt,
+        scheduledTimeUnspecified: time === undefined,
         volumeM3: v.volumeM3 ?? null,
         weightTons: v.weightTons ?? null,
-        loadingLocation: v.loadingLocation,
-        unloadingLocation: v.unloadingLocation,
+        loadingLocation: v.loadingLocation!,
+        unloadingLocation: v.unloadingLocation!,
         // onFinish гарантирует, что оба адреса верифицированы (жёсткая модель, ADR 0006).
         loadingAddress: loadingMeta!,
         unloadingAddress: unloadingMeta!,
-        comment: v.comment ?? '',
       };
       return record
         ? vehicleRequestsApi.update(record.id, {
-            requestType: 'freight_transport',
-            version: record.version,
             ...base,
+            version: record.version,
             addFileIds: editor.newFileIds(),
             removeFileIds: editor.removedIds,
           })
-        : vehicleRequestsApi.create({
-            requestType: 'freight_transport',
-            ...base,
-            fileIds: editor.newFileIds(),
-          });
+        : vehicleRequestsApi.create({ ...base, fileIds: editor.newFileIds() });
     },
     onSuccess: () => {
       message.success('Сохранено');
@@ -178,7 +276,12 @@ export function FreightTransportRequestsTab() {
     onError: (e) => message.error(errorMessage(e)),
   });
 
+  /** Доваливаем правила, которые зависят от вида ТС и не выражаются rules-ами полей. */
   const onFinish = (v: FormValues) => {
+    if (isSpecial) {
+      saveMut.mutate(v);
+      return;
+    }
     if (v.volumeM3 == null && v.weightTons == null) {
       message.error('Укажите объём или массу');
       return;
@@ -228,10 +331,9 @@ export function FreightTransportRequestsTab() {
     onError: (e) => message.error(errorMessage(e)),
   });
 
-  const canModify = (r: FreightTransportRequestDto) =>
-    !r.deletedAt && (!isShtab || r.status === 'new');
+  const canModify = (r: VehicleRequestDto) => !r.deletedAt && (!isShtab || r.status === 'new');
 
-  const confirmDelete = (r: FreightTransportRequestDto) =>
+  const confirmDelete = (r: VehicleRequestDto) =>
     modal.confirm({
       title:
         r.status === 'new'
@@ -243,7 +345,8 @@ export function FreightTransportRequestsTab() {
       onOk: () => removeMut.mutateAsync(r.id),
     });
 
-  const columns: TableColumnType<FreightTransportRequestDto>[] = [
+  // Единая таблица обоих типов: колонки чужого типа остаются пустыми.
+  const columns: TableColumnType<VehicleRequestDto>[] = [
     textColumn({
       key: 'num',
       title: '№',
@@ -252,8 +355,18 @@ export function FreightTransportRequestsTab() {
       searchable: false,
       width: 120,
     }),
+    badgeColumn<VehicleRequestDto>({
+      key: 'requestType',
+      title: 'Тип заявки',
+      dataIndex: 'requestType',
+      labels: vehicleRequestTypeLabels,
+      colors: vehicleRequestTypeColors,
+      filters: true,
+      sortable: false,
+      width: 180,
+    }),
     textColumn({ key: 'objectName', title: 'Объект', dataIndex: 'objectName', searchable: false }),
-    textColumn<FreightTransportRequestDto>({
+    textColumn<VehicleRequestDto>({
       key: 'createdByName',
       title: 'Автор',
       dataIndex: 'createdByName',
@@ -275,28 +388,38 @@ export function FreightTransportRequestsTab() {
       searchable: false,
     }),
     {
-      key: 'scheduledAt',
-      title: 'Дата и время',
-      width: 160,
-      render: (_v, r) => formatDateTime(r.scheduledAt),
+      key: 'term',
+      title: 'Срок',
+      width: 190,
+      render: (_v, r) => termLabel(r),
     },
     {
       key: 'amount',
       title: 'Объём / масса',
       width: 140,
-      render: (_v, r) => amountLabel(r.volumeM3, r.weightTons),
+      render: (_v, r) => amountLabel(r),
     },
     {
       key: 'loadingLocation',
       title: 'Погрузка',
       ellipsis: true,
-      render: (_v, r) => <AddressCell text={r.loadingLocation} meta={r.loadingAddress} />,
+      render: (_v, r) =>
+        r.requestType === 'freight_transport' ? (
+          <AddressCell text={r.loadingLocation} meta={r.loadingAddress} />
+        ) : (
+          '—'
+        ),
     },
     {
       key: 'unloadingLocation',
       title: 'Разгрузка',
       ellipsis: true,
-      render: (_v, r) => <AddressCell text={r.unloadingLocation} meta={r.unloadingAddress} />,
+      render: (_v, r) =>
+        r.requestType === 'freight_transport' ? (
+          <AddressCell text={r.unloadingLocation} meta={r.unloadingAddress} />
+        ) : (
+          '—'
+        ),
     },
     {
       key: 'status',
@@ -326,7 +449,7 @@ export function FreightTransportRequestsTab() {
       width: 110,
       render: (_v, r) => <FilesCell files={r.files} />,
     },
-    actionsColumn<FreightTransportRequestDto>((r) =>
+    actionsColumn<VehicleRequestDto>((r) =>
       r.deletedAt ? (
         isAdmin ? (
           <Button
@@ -362,6 +485,14 @@ export function FreightTransportRequestsTab() {
     <Space wrap>
       <Select
         allowClear
+        placeholder="Все типы заявок"
+        style={{ width: 200 }}
+        options={VEHICLE_REQUEST_TYPES.map((t) => ({ value: t, label: vehicleRequestTypeLabels[t] }))}
+        value={params.requestType as VehicleRequestType | undefined}
+        onChange={(v) => setParams((p) => ({ ...p, requestType: v, page: 1 }))}
+      />
+      <Select
+        allowClear
         showSearch
         optionFilterProp="label"
         placeholder="Все объекты"
@@ -385,9 +516,13 @@ export function FreightTransportRequestsTab() {
   return (
     <PageTableLayout
       filters={filters}
-      extra={<CreateRequestButton current="freight-transport" onCreateHere={openCreate} />}
+      extra={
+        <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
+          Создать заявку
+        </Button>
+      }
     >
-      <DataTable<FreightTransportRequestDto>
+      <DataTable<VehicleRequestDto>
         columns={columns}
         data={items}
         total={data?.total ?? 0}
@@ -397,7 +532,7 @@ export function FreightTransportRequestsTab() {
         onChange={onTableChange}
       />
       <FormModal
-        title={record ? `Заявка ${record.displayNumber}` : 'Новая заявка на грузоперевозку'}
+        title={record ? `Заявка ${record.displayNumber}` : 'Новая заявка на автотехнику'}
         open={open}
         onCancel={() => setOpen(false)}
         onSubmit={() => form.submit()}
@@ -417,56 +552,90 @@ export function FreightTransportRequestsTab() {
               placeholder="Объект"
             />
           </Form.Item>
-          <VehicleTypeSelect kindCode="freight_transport" />
+          <VehicleTypeSelect
+            groups={typeGroups}
+            loading={typesLoading}
+            onChange={handleTypeChange}
+          />
+
+          {/* Спецтехника: период работы. Для грузоперевозки поля выключены. */}
           <Space style={{ width: '100%' }} size="middle">
-            <Form.Item name="volumeM3" label="Объём, м³" style={{ flex: 1 }}>
-              <InputNumber style={{ width: '100%' }} min={0} step={0.1} />
+            <Form.Item
+              name="dateFrom"
+              label="Дата начала"
+              rules={[{ required: isSpecial, message: 'Укажите дату начала' }]}
+            >
+              <DatePicker
+                format="DD.MM.YYYY"
+                style={{ width: '100%' }}
+                disabled={!isSpecial}
+                disabledDate={isPastDate}
+              />
             </Form.Item>
-            <Form.Item name="weightTons" label="Масса, т" style={{ flex: 1 }}>
-              <InputNumber style={{ width: '100%' }} min={0} step={0.1} />
+            <Form.Item name="dateTo" label="Дата окончания">
+              <DatePicker
+                format="DD.MM.YYYY"
+                style={{ width: '100%' }}
+                disabled={!isSpecial}
+                disabledDate={isPastDate}
+              />
             </Form.Item>
           </Space>
+
+          {/* Грузоперевозка: дата/время, объём или масса, адреса. Для спецтехники выключены. */}
           <Space style={{ width: '100%' }} size="middle">
             <Form.Item
               name="scheduledDate"
-              label="Дата"
-              rules={[{ required: true, message: 'Укажите дату' }]}
+              label="Дата подачи"
+              rules={[{ required: isFreight, message: 'Укажите дату' }]}
             >
-              <DatePicker format="DD.MM.YYYY" style={{ width: '100%' }} disabledDate={isPastDate} />
+              <DatePicker
+                format="DD.MM.YYYY"
+                style={{ width: '100%' }}
+                disabled={!isFreight}
+                disabledDate={isPastDate}
+              />
             </Form.Item>
             <Form.Item
               name="scheduledTime"
               label="Время (МСК)"
-              rules={[{ required: true, message: 'Укажите время' }]}
+              tooltip="Необязательно. Рабочее окно — с 07:00 до 21:00"
+              rules={[optionalWorkTimeRule]}
             >
-              <TimePicker
-                format="HH:mm"
-                minuteStep={5}
-                needConfirm={false}
-                style={{ width: '100%' }}
-              />
+              <TimeInput disabled={!isFreight} />
+            </Form.Item>
+          </Space>
+          <Space style={{ width: '100%' }} size="middle">
+            <Form.Item name="volumeM3" label="Объём, м³" style={{ flex: 1 }}>
+              <InputNumber style={{ width: '100%' }} min={0} step={0.1} disabled={!isFreight} />
+            </Form.Item>
+            <Form.Item name="weightTons" label="Масса, т" style={{ flex: 1 }}>
+              <InputNumber style={{ width: '100%' }} min={0} step={0.1} disabled={!isFreight} />
             </Form.Item>
           </Space>
           <Form.Item
             name="loadingLocation"
             label="Место погрузки"
-            rules={[{ required: true, message: 'Укажите место погрузки' }]}
+            rules={[{ required: isFreight, message: 'Укажите место погрузки' }]}
           >
             <AddressAutoComplete
               placeholder="Начните вводить адрес"
+              disabled={!isFreight}
               onMetaChange={setLoadingMeta}
             />
           </Form.Item>
           <Form.Item
             name="unloadingLocation"
             label="Место разгрузки"
-            rules={[{ required: true, message: 'Укажите место разгрузки' }]}
+            rules={[{ required: isFreight, message: 'Укажите место разгрузки' }]}
           >
             <AddressAutoComplete
               placeholder="Начните вводить адрес"
+              disabled={!isFreight}
               onMetaChange={setUnloadingMeta}
             />
           </Form.Item>
+
           <Form.Item name="comment" label="Комментарий">
             <Input.TextArea rows={2} maxLength={2000} />
           </Form.Item>

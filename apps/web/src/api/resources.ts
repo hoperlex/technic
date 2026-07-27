@@ -3,6 +3,7 @@ import type {
   CreateContainerTypeInput,
   CreateObjectInput,
   CreateUserInput,
+  CreateVehicleInput,
   CreateVehicleRequestInput,
   CreateVehicleTypeInput,
   DownloadUrlDto,
@@ -14,14 +15,20 @@ import type {
   UpdateContainerTypeInput,
   UpdateObjectInput,
   UpdateUserInput,
+  UpdateVehicleInput,
   UpdateVehicleRequestInput,
   UpdateVehicleTypeInput,
   UploadSessionDto,
   UserDto,
+  VehicleDto,
   VehicleKindDto,
+  VehicleModelDto,
   VehicleRequestDto,
   VehicleTypeDto,
   WasteRequestDto,
+  WasteTariffDto,
+  WasteTypeDto,
+  ResolvedWasteTariffDto,
 } from '@technic/contracts';
 import { apiFetch } from './client';
 
@@ -67,6 +74,19 @@ export const vehicleTypesApi = {
     apiFetch<VehicleTypeDto>(`/vehicle-types/${id}`, { method: 'PATCH', body }),
 };
 
+export const vehicleModelsApi = {
+  list: (q: Query) => apiFetch<ListResult<VehicleModelDto>>('/vehicle-models', { query: q }),
+};
+
+export const vehiclesApi = {
+  list: (q: Query) => apiFetch<ListResult<VehicleDto>>('/vehicles', { query: q }),
+  create: (body: CreateVehicleInput) => apiFetch<VehicleDto>('/vehicles', { method: 'POST', body }),
+  update: (id: string, body: UpdateVehicleInput) =>
+    apiFetch<VehicleDto>(`/vehicles/${id}`, { method: 'PATCH', body }),
+  remove: (id: string) => apiFetch<{ ok: boolean }>(`/vehicles/${id}`, { method: 'DELETE' }),
+  restore: (id: string) => apiFetch<VehicleDto>(`/vehicles/${id}/restore`, { method: 'POST' }),
+};
+
 export const vehicleRequestsApi = {
   list: (q: Query) => apiFetch<ListResult<VehicleRequestDto>>('/vehicle-requests', { query: q }),
   get: (id: string) => apiFetch<VehicleRequestDto>(`/vehicle-requests/${id}`),
@@ -89,6 +109,7 @@ export interface WasteRequestPayload {
   objectId: string;
   requestType: RequestType;
   containerTypeId?: string;
+  wasteTypeId?: string;
   volumeM3?: number;
   deliveryAt: string;
   comment?: string;
@@ -99,6 +120,7 @@ export interface WasteRequestUpdatePayload {
   objectId?: string;
   requestType?: RequestType;
   containerTypeId?: string | null;
+  wasteTypeId?: string | null;
   volumeM3?: number | null;
   deliveryAt?: string;
   comment?: string;
@@ -106,6 +128,19 @@ export interface WasteRequestUpdatePayload {
   removeFileIds?: string[];
   version: number;
 }
+
+export const wasteTypesApi = {
+  list: (q: Query) => apiFetch<ListResult<WasteTypeDto>>('/waste-types', { query: q }),
+};
+
+export const wasteTariffsApi = {
+  list: (q: Query) => apiFetch<ListResult<WasteTariffDto>>('/waste-tariffs', { query: q }),
+  /** Тариф под пару «тип мусора × техника» — предпросмотр цены в форме заявки. */
+  resolve: (wasteTypeId: string, containerTypeId: string) =>
+    apiFetch<ResolvedWasteTariffDto>('/waste-tariffs/resolve', {
+      query: { wasteTypeId, containerTypeId },
+    }),
+};
 
 export const wasteRequestsApi = {
   list: (q: Query) => apiFetch<ListResult<WasteRequestDto>>('/waste-requests', { query: q }),
