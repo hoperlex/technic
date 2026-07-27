@@ -47,6 +47,7 @@ import {
   isVolumeAllowed,
   volumeStepMessage,
   type WasteRequestDto,
+  type WasteRequestVehicleDto,
 } from '@technic/contracts';
 import {
   containerTypesApi,
@@ -60,6 +61,15 @@ import {
   type WasteRequestUpdatePayload,
 } from '../api/resources';
 import { CancelReasonModal } from '../components/CancelReasonModal';
+import {
+  emptyVehicleDraft,
+  draftsToInput,
+  sumDraftVolume,
+  validateVehicleDrafts,
+  VolumeSummary,
+  WasteVehiclesEditor,
+  type VehicleDraft,
+} from '../components/WasteVehiclesEditor';
 import { DataTable } from '../components/DataTable';
 import { FormModal } from '../components/FormModal';
 import { PageTableLayout } from '../components/PageTableLayout';
@@ -282,6 +292,33 @@ function RequestsTab() {
   // Тарифицируемые операции: замена, снятие, вывоз. Установка нового контейнера цены не имеет.
   const isPriced = watchRequestType ? isPricedRequestType(watchRequestType) : false;
 
+  // Машины заявки в форме редактирования (ADR 0011): новые строки и действия над заведёнными.
+  // Пометку ставит любой, кто правит заявку; удалить насовсем может только администратор.
+  const [vehicleDrafts, setVehicleDrafts] = useState<VehicleDraft[]>([]);
+  const [vehicleMarks, setVehicleMarks] = useState<
+    Record<string, 'marked' | 'restored' | 'deleted'>
+  >({});
+  const isVehicleDeleted = (v: WasteRequestVehicleDto): boolean => {
+    const mark = vehicleMarks[v.id];
+    if (mark === 'marked') return true;
+    if (mark === 'restored') return false;
+    return v.isDeleted;
+  };
+  const setVehicleMark = (id: string, mark: 'marked' | 'restored' | 'deleted' | null) =>
+    setVehicleMarks((prev) => {
+      const next = { ...prev };
+      if (mark === null) delete next[id];
+      else next[id] = mark;
+      return next;
+    });
+  // В сверке участвуют только те, что останутся активными после сохранения.
+  const editVehiclesVolume =
+    (record?.vehicles ?? []).reduce(
+      (acc, v) =>
+        vehicleMarks[v.id] === 'deleted' || isVehicleDeleted(v) ? acc : acc + v.volumeM3,
+      0,
+    ) + sumDraftVolume(vehicleDrafts);
+
   // Выбор исполнителя в форме следует за выбранным объектом: сменили объект — сменился список.
   const formOperatorOptions = operatorOptionsFor(watchObjectId, {
     id: record?.operatorCounterpartyId ?? null,
@@ -354,6 +391,8 @@ function RequestsTab() {
     setRecord(null);
     setFiles([]);
     setRemovedIds([]);
+    setVehicleDrafts([]);
+    setVehicleMarks({});
     form.resetFields();
     // Дата доставки по умолчанию — сегодня.
     form.setFieldsValue({ deliveryDate: startOfToday() } as Partial<RequestFormValues>);
@@ -366,6 +405,8 @@ function RequestsTab() {
     setRecord(r);
     setFiles(r.files.map((f) => ({ id: f.id, filename: f.filename, size: f.size, isNew: false })));
     setRemovedIds([]);
+    setVehicleDrafts([]);
+    setVehicleMarks({});
     form.resetFields();
     form.setFieldsValue({
       objectId: r.objectId,
@@ -445,6 +486,8 @@ function RequestsTab() {
         comment: values.comment ?? '',
       };
       if (record) {
+        const marked = (id: string, mark: string) => vehicleMarks[id] === mark;
+        const ids = record.vehicles.map((v) => v.id);
         const payload: WasteRequestUpdatePayload = {
           ...base,
           // Пустое поле у диспетчера означает «снять исполнителя» — это null, а не «не менять».
@@ -453,6 +496,10 @@ function RequestsTab() {
             : undefined,
           addFileIds: files.filter((f) => f.isNew).map((f) => f.id),
           removeFileIds: removedIds,
+          addVehicles: vehicleDrafts.length > 0 ? draftsToInput(vehicleDrafts) : undefined,
+          markDeletedVehicleIds: ids.filter((id) => marked(id, 'marked')),
+          restoreVehicleIds: ids.filter((id) => marked(id, 'restored')),
+          deleteVehicleIds: ids.filter((id) => marked(id, 'deleted')),
           version: record.version,
         };
         return wasteRequestsApi.update(record.id, payload);
@@ -482,12 +529,30 @@ function RequestsTab() {
     name: operatorTarget?.operatorName ?? null,
   });
 
+  // Закрытие заявки: машины с талонами вводятся в отдельном окне и уходят вместе со статусом.
+  const [doneTarget, setDoneTarget] = useState<WasteRequestDto | null>(null);
+  const [doneDrafts, setDoneDrafts] = useState<VehicleDraft[]>([]);
+
   const statusMut = useMutation({
-    mutationFn: (v: { id: string; status: RequestStatus; version: number; comment?: string }) =>
-      wasteRequestsApi.changeStatus(v.id, v.status, v.version, v.comment),
+    mutationFn: (v: {
+      id: string;
+      status: RequestStatus;
+      version: number;
+      comment?: string;
+      vehicles?: VehicleDraft[];
+    }) =>
+      wasteRequestsApi.changeStatus(
+        v.id,
+        v.status,
+        v.version,
+        v.comment,
+        v.vehicles ? draftsToInput(v.vehicles) : [],
+      ),
     onSuccess: () => {
       setOperatorTarget(null);
       setCancelTarget(null);
+      setDoneTarget(null);
+      setDoneDrafts([]);
       void qc.invalidateQueries({ queryKey: ['waste-requests'] });
     },
     onError: (e) => {
@@ -521,8 +586,8 @@ function RequestsTab() {
   });
 
   /**
-   * Перевод в работу — через назначение оператора вывоза; отмена — через обязательную причину.
-   * Остальные переходы (в т.ч. «Выполнена» у оператора) выполняются сразу.
+   * Перевод в работу — через назначение оператора вывоза; закрытие — через машины с талонами;
+   * отмена — через обязательную причину. Остальные переходы (откаты) выполняются сразу.
    */
   const requestStatusChange = (r: WasteRequestDto, status: RequestStatus) => {
     if (statusChangeRequiresReason(status)) {
@@ -538,7 +603,35 @@ function RequestsTab() {
       setOperatorTarget(r);
       return;
     }
+    if (status === 'done') {
+      // Уже заведённых машин хватает (повторное закрытие после отката) — тогда окно открывается
+      // пустым и просто подтверждает факт; иначе первая строка предлагается сразу.
+      const hasVehicles = r.vehicles.some((v) => !v.isDeleted);
+      setDoneDrafts(hasVehicles ? [] : [emptyVehicleDraft(r.containerTypeId ?? undefined)]);
+      setDoneTarget(r);
+      return;
+    }
     statusMut.mutate({ id: r.id, status, version: r.version });
+  };
+
+  const submitDone = () => {
+    if (!doneTarget) return;
+    const error = validateVehicleDrafts(doneDrafts);
+    if (error) {
+      message.warning(error);
+      return;
+    }
+    const activeExisting = doneTarget.vehicles.filter((v) => !v.isDeleted).length;
+    if (activeExisting + doneDrafts.length === 0) {
+      message.warning('Добавьте хотя бы одну машину');
+      return;
+    }
+    statusMut.mutate({
+      id: doneTarget.id,
+      status: 'done',
+      version: doneTarget.version,
+      vehicles: doneDrafts,
+    });
   };
 
   const removeMut = useMutation({
@@ -898,6 +991,62 @@ function RequestsTab() {
         </Form>
       </FormModal>
 
+      {/* Закрытие заявки: факт вывоза предъявляется машинами и талонами (ADR 0011). Сверка
+          с заявленным объёмом — подсказка, расхождение сохранению не мешает. */}
+      <FormModal
+        title="Прикрепление талона(ов)"
+        open={!!doneTarget}
+        onCancel={() => {
+          setDoneTarget(null);
+          setDoneDrafts([]);
+        }}
+        onSubmit={submitDone}
+        confirmLoading={statusMut.isPending}
+        okText="Выполнена"
+        width={720}
+      >
+        {doneTarget && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <Typography.Text type="secondary">
+              Заявка № {doneTarget.num}-{requestTypeShort[doneTarget.requestType]},{' '}
+              {doneTarget.objectName}
+              {doneTarget.volumeM3 != null ? ` · заявлено ${doneTarget.volumeM3} м³` : ''}
+            </Typography.Text>
+            {doneTarget.vehicles.filter((v) => !v.isDeleted).length > 0 && (
+              <List
+                size="small"
+                header={<Typography.Text strong>Уже заведённые машины</Typography.Text>}
+                dataSource={doneTarget.vehicles.filter((v) => !v.isDeleted)}
+                renderItem={(v) => (
+                  <List.Item>
+                    <span>
+                      {v.containerTypeName} — {v.volumeM3} м³
+                    </span>
+                    <Typography.Text type="secondary">
+                      {v.files.length > 0 ? `талонов: ${v.files.length}` : 'без талона'}
+                    </Typography.Text>
+                  </List.Item>
+                )}
+              />
+            )}
+            <WasteVehiclesEditor
+              value={doneDrafts}
+              onChange={setDoneDrafts}
+              typeOptions={allTypeOptions}
+              defaultContainerTypeId={doneTarget.containerTypeId ?? undefined}
+              existingCount={doneTarget.vehicles.filter((v) => !v.isDeleted).length}
+            />
+            <VolumeSummary
+              planned={doneTarget.volumeM3}
+              actual={
+                sumDraftVolume(doneDrafts) +
+                doneTarget.vehicles.reduce((acc, v) => (v.isDeleted ? acc : acc + v.volumeM3), 0)
+              }
+            />
+          </div>
+        )}
+      </FormModal>
+
       <CancelReasonModal
         open={!!cancelTarget}
         subject={
@@ -927,7 +1076,16 @@ function RequestsTab() {
         <Form
           form={form}
           layout="vertical"
-          onFinish={(v) => saveMut.mutate(v)}
+          onFinish={(v) => {
+            // Незаполненная строка машины — не повод отправлять запрос: сервер отвергнет её
+            // целиком, а человеку нужно знать, в какой именно строке пробел.
+            const vehicleError = validateVehicleDrafts(vehicleDrafts);
+            if (vehicleError) {
+              message.warning(vehicleError);
+              return;
+            }
+            saveMut.mutate(v);
+          }}
           // Смена объекта может сделать выбранного исполнителя недопустимым — снимаем его сразу,
           // а не отказом сервера при сохранении.
           onValuesChange={(changed: Partial<RequestFormValues>) => {
@@ -1103,6 +1261,97 @@ function RequestsTab() {
           <Form.Item name="comment" label="Комментарий">
             <Input.TextArea rows={3} maxLength={2000} showCount />
           </Form.Item>
+
+          {/* Машины и талоны (ADR 0011). Заведённые строки удаляет только администратор,
+              остальным доступна пометка: ошибочно снятый талон иначе не заметить. */}
+          {record && (
+            <Form.Item label="Машины и талоны">
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {record.vehicles.length > 0 && (
+                  <List
+                    size="small"
+                    dataSource={record.vehicles}
+                    renderItem={(v) => {
+                      const willDelete = vehicleMarks[v.id] === 'deleted';
+                      const inactive = willDelete || isVehicleDeleted(v);
+                      return (
+                        <List.Item
+                          actions={
+                            willDelete
+                              ? [
+                                  <Button
+                                    key="undo"
+                                    type="link"
+                                    size="small"
+                                    onClick={() => setVehicleMark(v.id, null)}
+                                  >
+                                    Отменить удаление
+                                  </Button>,
+                                ]
+                              : [
+                                  <Button
+                                    key="mark"
+                                    type="link"
+                                    size="small"
+                                    onClick={() =>
+                                      setVehicleMark(
+                                        v.id,
+                                        isVehicleDeleted(v)
+                                          ? v.isDeleted
+                                            ? 'restored'
+                                            : null
+                                          : v.isDeleted
+                                            ? null
+                                            : 'marked',
+                                      )
+                                    }
+                                  >
+                                    {isVehicleDeleted(v) ? 'Вернуть' : 'Пометить на удаление'}
+                                  </Button>,
+                                  ...(isAdmin
+                                    ? [
+                                        <Button
+                                          key="del"
+                                          type="link"
+                                          danger
+                                          size="small"
+                                          onClick={() => setVehicleMark(v.id, 'deleted')}
+                                        >
+                                          Удалить
+                                        </Button>,
+                                      ]
+                                    : []),
+                                ]
+                          }
+                        >
+                          <Typography.Text
+                            delete={inactive}
+                            type={inactive ? 'secondary' : undefined}
+                          >
+                            {v.containerTypeName} — {v.volumeM3} м³
+                            {v.files.length > 0 ? ` · талонов: ${v.files.length}` : ' · без талона'}
+                            {willDelete ? ' · будет удалена' : ''}
+                          </Typography.Text>
+                        </List.Item>
+                      );
+                    }}
+                  />
+                )}
+                <WasteVehiclesEditor
+                  value={vehicleDrafts}
+                  onChange={setVehicleDrafts}
+                  typeOptions={allTypeOptions}
+                  defaultContainerTypeId={record.containerTypeId ?? undefined}
+                  existingCount={record.vehicles.filter((v) => !isVehicleDeleted(v)).length}
+                />
+                <VolumeSummary
+                  planned={watchVolumeM3 ?? record.volumeM3}
+                  actual={editVehiclesVolume}
+                />
+              </div>
+            </Form.Item>
+          )}
+
           <Form.Item label={`Файлы (до ${FILE_MAX_COUNT}, до 50 МБ каждый)`}>
             <Upload
               multiple

@@ -29,6 +29,7 @@ import type {
   VehicleRequestDto,
   VehicleTypeDto,
   WasteRequestDto,
+  WasteRequestVehicleInput,
   WasteTariffDto,
   WasteTypeDto,
   ResolvedWasteTariffDto,
@@ -140,6 +141,12 @@ export interface WasteRequestUpdatePayload {
   wasteTypeId?: string | null;
   volumeM3?: number | null;
   operatorCounterpartyId?: string | null;
+  /** Машины заявки (ADR 0011): новые строки и операции над заведёнными. */
+  addVehicles?: WasteRequestVehicleInput[];
+  markDeletedVehicleIds?: string[];
+  restoreVehicleIds?: string[];
+  /** Полное удаление — только администратору. */
+  deleteVehicleIds?: string[];
   deliveryAt?: string;
   comment?: string;
   addFileIds?: string[];
@@ -176,11 +183,21 @@ export const wasteRequestsApi = {
       method: 'PATCH',
       body: { operatorCounterpartyId, version },
     }),
-  /** `comment` уходит в историю статусов; при отмене это обязательная причина. */
-  changeStatus: (id: string, status: RequestStatus, version: number, comment = '') =>
+  /**
+   * `comment` уходит в историю статусов; при отмене это обязательная причина.
+   * `vehicles` принимаются только при закрытии заявки — факт вывоза фиксируется тем же
+   * запросом, что и статус (ADR 0011).
+   */
+  changeStatus: (
+    id: string,
+    status: RequestStatus,
+    version: number,
+    comment = '',
+    vehicles: WasteRequestVehicleInput[] = [],
+  ) =>
     apiFetch<WasteRequestDto>(`/waste-requests/${id}/status`, {
       method: 'PATCH',
-      body: { status, comment, version },
+      body: { status, comment, vehicles, version },
     }),
   remove: (id: string) =>
     apiFetch<{ ok: boolean; mode: string }>(`/waste-requests/${id}`, { method: 'DELETE' }),

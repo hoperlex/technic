@@ -40,6 +40,24 @@ export const wasteRequestListQuerySchema = baseListQuery(WASTE_REQUEST_SORT_FIEL
 
 const volumeSchema = z.coerce.number().int().min(MIN_WASTE_VOLUME_M3);
 
+// ── Машины и талоны (ADR 0011) ──
+
+/**
+ * Машина, вывезшая часть заявки: тип техники из справочника, фактический объём рейса и талоны.
+ * Объём проставляется руками — недогруз обычнее полной загрузки, поэтому вместимость типа его
+ * не задаёт. Талоны необязательны: загрузка файлов ещё не работает, а факт вывоза фиксировать
+ * нужно уже сейчас.
+ */
+export const wasteRequestVehicleInputSchema = z.object({
+  containerTypeId: uuidSchema,
+  volumeM3: z.coerce.number().positive().max(100_000),
+  fileIds: z.array(uuidSchema).max(20).optional().default([]),
+});
+export type WasteRequestVehicleInput = z.infer<typeof wasteRequestVehicleInputSchema>;
+
+export const MAX_VEHICLES_PER_REQUEST = 50;
+const vehiclesArraySchema = z.array(wasteRequestVehicleInputSchema).max(MAX_VEHICLES_PER_REQUEST);
+
 /**
  * Поля заявки зависят от типа операции:
  *  - container_install → containerTypeId (тип контейнера из справочника, type='cont');
@@ -126,6 +144,12 @@ export const updateWasteRequestSchema = z
     comment: z.string().trim().max(2000).optional(),
     addFileIds: z.array(uuidSchema).max(20).optional(),
     removeFileIds: z.array(uuidSchema).optional(),
+    // Машины заявки (ADR 0011). Пометка на удаление доступна всем, кто правит заявку;
+    // удалить запись насовсем может только администратор — сервер сверяет роль.
+    addVehicles: vehiclesArraySchema.optional(),
+    markDeletedVehicleIds: z.array(uuidSchema).optional(),
+    restoreVehicleIds: z.array(uuidSchema).optional(),
+    deleteVehicleIds: z.array(uuidSchema).optional(),
     version: z.number().int().nonnegative(),
   })
   .superRefine((v, ctx) => {
@@ -147,17 +171,69 @@ export const assignWasteOperatorSchema = z.object({
 });
 export type AssignWasteOperatorInput = z.infer<typeof assignWasteOperatorSchema>;
 
+export interface WasteRequestVehicleDto {
+  id: string;
+  containerTypeId: string;
+  containerTypeName: string;
+  volumeM3: number;
+  /** Талоны рейса; пустой список — талон ещё не приложен. */
+  files: FileDto[];
+  /** Помечена на удаление: в сверке объёма не участвует, в списке показывается неактивной. */
+  isDeleted: boolean;
+  createdAt: string;
+}
+
+/** Фактически вывезенный объём: сумма по машинам без помеченных на удаление. */
+export function sumVehicleVolume(vehicles: readonly WasteRequestVehicleDto[]): number {
+  const sum = vehicles.reduce((acc, v) => (v.isDeleted ? acc : acc + v.volumeM3), 0);
+  return Math.round(sum * 1000) / 1000;
+}
+
+export interface VolumeCheck {
+  /** Сумма по активным машинам. */
+  actual: number;
+  /** Объём из заявки; null — заявка объёма не несёт (установка контейнера). */
+  planned: number | null;
+  /** Факт − план; null, если сравнивать не с чем. */
+  diff: number | null;
+  matches: boolean;
+}
+
+/**
+ * Сверка «заявлено ↔ вывезено». Расхождение — не ошибка: заявка это план, машины — факт
+ * (недогруз, лишний рейс). Результат показывается человеку и ничего не блокирует (ADR 0011).
+ */
+export function checkVehicleVolume(
+  plannedVolumeM3: number | null,
+  vehicles: readonly WasteRequestVehicleDto[],
+): VolumeCheck {
+  const actual = sumVehicleVolume(vehicles);
+  if (plannedVolumeM3 == null) return { actual, planned: null, diff: null, matches: true };
+  const diff = Math.round((actual - plannedVolumeM3) * 1000) / 1000;
+  return { actual, planned: plannedVolumeM3, diff, matches: diff === 0 };
+}
+
 // Комментарий к смене статуса пишется в историю (request_status_history.comment).
 // При отмене он обязателен и играет роль причины — см. statusChangeRequiresReason.
+// Машины передаются вместе с закрытием заявки: «Выполнена» без единой машины бессмысленна,
+// а отдельным запросом её пришлось бы проводить не атомарно со сменой статуса (ADR 0011).
 export const changeWasteRequestStatusSchema = z
   .object({
     status: requestStatusSchema,
     comment: z.string().trim().max(2000).optional().default(''),
+    vehicles: vehiclesArraySchema.optional().default([]),
     version: z.number().int().nonnegative(),
   })
   .superRefine((v, ctx) => {
     if (statusChangeRequiresReason(v.status) && !v.comment) {
       ctx.addIssue({ code: 'custom', path: ['comment'], message: 'Укажите причину отмены' });
+    }
+    if (v.status !== 'done' && v.vehicles.length > 0) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['vehicles'],
+        message: 'Машины прикладываются только при закрытии заявки',
+      });
     }
   });
 export type ChangeWasteRequestStatusInput = z.infer<typeof changeWasteRequestStatusSchema>;
@@ -192,6 +268,8 @@ export interface WasteRequestDto {
   /** Причина отмены из истории статусов; заполнена только у отменённых заявок. */
   cancelReason: string | null;
   files: FileDto[];
+  /** Машины, вывезшие заявку, с талонами (ADR 0011); помеченные на удаление входят в список. */
+  vehicles: WasteRequestVehicleDto[];
   version: number;
   createdBy: string;
   createdByName: string;

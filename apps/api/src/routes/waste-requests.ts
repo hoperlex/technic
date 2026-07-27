@@ -11,6 +11,7 @@ import {
   type RequestType,
   updateWasteRequestSchema,
   type WasteRequestDto,
+  type WasteRequestVehicleDto,
   wasteRequestListQuerySchema,
 } from '@technic/contracts';
 import { db } from '../db/client';
@@ -48,6 +49,15 @@ import {
   scheduleFilesDeletion,
 } from '../services/request-files';
 import { priceWasteRequest, toNum } from '../services/waste-pricing';
+import {
+  countActiveVehicles,
+  hardDeleteVehicles,
+  insertVehicles,
+  markVehiclesDeleted,
+  restoreVehicles,
+  vehicleFilesOfRequest,
+  vehiclesByRequestIds,
+} from '../services/waste-request-vehicles';
 import { assertOperatorServesObject } from '../services/object-operators';
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -126,7 +136,11 @@ async function filesByRequestIds(ids: string[]): Promise<Map<string, FileDto[]>>
   return map;
 }
 
-function toDto(r: RequestRow, fileList: FileDto[]): WasteRequestDto {
+function toDto(
+  r: RequestRow,
+  fileList: FileDto[],
+  vehicles: WasteRequestVehicleDto[] = [],
+): WasteRequestDto {
   return {
     id: r.id,
     num: r.num,
@@ -150,6 +164,7 @@ function toDto(r: RequestRow, fileList: FileDto[]): WasteRequestDto {
     // Пустой комментарий отмены (история до миграции 0024) читается как «причина не указана».
     cancelReason: r.cancelReason || null,
     files: fileList,
+    vehicles,
     version: r.version,
     createdBy: r.createdBy,
     createdByName: r.createdByName,
@@ -312,8 +327,11 @@ async function resolveSubject(
 async function getRequestDto(id: string): Promise<WasteRequestDto | null> {
   const [row] = await baseQuery().where(eq(wasteRequests.id, id));
   if (!row) return null;
-  const filesMap = await filesByRequestIds([id]);
-  return toDto(row, filesMap.get(id) ?? []);
+  const [filesMap, vehiclesMap] = await Promise.all([
+    filesByRequestIds([id]),
+    vehiclesByRequestIds([id]),
+  ]);
+  return toDto(row, filesMap.get(id) ?? [], vehiclesMap.get(id) ?? []);
 }
 
 async function linkFiles(
@@ -400,9 +418,14 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       .from(wasteRequests)
       .innerJoin(constructionObjects, eq(wasteRequests.objectId, constructionObjects.id))
       .where(where);
-    const filesMap = await filesByRequestIds(rows.map((row) => row.id));
+    const [filesMap, vehiclesMap] = await Promise.all([
+      filesByRequestIds(rows.map((row) => row.id)),
+      vehiclesByRequestIds(rows.map((row) => row.id)),
+    ]);
     return {
-      items: rows.map((row) => toDto(row, filesMap.get(row.id) ?? [])),
+      items: rows.map((row) =>
+        toDto(row, filesMap.get(row.id) ?? [], vehiclesMap.get(row.id) ?? []),
+      ),
       total: Number(totalRow!.c),
       page: p2.page,
       pageSize: p2.pageSize,
@@ -572,6 +595,24 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         if (!updated) throw err.conflict();
         if (body.removeFileIds?.length) await unlinkFiles(tx, id, body.removeFileIds);
         if (body.addFileIds?.length) await linkFiles(tx, id, body.addFileIds, p.id, true);
+        // Машины заявки (ADR 0011). Пометку ставит и снимает любой, кто правит заявку; удалить
+        // запись насовсем может только администратор — ошибочно снятый талон иначе не заметить.
+        if (body.deleteVehicleIds?.length && p.role !== 'admin') {
+          throw err.forbidden('Удалить машину насовсем может только администратор');
+        }
+        if (body.addVehicles?.length) await insertVehicles(tx, id, body.addVehicles, p.id);
+        if (body.markDeletedVehicleIds?.length) {
+          await markVehiclesDeleted(tx, id, body.markDeletedVehicleIds, p.id);
+        }
+        if (body.restoreVehicleIds?.length) await restoreVehicles(tx, id, body.restoreVehicleIds);
+        if (body.deleteVehicleIds?.length) await hardDeleteVehicles(tx, id, body.deleteVehicleIds);
+        // Выполненная заявка без единой машины означала бы вывоз без подтверждения — то же
+        // требование, что и при закрытии.
+        if (existing.status === 'done' && (await countActiveVehicles(tx, id)) === 0) {
+          throw err.badRequest('У выполненной заявки должна остаться хотя бы одна машина', {
+            vehicles: 'Оставьте хотя бы одну машину',
+          });
+        }
       });
       await writeAudit({
         actorUserId: p.id,
@@ -630,7 +671,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
     async (req) => {
       const p = requirePrincipal(req);
       if (!canChangeStatus(p)) throw err.forbidden('Недостаточно прав для смены статуса');
-      const { status, comment, version } = req.body;
+      const { status, comment, vehicles, version } = req.body;
       const [existing] = await db
         .select()
         .from(wasteRequests)
@@ -641,6 +682,17 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       if (existing.status === status) return (await getRequestDto(existing.id))!;
       assertTransitionAllowed(existing.status, status, p.role);
       await db.transaction(async (tx) => {
+        // Закрытие заявки — это предъявление факта вывоза: машины заводятся тем же запросом,
+        // и «Выполнена» без единой машины не проходит. При повторном закрытии (после отката
+        // администратором) хватает уже заведённых — заново их вносить не нужно (ADR 0011).
+        if (status === 'done') {
+          await insertVehicles(tx, existing.id, vehicles, p.id);
+          if ((await countActiveVehicles(tx, existing.id)) === 0) {
+            throw err.badRequest('Укажите хотя бы одну машину с объёмом вывоза', {
+              vehicles: 'Добавьте машину',
+            });
+          }
+        }
         const [updated] = await tx
           .update(wasteRequests)
           .set({ status, updatedBy: p.id, version: existing.version + 1, updatedAt: new Date() })
@@ -678,15 +730,17 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
     }
 
     if (existing.status === 'new') {
-      // hard delete + физическое удаление файлов
+      // hard delete + физическое удаление файлов (вложений заявки и талонов её машин)
       await db.transaction(async (tx) => {
         const linked = await tx
           .select({ id: files.id, objectKey: files.objectKey })
           .from(requestFiles)
           .innerJoin(files, eq(requestFiles.fileId, files.id))
           .where(eq(requestFiles.requestId, id));
+        const tickets = await vehicleFilesOfRequest(tx, id);
+        // Машины уходят каскадом вместе с заявкой, но строки files каскад не трогает.
         await tx.delete(wasteRequests).where(eq(wasteRequests.id, id));
-        await hardDeleteFiles(tx, linked);
+        await hardDeleteFiles(tx, [...linked, ...tickets]);
       });
       await writeAudit({
         actorUserId: p.id,

@@ -12,6 +12,8 @@ import {
   vehicleRequestFiles,
   vehicleRequests,
   wasteRequests,
+  wasteRequestVehicleFiles,
+  wasteRequestVehicles,
 } from '../db/schema';
 import { err } from '../lib/errors';
 import { requirePrincipal } from '../auth/plugin';
@@ -65,6 +67,25 @@ async function canAccessFile(p: Principal, fileId: string, uploadedBy: string | 
     )
     .limit(1);
   if (waste.length > 0) return true;
+  // Талон машины (ADR 0011) виден тем же, кому видна его заявка.
+  const ticket = await db
+    .select({ id: wasteRequests.id })
+    .from(wasteRequestVehicleFiles)
+    .innerJoin(
+      wasteRequestVehicles,
+      eq(wasteRequestVehicleFiles.vehicleId, wasteRequestVehicles.id),
+    )
+    .innerJoin(wasteRequests, eq(wasteRequestVehicles.requestId, wasteRequests.id))
+    .where(
+      and(
+        eq(wasteRequestVehicleFiles.fileId, fileId),
+        isNull(wasteRequests.deletedAt),
+        requestVisibilityWhere(p, wasteRequests.objectId),
+        operatorVisibilityWhere(p, wasteRequests.operatorCounterpartyId),
+      ),
+    )
+    .limit(1);
+  if (ticket.length > 0) return true;
   // Заказ ТС оператору недоступен целиком (ADR 0010) — значит и вложения его заявок.
   if (p.role === 'operator') return false;
   const vehicle = await db

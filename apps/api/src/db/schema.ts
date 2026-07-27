@@ -616,6 +616,56 @@ export const requestFiles = pgTable(
   }),
 );
 
+// ── Машины, вывезшие заявку (ADR 0011, миграция 0029) ──
+// Факт вывоза — список машин, а не одно число: заявленный объём увозят несколькими рейсами,
+// у каждого свой талон. Машина описывается типом из общего справочника — техника принадлежит
+// оператору, в справочнике конкретных ТС (vehicles) её нет. Объём проставляется руками и с
+// вместимостью типа совпадать не обязан. Пометка на удаление (deletedAt) выводит строку из
+// сверки объёма, но оставляет в истории; удалить запись насовсем может только администратор.
+export const wasteRequestVehicles = pgTable(
+  'waste_request_vehicles',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    requestId: uuid('request_id')
+      .notNull()
+      .references(() => wasteRequests.id, { onDelete: 'cascade' }),
+    containerTypeId: uuid('container_type_id')
+      .notNull()
+      .references(() => containerTypes.id, { onDelete: 'restrict' }),
+    volumeM3: numeric('volume_m3', { precision: 12, scale: 3 }).notNull(),
+    createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+    deletedBy: uuid('deleted_by').references(() => users.id, { onDelete: 'set null' }),
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    volumePositive: check('waste_request_vehicles_volume_positive_check', sql`${t.volumeM3} > 0`),
+    requestIdx: index('waste_request_vehicles_request_idx').on(t.requestId),
+    activeIdx: index('waste_request_vehicles_active_idx')
+      .on(t.requestId)
+      .where(sql`${t.deletedAt} IS NULL`),
+  }),
+);
+
+// Талоны машины (сканы). UNIQUE(file_id) — файл не в двух машинах (паттерн vehicleRequestFiles).
+export const wasteRequestVehicleFiles = pgTable(
+  'waste_request_vehicle_files',
+  {
+    vehicleId: uuid('vehicle_id')
+      .notNull()
+      .references(() => wasteRequestVehicles.id, { onDelete: 'cascade' }),
+    fileId: uuid('file_id')
+      .notNull()
+      .references(() => files.id, { onDelete: 'cascade' }),
+    addedAt: timestamp('added_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.vehicleId, t.fileId] }),
+    fileUnique: uniqueIndex('waste_request_vehicle_files_file_unique').on(t.fileId),
+  }),
+);
+
 // ── История статусов заявки ──
 export const requestStatusHistory = pgTable('request_status_history', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -1153,6 +1203,7 @@ export type VehicleRow = typeof vehicles.$inferSelect;
 export type VehicleRequestRow = typeof vehicleRequests.$inferSelect;
 export type SpecialEquipmentRequestDetailsRow = typeof specialEquipmentRequestDetails.$inferSelect;
 export type FreightTransportRequestDetailsRow = typeof freightTransportRequestDetails.$inferSelect;
+export type WasteRequestVehicleRow = typeof wasteRequestVehicles.$inferSelect;
 export type CounterpartyRow = typeof counterparties.$inferSelect;
 export type CounterpartySynonymRow = typeof counterpartySynonyms.$inferSelect;
 export type ObjectOperatorRow = typeof constructionObjectOperators.$inferSelect;
