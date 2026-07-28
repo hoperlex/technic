@@ -1,23 +1,14 @@
 import {
   formatMoscowDateTime,
+  type RequestChangeDto,
   requestTypeLabels,
-  type WasteRequestChangeDto,
   type WasteRequestDto,
   type WasteRequestVehicleDto,
 } from '@technic/contracts';
+import { changeSet, EMPTY, short } from './request-diff';
 
-// Что изменила правка заявки — для истории в её карточке. Сравниваются DTO «до» и «после», а не
-// сырые колонки: человеку нужны названия справочников и суммы, а не идентификаторы. Модуль
-// намеренно не знает о БД — так его считает и проверяет тест без поднятого приложения.
-
-/** Больше в историю не помещается: смысл правки виден по началу значения. */
-const MAX_VALUE_LENGTH = 300;
-
-const EMPTY = '—';
-
-function short(value: string): string {
-  return value.length > MAX_VALUE_LENGTH ? `${value.slice(0, MAX_VALUE_LENGTH)}…` : value;
-}
+// Что изменила правка заявки на вывоз — для истории в её карточке (ADR 0012). Общая механика
+// диффа — в request-diff.ts; здесь перечень полей этого модуля.
 
 function money(v: number | null): string {
   if (v == null) return EMPTY;
@@ -44,45 +35,33 @@ function vehicleLabel(v: WasteRequestVehicleDto): string {
 export function diffWasteRequests(
   before: WasteRequestDto,
   after: WasteRequestDto,
-): WasteRequestChangeDto[] {
-  const changes: WasteRequestChangeDto[] = [];
-  const changed = (field: string, from: string, to: string): void => {
-    if (from !== to) changes.push({ field, from, to });
-  };
-  // Событие-список: значима только правая часть («прикреплены файлы: акт.pdf»).
-  const listed = (field: string, items: string[]): void => {
-    if (items.length > 0) changes.push({ field, from: null, to: short(items.join(', ')) });
-  };
+): RequestChangeDto[] {
+  const diff = changeSet();
 
-  changed(
+  diff.changed(
     'object',
     `${before.objectCode} — ${before.objectName}`,
     `${after.objectCode} — ${after.objectName}`,
   );
-  changed(
+  diff.changed(
     'requestType',
     requestTypeLabels[before.requestType],
     requestTypeLabels[after.requestType],
   );
-  changed('containerType', before.containerTypeName ?? EMPTY, after.containerTypeName ?? EMPTY);
-  changed('wasteType', before.wasteTypeName ?? EMPTY, after.wasteTypeName ?? EMPTY);
-  changed('volumeM3', volume(before.volumeM3), volume(after.volumeM3));
-  changed('pricePerM3', money(before.pricePerM3), money(after.pricePerM3));
-  changed('amount', money(before.amount), money(after.amount));
-  changed('operator', before.operatorName ?? EMPTY, after.operatorName ?? EMPTY);
-  changed('deliveryAt', delivery(before), delivery(after));
-  changed('comment', short(before.comment) || EMPTY, short(after.comment) || EMPTY);
+  diff.changed(
+    'containerType',
+    before.containerTypeName ?? EMPTY,
+    after.containerTypeName ?? EMPTY,
+  );
+  diff.changed('wasteType', before.wasteTypeName ?? EMPTY, after.wasteTypeName ?? EMPTY);
+  diff.changed('volumeM3', volume(before.volumeM3), volume(after.volumeM3));
+  diff.changed('pricePerM3', money(before.pricePerM3), money(after.pricePerM3));
+  diff.changed('amount', money(before.amount), money(after.amount));
+  diff.changed('operator', before.operatorName ?? EMPTY, after.operatorName ?? EMPTY);
+  diff.changed('deliveryAt', delivery(before), delivery(after));
+  diff.changed('comment', short(before.comment) || EMPTY, short(after.comment) || EMPTY);
 
-  const beforeFiles = new Map(before.files.map((f) => [f.id, f.filename]));
-  const afterFiles = new Map(after.files.map((f) => [f.id, f.filename]));
-  listed(
-    'filesAdded',
-    [...afterFiles].filter(([id]) => !beforeFiles.has(id)).map(([, name]) => name),
-  );
-  listed(
-    'filesRemoved',
-    [...beforeFiles].filter(([id]) => !afterFiles.has(id)).map(([, name]) => name),
-  );
+  diff.files(before.files, after.files);
 
   const beforeVehicles = new Map(before.vehicles.map((v) => [v.id, v]));
   const afterVehicles = new Map(after.vehicles.map((v) => [v.id, v]));
@@ -99,10 +78,10 @@ export function diffWasteRequests(
   for (const [id, v] of beforeVehicles) {
     if (!afterVehicles.has(id)) removed.push(vehicleLabel(v));
   }
-  listed('vehiclesAdded', added);
-  listed('vehiclesMarkedDeleted', marked);
-  listed('vehiclesRestored', restored);
-  listed('vehiclesRemoved', removed);
+  diff.listed('vehiclesAdded', added);
+  diff.listed('vehiclesMarkedDeleted', marked);
+  diff.listed('vehiclesRestored', restored);
+  diff.listed('vehiclesRemoved', removed);
 
-  return changes;
+  return diff.changes;
 }

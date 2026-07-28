@@ -16,6 +16,15 @@ import { errorMessage } from '../../utils/format';
 export const FILE_MAX_COUNT = 20;
 export const FILE_MAX_SIZE = 52_428_800; // 50 МБ
 
+/**
+ * Дата без времени (`YYYY-MM-DD`) — как есть, без пересчёта часовых поясов: часа в ней нет,
+ * а перевод в МСК из браузера восточнее Москвы сдвинул бы срок спецтехники на день назад.
+ */
+export function formatDateOnly(value: string): string {
+  const [y, m, d] = value.split('-');
+  return y && m && d ? `${d}.${m}.${y}` : value;
+}
+
 export interface EditorFile {
   id: string;
   filename: string;

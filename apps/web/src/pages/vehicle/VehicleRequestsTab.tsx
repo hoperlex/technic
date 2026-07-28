@@ -9,9 +9,16 @@ import {
   Select,
   Space,
   Tag,
+  Tooltip,
   type TableColumnType,
 } from 'antd';
-import { DeleteOutlined, EditOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
+import {
+  DeleteOutlined,
+  EditOutlined,
+  EyeOutlined,
+  PlusOutlined,
+  ReloadOutlined,
+} from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import dayjs, { type Dayjs } from 'dayjs';
 import {
@@ -46,8 +53,10 @@ import { errorMessage, formatDateTimeMaybe } from '../../utils/format';
 import { isPastDate, startOfToday } from '../../utils/date';
 import { MOSCOW_TZ } from '../../theme';
 import { FilesCell } from '../../components/FileLinks';
+import { VehicleRequestViewModal } from './VehicleRequestViewModal';
 import {
   FileEditor,
+  formatDateOnly,
   StatusCell,
   VehicleTypeSelect,
   useFileEditor,
@@ -87,12 +96,12 @@ const FREIGHT_FIELDS = [
   'unloadingLocation',
 ] as const;
 
-const fmtDate = (s: string) => dayjs(s).format('DD.MM.YYYY');
-
 /** Колонка «Срок»: у спецтехники это период, у грузоперевозки — дата (и время, если задано). */
 function termLabel(r: VehicleRequestDto): string {
   if (r.requestType === 'special_equipment') {
-    return r.dateTo ? `${fmtDate(r.dateFrom)} – ${fmtDate(r.dateTo)}` : fmtDate(r.dateFrom);
+    return r.dateTo
+      ? `${formatDateOnly(r.dateFrom)} – ${formatDateOnly(r.dateTo)}`
+      : formatDateOnly(r.dateFrom);
   }
   return formatDateTimeMaybe(r.scheduledAt, r.scheduledTimeUnspecified);
 }
@@ -150,6 +159,8 @@ export function VehicleRequestsTab() {
 
   const [open, setOpen] = useState(false);
   const [record, setRecord] = useState<VehicleRequestDto | null>(null);
+  /** Открытая карточка заявки: поля только на чтение и история событий (ADR 0015). */
+  const [viewRecord, setViewRecord] = useState<VehicleRequestDto | null>(null);
   const [form] = Form.useForm<FormValues>();
   const editor = useFileEditor();
   // Метаданные верификации адресов держим вне формы (значение — объект, не строка).
@@ -479,36 +490,57 @@ export function VehicleRequestsTab() {
       width: 110,
       render: (_v, r) => <FilesCell files={r.files} />,
     },
-    actionsColumn<VehicleRequestDto>((r) =>
-      r.deletedAt ? (
-        isAdmin ? (
+    actionsColumn<VehicleRequestDto>((r) => {
+      // Карточка открывается и у архивной заявки: понять, что и почему в ней было, можно
+      // только там — в строке таблицы ни истории, ни адресов целиком нет.
+      const view = (
+        <Tooltip title="Открыть карточку">
           <Button
             size="small"
-            icon={<ReloadOutlined />}
-            onClick={() => restoreMut.mutate(r.id)}
-            title="Восстановить"
+            icon={<EyeOutlined />}
+            aria-label="Открыть карточку"
+            onClick={() => setViewRecord(r)}
           />
-        ) : (
-          <Tag>в архиве</Tag>
-        )
-      ) : (
-        <Space>
+        </Tooltip>
+      );
+      if (r.deletedAt) {
+        return (
+          <Space size={4}>
+            {view}
+            {isAdmin ? (
+              <Tooltip title="Восстановить">
+                <Button
+                  size="small"
+                  icon={<ReloadOutlined />}
+                  onClick={() => restoreMut.mutate(r.id)}
+                />
+              </Tooltip>
+            ) : (
+              <Tag style={{ marginInlineEnd: 0 }}>в архиве</Tag>
+            )}
+          </Space>
+        );
+      }
+      const allowed = canModify(r);
+      return (
+        <Space size={4}>
+          {view}
           <Button
             size="small"
             icon={<EditOutlined />}
-            disabled={!canModify(r)}
+            disabled={!allowed}
             onClick={() => openEdit(r)}
           />
           <Button
             size="small"
             danger
             icon={<DeleteOutlined />}
-            disabled={!canModify(r)}
+            disabled={!allowed}
             onClick={() => confirmDelete(r)}
           />
         </Space>
-      ),
-    ),
+      );
+    }, 120),
   ];
 
   const filters = (
@@ -688,6 +720,21 @@ export function VehicleRequestsTab() {
           </Form.Item>
         </Form>
       </FormModal>
+
+      {/* Карточка заявки: поля только на чтение плюс история событий. Правка — той же формой,
+          что и из таблицы, и только если она этой роли доступна. */}
+      <VehicleRequestViewModal
+        request={viewRecord}
+        onClose={() => setViewRecord(null)}
+        onEdit={
+          viewRecord && canModify(viewRecord)
+            ? (r) => {
+                setViewRecord(null);
+                openEdit(r);
+              }
+            : undefined
+        }
+      />
 
       <CancelReasonModal
         open={!!cancelTarget}

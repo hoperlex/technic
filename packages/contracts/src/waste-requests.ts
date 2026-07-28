@@ -331,41 +331,9 @@ export interface WasteRequestDto {
   deletedAt: string | null;
 }
 
-// ── История заявки ──
-// Что с заявкой происходило: кто и когда её завёл, правил, менял статус. Собирается из двух
-// источников — истории статусов (request_status_history) и аудита (audit_log); третьей таблицы
-// не заводим, обе уже пишутся.
-
-/**
- * Изменение одного поля при правке. Значения — готовый текст на момент правки, а не ссылки:
- * переименование справочника не должно переписывать прошлое. `from === null` — событие-список
- * («прикреплены файлы»), у него значима только правая часть.
- */
-export interface WasteRequestChangeDto {
-  field: string;
-  from: string | null;
-  to: string | null;
-}
-
-export type WasteRequestHistoryKind =
-  'created' | 'updated' | 'status' | 'operator' | 'deleted' | 'restored';
-
-export interface WasteRequestHistoryEntryDto {
-  id: string;
-  kind: WasteRequestHistoryKind;
-  /** Момент события (ISO). */
-  at: string;
-  /** Автор события; null — учётная запись удалена или действие выполнено системой. */
-  actorId: string | null;
-  actorName: string | null;
-  /** Смена статуса: откуда и куда. У остальных событий — null. */
-  fromStatus: RequestStatus | null;
-  toStatus: RequestStatus | null;
-  /** Комментарий к переходу; при отмене — причина. */
-  comment: string;
-  /** Изменённые поля у правок; у остальных событий список пуст. */
-  changes: WasteRequestChangeDto[];
-}
+// ── История заявки (ADR 0012) ──
+// Сами события описаны в `request-history.ts` — их форма общая для всех модулей заявок.
+// Здесь остаётся своё: как называются поля этого модуля в перечне изменений.
 
 /** Подписи полей в истории; ключи проставляет сервер при вычислении изменений. */
 export const wasteRequestChangeLabels: Record<string, string> = {

@@ -364,3 +364,27 @@ export interface FreightTransportRequestDto extends VehicleRequestBaseDto {
 }
 
 export type VehicleRequestDto = SpecialEquipmentRequestDto | FreightTransportRequestDto;
+
+// ── История заявки (ADR 0012, ADR 0015) ──
+// События описаны в `request-history.ts` — форма у обоих модулей заявок одна. Своё здесь только
+// подписи полей: тип заявки неизменяем, поэтому набор полей у правки известен заранее.
+
+/**
+ * Подписи полей в истории; ключи проставляет сервер при вычислении изменений. Поля обоих типов
+ * заявки лежат в одном словаре: правка не может сменить тип, а читателю истории всё равно, из
+ * какой detail-таблицы пришло значение.
+ */
+export const vehicleRequestChangeLabels: Record<string, string> = {
+  object: 'Объект',
+  vehicleType: 'Тип ТС',
+  dateFrom: 'Дата начала',
+  dateTo: 'Дата окончания',
+  scheduledAt: 'Подача',
+  volumeM3: 'Объём',
+  weightTons: 'Масса',
+  loadingLocation: 'Место погрузки',
+  unloadingLocation: 'Место разгрузки',
+  comment: 'Комментарий',
+  filesAdded: 'Прикреплены файлы',
+  filesRemoved: 'Откреплены файлы',
+};

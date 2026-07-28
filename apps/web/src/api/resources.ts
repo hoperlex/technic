@@ -15,6 +15,7 @@ import type {
   FileDto,
   ListResult,
   ObjectDto,
+  RequestHistoryEntryDto,
   RequestStatus,
   RequestType,
   UpdateContainerTypeInput,
@@ -35,7 +36,6 @@ import type {
   VehicleRequestSummaryDto,
   VehicleTypeDto,
   WasteRequestDto,
-  WasteRequestHistoryEntryDto,
   WasteRequestSummaryDto,
   WasteRequestVehicleInput,
   WasteTariffDto,
@@ -116,6 +116,8 @@ export const vehicleRequestsApi = {
   summary: (q: Query) =>
     apiFetch<VehicleRequestSummaryDto>('/vehicle-requests/summary', { query: q }),
   get: (id: string) => apiFetch<VehicleRequestDto>(`/vehicle-requests/${id}`),
+  /** События заявки в хронологическом порядке: создание, правки, смены статусов (ADR 0015). */
+  history: (id: string) => apiFetch<RequestHistoryEntryDto[]>(`/vehicle-requests/${id}/history`),
   create: (body: CreateVehicleRequestInput) =>
     apiFetch<VehicleRequestDto>('/vehicle-requests', { method: 'POST', body }),
   update: (id: string, body: UpdateVehicleRequestInput) =>
@@ -197,7 +199,7 @@ export const wasteRequestsApi = {
   summary: (q: Query) => apiFetch<WasteRequestSummaryDto>('/waste-requests/summary', { query: q }),
   get: (id: string) => apiFetch<WasteRequestDto>(`/waste-requests/${id}`),
   /** События заявки в хронологическом порядке: создание, правки, смены статусов (ADR 0012). */
-  history: (id: string) => apiFetch<WasteRequestHistoryEntryDto[]>(`/waste-requests/${id}/history`),
+  history: (id: string) => apiFetch<RequestHistoryEntryDto[]>(`/waste-requests/${id}/history`),
   create: (body: WasteRequestPayload) =>
     apiFetch<WasteRequestDto>('/waste-requests', { method: 'POST', body }),
   update: (id: string, body: WasteRequestUpdatePayload) =>

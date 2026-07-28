@@ -45,6 +45,8 @@ import {
   markFilesActive,
   scheduleFilesDeletion,
 } from '../services/request-files';
+import { diffVehicleRequests } from '../services/vehicle-request-diff';
+import { loadVehicleRequestHistory } from '../services/vehicle-request-history';
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -460,6 +462,32 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
     return dto;
   });
 
+  // История заявки: создание, правки, смены статусов (ADR 0015). Доступна тем же, кто видит саму
+  // заявку — отдельного права на неё нет: это те же события, что и в карточке, только по времени.
+  r.get('/:id/history', { ...auth, schema: { params: idParams } }, async (req) => {
+    const p = requirePrincipal(req);
+    const [row] = await db
+      .select({
+        id: vehicleRequests.id,
+        objectId: vehicleRequests.objectId,
+        deletedAt: vehicleRequests.deletedAt,
+        createdAt: vehicleRequests.createdAt,
+        createdBy: vehicleRequests.createdBy,
+        createdByName: users.fullName,
+      })
+      .from(vehicleRequests)
+      .innerJoin(users, eq(vehicleRequests.createdBy, users.id))
+      .where(eq(vehicleRequests.id, req.params.id));
+    // Архивная заявка видна только администратору — как и сама карточка (GET /:id).
+    if (!row || (row.deletedAt && p.role !== 'admin')) throw err.notFound('Заявка не найдена');
+    assertShtabScope(p, row.objectId);
+    return loadVehicleRequestHistory(row.id, {
+      at: row.createdAt,
+      actorId: row.createdBy,
+      actorName: row.createdByName,
+    });
+  });
+
   // ── Создание ──
   r.post('/', { ...auth, schema: { body: createVehicleRequestSchema } }, async (req, reply) => {
     const p = requirePrincipal(req);
@@ -533,26 +561,28 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       const p = requirePrincipal(req);
       const { id } = req.params;
       const body = req.body;
-      const [existing] = await db.select().from(vehicleRequests).where(eq(vehicleRequests.id, id));
-      if (!existing || existing.deletedAt) throw err.notFound('Заявка не найдена');
-      if (existing.requestType !== body.requestType) {
+      // Состояние «до» берётся сразу как DTO: по нему не только проверки, но и дифф для
+      // истории — названия справочников там уже собраны (см. vehicle-request-history).
+      const before = await getDto(id);
+      if (!before || before.deletedAt) throw err.notFound('Заявка не найдена');
+      if (before.requestType !== body.requestType) {
         throw err.unprocessable('Тип заявки изменить нельзя');
       }
-      assertShtabScope(p, existing.objectId);
-      if (p.role === 'shtab' && existing.status !== 'new') {
+      assertShtabScope(p, before.objectId);
+      if (p.role === 'shtab' && before.status !== 'new') {
         throw err.forbidden('Штаб может редактировать заявку только в статусе «Новая»');
       }
 
-      const objectId = body.objectId ?? existing.objectId;
-      const nextTypeId = body.vehicleTypeId ?? existing.vehicleTypeId;
+      const objectId = body.objectId ?? before.objectId;
+      const nextTypeId = body.vehicleTypeId ?? before.vehicleTypeId;
 
       await db.transaction(async (tx) => {
-        if (body.objectId && body.objectId !== existing.objectId) {
+        if (body.objectId && body.objectId !== before.objectId) {
           assertShtabScope(p, body.objectId);
           await assertObjectActive(tx, body.objectId);
         }
-        if (body.vehicleTypeId && body.vehicleTypeId !== existing.vehicleTypeId) {
-          await resolveVehicleType(tx, body.vehicleTypeId, existing.requestType);
+        if (body.vehicleTypeId && body.vehicleTypeId !== before.vehicleTypeId) {
+          await resolveVehicleType(tx, body.vehicleTypeId, before.requestType);
         }
 
         const [updated] = await tx
@@ -560,9 +590,9 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           .set({
             objectId,
             vehicleTypeId: nextTypeId,
-            comment: body.comment ?? existing.comment,
+            comment: body.comment ?? before.comment,
             updatedBy: p.id,
-            version: existing.version + 1,
+            version: before.version + 1,
             updatedAt: new Date(),
           })
           .where(and(eq(vehicleRequests.id, id), eq(vehicleRequests.version, body.version)))
@@ -620,13 +650,16 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         if (body.addFileIds?.length) await attachFiles(tx, id, body.addFileIds, p.id, true);
       });
 
+      const after = (await getDto(id))!;
       await writeAudit({
         actorUserId: p.id,
         action: 'vehicle_request.update',
         entityType: 'vehicle_request',
         entityId: id,
+        // Перечень изменённых полей — то, ради чего история отличает правку от «заявку трогали».
+        metadata: { changes: diffVehicleRequests(before, after) },
       });
-      return (await getDto(id))!;
+      return after;
     },
   );
 

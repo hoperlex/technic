@@ -1,28 +1,27 @@
 import { desc, eq } from 'drizzle-orm';
 import type { RequestHistoryEntryDto, RequestHistoryKind } from '@technic/contracts';
 import { db } from '../db/client';
-import { requestStatusHistory, users } from '../db/schema';
+import { users, vehicleRequestStatusHistory } from '../db/schema';
 import { HISTORY_LIMIT, loadAuditEvents, mergeHistory } from './request-history';
 
-// История заявки на вывоз (ADR 0012). Общая часть — в request-history.ts; здесь только своя
+// История заявки на технику (ADR 0015). Общая часть — в request-history.ts; здесь только своя
 // таблица переходов и перечень событий аудита этого модуля.
 
 /**
  * События аудита, попадающие в историю. Смены статусов берутся из своей таблицы: там есть
- * переход и причина, а запись `waste_request.status` их бы только продублировала.
+ * переход и причина, а запись `vehicle_request.status` их бы только продублировала.
+ * Исполнитель у заявок на технику не назначается — события `assign_operator` здесь нет.
  */
 const AUDIT_ACTIONS = [
-  'waste_request.update',
-  'waste_request.assign_operator',
-  'waste_request.soft_delete',
-  'waste_request.restore',
+  'vehicle_request.update',
+  'vehicle_request.soft_delete',
+  'vehicle_request.restore',
 ] as const;
 
 const AUDIT_KINDS: Record<string, RequestHistoryKind> = {
-  'waste_request.update': 'updated',
-  'waste_request.assign_operator': 'operator',
-  'waste_request.soft_delete': 'deleted',
-  'waste_request.restore': 'restored',
+  'vehicle_request.update': 'updated',
+  'vehicle_request.soft_delete': 'deleted',
+  'vehicle_request.restore': 'restored',
 };
 
 /**
@@ -30,27 +29,27 @@ const AUDIT_KINDS: Record<string, RequestHistoryKind> = {
  * обычно оно есть в истории статусов (переход «— → Новая»), но у записей, заведённых в БД
  * помимо приложения, его может не быть.
  */
-export async function loadWasteRequestHistory(
+export async function loadVehicleRequestHistory(
   requestId: string,
   created: { at: Date; actorId: string; actorName: string },
 ): Promise<RequestHistoryEntryDto[]> {
   const [statusRows, auditRows] = await Promise.all([
     db
       .select({
-        id: requestStatusHistory.id,
-        fromStatus: requestStatusHistory.fromStatus,
-        toStatus: requestStatusHistory.toStatus,
-        comment: requestStatusHistory.comment,
-        at: requestStatusHistory.changedAt,
-        actorId: requestStatusHistory.changedBy,
+        id: vehicleRequestStatusHistory.id,
+        fromStatus: vehicleRequestStatusHistory.fromStatus,
+        toStatus: vehicleRequestStatusHistory.toStatus,
+        comment: vehicleRequestStatusHistory.comment,
+        at: vehicleRequestStatusHistory.changedAt,
+        actorId: vehicleRequestStatusHistory.changedBy,
         actorName: users.fullName,
       })
-      .from(requestStatusHistory)
-      .innerJoin(users, eq(requestStatusHistory.changedBy, users.id))
-      .where(eq(requestStatusHistory.requestId, requestId))
-      .orderBy(desc(requestStatusHistory.changedAt))
+      .from(vehicleRequestStatusHistory)
+      .innerJoin(users, eq(vehicleRequestStatusHistory.changedBy, users.id))
+      .where(eq(vehicleRequestStatusHistory.vehicleRequestId, requestId))
+      .orderBy(desc(vehicleRequestStatusHistory.changedAt))
       .limit(HISTORY_LIMIT),
-    loadAuditEvents('waste_request', requestId, AUDIT_ACTIONS),
+    loadAuditEvents('vehicle_request', requestId, AUDIT_ACTIONS),
   ]);
 
   return mergeHistory({ requestId, statusRows, auditRows, auditKinds: AUDIT_KINDS, created });

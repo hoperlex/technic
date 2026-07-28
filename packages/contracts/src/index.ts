@@ -10,6 +10,7 @@ export * from './vehicle-kinds';
 export * from './vehicle-types';
 export * from './vehicles';
 export * from './files';
+export * from './request-history';
 export * from './waste-tariffs';
 export * from './waste-requests';
 export * from './vehicle-requests';
