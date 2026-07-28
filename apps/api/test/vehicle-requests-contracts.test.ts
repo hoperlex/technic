@@ -8,6 +8,7 @@ import {
   parseVehicleRequestNumberSearch,
   updateVehicleRequestSchema,
   vehicleRequestListQuerySchema,
+  vehicleRequestSummaryQuerySchema,
 } from '@technic/contracts';
 
 const OBJ = '11111111-1111-4111-8111-111111111111';
@@ -254,6 +255,24 @@ describe('vehicle-requests: список и номер', () => {
     expect(one.requestType).toBe('special_equipment');
 
     expect(() => vehicleRequestListQuerySchema.parse({ requestType: 'unknown' })).toThrow();
+  });
+
+  it('сводка сужается только объектом и типом заявки', () => {
+    const all = vehicleRequestSummaryQuerySchema.parse({});
+    expect(all.objectId).toBeUndefined();
+    expect(all.requestType).toBeUndefined();
+
+    // Статус и номер в сводку не входят: по статусу она свелась бы к самой себе, по номеру —
+    // к одной заявке. Лишние ключи схема отбрасывает.
+    const narrowed = vehicleRequestSummaryQuerySchema.parse({
+      objectId: OBJ,
+      requestType: 'freight_transport',
+      status: 'new',
+      num: 5,
+    });
+    expect(narrowed).toEqual({ objectId: OBJ, requestType: 'freight_transport' });
+
+    expect(() => vehicleRequestSummaryQuerySchema.parse({ requestType: 'unknown' })).toThrow();
   });
 
   it('формат и разбор номера', () => {

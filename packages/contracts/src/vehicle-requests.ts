@@ -280,6 +280,20 @@ export const vehicleRequestListQuerySchema = baseListQuery(VEHICLE_REQUEST_SORT_
     .transform((v) => v === 'true'),
 });
 
+/**
+ * Сводка по статусам для виджета над списком. Из фильтров таблицы учитываются объект и тип
+ * заявки — те же, что сужают сам список; фильтр по статусу свёл бы сводку к самой себе,
+ * а по номеру — к одной заявке.
+ */
+export const vehicleRequestSummaryQuerySchema = z.object({
+  objectId: uuidSchema.optional(),
+  requestType: vehicleRequestTypeSchema.optional(),
+});
+export type VehicleRequestSummaryQuery = z.infer<typeof vehicleRequestSummaryQuerySchema>;
+
+/** Количество видимых заявок в каждом статусе (удалённые не считаются). */
+export type VehicleRequestSummaryDto = Record<RequestStatus, number>;
+
 // ── DTO ──
 export interface VehicleRequestBaseDto {
   id: string;

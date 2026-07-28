@@ -20,6 +20,7 @@ import {
   normalizeTimeInput,
   parseVehicleRequestNumberSearch,
   type RequestStatus,
+  requestStatusLabels,
   statusChangeRequiresReason,
   VEHICLE_REQUEST_TYPES,
   type VehicleRequestDto,
@@ -32,6 +33,7 @@ import { CancelReasonModal } from '../../components/CancelReasonModal';
 import { DataTable } from '../../components/DataTable';
 import { FormModal } from '../../components/FormModal';
 import { PageTableLayout } from '../../components/PageTableLayout';
+import { SummaryBar } from '../../components/SummaryBar';
 import { actionsColumn, badgeColumn, textColumn } from '../../components/columns';
 import { TimeInput, optionalWorkTimeRule } from '../../components/TimeInput';
 import { UserAvatar } from '../../components/UserAvatar';
@@ -113,6 +115,7 @@ export function VehicleRequestsTab() {
   const { params, setParams, onTableChange } = useListParams<{
     requestType?: string;
     status?: string;
+    objectId?: string;
   }>(
     {},
     {
@@ -129,6 +132,18 @@ export function VehicleRequestsTab() {
     queryFn: () => vehicleRequestsApi.list(params),
   });
   const items = data?.items ?? [];
+
+  // Сводка в шапке: сколько заявок ждёт обработки и сколько в работе. Ключ начинается с
+  // 'vehicle-requests' — значит счётчики обновляются теми же инвалидациями, что и список.
+  const { data: summary } = useQuery({
+    queryKey: ['vehicle-requests', 'summary', params.objectId, params.requestType],
+    queryFn: () =>
+      vehicleRequestsApi.summary({ objectId: params.objectId, requestType: params.requestType }),
+  });
+  const summaryItems = [
+    { label: 'Не обработанных', value: summary?.new ?? 0 },
+    { label: requestStatusLabels.confirmed, value: summary?.confirmed ?? 0 },
+  ];
 
   const objectOptions = useObjectOptions();
   const { kindByTypeId, groups, loading: typesLoading } = useVehicleTypes();
@@ -512,7 +527,7 @@ export function VehicleRequestsTab() {
         style={{ width: 260 }}
         options={objectOptions}
         disabled={isShtab}
-        value={params.objectId as string | undefined}
+        value={params.objectId}
         onChange={(v) => setParams((p) => ({ ...p, objectId: v, page: 1 }))}
       />
       <Input.Search
@@ -530,9 +545,12 @@ export function VehicleRequestsTab() {
     <PageTableLayout
       filters={filters}
       extra={
-        <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-          Создать заявку
-        </Button>
+        <Space size={16}>
+          <SummaryBar title="Заявок" items={summaryItems} />
+          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
+            Создать заявку
+          </Button>
+        </Space>
       }
     >
       <DataTable<VehicleRequestDto>

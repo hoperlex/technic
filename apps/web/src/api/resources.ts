@@ -27,6 +27,7 @@ import type {
   VehicleKindDto,
   VehicleModelDto,
   VehicleRequestDto,
+  VehicleRequestSummaryDto,
   VehicleTypeDto,
   WasteRequestDto,
   WasteRequestHistoryEntryDto,
@@ -106,6 +107,9 @@ export const vehiclesApi = {
 
 export const vehicleRequestsApi = {
   list: (q: Query) => apiFetch<ListResult<VehicleRequestDto>>('/vehicle-requests', { query: q }),
+  /** Счётчики заявок по статусам — сводка над списком; сужается объектом и типом заявки. */
+  summary: (q: Query) =>
+    apiFetch<VehicleRequestSummaryDto>('/vehicle-requests/summary', { query: q }),
   get: (id: string) => apiFetch<VehicleRequestDto>(`/vehicle-requests/${id}`),
   create: (body: CreateVehicleRequestInput) =>
     apiFetch<VehicleRequestDto>('/vehicle-requests', { method: 'POST', body }),

@@ -7,10 +7,13 @@ import {
   createVehicleRequestSchema,
   type FileDto,
   formatVehicleRequestNumber,
+  REQUEST_STATUSES,
   updateVehicleRequestSchema,
   type VehicleRequestDto,
+  type VehicleRequestSummaryDto,
   type VehicleRequestType,
   vehicleRequestListQuerySchema,
+  vehicleRequestSummaryQuerySchema,
 } from '@technic/contracts';
 import { db } from '../db/client';
 import {
@@ -403,6 +406,38 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       pageSize: pg.pageSize,
     };
   });
+
+  /**
+   * Сводка «сколько заявок в каком статусе» для виджета над таблицей. Считается по тем же
+   * правилам видимости, что и список: штаб видит только свой объект. Удалённые в счёт не идут —
+   * в списке их тоже нет (админский includeDeleted сводку не расширяет).
+   */
+  r.get(
+    '/summary',
+    { ...auth, schema: { querystring: vehicleRequestSummaryQuerySchema } },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const rows = await db
+        .select({ status: vehicleRequests.status, c: count() })
+        .from(vehicleRequests)
+        .where(
+          and(
+            isNull(vehicleRequests.deletedAt),
+            requestVisibilityWhere(p, vehicleRequests.objectId),
+            req.query.objectId ? eq(vehicleRequests.objectId, req.query.objectId) : undefined,
+            req.query.requestType
+              ? eq(vehicleRequests.requestType, req.query.requestType)
+              : undefined,
+          ),
+        )
+        .groupBy(vehicleRequests.status);
+      const summary = Object.fromEntries(
+        REQUEST_STATUSES.map((s) => [s, 0]),
+      ) as VehicleRequestSummaryDto;
+      for (const row of rows) summary[row.status] = Number(row.c);
+      return summary;
+    },
+  );
 
   r.get('/:id', { ...auth, schema: { params: idParams } }, async (req) => {
     const p = requirePrincipal(req);
