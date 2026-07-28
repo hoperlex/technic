@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createS3Client, presignPutUrl } from '../src/lib/s3-client';
+import { createS3Client, presignGetUrl, presignPutUrl } from '../src/lib/s3-client';
 
 // Проверяем presigned PUT без загрузки полного конфига приложения: createS3Client и
 // presignPutUrl config-free. Секрет заведомо «утечка-детектор».
@@ -45,5 +45,34 @@ describe('presignPutUrl', () => {
 
     // секретный ключ не попадает в URL
     expect(url).not.toContain(SECRET_ACCESS_KEY);
+  });
+});
+
+describe('presignGetUrl', () => {
+  it('по умолчанию отдаёт файл вложением с исходным именем', async () => {
+    const url = await presignGetUrl(client, {
+      bucket: 'technic-portal-files',
+      key: 'waste-requests/2026/07/example.pdf',
+      filename: 'Талон №1.pdf',
+      expiresIn: 600,
+    });
+    const disposition = new URL(url).searchParams.get('response-content-disposition') ?? '';
+    expect(disposition).toContain('attachment;');
+    // Кириллица в имени уходит в RFC 5987 — иначе подпись не сойдётся с заголовком.
+    expect(disposition).toContain(`filename*=UTF-8''${encodeURIComponent('Талон №1.pdf')}`);
+    expect(url).not.toContain(SECRET_ACCESS_KEY);
+  });
+
+  it('inline открывает файл во вкладке, имя при сохранении сохраняется', async () => {
+    const url = await presignGetUrl(client, {
+      bucket: 'technic-portal-files',
+      key: 'waste-requests/2026/07/ticket.jpg',
+      filename: 'ticket.jpg',
+      disposition: 'inline',
+      expiresIn: 600,
+    });
+    const disposition = new URL(url).searchParams.get('response-content-disposition') ?? '';
+    expect(disposition).toContain('inline;');
+    expect(disposition).toContain("filename*=UTF-8''ticket.jpg");
   });
 });

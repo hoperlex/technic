@@ -15,7 +15,10 @@ export const s3 = createS3Client({
 /** object key генерируется backend (не конкатенацией пользовательского ввода, §15). */
 export function buildObjectKey(filename: string): string {
   const id = randomUUID();
-  const ext = extname(filename).toLowerCase().slice(0, 12).replace(/[^.a-z0-9]/g, '');
+  const ext = extname(filename)
+    .toLowerCase()
+    .slice(0, 12)
+    .replace(/[^.a-z0-9]/g, '');
   const now = new Date();
   const yyyy = now.getUTCFullYear();
   const mm = String(now.getUTCMonth() + 1).padStart(2, '0');
@@ -31,11 +34,16 @@ export function presignPut(objectKey: string, contentType: string): Promise<stri
   });
 }
 
-export function presignGet(objectKey: string, filename?: string): Promise<string> {
+export function presignGet(
+  objectKey: string,
+  filename?: string,
+  disposition: 'attachment' | 'inline' = 'attachment',
+): Promise<string> {
   return presignGetUrl(s3, {
     bucket: config.s3.bucket,
     key: objectKey,
     filename,
+    disposition,
     expiresIn: config.s3.downloadUrlTtl,
   });
 }

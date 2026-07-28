@@ -1,29 +1,17 @@
 import { useState } from 'react';
-import {
-  App,
-  Button,
-  Dropdown,
-  Form,
-  List,
-  Popover,
-  Select,
-  Tag,
-  Tooltip,
-  Typography,
-  Upload,
-} from 'antd';
+import { App, Button, Dropdown, Form, Select, Tag, Tooltip, Upload } from 'antd';
 import { DownOutlined, UploadOutlined } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
 import {
   allowedStatusTransitions,
-  type FileDto,
   type RequestStatus,
   requestStatusColors,
   requestStatusLabels,
 } from '@technic/contracts';
 import { filesApi, objectsApi, vehicleTypesApi } from '../../api/resources';
+import { FileLinkList } from '../../components/FileLinks';
 import { useAuth } from '../../auth/AuthContext';
-import { errorMessage, formatBytes } from '../../utils/format';
+import { errorMessage } from '../../utils/format';
 
 export const FILE_MAX_COUNT = 20;
 export const FILE_MAX_SIZE = 52_428_800; // 50 МБ
@@ -31,6 +19,8 @@ export const FILE_MAX_SIZE = 52_428_800; // 50 МБ
 export interface EditorFile {
   id: string;
   filename: string;
+  /** Нужен ссылке в списке: фото и PDF открываются во вкладке, остальное скачивается. */
+  contentType: string;
   size: number;
   isNew: boolean;
 }
@@ -74,7 +64,16 @@ export function useFileEditor() {
     setUploading(true);
     try {
       const dto = await filesApi.upload(file);
-      setFiles((p) => [...p, { id: dto.id, filename: dto.filename, size: dto.size, isNew: true }]);
+      setFiles((p) => [
+        ...p,
+        {
+          id: dto.id,
+          filename: dto.filename,
+          contentType: dto.contentType,
+          size: dto.size,
+          isNew: true,
+        },
+      ]);
     } catch (e) {
       message.error(errorMessage(e));
     } finally {
@@ -108,24 +107,13 @@ export function FileEditor({ editor }: { editor: ReturnType<typeof useFileEditor
           Прикрепить файлы
         </Button>
       </Upload>
-      <List
-        size="small"
-        style={{ marginTop: 8 }}
-        dataSource={editor.files}
-        locale={{ emptyText: 'Нет файлов' }}
-        renderItem={(f) => (
-          <List.Item
-            actions={[
-              <Button type="link" danger size="small" key="d" onClick={() => editor.remove(f.id)}>
-                Удалить
-              </Button>,
-            ]}
-          >
-            <span style={{ marginRight: 8 }}>{f.filename}</span>
-            <Typography.Text type="secondary">{formatBytes(f.size)}</Typography.Text>
-          </List.Item>
-        )}
-      />
+      <div style={{ marginTop: 8 }}>
+        <FileLinkList
+          files={editor.files}
+          emptyText="Нет файлов"
+          onRemove={(f) => editor.remove(f.id)}
+        />
+      </div>
     </div>
   );
 }
@@ -168,39 +156,6 @@ export function StatusCell({
         <DownOutlined />
       </Button>
     </Dropdown>
-  );
-}
-
-/** Ячейка файлов: поповер со списком и скачиванием. */
-export function FilesCell({ files }: { files: FileDto[] }) {
-  if (files.length === 0) return <span>—</span>;
-  return (
-    <Popover
-      content={
-        <List
-          size="small"
-          dataSource={files}
-          renderItem={(f) => (
-            <List.Item
-              actions={[
-                <Button
-                  type="link"
-                  size="small"
-                  key="dl"
-                  onClick={() => void filesApi.download(f.id)}
-                >
-                  Скачать
-                </Button>,
-              ]}
-            >
-              {f.filename}
-            </List.Item>
-          )}
-        />
-      }
-    >
-      <a>{files.length} файл(ов)</a>
-    </Popover>
   );
 }
 

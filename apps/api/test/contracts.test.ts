@@ -5,6 +5,8 @@ import {
   canTransitionStatus,
   changeWasteRequestStatusSchema,
   createWasteRequestSchema,
+  fileDownloadQuerySchema,
+  isInlineViewable,
   requestStatusTransitions,
 } from '@technic/contracts';
 
@@ -148,5 +150,29 @@ describe('createWasteRequestSchema', () => {
         deliveryAt: '2026-08-01T10:00:00.000Z',
       }),
     ).toThrow();
+  });
+});
+
+describe('просмотр файлов во вкладке', () => {
+  it('фото и PDF смотрят в браузере', () => {
+    expect(isInlineViewable('image/jpeg')).toBe(true);
+    expect(isInlineViewable('image/png')).toBe(true);
+    expect(isInlineViewable('application/pdf')).toBe(true);
+    // Заголовок из хранилища приходит с параметрами — разбор не должен на них спотыкаться.
+    expect(isInlineViewable('TEXT/PLAIN; charset=utf-8')).toBe(true);
+  });
+
+  it('исполняемое и неизвестное уходит вложением', () => {
+    // svg и html исполняют скрипты — открывать их на домене хранилища незачем.
+    expect(isInlineViewable('image/svg+xml')).toBe(false);
+    expect(isInlineViewable('text/html')).toBe(false);
+    expect(isInlineViewable('application/octet-stream')).toBe(false);
+    expect(isInlineViewable('')).toBe(false);
+  });
+
+  it('по умолчанию ссылка ведёт на скачивание', () => {
+    expect(fileDownloadQuerySchema.parse({}).disposition).toBe('attachment');
+    expect(fileDownloadQuerySchema.parse({ disposition: 'inline' }).disposition).toBe('inline');
+    expect(() => fileDownloadQuerySchema.parse({ disposition: 'что-то' })).toThrow();
   });
 });

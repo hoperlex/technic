@@ -43,9 +43,9 @@ import { useAuth } from '../../auth/AuthContext';
 import { errorMessage, formatDateTimeMaybe } from '../../utils/format';
 import { isPastDate, startOfToday } from '../../utils/date';
 import { MOSCOW_TZ } from '../../theme';
+import { FilesCell } from '../../components/FileLinks';
 import {
   FileEditor,
-  FilesCell,
   StatusCell,
   VehicleTypeSelect,
   useFileEditor,
@@ -226,6 +226,7 @@ export function VehicleRequestsTab() {
       r.files.map((f): EditorFile => ({
         id: f.id,
         filename: f.filename,
+        contentType: f.contentType,
         size: f.size,
         isNew: false,
       })),
@@ -515,7 +516,10 @@ export function VehicleRequestsTab() {
         allowClear
         placeholder="Все типы заявок"
         style={{ width: 200 }}
-        options={VEHICLE_REQUEST_TYPES.map((t) => ({ value: t, label: vehicleRequestTypeLabels[t] }))}
+        options={VEHICLE_REQUEST_TYPES.map((t) => ({
+          value: t,
+          label: vehicleRequestTypeLabels[t],
+        }))}
         value={params.requestType as VehicleRequestType | undefined}
         onChange={(v) => setParams((p) => ({ ...p, requestType: v, page: 1 }))}
       />

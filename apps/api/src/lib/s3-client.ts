@@ -55,16 +55,26 @@ export function presignPutUrl(
   });
 }
 
-/** Presigned GET (скачивание с Content-Disposition attachment). */
+/**
+ * Presigned GET. `disposition` определяет, скачает браузер файл или покажет его во вкладке;
+ * имя файла подставляется в обоих случаях — при сохранении из просмотра оно тоже нужно.
+ */
 export function presignGetUrl(
   client: S3Client,
-  params: { bucket: string; key: string; filename?: string; expiresIn: number },
+  params: {
+    bucket: string;
+    key: string;
+    filename?: string;
+    disposition?: 'attachment' | 'inline';
+    expiresIn: number;
+  },
 ): Promise<string> {
+  const disposition = params.disposition ?? 'attachment';
   const cmd = new GetObjectCommand({
     Bucket: params.bucket,
     Key: params.key,
     ResponseContentDisposition: params.filename
-      ? `attachment; filename*=UTF-8''${encodeURIComponent(params.filename)}`
+      ? `${disposition}; filename*=UTF-8''${encodeURIComponent(params.filename)}`
       : undefined,
   });
   return getSignedUrl(client, cmd, { expiresIn: params.expiresIn });

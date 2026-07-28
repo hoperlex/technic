@@ -8,7 +8,6 @@ import {
   Input,
   InputNumber,
   List,
-  Popover,
   Select,
   Space,
   Tabs,
@@ -22,7 +21,6 @@ import {
   DownOutlined,
   EditOutlined,
   EyeOutlined,
-  PaperClipOutlined,
   PlusOutlined,
   ReloadOutlined,
   UploadOutlined,
@@ -72,6 +70,7 @@ import {
   type VehicleDraft,
 } from '../components/WasteVehiclesEditor';
 import { DataTable } from '../components/DataTable';
+import { FileLinkList, FilesButton, FilesCell } from '../components/FileLinks';
 import { FormModal } from '../components/FormModal';
 import { PageTableLayout } from '../components/PageTableLayout';
 import { SummaryBar } from '../components/SummaryBar';
@@ -80,13 +79,7 @@ import { TimeInput, optionalWorkTimeRule } from '../components/TimeInput';
 import { useListParams } from '../hooks/useListParams';
 import { useAuth } from '../auth/AuthContext';
 import { MOSCOW_TZ } from '../theme';
-import {
-  errorMessage,
-  formatBytes,
-  formatDate,
-  formatDateTimeMaybe,
-  formatMoney,
-} from '../utils/format';
+import { errorMessage, formatDate, formatDateTimeMaybe, formatMoney } from '../utils/format';
 import { applyApiFieldErrors } from '../utils/formErrors';
 import { isPastDate, startOfToday } from '../utils/date';
 import { OnSiteTab } from './waste/OnSiteTab';
@@ -98,6 +91,8 @@ const FILE_MAX_COUNT = 20;
 interface EditorFile {
   id: string;
   filename: string;
+  /** Нужен ссылке в списке: фото и PDF открываются во вкладке, остальное скачивается. */
+  contentType: string;
   size: number;
   isNew: boolean;
 }
@@ -427,7 +422,15 @@ function RequestsTab() {
   };
   const openEdit = (r: WasteRequestDto) => {
     setRecord(r);
-    setFiles(r.files.map((f) => ({ id: f.id, filename: f.filename, size: f.size, isNew: false })));
+    setFiles(
+      r.files.map((f) => ({
+        id: f.id,
+        filename: f.filename,
+        contentType: f.contentType,
+        size: f.size,
+        isNew: false,
+      })),
+    );
     setRemovedIds([]);
     setVehicleDrafts([]);
     setVehicleMarks({});
@@ -468,7 +471,13 @@ function RequestsTab() {
       const uploaded = await filesApi.upload(file);
       setFiles((prev) => [
         ...prev,
-        { id: uploaded.id, filename: uploaded.filename, size: uploaded.size, isNew: true },
+        {
+          id: uploaded.id,
+          filename: uploaded.filename,
+          contentType: uploaded.contentType,
+          size: uploaded.size,
+          isNew: true,
+        },
       ]);
     } catch (e) {
       message.error(errorMessage(e));
@@ -746,44 +755,6 @@ function RequestsTab() {
     );
   };
 
-  const FilesCell = ({ r }: { r: WasteRequestDto }) => {
-    if (r.files.length === 0) return <>—</>;
-    return (
-      <Popover
-        trigger="click"
-        content={
-          <List
-            size="small"
-            style={{ minWidth: 240 }}
-            dataSource={r.files}
-            renderItem={(f) => (
-              <List.Item
-                actions={[
-                  <Button
-                    key="dl"
-                    type="link"
-                    size="small"
-                    onClick={() => void filesApi.download(f.id)}
-                  >
-                    Скачать
-                  </Button>,
-                ]}
-              >
-                <Typography.Text ellipsis style={{ maxWidth: 180 }}>
-                  {f.filename}
-                </Typography.Text>
-              </List.Item>
-            )}
-          />
-        }
-      >
-        <Button size="small" icon={<PaperClipOutlined />}>
-          {r.files.length}
-        </Button>
-      </Popover>
-    );
-  };
-
   const columns = [
     {
       key: 'no',
@@ -901,7 +872,7 @@ function RequestsTab() {
       title: 'Файлы',
       dataIndex: 'files',
       width: 80,
-      render: (_v: unknown, r: WasteRequestDto) => <FilesCell r={r} />,
+      render: (_v: unknown, r: WasteRequestDto) => <FilesCell files={r.files} />,
     },
     actionsColumn<WasteRequestDto>((r) => {
       // Карточка открывается и у архивной заявки: понять, что и почему в ней было, можно
@@ -1085,9 +1056,12 @@ function RequestsTab() {
                     <span>
                       {v.containerTypeName} — {v.volumeM3} м³
                     </span>
-                    <Typography.Text type="secondary">
-                      {v.files.length > 0 ? `талонов: ${v.files.length}` : 'без талона'}
-                    </Typography.Text>
+                    <FilesButton
+                      files={v.files}
+                      title={`Талоны — ${v.containerTypeName}`}
+                      label={`талонов: ${v.files.length}`}
+                      emptyText="без талона"
+                    />
                   </List.Item>
                 )}
               />
@@ -1392,14 +1366,21 @@ function RequestsTab() {
                                 ]
                           }
                         >
-                          <Typography.Text
-                            delete={inactive}
-                            type={inactive ? 'secondary' : undefined}
-                          >
-                            {v.containerTypeName} — {v.volumeM3} м³
-                            {v.files.length > 0 ? ` · талонов: ${v.files.length}` : ' · без талона'}
-                            {willDelete ? ' · будет удалена' : ''}
-                          </Typography.Text>
+                          <Space size={8} wrap>
+                            <Typography.Text
+                              delete={inactive}
+                              type={inactive ? 'secondary' : undefined}
+                            >
+                              {v.containerTypeName} — {v.volumeM3} м³
+                              {willDelete ? ' · будет удалена' : ''}
+                            </Typography.Text>
+                            <FilesButton
+                              files={v.files}
+                              title={`Талоны — ${v.containerTypeName}`}
+                              label={`талонов: ${v.files.length}`}
+                              emptyText="без талона"
+                            />
+                          </Space>
                         </List.Item>
                       );
                     }}
@@ -1441,34 +1422,14 @@ function RequestsTab() {
                 Прикрепить файл
               </Button>
             </Upload>
-            <List
-              size="small"
-              style={{ marginTop: 8 }}
-              locale={{ emptyText: 'Файлы не прикреплены' }}
-              dataSource={files}
-              renderItem={(f) => (
-                <List.Item
-                  actions={[
-                    <Button
-                      key="rm"
-                      type="link"
-                      danger
-                      size="small"
-                      onClick={() => void removeFile(f)}
-                    >
-                      Удалить
-                    </Button>,
-                  ]}
-                >
-                  <Typography.Text ellipsis style={{ maxWidth: 300 }}>
-                    {f.filename}
-                  </Typography.Text>
-                  <Typography.Text type="secondary" style={{ marginLeft: 8 }}>
-                    {formatBytes(f.size)}
-                  </Typography.Text>
-                </List.Item>
-              )}
-            />
+            <div style={{ marginTop: 8 }}>
+              <FileLinkList
+                files={files}
+                emptyText="Файлы не прикреплены"
+                maxNameWidth={300}
+                onRemove={(f) => void removeFile(f)}
+              />
+            </div>
           </Form.Item>
         </Form>
       </FormModal>

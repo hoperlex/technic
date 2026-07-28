@@ -2,7 +2,12 @@ import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { and, eq, isNull } from 'drizzle-orm';
-import { createUploadSessionSchema, type FileDto } from '@technic/contracts';
+import {
+  createUploadSessionSchema,
+  fileDownloadQuerySchema,
+  type FileDto,
+  isInlineViewable,
+} from '@technic/contracts';
 import { config } from '../config';
 import { db } from '../db/client';
 import {
@@ -50,7 +55,11 @@ export async function softDeleteFile(fileId: string, objectKey: string): Promise
   );
 }
 
-async function canAccessFile(p: Principal, fileId: string, uploadedBy: string | null): Promise<boolean> {
+async function canAccessFile(
+  p: Principal,
+  fileId: string,
+  uploadedBy: string | null,
+): Promise<boolean> {
   if (uploadedBy && uploadedBy === p.id) return true;
   // Доступ через связанную не удалённую заявку любого модуля, видимую пользователю.
   const waste = await db
@@ -107,31 +116,35 @@ export default async function filesRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
   const auth = { preHandler: [app.authenticate] };
 
-  r.post('/upload-session', { ...auth, schema: { body: createUploadSessionSchema } }, async (req, reply) => {
-    const p = requirePrincipal(req);
-    const { filename, contentType, size } = req.body;
-    if (size > config.files.maxSize) {
-      throw err.badRequest(
-        `Файл превышает лимит ${Math.floor(config.files.maxSize / 1024 / 1024)} МБ`,
-      );
-    }
-    const objectKey = buildObjectKey(filename);
-    const [file] = await db
-      .insert(files)
-      .values({
-        bucket: config.s3.bucket,
-        objectKey,
-        filename,
-        contentType,
-        size,
-        status: 'pending',
-        uploadedBy: p.id,
-      })
-      .returning();
-    const uploadUrl = await presignPut(objectKey, contentType);
-    reply.code(201);
-    return { fileId: file!.id, uploadUrl, objectKey, expiresIn: config.s3.uploadUrlTtl };
-  });
+  r.post(
+    '/upload-session',
+    { ...auth, schema: { body: createUploadSessionSchema } },
+    async (req, reply) => {
+      const p = requirePrincipal(req);
+      const { filename, contentType, size } = req.body;
+      if (size > config.files.maxSize) {
+        throw err.badRequest(
+          `Файл превышает лимит ${Math.floor(config.files.maxSize / 1024 / 1024)} МБ`,
+        );
+      }
+      const objectKey = buildObjectKey(filename);
+      const [file] = await db
+        .insert(files)
+        .values({
+          bucket: config.s3.bucket,
+          objectKey,
+          filename,
+          contentType,
+          size,
+          status: 'pending',
+          uploadedBy: p.id,
+        })
+        .returning();
+      const uploadUrl = await presignPut(objectKey, contentType);
+      reply.code(201);
+      return { fileId: file!.id, uploadUrl, objectKey, expiresIn: config.s3.uploadUrlTtl };
+    },
+  );
 
   r.post('/:id/complete', { ...auth, schema: { params: idParams } }, async (req) => {
     const p = requirePrincipal(req);
@@ -144,7 +157,10 @@ export default async function filesRoutes(app: FastifyInstance): Promise<void> {
     if (!head) throw err.badRequest('Файл не найден в хранилище — загрузка не завершена');
     if (head.size > config.files.maxSize) {
       await deleteObject(file.objectKey);
-      await db.update(files).set({ status: 'deleted', deletedAt: new Date() }).where(eq(files.id, file.id));
+      await db
+        .update(files)
+        .set({ status: 'deleted', deletedAt: new Date() })
+        .where(eq(files.id, file.id));
       throw err.badRequest('Файл превышает допустимый размер');
     }
     const [updated] = await db
@@ -155,14 +171,24 @@ export default async function filesRoutes(app: FastifyInstance): Promise<void> {
     return toFileDto(updated!);
   });
 
-  r.get('/:id/download', { ...auth, schema: { params: idParams } }, async (req) => {
-    const p = requirePrincipal(req);
-    const [file] = await db.select().from(files).where(eq(files.id, req.params.id));
-    if (!file || file.status !== 'active' || file.deletedAt) throw err.notFound('Файл не найден');
-    if (!(await canAccessFile(p, file.id, file.uploadedBy))) throw err.forbidden();
-    const url = await presignGet(file.objectKey, file.filename);
-    return { url, expiresIn: config.s3.downloadUrlTtl };
-  });
+  /**
+   * Ссылка на файл: по умолчанию — скачивание, `disposition=inline` — просмотр во вкладке.
+   * Инлайном отдаются только типы, которые браузер показывает сам (фото талона, PDF); всё
+   * остальное всё равно уходит вложением — исполняемая разметка на домене хранилища не нужна.
+   */
+  r.get(
+    '/:id/download',
+    { ...auth, schema: { params: idParams, querystring: fileDownloadQuerySchema } },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const [file] = await db.select().from(files).where(eq(files.id, req.params.id));
+      if (!file || file.status !== 'active' || file.deletedAt) throw err.notFound('Файл не найден');
+      if (!(await canAccessFile(p, file.id, file.uploadedBy))) throw err.forbidden();
+      const inline = req.query.disposition === 'inline' && isInlineViewable(file.contentType);
+      const url = await presignGet(file.objectKey, file.filename, inline ? 'inline' : 'attachment');
+      return { url, expiresIn: config.s3.downloadUrlTtl };
+    },
+  );
 
   r.delete('/:id', { ...auth, schema: { params: idParams } }, async (req) => {
     const p = requirePrincipal(req);

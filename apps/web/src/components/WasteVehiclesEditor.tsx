@@ -1,13 +1,16 @@
-import { App, Button, List, Select, Space, Typography, Upload } from 'antd';
+import { App, Button, Select, Space, Typography, Upload } from 'antd';
 import { DeleteOutlined, PlusCircleOutlined, UploadOutlined } from '@ant-design/icons';
 import { useState } from 'react';
 import { MAX_VEHICLES_PER_REQUEST, type WasteRequestVehicleInput } from '@technic/contracts';
 import { filesApi } from '../api/resources';
-import { errorMessage, formatBytes } from '../utils/format';
+import { FileLinkList } from './FileLinks';
+import { errorMessage } from '../utils/format';
 
 export interface VehicleDraftFile {
   id: string;
   filename: string;
+  /** Нужен ссылке на талон: фото и PDF открываются во вкладке, остальное скачивается. */
+  contentType: string;
   size: number;
 }
 
@@ -111,7 +114,12 @@ export function WasteVehiclesEditor({
       patch(key, {
         files: [
           ...row.files,
-          { id: uploaded.id, filename: uploaded.filename, size: uploaded.size },
+          {
+            id: uploaded.id,
+            filename: uploaded.filename,
+            contentType: uploaded.contentType,
+            size: uploaded.size,
+          },
         ],
       });
     } catch (e) {
@@ -193,31 +201,10 @@ export function WasteVehiclesEditor({
             )}
           </Space>
           {d.files.length > 0 && (
-            <List
-              size="small"
-              dataSource={d.files}
-              renderItem={(f) => (
-                <List.Item
-                  actions={[
-                    <Button
-                      key="rm"
-                      type="link"
-                      danger
-                      size="small"
-                      onClick={() => removeFile(d.key, f.id)}
-                    >
-                      Удалить
-                    </Button>,
-                  ]}
-                >
-                  <Typography.Text ellipsis style={{ maxWidth: 260 }}>
-                    {f.filename}
-                  </Typography.Text>
-                  <Typography.Text type="secondary" style={{ marginLeft: 8 }}>
-                    {formatBytes(f.size)}
-                  </Typography.Text>
-                </List.Item>
-              )}
+            <FileLinkList
+              files={d.files}
+              maxNameWidth={260}
+              onRemove={(f) => removeFile(d.key, f.id)}
             />
           )}
         </div>

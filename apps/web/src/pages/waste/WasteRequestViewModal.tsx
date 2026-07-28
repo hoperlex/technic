@@ -1,25 +1,38 @@
-import { Button, Descriptions, List, Modal, Space, Spin, Tag, Timeline, Typography } from 'antd';
+import {
+  Button,
+  Descriptions,
+  Modal,
+  Space,
+  Spin,
+  Table,
+  type TableColumnsType,
+  Tag,
+  Typography,
+} from 'antd';
+import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   isPricedRequestType,
-  type RequestStatus,
   requestStatusColors,
   requestStatusLabels,
   requestTypeColors,
   requestTypeLabels,
   requestTypeShort,
+  sumVehicleVolume,
   type WasteRequestDto,
   type WasteRequestHistoryEntryDto,
+  type WasteRequestVehicleDto,
   wasteRequestChangeLabels,
 } from '@technic/contracts';
-import { filesApi, wasteRequestsApi } from '../../api/resources';
+import { wasteRequestsApi } from '../../api/resources';
+import { FileLinkList, FilesButton } from '../../components/FileLinks';
 import { UserAvatar } from '../../components/UserAvatar';
-import { formatBytes, formatDateTime, formatDateTimeMaybe, formatMoney } from '../../utils/format';
+import { formatDateTime, formatDateTimeMaybe, formatMoney } from '../../utils/format';
 
 /**
- * Карточка заявки: поля только на чтение и история событий (ADR 0012). Открывается кликом по
- * номеру в списке — там колонок на всё не хватает, а автор, цена за м³ и состав машин нужны
- * не в таблице, а при разборе конкретной заявки. Правка — отдельным окном, той же формой.
+ * Карточка заявки: поля только на чтение и история событий (ADR 0012). Открывается кнопкой в
+ * «Действиях» — в таблице колонок на всё не хватает, а автор, цена за м³ и состав машин нужны
+ * не в списке, а при разборе конкретной заявки. Правка — отдельным окном, той же формой.
  */
 interface Props {
   /** null — окно закрыто; поля берутся из строки списка, отдельный запрос за ними не нужен. */
@@ -38,66 +51,166 @@ const HISTORY_TITLES: Record<WasteRequestHistoryEntryDto['kind'], string> = {
   restored: 'Восстановлена из архива',
 };
 
-/** Цвета ленты: у Timeline своя палитра, `gold` тега здесь выглядел бы выцветшим. */
-const STATUS_DOT_COLORS: Record<RequestStatus, string> = {
-  new: 'blue',
-  confirmed: '#faad14',
-  done: 'green',
-  cancelled: 'red',
+/** События без перехода статуса тоже начинаются с бабла — иначе первая колонка рвётся. */
+const KIND_TAGS: Record<string, { label: string; color?: string }> = {
+  updated: { label: 'Правка' },
+  operator: { label: 'Исполнитель', color: 'geekblue' },
+  deleted: { label: 'Архив', color: 'red' },
+  restored: { label: 'Из архива', color: 'green' },
 };
-
-function dotColor(e: WasteRequestHistoryEntryDto): string {
-  switch (e.kind) {
-    case 'status':
-      return e.toStatus ? STATUS_DOT_COLORS[e.toStatus] : 'blue';
-    case 'created':
-      return 'blue';
-    case 'deleted':
-      return 'red';
-    case 'restored':
-      return 'green';
-    default:
-      return 'gray';
-  }
-}
-
-function entryTitle(e: WasteRequestHistoryEntryDto): string {
-  if (e.kind === 'status' && e.toStatus) {
-    const from = e.fromStatus ? requestStatusLabels[e.fromStatus] : '—';
-    return `${from} → ${requestStatusLabels[e.toStatus]}`;
-  }
-  return HISTORY_TITLES[e.kind];
-}
 
 const secondary = { fontSize: 12 } as const;
 
-function HistoryContent({ entry }: { entry: WasteRequestHistoryEntryDto }) {
-  // Комментарий к отмене — это её причина: без подписи он читается как обычная заметка.
-  const comment = entry.comment
-    ? entry.toStatus === 'cancelled'
-      ? `Причина: ${entry.comment}`
-      : entry.comment
-    : null;
-  // Правки до появления истории деталей не несут — молчать об этом хуже, чем сказать прямо.
-  const noDetails = entry.kind === 'updated' && entry.changes.length === 0;
-  if (!comment && !noDetails && entry.changes.length === 0) return null;
+/** В Space тег ведёт свой отступ сам — собственный правый отступ ставит лишнюю дырку. */
+const tagStyle = { marginInlineEnd: 0 } as const;
+
+/**
+ * Строка истории: событие и машины, заведённые при нём. Машины показываются у закрытия заявки —
+ * там их и заводят (ADR 0011); в теле карточки они занимали место, а талоны всё равно
+ * разбирают поштучно.
+ */
+interface HistoryRow {
+  key: string;
+  /** null — машины есть, а закрытия в истории нет: строка состояния, а не событие. */
+  entry: WasteRequestHistoryEntryDto | null;
+  vehicles: WasteRequestVehicleDto[];
+}
+
+function buildRows(
+  history: WasteRequestHistoryEntryDto[] | undefined,
+  vehicles: WasteRequestVehicleDto[],
+): HistoryRow[] {
+  const entries = history ?? [];
+  // Повторное закрытие (после отката) — последнее слово о машинах, к нему их и цепляем.
+  const closingIndex = entries.findLastIndex((e) => e.kind === 'status' && e.toStatus === 'done');
+  const rows = entries.map<HistoryRow>((e, i) => ({
+    key: e.id,
+    entry: e,
+    vehicles: i === closingIndex ? vehicles : [],
+  }));
+  // Машины у незакрытой заявки (их можно завести и правкой) без такой строки просто пропали бы.
+  if (closingIndex < 0 && vehicles.length > 0) {
+    rows.push({ key: 'vehicles', entry: null, vehicles });
+  }
+  return rows;
+}
+
+function StatusBubbles({ row }: { row: HistoryRow }) {
+  const e = row.entry;
+  if (!e) return <Tag style={tagStyle}>Машины</Tag>;
+  if (e.kind === 'status' || e.kind === 'created') {
+    // Заведение заявки — переход «ниоткуда»: слева пусто, справа статус, с которого она начата.
+    const to = e.toStatus ?? 'new';
+    return (
+      <Space size={4} wrap>
+        {e.fromStatus && (
+          <>
+            <Tag color={requestStatusColors[e.fromStatus]} style={tagStyle}>
+              {requestStatusLabels[e.fromStatus]}
+            </Tag>
+            <Typography.Text type="secondary">→</Typography.Text>
+          </>
+        )}
+        <Tag color={requestStatusColors[to]} style={tagStyle}>
+          {requestStatusLabels[to]}
+        </Tag>
+      </Space>
+    );
+  }
+  const tag = KIND_TAGS[e.kind];
   return (
-    <div style={{ display: 'flex', flexDirection: 'column' }}>
+    <Tag color={tag?.color} style={tagStyle}>
+      {tag?.label ?? HISTORY_TITLES[e.kind]}
+    </Tag>
+  );
+}
+
+/** Строка свёрнутая: чем событие было. Значения изменений и машины — уже в раскрытой части. */
+function summaryOf(row: HistoryRow): string {
+  const e = row.entry;
+  if (!e) return `машин: ${row.vehicles.length}`;
+  // Комментарий к отмене — это её причина: без подписи он читается как обычная заметка.
+  if (e.comment) return e.toStatus === 'cancelled' ? `Причина: ${e.comment}` : e.comment;
+  if (row.vehicles.length > 0) return `машин: ${row.vehicles.length}`;
+  if (e.changes.length > 0) {
+    return e.changes.map((c) => wasteRequestChangeLabels[c.field] ?? c.field).join(', ');
+  }
+  // Правки до появления истории деталей не несут — молчать об этом хуже, чем сказать прямо.
+  if (e.kind === 'updated') return 'состав изменений не записан';
+  // Переход виден по баблам — повторять его словами незачем.
+  return e.kind === 'status' ? '' : HISTORY_TITLES[e.kind];
+}
+
+function hasDetails(row: HistoryRow): boolean {
+  return row.vehicles.length > 0 || !!row.entry?.comment || (row.entry?.changes.length ?? 0) > 0;
+}
+
+function HistoryDetails({ row }: { row: HistoryRow }) {
+  const e = row.entry;
+  const comment = e?.comment
+    ? e.toStatus === 'cancelled'
+      ? `Причина: ${e.comment}`
+      : e.comment
+    : null;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
       {comment && <Typography.Text>{comment}</Typography.Text>}
-      {entry.changes.map((c, i) => (
+      {e?.changes.map((c, i) => (
         <Typography.Text key={`${c.field}-${i}`} type="secondary" style={secondary}>
           {wasteRequestChangeLabels[c.field] ?? c.field}:{' '}
           {c.from === null ? c.to : `${c.from} → ${c.to}`}
         </Typography.Text>
       ))}
-      {noDetails && (
-        <Typography.Text type="secondary" style={secondary}>
-          Состав изменений не записан
-        </Typography.Text>
-      )}
+      {/* Помеченные на удаление остаются в списке зачёркнутыми — иначе снятый талон нечем
+          заметить. Талоны открываются отдельным окном: их смотрят по одному. */}
+      {row.vehicles.map((v) => (
+        <Space key={v.id} size={8} wrap>
+          <Typography.Text delete={v.isDeleted} type={v.isDeleted ? 'secondary' : undefined}>
+            {v.containerTypeName} — {v.volumeM3} м³
+          </Typography.Text>
+          <FilesButton
+            files={v.files}
+            title={`Талоны — ${v.containerTypeName}`}
+            label={`талонов: ${v.files.length}`}
+            emptyText="без талона"
+          />
+          {v.isDeleted && (
+            <Typography.Text type="secondary" style={secondary}>
+              помечена на удаление
+            </Typography.Text>
+          )}
+        </Space>
+      ))}
     </div>
   );
 }
+
+const historyColumns: TableColumnsType<HistoryRow> = [
+  {
+    key: 'bubbles',
+    width: 200,
+    render: (_v, row) => <StatusBubbles row={row} />,
+  },
+  {
+    key: 'summary',
+    render: (_v, row) => (
+      <Typography.Text ellipsis={{ tooltip: true }} style={{ maxWidth: 260 }}>
+        {summaryOf(row)}
+      </Typography.Text>
+    ),
+  },
+  {
+    key: 'when',
+    width: 210,
+    align: 'right',
+    render: (_v, row) =>
+      row.entry && (
+        <Typography.Text type="secondary" style={secondary}>
+          {formatDateTime(row.entry.at)} · {row.entry.actorName ?? '—'}
+        </Typography.Text>
+      ),
+  },
+];
 
 export function WasteRequestViewModal({ request, onClose, onEdit }: Props) {
   const { data: history, isPending } = useQuery({
@@ -108,6 +221,10 @@ export function WasteRequestViewModal({ request, onClose, onEdit }: Props) {
 
   const priced = request ? isPricedRequestType(request.requestType) : false;
   const activeVehicles = request?.vehicles.filter((v) => !v.isDeleted).length ?? 0;
+  const rows = useMemo(
+    () => buildRows(history, request?.vehicles ?? []),
+    [history, request?.vehicles],
+  );
 
   const fields = request
     ? [
@@ -176,6 +293,16 @@ export function WasteRequestViewModal({ request, onClose, onEdit }: Props) {
               },
             ]
           : []),
+        // Итог по машинам: сами они с талонами — в истории, у закрытия заявки.
+        ...(request.vehicles.length > 0
+          ? [
+              {
+                key: 'hauled',
+                label: 'Вывезено',
+                children: `${sumVehicleVolume(request.vehicles)} м³ · машин: ${activeVehicles}`,
+              },
+            ]
+          : []),
         {
           key: 'author',
           label: 'Автор',
@@ -211,6 +338,8 @@ export function WasteRequestViewModal({ request, onClose, onEdit }: Props) {
       width={760}
       centered
       mask={{ closable: false }}
+      // Окно переоткрывают на соседней заявке — раскрытые строки прошлой истории не её дело.
+      destroyOnHidden
       footer={[
         ...(request && onEdit
           ? [
@@ -238,63 +367,10 @@ export function WasteRequestViewModal({ request, onClose, onEdit }: Props) {
           <Descriptions size="small" bordered column={2} items={fields} />
 
           {request.files.length > 0 && (
-            <List
-              size="small"
-              header={<Typography.Text strong>Файлы</Typography.Text>}
-              dataSource={request.files}
-              renderItem={(f) => (
-                <List.Item
-                  actions={[
-                    <Button
-                      key="dl"
-                      type="link"
-                      size="small"
-                      onClick={() => void filesApi.download(f.id)}
-                    >
-                      Скачать
-                    </Button>,
-                  ]}
-                >
-                  <Typography.Text ellipsis style={{ maxWidth: 420 }}>
-                    {f.filename}
-                  </Typography.Text>
-                  <Typography.Text type="secondary" style={secondary}>
-                    {formatBytes(f.size)}
-                  </Typography.Text>
-                </List.Item>
-              )}
-            />
-          )}
-
-          {/* Машины и талоны (ADR 0011): помеченные на удаление остаются в списке зачёркнутыми —
-              иначе снятый талон нечем заметить. */}
-          {request.vehicles.length > 0 && (
-            <List
-              size="small"
-              header={
-                <Space size={8}>
-                  <Typography.Text strong>Машины и талоны</Typography.Text>
-                  <Typography.Text type="secondary" style={secondary}>
-                    активных: {activeVehicles}
-                  </Typography.Text>
-                </Space>
-              }
-              dataSource={request.vehicles}
-              renderItem={(v) => (
-                <List.Item>
-                  <Typography.Text
-                    delete={v.isDeleted}
-                    type={v.isDeleted ? 'secondary' : undefined}
-                  >
-                    {v.containerTypeName} — {v.volumeM3} м³
-                  </Typography.Text>
-                  <Typography.Text type="secondary" style={secondary}>
-                    {v.files.length > 0 ? `талонов: ${v.files.length}` : 'без талона'}
-                    {v.isDeleted ? ' · помечена на удаление' : ''}
-                  </Typography.Text>
-                </List.Item>
-              )}
-            />
+            <div>
+              <Typography.Text strong>Файлы</Typography.Text>
+              <FileLinkList files={request.files} showView maxNameWidth={420} />
+            </div>
           )}
 
           <div>
@@ -302,21 +378,24 @@ export function WasteRequestViewModal({ request, onClose, onEdit }: Props) {
             <div style={{ marginTop: 12 }}>
               {isPending ? (
                 <Spin size="small" />
-              ) : history && history.length > 0 ? (
-                <Timeline
-                  items={history.map((e) => ({
-                    key: e.id,
-                    color: dotColor(e),
-                    title: (
-                      <Space size={8} wrap>
-                        <Typography.Text strong>{entryTitle(e)}</Typography.Text>
-                        <Typography.Text type="secondary" style={secondary}>
-                          {formatDateTime(e.at)} · {e.actorName ?? '—'}
-                        </Typography.Text>
-                      </Space>
-                    ),
-                    content: <HistoryContent entry={e} />,
-                  }))}
+              ) : rows.length > 0 ? (
+                // Событие строкой: слева баблы статусов, детали — подстроками при раскрытии.
+                <Table
+                  size="small"
+                  showHeader={false}
+                  pagination={false}
+                  rowKey="key"
+                  columns={historyColumns}
+                  dataSource={rows}
+                  expandable={{
+                    rowExpandable: hasDetails,
+                    expandRowByClick: true,
+                    expandedRowRender: (row) => <HistoryDetails row={row} />,
+                    // Машины раскрыты сразу: за талонами карточку и открывают.
+                    defaultExpandedRowKeys: rows
+                      .filter((r) => r.vehicles.length > 0)
+                      .map((r) => r.key),
+                  }}
                 />
               ) : (
                 <Typography.Text type="secondary">История недоступна</Typography.Text>

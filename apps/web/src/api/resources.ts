@@ -9,6 +9,7 @@ import type {
   CreateVehicleRequestInput,
   CreateVehicleTypeInput,
   DownloadUrlDto,
+  FileDisposition,
   FileDto,
   ListResult,
   ObjectDto,
@@ -222,7 +223,8 @@ export const filesApi = {
       body: { filename, contentType, size },
     }),
   complete: (id: string) => apiFetch<FileDto>(`/files/${id}/complete`, { method: 'POST' }),
-  downloadUrl: (id: string) => apiFetch<DownloadUrlDto>(`/files/${id}/download`),
+  downloadUrl: (id: string, disposition: FileDisposition = 'attachment') =>
+    apiFetch<DownloadUrlDto>(`/files/${id}/download`, { query: { disposition } }),
   remove: (id: string) => apiFetch<{ ok: boolean }>(`/files/${id}`, { method: 'DELETE' }),
 
   /** Полный цикл загрузки: session → PUT в S3 → complete. */
@@ -238,8 +240,36 @@ export const filesApi = {
     return filesApi.complete(session.fileId);
   },
 
+  /**
+   * Скачивание. Ссылка ведёт на ответ с `Content-Disposition: attachment`, поэтому переход
+   * по ней сохраняет файл и не уводит со страницы — новая вкладка для этого не нужна.
+   */
   async download(id: string): Promise<void> {
-    const { url } = await filesApi.downloadUrl(id);
-    window.open(url, '_blank', 'noopener');
+    const { url } = await filesApi.downloadUrl(id, 'attachment');
+    const a = document.createElement('a');
+    a.href = url;
+    a.rel = 'noopener';
+    a.style.display = 'none';
+    document.body.append(a);
+    a.click();
+    a.remove();
+  },
+
+  /**
+   * Просмотр во вкладке (фото талона, PDF). Вкладку открываем до запроса за ссылкой: открытие
+   * после `await` браузер считает непользовательским и блокирует как всплывающее окно.
+   */
+  async openInline(id: string): Promise<void> {
+    const tab = window.open('', '_blank');
+    // Открытая нами вкладка не должна иметь доступа к странице портала через opener.
+    if (tab) tab.opener = null;
+    try {
+      const { url } = await filesApi.downloadUrl(id, 'inline');
+      if (tab) tab.location.replace(url);
+      else window.open(url, '_blank', 'noopener');
+    } catch (e) {
+      tab?.close();
+      throw e;
+    }
   },
 };
