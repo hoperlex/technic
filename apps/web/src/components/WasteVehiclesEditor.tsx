@@ -36,10 +36,22 @@ export function emptyVehicleDraft(containerTypeId?: string): VehicleDraft {
   return { key: `v${draftSeq}`, containerTypeId, files: [] };
 }
 
-/** Заполненность строк: обязателен только тип; талоны — нет (загрузка файлов ещё не работает). */
-export function validateVehicleDrafts(drafts: readonly VehicleDraft[]): string | null {
+/**
+ * Заполненность строк: тип всегда, талон — когда рейс предъявляется как факт. Талон подтверждает
+ * рейс, а не заявку целиком, поэтому спрашивается у каждой машины (ADR 0020); ту же проверку
+ * повторяет сервер. У заявки в работе машину заводят и без бумаги — её спросят при закрытии,
+ * поэтому `requireTicket` повторяет серверное правило, а не ужесточает его.
+ * Нумерация в тексте — сквозная по заявке: строки формы идут после уже заведённых машин.
+ */
+export function validateVehicleDrafts(
+  drafts: readonly VehicleDraft[],
+  existingCount = 0,
+  requireTicket = true,
+): string | null {
   for (const [i, d] of drafts.entries()) {
-    if (!d.containerTypeId) return `Машина ${i + 1}: выберите тип машины`;
+    const num = existingCount + i + 1;
+    if (!d.containerTypeId) return `Машина ${num}: выберите тип машины`;
+    if (requireTicket && d.files.length === 0) return `Машина ${num}: приложите талон`;
   }
   return null;
 }
@@ -76,6 +88,11 @@ interface Props {
   defaultContainerTypeId?: string;
   /** Сколько машин уже заведено у заявки: лимит общий на заявку. */
   existingCount?: number;
+  /**
+   * Талон обязателен для этих строк — так же, как его потребует сервер. Ложь только там, где
+   * машину заводят до предъявления факта (правка заявки, которую ещё выполняют).
+   */
+  ticketRequired?: boolean;
 }
 
 /**
@@ -89,6 +106,7 @@ export function WasteVehiclesEditor({
   typeOptions,
   defaultContainerTypeId,
   existingCount = 0,
+  ticketRequired = true,
 }: Props) {
   const { message } = App.useApp();
   const [uploadingKey, setUploadingKey] = useState<string | null>(null);
@@ -183,8 +201,21 @@ export function WasteVehiclesEditor({
                 return false;
               }}
             >
-              <Tooltip title="Талон можно приложить и позже">
-                <Button size="small" icon={<UploadOutlined />} loading={uploadingKey === d.key}>
+              <Tooltip
+                title={
+                  ticketRequired
+                    ? 'Талон обязателен: без него заявка не закрывается'
+                    : 'Талон можно приложить и позже — его спросят при закрытии'
+                }
+              >
+                <Button
+                  size="small"
+                  icon={<UploadOutlined />}
+                  loading={uploadingKey === d.key}
+                  // Незаполненный обязательный ввод подсвечивается сразу, а не только сообщением
+                  // при сохранении: строк бывает несколько, и глазу нужно, к какой возвращаться.
+                  danger={ticketRequired && d.files.length === 0}
+                >
                   Прикрепить талон
                 </Button>
               </Tooltip>

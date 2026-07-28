@@ -1,6 +1,11 @@
-import { and, count, eq, inArray, isNull } from 'drizzle-orm';
-import type { FileDto, WasteRequestVehicleDto, WasteRequestVehicleInput } from '@technic/contracts';
-import { MAX_VEHICLES_PER_REQUEST } from '@technic/contracts';
+import { and, count, eq, inArray, isNull, notExists, sql } from 'drizzle-orm';
+import type {
+  FileDto,
+  WasteRequestVehicleDto,
+  WasteRequestVehicleInput,
+  WasteVehicleTicketsInput,
+} from '@technic/contracts';
+import { MAX_TICKETS_PER_VEHICLE, MAX_VEHICLES_PER_REQUEST } from '@technic/contracts';
 import { db } from '../db/client';
 import {
   containerTypes,
@@ -164,6 +169,85 @@ export async function insertVehicles(
       .insert(wasteRequestVehicleFiles)
       .values(input.fileIds.map((fileId) => ({ vehicleId: row!.id, fileId })));
     await markFilesActive(tx, input.fileIds);
+  }
+}
+
+/**
+ * Активные машины, к которым не приложено ни одного живого талона — в порядке заведения.
+ * Возвращаются названия типов: ими ошибка объясняет, каких именно рейсов не хватает бумаги.
+ * Считается по состоянию заявки, а не по телу запроса: талон мог прийти с прошлым закрытием.
+ */
+export async function vehiclesMissingTickets(tx: Tx, requestId: string): Promise<string[]> {
+  const rows = await tx
+    .select({ name: containerTypes.name })
+    .from(wasteRequestVehicles)
+    .innerJoin(containerTypes, eq(wasteRequestVehicles.containerTypeId, containerTypes.id))
+    .where(
+      and(
+        eq(wasteRequestVehicles.requestId, requestId),
+        isNull(wasteRequestVehicles.deletedAt),
+        // Удалённый файл талоном не считается: строка связи живёт до hard-delete машины.
+        notExists(
+          tx
+            .select({ one: sql`1` })
+            .from(wasteRequestVehicleFiles)
+            .innerJoin(files, eq(wasteRequestVehicleFiles.fileId, files.id))
+            .where(
+              and(
+                eq(wasteRequestVehicleFiles.vehicleId, wasteRequestVehicles.id),
+                eq(files.status, 'active'),
+              ),
+            ),
+        ),
+      ),
+    )
+    .orderBy(wasteRequestVehicles.createdAt);
+  return rows.map((r) => r.name);
+}
+
+/**
+ * Догрузка талонов к уже заведённым машинам (ADR 0020). Нужна при повторном закрытии: машины
+ * заведены прошлым закрытием, и если талона у них нет, приложить его было бы некуда — заводить
+ * рейс заново значило бы терять его место в истории заявки.
+ */
+export async function attachVehicleTickets(
+  tx: Tx,
+  requestId: string,
+  entries: readonly WasteVehicleTicketsInput[],
+  actorId: string,
+): Promise<void> {
+  if (entries.length === 0) return;
+  const ids = entries.map((e) => e.vehicleId);
+  const rows = await tx
+    .select({ id: wasteRequestVehicles.id, deletedAt: wasteRequestVehicles.deletedAt })
+    .from(wasteRequestVehicles)
+    .where(
+      and(eq(wasteRequestVehicles.requestId, requestId), inArray(wasteRequestVehicles.id, ids)),
+    );
+  if (rows.length !== new Set(ids).size) throw err.badRequest('Машина не найдена в этой заявке');
+  // Помеченная на удаление машина в сверке не участвует — талон на ней повис бы мимо факта.
+  if (rows.some((r) => r.deletedAt != null)) {
+    throw err.badRequest('Машина помечена на удаление — талон к ней не прикладывается', {
+      vehicleTickets: 'Верните машину в заявку или уберите её талон',
+    });
+  }
+  for (const entry of entries) {
+    const [existing] = await tx
+      .select({ c: count() })
+      .from(wasteRequestVehicleFiles)
+      .innerJoin(files, eq(wasteRequestVehicleFiles.fileId, files.id))
+      .where(
+        and(eq(wasteRequestVehicleFiles.vehicleId, entry.vehicleId), eq(files.status, 'active')),
+      );
+    if (Number(existing!.c) + entry.fileIds.length > MAX_TICKETS_PER_VEHICLE) {
+      throw err.badRequest(`Не более ${MAX_TICKETS_PER_VEHICLE} талонов на машину`);
+    }
+    // Те же проверки, что и у талонов новой машины: свои, живые, ещё не привязанные.
+    await assertFilesAttachable(tx, entry.fileIds, actorId);
+    await tx
+      .insert(wasteRequestVehicleFiles)
+      .values(entry.fileIds.map((fileId) => ({ vehicleId: entry.vehicleId, fileId })));
+    await markFilesActive(tx, entry.fileIds);
   }
 }
 

@@ -2,21 +2,38 @@ import { describe, expect, it } from 'vitest';
 import {
   changeWasteRequestStatusSchema,
   checkVehicleVolume,
+  type FileDto,
   requiresWasteVehicles,
   sumVehicleVolume,
   updateWasteRequestSchema,
   type WasteRequestVehicleDto,
   wasteRequestVehicleInputSchema,
+  vehiclesWithoutTickets,
 } from '@technic/contracts';
 
 const TYPE_ID = '11111111-1111-4111-8111-111111111111';
+const VEHICLE_ID = '22222222-2222-4222-8222-222222222222';
+const FILE_ID_A = '77777777-7777-4777-8777-777777777777';
 
-const vehicle = (volumeM3: number, isDeleted = false): WasteRequestVehicleDto => ({
-  id: '22222222-2222-4222-8222-222222222222',
+const ticket = (id: string): FileDto => ({
+  id,
+  filename: 'Талон.pdf',
+  contentType: 'application/pdf',
+  size: 1024,
+  status: 'active',
+  createdAt: '2026-07-27T10:00:00.000Z',
+});
+
+const vehicle = (
+  volumeM3: number,
+  isDeleted = false,
+  files: FileDto[] = [],
+): WasteRequestVehicleDto => ({
+  id: VEHICLE_ID,
   containerTypeId: TYPE_ID,
   containerTypeName: 'Самосвал 25 м³',
   volumeM3,
-  files: [],
+  files,
   isDeleted,
   createdAt: '2026-07-27T10:00:00.000Z',
 });
@@ -31,7 +48,9 @@ describe('какие заявки отчитываются машинами', ()
 });
 
 describe('машина заявки', () => {
-  it('требует только тип; талоны необязательны', () => {
+  // Талон обязателен к моменту закрытия (ADR 0020), но проверяет это сервер: машину заводят и
+  // до закрытия — правкой заявки, которую ещё выполняют, и там бумаги на руках может не быть.
+  it('требует только тип: обязательность талона схема не решает', () => {
     const parsed = wasteRequestVehicleInputSchema.parse({ containerTypeId: TYPE_ID });
     expect(parsed.fileIds).toEqual([]);
     expect(() => wasteRequestVehicleInputSchema.parse({})).toThrow();
@@ -80,7 +99,9 @@ describe('талоны заявки при смене статуса', () => {
     ).toThrow();
   });
 
-  it('закрытие без талонов проходит — талон могут донести позже', () => {
+  // Талон обязателен (ADR 0020), но требует его сервер: он считает не тело запроса, а состояние
+  // заявки — бумага могла прийти ещё с прошлым закрытием, и просить её второй раз незачем.
+  it('пустой список схема пропускает — обязательность талона считает сервер', () => {
     expect(
       changeWasteRequestStatusSchema.parse({ status: 'done', version: 1 }).ticketFileIds,
     ).toEqual([]);
@@ -94,6 +115,62 @@ describe('талоны заявки при смене статуса', () => {
     });
     expect(parsed.comment).toBe('вывезли не полностью');
     expect(changeWasteRequestStatusSchema.parse({ status: 'done', version: 1 }).comment).toBe('');
+  });
+});
+
+// Догрузка талонов к машинам прошлого закрытия (ADR 0020): после отката администратором машины
+// у заявки уже есть, и талон к ним прикладывается по id — заводить рейс заново незачем.
+describe('талоны уже заведённых машин', () => {
+  const FILE_ID = '55555555-5555-4555-8555-555555555555';
+  const OTHER_FILE_ID = '66666666-6666-4666-8666-666666666666';
+
+  it('принимаются только при закрытии заявки', () => {
+    const vehicleTickets = [{ vehicleId: VEHICLE_ID, fileIds: [FILE_ID] }];
+    expect(() =>
+      changeWasteRequestStatusSchema.parse({ status: 'done', version: 1, vehicleTickets }),
+    ).not.toThrow();
+    expect(() =>
+      changeWasteRequestStatusSchema.parse({ status: 'confirmed', version: 1, vehicleTickets }),
+    ).toThrow();
+  });
+
+  it('запись без файлов бессмысленна — машину без талона так не «подтвердить»', () => {
+    expect(() =>
+      changeWasteRequestStatusSchema.parse({
+        status: 'done',
+        version: 1,
+        vehicleTickets: [{ vehicleId: VEHICLE_ID, fileIds: [] }],
+      }),
+    ).toThrow();
+  });
+
+  it('одна машина — одна запись: лимит талонов иначе считался бы по частям', () => {
+    expect(() =>
+      changeWasteRequestStatusSchema.parse({
+        status: 'done',
+        version: 1,
+        vehicleTickets: [
+          { vehicleId: VEHICLE_ID, fileIds: [FILE_ID] },
+          { vehicleId: VEHICLE_ID, fileIds: [OTHER_FILE_ID] },
+        ],
+      }),
+    ).toThrow();
+  });
+});
+
+describe('машины без талона', () => {
+  it('видны все активные без единого талона — с ними заявку не закрыть', () => {
+    const missing = vehiclesWithoutTickets([
+      vehicle(25, false, [ticket(FILE_ID_A)]),
+      vehicle(20),
+      vehicle(8, true),
+    ]);
+    expect(missing).toHaveLength(1);
+    expect(missing[0]!.volumeM3).toBe(20);
+  });
+
+  it('помеченная на удаление машина талона не требует — она вне факта вывоза', () => {
+    expect(vehiclesWithoutTickets([vehicle(8, true)])).toEqual([]);
   });
 });
 

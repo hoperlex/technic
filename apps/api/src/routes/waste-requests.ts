@@ -888,9 +888,12 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
             if (missing.length > 0) {
               const shown = missing.slice(0, 3).join(', ');
               const rest = missing.length > 3 ? ` и ещё ${missing.length - 3}` : '';
-              throw err.badRequest(`Приложите талон к каждой машине — без талона: ${shown}${rest}`, {
-                vehicles: 'У каждой машины должен быть талон',
-              });
+              throw err.badRequest(
+                `Приложите талон к каждой машине — без талона: ${shown}${rest}`,
+                {
+                  vehicles: 'У каждой машины должен быть талон',
+                },
+              );
             }
           }
         }

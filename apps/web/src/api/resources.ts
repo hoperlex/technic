@@ -37,6 +37,7 @@ import type {
   WasteRequestDto,
   WasteRequestSummaryDto,
   WasteRequestVehicleInput,
+  WasteVehicleTicketsInput,
   WasteTariffDto,
   WasteTypeDto,
   ResolvedWasteTariffDto,
@@ -225,6 +226,8 @@ export const wasteRequestsApi = {
       vehicles?: WasteRequestVehicleInput[];
       /** Талоны самой заявки — контейнерные операции (ADR 0013). */
       ticketFileIds?: string[];
+      /** Талоны к машинам прошлого закрытия: догрузка при повторном закрытии (ADR 0020). */
+      vehicleTickets?: WasteVehicleTicketsInput[];
     } = {},
   ) =>
     apiFetch<WasteRequestDto>(`/waste-requests/${id}/status`, {
@@ -235,6 +238,7 @@ export const wasteRequestsApi = {
         comment: extra.comment ?? '',
         vehicles: extra.vehicles ?? [],
         ticketFileIds: extra.ticketFileIds ?? [],
+        vehicleTickets: extra.vehicleTickets ?? [],
       },
     }),
   remove: (id: string) =>

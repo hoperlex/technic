@@ -1146,8 +1146,13 @@ function RequestsTab() {
           layout="vertical"
           onFinish={(v) => {
             // Незаполненная строка машины — не повод отправлять запрос: сервер отвергнет её
-            // целиком, а человеку нужно знать, в какой именно строке пробел.
-            const vehicleError = validateVehicleDrafts(vehicleDrafts);
+            // целиком, а человеку нужно знать, в какой именно строке пробел. Талон здесь
+            // обязателен только у выполненной заявки — то же правило, что и на сервере (ADR 0020).
+            const vehicleError = validateVehicleDrafts(
+              vehicleDrafts,
+              record?.vehicles.filter((v) => !isVehicleDeleted(v)).length ?? 0,
+              record?.status === 'done',
+            );
             if (vehicleError) {
               message.warning(vehicleError);
               return;
@@ -1425,6 +1430,7 @@ function RequestsTab() {
                   typeOptions={vehicleTypeOptions}
                   defaultContainerTypeId={record.containerTypeId ?? undefined}
                   existingCount={record.vehicles.filter((v) => !isVehicleDeleted(v)).length}
+                  ticketRequired={record.status === 'done'}
                 />
                 <VolumeSummary
                   planned={plannedVolume ?? record.volumeM3}

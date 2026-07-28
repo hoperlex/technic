@@ -26,7 +26,7 @@ const FILE_MAX_COUNT = 20;
 
 /**
  * Закрытие заявки на вывоз: факт предъявляется вместе со сменой статуса, а не после неё.
- * Форма предъявления зависит от типа заявки:
+ * Талон обязателен в любом случае (ADR 0020) — различается только то, к чему он крепится:
  *  - вывоз самосвалами — машины с талонами: рейсов несколько, у каждого свой талон (ADR 0011),
  *    и без единой машины заявка не закрывается;
  *  - контейнерные операции — талоны самой заявки: ходка одна, машине взяться неоткуда, и
@@ -39,7 +39,13 @@ interface Props {
   typeOptions: VehicleTypeOption[];
   confirmLoading: boolean;
   onCancel: () => void;
-  onSubmit: (v: { comment: string; vehicles: VehicleDraft[]; ticketFileIds: string[] }) => void;
+  onSubmit: (v: {
+    comment: string;
+    vehicles: VehicleDraft[];
+    ticketFileIds: string[];
+    /** Талоны к машинам прошлого закрытия — по одной записи на машину (ADR 0020). */
+    vehicleTickets: { vehicleId: string; fileIds: string[] }[];
+  }) => void;
 }
 
 export function WasteDoneModal({
@@ -52,8 +58,12 @@ export function WasteDoneModal({
   const { message } = App.useApp();
   const [drafts, setDrafts] = useState<VehicleDraft[]>([]);
   const [tickets, setTickets] = useState<FileDto[]>([]);
+  /** Догруженные талоны уже заведённых машин: ключ — id машины (ADR 0020). */
+  const [vehicleTickets, setVehicleTickets] = useState<Record<string, FileDto[]>>({});
   const [comment, setComment] = useState('');
   const [uploading, setUploading] = useState(false);
+  /** id машины, к которой сейчас грузится талон: спиннер нужен на её кнопке, а не на всех. */
+  const [uploadingVehicleId, setUploadingVehicleId] = useState<string | null>(null);
 
   const byVehicles = request ? requiresWasteVehicles(request.requestType) : false;
   const activeVehicles = request?.vehicles.filter((v) => !v.isDeleted) ?? [];
@@ -65,21 +75,31 @@ export function WasteDoneModal({
   useEffect(() => {
     if (!request) return;
     setDrafts(
-      requiresWasteVehicles(request.requestType) &&
-        !request.vehicles.some((v) => !v.isDeleted)
+      requiresWasteVehicles(request.requestType) && !request.vehicles.some((v) => !v.isDeleted)
         ? [emptyVehicleDraft(request.containerTypeId ?? undefined)]
         : [],
     );
     setTickets([]);
+    setVehicleTickets({});
     setComment('');
     // Зависимость — идентификатор заявки, а не сама заявка: перерисовка той же заявки (invalidate
     // списка после соседнего действия) приходит новым объектом и стёрла бы уже набранное.
   }, [targetId]);
 
-  /** Файлы, не дошедшие до заявки, удаляем сразу: иначе они повиснут в S3 ничьими. */
-  const discardTickets = () => {
-    tickets.forEach((f) => void filesApi.remove(f.id).catch(() => {}));
+  /**
+   * Файлы, не дошедшие до заявки, удаляем сразу: иначе они повиснут в S3 ничьими. Считаются все
+   * три места, куда их грузит окно, — талоны заявки, талоны черновиков машин и догруженные
+   * талоны уже заведённых машин.
+   */
+  const discardUploads = () => {
+    const orphans = [
+      ...tickets,
+      ...drafts.flatMap((d) => d.files),
+      ...Object.values(vehicleTickets).flat(),
+    ];
+    orphans.forEach((f) => void filesApi.remove(f.id).catch(() => {}));
     setTickets([]);
+    setVehicleTickets({});
   };
 
   const uploadTicket = async (file: File) => {
@@ -99,15 +119,43 @@ export function WasteDoneModal({
     setTickets((prev) => prev.filter((t) => t.id !== f.id));
   };
 
+  /** Талон к машине, заведённой прошлым закрытием: она уже в заявке, файл догружается к ней. */
+  const uploadVehicleTicket = async (vehicleId: string, file: File) => {
+    setUploadingVehicleId(vehicleId);
+    try {
+      const uploaded = await filesApi.upload(file);
+      setVehicleTickets((prev) => ({
+        ...prev,
+        [vehicleId]: [...(prev[vehicleId] ?? []), uploaded],
+      }));
+    } catch (e) {
+      message.error(errorMessage(e));
+    } finally {
+      setUploadingVehicleId(null);
+    }
+  };
+
+  const removeVehicleTicket = (vehicleId: string, f: FileDto) => {
+    void filesApi.remove(f.id).catch(() => {});
+    setVehicleTickets((prev) => ({
+      ...prev,
+      [vehicleId]: (prev[vehicleId] ?? []).filter((t) => t.id !== f.id),
+    }));
+  };
+
+  /** Талон у машины есть, если он приложен раньше или догружен здесь. */
+  const vehicleHasTicket = (v: (typeof activeVehicles)[number]) =>
+    v.files.length > 0 || (vehicleTickets[v.id]?.length ?? 0) > 0;
+
   const cancel = () => {
-    discardTickets();
+    discardUploads();
     onCancel();
   };
 
   const submit = () => {
     if (!request) return;
     if (byVehicles) {
-      const error = validateVehicleDrafts(drafts);
+      const error = validateVehicleDrafts(drafts, activeVehicles.length);
       if (error) {
         message.warning(error);
         return;
@@ -116,11 +164,26 @@ export function WasteDoneModal({
         message.warning('Добавьте хотя бы одну машину');
         return;
       }
+      // Машины прошлого закрытия могли остаться без талона: тогда его прикладывают здесь же,
+      // иначе сервер закрытие не проведёт (ADR 0020).
+      const missing = activeVehicles.filter((v) => !vehicleHasTicket(v));
+      if (missing.length > 0) {
+        message.warning(`Приложите талон к уже заведённым машинам: ${missing.length} без талона`);
+        return;
+      }
+    } else if (request.tickets.length + tickets.length === 0) {
+      message.warning('Приложите талон — без него заявка не закрывается');
+      return;
     }
     onSubmit({
       comment: comment.trim(),
       vehicles: byVehicles ? drafts : [],
       ticketFileIds: byVehicles ? [] : tickets.map((f) => f.id),
+      vehicleTickets: byVehicles
+        ? Object.entries(vehicleTickets)
+            .filter(([, files]) => files.length > 0)
+            .map(([vehicleId, files]) => ({ vehicleId, fileIds: files.map((f) => f.id) }))
+        : [],
     });
   };
 
@@ -153,12 +216,49 @@ export function WasteDoneModal({
                       <span>
                         {v.containerTypeName} — {v.volumeM3} м³
                       </span>
-                      <FilesButton
-                        files={v.files}
-                        title={`Талоны — ${v.containerTypeName}`}
-                        label={`талонов: ${v.files.length}`}
-                        emptyText="без талона"
-                      />
+                      {/* Машина прошлого закрытия может быть без талона — тогда талон грузится
+                          прямо здесь: заводить рейс заново ради вложения незачем (ADR 0020). */}
+                      {v.files.length > 0 ? (
+                        <FilesButton
+                          files={v.files}
+                          title={`Талоны — ${v.containerTypeName}`}
+                          label={`талонов: ${v.files.length}`}
+                          emptyText="без талона"
+                        />
+                      ) : (
+                        <Space size={8} align="start">
+                          <FileLinkList
+                            files={vehicleTickets[v.id] ?? []}
+                            maxNameWidth={200}
+                            onRemove={(f) => removeVehicleTicket(v.id, f)}
+                          />
+                          <Upload
+                            multiple
+                            showUploadList={false}
+                            beforeUpload={(file) => {
+                              if ((vehicleTickets[v.id]?.length ?? 0) >= FILE_MAX_COUNT) {
+                                message.warning(`Не более ${FILE_MAX_COUNT} талонов`);
+                                return Upload.LIST_IGNORE;
+                              }
+                              if (file.size > FILE_MAX_SIZE) {
+                                message.warning('Файл больше 50 МБ');
+                                return Upload.LIST_IGNORE;
+                              }
+                              void uploadVehicleTicket(v.id, file);
+                              return false;
+                            }}
+                          >
+                            <Button
+                              size="small"
+                              icon={<UploadOutlined />}
+                              loading={uploadingVehicleId === v.id}
+                              danger={!vehicleHasTicket(v)}
+                            >
+                              Прикрепить талон
+                            </Button>
+                          </Upload>
+                        </Space>
+                      )}
                     </List.Item>
                   )}
                 />
@@ -205,13 +305,17 @@ export function WasteDoneModal({
                     return false;
                   }}
                 >
-                  <Button icon={<UploadOutlined />} loading={uploading}>
+                  <Button
+                    icon={<UploadOutlined />}
+                    loading={uploading}
+                    danger={request.tickets.length + tickets.length === 0}
+                  >
                     Прикрепить талон
                   </Button>
                 </Upload>
-                {tickets.length === 0 && (
+                {request.tickets.length + tickets.length === 0 && (
                   <Typography.Text type="secondary" style={{ lineHeight: '32px' }}>
-                    Талон можно приложить позже
+                    Талон обязателен: без него заявка не закрывается
                   </Typography.Text>
                 )}
               </Space>
