@@ -1,7 +1,14 @@
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
-import { and, count, eq } from 'drizzle-orm';
+import { z } from 'zod';
+import { and, count, eq, ne } from 'drizzle-orm';
 import {
+  type ContainerKind,
+  createWasteTariffSchema,
+  pricePerM3FromContainer,
+  updateWasteTariffSchema,
+  validateWasteTariff,
+  type WasteTariffDefinition,
   type WasteTariffDto,
   resolveWasteTariffQuerySchema,
   wasteTariffListQuerySchema,
@@ -9,6 +16,8 @@ import {
 import { db } from '../db/client';
 import { containerTypes, wasteTariffs, wasteTypes } from '../db/schema';
 import { err } from '../lib/errors';
+import { writeAudit } from '../lib/audit';
+import { requirePrincipal } from '../auth/plugin';
 import { orderByFrom, pageParams } from '../lib/pagination';
 import { resolveWasteTariff } from '../services/waste-pricing';
 
@@ -18,6 +27,7 @@ const dtoColumns = {
   wasteTypeName: wasteTypes.name,
   containerTypeId: wasteTariffs.containerTypeId,
   containerTypeName: containerTypes.name,
+  containerVolumeM3: containerTypes.volumeM3,
   containerKind: wasteTariffs.containerKind,
   pricePerM3: wasteTariffs.pricePerM3,
   pricePerContainer: wasteTariffs.pricePerContainer,
@@ -26,10 +36,137 @@ const dtoColumns = {
   isActive: wasteTariffs.isActive,
 };
 
-// Прайс вывоза мусора (ADR 0009). Только чтение: цены задаются миграцией, а в заявке остаётся
-// снимок применённого тарифа, поэтому изменение прайса не переписывает оформленные суммы.
+/** Строка выборки `dtoColumns`: колонки типа контейнера приходят из leftJoin, поэтому nullable. */
+interface DtoRow {
+  id: string;
+  wasteTypeId: string;
+  wasteTypeName: string;
+  containerTypeId: string | null;
+  containerTypeName: string | null;
+  containerVolumeM3: number | null;
+  containerKind: ContainerKind | null;
+  pricePerM3: string;
+  pricePerContainer: string | null;
+  isPerContainer: boolean;
+  note: string;
+  isActive: boolean;
+}
+
+function toDto(t: DtoRow): WasteTariffDto {
+  return {
+    id: t.id,
+    wasteTypeId: t.wasteTypeId,
+    wasteTypeName: t.wasteTypeName,
+    containerTypeId: t.containerTypeId,
+    containerTypeName: t.containerTypeName,
+    containerVolumeM3: t.containerVolumeM3,
+    containerKind: t.containerKind,
+    pricePerM3: Number(t.pricePerM3),
+    pricePerContainer: t.pricePerContainer == null ? null : Number(t.pricePerContainer),
+    isPerContainer: t.isPerContainer,
+    note: t.note,
+    isActive: t.isActive,
+  };
+}
+
+const idParams = z.object({ id: z.string().uuid() });
+
+/** Позиция прайса после проверок — в том виде, в каком ложится в строку таблицы. */
+interface TariffValues {
+  wasteTypeId: string;
+  containerTypeId: string | null;
+  containerKind: ContainerKind | null;
+  pricePerM3: string;
+  pricePerContainer: string | null;
+  isPerContainer: boolean;
+}
+
+/**
+ * Проверяет позицию и выводит хранимые цены. Цену за м³ у позиции «за контейнер» считает сервер
+ * из вместимости типа (ADR 0009): вводится одна цена, вторая — производная, разойтись им негде.
+ * `excludeId` — id правимой позиции: она сама не считается дублем.
+ */
+async function prepareValues(
+  input: WasteTariffDefinition & { wasteTypeId: string },
+  excludeId?: string,
+): Promise<TariffValues> {
+  const fields = validateWasteTariff(input);
+  if (Object.keys(fields).length > 0) throw err.validation(fields);
+
+  const [wasteType] = await db
+    .select({ id: wasteTypes.id })
+    .from(wasteTypes)
+    .where(eq(wasteTypes.id, input.wasteTypeId));
+  if (!wasteType) throw err.validation({ wasteTypeId: 'Тип мусора не найден' });
+
+  let containerVolumeM3: number | null = null;
+  if (input.containerTypeId) {
+    const [containerType] = await db
+      .select({ volumeM3: containerTypes.volumeM3 })
+      .from(containerTypes)
+      .where(eq(containerTypes.id, input.containerTypeId));
+    if (!containerType) {
+      throw err.validation({ containerTypeId: 'Тип машины/контейнера не найден' });
+    }
+    containerVolumeM3 = containerType.volumeM3;
+  }
+
+  // Дальше цены уже согласованы с режимом тарификации — это гарантирует validateWasteTariff.
+  let pricePerM3: number;
+  let pricePerContainer: number | null = null;
+  if (input.isPerContainer) {
+    // Без вместимости не вывести ни цену за м³, ни кратность объёма в заявке.
+    if (containerVolumeM3 == null) {
+      throw err.validation({
+        containerTypeId: 'У типа не задана вместимость — цену за контейнер задать нельзя',
+      });
+    }
+    pricePerContainer = input.pricePerContainer!;
+    pricePerM3 = pricePerM3FromContainer(pricePerContainer, containerVolumeM3);
+  } else {
+    pricePerM3 = input.pricePerM3!;
+  }
+
+  // Пара «тип мусора × техника» разрешается однозначно, поэтому вторая позиция на ту же пару —
+  // не новая цена, а спор двух цен. Частичные UNIQUE в БД это же ловят кодом 23505 без пояснения.
+  const dupWhere = and(
+    eq(wasteTariffs.wasteTypeId, input.wasteTypeId),
+    input.containerTypeId
+      ? eq(wasteTariffs.containerTypeId, input.containerTypeId)
+      : eq(wasteTariffs.containerKind, input.containerKind!),
+    excludeId ? ne(wasteTariffs.id, excludeId) : undefined,
+  );
+  const dup = await db.select({ id: wasteTariffs.id }).from(wasteTariffs).where(dupWhere);
+  if (dup.length > 0) {
+    throw err.conflict('Тариф для этой пары уже задан — измените цену в существующей позиции');
+  }
+
+  return {
+    wasteTypeId: input.wasteTypeId,
+    containerTypeId: input.containerTypeId,
+    containerKind: input.containerKind,
+    pricePerM3: String(pricePerM3),
+    pricePerContainer: pricePerContainer == null ? null : String(pricePerContainer),
+    isPerContainer: input.isPerContainer,
+  };
+}
+
+async function loadDto(id: string): Promise<WasteTariffDto> {
+  const [row] = await db
+    .select(dtoColumns)
+    .from(wasteTariffs)
+    .innerJoin(wasteTypes, eq(wasteTariffs.wasteTypeId, wasteTypes.id))
+    .leftJoin(containerTypes, eq(wasteTariffs.containerTypeId, containerTypes.id))
+    .where(eq(wasteTariffs.id, id));
+  if (!row) throw err.notFound('Тариф не найден');
+  return toDto(row);
+}
+
+// Прайс вывоза мусора (ADR 0009). Читают все, кто видит заявки; ведут — администратор и менеджер
+// (ADR 0014). Правка цены не переписывает оформленные суммы: в заявке остаётся снимок тарифа.
 export default async function wasteTariffsRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
+  const canWrite = app.requireRoles('admin', 'manager');
 
   // ── Подбор тарифа под пару «тип мусора × техника» (предпросмотр цены в форме заявки) ──
   // Объявлен до '/:id'-подобных маршрутов не случайно: статический сегмент должен матчиться первым.
@@ -73,20 +210,122 @@ export default async function wasteTariffsRoutes(app: FastifyInstance): Promise<
           .offset(p.offset),
         db.select({ c: count() }).from(wasteTariffs).where(where),
       ]);
-      const items: WasteTariffDto[] = rows.map((t) => ({
-        id: t.id,
-        wasteTypeId: t.wasteTypeId,
-        wasteTypeName: t.wasteTypeName,
-        containerTypeId: t.containerTypeId,
-        containerTypeName: t.containerTypeName,
-        containerKind: t.containerKind,
-        pricePerM3: Number(t.pricePerM3),
-        pricePerContainer: t.pricePerContainer == null ? null : Number(t.pricePerContainer),
-        isPerContainer: t.isPerContainer,
-        note: t.note,
-        isActive: t.isActive,
-      }));
-      return { items, total: Number(totalRows[0]!.c), page: p.page, pageSize: p.pageSize };
+      return {
+        items: rows.map(toDto),
+        total: Number(totalRows[0]!.c),
+        page: p.page,
+        pageSize: p.pageSize,
+      };
+    },
+  );
+
+  // ── Новая позиция прайса ──
+  r.post(
+    '/',
+    { preHandler: [app.authenticate, canWrite], schema: { body: createWasteTariffSchema } },
+    async (req, reply) => {
+      const b = req.body;
+      const values = await prepareValues({
+        wasteTypeId: b.wasteTypeId,
+        containerTypeId: b.containerTypeId ?? null,
+        containerKind: b.containerKind ?? null,
+        pricePerM3: b.pricePerM3 ?? null,
+        pricePerContainer: b.pricePerContainer ?? null,
+        isPerContainer: b.isPerContainer,
+      });
+      const [created] = await db
+        .insert(wasteTariffs)
+        .values({ ...values, note: b.note, isActive: b.isActive })
+        .returning();
+      await writeAudit({
+        actorUserId: requirePrincipal(req).id,
+        action: 'waste_tariff.create',
+        entityType: 'waste_tariff',
+        entityId: created!.id,
+        metadata: { ...values },
+      });
+      reply.code(201);
+      return loadDto(created!.id);
+    },
+  );
+
+  // ── Правка позиции ──
+  r.patch(
+    '/:id',
+    {
+      preHandler: [app.authenticate, canWrite],
+      schema: { params: idParams, body: updateWasteTariffSchema },
+    },
+    async (req) => {
+      const b = req.body;
+      const [current] = await db
+        .select()
+        .from(wasteTariffs)
+        .where(eq(wasteTariffs.id, req.params.id));
+      if (!current) throw err.notFound('Тариф не найден');
+
+      // Патч накладывается на сохранённую позицию, и проверяется результат целиком: инварианты
+      // прайса кросс-полевые, по отдельным полям их не проверить.
+      const isPerContainer = b.isPerContainer ?? current.isPerContainer;
+      const values = await prepareValues(
+        {
+          wasteTypeId: b.wasteTypeId ?? current.wasteTypeId,
+          containerTypeId:
+            b.containerTypeId === undefined ? current.containerTypeId : (b.containerTypeId ?? null),
+          containerKind:
+            b.containerKind === undefined ? current.containerKind : (b.containerKind ?? null),
+          pricePerM3:
+            b.pricePerM3 === undefined ? Number(current.pricePerM3) : (b.pricePerM3 ?? null),
+          pricePerContainer:
+            b.pricePerContainer === undefined
+              ? current.pricePerContainer == null
+                ? null
+                : Number(current.pricePerContainer)
+              : (b.pricePerContainer ?? null),
+          isPerContainer,
+        },
+        current.id,
+      );
+
+      const [updated] = await db
+        .update(wasteTariffs)
+        .set({
+          ...values,
+          ...(b.note === undefined ? {} : { note: b.note }),
+          ...(b.isActive === undefined ? {} : { isActive: b.isActive }),
+          updatedAt: new Date(),
+        })
+        .where(eq(wasteTariffs.id, current.id))
+        .returning();
+
+      const action =
+        b.isActive === false
+          ? 'waste_tariff.deactivate'
+          : b.isActive === true
+            ? 'waste_tariff.activate'
+            : 'waste_tariff.update';
+      // История цен ведётся аудитом: снимок «было → стало» — единственный след правки прайса.
+      await writeAudit({
+        actorUserId: requirePrincipal(req).id,
+        action,
+        entityType: 'waste_tariff',
+        entityId: current.id,
+        metadata: {
+          before: {
+            pricePerM3: current.pricePerM3,
+            pricePerContainer: current.pricePerContainer,
+            isPerContainer: current.isPerContainer,
+            isActive: current.isActive,
+          },
+          after: {
+            pricePerM3: updated!.pricePerM3,
+            pricePerContainer: updated!.pricePerContainer,
+            isPerContainer: updated!.isPerContainer,
+            isActive: updated!.isActive,
+          },
+        },
+      });
+      return loadDto(current.id);
     },
   );
 }

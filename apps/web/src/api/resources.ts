@@ -8,6 +8,8 @@ import type {
   CreateVehicleInput,
   CreateVehicleRequestInput,
   CreateVehicleTypeInput,
+  CreateWasteTariffInput,
+  CreateWasteTypeInput,
   DownloadUrlDto,
   FileDisposition,
   FileDto,
@@ -22,6 +24,8 @@ import type {
   UpdateVehicleInput,
   UpdateVehicleRequestInput,
   UpdateVehicleTypeInput,
+  UpdateWasteTariffInput,
+  UpdateWasteTypeInput,
   UploadSessionDto,
   UserDto,
   VehicleDto,
@@ -163,6 +167,11 @@ export interface WasteRequestUpdatePayload {
 
 export const wasteTypesApi = {
   list: (q: Query) => apiFetch<ListResult<WasteTypeDto>>('/waste-types', { query: q }),
+  create: (body: CreateWasteTypeInput) =>
+    apiFetch<WasteTypeDto>('/waste-types', { method: 'POST', body }),
+  // Удаления нет: деактивация через update({ isActive: false }) — на тип ссылаются заявки.
+  update: (id: string, body: UpdateWasteTypeInput) =>
+    apiFetch<WasteTypeDto>(`/waste-types/${id}`, { method: 'PATCH', body }),
 };
 
 export const wasteTariffsApi = {
@@ -172,6 +181,11 @@ export const wasteTariffsApi = {
     apiFetch<ResolvedWasteTariffDto>('/waste-tariffs/resolve', {
       query: { wasteTypeId, containerTypeId },
     }),
+  create: (body: CreateWasteTariffInput) =>
+    apiFetch<WasteTariffDto>('/waste-tariffs', { method: 'POST', body }),
+  /** Правка цены не переписывает суммы оформленных заявок: в них снимок тарифа (ADR 0009). */
+  update: (id: string, body: UpdateWasteTariffInput) =>
+    apiFetch<WasteTariffDto>(`/waste-tariffs/${id}`, { method: 'PATCH', body }),
 };
 
 export const wasteRequestsApi = {
