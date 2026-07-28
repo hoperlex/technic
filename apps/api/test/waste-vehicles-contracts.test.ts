@@ -64,6 +64,39 @@ describe('машины при смене статуса', () => {
   });
 });
 
+// Талоны заявок без машин (ADR 0013): контейнерная операция — одна ходка, делить талоны не по
+// чему, поэтому они крепятся к самой заявке. Какой из двух способов предъявления допустим для
+// конкретной заявки, знает только сервер (он видит её тип) — схема разделяет их по времени.
+describe('талоны заявки при смене статуса', () => {
+  const FILE_ID = '55555555-5555-4555-8555-555555555555';
+
+  it('принимаются только при закрытии заявки', () => {
+    const ticketFileIds = [FILE_ID];
+    expect(() =>
+      changeWasteRequestStatusSchema.parse({ status: 'done', version: 1, ticketFileIds }),
+    ).not.toThrow();
+    expect(() =>
+      changeWasteRequestStatusSchema.parse({ status: 'confirmed', version: 1, ticketFileIds }),
+    ).toThrow();
+  });
+
+  it('закрытие без талонов проходит — талон могут донести позже', () => {
+    expect(
+      changeWasteRequestStatusSchema.parse({ status: 'done', version: 1 }).ticketFileIds,
+    ).toEqual([]);
+  });
+
+  it('комментарий к выполнению необязателен и уходит в историю', () => {
+    const parsed = changeWasteRequestStatusSchema.parse({
+      status: 'done',
+      version: 1,
+      comment: '  вывезли не полностью  ',
+    });
+    expect(parsed.comment).toBe('вывезли не полностью');
+    expect(changeWasteRequestStatusSchema.parse({ status: 'done', version: 1 }).comment).toBe('');
+  });
+});
+
 describe('сверка объёма', () => {
   it('помеченные на удаление машины в сумму не входят', () => {
     expect(sumVehicleVolume([vehicle(25), vehicle(20), vehicle(8, true)])).toBe(45);

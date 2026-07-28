@@ -217,12 +217,25 @@ export const wasteRequestsApi = {
     id: string,
     status: RequestStatus,
     version: number,
-    comment = '',
-    vehicles: WasteRequestVehicleInput[] = [],
+    // Что предъявляется вместе со статусом, зависит от типа заявки, поэтому необязательные
+    // части собраны в объект: позиционным списком из пяти аргументов вызов стал бы нечитаемым.
+    extra: {
+      comment?: string;
+      /** Машины с талонами — вывоз самосвалами (ADR 0011). */
+      vehicles?: WasteRequestVehicleInput[];
+      /** Талоны самой заявки — контейнерные операции (ADR 0013). */
+      ticketFileIds?: string[];
+    } = {},
   ) =>
     apiFetch<WasteRequestDto>(`/waste-requests/${id}/status`, {
       method: 'PATCH',
-      body: { status, comment, vehicles, version },
+      body: {
+        status,
+        version,
+        comment: extra.comment ?? '',
+        vehicles: extra.vehicles ?? [],
+        ticketFileIds: extra.ticketFileIds ?? [],
+      },
     }),
   remove: (id: string) =>
     apiFetch<{ ok: boolean; mode: string }>(`/waste-requests/${id}`, { method: 'DELETE' }),

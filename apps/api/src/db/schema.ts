@@ -609,10 +609,14 @@ export const requestFiles = pgTable(
     fileId: uuid('file_id')
       .notNull()
       .references(() => files.id, { onDelete: 'cascade' }),
+    // Документ заявки или талон, приложенный при её закрытии (миграция 0031). Талоны вывоза
+    // самосвалами сюда не попадают — они висят на машинах (ADR 0011).
+    kind: text('kind').notNull().default('attachment').$type<'attachment' | 'ticket'>(),
   },
   (t) => ({
     pk: primaryKey({ columns: [t.requestId, t.fileId] }),
     fileIdx: index('request_files_file_idx').on(t.fileId),
+    kindCheck: check('request_files_kind_check', sql`${t.kind} IN ('attachment', 'ticket')`),
   }),
 );
 

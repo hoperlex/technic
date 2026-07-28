@@ -12,6 +12,7 @@ import {
 import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
+  type FileDto,
   isPricedRequestType,
   requestStatusColors,
   requestStatusLabels,
@@ -65,39 +66,43 @@ const secondary = { fontSize: 12 } as const;
 const tagStyle = { marginInlineEnd: 0 } as const;
 
 /**
- * Строка истории: событие и машины, заведённые при нём. Машины показываются у закрытия заявки —
- * там их и заводят (ADR 0011); в теле карточки они занимали место, а талоны всё равно
- * разбирают поштучно.
+ * Строка истории: событие и предъявленный при нём факт. И машины (ADR 0011), и талоны заявки
+ * (ADR 0013) заводятся при закрытии — к нему они и цепляются; в теле карточки они занимали бы
+ * место, а разбирают их всё равно поштучно.
  */
 interface HistoryRow {
   key: string;
-  /** null — машины есть, а закрытия в истории нет: строка состояния, а не событие. */
+  /** null — факт есть, а закрытия в истории нет: строка состояния, а не событие. */
   entry: WasteRequestHistoryEntryDto | null;
   vehicles: WasteRequestVehicleDto[];
+  tickets: FileDto[];
 }
 
 function buildRows(
   history: WasteRequestHistoryEntryDto[] | undefined,
   vehicles: WasteRequestVehicleDto[],
+  tickets: FileDto[],
 ): HistoryRow[] {
   const entries = history ?? [];
-  // Повторное закрытие (после отката) — последнее слово о машинах, к нему их и цепляем.
+  // Повторное закрытие (после отката) — последнее слово о факте, к нему его и цепляем.
   const closingIndex = entries.findLastIndex((e) => e.kind === 'status' && e.toStatus === 'done');
   const rows = entries.map<HistoryRow>((e, i) => ({
     key: e.id,
     entry: e,
     vehicles: i === closingIndex ? vehicles : [],
+    tickets: i === closingIndex ? tickets : [],
   }));
-  // Машины у незакрытой заявки (их можно завести и правкой) без такой строки просто пропали бы.
-  if (closingIndex < 0 && vehicles.length > 0) {
-    rows.push({ key: 'vehicles', entry: null, vehicles });
+  // Машины у незакрытой заявки (их можно завести и правкой) без такой строки просто пропали бы;
+  // талоны без закрытия означают обрезанную историю — молчать о них так же нельзя.
+  if (closingIndex < 0 && (vehicles.length > 0 || tickets.length > 0)) {
+    rows.push({ key: 'fact', entry: null, vehicles, tickets });
   }
   return rows;
 }
 
 function StatusBubbles({ row }: { row: HistoryRow }) {
   const e = row.entry;
-  if (!e) return <Tag style={tagStyle}>Машины</Tag>;
+  if (!e) return <Tag style={tagStyle}>{row.vehicles.length > 0 ? 'Машины' : 'Талоны'}</Tag>;
   if (e.kind === 'status' || e.kind === 'created') {
     // Заведение заявки — переход «ниоткуда»: слева пусто, справа статус, с которого она начата.
     const to = e.toStatus ?? 'new';
@@ -125,13 +130,20 @@ function StatusBubbles({ row }: { row: HistoryRow }) {
   );
 }
 
-/** Строка свёрнутая: чем событие было. Значения изменений и машины — уже в раскрытой части. */
+/** Чем предъявлен факт выполнения: машинами (ADR 0011) или талонами заявки (ADR 0013). */
+function factOf(row: HistoryRow): string {
+  if (row.vehicles.length > 0) return `машин: ${row.vehicles.length}`;
+  return row.tickets.length > 0 ? `талонов: ${row.tickets.length}` : '';
+}
+
+/** Строка свёрнутая: чем событие было. Значения изменений и факт — уже в раскрытой части. */
 function summaryOf(row: HistoryRow): string {
   const e = row.entry;
-  if (!e) return `машин: ${row.vehicles.length}`;
+  if (!e) return factOf(row);
   // Комментарий к отмене — это её причина: без подписи он читается как обычная заметка.
   if (e.comment) return e.toStatus === 'cancelled' ? `Причина: ${e.comment}` : e.comment;
-  if (row.vehicles.length > 0) return `машин: ${row.vehicles.length}`;
+  const fact = factOf(row);
+  if (fact) return fact;
   // У назначения исполнителя суть — имя контрагента, а не то, что поле трогали.
   const operator = e.kind === 'operator' ? e.changes.find((c) => c.field === 'operator') : null;
   if (operator)
@@ -146,7 +158,12 @@ function summaryOf(row: HistoryRow): string {
 }
 
 function hasDetails(row: HistoryRow): boolean {
-  return row.vehicles.length > 0 || !!row.entry?.comment || (row.entry?.changes.length ?? 0) > 0;
+  return (
+    row.vehicles.length > 0 ||
+    row.tickets.length > 0 ||
+    !!row.entry?.comment ||
+    (row.entry?.changes.length ?? 0) > 0
+  );
 }
 
 function HistoryDetails({ row }: { row: HistoryRow }) {
@@ -185,6 +202,18 @@ function HistoryDetails({ row }: { row: HistoryRow }) {
           )}
         </Space>
       ))}
+      {/* Талоны заявки без машин: у контейнерной операции ходка одна, и делить талоны не по чему
+          (ADR 0013). Кнопкой — как у машин: список открывается окном, файлы смотрят по одному. */}
+      {row.tickets.length > 0 && (
+        <Space size={8} wrap>
+          <Typography.Text>Талоны заявки</Typography.Text>
+          <FilesButton
+            files={row.tickets}
+            title="Талоны заявки"
+            label={`талонов: ${row.tickets.length}`}
+          />
+        </Space>
+      )}
     </div>
   );
 }
@@ -236,8 +265,8 @@ export function WasteRequestViewModal({ request, onClose, onEdit }: Props) {
   const priced = request ? isPricedRequestType(request.requestType) : false;
   const activeVehicles = request?.vehicles.filter((v) => !v.isDeleted).length ?? 0;
   const rows = useMemo(
-    () => buildRows(history, request?.vehicles ?? []),
-    [history, request?.vehicles],
+    () => buildRows(history, request?.vehicles ?? [], request?.tickets ?? []),
+    [history, request?.vehicles, request?.tickets],
   );
 
   const fields = request
@@ -384,6 +413,16 @@ export function WasteRequestViewModal({ request, onClose, onEdit }: Props) {
             <div>
               <Typography.Text strong>Файлы</Typography.Text>
               <FileLinkList files={request.files} maxNameWidth={420} />
+            </div>
+          )}
+
+          {/* Талоны стоят отдельным блоком от документов заявки: это не сопроводительная
+              бумага, а подтверждение вывоза (ADR 0013). У вывоза самосвалами список пуст —
+              там талоны висят на машинах и показаны в истории, у их закрытия. */}
+          {request.tickets.length > 0 && (
+            <div>
+              <Typography.Text strong>Талоны</Typography.Text>
+              <FileLinkList files={request.tickets} maxNameWidth={420} />
             </div>
           )}
 
