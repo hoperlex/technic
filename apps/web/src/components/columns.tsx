@@ -68,6 +68,8 @@ export function badgeColumn<T>(opts: {
   filters?: boolean;
   sortable?: boolean;
   width?: number;
+  /** Длинная подпись переносится внутри тега, а не растягивает колонку на одну строку. */
+  multiline?: boolean;
 }): TableColumnType<T> {
   const filterList = opts.filters
     ? Object.entries(opts.labels).map(([value, text]) => ({ text, value }))
@@ -83,7 +85,23 @@ export function badgeColumn<T>(opts: {
     render: (value: unknown) => {
       const v = value as string | null;
       if (v == null) return '—';
-      return <Tag color={opts.colors?.[v]}>{opts.labels[v] ?? v}</Tag>;
+      return (
+        <Tag
+          color={opts.colors?.[v]}
+          style={
+            opts.multiline
+              ? {
+                  whiteSpace: 'normal',
+                  lineHeight: 1.25,
+                  maxWidth: '100%',
+                  wordBreak: 'break-word',
+                }
+              : undefined
+          }
+        >
+          {opts.labels[v] ?? v}
+        </Tag>
+      );
     },
   };
 }

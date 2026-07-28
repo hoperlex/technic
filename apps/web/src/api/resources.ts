@@ -29,6 +29,8 @@ import type {
   VehicleRequestDto,
   VehicleTypeDto,
   WasteRequestDto,
+  WasteRequestHistoryEntryDto,
+  WasteRequestSummaryDto,
   WasteRequestVehicleInput,
   WasteTariffDto,
   WasteTypeDto,
@@ -172,7 +174,11 @@ export const wasteRequestsApi = {
   /** Наличие контейнеров на площадках (присутствующие заявки установки). */
   present: (q: Query) =>
     apiFetch<ListResult<WasteRequestDto>>('/waste-requests/present', { query: q }),
+  /** Счётчики заявок по статусам — сводка над списком; сужается только фильтром по объекту. */
+  summary: (q: Query) => apiFetch<WasteRequestSummaryDto>('/waste-requests/summary', { query: q }),
   get: (id: string) => apiFetch<WasteRequestDto>(`/waste-requests/${id}`),
+  /** События заявки в хронологическом порядке: создание, правки, смены статусов (ADR 0012). */
+  history: (id: string) => apiFetch<WasteRequestHistoryEntryDto[]>(`/waste-requests/${id}/history`),
   create: (body: WasteRequestPayload) =>
     apiFetch<WasteRequestDto>('/waste-requests', { method: 'POST', body }),
   update: (id: string, body: WasteRequestUpdatePayload) =>

@@ -1,4 +1,4 @@
-import { App, Button, InputNumber, List, Select, Space, Typography, Upload } from 'antd';
+import { App, Button, List, Select, Space, Typography, Upload } from 'antd';
 import { DeleteOutlined, PlusCircleOutlined, UploadOutlined } from '@ant-design/icons';
 import { useState } from 'react';
 import { MAX_VEHICLES_PER_REQUEST, type WasteRequestVehicleInput } from '@technic/contracts';
@@ -11,26 +11,32 @@ export interface VehicleDraftFile {
   size: number;
 }
 
-/** Строка формы машины: пока не сохранена, поля могут быть пустыми. */
+/** Строка формы машины: объём не вводится — он равен вместимости выбранного типа. */
 export interface VehicleDraft {
   /** Локальный ключ строки (в БД не уходит). */
   key: string;
   containerTypeId?: string;
-  volumeM3?: number;
   files: VehicleDraftFile[];
+}
+
+/** Тип техники с вместимостью: она и есть объём рейса, поэтому в опции нужна явно. */
+export interface VehicleTypeOption {
+  value: string;
+  label: string;
+  /** Вместимость, м³; null — у типа не задана, выбрать его нельзя. */
+  volumeM3: number | null;
 }
 
 let draftSeq = 0;
 export function emptyVehicleDraft(containerTypeId?: string): VehicleDraft {
   draftSeq += 1;
-  return { key: `v${draftSeq}`, containerTypeId, volumeM3: undefined, files: [] };
+  return { key: `v${draftSeq}`, containerTypeId, files: [] };
 }
 
-/** Заполненность строк: тип и объём обязательны, талоны — нет (загрузка файлов ещё не работает). */
+/** Заполненность строк: обязателен только тип; талоны — нет (загрузка файлов ещё не работает). */
 export function validateVehicleDrafts(drafts: readonly VehicleDraft[]): string | null {
   for (const [i, d] of drafts.entries()) {
-    if (!d.containerTypeId) return `Машина ${i + 1}: выберите тип машины/контейнера`;
-    if (d.volumeM3 == null || d.volumeM3 <= 0) return `Машина ${i + 1}: укажите объём вывоза`;
+    if (!d.containerTypeId) return `Машина ${i + 1}: выберите тип машины`;
   }
   return null;
 }
@@ -39,20 +45,30 @@ export function validateVehicleDrafts(drafts: readonly VehicleDraft[]): string |
 export function draftsToInput(drafts: readonly VehicleDraft[]): WasteRequestVehicleInput[] {
   return drafts.map((d) => ({
     containerTypeId: d.containerTypeId!,
-    volumeM3: d.volumeM3!,
     fileIds: d.files.map((f) => f.id),
   }));
 }
 
-export function sumDraftVolume(drafts: readonly VehicleDraft[]): number {
-  const sum = drafts.reduce((acc, d) => acc + (d.volumeM3 ?? 0), 0);
+/** Объём строки = вместимость выбранного типа; тот же расчёт делает сервер при сохранении. */
+export function draftVolume(
+  draft: VehicleDraft,
+  typeOptions: readonly VehicleTypeOption[],
+): number {
+  return typeOptions.find((t) => t.value === draft.containerTypeId)?.volumeM3 ?? 0;
+}
+
+export function sumDraftVolume(
+  drafts: readonly VehicleDraft[],
+  typeOptions: readonly VehicleTypeOption[],
+): number {
+  const sum = drafts.reduce((acc, d) => acc + draftVolume(d, typeOptions), 0);
   return Math.round(sum * 1000) / 1000;
 }
 
 interface Props {
   value: VehicleDraft[];
   onChange: (next: VehicleDraft[]) => void;
-  typeOptions: { value: string; label: string }[];
+  typeOptions: VehicleTypeOption[];
   /** Тип из заявки — им заполняется новая строка: чаще всего вывозят именно им. */
   defaultContainerTypeId?: string;
   /** Сколько машин уже заведено у заявки: лимит общий на заявку. */
@@ -60,9 +76,9 @@ interface Props {
 }
 
 /**
- * Список машин, вывезших заявку (ADR 0011). Одна строка — один рейс: тип техники, фактический
- * объём и талоны. Строки добавляются кнопкой «+»; объём вводится руками, потому что машина
- * уходит недогруженной чаще, чем полной.
+ * Список машин, вывезших заявку (ADR 0011). Одна строка — один рейс: тип техники и талоны.
+ * Строки добавляются кнопкой «+»; объём не вводится, а берётся из вместимости выбранного типа
+ * («Самосвал 25 м³» → 25 м³) — тот же расчёт повторяет сервер при сохранении.
  */
 export function WasteVehiclesEditor({
   value,
@@ -134,21 +150,21 @@ export function WasteVehiclesEditor({
             </Typography.Text>
             <Select
               style={{ flex: 3, minWidth: 0 }}
-              placeholder="Тип машины/контейнера"
-              options={typeOptions}
+              placeholder="Тип машины"
+              // Тип без заданной вместимости выбрать нельзя: объём рейса брать было бы неоткуда.
+              options={typeOptions.map((t) => ({
+                ...t,
+                disabled: t.volumeM3 == null,
+                label: t.volumeM3 == null ? `${t.label} — вместимость не задана` : t.label,
+              }))}
               showSearch
               optionFilterProp="label"
               value={d.containerTypeId}
               onChange={(v: string) => patch(d.key, { containerTypeId: v })}
             />
-            <InputNumber
-              style={{ flex: 1, minWidth: 110 }}
-              min={0.001}
-              step={1}
-              placeholder="Объём, м³"
-              value={d.volumeM3}
-              onChange={(v) => patch(d.key, { volumeM3: v ?? undefined })}
-            />
+            <Typography.Text style={{ minWidth: 90, textAlign: 'right', whiteSpace: 'nowrap' }}>
+              {d.containerTypeId ? `${draftVolume(d, typeOptions)} м³` : '— м³'}
+            </Typography.Text>
             <Button
               danger
               type="text"

@@ -30,7 +30,6 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import dayjs, { type Dayjs } from 'dayjs';
 import {
   allowedStatusTransitions,
-  containerKindLabels,
   MIN_WASTE_VOLUME_M3,
   REQUEST_TYPES,
   type RequestStatus,
@@ -74,9 +73,9 @@ import {
 import { DataTable } from '../components/DataTable';
 import { FormModal } from '../components/FormModal';
 import { PageTableLayout } from '../components/PageTableLayout';
+import { SummaryBar } from '../components/SummaryBar';
 import { actionsColumn, badgeColumn, textColumn } from '../components/columns';
 import { TimeInput, optionalWorkTimeRule } from '../components/TimeInput';
-import { UserAvatar } from '../components/UserAvatar';
 import { useListParams } from '../hooks/useListParams';
 import { useAuth } from '../auth/AuthContext';
 import { MOSCOW_TZ } from '../theme';
@@ -90,6 +89,7 @@ import {
 import { applyApiFieldErrors } from '../utils/formErrors';
 import { isPastDate, startOfToday } from '../utils/date';
 import { OnSiteTab } from './waste/OnSiteTab';
+import { WasteRequestViewModal } from './waste/WasteRequestViewModal';
 
 const FILE_MAX_SIZE = 52_428_800; // 50 МБ
 const FILE_MAX_COUNT = 20;
@@ -192,6 +192,19 @@ function RequestsTab() {
     queryFn: () => wasteRequestsApi.list(params),
   });
 
+  // Сводка в шапке: сколько заявок ждёт обработки и сколько в работе. Ключ начинается с
+  // 'waste-requests' — значит счётчики обновляются теми же инвалидациями, что и список.
+  const { data: summary } = useQuery({
+    queryKey: ['waste-requests', 'summary', params.objectId],
+    queryFn: () => wasteRequestsApi.summary({ objectId: params.objectId }),
+  });
+  // Оператор заявки не обрабатывает — он их выполняет (ADR 0010): «Новых» у него не бывает,
+  // они появляются в его списке уже переведёнными в работу.
+  const summaryItems = [
+    ...(isOperator ? [] : [{ label: 'Не обработанных', value: summary?.new ?? 0 }]),
+    { label: requestStatusLabels.confirmed, value: summary?.confirmed ?? 0 },
+  ];
+
   const { data: objects } = useQuery({
     queryKey: ['objects', 'for-select'],
     queryFn: () =>
@@ -223,10 +236,15 @@ function RequestsTab() {
   const contTypeOptions = allTypes
     .filter((t) => t.type === 'cont')
     .map((t) => ({ value: t.id, label: t.name }));
-  // Вывоз — любой тип (машина или контейнер), с пометкой вида.
-  const allTypeOptions = allTypes.map((t) => ({
+  // Вывоз мусора выполняется самосвалами: контейнерные типы относятся к замене и снятию.
+  const truckTypes = allTypes.filter((t) => t.type === 'truck');
+  const truckTypeOptions = truckTypes.map((t) => ({ value: t.id, label: t.name }));
+  // Машины при закрытии заявки — те же самосвалы, но с вместимостью: она и есть объём рейса
+  // (ADR 0011), поэтому нужна клиенту для подстановки и сверки.
+  const vehicleTypeOptions = truckTypes.map((t) => ({
     value: t.id,
-    label: `${t.name} (${containerKindLabels[t.type]})`,
+    label: t.name,
+    volumeM3: t.volumeM3,
   }));
   const requestTypeOptions = REQUEST_TYPES.map((t) => ({ value: t, label: requestTypeLabels[t] }));
 
@@ -280,6 +298,9 @@ function RequestsTab() {
 
   const [open, setOpen] = useState(false);
   const [record, setRecord] = useState<WasteRequestDto | null>(null);
+  // Просмотр заявки — отдельное окно, только чтение: в таблице нет места ни автору, ни цене за
+  // м³, ни машинам, а разбирать конкретную заявку без них нельзя (ADR 0012).
+  const [viewRecord, setViewRecord] = useState<WasteRequestDto | null>(null);
   const [form] = Form.useForm<RequestFormValues>();
   const [files, setFiles] = useState<EditorFile[]>([]);
   const [removedIds, setRemovedIds] = useState<string[]>([]);
@@ -319,7 +340,7 @@ function RequestsTab() {
       (acc, v) =>
         vehicleMarks[v.id] === 'deleted' || isVehicleDeleted(v) ? acc : acc + v.volumeM3,
       0,
-    ) + sumDraftVolume(vehicleDrafts);
+    ) + sumDraftVolume(vehicleDrafts, vehicleTypeOptions);
 
   // Выбор исполнителя в форме следует за выбранным объектом: сменили объект — сменился список.
   const formOperatorOptions = operatorOptionsFor(watchObjectId, {
@@ -359,7 +380,7 @@ function RequestsTab() {
   const objectHasPresent = presentTypeOptions.length > 0;
 
   // Первое поле тарифицируемой строки: для замены и снятия выбор ограничен контейнерами,
-  // которые сейчас стоят на объекте; для вывоза — весь справочник (машины и контейнеры).
+  // которые сейчас стоят на объекте; для вывоза — самосвалы из справочника.
   const fromObjectField = {
     options: presentTypeOptions,
     placeholder: 'Тип, присутствующий на объекте',
@@ -377,9 +398,9 @@ function RequestsTab() {
       ...fromObjectField,
     },
     waste_removal: {
-      label: 'Тип машины/контейнера',
-      message: 'Выберите тип машины/контейнера',
-      options: allTypeOptions,
+      label: 'Тип самосвала',
+      message: 'Выберите тип самосвала',
+      options: truckTypeOptions,
       placeholder: 'Чем вывозим',
       fromObject: false,
     },
@@ -768,59 +789,52 @@ function RequestsTab() {
       title: '№',
       dataIndex: 'num',
       width: 90,
-      render: (_v: unknown, r: WasteRequestDto) => `${r.num}-${requestTypeShort[r.requestType]}`,
+      // Номер — вход в карточку заявки: остальные поля в строке не помещаются.
+      render: (_v: unknown, r: WasteRequestDto) => (
+        <Button
+          type="link"
+          size="small"
+          style={{ padding: 0, height: 'auto' }}
+          onClick={() => setViewRecord(r)}
+        >
+          {r.num}-{requestTypeShort[r.requestType]}
+        </Button>
+      ),
     },
+    // Ширина задана всем колонкам: при scroll.x='max-content' колонка без ширины тянется по
+    // содержимому, и один длинный комментарий возвращал бы горизонтальный скролл всей таблице.
     textColumn<WasteRequestDto>({
       key: 'objectName',
       title: 'Объект',
       dataIndex: 'objectName',
       searchable: false,
-    }),
-    textColumn<WasteRequestDto>({
-      key: 'createdByName',
-      title: 'Автор',
-      dataIndex: 'createdByName',
-      searchable: false,
-      width: 170,
-      render: (_v, r) => (
-        <Space size={8}>
-          <UserAvatar name={r.createdByName} size="small" />
-          <span>{r.createdByName}</span>
-        </Space>
-      ),
+      width: 230,
+      ellipsis: true,
     }),
     {
       key: 'containerTypeName',
       title: 'Контейнер / машина',
       dataIndex: 'containerTypeName',
-      width: 240,
-      render: (_v: unknown, r: WasteRequestDto) => requestSubject(r),
+      width: 230,
+      // Стоимость — второй строкой к предмету заявки: своей колонки она стоила дороже, чем
+      // помогала, а цена за м³ рядом с суммой объясняет, почему одинаковый объём стоит по-разному.
+      render: (_v: unknown, r: WasteRequestDto) => (
+        <div style={{ lineHeight: 1.35 }}>
+          <div>{requestSubject(r)}</div>
+          {r.amount != null && (
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {formatMoney(r.amount)} · {formatMoney(r.pricePerM3)}/м³
+            </Typography.Text>
+          )}
+        </div>
+      ),
     },
     {
       key: 'wasteTypeName',
       title: 'Тип мусора',
       dataIndex: 'wasteTypeName',
-      width: 170,
+      width: 150,
       render: (_v: unknown, r: WasteRequestDto) => r.wasteTypeName ?? '—',
-    },
-    {
-      key: 'amount',
-      title: 'Стоимость',
-      dataIndex: 'amount',
-      width: 130,
-      align: 'right' as const,
-      // Цена за м³ — под суммой: без неё непонятно, почему одинаковый объём стоит по-разному.
-      render: (_v: unknown, r: WasteRequestDto) =>
-        r.amount == null ? (
-          '—'
-        ) : (
-          <div style={{ lineHeight: 1.3 }}>
-            <div>{formatMoney(r.amount)}</div>
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              {formatMoney(r.pricePerM3)}/м³
-            </Typography.Text>
-          </div>
-        ),
     },
     badgeColumn<WasteRequestDto>({
       key: 'requestType',
@@ -829,9 +843,10 @@ function RequestsTab() {
       labels: requestTypeLabels,
       colors: requestTypeColors,
       filters: true,
-      // Названия типов развёрнутые («Замена полного контейнера на пустой») — под 140px тег
-      // разъезжался на три строки.
-      width: 210,
+      // Названия типов развёрнутые («Замена полного контейнера на пустой»); тег переносится
+      // на вторую строку — на одну строку такая колонка забирала бы пол-экрана.
+      width: 160,
+      multiline: true,
     }),
     {
       key: 'createdAt',
@@ -842,7 +857,7 @@ function RequestsTab() {
         </div>
       ),
       dataIndex: 'createdAt',
-      width: 150,
+      width: 130,
       sorter: true,
       render: (_v: unknown, r: WasteRequestDto) => (
         <div style={{ lineHeight: 1.35, whiteSpace: 'nowrap' }}>
@@ -853,19 +868,25 @@ function RequestsTab() {
         </div>
       ),
     },
-    {
-      key: 'operatorName',
-      title: 'Оператор',
-      dataIndex: 'operatorName',
-      width: 180,
-      sorter: true,
-      render: (_v: unknown, r: WasteRequestDto) => r.operatorName ?? '—',
-    },
+    // Оператор вывоза видит только свои заявки (ADR 0010) — колонка повторяла бы ему одно и то
+    // же значение во всех строках.
+    ...(isOperator
+      ? []
+      : [
+          {
+            key: 'operatorName',
+            title: 'Оператор',
+            dataIndex: 'operatorName',
+            width: 170,
+            sorter: true,
+            render: (_v: unknown, r: WasteRequestDto) => r.operatorName ?? '—',
+          },
+        ]),
     {
       key: 'status',
       title: 'Статус',
       dataIndex: 'status',
-      width: 170,
+      width: 160,
       sorter: true,
       filters: Object.entries(requestStatusLabels).map(([value, text]) => ({ text, value })),
       filterMultiple: false,
@@ -876,13 +897,14 @@ function RequestsTab() {
       title: 'Комментарий',
       dataIndex: 'comment',
       sortable: false,
+      width: 230,
       ellipsis: true,
     }),
     {
       key: 'files',
       title: 'Файлы',
       dataIndex: 'files',
-      width: 100,
+      width: 80,
       render: (_v: unknown, r: WasteRequestDto) => <FilesCell r={r} />,
     },
     actionsColumn<WasteRequestDto>((r) => {
@@ -945,11 +967,14 @@ function RequestsTab() {
     <PageTableLayout
       filters={filters}
       extra={
-        isOperator ? null : (
-          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-            Создать заявку
-          </Button>
-        )
+        <Space size={16}>
+          <SummaryBar title="Заявок" items={summaryItems} />
+          {isOperator ? null : (
+            <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
+              Создать заявку
+            </Button>
+          )}
+        </Space>
       }
     >
       <DataTable<WasteRequestDto>
@@ -960,6 +985,21 @@ function RequestsTab() {
         page={params.page}
         pageSize={params.pageSize}
         onChange={onTableChange}
+      />
+
+      {/* Карточка заявки: поля только на чтение плюс история событий. Правка — той же формой,
+          что и из таблицы, и только если она этой роли доступна. */}
+      <WasteRequestViewModal
+        request={viewRecord}
+        onClose={() => setViewRecord(null)}
+        onEdit={
+          viewRecord && canModify(viewRecord)
+            ? (r) => {
+                setViewRecord(null);
+                openEdit(r);
+              }
+            : undefined
+        }
       />
 
       {/* Назначение оператора вывоза при переводе заявки в работу: исполнитель обязателен —
@@ -1041,14 +1081,14 @@ function RequestsTab() {
             <WasteVehiclesEditor
               value={doneDrafts}
               onChange={setDoneDrafts}
-              typeOptions={allTypeOptions}
+              typeOptions={vehicleTypeOptions}
               defaultContainerTypeId={doneTarget.containerTypeId ?? undefined}
               existingCount={doneTarget.vehicles.filter((v) => !v.isDeleted).length}
             />
             <VolumeSummary
               planned={doneTarget.volumeM3}
               actual={
-                sumDraftVolume(doneDrafts) +
+                sumDraftVolume(doneDrafts, vehicleTypeOptions) +
                 doneTarget.vehicles.reduce((acc, v) => (v.isDeleted ? acc : acc + v.volumeM3), 0)
               }
             />
@@ -1354,7 +1394,7 @@ function RequestsTab() {
                 <WasteVehiclesEditor
                   value={vehicleDrafts}
                   onChange={setVehicleDrafts}
-                  typeOptions={allTypeOptions}
+                  typeOptions={vehicleTypeOptions}
                   defaultContainerTypeId={record.containerTypeId ?? undefined}
                   existingCount={record.vehicles.filter((v) => !isVehicleDeleted(v)).length}
                 />

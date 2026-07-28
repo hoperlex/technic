@@ -31,25 +31,24 @@ describe('какие заявки отчитываются машинами', ()
 });
 
 describe('машина заявки', () => {
-  it('требует тип и положительный объём; талоны необязательны', () => {
-    const parsed = wasteRequestVehicleInputSchema.parse({ containerTypeId: TYPE_ID, volumeM3: 25 });
+  it('требует только тип; талоны необязательны', () => {
+    const parsed = wasteRequestVehicleInputSchema.parse({ containerTypeId: TYPE_ID });
     expect(parsed.fileIds).toEqual([]);
-    expect(() =>
-      wasteRequestVehicleInputSchema.parse({ containerTypeId: TYPE_ID, volumeM3: 0 }),
-    ).toThrow();
-    expect(() => wasteRequestVehicleInputSchema.parse({ volumeM3: 25 })).toThrow();
+    expect(() => wasteRequestVehicleInputSchema.parse({})).toThrow();
   });
 
-  it('объём может быть дробным — машина уходит недогруженной', () => {
-    expect(
-      wasteRequestVehicleInputSchema.parse({ containerTypeId: TYPE_ID, volumeM3: 18.5 }).volumeM3,
-    ).toBe(18.5);
+  it('объём с клиента не принимается — его берут из вместимости типа', () => {
+    const parsed = wasteRequestVehicleInputSchema.parse({
+      containerTypeId: TYPE_ID,
+      volumeM3: 999,
+    }) as Record<string, unknown>;
+    expect(parsed.volumeM3).toBeUndefined();
   });
 });
 
 describe('машины при смене статуса', () => {
   it('принимаются только при закрытии заявки', () => {
-    const vehicles = [{ containerTypeId: TYPE_ID, volumeM3: 25 }];
+    const vehicles = [{ containerTypeId: TYPE_ID }];
     expect(() =>
       changeWasteRequestStatusSchema.parse({ status: 'done', version: 1, vehicles }),
     ).not.toThrow();
@@ -89,7 +88,7 @@ describe('машины при редактировании заявки', () => 
   it('операции над машинами передаются отдельными списками', () => {
     const parsed = updateWasteRequestSchema.parse({
       version: 3,
-      addVehicles: [{ containerTypeId: TYPE_ID, volumeM3: 25 }],
+      addVehicles: [{ containerTypeId: TYPE_ID }],
       markDeletedVehicleIds: ['33333333-3333-4333-8333-333333333333'],
       deleteVehicleIds: ['44444444-4444-4444-8444-444444444444'],
     });

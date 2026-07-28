@@ -101,7 +101,11 @@ export async function countActiveVehicles(tx: Tx, requestId: string): Promise<nu
   return Number(row!.c);
 }
 
-/** Заводит машины заявки вместе с талонами. Типы техники сверяются со справочником. */
+/**
+ * Заводит машины заявки вместе с талонами. Объём рейса не приходит с клиента: он равен
+ * вместимости типа из справочника и сохраняется снимком — вместимость типа потом могут
+ * уточнить, а закрытые заявки должны остаться с теми цифрами, по которым их принимали.
+ */
 export async function insertVehicles(
   tx: Tx,
   requestId: string,
@@ -119,18 +123,37 @@ export async function insertVehicles(
 
   const typeIds = [...new Set(inputs.map((v) => v.containerTypeId))];
   const types = await tx
-    .select({ id: containerTypes.id })
+    .select({
+      id: containerTypes.id,
+      name: containerTypes.name,
+      kind: containerTypes.type,
+      volumeM3: containerTypes.volumeM3,
+    })
     .from(containerTypes)
     .where(inArray(containerTypes.id, typeIds));
-  if (types.length !== typeIds.length) throw err.badRequest('Тип машины/контейнера не найден');
+  if (types.length !== typeIds.length) throw err.badRequest('Тип машины не найден');
+  const volumeByType = new Map(types.map((t) => [t.id, t]));
 
   for (const input of inputs) {
+    const type = volumeByType.get(input.containerTypeId)!;
+    // Вывоз оформляется самосвалами — контейнерный тип в машине означал бы другую операцию.
+    if (type.kind !== 'truck') {
+      throw err.badRequest(`«${type.name}» — не самосвал: вывоз выполняется самосвалами`, {
+        vehicles: 'Выберите тип вида «Самосвал»',
+      });
+    }
+    if (type.volumeM3 == null || type.volumeM3 <= 0) {
+      throw err.badRequest(
+        `У типа «${type.name}» не задана вместимость — укажите её в справочнике`,
+        { vehicles: 'У выбранного типа нет вместимости' },
+      );
+    }
     const [row] = await tx
       .insert(wasteRequestVehicles)
       .values({
         requestId,
         containerTypeId: input.containerTypeId,
-        volumeM3: String(input.volumeM3),
+        volumeM3: String(type.volumeM3),
         createdBy: actorId,
       })
       .returning({ id: wasteRequestVehicles.id });

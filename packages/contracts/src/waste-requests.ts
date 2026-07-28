@@ -38,6 +38,18 @@ export const wasteRequestListQuerySchema = baseListQuery(WASTE_REQUEST_SORT_FIEL
     .transform((v) => v === 'true'),
 });
 
+/**
+ * Сводка по статусам для виджета над списком. Из фильтров таблицы учитывается только объект:
+ * фильтр по статусу свёл бы сводку к самой себе, а по номеру — к одной заявке.
+ */
+export const wasteRequestSummaryQuerySchema = z.object({
+  objectId: uuidSchema.optional(),
+});
+export type WasteRequestSummaryQuery = z.infer<typeof wasteRequestSummaryQuerySchema>;
+
+/** Количество видимых заявок в каждом статусе (удалённые не считаются). */
+export type WasteRequestSummaryDto = Record<RequestStatus, number>;
+
 const volumeSchema = z.coerce.number().int().min(MIN_WASTE_VOLUME_M3);
 
 // ── Машины и талоны (ADR 0011) ──
@@ -52,14 +64,14 @@ export function requiresWasteVehicles(t: RequestType): boolean {
 }
 
 /**
- * Машина, вывезшая часть заявки: тип техники из справочника, фактический объём рейса и талоны.
- * Объём проставляется руками — недогруз обычнее полной загрузки, поэтому вместимость типа его
- * не задаёт. Талоны необязательны: загрузка файлов ещё не работает, а факт вывоза фиксировать
- * нужно уже сейчас.
+ * Машина, вывезшая часть заявки: тип техники из справочника и талоны. Объём не вводится —
+ * он равен вместимости выбранного типа («Самосвал 25 м³» → 25 м³): машина уезжает гружёной
+ * целиком, а разнобой в ручном вводе давал бы расхождение там, где его нет. В строке машины
+ * объём сохраняется снимком (тип потом могут переименовать или пересчитать).
+ * Талоны необязательны: загрузка файлов ещё не работает, а факт вывоза фиксировать нужно сейчас.
  */
 export const wasteRequestVehicleInputSchema = z.object({
   containerTypeId: uuidSchema,
-  volumeM3: z.coerce.number().positive().max(100_000),
   fileIds: z.array(uuidSchema).max(20).optional().default([]),
 });
 export type WasteRequestVehicleInput = z.infer<typeof wasteRequestVehicleInputSchema>;

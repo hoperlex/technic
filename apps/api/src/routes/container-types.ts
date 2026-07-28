@@ -21,6 +21,7 @@ function toDto(r: ContainerTypeRow): ContainerTypeDto {
     code: r.code,
     name: r.name,
     type: r.type,
+    volumeM3: r.volumeM3,
     sortOrder: r.sortOrder,
     isActive: r.isActive,
     createdAt: r.createdAt.toISOString(),

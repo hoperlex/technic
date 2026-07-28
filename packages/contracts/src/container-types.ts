@@ -41,6 +41,11 @@ export interface ContainerTypeDto {
   code: string;
   name: string;
   type: ContainerKind;
+  /**
+   * Вместимость, м³ (ADR 0009). Она же — объём рейса при закрытии заявки на вывоз (ADR 0011),
+   * поэтому нужна клиенту. null — не задана: такой тип в машинах выбрать нельзя.
+   */
+  volumeM3: number | null;
   sortOrder: number;
   isActive: boolean;
   createdAt: string;

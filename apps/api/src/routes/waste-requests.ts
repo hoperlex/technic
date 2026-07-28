@@ -8,12 +8,15 @@ import {
   createWasteRequestSchema,
   type FileDto,
   MIN_WASTE_VOLUME_M3,
+  REQUEST_STATUSES,
   type RequestType,
   requiresWasteVehicles,
   updateWasteRequestSchema,
   type WasteRequestDto,
+  type WasteRequestSummaryDto,
   type WasteRequestVehicleDto,
   wasteRequestListQuerySchema,
+  wasteRequestSummaryQuerySchema,
 } from '@technic/contracts';
 import { db } from '../db/client';
 import {
@@ -293,13 +296,19 @@ async function resolveSubject(
       throw err.badRequest('На объекте нет контейнера этого типа для снятия');
     }
   } else {
-    // waste_removal — принимаем любой тип из справочника (машина или контейнер)
-    if (!input.containerTypeId) throw err.badRequest('Выберите тип машины/контейнера');
+    // waste_removal — вывоз самосвалами: контейнерные типы сюда не подходят, для них есть
+    // отдельные операции (замена, снятие).
+    if (!input.containerTypeId) throw err.badRequest('Выберите тип самосвала');
     const [mt] = await tx
-      .select({ id: containerTypes.id })
+      .select({ id: containerTypes.id, type: containerTypes.type })
       .from(containerTypes)
       .where(eq(containerTypes.id, input.containerTypeId));
     if (!mt) throw err.badRequest('Тип не найден');
+    if (mt.type !== 'truck') {
+      throw err.badRequest('Вывоз мусора оформляется самосвалами — выберите тип самосвала', {
+        containerTypeId: 'Нужен тип вида «Самосвал»',
+      });
+    }
   }
 
   // Тарифицируемые операции: объём и тип мусора обязательны, цена берётся из прайса.
@@ -478,6 +487,36 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         page: p2.page,
         pageSize: p2.pageSize,
       };
+    },
+  );
+
+  /**
+   * Сводка «сколько заявок в каком статусе» для виджета над таблицей. Считается по тем же
+   * правилам видимости, что и список: штаб видит свой объект, оператор — только назначенные
+   * ему заявки (ADR 0010). Удалённые в счёт не идут — их нет и в списке.
+   */
+  r.get(
+    '/summary',
+    { ...auth, schema: { querystring: wasteRequestSummaryQuerySchema } },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const rows = await db
+        .select({ status: wasteRequests.status, c: count() })
+        .from(wasteRequests)
+        .where(
+          and(
+            isNull(wasteRequests.deletedAt),
+            requestVisibilityWhere(p, wasteRequests.objectId),
+            operatorVisibilityWhere(p, wasteRequests.operatorCounterpartyId),
+            req.query.objectId ? eq(wasteRequests.objectId, req.query.objectId) : undefined,
+          ),
+        )
+        .groupBy(wasteRequests.status);
+      const summary = Object.fromEntries(
+        REQUEST_STATUSES.map((s) => [s, 0]),
+      ) as WasteRequestSummaryDto;
+      for (const row of rows) summary[row.status] = Number(row.c);
+      return summary;
     },
   );
 
