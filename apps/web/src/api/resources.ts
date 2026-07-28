@@ -1,12 +1,15 @@
 import type {
+  AttachVehicleTypeSpecInput,
   ContainerTypeDto,
   CounterpartyDto,
   CreateContainerTypeInput,
   CreateCounterpartyInput,
   CreateObjectInput,
   CreateUserInput,
+  CreateVehicleCategoryInput,
   CreateVehicleInput,
   CreateVehicleRequestInput,
+  CreateVehicleSpecInput,
   CreateVehicleTypeInput,
   CreateWasteTariffInput,
   DownloadUrlDto,
@@ -21,19 +24,25 @@ import type {
   UpdateCounterpartyInput,
   UpdateObjectInput,
   UpdateUserInput,
+  UpdateVehicleCategoryInput,
   UpdateVehicleInput,
   UpdateVehicleRequestInput,
+  UpdateVehicleSpecInput,
   UpdateVehicleTypeInput,
+  UpdateVehicleTypeSpecInput,
   UpdateWasteTariffInput,
   UpdateWasteTypeInput,
   UploadSessionDto,
   UserDto,
+  VehicleCategoryDto,
   VehicleDto,
   VehicleKindDto,
   VehicleModelDto,
   VehicleRequestDto,
   VehicleRequestSummaryDto,
+  VehicleSpecDto,
   VehicleTypeDto,
+  VehicleTypeSpecDto,
   WasteRequestDto,
   WasteRequestSummaryDto,
   WasteRequestVehicleInput,
@@ -95,6 +104,38 @@ export const vehicleTypesApi = {
   // Только описательные поля (типа) + isActive (подтипа). Структурные поля неизменяемы.
   update: (id: string, body: UpdateVehicleTypeInput) =>
     apiFetch<VehicleTypeDto>(`/vehicle-types/${id}`, { method: 'PATCH', body }),
+  // ТТХ типа (ADR 0016): привязка означает обязательность значения у каждой категории типа,
+  // поэтому все четыре ручки возвращают актуальный набор ТТХ целиком.
+  specs: (id: string) => apiFetch<VehicleTypeSpecDto[]>(`/vehicle-types/${id}/specs`),
+  attachSpec: (id: string, body: AttachVehicleTypeSpecInput) =>
+    apiFetch<VehicleTypeSpecDto[]>(`/vehicle-types/${id}/specs`, { method: 'POST', body }),
+  updateSpec: (id: string, specId: string, body: UpdateVehicleTypeSpecInput) =>
+    apiFetch<VehicleTypeSpecDto[]>(`/vehicle-types/${id}/specs/${specId}`, {
+      method: 'PATCH',
+      body,
+    }),
+  detachSpec: (id: string, specId: string) =>
+    apiFetch<VehicleTypeSpecDto[]>(`/vehicle-types/${id}/specs/${specId}`, { method: 'DELETE' }),
+};
+
+// ── ТТХ и категории типов ТС (ADR 0016) ──
+export const vehicleSpecsApi = {
+  list: (q: Query) => apiFetch<ListResult<VehicleSpecDto>>('/vehicle-specs', { query: q }),
+  create: (body: CreateVehicleSpecInput) =>
+    apiFetch<VehicleSpecDto>('/vehicle-specs', { method: 'POST', body }),
+  // `code` неизменяем; `unit`/`decimals` сервер запретит менять, как только ТТХ привязан к типам.
+  update: (id: string, body: UpdateVehicleSpecInput) =>
+    apiFetch<VehicleSpecDto>(`/vehicle-specs/${id}`, { method: 'PATCH', body }),
+};
+
+export const vehicleCategoriesApi = {
+  list: (q: Query) => apiFetch<ListResult<VehicleCategoryDto>>('/vehicle-categories', { query: q }),
+  create: (body: CreateVehicleCategoryInput) =>
+    apiFetch<VehicleCategoryDto>('/vehicle-categories', { method: 'POST', body }),
+  update: (id: string, body: UpdateVehicleCategoryInput) =>
+    apiFetch<VehicleCategoryDto>(`/vehicle-categories/${id}`, { method: 'PATCH', body }),
+  remove: (id: string) =>
+    apiFetch<{ ok: boolean }>(`/vehicle-categories/${id}`, { method: 'DELETE' }),
 };
 
 export const vehicleModelsApi = {

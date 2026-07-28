@@ -8,6 +8,8 @@ export * from './counterparties';
 export * from './container-types';
 export * from './vehicle-kinds';
 export * from './vehicle-types';
+export * from './vehicle-specs';
+export * from './vehicle-categories';
 export * from './vehicles';
 export * from './files';
 export * from './request-history';

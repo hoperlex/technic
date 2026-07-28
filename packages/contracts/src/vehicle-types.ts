@@ -63,6 +63,10 @@ export interface VehicleTypeDto {
   description: string;
   isActive: boolean;
   sortOrder: number;
+  /** Сколько ТТХ привязано к типу (ADR 0016): 0 — у типа нет и не может быть категорий. */
+  specCount: number;
+  /** Сколько категорий (комбинаций значений ТТХ) заведено у типа. */
+  categoryCount: number;
   createdAt: string;
   updatedAt: string;
 }

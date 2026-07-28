@@ -20,6 +20,8 @@ import counterpartiesRoutes from './routes/counterparties';
 import containerTypesRoutes from './routes/container-types';
 import vehicleKindsRoutes from './routes/vehicle-kinds';
 import vehicleTypesRoutes from './routes/vehicle-types';
+import vehicleSpecsRoutes from './routes/vehicle-specs';
+import vehicleCategoriesRoutes from './routes/vehicle-categories';
 import vehicleModelsRoutes from './routes/vehicle-models';
 import vehiclesRoutes from './routes/vehicles';
 import vehicleRequestsRoutes from './routes/vehicle-requests';
@@ -64,6 +66,8 @@ export async function buildApp() {
   await app.register(containerTypesRoutes, { prefix: '/api/v1/container-types' });
   await app.register(vehicleKindsRoutes, { prefix: '/api/v1/vehicle-kinds' });
   await app.register(vehicleTypesRoutes, { prefix: '/api/v1/vehicle-types' });
+  await app.register(vehicleSpecsRoutes, { prefix: '/api/v1/vehicle-specs' });
+  await app.register(vehicleCategoriesRoutes, { prefix: '/api/v1/vehicle-categories' });
   await app.register(vehicleModelsRoutes, { prefix: '/api/v1/vehicle-models' });
   await app.register(vehiclesRoutes, { prefix: '/api/v1/vehicles' });
   await app.register(vehicleRequestsRoutes, { prefix: '/api/v1/vehicle-requests' });

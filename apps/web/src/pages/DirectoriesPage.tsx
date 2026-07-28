@@ -4,6 +4,7 @@ import { CounterpartiesTab } from './directories/CounterpartiesTab';
 import { ContainerTypesTab } from './directories/ContainerTypesTab';
 import { WasteTariffsTab } from './directories/WasteTariffsTab';
 import { VehicleTypesTab } from './directories/VehicleTypesTab';
+import { VehicleSpecsTab } from './directories/VehicleSpecsTab';
 import { VehiclesTab } from './directories/VehiclesTab';
 
 export function DirectoriesPage() {
@@ -24,6 +25,7 @@ export function DirectoriesPage() {
             children: <WasteTariffsTab />,
           },
           { key: 'vehicle-types', label: 'Типы ТС', children: <VehicleTypesTab /> },
+          { key: 'vehicle-specs', label: 'ТТХ', children: <VehicleSpecsTab /> },
           { key: 'vehicles', label: 'Техника', children: <VehiclesTab /> },
         ]}
       />

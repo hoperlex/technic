@@ -8,9 +8,10 @@ import {
   Select,
   Space,
   Switch,
+  Tag,
   type TableColumnType,
 } from 'antd';
-import { EditOutlined, PlusOutlined } from '@ant-design/icons';
+import { EditOutlined, PlusOutlined, SettingOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   DEFAULT_PAGE_SIZE,
@@ -24,6 +25,7 @@ import { FormModal } from '../../components/FormModal';
 import { PageTableLayout } from '../../components/PageTableLayout';
 import { actionsColumn, textColumn } from '../../components/columns';
 import { errorMessage } from '../../utils/format';
+import { VehicleTypeCardDrawer } from './VehicleTypeCardDrawer';
 
 interface VtParams {
   page: number;
@@ -48,10 +50,13 @@ interface VtFormValues {
 
 const CODE_PATTERN = /^[a-z][a-z0-9_]*$/;
 
-// Плоский справочник типов ТС (ADR 0005): один уровень, без подтипов/иерархии.
+// Плоский справочник типов ТС (ADR 0005): один уровень, без подтипов/иерархии. Подтип вернулся
+// в другом виде (ADR 0016): у типа есть набор ТТХ, а категории — комбинации их значений; и то,
+// и другое ведётся в карточке типа (VehicleTypeCardDrawer).
 export function VehicleTypesTab() {
   const { message, modal } = App.useApp();
   const qc = useQueryClient();
+  const [card, setCard] = useState<VehicleTypeDto | null>(null);
 
   // pageSize берём из контракта: сервер принимает только PAGE_SIZES (100/200/500),
   // произвольное значение отклоняется валидацией querystring и список не грузится.
@@ -170,7 +175,7 @@ export function VehicleTypesTab() {
       sortOrder: c.sortOrder ?? 'asc',
     }));
 
-  // Колонки: Вид → Тип → Активен → Действия.
+  // Колонки: Вид → Тип → ТТХ → Категорий → Активен → Действия.
   const columns: TableColumnType<VehicleTypeDto>[] = [
     textColumn<VehicleTypeDto>({
       key: 'kindName',
@@ -185,6 +190,23 @@ export function VehicleTypesTab() {
       dataIndex: 'name',
       searchable: false,
     }),
+    {
+      key: 'specCount',
+      title: 'ТТХ',
+      dataIndex: 'specCount',
+      width: 90,
+      sorter: false,
+      render: (v: number) => (v > 0 ? <Tag color="blue">{v}</Tag> : <Tag>0</Tag>),
+    },
+    {
+      key: 'categoryCount',
+      title: 'Категорий',
+      dataIndex: 'categoryCount',
+      width: 110,
+      sorter: false,
+      // У типа без ТТХ категорий не бывает — это не «пусто», а «неприменимо».
+      render: (v: number, r) => (r.specCount === 0 ? '—' : v),
+    },
     {
       key: 'isActive',
       title: 'Активен',
@@ -201,7 +223,15 @@ export function VehicleTypesTab() {
       ),
     },
     actionsColumn<VehicleTypeDto>((r) => (
-      <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)} />
+      <Space size={4}>
+        <Button
+          size="small"
+          icon={<SettingOutlined />}
+          title="ТТХ и категории"
+          onClick={() => setCard(r)}
+        />
+        <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)} />
+      </Space>
     )),
   ];
 
@@ -313,6 +343,7 @@ export function VehicleTypesTab() {
           </Form.Item>
         </Form>
       </FormModal>
+      <VehicleTypeCardDrawer type={card} onClose={() => setCard(null)} />
     </PageTableLayout>
   );
 }
