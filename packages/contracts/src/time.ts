@@ -92,6 +92,23 @@ export function isWithinWorkTimeAt(date: Date): boolean {
   return isWithinWorkTime(moscowTimeOf(date));
 }
 
+/** Дата по МСК в виде `DD.MM.YYYY`. */
+export function moscowDateOf(date: Date): string {
+  const shifted = new Date(date.getTime() + MOSCOW_UTC_OFFSET_MINUTES * 60_000);
+  const dd = String(shifted.getUTCDate()).padStart(2, '0');
+  const mm = String(shifted.getUTCMonth() + 1).padStart(2, '0');
+  return `${dd}.${mm}.${shifted.getUTCFullYear()}`;
+}
+
+/**
+ * Отметка «дата и время» по МСК для показа человеку: `DD.MM.YYYY HH:mm`, а при незаданном
+ * времени — только дата. Нужна серверу: в историю заявки значения полей уходят снимком уже
+ * готовым текстом (справочник мог измениться), и формат там обязан совпадать с таблицей в вебе.
+ */
+export function formatMoscowDateTime(date: Date, timeUnspecified = false): string {
+  return timeUnspecified ? moscowDateOf(date) : `${moscowDateOf(date)} ${moscowTimeOf(date)}`;
+}
+
 /** Сообщение об ошибке рабочего окна — одинаковое в форме и в ответе API. */
 export const WORK_TIME_MESSAGE = 'Время должно быть в рабочем окне с 07:00 до 21:00';
 export const TIME_FORMAT_MESSAGE = 'Время в формате чч:мм (24 часа)';

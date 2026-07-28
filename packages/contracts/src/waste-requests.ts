@@ -43,6 +43,15 @@ const volumeSchema = z.coerce.number().int().min(MIN_WASTE_VOLUME_M3);
 // ── Машины и талоны (ADR 0011) ──
 
 /**
+ * Машины с талонами предъявляются только при вывозе самосвалами: там рейсов несколько и на
+ * каждый есть талон. Контейнерные операции (установка, замена, снятие) считаются по самим
+ * контейнерам — машина там одна и по талонам не разбивается, поэтому закрываются они без окна.
+ */
+export function requiresWasteVehicles(t: RequestType): boolean {
+  return t === 'waste_removal';
+}
+
+/**
  * Машина, вывезшая часть заявки: тип техники из справочника, фактический объём рейса и талоны.
  * Объём проставляется руками — недогруз обычнее полной загрузки, поэтому вместимость типа его
  * не задаёт. Талоны необязательны: загрузка файлов ещё не работает, а факт вывоза фиксировать
@@ -277,3 +286,64 @@ export interface WasteRequestDto {
   updatedAt: string;
   deletedAt: string | null;
 }
+
+// ── История заявки ──
+// Что с заявкой происходило: кто и когда её завёл, правил, менял статус. Собирается из двух
+// источников — истории статусов (request_status_history) и аудита (audit_log); третьей таблицы
+// не заводим, обе уже пишутся.
+
+/**
+ * Изменение одного поля при правке. Значения — готовый текст на момент правки, а не ссылки:
+ * переименование справочника не должно переписывать прошлое. `from === null` — событие-список
+ * («прикреплены файлы»), у него значима только правая часть.
+ */
+export interface WasteRequestChangeDto {
+  field: string;
+  from: string | null;
+  to: string | null;
+}
+
+export type WasteRequestHistoryKind =
+  | 'created'
+  | 'updated'
+  | 'status'
+  | 'operator'
+  | 'deleted'
+  | 'restored';
+
+export interface WasteRequestHistoryEntryDto {
+  id: string;
+  kind: WasteRequestHistoryKind;
+  /** Момент события (ISO). */
+  at: string;
+  /** Автор события; null — учётная запись удалена или действие выполнено системой. */
+  actorId: string | null;
+  actorName: string | null;
+  /** Смена статуса: откуда и куда. У остальных событий — null. */
+  fromStatus: RequestStatus | null;
+  toStatus: RequestStatus | null;
+  /** Комментарий к переходу; при отмене — причина. */
+  comment: string;
+  /** Изменённые поля у правок; у остальных событий список пуст. */
+  changes: WasteRequestChangeDto[];
+}
+
+/** Подписи полей в истории; ключи проставляет сервер при вычислении изменений. */
+export const wasteRequestChangeLabels: Record<string, string> = {
+  object: 'Объект',
+  requestType: 'Тип заявки',
+  containerType: 'Контейнер / машина',
+  wasteType: 'Тип мусора',
+  volumeM3: 'Объём',
+  pricePerM3: 'Цена за м³',
+  amount: 'Стоимость',
+  operator: 'Оператор вывоза',
+  deliveryAt: 'Доставка',
+  comment: 'Комментарий',
+  filesAdded: 'Прикреплены файлы',
+  filesRemoved: 'Откреплены файлы',
+  vehiclesAdded: 'Добавлены машины',
+  vehiclesMarkedDeleted: 'Машины помечены на удаление',
+  vehiclesRestored: 'Машины возвращены',
+  vehiclesRemoved: 'Машины удалены',
+};

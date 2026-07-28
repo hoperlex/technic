@@ -7,9 +7,9 @@ import {
   changeWasteRequestStatusSchema,
   createWasteRequestSchema,
   type FileDto,
-  isPricedRequestType,
   MIN_WASTE_VOLUME_M3,
   type RequestType,
+  requiresWasteVehicles,
   updateWasteRequestSchema,
   type WasteRequestDto,
   type WasteRequestVehicleDto,
@@ -50,6 +50,8 @@ import {
   scheduleFilesDeletion,
 } from '../services/request-files';
 import { priceWasteRequest, toNum } from '../services/waste-pricing';
+import { diffWasteRequests } from '../services/waste-request-diff';
+import { loadWasteRequestHistory } from '../services/waste-request-history';
 import {
   countActiveVehicles,
   hardDeleteVehicles,
@@ -64,6 +66,10 @@ import { assertOperatorServesObject } from '../services/object-operators';
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 const idParams = z.object({ id: z.string().uuid() });
+
+/** Машины с талонами есть только у вывоза самосвалами; контейнерные операции их не несут. */
+const VEHICLES_NOT_APPLICABLE =
+  'Машины и талоны прикладываются только к заявкам на вывоз мусора самосвалами';
 
 const requestSelect = {
   id: wasteRequests.id,
@@ -484,6 +490,32 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
     return dto;
   });
 
+  // История заявки: создание, правки, смены статусов. Доступна тем же, кто видит саму заявку —
+  // отдельного права на неё нет: это те же события, что и в карточке, только по времени.
+  r.get('/:id/history', { ...auth, schema: { params: idParams } }, async (req) => {
+    const p = requirePrincipal(req);
+    const [row] = await db
+      .select({
+        id: wasteRequests.id,
+        objectId: wasteRequests.objectId,
+        operatorCounterpartyId: wasteRequests.operatorCounterpartyId,
+        createdAt: wasteRequests.createdAt,
+        createdBy: wasteRequests.createdBy,
+        createdByName: users.fullName,
+      })
+      .from(wasteRequests)
+      .innerJoin(users, eq(wasteRequests.createdBy, users.id))
+      .where(eq(wasteRequests.id, req.params.id));
+    if (!row) throw err.notFound('Заявка не найдена');
+    assertShtabScope(p, row.objectId);
+    assertOperatorScope(p, row.operatorCounterpartyId);
+    return loadWasteRequestHistory(row.id, {
+      at: row.createdAt,
+      actorId: row.createdBy,
+      actorName: row.createdByName,
+    });
+  });
+
   r.post('/', { ...auth, schema: { body: createWasteRequestSchema } }, async (req, reply) => {
     const p = requirePrincipal(req);
     const body = req.body;
@@ -541,36 +573,38 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       const p = requirePrincipal(req);
       const { id } = req.params;
       const body = req.body;
-      const [existing] = await db.select().from(wasteRequests).where(eq(wasteRequests.id, id));
-      if (!existing || existing.deletedAt) throw err.notFound('Заявка не найдена');
+      // Состояние «до» берётся сразу как DTO: по нему не только проверки, но и дифф для
+      // истории — названия справочников и суммы там уже собраны (см. waste-request-history).
+      const before = await getRequestDto(id);
+      if (!before || before.deletedAt) throw err.notFound('Заявка не найдена');
       assertNotOperator(p, 'Оператор не может редактировать заявки');
-      assertShtabScope(p, existing.objectId);
-      if (p.role === 'shtab' && existing.status !== 'new') {
+      assertShtabScope(p, before.objectId);
+      if (p.role === 'shtab' && before.status !== 'new') {
         throw err.forbidden('Штаб может редактировать заявку только в статусе «Новая»');
       }
       if (body.objectId) assertShtabScope(p, body.objectId);
 
-      const rt = body.requestType ?? existing.requestType;
-      const objectId = body.objectId ?? existing.objectId;
+      const rt = body.requestType ?? before.requestType;
+      const objectId = body.objectId ?? before.objectId;
       const operatorCounterpartyId =
         body.operatorCounterpartyId !== undefined
           ? body.operatorCounterpartyId
-          : existing.operatorCounterpartyId;
+          : before.operatorCounterpartyId;
       await db.transaction(async (tx) => {
         const subject = await resolveSubject(tx, {
           requestType: rt,
           objectId,
           containerTypeId:
-            body.containerTypeId !== undefined ? body.containerTypeId : existing.containerTypeId,
-          wasteTypeId: body.wasteTypeId !== undefined ? body.wasteTypeId : existing.wasteTypeId,
-          volumeM3: body.volumeM3 !== undefined ? body.volumeM3 : existing.volumeM3,
+            body.containerTypeId !== undefined ? body.containerTypeId : before.containerTypeId,
+          wasteTypeId: body.wasteTypeId !== undefined ? body.wasteTypeId : before.wasteTypeId,
+          volumeM3: body.volumeM3 !== undefined ? body.volumeM3 : before.volumeM3,
         });
         // Проверяем и при переносе заявки на другой объект: пара «оператор — объект» могла
         // разойтись, даже если исполнителя не меняли.
         if (
           operatorCounterpartyId &&
-          (operatorCounterpartyId !== existing.operatorCounterpartyId ||
-            objectId !== existing.objectId)
+          (operatorCounterpartyId !== before.operatorCounterpartyId ||
+            objectId !== before.objectId)
         ) {
           await assertOperatorAssignable(tx, operatorCounterpartyId, objectId);
         }
@@ -581,14 +615,14 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
             requestType: rt,
             ...subject,
             operatorCounterpartyId,
-            deliveryAt: body.deliveryAt ?? existing.deliveryAt,
+            deliveryAt: body.deliveryAt ?? new Date(before.deliveryAt),
             // Признак меняется только вместе с датой — иначе остаётся прежним.
             deliveryTimeUnspecified: body.deliveryAt
               ? (body.deliveryTimeUnspecified ?? false)
-              : existing.deliveryTimeUnspecified,
-            comment: body.comment ?? existing.comment,
+              : before.deliveryTimeUnspecified,
+            comment: body.comment ?? before.comment,
             updatedBy: p.id,
-            version: existing.version + 1,
+            version: before.version + 1,
             updatedAt: new Date(),
           })
           .where(and(eq(wasteRequests.id, id), eq(wasteRequests.version, body.version)))
@@ -602,13 +636,10 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
           throw err.forbidden('Удалить машину насовсем может только администратор');
         }
         if (body.addVehicles?.length) {
-          if (!isPricedRequestType(rt)) {
-            throw err.badRequest(
-              'Установка нового контейнера вывоза не содержит — машины не нужны',
-              {
-                vehicles: 'Для установки машины не заполняются',
-              },
-            );
+          if (!requiresWasteVehicles(rt)) {
+            throw err.badRequest(VEHICLES_NOT_APPLICABLE, {
+              vehicles: 'Машины заполняются только у вывоза самосвалами',
+            });
           }
           await insertVehicles(tx, id, body.addVehicles, p.id);
         }
@@ -617,18 +648,19 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         }
         if (body.restoreVehicleIds?.length) await restoreVehicles(tx, id, body.restoreVehicleIds);
         if (body.deleteVehicleIds?.length) await hardDeleteVehicles(tx, id, body.deleteVehicleIds);
-        // Смена типа на установку оставила бы машины у заявки, у которой вывоза нет.
-        if (!isPricedRequestType(rt) && (await countActiveVehicles(tx, id)) > 0) {
+        // Смена типа на контейнерную операцию оставила бы машины у заявки, которая по ним
+        // не отчитывается.
+        if (!requiresWasteVehicles(rt) && (await countActiveVehicles(tx, id)) > 0) {
           throw err.badRequest(
-            'У установки нового контейнера не может быть машин — снимите их перед сменой типа',
+            'У этого типа заявки не может быть машин — снимите их перед сменой типа',
             { requestType: 'Сначала снимите машины' },
           );
         }
         // Выполненная заявка без единой машины означала бы вывоз без подтверждения — то же
-        // требование, что и при закрытии (у установки вывоза нет, поэтому её не касается).
+        // требование, что и при закрытии (контейнерных операций оно не касается).
         if (
-          existing.status === 'done' &&
-          isPricedRequestType(rt) &&
+          before.status === 'done' &&
+          requiresWasteVehicles(rt) &&
           (await countActiveVehicles(tx, id)) === 0
         ) {
           throw err.badRequest('У выполненной заявки должна остаться хотя бы одна машина', {
@@ -636,13 +668,16 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
           });
         }
       });
+      const after = (await getRequestDto(id))!;
       await writeAudit({
         actorUserId: p.id,
         action: 'waste_request.update',
         entityType: 'waste_request',
         entityId: id,
+        // Перечень изменённых полей — то, ради чего история отличает правку от «заявку трогали».
+        metadata: { changes: diffWasteRequests(before, after) },
       });
-      return (await getRequestDto(id))!;
+      return after;
     },
   );
 
@@ -655,35 +690,34 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       const p = requirePrincipal(req);
       if (!canManageRequests(p)) throw err.forbidden('Оператора назначает диспетчер или менеджер');
       const { operatorCounterpartyId, version } = req.body;
-      const [existing] = await db
-        .select()
-        .from(wasteRequests)
-        .where(eq(wasteRequests.id, req.params.id));
-      if (!existing || existing.deletedAt) throw err.notFound('Заявка не найдена');
+      const before = await getRequestDto(req.params.id);
+      if (!before || before.deletedAt) throw err.notFound('Заявка не найдена');
       await db.transaction(async (tx) => {
         if (operatorCounterpartyId) {
-          await assertOperatorAssignable(tx, operatorCounterpartyId, existing.objectId);
+          await assertOperatorAssignable(tx, operatorCounterpartyId, before.objectId);
         }
         const [updated] = await tx
           .update(wasteRequests)
           .set({
             operatorCounterpartyId,
             updatedBy: p.id,
-            version: existing.version + 1,
+            version: before.version + 1,
             updatedAt: new Date(),
           })
-          .where(and(eq(wasteRequests.id, existing.id), eq(wasteRequests.version, version)))
+          .where(and(eq(wasteRequests.id, before.id), eq(wasteRequests.version, version)))
           .returning({ id: wasteRequests.id });
         if (!updated) throw err.conflict();
       });
+      const after = (await getRequestDto(before.id))!;
       await writeAudit({
         actorUserId: p.id,
         action: 'waste_request.assign_operator',
         entityType: 'waste_request',
-        entityId: existing.id,
-        metadata: { operatorCounterpartyId },
+        entityId: before.id,
+        // Имя исполнителя в истории — снимком: контрагента могут переименовать.
+        metadata: { operatorCounterpartyId, changes: diffWasteRequests(before, after) },
       });
-      return (await getRequestDto(existing.id))!;
+      return after;
     },
   );
 
@@ -704,20 +738,16 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       if (existing.status === status) return (await getRequestDto(existing.id))!;
       assertTransitionAllowed(existing.status, status, p.role);
       await db.transaction(async (tx) => {
-        // Закрытие заявки — это предъявление факта вывоза: машины заводятся тем же запросом,
-        // и «Выполнена» без единой машины не проходит. При повторном закрытии (после отката
-        // администратором) хватает уже заведённых — заново их вносить не нужно (ADR 0011).
-        // Установка нового контейнера вывоза не содержит (ADR 0009), поэтому машин у неё нет:
-        // ни требования, ни возможности их приложить.
+        // Закрытие вывоза самосвалами — это предъявление факта: машины заводятся тем же
+        // запросом, и «Выполнена» без единой машины не проходит. При повторном закрытии (после
+        // отката администратором) хватает уже заведённых (ADR 0011). Контейнерные операции по
+        // машинам не отчитываются — они закрываются без них.
         if (status === 'done') {
-          if (!isPricedRequestType(existing.requestType)) {
+          if (!requiresWasteVehicles(existing.requestType)) {
             if (vehicles.length > 0) {
-              throw err.badRequest(
-                'Установка нового контейнера вывоза не содержит — машины не нужны',
-                {
-                  vehicles: 'Для установки машины не заполняются',
-                },
-              );
+              throw err.badRequest(VEHICLES_NOT_APPLICABLE, {
+                vehicles: 'Машины заполняются только у вывоза самосвалами',
+              });
             }
           } else {
             await insertVehicles(tx, existing.id, vehicles, p.id);

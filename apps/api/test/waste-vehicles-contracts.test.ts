@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   changeWasteRequestStatusSchema,
   checkVehicleVolume,
+  requiresWasteVehicles,
   sumVehicleVolume,
   updateWasteRequestSchema,
   type WasteRequestVehicleDto,
@@ -18,6 +19,15 @@ const vehicle = (volumeM3: number, isDeleted = false): WasteRequestVehicleDto =>
   files: [],
   isDeleted,
   createdAt: '2026-07-27T10:00:00.000Z',
+});
+
+describe('какие заявки отчитываются машинами', () => {
+  it('только вывоз самосвалами — контейнерные операции закрываются без талонов', () => {
+    expect(requiresWasteVehicles('waste_removal')).toBe(true);
+    expect(requiresWasteVehicles('container_install')).toBe(false);
+    expect(requiresWasteVehicles('container_replace')).toBe(false);
+    expect(requiresWasteVehicles('container_removal')).toBe(false);
+  });
 });
 
 describe('машина заявки', () => {

@@ -1177,17 +1177,24 @@ export const jobs = pgTable(
 );
 
 // ── Аудит (append-only, §22) ──
-export const auditLog = pgTable('audit_log', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  actorUserId: uuid('actor_user_id').references(() => users.id, { onDelete: 'set null' }),
-  action: text('action').notNull(),
-  entityType: text('entity_type'),
-  entityId: text('entity_id'),
-  metadata: jsonb('metadata')
-    .notNull()
-    .default(sql`'{}'::jsonb`),
-  createdAt: createdAt(),
-});
+export const auditLog = pgTable(
+  'audit_log',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    actorUserId: uuid('actor_user_id').references(() => users.id, { onDelete: 'set null' }),
+    action: text('action').notNull(),
+    entityType: text('entity_type'),
+    entityId: text('entity_id'),
+    metadata: jsonb('metadata')
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    // История одной сущности (карточка заявки) — выборка по паре «тип + id», свежие сначала.
+    entityIdx: index('audit_log_entity_idx').on(t.entityType, t.entityId, t.createdAt),
+  }),
+);
 
 export type UserRow = typeof users.$inferSelect;
 export type WasteRequestRow = typeof wasteRequests.$inferSelect;

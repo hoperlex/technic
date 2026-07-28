@@ -44,6 +44,7 @@ import {
   normalizeTimeInput,
   calcWasteAmount,
   isPricedRequestType,
+  requiresWasteVehicles,
   isVolumeAllowed,
   volumeStepMessage,
   type WasteRequestDto,
@@ -86,6 +87,7 @@ import {
   formatDateTimeMaybe,
   formatMoney,
 } from '../utils/format';
+import { applyApiFieldErrors } from '../utils/formErrors';
 import { isPastDate, startOfToday } from '../utils/date';
 import { OnSiteTab } from './waste/OnSiteTab';
 
@@ -515,7 +517,12 @@ function RequestsTab() {
       void qc.invalidateQueries({ queryKey: ['waste-requests'] });
       setOpen(false);
     },
-    onError: (e) => message.error(errorMessage(e)),
+    onError: (e) => {
+      // Ошибку валидации показываем на самом поле: тост «Ошибка валидации данных» не говорит,
+      // что именно править. `deliveryAt` в форме разложен на дату и время — правим дату.
+      applyApiFieldErrors(form, e, { deliveryAt: 'deliveryDate' });
+      message.error(errorMessage(e));
+    },
   });
 
   // Переход в работу и отмена проходят через модальные окна — оба требуют ввода
@@ -603,15 +610,12 @@ function RequestsTab() {
       setOperatorTarget(r);
       return;
     }
-    if (status === 'done') {
+    // Талоны предъявляет только вывоз самосвалами; контейнерные операции закрываются сразу.
+    if (status === 'done' && requiresWasteVehicles(r.requestType)) {
       // Уже заведённых машин хватает (повторное закрытие после отката) — тогда окно открывается
-      // пустым и просто подтверждает факт; иначе первая строка предлагается сразу. У установки
-      // нового контейнера вывоза нет, поэтому машин ей не нужно вовсе (ADR 0009/0011).
+      // пустым и просто подтверждает факт; иначе первая строка предлагается сразу.
       const hasVehicles = r.vehicles.some((v) => !v.isDeleted);
-      const needsVehicles = isPricedRequestType(r.requestType);
-      setDoneDrafts(
-        needsVehicles && !hasVehicles ? [emptyVehicleDraft(r.containerTypeId ?? undefined)] : [],
-      );
+      setDoneDrafts(hasVehicles ? [] : [emptyVehicleDraft(r.containerTypeId ?? undefined)]);
       setDoneTarget(r);
       return;
     }
@@ -626,8 +630,7 @@ function RequestsTab() {
       return;
     }
     const activeExisting = doneTarget.vehicles.filter((v) => !v.isDeleted).length;
-    // Машины подтверждают вывоз; у установки нового контейнера вывоза нет — закрывается без них.
-    if (isPricedRequestType(doneTarget.requestType) && activeExisting + doneDrafts.length === 0) {
+    if (activeExisting + doneDrafts.length === 0) {
       message.warning('Добавьте хотя бы одну машину');
       return;
     }
@@ -996,15 +999,11 @@ function RequestsTab() {
         </Form>
       </FormModal>
 
-      {/* Закрытие заявки: факт вывоза предъявляется машинами и талонами (ADR 0011). Сверка
-          с заявленным объёмом — подсказка, расхождение сохранению не мешает. У установки
-          нового контейнера вывоза нет — окно только подтверждает выполнение. */}
+      {/* Закрытие вывоза самосвалами: факт предъявляется машинами и талонами (ADR 0011). Сверка
+          с заявленным объёмом — подсказка, расхождение сохранению не мешает. Контейнерные
+          операции окна не открывают — они закрываются одним действием. */}
       <FormModal
-        title={
-          doneTarget && !isPricedRequestType(doneTarget.requestType)
-            ? 'Заявка выполнена'
-            : 'Прикрепление талона(ов)'
-        }
+        title="Прикрепление талона(ов)"
         open={!!doneTarget}
         onCancel={() => {
           setDoneTarget(null);
@@ -1039,31 +1038,20 @@ function RequestsTab() {
                 )}
               />
             )}
-            {isPricedRequestType(doneTarget.requestType) ? (
-              <>
-                <WasteVehiclesEditor
-                  value={doneDrafts}
-                  onChange={setDoneDrafts}
-                  typeOptions={allTypeOptions}
-                  defaultContainerTypeId={doneTarget.containerTypeId ?? undefined}
-                  existingCount={doneTarget.vehicles.filter((v) => !v.isDeleted).length}
-                />
-                <VolumeSummary
-                  planned={doneTarget.volumeM3}
-                  actual={
-                    sumDraftVolume(doneDrafts) +
-                    doneTarget.vehicles.reduce(
-                      (acc, v) => (v.isDeleted ? acc : acc + v.volumeM3),
-                      0,
-                    )
-                  }
-                />
-              </>
-            ) : (
-              <Typography.Text>
-                Установка нового контейнера вывоза не содержит — машины и талоны для неё не нужны.
-              </Typography.Text>
-            )}
+            <WasteVehiclesEditor
+              value={doneDrafts}
+              onChange={setDoneDrafts}
+              typeOptions={allTypeOptions}
+              defaultContainerTypeId={doneTarget.containerTypeId ?? undefined}
+              existingCount={doneTarget.vehicles.filter((v) => !v.isDeleted).length}
+            />
+            <VolumeSummary
+              planned={doneTarget.volumeM3}
+              actual={
+                sumDraftVolume(doneDrafts) +
+                doneTarget.vehicles.reduce((acc, v) => (v.isDeleted ? acc : acc + v.volumeM3), 0)
+              }
+            />
           </div>
         )}
       </FormModal>
@@ -1215,6 +1203,9 @@ function RequestsTab() {
                 <InputNumber
                   min={MIN_WASTE_VOLUME_M3}
                   step={volumeStepM3 ?? 1}
+                  // Заявленный объём — целое (в БД integer): дробное значение сервер отвергал бы
+                  // валидацией уже после отправки формы.
+                  precision={0}
                   style={{ width: '100%' }}
                   placeholder={volumeStepM3 ? `Кратно ${volumeStepM3}` : 'Например, 20'}
                 />
@@ -1285,8 +1276,9 @@ function RequestsTab() {
 
           {/* Машины и талоны (ADR 0011). Заведённые строки удаляет только администратор,
               остальным доступна пометка: ошибочно снятый талон иначе не заметить.
-              У установки нового контейнера вывоза нет — блок ей не показывается. */}
-          {record && isPriced && (
+              Блок есть только у вывоза самосвалами — контейнерные операции по машинам
+              не отчитываются. */}
+          {record && watchRequestType && requiresWasteVehicles(watchRequestType) && (
             <Form.Item label="Машины и талоны">
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {record.vehicles.length > 0 && (
