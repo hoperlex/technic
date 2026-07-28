@@ -29,7 +29,6 @@ export function OnSiteTab() {
       key: 'containerTypeName',
       title: 'Тип контейнера',
       dataIndex: 'containerTypeName',
-      sortable: false,
       searchable: false,
     }),
     textColumn<WasteRequestDto>({
@@ -49,10 +48,11 @@ export function OnSiteTab() {
       render: (v, r) => formatDateTimeMaybe(v as string, r.deliveryTimeUnspecified),
     }),
     {
-      key: 'no',
+      key: 'num',
       title: '№ заявки установки',
       dataIndex: 'num',
       width: 150,
+      sorter: true,
       render: (_v: unknown, r: WasteRequestDto) => (
         <Typography.Text copyable>{`${r.num}-${requestTypeShort[r.requestType]}`}</Typography.Text>
       ),
