@@ -92,12 +92,22 @@ export function isWithinWorkTimeAt(date: Date): boolean {
   return isWithinWorkTime(moscowTimeOf(date));
 }
 
+/**
+ * Календарная дата по МСК в виде `YYYY-MM-DD`. В этом же виде даты приходят в заявках на
+ * спецтехнику, а лексикографическое сравнение таких строк совпадает с хронологическим —
+ * поэтому день сравнивается как день, без пересчёта в моменты времени.
+ */
+export function moscowDateKeyOf(date: Date): string {
+  const shifted = new Date(date.getTime() + MOSCOW_UTC_OFFSET_MINUTES * 60_000);
+  const mm = String(shifted.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(shifted.getUTCDate()).padStart(2, '0');
+  return `${shifted.getUTCFullYear()}-${mm}-${dd}`;
+}
+
 /** Дата по МСК в виде `DD.MM.YYYY`. */
 export function moscowDateOf(date: Date): string {
-  const shifted = new Date(date.getTime() + MOSCOW_UTC_OFFSET_MINUTES * 60_000);
-  const dd = String(shifted.getUTCDate()).padStart(2, '0');
-  const mm = String(shifted.getUTCMonth() + 1).padStart(2, '0');
-  return `${dd}.${mm}.${shifted.getUTCFullYear()}`;
+  const [yyyy, mm, dd] = moscowDateKeyOf(date).split('-');
+  return `${dd}.${mm}.${yyyy}`;
 }
 
 /**
@@ -109,6 +119,29 @@ export function formatMoscowDateTime(date: Date, timeUnspecified = false): strin
   return timeUnspecified ? moscowDateOf(date) : `${moscowDateOf(date)} ${moscowTimeOf(date)}`;
 }
 
+// ── Минимальная дата новой заявки ──
+// Заявку заводят заранее: на сегодня и задним числом технику уже не подать. Отсчёт ведётся от
+// текущей даты по МСК — по ней живут диспетчеры, и в этом же поясе считаются сроки в заявках.
+// Правило касается только заведения заявки: у заведённой дата остаётся такой, какой была,
+// иначе вчерашнюю заявку нельзя было бы даже отредактировать.
+
+/** Минимальная дата назначения новой заявки — завтра по МСК, `YYYY-MM-DD`. */
+export function minRequestDateKey(now: Date = new Date()): string {
+  return moscowDateKeyOf(new Date(now.getTime() + MINUTES_PER_DAY * 60_000));
+}
+
+/** Календарная дата `YYYY-MM-DD` не раньше завтрашней по МСК. */
+export function isAllowedRequestDate(dateKey: string, now?: Date): boolean {
+  return dateKey >= minRequestDateKey(now);
+}
+
+/** Момент времени приходится на дату не раньше завтрашней по МСК. */
+export function isAllowedRequestDateAt(date: Date, now?: Date): boolean {
+  return isAllowedRequestDate(moscowDateKeyOf(date), now);
+}
+
 /** Сообщение об ошибке рабочего окна — одинаковое в форме и в ответе API. */
 export const WORK_TIME_MESSAGE = 'Время должно быть в рабочем окне с 07:00 до 21:00';
 export const TIME_FORMAT_MESSAGE = 'Время в формате чч:мм (24 часа)';
+/** Сообщение о слишком ранней дате — общее для формы и ответа API. */
+export const MIN_REQUEST_DATE_MESSAGE = 'Дата не может быть раньше завтрашней';

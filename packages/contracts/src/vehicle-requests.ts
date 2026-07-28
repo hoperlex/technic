@@ -3,7 +3,13 @@ import { requestStatusSchema, statusChangeRequiresReason } from './enums';
 import type { RequestStatus } from './enums';
 import { baseListQuery, uuidSchema } from './common';
 import type { FileDto } from './files';
-import { WORK_TIME_MESSAGE, isWithinWorkTimeAt } from './time';
+import {
+  MIN_REQUEST_DATE_MESSAGE,
+  WORK_TIME_MESSAGE,
+  isAllowedRequestDate,
+  isAllowedRequestDateAt,
+  isWithinWorkTimeAt,
+} from './time';
 
 // ── Тип заявки на технику ──
 export const VEHICLE_REQUEST_TYPES = ['special_equipment', 'freight_transport'] as const;
@@ -150,12 +156,20 @@ export const createVehicleRequestSchema = z
           message: 'Дата окончания раньше даты начала',
         });
       }
+      // Новую заявку заводят не раньше чем на завтра (по МСК). Конец периода проверять
+      // отдельно не нужно: он не раньше начала.
+      if (!isAllowedRequestDate(v.dateFrom)) {
+        ctx.addIssue({ code: 'custom', path: ['dateFrom'], message: MIN_REQUEST_DATE_MESSAGE });
+      }
     } else {
       if (v.volumeM3 == null && v.weightTons == null) {
         ctx.addIssue({ code: 'custom', path: ['volumeM3'], message: 'Укажите объём или массу' });
       }
       if (!v.scheduledTimeUnspecified && !isWithinWorkTimeAt(new Date(v.scheduledAt))) {
         ctx.addIssue({ code: 'custom', path: ['scheduledAt'], message: WORK_TIME_MESSAGE });
+      }
+      if (!isAllowedRequestDateAt(new Date(v.scheduledAt))) {
+        ctx.addIssue({ code: 'custom', path: ['scheduledAt'], message: MIN_REQUEST_DATE_MESSAGE });
       }
     }
   });

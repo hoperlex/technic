@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   addressMetaSchema,
   changeVehicleRequestStatusSchema,
@@ -13,6 +13,17 @@ import {
 
 const OBJ = '11111111-1111-4111-8111-111111111111';
 const TYPE = '33333333-3333-4333-8333-333333333333';
+
+// Создание заявки проверяет минимальную дату (не раньше завтра по МСК), поэтому «сейчас»
+// фиксируем: даты в фикстурах календарные, и без фиксации тесты зависели бы от дня запуска.
+// 24.07.2026 12:00 МСК → минимальная дата заявки 25.07.2026.
+beforeAll(() => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date('2026-07-24T09:00:00.000Z'));
+});
+afterAll(() => {
+  vi.useRealTimers();
+});
 
 // Верифицированный адрес (resolved + ФИАС) — обязателен для грузоперевозки (ADR 0006).
 const resolvedMeta = {

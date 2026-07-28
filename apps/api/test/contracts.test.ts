@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   allowedStatusTransitions,
   baseListQuery,
@@ -79,6 +79,16 @@ describe('baseListQuery', () => {
 });
 
 describe('createWasteRequestSchema', () => {
+  // Создание проверяет минимальную дату (не раньше завтра по МСК): без фиксации «сейчас»
+  // фикстура с датой доставки протухла бы вместе с календарём.
+  beforeAll(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-07-31T09:00:00.000Z'));
+  });
+  afterAll(() => {
+    vi.useRealTimers();
+  });
+
   it('парсит корректную заявку и приводит дату', () => {
     const parsed = createWasteRequestSchema.parse({
       objectId: '11111111-1111-4111-8111-111111111111',

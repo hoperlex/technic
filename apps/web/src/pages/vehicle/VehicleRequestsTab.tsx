@@ -50,7 +50,7 @@ import { AddressAutoComplete, AddressCell } from '../../components/AddressAutoCo
 import { useListParams } from '../../hooks/useListParams';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage, formatDateTimeMaybe } from '../../utils/format';
-import { isPastDate, startOfToday } from '../../utils/date';
+import { isBeforeMinRequestDate, isPastDate, minRequestDate } from '../../utils/date';
 import { MOSCOW_TZ } from '../../theme';
 import { FilesCell } from '../../components/FileLinks';
 import { VehicleRequestViewModal } from './VehicleRequestViewModal';
@@ -173,23 +173,27 @@ export function VehicleRequestsTab() {
   const isSpecial = kind === 'special_equipment';
   const isFreight = kind === 'freight_transport';
 
+  // Ограничение дат: новая заявка — не раньше завтра по МСК (правило сервера), правка
+  // заведённой — не в прошлое (её дата могла быть назначена и вчера).
+  const minDateRule = record ? isPastDate : isBeforeMinRequestDate;
+
   // Тип заявки менять нельзя (сервер отклонит) — при редактировании оставляем только свой вид.
   const typeGroups = record
     ? groups.filter((g) => g.options.some((o) => kindByTypeId.get(o.value) === record.requestType))
     : groups;
 
-  /** Смена типа ТС: поля чужого вида очищаем, своей дате подставляем сегодня. */
+  /** Смена типа ТС: поля чужого вида очищаем, своей дате подставляем завтра — раньше нельзя. */
   const handleTypeChange = (typeId: string) => {
     const next = kindByTypeId.get(typeId);
     if (next === 'special_equipment') {
       form.resetFields([...FREIGHT_FIELDS]);
       setLoadingMeta(null);
       setUnloadingMeta(null);
-      if (!form.getFieldValue('dateFrom')) form.setFieldsValue({ dateFrom: startOfToday() });
+      if (!form.getFieldValue('dateFrom')) form.setFieldsValue({ dateFrom: minRequestDate() });
     } else if (next === 'freight_transport') {
       form.resetFields([...SPECIAL_FIELDS]);
       if (!form.getFieldValue('scheduledDate')) {
-        form.setFieldsValue({ scheduledDate: startOfToday() });
+        form.setFieldsValue({ scheduledDate: minRequestDate() });
       }
     }
   };
@@ -634,7 +638,9 @@ export function VehicleRequestsTab() {
             onChange={handleTypeChange}
           />
 
-          {/* Спецтехника: период работы. Для грузоперевозки поля выключены. */}
+          {/* Спецтехника: период работы. Для грузоперевозки поля выключены.
+              Новую заявку назначают не раньше чем на завтра (по МСК); у заведённой дата
+              правится свободно, лишь бы не в прошлое. */}
           <Space style={{ width: '100%' }} size="middle">
             <Form.Item
               name="dateFrom"
@@ -645,7 +651,7 @@ export function VehicleRequestsTab() {
                 format="DD.MM.YYYY"
                 style={{ width: '100%' }}
                 disabled={!isSpecial}
-                disabledDate={isPastDate}
+                disabledDate={minDateRule}
               />
             </Form.Item>
             <Form.Item name="dateTo" label="Дата окончания">
@@ -653,7 +659,7 @@ export function VehicleRequestsTab() {
                 format="DD.MM.YYYY"
                 style={{ width: '100%' }}
                 disabled={!isSpecial}
-                disabledDate={isPastDate}
+                disabledDate={minDateRule}
               />
             </Form.Item>
           </Space>
@@ -669,7 +675,7 @@ export function VehicleRequestsTab() {
                 format="DD.MM.YYYY"
                 style={{ width: '100%' }}
                 disabled={!isFreight}
-                disabledDate={isPastDate}
+                disabledDate={minDateRule}
               />
             </Form.Item>
             <Form.Item
