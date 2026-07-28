@@ -27,7 +27,7 @@ interface AddressAutoCompleteProps {
   onMetaChange?: (meta: AddressMeta | null) => void;
   placeholder?: string;
   maxLength?: number;
-  /** Поле неприменимо к выбранному виду заявки — ввод и подсказки выключены. */
+  /** Ввод и подсказки выключены. */
   disabled?: boolean;
 }
 

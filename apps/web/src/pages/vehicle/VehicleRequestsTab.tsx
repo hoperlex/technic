@@ -68,7 +68,8 @@ import {
 /**
  * Единая форма заявки на автотехнику. Тип заявки не выбирается отдельно — его задаёт
  * вид выбранного типа ТС (коды vehicle_kinds совпадают с vehicle_request_type).
- * Поля обоих типов видны всегда; неприменимые к выбранному виду выключены и не заполняются.
+ * Показываем только поля выбранного вида: неприменимые скрыты вместе с лейблами,
+ * пока тип ТС не выбран — не видно ни одного из двух блоков.
  */
 interface FormValues {
   objectId: string;
@@ -638,85 +639,85 @@ export function VehicleRequestsTab() {
             onChange={handleTypeChange}
           />
 
-          {/* Спецтехника: период работы. Для грузоперевозки поля выключены.
-              Новую заявку назначают не раньше чем на завтра (по МСК); у заведённой дата
-              правится свободно, лишь бы не в прошлое. */}
-          <Space style={{ width: '100%' }} size="middle">
-            <Form.Item
-              name="dateFrom"
-              label="Дата начала"
-              rules={[{ required: isSpecial, message: 'Укажите дату начала' }]}
-            >
-              <DatePicker
-                format="DD.MM.YYYY"
-                style={{ width: '100%' }}
-                disabled={!isSpecial}
-                disabledDate={minDateRule}
-              />
-            </Form.Item>
-            <Form.Item name="dateTo" label="Дата окончания">
-              <DatePicker
-                format="DD.MM.YYYY"
-                style={{ width: '100%' }}
-                disabled={!isSpecial}
-                disabledDate={minDateRule}
-              />
-            </Form.Item>
-          </Space>
+          {/* Спецтехника: период работы. Новую заявку назначают не раньше чем на завтра
+              (по МСК); у заведённой дата правится свободно, лишь бы не в прошлое. */}
+          {isSpecial && (
+            <Space style={{ width: '100%' }} size="middle">
+              <Form.Item
+                name="dateFrom"
+                label="Дата начала"
+                rules={[{ required: true, message: 'Укажите дату начала' }]}
+              >
+                <DatePicker
+                  format="DD.MM.YYYY"
+                  style={{ width: '100%' }}
+                  disabledDate={minDateRule}
+                />
+              </Form.Item>
+              <Form.Item name="dateTo" label="Дата окончания">
+                <DatePicker
+                  format="DD.MM.YYYY"
+                  style={{ width: '100%' }}
+                  disabledDate={minDateRule}
+                />
+              </Form.Item>
+            </Space>
+          )}
 
-          {/* Грузоперевозка: дата/время, объём или масса, адреса. Для спецтехники выключены. */}
-          <Space style={{ width: '100%' }} size="middle">
-            <Form.Item
-              name="scheduledDate"
-              label="Дата подачи"
-              rules={[{ required: isFreight, message: 'Укажите дату' }]}
-            >
-              <DatePicker
-                format="DD.MM.YYYY"
-                style={{ width: '100%' }}
-                disabled={!isFreight}
-                disabledDate={minDateRule}
-              />
-            </Form.Item>
-            <Form.Item
-              name="scheduledTime"
-              label="Время (МСК)"
-              tooltip="Необязательно. Рабочее окно — с 07:00 до 21:00"
-              rules={[optionalWorkTimeRule]}
-            >
-              <TimeInput disabled={!isFreight} />
-            </Form.Item>
-          </Space>
-          <Space style={{ width: '100%' }} size="middle">
-            <Form.Item name="volumeM3" label="Объём, м³" style={{ flex: 1 }}>
-              <InputNumber style={{ width: '100%' }} min={0} step={0.1} disabled={!isFreight} />
-            </Form.Item>
-            <Form.Item name="weightTons" label="Масса, т" style={{ flex: 1 }}>
-              <InputNumber style={{ width: '100%' }} min={0} step={0.1} disabled={!isFreight} />
-            </Form.Item>
-          </Space>
-          <Form.Item
-            name="loadingLocation"
-            label="Место погрузки"
-            rules={[{ required: isFreight, message: 'Укажите место погрузки' }]}
-          >
-            <AddressAutoComplete
-              placeholder="Начните вводить адрес"
-              disabled={!isFreight}
-              onMetaChange={setLoadingMeta}
-            />
-          </Form.Item>
-          <Form.Item
-            name="unloadingLocation"
-            label="Место разгрузки"
-            rules={[{ required: isFreight, message: 'Укажите место разгрузки' }]}
-          >
-            <AddressAutoComplete
-              placeholder="Начните вводить адрес"
-              disabled={!isFreight}
-              onMetaChange={setUnloadingMeta}
-            />
-          </Form.Item>
+          {/* Грузоперевозка: дата/время, объём или масса, адреса. */}
+          {isFreight && (
+            <>
+              <Space style={{ width: '100%' }} size="middle">
+                <Form.Item
+                  name="scheduledDate"
+                  label="Дата подачи"
+                  rules={[{ required: true, message: 'Укажите дату' }]}
+                >
+                  <DatePicker
+                    format="DD.MM.YYYY"
+                    style={{ width: '100%' }}
+                    disabledDate={minDateRule}
+                  />
+                </Form.Item>
+                <Form.Item
+                  name="scheduledTime"
+                  label="Время (МСК)"
+                  tooltip="Необязательно. Рабочее окно — с 07:00 до 21:00"
+                  rules={[optionalWorkTimeRule]}
+                >
+                  <TimeInput />
+                </Form.Item>
+              </Space>
+              <Space style={{ width: '100%' }} size="middle">
+                <Form.Item name="volumeM3" label="Объём, м³" style={{ flex: 1 }}>
+                  <InputNumber style={{ width: '100%' }} min={0} step={0.1} />
+                </Form.Item>
+                <Form.Item name="weightTons" label="Масса, т" style={{ flex: 1 }}>
+                  <InputNumber style={{ width: '100%' }} min={0} step={0.1} />
+                </Form.Item>
+              </Space>
+              <Form.Item
+                name="loadingLocation"
+                label="Место погрузки"
+                rules={[{ required: true, message: 'Укажите место погрузки' }]}
+              >
+                <AddressAutoComplete
+                  placeholder="Начните вводить адрес"
+                  onMetaChange={setLoadingMeta}
+                />
+              </Form.Item>
+              <Form.Item
+                name="unloadingLocation"
+                label="Место разгрузки"
+                rules={[{ required: true, message: 'Укажите место разгрузки' }]}
+              >
+                <AddressAutoComplete
+                  placeholder="Начните вводить адрес"
+                  onMetaChange={setUnloadingMeta}
+                />
+              </Form.Item>
+            </>
+          )}
 
           <Form.Item name="comment" label="Комментарий">
             <Input.TextArea rows={2} maxLength={2000} />
