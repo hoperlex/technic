@@ -28,7 +28,7 @@ export function formatDateOnly(value: string): string {
 export interface EditorFile {
   id: string;
   filename: string;
-  /** Нужен ссылке в списке: фото и PDF открываются во вкладке, остальное скачивается. */
+  /** Нужен ссылке в списке: фото и PDF открываются окном просмотра, остальное скачивается. */
   contentType: string;
   size: number;
   isNew: boolean;

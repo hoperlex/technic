@@ -56,7 +56,7 @@ export function presignPutUrl(
 }
 
 /**
- * Presigned GET. `disposition` определяет, скачает браузер файл или покажет его во вкладке;
+ * Presigned GET. `disposition` определяет, скачает браузер файл или покажет его содержимое;
  * имя файла подставляется в обоих случаях — при сохранении из просмотра оно тоже нужно.
  */
 export function presignGetUrl(

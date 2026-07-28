@@ -1,4 +1,4 @@
-import { App, Button, Select, Space, Typography, Upload } from 'antd';
+import { App, Button, Select, Tooltip, Typography, Upload } from 'antd';
 import { DeleteOutlined, PlusCircleOutlined, UploadOutlined } from '@ant-design/icons';
 import { useState } from 'react';
 import { MAX_VEHICLES_PER_REQUEST, type WasteRequestVehicleInput } from '@technic/contracts';
@@ -9,7 +9,7 @@ import { errorMessage } from '../utils/format';
 export interface VehicleDraftFile {
   id: string;
   filename: string;
-  /** Нужен ссылке на талон: фото и PDF открываются во вкладке, остальное скачивается. */
+  /** Нужен ссылке на талон: фото и PDF открываются окном просмотра, остальное скачивается. */
   contentType: string;
   size: number;
 }
@@ -170,18 +170,11 @@ export function WasteVehiclesEditor({
               value={d.containerTypeId}
               onChange={(v: string) => patch(d.key, { containerTypeId: v })}
             />
-            <Typography.Text style={{ minWidth: 90, textAlign: 'right', whiteSpace: 'nowrap' }}>
+            <Typography.Text style={{ minWidth: 70, textAlign: 'right', whiteSpace: 'nowrap' }}>
               {d.containerTypeId ? `${draftVolume(d, typeOptions)} м³` : '— м³'}
             </Typography.Text>
-            <Button
-              danger
-              type="text"
-              icon={<DeleteOutlined />}
-              aria-label={`Убрать машину ${i + 1}`}
-              onClick={() => removeRow(d.key)}
-            />
-          </div>
-          <Space size={8} align="start">
+            {/* Талон стоит в одной строке с машиной: рейс и его бумага — одна запись, и глазу
+                не приходится связывать кнопку со строкой выше. */}
             <Upload
               multiple
               showUploadList={false}
@@ -190,16 +183,20 @@ export function WasteVehiclesEditor({
                 return false;
               }}
             >
-              <Button size="small" icon={<UploadOutlined />} loading={uploadingKey === d.key}>
-                Прикрепить талон
-              </Button>
+              <Tooltip title="Талон можно приложить и позже">
+                <Button size="small" icon={<UploadOutlined />} loading={uploadingKey === d.key}>
+                  Прикрепить талон
+                </Button>
+              </Tooltip>
             </Upload>
-            {d.files.length === 0 && (
-              <Typography.Text type="secondary" style={{ fontSize: 12, lineHeight: '24px' }}>
-                Талон можно приложить позже
-              </Typography.Text>
-            )}
-          </Space>
+            <Button
+              danger
+              type="text"
+              icon={<DeleteOutlined />}
+              aria-label={`Убрать машину ${i + 1}`}
+              onClick={() => removeRow(d.key)}
+            />
+          </div>
           {d.files.length > 0 && (
             <FileLinkList
               files={d.files}

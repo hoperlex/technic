@@ -283,22 +283,4 @@ export const filesApi = {
     a.click();
     a.remove();
   },
-
-  /**
-   * Просмотр во вкладке (фото талона, PDF). Вкладку открываем до запроса за ссылкой: открытие
-   * после `await` браузер считает непользовательским и блокирует как всплывающее окно.
-   */
-  async openInline(id: string): Promise<void> {
-    const tab = window.open('', '_blank');
-    // Открытая нами вкладка не должна иметь доступа к странице портала через opener.
-    if (tab) tab.opener = null;
-    try {
-      const { url } = await filesApi.downloadUrl(id, 'inline');
-      if (tab) tab.location.replace(url);
-      else window.open(url, '_blank', 'noopener');
-    } catch (e) {
-      tab?.close();
-      throw e;
-    }
-  },
 };

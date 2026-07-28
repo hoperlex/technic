@@ -93,7 +93,7 @@ const FILE_MAX_COUNT = 20;
 interface EditorFile {
   id: string;
   filename: string;
-  /** Нужен ссылке в списке: фото и PDF открываются во вкладке, остальное скачивается. */
+  /** Нужен ссылке в списке: фото и PDF открываются окном просмотра, остальное скачивается. */
   contentType: string;
   size: number;
   isNew: boolean;
@@ -563,8 +563,10 @@ function RequestsTab() {
         // Объём шлём только там, где его вводят руками: у замены и снятия его берёт из
         // справочника сервер — присланное значение он всё равно перезапишет вместимостью.
         volumeM3: requiresManualVolume(values.requestType) ? values.volumeM3 : undefined,
-        // Исполнителя назначает диспетчер; у остальных ролей поля в форме нет (ADR 0010).
-        operatorCounterpartyId: canAssignOperator ? values.operatorCounterpartyId : undefined,
+        // Исполнителя назначает диспетчер и только у заведённой заявки: в форме создания поля
+        // нет, у остальных ролей — нет и при редактировании (ADR 0010).
+        operatorCounterpartyId:
+          canAssignOperator && record ? values.operatorCounterpartyId : undefined,
         deliveryAt: deliveryAt.toISOString(),
         deliveryTimeUnspecified: time === undefined,
         comment: values.comment ?? '',
@@ -1283,8 +1285,10 @@ function RequestsTab() {
               )}
             </>
           )}
-          {/* Исполнителя можно выбрать заранее; если нет — его спросят при переводе в работу. */}
-          {canAssignOperator && (
+          {/* Исполнителя выбирают у уже заведённой заявки: при создании его чаще всего ещё не
+              знают, и лишнее поле в форме отвлекало бы. Новой заявке оператора назначают
+              отдельным действием списка или при переводе в работу. */}
+          {canAssignOperator && record && (
             <Form.Item
               name="operatorCounterpartyId"
               label="Оператор вывоза"
