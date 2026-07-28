@@ -65,20 +65,41 @@ describe('createWasteRequestSchema: тип мусора и объём', () => {
     expect(parsed.volumeM3).toBeUndefined();
   });
 
-  it.each(PRICED_REQUEST_TYPES)('%s требует тип мусора и объём', (requestType) => {
+  it.each(PRICED_REQUEST_TYPES)('%s требует тип мусора', (requestType) => {
     expect(() => createWasteRequestSchema.parse({ ...base, requestType })).toThrow();
-    expect(() =>
-      createWasteRequestSchema.parse({ ...base, requestType, wasteTypeId: WASTE_TYPE_ID }),
-    ).toThrow();
     expect(() => createWasteRequestSchema.parse({ ...base, requestType, volumeM3: 20 })).toThrow();
+  });
+
+  // Замена и снятие вывозят контейнер целиком: объём равен его вместимости и приходит
+  // из справочника, а не от клиента.
+  it.each(['container_replace', 'container_removal'] as const)(
+    '%s объём не требует — его даёт вместимость контейнера',
+    (requestType) => {
+      const parsed = createWasteRequestSchema.parse({
+        ...base,
+        requestType,
+        wasteTypeId: WASTE_TYPE_ID,
+      });
+      expect(parsed.wasteTypeId).toBe(WASTE_TYPE_ID);
+      expect(parsed.volumeM3).toBeUndefined();
+    },
+  );
+
+  it('вывоз самосвалами требует объём: сколько вывезти — предмет заявки', () => {
+    expect(() =>
+      createWasteRequestSchema.parse({
+        ...base,
+        requestType: 'waste_removal',
+        wasteTypeId: WASTE_TYPE_ID,
+      }),
+    ).toThrow();
 
     const parsed = createWasteRequestSchema.parse({
       ...base,
-      requestType,
+      requestType: 'waste_removal',
       wasteTypeId: WASTE_TYPE_ID,
       volumeM3: 20,
     });
-    expect(parsed.wasteTypeId).toBe(WASTE_TYPE_ID);
     expect(parsed.volumeM3).toBe(20);
   });
 });

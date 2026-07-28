@@ -10,6 +10,7 @@ import {
   MIN_WASTE_VOLUME_M3,
   REQUEST_STATUSES,
   type RequestType,
+  requiresManualVolume,
   requiresWasteVehicles,
   updateWasteRequestSchema,
   type WasteRequestDto,
@@ -70,9 +71,10 @@ type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 const idParams = z.object({ id: z.string().uuid() });
 
-/** Машины с талонами есть только у вывоза самосвалами; контейнерные операции их не несут. */
+// Машины есть только у вывоза самосвалами. Талоны при этом бывают у заявок любого типа — просто
+// у контейнерных операций они висят на самой заявке, а не на машине (ADR 0013).
 const VEHICLES_NOT_APPLICABLE =
-  'Машины и талоны прикладываются только к заявкам на вывоз мусора самосвалами';
+  'Машины прикладываются только к заявкам на вывоз мусора самосвалами';
 
 const requestSelect = {
   id: wasteRequests.id,
@@ -115,12 +117,21 @@ const requestSelect = {
 
 type RequestRow = Awaited<ReturnType<typeof baseQuery>>[number];
 
-async function filesByRequestIds(ids: string[]): Promise<Map<string, FileDto[]>> {
-  const map = new Map<string, FileDto[]>();
+/** Вложения заявки, разложенные по назначению: документы и талоны закрытия (ADR 0013). */
+interface RequestFileGroups {
+  files: FileDto[];
+  tickets: FileDto[];
+}
+
+const EMPTY_FILE_GROUPS: RequestFileGroups = { files: [], tickets: [] };
+
+async function filesByRequestIds(ids: string[]): Promise<Map<string, RequestFileGroups>> {
+  const map = new Map<string, RequestFileGroups>();
   if (ids.length === 0) return map;
   const rows = await db
     .select({
       requestId: requestFiles.requestId,
+      kind: requestFiles.kind,
       id: files.id,
       filename: files.filename,
       contentType: files.contentType,
@@ -132,8 +143,8 @@ async function filesByRequestIds(ids: string[]): Promise<Map<string, FileDto[]>>
     .innerJoin(files, eq(requestFiles.fileId, files.id))
     .where(and(inArray(requestFiles.requestId, ids), eq(files.status, 'active')));
   for (const row of rows) {
-    const list = map.get(row.requestId) ?? [];
-    list.push({
+    const groups = map.get(row.requestId) ?? { files: [], tickets: [] };
+    (row.kind === 'ticket' ? groups.tickets : groups.files).push({
       id: row.id,
       filename: row.filename,
       contentType: row.contentType,
@@ -141,14 +152,14 @@ async function filesByRequestIds(ids: string[]): Promise<Map<string, FileDto[]>>
       status: row.status,
       createdAt: row.createdAt.toISOString(),
     });
-    map.set(row.requestId, list);
+    map.set(row.requestId, groups);
   }
   return map;
 }
 
 function toDto(
   r: RequestRow,
-  fileList: FileDto[],
+  fileGroups: RequestFileGroups,
   vehicles: WasteRequestVehicleDto[] = [],
 ): WasteRequestDto {
   return {
@@ -173,7 +184,8 @@ function toDto(
     status: r.status,
     // Пустой комментарий отмены (история до миграции 0024) читается как «причина не указана».
     cancelReason: r.cancelReason || null,
-    files: fileList,
+    files: fileGroups.files,
+    tickets: fileGroups.tickets,
     vehicles,
     version: r.version,
     createdBy: r.createdBy,
@@ -251,12 +263,30 @@ async function isTypePresent(tx: Tx, objectId: string, containerTypeId: string):
 }
 
 /**
+ * Вместимость типа контейнера — она же объём заявки на замену и снятие: контейнер вывозится
+ * целиком (ADR 0009). Тип без вместимости в такой заявке использовать нельзя — считать нечего.
+ */
+async function containerCapacity(tx: Tx, containerTypeId: string): Promise<number> {
+  const [ct] = await tx
+    .select({ volumeM3: containerTypes.volumeM3 })
+    .from(containerTypes)
+    .where(eq(containerTypes.id, containerTypeId));
+  if (!ct) throw err.badRequest('Тип контейнера не найден');
+  if (ct.volumeM3 == null) {
+    throw err.unprocessable('У выбранного типа контейнера не задана вместимость', {
+      containerTypeId: 'Вместимость типа не указана в справочнике',
+    });
+  }
+  return ct.volumeM3;
+}
+
+/**
  * Проверяет и нормализует поля заявки по её типу:
  *  - установка — сверяет тип контейнера (type='cont'), тарификации нет;
  *  - замена/снятие — сверяет, что контейнер этого типа присутствует на объекте (view наличия);
- *  - вывоз — сверяет тип из справочника (любой: машина или контейнер).
- * Для тарифицируемых операций (замена/снятие/вывоз) дополнительно требует тип мусора и объём,
- * подбирает тариф и возвращает снимок цены (ADR 0009). Лишние поля обнуляет.
+ *  - вывоз — сверяет тип из справочника (только самосвал).
+ * Для тарифицируемых операций (замена/снятие/вывоз) дополнительно требует тип мусора, определяет
+ * объём, подбирает тариф и возвращает снимок цены (ADR 0009). Лишние поля обнуляет.
  */
 async function resolveSubject(
   tx: Tx,
@@ -311,11 +341,19 @@ async function resolveSubject(
     }
   }
 
-  // Тарифицируемые операции: объём и тип мусора обязательны, цена берётся из прайса.
+  // Тарифицируемые операции: тип мусора обязателен, цена берётся из прайса.
   if (!input.wasteTypeId) throw err.badRequest('Выберите тип мусора');
-  if (input.volumeM3 == null) throw err.badRequest('Укажите объём');
-  if (input.volumeM3 < MIN_WASTE_VOLUME_M3) {
-    throw err.badRequest(`Объём не меньше ${MIN_WASTE_VOLUME_M3} м³`);
+  // Объём вводится вручную только у вывоза самосвалами; замена и снятие вывозят контейнер
+  // целиком, поэтому их объём — вместимость типа из справочника, а присланный игнорируется.
+  let volumeM3: number;
+  if (requiresManualVolume(input.requestType)) {
+    if (input.volumeM3 == null) throw err.badRequest('Укажите объём');
+    if (input.volumeM3 < MIN_WASTE_VOLUME_M3) {
+      throw err.badRequest(`Объём не меньше ${MIN_WASTE_VOLUME_M3} м³`);
+    }
+    volumeM3 = input.volumeM3;
+  } else {
+    volumeM3 = await containerCapacity(tx, input.containerTypeId);
   }
   const [wt] = await tx
     .select({ id: wasteTypes.id, isActive: wasteTypes.isActive })
@@ -328,13 +366,13 @@ async function resolveSubject(
     requestType: input.requestType,
     wasteTypeId: input.wasteTypeId,
     containerTypeId: input.containerTypeId,
-    volumeM3: input.volumeM3,
+    volumeM3,
   });
 
   return {
     containerTypeId: input.containerTypeId,
     wasteTypeId: input.wasteTypeId,
-    volumeM3: input.volumeM3,
+    volumeM3,
     wasteTariffId: pricing.wasteTariffId,
     pricePerM3: pricing.pricePerM3,
   };
@@ -347,7 +385,7 @@ async function getRequestDto(id: string): Promise<WasteRequestDto | null> {
     filesByRequestIds([id]),
     vehiclesByRequestIds([id]),
   ]);
-  return toDto(row, filesMap.get(id) ?? [], vehiclesMap.get(id) ?? []);
+  return toDto(row, filesMap.get(id) ?? EMPTY_FILE_GROUPS, vehiclesMap.get(id) ?? []);
 }
 
 async function linkFiles(
@@ -356,6 +394,8 @@ async function linkFiles(
   fileIds: string[],
   uploaderId: string,
   enforceTotal = false,
+  // Талоны приходят только с закрытием заявки; всё остальное — документы (ADR 0013).
+  kind: 'attachment' | 'ticket' = 'attachment',
 ): Promise<void> {
   if (fileIds.length === 0) return;
   await assertFilesAttachable(tx, fileIds, uploaderId);
@@ -366,7 +406,7 @@ async function linkFiles(
       .where(eq(requestFiles.requestId, requestId));
     assertTotalWithinLimit(Number(c!.c), fileIds.length);
   }
-  await tx.insert(requestFiles).values(fileIds.map((fileId) => ({ requestId, fileId })));
+  await tx.insert(requestFiles).values(fileIds.map((fileId) => ({ requestId, fileId, kind })));
   await markFilesActive(tx, fileIds);
 }
 
@@ -414,13 +454,16 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       ]),
     );
     const sortCols = {
+      num: wasteRequests.num,
       objectName: constructionObjects.name,
       createdByName: users.fullName,
       containerTypeName: containerTypes.name,
+      wasteTypeName: wasteTypes.name,
       requestType: wasteRequests.requestType,
       deliveryAt: wasteRequests.deliveryAt,
       status: wasteRequests.status,
       operatorName: counterparties.name,
+      comment: wasteRequests.comment,
       createdAt: wasteRequests.createdAt,
     };
     const p2 = pageParams(q);
@@ -440,7 +483,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
     ]);
     return {
       items: rows.map((row) =>
-        toDto(row, filesMap.get(row.id) ?? [], vehiclesMap.get(row.id) ?? []),
+        toDto(row, filesMap.get(row.id) ?? EMPTY_FILE_GROUPS, vehiclesMap.get(row.id) ?? []),
       ),
       total: Number(totalRow!.c),
       page: p2.page,
@@ -464,6 +507,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         searchCondition(q.search, [constructionObjects.name, constructionObjects.code]),
       );
       const sortCols = {
+        num: wasteRequests.num,
         objectName: constructionObjects.name,
         containerTypeName: containerTypes.name,
         deliveryAt: wasteRequests.deliveryAt,
@@ -482,7 +526,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         .where(where);
       const filesMap = await filesByRequestIds(rows.map((row) => row.id));
       return {
-        items: rows.map((row) => toDto(row, filesMap.get(row.id) ?? [])),
+        items: rows.map((row) => toDto(row, filesMap.get(row.id) ?? EMPTY_FILE_GROUPS)),
         total: Number(totalRow!.c),
         page: p2.page,
         pageSize: p2.pageSize,
@@ -765,7 +809,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
     async (req) => {
       const p = requirePrincipal(req);
       if (!canChangeStatus(p)) throw err.forbidden('Недостаточно прав для смены статуса');
-      const { status, comment, vehicles, version } = req.body;
+      const { status, comment, vehicles, ticketFileIds, version } = req.body;
       const [existing] = await db
         .select()
         .from(wasteRequests)
@@ -776,10 +820,14 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       if (existing.status === status) return (await getRequestDto(existing.id))!;
       assertTransitionAllowed(existing.status, status, p.role);
       await db.transaction(async (tx) => {
-        // Закрытие вывоза самосвалами — это предъявление факта: машины заводятся тем же
-        // запросом, и «Выполнена» без единой машины не проходит. При повторном закрытии (после
-        // отката администратором) хватает уже заведённых (ADR 0011). Контейнерные операции по
-        // машинам не отчитываются — они закрываются без них.
+        // Закрытие заявки — это предъявление факта, и оно проводится тем же запросом, что и
+        // смена статуса. Способов предъявления два, и выбирает между ними тип заявки:
+        //  - вывоз самосвалами: машины с талонами, «Выполнена» без единой машины не проходит.
+        //    При повторном закрытии (после отката администратором) хватает уже заведённых
+        //    (ADR 0011);
+        //  - контейнерные операции: одна ходка, машине взяться неоткуда — талон крепится к самой
+        //    заявке (ADR 0013). Обязательным он не сделан: талон могут донести позже, а держать
+        //    заявку невыполненной из-за неотсканированной бумажки — врать о состоянии работ.
         if (status === 'done') {
           if (!requiresWasteVehicles(existing.requestType)) {
             if (vehicles.length > 0) {
@@ -787,7 +835,13 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
                 vehicles: 'Машины заполняются только у вывоза самосвалами',
               });
             }
+            await linkFiles(tx, existing.id, ticketFileIds, p.id, true, 'ticket');
           } else {
+            if (ticketFileIds.length > 0) {
+              throw err.badRequest('У вывоза самосвалами талоны прикладываются к машинам', {
+                ticketFileIds: 'Приложите талоны к машинам',
+              });
+            }
             await insertVehicles(tx, existing.id, vehicles, p.id);
             if ((await countActiveVehicles(tx, existing.id)) === 0) {
               throw err.badRequest('Укажите хотя бы одну машину с объёмом вывоза', {
@@ -815,7 +869,12 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         action: 'waste_request.status',
         entityType: 'waste_request',
         entityId: existing.id,
-        metadata: { from: existing.status, to: status, comment },
+        metadata: {
+          from: existing.status,
+          to: status,
+          comment,
+          ticketsAdded: ticketFileIds.length,
+        },
       });
       return (await getRequestDto(existing.id))!;
     },

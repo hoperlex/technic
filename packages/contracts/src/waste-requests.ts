@@ -11,13 +11,18 @@ import type { FileDto } from './files';
 import { WORK_TIME_MESSAGE, isWithinWorkTimeAt } from './time';
 import { isPricedRequestType } from './waste-tariffs';
 
+// Сортировка доступна во всех столбцах таблицы заявок; ключ поля совпадает с ключом колонки.
 export const WASTE_REQUEST_SORT_FIELDS = [
+  'num',
   'objectName',
   'containerTypeName',
+  'wasteTypeName',
   'requestType',
   'deliveryAt',
   'status',
   'operatorName',
+  'comment',
+  'createdByName',
   'createdAt',
 ] as const;
 
@@ -64,6 +69,16 @@ export function requiresWasteVehicles(t: RequestType): boolean {
 }
 
 /**
+ * Объём вводится вручную только у вывоза самосвалами: сколько мусора вывезти — там и есть
+ * предмет заявки, а вместимость самосвала говорит лишь о том, за сколько рейсов это сделают.
+ * Замена и снятие вывозят контейнер целиком, поэтому их объём равен вместимости выбранного
+ * типа и подставляется сервером из справочника (ADR 0009).
+ */
+export function requiresManualVolume(t: RequestType): boolean {
+  return t === 'waste_removal';
+}
+
+/**
  * Машина, вывезшая часть заявки: тип техники из справочника и талоны. Объём не вводится —
  * он равен вместимости выбранного типа («Самосвал 25 м³» → 25 м³): машина уезжает гружёной
  * целиком, а разнобой в ручном вводе давал бы расхождение там, где его нет. В строке машины
@@ -82,11 +97,11 @@ const vehiclesArraySchema = z.array(wasteRequestVehicleInputSchema).max(MAX_VEHI
 /**
  * Поля заявки зависят от типа операции:
  *  - container_install → containerTypeId (тип контейнера из справочника, type='cont');
- *  - container_replace → containerTypeId (присутствующий на объекте) + wasteTypeId + volumeM3;
- *  - container_removal → containerTypeId (присутствующий на объекте) + wasteTypeId + volumeM3;
- *  - waste_removal     → containerTypeId (тип машины или контейнера) + wasteTypeId + volumeM3.
- * Кросс-полевые требования проверяет superRefine; тариф и сумму считает сервер (ADR 0009) —
- * кратность объёма зависит от подобранного тарифа и здесь проверена быть не может.
+ *  - container_replace → containerTypeId (присутствующий на объекте) + wasteTypeId;
+ *  - container_removal → containerTypeId (присутствующий на объекте) + wasteTypeId;
+ *  - waste_removal     → containerTypeId (тип самосвала) + wasteTypeId + volumeM3.
+ * Кросс-полевые требования проверяет superRefine; объём контейнерных операций, тариф и сумму
+ * считает сервер (ADR 0009) — вместимость типа и кратность объёма известны только ему.
  */
 export const createWasteRequestSchema = z
   .object({
@@ -138,14 +153,13 @@ export const createWasteRequestSchema = z
         message: 'Выберите тип машины/контейнера',
       });
     }
-    // Тарифицируемые операции: мусор реально вывозится, значит нужны его тип и объём (ADR 0009).
-    if (isPricedRequestType(v.requestType)) {
-      if (!v.wasteTypeId) {
-        ctx.addIssue({ code: 'custom', path: ['wasteTypeId'], message: 'Выберите тип мусора' });
-      }
-      if (v.volumeM3 == null) {
-        ctx.addIssue({ code: 'custom', path: ['volumeM3'], message: 'Укажите объём' });
-      }
+    // Тарифицируемые операции: мусор реально вывозится, значит нужен его тип (ADR 0009).
+    if (isPricedRequestType(v.requestType) && !v.wasteTypeId) {
+      ctx.addIssue({ code: 'custom', path: ['wasteTypeId'], message: 'Выберите тип мусора' });
+    }
+    // Объём — только у вывоза самосвалами; у замены и снятия его даёт вместимость контейнера.
+    if (requiresManualVolume(v.requestType) && v.volumeM3 == null) {
+      ctx.addIssue({ code: 'custom', path: ['volumeM3'], message: 'Укажите объём' });
     }
   });
 export type CreateWasteRequestInput = z.infer<typeof createWasteRequestSchema>;
@@ -158,6 +172,7 @@ export const updateWasteRequestSchema = z
     requestType: requestTypeSchema.optional(),
     containerTypeId: uuidSchema.nullable().optional(),
     wasteTypeId: uuidSchema.nullable().optional(),
+    /** Значим только у вывоза самосвалами: у замены и снятия объём даёт вместимость контейнера. */
     volumeM3: volumeSchema.nullable().optional(),
     operatorCounterpartyId: uuidSchema.nullable().optional(),
     deliveryAt: z.coerce.date().optional(),
@@ -236,13 +251,17 @@ export function checkVehicleVolume(
 
 // Комментарий к смене статуса пишется в историю (request_status_history.comment).
 // При отмене он обязателен и играет роль причины — см. statusChangeRequiresReason.
-// Машины передаются вместе с закрытием заявки: «Выполнена» без единой машины бессмысленна,
-// а отдельным запросом её пришлось бы проводить не атомарно со сменой статуса (ADR 0011).
+// Машины и талоны передаются вместе с закрытием заявки: «Выполнена» без предъявленного факта
+// бессмысленна, а отдельным запросом его пришлось бы проводить не атомарно со сменой статуса
+// (ADR 0011). Какой из двух способов предъявления в ходу, решает тип заявки:
+// вывоз самосвалами — `vehicles`, контейнерные операции — `ticketFileIds` (ADR 0013).
 export const changeWasteRequestStatusSchema = z
   .object({
     status: requestStatusSchema,
     comment: z.string().trim().max(2000).optional().default(''),
     vehicles: vehiclesArraySchema.optional().default([]),
+    /** Талоны заявок без машин: крепятся к самой заявке (request_files, kind='ticket'). */
+    ticketFileIds: z.array(uuidSchema).max(20).optional().default([]),
     version: z.number().int().nonnegative(),
   })
   .superRefine((v, ctx) => {
@@ -254,6 +273,13 @@ export const changeWasteRequestStatusSchema = z
         code: 'custom',
         path: ['vehicles'],
         message: 'Машины прикладываются только при закрытии заявки',
+      });
+    }
+    if (v.status !== 'done' && v.ticketFileIds.length > 0) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['ticketFileIds'],
+        message: 'Талоны прикладываются только при закрытии заявки',
       });
     }
   });
@@ -288,7 +314,13 @@ export interface WasteRequestDto {
   status: RequestStatus;
   /** Причина отмены из истории статусов; заполнена только у отменённых заявок. */
   cancelReason: string | null;
+  /** Документы заявки: прикладываются при заведении и правятся свободно. Талонов здесь нет. */
   files: FileDto[];
+  /**
+   * Талоны, приложенные при закрытии заявки без машин (ADR 0013). У вывоза самосвалами список
+   * пуст — там талоны висят на машинах и лежат в `vehicles[].files`.
+   */
+  tickets: FileDto[];
   /** Машины, вывезшие заявку, с талонами (ADR 0011); помеченные на удаление входят в список. */
   vehicles: WasteRequestVehicleDto[];
   version: number;
