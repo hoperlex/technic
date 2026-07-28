@@ -21,6 +21,7 @@ import {
   DeleteOutlined,
   DownOutlined,
   EditOutlined,
+  EyeOutlined,
   PaperClipOutlined,
   PlusOutlined,
   ReloadOutlined,
@@ -789,16 +790,11 @@ function RequestsTab() {
       title: '№',
       dataIndex: 'num',
       width: 90,
-      // Номер — вход в карточку заявки: остальные поля в строке не помещаются.
+      // Номер — только идентификатор заявки; карточка открывается кнопкой в «Действиях».
       render: (_v: unknown, r: WasteRequestDto) => (
-        <Button
-          type="link"
-          size="small"
-          style={{ padding: 0, height: 'auto' }}
-          onClick={() => setViewRecord(r)}
-        >
+        <span style={{ whiteSpace: 'nowrap' }}>
           {r.num}-{requestTypeShort[r.requestType]}
-        </Button>
+        </span>
       ),
     },
     // Ширина задана всем колонкам: при scroll.x='max-content' колонка без ширины тянется по
@@ -908,22 +904,40 @@ function RequestsTab() {
       render: (_v: unknown, r: WasteRequestDto) => <FilesCell r={r} />,
     },
     actionsColumn<WasteRequestDto>((r) => {
+      // Карточка открывается и у архивной заявки: понять, что и почему в ней было, можно
+      // только там — в строке таблицы ни автора, ни истории нет.
+      const view = (
+        <Tooltip title="Открыть карточку">
+          <Button
+            size="small"
+            icon={<EyeOutlined />}
+            aria-label="Открыть карточку"
+            onClick={() => setViewRecord(r)}
+          />
+        </Tooltip>
+      );
       if (r.deletedAt) {
-        return isAdmin ? (
-          <Tooltip title="Восстановить">
-            <Button
-              size="small"
-              icon={<ReloadOutlined />}
-              onClick={() => restoreMut.mutate(r.id)}
-            />
-          </Tooltip>
-        ) : (
-          <Tag>в архиве</Tag>
+        return (
+          <Space size={4}>
+            {view}
+            {isAdmin ? (
+              <Tooltip title="Восстановить">
+                <Button
+                  size="small"
+                  icon={<ReloadOutlined />}
+                  onClick={() => restoreMut.mutate(r.id)}
+                />
+              </Tooltip>
+            ) : (
+              <Tag style={{ marginInlineEnd: 0 }}>в архиве</Tag>
+            )}
+          </Space>
         );
       }
       const allowed = canModify(r);
       return (
         <Space size={4}>
+          {view}
           <Button
             size="small"
             icon={<EditOutlined />}
@@ -939,7 +953,7 @@ function RequestsTab() {
           />
         </Space>
       );
-    }, 90),
+    }, 120),
   ];
 
   const filters = (
