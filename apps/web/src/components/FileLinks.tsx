@@ -100,17 +100,18 @@ interface FileListProps<T extends FileRef> {
   onRemove?: (file: T) => void;
   emptyText?: string;
   maxNameWidth?: number;
-  /** Иконка «Посмотреть» рядом со скачиванием — для окон, где вложения разбирают, а не правят. */
-  showView?: boolean;
 }
 
-/** Список вложений: имя ссылкой, размер и действия. Общий для заявок всех модулей. */
+/**
+ * Список вложений: имя ссылкой, размер и действия. Общий для заявок всех модулей.
+ * Просмотр и скачивание стоят иконками у каждой строки — это разные действия (открыть во
+ * вкладке против сохранить на диск), и выбирать между ними приходится в любом списке.
+ */
 export function FileLinkList<T extends FileRef>({
   files,
   onRemove,
   emptyText,
   maxNameWidth = 320,
-  showView = false,
 }: FileListProps<T>) {
   return (
     <List
@@ -120,7 +121,7 @@ export function FileLinkList<T extends FileRef>({
       renderItem={(f) => (
         <List.Item
           actions={[
-            ...(showView ? [<FileViewButton key="view" file={f} />] : []),
+            <FileViewButton key="view" file={f} />,
             <FileDownloadButton key="dl" file={f} />,
             ...(onRemove
               ? [
@@ -168,7 +169,7 @@ export function FileListModal({
       width={520}
       footer={<Button onClick={onClose}>Закрыть</Button>}
     >
-      <FileLinkList files={files} showView emptyText="Файлы не прикреплены" maxNameWidth={320} />
+      <FileLinkList files={files} emptyText="Файлы не прикреплены" maxNameWidth={320} />
     </Modal>
   );
 }

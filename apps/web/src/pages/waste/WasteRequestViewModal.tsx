@@ -132,6 +132,10 @@ function summaryOf(row: HistoryRow): string {
   // Комментарий к отмене — это её причина: без подписи он читается как обычная заметка.
   if (e.comment) return e.toStatus === 'cancelled' ? `Причина: ${e.comment}` : e.comment;
   if (row.vehicles.length > 0) return `машин: ${row.vehicles.length}`;
+  // У назначения исполнителя суть — имя контрагента, а не то, что поле трогали.
+  const operator = e.kind === 'operator' ? e.changes.find((c) => c.field === 'operator') : null;
+  if (operator)
+    return operator.to && operator.to !== '—' ? `назначен ${operator.to}` : 'снят исполнитель';
   if (e.changes.length > 0) {
     return e.changes.map((c) => wasteRequestChangeLabels[c.field] ?? c.field).join(', ');
   }
@@ -185,29 +189,39 @@ function HistoryDetails({ row }: { row: HistoryRow }) {
   );
 }
 
+// Ширины держат колонки в пределах окна: шире суммы столбцы вытолкнули бы таблицу
+// в горизонтальную прокрутку, а история читается только сверху вниз.
 const historyColumns: TableColumnsType<HistoryRow> = [
   {
     key: 'bubbles',
-    width: 200,
+    width: 190,
     render: (_v, row) => <StatusBubbles row={row} />,
   },
   {
     key: 'summary',
     render: (_v, row) => (
-      <Typography.Text ellipsis={{ tooltip: true }} style={{ maxWidth: 260 }}>
+      <Typography.Text ellipsis={{ tooltip: true }} style={{ maxWidth: 250 }}>
         {summaryOf(row)}
       </Typography.Text>
     ),
   },
   {
     key: 'when',
-    width: 210,
+    width: 190,
     align: 'right',
     render: (_v, row) =>
       row.entry && (
-        <Typography.Text type="secondary" style={secondary}>
-          {formatDateTime(row.entry.at)} · {row.entry.actorName ?? '—'}
-        </Typography.Text>
+        // Время и автор — двумя строками: в одну длинное ФИО рвётся как попало.
+        <div style={{ lineHeight: 1.4 }}>
+          <Typography.Text type="secondary" style={secondary}>
+            {formatDateTime(row.entry.at)}
+          </Typography.Text>
+          <div>
+            <Typography.Text type="secondary" ellipsis style={{ ...secondary, maxWidth: 170 }}>
+              {row.entry.actorName ?? '—'}
+            </Typography.Text>
+          </div>
+        </div>
       ),
   },
 ];
@@ -369,7 +383,7 @@ export function WasteRequestViewModal({ request, onClose, onEdit }: Props) {
           {request.files.length > 0 && (
             <div>
               <Typography.Text strong>Файлы</Typography.Text>
-              <FileLinkList files={request.files} showView maxNameWidth={420} />
+              <FileLinkList files={request.files} maxNameWidth={420} />
             </div>
           )}
 
