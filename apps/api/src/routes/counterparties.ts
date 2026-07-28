@@ -14,7 +14,13 @@ import {
 } from '@technic/contracts';
 import { z } from 'zod';
 import { db } from '../db/client';
-import { counterparties, counterpartySynonyms, type CounterpartyRow } from '../db/schema';
+import {
+  counterparties,
+  counterpartySynonyms,
+  users,
+  vehicles,
+  type CounterpartyRow,
+} from '../db/schema';
 import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
@@ -141,6 +147,49 @@ function assertObjectsAllowed(type: CounterpartyType, objectIds: string[]): void
     throw err.badRequest('Объекты привязываются только к контрагенту типа «Оператор»', {
       objectIds: 'Доступно только для типа «Оператор»',
     });
+  }
+}
+
+/**
+ * Смена типа не должна оставлять за собой висящие ссылки — тот же принцип, что и с привязанными
+ * объектами: их заводил кто-то другой, и снимать их побочным эффектом правки типа нельзя.
+ *
+ * Арендодатель ТС (ADR 0018 §9) в приложении не действует: у него не может быть ни одной учётки,
+ * ни в какой роли. Через форму учётки такую привязку не создать (resolveCounterpartyId), и смена
+ * типа — единственный путь, где инвариант ломался.
+ */
+async function assertTypeChangeAllowed(
+  tx: Tx,
+  id: string,
+  before: CounterpartyType,
+  next: CounterpartyType,
+): Promise<void> {
+  if (before === next) return;
+
+  if (next === 'vehicle_lessor') {
+    const [linked] = await tx
+      .select({ c: count() })
+      .from(users)
+      .where(and(eq(users.counterpartyId, id), isNull(users.deletedAt)));
+    const n = Number(linked?.c ?? 0);
+    if (n > 0) {
+      throw err.conflict(
+        `У контрагента есть учётные записи (${n}), а у арендодателя ТС их быть не может — отвяжите их перед сменой типа`,
+      );
+    }
+  }
+
+  if (before === 'vehicle_lessor') {
+    const [rented] = await tx
+      .select({ c: count() })
+      .from(vehicles)
+      .where(and(eq(vehicles.lessorId, id), isNull(vehicles.deletedAt)));
+    const n = Number(rented?.c ?? 0);
+    if (n > 0) {
+      throw err.conflict(
+        `На контрагента ссылаются предложения аренды (${n}) — удалите их перед сменой типа`,
+      );
+    }
   }
 }
 
@@ -326,6 +375,7 @@ export default async function counterpartiesRoutes(app: FastifyInstance): Promis
         }
         const type = body.type ?? existing.type;
         assertObjectsAllowed(type, body.objectIds ?? []);
+        await assertTypeChangeAllowed(tx, id, existing.type, type);
         // Смена типа с «Оператора» на другой при живых привязках — не молчаливая их очистка:
         // привязки заводил кто-то другой (в том числе из карточки объекта), и снимать их
         // побочным эффектом правки типа нельзя.

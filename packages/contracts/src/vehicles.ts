@@ -22,17 +22,53 @@ export const vehicleStatusColors: Record<VehicleStatus, string> = {
   retired: 'red',
 };
 
+// ── Принадлежность: собственная техника и аренда (ADR 0018) ──
+// Ветки не пересекаются ни одним содержательным реквизитом: у своей машины — марка/модель,
+// госномер и ПТС, у аренды — арендодатель, цены и короткий срез-идентификатор.
+
+export const VEHICLE_OWNERSHIPS = ['own', 'rental'] as const;
+export const vehicleOwnershipSchema = z.enum(VEHICLE_OWNERSHIPS);
+export type VehicleOwnership = (typeof VEHICLE_OWNERSHIPS)[number];
+
+export const vehicleOwnershipLabels: Record<VehicleOwnership, string> = {
+  own: 'Собственная',
+  rental: 'Аренда',
+};
+export const vehicleOwnershipColors: Record<VehicleOwnership, string> = {
+  own: 'blue',
+  rental: 'purple',
+};
+
+/** У предложения аренды нет состояний машины: «Обслуживание» и «Списана» к нему не применимы. */
+export const RENTAL_STATUSES = ['active', 'inactive'] as const satisfies readonly VehicleStatus[];
+
+export function isRentalStatus(s: VehicleStatus): boolean {
+  return (RENTAL_STATUSES as readonly VehicleStatus[]).includes(s);
+}
+
+/** Цена в рублях: две цифры после запятой (numeric(12,2) в БД), строго положительная. */
+export const vehiclePriceSchema = z.coerce.number().positive().max(9_999_999_99).multipleOf(0.01);
+
 // Сортировка доступна во всех столбцах таблицы; ключ поля совпадает с ключом колонки.
 export const VEHICLE_SORT_FIELDS = [
+  'ownership',
   'registrationNumber',
   'typeName',
+  'categoryName',
   'modelName',
+  'lessorName',
+  'description',
+  'pricePerHour',
+  'pricePerShift',
   'status',
   'createdAt',
 ] as const;
 
 export const vehicleListQuerySchema = baseListQuery(VEHICLE_SORT_FIELDS).extend({
+  ownership: vehicleOwnershipSchema.optional(),
   vehicleTypeId: uuidSchema.optional(),
+  vehicleCategoryId: uuidSchema.optional(),
+  lessorId: uuidSchema.optional(),
   status: vehicleStatusSchema.optional(),
   includeDeleted: z
     .enum(['true', 'false'])
@@ -40,43 +76,129 @@ export const vehicleListQuerySchema = baseListQuery(VEHICLE_SORT_FIELDS).extend(
     .transform((v) => v === 'true'),
 });
 
-export const createVehicleSchema = z
+/** Общее у веток: классификация, статус, комментарий. Тип обязателен всегда, категория — нет. */
+const vehicleCommonFields = {
+  vehicleTypeId: uuidSchema,
+  vehicleCategoryId: uuidSchema.nullish(),
+  status: vehicleStatusSchema.optional().default('active'),
+  note: z.string().trim().max(2000).optional().default(''),
+};
+
+const createOwnVehicleSchema = z
   .object({
-    vehicleTypeId: uuidSchema,
+    ownership: z.literal('own'),
+    ...vehicleCommonFields,
     vehicleModelId: uuidSchema.nullish(),
     registrationNumber: z.string().trim().max(50).nullish(),
     passportNumber: z.string().trim().max(100).nullish(),
-    status: vehicleStatusSchema.optional().default('active'),
-    note: z.string().trim().max(2000).optional().default(''),
   })
   .strict();
-export type CreateVehicleInput = z.infer<typeof createVehicleSchema>;
 
-// `.partial()` делает поля необязательными, но НЕ снимает `.default()` — без переобъявления
-// PATCH со сменой одного статуса возвращал бы note пустой строкой и затирал его в БД.
-// Поэтому поля со значением по умолчанию объявлены здесь заново, без дефолта.
-export const updateVehicleSchema = createVehicleSchema
-  .partial()
-  .extend({
+const createRentalVehicleSchema = z
+  .object({
+    ownership: z.literal('rental'),
+    ...vehicleCommonFields,
+    status: z.enum(RENTAL_STATUSES).optional().default('active'),
+    lessorId: uuidSchema,
+    /** Короткий срез вида «Автокран 70 тн»; входит в ключ уникальности предложения. */
+    description: z.string().trim().max(120).optional().default(''),
+    pricePerHour: vehiclePriceSchema.nullish(),
+    pricePerShift: vehiclePriceSchema.nullish(),
+    shiftHours: z.coerce.number().int().min(1).max(24).nullish(),
+  })
+  .strict()
+  .refine((v) => v.pricePerHour != null || v.pricePerShift != null, {
+    message: 'Укажите хотя бы одну цену — за час или за смену',
+    path: ['pricePerHour'],
+  });
+
+// Строгие ветки союза физически отсекают «госномер у аренды» и «цену у своей машины» ещё
+// на валидации: чужое поле не пройдёт `.strict()`.
+export const createVehicleSchema = z.discriminatedUnion('ownership', [
+  createOwnVehicleSchema,
+  createRentalVehicleSchema,
+]);
+export type CreateVehicleInput = z.infer<typeof createVehicleSchema>;
+export type CreateOwnVehicleInput = z.infer<typeof createOwnVehicleSchema>;
+export type CreateRentalVehicleInput = z.infer<typeof createRentalVehicleSchema>;
+
+// `ownership` в PATCH не принимается: смена принадлежности — другая сущность, а не правка.
+// `.partial()` не снимает `.default()`, поэтому поля с дефолтом переобъявлены без него — иначе
+// PATCH со сменой одного статуса затирал бы note пустой строкой.
+const updateOwnVehicleSchema = z
+  .object({
+    vehicleTypeId: uuidSchema.optional(),
+    vehicleCategoryId: uuidSchema.nullish(),
+    vehicleModelId: uuidSchema.nullish(),
+    registrationNumber: z.string().trim().max(50).nullish(),
+    passportNumber: z.string().trim().max(100).nullish(),
     status: vehicleStatusSchema.optional(),
     note: z.string().trim().max(2000).optional(),
   })
   .strict();
-export type UpdateVehicleInput = z.infer<typeof updateVehicleSchema>;
 
+const updateRentalVehicleSchema = z
+  .object({
+    vehicleTypeId: uuidSchema.optional(),
+    vehicleCategoryId: uuidSchema.nullish(),
+    lessorId: uuidSchema.optional(),
+    description: z.string().trim().max(120).optional(),
+    pricePerHour: vehiclePriceSchema.nullish(),
+    pricePerShift: vehiclePriceSchema.nullish(),
+    shiftHours: z.coerce.number().int().min(1).max(24).nullish(),
+    status: z.enum(RENTAL_STATUSES).optional(),
+    note: z.string().trim().max(2000).optional(),
+  })
+  .strict();
+
+/**
+ * Ветку PATCH определяет не тело, а сама запись: клиент не должен сообщать принадлежность,
+ * чтобы не было соблазна её «поправить». Маршрут выбирает схему по существующей строке.
+ */
+export const updateVehicleSchema = z.union([updateOwnVehicleSchema, updateRentalVehicleSchema]);
+export type UpdateVehicleInput = z.infer<typeof updateVehicleSchema>;
+export const updateVehicleSchemaByOwnership: Record<
+  VehicleOwnership,
+  typeof updateOwnVehicleSchema | typeof updateRentalVehicleSchema
+> = {
+  own: updateOwnVehicleSchema,
+  rental: updateRentalVehicleSchema,
+};
+export type UpdateOwnVehicleInput = z.infer<typeof updateOwnVehicleSchema>;
+export type UpdateRentalVehicleInput = z.infer<typeof updateRentalVehicleSchema>;
+
+// Поля чужой ветки приходят как null, а не отсутствуют: справочник — один список с одним набором
+// колонок, и клиенту не нужно ветвиться при отрисовке строки.
 export interface VehicleDto {
   id: string;
+  ownership: VehicleOwnership;
   vehicleTypeId: string;
   typeName: string;
+  vehicleCategoryId: string | null;
+  categoryName: string | null;
   vehicleModelId: string | null;
   modelName: string | null;
   registrationNumber: string | null;
   passportNumber: string | null;
+  lessorId: string | null;
+  lessorName: string | null;
+  description: string;
+  pricePerHour: number | null;
+  pricePerShift: number | null;
+  shiftHours: number | null;
   status: VehicleStatus;
   note: string;
   createdAt: string;
   updatedAt: string;
   deletedAt: string | null;
+}
+
+/** Как строка техники называется в списках и подтверждениях. */
+export function vehicleTitle(v: VehicleDto): string {
+  if (v.ownership === 'rental') {
+    return v.description || v.categoryName || v.typeName;
+  }
+  return v.registrationNumber || v.modelName || v.categoryName || v.typeName;
 }
 
 // ── Марки/модели: read-only список для выбора в форме техники (не отдельный справочник) ──
