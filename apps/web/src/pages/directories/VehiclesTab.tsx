@@ -3,7 +3,6 @@ import {
   App,
   Button,
   Checkbox,
-  DatePicker,
   Form,
   Input,
   Select,
@@ -13,7 +12,6 @@ import {
 } from 'antd';
 import { DeleteOutlined, EditOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import dayjs, { type Dayjs } from 'dayjs';
 import {
   type CreateVehicleInput,
   type VehicleDto,
@@ -34,11 +32,7 @@ interface FormValues {
   vehicleTypeId: string;
   vehicleModelId?: string;
   registrationNumber?: string;
-  inventoryNumber?: string;
-  serialNumber?: string;
   passportNumber?: string;
-  manufacturerName?: string;
-  manufacturedOn?: Dayjs | null;
   status: VehicleStatus;
   note?: string;
 }
@@ -105,11 +99,7 @@ export function VehiclesTab() {
       vehicleTypeId: r.vehicleTypeId,
       vehicleModelId: r.vehicleModelId ?? undefined,
       registrationNumber: r.registrationNumber ?? undefined,
-      inventoryNumber: r.inventoryNumber ?? undefined,
-      serialNumber: r.serialNumber ?? undefined,
       passportNumber: r.passportNumber ?? undefined,
-      manufacturerName: r.manufacturerName,
-      manufacturedOn: r.manufacturedOn ? dayjs(r.manufacturedOn) : null,
       status: r.status,
       note: r.note,
     });
@@ -122,11 +112,7 @@ export function VehiclesTab() {
         vehicleTypeId: v.vehicleTypeId,
         vehicleModelId: v.vehicleModelId ?? null,
         registrationNumber: v.registrationNumber ?? null,
-        inventoryNumber: v.inventoryNumber ?? null,
-        serialNumber: v.serialNumber ?? null,
         passportNumber: v.passportNumber ?? null,
-        manufacturerName: v.manufacturerName ?? '',
-        manufacturedOn: v.manufacturedOn ? v.manufacturedOn.format('YYYY-MM-DD') : null,
         status: v.status,
         note: v.note ?? '',
       };
@@ -192,36 +178,6 @@ export function VehiclesTab() {
       sorter: true,
       render: (_v: unknown, r: VehicleDto) => r.modelName ?? '—',
     },
-    {
-      key: 'inventoryNumber',
-      title: 'Инв. №',
-      width: 120,
-      sorter: true,
-      render: (_v: unknown, r: VehicleDto) => r.inventoryNumber ?? '—',
-    },
-    {
-      key: 'serialNumber',
-      title: 'Зав. № / VIN',
-      width: 160,
-      ellipsis: true,
-      sorter: true,
-      render: (_v: unknown, r: VehicleDto) => r.serialNumber ?? '—',
-    },
-    {
-      key: 'manufacturerName',
-      title: 'Изготовитель',
-      width: 160,
-      ellipsis: true,
-      sorter: true,
-      render: (_v: unknown, r: VehicleDto) => r.manufacturerName || '—',
-    },
-    {
-      key: 'manufacturedOn',
-      title: 'Дата вып.',
-      width: 120,
-      sorter: true,
-      render: (_v: unknown, r: VehicleDto) => r.manufacturedOn ?? '—',
-    },
     badgeColumn<VehicleDto>({
       key: 'status',
       title: 'Статус',
@@ -272,7 +228,7 @@ export function VehiclesTab() {
       />
       <Input.Search
         allowClear
-        placeholder="Госномер / инв. / зав. № / изготовитель"
+        placeholder="Госномер / марка, модель"
         style={{ width: 300 }}
         onSearch={(val) => setParams((p) => ({ ...p, search: val || undefined, page: 1 }))}
       />
@@ -348,24 +304,8 @@ export function VehiclesTab() {
               <Select options={statusOptions} />
             </Form.Item>
           </Space>
-          <Space style={{ width: '100%' }} size="middle">
-            <Form.Item name="inventoryNumber" label="Инв. № (1С)" style={{ flex: 1 }}>
-              <Input maxLength={100} />
-            </Form.Item>
-            <Form.Item name="serialNumber" label="Зав. № / VIN" style={{ flex: 1 }}>
-              <Input maxLength={100} />
-            </Form.Item>
-          </Space>
-          <Space style={{ width: '100%' }} size="middle">
-            <Form.Item name="passportNumber" label="ПТС / ПСМ" style={{ flex: 1 }}>
-              <Input maxLength={100} />
-            </Form.Item>
-            <Form.Item name="manufacturedOn" label="Дата выпуска" style={{ flex: 1 }}>
-              <DatePicker format="DD.MM.YYYY" style={{ width: '100%' }} />
-            </Form.Item>
-          </Space>
-          <Form.Item name="manufacturerName" label="Изготовитель">
-            <Input maxLength={255} />
+          <Form.Item name="passportNumber" label="ПТС / ПСМ">
+            <Input maxLength={100} />
           </Form.Item>
           <Form.Item name="note" label="Примечание">
             <Input.TextArea rows={2} maxLength={2000} />

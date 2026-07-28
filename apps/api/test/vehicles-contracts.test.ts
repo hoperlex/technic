@@ -8,7 +8,6 @@ describe('vehicles: создание', () => {
   it('минимально валидно: только тип + дефолты', () => {
     const v = createVehicleSchema.parse({ vehicleTypeId: TYPE });
     expect(v.status).toBe('active');
-    expect(v.manufacturerName).toBe('');
     expect(v.note).toBe('');
   });
 
@@ -38,16 +37,12 @@ describe('vehicles: создание', () => {
     ).toThrow();
   });
 
-  it('дата выпуска: формат YYYY-MM-DD и валидность', () => {
-    expect(
-      createVehicleSchema.parse({ vehicleTypeId: TYPE, manufacturedOn: '2020-06-15' }).manufacturedOn,
-    ).toBe('2020-06-15');
-    expect(() =>
-      createVehicleSchema.parse({ vehicleTypeId: TYPE, manufacturedOn: '15.06.2020' }),
-    ).toThrow();
-    expect(() =>
-      createVehicleSchema.parse({ vehicleTypeId: TYPE, manufacturedOn: '2020-13-40' }),
-    ).toThrow();
+  // Инв. №, зав. № / VIN, изготовитель и дата выпуска убраны из справочника: схема их не принимает.
+  it('снятые поля отклоняются как лишние', () => {
+    for (const field of ['inventoryNumber', 'serialNumber', 'manufacturerName', 'manufacturedOn']) {
+      expect(() => createVehicleSchema.parse({ vehicleTypeId: TYPE, [field]: 'x' })).toThrow();
+      expect(() => updateVehicleSchema.parse({ [field]: 'x' })).toThrow();
+    }
   });
 
   it('модель — uuid или null', () => {
@@ -76,7 +71,7 @@ describe('vehicles: обновление', () => {
     const v = updateVehicleSchema.parse({ status: 'maintenance' });
     expect(v.status).toBe('maintenance');
     expect(v.vehicleTypeId).toBeUndefined();
-    expect(v.manufacturerName).toBeUndefined();
+    expect(v.note).toBeUndefined();
   });
 });
 

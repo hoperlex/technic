@@ -24,11 +24,7 @@ const vehicleSelect = {
   vehicleModelId: vehicles.vehicleModelId,
   modelName: vehicleModels.name,
   registrationNumber: vehicles.registrationNumber,
-  inventoryNumber: vehicles.inventoryNumber,
-  serialNumber: vehicles.serialNumber,
   passportNumber: vehicles.passportNumber,
-  manufacturerName: vehicles.manufacturerName,
-  manufacturedOn: vehicles.manufacturedOn,
   status: vehicles.status,
   note: vehicles.note,
   createdAt: vehicles.createdAt,
@@ -55,11 +51,7 @@ function toDto(r: VehicleRow): VehicleDto {
     vehicleModelId: r.vehicleModelId,
     modelName: r.modelName,
     registrationNumber: r.registrationNumber,
-    inventoryNumber: r.inventoryNumber,
-    serialNumber: r.serialNumber,
     passportNumber: r.passportNumber,
-    manufacturerName: r.manufacturerName,
-    manufacturedOn: r.manufacturedOn,
     status: r.status,
     note: r.note,
     createdAt: r.createdAt.toISOString(),
@@ -120,9 +112,6 @@ export default async function vehiclesRoutes(app: FastifyInstance): Promise<void
         q.search
           ? or(
               sql`${vehicles.registrationNumberNormalized} ILIKE '%' || vehicle_reg_normalize(${q.search}) || '%'`,
-              ilike(vehicles.inventoryNumber, `%${q.search}%`),
-              ilike(vehicles.serialNumber, `%${q.search}%`),
-              ilike(vehicles.manufacturerName, `%${q.search}%`),
               ilike(vehicleModels.name, `%${q.search}%`),
             )
           : undefined,
@@ -131,10 +120,6 @@ export default async function vehiclesRoutes(app: FastifyInstance): Promise<void
         registrationNumber: vehicles.registrationNumberNormalized,
         typeName: vehicleTypes.name,
         modelName: vehicleModels.name,
-        inventoryNumber: vehicles.inventoryNumber,
-        serialNumber: vehicles.serialNumber,
-        manufacturerName: vehicles.manufacturerName,
-        manufacturedOn: vehicles.manufacturedOn,
         status: vehicles.status,
         createdAt: vehicles.createdAt,
       };
@@ -176,11 +161,7 @@ export default async function vehiclesRoutes(app: FastifyInstance): Promise<void
           vehicleTypeId: b.vehicleTypeId,
           vehicleModelId: b.vehicleModelId ?? null,
           registrationNumber: reg,
-          inventoryNumber: blank(b.inventoryNumber),
-          serialNumber: blank(b.serialNumber),
           passportNumber: blank(b.passportNumber),
-          manufacturerName: b.manufacturerName,
-          manufacturedOn: b.manufacturedOn ?? null,
           status: b.status,
           note: b.note,
         })
@@ -222,11 +203,7 @@ export default async function vehiclesRoutes(app: FastifyInstance): Promise<void
       if (b.vehicleTypeId !== undefined) set.vehicleTypeId = b.vehicleTypeId;
       if (b.vehicleModelId !== undefined) set.vehicleModelId = b.vehicleModelId ?? null;
       if (b.registrationNumber !== undefined) set.registrationNumber = blank(b.registrationNumber);
-      if (b.inventoryNumber !== undefined) set.inventoryNumber = blank(b.inventoryNumber);
-      if (b.serialNumber !== undefined) set.serialNumber = blank(b.serialNumber);
       if (b.passportNumber !== undefined) set.passportNumber = blank(b.passportNumber);
-      if (b.manufacturerName !== undefined) set.manufacturerName = b.manufacturerName;
-      if (b.manufacturedOn !== undefined) set.manufacturedOn = b.manufacturedOn ?? null;
       if (b.status !== undefined) set.status = b.status;
       if (b.note !== undefined) set.note = b.note;
 
