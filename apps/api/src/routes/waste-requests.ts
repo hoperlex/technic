@@ -603,8 +603,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         // разойтись, даже если исполнителя не меняли.
         if (
           operatorCounterpartyId &&
-          (operatorCounterpartyId !== before.operatorCounterpartyId ||
-            objectId !== before.objectId)
+          (operatorCounterpartyId !== before.operatorCounterpartyId || objectId !== before.objectId)
         ) {
           await assertOperatorAssignable(tx, operatorCounterpartyId, objectId);
         }

@@ -304,12 +304,7 @@ export interface WasteRequestChangeDto {
 }
 
 export type WasteRequestHistoryKind =
-  | 'created'
-  | 'updated'
-  | 'status'
-  | 'operator'
-  | 'deleted'
-  | 'restored';
+  'created' | 'updated' | 'status' | 'operator' | 'deleted' | 'restored';
 
 export interface WasteRequestHistoryEntryDto {
   id: string;

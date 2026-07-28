@@ -94,8 +94,8 @@ export async function loadWasteRequestHistory(
       // Переход «ниоткуда» — это и есть заведение заявки.
       kind: (row.fromStatus === null ? 'created' : 'status') as WasteRequestHistoryEntryDto['kind'],
       at: row.at.toISOString(),
-      actorId: row.actorId as string | null,
-      actorName: row.actorName as string | null,
+      actorId: row.actorId,
+      actorName: row.actorName,
       fromStatus: row.fromStatus,
       toStatus: row.toStatus,
       comment: row.comment,
