@@ -88,16 +88,23 @@ placeholder (`CHANGE_ME`) в проде, некорректен `DATABASE_URL`/T
 ## Загрузка файлов (S3 / CORS)
 
 Файлы грузятся **напрямую в cloud.ru** по presigned PUT: браузер (origin `https://auto.su10.ru`)
-делает PUT на `*.s3.cloud.ru`. **nginx и Fastify в этом запросе не участвуют** — preflight (OPTIONS)
-обрабатывает cloud.ru. Поэтому CORS настраивается **на бакете** (`docs/setup-infra.md §3`), а не в
-nginx/Fastify. Архитектуру на проксирование файлов через API не менять — файлы до 50 МБ идут прямо в S3.
+делает PUT на `https://s3.cloud.ru/<bucket>/<key>`. **nginx и Fastify в этом запросе не участвуют** —
+preflight (OPTIONS) обрабатывает cloud.ru. Поэтому CORS настраивается **на бакете**
+(`docs/setup-infra.md §3`), а не в nginx/Fastify. Архитектуру на проксирование файлов через API
+не менять — файлы до 50 МБ идут прямо в S3.
 
 Симптом `No 'Access-Control-Allow-Origin' header` при загрузке — обычно одно из:
 
-1. presigned URL содержит `x-amz-checksum-crc32` / `x-amz-sdk-checksum-algorithm` (авто-checksum AWS SDK) —
+1. **`S3_FORCE_PATH_STYLE=false`** → URL вида `https://<bucket>.s3.cloud.ru/...`. cloud.ru отдаёт на такой
+   host `403 AccessDenied` вообще на всё, включая preflight, и **без** `Access-Control-*` заголовков —
+   браузер показывает это как ошибку CORS, хотя политика бакета корректна. Поставить `true` (см. env ниже);
+2. presigned URL содержит `x-amz-checksum-crc32` / `x-amz-sdk-checksum-algorithm` (авто-checksum AWS SDK) —
    **исправлено в коде** (`apps/api/src/lib/s3-client.ts`); убедиться, что задеплоена свежая версия;
-2. на бакете нет/некорректна CORS-политика — настроить (`aws s3api put-bucket-cors`, см. setup-infra §3);
-3. runtime использует не тот bucket/endpoint (напр. `auto`) — проверить env (ниже).
+3. на бакете нет/некорректна CORS-политика — настроить (`aws s3api put-bucket-cors`, см. setup-infra §3);
+4. runtime использует не тот bucket/endpoint — проверить env (ниже).
+
+Отличить (1) от (3) можно за один запрос: preflight на path-style URL отвечает `200` + CORS-заголовками,
+на virtual-hosted — `403` без них (см. «Проверка preflight» ниже).
 
 ### Проверка runtime-окружения (без секретов)
 
@@ -106,7 +113,7 @@ docker exec technic-api sh -lc \
   'env | grep -E "^(PUBLIC_ORIGIN|S3_ENDPOINT|S3_REGION|S3_BUCKET|S3_FORCE_PATH_STYLE)="'
 ```
 
-Если `S3_BUCKET` не ожидаемый (напр. `auto` вместо `technic-portal-files`) — поправить
+`S3_FORCE_PATH_STYLE` должен быть `true`. Если значения не совпадают с ожидаемыми — поправить
 `/etc/technic-portal/prod.env`. **Изменение `prod.env` требует пересоздания контейнеров**
 (restart/reload не перечитывает `env_file`):
 
@@ -129,10 +136,12 @@ curl -i -X OPTIONS "$UPLOAD_URL" \
 
 - `Access-Control-Allow-Origin: https://auto.su10.ru`
 - `Access-Control-Allow-Methods: PUT` (или список с PUT)
-- `Access-Control-Allow-Headers: content-type` (или `*` на этапе диагностики)
-- `Access-Control-Max-Age: 3000`
+- `Access-Control-Allow-Headers: content-type`
+- `Access-Control-Max-Age: 3600`
 
-Нет этих заголовков → проблема на бакете (CORS), а не в приложении.
+`403 AccessDenied` без `Access-Control-*` и с host `<bucket>.s3.cloud.ru` → virtual-hosted-style,
+чинится `S3_FORCE_PATH_STYLE=true`. Ответ без CORS-заголовков на **path-style** URL → проблема
+в CORS-политике бакета, а не в приложении.
 
 ## Backup / restore
 

@@ -5,10 +5,12 @@ import { createS3Client, presignPutUrl } from '../src/lib/s3-client';
 // presignPutUrl config-free. Секрет заведомо «утечка-детектор».
 const SECRET_ACCESS_KEY = 'unit-test-secret-must-not-leak-into-url';
 
+// forcePathStyle=true — как в проде: cloud.ru отдаёт 403 AccessDenied на virtual-hosted-style
+// (`<bucket>.s3.cloud.ru`), включая анонимный CORS-preflight. См. docs/setup-infra.md §3.
 const client = createS3Client({
   region: 'ru-central-1',
   endpoint: 'https://s3.cloud.ru',
-  forcePathStyle: false,
+  forcePathStyle: true,
   accessKeyId: 'TENANT_ID:KEY_ID',
   secretAccessKey: SECRET_ACCESS_KEY,
 });
@@ -24,10 +26,9 @@ describe('presignPutUrl', () => {
     const u = new URL(url);
     const query = u.search.toLowerCase();
 
-    // endpoint + bucket (virtual-hosted: bucket в host) + ключ объекта
-    expect(u.host).toContain('s3.cloud.ru');
-    expect(u.host).toContain('technic-portal-files');
-    expect(u.pathname).toContain('waste-requests/2026/07/example.pdf');
+    // path-style: bucket в пути, host — чистый endpoint (bucket НЕ в host)
+    expect(u.host).toBe('s3.cloud.ru');
+    expect(u.pathname).toBe('/technic-portal-files/waste-requests/2026/07/example.pdf');
 
     // presigned URL с временем жизни
     expect(query).toContain('x-amz-expires');
@@ -37,7 +38,9 @@ describe('presignPutUrl', () => {
     expect(query).not.toContain('x-amz-sdk-checksum-algorithm');
 
     // content-type подписан → простой preflight (content-type)
-    const signedHeaders = (u.searchParams.get('X-Amz-SignedHeaders') ?? '').toLowerCase().split(';');
+    const signedHeaders = (u.searchParams.get('X-Amz-SignedHeaders') ?? '')
+      .toLowerCase()
+      .split(';');
     expect(signedHeaders).toContain('content-type');
 
     // секретный ключ не попадает в URL
