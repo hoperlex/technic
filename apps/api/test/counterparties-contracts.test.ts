@@ -49,6 +49,18 @@ describe('контракт контрагента', () => {
     ).toThrow();
   });
 
+  it('принимает арендодателя ТС — роль наравне с остальными, ИНН обязателен и ей', () => {
+    const lessor = createCounterpartySchema.parse({
+      type: 'vehicle_lessor',
+      name: 'ООО «ЭВЕРЕНТ»',
+      inn: '7734432462',
+    });
+    expect(lessor.type).toBe('vehicle_lessor');
+    expect(() =>
+      createCounterpartySchema.parse({ type: 'vehicle_lessor', name: 'ООО «ЭВЕРЕНТ»' }),
+    ).toThrow();
+  });
+
   it('пустой список синонимов означает «снять все», отсутствие поля — «не трогать»', () => {
     expect(updateCounterpartySchema.parse({ synonyms: [] }).synonyms).toEqual([]);
     expect(updateCounterpartySchema.parse({ name: 'Ромашка' }).synonyms).toBeUndefined();

@@ -4,7 +4,12 @@ import { baseListQuery, uuidSchema } from './common';
 // ── Тип контрагента ──
 // Роль организации в проекте. У записи он один: контрагент опознаётся по ИНН, а ИНН уникален,
 // поэтому «та же организация в другой роли» — это смена типа записи, а не вторая запись (ADR 0010).
-export const COUNTERPARTY_TYPES = ['general_contractor', 'contractor', 'operator'] as const;
+export const COUNTERPARTY_TYPES = [
+  'general_contractor',
+  'contractor',
+  'operator',
+  'vehicle_lessor',
+] as const;
 export const counterpartyTypeSchema = z.enum(COUNTERPARTY_TYPES);
 export type CounterpartyType = (typeof COUNTERPARTY_TYPES)[number];
 
@@ -12,12 +17,14 @@ export const counterpartyTypeLabels: Record<CounterpartyType, string> = {
   general_contractor: 'Генеральный подрядчик',
   contractor: 'Подрядчик',
   operator: 'Оператор (вывоз мусора)',
+  vehicle_lessor: 'Арендодатель (ТС)',
 };
 
 export const counterpartyTypeColors: Record<CounterpartyType, string> = {
   general_contractor: 'purple',
   contractor: 'blue',
   operator: 'green',
+  vehicle_lessor: 'orange',
 };
 
 // ── ИНН ──
