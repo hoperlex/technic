@@ -8,6 +8,7 @@ import {
   pricePerM3FromContainer,
   updateWasteTariffSchema,
   validateWasteTariff,
+  validateWasteTypeChoice,
   type WasteTariffDefinition,
   type WasteTariffDto,
   resolveWasteTariffQuerySchema,
@@ -20,6 +21,7 @@ import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
 import { orderByFrom, pageParams } from '../lib/pagination';
 import { resolveWasteTariff } from '../services/waste-pricing';
+import { asWasteTypeNameConflict, createWasteType } from '../services/waste-types';
 
 const dtoColumns = {
   id: wasteTariffs.id,
@@ -81,19 +83,24 @@ interface TariffValues {
   isPerContainer: boolean;
 }
 
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+/** Читающее соединение: подходит и пул, и транзакция. */
+type Reader = Pick<Tx, 'select'>;
+
 /**
  * Проверяет позицию и выводит хранимые цены. Цену за м³ у позиции «за контейнер» считает сервер
  * из вместимости типа (ADR 0009): вводится одна цена, вторая — производная, разойтись им негде.
  * `excludeId` — id правимой позиции: она сама не считается дублем.
  */
 async function prepareValues(
+  conn: Reader,
   input: WasteTariffDefinition & { wasteTypeId: string },
   excludeId?: string,
 ): Promise<TariffValues> {
   const fields = validateWasteTariff(input);
   if (Object.keys(fields).length > 0) throw err.validation(fields);
 
-  const [wasteType] = await db
+  const [wasteType] = await conn
     .select({ id: wasteTypes.id })
     .from(wasteTypes)
     .where(eq(wasteTypes.id, input.wasteTypeId));
@@ -101,7 +108,7 @@ async function prepareValues(
 
   let containerVolumeM3: number | null = null;
   if (input.containerTypeId) {
-    const [containerType] = await db
+    const [containerType] = await conn
       .select({ volumeM3: containerTypes.volumeM3 })
       .from(containerTypes)
       .where(eq(containerTypes.id, input.containerTypeId));
@@ -136,7 +143,7 @@ async function prepareValues(
       : eq(wasteTariffs.containerKind, input.containerKind!),
     excludeId ? ne(wasteTariffs.id, excludeId) : undefined,
   );
-  const dup = await db.select({ id: wasteTariffs.id }).from(wasteTariffs).where(dupWhere);
+  const dup = await conn.select({ id: wasteTariffs.id }).from(wasteTariffs).where(dupWhere);
   if (dup.length > 0) {
     throw err.conflict('Тариф для этой пары уже задан — измените цену в существующей позиции');
   }
@@ -219,33 +226,65 @@ export default async function wasteTariffsRoutes(app: FastifyInstance): Promise<
     },
   );
 
-  // ── Новая позиция прайса ──
+  // ── Новая позиция прайса (и, если тип назван, сам тип мусора) ──
+  // Тип и цена заводятся одной транзакцией (ADR 0017): отдельного шага «сначала тип» нет, иначе
+  // брошенная на полпути форма оставляла бы тип без цены — невидимый в заявках и неправимый,
+  // потому что интерфейс типа живёт в строке тарифа.
   r.post(
     '/',
     { preHandler: [app.authenticate, canWrite], schema: { body: createWasteTariffSchema } },
     async (req, reply) => {
       const b = req.body;
-      const values = await prepareValues({
-        wasteTypeId: b.wasteTypeId,
-        containerTypeId: b.containerTypeId ?? null,
-        containerKind: b.containerKind ?? null,
-        pricePerM3: b.pricePerM3 ?? null,
-        pricePerContainer: b.pricePerContainer ?? null,
-        isPerContainer: b.isPerContainer,
-      });
-      const [created] = await db
-        .insert(wasteTariffs)
-        .values({ ...values, note: b.note, isActive: b.isActive })
-        .returning();
+      const choice = validateWasteTypeChoice(b);
+      if (Object.keys(choice).length > 0) throw err.validation(choice);
+
+      const { tariff, newType } = await db
+        .transaction(async (tx) => {
+          const type = b.wasteTypeName ? await createWasteType(tx, b.wasteTypeName) : null;
+          const values = await prepareValues(tx, {
+            wasteTypeId: type?.id ?? b.wasteTypeId!,
+            containerTypeId: b.containerTypeId ?? null,
+            containerKind: b.containerKind ?? null,
+            pricePerM3: b.pricePerM3 ?? null,
+            pricePerContainer: b.pricePerContainer ?? null,
+            isPerContainer: b.isPerContainer,
+          });
+          const [created] = await tx
+            .insert(wasteTariffs)
+            .values({ ...values, note: b.note, isActive: b.isActive })
+            .returning();
+          return { tariff: created!, newType: type };
+        })
+        .catch((e: unknown) => {
+          throw asWasteTypeNameConflict(e, 'wasteTypeName');
+        });
+
+      const actorUserId = requirePrincipal(req).id;
+      if (newType) {
+        await writeAudit({
+          actorUserId,
+          action: 'waste_type.create',
+          entityType: 'waste_type',
+          entityId: newType.id,
+          metadata: { code: newType.code, name: newType.name, tariffId: tariff.id },
+        });
+      }
       await writeAudit({
-        actorUserId: requirePrincipal(req).id,
+        actorUserId,
         action: 'waste_tariff.create',
         entityType: 'waste_tariff',
-        entityId: created!.id,
-        metadata: { ...values },
+        entityId: tariff.id,
+        metadata: {
+          wasteTypeId: tariff.wasteTypeId,
+          containerTypeId: tariff.containerTypeId,
+          containerKind: tariff.containerKind,
+          pricePerM3: tariff.pricePerM3,
+          pricePerContainer: tariff.pricePerContainer,
+          isPerContainer: tariff.isPerContainer,
+        },
       });
       reply.code(201);
-      return loadDto(created!.id);
+      return loadDto(tariff.id);
     },
   );
 
@@ -268,6 +307,7 @@ export default async function wasteTariffsRoutes(app: FastifyInstance): Promise<
       // прайса кросс-полевые, по отдельным полям их не проверить.
       const isPerContainer = b.isPerContainer ?? current.isPerContainer;
       const values = await prepareValues(
+        db,
         {
           wasteTypeId: b.wasteTypeId ?? current.wasteTypeId,
           containerTypeId:

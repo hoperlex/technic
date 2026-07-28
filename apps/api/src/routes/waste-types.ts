@@ -1,19 +1,19 @@
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
-import { and, count, eq } from 'drizzle-orm';
+import { and, count, eq, exists, notExists } from 'drizzle-orm';
 import {
-  createWasteTypeSchema,
   updateWasteTypeSchema,
   type WasteTypeDto,
   wasteTypeListQuerySchema,
 } from '@technic/contracts';
 import { db } from '../db/client';
-import { wasteTypes, type WasteTypeRow } from '../db/schema';
+import { wasteTariffs, wasteTypes, type WasteTypeRow } from '../db/schema';
 import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
 import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
+import { assertWasteTypeNameFree, asWasteTypeNameConflict } from '../services/waste-types';
 
 function toDto(t: WasteTypeRow): WasteTypeDto {
   return {
@@ -30,9 +30,19 @@ function toDto(t: WasteTypeRow): WasteTypeDto {
 
 const idParams = z.object({ id: z.string().uuid() });
 
-// Справочник типов мусора (ADR 0009, ведение — ADR 0014): «что вывозим». Читают все, правят
-// администратор и менеджер — тип мусора существует ради тарифа, поэтому оба справочника ведёт
-// одна роль. Удаления нет: на тип ссылаются заявки и позиции прайса, выбытие — через isActive.
+/** Есть ли у типа хоть одна действующая позиция прайса. */
+function withActiveTariff(has: boolean) {
+  const tariff = db
+    .select({ id: wasteTariffs.id })
+    .from(wasteTariffs)
+    .where(and(eq(wasteTariffs.wasteTypeId, wasteTypes.id), eq(wasteTariffs.isActive, true)));
+  return has ? exists(tariff) : notExists(tariff);
+}
+
+// Типы мусора (ADR 0009, ведение — ADR 0017): «что вывозим». Читают все, правят администратор и
+// менеджер. Отдельной вкладки у типов больше нет: заводятся они вместе с первой ценой
+// (POST /waste-tariffs), а этот маршрут отдаёт список для выбора и правит название с активностью
+// из строки тарифа. Удаления нет: на тип ссылаются заявки и позиции прайса, выбытие — isActive.
 export default async function wasteTypesRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
   const canWrite = app.requireRoles('admin', 'manager');
@@ -44,6 +54,9 @@ export default async function wasteTypesRoutes(app: FastifyInstance): Promise<vo
       const q = req.query;
       const where = and(
         q.isActive === undefined ? undefined : eq(wasteTypes.isActive, q.isActive),
+        // Форма заявки спрашивает типы с действующей ценой: выбор типа без тарифа кончался бы
+        // отказом «тариф не найден» уже при сохранении заявки.
+        q.hasActiveTariff === undefined ? undefined : withActiveTariff(q.hasActiveTariff),
         searchCondition(q.search, [wasteTypes.code, wasteTypes.name]),
       );
       const sortCols = {
@@ -72,28 +85,9 @@ export default async function wasteTypesRoutes(app: FastifyInstance): Promise<vo
     },
   );
 
-  r.post(
-    '/',
-    { preHandler: [app.authenticate, canWrite], schema: { body: createWasteTypeSchema } },
-    async (req, reply) => {
-      const dup = await db
-        .select({ id: wasteTypes.id })
-        .from(wasteTypes)
-        .where(eq(wasteTypes.code, req.body.code));
-      if (dup.length > 0) throw err.conflict('Тип мусора с таким кодом уже существует');
-      const [created] = await db.insert(wasteTypes).values(req.body).returning();
-      await writeAudit({
-        actorUserId: requirePrincipal(req).id,
-        action: 'waste_type.create',
-        entityType: 'waste_type',
-        entityId: created!.id,
-        metadata: { code: created!.code, name: created!.name },
-      });
-      reply.code(201);
-      return toDto(created!);
-    },
-  );
-
+  // Заведения типа тут нет: тип появляется вместе с первой ценой (POST /waste-tariffs, ADR 0017).
+  // Иначе брошенная на полпути форма оставляла бы тип без цены, а править такой тип негде —
+  // его интерфейс живёт в строке тарифа.
   r.patch(
     '/:id',
     {
@@ -101,11 +95,22 @@ export default async function wasteTypesRoutes(app: FastifyInstance): Promise<vo
       schema: { params: idParams, body: updateWasteTypeSchema },
     },
     async (req) => {
+      // Переименование проверяется тем же правилом, что и заведение: иначе дубль, запрещённый
+      // при создании, заводился бы правкой соседней строки.
+      if (req.body.name !== undefined) {
+        await assertWasteTypeNameFree(db, req.body.name, {
+          field: 'name',
+          excludeId: req.params.id,
+        });
+      }
       const [updated] = await db
         .update(wasteTypes)
         .set({ ...req.body, updatedAt: new Date() })
         .where(eq(wasteTypes.id, req.params.id))
-        .returning();
+        .returning()
+        .catch((e: unknown) => {
+          throw asWasteTypeNameConflict(e, 'name');
+        });
       if (!updated) throw err.notFound('Тип мусора не найден');
       const action =
         req.body.isActive === false

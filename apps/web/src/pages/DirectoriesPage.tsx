@@ -2,7 +2,6 @@ import { Tabs } from 'antd';
 import { ObjectsTab } from './directories/ObjectsTab';
 import { CounterpartiesTab } from './directories/CounterpartiesTab';
 import { ContainerTypesTab } from './directories/ContainerTypesTab';
-import { WasteTypesTab } from './directories/WasteTypesTab';
 import { WasteTariffsTab } from './directories/WasteTariffsTab';
 import { VehicleTypesTab } from './directories/VehicleTypesTab';
 import { VehiclesTab } from './directories/VehiclesTab';
@@ -17,7 +16,8 @@ export function DirectoriesPage() {
           { key: 'objects', label: 'Объекты', children: <ObjectsTab /> },
           { key: 'counterparties', label: 'Контрагенты', children: <CounterpartiesTab /> },
           { key: 'types', label: 'Типы контейнеров', children: <ContainerTypesTab /> },
-          { key: 'waste-types', label: 'Типы мусора', children: <WasteTypesTab /> },
+          // Отдельной вкладки «Типы мусора» нет (ADR 0017): тип заводится и правится здесь же,
+          // в прайсе, — сам по себе, без цены, он ничего не значит.
           {
             key: 'waste-tariffs',
             label: 'Стоимость вывоза мусора',

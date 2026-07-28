@@ -9,7 +9,6 @@ import type {
   CreateVehicleRequestInput,
   CreateVehicleTypeInput,
   CreateWasteTariffInput,
-  CreateWasteTypeInput,
   DownloadUrlDto,
   FileDisposition,
   FileDto,
@@ -167,11 +166,10 @@ export interface WasteRequestUpdatePayload {
   version: number;
 }
 
+// Заведения типа здесь нет: тип появляется вместе с первой ценой (wasteTariffsApi.create,
+// ADR 0017). Удаления тоже нет — деактивация через update({ isActive: false }).
 export const wasteTypesApi = {
   list: (q: Query) => apiFetch<ListResult<WasteTypeDto>>('/waste-types', { query: q }),
-  create: (body: CreateWasteTypeInput) =>
-    apiFetch<WasteTypeDto>('/waste-types', { method: 'POST', body }),
-  // Удаления нет: деактивация через update({ isActive: false }) — на тип ссылаются заявки.
   update: (id: string, body: UpdateWasteTypeInput) =>
     apiFetch<WasteTypeDto>(`/waste-types/${id}`, { method: 'PATCH', body }),
 };

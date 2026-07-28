@@ -1,5 +1,17 @@
 import { useState } from 'react';
-import { App, Button, Form, Input, InputNumber, Radio, Select, Space, Switch, Tag } from 'antd';
+import {
+  Alert,
+  App,
+  Button,
+  Form,
+  Input,
+  InputNumber,
+  Radio,
+  Select,
+  Space,
+  Switch,
+  Tag,
+} from 'antd';
 import { EditOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { TableColumnType } from 'antd';
@@ -8,14 +20,18 @@ import {
   type ContainerKind,
   containerKindColors,
   type CreateWasteTariffInput,
+  findSimilarWasteTypes,
+  findWasteTypeByName,
   pricePerM3FromContainer,
   type WasteTariffDto,
+  wasteTypeDuplicateMessage,
+  type WasteTypeDto,
 } from '@technic/contracts';
 import { containerTypesApi, wasteTariffsApi, wasteTypesApi } from '../../api/resources';
 import { DataTable } from '../../components/DataTable';
 import { FormModal } from '../../components/FormModal';
 import { PageTableLayout } from '../../components/PageTableLayout';
-import { actionsColumn, textColumn } from '../../components/columns';
+import { actionsColumn } from '../../components/columns';
 import { useListParams } from '../../hooks/useListParams';
 import { applyApiFieldErrors } from '../../utils/formErrors';
 import { errorMessage, formatMoney } from '../../utils/format';
@@ -29,7 +45,10 @@ const kindAllLabels: Record<ContainerKind, string> = {
 const kindOptions = CONTAINER_KINDS.map((k) => ({ value: k, label: kindAllLabels[k] }));
 
 interface FormValues {
-  wasteTypeId: string;
+  /** Откуда берётся тип мусора: из списка заведённых или заводится тут же (ADR 0017). */
+  wasteTypeSource: 'existing' | 'new';
+  wasteTypeId?: string;
+  wasteTypeName?: string;
   /** Чему назначается цена: конкретному типу контейнера/машины или виду техники целиком. */
   target: 'container_type' | 'container_kind';
   containerTypeId?: string;
@@ -42,10 +61,17 @@ interface FormValues {
   isActive: boolean;
 }
 
+interface TypeFormValues {
+  name: string;
+  isActive: boolean;
+}
+
 const selectQuery = { page: 1, pageSize: 500, sortBy: 'sortOrder', sortOrder: 'asc' } as const;
 
 /**
- * Прайс вывоза мусора (ADR 0009, ведение — ADR 0014): пара «что вывозим × чем вывозим» → цена.
+ * Прайс вывоза мусора (ADR 0009, ведение — ADR 0014, 0017): пара «что вывозим × чем вывозим» →
+ * цена. Отдельного справочника типов мусора нет: тип заводится здесь же вместе с первой ценой и
+ * правится в строке тарифа — сам по себе, без цены, он ничего не значит.
  * Правка цены не пересчитывает оформленные заявки — в них снимок применённого тарифа.
  */
 export function WasteTariffsTab() {
@@ -77,7 +103,9 @@ export function WasteTariffsTab() {
     queryKey: ['container-types', 'for-select'],
     queryFn: () => containerTypesApi.list(selectQuery),
   });
-  const wasteTypeOptions = (wasteTypesData?.items ?? []).map((t) => ({
+  const wasteTypeList = wasteTypesData?.items ?? [];
+  const wasteTypeById = new Map(wasteTypeList.map((t) => [t.id, t]));
+  const wasteTypeOptions = wasteTypeList.map((t) => ({
     value: t.id,
     label: t.isActive ? t.name : `${t.name} (неактивен)`,
   }));
@@ -92,30 +120,42 @@ export function WasteTariffsTab() {
   const [open, setOpen] = useState(false);
   const [record, setRecord] = useState<WasteTariffDto | null>(null);
   const [form] = Form.useForm<FormValues>();
+  const watchWasteTypeSource = Form.useWatch('wasteTypeSource', form);
+  const watchWasteTypeName = Form.useWatch('wasteTypeName', form);
   const watchTarget = Form.useWatch('target', form);
   const watchContainerTypeId = Form.useWatch('containerTypeId', form);
   const watchPricing = Form.useWatch('pricing', form);
   const watchPricePerContainer = Form.useWatch('pricePerContainer', form);
 
-  const selectedVolumeM3 =
-    containerTypes.find((t) => t.id === watchContainerTypeId)?.volumeM3 ?? null;
-  // Цена за контейнер опирается на вместимость: без неё не вывести ни цену за м³, ни кратность.
-  const perContainerAvailable = watchTarget === 'container_type' && selectedVolumeM3 != null;
-  const derivedPricePerM3 =
-    watchPricing === 'per_container' && selectedVolumeM3 && watchPricePerContainer
-      ? pricePerM3FromContainer(Number(watchPricePerContainer), selectedVolumeM3)
-      : null;
+  // Проверка названия нового типа идёт по уже загруженному списку — человек видит ответ, пока
+  // печатает, а не после отправки. Сервер повторяет её же (и за ним UNIQUE в БД): список в
+  // браузере успевает устареть, поэтому последнее слово не за формой.
+  const newTypeName = (watchWasteTypeName ?? '').trim();
+  const duplicateType = newTypeName ? findWasteTypeByName(newTypeName, wasteTypeList) : undefined;
+  const similarTypes = duplicateType ? [] : findSimilarWasteTypes(newTypeName, wasteTypeList);
+
+  /** Похожий тип оказался тем самым — форма возвращается к выбору из списка. */
+  const pickExistingType = (t: WasteTypeDto) => {
+    form.setFieldsValue({ wasteTypeSource: 'existing', wasteTypeId: t.id, wasteTypeName: '' });
+  };
 
   const openCreate = () => {
     setRecord(null);
     form.resetFields();
-    form.setFieldsValue({ target: 'container_type', pricing: 'per_m3', isActive: true, note: '' });
+    form.setFieldsValue({
+      wasteTypeSource: 'existing',
+      target: 'container_type',
+      pricing: 'per_m3',
+      isActive: true,
+      note: '',
+    });
     setOpen(true);
   };
   const openEdit = (r: WasteTariffDto) => {
     setRecord(r);
     form.resetFields();
     form.setFieldsValue({
+      wasteTypeSource: 'existing',
       wasteTypeId: r.wasteTypeId,
       target: r.containerTypeId ? 'container_type' : 'container_kind',
       containerTypeId: r.containerTypeId ?? undefined,
@@ -131,8 +171,7 @@ export function WasteTariffsTab() {
 
   const saveMut = useMutation({
     mutationFn: (v: FormValues) => {
-      const payload: CreateWasteTariffInput = {
-        wasteTypeId: v.wasteTypeId,
+      const common = {
         containerTypeId: v.target === 'container_type' ? (v.containerTypeId ?? null) : null,
         containerKind: v.target === 'container_kind' ? (v.containerKind ?? null) : null,
         isPerContainer: v.pricing === 'per_container',
@@ -142,15 +181,51 @@ export function WasteTariffsTab() {
         note: v.note ?? '',
         isActive: v.isActive,
       };
-      return record ? wasteTariffsApi.update(record.id, payload) : wasteTariffsApi.create(payload);
+      if (record)
+        return wasteTariffsApi.update(record.id, { ...common, wasteTypeId: v.wasteTypeId });
+      // Новый тип уходит названием: заводит его сервер той же транзакцией, что и цену.
+      const payload: CreateWasteTariffInput = {
+        ...common,
+        wasteTypeId: v.wasteTypeSource === 'new' ? null : (v.wasteTypeId ?? null),
+        wasteTypeName: v.wasteTypeSource === 'new' ? (v.wasteTypeName ?? null) : null,
+      };
+      return wasteTariffsApi.create(payload);
     },
     onSuccess: () => {
       message.success('Сохранено');
       void qc.invalidateQueries({ queryKey: ['waste-tariffs'] });
+      // Вместе с ценой мог появиться новый тип мусора — список для выбора устарел.
+      void qc.invalidateQueries({ queryKey: ['waste-types'] });
       setOpen(false);
     },
     onError: (e) => {
       if (!applyApiFieldErrors(form, e)) message.error(errorMessage(e));
+    },
+  });
+
+  // ── Правка типа мусора: его интерфейс — строка тарифа (ADR 0017) ──
+  const [typeOpen, setTypeOpen] = useState(false);
+  const [typeRecord, setTypeRecord] = useState<WasteTypeDto | null>(null);
+  const [typeForm] = Form.useForm<TypeFormValues>();
+
+  const openTypeEdit = (t: WasteTypeDto) => {
+    setTypeRecord(t);
+    typeForm.resetFields();
+    typeForm.setFieldsValue({ name: t.name, isActive: t.isActive });
+    setTypeOpen(true);
+  };
+
+  const saveTypeMut = useMutation({
+    mutationFn: (v: TypeFormValues) => wasteTypesApi.update(typeRecord!.id, v),
+    onSuccess: () => {
+      message.success('Сохранено');
+      void qc.invalidateQueries({ queryKey: ['waste-types'] });
+      // Название типа показано в каждой строке прайса и в заявках.
+      void qc.invalidateQueries({ queryKey: ['waste-tariffs'] });
+      setTypeOpen(false);
+    },
+    onError: (e) => {
+      if (!applyApiFieldErrors(typeForm, e)) message.error(errorMessage(e));
     },
   });
 
@@ -203,13 +278,32 @@ export function WasteTariffsTab() {
   };
 
   const columns = [
-    textColumn<WasteTariffDto>({
+    {
       key: 'wasteTypeName',
       title: 'Тип мусора',
       dataIndex: 'wasteTypeName',
-      searchable: false,
-      width: 240,
-    }),
+      width: 260,
+      sorter: true,
+      // Карандаш правит сам тип, а не тариф: отдельной вкладки у типов больше нет.
+      render: (v: string, r: WasteTariffDto) => {
+        const type = wasteTypeById.get(r.wasteTypeId);
+        return (
+          <Space size={4}>
+            <span>{v}</span>
+            {type && !type.isActive && <Tag>неактивен</Tag>}
+            {type && (
+              <Button
+                type="text"
+                size="small"
+                title="Переименовать тип мусора"
+                icon={<EditOutlined />}
+                onClick={() => openTypeEdit(type)}
+              />
+            )}
+          </Space>
+        );
+      },
+    },
     {
       key: 'container',
       title: 'Техника',
@@ -277,6 +371,15 @@ export function WasteTariffsTab() {
     </Space>
   );
 
+  const selectedVolumeM3 =
+    containerTypes.find((t) => t.id === watchContainerTypeId)?.volumeM3 ?? null;
+  // Цена за контейнер опирается на вместимость: без неё не вывести ни цену за м³, ни кратность.
+  const perContainerAvailable = watchTarget === 'container_type' && selectedVolumeM3 != null;
+  const derivedPricePerM3 =
+    watchPricing === 'per_container' && selectedVolumeM3 && watchPricePerContainer
+      ? pricePerM3FromContainer(Number(watchPricePerContainer), selectedVolumeM3)
+      : null;
+
   return (
     <PageTableLayout
       filters={filters}
@@ -308,6 +411,11 @@ export function WasteTariffsTab() {
           layout="vertical"
           onFinish={(v) => saveMut.mutate(v)}
           onValuesChange={(changed: Partial<FormValues>) => {
+            // Источник типа переключён — поле предыдущего варианта очищается, иначе на сервер
+            // ушли бы и id, и название сразу.
+            if ('wasteTypeSource' in changed) {
+              form.setFieldsValue({ wasteTypeId: undefined, wasteTypeName: '' });
+            }
             // Область действия и режим тарификации связаны: цена за контейнер существует
             // только у конкретного типа с известной вместимостью.
             if ('target' in changed) {
@@ -323,13 +431,85 @@ export function WasteTariffsTab() {
             }
           }}
         >
-          <Form.Item
-            name="wasteTypeId"
-            label="Тип мусора"
-            rules={[{ required: true, message: 'Выберите тип мусора' }]}
-          >
-            <Select options={wasteTypeOptions} showSearch optionFilterProp="label" />
-          </Form.Item>
+          {/* Тип мусора у новой позиции можно завести на месте: отдельного справочника нет. */}
+          {!record && (
+            <Form.Item name="wasteTypeSource" label="Тип мусора" style={{ marginBottom: 12 }}>
+              <Radio.Group
+                options={[
+                  { value: 'existing', label: 'Из заведённых' },
+                  { value: 'new', label: 'Новый' },
+                ]}
+                optionType="button"
+              />
+            </Form.Item>
+          )}
+
+          {!record && watchWasteTypeSource === 'new' ? (
+            <>
+              <Form.Item
+                name="wasteTypeName"
+                extra={
+                  duplicateType ? (
+                    <Button
+                      type="link"
+                      size="small"
+                      style={{ padding: 0, height: 'auto' }}
+                      onClick={() => pickExistingType(duplicateType)}
+                    >
+                      Выбрать «{duplicateType.name}»
+                    </Button>
+                  ) : (
+                    'Тип заведётся вместе с этой ценой'
+                  )
+                }
+                rules={[
+                  { required: true, message: 'Укажите название типа мусора' },
+                  {
+                    // Вариации написания уже заведённого типа — не новый тип, а тот же самый:
+                    // пара «тип × техника» разошлась бы на две цены. Это запрет, а не подсказка.
+                    validator: (_r, v: string) => {
+                      const clash = v ? findWasteTypeByName(v, wasteTypeList) : undefined;
+                      return clash
+                        ? Promise.reject(new Error(wasteTypeDuplicateMessage(clash.name)))
+                        : Promise.resolve();
+                    },
+                  },
+                ]}
+              >
+                <Input maxLength={255} placeholder="Например, бетонный бой" />
+              </Form.Item>
+              {similarTypes.length > 0 && (
+                // Похожесть — предупреждение, а не запрет: решать человеку, поэтому кнопка
+                // «Сохранить» остаётся рабочей.
+                <Alert
+                  type="warning"
+                  showIcon
+                  style={{ marginBottom: 16 }}
+                  message="Есть похожие типы"
+                  description={
+                    <>
+                      <div>Если речь об одном и том же — выберите заведённый тип:</div>
+                      <Space wrap style={{ marginTop: 8 }}>
+                        {similarTypes.map((t) => (
+                          <Button key={t.id} size="small" onClick={() => pickExistingType(t)}>
+                            {t.name}
+                          </Button>
+                        ))}
+                      </Space>
+                    </>
+                  }
+                />
+              )}
+            </>
+          ) : (
+            <Form.Item
+              name="wasteTypeId"
+              label={record ? 'Тип мусора' : undefined}
+              rules={[{ required: true, message: 'Выберите тип мусора' }]}
+            >
+              <Select options={wasteTypeOptions} showSearch optionFilterProp="label" />
+            </Form.Item>
+          )}
 
           <Form.Item name="target" label="Тариф действует для">
             <Radio.Group
@@ -413,6 +593,45 @@ export function WasteTariffsTab() {
             <Input.TextArea rows={2} maxLength={500} />
           </Form.Item>
           <Form.Item name="isActive" label="Действует" valuePropName="checked">
+            <Switch />
+          </Form.Item>
+        </Form>
+      </FormModal>
+
+      {/* Правка самого типа мусора. Удаления нет: на тип ссылаются заявки и позиции прайса. */}
+      <FormModal
+        title="Тип мусора"
+        open={typeOpen}
+        onCancel={() => setTypeOpen(false)}
+        onSubmit={() => typeForm.submit()}
+        confirmLoading={saveTypeMut.isPending}
+        width={480}
+      >
+        <Form form={typeForm} layout="vertical" onFinish={(v) => saveTypeMut.mutate(v)}>
+          <Form.Item
+            name="name"
+            label="Название"
+            rules={[
+              { required: true, message: 'Укажите название' },
+              {
+                validator: (_r, v: string) => {
+                  const others = wasteTypeList.filter((t) => t.id !== typeRecord?.id);
+                  const clash = v ? findWasteTypeByName(v, others) : undefined;
+                  return clash
+                    ? Promise.reject(new Error(wasteTypeDuplicateMessage(clash.name)))
+                    : Promise.resolve();
+                },
+              },
+            ]}
+          >
+            <Input maxLength={255} />
+          </Form.Item>
+          <Form.Item
+            name="isActive"
+            label="Активен"
+            valuePropName="checked"
+            extra="Неактивный тип исчезает из выбора в заявках; заведённые заявки и тарифы остаются как есть"
+          >
             <Switch />
           </Form.Item>
         </Form>
