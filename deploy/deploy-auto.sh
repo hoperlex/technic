@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 #
 # deploy-auto — деплой/обновление портала technic (auto.su10.ru), build-on-VPS.
-# Portal-scoped: НЕ трогает соседние порталы (zakupki/estimat/billhub/keycloak),
-# infra-nginx и общие ресурсы.
+# Portal-scoped: НЕ трогает соседние порталы (zakupki/estimat/billhub/keycloak)
+# и общие ресурсы. Исключение — СВОЙ vhost /opt/infra/nginx/conf.d/technic.conf:
+# он синхронизируется с deploy/nginx/technic.conf и сопровождается graceful reload
+# infra-nginx (соседние vhost при этом не изменяются).
 #
 # Ставится симлинком и работает из ЛЮБОГО каталога:
 #   sudo ln -sfn /opt/portals/technic/deploy/deploy-auto.sh /usr/local/bin/deploy-auto
@@ -41,6 +43,7 @@ PROD_ENV="/etc/technic-portal/prod.env"
 CA_FILE="/etc/technic-portal/certs/yandex-root.crt"
 LIVE_VHOST="/opt/infra/nginx/conf.d/technic.conf"
 REPO_VHOST="deploy/nginx/technic.conf"
+EDGE_NGINX="infra-nginx"                # общий edge-контейнер: nginx -t / reload
 HEALTH_EXTERNAL="https://auto.su10.ru/"
 
 SERVICES=(technic-api technic-web technic-worker)   # порядок сборки
@@ -78,8 +81,12 @@ deploy-auto — деплой/обновление портала technic (auto.s
   AUTO_DEPLOY_USER    владелец портала (по умолчанию — владелец каталога репозитория)
   AUTO_PRUNE_CACHE=0  то же, что --no-prune, для BuildKit-кэша
 
+Vhost: /opt/infra/nginx/conf.d/technic.conf синхронизируется с deploy/nginx/technic.conf
+при каждом деплое (бэкап → nginx -t → graceful reload infra-nginx). Соседние vhost не
+трогаются; при неудаче деплой не падает, но пишет warn и vhost_sync в отчёт.
+
 Ретеншн: 3 SHA-тега на образ, 2 предмиграционных дампа (+1 аварийный), 2 снимка конфига,
-BuildKit-кэш старше 14 суток (при диске ≥85% — старше 72 ч).
+2 бэкапа vhost, BuildKit-кэш старше 14 суток (при диске ≥85% — старше 72 ч).
 
 Git: деплоится ТОЛЬКО ветка main; требуется HEAD == origin/main (запуш перед деплоем).
 EOF
@@ -182,6 +189,118 @@ write_release_state() {
 }
 
 # ---------------------------------------------------------------------------
+# Vhost infra-nginx. Файл в git (REPO_VHOST) — источник истины для LIVE_VHOST;
+# раньше он никуда не раскатывался, и правки (CSP connect-src для DaData) молча
+# оставались в репозитории при внешне успешном деплое. Теперь деплой сверяет их
+# и синхронизирует. Трогается ТОЛЬКО свой technic.conf; соседние vhost в conf.d/
+# не читаются и не меняются, reload — graceful, после nginx -t.
+# ---------------------------------------------------------------------------
+# 0 — файлы идентичны, 1 — расходятся (или live отсутствует), 2 — сравнить не удалось.
+vhost_state() {
+  local repo="$PORTAL_DIR/$REPO_VHOST"
+  [ -f "$repo" ] || return 2
+  if [ -r "$LIVE_VHOST" ]; then
+    cmp -s "$repo" "$LIVE_VHOST" && return 0 || return 1
+  fi
+  # Живой vhost — root:root 0644, но каталог может быть закрыт: пробуем через sudo,
+  # строго неинтерактивно (деплой не должен виснуть на промпте пароля).
+  if sudo -n test -e "$LIVE_VHOST" 2>/dev/null; then
+    sudo -n cmp -s "$repo" "$LIVE_VHOST" 2>/dev/null && return 0 || return 1
+  fi
+  # Каталог conf.d/ виден, а файла нет — это расхождение (первая раскатка), не «неизвестно».
+  if sudo -n test -d "$(dirname "$LIVE_VHOST")" 2>/dev/null; then return 1; fi
+  return 2
+}
+
+# Печатает расхождение (20 строк). Vhost секретов не содержит — только домены,
+# пути к сертификатам и заголовки, поэтому diff безопасен для лога деплоя.
+vhost_diff() {
+  local repo="$PORTAL_DIR/$REPO_VHOST"
+  { sudo -n cat "$LIVE_VHOST" 2>/dev/null || cat "$LIVE_VHOST" 2>/dev/null || true; } \
+    | diff -u --label "живой $LIVE_VHOST" --label "репозиторий $REPO_VHOST" - "$repo" \
+    | head -20 | sed 's/^/    /' || true
+}
+
+# Раскатывает repo-vhost в LIVE_VHOST. Деплой не валит: код уже выкачен и здоров,
+# а расхождение конфига — повод для громкого warn и пометки в отчёте, не для отказа.
+sync_vhost() {
+  local repo="$PORTAL_DIR/$REPO_VHOST" bak="" st=0
+  # Через `|| st=$?`, а не голым вызовом: под set -e ненулевой код убил бы деплой.
+  vhost_state || st=$?
+  case "$st" in
+    0) VHOST_SYNC="uptodate"; log "vhost infra-nginx актуален"; return 0 ;;
+    2) VHOST_SYNC="unknown"
+       warn "не удалось сравнить $LIVE_VHOST с $REPO_VHOST — проверьте вручную:"
+       warn "  sudo cp $REPO_VHOST $LIVE_VHOST && docker exec $EDGE_NGINX nginx -t && docker exec $EDGE_NGINX nginx -s reload"
+       return 0 ;;
+  esac
+
+  log "vhost расходится с $REPO_VHOST — синхронизирую"
+  vhost_diff
+
+  if ! docker inspect "$EDGE_NGINX" >/dev/null 2>&1; then
+    VHOST_SYNC="manual"
+    warn "контейнер $EDGE_NGINX не найден — vhost НЕ обновлён (без nginx -t не раскатываю)"
+    return 0
+  fi
+  # Базовая проверка: чужой сломанный конфиг в conf.d/ не должен выглядеть как наша
+  # поломка, а reload в таком состоянии положил бы соседние порталы.
+  if ! docker exec "$EDGE_NGINX" nginx -t >/dev/null 2>&1; then
+    VHOST_SYNC="blocked"
+    warn "конфиг $EDGE_NGINX невалиден ЕЩЁ ДО правки — vhost не трогаю. Диагностика:"
+    warn "  docker exec $EDGE_NGINX nginx -t"
+    return 0
+  fi
+
+  # Бэкап живого файла обязателен: без него откат после неудачного nginx -t невозможен.
+  if sudo -n test -e "$LIVE_VHOST" 2>/dev/null || [ -e "$LIVE_VHOST" ]; then
+    bak="$CONFIG_DIR/vhost-$(date -u +%Y%m%dT%H%M%SZ).conf"
+    if ! { sudo -n cat "$LIVE_VHOST" 2>/dev/null || cat "$LIVE_VHOST" 2>/dev/null; } >"$bak"; then
+      rm -f "$bak"
+      VHOST_SYNC="manual"
+      warn "не удалось снять бэкап $LIVE_VHOST — vhost НЕ обновлён (откат был бы невозможен)"
+      return 0
+    fi
+    chmod 600 "$bak"
+    # Ротация keep-2, как у снимков конфига (`|| true` — см. rotate в snapshot_config).
+    # shellcheck disable=SC2012
+    ls -1t "$CONFIG_DIR"/vhost-*.conf 2>/dev/null | tail -n +$((KEEP_CONFIGS + 1)) | xargs -r rm -f || true
+  fi
+
+  if ! sudo -n install -m 644 -o root -g root "$repo" "$LIVE_VHOST" 2>/dev/null; then
+    VHOST_SYNC="manual"
+    warn "нет прав записи в $LIVE_VHOST (нужен passwordless sudo) — vhost НЕ обновлён. Вручную:"
+    warn "  sudo cp $PORTAL_DIR/$REPO_VHOST $LIVE_VHOST"
+    warn "  docker exec $EDGE_NGINX nginx -t && docker exec $EDGE_NGINX nginx -s reload"
+    return 0
+  fi
+
+  if ! docker exec "$EDGE_NGINX" nginx -t >/dev/null 2>&1; then
+    VHOST_SYNC="rejected"
+    warn "новый vhost не прошёл nginx -t — возвращаю прежний, reload НЕ выполняю"
+    if [ -n "$bak" ]; then
+      sudo -n install -m 644 -o root -g root "$bak" "$LIVE_VHOST" 2>/dev/null \
+        || warn "ОТКАТ НЕ УДАЛСЯ: восстановите $LIVE_VHOST из $bak вручную!"
+    else
+      sudo -n rm -f "$LIVE_VHOST" 2>/dev/null \
+        || warn "ОТКАТ НЕ УДАЛСЯ: удалите $LIVE_VHOST вручную!"
+    fi
+    warn "  причина: docker exec $EDGE_NGINX nginx -t"
+    return 0
+  fi
+
+  if ! docker exec "$EDGE_NGINX" nginx -s reload >/dev/null 2>&1; then
+    VHOST_SYNC="reload-failed"
+    warn "vhost записан, но reload $EDGE_NGINX провалился — конфиг применится только"
+    warn "после перезагрузки nginx: docker exec $EDGE_NGINX nginx -s reload"
+    return 0
+  fi
+
+  VHOST_SYNC="synced"
+  log "vhost обновлён, $EDGE_NGINX перезагружен (graceful)${bak:+; бэкап: config-backups/$(basename "$bak")}"
+}
+
+# ---------------------------------------------------------------------------
 # --status: только чтение — ни lock, ни снимков, ни мутаций.
 # ---------------------------------------------------------------------------
 if [ "$DO_STATUS" -eq 1 ]; then
@@ -190,6 +309,12 @@ if [ "$DO_STATUS" -eq 1 ]; then
   echo "previous : ${PREVIOUS_BEFORE:-<нет>}"
   echo "ветка    : $(git_c rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
   echo "HEAD     : $(git_c rev-parse --short HEAD 2>/dev/null || echo '?')"
+  vhost_st=0; vhost_state || vhost_st=$?
+  case "$vhost_st" in
+    0) echo "vhost    : совпадает с $REPO_VHOST" ;;
+    1) echo "vhost    : РАСХОДИТСЯ с $REPO_VHOST (деплой синхронизирует и перезагрузит $EDGE_NGINX)" ;;
+    *) echo "vhost    : сравнить не удалось (нет доступа к $LIVE_VHOST)" ;;
+  esac
   if [ -n "$(git_c status --porcelain 2>/dev/null || true)" ]; then
     echo "           (рабочее дерево ГРЯЗНОЕ — деплой откажется собирать)"
   fi
@@ -222,7 +347,7 @@ flock -n 9 || fail "деплой уже выполняется (lock $LOCK_FILE)
 # Отчёт и восстановление.
 # ---------------------------------------------------------------------------
 RESULT="ok" REASON="" HEALTH="" COMMIT_SHA="" TARGET_TAG="" DUMP_FILE=""
-PRE_RESTORE_DUMP="" CFG_SNAPSHOT="" CACHE_FREED="" BUILT_TAG=""
+PRE_RESTORE_DUMP="" CFG_SNAPSHOT="" CACHE_FREED="" BUILT_TAG="" VHOST_SYNC="not-checked"
 SERVICES_STOPPED=0 RESTORE_DB_TOUCHED=0 ROLLBACK_UP_STARTED=0 MIGRATION_ATTEMPTED=0
 
 json_escape() {
@@ -246,6 +371,7 @@ write_report() {
     printf '  "previous_tag": "%s",\n'  "$(json_escape "$PREVIOUS_BEFORE")"
     printf '  "skip_migrate": %s,\n'    "$SKIP_MIGRATE"
     printf '  "config_snapshot": "%s",\n' "$(json_escape "$CFG_SNAPSHOT")"
+    printf '  "vhost_sync": "%s",\n'     "$(json_escape "$VHOST_SYNC")"
     printf '  "dump_file": "%s",\n'     "$(json_escape "$DUMP_FILE")"
     printf '  "pre_restore_dump": "%s",\n' "$(json_escape "$PRE_RESTORE_DUMP")"
     printf '  "cache_freed": "%s",\n'   "$(json_escape "$CACHE_FREED")"
@@ -654,6 +780,10 @@ else
   write_report; trap - EXIT
   exit 1
 fi
+
+# Vhost — после up -d (новые контейнеры уже подняты, proxy_pass есть куда резолвить)
+# и до внешнего health, чтобы тот проверял уже актуальный конфиг edge.
+sync_vhost
 
 # Внешний health — отдельно: проверяет infra-nginx/TLS/DNS, а не наш код.
 if curl -fsSI -m 10 "$HEALTH_EXTERNAL" >/dev/null 2>&1; then

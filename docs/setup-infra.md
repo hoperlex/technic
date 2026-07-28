@@ -96,7 +96,10 @@ aws s3api put-bucket-cors --endpoint-url https://s3.cloud.ru --bucket "$S3_BUCKE
   --cors-configuration file://cors.json
 ```
 
-- CSP на edge-nginx должен разрешать `connect-src https://s3.cloud.ru https://*.s3.cloud.ru` (см. `deploy/nginx/technic.conf`).
+- CSP на edge-nginx должен разрешать `connect-src https://s3.cloud.ru https://*.s3.cloud.ru`
+  и `https://suggestions.dadata.ru` (подсказки адресов, ADR 0006) — см. `deploy/nginx/technic.conf`.
+  Домена нет в `connect-src` → браузер режет запрос, подсказки не работают, заявку на
+  грузоперевозку создать нельзя.
 
 ## 4. Edge-nginx (`infra-nginx`)
 

@@ -61,7 +61,11 @@ docker exec technic-api node -e "fetch('http://127.0.0.1:3000/health/ready').the
 curl -fsSI https://auto.su10.ru/
 ```
 
-Edge-vhost (только при смене домена/TLS):
+Edge-vhost. `deploy-auto` сам сверяет `/opt/infra/nginx/conf.d/technic.conf` с
+`deploy/nginx/technic.conf` и раскатывает расхождение (бэкап → `nginx -t` → graceful
+reload); результат — в логе деплоя и в поле `vhost_sync` отчёта, состояние на сейчас
+показывает `deploy-auto --status`. Вручную нужно только если синхронизация вернула
+`manual`/`blocked`/`rejected` (нет sudo, нет контейнера, конфиг не проходит `nginx -t`):
 
 ```bash
 sudo cp deploy/nginx/technic.conf /opt/infra/nginx/conf.d/technic.conf
