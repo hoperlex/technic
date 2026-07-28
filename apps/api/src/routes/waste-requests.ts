@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
-import { and, count, eq, gte, inArray, isNull, lte, sql } from 'drizzle-orm';
+import { and, asc, count, eq, gte, inArray, isNull, lte, sql } from 'drizzle-orm';
 import {
   assignWasteOperatorSchema,
   changeWasteRequestStatusSchema,
@@ -467,9 +467,16 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       createdAt: wasteRequests.createdAt,
     };
     const p2 = pageParams(q);
+    // Сортировка по неуникальному столбцу (status, requestType, deliveryAt) сама по себе не задаёт
+    // порядок строк с одинаковым значением: между запросами страниц они могут переставиться, и
+    // тогда часть заявок задвоится, а часть пропадёт. num + id доводят сортировку до полной.
     const rows = await baseQuery()
       .where(where)
-      .orderBy(orderByFrom(sortCols, q.sortBy, q.sortOrder, 'createdAt'))
+      .orderBy(
+        orderByFrom(sortCols, q.sortBy, q.sortOrder, 'createdAt'),
+        asc(wasteRequests.num),
+        asc(wasteRequests.id),
+      )
       .limit(p2.limit)
       .offset(p2.offset);
     const [totalRow] = await db
@@ -516,7 +523,11 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       const p2 = pageParams(q);
       const rows = await baseQuery()
         .where(where)
-        .orderBy(orderByFrom(sortCols, q.sortBy, q.sortOrder, 'createdAt'))
+        .orderBy(
+          orderByFrom(sortCols, q.sortBy, q.sortOrder, 'createdAt'),
+          asc(wasteRequests.num),
+          asc(wasteRequests.id),
+        )
         .limit(p2.limit)
         .offset(p2.offset);
       const [totalRow] = await db
