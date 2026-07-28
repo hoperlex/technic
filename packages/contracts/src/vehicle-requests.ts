@@ -11,7 +11,7 @@ export const vehicleRequestTypeSchema = z.enum(VEHICLE_REQUEST_TYPES);
 export type VehicleRequestType = (typeof VEHICLE_REQUEST_TYPES)[number];
 
 export const vehicleRequestTypeLabels: Record<VehicleRequestType, string> = {
-  special_equipment: 'Заказ спецтехники',
+  special_equipment: 'Техника для работы на объекте',
   freight_transport: 'Грузоперевозка',
 };
 
