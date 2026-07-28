@@ -8,7 +8,12 @@ import {
 import type { RequestStatus, RequestType } from './enums';
 import { baseListQuery, uuidSchema } from './common';
 import type { FileDto } from './files';
-import { WORK_TIME_MESSAGE, isWithinWorkTimeAt } from './time';
+import {
+  MIN_REQUEST_DATE_MESSAGE,
+  WORK_TIME_MESSAGE,
+  isAllowedRequestDateAt,
+  isWithinWorkTimeAt,
+} from './time';
 import { isPricedRequestType } from './waste-tariffs';
 
 // Сортировка доступна во всех столбцах таблицы заявок; ключ поля совпадает с ключом колонки.
@@ -68,28 +73,33 @@ export function requiresWasteVehicles(t: RequestType): boolean {
   return t === 'waste_removal';
 }
 
-/**
- * Объём вводится вручную только у вывоза самосвалами: сколько мусора вывезти — там и есть
- * предмет заявки, а вместимость самосвала говорит лишь о том, за сколько рейсов это сделают.
- * Замена и снятие вывозят контейнер целиком, поэтому их объём равен вместимости выбранного
- * типа и подставляется сервером из справочника (ADR 0009).
- */
-export function requiresManualVolume(t: RequestType): boolean {
-  return t === 'waste_removal';
-}
+/** Сканов на один рейс бывает несколько (талон с двух сторон, весовая квитанция рядом). */
+export const MAX_TICKETS_PER_VEHICLE = 20;
 
 /**
  * Машина, вывезшая часть заявки: тип техники из справочника и талоны. Объём не вводится —
  * он равен вместимости выбранного типа («Самосвал 25 м³» → 25 м³): машина уезжает гружёной
  * целиком, а разнобой в ручном вводе давал бы расхождение там, где его нет. В строке машины
  * объём сохраняется снимком (тип потом могут переименовать или пересчитать).
- * Талоны необязательны: загрузка файлов ещё не работает, а факт вывоза фиксировать нужно сейчас.
+ * Талон в самой схеме не требуется: машину заводят и до закрытия (правка заявки в работе), а
+ * обязателен он к моменту «Выполнена» — там проверяется состояние всех машин заявки (ADR 0020).
  */
 export const wasteRequestVehicleInputSchema = z.object({
   containerTypeId: uuidSchema,
-  fileIds: z.array(uuidSchema).max(20).optional().default([]),
+  fileIds: z.array(uuidSchema).max(MAX_TICKETS_PER_VEHICLE).optional().default([]),
 });
 export type WasteRequestVehicleInput = z.infer<typeof wasteRequestVehicleInputSchema>;
+
+/**
+ * Талоны к уже заведённой машине. Нужны при повторном закрытии: после отката администратором
+ * машины у заявки уже есть, и если талона у какой-то из них нет, приложить его иначе было бы
+ * некуда — пришлось бы удалять рейс и заводить заново (ADR 0020).
+ */
+export const wasteVehicleTicketsInputSchema = z.object({
+  vehicleId: uuidSchema,
+  fileIds: z.array(uuidSchema).min(1).max(MAX_TICKETS_PER_VEHICLE),
+});
+export type WasteVehicleTicketsInput = z.infer<typeof wasteVehicleTicketsInputSchema>;
 
 export const MAX_VEHICLES_PER_REQUEST = 50;
 const vehiclesArraySchema = z.array(wasteRequestVehicleInputSchema).max(MAX_VEHICLES_PER_REQUEST);
@@ -97,11 +107,11 @@ const vehiclesArraySchema = z.array(wasteRequestVehicleInputSchema).max(MAX_VEHI
 /**
  * Поля заявки зависят от типа операции:
  *  - container_install → containerTypeId (тип контейнера из справочника, type='cont');
- *  - container_replace → containerTypeId (присутствующий на объекте) + wasteTypeId;
- *  - container_removal → containerTypeId (присутствующий на объекте) + wasteTypeId;
+ *  - container_replace → containerTypeId (присутствующий на объекте);
+ *  - container_removal → containerTypeId (присутствующий на объекте);
  *  - waste_removal     → containerTypeId (тип самосвала) + wasteTypeId + volumeM3.
- * Кросс-полевые требования проверяет superRefine; объём контейнерных операций, тариф и сумму
- * считает сервер (ADR 0009) — вместимость типа и кратность объёма известны только ему.
+ * Тип мусора, объём и цена есть только у вывоза самосвалами (ADR 0019). Кросс-полевые требования
+ * проверяет superRefine; тариф и сумму считает сервер — кратность объёма известна только ему.
  */
 export const createWasteRequestSchema = z
   .object({
@@ -124,6 +134,10 @@ export const createWasteRequestSchema = z
   .superRefine((v, ctx) => {
     if (!v.deliveryTimeUnspecified && !isWithinWorkTimeAt(v.deliveryAt)) {
       ctx.addIssue({ code: 'custom', path: ['deliveryAt'], message: WORK_TIME_MESSAGE });
+    }
+    // Новую заявку заводят не раньше чем на завтра (по МСК); правка даты этим не связана.
+    if (!isAllowedRequestDateAt(v.deliveryAt)) {
+      ctx.addIssue({ code: 'custom', path: ['deliveryAt'], message: MIN_REQUEST_DATE_MESSAGE });
     }
     if (v.requestType === 'container_install' && !v.containerTypeId) {
       ctx.addIssue({
@@ -153,13 +167,15 @@ export const createWasteRequestSchema = z
         message: 'Выберите тип машины/контейнера',
       });
     }
-    // Тарифицируемые операции: мусор реально вывозится, значит нужен его тип (ADR 0009).
-    if (isPricedRequestType(v.requestType) && !v.wasteTypeId) {
-      ctx.addIssue({ code: 'custom', path: ['wasteTypeId'], message: 'Выберите тип мусора' });
-    }
-    // Объём — только у вывоза самосвалами; у замены и снятия его даёт вместимость контейнера.
-    if (requiresManualVolume(v.requestType) && v.volumeM3 == null) {
-      ctx.addIssue({ code: 'custom', path: ['volumeM3'], message: 'Укажите объём' });
+    // Тарифицируемая операция (вывоз самосвалами): нужны и тип мусора, и объём — вдвоём с
+    // прайсом они дают сумму заявки (ADR 0019). У контейнерных операций обоих полей нет.
+    if (isPricedRequestType(v.requestType)) {
+      if (!v.wasteTypeId) {
+        ctx.addIssue({ code: 'custom', path: ['wasteTypeId'], message: 'Выберите тип мусора' });
+      }
+      if (v.volumeM3 == null) {
+        ctx.addIssue({ code: 'custom', path: ['volumeM3'], message: 'Укажите объём' });
+      }
     }
   });
 export type CreateWasteRequestInput = z.infer<typeof createWasteRequestSchema>;
@@ -172,7 +188,7 @@ export const updateWasteRequestSchema = z
     requestType: requestTypeSchema.optional(),
     containerTypeId: uuidSchema.nullable().optional(),
     wasteTypeId: uuidSchema.nullable().optional(),
-    /** Значим только у вывоза самосвалами: у замены и снятия объём даёт вместимость контейнера. */
+    /** Значим только у вывоза самосвалами: у контейнерных операций объёма нет (ADR 0019). */
     volumeM3: volumeSchema.nullable().optional(),
     operatorCounterpartyId: uuidSchema.nullable().optional(),
     deliveryAt: z.coerce.date().optional(),
@@ -212,7 +228,10 @@ export interface WasteRequestVehicleDto {
   containerTypeId: string;
   containerTypeName: string;
   volumeM3: number;
-  /** Талоны рейса; пустой список — талон ещё не приложен. */
+  /**
+   * Талоны рейса. С ADR 0020 закрытая заявка без талона у машины невозможна; пустой список
+   * встречается у заявок, закрытых раньше, и у машин, заведённых до закрытия.
+   */
   files: FileDto[];
   /** Помечена на удаление: в сверке объёма не участвует, в списке показывается неактивной. */
   isDeleted: boolean;
@@ -228,7 +247,7 @@ export function sumVehicleVolume(vehicles: readonly WasteRequestVehicleDto[]): n
 export interface VolumeCheck {
   /** Сумма по активным машинам. */
   actual: number;
-  /** Объём из заявки; null — заявка объёма не несёт (установка контейнера). */
+  /** Объём из заявки; null — заявка объёма не несёт (контейнерные операции). */
   planned: number | null;
   /** Факт − план; null, если сравнивать не с чем. */
   diff: number | null;
@@ -249,19 +268,35 @@ export function checkVehicleVolume(
   return { actual, planned: plannedVolumeM3, diff, matches: diff === 0 };
 }
 
+/** Активные машины, к которым талон ещё не приложен: закрывать заявку с ними нельзя (ADR 0020). */
+export function vehiclesWithoutTickets(
+  vehicles: readonly WasteRequestVehicleDto[],
+): WasteRequestVehicleDto[] {
+  return vehicles.filter((v) => !v.isDeleted && v.files.length === 0);
+}
+
 // Комментарий к смене статуса пишется в историю (request_status_history.comment).
 // При отмене он обязателен и играет роль причины — см. statusChangeRequiresReason.
 // Машины и талоны передаются вместе с закрытием заявки: «Выполнена» без предъявленного факта
 // бессмысленна, а отдельным запросом его пришлось бы проводить не атомарно со сменой статуса
 // (ADR 0011). Какой из двух способов предъявления в ходу, решает тип заявки:
-// вывоз самосвалами — `vehicles`, контейнерные операции — `ticketFileIds` (ADR 0013).
+// вывоз самосвалами — `vehicles` (+ `vehicleTickets` к уже заведённым машинам), контейнерные
+// операции — `ticketFileIds` (ADR 0013). Талон обязателен в обоих случаях, но обязательность
+// проверяет сервер: она считается по состоянию заявки, а не по одному лишь телу запроса —
+// талоны могли быть приложены при прошлом закрытии (ADR 0020).
 export const changeWasteRequestStatusSchema = z
   .object({
     status: requestStatusSchema,
     comment: z.string().trim().max(2000).optional().default(''),
     vehicles: vehiclesArraySchema.optional().default([]),
     /** Талоны заявок без машин: крепятся к самой заявке (request_files, kind='ticket'). */
-    ticketFileIds: z.array(uuidSchema).max(20).optional().default([]),
+    ticketFileIds: z.array(uuidSchema).max(MAX_TICKETS_PER_VEHICLE).optional().default([]),
+    /** Догрузка талонов к машинам, заведённым раньше (повторное закрытие). */
+    vehicleTickets: z
+      .array(wasteVehicleTicketsInputSchema)
+      .max(MAX_VEHICLES_PER_REQUEST)
+      .optional()
+      .default([]),
     version: z.number().int().nonnegative(),
   })
   .superRefine((v, ctx) => {
@@ -280,6 +315,22 @@ export const changeWasteRequestStatusSchema = z
         code: 'custom',
         path: ['ticketFileIds'],
         message: 'Талоны прикладываются только при закрытии заявки',
+      });
+    }
+    if (v.status !== 'done' && v.vehicleTickets.length > 0) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['vehicleTickets'],
+        message: 'Талоны прикладываются только при закрытии заявки',
+      });
+    }
+    // Одна машина — одна запись: два блока талонов на неё разошлись бы с проверкой лимита.
+    const ids = new Set(v.vehicleTickets.map((t) => t.vehicleId));
+    if (ids.size !== v.vehicleTickets.length) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['vehicleTickets'],
+        message: 'Талоны одной машины передаются одним списком',
       });
     }
   });

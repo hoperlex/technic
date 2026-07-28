@@ -130,7 +130,13 @@ export function WasteRequestViewModal({ request, onClose, onEdit }: Props) {
     enabled: !!request,
   });
 
-  const priced = request ? isPricedRequestType(request.requestType) : false;
+  /**
+   * Блок «объём — тип мусора — стоимость» показывается по самим данным, а не по типу заявки:
+   * тарифицируется только вывоз самосвалами (ADR 0019), но у замены и снятия, заведённых до
+   * этого решения, цена сохранена — прятать её значило бы потерять историю сумм.
+   */
+  const priced =
+    request != null && (isPricedRequestType(request.requestType) || request.amount != null);
   const activeVehicles = request?.vehicles.filter((v) => !v.isDeleted).length ?? 0;
   const rows = useMemo(
     () => buildRows(history, request?.vehicles ?? [], request?.tickets ?? []),
@@ -179,7 +185,6 @@ export function WasteRequestViewModal({ request, onClose, onEdit }: Props) {
           span: priced ? 1 : 2,
           children: request.containerTypeName ?? '—',
         },
-        // Тип мусора, объём и цена есть только у тарифицируемых операций (ADR 0009).
         ...(priced
           ? [
               {

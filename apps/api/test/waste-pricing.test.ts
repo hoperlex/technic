@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   calcWasteAmount,
   createWasteRequestSchema,
@@ -13,14 +13,26 @@ const CONTAINER_TYPE_ID = '22222222-2222-4222-8222-222222222222';
 const WASTE_TYPE_ID = '33333333-3333-4333-8333-333333333333';
 const DELIVERY_AT = '2026-08-01T10:00:00.000Z';
 
-describe('тарифицируемые операции (ADR 0009)', () => {
-  it('установка нового контейнера не тарифицируется', () => {
+// Создание заявки проверяет минимальную дату (не раньше завтра по МСК) — «сейчас» фиксируем,
+// иначе фикстура с датой доставки протухла бы вместе с календарём.
+beforeAll(() => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date('2026-07-31T09:00:00.000Z'));
+});
+afterAll(() => {
+  vi.useRealTimers();
+});
+
+describe('тарифицируемые операции (ADR 0019)', () => {
+  it('контейнерные операции не тарифицируются', () => {
     expect(isPricedRequestType('container_install')).toBe(false);
+    expect(isPricedRequestType('container_replace')).toBe(false);
+    expect(isPricedRequestType('container_removal')).toBe(false);
   });
 
-  it('замена, снятие и вывоз тарифицируются', () => {
-    for (const t of PRICED_REQUEST_TYPES) expect(isPricedRequestType(t)).toBe(true);
-    expect(PRICED_REQUEST_TYPES).toHaveLength(3);
+  it('тарифицируется один вывоз самосвалами', () => {
+    expect(isPricedRequestType('waste_removal')).toBe(true);
+    expect(PRICED_REQUEST_TYPES).toEqual(['waste_removal']);
   });
 });
 
@@ -59,33 +71,25 @@ describe('кратность объёма', () => {
 describe('createWasteRequestSchema: тип мусора и объём', () => {
   const base = { objectId: OBJECT_ID, containerTypeId: CONTAINER_TYPE_ID, deliveryAt: DELIVERY_AT };
 
-  it('установка не требует тип мусора и объём', () => {
-    const parsed = createWasteRequestSchema.parse({ ...base, requestType: 'container_install' });
-    expect(parsed.wasteTypeId).toBeUndefined();
-    expect(parsed.volumeM3).toBeUndefined();
-  });
-
-  it.each(PRICED_REQUEST_TYPES)('%s требует тип мусора', (requestType) => {
-    expect(() => createWasteRequestSchema.parse({ ...base, requestType })).toThrow();
-    expect(() => createWasteRequestSchema.parse({ ...base, requestType, volumeM3: 20 })).toThrow();
-  });
-
-  // Замена и снятие вывозят контейнер целиком: объём равен его вместимости и приходит
-  // из справочника, а не от клиента.
-  it.each(['container_replace', 'container_removal'] as const)(
-    '%s объём не требует — его даёт вместимость контейнера',
+  // Контейнерные операции не тарифицируются (ADR 0019): им хватает типа контейнера.
+  it.each(['container_install', 'container_replace', 'container_removal'] as const)(
+    '%s не требует ни типа мусора, ни объёма',
     (requestType) => {
-      const parsed = createWasteRequestSchema.parse({
-        ...base,
-        requestType,
-        wasteTypeId: WASTE_TYPE_ID,
-      });
-      expect(parsed.wasteTypeId).toBe(WASTE_TYPE_ID);
+      const parsed = createWasteRequestSchema.parse({ ...base, requestType });
+      expect(parsed.wasteTypeId).toBeUndefined();
       expect(parsed.volumeM3).toBeUndefined();
     },
   );
 
-  it('вывоз самосвалами требует объём: сколько вывезти — предмет заявки', () => {
+  it('вывоз самосвалами требует и тип мусора, и объём', () => {
+    expect(() =>
+      createWasteRequestSchema.parse({ ...base, requestType: 'waste_removal' }),
+    ).toThrow();
+    // Только объём — без типа мусора цену взять неоткуда.
+    expect(() =>
+      createWasteRequestSchema.parse({ ...base, requestType: 'waste_removal', volumeM3: 20 }),
+    ).toThrow();
+    // Только тип мусора — сколько вывезти, и есть предмет заявки.
     expect(() =>
       createWasteRequestSchema.parse({
         ...base,
@@ -100,6 +104,7 @@ describe('createWasteRequestSchema: тип мусора и объём', () => {
       wasteTypeId: WASTE_TYPE_ID,
       volumeM3: 20,
     });
+    expect(parsed.wasteTypeId).toBe(WASTE_TYPE_ID);
     expect(parsed.volumeM3).toBe(20);
   });
 });

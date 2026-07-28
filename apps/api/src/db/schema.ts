@@ -14,6 +14,7 @@ import {
   pgTable,
   pgView,
   primaryKey,
+  smallint,
   text,
   timestamp,
   unique,
@@ -54,6 +55,8 @@ export const vehicleRequestTypeEnum = pgEnum('vehicle_request_type', [
   'special_equipment',
   'freight_transport',
 ]);
+// Принадлежность техники (ADR 0018): собственный парк и предложения аренды в одной таблице.
+export const vehicleOwnershipEnum = pgEnum('vehicle_ownership', ['own', 'rental']);
 // Тип трудовых отношений физлица с организацией (ADR 0008).
 export const employmentTypeEnum = pgEnum('employment_type', ['staff', 'contractor', 'temporary']);
 // Статус проверки документа работника (ADR 0008); отделён от срока действия документа.
@@ -120,15 +123,19 @@ export const containerTypes = pgTable(
   }),
 );
 
-// ── Справочник типов мусора (ADR 0009) ──
+// ── Типы мусора (ADR 0009, ведение — ADR 0017) ──
 // «Что вывозим»: строительные отходы, бетонный бой, грунт, ОССиГ, древесные отходы.
-// «Чем вывозим» — container_types; цена задаётся на пару (см. wasteTariffs).
+// «Чем вывозим» — container_types; цена задаётся на пару (см. wasteTariffs). Отдельного
+// справочника в интерфейсе нет: тип заводится вместе с первой ценой и правится в строке тарифа.
 export const wasteTypes = pgTable(
   'waste_types',
   {
     id: uuid('id').primaryKey().defaultRandom(),
     code: text('code').notNull(),
     name: text('name').notNull(),
+    // Нормализованное название (GENERATED, миграция 0036): под ним живёт UNIQUE, ловящий
+    // вариации написания одного типа. Значение считает БД — вставлять и обновлять его нельзя.
+    nameKey: text('name_key').generatedAlwaysAs(sql`waste_type_name_key(name)`),
     description: text('description').notNull().default(''),
     sortOrder: integer('sort_order').notNull().default(100),
     isActive: boolean('is_active').notNull().default(true),
@@ -139,6 +146,8 @@ export const wasteTypes = pgTable(
     codeUnique: uniqueIndex('waste_types_code_unique').on(t.code),
     codeFormat: check('waste_types_code_format_check', sql`${t.code} ~ '^[a-z][a-z0-9_]*$'`),
     nameNotBlank: check('waste_types_name_not_blank_check', sql`btrim(${t.name}) <> ''`),
+    nameKeyUnique: uniqueIndex('waste_types_name_key_unique').on(t.nameKey),
+    nameKeyNotBlank: check('waste_types_name_key_not_blank_check', sql`${t.nameKey} <> ''`),
   }),
 );
 
@@ -236,6 +245,134 @@ export const vehicleTypes = pgTable(
   }),
 );
 
+// ── ТТХ: справочник характеристик (ADR 0016) ──
+// Глобальный, а не «поле типа»: «Грузоподъёмность, т» — одна запись, общая для автокранов и
+// самосвалов. unit/decimals входят в смысл канонизации значения и замораживаются после первого
+// значения (проверяет сервис).
+export const vehicleSpecs = pgTable(
+  'vehicle_specs',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    code: text('code').notNull(),
+    name: text('name').notNull(),
+    shortName: text('short_name').notNull().default(''),
+    unit: text('unit').notNull().default(''),
+    valueKind: text('value_kind').notNull().default('number').$type<'number'>(),
+    decimals: smallint('decimals').notNull().default(0),
+    minValue: numeric('min_value', { precision: 14, scale: 4 }),
+    maxValue: numeric('max_value', { precision: 14, scale: 4 }),
+    description: text('description').notNull().default(''),
+    sortOrder: integer('sort_order').notNull().default(100),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    codeUnique: uniqueIndex('vehicle_specs_code_unique').on(t.code),
+    nameUnitUnique: uniqueIndex('vehicle_specs_name_unit_unique').on(
+      sql`lower(btrim(${t.name}))`,
+      sql`lower(btrim(${t.unit}))`,
+    ),
+    activeSortIdx: index('vehicle_specs_active_sort_idx').on(t.isActive, t.sortOrder),
+    codeFormat: check('vehicle_specs_code_format_check', sql`${t.code} ~ '^[a-z][a-z0-9_]*$'`),
+    nameNotBlank: check('vehicle_specs_name_not_blank_check', sql`btrim(${t.name}) <> ''`),
+    valueKindCheck: check('vehicle_specs_value_kind_check', sql`${t.valueKind} IN ('number')`),
+    decimalsRange: check('vehicle_specs_decimals_range_check', sql`${t.decimals} BETWEEN 0 AND 3`),
+    bounds: check(
+      'vehicle_specs_bounds_check',
+      sql`${t.minValue} IS NULL OR ${t.maxValue} IS NULL OR ${t.minValue} <= ${t.maxValue}`,
+    ),
+  }),
+);
+
+// ── ТТХ: привязка к типу (ADR 0016) ──
+// Привязка = обязательность: is_required нет намеренно — раз ТТХ привязан к типу, каждая категория
+// типа обязана иметь по нему значение. PK — цель составного FK из значений категорий.
+export const vehicleTypeSpecs = pgTable(
+  'vehicle_type_specs',
+  {
+    vehicleTypeId: uuid('vehicle_type_id')
+      .notNull()
+      .references(() => vehicleTypes.id, { onDelete: 'restrict' }),
+    specId: uuid('spec_id')
+      .notNull()
+      .references(() => vehicleSpecs.id, { onDelete: 'restrict' }),
+    sortOrder: integer('sort_order').notNull().default(100),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.vehicleTypeId, t.specId] }),
+    specIdx: index('vehicle_type_specs_spec_idx').on(t.specId),
+  }),
+);
+
+// ── Категории типа ТС: условные подтипы (ADR 0016) ──
+// Идентичность категории — набор значений ТТХ, а не наименование; её материализует spec_signature
+// (см. SQL-функцию vehicle_category_signature) под уникальным индексом по (тип, сигнатура).
+export const vehicleCategories = pgTable(
+  'vehicle_categories',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    vehicleTypeId: uuid('vehicle_type_id')
+      .notNull()
+      .references(() => vehicleTypes.id, { onDelete: 'restrict' }),
+    name: text('name').notNull(),
+    isAutoName: boolean('is_auto_name').notNull().default(true),
+    specSignature: text('spec_signature').notNull(),
+    sortOrder: integer('sort_order').notNull().default(100),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    // Цель составного FK из значений — см. vehicleCategorySpecValues.categoryTypeFk.
+    idTypeUnique: unique('vehicle_categories_id_type_unique').on(t.id, t.vehicleTypeId),
+    typeSignatureUnique: uniqueIndex('vehicle_categories_type_signature_unique').on(
+      t.vehicleTypeId,
+      t.specSignature,
+    ),
+    typeActiveSortIdx: index('vehicle_categories_type_active_sort_idx').on(
+      t.vehicleTypeId,
+      t.isActive,
+      t.sortOrder,
+    ),
+    nameNotBlank: check('vehicle_categories_name_not_blank_check', sql`btrim(${t.name}) <> ''`),
+    // Пустая сигнатура запрещена: у типа без ТТХ категорий нет вовсе.
+    signatureNotBlank: check(
+      'vehicle_categories_signature_not_blank_check',
+      sql`btrim(${t.specSignature}) <> ''`,
+    ),
+  }),
+);
+
+// ── Значения ТТХ у категории (ADR 0016) ──
+// Пара составных FK запрещает значение по непривязанному ТТХ, значение у категории чужого типа и
+// отвязку ТТХ, по которому есть значения. Полноту набора (нет пропущенных ТТХ) ключами не выразить —
+// её держат сервис и отложенные constraint-триггеры из миграции 0035.
+export const vehicleCategorySpecValues = pgTable(
+  'vehicle_category_spec_values',
+  {
+    categoryId: uuid('category_id').notNull(),
+    vehicleTypeId: uuid('vehicle_type_id').notNull(),
+    specId: uuid('spec_id').notNull(),
+    valueNum: numeric('value_num', { precision: 14, scale: 4 }).notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.categoryId, t.specId] }),
+    categoryTypeFk: foreignKey({
+      columns: [t.categoryId, t.vehicleTypeId],
+      foreignColumns: [vehicleCategories.id, vehicleCategories.vehicleTypeId],
+      name: 'vehicle_category_spec_values_category_fk',
+    }).onDelete('cascade'),
+    typeSpecFk: foreignKey({
+      columns: [t.vehicleTypeId, t.specId],
+      foreignColumns: [vehicleTypeSpecs.vehicleTypeId, vehicleTypeSpecs.specId],
+      name: 'vehicle_category_spec_values_type_spec_fk',
+    }).onDelete('restrict'),
+    specValueIdx: index('vehicle_category_spec_values_spec_value_idx').on(t.specId, t.valueNum),
+  }),
+);
+
 // ── Справочник «Марка/модель» (ADR 0007) ──
 // Одна запись = одно наименование марки/модели («Mustang 2700V», «МАЗ 6501В5»). Отдельной сущности
 // марки (vehicle_makes) нет: изготовитель — текст. Модель принадлежит плоскому типу ТС.
@@ -272,17 +409,26 @@ export const vehicleModels = pgTable(
   }),
 );
 
-// ── Конкретные ТС (ADR 0007) ──
+// ── Конкретные ТС (ADR 0007) и предложения аренды (ADR 0018) ──
 // Тип хранится явно (известен всегда), марка/модель — опциональна (в источнике есть машины без марки).
 // Согласованность обеспечивает составной FK на (vehicle_models.id, vehicle_models.vehicle_type_id):
 // при NULL-модели он не проверяется (MATCH SIMPLE), при заполненной — запрещает расхождение типов.
+//
+// Принадлежность (ownership) делит таблицу на две ветки: собственную машину описывают её реквизиты,
+// аренду — арендодатель, цены и короткий срез-идентификатор. Ветки различают CHECK'и, а не
+// detail-таблицы: на ветку приходится по три поля, а ссылаться на технику (назначение на заявку)
+// нужно одной колонкой (ADR 0018 §1–2).
 export const vehicles = pgTable(
   'vehicles',
   {
     id: uuid('id').primaryKey().defaultRandom(),
+    ownership: vehicleOwnershipEnum('ownership').notNull().default('own'),
     vehicleTypeId: uuid('vehicle_type_id')
       .notNull()
       .references(() => vehicleTypes.id, { onDelete: 'restrict' }),
+    // Категория (ADR 0016). У аренды — основной классификатор, у своей машины заполняется по мере
+    // разнесения парка; NULL допустим у обеих веток.
+    vehicleCategoryId: uuid('vehicle_category_id'),
     vehicleModelId: uuid('vehicle_model_id'),
     registrationNumber: text('registration_number'),
     registrationNumberNormalized: text('registration_number_normalized').generatedAlwaysAs(
@@ -293,6 +439,17 @@ export const vehicles = pgTable(
     passportNumber: text('passport_number'),
     manufacturerName: text('manufacturer_name').notNull().default(''),
     manufacturedOn: date('manufactured_on'),
+    // ── Аренда ──
+    lessorId: uuid('lessor_id'),
+    // Служебная: приложение всегда пишет 'vehicle_lessor'. Существует ради составного FK
+    // на (counterparties.id, type) — им инвариант «арендодатель именно арендодатель» физический.
+    lessorType: counterpartyTypeEnum('lessor_type'),
+    // Короткий срез вида «Автокран 70 тн» — то, чем человек различает два предложения одного
+    // арендодателя, пока категории не заведены. Входит в ключ уникальности предложения.
+    description: text('description').notNull().default(''),
+    pricePerHour: numeric('price_per_hour', { precision: 12, scale: 2 }),
+    pricePerShift: numeric('price_per_shift', { precision: 12, scale: 2 }),
+    shiftHours: smallint('shift_hours'),
     status: vehicleStatusEnum('status').notNull().default('active'),
     sourceName: text('source_name').notNull().default(''),
     note: text('note').notNull().default(''),
@@ -306,6 +463,56 @@ export const vehicles = pgTable(
       foreignColumns: [vehicleModels.id, vehicleModels.vehicleTypeId],
       name: 'vehicles_model_type_fk',
     }).onDelete('restrict'),
+    // Категория не может разойтись с типом — тот же приём, что и с моделью.
+    categoryTypeFk: foreignKey({
+      columns: [t.vehicleCategoryId, t.vehicleTypeId],
+      foreignColumns: [vehicleCategories.id, vehicleCategories.vehicleTypeId],
+      name: 'vehicles_category_type_fk',
+    }).onDelete('restrict'),
+    lessorFk: foreignKey({
+      columns: [t.lessorId, t.lessorType],
+      foreignColumns: [counterparties.id, counterparties.type],
+      name: 'vehicles_lessor_fk',
+    }).onDelete('restrict'),
+    ownFields: check(
+      'vehicles_own_fields_check',
+      sql`${t.ownership} <> 'own' OR (
+        ${t.lessorId} IS NULL AND ${t.lessorType} IS NULL
+        AND ${t.pricePerHour} IS NULL AND ${t.pricePerShift} IS NULL AND ${t.shiftHours} IS NULL
+        AND ${t.description} = ''
+      )`,
+    ),
+    rentalFields: check(
+      'vehicles_rental_fields_check',
+      sql`${t.ownership} <> 'rental' OR (
+        ${t.lessorId} IS NOT NULL
+        AND (${t.pricePerHour} IS NOT NULL OR ${t.pricePerShift} IS NOT NULL)
+        AND ${t.vehicleModelId} IS NULL
+        AND ${t.registrationNumber} IS NULL
+        AND ${t.passportNumber} IS NULL
+      )`,
+    ),
+    rentalStatus: check(
+      'vehicles_rental_status_check',
+      sql`${t.ownership} <> 'rental' OR ${t.status} IN ('active', 'inactive')`,
+    ),
+    pricesPositive: check(
+      'vehicles_prices_positive_check',
+      sql`(${t.pricePerHour} IS NULL OR ${t.pricePerHour} > 0)
+          AND (${t.pricePerShift} IS NULL OR ${t.pricePerShift} > 0)`,
+    ),
+    shiftHoursRange: check(
+      'vehicles_shift_hours_range_check',
+      sql`${t.shiftHours} IS NULL OR ${t.shiftHours} BETWEEN 1 AND 24`,
+    ),
+    lessorTypeCheck: check(
+      'vehicles_lessor_type_check',
+      sql`${t.lessorType} IS NULL OR ${t.lessorType} = 'vehicle_lessor'`,
+    ),
+    lessorPair: check(
+      'vehicles_lessor_pair_check',
+      sql`(${t.lessorId} IS NULL) = (${t.lessorType} IS NULL)`,
+    ),
     registrationNumberNotBlank: check(
       'vehicles_registration_number_not_blank_check',
       sql`${t.registrationNumber} IS NULL OR btrim(${t.registrationNumber}) <> ''`,
@@ -325,6 +532,20 @@ export const vehicles = pgTable(
     registrationNumberUnique: uniqueIndex('vehicles_registration_number_unique')
       .on(t.registrationNumberNormalized)
       .where(sql`${t.registrationNumberNormalized} IS NOT NULL AND ${t.deletedAt} IS NULL`),
+    // Одно предложение = (арендодатель, тип, категория, описание). В БД индекс объявлен
+    // с NULLS NOT DISTINCT (миграция 0037) — без этого два предложения одного арендодателя
+    // на тип без категории оба прошли бы, потому что NULL <> NULL. Драйвер этот модификатор
+    // не выражает, поэтому здесь индекс описан без него: источник истины — SQL миграции.
+    rentalOfferUnique: uniqueIndex('vehicles_rental_offer_unique')
+      .on(t.lessorId, t.vehicleTypeId, t.vehicleCategoryId, t.description)
+      .where(sql`${t.ownership} = 'rental' AND ${t.deletedAt} IS NULL`),
+    lessorIdx: index('vehicles_lessor_idx')
+      .on(t.lessorId)
+      .where(sql`${t.ownership} = 'rental'`),
+    categoryIdx: index('vehicles_category_idx')
+      .on(t.vehicleCategoryId)
+      .where(sql`${t.vehicleCategoryId} IS NOT NULL`),
+    ownershipTypeIdx: index('vehicles_ownership_type_idx').on(t.ownership, t.vehicleTypeId),
     typeStatusIdx: index('vehicles_type_status_idx').on(t.vehicleTypeId, t.status),
     modelIdx: index('vehicles_model_idx').on(t.vehicleModelId),
     inventoryNumberIdx: index('vehicles_inventory_number_idx').on(t.inventoryNumber),
@@ -429,6 +650,9 @@ export const counterparties = pgTable(
     ),
     // 10 знаков у организации, 12 — у ИП/физлица. Контрольную сумму проверяет сервис.
     innFormat: check('counterparties_inn_format_check', sql`${t.inn} ~ '^([0-9]{10}|[0-9]{12})$'`),
+    // Цель составного FK из vehicles.lessor_fk (ADR 0018 §10): арендодателем можно указать только
+    // контрагента роли vehicle_lessor, и роль нельзя переписать, пока на него ссылается аренда.
+    idTypeUnique: unique('counterparties_id_type_unique').on(t.id, t.type),
     innUnique: uniqueIndex('counterparties_inn_unique')
       .on(t.inn)
       .where(sql`${t.deletedAt} IS NULL`),
@@ -530,10 +754,12 @@ export const wasteRequests = pgTable(
     containerTypeId: uuid('container_type_id').references(() => containerTypes.id, {
       onDelete: 'restrict',
     }),
-    // Объём вывоза (ADR 0009): waste_removal, container_replace, container_removal.
+    // Объём вывоза: только у waste_removal — контейнерные операции его не несут (ADR 0019).
+    // У заявок на замену и снятие, заведённых до этого решения, объём остался в истории.
     volumeM3: integer('volume_m3'),
-    // Что вывозим и по какой цене. Тариф и цена — снимок на момент сохранения заявки:
-    // изменение прайса не переписывает суммы уже оформленных заявок.
+    // Что вывозим и по какой цене — только у вывоза самосвалами (ADR 0019). Тариф и цена —
+    // снимок на момент сохранения заявки: изменение прайса не переписывает суммы уже
+    // оформленных заявок.
     wasteTypeId: uuid('waste_type_id').references(() => wasteTypes.id, { onDelete: 'restrict' }),
     wasteTariffId: uuid('waste_tariff_id').references(() => wasteTariffs.id, {
       onDelete: 'restrict',
@@ -576,6 +802,8 @@ export const wasteRequests = pgTable(
     createdAtIdx: index('waste_requests_created_at_idx').on(t.createdAt),
     wasteTypeIdx: index('waste_requests_waste_type_idx').on(t.wasteTypeId),
     // Установка нового контейнера не тарифицируется: вывоза мусора в этой операции нет.
+    // Замена и снятие тарификацию тоже потеряли (ADR 0019), но CHECK на них не расширен —
+    // у заведённых до этого заявок тип мусора и цена сохранены как есть; новые их не пишут.
     installNoPricing: check(
       'waste_requests_install_no_pricing_check',
       sql`${t.requestType} <> 'container_install'
@@ -1210,6 +1438,10 @@ export type WasteTypeRow = typeof wasteTypes.$inferSelect;
 export type WasteTariffRow = typeof wasteTariffs.$inferSelect;
 export type VehicleKindRow = typeof vehicleKinds.$inferSelect;
 export type VehicleTypeRow = typeof vehicleTypes.$inferSelect;
+export type VehicleSpecRow = typeof vehicleSpecs.$inferSelect;
+export type VehicleTypeSpecRow = typeof vehicleTypeSpecs.$inferSelect;
+export type VehicleCategoryRow = typeof vehicleCategories.$inferSelect;
+export type VehicleCategorySpecValueRow = typeof vehicleCategorySpecValues.$inferSelect;
 export type VehicleModelRow = typeof vehicleModels.$inferSelect;
 export type VehicleRow = typeof vehicles.$inferSelect;
 export type VehicleRequestRow = typeof vehicleRequests.$inferSelect;

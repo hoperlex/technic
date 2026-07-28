@@ -3,20 +3,19 @@ import { baseListQuery, uuidSchema } from './common';
 import { containerKindSchema, type ContainerKind, type RequestType } from './enums';
 
 /**
- * Операции, в которых мусор фактически вывозится, — только они тарифицируются.
- * Установка нового контейнера вывоза не содержит, поэтому цены у неё нет.
+ * Тарифицируется только вывоз мусора самосвалами (ADR 0019): там объём заказывают заявкой, и он
+ * же вместе с прайсом даёт сумму. Контейнерные операции (установка, замена, снятие) заявкой не
+ * считаются: ни типа мусора, ни объёма, ни цены у них нет.
  */
-export const PRICED_REQUEST_TYPES = [
-  'container_replace',
-  'container_removal',
-  'waste_removal',
-] as const satisfies readonly RequestType[];
+export const PRICED_REQUEST_TYPES = ['waste_removal'] as const satisfies readonly RequestType[];
 
 export function isPricedRequestType(t: RequestType): boolean {
   return (PRICED_REQUEST_TYPES as readonly RequestType[]).includes(t);
 }
 
 // ── Типы мусора ──
+// Отдельного справочника типов нет (ADR 0017): тип существует ради цены и заводится вместе с
+// первой позицией прайса, а правится в строке тарифа. Наружу тип остаётся списком для выбора.
 
 export const WASTE_TYPE_SORT_FIELDS = ['code', 'name', 'sortOrder', 'isActive'] as const;
 
@@ -27,11 +26,17 @@ const boolFromQuery = z
 
 export const wasteTypeListQuerySchema = baseListQuery(WASTE_TYPE_SORT_FIELDS).extend({
   isActive: boolFromQuery,
+  /**
+   * Только типы с действующим тарифом. Форма заявки спрашивает именно так: тип без цены
+   * выбрать можно, а сохранить заявку — нет («тариф не найден»).
+   */
+  hasActiveTariff: boolFromQuery,
 });
 
 /** «Что вывозим»: строительные отходы, бетонный бой, грунт, ОССиГ, древесные отходы. */
 export interface WasteTypeDto {
   id: string;
+  /** Стабильный системный идентификатор; выводится из названия сервером при заведении типа. */
   code: string;
   name: string;
   description: string;
@@ -41,36 +46,119 @@ export interface WasteTypeDto {
   updatedAt: string;
 }
 
-/** Код — стабильный системный идентификатор; формат повторяет CHECK `waste_types_code_format`. */
-export const WASTE_TYPE_CODE_RE = /^[a-z][a-z0-9_]*$/;
+/**
+ * Нормализованный ключ названия — повторяет SQL-функцию `waste_type_name_key` (миграция 0036):
+ * регистр, «ё» и любые разделители значения не имеют. Одинаковый ключ = один и тот же тип.
+ */
+export function wasteTypeNameKey(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/ё/g, 'е')
+    .replace(/[^0-9a-zа-я]+/g, '');
+}
 
-export const createWasteTypeSchema = z
-  .object({
-    code: z
-      .string()
-      .trim()
-      .min(1)
-      .max(50)
-      .regex(WASTE_TYPE_CODE_RE, 'Код: латиница в нижнем регистре, цифры и «_», начиная с буквы'),
-    name: z.string().trim().min(1).max(255),
-    description: z.string().trim().max(2000).default(''),
-    sortOrder: z.coerce.number().int().default(100),
-    isActive: z.boolean().default(true),
-  })
-  .strict();
-export type CreateWasteTypeInput = z.infer<typeof createWasteTypeSchema>;
+export const wasteTypeNameSchema = z
+  .string()
+  .trim()
+  .min(2, 'Название слишком короткое')
+  .max(255)
+  .refine((n) => wasteTypeNameKey(n) !== '', 'Название должно содержать буквы или цифры');
 
 // `code` неизменяем после создания, удаления нет — деактивация через isActive
 // (единый принцип со справочником типов контейнеров).
 export const updateWasteTypeSchema = z
   .object({
-    name: z.string().trim().min(1).max(255).optional(),
+    name: wasteTypeNameSchema.optional(),
     description: z.string().trim().max(2000).optional(),
     sortOrder: z.coerce.number().int().optional(),
     isActive: z.boolean().optional(),
   })
   .strict();
 export type UpdateWasteTypeInput = z.infer<typeof updateWasteTypeSchema>;
+
+// ── Дубли и похожие названия ──
+// Две разные проверки с разной силой. Совпадение ключа — запрет: это то же самое, написанное
+// иначе, и вторая строка развалила бы пару «тип × техника» на две цены. Похожесть — только
+// предупреждение: «Грунт» рядом с «Чистый грунт» бывает и опечаткой, и новой позицией прайса,
+// и решать это человеку, а не порогу расстояния между строками.
+
+/** Порог похожести: доля совпадения ключей, при которой название показывается как близкое. */
+export const WASTE_TYPE_SIMILARITY_THRESHOLD = 0.75;
+
+/** Ключ короче этого не сравнивается: на 1–2 символах любое расстояние даёт ложные срабатывания. */
+const MIN_COMPARED_KEY_LENGTH = 3;
+
+export interface WasteTypeNameLike {
+  id: string;
+  name: string;
+}
+
+function levenshtein(a: string, b: string): number {
+  // Одна строка матрицы: длины названий малы, но функция зовётся на каждый ввод символа в форме.
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i += 1) {
+    const row = [i];
+    for (let j = 1; j <= b.length; j += 1) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      row[j] = Math.min(row[j - 1]! + 1, prev[j]! + 1, prev[j - 1]! + cost);
+    }
+    prev = row;
+  }
+  return prev[b.length]!;
+}
+
+/** Похожесть двух названий: 0 — ничего общего, 1 — один и тот же ключ. */
+export function wasteTypeNameSimilarity(a: string, b: string): number {
+  const ka = wasteTypeNameKey(a);
+  const kb = wasteTypeNameKey(b);
+  if (!ka || !kb) return 0;
+  if (ka === kb) return 1;
+  const max = Math.max(ka.length, kb.length);
+  return (max - levenshtein(ka, kb)) / max;
+}
+
+/** Существующий тип с тем же ключом — блокирующий дубль (его же ловит UNIQUE в БД). */
+export function findWasteTypeByName<T extends WasteTypeNameLike>(
+  name: string,
+  types: readonly T[],
+): T | undefined {
+  const key = wasteTypeNameKey(name);
+  if (!key) return undefined;
+  return types.find((t) => wasteTypeNameKey(t.name) === key);
+}
+
+/**
+ * Близкие названия — предупреждение, не запрет. Кроме расстояния учитывается вхождение целиком:
+ * «Грунт» и «Чистый грунт» далеки по буквам, но почти наверняка про одно и то же.
+ */
+export function findSimilarWasteTypes<T extends WasteTypeNameLike>(
+  name: string,
+  types: readonly T[],
+  limit = 5,
+): T[] {
+  const key = wasteTypeNameKey(name);
+  if (key.length < MIN_COMPARED_KEY_LENGTH) return [];
+  const scored: { type: T; score: number }[] = [];
+  for (const type of types) {
+    const other = wasteTypeNameKey(type.name);
+    if (other === key || other.length < MIN_COMPARED_KEY_LENGTH) continue;
+    const ratio = wasteTypeNameSimilarity(name, type.name);
+    const score =
+      other.includes(key) || key.includes(other)
+        ? Math.max(WASTE_TYPE_SIMILARITY_THRESHOLD, ratio)
+        : ratio;
+    if (score >= WASTE_TYPE_SIMILARITY_THRESHOLD) scored.push({ type, score });
+  }
+  return scored
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+    .map((s) => s.type);
+}
+
+/** Текст отказа один на форму и сервер: человек видит одно и то же до и после отправки. */
+export function wasteTypeDuplicateMessage(existingName: string): string {
+  return `Такой тип уже есть — «${existingName}»; выберите его в списке`;
+}
 
 // ── Тарифы ──
 
@@ -119,7 +207,14 @@ const priceSchema = z.coerce
  */
 export const createWasteTariffSchema = z
   .object({
-    wasteTypeId: uuidSchema,
+    /** Существующий тип мусора — либо он, либо название нового в `wasteTypeName`. */
+    wasteTypeId: uuidSchema.nullish(),
+    /**
+     * Новый тип мусора: заводится той же транзакцией, что и цена (ADR 0017). Отдельного шага
+     * «сначала тип» нет намеренно — иначе брошенная на полпути форма оставляла бы тип без цены,
+     * а править и отключать такой тип негде: интерфейс типа живёт в строке тарифа.
+     */
+    wasteTypeName: wasteTypeNameSchema.nullish(),
     /** Точный тариф на тип контейнера/машины — либо он, либо `containerKind`. */
     containerTypeId: uuidSchema.nullish(),
     /** Тариф на вид техники целиком (контейнер | самосвал). */
@@ -182,6 +277,22 @@ export function validateWasteTariff(d: WasteTariffDefinition): Record<string, st
     fields.pricePerM3 = 'Укажите цену за м³';
   }
   return fields;
+}
+
+/**
+ * Выбор типа мусора у новой позиции: ровно одно из двух — существующий тип или название нового.
+ * Схема этого не выражает (оба поля необязательны по отдельности), поэтому проверка отдельная —
+ * тем же приёмом, что и цель тарифа в `validateWasteTariff`.
+ */
+export function validateWasteTypeChoice(c: {
+  wasteTypeId?: string | null;
+  wasteTypeName?: string | null;
+}): Record<string, string> {
+  if (c.wasteTypeId && c.wasteTypeName) {
+    return { wasteTypeId: 'Либо существующий тип мусора, либо новый — не оба сразу' };
+  }
+  if (!c.wasteTypeId && !c.wasteTypeName) return { wasteTypeId: 'Выберите тип мусора' };
+  return {};
 }
 
 export const resolveWasteTariffQuerySchema = z.object({

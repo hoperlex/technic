@@ -42,7 +42,6 @@ import {
   normalizeTimeInput,
   calcWasteAmount,
   isPricedRequestType,
-  requiresManualVolume,
   requiresWasteVehicles,
   isVolumeAllowed,
   volumeStepMessage,
@@ -82,7 +81,7 @@ import { useAuth } from '../auth/AuthContext';
 import { MOSCOW_TZ } from '../theme';
 import { errorMessage, formatDate, formatDateTimeMaybe, formatMoney } from '../utils/format';
 import { applyApiFieldErrors } from '../utils/formErrors';
-import { isPastDate, startOfToday } from '../utils/date';
+import { isBeforeMinRequestDate, isPastDate, minRequestDate } from '../utils/date';
 import { OnSiteTab } from './waste/OnSiteTab';
 import { WasteDoneModal } from './waste/WasteDoneModal';
 import { WasteRequestViewModal } from './waste/WasteRequestViewModal';
@@ -115,15 +114,12 @@ interface RequestFormValues {
 
 /** Человекочитаемое описание предмета заявки для колонки списка. */
 function requestSubject(r: WasteRequestDto): string {
-  // У тарифицируемых операций объём — часть предмета заявки: он определяет сумму (ADR 0009).
-  if (isPricedRequestType(r.requestType)) {
-    const parts = [r.containerTypeName, r.volumeM3 != null ? `${r.volumeM3} м³` : null].filter(
-      Boolean,
-    );
-    return parts.length ? parts.join(', ') : '—';
-  }
-  // container_install — только тип контейнера
-  return r.containerTypeName ?? '—';
+  // Объём — часть предмета заявки там, где он есть: у вывоза самосвалами он определяет сумму
+  // (ADR 0019), у контейнерных операций его нет — кроме заявок, заведённых до этого решения.
+  const parts = [r.containerTypeName, r.volumeM3 != null ? `${r.volumeM3} м³` : null].filter(
+    Boolean,
+  );
+  return parts.length ? parts.join(', ') : '—';
 }
 
 export function WasteRequestsPage() {
@@ -254,14 +250,17 @@ function RequestsTab() {
     { label: 'Самосвалы', options: truckTypeOptions },
   ].filter((g) => g.options.length > 0);
 
-  // Типы мусора — для тарифицируемых операций (замена / снятие / вывоз), ADR 0009.
+  // Типы мусора — только для вывоза самосвалами (ADR 0019). Спрашиваются
+  // только типы с действующей ценой (ADR 0017): выбор типа без тарифа кончался бы отказом
+  // «тариф не найден» уже при сохранении заявки.
   const { data: wasteTypes } = useQuery({
-    queryKey: ['waste-types', 'for-select'],
+    queryKey: ['waste-types', 'for-select', 'priced'],
     queryFn: () =>
       wasteTypesApi.list({
         page: 1,
         pageSize: 500,
         isActive: 'true',
+        hasActiveTariff: 'true',
         sortBy: 'sortOrder',
         sortOrder: 'asc',
       }),
@@ -318,13 +317,21 @@ function RequestsTab() {
   const watchWasteTypeId = Form.useWatch('wasteTypeId', form);
   const watchVolumeM3 = Form.useWatch('volumeM3', form);
 
-  // Тарифицируемые операции: замена, снятие, вывоз. Установка нового контейнера цены не имеет.
+  // Тип оформленной заявки остаётся в выборе, даже если его тариф успели отключить: иначе правка
+  // такой заявки начиналась бы с пустого поля и молча меняла её предмет (приём — как у оператора).
+  const formWasteTypeOptions = (() => {
+    if (!record?.wasteTypeId || wasteTypeOptions.some((o) => o.value === record.wasteTypeId)) {
+      return wasteTypeOptions;
+    }
+    return [
+      { value: record.wasteTypeId, label: record.wasteTypeName ?? record.wasteTypeId },
+      ...wasteTypeOptions,
+    ];
+  })();
+
+  // Тарифицируется только вывоз самосвалами (ADR 0019): тип мусора, объём и стоимость есть
+  // у него одного, контейнерные операции ограничиваются типом контейнера.
   const isPriced = watchRequestType ? isPricedRequestType(watchRequestType) : false;
-  // Объём вводится вручную только у вывоза самосвалами: сколько мусора вывезти — там и есть
-  // предмет заявки. Замена и снятие вывозят контейнер целиком, поэтому их объём равен
-  // вместимости выбранного типа и подставляется сервером из справочника (ADR 0009).
-  const manualVolume = watchRequestType ? requiresManualVolume(watchRequestType) : false;
-  const containerVolume = allTypes.find((t) => t.id === watchContainerTypeId)?.volumeM3 ?? null;
 
   // Машины заявки в форме редактирования (ADR 0011): новые строки и действия над заведёнными.
   // Пометку ставит любой, кто правит заявку; удалить насовсем может только администратор.
@@ -368,25 +375,24 @@ function RequestsTab() {
     retry: false,
   });
   const volumeStepM3 = tariff?.volumeStepM3 ?? null;
-  /** Объём, по которому считается заявка: введённый у вывоза, вместимость контейнера у остальных. */
-  const plannedVolume = manualVolume ? (watchVolumeM3 ?? null) : containerVolume;
+  /** Объём, по которому считается заявка; есть только у вывоза самосвалами (ADR 0019). */
+  const plannedVolume = isPriced ? (watchVolumeM3 ?? null) : null;
   const amountPreview =
     tariff && plannedVolume != null && isVolumeAllowed(plannedVolume, volumeStepM3)
       ? calcWasteAmount(plannedVolume, tariff.pricePerM3)
       : null;
   /**
-   * Расчёт показывается подсказкой: полей объёма (у контейнерных операций) и стоимости в форме
-   * нет — объём даёт справочник, цену прайс, и человеку остаётся увидеть, во что заявка обойдётся.
+   * Расчёт показывается подсказкой: поля стоимости в форме нет — цену даёт прайс по паре
+   * «тип мусора × техника», и человеку остаётся увидеть, во что заявка обойдётся.
    */
   const pricingHint = ((): string | null => {
     if (!isPriced) return null;
     if (!watchContainerTypeId || !watchWasteTypeId) {
-      return 'Объём и стоимость посчитаются автоматически: объём — по вместимости, цена — по прайсу';
+      return 'Стоимость посчитается автоматически: цена — по прайсу, сумма — по объёму';
     }
     if (tariffMissing) return 'Тариф для выбранной пары «тип мусора × техника» не задан';
     if (!tariff) return null;
     return [
-      plannedVolume != null ? `Объём ${plannedVolume} м³` : null,
       `${formatMoney(tariff.pricePerM3)}/м³`,
       amountPreview != null ? `итого ${formatMoney(amountPreview)}` : null,
     ]
@@ -408,24 +414,13 @@ function RequestsTab() {
       presentTypeMap.set(r.containerTypeId, r.containerTypeName ?? 'Контейнер');
     }
   }
-  // Объём замены и снятия равен вместимости контейнера (ADR 0009), поэтому она стоит прямо в
-  // подписи; тип с незаполненной вместимостью выбрать нельзя — считать такую заявку не по чему.
-  // Тип, которого нет в справочнике активных (деактивировали, а контейнер на объекте остался),
-  // форма не блокирует: вместимость она не знает, но у сервера она есть.
-  const presentTypeOptions = [...presentTypeMap].map(([value, label]) => {
-    const known = allTypes.find((t) => t.id === value);
-    const noCapacity = known != null && known.volumeM3 == null;
-    return {
-      value,
-      label: known?.volumeM3 != null ? `${label} — ${known.volumeM3} м³` : label,
-      disabled: noCapacity,
-      title: noCapacity ? 'У типа не задана вместимость — объём заявки взять неоткуда' : undefined,
-    };
-  });
+  // Тип контейнера — единственное, что нужно замене и снятию (ADR 0019): вместимость в подписи
+  // не нужна, объёма у такой заявки нет, и тип без вместимости в справочнике ей не мешает.
+  const presentTypeOptions = [...presentTypeMap].map(([value, label]) => ({ value, label }));
   const objectHasPresent = presentTypeOptions.length > 0;
 
-  // Первое поле тарифицируемой строки: для замены и снятия выбор ограничен контейнерами,
-  // которые сейчас стоят на объекте; для вывоза — самосвалы из справочника.
+  // Чем оперирует заявка: у замены и снятия выбор ограничен контейнерами, которые сейчас стоят
+  // на объекте; у вывоза — самосвалы из справочника.
   const fromObjectField = {
     options: presentTypeOptions,
     placeholder: 'Тип, присутствующий на объекте',
@@ -462,8 +457,8 @@ function RequestsTab() {
     setVehicleDrafts([]);
     setVehicleMarks({});
     form.resetFields();
-    // Дата доставки по умолчанию — сегодня.
-    form.setFieldsValue({ deliveryDate: startOfToday() } as Partial<RequestFormValues>);
+    // Дата доставки по умолчанию — завтра: раньше заявку не заводят (правило в контрактах).
+    form.setFieldsValue({ deliveryDate: minRequestDate() } as Partial<RequestFormValues>);
     if (isShtab && user?.constructionObjectId) {
       form.setFieldsValue({ objectId: user.constructionObjectId } as Partial<RequestFormValues>);
     }
@@ -558,11 +553,10 @@ function RequestsTab() {
         requestType: values.requestType,
         // все четыре типа заявки ссылаются на тип из справочника
         containerTypeId: values.containerTypeId,
-        // Тип мусора и объём — только у тарифицируемых операций (ADR 0009).
+        // Тип мусора и объём есть только у вывоза самосвалами (ADR 0019); у контейнерных
+        // операций сервер их всё равно обнулит.
         wasteTypeId: isPricedRequestType(values.requestType) ? values.wasteTypeId : undefined,
-        // Объём шлём только там, где его вводят руками: у замены и снятия его берёт из
-        // справочника сервер — присланное значение он всё равно перезапишет вместимостью.
-        volumeM3: requiresManualVolume(values.requestType) ? values.volumeM3 : undefined,
+        volumeM3: isPricedRequestType(values.requestType) ? values.volumeM3 : undefined,
         // Исполнителя назначает диспетчер и только у заведённой заявки: в форме создания поля
         // нет, у остальных ролей — нет и при редактировании (ADR 0010).
         operatorCounterpartyId:
@@ -632,11 +626,13 @@ function RequestsTab() {
       comment?: string;
       vehicles?: VehicleDraft[];
       ticketFileIds?: string[];
+      vehicleTickets?: { vehicleId: string; fileIds: string[] }[];
     }) =>
       wasteRequestsApi.changeStatus(v.id, v.status, v.version, {
         comment: v.comment,
         vehicles: v.vehicles ? draftsToInput(v.vehicles) : [],
         ticketFileIds: v.ticketFileIds,
+        vehicleTickets: v.vehicleTickets,
       }),
     onSuccess: () => {
       setOperatorTarget(null);
@@ -1098,7 +1094,8 @@ function RequestsTab() {
 
       {/* Закрытие заявки: предъявление факта и комментарий уходят вместе со статусом. Вывоз
           самосвалами отчитывается машинами (ADR 0011), контейнерные операции — талонами
-          заявки (ADR 0013); сверка объёма — подсказка, расхождение сохранению не мешает. */}
+          заявки (ADR 0013); талон обязателен в обоих случаях (ADR 0020), а сверка объёма —
+          подсказка: расхождение сохранению не мешает. */}
       <WasteDoneModal
         request={doneTarget}
         typeOptions={vehicleTypeOptions}
@@ -1113,6 +1110,7 @@ function RequestsTab() {
             comment: v.comment,
             vehicles: v.vehicles,
             ticketFileIds: v.ticketFileIds,
+            vehicleTickets: v.vehicleTickets,
           })
         }
       />
@@ -1203,61 +1201,60 @@ function RequestsTab() {
             </Form.Item>
           )}
 
-          {/* Тарифицируемые операции: сначала что вывозим (и сколько — у самосвалов), следом чем.
-              Порядок повторяет разговор о заявке: тип мусора сужает список техники, которой его
-              возят. Полей объёма и стоимости нет — объём замены и снятия равен вместимости
-              контейнера, цену даёт прайс по паре «тип мусора × техника», и расчёт виден
-              подсказкой под полями (ADR 0009). Объём остаётся полем только у вывоза самосвалами:
-              там он и есть предмет заявки. */}
-          {isPriced && subjectField && (
+          {/* Вывоз самосвалами: сначала что вывозим и сколько, следом чем. Порядок повторяет
+              разговор о заявке: тип мусора сужает список техники, которой его возят. Поля
+              стоимости нет — цену даёт прайс по паре «тип мусора × техника», и расчёт виден
+              подсказкой под полями (ADR 0009). У замены и снятия этих полей нет вовсе: они не
+              тарифицируются (ADR 0019), в форме остаётся только контейнер с объекта. */}
+          {isPriced && (
+            <div style={{ display: 'flex', gap: 12 }}>
+              <Form.Item
+                name="wasteTypeId"
+                label="Тип мусора"
+                rules={[{ required: true, message: 'Выберите тип мусора' }]}
+                style={{ flex: 3, minWidth: 0 }}
+              >
+                <Select
+                  options={formWasteTypeOptions}
+                  showSearch
+                  optionFilterProp="label"
+                  placeholder="Что вывозим"
+                />
+              </Form.Item>
+              <Form.Item
+                name="volumeM3"
+                label="Объём, м³"
+                rules={[
+                  { required: true, message: 'Укажите объём' },
+                  {
+                    type: 'number',
+                    min: MIN_WASTE_VOLUME_M3,
+                    message: `Не менее ${MIN_WASTE_VOLUME_M3} м³`,
+                  },
+                  {
+                    // Тариф «за контейнер» тарифицирует контейнер целиком: половину не вывозят.
+                    validator: (_rule, v: number | undefined) =>
+                      v == null || isVolumeAllowed(v, volumeStepM3)
+                        ? Promise.resolve()
+                        : Promise.reject(new Error(volumeStepMessage(volumeStepM3!))),
+                  },
+                ]}
+                style={{ flex: 2, minWidth: 0 }}
+              >
+                <InputNumber
+                  min={MIN_WASTE_VOLUME_M3}
+                  step={volumeStepM3 ?? 1}
+                  // Заявленный объём — целое (в БД integer): дробное значение сервер отвергал
+                  // бы валидацией уже после отправки формы.
+                  precision={0}
+                  style={{ width: '100%' }}
+                  placeholder={volumeStepM3 ? `Кратно ${volumeStepM3}` : 'Например, 20'}
+                />
+              </Form.Item>
+            </div>
+          )}
+          {subjectField && (
             <>
-              <div style={{ display: 'flex', gap: 12 }}>
-                <Form.Item
-                  name="wasteTypeId"
-                  label="Тип мусора"
-                  rules={[{ required: true, message: 'Выберите тип мусора' }]}
-                  style={{ flex: 3, minWidth: 0 }}
-                >
-                  <Select
-                    options={wasteTypeOptions}
-                    showSearch
-                    optionFilterProp="label"
-                    placeholder="Что вывозим"
-                  />
-                </Form.Item>
-                {manualVolume && (
-                  <Form.Item
-                    name="volumeM3"
-                    label="Объём, м³"
-                    rules={[
-                      { required: true, message: 'Укажите объём' },
-                      {
-                        type: 'number',
-                        min: MIN_WASTE_VOLUME_M3,
-                        message: `Не менее ${MIN_WASTE_VOLUME_M3} м³`,
-                      },
-                      {
-                        // Тариф «за контейнер» тарифицирует контейнер целиком: половину не вывозят.
-                        validator: (_rule, v: number | undefined) =>
-                          v == null || isVolumeAllowed(v, volumeStepM3)
-                            ? Promise.resolve()
-                            : Promise.reject(new Error(volumeStepMessage(volumeStepM3!))),
-                      },
-                    ]}
-                    style={{ flex: 2, minWidth: 0 }}
-                  >
-                    <InputNumber
-                      min={MIN_WASTE_VOLUME_M3}
-                      step={volumeStepM3 ?? 1}
-                      // Заявленный объём — целое (в БД integer): дробное значение сервер отвергал
-                      // бы валидацией уже после отправки формы.
-                      precision={0}
-                      style={{ width: '100%' }}
-                      placeholder={volumeStepM3 ? `Кратно ${volumeStepM3}` : 'Например, 20'}
-                    />
-                  </Form.Item>
-                )}
-              </div>
               <Form.Item
                 name="containerTypeId"
                 label={subjectField.label}
@@ -1315,11 +1312,13 @@ function RequestsTab() {
               rules={[{ required: true, message: 'Укажите дату' }]}
               style={{ flex: 1 }}
             >
+              {/* Новую заявку — не раньше чем на завтра (по МСК); у заведённой дата правится
+                  свободно, лишь бы не в прошлое. */}
               <DatePicker
                 format="DD.MM.YYYY"
                 style={{ width: '100%' }}
                 placeholder="дд.мм.гггг"
-                disabledDate={isPastDate}
+                disabledDate={record ? isPastDate : isBeforeMinRequestDate}
               />
             </Form.Item>
             <Form.Item

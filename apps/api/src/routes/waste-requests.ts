@@ -10,7 +10,6 @@ import {
   MIN_WASTE_VOLUME_M3,
   REQUEST_STATUSES,
   type RequestType,
-  requiresManualVolume,
   requiresWasteVehicles,
   updateWasteRequestSchema,
   type WasteRequestDto,
@@ -57,6 +56,7 @@ import { priceWasteRequest, toNum } from '../services/waste-pricing';
 import { diffWasteRequests } from '../services/waste-request-diff';
 import { loadWasteRequestHistory } from '../services/waste-request-history';
 import {
+  attachVehicleTickets,
   countActiveVehicles,
   hardDeleteVehicles,
   insertVehicles,
@@ -64,6 +64,7 @@ import {
   restoreVehicles,
   vehicleFilesOfRequest,
   vehiclesByRequestIds,
+  vehiclesMissingTickets,
 } from '../services/waste-request-vehicles';
 import { assertOperatorServesObject } from '../services/object-operators';
 
@@ -263,30 +264,13 @@ async function isTypePresent(tx: Tx, objectId: string, containerTypeId: string):
 }
 
 /**
- * Вместимость типа контейнера — она же объём заявки на замену и снятие: контейнер вывозится
- * целиком (ADR 0009). Тип без вместимости в такой заявке использовать нельзя — считать нечего.
- */
-async function containerCapacity(tx: Tx, containerTypeId: string): Promise<number> {
-  const [ct] = await tx
-    .select({ volumeM3: containerTypes.volumeM3 })
-    .from(containerTypes)
-    .where(eq(containerTypes.id, containerTypeId));
-  if (!ct) throw err.badRequest('Тип контейнера не найден');
-  if (ct.volumeM3 == null) {
-    throw err.unprocessable('У выбранного типа контейнера не задана вместимость', {
-      containerTypeId: 'Вместимость типа не указана в справочнике',
-    });
-  }
-  return ct.volumeM3;
-}
-
-/**
  * Проверяет и нормализует поля заявки по её типу:
- *  - установка — сверяет тип контейнера (type='cont'), тарификации нет;
+ *  - установка — сверяет тип контейнера (type='cont');
  *  - замена/снятие — сверяет, что контейнер этого типа присутствует на объекте (view наличия);
  *  - вывоз — сверяет тип из справочника (только самосвал).
- * Для тарифицируемых операций (замена/снятие/вывоз) дополнительно требует тип мусора, определяет
- * объём, подбирает тариф и возвращает снимок цены (ADR 0009). Лишние поля обнуляет.
+ * Тарифицируется один вывоз самосвалами (ADR 0019): у него требуются тип мусора и объём, по ним
+ * подбирается тариф и возвращается снимок цены. У контейнерных операций эти поля обнуляются —
+ * так они очищаются и при смене типа уже заведённой заявки.
  */
 async function resolveSubject(
   tx: Tx,
@@ -315,46 +299,44 @@ async function resolveSubject(
     };
   }
 
-  if (input.requestType === 'container_replace') {
-    if (!input.containerTypeId) throw err.badRequest('Выберите тип контейнера для замены');
+  if (input.requestType === 'container_replace' || input.requestType === 'container_removal') {
+    const what = input.requestType === 'container_replace' ? 'замены' : 'снятия';
+    if (!input.containerTypeId) throw err.badRequest(`Выберите тип контейнера для ${what}`);
     if (!(await isTypePresent(tx, input.objectId, input.containerTypeId))) {
-      throw err.badRequest('На объекте нет контейнера этого типа для замены');
+      throw err.badRequest(`На объекте нет контейнера этого типа для ${what}`);
     }
-  } else if (input.requestType === 'container_removal') {
-    if (!input.containerTypeId) throw err.badRequest('Выберите тип контейнера для снятия');
-    if (!(await isTypePresent(tx, input.objectId, input.containerTypeId))) {
-      throw err.badRequest('На объекте нет контейнера этого типа для снятия');
-    }
-  } else {
-    // waste_removal — вывоз самосвалами: контейнерные типы сюда не подходят, для них есть
-    // отдельные операции (замена, снятие).
-    if (!input.containerTypeId) throw err.badRequest('Выберите тип самосвала');
-    const [mt] = await tx
-      .select({ id: containerTypes.id, type: containerTypes.type })
-      .from(containerTypes)
-      .where(eq(containerTypes.id, input.containerTypeId));
-    if (!mt) throw err.badRequest('Тип не найден');
-    if (mt.type !== 'truck') {
-      throw err.badRequest('Вывоз мусора оформляется самосвалами — выберите тип самосвала', {
-        containerTypeId: 'Нужен тип вида «Самосвал»',
-      });
-    }
+    // Контейнерная операция не тарифицируется (ADR 0019): присланные тип мусора и объём
+    // отбрасываются вместе со снимком цены.
+    return {
+      containerTypeId: input.containerTypeId,
+      wasteTypeId: null,
+      volumeM3: null,
+      wasteTariffId: null,
+      pricePerM3: null,
+    };
   }
 
-  // Тарифицируемые операции: тип мусора обязателен, цена берётся из прайса.
-  if (!input.wasteTypeId) throw err.badRequest('Выберите тип мусора');
-  // Объём вводится вручную только у вывоза самосвалами; замена и снятие вывозят контейнер
-  // целиком, поэтому их объём — вместимость типа из справочника, а присланный игнорируется.
-  let volumeM3: number;
-  if (requiresManualVolume(input.requestType)) {
-    if (input.volumeM3 == null) throw err.badRequest('Укажите объём');
-    if (input.volumeM3 < MIN_WASTE_VOLUME_M3) {
-      throw err.badRequest(`Объём не меньше ${MIN_WASTE_VOLUME_M3} м³`);
-    }
-    volumeM3 = input.volumeM3;
-  } else {
-    volumeM3 = await containerCapacity(tx, input.containerTypeId);
+  // waste_removal — вывоз самосвалами: контейнерные типы сюда не подходят, для них есть
+  // отдельные операции (замена, снятие).
+  if (!input.containerTypeId) throw err.badRequest('Выберите тип самосвала');
+  const [mt] = await tx
+    .select({ id: containerTypes.id, type: containerTypes.type })
+    .from(containerTypes)
+    .where(eq(containerTypes.id, input.containerTypeId));
+  if (!mt) throw err.badRequest('Тип не найден');
+  if (mt.type !== 'truck') {
+    throw err.badRequest('Вывоз мусора оформляется самосвалами — выберите тип самосвала', {
+      containerTypeId: 'Нужен тип вида «Самосвал»',
+    });
   }
+
+  // Вывоз мусора: тип мусора и объём обязательны, цена берётся из прайса по их паре с техникой.
+  if (!input.wasteTypeId) throw err.badRequest('Выберите тип мусора');
+  if (input.volumeM3 == null) throw err.badRequest('Укажите объём');
+  if (input.volumeM3 < MIN_WASTE_VOLUME_M3) {
+    throw err.badRequest(`Объём не меньше ${MIN_WASTE_VOLUME_M3} м³`);
+  }
+  const volumeM3 = input.volumeM3;
   const [wt] = await tx
     .select({ id: wasteTypes.id, isActive: wasteTypes.isActive })
     .from(wasteTypes)
@@ -408,6 +390,25 @@ async function linkFiles(
   }
   await tx.insert(requestFiles).values(fileIds.map((fileId) => ({ requestId, fileId, kind })));
   await markFilesActive(tx, fileIds);
+}
+
+/**
+ * Живые талоны самой заявки (ADR 0013). Считаются по состоянию заявки, а не по телу запроса:
+ * при повторном закрытии талон мог быть приложен ещё в прошлый раз (ADR 0020).
+ */
+async function countRequestTickets(tx: Tx, requestId: string): Promise<number> {
+  const [row] = await tx
+    .select({ c: count() })
+    .from(requestFiles)
+    .innerJoin(files, eq(requestFiles.fileId, files.id))
+    .where(
+      and(
+        eq(requestFiles.requestId, requestId),
+        eq(requestFiles.kind, 'ticket'),
+        eq(files.status, 'active'),
+      ),
+    );
+  return Number(row!.c);
 }
 
 async function unlinkFiles(tx: Tx, requestId: string, fileIds: string[]): Promise<void> {
@@ -734,6 +735,14 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
               vehicles: 'Машины заполняются только у вывоза самосвалами',
             });
           }
+          // В уже выполненную заявку рейс без талона не дописывается: закрытие такую машину не
+          // пропустило бы, и правкой обойти это требование нельзя (ADR 0020). Заявке в работе
+          // талон при заведении машины не нужен — его спросят при закрытии.
+          if (before.status === 'done' && body.addVehicles.some((v) => v.fileIds.length === 0)) {
+            throw err.badRequest('У выполненной заявки машина заводится вместе с талоном', {
+              vehicles: 'Приложите талон к машине',
+            });
+          }
           await insertVehicles(tx, id, body.addVehicles, p.id);
         }
         if (body.markDeletedVehicleIds?.length) {
@@ -820,7 +829,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
     async (req) => {
       const p = requirePrincipal(req);
       if (!canChangeStatus(p)) throw err.forbidden('Недостаточно прав для смены статуса');
-      const { status, comment, vehicles, ticketFileIds, version } = req.body;
+      const { status, comment, vehicles, ticketFileIds, vehicleTickets, version } = req.body;
       const [existing] = await db
         .select()
         .from(wasteRequests)
@@ -832,13 +841,16 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       assertTransitionAllowed(existing.status, status, p.role);
       await db.transaction(async (tx) => {
         // Закрытие заявки — это предъявление факта, и оно проводится тем же запросом, что и
-        // смена статуса. Способов предъявления два, и выбирает между ними тип заявки:
+        // смена статуса. Талон обязателен: «Выполнена» без бумаги о вывозе — отметка о работе,
+        // которую нечем подтвердить (ADR 0020). Способов предъявления два, и выбирает между ними
+        // тип заявки:
         //  - вывоз самосвалами: машины с талонами, «Выполнена» без единой машины не проходит.
         //    При повторном закрытии (после отката администратором) хватает уже заведённых
-        //    (ADR 0011);
+        //    (ADR 0011), а талон к ним догружается через `vehicleTickets`;
         //  - контейнерные операции: одна ходка, машине взяться неоткуда — талон крепится к самой
-        //    заявке (ADR 0013). Обязательным он не сделан: талон могут донести позже, а держать
-        //    заявку невыполненной из-за неотсканированной бумажки — врать о состоянии работ.
+        //    заявке (ADR 0013).
+        // Обязательность считается по состоянию заявки, а не по телу запроса: талон мог прийти
+        // с прошлым закрытием, и требовать его второй раз значило бы просить ту же бумагу дважды.
         if (status === 'done') {
           if (!requiresWasteVehicles(existing.requestType)) {
             if (vehicles.length > 0) {
@@ -846,7 +858,17 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
                 vehicles: 'Машины заполняются только у вывоза самосвалами',
               });
             }
+            if (vehicleTickets.length > 0) {
+              throw err.badRequest(VEHICLES_NOT_APPLICABLE, {
+                vehicleTickets: 'Талон прикладывается к самой заявке',
+              });
+            }
             await linkFiles(tx, existing.id, ticketFileIds, p.id, true, 'ticket');
+            if ((await countRequestTickets(tx, existing.id)) === 0) {
+              throw err.badRequest('Приложите талон — без него заявка не закрывается', {
+                ticketFileIds: 'Приложите талон',
+              });
+            }
           } else {
             if (ticketFileIds.length > 0) {
               throw err.badRequest('У вывоза самосвалами талоны прикладываются к машинам', {
@@ -854,9 +876,20 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
               });
             }
             await insertVehicles(tx, existing.id, vehicles, p.id);
+            await attachVehicleTickets(tx, existing.id, vehicleTickets, p.id);
             if ((await countActiveVehicles(tx, existing.id)) === 0) {
               throw err.badRequest('Укажите хотя бы одну машину с объёмом вывоза', {
                 vehicles: 'Добавьте машину',
+              });
+            }
+            // Талон подтверждает рейс, а не заявку целиком: одна бумага на несколько машин
+            // оставила бы остальные рейсы неподтверждёнными (ADR 0011 — рейс = талон).
+            const missing = await vehiclesMissingTickets(tx, existing.id);
+            if (missing.length > 0) {
+              const shown = missing.slice(0, 3).join(', ');
+              const rest = missing.length > 3 ? ` и ещё ${missing.length - 3}` : '';
+              throw err.badRequest(`Приложите талон к каждой машине — без талона: ${shown}${rest}`, {
+                vehicles: 'У каждой машины должен быть талон',
               });
             }
           }
@@ -884,7 +917,12 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
           from: existing.status,
           to: status,
           comment,
-          ticketsAdded: ticketFileIds.length,
+          // Все талоны, приложенные этим закрытием: самой заявки, новых машин и догруженные
+          // к машинам прошлого закрытия — по одному числу видно, чем подтверждён вывоз.
+          ticketsAdded:
+            ticketFileIds.length +
+            vehicles.reduce((acc, v) => acc + v.fileIds.length, 0) +
+            vehicleTickets.reduce((acc, t) => acc + t.fileIds.length, 0),
         },
       });
       return (await getRequestDto(existing.id))!;
