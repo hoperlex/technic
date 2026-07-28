@@ -369,10 +369,21 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         constructionObjects.code,
       ]),
     );
+    // Сортировка во всех столбцах. «Срок» и «объём/масса» у типов заявки лежат в разных
+    // detail-таблицах, поэтому сводятся coalesce: у строки заполнена ровно одна из колонок.
+    // Объём и масса — разные единицы, но в одном столбце: сортируем по тому, что указано.
     const sortCols = {
       num: vehicleRequests.num,
+      requestType: vehicleRequests.requestType,
       objectName: constructionObjects.name,
+      createdByName: users.fullName,
+      vehicleTypeName: vehicleTypes.name,
+      term: sql`coalesce(${freightTransportRequestDetails.scheduledAt}, ${specialEquipmentRequestDetails.dateFrom}::timestamptz)`,
+      amount: sql`coalesce(${freightTransportRequestDetails.volumeM3}, ${freightTransportRequestDetails.weightTons})`,
+      loadingLocation: freightTransportRequestDetails.loadingLocation,
+      unloadingLocation: freightTransportRequestDetails.unloadingLocation,
       status: vehicleRequests.status,
+      comment: vehicleRequests.comment,
       createdAt: vehicleRequests.createdAt,
     };
     const pg = pageParams(q);

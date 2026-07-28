@@ -130,6 +130,8 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
       email: users.email,
       fullName: users.fullName,
       role: users.role,
+      constructionObjectName: constructionObjects.name,
+      counterpartyName: counterparties.name,
       isActive: users.isActive,
       createdAt: users.createdAt,
     };

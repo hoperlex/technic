@@ -160,8 +160,15 @@ export function VehicleTypesTab() {
     });
   };
 
+  // Сортировка серверная; снятая сортировка возвращает справочник к его собственному порядку.
   const onTableChange = (c: TableChange) =>
-    setParams((p) => ({ ...p, page: c.page, pageSize: c.pageSize }));
+    setParams((p) => ({
+      ...p,
+      page: c.page,
+      pageSize: c.pageSize,
+      sortBy: c.sortBy ?? 'sortOrder',
+      sortOrder: c.sortOrder ?? 'asc',
+    }));
 
   // Колонки: Вид → Тип → Активен → Действия.
   const columns: TableColumnType<VehicleTypeDto>[] = [
@@ -169,7 +176,6 @@ export function VehicleTypesTab() {
       key: 'kindName',
       title: 'Вид',
       dataIndex: 'kindName',
-      sortable: false,
       searchable: false,
       width: 200,
     }),
@@ -177,7 +183,6 @@ export function VehicleTypesTab() {
       key: 'name',
       title: 'Тип',
       dataIndex: 'name',
-      sortable: false,
       searchable: false,
     }),
     {
@@ -185,6 +190,7 @@ export function VehicleTypesTab() {
       title: 'Активен',
       dataIndex: 'isActive',
       width: 110,
+      sorter: true,
       render: (v: boolean, r) => (
         <Switch
           size="small"

@@ -131,6 +131,10 @@ export default async function vehiclesRoutes(app: FastifyInstance): Promise<void
         registrationNumber: vehicles.registrationNumberNormalized,
         typeName: vehicleTypes.name,
         modelName: vehicleModels.name,
+        inventoryNumber: vehicles.inventoryNumber,
+        serialNumber: vehicles.serialNumber,
+        manufacturerName: vehicles.manufacturerName,
+        manufacturedOn: vehicles.manufacturedOn,
         status: vehicles.status,
         createdAt: vehicles.createdAt,
       };

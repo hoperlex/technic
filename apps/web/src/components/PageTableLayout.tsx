@@ -20,7 +20,9 @@ export function PageTableLayout({ title, filters, extra, toolbar, children }: Pr
       {title}
     </Typography.Title>
   ) : filters ? (
-    <div>{filters}</div>
+    // Фильтров может быть много: блок занимает свободную ширину и переносит их по строкам,
+    // а кнопка справа остаётся на месте.
+    <div style={{ flex: '1 1 auto', minWidth: 0 }}>{filters}</div>
   ) : null;
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', gap: 12 }}>
@@ -32,6 +34,7 @@ export function PageTableLayout({ title, filters, extra, toolbar, children }: Pr
             alignItems: 'center',
             justifyContent: left ? 'space-between' : 'flex-end',
             gap: 12,
+            flexWrap: 'wrap',
           }}
         >
           {left}

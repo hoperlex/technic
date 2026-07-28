@@ -183,6 +183,7 @@ export default async function counterpartiesRoutes(app: FastifyInstance): Promis
         name: counterparties.name,
         inn: counterparties.inn,
         type: counterparties.type,
+        comment: counterparties.comment,
         isActive: counterparties.isActive,
         createdAt: counterparties.createdAt,
       };

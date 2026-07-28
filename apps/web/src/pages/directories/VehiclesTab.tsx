@@ -53,13 +53,9 @@ export function VehiclesTab() {
     vehicleTypeId?: string;
     status?: VehicleStatus;
     includeDeleted?: string;
-  }>(
-    {},
-    {
-      searchKeys: ['registrationNumber'],
-      mapFilters: (f) => ({ status: f.status?.[0] as VehicleStatus | undefined }),
-    },
-  );
+    // Статус и поиск задаются только панелью над таблицей: продублируй их выпадашкой столбца —
+    // и любая сортировка сбрасывала бы выбранное (в onChange таблицы приходит пустой фильтр).
+  }>({}, { searchKeys: [] });
 
   const { data, isFetching } = useQuery({
     queryKey: ['vehicles', params],
@@ -176,21 +172,31 @@ export function VehiclesTab() {
       key: 'registrationNumber',
       title: 'Госномер',
       dataIndex: 'registrationNumber',
+      searchable: false,
       width: 150,
       render: (_v, r) => r.registrationNumber ?? '—',
     }),
-    { key: 'typeName', title: 'Тип', dataIndex: 'typeName', width: 180, ellipsis: true },
+    {
+      key: 'typeName',
+      title: 'Тип',
+      dataIndex: 'typeName',
+      width: 180,
+      ellipsis: true,
+      sorter: true,
+    },
     {
       key: 'modelName',
       title: 'Марка/модель',
       width: 180,
       ellipsis: true,
+      sorter: true,
       render: (_v: unknown, r: VehicleDto) => r.modelName ?? '—',
     },
     {
       key: 'inventoryNumber',
       title: 'Инв. №',
       width: 120,
+      sorter: true,
       render: (_v: unknown, r: VehicleDto) => r.inventoryNumber ?? '—',
     },
     {
@@ -198,6 +204,7 @@ export function VehiclesTab() {
       title: 'Зав. № / VIN',
       width: 160,
       ellipsis: true,
+      sorter: true,
       render: (_v: unknown, r: VehicleDto) => r.serialNumber ?? '—',
     },
     {
@@ -205,12 +212,14 @@ export function VehiclesTab() {
       title: 'Изготовитель',
       width: 160,
       ellipsis: true,
+      sorter: true,
       render: (_v: unknown, r: VehicleDto) => r.manufacturerName || '—',
     },
     {
       key: 'manufacturedOn',
       title: 'Дата вып.',
       width: 120,
+      sorter: true,
       render: (_v: unknown, r: VehicleDto) => r.manufacturedOn ?? '—',
     },
     badgeColumn<VehicleDto>({
@@ -219,7 +228,6 @@ export function VehiclesTab() {
       dataIndex: 'status',
       labels: vehicleStatusLabels,
       colors: vehicleStatusColors,
-      filters: true,
       width: 150,
     }),
     actionsColumn<VehicleDto>((r) =>

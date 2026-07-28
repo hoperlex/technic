@@ -19,6 +19,7 @@ import {
   isAddressVerified,
   normalizeTimeInput,
   parseVehicleRequestNumberSearch,
+  REQUEST_STATUSES,
   type RequestStatus,
   requestStatusLabels,
   statusChangeRequiresReason,
@@ -33,6 +34,7 @@ import { CancelReasonModal } from '../../components/CancelReasonModal';
 import { DataTable } from '../../components/DataTable';
 import { FormModal } from '../../components/FormModal';
 import { PageTableLayout } from '../../components/PageTableLayout';
+import { TabsExtra } from '../../components/PageTabs';
 import { SummaryBar } from '../../components/SummaryBar';
 import { actionsColumn, badgeColumn, textColumn } from '../../components/columns';
 import { TimeInput, optionalWorkTimeRule } from '../../components/TimeInput';
@@ -112,20 +114,18 @@ export function VehicleRequestsTab() {
   const isShtab = hasRole('shtab');
 
   // requestType не задан — список обоих типов; фильтр в шапке сужает до одного.
+  // Все фильтры собраны в панели над таблицей, а не в выпадашках столбцов: в заголовке их
+  // не видно, а часть значений (объект, тип ТС) — списки справочников.
   const { params, setParams, onTableChange } = useListParams<{
     requestType?: string;
     status?: string;
     objectId?: string;
-  }>(
-    {},
-    {
-      searchKeys: ['comment'],
-      mapFilters: (f) => ({
-        status: f.status?.[0] as string | undefined,
-        requestType: f.requestType?.[0] as string | undefined,
-      }),
-    },
-  );
+    num?: number;
+  }>({}, { searchKeys: ['comment'] });
+
+  /** Смена любого фильтра возвращает список на первую страницу. */
+  const applyFilter = (patch: Partial<typeof params>) =>
+    setParams((p) => ({ ...p, ...patch, page: 1 }));
 
   const { data, isFetching } = useQuery({
     queryKey: ['vehicle-requests', 'all', params],
@@ -375,12 +375,12 @@ export function VehicleRequestsTab() {
     });
 
   // Единая таблица обоих типов: колонки чужого типа остаются пустыми.
+  // Ключ колонки — он же поле сортировки на сервере (VEHICLE_REQUEST_SORT_FIELDS).
   const columns: TableColumnType<VehicleRequestDto>[] = [
     textColumn({
       key: 'num',
       title: '№',
       dataIndex: 'displayNumber',
-      sortable: false,
       searchable: false,
       width: 120,
     }),
@@ -390,8 +390,6 @@ export function VehicleRequestsTab() {
       dataIndex: 'requestType',
       labels: vehicleRequestTypeLabels,
       colors: vehicleRequestTypeColors,
-      filters: true,
-      sortable: false,
       width: 180,
     }),
     textColumn({ key: 'objectName', title: 'Объект', dataIndex: 'objectName', searchable: false }),
@@ -399,7 +397,6 @@ export function VehicleRequestsTab() {
       key: 'createdByName',
       title: 'Автор',
       dataIndex: 'createdByName',
-      sortable: false,
       searchable: false,
       width: 170,
       render: (_v, r) => (
@@ -413,25 +410,28 @@ export function VehicleRequestsTab() {
       key: 'vehicleTypeName',
       title: 'Тип ТС',
       dataIndex: 'vehicleTypeName',
-      sortable: false,
       searchable: false,
     }),
     {
       key: 'term',
       title: 'Срок',
       width: 190,
+      // Срок и «объём/масса» у типов заявки лежат в разных полях — сортировку сводит сервер.
+      sorter: true,
       render: (_v, r) => termLabel(r),
     },
     {
       key: 'amount',
       title: 'Объём / масса',
       width: 140,
+      sorter: true,
       render: (_v, r) => amountLabel(r),
     },
     {
       key: 'loadingLocation',
       title: 'Погрузка',
       ellipsis: true,
+      sorter: true,
       render: (_v, r) =>
         r.requestType === 'freight_transport' ? (
           <AddressCell text={r.loadingLocation} meta={r.loadingAddress} />
@@ -443,6 +443,7 @@ export function VehicleRequestsTab() {
       key: 'unloadingLocation',
       title: 'Разгрузка',
       ellipsis: true,
+      sorter: true,
       render: (_v, r) =>
         r.requestType === 'freight_transport' ? (
           <AddressCell text={r.unloadingLocation} meta={r.unloadingAddress} />
@@ -455,6 +456,7 @@ export function VehicleRequestsTab() {
       title: 'Статус',
       dataIndex: 'status',
       width: 150,
+      sorter: true,
       render: (_v, r) => (
         <StatusCell
           status={r.status}
@@ -469,7 +471,6 @@ export function VehicleRequestsTab() {
       key: 'comment',
       title: 'Комментарий',
       dataIndex: 'comment',
-      sortable: false,
       ellipsis: true,
     }),
     {
@@ -511,7 +512,7 @@ export function VehicleRequestsTab() {
   ];
 
   const filters = (
-    <Space wrap>
+    <Space size={[12, 8]} wrap>
       <Select
         allowClear
         placeholder="Все типы заявок"
@@ -521,26 +522,32 @@ export function VehicleRequestsTab() {
           label: vehicleRequestTypeLabels[t],
         }))}
         value={params.requestType as VehicleRequestType | undefined}
-        onChange={(v) => setParams((p) => ({ ...p, requestType: v, page: 1 }))}
+        onChange={(v: VehicleRequestType | undefined) => applyFilter({ requestType: v })}
+      />
+      <Select
+        allowClear
+        placeholder="Все статусы"
+        style={{ width: 150 }}
+        options={REQUEST_STATUSES.map((s) => ({ value: s, label: requestStatusLabels[s] }))}
+        value={params.status as RequestStatus | undefined}
+        onChange={(v: RequestStatus | undefined) => applyFilter({ status: v })}
       />
       <Select
         allowClear
         showSearch
         optionFilterProp="label"
         placeholder="Все объекты"
-        style={{ width: 260 }}
+        style={{ width: 240 }}
         options={objectOptions}
         disabled={isShtab}
         value={params.objectId}
-        onChange={(v) => setParams((p) => ({ ...p, objectId: v, page: 1 }))}
+        onChange={(v: string | undefined) => applyFilter({ objectId: v })}
       />
       <Input.Search
         allowClear
         placeholder="Поиск по № (ТС-000123)"
-        style={{ width: 200 }}
-        onSearch={(val) =>
-          setParams((p) => ({ ...p, num: parseVehicleRequestNumberSearch(val), page: 1 }))
-        }
+        style={{ width: 180 }}
+        onSearch={(val) => applyFilter({ num: parseVehicleRequestNumberSearch(val) })}
       />
     </Space>
   );
@@ -549,14 +556,16 @@ export function VehicleRequestsTab() {
     <PageTableLayout
       filters={filters}
       extra={
-        <Space size={16}>
-          <SummaryBar title="Заявок" items={summaryItems} />
-          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-            Создать заявку
-          </Button>
-        </Space>
+        <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
+          Создать заявку
+        </Button>
       }
     >
+      {/* Сводка — на уровне вкладок, над фильтрами и кнопкой: она относится ко всему списку. */}
+      <TabsExtra tabKey="requests">
+        <SummaryBar title="Заявок" items={summaryItems} />
+      </TabsExtra>
+
       <DataTable<VehicleRequestDto>
         columns={columns}
         data={items}

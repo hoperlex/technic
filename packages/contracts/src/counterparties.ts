@@ -67,7 +67,14 @@ export const synonymsSchema = z.array(nameSchema).max(50);
  */
 export const counterpartyObjectIdsSchema = z.array(uuidSchema).max(200);
 
-export const COUNTERPARTY_SORT_FIELDS = ['name', 'inn', 'type', 'isActive', 'createdAt'] as const;
+export const COUNTERPARTY_SORT_FIELDS = [
+  'name',
+  'inn',
+  'type',
+  'comment',
+  'isActive',
+  'createdAt',
+] as const;
 
 const boolFromQuery = z
   .enum(['true', 'false'])

@@ -89,6 +89,7 @@ export default async function vehicleTypesRoutes(app: FastifyInstance): Promise<
       );
       const sortCols = {
         code: vehicleTypes.code,
+        kindName: vehicleKinds.name,
         name: vehicleTypes.name,
         sortOrder: vehicleTypes.sortOrder,
         isActive: vehicleTypes.isActive,

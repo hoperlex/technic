@@ -1,7 +1,13 @@
 import { z } from 'zod';
 import { baseListQuery, uuidSchema } from './common';
 
-export const VEHICLE_TYPE_SORT_FIELDS = ['code', 'name', 'sortOrder', 'isActive'] as const;
+export const VEHICLE_TYPE_SORT_FIELDS = [
+  'code',
+  'kindName',
+  'name',
+  'sortOrder',
+  'isActive',
+] as const;
 
 /** Системный код: строчные латинские, цифры и `_`; первый символ — буква. Неизменяем после создания. */
 export const vehicleTypeCodeSchema = z

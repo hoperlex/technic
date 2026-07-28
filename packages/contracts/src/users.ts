@@ -2,10 +2,13 @@ import { z } from 'zod';
 import { roleSchema, type Role } from './enums';
 import { baseListQuery, uuidSchema } from './common';
 
+// Сортировка доступна во всех столбцах таблицы; ключ поля совпадает с ключом колонки.
 export const USER_SORT_FIELDS = [
   'email',
   'fullName',
   'role',
+  'constructionObjectName',
+  'counterpartyName',
   'isActive',
   'createdAt',
 ] as const;

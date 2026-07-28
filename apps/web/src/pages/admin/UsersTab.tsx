@@ -229,7 +229,6 @@ export function UsersTab() {
       title: 'Объект (Штаб)',
       dataIndex: 'constructionObjectName',
       searchable: false,
-      sortable: false,
       render: (v) => (v ? String(v) : '—'),
     }),
     textColumn<UserDto>({
@@ -237,7 +236,6 @@ export function UsersTab() {
       title: 'Контрагент (Оператор)',
       dataIndex: 'counterpartyName',
       searchable: false,
-      sortable: false,
       render: (v) => (v ? String(v) : '—'),
     }),
     boolBadgeColumn<UserDto>({

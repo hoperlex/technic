@@ -254,7 +254,25 @@ export const changeVehicleRequestStatusSchema = z
 export type ChangeVehicleRequestStatusInput = z.infer<typeof changeVehicleRequestStatusSchema>;
 
 // ── Список ──
-export const VEHICLE_REQUEST_SORT_FIELDS = ['num', 'objectName', 'status', 'createdAt'] as const;
+/**
+ * Сортировка доступна во всех столбцах таблицы; ключ поля совпадает с ключом колонки.
+ * `term` и `amount` — общие для обоих типов заявки: срок и «объём/масса» лежат в разных
+ * detail-таблицах, поэтому сервер сводит их одним выражением.
+ */
+export const VEHICLE_REQUEST_SORT_FIELDS = [
+  'num',
+  'requestType',
+  'objectName',
+  'createdByName',
+  'vehicleTypeName',
+  'term',
+  'amount',
+  'loadingLocation',
+  'unloadingLocation',
+  'status',
+  'comment',
+  'createdAt',
+] as const;
 
 export const vehicleRequestListQuerySchema = baseListQuery(VEHICLE_REQUEST_SORT_FIELDS).extend({
   // Необязателен: раздел «Заказ автотехники» — единый список обоих типов.

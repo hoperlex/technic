@@ -33,10 +33,15 @@ const dateOnlySchema = z
     return dt.getUTCFullYear() === y && dt.getUTCMonth() === m! - 1 && dt.getUTCDate() === d;
   }, 'Некорректная дата');
 
+// Сортировка доступна во всех столбцах таблицы; ключ поля совпадает с ключом колонки.
 export const VEHICLE_SORT_FIELDS = [
   'registrationNumber',
   'typeName',
   'modelName',
+  'inventoryNumber',
+  'serialNumber',
+  'manufacturerName',
+  'manufacturedOn',
   'status',
   'createdAt',
 ] as const;

@@ -43,10 +43,9 @@ export function CounterpartiesTab() {
     {},
     {
       searchKeys: ['name', 'inn'],
-      mapFilters: (f) => ({
-        type: f.type?.[0] as string | undefined,
-        isActive: f.isActive?.[0] as string | undefined,
-      }),
+      // Тип задаётся только селектом над таблицей: продублируй его выпадашкой столбца — и любая
+      // сортировка сбрасывала бы выбранное (в onChange таблицы приходит пустой фильтр).
+      mapFilters: (f) => ({ isActive: f.isActive?.[0] as string | undefined }),
     },
   );
   const { data, isFetching } = useQuery({
@@ -172,7 +171,6 @@ export function CounterpartiesTab() {
       dataIndex: 'type',
       labels: counterpartyTypeLabels,
       colors: counterpartyTypeColors,
-      filters: true,
       width: 210,
     }),
     textColumn<CounterpartyDto>({
@@ -189,7 +187,6 @@ export function CounterpartiesTab() {
       key: 'comment',
       title: 'Комментарий',
       dataIndex: 'comment',
-      sortable: false,
       searchable: false,
       ellipsis: true,
     }),

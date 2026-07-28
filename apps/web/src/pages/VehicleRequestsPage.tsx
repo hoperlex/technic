@@ -1,5 +1,5 @@
-import { Tabs } from 'antd';
 import { useSearchParams } from 'react-router';
+import { PageTabs } from '../components/PageTabs';
 import { VehicleRequestsTab } from './vehicle/VehicleRequestsTab';
 import { VehicleRequestsOnSiteTab } from './vehicle/VehicleRequestsOnSiteTab';
 
@@ -14,10 +14,10 @@ export function VehicleRequestsPage() {
 
   return (
     <div style={{ height: '100%' }}>
-      <Tabs
-        className="full-height-tabs"
+      <PageTabs
         activeKey={tab}
         onChange={(k) => setSp({ tab: k })}
+        refreshQueryKey={['vehicle-requests']}
         items={[
           { key: 'requests', label: 'Заказ автотехники', children: <VehicleRequestsTab /> },
           { key: 'on-site', label: 'На объекте', children: <VehicleRequestsOnSiteTab /> },
