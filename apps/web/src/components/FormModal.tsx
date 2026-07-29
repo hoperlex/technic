@@ -54,7 +54,7 @@ export function FormModal({
         open={open}
         onClose={onCancel}
         placement="bottom"
-        height="100%"
+        size="100%"
         mask={{ closable: false }}
         footer={
           // Кнопки во всю ширину и в порядке «отказ слева, действие справа» — тем же, что в

@@ -73,10 +73,12 @@ import {
   WasteVehiclesEditor,
   type VehicleDraft,
 } from '../components/WasteVehiclesEditor';
-import { DataTable } from '../components/DataTable';
+import { ActionSheet } from '../components/ActionSheet';
+import { DataTable, type CardConfig } from '../components/DataTable';
 import { FileLinkList, FilesCell } from '../components/FileLinks';
 import { FormModal } from '../components/FormModal';
 import { PageTableLayout } from '../components/PageTableLayout';
+import { sortOptionsFrom, type FilterDefinition } from '../components/listControls';
 import { PageTabs, TabsExtra } from '../components/PageTabs';
 import { SummaryBar } from '../components/SummaryBar';
 import { actionsColumn, badgeColumn, textColumn } from '../components/columns';
@@ -783,27 +785,66 @@ function RequestsTab() {
   const StatusCell = ({ r }: { r: WasteRequestDto }) => {
     // Набор переходов зависит от роли: линейный цикл для всех, откаты — только администратору.
     const transitions = user?.role ? allowedStatusTransitions(r.status, user.role) : [];
+    const [sheetOpen, setSheetOpen] = useState(false);
     const tag = (
       <Tag color={requestStatusColors[r.status]} style={{ marginInlineEnd: 0 }}>
         {requestStatusLabels[r.status]}
       </Tag>
     );
     // Причина отмены — в подсказке на теге: в таблице для неё нет колонки, а знать её нужно.
-    const badge = r.cancelReason ? (
-      <Tooltip title={`Причина отмены: ${r.cancelReason}`}>{tag}</Tooltip>
-    ) : (
-      tag
-    );
+    // На телефоне подсказки нет вовсе — там причина выводится строкой карточки.
+    const badge =
+      r.cancelReason && !isMobile ? (
+        <Tooltip title={`Причина отмены: ${r.cancelReason}`}>{tag}</Tooltip>
+      ) : (
+        tag
+      );
     if (r.deletedAt || transitions.length === 0) {
       return badge;
     }
     const pending = statusMut.isPending && statusMut.variables?.id === r.id;
+    const items = transitions.map((s) => ({ key: s, label: requestStatusLabels[s] }));
+
+    // На телефоне переходы показываются списком снизу: выпадающее меню у тега в карточке
+    // открывается под палец мимо цели, а подписи в нём — те же (ADR 0030).
+    if (isMobile) {
+      return (
+        <>
+          <button
+            type="button"
+            className="status-trigger"
+            aria-label="Изменить статус"
+            disabled={pending}
+            onClick={(e) => {
+              e.stopPropagation();
+              setSheetOpen(true);
+            }}
+          >
+            <Space size={4}>
+              {badge}
+              <DownOutlined style={{ fontSize: 10, color: 'rgba(0,0,0,0.45)' }} />
+            </Space>
+          </button>
+          <ActionSheet
+            title="Изменить статус"
+            open={sheetOpen}
+            onClose={() => setSheetOpen(false)}
+            items={items.map((item) => ({
+              key: item.key,
+              label: item.label,
+              onClick: () => requestStatusChange(r, item.key as RequestStatus),
+            }))}
+          />
+        </>
+      );
+    }
+
     return (
       <Dropdown
         trigger={['click']}
         disabled={pending}
         menu={{
-          items: transitions.map((s) => ({ key: s, label: requestStatusLabels[s] })),
+          items,
           onClick: ({ key }) => requestStatusChange(r, key as RequestStatus),
         }}
       >
@@ -1059,6 +1100,143 @@ function RequestsTab() {
     </Space>
   );
 
+  /**
+   * Те же фильтры описаниями — для шита на телефоне (ADR 0030). Панель выше остаётся панелью:
+   * на десктопе она вся на виду, и собирать её из описаний было бы переписыванием ради
+   * единообразия. Значения и обработчики здесь общие с ней — расходиться нечему.
+   */
+  const mobileFilters: FilterDefinition[] = [
+    {
+      kind: 'select',
+      key: 'objectId',
+      label: 'Объект',
+      value: objectFilter || undefined,
+      options: objectOptions,
+      placeholder: 'Все объекты',
+      loading: objectsLoading,
+      // Штабу объект зафиксирован на его собственном — фильтр показан, но не меняется.
+      disabled: isShtab,
+      onChange: (v) => applyObjectFilter(v ?? ''),
+    },
+    {
+      kind: 'select',
+      key: 'requestType',
+      label: 'Тип заявки',
+      value: params.requestType,
+      options: requestTypeOptions,
+      placeholder: 'Все типы заявок',
+      onChange: (v) => applyFilter({ requestType: v }),
+    },
+    {
+      kind: 'select',
+      key: 'status',
+      label: 'Статус',
+      value: params.status,
+      options: statusOptions,
+      placeholder: 'Все статусы',
+      onChange: (v) => applyFilter({ status: v }),
+    },
+    {
+      kind: 'select',
+      key: 'containerTypeId',
+      label: 'Контейнер / машина',
+      value: params.containerTypeId,
+      options: subjectFilterOptions,
+      placeholder: 'Любой',
+      onChange: (v) => applyFilter({ containerTypeId: v }),
+    },
+    ...(canAssignOperator
+      ? [
+          {
+            kind: 'select' as const,
+            key: 'operatorCounterpartyId',
+            label: 'Оператор вывоза',
+            value: params.operatorCounterpartyId,
+            options: (operatorsData?.items ?? []).map((c) => ({ value: c.id, label: c.name })),
+            placeholder: 'Все операторы',
+            loading: operatorsLoading,
+            onChange: (v: string | undefined) => applyFilter({ operatorCounterpartyId: v }),
+          },
+        ]
+      : []),
+    {
+      kind: 'text',
+      key: 'num',
+      label: '№ заявки',
+      value: numInput || undefined,
+      placeholder: 'Например, 128',
+      onChange: (v) => applyNumFilter(v ?? ''),
+    },
+  ];
+
+  /**
+   * Строка списка на телефоне (ADR 0030). Читают её сверху вниз: что за заявка и в каком она
+   * статусе, на каком объекте, что и почём вывозим, когда и кем. Действия — списком с подписями:
+   * иконки с подсказками на касании молчат.
+   */
+  const card: CardConfig<WasteRequestDto> = {
+    title: (r) => `№ ${r.num}-${requestTypeShort[r.requestType]}`,
+    badge: (r) => <StatusCell r={r} />,
+    primary: (r) => r.objectName,
+    lines: [
+      (r) => requestTypeLabels[r.requestType],
+      (r) => [requestSubject(r), r.wasteTypeName].filter(Boolean).join(' · '),
+      (r) =>
+        r.amount != null
+          ? `${r.operatorCounterpartyId ? '' : 'от '}${formatMoney(r.amount)} · ${formatMoney(r.pricePerM3)}/м³`
+          : null,
+      (r) => `Доставка: ${formatDateTimeMaybe(r.deliveryAt, r.deliveryTimeUnspecified)}`,
+      // Оператору исполнителя не показываем: в его списке все заявки и так его (ADR 0010).
+      (r) => (isOperator ? null : r.operatorName ? `Оператор: ${r.operatorName}` : null),
+      // На десктопе причина отмены живёт подсказкой на теге статуса; на телефоне подсказок нет.
+      (r) => (r.cancelReason ? `Причина отмены: ${r.cancelReason}` : null),
+      (r) => r.comment || null,
+      (r) => (r.files.length > 0 ? <FilesCell files={r.files} /> : null),
+      (r) => (r.deletedAt ? <Tag>в архиве</Tag> : null),
+    ],
+    onOpen: (r) => setViewRecord(r),
+    actions: (r) => {
+      const view = {
+        key: 'view',
+        label: 'Открыть карточку',
+        icon: <EyeOutlined />,
+        onClick: () => setViewRecord(r),
+      };
+      if (r.deletedAt) {
+        return canRestore
+          ? [
+              view,
+              {
+                key: 'restore',
+                label: 'Восстановить',
+                icon: <ReloadOutlined />,
+                onClick: () => restoreMut.mutate(r.id),
+              },
+            ]
+          : [view];
+      }
+      const allowed = canModify(r);
+      return [
+        view,
+        {
+          key: 'edit',
+          label: 'Редактировать',
+          icon: <EditOutlined />,
+          disabled: !allowed,
+          onClick: () => openEdit(r),
+        },
+        {
+          key: 'delete',
+          label: r.status === 'new' ? 'Удалить' : 'Переместить в архив',
+          icon: <DeleteOutlined />,
+          danger: true,
+          disabled: !allowed,
+          onClick: () => confirmDelete(r),
+        },
+      ];
+    },
+  };
+
   return (
     <PageTableLayout
       filters={filters}
@@ -1069,6 +1247,19 @@ function RequestsTab() {
           </Button>
         ) : null
       }
+      mobile={{
+        filters: mobileFilters,
+        sort: {
+          // Подписи там, где заголовок колонки — разметка в две строки.
+          options: sortOptionsFrom(columns, { createdAt: 'Дата создания', num: 'Номер заявки' }),
+          sortBy: params.sortBy,
+          sortOrder: params.sortOrder,
+          onChange: (sortBy, sortOrder) => setParams((p) => ({ ...p, sortBy, sortOrder, page: 1 })),
+        },
+        primaryAction: canCreate
+          ? { label: 'Создать заявку', icon: <PlusOutlined />, onClick: openCreate }
+          : undefined,
+      }}
     >
       {/* Сводка — на уровне вкладок, над фильтрами и кнопкой: она относится ко всему списку,
           а не к панели инструментов, и там не отнимает высоту у таблицы. */}
@@ -1078,11 +1269,14 @@ function RequestsTab() {
 
       <DataTable<WasteRequestDto>
         columns={columns}
+        card={card}
         data={data?.items ?? []}
         total={data?.total ?? 0}
         loading={isFetching}
         page={params.page}
         pageSize={params.pageSize}
+        sortBy={params.sortBy}
+        sortOrder={params.sortOrder}
         onChange={onTableChange}
       />
 

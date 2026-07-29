@@ -381,7 +381,7 @@ export function VehicleTypeCardDrawer({ type, onClose }: Props) {
       onClose={onClose}
       // На телефоне карточка занимает экран целиком: 960 px там всё равно ужимаются до ширины
       // экрана, но с боковым зазором, за которым видно ненужный сейчас список (ADR 0030).
-      width={isMobile ? '100%' : 960}
+      size={isMobile ? '100%' : 960}
       destroyOnHidden
     >
       <Space direction="vertical" size="large" style={{ display: 'flex' }}>

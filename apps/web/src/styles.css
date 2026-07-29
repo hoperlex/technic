@@ -262,3 +262,156 @@ body,
 .is-mobile .page-empty {
   padding: 24px 12px;
 }
+
+/* ─── Список на телефоне ───────────────────────────────────────────────────────────────── */
+
+/* Панель со входом в фильтры и сортировку закреплена, прокручивается только список */
+.mobile-page {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  gap: 8px;
+}
+.mobile-page__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  /* Место под круглую кнопку создания: без него она накрывает последнюю карточку */
+  padding-bottom: 72px;
+}
+
+.list-toolbar {
+  flex: 0 0 auto;
+}
+
+/* Главное действие списка: над нижней навигацией, у правого края большого пальца */
+.list-fab {
+  position: absolute;
+  right: 4px;
+  bottom: 8px;
+  z-index: 10;
+  width: 52px;
+  height: 52px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.24);
+}
+
+/* Карточка записи: номер и статус в шапке, дальше — суть строки */
+.list-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.list-card {
+  position: relative;
+  padding: 10px 40px 10px 12px;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: 8px;
+  background: #fff;
+  line-height: 1.4;
+}
+.list-card--openable {
+  cursor: pointer;
+}
+.list-card--openable:active {
+  background: #fafafa;
+}
+.list-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+.list-card__badge {
+  flex: 0 0 auto;
+}
+.list-card__primary {
+  font-weight: 500;
+}
+.list-card__line {
+  color: rgba(0, 0, 0, 0.65);
+  font-size: 13px;
+}
+/* Меню действий: тач-цель 40×40 в правом верхнем углу карточки */
+.list-card__more {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: rgba(0, 0, 0, 0.55);
+  font-size: 18px;
+  cursor: pointer;
+}
+.list-card__more:active {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+/* Тег статуса в карточке — кнопка: открывает список переходов снизу */
+.status-trigger {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 0 2px 8px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+}
+.status-trigger:disabled {
+  opacity: 0.6;
+}
+
+/* Справочник на телефоне: таблица прокручивается вбок внутри своей рамки, страница — нет */
+.list-scroll-table {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.list-scroll-table .ant-table-wrapper {
+  max-width: 100%;
+}
+
+.list-pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 0 4px;
+}
+
+/* Фильтры в шите: каждый во всю ширину, подпись сверху */
+.filter-sheet {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.filter-sheet__row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.filter-sheet__label {
+  font-size: 12px;
+}
+
+/* Действия и сортировка: пункты во всю ширину, подписи слева */
+.action-sheet {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.action-sheet__item {
+  justify-content: flex-start;
+  height: 48px;
+  text-align: left;
+}
+.sort-sheet__option {
+  padding: 8px 0;
+}

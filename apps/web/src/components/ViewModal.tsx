@@ -43,7 +43,7 @@ export function ViewModal({
         open={open}
         onClose={onClose}
         placement="bottom"
-        height="100%"
+        size="100%"
         mask={{ closable: false }}
         destroyOnHidden={destroyOnHidden}
         styles={bodyStyle ? { body: bodyStyle } : undefined}

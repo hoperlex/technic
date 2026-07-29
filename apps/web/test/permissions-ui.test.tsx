@@ -150,7 +150,9 @@ describe('нижняя навигация на мобильном повторя
     renderMenu('admin');
     const active = screen.getByRole('button', { name: 'Вывоз мусора' });
     expect(active.getAttribute('aria-current')).toBe('page');
-    expect(screen.getByRole('button', { name: 'Заказ ТС' }).getAttribute('aria-current')).toBeNull();
+    expect(
+      screen.getByRole('button', { name: 'Заказ ТС' }).getAttribute('aria-current'),
+    ).toBeNull();
     // Заголовок панели называет раздел полностью — в навигации подпись сокращена.
     expect(screen.getAllByText('Вывоз мусора').length).toBeGreaterThan(0);
   });
