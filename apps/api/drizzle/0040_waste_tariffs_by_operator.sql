@@ -20,23 +20,29 @@ BEGIN
   END IF;
 END $$;
 
--- 2. «Строительные отходы» уходят из прайса вместе со своими ценами: тип заведён первым пунктом
---    исходного прайса, но в работе не используется — вывоз оформляют «строительным мусором».
---    Ссылки из заявок означали бы потерю снимка цены, поэтому удаление идёт под guard, а не
---    под сырой ошибкой FK: RESTRICT сказал бы только «нарушено ограничение».
+-- 2. «Строительные отходы» уходят из прайса вместе со своими ценами и заявками: тип заведён
+--    первым пунктом исходного прайса, но в работе не используется — вывоз оформляют
+--    «строительным мусором», а заведённые на него заявки пробные. Ссылающиеся заявки удаляются
+--    физически: RESTRICT на waste_type_id/waste_tariff_id иначе остановил бы миграцию, а
+--    деактивация типа вместо удаления оставила бы в прайсе пункт, которого в работе нет.
+--    Файлы, историю статусов и машины таких заявок забирают каскады (request_files,
+--    request_status_history, waste_request_vehicles — все ON DELETE CASCADE); заявку установки
+--    удаление не заденет — тарификации она не несёт вовсе (waste_requests_install_no_pricing_check),
+--    поэтому и self-reference install_request_id обнулять не приходится.
 DO $$
-DECLARE refs int;
+DECLARE removed int;
 BEGIN
-  SELECT count(*) INTO refs
-  FROM waste_requests wr
-  LEFT JOIN waste_types wt ON wt.id = wr.waste_type_id
-  LEFT JOIN waste_tariffs tf ON tf.id = wr.waste_tariff_id
-  LEFT JOIN waste_types tft ON tft.id = tf.waste_type_id
-  WHERE wt.code = 'construction_waste' OR tft.code = 'construction_waste';
-  IF refs > 0 THEN
-    RAISE EXCEPTION
-      'На «Строительные отходы» ссылаются заявки (%). Удалять тип нельзя — деактивируйте его вместо удаления.',
-      refs;
+  DELETE FROM waste_requests wr
+  WHERE wr.waste_type_id IN (SELECT id FROM waste_types WHERE code = 'construction_waste')
+     OR wr.waste_tariff_id IN (
+          SELECT tf.id
+          FROM waste_tariffs tf
+          JOIN waste_types wt ON wt.id = tf.waste_type_id
+          WHERE wt.code = 'construction_waste'
+        );
+  GET DIAGNOSTICS removed = ROW_COUNT;
+  IF removed > 0 THEN
+    RAISE NOTICE 'Удалено заявок со «Строительными отходами»: %', removed;
   END IF;
 END $$;
 
