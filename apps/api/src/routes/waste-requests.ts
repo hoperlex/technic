@@ -41,8 +41,8 @@ import {
   assertArchiveVisible,
   assertCan,
   assertOperatorScope,
-  assertShtabEditable,
-  assertShtabScope,
+  assertObjectRoleEditable,
+  assertObjectScope,
   assertTransitionAllowed,
   operatorVisibilityWhere,
   requestVisibilityWhere,
@@ -615,7 +615,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
     const dto = await getRequestDto(req.params.id);
     if (!dto) throw err.notFound('Заявка не найдена');
     assertArchiveVisible(p, dto.deletedAt, 'Заявка не найдена');
-    assertShtabScope(p, dto.objectId);
+    assertObjectScope(p, dto.objectId);
     assertOperatorScope(p, dto.operatorCounterpartyId);
     return dto;
   });
@@ -639,7 +639,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       .where(eq(wasteRequests.id, req.params.id));
     if (!row) throw err.notFound('Заявка не найдена');
     assertArchiveVisible(p, row.deletedAt, 'Заявка не найдена');
-    assertShtabScope(p, row.objectId);
+    assertObjectScope(p, row.objectId);
     assertOperatorScope(p, row.operatorCounterpartyId);
     return loadWasteRequestHistory(row.id, {
       at: row.createdAt,
@@ -651,7 +651,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
   r.post('/', { ...canCreate, schema: { body: createWasteRequestSchema } }, async (req, reply) => {
     const p = requirePrincipal(req);
     const body = req.body;
-    assertShtabScope(p, body.objectId);
+    assertObjectScope(p, body.objectId);
     // Исполнителя можно указать прямо в форме заявки, но это по-прежнему назначение оператора:
     // без отдельной проверки роль с правом на заявку (штаб) назначала бы его в обход
     // `PATCH /:id/operator`, где право спрашивают. Право требуется по факту присутствия поля,
@@ -722,9 +722,9 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       // истории — названия справочников и суммы там уже собраны (см. waste-request-history).
       const before = await getRequestDto(id);
       if (!before || before.deletedAt) throw err.notFound('Заявка не найдена');
-      assertShtabScope(p, before.objectId);
-      assertShtabEditable(p, before.status, 'редактировать');
-      if (body.objectId) assertShtabScope(p, body.objectId);
+      assertObjectScope(p, before.objectId);
+      assertObjectRoleEditable(p, before.status, 'редактировать');
+      if (body.objectId) assertObjectScope(p, body.objectId);
 
       const rt = body.requestType ?? before.requestType;
       const objectId = body.objectId ?? before.objectId;
@@ -894,7 +894,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         .from(wasteRequests)
         .where(eq(wasteRequests.id, req.params.id));
       if (!existing || existing.deletedAt) throw err.notFound('Заявка не найдена');
-      assertShtabScope(p, existing.objectId);
+      assertObjectScope(p, existing.objectId);
       assertOperatorScope(p, existing.operatorCounterpartyId);
       if (existing.status === status) return (await getRequestDto(existing.id))!;
       assertTransitionAllowed(existing.status, status, p.role);
@@ -973,8 +973,8 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
     const { id } = req.params;
     const [existing] = await db.select().from(wasteRequests).where(eq(wasteRequests.id, id));
     if (!existing || existing.deletedAt) throw err.notFound('Заявка не найдена');
-    assertShtabScope(p, existing.objectId);
-    assertShtabEditable(p, existing.status, 'удалять');
+    assertObjectScope(p, existing.objectId);
+    assertObjectRoleEditable(p, existing.status, 'удалять');
 
     if (existing.status === 'new') {
       // hard delete + физическое удаление файлов: и вложений заявки, и её талонов — с ADR 0024

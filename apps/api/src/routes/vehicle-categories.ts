@@ -107,12 +107,16 @@ async function getDtoById(id: string): Promise<VehicleCategoryDto | undefined> {
 
 export default async function vehicleCategoriesRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
-  const canWrite = app.requireRoles('admin', 'manager');
+  const canRead = app.requirePermission('directories.read');
+  const canWrite = app.requirePermission('directories.write');
 
   // ── Список ──
   r.get(
     '/',
-    { preHandler: [app.authenticate], schema: { querystring: vehicleCategoryListQuerySchema } },
+    {
+      preHandler: [app.authenticate, canRead],
+      schema: { querystring: vehicleCategoryListQuerySchema },
+    },
     async (req) => {
       const q = req.query;
       const where = and(
@@ -154,11 +158,15 @@ export default async function vehicleCategoriesRoutes(app: FastifyInstance): Pro
   );
 
   // ── Одна запись ──
-  r.get('/:id', { preHandler: [app.authenticate], schema: { params: idParams } }, async (req) => {
-    const dto = await getDtoById(req.params.id);
-    if (!dto) throw err.notFound('Категория не найдена');
-    return dto;
-  });
+  r.get(
+    '/:id',
+    { preHandler: [app.authenticate, canRead], schema: { params: idParams } },
+    async (req) => {
+      const dto = await getDtoById(req.params.id);
+      if (!dto) throw err.notFound('Категория не найдена');
+      return dto;
+    },
+  );
 
   // ── Создание ──
   r.post(

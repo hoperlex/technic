@@ -24,6 +24,9 @@ const HISTORY_TITLES: Record<RequestHistoryKind, string> = {
   updated: 'Заявка отредактирована',
   status: 'Смена статуса',
   operator: 'Смена исполнителя',
+  approved: 'Заявка завизирована',
+  approvalRevoked: 'Виза снята',
+  assigned: 'Назначена техника',
   deleted: 'Перемещена в архив',
   restored: 'Восстановлена из архива',
 };
@@ -32,6 +35,11 @@ const HISTORY_TITLES: Record<RequestHistoryKind, string> = {
 const KIND_TAGS: Record<string, { label: string; color?: string }> = {
   updated: { label: 'Правка' },
   operator: { label: 'Исполнитель', color: 'geekblue' },
+  // Виза (ADR 0025): тем же зелёным, что и в списке заявок, — событие и состояние читаются одинаково.
+  approved: { label: 'Виза', color: 'green' },
+  approvalRevoked: { label: 'Виза снята', color: 'orange' },
+  // Назначение техники (ADR 0027) идёт вместе с переводом в работу — тем же цветом, что «В работе».
+  assigned: { label: 'Техника', color: 'gold' },
   deleted: { label: 'Архив', color: 'red' },
   restored: { label: 'Из архива', color: 'green' },
 };
@@ -95,6 +103,9 @@ function summaryOf(row: HistoryRow, labels: Record<string, string>): string {
   const operator = e.kind === 'operator' ? e.changes.find((c) => c.field === 'operator') : null;
   if (operator)
     return operator.to && operator.to !== '—' ? `назначен ${operator.to}` : 'снят исполнитель';
+  // У назначения техники — сама машина: ставки видны при раскрытии, а в строке важно, чем взяли.
+  const vehicle = e.kind === 'assigned' ? e.changes.find((c) => c.field === 'vehicle') : null;
+  if (vehicle?.to) return vehicle.to;
   if (e.changes.length > 0) return e.changes.map((c) => labels[c.field] ?? c.field).join(', ');
   // Правки до появления истории деталей не несут — молчать об этом хуже, чем сказать прямо.
   if (e.kind === 'updated') return 'состав изменений не записан';

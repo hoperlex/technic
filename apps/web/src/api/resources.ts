@@ -1,4 +1,5 @@
 import type {
+  AssignVehicleInput,
   AttachVehicleTypeSpecInput,
   ContainerKind,
   ContainerTypeDto,
@@ -164,11 +165,27 @@ export const vehicleRequestsApi = {
     apiFetch<VehicleRequestDto>('/vehicle-requests', { method: 'POST', body }),
   update: (id: string, body: UpdateVehicleRequestInput) =>
     apiFetch<VehicleRequestDto>(`/vehicle-requests/${id}`, { method: 'PATCH', body }),
-  /** `comment` уходит в историю статусов; при отмене это обязательная причина. */
-  changeStatus: (id: string, status: RequestStatus, version: number, comment = '') =>
+  /**
+   * `comment` уходит в историю статусов; при отмене это обязательная причина. `assignment` —
+   * техника и ставки при переводе в работу (ADR 0027): назначение проводится тем же запросом,
+   * что и смена статуса.
+   */
+  changeStatus: (
+    id: string,
+    status: RequestStatus,
+    version: number,
+    comment = '',
+    assignment?: AssignVehicleInput,
+  ) =>
     apiFetch<VehicleRequestDto>(`/vehicle-requests/${id}/status`, {
       method: 'PATCH',
-      body: { status, comment, version },
+      body: { status, comment, version, ...(assignment ? { assignment } : {}) },
+    }),
+  /** Виза руководителя строительства: `approved: false` — отзыв (ADR 0025). */
+  setApproval: (id: string, approved: boolean, version: number) =>
+    apiFetch<VehicleRequestDto>(`/vehicle-requests/${id}/approval`, {
+      method: 'PATCH',
+      body: { approved, version },
     }),
   remove: (id: string) =>
     apiFetch<{ ok: boolean; mode: string }>(`/vehicle-requests/${id}`, { method: 'DELETE' }),

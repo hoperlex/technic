@@ -1,13 +1,19 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   addressMetaSchema,
+  allowedVehicleRequestTransitions,
+  assignmentRateLabel,
   changeVehicleRequestStatusSchema,
   createVehicleRequestSchema,
   formatVehicleRequestNumber,
   FREIGHT_VEHICLE_KIND_CODE,
   isAddressVerified,
+  isApprovalChangeable,
   isVehicleKindAllowedForRequest,
   parseVehicleRequestNumberSearch,
+  setVehicleRequestApprovalSchema,
+  transitionRequiresApproval,
+  transitionRequiresAssignment,
   updateVehicleRequestSchema,
   vehicleRequestListQuerySchema,
   vehicleRequestSummaryQuerySchema,
@@ -224,6 +230,88 @@ describe('vehicle-requests: обновление', () => {
   });
 });
 
+// ── Назначение техники при переводе в работу (ADR 0027) ──
+describe('vehicle-requests: техника и ставки (ADR 0027)', () => {
+  const VEHICLE = '44444444-4444-4444-8444-444444444444';
+
+  it('технику назначают только при переводе в работу', () => {
+    expect(transitionRequiresAssignment('confirmed')).toBe(true);
+    expect(transitionRequiresAssignment('done')).toBe(false);
+    expect(transitionRequiresAssignment('cancelled')).toBe(false);
+    expect(transitionRequiresAssignment('new')).toBe(false);
+  });
+
+  it('ставки идут вместе с техникой и остаются необязательными', () => {
+    const parsed = changeVehicleRequestStatusSchema.parse({
+      status: 'confirmed',
+      version: 2,
+      assignment: { vehicleId: VEHICLE, pricePerHour: 2500, pricePerShift: 18000, shiftHours: 8 },
+    });
+    expect(parsed.assignment).toEqual({
+      vehicleId: VEHICLE,
+      pricePerHour: 2500,
+      pricePerShift: 18000,
+      shiftHours: 8,
+    });
+    // Своя машина может работать без ставки — «хотя бы одна цена» требует только аренда,
+    // и требует её сервер: чья это машина, схема не знает.
+    expect(
+      changeVehicleRequestStatusSchema.parse({
+        status: 'confirmed',
+        version: 2,
+        assignment: { vehicleId: VEHICLE },
+      }).assignment?.pricePerHour,
+    ).toBeUndefined();
+  });
+
+  it('назначение не прикладывается к другим переходам', () => {
+    expect(() =>
+      changeVehicleRequestStatusSchema.parse({
+        status: 'done',
+        version: 3,
+        assignment: { vehicleId: VEHICLE },
+      }),
+    ).toThrow();
+  });
+
+  it('ставка — положительная сумма с копейками, смена — от часа до суток', () => {
+    const withAssignment = (assignment: unknown) =>
+      changeVehicleRequestStatusSchema.parse({ status: 'confirmed', version: 2, assignment });
+    expect(() => withAssignment({ vehicleId: VEHICLE, pricePerHour: 0 })).toThrow();
+    expect(() => withAssignment({ vehicleId: VEHICLE, pricePerHour: -100 })).toThrow();
+    expect(() => withAssignment({ vehicleId: VEHICLE, pricePerHour: 1000.555 })).toThrow();
+    expect(() => withAssignment({ vehicleId: VEHICLE, shiftHours: 25 })).toThrow();
+    expect(() => withAssignment({ vehicleId: VEHICLE, shiftHours: 0 })).toThrow();
+    // Ставку снимают явным null — «поле не пришло» и «ставки нет» это разные вещи.
+    expect(withAssignment({ vehicleId: VEHICLE, pricePerHour: null }).assignment?.pricePerHour).toBe(
+      null,
+    );
+  });
+
+  it('лишние поля назначения не проходят (strict)', () => {
+    expect(() =>
+      changeVehicleRequestStatusSchema.parse({
+        status: 'confirmed',
+        version: 2,
+        assignment: { vehicleId: VEHICLE, lessorId: OBJ },
+      }),
+    ).toThrow();
+  });
+
+  it('ставки одной строкой: час, смена и её длительность', () => {
+    expect(
+      assignmentRateLabel({ pricePerHour: 2500, pricePerShift: 18000, shiftHours: 8 }),
+    ).toContain('₽/час');
+    expect(
+      assignmentRateLabel({ pricePerHour: null, pricePerShift: 18000, shiftHours: 8 }),
+    ).toContain('(8 ч)');
+    // Ставок нет — строка пустая: показывать «—» решает интерфейс, а не контракт.
+    expect(assignmentRateLabel({ pricePerHour: null, pricePerShift: null, shiftHours: null })).toBe(
+      '',
+    );
+  });
+});
+
 describe('vehicle-requests: адрес (DaData, ADR 0006 — жёсткая модель)', () => {
   it('freight требует верифицированный адрес: без адреса — отклоняется', () => {
     const { loadingAddress: _l, unloadingAddress: _u, ...noAddr } = freight;
@@ -316,5 +404,57 @@ describe('vehicle-requests: список и номер', () => {
     expect(parseVehicleRequestNumberSearch('ТС-123')).toBe(123);
     expect(parseVehicleRequestNumberSearch('ТС-000123')).toBe(123);
     expect(parseVehicleRequestNumberSearch('  ')).toBeUndefined();
+  });
+});
+
+describe('vehicle-requests: виза руководителя строительства (ADR 0025)', () => {
+  it('визы требует только переход «в работу»', () => {
+    expect(transitionRequiresApproval('confirmed')).toBe(true);
+    // Отменить незавизированную заявку можно — иначе ей нечем закрыть путь.
+    expect(transitionRequiresApproval('cancelled')).toBe(false);
+    expect(transitionRequiresApproval('done')).toBe(false);
+    expect(transitionRequiresApproval('new')).toBe(false);
+  });
+
+  it('без визы «в работу» не предлагается никому, отмена остаётся', () => {
+    expect(allowedVehicleRequestTransitions('new', 'dispatcher', false)).toEqual(['cancelled']);
+    expect(allowedVehicleRequestTransitions('new', 'dispatcher', true)).toEqual([
+      'confirmed',
+      'cancelled',
+    ]);
+    // Откат закрытой заявки — тоже переход в «В работе»: без визы его нет и у администратора.
+    expect(allowedVehicleRequestTransitions('done', 'admin', false)).toEqual([]);
+    expect(allowedVehicleRequestTransitions('done', 'admin', true)).toEqual(['confirmed']);
+  });
+
+  it('роль без права на статус визой ничего не приобретает', () => {
+    expect(allowedVehicleRequestTransitions('new', 'rukstroy', true)).toEqual([]);
+    expect(allowedVehicleRequestTransitions('new', 'shtab', true)).toEqual([]);
+  });
+
+  it('визу ставят и снимают, пока заявка «Новая»', () => {
+    expect(isApprovalChangeable('new')).toBe(true);
+    expect(isApprovalChangeable('confirmed')).toBe(false);
+    expect(isApprovalChangeable('done')).toBe(false);
+    expect(isApprovalChangeable('cancelled')).toBe(false);
+  });
+
+  it('в теле визы обязательны признак и версия, лишние поля отвергаются', () => {
+    expect(setVehicleRequestApprovalSchema.parse({ approved: true, version: 3 })).toEqual({
+      approved: true,
+      version: 3,
+    });
+    expect(() => setVehicleRequestApprovalSchema.parse({ approved: true })).toThrow();
+    expect(() => setVehicleRequestApprovalSchema.parse({ version: 1 })).toThrow();
+    expect(() =>
+      setVehicleRequestApprovalSchema.parse({ approved: true, version: 1, comment: 'ок' }),
+    ).toThrow();
+  });
+
+  it('список сужается по наличию визы', () => {
+    expect(vehicleRequestListQuerySchema.parse({ approved: 'false' }).approved).toBe(false);
+    expect(vehicleRequestListQuerySchema.parse({ approved: 'true' }).approved).toBe(true);
+    expect(vehicleRequestListQuerySchema.parse({}).approved).toBeUndefined();
+    expect(() => vehicleRequestListQuerySchema.parse({ approved: 'maybe' })).toThrow();
   });
 });

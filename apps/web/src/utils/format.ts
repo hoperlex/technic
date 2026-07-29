@@ -73,7 +73,11 @@ export function errorFields(e: unknown): Record<string, string> | null {
 
 function fieldLabel(path: string): string {
   // zod присылает путь вида `vehicles.0.volumeM3` — для подписи важен последний сегмент.
-  const last = path.split('.').filter((s) => !/^\d+$/.test(s)).pop() ?? path;
+  const last =
+    path
+      .split('.')
+      .filter((s) => !/^\d+$/.test(s))
+      .pop() ?? path;
   return FIELD_LABELS[last] ?? last;
 }
 

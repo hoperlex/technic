@@ -1,41 +1,72 @@
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
-import { and, asc, count, eq, gte, inArray, isNull, lte, or, sql, type SQL } from 'drizzle-orm';
 import {
+  and,
+  asc,
+  count,
+  eq,
+  gte,
+  inArray,
+  isNotNull,
+  isNull,
+  lte,
+  or,
+  sql,
+  type SQL,
+} from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
+import {
+  type AssignVehicleInput,
+  can,
   changeVehicleRequestStatusSchema,
   createVehicleRequestSchema,
   type FileDto,
   formatVehicleRequestNumber,
+  isApprovalChangeable,
+  isObjectScopedRole,
   isVehicleKindAllowedForRequest,
   REQUEST_STATUSES,
+  requestStatusLabels,
+  setVehicleRequestApprovalSchema,
+  transitionRequiresApproval,
+  transitionRequiresAssignment,
   updateVehicleRequestSchema,
+  type VehicleRequestAssignmentDto,
   type VehicleRequestDto,
   type VehicleRequestSummaryDto,
   type VehicleRequestType,
   vehicleRequestListQuerySchema,
   vehicleRequestSummaryQuerySchema,
+  vehicleStatusLabels,
 } from '@technic/contracts';
 import { db } from '../db/client';
 import {
   constructionObjects,
+  counterparties,
   files,
   freightTransportRequestDetails,
   specialEquipmentRequestDetails,
   users,
+  vehicleCategories,
   vehicleKinds,
+  vehicleModels,
+  vehicleRequestAssignments,
   vehicleRequestFiles,
-  vehicleRequestStatusHistory,
   vehicleRequests,
+  vehicleRequestStatusHistory,
+  vehicles,
   vehicleTypes,
 } from '../db/schema';
 import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
+import type { Principal } from '../auth/principal';
 import {
-  assertShtabScope,
+  assertArchiveVisible,
+  assertObjectRoleEditable,
+  assertObjectScope,
   assertTransitionAllowed,
-  canChangeStatus,
   requestVisibilityWhere,
 } from '../lib/access';
 import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
@@ -46,12 +77,19 @@ import {
   markFilesActive,
   scheduleFilesDeletion,
 } from '../services/request-files';
-import { diffVehicleRequests } from '../services/vehicle-request-diff';
+import { diffVehicleAssignment, diffVehicleRequests } from '../services/vehicle-request-diff';
 import { loadVehicleRequestHistory } from '../services/vehicle-request-history';
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 const idParams = z.object({ id: z.string().uuid() });
+
+/** Завизировавший — второй join на ту же таблицу учёток (первый отдаёт автора заявки). */
+const approvers = alias(users, 'approvers');
+/** Назначивший технику — третий join на учётки (ADR 0027). */
+const assigners = alias(users, 'assigners');
+/** Арендодатель назначенной машины; у собственной техники его нет. */
+const lessors = alias(counterparties, 'lessors');
 
 const requestSelect = {
   id: vehicleRequests.id,
@@ -74,6 +112,25 @@ const requestSelect = {
       ORDER BY h.changed_at DESC
       LIMIT 1
     ) END`.as('cancel_reason'),
+  // Виза руководителя строительства (ADR 0025): пусто — заявка ждёт согласования.
+  approvedBy: vehicleRequests.approvedBy,
+  approvedByName: approvers.fullName,
+  approvedAt: vehicleRequests.approvedAt,
+  // Назначенная техника (ADR 0027): ставки — снимок из назначения, реквизиты машины — join'ом.
+  assignmentVehicleId: vehicleRequestAssignments.vehicleId,
+  assignmentOwnership: vehicles.ownership,
+  assignmentCategoryName: vehicleCategories.name,
+  assignmentModelName: vehicleModels.name,
+  assignmentRegistrationNumber: vehicles.registrationNumber,
+  assignmentDescription: vehicles.description,
+  assignmentLessorId: vehicles.lessorId,
+  assignmentLessorName: lessors.name,
+  assignmentPricePerHour: vehicleRequestAssignments.pricePerHour,
+  assignmentPricePerShift: vehicleRequestAssignments.pricePerShift,
+  assignmentShiftHours: vehicleRequestAssignments.shiftHours,
+  assignedBy: vehicleRequestAssignments.assignedBy,
+  assignedByName: assigners.fullName,
+  assignedAt: vehicleRequestAssignments.assignedAt,
   version: vehicleRequests.version,
   createdBy: vehicleRequests.createdBy,
   createdByName: users.fullName,
@@ -99,6 +156,7 @@ function baseQuery() {
     .innerJoin(constructionObjects, eq(vehicleRequests.objectId, constructionObjects.id))
     .innerJoin(vehicleTypes, eq(vehicleRequests.vehicleTypeId, vehicleTypes.id))
     .innerJoin(users, eq(vehicleRequests.createdBy, users.id))
+    .leftJoin(approvers, eq(vehicleRequests.approvedBy, approvers.id))
     .leftJoin(
       specialEquipmentRequestDetails,
       eq(vehicleRequests.id, specialEquipmentRequestDetails.requestId),
@@ -106,7 +164,15 @@ function baseQuery() {
     .leftJoin(
       freightTransportRequestDetails,
       eq(vehicleRequests.id, freightTransportRequestDetails.requestId),
-    );
+    )
+    // Назначенная техника (ADR 0027). Её нет у «Новой» заявки, поэтому вся ветка — leftJoin;
+    // марка/модель, категория и арендодатель необязательны и у самой машины.
+    .leftJoin(vehicleRequestAssignments, eq(vehicleRequests.id, vehicleRequestAssignments.requestId))
+    .leftJoin(vehicles, eq(vehicleRequestAssignments.vehicleId, vehicles.id))
+    .leftJoin(vehicleCategories, eq(vehicles.vehicleCategoryId, vehicleCategories.id))
+    .leftJoin(vehicleModels, eq(vehicles.vehicleModelId, vehicleModels.id))
+    .leftJoin(lessors, eq(vehicles.lessorId, lessors.id))
+    .leftJoin(assigners, eq(vehicleRequestAssignments.assignedBy, assigners.id));
 }
 
 type RequestRow = Awaited<ReturnType<typeof baseQuery>>[number];
@@ -154,6 +220,33 @@ async function filesByRequestIds(ids: string[]): Promise<Map<string, FileDto[]>>
   return map;
 }
 
+/**
+ * Назначенная техника из строки выборки (ADR 0027); null — заявку в работу не брали. Тип ТС у
+ * машины и у заявки один — это держит составной FK, поэтому в DTO уходит имя типа заявки.
+ */
+function toAssignmentDto(r: RequestRow): VehicleRequestAssignmentDto | null {
+  if (!r.assignmentVehicleId || !r.assignmentOwnership || !r.assignedBy || !r.assignedAt) {
+    return null;
+  }
+  return {
+    vehicleId: r.assignmentVehicleId,
+    ownership: r.assignmentOwnership,
+    typeName: r.vehicleTypeName,
+    categoryName: r.assignmentCategoryName,
+    modelName: r.assignmentModelName,
+    registrationNumber: r.assignmentRegistrationNumber,
+    description: r.assignmentDescription ?? '',
+    lessorId: r.assignmentLessorId,
+    lessorName: r.assignmentLessorName,
+    pricePerHour: toNum(r.assignmentPricePerHour),
+    pricePerShift: toNum(r.assignmentPricePerShift),
+    shiftHours: r.assignmentShiftHours,
+    assignedBy: r.assignedBy,
+    assignedByName: r.assignedByName ?? '',
+    assignedAt: r.assignedAt.toISOString(),
+  };
+}
+
 function toDto(r: RequestRow, fileList: FileDto[]): VehicleRequestDto {
   const base = {
     id: r.id,
@@ -167,6 +260,10 @@ function toDto(r: RequestRow, fileList: FileDto[]): VehicleRequestDto {
     status: r.status,
     comment: r.comment,
     cancelReason: r.cancelReason || null,
+    approvedBy: r.approvedBy,
+    approvedByName: r.approvedByName,
+    approvedAt: r.approvedAt ? r.approvedAt.toISOString() : null,
+    assignment: toAssignmentDto(r),
     files: fileList,
     version: r.version,
     createdBy: r.createdBy,
@@ -204,6 +301,16 @@ async function getDto(id: string): Promise<VehicleRequestDto | null> {
   return toDto(row, filesMap.get(id) ?? []);
 }
 
+/**
+ * Может ли учётка визировать заявку этого объекта (ADR 0025): право визы плюс область —
+ * руководитель строительства отвечает за свой объект. Предикат, а не проверка с отказом: тем же
+ * правилом решается, ставить ли визу сразу при создании заявки её же автором.
+ */
+function canApproveForObject(p: Principal, objectId: string): boolean {
+  if (!can(p.role, 'vehicleRequests.approve')) return false;
+  return !isObjectScopedRole(p.role) || p.constructionObjectId === objectId;
+}
+
 async function assertObjectActive(tx: Tx, objectId: string): Promise<void> {
   const [o] = await tx
     .select({ isActive: constructionObjects.isActive })
@@ -238,6 +345,106 @@ async function resolveVehicleType(
   if (!isVehicleKindAllowedForRequest(requestType, row.kindCode)) {
     throw err.unprocessable('Грузоперевозку выполняет только грузовая техника');
   }
+}
+
+/**
+ * Машина, которой берут заявку в работу (ADR 0027). Проверяется всё, чего не видит БД: живая ли
+ * запись, годна ли машина к работе и есть ли ставка там, где без неё нельзя. Совпадение типа ТС
+ * держит составной FK, но сверяется и здесь — иначе вместо понятного отказа человек получил бы
+ * ошибку целостности.
+ *
+ * Возвращает DTO назначения «как будет после записи»: им же пишется история.
+ */
+async function resolveAssignment(
+  tx: Tx,
+  request: { vehicleTypeId: string; vehicleTypeName: string },
+  input: AssignVehicleInput,
+  actor: { id: string; name: string },
+): Promise<VehicleRequestAssignmentDto> {
+  const [row] = await tx
+    .select({
+      id: vehicles.id,
+      ownership: vehicles.ownership,
+      vehicleTypeId: vehicles.vehicleTypeId,
+      status: vehicles.status,
+      deletedAt: vehicles.deletedAt,
+      registrationNumber: vehicles.registrationNumber,
+      description: vehicles.description,
+      categoryName: vehicleCategories.name,
+      modelName: vehicleModels.name,
+      lessorId: vehicles.lessorId,
+      lessorName: counterparties.name,
+    })
+    .from(vehicles)
+    .leftJoin(vehicleCategories, eq(vehicles.vehicleCategoryId, vehicleCategories.id))
+    .leftJoin(vehicleModels, eq(vehicles.vehicleModelId, vehicleModels.id))
+    .leftJoin(counterparties, eq(vehicles.lessorId, counterparties.id))
+    .where(eq(vehicles.id, input.vehicleId));
+  if (!row || row.deletedAt) throw err.badRequest('Техника не найдена');
+  if (row.vehicleTypeId !== request.vehicleTypeId) {
+    throw err.unprocessable(`Заявка заказана на тип ТС «${request.vehicleTypeName}»`, {
+      vehicleId: 'Техника другого типа',
+    });
+  }
+  // «Обслуживание», «Списана» и выключенное предложение аренды к работе не годятся: заявка
+  // взята в работу означает, что машина выйдет.
+  if (row.status !== 'active') {
+    throw err.unprocessable(
+      `Техника недоступна: ${vehicleStatusLabels[row.status].toLowerCase()}`,
+      { vehicleId: 'Техника недоступна' },
+    );
+  }
+  // Аренда — это счёт от контрагента: заявка в работе без ставки означала бы, что цену
+  // выяснят потом. У собственной машины ставки может не быть вовсе.
+  if (row.ownership === 'rental' && input.pricePerHour == null && input.pricePerShift == null) {
+    throw err.badRequest('Укажите стоимость аренды — за час или за смену', {
+      pricePerHour: 'Укажите стоимость',
+    });
+  }
+  return {
+    vehicleId: row.id,
+    ownership: row.ownership,
+    typeName: request.vehicleTypeName,
+    categoryName: row.categoryName,
+    modelName: row.modelName,
+    registrationNumber: row.registrationNumber,
+    description: row.description,
+    lessorId: row.lessorId,
+    lessorName: row.lessorName,
+    pricePerHour: input.pricePerHour ?? null,
+    pricePerShift: input.pricePerShift ?? null,
+    shiftHours: input.shiftHours ?? null,
+    assignedBy: actor.id,
+    assignedByName: actor.name,
+    assignedAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * Назначение заявки: одна строка на заявку, повторный перевод в работу (после отката) её
+ * переписывает — вторая машина в заявке одного типа и одного срока не появляется.
+ */
+async function saveAssignment(
+  tx: Tx,
+  requestId: string,
+  vehicleTypeId: string,
+  a: VehicleRequestAssignmentDto,
+): Promise<void> {
+  const values = {
+    vehicleId: a.vehicleId,
+    vehicleTypeId,
+    pricePerHour: numToDb(a.pricePerHour),
+    pricePerShift: numToDb(a.pricePerShift),
+    shiftHours: a.shiftHours,
+    assignedBy: a.assignedBy,
+  };
+  await tx
+    .insert(vehicleRequestAssignments)
+    .values({ requestId, ...values })
+    .onConflictDoUpdate({
+      target: vehicleRequestAssignments.requestId,
+      set: { ...values, assignedAt: new Date(), updatedAt: new Date() },
+    });
 }
 
 async function attachFiles(
@@ -285,6 +492,43 @@ async function detachFiles(tx: Tx, vehicleRequestId: string, fileIds: string[]):
       ),
     );
   await scheduleFilesDeletion(tx, linked, false);
+}
+
+/**
+ * Меняет ли правка суть заявки — то, что согласовывали (ADR 0025). Комментарий и вложения визу
+ * не трогают: ими уточняют уже согласованное. Сравнение с прежними значениями обязательно —
+ * форма присылает поля целиком, и «сохранить без изменений» иначе снимало бы визу.
+ */
+function editChangesSubstance(
+  before: VehicleRequestDto,
+  body: z.infer<typeof updateVehicleRequestSchema>,
+): boolean {
+  const changed = (next: unknown, prev: unknown): boolean => next !== undefined && next !== prev;
+  if (changed(body.objectId, before.objectId)) return true;
+  if (changed(body.vehicleTypeId, before.vehicleTypeId)) return true;
+  if (before.requestType === 'special_equipment' && body.requestType === 'special_equipment') {
+    return changed(body.dateFrom, before.dateFrom) || changed(body.dateTo, before.dateTo);
+  }
+  if (before.requestType === 'freight_transport' && body.requestType === 'freight_transport') {
+    const scheduledChanged =
+      body.scheduledAt !== undefined &&
+      new Date(body.scheduledAt).getTime() !== new Date(before.scheduledAt).getTime();
+    return (
+      scheduledChanged ||
+      changed(body.scheduledTimeUnspecified, before.scheduledTimeUnspecified) ||
+      changed(body.volumeM3, before.volumeM3) ||
+      changed(body.weightTons, before.weightTons) ||
+      changed(body.loadingLocation, before.loadingLocation) ||
+      changed(body.unloadingLocation, before.unloadingLocation)
+    );
+  }
+  return false;
+}
+
+/** Фильтр по визе (ADR 0025): «нет» — заявки, ждущие согласования. */
+function approvedFilter(approved: boolean | undefined): SQL | undefined {
+  if (approved === undefined) return undefined;
+  return approved ? isNotNull(vehicleRequests.approvedAt) : isNull(vehicleRequests.approvedAt);
 }
 
 /** Спецтехника: пересечение периодов. */
@@ -341,17 +585,39 @@ function dateFilters(
 
 export default async function vehicleRequestsRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
-  // Модуль «Заказ ТС» оператору вывоза мусора недоступен целиком (ADR 0010): роли перечислены
-  // явно, чтобы новая роль по умолчанию не получала доступ.
-  const auth = {
-    preHandler: [app.authenticate, app.requireRoles('admin', 'manager', 'dispatcher', 'shtab')],
+  // Право на каждое действие отдельно (ADR 0021): модуль «Заказ ТС» оператору вывоза недоступен
+  // целиком (ADR 0010), а штаб заводит и правит заявки, но не ведёт их статусы.
+  const auth = { preHandler: [app.authenticate, app.requirePermission('vehicleRequests.read')] };
+  const canCreate = {
+    preHandler: [app.authenticate, app.requirePermission('vehicleRequests.create')],
+  };
+  const canUpdate = {
+    preHandler: [app.authenticate, app.requirePermission('vehicleRequests.update')],
+  };
+  const canDelete = {
+    preHandler: [app.authenticate, app.requirePermission('vehicleRequests.delete')],
+  };
+  const canChangeStatus = {
+    preHandler: [
+      app.authenticate,
+      app.requirePermission('vehicleRequests.status', 'Недостаточно прав для смены статуса'),
+    ],
+  };
+  const canApprove = {
+    preHandler: [
+      app.authenticate,
+      app.requirePermission(
+        'vehicleRequests.approve',
+        'Визировать заявки может руководитель строительства',
+      ),
+    ],
   };
 
   // ── Список (единый по обоим типам; requestType — необязательное сужение) ──
   r.get('/', { ...auth, schema: { querystring: vehicleRequestListQuerySchema } }, async (req) => {
     const p = requirePrincipal(req);
     const q = req.query;
-    const showDeleted = q.includeDeleted && p.role === 'admin';
+    const showDeleted = q.includeDeleted && can(p.role, 'archive.read');
     const where = and(
       q.requestType ? eq(vehicleRequests.requestType, q.requestType) : undefined,
       showDeleted ? undefined : isNull(vehicleRequests.deletedAt),
@@ -360,6 +626,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       q.objectId ? eq(vehicleRequests.objectId, q.objectId) : undefined,
       q.vehicleTypeId ? eq(vehicleRequests.vehicleTypeId, q.vehicleTypeId) : undefined,
       q.num ? eq(vehicleRequests.num, q.num) : undefined,
+      approvedFilter(q.approved),
       ...dateFilters(q.requestType, q.dateFrom, q.dateTo),
       searchCondition(q.search, [
         vehicleRequests.comment,
@@ -381,6 +648,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       loadingLocation: freightTransportRequestDetails.loadingLocation,
       unloadingLocation: freightTransportRequestDetails.unloadingLocation,
       status: vehicleRequests.status,
+      approval: vehicleRequests.approvedAt,
       comment: vehicleRequests.comment,
       createdAt: vehicleRequests.createdAt,
     };
@@ -426,35 +694,44 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
     { ...auth, schema: { querystring: vehicleRequestSummaryQuerySchema } },
     async (req) => {
       const p = requirePrincipal(req);
+      const where = and(
+        isNull(vehicleRequests.deletedAt),
+        requestVisibilityWhere(p, vehicleRequests.objectId),
+        req.query.objectId ? eq(vehicleRequests.objectId, req.query.objectId) : undefined,
+        req.query.requestType ? eq(vehicleRequests.requestType, req.query.requestType) : undefined,
+      );
       const rows = await db
-        .select({ status: vehicleRequests.status, c: count() })
+        .select({
+          status: vehicleRequests.status,
+          c: count(),
+          // «Ждёт визы» — про новые заявки: дальше «Новой» незавизированная не уходит, а виза
+          // у взятой в работу уже не снимается (ADR 0025).
+          awaiting: sql<number>`count(*) FILTER (WHERE ${vehicleRequests.approvedAt} IS NULL)`,
+        })
         .from(vehicleRequests)
-        .where(
-          and(
-            isNull(vehicleRequests.deletedAt),
-            requestVisibilityWhere(p, vehicleRequests.objectId),
-            req.query.objectId ? eq(vehicleRequests.objectId, req.query.objectId) : undefined,
-            req.query.requestType
-              ? eq(vehicleRequests.requestType, req.query.requestType)
-              : undefined,
-          ),
-        )
+        .where(where)
         .groupBy(vehicleRequests.status);
-      const summary = Object.fromEntries(
-        REQUEST_STATUSES.map((s) => [s, 0]),
-      ) as VehicleRequestSummaryDto;
-      for (const row of rows) summary[row.status] = Number(row.c);
-      return summary;
+      const summary = {
+        ...(Object.fromEntries(REQUEST_STATUSES.map((s) => [s, 0])) as Record<
+          (typeof REQUEST_STATUSES)[number],
+          number
+        >),
+        awaitingApproval: 0,
+      };
+      for (const row of rows) {
+        summary[row.status] = Number(row.c);
+        if (row.status === 'new') summary.awaitingApproval = Number(row.awaiting);
+      }
+      return summary satisfies VehicleRequestSummaryDto;
     },
   );
 
   r.get('/:id', { ...auth, schema: { params: idParams } }, async (req) => {
     const p = requirePrincipal(req);
     const dto = await getDto(req.params.id);
-    if (!dto || dto.deletedAt) {
-      if (!dto || p.role !== 'admin') throw err.notFound('Заявка не найдена');
-    }
-    assertShtabScope(p, dto!.objectId);
+    if (!dto) throw err.notFound('Заявка не найдена');
+    assertArchiveVisible(p, dto.deletedAt, 'Заявка не найдена');
+    assertObjectScope(p, dto.objectId);
     return dto;
   });
 
@@ -474,9 +751,10 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       .from(vehicleRequests)
       .innerJoin(users, eq(vehicleRequests.createdBy, users.id))
       .where(eq(vehicleRequests.id, req.params.id));
-    // Архивная заявка видна только администратору — как и сама карточка (GET /:id).
-    if (!row || (row.deletedAt && p.role !== 'admin')) throw err.notFound('Заявка не найдена');
-    assertShtabScope(p, row.objectId);
+    if (!row) throw err.notFound('Заявка не найдена');
+    // Архивная заявка видна только тем, кому открыт архив, — как и сама карточка (GET /:id).
+    assertArchiveVisible(p, row.deletedAt, 'Заявка не найдена');
+    assertObjectScope(p, row.objectId);
     return loadVehicleRequestHistory(row.id, {
       at: row.createdAt,
       actorId: row.createdBy,
@@ -485,74 +763,95 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
   });
 
   // ── Создание ──
-  r.post('/', { ...auth, schema: { body: createVehicleRequestSchema } }, async (req, reply) => {
-    const p = requirePrincipal(req);
-    const body = req.body;
-    assertShtabScope(p, body.objectId);
+  r.post(
+    '/',
+    { ...canCreate, schema: { body: createVehicleRequestSchema } },
+    async (req, reply) => {
+      const p = requirePrincipal(req);
+      const body = req.body;
+      assertObjectScope(p, body.objectId);
+      // Заявку завёл тот, кто её и визирует, — согласование уже состоялось (ADR 0025). Просить
+      // руководителя строительства завизировать собственную заявку отдельным действием незачем.
+      const selfApproved = canApproveForObject(p, body.objectId);
+      const approvedAt = new Date();
 
-    const createdId = await db.transaction(async (tx) => {
-      await assertObjectActive(tx, body.objectId);
-      await resolveVehicleType(tx, body.vehicleTypeId, body.requestType);
-      const [row] = await tx
-        .insert(vehicleRequests)
-        .values({
+      const createdId = await db.transaction(async (tx) => {
+        await assertObjectActive(tx, body.objectId);
+        await resolveVehicleType(tx, body.vehicleTypeId, body.requestType);
+        const [row] = await tx
+          .insert(vehicleRequests)
+          .values({
+            requestType: body.requestType,
+            objectId: body.objectId,
+            vehicleTypeId: body.vehicleTypeId,
+            status: 'new',
+            comment: body.comment,
+            createdBy: p.id,
+            approvedBy: selfApproved ? p.id : null,
+            approvedAt: selfApproved ? approvedAt : null,
+          })
+          .returning({ id: vehicleRequests.id });
+        const id = row!.id;
+        if (body.requestType === 'special_equipment') {
+          await tx.insert(specialEquipmentRequestDetails).values({
+            requestId: id,
+            dateFrom: body.dateFrom,
+            dateTo: body.dateTo ?? null,
+          });
+        } else {
+          await tx.insert(freightTransportRequestDetails).values({
+            requestId: id,
+            scheduledAt: new Date(body.scheduledAt),
+            scheduledTimeUnspecified: body.scheduledTimeUnspecified,
+            volumeM3: numToDb(body.volumeM3),
+            weightTons: numToDb(body.weightTons),
+            loadingLocation: body.loadingLocation,
+            unloadingLocation: body.unloadingLocation,
+            loadingAddress: body.loadingAddress ?? null,
+            unloadingAddress: body.unloadingAddress ?? null,
+          });
+        }
+        await tx.insert(vehicleRequestStatusHistory).values({
+          vehicleRequestId: id,
+          fromStatus: null,
+          toStatus: 'new',
+          changedBy: p.id,
+        });
+        await attachFiles(tx, id, body.fileIds, p.id);
+        return id;
+      });
+
+      await writeAudit({
+        actorUserId: p.id,
+        action: 'vehicle_request.create',
+        entityType: 'vehicle_request',
+        entityId: createdId,
+        metadata: {
           requestType: body.requestType,
           objectId: body.objectId,
           vehicleTypeId: body.vehicleTypeId,
-          status: 'new',
-          comment: body.comment,
-          createdBy: p.id,
-        })
-        .returning({ id: vehicleRequests.id });
-      const id = row!.id;
-      if (body.requestType === 'special_equipment') {
-        await tx.insert(specialEquipmentRequestDetails).values({
-          requestId: id,
-          dateFrom: body.dateFrom,
-          dateTo: body.dateTo ?? null,
-        });
-      } else {
-        await tx.insert(freightTransportRequestDetails).values({
-          requestId: id,
-          scheduledAt: new Date(body.scheduledAt),
-          scheduledTimeUnspecified: body.scheduledTimeUnspecified,
-          volumeM3: numToDb(body.volumeM3),
-          weightTons: numToDb(body.weightTons),
-          loadingLocation: body.loadingLocation,
-          unloadingLocation: body.unloadingLocation,
-          loadingAddress: body.loadingAddress ?? null,
-          unloadingAddress: body.unloadingAddress ?? null,
+        },
+      });
+      // Автоматическая виза — тоже виза: в истории заявки она должна быть видна событием, иначе
+      // «кто согласовал» отвечается только текущим значением поля.
+      if (selfApproved) {
+        await writeAudit({
+          actorUserId: p.id,
+          action: 'vehicle_request.approve',
+          entityType: 'vehicle_request',
+          entityId: createdId,
+          metadata: { auto: true },
         });
       }
-      await tx.insert(vehicleRequestStatusHistory).values({
-        vehicleRequestId: id,
-        fromStatus: null,
-        toStatus: 'new',
-        changedBy: p.id,
-      });
-      await attachFiles(tx, id, body.fileIds, p.id);
-      return id;
-    });
-
-    await writeAudit({
-      actorUserId: p.id,
-      action: 'vehicle_request.create',
-      entityType: 'vehicle_request',
-      entityId: createdId,
-      metadata: {
-        requestType: body.requestType,
-        objectId: body.objectId,
-        vehicleTypeId: body.vehicleTypeId,
-      },
-    });
-    reply.code(201);
-    return (await getDto(createdId))!;
-  });
+      reply.code(201);
+      return (await getDto(createdId))!;
+    },
+  );
 
   // ── Обновление ──
   r.patch(
     '/:id',
-    { ...auth, schema: { params: idParams, body: updateVehicleRequestSchema } },
+    { ...canUpdate, schema: { params: idParams, body: updateVehicleRequestSchema } },
     async (req) => {
       const p = requirePrincipal(req);
       const { id } = req.params;
@@ -564,21 +863,35 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       if (before.requestType !== body.requestType) {
         throw err.unprocessable('Тип заявки изменить нельзя');
       }
-      assertShtabScope(p, before.objectId);
-      if (p.role === 'shtab' && before.status !== 'new') {
-        throw err.forbidden('Штаб может редактировать заявку только в статусе «Новая»');
-      }
+      assertObjectScope(p, before.objectId);
+      assertObjectRoleEditable(p, before.status, 'редактировать');
 
       const objectId = body.objectId ?? before.objectId;
       const nextTypeId = body.vehicleTypeId ?? before.vehicleTypeId;
+      // Согласовано было то, что руководитель строительства видел: переписанную по существу
+      // заявку он визирует заново (ADR 0025). Правка самим визирующим визу не снимает — он и
+      // подтверждает изменение самим фактом правки.
+      const dropApproval =
+        !!before.approvedAt &&
+        !canApproveForObject(p, objectId) &&
+        editChangesSubstance(before, body);
 
       await db.transaction(async (tx) => {
         if (body.objectId && body.objectId !== before.objectId) {
-          assertShtabScope(p, body.objectId);
+          assertObjectScope(p, body.objectId);
           await assertObjectActive(tx, body.objectId);
         }
         if (body.vehicleTypeId && body.vehicleTypeId !== before.vehicleTypeId) {
           await resolveVehicleType(tx, body.vehicleTypeId, before.requestType);
+          // На заявке уже стоит машина заказанного типа (ADR 0027) — сменить тип означало бы
+          // оставить назначение без основания. То же держит составной FK, но человеку нужен
+          // ответ, а не ошибка целостности.
+          if (before.assignment) {
+            throw err.unprocessable(
+              'На заявку назначена техника — сменить тип ТС можно, только отменив заявку',
+              { vehicleTypeId: 'Назначена техника' },
+            );
+          }
         }
 
         const [updated] = await tx
@@ -587,6 +900,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
             objectId,
             vehicleTypeId: nextTypeId,
             comment: body.comment ?? before.comment,
+            ...(dropApproval ? { approvedBy: null, approvedAt: null } : {}),
             updatedBy: p.id,
             version: before.version + 1,
             updatedAt: new Date(),
@@ -655,6 +969,17 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         // Перечень изменённых полей — то, ради чего история отличает правку от «заявку трогали».
         metadata: { changes: diffVehicleRequests(before, after) },
       });
+      // Снятую правкой визу показываем отдельным событием: иначе заявка молча перестаёт
+      // годиться в работу, и по истории непонятно, почему.
+      if (dropApproval) {
+        await writeAudit({
+          actorUserId: p.id,
+          action: 'vehicle_request.approval_revoke',
+          entityType: 'vehicle_request',
+          entityId: id,
+          metadata: { reason: 'edited' },
+        });
+      }
       return after;
     },
   );
@@ -662,54 +987,143 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
   // ── Смена статуса ──
   r.patch(
     '/:id/status',
-    { ...auth, schema: { params: idParams, body: changeVehicleRequestStatusSchema } },
+    { ...canChangeStatus, schema: { params: idParams, body: changeVehicleRequestStatusSchema } },
     async (req) => {
       const p = requirePrincipal(req);
-      if (!canChangeStatus(p)) throw err.forbidden('Недостаточно прав для смены статуса');
-      const { status, comment, version } = req.body;
-      const [existing] = await db
-        .select()
-        .from(vehicleRequests)
-        .where(eq(vehicleRequests.id, req.params.id));
-      if (!existing || existing.deletedAt) throw err.notFound('Заявка не найдена');
-      if (existing.status === status) return (await getDto(existing.id))!;
-      assertTransitionAllowed(existing.status, status, p.role);
-      await db.transaction(async (tx) => {
+      const { status, comment, assignment, version } = req.body;
+      // Состояние «до» берётся DTO: при переводе в работу нужна не только сама заявка, но и
+      // назначенная прежде техника — по ней считается, что изменилось (повторный перевод после
+      // отката может сменить и машину, и ставки).
+      const before = await getDto(req.params.id);
+      if (!before || before.deletedAt) throw err.notFound('Заявка не найдена');
+      if (before.status === status) return before;
+      assertTransitionAllowed(before.status, status, p.role);
+      // Без визы заявка не обрабатывается (ADR 0025): в работу её не берут, пока руководитель
+      // строительства не согласовал. Отменить незавизированную заявку можно — ей так и закрывают
+      // путь. 422, а не 403: право на переход есть, не хватает состояния самой заявки.
+      if (transitionRequiresApproval(status) && !before.approvedAt) {
+        throw err.unprocessable(
+          'Заявку не завизировал руководитель строительства — взять её в работу нельзя',
+        );
+      }
+      // Заявку берут в работу конкретной машиной (ADR 0027). При повторном переводе (после
+      // отката администратором) хватает уже назначенной: перевыбирать то же самое незачем.
+      if (transitionRequiresAssignment(status) && !assignment && !before.assignment) {
+        throw err.unprocessable('Выберите технику — в работу заявку берут конкретной машиной', {
+          assignment: 'Выберите технику',
+        });
+      }
+
+      // Назначение проверяется и пишется в той же транзакции, что и статус: заявка не должна
+      // побыть «в работе» ни на чём, даже мгновение.
+      const assigned = await db.transaction(async (tx) => {
+        let saved: VehicleRequestAssignmentDto | null = null;
+        if (assignment) {
+          saved = await resolveAssignment(
+            tx,
+            { vehicleTypeId: before.vehicleTypeId, vehicleTypeName: before.vehicleTypeName },
+            assignment,
+            { id: p.id, name: p.fullName },
+          );
+          await saveAssignment(tx, before.id, before.vehicleTypeId, saved);
+        }
         const [updated] = await tx
           .update(vehicleRequests)
-          .set({ status, updatedBy: p.id, version: existing.version + 1, updatedAt: new Date() })
-          .where(and(eq(vehicleRequests.id, existing.id), eq(vehicleRequests.version, version)))
+          .set({ status, updatedBy: p.id, version: before.version + 1, updatedAt: new Date() })
+          .where(and(eq(vehicleRequests.id, before.id), eq(vehicleRequests.version, version)))
           .returning({ id: vehicleRequests.id });
         if (!updated) throw err.conflict();
         await tx.insert(vehicleRequestStatusHistory).values({
-          vehicleRequestId: existing.id,
-          fromStatus: existing.status,
+          vehicleRequestId: before.id,
+          fromStatus: before.status,
           toStatus: status,
           changedBy: p.id,
           comment,
         });
+        return saved;
       });
       await writeAudit({
         actorUserId: p.id,
         action: 'vehicle_request.status',
         entityType: 'vehicle_request',
+        entityId: before.id,
+        metadata: { from: before.status, to: status, comment },
+      });
+      // Назначение — отдельное событие истории: «в работе» и «на такой-то машине по такой-то
+      // ставке» отвечают на разные вопросы, и второе нужно предъявлять с составом изменений.
+      if (assigned) {
+        await writeAudit({
+          actorUserId: p.id,
+          action: 'vehicle_request.assign',
+          entityType: 'vehicle_request',
+          entityId: before.id,
+          metadata: {
+            vehicleId: assigned.vehicleId,
+            changes: diffVehicleAssignment(before.assignment, assigned),
+          },
+        });
+      }
+      return (await getDto(before.id))!;
+    },
+  );
+
+  // ── Виза руководителя строительства (ADR 0025) ──
+  // Постановка и отзыв — одним маршрутом: у них одно право, одна область и один инвариант
+  // «пока заявка «Новая»». Отдельные маршруты разошлись бы в проверках при первой же правке.
+  r.patch(
+    '/:id/approval',
+    { ...canApprove, schema: { params: idParams, body: setVehicleRequestApprovalSchema } },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const { approved, version } = req.body;
+      const [existing] = await db
+        .select()
+        .from(vehicleRequests)
+        .where(eq(vehicleRequests.id, req.params.id));
+      if (!existing || existing.deletedAt) throw err.notFound('Заявка не найдена');
+      // Право на маршруте общее, а визирует руководитель своего объекта: чужую заявку он не
+      // согласовывает, даже видя её.
+      assertObjectScope(p, existing.objectId);
+
+      const isApproved = existing.approvedAt !== null;
+      if (isApproved === approved) return (await getDto(existing.id))!;
+      if (!isApprovalChangeable(existing.status)) {
+        throw err.unprocessable(
+          `Визу ставят и снимают, пока заявка в статусе «${requestStatusLabels.new}»`,
+        );
+      }
+
+      const [updated] = await db
+        .update(vehicleRequests)
+        .set({
+          approvedBy: approved ? p.id : null,
+          approvedAt: approved ? new Date() : null,
+          updatedBy: p.id,
+          version: existing.version + 1,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(vehicleRequests.id, existing.id), eq(vehicleRequests.version, version)))
+        .returning({ id: vehicleRequests.id });
+      if (!updated) throw err.conflict();
+
+      await writeAudit({
+        actorUserId: p.id,
+        action: approved ? 'vehicle_request.approve' : 'vehicle_request.approval_revoke',
+        entityType: 'vehicle_request',
         entityId: existing.id,
-        metadata: { from: existing.status, to: status, comment },
       });
       return (await getDto(existing.id))!;
     },
   );
 
   // ── Удаление (hard для «Новая», иначе soft) ──
-  r.delete('/:id', { ...auth, schema: { params: idParams } }, async (req) => {
+  r.delete('/:id', { ...canDelete, schema: { params: idParams } }, async (req) => {
     const p = requirePrincipal(req);
     const { id } = req.params;
     const [existing] = await db.select().from(vehicleRequests).where(eq(vehicleRequests.id, id));
     if (!existing || existing.deletedAt) throw err.notFound('Заявка не найдена');
-    assertShtabScope(p, existing.objectId);
-    if (p.role === 'shtab' && existing.status !== 'new') {
-      throw err.forbidden('Штаб может удалять заявку только в статусе «Новая»');
-    }
+    assertObjectScope(p, existing.objectId);
+    assertObjectRoleEditable(p, existing.status, 'удалять');
 
     if (existing.status === 'new') {
       await db.transaction(async (tx) => {
@@ -749,10 +1163,13 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
     return { ok: true, mode: 'soft' };
   });
 
-  // ── Восстановление (admin) ──
+  // ── Восстановление удалённой заявки (архив) ──
   r.post(
     '/:id/restore',
-    { preHandler: [app.authenticate, app.requireRoles('admin')], schema: { params: idParams } },
+    {
+      preHandler: [app.authenticate, app.requirePermission('archive.restore')],
+      schema: { params: idParams },
+    },
     async (req) => {
       const [existing] = await db
         .select()

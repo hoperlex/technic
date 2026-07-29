@@ -579,6 +579,9 @@ export const vehicles = pgTable(
     categoryIdx: index('vehicles_category_idx')
       .on(t.vehicleCategoryId)
       .where(sql`${t.vehicleCategoryId} IS NOT NULL`),
+    // Цель составного FK из vehicle_request_assignments: назначенная машина должна быть того же
+    // типа, что заказан заявкой (ADR 0027) — тем же приёмом, что «модель того же типа» выше.
+    idTypeUnique: unique('vehicles_id_type_unique').on(t.id, t.vehicleTypeId),
     ownershipTypeIdx: index('vehicles_ownership_type_idx').on(t.ownership, t.vehicleTypeId),
     typeStatusIdx: index('vehicles_type_status_idx').on(t.vehicleTypeId, t.status),
     modelIdx: index('vehicles_model_idx').on(t.vehicleModelId),
@@ -969,10 +972,14 @@ export const vehicleRequests = pgTable(
     objectId: uuid('object_id')
       .notNull()
       .references(() => constructionObjects.id, { onDelete: 'restrict' }),
-    // Конечный выбираемый подтип ТС (level=subtype). В API — vehicleSubtypeId.
+    // Заказанный тип ТС (плоская модель, ADR 0005).
     vehicleTypeId: uuid('vehicle_type_id')
       .notNull()
       .references(() => vehicleTypes.id, { onDelete: 'restrict' }),
+    // Категория заказанного типа (ADR 0028, миграция 0052): «Автокраны, г/п 130 т». Пусто —
+    // у типа категорий нет («Ямобур») либо заявка заведена до появления колонки. Обязательность
+    // решает сервер: есть ли у типа активные категории, видно только ему.
+    vehicleCategoryId: uuid('vehicle_category_id'),
     status: requestStatusEnum('status').notNull().default('new'),
     comment: text('comment').notNull().default(''),
     // Виза руководителя строительства (ADR 0025, миграция 0049): без неё заявку не берут в
@@ -991,6 +998,9 @@ export const vehicleRequests = pgTable(
   },
   (t) => ({
     numUnique: uniqueIndex('vehicle_requests_num_unique').on(t.num),
+    // Цель составного FK из vehicle_request_assignments (ADR 0027): пока на заявке стоит машина,
+    // тип ТС у неё не уедет в сторону от назначенного.
+    idTypeUnique: unique('vehicle_requests_id_type_unique').on(t.id, t.vehicleTypeId),
     approvalPresence: check(
       'vehicle_requests_approval_check',
       sql`(${t.approvedBy} is null) = (${t.approvedAt} is null)`,
@@ -1070,6 +1080,56 @@ export const freightTransportRequestDetails = pgTable(
       sql`btrim(${t.unloadingLocation}) <> ''`,
     ),
     scheduledIdx: index('freight_scheduled_at_idx').on(t.scheduledAt),
+  }),
+);
+
+// Техника, которой заявку взяли в работу (ADR 0027, миграция 0051). Одна заявка — одна машина,
+// поэтому request_id и есть первичный ключ: заявка заказывает один тип ТС на один срок, и второй
+// машины в ней нет. Ставки — снимок договорённости по этой заявке: их подставляют из предложения
+// аренды, но правят свободно, и прайс справочника их потом не переписывает.
+export const vehicleRequestAssignments = pgTable(
+  'vehicle_request_assignments',
+  {
+    requestId: uuid('request_id').primaryKey(),
+    vehicleId: uuid('vehicle_id').notNull(),
+    // Служебная: копия типа ТС заявки. Существует ради двух составных FK — ими инвариант
+    // «назначенная машина того же типа, что заказан» становится физическим, а не проверкой.
+    vehicleTypeId: uuid('vehicle_type_id').notNull(),
+    pricePerHour: numeric('price_per_hour', { precision: 12, scale: 2 }),
+    pricePerShift: numeric('price_per_shift', { precision: 12, scale: 2 }),
+    shiftHours: smallint('shift_hours'),
+    assignedBy: uuid('assigned_by')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    assignedAt: timestamp('assigned_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    // Заявка: каскад — назначение живёт ровно столько же, сколько сама заявка. ON UPDATE не
+    // задан намеренно: смена типа ТС у заявки с назначенной машиной должна отклоняться, а не
+    // тянуть за собой строку назначения (сервер отвечает на это 422 с объяснением).
+    requestTypeFk: foreignKey({
+      columns: [t.requestId, t.vehicleTypeId],
+      foreignColumns: [vehicleRequests.id, vehicleRequests.vehicleTypeId],
+      name: 'vehicle_request_assignments_request_type_fk',
+    }).onDelete('cascade'),
+    // Машина: restrict — назначенную технику из справочника не удаляют, на неё ссылается работа.
+    vehicleTypeFk: foreignKey({
+      columns: [t.vehicleId, t.vehicleTypeId],
+      foreignColumns: [vehicles.id, vehicles.vehicleTypeId],
+      name: 'vehicle_request_assignments_vehicle_type_fk',
+    }).onDelete('restrict'),
+    pricesPositive: check(
+      'vehicle_request_assignments_prices_positive_check',
+      sql`(${t.pricePerHour} IS NULL OR ${t.pricePerHour} > 0)
+          AND (${t.pricePerShift} IS NULL OR ${t.pricePerShift} > 0)`,
+    ),
+    shiftHoursRange: check(
+      'vehicle_request_assignments_shift_hours_range_check',
+      sql`${t.shiftHours} IS NULL OR ${t.shiftHours} BETWEEN 1 AND 24`,
+    ),
+    // «Где сейчас эта машина» — вопрос к таблице со стороны справочника техники.
+    vehicleIdx: index('vehicle_request_assignments_vehicle_idx').on(t.vehicleId),
   }),
 );
 

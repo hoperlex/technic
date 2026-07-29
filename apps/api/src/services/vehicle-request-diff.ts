@@ -1,6 +1,8 @@
 import {
+  assignmentTitle,
   formatMoscowDateTime,
   type RequestChangeDto,
+  type VehicleRequestAssignmentDto,
   type VehicleRequestDto,
 } from '@technic/contracts';
 import { changeSet, EMPTY, short } from './request-diff';
@@ -63,5 +65,41 @@ export function diffVehicleRequests(
   diff.changed('comment', short(before.comment) || EMPTY, short(after.comment) || EMPTY);
   diff.files(before.files, after.files);
 
+  return diff.changes;
+}
+
+/** Ставка в рублях; незаполненная — прочерком, как и всякое пустое значение в истории. */
+function rub(v: number | null): string {
+  if (v == null) return EMPTY;
+  return `${v.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ₽`;
+}
+
+/**
+ * Как машина названа в истории: подпись из справочника плюс арендодатель — без него две машины
+ * одной категории у разных арендодателей в истории неразличимы.
+ */
+function vehicleValue(a: VehicleRequestAssignmentDto): string {
+  const title = assignmentTitle(a);
+  return a.lessorName ? `${title} · ${a.lessorName}` : title;
+}
+
+/**
+ * Что изменило назначение техники (ADR 0027). `before === null` — заявку берут в работу впервые,
+ * и слева у всех полей прочерк: назначения не было. Ставки сравниваются наравне с машиной —
+ * повторный перевод в работу той же машиной, но по другой цене, это тоже событие.
+ */
+export function diffVehicleAssignment(
+  before: VehicleRequestAssignmentDto | null,
+  after: VehicleRequestAssignmentDto,
+): RequestChangeDto[] {
+  const diff = changeSet();
+  diff.changed('vehicle', before ? vehicleValue(before) : EMPTY, vehicleValue(after));
+  diff.changed('pricePerHour', rub(before?.pricePerHour ?? null), rub(after.pricePerHour));
+  diff.changed('pricePerShift', rub(before?.pricePerShift ?? null), rub(after.pricePerShift));
+  diff.changed(
+    'shiftHours',
+    before?.shiftHours == null ? EMPTY : `${before.shiftHours} ч`,
+    after.shiftHours == null ? EMPTY : `${after.shiftHours} ч`,
+  );
   return diff.changes;
 }

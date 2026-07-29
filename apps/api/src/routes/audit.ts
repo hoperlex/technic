@@ -14,7 +14,7 @@ const auditQuerySchema = baseListQuery(['createdAt', 'action']).extend({
 
 export default async function auditRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
-  const guards = { preHandler: [app.authenticate, app.requireRoles('admin')] };
+  const guards = { preHandler: [app.authenticate, app.requirePermission('audit.read')] };
 
   r.get('/', { ...guards, schema: { querystring: auditQuerySchema } }, async (req) => {
     const q = req.query;

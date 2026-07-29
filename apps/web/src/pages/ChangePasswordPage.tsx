@@ -26,7 +26,15 @@ export function ChangePasswordPage() {
   };
 
   return (
-    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+    <div
+      style={{
+        minHeight: '100vh',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 16,
+      }}
+    >
       <Card style={{ width: 420 }}>
         <Typography.Title level={3} style={{ textAlign: 'center' }}>
           Смена пароля

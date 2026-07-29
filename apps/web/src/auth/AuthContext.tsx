@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
-import type { AuthUser, Role } from '@technic/contracts';
+import { can as roleCan, type AuthUser, type Permission, type Role } from '@technic/contracts';
 import { authApi } from '../api/auth';
 import { refreshSession } from '../api/client';
 
@@ -13,6 +13,12 @@ interface AuthContextValue {
   setUser: (u: AuthUser) => void;
   refreshUser: () => Promise<void>;
   hasRole: (...roles: Role[]) => boolean;
+  /**
+   * Право текущего пользователя по общей матрице (ADR 0021) — той же, по которой API
+   * проверяет доступ. Интерфейс скрывает недоступное, но решение всё равно за сервером:
+   * здесь это удобство, а не защита.
+   */
+  can: (permission: Permission) => boolean;
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
@@ -75,6 +81,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setUser(me);
       },
       hasRole: (...roles) => !!user?.role && roles.includes(user.role),
+      can: (permission) => roleCan(user?.role, permission),
     }),
     [user, status],
   );

@@ -1,9 +1,16 @@
 import { useState } from 'react';
 import { App, Button, Dropdown, Form, Tag, Tooltip, Upload } from 'antd';
-import { DownOutlined, UploadOutlined } from '@ant-design/icons';
+import {
+  CheckCircleOutlined,
+  CheckOutlined,
+  ClockCircleOutlined,
+  DownOutlined,
+  UploadOutlined,
+} from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
 import {
-  allowedStatusTransitions,
+  allowedVehicleRequestTransitions,
+  isApprovalChangeable,
   type RequestStatus,
   requestStatusColors,
   requestStatusLabels,
@@ -12,7 +19,7 @@ import { filesApi, objectsApi, vehicleTypesApi } from '../../api/resources';
 import { AutoSelect } from '../../components/AutoSelect';
 import { FileLinkList } from '../../components/FileLinks';
 import { useAuth } from '../../auth/AuthContext';
-import { errorMessage } from '../../utils/format';
+import { errorMessage, formatDateTime } from '../../utils/format';
 
 export const FILE_MAX_COUNT = 20;
 export const FILE_MAX_SIZE = 52_428_800; // 50 МБ
@@ -135,20 +142,26 @@ export function FileEditor({ editor }: { editor: ReturnType<typeof useFileEditor
 export function StatusCell({
   status,
   deleted,
+  approved,
   cancelReason,
   pending,
   onChange,
 }: {
   status: RequestStatus;
   deleted: boolean;
+  /** Виза руководителя строительства: без неё заявку не берут в работу (ADR 0025). */
+  approved: boolean;
   /** Причина отмены — подсказкой на теге (колонки под неё в таблице нет). */
   cancelReason?: string | null;
   pending: boolean;
   onChange: (s: RequestStatus) => void;
 }) {
   const { user } = useAuth();
-  // Линейный цикл доступен ведущим заявки ролям, откаты закрытых заявок — только админу.
-  const transitions = user?.role ? allowedStatusTransitions(status, user.role) : [];
+  // Линейный цикл доступен ведущим заявки ролям, откаты закрытых заявок — только админу;
+  // «В работе» до визы не предлагается никому — сервер такой переход отклонит.
+  const transitions = user?.role
+    ? allowedVehicleRequestTransitions(status, user.role, approved)
+    : [];
   const plain = <Tag color={requestStatusColors[status]}>{requestStatusLabels[status]}</Tag>;
   const tag = cancelReason ? (
     <Tooltip title={`Причина отмены: ${cancelReason}`}>{plain}</Tooltip>
@@ -169,6 +182,69 @@ export function StatusCell({
         <DownOutlined />
       </Button>
     </Dropdown>
+  );
+}
+
+/**
+ * Ячейка согласования (ADR 0025). Завизированная заявка — зелёная с галочкой, ждущая визы —
+ * оранжевая: состояние читается цветом, не текстом, потому что в списке это первое, на что
+ * смотрят и диспетчер, и руководитель строительства.
+ *
+ * Кнопкой ячейка становится только у того, кто эту заявку визирует, и только пока её не взяли
+ * в работу; остальным и в остальных статусах — тег.
+ */
+export function ApprovalCell({
+  status,
+  deleted,
+  approved,
+  approvedByName,
+  approvedAt,
+  canApprove,
+  pending,
+  onChange,
+}: {
+  status: RequestStatus;
+  deleted: boolean;
+  approved: boolean;
+  approvedByName: string | null;
+  approvedAt: string | null;
+  /** Право визы у роли; чужой объект сервер отсечёт сам (assertObjectScope). */
+  canApprove: boolean;
+  pending: boolean;
+  onChange: (approved: boolean) => void;
+}) {
+  const approvedTitle =
+    approved && approvedAt
+      ? `Завизировал ${approvedByName ?? '—'} · ${formatDateTime(approvedAt)}`
+      : 'Заявка ждёт визы руководителя строительства';
+  const editable = canApprove && !deleted && isApprovalChangeable(status);
+
+  if (!editable) {
+    const tag = approved ? (
+      <Tag color="green" icon={<CheckCircleOutlined />} style={{ marginInlineEnd: 0 }}>
+        Завизирована
+      </Tag>
+    ) : (
+      <Tag color="orange" icon={<ClockCircleOutlined />} style={{ marginInlineEnd: 0 }}>
+        Ждёт визы
+      </Tag>
+    );
+    return <Tooltip title={approvedTitle}>{tag}</Tooltip>;
+  }
+
+  return (
+    <Tooltip title={approved ? `${approvedTitle}. Нажмите, чтобы снять визу` : 'Согласовать заявку'}>
+      <Button
+        size="small"
+        color={approved ? 'green' : 'orange'}
+        variant="solid"
+        loading={pending}
+        icon={approved ? <CheckOutlined /> : undefined}
+        onClick={() => onChange(!approved)}
+      >
+        {approved ? 'Завизирована' : 'Согласовать'}
+      </Button>
+    </Tooltip>
   );
 }
 

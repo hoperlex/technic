@@ -109,12 +109,16 @@ async function getDtoById(id: string): Promise<VehicleTypeDto | undefined> {
 // деактивация через PATCH isActive. Структурные ключи (code/kindId) неизменяемы после создания.
 export default async function vehicleTypesRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
-  const canWrite = app.requireRoles('admin', 'manager');
+  const canRead = app.requirePermission('directories.read');
+  const canWrite = app.requirePermission('directories.write');
 
   // ── Список ──
   r.get(
     '/',
-    { preHandler: [app.authenticate], schema: { querystring: vehicleTypeListQuerySchema } },
+    {
+      preHandler: [app.authenticate, canRead],
+      schema: { querystring: vehicleTypeListQuerySchema },
+    },
     async (req) => {
       const q = req.query;
       const where = and(
@@ -151,11 +155,15 @@ export default async function vehicleTypesRoutes(app: FastifyInstance): Promise<
   );
 
   // ── Одна запись ──
-  r.get('/:id', { preHandler: [app.authenticate], schema: { params: idParams } }, async (req) => {
-    const dto = await getDtoById(req.params.id);
-    if (!dto) throw err.notFound('Тип не найден');
-    return dto;
-  });
+  r.get(
+    '/:id',
+    { preHandler: [app.authenticate, canRead], schema: { params: idParams } },
+    async (req) => {
+      const dto = await getDtoById(req.params.id);
+      if (!dto) throw err.notFound('Тип не найден');
+      return dto;
+    },
+  );
 
   // ── Создание ──
   r.post(
@@ -252,7 +260,7 @@ export default async function vehicleTypesRoutes(app: FastifyInstance): Promise<
 
   r.get(
     '/:id/specs',
-    { preHandler: [app.authenticate], schema: { params: idParams } },
+    { preHandler: [app.authenticate, canRead], schema: { params: idParams } },
     async (req) => {
       const [type] = await db
         .select({ id: vehicleTypes.id })

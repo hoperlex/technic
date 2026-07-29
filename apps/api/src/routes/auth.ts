@@ -13,11 +13,7 @@ import { db } from '../db/client';
 import { users } from '../db/schema';
 import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
-import {
-  clearRefreshCookie,
-  readRefreshCookie,
-  setRefreshCookie,
-} from '../lib/cookies';
+import { clearRefreshCookie, readRefreshCookie, setRefreshCookie } from '../lib/cookies';
 import { hashPassword, verifyPassword } from '../auth/password';
 import { signAccessToken } from '../auth/tokens';
 import {
@@ -158,20 +154,30 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
 
   r.post(
     '/change-password',
-    { preHandler: [app.authenticate], schema: { body: changePasswordSchema }, config: authRateLimit },
+    {
+      preHandler: [app.authenticate],
+      schema: { body: changePasswordSchema },
+      config: authRateLimit,
+    },
     async (req, reply) => {
       const principal = requirePrincipal(req);
       const { currentPassword, newPassword } = req.body;
       const [u] = await db.select().from(users).where(eq(users.id, principal.id));
       if (!u) throw err.unauthorized();
       const ok = await verifyPassword(u.passwordHash, currentPassword);
-      if (!ok) throw err.badRequest('Текущий пароль неверен', { currentPassword: 'Неверный пароль' });
+      if (!ok)
+        throw err.badRequest('Текущий пароль неверен', { currentPassword: 'Неверный пароль' });
 
       const passwordHash = await hashPassword(newPassword);
       const newAuthVersion = u.authVersion + 1;
       await db
         .update(users)
-        .set({ passwordHash, mustChangePassword: false, authVersion: newAuthVersion, updatedAt: new Date() })
+        .set({
+          passwordHash,
+          mustChangePassword: false,
+          authVersion: newAuthVersion,
+          updatedAt: new Date(),
+        })
         .where(eq(users.id, u.id));
       await revokeAllForUser(u.id);
 

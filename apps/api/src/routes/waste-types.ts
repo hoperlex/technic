@@ -45,11 +45,12 @@ function withActiveTariff(has: boolean) {
 // из строки тарифа. Удаления нет: на тип ссылаются заявки и позиции прайса, выбытие — isActive.
 export default async function wasteTypesRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
-  const canWrite = app.requireRoles('admin', 'manager');
+  const canRead = app.requirePermission('directories.read');
+  const canWrite = app.requirePermission('directories.write');
 
   r.get(
     '/',
-    { preHandler: [app.authenticate], schema: { querystring: wasteTypeListQuerySchema } },
+    { preHandler: [app.authenticate, canRead], schema: { querystring: wasteTypeListQuerySchema } },
     async (req) => {
       const q = req.query;
       const where = and(

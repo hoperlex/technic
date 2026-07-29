@@ -149,8 +149,17 @@ export interface CounterpartyDto {
   deletedAt: string | null;
 }
 
-/** Результат сопоставления наименования: чем именно оно совпало. */
-export interface ResolvedCounterpartyDto {
+/** Совпавший контрагент и то, чем именно совпало наименование. */
+export interface CounterpartyMatchDto {
   counterparty: CounterpartyDto;
   matchedBy: 'name' | 'synonym';
+}
+
+/**
+ * Ответ `GET /counterparties/resolve`. Ненайденное совпадение — штатный результат поиска,
+ * а не ошибка: `match: null` при 200. Иначе клиент не отличает «такого наименования нет»
+ * от «ручка недоступна» — оба приходили бы ошибкой.
+ */
+export interface ResolvedCounterpartyDto {
+  match: CounterpartyMatchDto | null;
 }

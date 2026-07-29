@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { App, Button, Form, Input, InputNumber, Select, Space, Switch } from 'antd';
+import { App, Button, Form, Input, InputNumber, Space, Switch } from 'antd';
 import { EditOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -11,6 +11,7 @@ import {
 } from '@technic/contracts';
 import type { TableColumnType } from 'antd';
 import { containerTypesApi } from '../../api/resources';
+import { AutoSelect } from '../../components/AutoSelect';
 import { DataTable } from '../../components/DataTable';
 import { FormModal } from '../../components/FormModal';
 import { PageTableLayout } from '../../components/PageTableLayout';
@@ -45,7 +46,11 @@ export function ContainerTypesTab() {
   const openCreate = () => {
     setRecord(null);
     form.resetFields();
-    form.setFieldsValue({ isActive: true, sortOrder: 100, type: 'cont' } as CreateContainerTypeInput);
+    form.setFieldsValue({
+      isActive: true,
+      sortOrder: 100,
+      type: 'cont',
+    } as CreateContainerTypeInput);
     setOpen(true);
   };
   const openEdit = (r: ContainerTypeDto) => {
@@ -102,7 +107,12 @@ export function ContainerTypesTab() {
     ],
     filterMultiple: false,
     render: (v: boolean, r) => (
-      <Switch size="small" checked={v} loading={toggleMut.isPending} onChange={(n) => onToggleActive(r, n)} />
+      <Switch
+        size="small"
+        checked={v}
+        loading={toggleMut.isPending}
+        onChange={(n) => onToggleActive(r, n)}
+      />
     ),
   };
 
@@ -163,7 +173,7 @@ export function ContainerTypesTab() {
             <Input />
           </Form.Item>
           <Form.Item name="type" label="Тип" rules={[{ required: true, message: 'Выберите тип' }]}>
-            <Select options={kindOptions} />
+            <AutoSelect options={kindOptions} />
           </Form.Item>
           <Form.Item name="sortOrder" label="Порядок сортировки">
             <InputNumber style={{ width: '100%' }} min={0} />

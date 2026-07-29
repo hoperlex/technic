@@ -31,8 +31,7 @@ export function DataTable<T extends object>(props: DataTableProps<T>) {
 
   const handleChange: TableProps<T>['onChange'] = (pagination, filters, sorter) => {
     const s = (Array.isArray(sorter) ? sorter[0] : sorter) as SorterResult<T> | undefined;
-    const sortOrder =
-      s?.order === 'ascend' ? 'asc' : s?.order === 'descend' ? 'desc' : undefined;
+    const sortOrder = s?.order === 'ascend' ? 'asc' : s?.order === 'descend' ? 'desc' : undefined;
     const sortBy = sortOrder ? String(s?.columnKey ?? s?.field ?? '') : undefined;
     props.onChange({
       page: pagination.current ?? 1,

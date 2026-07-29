@@ -49,6 +49,12 @@ export function isRentalStatus(s: VehicleStatus): boolean {
 /** Цена в рублях: две цифры после запятой (numeric(12,2) в БД), строго положительная. */
 export const vehiclePriceSchema = z.coerce.number().positive().max(9_999_999_99).multipleOf(0.01);
 
+/**
+ * Часов в смене: столько же, сколько в сутках, и не меньше часа. Схема общая со ставками
+ * назначенной техники (ADR 0027) — «смена» в справочнике и в заявке значит одно и то же.
+ */
+export const shiftHoursSchema = z.coerce.number().int().min(1).max(24);
+
 // Сортировка доступна во всех столбцах таблицы; ключ поля совпадает с ключом колонки.
 export const VEHICLE_SORT_FIELDS = [
   'ownership',
@@ -104,7 +110,7 @@ const createRentalVehicleSchema = z
     description: z.string().trim().max(120).optional().default(''),
     pricePerHour: vehiclePriceSchema.nullish(),
     pricePerShift: vehiclePriceSchema.nullish(),
-    shiftHours: z.coerce.number().int().min(1).max(24).nullish(),
+    shiftHours: shiftHoursSchema.nullish(),
   })
   .strict()
   .refine((v) => v.pricePerHour != null || v.pricePerShift != null, {
@@ -145,7 +151,7 @@ const updateRentalVehicleSchema = z
     description: z.string().trim().max(120).optional(),
     pricePerHour: vehiclePriceSchema.nullish(),
     pricePerShift: vehiclePriceSchema.nullish(),
-    shiftHours: z.coerce.number().int().min(1).max(24).nullish(),
+    shiftHours: shiftHoursSchema.nullish(),
     status: z.enum(RENTAL_STATUSES).optional(),
     note: z.string().trim().max(2000).optional(),
   })
@@ -221,12 +227,28 @@ export function rentalActivationBlockReason(v: {
     : `${who} — активируйте его в справочнике контрагентов`;
 }
 
-/** Как строка техники называется в списках и подтверждениях. */
-export function vehicleTitle(v: VehicleDto): string {
+/**
+ * Как машина называется в списках и подтверждениях. Ветки различаются тем, чем их различает
+ * человек: аренду — коротким срезом предложения, свою машину — госномером. Реквизиты, которых
+ * может не быть, перебираются до типа ТС: он есть всегда.
+ */
+export function vehicleLabel(v: {
+  ownership: VehicleOwnership;
+  description: string;
+  categoryName: string | null;
+  typeName: string;
+  registrationNumber: string | null;
+  modelName: string | null;
+}): string {
   if (v.ownership === 'rental') {
     return v.description || v.categoryName || v.typeName;
   }
   return v.registrationNumber || v.modelName || v.categoryName || v.typeName;
+}
+
+/** Как строка справочника техники называется в списках и подтверждениях. */
+export function vehicleTitle(v: VehicleDto): string {
+  return vehicleLabel(v);
 }
 
 // ── Марки/модели: read-only список для выбора в форме техники (не отдельный справочник) ──

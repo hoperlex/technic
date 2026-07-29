@@ -40,7 +40,7 @@ function writeCollapsed(value: boolean): void {
 }
 
 export function AppLayout() {
-  const { user, logout, hasRole } = useAuth();
+  const { user, logout, can } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(readCollapsed);
@@ -52,23 +52,24 @@ export function AppLayout() {
     });
 
   const navItems: { key: string; icon: ReactNode; label: string }[] = [
-    { key: '/waste', icon: <FileTextOutlined />, label: 'Вывоз мусора' },
+    // Руководитель строительства отвечает за технику на объекте, вывоз мусора ведёт штаб (ADR 0025).
+    ...(can('wasteRequests.read')
+      ? [{ key: '/waste', icon: <FileTextOutlined />, label: 'Вывоз мусора' }]
+      : []),
     // Оператор вывоза — внешний перевозчик: заказ ТС к его работе отношения не имеет (ADR 0010).
-    ...(hasRole('operator')
-      ? []
-      : [{ key: '/vehicle-requests', icon: <CarOutlined />, label: 'Заказ ТС' }]),
-    ...(hasRole('admin', 'manager')
+    ...(can('vehicleRequests.read')
+      ? [{ key: '/vehicle-requests', icon: <CarOutlined />, label: 'Заказ ТС' }]
+      : []),
+    ...(can('directories.write')
       ? [{ key: '/directories', icon: <DatabaseOutlined />, label: 'Справочники' }]
       : []),
-    ...(hasRole('admin')
+    ...(can('users.manage')
       ? [{ key: '/admin', icon: <TeamOutlined />, label: 'Администрирование' }]
       : []),
   ];
 
-  const selectedKey =
-    ['/waste', '/vehicle-requests', '/directories', '/admin'].find((k) =>
-      location.pathname.startsWith(k),
-    ) ?? '/waste';
+  // Подсвечен тот пункт, на страницу которого зашли; если такого пункта у роли нет — никакой.
+  const selectedKey = navItems.find((it) => location.pathname.startsWith(it.key))?.key ?? '';
 
   const userMenu: MenuProps = {
     items: [

@@ -23,7 +23,15 @@ export function RegisterPage() {
   };
 
   return (
-    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+    <div
+      style={{
+        minHeight: '100vh',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 16,
+      }}
+    >
       <Card style={{ width: 420 }}>
         <Typography.Title level={3} style={{ textAlign: 'center' }}>
           Регистрация
@@ -32,7 +40,11 @@ export function RegisterPage() {
           После регистрации аккаунт будет неактивен до активации администратором.
         </Typography.Paragraph>
         <Form layout="vertical" onFinish={onFinish} requiredMark={false}>
-          <Form.Item name="fullName" label="ФИО" rules={[{ required: true, min: 2, message: 'Укажите ФИО' }]}>
+          <Form.Item
+            name="fullName"
+            label="ФИО"
+            rules={[{ required: true, min: 2, message: 'Укажите ФИО' }]}
+          >
             <Input size="large" />
           </Form.Item>
           <Form.Item

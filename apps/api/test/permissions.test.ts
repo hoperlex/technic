@@ -3,6 +3,7 @@ import {
   allowedStatusTransitions,
   can,
   canTransitionStatus,
+  isObjectScopedRole,
   PERMISSIONS,
   permissionsFor,
   ROLE_PERMISSIONS,
@@ -66,6 +67,33 @@ describe('права ролей', () => {
     for (const permission of PERMISSIONS.filter((p) => p.startsWith('vehicleRequests.'))) {
       expect(can('operator', permission), permission).toBe(false);
     }
+  });
+
+  it('руководитель строительства ведёт только технику своего объекта и визирует её (ADR 0025)', () => {
+    expect(can('rukstroy', 'vehicleRequests.create')).toBe(true);
+    expect(can('rukstroy', 'vehicleRequests.update')).toBe(true);
+    expect(can('rukstroy', 'vehicleRequests.delete')).toBe(true);
+    expect(can('rukstroy', 'vehicleRequests.approve')).toBe(true);
+    // Статусы заявки ведут те, кто её обрабатывает: виза — не смена статуса.
+    expect(can('rukstroy', 'vehicleRequests.status')).toBe(false);
+    expect(can('rukstroy', 'directories.write')).toBe(false);
+    // Модуль «Вывоз мусора» недоступен целиком — там заказчик со стороны объекта штаб.
+    for (const permission of PERMISSIONS.filter((p) => p.startsWith('wasteRequests.'))) {
+      expect(can('rukstroy', permission), permission).toBe(false);
+    }
+  });
+
+  it('визирует заказчик со стороны объекта, а не тот, кто обрабатывает заявку', () => {
+    expect(rolesWith('vehicleRequests.approve')).toEqual(['admin', 'rukstroy']);
+  });
+
+  it('объектные роли работают в пределах своего объекта', () => {
+    expect(isObjectScopedRole('shtab')).toBe(true);
+    expect(isObjectScopedRole('rukstroy')).toBe(true);
+    for (const role of ['admin', 'manager', 'dispatcher', 'operator'] as const) {
+      expect(isObjectScopedRole(role), role).toBe(false);
+    }
+    expect(isObjectScopedRole(null)).toBe(false);
   });
 
   it('штаб заводит заявки обоих модулей, но не ведёт их статусы', () => {

@@ -33,11 +33,15 @@ const idParams = z.object({ id: z.string().uuid() });
 
 export default async function containerTypesRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
-  const canWrite = app.requireRoles('admin', 'manager');
+  const canRead = app.requirePermission('directories.read');
+  const canWrite = app.requirePermission('directories.write');
 
   r.get(
     '/',
-    { preHandler: [app.authenticate], schema: { querystring: containerTypeListQuerySchema } },
+    {
+      preHandler: [app.authenticate, canRead],
+      schema: { querystring: containerTypeListQuerySchema },
+    },
     async (req) => {
       const q = req.query;
       const where = and(

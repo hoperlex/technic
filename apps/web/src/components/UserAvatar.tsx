@@ -3,13 +3,7 @@ import { UserOutlined } from '@ant-design/icons';
 import { avatarColor, getInitials } from '../utils/avatar';
 
 /** Аватар пользователя: цветной кружок с инициалами (CSS, без картинок). */
-export function UserAvatar({
-  name,
-  size,
-}: {
-  name?: string | null;
-  size?: AvatarProps['size'];
-}) {
+export function UserAvatar({ name, size }: { name?: string | null; size?: AvatarProps['size'] }) {
   const trimmed = name?.trim();
   if (!trimmed) return <Avatar size={size} icon={<UserOutlined />} />;
   return (

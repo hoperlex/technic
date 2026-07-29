@@ -1,11 +1,16 @@
 import { Button, Descriptions, Modal, Space, Spin, Tag, Typography } from 'antd';
-import { useMemo } from 'react';
+import { CheckCircleOutlined, ClockCircleOutlined } from '@ant-design/icons';
+import { type ReactNode, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
+  assignmentRateLabel,
+  assignmentTitle,
   type RequestHistoryEntryDto,
   requestStatusColors,
   requestStatusLabels,
   type VehicleRequestDto,
+  vehicleOwnershipColors,
+  vehicleOwnershipLabels,
   vehicleRequestChangeLabels,
   vehicleRequestTypeColors,
   vehicleRequestTypeLabels,
@@ -15,6 +20,7 @@ import { AddressCell } from '../../components/AddressAutoComplete';
 import { FileLinkList } from '../../components/FileLinks';
 import { type HistoryRow, RequestHistoryTable } from '../../components/RequestHistory';
 import { UserAvatar } from '../../components/UserAvatar';
+import { calendarDaysLabel } from '../../utils/date';
 import { formatDateTime, formatDateTimeMaybe } from '../../utils/format';
 import { formatDateOnly } from './shared';
 
@@ -37,14 +43,25 @@ function toRows(history: RequestHistoryEntryDto[] | undefined): HistoryRow[] {
   return (history ?? []).map((e) => ({ key: e.id, entry: e }));
 }
 
-/** Срок: у спецтехники период работы, у грузоперевозки — дата подачи (и время, если задано). */
-function termOf(r: VehicleRequestDto): string {
-  if (r.requestType === 'special_equipment') {
-    return r.dateTo
-      ? `${formatDateOnly(r.dateFrom)} – ${formatDateOnly(r.dateTo)}`
-      : formatDateOnly(r.dateFrom);
+/**
+ * Срок: у спецтехники период работы, у грузоперевозки — дата подачи (и время, если задано).
+ * К периоду приписано число календарных дней — та же подсказка, что и в форме заявки: по двум
+ * датам длину аренды в уме считают с ошибкой, а решают по ней.
+ */
+function termOf(r: VehicleRequestDto): ReactNode {
+  if (r.requestType !== 'special_equipment') {
+    return formatDateTimeMaybe(r.scheduledAt, r.scheduledTimeUnspecified);
   }
-  return formatDateTimeMaybe(r.scheduledAt, r.scheduledTimeUnspecified);
+  const period = r.dateTo
+    ? `${formatDateOnly(r.dateFrom)} – ${formatDateOnly(r.dateTo)}`
+    : formatDateOnly(r.dateFrom);
+  const days = calendarDaysLabel(r.dateFrom, r.dateTo);
+  return (
+    <Space size={6} wrap>
+      <span>{period}</span>
+      {days && <Typography.Text type="secondary">{days}</Typography.Text>}
+    </Space>
+  );
 }
 
 export function VehicleRequestViewModal({ request, onClose, onEdit }: Props) {
@@ -77,12 +94,61 @@ export function VehicleRequestViewModal({ request, onClose, onEdit }: Props) {
           ),
         },
         {
+          // Виза (ADR 0025): в карточке важно не только «есть ли», но и кто согласовал.
+          key: 'approval',
+          label: 'Согласование',
+          span: 2,
+          children: request.approvedAt ? (
+            <Space size={8}>
+              <Tag color="green" icon={<CheckCircleOutlined />} style={{ marginInlineEnd: 0 }}>
+                Завизирована
+              </Tag>
+              <span>
+                {request.approvedByName ?? '—'} · {formatDateTime(request.approvedAt)}
+              </span>
+            </Space>
+          ) : (
+            <Tag color="orange" icon={<ClockCircleOutlined />} style={{ marginInlineEnd: 0 }}>
+              Ждёт визы руководителя строительства
+            </Tag>
+          ),
+        },
+        {
           key: 'object',
           label: 'Объект',
           span: 2,
           children: `${request.objectCode} — ${request.objectName}`,
         },
         { key: 'vehicleType', label: 'Тип ТС', children: request.vehicleTypeName },
+        // Назначенная техника (ADR 0027): у «Новой» заявки её нет, у остальных это ответ на
+        // вопрос «чем и почём» — вместе с тем, кто и когда назначил.
+        {
+          key: 'assignment',
+          label: 'Техника',
+          span: 2,
+          children: request.assignment ? (
+            <Space direction="vertical" size={2}>
+              <Space size={8} wrap>
+                <span>{assignmentTitle(request.assignment)}</span>
+                <Tag color={vehicleOwnershipColors[request.assignment.ownership]}>
+                  {vehicleOwnershipLabels[request.assignment.ownership]}
+                </Tag>
+                {request.assignment.lessorName && <Tag>{request.assignment.lessorName}</Tag>}
+              </Space>
+              <Typography.Text>
+                {assignmentRateLabel(request.assignment) || 'Ставка не указана'}
+              </Typography.Text>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                Назначил {request.assignment.assignedByName || '—'} ·{' '}
+                {formatDateTime(request.assignment.assignedAt)}
+              </Typography.Text>
+            </Space>
+          ) : (
+            <Typography.Text type="secondary">
+              Не назначена — заявку ещё не брали в работу
+            </Typography.Text>
+          ),
+        },
         {
           key: 'term',
           label: request.requestType === 'special_equipment' ? 'Период работы' : 'Подача',

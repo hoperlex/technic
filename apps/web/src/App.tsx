@@ -1,7 +1,7 @@
-import { Navigate, Route, Routes } from 'react-router';
+import { Route, Routes } from 'react-router';
 import { AppLayout } from './components/AppLayout';
 import { AppUpdateBanner } from './components/AppUpdateBanner';
-import { ProtectedRoute, RequireRole } from './auth/ProtectedRoute';
+import { HomeRedirect, ProtectedRoute, RequirePermission } from './auth/ProtectedRoute';
 import { LoginPage } from './pages/LoginPage';
 import { RegisterPage } from './pages/RegisterPage';
 import { ChangePasswordPage } from './pages/ChangePasswordPage';
@@ -20,21 +20,26 @@ export default function App() {
         <Route element={<ProtectedRoute />}>
           <Route path="/change-password" element={<ChangePasswordPage />} />
           <Route element={<AppLayout />}>
-            <Route index element={<Navigate to="/waste" replace />} />
-            <Route path="/waste" element={<WasteRequestsPage />} />
-            {/* Оператору вывоза модуль «Заказ ТС» недоступен (ADR 0010). */}
-            <Route element={<RequireRole roles={['admin', 'manager', 'dispatcher', 'shtab']} />}>
+            <Route index element={<HomeRedirect />} />
+            {/* Руководителю строительства «Вывоз мусора» недоступен (ADR 0025), оператору
+                вывоза — наоборот, «Заказ ТС» (ADR 0010). */}
+            <Route element={<RequirePermission permission="wasteRequests.read" />}>
+              <Route path="/waste" element={<WasteRequestsPage />} />
+            </Route>
+            <Route element={<RequirePermission permission="vehicleRequests.read" />}>
               <Route path="/vehicle-requests" element={<VehicleRequestsPage />} />
             </Route>
-            <Route element={<RequireRole roles={['admin', 'manager']} />}>
+            {/* Справочники открыты тем, кто их ведёт: смотреть их отдельной страницей
+                остальным незачем — значения и так видны в карточках заявок. */}
+            <Route element={<RequirePermission permission="directories.write" />}>
               <Route path="/directories" element={<DirectoriesPage />} />
             </Route>
-            <Route element={<RequireRole roles={['admin']} />}>
+            <Route element={<RequirePermission permission="users.manage" />}>
               <Route path="/admin" element={<AdministrationPage />} />
             </Route>
           </Route>
         </Route>
-        <Route path="*" element={<Navigate to="/waste" replace />} />
+        <Route path="*" element={<HomeRedirect />} />
       </Routes>
     </>
   );

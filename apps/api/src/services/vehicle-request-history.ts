@@ -10,16 +10,26 @@ import { HISTORY_LIMIT, loadAuditEvents, mergeHistory } from './request-history'
 /**
  * События аудита, попадающие в историю. Смены статусов берутся из своей таблицы: там есть
  * переход и причина, а запись `vehicle_request.status` их бы только продублировала.
- * Исполнитель у заявок на технику не назначается — события `assign_operator` здесь нет.
+ * Исполнителя-контрагента у заявок на технику не назначают — события `assign_operator` здесь нет.
+ * Своё у модуля другое: виза руководителя строительства (ADR 0025), решающая, пойдёт ли заявка
+ * в работу, и назначение конкретной машины со ставками (ADR 0027), с которого работа начинается.
  */
 const AUDIT_ACTIONS = [
   'vehicle_request.update',
+  'vehicle_request.approve',
+  'vehicle_request.approval_revoke',
+  'vehicle_request.assign',
   'vehicle_request.soft_delete',
   'vehicle_request.restore',
 ] as const;
 
 const AUDIT_KINDS: Record<string, RequestHistoryKind> = {
   'vehicle_request.update': 'updated',
+  'vehicle_request.approve': 'approved',
+  'vehicle_request.approval_revoke': 'approvalRevoked',
+  // Назначение техники (ADR 0027) идёт вместе с переводом в работу, но событием остаётся своим:
+  // переход отвечает «что с заявкой», назначение — «чем и почём».
+  'vehicle_request.assign': 'assigned',
   'vehicle_request.soft_delete': 'deleted',
   'vehicle_request.restore': 'restored',
 };

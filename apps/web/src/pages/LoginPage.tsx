@@ -25,7 +25,15 @@ export function LoginPage() {
   };
 
   return (
-    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+    <div
+      style={{
+        minHeight: '100vh',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 16,
+      }}
+    >
       <Card style={{ width: 380 }}>
         <Typography.Title level={3} style={{ textAlign: 'center' }}>
           Вход в портал
@@ -38,7 +46,11 @@ export function LoginPage() {
           >
             <Input autoComplete="username" size="large" />
           </Form.Item>
-          <Form.Item name="password" label="Пароль" rules={[{ required: true, message: 'Введите пароль' }]}>
+          <Form.Item
+            name="password"
+            label="Пароль"
+            rules={[{ required: true, message: 'Введите пароль' }]}
+          >
             <Input.Password autoComplete="current-password" size="large" />
           </Form.Item>
           <Button type="primary" htmlType="submit" size="large" block loading={loading}>

@@ -24,10 +24,14 @@ function toDto(r: VehicleKindRow): VehicleKindDto {
  */
 export default async function vehicleKindsRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
+  const canRead = app.requirePermission('directories.read');
 
   r.get(
     '/',
-    { preHandler: [app.authenticate], schema: { querystring: vehicleKindListQuerySchema } },
+    {
+      preHandler: [app.authenticate, canRead],
+      schema: { querystring: vehicleKindListQuerySchema },
+    },
     async (req) => {
       const q = req.query;
       const where = and(

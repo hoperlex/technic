@@ -35,3 +35,41 @@ export function isBeforeMinRequestDate(d: Dayjs): boolean {
 export function isPastDate(d: Dayjs): boolean {
   return d.isBefore(startOfToday(), 'day');
 }
+
+/**
+ * Число календарных дней периода, включая обе границы: с 01.08 по 03.08 — три дня, а не два.
+ * Пустая дата окончания — однодневный срок: тем же `coalesce(date_to, date_from)` считает
+ * период сервер, когда ищет пересечения заявок.
+ *
+ * Границы разбираются как календарные ключи `YYYY-MM-DD` в UTC: в поясе браузера с переводом
+ * часов сутки бывают короче 24 часов, и разница дат теряла бы день. `null` — период не
+ * складывается (конец раньше начала); подсказывать в этом случае нечего.
+ */
+function calendarDayCount(fromKey: string, toKey?: string | null): number | null {
+  const from = Date.parse(`${fromKey}T00:00:00Z`);
+  const to = Date.parse(`${toKey || fromKey}T00:00:00Z`);
+  if (Number.isNaN(from) || Number.isNaN(to) || to < from) return null;
+  return Math.round((to - from) / 86_400_000) + 1;
+}
+
+/**
+ * Длина периода словами — «5 календарных дней». Считать дни по календарю в уме легко
+ * ошибиться (особенно через границу месяца), а заказывают технику и считают аренду именно
+ * в днях, поэтому подсказка стоит и в форме заявки, и в её карточке.
+ */
+export function calendarDaysLabel(fromKey: string, toKey?: string | null): string | null {
+  const days = calendarDayCount(fromKey, toKey);
+  if (days === null) return null;
+  // Русское склонение: 1 день, 2–4 дня, 5–20 дней; 11–14 — всегда «дней».
+  const tail = days % 100;
+  const last = days % 10;
+  const form =
+    tail >= 11 && tail <= 14
+      ? 'календарных дней'
+      : last === 1
+        ? 'календарный день'
+        : last >= 2 && last <= 4
+          ? 'календарных дня'
+          : 'календарных дней';
+  return `${days} ${form}`;
+}

@@ -1,7 +1,11 @@
 import { eq, type AnyColumn, type SQL } from 'drizzle-orm';
 import {
+  can,
   canTransitionStatus,
+  isObjectScopedRole,
   requestStatusLabels,
+  roleLabels,
+  type Permission,
   type RequestStatus,
   type Role,
 } from '@technic/contracts';
@@ -11,12 +15,27 @@ import { err } from './errors';
 const NEVER_MATCH = '00000000-0000-0000-0000-000000000000';
 
 /**
- * Ограничение видимости заявок по ролям: «Штаб» видит только заявки своего объекта;
- * остальные роли — все. Параметризовано колонкой объекта (переиспользуется модулями
- * «Вывоз мусора» и «Заказ ТС»).
+ * Доступ проверяется в два слоя (ADR 0021):
+ *  - право — «что роль может делать» (матрица в @technic/contracts), проверяется до запроса
+ *    в БД: `app.requirePermission(...)` на маршруте либо `assertCan(...)` в обработчике, если
+ *    право зависит от содержимого запроса;
+ *  - область — «над какими строками», проверяется по конкретной записи: штаб работает со своим
+ *    объектом, оператор — с заявками своего контрагента.
+ * Здесь живёт второй слой и те проверки прав, которые нельзя сделать на маршруте.
+ */
+
+/** Право, проверяемое внутри обработчика (когда оно зависит от тела запроса или от записи). */
+export function assertCan(p: Principal, permission: Permission, message?: string): void {
+  if (!can(p.role, permission)) throw err.forbidden(message);
+}
+
+/**
+ * Ограничение видимости заявок по ролям: роли, работающие в пределах объекта («Штаб»,
+ * «Руководитель строительства», ADR 0025), видят только заявки своего объекта; остальные — все.
+ * Параметризовано колонкой объекта (переиспользуется модулями «Вывоз мусора» и «Заказ ТС»).
  */
 export function requestVisibilityWhere(p: Principal, objectIdColumn: AnyColumn): SQL | undefined {
-  if (p.role === 'shtab') {
+  if (isObjectScopedRole(p.role)) {
     return eq(objectIdColumn, p.constructionObjectId ?? NEVER_MATCH);
   }
   return undefined;
@@ -31,20 +50,41 @@ export function operatorVisibilityWhere(p: Principal, operatorColumn: AnyColumn)
   return eq(operatorColumn, p.counterpartyId ?? NEVER_MATCH);
 }
 
-/** «Штаб» работает только со своим объектом (проверка конкретного objectId). */
-export function assertShtabScope(p: Principal, objectId: string): void {
-  if (p.role === 'shtab' && objectId !== p.constructionObjectId) {
-    throw err.forbidden('Штаб работает только со своим объектом');
+/**
+ * Удалённая запись видна только тем, кому открыт архив; остальным её как бы нет — 404, а не
+ * 403: сам факт существования удалённой заявки под известным id тоже не их дело. Проверять
+ * это обязан каждый маршрут, отдающий запись по id: список удалённые скрывает, а карточка,
+ * история и карточка справочника получают строку напрямую и без этой проверки отдают архив
+ * любому, кто знает id.
+ */
+export function assertArchiveVisible(
+  p: Principal,
+  deletedAt: Date | string | null,
+  notFoundMessage: string,
+): void {
+  if (deletedAt && !can(p.role, 'archive.read')) throw err.notFound(notFoundMessage);
+}
+
+/** Объектная роль работает только со своим объектом (проверка конкретного objectId). */
+export function assertObjectScope(p: Principal, objectId: string): void {
+  if (isObjectScopedRole(p.role) && objectId !== p.constructionObjectId) {
+    throw err.forbidden(`${roleLabels[p.role!]} работает только со своим объектом`);
   }
 }
 
 /**
- * Оператор — исполнитель, а не заказчик: заявки он не заводит, не редактирует и не удаляет,
- * даже свои (ADR 0010). Роли «Штаб» такой запрет не подходит — она заявки как раз создаёт,
- * поэтому проверка отдельная, а не через canManageRequests.
+ * Со стороны объекта правят и удаляют только заявку, которую ещё не взяли в работу: после
+ * «В работе» за заявкой стоят договорённости с исполнителем, и менять её задним числом нельзя.
+ * Ограничение по состоянию записи, а не по действию, поэтому это область, а не право.
  */
-export function assertNotOperator(p: Principal, message: string): void {
-  if (p.role === 'operator') throw err.forbidden(message);
+export function assertObjectRoleEditable(
+  p: Principal,
+  status: RequestStatus,
+  action: string,
+): void {
+  if (isObjectScopedRole(p.role) && status !== 'new') {
+    throw err.forbidden(`${roleLabels[p.role!]} может ${action} заявку только в статусе «Новая»`);
+  }
 }
 
 /** «Оператор» работает только с заявками своего контрагента (проверка конкретной заявки). */
@@ -52,18 +92,6 @@ export function assertOperatorScope(p: Principal, operatorCounterpartyId: string
   if (p.role === 'operator' && operatorCounterpartyId !== p.counterpartyId) {
     throw err.forbidden('Оператор работает только с заявками своего контрагента');
   }
-}
-
-export function canManageRequests(p: Principal): boolean {
-  return p.role === 'admin' || p.role === 'manager' || p.role === 'dispatcher';
-}
-
-/**
- * Оператор заявки не ведёт, но статус меняет — в единственном разрешённом ему переходе
- * «В работе» → «Выполнена». Сам переход проверяет assertTransitionAllowed по роли.
- */
-export function canChangeStatus(p: Principal): boolean {
-  return canManageRequests(p) || p.role === 'operator';
 }
 
 /**
@@ -74,10 +102,12 @@ export function canChangeStatus(p: Principal): boolean {
 export function assertTransitionAllowed(
   from: RequestStatus,
   to: RequestStatus,
-  // Учётка без роли статусы не меняет; до сюда её не пускает canChangeStatus.
   role: Role | null,
 ): void {
   if (role && canTransitionStatus(from, to, role)) return;
+  // Учётка без роли до сюда не доходит — её отсекает право на маршруте. Но объяснять отказ
+  // разбором переходов ей нечем: у неё нет ни одного, и «только администратор» было бы ложью.
+  if (!role) throw err.forbidden('Недостаточно прав для смены статуса');
   // У оператора коридор один, поэтому «недопустимый переход» ему ничего не объясняет.
   if (role === 'operator') {
     throw err.forbidden(

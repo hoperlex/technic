@@ -11,6 +11,7 @@ export * from './vehicle-kinds';
 export * from './vehicle-types';
 export * from './vehicle-specs';
 export * from './vehicle-categories';
+export * from './vehicle-classifications';
 export * from './vehicles';
 export * from './files';
 export * from './request-history';

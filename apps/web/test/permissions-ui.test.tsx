@@ -1,0 +1,125 @@
+import { describe, expect, it, vi } from 'vitest';
+import { render, screen } from '@testing-library/react';
+import { MemoryRouter, Route, Routes } from 'react-router';
+import { can, type AuthUser, type Permission, type Role } from '@technic/contracts';
+
+/**
+ * Портал скрывает недоступное по той же матрице, по которой API запрещает (ADR 0021).
+ * Проверяется именно связка «роль → право → элемент интерфейса»: расхождение здесь даёт либо
+ * кнопку, ведущую в 403, либо раздел, невидимый тому, кому он разрешён.
+ *
+ * `useAuth` подменяется целиком: настоящий провайдер поднимает сессию через API, а к правам
+ * это отношения не имеет.
+ */
+
+let currentRole: Role | null = null;
+
+vi.mock('../src/auth/AuthContext', () => ({
+  useAuth: () => ({
+    user: currentRole
+      ? ({
+          id: 'user-1',
+          email: 'user@test.local',
+          fullName: 'Пользователь',
+          role: currentRole,
+          isActive: true,
+          mustChangePassword: false,
+          constructionObjectId: null,
+        } satisfies AuthUser)
+      : null,
+    status: 'authenticated' as const,
+    login: vi.fn(),
+    logout: vi.fn(),
+    setUser: vi.fn(),
+    refreshUser: vi.fn(),
+    hasRole: (...roles: Role[]) => !!currentRole && roles.includes(currentRole),
+    can: (permission: Permission) => can(currentRole, permission),
+  }),
+}));
+
+const { AppLayout } = await import('../src/components/AppLayout');
+const { RequirePermission } = await import('../src/auth/ProtectedRoute');
+
+function renderMenu(role: Role | null) {
+  currentRole = role;
+  return render(
+    <MemoryRouter initialEntries={['/waste']}>
+      <Routes>
+        <Route element={<AppLayout />}>
+          <Route path="/waste" element={<div>Список заявок</div>} />
+        </Route>
+      </Routes>
+    </MemoryRouter>,
+  );
+}
+
+function renderGuarded(role: Role | null, permission: Permission) {
+  currentRole = role;
+  return render(
+    <MemoryRouter initialEntries={['/directories']}>
+      <Routes>
+        <Route element={<RequirePermission permission={permission} />}>
+          <Route path="/directories" element={<div>Страница справочников</div>} />
+        </Route>
+        <Route path="/waste" element={<div>Список заявок</div>} />
+      </Routes>
+    </MemoryRouter>,
+  );
+}
+
+describe('пункты меню следуют из прав', () => {
+  it('диспетчер видит справочники — доступ выдан вместе с правом directories.write', () => {
+    renderMenu('dispatcher');
+    expect(screen.getByText('Справочники')).toBeDefined();
+    expect(screen.getByText('Заказ ТС')).toBeDefined();
+    expect(screen.queryByText('Администрирование')).toBeNull();
+  });
+
+  it('менеджер видит то же самое', () => {
+    renderMenu('manager');
+    expect(screen.getByText('Справочники')).toBeDefined();
+    expect(screen.queryByText('Администрирование')).toBeNull();
+  });
+
+  it('оператору вывоза не показывают ни заказ ТС, ни справочники (ADR 0010)', () => {
+    renderMenu('operator');
+    expect(screen.getByText('Вывоз мусора')).toBeDefined();
+    expect(screen.queryByText('Заказ ТС')).toBeNull();
+    expect(screen.queryByText('Справочники')).toBeNull();
+  });
+
+  it('штаб ведёт заявки обоих модулей, но справочники не правит', () => {
+    renderMenu('shtab');
+    expect(screen.getByText('Заказ ТС')).toBeDefined();
+    expect(screen.queryByText('Справочники')).toBeNull();
+  });
+
+  it('администратору доступно всё, включая учётки', () => {
+    renderMenu('admin');
+    expect(screen.getByText('Справочники')).toBeDefined();
+    expect(screen.getByText('Администрирование')).toBeDefined();
+  });
+});
+
+describe('раздел закрывается правом, а не списком ролей', () => {
+  it('пускает роль с правом', () => {
+    renderGuarded('dispatcher', 'directories.write');
+    expect(screen.getByText('Страница справочников')).toBeDefined();
+  });
+
+  it('роль без права уводит на список заявок, а не показывает пустую страницу', () => {
+    renderGuarded('shtab', 'directories.write');
+    expect(screen.queryByText('Страница справочников')).toBeNull();
+    expect(screen.getByText('Список заявок')).toBeDefined();
+  });
+
+  it('учётку без роли не пускает никуда', () => {
+    renderGuarded(null, 'directories.write');
+    expect(screen.queryByText('Страница справочников')).toBeNull();
+  });
+
+  it('администрирование закрыто правом на учётки', () => {
+    renderGuarded('manager', 'users.manage');
+    expect(screen.queryByText('Страница справочников')).toBeNull();
+  });
+});

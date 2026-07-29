@@ -9,10 +9,14 @@ import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
 // Read-only: список марок/моделей для селекта в форме техники (не отдельный справочник, ADR 0007).
 export default async function vehicleModelsRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
+  const canRead = app.requirePermission('directories.read');
 
   r.get(
     '/',
-    { preHandler: [app.authenticate], schema: { querystring: vehicleModelListQuerySchema } },
+    {
+      preHandler: [app.authenticate, canRead],
+      schema: { querystring: vehicleModelListQuerySchema },
+    },
     async (req) => {
       const q = req.query;
       const where = and(

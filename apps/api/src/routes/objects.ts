@@ -41,12 +41,13 @@ const idParams = z.object({ id: z.string().uuid() });
 
 export default async function objectsRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
-  const canWrite = app.requireRoles('admin', 'manager');
+  const canRead = app.requirePermission('directories.read');
+  const canWrite = app.requirePermission('directories.write');
 
   // Чтение доступно всем аутентифицированным (для выбора в форме заявки).
   r.get(
     '/',
-    { preHandler: [app.authenticate], schema: { querystring: objectListQuerySchema } },
+    { preHandler: [app.authenticate, canRead], schema: { querystring: objectListQuerySchema } },
     async (req) => {
       const q = req.query;
       const where = and(

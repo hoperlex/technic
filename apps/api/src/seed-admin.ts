@@ -12,7 +12,9 @@ async function main(): Promise<void> {
   const fullName = process.env.ADMIN_NAME ?? process.argv[4] ?? 'Администратор';
 
   if (!email || !password) {
-    console.error('Использование: ADMIN_EMAIL=.. ADMIN_PASSWORD=.. [ADMIN_NAME=..] pnpm seed:admin');
+    console.error(
+      'Использование: ADMIN_EMAIL=.. ADMIN_PASSWORD=.. [ADMIN_NAME=..] pnpm seed:admin',
+    );
     process.exit(1);
   }
   if (password.length < 8) {

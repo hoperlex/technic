@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import type { FreightTransportRequestDto, SpecialEquipmentRequestDto } from '@technic/contracts';
-import { diffVehicleRequests } from '../src/services/vehicle-request-diff';
+import type {
+  FreightTransportRequestDto,
+  SpecialEquipmentRequestDto,
+  VehicleRequestAssignmentDto,
+} from '@technic/contracts';
+import { diffVehicleAssignment, diffVehicleRequests } from '../src/services/vehicle-request-diff';
 
 // Дифф правки заявки на технику — то, из чего складывается история в карточке (ADR 0015).
 
@@ -142,5 +146,67 @@ describe('дифф правки заявки на технику', () => {
     );
     expect(changes).toContainEqual({ field: 'filesAdded', from: null, to: 'путевой.pdf' });
     expect(changes).toContainEqual({ field: 'filesRemoved', from: null, to: 'заявка.pdf' });
+  });
+});
+
+// ── Назначение техники (ADR 0027) ──
+const RENTAL: VehicleRequestAssignmentDto = {
+  vehicleId: '66666666-6666-4666-8666-666666666666',
+  ownership: 'rental',
+  typeName: 'Экскаватор',
+  categoryName: 'Экскаватор 1,5 м³',
+  modelName: null,
+  registrationNumber: null,
+  description: 'Экскаватор Hitachi 1,5 м³',
+  lessorId: '77777777-7777-4777-8777-777777777777',
+  lessorName: 'ООО «Спецтехника»',
+  pricePerHour: 2500,
+  pricePerShift: null,
+  shiftHours: null,
+  assignedBy: '55555555-5555-4555-8555-555555555555',
+  assignedByName: 'Иванов И. И.',
+  assignedAt: '2026-07-28T12:00:00.000Z',
+};
+
+describe('дифф назначения техники', () => {
+  it('первое назначение: слева прочерк — назначения не было', () => {
+    const changes = diffVehicleAssignment(null, RENTAL);
+    expect(changes).toContainEqual({
+      field: 'vehicle',
+      from: '—',
+      to: 'Экскаватор Hitachi 1,5 м³ · ООО «Спецтехника»',
+    });
+    expect(changes.find((c) => c.field === 'pricePerHour')?.to).toContain('₽');
+    // Ставки за смену не было и нет — событию о ней взяться неоткуда.
+    expect(changes.some((c) => c.field === 'pricePerShift')).toBe(false);
+  });
+
+  it('та же машина по другой цене — событие о ставке, а не о технике', () => {
+    const changes = diffVehicleAssignment(RENTAL, { ...RENTAL, pricePerHour: 2800 });
+    expect(changes.some((c) => c.field === 'vehicle')).toBe(false);
+    // Разделитель разрядов у ru-RU неразрывный — сравниваем по цифрам, а не по виду строки.
+    const digits = (s: string | null | undefined) => (s ?? '').replace(/\D/g, '');
+    expect(digits(changes.find((c) => c.field === 'pricePerHour')?.from)).toBe('250000');
+    expect(digits(changes.find((c) => c.field === 'pricePerHour')?.to)).toBe('280000');
+  });
+
+  it('своя машина различается госномером, арендодателя у неё нет', () => {
+    const own: VehicleRequestAssignmentDto = {
+      ...RENTAL,
+      ownership: 'own',
+      description: '',
+      registrationNumber: 'О123ОО197',
+      lessorId: null,
+      lessorName: null,
+      pricePerHour: null,
+    };
+    const changes = diffVehicleAssignment(RENTAL, own);
+    expect(changes).toContainEqual({
+      field: 'vehicle',
+      from: 'Экскаватор Hitachi 1,5 м³ · ООО «Спецтехника»',
+      to: 'О123ОО197',
+    });
+    // Ставка снята — в истории это «было 2 500 ₽, стало ничего».
+    expect(changes.find((c) => c.field === 'pricePerHour')?.to).toBe('—');
   });
 });

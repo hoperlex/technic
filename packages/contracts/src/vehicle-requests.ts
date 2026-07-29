@@ -5,6 +5,12 @@ import { allowedStatusTransitions } from './permissions';
 import { baseListQuery, uuidSchema } from './common';
 import type { FileDto } from './files';
 import {
+  shiftHoursSchema,
+  vehicleLabel,
+  type VehicleOwnership,
+  vehiclePriceSchema,
+} from './vehicles';
+import {
   MIN_REQUEST_DATE_MESSAGE,
   WORK_TIME_MESSAGE,
   isAllowedRequestDate,
@@ -309,18 +315,61 @@ export const setVehicleRequestApprovalSchema = z
   .strict();
 export type SetVehicleRequestApprovalInput = z.infer<typeof setVehicleRequestApprovalSchema>;
 
+// ── Назначение техники на заявку (ADR 0027) ──
+
+/**
+ * Заявку берут в работу не «вообще», а конкретной машиной: с этого момента известно, кто и на
+ * чём выходит и по какой ставке. Поэтому назначение — часть перехода «Новая» → «В работе», а не
+ * отдельное действие после него.
+ */
+export function transitionRequiresAssignment(to: RequestStatus): boolean {
+  return to === 'confirmed';
+}
+
+/**
+ * Техника и её ставки. Цены подставляются из справочника (предложение аренды), но приходят от
+ * клиента как обычные значения и редактируются свободно: договариваются по конкретной заявке —
+ * со скидкой за объём, с наценкой за срочность, — и прайс справочника такой договорённости не
+ * начальник. Обе цены необязательны: у собственной машины ставки может не быть вовсе, а у
+ * аренды хотя бы одну потребует сервер — он знает, чья это машина.
+ */
+export const assignVehicleSchema = z
+  .object({
+    vehicleId: uuidSchema,
+    pricePerHour: vehiclePriceSchema.nullable().optional(),
+    pricePerShift: vehiclePriceSchema.nullable().optional(),
+    /** Длительность смены: без неё цена за смену — сумма без единицы измерения. */
+    shiftHours: shiftHoursSchema.nullable().optional(),
+  })
+  .strict();
+export type AssignVehicleInput = z.infer<typeof assignVehicleSchema>;
+
 // Комментарий пишется в историю (vehicle_request_status_history.comment); при отмене
 // он обязателен и играет роль причины — как и у заявок на вывоз мусора.
+// Техника передаётся вместе с переводом в работу (ADR 0027): отдельным запросом назначение
+// прошло бы не атомарно со сменой статуса, и заявка успела бы побыть «в работе» ни на чём.
 export const changeVehicleRequestStatusSchema = z
   .object({
     status: requestStatusSchema,
     comment: commentSchema.optional().default(''),
+    /**
+     * Назначаемая техника; обязательность решает сервер — при повторном переводе в работу
+     * (после отката) хватает уже назначенной машины.
+     */
+    assignment: assignVehicleSchema.optional(),
     version: z.number().int().nonnegative(),
   })
   .strict()
   .superRefine((v, ctx) => {
     if (statusChangeRequiresReason(v.status) && !v.comment) {
       ctx.addIssue({ code: 'custom', path: ['comment'], message: 'Укажите причину отмены' });
+    }
+    if (v.assignment && !transitionRequiresAssignment(v.status)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['assignment'],
+        message: 'Технику назначают при переводе заявки в работу',
+      });
     }
   });
 export type ChangeVehicleRequestStatusInput = z.infer<typeof changeVehicleRequestStatusSchema>;
@@ -401,6 +450,54 @@ export type VehicleRequestSummaryDto = Record<RequestStatus, number> & {
 };
 
 // ── DTO ──
+
+/**
+ * Назначенная на заявку техника со ставками (ADR 0027). Реквизиты машины — join'ом, а не
+ * снимком: в карточке заявки предъявляют ту машину, что стоит в справочнике сейчас (её могли
+ * переименовать или уточнить госномер). Снимок здесь только у ставок — о них договорились под
+ * эту заявку, и правка прайса их не переписывает.
+ */
+export interface VehicleRequestAssignmentDto {
+  vehicleId: string;
+  ownership: VehicleOwnership;
+  /** Тип ТС машины; совпадает с типом заявки — это держит составной FK в БД. */
+  typeName: string;
+  categoryName: string | null;
+  modelName: string | null;
+  registrationNumber: string | null;
+  /** Короткий срез предложения аренды («Автокран 70 тн»); у своей машины пуст. */
+  description: string;
+  lessorId: string | null;
+  lessorName: string | null;
+  pricePerHour: number | null;
+  pricePerShift: number | null;
+  shiftHours: number | null;
+  assignedBy: string;
+  assignedByName: string;
+  assignedAt: string;
+}
+
+/** Как назначенная машина называется в списке заявок и в карточке. */
+export function assignmentTitle(a: VehicleRequestAssignmentDto): string {
+  return vehicleLabel(a);
+}
+
+/** Ставки одной строкой: «2 500 ₽/час · 18 000 ₽/смена (8 ч)»; пусто — ставок нет. */
+export function assignmentRateLabel(a: {
+  pricePerHour: number | null;
+  pricePerShift: number | null;
+  shiftHours: number | null;
+}): string {
+  const money = (v: number): string =>
+    v.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const parts: string[] = [];
+  if (a.pricePerHour != null) parts.push(`${money(a.pricePerHour)} ₽/час`);
+  if (a.pricePerShift != null) {
+    parts.push(`${money(a.pricePerShift)} ₽/смена${a.shiftHours ? ` (${a.shiftHours} ч)` : ''}`);
+  }
+  return parts.join(' · ');
+}
+
 export interface VehicleRequestBaseDto {
   id: string;
   num: number;
@@ -429,6 +526,11 @@ export interface VehicleRequestBaseDto {
   approvedBy: string | null;
   approvedByName: string | null;
   approvedAt: string | null;
+  /**
+   * Техника, которой заявку взяли в работу (ADR 0027). `null` — заявку ещё не брали: у «Новой»
+   * машины нет, а у закрытой и отменённой остаётся та, что была назначена.
+   */
+  assignment: VehicleRequestAssignmentDto | null;
   files: FileDto[];
   version: number;
 
@@ -484,4 +586,10 @@ export const vehicleRequestChangeLabels: Record<string, string> = {
   comment: 'Комментарий',
   filesAdded: 'Прикреплены файлы',
   filesRemoved: 'Откреплены файлы',
+  // Назначение техники (ADR 0027): событие не правки, но поля у него те же по форме — «было →
+  // стало», и в истории они читаются одним списком.
+  vehicle: 'Техника',
+  pricePerHour: 'Ставка за час',
+  pricePerShift: 'Ставка за смену',
+  shiftHours: 'Часов в смене',
 };

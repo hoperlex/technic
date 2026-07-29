@@ -18,9 +18,21 @@ export interface RequestChangeDto {
   to: string | null;
 }
 
-/** `operator` есть только у вывоза мусора: у заявок на технику исполнитель не назначается. */
+/**
+ * `operator` есть только у вывоза мусора: там исполнителя назначают контрагентом, а не машиной.
+ * `approved` / `approvalRevoked` (виза руководителя строительства, ADR 0025) и `assigned`
+ * (техника со ставками, ADR 0027) — наоборот, только у заявок на технику.
+ */
 export type RequestHistoryKind =
-  'created' | 'updated' | 'status' | 'operator' | 'deleted' | 'restored';
+  | 'created'
+  | 'updated'
+  | 'status'
+  | 'operator'
+  | 'approved'
+  | 'approvalRevoked'
+  | 'assigned'
+  | 'deleted'
+  | 'restored';
 
 export interface RequestHistoryEntryDto {
   id: string;

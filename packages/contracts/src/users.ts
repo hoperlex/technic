@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { roleSchema, type Role } from './enums';
+import { isObjectScopedRole, roleSchema, type Role } from './enums';
 import { baseListQuery, uuidSchema } from './common';
 
 // Сортировка доступна во всех столбцах таблицы; ключ поля совпадает с ключом колонки.
@@ -32,8 +32,10 @@ export const createUserSchema = z
     /** Контрагент учётки: обязателен для «Оператора» — задаёт, чьи заявки он видит (ADR 0010). */
     counterpartyId: uuidSchema.nullish(),
   })
-  .refine((v) => v.role !== 'shtab' || !!v.constructionObjectId, {
-    message: 'Для роли «Штаб» обязателен объект',
+  // Объектные роли («Штаб», «Руководитель строительства») работают в пределах своего объекта —
+  // без него у учётки нет ни области видимости, ни ограничения (ADR 0025).
+  .refine((v) => !isObjectScopedRole(v.role) || !!v.constructionObjectId, {
+    message: 'Роль работает в пределах объекта — укажите объект',
     path: ['constructionObjectId'],
   })
   .refine((v) => v.role !== 'operator' || !!v.counterpartyId, {

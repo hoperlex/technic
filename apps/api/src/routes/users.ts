@@ -4,6 +4,8 @@ import { z } from 'zod';
 import { and, count, eq, isNull } from 'drizzle-orm';
 import {
   createUserSchema,
+  isObjectScopedRole,
+  roleLabels,
   setUserPasswordSchema,
   updateUserSchema,
   userListQuerySchema,
@@ -115,8 +117,7 @@ async function resolveCounterpartyId(
 
 export default async function usersRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
-  const adminOnly = app.requireRoles('admin');
-  const guards = { preHandler: [app.authenticate, adminOnly] };
+  const guards = { preHandler: [app.authenticate, app.requirePermission('users.manage')] };
 
   r.get('/', { ...guards, schema: { querystring: userListQuerySchema } }, async (req) => {
     const q = req.query;
@@ -181,69 +182,76 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
     return (await fetchUserDto(created!.id))!;
   });
 
-  r.patch('/:id', { ...guards, schema: { params: idParams, body: updateUserSchema } }, async (req) => {
-    const actor = requirePrincipal(req);
-    const { id } = req.params;
-    const body = req.body;
-    const [existing] = await db.select().from(users).where(eq(users.id, id));
-    if (!existing || existing.deletedAt) throw err.notFound('Пользователь не найден');
+  r.patch(
+    '/:id',
+    { ...guards, schema: { params: idParams, body: updateUserSchema } },
+    async (req) => {
+      const actor = requirePrincipal(req);
+      const { id } = req.params;
+      const body = req.body;
+      const [existing] = await db.select().from(users).where(eq(users.id, id));
+      if (!existing || existing.deletedAt) throw err.notFound('Пользователь не найден');
 
-    // защита от самоблокировки
-    if (actor.id === id) {
-      if (body.isActive === false) throw err.badRequest('Нельзя деактивировать собственный аккаунт');
-      if (body.role && body.role !== existing.role) {
-        throw err.badRequest('Нельзя менять собственную роль');
+      // защита от самоблокировки
+      if (actor.id === id) {
+        if (body.isActive === false)
+          throw err.badRequest('Нельзя деактивировать собственный аккаунт');
+        if (body.role && body.role !== existing.role) {
+          throw err.badRequest('Нельзя менять собственную роль');
+        }
       }
-    }
 
-    const nextRole = body.role ?? existing.role;
-    // Активная учётка без роли не попадает ни под одно ограничение доступа: проверки
-    // сформулированы от конкретных ролей («штаб — свой объект», «оператор — свой контрагент»),
-    // и учётка без роли видит все заявки вывоза. Роль назначается вместе с активацией.
-    if ((body.isActive ?? existing.isActive) && !nextRole) {
-      throw err.badRequest('Нельзя активировать учётку без роли', { role: 'Выберите роль' });
-    }
-    const nextObjectId =
-      body.constructionObjectId !== undefined
-        ? body.constructionObjectId
-        : existing.constructionObjectId;
-    if (nextRole === 'shtab' && !nextObjectId) {
-      throw err.badRequest('Для роли «Штаб» обязателен объект', {
-        constructionObjectId: 'Укажите объект',
+      const nextRole = body.role ?? existing.role;
+      // Активная учётка без роли не попадает ни под одно ограничение доступа: проверки
+      // сформулированы от конкретных ролей («штаб — свой объект», «оператор — свой контрагент»),
+      // и учётка без роли видит все заявки вывоза. Роль назначается вместе с активацией.
+      if ((body.isActive ?? existing.isActive) && !nextRole) {
+        throw err.badRequest('Нельзя активировать учётку без роли', { role: 'Выберите роль' });
+      }
+      const nextObjectId =
+        body.constructionObjectId !== undefined
+          ? body.constructionObjectId
+          : existing.constructionObjectId;
+      // Объектные роли («Штаб», «Руководитель строительства») без объекта не ограничены ничем и
+      // одновременно не видят ни одной заявки — объект назначается вместе с ролью (ADR 0025).
+      if (isObjectScopedRole(nextRole) && !nextObjectId) {
+        throw err.badRequest(`Для роли «${roleLabels[nextRole!]}» обязателен объект`, {
+          constructionObjectId: 'Укажите объект',
+        });
+      }
+      const nextCounterpartyId = await resolveCounterpartyId(
+        nextRole,
+        body.counterpartyId !== undefined ? body.counterpartyId : existing.counterpartyId,
+      );
+
+      const roleChanged = body.role !== undefined && body.role !== existing.role;
+      const deactivated = body.isActive === false && existing.isActive;
+      const bumpAuth = roleChanged || deactivated;
+
+      await db
+        .update(users)
+        .set({
+          fullName: body.fullName ?? existing.fullName,
+          role: nextRole,
+          isActive: body.isActive ?? existing.isActive,
+          constructionObjectId: nextObjectId ?? null,
+          counterpartyId: nextCounterpartyId,
+          authVersion: bumpAuth ? existing.authVersion + 1 : existing.authVersion,
+          updatedAt: new Date(),
+        })
+        .where(eq(users.id, id));
+
+      if (bumpAuth) await revokeAllForUser(id);
+      await writeAudit({
+        actorUserId: actor.id,
+        action: 'user.update',
+        entityType: 'user',
+        entityId: id,
+        metadata: { roleChanged, deactivated },
       });
-    }
-    const nextCounterpartyId = await resolveCounterpartyId(
-      nextRole,
-      body.counterpartyId !== undefined ? body.counterpartyId : existing.counterpartyId,
-    );
-
-    const roleChanged = body.role !== undefined && body.role !== existing.role;
-    const deactivated = body.isActive === false && existing.isActive;
-    const bumpAuth = roleChanged || deactivated;
-
-    await db
-      .update(users)
-      .set({
-        fullName: body.fullName ?? existing.fullName,
-        role: nextRole,
-        isActive: body.isActive ?? existing.isActive,
-        constructionObjectId: nextObjectId ?? null,
-        counterpartyId: nextCounterpartyId,
-        authVersion: bumpAuth ? existing.authVersion + 1 : existing.authVersion,
-        updatedAt: new Date(),
-      })
-      .where(eq(users.id, id));
-
-    if (bumpAuth) await revokeAllForUser(id);
-    await writeAudit({
-      actorUserId: actor.id,
-      action: 'user.update',
-      entityType: 'user',
-      entityId: id,
-      metadata: { roleChanged, deactivated },
-    });
-    return (await fetchUserDto(id))!;
-  });
+      return (await fetchUserDto(id))!;
+    },
+  );
 
   r.post(
     '/:id/password',

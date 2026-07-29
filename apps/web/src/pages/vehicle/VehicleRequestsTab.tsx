@@ -10,6 +10,7 @@ import {
   Space,
   Tag,
   Tooltip,
+  Typography,
   type TableColumnType,
 } from 'antd';
 import {
@@ -23,7 +24,11 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import dayjs, { type Dayjs } from 'dayjs';
 import {
   type AddressMeta,
+  type AssignVehicleInput,
+  assignmentRateLabel,
+  assignmentTitle,
   isAddressVerified,
+  isObjectScopedRole,
   isVehicleKindAllowedForRequest,
   normalizeTimeInput,
   parseVehicleRequestNumberSearch,
@@ -31,6 +36,7 @@ import {
   type RequestStatus,
   requestStatusLabels,
   statusChangeRequiresReason,
+  transitionRequiresAssignment,
   VEHICLE_REQUEST_TYPES,
   type VehicleRequestDto,
   type VehicleRequestType,
@@ -45,18 +51,25 @@ import { FormModal } from '../../components/FormModal';
 import { PageTableLayout } from '../../components/PageTableLayout';
 import { TabsExtra } from '../../components/PageTabs';
 import { SummaryBar } from '../../components/SummaryBar';
-import { actionsColumn, badgeColumn, textColumn } from '../../components/columns';
+import { actionsColumn, textColumn } from '../../components/columns';
 import { TimeInput, optionalWorkTimeRule } from '../../components/TimeInput';
 import { UserAvatar } from '../../components/UserAvatar';
-import { AddressAutoComplete, AddressCell } from '../../components/AddressAutoComplete';
+import { AddressAutoComplete } from '../../components/AddressAutoComplete';
 import { useListParams } from '../../hooks/useListParams';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage, formatDateTimeMaybe } from '../../utils/format';
-import { isBeforeMinRequestDate, isPastDate, minRequestDate } from '../../utils/date';
+import {
+  calendarDaysLabel,
+  isBeforeMinRequestDate,
+  isPastDate,
+  minRequestDate,
+} from '../../utils/date';
 import { MOSCOW_TZ } from '../../theme';
 import { FilesCell } from '../../components/FileLinks';
+import { VehicleAssignModal } from './VehicleAssignModal';
 import { VehicleRequestViewModal } from './VehicleRequestViewModal';
 import {
+  ApprovalCell,
   FileEditor,
   formatDateOnly,
   StatusCell,
@@ -90,6 +103,26 @@ interface FormValues {
   comment?: string;
 }
 
+/**
+ * Комментарий — единственное место, где автор объясняет суть заказа, и объясняет он разное:
+ * у грузоперевозки диспетчеру нужно знать груз (от него зависит машина и погрузка), у техники
+ * на объект — какие работы её ждут. Поэтому заголовок уточняется типом заявки, а пример
+ * заполнения стоит в самом поле: без него комментарий приходит пустым или бесполезным
+ * («срочно»), и детали всё равно выясняются звонком.
+ */
+const COMMENT_HINTS: Record<VehicleRequestType, { label: string; placeholder: string }> = {
+  special_equipment: {
+    label: 'Комментарий (планируемые задачи)',
+    placeholder:
+      'Например: разработка котлована под фундамент, погрузка грунта в самосвалы; заезд с ул. Ленина, работы с 08:00',
+  },
+  freight_transport: {
+    label: 'Комментарий (опишите груз)',
+    placeholder:
+      'Например: плиты перекрытия ПК 60-15, 12 шт, 14 т; погрузка краном поставщика, на объекте нужен манипулятор',
+  },
+};
+
 const SPECIAL_FIELDS = ['dateFrom', 'dateTo'] as const;
 const FREIGHT_FIELDS = [
   'scheduledDate',
@@ -110,29 +143,22 @@ function termLabel(r: VehicleRequestDto): string {
   return formatDateTimeMaybe(r.scheduledAt, r.scheduledTimeUnspecified);
 }
 
-function amountLabel(r: VehicleRequestDto): string {
-  if (r.requestType !== 'freight_transport') return '—';
-  const parts = [
-    r.volumeM3 != null ? `${r.volumeM3} м³` : null,
-    r.weightTons != null ? `${r.weightTons} т` : null,
-  ];
-  return parts.filter(Boolean).join(' / ') || '—';
-}
-
 export function VehicleRequestsTab() {
   const { message, modal } = App.useApp();
-  const { user, hasRole, can } = useAuth();
+  const { user, can } = useAuth();
   const qc = useQueryClient();
-  // Штаб — область видимости (свой объект, заявка до «В работе»); действия — по правам (ADR 0021).
-  const isShtab = hasRole('shtab');
+  // Объектные роли — область видимости (свой объект, заявка до «В работе»); действия — по
+  // правам (ADR 0021). Виза — право руководителя строительства (ADR 0025).
+  const isObjectRole = isObjectScopedRole(user?.role);
   const canEdit = can('vehicleRequests.update');
   const canDelete = can('vehicleRequests.delete');
   const canCreate = can('vehicleRequests.create');
+  const canApprove = can('vehicleRequests.approve');
   const canRestore = can('archive.restore');
 
-  // Для штаба объект зафиксирован на его собственном: и в фильтре списка, и в форме заявки
-  // (сервер всё равно отвечает 403 на чужой объект — assertShtabScope).
-  const shtabObjectId = isShtab ? (user?.constructionObjectId ?? '') : '';
+  // Объектной роли объект зафиксирован на её собственном: и в фильтре списка, и в форме заявки
+  // (сервер всё равно отвечает 403 на чужой объект — assertObjectScope).
+  const ownObjectId = isObjectRole ? (user?.constructionObjectId ?? '') : '';
 
   // requestType не задан — список обоих типов; фильтр в шапке сужает до одного.
   // Все фильтры собраны в панели над таблицей, а не в выпадашках столбцов: в заголовке их
@@ -142,7 +168,9 @@ export function VehicleRequestsTab() {
     status?: string;
     objectId?: string;
     num?: number;
-  }>({ objectId: shtabObjectId || undefined }, { searchKeys: ['comment'] });
+    /** Виза (ADR 0025): 'false' — заявки, ждущие согласования. */
+    approved?: string;
+  }>({ objectId: ownObjectId || undefined }, { searchKeys: ['comment'] });
 
   /** Смена любого фильтра возвращает список на первую страницу. */
   const applyFilter = (patch: Partial<typeof params>) =>
@@ -163,6 +191,8 @@ export function VehicleRequestsTab() {
   });
   const summaryItems = [
     { label: 'Не обработанных', value: summary?.new ?? 0 },
+    // Заявка без визы не двинется дальше «Новой», и по статусам это не видно (ADR 0025).
+    { label: 'Ждут визы', value: summary?.awaitingApproval ?? 0 },
     { label: requestStatusLabels.confirmed, value: summary?.confirmed ?? 0 },
   ];
 
@@ -183,6 +213,15 @@ export function VehicleRequestsTab() {
   const watchRequestType = Form.useWatch('requestType', form);
   const isSpecial = watchRequestType === 'special_equipment';
   const isFreight = watchRequestType === 'freight_transport';
+  const commentHint = watchRequestType ? COMMENT_HINTS[watchRequestType] : null;
+
+  // Подсказка о длине периода работы техники: пустая дата окончания — однодневный срок
+  // (так же его понимает сервер). Та же подсказка стоит в карточке заявки.
+  const watchDateFrom = Form.useWatch('dateFrom', form);
+  const watchDateTo = Form.useWatch('dateTo', form);
+  const periodHint = watchDateFrom
+    ? calendarDaysLabel(watchDateFrom.format('YYYY-MM-DD'), watchDateTo?.format('YYYY-MM-DD'))
+    : null;
 
   // Ограничение дат: новая заявка — не раньше сегодня по МСК (правило сервера), правка
   // заведённой — не в прошлое (её дата могла быть назначена и вчера).
@@ -220,7 +259,7 @@ export function VehicleRequestsTab() {
     setRecord(null);
     form.resetFields();
     // Штаб заводит заявку только на свой объект — подставляем его сразу, поле заперто.
-    if (shtabObjectId) form.setFieldsValue({ objectId: shtabObjectId } as Partial<FormValues>);
+    if (ownObjectId) form.setFieldsValue({ objectId: ownObjectId } as Partial<FormValues>);
     setLoadingMeta(null);
     setUnloadingMeta(null);
     editor.reset([]);
@@ -359,13 +398,21 @@ export function VehicleRequestsTab() {
 
   // Отмена заявки требует причины — она вводится в отдельном окне.
   const [cancelTarget, setCancelTarget] = useState<VehicleRequestDto | null>(null);
+  // Перевод в работу — выбор техники и ставок (ADR 0027): назначение уходит вместе со статусом.
+  const [assignTarget, setAssignTarget] = useState<VehicleRequestDto | null>(null);
 
   const statusMut = useMutation({
-    mutationFn: (v: { id: string; status: RequestStatus; version: number; comment?: string }) =>
-      vehicleRequestsApi.changeStatus(v.id, v.status, v.version, v.comment),
+    mutationFn: (v: {
+      id: string;
+      status: RequestStatus;
+      version: number;
+      comment?: string;
+      assignment?: AssignVehicleInput;
+    }) => vehicleRequestsApi.changeStatus(v.id, v.status, v.version, v.comment, v.assignment),
     onSuccess: () => {
       message.success('Статус изменён');
       setCancelTarget(null);
+      setAssignTarget(null);
       void qc.invalidateQueries({ queryKey: ['vehicle-requests'] });
     },
     onError: (e) => message.error(errorMessage(e)),
@@ -376,7 +423,38 @@ export function VehicleRequestsTab() {
       setCancelTarget(r);
       return;
     }
+    // «В работе» без машины не бывает: заявку берут конкретной единицей и по конкретной ставке.
+    if (transitionRequiresAssignment(status)) {
+      setAssignTarget(r);
+      return;
+    }
     statusMut.mutate({ id: r.id, status, version: r.version });
+  };
+
+  const approvalMut = useMutation({
+    mutationFn: (v: { id: string; approved: boolean; version: number }) =>
+      vehicleRequestsApi.setApproval(v.id, v.approved, v.version),
+    onSuccess: (_res, v) => {
+      message.success(v.approved ? 'Заявка завизирована' : 'Виза снята');
+      void qc.invalidateQueries({ queryKey: ['vehicle-requests'] });
+    },
+    onError: (e) => message.error(errorMessage(e)),
+  });
+
+  /** Снятие визы спрашиваем: заявка после этого перестаёт годиться в работу. */
+  const requestApprovalChange = (r: VehicleRequestDto, approved: boolean) => {
+    if (approved) {
+      approvalMut.mutate({ id: r.id, approved, version: r.version });
+      return;
+    }
+    modal.confirm({
+      title: `Снять визу с заявки ${r.displayNumber}?`,
+      content: 'Пока визы нет, заявку нельзя взять в работу.',
+      okText: 'Снять визу',
+      okButtonProps: { danger: true },
+      cancelText: 'Отмена',
+      onOk: () => approvalMut.mutateAsync({ id: r.id, approved: false, version: r.version }),
+    });
   };
 
   const removeMut = useMutation({
@@ -398,7 +476,7 @@ export function VehicleRequestsTab() {
   });
 
   const canModify = (r: VehicleRequestDto) =>
-    !r.deletedAt && (canEdit || canDelete) && (!isShtab || r.status === 'new');
+    !r.deletedAt && (canEdit || canDelete) && (!isObjectRole || r.status === 'new');
 
   const confirmDelete = (r: VehicleRequestDto) =>
     modal.confirm({
@@ -414,79 +492,89 @@ export function VehicleRequestsTab() {
 
   // Единая таблица обоих типов: колонки чужого типа остаются пустыми.
   // Ключ колонки — он же поле сортировки на сервере (VEHICLE_REQUEST_SORT_FIELDS).
+  //
+  // Объём/массы и адресов погрузки-разгрузки в строке нет: они есть только у грузоперевозки, а
+  // список читают по номеру, объекту и сроку. Всё это — в карточке заявки. Автор и тип заявки
+  // тоже своих колонок не занимают: они уточняют номер и тип ТС и стоят вторыми строками к ним.
   const columns: TableColumnType<VehicleRequestDto>[] = [
-    textColumn({
+    {
       key: 'num',
       title: '№',
       dataIndex: 'displayNumber',
-      searchable: false,
-      width: 120,
-    }),
-    badgeColumn<VehicleRequestDto>({
-      key: 'requestType',
-      title: 'Тип заявки',
-      dataIndex: 'requestType',
-      labels: vehicleRequestTypeLabels,
-      colors: vehicleRequestTypeColors,
-      width: 180,
-    }),
-    textColumn({ key: 'objectName', title: 'Объект', dataIndex: 'objectName', searchable: false }),
-    textColumn<VehicleRequestDto>({
-      key: 'createdByName',
-      title: 'Автор',
-      dataIndex: 'createdByName',
-      searchable: false,
-      width: 170,
+      width: 190,
+      sorter: true,
       render: (_v, r) => (
-        <Space size={8}>
-          <UserAvatar name={r.createdByName} size="small" />
-          <span>{r.createdByName}</span>
-        </Space>
+        <div style={{ lineHeight: 1.35 }}>
+          <div>{r.displayNumber}</div>
+          <Space size={6}>
+            <UserAvatar name={r.createdByName} size={18} />
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {r.createdByName}
+            </Typography.Text>
+          </Space>
+        </div>
       ),
-    }),
+    },
+    // Ширина задана всем колонкам: при scroll.x='max-content' колонка без ширины тянется по
+    // содержимому, и один длинный комментарий возвращал бы горизонтальный скролл всей таблице.
     textColumn({
+      key: 'objectName',
+      title: 'Объект',
+      dataIndex: 'objectName',
+      searchable: false,
+      width: 230,
+      ellipsis: true,
+    }),
+    {
       key: 'vehicleTypeName',
       title: 'Тип ТС',
       dataIndex: 'vehicleTypeName',
-      searchable: false,
-    }),
+      width: 200,
+      sorter: true,
+      render: (_v, r) => (
+        <div style={{ lineHeight: 1.35 }}>
+          <div>{r.vehicleTypeName}</div>
+          {/* Подписи типов развёрнутые («Техника для работы на объекте») — тег переносится
+              на вторую строку, иначе колонка растянулась бы на них одну строку в пол-экрана. */}
+          <Tag
+            color={vehicleRequestTypeColors[r.requestType]}
+            style={{
+              whiteSpace: 'normal',
+              lineHeight: 1.25,
+              maxWidth: '100%',
+              wordBreak: 'break-word',
+              marginTop: 2,
+            }}
+          >
+            {vehicleRequestTypeLabels[r.requestType]}
+          </Tag>
+        </div>
+      ),
+    },
     {
       key: 'term',
       title: 'Срок',
-      width: 190,
-      // Срок и «объём/масса» у типов заявки лежат в разных полях — сортировку сводит сервер.
+      width: 170,
+      // Срок у типов заявки лежит в разных полях — сортировку сводит сервер.
       sorter: true,
       render: (_v, r) => termLabel(r),
     },
     {
-      key: 'amount',
-      title: 'Объём / масса',
-      width: 140,
-      sorter: true,
-      render: (_v, r) => amountLabel(r),
-    },
-    {
-      key: 'loadingLocation',
-      title: 'Погрузка',
-      ellipsis: true,
-      sorter: true,
+      // Назначенная техника (ADR 0027): у «Новой» заявки пусто, дальше — чем её взяли и почём.
+      // Ставка второй строкой: без неё в списке видно «кто поехал», но не «во сколько встало».
+      key: 'assignment',
+      title: 'Техника',
+      width: 200,
       render: (_v, r) =>
-        r.requestType === 'freight_transport' ? (
-          <AddressCell text={r.loadingLocation} meta={r.loadingAddress} />
+        r.assignment ? (
+          <div style={{ lineHeight: 1.35 }}>
+            <div>{assignmentTitle(r.assignment)}</div>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {assignmentRateLabel(r.assignment) || r.assignment.lessorName || '—'}
+            </Typography.Text>
+          </div>
         ) : (
-          '—'
-        ),
-    },
-    {
-      key: 'unloadingLocation',
-      title: 'Разгрузка',
-      ellipsis: true,
-      sorter: true,
-      render: (_v, r) =>
-        r.requestType === 'freight_transport' ? (
-          <AddressCell text={r.unloadingLocation} meta={r.unloadingAddress} />
-        ) : (
-          '—'
+          <Typography.Text type="secondary">—</Typography.Text>
         ),
     },
     {
@@ -499,9 +587,29 @@ export function VehicleRequestsTab() {
         <StatusCell
           status={r.status}
           deleted={!!r.deletedAt}
+          approved={!!r.approvedAt}
           cancelReason={r.cancelReason}
           pending={statusMut.isPending && statusMut.variables?.id === r.id}
           onChange={(status) => requestStatusChange(r, status)}
+        />
+      ),
+    },
+    {
+      // Виза руководителя строительства (ADR 0025): без неё диспетчер не берёт заявку в работу.
+      key: 'approval',
+      title: 'Согласование',
+      width: 160,
+      sorter: true,
+      render: (_v, r) => (
+        <ApprovalCell
+          status={r.status}
+          deleted={!!r.deletedAt}
+          approved={!!r.approvedAt}
+          approvedByName={r.approvedByName}
+          approvedAt={r.approvedAt}
+          canApprove={canApprove}
+          pending={approvalMut.isPending && approvalMut.variables?.id === r.id}
+          onChange={(approved) => requestApprovalChange(r, approved)}
         />
       ),
     },
@@ -509,6 +617,7 @@ export function VehicleRequestsTab() {
       key: 'comment',
       title: 'Комментарий',
       dataIndex: 'comment',
+      width: 230,
       ellipsis: true,
     }),
     {
@@ -593,12 +702,23 @@ export function VehicleRequestsTab() {
       />
       <Select
         allowClear
+        placeholder="Любое согласование"
+        style={{ width: 190 }}
+        options={[
+          { value: 'false', label: 'Ждут визы' },
+          { value: 'true', label: 'Завизированные' },
+        ]}
+        value={params.approved}
+        onChange={(v: string | undefined) => applyFilter({ approved: v })}
+      />
+      <Select
+        allowClear
         showSearch
         optionFilterProp="label"
         placeholder="Все объекты"
         style={{ width: 240 }}
         options={objectOptions}
-        disabled={isShtab}
+        disabled={isObjectRole}
         value={params.objectId}
         onChange={(v: string | undefined) => applyFilter({ objectId: v })}
       />
@@ -656,7 +776,7 @@ export function VehicleRequestsTab() {
               showSearch
               optionFilterProp="label"
               placeholder="Объект"
-              disabled={isShtab}
+              disabled={isObjectRole}
             />
           </Form.Item>
           {/* Тип заявки неизменяем после создания (сервер отдаёт 422) — при правке поле заперто. */}
@@ -698,7 +818,8 @@ export function VehicleRequestsTab() {
                   disabledDate={minDateRule}
                 />
               </Form.Item>
-              <Form.Item name="dateTo" label="Дата окончания">
+              {/* Число дней — подсказкой под полем: столько техника занята на объекте. */}
+              <Form.Item name="dateTo" label="Дата окончания" extra={periodHint}>
                 <DatePicker
                   format="DD.MM.YYYY"
                   style={{ width: '100%' }}
@@ -763,8 +884,9 @@ export function VehicleRequestsTab() {
             </>
           )}
 
-          <Form.Item name="comment" label="Комментарий">
-            <Input.TextArea rows={2} maxLength={2000} />
+          {/* Заголовок и пример заполнения зависят от типа заявки (COMMENT_HINTS). */}
+          <Form.Item name="comment" label={commentHint?.label ?? 'Комментарий'}>
+            <Input.TextArea rows={3} maxLength={2000} placeholder={commentHint?.placeholder} />
           </Form.Item>
           <Form.Item label="Файлы">
             <FileEditor editor={editor} />
@@ -784,6 +906,23 @@ export function VehicleRequestsTab() {
                 openEdit(r);
               }
             : undefined
+        }
+      />
+
+      {/* Перевод в работу: техника и ставки (ADR 0027). Назначение уходит тем же запросом, что
+          и смена статуса, — заявка не бывает «в работе» ни на чём. */}
+      <VehicleAssignModal
+        request={assignTarget}
+        confirmLoading={statusMut.isPending}
+        onCancel={() => setAssignTarget(null)}
+        onSubmit={(assignment) =>
+          assignTarget &&
+          statusMut.mutate({
+            id: assignTarget.id,
+            status: 'confirmed',
+            version: assignTarget.version,
+            assignment,
+          })
         }
       />
 

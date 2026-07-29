@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { App, Button, Dropdown, Form, Input, Space, Switch } from 'antd';
 import { MoreOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ROLES, roleColors, roleLabels, type UserDto } from '@technic/contracts';
+import { isObjectScopedRole, ROLES, roleColors, roleLabels, type UserDto } from '@technic/contracts';
 import { counterpartiesApi, objectsApi, usersApi } from '../../api/resources';
 import { AutoSelect } from '../../components/AutoSelect';
 import { DataTable } from '../../components/DataTable';
@@ -113,8 +113,9 @@ export function UsersTab() {
     mutationFn: (values: UserFormValues) => {
       const payload = {
         ...values,
-        constructionObjectId:
-          values.role === 'shtab' ? (values.constructionObjectId ?? null) : null,
+        constructionObjectId: isObjectScopedRole(values.role)
+          ? (values.constructionObjectId ?? null)
+          : null,
         counterpartyId: values.role === 'operator' ? (values.counterpartyId ?? null) : null,
       };
       if (record) {
@@ -227,7 +228,7 @@ export function UsersTab() {
     }),
     textColumn<UserDto>({
       key: 'constructionObjectName',
-      title: 'Объект (Штаб)',
+      title: 'Объект',
       dataIndex: 'constructionObjectName',
       searchable: false,
       render: (v) => (v ? String(v) : '—'),
@@ -306,10 +307,12 @@ export function UsersTab() {
           >
             <AutoSelect options={roleOptions} />
           </Form.Item>
-          {watchRole === 'shtab' ? (
+          {/* Объектные роли («Штаб», «Руководитель строительства») работают в пределах своего
+              объекта — без него учётку не активировать (ADR 0025). */}
+          {isObjectScopedRole(watchRole) ? (
             <Form.Item
               name="constructionObjectId"
-              label="Объект (для роли «Штаб»)"
+              label={`Объект (для роли «${roleLabels[watchRole!]}»)`}
               rules={[{ required: true, message: 'Выберите объект' }]}
             >
               <AutoSelect
