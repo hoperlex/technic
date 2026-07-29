@@ -2,10 +2,11 @@ import { useSearchParams } from 'react-router';
 import { PageTabs } from '../components/PageTabs';
 import { VehicleRequestsTab } from './vehicle/VehicleRequestsTab';
 import { VehicleRequestsOnSiteTab } from './vehicle/VehicleRequestsOnSiteTab';
+import { VehicleRequestsHistoryTab } from './vehicle/VehicleRequestsHistoryTab';
 
 // Спецтехника и грузоперевозки живут в одном списке («Заказ автотехники»): тип заявки —
 // колонка и фильтр, а не отдельная вкладка. Старые ключи вкладок ведут на общий список.
-const TABS = ['requests', 'on-site'] as const;
+const TABS = ['requests', 'on-site', 'history'] as const;
 
 export function VehicleRequestsPage() {
   const [sp, setSp] = useSearchParams();
@@ -21,6 +22,7 @@ export function VehicleRequestsPage() {
         items={[
           { key: 'requests', label: 'Заказ автотехники', children: <VehicleRequestsTab /> },
           { key: 'on-site', label: 'На объекте', children: <VehicleRequestsOnSiteTab /> },
+          { key: 'history', label: 'История', children: <VehicleRequestsHistoryTab /> },
         ]}
       />
     </div>
