@@ -333,7 +333,7 @@ function RequestsTab() {
   const watchRequestType = Form.useWatch('requestType', form);
   const watchWasteTypeId = Form.useWatch('wasteTypeId', form);
   const watchVolumeM3 = Form.useWatch('volumeM3', form);
-  // Исполнитель влияет на цену: прайс у каждого оператора свой (ADR 0023).
+  // Исполнитель влияет на цену: прайс у каждого оператора свой (ADR 0026).
   const watchOperatorId = Form.useWatch('operatorCounterpartyId', form);
 
   // Тип оформленной заявки остаётся в выборе, даже если его тариф успели отключить: иначе правка
@@ -394,7 +394,7 @@ function RequestsTab() {
   // Предпросмотр цены: тариф подбирает сервер, чтобы форма и расчёт при сохранении не разошлись.
   // Техника в заявке не указывается (ADR 0022), поэтому подбор идёт по виду «Самосвал» — тем же
   // способом, что и на сохранении. Оператор выбран — цена его прайса; не выбран — минимальная
-  // среди операторов, и форма показывает её как «от» (ADR 0023). Незаданный прайс приходит как
+  // среди операторов, и форма показывает её как «от» (ADR 0026). Незаданный прайс приходит как
   // `tariff: null` при 200, поэтому «цены нет» и «запрос не прошёл» — разные ветки, а не общая
   // ошибка.
   const { data: tariffResult, isError: tariffRequestFailed } = useQuery({
@@ -433,7 +433,7 @@ function RequestsTab() {
     }
     if (!tariff) return null;
     // «от» — цена самого дешёвого оператора: исполнитель ещё не выбран, и назначение его
-    // уточнит (ADR 0023). Когда все операторы просят одинаково, уточнять нечего — приставки нет.
+    // уточнит (ADR 0026). Когда все операторы просят одинаково, уточнять нечего — приставки нет.
     const from = tariff.isMinimum ? 'от ' : '';
     return [
       `${from}${formatMoney(tariff.pricePerM3)}/м³`,
@@ -858,7 +858,7 @@ function RequestsTab() {
         <div style={{ lineHeight: 1.35 }}>
           <div>{requestSubject(r)}</div>
           {r.amount != null && (
-            // Пока исполнителя нет, сумма посчитана по самому дешёвому прайсу (ADR 0023) —
+            // Пока исполнителя нет, сумма посчитана по самому дешёвому прайсу (ADR 0026) —
             // «от» говорит, что назначение оператора её уточнит.
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               {r.operatorCounterpartyId ? '' : 'от '}

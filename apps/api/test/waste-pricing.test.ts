@@ -123,8 +123,7 @@ describe('createWasteRequestSchema: тип мусора и объём', () => {
   });
 });
 
-
-// ── Выбор позиции прайса между операторами (ADR 0023) ──
+// ── Выбор позиции прайса между операторами (ADR 0026) ──
 
 const TRANS = 'op-trans-invest';
 const TRINITY = 'op-trinity';

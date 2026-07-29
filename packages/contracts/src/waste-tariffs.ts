@@ -41,7 +41,7 @@ export const wasteTypeListQuerySchema = baseListQuery(WASTE_TYPE_SORT_FIELDS).ex
   hasActiveTariff: boolFromQuery,
 });
 
-/** «Что вывозим»: строительные отходы, бетонный бой, грунт, ОССиГ, древесные отходы. */
+/** «Что вывозим»: строительный мусор, бетонный бой, грунт, Тринити, древесные отходы. */
 export interface WasteTypeDto {
   id: string;
   /** Стабильный системный идентификатор; выводится из названия сервером при заведении типа. */
@@ -182,7 +182,7 @@ export const wasteTariffListQuerySchema = baseListQuery(WASTE_TARIFF_SORT_FIELDS
 /**
  * Позиция прайса. Цена всегда за 1 м³; `isPerContainer` означает, что в исходном прайсе она
  * объявлена за контейнер целиком (`pricePerContainer`), поэтому объём заявки обязан быть кратен
- * вместимости этого контейнера. Позиция принадлежит оператору (ADR 0023): у каждого оператора
+ * вместимости этого контейнера. Позиция принадлежит оператору (ADR 0026): у каждого оператора
  * своя цена на ту же пару «мусор × техника».
  */
 export interface WasteTariffDto {
@@ -220,7 +220,7 @@ const priceSchema = z.coerce
  */
 export const createWasteTariffSchema = z
   .object({
-    /** Чья цена (ADR 0023). Оператор обязателен: прайса «вообще» больше нет. */
+    /** Чья цена (ADR 0026). Оператор обязателен: прайса «вообще» больше нет. */
     operatorCounterpartyId: uuidSchema,
     /** Существующий тип мусора — либо он, либо название нового в `wasteTypeName`. */
     wasteTypeId: uuidSchema.nullish(),
@@ -323,7 +323,7 @@ export const resolveWasteTariffQuerySchema = z
     containerTypeId: uuidSchema.optional(),
     containerKind: containerKindSchema.optional(),
     /**
-     * Чей прайс применять (ADR 0023). Не задан — исполнитель ещё не выбран: цена берётся по
+     * Чей прайс применять (ADR 0026). Не задан — исполнитель ещё не выбран: цена берётся по
      * самой дешёвой позиции среди операторов и помечается как «от» (`isMinimum`).
      */
     operatorCounterpartyId: uuidSchema.optional(),
@@ -340,7 +340,7 @@ export interface ResolvedWasteTariffDto {
   wasteTypeId: string;
   /** Тип, под который подбирали; null — подбор шёл по виду техники (вывоз мусора, ADR 0022). */
   containerTypeId: string | null;
-  /** Оператор, чья позиция прайса применена (ADR 0023). */
+  /** Оператор, чья позиция прайса применена (ADR 0026). */
   operatorCounterpartyId: string;
   operatorName: string;
   /**
@@ -376,7 +376,7 @@ export interface PickedWasteTariff<T extends WasteTariffCandidate> {
 }
 
 /**
- * Выбор позиции прайса среди действующих кандидатов на пару «тип мусора × техника» (ADR 0023).
+ * Выбор позиции прайса среди действующих кандидатов на пару «тип мусора × техника» (ADR 0026).
  *
  * Правил два, и они складываются:
  *  - у одного оператора точный тариф на тип контейнера побеждает тариф вида техники (ADR 0009);

@@ -107,7 +107,7 @@ async function prepareValues(
   const fields = validateWasteTariff(input);
   if (Object.keys(fields).length > 0) throw err.validation(fields);
 
-  // Цена принадлежит оператору (ADR 0023). Тип контрагента проверяется здесь, а не составным FK:
+  // Цена принадлежит оператору (ADR 0026). Тип контрагента проверяется здесь, а не составным FK:
   // то же решение, что и у исполнителя заявки. Неактивный оператор не запрещён — его прайс
   // правят и после отключения, а из подбора цены он выпадает сам (waste-pricing).
   const [operator] = await conn
@@ -157,7 +157,7 @@ async function prepareValues(
 
   // Пара «тип мусора × техника» разрешается у оператора однозначно, поэтому вторая его позиция
   // на ту же пару — не новая цена, а спор двух цен. Цена другого оператора на ту же пару дублем
-  // не считается: это и есть прайс по операторам (ADR 0023). Частичные UNIQUE в БД ловят то же
+  // не считается: это и есть прайс по операторам (ADR 0026). Частичные UNIQUE в БД ловят то же
   // самое кодом 23505 без пояснения.
   const dupWhere = and(
     eq(wasteTariffs.operatorCounterpartyId, input.operatorCounterpartyId),
@@ -218,7 +218,7 @@ export default async function wasteTariffsRoutes(app: FastifyInstance): Promise<
       // Форма по нему подсказывает «тариф не задан», а сбой запроса показывает иначе.
       // Цель подбора — либо конкретный тип, либо вид техники: вывоз мусора машину не называет
       // (ADR 0022), и цену для него даёт строка прайса на вид. Оператор задан — цена его прайса,
-      // не задан — минимальная среди операторов, помеченная как «от» (ADR 0023).
+      // не задан — минимальная среди операторов, помеченная как «от» (ADR 0026).
       const operator = operatorCounterpartyId ?? null;
       const tariff = containerTypeId
         ? await resolveWasteTariff(wasteTypeId, containerTypeId, operator)

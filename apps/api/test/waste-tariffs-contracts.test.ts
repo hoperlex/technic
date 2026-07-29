@@ -15,6 +15,7 @@ import { wasteTypeCodeFromName } from '../src/services/waste-types';
 
 const WASTE_TYPE_ID = '33333333-3333-4333-8333-333333333333';
 const CONTAINER_TYPE_ID = '22222222-2222-4222-8222-222222222222';
+const OPERATOR_ID = '44444444-4444-4444-8444-444444444444';
 
 const perM3: WasteTariffDefinition = {
   containerTypeId: CONTAINER_TYPE_ID,
@@ -93,6 +94,7 @@ describe('pricePerM3FromContainer', () => {
 describe('схемы прайса', () => {
   it('цена округляется до копеек на входе', () => {
     const parsed = createWasteTariffSchema.parse({
+      operatorCounterpartyId: OPERATOR_ID,
       wasteTypeId: WASTE_TYPE_ID,
       containerTypeId: CONTAINER_TYPE_ID,
       pricePerM3: 1500.005,
@@ -106,7 +108,22 @@ describe('схемы прайса', () => {
 
   it('неположительная цена отклоняется', () => {
     expect(() =>
-      createWasteTariffSchema.parse({ wasteTypeId: WASTE_TYPE_ID, pricePerM3: 0 }),
+      createWasteTariffSchema.parse({
+        operatorCounterpartyId: OPERATOR_ID,
+        wasteTypeId: WASTE_TYPE_ID,
+        pricePerM3: 0,
+      }),
+    ).toThrow();
+  });
+
+  // Прайса «вообще» больше нет: цена всегда чья-то (ADR 0026).
+  it('позиция без оператора не проходит', () => {
+    expect(() =>
+      createWasteTariffSchema.parse({
+        wasteTypeId: WASTE_TYPE_ID,
+        containerTypeId: CONTAINER_TYPE_ID,
+        pricePerM3: 1500,
+      }),
     ).toThrow();
   });
 

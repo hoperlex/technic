@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   Alert,
   App,
@@ -11,8 +11,9 @@ import {
   Space,
   Switch,
   Tag,
+  Tooltip,
 } from 'antd';
-import { EditOutlined, PlusOutlined } from '@ant-design/icons';
+import { EditOutlined, InfoCircleOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { TableColumnType } from 'antd';
 import {
@@ -27,14 +28,24 @@ import {
   wasteTypeDuplicateMessage,
   type WasteTypeDto,
 } from '@technic/contracts';
-import { containerTypesApi, wasteTariffsApi, wasteTypesApi } from '../../api/resources';
+import {
+  containerTypesApi,
+  counterpartiesApi,
+  wasteTariffsApi,
+  wasteTypesApi,
+} from '../../api/resources';
+import { AutoSelect } from '../../components/AutoSelect';
 import { DataTable } from '../../components/DataTable';
 import { FormModal } from '../../components/FormModal';
 import { PageTableLayout } from '../../components/PageTableLayout';
-import { actionsColumn } from '../../components/columns';
 import { useListParams } from '../../hooks/useListParams';
 import { applyApiFieldErrors } from '../../utils/formErrors';
 import { errorMessage, formatMoney } from '../../utils/format';
+import {
+  buildWasteTariffGrid,
+  wasteTariffColumnOperators,
+  type WasteTariffGridRow,
+} from './wasteTariffGrid';
 
 /** Тариф на вид техники целиком — «любой контейнер» / «любой самосвал». */
 const kindAllLabels: Record<ContainerKind, string> = {
@@ -45,6 +56,8 @@ const kindAllLabels: Record<ContainerKind, string> = {
 const kindOptions = CONTAINER_KINDS.map((k) => ({ value: k, label: kindAllLabels[k] }));
 
 interface FormValues {
+  /** Чей это прайс: цена принадлежит оператору (ADR 0026). */
+  operatorCounterpartyId?: string;
   /** Откуда берётся тип мусора: из списка заведённых или заводится тут же (ADR 0017). */
   wasteTypeSource: 'existing' | 'new';
   wasteTypeId?: string;
@@ -67,11 +80,26 @@ interface TypeFormValues {
 }
 
 const selectQuery = { page: 1, pageSize: 500, sortBy: 'sortOrder', sortOrder: 'asc' } as const;
+const operatorsQuery = {
+  page: 1,
+  pageSize: 200,
+  sortBy: 'name',
+  sortOrder: 'asc',
+  type: 'operator',
+} as const;
+
+/**
+ * Прайс целиком грузится одной страницей: справочник сводный, и строку «мусор × техника» нельзя
+ * собрать из куска выборки — цены операторов приехали бы на разных страницах. Предел на случай,
+ * если прайс однажды перерастёт эту цифру: тогда таблица честно скажет, что показано не всё.
+ */
+const MAX_TARIFFS = 500;
 
 /**
  * Прайс вывоза мусора (ADR 0009, ведение — ADR 0014, 0017): пара «что вывозим × чем вывозим» →
- * цена. Отдельного справочника типов мусора нет: тип заводится здесь же вместе с первой ценой и
- * правится в строке тарифа — сам по себе, без цены, он ничего не значит.
+ * цена. Цена принадлежит оператору (ADR 0026), поэтому таблица сводная: строка — пара, столбцы —
+ * операторы, в ячейке цена за м³. Отдельного справочника типов мусора нет: тип заводится здесь же
+ * вместе с первой ценой и правится в строке тарифа.
  * Правка цены не пересчитывает оформленные заявки — в них снимок применённого тарифа.
  */
 export function WasteTariffsTab() {
@@ -81,28 +109,34 @@ export function WasteTariffsTab() {
   const { params, setParams, onTableChange } = useListParams<{
     wasteTypeId?: string;
     isActive?: string;
-  }>(
-    {},
-    {
-      searchKeys: [],
-      mapFilters: (f) => ({ isActive: f.isActive?.[0] as string | undefined }),
-    },
-  );
+  }>({}, { searchKeys: [] });
+
   const { data, isFetching } = useQuery({
-    queryKey: ['waste-tariffs', params],
-    queryFn: () => wasteTariffsApi.list(params),
+    queryKey: ['waste-tariffs', 'grid', params.wasteTypeId, params.isActive],
+    queryFn: () =>
+      wasteTariffsApi.list({
+        page: 1,
+        pageSize: MAX_TARIFFS,
+        ...(params.wasteTypeId ? { wasteTypeId: params.wasteTypeId } : {}),
+        ...(params.isActive ? { isActive: params.isActive } : {}),
+      }),
   });
 
   // Справочники для селектов. Неактивные не прячем: тариф мог быть заведён до деактивации,
   // и при его правке выбор должен показывать сохранённое значение, а не пустоту.
-  const { data: wasteTypesData } = useQuery({
+  const { data: wasteTypesData, isLoading: wasteTypesLoading } = useQuery({
     queryKey: ['waste-types', 'for-select'],
     queryFn: () => wasteTypesApi.list(selectQuery),
   });
-  const { data: containerTypesData } = useQuery({
+  const { data: containerTypesData, isLoading: containerTypesLoading } = useQuery({
     queryKey: ['container-types', 'for-select'],
     queryFn: () => containerTypesApi.list(selectQuery),
   });
+  const { data: operatorsData, isLoading: operatorsLoading } = useQuery({
+    queryKey: ['counterparties', 'operators'],
+    queryFn: () => counterpartiesApi.list(operatorsQuery),
+  });
+
   const wasteTypeList = wasteTypesData?.items ?? [];
   const wasteTypeById = new Map(wasteTypeList.map((t) => [t.id, t]));
   const wasteTypeOptions = wasteTypeList.map((t) => ({
@@ -116,6 +150,24 @@ export function WasteTariffsTab() {
       t.volumeM3 == null ? ' — вместимость не задана' : ''
     }`,
   }));
+  const operators = operatorsData?.items ?? [];
+  const operatorOptions = operators.map((o) => ({
+    value: o.id,
+    label: o.isActive ? o.name : `${o.name} (неактивен)`,
+  }));
+
+  const tariffs = useMemo(() => data?.items ?? [], [data]);
+  const rows = useMemo(() => buildWasteTariffGrid(tariffs), [tariffs]);
+  const columnOperators = useMemo(
+    () => wasteTariffColumnOperators(operators, tariffs),
+    [operators, tariffs],
+  );
+  // Пагинация идёт по строкам сводной таблицы, а не по позициям прайса: строк меньше, чем цен.
+  const pageRows = rows.slice(
+    (params.page - 1) * params.pageSize,
+    (params.page - 1) * params.pageSize + params.pageSize,
+  );
+  const truncated = (data?.total ?? 0) > tariffs.length;
 
   const [open, setOpen] = useState(false);
   const [record, setRecord] = useState<WasteTariffDto | null>(null);
@@ -151,10 +203,30 @@ export function WasteTariffsTab() {
     });
     setOpen(true);
   };
+
+  /** Пустая ячейка сводной таблицы: пара и оператор уже известны — остаётся цена. */
+  const openCreateFor = (row: WasteTariffGridRow, operatorCounterpartyId: string) => {
+    setRecord(null);
+    form.resetFields();
+    form.setFieldsValue({
+      operatorCounterpartyId,
+      wasteTypeSource: 'existing',
+      wasteTypeId: row.wasteTypeId,
+      target: row.containerTypeId ? 'container_type' : 'container_kind',
+      containerTypeId: row.containerTypeId ?? undefined,
+      containerKind: row.containerKind ?? undefined,
+      pricing: 'per_m3',
+      isActive: true,
+      note: '',
+    });
+    setOpen(true);
+  };
+
   const openEdit = (r: WasteTariffDto) => {
     setRecord(r);
     form.resetFields();
     form.setFieldsValue({
+      operatorCounterpartyId: r.operatorCounterpartyId,
       wasteTypeSource: 'existing',
       wasteTypeId: r.wasteTypeId,
       target: r.containerTypeId ? 'container_type' : 'container_kind',
@@ -172,6 +244,7 @@ export function WasteTariffsTab() {
   const saveMut = useMutation({
     mutationFn: (v: FormValues) => {
       const common = {
+        operatorCounterpartyId: v.operatorCounterpartyId!,
         containerTypeId: v.target === 'container_type' ? (v.containerTypeId ?? null) : null,
         containerKind: v.target === 'container_kind' ? (v.containerKind ?? null) : null,
         isPerContainer: v.pricing === 'per_container',
@@ -234,7 +307,7 @@ export function WasteTariffsTab() {
     mutationFn: ({ id, isActive }: { id: string; isActive: boolean }) =>
       wasteTariffsApi.update(id, { isActive }),
     onSuccess: (_d, v) => {
-      message.success(v.isActive ? 'Тариф включён' : 'Тариф отключён');
+      message.success(v.isActive ? 'Цена включена' : 'Цена отключена');
       void qc.invalidateQueries({ queryKey: ['waste-tariffs'] });
     },
     onError: (e) => message.error(errorMessage(e)),
@@ -246,9 +319,9 @@ export function WasteTariffsTab() {
       return;
     }
     modal.confirm({
-      title: `Отключить тариф «${r.wasteTypeName}»?`,
+      title: `Отключить цену «${r.wasteTypeName}» у оператора «${r.operatorName}»?`,
       content:
-        'Новые заявки на эту пару «мусор × техника» перестанут тарифицироваться. Суммы уже оформленных заявок не изменятся.',
+        'Новые заявки этого оператора на такую пару «мусор × техника» перестанут тарифицироваться. Суммы уже оформленных заявок не изменятся.',
       okText: 'Отключить',
       okButtonProps: { danger: true },
       cancelText: 'Отмена',
@@ -256,36 +329,83 @@ export function WasteTariffsTab() {
     });
   };
 
-  const activeColumn: TableColumnType<WasteTariffDto> = {
-    key: 'isActive',
-    title: 'Действует',
-    dataIndex: 'isActive',
-    width: 120,
-    sorter: true,
-    filters: [
-      { text: 'Да', value: 'true' },
-      { text: 'Нет', value: 'false' },
-    ],
-    filterMultiple: false,
-    render: (v: boolean, r) => (
-      <Switch
-        size="small"
-        checked={v}
-        loading={toggleMut.isPending}
-        onChange={(n) => onToggleActive(r, n)}
-      />
-    ),
+  /** Подсказка ячейки: что за цена и в каком виде она задана в прайсе. */
+  const cellHint = (t: WasteTariffDto): string => {
+    const parts = [
+      t.isPerContainer && t.pricePerContainer != null
+        ? `В прайсе — ${formatMoney(t.pricePerContainer)} за контейнер${
+            t.containerVolumeM3 != null ? ` ${t.containerVolumeM3} м³` : ''
+          }`
+        : null,
+      t.note || null,
+      t.isActive ? null : 'Цена отключена',
+    ].filter(Boolean);
+    return parts.join(' · ');
   };
 
-  const columns = [
+  const operatorColumns: TableColumnType<WasteTariffGridRow>[] = columnOperators.map((op) => ({
+    key: `operator:${op.id}`,
+    title: (
+      <Space direction="vertical" size={0}>
+        <span>{op.name}</span>
+        <span style={{ fontWeight: 400, fontSize: 12, opacity: 0.65 }}>
+          {op.isActive ? '₽/м³' : '₽/м³ · неактивен'}
+        </span>
+      </Space>
+    ),
+    width: 200,
+    render: (_v: unknown, row: WasteTariffGridRow) => {
+      const t = row.byOperator[op.id];
+      // Пустая ячейка — не «нет цены навсегда», а место, куда её заводят: пара и оператор
+      // уже выбраны самой ячейкой.
+      if (!t) {
+        return (
+          <Button
+            type="text"
+            size="small"
+            icon={<PlusOutlined />}
+            title={`Задать цену — ${op.name}`}
+            onClick={() => openCreateFor(row, op.id)}
+          />
+        );
+      }
+      const hint = cellHint(t);
+      return (
+        <Space size={4}>
+          <Button
+            type="link"
+            size="small"
+            style={{ padding: 0, height: 'auto', opacity: t.isActive ? 1 : 0.45 }}
+            onClick={() => openEdit(t)}
+          >
+            {formatMoney(t.pricePerM3)}
+          </Button>
+          {!t.isActive && <Tag>отключена</Tag>}
+          {hint && (
+            <Tooltip title={hint}>
+              <InfoCircleOutlined style={{ opacity: 0.45 }} />
+            </Tooltip>
+          )}
+          <Switch
+            size="small"
+            checked={t.isActive}
+            loading={toggleMut.isPending}
+            title="Действует"
+            onChange={(n) => onToggleActive(t, n)}
+          />
+        </Space>
+      );
+    },
+  }));
+
+  const columns: TableColumnType<WasteTariffGridRow>[] = [
     {
       key: 'wasteTypeName',
       title: 'Тип мусора',
       dataIndex: 'wasteTypeName',
       width: 260,
-      sorter: true,
-      // Карандаш правит сам тип, а не тариф: отдельной вкладки у типов больше нет.
-      render: (v: string, r: WasteTariffDto) => {
+      // Карандаш правит сам тип, а не цену: отдельной вкладки у типов больше нет.
+      render: (v: string, r: WasteTariffGridRow) => {
         const type = wasteTypeById.get(r.wasteTypeId);
         return (
           <Space size={4}>
@@ -308,7 +428,7 @@ export function WasteTariffsTab() {
       key: 'container',
       title: 'Техника',
       width: 220,
-      render: (_v: unknown, r: WasteTariffDto) =>
+      render: (_v: unknown, r: WasteTariffGridRow) =>
         r.containerTypeName ??
         (r.containerKind ? (
           <Tag color={containerKindColors[r.containerKind]}>{kindAllLabels[r.containerKind]}</Tag>
@@ -316,44 +436,7 @@ export function WasteTariffsTab() {
           '—'
         )),
     },
-    {
-      key: 'pricePerM3',
-      title: 'Цена за м³',
-      dataIndex: 'pricePerM3',
-      width: 150,
-      sorter: true,
-      render: (v: number) => formatMoney(v),
-    },
-    {
-      key: 'pricePerContainer',
-      title: 'Цена за контейнер',
-      width: 200,
-      render: (_v: unknown, r: WasteTariffDto) =>
-        r.isPerContainer && r.pricePerContainer != null ? (
-          <span>
-            {formatMoney(r.pricePerContainer)}
-            {r.containerVolumeM3 != null ? ` / ${r.containerVolumeM3} м³` : ''}
-          </span>
-        ) : (
-          '—'
-        ),
-    },
-    {
-      key: 'note',
-      title: 'Пункт прайса',
-      dataIndex: 'note',
-      ellipsis: true,
-      render: (v: string) => v || '—',
-    },
-    activeColumn,
-    actionsColumn<WasteTariffDto>(
-      (r) => (
-        <Space>
-          <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)} />
-        </Space>
-      ),
-      100,
-    ),
+    ...operatorColumns,
   ];
 
   const filters = (
@@ -367,6 +450,17 @@ export function WasteTariffsTab() {
         options={wasteTypeOptions}
         value={params.wasteTypeId}
         onChange={(v) => setParams((p) => ({ ...p, wasteTypeId: v, page: 1 }))}
+      />
+      <Select
+        allowClear
+        placeholder="Все цены"
+        style={{ width: 200 }}
+        options={[
+          { value: 'true', label: 'Только действующие' },
+          { value: 'false', label: 'Только отключённые' },
+        ]}
+        value={params.isActive}
+        onChange={(v) => setParams((p) => ({ ...p, isActive: v, page: 1 }))}
       />
     </Space>
   );
@@ -385,21 +479,40 @@ export function WasteTariffsTab() {
       filters={filters}
       extra={
         <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-          Добавить тариф
+          Добавить цену
         </Button>
       }
     >
-      <DataTable<WasteTariffDto>
+      {operators.length === 0 && !operatorsLoading && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message="Операторы не заведены"
+          description="Цена вывоза принадлежит оператору — заведите контрагента типа «Оператор» в справочнике контрагентов."
+        />
+      )}
+      {truncated && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message={`Показаны первые ${tariffs.length} позиций прайса из ${data?.total ?? 0}`}
+          description="Отфильтруйте справочник по типу мусора — иначе часть цен в таблицу не попала."
+        />
+      )}
+      <DataTable<WasteTariffGridRow>
+        rowKey="key"
         columns={columns}
-        data={data?.items ?? []}
-        total={data?.total ?? 0}
+        data={pageRows}
+        total={rows.length}
         loading={isFetching}
         page={params.page}
         pageSize={params.pageSize}
         onChange={onTableChange}
       />
       <FormModal
-        title={record ? 'Редактирование тарифа' : 'Новый тариф'}
+        title={record ? 'Редактирование цены' : 'Новая цена'}
         open={open}
         onCancel={() => setOpen(false)}
         onSubmit={() => form.submit()}
@@ -431,6 +544,20 @@ export function WasteTariffsTab() {
             }
           }}
         >
+          <Form.Item
+            name="operatorCounterpartyId"
+            label="Оператор"
+            extra="Цена действует только для этого оператора"
+            rules={[{ required: true, message: 'Выберите оператора' }]}
+          >
+            <AutoSelect
+              options={operatorOptions}
+              loading={operatorsLoading}
+              showSearch
+              optionFilterProp="label"
+            />
+          </Form.Item>
+
           {/* Тип мусора у новой позиции можно завести на месте: отдельного справочника нет. */}
           {!record && (
             <Form.Item name="wasteTypeSource" label="Тип мусора" style={{ marginBottom: 12 }}>
@@ -507,11 +634,16 @@ export function WasteTariffsTab() {
               label={record ? 'Тип мусора' : undefined}
               rules={[{ required: true, message: 'Выберите тип мусора' }]}
             >
-              <Select options={wasteTypeOptions} showSearch optionFilterProp="label" />
+              <AutoSelect
+                options={wasteTypeOptions}
+                loading={wasteTypesLoading}
+                showSearch
+                optionFilterProp="label"
+              />
             </Form.Item>
           )}
 
-          <Form.Item name="target" label="Тариф действует для">
+          <Form.Item name="target" label="Цена действует для">
             <Radio.Group
               options={[
                 { value: 'container_type', label: 'Конкретной техники' },
@@ -525,10 +657,10 @@ export function WasteTariffsTab() {
             <Form.Item
               name="containerKind"
               label="Вид техники"
-              extra="Точный тариф на конкретный тип контейнера побеждает тариф вида"
+              extra="Точная цена на конкретный тип контейнера побеждает цену вида"
               rules={[{ required: true, message: 'Выберите вид техники' }]}
             >
-              <Select options={kindOptions} />
+              <AutoSelect options={kindOptions} />
             </Form.Item>
           ) : (
             <Form.Item
@@ -536,7 +668,12 @@ export function WasteTariffsTab() {
               label="Тип машины/контейнера"
               rules={[{ required: true, message: 'Выберите тип машины/контейнера' }]}
             >
-              <Select options={containerTypeOptions} showSearch optionFilterProp="label" />
+              <AutoSelect
+                options={containerTypeOptions}
+                loading={containerTypesLoading}
+                showSearch
+                optionFilterProp="label"
+              />
             </Form.Item>
           )}
 
