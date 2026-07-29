@@ -41,6 +41,7 @@ import {
   requestTypeShort,
   normalizeTimeInput,
   calcWasteAmount,
+  isObjectScopedRole,
   isPricedRequestType,
   requiresWasteVehicles,
   isVolumeAllowed,
@@ -156,9 +157,11 @@ function RequestsTab() {
   const qc = useQueryClient();
   const isMobile = useIsMobile();
   const { user, hasRole, can } = useAuth();
-  // Штаб и оператор — это область видимости («свой объект», «свои заявки»), а не право:
-  // от неё зависит, что показывать в фильтрах и колонках, а не что разрешено делать.
-  const isShtab = hasRole('shtab');
+  // Объектные роли и оператор — это область видимости («свой объект», «свои заявки»), а не право:
+  // от неё зависит, что показывать в фильтрах и колонках, а не что разрешено делать. Роль здесь
+  // не перечисляется: заказчиков со стороны объекта двое (ADR 0031), и список ролей разъехался бы
+  // с `OBJECT_SCOPED_ROLES` молча — фильтром объекта, открытым для чужих объектов.
+  const isObjectRole = isObjectScopedRole(user?.role);
   const isOperator = hasRole('operator');
   // Действия — только по правам (ADR 0021): те же, что проверяет API.
   const canCreate = can('wasteRequests.create');
@@ -168,8 +171,8 @@ function RequestsTab() {
   const canRestore = can('archive.restore');
   const canPurge = can('records.purge');
 
-  // Для штаба фильтр по объекту зафиксирован на его объекте.
-  const shtabObjectId = isShtab ? (user?.constructionObjectId ?? '') : '';
+  // Объектной роли фильтр по объекту зафиксирован на её собственном объекте.
+  const ownObjectId = isObjectRole ? (user?.constructionObjectId ?? '') : '';
 
   // Фильтры живут в панели над таблицей, а не в выпадашках столбцов: в заголовке их не видно,
   // а половина из них (объект, оператор) — списки справочников, которым там тесно.
@@ -180,13 +183,13 @@ function RequestsTab() {
     containerTypeId?: string;
     operatorCounterpartyId?: string;
     num?: number;
-  }>({ objectId: shtabObjectId || undefined }, { searchKeys: ['comment'] });
+  }>({ objectId: ownObjectId || undefined }, { searchKeys: ['comment'] });
 
   /** Смена любого фильтра возвращает список на первую страницу. */
   const applyFilter = (patch: Partial<typeof params>) =>
     setParams((p) => ({ ...p, ...patch, page: 1 }));
 
-  const [objectFilter, setObjectFilter] = useState(shtabObjectId);
+  const [objectFilter, setObjectFilter] = useState(ownObjectId);
   const [numInput, setNumInput] = useState('');
   const applyObjectFilter = (v: string) => {
     setObjectFilter(v);
@@ -501,7 +504,7 @@ function RequestsTab() {
     form.resetFields();
     // Дата доставки по умолчанию — сегодня: раньше заявку не заводят (правило в контрактах).
     form.setFieldsValue({ deliveryDate: minRequestDate() } as Partial<RequestFormValues>);
-    if (isShtab && user?.constructionObjectId) {
+    if (isObjectRole && user?.constructionObjectId) {
       form.setFieldsValue({ objectId: user.constructionObjectId } as Partial<RequestFormValues>);
     }
     setOpen(true);
@@ -764,8 +767,8 @@ function RequestsTab() {
   const canModify = (r: WasteRequestDto): boolean => {
     if (r.deletedAt) return false;
     if (!canEdit && !canDelete) return false;
-    // Штаб правит заявку, пока её не взяли в работу: дальше за ней договорённости с исполнителем.
-    if (isShtab) return r.status === 'new';
+    // Объект правит заявку, пока её не взяли в работу: дальше за ней договорённости с исполнителем.
+    if (isObjectRole) return r.status === 'new';
     return true;
   };
 
@@ -1048,7 +1051,7 @@ function RequestsTab() {
         options={[{ value: '', label: 'Все объекты' }, ...objectOptions]}
         showSearch
         optionFilterProp="label"
-        disabled={isShtab}
+        disabled={isObjectRole}
       />
       <Select
         style={{ width: 190 }}
@@ -1114,8 +1117,8 @@ function RequestsTab() {
       options: objectOptions,
       placeholder: 'Все объекты',
       loading: objectsLoading,
-      // Штабу объект зафиксирован на его собственном — фильтр показан, но не меняется.
-      disabled: isShtab,
+      // Объектной роли объект зафиксирован на её собственном — фильтр показан, но не меняется.
+      disabled: isObjectRole,
       onChange: (v) => applyObjectFilter(v ?? ''),
     },
     {
@@ -1430,7 +1433,7 @@ function RequestsTab() {
               loading={objectsLoading}
               showSearch
               optionFilterProp="label"
-              disabled={isShtab}
+              disabled={isObjectRole}
               onChange={handleObjectChange}
             />
           </Form.Item>

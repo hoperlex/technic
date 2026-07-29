@@ -10,6 +10,7 @@ import {
   ROLES,
   rolesWith,
   type Permission,
+  type Role,
 } from '@technic/contracts';
 
 describe('матрица прав', () => {
@@ -69,7 +70,7 @@ describe('права ролей', () => {
     }
   });
 
-  it('руководитель строительства ведёт только технику своего объекта и визирует её (ADR 0025)', () => {
+  it('руководитель строительства ведёт заявки своего объекта и визирует технику (ADR 0025, 0031)', () => {
     expect(can('rukstroy', 'vehicleRequests.create')).toBe(true);
     expect(can('rukstroy', 'vehicleRequests.update')).toBe(true);
     expect(can('rukstroy', 'vehicleRequests.delete')).toBe(true);
@@ -77,10 +78,23 @@ describe('права ролей', () => {
     // Статусы заявки ведут те, кто её обрабатывает: виза — не смена статуса.
     expect(can('rukstroy', 'vehicleRequests.status')).toBe(false);
     expect(can('rukstroy', 'directories.write')).toBe(false);
-    // Модуль «Вывоз мусора» недоступен целиком — там заказчик со стороны объекта штаб.
-    for (const permission of PERMISSIONS.filter((p) => p.startsWith('wasteRequests.'))) {
-      expect(can('rukstroy', permission), permission).toBe(false);
-    }
+  });
+
+  /**
+   * Вывоз мусора у руководителя строительства и штаба — один набор прав (ADR 0031), а не два
+   * похожих списка: разойдясь, они дадут двум заказчикам одного объекта разный портал.
+   * Сравнением, а не перечислением: новое право вывоза у штаба обязано появиться и здесь.
+   */
+  it('руководитель строительства ведёт вывоз мусора наравне со штабом (ADR 0031)', () => {
+    const wasteOf = (role: Role) =>
+      permissionsFor(role)
+        .filter((p) => p.startsWith('wasteRequests.'))
+        .sort();
+    expect(wasteOf('rukstroy')).toEqual(wasteOf('shtab'));
+    expect(wasteOf('rukstroy')).not.toEqual([]);
+    // Исполнение остаётся за теми, кто заявку обрабатывает: заказчик её только заводит.
+    expect(can('rukstroy', 'wasteRequests.status')).toBe(false);
+    expect(can('rukstroy', 'wasteRequests.assignOperator')).toBe(false);
   });
 
   it('визирует заказчик со стороны объекта, а не тот, кто обрабатывает заявку', () => {

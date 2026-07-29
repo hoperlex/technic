@@ -67,7 +67,14 @@ describe('привязанный файл живёт по правилам св�
   });
 
   it('видимая заявка вывоза открывает файл тому, кто вправе её читать', () => {
-    for (const role of ['admin', 'manager', 'dispatcher', 'shtab', 'operator'] as Role[]) {
+    for (const role of [
+      'admin',
+      'manager',
+      'dispatcher',
+      'shtab',
+      'rukstroy',
+      'operator',
+    ] as Role[]) {
       expect(decideFileAccess(principal(role, 'other'), UPLOADER, IN_WASTE), role).toBe(true);
     }
   });

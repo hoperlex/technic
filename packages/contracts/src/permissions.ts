@@ -127,11 +127,16 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'vehicleRequests.delete',
   ],
 
-  // Руководитель строительства (ADR 0025): отвечает за технику на своём объекте. Заявку заводит
-  // и правит наравне со штабом, но главное его действие — виза: без неё заявку не берут в работу.
-  // Модуль «Вывоз мусора» ему недоступен целиком — там решения принимает штаб.
+  // Руководитель строительства (ADR 0025, 0031): вторая роль заказчика на объекте. Заявки обоих
+  // модулей заводит и правит наравне со штабом — и вывоз мусора, и технику; ход заявок, как и у
+  // штаба, решают те, кто их исполняет. Своё у него одно — виза: без неё заявку на технику не
+  // берут в работу.
   rukstroy: [
     'directories.read',
+    'wasteRequests.read',
+    'wasteRequests.create',
+    'wasteRequests.update',
+    'wasteRequests.delete',
     'vehicleRequests.read',
     'vehicleRequests.create',
     'vehicleRequests.update',

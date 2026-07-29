@@ -137,13 +137,13 @@ const CASES: Case[] = [
     title: 'вывоз — список',
     method: 'GET',
     url: '/api/v1/waste-requests',
-    allowed: ['admin', 'manager', 'dispatcher', 'shtab', 'operator'],
+    allowed: ['admin', 'manager', 'dispatcher', 'shtab', 'rukstroy', 'operator'],
   },
   {
     title: 'вывоз — удаление заявки',
     method: 'DELETE',
     url: `/api/v1/waste-requests/${RECORD_ID}`,
-    allowed: ['admin', 'manager', 'dispatcher', 'shtab'],
+    allowed: ['admin', 'manager', 'dispatcher', 'shtab', 'rukstroy'],
   },
   {
     title: 'вывоз — смена статуса',
@@ -235,7 +235,7 @@ const CASES: Case[] = [
       deliveryAt: FUTURE_DELIVERY_AT,
       deliveryTimeUnspecified: true,
     },
-    allowed: ['admin', 'manager', 'dispatcher', 'shtab'],
+    allowed: ['admin', 'manager', 'dispatcher', 'shtab', 'rukstroy'],
   },
 
   // ── Архив справочника: смотрит тот, кто его ведёт; возвращает из архива администратор ──
