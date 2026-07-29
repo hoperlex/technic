@@ -1,5 +1,6 @@
 import type {
   AttachVehicleTypeSpecInput,
+  ContainerKind,
   ContainerTypeDto,
   CounterpartyDto,
   CreateContainerTypeInput,
@@ -46,10 +47,10 @@ import type {
   WasteRequestDto,
   WasteRequestSummaryDto,
   WasteRequestVehicleInput,
-  WasteVehicleTicketsInput,
+  WasteVehicleCountInput,
   WasteTariffDto,
   WasteTypeDto,
-  ResolvedWasteTariffDto,
+  ResolveWasteTariffResultDto,
 } from '@technic/contracts';
 import { apiFetch } from './client';
 
@@ -195,8 +196,10 @@ export interface WasteRequestUpdatePayload {
   wasteTypeId?: string | null;
   volumeM3?: number | null;
   operatorCounterpartyId?: string | null;
-  /** Машины заявки (ADR 0011): новые строки и операции над заведёнными. */
+  /** Машины заявки (ADR 0011): новые строки «тип × количество» и операции над заведёнными. */
   addVehicles?: WasteRequestVehicleInput[];
+  /** Правка количества у заведённых строк (ADR 0024). */
+  vehicleCounts?: WasteVehicleCountInput[];
   markDeletedVehicleIds?: string[];
   restoreVehicleIds?: string[];
   /** Полное удаление — только администратору. */
@@ -218,10 +221,24 @@ export const wasteTypesApi = {
 
 export const wasteTariffsApi = {
   list: (q: Query) => apiFetch<ListResult<WasteTariffDto>>('/waste-tariffs', { query: q }),
-  /** Тариф под пару «тип мусора × техника» — предпросмотр цены в форме заявки. */
-  resolve: (wasteTypeId: string, containerTypeId: string) =>
-    apiFetch<ResolvedWasteTariffDto>('/waste-tariffs/resolve', {
-      query: { wasteTypeId, containerTypeId },
+  /**
+   * Тариф под пару «тип мусора × техника» — предпросмотр цены в форме заявки. Цель подбора —
+   * либо конкретный тип из справочника, либо вид техники целиком: вывоз мусора заказывает объём
+   * и машину не называет (ADR 0022). Оператор задан — цена его прайса; не задан — минимальная
+   * среди операторов с пометкой `isMinimum` (цена «от», ADR 0023). Незаданный прайс приходит как
+   * `{ tariff: null }`, а не ошибкой: сбой запроса форма показывает иначе, чем отсутствие цены.
+   */
+  resolve: (
+    wasteTypeId: string,
+    target: { containerTypeId: string } | { containerKind: ContainerKind },
+    operatorCounterpartyId?: string | null,
+  ) =>
+    apiFetch<ResolveWasteTariffResultDto>('/waste-tariffs/resolve', {
+      query: {
+        wasteTypeId,
+        ...target,
+        ...(operatorCounterpartyId ? { operatorCounterpartyId } : {}),
+      },
     }),
   create: (body: CreateWasteTariffInput) =>
     apiFetch<WasteTariffDto>('/waste-tariffs', { method: 'POST', body }),
@@ -263,12 +280,12 @@ export const wasteRequestsApi = {
     // части собраны в объект: позиционным списком из пяти аргументов вызов стал бы нечитаемым.
     extra: {
       comment?: string;
-      /** Машины с талонами — вывоз самосвалами (ADR 0011). */
+      /** Чем вывезли: «тип × количество» — только вывоз мусора (ADR 0024). */
       vehicles?: WasteRequestVehicleInput[];
-      /** Талоны самой заявки — контейнерные операции (ADR 0013). */
+      /** Количество у машин прошлого закрытия: повторное закрытие правит его, а не плодит строки. */
+      vehicleCounts?: WasteVehicleCountInput[];
+      /** Талоны закрытия — общий пул заявки у любого типа (ADR 0013, ADR 0024). */
       ticketFileIds?: string[];
-      /** Талоны к машинам прошлого закрытия: догрузка при повторном закрытии (ADR 0020). */
-      vehicleTickets?: WasteVehicleTicketsInput[];
     } = {},
   ) =>
     apiFetch<WasteRequestDto>(`/waste-requests/${id}/status`, {
@@ -278,8 +295,8 @@ export const wasteRequestsApi = {
         version,
         comment: extra.comment ?? '',
         vehicles: extra.vehicles ?? [],
+        vehicleCounts: extra.vehicleCounts ?? [],
         ticketFileIds: extra.ticketFileIds ?? [],
-        vehicleTickets: extra.vehicleTickets ?? [],
       },
     }),
   remove: (id: string) =>

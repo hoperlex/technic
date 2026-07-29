@@ -3,7 +3,7 @@ import { baseListQuery, uuidSchema } from './common';
 import { containerKindSchema, type ContainerKind, type RequestType } from './enums';
 
 /**
- * Тарифицируется только вывоз мусора самосвалами (ADR 0019): там объём заказывают заявкой, и он
+ * Тарифицируется только вывоз мусора (ADR 0019): там объём заказывают заявкой, и он
  * же вместе с прайсом даёт сумму. Контейнерные операции (установка, замена, снятие) заявкой не
  * считаются: ни типа мусора, ни объёма, ни цены у них нет.
  */
@@ -12,6 +12,14 @@ export const PRICED_REQUEST_TYPES = ['waste_removal'] as const satisfies readonl
 export function isPricedRequestType(t: RequestType): boolean {
   return (PRICED_REQUEST_TYPES as readonly RequestType[]).includes(t);
 }
+
+/**
+ * Вид техники, по которому тарифицируется вывоз мусора (ADR 0022). Заявка заказывает объём и
+ * технику не называет, но цена в прайсе задана по видам («вывоз самосвалами — 850 ₽/м³»), и
+ * вывоз разового объёма — это они: контейнерные строки прайса относятся к операциям с
+ * контейнерами, которые заявкой не тарифицируются (ADR 0019).
+ */
+export const WASTE_REMOVAL_CONTAINER_KIND: ContainerKind = 'truck';
 
 // ── Типы мусора ──
 // Отдельного справочника типов нет (ADR 0017): тип существует ради цены и заводится вместе с
@@ -167,16 +175,21 @@ export const WASTE_TARIFF_SORT_FIELDS = ['wasteTypeName', 'pricePerM3', 'isActiv
 export const wasteTariffListQuerySchema = baseListQuery(WASTE_TARIFF_SORT_FIELDS).extend({
   wasteTypeId: uuidSchema.optional(),
   containerTypeId: uuidSchema.optional(),
+  operatorCounterpartyId: uuidSchema.optional(),
   isActive: boolFromQuery,
 });
 
 /**
  * Позиция прайса. Цена всегда за 1 м³; `isPerContainer` означает, что в исходном прайсе она
  * объявлена за контейнер целиком (`pricePerContainer`), поэтому объём заявки обязан быть кратен
- * вместимости этого контейнера.
+ * вместимости этого контейнера. Позиция принадлежит оператору (ADR 0023): у каждого оператора
+ * своя цена на ту же пару «мусор × техника».
  */
 export interface WasteTariffDto {
   id: string;
+  /** Чья цена: контрагент типа «Оператор». */
+  operatorCounterpartyId: string;
+  operatorName: string;
   wasteTypeId: string;
   wasteTypeName: string;
   /** Тариф для конкретного типа контейнера/машины; иначе null — тариф на вид техники. */
@@ -207,6 +220,8 @@ const priceSchema = z.coerce
  */
 export const createWasteTariffSchema = z
   .object({
+    /** Чья цена (ADR 0023). Оператор обязателен: прайса «вообще» больше нет. */
+    operatorCounterpartyId: uuidSchema,
     /** Существующий тип мусора — либо он, либо название нового в `wasteTypeName`. */
     wasteTypeId: uuidSchema.nullish(),
     /**
@@ -234,6 +249,7 @@ export type CreateWasteTariffInput = z.infer<typeof createWasteTariffSchema>;
  */
 export const updateWasteTariffSchema = z
   .object({
+    operatorCounterpartyId: uuidSchema.optional(),
     wasteTypeId: uuidSchema.optional(),
     containerTypeId: uuidSchema.nullish(),
     containerKind: containerKindSchema.nullish(),
@@ -295,17 +311,43 @@ export function validateWasteTypeChoice(c: {
   return {};
 }
 
-export const resolveWasteTariffQuerySchema = z.object({
-  wasteTypeId: uuidSchema,
-  containerTypeId: uuidSchema,
-});
+/**
+ * Цель подбора — либо конкретный тип из справочника, либо вид техники целиком. Второе нужно
+ * заявке на вывоз мусора: она заказывает объём, а не машину (ADR 0022), и цену для неё даёт
+ * прайсовая строка на вид «Самосвал». Ровно одно из двух: без цели подбор неопределён, с двумя —
+ * неоднозначен.
+ */
+export const resolveWasteTariffQuerySchema = z
+  .object({
+    wasteTypeId: uuidSchema,
+    containerTypeId: uuidSchema.optional(),
+    containerKind: containerKindSchema.optional(),
+    /**
+     * Чей прайс применять (ADR 0023). Не задан — исполнитель ещё не выбран: цена берётся по
+     * самой дешёвой позиции среди операторов и помечается как «от» (`isMinimum`).
+     */
+    operatorCounterpartyId: uuidSchema.optional(),
+  })
+  .refine((q) => !!q.containerTypeId !== !!q.containerKind, {
+    message: 'Укажите либо тип контейнера/машины, либо вид техники',
+    path: ['containerTypeId'],
+  });
 export type ResolveWasteTariffQuery = z.infer<typeof resolveWasteTariffQuerySchema>;
 
-/** Тариф, подобранный под пару «тип мусора × тип машины/контейнера», и правила расчёта по нему. */
+/** Тариф, подобранный под пару «тип мусора × техника», и правила расчёта по нему. */
 export interface ResolvedWasteTariffDto {
   tariffId: string;
   wasteTypeId: string;
-  containerTypeId: string;
+  /** Тип, под который подбирали; null — подбор шёл по виду техники (вывоз мусора, ADR 0022). */
+  containerTypeId: string | null;
+  /** Оператор, чья позиция прайса применена (ADR 0023). */
+  operatorCounterpartyId: string;
+  operatorName: string;
+  /**
+   * Цена «от»: подбирали без оператора, и у кого-то из остальных та же пара дороже. Назначение
+   * исполнителя такую цену уточняет — форма и карточка заявки показывают её с приставкой «от».
+   */
+  isMinimum: boolean;
   pricePerM3: number;
   isPerContainer: boolean;
   /** Вместимость выбранного типа (м³), если задана в справочнике. */
@@ -314,6 +356,75 @@ export interface ResolvedWasteTariffDto {
   volumeStepM3: number | null;
   /** Чем подобран тариф: точным типом контейнера или видом техники. */
   matchedBy: 'container_type' | 'container_kind';
+}
+
+// ── Выбор позиции прайса (одно правило для всех точек подбора) ──
+
+/** Позиция прайса в том виде, в каком её сравнивает подбор. */
+export interface WasteTariffCandidate {
+  id: string;
+  operatorCounterpartyId: string;
+  containerTypeId: string | null;
+  containerKind: ContainerKind | null;
+  pricePerM3: number;
+}
+
+/** Результат подбора: чья позиция применена и надо ли показывать цену как «от». */
+export interface PickedWasteTariff<T extends WasteTariffCandidate> {
+  tariff: T;
+  isMinimum: boolean;
+}
+
+/**
+ * Выбор позиции прайса среди действующих кандидатов на пару «тип мусора × техника» (ADR 0023).
+ *
+ * Правил два, и они складываются:
+ *  - у одного оператора точный тариф на тип контейнера побеждает тариф вида техники (ADR 0009);
+ *  - между операторами выбор делает исполнитель заявки. Пока его нет, берётся самая дешёвая
+ *    позиция, а цена помечается как «от» — но только если у кого-то дороже: при единственной
+ *    цене «от» вводило бы в заблуждение, ничего уточнять не придётся.
+ *
+ * Кандидатов фильтрует вызывающий: сюда приходят только действующие позиции нужного типа мусора,
+ * подходящие по технике.
+ */
+export function pickWasteTariff<T extends WasteTariffCandidate>(
+  candidates: readonly T[],
+  opts: { operatorCounterpartyId?: string | null; containerTypeId?: string | null },
+): PickedWasteTariff<T> | null {
+  const containerTypeId = opts.containerTypeId ?? null;
+  // Внутри оператора остаётся одна позиция: точная вытесняет позицию на вид техники, а двух
+  // точных (как и двух «на вид») у оператора не бывает — это держит UNIQUE в БД.
+  const perOperator = new Map<string, T>();
+  for (const c of candidates) {
+    const exact = containerTypeId !== null && c.containerTypeId === containerTypeId;
+    if (exact || !perOperator.has(c.operatorCounterpartyId)) {
+      perOperator.set(c.operatorCounterpartyId, c);
+    }
+  }
+
+  if (opts.operatorCounterpartyId) {
+    const own = perOperator.get(opts.operatorCounterpartyId);
+    return own ? { tariff: own, isMinimum: false } : null;
+  }
+
+  const applicable = [...perOperator.values()];
+  if (applicable.length === 0) return null;
+  // Тай-брейк по id: при равных ценах выбор не должен зависеть от порядка строк из БД —
+  // иначе снимок цены в заявке ссылался бы то на одного оператора, то на другого.
+  const cheapest = applicable.reduce((a, b) =>
+    b.pricePerM3 < a.pricePerM3 || (b.pricePerM3 === a.pricePerM3 && b.id < a.id) ? b : a,
+  );
+  const dearest = applicable.reduce((a, b) => (b.pricePerM3 > a.pricePerM3 ? b : a));
+  return { tariff: cheapest, isMinimum: dearest.pricePerM3 > cheapest.pricePerM3 };
+}
+
+/**
+ * Ответ `GET /waste-tariffs/resolve`. Незаданный прайс для пары — штатный результат подбора,
+ * а не ошибка: `tariff: null` при 200. Форма показывает по нему «тариф не задан», а на
+ * настоящий сбой запроса реагирует иначе — различить их по ошибке HTTP было нельзя.
+ */
+export interface ResolveWasteTariffResultDto {
+  tariff: ResolvedWasteTariffDto | null;
 }
 
 // ── Расчёт (одна формула для сервера и формы) ──

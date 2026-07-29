@@ -38,6 +38,7 @@ import {
   vehicleRequestTypeLabels,
 } from '@technic/contracts';
 import { vehicleRequestsApi } from '../../api/resources';
+import { AutoSelect } from '../../components/AutoSelect';
 import { CancelReasonModal } from '../../components/CancelReasonModal';
 import { DataTable } from '../../components/DataTable';
 import { FormModal } from '../../components/FormModal';
@@ -165,7 +166,7 @@ export function VehicleRequestsTab() {
     { label: requestStatusLabels.confirmed, value: summary?.confirmed ?? 0 },
   ];
 
-  const objectOptions = useObjectOptions();
+  const { options: objectOptions, loading: objectsLoading } = useObjectOptions();
   const { kindByTypeId, groups, loading: typesLoading } = useVehicleTypes();
 
   const [open, setOpen] = useState(false);
@@ -183,7 +184,7 @@ export function VehicleRequestsTab() {
   const isSpecial = watchRequestType === 'special_equipment';
   const isFreight = watchRequestType === 'freight_transport';
 
-  // Ограничение дат: новая заявка — не раньше завтра по МСК (правило сервера), правка
+  // Ограничение дат: новая заявка — не раньше сегодня по МСК (правило сервера), правка
   // заведённой — не в прошлое (её дата могла быть назначена и вчера).
   const minDateRule = record ? isPastDate : isBeforeMinRequestDate;
 
@@ -193,7 +194,7 @@ export function VehicleRequestsTab() {
     : [];
 
   /**
-   * Смена типа заявки: поля чужого типа очищаем, своей дате подставляем завтра — раньше
+   * Смена типа заявки: поля чужого типа очищаем, своей дате подставляем сегодня — раньше
    * нельзя; выбранный тип ТС сбрасываем, если новому типу заявки он не подходит.
    */
   const handleRequestTypeChange = (next: VehicleRequestType) => {
@@ -649,8 +650,9 @@ export function VehicleRequestsTab() {
             label="Объект"
             rules={[{ required: true, message: 'Выберите объект' }]}
           >
-            <Select
+            <AutoSelect
               options={objectOptions}
+              loading={objectsLoading}
               showSearch
               optionFilterProp="label"
               placeholder="Объект"
@@ -664,7 +666,7 @@ export function VehicleRequestsTab() {
             tooltip="Заказ техники на объект — техника любого вида; грузоперевозка — только грузовая"
             rules={[{ required: true, message: 'Выберите тип заявки' }]}
           >
-            <Select
+            <AutoSelect
               options={VEHICLE_REQUEST_TYPES.map((t) => ({
                 value: t,
                 label: vehicleRequestTypeLabels[t],
@@ -681,7 +683,7 @@ export function VehicleRequestsTab() {
             placeholder={watchRequestType ? 'Выберите тип' : 'Сначала выберите тип заявки'}
           />
 
-          {/* Техника на объект: период работы. Новую заявку назначают не раньше чем на завтра
+          {/* Техника на объект: период работы. Новую заявку назначают не раньше чем на сегодня
               (по МСК); у заведённой дата правится свободно, лишь бы не в прошлое. */}
           {isSpecial && (
             <Space style={{ width: '100%' }} size="middle">

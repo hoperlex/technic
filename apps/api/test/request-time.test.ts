@@ -17,7 +17,7 @@ import {
 } from '@technic/contracts';
 
 // Создание заявки сверяет дату с текущим днём, а даты в фикстурах календарные — «сейчас»
-// фиксируем на 27.07.2026 12:00 МСК, чтобы 28-е было ровно завтрашним днём. Тесты самой
+// фиксируем на 27.07.2026 12:00 МСК: 27-е тогда сегодняшний день, 26-е — прошлое. Тесты самой
 // границы переводят часы дальше (`at`), возврат к реальному времени делает общий afterEach.
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] });
@@ -99,40 +99,40 @@ describe('рабочее окно 07:00–21:00', () => {
   });
 });
 
-describe('минимальная дата новой заявки — завтра по МСК', () => {
+describe('минимальная дата новой заявки — сегодня по МСК', () => {
   /** Переводит «сейчас» на указанный момент UTC (таймеры уже фиктивные — см. хуки файла). */
   const at = (utc: string) => vi.setSystemTime(new Date(utc));
 
-  it('минимальная дата — следующий календарный день по МСК', () => {
+  it('минимальная дата — текущий календарный день по МСК', () => {
     at('2026-07-28T09:00:00.000Z'); // 12:00 МСК 28-го
-    expect(minRequestDateKey()).toBe('2026-07-29');
+    expect(minRequestDateKey()).toBe('2026-07-28');
   });
 
   it('после 21:00 UTC в Москве уже следующие сутки — граница сдвигается вместе с ними', () => {
-    // 23:30 МСК 28-го: московское «завтра» — 29-е, хотя по UTC ещё 28-е.
+    // 23:30 МСК 28-го: по UTC ещё 28-е, и московское «сегодня» — тоже 28-е.
     at('2026-07-28T20:30:00.000Z');
     expect(moscowDateKeyOf(new Date())).toBe('2026-07-28');
-    expect(minRequestDateKey()).toBe('2026-07-29');
-    // 00:30 МСК 29-го (21:30 UTC 28-го) — сутки в Москве уже сменились, граница ушла на 30-е.
+    expect(minRequestDateKey()).toBe('2026-07-28');
+    // 00:30 МСК 29-го (21:30 UTC 28-го) — сутки в Москве уже сменились, граница ушла на 29-е.
     at('2026-07-28T21:30:00.000Z');
     expect(moscowDateKeyOf(new Date())).toBe('2026-07-29');
-    expect(minRequestDateKey()).toBe('2026-07-30');
+    expect(minRequestDateKey()).toBe('2026-07-29');
   });
 
-  it('сегодня и прошлое не проходят, завтра и позже — проходят', () => {
+  it('прошлое не проходит, сегодня и позже — проходят', () => {
     at('2026-07-28T09:00:00.000Z');
+    expect(isAllowedRequestDate('2026-07-26')).toBe(false);
     expect(isAllowedRequestDate('2026-07-27')).toBe(false);
-    expect(isAllowedRequestDate('2026-07-28')).toBe(false);
-    expect(isAllowedRequestDate('2026-07-29')).toBe(true);
+    expect(isAllowedRequestDate('2026-07-28')).toBe(true);
     expect(isAllowedRequestDate('2026-08-15')).toBe(true);
   });
 
   it('момент времени оценивается по календарю МСК, а не по UTC', () => {
     at('2026-07-28T09:00:00.000Z');
-    // 21:30 UTC 28-го = 00:30 МСК 29-го — это уже завтра по Москве, значит допустимо.
-    expect(isAllowedRequestDateAt(new Date('2026-07-28T21:30:00.000Z'))).toBe(true);
-    // 20:30 UTC 28-го = 23:30 МСК того же дня — ещё сегодня.
-    expect(isAllowedRequestDateAt(new Date('2026-07-28T20:30:00.000Z'))).toBe(false);
+    // 20:30 UTC 27-го = 23:30 МСК того же дня — вчера по Москве, значит уже поздно.
+    expect(isAllowedRequestDateAt(new Date('2026-07-27T20:30:00.000Z'))).toBe(false);
+    // 21:30 UTC 27-го = 00:30 МСК 28-го — это уже сегодня по Москве, значит допустимо.
+    expect(isAllowedRequestDateAt(new Date('2026-07-27T21:30:00.000Z'))).toBe(true);
   });
 });
 
@@ -189,14 +189,14 @@ describe('createWasteRequestSchema: минимальная дата достав
   const parseAt = (deliveryAt: string) =>
     createWasteRequestSchema.safeParse({ ...wasteBase, deliveryAt });
 
-  it('отклоняет сегодня — даже в рабочее окно', () => {
-    const r = parseAt('2026-07-27T10:00:00.000+03:00');
+  it('отклоняет вчерашнюю дату', () => {
+    const r = parseAt('2026-07-26T10:00:00.000+03:00');
     expect(r.success).toBe(false);
     expect(r.error?.issues.some((i) => i.path.join('.') === 'deliveryAt')).toBe(true);
   });
 
-  it('отклоняет вчерашнюю дату', () => {
-    expect(parseAt('2026-07-26T10:00:00.000+03:00').success).toBe(false);
+  it('принимает сегодня — вывоз заказывают и день в день', () => {
+    expect(parseAt('2026-07-27T10:00:00.000+03:00').success).toBe(true);
   });
 
   it('принимает завтра и более поздние даты', () => {
@@ -289,31 +289,31 @@ describe('createVehicleRequestSchema: минимальная дата', () => {
     vehicleTypeId: TYPE,
   };
 
-  it('грузоперевозка: подача сегодня отклоняется, завтра — принимается', () => {
-    const today = createVehicleRequestSchema.safeParse({
+  it('грузоперевозка: подача вчера отклоняется, сегодня — принимается', () => {
+    const yesterday = createVehicleRequestSchema.safeParse({
       ...freightBase,
-      scheduledAt: '2026-07-27T10:00:00+03:00',
+      scheduledAt: '2026-07-26T10:00:00+03:00',
     });
-    expect(today.success).toBe(false);
-    expect(today.error?.issues.some((i) => i.path.join('.') === 'scheduledAt')).toBe(true);
+    expect(yesterday.success).toBe(false);
+    expect(yesterday.error?.issues.some((i) => i.path.join('.') === 'scheduledAt')).toBe(true);
     expect(
       createVehicleRequestSchema.safeParse({
         ...freightBase,
-        scheduledAt: '2026-07-28T10:00:00+03:00',
+        scheduledAt: '2026-07-27T10:00:00+03:00',
       }).success,
     ).toBe(true);
   });
 
-  it('спецтехника: начало периода не раньше завтра', () => {
-    const today = createVehicleRequestSchema.safeParse({
+  it('спецтехника: начало периода не раньше сегодня', () => {
+    const yesterday = createVehicleRequestSchema.safeParse({
       ...specialBase,
-      dateFrom: '2026-07-27',
+      dateFrom: '2026-07-26',
       dateTo: '2026-07-30',
     });
-    expect(today.success).toBe(false);
-    expect(today.error?.issues.some((i) => i.path.join('.') === 'dateFrom')).toBe(true);
+    expect(yesterday.success).toBe(false);
+    expect(yesterday.error?.issues.some((i) => i.path.join('.') === 'dateFrom')).toBe(true);
     expect(
-      createVehicleRequestSchema.safeParse({ ...specialBase, dateFrom: '2026-07-28' }).success,
+      createVehicleRequestSchema.safeParse({ ...specialBase, dateFrom: '2026-07-27' }).success,
     ).toBe(true);
   });
 

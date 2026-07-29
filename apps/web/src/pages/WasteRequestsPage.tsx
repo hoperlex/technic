@@ -45,8 +45,12 @@ import {
   requiresWasteVehicles,
   isVolumeAllowed,
   volumeStepMessage,
+  WASTE_REMOVAL_CONTAINER_KIND,
+  vehicleVolume,
   type WasteRequestDto,
   type WasteRequestVehicleDto,
+  type WasteRequestVehicleInput,
+  type WasteVehicleCountInput,
 } from '@technic/contracts';
 import {
   containerTypesApi,
@@ -59,6 +63,7 @@ import {
   type WasteRequestPayload,
   type WasteRequestUpdatePayload,
 } from '../api/resources';
+import { AutoSelect } from '../components/AutoSelect';
 import { CancelReasonModal } from '../components/CancelReasonModal';
 import {
   draftsToInput,
@@ -69,7 +74,7 @@ import {
   type VehicleDraft,
 } from '../components/WasteVehiclesEditor';
 import { DataTable } from '../components/DataTable';
-import { FileLinkList, FilesButton, FilesCell } from '../components/FileLinks';
+import { FileLinkList, FilesCell } from '../components/FileLinks';
 import { FormModal } from '../components/FormModal';
 import { PageTableLayout } from '../components/PageTableLayout';
 import { PageTabs, TabsExtra } from '../components/PageTabs';
@@ -114,11 +119,14 @@ interface RequestFormValues {
 
 /** Человекочитаемое описание предмета заявки для колонки списка. */
 function requestSubject(r: WasteRequestDto): string {
-  // Объём — часть предмета заявки там, где он есть: у вывоза самосвалами он определяет сумму
-  // (ADR 0019), у контейнерных операций его нет — кроме заявок, заведённых до этого решения.
-  const parts = [r.containerTypeName, r.volumeM3 != null ? `${r.volumeM3} м³` : null].filter(
-    Boolean,
-  );
+  // Объём — часть предмета заявки там, где он есть: у вывоза он определяет сумму (ADR 0019),
+  // у контейнерных операций его нет — кроме заявок, заведённых до этого решения.
+  // Техники у вывоза нет вовсе (ADR 0022); у заявок, заведённых раньше, тип в базе остался,
+  // но предметом заявки он больше не является и в списке не показывается.
+  const parts = [
+    requiresWasteVehicles(r.requestType) ? null : r.containerTypeName,
+    r.volumeM3 != null ? `${r.volumeM3} м³` : null,
+  ].filter(Boolean);
   return parts.length ? parts.join(', ') : '—';
 }
 
@@ -143,13 +151,18 @@ export function WasteRequestsPage() {
 function RequestsTab() {
   const { message, modal } = App.useApp();
   const qc = useQueryClient();
-  const { user, hasRole } = useAuth();
+  const { user, hasRole, can } = useAuth();
+  // Штаб и оператор — это область видимости («свой объект», «свои заявки»), а не право:
+  // от неё зависит, что показывать в фильтрах и колонках, а не что разрешено делать.
   const isShtab = hasRole('shtab');
-  const isAdmin = hasRole('admin');
-  // Оператор вывоза видит только свои заявки и только закрывает их: заводить, править и
-  // удалять заявки, как и назначать исполнителя, он не может (ADR 0010).
   const isOperator = hasRole('operator');
-  const canAssignOperator = hasRole('admin', 'manager', 'dispatcher');
+  // Действия — только по правам (ADR 0021): те же, что проверяет API.
+  const canCreate = can('wasteRequests.create');
+  const canEdit = can('wasteRequests.update');
+  const canDelete = can('wasteRequests.delete');
+  const canAssignOperator = can('wasteRequests.assignOperator');
+  const canRestore = can('archive.restore');
+  const canPurge = can('records.purge');
 
   // Для штаба фильтр по объекту зафиксирован на его объекте.
   const shtabObjectId = isShtab ? (user?.constructionObjectId ?? '') : '';
@@ -200,7 +213,9 @@ function RequestsTab() {
     { label: requestStatusLabels.confirmed, value: summary?.confirmed ?? 0 },
   ];
 
-  const { data: objects } = useQuery({
+  // isLoading у списков нужен полям формы: обязательное поле с единственным вариантом
+  // заполняет себя само, и подставлять по недогруженному списку нельзя.
+  const { data: objects, isLoading: objectsLoading } = useQuery({
     queryKey: ['objects', 'for-select'],
     queryFn: () =>
       objectsApi.list({
@@ -211,7 +226,7 @@ function RequestsTab() {
         sortOrder: 'asc',
       }),
   });
-  const { data: types } = useQuery({
+  const { data: types, isLoading: typesLoading } = useQuery({
     queryKey: ['container-types', 'for-select'],
     queryFn: () =>
       containerTypesApi.list({
@@ -231,29 +246,32 @@ function RequestsTab() {
   const contTypeOptions = allTypes
     .filter((t) => t.type === 'cont')
     .map((t) => ({ value: t.id, label: t.name }));
-  // Вывоз мусора выполняется самосвалами: контейнерные типы относятся к замене и снятию.
+  // Самосвалы нужны машинам закрытия (ADR 0011) и фильтру списка: сама заявка на вывоз
+  // техники больше не несёт (ADR 0022), но у заведённых до этого решения тип сохранён.
   const truckTypes = allTypes.filter((t) => t.type === 'truck');
   const truckTypeOptions = truckTypes.map((t) => ({ value: t.id, label: t.name }));
-  // Машины при закрытии заявки — те же самосвалы, но с вместимостью: она и есть объём рейса
-  // (ADR 0011), поэтому нужна клиенту для подстановки и сверки.
-  const vehicleTypeOptions = truckTypes.map((t) => ({
+  // Машины при закрытии заявки — оба вида справочника (ADR 0024): вывозят и самосвалами, и
+  // контейнерами. Вместимость нужна клиенту: из неё считаются объём строки и её стоимость.
+  const vehicleTypeOptions = allTypes.map((t) => ({
     value: t.id,
     label: t.name,
     volumeM3: t.volumeM3,
+    kind: t.type,
   }));
   const requestTypeOptions = REQUEST_TYPES.map((t) => ({ value: t, label: requestTypeLabels[t] }));
   const statusOptions = REQUEST_STATUSES.map((s) => ({ value: s, label: requestStatusLabels[s] }));
   // Фильтр по столбцу «Контейнер / машина»: в нём соседствуют оба вида, поэтому список общий,
-  // но разложен по группам — иначе самосвалы и контейнеры идут вперемешку.
+  // но разложен по группам — иначе самосвалы и контейнеры идут вперемешку. Самосвал в фильтре
+  // находит только заявки вывоза, заведённые до ADR 0022: у новых техники в предмете нет.
   const subjectFilterOptions = [
     { label: 'Контейнеры', options: contTypeOptions },
     { label: 'Самосвалы', options: truckTypeOptions },
   ].filter((g) => g.options.length > 0);
 
-  // Типы мусора — только для вывоза самосвалами (ADR 0019). Спрашиваются
+  // Типы мусора — только для вывоза (ADR 0019). Спрашиваются
   // только типы с действующей ценой (ADR 0017): выбор типа без тарифа кончался бы отказом
   // «тариф не найден» уже при сохранении заявки.
-  const { data: wasteTypes } = useQuery({
+  const { data: wasteTypes, isLoading: wasteTypesLoading } = useQuery({
     queryKey: ['waste-types', 'for-select', 'priced'],
     queryFn: () =>
       wasteTypesApi.list({
@@ -269,7 +287,7 @@ function RequestsTab() {
 
   // Операторы вывоза — контрагенты соответствующего типа (ADR 0010). Оператору этот список
   // не нужен: исполнителя он не выбирает.
-  const { data: operatorsData } = useQuery({
+  const { data: operatorsData, isLoading: operatorsLoading } = useQuery({
     queryKey: ['counterparties', 'operators-for-select'],
     queryFn: () =>
       counterpartiesApi.list({
@@ -313,9 +331,10 @@ function RequestsTab() {
 
   const watchObjectId = Form.useWatch('objectId', form);
   const watchRequestType = Form.useWatch('requestType', form);
-  const watchContainerTypeId = Form.useWatch('containerTypeId', form);
   const watchWasteTypeId = Form.useWatch('wasteTypeId', form);
   const watchVolumeM3 = Form.useWatch('volumeM3', form);
+  // Исполнитель влияет на цену: прайс у каждого оператора свой (ADR 0023).
+  const watchOperatorId = Form.useWatch('operatorCounterpartyId', form);
 
   // Тип оформленной заявки остаётся в выборе, даже если его тариф успели отключить: иначе правка
   // такой заявки начиналась бы с пустого поля и молча меняла её предмет (приём — как у оператора).
@@ -329,7 +348,7 @@ function RequestsTab() {
     ];
   })();
 
-  // Тарифицируется только вывоз самосвалами (ADR 0019): тип мусора, объём и стоимость есть
+  // Тарифицируется только вывоз (ADR 0019): тип мусора, объём и стоимость есть
   // у него одного, контейнерные операции ограничиваются типом контейнера.
   const isPriced = watchRequestType ? isPricedRequestType(watchRequestType) : false;
 
@@ -352,11 +371,17 @@ function RequestsTab() {
       else next[id] = mark;
       return next;
     });
+  /** Типы, занятые заведёнными строками: второй строки на тот же тип у заявки не бывает. */
+  const activeVehicleTypeIds = new Set(
+    (record?.vehicles ?? [])
+      .filter((v) => vehicleMarks[v.id] !== 'deleted' && !isVehicleDeleted(v))
+      .map((v) => v.containerTypeId),
+  );
   // В сверке участвуют только те, что останутся активными после сохранения.
   const editVehiclesVolume =
     (record?.vehicles ?? []).reduce(
       (acc, v) =>
-        vehicleMarks[v.id] === 'deleted' || isVehicleDeleted(v) ? acc : acc + v.volumeM3,
+        vehicleMarks[v.id] === 'deleted' || isVehicleDeleted(v) ? acc : acc + vehicleVolume(v),
       0,
     ) + sumDraftVolume(vehicleDrafts, vehicleTypeOptions);
 
@@ -366,42 +391,61 @@ function RequestsTab() {
     name: record?.operatorName ?? null,
   });
 
-  // Предпросмотр цены: тариф подбирает сервер по паре «тип мусора × техника», чтобы форма и
-  // расчёт при сохранении не разошлись. 404 (тарифа нет) — штатный ответ, не ошибка ввода.
-  const { data: tariff, isError: tariffMissing } = useQuery({
-    queryKey: ['waste-tariffs', 'resolve', watchWasteTypeId, watchContainerTypeId],
-    queryFn: () => wasteTariffsApi.resolve(watchWasteTypeId!, watchContainerTypeId!),
-    enabled: isPriced && !!watchWasteTypeId && !!watchContainerTypeId,
-    retry: false,
+  // Предпросмотр цены: тариф подбирает сервер, чтобы форма и расчёт при сохранении не разошлись.
+  // Техника в заявке не указывается (ADR 0022), поэтому подбор идёт по виду «Самосвал» — тем же
+  // способом, что и на сохранении. Оператор выбран — цена его прайса; не выбран — минимальная
+  // среди операторов, и форма показывает её как «от» (ADR 0023). Незаданный прайс приходит как
+  // `tariff: null` при 200, поэтому «цены нет» и «запрос не прошёл» — разные ветки, а не общая
+  // ошибка.
+  const { data: tariffResult, isError: tariffRequestFailed } = useQuery({
+    queryKey: ['waste-tariffs', 'resolve', watchWasteTypeId, watchOperatorId],
+    queryFn: () =>
+      wasteTariffsApi.resolve(
+        watchWasteTypeId!,
+        { containerKind: WASTE_REMOVAL_CONTAINER_KIND },
+        watchOperatorId,
+      ),
+    enabled: isPriced && !!watchWasteTypeId,
   });
+  const tariff = tariffResult?.tariff ?? null;
+  const tariffMissing = tariffResult != null && tariffResult.tariff === null;
   const volumeStepM3 = tariff?.volumeStepM3 ?? null;
-  /** Объём, по которому считается заявка; есть только у вывоза самосвалами (ADR 0019). */
+  /** Объём, по которому считается заявка; есть только у вывоза (ADR 0019). */
   const plannedVolume = isPriced ? (watchVolumeM3 ?? null) : null;
   const amountPreview =
     tariff && plannedVolume != null && isVolumeAllowed(plannedVolume, volumeStepM3)
       ? calcWasteAmount(plannedVolume, tariff.pricePerM3)
       : null;
   /**
-   * Расчёт показывается подсказкой: поля стоимости в форме нет — цену даёт прайс по паре
-   * «тип мусора × техника», и человеку остаётся увидеть, во что заявка обойдётся.
+   * Расчёт показывается подсказкой: поля стоимости в форме нет — цену даёт прайс по типу
+   * мусора, и человеку остаётся увидеть, во что заявка обойдётся.
    */
   const pricingHint = ((): string | null => {
     if (!isPriced) return null;
-    if (!watchContainerTypeId || !watchWasteTypeId) {
+    if (!watchWasteTypeId) {
       return 'Стоимость посчитается автоматически: цена — по прайсу, сумма — по объёму';
     }
-    if (tariffMissing) return 'Тариф для выбранной пары «тип мусора × техника» не задан';
+    if (tariffRequestFailed) return 'Не удалось получить цену — обновите страницу и повторите';
+    if (tariffMissing) {
+      return watchOperatorId
+        ? 'У выбранного оператора цена на этот тип мусора не задана'
+        : 'Тариф на вывоз этого типа мусора не задан';
+    }
     if (!tariff) return null;
+    // «от» — цена самого дешёвого оператора: исполнитель ещё не выбран, и назначение его
+    // уточнит (ADR 0023). Когда все операторы просят одинаково, уточнять нечего — приставки нет.
+    const from = tariff.isMinimum ? 'от ' : '';
     return [
-      `${formatMoney(tariff.pricePerM3)}/м³`,
-      amountPreview != null ? `итого ${formatMoney(amountPreview)}` : null,
+      `${from}${formatMoney(tariff.pricePerM3)}/м³`,
+      amountPreview != null ? `итого ${from}${formatMoney(amountPreview)}` : null,
+      tariff.isMinimum ? `по прайсу «${tariff.operatorName}»` : null,
     ]
       .filter(Boolean)
       .join(' · ');
   })();
 
   // Наличие контейнеров на объекте (view: установки − снятия). Для «Замены» и «Снятия».
-  const { data: presentData } = useQuery({
+  const { data: presentData, isLoading: presentLoading } = useQuery({
     queryKey: ['waste-requests', 'present-for-object', watchObjectId],
     queryFn: () => wasteRequestsApi.present({ objectId: watchObjectId, pageSize: 500 }),
     enabled: !!watchObjectId,
@@ -420,11 +464,12 @@ function RequestsTab() {
   const objectHasPresent = presentTypeOptions.length > 0;
 
   // Чем оперирует заявка: у замены и снятия выбор ограничен контейнерами, которые сейчас стоят
-  // на объекте; у вывоза — самосвалы из справочника.
+  // на объекте. У вывоза техники нет вовсе (ADR 0022) — заказывают объём, а чем его увезут,
+  // решает оператор и показывает машинами при закрытии.
   const fromObjectField = {
     options: presentTypeOptions,
+    loading: presentLoading,
     placeholder: 'Тип, присутствующий на объекте',
-    fromObject: true,
   };
   const subjectFieldByType = {
     container_replace: {
@@ -437,16 +482,9 @@ function RequestsTab() {
       message: 'Выберите тип контейнера для снятия',
       ...fromObjectField,
     },
-    waste_removal: {
-      label: 'Тип самосвала',
-      message: 'Выберите тип самосвала',
-      options: truckTypeOptions,
-      placeholder: 'Чем вывозим',
-      fromObject: false,
-    },
   } as const;
   const subjectField =
-    watchRequestType && watchRequestType !== 'container_install'
+    watchRequestType === 'container_replace' || watchRequestType === 'container_removal'
       ? subjectFieldByType[watchRequestType]
       : null;
 
@@ -457,7 +495,7 @@ function RequestsTab() {
     setVehicleDrafts([]);
     setVehicleMarks({});
     form.resetFields();
-    // Дата доставки по умолчанию — завтра: раньше заявку не заводят (правило в контрактах).
+    // Дата доставки по умолчанию — сегодня: раньше заявку не заводят (правило в контрактах).
     form.setFieldsValue({ deliveryDate: minRequestDate() } as Partial<RequestFormValues>);
     if (isShtab && user?.constructionObjectId) {
       form.setFieldsValue({ objectId: user.constructionObjectId } as Partial<RequestFormValues>);
@@ -551,9 +589,10 @@ function RequestsTab() {
       const base = {
         objectId: values.objectId,
         requestType: values.requestType,
-        // все четыре типа заявки ссылаются на тип из справочника
+        // Тип из справочника несут только контейнерные операции: у вывоза поля в форме нет,
+        // и присланное значение сервер всё равно обнулит (ADR 0022).
         containerTypeId: values.containerTypeId,
-        // Тип мусора и объём есть только у вывоза самосвалами (ADR 0019); у контейнерных
+        // Тип мусора и объём есть только у вывоза (ADR 0019); у контейнерных
         // операций сервер их всё равно обнулит.
         wasteTypeId: isPricedRequestType(values.requestType) ? values.wasteTypeId : undefined,
         volumeM3: isPricedRequestType(values.requestType) ? values.volumeM3 : undefined,
@@ -619,20 +658,22 @@ function RequestsTab() {
   const [doneTarget, setDoneTarget] = useState<WasteRequestDto | null>(null);
 
   const statusMut = useMutation({
+    // Окно закрытия отдаёт факт уже в виде тела запроса: строки машин, правки их количества и
+    // талоны заявки (ADR 0024) — здесь остаётся только приложить их к смене статуса.
     mutationFn: (v: {
       id: string;
       status: RequestStatus;
       version: number;
       comment?: string;
-      vehicles?: VehicleDraft[];
+      vehicles?: WasteRequestVehicleInput[];
+      vehicleCounts?: WasteVehicleCountInput[];
       ticketFileIds?: string[];
-      vehicleTickets?: { vehicleId: string; fileIds: string[] }[];
     }) =>
       wasteRequestsApi.changeStatus(v.id, v.status, v.version, {
         comment: v.comment,
-        vehicles: v.vehicles ? draftsToInput(v.vehicles) : [],
+        vehicles: v.vehicles,
+        vehicleCounts: v.vehicleCounts,
         ticketFileIds: v.ticketFileIds,
-        vehicleTickets: v.vehicleTickets,
       }),
     onSuccess: () => {
       setOperatorTarget(null);
@@ -672,7 +713,7 @@ function RequestsTab() {
 
   /**
    * Перевод в работу — через назначение оператора вывоза; закрытие — через окно предъявления
-   * факта (машины у вывоза самосвалами, талоны у контейнерных операций) и комментария; отмена —
+   * факта (машины у вывоза мусора, талоны у контейнерных операций) и комментария; отмена —
    * через обязательную причину. Остальные переходы (откаты) выполняются сразу.
    */
   const requestStatusChange = (r: WasteRequestDto, status: RequestStatus) => {
@@ -718,8 +759,8 @@ function RequestsTab() {
 
   const canModify = (r: WasteRequestDto): boolean => {
     if (r.deletedAt) return false;
-    // Оператор — исполнитель: заявку он только читает и закрывает (ADR 0010).
-    if (isOperator) return false;
+    if (!canEdit && !canDelete) return false;
+    // Штаб правит заявку, пока её не взяли в работу: дальше за ней договорённости с исполнителем.
     if (isShtab) return r.status === 'new';
     return true;
   };
@@ -817,7 +858,10 @@ function RequestsTab() {
         <div style={{ lineHeight: 1.35 }}>
           <div>{requestSubject(r)}</div>
           {r.amount != null && (
+            // Пока исполнителя нет, сумма посчитана по самому дешёвому прайсу (ADR 0023) —
+            // «от» говорит, что назначение оператора её уточнит.
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {r.operatorCounterpartyId ? '' : 'от '}
               {formatMoney(r.amount)} · {formatMoney(r.pricePerM3)}/м³
             </Typography.Text>
           )}
@@ -916,7 +960,7 @@ function RequestsTab() {
         return (
           <Space size={4}>
             {view}
-            {isAdmin ? (
+            {canRestore ? (
               <Tooltip title="Восстановить">
                 <Button
                   size="small"
@@ -1017,11 +1061,11 @@ function RequestsTab() {
     <PageTableLayout
       filters={filters}
       extra={
-        isOperator ? null : (
+        canCreate ? (
           <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
             Создать заявку
           </Button>
-        )
+        ) : null
       }
     >
       {/* Сводка — на уровне вкладок, над фильтрами и кнопкой: она относится ко всему списку,
@@ -1087,15 +1131,20 @@ function RequestsTab() {
                 : 'Оператор увидит заявку в своём списке и сможет отметить её выполненной'
             }
           >
-            <Select options={assignOperatorOptions} showSearch optionFilterProp="label" />
+            <AutoSelect
+              options={assignOperatorOptions}
+              loading={operatorsLoading}
+              showSearch
+              optionFilterProp="label"
+            />
           </Form.Item>
         </Form>
       </FormModal>
 
       {/* Закрытие заявки: предъявление факта и комментарий уходят вместе со статусом. Вывоз
-          самосвалами отчитывается машинами (ADR 0011), контейнерные операции — талонами
-          заявки (ADR 0013); талон обязателен в обоих случаях (ADR 0020), а сверка объёма —
-          подсказка: расхождение сохранению не мешает. */}
+          мусора отчитывается машинами «тип × количество» с расчётом по прайсу (ADR 0024),
+          контейнерные операции — одним талоном (ADR 0013); талон обязателен в обоих случаях
+          (ADR 0020), а сверка объёма — подсказка: расхождение сохранению не мешает. */}
       <WasteDoneModal
         request={doneTarget}
         typeOptions={vehicleTypeOptions}
@@ -1109,8 +1158,8 @@ function RequestsTab() {
             version: doneTarget.version,
             comment: v.comment,
             vehicles: v.vehicles,
+            vehicleCounts: v.vehicleCounts,
             ticketFileIds: v.ticketFileIds,
-            vehicleTickets: v.vehicleTickets,
           })
         }
       />
@@ -1145,16 +1194,21 @@ function RequestsTab() {
           form={form}
           layout="vertical"
           onFinish={(v) => {
-            // Незаполненная строка машины — не повод отправлять запрос: сервер отвергнет её
-            // целиком, а человеку нужно знать, в какой именно строке пробел. Талон здесь
-            // обязателен только у выполненной заявки — то же правило, что и на сервере (ADR 0020).
-            const vehicleError = validateVehicleDrafts(
-              vehicleDrafts,
-              record?.vehicles.filter((v) => !isVehicleDeleted(v)).length ?? 0,
-              record?.status === 'done',
-            );
+            // Незаполненная строка машины — не повод отправлять запрос: сервер отвергнет его
+            // целиком, а человеку нужно знать, в какой именно строке пробел. Талон здесь не
+            // спрашивается: он общий на заявку и прикладывается при закрытии (ADR 0024).
+            const vehicleError = validateVehicleDrafts(vehicleDrafts);
             if (vehicleError) {
               message.warning(vehicleError);
+              return;
+            }
+            // Тип уже заведён у заявки — значит это то же самое место факта: сервер вторую
+            // строку на него не примет, и говорить об этом надо до отправки.
+            const clash = vehicleDrafts.find(
+              (d) => d.containerTypeId && activeVehicleTypeIds.has(d.containerTypeId),
+            );
+            if (clash) {
+              message.warning('Этот тип уже есть в заявке — измените количество в его строке');
               return;
             }
             saveMut.mutate(v);
@@ -1175,8 +1229,9 @@ function RequestsTab() {
             label="Объект строительства"
             rules={[{ required: true, message: 'Выберите объект' }]}
           >
-            <Select
+            <AutoSelect
               options={objectOptions}
+              loading={objectsLoading}
               showSearch
               optionFilterProp="label"
               disabled={isShtab}
@@ -1188,7 +1243,7 @@ function RequestsTab() {
             label="Тип заявки"
             rules={[{ required: true, message: 'Выберите тип заявки' }]}
           >
-            <Select
+            <AutoSelect
               options={requestTypeOptions}
               placeholder={watchObjectId ? 'Выберите тип заявки' : 'Сначала выберите объект'}
               disabled={!watchObjectId}
@@ -1202,14 +1257,19 @@ function RequestsTab() {
               label="Тип контейнера"
               rules={[{ required: true, message: 'Выберите тип контейнера' }]}
             >
-              <Select options={contTypeOptions} showSearch optionFilterProp="label" />
+              <AutoSelect
+                options={contTypeOptions}
+                loading={typesLoading}
+                showSearch
+                optionFilterProp="label"
+              />
             </Form.Item>
           )}
 
-          {/* Вывоз самосвалами: сначала что вывозим и сколько, следом чем. Порядок повторяет
-              разговор о заявке: тип мусора сужает список техники, которой его возят. Поля
-              стоимости нет — цену даёт прайс по паре «тип мусора × техника», и расчёт виден
-              подсказкой под полями (ADR 0009). У замены и снятия этих полей нет вовсе: они не
+          {/* Вывоз мусора: что вывозим и сколько — весь предмет заявки. Техники в ней нет
+              (ADR 0022): чем увезут объём, решает оператор и показывает машинами при закрытии.
+              Поля стоимости тоже нет — цену даёт прайс по типу мусора, и расчёт виден подсказкой
+              под полями (ADR 0009). У замены и снятия этих полей нет вовсе: они не
               тарифицируются (ADR 0019), в форме остаётся только контейнер с объекта. */}
           {isPriced && (
             <div style={{ display: 'flex', gap: 12 }}>
@@ -1219,8 +1279,9 @@ function RequestsTab() {
                 rules={[{ required: true, message: 'Выберите тип мусора' }]}
                 style={{ flex: 3, minWidth: 0 }}
               >
-                <Select
+                <AutoSelect
                   options={formWasteTypeOptions}
+                  loading={wasteTypesLoading}
                   showSearch
                   optionFilterProp="label"
                   placeholder="Что вывозим"
@@ -1258,34 +1319,27 @@ function RequestsTab() {
               </Form.Item>
             </div>
           )}
+          {pricingHint && (
+            <div style={{ marginTop: -16, marginBottom: 24 }}>
+              <Typography.Text type="secondary">{pricingHint}</Typography.Text>
+            </div>
+          )}
           {subjectField && (
-            <>
-              <Form.Item
-                name="containerTypeId"
-                label={subjectField.label}
-                rules={[{ required: true, message: subjectField.message }]}
-                extra={
-                  subjectField.fromObject && !objectHasPresent
-                    ? 'На объекте нет контейнеров'
-                    : undefined
-                }
-              >
-                <Select
-                  options={subjectField.options}
-                  showSearch
-                  optionFilterProp="label"
-                  placeholder={subjectField.placeholder}
-                  notFoundContent={
-                    subjectField.fromObject ? 'Нет контейнеров на объекте' : undefined
-                  }
-                />
-              </Form.Item>
-              {pricingHint && (
-                <div style={{ marginTop: -16, marginBottom: 24 }}>
-                  <Typography.Text type="secondary">{pricingHint}</Typography.Text>
-                </div>
-              )}
-            </>
+            <Form.Item
+              name="containerTypeId"
+              label={subjectField.label}
+              rules={[{ required: true, message: subjectField.message }]}
+              extra={!objectHasPresent ? 'На объекте нет контейнеров' : undefined}
+            >
+              <AutoSelect
+                options={subjectField.options}
+                loading={subjectField.loading}
+                showSearch
+                optionFilterProp="label"
+                placeholder={subjectField.placeholder}
+                notFoundContent="Нет контейнеров на объекте"
+              />
+            </Form.Item>
           )}
           {/* Исполнителя выбирают у уже заведённой заявки: при создании его чаще всего ещё не
               знают, и лишнее поле в форме отвлекало бы. Новой заявке оператора назначают
@@ -1317,7 +1371,7 @@ function RequestsTab() {
               rules={[{ required: true, message: 'Укажите дату' }]}
               style={{ flex: 1 }}
             >
-              {/* Новую заявку — не раньше чем на завтра (по МСК); у заведённой дата правится
+              {/* Новую заявку — не раньше чем на сегодня (по МСК); у заведённой дата правится
                   свободно, лишь бы не в прошлое. */}
               <DatePicker
                 format="DD.MM.YYYY"
@@ -1340,12 +1394,13 @@ function RequestsTab() {
             <Input.TextArea rows={3} maxLength={2000} showCount />
           </Form.Item>
 
-          {/* Машины и талоны (ADR 0011). Заведённые строки удаляет только администратор,
-              остальным доступна пометка: ошибочно снятый талон иначе не заметить.
-              Блок есть только у вывоза самосвалами — контейнерные операции по машинам
+          {/* Чем вывезли (ADR 0011, ADR 0024): строки «тип × количество». Заведённые строки
+              удаляет только администратор, остальным доступна пометка — ошибочно снятую машину
+              иначе не заметить. Талонов здесь нет: они общий пул заявки и прикладываются при
+              закрытии. Блок есть только у вывоза мусора — контейнерные операции по машинам
               не отчитываются. */}
           {record && watchRequestType && requiresWasteVehicles(watchRequestType) && (
-            <Form.Item label="Машины и талоны">
+            <Form.Item label="Чем вывезли">
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {record.vehicles.length > 0 && (
                   <List
@@ -1388,7 +1443,7 @@ function RequestsTab() {
                                   >
                                     {isVehicleDeleted(v) ? 'Вернуть' : 'Пометить на удаление'}
                                   </Button>,
-                                  ...(isAdmin
+                                  ...(canPurge
                                     ? [
                                         <Button
                                           key="del"
@@ -1409,15 +1464,11 @@ function RequestsTab() {
                               delete={inactive}
                               type={inactive ? 'secondary' : undefined}
                             >
-                              {v.containerTypeName} — {v.volumeM3} м³
+                              {v.containerTypeName}
+                              {v.count > 1 ? ` × ${v.count}` : ''} — {vehicleVolume(v)} м³
+                              {v.amount != null ? ` · ${formatMoney(v.amount)}` : ''}
                               {willDelete ? ' · будет удалена' : ''}
                             </Typography.Text>
-                            <FilesButton
-                              files={v.files}
-                              title={`Талоны — ${v.containerTypeName}`}
-                              label={`талонов: ${v.files.length}`}
-                              emptyText="без талона"
-                            />
                           </Space>
                         </List.Item>
                       );
@@ -1428,9 +1479,6 @@ function RequestsTab() {
                   value={vehicleDrafts}
                   onChange={setVehicleDrafts}
                   typeOptions={vehicleTypeOptions}
-                  defaultContainerTypeId={record.containerTypeId ?? undefined}
-                  existingCount={record.vehicles.filter((v) => !isVehicleDeleted(v)).length}
-                  ticketRequired={record.status === 'done'}
                 />
                 <VolumeSummary
                   planned={plannedVolume ?? record.volumeM3}

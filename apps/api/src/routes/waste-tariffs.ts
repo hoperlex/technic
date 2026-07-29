@@ -15,16 +15,18 @@ import {
   wasteTariffListQuerySchema,
 } from '@technic/contracts';
 import { db } from '../db/client';
-import { containerTypes, wasteTariffs, wasteTypes } from '../db/schema';
+import { containerTypes, counterparties, wasteTariffs, wasteTypes } from '../db/schema';
 import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
 import { orderByFrom, pageParams } from '../lib/pagination';
-import { resolveWasteTariff } from '../services/waste-pricing';
+import { resolveWasteTariff, resolveWasteTariffByKind } from '../services/waste-pricing';
 import { asWasteTypeNameConflict, createWasteType } from '../services/waste-types';
 
 const dtoColumns = {
   id: wasteTariffs.id,
+  operatorCounterpartyId: wasteTariffs.operatorCounterpartyId,
+  operatorName: counterparties.name,
   wasteTypeId: wasteTariffs.wasteTypeId,
   wasteTypeName: wasteTypes.name,
   containerTypeId: wasteTariffs.containerTypeId,
@@ -41,6 +43,8 @@ const dtoColumns = {
 /** Строка выборки `dtoColumns`: колонки типа контейнера приходят из leftJoin, поэтому nullable. */
 interface DtoRow {
   id: string;
+  operatorCounterpartyId: string;
+  operatorName: string;
   wasteTypeId: string;
   wasteTypeName: string;
   containerTypeId: string | null;
@@ -57,6 +61,8 @@ interface DtoRow {
 function toDto(t: DtoRow): WasteTariffDto {
   return {
     id: t.id,
+    operatorCounterpartyId: t.operatorCounterpartyId,
+    operatorName: t.operatorName,
     wasteTypeId: t.wasteTypeId,
     wasteTypeName: t.wasteTypeName,
     containerTypeId: t.containerTypeId,
@@ -75,6 +81,7 @@ const idParams = z.object({ id: z.string().uuid() });
 
 /** Позиция прайса после проверок — в том виде, в каком ложится в строку таблицы. */
 interface TariffValues {
+  operatorCounterpartyId: string;
   wasteTypeId: string;
   containerTypeId: string | null;
   containerKind: ContainerKind | null;
@@ -94,11 +101,25 @@ type Reader = Pick<Tx, 'select'>;
  */
 async function prepareValues(
   conn: Reader,
-  input: WasteTariffDefinition & { wasteTypeId: string },
+  input: WasteTariffDefinition & { wasteTypeId: string; operatorCounterpartyId: string },
   excludeId?: string,
 ): Promise<TariffValues> {
   const fields = validateWasteTariff(input);
   if (Object.keys(fields).length > 0) throw err.validation(fields);
+
+  // Цена принадлежит оператору (ADR 0023). Тип контрагента проверяется здесь, а не составным FK:
+  // то же решение, что и у исполнителя заявки. Неактивный оператор не запрещён — его прайс
+  // правят и после отключения, а из подбора цены он выпадает сам (waste-pricing).
+  const [operator] = await conn
+    .select({ type: counterparties.type, deletedAt: counterparties.deletedAt })
+    .from(counterparties)
+    .where(eq(counterparties.id, input.operatorCounterpartyId));
+  if (!operator || operator.deletedAt) {
+    throw err.validation({ operatorCounterpartyId: 'Оператор не найден' });
+  }
+  if (operator.type !== 'operator') {
+    throw err.validation({ operatorCounterpartyId: 'Нужен контрагент типа «Оператор»' });
+  }
 
   const [wasteType] = await conn
     .select({ id: wasteTypes.id })
@@ -134,9 +155,12 @@ async function prepareValues(
     pricePerM3 = input.pricePerM3!;
   }
 
-  // Пара «тип мусора × техника» разрешается однозначно, поэтому вторая позиция на ту же пару —
-  // не новая цена, а спор двух цен. Частичные UNIQUE в БД это же ловят кодом 23505 без пояснения.
+  // Пара «тип мусора × техника» разрешается у оператора однозначно, поэтому вторая его позиция
+  // на ту же пару — не новая цена, а спор двух цен. Цена другого оператора на ту же пару дублем
+  // не считается: это и есть прайс по операторам (ADR 0023). Частичные UNIQUE в БД ловят то же
+  // самое кодом 23505 без пояснения.
   const dupWhere = and(
+    eq(wasteTariffs.operatorCounterpartyId, input.operatorCounterpartyId),
     eq(wasteTariffs.wasteTypeId, input.wasteTypeId),
     input.containerTypeId
       ? eq(wasteTariffs.containerTypeId, input.containerTypeId)
@@ -145,10 +169,13 @@ async function prepareValues(
   );
   const dup = await conn.select({ id: wasteTariffs.id }).from(wasteTariffs).where(dupWhere);
   if (dup.length > 0) {
-    throw err.conflict('Тариф для этой пары уже задан — измените цену в существующей позиции');
+    throw err.conflict(
+      'У этого оператора тариф на такую пару уже задан — измените цену в существующей позиции',
+    );
   }
 
   return {
+    operatorCounterpartyId: input.operatorCounterpartyId,
     wasteTypeId: input.wasteTypeId,
     containerTypeId: input.containerTypeId,
     containerKind: input.containerKind,
@@ -163,6 +190,7 @@ async function loadDto(id: string): Promise<WasteTariffDto> {
     .select(dtoColumns)
     .from(wasteTariffs)
     .innerJoin(wasteTypes, eq(wasteTariffs.wasteTypeId, wasteTypes.id))
+    .innerJoin(counterparties, eq(wasteTariffs.operatorCounterpartyId, counterparties.id))
     .leftJoin(containerTypes, eq(wasteTariffs.containerTypeId, containerTypes.id))
     .where(eq(wasteTariffs.id, id));
   if (!row) throw err.notFound('Тариф не найден');
@@ -173,30 +201,47 @@ async function loadDto(id: string): Promise<WasteTariffDto> {
 // (ADR 0014). Правка цены не переписывает оформленные суммы: в заявке остаётся снимок тарифа.
 export default async function wasteTariffsRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
-  const canWrite = app.requireRoles('admin', 'manager');
+  const canRead = app.requirePermission('directories.read');
+  const canWrite = app.requirePermission('directories.write');
 
   // ── Подбор тарифа под пару «тип мусора × техника» (предпросмотр цены в форме заявки) ──
   // Объявлен до '/:id'-подобных маршрутов не случайно: статический сегмент должен матчиться первым.
   r.get(
     '/resolve',
-    { preHandler: [app.authenticate], schema: { querystring: resolveWasteTariffQuerySchema } },
+    {
+      preHandler: [app.authenticate, canRead],
+      schema: { querystring: resolveWasteTariffQuerySchema },
+    },
     async (req) => {
-      const { wasteTypeId, containerTypeId } = req.query;
-      const resolved = await resolveWasteTariff(wasteTypeId, containerTypeId);
-      if (!resolved) throw err.notFound('Тариф для выбранной пары не задан');
-      return resolved;
+      const { wasteTypeId, containerTypeId, containerKind, operatorCounterpartyId } = req.query;
+      // Незаданный прайс для пары — результат подбора, а не ошибка: `tariff: null` при 200.
+      // Форма по нему подсказывает «тариф не задан», а сбой запроса показывает иначе.
+      // Цель подбора — либо конкретный тип, либо вид техники: вывоз мусора машину не называет
+      // (ADR 0022), и цену для него даёт строка прайса на вид. Оператор задан — цена его прайса,
+      // не задан — минимальная среди операторов, помеченная как «от» (ADR 0023).
+      const operator = operatorCounterpartyId ?? null;
+      const tariff = containerTypeId
+        ? await resolveWasteTariff(wasteTypeId, containerTypeId, operator)
+        : await resolveWasteTariffByKind(wasteTypeId, containerKind!, operator);
+      return { tariff };
     },
   );
 
   // ── Список тарифов ──
   r.get(
     '/',
-    { preHandler: [app.authenticate], schema: { querystring: wasteTariffListQuerySchema } },
+    {
+      preHandler: [app.authenticate, canRead],
+      schema: { querystring: wasteTariffListQuerySchema },
+    },
     async (req) => {
       const q = req.query;
       const where = and(
         q.wasteTypeId ? eq(wasteTariffs.wasteTypeId, q.wasteTypeId) : undefined,
         q.containerTypeId ? eq(wasteTariffs.containerTypeId, q.containerTypeId) : undefined,
+        q.operatorCounterpartyId
+          ? eq(wasteTariffs.operatorCounterpartyId, q.operatorCounterpartyId)
+          : undefined,
         q.isActive === undefined ? undefined : eq(wasteTariffs.isActive, q.isActive),
       );
       const sortCols = {
@@ -210,6 +255,7 @@ export default async function wasteTariffsRoutes(app: FastifyInstance): Promise<
           .select(dtoColumns)
           .from(wasteTariffs)
           .innerJoin(wasteTypes, eq(wasteTariffs.wasteTypeId, wasteTypes.id))
+          .innerJoin(counterparties, eq(wasteTariffs.operatorCounterpartyId, counterparties.id))
           .leftJoin(containerTypes, eq(wasteTariffs.containerTypeId, containerTypes.id))
           .where(where)
           .orderBy(orderByFrom(sortCols, q.sortBy, q.sortOrder, 'wasteTypeName'))
@@ -242,6 +288,7 @@ export default async function wasteTariffsRoutes(app: FastifyInstance): Promise<
         .transaction(async (tx) => {
           const type = b.wasteTypeName ? await createWasteType(tx, b.wasteTypeName) : null;
           const values = await prepareValues(tx, {
+            operatorCounterpartyId: b.operatorCounterpartyId,
             wasteTypeId: type?.id ?? b.wasteTypeId!,
             containerTypeId: b.containerTypeId ?? null,
             containerKind: b.containerKind ?? null,
@@ -275,6 +322,7 @@ export default async function wasteTariffsRoutes(app: FastifyInstance): Promise<
         entityType: 'waste_tariff',
         entityId: tariff.id,
         metadata: {
+          operatorCounterpartyId: tariff.operatorCounterpartyId,
           wasteTypeId: tariff.wasteTypeId,
           containerTypeId: tariff.containerTypeId,
           containerKind: tariff.containerKind,
@@ -309,6 +357,7 @@ export default async function wasteTariffsRoutes(app: FastifyInstance): Promise<
       const values = await prepareValues(
         db,
         {
+          operatorCounterpartyId: b.operatorCounterpartyId ?? current.operatorCounterpartyId,
           wasteTypeId: b.wasteTypeId ?? current.wasteTypeId,
           containerTypeId:
             b.containerTypeId === undefined ? current.containerTypeId : (b.containerTypeId ?? null),
@@ -352,12 +401,14 @@ export default async function wasteTariffsRoutes(app: FastifyInstance): Promise<
         entityId: current.id,
         metadata: {
           before: {
+            operatorCounterpartyId: current.operatorCounterpartyId,
             pricePerM3: current.pricePerM3,
             pricePerContainer: current.pricePerContainer,
             isPerContainer: current.isPerContainer,
             isActive: current.isActive,
           },
           after: {
+            operatorCounterpartyId: updated!.operatorCounterpartyId,
             pricePerM3: updated!.pricePerM3,
             pricePerContainer: updated!.pricePerContainer,
             isPerContainer: updated!.isPerContainer,

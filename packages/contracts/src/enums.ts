@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 // ── Роли ──
-export const ROLES = ['admin', 'manager', 'dispatcher', 'shtab', 'operator'] as const;
+export const ROLES = ['admin', 'manager', 'dispatcher', 'shtab', 'rukstroy', 'operator'] as const;
 export const roleSchema = z.enum(ROLES);
 export type Role = (typeof ROLES)[number];
 
@@ -10,6 +10,7 @@ export const roleLabels: Record<Role, string> = {
   manager: 'Менеджер',
   dispatcher: 'Диспетчер',
   shtab: 'Штаб',
+  rukstroy: 'Руководитель строительства',
   operator: 'Оператор (вывоз мусора)',
 };
 
@@ -18,13 +19,24 @@ export const roleColors: Record<Role, string> = {
   manager: 'geekblue',
   dispatcher: 'cyan',
   shtab: 'orange',
+  rukstroy: 'purple',
   operator: 'green',
 };
 
-/** Роли, которым доступна страница «Справочники». */
-export const REFERENCE_MANAGER_ROLES: readonly Role[] = ['admin', 'manager'];
-/** Роли, которые ведут заявки: создают, редактируют и меняют статусы без ограничения оператора. */
-export const STATUS_CHANGE_ROLES: readonly Role[] = ['admin', 'manager', 'dispatcher'];
+/**
+ * Роли, работающие в пределах одного объекта строительства (ADR 0025): и видимость заявок,
+ * и правки ограничены объектом учётки, поэтому объект у них обязателен — без него роль не
+ * ограничена ничем и одновременно не видит ничего. Список здесь, а не в проверках доступа:
+ * по нему и API требует объект при активации, и форма учётки показывает поле.
+ */
+export const OBJECT_SCOPED_ROLES = ['shtab', 'rukstroy'] as const;
+
+export function isObjectScopedRole(role: Role | null | undefined): boolean {
+  return !!role && (OBJECT_SCOPED_ROLES as readonly string[]).includes(role);
+}
+
+// Кто что может — в permissions.ts (ADR 0021): здесь только словари статусов и типов, чтобы
+// списки ролей не расходились по файлам.
 
 // ── Статусы заявки ──
 export const REQUEST_STATUSES = ['new', 'confirmed', 'done', 'cancelled'] as const;
@@ -79,19 +91,6 @@ export const OPERATOR_STATUS_TRANSITIONS: Record<RequestStatus, RequestStatus[]>
   cancelled: [],
 };
 
-/** Статусы, доступные роли из текущего статуса (пустой список — смена статуса запрещена). */
-export function allowedStatusTransitions(from: RequestStatus, role: Role): RequestStatus[] {
-  if (role === 'operator') return OPERATOR_STATUS_TRANSITIONS[from];
-  if (!STATUS_CHANGE_ROLES.includes(role)) return [];
-  return role === 'admin'
-    ? [...requestStatusTransitions[from], ...requestStatusRollbacks[from]]
-    : requestStatusTransitions[from];
-}
-
-export function canTransitionStatus(from: RequestStatus, to: RequestStatus, role: Role): boolean {
-  return allowedStatusTransitions(from, role).includes(to);
-}
-
 /**
  * Отмена заявки требует причины: заявка закрывается без результата, и без объяснения
  * ни автор, ни следующий диспетчер не поймут, почему.
@@ -114,7 +113,7 @@ export const requestTypeLabels: Record<RequestType, string> = {
   container_install: 'Установка нового контейнера',
   container_replace: 'Замена полного контейнера на пустой',
   container_removal: 'Снятие контейнера (вывоз без замены)',
-  waste_removal: 'Вывоз мусора (самосвалами)',
+  waste_removal: 'Вывоз мусора (разовый объём)',
 };
 
 export const requestTypeColors: Record<RequestType, string> = {
@@ -151,11 +150,13 @@ export const containerKindColors: Record<ContainerKind, string> = {
 };
 
 // ── Типы контейнеров и машин (единый справочник; данные в БД) ──
+// Контейнер 25 м³ для тяжёлых грузов выведен из обихода (миграция 0041): в справочнике он
+// остаётся неактивным — на него ссылаются заведённые заявки.
 export const CONTAINER_TYPE_SEED = [
   { code: 'container_8', name: 'Контейнер 8 м³', sortOrder: 10, type: 'cont' },
   { code: 'container_20', name: 'Контейнер 20 м³', sortOrder: 20, type: 'cont' },
   { code: 'container_27', name: 'Контейнер 27 м³', sortOrder: 30, type: 'cont' },
-  { code: 'container_25_heavy', name: 'Контейнер 25 м³ для тяжёлых грузов', sortOrder: 40, type: 'cont' },
+  { code: 'container_38', name: 'Контейнер 38 м³', sortOrder: 40, type: 'cont' },
   { code: 'dump_truck_25', name: 'Самосвал 25 м³', sortOrder: 50, type: 'truck' },
   { code: 'dump_truck_36', name: 'Самосвал 36 м³', sortOrder: 60, type: 'truck' },
 ] as const;

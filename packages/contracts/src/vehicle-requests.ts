@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { requestStatusSchema, statusChangeRequiresReason } from './enums';
-import type { RequestStatus } from './enums';
+import type { RequestStatus, Role } from './enums';
+import { allowedStatusTransitions } from './permissions';
 import { baseListQuery, uuidSchema } from './common';
 import type { FileDto } from './files';
 import {
@@ -173,7 +174,7 @@ export const createVehicleRequestSchema = z
           message: 'Дата окончания раньше даты начала',
         });
       }
-      // Новую заявку заводят не раньше чем на завтра (по МСК). Конец периода проверять
+      // Новую заявку заводят не раньше чем на сегодня (по МСК). Конец периода проверять
       // отдельно не нужно: он не раньше начала.
       if (!isAllowedRequestDate(v.dateFrom)) {
         ctx.addIssue({ code: 'custom', path: ['dateFrom'], message: MIN_REQUEST_DATE_MESSAGE });
@@ -268,6 +269,46 @@ export const updateVehicleRequestSchema = z
   });
 export type UpdateVehicleRequestInput = z.infer<typeof updateVehicleRequestSchema>;
 
+// ── Виза руководителя строительства (ADR 0025) ──
+
+/**
+ * Переход, требующий визы: незавизированную заявку нельзя взять в работу. Отмена визы не
+ * требует — заявку, которую не согласовали, закрывают именно отменой.
+ */
+export function transitionRequiresApproval(to: RequestStatus): boolean {
+  return to === 'confirmed';
+}
+
+/**
+ * Статусы, доступные роли из текущего — с поправкой на визу. Правило одно на портал и API:
+ * список переходов в интерфейсе не должен предлагать то, что сервер отклонит.
+ */
+export function allowedVehicleRequestTransitions(
+  from: RequestStatus,
+  role: Role,
+  approved: boolean,
+): RequestStatus[] {
+  const transitions = allowedStatusTransitions(from, role);
+  return approved ? transitions : transitions.filter((to) => !transitionRequiresApproval(to));
+}
+
+/**
+ * Визу ставят и снимают, пока заявку не взяли в работу: после «В работе» она уже основание
+ * для договорённостей с исполнителем, и отзыв визы задним числом ничего не отменяет.
+ */
+export function isApprovalChangeable(status: RequestStatus): boolean {
+  return status === 'new';
+}
+
+/** Виза и её отзыв одним маршрутом: у обоих действий одно право и одна проверка области. */
+export const setVehicleRequestApprovalSchema = z
+  .object({
+    approved: z.boolean(),
+    version: z.number().int().nonnegative(),
+  })
+  .strict();
+export type SetVehicleRequestApprovalInput = z.infer<typeof setVehicleRequestApprovalSchema>;
+
 // Комментарий пишется в историю (vehicle_request_status_history.comment); при отмене
 // он обязателен и играет роль причины — как и у заявок на вывоз мусора.
 export const changeVehicleRequestStatusSchema = z
@@ -301,6 +342,7 @@ export const VEHICLE_REQUEST_SORT_FIELDS = [
   'loadingLocation',
   'unloadingLocation',
   'status',
+  'approval',
   'comment',
   'createdAt',
 ] as const;
@@ -313,6 +355,12 @@ export const vehicleRequestListQuerySchema = baseListQuery(VEHICLE_REQUEST_SORT_
   objectId: uuidSchema.optional(),
   vehicleTypeId: uuidSchema.optional(),
   num: z.coerce.number().int().positive().optional(),
+  // Виза (ADR 0025): «false» — заявки, ждущие согласования; ими и открывают день диспетчер
+  // и руководитель строительства.
+  approved: z
+    .enum(['true', 'false'])
+    .optional()
+    .transform((v) => (v === undefined ? undefined : v === 'true')),
   // Календарный диапазон (YYYY-MM-DD): для спецтехники — пересечение периодов,
   // для грузоперевозки — день в Europe/Moscow (интерпретирует backend).
   dateFrom: z
@@ -340,8 +388,14 @@ export const vehicleRequestSummaryQuerySchema = z.object({
 });
 export type VehicleRequestSummaryQuery = z.infer<typeof vehicleRequestSummaryQuerySchema>;
 
-/** Количество видимых заявок в каждом статусе (удалённые не считаются). */
-export type VehicleRequestSummaryDto = Record<RequestStatus, number>;
+/**
+ * Количество видимых заявок в каждом статусе (удалённые не считаются) плюс отдельная цифра —
+ * сколько новых заявок ждёт визы (ADR 0025): пока её нет, заявка не двинется дальше, и это
+ * не видно ни по одному статусу.
+ */
+export type VehicleRequestSummaryDto = Record<RequestStatus, number> & {
+  awaitingApproval: number;
+};
 
 // ── DTO ──
 export interface VehicleRequestBaseDto {
@@ -363,6 +417,15 @@ export interface VehicleRequestBaseDto {
   comment: string;
   /** Причина отмены из истории статусов; заполнена только у отменённых заявок. */
   cancelReason: string | null;
+
+  /**
+   * Виза руководителя строительства (ADR 0025): кто согласовал заявку и когда. `null` — заявка
+   * ждёт согласования, и взять её в работу нельзя. Имя хранится не снимком, а join'ом: виза
+   * действует, пока не отозвана, и должна показывать текущее ФИО завизировавшего.
+   */
+  approvedBy: string | null;
+  approvedByName: string | null;
+  approvedAt: string | null;
   files: FileDto[];
   version: number;
 

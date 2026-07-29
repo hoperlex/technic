@@ -10,7 +10,9 @@ import {
   requestTypeColors,
   requestTypeLabels,
   requestTypeShort,
+  requiresWasteVehicles,
   sumVehicleVolume,
+  vehicleVolume,
   type WasteRequestDto,
   type WasteRequestVehicleDto,
   wasteRequestChangeLabels,
@@ -37,9 +39,9 @@ interface Props {
 const secondary = { fontSize: 12 } as const;
 
 /**
- * Машины и талоны показываются у закрытия заявки, а не в теле карточки: и машины (ADR 0011),
- * и талоны заявки (ADR 0013) заводятся именно при переходе в «Выполнена» — к нему они
- * и цепляются, а разбирают их всё равно поштучно.
+ * Чем вывезли и чем это подтверждено — у закрытия заявки, а не в теле карточки: и машины
+ * (ADR 0011), и талоны (ADR 0013) заводятся именно при переходе в «Выполнена», к нему они
+ * и цепляются. Строка машины — «тип × количество» со своей суммой по прайсу (ADR 0024).
  */
 function ClosingFact({
   vehicles,
@@ -50,19 +52,15 @@ function ClosingFact({
 }) {
   return (
     <>
-      {/* Помеченные на удаление остаются в списке зачёркнутыми — иначе снятый талон нечем
-          заметить. Талоны открываются отдельным окном: их смотрят по одному. */}
+      {/* Помеченные на удаление остаются в списке зачёркнутыми — иначе снятую машину нечем
+          заметить. */}
       {vehicles.map((v) => (
         <Space key={v.id} size={8} wrap>
           <Typography.Text delete={v.isDeleted} type={v.isDeleted ? 'secondary' : undefined}>
-            {v.containerTypeName} — {v.volumeM3} м³
+            {v.containerTypeName}
+            {v.count > 1 ? ` × ${v.count}` : ''} — {vehicleVolume(v)} м³
+            {v.amount != null ? ` · ${formatMoney(v.amount)}` : ''}
           </Typography.Text>
-          <FilesButton
-            files={v.files}
-            title={`Талоны — ${v.containerTypeName}`}
-            label={`талонов: ${v.files.length}`}
-            emptyText="без талона"
-          />
           {v.isDeleted && (
             <Typography.Text type="secondary" style={secondary}>
               помечена на удаление
@@ -70,8 +68,8 @@ function ClosingFact({
           )}
         </Space>
       ))}
-      {/* Талоны заявки без машин: у контейнерной операции ходка одна, и делить талоны не по чему
-          (ADR 0013). Кнопкой — как у машин: список открывается окном, файлы смотрят по одному. */}
+      {/* Талоны — общий пул заявки (ADR 0024): бумаги за всё закрытие, без деления по машинам.
+          Кнопкой: список открывается окном, файлы смотрят по одному. */}
       {tickets.length > 0 && (
         <Space size={8} wrap>
           <Typography.Text>Талоны заявки</Typography.Text>
@@ -82,10 +80,13 @@ function ClosingFact({
   );
 }
 
-/** Чем предъявлен факт выполнения: машинами (ADR 0011) или талонами заявки (ADR 0013). */
+/** Чем предъявлен факт выполнения: машинами (ADR 0011) и талонами заявки (ADR 0013, ADR 0024). */
 function factOf(vehicles: WasteRequestVehicleDto[], tickets: FileDto[]): string {
-  if (vehicles.length > 0) return `машин: ${vehicles.length}`;
-  return tickets.length > 0 ? `талонов: ${tickets.length}` : '';
+  const parts = [
+    vehicles.length > 0 ? `машин: ${vehicles.reduce((acc, v) => acc + v.count, 0)}` : null,
+    tickets.length > 0 ? `талонов: ${tickets.length}` : null,
+  ].filter(Boolean);
+  return parts.join(' · ');
 }
 
 function buildRows(
@@ -132,7 +133,7 @@ export function WasteRequestViewModal({ request, onClose, onEdit }: Props) {
 
   /**
    * Блок «объём — тип мусора — стоимость» показывается по самим данным, а не по типу заявки:
-   * тарифицируется только вывоз самосвалами (ADR 0019), но у замены и снятия, заведённых до
+   * тарифицируется только вывоз (ADR 0019), но у замены и снятия, заведённых до
    * этого решения, цена сохранена — прятать её значило бы потерять историю сумм.
    */
   const priced =
@@ -179,12 +180,19 @@ export function WasteRequestViewModal({ request, onClose, onEdit }: Props) {
           label: 'Оператор вывоза',
           children: request.operatorName ?? 'не назначен',
         },
-        {
-          key: 'containerType',
-          label: 'Контейнер / машина',
-          span: priced ? 1 : 2,
-          children: request.containerTypeName ?? '—',
-        },
+        // Контейнер — предмет только контейнерных операций: вывоз заказывает объём и технику не
+        // называет (ADR 0022). У заявок вывоза, заведённых раньше, тип в базе остался, но строка
+        // о нём в карточке говорила бы о поле, которого у этого типа заявки больше нет.
+        ...(requiresWasteVehicles(request.requestType)
+          ? []
+          : [
+              {
+                key: 'containerType',
+                label: 'Контейнер / машина',
+                span: priced ? 1 : 2,
+                children: request.containerTypeName ?? '—',
+              },
+            ]),
         ...(priced
           ? [
               {
@@ -198,7 +206,12 @@ export function WasteRequestViewModal({ request, onClose, onEdit }: Props) {
                 label: 'Стоимость',
                 children: (
                   <div style={{ lineHeight: 1.3 }}>
-                    <div>{formatMoney(request.amount)}</div>
+                    {/* Без исполнителя цена взята по самому дешёвому прайсу (ADR 0023):
+                        «от» показывает, что назначение оператора её уточнит. */}
+                    <div>
+                      {request.operatorCounterpartyId ? '' : 'от '}
+                      {formatMoney(request.amount)}
+                    </div>
                     {request.pricePerM3 != null && (
                       <Typography.Text type="secondary" style={secondary}>
                         {formatMoney(request.pricePerM3)}/м³
@@ -209,13 +222,29 @@ export function WasteRequestViewModal({ request, onClose, onEdit }: Props) {
               },
             ]
           : []),
-        // Итог по машинам: сами они с талонами — в истории, у закрытия заявки.
+        // Итог по машинам: сами строки — в истории, у закрытия заявки. Сумма по факту (ADR 0024)
+        // и есть то, что заявка стоила: цена выше — плановая, по заявленному объёму.
         ...(request.vehicles.length > 0
           ? [
               {
                 key: 'hauled',
                 label: 'Вывезено',
-                children: `${sumVehicleVolume(request.vehicles)} м³ · машин: ${activeVehicles}`,
+                span: 2,
+                children: (
+                  <div style={{ lineHeight: 1.3 }}>
+                    <div>
+                      {sumVehicleVolume(request.vehicles)} м³ · машин: {activeVehicles}
+                      {request.factAmount != null ? ` · ${formatMoney(request.factAmount)}` : ''}
+                    </div>
+                    {request.factAmount != null &&
+                      request.amount != null &&
+                      request.factAmount !== request.amount && (
+                        <Typography.Text type="secondary" style={secondary}>
+                          заявка оформлялась на {formatMoney(request.amount)}
+                        </Typography.Text>
+                      )}
+                  </div>
+                ),
               },
             ]
           : []),
@@ -290,8 +319,8 @@ export function WasteRequestViewModal({ request, onClose, onEdit }: Props) {
           )}
 
           {/* Талоны стоят отдельным блоком от документов заявки: это не сопроводительная
-              бумага, а подтверждение вывоза (ADR 0013). У вывоза самосвалами список пуст —
-              там талоны висят на машинах и показаны в истории, у их закрытия. */}
+              бумага, а подтверждение вывоза (ADR 0013). С ADR 0024 список общий у заявки
+              любого типа — по машинам талоны не делятся. */}
           {request.tickets.length > 0 && (
             <div>
               <Typography.Text strong>Талоны</Typography.Text>

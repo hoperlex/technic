@@ -120,22 +120,23 @@ export function formatMoscowDateTime(date: Date, timeUnspecified = false): strin
 }
 
 // ── Минимальная дата новой заявки ──
-// Заявку заводят заранее: на сегодня и задним числом технику уже не подать. Отсчёт ведётся от
-// текущей даты по МСК — по ней живут диспетчеры, и в этом же поясе считаются сроки в заявках.
-// Правило касается только заведения заявки: у заведённой дата остаётся такой, какой была,
-// иначе вчерашнюю заявку нельзя было бы даже отредактировать.
+// Заявку заводят и день в день: срочный вывоз и подача техники «на сегодня» — обычное дело, а
+// запрет отправлял бы такую заявку в обход портала. Задним числом заявок по-прежнему нет.
+// Отсчёт ведётся от текущей даты по МСК — по ней живут диспетчеры, и в этом же поясе считаются
+// сроки в заявках. Правило касается только заведения заявки: у заведённой дата остаётся такой,
+// какой была, иначе вчерашнюю заявку нельзя было бы даже отредактировать.
 
-/** Минимальная дата назначения новой заявки — завтра по МСК, `YYYY-MM-DD`. */
+/** Минимальная дата назначения новой заявки — сегодня по МСК, `YYYY-MM-DD`. */
 export function minRequestDateKey(now: Date = new Date()): string {
-  return moscowDateKeyOf(new Date(now.getTime() + MINUTES_PER_DAY * 60_000));
+  return moscowDateKeyOf(now);
 }
 
-/** Календарная дата `YYYY-MM-DD` не раньше завтрашней по МСК. */
+/** Календарная дата `YYYY-MM-DD` не раньше сегодняшней по МСК. */
 export function isAllowedRequestDate(dateKey: string, now?: Date): boolean {
   return dateKey >= minRequestDateKey(now);
 }
 
-/** Момент времени приходится на дату не раньше завтрашней по МСК. */
+/** Момент времени приходится на дату не раньше сегодняшней по МСК. */
 export function isAllowedRequestDateAt(date: Date, now?: Date): boolean {
   return isAllowedRequestDate(moscowDateKeyOf(date), now);
 }
@@ -144,4 +145,4 @@ export function isAllowedRequestDateAt(date: Date, now?: Date): boolean {
 export const WORK_TIME_MESSAGE = 'Время должно быть в рабочем окне с 07:00 до 21:00';
 export const TIME_FORMAT_MESSAGE = 'Время в формате чч:мм (24 часа)';
 /** Сообщение о слишком ранней дате — общее для формы и ответа API. */
-export const MIN_REQUEST_DATE_MESSAGE = 'Дата не может быть раньше завтрашней';
+export const MIN_REQUEST_DATE_MESSAGE = 'Дата не может быть раньше сегодняшней';

@@ -79,7 +79,7 @@ describe('baseListQuery', () => {
 });
 
 describe('createWasteRequestSchema', () => {
-  // Создание проверяет минимальную дату (не раньше завтра по МСК): без фиксации «сейчас»
+  // Создание проверяет минимальную дату (не раньше сегодня по МСК): без фиксации «сейчас»
   // фикстура с датой доставки протухла бы вместе с календарём.
   beforeAll(() => {
     vi.useFakeTimers({ toFake: ['Date'] });
@@ -142,21 +142,21 @@ describe('createWasteRequestSchema', () => {
     expect(parsed.requestType).toBe('container_removal');
   });
 
-  it('вывоз требует тип машины и объём', () => {
+  it('вывоз требует тип мусора и объём, а техники не спрашивает (ADR 0022)', () => {
     const ok = createWasteRequestSchema.parse({
       objectId: '11111111-1111-4111-8111-111111111111',
       requestType: 'waste_removal',
-      containerTypeId: '22222222-2222-4222-8222-222222222222',
       wasteTypeId: '44444444-4444-4444-8444-444444444444',
       volumeM3: 20,
       deliveryAt: '2026-08-01T10:00:00.000Z',
     });
     expect(ok.volumeM3).toBe(20);
+    expect(ok.containerTypeId).toBeUndefined();
     expect(() =>
       createWasteRequestSchema.parse({
         objectId: '11111111-1111-4111-8111-111111111111',
         requestType: 'waste_removal',
-        containerTypeId: '22222222-2222-4222-8222-222222222222',
+        wasteTypeId: '44444444-4444-4444-8444-444444444444',
         deliveryAt: '2026-08-01T10:00:00.000Z',
       }),
     ).toThrow();
