@@ -4,7 +4,9 @@ import {
   changeVehicleRequestStatusSchema,
   createVehicleRequestSchema,
   formatVehicleRequestNumber,
+  FREIGHT_VEHICLE_KIND_CODE,
   isAddressVerified,
+  isVehicleKindAllowedForRequest,
   parseVehicleRequestNumberSearch,
   updateVehicleRequestSchema,
   vehicleRequestListQuerySchema,
@@ -84,6 +86,28 @@ describe('vehicle-requests: тип ТС (плоская модель, ADR 0005)'
   it('устаревший vehicleSubtypeId отклоняется (strict)', () => {
     const { vehicleTypeId: _t, ...noType } = special;
     expect(() => createVehicleRequestSchema.parse({ ...noType, vehicleSubtypeId: TYPE })).toThrow();
+  });
+});
+
+// Тип заявки выбирают в форме явно, из вида ТС он не выводится: на объект вызывают технику
+// любого вида, грузоперевозку выполняют только грузовым. Тем же предикатом сужен список типов
+// ТС в форме и проверен `vehicleTypeId` на сервере.
+describe('vehicle-requests: вид ТС, доступный типу заявки', () => {
+  it('на объект — техника любого вида', () => {
+    expect(isVehicleKindAllowedForRequest('special_equipment', 'special_equipment')).toBe(true);
+    expect(isVehicleKindAllowedForRequest('special_equipment', FREIGHT_VEHICLE_KIND_CODE)).toBe(
+      true,
+    );
+    // Вид ТС — управляемый справочник: заведённый позже вид тоже можно заказать на объект.
+    expect(isVehicleKindAllowedForRequest('special_equipment', 'passenger_transport')).toBe(true);
+  });
+
+  it('грузоперевозка — только грузовым видом', () => {
+    expect(isVehicleKindAllowedForRequest('freight_transport', FREIGHT_VEHICLE_KIND_CODE)).toBe(
+      true,
+    );
+    expect(isVehicleKindAllowedForRequest('freight_transport', 'special_equipment')).toBe(false);
+    expect(isVehicleKindAllowedForRequest('freight_transport', 'passenger_transport')).toBe(false);
   });
 });
 

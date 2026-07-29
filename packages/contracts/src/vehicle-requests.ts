@@ -26,6 +26,23 @@ export const vehicleRequestTypeColors: Record<VehicleRequestType, string> = {
   freight_transport: 'green',
 };
 
+/** Код вида ТС (`vehicle_kinds.code`), которым выполняют грузоперевозки. */
+export const FREIGHT_VEHICLE_KIND_CODE = 'freight_transport';
+
+/**
+ * Технику какого вида можно заказать заявкой этого типа.
+ *
+ * Тип заявки выбирается в форме явно и из вида ТС не выводится: на объект вызывают технику
+ * любого вида (и спецтехнику, и грузовую — самосвал под вывоз грунта работает на объекте),
+ * а грузоперевозку выполняют только грузовым видом.
+ */
+export function isVehicleKindAllowedForRequest(
+  requestType: VehicleRequestType,
+  kindCode: string,
+): boolean {
+  return requestType === 'freight_transport' ? kindCode === FREIGHT_VEHICLE_KIND_CODE : true;
+}
+
 /** Отображаемый номер заявки ТС: «ТС-000123» (в БД хранится только число). */
 export function formatVehicleRequestNumber(num: number): string {
   return `ТС-${String(num).padStart(6, '0')}`;

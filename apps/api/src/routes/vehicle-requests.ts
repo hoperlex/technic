@@ -7,6 +7,7 @@ import {
   createVehicleRequestSchema,
   type FileDto,
   formatVehicleRequestNumber,
+  isVehicleKindAllowedForRequest,
   REQUEST_STATUSES,
   updateVehicleRequestSchema,
   type VehicleRequestDto,
@@ -51,12 +52,6 @@ import { loadVehicleRequestHistory } from '../services/vehicle-request-history';
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 const idParams = z.object({ id: z.string().uuid() });
-
-// Вид ТС, ожидаемый для типа заявки (совпадает с кодами vehicle_kinds).
-const KIND_BY_REQUEST_TYPE: Record<VehicleRequestType, string> = {
-  special_equipment: 'special_equipment',
-  freight_transport: 'freight_transport',
-};
 
 const requestSelect = {
   id: vehicleRequests.id,
@@ -219,8 +214,9 @@ async function assertObjectActive(tx: Tx, objectId: string): Promise<void> {
 }
 
 /**
- * Плоская модель (ADR 0005): выбран активный тип ТС активного вида, совпадающего с типом
- * заявки. Иначе — отказ.
+ * Плоская модель (ADR 0005): выбран активный тип ТС активного вида, разрешённого этому типу
+ * заявки. Иначе — отказ. Тип заявки задаётся в форме явно: на объект заказывают технику любого
+ * вида, грузоперевозку — только грузовым (`isVehicleKindAllowedForRequest`).
  */
 async function resolveVehicleType(
   tx: Tx,
@@ -239,8 +235,8 @@ async function resolveVehicleType(
   if (!row) throw err.badRequest('Тип ТС не найден');
   if (!row.isActive) throw err.badRequest('Тип ТС неактивен');
   if (!row.kindActive) throw err.badRequest('Вид ТС неактивен');
-  if (row.kindCode !== KIND_BY_REQUEST_TYPE[requestType]) {
-    throw err.unprocessable('Тип ТС не относится к выбранному виду заявки');
+  if (!isVehicleKindAllowedForRequest(requestType, row.kindCode)) {
+    throw err.unprocessable('Грузоперевозку выполняет только грузовая техника');
   }
 }
 

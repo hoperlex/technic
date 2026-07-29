@@ -24,6 +24,7 @@ import dayjs, { type Dayjs } from 'dayjs';
 import {
   type AddressMeta,
   isAddressVerified,
+  isVehicleKindAllowedForRequest,
   normalizeTimeInput,
   parseVehicleRequestNumberSearch,
   REQUEST_STATUSES,
@@ -66,15 +67,16 @@ import {
 } from './shared';
 
 /**
- * Единая форма заявки на автотехнику. Тип заявки не выбирается отдельно — его задаёт
- * вид выбранного типа ТС (коды vehicle_kinds совпадают с vehicle_request_type).
- * Показываем только поля выбранного вида: неприменимые скрыты вместе с лейблами,
- * пока тип ТС не выбран — не видно ни одного из двух блоков.
+ * Единая форма заявки на автотехнику. Тип заявки выбирают явно — он задаёт и набор полей,
+ * и список доступной техники: на объект заказывают технику любого вида, грузоперевозку —
+ * только грузовым (`isVehicleKindAllowedForRequest`). Поля чужого типа скрыты вместе с
+ * лейблами, пока тип заявки не выбран — не видно ни одного из двух блоков.
  */
 interface FormValues {
+  requestType: VehicleRequestType;
   objectId: string;
   vehicleTypeId: string;
-  // Спецтехника: период работы (date-only).
+  // Техника на объект: период работы (date-only).
   dateFrom?: Dayjs | null;
   dateTo?: Dayjs | null;
   // Грузоперевозка: дата + необязательное время `HH:mm`, объём/масса, адреса.
@@ -118,10 +120,14 @@ function amountLabel(r: VehicleRequestDto): string {
 
 export function VehicleRequestsTab() {
   const { message, modal } = App.useApp();
-  const { hasRole } = useAuth();
+  const { hasRole, can } = useAuth();
   const qc = useQueryClient();
-  const isAdmin = hasRole('admin');
+  // Штаб — область видимости (свой объект, заявка до «В работе»); действия — по правам (ADR 0021).
   const isShtab = hasRole('shtab');
+  const canEdit = can('vehicleRequests.update');
+  const canDelete = can('vehicleRequests.delete');
+  const canCreate = can('vehicleRequests.create');
+  const canRestore = can('archive.restore');
 
   // requestType не задан — список обоих типов; фильтр в шапке сужает до одного.
   // Все фильтры собраны в панели над таблицей, а не в выпадашках столбцов: в заголовке их
@@ -168,30 +174,36 @@ export function VehicleRequestsTab() {
   const [loadingMeta, setLoadingMeta] = useState<AddressMeta | null>(null);
   const [unloadingMeta, setUnloadingMeta] = useState<AddressMeta | null>(null);
 
-  // Тип заявки выводится из вида выбранного ТС.
-  const watchTypeId = Form.useWatch('vehicleTypeId', form);
-  const kind = watchTypeId ? kindByTypeId.get(watchTypeId) : undefined;
-  const isSpecial = kind === 'special_equipment';
-  const isFreight = kind === 'freight_transport';
+  // Тип заявки выбирают в форме первым — от него зависят и поля, и список типов ТС.
+  const watchRequestType = Form.useWatch('requestType', form);
+  const isSpecial = watchRequestType === 'special_equipment';
+  const isFreight = watchRequestType === 'freight_transport';
 
   // Ограничение дат: новая заявка — не раньше завтра по МСК (правило сервера), правка
   // заведённой — не в прошлое (её дата могла быть назначена и вчера).
   const minDateRule = record ? isPastDate : isBeforeMinRequestDate;
 
-  // Тип заявки менять нельзя (сервер отклонит) — при редактировании оставляем только свой вид.
-  const typeGroups = record
-    ? groups.filter((g) => g.options.some((o) => kindByTypeId.get(o.value) === record.requestType))
-    : groups;
+  // Заказ техники на объект допускает технику любого вида, грузоперевозка — только грузовую.
+  const typeGroups = watchRequestType
+    ? groups.filter((g) => isVehicleKindAllowedForRequest(watchRequestType, g.kindCode))
+    : [];
 
-  /** Смена типа ТС: поля чужого вида очищаем, своей дате подставляем завтра — раньше нельзя. */
-  const handleTypeChange = (typeId: string) => {
-    const next = kindByTypeId.get(typeId);
+  /**
+   * Смена типа заявки: поля чужого типа очищаем, своей дате подставляем завтра — раньше
+   * нельзя; выбранный тип ТС сбрасываем, если новому типу заявки он не подходит.
+   */
+  const handleRequestTypeChange = (next: VehicleRequestType) => {
+    const typeId: string | undefined = form.getFieldValue('vehicleTypeId');
+    const kindCode = typeId ? kindByTypeId.get(typeId) : undefined;
+    if (kindCode && !isVehicleKindAllowedForRequest(next, kindCode)) {
+      form.resetFields(['vehicleTypeId']);
+    }
     if (next === 'special_equipment') {
       form.resetFields([...FREIGHT_FIELDS]);
       setLoadingMeta(null);
       setUnloadingMeta(null);
       if (!form.getFieldValue('dateFrom')) form.setFieldsValue({ dateFrom: minRequestDate() });
-    } else if (next === 'freight_transport') {
+    } else {
       form.resetFields([...SPECIAL_FIELDS]);
       if (!form.getFieldValue('scheduledDate')) {
         form.setFieldsValue({ scheduledDate: minRequestDate() });
@@ -215,6 +227,7 @@ export function VehicleRequestsTab() {
       setLoadingMeta(null);
       setUnloadingMeta(null);
       form.setFieldsValue({
+        requestType: r.requestType,
         objectId: r.objectId,
         vehicleTypeId: r.vehicleTypeId,
         dateFrom: dayjs(r.dateFrom),
@@ -226,6 +239,7 @@ export function VehicleRequestsTab() {
       setUnloadingMeta(r.unloadingAddress);
       const at = dayjs.tz(r.scheduledAt, MOSCOW_TZ);
       form.setFieldsValue({
+        requestType: r.requestType,
         objectId: r.objectId,
         vehicleTypeId: r.vehicleTypeId,
         scheduledDate: at,
@@ -257,7 +271,7 @@ export function VehicleRequestsTab() {
         vehicleTypeId: v.vehicleTypeId,
         comment: v.comment ?? '',
       };
-      if (isSpecial) {
+      if (v.requestType === 'special_equipment') {
         const base = {
           requestType: 'special_equipment' as const,
           ...common,
@@ -309,9 +323,9 @@ export function VehicleRequestsTab() {
     onError: (e) => message.error(errorMessage(e)),
   });
 
-  /** Доваливаем правила, которые зависят от вида ТС и не выражаются rules-ами полей. */
+  /** Доваливаем правила, которые зависят от типа заявки и не выражаются rules-ами полей. */
   const onFinish = (v: FormValues) => {
-    if (isSpecial) {
+    if (v.requestType === 'special_equipment') {
       saveMut.mutate(v);
       return;
     }
@@ -376,7 +390,8 @@ export function VehicleRequestsTab() {
     onError: (e) => message.error(errorMessage(e)),
   });
 
-  const canModify = (r: VehicleRequestDto) => !r.deletedAt && (!isShtab || r.status === 'new');
+  const canModify = (r: VehicleRequestDto) =>
+    !r.deletedAt && (canEdit || canDelete) && (!isShtab || r.status === 'new');
 
   const confirmDelete = (r: VehicleRequestDto) =>
     modal.confirm({
@@ -512,7 +527,7 @@ export function VehicleRequestsTab() {
         return (
           <Space size={4}>
             {view}
-            {isAdmin ? (
+            {canRestore ? (
               <Tooltip title="Восстановить">
                 <Button
                   size="small"
@@ -593,9 +608,11 @@ export function VehicleRequestsTab() {
     <PageTableLayout
       filters={filters}
       extra={
-        <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-          Создать заявку
-        </Button>
+        canCreate ? (
+          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
+            Создать заявку
+          </Button>
+        ) : null
       }
     >
       {/* Сводка — на уровне вкладок, над фильтрами и кнопкой: она относится ко всему списку. */}
@@ -633,13 +650,31 @@ export function VehicleRequestsTab() {
               placeholder="Объект"
             />
           </Form.Item>
+          {/* Тип заявки неизменяем после создания (сервер отдаёт 422) — при правке поле заперто. */}
+          <Form.Item
+            name="requestType"
+            label="Тип заявки"
+            tooltip="Заказ техники на объект — техника любого вида; грузоперевозка — только грузовая"
+            rules={[{ required: true, message: 'Выберите тип заявки' }]}
+          >
+            <Select
+              options={VEHICLE_REQUEST_TYPES.map((t) => ({
+                value: t,
+                label: vehicleRequestTypeLabels[t],
+              }))}
+              placeholder="Выберите тип заявки"
+              disabled={!!record}
+              onChange={handleRequestTypeChange}
+            />
+          </Form.Item>
           <VehicleTypeSelect
             groups={typeGroups}
             loading={typesLoading}
-            onChange={handleTypeChange}
+            disabled={!watchRequestType}
+            placeholder={watchRequestType ? 'Выберите тип' : 'Сначала выберите тип заявки'}
           />
 
-          {/* Спецтехника: период работы. Новую заявку назначают не раньше чем на завтра
+          {/* Техника на объект: период работы. Новую заявку назначают не раньше чем на завтра
               (по МСК); у заведённой дата правится свободно, лишь бы не в прошлое. */}
           {isSpecial && (
             <Space style={{ width: '100%' }} size="middle">

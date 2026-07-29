@@ -168,12 +168,19 @@ export function StatusCell({
   );
 }
 
+/** Типы ТС одного вида — группа в Select. `kindCode` нужен, чтобы сузить список типом заявки. */
+export interface VehicleTypeGroup {
+  label: string;
+  kindCode: string;
+  options: { value: string; label: string }[];
+}
+
 /**
  * Все активные типы ТС (плоская модель, ADR 0005), сгруппированные по виду.
  *
- * Вид ТС — он же тип заявки: коды `vehicle_kinds` совпадают с `vehicle_request_type`
- * (`special_equipment` / `freight_transport`). Поэтому выбранный тип ТС однозначно
- * задаёт, какая это заявка, и отдельный переключатель типа в форме не нужен.
+ * Вид ТС не задаёт тип заявки — его выбирают в форме явно: техникой любого вида работают
+ * на объекте, а грузоперевозку выполняют только грузовым видом
+ * (`isVehicleKindAllowedForRequest`).
  */
 export function useVehicleTypes() {
   const { data, isFetching } = useQuery({
@@ -189,11 +196,11 @@ export function useVehicleTypes() {
   const items = data?.items ?? [];
 
   const kindByTypeId = new Map(items.map((t) => [t.id, t.kindCode]));
-  const groups: { label: string; options: { value: string; label: string }[] }[] = [];
+  const groups: VehicleTypeGroup[] = [];
   for (const t of items) {
-    let group = groups.find((g) => g.label === t.kindName);
+    let group = groups.find((g) => g.kindCode === t.kindCode);
     if (!group) {
-      group = { label: t.kindName, options: [] };
+      group = { label: t.kindName, kindCode: t.kindCode, options: [] };
       groups.push(group);
     }
     group.options.push({ value: t.id, label: t.name });
@@ -202,21 +209,26 @@ export function useVehicleTypes() {
   return { kindByTypeId, groups, loading: isFetching };
 }
 
-/** Выбор типа ТС: список сгруппирован по виду, в API уходит vehicleTypeId. */
+/**
+ * Выбор типа ТС: список сгруппирован по виду, в API уходит vehicleTypeId. Набор групп сужен
+ * типом заявки, поэтому до его выбора поле недоступно.
+ */
 export function VehicleTypeSelect({
   groups,
   loading,
-  onChange,
+  disabled,
+  placeholder = 'Выберите тип',
 }: {
-  groups: { label: string; options: { value: string; label: string }[] }[];
+  groups: VehicleTypeGroup[];
   loading: boolean;
-  onChange?: (typeId: string) => void;
+  disabled?: boolean;
+  placeholder?: string;
 }) {
   return (
     <Form.Item
       name="vehicleTypeId"
       label="Тип ТС"
-      tooltip="Вид техники определяет, какие поля заявки нужно заполнить"
+      tooltip="Список сужен типом заявки: грузоперевозку выполняет только грузовая техника"
       rules={[{ required: true, message: 'Выберите тип' }]}
     >
       <Select
@@ -224,8 +236,8 @@ export function VehicleTypeSelect({
         showSearch
         optionFilterProp="label"
         loading={loading}
-        placeholder="Выберите тип"
-        onChange={onChange}
+        disabled={disabled}
+        placeholder={placeholder}
       />
     </Form.Item>
   );
