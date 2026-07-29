@@ -34,7 +34,14 @@ const createdAt = () => timestamp('created_at', { withTimezone: true }).notNull(
 const updatedAt = () => timestamp('updated_at', { withTimezone: true }).notNull().defaultNow();
 
 // ── Enums ──
-export const roleEnum = pgEnum('role', ['admin', 'manager', 'dispatcher', 'shtab', 'operator']);
+export const roleEnum = pgEnum('role', [
+  'admin',
+  'manager',
+  'dispatcher',
+  'shtab',
+  'rukstroy',
+  'operator',
+]);
 export const requestStatusEnum = pgEnum('request_status', [
   'new',
   'confirmed',
@@ -124,7 +131,7 @@ export const containerTypes = pgTable(
 );
 
 // ── Типы мусора (ADR 0009, ведение — ADR 0017) ──
-// «Что вывозим»: строительные отходы, бетонный бой, грунт, ОССиГ, древесные отходы.
+// «Что вывозим»: строительный мусор, бетонный бой, грунт, Тринити, древесные отходы.
 // «Чем вывозим» — container_types; цена задаётся на пару (см. wasteTariffs). Отдельного
 // справочника в интерфейсе нет: тип заводится вместе с первой ценой и правится в строке тарифа.
 export const wasteTypes = pgTable(
@@ -155,10 +162,17 @@ export const wasteTypes = pgTable(
 // Тариф задаётся либо для конкретного типа контейнера/машины, либо для вида техники целиком;
 // при расчёте точное совпадение по типу побеждает тариф вида. Цена всегда за 1 м³: позиция
 // «15 000 ₽ за контейнер 8 м³» хранится как 1875 ₽/м³ + isPerContainer (кратность объёма).
+// Позиция принадлежит оператору (ADR 0026): одну и ту же пару «мусор × техника» операторы возят
+// по разным ставкам, поэтому оператор входит в ключ уникальности.
 export const wasteTariffs = pgTable(
   'waste_tariffs',
   {
     id: uuid('id').primaryKey().defaultRandom(),
+    // Чья это цена. Требование «тип контрагента = operator» держит сервис — как и у
+    // wasteRequests.operatorCounterpartyId (составной FK потребовал бы дублировать тип здесь).
+    operatorCounterpartyId: uuid('operator_counterparty_id')
+      .notNull()
+      .references(() => counterparties.id, { onDelete: 'restrict' }),
     wasteTypeId: uuid('waste_type_id')
       .notNull()
       .references(() => wasteTypes.id, { onDelete: 'restrict' }),
@@ -186,13 +200,14 @@ export const wasteTariffs = pgTable(
       sql`NOT ${t.isPerContainer}
           OR (${t.containerTypeId} IS NOT NULL AND ${t.pricePerContainer} IS NOT NULL)`,
     ),
-    typeContainerUnique: uniqueIndex('waste_tariffs_type_container_unique')
-      .on(t.wasteTypeId, t.containerTypeId)
+    operatorTypeContainerUnique: uniqueIndex('waste_tariffs_operator_type_container_unique')
+      .on(t.operatorCounterpartyId, t.wasteTypeId, t.containerTypeId)
       .where(sql`${t.containerTypeId} IS NOT NULL`),
-    typeKindUnique: uniqueIndex('waste_tariffs_type_kind_unique')
-      .on(t.wasteTypeId, t.containerKind)
+    operatorTypeKindUnique: uniqueIndex('waste_tariffs_operator_type_kind_unique')
+      .on(t.operatorCounterpartyId, t.wasteTypeId, t.containerKind)
       .where(sql`${t.containerKind} IS NOT NULL`),
     wasteTypeIdx: index('waste_tariffs_waste_type_idx').on(t.wasteTypeId),
+    operatorIdx: index('waste_tariffs_operator_idx').on(t.operatorCounterpartyId),
   }),
 );
 
@@ -444,6 +459,12 @@ export const vehicles = pgTable(
     // Служебная: приложение всегда пишет 'vehicle_lessor'. Существует ради составного FK
     // на (counterparties.id, type) — им инвариант «арендодатель именно арендодатель» физический.
     lessorType: counterpartyTypeEnum('lessor_type'),
+    // Активность арендодателя (ADR 0018 §15). Пишет не приложение, а каскад FK: у неактивного
+    // арендодателя не может быть активной аренды, и держит это обычный CHECK по строке.
+    lessorIsActive: boolean('lessor_is_active'),
+    // Почему предложение выключено: каскадом от арендодателя (ADR 0018 §14) или отдельным
+    // решением человека. Метка нужна, чтобы активация арендодателя вернула ровно то, что погасила.
+    deactivatedWithLessor: boolean('deactivated_with_lessor').notNull().default(false),
     // Короткий срез вида «Автокран 70 тн» — то, чем человек различает два предложения одного
     // арендодателя, пока категории не заведены. Входит в ключ уникальности предложения.
     description: text('description').notNull().default(''),
@@ -470,10 +491,12 @@ export const vehicles = pgTable(
       name: 'vehicles_category_type_fk',
     }).onDelete('restrict'),
     lessorFk: foreignKey({
-      columns: [t.lessorId, t.lessorType],
-      foreignColumns: [counterparties.id, counterparties.type],
+      columns: [t.lessorId, t.lessorType, t.lessorIsActive],
+      foreignColumns: [counterparties.id, counterparties.type, counterparties.isActive],
       name: 'vehicles_lessor_fk',
-    }).onDelete('restrict'),
+    })
+      .onUpdate('cascade')
+      .onDelete('restrict'),
     ownFields: check(
       'vehicles_own_fields_check',
       sql`${t.ownership} <> 'own' OR (
@@ -513,6 +536,14 @@ export const vehicles = pgTable(
       'vehicles_lessor_pair_check',
       sql`(${t.lessorId} IS NULL) = (${t.lessorType} IS NULL)`,
     ),
+    deactivatedWithLessorOwn: check(
+      'vehicles_deactivated_with_lessor_own_check',
+      sql`${t.ownership} = 'rental' OR NOT ${t.deactivatedWithLessor}`,
+    ),
+    deactivatedWithLessorStatus: check(
+      'vehicles_deactivated_with_lessor_status_check',
+      sql`NOT ${t.deactivatedWithLessor} OR ${t.status} <> 'active'`,
+    ),
     registrationNumberNotBlank: check(
       'vehicles_registration_number_not_blank_check',
       sql`${t.registrationNumber} IS NULL OR btrim(${t.registrationNumber}) <> ''`,
@@ -539,6 +570,9 @@ export const vehicles = pgTable(
     rentalOfferUnique: uniqueIndex('vehicles_rental_offer_unique')
       .on(t.lessorId, t.vehicleTypeId, t.vehicleCategoryId, t.description)
       .where(sql`${t.ownership} = 'rental' AND ${t.deletedAt} IS NULL`),
+    deactivatedWithLessorIdx: index('vehicles_deactivated_with_lessor_idx')
+      .on(t.lessorId)
+      .where(sql`${t.deactivatedWithLessor}`),
     lessorIdx: index('vehicles_lessor_idx')
       .on(t.lessorId)
       .where(sql`${t.ownership} = 'rental'`),
@@ -650,9 +684,10 @@ export const counterparties = pgTable(
     ),
     // 10 знаков у организации, 12 — у ИП/физлица. Контрольную сумму проверяет сервис.
     innFormat: check('counterparties_inn_format_check', sql`${t.inn} ~ '^([0-9]{10}|[0-9]{12})$'`),
-    // Цель составного FK из vehicles.lessor_fk (ADR 0018 §10): арендодателем можно указать только
-    // контрагента роли vehicle_lessor, и роль нельзя переписать, пока на него ссылается аренда.
-    idTypeUnique: unique('counterparties_id_type_unique').on(t.id, t.type),
+    // Цель составного FK из vehicles.lessor_fk (ADR 0018 §10, §15): арендодателем можно указать
+    // только контрагента роли vehicle_lessor, роль нельзя переписать, пока на него ссылается
+    // аренда, а его активность каскадом доезжает до техники.
+    idTypeActiveUnique: unique('counterparties_id_type_active_unique').on(t.id, t.type, t.isActive),
     innUnique: uniqueIndex('counterparties_inn_unique')
       .on(t.inn)
       .where(sql`${t.deletedAt} IS NULL`),
@@ -838,8 +873,9 @@ export const requestFiles = pgTable(
     fileId: uuid('file_id')
       .notNull()
       .references(() => files.id, { onDelete: 'cascade' }),
-    // Документ заявки или талон, приложенный при её закрытии (миграция 0031). Талоны вывоза
-    // самосвалами сюда не попадают — они висят на машинах (ADR 0011).
+    // Документ заявки или талон, приложенный при её закрытии (миграция 0031). С ADR 0024 сюда
+    // попадают талоны любой заявки: у вывоза они тоже общий пул, а не бумага отдельной машины
+    // (миграция 0042 перенесла их с машин сюда).
     kind: text('kind').notNull().default('attachment').$type<'attachment' | 'ticket'>(),
   },
   (t) => ({
@@ -849,12 +885,15 @@ export const requestFiles = pgTable(
   }),
 );
 
-// ── Машины, вывезшие заявку (ADR 0011, миграция 0029) ──
-// Факт вывоза — список машин, а не одно число: заявленный объём увозят несколькими рейсами,
-// у каждого свой талон. Машина описывается типом из общего справочника — техника принадлежит
-// оператору, в справочнике конкретных ТС (vehicles) её нет. Объём проставляется руками и с
-// вместимостью типа совпадать не обязан. Пометка на удаление (deletedAt) выводит строку из
-// сверки объёма, но оставляет в истории; удалить запись насовсем может только администратор.
+// ── Чем вывезли заявку (ADR 0011, миграции 0029 и 0042) ──
+// Строка — не рейс, а «тип техники × количество» (ADR 0024): оператор отчитывается «два
+// самосвала 25 м³», а не тремя одинаковыми записями. Машина описывается типом из общего
+// справочника — техника принадлежит оператору, в справочнике конкретных ТС (vehicles) её нет;
+// допустимы оба вида, и самосвалы, и контейнеры. Вместимость (volumeM3) хранится снимком за
+// одну машину, объём строки = вместимость × количество. Цена — снимок прайса на момент
+// заведения строки: по ним считается сумма закрытой заявки, и правка прайса её не переписывает.
+// Пометка на удаление (deletedAt) выводит строку из сверки объёма и суммы, но оставляет в
+// истории; удалить запись насовсем может только администратор.
 export const wasteRequestVehicles = pgTable(
   'waste_request_vehicles',
   {
@@ -866,6 +905,16 @@ export const wasteRequestVehicles = pgTable(
       .notNull()
       .references(() => containerTypes.id, { onDelete: 'restrict' }),
     volumeM3: numeric('volume_m3', { precision: 12, scale: 3 }).notNull(),
+    /** Сколько машин этого типа; колонка названа не `count`, чтобы не спорить с агрегатом. */
+    count: integer('vehicle_count').notNull().default(1),
+    wasteTariffId: uuid('waste_tariff_id').references(() => wasteTariffs.id, {
+      onDelete: 'restrict',
+    }),
+    pricePerM3: numeric('price_per_m3', { precision: 12, scale: 2 }),
+    // Сумма строки считается БД (GENERATED) — производная от вместимости, количества и цены.
+    amount: numeric('amount', { precision: 14, scale: 2 }).generatedAlwaysAs(
+      sql`round(volume_m3 * vehicle_count * price_per_m3, 2)`,
+    ),
     createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
     deletedBy: uuid('deleted_by').references(() => users.id, { onDelete: 'set null' }),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
@@ -874,28 +923,19 @@ export const wasteRequestVehicles = pgTable(
   },
   (t) => ({
     volumePositive: check('waste_request_vehicles_volume_positive_check', sql`${t.volumeM3} > 0`),
+    countCheck: check('waste_request_vehicles_count_check', sql`${t.count} BETWEEN 1 AND 99`),
+    priceSnapshot: check(
+      'waste_request_vehicles_price_snapshot_check',
+      sql`(${t.wasteTariffId} IS NULL) = (${t.pricePerM3} IS NULL)`,
+    ),
+    pricePositive: check(
+      'waste_request_vehicles_price_positive_check',
+      sql`${t.pricePerM3} IS NULL OR ${t.pricePerM3} > 0`,
+    ),
     requestIdx: index('waste_request_vehicles_request_idx').on(t.requestId),
     activeIdx: index('waste_request_vehicles_active_idx')
       .on(t.requestId)
       .where(sql`${t.deletedAt} IS NULL`),
-  }),
-);
-
-// Талоны машины (сканы). UNIQUE(file_id) — файл не в двух машинах (паттерн vehicleRequestFiles).
-export const wasteRequestVehicleFiles = pgTable(
-  'waste_request_vehicle_files',
-  {
-    vehicleId: uuid('vehicle_id')
-      .notNull()
-      .references(() => wasteRequestVehicles.id, { onDelete: 'cascade' }),
-    fileId: uuid('file_id')
-      .notNull()
-      .references(() => files.id, { onDelete: 'cascade' }),
-    addedAt: timestamp('added_at', { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => ({
-    pk: primaryKey({ columns: [t.vehicleId, t.fileId] }),
-    fileUnique: uniqueIndex('waste_request_vehicle_files_file_unique').on(t.fileId),
   }),
 );
 
@@ -935,6 +975,10 @@ export const vehicleRequests = pgTable(
       .references(() => vehicleTypes.id, { onDelete: 'restrict' }),
     status: requestStatusEnum('status').notNull().default('new'),
     comment: text('comment').notNull().default(''),
+    // Виза руководителя строительства (ADR 0025, миграция 0049): без неё заявку не берут в
+    // работу. Заполнены обе колонки или ни одной (CHECK vehicle_requests_approval_check).
+    approvedBy: uuid('approved_by').references(() => users.id, { onDelete: 'restrict' }),
+    approvedAt: timestamp('approved_at', { withTimezone: true }),
     createdBy: uuid('created_by')
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
@@ -947,6 +991,14 @@ export const vehicleRequests = pgTable(
   },
   (t) => ({
     numUnique: uniqueIndex('vehicle_requests_num_unique').on(t.num),
+    approvalPresence: check(
+      'vehicle_requests_approval_check',
+      sql`(${t.approvedBy} is null) = (${t.approvedAt} is null)`,
+    ),
+    // «Что ждёт визы» — главный вопрос к таблице после её появления (миграция 0049).
+    awaitingApprovalIdx: index('vehicle_requests_awaiting_approval_idx')
+      .on(t.objectId)
+      .where(sql`${t.approvedAt} is null and ${t.deletedAt} is null`),
     objectIdx: index('vehicle_requests_object_idx').on(t.objectId),
     typeIdx: index('vehicle_requests_request_type_idx').on(t.requestType),
     statusIdx: index('vehicle_requests_status_idx').on(t.status),

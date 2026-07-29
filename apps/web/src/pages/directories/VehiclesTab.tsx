@@ -13,7 +13,13 @@ import {
   Tooltip,
   type TableColumnsType,
 } from 'antd';
-import { DeleteOutlined, EditOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
+import {
+  DeleteOutlined,
+  EditOutlined,
+  ExclamationCircleOutlined,
+  PlusOutlined,
+  ReloadOutlined,
+} from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   RENTAL_STATUSES,
@@ -23,6 +29,7 @@ import {
   type VehicleOwnership,
   type VehicleStatus,
   VEHICLE_STATUSES,
+  rentalActivationBlockReason,
   vehicleOwnershipColors,
   vehicleOwnershipLabels,
   vehicleStatusColors,
@@ -36,11 +43,13 @@ import {
   vehiclesApi,
   vehicleTypesApi,
 } from '../../api/resources';
+import { AutoSelect } from '../../components/AutoSelect';
 import { DataTable } from '../../components/DataTable';
 import { FormModal } from '../../components/FormModal';
 import { PageTableLayout } from '../../components/PageTableLayout';
 import { actionsColumn, badgeColumn, textColumn } from '../../components/columns';
 import { useListParams } from '../../hooks/useListParams';
+import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
 
 // Справочник техники (ADR 0007) с двумя ветками принадлежности (ADR 0018). Один список, а не две
@@ -75,6 +84,10 @@ const money = (v: number | null) =>
 export function VehiclesTab() {
   const { message, modal } = App.useApp();
   const qc = useQueryClient();
+  // Архив справочника виден тем, кто его ведёт, но возвращает запись из архива администратор
+  // (ADR 0021) — кнопка следует за правом, иначе она ведёт в 403.
+  const { can } = useAuth();
+  const canRestore = can('archive.restore');
 
   const { params, setParams, onTableChange } = useListParams<{
     ownership?: VehicleOwnership;
@@ -96,7 +109,7 @@ export function VehiclesTab() {
   });
 
   // Типы ТС для селекта (активные).
-  const { data: typesData } = useQuery({
+  const { data: typesData, isLoading: typesLoading } = useQuery({
     queryKey: ['vehicle-types', 'for-select'],
     queryFn: () =>
       vehicleTypesApi.list({ page: 1, pageSize: 500, sortBy: 'name', sortOrder: 'asc' }),
@@ -105,7 +118,7 @@ export function VehiclesTab() {
   const typeOptions = types.filter((t) => t.isActive).map((t) => ({ value: t.id, label: t.name }));
 
   // Арендодатели — контрагенты роли «Арендодатель (ТС)»; учёток за ними нет, это чистый справочник.
-  const { data: lessorsData } = useQuery({
+  const { data: lessorsData, isLoading: lessorsLoading } = useQuery({
     queryKey: ['counterparties', 'vehicle-lessors'],
     queryFn: () =>
       counterpartiesApi.list({
@@ -117,7 +130,10 @@ export function VehiclesTab() {
         sortOrder: 'asc',
       }),
   });
-  const lessorOptions = (lessorsData?.items ?? []).map((c) => ({ value: c.id, label: c.name }));
+  const activeLessorOptions = (lessorsData?.items ?? []).map((c) => ({
+    value: c.id,
+    label: c.name,
+  }));
 
   const [open, setOpen] = useState(false);
   const [record, setRecord] = useState<VehicleDto | null>(null);
@@ -125,6 +141,18 @@ export function VehiclesTab() {
   const watchOwnership = Form.useWatch('ownership', form) ?? 'own';
   const watchTypeId = Form.useWatch('vehicleTypeId', form);
   const isRental = watchOwnership === 'rental';
+
+  // Почему это предложение нельзя включить (ADR 0018 §15). Текст общий с ответом сервера.
+  const blockReason = record ? rentalActivationBlockReason(record) : null;
+  // Неактивного арендодателя в списке выбора нет — но у правимой записи он может быть именно им.
+  // Без этой добавки Select показал бы сырой uuid вместо наименования.
+  const lessorOptions =
+    record?.lessorId && !activeLessorOptions.some((o) => o.value === record.lessorId)
+      ? [
+          ...activeLessorOptions,
+          { value: record.lessorId, label: `${record.lessorName ?? '—'} (неактивен)` },
+        ]
+      : activeLessorOptions;
 
   // Марки/модели выбранного типа (могут быть пусты, пока не засидированы — ADR 0007).
   const { data: modelsData } = useQuery({
@@ -345,31 +373,49 @@ export function VehiclesTab() {
               r.pricePerShift == null ? (
                 '—'
               ) : (
-                <Tooltip title={r.shiftHours ? `Смена ${r.shiftHours} ч` : 'Длительность смены не задана'}>
+                <Tooltip
+                  title={r.shiftHours ? `Смена ${r.shiftHours} ч` : 'Длительность смены не задана'}
+                >
                   {money(r.pricePerShift)}
                 </Tooltip>
               ),
           },
         ]
       : []),
-    badgeColumn<VehicleDto>({
+    {
       key: 'status',
       title: 'Статус',
       dataIndex: 'status',
-      labels: vehicleStatusLabels,
-      colors: vehicleStatusColors,
-      width: 140,
-    }),
+      width: 160,
+      sorter: true,
+      // У предложения с неактивным арендодателем рядом со статусом висит причина, по которой его
+      // нельзя включить, — иначе выключенный вариант в форме выглядел бы поломкой.
+      render: (v: VehicleStatus, r: VehicleDto) => {
+        const reason = rentalActivationBlockReason(r);
+        return (
+          <Space size={4}>
+            <Tag color={vehicleStatusColors[v]}>{vehicleStatusLabels[v]}</Tag>
+            {reason ? (
+              <Tooltip title={reason}>
+                <ExclamationCircleOutlined style={{ color: '#faad14' }} />
+              </Tooltip>
+            ) : null}
+          </Space>
+        );
+      },
+    },
     actionsColumn<VehicleDto>((r) =>
       r.deletedAt ? (
         <Space>
           <Tag>в архиве</Tag>
-          <Button
-            size="small"
-            icon={<ReloadOutlined />}
-            title="Восстановить"
-            onClick={() => restoreMut.mutate(r.id)}
-          />
+          {canRestore ? (
+            <Button
+              size="small"
+              icon={<ReloadOutlined />}
+              title="Восстановить"
+              onClick={() => restoreMut.mutate(r.id)}
+            />
+          ) : null}
         </Space>
       ) : (
         <Space>
@@ -499,7 +545,9 @@ export function VehiclesTab() {
           <Form.Item
             name="ownership"
             label="Принадлежность"
-            extra={record ? 'Принадлежность неизменяема: это другая сущность, а не правка' : undefined}
+            extra={
+              record ? 'Принадлежность неизменяема: это другая сущность, а не правка' : undefined
+            }
           >
             <Segmented<VehicleOwnership>
               disabled={!!record}
@@ -515,7 +563,13 @@ export function VehiclesTab() {
             label="Тип ТС"
             rules={[{ required: true, message: 'Выберите тип' }]}
           >
-            <Select options={typeOptions} showSearch optionFilterProp="label" placeholder="Тип ТС" />
+            <AutoSelect
+              options={typeOptions}
+              loading={typesLoading}
+              showSearch
+              optionFilterProp="label"
+              placeholder="Тип ТС"
+            />
           </Form.Item>
 
           {typeHasCategories ? (
@@ -545,8 +599,9 @@ export function VehiclesTab() {
                 label="Арендодатель"
                 rules={[{ required: true, message: 'Выберите арендодателя' }]}
               >
-                <Select
+                <AutoSelect
                   options={lessorOptions}
+                  loading={lessorsLoading}
                   showSearch
                   optionFilterProp="label"
                   placeholder="Контрагент роли «Арендодатель (ТС)»"
@@ -583,8 +638,15 @@ export function VehiclesTab() {
                   <InputNumber style={{ width: '100%' }} min={1} max={24} placeholder="8" />
                 </Form.Item>
               </Space>
-              <Form.Item name="status" label="Статус">
-                <Select options={rentalStatusOptions} />
+              {/* Активное предложение у неактивного арендодателя невозможно — вариант «Активна»
+                  выключен, а причина написана рядом, чтобы не гадать после отказа сервера. */}
+              <Form.Item name="status" label="Статус" extra={blockReason ?? undefined}>
+                <Select
+                  options={rentalStatusOptions.map((o) => ({
+                    ...o,
+                    disabled: !!blockReason && o.value === 'active',
+                  }))}
+                />
               </Form.Item>
             </>
           ) : (

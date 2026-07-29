@@ -13,6 +13,7 @@ import {
   isValidInn,
 } from '@technic/contracts';
 import { counterpartiesApi, objectsApi } from '../../api/resources';
+import { AutoSelect } from '../../components/AutoSelect';
 import { DataTable } from '../../components/DataTable';
 import { FormModal } from '../../components/FormModal';
 import { PageTableLayout } from '../../components/PageTableLayout';
@@ -122,6 +123,8 @@ export function CounterpartiesTab() {
       void qc.invalidateQueries({ queryKey: ['counterparties'] });
       // Привязка видна и в справочнике объектов — его список тоже устарел.
       void qc.invalidateQueries({ queryKey: ['objects'] });
+      // Деактивация арендодателя гасит его технику — список техники тоже устарел.
+      void qc.invalidateQueries({ queryKey: ['vehicles'] });
       setOpen(false);
     },
     onError: (e) => message.error(errorMessage(e)),
@@ -132,6 +135,7 @@ export function CounterpartiesTab() {
     onSuccess: () => {
       message.success('Контрагент удалён');
       void qc.invalidateQueries({ queryKey: ['counterparties'] });
+      void qc.invalidateQueries({ queryKey: ['vehicles'] });
     },
     onError: (e) => message.error(errorMessage(e)),
   });
@@ -140,7 +144,9 @@ export function CounterpartiesTab() {
     modal.confirm({
       title: `Удалить контрагента «${r.name}»?`,
       content:
-        'Заявки и учётные записи, где он указан, сохранятся; восстановить запись может администратор.',
+        r.type === 'vehicle_lessor'
+          ? 'Вся техника этого арендодателя будет выключена. Заявки, где он указан, сохранятся; восстановить запись может администратор.'
+          : 'Заявки и учётные записи, где он указан, сохранятся; восстановить запись может администратор.',
       okText: 'Удалить',
       okButtonProps: { danger: true },
       cancelText: 'Отмена',
@@ -247,7 +253,7 @@ export function CounterpartiesTab() {
       >
         <Form form={form} layout="vertical" onFinish={(v) => saveMut.mutate(v)}>
           <Form.Item name="type" label="Тип" rules={[{ required: true, message: 'Выберите тип' }]}>
-            <Select options={typeOptions} />
+            <AutoSelect options={typeOptions} />
           </Form.Item>
           <Form.Item
             name="name"
@@ -311,7 +317,18 @@ export function CounterpartiesTab() {
           <Form.Item name="comment" label="Комментарий">
             <Input.TextArea rows={2} maxLength={2000} showCount />
           </Form.Item>
-          <Form.Item name="isActive" label="Активен" valuePropName="checked">
+          <Form.Item
+            name="isActive"
+            label="Активен"
+            valuePropName="checked"
+            // У неактивного арендодателя не может быть активных предложений аренды (ADR 0018 §15):
+            // деактивация гасит их разом, обратное включение — по одной позиции вручную.
+            extra={
+              watchType === 'vehicle_lessor'
+                ? 'Деактивация выключит всю технику этого арендодателя, активация — вернёт ровно её (позиции, выключенные вручную, останутся выключенными)'
+                : undefined
+            }
+          >
             <Switch />
           </Form.Item>
         </Form>

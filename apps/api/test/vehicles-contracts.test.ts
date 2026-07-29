@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   createVehicleSchema,
+  rentalActivationBlockReason,
   updateVehicleSchema,
   updateVehicleSchemaByOwnership,
   vehicleListQuerySchema,
@@ -217,6 +218,8 @@ describe('vehicles: заголовок строки', () => {
     passportNumber: null,
     lessorId: null,
     lessorName: null,
+    lessorIsActive: null,
+    deactivatedWithLessor: false,
     description: '',
     pricePerHour: null,
     pricePerShift: null,
@@ -244,5 +247,49 @@ describe('vehicles: заголовок строки', () => {
     expect(vehicleTitle({ ...r, description: 'Автокран 70 тн' })).toBe('Автокран 70 тн');
     expect(vehicleTitle({ ...r, categoryName: 'Автокраны, г/п 25 т' })).toBe('Автокраны, г/п 25 т');
     expect(vehicleTitle(r)).toBe('Автокраны');
+  });
+
+  // Причина запрета одна и та же в подсказке интерфейса и в ответе сервера (ADR 0018 §16).
+  describe('запрет включения аренды у неактивного арендодателя', () => {
+    const rental: VehicleDto = {
+      ...base,
+      ownership: 'rental',
+      lessorId: LESSOR,
+      lessorName: 'ООО «ЭВЕРЕНТ»',
+      lessorIsActive: true,
+    };
+
+    it('активный арендодатель — включать можно', () => {
+      expect(rentalActivationBlockReason(rental)).toBeNull();
+    });
+
+    it('неактивный арендодатель — причина с его наименованием', () => {
+      const reason = rentalActivationBlockReason({ ...rental, lessorIsActive: false });
+      expect(reason).toContain('ООО «ЭВЕРЕНТ»');
+      expect(reason).toContain('неактивен');
+    });
+
+    it('собственной техники правило не касается', () => {
+      expect(rentalActivationBlockReason({ ...base, lessorIsActive: false })).toBeNull();
+    });
+
+    // Выключенным вместе с арендодателем возвращаться вручную не нужно — они поднимутся сами.
+    it('выключенным каскадом обещан автоматический возврат', () => {
+      const reason = rentalActivationBlockReason({
+        ...rental,
+        lessorIsActive: false,
+        deactivatedWithLessor: true,
+      });
+      expect(reason).toContain('включится обратно вместе с ним');
+    });
+
+    it('выключенным вручную предложено активировать арендодателя', () => {
+      const reason = rentalActivationBlockReason({
+        ...rental,
+        lessorIsActive: false,
+        deactivatedWithLessor: false,
+      });
+      expect(reason).toContain('справочнике контрагентов');
+    });
   });
 });

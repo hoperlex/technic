@@ -182,6 +182,16 @@ export interface VehicleDto {
   passportNumber: string | null;
   lessorId: string | null;
   lessorName: string | null;
+  /**
+   * Активен ли арендодатель. У неактивного не может быть активных предложений (ADR 0018 §15):
+   * интерфейс по этому полю блокирует включение и объясняет причину, не дожидаясь отказа сервера.
+   */
+  lessorIsActive: boolean | null;
+  /**
+   * Выключено каскадом от арендодателя, а не отдельным решением. Такие позиции вернутся сами,
+   * когда арендодателя активируют; выключенные вручную — нет (ADR 0018 §14).
+   */
+  deactivatedWithLessor: boolean;
   description: string;
   pricePerHour: number | null;
   pricePerShift: number | null;
@@ -191,6 +201,24 @@ export interface VehicleDto {
   createdAt: string;
   updatedAt: string;
   deletedAt: string | null;
+}
+
+/**
+ * Почему предложение аренды нельзя включить, или null — если можно. Текст один и тот же в
+ * подсказке у переключателя и в отказе сервера, чтобы человек не гадал, что именно не так.
+ */
+export function rentalActivationBlockReason(v: {
+  ownership: VehicleOwnership;
+  lessorIsActive: boolean | null;
+  lessorName: string | null;
+  deactivatedWithLessor?: boolean;
+}): string | null {
+  if (v.ownership !== 'rental' || v.lessorIsActive !== false) return null;
+  const who = `Арендодатель${v.lessorName ? ` «${v.lessorName}»` : ''} неактивен`;
+  // Выключенным вместе с арендодателем возвращаться не нужно вручную — они поднимутся сами.
+  return v.deactivatedWithLessor
+    ? `${who} — техника включится обратно вместе с ним`
+    : `${who} — активируйте его в справочнике контрагентов`;
 }
 
 /** Как строка техники называется в списках и подтверждениях. */

@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { and, count, eq, exists, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import {
+  can,
   type CounterpartyDto,
   counterpartyListQuerySchema,
   type CounterpartyType,
@@ -19,11 +20,13 @@ import {
   counterpartySynonyms,
   users,
   vehicles,
+  wasteTariffs,
   type CounterpartyRow,
 } from '../db/schema';
 import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
+import { assertArchiveVisible } from '../lib/access';
 import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
 import {
   hasObjectLinks,
@@ -151,6 +154,52 @@ function assertObjectsAllowed(type: CounterpartyType, objectIds: string[]): void
 }
 
 /**
+ * Гасит активные предложения аренды арендодателя (ADR 0018 §15). Вызывается перед тем, как
+ * контрагент станет неактивным: у неактивного арендодателя активной аренды быть не может, и это
+ * держит CHECK в БД — без этого шага деактивация просто упала бы сырой ошибкой ограничения.
+ * Обратного хода нет: активация арендодателя технику не поднимает, каждую позицию включают
+ * осознанно.
+ */
+async function deactivateLessorVehicles(tx: Tx, lessorId: string): Promise<number> {
+  const rows = await tx
+    .update(vehicles)
+    // Метка «выключено вместе с арендодателем» — то, по чему активация поймёт, что возвращать.
+    .set({ status: 'inactive', deactivatedWithLessor: true, updatedAt: new Date() })
+    .where(
+      and(
+        eq(vehicles.lessorId, lessorId),
+        eq(vehicles.ownership, 'rental'),
+        eq(vehicles.status, 'active'),
+        isNull(vehicles.deletedAt),
+      ),
+    )
+    .returning({ id: vehicles.id });
+  return rows.length;
+}
+
+/**
+ * Возвращает технику, погашенную вместе с арендодателем (ADR 0018 §14). Позиции, выключенные
+ * отдельным решением человека, не поднимаются — у них метки нет.
+ *
+ * Вызывать строго ПОСЛЕ обновления строки контрагента: активность доезжает до техники каскадом FK,
+ * и до него включение упёрлось бы в CHECK «активная аренда только у активного арендодателя».
+ */
+async function reactivateLessorVehicles(tx: Tx, lessorId: string): Promise<number> {
+  const rows = await tx
+    .update(vehicles)
+    .set({ status: 'active', deactivatedWithLessor: false, updatedAt: new Date() })
+    .where(
+      and(
+        eq(vehicles.lessorId, lessorId),
+        eq(vehicles.deactivatedWithLessor, true),
+        isNull(vehicles.deletedAt),
+      ),
+    )
+    .returning({ id: vehicles.id });
+  return rows.length;
+}
+
+/**
  * Смена типа не должна оставлять за собой висящие ссылки — тот же принцип, что и с привязанными
  * объектами: их заводил кто-то другой, и снимать их побочным эффектом правки типа нельзя.
  *
@@ -179,6 +228,21 @@ async function assertTypeChangeAllowed(
     }
   }
 
+  if (before === 'operator') {
+    // Позиция прайса принадлежит оператору (ADR 0026): перестав быть оператором, контрагент
+    // остался бы владельцем цен, которые больше некому применить.
+    const [priced] = await tx
+      .select({ c: count() })
+      .from(wasteTariffs)
+      .where(eq(wasteTariffs.operatorCounterpartyId, id));
+    const n = Number(priced?.c ?? 0);
+    if (n > 0) {
+      throw err.conflict(
+        `На контрагента ссылаются позиции прайса вывоза мусора (${n}) — удалите их перед сменой типа`,
+      );
+    }
+  }
+
   if (before === 'vehicle_lessor') {
     const [rented] = await tx
       .select({ c: count() })
@@ -195,16 +259,21 @@ async function assertTypeChangeAllowed(
 
 export default async function counterpartiesRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
-  const canWrite = app.requireRoles('admin', 'manager');
+  const canRead = app.requirePermission('directories.read');
+  const canWrite = app.requirePermission('directories.write');
+  const canRestore = app.requirePermission('archive.restore');
 
   // Чтение — всем аутентифицированным: контрагент выбирается в заявке (оператор вывоза).
   r.get(
     '/',
-    { preHandler: [app.authenticate], schema: { querystring: counterpartyListQuerySchema } },
+    {
+      preHandler: [app.authenticate, canRead],
+      schema: { querystring: counterpartyListQuerySchema },
+    },
     async (req) => {
       const p = requirePrincipal(req);
       const q = req.query;
-      const showDeleted = q.includeDeleted && p.role === 'admin';
+      const showDeleted = q.includeDeleted && can(p.role, 'archive.read');
       // Поиск идёт и по синонимам: пользователь ищет по тому наименованию, которое видит в документе.
       const search = q.search
         ? or(
@@ -264,10 +333,13 @@ export default async function counterpartiesRoutes(app: FastifyInstance): Promis
   // Сопоставление наименования из документа с контрагентом: основное имя, затем синонимы.
   // Сравнение — по нормализованной форме («ООО «Ромашка»» и «Ромашка ООО» дают разное, а
   // «ООО «Ромашка»» и «ООО Ромашка» — одно и то же).
+  // Ненайденное совпадение — это `match: null` при 200, а не 404: ручка отработала, просто
+  // в справочнике такого наименования нет. Импорту выгрузки нужно отличать «нет такого» от
+  // сбоя запроса, а по коду ошибки эти случаи не различались.
   r.get(
     '/resolve',
     {
-      preHandler: [app.authenticate],
+      preHandler: [app.authenticate, canRead],
       schema: { querystring: resolveCounterpartyQuerySchema },
     },
     async (req) => {
@@ -284,8 +356,7 @@ export default async function counterpartiesRoutes(app: FastifyInstance): Promis
         .limit(1);
       if (byName) {
         const dto: ResolvedCounterpartyDto = {
-          counterparty: (await getDto(byName.id))!,
-          matchedBy: 'name',
+          match: { counterparty: (await getDto(byName.id))!, matchedBy: 'name' },
         };
         return dto;
       }
@@ -300,20 +371,26 @@ export default async function counterpartiesRoutes(app: FastifyInstance): Promis
           ),
         )
         .limit(1);
-      if (!bySynonym) throw err.notFound('Контрагент с таким наименованием не найден');
       const dto: ResolvedCounterpartyDto = {
-        counterparty: (await getDto(bySynonym.row.id))!,
-        matchedBy: 'synonym',
+        match: bySynonym
+          ? { counterparty: (await getDto(bySynonym.row.id))!, matchedBy: 'synonym' }
+          : null,
       };
       return dto;
     },
   );
 
-  r.get('/:id', { preHandler: [app.authenticate], schema: { params: idParams } }, async (req) => {
-    const dto = await getDto(req.params.id);
-    if (!dto) throw err.notFound('Контрагент не найден');
-    return dto;
-  });
+  r.get(
+    '/:id',
+    { preHandler: [app.authenticate, canRead], schema: { params: idParams } },
+    async (req) => {
+      const dto = await getDto(req.params.id);
+      if (!dto) throw err.notFound('Контрагент не найден');
+      // Удалённый контрагент — архив: по прямому id его тоже не отдаём (ADR 0021).
+      assertArchiveVisible(requirePrincipal(req), dto.deletedAt, 'Контрагент не найден');
+      return dto;
+    },
+  );
 
   r.post(
     '/',
@@ -367,6 +444,8 @@ export default async function counterpartiesRoutes(app: FastifyInstance): Promis
       if (body.inn !== undefined && !isValidInn(body.inn)) {
         throw err.badRequest(INN_CHECKSUM_MESSAGE, { inn: 'Неверный ИНН' });
       }
+      let deactivatedVehicles = 0;
+      let reactivatedVehicles = 0;
       await db.transaction(async (tx) => {
         const [existing] = await tx.select().from(counterparties).where(eq(counterparties.id, id));
         if (!existing || existing.deletedAt) throw err.notFound('Контрагент не найден');
@@ -384,6 +463,11 @@ export default async function counterpartiesRoutes(app: FastifyInstance): Promis
             'У контрагента есть привязанные объекты — снимите привязку перед сменой типа',
           );
         }
+        // Деактивация арендодателя гасит его технику — до обновления самой строки: активность
+        // арендодателя доезжает до vehicles каскадом FK, и активная аренда упёрлась бы в CHECK.
+        if (body.isActive === false && existing.isActive && type === 'vehicle_lessor') {
+          deactivatedVehicles = await deactivateLessorVehicles(tx, id);
+        }
         await tx
           .update(counterparties)
           .set({
@@ -396,6 +480,11 @@ export default async function counterpartiesRoutes(app: FastifyInstance): Promis
             updatedAt: new Date(),
           })
           .where(eq(counterparties.id, id));
+        // Активация — наоборот, ПОСЛЕ обновления строки: только теперь каскад проставил технике
+        // активного арендодателя, и включение не упрётся в CHECK.
+        if (body.isActive === true && !existing.isActive && type === 'vehicle_lessor') {
+          reactivatedVehicles = await reactivateLessorVehicles(tx, id);
+        }
         if (body.synonyms !== undefined) await replaceSynonyms(tx, id, body.synonyms);
         // Отсутствие поля — «не трогать привязки»: их правят и из карточки объекта.
         if (body.objectIds !== undefined)
@@ -406,6 +495,10 @@ export default async function counterpartiesRoutes(app: FastifyInstance): Promis
         action: 'counterparty.update',
         entityType: 'counterparty',
         entityId: id,
+        metadata:
+          deactivatedVehicles > 0 || reactivatedVehicles > 0
+            ? { deactivatedVehicles, reactivatedVehicles }
+            : undefined,
       });
       return (await getDto(id))!;
     },
@@ -419,17 +512,25 @@ export default async function counterpartiesRoutes(app: FastifyInstance): Promis
     async (req) => {
       const p = requirePrincipal(req);
       const { id } = req.params;
-      const [existing] = await db.select().from(counterparties).where(eq(counterparties.id, id));
-      if (!existing || existing.deletedAt) throw err.notFound('Контрагент не найден');
-      await db
-        .update(counterparties)
-        .set({ deletedAt: new Date(), deletedBy: p.id, isActive: false, updatedAt: new Date() })
-        .where(eq(counterparties.id, id));
+      let deactivatedVehicles = 0;
+      await db.transaction(async (tx) => {
+        const [existing] = await tx.select().from(counterparties).where(eq(counterparties.id, id));
+        if (!existing || existing.deletedAt) throw err.notFound('Контрагент не найден');
+        // Удаление тоже снимает активность — значит и технику гасим здесь (ADR 0018 §15).
+        if (existing.type === 'vehicle_lessor') {
+          deactivatedVehicles = await deactivateLessorVehicles(tx, id);
+        }
+        await tx
+          .update(counterparties)
+          .set({ deletedAt: new Date(), deletedBy: p.id, isActive: false, updatedAt: new Date() })
+          .where(eq(counterparties.id, id));
+      });
       await writeAudit({
         actorUserId: p.id,
         action: 'counterparty.delete',
         entityType: 'counterparty',
         entityId: id,
+        metadata: deactivatedVehicles > 0 ? { deactivatedVehicles } : undefined,
       });
       return { ok: true };
     },
@@ -437,7 +538,7 @@ export default async function counterpartiesRoutes(app: FastifyInstance): Promis
 
   r.post(
     '/:id/restore',
-    { preHandler: [app.authenticate, app.requireRoles('admin')], schema: { params: idParams } },
+    { preHandler: [app.authenticate, canRestore], schema: { params: idParams } },
     async (req) => {
       const p = requirePrincipal(req);
       const { id } = req.params;

@@ -2,7 +2,9 @@ import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { and, count, eq, ilike, isNull, ne, or, sql } from 'drizzle-orm';
 import {
+  can,
   createVehicleSchema,
+  rentalActivationBlockReason,
   updateVehicleSchema,
   updateVehicleSchemaByOwnership,
   type UpdateOwnVehicleInput,
@@ -43,6 +45,8 @@ const vehicleSelect = {
   passportNumber: vehicles.passportNumber,
   lessorId: vehicles.lessorId,
   lessorName: counterparties.name,
+  lessorIsActive: vehicles.lessorIsActive,
+  deactivatedWithLessor: vehicles.deactivatedWithLessor,
   description: vehicles.description,
   pricePerHour: vehicles.pricePerHour,
   pricePerShift: vehicles.pricePerShift,
@@ -83,6 +87,8 @@ function toDto(r: VehicleRow): VehicleDto {
     passportNumber: r.passportNumber,
     lessorId: r.lessorId,
     lessorName: r.lessorName,
+    lessorIsActive: r.lessorIsActive,
+    deactivatedWithLessor: r.deactivatedWithLessor,
     description: r.description,
     pricePerHour: r.pricePerHour == null ? null : Number(r.pricePerHour),
     pricePerShift: r.pricePerShift == null ? null : Number(r.pricePerShift),
@@ -157,6 +163,25 @@ async function assertLessorUsable(lessorId: string): Promise<void> {
   if (!cp.isActive) throw err.unprocessable('Арендодатель неактивен');
 }
 
+/**
+ * Включить предложение аренды можно только у активного арендодателя (ADR 0018 §15). Формулировка
+ * отказа — общая с интерфейсом, чтобы подсказка у выключенного переключателя и ответ сервера
+ * говорили одно и то же.
+ */
+async function assertRentalActivatable(lessorId: string | null): Promise<void> {
+  if (!lessorId) return;
+  const [cp] = await db
+    .select({ name: counterparties.name, isActive: counterparties.isActive })
+    .from(counterparties)
+    .where(eq(counterparties.id, lessorId));
+  const reason = rentalActivationBlockReason({
+    ownership: 'rental',
+    lessorIsActive: cp?.isActive ?? null,
+    lessorName: cp?.name ?? null,
+  });
+  if (reason) throw err.unprocessable(reason, { status: 'Арендодатель неактивен' });
+}
+
 async function assertRegUnique(reg: string, excludeId?: string): Promise<void> {
   const [dup] = await db
     .select({ id: vehicles.id })
@@ -209,15 +234,19 @@ async function assertRentalOfferFree(
 
 export default async function vehiclesRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
-  const canWrite = app.requireRoles('admin', 'manager');
+  const canRead = app.requirePermission('directories.read');
+  const canWrite = app.requirePermission('directories.write');
 
   r.get(
     '/',
-    { preHandler: [app.authenticate], schema: { querystring: vehicleListQuerySchema } },
+    { preHandler: [app.authenticate, canRead], schema: { querystring: vehicleListQuerySchema } },
     async (req) => {
       const q = req.query;
+      // Удалённую технику показываем тем, кто ведёт справочник: остальным она в списке
+      // выбора только мешает (ADR 0021).
+      const showDeleted = q.includeDeleted && can(requirePrincipal(req).role, 'directories.write');
       const where = and(
-        q.includeDeleted ? undefined : isNull(vehicles.deletedAt),
+        showDeleted ? undefined : isNull(vehicles.deletedAt),
         q.ownership ? eq(vehicles.ownership, q.ownership) : undefined,
         q.vehicleTypeId ? eq(vehicles.vehicleTypeId, q.vehicleTypeId) : undefined,
         q.vehicleCategoryId ? eq(vehicles.vehicleCategoryId, q.vehicleCategoryId) : undefined,
@@ -311,8 +340,10 @@ export default async function vehiclesRoutes(app: FastifyInstance): Promise<void
         values = {
           ...common,
           lessorId: b.lessorId,
-          // Служебный тип — цель составного FK; человек его не задаёт.
+          // Служебные поля — цель составного FK; человек их не задаёт. Активность здесь всегда
+          // true: неактивного арендодателя отсёк assertLessorUsable, а дальше её ведёт каскад FK.
           lessorType: 'vehicle_lessor',
+          lessorIsActive: true,
           description: b.description,
           pricePerHour: money(b.pricePerHour),
           pricePerShift: money(b.pricePerShift),
@@ -410,7 +441,20 @@ export default async function vehiclesRoutes(app: FastifyInstance): Promise<void
         if (hour == null && shift == null) {
           throw err.unprocessable('Укажите хотя бы одну цену — за час или за смену');
         }
-        if (b.lessorId !== undefined) set.lessorId = b.lessorId;
+        // Включить предложение можно только у активного арендодателя. Проверяем на итоговом
+        // состоянии: статус мог остаться активным, а арендодатель — смениться.
+        if ((b.status ?? ex.status) === 'active') await assertRentalActivatable(lessorId);
+        // Любая ручная правка статуса снимает метку «выключено вместе с арендодателем»: дальше
+        // это решение человека, и активация арендодателя такую позицию уже не поднимет.
+        if (b.status !== undefined) set.deactivatedWithLessor = false;
+        if (b.lessorId !== undefined && b.lessorId !== ex.lessorId) {
+          set.lessorId = b.lessorId;
+          // Активность нового арендодателя уже проверена — дальше её ведёт каскад FK.
+          set.lessorIsActive = true;
+          // Метка относилась к прежнему арендодателю: с новым никто не обещал вернуть позицию,
+          // иначе она однажды всплыла бы активной при его активации.
+          set.deactivatedWithLessor = false;
+        }
         if (b.description !== undefined) set.description = b.description;
         if (b.pricePerHour !== undefined) set.pricePerHour = money(b.pricePerHour);
         if (b.pricePerShift !== undefined) set.pricePerShift = money(b.pricePerShift);
@@ -450,9 +494,14 @@ export default async function vehiclesRoutes(app: FastifyInstance): Promise<void
     },
   );
 
+  // Восстановление удалённой записи — работа с архивом (ADR 0021), а не обычная правка
+  // справочника: удаление могло быть осознанным решением, и отменяет его администратор.
   r.post(
     '/:id/restore',
-    { preHandler: [app.authenticate, canWrite], schema: { params: idParams } },
+    {
+      preHandler: [app.authenticate, app.requirePermission('archive.restore')],
+      schema: { params: idParams },
+    },
     async (req) => {
       const { id } = req.params;
       const [ex] = await db.select().from(vehicles).where(eq(vehicles.id, id));
@@ -460,6 +509,11 @@ export default async function vehiclesRoutes(app: FastifyInstance): Promise<void
       if (!ex.deletedAt) return (await getById(id))!;
       // Уникальность считается только среди живых — при восстановлении сверяем заново.
       if (ex.registrationNumber) await assertRegUnique(ex.registrationNumber, id);
+      // Пока запись лежала в архиве, арендодателя могли деактивировать: активное предложение
+      // у неактивного арендодателя невозможно, и молча гасить статус при восстановлении нельзя.
+      if (ex.ownership === 'rental' && ex.status === 'active') {
+        await assertRentalActivatable(ex.lessorId);
+      }
       if (ex.ownership === 'rental' && ex.lessorId) {
         await assertRentalOfferFree(
           ex.lessorId,
@@ -471,7 +525,9 @@ export default async function vehiclesRoutes(app: FastifyInstance): Promise<void
       }
       await db
         .update(vehicles)
-        .set({ deletedAt: null, updatedAt: new Date() })
+        // Возврат из архива — решение человека: метку «выключено вместе с арендодателем» снимаем,
+        // иначе запись всплыла бы активной при следующей активации арендодателя.
+        .set({ deletedAt: null, deactivatedWithLessor: false, updatedAt: new Date() })
         .where(eq(vehicles.id, id));
       await writeAudit({
         actorUserId: requirePrincipal(req).id,
