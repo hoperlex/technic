@@ -16,6 +16,7 @@ import {
   workedAmountLabel,
 } from '@technic/contracts';
 import { FormModal } from '../../components/FormModal';
+import { useIsMobile } from '../../hooks/useIsMobile';
 import { calendarDayCount } from '../../utils/date';
 import { formatMoney } from '../../utils/format';
 
@@ -72,6 +73,7 @@ function plannedAmount(request: VehicleRequestDto, unit: VehicleWorkUnit): numbe
 
 export function VehicleCompleteModal({ request, confirmLoading, onCancel, onSubmit }: Props) {
   const { message } = App.useApp();
+  const isMobile = useIsMobile();
   const [form] = Form.useForm<FormValues>();
   const [unit, setUnit] = useState<VehicleWorkUnit>('shifts');
   /** Сумму правили руками — расчёт её больше не переписывает. */
@@ -206,7 +208,14 @@ export function VehicleCompleteModal({ request, confirmLoading, onCancel, onSubm
             />
           </Form.Item>
 
-          <Space style={{ width: '100%' }} size="middle" align="start">
+          {/* Отработанное и стоимость стоят рядом — их сверяют друг с другом; на телефоне
+              для двух числовых полей в строке места нет (ADR 0030). */}
+          <Space
+            style={{ width: '100%' }}
+            size="middle"
+            align="start"
+            direction={isMobile ? 'vertical' : 'horizontal'}
+          >
             <Form.Item
               name="workedAmount"
               label={unit === 'hours' ? 'Отработано часов' : 'Отработано смен'}

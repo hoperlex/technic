@@ -1,4 +1,4 @@
-import { Button, Descriptions, Modal, Space, Spin, Tag, Typography } from 'antd';
+import { Button, Descriptions, Space, Spin, Tag, Typography } from 'antd';
 import { CheckCircleOutlined, ClockCircleOutlined } from '@ant-design/icons';
 import { type ReactNode, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
@@ -22,6 +22,8 @@ import { AddressCell } from '../../components/AddressAutoComplete';
 import { FileLinkList } from '../../components/FileLinks';
 import { type HistoryRow, RequestHistoryTable } from '../../components/RequestHistory';
 import { UserAvatar } from '../../components/UserAvatar';
+import { ViewModal } from '../../components/ViewModal';
+import { useIsMobile } from '../../hooks/useIsMobile';
 import { calendarDaysLabel } from '../../utils/date';
 import { formatDateTime, formatDateTimeMaybe, formatMoney } from '../../utils/format';
 import { formatDateOnly } from './shared';
@@ -67,6 +69,7 @@ function termOf(r: VehicleRequestDto): ReactNode {
 }
 
 export function VehicleRequestViewModal({ request, onClose, onEdit }: Props) {
+  const isMobile = useIsMobile();
   const { data: history, isPending } = useQuery({
     queryKey: ['vehicle-requests', request?.id, 'history'],
     queryFn: () => vehicleRequestsApi.history(request!.id),
@@ -250,13 +253,11 @@ export function VehicleRequestViewModal({ request, onClose, onEdit }: Props) {
     : [];
 
   return (
-    <Modal
+    <ViewModal
       title={request ? `Заявка ${request.displayNumber}` : 'Заявка'}
       open={!!request}
-      onCancel={onClose}
+      onClose={onClose}
       width={760}
-      centered
-      mask={{ closable: false }}
       // Окно переоткрывают на соседней заявке — раскрытые строки прошлой истории не её дело.
       destroyOnHidden
       footer={[
@@ -271,19 +272,18 @@ export function VehicleRequestViewModal({ request, onClose, onEdit }: Props) {
           Закрыть
         </Button>,
       ]}
-      styles={{
-        container: {
-          display: 'flex',
-          flexDirection: 'column',
-          maxHeight: 'calc(100dvh - 48px)',
-          overflow: 'hidden',
-        },
-        body: { flex: '1 1 auto', minHeight: 0, overflowY: 'auto' },
-      }}
     >
       {request && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          <Descriptions size="small" bordered column={2} items={fields} />
+          {/* На телефоне поля идут в одну колонку: в две подпись и значение делят 180 px
+              и переносятся по слогам. Набор полей общий — меняется только число колонок. */}
+          <Descriptions
+            size="small"
+            bordered
+            column={isMobile ? 1 : 2}
+            layout={isMobile ? 'vertical' : 'horizontal'}
+            items={fields}
+          />
 
           {request.files.length > 0 && (
             <div>
@@ -307,6 +307,6 @@ export function VehicleRequestViewModal({ request, onClose, onEdit }: Props) {
           </div>
         </div>
       )}
-    </Modal>
+    </ViewModal>
   );
 }

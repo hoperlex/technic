@@ -59,6 +59,7 @@ import { actionsColumn, textColumn } from '../../components/columns';
 import { TimeInput, optionalWorkTimeRule } from '../../components/TimeInput';
 import { UserAvatar } from '../../components/UserAvatar';
 import { AddressAutoComplete } from '../../components/AddressAutoComplete';
+import { useIsMobile } from '../../hooks/useIsMobile';
 import { useListParams } from '../../hooks/useListParams';
 import {
   classificationKeyOf,
@@ -157,6 +158,7 @@ export function VehicleRequestsTab() {
   const { message, modal } = App.useApp();
   const { user, can } = useAuth();
   const qc = useQueryClient();
+  const isMobile = useIsMobile();
   // Объектные роли — область видимости (свой объект, заявка до «В работе»); действия — по
   // правам (ADR 0021). Виза — право руководителя строительства (ADR 0025).
   const isObjectRole = isObjectScopedRole(user?.role);
@@ -861,7 +863,11 @@ export function VehicleRequestsTab() {
           {/* Техника на объект: период работы. Новую заявку назначают не раньше чем на сегодня
               (по МСК); у заведённой дата правится свободно, лишь бы не в прошлое. */}
           {isSpecial && (
-            <Space style={{ width: '100%' }} size="middle">
+            <Space
+              style={{ width: '100%' }}
+              size="middle"
+              direction={isMobile ? 'vertical' : 'horizontal'}
+            >
               <Form.Item
                 name="dateFrom"
                 label="Дата начала"
@@ -870,6 +876,7 @@ export function VehicleRequestsTab() {
                 <DatePicker
                   format="DD.MM.YYYY"
                   style={{ width: '100%' }}
+                  inputReadOnly={isMobile}
                   disabledDate={minDateRule}
                 />
               </Form.Item>
@@ -878,6 +885,7 @@ export function VehicleRequestsTab() {
                 <DatePicker
                   format="DD.MM.YYYY"
                   style={{ width: '100%' }}
+                  inputReadOnly={isMobile}
                   disabledDate={minDateRule}
                 />
               </Form.Item>
@@ -887,7 +895,11 @@ export function VehicleRequestsTab() {
           {/* Грузоперевозка: дата/время, объём или масса, адреса. */}
           {isFreight && (
             <>
-              <Space style={{ width: '100%' }} size="middle">
+              <Space
+                style={{ width: '100%' }}
+                size="middle"
+                direction={isMobile ? 'vertical' : 'horizontal'}
+              >
                 <Form.Item
                   name="scheduledDate"
                   label="Дата подачи"
@@ -896,6 +908,7 @@ export function VehicleRequestsTab() {
                   <DatePicker
                     format="DD.MM.YYYY"
                     style={{ width: '100%' }}
+                    inputReadOnly={isMobile}
                     disabledDate={minDateRule}
                   />
                 </Form.Item>
@@ -908,7 +921,11 @@ export function VehicleRequestsTab() {
                   <TimeInput />
                 </Form.Item>
               </Space>
-              <Space style={{ width: '100%' }} size="middle">
+              <Space
+                style={{ width: '100%' }}
+                size="middle"
+                direction={isMobile ? 'vertical' : 'horizontal'}
+              >
                 <Form.Item name="volumeM3" label="Объём, м³" style={{ flex: 1 }}>
                   <InputNumber style={{ width: '100%' }} min={0} step={0.1} />
                 </Form.Item>
