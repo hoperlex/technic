@@ -3,8 +3,13 @@ import type {
   FreightTransportRequestDto,
   SpecialEquipmentRequestDto,
   VehicleRequestAssignmentDto,
+  VehicleRequestCompletionDto,
 } from '@technic/contracts';
-import { diffVehicleAssignment, diffVehicleRequests } from '../src/services/vehicle-request-diff';
+import {
+  diffVehicleAssignment,
+  diffVehicleCompletion,
+  diffVehicleRequests,
+} from '../src/services/vehicle-request-diff';
 
 // Дифф правки заявки на технику — то, из чего складывается история в карточке (ADR 0015).
 
@@ -246,5 +251,61 @@ describe('дифф назначения техники', () => {
     });
     // Ставка снята — в истории это «было 2 500 ₽, стало ничего».
     expect(changes.find((c) => c.field === 'pricePerHour')?.to).toBe('—');
+  });
+});
+
+// ── Факт выполнения (ADR 0029) ──
+const COMPLETION: VehicleRequestCompletionDto = {
+  workedUnit: 'shifts',
+  workedAmount: 3,
+  rate: 18000,
+  totalCost: 54000,
+  completedBy: '55555555-5555-4555-8555-555555555555',
+  completedByName: 'Иванов И. И.',
+  completedAt: '2026-08-05T12:00:00.000Z',
+};
+
+describe('дифф факта выполнения', () => {
+  it('первое закрытие: слева прочерки — факта не было', () => {
+    const changes = diffVehicleCompletion(null, COMPLETION);
+    expect(changes).toContainEqual({ field: 'worked', from: '—', to: '3 смены' });
+    expect(changes.find((c) => c.field === 'totalCost')?.from).toBe('—');
+    expect(changes.find((c) => c.field === 'totalCost')?.to).toContain('₽');
+  });
+
+  it('повторное закрытие: изменилось время — изменилась и сумма', () => {
+    const changes = diffVehicleCompletion(COMPLETION, {
+      ...COMPLETION,
+      workedAmount: 2,
+      totalCost: 36000,
+    });
+    expect(changes).toContainEqual({ field: 'worked', from: '3 смены', to: '2 смены' });
+    const digits = (s: string | null | undefined) => (s ?? '').replace(/\D/g, '');
+    expect(digits(changes.find((c) => c.field === 'totalCost')?.to)).toBe('3600000');
+    // Ставка та же — событию о ней взяться неоткуда.
+    expect(changes.some((c) => c.field === 'rate')).toBe(false);
+  });
+
+  it('смена единицы видна даже при том же числе: 3 смены и 3 часа — разные факты', () => {
+    const changes = diffVehicleCompletion(COMPLETION, {
+      ...COMPLETION,
+      workedUnit: 'hours',
+      rate: 2500,
+      totalCost: 7500,
+    });
+    expect(changes).toContainEqual({ field: 'worked', from: '3 смены', to: '3 ч' });
+  });
+
+  it('своя машина без ставки: отработанное есть, суммы нет', () => {
+    const changes = diffVehicleCompletion(null, {
+      ...COMPLETION,
+      workedUnit: 'hours',
+      workedAmount: 6,
+      rate: null,
+      totalCost: null,
+    });
+    expect(changes).toContainEqual({ field: 'worked', from: '—', to: '6 ч' });
+    // Ни ставки, ни суммы не было и нет — в истории об этом ни строки.
+    expect(changes.some((c) => c.field === 'rate' || c.field === 'totalCost')).toBe(false);
   });
 });

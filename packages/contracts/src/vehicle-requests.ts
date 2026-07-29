@@ -352,6 +352,92 @@ export const assignVehicleSchema = z
   .strict();
 export type AssignVehicleInput = z.infer<typeof assignVehicleSchema>;
 
+// ── Факт выполнения заявки (ADR 0029) ──
+
+/**
+ * Чем мерят отработанное — теми же единицами, в которых заведены ставки (ADR 0027, ADR 0018).
+ * Третьей единицы («по рейсам», «по тоннам») здесь нет намеренно: за что не назначена ставка,
+ * то нечем и считать.
+ */
+export const VEHICLE_WORK_UNITS = ['hours', 'shifts'] as const;
+export const vehicleWorkUnitSchema = z.enum(VEHICLE_WORK_UNITS);
+export type VehicleWorkUnit = (typeof VEHICLE_WORK_UNITS)[number];
+
+export const vehicleWorkUnitLabels: Record<VehicleWorkUnit, string> = {
+  hours: 'Часами',
+  shifts: 'Сменами',
+};
+
+/** Как называется ставка этой единицы: «ставка за час», «ставка за смену». */
+export const vehicleWorkUnitRateLabels: Record<VehicleWorkUnit, string> = {
+  hours: 'за час',
+  shifts: 'за смену',
+};
+
+/** Ставка этой единицы: «часами» считают по цене за час, «сменами» — по цене за смену. */
+export function rateForWorkUnit(
+  rates: { pricePerHour: number | null; pricePerShift: number | null } | null | undefined,
+  unit: VehicleWorkUnit,
+): number | null {
+  if (!rates) return null;
+  return (unit === 'hours' ? rates.pricePerHour : rates.pricePerShift) ?? null;
+}
+
+/** Стоимость закрытия: ставка на количество, с округлением до копейки. Нет ставки — нет суммы. */
+export function calcVehicleRequestCost(rate: number | null, amount: number): number | null {
+  if (rate == null) return null;
+  return Math.round(rate * amount * 100) / 100;
+}
+
+/** «26 ч», «3 смены», «2,5 смены» — отработанное одной строкой, с русским склонением. */
+export function workedAmountLabel(unit: VehicleWorkUnit, amount: number): string {
+  const value = amount.toLocaleString('ru-RU', { maximumFractionDigits: 2 });
+  if (unit === 'hours') return `${value} ч`;
+  // Дробное количество смен — всегда «смены» («2,5 смены»); целое склоняется по последней цифре.
+  if (!Number.isInteger(amount)) return `${value} смены`;
+  const tail = amount % 100;
+  const last = amount % 10;
+  const form =
+    tail >= 11 && tail <= 14
+      ? 'смен'
+      : last === 1
+        ? 'смена'
+        : last >= 2 && last <= 4
+          ? 'смены'
+          : 'смен';
+  return `${value} ${form}`;
+}
+
+/** Отработанное количество: numeric(10,2), положительное. Смена дробится до четверти часа. */
+const workedAmountSchema = z
+  .number()
+  .positive('Укажите отработанное время')
+  .max(99_999_999.99, 'Слишком большое значение')
+  .refine((v) => Math.abs(v * 100 - Math.round(v * 100)) < 1e-6, 'Не более 2 знаков после запятой');
+
+/**
+ * Заявку закрывают фактом: сколько отработали и во сколько это обошлось. Сумма приходит от
+ * клиента — он её и показывал человеку перед нажатием, — но подставляется расчётом по ставке
+ * назначения: счёт арендодателя включает и перегон, и простой, и сходиться сумма заявки должна
+ * со счётом, а не с формулой. Не прислана — сервер посчитает сам.
+ */
+export const completeVehicleRequestSchema = z
+  .object({
+    workedUnit: vehicleWorkUnitSchema,
+    workedAmount: workedAmountSchema,
+    totalCost: vehiclePriceSchema.nullable().optional(),
+  })
+  .strict();
+export type CompleteVehicleRequestInput = z.infer<typeof completeVehicleRequestSchema>;
+
+/**
+ * Переход, требующий факта: «Выполнена» отвечает на «сколько отработали и сколько стоило».
+ * Отмена факта не требует — по отменённой заявке никто не выходил.
+ */
+export function transitionRequiresCompletion(to: RequestStatus): boolean {
+  return to === 'done';
+}
+
 // Комментарий пишется в историю (vehicle_request_status_history.comment); при отмене
 // он обязателен и играет роль причины — как и у заявок на вывоз мусора.
 // Техника передаётся вместе с переводом в работу (ADR 0027): отдельным запросом назначение
@@ -365,6 +451,11 @@ export const changeVehicleRequestStatusSchema = z
      * (после отката) хватает уже назначенной машины.
      */
     assignment: assignVehicleSchema.optional(),
+    /**
+     * Факт выполнения (ADR 0029): отработанное время и стоимость. Обязательность тоже за
+     * сервером — он один знает, была ли у заявки назначена машина и по какой ставке.
+     */
+    completion: completeVehicleRequestSchema.optional(),
     version: z.number().int().nonnegative(),
   })
   .strict()
@@ -377,6 +468,13 @@ export const changeVehicleRequestStatusSchema = z
         code: 'custom',
         path: ['assignment'],
         message: 'Технику назначают при переводе заявки в работу',
+      });
+    }
+    if (v.completion && !transitionRequiresCompletion(v.status)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['completion'],
+        message: 'Отработанное время предъявляют при выполнении заявки',
       });
     }
   });
@@ -405,6 +503,11 @@ export const VEHICLE_REQUEST_SORT_FIELDS = [
   'approval',
   'comment',
   'createdAt',
+  // Столбцы журнала закрытых заявок (вкладка «История», ADR 0029): чья машина и во сколько
+  // обошлась. В списке заявок этих столбцов нет, но поля сортировки общие — запрос один.
+  'lessorName',
+  'totalCost',
+  'completedAt',
 ] as const;
 
 export const vehicleRequestListQuerySchema = baseListQuery(VEHICLE_REQUEST_SORT_FIELDS).extend({
@@ -439,6 +542,43 @@ export const vehicleRequestListQuerySchema = baseListQuery(VEHICLE_REQUEST_SORT_
     .optional()
     .transform((v) => v === 'true'),
 });
+
+/**
+ * Журнал закрытых заявок (вкладка «История», ADR 0029). Тот же список, суженный до состоявшегося:
+ * «Выполнена» и «Отменена». Своё здесь — арендодатель: в журнале читают не только «что заказывали»,
+ * но и «у кого брали», а по одному арендодателю сводят и расходы.
+ *
+ * `status` наследуется от общей схемы и сужает журнал до одного из двух закрытых статусов;
+ * остальные сервер отклоняет — открытая заявка историей ещё не стала.
+ */
+export const vehicleRequestHistoryQuerySchema = vehicleRequestListQuerySchema.extend({
+  lessorId: uuidSchema.optional(),
+});
+export type VehicleRequestHistoryQuery = z.infer<typeof vehicleRequestHistoryQuerySchema>;
+
+/** Статусы, попадающие в журнал: заявка, по которой уже нечего решать. */
+export const CLOSED_REQUEST_STATUSES = [
+  'done',
+  'cancelled',
+] as const satisfies readonly RequestStatus[];
+
+export function isClosedRequestStatus(status: RequestStatus): boolean {
+  return (CLOSED_REQUEST_STATUSES as readonly RequestStatus[]).includes(status);
+}
+
+/**
+ * Итог журнала за выбранный период и фильтры: сколько заявок закрыто, сколько выполнено и
+ * отменено и на какую сумму. Сумма — по выполненным с известной стоимостью: у отменённой её
+ * не бывает, а у своей машины без ставки работа в деньгах не считается.
+ */
+export interface VehicleRequestHistorySummaryDto {
+  total: number;
+  done: number;
+  cancelled: number;
+  totalCost: number;
+  /** Сколько выполненных заявок не имеет суммы — иначе итог читается как «всё посчитано». */
+  withoutCost: number;
+}
 
 /**
  * Сводка по статусам для виджета над списком. Из фильтров таблицы учитываются объект и тип
@@ -509,6 +649,33 @@ export function assignmentRateLabel(a: {
   return parts.join(' · ');
 }
 
+/**
+ * Факт выполнения заявки (ADR 0029): сколько отработали и во сколько это обошлось. Ставка —
+ * снимок на момент закрытия, а не текущая ставка назначения: сумма обязана объясняться сама.
+ */
+export interface VehicleRequestCompletionDto {
+  workedUnit: VehicleWorkUnit;
+  workedAmount: number;
+  /** Ставка за единицу на момент закрытия; `null` — своя машина без ставки. */
+  rate: number | null;
+  /** Итоговая стоимость; `null` — считать было нечем (работу в деньгах не ведут). */
+  totalCost: number | null;
+  completedBy: string;
+  completedByName: string;
+  completedAt: string;
+}
+
+/** Отработанное и сумма одной строкой: «3 смены × 18 000 ₽»; без ставки — только отработанное. */
+export function completionLabel(c: VehicleRequestCompletionDto): string {
+  const worked = workedAmountLabel(c.workedUnit, c.workedAmount);
+  if (c.rate == null) return worked;
+  const rate = c.rate.toLocaleString('ru-RU', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+  return `${worked} × ${rate} ₽`;
+}
+
 export interface VehicleRequestBaseDto {
   id: string;
   num: number;
@@ -548,6 +715,11 @@ export interface VehicleRequestBaseDto {
    * машины нет, а у закрытой и отменённой остаётся та, что была назначена.
    */
   assignment: VehicleRequestAssignmentDto | null;
+  /**
+   * Факт выполнения (ADR 0029). `null` — заявку не закрывали: у «Новой» и «В работе» его нет,
+   * у отменённой не бывает вовсе, а у выполненной до этой версии его не восстановить.
+   */
+  completion: VehicleRequestCompletionDto | null;
   files: FileDto[];
   version: number;
 
@@ -611,4 +783,9 @@ export const vehicleRequestChangeLabels: Record<string, string> = {
   pricePerHour: 'Ставка за час',
   pricePerShift: 'Ставка за смену',
   shiftHours: 'Часов в смене',
+  // Факт выполнения (ADR 0029): им заявка и закрывается, поэтому его поля читаются в истории
+  // тем же списком «было → стало» — повторное закрытие после отката правит и время, и сумму.
+  worked: 'Отработано',
+  rate: 'Ставка закрытия',
+  totalCost: 'Стоимость',
 };

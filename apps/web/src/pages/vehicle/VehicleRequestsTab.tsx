@@ -27,6 +27,7 @@ import {
   type AssignVehicleInput,
   assignmentRateLabel,
   assignmentTitle,
+  type CompleteVehicleRequestInput,
   isAddressVerified,
   isObjectScopedRole,
   isVehicleKindAllowedForRequest,
@@ -38,6 +39,7 @@ import {
   requestStatusLabels,
   statusChangeRequiresReason,
   transitionRequiresAssignment,
+  transitionRequiresCompletion,
   VEHICLE_REQUEST_TYPES,
   vehicleClassificationLabel,
   type VehicleRequestDto,
@@ -74,6 +76,7 @@ import {
 import { MOSCOW_TZ } from '../../theme';
 import { FilesCell } from '../../components/FileLinks';
 import { VehicleAssignModal } from './VehicleAssignModal';
+import { VehicleCompleteModal } from './VehicleCompleteModal';
 import { VehicleRequestViewModal } from './VehicleRequestViewModal';
 import {
   ApprovalCell,
@@ -424,6 +427,8 @@ export function VehicleRequestsTab() {
   const [cancelTarget, setCancelTarget] = useState<VehicleRequestDto | null>(null);
   // Перевод в работу — выбор техники и ставок (ADR 0027): назначение уходит вместе со статусом.
   const [assignTarget, setAssignTarget] = useState<VehicleRequestDto | null>(null);
+  // Выполнение — отработанное время и стоимость (ADR 0029): факт тоже уходит со статусом.
+  const [completeTarget, setCompleteTarget] = useState<VehicleRequestDto | null>(null);
 
   const statusMut = useMutation({
     mutationFn: (v: {
@@ -432,11 +437,21 @@ export function VehicleRequestsTab() {
       version: number;
       comment?: string;
       assignment?: AssignVehicleInput;
-    }) => vehicleRequestsApi.changeStatus(v.id, v.status, v.version, v.comment, v.assignment),
+      completion?: CompleteVehicleRequestInput;
+    }) =>
+      vehicleRequestsApi.changeStatus(
+        v.id,
+        v.status,
+        v.version,
+        v.comment,
+        v.assignment,
+        v.completion,
+      ),
     onSuccess: () => {
       message.success('Статус изменён');
       setCancelTarget(null);
       setAssignTarget(null);
+      setCompleteTarget(null);
       void qc.invalidateQueries({ queryKey: ['vehicle-requests'] });
     },
     onError: (e) => message.error(errorMessage(e)),
@@ -450,6 +465,13 @@ export function VehicleRequestsTab() {
     // «В работе» без машины не бывает: заявку берут конкретной единицей и по конкретной ставке.
     if (transitionRequiresAssignment(status)) {
       setAssignTarget(r);
+      return;
+    }
+    // Закрытие спрашивает факт — но только там, где есть чем считать: у заявки, взятой в работу
+    // до ADR 0027, машины и ставки нет, и просить отработанное время не у чего. Так же решает
+    // и сервер: факт обязателен при назначенной технике.
+    if (transitionRequiresCompletion(status) && r.assignment) {
+      setCompleteTarget(r);
       return;
     }
     statusMut.mutate({ id: r.id, status, version: r.version });
@@ -955,6 +977,24 @@ export function VehicleRequestsTab() {
             status: 'confirmed',
             version: assignTarget.version,
             assignment,
+          })
+        }
+      />
+
+      {/* Выполнение: отработанное время и стоимость (ADR 0029). Факт уходит тем же запросом,
+          что и статус, — заявка не бывает выполненной без ответа «сколько стоило». */}
+      <VehicleCompleteModal
+        request={completeTarget}
+        confirmLoading={statusMut.isPending}
+        onCancel={() => setCompleteTarget(null)}
+        onSubmit={({ completion, comment }) =>
+          completeTarget &&
+          statusMut.mutate({
+            id: completeTarget.id,
+            status: 'done',
+            version: completeTarget.version,
+            comment,
+            completion,
           })
         }
       />

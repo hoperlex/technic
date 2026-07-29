@@ -27,6 +27,7 @@ const HISTORY_TITLES: Record<RequestHistoryKind, string> = {
   approved: 'Заявка завизирована',
   approvalRevoked: 'Виза снята',
   assigned: 'Назначена техника',
+  completed: 'Предъявлен факт выполнения',
   deleted: 'Перемещена в архив',
   restored: 'Восстановлена из архива',
 };
@@ -40,6 +41,8 @@ const KIND_TAGS: Record<string, { label: string; color?: string }> = {
   approvalRevoked: { label: 'Виза снята', color: 'orange' },
   // Назначение техники (ADR 0027) идёт вместе с переводом в работу — тем же цветом, что «В работе».
   assigned: { label: 'Техника', color: 'gold' },
+  // Факт выполнения (ADR 0029) — вместе с закрытием, и цвет тот же, что у «Выполнена».
+  completed: { label: 'Факт', color: 'green' },
   deleted: { label: 'Архив', color: 'red' },
   restored: { label: 'Из архива', color: 'green' },
 };

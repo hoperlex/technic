@@ -1,6 +1,7 @@
 import type {
   AssignVehicleInput,
   AttachVehicleTypeSpecInput,
+  CompleteVehicleRequestInput,
   ContainerKind,
   ContainerTypeDto,
   CounterpartyDto,
@@ -42,6 +43,7 @@ import type {
   VehicleKindDto,
   VehicleModelDto,
   VehicleRequestDto,
+  VehicleRequestHistorySummaryDto,
   VehicleRequestSummaryDto,
   VehicleSpecDto,
   VehicleTypeDto,
@@ -169,6 +171,15 @@ export const vehicleRequestsApi = {
   /** Счётчики заявок по статусам — сводка над списком; сужается объектом и типом заявки. */
   summary: (q: Query) =>
     apiFetch<VehicleRequestSummaryDto>('/vehicle-requests/summary', { query: q }),
+  /**
+   * Журнал закрытых заявок — вкладка «История» (ADR 0029): «Выполнена» и «Отменена» с фактом
+   * выполнения. Отдельный маршрут: свой фильтр по арендодателю и свой порядок (по сроку работ).
+   */
+  historyList: (q: Query) =>
+    apiFetch<ListResult<VehicleRequestDto>>('/vehicle-requests/history', { query: q }),
+  /** Итог журнала по тем же фильтрам: сколько закрыто, чем закончилось и на какую сумму. */
+  historySummary: (q: Query) =>
+    apiFetch<VehicleRequestHistorySummaryDto>('/vehicle-requests/history/summary', { query: q }),
   get: (id: string) => apiFetch<VehicleRequestDto>(`/vehicle-requests/${id}`),
   /** События заявки в хронологическом порядке: создание, правки, смены статусов (ADR 0015). */
   history: (id: string) => apiFetch<RequestHistoryEntryDto[]>(`/vehicle-requests/${id}/history`),
@@ -178,8 +189,9 @@ export const vehicleRequestsApi = {
     apiFetch<VehicleRequestDto>(`/vehicle-requests/${id}`, { method: 'PATCH', body }),
   /**
    * `comment` уходит в историю статусов; при отмене это обязательная причина. `assignment` —
-   * техника и ставки при переводе в работу (ADR 0027): назначение проводится тем же запросом,
-   * что и смена статуса.
+   * техника и ставки при переводе в работу (ADR 0027), `completion` — отработанное время и
+   * стоимость при выполнении (ADR 0029): и то и другое проводится тем же запросом, что и смена
+   * статуса, — заявка не бывает «в работе» ни на чём и «выполненной» без факта.
    */
   changeStatus: (
     id: string,
@@ -187,10 +199,17 @@ export const vehicleRequestsApi = {
     version: number,
     comment = '',
     assignment?: AssignVehicleInput,
+    completion?: CompleteVehicleRequestInput,
   ) =>
     apiFetch<VehicleRequestDto>(`/vehicle-requests/${id}/status`, {
       method: 'PATCH',
-      body: { status, comment, version, ...(assignment ? { assignment } : {}) },
+      body: {
+        status,
+        comment,
+        version,
+        ...(assignment ? { assignment } : {}),
+        ...(completion ? { completion } : {}),
+      },
     }),
   /** Виза руководителя строительства: `approved: false` — отзыв (ADR 0025). */
   setApproval: (id: string, approved: boolean, version: number) =>

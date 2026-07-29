@@ -18,27 +18,37 @@ import {
 import { alias } from 'drizzle-orm/pg-core';
 import {
   type AssignVehicleInput,
+  calcVehicleRequestCost,
   can,
   changeVehicleRequestStatusSchema,
+  CLOSED_REQUEST_STATUSES,
+  type CompleteVehicleRequestInput,
   createVehicleRequestSchema,
   type FileDto,
   formatVehicleRequestNumber,
   isApprovalChangeable,
+  isClosedRequestStatus,
   isObjectScopedRole,
   isVehicleKindAllowedForRequest,
+  rateForWorkUnit,
   REQUEST_STATUSES,
   requestStatusLabels,
   setVehicleRequestApprovalSchema,
   transitionRequiresApproval,
   transitionRequiresAssignment,
+  transitionRequiresCompletion,
   updateVehicleRequestSchema,
   type VehicleRequestAssignmentDto,
+  type VehicleRequestCompletionDto,
   type VehicleRequestDto,
+  type VehicleRequestHistorySummaryDto,
   type VehicleRequestSummaryDto,
   type VehicleRequestType,
+  vehicleRequestHistoryQuerySchema,
   vehicleRequestListQuerySchema,
   vehicleRequestSummaryQuerySchema,
   vehicleStatusLabels,
+  vehicleWorkUnitRateLabels,
 } from '@technic/contracts';
 import { db } from '../db/client';
 import {
@@ -52,6 +62,7 @@ import {
   vehicleKinds,
   vehicleModels,
   vehicleRequestAssignments,
+  vehicleRequestCompletions,
   vehicleRequestFiles,
   vehicleRequests,
   vehicleRequestStatusHistory,
@@ -77,7 +88,11 @@ import {
   markFilesActive,
   scheduleFilesDeletion,
 } from '../services/request-files';
-import { diffVehicleAssignment, diffVehicleRequests } from '../services/vehicle-request-diff';
+import {
+  diffVehicleAssignment,
+  diffVehicleCompletion,
+  diffVehicleRequests,
+} from '../services/vehicle-request-diff';
 import { loadVehicleRequestHistory } from '../services/vehicle-request-history';
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -93,6 +108,8 @@ const approvers = alias(users, 'approvers');
 const requestCategories = alias(vehicleCategories, 'request_categories');
 /** Назначивший технику — третий join на учётки (ADR 0027). */
 const assigners = alias(users, 'assigners');
+/** Закрывший заявку фактом — четвёртый join на учётки (ADR 0029). */
+const completers = alias(users, 'completers');
 /** Арендодатель назначенной машины; у собственной техники его нет. */
 const lessors = alias(counterparties, 'lessors');
 
@@ -139,6 +156,14 @@ const requestSelect = {
   assignedBy: vehicleRequestAssignments.assignedBy,
   assignedByName: assigners.fullName,
   assignedAt: vehicleRequestAssignments.assignedAt,
+  // Факт выполнения (ADR 0029): отработанное и стоимость — снимок на момент закрытия.
+  completionWorkedUnit: vehicleRequestCompletions.workedUnit,
+  completionWorkedAmount: vehicleRequestCompletions.workedAmount,
+  completionRate: vehicleRequestCompletions.rate,
+  completionTotalCost: vehicleRequestCompletions.totalCost,
+  completedBy: vehicleRequestCompletions.completedBy,
+  completedByName: completers.fullName,
+  completedAt: vehicleRequestCompletions.completedAt,
   version: vehicleRequests.version,
   createdBy: vehicleRequests.createdBy,
   createdByName: users.fullName,
@@ -187,6 +212,13 @@ function baseQuery() {
       .leftJoin(vehicleModels, eq(vehicles.vehicleModelId, vehicleModels.id))
       .leftJoin(lessors, eq(vehicles.lessorId, lessors.id))
       .leftJoin(assigners, eq(vehicleRequestAssignments.assignedBy, assigners.id))
+      // Факт выполнения (ADR 0029): есть только у закрытой заявки, и то не у всякой — у
+      // выполненных до миграции 0053 его не восстановить.
+      .leftJoin(
+        vehicleRequestCompletions,
+        eq(vehicleRequests.id, vehicleRequestCompletions.requestId),
+      )
+      .leftJoin(completers, eq(vehicleRequestCompletions.completedBy, completers.id))
   );
 }
 
@@ -262,6 +294,23 @@ function toAssignmentDto(r: RequestRow): VehicleRequestAssignmentDto | null {
   };
 }
 
+/**
+ * Факт выполнения из строки выборки (ADR 0029); null — заявку не закрывали фактом. Отработанное
+ * и суммы приходят из numeric строками — приводятся тем же `toNum`, что и ставки.
+ */
+function toCompletionDto(r: RequestRow): VehicleRequestCompletionDto | null {
+  if (!r.completionWorkedUnit || !r.completedBy || !r.completedAt) return null;
+  return {
+    workedUnit: r.completionWorkedUnit,
+    workedAmount: toNum(r.completionWorkedAmount) ?? 0,
+    rate: toNum(r.completionRate),
+    totalCost: toNum(r.completionTotalCost),
+    completedBy: r.completedBy,
+    completedByName: r.completedByName ?? '',
+    completedAt: r.completedAt.toISOString(),
+  };
+}
+
 function toDto(r: RequestRow, fileList: FileDto[]): VehicleRequestDto {
   const base = {
     id: r.id,
@@ -281,6 +330,7 @@ function toDto(r: RequestRow, fileList: FileDto[]): VehicleRequestDto {
     approvedByName: r.approvedByName,
     approvedAt: r.approvedAt ? r.approvedAt.toISOString() : null,
     assignment: toAssignmentDto(r),
+    completion: toCompletionDto(r),
     files: fileList,
     version: r.version,
     createdBy: r.createdBy,
@@ -520,6 +570,68 @@ async function saveAssignment(
     });
 }
 
+/**
+ * Факт, которым закрывают заявку (ADR 0029). Ставку берёт не клиент, а сервер — из назначения,
+ * по выбранной единице: «сколько стоило» должно объясняться той ценой, о которой договорились
+ * при переводе в работу, а не той, что пришла в теле запроса. Сумма приходит уже посчитанной
+ * (её видел человек в окне закрытия) и правится свободно — счёт арендодателя включает перегон и
+ * простой; не прислана — считается ставкой на количество.
+ *
+ * Возвращает DTO «как будет после записи»: им же пишется история.
+ */
+function resolveCompletion(
+  assignment: VehicleRequestAssignmentDto | null,
+  input: CompleteVehicleRequestInput,
+  actor: { id: string; name: string },
+): VehicleRequestCompletionDto {
+  const rate = rateForWorkUnit(assignment, input.workedUnit);
+  const totalCost = input.totalCost ?? calcVehicleRequestCost(rate, input.workedAmount);
+  // Аренда — счёт от контрагента (ADR 0027): закрытие без суммы означало бы «сколько заплатили,
+  // выясним потом». Своя машина без ставок закрывается и без суммы: внутреннюю технику не всегда
+  // считают в деньгах. Ставка не задана именно за выбранную единицу — об этом и говорим: обычно
+  // достаточно закрыть сменами вместо часов.
+  if (assignment?.ownership === 'rental' && totalCost == null) {
+    throw err.unprocessable(
+      `Ставка ${vehicleWorkUnitRateLabels[input.workedUnit]} у назначенной техники не задана — укажите стоимость`,
+      { totalCost: 'Укажите стоимость' },
+    );
+  }
+  return {
+    workedUnit: input.workedUnit,
+    workedAmount: input.workedAmount,
+    rate,
+    totalCost,
+    completedBy: actor.id,
+    completedByName: actor.name,
+    completedAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * Закрытие заявки: одна строка на заявку. Повторное закрытие (после отката администратором)
+ * переписывает её — двух фактов об одной работе не бывает.
+ */
+async function saveCompletion(
+  tx: Tx,
+  requestId: string,
+  c: VehicleRequestCompletionDto,
+): Promise<void> {
+  const values = {
+    workedUnit: c.workedUnit,
+    workedAmount: String(c.workedAmount),
+    rate: numToDb(c.rate),
+    totalCost: numToDb(c.totalCost),
+    completedBy: c.completedBy,
+  };
+  await tx
+    .insert(vehicleRequestCompletions)
+    .values({ requestId, ...values })
+    .onConflictDoUpdate({
+      target: vehicleRequestCompletions.requestId,
+      set: { ...values, completedAt: new Date(), updatedAt: new Date() },
+    });
+}
+
 async function attachFiles(
   tx: Tx,
   vehicleRequestId: string,
@@ -607,6 +719,33 @@ function editChangesSubstance(
   return false;
 }
 
+/**
+ * Столбцы сортировки списка и журнала. «Срок» и «объём/масса» у типов заявки лежат в разных
+ * detail-таблицах, поэтому сводятся coalesce: у строки заполнена ровно одна из колонок. Объём и
+ * масса — разные единицы, но в одном столбце: сортируем по тому, что указано.
+ */
+const sortColumns = {
+  num: vehicleRequests.num,
+  requestType: vehicleRequests.requestType,
+  objectName: constructionObjects.name,
+  createdByName: users.fullName,
+  // Сортируют по тому, что видно в столбце: у заявки с категорией это её наименование
+  // (ADR 0028) — оно уже начинается с типа, поэтому порядок остаётся типовым.
+  vehicleTypeName: sql`coalesce(${requestCategories.name}, ${vehicleTypes.name})`,
+  term: sql`coalesce(${freightTransportRequestDetails.scheduledAt}, ${specialEquipmentRequestDetails.dateFrom}::timestamptz)`,
+  amount: sql`coalesce(${freightTransportRequestDetails.volumeM3}, ${freightTransportRequestDetails.weightTons})`,
+  loadingLocation: freightTransportRequestDetails.loadingLocation,
+  unloadingLocation: freightTransportRequestDetails.unloadingLocation,
+  status: vehicleRequests.status,
+  approval: vehicleRequests.approvedAt,
+  comment: vehicleRequests.comment,
+  createdAt: vehicleRequests.createdAt,
+  // Столбцы журнала (ADR 0029): у кого брали и во сколько обошлось.
+  lessorName: lessors.name,
+  totalCost: vehicleRequestCompletions.totalCost,
+  completedAt: vehicleRequestCompletions.completedAt,
+};
+
 /** Фильтр по визе (ADR 0025): «нет» — заявки, ждущие согласования. */
 function approvedFilter(approved: boolean | undefined): SQL | undefined {
   if (approved === undefined) return undefined;
@@ -665,6 +804,62 @@ function dateFilters(
   ];
 }
 
+/**
+ * Условия журнала закрытых заявок (ADR 0029). Границы видимости те же, что у списка: штаб видит
+ * свой объект, архивные заявки — только тот, кому открыт архив. Статус сужается до одного из
+ * закрытых; открытая заявка историей ещё не стала, и просить её здесь нечего.
+ */
+function historyWhere(p: Principal, q: z.infer<typeof vehicleRequestHistoryQuerySchema>): SQL {
+  const statuses =
+    q.status && isClosedRequestStatus(q.status) ? [q.status] : [...CLOSED_REQUEST_STATUSES];
+  const showDeleted = q.includeDeleted && can(p.role, 'archive.read');
+  return and(
+    inArray(vehicleRequests.status, statuses),
+    showDeleted ? undefined : isNull(vehicleRequests.deletedAt),
+    requestVisibilityWhere(p, vehicleRequests.objectId),
+    q.requestType ? eq(vehicleRequests.requestType, q.requestType) : undefined,
+    q.objectId ? eq(vehicleRequests.objectId, q.objectId) : undefined,
+    q.vehicleTypeId ? eq(vehicleRequests.vehicleTypeId, q.vehicleTypeId) : undefined,
+    q.vehicleCategoryId ? eq(vehicleRequests.vehicleCategoryId, q.vehicleCategoryId) : undefined,
+    q.num ? eq(vehicleRequests.num, q.num) : undefined,
+    // «У кого брали»: арендодатель лежит у самой машины, а не в назначении, — своя техника под
+    // такой фильтр не попадает никогда, и это верно: у неё арендодателя нет.
+    q.lessorId ? eq(vehicles.lessorId, q.lessorId) : undefined,
+    approvedFilter(q.approved),
+    ...dateFilters(q.requestType, q.dateFrom, q.dateTo),
+    searchCondition(q.search, [
+      vehicleRequests.comment,
+      constructionObjects.name,
+      constructionObjects.code,
+    ]),
+  )!;
+}
+
+/**
+ * Счётчик строк журнала: те же join'ы, что нужны его условиям (объект — поиску, detail-таблицы —
+ * датам, назначение с машиной — арендодателю). Без них `where` сослался бы на таблицы, которых
+ * в запросе нет.
+ */
+function historyCountQuery() {
+  return db
+    .select({ c: count() })
+    .from(vehicleRequests)
+    .innerJoin(constructionObjects, eq(vehicleRequests.objectId, constructionObjects.id))
+    .leftJoin(
+      specialEquipmentRequestDetails,
+      eq(vehicleRequests.id, specialEquipmentRequestDetails.requestId),
+    )
+    .leftJoin(
+      freightTransportRequestDetails,
+      eq(vehicleRequests.id, freightTransportRequestDetails.requestId),
+    )
+    .leftJoin(
+      vehicleRequestAssignments,
+      eq(vehicleRequests.id, vehicleRequestAssignments.requestId),
+    )
+    .leftJoin(vehicles, eq(vehicleRequestAssignments.vehicleId, vehicles.id));
+}
+
 export default async function vehicleRequestsRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
   // Право на каждое действие отдельно (ADR 0021): модуль «Заказ ТС» оператору вывоза недоступен
@@ -717,31 +912,11 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         constructionObjects.code,
       ]),
     );
-    // Сортировка во всех столбцах. «Срок» и «объём/масса» у типов заявки лежат в разных
-    // detail-таблицах, поэтому сводятся coalesce: у строки заполнена ровно одна из колонок.
-    // Объём и масса — разные единицы, но в одном столбце: сортируем по тому, что указано.
-    const sortCols = {
-      num: vehicleRequests.num,
-      requestType: vehicleRequests.requestType,
-      objectName: constructionObjects.name,
-      createdByName: users.fullName,
-      // Сортируют по тому, что видно в столбце: у заявки с категорией это её наименование
-      // (ADR 0028) — оно уже начинается с типа, поэтому порядок остаётся типовым.
-      vehicleTypeName: sql`coalesce(${requestCategories.name}, ${vehicleTypes.name})`,
-      term: sql`coalesce(${freightTransportRequestDetails.scheduledAt}, ${specialEquipmentRequestDetails.dateFrom}::timestamptz)`,
-      amount: sql`coalesce(${freightTransportRequestDetails.volumeM3}, ${freightTransportRequestDetails.weightTons})`,
-      loadingLocation: freightTransportRequestDetails.loadingLocation,
-      unloadingLocation: freightTransportRequestDetails.unloadingLocation,
-      status: vehicleRequests.status,
-      approval: vehicleRequests.approvedAt,
-      comment: vehicleRequests.comment,
-      createdAt: vehicleRequests.createdAt,
-    };
     const pg = pageParams(q);
     const rows = await baseQuery()
       .where(where)
       .orderBy(
-        orderByFrom(sortCols, q.sortBy, q.sortOrder, 'createdAt'),
+        orderByFrom(sortColumns, q.sortBy, q.sortOrder, 'createdAt'),
         asc(vehicleRequests.num),
         asc(vehicleRequests.id),
       )
@@ -768,6 +943,90 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       pageSize: pg.pageSize,
     };
   });
+
+  // ── Журнал закрытых заявок: вкладка «История» (ADR 0029) ──
+  // Тот же список, суженный до состоявшегося: «Выполнена» и «Отменена». Отдельным маршрутом, а
+  // не фильтром общего списка, потому что вопросы к нему другие: не «что сейчас в работе», а
+  // «что за период заказали, у кого брали и во сколько это обошлось» — отсюда свой фильтр по
+  // арендодателю, свой порядок по умолчанию (по сроку работ) и своя денежная сводка.
+  r.get(
+    '/history',
+    { ...auth, schema: { querystring: vehicleRequestHistoryQuerySchema } },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const where = historyWhere(p, req.query);
+      const pg = pageParams(req.query);
+      const rows = await baseQuery()
+        .where(where)
+        // По сроку работ, а не по дате создания: журнал читают по времени, когда техника
+        // работала, — так же его и сводят с табелями и счетами.
+        .orderBy(
+          orderByFrom(sortColumns, req.query.sortBy, req.query.sortOrder, 'term'),
+          asc(vehicleRequests.num),
+          asc(vehicleRequests.id),
+        )
+        .limit(pg.limit)
+        .offset(pg.offset);
+      const [totalRow] = await historyCountQuery().where(where);
+      const filesMap = await filesByRequestIds(rows.map((row) => row.id));
+      return {
+        items: rows.map((row) => toDto(row, filesMap.get(row.id) ?? [])),
+        total: Number(totalRow!.c),
+        page: pg.page,
+        pageSize: pg.pageSize,
+      };
+    },
+  );
+
+  /**
+   * Итог журнала за выбранные фильтры: сколько закрыто, чем закончилось и на какую сумму.
+   * Считается по тем же условиям, что и сам журнал, — иначе сводка отвечала бы не про то, что
+   * человек видит в таблице. Отдельно считаются выполненные заявки без суммы: без этой цифры
+   * итог читается как «столько всего и потратили».
+   */
+  r.get(
+    '/history/summary',
+    { ...auth, schema: { querystring: vehicleRequestHistoryQuerySchema } },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const where = historyWhere(p, req.query);
+      const [agg] = await db
+        .select({
+          total: count(),
+          done: sql<number>`count(*) FILTER (WHERE ${vehicleRequests.status} = 'done')`,
+          cancelled: sql<number>`count(*) FILTER (WHERE ${vehicleRequests.status} = 'cancelled')`,
+          totalCost: sql<string | null>`sum(${vehicleRequestCompletions.totalCost})`,
+          withoutCost: sql<number>`count(*) FILTER (WHERE ${vehicleRequests.status} = 'done' AND ${vehicleRequestCompletions.totalCost} IS NULL)`,
+        })
+        .from(vehicleRequests)
+        .innerJoin(constructionObjects, eq(vehicleRequests.objectId, constructionObjects.id))
+        .leftJoin(
+          specialEquipmentRequestDetails,
+          eq(vehicleRequests.id, specialEquipmentRequestDetails.requestId),
+        )
+        .leftJoin(
+          freightTransportRequestDetails,
+          eq(vehicleRequests.id, freightTransportRequestDetails.requestId),
+        )
+        .leftJoin(
+          vehicleRequestAssignments,
+          eq(vehicleRequests.id, vehicleRequestAssignments.requestId),
+        )
+        .leftJoin(vehicles, eq(vehicleRequestAssignments.vehicleId, vehicles.id))
+        .leftJoin(
+          vehicleRequestCompletions,
+          eq(vehicleRequests.id, vehicleRequestCompletions.requestId),
+        )
+        .where(where);
+      return {
+        total: Number(agg!.total),
+        done: Number(agg!.done),
+        cancelled: Number(agg!.cancelled),
+        totalCost: toNum(agg!.totalCost) ?? 0,
+        withoutCost: Number(agg!.withoutCost),
+      } satisfies VehicleRequestHistorySummaryDto;
+    },
+  );
 
   /**
    * Сводка «сколько заявок в каком статусе» для виджета над таблицей. Считается по тем же
@@ -1095,7 +1354,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
     { ...canChangeStatus, schema: { params: idParams, body: changeVehicleRequestStatusSchema } },
     async (req) => {
       const p = requirePrincipal(req);
-      const { status, comment, assignment, version } = req.body;
+      const { status, comment, assignment, completion, version } = req.body;
       // Состояние «до» берётся DTO: при переводе в работу нужна не только сама заявка, но и
       // назначенная прежде техника — по ней считается, что изменилось (повторный перевод после
       // отката может сменить и машину, и ставки).
@@ -1118,10 +1377,24 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           assignment: 'Выберите технику',
         });
       }
+      // Заявку закрывают фактом (ADR 0029): сколько отработали и во сколько это обошлось.
+      // Спрашивать факт есть смысл только там, где есть назначенная машина со ставкой: у заявок,
+      // взятых в работу до ADR 0027, считать нечем — их закрывают как раньше, с прочерком.
+      // Повторное закрытие (после отката) обходится прежним фактом, как и назначение.
+      if (
+        transitionRequiresCompletion(status) &&
+        !completion &&
+        !before.completion &&
+        before.assignment
+      ) {
+        throw err.unprocessable('Укажите отработанное время — им заявка и закрывается', {
+          completion: 'Укажите отработанное время',
+        });
+      }
 
-      // Назначение проверяется и пишется в той же транзакции, что и статус: заявка не должна
-      // побыть «в работе» ни на чём, даже мгновение.
-      const assigned = await db.transaction(async (tx) => {
+      // Назначение и факт проверяются и пишутся в той же транзакции, что и статус: заявка не
+      // должна побыть «в работе» ни на чём или «выполненной» без факта, даже мгновение.
+      const { assigned, completed } = await db.transaction(async (tx) => {
         let saved: VehicleRequestAssignmentDto | null = null;
         if (assignment) {
           saved = await resolveAssignment(
@@ -1137,6 +1410,16 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           );
           await saveAssignment(tx, before.id, before.vehicleTypeId, saved);
         }
+        // Ставка берётся из назначения — того, что стоит на заявке сейчас: сменить машину, не
+        // меняя статуса, нельзя (ADR 0027), поэтому оно же и было в работе.
+        let closed: VehicleRequestCompletionDto | null = null;
+        if (completion) {
+          closed = resolveCompletion(before.assignment, completion, {
+            id: p.id,
+            name: p.fullName,
+          });
+          await saveCompletion(tx, before.id, closed);
+        }
         const [updated] = await tx
           .update(vehicleRequests)
           .set({ status, updatedBy: p.id, version: before.version + 1, updatedAt: new Date() })
@@ -1150,7 +1433,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           changedBy: p.id,
           comment,
         });
-        return saved;
+        return { assigned: saved, completed: closed };
       });
       await writeAudit({
         actorUserId: p.id,
@@ -1171,6 +1454,18 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
             vehicleId: assigned.vehicleId,
             changes: diffVehicleAssignment(before.assignment, assigned),
           },
+        });
+      }
+      // Факт выполнения — тоже своё событие: «Выполнена» отвечает «что с заявкой», закрытие —
+      // «сколько отработали и сколько это стоило». Повторное закрытие после отката видно
+      // составом изменений: та же работа, но другое время и другая сумма.
+      if (completed) {
+        await writeAudit({
+          actorUserId: p.id,
+          action: 'vehicle_request.complete',
+          entityType: 'vehicle_request',
+          entityId: before.id,
+          metadata: { changes: diffVehicleCompletion(before.completion, completed) },
         });
       }
       return (await getDto(before.id))!;

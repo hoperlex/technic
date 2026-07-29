@@ -12,13 +12,15 @@ import { HISTORY_LIMIT, loadAuditEvents, mergeHistory } from './request-history'
  * переход и причина, а запись `vehicle_request.status` их бы только продублировала.
  * Исполнителя-контрагента у заявок на технику не назначают — события `assign_operator` здесь нет.
  * Своё у модуля другое: виза руководителя строительства (ADR 0025), решающая, пойдёт ли заявка
- * в работу, и назначение конкретной машины со ставками (ADR 0027), с которого работа начинается.
+ * в работу, назначение конкретной машины со ставками (ADR 0027), с которого работа начинается,
+ * и предъявленный при закрытии факт (ADR 0029), которым она заканчивается.
  */
 const AUDIT_ACTIONS = [
   'vehicle_request.update',
   'vehicle_request.approve',
   'vehicle_request.approval_revoke',
   'vehicle_request.assign',
+  'vehicle_request.complete',
   'vehicle_request.soft_delete',
   'vehicle_request.restore',
 ] as const;
@@ -30,6 +32,9 @@ const AUDIT_KINDS: Record<string, RequestHistoryKind> = {
   // Назначение техники (ADR 0027) идёт вместе с переводом в работу, но событием остаётся своим:
   // переход отвечает «что с заявкой», назначение — «чем и почём».
   'vehicle_request.assign': 'assigned',
+  // Факт выполнения (ADR 0029) — тем же приёмом: «Выполнена» отвечает «что с заявкой»,
+  // закрытие — «сколько отработали и сколько это стоило».
+  'vehicle_request.complete': 'completed',
   'vehicle_request.soft_delete': 'deleted',
   'vehicle_request.restore': 'restored',
 };

@@ -3,20 +3,28 @@ import {
   addressMetaSchema,
   allowedVehicleRequestTransitions,
   assignmentRateLabel,
+  calcVehicleRequestCost,
   changeVehicleRequestStatusSchema,
+  CLOSED_REQUEST_STATUSES,
+  completeVehicleRequestSchema,
   createVehicleRequestSchema,
   formatVehicleRequestNumber,
   FREIGHT_VEHICLE_KIND_CODE,
   isAddressVerified,
   isApprovalChangeable,
+  isClosedRequestStatus,
   isVehicleKindAllowedForRequest,
   parseVehicleRequestNumberSearch,
+  rateForWorkUnit,
   setVehicleRequestApprovalSchema,
   transitionRequiresApproval,
   transitionRequiresAssignment,
+  transitionRequiresCompletion,
   updateVehicleRequestSchema,
+  vehicleRequestHistoryQuerySchema,
   vehicleRequestListQuerySchema,
   vehicleRequestSummaryQuerySchema,
+  workedAmountLabel,
 } from '@technic/contracts';
 
 const OBJ = '11111111-1111-4111-8111-111111111111';
@@ -355,6 +363,140 @@ describe('vehicle-requests: техника и ставки (ADR 0027)', () => {
     expect(assignmentRateLabel({ pricePerHour: null, pricePerShift: null, shiftHours: null })).toBe(
       '',
     );
+  });
+});
+
+// ── Факт выполнения при закрытии заявки (ADR 0029) ──
+describe('vehicle-requests: отработанное и стоимость (ADR 0029)', () => {
+  const VEHICLE = '44444444-4444-4444-8444-444444444444';
+
+  it('факт предъявляют только при выполнении', () => {
+    expect(transitionRequiresCompletion('done')).toBe(true);
+    expect(transitionRequiresCompletion('confirmed')).toBe(false);
+    expect(transitionRequiresCompletion('cancelled')).toBe(false);
+    expect(transitionRequiresCompletion('new')).toBe(false);
+  });
+
+  it('факт уходит вместе со статусом', () => {
+    const parsed = changeVehicleRequestStatusSchema.parse({
+      status: 'done',
+      version: 4,
+      completion: { workedUnit: 'shifts', workedAmount: 2.5, totalCost: 45000 },
+    });
+    expect(parsed.completion).toEqual({
+      workedUnit: 'shifts',
+      workedAmount: 2.5,
+      totalCost: 45000,
+    });
+  });
+
+  it('факт не прикладывается к другим переходам', () => {
+    expect(() =>
+      changeVehicleRequestStatusSchema.parse({
+        status: 'confirmed',
+        version: 2,
+        assignment: { vehicleId: VEHICLE },
+        completion: { workedUnit: 'hours', workedAmount: 8 },
+      }),
+    ).toThrow();
+  });
+
+  it('отработанное — положительное, не более 2 знаков; сумма необязательна', () => {
+    expect(() =>
+      completeVehicleRequestSchema.parse({ workedUnit: 'hours', workedAmount: 0 }),
+    ).toThrow();
+    expect(() =>
+      completeVehicleRequestSchema.parse({ workedUnit: 'hours', workedAmount: -3 }),
+    ).toThrow();
+    expect(() =>
+      completeVehicleRequestSchema.parse({ workedUnit: 'hours', workedAmount: 1.234 }),
+    ).toThrow();
+    expect(() =>
+      completeVehicleRequestSchema.parse({ workedUnit: 'days', workedAmount: 1 }),
+    ).toThrow();
+    // Сумма не пришла — её посчитает сервер по ставке назначения; своя машина закрывается и без неё.
+    expect(
+      completeVehicleRequestSchema.parse({ workedUnit: 'hours', workedAmount: 26 }).totalCost,
+    ).toBeUndefined();
+    expect(
+      completeVehicleRequestSchema.parse({ workedUnit: 'hours', workedAmount: 26, totalCost: null })
+        .totalCost,
+    ).toBe(null);
+  });
+
+  it('лишние поля факта не проходят (strict)', () => {
+    expect(() =>
+      completeVehicleRequestSchema.parse({
+        workedUnit: 'shifts',
+        workedAmount: 1,
+        completedBy: VEHICLE,
+      }),
+    ).toThrow();
+  });
+
+  it('ставку берут по выбранной единице', () => {
+    const rates = { pricePerHour: 2500, pricePerShift: 18000 };
+    expect(rateForWorkUnit(rates, 'hours')).toBe(2500);
+    expect(rateForWorkUnit(rates, 'shifts')).toBe(18000);
+    // Ставки за эту единицу нет — считать нечем, и это не ноль.
+    expect(rateForWorkUnit({ pricePerHour: null, pricePerShift: 18000 }, 'hours')).toBe(null);
+    expect(rateForWorkUnit(null, 'shifts')).toBe(null);
+  });
+
+  it('стоимость — ставка на количество, с округлением до копейки', () => {
+    expect(calcVehicleRequestCost(18000, 2.5)).toBe(45000);
+    expect(calcVehicleRequestCost(2500, 26)).toBe(65000);
+    expect(calcVehicleRequestCost(1333.33, 3)).toBe(3999.99);
+    // Без ставки суммы не бывает: ноль означал бы «работа бесплатна».
+    expect(calcVehicleRequestCost(null, 8)).toBe(null);
+  });
+
+  it('отработанное словами: часы и склонение смен', () => {
+    expect(workedAmountLabel('hours', 26)).toBe('26 ч');
+    expect(workedAmountLabel('shifts', 1)).toBe('1 смена');
+    expect(workedAmountLabel('shifts', 3)).toBe('3 смены');
+    expect(workedAmountLabel('shifts', 5)).toBe('5 смен');
+    expect(workedAmountLabel('shifts', 11)).toBe('11 смен');
+    expect(workedAmountLabel('shifts', 21)).toBe('21 смена');
+    expect(workedAmountLabel('shifts', 2.5)).toBe('2,5 смены');
+  });
+});
+
+// ── Журнал закрытых заявок: вкладка «История» (ADR 0029) ──
+describe('vehicle-requests: журнал закрытых заявок (ADR 0029)', () => {
+  const LESSOR = '66666666-6666-4666-8666-666666666666';
+
+  it('закрытые статусы — «Выполнена» и «Отменена»', () => {
+    expect([...CLOSED_REQUEST_STATUSES]).toEqual(['done', 'cancelled']);
+    expect(isClosedRequestStatus('done')).toBe(true);
+    expect(isClosedRequestStatus('cancelled')).toBe(true);
+    expect(isClosedRequestStatus('new')).toBe(false);
+    expect(isClosedRequestStatus('confirmed')).toBe(false);
+  });
+
+  it('журнал наследует фильтры списка и добавляет арендодателя', () => {
+    const q = vehicleRequestHistoryQuerySchema.parse({
+      objectId: OBJ,
+      lessorId: LESSOR,
+      dateFrom: '2026-07-01',
+      dateTo: '2026-07-31',
+      status: 'done',
+    });
+    expect(q.lessorId).toBe(LESSOR);
+    expect(q.objectId).toBe(OBJ);
+    expect(q.status).toBe('done');
+    expect(q.page).toBe(1);
+  });
+
+  it('арендодатель — uuid; сортировка по стоимости разрешена', () => {
+    expect(() => vehicleRequestHistoryQuerySchema.parse({ lessorId: 'Спецтех' })).toThrow();
+    expect(vehicleRequestHistoryQuerySchema.parse({ sortBy: 'totalCost' }).sortBy).toBe(
+      'totalCost',
+    );
+    expect(vehicleRequestHistoryQuerySchema.parse({ sortBy: 'lessorName' }).sortBy).toBe(
+      'lessorName',
+    );
+    expect(() => vehicleRequestHistoryQuerySchema.parse({ sortBy: 'ставка' })).toThrow();
   });
 });
 

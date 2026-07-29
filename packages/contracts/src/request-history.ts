@@ -20,8 +20,9 @@ export interface RequestChangeDto {
 
 /**
  * `operator` есть только у вывоза мусора: там исполнителя назначают контрагентом, а не машиной.
- * `approved` / `approvalRevoked` (виза руководителя строительства, ADR 0025) и `assigned`
- * (техника со ставками, ADR 0027) — наоборот, только у заявок на технику.
+ * `approved` / `approvalRevoked` (виза руководителя строительства, ADR 0025), `assigned`
+ * (техника со ставками, ADR 0027) и `completed` (отработанное время и стоимость, ADR 0029) —
+ * наоборот, только у заявок на технику.
  */
 export type RequestHistoryKind =
   | 'created'
@@ -31,6 +32,7 @@ export type RequestHistoryKind =
   | 'approved'
   | 'approvalRevoked'
   | 'assigned'
+  | 'completed'
   | 'deleted'
   | 'restored';
 

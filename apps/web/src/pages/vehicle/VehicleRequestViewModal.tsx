@@ -5,6 +5,7 @@ import { useQuery } from '@tanstack/react-query';
 import {
   assignmentRateLabel,
   assignmentTitle,
+  completionLabel,
   type RequestHistoryEntryDto,
   requestStatusColors,
   requestStatusLabels,
@@ -22,7 +23,7 @@ import { FileLinkList } from '../../components/FileLinks';
 import { type HistoryRow, RequestHistoryTable } from '../../components/RequestHistory';
 import { UserAvatar } from '../../components/UserAvatar';
 import { calendarDaysLabel } from '../../utils/date';
-import { formatDateTime, formatDateTimeMaybe } from '../../utils/format';
+import { formatDateTime, formatDateTimeMaybe, formatMoney } from '../../utils/format';
 import { formatDateOnly } from './shared';
 
 /**
@@ -159,6 +160,31 @@ export function VehicleRequestViewModal({ request, onClose, onEdit }: Props) {
             </Typography.Text>
           ),
         },
+        // Факт выполнения (ADR 0029): «сколько отработали и сколько это стоило». Есть только у
+        // закрытой фактом заявки — у отменённой его не бывает, у выполненной раньше не восстановить.
+        ...(request.completion
+          ? [
+              {
+                key: 'completion',
+                label: 'Выполнение',
+                span: 2,
+                children: (
+                  <Space direction="vertical" size={2}>
+                    <Space size={8} wrap>
+                      <Typography.Text strong>
+                        {formatMoney(request.completion.totalCost)}
+                      </Typography.Text>
+                      <Typography.Text>{completionLabel(request.completion)}</Typography.Text>
+                    </Space>
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                      Закрыл {request.completion.completedByName || '—'} ·{' '}
+                      {formatDateTime(request.completion.completedAt)}
+                    </Typography.Text>
+                  </Space>
+                ),
+              },
+            ]
+          : []),
         {
           key: 'term',
           label: request.requestType === 'special_equipment' ? 'Период работы' : 'Подача',

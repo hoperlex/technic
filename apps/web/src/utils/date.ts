@@ -45,7 +45,7 @@ export function isPastDate(d: Dayjs): boolean {
  * часов сутки бывают короче 24 часов, и разница дат теряла бы день. `null` — период не
  * складывается (конец раньше начала); подсказывать в этом случае нечего.
  */
-function calendarDayCount(fromKey: string, toKey?: string | null): number | null {
+export function calendarDayCount(fromKey: string, toKey?: string | null): number | null {
   const from = Date.parse(`${fromKey}T00:00:00Z`);
   const to = Date.parse(`${toKey || fromKey}T00:00:00Z`);
   if (Number.isNaN(from) || Number.isNaN(to) || to < from) return null;

@@ -64,6 +64,9 @@ export const vehicleRequestTypeEnum = pgEnum('vehicle_request_type', [
 ]);
 // Принадлежность техники (ADR 0018): собственный парк и предложения аренды в одной таблице.
 export const vehicleOwnershipEnum = pgEnum('vehicle_ownership', ['own', 'rental']);
+// Чем мерят отработанное при закрытии заявки ТС (ADR 0029) — теми же единицами, в которых
+// заведены ставки: за час и за смену.
+export const vehicleWorkUnitEnum = pgEnum('vehicle_work_unit', ['hours', 'shifts']);
 // Тип трудовых отношений физлица с организацией (ADR 0008).
 export const employmentTypeEnum = pgEnum('employment_type', ['staff', 'contractor', 'temporary']);
 // Статус проверки документа работника (ADR 0008); отделён от срока действия документа.
@@ -1141,6 +1144,45 @@ export const vehicleRequestAssignments = pgTable(
     ),
     // «Где сейчас эта машина» — вопрос к таблице со стороны справочника техники.
     vehicleIdx: index('vehicle_request_assignments_vehicle_idx').on(t.vehicleId),
+  }),
+);
+
+// ── Факт выполнения заявки ТС (ADR 0029, миграция 0053) ──
+// Назначение отвечает «чем и почём», закрытие — «сколько отработали и сколько это стоило».
+// Одна заявка — одно закрытие: повторное (после отката администратором) переписывает строку.
+export const vehicleRequestCompletions = pgTable(
+  'vehicle_request_completions',
+  {
+    requestId: uuid('request_id')
+      .primaryKey()
+      .references(() => vehicleRequests.id, { onDelete: 'cascade' }),
+    workedUnit: vehicleWorkUnitEnum('worked_unit').notNull(),
+    workedAmount: numeric('worked_amount', { precision: 10, scale: 2 }).notNull(),
+    // Снимок ставки на момент закрытия: сумма обязана объясняться сама («26 ч × 2 500 ₽»),
+    // а ставку назначения повторный перевод в работу может переписать.
+    rate: numeric('rate', { precision: 12, scale: 2 }),
+    totalCost: numeric('total_cost', { precision: 14, scale: 2 }),
+    completedBy: uuid('completed_by')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    completedAt: timestamp('completed_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    workedAmountPositive: check(
+      'vehicle_request_completions_worked_amount_positive_check',
+      sql`${t.workedAmount} > 0`,
+    ),
+    ratePositive: check(
+      'vehicle_request_completions_rate_positive_check',
+      sql`${t.rate} IS NULL OR ${t.rate} > 0`,
+    ),
+    totalCostPositive: check(
+      'vehicle_request_completions_total_cost_positive_check',
+      sql`${t.totalCost} IS NULL OR ${t.totalCost} >= 0`,
+    ),
+    // «Что закрыли за период и на какую сумму» — вопрос вкладки «История» ко всем закрытиям.
+    completedAtIdx: index('vehicle_request_completions_completed_at_idx').on(t.completedAt.desc()),
   }),
 );
 
