@@ -150,6 +150,80 @@ describe('наименование категории', () => {
   });
 });
 
+// Наименования категорий в сид-миграции 0046 записаны литералами: это снимок, а не второй
+// генератор имени. Здесь тот же набор ТТХ и значений прогоняется через buildVehicleCategoryName —
+// если формат изменится, тест укажет на строки, которые в сиде разъедутся с приложением.
+describe('наименования категорий из сида 0046', () => {
+  const spec = (
+    code: string,
+    name: string,
+    shortName: string,
+    unit: string,
+    decimals: number,
+    sortOrder = 10,
+  ): VehicleTypeSpecDto & { specId: string } => ({
+    specId: code,
+    code,
+    name,
+    shortName,
+    unit,
+    decimals,
+    minValue: null,
+    maxValue: null,
+    sortOrder,
+    isActive: true,
+  });
+
+  const capacityT = spec('lift_capacity', 'Грузоподъёмность', 'г/п', 'т', 1);
+  const boomT = spec('boom_capacity', 'Грузоподъёмность стрелы', 'стрела г/п', 'т', 1, 20);
+  const heightM = spec('lift_height', 'Высота подъёма', 'высота', 'м', 1);
+  const volumeM3 = spec('body_volume', 'Объём кузова', 'кузов', 'м³', 1);
+  const weightT = spec('operating_weight', 'Эксплуатационная масса', 'масса', 'т', 1);
+  const hammers = spec('hammer_count', 'Количество молотков', 'молотков', '', 0);
+
+  const nameOf = (
+    typeName: string,
+    specs: (VehicleTypeSpecDto & { specId: string })[],
+    values: [string, number][],
+  ) => buildVehicleCategoryName(typeName, valueDtos(specs, new Map(values)));
+
+  it('однозначные категории — по одному ТТХ на тип', () => {
+    expect(nameOf('Автокраны', [capacityT], [['lift_capacity', 25]])).toBe('Автокраны, г/п 25 т');
+    expect(nameOf('Автокраны', [capacityT], [['lift_capacity', 130]])).toBe('Автокраны, г/п 130 т');
+    expect(nameOf('Автовышки (АГП)', [heightM], [['lift_height', 32]])).toBe(
+      'Автовышки (АГП), высота 32 м',
+    );
+    expect(nameOf('Самосвалы', [volumeM3], [['body_volume', 20]])).toBe('Самосвалы, кузов 20 м³');
+    expect(nameOf('Катки', [weightT], [['operating_weight', 14]])).toBe('Катки, масса 14 т');
+    expect(nameOf('Компрессоры', [hammers], [['hammer_count', 2]])).toBe('Компрессоры, молотков 2');
+  });
+
+  it('дробные значения — с точкой, целые — без хвостового нуля', () => {
+    expect(nameOf('Фронтальные погрузчики', [capacityT], [['lift_capacity', 3.4]])).toBe(
+      'Фронтальные погрузчики, г/п 3.4 т',
+    );
+    expect(nameOf('Вилочные погрузчики и минипогрузчики', [capacityT], [['lift_capacity', 1]])).toBe(
+      'Вилочные погрузчики и минипогрузчики, г/п 1 т',
+    );
+    expect(nameOf('Вилочные погрузчики и минипогрузчики', [capacityT], [['lift_capacity', 3]])).toBe(
+      'Вилочные погрузчики и минипогрузчики, г/п 3 т',
+    );
+  });
+
+  it('манипулятор: обе части в порядке привязки ТТХ', () => {
+    expect(
+      nameOf(
+        'Тяжелые манипуляторы',
+        [capacityT, boomT],
+        [
+          ['lift_capacity', 15],
+          ['boom_capacity', 7],
+        ],
+      ),
+    ).toBe('Тяжелые манипуляторы, г/п 15 т, стрела г/п 7 т');
+  });
+});
+
 describe('контракты', () => {
   it('один ТТХ дважды в наборе значений отклоняется', () => {
     const parsed = createVehicleCategorySchema.safeParse({
