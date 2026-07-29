@@ -37,6 +37,7 @@ import type {
   UploadSessionDto,
   UserDto,
   VehicleCategoryDto,
+  VehicleClassificationDto,
   VehicleDto,
   VehicleKindDto,
   VehicleModelDto,
@@ -138,6 +139,16 @@ export const vehicleCategoriesApi = {
     apiFetch<VehicleCategoryDto>(`/vehicle-categories/${id}`, { method: 'PATCH', body }),
   remove: (id: string) =>
     apiFetch<{ ok: boolean }>(`/vehicle-categories/${id}`, { method: 'DELETE' }),
+};
+
+/**
+ * Классификатор ТС одним списком (ADR 0028): тип с категориями раскрыт в категории, тип без
+ * категорий — сам собой. Им заполняются все места, где выбирают «что заказываем» и «что это за
+ * машина»: правило «общий тип при наличии категорий не выводится» одно на портал.
+ */
+export const vehicleClassificationsApi = {
+  list: (q: Query) =>
+    apiFetch<ListResult<VehicleClassificationDto>>('/vehicle-classifications', { query: q }),
 };
 
 export const vehicleModelsApi = {

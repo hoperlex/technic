@@ -86,6 +86,11 @@ const idParams = z.object({ id: z.string().uuid() });
 
 /** Завизировавший — второй join на ту же таблицу учёток (первый отдаёт автора заявки). */
 const approvers = alias(users, 'approvers');
+/**
+ * Заказанная категория (ADR 0028). Своим алиасом: `vehicleCategories` в этом запросе уже занята
+ * категорией назначенной машины, а это разные вещи — заказали одно, вышло может быть другое.
+ */
+const requestCategories = alias(vehicleCategories, 'request_categories');
 /** Назначивший технику — третий join на учётки (ADR 0027). */
 const assigners = alias(users, 'assigners');
 /** Арендодатель назначенной машины; у собственной техники его нет. */
@@ -101,6 +106,9 @@ const requestSelect = {
   // Плоская модель (ADR 0005): тип ТС — напрямую vehicle_type_id.
   vehicleTypeId: vehicleRequests.vehicleTypeId,
   vehicleTypeName: vehicleTypes.name,
+  // Категория заказанного типа (ADR 0028); пусто — у типа категорий нет.
+  vehicleCategoryId: vehicleRequests.vehicleCategoryId,
+  vehicleCategoryName: requestCategories.name,
   status: vehicleRequests.status,
   comment: vehicleRequests.comment,
   // Причина отмены живёт в истории статусов; актуальна последняя и только у отменённых заявок.
@@ -150,29 +158,36 @@ const requestSelect = {
 };
 
 function baseQuery() {
-  return db
-    .select(requestSelect)
-    .from(vehicleRequests)
-    .innerJoin(constructionObjects, eq(vehicleRequests.objectId, constructionObjects.id))
-    .innerJoin(vehicleTypes, eq(vehicleRequests.vehicleTypeId, vehicleTypes.id))
-    .innerJoin(users, eq(vehicleRequests.createdBy, users.id))
-    .leftJoin(approvers, eq(vehicleRequests.approvedBy, approvers.id))
-    .leftJoin(
-      specialEquipmentRequestDetails,
-      eq(vehicleRequests.id, specialEquipmentRequestDetails.requestId),
-    )
-    .leftJoin(
-      freightTransportRequestDetails,
-      eq(vehicleRequests.id, freightTransportRequestDetails.requestId),
-    )
-    // Назначенная техника (ADR 0027). Её нет у «Новой» заявки, поэтому вся ветка — leftJoin;
-    // марка/модель, категория и арендодатель необязательны и у самой машины.
-    .leftJoin(vehicleRequestAssignments, eq(vehicleRequests.id, vehicleRequestAssignments.requestId))
-    .leftJoin(vehicles, eq(vehicleRequestAssignments.vehicleId, vehicles.id))
-    .leftJoin(vehicleCategories, eq(vehicles.vehicleCategoryId, vehicleCategories.id))
-    .leftJoin(vehicleModels, eq(vehicles.vehicleModelId, vehicleModels.id))
-    .leftJoin(lessors, eq(vehicles.lessorId, lessors.id))
-    .leftJoin(assigners, eq(vehicleRequestAssignments.assignedBy, assigners.id));
+  return (
+    db
+      .select(requestSelect)
+      .from(vehicleRequests)
+      .innerJoin(constructionObjects, eq(vehicleRequests.objectId, constructionObjects.id))
+      .innerJoin(vehicleTypes, eq(vehicleRequests.vehicleTypeId, vehicleTypes.id))
+      // Заказанная категория (ADR 0028): её нет у типа без ТТХ и у заявок старше миграции 0052.
+      .leftJoin(requestCategories, eq(vehicleRequests.vehicleCategoryId, requestCategories.id))
+      .innerJoin(users, eq(vehicleRequests.createdBy, users.id))
+      .leftJoin(approvers, eq(vehicleRequests.approvedBy, approvers.id))
+      .leftJoin(
+        specialEquipmentRequestDetails,
+        eq(vehicleRequests.id, specialEquipmentRequestDetails.requestId),
+      )
+      .leftJoin(
+        freightTransportRequestDetails,
+        eq(vehicleRequests.id, freightTransportRequestDetails.requestId),
+      )
+      // Назначенная техника (ADR 0027). Её нет у «Новой» заявки, поэтому вся ветка — leftJoin;
+      // марка/модель, категория и арендодатель необязательны и у самой машины.
+      .leftJoin(
+        vehicleRequestAssignments,
+        eq(vehicleRequests.id, vehicleRequestAssignments.requestId),
+      )
+      .leftJoin(vehicles, eq(vehicleRequestAssignments.vehicleId, vehicles.id))
+      .leftJoin(vehicleCategories, eq(vehicles.vehicleCategoryId, vehicleCategories.id))
+      .leftJoin(vehicleModels, eq(vehicles.vehicleModelId, vehicleModels.id))
+      .leftJoin(lessors, eq(vehicles.lessorId, lessors.id))
+      .leftJoin(assigners, eq(vehicleRequestAssignments.assignedBy, assigners.id))
+  );
 }
 
 type RequestRow = Awaited<ReturnType<typeof baseQuery>>[number];
@@ -257,6 +272,8 @@ function toDto(r: RequestRow, fileList: FileDto[]): VehicleRequestDto {
     objectName: r.objectName,
     vehicleTypeId: r.vehicleTypeId,
     vehicleTypeName: r.vehicleTypeName,
+    vehicleCategoryId: r.vehicleCategoryId,
+    vehicleCategoryName: r.vehicleCategoryName,
     status: r.status,
     comment: r.comment,
     cancelReason: r.cancelReason || null,
@@ -321,17 +338,25 @@ async function assertObjectActive(tx: Tx, objectId: string): Promise<void> {
 }
 
 /**
- * Плоская модель (ADR 0005): выбран активный тип ТС активного вида, разрешённого этому типу
- * заявки. Иначе — отказ. Тип заявки задаётся в форме явно: на объект заказывают технику любого
- * вида, грузоперевозку — только грузовым (`isVehicleKindAllowedForRequest`).
+ * Заказанная позиция классификатора (ADR 0028): активный тип ТС (ADR 0005) активного вида,
+ * разрешённого этому типу заявки, и — если у типа есть активные категории (ADR 0016) — одна из
+ * них. Тип заявки задаётся в форме явно: на объект заказывают технику любого вида,
+ * грузоперевозку — только грузовым (`isVehicleKindAllowedForRequest`).
+ *
+ * Категория не «ещё одно поле формы», а часть выбора: у типа с категориями заказ без неё
+ * неадресен («нужен автокран» — какой?), а у типа без ТТХ её неоткуда взять. Принадлежность
+ * категории типу держит составной FK, но сверяется и здесь — вместо ошибки целостности человек
+ * должен получить ответ.
  */
-async function resolveVehicleType(
+async function resolveClassification(
   tx: Tx,
   typeId: string,
+  categoryId: string | null,
   requestType: VehicleRequestType,
 ): Promise<void> {
   const [row] = await tx
     .select({
+      name: vehicleTypes.name,
       isActive: vehicleTypes.isActive,
       kindCode: vehicleKinds.code,
       kindActive: vehicleKinds.isActive,
@@ -345,6 +370,34 @@ async function resolveVehicleType(
   if (!isVehicleKindAllowedForRequest(requestType, row.kindCode)) {
     throw err.unprocessable('Грузоперевозку выполняет только грузовая техника');
   }
+
+  const activeCategories = await tx
+    .select({ id: vehicleCategories.id })
+    .from(vehicleCategories)
+    .where(and(eq(vehicleCategories.vehicleTypeId, typeId), eq(vehicleCategories.isActive, true)));
+
+  if (!categoryId) {
+    if (activeCategories.length > 0) {
+      throw err.unprocessable(`Выберите категорию типа «${row.name}»`, {
+        vehicleCategoryId: 'Выберите категорию',
+      });
+    }
+    return;
+  }
+  // Категория чужого типа и выключенная категория — разные ошибки: первая означает сломанный
+  // клиент, вторая — что позицию убрали из справочника, пока форма была открыта.
+  if (!activeCategories.some((c) => c.id === categoryId)) {
+    const [existing] = await tx
+      .select({ isActive: vehicleCategories.isActive, typeId: vehicleCategories.vehicleTypeId })
+      .from(vehicleCategories)
+      .where(eq(vehicleCategories.id, categoryId));
+    if (!existing || existing.typeId !== typeId) {
+      throw err.badRequest('Категория не найдена у этого типа ТС', {
+        vehicleCategoryId: 'Категория другого типа',
+      });
+    }
+    throw err.unprocessable('Категория неактивна', { vehicleCategoryId: 'Категория неактивна' });
+  }
 }
 
 /**
@@ -357,7 +410,12 @@ async function resolveVehicleType(
  */
 async function resolveAssignment(
   tx: Tx,
-  request: { vehicleTypeId: string; vehicleTypeName: string },
+  request: {
+    vehicleTypeId: string;
+    vehicleTypeName: string;
+    vehicleCategoryId: string | null;
+    vehicleCategoryName: string | null;
+  },
   input: AssignVehicleInput,
   actor: { id: string; name: string },
 ): Promise<VehicleRequestAssignmentDto> {
@@ -366,6 +424,7 @@ async function resolveAssignment(
       id: vehicles.id,
       ownership: vehicles.ownership,
       vehicleTypeId: vehicles.vehicleTypeId,
+      vehicleCategoryId: vehicles.vehicleCategoryId,
       status: vehicles.status,
       deletedAt: vehicles.deletedAt,
       registrationNumber: vehicles.registrationNumber,
@@ -385,6 +444,20 @@ async function resolveAssignment(
     throw err.unprocessable(`Заявка заказана на тип ТС «${request.vehicleTypeName}»`, {
       vehicleId: 'Техника другого типа',
     });
+  }
+  // Категория заказана — значит заказана определённая машина по ТТХ (ADR 0028): автокран на 25 т
+  // вместо 130 т работу не сделает. У машины категория может быть не заполнена (в справочнике
+  // она необязательна, особенно у аренды) — тогда доверяем тому, кто назначает: запретить здесь
+  // означало бы закрыть заявку на технику, которая ей подходит.
+  if (
+    request.vehicleCategoryId &&
+    row.vehicleCategoryId &&
+    row.vehicleCategoryId !== request.vehicleCategoryId
+  ) {
+    throw err.unprocessable(
+      `Заявка заказана на «${request.vehicleCategoryName ?? request.vehicleTypeName}»`,
+      { vehicleId: 'Техника другой категории' },
+    );
   }
   // «Обслуживание», «Списана» и выключенное предложение аренды к работе не годятся: заявка
   // взята в работу означает, что машина выйдет.
@@ -506,6 +579,15 @@ function editChangesSubstance(
   const changed = (next: unknown, prev: unknown): boolean => next !== undefined && next !== prev;
   if (changed(body.objectId, before.objectId)) return true;
   if (changed(body.vehicleTypeId, before.vehicleTypeId)) return true;
+  // Категория — часть заказанного (ADR 0028): «автокран 25 т» вместо «130 т» согласовывают
+  // заново. Не переданная категория — не «сняли», а «не трогали»: иначе форма, которая её не
+  // знает, снимала бы визу каждой правкой.
+  if (
+    body.vehicleCategoryId !== undefined &&
+    (body.vehicleCategoryId ?? null) !== before.vehicleCategoryId
+  ) {
+    return true;
+  }
   if (before.requestType === 'special_equipment' && body.requestType === 'special_equipment') {
     return changed(body.dateFrom, before.dateFrom) || changed(body.dateTo, before.dateTo);
   }
@@ -625,6 +707,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       q.status ? eq(vehicleRequests.status, q.status) : undefined,
       q.objectId ? eq(vehicleRequests.objectId, q.objectId) : undefined,
       q.vehicleTypeId ? eq(vehicleRequests.vehicleTypeId, q.vehicleTypeId) : undefined,
+      q.vehicleCategoryId ? eq(vehicleRequests.vehicleCategoryId, q.vehicleCategoryId) : undefined,
       q.num ? eq(vehicleRequests.num, q.num) : undefined,
       approvedFilter(q.approved),
       ...dateFilters(q.requestType, q.dateFrom, q.dateTo),
@@ -642,7 +725,9 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       requestType: vehicleRequests.requestType,
       objectName: constructionObjects.name,
       createdByName: users.fullName,
-      vehicleTypeName: vehicleTypes.name,
+      // Сортируют по тому, что видно в столбце: у заявки с категорией это её наименование
+      // (ADR 0028) — оно уже начинается с типа, поэтому порядок остаётся типовым.
+      vehicleTypeName: sql`coalesce(${requestCategories.name}, ${vehicleTypes.name})`,
       term: sql`coalesce(${freightTransportRequestDetails.scheduledAt}, ${specialEquipmentRequestDetails.dateFrom}::timestamptz)`,
       amount: sql`coalesce(${freightTransportRequestDetails.volumeM3}, ${freightTransportRequestDetails.weightTons})`,
       loadingLocation: freightTransportRequestDetails.loadingLocation,
@@ -777,13 +862,19 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
 
       const createdId = await db.transaction(async (tx) => {
         await assertObjectActive(tx, body.objectId);
-        await resolveVehicleType(tx, body.vehicleTypeId, body.requestType);
+        await resolveClassification(
+          tx,
+          body.vehicleTypeId,
+          body.vehicleCategoryId ?? null,
+          body.requestType,
+        );
         const [row] = await tx
           .insert(vehicleRequests)
           .values({
             requestType: body.requestType,
             objectId: body.objectId,
             vehicleTypeId: body.vehicleTypeId,
+            vehicleCategoryId: body.vehicleCategoryId ?? null,
             status: 'new',
             comment: body.comment,
             createdBy: p.id,
@@ -830,6 +921,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           requestType: body.requestType,
           objectId: body.objectId,
           vehicleTypeId: body.vehicleTypeId,
+          vehicleCategoryId: body.vehicleCategoryId ?? null,
         },
       });
       // Автоматическая виза — тоже виза: в истории заявки она должна быть видна событием, иначе
@@ -868,6 +960,17 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
 
       const objectId = body.objectId ?? before.objectId;
       const nextTypeId = body.vehicleTypeId ?? before.vehicleTypeId;
+      // Тип и категория меняются одной позицией классификатора (ADR 0028). Сменили тип, а
+      // категорию не прислали — прежняя относится к прежнему типу, и оставлять её нельзя:
+      // считаем, что категории нет, а нужна ли она новому типу, скажет resolveClassification.
+      const typeChanged = nextTypeId !== before.vehicleTypeId;
+      const nextCategoryId =
+        body.vehicleCategoryId !== undefined
+          ? (body.vehicleCategoryId ?? null)
+          : typeChanged
+            ? null
+            : before.vehicleCategoryId;
+      const classificationChanged = typeChanged || nextCategoryId !== before.vehicleCategoryId;
       // Согласовано было то, что руководитель строительства видел: переписанную по существу
       // заявку он визирует заново (ADR 0025). Правка самим визирующим визу не снимает — он и
       // подтверждает изменение самим фактом правки.
@@ -881,14 +984,15 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           assertObjectScope(p, body.objectId);
           await assertObjectActive(tx, body.objectId);
         }
-        if (body.vehicleTypeId && body.vehicleTypeId !== before.vehicleTypeId) {
-          await resolveVehicleType(tx, body.vehicleTypeId, before.requestType);
-          // На заявке уже стоит машина заказанного типа (ADR 0027) — сменить тип означало бы
-          // оставить назначение без основания. То же держит составной FK, но человеку нужен
-          // ответ, а не ошибка целостности.
+        if (classificationChanged) {
+          await resolveClassification(tx, nextTypeId, nextCategoryId, before.requestType);
+          // На заявке уже стоит машина заказанного типа (ADR 0027) — сменить заказ означало бы
+          // оставить назначение без основания. Тип держит и составной FK, но человеку нужен
+          // ответ, а не ошибка целостности; категорию (ADR 0028) не держит никто — машину
+          // выбирали именно под неё.
           if (before.assignment) {
             throw err.unprocessable(
-              'На заявку назначена техника — сменить тип ТС можно, только отменив заявку',
+              'На заявку назначена техника — сменить тип или категорию можно, только отменив заявку',
               { vehicleTypeId: 'Назначена техника' },
             );
           }
@@ -899,6 +1003,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           .set({
             objectId,
             vehicleTypeId: nextTypeId,
+            vehicleCategoryId: nextCategoryId,
             comment: body.comment ?? before.comment,
             ...(dropApproval ? { approvedBy: null, approvedAt: null } : {}),
             updatedBy: p.id,
@@ -1021,7 +1126,12 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         if (assignment) {
           saved = await resolveAssignment(
             tx,
-            { vehicleTypeId: before.vehicleTypeId, vehicleTypeName: before.vehicleTypeName },
+            {
+              vehicleTypeId: before.vehicleTypeId,
+              vehicleTypeName: before.vehicleTypeName,
+              vehicleCategoryId: before.vehicleCategoryId,
+              vehicleCategoryName: before.vehicleCategoryName,
+            },
             assignment,
             { id: p.id, name: p.fullName },
           );

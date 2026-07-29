@@ -101,6 +101,9 @@ export function VehicleTypeCardDrawer({ type, onClose }: Props) {
     void qc.invalidateQueries({ queryKey: ['vehicle-categories'] });
     void qc.invalidateQueries({ queryKey: ['vehicle-types'] });
     void qc.invalidateQueries({ queryKey: ['vehicle-specs'] });
+    // Классификатор (ADR 0028) собран из типов и категорий: заведённая категория меняет и то,
+    // что показывает справочник, и то, что предлагают списки выбора.
+    void qc.invalidateQueries({ queryKey: ['vehicle-classifications'] });
   };
 
   // ── ТТХ типа ──

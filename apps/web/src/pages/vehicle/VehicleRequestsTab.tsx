@@ -31,6 +31,7 @@ import {
   isObjectScopedRole,
   isVehicleKindAllowedForRequest,
   normalizeTimeInput,
+  parseVehicleClassificationKey,
   parseVehicleRequestNumberSearch,
   REQUEST_STATUSES,
   type RequestStatus,
@@ -38,6 +39,7 @@ import {
   statusChangeRequiresReason,
   transitionRequiresAssignment,
   VEHICLE_REQUEST_TYPES,
+  vehicleClassificationLabel,
   type VehicleRequestDto,
   type VehicleRequestType,
   vehicleRequestTypeColors,
@@ -56,6 +58,11 @@ import { TimeInput, optionalWorkTimeRule } from '../../components/TimeInput';
 import { UserAvatar } from '../../components/UserAvatar';
 import { AddressAutoComplete } from '../../components/AddressAutoComplete';
 import { useListParams } from '../../hooks/useListParams';
+import {
+  classificationKeyOf,
+  useVehicleClassifications,
+  withSavedClassification,
+} from '../../hooks/useVehicleClassifications';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage, formatDateTimeMaybe } from '../../utils/format';
 import {
@@ -73,10 +80,9 @@ import {
   FileEditor,
   formatDateOnly,
   StatusCell,
-  VehicleTypeSelect,
+  VehicleClassificationSelect,
   useFileEditor,
   useObjectOptions,
-  useVehicleTypes,
   type EditorFile,
 } from './shared';
 
@@ -89,7 +95,8 @@ import {
 interface FormValues {
   requestType: VehicleRequestType;
   objectId: string;
-  vehicleTypeId: string;
+  /** Ключ позиции классификатора «тип:категория» (ADR 0028); в API уходит парой полей. */
+  classificationKey: string;
   // Техника на объект: период работы (date-only).
   dateFrom?: Dayjs | null;
   dateTo?: Dayjs | null;
@@ -197,7 +204,7 @@ export function VehicleRequestsTab() {
   ];
 
   const { options: objectOptions, loading: objectsLoading } = useObjectOptions();
-  const { kindByTypeId, groups, loading: typesLoading } = useVehicleTypes();
+  const { byKey: classificationByKey, groups, loading: typesLoading } = useVehicleClassifications();
 
   const [open, setOpen] = useState(false);
   const [record, setRecord] = useState<VehicleRequestDto | null>(null);
@@ -228,19 +235,32 @@ export function VehicleRequestsTab() {
   const minDateRule = record ? isPastDate : isBeforeMinRequestDate;
 
   // Заказ техники на объект допускает технику любого вида, грузоперевозка — только грузовую.
+  // Позиция правимой заявки могла выйти из справочника (её выключили) или не существовать вовсе
+  // (заявка старше категорий) — её добавляем отдельной заблокированной строкой, иначе поле
+  // выглядит пустым и непонятно, что вообще заказывали.
   const typeGroups = watchRequestType
-    ? groups.filter((g) => isVehicleKindAllowedForRequest(watchRequestType, g.kindCode))
+    ? withSavedClassification(
+        groups.filter((g) => isVehicleKindAllowedForRequest(watchRequestType, g.kindCode)),
+        record
+          ? {
+              vehicleTypeId: record.vehicleTypeId,
+              vehicleCategoryId: record.vehicleCategoryId,
+              typeName: record.vehicleTypeName,
+              categoryName: record.vehicleCategoryName,
+            }
+          : null,
+      )
     : [];
 
   /**
    * Смена типа заявки: поля чужого типа очищаем, своей дате подставляем сегодня — раньше
-   * нельзя; выбранный тип ТС сбрасываем, если новому типу заявки он не подходит.
+   * нельзя; выбранную технику сбрасываем, если новому типу заявки её вид не подходит.
    */
   const handleRequestTypeChange = (next: VehicleRequestType) => {
-    const typeId: string | undefined = form.getFieldValue('vehicleTypeId');
-    const kindCode = typeId ? kindByTypeId.get(typeId) : undefined;
+    const key: string | undefined = form.getFieldValue('classificationKey');
+    const kindCode = key ? classificationByKey.get(key)?.kindCode : undefined;
     if (kindCode && !isVehicleKindAllowedForRequest(next, kindCode)) {
-      form.resetFields(['vehicleTypeId']);
+      form.resetFields(['classificationKey']);
     }
     if (next === 'special_equipment') {
       form.resetFields([...FREIGHT_FIELDS]);
@@ -275,7 +295,7 @@ export function VehicleRequestsTab() {
       form.setFieldsValue({
         requestType: r.requestType,
         objectId: r.objectId,
-        vehicleTypeId: r.vehicleTypeId,
+        classificationKey: classificationKeyOf(r),
         dateFrom: dayjs(r.dateFrom),
         dateTo: r.dateTo ? dayjs(r.dateTo) : null,
         comment: r.comment,
@@ -287,7 +307,7 @@ export function VehicleRequestsTab() {
       form.setFieldsValue({
         requestType: r.requestType,
         objectId: r.objectId,
-        vehicleTypeId: r.vehicleTypeId,
+        classificationKey: classificationKeyOf(r),
         scheduledDate: at,
         // Время не задано — поле остаётся пустым (в scheduledAt лежит полночь МСК).
         scheduledTime: r.scheduledTimeUnspecified ? undefined : at.format('HH:mm'),
@@ -312,9 +332,13 @@ export function VehicleRequestsTab() {
 
   const saveMut = useMutation({
     mutationFn: (v: FormValues) => {
+      // Выбрана одна позиция классификатора (ADR 0028) — в API она уходит парой «тип +
+      // категория»: категория пуста у типа, у которого её и не бывает.
+      const picked = parseVehicleClassificationKey(v.classificationKey)!;
       const common = {
         objectId: v.objectId,
-        vehicleTypeId: v.vehicleTypeId,
+        vehicleTypeId: picked.vehicleTypeId,
+        vehicleCategoryId: picked.vehicleCategoryId,
         comment: v.comment ?? '',
       };
       if (v.requestType === 'special_equipment') {
@@ -527,13 +551,20 @@ export function VehicleRequestsTab() {
     }),
     {
       key: 'vehicleTypeName',
-      title: 'Тип ТС',
+      title: 'Тип/категория',
       dataIndex: 'vehicleTypeName',
       width: 200,
       sorter: true,
       render: (_v, r) => (
         <div style={{ lineHeight: 1.35 }}>
-          <div>{r.vehicleTypeName}</div>
+          {/* Заказанная позиция классификатора (ADR 0028): категория, а без неё — сам тип.
+              Наименование категории уже начинается с типа, повторять его незачем. */}
+          <div>
+            {vehicleClassificationLabel({
+              typeName: r.vehicleTypeName,
+              categoryName: r.vehicleCategoryName,
+            })}
+          </div>
           {/* Подписи типов развёрнутые («Техника для работы на объекте») — тег переносится
               на вторую строку, иначе колонка растянулась бы на них одну строку в пол-экрана. */}
           <Tag
@@ -796,11 +827,13 @@ export function VehicleRequestsTab() {
               onChange={handleRequestTypeChange}
             />
           </Form.Item>
-          <VehicleTypeSelect
+          <VehicleClassificationSelect
             groups={typeGroups}
             loading={typesLoading}
             disabled={!watchRequestType}
-            placeholder={watchRequestType ? 'Выберите тип' : 'Сначала выберите тип заявки'}
+            placeholder={
+              watchRequestType ? 'Выберите тип или категорию' : 'Сначала выберите тип заявки'
+            }
           />
 
           {/* Техника на объект: период работы. Новую заявку назначают не раньше чем на сегодня

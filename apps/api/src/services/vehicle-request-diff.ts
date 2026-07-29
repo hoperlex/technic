@@ -2,6 +2,7 @@ import {
   assignmentTitle,
   formatMoscowDateTime,
   type RequestChangeDto,
+  vehicleClassificationLabel,
   type VehicleRequestAssignmentDto,
   type VehicleRequestDto,
 } from '@technic/contracts';
@@ -37,7 +38,19 @@ export function diffVehicleRequests(
     `${before.objectCode} — ${before.objectName}`,
     `${after.objectCode} — ${after.objectName}`,
   );
-  diff.changed('vehicleType', before.vehicleTypeName, after.vehicleTypeName);
+  // Заказанная позиция классификатора одной строкой (ADR 0028): наименование категории уже
+  // начинается с типа, и две строки «Тип ТС» + «Категория» повторяли бы друг друга.
+  diff.changed(
+    'vehicleType',
+    vehicleClassificationLabel({
+      typeName: before.vehicleTypeName,
+      categoryName: before.vehicleCategoryName,
+    }),
+    vehicleClassificationLabel({
+      typeName: after.vehicleTypeName,
+      categoryName: after.vehicleCategoryName,
+    }),
+  );
 
   if (before.requestType === 'special_equipment' && after.requestType === 'special_equipment') {
     diff.changed('dateFrom', dateOnly(before.dateFrom), dateOnly(after.dateFrom));

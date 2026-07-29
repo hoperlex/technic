@@ -131,12 +131,16 @@ const amountSchema = z
   );
 
 // ── Создание (discriminatedUnion по requestType, strict) ──
-// Заявка ссылается на плоский тип ТС (ADR 0005): vehicleTypeId.
+// Заказывается конечная позиция классификатора (ADR 0028): тип ТС (ADR 0005) и — если у типа
+// есть категории (ADR 0016) — категория. Пустая категория не значит «не указали»: у типа без
+// ТТХ её и не бывает. Требовать выбор там, где категории есть, может только сервер — он один
+// видит состав справочника.
 export const createSpecialEquipmentRequestSchema = z
   .object({
     requestType: z.literal('special_equipment'),
     objectId: uuidSchema,
     vehicleTypeId: uuidSchema,
+    vehicleCategoryId: uuidSchema.nullish(),
     dateFrom: dateOnlySchema,
     dateTo: dateOnlySchema.nullable().optional(),
     comment: commentSchema.optional().default(''),
@@ -149,6 +153,7 @@ export const createFreightTransportRequestSchema = z
     requestType: z.literal('freight_transport'),
     objectId: uuidSchema,
     vehicleTypeId: uuidSchema,
+    vehicleCategoryId: uuidSchema.nullish(),
     scheduledAt: scheduledAtSchema,
     /**
      * Время подачи не задано: `scheduledAt` несёт только дату (00:00 МСК), рабочее окно
@@ -213,6 +218,8 @@ export const updateSpecialEquipmentRequestSchema = z
     version: z.number().int().nonnegative(),
     objectId: uuidSchema.optional(),
     vehicleTypeId: uuidSchema.optional(),
+    // Категория передаётся вместе с типом: `null` — заказан тип без категорий.
+    vehicleCategoryId: uuidSchema.nullish(),
     dateFrom: dateOnlySchema.optional(),
     dateTo: dateOnlySchema.nullable().optional(),
     comment: commentSchema.optional(),
@@ -227,6 +234,7 @@ export const updateFreightTransportRequestSchema = z
     version: z.number().int().nonnegative(),
     objectId: uuidSchema.optional(),
     vehicleTypeId: uuidSchema.optional(),
+    vehicleCategoryId: uuidSchema.nullish(),
     scheduledAt: scheduledAtSchema.optional(),
     // Передаётся вместе со `scheduledAt` — рабочее окно проверяется только при заданном времени.
     scheduledTimeUnspecified: z.boolean().optional(),
@@ -406,6 +414,9 @@ export const vehicleRequestListQuerySchema = baseListQuery(VEHICLE_REQUEST_SORT_
   status: requestStatusSchema.optional(),
   objectId: uuidSchema.optional(),
   vehicleTypeId: uuidSchema.optional(),
+  // Категория задаётся вместе с типом (позиция классификатора выбирается целиком, ADR 0028):
+  // одна категория принадлежит одному типу, и фильтр по ней сужает список до неё.
+  vehicleCategoryId: uuidSchema.optional(),
   num: z.coerce.number().int().positive().optional(),
   // Виза (ADR 0025): «false» — заявки, ждущие согласования; ими и открывают день диспетчер
   // и руководитель строительства.
@@ -512,6 +523,12 @@ export interface VehicleRequestBaseDto {
   /** Тип ТС (физически vehicle_requests.vehicle_type_id). Плоская модель (ADR 0005). */
   vehicleTypeId: string;
   vehicleTypeName: string;
+  /**
+   * Категория заказанного типа (ADR 0028). `null` — у типа категорий нет («Ямобур») либо заявка
+   * заведена до появления колонки. Показывают одно из двух — см. `vehicleClassificationLabel`.
+   */
+  vehicleCategoryId: string | null;
+  vehicleCategoryName: string | null;
 
   status: RequestStatus;
   comment: string;
@@ -575,7 +592,9 @@ export type VehicleRequestDto = SpecialEquipmentRequestDto | FreightTransportReq
  */
 export const vehicleRequestChangeLabels: Record<string, string> = {
   object: 'Объект',
-  vehicleType: 'Тип ТС',
+  // Заказанная позиция классификатора — одной строкой (ADR 0028): смена категории внутри типа
+  // и смена самого типа для читателя истории одно и то же событие — «заказали другое».
+  vehicleType: 'Тип/категория',
   dateFrom: 'Дата начала',
   dateTo: 'Дата окончания',
   scheduledAt: 'Подача',

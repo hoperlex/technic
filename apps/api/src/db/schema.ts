@@ -1001,6 +1001,13 @@ export const vehicleRequests = pgTable(
     // Цель составного FK из vehicle_request_assignments (ADR 0027): пока на заявке стоит машина,
     // тип ТС у неё не уедет в сторону от назначенного.
     idTypeUnique: unique('vehicle_requests_id_type_unique').on(t.id, t.vehicleTypeId),
+    // Категория чужого типа невозможна физически (ADR 0028) — тем же приёмом, что и у машины.
+    // RESTRICT: пока на категорию ссылается заявка, из справочника её не удалить.
+    categoryTypeFk: foreignKey({
+      columns: [t.vehicleCategoryId, t.vehicleTypeId],
+      foreignColumns: [vehicleCategories.id, vehicleCategories.vehicleTypeId],
+      name: 'vehicle_requests_category_type_fk',
+    }).onDelete('restrict'),
     approvalPresence: check(
       'vehicle_requests_approval_check',
       sql`(${t.approvedBy} is null) = (${t.approvedAt} is null)`,
@@ -1013,6 +1020,10 @@ export const vehicleRequests = pgTable(
     typeIdx: index('vehicle_requests_request_type_idx').on(t.requestType),
     statusIdx: index('vehicle_requests_status_idx').on(t.status),
     vehicleTypeIdx: index('vehicle_requests_vehicle_type_idx').on(t.vehicleTypeId),
+    // «Какие заявки на эту категорию» — вопрос со стороны справочника (ADR 0028).
+    vehicleCategoryIdx: index('vehicle_requests_vehicle_category_idx')
+      .on(t.vehicleCategoryId)
+      .where(sql`${t.vehicleCategoryId} is not null`),
     createdAtIdx: index('vehicle_requests_created_at_idx').on(t.createdAt),
     deletedAtIdx: index('vehicle_requests_deleted_at_idx').on(t.deletedAt),
     objectStatusIdx: index('vehicle_requests_object_status_idx').on(t.objectId, t.status),

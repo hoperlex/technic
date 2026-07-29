@@ -29,6 +29,7 @@ import {
   type VehicleOwnership,
   type VehicleStatus,
   VEHICLE_STATUSES,
+  parseVehicleClassificationKey,
   rentalActivationBlockReason,
   vehicleOwnershipColors,
   vehicleOwnershipLabels,
@@ -36,13 +37,12 @@ import {
   vehicleStatusLabels,
   vehicleTitle,
 } from '@technic/contracts';
+import { counterpartiesApi, vehicleModelsApi, vehiclesApi, vehicleTypesApi } from '../../api/resources';
 import {
-  counterpartiesApi,
-  vehicleCategoriesApi,
-  vehicleModelsApi,
-  vehiclesApi,
-  vehicleTypesApi,
-} from '../../api/resources';
+  classificationKeyOf,
+  useVehicleClassifications,
+  withSavedClassification,
+} from '../../hooks/useVehicleClassifications';
 import { AutoSelect } from '../../components/AutoSelect';
 import { DataTable } from '../../components/DataTable';
 import { FormModal } from '../../components/FormModal';
@@ -58,8 +58,8 @@ import { errorMessage } from '../../utils/format';
 
 interface FormValues {
   ownership: VehicleOwnership;
-  vehicleTypeId: string;
-  vehicleCategoryId?: string;
+  /** Ключ позиции классификатора «тип:категория» (ADR 0028); в API уходит парой полей. */
+  classificationKey: string;
   vehicleModelId?: string;
   registrationNumber?: string;
   passportNumber?: string;
@@ -108,14 +108,19 @@ export function VehiclesTab() {
     queryFn: () => vehiclesApi.list(params),
   });
 
-  // Типы ТС для селекта (активные).
-  const { data: typesData, isLoading: typesLoading } = useQuery({
+  // Классификатор для селекта (ADR 0028): позиции — категории типа, а у типа без ТТХ сам тип.
+  const { groups: classificationGroups, loading: typesLoading } = useVehicleClassifications();
+
+  // Фильтр по типу остаётся типовым: в списке техники сравнивают весь тип целиком — сколько
+  // автокранов и чьи они, — а не одну его категорию.
+  const { data: typesData } = useQuery({
     queryKey: ['vehicle-types', 'for-select'],
     queryFn: () =>
       vehicleTypesApi.list({ page: 1, pageSize: 500, sortBy: 'name', sortOrder: 'asc' }),
   });
-  const types = typesData?.items ?? [];
-  const typeOptions = types.filter((t) => t.isActive).map((t) => ({ value: t.id, label: t.name }));
+  const typeOptions = (typesData?.items ?? [])
+    .filter((t) => t.isActive)
+    .map((t) => ({ value: t.id, label: t.name }));
 
   // Арендодатели — контрагенты роли «Арендодатель (ТС)»; учёток за ними нет, это чистый справочник.
   const { data: lessorsData, isLoading: lessorsLoading } = useQuery({
@@ -139,7 +144,11 @@ export function VehiclesTab() {
   const [record, setRecord] = useState<VehicleDto | null>(null);
   const [form] = Form.useForm<FormValues>();
   const watchOwnership = Form.useWatch('ownership', form) ?? 'own';
-  const watchTypeId = Form.useWatch('vehicleTypeId', form);
+  // Выбирают одну позицию классификатора (ADR 0028), а марки/модели грузятся по типу — его
+  // достаём из ключа позиции.
+  const watchClassificationKey = Form.useWatch('classificationKey', form);
+  const picked = parseVehicleClassificationKey(watchClassificationKey);
+  const watchTypeId = picked?.vehicleTypeId;
   const isRental = watchOwnership === 'rental';
 
   // Почему это предложение нельзя включить (ADR 0018 §15). Текст общий с ответом сервера.
@@ -170,25 +179,20 @@ export function VehiclesTab() {
   });
   const modelOptions = (modelsData?.items ?? []).map((m) => ({ value: m.id, label: m.name }));
 
-  // Категории выбранного типа (ADR 0016): у типа без ТТХ их нет вовсе.
-  const { data: categoriesData } = useQuery({
-    queryKey: ['vehicle-categories', 'for-select', watchTypeId],
-    queryFn: () =>
-      vehicleCategoriesApi.list({
-        page: 1,
-        pageSize: 500,
-        vehicleTypeId: watchTypeId,
-        isActive: 'true',
-        sortBy: 'sortOrder',
-        sortOrder: 'asc',
-      }),
-    enabled: !!watchTypeId,
-  });
-  const categoryOptions = (categoriesData?.items ?? []).map((c) => ({
-    value: c.id,
-    label: c.name,
-  }));
-  const typeHasCategories = categoryOptions.length > 0;
+  // У правимой записи позиция могла выйти из справочника — или её не быть вовсе: машину завели
+  // до появления категорий у её типа. Такую позицию показываем отдельной заблокированной
+  // строкой, иначе поле выглядит пустым, будто классификацию потеряли.
+  const classificationOptions = withSavedClassification(
+    classificationGroups,
+    record
+      ? {
+          vehicleTypeId: record.vehicleTypeId,
+          vehicleCategoryId: record.vehicleCategoryId,
+          typeName: record.typeName,
+          categoryName: record.categoryName,
+        }
+      : null,
+  );
 
   const openCreate = () => {
     setRecord(null);
@@ -204,8 +208,7 @@ export function VehiclesTab() {
     form.resetFields();
     form.setFieldsValue({
       ownership: r.ownership,
-      vehicleTypeId: r.vehicleTypeId,
-      vehicleCategoryId: r.vehicleCategoryId ?? undefined,
+      classificationKey: classificationKeyOf(r),
       vehicleModelId: r.vehicleModelId ?? undefined,
       registrationNumber: r.registrationNumber ?? undefined,
       passportNumber: r.passportNumber ?? undefined,
@@ -222,9 +225,12 @@ export function VehiclesTab() {
 
   const saveMut = useMutation({
     mutationFn: (v: FormValues) => {
+      // Выбрана одна позиция классификатора (ADR 0028) — в API она уходит парой «тип +
+      // категория»: категория пуста у типа, у которого её и не бывает.
+      const chosen = parseVehicleClassificationKey(v.classificationKey)!;
       const common = {
-        vehicleTypeId: v.vehicleTypeId,
-        vehicleCategoryId: v.vehicleCategoryId ?? null,
+        vehicleTypeId: chosen.vehicleTypeId,
+        vehicleCategoryId: chosen.vehicleCategoryId,
         status: v.status,
         note: v.note ?? '',
       };
@@ -531,10 +537,9 @@ export function VehiclesTab() {
           layout="vertical"
           onFinish={(v) => saveMut.mutate(v)}
           onValuesChange={(changed) => {
-            // Смена типа сбрасывает марку/модель и категорию: обе принадлежат типу.
-            if ('vehicleTypeId' in changed) {
+            // Смена позиции сбрасывает марку/модель: она принадлежит типу, а тип мог смениться.
+            if ('classificationKey' in changed) {
               form.setFieldValue('vehicleModelId', undefined);
-              form.setFieldValue('vehicleCategoryId', undefined);
             }
             // У аренды состояний машины нет — статус приводим к допустимому.
             if (changed.ownership === 'rental' && form.getFieldValue('status') !== 'inactive') {
@@ -558,39 +563,26 @@ export function VehiclesTab() {
             />
           </Form.Item>
 
+          {/* Одна позиция классификатора вместо пары полей (ADR 0028): у типа с ТТХ выбирают
+              категорию — ей же заявка адресована, — а тип без ТТХ выбирается целиком. */}
           <Form.Item
-            name="vehicleTypeId"
-            label="Тип ТС"
-            rules={[{ required: true, message: 'Выберите тип' }]}
+            name="classificationKey"
+            label="Тип/категория ТС"
+            rules={[{ required: true, message: 'Выберите тип или категорию' }]}
+            extra={
+              isRental
+                ? 'Категория — то, по чему предложение сопоставляется с заявкой: «Автокран, г/п 130 т»'
+                : undefined
+            }
           >
             <AutoSelect
-              options={typeOptions}
+              options={classificationOptions}
               loading={typesLoading}
               showSearch
               optionFilterProp="label"
-              placeholder="Тип ТС"
+              placeholder="Тип или категория"
             />
           </Form.Item>
-
-          {typeHasCategories ? (
-            <Form.Item
-              name="vehicleCategoryId"
-              label="Категория"
-              extra={
-                isRental
-                  ? 'Без категории предложение не сопоставить с заявкой — указывайте, если арендодатель уточнил'
-                  : undefined
-              }
-            >
-              <Select
-                options={categoryOptions}
-                showSearch
-                allowClear
-                optionFilterProp="label"
-                placeholder="Категория (опционально)"
-              />
-            </Form.Item>
-          ) : null}
 
           {isRental ? (
             <>

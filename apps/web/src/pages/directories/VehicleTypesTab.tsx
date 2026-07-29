@@ -9,6 +9,7 @@ import {
   Space,
   Switch,
   Tag,
+  Tooltip,
   type TableColumnType,
 } from 'antd';
 import { EditOutlined, PlusOutlined, SettingOutlined } from '@ant-design/icons';
@@ -17,9 +18,15 @@ import {
   DEFAULT_PAGE_SIZE,
   type CreateVehicleTypeInput,
   type UpdateVehicleTypeInput,
+  type VehicleClassificationDto,
   type VehicleTypeDto,
 } from '@technic/contracts';
-import { vehicleKindsApi, vehicleTypesApi } from '../../api/resources';
+import {
+  vehicleCategoriesApi,
+  vehicleClassificationsApi,
+  vehicleKindsApi,
+  vehicleTypesApi,
+} from '../../api/resources';
 import { AutoSelect } from '../../components/AutoSelect';
 import { DataTable, type TableChange } from '../../components/DataTable';
 import { FormModal } from '../../components/FormModal';
@@ -51,9 +58,10 @@ interface VtFormValues {
 
 const CODE_PATTERN = /^[a-z][a-z0-9_]*$/;
 
-// Плоский справочник типов ТС (ADR 0005): один уровень, без подтипов/иерархии. Подтип вернулся
-// в другом виде (ADR 0016): у типа есть набор ТТХ, а категории — комбинации их значений; и то,
-// и другое ведётся в карточке типа (VehicleTypeCardDrawer).
+// Справочник классификации ТС. Уровней два — тип (ADR 0005) и категория (ADR 0016), — но
+// показываются они одним списком (ADR 0028): у типа с категориями строками идут категории, сам
+// тип отдельной строкой не выводится, а тип без ТТХ остаётся собой. Состав ТТХ и заведение
+// категорий — по-прежнему в карточке типа (VehicleTypeCardDrawer): там это один инвариант.
 export function VehicleTypesTab() {
   const { message, modal } = App.useApp();
   const qc = useQueryClient();
@@ -70,9 +78,18 @@ export function VehicleTypesTab() {
   const patchParams = (patch: Partial<VtParams>) => setParams((p) => ({ ...p, ...patch, page: 1 }));
 
   const { data, isFetching } = useQuery({
-    queryKey: ['vehicle-types', params],
-    queryFn: () => vehicleTypesApi.list(params),
+    queryKey: ['vehicle-classifications', params],
+    queryFn: () => vehicleClassificationsApi.list(params),
   });
+
+  // Сами типы — для правки и карточки: в строке классификатора лежит только то, что показывают,
+  // а форме нужен тип целиком (код, вид, описание, порядок). Типов десятки — грузим разом.
+  const { data: typesData } = useQuery({
+    queryKey: ['vehicle-types', 'full'],
+    queryFn: () =>
+      vehicleTypesApi.list({ page: 1, pageSize: 500, sortBy: 'sortOrder', sortOrder: 'asc' }),
+  });
+  const typeById = new Map((typesData?.items ?? []).map((t) => [t.id, t]));
 
   const { data: kindsData, isLoading: kindsLoading } = useQuery({
     queryKey: ['vehicle-kinds'],
@@ -115,6 +132,8 @@ export function VehicleTypesTab() {
     onSuccess: () => {
       message.success('Сохранено');
       void qc.invalidateQueries({ queryKey: ['vehicle-types'] });
+      // Наименование типа — это и подпись его строк в классификаторе (ADR 0028).
+      void qc.invalidateQueries({ queryKey: ['vehicle-classifications'] });
       setOpen(false);
     },
     onError: (e) => message.error(errorMessage(e)),
@@ -142,27 +161,40 @@ export function VehicleTypesTab() {
     saveMut.mutate({ create });
   };
 
-  // Активация/деактивация — инлайн; деактивация с подтверждением.
+  // Активация/деактивация — инлайн; деактивация с подтверждением. Строка классификатора может
+  // быть и типом, и категорией: выключают ровно то, что в строке, — иначе выключение «Автокрана,
+  // г/п 25 т» уносило бы с собой все остальные автокраны.
   const toggleMut = useMutation({
-    mutationFn: ({ id, isActive }: { id: string; isActive: boolean }) =>
-      vehicleTypesApi.update(id, { isActive }),
+    mutationFn: async (r: { row: VehicleClassificationDto; isActive: boolean }) => {
+      if (r.row.vehicleCategoryId) {
+        await vehicleCategoriesApi.update(r.row.vehicleCategoryId, { isActive: r.isActive });
+        return;
+      }
+      await vehicleTypesApi.update(r.row.vehicleTypeId, { isActive: r.isActive });
+    },
     onSuccess: (_d, v) => {
-      message.success(v.isActive ? 'Тип активирован' : 'Тип деактивирован');
+      const what = v.row.vehicleCategoryId ? 'Категория' : 'Тип';
+      message.success(`${what} ${v.isActive ? 'активирован' : 'деактивирован'}${v.row.vehicleCategoryId ? 'а' : ''}`);
+      void qc.invalidateQueries({ queryKey: ['vehicle-classifications'] });
       void qc.invalidateQueries({ queryKey: ['vehicle-types'] });
+      void qc.invalidateQueries({ queryKey: ['vehicle-categories'] });
     },
     onError: (e) => message.error(errorMessage(e)),
   });
-  const onToggleActive = (r: VehicleTypeDto, next: boolean) => {
+  const onToggleActive = (row: VehicleClassificationDto, next: boolean) => {
     if (next) {
-      toggleMut.mutate({ id: r.id, isActive: true });
+      toggleMut.mutate({ row, isActive: true });
       return;
     }
     modal.confirm({
-      title: `Деактивировать тип «${r.name}»?`,
+      title: `Деактивировать «${row.label}»?`,
+      content: row.vehicleCategoryId
+        ? 'Заказать эту категорию будет нельзя; остальные категории типа останутся доступны.'
+        : 'Заказать этот тип и любую его категорию будет нельзя.',
       okText: 'Деактивировать',
       okButtonProps: { danger: true },
       cancelText: 'Отмена',
-      onOk: () => toggleMut.mutateAsync({ id: r.id, isActive: false }),
+      onOk: () => toggleMut.mutateAsync({ row, isActive: false }),
     });
   };
 
@@ -176,21 +208,31 @@ export function VehicleTypesTab() {
       sortOrder: c.sortOrder ?? 'asc',
     }));
 
-  // Колонки: Вид → Тип → ТТХ → Категорий → Активен → Действия.
-  const columns: TableColumnType<VehicleTypeDto>[] = [
-    textColumn<VehicleTypeDto>({
+  // Колонки: Вид → Тип/категория → ТТХ → Активен → Действия. Отдельного счётчика категорий
+  // больше нет — категории и есть строки списка.
+  const columns: TableColumnType<VehicleClassificationDto>[] = [
+    textColumn<VehicleClassificationDto>({
       key: 'kindName',
       title: 'Вид',
       dataIndex: 'kindName',
       searchable: false,
       width: 200,
     }),
-    textColumn<VehicleTypeDto>({
-      key: 'name',
-      title: 'Тип',
-      dataIndex: 'name',
-      searchable: false,
-    }),
+    {
+      key: 'label',
+      title: 'Тип/категория',
+      dataIndex: 'label',
+      sorter: true,
+      ellipsis: true,
+      // Наименование категории уже начинается с типа («Автокраны, г/п 25 т»), поэтому тип рядом
+      // не повторяется. Тег отличает категорию от типа, который выбирается целиком.
+      render: (v: string, r) => (
+        <Space size={6}>
+          <span>{v}</span>
+          {r.vehicleCategoryId ? null : <Tag>тип целиком</Tag>}
+        </Space>
+      ),
+    },
     {
       key: 'specCount',
       title: 'ТТХ',
@@ -200,47 +242,63 @@ export function VehicleTypesTab() {
       render: (v: number) => (v > 0 ? <Tag color="blue">{v}</Tag> : <Tag>0</Tag>),
     },
     {
-      key: 'categoryCount',
-      title: 'Категорий',
-      dataIndex: 'categoryCount',
-      width: 110,
-      sorter: false,
-      // У типа без ТТХ категорий не бывает — это не «пусто», а «неприменимо».
-      render: (v: number, r) => (r.specCount === 0 ? '—' : v),
-    },
-    {
       key: 'isActive',
       title: 'Активен',
       dataIndex: 'isActive',
       width: 110,
       sorter: true,
-      render: (v: boolean, r) => (
-        <Switch
-          size="small"
-          checked={v}
-          loading={toggleMut.isPending}
-          onChange={(n) => onToggleActive(r, n)}
-        />
-      ),
+      // У категории показываем её доступность целиком: у выключенного типа не бывает доступных
+      // категорий, и включать их по одной бессмысленно — сперва нужно включить сам тип.
+      render: (v: boolean, r) => {
+        const blocked = !!r.vehicleCategoryId && !r.typeIsActive;
+        const control = (
+          <Switch
+            size="small"
+            checked={v}
+            disabled={blocked}
+            loading={toggleMut.isPending}
+            onChange={(n) => onToggleActive(r, n)}
+          />
+        );
+        return blocked ? (
+          <Tooltip title={`Тип «${r.typeName}» неактивен — активируйте сначала его`}>
+            {control}
+          </Tooltip>
+        ) : (
+          control
+        );
+      },
     },
-    actionsColumn<VehicleTypeDto>((r) => (
-      <Space size={4}>
-        <Button
-          size="small"
-          icon={<SettingOutlined />}
-          title="ТТХ и категории"
-          onClick={() => setCard(r)}
-        />
-        <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)} />
-      </Space>
-    )),
+    actionsColumn<VehicleClassificationDto>((r) => {
+      const type = typeById.get(r.vehicleTypeId);
+      return (
+        <Space size={4}>
+          <Button
+            size="small"
+            icon={<SettingOutlined />}
+            title="ТТХ и категории типа"
+            disabled={!type}
+            onClick={() => type && setCard(type)}
+          />
+          {/* Правится всегда тип: наименование категории собирается из его ТТХ и значений
+              (ADR 0016) и правится там же, в карточке. */}
+          <Button
+            size="small"
+            icon={<EditOutlined />}
+            title={`Редактировать тип «${r.typeName}»`}
+            disabled={!type}
+            onClick={() => type && openEdit(type)}
+          />
+        </Space>
+      );
+    }),
   ];
 
   const filters = (
     <Space wrap>
       <Input
         allowClear
-        placeholder="Поиск (код/название)"
+        placeholder="Поиск (код, тип, категория)"
         style={{ width: 220 }}
         value={params.search}
         onChange={(e) => patchParams({ search: e.target.value || undefined })}
@@ -286,8 +344,9 @@ export function VehicleTypesTab() {
         </Button>
       }
     >
-      <DataTable<VehicleTypeDto>
+      <DataTable<VehicleClassificationDto>
         columns={columns}
+        rowKey="key"
         data={data?.items ?? []}
         total={data?.total ?? 0}
         loading={isFetching}

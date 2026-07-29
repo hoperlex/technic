@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
   createVehicleKindSchema,
   createVehicleTypeSchema,
+  parseVehicleClassificationKey,
   updateVehicleTypeSchema,
+  vehicleClassificationKey,
+  vehicleClassificationLabel,
+  vehicleClassificationListQuerySchema,
   vehicleTypeCodeSchema,
   vehicleTypeListQuerySchema,
 } from '@technic/contracts';
@@ -86,5 +90,69 @@ describe('vehicle_types: list-query', () => {
     const q = vehicleTypeListQuerySchema.parse({ kindId: KIND_ID, isActive: 'false' });
     expect(q.kindId).toBe(KIND_ID);
     expect(q.isActive).toBe(false);
+  });
+});
+
+// ── Классификатор «тип/категория» (ADR 0028) ──
+// Ключ позиции — единственное, что уходит из списка выбора: им форма отвечает и «какой тип»,
+// и «какая категория», не заводя второго поля.
+
+describe('vehicle_classifications: ключ позиции', () => {
+  const TYPE_ID = '22222222-2222-4222-8222-222222222222';
+  const CATEGORY_ID = '33333333-3333-4333-8333-333333333333';
+
+  it('ключ категории разбирается обратно в пару', () => {
+    const key = vehicleClassificationKey(TYPE_ID, CATEGORY_ID);
+    expect(key).toBe(`${TYPE_ID}:${CATEGORY_ID}`);
+    expect(parseVehicleClassificationKey(key)).toEqual({
+      vehicleTypeId: TYPE_ID,
+      vehicleCategoryId: CATEGORY_ID,
+    });
+  });
+
+  it('тип без категорий — пустая половина ключа, а не отсутствие ключа', () => {
+    for (const empty of [null, undefined]) {
+      const key = vehicleClassificationKey(TYPE_ID, empty);
+      expect(key).toBe(`${TYPE_ID}:`);
+      expect(parseVehicleClassificationKey(key)).toEqual({
+        vehicleTypeId: TYPE_ID,
+        vehicleCategoryId: null,
+      });
+    }
+  });
+
+  it('пустой и битый ключ разбираются в null, а не в позицию с пустым типом', () => {
+    for (const bad of ['', null, undefined, ':', `:${CATEGORY_ID}`]) {
+      expect(parseVehicleClassificationKey(bad)).toBeNull();
+    }
+  });
+});
+
+describe('vehicle_classifications: подпись позиции', () => {
+  it('категория вытесняет тип — её наименование уже начинается с него', () => {
+    expect(
+      vehicleClassificationLabel({ typeName: 'Автокраны', categoryName: 'Автокраны, г/п 130 т' }),
+    ).toBe('Автокраны, г/п 130 т');
+  });
+
+  it('без категории показывается чистый тип', () => {
+    expect(vehicleClassificationLabel({ typeName: 'Ямобур', categoryName: null })).toBe('Ямобур');
+    expect(vehicleClassificationLabel({ typeName: 'Ямобур' })).toBe('Ямобур');
+  });
+});
+
+describe('vehicle_classifications: list-query', () => {
+  it('вид, тип и активность парсятся', () => {
+    const q = vehicleClassificationListQuerySchema.parse({
+      kindId: KIND_ID,
+      vehicleTypeId: '22222222-2222-4222-8222-222222222222',
+      isActive: 'true',
+    });
+    expect(q.kindId).toBe(KIND_ID);
+    expect(q.isActive).toBe(true);
+  });
+
+  it('сортировка вне allowlist отклоняется', () => {
+    expect(() => vehicleClassificationListQuerySchema.parse({ sortBy: 'specSignature' })).toThrow();
   });
 });

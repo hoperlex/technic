@@ -17,6 +17,9 @@ const BASE = {
   objectName: 'Жилой комплекс',
   vehicleTypeId: '33333333-3333-4333-8333-333333333333',
   vehicleTypeName: 'Экскаватор',
+  // Заявка на тип без ТТХ: категории у него не бывает (ADR 0028).
+  vehicleCategoryId: null,
+  vehicleCategoryName: null,
   status: 'new' as const,
   comment: 'Заезд со двора',
   cancelReason: null,
@@ -82,6 +85,41 @@ describe('дифф правки заявки на технику', () => {
       field: 'vehicleType',
       from: 'Экскаватор',
       to: 'Автокран',
+    });
+  });
+
+  // Заказанная позиция классификатора — одна строка истории (ADR 0028): наименование категории
+  // уже начинается с типа, и «Тип ТС» рядом с «Категорией» повторяли бы друг друга.
+  it('смена категории внутри типа — одна строка «тип/категория»', () => {
+    const from = {
+      ...SPECIAL,
+      vehicleTypeName: 'Автокраны',
+      vehicleCategoryId: '66666666-6666-4666-8666-666666666666',
+      vehicleCategoryName: 'Автокраны, г/п 25 т',
+    };
+    const to = {
+      ...from,
+      vehicleCategoryId: '77777777-7777-4777-8777-777777777777',
+      vehicleCategoryName: 'Автокраны, г/п 130 т',
+    };
+    const changes = diffVehicleRequests(from, to);
+    expect(changes).toEqual([
+      { field: 'vehicleType', from: 'Автокраны, г/п 25 т', to: 'Автокраны, г/п 130 т' },
+    ]);
+  });
+
+  it('тип без категорий показывается чистым типом', () => {
+    const to = {
+      ...SPECIAL,
+      vehicleTypeId: 'x',
+      vehicleTypeName: 'Автокраны',
+      vehicleCategoryId: '66666666-6666-4666-8666-666666666666',
+      vehicleCategoryName: 'Автокраны, г/п 25 т',
+    };
+    expect(diffVehicleRequests(SPECIAL, to)).toContainEqual({
+      field: 'vehicleType',
+      from: 'Экскаватор',
+      to: 'Автокраны, г/п 25 т',
     });
   });
 

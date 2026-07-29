@@ -87,6 +87,14 @@ const CASES: Case[] = [
     allowed: ['admin', 'manager', 'dispatcher', 'shtab', 'rukstroy', 'operator'],
   },
   {
+    // Классификатор (ADR 0028) — тот же справочник, что типы и категории, только одним списком:
+    // им заполняется форма заявки, поэтому читать его должны все роли.
+    title: 'классификатор ТС — чтение',
+    method: 'GET',
+    url: '/api/v1/vehicle-classifications',
+    allowed: ['admin', 'manager', 'dispatcher', 'shtab', 'rukstroy', 'operator'],
+  },
+  {
     title: 'объекты — создание',
     method: 'POST',
     url: '/api/v1/objects',

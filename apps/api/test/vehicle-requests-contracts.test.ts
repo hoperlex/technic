@@ -95,6 +95,52 @@ describe('vehicle-requests: тип ТС (плоская модель, ADR 0005)'
   });
 });
 
+// Заказывают конечную позицию классификатора (ADR 0028): у типа с ТТХ — категорию, у типа без
+// них — сам тип. Схема принимает обе формы: «есть ли у типа категории» знает только сервер,
+// и требовать выбор он же и будет.
+describe('vehicle-requests: категория заказанного типа (ADR 0028)', () => {
+  const CATEGORY = '44444444-4444-4444-8444-444444444444';
+
+  it('категория принимается обоими типами заявки', () => {
+    const s = createVehicleRequestSchema.parse({ ...special, vehicleCategoryId: CATEGORY });
+    expect(s.vehicleCategoryId).toBe(CATEGORY);
+    const f = createVehicleRequestSchema.parse({ ...freight, vehicleCategoryId: CATEGORY });
+    expect(f.vehicleCategoryId).toBe(CATEGORY);
+  });
+
+  it('без категории заявка проходит: у типа без ТТХ её и не бывает', () => {
+    const v = createVehicleRequestSchema.parse(special);
+    expect(v.vehicleCategoryId ?? null).toBeNull();
+    // Явный null — «категории нет», а не «поле забыли»; схема принимает обе записи.
+    const explicit = createVehicleRequestSchema.parse({ ...special, vehicleCategoryId: null });
+    expect(explicit.vehicleCategoryId).toBeNull();
+  });
+
+  it('не-uuid в категории отклоняется', () => {
+    expect(() =>
+      createVehicleRequestSchema.parse({ ...special, vehicleCategoryId: 'первая' }),
+    ).toThrow();
+  });
+
+  it('правка передаёт категорию вместе с типом', () => {
+    const v = updateVehicleRequestSchema.parse({
+      requestType: 'special_equipment',
+      version: 3,
+      vehicleTypeId: TYPE,
+      vehicleCategoryId: CATEGORY,
+    });
+    if (v.requestType !== 'special_equipment') throw new Error('unreachable');
+    expect(v.vehicleTypeId).toBe(TYPE);
+    expect(v.vehicleCategoryId).toBe(CATEGORY);
+  });
+
+  it('список сужается категорией', () => {
+    const q = vehicleRequestListQuerySchema.parse({ vehicleCategoryId: CATEGORY });
+    expect(q.vehicleCategoryId).toBe(CATEGORY);
+    expect(() => vehicleRequestListQuerySchema.parse({ vehicleCategoryId: 'нет' })).toThrow();
+  });
+});
+
 // Тип заявки выбирают в форме явно, из вида ТС он не выводится: на объект вызывают технику
 // любого вида, грузоперевозку выполняют только грузовым. Тем же предикатом сужен список типов
 // ТС в форме и проверен `vehicleTypeId` на сервере.
@@ -283,9 +329,9 @@ describe('vehicle-requests: техника и ставки (ADR 0027)', () => {
     expect(() => withAssignment({ vehicleId: VEHICLE, shiftHours: 25 })).toThrow();
     expect(() => withAssignment({ vehicleId: VEHICLE, shiftHours: 0 })).toThrow();
     // Ставку снимают явным null — «поле не пришло» и «ставки нет» это разные вещи.
-    expect(withAssignment({ vehicleId: VEHICLE, pricePerHour: null }).assignment?.pricePerHour).toBe(
-      null,
-    );
+    expect(
+      withAssignment({ vehicleId: VEHICLE, pricePerHour: null }).assignment?.pricePerHour,
+    ).toBe(null);
   });
 
   it('лишние поля назначения не проходят (strict)', () => {

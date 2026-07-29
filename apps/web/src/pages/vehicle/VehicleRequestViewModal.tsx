@@ -9,6 +9,7 @@ import {
   requestStatusColors,
   requestStatusLabels,
   type VehicleRequestDto,
+  vehicleClassificationLabel,
   vehicleOwnershipColors,
   vehicleOwnershipLabels,
   vehicleRequestChangeLabels,
@@ -119,7 +120,16 @@ export function VehicleRequestViewModal({ request, onClose, onEdit }: Props) {
           span: 2,
           children: `${request.objectCode} — ${request.objectName}`,
         },
-        { key: 'vehicleType', label: 'Тип ТС', children: request.vehicleTypeName },
+        // Заказанная позиция классификатора (ADR 0028): категория с её ТТХ, а у типа без
+        // характеристик — сам тип.
+        {
+          key: 'vehicleType',
+          label: 'Тип/категория',
+          children: vehicleClassificationLabel({
+            typeName: request.vehicleTypeName,
+            categoryName: request.vehicleCategoryName,
+          }),
+        },
         // Назначенная техника (ADR 0027): у «Новой» заявки её нет, у остальных это ответ на
         // вопрос «чем и почём» — вместе с тем, кто и когда назначил.
         {

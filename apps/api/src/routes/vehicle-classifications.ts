@@ -48,10 +48,17 @@ export default async function vehicleClassificationsRoutes(app: FastifyInstance)
       const q = req.query;
 
       /**
-       * «У типа есть категории» проверяется с той же поправкой на активность, что и сам запрос:
-       * при `isActive=true` тип, у которого все категории выключены, обязан вернуться чистым
-       * типом — иначе он исчез бы из выбора совсем, хотя заказывать его по-прежнему можно.
+       * Активность категории — условие соединения, а не фильтр строк. Разница важна: у типа,
+       * где все категории выключены, `LEFT JOIN` с этим условием не найдёт ни одной и отдаст
+       * строку самого типа. Тот же признак в `WHERE` отсёк бы её вместе с категориями, и тип
+       * исчез бы из выбора совсем — хотя заказывать его по-прежнему можно.
        */
+      const categoryJoin = and(
+        eq(vehicleCategories.vehicleTypeId, vehicleTypes.id),
+        q.isActive === true ? eq(vehicleCategories.isActive, true) : undefined,
+      )!;
+
+      /** «У типа есть категории» — с той же поправкой на активность, что и соединение. */
       const typeHasCategories = exists(
         db
           .select({ one: sql`1` })
@@ -104,7 +111,7 @@ export default async function vehicleClassificationsRoutes(app: FastifyInstance)
           })
           .from(vehicleTypes)
           .innerJoin(vehicleKinds, eq(vehicleTypes.kindId, vehicleKinds.id))
-          .leftJoin(vehicleCategories, eq(vehicleCategories.vehicleTypeId, vehicleTypes.id))
+          .leftJoin(vehicleCategories, categoryJoin)
           .where(where)
           // Категории внутри типа идут своим порядком, а не как легли в таблицу: «г/п 20 т»
           // раньше «г/п 25 т» — так их выстроил тот, кто вёл справочник.
@@ -120,7 +127,7 @@ export default async function vehicleClassificationsRoutes(app: FastifyInstance)
           .select({ c: count() })
           .from(vehicleTypes)
           .innerJoin(vehicleKinds, eq(vehicleTypes.kindId, vehicleKinds.id))
-          .leftJoin(vehicleCategories, eq(vehicleCategories.vehicleTypeId, vehicleTypes.id))
+          .leftJoin(vehicleCategories, categoryJoin)
           .where(where),
       ]);
 

@@ -15,7 +15,8 @@ import {
   requestStatusColors,
   requestStatusLabels,
 } from '@technic/contracts';
-import { filesApi, objectsApi, vehicleTypesApi } from '../../api/resources';
+import { filesApi, objectsApi } from '../../api/resources';
+import type { VehicleClassificationGroup } from '../../hooks/useVehicleClassifications';
 import { AutoSelect } from '../../components/AutoSelect';
 import { FileLinkList } from '../../components/FileLinks';
 import { useAuth } from '../../auth/AuthContext';
@@ -248,68 +249,29 @@ export function ApprovalCell({
   );
 }
 
-/** Типы ТС одного вида — группа в Select. `kindCode` нужен, чтобы сузить список типом заявки. */
-export interface VehicleTypeGroup {
-  label: string;
-  kindCode: string;
-  options: { value: string; label: string }[];
-}
-
 /**
- * Все активные типы ТС (плоская модель, ADR 0005), сгруппированные по виду.
- *
- * Вид ТС не задаёт тип заявки — его выбирают в форме явно: техникой любого вида работают
- * на объекте, а грузоперевозку выполняют только грузовым видом
- * (`isVehicleKindAllowedForRequest`).
+ * Выбор заказываемой техники (ADR 0028): одна позиция классификатора — категория типа
+ * («Автокраны, г/п 130 т») либо сам тип, если ТТХ у него нет («Ямобур»). Список сгруппирован по
+ * виду ТС и сужен типом заявки, поэтому до его выбора поле недоступно. В форме лежит ключ
+ * позиции, в API уходит пара «тип + категория».
  */
-export function useVehicleTypes() {
-  const { data, isFetching } = useQuery({
-    queryKey: ['vehicle-types', 'flat', 'all-kinds'],
-    queryFn: () =>
-      vehicleTypesApi.list({
-        isActive: 'true',
-        pageSize: 500,
-        sortBy: 'sortOrder',
-        sortOrder: 'asc',
-      }),
-  });
-  const items = data?.items ?? [];
-
-  const kindByTypeId = new Map(items.map((t) => [t.id, t.kindCode]));
-  const groups: VehicleTypeGroup[] = [];
-  for (const t of items) {
-    let group = groups.find((g) => g.kindCode === t.kindCode);
-    if (!group) {
-      group = { label: t.kindName, kindCode: t.kindCode, options: [] };
-      groups.push(group);
-    }
-    group.options.push({ value: t.id, label: t.name });
-  }
-
-  return { kindByTypeId, groups, loading: isFetching };
-}
-
-/**
- * Выбор типа ТС: список сгруппирован по виду, в API уходит vehicleTypeId. Набор групп сужен
- * типом заявки, поэтому до его выбора поле недоступно.
- */
-export function VehicleTypeSelect({
+export function VehicleClassificationSelect({
   groups,
   loading,
   disabled,
-  placeholder = 'Выберите тип',
+  placeholder = 'Выберите тип или категорию',
 }: {
-  groups: VehicleTypeGroup[];
+  groups: VehicleClassificationGroup[];
   loading: boolean;
   disabled?: boolean;
   placeholder?: string;
 }) {
   return (
     <Form.Item
-      name="vehicleTypeId"
-      label="Тип ТС"
-      tooltip="Список сужен типом заявки: грузоперевозку выполняет только грузовая техника"
-      rules={[{ required: true, message: 'Выберите тип' }]}
+      name="classificationKey"
+      label="Тип/категория ТС"
+      tooltip="У типа с характеристиками выбирают категорию — «Автокран, г/п 130 т»; тип без характеристик выбирается целиком. Список сужен типом заявки: грузоперевозку выполняет только грузовая техника"
+      rules={[{ required: true, message: 'Выберите тип или категорию' }]}
     >
       <AutoSelect
         options={groups}
