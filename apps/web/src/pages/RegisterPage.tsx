@@ -32,7 +32,8 @@ export function RegisterPage() {
         padding: 16,
       }}
     >
-      <Card style={{ width: 420 }}>
+      {/* Карточка держит прежнюю ширину, пока экран её вмещает, и сжимается на телефоне. */}
+      <Card style={{ width: '100%', maxWidth: 420 }}>
         <Typography.Title level={3} style={{ textAlign: 'center' }}>
           Регистрация
         </Typography.Title>

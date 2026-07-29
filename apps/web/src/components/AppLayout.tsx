@@ -13,6 +13,9 @@ import {
 import { Outlet, useLocation, useNavigate } from 'react-router';
 import { roleLabels } from '@technic/contracts';
 import { useAuth } from '../auth/AuthContext';
+import { useIsMobile } from '../hooks/useIsMobile';
+import { MobileAppBar } from './MobileAppBar';
+import { MobileNav, type MobileNavItem } from './MobileNav';
 import { PortalLogo } from './PortalLogo';
 import { UserAvatar } from './UserAvatar';
 
@@ -43,6 +46,7 @@ export function AppLayout() {
   const { user, logout, can } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+  const isMobile = useIsMobile();
   const [collapsed, setCollapsed] = useState(readCollapsed);
 
   const toggleCollapsed = () =>
@@ -51,20 +55,43 @@ export function AppLayout() {
       return !v;
     });
 
-  const navItems: { key: string; icon: ReactNode; label: string }[] = [
+  // `short` — подпись для нижней навигации мобильного режима: на 360 px пункту достаётся
+  // четверть экрана, и полное название раздела туда не помещается (ADR 0030).
+  const navItems: (MobileNavItem & { icon: ReactNode })[] = [
     // Руководитель строительства отвечает за технику на объекте, вывоз мусора ведёт штаб (ADR 0025).
     ...(can('wasteRequests.read')
-      ? [{ key: '/waste', icon: <FileTextOutlined />, label: 'Вывоз мусора' }]
+      ? [{ key: '/waste', icon: <FileTextOutlined />, label: 'Вывоз мусора', short: 'Вывоз' }]
       : []),
     // Оператор вывоза — внешний перевозчик: заказ ТС к его работе отношения не имеет (ADR 0010).
     ...(can('vehicleRequests.read')
-      ? [{ key: '/vehicle-requests', icon: <CarOutlined />, label: 'Заказ ТС' }]
+      ? [
+          {
+            key: '/vehicle-requests',
+            icon: <CarOutlined />,
+            label: 'Заказ ТС',
+            short: 'Заказ ТС',
+          },
+        ]
       : []),
     ...(can('directories.write')
-      ? [{ key: '/directories', icon: <DatabaseOutlined />, label: 'Справочники' }]
+      ? [
+          {
+            key: '/directories',
+            icon: <DatabaseOutlined />,
+            label: 'Справочники',
+            short: 'Справ.',
+          },
+        ]
       : []),
     ...(can('users.manage')
-      ? [{ key: '/admin', icon: <TeamOutlined />, label: 'Администрирование' }]
+      ? [
+          {
+            key: '/admin',
+            icon: <TeamOutlined />,
+            label: 'Администрирование',
+            short: 'Админ.',
+          },
+        ]
       : []),
   ];
 
@@ -82,6 +109,24 @@ export function AppLayout() {
       if (key === 'change-password') navigate('/change-password');
     },
   };
+
+  /**
+   * Мобильная раскладка (ADR 0030): разделы — нижней навигацией, учётная запись — в верхней
+   * панели. Высота остаётся фиксированной, как на десктопе: страницы внутри рассчитывают её
+   * сами (вкладки и тело таблицы со своей прокруткой), и менять это здесь — не дело каркаса.
+   */
+  if (isMobile) {
+    const title = navItems.find((it) => it.key === selectedKey)?.label ?? 'Заказ Автотехники';
+    return (
+      <div className="mobile-shell">
+        <MobileAppBar title={title} userName={user?.fullName} menu={userMenu} />
+        <main className="mobile-content">
+          <Outlet />
+        </main>
+        <MobileNav items={navItems} selectedKey={selectedKey} onSelect={(key) => navigate(key)} />
+      </div>
+    );
+  }
 
   return (
     <Layout style={{ height: '100dvh', position: 'relative' }}>
@@ -144,7 +189,9 @@ export function AppLayout() {
               <Menu
                 mode="inline"
                 selectedKeys={[selectedKey]}
-                items={navItems}
+                // Пункт меню antd получает ровно те же поля, что и раньше: короткая подпись
+                // нужна только нижней навигации мобильного режима.
+                items={navItems.map(({ key, icon, label }) => ({ key, icon, label }))}
                 onClick={({ key }) => navigate(key)}
                 style={{ borderInlineEnd: 'none' }}
               />

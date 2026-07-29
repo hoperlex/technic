@@ -34,7 +34,8 @@ export function LoginPage() {
         padding: 16,
       }}
     >
-      <Card style={{ width: 380 }}>
+      {/* Карточка держит прежнюю ширину, пока экран её вмещает, и сжимается на телефоне. */}
+      <Card style={{ width: '100%', maxWidth: 380 }}>
         <Typography.Title level={3} style={{ textAlign: 'center' }}>
           Вход в портал
         </Typography.Title>

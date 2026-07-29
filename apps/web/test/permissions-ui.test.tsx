@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router';
 import { can, type AuthUser, type Permission, type Role } from '@technic/contracts';
+import { MOBILE_VIEWPORT, setViewport } from './viewport';
 
 /**
  * Портал скрывает недоступное по той же матрице, по которой API запрещает (ADR 0021).
@@ -98,6 +99,65 @@ describe('пункты меню следуют из прав', () => {
     renderMenu('admin');
     expect(screen.getByText('Справочники')).toBeDefined();
     expect(screen.getByText('Администрирование')).toBeDefined();
+  });
+});
+
+/**
+ * Нижняя навигация мобильного режима (ADR 0030) строится из того же списка, что и меню на
+ * десктопе, поэтому проверяется не разметка, а состав: лишний пункт здесь — это кнопка, ведущая
+ * в 403, а недостающий — раздел, невидимый тому, кому он разрешён. Подписи в навигации сокращены,
+ * доступное имя кнопки остаётся полным — по нему пункт и ищется.
+ */
+function mobileNavLabels(role: Role | null): string[] {
+  setViewport(MOBILE_VIEWPORT);
+  renderMenu(role);
+  const nav = screen.getByRole('navigation', { name: 'Разделы портала' });
+  return [...nav.querySelectorAll('button')].map((b) => b.getAttribute('aria-label') ?? '');
+}
+
+describe('нижняя навигация на мобильном повторяет права роли', () => {
+  it('администратор — все четыре раздела', () => {
+    expect(mobileNavLabels('admin')).toEqual([
+      'Вывоз мусора',
+      'Заказ ТС',
+      'Справочники',
+      'Администрирование',
+    ]);
+  });
+
+  it('менеджер — без администрирования', () => {
+    expect(mobileNavLabels('manager')).toEqual(['Вывоз мусора', 'Заказ ТС', 'Справочники']);
+  });
+
+  it('диспетчер — то же, что у менеджера', () => {
+    expect(mobileNavLabels('dispatcher')).toEqual(['Вывоз мусора', 'Заказ ТС', 'Справочники']);
+  });
+
+  it('штаб — оба модуля заявок, без справочников', () => {
+    expect(mobileNavLabels('shtab')).toEqual(['Вывоз мусора', 'Заказ ТС']);
+  });
+
+  it('руководитель строительства — только заказ ТС (ADR 0025)', () => {
+    expect(mobileNavLabels('rukstroy')).toEqual(['Заказ ТС']);
+  });
+
+  it('оператор вывоза — только вывоз мусора (ADR 0010)', () => {
+    expect(mobileNavLabels('operator')).toEqual(['Вывоз мусора']);
+  });
+
+  it('открытый раздел помечен для скринридера и подписан в шапке', () => {
+    setViewport(MOBILE_VIEWPORT);
+    renderMenu('admin');
+    const active = screen.getByRole('button', { name: 'Вывоз мусора' });
+    expect(active.getAttribute('aria-current')).toBe('page');
+    expect(screen.getByRole('button', { name: 'Заказ ТС' }).getAttribute('aria-current')).toBeNull();
+    // Заголовок панели называет раздел полностью — в навигации подпись сокращена.
+    expect(screen.getAllByText('Вывоз мусора').length).toBeGreaterThan(0);
+  });
+
+  it('на десктопе нижней навигации нет вовсе', () => {
+    renderMenu('admin');
+    expect(screen.queryByRole('navigation', { name: 'Разделы портала' })).toBeNull();
   });
 });
 

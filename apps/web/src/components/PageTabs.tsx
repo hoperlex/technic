@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useState, type ReactNode } from
 import { createPortal } from 'react-dom';
 import { Tabs, type TabsProps } from 'antd';
 import { useQueryClient } from '@tanstack/react-query';
+import { useIsMobile } from '../hooks/useIsMobile';
 
 interface SlotValue {
   el: HTMLElement | null;
@@ -27,6 +28,7 @@ export function PageTabs({ activeKey, refreshQueryKey, onChange, ...rest }: Prop
   // Сама функция-ref стабильна — иначе React отцеплял бы её на каждый рендер и сбрасывал слот.
   const [el, setEl] = useState<HTMLDivElement | null>(null);
   const slotRef = useCallback((node: HTMLDivElement | null) => setEl(node), []);
+  const isMobile = useIsMobile();
 
   const qc = useQueryClient();
   /**
@@ -39,13 +41,29 @@ export function PageTabs({ activeKey, refreshQueryKey, onChange, ...rest }: Prop
     onChange?.(key);
   };
 
+  /**
+   * На телефоне виджет уезжает из строки вкладок под неё: рядом с вкладками на 360 px ему нет
+   * места, а сами вкладки должны прокручиваться во всю ширину (ADR 0030).
+   */
+  const slotProps: Partial<TabsProps> = isMobile
+    ? {
+        size: 'small',
+        renderTabBar: (tabBarProps, DefaultTabBar) => (
+          <>
+            <DefaultTabBar {...tabBarProps} />
+            <div ref={slotRef} className="mobile-tabs-slot" />
+          </>
+        ),
+      }
+    : { tabBarExtraContent: { right: <div ref={slotRef} /> } };
+
   return (
     <SlotContext.Provider value={{ el, activeKey }}>
       <Tabs
         className="full-height-tabs"
         activeKey={activeKey}
         onChange={handleChange}
-        tabBarExtraContent={{ right: <div ref={slotRef} /> }}
+        {...slotProps}
         {...rest}
       />
     </SlotContext.Provider>

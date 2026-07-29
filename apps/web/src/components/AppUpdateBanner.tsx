@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Alert, Button, Space } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
+import { useIsMobile } from '../hooks/useIsMobile';
 import { useVersionCheck } from '../hooks/useVersionCheck';
 
 // Ненавязчивый баннер о новой версии приложения. Перезагрузку инициирует пользователь,
@@ -9,6 +10,7 @@ import { useVersionCheck } from '../hooks/useVersionCheck';
 export function AppUpdateBanner() {
   const { latestBuildId } = useVersionCheck();
   const [dismissedBuildId, setDismissedBuildId] = useState<string | null>(null);
+  const isMobile = useIsMobile();
 
   // Показываем, только если это новый релиз, который пользователь ещё не откладывал.
   if (!latestBuildId || latestBuildId === dismissedBuildId) return null;
@@ -19,11 +21,15 @@ export function AppUpdateBanner() {
       style={{
         position: 'fixed',
         insetInline: 0,
-        bottom: 16,
+        // На мобильном внизу стоит навигация (ADR 0030): баннер садится над ней, иначе кнопки
+        // «Обновить» и «Позже» оказались бы под панелью разделов.
+        bottom: isMobile ? 'calc(56px + var(--safe-bottom) + 8px)' : 16,
         display: 'flex',
         justifyContent: 'center',
         zIndex: 900,
         pointerEvents: 'none',
+        // Узкий экран: баннеру нужны поля, иначе он ложится вплотную к краям.
+        ...(isMobile ? { paddingInline: 12 } : {}),
       }}
     >
       <Alert

@@ -1,4 +1,5 @@
 import { Tabs } from 'antd';
+import { useIsMobile } from '../hooks/useIsMobile';
 import { ObjectsTab } from './directories/ObjectsTab';
 import { CounterpartiesTab } from './directories/CounterpartiesTab';
 import { ContainerTypesTab } from './directories/ContainerTypesTab';
@@ -8,11 +9,14 @@ import { VehicleSpecsTab } from './directories/VehicleSpecsTab';
 import { VehiclesTab } from './directories/VehiclesTab';
 
 export function DirectoriesPage() {
+  // Вкладок семь: на телефоне они прокручиваются, и компактный размер оставляет им больше места.
+  const isMobile = useIsMobile();
   return (
     <div style={{ height: '100%' }}>
       <Tabs
         className="full-height-tabs"
         defaultActiveKey="objects"
+        size={isMobile ? 'small' : undefined}
         items={[
           { key: 'objects', label: 'Объекты', children: <ObjectsTab /> },
           { key: 'counterparties', label: 'Контрагенты', children: <CounterpartiesTab /> },

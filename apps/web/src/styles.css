@@ -134,3 +134,111 @@ body,
 .is-mobile .ant-input-number-input {
   font-size: 16px;
 }
+
+/* Классы ниже принадлежат компонентам, которые рендерятся только в мобильной ветке каркаса,
+   поэтому предок `.is-mobile` им не нужен: на десктопе такой разметки не существует. */
+
+/* Каркас: панель сверху, навигация снизу, содержимое между ними со своей прокруткой */
+.mobile-shell {
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.mobile-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  padding: 12px;
+}
+
+.mobile-appbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: calc(56px + var(--safe-top));
+  padding: var(--safe-top) calc(12px + var(--safe-right)) 0 calc(12px + var(--safe-left));
+  background: #fff;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+}
+.mobile-appbar__title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 16px;
+}
+.mobile-appbar__account {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Тач-цель 44×44 при аватаре 24: попасть пальцем важнее, чем сэкономить полоску экрана. */
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+}
+.mobile-appbar__account:active {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.mobile-nav {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: stretch;
+  padding: 0 var(--safe-right) var(--safe-bottom) var(--safe-left);
+  background: #fff;
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+}
+.mobile-nav__item {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  height: 56px;
+  padding: 0 4px;
+  border: none;
+  background: transparent;
+  color: rgba(0, 0, 0, 0.65);
+  cursor: pointer;
+}
+.mobile-nav__item--active {
+  color: #1677ff;
+}
+.mobile-nav__icon {
+  font-size: 20px;
+  line-height: 1;
+}
+.mobile-nav__label {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  line-height: 1.2;
+}
+.mobile-nav__item:focus-visible {
+  outline: 2px solid #1677ff;
+  outline-offset: -2px;
+}
+
+/* Место виджета вкладки (сводка) под строкой вкладок; пока виджета нет — места не занимает */
+.mobile-tabs-slot:not(:empty) {
+  padding: 6px 0 2px;
+}
+
+/* Пустое состояние вкладки: на телефоне столько воздуха вокруг сообщения не нужно */
+.page-empty {
+  display: flex;
+  justify-content: center;
+  padding: 48px;
+}
+.is-mobile .page-empty {
+  padding: 24px 12px;
+}
