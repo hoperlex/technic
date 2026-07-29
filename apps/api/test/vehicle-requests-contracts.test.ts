@@ -311,7 +311,7 @@ describe('vehicle-requests: список и номер', () => {
   });
 
   it('формат и разбор номера', () => {
-    expect(formatVehicleRequestNumber(123)).toBe('ТС-000123');
+    expect(formatVehicleRequestNumber(123)).toBe('ТС-123');
     expect(parseVehicleRequestNumberSearch('123')).toBe(123);
     expect(parseVehicleRequestNumberSearch('ТС-123')).toBe(123);
     expect(parseVehicleRequestNumberSearch('ТС-000123')).toBe(123);

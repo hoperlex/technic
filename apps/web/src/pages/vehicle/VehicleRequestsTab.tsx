@@ -603,7 +603,7 @@ export function VehicleRequestsTab() {
       />
       <Input.Search
         allowClear
-        placeholder="Поиск по № (ТС-000123)"
+        placeholder="Поиск по № (ТС-123)"
         style={{ width: 180 }}
         onSearch={(val) => applyFilter({ num: parseVehicleRequestNumberSearch(val) })}
       />

@@ -923,7 +923,7 @@ export const vehicleRequests = pgTable(
   'vehicle_requests',
   {
     id: uuid('id').primaryKey().defaultRandom(),
-    // Сквозной человекочитаемый номер (отображается как «ТС-000123»).
+    // Сквозной человекочитаемый номер (отображается как «ТС-123»).
     num: integer('num').generatedAlwaysAsIdentity(),
     requestType: vehicleRequestTypeEnum('request_type').notNull(),
     objectId: uuid('object_id')

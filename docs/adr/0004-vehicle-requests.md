@@ -40,8 +40,9 @@
 7. **Статусы/версии/удаление** — как в «Вывозе мусора»: enum `request_status`, optimistic
    `version`, hard-delete для «Новая» (иначе soft), restore (admin), `includeDeleted` (admin),
    история `NULL→new` в транзакции создания. Аудит — после commit (best-effort).
-8. **Номер.** `num` identity, отображается «ТС-000123» (`formatVehicleRequestNumber`); поиск
-   принимает `123`/`ТС-123`/`ТС-000123`. Своя последовательность (независимо от «Мусора»).
+8. **Номер.** `num` identity, отображается «ТС-123» (`formatVehicleRequestNumber`, без ведущих
+   нулей); поиск принимает `123`/`ТС-123`/`ТС-000123`. Своя последовательность (независимо от
+   «Мусора»).
 9. **Общий файловый сервис** `services/request-files.ts` — оба модуля: привязка/отвязка,
    S3-outbox задачи, **кросс-модульная уникальность** (файл максимум в одной заявке) через
    `FOR UPDATE`. `requestVisibilityWhere`/`assertShtabScope` вынесены/параметризованы в

@@ -7,7 +7,7 @@ import { diffVehicleRequests } from '../src/services/vehicle-request-diff';
 const BASE = {
   id: '11111111-1111-4111-8111-111111111111',
   num: 7,
-  displayNumber: 'ТС-000007',
+  displayNumber: 'ТС-7',
   objectId: '22222222-2222-4222-8222-222222222222',
   objectCode: 'ОБ-1',
   objectName: 'Жилой комплекс',

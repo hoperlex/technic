@@ -43,9 +43,9 @@ export function isVehicleKindAllowedForRequest(
   return requestType === 'freight_transport' ? kindCode === FREIGHT_VEHICLE_KIND_CODE : true;
 }
 
-/** Отображаемый номер заявки ТС: «ТС-000123» (в БД хранится только число). */
+/** Отображаемый номер заявки ТС: «ТС-123» (в БД хранится только число). */
 export function formatVehicleRequestNumber(num: number): string {
-  return `ТС-${String(num).padStart(6, '0')}`;
+  return `ТС-${num}`;
 }
 
 /** Разбор пользовательского ввода поиска: «123» / «ТС-123» / «ТС-000123» → 123. */
@@ -347,7 +347,7 @@ export type VehicleRequestSummaryDto = Record<RequestStatus, number>;
 export interface VehicleRequestBaseDto {
   id: string;
   num: number;
-  /** «ТС-000123». */
+  /** «ТС-123». */
   displayNumber: string;
   requestType: VehicleRequestType;
 
