@@ -26,6 +26,7 @@ import { vehicleSpecsApi } from '../../api/resources';
 import { DataTable, type TableChange } from '../../components/DataTable';
 import { FormModal } from '../../components/FormModal';
 import { PageTableLayout } from '../../components/PageTableLayout';
+import type { FilterDefinition } from '../../components/listControls';
 import { actionsColumn, textColumn } from '../../components/columns';
 import { errorMessage } from '../../utils/format';
 
@@ -270,6 +271,30 @@ export function VehicleSpecsTab() {
     </Space>
   );
 
+  /** Те же фильтры описаниями — для шита на телефоне (ADR 0030). */
+  const mobileFilters: FilterDefinition[] = [
+    {
+      kind: 'text',
+      key: 'search',
+      label: 'Поиск',
+      value: params.search,
+      placeholder: 'Код, название, единица',
+      onChange: (v) => patchParams({ search: v }),
+    },
+    {
+      kind: 'select',
+      key: 'isActive',
+      label: 'Активность',
+      value: params.isActive,
+      options: [
+        { value: 'true', label: 'Активные' },
+        { value: 'false', label: 'Неактивные' },
+      ],
+      placeholder: 'Все',
+      onChange: (v) => patchParams({ isActive: v }),
+    },
+  ];
+
   return (
     <PageTableLayout
       filters={filters}
@@ -278,6 +303,10 @@ export function VehicleSpecsTab() {
           Добавить
         </Button>
       }
+      mobile={{
+        filters: mobileFilters,
+        primaryAction: { label: 'Добавить ТТХ', icon: <PlusOutlined />, onClick: openCreate },
+      }}
     >
       <DataTable<VehicleSpecDto>
         columns={columns}

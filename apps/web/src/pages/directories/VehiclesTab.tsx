@@ -52,6 +52,7 @@ import { AutoSelect } from '../../components/AutoSelect';
 import { DataTable } from '../../components/DataTable';
 import { FormModal } from '../../components/FormModal';
 import { PageTableLayout } from '../../components/PageTableLayout';
+import type { FilterDefinition } from '../../components/listControls';
 import { actionsColumn, badgeColumn, textColumn } from '../../components/columns';
 import { useIsMobile } from '../../hooks/useIsMobile';
 import { useListParams } from '../../hooks/useListParams';
@@ -509,6 +510,82 @@ export function VehiclesTab() {
     </Space>
   );
 
+  /**
+   * Те же фильтры описаниями — для шита на телефоне (ADR 0030). Принадлежность на десктопе —
+   * переключатель на три положения; в шите это список с пустым значением «все», потому что
+   * три кнопки во всю ширину заняли бы там целую строку ради одного выбора.
+   */
+  const mobileFilters: FilterDefinition[] = [
+    {
+      kind: 'select',
+      key: 'ownership',
+      label: 'Принадлежность',
+      value: ownershipFilter,
+      options: [
+        { value: 'own', label: vehicleOwnershipLabels.own },
+        { value: 'rental', label: vehicleOwnershipLabels.rental },
+      ],
+      placeholder: 'Все',
+      onChange: (v) =>
+        setParams((p) => ({
+          ...p,
+          ownership: v as VehicleOwnership | undefined,
+          // Фильтр по арендодателю осмыслен только внутри аренды.
+          lessorId: v === 'rental' ? p.lessorId : undefined,
+          page: 1,
+        })),
+    },
+    {
+      kind: 'select',
+      key: 'vehicleTypeId',
+      label: 'Тип ТС',
+      value: params.vehicleTypeId as string | undefined,
+      options: typeOptions,
+      placeholder: 'Все типы',
+      onChange: (v) => setParams((p) => ({ ...p, vehicleTypeId: v, page: 1 })),
+    },
+    ...(ownershipFilter === 'rental'
+      ? [
+          {
+            kind: 'select' as const,
+            key: 'lessorId',
+            label: 'Арендодатель',
+            value: params.lessorId,
+            options: lessorOptions,
+            placeholder: 'Все арендодатели',
+            loading: lessorsLoading,
+            onChange: (v: string | undefined) => setParams((p) => ({ ...p, lessorId: v, page: 1 })),
+          },
+        ]
+      : []),
+    {
+      kind: 'select',
+      key: 'status',
+      label: 'Статус',
+      value: params.status,
+      options: ownershipFilter === 'rental' ? rentalStatusOptions : statusOptions,
+      placeholder: 'Все статусы',
+      onChange: (v) =>
+        setParams((p) => ({ ...p, status: v as VehicleStatus | undefined, page: 1 })),
+    },
+    {
+      kind: 'text',
+      key: 'search',
+      label: 'Поиск',
+      value: params.search,
+      placeholder: 'Госномер, марка, арендодатель',
+      onChange: (v) => setParams((p) => ({ ...p, search: v, page: 1 })),
+    },
+    {
+      kind: 'toggle',
+      key: 'includeDeleted',
+      label: 'Показывать архив',
+      value: params.includeDeleted === 'true',
+      onChange: (checked) =>
+        setParams((p) => ({ ...p, includeDeleted: checked ? 'true' : undefined, page: 1 })),
+    },
+  ];
+
   return (
     <PageTableLayout
       filters={filters}
@@ -517,6 +594,10 @@ export function VehiclesTab() {
           Добавить технику
         </Button>
       }
+      mobile={{
+        filters: mobileFilters,
+        primaryAction: { label: 'Добавить технику', icon: <PlusOutlined />, onClick: openCreate },
+      }}
     >
       <DataTable<VehicleDto>
         columns={columns}

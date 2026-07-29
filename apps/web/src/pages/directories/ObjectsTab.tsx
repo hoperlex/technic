@@ -135,6 +135,11 @@ export function ObjectsTab() {
 
   return (
     <PageTableLayout
+      // Фильтры этого справочника живут в заголовках столбцов и на телефоне работают там же:
+      // таблица со своей прокруткой остаётся (ADR 0030). В шит выносить нечего.
+      mobile={{
+        primaryAction: { label: 'Добавить объект', icon: <PlusOutlined />, onClick: openCreate },
+      }}
       extra={
         <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
           Добавить объект

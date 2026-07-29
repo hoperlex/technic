@@ -17,6 +17,7 @@ import { AutoSelect } from '../../components/AutoSelect';
 import { DataTable } from '../../components/DataTable';
 import { FormModal } from '../../components/FormModal';
 import { PageTableLayout } from '../../components/PageTableLayout';
+import type { FilterDefinition } from '../../components/listControls';
 import { actionsColumn, badgeColumn, boolBadgeColumn, textColumn } from '../../components/columns';
 import { useListParams } from '../../hooks/useListParams';
 import { errorMessage } from '../../utils/format';
@@ -225,9 +226,30 @@ export function CounterpartiesTab() {
     />
   );
 
+  /** Тот же фильтр описанием — для шита на телефоне (ADR 0030). */
+  const mobileFilters: FilterDefinition[] = [
+    {
+      kind: 'select',
+      key: 'type',
+      label: 'Тип контрагента',
+      value: typeFilter || undefined,
+      options: typeOptions,
+      placeholder: 'Все типы',
+      onChange: (v) => applyTypeFilter(v ?? ''),
+    },
+  ];
+
   return (
     <PageTableLayout
       filters={filters}
+      mobile={{
+        filters: mobileFilters,
+        primaryAction: {
+          label: 'Добавить контрагента',
+          icon: <PlusOutlined />,
+          onClick: openCreate,
+        },
+      }}
       extra={
         <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
           Добавить контрагента

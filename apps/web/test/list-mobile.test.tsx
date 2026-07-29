@@ -193,6 +193,31 @@ describe('шит фильтров', () => {
     expect(onStatus).not.toHaveBeenCalled();
   });
 
+  it('переключатель уходит в список только по «Применить»', () => {
+    const onToggle = vi.fn();
+    setViewport(MOBILE_VIEWPORT);
+    render(
+      <FilterSheet
+        open
+        onClose={vi.fn()}
+        filters={[
+          {
+            kind: 'toggle',
+            key: 'includeDeleted',
+            label: 'Показывать архив',
+            value: false,
+            onChange: onToggle,
+          },
+        ]}
+      />,
+    );
+    fireEvent.click(screen.getByRole('switch'));
+    expect(onToggle).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByText('Применить'));
+    expect(onToggle).toHaveBeenCalledWith(true);
+  });
+
   it('«Сбросить» не снимает фильтр, зафиксированный ролью', () => {
     const onObject = vi.fn();
     const onStatus = vi.fn();

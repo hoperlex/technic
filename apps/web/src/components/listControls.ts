@@ -51,10 +51,16 @@ export type FilterDefinition =
       from: string | undefined;
       to: string | undefined;
       onChange: (from: string | undefined, to: string | undefined) => void;
+    })
+  | (FilterBase & {
+      /** Переключатель «да/нет»: показывать архив, только свои и т. п. */
+      kind: 'toggle';
+      value: boolean;
+      onChange: (value: boolean) => void;
     });
 
 /** Значение фильтра в черновике шита: до нажатия «Применить» в параметры списка оно не уходит. */
-export type FilterDraftValue = string | undefined | { from?: string; to?: string };
+export type FilterDraftValue = string | boolean | undefined | { from?: string; to?: string };
 
 export interface SortOption {
   /** Ключ колонки — он же поле сортировки на сервере. */
@@ -84,6 +90,8 @@ export interface MobileListControls {
 export function isFilterActive(filter: FilterDefinition): boolean {
   if (filter.isActive != null) return filter.isActive;
   if (filter.kind === 'dateRange') return !!filter.from || !!filter.to;
+  // Выключенный переключатель — это состояние по умолчанию, а не заданный фильтр.
+  if (filter.kind === 'toggle') return filter.value;
   return filter.value != null && filter.value !== '';
 }
 

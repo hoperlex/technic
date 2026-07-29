@@ -2,7 +2,13 @@ import { useState } from 'react';
 import { App, Button, Dropdown, Form, Input, Space, Switch } from 'antd';
 import { MoreOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { isObjectScopedRole, ROLES, roleColors, roleLabels, type UserDto } from '@technic/contracts';
+import {
+  isObjectScopedRole,
+  ROLES,
+  roleColors,
+  roleLabels,
+  type UserDto,
+} from '@technic/contracts';
 import { counterpartiesApi, objectsApi, usersApi } from '../../api/resources';
 import { AutoSelect } from '../../components/AutoSelect';
 import { DataTable } from '../../components/DataTable';
@@ -261,6 +267,15 @@ export function UsersTab() {
 
   return (
     <PageTableLayout
+      // Фильтры этого справочника живут в заголовках столбцов и на телефоне работают там же:
+      // таблица со своей прокруткой остаётся (ADR 0030). В шит выносить нечего.
+      mobile={{
+        primaryAction: {
+          label: 'Добавить пользователя',
+          icon: <PlusOutlined />,
+          onClick: openCreate,
+        },
+      }}
       extra={
         <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
           Добавить

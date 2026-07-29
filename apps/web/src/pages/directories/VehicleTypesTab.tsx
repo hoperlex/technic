@@ -31,6 +31,7 @@ import { AutoSelect } from '../../components/AutoSelect';
 import { DataTable, type TableChange } from '../../components/DataTable';
 import { FormModal } from '../../components/FormModal';
 import { PageTableLayout } from '../../components/PageTableLayout';
+import type { FilterDefinition } from '../../components/listControls';
 import { actionsColumn, textColumn } from '../../components/columns';
 import { errorMessage } from '../../utils/format';
 import { VehicleTypeCardDrawer } from './VehicleTypeCardDrawer';
@@ -174,7 +175,9 @@ export function VehicleTypesTab() {
     },
     onSuccess: (_d, v) => {
       const what = v.row.vehicleCategoryId ? 'Категория' : 'Тип';
-      message.success(`${what} ${v.isActive ? 'активирован' : 'деактивирован'}${v.row.vehicleCategoryId ? 'а' : ''}`);
+      message.success(
+        `${what} ${v.isActive ? 'активирован' : 'деактивирован'}${v.row.vehicleCategoryId ? 'а' : ''}`,
+      );
       void qc.invalidateQueries({ queryKey: ['vehicle-classifications'] });
       void qc.invalidateQueries({ queryKey: ['vehicle-types'] });
       void qc.invalidateQueries({ queryKey: ['vehicle-categories'] });
@@ -335,6 +338,39 @@ export function VehicleTypesTab() {
         },
       ];
 
+  /** Те же фильтры описаниями — для шита на телефоне (ADR 0030). */
+  const mobileFilters: FilterDefinition[] = [
+    {
+      kind: 'text',
+      key: 'search',
+      label: 'Поиск',
+      value: params.search,
+      placeholder: 'Код, тип, категория',
+      onChange: (v) => patchParams({ search: v }),
+    },
+    {
+      kind: 'select',
+      key: 'kindId',
+      label: 'Вид техники',
+      value: params.kindId,
+      options: kindOptions,
+      placeholder: 'Любой вид',
+      onChange: (v) => patchParams({ kindId: v }),
+    },
+    {
+      kind: 'select',
+      key: 'isActive',
+      label: 'Активность',
+      value: params.isActive,
+      options: [
+        { value: 'true', label: 'Активные' },
+        { value: 'false', label: 'Неактивные' },
+      ],
+      placeholder: 'Все',
+      onChange: (v) => patchParams({ isActive: v }),
+    },
+  ];
+
   return (
     <PageTableLayout
       filters={filters}
@@ -343,6 +379,12 @@ export function VehicleTypesTab() {
           Добавить
         </Button>
       }
+      // Справочник на телефоне остаётся таблицей с прокруткой вбок: его читают сравнением
+      // строк. Сортировка при этом остаётся щелчком по заголовку — они никуда не делись.
+      mobile={{
+        filters: mobileFilters,
+        primaryAction: { label: 'Добавить тип', icon: <PlusOutlined />, onClick: openCreate },
+      }}
     >
       <DataTable<VehicleClassificationDto>
         columns={columns}

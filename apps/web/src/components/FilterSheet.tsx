@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Button, DatePicker, Drawer, Input, Select, Typography } from 'antd';
+import { Button, DatePicker, Drawer, Input, Select, Switch, Typography } from 'antd';
 import dayjs from 'dayjs';
 import type { FilterDefinition, FilterDraftValue } from './listControls';
 
@@ -18,6 +18,13 @@ function draftOf(filters: FilterDefinition[]): Record<string, FilterDraftValue> 
       filter.kind === 'dateRange' ? { from: filter.from, to: filter.to } : filter.value;
   }
   return draft;
+}
+
+/** Значение фильтра по умолчанию — то, к которому его возвращает «Сбросить». */
+function emptyValue(filter: FilterDefinition): FilterDraftValue {
+  if (filter.kind === 'dateRange') return {};
+  if (filter.kind === 'toggle') return false;
+  return undefined;
 }
 
 /**
@@ -54,6 +61,11 @@ export function FilterSheet({ open, onClose, filters }: Props) {
         }
         continue;
       }
+      if (filter.kind === 'toggle') {
+        const value = next === true;
+        if (value !== filter.value) filter.onChange(value);
+        continue;
+      }
       const value = (next as string | undefined) || undefined;
       if (value !== filter.value) filter.onChange(value);
     }
@@ -70,7 +82,7 @@ export function FilterSheet({ open, onClose, filters }: Props) {
           filter.kind === 'dateRange' ? { from: filter.from, to: filter.to } : filter.value;
         continue;
       }
-      cleared[filter.key] = filter.kind === 'dateRange' ? {} : undefined;
+      cleared[filter.key] = emptyValue(filter);
     }
     setDraft(cleared);
   };
@@ -121,6 +133,13 @@ export function FilterSheet({ open, onClose, filters }: Props) {
                 disabled={filter.disabled}
                 value={(draft[filter.key] as string | undefined) ?? ''}
                 onChange={(e) => set(filter.key, e.target.value)}
+              />
+            )}
+            {filter.kind === 'toggle' && (
+              <Switch
+                checked={draft[filter.key] === true}
+                disabled={filter.disabled}
+                onChange={(checked) => set(filter.key, checked)}
               />
             )}
             {filter.kind === 'dateRange' && (
