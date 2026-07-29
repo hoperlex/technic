@@ -120,7 +120,7 @@ function amountLabel(r: VehicleRequestDto): string {
 
 export function VehicleRequestsTab() {
   const { message, modal } = App.useApp();
-  const { hasRole, can } = useAuth();
+  const { user, hasRole, can } = useAuth();
   const qc = useQueryClient();
   // Штаб — область видимости (свой объект, заявка до «В работе»); действия — по правам (ADR 0021).
   const isShtab = hasRole('shtab');
@@ -128,6 +128,10 @@ export function VehicleRequestsTab() {
   const canDelete = can('vehicleRequests.delete');
   const canCreate = can('vehicleRequests.create');
   const canRestore = can('archive.restore');
+
+  // Для штаба объект зафиксирован на его собственном: и в фильтре списка, и в форме заявки
+  // (сервер всё равно отвечает 403 на чужой объект — assertShtabScope).
+  const shtabObjectId = isShtab ? (user?.constructionObjectId ?? '') : '';
 
   // requestType не задан — список обоих типов; фильтр в шапке сужает до одного.
   // Все фильтры собраны в панели над таблицей, а не в выпадашках столбцов: в заголовке их
@@ -137,7 +141,7 @@ export function VehicleRequestsTab() {
     status?: string;
     objectId?: string;
     num?: number;
-  }>({}, { searchKeys: ['comment'] });
+  }>({ objectId: shtabObjectId || undefined }, { searchKeys: ['comment'] });
 
   /** Смена любого фильтра возвращает список на первую страницу. */
   const applyFilter = (patch: Partial<typeof params>) =>
@@ -214,6 +218,8 @@ export function VehicleRequestsTab() {
   const openCreate = () => {
     setRecord(null);
     form.resetFields();
+    // Штаб заводит заявку только на свой объект — подставляем его сразу, поле заперто.
+    if (shtabObjectId) form.setFieldsValue({ objectId: shtabObjectId } as Partial<FormValues>);
     setLoadingMeta(null);
     setUnloadingMeta(null);
     editor.reset([]);
@@ -648,6 +654,7 @@ export function VehicleRequestsTab() {
               showSearch
               optionFilterProp="label"
               placeholder="Объект"
+              disabled={isShtab}
             />
           </Form.Item>
           {/* Тип заявки неизменяем после создания (сервер отдаёт 422) — при правке поле заперто. */}
