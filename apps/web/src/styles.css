@@ -73,7 +73,9 @@ body,
   color: rgba(0, 0, 0, 0.65);
   font-size: 16px;
   line-height: 1;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
 }
 .sider-mini-item:hover {
   background: rgba(0, 0, 0, 0.04);
@@ -226,6 +228,24 @@ body,
 .mobile-nav__item:focus-visible {
   outline: 2px solid #1677ff;
   outline-offset: -2px;
+}
+
+/* Пара полей, стоящая в строку на десктопе, на телефоне укладывается в столбец.
+   Отступ между ними не нужен: каждое поле формы несёт свой нижний отступ само. */
+.is-mobile .form-row {
+  flex-direction: column;
+  gap: 0;
+}
+
+/* Кнопки формы-шита: делят ширину поровну, с отступом под «домашнюю полоску» */
+.sheet-footer {
+  display: flex;
+  gap: 8px;
+  padding-bottom: var(--safe-bottom);
+}
+.sheet-footer > * {
+  flex: 1 1 0;
+  min-width: 0;
 }
 
 /* Место виджета вкладки (сводка) под строкой вкладок; пока виджета нет — места не занимает */

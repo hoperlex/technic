@@ -37,7 +37,12 @@ import {
   vehicleStatusLabels,
   vehicleTitle,
 } from '@technic/contracts';
-import { counterpartiesApi, vehicleModelsApi, vehiclesApi, vehicleTypesApi } from '../../api/resources';
+import {
+  counterpartiesApi,
+  vehicleModelsApi,
+  vehiclesApi,
+  vehicleTypesApi,
+} from '../../api/resources';
 import {
   classificationKeyOf,
   useVehicleClassifications,
@@ -48,6 +53,7 @@ import { DataTable } from '../../components/DataTable';
 import { FormModal } from '../../components/FormModal';
 import { PageTableLayout } from '../../components/PageTableLayout';
 import { actionsColumn, badgeColumn, textColumn } from '../../components/columns';
+import { useIsMobile } from '../../hooks/useIsMobile';
 import { useListParams } from '../../hooks/useListParams';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
@@ -84,6 +90,7 @@ const money = (v: number | null) =>
 export function VehiclesTab() {
   const { message, modal } = App.useApp();
   const qc = useQueryClient();
+  const isMobile = useIsMobile();
   // Архив справочника виден тем, кто его ведёт, но возвращает запись из архива администратор
   // (ADR 0021) — кнопка следует за правом, иначе она ведёт в 403.
   const { can } = useAuth();
@@ -607,7 +614,11 @@ export function VehiclesTab() {
               >
                 <Input maxLength={120} placeholder="Автокран 70 тн" />
               </Form.Item>
-              <Space style={{ width: '100%' }} size="middle">
+              <Space
+                style={{ width: '100%' }}
+                size="middle"
+                direction={isMobile ? 'vertical' : 'horizontal'}
+              >
                 <Form.Item
                   name="pricePerHour"
                   label="₽ / час"
@@ -654,7 +665,11 @@ export function VehiclesTab() {
                   notFoundContent="Нет марок для этого типа"
                 />
               </Form.Item>
-              <Space style={{ width: '100%' }} size="middle">
+              <Space
+                style={{ width: '100%' }}
+                size="middle"
+                direction={isMobile ? 'vertical' : 'horizontal'}
+              >
                 <Form.Item name="registrationNumber" label="Госномер" style={{ flex: 1 }}>
                   <Input maxLength={50} />
                 </Form.Item>

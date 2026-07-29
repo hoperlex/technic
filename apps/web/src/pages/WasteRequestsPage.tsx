@@ -81,6 +81,7 @@ import { PageTabs, TabsExtra } from '../components/PageTabs';
 import { SummaryBar } from '../components/SummaryBar';
 import { actionsColumn, badgeColumn, textColumn } from '../components/columns';
 import { TimeInput, optionalWorkTimeRule } from '../components/TimeInput';
+import { useIsMobile } from '../hooks/useIsMobile';
 import { useListParams } from '../hooks/useListParams';
 import { useAuth } from '../auth/AuthContext';
 import { MOSCOW_TZ } from '../theme';
@@ -151,6 +152,7 @@ export function WasteRequestsPage() {
 function RequestsTab() {
   const { message, modal } = App.useApp();
   const qc = useQueryClient();
+  const isMobile = useIsMobile();
   const { user, hasRole, can } = useAuth();
   // Штаб и оператор — это область видимости («свой объект», «свои заявки»), а не право:
   // от неё зависит, что показывать в фильтрах и колонках, а не что разрешено делать.
@@ -1272,7 +1274,8 @@ function RequestsTab() {
               под полями (ADR 0009). У замены и снятия этих полей нет вовсе: они не
               тарифицируются (ADR 0019), в форме остаётся только контейнер с объекта. */}
           {isPriced && (
-            <div style={{ display: 'flex', gap: 12 }}>
+            // Пара полей в строку; на телефоне класс укладывает их одно под другим (ADR 0030).
+            <div className="form-row" style={{ display: 'flex', gap: 12 }}>
               <Form.Item
                 name="wasteTypeId"
                 label="Тип мусора"
@@ -1364,7 +1367,7 @@ function RequestsTab() {
               />
             </Form.Item>
           )}
-          <div style={{ display: 'flex', gap: 12 }}>
+          <div className="form-row" style={{ display: 'flex', gap: 12 }}>
             <Form.Item
               name="deliveryDate"
               label="Дата доставки"
@@ -1377,6 +1380,9 @@ function RequestsTab() {
                 format="DD.MM.YYYY"
                 style={{ width: '100%' }}
                 placeholder="дд.мм.гггг"
+                // На телефоне календарь открывается вместе с клавиатурой и прячется за ней:
+                // дату там выбирают, а не набирают.
+                inputReadOnly={isMobile}
                 disabledDate={record ? isPastDate : isBeforeMinRequestDate}
               />
             </Form.Item>
@@ -1385,7 +1391,7 @@ function RequestsTab() {
               label="Время"
               tooltip="Необязательно. Рабочее окно — с 07:00 до 21:00"
               rules={[optionalWorkTimeRule]}
-              style={{ width: 130 }}
+              style={{ width: isMobile ? '100%' : 130 }}
             >
               <TimeInput />
             </Form.Item>

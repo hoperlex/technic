@@ -1,9 +1,11 @@
-import { App, Alert, Button, List, Modal, Popover, Spin, Tooltip, Typography } from 'antd';
+import { App, Alert, Button, List, Popover, Spin, Tooltip, Typography } from 'antd';
 import { DownloadOutlined, EyeOutlined, PaperClipOutlined } from '@ant-design/icons';
 import { useEffect, useState } from 'react';
 import { isInlineViewable } from '@technic/contracts';
 import { filesApi } from '../api/resources';
+import { useIsMobile } from '../hooks/useIsMobile';
 import { errorMessage, formatBytes } from '../utils/format';
+import { ViewModal } from './ViewModal';
 
 /**
  * Минимум, которым описывается прикреплённый файл. `contentType` есть не везде (черновики
@@ -38,6 +40,7 @@ export function FilePreviewModal({
   const [url, setUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const isImage = (file.contentType ?? '').toLowerCase().startsWith('image/');
+  const isMobile = useIsMobile();
 
   useEffect(() => {
     if (!open) {
@@ -69,11 +72,10 @@ export function FilePreviewModal({
   };
 
   return (
-    <Modal
+    <ViewModal
       title={file.filename}
       open={open}
-      onCancel={onClose}
-      centered
+      onClose={onClose}
       width="90vw"
       footer={[
         <Button key="dl" icon={<DownloadOutlined />} onClick={() => void download()}>
@@ -83,14 +85,14 @@ export function FilePreviewModal({
           Закрыть
         </Button>,
       ]}
-      styles={{
-        body: {
-          height: '80vh',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          overflow: 'hidden',
-        },
+      // На телефоне окно и так во весь экран: фиксированная высота тела оставила бы под фото
+      // полосу в 80% высоты окна, а не экрана.
+      bodyStyle={{
+        ...(isMobile ? { height: '100%', padding: 8 } : { height: '80vh' }),
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        overflow: 'hidden',
       }}
     >
       {error ? (
@@ -111,7 +113,7 @@ export function FilePreviewModal({
           style={{ width: '100%', height: '100%', border: 0 }}
         />
       )}
-    </Modal>
+    </ViewModal>
   );
 }
 
@@ -123,6 +125,9 @@ export function FileLink({ file, maxWidth = 320 }: { file: FileRef; maxWidth?: n
   const { message } = App.useApp();
   const [preview, setPreview] = useState(false);
   const inline = isInlineViewable(file.contentType ?? '');
+  // Ширина имени задана в пикселях под колонку десктопа; на телефоне ограничением служит
+  // сама строка — 420 px там шире экрана (ADR 0030).
+  const isMobile = useIsMobile();
   const open = async () => {
     if (inline) {
       setPreview(true);
@@ -137,7 +142,11 @@ export function FileLink({ file, maxWidth = 320 }: { file: FileRef; maxWidth?: n
   return (
     <>
       <Tooltip title={inline ? `Открыть «${file.filename}»` : `Скачать «${file.filename}»`}>
-        <Typography.Link ellipsis style={{ maxWidth }} onClick={() => void open()}>
+        <Typography.Link
+          ellipsis
+          style={{ maxWidth: isMobile ? '100%' : maxWidth }}
+          onClick={() => void open()}
+        >
           {file.filename}
         </Typography.Link>
       </Tooltip>
@@ -264,16 +273,15 @@ export function FileListModal({
   onClose: () => void;
 }) {
   return (
-    <Modal
+    <ViewModal
       title={title}
       open={open}
-      onCancel={onClose}
-      centered
+      onClose={onClose}
       width={520}
       footer={<Button onClick={onClose}>Закрыть</Button>}
     >
       <FileLinkList files={files} emptyText="Файлы не прикреплены" maxNameWidth={320} />
-    </Modal>
+    </ViewModal>
   );
 }
 

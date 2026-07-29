@@ -1,4 +1,4 @@
-import { Button, Descriptions, Modal, Space, Spin, Tag, Typography } from 'antd';
+import { Button, Descriptions, Space, Spin, Tag, Typography } from 'antd';
 import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
@@ -21,6 +21,8 @@ import { wasteRequestsApi } from '../../api/resources';
 import { FileLinkList, FilesButton } from '../../components/FileLinks';
 import { type HistoryRow, RequestHistoryTable } from '../../components/RequestHistory';
 import { UserAvatar } from '../../components/UserAvatar';
+import { ViewModal } from '../../components/ViewModal';
+import { useIsMobile } from '../../hooks/useIsMobile';
 import { formatDateTime, formatDateTimeMaybe, formatMoney } from '../../utils/format';
 
 /**
@@ -125,6 +127,7 @@ function buildRows(
 }
 
 export function WasteRequestViewModal({ request, onClose, onEdit }: Props) {
+  const isMobile = useIsMobile();
   const { data: history, isPending } = useQuery({
     queryKey: ['waste-requests', request?.id, 'history'],
     queryFn: () => wasteRequestsApi.history(request!.id),
@@ -274,15 +277,13 @@ export function WasteRequestViewModal({ request, onClose, onEdit }: Props) {
     : [];
 
   return (
-    <Modal
+    <ViewModal
       title={
         request ? `Заявка № ${request.num}-${requestTypeShort[request.requestType]}` : 'Заявка'
       }
       open={!!request}
-      onCancel={onClose}
+      onClose={onClose}
       width={760}
-      centered
-      mask={{ closable: false }}
       // Окно переоткрывают на соседней заявке — раскрытые строки прошлой истории не её дело.
       destroyOnHidden
       footer={[
@@ -297,19 +298,18 @@ export function WasteRequestViewModal({ request, onClose, onEdit }: Props) {
           Закрыть
         </Button>,
       ]}
-      styles={{
-        container: {
-          display: 'flex',
-          flexDirection: 'column',
-          maxHeight: 'calc(100dvh - 48px)',
-          overflow: 'hidden',
-        },
-        body: { flex: '1 1 auto', minHeight: 0, overflowY: 'auto' },
-      }}
     >
       {request && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          <Descriptions size="small" bordered column={2} items={fields} />
+          {/* На телефоне поля идут в одну колонку: в две подпись и значение делят 180 px и
+              переносятся по слогам. Разметка полей общая — меняется только число колонок. */}
+          <Descriptions
+            size="small"
+            bordered
+            column={isMobile ? 1 : 2}
+            layout={isMobile ? 'vertical' : 'horizontal'}
+            items={fields}
+          />
 
           {request.files.length > 0 && (
             <div>
@@ -348,6 +348,6 @@ export function WasteRequestViewModal({ request, onClose, onEdit }: Props) {
           </div>
         </div>
       )}
-    </Modal>
+    </ViewModal>
   );
 }

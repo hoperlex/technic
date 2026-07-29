@@ -34,6 +34,7 @@ import {
 import { vehicleCategoriesApi, vehicleSpecsApi, vehicleTypesApi } from '../../api/resources';
 import { AutoSelect } from '../../components/AutoSelect';
 import { FormModal } from '../../components/FormModal';
+import { useIsMobile } from '../../hooks/useIsMobile';
 import { errorMessage } from '../../utils/format';
 
 // Карточка типа ТС (ADR 0016): состав ТТХ и категории — комбинации их значений. Живут в одной
@@ -61,6 +62,7 @@ interface CategoryFormValues {
 export function VehicleTypeCardDrawer({ type, onClose }: Props) {
   const { message, modal } = App.useApp();
   const qc = useQueryClient();
+  const isMobile = useIsMobile();
   const typeId = type?.id ?? '';
 
   const specsQuery = useQuery({
@@ -377,7 +379,9 @@ export function VehicleTypeCardDrawer({ type, onClose }: Props) {
       title={type ? `Тип ТС: ${type.name}` : ''}
       open={!!type}
       onClose={onClose}
-      width={960}
+      // На телефоне карточка занимает экран целиком: 960 px там всё равно ужимаются до ширины
+      // экрана, но с боковым зазором, за которым видно ненужный сейчас список (ADR 0030).
+      width={isMobile ? '100%' : 960}
       destroyOnHidden
     >
       <Space direction="vertical" size="large" style={{ display: 'flex' }}>

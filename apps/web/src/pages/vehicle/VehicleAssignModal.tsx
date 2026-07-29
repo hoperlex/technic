@@ -15,6 +15,7 @@ import {
 import { vehiclesApi } from '../../api/resources';
 import { AutoSelect } from '../../components/AutoSelect';
 import { FormModal } from '../../components/FormModal';
+import { useIsMobile } from '../../hooks/useIsMobile';
 import { formatMoney } from '../../utils/format';
 
 /**
@@ -67,6 +68,7 @@ function vehicleOptionLabel(v: VehicleDto, requestHasCategory: boolean): string 
 
 export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit }: Props) {
   const { message } = App.useApp();
+  const isMobile = useIsMobile();
   const [form] = Form.useForm<FormValues>();
   const [ownership, setOwnership] = useState<VehicleOwnership>('own');
 
@@ -301,7 +303,12 @@ export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit
 
           {/* Ставки: подставлены из справочника, но это поля ввода — цену по заявке
               согласовывают отдельно от прайса. */}
-          <Space style={{ width: '100%' }} size="middle" align="start">
+          <Space
+            style={{ width: '100%' }}
+            size="middle"
+            align="start"
+            direction={isMobile ? 'vertical' : 'horizontal'}
+          >
             <Form.Item
               name="pricePerHour"
               label="Стоимость за час, ₽"
