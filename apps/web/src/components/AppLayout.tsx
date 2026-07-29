@@ -84,7 +84,7 @@ export function AppLayout() {
   };
 
   return (
-    <Layout style={{ height: '100vh', position: 'relative' }}>
+    <Layout style={{ height: '100dvh', position: 'relative' }}>
       <Sider
         theme="light"
         width={SIDER_WIDTH}

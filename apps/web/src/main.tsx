@@ -10,7 +10,8 @@ import timezone from 'dayjs/plugin/timezone';
 import { BrowserRouter } from 'react-router';
 import App from './App';
 import { AuthProvider } from './auth/AuthContext';
-import { MOSCOW_TZ, theme } from './theme';
+import { useIsMobile, useMobileRootClass } from './hooks/useIsMobile';
+import { MOSCOW_TZ, themeFor } from './theme';
 import './styles.css';
 
 dayjs.extend(utc);
@@ -24,9 +25,17 @@ const queryClient = new QueryClient({
   },
 });
 
-createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <ConfigProvider locale={ruRU} theme={theme}>
+/**
+ * Корень приложения: отсюда режим устройства расходится по обеим дорогам — в тему antd и в класс
+ * на <html>, по которому работают мобильные стили (ADR 0030). На десктопе обе величины те же,
+ * что и до появления мобильной версии.
+ */
+function Root() {
+  const isMobile = useIsMobile();
+  useMobileRootClass(isMobile);
+
+  return (
+    <ConfigProvider locale={ruRU} theme={themeFor(isMobile)}>
       <AntApp>
         <QueryClientProvider client={queryClient}>
           <BrowserRouter>
@@ -37,5 +46,11 @@ createRoot(document.getElementById('root')!).render(
         </QueryClientProvider>
       </AntApp>
     </ConfigProvider>
+  );
+}
+
+createRoot(document.getElementById('root')!).render(
+  <StrictMode>
+    <Root />
   </StrictMode>,
 );

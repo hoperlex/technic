@@ -6,7 +6,7 @@ import { useAuth } from './AuthContext';
 function FullScreenSpin() {
   return (
     <div
-      style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+      style={{ height: '100dvh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
     >
       <Spin size="large" />
     </div>

@@ -1,3 +1,13 @@
+/* Отступы под вырез и «домашнюю полоску»: после viewport-fit=cover контент лежит под ними, и
+   закреплённые элементы (верхняя панель, нижняя навигация, кнопки форм) отступают сами.
+   На десктопе и на устройствах без выреза env() возвращает 0 — правила ничего не меняют. */
+:root {
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+}
+
 html,
 body,
 #root {
@@ -109,4 +119,18 @@ body,
 .sider-toggle:focus-visible {
   outline: 2px solid #1677ff;
   outline-offset: 2px;
+}
+
+/* ─── Мобильный режим (ADR 0030) ────────────────────────────────────────────────────────────
+   Все правила ниже действуют только при классе `is-mobile` на <html>: его ставит useIsMobile
+   по единственному медиазапросу портала. Копии медиазапроса в стилях нет намеренно. */
+
+/* Поле мельче 16 px Safari увеличивает при фокусе, и масштаб обратно не возвращается. Токен темы
+   покрывает элементы antd, это правило — всё остальное, включая нативные поля загрузки файлов. */
+.is-mobile input,
+.is-mobile textarea,
+.is-mobile select,
+.is-mobile .ant-select-selector,
+.is-mobile .ant-input-number-input {
+  font-size: 16px;
 }
