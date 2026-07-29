@@ -9,6 +9,7 @@ import {
   type WasteVehicleCountInput,
 } from '@technic/contracts';
 import { AutoSelect } from './AutoSelect';
+import { useIsMobile } from '../hooks/useIsMobile';
 import { formatMoney } from '../utils/format';
 
 /**
@@ -143,6 +144,7 @@ interface Props {
  * вместимости типа, а не вводится руками. Талоны к строкам не крепятся — они общий пул заявки.
  */
 export function WasteVehiclesEditor({ value, onChange, typeOptions, priceOf }: Props) {
+  const isMobile = useIsMobile();
   const patch = (key: string, fields: Partial<VehicleDraft>) =>
     onChange(value.map((d) => (d.key === key ? { ...d, ...fields } : d)));
 
@@ -186,6 +188,77 @@ export function WasteVehiclesEditor({ value, onChange, typeOptions, priceOf }: P
         const amount = priceOf ? draftAmount(d, typeOptions, priceOf) : null;
         const priceMissing =
           priceOf != null && d.containerTypeId != null && priceOf(d.containerTypeId) === null;
+
+        /**
+         * На телефоне строка разворачивается в блок (ADR 0030): пять элементов в ряд ужимают
+         * выбор типа до трёх слов, а количество набирают степпером — по нему и попадают пальцем,
+         * не целясь в стрелки размером со спичечную головку.
+         */
+        if (isMobile) {
+          return (
+            <div key={d.key} className="vehicle-draft">
+              <div className="vehicle-draft__head">
+                <AutoSelect
+                  style={{ flex: 1, minWidth: 0 }}
+                  placeholder="Тип машины"
+                  options={optionsFor(d)}
+                  showSearch
+                  optionFilterProp="label"
+                  value={d.containerTypeId}
+                  disabled={d.id != null}
+                  onChange={(v: string) => patch(d.key, { containerTypeId: v })}
+                />
+                <Button
+                  danger
+                  type="text"
+                  icon={<DeleteOutlined />}
+                  aria-label="Убрать строку"
+                  disabled={d.id != null}
+                  onClick={() => removeRow(d.key)}
+                />
+              </div>
+              <div className="vehicle-draft__foot">
+                <div className="stepper">
+                  <Button
+                    aria-label="Меньше на одну"
+                    disabled={d.count <= 1}
+                    onClick={() => patch(d.key, { count: d.count - 1 })}
+                  >
+                    −
+                  </Button>
+                  <InputNumber
+                    style={{ width: 64 }}
+                    min={1}
+                    max={MAX_VEHICLE_COUNT_PER_ROW}
+                    precision={0}
+                    controls={false}
+                    value={d.count}
+                    onChange={(v) => patch(d.key, { count: typeof v === 'number' ? v : 1 })}
+                    aria-label="Количество машин"
+                  />
+                  <Button
+                    aria-label="Больше на одну"
+                    disabled={d.count >= MAX_VEHICLE_COUNT_PER_ROW}
+                    onClick={() => patch(d.key, { count: d.count + 1 })}
+                  >
+                    +
+                  </Button>
+                </div>
+                <Typography.Text type={priceMissing ? 'warning' : 'secondary'}>
+                  {d.containerTypeId ? `${draftVolume(d, typeOptions)} м³` : '— м³'}
+                  {priceOf
+                    ? priceMissing
+                      ? ' · цены в прайсе нет — с этим типом заявку не закрыть'
+                      : amount != null
+                        ? ` · ${formatMoney(amount)}`
+                        : ''
+                    : ''}
+                </Typography.Text>
+              </div>
+            </div>
+          );
+        }
+
         return (
           <div key={d.key} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <AutoSelect

@@ -12,6 +12,7 @@ import {
   Switch,
   Tag,
   Tooltip,
+  Typography,
 } from 'antd';
 import { EditOutlined, InfoCircleOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -38,6 +39,8 @@ import { AutoSelect } from '../../components/AutoSelect';
 import { DataTable } from '../../components/DataTable';
 import { FormModal } from '../../components/FormModal';
 import { PageTableLayout } from '../../components/PageTableLayout';
+import type { FilterDefinition } from '../../components/listControls';
+import { useIsMobile } from '../../hooks/useIsMobile';
 import { useListParams } from '../../hooks/useListParams';
 import { applyApiFieldErrors } from '../../utils/formErrors';
 import { errorMessage, formatMoney } from '../../utils/format';
@@ -105,6 +108,7 @@ const MAX_TARIFFS = 500;
 export function WasteTariffsTab() {
   const { message, modal } = App.useApp();
   const qc = useQueryClient();
+  const isMobile = useIsMobile();
 
   const { params, setParams, onTableChange } = useListParams<{
     wasteTypeId?: string;
@@ -353,7 +357,7 @@ export function WasteTariffsTab() {
         </span>
       </Space>
     ),
-    width: 200,
+    width: isMobile ? 150 : 200,
     render: (_v: unknown, row: WasteTariffGridRow) => {
       const t = row.byOperator[op.id];
       // Пустая ячейка — не «нет цены навсегда», а место, куда её заводят: пара и оператор
@@ -370,6 +374,24 @@ export function WasteTariffsTab() {
         );
       }
       const hint = cellHint(t);
+      // На телефоне в ячейке остаётся только цена: она же кнопка правки, где есть и заметка,
+      // и признак «действует». Подсказка на значке по касанию всё равно не открывается, а
+      // переключатель рядом с ценой в колонке 150 px не оставляет места ни тому, ни другому.
+      if (isMobile) {
+        return (
+          <Space size={4} wrap>
+            <Button
+              type="link"
+              size="small"
+              style={{ padding: 0, height: 'auto', opacity: t.isActive ? 1 : 0.45 }}
+              onClick={() => openEdit(t)}
+            >
+              {formatMoney(t.pricePerM3)}
+            </Button>
+            {!t.isActive && <Tag>отключена</Tag>}
+          </Space>
+        );
+      }
       return (
         <Space size={4}>
           <Button
@@ -398,46 +420,87 @@ export function WasteTariffsTab() {
     },
   }));
 
-  const columns: TableColumnType<WasteTariffGridRow>[] = [
-    {
-      key: 'wasteTypeName',
-      title: 'Тип мусора',
-      dataIndex: 'wasteTypeName',
-      width: 260,
-      // Карандаш правит сам тип, а не цену: отдельной вкладки у типов больше нет.
-      render: (v: string, r: WasteTariffGridRow) => {
-        const type = wasteTypeById.get(r.wasteTypeId);
-        return (
+  /**
+   * Пара «что вывозим × чем вывозим» — якорь строки. На телефоне обе колонки сливаются в одну
+   * (ADR 0030): по отдельности они занимают 480 px, и закрепить их на экране 360 px нельзя, а
+   * без закреплённого якоря при прокрутке к третьему оператору непонятно, чья это цена.
+   */
+  const subjectColumn: TableColumnType<WasteTariffGridRow> = {
+    key: 'subject',
+    title: 'Мусор · техника',
+    width: 170,
+    render: (_v: unknown, r: WasteTariffGridRow) => {
+      const type = wasteTypeById.get(r.wasteTypeId);
+      return (
+        <div style={{ lineHeight: 1.3 }}>
           <Space size={4}>
-            <span>{v}</span>
+            <span>{r.wasteTypeName}</span>
             {type && !type.isActive && <Tag>неактивен</Tag>}
             {type && (
               <Button
                 type="text"
                 size="small"
-                title="Переименовать тип мусора"
+                className="touch-icon"
+                aria-label="Переименовать тип мусора"
                 icon={<EditOutlined />}
                 onClick={() => openTypeEdit(type)}
               />
             )}
           </Space>
-        );
-      },
+          <div>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {r.containerTypeName ?? (r.containerKind ? kindAllLabels[r.containerKind] : '—')}
+            </Typography.Text>
+          </div>
+        </div>
+      );
     },
-    {
-      key: 'container',
-      title: 'Техника',
-      width: 220,
-      render: (_v: unknown, r: WasteTariffGridRow) =>
-        r.containerTypeName ??
-        (r.containerKind ? (
-          <Tag color={containerKindColors[r.containerKind]}>{kindAllLabels[r.containerKind]}</Tag>
-        ) : (
-          '—'
-        )),
-    },
-    ...operatorColumns,
-  ];
+  };
+
+  const columns: TableColumnType<WasteTariffGridRow>[] = isMobile
+    ? [subjectColumn, ...operatorColumns]
+    : [
+        {
+          key: 'wasteTypeName',
+          title: 'Тип мусора',
+          dataIndex: 'wasteTypeName',
+          width: 260,
+          // Карандаш правит сам тип, а не цену: отдельной вкладки у типов больше нет.
+          render: (v: string, r: WasteTariffGridRow) => {
+            const type = wasteTypeById.get(r.wasteTypeId);
+            return (
+              <Space size={4}>
+                <span>{v}</span>
+                {type && !type.isActive && <Tag>неактивен</Tag>}
+                {type && (
+                  <Button
+                    type="text"
+                    size="small"
+                    title="Переименовать тип мусора"
+                    icon={<EditOutlined />}
+                    onClick={() => openTypeEdit(type)}
+                  />
+                )}
+              </Space>
+            );
+          },
+        },
+        {
+          key: 'container',
+          title: 'Техника',
+          width: 220,
+          render: (_v: unknown, r: WasteTariffGridRow) =>
+            r.containerTypeName ??
+            (r.containerKind ? (
+              <Tag color={containerKindColors[r.containerKind]}>
+                {kindAllLabels[r.containerKind]}
+              </Tag>
+            ) : (
+              '—'
+            )),
+        },
+        ...operatorColumns,
+      ];
 
   const filters = (
     <Space wrap>
@@ -474,6 +537,32 @@ export function WasteTariffsTab() {
       ? pricePerM3FromContainer(Number(watchPricePerContainer), selectedVolumeM3)
       : null;
 
+  /** Те же фильтры описаниями — для шита на телефоне (ADR 0030). */
+  const mobileFilters: FilterDefinition[] = [
+    {
+      kind: 'select',
+      key: 'wasteTypeId',
+      label: 'Тип мусора',
+      value: params.wasteTypeId,
+      options: wasteTypeOptions,
+      placeholder: 'Все типы мусора',
+      loading: wasteTypesLoading,
+      onChange: (v) => setParams((p) => ({ ...p, wasteTypeId: v, page: 1 })),
+    },
+    {
+      kind: 'select',
+      key: 'isActive',
+      label: 'Действие цены',
+      value: params.isActive,
+      options: [
+        { value: 'true', label: 'Только действующие' },
+        { value: 'false', label: 'Только отключённые' },
+      ],
+      placeholder: 'Все цены',
+      onChange: (v) => setParams((p) => ({ ...p, isActive: v, page: 1 })),
+    },
+  ];
+
   return (
     <PageTableLayout
       filters={filters}
@@ -482,6 +571,10 @@ export function WasteTariffsTab() {
           Добавить цену
         </Button>
       }
+      mobile={{
+        filters: mobileFilters,
+        primaryAction: { label: 'Добавить цену', icon: <PlusOutlined />, onClick: openCreate },
+      }}
     >
       {operators.length === 0 && !operatorsLoading && (
         <Alert

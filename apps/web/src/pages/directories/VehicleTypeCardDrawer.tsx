@@ -180,7 +180,13 @@ export function VehicleTypeCardDrawer({ type, onClose }: Props) {
     .map((s) => ({ value: s.id, label: s.unit ? `${s.name}, ${s.unit}` : s.name }));
 
   const specColumns: TableColumnType<VehicleTypeSpecDto>[] = [
-    { key: 'name', title: 'Характеристика', dataIndex: 'name' },
+    {
+      key: 'name',
+      title: 'Характеристика',
+      dataIndex: 'name',
+      width: isMobile ? 150 : undefined,
+      fixed: isMobile ? 'left' : undefined,
+    },
     {
       key: 'unit',
       title: 'Ед. изм.',
@@ -326,6 +332,9 @@ export function VehicleTypeCardDrawer({ type, onClose }: Props) {
       key: 'name',
       title: 'Категория',
       dataIndex: 'name',
+      // На телефоне таблица уезжает вбок — наименование остаётся якорем строки (ADR 0030).
+      width: isMobile ? 150 : undefined,
+      fixed: isMobile ? 'left' : undefined,
       render: (v: string, r) => (
         <Space size={6}>
           <span>{v}</span>
@@ -411,6 +420,8 @@ export function VehicleTypeCardDrawer({ type, onClose }: Props) {
           <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
             Каждая категория типа обязана иметь значение по каждому ТТХ из этого списка.
           </Typography.Paragraph>
+          {/* На телефоне таблица прокручивается вбок внутри своей рамки: пять колонок с
+              кнопками порядка на 360 px иначе ужимаются до нечитаемого (ADR 0030). */}
           <Table<VehicleTypeSpecDto>
             rowKey="specId"
             size="small"
@@ -418,6 +429,7 @@ export function VehicleTypeCardDrawer({ type, onClose }: Props) {
             dataSource={specs}
             loading={specsQuery.isFetching}
             pagination={false}
+            scroll={isMobile ? { x: 'max-content' } : undefined}
             locale={{ emptyText: <Empty description="ТТХ не заданы — у типа нет категорий" /> }}
           />
         </div>

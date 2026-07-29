@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Space, Table, type TableColumnsType, Tag, Typography } from 'antd';
 import {
   type RequestHistoryEntryDto,
@@ -6,6 +6,7 @@ import {
   requestStatusColors,
   requestStatusLabels,
 } from '@technic/contracts';
+import { useIsMobile } from '../hooks/useIsMobile';
 import { formatDateTime } from '../utils/format';
 
 /**
@@ -179,6 +180,68 @@ function columnsWith(labels: Record<string, string>): TableColumnsType<HistoryRo
   ];
 }
 
+/**
+ * Событие на телефоне — карточка, а не строка из трёх колонок (ADR 0030): 190 + 250 + 190 px
+ * там не помещаются, и время с автором уезжают под горизонтальную прокрутку. Модель прежняя
+ * (ADR 0012): свёрнутое событие отвечает «что произошло», подробности раскрываются касанием.
+ */
+function MobileHistoryList({
+  rows,
+  labels,
+  defaultExpandedKeys,
+}: {
+  rows: HistoryRow[];
+  labels: Record<string, string>;
+  defaultExpandedKeys?: string[];
+}) {
+  const [expanded, setExpanded] = useState<Set<string>>(new Set(defaultExpandedKeys ?? []));
+  const toggle = (key: string) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+
+  return (
+    <div className="history-list">
+      {rows.map((row) => {
+        const summary = summaryOf(row, labels);
+        const expandable = hasDetails(row);
+        const open = expanded.has(row.key);
+        return (
+          <div
+            key={row.key}
+            className={`history-item${expandable ? ' history-item--expandable' : ''}`}
+            onClick={expandable ? () => toggle(row.key) : undefined}
+          >
+            <div className="history-item__head">
+              <StatusBubbles row={row} />
+              {row.entry && (
+                <Typography.Text type="secondary" style={secondary}>
+                  {formatDateTime(row.entry.at)}
+                </Typography.Text>
+              )}
+            </div>
+            {summary && <div>{summary}</div>}
+            {row.entry && (
+              <Typography.Text type="secondary" style={secondary}>
+                {row.entry.actorName ?? '—'}
+              </Typography.Text>
+            )}
+            {expandable &&
+              (open ? (
+                <HistoryDetails row={row} labels={labels} />
+              ) : (
+                <Typography.Link style={secondary}>Подробнее</Typography.Link>
+              ))}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export function RequestHistoryTable({
   rows,
   /** Подписи полей модуля: сервер шлёт технические ключи (`wasteRequestChangeLabels`). */
@@ -190,6 +253,14 @@ export function RequestHistoryTable({
   labels: Record<string, string>;
   defaultExpandedKeys?: string[];
 }) {
+  const isMobile = useIsMobile();
+
+  if (isMobile) {
+    return (
+      <MobileHistoryList rows={rows} labels={labels} defaultExpandedKeys={defaultExpandedKeys} />
+    );
+  }
+
   return (
     <Table
       size="small"

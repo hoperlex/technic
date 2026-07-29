@@ -355,6 +355,71 @@ body,
   background: rgba(0, 0, 0, 0.06);
 }
 
+/* История заявки на телефоне: событие карточкой, подробности раскрываются касанием */
+.history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.history-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: 8px;
+  line-height: 1.35;
+}
+.history-item--expandable {
+  cursor: pointer;
+}
+.history-item__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* Строка факта вывоза на телефоне: тип отдельной строкой, количество степпером под ним */
+.vehicle-draft {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: 8px;
+}
+.vehicle-draft__head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.vehicle-draft__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.stepper {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.stepper .ant-btn {
+  min-width: 40px;
+  height: 40px;
+  font-size: 18px;
+  line-height: 1;
+}
+
+/* Кнопка-значок внутри таблицы: на телефоне ей нужна тач-цель, а не только видимая иконка */
+.is-mobile .touch-icon.ant-btn {
+  min-width: 36px;
+  height: 36px;
+}
+
 /* Тег статуса в карточке — кнопка: открывает список переходов снизу */
 .status-trigger {
   display: inline-flex;

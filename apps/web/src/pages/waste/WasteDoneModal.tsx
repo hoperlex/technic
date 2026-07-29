@@ -1,5 +1,5 @@
 import { App, Button, Form, Input, Space, Typography, Upload } from 'antd';
-import { UploadOutlined } from '@ant-design/icons';
+import { CameraOutlined, UploadOutlined } from '@ant-design/icons';
 import { useEffect, useState } from 'react';
 import { useQueries } from '@tanstack/react-query';
 import {
@@ -15,6 +15,7 @@ import {
 import { filesApi, wasteTariffsApi } from '../../api/resources';
 import { FileLinkList } from '../../components/FileLinks';
 import { FormModal } from '../../components/FormModal';
+import { useIsMobile } from '../../hooks/useIsMobile';
 import {
   changedCounts,
   draftsToInput,
@@ -64,6 +65,7 @@ export function WasteDoneModal({
   onSubmit,
 }: Props) {
   const { message } = App.useApp();
+  const isMobile = useIsMobile();
   const [drafts, setDrafts] = useState<VehicleDraft[]>([]);
   const [tickets, setTickets] = useState<FileDto[]>([]);
   const [comment, setComment] = useState('');
@@ -158,6 +160,21 @@ export function WasteDoneModal({
   const removeTicket = (f: FileDto) => {
     void filesApi.remove(f.id).catch(() => {});
     setTickets((prev) => prev.filter((t) => t.id !== f.id));
+  };
+
+  /** Проверки талона общие для обоих способов приложить его — из файлов и снимком камеры. */
+  const beforeUploadTicket = (file: File) => {
+    if (!request) return Upload.LIST_IGNORE;
+    if (request.tickets.length + tickets.length >= MAX_TICKETS_PER_REQUEST) {
+      message.warning(`Не более ${MAX_TICKETS_PER_REQUEST} талонов`);
+      return Upload.LIST_IGNORE;
+    }
+    if (file.size > FILE_MAX_SIZE) {
+      message.warning('Файл больше 50 МБ');
+      return Upload.LIST_IGNORE;
+    }
+    void uploadTicket(file);
+    return false;
   };
 
   const cancel = () => {
@@ -276,23 +293,28 @@ export function WasteDoneModal({
               </div>
             )}
             <Space size={8} wrap style={{ marginTop: 8 }}>
-              <Upload
-                multiple
-                showUploadList={false}
-                beforeUpload={(file) => {
-                  if (request.tickets.length + tickets.length >= MAX_TICKETS_PER_REQUEST) {
-                    message.warning(`Не более ${MAX_TICKETS_PER_REQUEST} талонов`);
-                    return Upload.LIST_IGNORE;
-                  }
-                  if (file.size > FILE_MAX_SIZE) {
-                    message.warning('Файл больше 50 МБ');
-                    return Upload.LIST_IGNORE;
-                  }
-                  void uploadTicket(file);
-                  return false;
-                }}
-              >
-                <Button icon={<UploadOutlined />} loading={uploading} danger={noTicketYet}>
+              {/* Снимок камерой — только на телефоне (ADR 0030): талон подписывают на площадке,
+                  и фотографируют его там же. `capture` — подсказка браузеру, а не гарантия, что
+                  откроется именно камера, поэтому обычная загрузка остаётся рядом. Ограничение
+                  по типу стоит только на этой кнопке: у соседней его нет и не было. */}
+              {isMobile && (
+                <Upload
+                  showUploadList={false}
+                  accept="image/*"
+                  capture="environment"
+                  beforeUpload={beforeUploadTicket}
+                >
+                  <Button icon={<CameraOutlined />} loading={uploading} danger={noTicketYet}>
+                    Снять камерой
+                  </Button>
+                </Upload>
+              )}
+              <Upload multiple showUploadList={false} beforeUpload={beforeUploadTicket}>
+                <Button
+                  icon={<UploadOutlined />}
+                  loading={uploading}
+                  danger={noTicketYet && !isMobile}
+                >
                   Прикрепить талон
                 </Button>
               </Upload>
