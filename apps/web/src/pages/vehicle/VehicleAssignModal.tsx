@@ -5,6 +5,7 @@ import {
   type AssignVehicleInput,
   assignmentRateLabel,
   VEHICLE_OWNERSHIPS,
+  vehicleClassificationLabel,
   type VehicleDto,
   type VehicleOwnership,
   vehicleLabel,
@@ -24,8 +25,10 @@ import { formatMoney } from '../../utils/format';
  * подходящей техники сразу) на реальном парке нечитаем: у одного типа десятки предложений от
  * разных арендодателей, и различать их приходится по хвосту строки.
  *
- * Список сужен типом ТС заявки: заказывали автокран — назначают автокран. Категория машины
- * показана в строке, но не фильтрует: в заявке её нет, а решает по ней человек.
+ * Список сужен заказанной позицией классификатора (ADR 0028): заказывали «Автокран, г/п 130 т» —
+ * машины на 25 т в списке нет, её и сервер не примет. Техника с незаполненной категорией
+ * остаётся с пометкой: в справочнике категория необязательна, и «неизвестно» — не то же самое,
+ * что «не подходит».
  *
  * Ставки подставляются из предложения аренды и правятся свободно: договариваются по конкретной
  * заявке, и прайс справочника такой договорённости не начальник. Расхождение с прайсом видно
@@ -47,11 +50,16 @@ interface FormValues {
   shiftHours?: number | null;
 }
 
-/** Строка выбора: подпись машины плюс то, чем одна единица отличается от другой. */
-function vehicleOptionLabel(v: VehicleDto): string {
+/**
+ * Строка выбора: подпись машины плюс то, чем одна единица отличается от другой. Незаполненная
+ * категория проговаривается прямо в строке: заявка заказана по ТТХ, и подходит ли эта машина,
+ * решает человек — по названию модели и по тому, что он о ней знает.
+ */
+function vehicleOptionLabel(v: VehicleDto, requestHasCategory: boolean): string {
   const title = vehicleLabel(v);
   const extra = [
     v.ownership === 'own' ? v.modelName : v.categoryName,
+    requestHasCategory && !v.vehicleCategoryId ? 'категория не указана' : null,
     assignmentRateLabel(v) || null,
   ].filter((s): s is string => !!s && s !== title);
   return extra.length > 0 ? `${title} — ${extra.join(' · ')}` : title;
@@ -64,7 +72,10 @@ export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit
 
   // Вся подходящая техника одним запросом: обе ветки принадлежности нужны сразу — по их
   // наполнению подписан сам переключатель («Аренда — 12»), а списки невелики (сужены типом ТС).
+  // Запрашивается тип, а не категория: машина с незаполненной категорией заявке подходит, и
+  // фильтр по категории на сервере отсёк бы её вместе с чужими.
   const vehicleTypeId = request?.vehicleTypeId ?? null;
+  const categoryId = request?.vehicleCategoryId ?? null;
   const { data, isFetching } = useQuery({
     queryKey: ['vehicles', 'for-assignment', vehicleTypeId],
     queryFn: () =>
@@ -78,7 +89,15 @@ export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit
       }),
     enabled: !!vehicleTypeId,
   });
-  const vehicles = useMemo(() => data?.items ?? [], [data]);
+  // Машина другой категории в список не попадает: заказанная категория — это ТТХ (ADR 0028),
+  // и сервер такое назначение отклонит. Пустая категория у машины — «не разнесена», не «другая».
+  const vehicles = useMemo(
+    () =>
+      (data?.items ?? []).filter(
+        (v) => !categoryId || !v.vehicleCategoryId || v.vehicleCategoryId === categoryId,
+      ),
+    [data, categoryId],
+  );
   const byOwnership = useMemo(
     () => ({
       own: vehicles.filter((v) => v.ownership === 'own'),
@@ -128,8 +147,8 @@ export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit
       ownership === 'own'
         ? byOwnership.own
         : byOwnership.rental.filter((v) => !lessorId || v.lessorId === lessorId);
-    return list.map((v) => ({ value: v.id, label: vehicleOptionLabel(v) }));
-  }, [ownership, lessorId, byOwnership]);
+    return list.map((v) => ({ value: v.id, label: vehicleOptionLabel(v, !!categoryId) }));
+  }, [ownership, lessorId, byOwnership, categoryId]);
 
   const selected = vehicles.find((v) => v.id === vehicleId) ?? null;
   const isRental = ownership === 'rental';
@@ -186,10 +205,10 @@ export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit
   const emptyText = isFetching
     ? 'Загружаем технику…'
     : ownership === 'own'
-      ? 'Собственной техники этого типа нет — возьмите её в аренду'
+      ? 'Собственной техники под этот заказ нет — возьмите её в аренду'
       : lessorId
-        ? 'У этого арендодателя нет предложений выбранного типа'
-        : 'Предложений аренды этого типа нет';
+        ? 'У этого арендодателя нет подходящих предложений'
+        : 'Предложений аренды под этот заказ нет';
 
   return (
     <FormModal
@@ -204,7 +223,12 @@ export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit
       {request && (
         <Form form={form} layout="vertical" onFinish={submit}>
           <Typography.Paragraph type="secondary" style={{ marginBottom: 16 }}>
-            {request.objectCode} — {request.objectName} · заказан тип ТС «{request.vehicleTypeName}»
+            {request.objectCode} — {request.objectName} · заказано «
+            {vehicleClassificationLabel({
+              typeName: request.vehicleTypeName,
+              categoryName: request.vehicleCategoryName,
+            })}
+            »
           </Typography.Paragraph>
 
           {/* Шаг 1: чья машина. Количество подходящих единиц — в самой подписи: пустая ветка
