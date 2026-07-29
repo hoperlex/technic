@@ -7,7 +7,6 @@ import {
   Form,
   Input,
   InputNumber,
-  Select,
   Space,
   Switch,
   Table,
@@ -33,6 +32,7 @@ import {
   type VehicleTypeSpecDto,
 } from '@technic/contracts';
 import { vehicleCategoriesApi, vehicleSpecsApi, vehicleTypesApi } from '../../api/resources';
+import { AutoSelect } from '../../components/AutoSelect';
 import { FormModal } from '../../components/FormModal';
 import { errorMessage } from '../../utils/format';
 
@@ -480,10 +480,11 @@ export function VehicleTypeCardDrawer({ type, onClose }: Props) {
             label="Характеристика"
             rules={[{ required: true, message: 'Выберите ТТХ' }]}
           >
-            <Select
+            <AutoSelect
               showSearch
               optionFilterProp="label"
               options={attachOptions}
+              loading={allSpecsQuery.isLoading}
               placeholder="Выберите ТТХ"
               notFoundContent="Свободных активных ТТХ нет"
             />

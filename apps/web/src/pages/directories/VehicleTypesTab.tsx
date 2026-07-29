@@ -20,6 +20,7 @@ import {
   type VehicleTypeDto,
 } from '@technic/contracts';
 import { vehicleKindsApi, vehicleTypesApi } from '../../api/resources';
+import { AutoSelect } from '../../components/AutoSelect';
 import { DataTable, type TableChange } from '../../components/DataTable';
 import { FormModal } from '../../components/FormModal';
 import { PageTableLayout } from '../../components/PageTableLayout';
@@ -73,7 +74,7 @@ export function VehicleTypesTab() {
     queryFn: () => vehicleTypesApi.list(params),
   });
 
-  const { data: kindsData } = useQuery({
+  const { data: kindsData, isLoading: kindsLoading } = useQuery({
     queryKey: ['vehicle-kinds'],
     queryFn: () => vehicleKindsApi.list({ pageSize: 500, sortBy: 'sortOrder', sortOrder: 'asc' }),
   });
@@ -313,7 +314,7 @@ export function VehicleTypesTab() {
               label="Вид"
               rules={[{ required: true, message: 'Выберите вид' }]}
             >
-              <Select options={kindOptions} placeholder="Выберите вид" />
+              <AutoSelect options={kindOptions} loading={kindsLoading} placeholder="Выберите вид" />
             </Form.Item>
           )}
 
