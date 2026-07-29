@@ -50,9 +50,10 @@ import {
 import { vehicleRequestsApi } from '../../api/resources';
 import { AutoSelect } from '../../components/AutoSelect';
 import { CancelReasonModal } from '../../components/CancelReasonModal';
-import { DataTable } from '../../components/DataTable';
+import { DataTable, type CardConfig } from '../../components/DataTable';
 import { FormModal } from '../../components/FormModal';
 import { PageTableLayout } from '../../components/PageTableLayout';
+import { sortOptionsFrom, type FilterDefinition } from '../../components/listControls';
 import { TabsExtra } from '../../components/PageTabs';
 import { SummaryBar } from '../../components/SummaryBar';
 import { actionsColumn, textColumn } from '../../components/columns';
@@ -175,7 +176,7 @@ export function VehicleRequestsTab() {
   // requestType не задан — список обоих типов; фильтр в шапке сужает до одного.
   // Все фильтры собраны в панели над таблицей, а не в выпадашках столбцов: в заголовке их
   // не видно, а часть значений (объект, тип ТС) — списки справочников.
-  const { params, setParams, onTableChange } = useListParams<{
+  const { params, setParams, setSort, onTableChange } = useListParams<{
     requestType?: string;
     status?: string;
     objectId?: string;
@@ -786,6 +787,151 @@ export function VehicleRequestsTab() {
     </Space>
   );
 
+  /** Те же фильтры описаниями — для шита на телефоне (ADR 0030). */
+  const mobileFilters: FilterDefinition[] = [
+    {
+      kind: 'select',
+      key: 'requestType',
+      label: 'Тип заявки',
+      value: params.requestType,
+      options: VEHICLE_REQUEST_TYPES.map((t) => ({
+        value: t,
+        label: vehicleRequestTypeLabels[t],
+      })),
+      placeholder: 'Все типы заявок',
+      onChange: (v) => applyFilter({ requestType: v }),
+    },
+    {
+      kind: 'select',
+      key: 'status',
+      label: 'Статус',
+      value: params.status,
+      options: REQUEST_STATUSES.map((s) => ({ value: s, label: requestStatusLabels[s] })),
+      placeholder: 'Все статусы',
+      onChange: (v) => applyFilter({ status: v }),
+    },
+    {
+      kind: 'select',
+      key: 'approved',
+      label: 'Согласование',
+      value: params.approved,
+      options: [
+        { value: 'false', label: 'Ждут визы' },
+        { value: 'true', label: 'Завизированные' },
+      ],
+      placeholder: 'Любое согласование',
+      onChange: (v) => applyFilter({ approved: v }),
+    },
+    {
+      kind: 'select',
+      key: 'objectId',
+      label: 'Объект',
+      value: params.objectId,
+      options: objectOptions,
+      placeholder: 'Все объекты',
+      // Объектной роли объект зафиксирован на её собственном.
+      disabled: isObjectRole,
+      onChange: (v) => applyFilter({ objectId: v }),
+    },
+    {
+      kind: 'text',
+      key: 'num',
+      label: '№ заявки',
+      value: params.num != null ? String(params.num) : undefined,
+      placeholder: 'Например, ТС-123',
+      onChange: (v) => applyFilter({ num: parseVehicleRequestNumberSearch(v ?? '') }),
+    },
+  ];
+
+  /**
+   * Строка списка на телефоне (ADR 0030): номер и статус, объект, что заказано и на когда, чем
+   * взяли и во сколько встало. Виза — кнопкой прямо в карточке: у руководителя строительства это
+   * главное действие списка, и прятать его в меню значило бы добавить к нему два касания.
+   */
+  const card: CardConfig<VehicleRequestDto> = {
+    title: (r) => r.displayNumber,
+    badge: (r) => (
+      <StatusCell
+        status={r.status}
+        deleted={!!r.deletedAt}
+        approved={!!r.approvedAt}
+        cancelReason={r.cancelReason}
+        pending={statusMut.isPending && statusMut.variables?.id === r.id}
+        onChange={(status) => requestStatusChange(r, status)}
+      />
+    ),
+    primary: (r) => r.objectName,
+    lines: [
+      (r) =>
+        `${vehicleClassificationLabel({
+          typeName: r.vehicleTypeName,
+          categoryName: r.vehicleCategoryName,
+        })} · ${vehicleRequestTypeLabels[r.requestType]}`,
+      (r) => `Срок: ${termLabel(r)}`,
+      (r) =>
+        r.assignment
+          ? `${assignmentTitle(r.assignment)} · ${assignmentRateLabel(r.assignment) || r.assignment.lessorName || 'без ставки'}`
+          : null,
+      (r) => (r.cancelReason ? `Причина отмены: ${r.cancelReason}` : null),
+      (r) => r.comment || null,
+      (r) => (
+        <ApprovalCell
+          status={r.status}
+          deleted={!!r.deletedAt}
+          approved={!!r.approvedAt}
+          approvedByName={r.approvedByName}
+          approvedAt={r.approvedAt}
+          canApprove={canApprove}
+          pending={approvalMut.isPending && approvalMut.variables?.id === r.id}
+          onChange={(approved) => requestApprovalChange(r, approved)}
+        />
+      ),
+      (r) => (r.files.length > 0 ? <FilesCell files={r.files} /> : null),
+      (r) => (r.deletedAt ? <Tag>в архиве</Tag> : null),
+    ],
+    onOpen: (r) => setViewRecord(r),
+    actions: (r) => {
+      const view = {
+        key: 'view',
+        label: 'Открыть карточку',
+        icon: <EyeOutlined />,
+        onClick: () => setViewRecord(r),
+      };
+      if (r.deletedAt) {
+        return canRestore
+          ? [
+              view,
+              {
+                key: 'restore',
+                label: 'Восстановить',
+                icon: <ReloadOutlined />,
+                onClick: () => restoreMut.mutate(r.id),
+              },
+            ]
+          : [view];
+      }
+      const allowed = canModify(r);
+      return [
+        view,
+        {
+          key: 'edit',
+          label: 'Редактировать',
+          icon: <EditOutlined />,
+          disabled: !allowed,
+          onClick: () => openEdit(r),
+        },
+        {
+          key: 'delete',
+          label: r.status === 'new' ? 'Удалить' : 'Переместить в архив',
+          icon: <DeleteOutlined />,
+          danger: true,
+          disabled: !allowed,
+          onClick: () => confirmDelete(r),
+        },
+      ];
+    },
+  };
+
   return (
     <PageTableLayout
       filters={filters}
@@ -796,6 +942,18 @@ export function VehicleRequestsTab() {
           </Button>
         ) : null
       }
+      mobile={{
+        filters: mobileFilters,
+        sort: {
+          options: sortOptionsFrom(columns, { num: 'Номер заявки' }),
+          sortBy: params.sortBy,
+          sortOrder: params.sortOrder,
+          onChange: setSort,
+        },
+        primaryAction: canCreate
+          ? { label: 'Создать заявку', icon: <PlusOutlined />, onClick: openCreate }
+          : undefined,
+      }}
     >
       {/* Сводка — на уровне вкладок, над фильтрами и кнопкой: она относится ко всему списку. */}
       <TabsExtra tabKey="requests">
@@ -804,11 +962,14 @@ export function VehicleRequestsTab() {
 
       <DataTable<VehicleRequestDto>
         columns={columns}
+        card={card}
         data={items}
         total={data?.total ?? 0}
         loading={isFetching}
         page={params.page}
         pageSize={params.pageSize}
+        sortBy={params.sortBy}
+        sortOrder={params.sortOrder}
         onChange={onTableChange}
       />
       <FormModal

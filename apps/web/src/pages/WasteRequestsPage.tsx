@@ -173,7 +173,7 @@ function RequestsTab() {
 
   // Фильтры живут в панели над таблицей, а не в выпадашках столбцов: в заголовке их не видно,
   // а половина из них (объект, оператор) — списки справочников, которым там тесно.
-  const { params, setParams, onTableChange } = useListParams<{
+  const { params, setParams, setSort, onTableChange } = useListParams<{
     status?: string;
     requestType?: string;
     objectId?: string;
@@ -1254,7 +1254,7 @@ function RequestsTab() {
           options: sortOptionsFrom(columns, { createdAt: 'Дата создания', num: 'Номер заявки' }),
           sortBy: params.sortBy,
           sortOrder: params.sortOrder,
-          onChange: (sortBy, sortOrder) => setParams((p) => ({ ...p, sortBy, sortOrder, page: 1 })),
+          onChange: setSort,
         },
         primaryAction: canCreate
           ? { label: 'Создать заявку', icon: <PlusOutlined />, onClick: openCreate }

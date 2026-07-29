@@ -17,8 +17,10 @@ import {
 } from '@technic/contracts';
 import { filesApi, objectsApi } from '../../api/resources';
 import type { VehicleClassificationGroup } from '../../hooks/useVehicleClassifications';
+import { ActionSheet } from '../../components/ActionSheet';
 import { AutoSelect } from '../../components/AutoSelect';
 import { FileLinkList } from '../../components/FileLinks';
+import { useIsMobile } from '../../hooks/useIsMobile';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage, formatDateTime } from '../../utils/format';
 
@@ -158,18 +160,56 @@ export function StatusCell({
   onChange: (s: RequestStatus) => void;
 }) {
   const { user } = useAuth();
+  const isMobile = useIsMobile();
+  const [sheetOpen, setSheetOpen] = useState(false);
   // Линейный цикл доступен ведущим заявки ролям, откаты закрытых заявок — только админу;
   // «В работе» до визы не предлагается никому — сервер такой переход отклонит.
   const transitions = user?.role
     ? allowedVehicleRequestTransitions(status, user.role, approved)
     : [];
   const plain = <Tag color={requestStatusColors[status]}>{requestStatusLabels[status]}</Tag>;
-  const tag = cancelReason ? (
-    <Tooltip title={`Причина отмены: ${cancelReason}`}>{plain}</Tooltip>
-  ) : (
-    plain
-  );
+  // Причина отмены — подсказкой только на десктопе: на телефоне подсказка по касанию не
+  // открывается, и причина выводится строкой карточки (ADR 0030).
+  const tag =
+    cancelReason && !isMobile ? (
+      <Tooltip title={`Причина отмены: ${cancelReason}`}>{plain}</Tooltip>
+    ) : (
+      plain
+    );
   if (deleted || transitions.length === 0) return tag;
+
+  // На телефоне переходы показываются списком снизу: выпадающее меню открывается под палец
+  // мимо цели, а нажатие по тегу не должно заодно открывать карточку заявки.
+  if (isMobile) {
+    return (
+      <>
+        <button
+          type="button"
+          className="status-trigger"
+          aria-label="Изменить статус"
+          disabled={pending}
+          onClick={(e) => {
+            e.stopPropagation();
+            setSheetOpen(true);
+          }}
+        >
+          {tag}
+          <DownOutlined style={{ fontSize: 10, color: 'rgba(0,0,0,0.45)' }} />
+        </button>
+        <ActionSheet
+          title="Изменить статус"
+          open={sheetOpen}
+          onClose={() => setSheetOpen(false)}
+          items={transitions.map((s) => ({
+            key: s,
+            label: requestStatusLabels[s],
+            onClick: () => onChange(s),
+          }))}
+        />
+      </>
+    );
+  }
+
   return (
     <Dropdown
       trigger={['click']}
@@ -214,6 +254,7 @@ export function ApprovalCell({
   pending: boolean;
   onChange: (approved: boolean) => void;
 }) {
+  const isMobile = useIsMobile();
   const approvedTitle =
     approved && approvedAt
       ? `Завизировал ${approvedByName ?? '—'} · ${formatDateTime(approvedAt)}`
@@ -230,21 +271,34 @@ export function ApprovalCell({
         Ждёт визы
       </Tag>
     );
-    return <Tooltip title={approvedTitle}>{tag}</Tooltip>;
+    // На телефоне подсказки нет: кто и когда завизировал, видно в карточке заявки.
+    return isMobile ? tag : <Tooltip title={approvedTitle}>{tag}</Tooltip>;
   }
 
-  return (
-    <Tooltip title={approved ? `${approvedTitle}. Нажмите, чтобы снять визу` : 'Согласовать заявку'}>
-      <Button
-        size="small"
-        color={approved ? 'green' : 'orange'}
-        variant="solid"
-        loading={pending}
-        icon={approved ? <CheckOutlined /> : undefined}
-        onClick={() => onChange(!approved)}
-      >
-        {approved ? 'Завизирована' : 'Согласовать'}
-      </Button>
+  const button = (
+    <Button
+      size="small"
+      color={approved ? 'green' : 'orange'}
+      variant="solid"
+      loading={pending}
+      icon={approved ? <CheckOutlined /> : undefined}
+      // Виза стоит внутри карточки списка: нажатие на неё не должно открывать саму карточку.
+      onClick={(e) => {
+        e.stopPropagation();
+        onChange(!approved);
+      }}
+    >
+      {approved ? 'Завизирована' : 'Согласовать'}
+    </Button>
+  );
+
+  return isMobile ? (
+    button
+  ) : (
+    <Tooltip
+      title={approved ? `${approvedTitle}. Нажмите, чтобы снять визу` : 'Согласовать заявку'}
+    >
+      {button}
     </Tooltip>
   );
 }

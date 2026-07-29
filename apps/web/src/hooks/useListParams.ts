@@ -50,6 +50,13 @@ export function useListParams<E extends object>(initialExtra: E, opts: Options<E
     }));
   }, [isMobile]);
 
+  /**
+   * Смена сортировки из шита на телефоне (ADR 0030): список возвращается на первую страницу —
+   * та же страница при другом порядке означала бы уже другие записи.
+   */
+  const setSort = (sortBy: string | undefined, sortOrder: 'asc' | 'desc') =>
+    setParams((prev) => ({ ...prev, sortBy, sortOrder, page: 1 }) as BaseParams & E);
+
   const onTableChange = (c: TableChange) => {
     setParams((prev) => ({
       ...prev,
@@ -68,5 +75,5 @@ export function useListParams<E extends object>(initialExtra: E, opts: Options<E
     }));
   };
 
-  return { params, setParams, onTableChange };
+  return { params, setParams, setSort, onTableChange };
 }

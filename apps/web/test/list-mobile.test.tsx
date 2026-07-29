@@ -4,6 +4,7 @@ import { DataTable, type CardConfig, type TableChange } from '../src/components/
 import { FilterSheet } from '../src/components/FilterSheet';
 import type { FilterDefinition } from '../src/components/listControls';
 import { sortOptionsFrom } from '../src/components/listControls';
+import { ApprovalCell } from '../src/pages/vehicle/shared';
 import { DESKTOP_VIEWPORT, MOBILE_VIEWPORT, setViewport } from './viewport';
 
 /**
@@ -201,6 +202,45 @@ describe('шит фильтров', () => {
     // Объект у штаба остаётся выбранным, а пустой статус и был пустым — менять нечего.
     expect(onObject).not.toHaveBeenCalled();
     expect(onStatus).not.toHaveBeenCalled();
+  });
+});
+
+describe('виза в карточке заявки ТС', () => {
+  it('нажатие на кнопку визы не открывает карточку заодно', () => {
+    setViewport(MOBILE_VIEWPORT);
+    const onApprove = vi.fn();
+    const onOpen = vi.fn();
+    render(
+      <DataTable<Row>
+        columns={columns}
+        card={{
+          title: (r) => `№ ${r.num}`,
+          onOpen,
+          lines: [
+            () => (
+              <ApprovalCell
+                status="new"
+                deleted={false}
+                approved={false}
+                approvedByName={null}
+                approvedAt={null}
+                canApprove
+                pending={false}
+                onChange={onApprove}
+              />
+            ),
+          ],
+        }}
+        data={[rows[0]!]}
+        total={1}
+        page={1}
+        pageSize={50}
+        onChange={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Согласовать' }));
+    expect(onApprove).toHaveBeenCalledWith(true);
+    expect(onOpen).not.toHaveBeenCalled();
   });
 });
 

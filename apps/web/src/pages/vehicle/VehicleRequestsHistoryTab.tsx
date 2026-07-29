@@ -29,8 +29,9 @@ import {
   workedAmountLabel,
 } from '@technic/contracts';
 import { counterpartiesApi, vehicleRequestsApi } from '../../api/resources';
-import { DataTable } from '../../components/DataTable';
+import { DataTable, type CardConfig } from '../../components/DataTable';
 import { PageTableLayout } from '../../components/PageTableLayout';
+import { sortOptionsFrom, type FilterDefinition } from '../../components/listControls';
 import { TabsExtra } from '../../components/PageTabs';
 import { SummaryBar } from '../../components/SummaryBar';
 import { actionsColumn, textColumn } from '../../components/columns';
@@ -84,7 +85,7 @@ export function VehicleRequestsHistoryTab() {
   // отдаёт только свой объект (requestVisibilityWhere).
   const ownObjectId = isObjectRole ? (user?.constructionObjectId ?? '') : '';
 
-  const { params, setParams, onTableChange } = useListParams<{
+  const { params, setParams, setSort, onTableChange } = useListParams<{
     requestType?: string;
     status?: string;
     objectId?: string;
@@ -403,8 +404,131 @@ export function VehicleRequestsHistoryTab() {
     </Space>
   );
 
+  /** Те же фильтры описаниями — для шита на телефоне (ADR 0030). */
+  const mobileFilters: FilterDefinition[] = [
+    {
+      kind: 'select',
+      key: 'requestType',
+      label: 'Тип заявки',
+      value: params.requestType,
+      options: VEHICLE_REQUEST_TYPES.map((t) => ({
+        value: t,
+        label: vehicleRequestTypeLabels[t],
+      })),
+      placeholder: 'Все типы заявок',
+      onChange: (v) => applyFilter({ requestType: v }),
+    },
+    {
+      kind: 'select',
+      key: 'status',
+      label: 'Чем закончилась',
+      value: params.status,
+      options: CLOSED_REQUEST_STATUSES.map((s) => ({ value: s, label: requestStatusLabels[s] })),
+      placeholder: 'Выполненные и отменённые',
+      onChange: (v) => applyFilter({ status: v }),
+    },
+    {
+      kind: 'select',
+      key: 'objectId',
+      label: 'Объект',
+      value: params.objectId,
+      options: objectOptions,
+      placeholder: 'Все объекты',
+      disabled: isObjectRole,
+      onChange: (v) => applyFilter({ objectId: v }),
+    },
+    {
+      kind: 'select',
+      key: 'lessorId',
+      label: 'Арендодатель',
+      value: params.lessorId,
+      options: lessorOptions,
+      placeholder: 'Все арендодатели',
+      onChange: (v) => applyFilter({ lessorId: v }),
+    },
+    {
+      // Период — по сроку работ, как и в панели десктопа.
+      kind: 'dateRange',
+      key: 'period',
+      label: 'Период работ',
+      from: params.dateFrom,
+      to: params.dateTo,
+      onChange: (dateFrom, dateTo) => applyFilter({ dateFrom, dateTo }),
+    },
+    {
+      kind: 'text',
+      key: 'num',
+      label: '№ заявки',
+      value: params.num != null ? String(params.num) : undefined,
+      placeholder: 'Например, ТС-123',
+      onChange: (v) => applyFilter({ num: parseVehicleRequestNumberSearch(v ?? '') }),
+    },
+  ];
+
+  /**
+   * Строка журнала на телефоне (ADR 0030): чем закончилась заявка и во сколько обошлась —
+   * ради этих двух чисел журнал и открывают. Ниже — срок, объект, техника и обе подписи.
+   */
+  const card: CardConfig<VehicleRequestDto> = {
+    title: (r) => r.displayNumber,
+    badge: (r) => (
+      <Tag color={requestStatusColors[r.status]} style={{ marginInlineEnd: 0 }}>
+        {requestStatusLabels[r.status]}
+      </Tag>
+    ),
+    primary: (r) =>
+      r.completion?.totalCost != null ? formatMoney(r.completion.totalCost) : 'Без суммы',
+    lines: [
+      (r) => r.objectName,
+      (r) =>
+        `${vehicleClassificationLabel({
+          typeName: r.vehicleTypeName,
+          categoryName: r.vehicleCategoryName,
+        })} · ${vehicleRequestTypeLabels[r.requestType]}`,
+      (r) => termCell(r),
+      (r) =>
+        r.assignment
+          ? `${assignmentTitle(r.assignment)} · ${r.assignment.lessorName ?? 'Своя техника'}`
+          : null,
+      (r) =>
+        r.completion
+          ? `Отработано: ${workedAmountLabel(r.completion.workedUnit, r.completion.workedAmount)}${
+              r.completion.rate != null ? ` по ${formatMoney(r.completion.rate)}` : ''
+            }`
+          : null,
+      (r) => (r.cancelReason ? `Причина отмены: ${r.cancelReason}` : null),
+      (r) =>
+        r.approvedAt
+          ? `Завизировал ${r.approvedByName ?? '—'} · ${formatDate(r.approvedAt)}`
+          : 'Без визы',
+      (r) =>
+        r.completion
+          ? `Закрыл ${r.completion.completedByName || '—'} · ${formatDate(r.completion.completedAt)}`
+          : null,
+    ],
+    onOpen: (r) => setViewRecord(r),
+    actions: (r) => [
+      {
+        key: 'view',
+        label: 'Открыть карточку',
+        onClick: () => setViewRecord(r),
+      },
+    ],
+  };
+
   return (
-    <PageTableLayout filters={filters}>
+    <PageTableLayout
+      filters={filters}
+      mobile={{
+        filters: mobileFilters,
+        sort: {
+          options: sortOptionsFrom(columns, { num: 'Номер заявки', term: 'Срок работ' }),
+          sortBy: params.sortBy,
+          sortOrder: params.sortOrder,
+          onChange: setSort,
+        },
+      }}
+    >
       {/* Сводка — на уровне вкладок, над фильтрами: она относится ко всему журналу. */}
       <TabsExtra tabKey="history">
         <SummaryBar title="За период" items={summaryItems} />
@@ -412,11 +536,14 @@ export function VehicleRequestsHistoryTab() {
 
       <DataTable<VehicleRequestDto>
         columns={columns}
+        card={card}
         data={data?.items ?? []}
         total={data?.total ?? 0}
         loading={isFetching}
         page={params.page}
         pageSize={params.pageSize}
+        sortBy={params.sortBy}
+        sortOrder={params.sortOrder}
         onChange={onTableChange}
       />
 
