@@ -95,7 +95,7 @@ export function WasteDoneModal({
   /**
    * Предварительный расчёт по справочнику цен (ADR 0024): тариф для каждого выбранного типа
    * подбирает сервер — той же ручкой, что считает цену при сохранении заявки, и для оператора
-   * этой заявки (прайс у каждого свой, ADR 0023). Считать на клиенте по списку тарифов нельзя:
+   * этой заявки (прайс у каждого свой, ADR 0026). Считать на клиенте по списку тарифов нельзя:
    * правило подбора (точный тип побеждает вид техники) должно быть одно на обе стороны.
    */
   const selectedTypeIds = [
@@ -119,7 +119,7 @@ export function WasteDoneModal({
   });
   const priceOf: PriceLookup = (id) => priceByType.get(id);
   const pricesPending = priceQueries.some((q) => q.isPending);
-  /** Цена «от»: оператор не назначен, и подбор взял минимальную среди операторов (ADR 0023). */
+  /** Цена «от»: оператор не назначен, и подбор взял минимальную среди операторов (ADR 0026). */
   const priceIsMinimum = priceQueries.some((q) => q.data?.tariff?.isMinimum);
 
   const filledDrafts = drafts.filter((d) => d.containerTypeId);

@@ -1,13 +1,7 @@
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { config } from '../config';
 import { db } from '../db/client';
-import {
-  files,
-  jobs,
-  requestFiles,
-  vehicleRequestFiles,
-  wasteRequestVehicleFiles,
-} from '../db/schema';
+import { files, jobs, requestFiles, vehicleRequestFiles } from '../db/schema';
 import { err } from '../lib/errors';
 import { JOB_DELETE_S3_OBJECT } from '../lib/jobs';
 
@@ -19,10 +13,13 @@ type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 export const S3_DELETE_DELAY_MS = 30 * 24 * 60 * 60 * 1000;
 
-/** fileId, уже привязанные к какой-либо заявке: вложение мусора, вложение ТС или талон машины. */
+/**
+ * fileId, уже привязанные к какой-либо заявке: вложение или талон заявки вывоза (request_files,
+ * ADR 0024) либо вложение заявки на технику.
+ */
 async function linkedFileIds(tx: Tx, fileIds: string[]): Promise<Set<string>> {
   if (fileIds.length === 0) return new Set();
-  const [waste, vehicle, ticket] = await Promise.all([
+  const [waste, vehicle] = await Promise.all([
     tx
       .select({ fileId: requestFiles.fileId })
       .from(requestFiles)
@@ -31,12 +28,8 @@ async function linkedFileIds(tx: Tx, fileIds: string[]): Promise<Set<string>> {
       .select({ fileId: vehicleRequestFiles.fileId })
       .from(vehicleRequestFiles)
       .where(inArray(vehicleRequestFiles.fileId, fileIds)),
-    tx
-      .select({ fileId: wasteRequestVehicleFiles.fileId })
-      .from(wasteRequestVehicleFiles)
-      .where(inArray(wasteRequestVehicleFiles.fileId, fileIds)),
   ]);
-  return new Set([...waste, ...vehicle, ...ticket].map((r) => r.fileId));
+  return new Set([...waste, ...vehicle].map((r) => r.fileId));
 }
 
 /**
@@ -82,20 +75,19 @@ export async function markFilesActive(tx: Tx, fileIds: string[]): Promise<void> 
 
 /** Признак существования файла в связях. Возвращает true, если прикреплён к любой заявке. */
 export async function isFileLinked(fileId: string): Promise<boolean> {
-  const [waste, vehicle, ticket] = await Promise.all([
-    db.select({ f: requestFiles.fileId }).from(requestFiles).where(eq(requestFiles.fileId, fileId)).limit(1),
+  const [waste, vehicle] = await Promise.all([
+    db
+      .select({ f: requestFiles.fileId })
+      .from(requestFiles)
+      .where(eq(requestFiles.fileId, fileId))
+      .limit(1),
     db
       .select({ f: vehicleRequestFiles.fileId })
       .from(vehicleRequestFiles)
       .where(eq(vehicleRequestFiles.fileId, fileId))
       .limit(1),
-    db
-      .select({ f: wasteRequestVehicleFiles.fileId })
-      .from(wasteRequestVehicleFiles)
-      .where(eq(wasteRequestVehicleFiles.fileId, fileId))
-      .limit(1),
   ]);
-  return waste.length > 0 || vehicle.length > 0 || ticket.length > 0;
+  return waste.length > 0 || vehicle.length > 0;
 }
 
 /**
@@ -115,9 +107,11 @@ export async function scheduleFilesDeletion(
     .where(inArray(files.id, ids));
   const runAt = immediate ? new Date() : new Date(Date.now() + S3_DELETE_DELAY_MS);
   for (const f of fileRows) {
-    await tx
-      .insert(jobs)
-      .values({ type: JOB_DELETE_S3_OBJECT, payload: { objectKey: f.objectKey }, nextRunAt: runAt });
+    await tx.insert(jobs).values({
+      type: JOB_DELETE_S3_OBJECT,
+      payload: { objectKey: f.objectKey },
+      nextRunAt: runAt,
+    });
   }
 }
 
@@ -137,8 +131,10 @@ export async function hardDeleteFiles(
     ),
   );
   for (const f of fileRows) {
-    await tx
-      .insert(jobs)
-      .values({ type: JOB_DELETE_S3_OBJECT, payload: { objectKey: f.objectKey }, nextRunAt: new Date() });
+    await tx.insert(jobs).values({
+      type: JOB_DELETE_S3_OBJECT,
+      payload: { objectKey: f.objectKey },
+      nextRunAt: new Date(),
+    });
   }
 }

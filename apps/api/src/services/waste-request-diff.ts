@@ -2,6 +2,7 @@ import {
   formatMoscowDateTime,
   type RequestChangeDto,
   requestTypeLabels,
+  vehicleVolume,
   type WasteRequestDto,
   type WasteRequestVehicleDto,
 } from '@technic/contracts';
@@ -23,8 +24,12 @@ function delivery(r: WasteRequestDto): string {
   return formatMoscowDateTime(new Date(r.deliveryAt), r.deliveryTimeUnspecified);
 }
 
+/** Строка факта в истории: «Самосвал 25 м³ × 2 — 50 м³» (ADR 0024). */
 function vehicleLabel(v: WasteRequestVehicleDto): string {
-  return `${v.containerTypeName} — ${v.volumeM3} м³`;
+  const total = vehicleVolume(v);
+  return v.count > 1
+    ? `${v.containerTypeName} × ${v.count} — ${total} м³`
+    : `${v.containerTypeName} — ${total} м³`;
 }
 
 /**

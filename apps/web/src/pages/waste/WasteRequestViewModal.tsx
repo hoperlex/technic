@@ -206,7 +206,7 @@ export function WasteRequestViewModal({ request, onClose, onEdit }: Props) {
                 label: 'Стоимость',
                 children: (
                   <div style={{ lineHeight: 1.3 }}>
-                    {/* Без исполнителя цена взята по самому дешёвому прайсу (ADR 0023):
+                    {/* Без исполнителя цена взята по самому дешёвому прайсу (ADR 0026):
                         «от» показывает, что назначение оператора её уточнит. */}
                     <div>
                       {request.operatorCounterpartyId ? '' : 'от '}
