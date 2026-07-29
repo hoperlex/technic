@@ -1,4 +1,5 @@
 export * from './enums';
+export * from './permissions';
 export * from './common';
 export * from './time';
 export * from './auth';
