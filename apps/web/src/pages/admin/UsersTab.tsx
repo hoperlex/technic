@@ -1,9 +1,10 @@
 import { useState } from 'react';
-import { App, Button, Dropdown, Form, Input, Select, Space, Switch } from 'antd';
+import { App, Button, Dropdown, Form, Input, Space, Switch } from 'antd';
 import { MoreOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ROLES, roleColors, roleLabels, type UserDto } from '@technic/contracts';
 import { counterpartiesApi, objectsApi, usersApi } from '../../api/resources';
+import { AutoSelect } from '../../components/AutoSelect';
 import { DataTable } from '../../components/DataTable';
 import { FormModal } from '../../components/FormModal';
 import { PageTableLayout } from '../../components/PageTableLayout';
@@ -44,7 +45,7 @@ export function UsersTab() {
     queryFn: () => usersApi.list(params),
   });
 
-  const { data: objects } = useQuery({
+  const { data: objects, isLoading: objectsLoading } = useQuery({
     queryKey: ['objects', 'for-select'],
     queryFn: () =>
       objectsApi.list({
@@ -56,7 +57,7 @@ export function UsersTab() {
       }),
   });
   // Оператора привязываем только к контрагентам-операторам: у подрядчика заявок на вывоз нет.
-  const { data: operators } = useQuery({
+  const { data: operators, isLoading: operatorsLoading } = useQuery({
     queryKey: ['counterparties', 'operators-for-select'],
     queryFn: () =>
       counterpartiesApi.list({
@@ -303,7 +304,7 @@ export function UsersTab() {
             label="Роль"
             rules={[{ required: true, message: 'Выберите роль' }]}
           >
-            <Select options={roleOptions} />
+            <AutoSelect options={roleOptions} />
           </Form.Item>
           {watchRole === 'shtab' ? (
             <Form.Item
@@ -311,7 +312,12 @@ export function UsersTab() {
               label="Объект (для роли «Штаб»)"
               rules={[{ required: true, message: 'Выберите объект' }]}
             >
-              <Select options={objectOptions} showSearch optionFilterProp="label" />
+              <AutoSelect
+                options={objectOptions}
+                loading={objectsLoading}
+                showSearch
+                optionFilterProp="label"
+              />
             </Form.Item>
           ) : null}
           {watchRole === 'operator' ? (
@@ -326,7 +332,12 @@ export function UsersTab() {
                   : undefined
               }
             >
-              <Select options={operatorOptions} showSearch optionFilterProp="label" />
+              <AutoSelect
+                options={operatorOptions}
+                loading={operatorsLoading}
+                showSearch
+                optionFilterProp="label"
+              />
             </Form.Item>
           ) : null}
           {!record ? (

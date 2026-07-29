@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { App, Button, Dropdown, Form, Select, Tag, Tooltip, Upload } from 'antd';
+import { App, Button, Dropdown, Form, Tag, Tooltip, Upload } from 'antd';
 import { DownOutlined, UploadOutlined } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
 import {
@@ -9,6 +9,7 @@ import {
   requestStatusLabels,
 } from '@technic/contracts';
 import { filesApi, objectsApi, vehicleTypesApi } from '../../api/resources';
+import { AutoSelect } from '../../components/AutoSelect';
 import { FileLinkList } from '../../components/FileLinks';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
@@ -36,7 +37,7 @@ export interface EditorFile {
 
 /** Опции активных объектов для Select (грузятся разом, pageSize=500). */
 export function useObjectOptions() {
-  const { data } = useQuery({
+  const { data, isFetching } = useQuery({
     queryKey: ['objects', 'for-select'],
     queryFn: () =>
       objectsApi.list({
@@ -47,7 +48,10 @@ export function useObjectOptions() {
         sortOrder: 'asc',
       }),
   });
-  return (data?.items ?? []).map((o) => ({ value: o.id, label: `${o.code} — ${o.name}` }));
+  return {
+    options: (data?.items ?? []).map((o) => ({ value: o.id, label: `${o.code} — ${o.name}` })),
+    loading: isFetching,
+  };
 }
 
 /** Редактор прикреплённых файлов (загрузка в S3 + список add/remove). */
@@ -231,7 +235,7 @@ export function VehicleTypeSelect({
       tooltip="Список сужен типом заявки: грузоперевозку выполняет только грузовая техника"
       rules={[{ required: true, message: 'Выберите тип' }]}
     >
-      <Select
+      <AutoSelect
         options={groups}
         showSearch
         optionFilterProp="label"
