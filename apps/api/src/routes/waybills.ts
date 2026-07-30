@@ -47,13 +47,11 @@ import { renderOfficeTemplate } from '../services/office-template';
 
 const idParams = z.object({ id: z.string().uuid() });
 
-const EXPORT_FORMATS = { xlsx: 'xlsx', ods: 'ods' } as const;
-const exportQuery = z.object({ format: z.enum(['xlsx', 'ods']).optional().default('xlsx') });
-
-const CONTENT_TYPES = {
-  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  ods: 'application/vnd.oasis.opendocument.spreadsheet',
-} as const;
+/**
+ * Выгружается xlsx: бланки пришли от бухгалтерии в этом формате, и ods-двойника у них нет.
+ * Движок подстановки формат не различает — появится исходник в ods, добавится и он.
+ */
+const XLSX_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
 const templatesDir = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'templates');
 
@@ -61,11 +59,13 @@ const templatesDir = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '
  * Бланк читается с диска при каждой выгрузке, а не кэшируется: файл меняют редко, зато правку
  * подхватывает следующий же запрос, без перезапуска сервиса.
  */
-function readTemplate(formCode: string, format: 'xlsx' | 'ods'): Uint8Array {
+function readTemplate(formCode: string): Uint8Array {
   try {
-    return new Uint8Array(readFileSync(join(templatesDir, `waybill-${formCode}.${format}`)));
+    return new Uint8Array(readFileSync(join(templatesDir, `waybill-${formCode}.xlsx`)));
   } catch {
-    throw err.conflict(`Бланк ${formCode}.${format} не найден: соберите шаблоны`);
+    throw err.conflict(
+      `Бланк ${formCode} не размечен: положите оригинал в templates/source и прогоните template:waybill`,
+    );
   }
 }
 
@@ -250,7 +250,7 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
     '/:id/export',
     {
       preHandler: [app.authenticate, canRead],
-      schema: { params: idParams, querystring: exportQuery },
+      schema: { params: idParams },
     },
     async (req, reply) => {
       const p = requirePrincipal(req);
@@ -268,9 +268,8 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
         .where(eq(waybills.id, req.params.id));
       if (!row) throw err.notFound('Путевой лист не найден');
 
-      const format = EXPORT_FORMATS[req.query.format];
       const rendered = renderOfficeTemplate(
-        readTemplate(row.formCode, format),
+        readTemplate(row.formCode),
         row.data as Record<string, string>,
       );
 
@@ -280,12 +279,12 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
         action: 'waybill.export',
         entityType: 'waybill',
         entityId: row.id,
-        metadata: { format, missing: rendered.missing },
+        metadata: { missing: rendered.missing },
       });
 
-      const name = `Путевой лист ${waybillDisplayNumber(row.prefix, row.number, row.numberWidth)}.${format}`;
+      const name = `Путевой лист ${waybillDisplayNumber(row.prefix, row.number, row.numberWidth)}.xlsx`;
       return reply
-        .type(CONTENT_TYPES[format])
+        .type(XLSX_TYPE)
         .header('content-disposition', `attachment; filename*=UTF-8''${encodeURIComponent(name)}`)
         .send(Buffer.from(rendered.bytes));
     },

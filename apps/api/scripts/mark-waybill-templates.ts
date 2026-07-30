@@ -1,0 +1,165 @@
+import { readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { unzipSync, zipSync } from 'fflate';
+
+/**
+ * Разметка бланков путевых листов плейсхолдерами (ADR 0037).
+ *
+ * Бланки приходят от бухгалтерии готовыми — `templates/source/` хранит их ровно такими, какими
+ * их прислали. Скрипт не рисует форму, а только вписывает `{{ключ}}` в графы, которые заполняет
+ * портал: вёрстка, стили, штампы и линии остаются нетронутыми, потому что правится ровно
+ * содержимое перечисленных ячеек.
+ *
+ * Так замена бланка не требует правки кода: положить новый файл в `source/`, при необходимости
+ * поправить адреса ниже и прогнать скрипт. Тест `waybill-template.test.ts` затем проверит, что
+ * набор плейсхолдеров совпал с тем, что собирает сервер.
+ *
+ * Использование: pnpm --filter @technic/api template:waybill
+ */
+
+const here = dirname(fileURLToPath(import.meta.url));
+const templatesDir = join(here, '..', 'templates');
+
+interface Blank {
+  /** Файл-оригинал в `templates/source/`. */
+  source: string;
+  /** Готовый шаблон: имя совпадает с кодом формы (`vehicle_types.waybill_form_code`). */
+  out: string;
+  /** Ячейка → плейсхолдер. Адреса выверены по линиям заполнения самого бланка. */
+  cells: Record<string, string>;
+}
+
+/**
+ * Форма 4-П. Сетка мелкая (колонки до FJ), объединений нет — графа набирается в одной ячейке, а
+ * текст растекается вправо по линии заполнения. Поэтому значение пишется в первую ячейку линии.
+ */
+const FORM_4P: Blank = {
+  source: '4П.xlsx',
+  out: 'waybill-4p.xlsx',
+  cells: {
+    // Шапка: серия, номер и дата — три линии над «(серия)» и правее «№».
+    BR2: '{{waybill_series}}',
+    CX2: '{{waybill_number}}',
+    BJ4: '{{waybill_date}}',
+    // Организация и её коды; ОКУД впечатан типографией, ОКПО — наш.
+    V6: '{{org_name}}, {{org_address}}, тел. {{org_phone}}',
+    EY6: '{{org_okpo}}',
+    // Автомобиль.
+    V12: '{{vehicle_brand}}',
+    AH13: '{{vehicle_reg_number}}',
+    BZ13: '{{vehicle_garage_number}}',
+    // Водитель: ФИО, СНИЛС (обязателен с 01.03.2023) и табельный номер.
+    I14: '{{driver_fio}}',
+    AY14: '{{driver_snils}}',
+    CD14: '{{driver_personnel_no}}',
+    S16: '{{driver_license_number}}',
+    BE16: '{{driver_license_issued_on}}',
+    V17: '{{communication_kind}}',
+    // Прицепы: марка и госномер каждого.
+    J20: '{{trailer1_brand}}',
+    AV20: '{{trailer1_reg_number}}',
+    J22: '{{trailer2_brand}}',
+    AV22: '{{trailer2_reg_number}}',
+    // Задание водителю: в чьё распоряжение — две строки, наименование и адрес заказчика.
+    A30: '{{customer_name}}',
+    A31: '{{customer_address}}',
+    AN30: '{{task_departure_time}}',
+    // Кто выписал.
+    AD34: '{{dispatcher_fio}}',
+    // Талоны заказчиков: левый (третий-четвёртый) и правый (первый-второй).
+    W42: '{{waybill_number}}',
+    BF42: '{{waybill_date}}',
+    DB42: '{{waybill_number}}',
+    EK42: '{{waybill_date}}',
+    // Нижнее задание водителю: откуда, куда, груз, заказчик.
+    A75: '{{task_from}}',
+    Y75: '{{task_to}}',
+    AT75: '{{task_cargo}}',
+    BG75: '{{customer_name}}',
+  },
+};
+
+/**
+ * Форма № 3 (легковой автомобиль). Портал её пока не выписывает — на служебные машины заявок не
+ * заводят (ADR 0037), — но бланк размечен: включение будет простановкой `waybill_form_code`.
+ * Серии и номера в бланке нет вовсе, поэтому они пишутся в свободную строку под заголовком.
+ */
+const FORM_LEG3: Blank = {
+  source: 'пут.лист легков..xlsx',
+  out: 'waybill-leg3.xlsx',
+  cells: {
+    Q8: 'Серия {{waybill_series}}   № {{waybill_number}}   от {{waybill_date}}',
+    M11: '{{org_name}}',
+    A12: '{{org_address}}, тел. {{org_phone}}',
+    BW12: '{{org_okpo}}',
+    M14: '{{vehicle_brand}}',
+    X16: '{{vehicle_reg_number}}',
+    BW16: '{{vehicle_garage_number}}',
+    M18: '{{driver_fio}}',
+    BW18: '{{vehicle_inventory_number}}',
+    N20: '{{driver_license_number}}',
+    M22: '{{driver_license_issued_on}}',
+    M24: '{{driver_snils}}',
+    N27: '{{customer_name}}, {{customer_address}}',
+    AA39: '{{dispatcher_fio}}',
+  },
+};
+
+const COL = /^([A-Z]+)(\d+)$/;
+
+function colNumber(ref: string): number {
+  const letters = COL.exec(ref)![1]!;
+  return [...letters].reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0);
+}
+
+function escapeXml(value: string): string {
+  return value.replace(/&/gu, '&amp;').replace(/</gu, '&lt;').replace(/>/gu, '&gt;');
+}
+
+/**
+ * Вписывает значение в ячейку листа. Стиль ячейки сохраняется: он несёт шрифт, выравнивание и
+ * линию графы — потеряв его, значение выпало бы из бланка.
+ */
+function setCell(sheet: string, address: string, value: string): string {
+  const text = `<is><t xml:space="preserve">${escapeXml(value)}</t></is>`;
+  const existing = new RegExp(`<c r="${address}"([^>]*?)(/>|>[\\s\\S]*?</c>)`).exec(sheet);
+
+  if (existing) {
+    const attrs = existing[1] ?? '';
+    const style = /\ss="(\d+)"/.exec(attrs);
+    const s = style ? ` s="${style[1]}"` : '';
+    return sheet.replace(existing[0], `<c r="${address}"${s} t="inlineStr">${text}</c>`);
+  }
+
+  // Ячейки в строке нет — вставляем в порядке колонок: Excel требует возрастающего порядка.
+  const row = COL.exec(address)![2]!;
+  const rowRe = new RegExp(`(<row r="${row}"[^>]*>)([\\s\\S]*?)(</row>)`);
+  const found = rowRe.exec(sheet);
+  if (!found) throw new Error(`В листе нет строки ${row} — проверьте адрес ${address}`);
+
+  const cell = `<c r="${address}" t="inlineStr">${text}</c>`;
+  const body = found[2]!;
+  const target = colNumber(address);
+  const cells = [...body.matchAll(/<c r="([A-Z]+\d+)"[\s\S]*?(?:\/>|<\/c>)/g)];
+  const next = cells.find((m) => colNumber(m[1]!) > target);
+  const patched = next ? body.replace(next[0], `${cell}${next[0]}`) : `${body}${cell}`;
+  return sheet.replace(found[0], `${found[1]}${patched}${found[3]}`);
+}
+
+function mark(blank: Blank): void {
+  const files = unzipSync(new Uint8Array(readFileSync(join(templatesDir, 'source', blank.source))));
+  const sheetPath = 'xl/worksheets/sheet1.xml';
+  let sheet = new TextDecoder().decode(files[sheetPath]!);
+
+  for (const [address, value] of Object.entries(blank.cells)) {
+    sheet = setCell(sheet, address, value);
+  }
+
+  files[sheetPath] = new TextEncoder().encode(sheet);
+  // Время фиксировано: одинаковый исходник обязан давать одинаковый шаблон.
+  writeFileSync(join(templatesDir, blank.out), zipSync(files, { mtime: Date.UTC(1980, 0, 1) }));
+  console.log(`${blank.out}: размечено граф ${Object.keys(blank.cells).length}`);
+}
+
+for (const blank of [FORM_4P, FORM_LEG3]) mark(blank);

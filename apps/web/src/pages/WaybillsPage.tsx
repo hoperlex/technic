@@ -177,7 +177,7 @@ export function WaybillsPage() {
             size="small"
             icon={<DownloadOutlined />}
             title="Скачать бланк (xlsx)"
-            href={waybillsApi.exportUrl(r.id, 'xlsx')}
+            href={waybillsApi.exportUrl(r.id)}
             target="_blank"
           />
           {canCancel && (

@@ -135,8 +135,7 @@ export const waybillsApi = {
    * `Content-Disposition: attachment`, браузер сохраняет файл сам и со страницы не уводит —
    * тем же приёмом скачиваются вложения заявок.
    */
-  exportUrl: (id: string, format: 'xlsx' | 'ods') =>
-    `${API_BASE}/waybills/${id}/export?format=${format}`,
+  exportUrl: (id: string) => `${API_BASE}/waybills/${id}/export`,
 };
 
 export const counterpartiesApi = {
