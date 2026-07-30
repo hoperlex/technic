@@ -3,6 +3,7 @@ import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { eq } from 'drizzle-orm';
 import {
   type AuthUser,
+  type CaptchaChallenge,
   changePasswordSchema,
   loginSchema,
   registerSchema,
@@ -15,6 +16,7 @@ import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import { clearRefreshCookie, readRefreshCookie, setRefreshCookie } from '../lib/cookies';
 import { hashPassword, verifyPassword } from '../auth/password';
+import { issueCaptcha, verifyCaptcha } from '../auth/captcha';
 import { signAccessToken } from '../auth/tokens';
 import {
   createRefreshSession,
@@ -28,6 +30,9 @@ import { requirePrincipal } from '../auth/plugin';
 interface AuthUserSource {
   id: string;
   email: string;
+  lastName: string;
+  firstName: string;
+  middleName: string;
   fullName: string;
   role: Role | null;
   isActive: boolean;
@@ -39,6 +44,9 @@ function makeAuthUser(u: AuthUserSource): AuthUser {
   return {
     id: u.id,
     email: u.email,
+    lastName: u.lastName,
+    firstName: u.firstName,
+    middleName: u.middleName,
     fullName: u.fullName,
     role: u.role,
     isActive: u.isActive,
@@ -58,6 +66,16 @@ function assertCookieOrigin(req: FastifyRequest): void {
 
 const authRateLimit = { rateLimit: { max: 10, timeWindow: '1 minute' } };
 
+/**
+ * Регистрация ограничена жёстче входа: она создаёт запись и работу администратору, а живой
+ * человек заводит учётку один раз. Пять попыток за десять минут с адреса делают перебор кода
+ * капчи (1 к 32 768 за попытку) бессмысленным.
+ */
+const registerRateLimit = { rateLimit: { max: 5, timeWindow: '10 minutes' } };
+
+/** Выдача картинок щедрее: «обновить» нажимают несколько раз подряд, и это нормально. */
+const captchaRateLimit = { rateLimit: { max: 20, timeWindow: '1 minute' } };
+
 export default async function authRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
   const ctx = (req: FastifyRequest) => ({
@@ -65,11 +83,30 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
     userAgent: req.headers['user-agent'],
   });
 
+  r.get('/captcha', { config: captchaRateLimit }, async (): Promise<CaptchaChallenge> => {
+    const { token, image, expiresIn } = issueCaptcha();
+    return { token, image, expiresIn };
+  });
+
   r.post(
     '/register',
-    { schema: { body: registerSchema }, config: authRateLimit },
+    { schema: { body: registerSchema }, config: registerRateLimit },
     async (req, reply) => {
-      const { email, fullName, password } = req.body;
+      const {
+        email,
+        lastName,
+        firstName,
+        middleName,
+        password,
+        requestedRole,
+        requestedObject,
+        requestedCompany,
+        captchaToken,
+        captchaAnswer,
+      } = req.body;
+      // Капча проверяется до всего остального — иначе `/register` работал бы справочником
+      // «есть ли такой адрес в портале»: 409 на занятый email отличим от успеха.
+      verifyCaptcha(captchaToken, captchaAnswer);
       const existing = await db.select({ id: users.id }).from(users).where(eq(users.email, email));
       if (existing.length > 0) {
         throw err.conflict('Пользователь с таким email уже существует');
@@ -77,13 +114,25 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
       const passwordHash = await hashPassword(password);
       const [created] = await db
         .insert(users)
-        .values({ email, fullName, passwordHash, isActive: false })
+        .values({
+          email,
+          lastName,
+          firstName,
+          middleName,
+          passwordHash,
+          isActive: false,
+          // Роль не назначается: пожелание — подсказка администратору, а не право (ADR 0034).
+          requestedRole,
+          requestedObject,
+          requestedCompany,
+        })
         .returning({ id: users.id });
       await writeAudit({
         actorUserId: created!.id,
         action: 'user.register',
         entityType: 'user',
         entityId: created!.id,
+        metadata: { requestedRole },
       });
       reply.code(201);
       return {

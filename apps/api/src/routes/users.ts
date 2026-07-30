@@ -5,6 +5,7 @@ import { and, count, eq, isNull } from 'drizzle-orm';
 import {
   createUserSchema,
   isObjectScopedRole,
+  rejectUserSchema,
   roleLabels,
   setUserPasswordSchema,
   updateUserSchema,
@@ -22,10 +23,27 @@ import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
 
 const idParams = z.object({ id: z.string().uuid() });
 
+/**
+ * Заявка на регистрацию: учётка, которую завёл сам пользователь и которую администратор ещё не
+ * рассмотрел. Отличается от деактивированной именно отсутствием роли — роль назначают вместе с
+ * активацией, а саморегистрация её не ставит (ADR 0034).
+ */
+const pendingRegistration = and(
+  isNull(users.deletedAt),
+  eq(users.isActive, false),
+  isNull(users.role),
+);
+
 interface UserRowJoined {
   id: string;
   email: string;
+  lastName: string;
+  firstName: string;
+  middleName: string;
   fullName: string;
+  requestedRole: UserDto['requestedRole'];
+  requestedObject: string;
+  requestedCompany: string;
   role: UserDto['role'];
   isActive: boolean;
   mustChangePassword: boolean;
@@ -41,7 +59,13 @@ function toDto(r: UserRowJoined): UserDto {
   return {
     id: r.id,
     email: r.email,
+    lastName: r.lastName,
+    firstName: r.firstName,
+    middleName: r.middleName,
     fullName: r.fullName,
+    requestedRole: r.requestedRole,
+    requestedObject: r.requestedObject,
+    requestedCompany: r.requestedCompany,
     role: r.role,
     isActive: r.isActive,
     mustChangePassword: r.mustChangePassword,
@@ -57,7 +81,13 @@ function toDto(r: UserRowJoined): UserDto {
 const selectCols = {
   id: users.id,
   email: users.email,
+  lastName: users.lastName,
+  firstName: users.firstName,
+  middleName: users.middleName,
   fullName: users.fullName,
+  requestedRole: users.requestedRole,
+  requestedObject: users.requestedObject,
+  requestedCompany: users.requestedCompany,
   role: users.role,
   isActive: users.isActive,
   mustChangePassword: users.mustChangePassword,
@@ -125,6 +155,7 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
       isNull(users.deletedAt),
       q.role === undefined ? undefined : eq(users.role, q.role),
       q.isActive === undefined ? undefined : eq(users.isActive, q.isActive),
+      q.pending ? pendingRegistration : undefined,
       searchCondition(q.search, [users.email, users.fullName]),
     );
     const sortCols = {
@@ -153,6 +184,15 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
     };
   });
 
+  /**
+   * Счётчик для бейджа в меню. Отдельным маршрутом, а не полем в списке: бейдж рисуется на
+   * каждой странице портала, и тянуть ради него страницу пользователей — лишний трафик.
+   */
+  r.get('/pending-count', guards, async () => {
+    const [row] = await db.select({ c: count() }).from(users).where(pendingRegistration);
+    return { count: Number(row!.c) };
+  });
+
   r.post('/', { ...guards, schema: { body: createUserSchema } }, async (req, reply) => {
     const body = req.body;
     const dup = await db.select({ id: users.id }).from(users).where(eq(users.email, body.email));
@@ -163,7 +203,9 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
       .insert(users)
       .values({
         email: body.email,
-        fullName: body.fullName,
+        lastName: body.lastName,
+        firstName: body.firstName,
+        middleName: body.middleName,
         role: body.role,
         passwordHash,
         isActive: body.isActive,
@@ -231,7 +273,9 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
       await db
         .update(users)
         .set({
-          fullName: body.fullName ?? existing.fullName,
+          lastName: body.lastName ?? existing.lastName,
+          firstName: body.firstName ?? existing.firstName,
+          middleName: body.middleName ?? existing.middleName,
           role: nextRole,
           isActive: body.isActive ?? existing.isActive,
           constructionObjectId: nextObjectId ?? null,
@@ -276,6 +320,44 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
         action: 'user.reset_password',
         entityType: 'user',
         entityId: id,
+      });
+      return { ok: true };
+    },
+  );
+
+  /**
+   * Отказ по заявке на регистрацию. Технически это тот же soft delete, что и удаление учётки,
+   * но отдельным действием: в аудите «отклонена заявка, потому что <причина>» и «удалён
+   * сотрудник» — разные события, и разбирать их потом приходится по-разному.
+   */
+  r.post(
+    '/:id/reject',
+    { ...guards, schema: { params: idParams, body: rejectUserSchema } },
+    async (req) => {
+      const actor = requirePrincipal(req);
+      const { id } = req.params;
+      const [existing] = await db.select().from(users).where(eq(users.id, id));
+      if (!existing || existing.deletedAt) throw err.notFound('Пользователь не найден');
+      // Отклонять можно только нерассмотренную заявку: у действующей учётки для этого есть
+      // деактивация и удаление, и подменять их отказом — терять смысл записи в аудите.
+      if (existing.isActive || existing.role) {
+        throw err.badRequest('Отклонить можно только заявку, которая ещё не рассмотрена');
+      }
+      await db
+        .update(users)
+        .set({
+          deletedAt: new Date(),
+          authVersion: existing.authVersion + 1,
+          updatedAt: new Date(),
+        })
+        .where(eq(users.id, id));
+      await revokeAllForUser(id);
+      await writeAudit({
+        actorUserId: actor.id,
+        action: 'user.reject_registration',
+        entityType: 'user',
+        entityId: id,
+        metadata: { reason: req.body.reason, email: existing.email },
       });
       return { ok: true };
     },

@@ -6,6 +6,10 @@ import type { Role } from '@technic/contracts';
 export interface Principal {
   id: string;
   email: string;
+  lastName: string;
+  firstName: string;
+  middleName: string;
+  /** Считается базой из частей ФИО (ADR 0034). */
   fullName: string;
   role: Role | null;
   isActive: boolean;
@@ -26,6 +30,9 @@ export async function loadPrincipal(userId: string): Promise<Principal | null> {
   return {
     id: u.id,
     email: u.email,
+    lastName: u.lastName,
+    firstName: u.firstName,
+    middleName: u.middleName,
     fullName: u.fullName,
     role: u.role,
     isActive: u.isActive,

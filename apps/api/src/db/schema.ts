@@ -90,6 +90,17 @@ export const counterpartyTypeEnum = pgEnum('counterparty_type', [
   'operator',
   'vehicle_lessor',
 ]);
+// Кем человек назвал себя при регистрации (ADR 0034). Это пожелание, не роль: права даёт
+// только `users.role`, назначаемая администратором. Двум значениям роли в портале не
+// соответствуют вовсе — арендодателю техники и «другому».
+export const registrationRoleRequestEnum = pgEnum('registration_role_request', [
+  'dispatcher',
+  'rukstroy',
+  'site_staff',
+  'waste_operator',
+  'vehicle_lessor',
+  'other',
+]);
 
 // ── Справочник: объекты строительства ──
 export const constructionObjects = pgTable(
@@ -601,7 +612,19 @@ export const users = pgTable(
   {
     id: uuid('id').primaryKey().defaultRandom(),
     email: citext('email').notNull(),
-    fullName: text('full_name').notNull(),
+    // ФИО по частям (ADR 0034), как у persons. Имя без CHECK на непустоту: учётки, заведённые
+    // одним словом до миграции 0055, легальны — требование имени живёт в контрактах.
+    lastName: text('last_name').notNull(),
+    firstName: text('first_name').notNull(),
+    middleName: text('middle_name').notNull().default(''),
+    // Считает БД (STORED): второй точки правды по ФИО нет, чтение и поиск идут по этой колонке.
+    // Пробелы схлопываются, а не только обрезаются по краям (в отличие от persons): имя здесь
+    // может быть пустым, и простой btrim оставил бы двойной пробел внутри строки.
+    fullName: text('full_name')
+      .notNull()
+      .generatedAlwaysAs(
+        sql`btrim(regexp_replace(last_name || ' ' || first_name || ' ' || middle_name, '\s+', ' ', 'g'))`,
+      ),
     passwordHash: text('password_hash').notNull(),
     role: roleEnum('role'), // назначается администратором; до активации может быть null
     constructionObjectId: uuid('construction_object_id').references(() => constructionObjects.id, {
@@ -621,12 +644,33 @@ export const users = pgTable(
     // users ↔ persons (persons ссылается на users в полях аудита). Аналогично
     // refreshSessions.replacedBy. Пока связь не установлена, ФИО учётки живёт в users.fullName.
     personId: uuid('person_id'),
+    // Кем человек назвал себя при регистрации и что уточнил (ADR 0034, миграция 0057). Роль
+    // отсюда не выводится — она назначается администратором; объект и компания хранятся текстом,
+    // потому что справочники неаутентифицированному не отдаются. У учёток, заведённых
+    // администратором, пожелания нет: requestedRole = null.
+    requestedRole: registrationRoleRequestEnum('requested_role'),
+    requestedObject: text('requested_object').notNull().default(''),
+    requestedCompany: text('requested_company').notNull().default(''),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
   (t) => ({
     emailUnique: uniqueIndex('users_email_unique').on(t.email),
+    lastNameNotBlank: check('users_last_name_not_blank', sql`btrim(${t.lastName}) <> ''`),
+    // Пожелание без уточнения там, где оно решает дело, бессмысленно: объектную роль без объекта
+    // и оператора без компании всё равно не активировать (миграция 0057).
+    requestedObjectPresent: check(
+      'users_requested_object_check',
+      sql`${t.requestedRole} IS NULL OR ${t.requestedRole} NOT IN ('rukstroy', 'site_staff') OR btrim(${t.requestedObject}) <> ''`,
+    ),
+    requestedCompanyPresent: check(
+      'users_requested_company_check',
+      sql`${t.requestedRole} IS NULL OR ${t.requestedRole} NOT IN ('waste_operator', 'vehicle_lessor') OR btrim(${t.requestedCompany}) <> ''`,
+    ),
+    pendingRegistration: index('users_pending_registration_idx')
+      .on(sql`${t.createdAt} DESC`)
+      .where(sql`${t.deletedAt} IS NULL AND ${t.isActive} = false AND ${t.role} IS NULL`),
     fullNameTrgm: index('users_full_name_trgm').using('gin', sql`${t.fullName} gin_trgm_ops`),
     // Одна учётная запись на человека.
     personUnique: uniqueIndex('users_person_unique')
@@ -892,15 +936,13 @@ export const requestFiles = pgTable(
   }),
 );
 
-// ── Чем вывезли заявку (ADR 0011, миграции 0029 и 0042) ──
-// Строка — не рейс, а «тип техники × количество» (ADR 0024): оператор отчитывается «два
-// самосвала 25 м³», а не тремя одинаковыми записями. Машина описывается типом из общего
-// справочника — техника принадлежит оператору, в справочнике конкретных ТС (vehicles) её нет;
-// допустимы оба вида, и самосвалы, и контейнеры. Вместимость (volumeM3) хранится снимком за
-// одну машину, объём строки = вместимость × количество. Цена — снимок прайса на момент
-// заведения строки: по ним считается сумма закрытой заявки, и правка прайса её не переписывает.
-// Пометка на удаление (deletedAt) выводит строку из сверки объёма и суммы, но оставляет в
-// истории; удалить запись насовсем может только администратор.
+// ── Чем вывезли заявку: состав техники прошлых закрытий (миграции 0029, 0042, 0056) ──
+// ТОЛЬКО ЧТЕНИЕ. С ADR 0035 закрытие предъявляет фактический объём и стоимость
+// (waste_request_completions), а не перечень машин: вывоз тарифицируется самосвалами, и какими
+// именно машинами увезли объём, к расчёту отношения не имеет. Новых строк здесь не появляется,
+// заведённые остаются историей заявки — по ним её принимали, и объём с суммой перенесены в факт
+// миграцией 0056. Форма строки прежняя (ADR 0011, ADR 0024): «тип техники × количество» со
+// снимком вместимости и цены, `deletedAt` — пометка на удаление, выводившая строку из сверки.
 export const wasteRequestVehicles = pgTable(
   'waste_request_vehicles',
   {
@@ -943,6 +985,56 @@ export const wasteRequestVehicles = pgTable(
     activeIdx: index('waste_request_vehicles_active_idx')
       .on(t.requestId)
       .where(sql`${t.deletedAt} IS NULL`),
+  }),
+);
+
+// ── Факт вывоза: сколько вывезли и во сколько это обошлось (ADR 0035, миграция 0056) ──
+// Одна заявка — одно закрытие (PK=FK): повторное после отката администратором переписывает
+// строку. Объём вводится руками — он стоит в талоне и весовой квитанции, — и с заявленным
+// (waste_requests.volumeM3) расходится законно: заявка это план, а платят за вывезенное.
+// Сумма подставляется расчётом «объём × цена», но правится свободно: счёт оператора включает и
+// подачу, и недогруз, и сходиться сумма должна со счётом, а не с формулой. Цена нужна как
+// основание расчёта, а не как условие закрытия: нет её в прайсе — сумму вводят руками.
+export const wasteRequestCompletions = pgTable(
+  'waste_request_completions',
+  {
+    requestId: uuid('request_id')
+      .primaryKey()
+      .references(() => wasteRequests.id, { onDelete: 'cascade' }),
+    volumeM3: numeric('volume_m3', { precision: 12, scale: 3 }).notNull(),
+    // Снимок цены по виду «Самосвал» на момент закрытия (ADR 0022, ADR 0026): сумма обязана
+    // объясняться сама, а правка прайса не переписывает уже закрытые заявки.
+    pricePerM3: numeric('price_per_m3', { precision: 12, scale: 2 }),
+    wasteTariffId: uuid('waste_tariff_id').references(() => wasteTariffs.id, {
+      onDelete: 'restrict',
+    }),
+    totalCost: numeric('total_cost', { precision: 14, scale: 2 }),
+    completedBy: uuid('completed_by')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    completedAt: timestamp('completed_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    volumePositive: check(
+      'waste_request_completions_volume_positive_check',
+      sql`${t.volumeM3} > 0`,
+    ),
+    pricePositive: check(
+      'waste_request_completions_price_positive_check',
+      sql`${t.pricePerM3} IS NULL OR ${t.pricePerM3} > 0`,
+    ),
+    totalCostPositive: check(
+      'waste_request_completions_total_cost_positive_check',
+      sql`${t.totalCost} IS NULL OR ${t.totalCost} >= 0`,
+    ),
+    // Тариф без цены — ссылка на прайс, которая ничего не объясняет. Обратное законно: цена без
+    // тарифа означает «взяли не из прайса», потому что там её нет.
+    priceSnapshot: check(
+      'waste_request_completions_price_snapshot_check',
+      sql`${t.wasteTariffId} IS NULL OR ${t.pricePerM3} IS NOT NULL`,
+    ),
+    completedAtIdx: index('waste_request_completions_completed_at_idx').on(t.completedAt.desc()),
   }),
 );
 

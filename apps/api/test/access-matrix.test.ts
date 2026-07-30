@@ -36,7 +36,10 @@ vi.mock('../src/auth/principal', () => ({
   loadPrincipal: async () => ({
     id: 'user-1',
     email: 'user@test.local',
-    fullName: 'Пользователь',
+    lastName: 'Пользователь',
+    firstName: 'Тестовый',
+    middleName: '',
+    fullName: 'Пользователь Тестовый',
     role: currentRole,
     isActive: true,
     mustChangePassword: false,
@@ -177,6 +180,20 @@ const CASES: Case[] = [
     title: 'заказ ТС — сводка',
     method: 'GET',
     url: '/api/v1/vehicle-requests/summary',
+    allowed: ['admin', 'manager', 'dispatcher', 'shtab', 'rukstroy', 'observer'],
+  },
+  {
+    // Срез «На объекте» (ADR 0036) — то же чтение заявок: наблюдателю он открыт, оператору
+    // вывоза недоступен вместе со всем модулем.
+    title: 'заказ ТС — техника на объектах',
+    method: 'GET',
+    url: '/api/v1/vehicle-requests/on-site',
+    allowed: ['admin', 'manager', 'dispatcher', 'shtab', 'rukstroy', 'observer'],
+  },
+  {
+    title: 'заказ ТС — итог по технике на объектах',
+    method: 'GET',
+    url: '/api/v1/vehicle-requests/on-site/summary',
     allowed: ['admin', 'manager', 'dispatcher', 'shtab', 'rukstroy', 'observer'],
   },
   {

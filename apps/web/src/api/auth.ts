@@ -1,5 +1,6 @@
 import type {
   AuthUser,
+  CaptchaChallenge,
   ChangePasswordInput,
   LoginInput,
   LoginResult,
@@ -8,6 +9,11 @@ import type {
 import { apiFetch, setAccessToken } from './client';
 
 export const authApi = {
+  /** Новая картинка капчи; челлендж одноразовый, поэтому запрашивается перед каждой отправкой. */
+  captcha(): Promise<CaptchaChallenge> {
+    return apiFetch('/auth/captcha', { noRefresh: true });
+  },
+
   async login(input: LoginInput): Promise<LoginResult> {
     const result = await apiFetch<LoginResult>('/auth/login', {
       method: 'POST',

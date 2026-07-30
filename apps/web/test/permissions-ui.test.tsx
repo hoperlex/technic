@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes } from 'react-router';
 import { can, type AuthUser, type Permission, type Role } from '@technic/contracts';
 import { MOBILE_VIEWPORT, setViewport } from './viewport';
@@ -21,7 +22,10 @@ vi.mock('../src/auth/AuthContext', () => ({
       ? ({
           id: 'user-1',
           email: 'user@test.local',
-          fullName: 'Пользователь',
+          lastName: 'Пользователь',
+          firstName: 'Тестовый',
+          middleName: '',
+          fullName: 'Пользователь Тестовый',
           role: currentRole,
           isActive: true,
           mustChangePassword: false,
@@ -38,19 +42,33 @@ vi.mock('../src/auth/AuthContext', () => ({
   }),
 }));
 
+// Меню показывает бейдж с числом заявок на регистрацию (ADR 0034) — к правам это отношения не
+// имеет, но без заглушки макет ходил бы в API за счётчиком.
+vi.mock('../src/api/resources', () => ({
+  usersApi: { pendingCount: async () => ({ count: 0 }) },
+}));
+
+/** Провайдер запросов: в приложении он поднят выше макета, в тесте нужен свой. */
+function withQueryClient(ui: React.ReactElement) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return <QueryClientProvider client={client}>{ui}</QueryClientProvider>;
+}
+
 const { AppLayout } = await import('../src/components/AppLayout');
 const { RequirePermission } = await import('../src/auth/ProtectedRoute');
 
 function renderMenu(role: Role | null) {
   currentRole = role;
   return render(
-    <MemoryRouter initialEntries={['/waste']}>
-      <Routes>
-        <Route element={<AppLayout />}>
-          <Route path="/waste" element={<div>Список заявок</div>} />
-        </Route>
-      </Routes>
-    </MemoryRouter>,
+    withQueryClient(
+      <MemoryRouter initialEntries={['/waste']}>
+        <Routes>
+          <Route element={<AppLayout />}>
+            <Route path="/waste" element={<div>Список заявок</div>} />
+          </Route>
+        </Routes>
+      </MemoryRouter>,
+    ),
   );
 }
 

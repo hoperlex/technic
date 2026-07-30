@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from 'react';
-import { Dropdown, Layout, Menu, type MenuProps, Typography } from 'antd';
+import { Badge, Dropdown, Layout, Menu, type MenuProps, Typography } from 'antd';
+import { useQuery } from '@tanstack/react-query';
 import {
   CarOutlined,
   DatabaseOutlined,
@@ -11,7 +12,8 @@ import {
   TeamOutlined,
 } from '@ant-design/icons';
 import { Outlet, useLocation, useNavigate } from 'react-router';
-import { roleLabels } from '@technic/contracts';
+import { formatShortName, roleLabels } from '@technic/contracts';
+import { usersApi } from '../api/resources';
 import { useAuth } from '../auth/AuthContext';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { MobileAppBar } from './MobileAppBar';
@@ -55,6 +57,17 @@ export function AppLayout() {
       return !v;
     });
 
+  /**
+   * Заявки на регистрацию никуда не уведомляют — почты у портала нет. Бейдж в меню и есть
+   * единственный сигнал администратору, что кто-то ждёт активации (ADR 0034).
+   */
+  const { data: pendingUsers } = useQuery({
+    queryKey: ['users', 'pending-count'],
+    queryFn: () => usersApi.pendingCount(),
+    enabled: can('users.manage'),
+    staleTime: 60_000,
+  });
+
   // `short` — подпись для нижней навигации мобильного режима: на 360 px пункту достаётся
   // четверть экрана, и полное название раздела туда не помещается (ADR 0030).
   const navItems: (MobileNavItem & { icon: ReactNode })[] = [
@@ -87,7 +100,11 @@ export function AppLayout() {
       ? [
           {
             key: '/admin',
-            icon: <TeamOutlined />,
+            icon: (
+              <Badge count={pendingUsers?.count ?? 0} size="small" offset={[4, -2]} color="gold">
+                <TeamOutlined />
+              </Badge>
+            ),
             label: 'Администрирование',
             short: 'Админ.',
           },
@@ -119,7 +136,13 @@ export function AppLayout() {
     const title = navItems.find((it) => it.key === selectedKey)?.label ?? 'Заказ Автотехники';
     return (
       <div className="mobile-shell">
-        <MobileAppBar title={title} userName={user?.fullName} menu={userMenu} />
+        {/* На 360 px полное ФИО в панель не помещается; части ФИО есть (ADR 0034) — значит
+            можно показать «Иванов И. И.», а не обрезать строку многоточием. */}
+        <MobileAppBar
+          title={title}
+          userName={user ? formatShortName(user) : undefined}
+          menu={userMenu}
+        />
         <main className="mobile-content">
           <Outlet />
         </main>

@@ -1,9 +1,11 @@
 import { useState } from 'react';
-import { App, Button, Dropdown, Form, Input, Space, Switch } from 'antd';
+import { Alert, App, Badge, Button, Dropdown, Form, Input, Segmented, Space, Switch } from 'antd';
 import { MoreOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   isObjectScopedRole,
+  registrationRequestDetail,
+  registrationRoleRequestLabels,
   ROLES,
   roleColors,
   roleLabels,
@@ -14,6 +16,9 @@ import { AutoSelect } from '../../components/AutoSelect';
 import { DataTable } from '../../components/DataTable';
 import { FormModal } from '../../components/FormModal';
 import { PageTableLayout } from '../../components/PageTableLayout';
+import { PasswordField } from '../../components/PasswordField';
+import { PersonNameFields } from '../../components/PersonNameFields';
+import { ReasonModal } from '../../components/CancelReasonModal';
 import { actionsColumn, badgeColumn, boolBadgeColumn, textColumn } from '../../components/columns';
 import { useListParams } from '../../hooks/useListParams';
 import { useAuth } from '../../auth/AuthContext';
@@ -22,7 +27,9 @@ import { errorMessage } from '../../utils/format';
 
 interface UserFormValues {
   email: string;
-  fullName: string;
+  lastName: string;
+  firstName: string;
+  middleName?: string;
   role: (typeof ROLES)[number];
   password?: string;
   constructionObjectId?: string | null;
@@ -31,11 +38,30 @@ interface UserFormValues {
   isActive: boolean;
 }
 
+/** Заявка на регистрацию: человек зарегистрировался сам, роли ему ещё не назначили. */
+const isPendingRegistration = (u: UserDto) => !u.isActive && !u.role;
+
+/**
+ * Уточнение из заявки — свободный текст, а не ссылка на справочник: список объектов
+ * неаутентифицированному не отдаётся (ADR 0034), сопоставляет его администратор.
+ */
+function requestedDetailText(u: UserDto): string | undefined {
+  if (!u.requestedRole) return undefined;
+  const detail = registrationRequestDetail[u.requestedRole];
+  if (detail === 'object' && u.requestedObject) return `Объект: ${u.requestedObject}`;
+  if (detail === 'company' && u.requestedCompany) return `Компания: ${u.requestedCompany}`;
+  return undefined;
+}
+
 export function UsersTab() {
   const { message, modal } = App.useApp();
   const qc = useQueryClient();
   const { user: currentUser } = useAuth();
-  const { params, onTableChange } = useListParams<{ role?: string; isActive?: string }>(
+  const { params, setParams, onTableChange } = useListParams<{
+    role?: string;
+    isActive?: string;
+    pending?: string;
+  }>(
     {},
     {
       searchKeys: ['email', 'fullName'],
@@ -49,6 +75,12 @@ export function UsersTab() {
   const { data, isFetching } = useQuery({
     queryKey: ['users', params],
     queryFn: () => usersApi.list(params),
+  });
+
+  // Счётчик нерассмотренных заявок: он же рисуется бейджем в меню администрирования.
+  const { data: pending } = useQuery({
+    queryKey: ['users', 'pending-count'],
+    queryFn: () => usersApi.pendingCount(),
   });
 
   const { data: objects, isLoading: objectsLoading } = useQuery({
@@ -104,7 +136,9 @@ export function UsersTab() {
     form.resetFields();
     form.setFieldsValue({
       email: r.email,
-      fullName: r.fullName,
+      lastName: r.lastName,
+      firstName: r.firstName,
+      middleName: r.middleName,
       // Роль по умолчанию не подставляем: у зарегистрировавшегося самостоятельно её нет,
       // а активация без осознанно выбранной роли запрещена — пусть выберет администратор.
       role: r.role ?? undefined,
@@ -156,6 +190,17 @@ export function UsersTab() {
     onError: (e) => message.error(errorMessage(e)),
   });
 
+  const [rejecting, setRejecting] = useState<UserDto | null>(null);
+  const rejectMut = useMutation({
+    mutationFn: (v: { id: string; reason: string }) => usersApi.reject(v.id, v.reason),
+    onSuccess: () => {
+      message.success('Заявка отклонена');
+      setRejecting(null);
+      void qc.invalidateQueries({ queryKey: ['users'] });
+    },
+    onError: (e) => message.error(errorMessage(e)),
+  });
+
   const passwordMut = useMutation({
     mutationFn: (v: { id: string; newPassword: string }) =>
       usersApi.setPassword(v.id, v.newPassword),
@@ -168,9 +213,10 @@ export function UsersTab() {
 
   const rowMenu = (r: UserDto) => {
     const isSelf = r.id === currentUser?.id;
+    const pendingRegistration = isPendingRegistration(r);
     return {
       items: [
-        { key: 'edit', label: 'Редактировать' },
+        { key: 'edit', label: pendingRegistration ? 'Рассмотреть заявку' : 'Редактировать' },
         { key: 'password', label: 'Сменить пароль' },
         {
           key: 'toggle',
@@ -178,7 +224,11 @@ export function UsersTab() {
           disabled: isSelf && r.isActive,
         },
         { type: 'divider' as const },
-        { key: 'delete', label: 'Удалить', danger: true, disabled: isSelf },
+        // Отказ по нерассмотренной заявке и удаление сотрудника — разные события: в аудите
+        // остаётся причина отказа, и путать их не нужно ни администратору, ни разбору потом.
+        ...(pendingRegistration
+          ? [{ key: 'reject', label: 'Отклонить заявку', danger: true }]
+          : [{ key: 'delete', label: 'Удалить', danger: true, disabled: isSelf }]),
       ],
       onClick: ({ key }: { key: string }) => {
         if (key === 'edit') openEdit(r);
@@ -196,6 +246,7 @@ export function UsersTab() {
             void toggleActiveMut.mutate(r);
           }
         }
+        if (key === 'reject') setRejecting(r);
         if (key === 'delete') {
           modal.confirm({
             title: `Удалить пользователя ${r.email}?`,
@@ -220,6 +271,16 @@ export function UsersTab() {
         <Space size={8}>
           <UserAvatar name={r.fullName} size="small" />
           <span>{r.fullName}</span>
+          {isPendingRegistration(r) ? (
+            <Badge
+              color="gold"
+              text={
+                r.requestedRole
+                  ? `Заявка: ${registrationRoleRequestLabels[r.requestedRole]}`
+                  : 'Заявка'
+              }
+            />
+          ) : null}
         </Space>
       ),
     }),
@@ -277,9 +338,35 @@ export function UsersTab() {
         },
       }}
       extra={
-        <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-          Добавить
-        </Button>
+        <Space size={8} wrap>
+          {/* Заявки лежат в общем списке вперемешку с сотрудниками, а рассматривают их
+              отдельным заходом — поэтому переключатель, а не ещё один фильтр в столбце. */}
+          <Segmented
+            value={params.pending === 'true' ? 'pending' : 'all'}
+            onChange={(v) =>
+              setParams((prev) => ({
+                ...prev,
+                pending: v === 'pending' ? 'true' : undefined,
+                page: 1,
+              }))
+            }
+            options={[
+              { value: 'all', label: 'Все' },
+              {
+                value: 'pending',
+                label: (
+                  <Space size={6}>
+                    Ожидают активации
+                    {pending?.count ? <Badge count={pending.count} color="gold" /> : null}
+                  </Space>
+                ),
+              },
+            ]}
+          />
+          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
+            Добавить
+          </Button>
+        </Space>
       }
     >
       <DataTable<UserDto>
@@ -308,13 +395,18 @@ export function UsersTab() {
           >
             <Input disabled={!!record} />
           </Form.Item>
-          <Form.Item
-            name="fullName"
-            label="ФИО"
-            rules={[{ required: true, message: 'Укажите ФИО' }]}
-          >
-            <Input />
-          </Form.Item>
+          <PersonNameFields />
+          {/* Пожелание заявителя (ADR 0034) — справка, а не подстановка: роль остаётся выбором
+              администратора, иначе «Сохранить» не глядя выдавало бы права по чужому заявлению. */}
+          {record?.requestedRole ? (
+            <Alert
+              type="info"
+              showIcon
+              style={{ marginBottom: 16 }}
+              message={`При регистрации указал: ${registrationRoleRequestLabels[record.requestedRole]}`}
+              description={requestedDetailText(record)}
+            />
+          ) : null}
           <Form.Item
             name="role"
             label="Роль"
@@ -359,13 +451,7 @@ export function UsersTab() {
             </Form.Item>
           ) : null}
           {!record ? (
-            <Form.Item
-              name="password"
-              label="Пароль"
-              rules={[{ required: true, min: 10, message: 'Не менее 10 символов' }]}
-            >
-              <Input.Password autoComplete="new-password" />
-            </Form.Item>
+            <PasswordField name="password" identityFields={['email', 'lastName', 'firstName']} />
           ) : null}
           <Form.Item name="isActive" label="Активен" valuePropName="checked">
             <Switch />
@@ -388,15 +474,21 @@ export function UsersTab() {
             pwUser && passwordMut.mutate({ id: pwUser.id, newPassword: v.newPassword })
           }
         >
-          <Form.Item
-            name="newPassword"
-            label="Новый пароль"
-            rules={[{ required: true, min: 10, message: 'Не менее 10 символов' }]}
-          >
-            <Input.Password autoComplete="new-password" />
-          </Form.Item>
+          <PasswordField name="newPassword" label="Новый пароль" />
         </Form>
       </FormModal>
+
+      <ReasonModal
+        open={!!rejecting}
+        title="Отклонение заявки"
+        label={rejecting ? `Причина отказа по заявке ${rejecting.email}` : 'Причина отказа'}
+        okText="Отклонить"
+        cancelText="Не отклонять"
+        placeholderHint="Причина попадёт в аудит — по ней потом видно, почему доступ не дали."
+        onCancel={() => setRejecting(null)}
+        onSubmit={(reason) => rejecting && rejectMut.mutate({ id: rejecting.id, reason })}
+        confirmLoading={rejectMut.isPending}
+      />
     </PageTableLayout>
   );
 }

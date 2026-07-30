@@ -1,6 +1,9 @@
 import { z } from 'zod';
 import { isObjectScopedRole, roleSchema, type Role } from './enums';
 import { baseListQuery, uuidSchema } from './common';
+import { passwordIdentityIssue, passwordSchema } from './password';
+import { personNameFields, personNamePartialFields, type PersonNameParts } from './person-name';
+import type { RegistrationRoleRequest } from './registration-request';
 
 // Сортировка доступна во всех столбцах таблицы; ключ поля совпадает с ключом колонки.
 export const USER_SORT_FIELDS = [
@@ -13,20 +16,27 @@ export const USER_SORT_FIELDS = [
   'createdAt',
 ] as const;
 
+const booleanFlag = z
+  .enum(['true', 'false'])
+  .optional()
+  .transform((v) => (v === undefined ? undefined : v === 'true'));
+
 export const userListQuerySchema = baseListQuery(USER_SORT_FIELDS).extend({
   role: roleSchema.optional(),
-  isActive: z
-    .enum(['true', 'false'])
-    .optional()
-    .transform((v) => (v === undefined ? undefined : v === 'true')),
+  isActive: booleanFlag,
+  /**
+   * Заявки на регистрацию: неактивная учётка без роли. Роль при саморегистрации не назначается,
+   * поэтому «нет роли + не активна» отличает заявку от учётки, деактивированной администратором.
+   */
+  pending: booleanFlag,
 });
 
 export const createUserSchema = z
   .object({
     email: z.string().email().max(255),
-    fullName: z.string().trim().min(2).max(255),
+    ...personNameFields,
     role: roleSchema,
-    password: z.string().min(10).max(200),
+    password: passwordSchema,
     isActive: z.boolean().default(true),
     constructionObjectId: uuidSchema.nullish(),
     /** Контрагент учётки: обязателен для «Оператора» — задаёт, чьи заявки он видит (ADR 0010). */
@@ -41,11 +51,15 @@ export const createUserSchema = z
   .refine((v) => v.role !== 'operator' || !!v.counterpartyId, {
     message: 'Для роли «Оператор» обязателен контрагент',
     path: ['counterpartyId'],
+  })
+  .superRefine((v, ctx) => {
+    const issue = passwordIdentityIssue(v.password, [v.email, v.lastName, v.firstName]);
+    if (issue) ctx.addIssue({ code: 'custom', message: issue, path: ['password'] });
   });
 export type CreateUserInput = z.infer<typeof createUserSchema>;
 
 export const updateUserSchema = z.object({
-  fullName: z.string().trim().min(2).max(255).optional(),
+  ...personNamePartialFields,
   role: roleSchema.optional(),
   isActive: z.boolean().optional(),
   constructionObjectId: uuidSchema.nullish(),
@@ -54,13 +68,27 @@ export const updateUserSchema = z.object({
 export type UpdateUserInput = z.infer<typeof updateUserSchema>;
 
 export const setUserPasswordSchema = z.object({
-  newPassword: z.string().min(10).max(200),
+  newPassword: passwordSchema,
 });
 
-export interface UserDto {
+/** Отказ по заявке на регистрацию: причина попадает в аудит, учётка уходит в soft delete. */
+export const rejectUserSchema = z.object({
+  reason: z.string().trim().min(3).max(500),
+});
+export type RejectUserInput = z.infer<typeof rejectUserSchema>;
+
+export interface UserDto extends PersonNameParts {
   id: string;
   email: string;
+  /** Считается базой из частей ФИО; отдельно не редактируется. */
   fullName: string;
+  /**
+   * Кем человек назвал себя при регистрации (ADR 0034) и что уточнил. `null` — учётку заводил
+   * администратор, пожелания нет. Права из этого не следуют: их даёт только `role`.
+   */
+  requestedRole: RegistrationRoleRequest | null;
+  requestedObject: string;
+  requestedCompany: string;
   role: Role | null;
   isActive: boolean;
   mustChangePassword: boolean;

@@ -29,7 +29,10 @@ function principal(role: Role | null, id = UPLOADER): Principal {
   return {
     id,
     email: 'user@test.local',
-    fullName: 'Пользователь',
+    lastName: 'Пользователь',
+    firstName: 'Тестовый',
+    middleName: '',
+    fullName: 'Пользователь Тестовый',
     role,
     isActive: true,
     mustChangePassword: false,

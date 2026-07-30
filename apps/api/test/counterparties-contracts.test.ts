@@ -71,8 +71,9 @@ describe('роль «Оператор»', () => {
   it('учётка оператора без контрагента не создаётся', () => {
     const base = {
       email: 'op@example.com',
-      fullName: 'Оператор Вывоза',
-      password: 'password12345',
+      lastName: 'Оператор',
+      firstName: 'Вывоза',
+      password: 'Vv-8213-mrq',
     };
     expect(() => createUserSchema.parse({ ...base, role: 'operator' })).toThrow();
     expect(

@@ -36,7 +36,10 @@ function principal(role: Role | null, extra: Partial<Principal> = {}): Principal
   return {
     id: 'user-1',
     email: 'user@test.local',
-    fullName: 'Пользователь',
+    lastName: 'Пользователь',
+    firstName: 'Тестовый',
+    middleName: '',
+    fullName: 'Пользователь Тестовый',
     role,
     isActive: true,
     mustChangePassword: false,

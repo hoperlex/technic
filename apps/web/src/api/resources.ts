@@ -2,6 +2,7 @@ import type {
   AssignVehicleInput,
   AttachVehicleTypeSpecInput,
   CompleteVehicleRequestInput,
+  CompleteWasteRequestInput,
   ContainerKind,
   ContainerTypeDto,
   CounterpartyDto,
@@ -42,6 +43,8 @@ import type {
   VehicleDto,
   VehicleKindDto,
   VehicleModelDto,
+  VehicleOnSiteListDto,
+  VehicleOnSiteSummaryDto,
   VehicleRequestDto,
   VehicleRequestHistorySummaryDto,
   VehicleRequestSummaryDto,
@@ -50,8 +53,6 @@ import type {
   VehicleTypeSpecDto,
   WasteRequestDto,
   WasteRequestSummaryDto,
-  WasteRequestVehicleInput,
-  WasteVehicleCountInput,
   WasteTariffDto,
   WasteTypeDto,
   ResolveWasteTariffResultDto,
@@ -68,6 +69,10 @@ export const usersApi = {
   setPassword: (id: string, newPassword: string) =>
     apiFetch<{ ok: boolean }>(`/users/${id}/password`, { method: 'POST', body: { newPassword } }),
   remove: (id: string) => apiFetch<{ ok: boolean }>(`/users/${id}`, { method: 'DELETE' }),
+  /** Отказ по нерассмотренной заявке на регистрацию: причина уходит в аудит. */
+  reject: (id: string, reason: string) =>
+    apiFetch<{ ok: boolean }>(`/users/${id}/reject`, { method: 'POST', body: { reason } }),
+  pendingCount: () => apiFetch<{ count: number }>('/users/pending-count'),
 };
 
 export const objectsApi = {
@@ -180,6 +185,14 @@ export const vehicleRequestsApi = {
   /** Итог журнала по тем же фильтрам: сколько закрыто, чем закончилось и на какую сумму. */
   historySummary: (q: Query) =>
     apiFetch<VehicleRequestHistorySummaryDto>('/vehicle-requests/history/summary', { query: q }),
+  /**
+   * Техника на объектах прямо сейчас — вкладка «На объекте» (ADR 0036). День среза считает сервер
+   * и возвращает в `onDate`: от него, а не от часов браузера, считаются подписи присутствия.
+   */
+  onSite: (q: Query) => apiFetch<VehicleOnSiteListDto>('/vehicle-requests/on-site', { query: q }),
+  /** Итог среза по тем же фильтрам: сколько машин, на скольких объектах, кто вышел и кто уезжает. */
+  onSiteSummary: (q: Query) =>
+    apiFetch<VehicleOnSiteSummaryDto>('/vehicle-requests/on-site/summary', { query: q }),
   get: (id: string) => apiFetch<VehicleRequestDto>(`/vehicle-requests/${id}`),
   /** События заявки в хронологическом порядке: создание, правки, смены статусов (ADR 0015). */
   history: (id: string) => apiFetch<RequestHistoryEntryDto[]>(`/vehicle-requests/${id}/history`),
@@ -243,14 +256,8 @@ export interface WasteRequestUpdatePayload {
   wasteTypeId?: string | null;
   volumeM3?: number | null;
   operatorCounterpartyId?: string | null;
-  /** Машины заявки (ADR 0011): новые строки «тип × количество» и операции над заведёнными. */
-  addVehicles?: WasteRequestVehicleInput[];
-  /** Правка количества у заведённых строк (ADR 0024). */
-  vehicleCounts?: WasteVehicleCountInput[];
-  markDeletedVehicleIds?: string[];
-  restoreVehicleIds?: string[];
-  /** Полное удаление — только администратору. */
-  deleteVehicleIds?: string[];
+  // Факта выполнения здесь нет: он предъявляется закрытием заявки и правится повторным
+  // закрытием (ADR 0035).
   deliveryAt?: string;
   comment?: string;
   addFileIds?: string[];
@@ -316,8 +323,8 @@ export const wasteRequestsApi = {
     }),
   /**
    * `comment` уходит в историю статусов; при отмене это обязательная причина.
-   * `vehicles` принимаются только при закрытии заявки — факт вывоза фиксируется тем же
-   * запросом, что и статус (ADR 0011).
+   * `completion` принимается только при закрытии заявки — факт вывоза фиксируется тем же
+   * запросом, что и статус (ADR 0035).
    */
   changeStatus: (
     id: string,
@@ -327,10 +334,8 @@ export const wasteRequestsApi = {
     // части собраны в объект: позиционным списком из пяти аргументов вызов стал бы нечитаемым.
     extra: {
       comment?: string;
-      /** Чем вывезли: «тип × количество» — только вывоз мусора (ADR 0024). */
-      vehicles?: WasteRequestVehicleInput[];
-      /** Количество у машин прошлого закрытия: повторное закрытие правит его, а не плодит строки. */
-      vehicleCounts?: WasteVehicleCountInput[];
+      /** Факт вывоза: фактический объём и стоимость — только вывоз мусора (ADR 0035). */
+      completion?: CompleteWasteRequestInput;
       /** Талоны закрытия — общий пул заявки у любого типа (ADR 0013, ADR 0024). */
       ticketFileIds?: string[];
     } = {},
@@ -341,8 +346,7 @@ export const wasteRequestsApi = {
         status,
         version,
         comment: extra.comment ?? '',
-        vehicles: extra.vehicles ?? [],
-        vehicleCounts: extra.vehicleCounts ?? [],
+        ...(extra.completion ? { completion: extra.completion } : {}),
         ticketFileIds: extra.ticketFileIds ?? [],
       },
     }),
