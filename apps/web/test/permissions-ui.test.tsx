@@ -95,6 +95,14 @@ describe('пункты меню следуют из прав', () => {
     expect(screen.queryByText('Справочники')).toBeNull();
   });
 
+  it('наблюдатель видит оба модуля заявок и ничего сверх них (ADR 0033)', () => {
+    renderMenu('observer');
+    expect(screen.getByText('Вывоз мусора')).toBeDefined();
+    expect(screen.getByText('Заказ ТС')).toBeDefined();
+    expect(screen.queryByText('Справочники')).toBeNull();
+    expect(screen.queryByText('Администрирование')).toBeNull();
+  });
+
   it('администратору доступно всё, включая учётки', () => {
     renderMenu('admin');
     expect(screen.getByText('Справочники')).toBeDefined();
@@ -143,6 +151,10 @@ describe('нижняя навигация на мобильном повторя
 
   it('оператор вывоза — только вывоз мусора (ADR 0010)', () => {
     expect(mobileNavLabels('operator')).toEqual(['Вывоз мусора']);
+  });
+
+  it('наблюдатель — оба модуля заявок, смотреть их можно и с телефона (ADR 0033)', () => {
+    expect(mobileNavLabels('observer')).toEqual(['Вывоз мусора', 'Заказ ТС']);
   });
 
   it('открытый раздел помечен для скринридера и подписан в шапке', () => {

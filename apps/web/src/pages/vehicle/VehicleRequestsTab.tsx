@@ -713,6 +713,9 @@ export function VehicleRequestsTab() {
           </Space>
         );
       }
+      // Роль без права вести заявки (наблюдатель) кнопок не видит: «выключено» читается как
+      // «сейчас нельзя», а нельзя ей всегда.
+      if (!canEdit && !canDelete) return view;
       const allowed = canModify(r);
       return (
         <Space size={4}>
@@ -910,6 +913,7 @@ export function VehicleRequestsTab() {
             ]
           : [view];
       }
+      if (!canEdit && !canDelete) return [view];
       const allowed = canModify(r);
       return [
         view,

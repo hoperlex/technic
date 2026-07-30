@@ -1020,6 +1020,9 @@ function RequestsTab() {
           </Space>
         );
       }
+      // Роли, которая заявки не ведёт вовсе (наблюдатель, оператор), кнопки не показываются:
+      // «выключено» читается как «сейчас нельзя», а нельзя ей всегда.
+      if (!canEdit && !canDelete) return view;
       const allowed = canModify(r);
       return (
         <Space size={4}>
@@ -1218,6 +1221,7 @@ function RequestsTab() {
             ]
           : [view];
       }
+      if (!canEdit && !canDelete) return [view];
       const allowed = canModify(r);
       return [
         view,

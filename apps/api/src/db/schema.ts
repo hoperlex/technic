@@ -41,6 +41,7 @@ export const roleEnum = pgEnum('role', [
   'shtab',
   'rukstroy',
   'operator',
+  'observer',
 ]);
 export const requestStatusEnum = pgEnum('request_status', [
   'new',

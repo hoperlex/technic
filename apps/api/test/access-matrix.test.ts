@@ -78,13 +78,13 @@ const CASES: Case[] = [
     title: 'справочник техники — чтение',
     method: 'GET',
     url: '/api/v1/vehicles',
-    allowed: ['admin', 'manager', 'dispatcher', 'shtab', 'rukstroy', 'operator'],
+    allowed: ['admin', 'manager', 'dispatcher', 'shtab', 'rukstroy', 'operator', 'observer'],
   },
   {
     title: 'справочник типов ТС — чтение',
     method: 'GET',
     url: '/api/v1/vehicle-types',
-    allowed: ['admin', 'manager', 'dispatcher', 'shtab', 'rukstroy', 'operator'],
+    allowed: ['admin', 'manager', 'dispatcher', 'shtab', 'rukstroy', 'operator', 'observer'],
   },
   {
     // Классификатор (ADR 0028) — тот же справочник, что типы и категории, только одним списком:
@@ -92,7 +92,7 @@ const CASES: Case[] = [
     title: 'классификатор ТС — чтение',
     method: 'GET',
     url: '/api/v1/vehicle-classifications',
-    allowed: ['admin', 'manager', 'dispatcher', 'shtab', 'rukstroy', 'operator'],
+    allowed: ['admin', 'manager', 'dispatcher', 'shtab', 'rukstroy', 'operator', 'observer'],
   },
   {
     title: 'объекты — создание',
@@ -137,7 +137,7 @@ const CASES: Case[] = [
     title: 'вывоз — список',
     method: 'GET',
     url: '/api/v1/waste-requests',
-    allowed: ['admin', 'manager', 'dispatcher', 'shtab', 'rukstroy', 'operator'],
+    allowed: ['admin', 'manager', 'dispatcher', 'shtab', 'rukstroy', 'operator', 'observer'],
   },
   {
     title: 'вывоз — удаление заявки',
@@ -171,13 +171,13 @@ const CASES: Case[] = [
     title: 'заказ ТС — список',
     method: 'GET',
     url: '/api/v1/vehicle-requests',
-    allowed: ['admin', 'manager', 'dispatcher', 'shtab', 'rukstroy'],
+    allowed: ['admin', 'manager', 'dispatcher', 'shtab', 'rukstroy', 'observer'],
   },
   {
     title: 'заказ ТС — сводка',
     method: 'GET',
     url: '/api/v1/vehicle-requests/summary',
-    allowed: ['admin', 'manager', 'dispatcher', 'shtab', 'rukstroy'],
+    allowed: ['admin', 'manager', 'dispatcher', 'shtab', 'rukstroy', 'observer'],
   },
   {
     title: 'заказ ТС — удаление заявки',
@@ -251,7 +251,7 @@ const CASES: Case[] = [
     title: 'файл — ссылка на скачивание',
     method: 'GET',
     url: `/api/v1/files/${RECORD_ID}/download`,
-    allowed: ['admin', 'manager', 'dispatcher', 'shtab', 'rukstroy', 'operator'],
+    allowed: ['admin', 'manager', 'dispatcher', 'shtab', 'rukstroy', 'operator', 'observer'],
     checkedInHandler: true,
   },
 

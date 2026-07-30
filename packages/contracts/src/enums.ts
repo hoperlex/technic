@@ -1,7 +1,15 @@
 import { z } from 'zod';
 
 // ── Роли ──
-export const ROLES = ['admin', 'manager', 'dispatcher', 'shtab', 'rukstroy', 'operator'] as const;
+export const ROLES = [
+  'admin',
+  'manager',
+  'dispatcher',
+  'shtab',
+  'rukstroy',
+  'operator',
+  'observer',
+] as const;
 export const roleSchema = z.enum(ROLES);
 export type Role = (typeof ROLES)[number];
 
@@ -12,6 +20,7 @@ export const roleLabels: Record<Role, string> = {
   shtab: 'Штаб',
   rukstroy: 'Руководитель строительства',
   operator: 'Оператор (вывоз мусора)',
+  observer: 'Наблюдатель',
 };
 
 export const roleColors: Record<Role, string> = {
@@ -21,6 +30,8 @@ export const roleColors: Record<Role, string> = {
   shtab: 'orange',
   rukstroy: 'purple',
   operator: 'green',
+  // Серый: роль ничего не ведёт, и в списке учёток она не должна спорить с теми, кто ведёт.
+  observer: 'default',
 };
 
 /**

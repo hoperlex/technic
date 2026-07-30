@@ -101,10 +101,26 @@ describe('права ролей', () => {
     expect(rolesWith('vehicleRequests.approve')).toEqual(['admin', 'rukstroy']);
   });
 
+  /**
+   * Наблюдатель (ADR 0033) — роль без единого действия: перечислением прав, а не выборочными
+   * проверками, потому что смысл роли в том, чего у неё нет. Новое право, попавшее сюда по
+   * недосмотру, обязано уронить этот тест.
+   */
+  it('наблюдатель только смотрит: три права на чтение и ничего больше (ADR 0033)', () => {
+    expect([...permissionsFor('observer')].sort()).toEqual([
+      'directories.read',
+      'vehicleRequests.read',
+      'wasteRequests.read',
+    ]);
+    // Оба модуля заявок видны целиком, без сужения по объекту.
+    expect(isObjectScopedRole('observer')).toBe(false);
+    expect(allowedStatusTransitions('new', 'observer')).toEqual([]);
+  });
+
   it('объектные роли работают в пределах своего объекта', () => {
     expect(isObjectScopedRole('shtab')).toBe(true);
     expect(isObjectScopedRole('rukstroy')).toBe(true);
-    for (const role of ['admin', 'manager', 'dispatcher', 'operator'] as const) {
+    for (const role of ['admin', 'manager', 'dispatcher', 'operator', 'observer'] as const) {
       expect(isObjectScopedRole(role), role).toBe(false);
     }
     expect(isObjectScopedRole(null)).toBe(false);
