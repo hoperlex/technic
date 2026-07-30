@@ -8,6 +8,7 @@ import {
   licenseDefect,
   normalizeSnils,
   snilsSchema,
+  trailerCategoryCode,
   type DriverLicenseDto,
 } from '@technic/contracts';
 
@@ -145,6 +146,24 @@ describe('годность удостоверения на дату', () => {
 
   it('бессрочный документ не то же самое, что просроченный', () => {
     expect(licenseDefect(license({ expiresOn: null }), '2099-01-01')).toBeNull();
+  });
+});
+
+describe('рейс с прицепом', () => {
+  it('поднимает требование до E-версии той же категории', () => {
+    expect(trailerCategoryCode('c')).toBe('ce');
+    expect(trailerCategoryCode('b')).toBe('be');
+    expect(trailerCategoryCode('c1')).toBe('c1e');
+  });
+
+  it('категорию, которая уже с прицепом, не меняет — подменять нечем', () => {
+    expect(trailerCategoryCode('ce')).toBe('ce');
+    expect(trailerCategoryCode('be')).toBe('be');
+  });
+
+  it('к трамваю и мопеду прицеп неприменим: требование остаётся прежним', () => {
+    expect(trailerCategoryCode('tm')).toBe('tm');
+    expect(trailerCategoryCode('m')).toBe('m');
   });
 });
 

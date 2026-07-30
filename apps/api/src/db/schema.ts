@@ -257,6 +257,12 @@ export const vehicleTypes = pgTable(
     code: text('code').notNull(),
     name: text('name').notNull(),
     description: text('description').notNull().default(''),
+    // Категория прав по умолчанию для машин этого типа (ADR 0037, миграция 0059): подставляется
+    // при заведении машины и отбор не сужает — отбирают по требованию самой машины.
+    defaultQualificationCategoryId: uuid('default_qualification_category_id').references(
+      () => qualificationCategories.id,
+      { onDelete: 'restrict' },
+    ),
     sortOrder: integer('sort_order').notNull().default(100),
     isActive: boolean('is_active').notNull().default(true),
     createdAt: createdAt(),
@@ -469,6 +475,14 @@ export const vehicles = pgTable(
     passportNumber: text('passport_number'),
     manufacturerName: text('manufacturer_name').notNull().default(''),
     manufacturedOn: date('manufactured_on'),
+    // Какая категория прав нужна, чтобы сесть за эту машину (ADR 0037, миграция 0059). Стоит у
+    // машины, а не у типа: категорию определяет разрешённая максимальная масса, и в «Грузовых
+    // малотоннажных» живут и ГАЗель под B, и HINO 300 под C. NULL — требование не заведено, и
+    // отбор водителей по нему не сужается: пустое требование безопаснее неверного.
+    requiredQualificationCategoryId: uuid('required_qualification_category_id').references(
+      () => qualificationCategories.id,
+      { onDelete: 'restrict' },
+    ),
     // ── Аренда ──
     lessorId: uuid('lessor_id'),
     // Служебная: приложение всегда пишет 'vehicle_lessor'. Существует ради составного FK
@@ -594,6 +608,10 @@ export const vehicles = pgTable(
     categoryIdx: index('vehicles_category_idx')
       .on(t.vehicleCategoryId)
       .where(sql`${t.vehicleCategoryId} IS NOT NULL`),
+    // «Кто может сесть за эту машину» спрашивают при каждом переводе заявки в работу (ADR 0037).
+    requiredCategoryIdx: index('vehicles_required_category_idx')
+      .on(t.requiredQualificationCategoryId)
+      .where(sql`${t.requiredQualificationCategoryId} IS NOT NULL`),
     // Цель составного FK из vehicle_request_assignments: назначенная машина должна быть того же
     // типа, что заказан заявкой (ADR 0027) — тем же приёмом, что «модель того же типа» выше.
     idTypeUnique: unique('vehicles_id_type_unique').on(t.id, t.vehicleTypeId),

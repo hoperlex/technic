@@ -19,7 +19,8 @@
     "test": "pnpm -r test",
     "db:generate": "pnpm --filter @technic/api db:generate",
     "db:migrate": "pnpm --filter @technic/api db:migrate",
-    "seed:admin": "pnpm --filter @technic/api seed:admin"
+    "seed:admin": "pnpm --filter @technic/api seed:admin",
+    "seed:drivers-test": "pnpm --filter @technic/api seed:drivers-test"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",

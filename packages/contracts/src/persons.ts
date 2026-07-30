@@ -134,6 +134,28 @@ export function hasCategoryOn(license: DriverLicenseDto, code: string, on: strin
   );
 }
 
+/**
+ * Категория с прицепом: рейс с прицепом свыше 750 кг требует E-версию той же категории
+ * (ADR 0037). Прицепа в реестре техники нет, поэтому признак ставят на рейс при переводе заявки
+ * в работу — а требование к водителю поднимается этой таблицей.
+ */
+const TRAILER_CATEGORY_BY_BASE: Record<string, string> = {
+  b: 'be',
+  c: 'ce',
+  c1: 'c1e',
+  d: 'de',
+  d1: 'd1e',
+};
+
+/**
+ * Какая категория нужна для рейса с прицепом. У категории, которая уже с прицепом (CE, BE), и у
+ * тех, к кому прицеп неприменим (трамвай, мопед), требование не меняется: E-версии у них нет, и
+ * подменять код было бы нечем.
+ */
+export function trailerCategoryCode(code: string): string {
+  return TRAILER_CATEGORY_BY_BASE[code] ?? code;
+}
+
 /** Категории одной строкой: «B, C, CE» — как их читают в списке и в путевом листе. */
 export function licenseCategoriesLabel(license: DriverLicenseDto): string {
   return license.categories.map((c) => c.name).join(', ');

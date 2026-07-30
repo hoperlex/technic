@@ -13,7 +13,8 @@
     "db:migrate": "tsx src/db/migrate.ts",
     "db:migrate:check": "tsx src/db/migrate.ts check",
     "db:migrate:status": "tsx src/db/migrate.ts status",
-    "seed:admin": "tsx src/seed-admin.ts"
+    "seed:admin": "tsx src/seed-admin.ts",
+    "seed:drivers-test": "tsx src/seed-drivers-test.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "3.1091.0",
