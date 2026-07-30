@@ -1,4 +1,11 @@
 import type {
+  CreateDriverBody,
+  DriverDto,
+  DriverSelectionDto,
+  DriverLicenseBody,
+  RevokeDriverLicenseInput,
+  UpdateDriverInput,
+  VerifyDriverLicenseBody,
   AssignVehicleInput,
   AttachVehicleTypeSpecInput,
   CompleteVehicleRequestInput,
@@ -81,6 +88,35 @@ export const objectsApi = {
   update: (id: string, body: UpdateObjectInput) =>
     apiFetch<ObjectDto>(`/objects/${id}`, { method: 'PATCH', body }),
   remove: (id: string) => apiFetch<ObjectDto>(`/objects/${id}`, { method: 'DELETE' }),
+};
+
+/**
+ * Справочник водителей (ADR 0037). Отдельно от справочников не только маршрутом, но и правом:
+ * в карточке персональные данные, и открыта она не всем, кому доступен список типов ТС.
+ */
+export const driversApi = {
+  list: (q: Query) => apiFetch<ListResult<DriverDto>>('/drivers', { query: q }),
+  get: (id: string) => apiFetch<DriverDto>(`/drivers/${id}`),
+  create: (body: CreateDriverBody) => apiFetch<DriverDto>('/drivers', { method: 'POST', body }),
+  update: (id: string, body: UpdateDriverInput) =>
+    apiFetch<DriverDto>(`/drivers/${id}`, { method: 'PATCH', body }),
+  remove: (id: string) => apiFetch<void>(`/drivers/${id}`, { method: 'DELETE' }),
+  addLicense: (id: string, body: DriverLicenseBody) =>
+    apiFetch<DriverDto>(`/drivers/${id}/licenses`, { method: 'POST', body }),
+  verifyLicense: (id: string, licenseId: string, body: VerifyDriverLicenseBody) =>
+    apiFetch<DriverDto>(`/drivers/${id}/licenses/${licenseId}/verify`, { method: 'POST', body }),
+  revokeLicense: (id: string, licenseId: string, body: RevokeDriverLicenseInput) =>
+    apiFetch<DriverDto>(`/drivers/${id}/licenses/${licenseId}/revoke`, { method: 'POST', body }),
+  /** Категории ВУ для формы: справочник наполнен миграцией и на чтение. */
+  licenseCategories: () =>
+    apiFetch<{ id: string; code: string; name: string; description: string }[]>(
+      '/drivers/license-categories',
+    ),
+  /** Кто может сесть за эту машину в эту дату — список выбора при переводе заявки в работу. */
+  available: (q: { vehicleId: string; on: string; withTrailer?: boolean }) =>
+    apiFetch<DriverSelectionDto>('/drivers/available', {
+      query: { ...q, withTrailer: q.withTrailer ? 'true' : undefined },
+    }),
 };
 
 export const counterpartiesApi = {

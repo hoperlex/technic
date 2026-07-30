@@ -298,6 +298,29 @@ export default async function driversRoutes(app: FastifyInstance): Promise<void>
   // Право «вести статусы заявок ТС» сюда не годится: с ADR 0038 оно есть и у арендодателя, а он
   // водителей нашего парка не назначает — лист выписывается только на собственные машины.
 
+  /**
+   * Категории водительского удостоверения — ими заполняется форма. Справочник наполнен миграцией
+   * и не меняется, поэтому отдельного CRUD у него нет: список нужен только на чтение.
+   */
+  r.get('/license-categories', { preHandler: [app.authenticate, canRead] }, async () => {
+    const { licenseTypeId } = await loadDirectoryIds();
+    return db
+      .select({
+        id: qualificationCategories.id,
+        code: qualificationCategories.code,
+        name: qualificationCategories.name,
+        description: qualificationCategories.description,
+      })
+      .from(qualificationCategories)
+      .where(
+        and(
+          eq(qualificationCategories.credentialTypeId, licenseTypeId),
+          eq(qualificationCategories.isActive, true),
+        ),
+      )
+      .orderBy(asc(qualificationCategories.sortOrder));
+  });
+
   r.get(
     '/',
     { preHandler: [app.authenticate, canRead], schema: { querystring: driverListQuerySchema } },

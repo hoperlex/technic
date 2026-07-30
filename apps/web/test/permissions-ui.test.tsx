@@ -251,3 +251,38 @@ describe('раздел закрывается правом, а не списко
     expect(screen.queryByText('Страница справочников')).toBeNull();
   });
 });
+
+/**
+ * Водители (ADR 0037) — единственный справочник со своим правом: в карточке персональные данные,
+ * и роль, которой открыты остальные вкладки, доступа к ним не получает.
+ */
+describe('справочник водителей закрыт отдельным правом', () => {
+  const WITH_ACCESS: AccessSubject[] = [
+    { role: 'admin' },
+    { role: 'manager' },
+    { role: 'dispatcher' },
+  ];
+  const WITHOUT_ACCESS: AccessSubject[] = [
+    { role: 'shtab' },
+    { role: 'rukstroy' },
+    { role: 'observer' },
+    { role: 'operator', counterpartyType: 'operator' },
+    { role: 'operator', counterpartyType: 'vehicle_lessor' },
+  ];
+
+  it('право есть у тех, кто выписывает путевые листы', () => {
+    for (const subject of WITH_ACCESS) {
+      expect(can(authUser(subject), 'drivers.read'), String(subject.role)).toBe(true);
+      expect(can(authUser(subject), 'drivers.write'), String(subject.role)).toBe(true);
+    }
+  });
+
+  it('остальным закрыт — включая тех, кому открыты прочие справочники', () => {
+    for (const subject of WITHOUT_ACCESS) {
+      const key = `${subject.role}/${subject.counterpartyType ?? ''}`;
+      expect(can(authUser(subject), 'drivers.read'), key).toBe(false);
+      // Прочие справочники им доступны: право на водителей отделено именно от них.
+      expect(can(authUser(subject), 'directories.read'), key).toBe(true);
+    }
+  });
+});

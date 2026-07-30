@@ -216,6 +216,12 @@ export const driverLicenseInputSchema = z
     'Категория указана дважды',
   );
 export type DriverLicenseInput = z.infer<typeof driverLicenseInputSchema>;
+/**
+ * То же удостоверение со стороны клиента: поля с умолчаниями (`series`, `restrictions`) он вправе
+ * не присылать — их подставит схема. Тип вывода потребовал бы их заполнения, и форма собирала бы
+ * то, чего сервер не спрашивает.
+ */
+export type DriverLicenseBody = z.input<typeof driverLicenseInputSchema>;
 
 /**
  * Заведение водителя. СНИЛС обязателен: без него не выписать путевой лист (ADR 0037), а карточка
@@ -236,6 +242,7 @@ export const createDriverSchema = z
   })
   .strict();
 export type CreateDriverInput = z.infer<typeof createDriverSchema>;
+export type CreateDriverBody = z.input<typeof createDriverSchema>;
 
 /**
  * Отметка проверки документа. Учётное действие, а не правка реквизитов: проверенное
@@ -249,6 +256,7 @@ export const verifyDriverLicenseSchema = z
   })
   .strict();
 export type VerifyDriverLicenseInput = z.infer<typeof verifyDriverLicenseSchema>;
+export type VerifyDriverLicenseBody = z.input<typeof verifyDriverLicenseSchema>;
 
 /**
  * Аннулирование: документ был действующим и перестал им быть — это не истечение срока и не
