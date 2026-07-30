@@ -67,9 +67,10 @@ describe('baseListQuery', () => {
     expect(parsed.pageSize).toBe(100);
   });
 
-  it('допускает только 100/200/500', () => {
+  it('допускает только 50/100/200/500', () => {
+    expect(schema.parse({ pageSize: '50' }).pageSize).toBe(50);
     expect(schema.parse({ pageSize: '200' }).pageSize).toBe(200);
-    expect(() => schema.parse({ pageSize: '50' })).toThrow();
+    expect(() => schema.parse({ pageSize: '25' })).toThrow();
   });
 
   it('отклоняет поле сортировки вне allowlist', () => {

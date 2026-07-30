@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const PAGE_SIZES = [100, 200, 500] as const;
+export const PAGE_SIZES = [50, 100, 200, 500] as const;
 export const DEFAULT_PAGE_SIZE = 100;
 
 export const uuidSchema = z.string().uuid();
@@ -20,7 +20,7 @@ export function baseListQuery(sortFields: readonly string[]) {
       .int()
       .default(DEFAULT_PAGE_SIZE)
       .refine((v) => (PAGE_SIZES as readonly number[]).includes(v), {
-        message: 'pageSize должен быть одним из: 100, 200, 500',
+        message: 'pageSize должен быть одним из: 50, 100, 200, 500',
       }),
     sortBy: z
       .string()
