@@ -68,6 +68,9 @@ describe('контракт контрагента', () => {
 });
 
 describe('роль «Оператор»', () => {
+  /** Оператор вывоза — роль исполнителя плюс контрагент-оператор (ADR 0038). */
+  const wasteOperator = { role: 'operator', counterpartyType: 'operator' } as const;
+
   it('учётка оператора без контрагента не создаётся', () => {
     const base = {
       email: 'op@example.com',
@@ -85,14 +88,14 @@ describe('роль «Оператор»', () => {
   });
 
   it('оператору доступен единственный переход: «В работе» → «Выполнена»', () => {
-    expect(allowedStatusTransitions('confirmed', 'operator')).toEqual(['done']);
-    expect(canTransitionStatus('confirmed', 'done', 'operator')).toBe(true);
+    expect(allowedStatusTransitions('confirmed', wasteOperator)).toEqual(['done']);
+    expect(canTransitionStatus('confirmed', 'done', wasteOperator)).toBe(true);
   });
 
   it('оператор не подтверждает, не отменяет и не откатывает заявки', () => {
-    expect(canTransitionStatus('new', 'confirmed', 'operator')).toBe(false);
-    expect(canTransitionStatus('confirmed', 'cancelled', 'operator')).toBe(false);
-    expect(canTransitionStatus('done', 'confirmed', 'operator')).toBe(false);
-    expect(allowedStatusTransitions('new', 'operator')).toEqual([]);
+    expect(canTransitionStatus('new', 'confirmed', wasteOperator)).toBe(false);
+    expect(canTransitionStatus('confirmed', 'cancelled', wasteOperator)).toBe(false);
+    expect(canTransitionStatus('done', 'confirmed', wasteOperator)).toBe(false);
+    expect(allowedStatusTransitions('new', wasteOperator)).toEqual([]);
   });
 });

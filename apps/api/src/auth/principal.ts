@@ -1,9 +1,10 @@
 import { eq } from 'drizzle-orm';
 import { db } from '../db/client';
-import { users } from '../db/schema';
-import type { Role } from '@technic/contracts';
+import { counterparties, users } from '../db/schema';
+import type { AccessSubject, CounterpartyType, Role } from '@technic/contracts';
 
-export interface Principal {
+/** Принципал — субъект доступа (ADR 0038): права спрашиваются у пары «роль + тип контрагента». */
+export interface Principal extends AccessSubject {
   id: string;
   email: string;
   lastName: string;
@@ -15,8 +16,15 @@ export interface Principal {
   isActive: boolean;
   mustChangePassword: boolean;
   constructionObjectId: string | null;
-  /** Контрагент учётки (ADR 0010): у роли «Оператор» задаёт, чьи заявки ему видны. */
+  /** Контрагент учётки (ADR 0010): у внешнего исполнителя задаёт, чьи заявки ему видны. */
   counterpartyId: string | null;
+  /**
+   * Тип контрагента (ADR 0038): у внешнего исполнителя определяет модуль, в котором он работает,
+   * — вывоз мусора у оператора, заказ ТС у арендодателя. Читается из справочника на каждом
+   * запросе вместе с ролью: смена типа контрагента меняет права учётки, и кэшировать её в токене
+   * нельзя по той же причине, по которой там не хранится роль.
+   */
+  counterpartyType: CounterpartyType | null;
   authVersion: number;
 }
 
@@ -25,8 +33,14 @@ export interface Principal {
  * Возвращает null, если пользователь удалён или деактивирован.
  */
 export async function loadPrincipal(userId: string): Promise<Principal | null> {
-  const [u] = await db.select().from(users).where(eq(users.id, userId));
-  if (!u || u.deletedAt || !u.isActive) return null;
+  const [row] = await db
+    .select({ u: users, counterpartyType: counterparties.type })
+    .from(users)
+    .leftJoin(counterparties, eq(users.counterpartyId, counterparties.id))
+    .where(eq(users.id, userId));
+  if (!row) return null;
+  const u = row.u;
+  if (u.deletedAt || !u.isActive) return null;
   return {
     id: u.id,
     email: u.email,
@@ -39,6 +53,7 @@ export async function loadPrincipal(userId: string): Promise<Principal | null> {
     mustChangePassword: u.mustChangePassword,
     constructionObjectId: u.constructionObjectId,
     counterpartyId: u.counterpartyId,
+    counterpartyType: row.counterpartyType,
     authVersion: u.authVersion,
   };
 }

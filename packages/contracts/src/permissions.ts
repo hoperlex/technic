@@ -1,20 +1,34 @@
 import {
+  isCounterpartyScopedRole,
   OPERATOR_STATUS_TRANSITIONS,
   requestStatusRollbacks,
   requestStatusTransitions,
+  roleLabels,
   ROLES,
   type RequestStatus,
   type Role,
 } from './enums';
+import {
+  COUNTERPARTY_TYPES,
+  counterpartyTypeLabels,
+  type CounterpartyType,
+} from './counterparties';
 
 /**
- * Единая модель прав портала (ADR 0021).
+ * Единая модель прав портала (ADR 0021, дополнена ADR 0038).
  *
- * Право — это «что роль может делать», область видимости («над какими строками») задаётся
- * отдельно: штаб работает со своим объектом, оператор — с заявками своего контрагента.
- * Смешивать их в одном списке нельзя: право проверяется до запроса в БД (preHandler), а
- * область — по конкретной строке, и ошибка тут даёт либо 403 на своей же заявке, либо
- * доступ к чужой.
+ * Право — это «что учётка может делать», область видимости («над какими строками») задаётся
+ * отдельно: штаб работает со своим объектом, внешний исполнитель — с заявками своего
+ * контрагента. Смешивать их в одном списке нельзя: право проверяется до запроса в БД
+ * (preHandler), а область — по конкретной строке, и ошибка тут даёт либо 403 на своей же
+ * заявке, либо доступ к чужой.
+ *
+ * Права выдаются не роли, а **субъекту доступа** — паре «роль + тип контрагента учётки»
+ * (ADR 0038). У всех ролей, кроме внешнего исполнителя, контрагента нет и субъект совпадает с
+ * ролью; у исполнителя тип контрагента решает, в каком модуле он работает: оператор вывоза
+ * ведёт заявки вывоза, арендодатель ТС — заявки на технику. Роль отвечает «кем человек работает
+ * в портале», тип контрагента — «по какому предмету»; вторая роль-близнец на каждый модуль
+ * дублировала бы первое ради второго.
  *
  * Матрица живёт в общем пакете, потому что источник правды должен быть один: API проверяет
  * права на каждом маршруте, портал по той же матрице решает, показывать ли пункт меню и
@@ -144,9 +158,11 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'vehicleRequests.approve',
   ],
 
-  // Оператор — внешний исполнитель вывоза (ADR 0010): видит заявки своего контрагента и
-  // закрывает их. Модуль «Заказ ТС» ему недоступен целиком.
-  operator: ['directories.read', 'wasteRequests.read', 'wasteRequests.status'],
+  // Внешний исполнитель (ADR 0010, ADR 0038) — единственная роль, чьи права роль задаёт не
+  // целиком: модульные права приходят из типа его контрагента (COUNTERPARTY_TYPE_PERMISSIONS).
+  // Здесь остаётся только общее для любого исполнителя: без чтения справочников не отрисовать
+  // ни фильтр, ни название типа ТС в списке.
+  operator: ['directories.read'],
 
   // Наблюдатель (ADR 0033) — сквозной просмотр обоих модулей без единого действия: заявки всех
   // объектов видны, но ни завести, ни изменить, ни продвинуть по статусу их нельзя. Объекта у
@@ -154,28 +170,119 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
   observer: ['directories.read', 'wasteRequests.read', 'vehicleRequests.read'],
 };
 
+/**
+ * Права, которые даёт тип контрагента учётки внешнего исполнителя (ADR 0038). Каждый тип —
+ * один модуль портала, и набор в нём один и тот же: видеть свои заявки и закрывать
+ * выполненное. Заводить, править и удалять заявки исполнитель не может ни в одном модуле —
+ * заказчик и исполнитель разведены, и это граница модели, а не особенность вывоза мусора.
+ *
+ * Record по всем типам, а не по тем, у кого учётки есть: новый тип контрагента обязан здесь
+ * появиться строкой и ответить на вопрос «а этот что исполняет». Пустой список — «учёток у
+ * такого контрагента не бывает»: генподрядчик и подрядчик живут в справочнике как реквизиты
+ * договора, работают в портале их сотрудники под собственными ролями.
+ */
+export const COUNTERPARTY_TYPE_PERMISSIONS: Record<CounterpartyType, readonly Permission[]> = {
+  general_contractor: [],
+  contractor: [],
+  // Оператор вывоза (ADR 0010): видит заявки, назначенные его контрагенту, и закрывает их.
+  operator: ['wasteRequests.read', 'wasteRequests.status'],
+  // Арендодатель ТС (ADR 0038): видит заявки, на которые вышла его техника, и закрывает их.
+  vehicle_lessor: ['vehicleRequests.read', 'vehicleRequests.status'],
+};
+
+/**
+ * Типы контрагентов, к которым можно привязать учётку. Выводятся из матрицы, а не
+ * перечисляются вторым списком: тип без прав — контрагент, за который в портале никто не
+ * работает, и учётка на нём означала бы вход без единого действия.
+ */
+export const COUNTERPARTY_TYPES_WITH_ACCOUNTS = COUNTERPARTY_TYPES.filter(
+  (type) => COUNTERPARTY_TYPE_PERMISSIONS[type].length > 0,
+);
+
+export function counterpartyTypeHasAccounts(
+  type: CounterpartyType | null | undefined,
+): type is CounterpartyType {
+  return !!type && COUNTERPARTY_TYPE_PERMISSIONS[type].length > 0;
+}
+
+/**
+ * Кому проверяется право: роль плюс тип контрагента учётки. Принимать сюда одну роль нельзя —
+ * у внешнего исполнителя роль без контрагента отвечает только за общую часть прав, и вызов
+ * `can(role, ...)` молча возвращал бы «нет» на его собственный модуль. Поэтому субъект —
+ * объект: и принципал на сервере, и текущий пользователь на портале подходят под него как есть.
+ */
+export interface AccessSubject {
+  role: Role | null;
+  /** Тип контрагента учётки; у ролей вне `COUNTERPARTY_SCOPED_ROLES` не читается. */
+  counterpartyType?: CounterpartyType | null;
+}
+
 // Проверка прав идёт на каждом запросе, поэтому списки сразу разложены по множествам.
 const ROLE_PERMISSION_SETS = new Map<Role, ReadonlySet<Permission>>(
   ROLES.map((role) => [role, new Set(ROLE_PERMISSIONS[role])]),
 );
 
+const COUNTERPARTY_PERMISSION_SETS = new Map<CounterpartyType, ReadonlySet<Permission>>(
+  COUNTERPARTY_TYPES.map((type) => [type, new Set(COUNTERPARTY_TYPE_PERMISSIONS[type])]),
+);
+
 /**
- * Есть ли у роли право. Учётка без роли не может ничего: доступ выдаётся ролью, и пока её
+ * Есть ли у субъекта право. Учётка без роли не может ничего: доступ выдаётся ролью, и пока её
  * не назначили, пользователь для портала — никто (активировать такую учётку API не даёт).
+ * Исполнитель без контрагента — то же самое в своём модуле: без контрагента неизвестно ни что
+ * он исполняет, ни чьи заявки видит, поэтому модульных прав у него нет (активировать такую
+ * учётку API тоже не даёт).
  */
-export function can(role: Role | null | undefined, permission: Permission): boolean {
+export function can(subject: AccessSubject | null | undefined, permission: Permission): boolean {
+  const role = subject?.role;
   if (!role) return false;
-  return ROLE_PERMISSION_SETS.get(role)?.has(permission) ?? false;
+  if (ROLE_PERMISSION_SETS.get(role)?.has(permission)) return true;
+  if (!isCounterpartyScopedRole(role)) return false;
+  const type = subject?.counterpartyType;
+  return !!type && (COUNTERPARTY_PERMISSION_SETS.get(type)?.has(permission) ?? false);
 }
 
-/** Все права роли — для отладки и для страницы учёток. */
-export function permissionsFor(role: Role | null | undefined): readonly Permission[] {
-  return role ? ROLE_PERMISSIONS[role] : [];
+/**
+ * Работает ли учётка от контрагента указанного типа (ADR 0038) — то есть исполняет ли она
+ * заявки этого модуля. Предикат, а не сравнение с ролью: «оператор вывоза» — это роль
+ * исполнителя плюс контрагент-оператор, и одна роль без типа означает уже не то же самое.
+ */
+export function actsForCounterparty(
+  subject: AccessSubject | null | undefined,
+  type: CounterpartyType,
+): boolean {
+  return isCounterpartyScopedRole(subject?.role) && subject?.counterpartyType === type;
 }
 
-/** Роли, у которых есть указанное право (используется в подсказках интерфейса и тестах). */
-export function rolesWith(permission: Permission): Role[] {
-  return ROLES.filter((role) => can(role, permission));
+/** Все права субъекта — для отладки и для страницы учёток. */
+export function permissionsFor(subject: AccessSubject | null | undefined): readonly Permission[] {
+  const role = subject?.role;
+  if (!role) return [];
+  return PERMISSIONS.filter((permission) => can(subject, permission));
+}
+
+/**
+ * Все различимые субъекты доступа: роли без контрагента как есть, роль от контрагента —
+ * по разу на каждый тип контрагента с учётками. Список нужен там, где перебирают «всех, кто
+ * бывает в портале»: тесты матрицы, обратный поиск по праву.
+ */
+export const ACCESS_PROFILES: readonly AccessSubject[] = ROLES.flatMap((role) =>
+  isCounterpartyScopedRole(role)
+    ? COUNTERPARTY_TYPES_WITH_ACCOUNTS.map((counterpartyType) => ({ role, counterpartyType }))
+    : [{ role }],
+);
+
+/** Субъекты, у которых есть указанное право (обратный поиск: подсказки интерфейса и тесты). */
+export function profilesWith(permission: Permission): AccessSubject[] {
+  return ACCESS_PROFILES.filter((subject) => can(subject, permission));
+}
+
+/** Человекочитаемое имя субъекта: у исполнителя оно называет предмет работы, а не роль. */
+export function accessProfileLabel(subject: AccessSubject): string {
+  if (subject.role && isCounterpartyScopedRole(subject.role) && subject.counterpartyType) {
+    return `${roleLabels[subject.role]} — ${counterpartyTypeLabels[subject.counterpartyType]}`;
+  }
+  return subject.role ? roleLabels[subject.role] : 'Без роли';
 }
 
 /**
@@ -183,29 +290,39 @@ export function rolesWith(permission: Permission): Role[] {
  * рабочий цикл. Таблица, а не исключение в коде: следующая такая роль добавляется строкой.
  */
 const ROLE_STATUS_TRANSITIONS: Partial<Record<Role, Record<RequestStatus, RequestStatus[]>>> = {
-  // Оператор закрывает то, что сам выполнил; подтверждать и отменять — решения заказчика (ADR 0010).
+  // Внешний исполнитель закрывает то, что сам выполнил; подтверждать и отменять — решения
+  // заказчика (ADR 0010). Коридор один на оба модуля: закрытие выполненного — это одно и то же
+  // действие, что у вывоза мусора, что у аренды техники, поэтому таблица по роли, а не по типу
+  // контрагента.
   operator: OPERATOR_STATUS_TRANSITIONS,
 };
 
 /** Смена статуса хотя бы в одном модуле — общий предикат для правил перехода. */
-function canChangeAnyStatus(role: Role): boolean {
-  return can(role, 'wasteRequests.status') || can(role, 'vehicleRequests.status');
+function canChangeAnyStatus(subject: AccessSubject): boolean {
+  return can(subject, 'wasteRequests.status') || can(subject, 'vehicleRequests.status');
 }
 
 /**
- * Статусы, доступные роли из текущего статуса (пустой список — смена статуса запрещена).
+ * Статусы, доступные субъекту из текущего статуса (пустой список — смена статуса запрещена).
  * Живёт рядом с матрицей, а не с таблицами переходов: «кто может» — это право, а таблицы
  * переходов описывают только «что за чем идёт».
  */
-export function allowedStatusTransitions(from: RequestStatus, role: Role): RequestStatus[] {
-  if (!canChangeAnyStatus(role)) return [];
-  const ownCorridor = ROLE_STATUS_TRANSITIONS[role];
+export function allowedStatusTransitions(
+  from: RequestStatus,
+  subject: AccessSubject,
+): RequestStatus[] {
+  if (!canChangeAnyStatus(subject)) return [];
+  const ownCorridor = subject.role ? ROLE_STATUS_TRANSITIONS[subject.role] : undefined;
   if (ownCorridor) return ownCorridor[from];
-  return can(role, 'requests.rollbackStatus')
+  return can(subject, 'requests.rollbackStatus')
     ? [...requestStatusTransitions[from], ...requestStatusRollbacks[from]]
     : requestStatusTransitions[from];
 }
 
-export function canTransitionStatus(from: RequestStatus, to: RequestStatus, role: Role): boolean {
-  return allowedStatusTransitions(from, role).includes(to);
+export function canTransitionStatus(
+  from: RequestStatus,
+  to: RequestStatus,
+  subject: AccessSubject,
+): boolean {
+  return allowedStatusTransitions(from, subject).includes(to);
 }

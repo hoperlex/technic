@@ -571,7 +571,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
   r.get('/', { ...auth, schema: { querystring: wasteRequestListQuerySchema } }, async (req) => {
     const p = requirePrincipal(req);
     const q = req.query;
-    const showDeleted = q.includeDeleted && can(p.role, 'archive.read');
+    const showDeleted = q.includeDeleted && can(p, 'archive.read');
     const where = and(
       showDeleted ? undefined : isNull(wasteRequests.deletedAt),
       requestVisibilityWhere(p, wasteRequests.objectId),
@@ -964,7 +964,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       assertObjectScope(p, before.objectId);
       assertOperatorScope(p, before.operatorCounterpartyId);
       if (before.status === status) return before;
-      assertTransitionAllowed(before.status, status, p.role);
+      assertTransitionAllowed(p, before.status, status);
       // Факт предъявляет один вывоз мусора: у контейнерных операций объёма нет вовсе (ADR 0035).
       if (completion && !requiresWasteFact(before.requestType)) {
         throw err.badRequest(FACT_NOT_APPLICABLE, {

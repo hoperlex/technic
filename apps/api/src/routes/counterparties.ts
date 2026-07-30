@@ -203,9 +203,12 @@ async function reactivateLessorVehicles(tx: Tx, lessorId: string): Promise<numbe
  * Смена типа не должна оставлять за собой висящие ссылки — тот же принцип, что и с привязанными
  * объектами: их заводил кто-то другой, и снимать их побочным эффектом правки типа нельзя.
  *
- * Арендодатель ТС (ADR 0018 §9) в приложении не действует: у него не может быть ни одной учётки,
- * ни в какой роли. Через форму учётки такую привязку не создать (resolveCounterpartyId), и смена
- * типа — единственный путь, где инвариант ломался.
+ * С учётками этот принцип строже: тип контрагента задаёт их права (ADR 0038). Смена типа молча
+ * перевела бы оператора вывоза в заказ ТС — с новым модулем и новой областью видимости — правкой
+ * карточки справочника, которую делают совсем по другому поводу. Поэтому тип контрагента с
+ * живыми учётками не меняется вовсе: сначала учётки отвязывают или переводят, потом меняют тип.
+ * (Прежний запрет ADR 0018 §9 «у арендодателя не бывает учёток» снят — арендодатель теперь
+ * работает в портале сам.)
  */
 async function assertTypeChangeAllowed(
   tx: Tx,
@@ -215,17 +218,15 @@ async function assertTypeChangeAllowed(
 ): Promise<void> {
   if (before === next) return;
 
-  if (next === 'vehicle_lessor') {
-    const [linked] = await tx
-      .select({ c: count() })
-      .from(users)
-      .where(and(eq(users.counterpartyId, id), isNull(users.deletedAt)));
-    const n = Number(linked?.c ?? 0);
-    if (n > 0) {
-      throw err.conflict(
-        `У контрагента есть учётные записи (${n}), а у арендодателя ТС их быть не может — отвяжите их перед сменой типа`,
-      );
-    }
+  const [linked] = await tx
+    .select({ c: count() })
+    .from(users)
+    .where(and(eq(users.counterpartyId, id), isNull(users.deletedAt)));
+  const linkedCount = Number(linked?.c ?? 0);
+  if (linkedCount > 0) {
+    throw err.conflict(
+      `У контрагента есть учётные записи (${linkedCount}), а тип задаёт их права — отвяжите учётки перед сменой типа`,
+    );
   }
 
   if (before === 'operator') {
@@ -273,7 +274,7 @@ export default async function counterpartiesRoutes(app: FastifyInstance): Promis
     async (req) => {
       const p = requirePrincipal(req);
       const q = req.query;
-      const showDeleted = q.includeDeleted && can(p.role, 'archive.read');
+      const showDeleted = q.includeDeleted && can(p, 'archive.read');
       // Поиск идёт и по синонимам: пользователь ищет по тому наименованию, которое видит в документе.
       const search = q.search
         ? or(

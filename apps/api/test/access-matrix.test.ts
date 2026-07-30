@@ -1,11 +1,12 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { ROLES, type Role } from '@technic/contracts';
+import { ACCESS_PROFILES, type AccessSubject } from '@technic/contracts';
 
 /**
- * Сквозная проверка прав: настоящие запросы к собранному приложению под каждой ролью.
+ * Сквозная проверка прав: настоящие запросы к собранному приложению под каждым субъектом
+ * доступа — ролью, а у внешнего исполнителя парой «роль + тип контрагента» (ADR 0038).
  *
- * Матрица (`permissions.test.ts`) отвечает на вопрос «что роль может», страж
+ * Матрица (`permissions.test.ts`) отвечает на вопрос «что субъект может», страж
  * (`route-authorization.test.ts`) — «объявлена ли проверка». Здесь проверяется третье:
  * что маршрут отдаёт 403 именно тем, кому должен, — то есть что к маршруту привязано
  * правильное право, а не просто какое-нибудь.
@@ -28,7 +29,7 @@ vi.mock('../src/db/client', () => {
 
 // Токен и загрузка пользователя подменяются: проверяем права, а не механику входа.
 vi.mock('../src/auth/tokens', () => ({
-  verifyAccessToken: async () => ({ sub: 'user-1', role: currentRole, av: 1 }),
+  verifyAccessToken: async () => ({ sub: 'user-1', role: currentSubject.role, av: 1 }),
   signAccessToken: async () => 'test-token',
 }));
 
@@ -40,11 +41,12 @@ vi.mock('../src/auth/principal', () => ({
     firstName: 'Тестовый',
     middleName: '',
     fullName: 'Пользователь Тестовый',
-    role: currentRole,
+    role: currentSubject.role,
     isActive: true,
     mustChangePassword: false,
     constructionObjectId: OBJECT_ID,
     counterpartyId: COUNTERPARTY_ID,
+    counterpartyType: currentSubject.counterpartyType ?? null,
     authVersion: 1,
   }),
 }));
@@ -56,9 +58,29 @@ const RECORD_ID = '33333333-3333-4333-8333-333333333333';
 /** Заявку заводят не раньше чем на завтра по МСК — берём заведомо будущую дату. */
 const FUTURE_DELIVERY_AT = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString();
 
-/** Роль текущего запроса: подменённый `loadPrincipal` возвращает её принципалу. */
-let currentRole: Role | null = null;
+/** Субъект текущего запроса: подменённый `loadPrincipal` возвращает его принципалу. */
+let currentSubject: AccessSubject = { role: null };
 let app: FastifyInstance;
+
+/**
+ * Ключ субъекта в перечнях кейсов: у исполнителя — «роль/тип контрагента», у остальных ролей
+ * просто роль. Пара пишется одной строкой, потому что и разрешение у неё одно на пару: роль
+ * исполнителя без типа контрагента не отвечает ни на один вопрос про доступ.
+ */
+type ProfileKey =
+  | 'admin'
+  | 'manager'
+  | 'dispatcher'
+  | 'shtab'
+  | 'rukstroy'
+  | 'observer'
+  | 'operator/operator'
+  | 'operator/vehicle_lessor';
+
+const keyOf = (s: AccessSubject): ProfileKey =>
+  (s.counterpartyType ? `${s.role}/${s.counterpartyType}` : String(s.role)) as ProfileKey;
+
+const PROFILE_KEYS = ACCESS_PROFILES.map(keyOf);
 
 interface Case {
   title: string;
@@ -66,8 +88,8 @@ interface Case {
   url: string;
   /** Тело запроса: схема Fastify проверяется до preHandler, поэтому оно должно быть валидным. */
   payload?: unknown;
-  /** Роли, которым маршрут разрешён; остальным ожидается 403. */
-  allowed: Role[];
+  /** Субъекты, которым маршрут разрешён; остальным ожидается 403. */
+  allowed: ProfileKey[];
   /**
    * Маршрут решает по самой записи, а не по роли (`authorizeInHandler`): роль сюда не пускает
    * и не отсекает — доступ определяется тем, видна ли пользователю связанная заявка.
@@ -81,13 +103,31 @@ const CASES: Case[] = [
     title: 'справочник техники — чтение',
     method: 'GET',
     url: '/api/v1/vehicles',
-    allowed: ['admin', 'manager', 'dispatcher', 'shtab', 'rukstroy', 'operator', 'observer'],
+    allowed: [
+      'admin',
+      'manager',
+      'dispatcher',
+      'shtab',
+      'rukstroy',
+      'operator/operator',
+      'operator/vehicle_lessor',
+      'observer',
+    ],
   },
   {
     title: 'справочник типов ТС — чтение',
     method: 'GET',
     url: '/api/v1/vehicle-types',
-    allowed: ['admin', 'manager', 'dispatcher', 'shtab', 'rukstroy', 'operator', 'observer'],
+    allowed: [
+      'admin',
+      'manager',
+      'dispatcher',
+      'shtab',
+      'rukstroy',
+      'operator/operator',
+      'operator/vehicle_lessor',
+      'observer',
+    ],
   },
   {
     // Классификатор (ADR 0028) — тот же справочник, что типы и категории, только одним списком:
@@ -95,7 +135,16 @@ const CASES: Case[] = [
     title: 'классификатор ТС — чтение',
     method: 'GET',
     url: '/api/v1/vehicle-classifications',
-    allowed: ['admin', 'manager', 'dispatcher', 'shtab', 'rukstroy', 'operator', 'observer'],
+    allowed: [
+      'admin',
+      'manager',
+      'dispatcher',
+      'shtab',
+      'rukstroy',
+      'operator/operator',
+      'operator/vehicle_lessor',
+      'observer',
+    ],
   },
   {
     title: 'объекты — создание',
@@ -140,7 +189,15 @@ const CASES: Case[] = [
     title: 'вывоз — список',
     method: 'GET',
     url: '/api/v1/waste-requests',
-    allowed: ['admin', 'manager', 'dispatcher', 'shtab', 'rukstroy', 'operator', 'observer'],
+    allowed: [
+      'admin',
+      'manager',
+      'dispatcher',
+      'shtab',
+      'rukstroy',
+      'operator/operator',
+      'observer',
+    ],
   },
   {
     title: 'вывоз — удаление заявки',
@@ -153,7 +210,7 @@ const CASES: Case[] = [
     method: 'PATCH',
     url: `/api/v1/waste-requests/${RECORD_ID}/status`,
     payload: { status: 'confirmed', version: 1 },
-    allowed: ['admin', 'manager', 'dispatcher', 'operator'],
+    allowed: ['admin', 'manager', 'dispatcher', 'operator/operator'],
   },
   {
     title: 'вывоз — назначение оператора',
@@ -169,18 +226,35 @@ const CASES: Case[] = [
     allowed: ['admin'],
   },
 
-  // ── Заказ ТС: оператору вывоза недоступен целиком (ADR 0010) ──
+  // ── Заказ ТС: оператору вывоза недоступен целиком (ADR 0010), арендодателю открыт как
+  // исполнителю — он видит заявки, на которые вышла его техника, и закрывает их (ADR 0038) ──
   {
     title: 'заказ ТС — список',
     method: 'GET',
     url: '/api/v1/vehicle-requests',
-    allowed: ['admin', 'manager', 'dispatcher', 'shtab', 'rukstroy', 'observer'],
+    allowed: [
+      'admin',
+      'manager',
+      'dispatcher',
+      'shtab',
+      'rukstroy',
+      'operator/vehicle_lessor',
+      'observer',
+    ],
   },
   {
     title: 'заказ ТС — сводка',
     method: 'GET',
     url: '/api/v1/vehicle-requests/summary',
-    allowed: ['admin', 'manager', 'dispatcher', 'shtab', 'rukstroy', 'observer'],
+    allowed: [
+      'admin',
+      'manager',
+      'dispatcher',
+      'shtab',
+      'rukstroy',
+      'operator/vehicle_lessor',
+      'observer',
+    ],
   },
   {
     // Срез «На объекте» (ADR 0036) — то же чтение заявок: наблюдателю он открыт, оператору
@@ -188,13 +262,29 @@ const CASES: Case[] = [
     title: 'заказ ТС — техника на объектах',
     method: 'GET',
     url: '/api/v1/vehicle-requests/on-site',
-    allowed: ['admin', 'manager', 'dispatcher', 'shtab', 'rukstroy', 'observer'],
+    allowed: [
+      'admin',
+      'manager',
+      'dispatcher',
+      'shtab',
+      'rukstroy',
+      'operator/vehicle_lessor',
+      'observer',
+    ],
   },
   {
     title: 'заказ ТС — итог по технике на объектах',
     method: 'GET',
     url: '/api/v1/vehicle-requests/on-site/summary',
-    allowed: ['admin', 'manager', 'dispatcher', 'shtab', 'rukstroy', 'observer'],
+    allowed: [
+      'admin',
+      'manager',
+      'dispatcher',
+      'shtab',
+      'rukstroy',
+      'operator/vehicle_lessor',
+      'observer',
+    ],
   },
   {
     title: 'заказ ТС — удаление заявки',
@@ -216,7 +306,9 @@ const CASES: Case[] = [
     method: 'PATCH',
     url: `/api/v1/vehicle-requests/${RECORD_ID}/status`,
     payload: { status: 'confirmed', version: 1 },
-    allowed: ['admin', 'manager', 'dispatcher'],
+    // Право на маршрут у арендодателя есть; коридор переходов и чужие заявки отсекаются дальше —
+    // проверками области и `assertTransitionAllowed`, а не 403 на входе.
+    allowed: ['admin', 'manager', 'dispatcher', 'operator/vehicle_lessor'],
   },
 
   // ── Назначение исполнителя не должно обходиться общими маршрутами заявки (ADR 0010) ──
@@ -268,7 +360,16 @@ const CASES: Case[] = [
     title: 'файл — ссылка на скачивание',
     method: 'GET',
     url: `/api/v1/files/${RECORD_ID}/download`,
-    allowed: ['admin', 'manager', 'dispatcher', 'shtab', 'rukstroy', 'operator', 'observer'],
+    allowed: [
+      'admin',
+      'manager',
+      'dispatcher',
+      'shtab',
+      'rukstroy',
+      'operator/operator',
+      'operator/vehicle_lessor',
+      'observer',
+    ],
     checkedInHandler: true,
   },
 
@@ -277,8 +378,8 @@ const CASES: Case[] = [
   { title: 'аудит — журнал', method: 'GET', url: '/api/v1/audit', allowed: ['admin'] },
 ];
 
-async function request(role: Role | null, c: Case) {
-  currentRole = role;
+async function request(subject: AccessSubject, c: Case) {
+  currentSubject = subject;
   return app.inject({
     method: c.method,
     url: c.url,
@@ -310,43 +411,52 @@ afterAll(async () => {
   await app?.close();
 });
 
-describe('доступ по ролям — запреты', () => {
+describe('доступ по субъектам — запреты', () => {
   for (const c of CASES) {
-    const denied = ROLES.filter((r) => !c.allowed.includes(r));
+    const denied = ACCESS_PROFILES.filter((s) => !c.allowed.includes(keyOf(s)));
     if (denied.length === 0) continue;
-    it(`${c.title}: отказ для ${denied.join(', ')}`, async () => {
-      for (const role of denied) {
-        const res = await request(role, c);
-        expect(res.statusCode, `${role} → ${c.method} ${c.url}`).toBe(403);
+    it(`${c.title}: отказ для ${denied.map(keyOf).join(', ')}`, async () => {
+      for (const subject of denied) {
+        const res = await request(subject, c);
+        expect(res.statusCode, `${keyOf(subject)} → ${c.method} ${c.url}`).toBe(403);
       }
     });
   }
 });
 
-describe('доступ по ролям — разрешения', () => {
+describe('доступ по субъектам — разрешения', () => {
   for (const c of CASES) {
     it(`${c.title}: пропускает ${c.allowed.join(', ')}`, async () => {
-      for (const role of c.allowed) {
-        const res = await request(role, c);
+      for (const key of c.allowed) {
+        const subject = ACCESS_PROFILES.find((s) => keyOf(s) === key);
+        expect(subject, `неизвестный субъект ${key}`).toBeDefined();
+        const res = await request(subject!, c);
         // Проверка прав пройдена — дальше обработчик упирается в подменённую БД.
-        expect(res.statusCode, `${role} → ${c.method} ${c.url}`).not.toBe(403);
-        expect(res.statusCode, `${role} → ${c.method} ${c.url}`).not.toBe(401);
+        expect(res.statusCode, `${key} → ${c.method} ${c.url}`).not.toBe(403);
+        expect(res.statusCode, `${key} → ${c.method} ${c.url}`).not.toBe(401);
       }
     });
   }
+});
+
+describe('перечни кейсов покрывают всех, кто бывает в портале', () => {
+  it('каждый субъект доступа встречается хотя бы в одном разрешении', () => {
+    const mentioned = new Set(CASES.flatMap((c) => c.allowed));
+    expect(PROFILE_KEYS.filter((k) => !mentioned.has(k))).toEqual([]);
+  });
 });
 
 describe('учётка без роли', () => {
   it('не проходит ни на один маршрут, закрытый правом', async () => {
     for (const c of CASES.filter((x) => !x.checkedInHandler)) {
-      const res = await request(null, c);
+      const res = await request({ role: null }, c);
       expect(res.statusCode, `${c.method} ${c.url}`).toBe(403);
     }
   });
 
   it('на маршрутах «по записи» доходит до обработчика — там её не видит ни одна заявка', async () => {
     for (const c of CASES.filter((x) => x.checkedInHandler)) {
-      const res = await request(null, c);
+      const res = await request({ role: null }, c);
       expect(res.statusCode, `${c.method} ${c.url}`).not.toBe(403);
     }
   });

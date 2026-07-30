@@ -5,13 +5,14 @@ import {
   type AuthUser,
   type CaptchaChallenge,
   changePasswordSchema,
+  type CounterpartyType,
   loginSchema,
   registerSchema,
   type Role,
 } from '@technic/contracts';
 import { config } from '../config';
 import { db } from '../db/client';
-import { users } from '../db/schema';
+import { counterparties, users } from '../db/schema';
 import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import { clearRefreshCookie, readRefreshCookie, setRefreshCookie } from '../lib/cookies';
@@ -38,6 +39,8 @@ interface AuthUserSource {
   isActive: boolean;
   mustChangePassword: boolean;
   constructionObjectId: string | null;
+  /** Тип контрагента учётки (ADR 0038): вместе с ролью задаёт права — портал считает их сам. */
+  counterpartyType: CounterpartyType | null;
 }
 
 function makeAuthUser(u: AuthUserSource): AuthUser {
@@ -52,7 +55,19 @@ function makeAuthUser(u: AuthUserSource): AuthUser {
     isActive: u.isActive,
     mustChangePassword: u.mustChangePassword,
     constructionObjectId: u.constructionObjectId,
+    counterpartyType: u.counterpartyType,
   };
+}
+
+/**
+ * Учётка вместе с типом её контрагента: права портал считает по паре «роль + тип» (ADR 0038),
+ * поэтому вход и смена пароля отдают тип так же, как его отдаёт `loadPrincipal`.
+ */
+function userWithCounterpartyType() {
+  return db
+    .select({ u: users, counterpartyType: counterparties.type })
+    .from(users)
+    .leftJoin(counterparties, eq(users.counterpartyId, counterparties.id));
 }
 
 /** Защита cookie-эндпоинтов от CSRF: проверка Origin (при single-origin + SameSite=Strict). */
@@ -144,7 +159,8 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
 
   r.post('/login', { schema: { body: loginSchema }, config: authRateLimit }, async (req, reply) => {
     const { email, password } = req.body;
-    const [u] = await db.select().from(users).where(eq(users.email, email));
+    const [row] = await userWithCounterpartyType().where(eq(users.email, email));
+    const u = row ? { ...row.u, counterpartyType: row.counterpartyType } : undefined;
     if (!u || u.deletedAt) throw err.invalidCredentials();
     const ok = await verifyPassword(u.passwordHash, password);
     if (!ok) throw err.invalidCredentials();
@@ -211,8 +227,9 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
     async (req, reply) => {
       const principal = requirePrincipal(req);
       const { currentPassword, newPassword } = req.body;
-      const [u] = await db.select().from(users).where(eq(users.id, principal.id));
-      if (!u) throw err.unauthorized();
+      const [row] = await userWithCounterpartyType().where(eq(users.id, principal.id));
+      if (!row) throw err.unauthorized();
+      const u = { ...row.u, counterpartyType: row.counterpartyType };
       const ok = await verifyPassword(u.passwordHash, currentPassword);
       if (!ok)
         throw err.badRequest('Текущий пароль неверен', { currentPassword: 'Неверный пароль' });

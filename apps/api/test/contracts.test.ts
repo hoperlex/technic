@@ -12,29 +12,29 @@ import {
 
 describe('статусы заявок', () => {
   it('линейный цикл доступен ролям, ведущим заявки', () => {
-    expect(canTransitionStatus('new', 'confirmed', 'dispatcher')).toBe(true);
-    expect(canTransitionStatus('confirmed', 'done', 'dispatcher')).toBe(true);
-    expect(canTransitionStatus('new', 'cancelled', 'dispatcher')).toBe(true);
-    expect(canTransitionStatus('confirmed', 'cancelled', 'manager')).toBe(true);
+    expect(canTransitionStatus('new', 'confirmed', { role: 'dispatcher' })).toBe(true);
+    expect(canTransitionStatus('confirmed', 'done', { role: 'dispatcher' })).toBe(true);
+    expect(canTransitionStatus('new', 'cancelled', { role: 'dispatcher' })).toBe(true);
+    expect(canTransitionStatus('confirmed', 'cancelled', { role: 'manager' })).toBe(true);
   });
 
   it('хронологию нарушать нельзя, закрытые статусы терминальны', () => {
-    expect(canTransitionStatus('new', 'done', 'dispatcher')).toBe(false);
-    expect(canTransitionStatus('confirmed', 'new', 'manager')).toBe(false);
+    expect(canTransitionStatus('new', 'done', { role: 'dispatcher' })).toBe(false);
+    expect(canTransitionStatus('confirmed', 'new', { role: 'manager' })).toBe(false);
     expect(requestStatusTransitions.done).toEqual([]);
     expect(requestStatusTransitions.cancelled).toEqual([]);
   });
 
   it('откат закрытой заявки — только администратору', () => {
-    expect(canTransitionStatus('done', 'confirmed', 'admin')).toBe(true);
-    expect(canTransitionStatus('cancelled', 'new', 'admin')).toBe(true);
-    expect(canTransitionStatus('done', 'confirmed', 'manager')).toBe(false);
-    expect(canTransitionStatus('cancelled', 'new', 'dispatcher')).toBe(false);
+    expect(canTransitionStatus('done', 'confirmed', { role: 'admin' })).toBe(true);
+    expect(canTransitionStatus('cancelled', 'new', { role: 'admin' })).toBe(true);
+    expect(canTransitionStatus('done', 'confirmed', { role: 'manager' })).toBe(false);
+    expect(canTransitionStatus('cancelled', 'new', { role: 'dispatcher' })).toBe(false);
   });
 
   it('роли без ведения заявок статусы не меняют', () => {
-    expect(allowedStatusTransitions('new', 'shtab')).toEqual([]);
-    expect(canTransitionStatus('new', 'confirmed', 'shtab')).toBe(false);
+    expect(allowedStatusTransitions('new', { role: 'shtab' })).toEqual([]);
+    expect(canTransitionStatus('new', 'confirmed', { role: 'shtab' })).toBe(false);
   });
 
   it('отмена требует причины, прочие переходы — нет', () => {

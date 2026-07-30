@@ -3,7 +3,12 @@ import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { and, count, eq, isNull } from 'drizzle-orm';
 import {
+  type CounterpartyType,
+  COUNTERPARTY_TYPES_WITH_ACCOUNTS,
+  counterpartyTypeHasAccounts,
+  counterpartyTypeLabels,
   createUserSchema,
+  isCounterpartyScopedRole,
   isObjectScopedRole,
   rejectUserSchema,
   roleLabels,
@@ -51,6 +56,7 @@ interface UserRowJoined {
   objectName: string | null;
   counterpartyId: string | null;
   counterpartyName: string | null;
+  counterpartyType: CounterpartyType | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -73,6 +79,7 @@ function toDto(r: UserRowJoined): UserDto {
     constructionObjectName: r.objectName,
     counterpartyId: r.counterpartyId,
     counterpartyName: r.counterpartyName,
+    counterpartyType: r.counterpartyType,
     createdAt: r.createdAt.toISOString(),
     updatedAt: r.updatedAt.toISOString(),
   };
@@ -95,6 +102,7 @@ const selectCols = {
   objectName: constructionObjects.name,
   counterpartyId: users.counterpartyId,
   counterpartyName: counterparties.name,
+  counterpartyType: counterparties.type,
   createdAt: users.createdAt,
   updatedAt: users.updatedAt,
 };
@@ -113,17 +121,22 @@ async function fetchUserDto(id: string): Promise<UserDto | null> {
 }
 
 /**
- * Контрагент учётки (ADR 0010). Для «Оператора» он обязателен и обязан быть оператором вывоза:
- * учётка подрядчика с ролью оператора видела бы чужие заявки. Для остальных ролей поле пустое —
- * область видимости у них задаётся иначе (объект у «Штаба») или не ограничена.
+ * Контрагент учётки (ADR 0010, 0038). Для внешнего исполнителя он обязателен и задаёт сразу
+ * две вещи: чьи заявки видны и в каком модуле учётка работает — модуль следует из типа
+ * контрагента (оператор вывоза ведёт вывоз, арендодатель ТС — заказ техники).
+ *
+ * Годятся только типы, за которых в портале кто-то работает (`COUNTERPARTY_TYPES_WITH_ACCOUNTS`,
+ * выводятся из матрицы прав): учётка на генподрядчике не получила бы ни одного модульного права
+ * и вошла бы в портал, где ей нечего делать. Для остальных ролей поле пустое — область видимости
+ * у них задаётся иначе (объект у «Штаба») или не ограничена.
  */
 async function resolveCounterpartyId(
   role: UserDto['role'],
   counterpartyId: string | null | undefined,
 ): Promise<string | null> {
-  if (role !== 'operator') return null;
+  if (!isCounterpartyScopedRole(role)) return null;
   if (!counterpartyId) {
-    throw err.badRequest('Для роли «Оператор» обязателен контрагент', {
+    throw err.badRequest(`Для роли «${roleLabels[role!]}» обязателен контрагент`, {
       counterpartyId: 'Выберите контрагента',
     });
   }
@@ -136,9 +149,12 @@ async function resolveCounterpartyId(
     .from(counterparties)
     .where(eq(counterparties.id, counterpartyId));
   if (!cp || cp.deletedAt) throw err.badRequest('Контрагент не найден');
-  if (cp.type !== 'operator') {
-    throw err.badRequest('Учётку оператора можно привязать только к контрагенту-оператору', {
-      counterpartyId: 'Нужен контрагент типа «Оператор»',
+  if (!counterpartyTypeHasAccounts(cp.type)) {
+    const allowed = COUNTERPARTY_TYPES_WITH_ACCOUNTS.map(
+      (t) => `«${counterpartyTypeLabels[t]}»`,
+    ).join(' или ');
+    throw err.badRequest(`Учётку исполнителя можно привязать к контрагенту типа ${allowed}`, {
+      counterpartyId: `Нужен контрагент типа ${allowed}`,
     });
   }
   if (!cp.isActive) throw err.badRequest('Контрагент неактивен');
@@ -268,7 +284,10 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
 
       const roleChanged = body.role !== undefined && body.role !== existing.role;
       const deactivated = body.isActive === false && existing.isActive;
-      const bumpAuth = roleChanged || deactivated;
+      // Смена контрагента у исполнителя — это смена и модуля, и области видимости (ADR 0038):
+      // права учётки после неё другие, поэтому выданные токены гасятся так же, как при смене роли.
+      const counterpartyChanged = nextCounterpartyId !== existing.counterpartyId;
+      const bumpAuth = roleChanged || counterpartyChanged || deactivated;
 
       await db
         .update(users)
@@ -291,7 +310,7 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
         action: 'user.update',
         entityType: 'user',
         entityId: id,
-        metadata: { roleChanged, deactivated },
+        metadata: { roleChanged, counterpartyChanged, deactivated },
       });
       return (await fetchUserDto(id))!;
     },

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { Role } from '@technic/contracts';
+import type { CounterpartyType, Role } from '@technic/contracts';
 import type { Principal } from '../src/auth/principal';
 
 // Модуль маршрутов тянет S3-клиент и конфиг — для правила доступа нужен только сам файл.
@@ -25,7 +25,11 @@ const { decideFileAccess } = await import('../src/routes/files');
 
 const UPLOADER = 'uploader-1';
 
-function principal(role: Role | null, id = UPLOADER): Principal {
+function principal(
+  role: Role | null,
+  id = UPLOADER,
+  counterpartyType: CounterpartyType | null = null,
+): Principal {
   return {
     id,
     email: 'user@test.local',
@@ -38,9 +42,14 @@ function principal(role: Role | null, id = UPLOADER): Principal {
     mustChangePassword: false,
     constructionObjectId: null,
     counterpartyId: null,
+    counterpartyType,
     authVersion: 1,
   };
 }
+
+/** Внешний исполнитель: модуль ему открывает тип контрагента, а не роль (ADR 0038). */
+const wasteOperator = (id = 'other') => principal('operator', id, 'operator');
+const vehicleLessor = (id = 'other') => principal('operator', id, 'vehicle_lessor');
 
 const NOWHERE = { visibleWaste: false, visibleVehicle: false, linkedAnywhere: false };
 const IN_WASTE = { visibleWaste: true, visibleVehicle: false, linkedAnywhere: true };
@@ -70,20 +79,18 @@ describe('привязанный файл живёт по правилам св�
   });
 
   it('видимая заявка вывоза открывает файл тому, кто вправе её читать', () => {
-    for (const role of [
-      'admin',
-      'manager',
-      'dispatcher',
-      'shtab',
-      'rukstroy',
-      'operator',
-    ] as Role[]) {
+    for (const role of ['admin', 'manager', 'dispatcher', 'shtab', 'rukstroy'] as Role[]) {
       expect(decideFileAccess(principal(role, 'other'), UPLOADER, IN_WASTE), role).toBe(true);
     }
+    expect(decideFileAccess(wasteOperator(), UPLOADER, IN_WASTE)).toBe(true);
   });
 
-  it('вложение заказа ТС оператору вывоза недоступно (ADR 0010)', () => {
-    expect(decideFileAccess(principal('operator', 'other'), UPLOADER, IN_VEHICLE)).toBe(false);
+  it('исполнителю доступны вложения только своего модуля (ADR 0010, 0038)', () => {
+    // Оператор вывоза не видит вложений заказа ТС, арендодатель — вложений вывоза мусора:
+    // у каждого открыт ровно тот модуль, который назван типом его контрагента.
+    expect(decideFileAccess(wasteOperator(), UPLOADER, IN_VEHICLE)).toBe(false);
+    expect(decideFileAccess(vehicleLessor(), UPLOADER, IN_WASTE)).toBe(false);
+    expect(decideFileAccess(vehicleLessor(), UPLOADER, IN_VEHICLE)).toBe(true);
     expect(decideFileAccess(principal('dispatcher', 'other'), UPLOADER, IN_VEHICLE)).toBe(true);
   });
 });

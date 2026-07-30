@@ -19,7 +19,9 @@ export const roleLabels: Record<Role, string> = {
   dispatcher: 'Диспетчер',
   shtab: 'Штаб',
   rukstroy: 'Руководитель строительства',
-  operator: 'Оператор (вывоз мусора)',
+  // Модуль в подписи не назван намеренно: что именно исполняет учётка — вывоз мусора или
+  // аренду техники — решает тип её контрагента, а не роль (ADR 0038).
+  operator: 'Оператор (внешний исполнитель)',
   observer: 'Наблюдатель',
 };
 
@@ -44,6 +46,20 @@ export const OBJECT_SCOPED_ROLES = ['shtab', 'rukstroy'] as const;
 
 export function isObjectScopedRole(role: Role | null | undefined): boolean {
   return !!role && (OBJECT_SCOPED_ROLES as readonly string[]).includes(role);
+}
+
+/**
+ * Роли, работающие от контрагента (ADR 0038): контрагент задаёт им и область видимости («чьи
+ * заявки видны»), и сам модуль работы — он следует из типа контрагента. Отсюда обязательность
+ * контрагента при активации и запрет менять тип контрагента, пока на нём висят учётки.
+ *
+ * Список здесь, рядом с объектными ролями, по той же причине: по нему API требует контрагента,
+ * форма учётки показывает поле, а матрица прав знает, у кого спрашивать тип контрагента.
+ */
+export const COUNTERPARTY_SCOPED_ROLES = ['operator'] as const;
+
+export function isCounterpartyScopedRole(role: Role | null | undefined): boolean {
+  return !!role && (COUNTERPARTY_SCOPED_ROLES as readonly string[]).includes(role);
 }
 
 // Кто что может — в permissions.ts (ADR 0021): здесь только словари статусов и типов, чтобы

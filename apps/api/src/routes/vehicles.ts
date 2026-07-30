@@ -244,7 +244,7 @@ export default async function vehiclesRoutes(app: FastifyInstance): Promise<void
       const q = req.query;
       // Удалённую технику показываем тем, кто ведёт справочник: остальным она в списке
       // выбора только мешает (ADR 0021).
-      const showDeleted = q.includeDeleted && can(requirePrincipal(req).role, 'directories.write');
+      const showDeleted = q.includeDeleted && can(requirePrincipal(req), 'directories.write');
       const where = and(
         showDeleted ? undefined : isNull(vehicles.deletedAt),
         q.ownership ? eq(vehicles.ownership, q.ownership) : undefined,

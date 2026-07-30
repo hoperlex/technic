@@ -698,19 +698,23 @@ describe('vehicle-requests: виза руководителя строитель
   });
 
   it('без визы «в работу» не предлагается никому, отмена остаётся', () => {
-    expect(allowedVehicleRequestTransitions('new', 'dispatcher', false)).toEqual(['cancelled']);
-    expect(allowedVehicleRequestTransitions('new', 'dispatcher', true)).toEqual([
+    expect(allowedVehicleRequestTransitions('new', { role: 'dispatcher' }, false)).toEqual([
+      'cancelled',
+    ]);
+    expect(allowedVehicleRequestTransitions('new', { role: 'dispatcher' }, true)).toEqual([
       'confirmed',
       'cancelled',
     ]);
     // Откат закрытой заявки — тоже переход в «В работе»: без визы его нет и у администратора.
-    expect(allowedVehicleRequestTransitions('done', 'admin', false)).toEqual([]);
-    expect(allowedVehicleRequestTransitions('done', 'admin', true)).toEqual(['confirmed']);
+    expect(allowedVehicleRequestTransitions('done', { role: 'admin' }, false)).toEqual([]);
+    expect(allowedVehicleRequestTransitions('done', { role: 'admin' }, true)).toEqual([
+      'confirmed',
+    ]);
   });
 
   it('роль без права на статус визой ничего не приобретает', () => {
-    expect(allowedVehicleRequestTransitions('new', 'rukstroy', true)).toEqual([]);
-    expect(allowedVehicleRequestTransitions('new', 'shtab', true)).toEqual([]);
+    expect(allowedVehicleRequestTransitions('new', { role: 'rukstroy' }, true)).toEqual([]);
+    expect(allowedVehicleRequestTransitions('new', { role: 'shtab' }, true)).toEqual([]);
   });
 
   it('визу ставят и снимают, пока заявка «Новая»', () => {

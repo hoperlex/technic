@@ -15,8 +15,9 @@ interface AuthContextValue {
   hasRole: (...roles: Role[]) => boolean;
   /**
    * Право текущего пользователя по общей матрице (ADR 0021) — той же, по которой API
-   * проверяет доступ. Интерфейс скрывает недоступное, но решение всё равно за сервером:
-   * здесь это удобство, а не защита.
+   * проверяет доступ. Спрашивается у самого пользователя, а не у его роли: у внешнего
+   * исполнителя модуль задаёт тип контрагента (ADR 0038). Интерфейс скрывает недоступное, но
+   * решение всё равно за сервером: здесь это удобство, а не защита.
    */
   can: (permission: Permission) => boolean;
 }
@@ -81,7 +82,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setUser(me);
       },
       hasRole: (...roles) => !!user?.role && roles.includes(user.role),
-      can: (permission) => roleCan(user?.role, permission),
+      can: (permission) => roleCan(user, permission),
     }),
     [user, status],
   );

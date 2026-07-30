@@ -6,6 +6,7 @@ import {
   asc,
   count,
   eq,
+  exists,
   gte,
   inArray,
   isNotNull,
@@ -81,10 +82,12 @@ import type { Principal } from '../auth/principal';
 import {
   approvesOwnRequestOnCreate,
   assertArchiveVisible,
+  assertLessorScope,
   assertObjectRoleEditable,
   assertObjectScope,
   assertTransitionAllowed,
   canApproveForObject,
+  lessorVisibilityWhere,
   requestVisibilityWhere,
 } from '../lib/access';
 import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
@@ -230,6 +233,30 @@ function baseQuery() {
 }
 
 type RequestRow = Awaited<ReturnType<typeof baseQuery>>[number];
+
+// Машина в подзапросе видимости — своим алиасом: в списке `vehicles` уже присоединена, и
+// одноимённая таблица внутри EXISTS читалась бы как ссылка на внешнюю.
+const scopedVehicles = alias(vehicles, 'scoped_vehicles');
+
+/**
+ * Область видимости арендодателя (ADR 0038): заявка видна, если на неё назначена его техника.
+ *
+ * EXISTS, а не условие по присоединённой колонке: то же правило нужно списку, журналу, срезу «На
+ * объекте» и трём сводкам, а таблицы в них соединены по-разному — join ради видимости пришлось
+ * бы добавлять в каждый запрос отдельно и не забывать в следующем. Для всех остальных ролей
+ * условие пустое и в запрос не попадает.
+ */
+function assignedLessorWhere(p: Principal): SQL | undefined {
+  const ownLessor = lessorVisibilityWhere(p, scopedVehicles.lessorId);
+  if (!ownLessor) return undefined;
+  return exists(
+    db
+      .select({ one: sql`1` })
+      .from(vehicleRequestAssignments)
+      .innerJoin(scopedVehicles, eq(vehicleRequestAssignments.vehicleId, scopedVehicles.id))
+      .where(and(eq(vehicleRequestAssignments.requestId, vehicleRequests.id), ownLessor)),
+  );
+}
 
 /** numeric из pg приходит строкой — приводим к числу с проверкой конечности. */
 function toNum(v: string | null): number | null {
@@ -809,11 +836,12 @@ function dateFilters(
 function historyWhere(p: Principal, q: z.infer<typeof vehicleRequestHistoryQuerySchema>): SQL {
   const statuses =
     q.status && isClosedRequestStatus(q.status) ? [q.status] : [...CLOSED_REQUEST_STATUSES];
-  const showDeleted = q.includeDeleted && can(p.role, 'archive.read');
+  const showDeleted = q.includeDeleted && can(p, 'archive.read');
   return and(
     inArray(vehicleRequests.status, statuses),
     showDeleted ? undefined : isNull(vehicleRequests.deletedAt),
     requestVisibilityWhere(p, vehicleRequests.objectId),
+    assignedLessorWhere(p),
     q.requestType ? eq(vehicleRequests.requestType, q.requestType) : undefined,
     q.objectId ? eq(vehicleRequests.objectId, q.objectId) : undefined,
     q.vehicleTypeId ? eq(vehicleRequests.vehicleTypeId, q.vehicleTypeId) : undefined,
@@ -872,6 +900,7 @@ function onSiteWhere(p: Principal, q: VehicleRequestOnSiteQuery, onDate: string)
     eq(vehicleRequests.status, 'confirmed'),
     isNull(vehicleRequests.deletedAt),
     requestVisibilityWhere(p, vehicleRequests.objectId),
+    assignedLessorWhere(p),
     q.objectId ? eq(vehicleRequests.objectId, q.objectId) : undefined,
     q.vehicleTypeId ? eq(vehicleRequests.vehicleTypeId, q.vehicleTypeId) : undefined,
     q.vehicleCategoryId ? eq(vehicleRequests.vehicleCategoryId, q.vehicleCategoryId) : undefined,
@@ -934,11 +963,12 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
   r.get('/', { ...auth, schema: { querystring: vehicleRequestListQuerySchema } }, async (req) => {
     const p = requirePrincipal(req);
     const q = req.query;
-    const showDeleted = q.includeDeleted && can(p.role, 'archive.read');
+    const showDeleted = q.includeDeleted && can(p, 'archive.read');
     const where = and(
       q.requestType ? eq(vehicleRequests.requestType, q.requestType) : undefined,
       showDeleted ? undefined : isNull(vehicleRequests.deletedAt),
       requestVisibilityWhere(p, vehicleRequests.objectId),
+      assignedLessorWhere(p),
       q.status ? eq(vehicleRequests.status, q.status) : undefined,
       q.objectId ? eq(vehicleRequests.objectId, q.objectId) : undefined,
       q.vehicleTypeId ? eq(vehicleRequests.vehicleTypeId, q.vehicleTypeId) : undefined,
@@ -1164,6 +1194,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       const where = and(
         isNull(vehicleRequests.deletedAt),
         requestVisibilityWhere(p, vehicleRequests.objectId),
+        assignedLessorWhere(p),
         req.query.objectId ? eq(vehicleRequests.objectId, req.query.objectId) : undefined,
         req.query.requestType ? eq(vehicleRequests.requestType, req.query.requestType) : undefined,
         // Заказанная техника (ADR 0028): один тип целиком либо одна его категория — те же
@@ -1207,6 +1238,9 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
     if (!dto) throw err.notFound('Заявка не найдена');
     assertArchiveVisible(p, dto.deletedAt, 'Заявка не найдена');
     assertObjectScope(p, dto.objectId);
+    // Список арендодателю чужую заявку не покажет, но карточку он мог бы открыть по прямому id
+    // (ADR 0038): область спрашивается там, где запись достают, а не только там, где ищут.
+    assertLessorScope(p, dto.assignment?.lessorId ?? null);
     return dto;
   });
 
@@ -1222,14 +1256,23 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         createdAt: vehicleRequests.createdAt,
         createdBy: vehicleRequests.createdBy,
         createdByName: users.fullName,
+        // Арендодатель назначенной машины: по нему история открывается исполнителю (ADR 0038) —
+        // границы у неё те же, что у карточки.
+        assignedLessorId: vehicles.lessorId,
       })
       .from(vehicleRequests)
       .innerJoin(users, eq(vehicleRequests.createdBy, users.id))
+      .leftJoin(
+        vehicleRequestAssignments,
+        eq(vehicleRequests.id, vehicleRequestAssignments.requestId),
+      )
+      .leftJoin(vehicles, eq(vehicleRequestAssignments.vehicleId, vehicles.id))
       .where(eq(vehicleRequests.id, req.params.id));
     if (!row) throw err.notFound('Заявка не найдена');
     // Архивная заявка видна только тем, кому открыт архив, — как и сама карточка (GET /:id).
     assertArchiveVisible(p, row.deletedAt, 'Заявка не найдена');
     assertObjectScope(p, row.objectId);
+    assertLessorScope(p, row.assignedLessorId);
     return loadVehicleRequestHistory(row.id, {
       at: row.createdAt,
       actorId: row.createdBy,
@@ -1492,8 +1535,13 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       // отката может сменить и машину, и ставки).
       const before = await getDto(req.params.id);
       if (!before || before.deletedAt) throw err.notFound('Заявка не найдена');
+      assertObjectScope(p, before.objectId);
+      // Заявку закрывает тот, чья техника на неё вышла (ADR 0038): без этой проверки арендодатель
+      // закрыл бы чужую заявку по прямому id — право на переход у него есть, область спрашивается
+      // отдельно.
+      assertLessorScope(p, before.assignment?.lessorId ?? null);
       if (before.status === status) return before;
-      assertTransitionAllowed(before.status, status, p.role);
+      assertTransitionAllowed(p, before.status, status);
       // Без визы заявка не обрабатывается (ADR 0025): в работу её не берут, пока руководитель
       // строительства не согласовал. Отменить незавизированную заявку можно — ей так и закрывают
       // путь. 422, а не 403: право на переход есть, не хватает состояния самой заявки.

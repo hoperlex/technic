@@ -2,43 +2,56 @@ import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes } from 'react-router';
-import { can, type AuthUser, type Permission, type Role } from '@technic/contracts';
+import {
+  can,
+  type AccessSubject,
+  type AuthUser,
+  type CounterpartyType,
+  type Permission,
+  type Role,
+} from '@technic/contracts';
 import { MOBILE_VIEWPORT, setViewport } from './viewport';
 
 /**
  * Портал скрывает недоступное по той же матрице, по которой API запрещает (ADR 0021).
- * Проверяется именно связка «роль → право → элемент интерфейса»: расхождение здесь даёт либо
- * кнопку, ведущую в 403, либо раздел, невидимый тому, кому он разрешён.
+ * Проверяется именно связка «субъект → право → элемент интерфейса»: расхождение здесь даёт либо
+ * кнопку, ведущую в 403, либо раздел, невидимый тому, кому он разрешён. Субъект — роль, а у
+ * внешнего исполнителя пара «роль + тип контрагента» (ADR 0038): один и тот же `operator`
+ * видит разные разделы в зависимости от того, кого он исполняет.
  *
  * `useAuth` подменяется целиком: настоящий провайдер поднимает сессию через API, а к правам
  * это отношения не имеет.
  */
 
-let currentRole: Role | null = null;
+let currentSubject: AccessSubject = { role: null };
+
+const authUser = (subject: AccessSubject): AuthUser | null =>
+  subject.role
+    ? {
+        id: 'user-1',
+        email: 'user@test.local',
+        lastName: 'Пользователь',
+        firstName: 'Тестовый',
+        middleName: '',
+        fullName: 'Пользователь Тестовый',
+        role: subject.role,
+        isActive: true,
+        mustChangePassword: false,
+        constructionObjectId: null,
+        counterpartyType: subject.counterpartyType ?? null,
+      }
+    : null;
 
 vi.mock('../src/auth/AuthContext', () => ({
   useAuth: () => ({
-    user: currentRole
-      ? ({
-          id: 'user-1',
-          email: 'user@test.local',
-          lastName: 'Пользователь',
-          firstName: 'Тестовый',
-          middleName: '',
-          fullName: 'Пользователь Тестовый',
-          role: currentRole,
-          isActive: true,
-          mustChangePassword: false,
-          constructionObjectId: null,
-        } satisfies AuthUser)
-      : null,
+    user: authUser(currentSubject),
     status: 'authenticated' as const,
     login: vi.fn(),
     logout: vi.fn(),
     setUser: vi.fn(),
     refreshUser: vi.fn(),
-    hasRole: (...roles: Role[]) => !!currentRole && roles.includes(currentRole),
-    can: (permission: Permission) => can(currentRole, permission),
+    hasRole: (...roles: Role[]) => !!currentSubject.role && roles.includes(currentSubject.role),
+    can: (permission: Permission) => can(currentSubject, permission),
   }),
 }));
 
@@ -57,8 +70,14 @@ function withQueryClient(ui: React.ReactElement) {
 const { AppLayout } = await import('../src/components/AppLayout');
 const { RequirePermission } = await import('../src/auth/ProtectedRoute');
 
-function renderMenu(role: Role | null) {
-  currentRole = role;
+/** Внешний исполнитель: роль одна, разделы разные — их называет тип контрагента (ADR 0038). */
+const executor = (counterpartyType: CounterpartyType): AccessSubject => ({
+  role: 'operator',
+  counterpartyType,
+});
+
+function renderMenu(subject: AccessSubject | Role | null) {
+  currentSubject = typeof subject === 'string' ? { role: subject } : (subject ?? { role: null });
   return render(
     withQueryClient(
       <MemoryRouter initialEntries={['/waste']}>
@@ -73,7 +92,7 @@ function renderMenu(role: Role | null) {
 }
 
 function renderGuarded(role: Role | null, permission: Permission) {
-  currentRole = role;
+  currentSubject = { role };
   return render(
     <MemoryRouter initialEntries={['/directories']}>
       <Routes>
@@ -101,10 +120,23 @@ describe('пункты меню следуют из прав', () => {
   });
 
   it('оператору вывоза не показывают ни заказ ТС, ни справочники (ADR 0010)', () => {
-    renderMenu('operator');
+    renderMenu(executor('operator'));
     expect(screen.getByText('Вывоз мусора')).toBeDefined();
     expect(screen.queryByText('Заказ ТС')).toBeNull();
     expect(screen.queryByText('Справочники')).toBeNull();
+  });
+
+  it('арендодателю ТС показывают заказ техники — и только его (ADR 0038)', () => {
+    renderMenu(executor('vehicle_lessor'));
+    expect(screen.getByText('Заказ ТС')).toBeDefined();
+    expect(screen.queryByText('Вывоз мусора')).toBeNull();
+    expect(screen.queryByText('Справочники')).toBeNull();
+  });
+
+  it('исполнитель без контрагента не видит ни одного модуля заявок', () => {
+    renderMenu({ role: 'operator' });
+    expect(screen.queryByText('Вывоз мусора')).toBeNull();
+    expect(screen.queryByText('Заказ ТС')).toBeNull();
   });
 
   it('штаб ведёт заявки обоих модулей, но справочники не правит', () => {
@@ -134,9 +166,9 @@ describe('пункты меню следуют из прав', () => {
  * в 403, а недостающий — раздел, невидимый тому, кому он разрешён. Подписи в навигации сокращены,
  * доступное имя кнопки остаётся полным — по нему пункт и ищется.
  */
-function mobileNavLabels(role: Role | null): string[] {
+function mobileNavLabels(subject: AccessSubject | Role | null): string[] {
   setViewport(MOBILE_VIEWPORT);
-  renderMenu(role);
+  renderMenu(subject);
   const nav = screen.getByRole('navigation', { name: 'Разделы портала' });
   return [...nav.querySelectorAll('button')].map((b) => b.getAttribute('aria-label') ?? '');
 }
@@ -168,7 +200,11 @@ describe('нижняя навигация на мобильном повторя
   });
 
   it('оператор вывоза — только вывоз мусора (ADR 0010)', () => {
-    expect(mobileNavLabels('operator')).toEqual(['Вывоз мусора']);
+    expect(mobileNavLabels(executor('operator'))).toEqual(['Вывоз мусора']);
+  });
+
+  it('арендодатель ТС — только заказ техники (ADR 0038)', () => {
+    expect(mobileNavLabels(executor('vehicle_lessor'))).toEqual(['Заказ ТС']);
   });
 
   it('наблюдатель — оба модуля заявок, смотреть их можно и с телефона (ADR 0033)', () => {

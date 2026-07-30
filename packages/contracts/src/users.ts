@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { isObjectScopedRole, roleSchema, type Role } from './enums';
+import { isCounterpartyScopedRole, isObjectScopedRole, roleSchema, type Role } from './enums';
+import type { CounterpartyType } from './counterparties';
 import { baseListQuery, uuidSchema } from './common';
 import { passwordIdentityIssue, passwordSchema } from './password';
 import { personNameFields, personNamePartialFields, type PersonNameParts } from './person-name';
@@ -39,7 +40,11 @@ export const createUserSchema = z
     password: passwordSchema,
     isActive: z.boolean().default(true),
     constructionObjectId: uuidSchema.nullish(),
-    /** Контрагент учётки: обязателен для «Оператора» — задаёт, чьи заявки он видит (ADR 0010). */
+    /**
+     * Контрагент учётки: обязателен для внешнего исполнителя — задаёт и чьи заявки он видит
+     * (ADR 0010), и в каком модуле работает, потому что модуль следует из типа контрагента
+     * (ADR 0038).
+     */
     counterpartyId: uuidSchema.nullish(),
   })
   // Объектные роли («Штаб», «Руководитель строительства») работают в пределах своего объекта —
@@ -48,8 +53,8 @@ export const createUserSchema = z
     message: 'Роль работает в пределах объекта — укажите объект',
     path: ['constructionObjectId'],
   })
-  .refine((v) => v.role !== 'operator' || !!v.counterpartyId, {
-    message: 'Для роли «Оператор» обязателен контрагент',
+  .refine((v) => !isCounterpartyScopedRole(v.role) || !!v.counterpartyId, {
+    message: 'Роль работает от контрагента — укажите контрагента',
     path: ['counterpartyId'],
   })
   .superRefine((v, ctx) => {
@@ -96,6 +101,8 @@ export interface UserDto extends PersonNameParts {
   constructionObjectName: string | null;
   counterpartyId: string | null;
   counterpartyName: string | null;
+  /** Тип контрагента: у внешнего исполнителя им заданы модуль и набор прав (ADR 0038). */
+  counterpartyType: CounterpartyType | null;
   createdAt: string;
   updatedAt: string;
 }

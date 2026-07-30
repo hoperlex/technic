@@ -233,9 +233,7 @@ export function StatusCell({
   const [sheetOpen, setSheetOpen] = useState(false);
   // Линейный цикл доступен ведущим заявки ролям, откаты закрытых заявок — только админу;
   // «В работе» до визы не предлагается никому — сервер такой переход отклонит.
-  const transitions = user?.role
-    ? allowedVehicleRequestTransitions(status, user.role, approved)
-    : [];
+  const transitions = user ? allowedVehicleRequestTransitions(status, user, approved) : [];
   const plain = <Tag color={requestStatusColors[status]}>{requestStatusLabels[status]}</Tag>;
   // Причина отмены — подсказкой только на десктопе: на телефоне подсказка по касанию не
   // открывается, и причина выводится строкой карточки (ADR 0030).

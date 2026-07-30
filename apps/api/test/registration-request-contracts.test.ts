@@ -40,8 +40,12 @@ describe('перечень пожеланий', () => {
     expect(registrationRoleRequestLabels.site_staff).toBe('Сотрудник объекта');
   });
 
-  it('арендодателю техники и «другому» роль не соответствует', () => {
-    expect(registrationRoleRequestRole.vehicle_lessor).toBeNull();
+  it('оба исполнителя ведут к роли исполнителя — различает их контрагент (ADR 0038)', () => {
+    expect(registrationRoleRequestRole.waste_operator).toBe('operator');
+    expect(registrationRoleRequestRole.vehicle_lessor).toBe('operator');
+  });
+
+  it('«другому» роль не соответствует — пожелание требует разбора', () => {
     expect(registrationRoleRequestRole.other).toBeNull();
   });
 });

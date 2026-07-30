@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { CounterpartyType } from './counterparties';
 import type { Role } from './enums';
 import { passwordIdentityIssue, passwordSchema } from './password';
 import { personNameFields, type PersonNameParts } from './person-name';
@@ -85,6 +86,11 @@ export interface AuthUser extends PersonNameParts {
   isActive: boolean;
   mustChangePassword: boolean;
   constructionObjectId: string | null;
+  /**
+   * Тип контрагента учётки (ADR 0038): у роли внешнего исполнителя он определяет модуль, в
+   * котором она работает, поэтому портал спрашивает права по паре «роль + тип», а не по роли.
+   */
+  counterpartyType: CounterpartyType | null;
 }
 
 export interface LoginResult {

@@ -3,6 +3,10 @@ import { Alert, App, Badge, Button, Dropdown, Form, Input, Segmented, Space, Swi
 import { MoreOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
+  COUNTERPARTY_TYPES_WITH_ACCOUNTS,
+  counterpartyTypeHasAccounts,
+  counterpartyTypeLabels,
+  isCounterpartyScopedRole,
   isObjectScopedRole,
   registrationRequestDetail,
   registrationRoleRequestLabels,
@@ -33,7 +37,10 @@ interface UserFormValues {
   role: (typeof ROLES)[number];
   password?: string;
   constructionObjectId?: string | null;
-  /** Контрагент учётки: обязателен для роли «Оператор» (ADR 0010). */
+  /**
+   * Контрагент учётки: обязателен для внешнего исполнителя (ADR 0010). Его тип задаёт модуль,
+   * в котором учётка работает, — вывоз мусора или заказ ТС (ADR 0038).
+   */
   counterpartyId?: string | null;
   isActive: boolean;
 }
@@ -94,14 +101,14 @@ export function UsersTab() {
         sortOrder: 'asc',
       }),
   });
-  // Оператора привязываем только к контрагентам-операторам: у подрядчика заявок на вывоз нет.
-  const { data: operators, isLoading: operatorsLoading } = useQuery({
-    queryKey: ['counterparties', 'operators-for-select'],
+  // Учётку исполнителя привязываем к контрагенту, за которого в портале работают: оператор
+  // вывоза и арендодатель ТС (ADR 0038). У подрядчика заявок нет ни в одном модуле.
+  const { data: executors, isLoading: executorsLoading } = useQuery({
+    queryKey: ['counterparties', 'executors-for-select'],
     queryFn: () =>
       counterpartiesApi.list({
         page: 1,
         pageSize: 500,
-        type: 'operator',
         isActive: 'true',
         sortBy: 'name',
         sortOrder: 'asc',
@@ -111,10 +118,15 @@ export function UsersTab() {
     value: o.id,
     label: `${o.code} — ${o.name}`,
   }));
-  const operatorOptions = (operators?.items ?? []).map((c) => ({
-    value: c.id,
-    label: `${c.name} (ИНН ${c.inn})`,
-  }));
+  // Группами по типу: тип решает, что учётка сможет делать, поэтому выбор идёт «сначала кем,
+  // потом кого», а не по одному плоскому списку, где два вида исполнителей перемешаны.
+  const executorGroups = COUNTERPARTY_TYPES_WITH_ACCOUNTS.map((type) => ({
+    label: counterpartyTypeLabels[type],
+    options: (executors?.items ?? [])
+      .filter((c) => c.type === type)
+      .map((c) => ({ value: c.id, label: `${c.name} (ИНН ${c.inn})` })),
+  })).filter((g) => g.options.length > 0);
+  const executorCount = executorGroups.reduce((n, g) => n + g.options.length, 0);
   const roleOptions = ROLES.map((r) => ({ value: r, label: roleLabels[r] }));
 
   const [open, setOpen] = useState(false);
@@ -156,7 +168,9 @@ export function UsersTab() {
         constructionObjectId: isObjectScopedRole(values.role)
           ? (values.constructionObjectId ?? null)
           : null,
-        counterpartyId: values.role === 'operator' ? (values.counterpartyId ?? null) : null,
+        counterpartyId: isCounterpartyScopedRole(values.role)
+          ? (values.counterpartyId ?? null)
+          : null,
       };
       if (record) {
         const { password: _pw, email: _email, ...rest } = payload;
@@ -302,10 +316,16 @@ export function UsersTab() {
     }),
     textColumn<UserDto>({
       key: 'counterpartyName',
-      title: 'Контрагент (Оператор)',
+      title: 'Контрагент',
       dataIndex: 'counterpartyName',
       searchable: false,
-      render: (v) => (v ? String(v) : '—'),
+      // Тип рядом с наименованием: у исполнителя он и есть ответ на «что эта учётка ведёт».
+      render: (_v, r) =>
+        r.counterpartyName
+          ? counterpartyTypeHasAccounts(r.counterpartyType)
+            ? `${r.counterpartyName} — ${counterpartyTypeLabels[r.counterpartyType]}`
+            : r.counterpartyName
+          : '—',
     }),
     boolBadgeColumn<UserDto>({
       key: 'isActive',
@@ -430,21 +450,21 @@ export function UsersTab() {
               />
             </Form.Item>
           ) : null}
-          {watchRole === 'operator' ? (
+          {isCounterpartyScopedRole(watchRole) ? (
             <Form.Item
               name="counterpartyId"
-              label="Контрагент (для роли «Оператор»)"
-              tooltip="Оператор видит только заявки, назначенные этому контрагенту"
+              label={`Контрагент (для роли «${roleLabels[watchRole!]}»)`}
+              tooltip="Тип контрагента задаёт раздел: оператор вывоза ведёт заявки на вывоз мусора, арендодатель — заявки на технику, куда вышли его машины"
               rules={[{ required: true, message: 'Выберите контрагента' }]}
               extra={
-                operatorOptions.length === 0
-                  ? 'Нет активных контрагентов типа «Оператор» — заведите его в справочнике'
+                executorCount === 0
+                  ? 'Нет активных контрагентов-исполнителей — заведите оператора вывоза или арендодателя в справочнике'
                   : undefined
               }
             >
               <AutoSelect
-                options={operatorOptions}
-                loading={operatorsLoading}
+                options={executorGroups}
+                loading={executorsLoading}
                 showSearch
                 optionFilterProp="label"
               />

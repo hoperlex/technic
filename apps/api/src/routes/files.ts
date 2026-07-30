@@ -15,13 +15,19 @@ import {
   files,
   type FileRow,
   requestFiles,
+  vehicleRequestAssignments,
   vehicleRequestFiles,
   vehicleRequests,
+  vehicles,
   wasteRequests,
 } from '../db/schema';
 import { err } from '../lib/errors';
 import { requirePrincipal } from '../auth/plugin';
-import { operatorVisibilityWhere, requestVisibilityWhere } from '../lib/access';
+import {
+  lessorVisibilityWhere,
+  operatorVisibilityWhere,
+  requestVisibilityWhere,
+} from '../lib/access';
 import { isFileLinked } from '../services/request-files';
 import type { Principal } from '../auth/principal';
 import { buildObjectKey, deleteObject, headObject, presignGet, presignPut } from '../lib/s3';
@@ -77,8 +83,8 @@ export function decideFileAccess(
   uploadedBy: string | null,
   linkage: FileLinkage,
 ): boolean {
-  if (linkage.visibleWaste && can(p.role, 'wasteRequests.read')) return true;
-  if (linkage.visibleVehicle && can(p.role, 'vehicleRequests.read')) return true;
+  if (linkage.visibleWaste && can(p, 'wasteRequests.read')) return true;
+  if (linkage.visibleVehicle && can(p, 'vehicleRequests.read')) return true;
   return !linkage.linkedAnywhere && !!uploadedBy && uploadedBy === p.id;
 }
 
@@ -90,8 +96,8 @@ async function canAccessFile(
   // Связи ищем только по доступным ролям модулям: иначе учётка без роли (и любая новая роль)
   // прошла бы по заявке вывоза — ограничения видимости на неё не действуют, они про штаб и
   // оператора.
-  const canReadWaste = can(p.role, 'wasteRequests.read');
-  const canReadVehicle = can(p.role, 'vehicleRequests.read');
+  const canReadWaste = can(p, 'wasteRequests.read');
+  const canReadVehicle = can(p, 'vehicleRequests.read');
 
   let visibleWaste = false;
   if (canReadWaste) {
@@ -114,17 +120,24 @@ async function canAccessFile(
   }
 
   let visibleVehicle = false;
-  // Заказ ТС оператору недоступен целиком (ADR 0010) — значит и вложения его заявок.
   if (!visibleWaste && canReadVehicle) {
     const vehicle = await db
       .select({ id: vehicleRequests.id })
       .from(vehicleRequestFiles)
       .innerJoin(vehicleRequests, eq(vehicleRequestFiles.vehicleRequestId, vehicleRequests.id))
+      // Назначенная техника нужна не карточке файла, а области видимости: арендодателю видны
+      // заявки, на которые вышли его машины (ADR 0038), — и вложения у них те же.
+      .leftJoin(
+        vehicleRequestAssignments,
+        eq(vehicleRequests.id, vehicleRequestAssignments.requestId),
+      )
+      .leftJoin(vehicles, eq(vehicleRequestAssignments.vehicleId, vehicles.id))
       .where(
         and(
           eq(vehicleRequestFiles.fileId, fileId),
           isNull(vehicleRequests.deletedAt),
           requestVisibilityWhere(p, vehicleRequests.objectId),
+          lessorVisibilityWhere(p, vehicles.lessorId),
         ),
       )
       .limit(1);
@@ -230,7 +243,7 @@ export default async function filesRoutes(app: FastifyInstance): Promise<void> {
     const [file] = await db.select().from(files).where(eq(files.id, req.params.id));
     if (!file || file.deletedAt) throw err.notFound('Файл не найден');
     // Свой файл удаляет автор загрузки, чужой — тот, кто ведёт заявки.
-    if (file.uploadedBy !== p.id && !can(p.role, 'files.manageAny')) throw err.forbidden();
+    if (file.uploadedBy !== p.id && !can(p, 'files.manageAny')) throw err.forbidden();
     // Прикреплённый к заявке файл удаляется только через редактирование заявки.
     if (await isFileLinked(file.id)) {
       throw err.conflict('Файл прикреплён к заявке — удалите его через редактирование заявки');

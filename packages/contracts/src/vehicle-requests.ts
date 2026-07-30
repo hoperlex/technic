@@ -1,8 +1,8 @@
 import { z } from 'zod';
 import { requestStatusSchema, statusChangeRequiresReason } from './enums';
-import type { RequestStatus, Role } from './enums';
-import { allowedStatusTransitions } from './permissions';
-import { baseListQuery, uuidSchema } from './common';
+import type { RequestStatus } from './enums';
+import { allowedStatusTransitions, type AccessSubject } from './permissions';
+import { baseListQuery, dateOnlySchema, uuidSchema } from './common';
 import type { FileDto } from './files';
 import {
   shiftHoursSchema,
@@ -102,20 +102,6 @@ export function isAddressVerified(meta: AddressMeta | null | undefined): boolean
 export const verifiedAddressMetaSchema = addressMetaSchema.refine(isAddressVerified, {
   message: 'Адрес должен быть выбран из подсказок (верифицирован)',
 });
-
-/** Дата без времени, строго YYYY-MM-DD (не преобразуется через JS Date). */
-const dateOnlySchema = z
-  .string()
-  .trim()
-  .regex(/^\d{4}-\d{2}-\d{2}$/, 'Дата в формате YYYY-MM-DD')
-  .refine((s) => {
-    const parts = s.split('-');
-    const y = Number(parts[0]);
-    const m = Number(parts[1]);
-    const d = Number(parts[2]);
-    const dt = new Date(Date.UTC(y, m - 1, d));
-    return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
-  }, 'Некорректная дата');
 
 /** ISO 8601 с обязательным offset (напр. 2026-07-25T14:30:00+03:00). */
 const scheduledAtSchema = z.string().datetime({ offset: true });
@@ -294,15 +280,15 @@ export function transitionRequiresApproval(to: RequestStatus): boolean {
 }
 
 /**
- * Статусы, доступные роли из текущего — с поправкой на визу. Правило одно на портал и API:
+ * Статусы, доступные субъекту из текущего — с поправкой на визу. Правило одно на портал и API:
  * список переходов в интерфейсе не должен предлагать то, что сервер отклонит.
  */
 export function allowedVehicleRequestTransitions(
   from: RequestStatus,
-  role: Role,
+  subject: AccessSubject,
   approved: boolean,
 ): RequestStatus[] {
-  const transitions = allowedStatusTransitions(from, role);
+  const transitions = allowedStatusTransitions(from, subject);
   return approved ? transitions : transitions.filter((to) => !transitionRequiresApproval(to));
 }
 

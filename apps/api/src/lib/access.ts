@@ -1,13 +1,15 @@
 import { eq, type AnyColumn, type SQL } from 'drizzle-orm';
 import {
+  actsForCounterparty,
   can,
   canTransitionStatus,
+  isCounterpartyScopedRole,
   isObjectScopedRole,
   requestStatusLabels,
   roleLabels,
+  type CounterpartyType,
   type Permission,
   type RequestStatus,
-  type Role,
 } from '@technic/contracts';
 import type { Principal } from '../auth/principal';
 import { err } from './errors';
@@ -16,17 +18,48 @@ const NEVER_MATCH = '00000000-0000-0000-0000-000000000000';
 
 /**
  * Доступ проверяется в два слоя (ADR 0021):
- *  - право — «что роль может делать» (матрица в @technic/contracts), проверяется до запроса
- *    в БД: `app.requirePermission(...)` на маршруте либо `assertCan(...)` в обработчике, если
- *    право зависит от содержимого запроса;
+ *  - право — «что учётка может делать» (матрица в @technic/contracts: роль плюс тип контрагента,
+ *    ADR 0038), проверяется до запроса в БД: `app.requirePermission(...)` на маршруте либо
+ *    `assertCan(...)` в обработчике, если право зависит от содержимого запроса;
  *  - область — «над какими строками», проверяется по конкретной записи: штаб работает со своим
- *    объектом, оператор — с заявками своего контрагента.
+ *    объектом, внешний исполнитель — с заявками своего контрагента.
  * Здесь живёт второй слой и те проверки прав, которые нельзя сделать на маршруте.
  */
 
 /** Право, проверяемое внутри обработчика (когда оно зависит от тела запроса или от записи). */
 export function assertCan(p: Principal, permission: Permission, message?: string): void {
-  if (!can(p.role, permission)) throw err.forbidden(message);
+  if (!can(p, permission)) throw err.forbidden(message);
+}
+
+/**
+ * Ограничение видимости для внешнего исполнителя (ADR 0010, 0038): в своём модуле он видит
+ * строки своего контрагента, в чужом — не видит ничего.
+ *
+ * Ветка «чужой модуль» существует не ради отказа в правах (их и так нет — маршрут закрыт правом
+ * модуля), а ради того, чтобы ограничение видимости нельзя было обойти новым правом: право и
+ * область выдаются по отдельности, и «право есть, а область не написана» означает доступ ко
+ * всем строкам сразу.
+ */
+function counterpartyVisibilityWhere(
+  p: Principal,
+  type: CounterpartyType,
+  counterpartyColumn: AnyColumn,
+): SQL | undefined {
+  if (!isCounterpartyScopedRole(p.role)) return undefined;
+  const own = actsForCounterparty(p, type) ? (p.counterpartyId ?? NEVER_MATCH) : NEVER_MATCH;
+  return eq(counterpartyColumn, own);
+}
+
+/** Своя запись контрагента или отказ — общий разбор для проверок по конкретной строке. */
+function assertCounterpartyScope(
+  p: Principal,
+  type: CounterpartyType,
+  counterpartyId: string | null,
+  message: string,
+): void {
+  if (!isCounterpartyScopedRole(p.role)) return;
+  if (!actsForCounterparty(p, type) || counterpartyId !== p.counterpartyId)
+    throw err.forbidden(message);
 }
 
 /**
@@ -42,12 +75,24 @@ export function requestVisibilityWhere(p: Principal, objectIdColumn: AnyColumn):
 }
 
 /**
- * Видимость заявок вывоза для «Оператора» (ADR 0010): только заявки, назначенные его контрагенту.
+ * Видимость заявок вывоза для оператора (ADR 0010): только заявки, назначенные его контрагенту.
  * Отдельно от requestVisibilityWhere — колонка оператора есть только у «Вывоза мусора».
  */
 export function operatorVisibilityWhere(p: Principal, operatorColumn: AnyColumn): SQL | undefined {
-  if (p.role !== 'operator') return undefined;
-  return eq(operatorColumn, p.counterpartyId ?? NEVER_MATCH);
+  return counterpartyVisibilityWhere(p, 'operator', operatorColumn);
+}
+
+/**
+ * Видимость заявок на технику для арендодателя (ADR 0038): только заявки, на которые вышла его
+ * техника. Колонка — `vehicles.lessor_id` назначенной машины, поэтому запрос обязан быть
+ * соединён с назначением: своего поля исполнителя у заявки ТС нет, и роль арендодателя в заявке
+ * появляется вместе с назначением машины (ADR 0027).
+ *
+ * Следствие, принятое сознательно: «Новую» заявку арендодатель не видит — до назначения она
+ * ничья. Это и есть разница с вывозом мусора, где исполнителя можно проставить заранее.
+ */
+export function lessorVisibilityWhere(p: Principal, lessorColumn: AnyColumn): SQL | undefined {
+  return counterpartyVisibilityWhere(p, 'vehicle_lessor', lessorColumn);
 }
 
 /**
@@ -62,7 +107,7 @@ export function assertArchiveVisible(
   deletedAt: Date | string | null,
   notFoundMessage: string,
 ): void {
-  if (deletedAt && !can(p.role, 'archive.read')) throw err.notFound(notFoundMessage);
+  if (deletedAt && !can(p, 'archive.read')) throw err.notFound(notFoundMessage);
 }
 
 /**
@@ -71,7 +116,7 @@ export function assertArchiveVisible(
  * Предикат, а не проверка с отказом: им же решается, снимать ли визу при правке заявки.
  */
 export function canApproveForObject(p: Principal, objectId: string): boolean {
-  if (!can(p.role, 'vehicleRequests.approve')) return false;
+  if (!can(p, 'vehicleRequests.approve')) return false;
   return !isObjectScopedRole(p.role) || p.constructionObjectId === objectId;
 }
 
@@ -111,34 +156,51 @@ export function assertObjectRoleEditable(
   }
 }
 
-/** «Оператор» работает только с заявками своего контрагента (проверка конкретной заявки). */
+/** Оператор вывоза работает только с заявками своего контрагента (проверка конкретной заявки). */
 export function assertOperatorScope(p: Principal, operatorCounterpartyId: string | null): void {
-  if (p.role === 'operator' && operatorCounterpartyId !== p.counterpartyId) {
-    throw err.forbidden('Оператор работает только с заявками своего контрагента');
-  }
+  assertCounterpartyScope(
+    p,
+    'operator',
+    operatorCounterpartyId,
+    'Оператор работает только с заявками своего контрагента',
+  );
 }
 
 /**
- * Переход статуса заявки с учётом роли (един для «Вывоза мусора» и «Заказа ТС»). Откат
+ * Арендодатель работает только с заявками, на которые вышла его техника (ADR 0038). Проверяется
+ * арендодатель назначенной машины: у заявки без назначения его нет вовсе — такая заявка ничья, и
+ * доступ к ней исполнителю закрыт.
+ */
+export function assertLessorScope(p: Principal, assignedLessorId: string | null): void {
+  assertCounterpartyScope(
+    p,
+    'vehicle_lessor',
+    assignedLessorId,
+    'Арендодатель работает только с заявками, на которые назначена его техника',
+  );
+}
+
+/**
+ * Переход статуса заявки с учётом прав (един для «Вывоза мусора» и «Заказа ТС»). Откат
  * закрытой заявки — право администратора, поэтому 403, а не 400: переход существует,
- * но не для этой роли.
+ * но не для этой учётки.
  */
 export function assertTransitionAllowed(
+  p: Principal,
   from: RequestStatus,
   to: RequestStatus,
-  role: Role | null,
 ): void {
-  if (role && canTransitionStatus(from, to, role)) return;
+  if (canTransitionStatus(from, to, p)) return;
   // Учётка без роли до сюда не доходит — её отсекает право на маршруте. Но объяснять отказ
   // разбором переходов ей нечем: у неё нет ни одного, и «только администратор» было бы ложью.
-  if (!role) throw err.forbidden('Недостаточно прав для смены статуса');
-  // У оператора коридор один, поэтому «недопустимый переход» ему ничего не объясняет.
-  if (role === 'operator') {
+  if (!p.role) throw err.forbidden('Недостаточно прав для смены статуса');
+  // У внешнего исполнителя коридор один, поэтому «недопустимый переход» ему ничего не объясняет.
+  if (isCounterpartyScopedRole(p.role)) {
     throw err.forbidden(
-      `Оператор может только отметить заявку «${requestStatusLabels.confirmed}» выполненной`,
+      `${roleLabels[p.role]} может только отметить заявку «${requestStatusLabels.confirmed}» выполненной`,
     );
   }
-  if (canTransitionStatus(from, to, 'admin')) {
+  if (canTransitionStatus(from, to, { role: 'admin' })) {
     throw err.forbidden('Вернуть заявку в предыдущий статус может только администратор');
   }
   throw err.badRequest(

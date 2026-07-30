@@ -15,6 +15,7 @@ import dayjs from 'dayjs';
 import {
   assignmentTitle,
   CLOSED_REQUEST_STATUSES,
+  actsForCounterparty,
   isObjectScopedRole,
   parseVehicleRequestNumberSearch,
   type RequestStatus,
@@ -81,6 +82,9 @@ const dash = <Typography.Text type="secondary">—</Typography.Text>;
 export function VehicleRequestsHistoryTab() {
   const { user } = useAuth();
   const isObjectRole = isObjectScopedRole(user?.role);
+  // Сам арендодатель видит только свои заявки (ADR 0038) — фильтр «у кого брали» повторял бы ему
+  // единственный вариант, а список остальных арендодателей к его работе отношения не имеет.
+  const isLessor = actsForCounterparty(user, 'vehicle_lessor');
   // Штабу объект зафиксирован на его собственном — как и в списке заявок; сервер всё равно
   // отдаёт только свой объект (requestVisibilityWhere).
   const ownObjectId = isObjectRole ? (user?.constructionObjectId ?? '') : '';
@@ -379,16 +383,18 @@ export function VehicleRequestsHistoryTab() {
       />
       {/* Заказанная техника: тип целиком либо одна его категория (ADR 0028). */}
       {classificationFilter.controls}
-      <Select
-        allowClear
-        showSearch
-        optionFilterProp="label"
-        placeholder="Все арендодатели"
-        style={{ width: 220 }}
-        options={lessorOptions}
-        value={params.lessorId}
-        onChange={(v: string | undefined) => applyFilter({ lessorId: v })}
-      />
+      {isLessor ? null : (
+        <Select
+          allowClear
+          showSearch
+          optionFilterProp="label"
+          placeholder="Все арендодатели"
+          style={{ width: 220 }}
+          options={lessorOptions}
+          value={params.lessorId}
+          onChange={(v: string | undefined) => applyFilter({ lessorId: v })}
+        />
+      )}
       {/* Период — по сроку работ: журнал за месяц это «что работало в этом месяце», а не
           «что в нём успели закрыть». */}
       <DatePicker.RangePicker
@@ -449,15 +455,19 @@ export function VehicleRequestsHistoryTab() {
       onChange: (v) => applyFilter({ objectId: v }),
     },
     classificationFilter.mobileFilter,
-    {
-      kind: 'select',
-      key: 'lessorId',
-      label: 'Арендодатель',
-      value: params.lessorId,
-      options: lessorOptions,
-      placeholder: 'Все арендодатели',
-      onChange: (v) => applyFilter({ lessorId: v }),
-    },
+    ...(isLessor
+      ? []
+      : [
+          {
+            kind: 'select' as const,
+            key: 'lessorId',
+            label: 'Арендодатель',
+            value: params.lessorId,
+            options: lessorOptions,
+            placeholder: 'Все арендодатели',
+            onChange: (v: string | undefined) => applyFilter({ lessorId: v }),
+          },
+        ]),
     {
       // Период — по сроку работ, как и в панели десктопа.
       kind: 'dateRange',

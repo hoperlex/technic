@@ -41,6 +41,7 @@ import {
   normalizeTimeInput,
   calcWasteAmount,
   type CompleteWasteRequestInput,
+  actsForCounterparty,
   isObjectScopedRole,
   isPricedRequestType,
   requiresWasteFact,
@@ -144,13 +145,15 @@ function RequestsTab() {
   const { message, modal } = App.useApp();
   const qc = useQueryClient();
   const isMobile = useIsMobile();
-  const { user, hasRole, can } = useAuth();
+  const { user, can } = useAuth();
   // Объектные роли и оператор — это область видимости («свой объект», «свои заявки»), а не право:
   // от неё зависит, что показывать в фильтрах и колонках, а не что разрешено делать. Роль здесь
   // не перечисляется: заказчиков со стороны объекта двое (ADR 0031), и список ролей разъехался бы
   // с `OBJECT_SCOPED_ROLES` молча — фильтром объекта, открытым для чужих объектов.
   const isObjectRole = isObjectScopedRole(user?.role);
-  const isOperator = hasRole('operator');
+  // «Оператор вывоза» — это роль исполнителя плюс контрагент-оператор (ADR 0038): по одной роли
+  // такой вывод уже неверен, ею же работает арендодатель техники в другом разделе.
+  const isOperator = actsForCounterparty(user, 'operator');
   // Действия — только по правам (ADR 0021): те же, что проверяет API.
   const canCreate = can('wasteRequests.create');
   const canEdit = can('wasteRequests.update');
@@ -723,8 +726,9 @@ function RequestsTab() {
     });
 
   const StatusCell = ({ r }: { r: WasteRequestDto }) => {
-    // Набор переходов зависит от роли: линейный цикл для всех, откаты — только администратору.
-    const transitions = user?.role ? allowedStatusTransitions(r.status, user.role) : [];
+    // Набор переходов зависит от прав: линейный цикл для всех, откаты — только администратору,
+    // а у внешнего исполнителя свой коридор — закрытие взятой в работу заявки.
+    const transitions = user ? allowedStatusTransitions(r.status, user) : [];
     const [sheetOpen, setSheetOpen] = useState(false);
     const tag = (
       <Tag color={requestStatusColors[r.status]} style={{ marginInlineEnd: 0 }}>

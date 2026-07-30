@@ -19,7 +19,7 @@ declare module 'fastify' {
   }
   interface FastifyInstance {
     authenticate: (req: FastifyRequest, reply: FastifyReply) => Promise<void>;
-    /** Проверка права по матрице ролей (ADR 0021) — до входа в обработчик. */
+    /** Проверка права по матрице (ADR 0021, 0038: роль + тип контрагента) — до обработчика. */
     requirePermission: (permission: Permission, message?: string) => AuthzGuard;
     /**
      * Маршрут, доступный любому вошедшему: право зависит от самой записи и проверяется в
@@ -60,7 +60,7 @@ export default fp(
     app.decorate('requirePermission', (permission: Permission, message?: string): AuthzGuard => {
       const guard = async (req: FastifyRequest) => {
         const p = requirePrincipal(req);
-        if (!can(p.role, permission)) throw err.forbidden(message);
+        if (!can(p, permission)) throw err.forbidden(message);
       };
       guard.authz = permission;
       return guard;
