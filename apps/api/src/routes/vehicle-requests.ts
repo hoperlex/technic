@@ -88,6 +88,7 @@ import {
   requestVisibilityWhere,
 } from '../lib/access';
 import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
+import { nextRequestContact } from '../lib/request-contact';
 import {
   assertFilesAttachable,
   assertTotalWithinLimit,
@@ -179,6 +180,10 @@ const requestSelect = {
   deletedAt: vehicleRequests.deletedAt,
   dateFrom: specialEquipmentRequestDetails.dateFrom,
   dateTo: specialEquipmentRequestDetails.dateTo,
+  // Контакт ответственного (миграция 0062): у заявки на объект один, у грузоперевозки — по одному
+  // на концах маршрута. Имена колонок разные, поэтому в выборку идут обе пары.
+  responsibleName: specialEquipmentRequestDetails.responsibleName,
+  responsiblePhone: specialEquipmentRequestDetails.responsiblePhone,
   scheduledAt: freightTransportRequestDetails.scheduledAt,
   scheduledTimeUnspecified: freightTransportRequestDetails.scheduledTimeUnspecified,
   volumeM3: freightTransportRequestDetails.volumeM3,
@@ -187,6 +192,10 @@ const requestSelect = {
   unloadingLocation: freightTransportRequestDetails.unloadingLocation,
   loadingAddress: freightTransportRequestDetails.loadingAddress,
   unloadingAddress: freightTransportRequestDetails.unloadingAddress,
+  loadingResponsibleName: freightTransportRequestDetails.loadingResponsibleName,
+  loadingResponsiblePhone: freightTransportRequestDetails.loadingResponsiblePhone,
+  unloadingResponsibleName: freightTransportRequestDetails.unloadingResponsibleName,
+  unloadingResponsiblePhone: freightTransportRequestDetails.unloadingResponsiblePhone,
 };
 
 function baseQuery() {
@@ -352,6 +361,8 @@ function toDto(r: RequestRow, fileList: FileDto[]): VehicleRequestDto {
       requestType: 'special_equipment',
       dateFrom: r.dateFrom ?? '',
       dateTo: r.dateTo ?? null,
+      responsibleName: r.responsibleName ?? '',
+      responsiblePhone: r.responsiblePhone ?? '',
     };
   }
   return {
@@ -365,6 +376,10 @@ function toDto(r: RequestRow, fileList: FileDto[]): VehicleRequestDto {
     unloadingLocation: r.unloadingLocation ?? '',
     loadingAddress: r.loadingAddress ?? null,
     unloadingAddress: r.unloadingAddress ?? null,
+    loadingResponsibleName: r.loadingResponsibleName ?? '',
+    loadingResponsiblePhone: r.loadingResponsiblePhone ?? '',
+    unloadingResponsibleName: r.unloadingResponsibleName ?? '',
+    unloadingResponsiblePhone: r.unloadingResponsiblePhone ?? '',
   };
 }
 
@@ -680,6 +695,10 @@ async function detachFiles(tx: Tx, vehicleRequestId: string, fileIds: string[]):
  * Меняет ли правка суть заявки — то, что согласовывали (ADR 0025). Комментарий и вложения визу
  * не трогают: ими уточняют уже согласованное. Сравнение с прежними значениями обязательно —
  * форма присылает поля целиком, и «сохранить без изменений» иначе снимало бы визу.
+ *
+ * Контакт ответственного (миграция 0062) сути не меняет: руководитель строительства визирует
+ * технику, срок и объект, а не то, кто встретит машину. Уточнённый телефон не должен возвращать
+ * заявку на согласование — иначе исправление опечатки в номере снимает визу и останавливает рейс.
  */
 function editChangesSubstance(
   before: VehicleRequestDto,
@@ -1279,6 +1298,8 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
             requestId: id,
             dateFrom: body.dateFrom,
             dateTo: body.dateTo ?? null,
+            responsibleName: body.responsibleName,
+            responsiblePhone: body.responsiblePhone,
           });
         } else {
           await tx.insert(freightTransportRequestDetails).values({
@@ -1291,6 +1312,10 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
             unloadingLocation: body.unloadingLocation,
             loadingAddress: body.loadingAddress ?? null,
             unloadingAddress: body.unloadingAddress ?? null,
+            loadingResponsibleName: body.loadingResponsibleName,
+            loadingResponsiblePhone: body.loadingResponsiblePhone,
+            unloadingResponsibleName: body.unloadingResponsibleName,
+            unloadingResponsiblePhone: body.unloadingResponsiblePhone,
           });
         }
         await tx.insert(vehicleRequestStatusHistory).values({
@@ -1417,7 +1442,22 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           }
           await tx
             .update(specialEquipmentRequestDetails)
-            .set({ dateFrom, dateTo })
+            .set({
+              dateFrom,
+              dateTo,
+              responsibleName: nextRequestContact(
+                body.responsibleName,
+                ex!.responsibleName,
+                'responsibleName',
+                'Укажите ответственного',
+              ),
+              responsiblePhone: nextRequestContact(
+                body.responsiblePhone,
+                ex!.responsiblePhone,
+                'responsiblePhone',
+                'Укажите контактный телефон',
+              ),
+            })
             .where(eq(specialEquipmentRequestDetails.requestId, id));
         } else {
           const [ex] = await tx
@@ -1448,6 +1488,30 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
                 body.loadingAddress !== undefined ? body.loadingAddress : ex!.loadingAddress,
               unloadingAddress:
                 body.unloadingAddress !== undefined ? body.unloadingAddress : ex!.unloadingAddress,
+              loadingResponsibleName: nextRequestContact(
+                body.loadingResponsibleName,
+                ex!.loadingResponsibleName,
+                'loadingResponsibleName',
+                'Укажите ответственного за погрузку',
+              ),
+              loadingResponsiblePhone: nextRequestContact(
+                body.loadingResponsiblePhone,
+                ex!.loadingResponsiblePhone,
+                'loadingResponsiblePhone',
+                'Укажите телефон ответственного за погрузку',
+              ),
+              unloadingResponsibleName: nextRequestContact(
+                body.unloadingResponsibleName,
+                ex!.unloadingResponsibleName,
+                'unloadingResponsibleName',
+                'Укажите ответственного за разгрузку',
+              ),
+              unloadingResponsiblePhone: nextRequestContact(
+                body.unloadingResponsiblePhone,
+                ex!.unloadingResponsiblePhone,
+                'unloadingResponsiblePhone',
+                'Укажите телефон ответственного за разгрузку',
+              ),
             })
             .where(eq(freightTransportRequestDetails.requestId, id));
         }

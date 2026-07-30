@@ -21,6 +21,7 @@ import { vehicleRequestsApi } from '../../api/resources';
 import { AddressCell } from '../../components/AddressAutoComplete';
 import { FileLinkList } from '../../components/FileLinks';
 import { type HistoryRow, RequestHistoryTable } from '../../components/RequestHistory';
+import { ResponsibleValue } from '../../components/ResponsibleFields';
 import { UserAvatar } from '../../components/UserAvatar';
 import { ViewModal } from '../../components/ViewModal';
 import { useIsMobile } from '../../hooks/useIsMobile';
@@ -193,6 +194,23 @@ export function VehicleRequestViewModal({ request, onClose, onEdit }: Props) {
           label: request.requestType === 'special_equipment' ? 'Период работы' : 'Подача',
           children: termOf(request),
         },
+        // Кто встречает технику на объекте (миграция 0062): у грузоперевозки контакт свой на
+        // каждом конце маршрута — он стоит ниже, рядом со своим адресом.
+        ...(request.requestType === 'special_equipment'
+          ? [
+              {
+                key: 'responsible',
+                label: 'Ответственный',
+                span: 2,
+                children: (
+                  <ResponsibleValue
+                    name={request.responsibleName}
+                    phone={request.responsiblePhone}
+                  />
+                ),
+              },
+            ]
+          : []),
         // Объём/масса и адреса есть только у грузоперевозки: спецтехника заказывается на срок.
         ...(request.requestType === 'freight_transport'
           ? [
@@ -218,11 +236,33 @@ export function VehicleRequestViewModal({ request, onClose, onEdit }: Props) {
                 ),
               },
               {
+                key: 'loadingResponsible',
+                label: 'Ответственный за погрузку',
+                span: 2,
+                children: (
+                  <ResponsibleValue
+                    name={request.loadingResponsibleName}
+                    phone={request.loadingResponsiblePhone}
+                  />
+                ),
+              },
+              {
                 key: 'unloading',
                 label: 'Разгрузка',
                 span: 2,
                 children: (
                   <AddressCell text={request.unloadingLocation} meta={request.unloadingAddress} />
+                ),
+              },
+              {
+                key: 'unloadingResponsible',
+                label: 'Ответственный за разгрузку',
+                span: 2,
+                children: (
+                  <ResponsibleValue
+                    name={request.unloadingResponsibleName}
+                    phone={request.unloadingResponsiblePhone}
+                  />
                 ),
               },
             ]

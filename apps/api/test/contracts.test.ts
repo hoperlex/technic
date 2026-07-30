@@ -96,6 +96,8 @@ describe('createWasteRequestSchema', () => {
       containerTypeId: '22222222-2222-4222-8222-222222222222',
       requestType: 'container_install',
       deliveryAt: '2026-08-01T10:00:00.000Z',
+      responsibleName: 'Петров П. П.',
+      responsiblePhone: '+7 926 000-00-01',
     });
     expect(parsed.deliveryAt).toBeInstanceOf(Date);
     expect(parsed.comment).toBe('');
@@ -109,6 +111,8 @@ describe('createWasteRequestSchema', () => {
         containerTypeId: '22222222-2222-2222-2222-222222222222',
         requestType: 'monthly',
         deliveryAt: '2026-08-01T10:00:00.000Z',
+        responsibleName: 'Петров П. П.',
+        responsiblePhone: '+7 926 000-00-01',
       }),
     ).toThrow();
   });
@@ -119,6 +123,8 @@ describe('createWasteRequestSchema', () => {
         objectId: '11111111-1111-4111-8111-111111111111',
         requestType: 'container_replace',
         deliveryAt: '2026-08-01T10:00:00.000Z',
+        responsibleName: 'Петров П. П.',
+        responsiblePhone: '+7 926 000-00-01',
       }),
     ).toThrow();
   });
@@ -129,6 +135,8 @@ describe('createWasteRequestSchema', () => {
         objectId: '11111111-1111-4111-8111-111111111111',
         requestType: 'container_removal',
         deliveryAt: '2026-08-01T10:00:00.000Z',
+        responsibleName: 'Петров П. П.',
+        responsiblePhone: '+7 926 000-00-01',
       }),
     ).toThrow();
     // Снятие тарифицируется (ADR 0009): кроме типа контейнера нужен тип мусора. Объём не
@@ -139,6 +147,8 @@ describe('createWasteRequestSchema', () => {
       containerTypeId: '22222222-2222-4222-8222-222222222222',
       wasteTypeId: '44444444-4444-4444-8444-444444444444',
       deliveryAt: '2026-08-01T10:00:00.000Z',
+      responsibleName: 'Петров П. П.',
+      responsiblePhone: '+7 926 000-00-01',
     });
     expect(parsed.requestType).toBe('container_removal');
   });
@@ -150,6 +160,8 @@ describe('createWasteRequestSchema', () => {
       wasteTypeId: '44444444-4444-4444-8444-444444444444',
       volumeM3: 20,
       deliveryAt: '2026-08-01T10:00:00.000Z',
+      responsibleName: 'Петров П. П.',
+      responsiblePhone: '+7 926 000-00-01',
     });
     expect(ok.volumeM3).toBe(20);
     expect(ok.containerTypeId).toBeUndefined();
@@ -159,8 +171,29 @@ describe('createWasteRequestSchema', () => {
         requestType: 'waste_removal',
         wasteTypeId: '44444444-4444-4444-8444-444444444444',
         deliveryAt: '2026-08-01T10:00:00.000Z',
+        responsibleName: 'Петров П. П.',
+        responsiblePhone: '+7 926 000-00-01',
       }),
     ).toThrow();
+  });
+
+  // Контакт ответственного (миграция 0062): оператор приезжает к человеку, а не к адресу.
+  it('требует ответственного и телефон', () => {
+    const base = {
+      objectId: '11111111-1111-4111-8111-111111111111',
+      requestType: 'waste_removal' as const,
+      wasteTypeId: '44444444-4444-4444-8444-444444444444',
+      volumeM3: 20,
+      deliveryAt: '2026-08-01T10:00:00.000Z',
+      responsibleName: 'Петров П. П.',
+      responsiblePhone: '+7 926 000-00-01',
+    };
+    expect(createWasteRequestSchema.parse(base).responsibleName).toBe('Петров П. П.');
+    const { responsibleName: _n, ...noName } = base;
+    const { responsiblePhone: _p, ...noPhone } = base;
+    expect(() => createWasteRequestSchema.parse(noName)).toThrow();
+    expect(() => createWasteRequestSchema.parse(noPhone)).toThrow();
+    expect(() => createWasteRequestSchema.parse({ ...base, responsiblePhone: '123' })).toThrow();
   });
 });
 

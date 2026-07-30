@@ -52,6 +52,7 @@ import {
   requestVisibilityWhere,
 } from '../lib/access';
 import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
+import { nextRequestContact } from '../lib/request-contact';
 import {
   assertFilesAttachable,
   assertTotalWithinLimit,
@@ -98,6 +99,9 @@ const requestSelect = {
   amount: wasteRequests.amount,
   deliveryAt: wasteRequests.deliveryAt,
   deliveryTimeUnspecified: wasteRequests.deliveryTimeUnspecified,
+  // Кто принимает машину на площадке (миграция 0062).
+  responsibleName: wasteRequests.responsibleName,
+  responsiblePhone: wasteRequests.responsiblePhone,
   comment: wasteRequests.comment,
   status: wasteRequests.status,
   // Причина отмены живёт в истории статусов; в списке нужна последняя и только у отменённых
@@ -210,6 +214,8 @@ function toDto(
     operatorName: r.operatorName,
     deliveryAt: r.deliveryAt.toISOString(),
     deliveryTimeUnspecified: r.deliveryTimeUnspecified,
+    responsibleName: r.responsibleName,
+    responsiblePhone: r.responsiblePhone,
     comment: r.comment,
     status: r.status,
     // Пустой комментарий отмены (история до миграции 0024) читается как «причина не указана».
@@ -786,6 +792,8 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
           operatorCounterpartyId: body.operatorCounterpartyId ?? null,
           deliveryAt: body.deliveryAt,
           deliveryTimeUnspecified: body.deliveryTimeUnspecified,
+          responsibleName: body.responsibleName,
+          responsiblePhone: body.responsiblePhone,
           comment: body.comment,
           status: 'new',
           createdBy: p.id,
@@ -866,6 +874,20 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
             deliveryTimeUnspecified: body.deliveryAt
               ? (body.deliveryTimeUnspecified ?? false)
               : before.deliveryTimeUnspecified,
+            // Контакт нельзя оставить пустым даже у заявки старше миграции 0062: правка — тот
+            // момент, когда ответственного есть у кого спросить.
+            responsibleName: nextRequestContact(
+              body.responsibleName,
+              before.responsibleName,
+              'responsibleName',
+              'Укажите ответственного',
+            ),
+            responsiblePhone: nextRequestContact(
+              body.responsiblePhone,
+              before.responsiblePhone,
+              'responsiblePhone',
+              'Укажите контактный телефон',
+            ),
             comment: body.comment ?? before.comment,
             updatedBy: p.id,
             version: before.version + 1,

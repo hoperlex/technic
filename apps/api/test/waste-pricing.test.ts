@@ -71,7 +71,15 @@ describe('кратность объёма', () => {
 });
 
 describe('createWasteRequestSchema: тип мусора и объём', () => {
-  const base = { objectId: OBJECT_ID, containerTypeId: CONTAINER_TYPE_ID, deliveryAt: DELIVERY_AT };
+  // Контакт ответственного обязателен при заведении (миграция 0062) и к предмету заявки,
+  // который проверяют эти тесты, отношения не имеет — стоит в базовой фикстуре.
+  const contact = { responsibleName: 'Петров П. П.', responsiblePhone: '+7 926 000-00-01' };
+  const base = {
+    objectId: OBJECT_ID,
+    containerTypeId: CONTAINER_TYPE_ID,
+    deliveryAt: DELIVERY_AT,
+    ...contact,
+  };
 
   // Контейнерные операции не тарифицируются (ADR 0019): им хватает типа контейнера.
   it.each(['container_install', 'container_replace', 'container_removal'] as const)(
@@ -118,6 +126,7 @@ describe('createWasteRequestSchema: тип мусора и объём', () => {
       requestType: 'waste_removal',
       wasteTypeId: WASTE_TYPE_ID,
       volumeM3: 20,
+      ...contact,
     });
     expect(parsed.containerTypeId).toBeUndefined();
   });

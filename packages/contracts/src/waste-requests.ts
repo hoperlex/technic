@@ -6,7 +6,7 @@ import {
   statusChangeRequiresReason,
 } from './enums';
 import type { ContainerKind, RequestStatus, RequestType } from './enums';
-import { baseListQuery, uuidSchema } from './common';
+import { baseListQuery, contactNameSchema, contactPhoneSchema, uuidSchema } from './common';
 import type { FileDto } from './files';
 import {
   MIN_REQUEST_DATE_MESSAGE,
@@ -173,6 +173,12 @@ export const createWasteRequestSchema = z
      * не проверяется. Отдельного поля времени нет — дата и время в БД остаются одним timestamptz.
      */
     deliveryTimeUnspecified: z.boolean().optional().default(false),
+    /**
+     * Кто на площадке принимает машину и по какому телефону. Обязателен: оператор приезжает к
+     * человеку, а не к адресу — без контакта место установки и подъезд выясняются на месте.
+     */
+    responsibleName: contactNameSchema,
+    responsiblePhone: contactPhoneSchema,
     comment: z.string().trim().max(2000).optional().default(''),
     fileIds: z.array(uuidSchema).max(20).optional().default([]),
   })
@@ -233,6 +239,9 @@ export const updateWasteRequestSchema = z
     operatorCounterpartyId: uuidSchema.nullable().optional(),
     deliveryAt: z.coerce.date().optional(),
     deliveryTimeUnspecified: z.boolean().optional(),
+    // Не переданный контакт — «не трогали»; непустоту итогового значения проверяет backend.
+    responsibleName: contactNameSchema.optional(),
+    responsiblePhone: contactPhoneSchema.optional(),
     comment: z.string().trim().max(2000).optional(),
     addFileIds: z.array(uuidSchema).max(20).optional(),
     removeFileIds: z.array(uuidSchema).optional(),
@@ -369,6 +378,9 @@ export interface WasteRequestDto {
   deliveryAt: string;
   /** Время доставки не задано — в `deliveryAt` значима только дата (00:00 МСК). */
   deliveryTimeUnspecified: boolean;
+  /** Кто принимает машину на площадке; пусто — заявка заведена до миграции 0062. */
+  responsibleName: string;
+  responsiblePhone: string;
   comment: string;
   status: RequestStatus;
   /** Причина отмены из истории статусов; заполнена только у отменённых заявок. */
@@ -408,6 +420,9 @@ export const wasteRequestChangeLabels: Record<string, string> = {
   amount: 'Стоимость',
   operator: 'Оператор вывоза',
   deliveryAt: 'Доставка',
+  // Контакт ответственного на площадке (миграция 0062).
+  responsibleName: 'Ответственный',
+  responsiblePhone: 'Телефон ответственного',
   comment: 'Комментарий',
   filesAdded: 'Прикреплены файлы',
   filesRemoved: 'Откреплены файлы',

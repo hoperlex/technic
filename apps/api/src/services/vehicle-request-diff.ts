@@ -57,6 +57,18 @@ export function diffVehicleRequests(
   if (before.requestType === 'special_equipment' && after.requestType === 'special_equipment') {
     diff.changed('dateFrom', dateOnly(before.dateFrom), dateOnly(after.dateFrom));
     diff.changed('dateTo', dateOnly(before.dateTo), dateOnly(after.dateTo));
+    // Контакт ответственного (миграция 0062): в истории он читается наравне со сроком — по нему
+    // звонят, и «телефон сменился» это событие, а не оформление.
+    diff.changed(
+      'responsibleName',
+      before.responsibleName || EMPTY,
+      after.responsibleName || EMPTY,
+    );
+    diff.changed(
+      'responsiblePhone',
+      before.responsiblePhone || EMPTY,
+      after.responsiblePhone || EMPTY,
+    );
   } else if (
     before.requestType === 'freight_transport' &&
     after.requestType === 'freight_transport'
@@ -74,6 +86,28 @@ export function diffVehicleRequests(
       'unloadingLocation',
       short(before.unloadingLocation),
       short(after.unloadingLocation),
+    );
+    // Контакты на концах маршрута (миграция 0062) — четырьмя строками: сменился ответственный
+    // за погрузку или за разгрузку, читателю истории это разные события.
+    diff.changed(
+      'loadingResponsibleName',
+      before.loadingResponsibleName || EMPTY,
+      after.loadingResponsibleName || EMPTY,
+    );
+    diff.changed(
+      'loadingResponsiblePhone',
+      before.loadingResponsiblePhone || EMPTY,
+      after.loadingResponsiblePhone || EMPTY,
+    );
+    diff.changed(
+      'unloadingResponsibleName',
+      before.unloadingResponsibleName || EMPTY,
+      after.unloadingResponsibleName || EMPTY,
+    );
+    diff.changed(
+      'unloadingResponsiblePhone',
+      before.unloadingResponsiblePhone || EMPTY,
+      after.unloadingResponsiblePhone || EMPTY,
     );
   }
 
