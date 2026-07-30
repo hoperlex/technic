@@ -68,6 +68,9 @@ export const vehicleOwnershipEnum = pgEnum('vehicle_ownership', ['own', 'rental'
 // Чем мерят отработанное при закрытии заявки ТС (ADR 0029) — теми же единицами, в которых
 // заведены ставки: за час и за смену.
 export const vehicleWorkUnitEnum = pgEnum('vehicle_work_unit', ['hours', 'shifts']);
+// Состояние путевого листа (ADR 0037). Черновика нет: лист рождается переводом заявки в работу
+// сразу выданным, а испорченный бланк аннулируют с причиной — стереть его нельзя.
+export const waybillStatusEnum = pgEnum('waybill_status', ['issued', 'cancelled']);
 // Тип трудовых отношений физлица с организацией (ADR 0008).
 export const employmentTypeEnum = pgEnum('employment_type', ['staff', 'contractor', 'temporary']);
 // Статус проверки документа работника (ADR 0008); отделён от срока действия документа.
@@ -1298,6 +1301,13 @@ export const vehicleRequestAssignments = pgTable(
     pricePerHour: numeric('price_per_hour', { precision: 12, scale: 2 }),
     pricePerShift: numeric('price_per_shift', { precision: 12, scale: 2 }),
     shiftHours: smallint('shift_hours'),
+    // Кто за рулём (ADR 0037, миграция 0061): «чем взяли в работу» дополняется тем, кем.
+    // Колонкой, а не таблицей `vehicle_request_operators` из бэклога ADR 0008 — ADR 0027 уже
+    // выбрал форму «одна заявка — одно назначение», и второго водителя в ней не бывает.
+    // NULL — назначения до появления путевых листов и аренда, где водитель чужой.
+    driverPersonId: uuid('driver_person_id').references(() => persons.id, {
+      onDelete: 'restrict',
+    }),
     assignedBy: uuid('assigned_by')
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
@@ -1330,6 +1340,9 @@ export const vehicleRequestAssignments = pgTable(
     ),
     // «Где сейчас эта машина» — вопрос к таблице со стороны справочника техники.
     vehicleIdx: index('vehicle_request_assignments_vehicle_idx').on(t.vehicleId),
+    driverIdx: index('vehicle_request_assignments_driver_idx')
+      .on(t.driverPersonId)
+      .where(sql`${t.driverPersonId} IS NOT NULL`),
   }),
 );
 
@@ -1749,6 +1762,151 @@ export const personCredentialFiles = pgTable(
   (t) => ({
     pk: primaryKey({ columns: [t.credentialId, t.fileId] }),
     fileUnique: uniqueIndex('person_credential_files_file_unique').on(t.fileId),
+  }),
+);
+
+// ── Путевые листы (ADR 0037, миграция 0061) ──
+// Серия бланков: номер сквозной внутри серии, ширина — сколько знаков печатать с ведущими нулями.
+// Счётчик в строке, а не sequence: sequence не откатывается вместе с транзакцией и оставляет
+// дыры, а журнал учёта строгой отчётности читают как непрерывный.
+export const waybillSeries = pgTable(
+  'waybill_series',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    code: text('code').notNull(),
+    name: text('name').notNull(),
+    /** Печатается в графе «серия»: в образцах это «260604-646-». */
+    prefix: text('prefix').notNull().default(''),
+    nextNumber: bigint('next_number', { mode: 'number' }).notNull().default(1),
+    numberWidth: smallint('number_width').notNull().default(8),
+    /** Чья серия: у каждого юрлица своя нумерация. NULL — серия основной организации. */
+    organizationId: uuid('organization_id').references(() => organizations.id, {
+      onDelete: 'restrict',
+    }),
+    isActive: boolean('is_active').notNull().default(true),
+    comment: text('comment').notNull().default(''),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    codeUnique: uniqueIndex('waybill_series_code_unique').on(t.code),
+    codeFormat: check('waybill_series_code_format_check', sql`${t.code} ~ '^[a-z][a-z0-9_]*$'`),
+    nameNotBlank: check('waybill_series_name_not_blank', sql`btrim(${t.name}) <> ''`),
+    nextNumberCheck: check('waybill_series_next_number_check', sql`${t.nextNumber} >= 1`),
+    numberWidthCheck: check(
+      'waybill_series_number_width_check',
+      sql`${t.numberWidth} BETWEEN 1 AND 12`,
+    ),
+  }),
+);
+
+// Сам документ. Рождается переводом заявки в работу в той же транзакции и сразу выданным:
+// состояния «в работе, а листа нет» не существует (ADR 0037 п. 2).
+export const waybills = pgTable(
+  'waybills',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    seriesId: uuid('series_id')
+      .notNull()
+      .references(() => waybillSeries.id, { onDelete: 'restrict' }),
+    number: bigint('number', { mode: 'number' }).notNull(),
+    /** Бланк снимком, а не join'ом: тип машины могут переклассифицировать, а лист уже выдан. */
+    formCode: text('form_code').notNull().$type<'4p' | 'leg3' | 'esm2'>(),
+    status: waybillStatusEnum('status').notNull().default('issued'),
+    organizationId: uuid('organization_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'restrict' }),
+    vehicleId: uuid('vehicle_id')
+      .notNull()
+      .references(() => vehicles.id, { onDelete: 'restrict' }),
+    driverPersonId: uuid('driver_person_id')
+      .notNull()
+      .references(() => persons.id, { onDelete: 'restrict' }),
+    /**
+     * День, на который выписан лист, и он же граница правки: до этой даты лист аннулируют и
+     * выписывают заново, начиная с неё — нет (ADR 0037 п. 9). Держит это сервис: CURRENT_DATE
+     * не IMMUTABLE и в CHECK запрещён.
+     */
+    issuedForDate: date('issued_for_date', { mode: 'string' }).notNull(),
+    /** Прицеп — признак рейса: в реестре техники его нет, а категорию водителя он поднимает. */
+    withTrailer: boolean('with_trailer').notNull().default(false),
+    trailer1Model: text('trailer1_model').notNull().default(''),
+    trailer1RegNumber: text('trailer1_reg_number').notNull().default(''),
+    trailer2Model: text('trailer2_model').notNull().default(''),
+    trailer2RegNumber: text('trailer2_reg_number').notNull().default(''),
+    // Графы шапки, которых нет ни в заявке, ни в справочниках: наследуются от прошлого листа
+    // этой машины и правятся раз в сезон.
+    garageNumber: text('garage_number').notNull().default(''),
+    communicationKind: text('communication_kind').notNull().default(''),
+    transportationKind: text('transportation_kind').notNull().default(''),
+    /** Снимок значений бланка: лист печатается из него, а не из справочников. */
+    data: jsonb('data').notNull().default({}),
+    issuedBy: uuid('issued_by')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    issuedAt: timestamp('issued_at', { withTimezone: true }).notNull().defaultNow(),
+    cancelledBy: uuid('cancelled_by').references(() => users.id, { onDelete: 'restrict' }),
+    cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
+    cancelReason: text('cancel_reason').notNull().default(''),
+    version: integer('version').notNull().default(0),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    formCodeCheck: check('waybills_form_code_check', sql`${t.formCode} IN ('4p', 'leg3', 'esm2')`),
+    // Аннулирование — учётное действие: известно, когда и почему. Испорченный бланк списывают.
+    cancelledCheck: check(
+      'waybills_cancelled_check',
+      sql`(${t.status} = 'cancelled') = (${t.cancelledAt} IS NOT NULL)`,
+    ),
+    cancelReasonCheck: check(
+      'waybills_cancel_reason_check',
+      sql`${t.status} <> 'cancelled' OR btrim(${t.cancelReason}) <> ''`,
+    ),
+    trailerFieldsCheck: check(
+      'waybills_trailer_fields_check',
+      sql`${t.withTrailer} OR (
+        ${t.trailer1Model} = '' AND ${t.trailer1RegNumber} = ''
+        AND ${t.trailer2Model} = '' AND ${t.trailer2RegNumber} = ''
+      )`,
+    ),
+    seriesNumberUnique: uniqueIndex('waybills_series_number_unique').on(t.seriesId, t.number),
+    // Один лист на машину и дату (ADR 0037 п. 3); аннулированные не мешают — испорченный бланк
+    // заменяют новым на ту же дату.
+    vehicleDateUnique: uniqueIndex('waybills_vehicle_date_unique')
+      .on(t.vehicleId, t.issuedForDate)
+      .where(sql`${t.status} <> 'cancelled'`),
+    issuedForDateIdx: index('waybills_issued_for_date_idx').on(t.issuedForDate.desc()),
+    driverIdx: index('waybills_driver_idx').on(t.driverPersonId),
+    // «На чём человек ездил в прошлый раз» — этим сортируется список водителей и наследуются
+    // графы шапки.
+    vehicleIssuedIdx: index('waybills_vehicle_issued_idx').on(t.vehicleId, t.issuedForDate.desc()),
+  }),
+);
+
+// Талоны заказчиков: заявки, которые машина выполняет по этому листу. Форма 4-П держит до
+// четырёх, и вторая заявка на ту же машину в тот же день дописывается талоном, а не поднимает
+// второй лист.
+export const waybillRequests = pgTable(
+  'waybill_requests',
+  {
+    waybillId: uuid('waybill_id')
+      .notNull()
+      .references(() => waybills.id, { onDelete: 'cascade' }),
+    requestId: uuid('request_id')
+      .notNull()
+      .references(() => vehicleRequests.id, { onDelete: 'restrict' }),
+    slot: smallint('slot').notNull(),
+    addedAt: timestamp('added_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.waybillId, t.requestId] }),
+    slotCheck: check('waybill_requests_slot_check', sql`${t.slot} BETWEEN 1 AND 4`),
+    slotUnique: uniqueIndex('waybill_requests_slot_unique').on(t.waybillId, t.slot),
+    // Заявка в одном листе, но UNIQUE здесь нельзя: аннулированный лист сохраняет свою строку, а
+    // заявку после него выписывают заново. Условие «лист не аннулирован» — в соседней таблице,
+    // и держит его сервис.
+    requestIdx: index('waybill_requests_request_idx').on(t.requestId),
   }),
 );
 

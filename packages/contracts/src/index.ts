@@ -23,3 +23,4 @@ export * from './request-history';
 export * from './waste-tariffs';
 export * from './waste-requests';
 export * from './vehicle-requests';
+export * from './waybills';
