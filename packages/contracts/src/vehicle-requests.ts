@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { requestStatusSchema, statusChangeRequiresReason } from './enums';
 import type { RequestStatus, Role } from './enums';
 import { allowedStatusTransitions } from './permissions';
-import { baseListQuery, uuidSchema } from './common';
+import { baseListQuery, contactNameSchema, contactPhoneSchema, uuidSchema } from './common';
 import type { FileDto } from './files';
 import {
   shiftHoursSchema,
@@ -143,6 +143,13 @@ export const createSpecialEquipmentRequestSchema = z
     vehicleCategoryId: uuidSchema.nullish(),
     dateFrom: dateOnlySchema,
     dateTo: dateOnlySchema.nullable().optional(),
+    /**
+     * Кто встречает технику на объекте и по какому телефону. Обязателен: машина выходит по
+     * заявке, а договариваются о заезде, месте работ и допуске с человеком — без контакта это
+     * выясняется звонками через диспетчера уже на воротах.
+     */
+    responsibleName: contactNameSchema,
+    responsiblePhone: contactPhoneSchema,
     comment: commentSchema.optional().default(''),
     fileIds: fileIdsSchema.optional().default([]),
   })
@@ -166,6 +173,15 @@ export const createFreightTransportRequestSchema = z
     unloadingLocation: locationSchema,
     loadingAddress: verifiedAddressMetaSchema,
     unloadingAddress: verifiedAddressMetaSchema,
+    /**
+     * Контакт на каждом конце маршрута, а не один на заявку: грузят и принимают разные люди в
+     * разных местах, и водителю нужен тот, кто откроет ворота именно здесь. Оба обязательны —
+     * рейс без контакта на разгрузке заканчивается простоем у закрытой площадки.
+     */
+    loadingResponsibleName: contactNameSchema,
+    loadingResponsiblePhone: contactPhoneSchema,
+    unloadingResponsibleName: contactNameSchema,
+    unloadingResponsiblePhone: contactPhoneSchema,
     comment: commentSchema.optional().default(''),
     fileIds: fileIdsSchema.optional().default([]),
   })
@@ -222,6 +238,10 @@ export const updateSpecialEquipmentRequestSchema = z
     vehicleCategoryId: uuidSchema.nullish(),
     dateFrom: dateOnlySchema.optional(),
     dateTo: dateOnlySchema.nullable().optional(),
+    // Не переданный контакт — «не трогали», а не «сняли»: пустую строку схема не принимает, а
+    // непустоту итогового значения (у заявок старше миграции 0062 контакта нет) добьёт backend.
+    responsibleName: contactNameSchema.optional(),
+    responsiblePhone: contactPhoneSchema.optional(),
     comment: commentSchema.optional(),
     addFileIds: fileIdsSchema.optional(),
     removeFileIds: z.array(uuidSchema).optional(),
@@ -244,6 +264,10 @@ export const updateFreightTransportRequestSchema = z
     unloadingLocation: locationSchema.optional(),
     loadingAddress: verifiedAddressMetaSchema.optional(),
     unloadingAddress: verifiedAddressMetaSchema.optional(),
+    loadingResponsibleName: contactNameSchema.optional(),
+    loadingResponsiblePhone: contactPhoneSchema.optional(),
+    unloadingResponsibleName: contactNameSchema.optional(),
+    unloadingResponsiblePhone: contactPhoneSchema.optional(),
     comment: commentSchema.optional(),
     addFileIds: fileIdsSchema.optional(),
     removeFileIds: z.array(uuidSchema).optional(),
@@ -852,6 +876,9 @@ export interface SpecialEquipmentRequestDto extends VehicleRequestBaseDto {
   requestType: 'special_equipment';
   dateFrom: string;
   dateTo: string | null;
+  /** Кто встречает технику на объекте; пусто — заявка заведена до миграции 0062. */
+  responsibleName: string;
+  responsiblePhone: string;
 }
 
 export interface FreightTransportRequestDto extends VehicleRequestBaseDto {
@@ -867,6 +894,11 @@ export interface FreightTransportRequestDto extends VehicleRequestBaseDto {
   loadingAddress: AddressMeta | null;
   /** Метаданные верификации адреса разгрузки. */
   unloadingAddress: AddressMeta | null;
+  /** Контакты на концах маршрута; пусто — заявка заведена до миграции 0062. */
+  loadingResponsibleName: string;
+  loadingResponsiblePhone: string;
+  unloadingResponsibleName: string;
+  unloadingResponsiblePhone: string;
 }
 
 export type VehicleRequestDto = SpecialEquipmentRequestDto | FreightTransportRequestDto;
@@ -892,6 +924,14 @@ export const vehicleRequestChangeLabels: Record<string, string> = {
   weightTons: 'Масса',
   loadingLocation: 'Место погрузки',
   unloadingLocation: 'Место разгрузки',
+  // Контакт ответственного (миграция 0062): у заявки на объект один, у грузоперевозки — по одному
+  // на каждом конце маршрута. Ключи разные, потому что и правки это разные события.
+  responsibleName: 'Ответственный',
+  responsiblePhone: 'Телефон ответственного',
+  loadingResponsibleName: 'Ответственный за погрузку',
+  loadingResponsiblePhone: 'Телефон ответственного за погрузку',
+  unloadingResponsibleName: 'Ответственный за разгрузку',
+  unloadingResponsiblePhone: 'Телефон ответственного за разгрузку',
   comment: 'Комментарий',
   filesAdded: 'Прикреплены файлы',
   filesRemoved: 'Откреплены файлы',

@@ -145,6 +145,10 @@ const wasteBase = {
   objectId: OBJ,
   requestType: 'container_install' as const,
   containerTypeId: TYPE,
+  // Контакт ответственного обязателен при заведении заявки (миграция 0062); к сроку доставки,
+  // который проверяют эти тесты, он отношения не имеет — стоит в базовой фикстуре.
+  responsibleName: 'Петров П. П.',
+  responsiblePhone: '+7 926 000-00-01',
 };
 
 describe('createWasteRequestSchema: рабочее окно доставки', () => {
@@ -252,6 +256,10 @@ const freightBase = {
   unloadingLocation: 'г Москва, ул Арбат, д 2',
   loadingAddress: resolvedMeta,
   unloadingAddress: resolvedMeta,
+  loadingResponsibleName: 'Сидоров С. С.',
+  loadingResponsiblePhone: '+7 926 000-00-02',
+  unloadingResponsibleName: 'Кузнецов К. К.',
+  unloadingResponsiblePhone: '+7 926 000-00-03',
 };
 
 describe('createVehicleRequestSchema: рабочее окно подачи', () => {
@@ -287,6 +295,8 @@ describe('createVehicleRequestSchema: минимальная дата', () => {
     requestType: 'special_equipment' as const,
     objectId: OBJ,
     vehicleTypeId: TYPE,
+    responsibleName: 'Петров П. П.',
+    responsiblePhone: '+7 926 000-00-01',
   };
 
   it('грузоперевозка: подача вчера отклоняется, сегодня — принимается', () => {

@@ -245,6 +245,9 @@ export interface WasteRequestPayload {
   /** Контрагент-оператор вывоза; можно назначить позже (ADR 0010). */
   operatorCounterpartyId?: string;
   deliveryAt: string;
+  /** Кто принимает машину на площадке (миграция 0062); при заведении заявки обязателен. */
+  responsibleName: string;
+  responsiblePhone: string;
   comment?: string;
   fileIds?: string[];
 }
@@ -259,6 +262,9 @@ export interface WasteRequestUpdatePayload {
   // Факта выполнения здесь нет: он предъявляется закрытием заявки и правится повторным
   // закрытием (ADR 0035).
   deliveryAt?: string;
+  // Не переданный контакт означает «не трогали»; пустым сервер его оставить не даст.
+  responsibleName?: string;
+  responsiblePhone?: string;
   comment?: string;
   addFileIds?: string[];
   removeFileIds?: string[];

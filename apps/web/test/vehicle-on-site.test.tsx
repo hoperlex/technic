@@ -45,6 +45,8 @@ function request(
     updatedAt: '2026-07-19T09:00:00.000Z',
     deletedAt: null,
     dateTo: null,
+    responsibleName: 'Петров П. П.',
+    responsiblePhone: '+7 926 000-00-01',
     ...over,
   };
 }
