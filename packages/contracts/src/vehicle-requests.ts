@@ -580,6 +580,122 @@ export interface VehicleRequestHistorySummaryDto {
   withoutCost: number;
 }
 
+// ── Техника на объекте: вкладка «На объекте» (ADR 0036) ──
+
+/**
+ * Что показывает вкладка — техника, которая работает на объектах прямо сейчас. Отбор ведут сроки
+ * заявки: сегодняшний день по Москве должен попадать в её период. Статус в отборе не фильтр, а
+ * часть условия — только «В работе»: взятая в работу заявка названа машиной и ставкой (ADR 0027),
+ * а по новой на объект ещё никто не выходил.
+ *
+ * Дата в запросе не передаётся намеренно: «сейчас» обязан считать сервер. Часы клиента бывают
+ * сбиты, а браузер восточнее Москвы начинает сутки раньше — и срез разошёлся бы с ответом API.
+ */
+export const VEHICLE_ON_SITE_SORT_FIELDS = [
+  'num',
+  'objectName',
+  'vehicleTypeName',
+  'term',
+  'createdAt',
+] as const satisfies readonly (typeof VEHICLE_REQUEST_SORT_FIELDS)[number][];
+
+/**
+ * Фильтры вкладки — объект и заказанная позиция классификатора (ADR 0028). Ни статуса, ни типа
+ * заявки, ни дат здесь нет: они этот список не сужают, а определяют. Схема своя, а не `pick` от
+ * списочной, именно поэтому: от `dateFrom` в общей схеме клиент вправе ждать, что тот сработает,
+ * — здесь он не сработает никогда.
+ */
+export const vehicleRequestOnSiteQuerySchema = baseListQuery(VEHICLE_ON_SITE_SORT_FIELDS).extend({
+  objectId: uuidSchema.optional(),
+  vehicleTypeId: uuidSchema.optional(),
+  vehicleCategoryId: uuidSchema.optional(),
+  num: z.coerce.number().int().positive().optional(),
+});
+export type VehicleRequestOnSiteQuery = z.infer<typeof vehicleRequestOnSiteQuerySchema>;
+
+/**
+ * Срез вкладки. `onDate` — день, по которому сервер отбирал строки: подписи вида «день 3 из 5»
+ * считаются от него, а не от часов клиента, иначе отбор и подпись отвечали бы про разные дни.
+ */
+export interface VehicleOnSiteListDto {
+  items: SpecialEquipmentRequestDto[];
+  total: number;
+  page: number;
+  pageSize: number;
+  /** День среза (`YYYY-MM-DD`) по Москве. */
+  onDate: string;
+}
+
+/**
+ * Итог среза: сколько единиц техники сейчас на объектах и на скольких объектах, сколько вышло
+ * сегодня и сколько уезжает. Последние две цифры — то, ради чего вкладку открывают утром: и
+ * приёмка машины, и освобождение площадки планируются именно по ним.
+ */
+export interface VehicleOnSiteSummaryDto {
+  total: number;
+  objects: number;
+  arrivedToday: number;
+  leavingToday: number;
+}
+
+/**
+ * Как строка стоит в сегодняшнем дне: `single` — заявка на один день (вышла и уедет), `arrives` —
+ * первый день периода, `leaves` — последний, `ongoing` — середина срока.
+ *
+ * Пустая дата окончания — однодневный срок: тем же `coalesce(date_to, date_from)` сервер ищет
+ * пересечение периодов, и подпись обязана читать срок так же, как отбор.
+ */
+export type VehicleOnSitePresence = 'single' | 'arrives' | 'leaves' | 'ongoing';
+
+export function onSitePresence(
+  r: { dateFrom: string; dateTo: string | null },
+  onDate: string,
+): VehicleOnSitePresence {
+  const last = r.dateTo || r.dateFrom;
+  const isFirst = r.dateFrom === onDate;
+  if (isFirst && last === onDate) return 'single';
+  if (isFirst) return 'arrives';
+  return last === onDate ? 'leaves' : 'ongoing';
+}
+
+export const vehicleOnSitePresenceLabels: Record<VehicleOnSitePresence, string> = {
+  single: 'один день',
+  arrives: 'вышла сегодня',
+  leaves: 'уезжает сегодня',
+  ongoing: 'на объекте',
+};
+
+/** Цвет тега присутствия: выделены дни выхода и отъезда — по ним и планируют площадку. */
+export const vehicleOnSitePresenceColors: Record<VehicleOnSitePresence, string> = {
+  single: 'purple',
+  arrives: 'blue',
+  leaves: 'orange',
+  ongoing: 'default',
+};
+
+/**
+ * Который день из заказанных идёт сегодня: «день 3 из 5». Однодневная заявка подписи не получает
+ * — «день 1 из 1» не сообщает ничего, чего не сказал бы тег присутствия. `null` и когда период
+ * не складывается: считать в нём нечего.
+ */
+export function onSiteDayLabel(
+  r: { dateFrom: string; dateTo: string | null },
+  onDate: string,
+): string | null {
+  const day = dayNumberInPeriod(r.dateFrom, onDate);
+  const total = dayNumberInPeriod(r.dateFrom, r.dateTo || r.dateFrom);
+  if (day == null || total == null || total < 2) return null;
+  return `день ${day} из ${total}`;
+}
+
+/** Номер дня `onDate` в периоде, считая от `dateFrom` (включительно); `null` — день раньше начала. */
+function dayNumberInPeriod(dateFrom: string, onDate: string): number | null {
+  const from = Date.parse(`${dateFrom}T00:00:00Z`);
+  const to = Date.parse(`${onDate}T00:00:00Z`);
+  if (Number.isNaN(from) || Number.isNaN(to) || to < from) return null;
+  return Math.round((to - from) / 86_400_000) + 1;
+}
+
 /**
  * Сводка по статусам для виджета над списком. Из фильтров таблицы учитываются сужающие область —
  * объект, тип заявки и заказанная техника: цифры относятся к тому же списку, что человек видит

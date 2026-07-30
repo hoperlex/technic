@@ -29,22 +29,28 @@ import {
   isApprovalChangeable,
   isClosedRequestStatus,
   isVehicleKindAllowedForRequest,
+  moscowDateKeyOf,
   rateForWorkUnit,
   REQUEST_STATUSES,
   requestStatusLabels,
   setVehicleRequestApprovalSchema,
+  type SpecialEquipmentRequestDto,
   transitionRequiresApproval,
   transitionRequiresAssignment,
   transitionRequiresCompletion,
   updateVehicleRequestSchema,
+  type VehicleOnSiteListDto,
+  type VehicleOnSiteSummaryDto,
   type VehicleRequestAssignmentDto,
   type VehicleRequestCompletionDto,
   type VehicleRequestDto,
   type VehicleRequestHistorySummaryDto,
+  type VehicleRequestOnSiteQuery,
   type VehicleRequestSummaryDto,
   type VehicleRequestType,
   vehicleRequestHistoryQuerySchema,
   vehicleRequestListQuerySchema,
+  vehicleRequestOnSiteQuerySchema,
   vehicleRequestSummaryQuerySchema,
   vehicleStatusLabels,
   vehicleWorkUnitRateLabels,
@@ -851,6 +857,49 @@ function historyCountQuery() {
     .leftJoin(vehicles, eq(vehicleRequestAssignments.vehicleId, vehicles.id));
 }
 
+/**
+ * Условия вкладки «На объекте» (ADR 0036): заказ спецтехники, взятый в работу, чей срок накрывает
+ * день `onDate`. Пересечение периодов считает тот же `specialDateConds`, что и фильтр списка, —
+ * пустая дата окончания там и здесь означает одно и то же: `coalesce(date_to, date_from)`.
+ *
+ * Ни статуса, ни типа заявки, ни дат в фильтрах вкладки нет — они этот список определяют, а не
+ * сужают. Границы видимости общие со списком: штаб и руководитель строительства видят свой объект,
+ * а удалённые заявки не показываются никому — техники по ним на объекте нет.
+ */
+function onSiteWhere(p: Principal, q: VehicleRequestOnSiteQuery, onDate: string): SQL {
+  return and(
+    eq(vehicleRequests.requestType, 'special_equipment'),
+    eq(vehicleRequests.status, 'confirmed'),
+    isNull(vehicleRequests.deletedAt),
+    requestVisibilityWhere(p, vehicleRequests.objectId),
+    q.objectId ? eq(vehicleRequests.objectId, q.objectId) : undefined,
+    q.vehicleTypeId ? eq(vehicleRequests.vehicleTypeId, q.vehicleTypeId) : undefined,
+    q.vehicleCategoryId ? eq(vehicleRequests.vehicleCategoryId, q.vehicleCategoryId) : undefined,
+    q.num ? eq(vehicleRequests.num, q.num) : undefined,
+    ...specialDateConds(onDate, onDate),
+    searchCondition(q.search, [
+      vehicleRequests.comment,
+      constructionObjects.name,
+      constructionObjects.code,
+    ]),
+  )!;
+}
+
+/**
+ * Счётчик строк среза: join'ы под его условия — объект нужен поиску, деталь спецтехники срокам.
+ * Без них `where` сослался бы на таблицы, которых в запросе нет.
+ */
+function onSiteCountQuery() {
+  return db
+    .select({ c: count() })
+    .from(vehicleRequests)
+    .innerJoin(constructionObjects, eq(vehicleRequests.objectId, constructionObjects.id))
+    .leftJoin(
+      specialEquipmentRequestDetails,
+      eq(vehicleRequests.id, specialEquipmentRequestDetails.requestId),
+    );
+}
+
 export default async function vehicleRequestsRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
   // Право на каждое действие отдельно (ADR 0021): модуль «Заказ ТС» оператору вывоза недоступен
@@ -1016,6 +1065,89 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         totalCost: toNum(agg!.totalCost) ?? 0,
         withoutCost: Number(agg!.withoutCost),
       } satisfies VehicleRequestHistorySummaryDto;
+    },
+  );
+
+  /**
+   * Техника на объектах прямо сейчас — вкладка «На объекте» (ADR 0036). Отбор ведут сроки заявки:
+   * сегодняшний день по Москве должен попадать в её период, а сама заявка — быть «В работе»
+   * (ADR 0027: до этого она не названа машиной, и на объект по ней никто не выходил).
+   *
+   * «Сегодня» считает сервер и возвращает в `onDate`: часы клиента бывают сбиты, а браузер
+   * восточнее Москвы начинает сутки раньше — и подпись «день 3 из 5» отвечала бы про другой день,
+   * чем отбор строк.
+   */
+  r.get(
+    '/on-site',
+    { ...auth, schema: { querystring: vehicleRequestOnSiteQuerySchema } },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const onDate = moscowDateKeyOf(new Date());
+      const where = onSiteWhere(p, req.query, onDate);
+      const pg = pageParams(req.query);
+      const rows = await baseQuery()
+        .where(where)
+        // По объекту, а не по дате создания: срез читают площадкой — «что сейчас стоит на этом
+        // объекте», — и строки одного объекта должны идти рядом.
+        .orderBy(
+          orderByFrom(sortColumns, req.query.sortBy, req.query.sortOrder, 'objectName'),
+          asc(vehicleRequests.num),
+          asc(vehicleRequests.id),
+        )
+        .limit(pg.limit)
+        .offset(pg.offset);
+      const [totalRow] = await onSiteCountQuery().where(where);
+      const filesMap = await filesByRequestIds(rows.map((row) => row.id));
+      return {
+        // Тип заявки задан условием отбора: сужение здесь ничего не отбрасывает, оно лишь
+        // сообщает это типам — на объекте стоит спецтехника, а не грузоперевозка.
+        items: rows
+          .map((row) => toDto(row, filesMap.get(row.id) ?? []))
+          .filter(
+            (dto): dto is SpecialEquipmentRequestDto => dto.requestType === 'special_equipment',
+          ),
+        total: Number(totalRow!.c),
+        page: pg.page,
+        pageSize: pg.pageSize,
+        onDate,
+      } satisfies VehicleOnSiteListDto;
+    },
+  );
+
+  /**
+   * Итог среза: сколько единиц техники на объектах, на скольких объектах, сколько вышло сегодня и
+   * сколько уезжает. Считается по тем же условиям, что и сам список, — сводка обязана отвечать про
+   * то, что человек видит перед собой.
+   *
+   * «Вышла» и «уезжает» — крайние дни периода: по ним планируют и приёмку машины, и освобождение
+   * площадки. Однодневная заявка попадает в обе цифры, и это верно — она и вышла, и уедет сегодня.
+   */
+  r.get(
+    '/on-site/summary',
+    { ...auth, schema: { querystring: vehicleRequestOnSiteQuerySchema } },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const onDate = moscowDateKeyOf(new Date());
+      const [agg] = await db
+        .select({
+          total: count(),
+          objects: sql<number>`count(DISTINCT ${vehicleRequests.objectId})`,
+          arrivedToday: sql<number>`count(*) FILTER (WHERE ${specialEquipmentRequestDetails.dateFrom} = ${onDate}::date)`,
+          leavingToday: sql<number>`count(*) FILTER (WHERE coalesce(${specialEquipmentRequestDetails.dateTo}, ${specialEquipmentRequestDetails.dateFrom}) = ${onDate}::date)`,
+        })
+        .from(vehicleRequests)
+        .innerJoin(constructionObjects, eq(vehicleRequests.objectId, constructionObjects.id))
+        .leftJoin(
+          specialEquipmentRequestDetails,
+          eq(vehicleRequests.id, specialEquipmentRequestDetails.requestId),
+        )
+        .where(onSiteWhere(p, req.query, onDate));
+      return {
+        total: Number(agg!.total),
+        objects: Number(agg!.objects),
+        arrivedToday: Number(agg!.arrivedToday),
+        leavingToday: Number(agg!.leavingToday),
+      } satisfies VehicleOnSiteSummaryDto;
     },
   );
 

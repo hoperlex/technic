@@ -14,6 +14,8 @@ import {
   isApprovalChangeable,
   isClosedRequestStatus,
   isVehicleKindAllowedForRequest,
+  onSiteDayLabel,
+  onSitePresence,
   parseVehicleRequestNumberSearch,
   rateForWorkUnit,
   setVehicleRequestApprovalSchema,
@@ -21,8 +23,11 @@ import {
   transitionRequiresAssignment,
   transitionRequiresCompletion,
   updateVehicleRequestSchema,
+  vehicleOnSitePresenceColors,
+  vehicleOnSitePresenceLabels,
   vehicleRequestHistoryQuerySchema,
   vehicleRequestListQuerySchema,
+  vehicleRequestOnSiteQuerySchema,
   vehicleRequestSummaryQuerySchema,
   workedAmountLabel,
 } from '@technic/contracts';
@@ -497,6 +502,84 @@ describe('vehicle-requests: журнал закрытых заявок (ADR 0029
       'lessorName',
     );
     expect(() => vehicleRequestHistoryQuerySchema.parse({ sortBy: 'ставка' })).toThrow();
+  });
+});
+
+// ── Техника на объекте: вкладка «На объекте» (ADR 0036) ──
+describe('vehicle-requests: техника на объекте (ADR 0036)', () => {
+  const CAT = '77777777-7777-4777-8777-777777777777';
+
+  it('фильтры вкладки — объект, заказанная техника и номер', () => {
+    const q = vehicleRequestOnSiteQuerySchema.parse({
+      objectId: OBJ,
+      vehicleTypeId: TYPE,
+      vehicleCategoryId: CAT,
+      num: '123',
+    });
+    expect(q.objectId).toBe(OBJ);
+    expect(q.vehicleCategoryId).toBe(CAT);
+    // Номер приходит строкой из query — сравнивается он с числовой колонкой.
+    expect(q.num).toBe(123);
+    expect(q.page).toBe(1);
+  });
+
+  it('статус, тип заявки и даты в срез не передаются: они его определяют', () => {
+    const q = vehicleRequestOnSiteQuerySchema.parse({
+      status: 'new',
+      requestType: 'freight_transport',
+      dateFrom: '2026-07-01',
+      dateTo: '2026-07-31',
+    }) as Record<string, unknown>;
+    expect(q.status).toBeUndefined();
+    expect(q.requestType).toBeUndefined();
+    expect(q.dateFrom).toBeUndefined();
+    expect(q.dateTo).toBeUndefined();
+  });
+
+  it('сортировка — только по столбцам среза', () => {
+    expect(vehicleRequestOnSiteQuerySchema.parse({ sortBy: 'objectName' }).sortBy).toBe(
+      'objectName',
+    );
+    expect(vehicleRequestOnSiteQuerySchema.parse({ sortBy: 'term' }).sortBy).toBe('term');
+    // Столбцов журнала (стоимость, арендодатель) у среза нет — сортировать по ним нечего.
+    expect(() => vehicleRequestOnSiteQuerySchema.parse({ sortBy: 'totalCost' })).toThrow();
+    expect(() => vehicleRequestOnSiteQuerySchema.parse({ sortBy: 'status' })).toThrow();
+  });
+
+  it('присутствие в дне: вышла, стоит, уезжает, один день', () => {
+    const on = '2026-07-24';
+    expect(onSitePresence({ dateFrom: '2026-07-24', dateTo: '2026-07-28' }, on)).toBe('arrives');
+    expect(onSitePresence({ dateFrom: '2026-07-20', dateTo: '2026-07-28' }, on)).toBe('ongoing');
+    expect(onSitePresence({ dateFrom: '2026-07-20', dateTo: '2026-07-24' }, on)).toBe('leaves');
+    expect(onSitePresence({ dateFrom: '2026-07-24', dateTo: '2026-07-24' }, on)).toBe('single');
+    // Пустая дата окончания — однодневный срок: так же его читает и отбор на сервере, поэтому
+    // заявка от 20-го без даты окончания в срез 24-го уже не попадёт.
+    expect(onSitePresence({ dateFrom: '2026-07-24', dateTo: null }, on)).toBe('single');
+  });
+
+  it('который день из заказанных: «день 3 из 5»', () => {
+    expect(onSiteDayLabel({ dateFrom: '2026-07-22', dateTo: '2026-07-26' }, '2026-07-24')).toBe(
+      'день 3 из 5',
+    );
+    expect(onSiteDayLabel({ dateFrom: '2026-07-24', dateTo: '2026-07-25' }, '2026-07-24')).toBe(
+      'день 1 из 2',
+    );
+    // Однодневная заявка подписи не получает: «день 1 из 1» не сообщает ничего.
+    expect(onSiteDayLabel({ dateFrom: '2026-07-24', dateTo: '2026-07-24' }, '2026-07-24')).toBe(
+      null,
+    );
+    expect(onSiteDayLabel({ dateFrom: '2026-07-24', dateTo: null }, '2026-07-24')).toBe(null);
+    // День раньше начала периода — считать нечего.
+    expect(onSiteDayLabel({ dateFrom: '2026-07-25', dateTo: '2026-07-28' }, '2026-07-24')).toBe(
+      null,
+    );
+  });
+
+  it('подписи и цвета заданы каждому виду присутствия', () => {
+    for (const presence of ['single', 'arrives', 'leaves', 'ongoing'] as const) {
+      expect(vehicleOnSitePresenceLabels[presence]).toBeTruthy();
+      expect(vehicleOnSitePresenceColors[presence]).toBeTruthy();
+    }
   });
 });
 
