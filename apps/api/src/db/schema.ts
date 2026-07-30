@@ -263,6 +263,10 @@ export const vehicleTypes = pgTable(
       () => qualificationCategories.id,
       { onDelete: 'restrict' },
     ),
+    // Какой бланк путевого листа выписывается на машины этого типа (ADR 0037, миграция 0060).
+    // Код формы, а не флаг: легковые ('leg3') и спецтехника ('esm2') добавятся значением, а не
+    // второй схемой. NULL — лист не выписывается.
+    waybillFormCode: text('waybill_form_code').$type<'4p' | 'leg3' | 'esm2'>(),
     sortOrder: integer('sort_order').notNull().default(100),
     isActive: boolean('is_active').notNull().default(true),
     createdAt: createdAt(),
@@ -271,6 +275,10 @@ export const vehicleTypes = pgTable(
   (t) => ({
     codeUnique: uniqueIndex('vehicle_types_code_unique').on(t.code),
     codeFormat: check('vehicle_types_code_format_check', sql`${t.code} ~ '^[a-z][a-z0-9_]*$'`),
+    waybillForm: check(
+      'vehicle_types_waybill_form_check',
+      sql`${t.waybillFormCode} IS NULL OR ${t.waybillFormCode} IN ('4p', 'leg3', 'esm2')`,
+    ),
     codeNotBlank: check('vehicle_types_code_not_blank', sql`btrim(${t.code}) <> ''`),
     nameNotBlank: check('vehicle_types_name_not_blank', sql`btrim(${t.name}) <> ''`),
     kindActiveSortIdx: index('vehicle_types_kind_active_sort_idx').on(
@@ -471,6 +479,14 @@ export const vehicles = pgTable(
       sql`vehicle_reg_normalize(registration_number)`,
     ),
     inventoryNumber: text('inventory_number'),
+    // Гаражный номер (ADR 0037, миграция 0060) — своя графа бланка, отдельная от инвентарного:
+    // тот из 1С и печатается в форме № 3 отдельной строкой.
+    garageNumber: text('garage_number'),
+    // Юрлицо, за которым числится машина (ADR 0037). NULL — за основной организацией портала:
+    // пока юрлицо одно, ссылку не заполняют вовсе.
+    ownerOrganizationId: uuid('owner_organization_id').references(() => organizations.id, {
+      onDelete: 'restrict',
+    }),
     serialNumber: text('serial_number'),
     passportNumber: text('passport_number'),
     manufacturerName: text('manufacturer_name').notNull().default(''),
@@ -581,6 +597,10 @@ export const vehicles = pgTable(
       'vehicles_inventory_number_not_blank_check',
       sql`${t.inventoryNumber} IS NULL OR btrim(${t.inventoryNumber}) <> ''`,
     ),
+    garageNumberNotBlank: check(
+      'vehicles_garage_number_not_blank_check',
+      sql`${t.garageNumber} IS NULL OR btrim(${t.garageNumber}) <> ''`,
+    ),
     serialNumberNotBlank: check(
       'vehicles_serial_number_not_blank_check',
       sql`${t.serialNumber} IS NULL OR btrim(${t.serialNumber}) <> ''`,
@@ -608,6 +628,9 @@ export const vehicles = pgTable(
     categoryIdx: index('vehicles_category_idx')
       .on(t.vehicleCategoryId)
       .where(sql`${t.vehicleCategoryId} IS NOT NULL`),
+    ownerOrganizationIdx: index('vehicles_owner_organization_idx')
+      .on(t.ownerOrganizationId)
+      .where(sql`${t.ownerOrganizationId} IS NOT NULL`),
     // «Кто может сесть за эту машину» спрашивают при каждом переводе заявки в работу (ADR 0037).
     requiredCategoryIdx: index('vehicles_required_category_idx')
       .on(t.requiredQualificationCategoryId)
@@ -795,6 +818,58 @@ export const counterpartySynonyms = pgTable(
     nameUnique: uniqueIndex('counterparty_synonyms_name_unique').on(t.normalizedName),
     counterpartyIdx: index('counterparty_synonyms_counterparty_idx').on(t.counterpartyId),
     nameTrgm: index('counterparty_synonyms_name_trgm').using('gin', sql`${t.name} gin_trgm_ops`),
+  }),
+);
+
+// ── Организации-владельцы транспорта (ADR 0037, миграция 0060) ──
+// Реквизиты для шапки путевого листа: наименование, адрес, телефон и коды. Отдельно от
+// `counterparties`: там внешние стороны (операторы вывоза, арендодатели, подрядчики), здесь —
+// свои юрлица, от чьего имени выписывается документ. Таблица, а не строка настроек: техника
+// может числиться за разными юрлицами, и лист выписывает то, за которым числится машина.
+export const organizations = pgTable(
+  'organizations',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    name: text('name').notNull(),
+    address: text('address').notNull().default(''),
+    phone: text('phone').notNull().default(''),
+    // Коды из правого верхнего угла бланка. Пусто — реквизит не заполнен: лист печатается и без
+    // него, а требовать то, чего у бухгалтерии сейчас нет, значит не дать завести организацию.
+    okpo: text('okpo').notNull().default(''),
+    ogrn: text('ogrn').notNull().default(''),
+    inn: text('inn').notNull().default(''),
+    /** Ею подписан лист на машину, за которой юрлицо не закреплено. Такая ровно одна. */
+    isPrimary: boolean('is_primary').notNull().default(false),
+    isActive: boolean('is_active').notNull().default(true),
+    comment: text('comment').notNull().default(''),
+    createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+    updatedBy: uuid('updated_by').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    nameNotBlank: check('organizations_name_not_blank', sql`btrim(${t.name}) <> ''`),
+    // Контрольные суммы проверяет сервис — приём ИНН контрагента: формат ловит длину,
+    // контрольная сумма ловит опечатку в одной цифре, и в CHECK её не выразить.
+    innFormat: check(
+      'organizations_inn_format_check',
+      sql`${t.inn} = '' OR ${t.inn} ~ '^([0-9]{10}|[0-9]{12})$'`,
+    ),
+    okpoFormat: check(
+      'organizations_okpo_format_check',
+      sql`${t.okpo} = '' OR ${t.okpo} ~ '^([0-9]{8}|[0-9]{10})$'`,
+    ),
+    ogrnFormat: check(
+      'organizations_ogrn_format_check',
+      sql`${t.ogrn} = '' OR ${t.ogrn} ~ '^([0-9]{13}|[0-9]{15})$'`,
+    ),
+    // «Чей это лист по умолчанию» обязано иметь единственный ответ.
+    primaryUnique: uniqueIndex('organizations_primary_unique')
+      .on(t.isPrimary)
+      .where(sql`${t.isPrimary}`),
+    innUnique: uniqueIndex('organizations_inn_unique')
+      .on(t.inn)
+      .where(sql`${t.inn} <> ''`),
   }),
 );
 
