@@ -1028,15 +1028,13 @@ export function VehicleRequestsTab() {
           {/* Техника на объект: период работы. Новую заявку назначают не раньше чем на сегодня
               (по МСК); у заведённой дата правится свободно, лишь бы не в прошлое. */}
           {isSpecial && (
-            <Space
-              style={{ width: '100%' }}
-              size="middle"
-              direction={isMobile ? 'vertical' : 'horizontal'}
-            >
+            // Пара дат в строку; на телефоне класс укладывает их одну под другой (ADR 0030).
+            <div className="form-row" style={{ display: 'flex', gap: 12 }}>
               <Form.Item
                 name="dateFrom"
                 label="Дата начала"
                 rules={[{ required: true, message: 'Укажите дату начала' }]}
+                style={{ flex: 1, minWidth: 0 }}
               >
                 <DatePicker
                   format="DD.MM.YYYY"
@@ -1045,8 +1043,14 @@ export function VehicleRequestsTab() {
                   disabledDate={minDateRule}
                 />
               </Form.Item>
-              {/* Число дней — подсказкой под полем: столько техника занята на объекте. */}
-              <Form.Item name="dateTo" label="Дата окончания" extra={periodHint}>
+              <Form.Item
+                name="dateTo"
+                label="Дата окончания"
+                // На телефоне даты идут столбиком, справа от них места нет — там число дней
+                // остаётся подписью под полем.
+                extra={isMobile ? periodHint : undefined}
+                style={{ flex: 1, minWidth: 0 }}
+              >
                 <DatePicker
                   format="DD.MM.YYYY"
                   style={{ width: '100%' }}
@@ -1054,7 +1058,18 @@ export function VehicleRequestsTab() {
                   disabledDate={minDateRule}
                 />
               </Form.Item>
-            </Space>
+              {/* Число дней (столько техника занята на объекте) — третьей колонкой справа от дат,
+                  а не подписью под датой окончания: подписью она растила поле в высоту и уводила
+                  соседнюю дату вверх. Пустой лейбл держит ту же высоту шапки, что и у дат, —
+                  строка встаёт вровень с полями ввода. */}
+              {!isMobile && periodHint && (
+                <Form.Item label={'\u00a0'} colon={false} style={{ flex: 'none' }}>
+                  <Typography.Text type="secondary" style={{ whiteSpace: 'nowrap' }}>
+                    {periodHint}
+                  </Typography.Text>
+                </Form.Item>
+              )}
+            </div>
           )}
 
           {/* Грузоперевозка: дата/время, объём или масса, адреса. */}
