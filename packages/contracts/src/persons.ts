@@ -253,6 +253,45 @@ export const updateDriverSchema = z
   .strict();
 export type UpdateDriverInput = z.infer<typeof updateDriverSchema>;
 
+// ── Отбор водителя под машину (ADR 0037) ──
+
+/**
+ * Водитель в списке выбора при переводе заявки в работу. СНИЛС сюда не попадает намеренно: он
+ * нужен бланку, а не выбору, и собирает его сервер. Персональные данные не выносятся на экран,
+ * которым пользуется каждый, кто берёт заявки в работу, — карточка водителя закрыта своим правом.
+ */
+export interface DriverOptionDto {
+  personId: string;
+  fullName: string;
+  personnelNo: string;
+  /** «00 00 000001» — серия и номер, как напечатаны в удостоверении. */
+  licenseNumber: string;
+  licenseExpiresOn: string | null;
+  /** `unverified` — водитель в списке, но с пометкой: проверка бумаги не отменяет допуска. */
+  verificationStatus: CredentialVerificationStatus;
+  categories: string[];
+}
+
+export interface DriverSelectionDto {
+  /**
+   * Категория, по которой сужен список («C», «CE» при рейсе с прицепом). `null` — требование у
+   * машины не заведено, и по категории не сужали: пустое требование безопаснее неверного.
+   */
+  requiredCategory: string | null;
+  drivers: DriverOptionDto[];
+}
+
+export const driverSelectionQuerySchema = z.object({
+  vehicleId: uuidSchema,
+  /** Дата рейса: заявку берут в работу заранее, и годность считается на неё, а не на сегодня. */
+  on: dateOnlySchema,
+  withTrailer: z
+    .enum(['true', 'false'])
+    .optional()
+    .transform((v) => v === 'true'),
+});
+export type DriverSelectionQuery = z.infer<typeof driverSelectionQuerySchema>;
+
 // ── Список ──
 
 export const DRIVER_SORT_FIELDS = [

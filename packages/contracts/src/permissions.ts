@@ -58,6 +58,12 @@ export const PERMISSIONS = [
   /** Виза руководителя строительства: без неё заявку не берут в работу (ADR 0025). */
   'vehicleRequests.approve',
 
+  // Водители (ADR 0037). Отдельно от справочников: в карточке водителя лежат персональные
+  // данные — СНИЛС, номер удостоверения, — и открывать их каждому, кому нужен список типов ТС,
+  // нельзя. По той же причине права нет ни у наблюдателя, ни у объектных ролей.
+  'drivers.read',
+  'drivers.write',
+
   // Действия над удалёнными и закрытыми записями — общие для заявок и справочников
   /** Видеть удалённые записи (архив): списки с includeDeleted, карточка удалённой заявки. */
   'archive.read',
@@ -78,6 +84,13 @@ export const PERMISSIONS = [
 export type Permission = (typeof PERMISSIONS)[number];
 
 const DIRECTORY_PERMISSIONS = ['directories.read', 'directories.write'] as const;
+
+/**
+ * Ведение водителей (ADR 0037). Идёт вместе со справочниками у тех, кто обрабатывает заявки:
+ * водителя выбирают при переводе заявки в работу, и заводит его тот же человек, который
+ * выписывает путевой лист.
+ */
+const DRIVER_PERMISSIONS = ['drivers.read', 'drivers.write'] as const;
 
 const WASTE_REQUEST_PERMISSIONS = [
   'wasteRequests.read',
@@ -115,6 +128,7 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
 
   manager: [
     ...DIRECTORY_PERMISSIONS,
+    ...DRIVER_PERMISSIONS,
     ...WASTE_REQUEST_PERMISSIONS,
     ...VEHICLE_REQUEST_PERMISSIONS,
     'files.manageAny',
@@ -122,6 +136,7 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
 
   dispatcher: [
     ...DIRECTORY_PERMISSIONS,
+    ...DRIVER_PERMISSIONS,
     ...WASTE_REQUEST_PERMISSIONS,
     ...VEHICLE_REQUEST_PERMISSIONS,
     'files.manageAny',
