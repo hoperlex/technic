@@ -334,11 +334,11 @@ export function WasteRequestViewModal({ request, onClose, onEdit }: Props) {
               {isPending ? (
                 <Spin size="small" />
               ) : rows.length > 0 ? (
-                // Событие строкой: слева баблы статусов, детали — подстроками при раскрытии.
+                // Событие строкой: слева баблы статусов, дальше суть и значения изменений.
                 <RequestHistoryTable
                   rows={rows}
                   labels={wasteRequestChangeLabels}
-                  // Машины и талоны раскрыты сразу: за ними карточку и открывают.
+                  // Машины и талоны на телефоне раскрыты сразу: за ними карточку и открывают.
                   defaultExpandedKeys={rows.filter((r) => r.details).map((r) => r.key)}
                 />
               ) : (

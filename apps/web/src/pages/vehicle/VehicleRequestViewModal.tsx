@@ -298,7 +298,7 @@ export function VehicleRequestViewModal({ request, onClose, onEdit }: Props) {
               {isPending ? (
                 <Spin size="small" />
               ) : rows.length > 0 ? (
-                // Событие строкой: слева баблы статусов, детали — подстроками при раскрытии.
+                // Событие строкой: слева баблы статусов, дальше суть и значения изменений.
                 <RequestHistoryTable rows={rows} labels={vehicleRequestChangeLabels} />
               ) : (
                 <Typography.Text type="secondary">История недоступна</Typography.Text>

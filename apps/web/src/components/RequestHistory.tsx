@@ -1,5 +1,13 @@
 import { useState, type ReactNode } from 'react';
-import { Space, Table, type TableColumnsType, Tag, Typography } from 'antd';
+import {
+  ConfigProvider,
+  Space,
+  Table,
+  type TableColumnsType,
+  Tag,
+  type ThemeConfig,
+  Typography,
+} from 'antd';
 import {
   type RequestHistoryEntryDto,
   type RequestHistoryKind,
@@ -10,11 +18,13 @@ import { useIsMobile } from '../hooks/useIsMobile';
 import { formatDateTime } from '../utils/format';
 
 /**
- * История заявки списком с раскрытием, а не лентой (ADR 0012). Свёрнутая строка отвечает на
- * «что произошло»: слева баблы статусов со стрелкой (у событий без перехода — тег вида события),
- * дальше короткая суть и «когда · кто». Значения изменений, причина отмены и предъявленный факт
- * показываются подстроками при раскрытии — иначе карточка на десятке правок превращается
- * в простыню.
+ * История заявки списком, а не лентой (ADR 0012): слева баблы статусов со стрелкой (у событий
+ * без перехода — тег вида события), в середине суть события со значениями изменений, справа
+ * «когда · кто».
+ *
+ * На широком экране событие показывается целиком, без раскрытия: кнопка-раскрывашка занимала
+ * колонку и сдвигала весь список вправо, а прятала она две-три строки. На телефоне раскрытие
+ * остаётся — там колонки и так сложены в карточку (ADR 0030), и место экономить есть на чём.
  *
  * Общая для обоих модулей заявок: события у них одной формы, различаются только подписи полей
  * и то, чем заявка закрывается (машины и талоны у вывоза мусора — ADR 0011, 0013).
@@ -49,6 +59,14 @@ const KIND_TAGS: Record<string, { label: string; color?: string }> = {
 };
 
 const secondary = { fontSize: 12 } as const;
+
+/**
+ * Событие занимает несколько строк, поэтому вертикальный отступ ячейки урезан до 4 px: иначе
+ * десяток правок растёт вниз втрое. Правится токеном таблицы, а не CSS поверх antd, и только
+ * внутри истории — остальные мелкие таблицы остаются как были. Объект собран один раз:
+ * новый на каждый рендер сбрасывал бы кэш стилей antd.
+ */
+const historyTableTheme: ThemeConfig = { components: { Table: { cellPaddingBlockSM: 4 } } };
 
 /** В Space тег ведёт свой отступ сам — собственный правый отступ ставит лишнюю дырку. */
 const tagStyle = { marginInlineEnd: 0 } as const;
@@ -96,12 +114,18 @@ function StatusBubbles({ row }: { row: HistoryRow }) {
   );
 }
 
-/** Строка свёрнутая: чем событие было. Значения изменений и факт — уже в раскрытой части. */
+/** Комментарий к отмене — это её причина: без подписи он читается как обычная заметка. */
+function commentOf(entry: RequestHistoryEntryDto | null | undefined): string | null {
+  if (!entry?.comment) return null;
+  return entry.toStatus === 'cancelled' ? `Причина: ${entry.comment}` : entry.comment;
+}
+
+/** Строка свёрнутая (телефон): чем событие было. Значения изменений и факт — в раскрытой части. */
 function summaryOf(row: HistoryRow, labels: Record<string, string>): string {
   const e = row.entry;
   if (!e) return row.fact ?? '';
-  // Комментарий к отмене — это её причина: без подписи он читается как обычная заметка.
-  if (e.comment) return e.toStatus === 'cancelled' ? `Причина: ${e.comment}` : e.comment;
+  const comment = commentOf(e);
+  if (comment) return comment;
   if (row.fact) return row.fact;
   // У назначения исполнителя суть — имя контрагента, а не то, что поле трогали.
   const operator = e.kind === 'operator' ? e.changes.find((c) => c.field === 'operator') : null;
@@ -121,21 +145,45 @@ function hasDetails(row: HistoryRow): boolean {
   return !!row.details || !!row.entry?.comment || (row.entry?.changes.length ?? 0) > 0;
 }
 
+/** Что правка изменила: у появившегося значения «было» нет — стрелка из пустоты только мешает. */
+function ChangeLines({
+  row,
+  labels,
+}: {
+  row: HistoryRow;
+  labels: Record<string, string>;
+}): ReactNode {
+  return row.entry?.changes.map((c, i) => (
+    <Typography.Text key={`${c.field}-${i}`} type="secondary" style={secondary}>
+      {labels[c.field] ?? c.field}: {c.from === null ? c.to : `${c.from} → ${c.to}`}
+    </Typography.Text>
+  ));
+}
+
 function HistoryDetails({ row, labels }: { row: HistoryRow; labels: Record<string, string> }) {
-  const e = row.entry;
-  const comment = e?.comment
-    ? e.toStatus === 'cancelled'
-      ? `Причина: ${e.comment}`
-      : e.comment
-    : null;
+  const comment = commentOf(row.entry);
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+    <div className="history-cell">
       {comment && <Typography.Text>{comment}</Typography.Text>}
-      {e?.changes.map((c, i) => (
-        <Typography.Text key={`${c.field}-${i}`} type="secondary" style={secondary}>
-          {labels[c.field] ?? c.field}: {c.from === null ? c.to : `${c.from} → ${c.to}`}
-        </Typography.Text>
-      ))}
+      <ChangeLines row={row} labels={labels} />
+      {row.details}
+    </div>
+  );
+}
+
+/**
+ * Событие целиком, без раскрытия: суть, значения изменений и предъявленный факт идут одной
+ * колонкой. Короткая суть при них лишняя — «Исполнитель: — → ООО „Ромашка“» и «Вывезено 3 м³»
+ * говорят то же самое подробнее, и одно и то же читалось бы дважды подряд.
+ */
+function HistoryContent({ row, labels }: { row: HistoryRow; labels: Record<string, string> }) {
+  const comment = commentOf(row.entry);
+  const spoken = (row.entry?.changes.length ?? 0) > 0 || !!row.details;
+  const headline = comment ?? (spoken ? null : summaryOf(row, labels));
+  return (
+    <div className="history-cell">
+      {headline && <Typography.Text>{headline}</Typography.Text>}
+      <ChangeLines row={row} labels={labels} />
       {row.details}
     </div>
   );
@@ -152,11 +200,7 @@ function columnsWith(labels: Record<string, string>): TableColumnsType<HistoryRo
     },
     {
       key: 'summary',
-      render: (_v, row) => (
-        <Typography.Text ellipsis={{ tooltip: true }} style={{ maxWidth: 250 }}>
-          {summaryOf(row, labels)}
-        </Typography.Text>
-      ),
+      render: (_v, row) => <HistoryContent row={row} labels={labels} />,
     },
     {
       key: 'when',
@@ -246,7 +290,7 @@ export function RequestHistoryTable({
   rows,
   /** Подписи полей модуля: сервер шлёт технические ключи (`wasteRequestChangeLabels`). */
   labels,
-  /** Строки, раскрытые сразу: за приложенными к ним файлами карточку и открывают. */
+  /** Строки, раскрытые сразу на телефоне: за приложенными к ним файлами карточку и открывают. */
   defaultExpandedKeys,
 }: {
   rows: HistoryRow[];
@@ -262,19 +306,16 @@ export function RequestHistoryTable({
   }
 
   return (
-    <Table
-      size="small"
-      showHeader={false}
-      pagination={false}
-      rowKey="key"
-      columns={columnsWith(labels)}
-      dataSource={rows}
-      expandable={{
-        rowExpandable: hasDetails,
-        expandRowByClick: true,
-        expandedRowRender: (row) => <HistoryDetails row={row} labels={labels} />,
-        defaultExpandedRowKeys: defaultExpandedKeys,
-      }}
-    />
+    <ConfigProvider theme={historyTableTheme}>
+      <Table
+        className="history-table"
+        size="small"
+        showHeader={false}
+        pagination={false}
+        rowKey="key"
+        columns={columnsWith(labels)}
+        dataSource={rows}
+      />
+    </ConfigProvider>
   );
 }

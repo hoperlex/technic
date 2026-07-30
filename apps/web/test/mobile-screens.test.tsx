@@ -49,6 +49,14 @@ describe('история заявки', () => {
     render(<RequestHistoryTable rows={rows} labels={{ operator: 'Оператор' }} />);
     expect(document.querySelector('.ant-table')).not.toBeNull();
   });
+
+  it('на десктопе изменения видны сразу, без кнопки раскрытия', () => {
+    setViewport(DESKTOP_VIEWPORT);
+    render(<RequestHistoryTable rows={rows} labels={{ operator: 'Оператор' }} />);
+    expect(screen.getByText(/Оператор:/)).toBeDefined();
+    // Колонка с «плюсом» сдвигала весь список вправо, а прятала эти же две строки.
+    expect(document.querySelector('.ant-table-row-expand-icon')).toBeNull();
+  });
 });
 
 describe('строки факта вывоза', () => {
