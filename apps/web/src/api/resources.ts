@@ -1,7 +1,9 @@
 import type {
+  CancelWaybillInput,
   CreateDriverBody,
   DriverDto,
   DriverSelectionDto,
+  WaybillDto,
   DriverLicenseBody,
   RevokeDriverLicenseInput,
   UpdateDriverInput,
@@ -117,6 +119,17 @@ export const driversApi = {
     apiFetch<DriverSelectionDto>('/drivers/available', {
       query: { ...q, withTrailer: q.withTrailer ? 'true' : undefined },
     }),
+};
+
+/**
+ * Журнал учёта путевых листов (ADR 0037). Выдачи здесь нет: лист рождается переводом заявки в
+ * работу, и отдельной ручки «выписать» не существует — иначе появился бы лист без рейса.
+ */
+export const waybillsApi = {
+  list: (q: Query) => apiFetch<ListResult<WaybillDto>>('/waybills', { query: q }),
+  get: (id: string) => apiFetch<WaybillDto>(`/waybills/${id}`),
+  cancel: (id: string, body: CancelWaybillInput) =>
+    apiFetch<WaybillDto>(`/waybills/${id}/cancel`, { method: 'POST', body }),
 };
 
 export const counterpartiesApi = {

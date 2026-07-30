@@ -2,6 +2,7 @@ import { Route, Routes } from 'react-router';
 import { AppLayout } from './components/AppLayout';
 import { AppUpdateBanner } from './components/AppUpdateBanner';
 import { HomeRedirect, ProtectedRoute, RequirePermission } from './auth/ProtectedRoute';
+import { WaybillsPage } from './pages/WaybillsPage';
 import { LoginPage } from './pages/LoginPage';
 import { RegisterPage } from './pages/RegisterPage';
 import { ChangePasswordPage } from './pages/ChangePasswordPage';
@@ -31,6 +32,9 @@ export default function App() {
             </Route>
             {/* Справочники открыты тем, кто их ведёт: смотреть их отдельной страницей
                 остальным незачем — значения и так видны в карточках заявок. */}
+            <Route element={<RequirePermission permission="waybills.read" />}>
+              <Route path="/waybills" element={<WaybillsPage />} />
+            </Route>
             <Route element={<RequirePermission permission="directories.write" />}>
               <Route path="/directories" element={<DirectoriesPage />} />
             </Route>

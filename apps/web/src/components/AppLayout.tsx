@@ -3,6 +3,7 @@ import { Badge, Dropdown, Layout, Menu, type MenuProps, Typography } from 'antd'
 import { useQuery } from '@tanstack/react-query';
 import {
   CarOutlined,
+  ProfileOutlined,
   DatabaseOutlined,
   FileTextOutlined,
   KeyOutlined,
@@ -83,6 +84,18 @@ export function AppLayout() {
             icon: <CarOutlined />,
             label: 'Заказ ТС',
             short: 'Заказ ТС',
+          },
+        ]
+      : []),
+    // Журнал путевых листов (ADR 0037): его ведут те же, кто выписывает листы переводом заявок
+    // в работу. В листе персональные данные водителя — потому и право своё.
+    ...(can('waybills.read')
+      ? [
+          {
+            key: '/waybills',
+            icon: <ProfileOutlined />,
+            label: 'Путевые листы',
+            short: 'Листы',
           },
         ]
       : []),
