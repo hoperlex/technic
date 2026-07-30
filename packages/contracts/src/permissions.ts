@@ -64,6 +64,13 @@ export const PERMISSIONS = [
   'drivers.read',
   'drivers.write',
 
+  // Путевые листы (ADR 0037). Журнал учёта и аннулирование — своими правами: в листе те же
+  // персональные данные, что в карточке водителя, а испорченный бланк списывает не всякий, кто
+  // берёт заявки в работу. Выдача отдельного права не имеет: лист рождается переводом заявки в
+  // работу, и разрешает его `vehicleRequests.status`.
+  'waybills.read',
+  'waybills.cancel',
+
   // Действия над удалёнными и закрытыми записями — общие для заявок и справочников
   /** Видеть удалённые записи (архив): списки с includeDeleted, карточка удалённой заявки. */
   'archive.read',
@@ -91,6 +98,9 @@ const DIRECTORY_PERMISSIONS = ['directories.read', 'directories.write'] as const
  * выписывает путевой лист.
  */
 const DRIVER_PERMISSIONS = ['drivers.read', 'drivers.write'] as const;
+
+/** Журнал путевых листов ведут те же, кто выписывает листы и ведёт водителей (ADR 0037). */
+const WAYBILL_PERMISSIONS = ['waybills.read', 'waybills.cancel'] as const;
 
 const WASTE_REQUEST_PERMISSIONS = [
   'wasteRequests.read',
@@ -129,6 +139,7 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
   manager: [
     ...DIRECTORY_PERMISSIONS,
     ...DRIVER_PERMISSIONS,
+    ...WAYBILL_PERMISSIONS,
     ...WASTE_REQUEST_PERMISSIONS,
     ...VEHICLE_REQUEST_PERMISSIONS,
     'files.manageAny',
@@ -137,6 +148,7 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
   dispatcher: [
     ...DIRECTORY_PERMISSIONS,
     ...DRIVER_PERMISSIONS,
+    ...WAYBILL_PERMISSIONS,
     ...WASTE_REQUEST_PERMISSIONS,
     ...VEHICLE_REQUEST_PERMISSIONS,
     'files.manageAny',

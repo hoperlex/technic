@@ -313,6 +313,26 @@ export async function issueWaybill(tx: Tx, ctx: WaybillContext): Promise<IssuedW
     );
 
   if (existing) {
+    // Повторный перевод в работу (после отката администратором) не выписывает второй талон: та
+    // же заявка в том же листе уже стоит, и лист остаётся тем, по которому машина вышла.
+    const [already] = await tx
+      .select({ slot: waybillRequests.slot })
+      .from(waybillRequests)
+      .where(
+        and(
+          eq(waybillRequests.waybillId, existing.id),
+          eq(waybillRequests.requestId, ctx.requestId),
+        ),
+      );
+    if (already) {
+      return {
+        id: existing.id,
+        number: String(existing.number),
+        slot: already.slot,
+        reused: true,
+      };
+    }
+
     // Второй водитель на ту же машину и дату — это вторая смена, а не второй талон: такой лист
     // портал пока не выписывает (ADR 0037, backlog).
     if (existing.driverPersonId !== ctx.driverPersonId) {

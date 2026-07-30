@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  cancelWaybillSchema,
   formatWaybillNumber,
+  isWaybillEditable,
   WAYBILL_FORM_CODES,
   WAYBILL_STATUSES,
   waybillDisplayNumber,
@@ -46,5 +48,29 @@ describe('состояния и бланки', () => {
     expect(WAYBILL_FORM_CODES).toContain('4p');
     expect(WAYBILL_FORM_CODES).toContain('leg3');
     expect(WAYBILL_FORM_CODES).toContain('esm2');
+  });
+});
+
+/**
+ * Граница правки листа (ADR 0037 п. 9): до даты выезда лист аннулируют и выписывают заново, в
+ * день выезда и позже — нет. Бланк уже у водителя, и запись, разошедшаяся с бумагой на руках,
+ * хуже отсутствия записи.
+ */
+describe('до какого дня лист можно аннулировать', () => {
+  it('накануне — можно', () => {
+    expect(isWaybillEditable('2026-08-10', '2026-08-09')).toBe(true);
+  });
+
+  it('в день выезда — уже нет: бланк у водителя', () => {
+    expect(isWaybillEditable('2026-08-10', '2026-08-10')).toBe(false);
+  });
+
+  it('задним числом — тем более нет', () => {
+    expect(isWaybillEditable('2026-08-10', '2026-08-11')).toBe(false);
+  });
+
+  it('аннулирование без причины не принимается: в журнале должно быть видно, почему', () => {
+    expect(cancelWaybillSchema.safeParse({ reason: '   ' }).success).toBe(false);
+    expect(cancelWaybillSchema.safeParse({ reason: 'испорчен при печати' }).success).toBe(true);
   });
 });

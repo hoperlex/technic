@@ -149,6 +149,20 @@ const CASES: Case[] = [
     payload: { revokeReason: 'лишение права управления' },
     allowed: ['admin', 'manager', 'dispatcher'],
   },
+  // ── Путевые листы (ADR 0037): журнал и аннулирование — своими правами ──
+  {
+    title: 'журнал путевых листов — закрыт от всех, кроме ведущих заявки',
+    method: 'GET',
+    url: '/api/v1/waybills',
+    allowed: ['admin', 'manager', 'dispatcher'],
+  },
+  {
+    title: 'аннулирование листа — своим правом',
+    method: 'POST',
+    url: `/api/v1/waybills/${RECORD_ID}/cancel`,
+    payload: { reason: 'испорчен при печати' },
+    allowed: ['admin', 'manager', 'dispatcher'],
+  },
   // ── Справочники: чтение нужно всем (форма заявки), ведение — трём ролям ──
   {
     title: 'справочник техники — чтение',

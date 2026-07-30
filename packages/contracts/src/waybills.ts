@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { baseListQuery, dateOnlySchema, uuidSchema } from './common';
 
 // ── Путевой лист (ADR 0037) ──
 // Лист — документ строгой отчётности: серия, номер, журнал учёта. Черновика у него нет: он
@@ -44,3 +45,74 @@ export function formatWaybillNumber(num: number, width: number): string {
 export function waybillDisplayNumber(prefix: string, num: number, width: number): string {
   return `${prefix}${formatWaybillNumber(num, width)}`;
 }
+
+// ── Журнал учёта (ADR 0037) ──
+// Лист — бланк строгой отчётности: журнал отвечает, какие номера выданы, на какие машины и что
+// с ними стало. Аннулированные из него не исчезают — пропуск в нумерации означал бы утраченный
+// бланк, а не отменённый рейс.
+
+export interface WaybillRequestLinkDto {
+  requestId: string;
+  /** «ТС-501» — номер заявки, как его читают в портале. */
+  displayNumber: string;
+  /** Талон заказчика, 1–4: столько их держит бланк 4-П. */
+  slot: number;
+  objectName: string;
+}
+
+export interface WaybillDto {
+  id: string;
+  /** «260604-646-00000004897» — как номер напечатан на бланке. */
+  number: string;
+  formCode: WaybillFormCode;
+  status: WaybillStatus;
+  /** День, на который выписан лист, и граница его правки. */
+  issuedForDate: string;
+  organizationName: string;
+  vehicleId: string;
+  /** «КамАЗ 65201 · Е646СК799» — чем именно ехали. */
+  vehicleLabel: string;
+  driverPersonId: string;
+  driverName: string;
+  withTrailer: boolean;
+  trailerLabel: string;
+  issuedByName: string;
+  issuedAt: string;
+  cancelledByName: string | null;
+  cancelledAt: string | null;
+  cancelReason: string;
+  /** Заявки, которые машина выполняет по этому листу — талоны заказчиков. */
+  requests: WaybillRequestLinkDto[];
+}
+
+export const WAYBILL_SORT_FIELDS = ['issuedForDate', 'number', 'issuedAt'] as const;
+
+export const waybillListQuerySchema = baseListQuery(WAYBILL_SORT_FIELDS).extend({
+  /** Период выдачи: журнал читают по дням, а не по всей истории сразу. */
+  dateFrom: dateOnlySchema.optional(),
+  dateTo: dateOnlySchema.optional(),
+  vehicleId: uuidSchema.optional(),
+  driverPersonId: uuidSchema.optional(),
+  status: waybillStatusSchema.optional(),
+});
+export type WaybillListQuery = z.infer<typeof waybillListQuerySchema>;
+
+/**
+ * Аннулирование листа. Причина обязательна: испорченный бланк списывают, и в журнале должно быть
+ * видно, почему номер не ушёл в рейс.
+ */
+export const cancelWaybillSchema = z
+  .object({ reason: z.string().trim().min(1, 'Укажите причину').max(2000) })
+  .strict();
+export type CancelWaybillInput = z.infer<typeof cancelWaybillSchema>;
+
+/**
+ * Можно ли ещё аннулировать лист (ADR 0037 п. 9). До даты выезда — да; в день выезда и позже —
+ * нет: бланк уже у водителя, и запись, разошедшаяся с бумагой на руках, хуже отсутствия записи.
+ */
+export function isWaybillEditable(issuedForDate: string, today: string): boolean {
+  return today < issuedForDate;
+}
+
+export const WAYBILL_LOCKED_MESSAGE =
+  'Лист выписан на сегодня или прошедший день — бланк уже у водителя, и аннулировать его нельзя';
