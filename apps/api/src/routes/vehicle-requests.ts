@@ -104,6 +104,7 @@ import {
   diffVehicleRequests,
 } from '../services/vehicle-request-diff';
 import { loadVehicleRequestHistory } from '../services/vehicle-request-history';
+import { issueWaybill } from '../services/waybill-issue';
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -576,6 +577,7 @@ async function saveAssignment(
   requestId: string,
   vehicleTypeId: string,
   a: VehicleRequestAssignmentDto,
+  driverPersonId: string | null,
 ): Promise<void> {
   const values = {
     vehicleId: a.vehicleId,
@@ -583,6 +585,8 @@ async function saveAssignment(
     pricePerHour: numToDb(a.pricePerHour),
     pricePerShift: numToDb(a.pricePerShift),
     shiftHours: a.shiftHours,
+    // Кто за рулём (ADR 0037): у аренды водитель чужой, и колонка остаётся пустой.
+    driverPersonId: driverPersonId ?? null,
     assignedBy: a.assignedBy,
   };
   await tx
@@ -1588,7 +1592,26 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
             assignment,
             { id: p.id, name: p.fullName },
           );
-          await saveAssignment(tx, before.id, before.vehicleTypeId, saved);
+          await saveAssignment(
+            tx,
+            before.id,
+            before.vehicleTypeId,
+            saved,
+            assignment.driverPersonId ?? null,
+          );
+
+          // Путевой лист выдаётся в этой же транзакции (ADR 0037): состояния «в работе, а листа
+          // нет» не существует. На аренду и типы без бланка лист не выписывается — сервис
+          // возвращает null, и это нормальный ход, а не ошибка.
+          if (transitionRequiresAssignment(status)) {
+            await issueWaybill(tx, {
+              requestId: before.id,
+              vehicleId: saved.vehicleId,
+              driverPersonId: assignment.driverPersonId ?? null,
+              fields: assignment.waybill ?? null,
+              actor: { id: p.id, name: p.fullName },
+            });
+          }
         }
         // Ставка берётся из назначения — того, что стоит на заявке сейчас: сменить машину, не
         // меняя статуса, нельзя (ADR 0027), поэтому оно же и было в работе.
