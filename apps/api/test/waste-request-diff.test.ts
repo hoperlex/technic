@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import type { WasteRequestDto, WasteRequestVehicleDto } from '@technic/contracts';
-import { diffWasteRequests } from '../src/services/waste-request-diff';
+import type { WasteRequestCompletionDto, WasteRequestDto } from '@technic/contracts';
+import { diffWasteCompletion, diffWasteRequests } from '../src/services/waste-request-diff';
 
-// Дифф правки заявки — то, из чего складывается история в карточке (ADR 0012).
+// Дифф правки заявки и её закрытия — то, из чего складывается история в карточке (ADR 0012).
 
 const BASE: WasteRequestDto = {
   id: '11111111-1111-4111-8111-111111111111',
@@ -26,7 +26,9 @@ const BASE: WasteRequestDto = {
   status: 'new',
   cancelReason: null,
   files: [],
+  tickets: [],
   vehicles: [],
+  completion: null,
   version: 1,
   createdBy: '55555555-5555-4555-8555-555555555555',
   createdByName: 'Иванов И. И.',
@@ -34,16 +36,6 @@ const BASE: WasteRequestDto = {
   updatedAt: '2026-07-28T09:00:00.000Z',
   deletedAt: null,
 };
-
-const vehicle = (id: string, isDeleted = false): WasteRequestVehicleDto => ({
-  id,
-  containerTypeId: '33333333-3333-4333-8333-333333333333',
-  containerTypeName: 'Самосвал 20 м³',
-  volumeM3: 20,
-  files: [],
-  isDeleted,
-  createdAt: '2026-07-28T10:00:00.000Z',
-});
 
 const file = (id: string, filename: string) => ({
   id,
@@ -123,20 +115,52 @@ describe('дифф правки заявки', () => {
     expect(changes).toContainEqual({ field: 'filesRemoved', from: null, to: 'акт.pdf' });
   });
 
-  it('машины: добавление, пометка, возврат и удаление насовсем — разные события', () => {
-    const before = {
-      ...BASE,
-      vehicles: [vehicle('v1'), vehicle('v2', true), vehicle('v3')],
-    };
-    const after = {
-      ...BASE,
-      vehicles: [vehicle('v1', true), vehicle('v2'), vehicle('v4')],
-    };
-    expect(byField(diffWasteRequests(before, after))).toEqual([
-      'vehiclesAdded',
-      'vehiclesMarkedDeleted',
-      'vehiclesRestored',
-      'vehiclesRemoved',
-    ]);
+  // Факт правкой заявки не меняется (ADR 0035): его предъявляет закрытие, и в истории он идёт
+  // своим событием — здесь у правки о нём просто нечего сказать.
+  it('состав техники прошлых закрытий в дифф правки не попадает', () => {
+    const before = { ...BASE, vehicles: [] };
+    const after = { ...BASE, comment: 'Другой заезд' };
+    expect(byField(diffWasteRequests(before, after))).toEqual(['comment']);
+  });
+});
+
+// Закрытие заявки — отдельное событие истории (ADR 0035): «выполнена» и «вывезли столько-то на
+// такую-то сумму» отвечают на разные вопросы.
+describe('дифф закрытия заявки', () => {
+  const completion = (
+    volumeM3: number,
+    pricePerM3: number | null,
+    totalCost: number | null,
+  ): WasteRequestCompletionDto => ({
+    volumeM3,
+    pricePerM3,
+    totalCost,
+    completedBy: BASE.createdBy,
+    completedByName: BASE.createdByName,
+    completedAt: '2026-08-01T12:00:00.000Z',
+  });
+
+  it('первое закрытие показывает объём, цену и сумму', () => {
+    const changes = diffWasteCompletion(null, completion(48, 850, 40_800));
+    expect(byField(changes)).toEqual(['factVolume', 'factPrice', 'factCost']);
+    expect(changes[0]).toEqual({ field: 'factVolume', from: '—', to: '48 м³' });
+    expect(changes[2]?.to).toMatch(/^40.800,00 ₽$/);
+  });
+
+  // Повторное закрытие (после отката администратором) сравнивается с прошлым фактом: видно, какую
+  // именно цифру исправили — ради этого закрытие и держит свою историю.
+  it('повторное закрытие показывает только исправленное', () => {
+    const changes = diffWasteCompletion(
+      completion(48, 850, 40_800),
+      completion(48, 850, 39_000),
+    );
+    expect(byField(changes)).toEqual(['factCost']);
+  });
+
+  // Цены в прайсе может не быть вовсе — сумму тогда вводят руками. Событию о цене взяться
+  // неоткуда («было — стало —»), а объём и сумма в истории остаются.
+  it('закрытие без цены не выдумывает её', () => {
+    const changes = diffWasteCompletion(null, completion(48, null, 39_000));
+    expect(byField(changes)).toEqual(['factVolume', 'factCost']);
   });
 });

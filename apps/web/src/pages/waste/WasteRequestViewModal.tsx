@@ -10,9 +10,9 @@ import {
   requestTypeColors,
   requestTypeLabels,
   requestTypeShort,
-  requiresWasteVehicles,
-  sumVehicleVolume,
+  requiresWasteFact,
   vehicleVolume,
+  type WasteRequestCompletionDto,
   type WasteRequestDto,
   type WasteRequestVehicleDto,
   wasteRequestChangeLabels,
@@ -41,19 +41,35 @@ interface Props {
 const secondary = { fontSize: 12 } as const;
 
 /**
- * Чем вывезли и чем это подтверждено — у закрытия заявки, а не в теле карточки: и машины
- * (ADR 0011), и талоны (ADR 0013) заводятся именно при переходе в «Выполнена», к нему они
- * и цепляются. Строка машины — «тип × количество» со своей суммой по прайсу (ADR 0024).
+ * Чем подтверждено выполнение — у закрытия заявки, а не в теле карточки: и факт вывоза
+ * (ADR 0035), и талоны (ADR 0013) предъявляются именно при переходе в «Выполнена», к нему они
+ * и цепляются. Состав техники показывается у заявок, закрытых до ADR 0035: новых строк не
+ * появляется, но по этим заявку принимали — молчать о них нельзя.
  */
 function ClosingFact({
+  completion,
   vehicles,
   tickets,
 }: {
+  completion: WasteRequestCompletionDto | null;
   vehicles: WasteRequestVehicleDto[];
   tickets: FileDto[];
 }) {
   return (
     <>
+      {completion && (
+        <Space size={8} wrap>
+          <Typography.Text>
+            Вывезено {completion.volumeM3} м³
+            {completion.totalCost != null ? ` · ${formatMoney(completion.totalCost)}` : ''}
+          </Typography.Text>
+          {completion.pricePerM3 != null && (
+            <Typography.Text type="secondary" style={secondary}>
+              по {formatMoney(completion.pricePerM3)}/м³
+            </Typography.Text>
+          )}
+        </Space>
+      )}
       {/* Помеченные на удаление остаются в списке зачёркнутыми — иначе снятую машину нечем
           заметить. */}
       {vehicles.map((v) => (
@@ -82,10 +98,19 @@ function ClosingFact({
   );
 }
 
-/** Чем предъявлен факт выполнения: машинами (ADR 0011) и талонами заявки (ADR 0013, ADR 0024). */
-function factOf(vehicles: WasteRequestVehicleDto[], tickets: FileDto[]): string {
+/** Чем предъявлен факт выполнения: объёмом (ADR 0035) и талонами заявки (ADR 0013, ADR 0024). */
+function factOf(
+  completion: WasteRequestCompletionDto | null,
+  vehicles: WasteRequestVehicleDto[],
+  tickets: FileDto[],
+): string {
   const parts = [
-    vehicles.length > 0 ? `машин: ${vehicles.reduce((acc, v) => acc + v.count, 0)}` : null,
+    completion ? `${completion.volumeM3} м³` : null,
+    completion?.totalCost != null ? formatMoney(completion.totalCost) : null,
+    // Состав техники — только у закрытий до ADR 0035; у них объёма в факте не было.
+    !completion && vehicles.length > 0
+      ? `машин: ${vehicles.reduce((acc, v) => acc + v.count, 0)}`
+      : null,
     tickets.length > 0 ? `талонов: ${tickets.length}` : null,
   ].filter(Boolean);
   return parts.join(' · ');
@@ -93,29 +118,30 @@ function factOf(vehicles: WasteRequestVehicleDto[], tickets: FileDto[]): string 
 
 function buildRows(
   history: RequestHistoryEntryDto[] | undefined,
+  completion: WasteRequestCompletionDto | null,
   vehicles: WasteRequestVehicleDto[],
   tickets: FileDto[],
 ): HistoryRow[] {
   const entries = history ?? [];
   // Повторное закрытие (после отката) — последнее слово о факте, к нему его и цепляем.
   const closingIndex = entries.findLastIndex((e) => e.kind === 'status' && e.toStatus === 'done');
-  // Закрытие без единой машины и талона (контейнерная операция, талон донесут позже) не должно
+  // Закрытие без факта и талона (контейнерная операция, талон донесут позже) не должно
   // раскрываться в пустоту — тогда факта у строки просто нет.
-  const fact: Partial<HistoryRow> =
-    vehicles.length > 0 || tickets.length > 0
-      ? {
-          fact: factOf(vehicles, tickets),
-          details: <ClosingFact vehicles={vehicles} tickets={tickets} />,
-        }
-      : {};
+  const hasFact = completion != null || vehicles.length > 0 || tickets.length > 0;
+  const fact: Partial<HistoryRow> = hasFact
+    ? {
+        fact: factOf(completion, vehicles, tickets),
+        details: <ClosingFact completion={completion} vehicles={vehicles} tickets={tickets} />,
+      }
+    : {};
   const rows = entries.map<HistoryRow>((e, i) => ({
     key: e.id,
     entry: e,
     ...(i === closingIndex ? fact : {}),
   }));
-  // Машины у незакрытой заявки (их можно завести и правкой) без такой строки просто пропали бы;
-  // талоны без закрытия означают обрезанную историю — молчать о них так же нельзя.
-  if (closingIndex < 0 && (vehicles.length > 0 || tickets.length > 0)) {
+  // Талоны без закрытия означают обрезанную историю, а машины у незакрытой заявки остались от
+  // прежнего порядка (их заводили и правкой) — без такой строки и то, и другое просто пропало бы.
+  if (closingIndex < 0 && hasFact) {
     rows.push({
       key: 'fact',
       entry: null,
@@ -141,10 +167,15 @@ export function WasteRequestViewModal({ request, onClose, onEdit }: Props) {
    */
   const priced =
     request != null && (isPricedRequestType(request.requestType) || request.amount != null);
-  const activeVehicles = request?.vehicles.filter((v) => !v.isDeleted).length ?? 0;
   const rows = useMemo(
-    () => buildRows(history, request?.vehicles ?? [], request?.tickets ?? []),
-    [history, request?.vehicles, request?.tickets],
+    () =>
+      buildRows(
+        history,
+        request?.completion ?? null,
+        request?.vehicles ?? [],
+        request?.tickets ?? [],
+      ),
+    [history, request?.completion, request?.vehicles, request?.tickets],
   );
 
   const fields = request
@@ -186,7 +217,7 @@ export function WasteRequestViewModal({ request, onClose, onEdit }: Props) {
         // Контейнер — предмет только контейнерных операций: вывоз заказывает объём и технику не
         // называет (ADR 0022). У заявок вывоза, заведённых раньше, тип в базе остался, но строка
         // о нём в карточке говорила бы о поле, которого у этого типа заявки больше нет.
-        ...(requiresWasteVehicles(request.requestType)
+        ...(requiresWasteFact(request.requestType)
           ? []
           : [
               {
@@ -225,9 +256,10 @@ export function WasteRequestViewModal({ request, onClose, onEdit }: Props) {
               },
             ]
           : []),
-        // Итог по машинам: сами строки — в истории, у закрытия заявки. Сумма по факту (ADR 0024)
-        // и есть то, что заявка стоила: цена выше — плановая, по заявленному объёму.
-        ...(request.vehicles.length > 0
+        // Факт выполнения (ADR 0035): что вывезли и во сколько это обошлось. Его сумма и есть то,
+        // что заявка стоила — цена выше плановая, по заявленному объёму. Состав техники прошлых
+        // закрытий сюда не поднимается: он в истории, у самого закрытия.
+        ...(request.completion
           ? [
               {
                 key: 'hauled',
@@ -236,16 +268,23 @@ export function WasteRequestViewModal({ request, onClose, onEdit }: Props) {
                 children: (
                   <div style={{ lineHeight: 1.3 }}>
                     <div>
-                      {sumVehicleVolume(request.vehicles)} м³ · машин: {activeVehicles}
-                      {request.factAmount != null ? ` · ${formatMoney(request.factAmount)}` : ''}
+                      {request.completion.volumeM3} м³
+                      {request.completion.totalCost != null
+                        ? ` · ${formatMoney(request.completion.totalCost)}`
+                        : ''}
                     </div>
-                    {request.factAmount != null &&
+                    {request.completion.totalCost != null &&
                       request.amount != null &&
-                      request.factAmount !== request.amount && (
+                      request.completion.totalCost !== request.amount && (
                         <Typography.Text type="secondary" style={secondary}>
                           заявка оформлялась на {formatMoney(request.amount)}
                         </Typography.Text>
                       )}
+                    {request.completion.totalCost == null && (
+                      <Typography.Text type="secondary" style={secondary}>
+                        стоимость не указана — цены в прайсе не было
+                      </Typography.Text>
+                    )}
                   </div>
                 ),
               },

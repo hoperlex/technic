@@ -1,143 +1,139 @@
-import { App, Button, Form, Input, Space, Typography, Upload } from 'antd';
+import { App, Button, Form, Input, InputNumber, Space, Typography, Upload } from 'antd';
 import { CameraOutlined, UploadOutlined } from '@ant-design/icons';
 import { useEffect, useState } from 'react';
-import { useQueries } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import {
-  calcWasteAmount,
+  calcWasteFactCost,
+  type CompleteWasteRequestInput,
   type FileDto,
   MAX_TICKETS_PER_REQUEST,
   requestTypeShort,
-  requiresWasteVehicles,
+  requiresWasteFact,
+  WASTE_REMOVAL_CONTAINER_KIND,
   type WasteRequestDto,
-  type WasteRequestVehicleInput,
-  type WasteVehicleCountInput,
 } from '@technic/contracts';
 import { filesApi, wasteTariffsApi } from '../../api/resources';
 import { FileLinkList } from '../../components/FileLinks';
 import { FormModal } from '../../components/FormModal';
 import { useIsMobile } from '../../hooks/useIsMobile';
-import {
-  changedCounts,
-  draftsToInput,
-  draftVolume,
-  emptyVehicleDraft,
-  existingVehicleDraft,
-  type PriceLookup,
-  sumDraftVolume,
-  validateVehicleDrafts,
-  type VehicleDraft,
-  type VehicleTypeOption,
-  VolumeSummary,
-  WasteVehiclesEditor,
-} from '../../components/WasteVehiclesEditor';
 import { errorMessage, formatMoney } from '../../utils/format';
 
 const FILE_MAX_SIZE = 52_428_800; // 50 МБ
 
 /**
  * Закрытие заявки: факт предъявляется вместе со сменой статуса, а не после неё.
- *  - вывоз мусора — чем вывезли: строки «тип машины × количество» (ADR 0024). Объём считается из
- *    вместимости типа, стоимость — по справочнику цен: заявку оформляли планом, платят за факт;
- *  - контейнерные операции — только талон: ходка одна, и машине взяться неоткуда (ADR 0013).
+ *  - вывоз мусора — сколько вывезли и во сколько это обошлось (ADR 0035). Объём вводят руками:
+ *    он стоит в талоне и весовой квитанции. Состав техники не спрашивается — вывоз тарифицируется
+ *    самосвалами (ADR 0022), и какими машинами увезли объём, к расчёту отношения не имеет;
+ *  - контейнерные операции — только талон: ходка одна, и объёма у такой заявки нет (ADR 0013).
+ *
+ * Стоимость подставляется расчётом «объём × цена по прайсу» и правится свободно: счёт оператора
+ * включает и подачу, и недогруз, и сходиться сумма должна со счётом, а не с формулой. Ручная
+ * правка видна подсказкой — расхождение с расчётом должно быть замечено, а не проскочить молча.
+ * Цены в прайсе нет — это не запрет: заявка выполнена, и сумму просто вводят руками.
+ *
  * Талон обязателен в обоих случаях (ADR 0020) и с ADR 0024 крепится к самой заявке общим пулом:
  * оператор отдаёт бумаги пачкой за всё закрытие. Комментарий уходит в историю заявки.
  */
 interface Props {
   /** null — окно закрыто; заявка берётся из строки списка. */
   request: WasteRequestDto | null;
-  typeOptions: VehicleTypeOption[];
   confirmLoading: boolean;
   onCancel: () => void;
   onSubmit: (v: {
     comment: string;
-    vehicles: WasteRequestVehicleInput[];
-    /** Правка количества у машин прошлого закрытия — вместо второй строки того же типа. */
-    vehicleCounts: WasteVehicleCountInput[];
+    /** Факт вывоза; null — заявка контейнерная, объёма у неё нет. */
+    completion: CompleteWasteRequestInput | null;
     ticketFileIds: string[];
   }) => void;
 }
 
-export function WasteDoneModal({
-  request,
-  typeOptions,
-  confirmLoading,
-  onCancel,
-  onSubmit,
-}: Props) {
+interface FormValues {
+  volumeM3?: number | null;
+  totalCost?: number | null;
+  comment?: string;
+}
+
+export function WasteDoneModal({ request, confirmLoading, onCancel, onSubmit }: Props) {
   const { message } = App.useApp();
   const isMobile = useIsMobile();
-  const [drafts, setDrafts] = useState<VehicleDraft[]>([]);
+  const [form] = Form.useForm<FormValues>();
   const [tickets, setTickets] = useState<FileDto[]>([]);
-  const [comment, setComment] = useState('');
   const [uploading, setUploading] = useState(false);
+  /** Сумму правили руками — расчёт её больше не переписывает. */
+  const [costTouched, setCostTouched] = useState(false);
 
-  const byVehicles = request ? requiresWasteVehicles(request.requestType) : false;
-  const activeVehicles = request?.vehicles.filter((v) => !v.isDeleted) ?? [];
+  const byFact = request ? requiresWasteFact(request.requestType) : false;
 
-  // Окно переиспользуется под разные заявки, поэтому строки сбрасываются при смене цели, а не
-  // при размонтировании. Машины прошлого закрытия (после отката) показываются готовыми строками:
-  // у них правится количество — второй строки того же типа в заявке не бывает.
+  /**
+   * Цена-основание: снимок самой заявки — по нему её оформляли, и правка прайса оформленную
+   * заявку не переписывает (ADR 0009). Снимка нет (заявки старше тарификации) — спрашиваем прайс
+   * по виду «Самосвал» той же ручкой, что считает цену сервер: правило подбора должно быть одно
+   * на обе стороны (ADR 0022, ADR 0026). Тем же порядком цену выбирает и сервер при закрытии.
+   */
+  const wasteTypeId = request?.wasteTypeId ?? null;
+  const operatorId = request?.operatorCounterpartyId ?? null;
+  const needTariff = byFact && request?.pricePerM3 == null && !!wasteTypeId;
+  const { data: tariffResult } = useQuery({
+    queryKey: ['waste-tariffs', 'resolve', wasteTypeId, operatorId],
+    queryFn: () =>
+      wasteTariffsApi.resolve(
+        wasteTypeId!,
+        { containerKind: WASTE_REMOVAL_CONTAINER_KIND },
+        operatorId,
+      ),
+    enabled: needTariff,
+    staleTime: 60_000,
+  });
+  const pricePerM3 = request?.pricePerM3 ?? tariffResult?.tariff?.pricePerM3 ?? null;
+  /** Цена «от»: оператор не назначен, и подбор взял минимальную среди операторов (ADR 0026). */
+  const priceIsMinimum = request?.pricePerM3 == null && !!tariffResult?.tariff?.isMinimum;
+
+  // Окно переиспользуется под разные заявки, поэтому поля сбрасываются при смене цели, а не при
+  // размонтировании. Повторное закрытие (после отката администратором) открывается на прежнем
+  // факте: обычно правят одну цифру, а не набирают всё заново. У первого закрытия объём
+  // подставляется заявленным — его подтверждают или правят по талону.
   const targetId = request?.id ?? null;
   useEffect(() => {
     if (!request) return;
-    const existing = request.vehicles.filter((v) => !v.isDeleted).map(existingVehicleDraft);
-    setDrafts(
-      requiresWasteVehicles(request.requestType)
-        ? existing.length > 0
-          ? existing
-          : [emptyVehicleDraft()]
-        : [],
-    );
+    const previous = request.completion;
+    const volumeM3 = previous?.volumeM3 ?? request.volumeM3 ?? null;
     setTickets([]);
-    setComment('');
+    setCostTouched(!!previous);
+    form.setFieldsValue({
+      volumeM3,
+      totalCost:
+        previous?.totalCost ??
+        (volumeM3 != null ? calcWasteFactCost(volumeM3, request.pricePerM3) : null),
+      comment: '',
+    });
     // Зависимость — идентификатор заявки, а не сама заявка: перерисовка той же заявки (invalidate
     // списка после соседнего действия) приходит новым объектом и стёрла бы уже набранное.
   }, [targetId]);
 
-  /**
-   * Предварительный расчёт по справочнику цен (ADR 0024): тариф для каждого выбранного типа
-   * подбирает сервер — той же ручкой, что считает цену при сохранении заявки, и для оператора
-   * этой заявки (прайс у каждого свой, ADR 0026). Считать на клиенте по списку тарифов нельзя:
-   * правило подбора (точный тип побеждает вид техники) должно быть одно на обе стороны.
-   */
-  const selectedTypeIds = [
-    ...new Set(drafts.map((d) => d.containerTypeId).filter((id): id is string => !!id)),
-  ];
-  const wasteTypeId = request?.wasteTypeId ?? null;
-  const operatorId = request?.operatorCounterpartyId ?? null;
-  const priceQueries = useQueries({
-    queries: selectedTypeIds.map((containerTypeId) => ({
-      queryKey: ['waste-tariffs', 'resolve', wasteTypeId, containerTypeId, operatorId],
-      queryFn: () => wasteTariffsApi.resolve(wasteTypeId!, { containerTypeId }, operatorId),
-      enabled: !!wasteTypeId,
-      staleTime: 60_000,
-    })),
-  });
-  const priceByType = new Map<string, number | null | undefined>();
-  selectedTypeIds.forEach((id, i) => {
-    const q = priceQueries[i];
-    // undefined — цена ещё грузится (или тип мусора неизвестен), null — тарифа для типа нет.
-    priceByType.set(id, q?.isSuccess ? (q.data.tariff?.pricePerM3 ?? null) : undefined);
-  });
-  const priceOf: PriceLookup = (id) => priceByType.get(id);
-  const pricesPending = priceQueries.some((q) => q.isPending);
-  /** Цена «от»: оператор не назначен, и подбор взял минимальную среди операторов (ADR 0026). */
-  const priceIsMinimum = priceQueries.some((q) => q.data?.tariff?.isMinimum);
+  const volumeM3 = Form.useWatch('volumeM3', form);
+  const totalCost = Form.useWatch('totalCost', form);
 
-  const filledDrafts = drafts.filter((d) => d.containerTypeId);
-  const missingPrice = filledDrafts.some((d) => priceByType.get(d.containerTypeId!) === null);
-  const factVolume = sumDraftVolume(drafts, typeOptions);
-  /** Итог расчёта; null — не все цены известны, и складывать было бы нечего. */
-  const factAmount = (() => {
-    if (filledDrafts.length === 0) return null;
-    let sum = 0;
-    for (const d of filledDrafts) {
-      const price = priceByType.get(d.containerTypeId!);
-      if (price == null) return null;
-      sum += calcWasteAmount(draftVolume(d, typeOptions), price);
-    }
-    return Math.round(sum * 100) / 100;
-  })();
+  // У заявок без снимка цены она приезжает отдельным запросом (прайс по виду «Самосвал»). Пока
+  // сумму не правили руками, расчёт подставляется, как только цена известна: иначе поле осталось
+  // бы пустым при заполненном прайсе.
+  useEffect(() => {
+    if (costTouched || pricePerM3 == null) return;
+    const current = form.getFieldValue('volumeM3') as number | null | undefined;
+    if (current == null || current <= 0) return;
+    form.setFieldsValue({ totalCost: calcWasteFactCost(current, pricePerM3) });
+  }, [pricePerM3, costTouched]);
+
+  /** Расчёт по прайсу — им подставляется сумма и с ним же сравнивается введённая вручную. */
+  const calculated =
+    volumeM3 != null && volumeM3 > 0 ? calcWasteFactCost(volumeM3, pricePerM3) : null;
+  const costDiffers = costTouched && calculated != null && (totalCost ?? null) !== calculated;
+
+  /** Пока сумму не правили руками, она следует за объёмом: её показывают, а не набирают. */
+  const changeVolume = (value: number | null) => {
+    if (costTouched) return;
+    form.setFieldsValue({ totalCost: value == null ? null : calcWasteFactCost(value, pricePerM3) });
+  };
 
   /** Файлы, не дошедшие до заявки, удаляем сразу: иначе они повиснут в S3 ничьими. */
   const discardUploads = () => {
@@ -182,23 +178,11 @@ export function WasteDoneModal({
     onCancel();
   };
 
-  const submit = () => {
+  const submit = (v: FormValues) => {
     if (!request) return;
-    if (byVehicles) {
-      const error = validateVehicleDrafts(drafts);
-      if (error) {
-        message.warning(error);
-        return;
-      }
-      if (drafts.length === 0) {
-        message.warning('Добавьте хотя бы одну машину');
-        return;
-      }
-      // Без цены сумма по факту вышла бы неполной — такое закрытие сервер и не проведёт.
-      if (missingPrice) {
-        message.warning('Для выбранного типа цена в прайсе не задана — заполните прайс');
-        return;
-      }
+    if (byFact && (v.volumeM3 == null || v.volumeM3 <= 0)) {
+      message.warning('Укажите фактически вывезенный объём');
+      return;
     }
     // Талон обязателен у заявки любого типа; приложенные прошлым закрытием засчитываются.
     if (request.tickets.length + tickets.length === 0) {
@@ -206,73 +190,112 @@ export function WasteDoneModal({
       return;
     }
     onSubmit({
-      comment: comment.trim(),
-      vehicles: byVehicles ? draftsToInput(drafts) : [],
-      vehicleCounts: byVehicles ? changedCounts(drafts, activeVehicles) : [],
+      comment: (v.comment ?? '').trim(),
+      completion: byFact ? { volumeM3: v.volumeM3!, totalCost: v.totalCost ?? null } : null,
       ticketFileIds: tickets.map((f) => f.id),
     });
   };
 
   const noTicketYet = !!request && request.tickets.length + tickets.length === 0;
+  /** Расхождение с заявкой — подсказка, а не запрет: заявка это план, платят за вывезенное. */
+  const volumeDiff =
+    request?.volumeM3 != null && volumeM3 != null && volumeM3 > 0
+      ? Math.round((volumeM3 - request.volumeM3) * 1000) / 1000
+      : null;
 
   return (
     <FormModal
       title="Выполнение заявки"
       open={!!request}
       onCancel={cancel}
-      onSubmit={submit}
+      onSubmit={() => form.submit()}
       confirmLoading={confirmLoading}
       okText="Выполнена"
-      width={760}
+      width={620}
     >
       {request && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <Typography.Text type="secondary">
+        <Form form={form} layout="vertical" onFinish={submit}>
+          <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
             Заявка № {request.num}-{requestTypeShort[request.requestType]}, {request.objectName}
             {request.volumeM3 != null ? ` · заявлено ${request.volumeM3} м³` : ''}
             {request.amount != null ? ` на ${formatMoney(request.amount)}` : ''}
-          </Typography.Text>
+          </Typography.Paragraph>
 
-          {byVehicles && (
+          {byFact && (
             <>
-              <Typography.Text strong>Чем вывезли</Typography.Text>
-              <WasteVehiclesEditor
-                value={drafts}
-                onChange={setDrafts}
-                typeOptions={typeOptions}
-                priceOf={priceOf}
-              />
-              <VolumeSummary planned={request.volumeM3} actual={factVolume} />
-              {/* Предварительный расчёт по прайсу: им же считается сумма закрытой заявки, и
-                  человек видит её до того, как нажмёт «Выполнена». */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                <Typography.Text>
-                  {'Стоимость по прайсу: '}
-                  {factAmount != null ? (
-                    <Typography.Text strong>
-                      {priceIsMinimum ? 'от ' : ''}
-                      {formatMoney(factAmount)}
-                    </Typography.Text>
-                  ) : pricesPending ? (
-                    <Typography.Text type="secondary">считаем…</Typography.Text>
-                  ) : (
-                    <Typography.Text type="secondary">—</Typography.Text>
-                  )}
-                </Typography.Text>
-                {factAmount != null && request.amount != null && factAmount !== request.amount && (
-                  <Typography.Text type="warning" style={{ fontSize: 12 }}>
-                    Заявка оформлена на {formatMoney(request.amount)} — закрытие пересчитает сумму
-                    по машинам
+              {/* Объём и стоимость стоят рядом — их сверяют друг с другом; на телефоне для двух
+                  числовых полей в строке места нет (ADR 0030). */}
+              <Space
+                style={{ width: '100%' }}
+                size="middle"
+                align="start"
+                direction={isMobile ? 'vertical' : 'horizontal'}
+              >
+                <Form.Item
+                  name="volumeM3"
+                  label="Вывезено, м³"
+                  rules={[
+                    { required: true, message: 'Укажите объём' },
+                    {
+                      // Объём взвешивают, поэтому дробный он обычен, но не бесконечно: столько же
+                      // знаков хранит БД, и лишние сервер отвергнет уже после отправки формы.
+                      validator: (_rule, v: number | undefined) =>
+                        v == null || Math.abs(v * 1000 - Math.round(v * 1000)) < 1e-6
+                          ? Promise.resolve()
+                          : Promise.reject(new Error('Не более 3 знаков после запятой')),
+                    },
+                  ]}
+                  extra={
+                    volumeDiff != null && volumeDiff !== 0
+                      ? `Заявлено ${request.volumeM3} м³ (${volumeDiff > 0 ? '+' : ''}${volumeDiff} м³)`
+                      : undefined
+                  }
+                >
+                  <InputNumber
+                    style={{ width: '100%' }}
+                    min={0}
+                    step={1}
+                    placeholder="По талону"
+                    onChange={changeVolume}
+                  />
+                </Form.Item>
+                <Form.Item
+                  name="totalCost"
+                  label="Стоимость, ₽"
+                  extra={
+                    pricePerM3 != null
+                      ? `${priceIsMinimum ? 'от ' : ''}${formatMoney(pricePerM3)}/м³ по прайсу`
+                      : 'Цены на этот тип мусора в прайсе нет — укажите сумму'
+                  }
+                >
+                  <InputNumber
+                    style={{ width: '100%' }}
+                    min={0}
+                    step={1000}
+                    precision={2}
+                    onChange={() => setCostTouched(true)}
+                  />
+                </Form.Item>
+              </Space>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginBottom: 16 }}>
+                {costDiffers && (
+                  <Typography.Text type="warning">
+                    Сумма отличается от расчёта ({formatMoney(calculated)}) — в заявке сохранится
+                    введённая
                   </Typography.Text>
                 )}
-                {missingPrice && (
-                  <Typography.Text type="warning" style={{ fontSize: 12 }}>
-                    Для выбранного типа цена в прайсе не задана — заявку с ним не закрыть
+                {/* Заявку оформляли планом, платят за вывезенное: расхождение сумм — не ошибка,
+                    но человек должен увидеть его до нажатия «Выполнена». */}
+                {totalCost != null && request.amount != null && totalCost !== request.amount && (
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    Заявка оформлена на {formatMoney(request.amount)} — закрытие сохранит{' '}
+                    {formatMoney(totalCost)}
                   </Typography.Text>
                 )}
                 {priceIsMinimum && (
                   <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    Оператор не назначен — показана минимальная цена среди операторов
+                    Оператор не назначен — расчёт по минимальной цене среди операторов
                   </Typography.Text>
                 )}
               </div>
@@ -282,17 +305,16 @@ export function WasteDoneModal({
           {/* Талоны — общий пул заявки (ADR 0024): бумаги за всё закрытие, без деления по машинам.
               Приложенные прошлым закрытием остаются на заявке и показываются здесь же — чтобы
               не нести те же сканы второй раз. */}
-          <div>
-            <Typography.Text strong>Талоны</Typography.Text>
+          <Form.Item label="Талоны" style={{ marginBottom: 16 }}>
             {request.tickets.length > 0 && (
-              <div style={{ marginTop: 4 }}>
+              <div style={{ marginBottom: 8 }}>
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                   Уже приложены
                 </Typography.Text>
                 <FileLinkList files={request.tickets} maxNameWidth={300} />
               </div>
             )}
-            <Space size={8} wrap style={{ marginTop: 8 }}>
+            <Space size={8} wrap>
               {/* Снимок камерой — только на телефоне (ADR 0030): талон подписывают на площадке,
                   и фотографируют его там же. `capture` — подсказка браузеру, а не гарантия, что
                   откроется именно камера, поэтому обычная загрузка остаётся рядом. Ограничение
@@ -329,23 +351,19 @@ export function WasteDoneModal({
                 <FileLinkList files={tickets} maxNameWidth={300} onRemove={removeTicket} />
               </div>
             )}
-          </div>
+          </Form.Item>
 
           {/* Комментарий к выполнению — событие истории заявки, а не поле самой заявки: он
               описывает конкретное закрытие (что вывезли не полностью, кто принимал). */}
-          <Form layout="vertical" component="div">
-            <Form.Item label="Комментарий" style={{ marginBottom: 0 }}>
-              <Input.TextArea
-                value={comment}
-                onChange={(e) => setComment(e.target.value)}
-                rows={2}
-                maxLength={2000}
-                showCount
-                placeholder="Необязательно: что важно знать об этом выполнении"
-              />
-            </Form.Item>
-          </Form>
-        </div>
+          <Form.Item name="comment" label="Комментарий" style={{ marginBottom: 0 }}>
+            <Input.TextArea
+              rows={2}
+              maxLength={2000}
+              showCount
+              placeholder="Необязательно: что важно знать об этом выполнении"
+            />
+          </Form.Item>
+        </Form>
       )}
     </FormModal>
   );

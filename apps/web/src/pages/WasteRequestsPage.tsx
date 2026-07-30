@@ -7,7 +7,6 @@ import {
   Form,
   Input,
   InputNumber,
-  List,
   Select,
   Space,
   Tag,
@@ -41,17 +40,14 @@ import {
   requestTypeShort,
   normalizeTimeInput,
   calcWasteAmount,
+  type CompleteWasteRequestInput,
   isObjectScopedRole,
   isPricedRequestType,
-  requiresWasteVehicles,
+  requiresWasteFact,
   isVolumeAllowed,
   volumeStepMessage,
   WASTE_REMOVAL_CONTAINER_KIND,
-  vehicleVolume,
   type WasteRequestDto,
-  type WasteRequestVehicleDto,
-  type WasteRequestVehicleInput,
-  type WasteVehicleCountInput,
 } from '@technic/contracts';
 import {
   containerTypesApi,
@@ -66,14 +62,6 @@ import {
 } from '../api/resources';
 import { AutoSelect } from '../components/AutoSelect';
 import { CancelReasonModal } from '../components/CancelReasonModal';
-import {
-  draftsToInput,
-  sumDraftVolume,
-  validateVehicleDrafts,
-  VolumeSummary,
-  WasteVehiclesEditor,
-  type VehicleDraft,
-} from '../components/WasteVehiclesEditor';
 import { ActionSheet } from '../components/ActionSheet';
 import { DataTable, type CardConfig } from '../components/DataTable';
 import { FileLinkList, FilesCell } from '../components/FileLinks';
@@ -128,7 +116,7 @@ function requestSubject(r: WasteRequestDto): string {
   // Техники у вывоза нет вовсе (ADR 0022); у заявок, заведённых раньше, тип в базе остался,
   // но предметом заявки он больше не является и в списке не показывается.
   const parts = [
-    requiresWasteVehicles(r.requestType) ? null : r.containerTypeName,
+    requiresWasteFact(r.requestType) ? null : r.containerTypeName,
     r.volumeM3 != null ? `${r.volumeM3} м³` : null,
   ].filter(Boolean);
   return parts.length ? parts.join(', ') : '—';
@@ -169,7 +157,6 @@ function RequestsTab() {
   const canDelete = can('wasteRequests.delete');
   const canAssignOperator = can('wasteRequests.assignOperator');
   const canRestore = can('archive.restore');
-  const canPurge = can('records.purge');
 
   // Объектной роли фильтр по объекту зафиксирован на её собственном объекте.
   const ownObjectId = isObjectRole ? (user?.constructionObjectId ?? '') : '';
@@ -257,14 +244,6 @@ function RequestsTab() {
   // техники больше не несёт (ADR 0022), но у заведённых до этого решения тип сохранён.
   const truckTypes = allTypes.filter((t) => t.type === 'truck');
   const truckTypeOptions = truckTypes.map((t) => ({ value: t.id, label: t.name }));
-  // Машины при закрытии заявки — оба вида справочника (ADR 0024): вывозят и самосвалами, и
-  // контейнерами. Вместимость нужна клиенту: из неё считаются объём строки и её стоимость.
-  const vehicleTypeOptions = allTypes.map((t) => ({
-    value: t.id,
-    label: t.name,
-    volumeM3: t.volumeM3,
-    kind: t.type,
-  }));
   const requestTypeOptions = REQUEST_TYPES.map((t) => ({ value: t, label: requestTypeLabels[t] }));
   const statusOptions = REQUEST_STATUSES.map((s) => ({ value: s, label: requestStatusLabels[s] }));
   // Фильтр по столбцу «Контейнер / машина»: в нём соседствуют оба вида, поэтому список общий,
@@ -359,38 +338,8 @@ function RequestsTab() {
   // у него одного, контейнерные операции ограничиваются типом контейнера.
   const isPriced = watchRequestType ? isPricedRequestType(watchRequestType) : false;
 
-  // Машины заявки в форме редактирования (ADR 0011): новые строки и действия над заведёнными.
-  // Пометку ставит любой, кто правит заявку; удалить насовсем может только администратор.
-  const [vehicleDrafts, setVehicleDrafts] = useState<VehicleDraft[]>([]);
-  const [vehicleMarks, setVehicleMarks] = useState<
-    Record<string, 'marked' | 'restored' | 'deleted'>
-  >({});
-  const isVehicleDeleted = (v: WasteRequestVehicleDto): boolean => {
-    const mark = vehicleMarks[v.id];
-    if (mark === 'marked') return true;
-    if (mark === 'restored') return false;
-    return v.isDeleted;
-  };
-  const setVehicleMark = (id: string, mark: 'marked' | 'restored' | 'deleted' | null) =>
-    setVehicleMarks((prev) => {
-      const next = { ...prev };
-      if (mark === null) delete next[id];
-      else next[id] = mark;
-      return next;
-    });
-  /** Типы, занятые заведёнными строками: второй строки на тот же тип у заявки не бывает. */
-  const activeVehicleTypeIds = new Set(
-    (record?.vehicles ?? [])
-      .filter((v) => vehicleMarks[v.id] !== 'deleted' && !isVehicleDeleted(v))
-      .map((v) => v.containerTypeId),
-  );
-  // В сверке участвуют только те, что останутся активными после сохранения.
-  const editVehiclesVolume =
-    (record?.vehicles ?? []).reduce(
-      (acc, v) =>
-        vehicleMarks[v.id] === 'deleted' || isVehicleDeleted(v) ? acc : acc + vehicleVolume(v),
-      0,
-    ) + sumDraftVolume(vehicleDrafts, vehicleTypeOptions);
+  // Факта выполнения в форме правки нет: он предъявляется закрытием заявки и правится повторным
+  // закрытием (ADR 0035) — там же, где его вводят, с расчётом по прайсу перед глазами.
 
   // Выбор исполнителя в форме следует за выбранным объектом: сменили объект — сменился список.
   const formOperatorOptions = operatorOptionsFor(watchObjectId, {
@@ -499,8 +448,6 @@ function RequestsTab() {
     setRecord(null);
     setFiles([]);
     setRemovedIds([]);
-    setVehicleDrafts([]);
-    setVehicleMarks({});
     form.resetFields();
     // Дата доставки по умолчанию — сегодня: раньше заявку не заводят (правило в контрактах).
     form.setFieldsValue({ deliveryDate: minRequestDate() } as Partial<RequestFormValues>);
@@ -521,8 +468,6 @@ function RequestsTab() {
       })),
     );
     setRemovedIds([]);
-    setVehicleDrafts([]);
-    setVehicleMarks({});
     form.resetFields();
     form.setFieldsValue({
       objectId: r.objectId,
@@ -612,8 +557,6 @@ function RequestsTab() {
         comment: values.comment ?? '',
       };
       if (record) {
-        const marked = (id: string, mark: string) => vehicleMarks[id] === mark;
-        const ids = record.vehicles.map((v) => v.id);
         const payload: WasteRequestUpdatePayload = {
           ...base,
           // Пустое поле у диспетчера означает «снять исполнителя» — это null, а не «не менять».
@@ -622,10 +565,6 @@ function RequestsTab() {
             : undefined,
           addFileIds: files.filter((f) => f.isNew).map((f) => f.id),
           removeFileIds: removedIds,
-          addVehicles: vehicleDrafts.length > 0 ? draftsToInput(vehicleDrafts) : undefined,
-          markDeletedVehicleIds: ids.filter((id) => marked(id, 'marked')),
-          restoreVehicleIds: ids.filter((id) => marked(id, 'restored')),
-          deleteVehicleIds: ids.filter((id) => marked(id, 'deleted')),
           version: record.version,
         };
         return wasteRequestsApi.update(record.id, payload);
@@ -660,26 +599,24 @@ function RequestsTab() {
     name: operatorTarget?.operatorName ?? null,
   });
 
-  // Закрытие заявки: факт (машины или талоны) и комментарий вводятся в отдельном окне и уходят
-  // вместе со статусом одним запросом.
+  // Закрытие заявки: факт (объём и стоимость либо только талон) и комментарий вводятся в отдельном
+  // окне и уходят вместе со статусом одним запросом.
   const [doneTarget, setDoneTarget] = useState<WasteRequestDto | null>(null);
 
   const statusMut = useMutation({
-    // Окно закрытия отдаёт факт уже в виде тела запроса: строки машин, правки их количества и
-    // талоны заявки (ADR 0024) — здесь остаётся только приложить их к смене статуса.
+    // Окно закрытия отдаёт факт уже в виде тела запроса: фактический объём со стоимостью
+    // (ADR 0035) и талоны заявки — здесь остаётся приложить их к смене статуса.
     mutationFn: (v: {
       id: string;
       status: RequestStatus;
       version: number;
       comment?: string;
-      vehicles?: WasteRequestVehicleInput[];
-      vehicleCounts?: WasteVehicleCountInput[];
+      completion?: CompleteWasteRequestInput;
       ticketFileIds?: string[];
     }) =>
       wasteRequestsApi.changeStatus(v.id, v.status, v.version, {
         comment: v.comment,
-        vehicles: v.vehicles,
-        vehicleCounts: v.vehicleCounts,
+        completion: v.completion,
         ticketFileIds: v.ticketFileIds,
       }),
     onSuccess: () => {
@@ -1345,12 +1282,11 @@ function RequestsTab() {
       </FormModal>
 
       {/* Закрытие заявки: предъявление факта и комментарий уходят вместе со статусом. Вывоз
-          мусора отчитывается машинами «тип × количество» с расчётом по прайсу (ADR 0024),
-          контейнерные операции — одним талоном (ADR 0013); талон обязателен в обоих случаях
-          (ADR 0020), а сверка объёма — подсказка: расхождение сохранению не мешает. */}
+          мусора отчитывается фактическим объёмом и стоимостью (ADR 0035), контейнерные операции —
+          одним талоном (ADR 0013); талон обязателен в обоих случаях (ADR 0020), а расхождение
+          с заявленным объёмом — подсказка: сохранению оно не мешает. */}
       <WasteDoneModal
         request={doneTarget}
-        typeOptions={vehicleTypeOptions}
         confirmLoading={statusMut.isPending}
         onCancel={() => setDoneTarget(null)}
         onSubmit={(v) =>
@@ -1360,8 +1296,7 @@ function RequestsTab() {
             status: 'done',
             version: doneTarget.version,
             comment: v.comment,
-            vehicles: v.vehicles,
-            vehicleCounts: v.vehicleCounts,
+            completion: v.completion ?? undefined,
             ticketFileIds: v.ticketFileIds,
           })
         }
@@ -1396,26 +1331,7 @@ function RequestsTab() {
         <Form
           form={form}
           layout="vertical"
-          onFinish={(v) => {
-            // Незаполненная строка машины — не повод отправлять запрос: сервер отвергнет его
-            // целиком, а человеку нужно знать, в какой именно строке пробел. Талон здесь не
-            // спрашивается: он общий на заявку и прикладывается при закрытии (ADR 0024).
-            const vehicleError = validateVehicleDrafts(vehicleDrafts);
-            if (vehicleError) {
-              message.warning(vehicleError);
-              return;
-            }
-            // Тип уже заведён у заявки — значит это то же самое место факта: сервер вторую
-            // строку на него не примет, и говорить об этом надо до отправки.
-            const clash = vehicleDrafts.find(
-              (d) => d.containerTypeId && activeVehicleTypeIds.has(d.containerTypeId),
-            );
-            if (clash) {
-              message.warning('Этот тип уже есть в заявке — измените количество в его строке');
-              return;
-            }
-            saveMut.mutate(v);
-          }}
+          onFinish={(v) => saveMut.mutate(v)}
           // Смена объекта может сделать выбранного исполнителя недопустимым — снимаем его сразу,
           // а не отказом сервера при сохранении.
           onValuesChange={(changed: Partial<RequestFormValues>) => {
@@ -1601,99 +1517,10 @@ function RequestsTab() {
             <Input.TextArea rows={3} maxLength={2000} showCount />
           </Form.Item>
 
-          {/* Чем вывезли (ADR 0011, ADR 0024): строки «тип × количество». Заведённые строки
-              удаляет только администратор, остальным доступна пометка — ошибочно снятую машину
-              иначе не заметить. Талонов здесь нет: они общий пул заявки и прикладываются при
-              закрытии. Блок есть только у вывоза мусора — контейнерные операции по машинам
-              не отчитываются. */}
-          {record && watchRequestType && requiresWasteVehicles(watchRequestType) && (
-            <Form.Item label="Чем вывезли">
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {record.vehicles.length > 0 && (
-                  <List
-                    size="small"
-                    dataSource={record.vehicles}
-                    renderItem={(v) => {
-                      const willDelete = vehicleMarks[v.id] === 'deleted';
-                      const inactive = willDelete || isVehicleDeleted(v);
-                      return (
-                        <List.Item
-                          actions={
-                            willDelete
-                              ? [
-                                  <Button
-                                    key="undo"
-                                    type="link"
-                                    size="small"
-                                    onClick={() => setVehicleMark(v.id, null)}
-                                  >
-                                    Отменить удаление
-                                  </Button>,
-                                ]
-                              : [
-                                  <Button
-                                    key="mark"
-                                    type="link"
-                                    size="small"
-                                    onClick={() =>
-                                      setVehicleMark(
-                                        v.id,
-                                        isVehicleDeleted(v)
-                                          ? v.isDeleted
-                                            ? 'restored'
-                                            : null
-                                          : v.isDeleted
-                                            ? null
-                                            : 'marked',
-                                      )
-                                    }
-                                  >
-                                    {isVehicleDeleted(v) ? 'Вернуть' : 'Пометить на удаление'}
-                                  </Button>,
-                                  ...(canPurge
-                                    ? [
-                                        <Button
-                                          key="del"
-                                          type="link"
-                                          danger
-                                          size="small"
-                                          onClick={() => setVehicleMark(v.id, 'deleted')}
-                                        >
-                                          Удалить
-                                        </Button>,
-                                      ]
-                                    : []),
-                                ]
-                          }
-                        >
-                          <Space size={8} wrap>
-                            <Typography.Text
-                              delete={inactive}
-                              type={inactive ? 'secondary' : undefined}
-                            >
-                              {v.containerTypeName}
-                              {v.count > 1 ? ` × ${v.count}` : ''} — {vehicleVolume(v)} м³
-                              {v.amount != null ? ` · ${formatMoney(v.amount)}` : ''}
-                              {willDelete ? ' · будет удалена' : ''}
-                            </Typography.Text>
-                          </Space>
-                        </List.Item>
-                      );
-                    }}
-                  />
-                )}
-                <WasteVehiclesEditor
-                  value={vehicleDrafts}
-                  onChange={setVehicleDrafts}
-                  typeOptions={vehicleTypeOptions}
-                />
-                <VolumeSummary
-                  planned={plannedVolume ?? record.volumeM3}
-                  actual={editVehiclesVolume}
-                />
-              </div>
-            </Form.Item>
-          )}
+          {/* Факта выполнения в форме правки нет: сколько вывезли и во сколько это обошлось,
+              вводят при закрытии заявки — там же, где виден расчёт по прайсу (ADR 0035). Правят
+              его повторным закрытием, после отката администратором. Состав техники прошлых
+              закрытий виден в карточке заявки, в истории её выполнения. */}
 
           <Form.Item label={`Файлы (до ${FILE_MAX_COUNT}, до 50 МБ каждый)`}>
             <Upload

@@ -2,9 +2,8 @@ import {
   formatMoscowDateTime,
   type RequestChangeDto,
   requestTypeLabels,
-  vehicleVolume,
+  type WasteRequestCompletionDto,
   type WasteRequestDto,
-  type WasteRequestVehicleDto,
 } from '@technic/contracts';
 import { changeSet, EMPTY, short } from './request-diff';
 
@@ -24,18 +23,10 @@ function delivery(r: WasteRequestDto): string {
   return formatMoscowDateTime(new Date(r.deliveryAt), r.deliveryTimeUnspecified);
 }
 
-/** Строка факта в истории: «Самосвал 25 м³ × 2 — 50 м³» (ADR 0024). */
-function vehicleLabel(v: WasteRequestVehicleDto): string {
-  const total = vehicleVolume(v);
-  return v.count > 1
-    ? `${v.containerTypeName} × ${v.count} — ${total} м³`
-    : `${v.containerTypeName} — ${total} м³`;
-}
-
 /**
  * Изменённые поля заявки. Значения — готовый текст на момент правки: справочник могли
- * переименовать или удалить, а история обязана показывать то, что было. Файлы и машины
- * сравниваются по составу — «было 3, стало 3» скрыло бы замену одного талона другим.
+ * переименовать или удалить, а история обязана показывать то, что было. Файлы сравниваются по
+ * составу — «было 3, стало 3» скрыло бы замену одного документа другим.
  */
 export function diffWasteRequests(
   before: WasteRequestDto,
@@ -68,25 +59,21 @@ export function diffWasteRequests(
 
   diff.files(before.files, after.files);
 
-  const beforeVehicles = new Map(before.vehicles.map((v) => [v.id, v]));
-  const afterVehicles = new Map(after.vehicles.map((v) => [v.id, v]));
-  const added: string[] = [];
-  const marked: string[] = [];
-  const restored: string[] = [];
-  const removed: string[] = [];
-  for (const [id, v] of afterVehicles) {
-    const was = beforeVehicles.get(id);
-    if (!was) added.push(vehicleLabel(v));
-    else if (!was.isDeleted && v.isDeleted) marked.push(vehicleLabel(v));
-    else if (was.isDeleted && !v.isDeleted) restored.push(vehicleLabel(v));
-  }
-  for (const [id, v] of beforeVehicles) {
-    if (!afterVehicles.has(id)) removed.push(vehicleLabel(v));
-  }
-  diff.listed('vehiclesAdded', added);
-  diff.listed('vehiclesMarkedDeleted', marked);
-  diff.listed('vehiclesRestored', restored);
-  diff.listed('vehiclesRemoved', removed);
+  return diff.changes;
+}
 
+/**
+ * Что предъявило закрытие заявки (ADR 0035). Отдельным событием от смены статуса: «выполнена» и
+ * «вывезли 48 м³ на 40 800 ₽» отвечают на разные вопросы. Повторное закрытие (после отката
+ * администратором) сравнивается с прошлым фактом — видно, какую именно цифру исправили.
+ */
+export function diffWasteCompletion(
+  before: WasteRequestCompletionDto | null,
+  after: WasteRequestCompletionDto,
+): RequestChangeDto[] {
+  const diff = changeSet();
+  diff.changed('factVolume', volume(before?.volumeM3 ?? null), volume(after.volumeM3));
+  diff.changed('factPrice', money(before?.pricePerM3 ?? null), money(after.pricePerM3));
+  diff.changed('factCost', money(before?.totalCost ?? null), money(after.totalCost));
   return diff.changes;
 }

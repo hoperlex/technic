@@ -1,11 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { App } from 'antd';
+import type { WasteRequestDto } from '@technic/contracts';
 import { RequestHistoryTable, type HistoryRow } from '../src/components/RequestHistory';
-import { WasteVehiclesEditor, type VehicleDraft } from '../src/components/WasteVehiclesEditor';
+import { WasteDoneModal } from '../src/pages/waste/WasteDoneModal';
 import { DESKTOP_VIEWPORT, MOBILE_VIEWPORT, setViewport } from './viewport';
 
 /**
- * Экраны, у которых на телефоне своя раскладка (ADR 0030): история заявки и строки факта вывоза.
+ * Экраны, у которых на телефоне своя раскладка (ADR 0030): история заявки и окно выполнения.
  * Проверяется, что содержимое никуда не делось — модель осталась прежней, изменилась подача.
  */
 
@@ -59,34 +62,91 @@ describe('история заявки', () => {
   });
 });
 
-describe('строки факта вывоза', () => {
-  const typeOptions = [
-    { value: 't1', label: 'Самосвал 25 м³', volumeM3: 25, kind: 'truck' as const },
-  ];
-  const draft: VehicleDraft = { key: 'v1', containerTypeId: 't1', count: 2 };
+describe('выполнение заявки на вывоз', () => {
+  /**
+   * Заявка со снимком цены: тариф в этом случае не запрашивается, и окно считает сумму само
+   * (ADR 0035). Полей DTO у заявки много, а окну нужны считанные — остальные к делу не относятся.
+   */
+  const request = {
+    id: 'r1',
+    num: 42,
+    requestType: 'waste_removal',
+    objectCode: 'OBJ-1',
+    objectName: 'Объект',
+    wasteTypeId: 'w1',
+    volumeM3: 40,
+    pricePerM3: 850,
+    amount: 34_000,
+    operatorCounterpartyId: 'op1',
+    completion: null,
+    vehicles: [],
+    files: [],
+    tickets: [{ id: 'f1', filename: 'талон.pdf', contentType: 'application/pdf', size: 1, status: 'active', createdAt: '2026-07-20T09:00:00.000Z' }],
+    version: 1,
+  } as unknown as WasteRequestDto;
 
-  it('на телефоне количество меняется степпером', () => {
-    setViewport(MOBILE_VIEWPORT);
-    const onChange = vi.fn<(next: VehicleDraft[]) => void>();
-    render(<WasteVehiclesEditor value={[draft]} onChange={onChange} typeOptions={typeOptions} />);
+  function renderModal() {
+    const onSubmit = vi.fn();
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <App>
+          <WasteDoneModal
+            request={request}
+            confirmLoading={false}
+            onCancel={vi.fn()}
+            onSubmit={onSubmit}
+          />
+        </App>
+      </QueryClientProvider>,
+    );
+    return onSubmit;
+  }
 
-    fireEvent.click(screen.getByLabelText('Больше на одну'));
-    expect(onChange).toHaveBeenCalledWith([{ ...draft, count: 3 }]);
+  const field = (label: string) => screen.getByLabelText(label) as HTMLInputElement;
 
-    fireEvent.click(screen.getByLabelText('Меньше на одну'));
-    expect(onChange).toHaveBeenLastCalledWith([{ ...draft, count: 1 }]);
-  });
-
-  it('объём строки считается так же, как и на десктопе', () => {
-    setViewport(MOBILE_VIEWPORT);
-    render(<WasteVehiclesEditor value={[draft]} onChange={vi.fn()} typeOptions={typeOptions} />);
-    expect(screen.getByText(/50 м³/)).toBeDefined();
-  });
-
-  it('на десктопе степпера нет — количество набирают полем', () => {
+  it('объём открывается заявленным, стоимость — расчётом по прайсу', () => {
     setViewport(DESKTOP_VIEWPORT);
-    render(<WasteVehiclesEditor value={[draft]} onChange={vi.fn()} typeOptions={typeOptions} />);
-    expect(screen.queryByLabelText('Больше на одну')).toBeNull();
-    expect(screen.getByLabelText('Количество машин')).toBeDefined();
+    renderModal();
+    expect(field('Вывезено, м³').value).toBe('40');
+    expect(field('Стоимость, ₽').value).toBe('34000.00');
+  });
+
+  it('правка объёма пересчитывает стоимость', () => {
+    setViewport(DESKTOP_VIEWPORT);
+    renderModal();
+    fireEvent.change(field('Вывезено, м³'), { target: { value: '48' } });
+    expect(field('Стоимость, ₽').value).toBe('40800.00');
+  });
+
+  // Ради этого стоимость и сделали полем: цены в прайсе может не быть вовсе, а счёт оператора
+  // включает и подачу, и недогруз — сумма обязана сходиться со счётом, а не с формулой.
+  it('введённая руками стоимость не переписывается расчётом', async () => {
+    setViewport(DESKTOP_VIEWPORT);
+    const onSubmit = renderModal();
+    fireEvent.change(field('Стоимость, ₽'), { target: { value: '39000' } });
+    fireEvent.change(field('Вывезено, м³'), { target: { value: '48' } });
+    expect(field('Стоимость, ₽').value).toBe('39000.00');
+
+    // Форма antd проверяет поля асинхронно, поэтому обработчик вызывается не в тот же тик.
+    fireEvent.click(screen.getByRole('button', { name: 'Выполнена' }));
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith(
+        expect.objectContaining({ completion: { volumeM3: 48, totalCost: 39_000 } }),
+      ),
+    );
+  });
+
+  // Талон подписывают на площадке и фотографируют там же — кнопка камеры нужна только на
+  // телефоне (ADR 0030); на десктопе снимать нечем, и в окне её нет.
+  it('на телефоне талон можно снять камерой', () => {
+    setViewport(MOBILE_VIEWPORT);
+    renderModal();
+    expect(screen.getByRole('button', { name: /Снять камерой/ })).toBeDefined();
+  });
+
+  it('на десктопе кнопки камеры нет', () => {
+    setViewport(DESKTOP_VIEWPORT);
+    renderModal();
+    expect(screen.queryByRole('button', { name: /Снять камерой/ })).toBeNull();
   });
 });
