@@ -60,6 +60,8 @@ const special = {
   objectId: OBJ,
   vehicleTypeId: TYPE,
   dateFrom: '2026-07-25',
+  responsibleName: 'Петров П. П.',
+  responsiblePhone: '+7 926 000-00-01',
 };
 const freight = {
   requestType: 'freight_transport' as const,
@@ -71,6 +73,10 @@ const freight = {
   unloadingLocation: 'Объект Б',
   loadingAddress: resolvedMeta,
   unloadingAddress: resolvedMeta,
+  loadingResponsibleName: 'Сидоров С. С.',
+  loadingResponsiblePhone: '+7 926 000-00-02',
+  unloadingResponsibleName: 'Кузнецов К. К.',
+  unloadingResponsiblePhone: '+7 926 000-00-03',
 };
 
 describe('vehicle-requests: создание — discriminator', () => {
@@ -238,6 +244,60 @@ describe('vehicle-requests: кросс-поля и валидация значе
   it('scheduledAt требует offset', () => {
     expect(() =>
       createVehicleRequestSchema.parse({ ...freight, scheduledAt: '2026-07-25T14:30:00' }),
+    ).toThrow();
+  });
+});
+
+// Контакт ответственного (миграция 0062): у заявки на объект один, у грузоперевозки — на каждом
+// конце маршрута. Обязателен при заведении: заявку заводят, чтобы к кому-то приехали.
+describe('vehicle-requests: ответственный и контактный телефон', () => {
+  it('спецтехника: без ответственного или телефона заявка не проходит', () => {
+    const { responsibleName: _n, ...noName } = special;
+    const { responsiblePhone: _p, ...noPhone } = special;
+    expect(() => createVehicleRequestSchema.parse(noName)).toThrow();
+    expect(() => createVehicleRequestSchema.parse(noPhone)).toThrow();
+    expect(() =>
+      createVehicleRequestSchema.parse({ ...special, responsibleName: '   ' }),
+    ).toThrow();
+  });
+
+  it('грузоперевозка требует контакт на обоих концах маршрута', () => {
+    for (const field of [
+      'loadingResponsibleName',
+      'loadingResponsiblePhone',
+      'unloadingResponsibleName',
+      'unloadingResponsiblePhone',
+    ] as const) {
+      const { [field]: _omitted, ...without } = freight;
+      expect(() => createVehicleRequestSchema.parse(without)).toThrow();
+    }
+  });
+
+  it('телефон принимается в любой записи, лишь бы цифр хватало на звонок', () => {
+    for (const phone of ['+7 926 000-00-01', '8(495)123-45-67', '495 12-34 доб. 5']) {
+      const v = createVehicleRequestSchema.parse({ ...special, responsiblePhone: phone });
+      if (v.requestType !== 'special_equipment') throw new Error('unreachable');
+      expect(v.responsiblePhone).toBe(phone);
+    }
+    // Цифр меньше пяти — по такому «номеру» не дозвонятся.
+    expect(() =>
+      createVehicleRequestSchema.parse({ ...special, responsiblePhone: 'позвонить Пете' }),
+    ).toThrow();
+  });
+
+  it('правка: контакт необязателен, но пустым его не передать', () => {
+    const untouched = updateVehicleRequestSchema.parse({
+      requestType: 'special_equipment',
+      version: 1,
+      comment: 'уточнение',
+    });
+    expect(untouched.requestType).toBe('special_equipment');
+    expect(() =>
+      updateVehicleRequestSchema.parse({
+        requestType: 'special_equipment',
+        version: 1,
+        responsibleName: '',
+      }),
     ).toThrow();
   });
 });

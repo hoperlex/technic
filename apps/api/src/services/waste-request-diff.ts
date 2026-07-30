@@ -55,6 +55,14 @@ export function diffWasteRequests(
   diff.changed('amount', money(before.amount), money(after.amount));
   diff.changed('operator', before.operatorName ?? EMPTY, after.operatorName ?? EMPTY);
   diff.changed('deliveryAt', delivery(before), delivery(after));
+  // Контакт ответственного (миграция 0062): по нему звонят с площадки, и смена телефона —
+  // событие истории наравне с датой доставки.
+  diff.changed('responsibleName', before.responsibleName || EMPTY, after.responsibleName || EMPTY);
+  diff.changed(
+    'responsiblePhone',
+    before.responsiblePhone || EMPTY,
+    after.responsiblePhone || EMPTY,
+  );
   diff.changed('comment', short(before.comment) || EMPTY, short(after.comment) || EMPTY);
 
   diff.files(before.files, after.files);

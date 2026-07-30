@@ -68,6 +68,7 @@ import { DataTable, type CardConfig } from '../components/DataTable';
 import { FileLinkList, FilesCell } from '../components/FileLinks';
 import { FormModal } from '../components/FormModal';
 import { PageTableLayout } from '../components/PageTableLayout';
+import { ResponsibleFields } from '../components/ResponsibleFields';
 import { sortOptionsFrom, type FilterDefinition } from '../components/listControls';
 import { PageTabs, TabsExtra } from '../components/PageTabs';
 import { SummaryBar } from '../components/SummaryBar';
@@ -107,6 +108,9 @@ interface RequestFormValues {
   deliveryDate: Dayjs;
   /** Необязательное время в виде `HH:mm`; пусто — «на эту дату, время не важно». */
   deliveryTime?: string;
+  /** Кто принимает машину на площадке и по какому телефону (миграция 0062). */
+  responsibleName?: string;
+  responsiblePhone?: string;
   comment?: string;
 }
 
@@ -484,6 +488,8 @@ function RequestsTab() {
       deliveryTime: r.deliveryTimeUnspecified
         ? undefined
         : dayjs(r.deliveryAt).tz(MOSCOW_TZ).format('HH:mm'),
+      responsibleName: r.responsibleName,
+      responsiblePhone: r.responsiblePhone,
       comment: r.comment,
     });
     setOpen(true);
@@ -557,6 +563,8 @@ function RequestsTab() {
           canAssignOperator && record ? values.operatorCounterpartyId : undefined,
         deliveryAt: deliveryAt.toISOString(),
         deliveryTimeUnspecified: time === undefined,
+        responsibleName: values.responsibleName!,
+        responsiblePhone: values.responsiblePhone!,
         comment: values.comment ?? '',
       };
       if (record) {
@@ -1517,6 +1525,14 @@ function RequestsTab() {
               <TimeInput />
             </Form.Item>
           </div>
+          {/* Кто принимает машину на площадке: оператор приезжает к человеку, а не к адресу —
+              без контакта место установки и подъезд выясняются уже на месте. */}
+          <ResponsibleFields
+            nameField="responsibleName"
+            phoneField="responsiblePhone"
+            nameLabel="Ответственный на площадке"
+            phoneLabel="Контактный телефон"
+          />
           <Form.Item name="comment" label="Комментарий">
             <Input.TextArea rows={3} maxLength={2000} showCount />
           </Form.Item>

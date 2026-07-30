@@ -53,6 +53,7 @@ import { CancelReasonModal } from '../../components/CancelReasonModal';
 import { DataTable, type CardConfig } from '../../components/DataTable';
 import { FormModal } from '../../components/FormModal';
 import { PageTableLayout } from '../../components/PageTableLayout';
+import { ResponsibleFields } from '../../components/ResponsibleFields';
 import { sortOptionsFrom, type FilterDefinition } from '../../components/listControls';
 import { TabsExtra } from '../../components/PageTabs';
 import { SummaryBar } from '../../components/SummaryBar';
@@ -103,16 +104,23 @@ interface FormValues {
   objectId: string;
   /** Ключ позиции классификатора «тип:категория» (ADR 0028); в API уходит парой полей. */
   classificationKey: string;
-  // Техника на объект: период работы (date-only).
+  // Техника на объект: период работы (date-only) и контакт встречающего.
   dateFrom?: Dayjs | null;
   dateTo?: Dayjs | null;
-  // Грузоперевозка: дата + необязательное время `HH:mm`, объём/масса, адреса.
+  responsibleName?: string;
+  responsiblePhone?: string;
+  // Грузоперевозка: дата + необязательное время `HH:mm`, объём/масса, адреса и контакт на
+  // каждом конце маршрута — грузят и принимают разные люди в разных местах.
   scheduledDate?: Dayjs | null;
   scheduledTime?: string;
   volumeM3?: number | null;
   weightTons?: number | null;
   loadingLocation?: string;
   unloadingLocation?: string;
+  loadingResponsibleName?: string;
+  loadingResponsiblePhone?: string;
+  unloadingResponsibleName?: string;
+  unloadingResponsiblePhone?: string;
   comment?: string;
 }
 
@@ -136,7 +144,7 @@ const COMMENT_HINTS: Record<VehicleRequestType, { label: string; placeholder: st
   },
 };
 
-const SPECIAL_FIELDS = ['dateFrom', 'dateTo'] as const;
+const SPECIAL_FIELDS = ['dateFrom', 'dateTo', 'responsibleName', 'responsiblePhone'] as const;
 const FREIGHT_FIELDS = [
   'scheduledDate',
   'scheduledTime',
@@ -144,6 +152,10 @@ const FREIGHT_FIELDS = [
   'weightTons',
   'loadingLocation',
   'unloadingLocation',
+  'loadingResponsibleName',
+  'loadingResponsiblePhone',
+  'unloadingResponsibleName',
+  'unloadingResponsiblePhone',
 ] as const;
 
 /** Колонка «Срок»: у спецтехники это период, у грузоперевозки — дата (и время, если задано). */
@@ -321,6 +333,8 @@ export function VehicleRequestsTab() {
         classificationKey: classificationKeyOf(r),
         dateFrom: dayjs(r.dateFrom),
         dateTo: r.dateTo ? dayjs(r.dateTo) : null,
+        responsibleName: r.responsibleName,
+        responsiblePhone: r.responsiblePhone,
         comment: r.comment,
       });
     } else {
@@ -338,6 +352,10 @@ export function VehicleRequestsTab() {
         weightTons: r.weightTons,
         loadingLocation: r.loadingLocation,
         unloadingLocation: r.unloadingLocation,
+        loadingResponsibleName: r.loadingResponsibleName,
+        loadingResponsiblePhone: r.loadingResponsiblePhone,
+        unloadingResponsibleName: r.unloadingResponsibleName,
+        unloadingResponsiblePhone: r.unloadingResponsiblePhone,
         comment: r.comment,
       });
     }
@@ -370,6 +388,8 @@ export function VehicleRequestsTab() {
           ...common,
           dateFrom: v.dateFrom!.format('YYYY-MM-DD'),
           dateTo: v.dateTo ? v.dateTo.format('YYYY-MM-DD') : null,
+          responsibleName: v.responsibleName!,
+          responsiblePhone: v.responsiblePhone!,
         };
         return record
           ? vehicleRequestsApi.update(record.id, {
@@ -398,6 +418,10 @@ export function VehicleRequestsTab() {
         // onFinish гарантирует, что оба адреса верифицированы (жёсткая модель, ADR 0006).
         loadingAddress: loadingMeta!,
         unloadingAddress: unloadingMeta!,
+        loadingResponsibleName: v.loadingResponsibleName!,
+        loadingResponsiblePhone: v.loadingResponsiblePhone!,
+        unloadingResponsibleName: v.unloadingResponsibleName!,
+        unloadingResponsiblePhone: v.unloadingResponsiblePhone!,
       };
       return record
         ? vehicleRequestsApi.update(record.id, {
@@ -1091,6 +1115,16 @@ export function VehicleRequestsTab() {
               )}
             </div>
           )}
+          {/* Кто встречает технику на объекте: без контакта заезд и место работ выясняются
+              звонками через диспетчера уже на воротах. */}
+          {isSpecial && (
+            <ResponsibleFields
+              nameField="responsibleName"
+              phoneField="responsiblePhone"
+              nameLabel="Ответственный на объекте"
+              phoneLabel="Контактный телефон"
+            />
+          )}
 
           {/* Грузоперевозка: дата/время, объём или масса, адреса. */}
           {isFreight && (
@@ -1143,6 +1177,14 @@ export function VehicleRequestsTab() {
                   onMetaChange={setLoadingMeta}
                 />
               </Form.Item>
+              {/* Контакт стоит под своим адресом, а не общим блоком в конце формы: погрузка и
+                  разгрузка — два разных места, и водитель ищет того, кто откроет ворота здесь. */}
+              <ResponsibleFields
+                nameField="loadingResponsibleName"
+                phoneField="loadingResponsiblePhone"
+                nameLabel="Ответственный за погрузку"
+                phoneLabel="Телефон"
+              />
               <Form.Item
                 name="unloadingLocation"
                 label="Место разгрузки"
@@ -1153,6 +1195,12 @@ export function VehicleRequestsTab() {
                   onMetaChange={setUnloadingMeta}
                 />
               </Form.Item>
+              <ResponsibleFields
+                nameField="unloadingResponsibleName"
+                phoneField="unloadingResponsiblePhone"
+                nameLabel="Ответственный за разгрузку"
+                phoneLabel="Телефон"
+              />
             </>
           )}
 

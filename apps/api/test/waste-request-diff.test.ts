@@ -22,6 +22,8 @@ const BASE: WasteRequestDto = {
   operatorName: null,
   deliveryAt: '2026-08-01T07:00:00.000Z',
   deliveryTimeUnspecified: false,
+  responsibleName: 'Петров П. П.',
+  responsiblePhone: '+7 926 000-00-01',
   comment: 'Заезд со двора',
   status: 'new',
   cancelReason: null,

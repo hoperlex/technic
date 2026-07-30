@@ -955,6 +955,10 @@ export const wasteRequests = pgTable(
     // Время не задано — в deliveryAt значима только дата (00:00 МСК). Инвариант держит
     // приложение: CHECK невозможен, приведение timestamptz к времени суток не IMMUTABLE (0020).
     deliveryTimeUnspecified: boolean('delivery_time_unspecified').notNull().default(false),
+    // Кто принимает машину на площадке (миграция 0062). Пусто — заявка заведена до этой колонки:
+    // CHECK на непустоту сделал бы прежние строки невалидными, поэтому требование держит сервер.
+    responsibleName: text('responsible_name').notNull().default(''),
+    responsiblePhone: text('responsible_phone').notNull().default(''),
     comment: text('comment').notNull().default(''),
     status: requestStatusEnum('status').notNull().default('new'),
     // Кто вывозит (ADR 0010): контрагент-оператор, назначенный менеджером/диспетчером. NULL —
@@ -1232,6 +1236,9 @@ export const specialEquipmentRequestDetails = pgTable(
       .references(() => vehicleRequests.id, { onDelete: 'cascade' }),
     dateFrom: date('date_from', { mode: 'string' }).notNull(),
     dateTo: date('date_to', { mode: 'string' }),
+    // Кто встречает технику на объекте (миграция 0062); пусто — заявка старше колонки.
+    responsibleName: text('responsible_name').notNull().default(''),
+    responsiblePhone: text('responsible_phone').notNull().default(''),
   },
   (t) => ({
     dateOrder: check(
@@ -1260,6 +1267,12 @@ export const freightTransportRequestDetails = pgTable(
     // Метаданные верификации адреса (DaData «Подсказки», ADR 0006); NULL = введён вручную.
     loadingAddress: jsonb('loading_address').$type<AddressMeta>(),
     unloadingAddress: jsonb('unloading_address').$type<AddressMeta>(),
+    // Контакт на каждом конце маршрута (миграция 0062): грузят и принимают разные люди в разных
+    // местах. Пусто — заявка заведена до появления колонок.
+    loadingResponsibleName: text('loading_responsible_name').notNull().default(''),
+    loadingResponsiblePhone: text('loading_responsible_phone').notNull().default(''),
+    unloadingResponsibleName: text('unloading_responsible_name').notNull().default(''),
+    unloadingResponsiblePhone: text('unloading_responsible_phone').notNull().default(''),
   },
   (t) => ({
     volumePositive: check(

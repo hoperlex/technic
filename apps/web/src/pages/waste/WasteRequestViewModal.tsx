@@ -20,6 +20,7 @@ import {
 import { wasteRequestsApi } from '../../api/resources';
 import { FileLinkList, FilesButton } from '../../components/FileLinks';
 import { type HistoryRow, RequestHistoryTable } from '../../components/RequestHistory';
+import { ResponsibleValue } from '../../components/ResponsibleFields';
 import { UserAvatar } from '../../components/UserAvatar';
 import { ViewModal } from '../../components/ViewModal';
 import { useIsMobile } from '../../hooks/useIsMobile';
@@ -213,6 +214,15 @@ export function WasteRequestViewModal({ request, onClose, onEdit }: Props) {
           key: 'operator',
           label: 'Оператор вывоза',
           children: request.operatorName ?? 'не назначен',
+        },
+        // Кто принимает машину на площадке (миграция 0062): по этому телефону звонят с подъезда.
+        {
+          key: 'responsible',
+          label: 'Ответственный',
+          span: 2,
+          children: (
+            <ResponsibleValue name={request.responsibleName} phone={request.responsiblePhone} />
+          ),
         },
         // Контейнер — предмет только контейнерных операций: вывоз заказывает объём и технику не
         // называет (ADR 0022). У заявок вывоза, заведённых раньше, тип в базе остался, но строка

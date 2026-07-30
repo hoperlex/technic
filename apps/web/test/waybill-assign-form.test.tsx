@@ -85,6 +85,10 @@ const REQUEST: FreightTransportRequestDto = {
   unloadingLocation: 'Объект Химки',
   loadingAddress: null,
   unloadingAddress: null,
+  loadingResponsibleName: 'Петров П. П.',
+  loadingResponsiblePhone: '+7 926 000-00-01',
+  unloadingResponsibleName: 'Сидоров С. С.',
+  unloadingResponsiblePhone: '+7 926 000-00-02',
 };
 
 /** Подсказка о листе приходит по машине: собственная его получает, аренда — нет. */

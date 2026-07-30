@@ -42,6 +42,8 @@ const SPECIAL: SpecialEquipmentRequestDto = {
   requestType: 'special_equipment',
   dateFrom: '2026-08-01',
   dateTo: null,
+  responsibleName: 'Петров П. П.',
+  responsiblePhone: '+7 926 000-00-01',
 };
 
 const FREIGHT: FreightTransportRequestDto = {
@@ -56,6 +58,10 @@ const FREIGHT: FreightTransportRequestDto = {
   unloadingLocation: 'г Москва, ул Арбат, д 2',
   loadingAddress: { source: 'resolved', fiasId: 'a1' },
   unloadingAddress: { source: 'resolved', fiasId: 'a2' },
+  loadingResponsibleName: 'Сидоров С. С.',
+  loadingResponsiblePhone: '+7 926 000-00-02',
+  unloadingResponsibleName: 'Кузнецов К. К.',
+  unloadingResponsiblePhone: '+7 926 000-00-03',
 };
 
 const file = (id: string, filename: string) => ({
