@@ -41,7 +41,7 @@ import { useAuth } from '../../auth/AuthContext';
 import { formatDate, formatDateTimeMaybe, formatMoney } from '../../utils/format';
 import { calendarDayCount } from '../../utils/date';
 import { VehicleRequestViewModal } from './VehicleRequestViewModal';
-import { formatDateOnly, useObjectOptions } from './shared';
+import { formatDateOnly, useObjectOptions, useVehicleClassificationFilter } from './shared';
 
 /**
  * Журнал закрытых заказов техники (ADR 0029). Первая вкладка отвечает на «что сейчас в работе»,
@@ -89,6 +89,9 @@ export function VehicleRequestsHistoryTab() {
     requestType?: string;
     status?: string;
     objectId?: string;
+    /** Заказанная техника (ADR 0028): тип целиком либо одна его категория. */
+    vehicleTypeId?: string;
+    vehicleCategoryId?: string;
     lessorId?: string;
     num?: number;
     dateFrom?: string;
@@ -97,6 +100,12 @@ export function VehicleRequestsHistoryTab() {
 
   const applyFilter = (patch: Partial<typeof params>) =>
     setParams((p) => ({ ...p, ...patch, page: 1 }));
+
+  const classificationFilter = useVehicleClassificationFilter({
+    vehicleTypeId: params.vehicleTypeId,
+    vehicleCategoryId: params.vehicleCategoryId,
+    onChange: applyFilter,
+  });
 
   const { data, isFetching } = useQuery({
     queryKey: ['vehicle-requests', 'history', params],
@@ -368,6 +377,8 @@ export function VehicleRequestsHistoryTab() {
         value={params.objectId}
         onChange={(v: string | undefined) => applyFilter({ objectId: v })}
       />
+      {/* Заказанная техника: тип целиком либо одна его категория (ADR 0028). */}
+      {classificationFilter.controls}
       <Select
         allowClear
         showSearch
@@ -437,6 +448,7 @@ export function VehicleRequestsHistoryTab() {
       disabled: isObjectRole,
       onChange: (v) => applyFilter({ objectId: v }),
     },
+    classificationFilter.mobileFilter,
     {
       kind: 'select',
       key: 'lessorId',

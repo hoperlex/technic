@@ -1,8 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import {
-  vehicleClassificationKey,
-  type VehicleClassificationDto,
-} from '@technic/contracts';
+import { vehicleClassificationKey, type VehicleClassificationDto } from '@technic/contracts';
 import { vehicleClassificationsApi } from '../api/resources';
 
 // Классификатор ТС для списков выбора (ADR 0028): позиции — категории типа, а у типа без ТТХ
@@ -14,6 +11,57 @@ export interface VehicleClassificationGroup {
   label: string;
   kindCode: string;
   options: { value: string; label: string; disabled?: boolean }[];
+}
+
+/** Группа вида ТС, к которой относится позиция; заводится при первой позиции этого вида. */
+function kindGroupOf(
+  groups: VehicleClassificationGroup[],
+  c: VehicleClassificationDto,
+): VehicleClassificationGroup {
+  let group = groups.find((g) => g.kindCode === c.kindCode);
+  if (!group) {
+    group = { label: c.kindName, kindCode: c.kindCode, options: [] };
+    groups.push(group);
+  }
+  return group;
+}
+
+/** Позиции для выбора в форме — как их отдал сервер, по видам ТС. */
+export function classificationGroups(
+  items: VehicleClassificationDto[],
+): VehicleClassificationGroup[] {
+  const groups: VehicleClassificationGroup[] = [];
+  for (const c of items) kindGroupOf(groups, c).options.push({ value: c.key, label: c.label });
+  return groups;
+}
+
+/**
+ * Варианты фильтра «тип/категория» для списков: те же позиции, но у типа с категориями впереди
+ * стоит он сам целиком.
+ *
+ * Заказывают всегда конечную позицию (ADR 0028) — «просто автокран» не заказывают. У списка же
+ * спрашивают оба уровня: «сколько заказывали автокранов» — вопрос не реже, чем «сколько на 130 т»,
+ * а заявка, заведённая до появления категорий, конечной позиции не имеет вовсе и находится только
+ * по типу. Значение варианта — тот же ключ позиции: `тип:` целиком, `тип:категория` — категория.
+ */
+export function classificationFilterGroups(
+  items: VehicleClassificationDto[],
+): VehicleClassificationGroup[] {
+  const groups: VehicleClassificationGroup[] = [];
+  const wholeTypeAdded = new Set<string>();
+  for (const c of items) {
+    const group = kindGroupOf(groups, c);
+    // У типа без категорий он сам и есть конечная позиция — второй строкой «весь тип» не нужен.
+    if (c.vehicleCategoryId && !wholeTypeAdded.has(c.vehicleTypeId)) {
+      wholeTypeAdded.add(c.vehicleTypeId);
+      group.options.push({
+        value: vehicleClassificationKey(c.vehicleTypeId, null),
+        label: `${c.typeName} — все категории`,
+      });
+    }
+    group.options.push({ value: c.key, label: c.label });
+  }
+  return groups;
 }
 
 /**
@@ -37,17 +85,15 @@ export function useVehicleClassifications() {
   const items = data?.items ?? [];
 
   const byKey = new Map(items.map((c) => [c.key, c]));
-  const groups: VehicleClassificationGroup[] = [];
-  for (const c of items) {
-    let group = groups.find((g) => g.kindCode === c.kindCode);
-    if (!group) {
-      group = { label: c.kindName, kindCode: c.kindCode, options: [] };
-      groups.push(group);
-    }
-    group.options.push({ value: c.key, label: c.label });
-  }
 
-  return { items, byKey, groups, loading: isFetching };
+  return {
+    items,
+    byKey,
+    groups: classificationGroups(items),
+    /** Те же позиции для фильтра списка — с вариантом «весь тип» (classificationFilterGroups). */
+    filterGroups: classificationFilterGroups(items),
+    loading: isFetching,
+  };
 }
 
 /**

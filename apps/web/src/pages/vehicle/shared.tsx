@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { App, Button, Dropdown, Form, Tag, Tooltip, Upload } from 'antd';
+import { useState, type ReactNode } from 'react';
+import { App, Button, Dropdown, Form, Select, Tag, Tooltip, Upload } from 'antd';
 import {
   CheckCircleOutlined,
   CheckOutlined,
@@ -11,15 +11,21 @@ import { useQuery } from '@tanstack/react-query';
 import {
   allowedVehicleRequestTransitions,
   isApprovalChangeable,
+  parseVehicleClassificationKey,
   type RequestStatus,
   requestStatusColors,
   requestStatusLabels,
+  vehicleClassificationKey,
 } from '@technic/contracts';
 import { filesApi, objectsApi } from '../../api/resources';
-import type { VehicleClassificationGroup } from '../../hooks/useVehicleClassifications';
+import {
+  useVehicleClassifications,
+  type VehicleClassificationGroup,
+} from '../../hooks/useVehicleClassifications';
 import { ActionSheet } from '../../components/ActionSheet';
 import { AutoSelect } from '../../components/AutoSelect';
 import { FileLinkList } from '../../components/FileLinks';
+import type { FilterDefinition } from '../../components/listControls';
 import { useIsMobile } from '../../hooks/useIsMobile';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage, formatDateTime } from '../../utils/format';
@@ -62,6 +68,69 @@ export function useObjectOptions() {
     options: (data?.items ?? []).map((o) => ({ value: o.id, label: `${o.code} — ${o.name}` })),
     loading: isFetching,
   };
+}
+
+/**
+ * Фильтр по заказанной технике — общий для списка заявок и журнала: вопрос «какую технику
+ * заказывали» в них один и тот же.
+ *
+ * Один список на оба уровня, а не «тип, затем категория» двумя полями: выбор и в форме заявки
+ * один (ADR 0028), и в фильтре читается так же — «Автокраны — все категории» рядом с «Автокраны,
+ * г/п 130 т». Каскад из двух полей стоил бы двух касаний в шите на телефоне (ADR 0030), где
+ * второе поле появлялось бы только после «Применить».
+ *
+ * Список не сужается выбранным типом заявки: фильтры независимы, а пустой результат
+ * («грузоперевозка автокраном») читается сам.
+ */
+export function useVehicleClassificationFilter({
+  vehicleTypeId,
+  vehicleCategoryId,
+  onChange,
+}: {
+  vehicleTypeId: string | undefined;
+  vehicleCategoryId: string | undefined;
+  /** В параметры списка уходит пара полей: ключ позиции — только вид выбора, не запрос. */
+  onChange: (patch: { vehicleTypeId?: string; vehicleCategoryId?: string }) => void;
+}): { controls: ReactNode; mobileFilter: FilterDefinition } {
+  const { filterGroups, loading } = useVehicleClassifications();
+  const value = vehicleTypeId
+    ? vehicleClassificationKey(vehicleTypeId, vehicleCategoryId)
+    : undefined;
+  const pick = (key: string | undefined) => {
+    const picked = parseVehicleClassificationKey(key);
+    onChange({
+      vehicleTypeId: picked?.vehicleTypeId,
+      vehicleCategoryId: picked?.vehicleCategoryId ?? undefined,
+    });
+  };
+
+  const controls = (
+    <Select
+      allowClear
+      showSearch
+      optionFilterProp="label"
+      placeholder="Вся техника"
+      style={{ width: 250 }}
+      options={filterGroups}
+      loading={loading}
+      value={value}
+      onChange={pick}
+    />
+  );
+
+  /** Тот же фильтр описанием — для шита на телефоне (ADR 0030). */
+  const mobileFilter: FilterDefinition = {
+    kind: 'select',
+    key: 'classification',
+    label: 'Тип/категория ТС',
+    value,
+    options: filterGroups,
+    placeholder: 'Вся техника',
+    loading,
+    onChange: pick,
+  };
+
+  return { controls, mobileFilter };
 }
 
 /** Редактор прикреплённых файлов (загрузка в S3 + список add/remove). */

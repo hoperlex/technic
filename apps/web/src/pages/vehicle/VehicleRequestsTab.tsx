@@ -88,6 +88,7 @@ import {
   VehicleClassificationSelect,
   useFileEditor,
   useObjectOptions,
+  useVehicleClassificationFilter,
   type EditorFile,
 } from './shared';
 
@@ -180,6 +181,9 @@ export function VehicleRequestsTab() {
     requestType?: string;
     status?: string;
     objectId?: string;
+    /** Заказанная техника (ADR 0028): тип целиком либо одна его категория. */
+    vehicleTypeId?: string;
+    vehicleCategoryId?: string;
     num?: number;
     /** Виза (ADR 0025): 'false' — заявки, ждущие согласования. */
     approved?: string;
@@ -189,6 +193,12 @@ export function VehicleRequestsTab() {
   const applyFilter = (patch: Partial<typeof params>) =>
     setParams((p) => ({ ...p, ...patch, page: 1 }));
 
+  const classificationFilter = useVehicleClassificationFilter({
+    vehicleTypeId: params.vehicleTypeId,
+    vehicleCategoryId: params.vehicleCategoryId,
+    onChange: applyFilter,
+  });
+
   const { data, isFetching } = useQuery({
     queryKey: ['vehicle-requests', 'all', params],
     queryFn: () => vehicleRequestsApi.list(params),
@@ -197,10 +207,17 @@ export function VehicleRequestsTab() {
 
   // Сводка в шапке: сколько заявок ждёт обработки и сколько в работе. Ключ начинается с
   // 'vehicle-requests' — значит счётчики обновляются теми же инвалидациями, что и список.
+  // Сужающие фильтры (объект, тип заявки, техника) в сводку идут: цифры относятся к тому же
+  // списку, что человек видит перед собой. Статус и номер — нет, они свели бы её к самой себе.
+  const summaryQuery = {
+    objectId: params.objectId,
+    requestType: params.requestType,
+    vehicleTypeId: params.vehicleTypeId,
+    vehicleCategoryId: params.vehicleCategoryId,
+  };
   const { data: summary } = useQuery({
-    queryKey: ['vehicle-requests', 'summary', params.objectId, params.requestType],
-    queryFn: () =>
-      vehicleRequestsApi.summary({ objectId: params.objectId, requestType: params.requestType }),
+    queryKey: ['vehicle-requests', 'summary', summaryQuery],
+    queryFn: () => vehicleRequestsApi.summary(summaryQuery),
   });
   const summaryItems = [
     { label: 'Не обработанных', value: summary?.new ?? 0 },
@@ -781,6 +798,8 @@ export function VehicleRequestsTab() {
         value={params.objectId}
         onChange={(v: string | undefined) => applyFilter({ objectId: v })}
       />
+      {/* Заказанная техника: тип целиком либо одна его категория (ADR 0028). */}
+      {classificationFilter.controls}
       <Input.Search
         allowClear
         placeholder="Поиск по № (ТС-123)"
@@ -836,6 +855,7 @@ export function VehicleRequestsTab() {
       disabled: isObjectRole,
       onChange: (v) => applyFilter({ objectId: v }),
     },
+    classificationFilter.mobileFilter,
     {
       kind: 'text',
       key: 'num',

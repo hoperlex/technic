@@ -581,13 +581,15 @@ export interface VehicleRequestHistorySummaryDto {
 }
 
 /**
- * Сводка по статусам для виджета над списком. Из фильтров таблицы учитываются объект и тип
- * заявки — те же, что сужают сам список; фильтр по статусу свёл бы сводку к самой себе,
- * а по номеру — к одной заявке.
+ * Сводка по статусам для виджета над списком. Из фильтров таблицы учитываются сужающие область —
+ * объект, тип заявки и заказанная техника: цифры относятся к тому же списку, что человек видит
+ * перед собой. Фильтр по статусу свёл бы сводку к самой себе, а по номеру — к одной заявке.
  */
 export const vehicleRequestSummaryQuerySchema = z.object({
   objectId: uuidSchema.optional(),
   requestType: vehicleRequestTypeSchema.optional(),
+  vehicleTypeId: uuidSchema.optional(),
+  vehicleCategoryId: uuidSchema.optional(),
 });
 export type VehicleRequestSummaryQuery = z.infer<typeof vehicleRequestSummaryQuerySchema>;
 

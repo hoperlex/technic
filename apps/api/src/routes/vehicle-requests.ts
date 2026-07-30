@@ -1034,6 +1034,14 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         requestVisibilityWhere(p, vehicleRequests.objectId),
         req.query.objectId ? eq(vehicleRequests.objectId, req.query.objectId) : undefined,
         req.query.requestType ? eq(vehicleRequests.requestType, req.query.requestType) : undefined,
+        // Заказанная техника (ADR 0028): один тип целиком либо одна его категория — те же
+        // условия, что и в списке.
+        req.query.vehicleTypeId
+          ? eq(vehicleRequests.vehicleTypeId, req.query.vehicleTypeId)
+          : undefined,
+        req.query.vehicleCategoryId
+          ? eq(vehicleRequests.vehicleCategoryId, req.query.vehicleCategoryId)
+          : undefined,
       );
       const rows = await db
         .select({

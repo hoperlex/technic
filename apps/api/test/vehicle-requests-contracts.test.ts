@@ -568,22 +568,32 @@ describe('vehicle-requests: список и номер', () => {
     expect(() => vehicleRequestListQuerySchema.parse({ requestType: 'unknown' })).toThrow();
   });
 
-  it('сводка сужается только объектом и типом заявки', () => {
+  it('сводка сужается объектом, типом заявки и заказанной техникой', () => {
+    const CATEGORY = '44444444-4444-4444-8444-444444444444';
     const all = vehicleRequestSummaryQuerySchema.parse({});
     expect(all.objectId).toBeUndefined();
     expect(all.requestType).toBeUndefined();
+    expect(all.vehicleTypeId).toBeUndefined();
 
     // Статус и номер в сводку не входят: по статусу она свелась бы к самой себе, по номеру —
     // к одной заявке. Лишние ключи схема отбрасывает.
     const narrowed = vehicleRequestSummaryQuerySchema.parse({
       objectId: OBJ,
       requestType: 'freight_transport',
+      vehicleTypeId: TYPE,
+      vehicleCategoryId: CATEGORY,
       status: 'new',
       num: 5,
     });
-    expect(narrowed).toEqual({ objectId: OBJ, requestType: 'freight_transport' });
+    expect(narrowed).toEqual({
+      objectId: OBJ,
+      requestType: 'freight_transport',
+      vehicleTypeId: TYPE,
+      vehicleCategoryId: CATEGORY,
+    });
 
     expect(() => vehicleRequestSummaryQuerySchema.parse({ requestType: 'unknown' })).toThrow();
+    expect(() => vehicleRequestSummaryQuerySchema.parse({ vehicleTypeId: 'нет' })).toThrow();
   });
 
   it('формат и разбор номера', () => {
