@@ -2,12 +2,14 @@ import { describe, expect, it } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { Role } from '@technic/contracts';
 import {
+  approvesOwnRequestOnCreate,
   assertArchiveVisible,
   assertCan,
   assertOperatorScope,
   assertObjectRoleEditable,
   assertObjectScope,
   assertTransitionAllowed,
+  canApproveForObject,
   operatorVisibilityWhere,
   requestVisibilityWhere,
 } from '../src/lib/access';
@@ -113,8 +115,14 @@ describe('работа с конкретной записью', () => {
   it('объектная роль не работает с чужим объектом', () => {
     for (const role of ['shtab', 'rukstroy'] as Role[]) {
       const p = principal(role, { constructionObjectId: OBJECT_A });
-      expect(statusOf(() => assertObjectScope(p, OBJECT_A)), role).toBe(200);
-      expect(statusOf(() => assertObjectScope(p, OBJECT_B)), role).toBe(403);
+      expect(
+        statusOf(() => assertObjectScope(p, OBJECT_A)),
+        role,
+      ).toBe(200);
+      expect(
+        statusOf(() => assertObjectScope(p, OBJECT_B)),
+        role,
+      ).toBe(403);
     }
   });
 
@@ -130,12 +138,18 @@ describe('работа с конкретной записью', () => {
   it('объектная роль правит и удаляет заявку только до «В работе»', () => {
     for (const role of ['shtab', 'rukstroy'] as Role[]) {
       const p = principal(role, { constructionObjectId: OBJECT_A });
-      expect(statusOf(() => assertObjectRoleEditable(p, 'new', 'редактировать')), role).toBe(200);
+      expect(
+        statusOf(() => assertObjectRoleEditable(p, 'new', 'редактировать')),
+        role,
+      ).toBe(200);
       expect(
         statusOf(() => assertObjectRoleEditable(p, 'confirmed', 'редактировать')),
         role,
       ).toBe(403);
-      expect(statusOf(() => assertObjectRoleEditable(p, 'done', 'удалять')), role).toBe(403);
+      expect(
+        statusOf(() => assertObjectRoleEditable(p, 'done', 'удалять')),
+        role,
+      ).toBe(403);
     }
     // Заявку в работе правит тот, кто её ведёт: ограничение только у штаба.
     expect(
@@ -150,6 +164,31 @@ describe('работа с конкретной записью', () => {
     // Неназначенная заявка для оператора тоже чужая.
     expect(statusOf(() => assertOperatorScope(p, null))).toBe(403);
     expect(statusOf(() => assertOperatorScope(principal('manager'), COUNTERPARTY_B))).toBe(200);
+  });
+});
+
+describe('виза на заявке ТС (ADR 0025, 0032)', () => {
+  it('визирует тот, у кого есть право, — руководитель строительства только свой объект', () => {
+    const ruk = principal('rukstroy', { constructionObjectId: OBJECT_A });
+    expect(canApproveForObject(ruk, OBJECT_A)).toBe(true);
+    expect(canApproveForObject(ruk, OBJECT_B)).toBe(false);
+    // Администратор право визы сохраняет, и объект его не ограничивает.
+    expect(canApproveForObject(principal('admin'), OBJECT_B)).toBe(true);
+    for (const role of ['manager', 'dispatcher', 'shtab', 'operator'] as Role[]) {
+      expect(
+        canApproveForObject(principal(role, { constructionObjectId: OBJECT_A }), OBJECT_A),
+        role,
+      ).toBe(false);
+    }
+  });
+
+  it('сама собой виза встаёт только у того, кто отвечает за объект', () => {
+    const ruk = principal('rukstroy', { constructionObjectId: OBJECT_A });
+    expect(approvesOwnRequestOnCreate(ruk, OBJECT_A)).toBe(true);
+    expect(approvesOwnRequestOnCreate(ruk, OBJECT_B)).toBe(false);
+    // Право визы автовизы не даёт: администратор заводит заявку не за себя, и она ждёт визы.
+    expect(canApproveForObject(principal('admin'), OBJECT_A)).toBe(true);
+    expect(approvesOwnRequestOnCreate(principal('admin'), OBJECT_A)).toBe(false);
   });
 });
 

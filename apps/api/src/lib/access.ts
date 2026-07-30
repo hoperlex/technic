@@ -65,6 +65,30 @@ export function assertArchiveVisible(
   if (deletedAt && !can(p.role, 'archive.read')) throw err.notFound(notFoundMessage);
 }
 
+/**
+ * Может ли учётка визировать заявку ТС этого объекта (ADR 0025): право визы плюс область —
+ * руководитель строительства отвечает за свой объект и чужие заявки не согласовывает.
+ * Предикат, а не проверка с отказом: им же решается, снимать ли визу при правке заявки.
+ */
+export function canApproveForObject(p: Principal, objectId: string): boolean {
+  if (!can(p.role, 'vehicleRequests.approve')) return false;
+  return !isObjectScopedRole(p.role) || p.constructionObjectId === objectId;
+}
+
+/**
+ * Визируется ли заявка сразу, самим фактом заведения её автором (ADR 0025 п. 5, ADR 0032).
+ *
+ * Это не то же, что право визировать. Виза — ответ объекта «техника нужна и по средствам», и
+ * сама собой она случается только у того, кто за объект отвечает: у руководителя строительства
+ * на своём объекте. Администратор право визы сохраняет, но заводит заявку не за себя — за того,
+ * кто до портала не добрался; согласование этим не состоялось, и его заявка ждёт визы наравне с
+ * остальными. Иначе на вопрос «кто согласовал» портал отвечал бы именем того, кто решения не
+ * принимал, — и обойти визу можно было бы просьбой завести заявку.
+ */
+export function approvesOwnRequestOnCreate(p: Principal, objectId: string): boolean {
+  return isObjectScopedRole(p.role) && canApproveForObject(p, objectId);
+}
+
 /** Объектная роль работает только со своим объектом (проверка конкретного objectId). */
 export function assertObjectScope(p: Principal, objectId: string): void {
   if (isObjectScopedRole(p.role) && objectId !== p.constructionObjectId) {

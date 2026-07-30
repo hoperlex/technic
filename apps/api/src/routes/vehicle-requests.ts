@@ -28,7 +28,6 @@ import {
   formatVehicleRequestNumber,
   isApprovalChangeable,
   isClosedRequestStatus,
-  isObjectScopedRole,
   isVehicleKindAllowedForRequest,
   rateForWorkUnit,
   REQUEST_STATUSES,
@@ -74,10 +73,12 @@ import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
 import type { Principal } from '../auth/principal';
 import {
+  approvesOwnRequestOnCreate,
   assertArchiveVisible,
   assertObjectRoleEditable,
   assertObjectScope,
   assertTransitionAllowed,
+  canApproveForObject,
   requestVisibilityWhere,
 } from '../lib/access';
 import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
@@ -366,16 +367,6 @@ async function getDto(id: string): Promise<VehicleRequestDto | null> {
   if (!row) return null;
   const filesMap = await filesByRequestIds([id]);
   return toDto(row, filesMap.get(id) ?? []);
-}
-
-/**
- * Может ли учётка визировать заявку этого объекта (ADR 0025): право визы плюс область —
- * руководитель строительства отвечает за свой объект. Предикат, а не проверка с отказом: тем же
- * правилом решается, ставить ли визу сразу при создании заявки её же автором.
- */
-function canApproveForObject(p: Principal, objectId: string): boolean {
-  if (!can(p.role, 'vehicleRequests.approve')) return false;
-  return !isObjectScopedRole(p.role) || p.constructionObjectId === objectId;
 }
 
 async function assertObjectActive(tx: Tx, objectId: string): Promise<void> {
@@ -1114,9 +1105,10 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       const p = requirePrincipal(req);
       const body = req.body;
       assertObjectScope(p, body.objectId);
-      // Заявку завёл тот, кто её и визирует, — согласование уже состоялось (ADR 0025). Просить
-      // руководителя строительства завизировать собственную заявку отдельным действием незачем.
-      const selfApproved = canApproveForObject(p, body.objectId);
+      // Заявку завёл тот, кто за объект и отвечает, — согласование уже состоялось (ADR 0025):
+      // просить руководителя строительства завизировать собственную заявку незачем. Право визы
+      // само по себе автовизы не даёт (ADR 0032) — администратор заводит заявку не за себя.
+      const selfApproved = approvesOwnRequestOnCreate(p, body.objectId);
       const approvedAt = new Date();
 
       const createdId = await db.transaction(async (tx) => {
