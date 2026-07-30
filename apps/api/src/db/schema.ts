@@ -1337,6 +1337,11 @@ export const persons = pgTable(
     birthDate: date('birth_date', { mode: 'string' }),
     phone: text('phone').notNull().default(''),
     email: citext('email').notNull().default(''),
+    // СНИЛС (ADR 0037, миграция 0058): обязательный реквизит путевого листа. Хранятся 11 цифр,
+    // форматирование «XXX-XXX-XXX YY» — на выводе. Пусто — не заполнен: таблица рассчитана не на
+    // одних водителей, и обязательность держит сервис. Контрольную сумму тоже проверяет он —
+    // приём ИНН контрагента: формат ловит длину, контрольная сумма — опечатку в одной цифре.
+    snils: text('snils').notNull().default(''),
     comment: text('comment').notNull().default(''),
     createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
     updatedBy: uuid('updated_by').references(() => users.id, { onDelete: 'set null' }),
@@ -1354,7 +1359,18 @@ export const persons = pgTable(
       'persons_birth_date_sane_check',
       sql`${t.birthDate} IS NULL OR ${t.birthDate} >= DATE '1900-01-01'`,
     ),
-    // Поиск по ФИО и предупреждение о вероятных дублях; жёсткого UNIQUE на человека нет.
+    snilsFormat: check(
+      'persons_snils_format_check',
+      sql`${t.snils} = '' OR ${t.snils} ~ '^[0-9]{11}$'`,
+    ),
+    // Ключ человека (ADR 0037): один СНИЛС — один живой person. Удалённых условие не касается —
+    // после soft-delete человека заводят заново, и номер освобождается вместе с ним.
+    snilsUnique: uniqueIndex('persons_snils_unique')
+      .on(t.snils)
+      .where(sql`${t.snils} <> '' AND ${t.deletedAt} IS NULL`),
+    // Поиск по ФИО и предупреждение о вероятных дублях; жёсткого UNIQUE по ФИО нет: бывают
+    // однофамильцы-ровесники. Надёжно человека различает СНИЛС, но он есть не у всех —
+    // обязателен только водителю (ADR 0037).
     fullNameTrgm: index('persons_full_name_trgm').using('gin', sql`${t.fullName} gin_trgm_ops`),
     deletedAtIdx: index('persons_deleted_at_idx').on(t.deletedAt),
     phoneIdx: index('persons_phone_idx')
