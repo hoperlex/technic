@@ -125,6 +125,30 @@ const CASES: Case[] = [
     url: '/api/v1/drivers/available?vehicleId=00000000-0000-4000-8000-000000000000&on=2026-08-03',
     allowed: ['admin', 'manager', 'dispatcher'],
   },
+  {
+    title: 'замена удостоверения — тем же, кто ведёт водителей',
+    method: 'POST',
+    url: `/api/v1/drivers/${RECORD_ID}/licenses`,
+    payload: {
+      number: '482645',
+      categories: [{ categoryId: '55555555-5555-4555-8555-555555555555' }],
+    },
+    allowed: ['admin', 'manager', 'dispatcher'],
+  },
+  {
+    title: 'отметка проверки документа — тем же, кто ведёт водителей',
+    method: 'POST',
+    url: `/api/v1/drivers/${RECORD_ID}/licenses/${RECORD_ID}/verify`,
+    payload: { verificationStatus: 'verified' },
+    allowed: ['admin', 'manager', 'dispatcher'],
+  },
+  {
+    title: 'аннулирование удостоверения — тем же, кто ведёт водителей',
+    method: 'POST',
+    url: `/api/v1/drivers/${RECORD_ID}/licenses/${RECORD_ID}/revoke`,
+    payload: { revokeReason: 'лишение права управления' },
+    allowed: ['admin', 'manager', 'dispatcher'],
+  },
   // ── Справочники: чтение нужно всем (форма заявки), ведение — трём ролям ──
   {
     title: 'справочник техники — чтение',
@@ -405,11 +429,23 @@ const CASES: Case[] = [
   { title: 'аудит — журнал', method: 'GET', url: '/api/v1/audit', allowed: ['admin'] },
 ];
 
+/**
+ * Каждый запрос идёт с собственного адреса: матрица перебирает все маршруты под всеми
+ * субъектами, и с одного адреса такой перебор упирается в защиту от подбора (429) — она считает
+ * запросы по IP. Тест проверяет права, а не лимиты, и упереться в них он не должен.
+ */
+let requestNo = 0;
+function nextAddress(): string {
+  requestNo += 1;
+  return `10.${(requestNo >> 16) & 0xff}.${(requestNo >> 8) & 0xff}.${requestNo & 0xff}`;
+}
+
 async function request(subject: AccessSubject, c: Case) {
   currentSubject = subject;
   return app.inject({
     method: c.method,
     url: c.url,
+    remoteAddress: nextAddress(),
     headers: { authorization: 'Bearer test-token' },
     ...(c.payload === undefined ? {} : { payload: c.payload as object }),
   });
@@ -495,6 +531,7 @@ describe('вход обязателен', () => {
       const res = await app.inject({
         method: c.method,
         url: c.url,
+        remoteAddress: nextAddress(),
         ...(c.payload === undefined ? {} : { payload: c.payload as object }),
       });
       expect(res.statusCode, `${c.method} ${c.url}`).toBe(401);

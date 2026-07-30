@@ -7,13 +7,16 @@ import {
   createDriverSchema,
   type DriverDto,
   type DriverLicenseDto,
+  driverLicenseInputSchema,
   driverListQuerySchema,
   type DriverSelectionDto,
   driverSelectionQuerySchema,
   isValidSnils,
   licenseNumberLabel,
+  revokeDriverLicenseSchema,
   SNILS_CHECKSUM_MESSAGE,
   updateDriverSchema,
+  verifyDriverLicenseSchema,
 } from '@technic/contracts';
 import { db } from '../db/client';
 import {
@@ -25,6 +28,7 @@ import {
   personSpecializations,
   qualificationCategories,
   specializations,
+  users,
 } from '../db/schema';
 import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
@@ -106,11 +110,13 @@ async function licensesByPerson(personIds: string[]): Promise<Map<string, Driver
       issuedBy: personCredentials.issuedBy,
       verificationStatus: personCredentials.verificationStatus,
       verifiedAt: personCredentials.verifiedAt,
+      verifiedByName: users.fullName,
       revokedAt: personCredentials.revokedAt,
       revokeReason: personCredentials.revokeReason,
     })
     .from(personCredentials)
     .innerJoin(credentialTypes, eq(credentialTypes.id, personCredentials.credentialTypeId))
+    .leftJoin(users, eq(users.id, personCredentials.verifiedBy))
     .where(
       and(
         inArray(personCredentials.personId, personIds),
@@ -169,7 +175,7 @@ async function licensesByPerson(personIds: string[]): Promise<Map<string, Driver
       expiresOn: row.expiresOn,
       issuedBy: row.issuedBy,
       verificationStatus: row.verificationStatus,
-      verifiedByName: null,
+      verifiedByName: row.verifiedByName,
       verifiedAt: row.verifiedAt?.toISOString() ?? null,
       revokedAt: row.revokedAt?.toISOString() ?? null,
       revokeReason: row.revokeReason,
@@ -512,6 +518,143 @@ export default async function driversRoutes(app: FastifyInstance): Promise<void>
         entityId: found.row.id,
       });
       const updated = await loadDriver(found.row.id);
+      return updated!.dto;
+    },
+  );
+
+  const licenseParams = z.object({ id: z.string().uuid(), licenseId: z.string().uuid() });
+
+  /** Найденный документ этого водителя; чужой документ по прямому id недоступен. */
+  async function loadLicense(personId: string, licenseId: string) {
+    const [row] = await db
+      .select({
+        id: personCredentials.id,
+        revokedAt: personCredentials.revokedAt,
+        version: personCredentials.version,
+      })
+      .from(personCredentials)
+      .innerJoin(credentialTypes, eq(credentialTypes.id, personCredentials.credentialTypeId))
+      .where(
+        and(
+          eq(personCredentials.id, licenseId),
+          eq(personCredentials.personId, personId),
+          eq(credentialTypes.code, DRIVER_LICENSE_CODE),
+          isNull(personCredentials.deletedAt),
+        ),
+      );
+    return row ?? null;
+  }
+
+  /**
+   * Новое удостоверение не стирает старое: замена по истечении срока — обычное дело, а история
+   * документов объясняет, по какому листу человек ездил в прошлом году.
+   */
+  r.post(
+    '/:id/licenses',
+    {
+      preHandler: [app.authenticate, canWrite],
+      schema: { params: idParams, body: driverLicenseInputSchema },
+    },
+    async (req, reply) => {
+      const p = requirePrincipal(req);
+      const found = await loadDriver(req.params.id);
+      if (!found) throw err.notFound('Водитель не найден');
+      if (found.row.deletedAt) throw err.conflict('Водитель удалён');
+
+      const { licenseTypeId } = await loadDirectoryIds();
+      await db.transaction(async (tx) => {
+        await insertLicense(tx, found.row.id, licenseTypeId, req.body);
+      });
+
+      await writeAudit({
+        actorUserId: p.id,
+        action: 'driver.license.add',
+        entityType: 'person',
+        entityId: found.row.id,
+        metadata: { number: req.body.number },
+      });
+      const updated = await loadDriver(found.row.id);
+      return reply.code(201).send(updated!.dto);
+    },
+  );
+
+  /**
+   * Отметка проверки — учётное действие: проверенный документ отличается от непроверенного не
+   * содержимым, а тем, что его сверили с оригиналом. Время проставляется сервером: у всего, что
+   * не `unverified`, оно обязано быть (CHECK в БД), а у непроверенного — обязано отсутствовать.
+   */
+  r.post(
+    '/:id/licenses/:licenseId/verify',
+    {
+      preHandler: [app.authenticate, canWrite],
+      schema: { params: licenseParams, body: verifyDriverLicenseSchema },
+    },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const license = await loadLicense(req.params.id, req.params.licenseId);
+      if (!license) throw err.notFound('Удостоверение не найдено');
+
+      const unverified = req.body.verificationStatus === 'unverified';
+      await db
+        .update(personCredentials)
+        .set({
+          verificationStatus: req.body.verificationStatus,
+          verifiedBy: unverified ? null : p.id,
+          verifiedAt: unverified ? null : new Date(),
+          verificationComment: req.body.verificationComment,
+          updatedBy: p.id,
+          updatedAt: new Date(),
+          version: license.version + 1,
+        })
+        .where(eq(personCredentials.id, license.id));
+
+      await writeAudit({
+        actorUserId: p.id,
+        action: 'driver.license.verify',
+        entityType: 'person',
+        entityId: req.params.id,
+        metadata: { status: req.body.verificationStatus },
+      });
+      const updated = await loadDriver(req.params.id);
+      return updated!.dto;
+    },
+  );
+
+  /**
+   * Аннулирование: документ был действующим и перестал им быть — это не истечение срока и не
+   * удаление записи. С этого момента водитель выпадает из отбора, и причина объясняет почему.
+   */
+  r.post(
+    '/:id/licenses/:licenseId/revoke',
+    {
+      preHandler: [app.authenticate, canWrite],
+      schema: { params: licenseParams, body: revokeDriverLicenseSchema },
+    },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const license = await loadLicense(req.params.id, req.params.licenseId);
+      if (!license) throw err.notFound('Удостоверение не найдено');
+      if (license.revokedAt) throw err.conflict('Удостоверение уже аннулировано');
+
+      await db
+        .update(personCredentials)
+        .set({
+          revokedAt: new Date(),
+          revokeReason: req.body.revokeReason,
+          updatedBy: p.id,
+          updatedAt: new Date(),
+          version: license.version + 1,
+        })
+        .where(eq(personCredentials.id, license.id));
+
+      await writeAudit({
+        actorUserId: p.id,
+        action: 'driver.license.revoke',
+        entityType: 'person',
+        entityId: req.params.id,
+        metadata: { reason: req.body.revokeReason },
+      });
+      const updated = await loadDriver(req.params.id);
       return updated!.dto;
     },
   );

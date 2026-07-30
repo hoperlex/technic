@@ -237,6 +237,30 @@ export const createDriverSchema = z
   .strict();
 export type CreateDriverInput = z.infer<typeof createDriverSchema>;
 
+/**
+ * Отметка проверки документа. Учётное действие, а не правка реквизитов: проверенное
+ * удостоверение отличается от непроверенного не содержимым, а тем, что его кто-то сверил с
+ * оригиналом — поэтому и операция своя.
+ */
+export const verifyDriverLicenseSchema = z
+  .object({
+    verificationStatus: credentialVerificationStatusSchema,
+    verificationComment: z.string().trim().max(2000).optional().default(''),
+  })
+  .strict();
+export type VerifyDriverLicenseInput = z.infer<typeof verifyDriverLicenseSchema>;
+
+/**
+ * Аннулирование: документ был действующим и перестал им быть — это не истечение срока и не
+ * удаление записи. Причина обязательна: по ней потом объясняют, почему водитель выпал из отбора.
+ */
+export const revokeDriverLicenseSchema = z
+  .object({
+    revokeReason: z.string().trim().min(1, 'Укажите причину').max(2000),
+  })
+  .strict();
+export type RevokeDriverLicenseInput = z.infer<typeof revokeDriverLicenseSchema>;
+
 /** Правка карточки. Документы правятся своими операциями: у них своя история и своя проверка. */
 export const updateDriverSchema = z
   .object({
