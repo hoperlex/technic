@@ -6,7 +6,7 @@ import type {
   RevokeDriverLicenseInput,
   UpdateDriverInput,
   VerifyDriverLicenseBody,
-  AssignVehicleInput,
+  AssignVehicleBody,
   AttachVehicleTypeSpecInput,
   CompleteVehicleRequestInput,
   CompleteWasteRequestInput,
@@ -209,6 +209,28 @@ export const vehiclesApi = {
 
 export const vehicleRequestsApi = {
   list: (q: Query) => apiFetch<ListResult<VehicleRequestDto>>('/vehicle-requests', { query: q }),
+  /**
+   * Что портал знает о будущем путевом листе до перевода заявки в работу (ADR 0037): выписывается
+   * ли он на выбранную машину, на какую дату и чем заполнить графы шапки — их наследуют от
+   * прошлого листа этой машины.
+   */
+  waybillPrefill: (id: string, vehicleId: string) =>
+    apiFetch<{
+      required: boolean;
+      formLabel: string | null;
+      reason: string | null;
+      tripDate: string;
+      fields: {
+        withTrailer: boolean;
+        trailer1Model: string;
+        trailer1RegNumber: string;
+        trailer2Model: string;
+        trailer2RegNumber: string;
+        garageNumber: string;
+        communicationKind: string;
+        transportationKind: string;
+      } | null;
+    }>(`/vehicle-requests/${id}/waybill-prefill`, { query: { vehicleId } }),
   /** Счётчики заявок по статусам — сводка над списком; сужается объектом и типом заявки. */
   summary: (q: Query) =>
     apiFetch<VehicleRequestSummaryDto>('/vehicle-requests/summary', { query: q }),
@@ -247,7 +269,7 @@ export const vehicleRequestsApi = {
     status: RequestStatus,
     version: number,
     comment = '',
-    assignment?: AssignVehicleInput,
+    assignment?: AssignVehicleBody,
     completion?: CompleteVehicleRequestInput,
   ) =>
     apiFetch<VehicleRequestDto>(`/vehicle-requests/${id}/status`, {

@@ -22,6 +22,8 @@ import { selectDrivers } from './drivers';
 import { findSeriesByCode, takeNextNumber } from './waybill-numbers';
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+/** Читающие функции годятся и вне транзакции: форма спрашивает их до перевода в работу. */
+type Reader = Tx | typeof db;
 
 /**
  * Выдача путевого листа при переводе заявки в работу (ADR 0037).
@@ -59,7 +61,7 @@ export interface WaybillRequirement {
  * пока за их типом не закреплён бланк (ADR 0037, backlog).
  */
 export async function waybillRequirementFor(
-  tx: Tx,
+  tx: Reader,
   vehicleId: string,
 ): Promise<WaybillRequirement> {
   const [row] = await tx
@@ -89,7 +91,7 @@ export async function waybillRequirementFor(
 }
 
 /** Дата рейса: у грузоперевозки её несёт время подачи, у прочих заявок — день перевода в работу. */
-async function tripDate(tx: Tx, requestId: string): Promise<string> {
+export async function tripDate(tx: Reader, requestId: string): Promise<string> {
   const [row] = await tx
     .select({ scheduledAt: freightTransportRequestDetails.scheduledAt })
     .from(freightTransportRequestDetails)

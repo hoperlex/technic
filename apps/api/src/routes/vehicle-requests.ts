@@ -27,6 +27,7 @@ import {
   createVehicleRequestSchema,
   type FileDto,
   formatVehicleRequestNumber,
+  waybillFormLabels,
   isApprovalChangeable,
   isClosedRequestStatus,
   isVehicleKindAllowedForRequest,
@@ -104,7 +105,12 @@ import {
   diffVehicleRequests,
 } from '../services/vehicle-request-diff';
 import { loadVehicleRequestHistory } from '../services/vehicle-request-history';
-import { issueWaybill } from '../services/waybill-issue';
+import {
+  issueWaybill,
+  lastWaybillFields,
+  tripDate,
+  waybillRequirementFor,
+} from '../services/waybill-issue';
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -1528,6 +1534,39 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
   );
 
   // ── Смена статуса ──
+  /**
+   * Что портал знает о будущем путевом листе до перевода заявки в работу (ADR 0037): выписывается
+   * ли он на эту машину, на какую дату и чем заполнить графы, которых нет ни в заявке, ни в
+   * справочниках. Их наследуют от прошлого листа этой машины: гаражный номер, вид сообщения и
+   * прицепы от рейса к рейсу те же, и перенабирать их каждый раз незачем.
+   *
+   * Причина «лист не выписывается» отдаётся текстом: диспетчер должен видеть, почему полей нет,
+   * а не отсутствующий блок — отсутствие читается как поломка.
+   */
+  r.get(
+    '/:id/waybill-prefill',
+    {
+      ...canChangeStatus,
+      schema: { params: idParams, querystring: z.object({ vehicleId: z.string().uuid() }) },
+    },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const before = await getDto(req.params.id);
+      if (!before) throw err.notFound('Заявка не найдена');
+      assertObjectScope(p, before.objectId);
+
+      const requirement = await waybillRequirementFor(db, req.query.vehicleId);
+      return {
+        required: requirement.formCode !== null,
+        formCode: requirement.formCode,
+        formLabel: requirement.formCode ? waybillFormLabels[requirement.formCode] : null,
+        reason: requirement.reason,
+        tripDate: await tripDate(db, before.id),
+        fields: requirement.formCode ? await lastWaybillFields(req.query.vehicleId) : null,
+      };
+    },
+  );
+
   r.patch(
     '/:id/status',
     { ...canChangeStatus, schema: { params: idParams, body: changeVehicleRequestStatusSchema } },

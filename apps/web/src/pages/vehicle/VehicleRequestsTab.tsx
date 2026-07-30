@@ -24,7 +24,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import dayjs, { type Dayjs } from 'dayjs';
 import {
   type AddressMeta,
-  type AssignVehicleInput,
+  type AssignVehicleBody,
   assignmentRateLabel,
   assignmentTitle,
   type CompleteVehicleRequestInput,
@@ -456,7 +456,7 @@ export function VehicleRequestsTab() {
       status: RequestStatus;
       version: number;
       comment?: string;
-      assignment?: AssignVehicleInput;
+      assignment?: AssignVehicleBody;
       completion?: CompleteVehicleRequestInput;
     }) =>
       vehicleRequestsApi.changeStatus(

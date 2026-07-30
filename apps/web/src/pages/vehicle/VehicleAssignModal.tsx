@@ -1,8 +1,19 @@
 import { useEffect, useMemo, useState } from 'react';
-import { App, Form, InputNumber, Segmented, Space, Tag, Typography } from 'antd';
+import {
+  Alert,
+  App,
+  Checkbox,
+  Form,
+  Input,
+  InputNumber,
+  Segmented,
+  Space,
+  Tag,
+  Typography,
+} from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import {
-  type AssignVehicleInput,
+  type AssignVehicleBody,
   assignmentRateLabel,
   VEHICLE_OWNERSHIPS,
   vehicleClassificationLabel,
@@ -12,7 +23,7 @@ import {
   vehicleOwnershipLabels,
   type VehicleRequestDto,
 } from '@technic/contracts';
-import { vehiclesApi } from '../../api/resources';
+import { driversApi, vehicleRequestsApi, vehiclesApi } from '../../api/resources';
 import { AutoSelect } from '../../components/AutoSelect';
 import { FormModal } from '../../components/FormModal';
 import { useIsMobile } from '../../hooks/useIsMobile';
@@ -40,7 +51,7 @@ interface Props {
   request: VehicleRequestDto | null;
   confirmLoading: boolean;
   onCancel: () => void;
-  onSubmit: (v: AssignVehicleInput) => void;
+  onSubmit: (v: AssignVehicleBody) => void;
 }
 
 interface FormValues {
@@ -49,6 +60,14 @@ interface FormValues {
   pricePerHour?: number | null;
   pricePerShift?: number | null;
   shiftHours?: number | null;
+  // ── Путевой лист (ADR 0037) ──
+  driverPersonId?: string;
+  withTrailer?: boolean;
+  trailer1Model?: string;
+  trailer1RegNumber?: string;
+  garageNumber?: string;
+  communicationKind?: string;
+  transportationKind?: string;
 }
 
 /**
@@ -155,6 +174,49 @@ export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit
   const selected = vehicles.find((v) => v.id === vehicleId) ?? null;
   const isRental = ownership === 'rental';
 
+  // ── Путевой лист (ADR 0037) ──
+  // Выписывается ли лист на выбранную машину, на какую дату и чем заполнены графы шапки в прошлый
+  // раз. Спрашивается по машине: на аренду лист не выписывается, и полей у неё быть не должно.
+  const withTrailer = Form.useWatch('withTrailer', form) ?? false;
+  const { data: prefill } = useQuery({
+    queryKey: ['waybill-prefill', targetId, vehicleId],
+    queryFn: () => vehicleRequestsApi.waybillPrefill(targetId!, vehicleId!),
+    enabled: !!targetId && !!vehicleId,
+  });
+  const needsWaybill = prefill?.required ?? false;
+
+  // Список водителей — тот же отбор, что проверит сервер: годные к этой машине на дату рейса.
+  const { data: selection, isFetching: driversLoading } = useQuery({
+    queryKey: ['drivers', 'available', vehicleId, prefill?.tripDate, withTrailer],
+    queryFn: () =>
+      driversApi.available({ vehicleId: vehicleId!, on: prefill!.tripDate, withTrailer }),
+    enabled: needsWaybill && !!vehicleId && !!prefill?.tripDate,
+  });
+  const driverOptions = (selection?.drivers ?? []).map((d) => ({
+    value: d.personId,
+    label: [
+      d.fullName,
+      d.categories.join(', '),
+      d.personnelNo && `таб. ${d.personnelNo}`,
+      d.verificationStatus === 'unverified' ? 'документ не проверен' : null,
+    ]
+      .filter(Boolean)
+      .join(' · '),
+  }));
+
+  /** Графы шапки наследуются от прошлого листа этой машины — их правят раз в сезон, а не в рейс. */
+  useEffect(() => {
+    if (!prefill?.fields) return;
+    form.setFieldsValue({
+      withTrailer: prefill.fields.withTrailer,
+      trailer1Model: prefill.fields.trailer1Model,
+      trailer1RegNumber: prefill.fields.trailer1RegNumber,
+      garageNumber: prefill.fields.garageNumber,
+      communicationKind: prefill.fields.communicationKind,
+      transportationKind: prefill.fields.transportationKind,
+    });
+  }, [prefill?.fields]);
+
   /** Ставки предложения аренды: по ним подставляются поля и видно, что цену изменили вручную. */
   const listedRate = selected?.ownership === 'rental' ? selected : null;
   const priceChanged =
@@ -196,11 +258,30 @@ export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit
       message.warning('Укажите стоимость аренды — за час или за смену');
       return;
     }
+    // Водитель обязателен ровно там, где выписывается лист: у аренды он чужой, и портал его
+    // не ведёт. Тем же правилом отвечает сервер.
+    if (needsWaybill && !v.driverPersonId) {
+      message.warning('Выберите водителя — на рейс выписывается путевой лист');
+      return;
+    }
     onSubmit({
       vehicleId: v.vehicleId,
       pricePerHour: v.pricePerHour ?? null,
       pricePerShift: v.pricePerShift ?? null,
       shiftHours: v.shiftHours ?? null,
+      ...(needsWaybill
+        ? {
+            driverPersonId: v.driverPersonId,
+            waybill: {
+              withTrailer: v.withTrailer ?? false,
+              trailer1Model: v.withTrailer ? (v.trailer1Model ?? '') : '',
+              trailer1RegNumber: v.withTrailer ? (v.trailer1RegNumber ?? '') : '',
+              garageNumber: v.garageNumber ?? '',
+              communicationKind: v.communicationKind ?? '',
+              transportationKind: v.transportationKind ?? '',
+            },
+          }
+        : {}),
     });
   };
 
@@ -346,6 +427,87 @@ export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit
               У собственной техники ставка необязательна: её указывают, если работу считают в
               деньгах
             </Typography.Text>
+          )}
+
+          {/* Путевой лист (ADR 0037): выписывается тут же, вместе с переводом в работу. Причина,
+              по которой лист не нужен, показывается текстом — отсутствие блока читалось бы как
+              поломка. */}
+          {selected && prefill && !prefill.required && prefill.reason && (
+            <Alert
+              type="info"
+              showIcon
+              style={{ marginTop: 16 }}
+              message="Путевой лист не выписывается"
+              description={prefill.reason}
+            />
+          )}
+
+          {needsWaybill && (
+            <>
+              <Typography.Title level={5} style={{ marginTop: 16 }}>
+                Путевой лист
+              </Typography.Title>
+              <Typography.Paragraph type="secondary" style={{ marginTop: -8 }}>
+                {prefill?.formLabel} · на {prefill?.tripDate}
+              </Typography.Paragraph>
+
+              <Form.Item
+                name="driverPersonId"
+                label="Водитель"
+                rules={[{ required: true, message: 'Выберите водителя' }]}
+                extra={
+                  driverOptions.length === 0 && !driversLoading
+                    ? selection?.requiredCategory
+                      ? `Нет водителей с действующей категорией ${selection.requiredCategory} на эту дату`
+                      : 'Нет водителей с действующим удостоверением на эту дату'
+                    : undefined
+                }
+              >
+                <AutoSelect
+                  options={driverOptions}
+                  showSearch
+                  optionFilterProp="label"
+                  loading={driversLoading}
+                  placeholder="Выберите водителя"
+                />
+              </Form.Item>
+
+              {/* Прицеп — признак рейса, а не свойство машины: он поднимает требуемую категорию
+                  водителя, поэтому список выше пересобирается при его включении. */}
+              <Form.Item name="withTrailer" valuePropName="checked">
+                <Checkbox>Рейс с прицепом</Checkbox>
+              </Form.Item>
+              {withTrailer && (
+                <Space
+                  style={{ width: '100%' }}
+                  size="middle"
+                  direction={isMobile ? 'vertical' : 'horizontal'}
+                >
+                  <Form.Item name="trailer1Model" label="Марка прицепа">
+                    <Input placeholder="МАЗ-8926" />
+                  </Form.Item>
+                  <Form.Item name="trailer1RegNumber" label="Госномер прицепа">
+                    <Input placeholder="8062 ЕН 77" />
+                  </Form.Item>
+                </Space>
+              )}
+
+              <Space
+                style={{ width: '100%' }}
+                size="middle"
+                direction={isMobile ? 'vertical' : 'horizontal'}
+              >
+                <Form.Item name="garageNumber" label="Гаражный номер">
+                  <Input placeholder="00000389" />
+                </Form.Item>
+                <Form.Item name="communicationKind" label="Вид сообщения">
+                  <Input placeholder="пригородное" />
+                </Form.Item>
+                <Form.Item name="transportationKind" label="Вид перевозки">
+                  <Input placeholder="коммерческая" />
+                </Form.Item>
+              </Space>
+            </>
           )}
         </Form>
       )}
