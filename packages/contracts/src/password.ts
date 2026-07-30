@@ -4,7 +4,7 @@ import { z } from 'zod';
 // Одной длины мало: «1234567890» и «Иванов1234» её проходят, а подбираются мгновенно. Правила
 // общие для формы и сервера — иначе клиент разрешил бы то, что API отклонит, и наоборот.
 
-export const PASSWORD_MIN = 10;
+export const PASSWORD_MIN = 8;
 export const PASSWORD_MAX = 200;
 
 /**

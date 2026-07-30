@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { App, Button, Card, Form, Input, Typography } from 'antd';
 import { useNavigate } from 'react-router';
+import { PASSWORD_MIN } from '@technic/contracts';
 import { authApi } from '../api/auth';
 import { useAuth } from '../auth/AuthContext';
 import { errorMessage } from '../utils/format';
@@ -56,7 +57,9 @@ export function ChangePasswordPage() {
           <Form.Item
             name="newPassword"
             label="Новый пароль"
-            rules={[{ required: true, min: 10, message: 'Не менее 10 символов' }]}
+            rules={[
+              { required: true, min: PASSWORD_MIN, message: `Не менее ${PASSWORD_MIN} символов` },
+            ]}
           >
             <Input.Password autoComplete="new-password" size="large" />
           </Form.Item>
