@@ -9,6 +9,24 @@ export const sortOrderSchema = z.enum(['asc', 'desc']);
 export type SortOrder = z.infer<typeof sortOrderSchema>;
 
 /**
+ * Дата без времени, строго YYYY-MM-DD. Через JS `Date` не преобразуется намеренно: срок действия
+ * документа и дата подачи — это календарные сутки, а не момент времени, и часовой пояс смещал бы
+ * их на день. Дополнительная проверка отсеивает «2026-02-31» — регулярное выражение его пропускает.
+ */
+export const dateOnlySchema = z
+  .string()
+  .trim()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'Дата в формате YYYY-MM-DD')
+  .refine((s) => {
+    const parts = s.split('-');
+    const y = Number(parts[0]);
+    const m = Number(parts[1]);
+    const d = Number(parts[2]);
+    const dt = new Date(Date.UTC(y, m - 1, d));
+    return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+  }, 'Некорректная дата');
+
+/**
  * Базовая схема списочного запроса. `sortFields` — allowlist сортируемых полей
  * (клиент не передаёт произвольные SQL-идентификаторы).
  */

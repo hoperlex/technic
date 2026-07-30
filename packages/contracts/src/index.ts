@@ -3,6 +3,8 @@ export * from './permissions';
 export * from './common';
 export * from './time';
 export * from './person-name';
+export * from './snils';
+export * from './persons';
 export * from './password';
 export * from './registration-request';
 export * from './auth';
