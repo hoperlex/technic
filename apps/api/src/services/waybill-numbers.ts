@@ -17,6 +17,8 @@ type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 export interface IssuedNumber {
   seriesId: string;
   number: number;
+  /** Серия: печатается в своей графе бланка отдельно от номера. */
+  prefix: string;
   /** Как номер печатают и ищут: «260604-646-00000004897». */
   display: string;
 }
@@ -51,6 +53,7 @@ export async function takeNextNumber(tx: Tx, seriesId: string): Promise<IssuedNu
   return {
     seriesId: series.id,
     number,
+    prefix: series.prefix,
     display: waybillDisplayNumber(series.prefix, number, series.numberWidth),
   };
 }

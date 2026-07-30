@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { App, Button, DatePicker, Input, Space, Typography } from 'antd';
-import { StopOutlined } from '@ant-design/icons';
+import { DownloadOutlined, StopOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -168,31 +168,39 @@ export function WaybillsPage() {
       width: 200,
       ellipsis: true,
     }),
-    ...(canCancel
-      ? [
-          actionsColumn<WaybillDto>((r) => {
-            const editable = r.status === 'issued' && isWaybillEditable(r.issuedForDate, today());
-            return (
-              <Button
-                size="small"
-                danger
-                icon={<StopOutlined />}
-                disabled={!editable}
-                // Причина запрета проговаривается подсказкой: выключенная кнопка без объяснения
-                // читается как поломка.
-                title={
-                  r.status === 'cancelled'
-                    ? 'Лист уже аннулирован'
-                    : editable
-                      ? 'Аннулировать'
-                      : WAYBILL_LOCKED_MESSAGE
-                }
-                onClick={() => confirmCancel(r)}
-              />
-            );
-          }),
-        ]
-      : []),
+    actionsColumn<WaybillDto>((r) => {
+      const editable = r.status === 'issued' && isWaybillEditable(r.issuedForDate, today());
+      return (
+        <Space>
+          {/* Выгрузка доступна и у аннулированного листа: испорченный бланк подшивают к журналу. */}
+          <Button
+            size="small"
+            icon={<DownloadOutlined />}
+            title="Скачать бланк (xlsx)"
+            href={waybillsApi.exportUrl(r.id, 'xlsx')}
+            target="_blank"
+          />
+          {canCancel && (
+            <Button
+              size="small"
+              danger
+              icon={<StopOutlined />}
+              disabled={!editable}
+              // Причина запрета проговаривается подсказкой: выключенная кнопка без объяснения
+              // читается как поломка.
+              title={
+                r.status === 'cancelled'
+                  ? 'Лист уже аннулирован'
+                  : editable
+                    ? 'Аннулировать'
+                    : WAYBILL_LOCKED_MESSAGE
+              }
+              onClick={() => confirmCancel(r)}
+            />
+          )}
+        </Space>
+      );
+    }),
   ];
 
   return (

@@ -66,7 +66,7 @@ import type {
   WasteTypeDto,
   ResolveWasteTariffResultDto,
 } from '@technic/contracts';
-import { apiFetch } from './client';
+import { API_BASE, apiFetch } from './client';
 
 type Query = Record<string, unknown>;
 
@@ -130,6 +130,13 @@ export const waybillsApi = {
   get: (id: string) => apiFetch<WaybillDto>(`/waybills/${id}`),
   cancel: (id: string, body: CancelWaybillInput) =>
     apiFetch<WaybillDto>(`/waybills/${id}/cancel`, { method: 'POST', body }),
+  /**
+   * Выгрузка бланка. Переход по ссылке, а не fetch с blob: ответ приходит с
+   * `Content-Disposition: attachment`, браузер сохраняет файл сам и со страницы не уводит —
+   * тем же приёмом скачиваются вложения заявок.
+   */
+  exportUrl: (id: string, format: 'xlsx' | 'ods') =>
+    `${API_BASE}/waybills/${id}/export?format=${format}`,
 };
 
 export const counterpartiesApi = {

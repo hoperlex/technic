@@ -1,5 +1,8 @@
 const BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? '/api/v1';
 
+/** Базовый адрес API: нужен ссылкам на скачивание — их браузер открывает сам, минуя apiFetch. */
+export const API_BASE = BASE;
+
 let accessToken: string | null = null;
 
 export function setAccessToken(token: string | null): void {

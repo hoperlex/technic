@@ -46,6 +46,46 @@ export function waybillDisplayNumber(prefix: string, num: number, width: number)
   return `${prefix}${formatWaybillNumber(num, width)}`;
 }
 
+/**
+ * Ключи снимка — они же плейсхолдеры бланка. Объявлены списком, а не выводятся из кода сборки:
+ * по нему тест сверяет шаблон, и графа, которой в снимке нет, не доедет до бумаги молча
+ * (ADR 0037 п. 10).
+ */
+export const WAYBILL_SNAPSHOT_KEYS = [
+  'org_name',
+  'org_address',
+  'org_phone',
+  'org_okpo',
+  'org_ogrn',
+  'waybill_series',
+  'waybill_number',
+  'waybill_date',
+  'vehicle_brand',
+  'vehicle_reg_number',
+  'vehicle_garage_number',
+  'vehicle_inventory_number',
+  'trailer1_brand',
+  'trailer1_reg_number',
+  'trailer2_brand',
+  'trailer2_reg_number',
+  'driver_fio',
+  'driver_snils',
+  'driver_personnel_no',
+  'driver_license_number',
+  'driver_license_issued_on',
+  'communication_kind',
+  'transportation_kind',
+  'customer_name',
+  'customer_address',
+  'task_from',
+  'task_to',
+  'task_cargo',
+  'task_departure_time',
+  'dispatcher_fio',
+] as const;
+
+export type WaybillSnapshotKey = (typeof WAYBILL_SNAPSHOT_KEYS)[number];
+
 // ── Журнал учёта (ADR 0037) ──
 // Лист — бланк строгой отчётности: журнал отвечает, какие номера выданы, на какие машины и что
 // с ними стало. Аннулированные из него не исчезают — пропуск в нумерации означал бы утраченный

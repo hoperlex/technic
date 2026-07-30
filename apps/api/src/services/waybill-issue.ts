@@ -2,6 +2,7 @@ import { and, desc, eq, isNull, ne, sql } from 'drizzle-orm';
 import {
   formatSnils,
   licenseNumberLabel,
+  type WaybillSnapshotKey,
   type WaybillFieldsInput,
   type WaybillFormCode,
 } from '@technic/contracts';
@@ -125,9 +126,9 @@ async function resolveOrganization(tx: Tx, vehicleId: string): Promise<string> {
 }
 
 /**
- * Значения бланка снимком (ADR 0037 п. 10). Ключи — плейсхолдеры шаблона: лист печатается из
- * этого объекта, а не из справочников, поэтому переименование объекта или уточнение госномера
- * задним числом уже выданный документ не меняет.
+ * Значения бланка снимком (ADR 0037 п. 10). Лист печатается из этого объекта, а не из
+ * справочников, поэтому переименование объекта или уточнение госномера задним числом уже выданный
+ * документ не меняет.
  */
 async function collectSnapshot(
   tx: Tx,
@@ -138,10 +139,11 @@ async function collectSnapshot(
     organizationId: string;
     fields: WaybillFieldsInput | null;
     number: string;
+    seriesPrefix: string;
     date: string;
     actorName: string;
   },
-): Promise<Record<string, string>> {
+): Promise<Record<WaybillSnapshotKey, string>> {
   const [org] = await tx
     .select({
       name: organizations.name,
@@ -225,6 +227,7 @@ async function collectSnapshot(
     org_okpo: org?.okpo ?? '',
     org_ogrn: org?.ogrn ?? '',
 
+    waybill_series: params.seriesPrefix,
     waybill_number: params.number,
     waybill_date: params.date,
 
@@ -371,6 +374,7 @@ export async function issueWaybill(tx: Tx, ctx: WaybillContext): Promise<IssuedW
     organizationId,
     fields: ctx.fields,
     number: number.display,
+    seriesPrefix: number.prefix,
     date,
     actorName: ctx.actor.name,
   });

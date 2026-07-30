@@ -12,6 +12,9 @@ import {
   WAYBILL_LOCKED_MESSAGE,
   type WaybillRequestLinkDto,
 } from '@technic/contracts';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { db } from '../db/client';
 import {
   constructionObjects,
@@ -29,6 +32,7 @@ import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
 import { pageParams } from '../lib/pagination';
+import { renderOfficeTemplate } from '../services/office-template';
 
 /**
  * Журнал учёта путевых листов (ADR 0037).
@@ -42,6 +46,28 @@ import { pageParams } from '../lib/pagination';
  */
 
 const idParams = z.object({ id: z.string().uuid() });
+
+const EXPORT_FORMATS = { xlsx: 'xlsx', ods: 'ods' } as const;
+const exportQuery = z.object({ format: z.enum(['xlsx', 'ods']).optional().default('xlsx') });
+
+const CONTENT_TYPES = {
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  ods: 'application/vnd.oasis.opendocument.spreadsheet',
+} as const;
+
+const templatesDir = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'templates');
+
+/**
+ * Бланк читается с диска при каждой выгрузке, а не кэшируется: файл меняют редко, зато правку
+ * подхватывает следующий же запрос, без перезапуска сервиса.
+ */
+function readTemplate(formCode: string, format: 'xlsx' | 'ods'): Uint8Array {
+  try {
+    return new Uint8Array(readFileSync(join(templatesDir, `waybill-${formCode}.${format}`)));
+  } catch {
+    throw err.conflict(`Бланк ${formCode}.${format} не найден: соберите шаблоны`);
+  }
+}
 
 /** Кто выписал и кто аннулировал — два join'а на одну таблицу учёток. */
 const issuers = users;
@@ -211,6 +237,57 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
         cancelledByNames([row]),
       ]);
       return toDto(row, links.get(row.id) ?? [], cancelled.get(row.cancelledBy ?? '') ?? null);
+    },
+  );
+
+  /**
+   * Выгрузка бланка (ADR 0037 п. 10). Печатается из снимка значений, а не из справочников:
+   * переименование объекта или уточнение госномера задним числом уже выданный лист не меняет.
+   *
+   * Аннулированный лист выгружается тоже: его подшивают к журналу как испорченный бланк.
+   */
+  r.get(
+    '/:id/export',
+    {
+      preHandler: [app.authenticate, canRead],
+      schema: { params: idParams, querystring: exportQuery },
+    },
+    async (req, reply) => {
+      const p = requirePrincipal(req);
+      const [row] = await db
+        .select({
+          id: waybills.id,
+          formCode: waybills.formCode,
+          number: waybills.number,
+          prefix: waybillSeries.prefix,
+          numberWidth: waybillSeries.numberWidth,
+          data: waybills.data,
+        })
+        .from(waybills)
+        .innerJoin(waybillSeries, eq(waybillSeries.id, waybills.seriesId))
+        .where(eq(waybills.id, req.params.id));
+      if (!row) throw err.notFound('Путевой лист не найден');
+
+      const format = EXPORT_FORMATS[req.query.format];
+      const rendered = renderOfficeTemplate(
+        readTemplate(row.formCode, format),
+        row.data as Record<string, string>,
+      );
+
+      // Выгрузка уносит персональные данные водителя из портала — это учётное событие.
+      await writeAudit({
+        actorUserId: p.id,
+        action: 'waybill.export',
+        entityType: 'waybill',
+        entityId: row.id,
+        metadata: { format, missing: rendered.missing },
+      });
+
+      const name = `Путевой лист ${waybillDisplayNumber(row.prefix, row.number, row.numberWidth)}.${format}`;
+      return reply
+        .type(CONTENT_TYPES[format])
+        .header('content-disposition', `attachment; filename*=UTF-8''${encodeURIComponent(name)}`)
+        .send(Buffer.from(rendered.bytes));
     },
   );
 
