@@ -17,6 +17,7 @@ import { useQuery } from '@tanstack/react-query';
 import {
   type AssignVehicleBody,
   assignmentRateLabel,
+  assignmentTitle,
   type ConfirmScheduleBody,
   formatMoscowDateTime,
   LICENSE_REQUISITES_MISSING_HINT,
@@ -474,12 +475,18 @@ export function VehicleAssignModal({
 
   return (
     <FormModal
-      title={request ? `В работу: заявка ${request.displayNumber}` : 'В работу'}
+      title={
+        request
+          ? `${reassign ? 'Смена техники' : 'В работу'}: заявка ${request.displayNumber}`
+          : reassign
+            ? 'Смена техники'
+            : 'В работу'
+      }
       open={!!request}
       onCancel={onCancel}
       onSubmit={() => form.submit()}
       confirmLoading={confirmLoading}
-      okText="Взять в работу"
+      okText={reassign ? 'Сменить технику' : 'Взять в работу'}
       width={880}
     >
       {request && (
@@ -493,9 +500,24 @@ export function VehicleAssignModal({
               </Typography.Paragraph>
             </FormGrid.Full>
 
+            {/* Чем заявку выполняют сейчас — строкой над выбором: смена техники начинается с
+              вопроса «на что меняем», и ответ на «с чего» должен стоять перед глазами. При
+              переводе в работу этой строки нет: менять там нечего. */}
+            {reassign && request.assignment && (
+              <FormGrid.Full>
+                <Typography.Paragraph style={{ marginBottom: 16 }}>
+                  Сейчас назначена: {assignmentTitle(request.assignment)}
+                  {assignmentRateLabel(request.assignment)
+                    ? ` · ${assignmentRateLabel(request.assignment)}`
+                    : ''}
+                </Typography.Paragraph>
+              </FormGrid.Full>
+            )}
+
             {/* Фактический срок: подставлен заказанным, под полями — что просили изначально.
-              Спрашивается первым, потому что от даты рейса зависит отбор водителей ниже. */}
-            {request.requestType === 'special_equipment' ? (
+              Спрашивается первым, потому что от даты рейса зависит отбор водителей ниже. При смене
+              техники срок не спрашивают — он согласован при переводе в работу (ADR 0048). */}
+            {reassign ? null : request.requestType === 'special_equipment' ? (
               <>
                 <Form.Item
                   name="dateFrom"

@@ -4,8 +4,10 @@ import {
   allowedVehicleRequestTransitions,
   assignmentRateLabel,
   calcVehicleRequestCost,
+  canReassignVehicle,
   canRequestEarlyEnd,
   canShortenWorkPeriodByEdit,
+  changeVehicleAssignmentSchema,
   changeVehicleRequestStatusSchema,
   CLOSED_REQUEST_STATUSES,
   completeVehicleRequestSchema,
@@ -579,6 +581,88 @@ describe('vehicle-requests: техника и ставки (ADR 0027)', () => {
     expect(assignmentRateLabel({ pricePerHour: null, pricePerShift: null, shiftHours: null })).toBe(
       '',
     );
+  });
+});
+
+// ── Смена назначенной техники у заявки в работе (ADR 0048) ──
+describe('vehicle-requests: смена назначенной техники (ADR 0048)', () => {
+  const VEHICLE = '44444444-4444-4444-8444-444444444444';
+  const ROUTE = '55555555-5555-4555-8555-555555555555';
+  const DRIVER = '66666666-6666-4666-8666-666666666666';
+
+  const assignment = (over: Record<string, unknown> = {}) => ({
+    vehicleId: VEHICLE,
+    ownership: 'own' as const,
+    typeName: 'Самосвалы',
+    categoryName: null,
+    modelName: null,
+    registrationNumber: 'Е646СК799',
+    description: '',
+    lessorId: null,
+    lessorName: null,
+    pricePerHour: null,
+    pricePerShift: null,
+    shiftHours: null,
+    assignedBy: DRIVER,
+    assignedByName: 'Диспетчеров Д. Д.',
+    assignedAt: '2026-08-01T10:00:00.000Z',
+    ...over,
+  });
+
+  it('менять технику можно только у заявки в работе', () => {
+    const inWork = { status: 'confirmed' as const, assignment: assignment(), deletedAt: null };
+    expect(canReassignVehicle(inWork)).toBe(true);
+    // «Новой» машину назначает сам перевод в работу, у закрытой и отменённой это уже история.
+    expect(canReassignVehicle({ ...inWork, status: 'new' })).toBe(false);
+    expect(canReassignVehicle({ ...inWork, status: 'done' })).toBe(false);
+    expect(canReassignVehicle({ ...inWork, status: 'cancelled' })).toBe(false);
+    // Заявка в работе без назначения — та, что взята до ADR 0027: менять нечего.
+    expect(canReassignVehicle({ ...inWork, assignment: null })).toBe(false);
+    // Архивную заявку не правят вовсе.
+    expect(canReassignVehicle({ ...inWork, deletedAt: '2026-08-02T00:00:00.000Z' })).toBe(false);
+  });
+
+  it('тело — техника, ставки и версия заявки', () => {
+    const parsed = changeVehicleAssignmentSchema.parse({
+      vehicleId: VEHICLE,
+      pricePerHour: 2500,
+      shiftHours: 8,
+      version: 3,
+    });
+    expect(parsed).toEqual({ vehicleId: VEHICLE, pricePerHour: 2500, shiftHours: 8, version: 3 });
+  });
+
+  it('рейс новой машины передаётся тем же полем, что и при переводе в работу', () => {
+    expect(
+      changeVehicleAssignmentSchema.parse({
+        vehicleId: VEHICLE,
+        version: 3,
+        route: { routeId: ROUTE },
+      }).route,
+    ).toEqual({ routeId: ROUTE });
+    expect(
+      changeVehicleAssignmentSchema.parse({
+        vehicleId: VEHICLE,
+        version: 3,
+        route: { newRoute: { driverPersonId: DRIVER } },
+      }).route,
+    ).toBeDefined();
+  });
+
+  it('статуса и срока в теле нет: техника меняется на согласованный срок', () => {
+    const rejects = (over: Record<string, unknown>) =>
+      expect(() =>
+        changeVehicleAssignmentSchema.parse({ vehicleId: VEHICLE, version: 3, ...over }),
+      ).toThrow();
+    rejects({ status: 'confirmed' });
+    rejects({ schedule: { requestType: 'special_equipment', dateFrom: '2026-08-10' } });
+    // Устаревшие поля перевода в работу здесь не принимаются: действие заведено после маршрутов.
+    rejects({ driverPersonId: DRIVER });
+    rejects({ waybill: { withTrailer: false } });
+  });
+
+  it('версия заявки обязательна — назначение меняют по оптимистичной блокировке', () => {
+    expect(() => changeVehicleAssignmentSchema.parse({ vehicleId: VEHICLE })).toThrow();
   });
 });
 

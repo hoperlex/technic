@@ -22,7 +22,9 @@ import {
   type AssignVehicleInput,
   calcVehicleRequestCost,
   can,
+  canReassignVehicle,
   canShortenWorkPeriodByEdit,
+  changeVehicleAssignmentSchema,
   changeVehicleRequestStatusSchema,
   CLOSED_REQUEST_STATUSES,
   type CompleteVehicleRequestInput,
@@ -887,6 +889,40 @@ async function detachOnStatus(
   requestId: string,
   next: RequestStatus,
   actorId: string,
+/**
+ * Заявка переезжает в рейс новой машины (ADR 0048). Рейс заведён на конкретную машину, поэтому
+ * смена техники — это всегда переезд, а не правка: заявка вынимается из прежнего маршрута и
+ * кладётся в маршрут новой единицы тем же путём, что и при переводе в работу.
+ *
+ * Замороженный выписанным листом рейс не отдаёт заявку: бланк уже у водителя, и исчезнуть из него
+ * задним числом она не может — сначала лист аннулируют (`waybills.cancel`). Тем же правилом рейс
+ * держит заявку при смене статуса (`detachOnStatus`).
+ */
+async function moveToRouteOfVehicle(
+  tx: Tx,
+  params: Parameters<typeof attachToRoute>[1],
+): Promise<void> {
+  // Лист, выписанный до маршрутов, держит заявку так же, как замороженный рейс: в бланке стоят
+  // прежние машина и водитель, а рейса, который можно было бы проверить, у него нет. Спрашивается
+  // до всего остального — новой машине бланк может быть и не нужен, но выданный уже на руках.
+  const legacyWaybill = await legacyWaybillOf(tx, params.request.id);
+  if (legacyWaybill) {
+    throw err.conflict(`${ROUTE_LEGACY_WAYBILL_MESSAGE} (${legacyWaybill})`);
+  }
+  const current = await routeOfRequest(tx, params.request.id);
+  if (current) {
+    const route = await lockRoute(tx, current.routeId);
+    const waybill = await routeWaybill(tx, route.id);
+    if (!isRouteEditable(waybill?.status ?? null)) throw err.conflict(ROUTE_FROZEN_MESSAGE);
+    await detachRequest(tx, route.id, params.request.id);
+    await bumpRouteVersion(tx, route.id, params.actor.id);
+  }
+  // Прежнего рейса у заявки уже нет — `attachToRoute` заводит новый либо кладёт в существующий
+  // маршрут новой машины. Ему же остаётся решить, нужен ли рейс вообще: у аренды и у типов без
+  // бланка его не бывает, и тогда заявка просто остаётся без маршрута.
+  await attachToRoute(tx, params);
+}
+
 ): Promise<void> {
   const current = await routeOfRequest(tx, requestId);
   if (!current) return;
@@ -2387,6 +2423,85 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           actorUserId: p.id,
           action: 'vehicle_request.assign',
           entityType: 'vehicle_request',
+  // ── Смена назначенной техники у заявки в работе (ADR 0048) ──
+  /**
+   * Сменить машину и ставки, не трогая статус: заказанная техника сломалась, ушла на другой
+   * объект или её перепутали при переводе в работу. До этого маршрута исправить назначение можно
+   * было только откатом заявки (ADR 0027 п. 8) — то есть силами администратора и с двумя лишними
+   * переходами в истории.
+   *
+   * Право — `vehicleRequests.status`, то же, которым машину назначают при переводе в работу: это
+   * решение диспетчера о том, чем выполнять заявку, а не правка заказа. Общее право правки
+   * (`vehicleRequests.update`) сюда не годится — оно есть у площадки, а подбор техники не её дело.
+   */
+  r.patch(
+    '/:id/assignment',
+    { ...canChangeStatus, schema: { params: idParams, body: changeVehicleAssignmentSchema } },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const { version, route, ...rates } = req.body;
+      const before = await getDto(req.params.id);
+      if (!before || before.deletedAt) throw err.notFound('Заявка не найдена');
+      assertRequestScope(p, before);
+      // Арендодатель видит свои заявки и закрывает их (ADR 0038), но подбор техники — не его
+      // решение: сменить машину он мог бы только на свою, а вместе с ней и исполнителя заявки.
+      assertLessorScope(p, before.assignment?.lessorId ?? null);
+      // Предикат общий с порталом (`canReassignVehicle`): у «Новой» машину назначает сам перевод
+      // в работу, у закрытой и отменённой менять нечего — там это уже история.
+      if (!canReassignVehicle(before)) {
+        throw err.unprocessable(
+          before.status === 'confirmed'
+            ? 'У заявки нет назначенной техники — её назначает перевод в работу'
+            : 'Сменить технику можно только у заявки в работе',
+          { vehicleId: 'Заявка не в работе' },
+        );
+      }
+
+      const assigned = await db.transaction(async (tx) => {
+        const saved = await resolveAssignment(
+          tx,
+          { vehicleTypeId: before.vehicleTypeId, vehicleTypeName: before.vehicleTypeName },
+          { ...rates, route },
+          { id: p.id, name: p.fullName },
+        );
+        // Область проверяется и по новой машине, а не только по прежней: иначе арендодатель одним
+        // запросом увёл бы заявку на чужую технику — и заодно из собственной видимости.
+        assertLessorScope(p, saved.lessorId);
+        // Рейс и назначение переезжают одной транзакцией: заявка не должна побыть назначенной на
+        // одну машину, а стоящей в рейсе другой — по такой паре не выписать ни лист, ни счёт.
+        await moveToRouteOfVehicle(tx, {
+          request: before,
+          assignment: saved,
+          route,
+          actor: { id: p.id },
+        });
+        await saveAssignment(tx, before.id, before.vehicleTypeId, saved);
+        const [updated] = await tx
+          .update(vehicleRequests)
+          .set({ updatedBy: p.id, version: before.version + 1, updatedAt: new Date() })
+          .where(and(eq(vehicleRequests.id, before.id), eq(vehicleRequests.version, version)))
+          .returning({ id: vehicleRequests.id });
+        if (!updated) throw err.conflict();
+        return saved;
+      });
+
+      // То же событие истории, что и у назначения при переводе в работу (ADR 0027 п. 9): вопрос
+      // «чем и почём выполняют заявку» один, и ответ на него читается одной строкой «было → стало»
+      // независимо от того, каким действием машину поменяли.
+      await writeAudit({
+        actorUserId: p.id,
+        action: 'vehicle_request.assign',
+        entityType: 'vehicle_request',
+        entityId: before.id,
+        metadata: {
+          vehicleId: assigned.vehicleId,
+          changes: diffVehicleAssignment(before.assignment, assigned),
+        },
+      });
+      return (await getDto(before.id))!;
+    },
+  );
+
           entityId: before.id,
           metadata: {
             vehicleId: assigned.vehicleId,

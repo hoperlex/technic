@@ -9,7 +9,8 @@
   `apps/api/src/routes/drivers.ts`, `apps/api/src/seed-drivers.ts`,
   `apps/web/src/pages/directories/DriversImportModal.tsx`,
   `packages/contracts/src/persons.ts`, `apps/api/test/drivers-contracts.test.ts`,
-  `apps/api/test/access-matrix.test.ts`
+  `apps/api/test/access-matrix.test.ts`,
+  [инструкция по наполнению справочника](../guide-staff-import.md)
 
 ## Контекст
 

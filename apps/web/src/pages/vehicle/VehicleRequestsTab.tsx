@@ -20,6 +20,7 @@ import {
   FieldTimeOutlined,
   PlusOutlined,
   ReloadOutlined,
+  SwapOutlined,
 } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import dayjs, { type Dayjs } from 'dayjs';
@@ -29,6 +30,7 @@ import {
   type ConfirmScheduleBody,
   assignmentRateLabel,
   assignmentTitle,
+  canReassignVehicle,
   canRequestEarlyEnd,
   canShortenWorkPeriodByEdit,
   type CompleteVehicleRequestInput,
@@ -78,6 +80,7 @@ import {
 } from '../../hooks/useVehicleClassifications';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage, formatDateTimeMaybe } from '../../utils/format';
+import { withSavedOption } from '../../utils/selectOptions';
 import {
   calendarDaysLabel,
   isBeforeMinRequestDate,
@@ -205,6 +208,8 @@ export function VehicleRequestsTab() {
   const canCreate = can('vehicleRequests.create');
   const canApprove = can('vehicleRequests.approve');
   const canRestore = can('archive.restore');
+  /** Ведение хода заявки: перевод в работу и, тем же правом, смена назначенной машины (ADR 0048). */
+  const canChangeStatus = can('vehicleRequests.status');
 
   // С одним объектом он зафиксирован и в фильтре списка, и в форме заявки; с несколькими —
   // выбор сужен до своих (ADR 0039). Сервер всё равно отвечает 403 на чужой — assertObjectScope.
@@ -281,6 +286,39 @@ export function VehicleRequestsTab() {
   // Метаданные верификации адресов держим вне формы (значение — объект, не строка).
   const [loadingMeta, setLoadingMeta] = useState<AddressMeta | null>(null);
   const [unloadingMeta, setUnloadingMeta] = useState<AddressMeta | null>(null);
+
+  /**
+   * Какой осью заказчика спрашивает форма (ADR 0040). У новой заявки её задаёт роль — отдел
+   * заказывает от отдела, остальные от объекта; у заведённой — сама заявка.
+   *
+   * Именно `record`, а не одна лишь роль: у заявки заказчик уже выбран, и спрашивать вместо него
+   * ось редактора значит показывать чужое пустое поле. Диспетчер, открыв правку грузоперевозки
+   * отдела, видел бы обязательный пустой «Объект» — отдела в форме нет вовсе, — и сохранение
+   * молча переносило бы заявку с отдела на площадку.
+   */
+  const departmentCustomer = record ? !!record.departmentId : isDepartmentRole;
+
+  /**
+   * Списки формы держат то, что выбрано у правимой заявки, даже если из действующего справочника
+   * оно выпало: объект закрыли, отдел расформировали, а заявка на них заведена. Поле обязательное,
+   * и без этого правка начиналась бы с пустого заказчика.
+   */
+  const formObjectOptions = withSavedOption(objectOptions, {
+    id: record?.objectId,
+    name: record ? `${record.objectCode} — ${record.objectName}` : null,
+  });
+  const formDepartmentOptions = withSavedOption(departmentOptions, {
+    id: record?.departmentId,
+    name: record ? `${record.departmentCode} — ${record.departmentName}` : null,
+  });
+  /**
+   * Тип правимой заявки остаётся в списке, даже если роли он недоступен (ADR 0040). Поле заперто —
+   * тип неизменяем, — но подписать значение вне списка `AutoSelect` нечем: показался бы код.
+   */
+  const formRequestTypeOptions = withSavedOption(requestTypeOptions, {
+    id: record?.requestType,
+    name: record ? vehicleRequestTypeLabels[record.requestType] : null,
+  });
 
   // Тип заявки выбирают в форме первым — от него зависят и поля, и список типов ТС.
   const watchRequestType = Form.useWatch('requestType', form);
@@ -459,9 +497,10 @@ export function VehicleRequestsTab() {
           : vehicleRequestsApi.create({ ...base, fileIds: editor.newFileIds() });
       }
 
-      // Заказчик грузоперевозки — объект либо отдел, ровно один (ADR 0040): вторая ось у роли
-      // пуста, и присылать обе сервер не даст.
-      const customer = isDepartmentRole
+      // Заказчик грузоперевозки — объект либо отдел, ровно один (ADR 0040): присылать обе оси
+      // сервер не даст. Ось берётся та же, которую спрашивала форма (`departmentCustomer`), — у
+      // заведённой заявки это её собственный заказчик, а не ось того, кто правит.
+      const customer = departmentCustomer
         ? { departmentId: v.departmentId! }
         : { objectId: v.objectId! };
 
@@ -538,6 +577,21 @@ export function VehicleRequestsTab() {
   const [assignTarget, setAssignTarget] = useState<VehicleRequestDto | null>(null);
   // Выполнение — отработанное время и стоимость (ADR 0029): факт тоже уходит со статусом.
   const [completeTarget, setCompleteTarget] = useState<VehicleRequestDto | null>(null);
+  // Смена машины у работающей заявки (ADR 0048) — своим запросом: статус при ней не меняется.
+  const [reassignTarget, setReassignTarget] = useState<VehicleRequestDto | null>(null);
+
+  const reassignMut = useMutation({
+    mutationFn: (v: { id: string; version: number; assignment: AssignVehicleBody }) =>
+      vehicleRequestsApi.changeAssignment(v.id, { ...v.assignment, version: v.version }),
+    onSuccess: () => {
+      message.success('Техника изменена');
+      setReassignTarget(null);
+      void qc.invalidateQueries({ queryKey: ['vehicle-requests'] });
+      // Заявка переезжает в рейс новой машины — списки маршрутов после этого не те же.
+      void qc.invalidateQueries({ queryKey: ['vehicle-routes'] });
+    },
+    onError: (e) => message.error(errorMessage(e)),
+  });
 
   const statusMut = useMutation({
     mutationFn: (v: {
@@ -625,6 +679,25 @@ export function VehicleRequestsTab() {
     r.earlyEnd?.status !== 'pending';
   const decidableEarlyEnd = (r: VehicleRequestDto): r is SpecialEquipmentRequestDto =>
     canApprove && r.requestType === 'special_equipment' && r.earlyEnd?.status === 'pending';
+
+  /**
+   * Сменить назначенную машину (ADR 0048). Право — то же, которым заявку берут в работу: подбор
+   * техники решает диспетчер, а не автор заявки. Состояние спрашивается предикатом из контрактов —
+   * тем же, которым отвечает сервер, чтобы кнопка не предлагала отказ.
+   */
+  const reassignAllowed = (r: VehicleRequestDto) => canChangeStatus && canReassignVehicle(r);
+
+  /** Кнопка смены техники — одна на обе ветки «Действий»: у арендодателя своя короткая. */
+  const reassignButton = (r: VehicleRequestDto) => (
+    <Tooltip title="Сменить технику">
+      <Button
+        size="small"
+        icon={<SwapOutlined />}
+        aria-label="Сменить технику"
+        onClick={() => setReassignTarget(r)}
+      />
+    </Tooltip>
+  );
 
   const removeMut = useMutation({
     mutationFn: (id: string) => vehicleRequestsApi.remove(id),
@@ -878,12 +951,23 @@ export function VehicleRequestsTab() {
         );
       }
       // Роль без права вести заявки (наблюдатель) кнопок не видит: «выключено» читается как
-      // «сейчас нельзя», а нельзя ей всегда.
-      if (!canEdit && !canDelete) return view;
+      // «сейчас нельзя», а нельзя ей всегда. Смена техники живёт на своём праве (ADR 0048) и
+      // спрашивается отдельно: у арендодателя правки заявки нет, а машину он подменяет свою.
+      if (!canEdit && !canDelete) {
+        return reassignAllowed(r) ? (
+          <Space size={4}>
+            {view}
+            {reassignButton(r)}
+          </Space>
+        ) : (
+          view
+        );
+      }
       const allowed = canModify(r);
       return (
         <Space size={4}>
           {view}
+          {reassignAllowed(r) && reassignButton(r)}
           {/* Досрочное завершение (ADR 0044): у ожидающего визы запроса кнопка ведёт в карточку —
             решают, прочитав причину, а она там. Пока запроса нет — просят сокращение отсюда. */}
           {decidableEarlyEnd(r) ? (
@@ -1134,10 +1218,22 @@ export function VehicleRequestsTab() {
             ]
           : [view];
       }
-      if (!canEdit && !canDelete) return [view];
+      /** Смена техники (ADR 0048) — на своём праве, поэтому и в короткой ветке арендодателя. */
+      const reassign = reassignAllowed(r)
+        ? [
+            {
+              key: 'reassign',
+              label: 'Сменить технику',
+              icon: <SwapOutlined />,
+              onClick: () => setReassignTarget(r),
+            },
+          ]
+        : [];
+      if (!canEdit && !canDelete) return [view, ...reassign];
       const allowed = canModify(r);
       return [
         view,
+        ...reassign,
         ...(decidableEarlyEnd(r)
           ? [
               {
@@ -1235,16 +1331,17 @@ export function VehicleRequestsTab() {
             полей прячет под прокрутку. На телефоне колонка одна, порядок полей тот же. */}
         <Form form={form} layout="vertical" onFinish={onFinish}>
           <FormGrid>
-            {/* Заказчик заявки (ADR 0040): роль отдела заказывает от отдела, остальные — от
-              объекта. Два поля рядом не показываются никогда — заказчик у заявки один. */}
-            {isDepartmentRole ? (
+            {/* Заказчик заявки (ADR 0040): у новой ось задаёт роль — отдел заказывает от отдела,
+              остальные от объекта, — у заведённой сама заявка (`departmentCustomer`). Два поля
+              рядом не показываются никогда: заказчик у заявки один. */}
+            {departmentCustomer ? (
               <Form.Item
                 name="departmentId"
                 label="Отдел"
                 rules={[{ required: true, message: 'Выберите отдел' }]}
               >
                 <AutoSelect
-                  options={departmentOptions}
+                  options={formDepartmentOptions}
                   loading={departmentsLoading}
                   showSearch
                   optionFilterProp="label"
@@ -1259,7 +1356,7 @@ export function VehicleRequestsTab() {
                 rules={[{ required: true, message: 'Выберите объект' }]}
               >
                 <AutoSelect
-                  options={objectOptions}
+                  options={formObjectOptions}
                   loading={objectsLoading}
                   showSearch
                   optionFilterProp="label"
@@ -1276,7 +1373,7 @@ export function VehicleRequestsTab() {
               rules={[{ required: true, message: 'Выберите тип заявки' }]}
             >
               <AutoSelect
-                options={requestTypeOptions}
+                options={formRequestTypeOptions}
                 placeholder="Выберите тип заявки"
                 // Заперто и при правке (тип неизменяем), и когда роли доступен один тип: выбор,
                 // которого нет, поле обещать не должно.
@@ -1472,6 +1569,16 @@ export function VehicleRequestsTab() {
               }
             : undefined
         }
+        // Смена машины прямо из карточки (ADR 0048): поле «Техника» видно здесь, и менять его
+        // логично здесь же, а не возвращаясь в строку списка.
+        onReassign={
+          viewRecord && reassignAllowed(viewRecord)
+            ? (r) => {
+                setViewRecord(null);
+                setReassignTarget(r);
+              }
+            : undefined
+        }
       />
 
       {/* Перевод в работу: техника, ставки (ADR 0027) и фактический срок. Всё уходит тем же
@@ -1488,7 +1595,25 @@ export function VehicleRequestsTab() {
             status: 'confirmed',
             version: assignTarget.version,
             assignment,
-            schedule,
+            // Срок при переводе в работу окно спрашивает всегда — `null` сюда не приходит.
+            schedule: schedule ?? undefined,
+          })
+        }
+      />
+
+      {/* Смена техники у заявки в работе (ADR 0048): то же окно подбора, но без фактического
+          срока — он уже согласован, и меняется только чем заявку выполняют. */}
+      <VehicleAssignModal
+        request={reassignTarget}
+        mode="reassign"
+        confirmLoading={reassignMut.isPending}
+        onCancel={() => setReassignTarget(null)}
+        onSubmit={({ assignment }) =>
+          reassignTarget &&
+          reassignMut.mutate({
+            id: reassignTarget.id,
+            version: reassignTarget.version,
+            assignment,
           })
         }
       />

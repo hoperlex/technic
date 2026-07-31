@@ -13,6 +13,7 @@ import type {
   VerifyDriverLicenseBody,
   AssignVehicleBody,
   AttachVehicleTypeSpecInput,
+  ChangeVehicleAssignmentBody,
   CompleteVehicleRequestInput,
   CompleteWasteRequestInput,
   ConfirmScheduleBody,
@@ -382,6 +383,14 @@ export const vehicleRequestsApi = {
    * Всё это проводится тем же запросом, что и смена статуса: заявка не бывает «в работе» ни на
    * чём, взятой на одно время с листом на другое и «выполненной» без факта.
    */
+  /**
+   * Сменить машину и ставки у заявки, которая уже в работе (ADR 0048): техника сломалась, ушла на
+   * другой объект или её перепутали при переводе в работу. Статус при этом не меняется — тем и
+   * отличается от повторного перевода в работу, которым назначение переписывали до сих пор.
+   * Заявка переезжает в рейс новой машины той же транзакцией.
+   */
+  changeAssignment: (id: string, body: ChangeVehicleAssignmentBody) =>
+    apiFetch<VehicleRequestDto>(`/vehicle-requests/${id}/assignment`, { method: 'PATCH', body }),
   changeStatus: (
     id: string,
     status: RequestStatus,

@@ -6,7 +6,8 @@
   данные), [ADR 0008](0008-persons-and-qualifications.md) (физлица и квалификации)
 - Связано: `apps/api/src/services/driver-import.ts`,
   `apps/api/src/services/driver-import-apply.ts`, `packages/contracts/src/persons.ts`,
-  `apps/api/test/driver-import.test.ts`
+  `apps/api/test/driver-import.test.ts`,
+  [инструкция по наполнению справочника](../guide-staff-import.md)
 
 ## Контекст
 

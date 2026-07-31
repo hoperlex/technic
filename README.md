@@ -95,4 +95,7 @@ pnpm dev                        # api + worker + web параллельно
 - Собственная авторизация: access-JWT (Ed25519) + opaque refresh с ротацией и reuse detection.
 - Файлы — presigned URL напрямую в cloud.ru; backend генерирует object key.
 
-Подробности деплоя и эксплуатации — в `docs/`.
+Подробности деплоя и эксплуатации — в `docs/`. Оттуда же — рабочие инструкции:
+[наполнение справочника сотрудниками](docs/guide-staff-import.md) из кадровой выгрузки,
+[памятка сотруднику отдела](docs/guide-department.md),
+[памятка руководителю строительства](docs/guide-rukstroy.md).

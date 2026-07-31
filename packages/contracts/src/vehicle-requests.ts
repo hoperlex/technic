@@ -624,6 +624,50 @@ export type ConfirmScheduleBody = z.input<typeof confirmScheduleSchema>;
 
 export const assignVehicleSchema = z
   .object({
+// ── Смена назначенной техники у заявки в работе (ADR 0048) ──
+
+/**
+ * Можно ли сменить машину, не трогая статус. Заявка в работе — и только она: у «Новой» менять
+ * нечего (машину назначает сам перевод в работу), а закрытая и отменённая — история, которую
+ * правят откатом, а не подменой машины задним числом.
+ *
+ * Предикат один на портал и API: кнопка не должна предлагать действие, которое сервер отклонит.
+ */
+export function canReassignVehicle(request: {
+  status: RequestStatus;
+  assignment: VehicleRequestAssignmentDto | null;
+  deletedAt: string | null;
+}): boolean {
+  return request.status === 'confirmed' && !!request.assignment && !request.deletedAt;
+}
+
+/**
+ * Смена машины и ставок у заявки, которая уже в работе (ADR 0048).
+ *
+ * Тело — то же, что у назначения при переводе в работу, плюс версия заявки: подбирают машину тем
+ * же окном и по тем же правилам, меняется только момент. Устаревших `driverPersonId` и `waybill`
+ * здесь нет: действие заведено после маршрутов, и рейс описывается только `route` (ADR 0037).
+ *
+ * Статуса в теле нет намеренно: он не меняется. Тем и отличается от повторного перевода в работу
+ * (ADR 0027 п. 8), которым машину переписывали до сих пор, — тот требовал сначала откатить заявку.
+ */
+export const changeVehicleAssignmentSchema = z
+  .object({
+    vehicleId: uuidSchema,
+    pricePerHour: vehiclePriceSchema.nullable().optional(),
+    pricePerShift: vehiclePriceSchema.nullable().optional(),
+    shiftHours: shiftHoursSchema.nullable().optional(),
+    /**
+     * Рейс новой машины: существующий маршрут на дату заявки либо новый — с водителем и
+     * реквизитами. Обязателен там же, где и при переводе в работу, — решает сервер.
+     */
+    route: assignRouteSchema.optional(),
+    version: z.number().int().nonnegative(),
+  })
+  .strict();
+export type ChangeVehicleAssignmentInput = z.infer<typeof changeVehicleAssignmentSchema>;
+export type ChangeVehicleAssignmentBody = z.input<typeof changeVehicleAssignmentSchema>;
+
     vehicleId: uuidSchema,
     pricePerHour: vehiclePriceSchema.nullable().optional(),
     pricePerShift: vehiclePriceSchema.nullable().optional(),

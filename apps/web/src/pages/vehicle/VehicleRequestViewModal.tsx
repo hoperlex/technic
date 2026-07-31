@@ -51,6 +51,13 @@ interface Props {
   /** Не передана — правка этой заявки недоступна (роль, статус или архив). */
   onEdit?: (r: VehicleRequestDto) => void;
   /**
+   * Сменить назначенную машину (ADR 0048). Не передана — действие этой заявке недоступно: у
+   * «Новой» машину назначает перевод в работу, у закрытой её уже не меняют, а подбирает технику
+   * не всякий, кто заявку видит. Кнопка стоит здесь, потому что здесь же поле «Техника»: видеть
+   * значение и не иметь, чем его изменить, — ровно то, из-за чего действие и появилось.
+   */
+  onReassign?: (r: VehicleRequestDto) => void;
+  /**
    * Кнопки решения по досрочному завершению (ADR 0044). Функция, а не флаг: доступность зависит
    * и от роли, и от состояния запроса, и знает об этом вкладка, а не карточка. Не передана —
    * карточка показывает запрос на чтение, как и всё остальное в ней.
@@ -129,7 +136,13 @@ function termOf(r: VehicleRequestDto): ReactNode {
   );
 }
 
-export function VehicleRequestViewModal({ request, onClose, onEdit, earlyEndActions }: Props) {
+export function VehicleRequestViewModal({
+  request,
+  onClose,
+  onEdit,
+  onReassign,
+  earlyEndActions,
+}: Props) {
   const isMobile = useIsMobile();
   const { can } = useAuth();
   const { data: history, isPending } = useQuery({
@@ -227,6 +240,13 @@ export function VehicleRequestViewModal({ request, onClose, onEdit, earlyEndActi
                   {vehicleOwnershipLabels[request.assignment.ownership]}
                 </Tag>
                 {request.assignment.lessorName && <Tag>{request.assignment.lessorName}</Tag>}
+                {/* Смена машины — рядом со значением, а не в подвале окна: подвал отвечает за
+                    заявку целиком, а меняют здесь одно поле (ADR 0048). */}
+                {onReassign && (
+                  <Button size="small" onClick={() => onReassign(request)}>
+                    Сменить технику
+                  </Button>
+                )}
               </Space>
               <Typography.Text>
                 {assignmentRateLabel(request.assignment) || 'Ставка не указана'}

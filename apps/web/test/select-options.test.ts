@@ -5,6 +5,7 @@ import {
   optionsKey,
   selectableOptions,
   soleOption,
+  withSavedOption,
 } from '../src/utils/selectOptions';
 
 describe('flattenOptions', () => {
@@ -110,5 +111,45 @@ describe('isBlankValue', () => {
     expect(isBlankValue('a')).toBe(false);
     expect(isBlankValue(0)).toBe(false);
     expect(isBlankValue(['a'])).toBe(false);
+  });
+});
+
+/**
+ * Списки формы собираются из действующих справочников, а записи правят и через месяц: объект
+ * закрыт, тариф выключен, контейнер снят. Приём общий для всех форм правки — без него
+ * обязательное поле открывалось бы пустым и молча меняло заказчика или предмет записи.
+ */
+describe('withSavedOption', () => {
+  const OPTIONS = [
+    { value: 'a', label: 'Объект А' },
+    { value: 'b', label: 'Объект Б' },
+  ];
+
+  it('сохранённое значение выпало из справочника — возвращается первым', () => {
+    const result = withSavedOption(OPTIONS, { id: 'gone', name: 'Объект закрыт' });
+    expect(result).toHaveLength(3);
+    expect(result[0]).toEqual({ value: 'gone', label: 'Объект закрыт' });
+  });
+
+  it('сохранённое значение в списке есть — список тот же самый', () => {
+    expect(withSavedOption(OPTIONS, { id: 'a', name: 'Объект А' })).toBe(OPTIONS);
+  });
+
+  it('у новой записи сохранённого нет — список не меняется', () => {
+    expect(withSavedOption(OPTIONS, { id: null, name: null })).toBe(OPTIONS);
+    expect(withSavedOption(OPTIONS, { id: undefined, name: undefined })).toBe(OPTIONS);
+  });
+
+  it('без наименования подписью становится идентификатор — но поле не пустует', () => {
+    expect(withSavedOption(OPTIONS, { id: 'gone', name: null })[0]).toEqual({
+      value: 'gone',
+      label: 'gone',
+    });
+  });
+
+  it('добавленный вариант не выключен: оставить как есть — законный выбор', () => {
+    expect(selectableOptions(withSavedOption(OPTIONS, { id: 'gone', name: 'Закрыт' }))).toHaveLength(
+      3,
+    );
   });
 });

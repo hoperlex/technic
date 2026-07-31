@@ -536,6 +536,16 @@ const CASES: Case[] = [
     // проверками области и `assertTransitionAllowed`, а не 403 на входе.
     allowed: ['admin', 'manager', 'dispatcher', 'operator/vehicle_lessor'],
   },
+  {
+    // Смена машины у заявки в работе (ADR 0048) разрешена тем же правом, что и назначение при
+    // переводе в работу: подбор техники — решение диспетчера. Площадка сюда не попадает, хотя
+    // право правки заявки у неё есть, — на то это и отдельный маршрут, а не поле формы правки.
+    title: 'заказ ТС — смена назначенной техники',
+    method: 'PATCH',
+    url: `/api/v1/vehicle-requests/${RECORD_ID}/assignment`,
+    payload: { vehicleId: RECORD_ID, version: 1 },
+    allowed: ['admin', 'manager', 'dispatcher', 'operator/vehicle_lessor'],
+  },
 
   // ── Назначение исполнителя не должно обходиться общими маршрутами заявки (ADR 0010) ──
   {

@@ -81,6 +81,7 @@ import { useAuth } from '../auth/AuthContext';
 import { MOSCOW_TZ } from '../theme';
 import { errorMessage, formatDate, formatDateTimeMaybe } from '../utils/format';
 import { applyApiFieldErrors } from '../utils/formErrors';
+import { withSavedOption } from '../utils/selectOptions';
 import { isBeforeMinRequestDate, isPastDate, minRequestDate } from '../utils/date';
 import { OnSiteTab } from './waste/OnSiteTab';
 import { wasteAmountLine, wastePricingHint } from './waste/pricingHint';
@@ -307,10 +308,7 @@ function RequestsTab() {
     const all = operatorsData?.items ?? [];
     const linked = objectId ? all.filter((c) => c.objects.some((o) => o.id === objectId)) : [];
     const options = (linked.length > 0 ? linked : all).map((c) => ({ value: c.id, label: c.name }));
-    if (assigned?.id && !options.some((o) => o.value === assigned.id)) {
-      options.unshift({ value: assigned.id, label: assigned.name ?? assigned.id });
-    }
-    return options;
+    return withSavedOption(options, { id: assigned?.id, name: assigned?.name });
   };
 
   const [open, setOpen] = useState(false);
@@ -330,17 +328,18 @@ function RequestsTab() {
   // Исполнитель влияет на цену: прайс у каждого оператора свой (ADR 0026).
   const watchOperatorId = Form.useWatch('operatorCounterpartyId', form);
 
-  // Тип оформленной заявки остаётся в выборе, даже если его тариф успели отключить: иначе правка
-  // такой заявки начиналась бы с пустого поля и молча меняла её предмет (приём — как у оператора).
-  const formWasteTypeOptions = (() => {
-    if (!record?.wasteTypeId || wasteTypeOptions.some((o) => o.value === record.wasteTypeId)) {
-      return wasteTypeOptions;
-    }
-    return [
-      { value: record.wasteTypeId, label: record.wasteTypeName ?? record.wasteTypeId },
-      ...wasteTypeOptions,
-    ];
-  })();
+  // Тип оформленной заявки остаётся в выборе, даже если его тариф успели отключить.
+  const formWasteTypeOptions = withSavedOption(wasteTypeOptions, {
+    id: record?.wasteTypeId,
+    name: record?.wasteTypeName,
+  });
+  // Тем же приёмом держится тип контейнера: справочник могли выключить (установка), а с объекта
+  // контейнер — снять соседней заявкой (замена и снятие). Поле правки обязательное, и без этого
+  // оно открывалось бы пустым у заявки, предмет которой давно выбран.
+  const savedContainerType = {
+    id: record?.containerTypeId,
+    name: record?.containerTypeName,
+  };
 
   // Тарифицируется только вывоз (ADR 0019): тип мусора, объём и стоимость есть
   // у него одного, контейнерные операции ограничиваются типом контейнера.
@@ -410,7 +409,10 @@ function RequestsTab() {
   // на объекте. У вывоза техники нет вовсе (ADR 0022) — заказывают объём, а чем его увезут,
   // решает оператор и показывает машинами при закрытии.
   const fromObjectField = {
-    options: presentTypeOptions,
+    // Присутствие считается по объекту, а выбор заявки в нём мог и не остаться — его добавляем
+    // отдельно. Подпись «На объекте нет контейнеров» при этом остаётся честной: она о самом
+    // объекте, а не о том, что стоит в правимой заявке.
+    options: withSavedOption(presentTypeOptions, savedContainerType),
     loading: presentLoading,
     placeholder: 'Тип, присутствующий на объекте',
   };
@@ -1374,7 +1376,8 @@ function RequestsTab() {
               rules={[{ required: true, message: 'Выберите тип контейнера' }]}
             >
               <AutoSelect
-                options={contTypeOptions}
+                // Выключенный в справочнике тип остаётся видимым у уже заведённой заявки.
+                options={withSavedOption(contTypeOptions, savedContainerType)}
                 loading={typesLoading}
                 showSearch
                 optionFilterProp="label"
