@@ -1428,13 +1428,10 @@ export const vehicleRequestAssignments = pgTable(
     pricePerHour: numeric('price_per_hour', { precision: 12, scale: 2 }),
     pricePerShift: numeric('price_per_shift', { precision: 12, scale: 2 }),
     shiftHours: smallint('shift_hours'),
-    // Кто за рулём (ADR 0037, миграция 0061): «чем взяли в работу» дополняется тем, кем.
-    // Колонкой, а не таблицей `vehicle_request_operators` из бэклога ADR 0008 — ADR 0027 уже
-    // выбрал форму «одна заявка — одно назначение», и второго водителя в ней не бывает.
-    // NULL — назначения до появления путевых листов и аренда, где водитель чужой.
-    driverPersonId: uuid('driver_person_id').references(() => persons.id, {
-      onDelete: 'restrict',
-    }),
+    // Водителя здесь нет: за рулём человек сидит не в заявке, а в рейсе — колонка уехала в
+    // `vehicle_routes.driver_person_id` и удалена миграцией 0074. Три заявки одного дня едут
+    // одной машиной с одним водителем, и держать его копию в каждой значило бы иметь три ответа
+    // на один вопрос.
     assignedBy: uuid('assigned_by')
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
@@ -1467,9 +1464,6 @@ export const vehicleRequestAssignments = pgTable(
     ),
     // «Где сейчас эта машина» — вопрос к таблице со стороны справочника техники.
     vehicleIdx: index('vehicle_request_assignments_vehicle_idx').on(t.vehicleId),
-    driverIdx: index('vehicle_request_assignments_driver_idx')
-      .on(t.driverPersonId)
-      .where(sql`${t.driverPersonId} IS NOT NULL`),
   }),
 );
 
@@ -2010,11 +2004,12 @@ export const waybills = pgTable(
      */
     issuedForDate: date('issued_for_date', { mode: 'string' }).notNull(),
     /**
-     * Рейс, по которому выписан лист (маршруты, миграция 0072). Пусто у листов, выданных до
-     * появления маршрутов: их переносит `backfill:routes`, и только после этого contract-миграция
-     * ставит NOT NULL и «один действующий лист на рейс».
+     * Рейс, по которому выписан лист (маршруты, миграции 0072 и 0074). Листа без рейса не бывает:
+     * история перенесена скриптом `backfill:routes`, а новый лист выписывается только с рейса.
      */
-    routeId: uuid('route_id').references(() => vehicleRoutes.id, { onDelete: 'restrict' }),
+    routeId: uuid('route_id')
+      .notNull()
+      .references(() => vehicleRoutes.id, { onDelete: 'restrict' }),
     /** Прицеп — признак рейса: в реестре техники его нет, а категорию водителя он поднимает. */
     withTrailer: boolean('with_trailer').notNull().default(false),
     trailer1Model: text('trailer1_model').notNull().default(''),
@@ -2058,10 +2053,11 @@ export const waybills = pgTable(
       )`,
     ),
     seriesNumberUnique: uniqueIndex('waybills_series_number_unique').on(t.seriesId, t.number),
-    // Один лист на машину и дату (ADR 0037 п. 3); аннулированные не мешают — испорченный бланк
-    // заменяют новым на ту же дату.
-    vehicleDateUnique: uniqueIndex('waybills_vehicle_date_unique')
-      .on(t.vehicleId, t.issuedForDate)
+    // Один действующий лист на рейс (миграция 0074). Аннулированные не мешают: испорченный бланк
+    // списывают и выписывают новый по тому же рейсу — на этом держится пересборка состава.
+    // Прежнее «один лист на машину и дату» снято: день и ночь на одной машине — это два рейса.
+    routeUnique: uniqueIndex('waybills_route_unique')
+      .on(t.routeId)
       .where(sql`${t.status} <> 'cancelled'`),
     issuedForDateIdx: index('waybills_issued_for_date_idx').on(t.issuedForDate.desc()),
     routeIdx: index('waybills_route_idx')
