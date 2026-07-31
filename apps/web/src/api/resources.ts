@@ -3,6 +3,8 @@ import type {
   CreateDriverBody,
   DriverDto,
   DriverSelectionDto,
+  DriversImportBody,
+  DriversImportReportDto,
   WaybillDto,
   DriverLicenseBody,
   RevokeDriverLicenseInput,
@@ -125,6 +127,12 @@ export const driversApi = {
     apiFetch<DriverDto>(`/drivers/${id}/licenses/${licenseId}/verify`, { method: 'POST', body }),
   revokeLicense: (id: string, licenseId: string, body: RevokeDriverLicenseInput) =>
     apiFetch<DriverDto>(`/drivers/${id}/licenses/${licenseId}/revoke`, { method: 'POST', body }),
+  /**
+   * Наполнение справочника кадровой выгрузкой (ADR 0047). `dryRun` — обязательный первый шаг:
+   * заведение живых людей необратимо, поэтому сначала сервер отвечает отчётом, ничего не записав.
+   */
+  import: (body: DriversImportBody) =>
+    apiFetch<DriversImportReportDto>('/drivers/import', { method: 'POST', body }),
   /** Категории ВУ для формы: справочник наполнен миграцией и на чтение. */
   licenseCategories: () =>
     apiFetch<{ id: string; code: string; name: string; description: string }[]>(

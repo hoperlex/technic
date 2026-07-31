@@ -366,3 +366,91 @@ export const driverListQuerySchema = baseListQuery(DRIVER_SORT_FIELDS).extend({
     .transform((v) => v === 'true'),
 });
 export type DriverListQuery = z.infer<typeof driverListQuerySchema>;
+
+// ── Кадровая выгрузка (ADR 0047) ──
+
+/**
+ * Сколько строк принимается за раз. Ограничение не про производительность, а про происхождение
+ * файла: кадровая выгрузка одного отдела — это десятки человек, и файл на тысячу строк означает,
+ * что грузят не то, что собирались. Отказ по размеру объясним, молча заведённая тысяча — нет.
+ */
+export const DRIVERS_IMPORT_MAX_RECORDS = 500;
+
+/**
+ * Одна строка выгрузки. Даты приняты в двух видах намеренно: «ГГГГ-ММ-ДД» отдаёт кадровая
+ * система, «ДД.ММ.ГГГГ» набирает человек, а файл правит кадровик, а не программист. Разбор,
+ * контрольная сумма СНИЛС и категории — в `prepareDriverImport`: схема проверяет форму, а не
+ * содержание, и валидировать здесь второй раз значило бы завести второй набор правил.
+ */
+export const driverImportRecordSchema = z
+  .object({
+    fullName: z.string().trim().min(1, 'ФИО обязательно').max(255),
+    personnelNo: z.string().trim().max(50).optional(),
+    birthDate: z.string().trim().max(10).optional(),
+    employedSince: z.string().trim().max(10).optional(),
+    snils: z.string().trim().min(1, 'СНИЛС обязателен').max(20),
+    /** Категории строкой ровно как в источнике («B,B1,C,C1,BE,CE,C1E»). */
+    categories: z.string().trim().max(200).optional(),
+  })
+  .strict();
+export type DriverImportRecordInput = z.infer<typeof driverImportRecordSchema>;
+
+/**
+ * Файл выгрузки целиком. `source` и `note` описывают происхождение файла и в справочник не
+ * попадают, `department` становится комментарием трудового отношения, `jobTitle` — должностью.
+ *
+ * `.strict()` здесь важнее обычного: лишнее поле в файле означает, что выгрузку делали по другому
+ * шаблону, и молча проигнорировать его — значит завести людей не тем, чем собирались.
+ */
+export const driversImportFileSchema = z
+  .object({
+    source: z.string().trim().max(255).optional(),
+    note: z.string().trim().max(2000).optional(),
+    department: z.string().trim().max(255).optional(),
+    jobTitle: z.string().trim().max(255).optional(),
+    drivers: z
+      .array(driverImportRecordSchema)
+      .min(1, 'В выгрузке нет ни одной строки')
+      .max(DRIVERS_IMPORT_MAX_RECORDS, `Не больше ${DRIVERS_IMPORT_MAX_RECORDS} строк за раз`),
+  })
+  .strict();
+export type DriversImportFileInput = z.infer<typeof driversImportFileSchema>;
+
+/**
+ * Загрузка выгрузки. `dryRun` — не удобство, а обязательный первый шаг работы с чужим файлом:
+ * заведение живых людей необратимо (обратной операции у наполнения нет — удаление человека это
+ * учётное действие с аудитом), поэтому сначала показывается, что произойдёт.
+ */
+export const driversImportSchema = z
+  .object({
+    dryRun: z.boolean().optional().default(false),
+    file: driversImportFileSchema,
+  })
+  .strict();
+export type DriversImportInput = z.infer<typeof driversImportSchema>;
+export type DriversImportBody = z.input<typeof driversImportSchema>;
+
+/**
+ * Что получилось. Отчёт перечисляет людей поимённо, а не числами: тот, кто грузит файл, обязан
+ * увидеть, кого именно заводит, — сверять он будет с бумажной выгрузкой в руках.
+ */
+export interface DriversImportReportDto {
+  /** Повтор запроса без `dryRun` заведёт ровно то же — если файл и справочник не изменились. */
+  dryRun: boolean;
+  /** ФИО заведённых (при `dryRun` — тех, кто будет заведён). */
+  created: string[];
+  /** Уже есть в справочнике: совпал СНИЛС — ключ человека (ADR 0037). */
+  skipped: string[];
+  /** Заведён без удостоверения: в отбор под машину такой водитель не попадёт. */
+  withoutLicense: { who: string; why: string }[];
+  /** Коды, которых нет в справочнике категорий: их вносит администратор по оригиналу. */
+  unknownCategories: { who: string; codes: string[] }[];
+  /** Однофамилец среди заведённых раньше с другим СНИЛС — повод проверить, не один ли человек. */
+  nameCollisions: { who: string; existing: string }[];
+}
+
+/** Предупреждение о пустых реквизитах — то же, что печатает CLI после наполнения. */
+export const DRIVERS_IMPORT_LICENSE_HINT =
+  'У заведённых удостоверений пустые серия, номер и сроки: в выгрузке их нет. Пока они пустые, ' +
+  'водитель в отбор попадает, но графа «Удостоверение водителя» в путевом листе печатается ' +
+  'пустой. Реквизиты вносит администратор в карточке водителя — заменой документа.';

@@ -3,9 +3,21 @@ import type { PersonNameParts } from '@technic/contracts';
 
 // Разбор кадровой выгрузки водителей (ADR 0037).
 //
-// Отделено от `seed-drivers.ts` намеренно: там запись в базу, здесь — решения о том, что считать
-// корректной строкой выгрузки. Скрипт нельзя импортировать (он выполняется с первой строки), а
-// правила, по которым в прод попадают ФИО, СНИЛС и допуски живых людей, проверять тестом надо.
+// Отделено от записи в справочник (`driver-import-apply.ts`) намеренно: здесь решения о том, что
+// считать корректной строкой выгрузки. Правила, по которым в прод попадают ФИО, СНИЛС и допуски
+// живых людей, проверять тестом надо, а модуль с записью тянет за собой соединение с базой.
+
+/**
+ * Строка выгрузки не разобрана. Свой класс, а не голый Error: файл грузят из портала, и там
+ * «человек прислал не тот файл» обязано отличаться от «сервер сломался» — первое объясняют
+ * загрузившему дословно, второе прячут за 500.
+ */
+export class DriverImportError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DriverImportError';
+  }
+}
 
 /** Что кадровая выгрузка даёт по одному человеку. Даты — «ДД.ММ.ГГГГ» или «ГГГГ-ММ-ДД». */
 export interface DriverImportRecord {
@@ -59,7 +71,9 @@ export function parseImportDate(
   if (/^\d{4}-\d{2}-\d{2}$/u.test(v)) return v;
   const ru = /^(\d{2})\.(\d{2})\.(\d{4})$/u.exec(v);
   if (!ru) {
-    throw new Error(`${who}: ${field} — ожидается ДД.ММ.ГГГГ или ГГГГ-ММ-ДД, получено «${v}»`);
+    throw new DriverImportError(
+      `${who}: ${field} — ожидается ДД.ММ.ГГГГ или ГГГГ-ММ-ДД, получено «${v}»`,
+    );
   }
   return `${ru[3]}-${ru[2]}-${ru[1]}`;
 }
@@ -99,19 +113,22 @@ export function prepareDriverImport(
 
   const drivers = file.drivers.map((d) => {
     const who = d.fullName?.trim() ?? '';
-    if (who === '') throw new Error('В выгрузке есть строка без ФИО');
+    if (who === '') throw new DriverImportError('В выгрузке есть строка без ФИО');
 
     const name = splitFullName(who);
     if (!name.lastName || !name.firstName) {
-      throw new Error(`${who}: ожидается «Фамилия Имя Отчество»`);
+      throw new DriverImportError(`${who}: ожидается «Фамилия Имя Отчество»`);
     }
 
     const snils = normalizeSnils(d.snils ?? '');
-    if (!/^\d{11}$/u.test(snils)) throw new Error(`${who}: СНИЛС — 11 цифр, получено «${d.snils}»`);
+    if (!/^\d{11}$/u.test(snils))
+      throw new DriverImportError(`${who}: СНИЛС — 11 цифр, получено «${d.snils}»`);
     // Контрольная сумма ловит опечатку в одной цифре — то, чего формат не видит. Пропустить её
     // здесь значило бы завести номер, который потом отвергнет форма правки карточки.
     if (!isValidSnils(snils)) {
-      throw new Error(`${who}: СНИЛС ${formatSnils(snils)} не проходит проверку контрольной суммы`);
+      throw new DriverImportError(
+        `${who}: СНИЛС ${formatSnils(snils)} не проходит проверку контрольной суммы`,
+      );
     }
 
     const codes = parseCategoryCodes(d.categories);
@@ -138,7 +155,7 @@ export function prepareDriverImport(
     seen.add(d.snils);
   }
   if (duplicates.size > 0) {
-    throw new Error(`СНИЛС повторяется в файле: ${[...duplicates].join(', ')}`);
+    throw new DriverImportError(`СНИЛС повторяется в файле: ${[...duplicates].join(', ')}`);
   }
 
   return { drivers, unknownCategories };

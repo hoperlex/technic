@@ -11,6 +11,8 @@ import {
   driverListQuerySchema,
   type DriverSelectionDto,
   driverSelectionQuerySchema,
+  type DriversImportReportDto,
+  driversImportSchema,
   isValidSnils,
   licenseNumberLabel,
   revokeDriverLicenseSchema,
@@ -36,6 +38,8 @@ import { requirePrincipal } from '../auth/plugin';
 import { assertArchiveVisible } from '../lib/access';
 import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
 import { selectDrivers } from '../services/drivers';
+import { DriverImportError } from '../services/driver-import';
+import { applyDriverImport, DirectoriesNotSeededError } from '../services/driver-import-apply';
 
 /**
  * Справочник водителей (ADR 0037, ADR 0008).
@@ -476,6 +480,54 @@ export default async function driversRoutes(app: FastifyInstance): Promise<void>
       });
       const created = await loadDriver(id);
       return reply.code(201).send(created!.dto);
+    },
+  );
+
+  /**
+   * Наполнение справочника кадровой выгрузкой (ADR 0047).
+   *
+   * Тот же разбор и та же запись, что у `seed:drivers` на сервере, — но доступ к серверу нужен не
+   * всякому, кто ведёт справочник, а выгрузка приходит от кадровика тогда, когда пришла.
+   *
+   * Право то же, что у заведения водителя руками: загрузка заводит ровно тех же людей теми же
+   * записями, отличаясь только количеством. Отдельное право означало бы, что кому-то можно
+   * завести двадцать восемь человек по одному, но нельзя — файлом.
+   */
+  r.post(
+    '/import',
+    { preHandler: [app.authenticate, canWrite], schema: { body: driversImportSchema } },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const { dryRun, file } = req.body;
+
+      let report: DriversImportReportDto;
+      try {
+        report = await applyDriverImport(file, { dryRun, actorUserId: p.id });
+      } catch (e) {
+        // Разбор упал — это про содержимое присланного файла, и сказать об этом надо дословно:
+        // «Петров Пётр: СНИЛС не проходит проверку контрольной суммы» человек исправит, «422» — нет.
+        if (e instanceof DriverImportError) throw err.unprocessable(e.message);
+        if (e instanceof DirectoriesNotSeededError) throw err.conflict(e.message);
+        throw e;
+      }
+
+      // Пишется только состоявшееся наполнение: dry-run базу не менял. Поимённого состава в
+      // метаданных нет намеренно — заведённые люди и так видны в справочнике с автором записи,
+      // а аудит-лог не место для второго хранилища ФИО (ADR 0037 п. 13).
+      if (!dryRun) {
+        await writeAudit({
+          actorUserId: p.id,
+          action: 'driver.import',
+          entityType: 'person',
+          metadata: {
+            created: report.created.length,
+            skipped: report.skipped.length,
+            source: file.source ?? '',
+            department: file.department ?? '',
+          },
+        });
+      }
+      return report;
     },
   );
 

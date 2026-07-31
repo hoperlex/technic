@@ -1,6 +1,12 @@
 import { useState } from 'react';
 import { App, Button, DatePicker, Form, Input, Select, Space, Tag, Typography } from 'antd';
-import { DeleteOutlined, EditOutlined, IdcardOutlined, PlusOutlined } from '@ant-design/icons';
+import {
+  DeleteOutlined,
+  EditOutlined,
+  IdcardOutlined,
+  PlusOutlined,
+  UploadOutlined,
+} from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -20,6 +26,7 @@ import {
   SNILS_MESSAGE,
 } from '@technic/contracts';
 import { driversApi } from '../../api/resources';
+import { DriversImportModal } from './DriversImportModal';
 import { DataTable, type CardConfig } from '../../components/DataTable';
 import { FormModal } from '../../components/FormModal';
 import { PageTableLayout } from '../../components/PageTableLayout';
@@ -97,6 +104,7 @@ export function DriversTab() {
   }));
 
   const [open, setOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [record, setRecord] = useState<DriverDto | null>(null);
   const [licenseFor, setLicenseFor] = useState<DriverDto | null>(null);
   const [form] = Form.useForm<DriverFormValues>();
@@ -484,9 +492,16 @@ export function DriversTab() {
       }}
       extra={
         canWrite ? (
-          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-            Добавить водителя
-          </Button>
+          <Space>
+            {/* Кадровая выгрузка приходит файлом на весь отдел: заводить два десятка человек
+                формой по одному — работа на день, а ошибка в СНИЛС обнаружится на путевом листе. */}
+            <Button icon={<UploadOutlined />} onClick={() => setImportOpen(true)}>
+              Загрузить выгрузку
+            </Button>
+            <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
+              Добавить водителя
+            </Button>
+          </Space>
         ) : undefined
       }
     >
@@ -597,6 +612,12 @@ export function DriversTab() {
           </Form.Item>
         </Form>
       </FormModal>
+
+      <DriversImportModal
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
+        onImported={invalidate}
+      />
     </PageTableLayout>
   );
 }

@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   createDriverSchema,
   driverLicenseInputSchema,
+  DRIVERS_IMPORT_MAX_RECORDS,
+  driversImportSchema,
   formatSnils,
   hasCategoryOn,
   isValidSnils,
@@ -284,5 +286,57 @@ describe('реквизиты удостоверения не внесены', ()
   it('строку выбора сервер склеивает сам — правило то же', () => {
     expect(licenseRequisitesMissing('')).toBe(true);
     expect(licenseRequisitesMissing('00 00 000001')).toBe(false);
+  });
+});
+
+describe('кадровая выгрузка на входе (ADR 0047)', () => {
+  const record = { fullName: 'Иванов Иван Иванович', snils: '112-233-445 95', categories: 'B,C' };
+
+  it('файл кадровой системы проходит вместе со своим происхождением', () => {
+    const parsed = driversImportSchema.safeParse({
+      file: {
+        source: 'Выгрузка 1С от 31.07.2026',
+        note: 'отдел автотехники',
+        department: 'Отдел автотехники и СДМ',
+        jobTitle: 'Водитель',
+        drivers: [record],
+      },
+    });
+    expect(parsed.success).toBe(true);
+    // Первый шаг — всегда предпросмотр: заведение живых людей необратимо.
+    expect(parsed.success && parsed.data.dryRun).toBe(false);
+  });
+
+  it('лишнее поле — признак другого шаблона выгрузки, а не мелочь', () => {
+    const parsed = driversImportSchema.safeParse({
+      file: { drivers: [record], tabelNumber: '0001' },
+    });
+    expect(parsed.success).toBe(false);
+  });
+
+  it('пустой список отклоняется: грузить нечего', () => {
+    expect(driversImportSchema.safeParse({ file: { drivers: [] } }).success).toBe(false);
+  });
+
+  it('строка без ФИО или без СНИЛС до разбора не доходит', () => {
+    expect(
+      driversImportSchema.safeParse({ file: { drivers: [{ ...record, fullName: '' }] } }).success,
+    ).toBe(false);
+    expect(
+      driversImportSchema.safeParse({ file: { drivers: [{ ...record, snils: '' }] } }).success,
+    ).toBe(false);
+  });
+
+  it('файл на тысячу строк — грузят не то, что собирались', () => {
+    const many = Array.from({ length: DRIVERS_IMPORT_MAX_RECORDS + 1 }, () => record);
+    expect(driversImportSchema.safeParse({ file: { drivers: many } }).success).toBe(false);
+  });
+
+  it('СНИЛС остаётся строкой источника: контрольную сумму считает разбор, а не схема', () => {
+    // Схема проверяет форму, а не содержание — иначе правил стало бы два набора.
+    const parsed = driversImportSchema.safeParse({
+      file: { drivers: [{ ...record, snils: '123-456-789 00' }] },
+    });
+    expect(parsed.success).toBe(true);
   });
 });
