@@ -73,6 +73,7 @@ type ProfileKey =
   | 'dispatcher'
   | 'shtab'
   | 'rukstroy'
+  | 'commandant'
   | 'department'
   | 'department_head'
   | 'observer'
@@ -176,6 +177,7 @@ const CASES: Case[] = [
       'dispatcher',
       'shtab',
       'rukstroy',
+      'commandant',
       'department',
       'department_head',
       'operator/operator',
@@ -193,6 +195,7 @@ const CASES: Case[] = [
       'dispatcher',
       'shtab',
       'rukstroy',
+      'commandant',
       'department',
       'department_head',
       'operator/operator',
@@ -212,6 +215,7 @@ const CASES: Case[] = [
       'dispatcher',
       'shtab',
       'rukstroy',
+      'commandant',
       'department',
       'department_head',
       'operator/operator',
@@ -268,6 +272,7 @@ const CASES: Case[] = [
       'dispatcher',
       'shtab',
       'rukstroy',
+      'commandant',
       'operator/operator',
       'observer',
     ],
@@ -276,7 +281,7 @@ const CASES: Case[] = [
     title: 'вывоз — удаление заявки',
     method: 'DELETE',
     url: `/api/v1/waste-requests/${RECORD_ID}`,
-    allowed: ['admin', 'manager', 'dispatcher', 'shtab', 'rukstroy'],
+    allowed: ['admin', 'manager', 'dispatcher', 'shtab', 'rukstroy', 'commandant'],
   },
   {
     title: 'вывоз — смена статуса',
@@ -438,7 +443,7 @@ const CASES: Case[] = [
       responsibleName: 'Петров П. П.',
       responsiblePhone: '+7 926 000-00-01',
     },
-    allowed: ['admin', 'manager', 'dispatcher', 'shtab', 'rukstroy'],
+    allowed: ['admin', 'manager', 'dispatcher', 'shtab', 'rukstroy', 'commandant'],
   },
 
   // ── Архив справочника: смотрит тот, кто его ведёт; возвращает из архива администратор ──
@@ -460,6 +465,7 @@ const CASES: Case[] = [
       'dispatcher',
       'shtab',
       'rukstroy',
+      'commandant',
       'department',
       'department_head',
       'operator/operator',

@@ -74,7 +74,19 @@ export interface MobilePrimaryAction {
   onClick: () => void;
 }
 
+/**
+ * Строка поиска в панели списка. Стоит на виду, а не в шите фильтров: в справочнике «найти по
+ * названию» — самое частое действие, и прятать его за двумя касаниями значит прятать сам
+ * справочник. На десктопе поиск живёт лупой в заголовке столбца — до неё там дотягиваются мышью.
+ */
+export interface MobileSearchControl {
+  value: string | undefined;
+  placeholder?: string;
+  onChange: (value: string | undefined) => void;
+}
+
 export interface MobileListControls {
+  search?: MobileSearchControl;
   filters?: FilterDefinition[];
   sort?: {
     options: SortOption[];

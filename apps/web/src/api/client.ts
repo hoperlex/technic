@@ -83,7 +83,8 @@ async function doFetch(url: string, options: RequestOptions): Promise<Response> 
   });
 }
 
-export async function apiFetch<T>(path: string, options: RequestOptions = {}): Promise<T> {
+/** Запрос с обновлением токена и разбором ошибки; тело читают уже вызывающие. */
+async function request(path: string, options: RequestOptions): Promise<Response> {
   const url = buildUrl(path, options.query);
   let res = await doFetch(url, options);
 
@@ -107,7 +108,22 @@ export async function apiFetch<T>(path: string, options: RequestOptions = {}): P
       status: res.status,
     } as ApiError;
   }
+  return res;
+}
 
+export async function apiFetch<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  const res = await request(path, options);
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
+}
+
+/**
+ * Ответ файлом, а не JSON. Нужен печати путевого листа (ADR 0040): бланк приходит PDF-ом, и
+ * показать его фрейму надо из памяти вкладки (`blob:`), а не по адресу API. Адрес API в разработке
+ * лежит на другом порту, и фрейм с чужого источника печатать нельзя — своя же копия печатается
+ * везде одинаково и на диск при этом не ложится.
+ */
+export async function apiFetchBlob(path: string, options: RequestOptions = {}): Promise<Blob> {
+  const res = await request(path, options);
+  return res.blob();
 }

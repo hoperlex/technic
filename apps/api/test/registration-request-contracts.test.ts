@@ -40,6 +40,13 @@ describe('перечень пожеланий', () => {
     expect(registrationRoleRequestLabels.site_staff).toBe('Сотрудник объекта');
   });
 
+  it('комендант назван своей должностью — она и есть роль в портале', () => {
+    expect(registrationRoleRequestRole.commandant).toBe('commandant');
+    // Отдельный вариант, а не «сотрудник объекта»: роли разные — коменданту техника закрыта, и
+    // администратор видит по пожеланию, какую из двух назначать.
+    expect(registrationRoleRequestRole.commandant).not.toBe(registrationRoleRequestRole.site_staff);
+  });
+
   it('оба исполнителя ведут к роли исполнителя — различает их контрагент (ADR 0038)', () => {
     expect(registrationRoleRequestRole.waste_operator).toBe('operator');
     expect(registrationRoleRequestRole.vehicle_lessor).toBe('operator');
@@ -52,7 +59,7 @@ describe('перечень пожеланий', () => {
 
 describe('уточнение к пожеланию', () => {
   it('объектные роли требуют объект', () => {
-    for (const request of ['rukstroy', 'site_staff'] as const) {
+    for (const request of ['rukstroy', 'site_staff', 'commandant'] as const) {
       expect(() => registerSchema.parse({ ...BASE, requestedRole: request })).toThrow();
       expect(
         registerSchema.parse({ ...BASE, requestedRole: request, requestedObject: 'ЖК Северный' })

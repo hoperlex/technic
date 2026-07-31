@@ -181,6 +181,7 @@ describe('права ролей', () => {
   it('объектные роли работают в пределах своего объекта', () => {
     expect(isObjectScopedRole('shtab')).toBe(true);
     expect(isObjectScopedRole('rukstroy')).toBe(true);
+    expect(isObjectScopedRole('commandant')).toBe(true);
     for (const role of ['admin', 'manager', 'dispatcher', 'operator', 'observer'] as const) {
       expect(isObjectScopedRole(role), role).toBe(false);
     }
@@ -193,6 +194,41 @@ describe('права ролей', () => {
     expect(can(of('shtab'), 'wasteRequests.status')).toBe(false);
     expect(can(of('shtab'), 'vehicleRequests.status')).toBe(false);
     expect(can(of('shtab'), 'directories.write')).toBe(false);
+  });
+
+  /**
+   * Комендант — заказчик на объекте по одному модулю: вывоз мусора он ведёт наравне со штабом,
+   * технику не заказывает вовсе. Вывоз — сравнением, а не перечислением: разойдясь, два заказчика
+   * одной площадки получили бы разный портал на одну и ту же заявку.
+   */
+  it('комендант ведёт вывоз мусора наравне со штабом', () => {
+    const wasteOf = (role: Role) =>
+      permissionsFor(of(role))
+        .filter((p) => p.startsWith('wasteRequests.'))
+        .sort();
+    expect(wasteOf('commandant')).toEqual(wasteOf('shtab'));
+    expect(wasteOf('commandant')).not.toEqual([]);
+    // Исполнение остаётся за теми, кто заявку обрабатывает: заказчик её только заводит.
+    expect(can(of('commandant'), 'wasteRequests.status')).toBe(false);
+    expect(can(of('commandant'), 'wasteRequests.assignOperator')).toBe(false);
+  });
+
+  /**
+   * Модуль техники закрыт коменданту целиком — правом, а не спрятанной вкладкой: иначе чужой
+   * заказ техники по его объекту открывался бы прямой ссылкой. Перечислением, потому что смысл
+   * роли ровно в этом: право модуля, попавшее сюда по недосмотру, обязано уронить проверку.
+   */
+  it('комендант не заказывает технику: модуль закрыт целиком', () => {
+    for (const permission of PERMISSIONS.filter((p) => p.startsWith('vehicleRequests.'))) {
+      expect(can(of('commandant'), permission), permission).toBe(false);
+    }
+    expect([...permissionsFor(of('commandant'))].sort()).toEqual([
+      'directories.read',
+      'wasteRequests.create',
+      'wasteRequests.delete',
+      'wasteRequests.read',
+      'wasteRequests.update',
+    ]);
   });
 
   it('архив, откаты и учётки — только администратору', () => {
