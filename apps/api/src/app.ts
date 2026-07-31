@@ -29,6 +29,7 @@ import vehiclesRoutes from './routes/vehicles';
 import driversRoutes from './routes/drivers';
 import waybillsRoutes from './routes/waybills';
 import vehicleRequestsRoutes from './routes/vehicle-requests';
+import vehicleRoutesRoutes from './routes/vehicle-routes';
 import wasteRequestsRoutes from './routes/waste-requests';
 import wasteTypesRoutes from './routes/waste-types';
 import wasteTariffsRoutes from './routes/waste-tariffs';
@@ -89,6 +90,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
   await app.register(vehiclesRoutes, { prefix: '/api/v1/vehicles' });
   await app.register(driversRoutes, { prefix: '/api/v1/drivers' });
   await app.register(vehicleRequestsRoutes, { prefix: '/api/v1/vehicle-requests' });
+  await app.register(vehicleRoutesRoutes, { prefix: '/api/v1/vehicle-routes' });
   await app.register(waybillsRoutes, { prefix: '/api/v1/waybills' });
   await app.register(wasteRequestsRoutes, { prefix: '/api/v1/waste-requests' });
   await app.register(wasteTypesRoutes, { prefix: '/api/v1/waste-types' });

@@ -102,7 +102,7 @@ const PROFILE_KEYS = ACCESS_PROFILES.map(keyOf);
 
 interface Case {
   title: string;
-  method: 'GET' | 'POST' | 'PATCH' | 'DELETE';
+  method: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE';
   url: string;
   /** Тело запроса: схема Fastify проверяется до preHandler, поэтому оно должно быть валидным. */
   payload?: unknown;
@@ -193,6 +193,45 @@ const CASES: Case[] = [
     title: 'лист заявки в карточке — правом на листы, а не на заявки',
     method: 'GET',
     url: `/api/v1/vehicle-requests/${RECORD_ID}/waybill`,
+    allowed: ['admin', 'manager', 'dispatcher'],
+  },
+  // ── Маршруты: обе проверки сразу, waybills.read И vehicleRequests.status ──
+  // Важен здесь не столько список разрешённых, сколько один запрещённый: у внешнего
+  // арендодателя `vehicleRequests.status` есть (ADR 0038, он закрывает свои заявки), а
+  // `waybills.read` нет — и в рейс, где лежат чужие заявки и допуски водителей собственного
+  // парка, он попасть не должен ни на чтение, ни на правку.
+  {
+    title: 'список рейсов — закрыт от всех, кроме ведущих заявки и листы',
+    method: 'GET',
+    url: '/api/v1/vehicle-routes',
+    allowed: ['admin', 'manager', 'dispatcher'],
+  },
+  {
+    title: 'заведение рейса — теми же двумя правами',
+    method: 'POST',
+    url: '/api/v1/vehicle-routes',
+    payload: { vehicleId: RECORD_ID, routeDate: '2026-08-03' },
+    allowed: ['admin', 'manager', 'dispatcher'],
+  },
+  {
+    title: 'заявка в рейс — теми же двумя правами',
+    method: 'POST',
+    url: `/api/v1/vehicle-routes/${RECORD_ID}/requests`,
+    payload: { requestId: RECORD_ID, version: 0 },
+    allowed: ['admin', 'manager', 'dispatcher'],
+  },
+  {
+    title: 'порядок талонов — теми же двумя правами',
+    method: 'PUT',
+    url: `/api/v1/vehicle-routes/${RECORD_ID}/order`,
+    payload: { requestIds: [RECORD_ID], version: 0 },
+    allowed: ['admin', 'manager', 'dispatcher'],
+  },
+  {
+    title: 'выписка листа с рейса — теми же двумя правами',
+    method: 'POST',
+    url: `/api/v1/vehicle-routes/${RECORD_ID}/waybill`,
+    payload: { version: 0 },
     allowed: ['admin', 'manager', 'dispatcher'],
   },
   // ── Справочники: чтение нужно всем (форма заявки), ведение — трём ролям ──

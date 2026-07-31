@@ -419,6 +419,143 @@ export async function issueWaybill(tx: Tx, ctx: WaybillContext): Promise<IssuedW
   return { id: created!.id, number: number.display, slot: 1, reused: false };
 }
 
+export interface RouteWaybillContext {
+  routeId: string;
+  vehicleId: string;
+  /** День рейса: он же дата листа и дата, на которую проверяется допуск водителя. */
+  routeDate: string;
+  driverPersonId: string;
+  trip: WaybillFieldsInput;
+  /** Состав рейса в порядке талонов: позиция становится `slot` талона заказчика. */
+  requests: readonly { requestId: string; position: number }[];
+  actor: { id: string; name: string };
+}
+
+/**
+ * Выдача листа по рейсу (маршруты, план `docs/vehicle-routes-plan.md`).
+ *
+ * Отличие от прежней выдачи «в транзакции перевода заявки в работу» не только в источнике данных.
+ * Лист теперь рождается тогда, когда состав рейса собран, а не на первой заявке: номер бланка не
+ * сгорает на каждой перестановке, и талоны заполняются в том порядке, в котором машина поедет.
+ *
+ * Проверки «водитель назначен, состав непуст, все заявки в работе» и «действующего листа ещё нет»
+ * делает вызывающий (`canIssueWaybill` в контрактах) — под блокировкой рейса и строк заявок.
+ * Здесь остаётся то, что требует чтения справочников: бланк по машине, допуск водителя на дату
+ * рейса и снимок значений.
+ */
+export async function issueWaybillForRoute(
+  tx: Tx,
+  ctx: RouteWaybillContext,
+): Promise<IssuedWaybill> {
+  const requirement = await waybillRequirementFor(tx, {
+    requestType: 'freight_transport',
+    vehicleId: ctx.vehicleId,
+  });
+  if (!requirement.formCode) {
+    throw err.unprocessable(requirement.reason ?? 'На эту машину путевой лист не выписывается', {
+      vehicleId: 'Бланк не выписывается',
+    });
+  }
+
+  // Тот же отбор, что показывает форма: второму набору правил разъехаться с первым негде.
+  const selection = await selectDrivers({
+    vehicleId: ctx.vehicleId,
+    on: ctx.routeDate,
+    withTrailer: ctx.trip.withTrailer,
+    personId: ctx.driverPersonId,
+  });
+  if (!selection || selection.drivers.length === 0) {
+    throw err.unprocessable(
+      selection?.requiredCategoryName
+        ? `У водителя нет действующей категории ${selection.requiredCategoryName} на ${ctx.routeDate}`
+        : 'У водителя нет действующего удостоверения на дату рейса',
+      { driverPersonId: 'Водитель не допущен к этой машине' },
+    );
+  }
+
+  /*
+   * Пока история не перенесена `backfill:routes`, в базе живёт прежний UNIQUE
+   * (vehicle_id, issued_for_date) среди неаннулированных: вторая смена включается только
+   * contract-миграцией. Проверяем это сами и объясняем словами — иначе диспетчер получил бы
+   * ошибку уникального индекса вместо ответа.
+   */
+  const [sameDay] = await tx
+    .select({ id: waybills.id })
+    .from(waybills)
+    .where(
+      and(
+        eq(waybills.vehicleId, ctx.vehicleId),
+        eq(waybills.issuedForDate, ctx.routeDate),
+        ne(waybills.status, 'cancelled'),
+      ),
+    );
+  if (sameDay) {
+    throw err.conflict(
+      'На эту машину и дату уже выписан действующий путевой лист: вторая смена станет возможна после переноса истории маршрутов',
+    );
+  }
+
+  const series = await findSeriesByCode(DEFAULT_SERIES_CODE);
+  if (!series) throw err.conflict('Не заведена серия путевых листов');
+  const number = await takeNextNumber(tx, series.id);
+  const organizationId = await resolveOrganization(tx, ctx.vehicleId);
+
+  /*
+   * Задание в бланке 4-П набирается одной строкой («в чьё распоряжение», откуда, куда, груз), и
+   * снимок собирается по первому талону рейса. Остальные заявки печатаются пустыми графами
+   * талонов — так же, как печатались до маршрутов: разметка строк 2–4 требует правки самого
+   * бланка и идёт отдельным шагом (план, релиз 3).
+   */
+  const first = [...ctx.requests].sort((a, b) => a.position - b.position)[0]!;
+  const data = await collectSnapshot(tx, {
+    requestId: first.requestId,
+    vehicleId: ctx.vehicleId,
+    driverPersonId: ctx.driverPersonId,
+    organizationId,
+    fields: ctx.trip,
+    number: number.display,
+    seriesPrefix: number.prefix,
+    date: ctx.routeDate,
+    actorName: ctx.actor.name,
+  });
+
+  const [created] = await tx
+    .insert(waybills)
+    .values({
+      seriesId: number.seriesId,
+      number: number.number,
+      formCode: requirement.formCode,
+      organizationId,
+      routeId: ctx.routeId,
+      vehicleId: ctx.vehicleId,
+      driverPersonId: ctx.driverPersonId,
+      issuedForDate: ctx.routeDate,
+      withTrailer: ctx.trip.withTrailer,
+      trailer1Model: ctx.trip.trailer1Model,
+      trailer1RegNumber: ctx.trip.trailer1RegNumber,
+      trailer2Model: ctx.trip.trailer2Model,
+      trailer2RegNumber: ctx.trip.trailer2RegNumber,
+      garageNumber: data.vehicle_garage_number ?? '',
+      communicationKind: ctx.trip.communicationKind,
+      transportationKind: ctx.trip.transportationKind,
+      data,
+      issuedBy: ctx.actor.id,
+    })
+    .returning({ id: waybills.id });
+
+  // Талоны — снимок состава на момент выдачи: рейс потом пересоберут, а бланк в журнале обязан
+  // помнить своё.
+  await tx.insert(waybillRequests).values(
+    ctx.requests.map((r) => ({
+      waybillId: created!.id,
+      requestId: r.requestId,
+      slot: r.position,
+    })),
+  );
+
+  return { id: created!.id, number: number.display, slot: first.position, reused: false };
+}
+
 /**
  * Реквизиты прошлого листа этой машины — ими форма подставляет графы шапки. Гаражный номер, вид
  * сообщения и прицепы от рейса к рейсу те же, и перенабирать их каждый раз незачем.
