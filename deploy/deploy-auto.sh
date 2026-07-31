@@ -29,6 +29,10 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 SCRIPT="$(readlink -f "$0")"
 PORTAL_DIR="$(cd "$(dirname "$SCRIPT")/.." && pwd)"
+# Путь скрипта внутри репозитория — им проверяется, обновил ли pull сам deploy-auto (см. ниже).
+# Если скрипт стоит копией вне дерева портала, префикс не снимется и SCRIPT_REL останется
+# абсолютным: такая установка самообновления не получает, и проверку ниже надо пропустить.
+SCRIPT_REL="${SCRIPT#"$PORTAL_DIR"/}"
 COMPOSE_FILE="$PORTAL_DIR/deploy/docker-compose.yml"
 COMPOSE=(docker compose -f "$COMPOSE_FILE" -p technic)
 
@@ -90,7 +94,11 @@ deploy-auto — деплой/обновление портала technic (auto.s
   DRIVERS_FILE_HOST   кадровая выгрузка (по умолчанию /etc/technic-portal/drivers.json)
 
 Водители: если выгрузка лежит на месте, деплой после health заводит людей и ЗАТИРАЕТ файл
-(shred) — персональные данные не остаются на диске VPS. Нет файла — шаг молча пропускается.
+(shred) — персональные данные не остаются на диске VPS. Нет файла — шаг пропускается строкой
+в выводе.
+
+Обновление самого deploy-auto: если pull привёз новую версию скрипта, деплой перезапускается
+ею же и идёт дальше — правки вступают в силу тем же деплоем, а не следующим.
 
 Vhost: /opt/infra/nginx/conf.d/technic.conf синхронизируется с deploy/nginx/technic.conf
 при каждом деплое (бэкап → nginx -t → graceful reload infra-nginx). Соседние vhost не
@@ -371,7 +379,10 @@ flock -n 9 || fail "деплой уже выполняется (lock $LOCK_FILE)
 # Отчёт и восстановление.
 # ---------------------------------------------------------------------------
 RESULT="ok" REASON="" HEALTH="" COMMIT_SHA="" TARGET_TAG="" DUMP_FILE=""
-PRE_RESTORE_DUMP="" CFG_SNAPSHOT="" CACHE_FREED="" BUILT_TAG="" VHOST_SYNC="not-checked"
+PRE_RESTORE_DUMP="" CACHE_FREED="" BUILT_TAG="" VHOST_SYNC="not-checked"
+# Снимок конфига переживает самоперезапуск (ниже): он делается до pull, и второй проход не должен
+# снимать его повторно — двумя копиями одного деплоя ротация keep-2 выбросила бы снимок предыдущего.
+CFG_SNAPSHOT="${AUTO_CFG_SNAPSHOT:-}"
 SERVICES_STOPPED=0 RESTORE_DB_TOUCHED=0 ROLLBACK_UP_STARTED=0 MIGRATION_ATTEMPTED=0
 SEED_DRIVERS="no-file"   # no-file | skipped | done | done-not-shredded | failed
 
@@ -702,7 +713,10 @@ fi
 # Снимок конфига — до pull: repo-vhost трекается git'ом, pull его перепишет.
 [ -n "$CFG_SNAPSHOT" ] || snapshot_config
 
-PREPULL_SHA="$(git_c rev-parse --short HEAD)"
+# SHA до pull. При самоперезапуске (ниже) он приходит из первого прохода: там HEAD ещё не сдвинут,
+# а во втором проходе pull уже no-op — иначе bootstrap-пометка запущенных образов решила бы, что
+# pull ничего не менял, и --previous после такого деплоя не появился бы.
+PREPULL_SHA="${AUTO_PREPULL_SHA:-$(git_c rev-parse --short HEAD)}"
 
 log "git fetch + pull --ff-only (main ← origin/main)"
 git_c fetch --prune origin || { REASON="git fetch провалился"; fail "$REASON"; }
@@ -715,6 +729,30 @@ LOCAL_SHA="$(git_c rev-parse HEAD)"
 REMOTE_SHA="$(git_c rev-parse origin/main)"
 [ "$LOCAL_SHA" = "$REMOTE_SHA" ] \
   || { REASON="HEAD ($LOCAL_SHA) != origin/main ($REMOTE_SHA) — запушьте main перед деплоем"; fail "$REASON"; }
+
+# ---------------------------------------------------------------------------
+# Самоперезапуск, если pull обновил САМ deploy-auto.
+#
+# Скрипт стоит симлинком в рабочее дерево и пуллит сам себя. git обновляет файл заменой inode,
+# а запущенный bash дочитывает СТАРЫЙ через уже открытый дескриптор — деплой, который привёз
+# новую версию, целиком идёт по предыдущей, без единой ошибки в выводе. Так молча не выполнился
+# первый деплой шага наполнения справочника водителей: файл на диске новый, отработал старый.
+#
+# Точка выбрана здесь: мутаций релиза ещё нет (сборки не было, схему не трогали), а HEAD уже
+# на целевом коммите — второй проход повторяет только идемпотентное. EXIT-trap на exec не
+# срабатывает (bash заменяет процесс), ложного recover не будет; flock переживает exec —
+# fd 9 наследуется, второй проход переоткрывает его и берёт лок заново.
+#
+# AUTO_REEXECED отключает проверку во втором проходе, а не только петлю: сравнивать он будет
+# всё с тем же PREPULL_SHA (он проброшен), то есть diff останется непустым — без этого условия
+# каждый такой деплой ругался бы на «повторное обновление». Перезапуск нужен ровно один.
+# ---------------------------------------------------------------------------
+if [ -z "${AUTO_REEXECED:-}" ] && [ "$SCRIPT_REL" != "$SCRIPT" ] \
+   && [ -n "$(git_c diff --name-only "$PREPULL_SHA" HEAD -- "$SCRIPT_REL")" ]; then
+  log "pull обновил сам deploy-auto ($SCRIPT_REL) — деплой продолжает новая версия"
+  exec env AUTO_REEXECED=1 AUTO_PREPULL_SHA="$PREPULL_SHA" AUTO_CFG_SNAPSHOT="$CFG_SNAPSHOT" \
+    "$SCRIPT" "$@"
+fi
 
 COMMIT_SHA="$(git_c rev-parse --short HEAD)"
 # Экспорт ДО любого compose-вызова: иначе ${TAG:-latest} подставит СТАРЫЙ образ.
@@ -823,7 +861,7 @@ fi
 # ---------------------------------------------------------------------------
 # Наполнение справочника водителей кадровой выгрузкой (ADR 0037 п. 12–13).
 #
-# Файла в норме нет, и шаг молчит. Положили выгрузку рядом с prod.env — ближайший деплой
+# Файла в норме нет, и шаг только отмечается строкой. Положили выгрузку рядом с prod.env — деплой
 # заводит людей и затирает файл: персональные данные лежат на диске VPS ровно один деплой,
 # а не постоянно. Дальше шаг снова сам себя пропускает, ручной запуск из runbook'а не нужен.
 #
@@ -860,6 +898,10 @@ elif [ -f "$DRIVERS_FILE_HOST" ]; then
     warn "Разбор без записи: ${COMPOSE[*]} run --rm seed-drivers \\"
     warn "  pnpm --filter @technic/api seed:drivers --dry-run"
   fi
+else
+  # Штатное состояние, но строкой: молчащий шаг неотличим от неработающего, и пропуск
+  # из-за опечатки в пути или неснятого права на файл искали бы по пустому справочнику.
+  log "кадровой выгрузки нет ($DRIVERS_FILE_HOST) — справочник водителей не наполняется"
 fi
 
 prune_images
