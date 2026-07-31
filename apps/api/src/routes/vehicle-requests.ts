@@ -24,6 +24,7 @@ import {
   changeVehicleRequestStatusSchema,
   CLOSED_REQUEST_STATUSES,
   type CompleteVehicleRequestInput,
+  type ConfirmScheduleInput,
   createVehicleRequestSchema,
   type FileDto,
   formatVehicleRequestNumber,
@@ -679,6 +680,36 @@ async function saveCompletion(
       target: vehicleRequestCompletions.requestId,
       set: { ...values, completedAt: new Date(), updatedAt: new Date() },
     });
+}
+
+/**
+ * Фактический срок, уточнённый при переводе заявки в работу. Пишется в ту же detail-таблицу, что и
+ * заказанный: план и факт в заявке одно поле — время, о котором договорились, — а расхождение с
+ * первоначальным читается историей.
+ *
+ * Вызывается внутри транзакции перевода в работу и обязательно до выписки путевого листа: дату
+ * рейса лист берёт из заявки (`tripDate`), и записанный позже срок отправил бы лист на заказанное
+ * время вместо согласованного.
+ */
+async function applyConfirmedSchedule(
+  tx: Tx,
+  requestId: string,
+  schedule: ConfirmScheduleInput,
+): Promise<void> {
+  if (schedule.requestType === 'special_equipment') {
+    await tx
+      .update(specialEquipmentRequestDetails)
+      .set({ dateFrom: schedule.dateFrom, dateTo: schedule.dateTo ?? null })
+      .where(eq(specialEquipmentRequestDetails.requestId, requestId));
+    return;
+  }
+  await tx
+    .update(freightTransportRequestDetails)
+    .set({
+      scheduledAt: new Date(schedule.scheduledAt),
+      scheduledTimeUnspecified: schedule.scheduledTimeUnspecified,
+    })
+    .where(eq(freightTransportRequestDetails.requestId, requestId));
 }
 
 async function attachFiles(
@@ -1636,7 +1667,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
     { ...canChangeStatus, schema: { params: idParams, body: changeVehicleRequestStatusSchema } },
     async (req) => {
       const p = requirePrincipal(req);
-      const { status, comment, assignment, completion, version } = req.body;
+      const { status, comment, assignment, completion, schedule, version } = req.body;
       // Состояние «до» берётся DTO: при переводе в работу нужна не только сама заявка, но и
       // назначенная прежде техника — по ней считается, что изменилось (повторный перевод после
       // отката может сменить и машину, и ставки).
@@ -1678,10 +1709,19 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           completion: 'Укажите отработанное время',
         });
       }
+      // Срок уточняют полями своего типа заявки: тип неизменяем, и «дата начала» у грузоперевозки
+      // означала бы, что заявку подменили по дороге.
+      if (schedule && schedule.requestType !== before.requestType) {
+        throw err.unprocessable('Тип заявки изменить нельзя', { schedule: 'Другой тип заявки' });
+      }
 
-      // Назначение и факт проверяются и пишутся в той же транзакции, что и статус: заявка не
-      // должна побыть «в работе» ни на чём или «выполненной» без факта, даже мгновение.
+      // Назначение, факт и уточнённый срок проверяются и пишутся в той же транзакции, что и статус:
+      // заявка не должна побыть «в работе» ни на чём, «выполненной» без факта или взятой на одно
+      // время с листом на другое — даже мгновение.
       const { assigned, completed } = await db.transaction(async (tx) => {
+        // Срок — первым: дату рейса путевой лист берёт из заявки, и записанный после выписки он
+        // отправил бы лист на заказанное время вместо согласованного.
+        if (schedule) await applyConfirmedSchedule(tx, before.id, schedule);
         let saved: VehicleRequestAssignmentDto | null = null;
         if (assignment) {
           saved = await resolveAssignment(
@@ -1774,7 +1814,23 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           metadata: { changes: diffVehicleCompletion(before.completion, completed) },
         });
       }
-      return (await getDto(before.id))!;
+      const after = (await getDto(before.id))!;
+      // Уточнённый срок — событие правки, а не назначения: заказывали на одно время, вышли на
+      // другое, и в истории это читается теми же строками «было → стало», что и обычная правка
+      // заявки. Совпал с заказанным — события нет: «уточнили и не изменили» истории не событие.
+      if (schedule) {
+        const changes = diffVehicleRequests(before, after);
+        if (changes.length > 0) {
+          await writeAudit({
+            actorUserId: p.id,
+            action: 'vehicle_request.update',
+            entityType: 'vehicle_request',
+            entityId: before.id,
+            metadata: { changes },
+          });
+        }
+      }
+      return after;
     },
   );
 

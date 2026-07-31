@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { App } from 'antd';
 import type { FreightTransportRequestDto, VehicleDto } from '@technic/contracts';
@@ -118,6 +118,22 @@ const prefill = async (_id: string, vehicleId: string) =>
         fields: null,
       };
 
+/** Отбор водителей — шпион: по нему видно, на какую дату форма их спрашивает. */
+const availableDrivers = vi.fn(async (_q: { vehicleId: string; on: string }) => ({
+  requiredCategory: 'C',
+  drivers: [
+    {
+      personId: 'p-1',
+      fullName: 'Тестовый Водитель Первый',
+      personnelNo: 'Т-001',
+      licenseNumber: '00 00 000001',
+      licenseExpiresOn: '2031-03-12',
+      verificationStatus: 'verified' as const,
+      categories: ['B', 'C'],
+    },
+  ],
+}));
+
 vi.mock('../src/api/resources', () => ({
   vehiclesApi: {
     list: async () => ({
@@ -129,20 +145,7 @@ vi.mock('../src/api/resources', () => ({
   },
   vehicleRequestsApi: { waybillPrefill: prefill },
   driversApi: {
-    available: async () => ({
-      requiredCategory: 'C',
-      drivers: [
-        {
-          personId: 'p-1',
-          fullName: 'Тестовый Водитель Первый',
-          personnelNo: 'Т-001',
-          licenseNumber: '00 00 000001',
-          licenseExpiresOn: '2031-03-12',
-          verificationStatus: 'verified' as const,
-          categories: ['B', 'C'],
-        },
-      ],
-    }),
+    available: (q: { vehicleId: string; on: string }) => availableDrivers(q),
   },
 }));
 
@@ -169,7 +172,11 @@ function assignment(vehicleId: string, ownership: 'own' | 'rental') {
   };
 }
 
-function renderModal(vehicleId?: string, ownership: 'own' | 'rental' = 'own') {
+function renderModal(
+  vehicleId?: string,
+  ownership: 'own' | 'rental' = 'own',
+  onSubmit: (v: unknown) => void = () => {},
+) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
@@ -181,7 +188,7 @@ function renderModal(vehicleId?: string, ownership: 'own' | 'rental' = 'own') {
           }}
           confirmLoading={false}
           onCancel={() => {}}
-          onSubmit={() => {}}
+          onSubmit={onSubmit}
         />
       </App>
     </QueryClientProvider>,
@@ -207,6 +214,24 @@ describe('путевой лист в форме перевода в работу
     expect(screen.getByDisplayValue('пригородное')).toBeDefined();
   });
 
+  it('водителей спрашивает на ту дату, которую назначили в форме, а не на заказанную', async () => {
+    availableDrivers.mockClear();
+    renderModal('v-own');
+    await waitFor(() => expect(screen.getByText('Путевой лист')).toBeDefined());
+    await waitFor(() => expect(availableDrivers).toHaveBeenCalled());
+    expect(availableDrivers.mock.calls[0]![0].on).toBe('2026-08-10');
+
+    // Подачу сдвинули на два дня — годность удостоверения проверяется уже на новый день.
+    const dateInput = screen.getByDisplayValue('10.08.2026');
+    fireEvent.change(dateInput, { target: { value: '12.08.2026' } });
+    fireEvent.keyDown(dateInput, { key: 'Enter', keyCode: 13 });
+
+    await waitFor(() => {
+      const last = availableDrivers.mock.calls.at(-1)![0];
+      expect(last.on).toBe('2026-08-12');
+    });
+  });
+
   it('на аренду объясняет, почему листа нет, а не прячет блок', async () => {
     renderModal('v-rent', 'rental');
     await waitFor(() => expect(screen.getByText('Путевой лист не выписывается')).toBeDefined());
@@ -215,5 +240,41 @@ describe('путевой лист в форме перевода в работу
       screen.getByText('Путевой лист на арендную технику выписывает арендодатель'),
     ).toBeDefined();
     expect(screen.queryByText('Водитель')).toBeNull();
+  });
+});
+
+/**
+ * Фактический срок (заказанное время планируемое): форма открывается на заказанном, показывает
+ * его же справкой и отдаёт согласованное вместе с назначением — одним переходом в работу.
+ */
+describe('фактический срок в форме перевода в работу', () => {
+  it('поля подставлены заказанным, а заказанное остаётся видно рядом', async () => {
+    renderModal();
+    await waitFor(() => expect(screen.getByText('Фактическая дата подачи')).toBeDefined());
+
+    expect(screen.getByDisplayValue('10.08.2026')).toBeDefined();
+    expect(screen.getByDisplayValue('09:00')).toBeDefined();
+    expect(screen.getByText('Заказано: 10.08.2026 09:00')).toBeDefined();
+  });
+
+  it('согласованное время уходит вместе с назначением техники', async () => {
+    const onSubmit = vi.fn();
+    renderModal('v-rent', 'rental', onSubmit);
+    await waitFor(() => expect(screen.getByDisplayValue('09:00')).toBeDefined());
+
+    const timeInput = screen.getByDisplayValue('09:00');
+    fireEvent.change(timeInput, { target: { value: '10:30' } });
+    fireEvent.blur(timeInput);
+    fireEvent.click(screen.getByText('Взять в работу'));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    const body = onSubmit.mock.calls[0]![0] as {
+      assignment: { vehicleId: string };
+      schedule: { requestType: string; scheduledAt: string; scheduledTimeUnspecified: boolean };
+    };
+    expect(body.assignment.vehicleId).toBe('v-rent');
+    expect(body.schedule.requestType).toBe('freight_transport');
+    expect(body.schedule.scheduledAt).toBe('2026-08-10T10:30:00+03:00');
+    expect(body.schedule.scheduledTimeUnspecified).toBe(false);
   });
 });

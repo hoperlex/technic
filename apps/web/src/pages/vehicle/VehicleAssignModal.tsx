@@ -3,6 +3,7 @@ import {
   Alert,
   App,
   Checkbox,
+  DatePicker,
   Form,
   Input,
   InputNumber,
@@ -11,10 +12,14 @@ import {
   Tag,
   Typography,
 } from 'antd';
+import dayjs, { type Dayjs } from 'dayjs';
 import { useQuery } from '@tanstack/react-query';
 import {
   type AssignVehicleBody,
   assignmentRateLabel,
+  type ConfirmScheduleBody,
+  formatMoscowDateTime,
+  normalizeTimeInput,
   VEHICLE_OWNERSHIPS,
   vehicleClassificationLabel,
   type VehicleDto,
@@ -26,11 +31,20 @@ import {
 import { driversApi, vehicleRequestsApi, vehiclesApi } from '../../api/resources';
 import { AutoSelect } from '../../components/AutoSelect';
 import { FormModal } from '../../components/FormModal';
+import { TimeInput, optionalWorkTimeRule } from '../../components/TimeInput';
 import { useIsMobile } from '../../hooks/useIsMobile';
+import { MOSCOW_TZ } from '../../theme';
 import { formatMoney } from '../../utils/format';
+import { formatDateOnly } from './shared';
 
 /**
- * Выбор техники и ставок при переводе заявки в работу (ADR 0027).
+ * Выбор техники, срока и ставок при переводе заявки в работу (ADR 0027).
+ *
+ * Первым спрашивается фактический срок: заказанное время планируемое — заявку заводят заранее, а
+ * когда машина выйдет на самом деле, выясняется в разговоре с исполнителем, то есть ровно здесь.
+ * Поля подставлены заказанным, под ними — что просили изначально: правка должна быть видимой, а не
+ * незаметной подменой. Стоит блок до выбора техники не для порядка: от даты рейса зависит, кто из
+ * водителей годен, и список ниже пересобирается по ней.
  *
  * Выбор идёт тремя шагами — так его и держат в голове: сначала «своей машиной или арендой»,
  * у аренды — «у кого», и только потом конкретная единица. Обратный порядок (список всей
@@ -51,10 +65,17 @@ interface Props {
   request: VehicleRequestDto | null;
   confirmLoading: boolean;
   onCancel: () => void;
-  onSubmit: (v: AssignVehicleBody) => void;
+  onSubmit: (v: { assignment: AssignVehicleBody; schedule: ConfirmScheduleBody }) => void;
 }
 
 interface FormValues {
+  // ── Фактический срок ──
+  /** Спецтехника: период работ. */
+  dateFrom?: Dayjs | null;
+  dateTo?: Dayjs | null;
+  /** Грузоперевозка: дата подачи и время («чч:мм»); пустое время — подача без точного часа. */
+  scheduledDate?: Dayjs | null;
+  scheduledTime?: string;
   lessorId?: string;
   vehicleId?: string;
   pricePerHour?: number | null;
@@ -136,7 +157,26 @@ export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit
     if (!request) return;
     const start: VehicleOwnership = assignment?.ownership ?? 'own';
     setOwnership(start);
+    // Срок подставляется заказанным: обычно на него и выходят, а правят его в меньшинстве случаев.
+    // Подача переводится в МСК: в браузере восточнее Москвы «09:00 по Москве» иначе стало бы
+    // «12:00». Именно `dayjs(iso).tz(...)`, а не `dayjs.tz(iso, ...)`: второй читает строку как
+    // время уже в этой зоне и молча теряет смещение, приехавшее с сервера.
+    const scheduled =
+      request.requestType === 'freight_transport'
+        ? dayjs(request.scheduledAt).tz(MOSCOW_TZ)
+        : null;
     form.setFieldsValue({
+      dateFrom: request.requestType === 'special_equipment' ? dayjs(request.dateFrom) : null,
+      dateTo:
+        request.requestType === 'special_equipment' && request.dateTo
+          ? dayjs(request.dateTo)
+          : null,
+      scheduledDate: scheduled,
+      // Заявка «на дату» открывается с пустым временем: здесь его и назначают.
+      scheduledTime:
+        request.requestType === 'freight_transport' && !request.scheduledTimeUnspecified
+          ? scheduled!.format('HH:mm')
+          : undefined,
       lessorId: assignment?.lessorId ?? undefined,
       vehicleId: assignment?.vehicleId,
       pricePerHour: assignment?.pricePerHour ?? null,
@@ -151,6 +191,9 @@ export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit
   const vehicleId = Form.useWatch('vehicleId', form);
   const pricePerHour = Form.useWatch('pricePerHour', form);
   const pricePerShift = Form.useWatch('pricePerShift', form);
+  const scheduledDate = Form.useWatch('scheduledDate', form);
+
+  const isFreight = request?.requestType === 'freight_transport';
 
   /** Арендодатели — только те, у кого есть подходящая техника: пустой пункт выбирать незачем. */
   const lessorOptions = useMemo(() => {
@@ -185,12 +228,21 @@ export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit
   });
   const needsWaybill = prefill?.required ?? false;
 
+  /**
+   * Дата рейса для отбора водителей и подписи листа. У грузоперевозки её несёт подача — и берётся
+   * она из формы, а не из ответа сервера: время правят прямо здесь, и годность удостоверения
+   * обязана проверяться на тот день, на который машина выйдет. У прочих заявок дата листа — день
+   * перевода в работу (ADR 0037), его и считает сервер.
+   */
+  const tripDate = isFreight
+    ? (scheduledDate?.format('YYYY-MM-DD') ?? prefill?.tripDate)
+    : prefill?.tripDate;
+
   // Список водителей — тот же отбор, что проверит сервер: годные к этой машине на дату рейса.
   const { data: selection, isFetching: driversLoading } = useQuery({
-    queryKey: ['drivers', 'available', vehicleId, prefill?.tripDate, withTrailer],
-    queryFn: () =>
-      driversApi.available({ vehicleId: vehicleId!, on: prefill!.tripDate, withTrailer }),
-    enabled: needsWaybill && !!vehicleId && !!prefill?.tripDate,
+    queryKey: ['drivers', 'available', vehicleId, tripDate, withTrailer],
+    queryFn: () => driversApi.available({ vehicleId: vehicleId!, on: tripDate!, withTrailer }),
+    enabled: needsWaybill && !!vehicleId && !!tripDate,
   });
   const driverOptions = (selection?.drivers ?? []).map((d) => ({
     value: d.personId,
@@ -247,7 +299,38 @@ export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit
     });
   };
 
+  /**
+   * Фактический срок в том виде, в каком его принимает API. Время подачи собирается по МСК — в
+   * этом поясе живут и заявка, и путевой лист; пустое время означает подачу «на дату», как и при
+   * заведении заявки.
+   */
+  const scheduleOf = (v: FormValues): ConfirmScheduleBody | null => {
+    if (!request) return null;
+    if (request.requestType === 'special_equipment') {
+      if (!v.dateFrom) return null;
+      return {
+        requestType: 'special_equipment',
+        dateFrom: v.dateFrom.format('YYYY-MM-DD'),
+        dateTo: v.dateTo ? v.dateTo.format('YYYY-MM-DD') : null,
+      };
+    }
+    if (!v.scheduledDate) return null;
+    const time = normalizeTimeInput(v.scheduledTime ?? '');
+    return {
+      requestType: 'freight_transport',
+      scheduledAt: dayjs
+        .tz(`${v.scheduledDate.format('YYYY-MM-DD')} ${time ?? '00:00'}`, MOSCOW_TZ)
+        .format('YYYY-MM-DDTHH:mm:ssZ'),
+      scheduledTimeUnspecified: time === undefined,
+    };
+  };
+
   const submit = (v: FormValues) => {
+    const schedule = scheduleOf(v);
+    if (!schedule) {
+      message.warning('Укажите фактическую дату');
+      return;
+    }
     if (!v.vehicleId) {
       message.warning('Выберите технику');
       return;
@@ -265,23 +348,26 @@ export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit
       return;
     }
     onSubmit({
-      vehicleId: v.vehicleId,
-      pricePerHour: v.pricePerHour ?? null,
-      pricePerShift: v.pricePerShift ?? null,
-      shiftHours: v.shiftHours ?? null,
-      ...(needsWaybill
-        ? {
-            driverPersonId: v.driverPersonId,
-            waybill: {
-              withTrailer: v.withTrailer ?? false,
-              trailer1Model: v.withTrailer ? (v.trailer1Model ?? '') : '',
-              trailer1RegNumber: v.withTrailer ? (v.trailer1RegNumber ?? '') : '',
-              garageNumber: v.garageNumber ?? '',
-              communicationKind: v.communicationKind ?? '',
-              transportationKind: v.transportationKind ?? '',
-            },
-          }
-        : {}),
+      assignment: {
+        vehicleId: v.vehicleId,
+        pricePerHour: v.pricePerHour ?? null,
+        pricePerShift: v.pricePerShift ?? null,
+        shiftHours: v.shiftHours ?? null,
+        ...(needsWaybill
+          ? {
+              driverPersonId: v.driverPersonId,
+              waybill: {
+                withTrailer: v.withTrailer ?? false,
+                trailer1Model: v.withTrailer ? (v.trailer1Model ?? '') : '',
+                trailer1RegNumber: v.withTrailer ? (v.trailer1RegNumber ?? '') : '',
+                garageNumber: v.garageNumber ?? '',
+                communicationKind: v.communicationKind ?? '',
+                transportationKind: v.transportationKind ?? '',
+              },
+            }
+          : {}),
+      },
+      schedule,
     });
   };
 
@@ -313,6 +399,68 @@ export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit
             })}
             »
           </Typography.Paragraph>
+
+          {/* Фактический срок: подставлен заказанным, под полями — что просили изначально.
+              Спрашивается первым, потому что от даты рейса зависит отбор водителей ниже. */}
+          {request.requestType === 'special_equipment' ? (
+            <div className="form-row" style={{ display: 'flex', gap: 12 }}>
+              <Form.Item
+                name="dateFrom"
+                label="Фактическая дата начала"
+                rules={[{ required: true, message: 'Укажите дату начала' }]}
+                extra={`Заказано: ${formatDateOnly(request.dateFrom)}`}
+                style={{ flex: 1, minWidth: 0 }}
+              >
+                <DatePicker
+                  format="DD.MM.YYYY"
+                  style={{ width: '100%' }}
+                  inputReadOnly={isMobile}
+                />
+              </Form.Item>
+              <Form.Item
+                name="dateTo"
+                label="Фактическая дата окончания"
+                extra={
+                  request.dateTo ? `Заказано: ${formatDateOnly(request.dateTo)}` : 'Заказан один день'
+                }
+                style={{ flex: 1, minWidth: 0 }}
+              >
+                <DatePicker
+                  format="DD.MM.YYYY"
+                  style={{ width: '100%' }}
+                  inputReadOnly={isMobile}
+                />
+              </Form.Item>
+            </div>
+          ) : (
+            <div className="form-row" style={{ display: 'flex', gap: 12 }}>
+              <Form.Item
+                name="scheduledDate"
+                label="Фактическая дата подачи"
+                rules={[{ required: true, message: 'Укажите дату подачи' }]}
+                extra={`Заказано: ${formatMoscowDateTime(
+                  new Date(request.scheduledAt),
+                  request.scheduledTimeUnspecified,
+                )}`}
+                style={{ flex: 1, minWidth: 0 }}
+              >
+                <DatePicker
+                  format="DD.MM.YYYY"
+                  style={{ width: '100%' }}
+                  inputReadOnly={isMobile}
+                />
+              </Form.Item>
+              <Form.Item
+                name="scheduledTime"
+                label="Фактическое время (МСК)"
+                tooltip="Необязательно. Рабочее окно — с 07:00 до 21:00"
+                rules={[optionalWorkTimeRule]}
+                style={{ flex: 1, minWidth: 0 }}
+              >
+                <TimeInput />
+              </Form.Item>
+            </div>
+          )}
 
           {/* Шаг 1: чья машина. Количество подходящих единиц — в самой подписи: пустая ветка
               видна до того, как в неё зайдут. */}

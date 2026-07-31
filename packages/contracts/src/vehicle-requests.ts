@@ -389,6 +389,56 @@ export const waybillFieldsSchema = z
   );
 export type WaybillFieldsInput = z.infer<typeof waybillFieldsSchema>;
 
+/**
+ * Фактический срок, уточняемый при переводе заявки в работу.
+ *
+ * Заказанное время — планируемое: заявку заводят заранее, а когда именно машина выйдет,
+ * выясняется в разговоре с исполнителем — то есть ровно в тот момент, когда заявку берут в работу.
+ * Отдельной пары «план/факт» здесь нет намеренно: в заявке одно время — то, на которое
+ * договорились, — а расхождение с первоначальным видно историей («Подача: 03.08 08:00 → 09:30»).
+ *
+ * Правила те же, что у обычной правки заявки: конец срока не раньше начала, время подачи — в
+ * рабочем окне. Проверки «не раньше сегодня» тут нет: в работу заявку берут и задним числом, а
+ * заведение новой — единственное место, где такая проверка уместна.
+ */
+export const confirmSpecialEquipmentScheduleSchema = z
+  .object({
+    requestType: z.literal('special_equipment'),
+    dateFrom: dateOnlySchema,
+    dateTo: dateOnlySchema.nullable().optional(),
+  })
+  .strict();
+
+export const confirmFreightTransportScheduleSchema = z
+  .object({
+    requestType: z.literal('freight_transport'),
+    scheduledAt: scheduledAtSchema,
+    /** Время подачи не назначено: в `scheduledAt` значима только дата, рабочее окно не проверяется. */
+    scheduledTimeUnspecified: z.boolean().optional().default(false),
+  })
+  .strict();
+
+export const confirmScheduleSchema = z
+  .discriminatedUnion('requestType', [
+    confirmSpecialEquipmentScheduleSchema,
+    confirmFreightTransportScheduleSchema,
+  ])
+  .superRefine((v, ctx) => {
+    if (v.requestType === 'special_equipment') {
+      if (v.dateTo && v.dateTo < v.dateFrom) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['dateTo'],
+          message: 'Дата окончания раньше даты начала',
+        });
+      }
+    } else if (!v.scheduledTimeUnspecified && !isWithinWorkTimeAt(new Date(v.scheduledAt))) {
+      ctx.addIssue({ code: 'custom', path: ['scheduledAt'], message: WORK_TIME_MESSAGE });
+    }
+  });
+export type ConfirmScheduleInput = z.infer<typeof confirmScheduleSchema>;
+export type ConfirmScheduleBody = z.input<typeof confirmScheduleSchema>;
+
 export const assignVehicleSchema = z
   .object({
     vehicleId: uuidSchema,
@@ -513,12 +563,26 @@ export const changeVehicleRequestStatusSchema = z
      * сервером — он один знает, была ли у заявки назначена машина и по какой ставке.
      */
     completion: completeVehicleRequestSchema.optional(),
+    /**
+     * Фактический срок работ или подачи, уточнённый при переводе в работу. Необязателен: если
+     * машина выходит на заказанное время, править нечего.
+     */
+    schedule: confirmScheduleSchema.optional(),
     version: z.number().int().nonnegative(),
   })
   .strict()
   .superRefine((v, ctx) => {
     if (statusChangeRequiresReason(v.status) && !v.comment) {
       ctx.addIssue({ code: 'custom', path: ['comment'], message: 'Укажите причину отмены' });
+    }
+    // Срок уточняют там же, где заявку берут в работу: в остальных переходах его правят обычной
+    // правкой заявки, и вторая дорога к тем же полям разошлась бы с первой при первом изменении.
+    if (v.schedule && !transitionRequiresAssignment(v.status)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['schedule'],
+        message: 'Фактический срок уточняют при переводе заявки в работу',
+      });
     }
     if (v.assignment && !transitionRequiresAssignment(v.status)) {
       ctx.addIssue({

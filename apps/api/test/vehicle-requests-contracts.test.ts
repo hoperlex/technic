@@ -407,6 +407,88 @@ describe('vehicle-requests: техника и ставки (ADR 0027)', () => {
     ).toBe(null);
   });
 
+  it('фактический срок уточняется тем же переходом, что и назначение техники', () => {
+    const parsed = changeVehicleRequestStatusSchema.parse({
+      status: 'confirmed',
+      version: 2,
+      assignment: { vehicleId: VEHICLE },
+      schedule: { requestType: 'special_equipment', dateFrom: '2026-07-27', dateTo: '2026-07-29' },
+    });
+    expect(parsed.schedule).toEqual({
+      requestType: 'special_equipment',
+      dateFrom: '2026-07-27',
+      dateTo: '2026-07-29',
+    });
+  });
+
+  it('срок уточняют только при переводе в работу — в остальных переходах его правят правкой', () => {
+    expect(() =>
+      changeVehicleRequestStatusSchema.parse({
+        status: 'done',
+        version: 3,
+        schedule: { requestType: 'special_equipment', dateFrom: '2026-07-27' },
+      }),
+    ).toThrow();
+  });
+
+  it('фактический срок подчиняется тем же правилам, что правка заявки', () => {
+    // Конец периода не раньше начала.
+    expect(() =>
+      changeVehicleRequestStatusSchema.parse({
+        status: 'confirmed',
+        version: 2,
+        schedule: {
+          requestType: 'special_equipment',
+          dateFrom: '2026-07-29',
+          dateTo: '2026-07-27',
+        },
+      }),
+    ).toThrow();
+    // Подача — в рабочем окне 07:00–21:00 МСК.
+    expect(() =>
+      changeVehicleRequestStatusSchema.parse({
+        status: 'confirmed',
+        version: 2,
+        schedule: {
+          requestType: 'freight_transport',
+          scheduledAt: '2026-07-27T05:00:00+03:00',
+        },
+      }),
+    ).toThrow();
+    // Время не назначено — окно не проверяется: заявка «на дату» законна и в работе.
+    expect(
+      changeVehicleRequestStatusSchema.parse({
+        status: 'confirmed',
+        version: 2,
+        schedule: {
+          requestType: 'freight_transport',
+          scheduledAt: '2026-07-27T00:00:00+03:00',
+          scheduledTimeUnspecified: true,
+        },
+      }).schedule?.requestType,
+    ).toBe('freight_transport');
+  });
+
+  it('фактический срок в прошлом принимается: в работу заявку берут и задним числом', () => {
+    expect(
+      changeVehicleRequestStatusSchema.parse({
+        status: 'confirmed',
+        version: 2,
+        schedule: { requestType: 'special_equipment', dateFrom: '2026-07-01' },
+      }).schedule?.requestType,
+    ).toBe('special_equipment');
+  });
+
+  it('поля чужого типа заявки в срок не проходят (strict)', () => {
+    expect(() =>
+      changeVehicleRequestStatusSchema.parse({
+        status: 'confirmed',
+        version: 2,
+        schedule: { requestType: 'special_equipment', scheduledAt: '2026-07-27T09:00:00+03:00' },
+      }),
+    ).toThrow();
+  });
+
   it('лишние поля назначения не проходят (strict)', () => {
     expect(() =>
       changeVehicleRequestStatusSchema.parse({

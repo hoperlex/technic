@@ -25,11 +25,11 @@ import dayjs, { type Dayjs } from 'dayjs';
 import {
   type AddressMeta,
   type AssignVehicleBody,
+  type ConfirmScheduleBody,
   assignmentRateLabel,
   assignmentTitle,
   type CompleteVehicleRequestInput,
   isAddressVerified,
-  isObjectScopedRole,
   isVehicleKindAllowedForRequest,
   normalizeTimeInput,
   parseVehicleClassificationKey,
@@ -81,6 +81,7 @@ import { FilesCell } from '../../components/FileLinks';
 import { VehicleAssignModal } from './VehicleAssignModal';
 import { VehicleCompleteModal } from './VehicleCompleteModal';
 import { VehicleRequestViewModal } from './VehicleRequestViewModal';
+import { useObjectScope } from '../../hooks/useObjectScope';
 import {
   ApprovalCell,
   FileEditor,
@@ -170,21 +171,21 @@ function termLabel(r: VehicleRequestDto): string {
 
 export function VehicleRequestsTab() {
   const { message, modal } = App.useApp();
-  const { user, can } = useAuth();
+  const { can } = useAuth();
   const qc = useQueryClient();
   const isMobile = useIsMobile();
-  // Объектные роли — область видимости (свой объект, заявка до «В работе»); действия — по
+  // Объектные роли — область видимости (свои объекты, заявка до «В работе»); действия — по
   // правам (ADR 0021). Виза — право руководителя строительства (ADR 0025).
-  const isObjectRole = isObjectScopedRole(user?.role);
+  const { isObjectRole, soleObjectId, objectFieldDisabled, limitObjectOptions } = useObjectScope();
   const canEdit = can('vehicleRequests.update');
   const canDelete = can('vehicleRequests.delete');
   const canCreate = can('vehicleRequests.create');
   const canApprove = can('vehicleRequests.approve');
   const canRestore = can('archive.restore');
 
-  // Объектной роли объект зафиксирован на её собственном: и в фильтре списка, и в форме заявки
-  // (сервер всё равно отвечает 403 на чужой объект — assertObjectScope).
-  const ownObjectId = isObjectRole ? (user?.constructionObjectId ?? '') : '';
+  // С одним объектом он зафиксирован и в фильтре списка, и в форме заявки; с несколькими —
+  // выбор сужен до своих (ADR 0039). Сервер всё равно отвечает 403 на чужой — assertObjectScope.
+  const ownObjectId = soleObjectId ?? '';
 
   // requestType не задан — список обоих типов; фильтр в шапке сужает до одного.
   // Все фильтры собраны в панели над таблицей, а не в выпадашках столбцов: в заголовке их
@@ -238,7 +239,8 @@ export function VehicleRequestsTab() {
     { label: requestStatusLabels.confirmed, value: summary?.confirmed ?? 0 },
   ];
 
-  const { options: objectOptions, loading: objectsLoading } = useObjectOptions();
+  const { options: allObjectOptions, loading: objectsLoading } = useObjectOptions();
+  const objectOptions = limitObjectOptions(allObjectOptions);
   const { byKey: classificationByKey, groups, loading: typesLoading } = useVehicleClassifications();
 
   const [open, setOpen] = useState(false);
@@ -314,7 +316,8 @@ export function VehicleRequestsTab() {
     setRecord(null);
     form.resetFields();
     // Штаб заводит заявку только на свой объект — подставляем его сразу, поле заперто.
-    if (ownObjectId) form.setFieldsValue({ objectId: ownObjectId } as Partial<FormValues>);
+    // Объект подставляется, только когда он у роли один: с несколькими выбирает человек.
+    if (soleObjectId) form.setFieldsValue({ objectId: soleObjectId } as Partial<FormValues>);
     setLoadingMeta(null);
     setUnloadingMeta(null);
     editor.reset([]);
@@ -340,7 +343,10 @@ export function VehicleRequestsTab() {
     } else {
       setLoadingMeta(r.loadingAddress);
       setUnloadingMeta(r.unloadingAddress);
-      const at = dayjs.tz(r.scheduledAt, MOSCOW_TZ);
+      // Момент с сервера переводится в МСК, а не читается как московское время: `dayjs.tz(iso,
+      // tz)` теряет пришедшее смещение и показывал бы подачу на три часа раньше — а правка
+      // сохраняла бы этот сдвиг обратно в заявку. Так же читает подачу заявка на вывоз мусора.
+      const at = dayjs(r.scheduledAt).tz(MOSCOW_TZ);
       form.setFieldsValue({
         requestType: r.requestType,
         objectId: r.objectId,
@@ -481,16 +487,16 @@ export function VehicleRequestsTab() {
       version: number;
       comment?: string;
       assignment?: AssignVehicleBody;
+      /** Фактический срок, уточнённый при переводе в работу: заказывали на одно время, вышли на другое. */
+      schedule?: ConfirmScheduleBody;
       completion?: CompleteVehicleRequestInput;
     }) =>
-      vehicleRequestsApi.changeStatus(
-        v.id,
-        v.status,
-        v.version,
-        v.comment,
-        v.assignment,
-        v.completion,
-      ),
+      vehicleRequestsApi.changeStatus(v.id, v.status, v.version, {
+        comment: v.comment,
+        assignment: v.assignment,
+        schedule: v.schedule,
+        completion: v.completion,
+      }),
     onSuccess: () => {
       message.success('Статус изменён');
       setCancelTarget(null);
@@ -818,7 +824,7 @@ export function VehicleRequestsTab() {
         placeholder="Все объекты"
         style={{ width: 240 }}
         options={objectOptions}
-        disabled={isObjectRole}
+        disabled={objectFieldDisabled}
         value={params.objectId}
         onChange={(v: string | undefined) => applyFilter({ objectId: v })}
       />
@@ -876,7 +882,7 @@ export function VehicleRequestsTab() {
       options: objectOptions,
       placeholder: 'Все объекты',
       // Объектной роли объект зафиксирован на её собственном.
-      disabled: isObjectRole,
+      disabled: objectFieldDisabled,
       onChange: (v) => applyFilter({ objectId: v }),
     },
     classificationFilter.mobileFilter,
@@ -1040,7 +1046,7 @@ export function VehicleRequestsTab() {
               showSearch
               optionFilterProp="label"
               placeholder="Объект"
-              disabled={isObjectRole}
+              disabled={objectFieldDisabled}
             />
           </Form.Item>
           {/* Тип заявки неизменяем после создания (сервер отдаёт 422) — при правке поле заперто. */}
@@ -1229,19 +1235,21 @@ export function VehicleRequestsTab() {
         }
       />
 
-      {/* Перевод в работу: техника и ставки (ADR 0027). Назначение уходит тем же запросом, что
-          и смена статуса, — заявка не бывает «в работе» ни на чём. */}
+      {/* Перевод в работу: техника, ставки (ADR 0027) и фактический срок. Всё уходит тем же
+          запросом, что и смена статуса, — заявка не бывает «в работе» ни на чём и не бывает
+          взятой на одно время с путевым листом на другое. */}
       <VehicleAssignModal
         request={assignTarget}
         confirmLoading={statusMut.isPending}
         onCancel={() => setAssignTarget(null)}
-        onSubmit={(assignment) =>
+        onSubmit={({ assignment, schedule }) =>
           assignTarget &&
           statusMut.mutate({
             id: assignTarget.id,
             status: 'confirmed',
             version: assignTarget.version,
             assignment,
+            schedule,
           })
         }
       />

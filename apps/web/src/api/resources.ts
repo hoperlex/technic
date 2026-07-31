@@ -12,6 +12,7 @@ import type {
   AttachVehicleTypeSpecInput,
   CompleteVehicleRequestInput,
   CompleteWasteRequestInput,
+  ConfirmScheduleBody,
   ContainerKind,
   ContainerTypeDto,
   CounterpartyDto,
@@ -278,27 +279,33 @@ export const vehicleRequestsApi = {
   update: (id: string, body: UpdateVehicleRequestInput) =>
     apiFetch<VehicleRequestDto>(`/vehicle-requests/${id}`, { method: 'PATCH', body }),
   /**
-   * `comment` уходит в историю статусов; при отмене это обязательная причина. `assignment` —
-   * техника и ставки при переводе в работу (ADR 0027), `completion` — отработанное время и
-   * стоимость при выполнении (ADR 0029): и то и другое проводится тем же запросом, что и смена
-   * статуса, — заявка не бывает «в работе» ни на чём и «выполненной» без факта.
+   * `comment` уходит в историю статусов; при отмене это обязательная причина. Остальное
+   * предъявляется вместе со статусом и потому собрано в объект: `assignment` — техника и ставки
+   * при переводе в работу (ADR 0027), `schedule` — фактический срок, о котором договорились при
+   * том же переводе, `completion` — отработанное время и стоимость при выполнении (ADR 0029).
+   * Всё это проводится тем же запросом, что и смена статуса: заявка не бывает «в работе» ни на
+   * чём, взятой на одно время с листом на другое и «выполненной» без факта.
    */
   changeStatus: (
     id: string,
     status: RequestStatus,
     version: number,
-    comment = '',
-    assignment?: AssignVehicleBody,
-    completion?: CompleteVehicleRequestInput,
+    extra: {
+      comment?: string;
+      assignment?: AssignVehicleBody;
+      schedule?: ConfirmScheduleBody;
+      completion?: CompleteVehicleRequestInput;
+    } = {},
   ) =>
     apiFetch<VehicleRequestDto>(`/vehicle-requests/${id}/status`, {
       method: 'PATCH',
       body: {
         status,
-        comment,
+        comment: extra.comment ?? '',
         version,
-        ...(assignment ? { assignment } : {}),
-        ...(completion ? { completion } : {}),
+        ...(extra.assignment ? { assignment: extra.assignment } : {}),
+        ...(extra.schedule ? { schedule: extra.schedule } : {}),
+        ...(extra.completion ? { completion: extra.completion } : {}),
       },
     }),
   /** Виза руководителя строительства: `approved: false` — отзыв (ADR 0025). */
