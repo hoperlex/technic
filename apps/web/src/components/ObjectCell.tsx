@@ -5,6 +5,14 @@ import { Typography } from 'antd';
 const line: CSSProperties = { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' };
 
 /**
+ * Адрес не участвует в подборе ширины колонки: при `width: 0` его вклад в max-content нулевой
+ * (процент в `minWidth` браузер считает за `auto`, пока ширина родителя неизвестна), а при
+ * отрисовке `minWidth: '100%'` возвращает строке всю ширину ячейки. Иначе колонка без заданной
+ * ширины растягивалась бы по самому длинному адресу — ширину задаёт первая строка, наименование.
+ */
+const addressBox: CSSProperties = { width: 0, minWidth: '100%' };
+
+/**
  * Заказчик заявки в строке таблицы: наименование объекта (или отдела), а под ним — адрес. Адрес
  * отвечает на «куда ехать» — второй вопрос к списку после самой заявки, — но своей колонки не
  * стоит: у заявок отдела адреса нет (ADR 0040), и колонка стояла бы пустой через строку.
@@ -22,13 +30,15 @@ export function ObjectCell({ name, address }: { name: string; address?: string |
         {name}
       </div>
       {trimmed && (
-        <Typography.Text
-          type="secondary"
-          style={{ ...line, display: 'block', fontSize: 12 }}
-          title={trimmed}
-        >
-          {trimmed}
-        </Typography.Text>
+        <div style={addressBox}>
+          <Typography.Text
+            type="secondary"
+            style={{ ...line, display: 'block', fontSize: 12 }}
+            title={trimmed}
+          >
+            {trimmed}
+          </Typography.Text>
+        </div>
       )}
     </div>
   );
