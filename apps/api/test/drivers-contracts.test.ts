@@ -272,9 +272,9 @@ describe('реквизиты удостоверения не внесены', ()
   });
 
   it('заполненный документ предупреждения не вызывает', () => {
-    expect(licenseRequisitesMissing(licenseNumberLabel({ series: '99 39', number: '482645' }))).toBe(
-      false,
-    );
+    expect(
+      licenseRequisitesMissing(licenseNumberLabel({ series: '99 39', number: '482645' })),
+    ).toBe(false);
   });
 
   it('пробелы вместо номера — это не номер', () => {
