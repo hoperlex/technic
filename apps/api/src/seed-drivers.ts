@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { eq, inArray } from 'drizzle-orm';
-import { formatSnils, isValidSnils, normalizeSnils, splitFullName } from '@technic/contracts';
+import { formatSnils } from '@technic/contracts';
+import { type DriversImportFile, prepareDriverImport } from './services/driver-import';
 import { closeDb, db } from './db/client';
 import {
   credentialTypes,
@@ -29,23 +30,6 @@ import {
 // Обратной операции нет намеренно: удаление настоящих людей — учётное действие с аудитом, а не
 // ключ командной строки.
 
-/** Что кадровая выгрузка даёт по одному человеку. Даты — «ДД.ММ.ГГГГ» или «ГГГГ-ММ-ДД». */
-interface DriverRecord {
-  fullName: string;
-  personnelNo?: string;
-  birthDate?: string;
-  employedSince?: string;
-  snils: string;
-  /** Категории строкой ровно как в источнике («B,B1,C,C1,BE,CE,C1E»). Разбирает скрипт. */
-  categories?: string;
-}
-
-interface DriversFile {
-  department?: string;
-  jobTitle?: string;
-  drivers: DriverRecord[];
-}
-
 /** Код специализации, которой выражается водитель: отдельной таблицы для него нет (ADR 0008). */
 const DRIVER_SPECIALIZATION_CODE = 'driver';
 const DRIVER_LICENSE_CODE = 'driver_license';
@@ -61,36 +45,6 @@ const LICENSE_COMMENT =
   'Заведено кадровой выгрузкой: известны только категории. Серию, номер, дату выдачи и срок ' +
   'действия внести по оригиналу удостоверения — заменой документа.';
 
-function parseDate(value: string | undefined, field: string, who: string): string | null {
-  if (!value || value.trim() === '') return null;
-  const v = value.trim();
-  const iso = /^(\d{4})-(\d{2})-(\d{2})$/u.exec(v);
-  if (iso) return v;
-  const ru = /^(\d{2})\.(\d{2})\.(\d{4})$/u.exec(v);
-  if (!ru)
-    throw new Error(`${who}: ${field} — ожидается ДД.ММ.ГГГГ или ГГГГ-ММ-ДД, получено «${v}»`);
-  return `${ru[3]}-${ru[2]}-${ru[1]}`;
-}
-
-/**
- * Коды категорий из строки источника. Регистр снимается («C1E» → «c1e»), пустые элементы
- * отбрасываются: в выгрузке встречается «C,C1,,BE» — это мусор разделителей, а не категория.
- * Неизвестные коды не угадываются: «AM», «CE1» и одиночная «E» похожи на M, C1E и старую
- * докатегорийную E, но речь о допуске живого человека к грузовику — такую догадку подтверждают
- * удостоверением в руках, а не эвристикой в сиде. Скрипт их перечислит, остальные заведёт.
- */
-function parseCategories(raw: string | undefined): string[] {
-  if (!raw) return [];
-  return [
-    ...new Set(
-      raw
-        .split(',')
-        .map((c) => c.trim().toLowerCase())
-        .filter((c) => c !== ''),
-    ),
-  ];
-}
-
 interface Report {
   created: string[];
   skipped: string[];
@@ -99,7 +53,7 @@ interface Report {
   nameCollisions: { who: string; existing: string }[];
 }
 
-async function run(file: DriversFile, dryRun: boolean): Promise<Report> {
+async function run(file: DriversImportFile, dryRun: boolean): Promise<Report> {
   const jobTitle = file.jobTitle ?? 'Водитель';
   const employmentComment = file.department ?? '';
 
@@ -123,53 +77,18 @@ async function run(file: DriversFile, dryRun: boolean): Promise<Report> {
     .where(eq(qualificationCategories.credentialTypeId, licenseType.id));
   const categoryIdByCode = new Map(categoryRows.map((c) => [c.code, c.id]));
 
+  // Разбор целиком до первой записи в базу: половина заведённого справочника хуже, чем
+  // невыполненный запуск — второй раз его придётся сверять руками.
+  const prepared = prepareDriverImport(file, categoryIdByCode.keys());
+  const parsed = prepared.drivers;
+
   const report: Report = {
     created: [],
     skipped: [],
     withoutLicense: [],
-    unknownCategories: [],
+    unknownCategories: prepared.unknownCategories,
     nameCollisions: [],
   };
-
-  // Разбор целиком до первой записи в базу: половина заведённого справочника хуже, чем
-  // невыполненный запуск — второй раз его придётся сверять руками.
-  const parsed = file.drivers.map((d) => {
-    const who = d.fullName;
-    const name = splitFullName(d.fullName);
-    if (!name.lastName || !name.firstName) {
-      throw new Error(`${who}: ожидается «Фамилия Имя Отчество»`);
-    }
-    const snils = normalizeSnils(d.snils ?? '');
-    if (!/^\d{11}$/u.test(snils)) throw new Error(`${who}: СНИЛС — 11 цифр, получено «${d.snils}»`);
-    // Контрольная сумма ловит опечатку в одной цифре — то, чего формат не видит. Пропустить её
-    // здесь значило бы завести номер, который потом отвергнет форма правки карточки.
-    if (!isValidSnils(snils)) {
-      throw new Error(`${who}: СНИЛС ${formatSnils(snils)} не проходит проверку контрольной суммы`);
-    }
-
-    const codes = parseCategories(d.categories);
-    const known = codes.filter((c) => categoryIdByCode.has(c));
-    const unknown = codes.filter((c) => !categoryIdByCode.has(c));
-    if (unknown.length > 0) report.unknownCategories.push({ who, codes: unknown });
-
-    return {
-      who,
-      name,
-      snils,
-      personnelNo: d.personnelNo?.trim() ?? '',
-      birthDate: parseDate(d.birthDate, 'дата рождения', who),
-      employedSince: parseDate(d.employedSince, 'дата приёма', who),
-      categories: known,
-    };
-  });
-
-  const duplicates = parsed
-    .map((p) => p.snils)
-    .filter((s, i, all) => all.indexOf(s) !== i)
-    .map((s) => formatSnils(s));
-  if (duplicates.length > 0) {
-    throw new Error(`СНИЛС повторяется в файле: ${[...new Set(duplicates)].join(', ')}`);
-  }
 
   // Однофамильцы среди уже заведённых — не ошибка (ADR 0008: жёсткого UNIQUE по ФИО нет), но
   // при первичном наполнении это чаще всего тот же человек, заведённый раньше руками.
@@ -299,7 +218,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const file = JSON.parse(readFileSync(path, 'utf8')) as DriversFile;
+  const file = JSON.parse(readFileSync(path, 'utf8')) as DriversImportFile;
   if (!Array.isArray(file.drivers) || file.drivers.length === 0) {
     throw new Error(`${path}: нет массива drivers`);
   }
