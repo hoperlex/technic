@@ -16,6 +16,7 @@
     "seed:admin": "tsx src/seed-admin.ts",
     "seed:drivers": "tsx src/seed-drivers.ts",
     "seed:drivers-test": "tsx src/seed-drivers-test.ts",
+    "backfill:routes": "tsx src/backfill-routes.ts",
     "template:waybill": "tsx scripts/mark-waybill-templates.ts"
   },
   "dependencies": {
