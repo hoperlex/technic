@@ -22,6 +22,7 @@ import {
   type VehicleOwnership,
   vehiclePriceSchema,
 } from './vehicles';
+import { assignRouteSchema, routeTripFieldsSchema, type RouteTripFields } from './vehicle-routes';
 import {
   MIN_REQUEST_DATE_MESSAGE,
   WORK_TIME_MESSAGE,
@@ -556,36 +557,15 @@ export function transitionRequiresAssignment(to: RequestStatus): boolean {
  * аренды хотя бы одну потребует сервер — он знает, чья это машина.
  */
 /**
- * Реквизиты рейса для путевого листа (ADR 0037). В заявке их нет, в справочниках — тоже: они
- * описывают конкретный выезд. От листа к листу почти не меняются, поэтому форма подставляет их
- * из прошлого листа этой машины, а человек правит раз в сезон.
+ * Реквизиты рейса (ADR 0037). Устаревшее имя: они описывают выезд, а не заявку, и переехали в
+ * контракт маршрута (`routeTripFieldsSchema`). Имя остаётся, пока сервер принимает старое тело
+ * запроса на перевод в работу — до contract-релиза маршрутов.
+ *
+ * @deprecated используйте `routeTripFieldsSchema`
  */
-export const waybillFieldsSchema = z
-  .object({
-    /**
-     * Рейс с прицепом. Признак рейса, а не свойство машины: прицепа в реестре техники нет, а
-     * требование к категории водителя он поднимает — «C» превращается в «CE».
-     */
-    withTrailer: z.boolean().optional().default(false),
-    trailer1Model: z.string().trim().max(100).optional().default(''),
-    trailer1RegNumber: z.string().trim().max(20).optional().default(''),
-    trailer2Model: z.string().trim().max(100).optional().default(''),
-    trailer2RegNumber: z.string().trim().max(20).optional().default(''),
-    /** Гаражный номер машины: если пуст, берётся из справочника техники. */
-    garageNumber: z.string().trim().max(50).optional().default(''),
-    /** Вид сообщения: «городское», «пригородное», «междугородное». */
-    communicationKind: z.string().trim().max(50).optional().default(''),
-    /** Вид перевозки: в образцах бланка — «коммерческая». */
-    transportationKind: z.string().trim().max(50).optional().default(''),
-  })
-  .strict()
-  .refine(
-    (w) =>
-      w.withTrailer ||
-      (!w.trailer1Model && !w.trailer1RegNumber && !w.trailer2Model && !w.trailer2RegNumber),
-    { message: 'Реквизиты прицепа без прицепа в рейсе не печатаются', path: ['withTrailer'] },
-  );
-export type WaybillFieldsInput = z.infer<typeof waybillFieldsSchema>;
+export const waybillFieldsSchema = routeTripFieldsSchema;
+/** @deprecated используйте `RouteTripFields` */
+export type WaybillFieldsInput = RouteTripFields;
 
 /**
  * Фактический срок, уточняемый при переводе заявки в работу.
@@ -645,13 +625,24 @@ export const assignVehicleSchema = z
     /** Длительность смены: без неё цена за смену — сумма без единицы измерения. */
     shiftHours: shiftHoursSchema.nullable().optional(),
     /**
-     * Кто за рулём (ADR 0037). Обязателен, когда на рейс выписывается путевой лист — то есть у
-     * собственной машины типа, за которым закреплён бланк; решает это сервер, потому что состав
-     * справочника видит он. У аренды водитель чужой, и портал его не ведёт.
+     * Рейс, в который заявка едет: существующий маршрут этой машины на эту дату либо новый — с
+     * водителем и реквизитами рейса. Обязателен там, где выписывается путевой лист (грузоперевозка
+     * на собственной машине); решает это сервер, потому что состав справочника видит он.
+     */
+    route: assignRouteSchema.optional(),
+    /**
+     * Кто за рулём (ADR 0037).
+     *
+     * @deprecated водитель переехал на маршрут (`route.newRoute.driverPersonId`). Поле принимается,
+     * пока живо старое тело запроса, — сервер заводит по нему маршрут сам.
      */
     driverPersonId: uuidSchema.optional(),
-    /** Графы бланка, которых нет ни в заявке, ни в справочниках (ADR 0037). */
-    waybill: waybillFieldsSchema.optional(),
+    /**
+     * Графы бланка, которых нет ни в заявке, ни в справочниках (ADR 0037).
+     *
+     * @deprecated реквизиты рейса переехали на маршрут (`route.newRoute.trip`).
+     */
+    waybill: routeTripFieldsSchema.optional(),
   })
   .strict();
 export type AssignVehicleInput = z.infer<typeof assignVehicleSchema>;

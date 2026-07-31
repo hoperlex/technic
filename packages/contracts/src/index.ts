@@ -23,5 +23,6 @@ export * from './files';
 export * from './request-history';
 export * from './waste-tariffs';
 export * from './waste-requests';
+export * from './vehicle-routes';
 export * from './vehicle-requests';
 export * from './waybills';
