@@ -1,8 +1,8 @@
 # План: досрочное завершение заказа спецтехники
 
-Рабочий план, не ADR. Решения, принятые при постановке, помечены **Р**; их обоснование переезжает
-в ADR на этапе реализации (номер ADR и номер миграции проверить непосредственно перед созданием
-файлов — потоки нумеруются независимо).
+Рабочий план, не ADR. Решения, принятые при постановке, помечены **Р**; их обоснование переехало
+в [ADR 0044](adr/0044-vehicle-request-early-end.md). **Реализовано целиком** — все пять этапов §8,
+миграция `0071`.
 
 Задача: техника, заказанная на объект на длительный срок, освобождается раньше — работы кончились,
 фронт закрыт, машина простаивает. Портал должен уметь сократить срок заявки **с визой руководителя
@@ -47,8 +47,13 @@
 ```ts
 // packages/contracts/src/vehicle-requests.ts
 export function canRequestEarlyEnd(
-  r: { requestType: VehicleRequestType; status: RequestStatus; deletedAt: string | null;
-       dateFrom: string; dateTo: string | null },
+  r: {
+    requestType: VehicleRequestType;
+    status: RequestStatus;
+    deletedAt: string | null;
+    dateFrom: string;
+    dateTo: string | null;
+  },
   onDate: string,
 ): boolean;
 ```
@@ -192,8 +197,8 @@ Drizzle-схема (`apps/api/src/db/schema.ts`) повторяет таблиц
 ```ts
 export const VEHICLE_EARLY_END_STATUSES = ['pending', 'approved', 'rejected'] as const;
 export type VehicleEarlyEndStatus = (typeof VEHICLE_EARLY_END_STATUSES)[number];
-export const vehicleEarlyEndStatusLabels: Record<VehicleEarlyEndStatus, string>;  // Ждёт визы / Согласовано / Отклонено
-export const vehicleEarlyEndStatusColors: Record<VehicleEarlyEndStatus, string>;  // orange / green / red
+export const vehicleEarlyEndStatusLabels: Record<VehicleEarlyEndStatus, string>; // Ждёт визы / Согласовано / Отклонено
+export const vehicleEarlyEndStatusColors: Record<VehicleEarlyEndStatus, string>; // orange / green / red
 
 export interface VehicleRequestEarlyEndDto {
   status: VehicleEarlyEndStatus;
@@ -209,20 +214,26 @@ export interface VehicleRequestEarlyEndDto {
   decisionComment: string;
 }
 
-export const requestVehicleEarlyEndSchema = z.object({
-  newDateTo: dateOnlySchema,
-  reason: z.string().trim().min(1, 'Укажите причину').max(2000),
-  version: z.number().int().nonnegative(),
-}).strict();
+export const requestVehicleEarlyEndSchema = z
+  .object({
+    newDateTo: dateOnlySchema,
+    reason: z.string().trim().min(1, 'Укажите причину').max(2000),
+    version: z.number().int().nonnegative(),
+  })
+  .strict();
 
 /** Виза и отказ — одним маршрутом: одно право, одна область, один инвариант «пока ждёт визы». */
-export const decideVehicleEarlyEndSchema = z.object({
-  approved: z.boolean(),
-  comment: commentSchema.optional().default(''),
-  version: z.number().int().nonnegative(),
-}).strict().superRefine((v, ctx) => {
-  if (!v.approved && !v.comment) ctx.addIssue({ /* path: ['comment'], 'Укажите причину отказа' */ });
-});
+export const decideVehicleEarlyEndSchema = z
+  .object({
+    approved: z.boolean(),
+    comment: commentSchema.optional().default(''),
+    version: z.number().int().nonnegative(),
+  })
+  .strict()
+  .superRefine((v, ctx) => {
+    if (!v.approved && !v.comment)
+      ctx.addIssue({/* path: ['comment'], 'Укажите причину отказа' */});
+  });
 ```
 
 Поле DTO — в `SpecialEquipmentRequestDto`, а не в базовом: у грузоперевозки периода нет, и
@@ -294,14 +305,14 @@ export interface SpecialEquipmentRequestDto extends VehicleRequestBaseDto {
 
 ### Правки существующих маршрутов
 
-| Место | Что меняется |
-| --- | --- |
-| `requestSelect` / `baseQuery` | `leftJoin(vehicleRequestEarlyEndings)` + два алиаса `users` (кто запросил, кто решил) |
-| `toDto` | ветка `special_equipment` собирает `earlyEnd` |
-| `PATCH /:id` | Р8: `dropApproval` только при `isApprovalChangeable(before.status)`; Р9: 422 на сокращение `dateTo` у заявки «В работе»; Р7: правка периода снимает `pending` (аудит `early_end_cancel`, `reason: 'edited'`) |
-| `PATCH /:id/status` | Р7: уход из `confirmed` снимает `pending` (аудит `early_end_cancel`, `reason: 'closed'`) — в той же транзакции, что и статус |
-| `GET /on-site/summary` | пятая цифра `earlyEndPending` — сколько машин ждёт визы на досрочный отъезд |
-| `services/vehicle-request-history.ts` | четыре действия в `AUDIT_ACTIONS` и `AUDIT_KINDS` |
+| Место                                 | Что меняется                                                                                                                                                                                                 |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `requestSelect` / `baseQuery`         | `leftJoin(vehicleRequestEarlyEndings)` + два алиаса `users` (кто запросил, кто решил)                                                                                                                        |
+| `toDto`                               | ветка `special_equipment` собирает `earlyEnd`                                                                                                                                                                |
+| `PATCH /:id`                          | Р8: `dropApproval` только при `isApprovalChangeable(before.status)`; Р9: 422 на сокращение `dateTo` у заявки «В работе»; Р7: правка периода снимает `pending` (аудит `early_end_cancel`, `reason: 'edited'`) |
+| `PATCH /:id/status`                   | Р7: уход из `confirmed` снимает `pending` (аудит `early_end_cancel`, `reason: 'closed'`) — в той же транзакции, что и статус                                                                                 |
+| `GET /on-site/summary`                | пятая цифра `earlyEndPending` — сколько машин ждёт визы на досрочный отъезд                                                                                                                                  |
+| `services/vehicle-request-history.ts` | четыре действия в `AUDIT_ACTIONS` и `AUDIT_KINDS`                                                                                                                                                            |
 
 Заявка «Выполнена», откаченная администратором обратно в «В работе», сокращённый срок не
 восстанавливает: сокращение состоялось, и строка `approved` рядом объясняет, почему срок такой.
@@ -366,13 +377,13 @@ export interface SpecialEquipmentRequestDto extends VehicleRequestBaseDto {
 
 Каждый этап — свой коммит в `main` явными путями (соседние потоки держат в дереве своё).
 
-| № | Этап | Содержание |
-| --- | --- | --- |
-| 1 | БД | миграция, drizzle-схема, `docs/database-schema.md` |
-| 2 | Контракты | DTO, схемы, предикаты, подписи, виды событий + тесты контрактов |
-| 3 | API | `requestSelect`/`toDto`, три маршрута, снятие `pending` (Р7), Р8 и Р9, аудит и история, сводка среза + тесты доступа |
-| 4 | Портал | модалка, действия и решения, теги, карточка, история, сводка |
-| 5 | Документация | ADR (номер проверить), строка-уточнение в ADR 0036 и ADR 0025, `docs/access-model.md`, памятка `docs/guide-rukstroy.md` |
+| №   | Этап                       | Содержание                                                                                                                                   |
+| --- | -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | БД — **сделано**           | миграция `0071`, drizzle-схема, `docs/database-schema.md`                                                                                    |
+| 2   | Контракты — **сделано**    | DTO, схемы, предикаты, подписи, виды событий + тесты контрактов                                                                              |
+| 3   | API — **сделано**          | `requestSelect`/`toDto`, три маршрута, снятие `pending` (Р7), Р8 и Р9, аудит и история, сводка среза + тесты доступа                         |
+| 4   | Портал — **сделано**       | модалка, действия и решения, теги, карточка, история, сводка                                                                                 |
+| 5   | Документация — **сделано** | [ADR 0044](adr/0044-vehicle-request-early-end.md), уточнения в ADR 0036 и ADR 0025, `docs/access-model.md`, памятка `docs/guide-rukstroy.md` |
 
 Этапы 3 и 4 разделены сознательно: сервер с полным поведением проверяется тестами до того, как
 появляется первая кнопка.
