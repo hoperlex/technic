@@ -73,6 +73,13 @@ export const vehicleOwnershipEnum = pgEnum('vehicle_ownership', ['own', 'rental'
 // Чем мерят отработанное при закрытии заявки ТС (ADR 0029) — теми же единицами, в которых
 // заведены ставки: за час и за смену.
 export const vehicleWorkUnitEnum = pgEnum('vehicle_work_unit', ['hours', 'shifts']);
+// Состояние запроса на досрочное завершение заказа спецтехники (ADR 0044): сокращение срока
+// согласуется тем же руководителем строительства, что визировал заказ, — отсюда три состояния.
+export const vehicleEarlyEndStatusEnum = pgEnum('vehicle_early_end_status', [
+  'pending',
+  'approved',
+  'rejected',
+]);
 // Состояние путевого листа (ADR 0037). Черновика нет: лист рождается переводом заявки в работу
 // сразу выданным, а испорченный бланк аннулируют с причиной — стереть его нельзя.
 export const waybillStatusEnum = pgEnum('waybill_status', ['issued', 'cancelled']);
@@ -1499,6 +1506,60 @@ export const vehicleRequestCompletions = pgTable(
     ),
     // «Что закрыли за период и на какую сумму» — вопрос вкладки «История» ко всем закрытиям.
     completedAtIdx: index('vehicle_request_completions_completed_at_idx').on(t.completedAt.desc()),
+  }),
+);
+
+// ── Досрочное завершение заказа спецтехники (ADR 0044, миграция 0071) ──
+// Техника освободилась раньше срока: сокращение периода заявки согласуется тем же руководителем
+// строительства, что визировал заказ. Одна заявка — одна строка: повторный запрос переписывает её,
+// а цепочка решений остаётся событиями истории (как у закрытия заявки, ADR 0029).
+export const vehicleRequestEarlyEndings = pgTable(
+  'vehicle_request_early_endings',
+  {
+    requestId: uuid('request_id')
+      .primaryKey()
+      .references(() => vehicleRequests.id, { onDelete: 'cascade' }),
+    status: vehicleEarlyEndStatusEnum('status').notNull(),
+    newDateTo: date('new_date_to', { mode: 'string' }).notNull(),
+    // Снимок срока на момент запроса: по нему считаются освобождённые дни и видно, что заявку
+    // правили после запроса. Текущий date_to к моменту визы отвечает уже на другой вопрос.
+    previousDateTo: date('previous_date_to', { mode: 'string' }).notNull(),
+    reason: text('reason').notNull(),
+    requestedBy: uuid('requested_by')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    requestedAt: timestamp('requested_at', { withTimezone: true }).notNull().defaultNow(),
+    decidedBy: uuid('decided_by').references(() => users.id, { onDelete: 'restrict' }),
+    decidedAt: timestamp('decided_at', { withTimezone: true }),
+    decisionComment: text('decision_comment').notNull().default(''),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    decision: check(
+      'vehicle_request_early_endings_decision_check',
+      sql`(${t.decidedBy} IS NULL) = (${t.decidedAt} IS NULL)`,
+    ),
+    pendingState: check(
+      'vehicle_request_early_endings_pending_check',
+      sql`(${t.status} = 'pending') = (${t.decidedAt} IS NULL)`,
+    ),
+    // Досрочное завершение только сокращает срок: равный и больший — уже продление.
+    earlier: check(
+      'vehicle_request_early_endings_earlier_check',
+      sql`${t.newDateTo} < ${t.previousDateTo}`,
+    ),
+    reasonFilled: check(
+      'vehicle_request_early_endings_reason_check',
+      sql`btrim(${t.reason}) <> ''`,
+    ),
+    rejectionReason: check(
+      'vehicle_request_early_endings_rejection_reason_check',
+      sql`${t.status} <> 'rejected' OR btrim(${t.decisionComment}) <> ''`,
+    ),
+    // «Что ждёт визы на досрочный отъезд» — вопрос, с которого начинают день.
+    pendingIdx: index('vehicle_request_early_endings_pending_idx')
+      .on(t.requestedAt.desc())
+      .where(sql`${t.status} = 'pending'`),
   }),
 );
 
