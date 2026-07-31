@@ -329,6 +329,20 @@ export const vehicleRequestsApi = {
       } | null;
     }>(`/vehicle-requests/${id}/waybill-prefill`, { query: { vehicleId } }),
   /**
+   * Что портал знает о рейсе до перевода заявки в работу: ведётся ли он на выбранную машину, на
+   * какую дату, какие рейсы этой машины на неё уже заведены и чем были заполнены графы шапки в
+   * прошлый раз. Форма либо кладёт заявку в готовый рейс, либо заводит новый.
+   */
+  routePrefill: (id: string, vehicleId: string) =>
+    apiFetch<{
+      required: boolean;
+      formLabel: string | null;
+      reason: string | null;
+      tripDate: string;
+      routes: VehicleRouteDto[];
+      trip: RouteTripFields | null;
+    }>(`/vehicle-requests/${id}/route-prefill`, { query: { vehicleId } }),
+  /**
    * Лист, выписанный по заявке (ADR 0041) — его печатают из карточки, не уходя в журнал. `null`
    * приходит там, где листа нет: аренда, заказ техники на объект, заявка не в работе.
    */

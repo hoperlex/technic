@@ -22,6 +22,7 @@ import {
   LICENSE_REQUISITES_MISSING_HINT,
   LICENSE_REQUISITES_MISSING_WARNING,
   licenseRequisitesMissing,
+  MAX_ROUTE_REQUESTS,
   normalizeTimeInput,
   VEHICLE_CATEGORY_MISMATCH_HINT,
   VEHICLE_OWNERSHIPS,
@@ -67,14 +68,29 @@ import { formatDateOnly } from './shared';
  * Ставки подставляются из предложения аренды и правятся свободно: договариваются по конкретной
  * заявке, и прайс справочника такой договорённости не начальник. Расхождение с прайсом видно
  * подсказкой — чтобы правка была видимой, а не тихой.
+ *
+ * Этим же окном меняют машину у заявки, которая уже в работе (ADR 0048): подбор устроен одинаково
+ * в обоих случаях, и второе окно с тем же содержимым разошлось бы с первым при первой же правке.
+ * Отличается блок фактического срока — при смене техники его не спрашивают: срок уже согласован,
+ * меняется только чем заявку выполняют.
  */
 interface Props {
   /** null — окно закрыто; заявка берётся из строки списка. */
   request: VehicleRequestDto | null;
+  /**
+   * Зачем открыто окно: `confirm` — перевод заявки в работу (ADR 0027), `reassign` — смена машины
+   * у той, что уже работает (ADR 0048). Режим задаёт заголовок, надпись на кнопке и наличие блока
+   * фактического срока, но не сам подбор техники — он один на оба случая.
+   */
+  mode?: 'confirm' | 'reassign';
   confirmLoading: boolean;
   onCancel: () => void;
-  onSubmit: (v: { assignment: AssignVehicleBody; schedule: ConfirmScheduleBody }) => void;
+  /** `schedule: null` — срок не спрашивали (режим `reassign`). */
+  onSubmit: (v: { assignment: AssignVehicleBody; schedule: ConfirmScheduleBody | null }) => void;
 }
+
+/** Значение селекта «завести новый рейс»: пустая строка неотличима от «ещё не выбрали». */
+const NEW_ROUTE = 'new';
 
 interface FormValues {
   // ── Фактический срок ──
@@ -89,7 +105,8 @@ interface FormValues {
   pricePerHour?: number | null;
   pricePerShift?: number | null;
   shiftHours?: number | null;
-  // ── Путевой лист (ADR 0037) ──
+  // ── Маршрут: готовый рейс либо новый вместе с водителем и реквизитами выезда ──
+  routeId?: string;
   driverPersonId?: string;
   withTrailer?: boolean;
   trailer1Model?: string;
@@ -121,11 +138,19 @@ function vehicleOptionLabel(v: VehicleDto, requestCategoryId: string | null): st
   return extra.length > 0 ? `${title} — ${extra.join(' · ')}` : title;
 }
 
-export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit }: Props) {
+export function VehicleAssignModal({
+  request,
+  mode = 'confirm',
+  confirmLoading,
+  onCancel,
+  onSubmit,
+}: Props) {
   const { message } = App.useApp();
   const isMobile = useIsMobile();
   const [form] = Form.useForm<FormValues>();
   const [ownership, setOwnership] = useState<VehicleOwnership>('own');
+  /** Смена машины у работающей заявки (ADR 0048): срок не спрашивается — он уже согласован. */
+  const reassign = mode === 'reassign';
 
   // Вся техника заказанного типа одним запросом: обе ветки принадлежности нужны сразу — по их
   // наполнению подписан сам переключатель («Аренда — 12»), а списки невелики (сужены типом ТС).
@@ -240,20 +265,27 @@ export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit
       ? vehicleCategoryMismatchWarning(orderedLabel, selected.categoryName ?? '')
       : null;
 
-  // ── Путевой лист (ADR 0037) ──
-  // Выписывается ли лист на выбранную машину, на какую дату и чем заполнены графы шапки в прошлый
-  // раз. Спрашивается по машине: на аренду лист не выписывается, и полей у неё быть не должно.
+  // ── Маршрут (рейс машины на дату) ──
+  // Перевод в работу не выписывает документ: он кладёт заявку в рейс — в готовый рейс этой машины
+  // на эту дату либо в новый, заведённый тут же. Лист выписывают с рейса, когда состав собран.
   //
-  // У заказа техники на объект не спрашивается вовсе (ADR 0041): лист выписывается на рейс, а
-  // рейса у такой заявки нет — есть период работы машины на площадке. Отсюда и отсутствие блока
-  // без объяснения: объяснять нечего, документа в этом процессе не существует.
+  // Спрашивается по машине: у аренды рейса нет — лист на неё выписывает арендодатель. У заказа
+  // техники на объект не спрашивается вовсе (ADR 0041): там нет рейса, есть период работы машины
+  // на площадке, и объяснять отсутствие блока нечем — документа в этом процессе не существует.
   const withTrailer = Form.useWatch('withTrailer', form) ?? false;
+  const routeId = Form.useWatch('routeId', form);
   const { data: prefill } = useQuery({
-    queryKey: ['waybill-prefill', targetId, vehicleId],
-    queryFn: () => vehicleRequestsApi.waybillPrefill(targetId!, vehicleId!),
+    queryKey: ['route-prefill', targetId, vehicleId],
+    queryFn: () => vehicleRequestsApi.routePrefill(targetId!, vehicleId!),
     enabled: isFreight && !!targetId && !!vehicleId,
   });
-  const needsWaybill = prefill?.required ?? false;
+  const needsRoute = prefill?.required ?? false;
+  /** Рейсы этой машины на эту дату, где ещё остался свободный талон. */
+  const routeOptions = (prefill?.routes ?? []).filter(
+    (r) => r.requests.length < MAX_ROUTE_REQUESTS,
+  );
+  /** Выбран готовый рейс: водитель и реквизиты выезда в нём уже свои, спрашивать их незачем. */
+  const joiningRoute = !!routeId && routeId !== NEW_ROUTE;
 
   /**
    * Дата рейса для отбора водителей и подписи листа. У грузоперевозки её несёт подача — и берётся
@@ -261,15 +293,19 @@ export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit
    * обязана проверяться на тот день, на который машина выйдет. У прочих заявок дата листа — день
    * перевода в работу (ADR 0037), его и считает сервер.
    */
-  const tripDate = isFreight
-    ? (scheduledDate?.format('YYYY-MM-DD') ?? prefill?.tripDate)
-    : prefill?.tripDate;
+  // При смене техники (ADR 0048) срок не правят, и дату рейса целиком считает сервер: в форме
+  // поля подачи нет, а брать её из невидимого значения значило бы зависеть от того, что осталось
+  // в форме от прошлого открытия.
+  const tripDate =
+    isFreight && !reassign
+      ? (scheduledDate?.format('YYYY-MM-DD') ?? prefill?.tripDate)
+      : prefill?.tripDate;
 
   // Список водителей — тот же отбор, что проверит сервер: годные к этой машине на дату рейса.
   const { data: selection, isFetching: driversLoading } = useQuery({
     queryKey: ['drivers', 'available', vehicleId, tripDate, withTrailer],
     queryFn: () => driversApi.available({ vehicleId: vehicleId!, on: tripDate!, withTrailer }),
-    enabled: needsWaybill && !!vehicleId && !!tripDate,
+    enabled: needsRoute && !joiningRoute && !!vehicleId && !!tripDate,
   });
   const driverOptions = (selection?.drivers ?? []).map((d) => ({
     value: d.personId,
@@ -292,18 +328,27 @@ export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit
     (d) => d.personId === driverPersonId && licenseRequisitesMissing(d.licenseNumber),
   );
 
-  /** Графы шапки наследуются от прошлого листа этой машины — их правят раз в сезон, а не в рейс. */
+  /**
+   * Рейс подставляется сам: если у машины на этот день уже есть рейс со свободным талоном, заявка
+   * поедет в него — так диспетчер и работает, собирая день машины. Пусто — заводится новый.
+   */
   useEffect(() => {
-    if (!prefill?.fields) return;
+    if (!needsRoute) return;
+    form.setFieldsValue({ routeId: routeOptions[0]?.id ?? NEW_ROUTE });
+  }, [needsRoute, prefill?.routes]);
+
+  /** Графы шапки наследуются от прошлого рейса этой машины — их правят раз в сезон, а не в рейс. */
+  useEffect(() => {
+    if (!prefill?.trip) return;
     form.setFieldsValue({
-      withTrailer: prefill.fields.withTrailer,
-      trailer1Model: prefill.fields.trailer1Model,
-      trailer1RegNumber: prefill.fields.trailer1RegNumber,
-      garageNumber: prefill.fields.garageNumber,
-      communicationKind: prefill.fields.communicationKind,
-      transportationKind: prefill.fields.transportationKind,
+      withTrailer: prefill.trip.withTrailer,
+      trailer1Model: prefill.trip.trailer1Model,
+      trailer1RegNumber: prefill.trip.trailer1RegNumber,
+      garageNumber: prefill.trip.garageNumber,
+      communicationKind: prefill.trip.communicationKind,
+      transportationKind: prefill.trip.transportationKind,
     });
-  }, [prefill?.fields]);
+  }, [prefill?.trip]);
 
   /** Ставки предложения аренды: по ним подставляются поля и видно, что цену изменили вручную. */
   const listedRate = selected?.ownership === 'rental' ? selected : null;
@@ -362,8 +407,10 @@ export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit
   };
 
   const submit = (v: FormValues) => {
-    const schedule = scheduleOf(v);
-    if (!schedule) {
+    // Срок уточняют только при переводе в работу: у работающей заявки он уже согласован, и
+    // смена машины его не трогает (ADR 0048) — сервер `schedule` вне перевода и не примет.
+    const schedule = reassign ? null : scheduleOf(v);
+    if (!reassign && !schedule) {
       message.warning('Укажите фактическую дату');
       return;
     }
@@ -379,7 +426,7 @@ export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit
     }
     // Водитель обязателен ровно там, где выписывается лист: у аренды он чужой, и портал его
     // не ведёт. Тем же правилом отвечает сервер.
-    if (needsWaybill && !v.driverPersonId) {
+    if (needsRoute && v.routeId === NEW_ROUTE && !v.driverPersonId) {
       message.warning('Выберите водителя — на рейс выписывается путевой лист');
       return;
     }
@@ -389,17 +436,25 @@ export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit
         pricePerHour: v.pricePerHour ?? null,
         pricePerShift: v.pricePerShift ?? null,
         shiftHours: v.shiftHours ?? null,
-        ...(needsWaybill
+        // Рейс: готовый — одним идентификатором, новый — вместе с водителем и реквизитами выезда.
+        ...(needsRoute
           ? {
-              driverPersonId: v.driverPersonId,
-              waybill: {
-                withTrailer: v.withTrailer ?? false,
-                trailer1Model: v.withTrailer ? (v.trailer1Model ?? '') : '',
-                trailer1RegNumber: v.withTrailer ? (v.trailer1RegNumber ?? '') : '',
-                garageNumber: v.garageNumber ?? '',
-                communicationKind: v.communicationKind ?? '',
-                transportationKind: v.transportationKind ?? '',
-              },
+              route:
+                v.routeId && v.routeId !== NEW_ROUTE
+                  ? { routeId: v.routeId }
+                  : {
+                      newRoute: {
+                        driverPersonId: v.driverPersonId,
+                        trip: {
+                          withTrailer: v.withTrailer ?? false,
+                          trailer1Model: v.withTrailer ? (v.trailer1Model ?? '') : '',
+                          trailer1RegNumber: v.withTrailer ? (v.trailer1RegNumber ?? '') : '',
+                          garageNumber: v.garageNumber ?? '',
+                          communicationKind: v.communicationKind ?? '',
+                          transportationKind: v.transportationKind ?? '',
+                        },
+                      },
+                    },
             }
           : {}),
       },
@@ -626,56 +681,92 @@ export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit
               )}
             </FormGrid.Full>
 
-            {/* Путевой лист (ADR 0037): выписывается тут же, вместе с переводом в работу. Причина,
-              по которой лист не нужен, показывается текстом — отсутствие блока читалось бы как
-              поломка. У заказа техники на объект блока нет и текста нет: `prefill` для такой
-              заявки не запрашивается вовсе, и упоминать документ, которого в этом процессе не
-              существует, не о чем (ADR 0041). */}
+            {/* Маршрут: заявка едет рейсом, а не документом. Причина, по которой рейс не ведётся,
+              показывается текстом — отсутствие блока читалось бы как поломка. У заказа техники на
+              объект блока нет и текста нет: `prefill` для такой заявки не запрашивается вовсе, и
+              упоминать рейс, которого в этом процессе не существует, не о чем (ADR 0041). */}
             {selected && prefill && !prefill.required && prefill.reason && (
               <FormGrid.Full>
                 <Alert
                   type="info"
                   showIcon
                   style={{ marginTop: 16 }}
-                  message="Путевой лист не выписывается"
+                  message="Маршрут не ведётся"
                   description={prefill.reason}
                 />
               </FormGrid.Full>
             )}
 
-            {needsWaybill && (
+            {needsRoute && (
               <>
                 <FormGrid.Full>
                   <Typography.Title level={5} style={{ marginTop: 16 }}>
-                    Путевой лист
+                    Маршрут
                   </Typography.Title>
                   <Typography.Paragraph type="secondary" style={{ marginTop: -8 }}>
-                    {prefill?.formLabel} · на {tripDate}
+                    Рейс на {tripDate}. Путевой лист выписывается с маршрута, когда состав собран —
+                    {prefill?.formLabel
+                      ? ` ${prefill.formLabel.toLowerCase()}`
+                      : ' по бланку рейса'}
+                    .
                   </Typography.Paragraph>
                 </FormGrid.Full>
 
-                <Form.Item
-                  name="driverPersonId"
-                  label="Водитель"
-                  rules={[{ required: true, message: 'Выберите водителя' }]}
-                  extra={
-                    driverOptions.length === 0 && !driversLoading
-                      ? selection?.requiredCategory
-                        ? `Нет водителей с действующей категорией ${selection.requiredCategory} на эту дату`
-                        : 'Нет водителей с действующим удостоверением на эту дату'
-                      : undefined
-                  }
-                >
-                  <AutoSelect
-                    options={driverOptions}
-                    showSearch
-                    optionFilterProp="label"
-                    loading={driversLoading}
-                    placeholder="Выберите водителя"
-                  />
-                </Form.Item>
+                {/* Готовый рейс этой машины на эту дату — обычный ход дня: машина уже вышла, и
+                  вторая заявка дописывается к тому же рейсу талоном. Новый заводится, когда рейса
+                  ещё нет или свободных талонов не осталось. */}
+                <FormGrid.Full>
+                  <Form.Item name="routeId" label="Рейс">
+                    <AutoSelect
+                      options={[
+                        ...routeOptions.map((r) => ({
+                          value: r.id,
+                          label: [
+                            r.displayNumber,
+                            r.driverName || 'водитель не назначен',
+                            `${r.requests.length} из ${MAX_ROUTE_REQUESTS} талонов`,
+                          ].join(' · '),
+                        })),
+                        { value: NEW_ROUTE, label: 'Новый маршрут' },
+                      ]}
+                      placeholder="Выберите рейс"
+                    />
+                  </Form.Item>
+                </FormGrid.Full>
 
-                {driverRequisitesMissing && (
+                {joiningRoute && (
+                  <FormGrid.Full>
+                    <Typography.Text type="secondary">
+                      Водитель и реквизиты выезда берутся из выбранного рейса — их правят в карточке
+                      маршрута.
+                    </Typography.Text>
+                  </FormGrid.Full>
+                )}
+
+                {!joiningRoute && (
+                  <Form.Item
+                    name="driverPersonId"
+                    label="Водитель"
+                    rules={[{ required: true, message: 'Выберите водителя' }]}
+                    extra={
+                      driverOptions.length === 0 && !driversLoading
+                        ? selection?.requiredCategory
+                          ? `Нет водителей с действующей категорией ${selection.requiredCategory} на эту дату`
+                          : 'Нет водителей с действующим удостоверением на эту дату'
+                        : undefined
+                    }
+                  >
+                    <AutoSelect
+                      options={driverOptions}
+                      showSearch
+                      optionFilterProp="label"
+                      loading={driversLoading}
+                      placeholder="Выберите водителя"
+                    />
+                  </Form.Item>
+                )}
+
+                {!joiningRoute && driverRequisitesMissing && (
                   <FormGrid.Full>
                     <Alert
                       type="warning"
@@ -686,31 +777,36 @@ export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit
                   </FormGrid.Full>
                 )}
 
-                {/* Прицеп — признак рейса, а не свойство машины: он поднимает требуемую категорию
-                  водителя, поэтому список выше пересобирается при его включении. */}
-                <Form.Item name="withTrailer" valuePropName="checked">
-                  <Checkbox>Рейс с прицепом</Checkbox>
-                </Form.Item>
-                {withTrailer && (
+                {/* Реквизиты выезда — свойства рейса: у готового они уже свои, и переспрашивать их
+                  здесь значило бы молча переписать чужой рейс. Прицеп поднимает требуемую
+                  категорию водителя, поэтому список выше пересобирается при его включении. */}
+                {!joiningRoute && (
                   <>
-                    <Form.Item name="trailer1Model" label="Марка прицепа">
-                      <Input placeholder="МАЗ-8926" />
+                    <Form.Item name="withTrailer" valuePropName="checked">
+                      <Checkbox>Рейс с прицепом</Checkbox>
                     </Form.Item>
-                    <Form.Item name="trailer1RegNumber" label="Госномер прицепа">
-                      <Input placeholder="8062 ЕН 77" />
+                    {withTrailer && (
+                      <>
+                        <Form.Item name="trailer1Model" label="Марка прицепа">
+                          <Input placeholder="МАЗ-8926" />
+                        </Form.Item>
+                        <Form.Item name="trailer1RegNumber" label="Госномер прицепа">
+                          <Input placeholder="8062 ЕН 77" />
+                        </Form.Item>
+                      </>
+                    )}
+
+                    <Form.Item name="garageNumber" label="Гаражный номер">
+                      <Input placeholder="00000389" />
+                    </Form.Item>
+                    <Form.Item name="communicationKind" label="Вид сообщения">
+                      <Input placeholder="пригородное" />
+                    </Form.Item>
+                    <Form.Item name="transportationKind" label="Вид перевозки">
+                      <Input placeholder="коммерческая" />
                     </Form.Item>
                   </>
                 )}
-
-                <Form.Item name="garageNumber" label="Гаражный номер">
-                  <Input placeholder="00000389" />
-                </Form.Item>
-                <Form.Item name="communicationKind" label="Вид сообщения">
-                  <Input placeholder="пригородное" />
-                </Form.Item>
-                <Form.Item name="transportationKind" label="Вид перевозки">
-                  <Input placeholder="коммерческая" />
-                </Form.Item>
               </>
             )}
           </FormGrid>

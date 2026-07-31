@@ -9,15 +9,15 @@ import type {
 } from '@technic/contracts';
 
 /**
- * Форма перевода заявки в работу выписывает путевой лист (ADR 0037): здесь проверяется, что она
- * спрашивает водителя ровно там, где лист выписывается, и объясняет причину там, где нет.
+ * Форма перевода заявки в работу кладёт её в рейс (маршруты): здесь проверяется, что она
+ * спрашивает маршрут ровно там, где он ведётся, и объясняет причину там, где нет.
  *
  * Отсутствие блока читалось бы как поломка, поэтому «на аренду лист выписывает арендодатель» —
  * это текст на экране, а не пустое место.
  *
  * Ровно одно исключение — заказ техники на объект (ADR 0041): там нет ни блока, ни текста, ни
- * запроса к серверу. Объяснять отсутствие документа, которого в этом процессе не существует,
- * значит наводить на мысль, что где-то он всё же выписывается.
+ * запроса к серверу. Объяснять отсутствие рейса, которого в этом процессе не существует, значит
+ * наводить на мысль, что где-то он всё же бывает.
  */
 
 const OWN_VEHICLE: VehicleDto = {
@@ -147,7 +147,34 @@ const ON_SITE_REQUEST: SpecialEquipmentRequestDto = {
   earlyEnd: null,
 };
 
-/** Подсказка о листе приходит по машине: собственная его получает, аренда — нет. */
+/** Готовый рейс этой машины на этот день — в него заявка и поедет по умолчанию. */
+const EXISTING_ROUTE = {
+  id: 'route-1',
+  displayNumber: 'Р-12',
+  routeDate: '2026-08-10',
+  vehicleId: 'v-own',
+  vehicleLabel: 'КамАЗ 65201 · Е646СК799',
+  driverPersonId: 'p-9',
+  driverName: 'Сидоров Сидор Сидорович',
+  withTrailer: false,
+  trailerLabel: '',
+  trailer1Model: '',
+  trailer1RegNumber: '',
+  trailer2Model: '',
+  trailer2RegNumber: '',
+  garageNumber: '00000389',
+  communicationKind: 'пригородное',
+  transportationKind: 'коммерческая',
+  comment: '',
+  requests: [],
+  waybill: null,
+  createdByName: 'Диспетчер',
+  createdAt: '2026-08-09T09:00:00.000Z',
+  version: 1,
+};
+
+/** Подсказка о рейсе приходит по машине: собственная его ведёт, аренда — нет. */
+let routes = [EXISTING_ROUTE];
 const prefill = vi.fn(async (_id: string, vehicleId: string) =>
   vehicleId === 'v-own'
     ? {
@@ -155,7 +182,8 @@ const prefill = vi.fn(async (_id: string, vehicleId: string) =>
         formLabel: 'Форма 4-П (грузовой автомобиль)',
         reason: null,
         tripDate: '2026-08-10',
-        fields: {
+        routes,
+        trip: {
           withTrailer: false,
           trailer1Model: '',
           trailer1RegNumber: '',
@@ -171,7 +199,8 @@ const prefill = vi.fn(async (_id: string, vehicleId: string) =>
         formLabel: null,
         reason: 'Путевой лист на арендную технику выписывает арендодатель',
         tripDate: '2026-08-10',
-        fields: null,
+        routes: [],
+        trip: null,
       },
 );
 
@@ -200,7 +229,7 @@ vi.mock('../src/api/resources', () => ({
       pageSize: 500,
     }),
   },
-  vehicleRequestsApi: { waybillPrefill: prefill },
+  vehicleRequestsApi: { routePrefill: prefill },
   driversApi: {
     available: (q: { vehicleId: string; on: string }) => availableDrivers(q),
   },
@@ -253,29 +282,85 @@ function renderModal(
   );
 }
 
-describe('путевой лист в форме перевода в работу', () => {
-  it('до выбора машины о листе не спрашивают: он выписывается на конкретную', async () => {
+describe('маршрут в форме перевода в работу', () => {
+  it('до выбора машины о рейсе не спрашивают: он ведётся на конкретную', async () => {
+    routes = [EXISTING_ROUTE];
     renderModal();
     await waitFor(() => expect(screen.getByText('Конкретная техника')).toBeDefined());
-    expect(screen.queryByText('Путевой лист')).toBeNull();
+    expect(screen.queryByText('Маршрут')).toBeNull();
   });
 
-  it('на собственную машину спрашивает водителя и графы шапки', async () => {
+  it('на собственную машину предлагает готовый рейс этого дня', async () => {
+    routes = [EXISTING_ROUTE];
     renderModal('v-own');
-    await waitFor(() => expect(screen.getByText('Путевой лист')).toBeDefined());
+    await waitFor(() => expect(screen.getByText('Маршрут')).toBeDefined());
 
-    expect(screen.getByText('Форма 4-П (грузовой автомобиль) · на 2026-08-10')).toBeDefined();
+    // Рейс подставлен сам: диспетчер собирает день машины, а не заводит второй рейс на ту же дату.
+    expect(screen.getByText(/Р-12/)).toBeDefined();
+    // Водитель и реквизиты выезда — свойства рейса: у готового их не переспрашивают.
+    expect(screen.queryByText('Рейс с прицепом')).toBeNull();
+    expect(
+      screen.getByText(/Водитель и реквизиты выезда берутся из выбранного рейса/),
+    ).toBeDefined();
+  });
+
+  it('когда рейса на этот день нет, спрашивает водителя и реквизиты нового', async () => {
+    routes = [];
+    renderModal('v-own');
+    await waitFor(() => expect(screen.getByText('Маршрут')).toBeDefined());
+
     expect(screen.getByText('Водитель')).toBeDefined();
     expect(screen.getByText('Рейс с прицепом')).toBeDefined();
-    // Графы шапки подставлены от прошлого листа этой машины — их не перенабирают каждый рейс.
+    // Графы шапки подставлены от прошлого рейса этой машины — их не перенабирают каждый раз.
     expect(screen.getByDisplayValue('00000389')).toBeDefined();
     expect(screen.getByDisplayValue('пригородное')).toBeDefined();
   });
 
+  it('готовый рейс уходит идентификатором, а не водителем и графами', async () => {
+    routes = [EXISTING_ROUTE];
+    const onSubmit = vi.fn();
+    renderModal('v-own', 'own', onSubmit);
+    await waitFor(() => expect(screen.getByText(/Р-12/)).toBeDefined());
+
+    fireEvent.click(screen.getByText('Взять в работу'));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+
+    const body = onSubmit.mock.calls[0]![0] as {
+      assignment: { route?: { routeId?: string; newRoute?: unknown } };
+    };
+    expect(body.assignment.route).toEqual({ routeId: 'route-1' });
+  });
+
+  it('новый рейс уходит вместе с водителем и реквизитами выезда', async () => {
+    routes = [];
+    const onSubmit = vi.fn();
+    renderModal('v-own', 'own', onSubmit);
+    await waitFor(() => expect(screen.getByText('Водитель')).toBeDefined());
+
+    // Водителя выбирают из тех, кого отобрал сервер: список — тот же, что проверит выписка листа.
+    // Поле ищется по id: окно живёт в портале, и querySelector надёжнее порядкового номера.
+    const driverField = document.querySelector('#driverPersonId')!.closest('.ant-select')!;
+    fireEvent.mouseDown(driverField.querySelector('.ant-select-selector') ?? driverField);
+    await waitFor(() => expect(document.querySelector('.ant-select-item-option')).toBeTruthy());
+    fireEvent.click(document.querySelector('.ant-select-item-option')!);
+
+    fireEvent.click(screen.getByText('Взять в работу'));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+
+    const body = onSubmit.mock.calls[0]![0] as {
+      assignment: {
+        route?: { newRoute?: { driverPersonId?: string; trip?: { garageNumber?: string } } };
+      };
+    };
+    expect(body.assignment.route?.newRoute?.driverPersonId).toBe('p-1');
+    expect(body.assignment.route?.newRoute?.trip?.garageNumber).toBe('00000389');
+  });
+
   it('водителей спрашивает на ту дату, которую назначили в форме, а не на заказанную', async () => {
+    routes = [];
     availableDrivers.mockClear();
     renderModal('v-own');
-    await waitFor(() => expect(screen.getByText('Путевой лист')).toBeDefined());
+    await waitFor(() => expect(screen.getByText('Маршрут')).toBeDefined());
     await waitFor(() => expect(availableDrivers).toHaveBeenCalled());
     expect(availableDrivers.mock.calls[0]![0].on).toBe('2026-08-10');
 
@@ -290,22 +375,22 @@ describe('путевой лист в форме перевода в работу
     });
   });
 
-  it('у заказа техники на объект листа нет и объяснения тоже: документа в этом процессе нет', async () => {
+  it('у заказа техники на объект рейса нет и объяснения тоже: его в этом процессе не бывает', async () => {
     prefill.mockClear();
     renderModal('v-own', 'own', () => {}, ON_SITE_REQUEST);
     await waitFor(() => expect(screen.getByText('Конкретная техника')).toBeDefined());
 
-    expect(screen.queryByText('Путевой лист')).toBeNull();
-    expect(screen.queryByText('Путевой лист не выписывается')).toBeNull();
+    expect(screen.queryByText('Маршрут')).toBeNull();
+    expect(screen.queryByText('Маршрут не ведётся')).toBeNull();
     expect(screen.queryByText('Водитель')).toBeNull();
-    // Сервер о листе даже не спрашивается: спрашивать нечего, и лишний запрос выдал бы, что
-    // портал всё-таки держит документ в уме.
+    // Сервер о рейсе даже не спрашивается: спрашивать нечего, и лишний запрос выдал бы, что
+    // портал всё-таки держит рейс в уме.
     expect(prefill).not.toHaveBeenCalled();
   });
 
-  it('на аренду объясняет, почему листа нет, а не прячет блок', async () => {
+  it('на аренду объясняет, почему рейса нет, а не прячет блок', async () => {
     renderModal('v-rent', 'rental');
-    await waitFor(() => expect(screen.getByText('Путевой лист не выписывается')).toBeDefined());
+    await waitFor(() => expect(screen.getByText('Маршрут не ведётся')).toBeDefined());
 
     expect(
       screen.getByText('Путевой лист на арендную технику выписывает арендодатель'),

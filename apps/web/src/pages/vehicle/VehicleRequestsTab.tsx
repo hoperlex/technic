@@ -765,6 +765,39 @@ export function VehicleRequestsTab() {
         ),
     },
     {
+      /*
+       * Рейс, в котором заявка едет. Пустая ячейка сама по себе ничего не значит — рейса нет ни у
+       * «Новой», ни у аренды, ни у заказа техники на объект, — но грузоперевозка в работе на
+       * собственной машине без рейса это потерянная заявка: лист по ней не выпишется, и в дне
+       * машины её никто не увидит. Такую помечаем предупреждением.
+       */
+      key: 'route',
+      title: 'Маршрут',
+      width: 150,
+      render: (_v, r) => {
+        if (r.route) {
+          return (
+            <div style={{ lineHeight: 1.35 }}>
+              <div>{r.route.displayNumber}</div>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                талон {r.route.position}
+                {r.route.hasWaybill ? ' · лист выписан' : ''}
+              </Typography.Text>
+            </div>
+          );
+        }
+        const lost =
+          r.status === 'confirmed' &&
+          r.requestType === 'freight_transport' &&
+          r.assignment?.ownership === 'own';
+        return lost ? (
+          <Tag color="orange">Без маршрута</Tag>
+        ) : (
+          <Typography.Text type="secondary">—</Typography.Text>
+        );
+      },
+    },
+    {
       key: 'status',
       title: 'Статус',
       dataIndex: 'status',
@@ -1054,6 +1087,15 @@ export function VehicleRequestsTab() {
         r.assignment
           ? `${assignmentTitle(r.assignment)} · ${assignmentRateLabel(r.assignment) || r.assignment.lessorName || 'без ставки'}`
           : null,
+      // Рейс и та же потерянная заявка, что помечена в таблице колонкой «Маршрут».
+      (r) =>
+        r.route ? (
+          `Маршрут ${r.route.displayNumber} · талон ${r.route.position}`
+        ) : r.status === 'confirmed' &&
+          r.requestType === 'freight_transport' &&
+          r.assignment?.ownership === 'own' ? (
+          <Tag color="orange">Без маршрута</Tag>
+        ) : null,
       (r) => (r.cancelReason ? `Причина отмены: ${r.cancelReason}` : null),
       (r) => r.comment || null,
       (r) => (
