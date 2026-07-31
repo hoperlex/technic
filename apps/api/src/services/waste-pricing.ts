@@ -164,6 +164,10 @@ export interface PricingSnapshot {
  * назначение оператора уточнит. Для нетарифицируемой операции (любая контейнерная — установка,
  * замена, снятие; ADR 0019) снимок пустой: так поля цены гарантированно очищаются при смене типа
  * заявки. Сумму считает БД (generated-колонка `amount`).
+ *
+ * Незаданный тариф заявку не отменяет (ADR 0046): снимок остаётся пустым, и заявка живёт без
+ * стоимости — вывоз нужен раньше, чем в прайс успевают завести цену. Цену подставит первое же
+ * событие, которое пересчитывает снимок: назначение оператора, правка заявки или её закрытие.
  */
 export async function priceWasteRequest(input: {
   requestType: RequestType;
@@ -185,17 +189,10 @@ export async function priceWasteRequest(input: {
     WASTE_REMOVAL_CONTAINER_KIND,
     input.operatorCounterpartyId,
   );
-  if (!resolved) {
-    // Разные причины — разные подсказки: у назначенного оператора цены может не быть вовсе,
-    // и тогда правится прайс, а не заявка.
-    throw input.operatorCounterpartyId
-      ? err.unprocessable('У выбранного оператора не задана цена на этот тип мусора', {
-          operatorCounterpartyId: 'Тариф оператора не найден',
-        })
-      : err.unprocessable('Для выбранного типа мусора тариф на вывоз не задан', {
-          wasteTypeId: 'Тариф не найден',
-        });
-  }
+  // Цены на эту пару в прайсе нет — заявка сохраняется без стоимости, о чём предупреждает форма.
+  // Отказ здесь стоил дороже пустой суммы: вывоз всё равно состоится, а прайс правит не тот, кто
+  // заводит заявку, и не в тот момент.
+  if (!resolved) return { wasteTariffId: null, pricePerM3: null };
   if (!isVolumeAllowed(input.volumeM3, resolved.volumeStepM3)) {
     throw err.validation({ volumeM3: volumeStepMessage(resolved.volumeStepM3!) });
   }

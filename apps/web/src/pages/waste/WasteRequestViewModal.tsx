@@ -247,21 +247,33 @@ export function WasteRequestViewModal({ request, onClose, onEdit }: Props) {
               {
                 key: 'amount',
                 label: 'Стоимость',
-                children: (
-                  <div style={{ lineHeight: 1.3 }}>
-                    {/* Без исполнителя цена взята по самому дешёвому прайсу (ADR 0026):
-                        «от» показывает, что назначение оператора её уточнит. */}
-                    <div>
-                      {request.operatorCounterpartyId ? '' : 'от '}
-                      {formatMoney(request.amount)}
-                    </div>
-                    {request.pricePerM3 != null && (
-                      <Typography.Text type="secondary" style={secondary}>
-                        {formatMoney(request.pricePerM3)}/м³
+                children:
+                  request.amount == null ? (
+                    // Заявка заведена, когда цены на этот тип мусора в прайсе не было (ADR 0046).
+                    // Прочерк тут читался бы как «поле не заполнили» — сказано, почему пусто.
+                    // У заявок старше тарификации нет и типа мусора: там сказать нечего.
+                    request.wasteTypeId == null ? (
+                      '—'
+                    ) : (
+                      <Typography.Text type="warning">
+                        тариф не задан — стоимость не рассчитана
                       </Typography.Text>
-                    )}
-                  </div>
-                ),
+                    )
+                  ) : (
+                    <div style={{ lineHeight: 1.3 }}>
+                      {/* Без исполнителя цена взята по самому дешёвому прайсу (ADR 0026):
+                          «от» показывает, что назначение оператора её уточнит. */}
+                      <div>
+                        {request.operatorCounterpartyId ? '' : 'от '}
+                        {formatMoney(request.amount)}
+                      </div>
+                      {request.pricePerM3 != null && (
+                        <Typography.Text type="secondary" style={secondary}>
+                          {formatMoney(request.pricePerM3)}/м³
+                        </Typography.Text>
+                      )}
+                    </div>
+                  ),
               },
             ]
           : []),

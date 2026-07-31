@@ -39,7 +39,6 @@ import {
   requestTypeLabels,
   parseWasteRequestNumberSearch,
   normalizeTimeInput,
-  calcWasteAmount,
   type CompleteWasteRequestInput,
   actsForCounterparty,
   isPricedRequestType,
@@ -80,10 +79,11 @@ import { useListParams } from '../hooks/useListParams';
 import { useObjectScope } from '../hooks/useObjectScope';
 import { useAuth } from '../auth/AuthContext';
 import { MOSCOW_TZ } from '../theme';
-import { errorMessage, formatDate, formatDateTimeMaybe, formatMoney } from '../utils/format';
+import { errorMessage, formatDate, formatDateTimeMaybe } from '../utils/format';
 import { applyApiFieldErrors } from '../utils/formErrors';
 import { isBeforeMinRequestDate, isPastDate, minRequestDate } from '../utils/date';
 import { OnSiteTab } from './waste/OnSiteTab';
+import { wasteAmountLine, wastePricingHint } from './waste/pricingHint';
 import { WasteDoneModal } from './waste/WasteDoneModal';
 import { WasteRequestViewModal } from './waste/WasteRequestViewModal';
 
@@ -372,41 +372,20 @@ function RequestsTab() {
     enabled: isPriced && !!watchWasteTypeId,
   });
   const tariff = tariffResult?.tariff ?? null;
-  const tariffMissing = tariffResult != null && tariffResult.tariff === null;
   const volumeStepM3 = tariff?.volumeStepM3 ?? null;
   /** Объём, по которому считается заявка; есть только у вывоза (ADR 0019). */
   const plannedVolume = isPriced ? (watchVolumeM3 ?? null) : null;
-  const amountPreview =
-    tariff && plannedVolume != null && isVolumeAllowed(plannedVolume, volumeStepM3)
-      ? calcWasteAmount(plannedVolume, tariff.pricePerM3)
-      : null;
-  /**
-   * Расчёт показывается подсказкой: поля стоимости в форме нет — цену даёт прайс по типу
-   * мусора, и человеку остаётся увидеть, во что заявка обойдётся.
-   */
-  const pricingHint = ((): string | null => {
-    if (!isPriced) return null;
-    if (!watchWasteTypeId) {
-      return 'Стоимость посчитается автоматически: цена — по прайсу, сумма — по объёму';
-    }
-    if (tariffRequestFailed) return 'Не удалось получить цену — обновите страницу и повторите';
-    if (tariffMissing) {
-      return watchOperatorId
-        ? 'У выбранного оператора цена на этот тип мусора не задана'
-        : 'Тариф на вывоз этого типа мусора не задан';
-    }
-    if (!tariff) return null;
-    // «от» — цена самого дешёвого оператора: исполнитель ещё не выбран, и назначение его
-    // уточнит (ADR 0026). Когда все операторы просят одинаково, уточнять нечего — приставки нет.
-    const from = tariff.isMinimum ? 'от ' : '';
-    return [
-      `${from}${formatMoney(tariff.pricePerM3)}/м³`,
-      amountPreview != null ? `итого ${from}${formatMoney(amountPreview)}` : null,
-      tariff.isMinimum ? `по прайсу «${tariff.operatorName}»` : null,
-    ]
-      .filter(Boolean)
-      .join(' · ');
-  })();
+  // Незаданный тариф заявку не отменяет (ADR 0046): расчёт сменяется предупреждением, а форма
+  // отправляется как есть — заявка сохранится без стоимости.
+  const pricingHint = wastePricingHint({
+    isPriced,
+    wasteTypeId: watchWasteTypeId,
+    operatorSelected: !!watchOperatorId,
+    tariff,
+    resolved: tariffResult != null,
+    requestFailed: tariffRequestFailed,
+    volumeM3: plannedVolume,
+  });
 
   // Наличие контейнеров на объекте (view: установки − снятия). Для «Замены» и «Снятия».
   const { data: presentData, isLoading: presentLoading } = useQuery({
@@ -850,19 +829,19 @@ function RequestsTab() {
       sorter: true,
       // Стоимость — второй строкой к предмету заявки: своей колонки она стоила дороже, чем
       // помогала, а цена за м³ рядом с суммой объясняет, почему одинаковый объём стоит по-разному.
-      render: (_v: unknown, r: WasteRequestDto) => (
-        <div style={{ lineHeight: 1.35 }}>
-          <div>{requestSubject(r)}</div>
-          {r.amount != null && (
-            // Пока исполнителя нет, сумма посчитана по самому дешёвому прайсу (ADR 0026) —
-            // «от» говорит, что назначение оператора её уточнит.
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              {r.operatorCounterpartyId ? '' : 'от '}
-              {formatMoney(r.amount)} · {formatMoney(r.pricePerM3)}/м³
-            </Typography.Text>
-          )}
-        </div>
-      ),
+      render: (_v: unknown, r: WasteRequestDto) => {
+        const amountLine = wasteAmountLine(r);
+        return (
+          <div style={{ lineHeight: 1.35 }}>
+            <div>{requestSubject(r)}</div>
+            {amountLine && (
+              <Typography.Text type={amountLine.tone} style={{ fontSize: 12 }}>
+                {amountLine.text}
+              </Typography.Text>
+            )}
+          </div>
+        );
+      },
     },
     {
       key: 'wasteTypeName',
@@ -1137,10 +1116,12 @@ function RequestsTab() {
     lines: [
       (r) => requestTypeLabels[r.requestType],
       (r) => [requestSubject(r), r.wasteTypeName].filter(Boolean).join(' · '),
-      (r) =>
-        r.amount != null
-          ? `${r.operatorCounterpartyId ? '' : 'от '}${formatMoney(r.amount)} · ${formatMoney(r.pricePerM3)}/м³`
-          : null,
+      (r) => {
+        // Незаданный тариф на телефоне называется тем же текстом, что и в таблице (ADR 0046):
+        // цветом строки карточка не располагает, но молчать о непосчитанной сумме нельзя.
+        const amountLine = wasteAmountLine(r);
+        return amountLine?.text ?? null;
+      },
       (r) => `Доставка: ${formatDateTimeMaybe(r.deliveryAt, r.deliveryTimeUnspecified)}`,
       // Оператору исполнителя не показываем: в его списке все заявки и так его (ADR 0010).
       (r) => (isOperator ? null : r.operatorName ? `Оператор: ${r.operatorName}` : null),
@@ -1458,7 +1439,7 @@ function RequestsTab() {
             // строкой во всю ширину, а не подписью под одним из полей.
             <FormGrid.Full>
               <div style={{ marginTop: -16, marginBottom: 24 }}>
-                <Typography.Text type="secondary">{pricingHint}</Typography.Text>
+                <Typography.Text type={pricingHint.tone}>{pricingHint.text}</Typography.Text>
               </div>
             </FormGrid.Full>
           )}
