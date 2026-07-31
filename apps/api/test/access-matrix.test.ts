@@ -18,12 +18,27 @@ import { ACCESS_PROFILES, type AccessSubject } from '@technic/contracts';
 
 const DB_CALL = 'вызов БД в тесте прав';
 
+/**
+ * Любое обращение к db — ошибка: тест доходит максимум до входа в обработчик.
+ *
+ * Падает заглушка не на вызове, а на `await`: запрос drizzle собирается цепочкой
+ * (`select().from().where()`), и синхронный бросок из середины такой цепочки оставлял бы уже
+ * созданный соседний промис необработанным. Так и получалось на `Promise.all([loadRows(…),
+ * db.select(…)])` в журнале путевых листов: тест проходил, а vitest сообщал об unhandled
+ * rejection и возвращал ненулевой код выхода.
+ */
 vi.mock('../src/db/client', () => {
-  const fail = () => {
-    throw new Error(DB_CALL);
-  };
-  // Любое обращение к db — ошибка: тест доходит максимум до входа в обработчик.
-  const db = new Proxy({}, { get: () => fail });
+  const fail = () => Promise.reject(new Error(DB_CALL));
+  const chain: unknown = new Proxy(
+    {},
+    {
+      get: (_target, prop): unknown =>
+        prop === 'then'
+          ? (_resolve: unknown, reject: (e: Error) => void) => reject(new Error(DB_CALL))
+          : () => chain,
+    },
+  );
+  const db = new Proxy({}, { get: () => () => chain });
   return { db, pingDb: fail, pool: { end: async () => {} } };
 });
 
