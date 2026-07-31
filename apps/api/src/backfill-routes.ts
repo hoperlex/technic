@@ -119,8 +119,13 @@ async function diagnose(legacy: BackfillWaybill[], placed: Set<string>): Promise
     }
   }
 
-  // Водитель там, где рейса не бывает: у аренды он чужой, у спецтехники и типов без бланка листа
-  // нет вовсе. До маршрутов сервер записывал присланного водителя в любое назначение.
+  /*
+   * Водитель там, где рейса не бывает: у аренды он чужой, у спецтехники и типов без бланка листа
+   * нет вовсе. До маршрутов сервер записывал присланного водителя в любое назначение.
+   *
+   * Колонка спрашивается сырым SQL: миграция 0074 её удаляет, и в схеме drizzle её уже нет — а
+   * скрипт работает именно до этой миграции, на базе, где она ещё есть.
+   */
   const orphanRows = await db
     .select({ requestId: vehicleRequestAssignments.requestId, num: vehicleRequests.num })
     .from(vehicleRequestAssignments)
@@ -129,7 +134,7 @@ async function diagnose(legacy: BackfillWaybill[], placed: Set<string>): Promise
     .innerJoin(vehicleTypes, eq(vehicleTypes.id, vehicles.vehicleTypeId))
     .where(
       and(
-        sql`${vehicleRequestAssignments.driverPersonId} IS NOT NULL`,
+        sql`vehicle_request_assignments.driver_person_id IS NOT NULL`,
         sql`(${vehicleRequests.requestType} <> 'freight_transport'
              OR ${vehicles.ownership} <> 'own'
              OR ${vehicleTypes.waybillFormCode} IS NULL)`,
@@ -329,20 +334,14 @@ async function apply(legacy: BackfillWaybill[], placed: Set<string>): Promise<vo
 
 /** Обнуление водителей там, где рейса не бывает: значений этих не должно было быть вовсе. */
 async function clearOrphanDrivers(): Promise<void> {
-  const cleared = await db
-    .update(vehicleRequestAssignments)
-    .set({ driverPersonId: null, updatedAt: new Date() })
-    .where(
-      and(
-        sql`${vehicleRequestAssignments.driverPersonId} IS NOT NULL`,
-        sql`NOT EXISTS (
-          SELECT 1 FROM ${vehicleRouteRequests} rr
-          WHERE rr.request_id = ${vehicleRequestAssignments.requestId}
-        )`,
-      ),
-    )
-    .returning({ requestId: vehicleRequestAssignments.requestId });
-  console.log(`Обнулено водителей в назначениях вне рейсов: ${cleared.length}`);
+  // Тоже сырым SQL и по той же причине: колонки нет в схеме, но она есть в базе до миграции 0074.
+  const cleared = await db.execute(sql`
+    UPDATE vehicle_request_assignments a
+    SET driver_person_id = NULL, updated_at = now()
+    WHERE a.driver_person_id IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM vehicle_route_requests rr WHERE rr.request_id = a.request_id)
+  `);
+  console.log(`Обнулено водителей в назначениях вне рейсов: ${cleared.rowCount ?? 0}`);
 }
 
 async function main(): Promise<void> {

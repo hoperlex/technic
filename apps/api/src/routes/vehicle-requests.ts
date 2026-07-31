@@ -42,7 +42,6 @@ import {
   isRouteEditable,
   ROUTE_FROZEN_MESSAGE,
   ROUTE_LEGACY_WAYBILL_MESSAGE,
-  type RouteTripFields,
   shouldDetachOnStatus,
   waybillFormLabels,
   isAllowedEarlyEndDate,
@@ -155,7 +154,7 @@ import {
   routeRequestCount,
   routeWaybill,
 } from '../services/vehicle-routes';
-import { lastWaybillFields, tripDate, waybillRequirementFor } from '../services/waybill-issue';
+import { tripDate, waybillRequirementFor } from '../services/waybill-issue';
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -782,8 +781,6 @@ async function attachToRoute(
     };
     assignment: VehicleRequestAssignmentDto;
     route: AssignRouteInput | undefined;
-    /** Старое тело запроса (Р22): водитель и реквизиты рейса приходили в назначении. */
-    legacy: { driverPersonId?: string; trip?: RouteTripFields };
     actor: { id: string };
   },
 ): Promise<void> {
@@ -793,10 +790,9 @@ async function attachToRoute(
   });
 
   if (!requirement.formCode) {
-    // Водитель и рейс у такой заявки не спрашиваются вовсе: до маршрутов сервер молча записывал
-    // присланного водителя в назначение любой заявки — и колонка заполнялась там, где документа
-    // не бывает.
-    if (params.route || params.legacy.driverPersonId) {
+    // Рейс у такой заявки не спрашивается вовсе: у аренды его ведёт арендодатель, а у заказа
+    // техники на объект рейса не существует — там период стояния машины на площадке.
+    if (params.route) {
       throw err.unprocessable(
         requirement.reason ??
           'На эту заявку маршрут не ведётся: путевой лист по ней не выписывается',
@@ -804,11 +800,6 @@ async function attachToRoute(
       );
     }
     return;
-  }
-
-  const legacyWaybill = await legacyWaybillOf(tx, params.request.id);
-  if (legacyWaybill) {
-    throw err.unprocessable(`${ROUTE_LEGACY_WAYBILL_MESSAGE} (${legacyWaybill})`);
   }
 
   const routeDate = await tripDate(tx, params.request.id);
@@ -840,16 +831,14 @@ async function attachToRoute(
     );
     if (!check.ok) throw err.unprocessable(check.reason, { route: check.reason });
   } else {
-    const newRoute = params.route && 'newRoute' in params.route ? params.route.newRoute : null;
-    // Старое тело запроса заводит рейс тем же путём: водитель и графы шапки, которые раньше
-    // уходили прямо в лист, теперь описывают рейс.
-    const driverPersonId = newRoute?.driverPersonId ?? params.legacy.driverPersonId ?? null;
-    const trip = newRoute?.trip ?? params.legacy.trip;
-    if (!params.route && !params.legacy.driverPersonId) {
+    if (!params.route) {
       throw err.unprocessable('Выберите маршрут — рейс планируется маршрутом', {
         route: 'Выберите маршрут',
       });
     }
+    const newRoute = 'newRoute' in params.route ? params.route.newRoute : null;
+    const driverPersonId = newRoute?.driverPersonId ?? null;
+    const trip = newRoute?.trip;
     const [created] = await tx
       .insert(vehicleRoutes)
       .values({
@@ -2114,44 +2103,6 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
 
   // ── Смена статуса ──
   /**
-   * Что портал знает о будущем путевом листе до перевода заявки в работу (ADR 0037): выписывается
-   * ли он на эту машину, на какую дату и чем заполнить графы, которых нет ни в заявке, ни в
-   * справочниках. Их наследуют от прошлого листа этой машины: гаражный номер, вид сообщения и
-   * прицепы от рейса к рейсу те же, и перенабирать их каждый раз незачем.
-   *
-   * Причина «лист не выписывается» отдаётся текстом там, где о ней есть что сказать: диспетчер
-   * должен видеть, почему полей нет, а не отсутствующий блок. У заказа техники на объект причины
-   * нет и быть не должно — этот вид заявки путевого листа не знает вовсе (ADR 0041), и форма о
-   * нём не спрашивает.
-   */
-  r.get(
-    '/:id/waybill-prefill',
-    {
-      ...canChangeStatus,
-      schema: { params: idParams, querystring: z.object({ vehicleId: z.string().uuid() }) },
-    },
-    async (req) => {
-      const p = requirePrincipal(req);
-      const before = await getDto(req.params.id);
-      if (!before) throw err.notFound('Заявка не найдена');
-      assertRequestScope(p, before);
-
-      const requirement = await waybillRequirementFor(db, {
-        requestType: before.requestType,
-        vehicleId: req.query.vehicleId,
-      });
-      return {
-        required: requirement.formCode !== null,
-        formCode: requirement.formCode,
-        formLabel: requirement.formCode ? waybillFormLabels[requirement.formCode] : null,
-        reason: requirement.reason,
-        tripDate: await tripDate(db, before.id),
-        fields: requirement.formCode ? await lastWaybillFields(req.query.vehicleId) : null,
-      };
-    },
-  );
-
-  /**
    * То же для маршрутов: ведётся ли по этой заявке рейс, на какую дату, какие рейсы этой машины
    * на неё уже заведены и чем были заполнены графы шапки в прошлый раз.
    *
@@ -2363,10 +2314,6 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
               request: before,
               assignment: saved,
               route: assignment.route,
-              legacy: {
-                driverPersonId: assignment.driverPersonId,
-                trip: assignment.waybill,
-              },
               actor: { id: p.id },
             });
           }

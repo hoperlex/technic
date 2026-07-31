@@ -308,28 +308,6 @@ export const vehiclesApi = {
 export const vehicleRequestsApi = {
   list: (q: Query) => apiFetch<ListResult<VehicleRequestDto>>('/vehicle-requests', { query: q }),
   /**
-   * Что портал знает о будущем путевом листе до перевода заявки в работу (ADR 0037): выписывается
-   * ли он на выбранную машину, на какую дату и чем заполнить графы шапки — их наследуют от
-   * прошлого листа этой машины.
-   */
-  waybillPrefill: (id: string, vehicleId: string) =>
-    apiFetch<{
-      required: boolean;
-      formLabel: string | null;
-      reason: string | null;
-      tripDate: string;
-      fields: {
-        withTrailer: boolean;
-        trailer1Model: string;
-        trailer1RegNumber: string;
-        trailer2Model: string;
-        trailer2RegNumber: string;
-        garageNumber: string;
-        communicationKind: string;
-        transportationKind: string;
-      } | null;
-    }>(`/vehicle-requests/${id}/waybill-prefill`, { query: { vehicleId } }),
-  /**
    * Что портал знает о рейсе до перевода заявки в работу: ведётся ли он на выбранную машину, на
    * какую дату, какие рейсы этой машины на неё уже заведены и чем были заполнены графы шапки в
    * прошлый раз. Форма либо кладёт заявку в готовый рейс, либо заводит новый.
@@ -383,14 +361,6 @@ export const vehicleRequestsApi = {
    * Всё это проводится тем же запросом, что и смена статуса: заявка не бывает «в работе» ни на
    * чём, взятой на одно время с листом на другое и «выполненной» без факта.
    */
-  /**
-   * Сменить машину и ставки у заявки, которая уже в работе (ADR 0048): техника сломалась, ушла на
-   * другой объект или её перепутали при переводе в работу. Статус при этом не меняется — тем и
-   * отличается от повторного перевода в работу, которым назначение переписывали до сих пор.
-   * Заявка переезжает в рейс новой машины той же транзакцией.
-   */
-  changeAssignment: (id: string, body: ChangeVehicleAssignmentBody) =>
-    apiFetch<VehicleRequestDto>(`/vehicle-requests/${id}/assignment`, { method: 'PATCH', body }),
   changeStatus: (
     id: string,
     status: RequestStatus,
@@ -413,6 +383,14 @@ export const vehicleRequestsApi = {
         ...(extra.completion ? { completion: extra.completion } : {}),
       },
     }),
+  /**
+   * Сменить машину и ставки у заявки, которая уже в работе (ADR 0048): техника сломалась, ушла на
+   * другой объект или её перепутали при переводе в работу. Статус при этом не меняется — тем и
+   * отличается от повторного перевода в работу, которым назначение переписывали до сих пор.
+   * Заявка переезжает в рейс новой машины той же транзакцией.
+   */
+  changeAssignment: (id: string, body: ChangeVehicleAssignmentBody) =>
+    apiFetch<VehicleRequestDto>(`/vehicle-requests/${id}/assignment`, { method: 'PATCH', body }),
   /** Виза руководителя строительства: `approved: false` — отзыв (ADR 0025). */
   setApproval: (id: string, approved: boolean, version: number) =>
     apiFetch<VehicleRequestDto>(`/vehicle-requests/${id}/approval`, {

@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull, ne } from 'drizzle-orm';
+import { and, eq, ne } from 'drizzle-orm';
 import {
   formatSnils,
   licenseNumberLabel,
@@ -6,9 +6,9 @@ import {
   waybillRequirement,
   type WaybillRequirement,
   type WaybillSnapshotKey,
-  type WaybillFieldsInput,
+  type RouteTripFields,
 } from '@technic/contracts';
-import { db } from '../db/client';
+import type { db } from '../db/client';
 import {
   constructionObjects,
   departments,
@@ -126,7 +126,7 @@ async function collectSnapshot(
     vehicleId: string;
     driverPersonId: string | null;
     organizationId: string;
-    fields: WaybillFieldsInput | null;
+    fields: RouteTripFields | null;
     number: string;
     seriesPrefix: string;
     date: string;
@@ -270,7 +270,7 @@ export interface RouteWaybillContext {
   /** День рейса: он же дата листа и дата, на которую проверяется допуск водителя. */
   routeDate: string;
   driverPersonId: string;
-  trip: WaybillFieldsInput;
+  trip: RouteTripFields;
   /** Состав рейса в порядке талонов: позиция становится `slot` талона заказчика. */
   requests: readonly { requestId: string; position: number }[];
   actor: { id: string; name: string };
@@ -399,27 +399,4 @@ export async function issueWaybillForRoute(
   );
 
   return { id: created!.id, number: number.display, slot: first.position, reused: false };
-}
-
-/**
- * Реквизиты прошлого листа этой машины — ими форма подставляет графы шапки. Гаражный номер, вид
- * сообщения и прицепы от рейса к рейсу те же, и перенабирать их каждый раз незачем.
- */
-export async function lastWaybillFields(vehicleId: string): Promise<WaybillFieldsInput | null> {
-  const [row] = await db
-    .select({
-      withTrailer: waybills.withTrailer,
-      trailer1Model: waybills.trailer1Model,
-      trailer1RegNumber: waybills.trailer1RegNumber,
-      trailer2Model: waybills.trailer2Model,
-      trailer2RegNumber: waybills.trailer2RegNumber,
-      garageNumber: waybills.garageNumber,
-      communicationKind: waybills.communicationKind,
-      transportationKind: waybills.transportationKind,
-    })
-    .from(waybills)
-    .where(and(eq(waybills.vehicleId, vehicleId), isNull(waybills.cancelledAt)))
-    .orderBy(desc(waybills.issuedForDate))
-    .limit(1);
-  return row ?? null;
 }

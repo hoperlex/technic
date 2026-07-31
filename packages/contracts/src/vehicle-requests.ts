@@ -22,12 +22,7 @@ import {
   type VehicleOwnership,
   vehiclePriceSchema,
 } from './vehicles';
-import {
-  assignRouteSchema,
-  routeTripFieldsSchema,
-  type RouteTripFields,
-  type VehicleRequestRouteDto,
-} from './vehicle-routes';
+import { assignRouteSchema, type VehicleRequestRouteDto } from './vehicle-routes';
 import {
   MIN_REQUEST_DATE_MESSAGE,
   WORK_TIME_MESSAGE,
@@ -562,17 +557,6 @@ export function transitionRequiresAssignment(to: RequestStatus): boolean {
  * аренды хотя бы одну потребует сервер — он знает, чья это машина.
  */
 /**
- * Реквизиты рейса (ADR 0037). Устаревшее имя: они описывают выезд, а не заявку, и переехали в
- * контракт маршрута (`routeTripFieldsSchema`). Имя остаётся, пока сервер принимает старое тело
- * запроса на перевод в работу — до contract-релиза маршрутов.
- *
- * @deprecated используйте `routeTripFieldsSchema`
- */
-export const waybillFieldsSchema = routeTripFieldsSchema;
-/** @deprecated используйте `RouteTripFields` */
-export type WaybillFieldsInput = RouteTripFields;
-
-/**
  * Фактический срок, уточняемый при переводе заявки в работу.
  *
  * Заказанное время — планируемое: заявку заводят заранее, а когда именно машина выйдет,
@@ -624,6 +608,22 @@ export type ConfirmScheduleBody = z.input<typeof confirmScheduleSchema>;
 
 export const assignVehicleSchema = z
   .object({
+    vehicleId: uuidSchema,
+    pricePerHour: vehiclePriceSchema.nullable().optional(),
+    pricePerShift: vehiclePriceSchema.nullable().optional(),
+    /** Длительность смены: без неё цена за смену — сумма без единицы измерения. */
+    shiftHours: shiftHoursSchema.nullable().optional(),
+    /**
+     * Рейс, в который заявка едет: существующий маршрут этой машины на эту дату либо новый — с
+     * водителем и реквизитами рейса. Обязателен там, где выписывается путевой лист (грузоперевозка
+     * на собственной машине); решает это сервер, потому что состав справочника видит он.
+     */
+    route: assignRouteSchema.optional(),
+  })
+  .strict();
+export type AssignVehicleInput = z.infer<typeof assignVehicleSchema>;
+export type AssignVehicleBody = z.input<typeof assignVehicleSchema>;
+
 // ── Смена назначенной техники у заявки в работе (ADR 0048) ──
 
 /**
@@ -667,35 +667,6 @@ export const changeVehicleAssignmentSchema = z
   .strict();
 export type ChangeVehicleAssignmentInput = z.infer<typeof changeVehicleAssignmentSchema>;
 export type ChangeVehicleAssignmentBody = z.input<typeof changeVehicleAssignmentSchema>;
-
-    vehicleId: uuidSchema,
-    pricePerHour: vehiclePriceSchema.nullable().optional(),
-    pricePerShift: vehiclePriceSchema.nullable().optional(),
-    /** Длительность смены: без неё цена за смену — сумма без единицы измерения. */
-    shiftHours: shiftHoursSchema.nullable().optional(),
-    /**
-     * Рейс, в который заявка едет: существующий маршрут этой машины на эту дату либо новый — с
-     * водителем и реквизитами рейса. Обязателен там, где выписывается путевой лист (грузоперевозка
-     * на собственной машине); решает это сервер, потому что состав справочника видит он.
-     */
-    route: assignRouteSchema.optional(),
-    /**
-     * Кто за рулём (ADR 0037).
-     *
-     * @deprecated водитель переехал на маршрут (`route.newRoute.driverPersonId`). Поле принимается,
-     * пока живо старое тело запроса, — сервер заводит по нему маршрут сам.
-     */
-    driverPersonId: uuidSchema.optional(),
-    /**
-     * Графы бланка, которых нет ни в заявке, ни в справочниках (ADR 0037).
-     *
-     * @deprecated реквизиты рейса переехали на маршрут (`route.newRoute.trip`).
-     */
-    waybill: routeTripFieldsSchema.optional(),
-  })
-  .strict();
-export type AssignVehicleInput = z.infer<typeof assignVehicleSchema>;
-export type AssignVehicleBody = z.input<typeof assignVehicleSchema>;
 
 // ── Факт выполнения заявки (ADR 0029) ──
 
