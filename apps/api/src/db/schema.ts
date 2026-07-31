@@ -2009,6 +2009,12 @@ export const waybills = pgTable(
      * не IMMUTABLE и в CHECK запрещён.
      */
     issuedForDate: date('issued_for_date', { mode: 'string' }).notNull(),
+    /**
+     * Рейс, по которому выписан лист (маршруты, миграция 0072). Пусто у листов, выданных до
+     * появления маршрутов: их переносит `backfill:routes`, и только после этого contract-миграция
+     * ставит NOT NULL и «один действующий лист на рейс».
+     */
+    routeId: uuid('route_id').references(() => vehicleRoutes.id, { onDelete: 'restrict' }),
     /** Прицеп — признак рейса: в реестре техники его нет, а категорию водителя он поднимает. */
     withTrailer: boolean('with_trailer').notNull().default(false),
     trailer1Model: text('trailer1_model').notNull().default(''),
@@ -2058,6 +2064,9 @@ export const waybills = pgTable(
       .on(t.vehicleId, t.issuedForDate)
       .where(sql`${t.status} <> 'cancelled'`),
     issuedForDateIdx: index('waybills_issued_for_date_idx').on(t.issuedForDate.desc()),
+    routeIdx: index('waybills_route_idx')
+      .on(t.routeId)
+      .where(sql`${t.routeId} IS NOT NULL`),
     driverIdx: index('waybills_driver_idx').on(t.driverPersonId),
     // «На чём человек ездил в прошлый раз» — этим сортируется список водителей и наследуются
     // графы шапки.
@@ -2088,6 +2097,99 @@ export const waybillRequests = pgTable(
     // заявку после него выписывают заново. Условие «лист не аннулирован» — в соседней таблице,
     // и держит его сервис.
     requestIdx: index('waybill_requests_request_idx').on(t.requestId),
+  }),
+);
+
+// ── Маршруты: рейс одной машины на дату (миграция 0072) ──
+// Планировочный слой между заявкой и листом. Заявку кладут в рейс переводом в работу, лист
+// выписывают с рейса отдельным действием — когда состав собран. До выписки рейс правится
+// свободно; выписанный лист его замораживает, потому что бланк уже у водителя (ADR 0037 п. 9).
+export const vehicleRoutes = pgTable(
+  'vehicle_routes',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    /** Сквозной человекочитаемый номер: «Р-12». */
+    num: integer('num').generatedAlwaysAsIdentity(),
+    vehicleId: uuid('vehicle_id')
+      .notNull()
+      .references(() => vehicles.id, { onDelete: 'restrict' }),
+    /** День рейса по МСК: все заявки маршрута подаются в этот день. */
+    routeDate: date('route_date', { mode: 'string' }).notNull(),
+    /**
+     * Кто за рулём. NULL — водителя ещё не назначили: рейс собирают заранее, человека ставят
+     * утром. Один на маршрут: бланк 4-П держит одного, а вторая смена — это второй маршрут.
+     */
+    driverPersonId: uuid('driver_person_id').references(() => persons.id, {
+      onDelete: 'restrict',
+    }),
+    // Реквизиты рейса: описывают выезд, а не заявку, — до маршрутов они лежали в назначении.
+    withTrailer: boolean('with_trailer').notNull().default(false),
+    trailer1Model: text('trailer1_model').notNull().default(''),
+    trailer1RegNumber: text('trailer1_reg_number').notNull().default(''),
+    trailer2Model: text('trailer2_model').notNull().default(''),
+    trailer2RegNumber: text('trailer2_reg_number').notNull().default(''),
+    garageNumber: text('garage_number').notNull().default(''),
+    communicationKind: text('communication_kind').notNull().default(''),
+    transportationKind: text('transportation_kind').notNull().default(''),
+    comment: text('comment').notNull().default(''),
+    createdBy: uuid('created_by')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    updatedBy: uuid('updated_by').references(() => users.id, { onDelete: 'set null' }),
+    version: integer('version').notNull().default(0),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    numUnique: uniqueIndex('vehicle_routes_num_unique').on(t.num),
+    // «Что у этой машины на этот день»: им форма перевода в работу предлагает готовый рейс.
+    // UNIQUE нет намеренно — день и ночь на одной машине это два маршрута с двумя листами.
+    vehicleDateIdx: index('vehicle_routes_vehicle_date_idx').on(t.vehicleId, t.routeDate),
+    dateIdx: index('vehicle_routes_date_idx').on(t.routeDate.desc()),
+    driverIdx: index('vehicle_routes_driver_idx')
+      .on(t.driverPersonId)
+      .where(sql`${t.driverPersonId} IS NOT NULL`),
+    trailerFieldsCheck: check(
+      'vehicle_routes_trailer_fields_check',
+      sql`${t.withTrailer} OR (
+        ${t.trailer1Model} = '' AND ${t.trailer1RegNumber} = ''
+        AND ${t.trailer2Model} = '' AND ${t.trailer2RegNumber} = ''
+      )`,
+    ),
+  }),
+);
+
+// Состав рейса: заявки в порядке талонов бланка. Позиция и есть slot будущего листа.
+export const vehicleRouteRequests = pgTable(
+  'vehicle_route_requests',
+  {
+    routeId: uuid('route_id')
+      .notNull()
+      .references(() => vehicleRoutes.id, { onDelete: 'cascade' }),
+    requestId: uuid('request_id')
+      .notNull()
+      .references(() => vehicleRequests.id, { onDelete: 'restrict' }),
+    position: smallint('position').notNull(),
+    addedAt: timestamp('added_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.routeId, t.requestId] }),
+    positionCheck: check(
+      'vehicle_route_requests_position_check',
+      sql`${t.position} BETWEEN 1 AND 4`,
+    ),
+    // Заявка ровно в одном рейсе: «в работе и без маршрута» — законное состояние, «в двух сразу»
+    // — нет.
+    requestUnique: unique('vehicle_route_requests_request_unique').on(t.requestId),
+    /**
+     * Порядок талонов. В базе ограничение объявлено `DEFERRABLE INITIALLY IMMEDIATE` (миграция
+     * 0072): перестановка переписывает позиции одним запросом, и построчная проверка упала бы на
+     * первой же строке — транзакция перестановки откладывает её через `SET CONSTRAINTS`. Drizzle
+     * отложенность не выражает, поэтому здесь ограничение объявлено обычным; источник истины —
+     * миграция.
+     */
+    positionUnique: unique('vehicle_route_requests_position_unique').on(t.routeId, t.position),
+    requestIdx: index('vehicle_route_requests_request_idx').on(t.requestId),
   }),
 );
 
