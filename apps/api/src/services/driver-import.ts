@@ -1,4 +1,11 @@
-import { formatSnils, isValidSnils, normalizeSnils, splitFullName } from '@technic/contracts';
+import {
+  formatSnils,
+  isDriverJobTitle,
+  isValidSnils,
+  looksLikeDriverLicense,
+  normalizeSnils,
+  splitFullName,
+} from '@technic/contracts';
 import type { PersonNameParts } from '@technic/contracts';
 
 // Разбор кадровой выгрузки водителей (ADR 0037).
@@ -23,6 +30,9 @@ export class DriverImportError extends Error {
 export interface DriverImportRecord {
   fullName: string;
   personnelNo?: string;
+  /** Должность и подразделение строки; не заданы — берутся общие из файла. */
+  jobTitle?: string;
+  department?: string;
   birthDate?: string;
   employedSince?: string;
   snils: string;
@@ -36,6 +46,9 @@ export interface DriversImportFile {
   drivers: DriverImportRecord[];
 }
 
+/** Должность по умолчанию: выгрузку водителей за ней и заводили (ADR 0037). */
+const DEFAULT_JOB_TITLE = 'Водитель';
+
 /** Строка выгрузки, приведённая к тому, что примет база. */
 export interface PreparedDriver {
   /** ФИО одной строкой — им скрипт называет человека в отчёте. */
@@ -44,10 +57,19 @@ export interface PreparedDriver {
   /** 11 цифр: разделители — оформление, а не часть номера. */
   snils: string;
   personnelNo: string;
+  /** Должность и подразделение — из строки, а не из файла: в выгрузке отдела они разные. */
+  jobTitle: string;
+  department: string;
   birthDate: string | null;
   employedSince: string | null;
   /** Только коды, найденные в справочнике; остальные ушли в `unknownCategories`. */
   categories: string[];
+  /**
+   * Почему удостоверение не заводится вовсе, хотя категории в строке есть. Пусто — заводится
+   * обычным порядком. Заполнено у не водительских должностей (ADR 0049): их категории относятся
+   * к другому документу, и приписывать их к ВУ нельзя.
+   */
+  licenseSkipReason: string;
 }
 
 export interface PreparedImport {
@@ -65,15 +87,18 @@ export function parseImportDate(
   value: string | undefined,
   field: string,
   who: string,
+  /** Копилка ошибок разбора: передана — сюда, иначе бросаем (у отдельного вызова копилки нет). */
+  problems?: string[],
 ): string | null {
   if (!value || value.trim() === '') return null;
   const v = value.trim();
   if (/^\d{4}-\d{2}-\d{2}$/u.test(v)) return v;
   const ru = /^(\d{2})\.(\d{2})\.(\d{4})$/u.exec(v);
   if (!ru) {
-    throw new DriverImportError(
-      `${who}: ${field} — ожидается ДД.ММ.ГГГГ или ГГГГ-ММ-ДД, получено «${v}»`,
-    );
+    const message = `${who}: ${field} — ожидается ДД.ММ.ГГГГ или ГГГГ-ММ-ДД, получено «${v}»`;
+    if (!problems) throw new DriverImportError(message);
+    problems.push(message);
+    return null;
   }
   return `${ru[3]}-${ru[2]}-${ru[1]}`;
 }
@@ -110,39 +135,68 @@ export function prepareDriverImport(
 ): PreparedImport {
   const known = new Set(knownCategoryCodes);
   const unknownCategories: PreparedImport['unknownCategories'] = [];
+  /**
+   * Ошибки собираются по всей выгрузке, а не бросаются первой же. Заводить всё равно нечего —
+   * файл не разобран, — но человек с выгрузкой в руках правит её один раз, а не выясняет
+   * следующую опечатку каждым новым заходом: в выгрузке отдела на сотню строк их бывает четыре.
+   */
+  const problems: string[] = [];
 
   const drivers = file.drivers.map((d) => {
     const who = d.fullName?.trim() ?? '';
-    if (who === '') throw new DriverImportError('В выгрузке есть строка без ФИО');
+    if (who === '') problems.push('В выгрузке есть строка без ФИО');
 
     const name = splitFullName(who);
-    if (!name.lastName || !name.firstName) {
-      throw new DriverImportError(`${who}: ожидается «Фамилия Имя Отчество»`);
+    if (who !== '' && (!name.lastName || !name.firstName)) {
+      problems.push(`${who}: ожидается «Фамилия Имя Отчество»`);
     }
 
     const snils = normalizeSnils(d.snils ?? '');
-    if (!/^\d{11}$/u.test(snils))
-      throw new DriverImportError(`${who}: СНИЛС — 11 цифр, получено «${d.snils}»`);
-    // Контрольная сумма ловит опечатку в одной цифре — то, чего формат не видит. Пропустить её
-    // здесь значило бы завести номер, который потом отвергнет форма правки карточки.
-    if (!isValidSnils(snils)) {
-      throw new DriverImportError(
-        `${who}: СНИЛС ${formatSnils(snils)} не проходит проверку контрольной суммы`,
-      );
+    if (!/^\d{11}$/u.test(snils)) {
+      problems.push(`${who}: СНИЛС — 11 цифр, получено «${d.snils}»`);
+    } else if (!isValidSnils(snils)) {
+      // Контрольная сумма ловит опечатку в одной цифре — то, чего формат не видит. Пропустить её
+      // здесь значило бы завести номер, который потом отвергнет форма правки карточки.
+      problems.push(`${who}: СНИЛС ${formatSnils(snils)} не проходит проверку контрольной суммы`);
     }
+
+    const jobTitle = d.jobTitle?.trim() || file.jobTitle?.trim() || DEFAULT_JOB_TITLE;
+    const department = d.department?.trim() || file.department?.trim() || '';
 
     const codes = parseCategoryCodes(d.categories);
     const unknown = codes.filter((c) => !known.has(c));
-    if (unknown.length > 0) unknownCategories.push({ who, codes: unknown });
+    /**
+     * Водительское ли это удостоверение (ADR 0049). У водителя — да, колонка только про него.
+     * У машиниста в той же колонке стоят категории удостоверения тракториста-машиниста, где
+     * те же буквы означают другие машины: приписать их к ВУ значит выдать допуск к автобусу.
+     *
+     * Исключение — набор, который у тракториста невозможен: подкатегория или состав с прицепом
+     * (B1, CE, DE) при полном отсутствии незнакомых справочнику кодов. Так распознаётся машинист
+     * крана, у которого есть и настоящие права; всё спорное остаётся незаведённым.
+     */
+    const isDriverLicense =
+      isDriverJobTitle(jobTitle) || (unknown.length === 0 && looksLikeDriverLicense(codes));
+    const licenseSkipReason =
+      isDriverLicense || codes.length === 0
+        ? ''
+        : `должность «${jobTitle}» не водительская: категории ${codes
+            .map((c) => c.toUpperCase())
+            .join(', ')} относятся к другому удостоверению и не заведены`;
+    if (licenseSkipReason === '' && unknown.length > 0) {
+      unknownCategories.push({ who, codes: unknown });
+    }
 
     return {
       who,
       name,
       snils,
       personnelNo: d.personnelNo?.trim() ?? '',
-      birthDate: parseImportDate(d.birthDate, 'дата рождения', who),
-      employedSince: parseImportDate(d.employedSince, 'дата приёма', who),
-      categories: codes.filter((c) => known.has(c)),
+      jobTitle,
+      department,
+      birthDate: parseImportDate(d.birthDate, 'дата рождения', who, problems),
+      employedSince: parseImportDate(d.employedSince, 'дата приёма', who, problems),
+      categories: isDriverLicense ? codes.filter((c) => known.has(c)) : [],
+      licenseSkipReason,
     };
   });
 
@@ -153,6 +207,13 @@ export function prepareDriverImport(
   for (const d of drivers) {
     if (seen.has(d.snils)) duplicates.add(formatSnils(d.snils));
     seen.add(d.snils);
+  }
+  if (problems.length > 0) {
+    const head =
+      problems.length === 1
+        ? 'Выгрузка не разобрана:'
+        : `Выгрузка не разобрана, строк с ошибками — ${problems.length}:`;
+    throw new DriverImportError([head, ...problems.map((p) => `· ${p}`)].join('\n'));
   }
   if (duplicates.size > 0) {
     throw new DriverImportError(`СНИЛС повторяется в файле: ${[...duplicates].join(', ')}`);

@@ -138,3 +138,101 @@ describe('выгрузка разбирается целиком или не р�
     expect(() => prepareDriverImport(mixed, KNOWN)).toThrow(/Петров/u);
   });
 });
+
+describe('выгрузка шире водителей (ADR 0049)', () => {
+  const machinist = {
+    fullName: 'Машинистов Пётр Петрович',
+    snils: SNILS,
+    jobTitle: 'Машинист погрузчика',
+    department: 'Отдел автотехники и СДМ (ОП Химки)',
+    categories: 'B,C,D,E,F',
+  };
+
+  it('должность и подразделение берутся из строки, а не из шапки файла', () => {
+    const { drivers } = prepareDriverImport(
+      { jobTitle: 'Водитель', department: 'Отдел автотехники и СДМ', drivers: [machinist] },
+      KNOWN,
+    );
+    expect(drivers[0]!.jobTitle).toBe('Машинист погрузчика');
+    expect(drivers[0]!.department).toBe('Отдел автотехники и СДМ (ОП Химки)');
+  });
+
+  it('строка без должности берёт общую из файла', () => {
+    const { drivers } = prepareDriverImport(
+      { jobTitle: 'Водитель КМУ', drivers: [{ fullName: 'Иванов Иван Иванович', snils: SNILS }] },
+      KNOWN,
+    );
+    expect(drivers[0]!.jobTitle).toBe('Водитель КМУ');
+  });
+
+  it('машинисту водительские категории не приписываются: буквы у ВУ и у СДМ одни, машины разные', () => {
+    const { drivers, unknownCategories } = prepareDriverImport({ drivers: [machinist] }, KNOWN);
+    expect(drivers[0]!.categories).toEqual([]);
+    // Молчать нельзя: строка объясняет, почему у человека нет документа при заполненной колонке.
+    expect(drivers[0]!.licenseSkipReason).toMatch(/не водительская/u);
+    expect(drivers[0]!.licenseSkipReason).toMatch(/B, C, D, E, F/u);
+    // И это не «неизвестные коды»: они известны, просто относятся к другому документу.
+    expect(unknownCategories).toEqual([]);
+  });
+
+  it('водитель КМУ и водитель легкового — те же водители, документ заводится', () => {
+    for (const jobTitle of ['Водитель', 'Водитель КМУ', 'Водитель легкового автомобиля']) {
+      const { drivers } = prepareDriverImport({ drivers: [{ ...machinist, jobTitle }] }, KNOWN);
+      expect(drivers[0]!.categories).toEqual(['b', 'c', 'd']);
+      expect(drivers[0]!.licenseSkipReason).toBe('');
+    }
+  });
+
+  it('у машиниста крана с настоящими правами документ заводится: такого набора у тракториста нет', () => {
+    // B1, C1, CE, DE — подкатегории и составы с прицепом; у удостоверения тракториста их не бывает.
+    const { drivers } = prepareDriverImport(
+      {
+        drivers: [
+          { ...machinist, jobTitle: 'Машинист крана', categories: 'B,B1,C,C1,D,D1,BE,CE,C1E,DE' },
+        ],
+      },
+      KNOWN,
+    );
+    expect(drivers[0]!.licenseSkipReason).toBe('');
+    expect(drivers[0]!.categories).toContain('c1e');
+  });
+
+  it('тракторное удостоверение нового образца за ВУ не принимается, хотя B1 и D1 в нём есть', () => {
+    // Рядом с B1 и D1 стоят B2, E1, G1 — кодов, которых у ВУ нет, достаточно, чтобы не гадать.
+    const { drivers } = prepareDriverImport(
+      {
+        drivers: [
+          {
+            ...machinist,
+            jobTitle: 'Машинист экскаватора',
+            categories: 'A1,A2,B1,B2,B3,C,D1,E1,E2,G1,G2',
+          },
+        ],
+      },
+      KNOWN,
+    );
+    expect(drivers[0]!.categories).toEqual([]);
+    expect(drivers[0]!.licenseSkipReason).toMatch(/другому удостоверению/u);
+  });
+
+  it('ошибки собираются по всей выгрузке, а не бросаются первой же', () => {
+    const file = {
+      drivers: [
+        { fullName: 'Иванов Иван Иванович', snils: '111-111-111 46' },
+        { fullName: 'Петров Пётр Петрович', snils: SNILS, birthDate: '07/27/1968' },
+        { fullName: 'Сидоров', snils: '11111111145' },
+      ],
+    };
+    try {
+      prepareDriverImport(file, KNOWN);
+      throw new Error('разбор обязан был отказать');
+    } catch (e) {
+      const message = (e as Error).message;
+      // Человек с выгрузкой в руках правит её один раз, а не выясняет следующую опечатку заходом.
+      expect(message).toMatch(/строк с ошибками — 3/u);
+      expect(message).toMatch(/Иванов Иван Иванович/u);
+      expect(message).toMatch(/Петров Пётр Петрович/u);
+      expect(message).toMatch(/Сидоров/u);
+    }
+  });
+});

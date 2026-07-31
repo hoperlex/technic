@@ -145,7 +145,18 @@ export function DriversImportModal({ open, onClose, onImported }: Props) {
         )}
 
         {error && (
-          <Alert type="error" showIcon message="Выгрузка не разобрана" description={error} />
+          <Alert
+            type="error"
+            showIcon
+            message="Выгрузка не разобрана"
+            // Сервер перечисляет все негодные строки списком (ADR 0049): переносы здесь и есть
+            // отчёт, а собранные в абзац они читаются как одна длинная фраза.
+            description={
+              <div style={{ whiteSpace: 'pre-line', maxHeight: 260, overflowY: 'auto' }}>
+                {error}
+              </div>
+            }
+          />
         )}
 
         {!report && !error && (

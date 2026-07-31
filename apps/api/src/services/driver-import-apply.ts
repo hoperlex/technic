@@ -62,9 +62,6 @@ export async function applyDriverImport(
   file: DriversImportFile,
   { dryRun, actorUserId = null }: ApplyDriverImportOptions,
 ): Promise<DriversImportReportDto> {
-  const jobTitle = file.jobTitle ?? 'Водитель';
-  const employmentComment = file.department ?? '';
-
   const [driverSpecialization] = await db
     .select({ id: specializations.id })
     .from(specializations)
@@ -123,7 +120,9 @@ export async function applyDriverImport(
     if (d.categories.length === 0) {
       report.withoutLicense.push({
         who: d.who,
-        why: 'в выгрузке нет ни одной известной категории — удостоверение заводит администратор',
+        why:
+          d.licenseSkipReason ||
+          'в выгрузке нет ни одной известной категории — удостоверение заводит администратор',
       });
     }
 
@@ -152,12 +151,14 @@ export async function applyDriverImport(
         ...(d.employedSince ? { startedOn: d.employedSince } : {}),
       });
 
+      // Должность и подразделение — из строки: в выгрузке отдела водители, машинисты крана и
+      // погрузчика идут одним файлом, а обособленные подразделения — его разделами.
       await tx.insert(personEmployments).values({
         personId,
         employmentType: 'staff',
         personnelNo: d.personnelNo,
-        jobTitle,
-        comment: employmentComment,
+        jobTitle: d.jobTitle,
+        comment: d.department,
         ...(d.employedSince ? { startedOn: d.employedSince } : {}),
       });
 
