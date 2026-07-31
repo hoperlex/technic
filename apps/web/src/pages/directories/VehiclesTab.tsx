@@ -33,6 +33,9 @@ import {
   rentalActivationBlockReason,
   vehicleOwnershipColors,
   vehicleOwnershipLabels,
+  assignmentRateLabel,
+  vehicleClassificationLabel,
+  vehicleLabel,
   vehicleStatusColors,
   vehicleStatusLabels,
   vehicleTitle,
@@ -49,10 +52,10 @@ import {
   withSavedClassification,
 } from '../../hooks/useVehicleClassifications';
 import { AutoSelect } from '../../components/AutoSelect';
-import { DataTable } from '../../components/DataTable';
+import { DataTable, type CardConfig } from '../../components/DataTable';
 import { FormModal } from '../../components/FormModal';
 import { PageTableLayout } from '../../components/PageTableLayout';
-import type { FilterDefinition } from '../../components/listControls';
+import { sortOptionsFrom, type FilterDefinition } from '../../components/listControls';
 import { actionsColumn, badgeColumn, textColumn } from '../../components/columns';
 import { useIsMobile } from '../../hooks/useIsMobile';
 import { useListParams } from '../../hooks/useListParams';
@@ -97,7 +100,7 @@ export function VehiclesTab() {
   const { can } = useAuth();
   const canRestore = can('archive.restore');
 
-  const { params, setParams, onTableChange } = useListParams<{
+  const { params, setParams, setSort, onTableChange } = useListParams<{
     ownership?: VehicleOwnership;
     vehicleTypeId?: string;
     lessorId?: string;
@@ -569,14 +572,6 @@ export function VehiclesTab() {
         setParams((p) => ({ ...p, status: v as VehicleStatus | undefined, page: 1 })),
     },
     {
-      kind: 'text',
-      key: 'search',
-      label: 'Поиск',
-      value: params.search,
-      placeholder: 'Госномер, марка, арендодатель',
-      onChange: (v) => setParams((p) => ({ ...p, search: v, page: 1 })),
-    },
-    {
       kind: 'toggle',
       key: 'includeDeleted',
       label: 'Показывать архив',
@@ -585,6 +580,39 @@ export function VehiclesTab() {
         setParams((p) => ({ ...p, includeDeleted: checked ? 'true' : undefined, page: 1 })),
     },
   ];
+
+  /**
+   * Карточка единицы техники на телефоне (ADR 0042). Заголовок — то, чем машину зовут: у своей
+   * это госномер, у аренды — описание предложения («Автокран 70 тн»). Дальше классификация,
+   * владелец и ставки: по ним предложения аренды и различают между собой.
+   */
+  const card: CardConfig<VehicleDto> = {
+    title: (r) => vehicleLabel(r),
+    badge: (r) => <Tag color={vehicleStatusColors[r.status]}>{vehicleStatusLabels[r.status]}</Tag>,
+    primary: (r) => vehicleClassificationLabel({ typeName: r.typeName, categoryName: r.categoryName }),
+    lines: [
+      (r) => (r.ownership === 'own' ? r.modelName : r.lessorName),
+      (r) => assignmentRateLabel(r) || null,
+      // Причина, по которой предложение нельзя включить, — строкой: подсказки на касании нет.
+      (r) => rentalActivationBlockReason(r),
+      (r) => (r.deletedAt ? 'В архиве' : null),
+    ],
+    onOpen: (r) => (r.deletedAt ? undefined : openEdit(r)),
+    actions: (r) =>
+      r.deletedAt
+        ? canRestore
+          ? [{ key: 'restore', label: 'Восстановить', onClick: () => restoreMut.mutate(r.id) }]
+          : []
+        : [
+            { key: 'edit', label: 'Редактировать', onClick: () => openEdit(r) },
+            {
+              key: 'delete',
+              label: 'В архив',
+              danger: true,
+              onClick: () => confirmDelete(r),
+            },
+          ],
+  };
 
   return (
     <PageTableLayout
@@ -595,17 +623,31 @@ export function VehiclesTab() {
         </Button>
       }
       mobile={{
+        search: {
+          value: params.search,
+          placeholder: 'Госномер, марка, арендодатель',
+          onChange: (v) => setParams((p) => ({ ...p, search: v, page: 1 })),
+        },
         filters: mobileFilters,
+        sort: {
+          options: sortOptionsFrom(columns),
+          sortBy: params.sortBy,
+          sortOrder: params.sortOrder,
+          onChange: setSort,
+        },
         primaryAction: { label: 'Добавить технику', icon: <PlusOutlined />, onClick: openCreate },
       }}
     >
       <DataTable<VehicleDto>
         columns={columns}
+        card={card}
         data={data?.items ?? []}
         total={data?.total ?? 0}
         loading={isFetching}
         page={params.page}
         pageSize={params.pageSize}
+        sortBy={params.sortBy}
+        sortOrder={params.sortOrder}
         onChange={onTableChange}
       />
       <FormModal

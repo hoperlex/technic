@@ -35,14 +35,14 @@ import {
 } from '@technic/contracts';
 import { counterpartiesApi, departmentsApi, objectsApi, usersApi } from '../../api/resources';
 import { AutoSelect } from '../../components/AutoSelect';
-import { DataTable } from '../../components/DataTable';
+import { DataTable, type CardConfig } from '../../components/DataTable';
 import { FormModal } from '../../components/FormModal';
 import { PageTableLayout } from '../../components/PageTableLayout';
 import { PasswordField } from '../../components/PasswordField';
 import { PersonNameFields } from '../../components/PersonNameFields';
 import { ReasonModal } from '../../components/CancelReasonModal';
 import { actionsColumn, badgeColumn, boolBadgeColumn, textColumn } from '../../components/columns';
-import type { FilterDefinition } from '../../components/listControls';
+import { sortOptionsFrom, type FilterDefinition } from '../../components/listControls';
 import { useListParams } from '../../hooks/useListParams';
 import { useAuth } from '../../auth/AuthContext';
 import { UserAvatar } from '../../components/UserAvatar';
@@ -86,7 +86,7 @@ export function UsersTab() {
   const { message, modal } = App.useApp();
   const qc = useQueryClient();
   const { user: currentUser, can } = useAuth();
-  const { params, setParams, onTableChange } = useListParams<{
+  const { params, setParams, setSort, onTableChange } = useListParams<{
     role?: string;
     isActive?: string;
     pending?: string;
@@ -279,53 +279,77 @@ export function UsersTab() {
     onError: (e) => message.error(errorMessage(e)),
   });
 
-  const rowMenu = (r: UserDto) => {
+  /**
+   * Что можно сделать со строкой. Список один на оба режима: на десктопе он раскрывается меню,
+   * на телефоне — шитом с подписями (ADR 0030 п. 6, ADR 0042). Расходиться им нельзя — иначе
+   * «Отклонить заявку» существовало бы только с мышью.
+   */
+  const rowActions = (r: UserDto) => {
     const isSelf = r.id === currentUser?.id;
     const pendingRegistration = isPendingRegistration(r);
-    return {
-      items: [
-        { key: 'edit', label: pendingRegistration ? 'Рассмотреть заявку' : 'Редактировать' },
-        { key: 'password', label: 'Сменить пароль' },
-        {
-          key: 'toggle',
-          label: r.isActive ? 'Деактивировать' : 'Активировать',
-          disabled: isSelf && r.isActive,
-        },
-        { type: 'divider' as const },
-        // Отказ по нерассмотренной заявке и удаление сотрудника — разные события: в аудите
-        // остаётся причина отказа, и путать их не нужно ни администратору, ни разбору потом.
-        ...(pendingRegistration
-          ? [{ key: 'reject', label: 'Отклонить заявку', danger: true }]
-          : [{ key: 'delete', label: 'Удалить', danger: true, disabled: isSelf }]),
-      ],
-      onClick: ({ key }: { key: string }) => {
-        if (key === 'edit') openEdit(r);
-        if (key === 'password') {
+    const remove = () =>
+      modal.confirm({
+        title: `Удалить пользователя ${r.email}?`,
+        content: 'Аккаунт будет деактивирован (soft-delete).',
+        okText: 'Удалить',
+        okButtonProps: { danger: true },
+        cancelText: 'Отмена',
+        onOk: () => removeMut.mutateAsync(r.id),
+      });
+    return [
+      {
+        key: 'edit',
+        label: pendingRegistration ? 'Рассмотреть заявку' : 'Редактировать',
+        onClick: () => openEdit(r),
+      },
+      {
+        key: 'password',
+        label: 'Сменить пароль',
+        onClick: () => {
           pwForm.resetFields();
           setPwUser(r);
-        }
-        // Активация без роли запрещена (сервер её отклонит): у самостоятельно
-        // зарегистрировавшегося пользователя роли нет, поэтому активируем через форму.
-        if (key === 'toggle') {
+        },
+      },
+      {
+        key: 'toggle',
+        label: r.isActive ? 'Деактивировать' : 'Активировать',
+        disabled: isSelf && r.isActive,
+        onClick: () => {
+          // Активация без роли запрещена (сервер её отклонит): у самостоятельно
+          // зарегистрировавшегося пользователя роли нет, поэтому активируем через форму.
           if (!r.isActive && !r.role) {
             message.info('Назначьте роль — без неё учётку активировать нельзя');
             openEdit(r);
           } else {
             void toggleActiveMut.mutate(r);
           }
-        }
-        if (key === 'reject') setRejecting(r);
-        if (key === 'delete') {
-          modal.confirm({
-            title: `Удалить пользователя ${r.email}?`,
-            content: 'Аккаунт будет деактивирован (soft-delete).',
-            okText: 'Удалить',
-            okButtonProps: { danger: true },
-            cancelText: 'Отмена',
-            onOk: () => removeMut.mutateAsync(r.id),
-          });
-        }
+        },
       },
+      // Отказ по нерассмотренной заявке и удаление сотрудника — разные события: в аудите
+      // остаётся причина отказа, и путать их не нужно ни администратору, ни разбору потом.
+      ...(pendingRegistration
+        ? [
+            {
+              key: 'reject',
+              label: 'Отклонить заявку',
+              danger: true,
+              onClick: () => setRejecting(r),
+            },
+          ]
+        : [{ key: 'delete', label: 'Удалить', danger: true, disabled: isSelf, onClick: remove }]),
+    ];
+  };
+
+  const rowMenu = (r: UserDto) => {
+    const actions = rowActions(r);
+    return {
+      items: actions.map(({ key, label, danger, disabled }) => ({
+        key,
+        label,
+        danger,
+        disabled,
+      })),
+      onClick: ({ key }: { key: string }) => actions.find((a) => a.key === key)?.onClick(),
     };
   };
 
@@ -563,14 +587,6 @@ export function UsersTab() {
       onChange: setPending,
     },
     {
-      kind: 'text',
-      key: 'search',
-      label: 'Поиск',
-      value: params.search,
-      placeholder: 'Email или ФИО',
-      onChange: (v) => applyFilter({ search: v }),
-    },
-    {
       kind: 'select',
       key: 'role',
       label: 'Роль',
@@ -643,11 +659,67 @@ export function UsersTab() {
       : []),
   ];
 
+  /**
+   * Карточка учётной записи на телефоне (ADR 0042). Заголовок — ФИО: список читают по людям, а
+   * email нужен вторым. Нерассмотренная заявка на регистрацию помечена прямо в шапке: в общем
+   * списке она лежит вперемешку с сотрудниками и отличается только этим.
+   */
+  const card: CardConfig<UserDto> = {
+    title: (r) => (
+      <Space size={8}>
+        <UserAvatar name={r.fullName} size="small" />
+        <span>{r.fullName}</span>
+      </Space>
+    ),
+    badge: (r) =>
+      isPendingRegistration(r) ? (
+        <Tag color="gold">Ждёт активации</Tag>
+      ) : (
+        <Tag color={r.isActive ? 'green' : 'default'}>{r.isActive ? 'Активен' : 'Отключён'}</Tag>
+      ),
+    primary: (r) => (r.role ? <Tag color={roleColors[r.role]}>{roleLabels[r.role]}</Tag> : '—'),
+    lines: [
+      (r) => r.email,
+      (r) => {
+        // Область: отделы (ADR 0040) либо объекты — показывается то, что у учётки заполнено.
+        const places = r.departments.length > 0 ? r.departments : r.constructionObjects;
+        return places.length > 0 ? places.map((p) => p.name).join(' · ') : null;
+      },
+      (r) =>
+        r.counterpartyName
+          ? counterpartyTypeHasAccounts(r.counterpartyType)
+            ? `${r.counterpartyName} — ${counterpartyTypeLabels[r.counterpartyType]}`
+            : r.counterpartyName
+          : null,
+      (r) =>
+        r.requestedRole
+          ? `Пожелание: ${registrationRoleRequestLabels[r.requestedRole]}`
+          : null,
+      (r) => (r.deletedAt ? 'В архиве' : null),
+    ],
+    // Действий над архивной учёткой нет — как и в таблице.
+    onOpen: (r) => (r.deletedAt ? undefined : openEdit(r)),
+    actions: (r) => (r.deletedAt ? [] : rowActions(r)),
+  };
+
   return (
     <PageTableLayout
       filters={filters}
+      // На телефоне список читается карточками, поиск — строкой в панели, остальные фильтры и
+      // сортировка — шитами (ADR 0042).
       mobile={{
+        search: {
+          value: params.search,
+          placeholder: 'Email или ФИО',
+          onChange: (v) => applyFilter({ search: v }),
+        },
         filters: mobileFilters,
+        sort: {
+          options: sortOptionsFrom(columns, { fullName: 'ФИО' }),
+          sortBy: params.sortBy,
+          sortOrder: params.sortOrder,
+          onChange: setSort,
+        },
         primaryAction: {
           label: 'Добавить пользователя',
           icon: <PlusOutlined />,
@@ -662,11 +734,14 @@ export function UsersTab() {
     >
       <DataTable<UserDto>
         columns={columns}
+        card={card}
         data={data?.items ?? []}
         total={data?.total ?? 0}
         loading={isFetching}
         page={params.page}
         pageSize={params.pageSize}
+        sortBy={params.sortBy}
+        sortOrder={params.sortOrder}
         onChange={onTableChange}
       />
 

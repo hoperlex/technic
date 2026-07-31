@@ -23,10 +23,10 @@ import {
   type VehicleSpecDto,
 } from '@technic/contracts';
 import { vehicleSpecsApi } from '../../api/resources';
-import { DataTable, type TableChange } from '../../components/DataTable';
+import { DataTable, type CardConfig, type TableChange } from '../../components/DataTable';
 import { FormModal } from '../../components/FormModal';
 import { PageTableLayout } from '../../components/PageTableLayout';
-import type { FilterDefinition } from '../../components/listControls';
+import { sortOptionsFrom, type FilterDefinition } from '../../components/listControls';
 import { actionsColumn, textColumn } from '../../components/columns';
 import { errorMessage } from '../../utils/format';
 
@@ -271,16 +271,9 @@ export function VehicleSpecsTab() {
     </Space>
   );
 
-  /** Те же фильтры описаниями — для шита на телефоне (ADR 0030). */
+  /** Те же фильтры описаниями — для шита на телефоне (ADR 0030). Поиска здесь нет: он стоит
+      строкой в панели списка (ADR 0042), и второе поле спрашивало бы то же самое. */
   const mobileFilters: FilterDefinition[] = [
-    {
-      kind: 'text',
-      key: 'search',
-      label: 'Поиск',
-      value: params.search,
-      placeholder: 'Код, название, единица',
-      onChange: (v) => patchParams({ search: v }),
-    },
     {
       kind: 'select',
       key: 'isActive',
@@ -295,6 +288,35 @@ export function VehicleSpecsTab() {
     },
   ];
 
+  /**
+   * Карточка ТТХ на телефоне (ADR 0042): наименование с единицей — то, чем характеристику
+   * называют, дальше границы значений и число типов, где она уже привязана.
+   */
+  const card: CardConfig<VehicleSpecDto> = {
+    title: (r) => r.name,
+    badge: (r) => <Tag color={r.isActive ? 'green' : 'default'}>{r.isActive ? 'Да' : 'Нет'}</Tag>,
+    primary: (r) => (r.unit ? `Единица: ${r.unit}` : 'Без единицы измерения'),
+    lines: [
+      (r) =>
+        r.minValue == null && r.maxValue == null
+          ? null
+          : `Границы: ${r.minValue ?? '…'} — ${r.maxValue ?? '…'}`,
+      (r) => (r.usedInTypes > 0 ? `Привязан к типам: ${r.usedInTypes}` : 'Не привязан к типам'),
+    ],
+    onOpen: openEdit,
+    actions: (r) => [
+      { key: 'edit', label: 'Редактировать', onClick: () => openEdit(r) },
+      {
+        key: 'toggle',
+        label: r.isActive ? 'Деактивировать' : 'Активировать',
+        danger: r.isActive,
+        // Привязанный к типам ТТХ не выключают: сперва его отвязывают в карточке типа.
+        disabled: r.isActive && r.usedInTypes > 0,
+        onClick: () => onToggleActive(r, !r.isActive),
+      },
+    ],
+  };
+
   return (
     <PageTableLayout
       filters={filters}
@@ -304,17 +326,32 @@ export function VehicleSpecsTab() {
         </Button>
       }
       mobile={{
+        search: {
+          value: params.search,
+          placeholder: 'Код, название, единица',
+          onChange: (v) => patchParams({ search: v }),
+        },
         filters: mobileFilters,
+        sort: {
+          options: sortOptionsFrom(columns),
+          sortBy: params.sortBy,
+          sortOrder: params.sortOrder,
+          onChange: (sortBy, sortOrder) =>
+            patchParams({ sortBy: sortBy ?? 'sortOrder', sortOrder: sortOrder ?? 'asc' }),
+        },
         primaryAction: { label: 'Добавить ТТХ', icon: <PlusOutlined />, onClick: openCreate },
       }}
     >
       <DataTable<VehicleSpecDto>
         columns={columns}
+        card={card}
         data={data?.items ?? []}
         total={data?.total ?? 0}
         loading={isFetching}
         page={params.page}
         pageSize={params.pageSize}
+        sortBy={params.sortBy}
+        sortOrder={params.sortOrder}
         onChange={onTableChange}
       />
       <FormModal

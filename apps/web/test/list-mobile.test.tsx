@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { act, render, screen, fireEvent } from '@testing-library/react';
 import { DataTable, type CardConfig, type TableChange } from '../src/components/DataTable';
 import { FilterSheet } from '../src/components/FilterSheet';
+import { ListToolbar } from '../src/components/ListToolbar';
 import type { FilterDefinition } from '../src/components/listControls';
 import { sortOptionsFrom } from '../src/components/listControls';
 import { ApprovalCell } from '../src/pages/vehicle/shared';
@@ -285,5 +286,46 @@ describe('поля сортировки', () => {
     expect(sortOptionsFrom(withNode, { createdAt: 'Дата создания' })).toEqual([
       { key: 'createdAt', label: 'Дата создания' },
     ]);
+  });
+});
+
+/**
+ * Поиск в панели списка (ADR 0042). На телефоне лупы в заголовке столбца нет — до неё там не
+ * дотянуться, — поэтому строка поиска стоит на виду и уходит в параметры сама, с задержкой.
+ */
+describe('поиск в панели списка', () => {
+  it('набранное уходит в список после паузы, а не по каждой букве', async () => {
+    vi.useFakeTimers();
+    const onChange = vi.fn();
+    render(<ListToolbar search={{ value: undefined, onChange }} />);
+
+    const field = screen.getByPlaceholderText('Поиск');
+    fireEvent.change(field, { target: { value: 'ЖК' } });
+    fireEvent.change(field, { target: { value: 'ЖК Сев' } });
+    expect(onChange).not.toHaveBeenCalled();
+
+    await act(async () => {
+      vi.advanceTimersByTime(400);
+    });
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenCalledWith('ЖК Сев');
+    vi.useRealTimers();
+  });
+
+  it('Enter отправляет сразу, а пустая строка снимает поиск', () => {
+    const onChange = vi.fn();
+    render(<ListToolbar search={{ value: 'ЖК', onChange }} />);
+
+    const field = screen.getByDisplayValue('ЖК');
+    fireEvent.change(field, { target: { value: '   ' } });
+    fireEvent.keyDown(field, { key: 'Enter', keyCode: 13 });
+    fireEvent.keyUp(field, { key: 'Enter', keyCode: 13 });
+
+    expect(onChange).toHaveBeenLastCalledWith(undefined);
+  });
+
+  it('панель без единого контрола не рисуется', () => {
+    const { container } = render(<ListToolbar />);
+    expect(container.querySelector('.list-toolbar')).toBeNull();
   });
 });

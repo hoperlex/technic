@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { App, Button, Form, Input, InputNumber, Space, Switch } from 'antd';
+import { App, Button, Form, Input, InputNumber, Space, Switch, Tag } from 'antd';
 import { EditOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -12,10 +12,11 @@ import {
 import type { TableColumnType } from 'antd';
 import { containerTypesApi } from '../../api/resources';
 import { AutoSelect } from '../../components/AutoSelect';
-import { DataTable } from '../../components/DataTable';
+import { DataTable, type CardConfig } from '../../components/DataTable';
 import { FormModal } from '../../components/FormModal';
 import { PageTableLayout } from '../../components/PageTableLayout';
 import { actionsColumn, badgeColumn, textColumn } from '../../components/columns';
+import { sortOptionsFrom } from '../../components/listControls';
 import { useListParams } from '../../hooks/useListParams';
 import { errorMessage } from '../../utils/format';
 
@@ -24,7 +25,10 @@ const kindOptions = CONTAINER_KINDS.map((k) => ({ value: k, label: containerKind
 export function ContainerTypesTab() {
   const { message, modal } = App.useApp();
   const qc = useQueryClient();
-  const { params, onTableChange } = useListParams<{ isActive?: string; type?: string }>(
+  const { params, setParams, setSort, onTableChange } = useListParams<{
+    isActive?: string;
+    type?: string;
+  }>(
     {},
     {
       searchKeys: ['code', 'name'],
@@ -135,11 +139,66 @@ export function ContainerTypesTab() {
     )),
   ];
 
+  /**
+   * Карточка строки на телефоне (ADR 0042): наименование, вид контейнера и активность. Активность
+   * здесь тег, а не переключатель, как в таблице: случайное касание в списке не должно выключать
+   * тип из справочника — для этого есть карточка правки.
+   */
+  const card: CardConfig<ContainerTypeDto> = {
+    title: (r) => r.name,
+    badge: (r) => <Tag color={r.isActive ? 'green' : 'default'}>{r.isActive ? 'Да' : 'Нет'}</Tag>,
+    primary: (r) => containerKindLabels[r.type],
+    lines: [(r) => `Код: ${r.code}`],
+    onOpen: openEdit,
+    actions: (r) => [
+      { key: 'edit', label: 'Редактировать', onClick: () => openEdit(r) },
+      {
+        key: 'toggle',
+        label: r.isActive ? 'Деактивировать' : 'Активировать',
+        danger: r.isActive,
+        onClick: () => onToggleActive(r, !r.isActive),
+      },
+    ],
+  };
+
   return (
     <PageTableLayout
-      // Фильтры этого справочника живут в заголовках столбцов и на телефоне работают там же:
-      // таблица со своей прокруткой остаётся (ADR 0030). В шит выносить нечего.
+      // На телефоне справочник читается карточками, поиск и фильтры — в панели и шите (ADR 0042).
       mobile={{
+        search: {
+          value: params.search,
+          placeholder: 'Код или название',
+          onChange: (v) => setParams((p) => ({ ...p, search: v, page: 1 })),
+        },
+        filters: [
+          {
+            kind: 'select',
+            key: 'type',
+            label: 'Вид контейнера',
+            value: params.type,
+            options: kindOptions,
+            placeholder: 'Любой',
+            onChange: (v) => setParams((p) => ({ ...p, type: v, page: 1 })),
+          },
+          {
+            kind: 'select',
+            key: 'isActive',
+            label: 'Активность',
+            value: params.isActive,
+            options: [
+              { value: 'true', label: 'Активные' },
+              { value: 'false', label: 'Неактивные' },
+            ],
+            placeholder: 'Все',
+            onChange: (v) => setParams((p) => ({ ...p, isActive: v, page: 1 })),
+          },
+        ],
+        sort: {
+          options: sortOptionsFrom(columns),
+          sortBy: params.sortBy,
+          sortOrder: params.sortOrder,
+          onChange: setSort,
+        },
         primaryAction: { label: 'Добавить тип', icon: <PlusOutlined />, onClick: openCreate },
       }}
       extra={
@@ -150,11 +209,14 @@ export function ContainerTypesTab() {
     >
       <DataTable<ContainerTypeDto>
         columns={columns}
+        card={card}
         data={data?.items ?? []}
         total={data?.total ?? 0}
         loading={isFetching}
         page={params.page}
         pageSize={params.pageSize}
+        sortBy={params.sortBy}
+        sortOrder={params.sortOrder}
         onChange={onTableChange}
       />
       <FormModal

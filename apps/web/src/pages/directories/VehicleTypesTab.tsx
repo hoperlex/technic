@@ -28,10 +28,10 @@ import {
   vehicleTypesApi,
 } from '../../api/resources';
 import { AutoSelect } from '../../components/AutoSelect';
-import { DataTable, type TableChange } from '../../components/DataTable';
+import { DataTable, type CardConfig, type TableChange } from '../../components/DataTable';
 import { FormModal } from '../../components/FormModal';
 import { PageTableLayout } from '../../components/PageTableLayout';
-import type { FilterDefinition } from '../../components/listControls';
+import { sortOptionsFrom, type FilterDefinition } from '../../components/listControls';
 import { actionsColumn, textColumn } from '../../components/columns';
 import { errorMessage } from '../../utils/format';
 import { VehicleTypeCardDrawer } from './VehicleTypeCardDrawer';
@@ -340,14 +340,8 @@ export function VehicleTypesTab() {
 
   /** Те же фильтры описаниями — для шита на телефоне (ADR 0030). */
   const mobileFilters: FilterDefinition[] = [
-    {
-      kind: 'text',
-      key: 'search',
-      label: 'Поиск',
-      value: params.search,
-      placeholder: 'Код, тип, категория',
-      onChange: (v) => patchParams({ search: v }),
-    },
+    // Поиска здесь нет: он стоит строкой в панели списка (ADR 0042), и второе поле в шите
+    // спрашивало бы то же самое.
     {
       kind: 'select',
       key: 'kindId',
@@ -371,6 +365,53 @@ export function VehicleTypesTab() {
     },
   ];
 
+  /**
+   * Карточка позиции классификатора на телефоне (ADR 0042). Заголовок — сама позиция: категория
+   * уже начинается с типа («Автокраны, г/п 25 т»), поэтому тип рядом не повторяется, а тег
+   * отличает бескатегорийный тип, который заказывают целиком.
+   */
+  const listCard: CardConfig<VehicleClassificationDto> = {
+    title: (r) => r.label,
+    badge: (r) => <Tag color={r.isActive ? 'green' : 'default'}>{r.isActive ? 'Да' : 'Нет'}</Tag>,
+    primary: (r) => (
+      <Space size={6} wrap>
+        <span>{r.kindName}</span>
+        {r.vehicleCategoryId ? null : <Tag>тип целиком</Tag>}
+      </Space>
+    ),
+    lines: [(r) => (r.specCount > 0 ? `ТТХ: ${r.specCount}` : 'ТТХ не заведены')],
+    // Касание открывает карточку типа — там ТТХ, категории и правка наименования.
+    onOpen: (r) => {
+      const type = typeById.get(r.vehicleTypeId);
+      if (type) setCard(type);
+    },
+    actions: (r) => {
+      const type = typeById.get(r.vehicleTypeId);
+      return [
+        {
+          key: 'card',
+          label: 'ТТХ и категории типа',
+          disabled: !type,
+          onClick: () => type && setCard(type),
+        },
+        {
+          key: 'edit',
+          label: `Редактировать тип «${r.typeName}»`,
+          disabled: !type,
+          onClick: () => type && openEdit(type),
+        },
+        {
+          key: 'toggle',
+          label: r.isActive ? 'Деактивировать' : 'Активировать',
+          danger: r.isActive,
+          // Категорию выключенного типа включать нечего: сперва включают сам тип.
+          disabled: !!r.vehicleCategoryId && !r.typeIsActive,
+          onClick: () => onToggleActive(r, !r.isActive),
+        },
+      ];
+    },
+  };
+
   return (
     <PageTableLayout
       filters={filters}
@@ -379,21 +420,40 @@ export function VehicleTypesTab() {
           Добавить
         </Button>
       }
-      // Справочник на телефоне остаётся таблицей с прокруткой вбок: его читают сравнением
-      // строк. Сортировка при этом остаётся щелчком по заголовку — они никуда не делись.
+      // На телефоне справочник читается карточками, поиск и фильтры — в панели и шите (ADR 0042).
       mobile={{
+        search: {
+          value: params.search,
+          placeholder: 'Код, тип, категория',
+          onChange: (v) => patchParams({ search: v }),
+        },
         filters: mobileFilters,
+        sort: {
+          options: sortOptionsFrom(columns, { label: 'Тип/категория' }),
+          sortBy: params.sortBy,
+          sortOrder: params.sortOrder,
+          onChange: (sortBy, sortOrder) =>
+            setParams((p) => ({
+              ...p,
+              sortBy: sortBy ?? 'sortOrder',
+              sortOrder: sortOrder ?? 'asc',
+              page: 1,
+            })),
+        },
         primaryAction: { label: 'Добавить тип', icon: <PlusOutlined />, onClick: openCreate },
       }}
     >
       <DataTable<VehicleClassificationDto>
         columns={columns}
+        card={listCard}
         rowKey="key"
         data={data?.items ?? []}
         total={data?.total ?? 0}
         loading={isFetching}
         page={params.page}
         pageSize={params.pageSize}
+        sortBy={params.sortBy}
+        sortOrder={params.sortOrder}
         onChange={onTableChange}
       />
       <FormModal

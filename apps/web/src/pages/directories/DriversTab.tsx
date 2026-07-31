@@ -19,10 +19,11 @@ import {
   SNILS_MESSAGE,
 } from '@technic/contracts';
 import { driversApi } from '../../api/resources';
-import { DataTable } from '../../components/DataTable';
+import { DataTable, type CardConfig } from '../../components/DataTable';
 import { FormModal } from '../../components/FormModal';
 import { PageTableLayout } from '../../components/PageTableLayout';
 import { actionsColumn, textColumn } from '../../components/columns';
+import { sortOptionsFrom } from '../../components/listControls';
 import { useListParams } from '../../hooks/useListParams';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
@@ -73,7 +74,10 @@ export function DriversTab() {
   const canWrite = can('drivers.write');
   const qc = useQueryClient();
 
-  const { params, onTableChange } = useListParams({}, { searchKeys: ['fullName', 'snils'] });
+  const { params, setParams, setSort, onTableChange } = useListParams(
+    {},
+    { searchKeys: ['fullName', 'snils'] },
+  );
   const { data, isFetching } = useQuery({
     queryKey: ['drivers', params],
     queryFn: () => driversApi.list(params),
@@ -397,19 +401,76 @@ export function DriversTab() {
     },
   ];
 
+  /**
+   * Карточка водителя на телефоне (ADR 0042): ФИО и состояние удостоверения — то, ради чего
+   * справочник и открывают. Дефект документа выведен строкой, а не подсказкой на теге: на
+   * касании подсказка не открывается (ADR 0030 п. 6).
+   */
+  const card: CardConfig<DriverDto> = {
+    title: (r) => r.fullName,
+    badge: (r) => {
+      const license = currentLicense(r);
+      if (!license) return <Tag>нет ВУ</Tag>;
+      const defect = licenseDefect(license, today());
+      return defect ? (
+        <Tag color="red">{licenseDefectLabels[defect]}</Tag>
+      ) : (
+        <Tag color={credentialVerificationStatusColors[license.verificationStatus]}>
+          {credentialVerificationStatusLabels[license.verificationStatus]}
+        </Tag>
+      );
+    },
+    primary: (r) => {
+      const license = currentLicense(r);
+      return license
+        ? `${licenseNumberLabel(license)} · ${licenseCategoriesLabel(license)}`
+        : 'Удостоверение не заведено';
+    },
+    lines: [
+      (r) => {
+        const license = currentLicense(r);
+        if (!license) return null;
+        return license.expiresOn
+          ? `Действует до ${dayjs(license.expiresOn).format('DD.MM.YYYY')}`
+          : 'Бессрочное';
+      },
+      (r) => (r.personnelNo ? `Таб. № ${r.personnelNo}` : null),
+      (r) => (r.snils ? `СНИЛС ${formatSnils(r.snils)}` : null),
+    ],
+    onOpen: canWrite ? openEdit : undefined,
+    actions: (r) =>
+      canWrite
+        ? [
+            { key: 'edit', label: 'Редактировать', onClick: () => openEdit(r) },
+            { key: 'license', label: 'Заменить удостоверение', onClick: () => openLicense(r) },
+            { key: 'delete', label: 'Удалить', danger: true, onClick: () => confirmRemove(r) },
+          ]
+        : [],
+  };
+
   return (
     <PageTableLayout
-      mobile={
-        canWrite
+      // На телефоне справочник читается карточками, поиск и сортировка — в панели (ADR 0042).
+      mobile={{
+        search: {
+          value: params.search,
+          placeholder: 'ФИО или СНИЛС',
+          onChange: (v) => setParams((p) => ({ ...p, search: v, page: 1 })),
+        },
+        sort: {
+          options: sortOptionsFrom(columns),
+          sortBy: params.sortBy,
+          sortOrder: params.sortOrder,
+          onChange: setSort,
+        },
+        primaryAction: canWrite
           ? {
-              primaryAction: {
-                label: 'Добавить водителя',
-                icon: <PlusOutlined />,
-                onClick: openCreate,
-              },
+              label: 'Добавить водителя',
+              icon: <PlusOutlined />,
+              onClick: openCreate,
             }
-          : undefined
-      }
+          : undefined,
+      }}
       extra={
         canWrite ? (
           <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
@@ -420,11 +481,14 @@ export function DriversTab() {
     >
       <DataTable<DriverDto>
         columns={columns}
+        card={card}
         data={data?.items ?? []}
         total={data?.total ?? 0}
         loading={isFetching}
         page={params.page}
         pageSize={params.pageSize}
+        sortBy={params.sortBy}
+        sortOrder={params.sortOrder}
         onChange={onTableChange}
       />
 

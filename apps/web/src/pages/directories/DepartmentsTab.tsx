@@ -1,13 +1,14 @@
 import { useState } from 'react';
-import { App, Button, Form, Input, Select, Space, Switch, Typography } from 'antd';
+import { App, Button, Form, Input, Select, Space, Switch, Tag, Typography } from 'antd';
 import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { CreateDepartmentInput, DepartmentDto } from '@technic/contracts';
 import { departmentsApi, usersApi } from '../../api/resources';
-import { DataTable } from '../../components/DataTable';
+import { DataTable, type CardConfig } from '../../components/DataTable';
 import { FormModal } from '../../components/FormModal';
 import { PageTableLayout } from '../../components/PageTableLayout';
 import { actionsColumn, boolBadgeColumn, textColumn } from '../../components/columns';
+import { sortOptionsFrom } from '../../components/listControls';
 import { useListParams } from '../../hooks/useListParams';
 import { errorMessage } from '../../utils/format';
 
@@ -22,7 +23,7 @@ import { errorMessage } from '../../utils/format';
 export function DepartmentsTab() {
   const { message, modal } = App.useApp();
   const qc = useQueryClient();
-  const { params, onTableChange } = useListParams<{ isActive?: string }>(
+  const { params, setParams, setSort, onTableChange } = useListParams<{ isActive?: string }>(
     {},
     {
       searchKeys: ['code', 'name'],
@@ -138,9 +139,56 @@ export function DepartmentsTab() {
     )),
   ];
 
+  /**
+   * Карточка отдела на телефоне (ADR 0042): код и наименование — то, чем отдел называют, дальше
+   * руководители: пока их нет, визировать заявки отдела некому, и это видно сразу.
+   */
+  const card: CardConfig<DepartmentDto> = {
+    title: (r) => r.code,
+    badge: (r) => <Tag color={r.isActive ? 'green' : 'default'}>{r.isActive ? 'Да' : 'Нет'}</Tag>,
+    primary: (r) => r.name,
+    lines: [
+      (r) =>
+        r.heads.length > 0
+          ? `Руководители: ${r.heads.map((h) => h.fullName).join(' · ')}`
+          : 'Руководители не назначены',
+    ],
+    onOpen: openEdit,
+    actions: (r) => [
+      { key: 'edit', label: 'Редактировать', onClick: () => openEdit(r) },
+      { key: 'delete', label: 'Деактивировать', danger: true, onClick: () => confirmDelete(r) },
+    ],
+  };
+
   return (
     <PageTableLayout
+      // На телефоне справочник читается карточками, поиск и фильтр — в панели и шите (ADR 0042).
       mobile={{
+        search: {
+          value: params.search,
+          placeholder: 'Код или название',
+          onChange: (v) => setParams((p) => ({ ...p, search: v, page: 1 })),
+        },
+        filters: [
+          {
+            kind: 'select',
+            key: 'isActive',
+            label: 'Активность',
+            value: params.isActive,
+            options: [
+              { value: 'true', label: 'Активные' },
+              { value: 'false', label: 'Неактивные' },
+            ],
+            placeholder: 'Все',
+            onChange: (v) => setParams((p) => ({ ...p, isActive: v, page: 1 })),
+          },
+        ],
+        sort: {
+          options: sortOptionsFrom(columns),
+          sortBy: params.sortBy,
+          sortOrder: params.sortOrder,
+          onChange: setSort,
+        },
         primaryAction: { label: 'Добавить отдел', icon: <PlusOutlined />, onClick: openCreate },
       }}
       extra={
@@ -151,11 +199,14 @@ export function DepartmentsTab() {
     >
       <DataTable<DepartmentDto>
         columns={columns}
+        card={card}
         data={data?.items ?? []}
         total={data?.total ?? 0}
         loading={isFetching}
         page={params.page}
         pageSize={params.pageSize}
+        sortBy={params.sortBy}
+        sortOrder={params.sortOrder}
         onChange={onTableChange}
       />
       <FormModal

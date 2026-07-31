@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { App, Button, Form, Input, Select, Space, Switch, Typography } from 'antd';
+import { App, Button, Form, Input, Select, Space, Switch, Tag, Typography } from 'antd';
 import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -14,10 +14,10 @@ import {
 } from '@technic/contracts';
 import { counterpartiesApi, objectsApi } from '../../api/resources';
 import { AutoSelect } from '../../components/AutoSelect';
-import { DataTable } from '../../components/DataTable';
+import { DataTable, type CardConfig } from '../../components/DataTable';
 import { FormModal } from '../../components/FormModal';
 import { PageTableLayout } from '../../components/PageTableLayout';
-import type { FilterDefinition } from '../../components/listControls';
+import { sortOptionsFrom, type FilterDefinition } from '../../components/listControls';
 import { actionsColumn, badgeColumn, boolBadgeColumn, textColumn } from '../../components/columns';
 import { useListParams } from '../../hooks/useListParams';
 import { errorMessage } from '../../utils/format';
@@ -38,7 +38,7 @@ const typeOptions = COUNTERPARTY_TYPES.map((t) => ({ value: t, label: counterpar
 export function CounterpartiesTab() {
   const { message, modal } = App.useApp();
   const qc = useQueryClient();
-  const { params, setParams, onTableChange } = useListParams<{
+  const { params, setParams, setSort, onTableChange } = useListParams<{
     type?: string;
     isActive?: string;
   }>(
@@ -237,13 +237,59 @@ export function CounterpartiesTab() {
       placeholder: 'Все типы',
       onChange: (v) => applyTypeFilter(v ?? ''),
     },
+    {
+      kind: 'select',
+      key: 'isActive',
+      label: 'Активность',
+      value: params.isActive,
+      options: [
+        { value: 'true', label: 'Активные' },
+        { value: 'false', label: 'Неактивные' },
+      ],
+      placeholder: 'Все',
+      onChange: (v) => setParams((p) => ({ ...p, isActive: v, page: 1 })),
+    },
   ];
+
+  /**
+   * Карточка строки на телефоне (ADR 0042): наименование и тип — то, чем контрагента узнают,
+   * дальше ИНН, объекты и комментарий. Синонимы идут рядом с наименованием: по ним ищут не реже.
+   */
+  const card: CardConfig<CounterpartyDto> = {
+    title: (r) => r.name,
+    badge: (r) => <Tag color={r.isActive ? 'green' : 'default'}>{r.isActive ? 'Да' : 'Нет'}</Tag>,
+    primary: (r) => (
+      <Tag color={counterpartyTypeColors[r.type]}>{counterpartyTypeLabels[r.type]}</Tag>
+    ),
+    lines: [
+      (r) => (r.synonyms.length > 0 ? r.synonyms.join(' · ') : null),
+      (r) => (r.inn ? `ИНН ${r.inn}` : null),
+      (r) => (r.objects.length > 0 ? `Объекты: ${r.objects.map((o) => o.code).join(' · ')}` : null),
+      (r) => r.comment || null,
+    ],
+    onOpen: openEdit,
+    actions: (r) => [
+      { key: 'edit', label: 'Редактировать', onClick: () => openEdit(r) },
+      { key: 'delete', label: 'Деактивировать', danger: true, onClick: () => confirmDelete(r) },
+    ],
+  };
 
   return (
     <PageTableLayout
       filters={filters}
       mobile={{
+        search: {
+          value: params.search,
+          placeholder: 'Наименование или ИНН',
+          onChange: (v) => setParams((p) => ({ ...p, search: v, page: 1 })),
+        },
         filters: mobileFilters,
+        sort: {
+          options: sortOptionsFrom(columns, { name: 'Наименование' }),
+          sortBy: params.sortBy,
+          sortOrder: params.sortOrder,
+          onChange: setSort,
+        },
         primaryAction: {
           label: 'Добавить контрагента',
           icon: <PlusOutlined />,
@@ -258,11 +304,14 @@ export function CounterpartiesTab() {
     >
       <DataTable<CounterpartyDto>
         columns={columns}
+        card={card}
         data={data?.items ?? []}
         total={data?.total ?? 0}
         loading={isFetching}
         page={params.page}
         pageSize={params.pageSize}
+        sortBy={params.sortBy}
+        sortOrder={params.sortOrder}
         onChange={onTableChange}
       />
       <FormModal
