@@ -17,7 +17,7 @@ import {
   requestStatusLabels,
   vehicleClassificationKey,
 } from '@technic/contracts';
-import { filesApi, objectsApi } from '../../api/resources';
+import { departmentsApi, filesApi, objectsApi } from '../../api/resources';
 import {
   useVehicleClassifications,
   type VehicleClassificationGroup,
@@ -67,6 +67,28 @@ export function useObjectOptions() {
   });
   return {
     options: (data?.items ?? []).map((o) => ({ value: o.id, label: `${o.code} — ${o.name}` })),
+    loading: isFetching,
+  };
+}
+
+/**
+ * Отделы для выбора (ADR 0040) — второй заказчик рядом с объектами. Неактивные не показываются:
+ * заявку заводят на действующее подразделение, а у заведённых наименование приходит с заявкой.
+ */
+export function useDepartmentOptions() {
+  const { data, isFetching } = useQuery({
+    queryKey: ['departments', 'for-select'],
+    queryFn: () =>
+      departmentsApi.list({
+        page: 1,
+        pageSize: 500,
+        isActive: 'true',
+        sortBy: 'name',
+        sortOrder: 'asc',
+      }),
+  });
+  return {
+    options: (data?.items ?? []).map((d) => ({ value: d.id, label: `${d.code} — ${d.name}` })),
     loading: isFetching,
   };
 }

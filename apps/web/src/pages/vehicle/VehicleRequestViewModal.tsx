@@ -16,14 +16,18 @@ import {
   vehicleRequestChangeLabels,
   vehicleRequestTypeColors,
   vehicleRequestTypeLabels,
+  waybillStatusColors,
+  waybillStatusLabels,
 } from '@technic/contracts';
 import { vehicleRequestsApi } from '../../api/resources';
+import { useAuth } from '../../auth/AuthContext';
 import { AddressCell } from '../../components/AddressAutoComplete';
 import { FileLinkList } from '../../components/FileLinks';
 import { type HistoryRow, RequestHistoryTable } from '../../components/RequestHistory';
 import { ResponsibleValue } from '../../components/ResponsibleFields';
 import { UserAvatar } from '../../components/UserAvatar';
 import { ViewModal } from '../../components/ViewModal';
+import { PrintWaybillButton } from '../../components/WaybillPrint';
 import { useIsMobile } from '../../hooks/useIsMobile';
 import { calendarDaysLabel } from '../../utils/date';
 import { formatDateTime, formatDateTimeMaybe, formatMoney } from '../../utils/format';
@@ -71,10 +75,25 @@ function termOf(r: VehicleRequestDto): ReactNode {
 
 export function VehicleRequestViewModal({ request, onClose, onEdit }: Props) {
   const isMobile = useIsMobile();
+  const { can } = useAuth();
   const { data: history, isPending } = useQuery({
     queryKey: ['vehicle-requests', request?.id, 'history'],
     queryFn: () => vehicleRequestsApi.history(request!.id),
     enabled: !!request,
+  });
+
+  /**
+   * Лист, выписанный по заявке (ADR 0041): его печатают отсюда, не уходя в журнал — диспетчер
+   * взял заявку в работу и тут же отдаёт бланк водителю. Спрашивается только у грузоперевозки:
+   * заказ техники на объект путевого листа не знает, и ходить за ним незачем. Права своего нет —
+   * значит, персональные данные водителя этой роли не показывают (ADR 0037 п. 13).
+   */
+  const asksWaybill =
+    !!request && request.requestType === 'freight_transport' && can('waybills.read');
+  const { data: waybill } = useQuery({
+    queryKey: ['vehicle-requests', request?.id, 'waybill'],
+    queryFn: () => vehicleRequestsApi.waybill(request!.id),
+    enabled: asksWaybill,
   });
 
   const rows = useMemo(() => toRows(history), [history]);
@@ -120,10 +139,13 @@ export function VehicleRequestViewModal({ request, onClose, onEdit }: Props) {
           ),
         },
         {
-          key: 'object',
-          label: 'Объект',
+          key: 'customer',
+          // Заказчик заявки (ADR 0040): у объекта показывается код, у отдела — тоже свой.
+          label: request.departmentId ? 'Отдел' : 'Объект',
           span: 3,
-          children: `${request.objectCode} — ${request.objectName}`,
+          children: request.departmentId
+            ? `${request.departmentCode} — ${request.departmentName}`
+            : `${request.objectCode} — ${request.objectName}`,
         },
         // Заказанная позиция классификатора (ADR 0028): категория с её ТТХ, а у типа без
         // характеристик — сам тип.
@@ -164,6 +186,33 @@ export function VehicleRequestViewModal({ request, onClose, onEdit }: Props) {
             </Typography.Text>
           ),
         },
+        // Путевой лист (ADR 0037, печать — ADR 0041). Строка появляется, только когда лист
+        // выписан: у аренды его нет вовсе, и «Путевой лист: —» у такой заявки читалось бы как
+        // забытый документ. Номер рядом с кнопкой не для красоты — по нему лист ищут в журнале
+        // и на бумаге.
+        ...(waybill
+          ? [
+              {
+                key: 'waybill',
+                label: 'Путевой лист',
+                span: 2,
+                children: (
+                  <Space size={8} wrap>
+                    <span>{waybill.number}</span>
+                    <Tag color={waybillStatusColors[waybill.status]}>
+                      {waybillStatusLabels[waybill.status]}
+                    </Tag>
+                    <Typography.Text type="secondary">
+                      {waybill.driverName} · талон {waybill.slot}
+                    </Typography.Text>
+                    <PrintWaybillButton waybillId={waybill.id} number={waybill.number}>
+                      Печать
+                    </PrintWaybillButton>
+                  </Space>
+                ),
+              },
+            ]
+          : []),
         // Факт выполнения (ADR 0029): «сколько отработали и сколько это стоило». Есть только у
         // закрытой фактом заявки — у отменённой его не бывает, у выполненной раньше не восстановить.
         ...(request.completion

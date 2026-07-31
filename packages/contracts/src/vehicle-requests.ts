@@ -1,5 +1,10 @@
 import { z } from 'zod';
-import { requestStatusSchema, statusChangeRequiresReason } from './enums';
+import {
+  requestStatusSchema,
+  statusChangeRequiresReason,
+  vehicleRequestTypeSchema,
+  type VehicleRequestType,
+} from './enums';
 import type { RequestStatus } from './enums';
 import { allowedStatusTransitions, type AccessSubject } from './permissions';
 import {
@@ -23,21 +28,6 @@ import {
   isAllowedRequestDateAt,
   isWithinWorkTimeAt,
 } from './time';
-
-// ── Тип заявки на технику ──
-export const VEHICLE_REQUEST_TYPES = ['special_equipment', 'freight_transport'] as const;
-export const vehicleRequestTypeSchema = z.enum(VEHICLE_REQUEST_TYPES);
-export type VehicleRequestType = (typeof VEHICLE_REQUEST_TYPES)[number];
-
-export const vehicleRequestTypeLabels: Record<VehicleRequestType, string> = {
-  special_equipment: 'Техника для работы на объекте',
-  freight_transport: 'Грузоперевозка',
-};
-
-export const vehicleRequestTypeColors: Record<VehicleRequestType, string> = {
-  special_equipment: 'geekblue',
-  freight_transport: 'green',
-};
 
 /** Код вида ТС (`vehicle_kinds.code`), которым выполняют грузоперевозки. */
 export const FREIGHT_VEHICLE_KIND_CODE = 'freight_transport';
@@ -147,10 +137,19 @@ export const createSpecialEquipmentRequestSchema = z
   })
   .strict();
 
+/**
+ * Заказчик заявки (ADR 0040): объект строительства **или** отдел, ровно один. Отдел с объектами
+ * не пересекается — снабжение везёт материалы на склад, площадки у такой заявки нет вовсе, —
+ * поэтому не «отдел вдобавок к объекту», а вместо него.
+ *
+ * Только у грузоперевозки: спецтехника выходит на площадку, и заказать её отдел не может
+ * (CHECK `vehicle_requests_department_freight_check`, миграция 0069).
+ */
 export const createFreightTransportRequestSchema = z
   .object({
     requestType: z.literal('freight_transport'),
-    objectId: uuidSchema,
+    objectId: uuidSchema.optional(),
+    departmentId: uuidSchema.optional(),
     vehicleTypeId: uuidSchema,
     vehicleCategoryId: uuidSchema.nullish(),
     scheduledAt: scheduledAtSchema,
@@ -199,6 +198,15 @@ export const createVehicleRequestSchema = z
         ctx.addIssue({ code: 'custom', path: ['dateFrom'], message: MIN_REQUEST_DATE_MESSAGE });
       }
     } else {
+      // Заказчик ровно один (ADR 0040): двое дали бы два ответа на «кто визирует», ноль —
+      // ничью заявку. То же условие держит CHECK `vehicle_requests_customer_check`.
+      if ((v.objectId == null) === (v.departmentId == null)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['objectId'],
+          message: 'Укажите объект либо отдел — что-то одно',
+        });
+      }
       if (v.volumeM3 == null && v.weightTons == null) {
         ctx.addIssue({ code: 'custom', path: ['volumeM3'], message: 'Укажите объём или массу' });
       }
@@ -244,7 +252,9 @@ export const updateFreightTransportRequestSchema = z
   .object({
     requestType: z.literal('freight_transport'),
     version: z.number().int().nonnegative(),
+    /** Заказчик: переданный объект снимает отдел и наоборот — их всегда ровно один (ADR 0040). */
     objectId: uuidSchema.optional(),
+    departmentId: uuidSchema.optional(),
     vehicleTypeId: uuidSchema.optional(),
     vehicleCategoryId: uuidSchema.nullish(),
     scheduledAt: scheduledAtSchema.optional(),
@@ -274,6 +284,14 @@ export const updateVehicleRequestSchema = z
   .superRefine((v, ctx) => {
     // Жёсткая модель (ADR 0006): строка адреса и его метаданные передаются вместе.
     if (v.requestType === 'freight_transport') {
+      // Переданный заказчик заменяет прежнего целиком; двое сразу невозможны (ADR 0040).
+      if (v.objectId != null && v.departmentId != null) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['objectId'],
+          message: 'Заказчик один: объект либо отдел',
+        });
+      }
       if ((v.loadingLocation === undefined) !== (v.loadingAddress === undefined)) {
         ctx.addIssue({
           code: 'custom',
@@ -637,6 +655,8 @@ export const vehicleRequestListQuerySchema = baseListQuery(VEHICLE_REQUEST_SORT_
   requestType: vehicleRequestTypeSchema.optional(),
   status: requestStatusSchema.optional(),
   objectId: uuidSchema.optional(),
+  /** Заказчик со стороны офиса (ADR 0040): фильтр «заявки этого отдела». */
+  departmentId: uuidSchema.optional(),
   vehicleTypeId: uuidSchema.optional(),
   // Категория задаётся вместе с типом (позиция классификатора выбирается целиком, ADR 0028):
   // одна категория принадлежит одному типу, и фильтр по ней сужает список до неё.
@@ -915,6 +935,17 @@ export function completionLabel(c: VehicleRequestCompletionDto): string {
   return `${worked} × ${rate} ₽`;
 }
 
+/**
+ * Подпись заказчика заявки для списка и карточки: объект или отдел (ADR 0040). Одно место на
+ * портал и сервер — иначе половина экранов показывала бы «—» там, где заявку завёл отдел.
+ */
+export function requestCustomerName(r: {
+  objectName: string | null;
+  departmentName: string | null;
+}): string {
+  return r.objectName ?? r.departmentName ?? '—';
+}
+
 export interface VehicleRequestBaseDto {
   id: string;
   num: number;
@@ -922,9 +953,17 @@ export interface VehicleRequestBaseDto {
   displayNumber: string;
   requestType: VehicleRequestType;
 
-  objectId: string;
-  objectCode: string;
-  objectName: string;
+  /**
+   * Заказчик заявки (ADR 0040): объект строительства **или** отдел — заполнена ровно одна пара.
+   * Спрашивать «чья заявка» одним полем нельзя: у объекта есть код и адрес, у отдела их нет, и
+   * общая колонка склеила бы две разные сущности. Подпись для показа даёт `requestCustomerName`.
+   */
+  objectId: string | null;
+  objectCode: string | null;
+  objectName: string | null;
+  departmentId: string | null;
+  departmentCode: string | null;
+  departmentName: string | null;
 
   /** Тип ТС (физически vehicle_requests.vehicle_type_id). Плоская модель (ADR 0005). */
   vehicleTypeId: string;

@@ -5,6 +5,7 @@ import { z } from 'zod';
 import {
   cancelWaybillSchema,
   formatVehicleRequestNumber,
+  requestCustomerName,
   isWaybillEditable,
   waybillDisplayNumber,
   type WaybillDto,
@@ -18,6 +19,7 @@ import { fileURLToPath } from 'node:url';
 import { db } from '../db/client';
 import {
   constructionObjects,
+  departments,
   organizations,
   persons,
   users,
@@ -131,11 +133,15 @@ async function linksByWaybill(ids: string[]): Promise<Map<string, WaybillRequest
       requestId: waybillRequests.requestId,
       slot: waybillRequests.slot,
       num: vehicleRequests.num,
+      // Талон заказчика: объект или отдел (ADR 0040) — innerJoin по объекту терял бы заявки
+      // отдела вместе с их листами.
       objectName: constructionObjects.name,
+      departmentName: departments.name,
     })
     .from(waybillRequests)
     .innerJoin(vehicleRequests, eq(vehicleRequests.id, waybillRequests.requestId))
-    .innerJoin(constructionObjects, eq(constructionObjects.id, vehicleRequests.objectId))
+    .leftJoin(constructionObjects, eq(constructionObjects.id, vehicleRequests.objectId))
+    .leftJoin(departments, eq(departments.id, vehicleRequests.departmentId))
     .where(inArray(waybillRequests.waybillId, ids))
     .orderBy(asc(waybillRequests.slot));
 
@@ -145,7 +151,7 @@ async function linksByWaybill(ids: string[]): Promise<Map<string, WaybillRequest
       requestId: row.requestId,
       displayNumber: formatVehicleRequestNumber(row.num),
       slot: row.slot,
-      objectName: row.objectName,
+      objectName: requestCustomerName(row),
     });
     map.set(row.waybillId, list);
   }
@@ -302,7 +308,7 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
   );
 
   /**
-   * Тот же бланк, но готовым к печати (ADR 0040): PDF отдаётся инлайном, браузер показывает его
+   * Тот же бланк, но готовым к печати (ADR 0041): PDF отдаётся инлайном, браузер показывает его
    * сам и печатает своим диалогом. Лист при этом не оседает файлом на машине диспетчера — а его
    * незачем там держать: документ живёт в журнале, а на руки нужен бумажный.
    *

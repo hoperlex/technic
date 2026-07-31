@@ -204,6 +204,24 @@ export const requestTypeShort: Record<RequestType, string> = {
 /** Минимальный объём вывоза мусора (м³). */
 export const MIN_WASTE_VOLUME_M3 = 8;
 
+// ── Тип заявки на технику ──
+// Здесь, рядом с остальными перечнями, а не в vehicle-requests.ts: по типу заявки задан коридор
+// ролей отдела (`allowedVehicleRequestTypes`, ADR 0040), а матрица прав лежит ниже по импортам —
+// vehicle-requests.ts сам импортирует permissions.ts, и обратная ссылка замкнула бы круг.
+export const VEHICLE_REQUEST_TYPES = ['special_equipment', 'freight_transport'] as const;
+export const vehicleRequestTypeSchema = z.enum(VEHICLE_REQUEST_TYPES);
+export type VehicleRequestType = (typeof VEHICLE_REQUEST_TYPES)[number];
+
+export const vehicleRequestTypeLabels: Record<VehicleRequestType, string> = {
+  special_equipment: 'Техника для работы на объекте',
+  freight_transport: 'Грузоперевозка',
+};
+
+export const vehicleRequestTypeColors: Record<VehicleRequestType, string> = {
+  special_equipment: 'geekblue',
+  freight_transport: 'green',
+};
+
 // ── Вид записи справочника: контейнер или самосвал ──
 export const CONTAINER_KINDS = ['cont', 'truck'] as const;
 export const containerKindSchema = z.enum(CONTAINER_KINDS);

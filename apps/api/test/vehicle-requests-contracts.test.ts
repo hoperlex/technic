@@ -79,6 +79,64 @@ const freight = {
   unloadingResponsiblePhone: '+7 926 000-00-03',
 };
 
+/**
+ * Заказчик заявки (ADR 0040): объект строительства или отдел, ровно один. Схема — первая линия
+ * этого инварианта; вторая — CHECK `vehicle_requests_customer_check`.
+ */
+describe('vehicle-requests: заказчик — объект либо отдел (ADR 0040)', () => {
+  const DEPT = '44444444-4444-4444-8444-444444444444';
+
+  it('грузоперевозку заказывает объект или отдел — что-то одно', () => {
+    expect(createVehicleRequestSchema.safeParse(freight).success).toBe(true);
+    expect(
+      createVehicleRequestSchema.safeParse({ ...freight, objectId: undefined, departmentId: DEPT })
+        .success,
+    ).toBe(true);
+    // Двое сразу дали бы два ответа на «кто визирует», ноль — ничью заявку.
+    expect(createVehicleRequestSchema.safeParse({ ...freight, departmentId: DEPT }).success).toBe(
+      false,
+    );
+    expect(createVehicleRequestSchema.safeParse({ ...freight, objectId: undefined }).success).toBe(
+      false,
+    );
+  });
+
+  it('спецтехнику заказывает только объект: отдела в её схеме нет вовсе', () => {
+    const spec = {
+      requestType: 'special_equipment' as const,
+      objectId: OBJ,
+      vehicleTypeId: TYPE,
+      dateFrom: '2026-07-25',
+      responsibleName: 'Иванов И. И.',
+      responsiblePhone: '+7 926 000-00-01',
+    };
+    expect(createVehicleRequestSchema.safeParse(spec).success).toBe(true);
+    // strict(): лишнее поле — не «проигнорируем», а отказ. Заявка отдела на спецтехнику
+    // невозможна и физически (CHECK `vehicle_requests_department_freight_check`).
+    expect(createVehicleRequestSchema.safeParse({ ...spec, departmentId: DEPT }).success).toBe(
+      false,
+    );
+  });
+
+  it('при правке заказчик заменяется целиком, а не дополняется', () => {
+    const base = { requestType: 'freight_transport' as const, version: 0 };
+    expect(updateVehicleRequestSchema.safeParse({ ...base, objectId: OBJ }).success).toBe(true);
+    expect(updateVehicleRequestSchema.safeParse({ ...base, departmentId: DEPT }).success).toBe(
+      true,
+    );
+    expect(
+      updateVehicleRequestSchema.safeParse({ ...base, objectId: OBJ, departmentId: DEPT }).success,
+    ).toBe(false);
+    // Не переданный заказчик — «не трогали»: правка комментария заказчика не меняет.
+    expect(updateVehicleRequestSchema.safeParse(base).success).toBe(true);
+  });
+
+  it('список фильтруется по отделу так же, как по объекту', () => {
+    expect(vehicleRequestListQuerySchema.parse({ departmentId: DEPT }).departmentId).toBe(DEPT);
+    expect(() => vehicleRequestListQuerySchema.parse({ departmentId: 'Отдел1' })).toThrow();
+  });
+});
+
 describe('vehicle-requests: создание — discriminator', () => {
   it('без requestType union не проходит', () => {
     expect(() =>

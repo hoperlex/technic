@@ -11,6 +11,7 @@ import {
 import { db } from '../db/client';
 import {
   constructionObjects,
+  departments,
   freightTransportRequestDetails,
   organizations,
   vehicleModels,
@@ -45,7 +46,7 @@ const MAX_SLOTS = 4;
 
 export interface WaybillContext {
   requestId: string;
-  /** Вид заявки: лист выписывается только на грузоперевозку (ADR 0040). */
+  /** Вид заявки: лист выписывается только на грузоперевозку (ADR 0041). */
   requestType: VehicleRequestType;
   vehicleId: string;
   driverPersonId: string | null;
@@ -60,7 +61,7 @@ export interface WaybillContext {
  *
  * Тип заявки спрашивается наравне с машиной: ограничение идёт и по нему, и по виду ТС, и это не
  * тавтология — заявку на технику для работы на объекте можно завести и на самосвал, а рейса,
- * маршрута и груза у неё нет (ADR 0037 п. 1, ADR 0040).
+ * маршрута и груза у неё нет (ADR 0037 п. 1, ADR 0041).
  */
 export async function waybillRequirementFor(
   tx: Reader,
@@ -90,7 +91,7 @@ export async function waybillRequirementFor(
 
 /**
  * Дата рейса: её несёт время подачи. Заявок другого вида здесь не бывает — лист выписывается
- * только на грузоперевозку (ADR 0040), — но `now()` оставлен ответом на случай заявки без
+ * только на грузоперевозку (ADR 0041), — но `now()` оставлен ответом на случай заявки без
  * заполненных деталей: лист без даты не выписать вовсе.
  */
 export async function tripDate(tx: Reader, requestId: string): Promise<string> {
@@ -170,8 +171,11 @@ async function collectSnapshot(
 
   const [request] = await tx
     .select({
+      // Заказчик в бланке — объект или отдел (ADR 0040): у заявки отдела площадки нет вовсе, и
+      // строка «Заказчик» осталась бы пустой при innerJoin по объекту — вместе со всем листом.
       objectName: constructionObjects.name,
       objectAddress: constructionObjects.address,
+      departmentName: departments.name,
       loading: freightTransportRequestDetails.loadingLocation,
       unloading: freightTransportRequestDetails.unloadingLocation,
       volumeM3: freightTransportRequestDetails.volumeM3,
@@ -180,7 +184,8 @@ async function collectSnapshot(
       timeUnspecified: freightTransportRequestDetails.scheduledTimeUnspecified,
     })
     .from(vehicleRequests)
-    .innerJoin(constructionObjects, eq(constructionObjects.id, vehicleRequests.objectId))
+    .leftJoin(constructionObjects, eq(constructionObjects.id, vehicleRequests.objectId))
+    .leftJoin(departments, eq(departments.id, vehicleRequests.departmentId))
     .leftJoin(
       freightTransportRequestDetails,
       eq(freightTransportRequestDetails.requestId, vehicleRequests.id),
@@ -251,7 +256,8 @@ async function collectSnapshot(
     communication_kind: params.fields?.communicationKind ?? '',
     transportation_kind: params.fields?.transportationKind ?? '',
 
-    customer_name: request?.objectName ?? '',
+    // У отдела адреса нет: он не площадка, и маршрут задан адресами погрузки и разгрузки.
+    customer_name: request?.objectName ?? request?.departmentName ?? '',
     customer_address: request?.objectAddress ?? '',
     task_from: request?.loading ?? '',
     task_to: request?.unloading ?? '',

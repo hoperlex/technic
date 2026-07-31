@@ -27,6 +27,7 @@ import {
   lessorVisibilityWhere,
   operatorVisibilityWhere,
   requestVisibilityWhere,
+  vehicleRequestVisibilityWhere,
 } from '../lib/access';
 import { isFileLinked } from '../services/request-files';
 import type { Principal } from '../auth/principal';
@@ -136,7 +137,7 @@ async function canAccessFile(
         and(
           eq(vehicleRequestFiles.fileId, fileId),
           isNull(vehicleRequests.deletedAt),
-          requestVisibilityWhere(p, vehicleRequests.objectId),
+          vehicleRequestVisibilityWhere(p, vehicleRequests.objectId, vehicleRequests.departmentId),
           lessorVisibilityWhere(p, vehicles.lessorId),
         ),
       )

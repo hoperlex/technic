@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { baseListQuery, dateOnlySchema, uuidSchema } from './common';
 import type { VehicleOwnership } from './vehicles';
-import type { VehicleRequestType } from './vehicle-requests';
+import type { VehicleRequestType } from './enums';
 
 // ── Путевой лист (ADR 0037) ──
 // Лист — документ строгой отчётности: серия, номер, журнал учёта. Черновика у него нет: он
@@ -35,7 +35,7 @@ export const waybillFormLabels: Record<WaybillFormCode, string> = {
   esm2: 'Форма ЭСМ-2 (строительная машина)',
 };
 
-// ── На какой рейс выписывается лист (ADR 0037 п. 1, ADR 0040) ──
+// ── На какой рейс выписывается лист (ADR 0037 п. 1, ADR 0041) ──
 
 export interface WaybillRequirementInput {
   /** Тип заявки: лист выписывается только на грузоперевозку. */
@@ -54,7 +54,7 @@ export interface WaybillRequirement {
   /**
    * Почему не выписывается — это показывают человеку вместо отсутствующего блока. `null` при
    * пустом `formCode` означает другое: заявка такого вида путевого листа не знает вовсе, и
-   * говорить не о чем — ни блока, ни объяснения (ADR 0040).
+   * говорить не о чем — ни блока, ни объяснения (ADR 0041).
    */
   reason: string | null;
 }
@@ -65,7 +65,7 @@ export interface WaybillRequirement {
  * Порядок проверок задаёт и то, что увидит человек. Первым идёт тип заявки: заказ техники на
  * объект листа не знает — там нет ни рейса, ни маршрута, ни груза, и объяснять в форме нечего.
  * Дальше идут причины, о которых сказать надо: арендную машину ведёт арендодатель, а тип без
- * бланка — состояние справочника, которое поправимо (ADR 0040).
+ * бланка — состояние справочника, которое поправимо (ADR 0041).
  */
 export function waybillRequirement(input: WaybillRequirementInput): WaybillRequirement {
   if (input.requestType !== 'freight_transport') return { formCode: null, reason: null };
@@ -174,7 +174,7 @@ export interface WaybillDto {
 }
 
 /**
- * Лист, выписанный по заявке (ADR 0040): его показывает карточка грузоперевозки, чтобы печатать
+ * Лист, выписанный по заявке (ADR 0041): его показывает карточка грузоперевозки, чтобы печатать
  * бланк там же, где заявку взяли в работу, а не искать её номер в журнале. `null` — листа нет:
  * заявку не брали в работу, взяли арендной машиной или это заказ техники на объект.
  */

@@ -5,8 +5,10 @@ import {
   requestStatusTransitions,
   roleLabels,
   ROLES,
+  VEHICLE_REQUEST_TYPES,
   type RequestStatus,
   type Role,
+  type VehicleRequestType,
 } from './enums';
 import {
   COUNTERPARTY_TYPES,
@@ -347,6 +349,36 @@ export function accessProfileLabel(subject: AccessSubject): string {
     return `${roleLabels[subject.role]} — ${counterpartyTypeLabels[subject.counterpartyType]}`;
   }
   return subject.role ? roleLabels[subject.role] : 'Без роли';
+}
+
+/**
+ * Роли, которым в модуле «Заказ ТС» доступны не все типы заявки (ADR 0040). Отдел заказывает
+ * только грузоперевозки: спецтехника выходит на площадку, а площадки у отдела нет.
+ *
+ * Таблица, а не право `vehicleRequests.freight` и не `if` по имени роли. Право отвечает «что
+ * учётка делает», а здесь ограничение по признаку самой строки — это область; в матрице оно
+ * завело бы колонку-исключение, которую пришлось бы читать при каждом новом типе заявки.
+ * Отсутствие роли в таблице означает «доступны все типы» — так новый тип заявки открывается
+ * всем, кроме тех, кому его закрыли осознанно, строкой здесь.
+ */
+const ROLE_VEHICLE_REQUEST_TYPES: Partial<Record<Role, readonly VehicleRequestType[]>> = {
+  department: ['freight_transport'],
+  department_head: ['freight_transport'],
+};
+
+/** Типы заявки на технику, доступные субъекту (пустой список невозможен: роли без модуля сюда не доходят). */
+export function allowedVehicleRequestTypes(
+  subject: AccessSubject | null | undefined,
+): readonly VehicleRequestType[] {
+  const own = subject?.role ? ROLE_VEHICLE_REQUEST_TYPES[subject.role] : undefined;
+  return own ?? VEHICLE_REQUEST_TYPES;
+}
+
+export function canOrderVehicleRequestType(
+  subject: AccessSubject | null | undefined,
+  requestType: VehicleRequestType,
+): boolean {
+  return allowedVehicleRequestTypes(subject).includes(requestType);
 }
 
 /**

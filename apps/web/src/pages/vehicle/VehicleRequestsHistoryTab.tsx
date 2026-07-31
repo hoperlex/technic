@@ -19,6 +19,7 @@ import {
   parseVehicleRequestNumberSearch,
   type RequestStatus,
   requestStatusColors,
+  requestCustomerName,
   requestStatusLabels,
   VEHICLE_REQUEST_TYPES,
   vehicleClassificationLabel,
@@ -198,13 +199,17 @@ export function VehicleRequestsHistoryTab() {
       defaultSortOrder: 'descend',
       render: (_v, r) => termCell(r),
     },
+    // Заказчик заявки: объект или отдел (ADR 0040). Одна колонка на обе оси — у заявки заказчик
+    // один, и вторая стояла бы пустой в каждой строке. Сортировка осталась по `objectName`:
+    // ключ колонки — он же поле сортировки на сервере.
     textColumn({
       key: 'objectName',
-      title: 'Объект',
+      title: 'Заказчик',
       dataIndex: 'objectName',
       searchable: false,
       width: 220,
       ellipsis: true,
+      render: (_v, r) => requestCustomerName(r),
     }),
     {
       key: 'vehicleTypeName',
@@ -502,7 +507,7 @@ export function VehicleRequestsHistoryTab() {
     primary: (r) =>
       r.completion?.totalCost != null ? formatMoney(r.completion.totalCost) : 'Без суммы',
     lines: [
-      (r) => r.objectName,
+      (r) => requestCustomerName(r),
       (r) =>
         `${vehicleClassificationLabel({
           typeName: r.vehicleTypeName,

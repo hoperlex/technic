@@ -36,15 +36,16 @@ import {
   parseVehicleRequestNumberSearch,
   REQUEST_STATUSES,
   type RequestStatus,
+  requestCustomerName,
   requestStatusLabels,
   statusChangeRequiresReason,
   transitionRequiresAssignment,
   transitionRequiresCompletion,
-  VEHICLE_REQUEST_TYPES,
   vehicleClassificationLabel,
   type VehicleRequestDto,
   type VehicleRequestType,
   vehicleRequestTypeColors,
+  allowedVehicleRequestTypes,
   vehicleRequestTypeLabels,
 } from '@technic/contracts';
 import { vehicleRequestsApi } from '../../api/resources';
@@ -83,12 +84,14 @@ import { VehicleAssignModal } from './VehicleAssignModal';
 import { VehicleCompleteModal } from './VehicleCompleteModal';
 import { VehicleRequestViewModal } from './VehicleRequestViewModal';
 import { useObjectScope } from '../../hooks/useObjectScope';
+import { useDepartmentScope } from '../../hooks/useDepartmentScope';
 import {
   ApprovalCell,
   FileEditor,
   formatDateOnly,
   StatusCell,
   VehicleClassificationSelect,
+  useDepartmentOptions,
   useFileEditor,
   useObjectOptions,
   useVehicleClassificationFilter,
@@ -103,7 +106,9 @@ import {
  */
 interface FormValues {
   requestType: VehicleRequestType;
-  objectId: string;
+  /** Заказчик (ADR 0040): у роли отдела заполняется `departmentId`, у остальных — `objectId`. */
+  objectId?: string;
+  departmentId?: string;
   /** Ключ позиции классификатора «тип:категория» (ADR 0028); в API уходит парой полей. */
   classificationKey: string;
   // Техника на объект: период работы (date-only) и контакт встречающего.
@@ -172,12 +177,20 @@ function termLabel(r: VehicleRequestDto): string {
 
 export function VehicleRequestsTab() {
   const { message, modal } = App.useApp();
-  const { can } = useAuth();
+  const { user, can } = useAuth();
   const qc = useQueryClient();
   const isMobile = useIsMobile();
   // Объектные роли — область видимости (свои объекты, заявка до «В работе»); действия — по
   // правам (ADR 0021). Виза — право руководителя строительства (ADR 0025).
   const { isObjectRole, soleObjectId, objectFieldDisabled, limitObjectOptions } = useObjectScope();
+  // Вторая ось заказчика (ADR 0040): отдел вместо объекта — у роли она ровно одна.
+  const { isDepartmentRole, soleDepartmentId, departmentFieldDisabled, limitDepartmentOptions } =
+    useDepartmentScope();
+  // Отдел заказывает только грузоперевозки: перечень берётся из матрицы, а не из имени роли.
+  const requestTypeOptions = allowedVehicleRequestTypes(user).map((t) => ({
+    value: t,
+    label: vehicleRequestTypeLabels[t],
+  }));
   const canEdit = can('vehicleRequests.update');
   const canDelete = can('vehicleRequests.delete');
   const canCreate = can('vehicleRequests.create');
@@ -195,13 +208,17 @@ export function VehicleRequestsTab() {
     requestType?: string;
     status?: string;
     objectId?: string;
+    departmentId?: string;
     /** Заказанная техника (ADR 0028): тип целиком либо одна его категория. */
     vehicleTypeId?: string;
     vehicleCategoryId?: string;
     num?: number;
     /** Виза (ADR 0025): 'false' — заявки, ждущие согласования. */
     approved?: string;
-  }>({ objectId: ownObjectId || undefined }, { searchKeys: ['comment'] });
+  }>(
+    { objectId: ownObjectId || undefined, departmentId: soleDepartmentId ?? undefined },
+    { searchKeys: ['comment'] },
+  );
 
   /** Смена любого фильтра возвращает список на первую страницу. */
   const applyFilter = (patch: Partial<typeof params>) =>
@@ -242,6 +259,8 @@ export function VehicleRequestsTab() {
 
   const { options: allObjectOptions, loading: objectsLoading } = useObjectOptions();
   const objectOptions = limitObjectOptions(allObjectOptions);
+  const { options: allDepartmentOptions, loading: departmentsLoading } = useDepartmentOptions();
+  const departmentOptions = limitDepartmentOptions(allDepartmentOptions);
   const { byKey: classificationByKey, groups, loading: typesLoading } = useVehicleClassifications();
 
   const [open, setOpen] = useState(false);
@@ -318,7 +337,16 @@ export function VehicleRequestsTab() {
     form.resetFields();
     // Штаб заводит заявку только на свой объект — подставляем его сразу, поле заперто.
     // Объект подставляется, только когда он у роли один: с несколькими выбирает человек.
+    // Заказчик подставляется, только когда он у роли один: с несколькими выбирает человек.
     if (soleObjectId) form.setFieldsValue({ objectId: soleObjectId } as Partial<FormValues>);
+    if (soleDepartmentId) {
+      form.setFieldsValue({ departmentId: soleDepartmentId } as Partial<FormValues>);
+    }
+    // Отделу доступен один тип заявки — подставляем его, чтобы поле не спрашивало о выборе,
+    // которого нет.
+    if (requestTypeOptions.length === 1) {
+      form.setFieldsValue({ requestType: requestTypeOptions[0]!.value } as Partial<FormValues>);
+    }
     setLoadingMeta(null);
     setUnloadingMeta(null);
     editor.reset([]);
@@ -333,7 +361,7 @@ export function VehicleRequestsTab() {
       setUnloadingMeta(null);
       form.setFieldsValue({
         requestType: r.requestType,
-        objectId: r.objectId,
+        objectId: r.objectId ?? undefined,
         classificationKey: classificationKeyOf(r),
         dateFrom: dayjs(r.dateFrom),
         dateTo: r.dateTo ? dayjs(r.dateTo) : null,
@@ -350,7 +378,8 @@ export function VehicleRequestsTab() {
       const at = dayjs(r.scheduledAt).tz(MOSCOW_TZ);
       form.setFieldsValue({
         requestType: r.requestType,
-        objectId: r.objectId,
+        objectId: r.objectId ?? undefined,
+        departmentId: r.departmentId ?? undefined,
         classificationKey: classificationKeyOf(r),
         scheduledDate: at,
         // Время не задано — поле остаётся пустым (в scheduledAt лежит полночь МСК).
@@ -384,14 +413,16 @@ export function VehicleRequestsTab() {
       // категория»: категория пуста у типа, у которого её и не бывает.
       const picked = parseVehicleClassificationKey(v.classificationKey)!;
       const common = {
-        objectId: v.objectId,
         vehicleTypeId: picked.vehicleTypeId,
         vehicleCategoryId: picked.vehicleCategoryId,
         comment: v.comment ?? '',
       };
       if (v.requestType === 'special_equipment') {
+        // Спецтехнику заказывает только объект: она выходит на площадку, и отдела в такой заявке
+        // нет вовсе (ADR 0040) — роль отдела до этой ветки не доходит, ей закрыт сам тип.
         const base = {
           requestType: 'special_equipment' as const,
+          objectId: v.objectId!,
           ...common,
           dateFrom: v.dateFrom!.format('YYYY-MM-DD'),
           dateTo: v.dateTo ? v.dateTo.format('YYYY-MM-DD') : null,
@@ -408,6 +439,12 @@ export function VehicleRequestsTab() {
           : vehicleRequestsApi.create({ ...base, fileIds: editor.newFileIds() });
       }
 
+      // Заказчик грузоперевозки — объект либо отдел, ровно один (ADR 0040): вторая ось у роли
+      // пуста, и присылать обе сервер не даст.
+      const customer = isDepartmentRole
+        ? { departmentId: v.departmentId! }
+        : { objectId: v.objectId! };
+
       // Время не задано → полночь МСК + признак: заявка «на дату», без конкретного часа.
       const time = normalizeTimeInput(v.scheduledTime ?? '');
       const scheduledAt = dayjs
@@ -415,6 +452,7 @@ export function VehicleRequestsTab() {
         .format('YYYY-MM-DDTHH:mm:ssZ');
       const base = {
         requestType: 'freight_transport' as const,
+        ...customer,
         ...common,
         scheduledAt,
         scheduledTimeUnspecified: time === undefined,
@@ -614,13 +652,17 @@ export function VehicleRequestsTab() {
     },
     // Ширина задана всем колонкам: при scroll.x='max-content' колонка без ширины тянется по
     // содержимому, и один длинный комментарий возвращал бы горизонтальный скролл всей таблице.
+    // Заказчик заявки: объект или отдел (ADR 0040). Одна колонка на обе оси — у заявки заказчик
+    // один, и вторая стояла бы пустой в каждой строке. Сортировка осталась по `objectName`:
+    // ключ колонки — он же поле сортировки на сервере.
     textColumn({
       key: 'objectName',
-      title: 'Объект',
+      title: 'Заказчик',
       dataIndex: 'objectName',
       searchable: false,
       width: 230,
       ellipsis: true,
+      render: (_v, r) => requestCustomerName(r),
     }),
     {
       key: 'vehicleTypeName',
@@ -792,10 +834,7 @@ export function VehicleRequestsTab() {
         allowClear
         placeholder="Все типы заявок"
         style={{ width: 200 }}
-        options={VEHICLE_REQUEST_TYPES.map((t) => ({
-          value: t,
-          label: vehicleRequestTypeLabels[t],
-        }))}
+        options={requestTypeOptions}
         value={params.requestType as VehicleRequestType | undefined}
         onChange={(v: VehicleRequestType | undefined) => applyFilter({ requestType: v })}
       />
@@ -818,17 +857,33 @@ export function VehicleRequestsTab() {
         value={params.approved}
         onChange={(v: string | undefined) => applyFilter({ approved: v })}
       />
-      <Select
-        allowClear
-        showSearch
-        optionFilterProp="label"
-        placeholder="Все объекты"
-        style={{ width: 240 }}
-        options={objectOptions}
-        disabled={objectFieldDisabled}
-        value={params.objectId}
-        onChange={(v: string | undefined) => applyFilter({ objectId: v })}
-      />
+      {/* Фильтр заказчика: роль отдела ищет по отделам, остальные — по объектам (ADR 0040).
+          Обоих сразу не бывает — у заявки заказчик один, и второй фильтр всегда давал бы пусто. */}
+      {isDepartmentRole ? (
+        <Select
+          allowClear
+          showSearch
+          optionFilterProp="label"
+          placeholder="Все отделы"
+          style={{ width: 240 }}
+          options={departmentOptions}
+          disabled={departmentFieldDisabled}
+          value={params.departmentId}
+          onChange={(v: string | undefined) => applyFilter({ departmentId: v })}
+        />
+      ) : (
+        <Select
+          allowClear
+          showSearch
+          optionFilterProp="label"
+          placeholder="Все объекты"
+          style={{ width: 240 }}
+          options={objectOptions}
+          disabled={objectFieldDisabled}
+          value={params.objectId}
+          onChange={(v: string | undefined) => applyFilter({ objectId: v })}
+        />
+      )}
       {/* Заказанная техника: тип целиком либо одна его категория (ADR 0028). */}
       {classificationFilter.controls}
       <Input.Search
@@ -847,10 +902,7 @@ export function VehicleRequestsTab() {
       key: 'requestType',
       label: 'Тип заявки',
       value: params.requestType,
-      options: VEHICLE_REQUEST_TYPES.map((t) => ({
-        value: t,
-        label: vehicleRequestTypeLabels[t],
-      })),
+      options: requestTypeOptions,
       placeholder: 'Все типы заявок',
       onChange: (v) => applyFilter({ requestType: v }),
     },
@@ -875,17 +927,29 @@ export function VehicleRequestsTab() {
       placeholder: 'Любое согласование',
       onChange: (v) => applyFilter({ approved: v }),
     },
-    {
-      kind: 'select',
-      key: 'objectId',
-      label: 'Объект',
-      value: params.objectId,
-      options: objectOptions,
-      placeholder: 'Все объекты',
-      // Объектной роли объект зафиксирован на её собственном.
-      disabled: objectFieldDisabled,
-      onChange: (v) => applyFilter({ objectId: v }),
-    },
+    // Тот же фильтр заказчика, что в панели над таблицей: отдел либо объект (ADR 0040).
+    isDepartmentRole
+      ? ({
+          kind: 'select',
+          key: 'departmentId',
+          label: 'Отдел',
+          value: params.departmentId,
+          options: departmentOptions,
+          placeholder: 'Все отделы',
+          disabled: departmentFieldDisabled,
+          onChange: (v) => applyFilter({ departmentId: v }),
+        } as const)
+      : ({
+          kind: 'select',
+          key: 'objectId',
+          label: 'Объект',
+          value: params.objectId,
+          options: objectOptions,
+          // С одним объектом он зафиксирован; с несколькими выбор сужен до своих.
+          placeholder: 'Все объекты',
+          disabled: objectFieldDisabled,
+          onChange: (v) => applyFilter({ objectId: v }),
+        } as const),
     classificationFilter.mobileFilter,
     {
       kind: 'text',
@@ -914,7 +978,7 @@ export function VehicleRequestsTab() {
         onChange={(status) => requestStatusChange(r, status)}
       />
     ),
-    primary: (r) => r.objectName,
+    primary: (r) => requestCustomerName(r),
     lines: [
       (r) =>
         `${vehicleClassificationLabel({
@@ -1039,173 +1103,191 @@ export function VehicleRequestsTab() {
             полей прячет под прокрутку. На телефоне колонка одна, порядок полей тот же. */}
         <Form form={form} layout="vertical" onFinish={onFinish}>
           <FormGrid>
-          <Form.Item
-            name="objectId"
-            label="Объект"
-            rules={[{ required: true, message: 'Выберите объект' }]}
-          >
-            <AutoSelect
-              options={objectOptions}
-              loading={objectsLoading}
-              showSearch
-              optionFilterProp="label"
-              placeholder="Объект"
-              disabled={objectFieldDisabled}
-            />
-          </Form.Item>
-          {/* Тип заявки неизменяем после создания (сервер отдаёт 422) — при правке поле заперто. */}
-          <Form.Item
-            name="requestType"
-            label="Тип заявки"
-            tooltip="Заказ техники на объект — техника любого вида; грузоперевозка — только грузовая"
-            rules={[{ required: true, message: 'Выберите тип заявки' }]}
-          >
-            <AutoSelect
-              options={VEHICLE_REQUEST_TYPES.map((t) => ({
-                value: t,
-                label: vehicleRequestTypeLabels[t],
-              }))}
-              placeholder="Выберите тип заявки"
-              disabled={!!record}
-              onChange={handleRequestTypeChange}
-            />
-          </Form.Item>
-          {/* Позиция классификатора — во всю ширину: подписи вроде «Автокраны, г/п 130 т» в
+            {/* Заказчик заявки (ADR 0040): роль отдела заказывает от отдела, остальные — от
+              объекта. Два поля рядом не показываются никогда — заказчик у заявки один. */}
+            {isDepartmentRole ? (
+              <Form.Item
+                name="departmentId"
+                label="Отдел"
+                rules={[{ required: true, message: 'Выберите отдел' }]}
+              >
+                <AutoSelect
+                  options={departmentOptions}
+                  loading={departmentsLoading}
+                  showSearch
+                  optionFilterProp="label"
+                  placeholder="Отдел"
+                  disabled={departmentFieldDisabled}
+                />
+              </Form.Item>
+            ) : (
+              <Form.Item
+                name="objectId"
+                label="Объект"
+                rules={[{ required: true, message: 'Выберите объект' }]}
+              >
+                <AutoSelect
+                  options={objectOptions}
+                  loading={objectsLoading}
+                  showSearch
+                  optionFilterProp="label"
+                  placeholder="Объект"
+                  disabled={objectFieldDisabled}
+                />
+              </Form.Item>
+            )}
+            {/* Тип заявки неизменяем после создания (сервер отдаёт 422) — при правке поле заперто. */}
+            <Form.Item
+              name="requestType"
+              label="Тип заявки"
+              tooltip="Заказ техники на объект — техника любого вида; грузоперевозка — только грузовая"
+              rules={[{ required: true, message: 'Выберите тип заявки' }]}
+            >
+              <AutoSelect
+                options={requestTypeOptions}
+                placeholder="Выберите тип заявки"
+                // Заперто и при правке (тип неизменяем), и когда роли доступен один тип: выбор,
+                // которого нет, поле обещать не должно.
+                disabled={!!record || requestTypeOptions.length === 1}
+                onChange={handleRequestTypeChange}
+              />
+            </Form.Item>
+            {/* Позиция классификатора — во всю ширину: подписи вроде «Автокраны, г/п 130 т» в
               половине окна обрезаются там, где начинается отличие одной от другой. */}
-          <FormGrid.Full>
-            <VehicleClassificationSelect
-              groups={typeGroups}
-              loading={typesLoading}
-              disabled={!watchRequestType}
-              placeholder={
-                watchRequestType ? 'Выберите тип или категорию' : 'Сначала выберите тип заявки'
-              }
-            />
-          </FormGrid.Full>
+            <FormGrid.Full>
+              <VehicleClassificationSelect
+                groups={typeGroups}
+                loading={typesLoading}
+                disabled={!watchRequestType}
+                placeholder={
+                  watchRequestType ? 'Выберите тип или категорию' : 'Сначала выберите тип заявки'
+                }
+              />
+            </FormGrid.Full>
 
-          {/* Техника на объект: период работы. Новую заявку назначают не раньше чем на сегодня
+            {/* Техника на объект: период работы. Новую заявку назначают не раньше чем на сегодня
               (по МСК); у заведённой дата правится свободно, лишь бы не в прошлое. */}
-          {isSpecial && (
-            // Даты — соседними ячейками сетки: пара «начало — окончание» читается вместе.
-            <>
-              <Form.Item
-                name="dateFrom"
-                label="Дата начала"
-                rules={[{ required: true, message: 'Укажите дату начала' }]}
-              >
-                <DatePicker
-                  format="DD.MM.YYYY"
-                  style={{ width: '100%' }}
-                  inputReadOnly={isMobile}
-                  disabledDate={minDateRule}
-                />
-              </Form.Item>
-              <Form.Item
-                name="dateTo"
-                label="Дата окончания"
-                // Число дней (столько техника занята на объекте) — подписью под полем: в сетке из
-                // двух колонок отдельной колонки под него уже нет.
-                extra={periodHint}
-              >
-                <DatePicker
-                  format="DD.MM.YYYY"
-                  style={{ width: '100%' }}
-                  inputReadOnly={isMobile}
-                  disabledDate={minDateRule}
-                />
-              </Form.Item>
-              {/* Кто встречает технику на объекте: без контакта заезд и место работ выясняются
+            {isSpecial && (
+              // Даты — соседними ячейками сетки: пара «начало — окончание» читается вместе.
+              <>
+                <Form.Item
+                  name="dateFrom"
+                  label="Дата начала"
+                  rules={[{ required: true, message: 'Укажите дату начала' }]}
+                >
+                  <DatePicker
+                    format="DD.MM.YYYY"
+                    style={{ width: '100%' }}
+                    inputReadOnly={isMobile}
+                    disabledDate={minDateRule}
+                  />
+                </Form.Item>
+                <Form.Item
+                  name="dateTo"
+                  label="Дата окончания"
+                  // Число дней (столько техника занята на объекте) — подписью под полем: в сетке из
+                  // двух колонок отдельной колонки под него уже нет.
+                  extra={periodHint}
+                >
+                  <DatePicker
+                    format="DD.MM.YYYY"
+                    style={{ width: '100%' }}
+                    inputReadOnly={isMobile}
+                    disabledDate={minDateRule}
+                  />
+                </Form.Item>
+                {/* Кто встречает технику на объекте: без контакта заезд и место работ выясняются
                   звонками через диспетчера уже на воротах. */}
-              <FormGrid.Full>
-                <ResponsibleFields
-                  nameField="responsibleName"
-                  phoneField="responsiblePhone"
-                  nameLabel="Ответственный на объекте"
-                  phoneLabel="Контактный телефон"
-                />
-              </FormGrid.Full>
-            </>
-          )}
+                <FormGrid.Full>
+                  <ResponsibleFields
+                    nameField="responsibleName"
+                    phoneField="responsiblePhone"
+                    nameLabel="Ответственный на объекте"
+                    phoneLabel="Контактный телефон"
+                  />
+                </FormGrid.Full>
+              </>
+            )}
 
-          {/* Грузоперевозка: дата/время, объём или масса, адреса. */}
-          {isFreight && (
-            <>
-              <Form.Item
-                name="scheduledDate"
-                label="Дата подачи"
-                rules={[{ required: true, message: 'Укажите дату' }]}
-              >
-                <DatePicker
-                  format="DD.MM.YYYY"
-                  style={{ width: '100%' }}
-                  inputReadOnly={isMobile}
-                  disabledDate={minDateRule}
-                />
-              </Form.Item>
-              <Form.Item
-                name="scheduledTime"
-                label="Время (МСК)"
-                tooltip="Необязательно. Рабочее окно — с 07:00 до 21:00"
-                rules={[optionalWorkTimeRule]}
-              >
-                <TimeInput />
-              </Form.Item>
-              <Form.Item name="volumeM3" label="Объём, м³">
-                <InputNumber style={{ width: '100%' }} min={0} step={0.1} />
-              </Form.Item>
-              <Form.Item name="weightTons" label="Масса, т">
-                <InputNumber style={{ width: '100%' }} min={0} step={0.1} />
-              </Form.Item>
-              {/* Адреса и контакты — во всю ширину: подсказка DaData приходит одной длинной
+            {/* Грузоперевозка: дата/время, объём или масса, адреса. */}
+            {isFreight && (
+              <>
+                <Form.Item
+                  name="scheduledDate"
+                  label="Дата подачи"
+                  rules={[{ required: true, message: 'Укажите дату' }]}
+                >
+                  <DatePicker
+                    format="DD.MM.YYYY"
+                    style={{ width: '100%' }}
+                    inputReadOnly={isMobile}
+                    disabledDate={minDateRule}
+                  />
+                </Form.Item>
+                <Form.Item
+                  name="scheduledTime"
+                  label="Время (МСК)"
+                  tooltip="Необязательно. Рабочее окно — с 07:00 до 21:00"
+                  rules={[optionalWorkTimeRule]}
+                >
+                  <TimeInput />
+                </Form.Item>
+                <Form.Item name="volumeM3" label="Объём, м³">
+                  <InputNumber style={{ width: '100%' }} min={0} step={0.1} />
+                </Form.Item>
+                <Form.Item name="weightTons" label="Масса, т">
+                  <InputNumber style={{ width: '100%' }} min={0} step={0.1} />
+                </Form.Item>
+                {/* Адреса и контакты — во всю ширину: подсказка DaData приходит одной длинной
                   строкой, и в половине окна выбирать пришлось бы из обрезанных вариантов. */}
-              <FormGrid.Full>
-                <Form.Item
-                  name="loadingLocation"
-                  label="Место погрузки"
-                  rules={[{ required: true, message: 'Укажите место погрузки' }]}
-                >
-                  <AddressAutoComplete
-                    placeholder="Начните вводить адрес"
-                    onMetaChange={setLoadingMeta}
-                  />
-                </Form.Item>
-                {/* Контакт стоит под своим адресом, а не общим блоком в конце формы: погрузка и
+                <FormGrid.Full>
+                  <Form.Item
+                    name="loadingLocation"
+                    label="Место погрузки"
+                    rules={[{ required: true, message: 'Укажите место погрузки' }]}
+                  >
+                    <AddressAutoComplete
+                      placeholder="Начните вводить адрес"
+                      onMetaChange={setLoadingMeta}
+                    />
+                  </Form.Item>
+                  {/* Контакт стоит под своим адресом, а не общим блоком в конце формы: погрузка и
                     разгрузка — два разных места, и водитель ищет того, кто откроет ворота здесь. */}
-                <ResponsibleFields
-                  nameField="loadingResponsibleName"
-                  phoneField="loadingResponsiblePhone"
-                  nameLabel="Ответственный за погрузку"
-                  phoneLabel="Телефон"
-                />
-                <Form.Item
-                  name="unloadingLocation"
-                  label="Место разгрузки"
-                  rules={[{ required: true, message: 'Укажите место разгрузки' }]}
-                >
-                  <AddressAutoComplete
-                    placeholder="Начните вводить адрес"
-                    onMetaChange={setUnloadingMeta}
+                  <ResponsibleFields
+                    nameField="loadingResponsibleName"
+                    phoneField="loadingResponsiblePhone"
+                    nameLabel="Ответственный за погрузку"
+                    phoneLabel="Телефон"
                   />
-                </Form.Item>
-                <ResponsibleFields
-                  nameField="unloadingResponsibleName"
-                  phoneField="unloadingResponsiblePhone"
-                  nameLabel="Ответственный за разгрузку"
-                  phoneLabel="Телефон"
-                />
-              </FormGrid.Full>
-            </>
-          )}
+                  <Form.Item
+                    name="unloadingLocation"
+                    label="Место разгрузки"
+                    rules={[{ required: true, message: 'Укажите место разгрузки' }]}
+                  >
+                    <AddressAutoComplete
+                      placeholder="Начните вводить адрес"
+                      onMetaChange={setUnloadingMeta}
+                    />
+                  </Form.Item>
+                  <ResponsibleFields
+                    nameField="unloadingResponsibleName"
+                    phoneField="unloadingResponsiblePhone"
+                    nameLabel="Ответственный за разгрузку"
+                    phoneLabel="Телефон"
+                  />
+                </FormGrid.Full>
+              </>
+            )}
 
-          {/* Заголовок и пример заполнения зависят от типа заявки (COMMENT_HINTS). */}
-          <FormGrid.Full>
-            <Form.Item name="comment" label={commentHint?.label ?? 'Комментарий'}>
-              <Input.TextArea rows={3} maxLength={2000} placeholder={commentHint?.placeholder} />
-            </Form.Item>
-            <Form.Item label="Файлы">
-              <FileEditor editor={editor} />
-            </Form.Item>
-          </FormGrid.Full>
+            {/* Заголовок и пример заполнения зависят от типа заявки (COMMENT_HINTS). */}
+            <FormGrid.Full>
+              <Form.Item name="comment" label={commentHint?.label ?? 'Комментарий'}>
+                <Input.TextArea rows={3} maxLength={2000} placeholder={commentHint?.placeholder} />
+              </Form.Item>
+              <Form.Item label="Файлы">
+                <FileEditor editor={editor} />
+              </Form.Item>
+            </FormGrid.Full>
           </FormGrid>
         </Form>
       </FormModal>

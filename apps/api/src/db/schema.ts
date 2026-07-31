@@ -1247,9 +1247,12 @@ export const vehicleRequests = pgTable(
     // Сквозной человекочитаемый номер (отображается как «ТС-123»).
     num: integer('num').generatedAlwaysAsIdentity(),
     requestType: vehicleRequestTypeEnum('request_type').notNull(),
-    objectId: uuid('object_id')
-      .notNull()
-      .references(() => constructionObjects.id, { onDelete: 'restrict' }),
+    // Заказчик заявки (ADR 0040, миграция 0069): объект строительства **или** отдел, ровно один
+    // (CHECK `vehicle_requests_customer_check`). Отдел с объектами не пересекается — снабжение
+    // везёт материалы на склад, площадки у такой заявки нет вовсе, — поэтому вторая колонка
+    // вместо первой, а не рядом с ней.
+    objectId: uuid('object_id').references(() => constructionObjects.id, { onDelete: 'restrict' }),
+    departmentId: uuid('department_id').references(() => departments.id, { onDelete: 'restrict' }),
     // Заказанный тип ТС (плоская модель, ADR 0005).
     vehicleTypeId: uuid('vehicle_type_id')
       .notNull()
@@ -1290,6 +1293,25 @@ export const vehicleRequests = pgTable(
       'vehicle_requests_approval_check',
       sql`(${t.approvedBy} is null) = (${t.approvedAt} is null)`,
     ),
+    // Заказчик ровно один (ADR 0040): двое дали бы два ответа на «кто визирует», ноль — ничью
+    // заявку.
+    customerPresence: check(
+      'vehicle_requests_customer_check',
+      sql`num_nonnulls(${t.objectId}, ${t.departmentId}) = 1`,
+    ),
+    // У отдела бывают только грузоперевозки: спецтехника выходит на площадку, а её у отдела нет.
+    departmentFreightOnly: check(
+      'vehicle_requests_department_freight_check',
+      sql`${t.departmentId} is null or ${t.requestType} = 'freight_transport'`,
+    ),
+    departmentIdx: index('vehicle_requests_department_idx')
+      .on(t.departmentId)
+      .where(sql`${t.departmentId} is not null`),
+    departmentAwaitingApprovalIdx: index('vehicle_requests_department_awaiting_approval_idx')
+      .on(t.departmentId)
+      .where(
+        sql`${t.approvedAt} is null and ${t.deletedAt} is null and ${t.departmentId} is not null`,
+      ),
     // «Что ждёт визы» — главный вопрос к таблице после её появления (миграция 0049).
     awaitingApprovalIdx: index('vehicle_requests_awaiting_approval_idx')
       .on(t.objectId)

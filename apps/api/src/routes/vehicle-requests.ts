@@ -26,6 +26,7 @@ import {
   type CompleteVehicleRequestInput,
   type ConfirmScheduleInput,
   createVehicleRequestSchema,
+  type CreateVehicleRequestInput,
   type FileDto,
   formatVehicleRequestNumber,
   waybillFormLabels,
@@ -43,6 +44,7 @@ import {
   transitionRequiresAssignment,
   transitionRequiresCompletion,
   updateVehicleRequestSchema,
+  type UpdateVehicleRequestInput,
   type VehicleOnSiteListDto,
   type VehicleOnSiteSummaryDto,
   type VehicleRequestAssignmentDto,
@@ -64,6 +66,7 @@ import { db } from '../db/client';
 import {
   constructionObjects,
   counterparties,
+  departments,
   files,
   freightTransportRequestDetails,
   persons,
@@ -92,11 +95,13 @@ import {
   assertArchiveVisible,
   assertLessorScope,
   assertObjectRoleEditable,
-  assertObjectScope,
   assertTransitionAllowed,
-  canApproveForObject,
+  assertRequestScope,
+  type RequestCustomer,
+  assertVehicleRequestTypeAllowed,
+  canApproveRequest,
+  vehicleRequestVisibilityWhere,
   lessorVisibilityWhere,
-  requestVisibilityWhere,
 } from '../lib/access';
 import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
 import { nextRequestContact } from '../lib/request-contact';
@@ -142,9 +147,13 @@ const requestSelect = {
   id: vehicleRequests.id,
   num: vehicleRequests.num,
   requestType: vehicleRequests.requestType,
+  // Заказчик заявки (ADR 0040): объект строительства или отдел — заполнена ровно одна пара.
   objectId: vehicleRequests.objectId,
   objectCode: constructionObjects.code,
   objectName: constructionObjects.name,
+  departmentId: vehicleRequests.departmentId,
+  departmentCode: departments.code,
+  departmentName: departments.name,
   // Плоская модель (ADR 0005): тип ТС — напрямую vehicle_type_id.
   vehicleTypeId: vehicleRequests.vehicleTypeId,
   vehicleTypeName: vehicleTypes.name,
@@ -220,7 +229,8 @@ function baseQuery() {
     db
       .select(requestSelect)
       .from(vehicleRequests)
-      .innerJoin(constructionObjects, eq(vehicleRequests.objectId, constructionObjects.id))
+      .leftJoin(constructionObjects, eq(vehicleRequests.objectId, constructionObjects.id))
+      .leftJoin(departments, eq(vehicleRequests.departmentId, departments.id))
       .innerJoin(vehicleTypes, eq(vehicleRequests.vehicleTypeId, vehicleTypes.id))
       // Заказанная категория (ADR 0028): её нет у типа без ТТХ и у заявок старше миграции 0052.
       .leftJoin(requestCategories, eq(vehicleRequests.vehicleCategoryId, requestCategories.id))
@@ -376,6 +386,9 @@ function toDto(r: RequestRow, fileList: FileDto[]): VehicleRequestDto {
     objectId: r.objectId,
     objectCode: r.objectCode,
     objectName: r.objectName,
+    departmentId: r.departmentId,
+    departmentCode: r.departmentCode,
+    departmentName: r.departmentName,
     vehicleTypeId: r.vehicleTypeId,
     vehicleTypeName: r.vehicleTypeName,
     vehicleCategoryId: r.vehicleCategoryId,
@@ -438,6 +451,53 @@ async function assertObjectActive(tx: Tx, objectId: string): Promise<void> {
     .where(eq(constructionObjects.id, objectId));
   if (!o) throw err.badRequest('Объект не найден');
   if (!o.isActive) throw err.badRequest('Объект неактивен');
+}
+
+async function assertDepartmentActive(tx: Tx, departmentId: string): Promise<void> {
+  const [d] = await tx
+    .select({ isActive: departments.isActive })
+    .from(departments)
+    .where(eq(departments.id, departmentId));
+  if (!d) throw err.badRequest('Отдел не найден');
+  if (!d.isActive) throw err.badRequest('Отдел неактивен');
+}
+
+/**
+ * Заказчик заявки (ADR 0040): объект или отдел, ровно один. Схема пропускает только валидные
+ * пары, но заказчика надо ещё и разрешить — учётке своей оси и живой записи справочника.
+ */
+/**
+ * Заказчик после правки (ADR 0040): переданный заменяет прежнего целиком — присланный объект
+ * снимает отдел и наоборот. Не переданный ничего не меняет.
+ *
+ * «Заменяет целиком», а не «дополняет»: заказчик у заявки один, и присылать вместе с новым
+ * отделом ещё и `objectId: null` клиенту незачем — схема пары всё равно не примет.
+ */
+function customerAfterEdit(
+  before: RequestCustomer,
+  body: UpdateVehicleRequestInput,
+): RequestCustomer {
+  const departmentId = body.requestType === 'freight_transport' ? body.departmentId : undefined;
+  if (body.objectId) return { objectId: body.objectId, departmentId: null };
+  if (departmentId) return { objectId: null, departmentId };
+  return { objectId: before.objectId, departmentId: before.departmentId };
+}
+
+/**
+ * Заказчик из тела запроса (ADR 0040). У спецтехники он всегда объект: её заказывают на площадку,
+ * и отдела в схеме такой заявки нет вовсе — читать оттуда `departmentId` было бы неправдой о том,
+ * что клиент может прислать.
+ */
+function customerOf(body: CreateVehicleRequestInput): RequestCustomer {
+  if (body.requestType === 'special_equipment') {
+    return { objectId: body.objectId, departmentId: null };
+  }
+  return { objectId: body.objectId ?? null, departmentId: body.departmentId ?? null };
+}
+
+async function assertCustomerActive(tx: Tx, customer: RequestCustomer): Promise<void> {
+  if (customer.objectId) await assertObjectActive(tx, customer.objectId);
+  if (customer.departmentId) await assertDepartmentActive(tx, customer.departmentId);
 }
 
 /**
@@ -906,10 +966,11 @@ function historyWhere(p: Principal, q: z.infer<typeof vehicleRequestHistoryQuery
   return and(
     inArray(vehicleRequests.status, statuses),
     showDeleted ? undefined : isNull(vehicleRequests.deletedAt),
-    requestVisibilityWhere(p, vehicleRequests.objectId),
+    vehicleRequestVisibilityWhere(p, vehicleRequests.objectId, vehicleRequests.departmentId),
     assignedLessorWhere(p),
     q.requestType ? eq(vehicleRequests.requestType, q.requestType) : undefined,
     q.objectId ? eq(vehicleRequests.objectId, q.objectId) : undefined,
+    q.departmentId ? eq(vehicleRequests.departmentId, q.departmentId) : undefined,
     q.vehicleTypeId ? eq(vehicleRequests.vehicleTypeId, q.vehicleTypeId) : undefined,
     q.vehicleCategoryId ? eq(vehicleRequests.vehicleCategoryId, q.vehicleCategoryId) : undefined,
     q.num ? eq(vehicleRequests.num, q.num) : undefined,
@@ -935,7 +996,8 @@ function historyCountQuery() {
   return db
     .select({ c: count() })
     .from(vehicleRequests)
-    .innerJoin(constructionObjects, eq(vehicleRequests.objectId, constructionObjects.id))
+    .leftJoin(constructionObjects, eq(vehicleRequests.objectId, constructionObjects.id))
+    .leftJoin(departments, eq(vehicleRequests.departmentId, departments.id))
     .leftJoin(
       specialEquipmentRequestDetails,
       eq(vehicleRequests.id, specialEquipmentRequestDetails.requestId),
@@ -965,9 +1027,11 @@ function onSiteWhere(p: Principal, q: VehicleRequestOnSiteQuery, onDate: string)
     eq(vehicleRequests.requestType, 'special_equipment'),
     eq(vehicleRequests.status, 'confirmed'),
     isNull(vehicleRequests.deletedAt),
-    requestVisibilityWhere(p, vehicleRequests.objectId),
+    vehicleRequestVisibilityWhere(p, vehicleRequests.objectId, vehicleRequests.departmentId),
     assignedLessorWhere(p),
     q.objectId ? eq(vehicleRequests.objectId, q.objectId) : undefined,
+    // Фильтра по отделу здесь нет намеренно: срез — про спецтехнику на площадке, а её отдел не
+    // заказывает вовсе (CHECK `vehicle_requests_department_freight_check`).
     q.vehicleTypeId ? eq(vehicleRequests.vehicleTypeId, q.vehicleTypeId) : undefined,
     q.vehicleCategoryId ? eq(vehicleRequests.vehicleCategoryId, q.vehicleCategoryId) : undefined,
     q.num ? eq(vehicleRequests.num, q.num) : undefined,
@@ -988,7 +1052,8 @@ function onSiteCountQuery() {
   return db
     .select({ c: count() })
     .from(vehicleRequests)
-    .innerJoin(constructionObjects, eq(vehicleRequests.objectId, constructionObjects.id))
+    .leftJoin(constructionObjects, eq(vehicleRequests.objectId, constructionObjects.id))
+    .leftJoin(departments, eq(vehicleRequests.departmentId, departments.id))
     .leftJoin(
       specialEquipmentRequestDetails,
       eq(vehicleRequests.id, specialEquipmentRequestDetails.requestId),
@@ -1033,10 +1098,11 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
     const where = and(
       q.requestType ? eq(vehicleRequests.requestType, q.requestType) : undefined,
       showDeleted ? undefined : isNull(vehicleRequests.deletedAt),
-      requestVisibilityWhere(p, vehicleRequests.objectId),
+      vehicleRequestVisibilityWhere(p, vehicleRequests.objectId, vehicleRequests.departmentId),
       assignedLessorWhere(p),
       q.status ? eq(vehicleRequests.status, q.status) : undefined,
       q.objectId ? eq(vehicleRequests.objectId, q.objectId) : undefined,
+      q.departmentId ? eq(vehicleRequests.departmentId, q.departmentId) : undefined,
       q.vehicleTypeId ? eq(vehicleRequests.vehicleTypeId, q.vehicleTypeId) : undefined,
       q.vehicleCategoryId ? eq(vehicleRequests.vehicleCategoryId, q.vehicleCategoryId) : undefined,
       q.num ? eq(vehicleRequests.num, q.num) : undefined,
@@ -1061,7 +1127,8 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
     const [totalRow] = await db
       .select({ c: count() })
       .from(vehicleRequests)
-      .innerJoin(constructionObjects, eq(vehicleRequests.objectId, constructionObjects.id))
+      .leftJoin(constructionObjects, eq(vehicleRequests.objectId, constructionObjects.id))
+      .leftJoin(departments, eq(vehicleRequests.departmentId, departments.id))
       .leftJoin(
         specialEquipmentRequestDetails,
         eq(vehicleRequests.id, specialEquipmentRequestDetails.requestId),
@@ -1135,7 +1202,8 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           withoutCost: sql<number>`count(*) FILTER (WHERE ${vehicleRequests.status} = 'done' AND ${vehicleRequestCompletions.totalCost} IS NULL)`,
         })
         .from(vehicleRequests)
-        .innerJoin(constructionObjects, eq(vehicleRequests.objectId, constructionObjects.id))
+        .leftJoin(constructionObjects, eq(vehicleRequests.objectId, constructionObjects.id))
+        .leftJoin(departments, eq(vehicleRequests.departmentId, departments.id))
         .leftJoin(
           specialEquipmentRequestDetails,
           eq(vehicleRequests.id, specialEquipmentRequestDetails.requestId),
@@ -1232,7 +1300,9 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           leavingToday: sql<number>`count(*) FILTER (WHERE coalesce(${specialEquipmentRequestDetails.dateTo}, ${specialEquipmentRequestDetails.dateFrom}) = ${onDate}::date)`,
         })
         .from(vehicleRequests)
-        .innerJoin(constructionObjects, eq(vehicleRequests.objectId, constructionObjects.id))
+        // Отдел здесь не присоединяется: срез отбирает спецтехнику, а её заказывает только
+        // объект (CHECK `vehicle_requests_department_freight_check`).
+        .leftJoin(constructionObjects, eq(vehicleRequests.objectId, constructionObjects.id))
         .leftJoin(
           specialEquipmentRequestDetails,
           eq(vehicleRequests.id, specialEquipmentRequestDetails.requestId),
@@ -1259,7 +1329,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       const p = requirePrincipal(req);
       const where = and(
         isNull(vehicleRequests.deletedAt),
-        requestVisibilityWhere(p, vehicleRequests.objectId),
+        vehicleRequestVisibilityWhere(p, vehicleRequests.objectId, vehicleRequests.departmentId),
         assignedLessorWhere(p),
         req.query.objectId ? eq(vehicleRequests.objectId, req.query.objectId) : undefined,
         req.query.requestType ? eq(vehicleRequests.requestType, req.query.requestType) : undefined,
@@ -1303,7 +1373,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
     const dto = await getDto(req.params.id);
     if (!dto) throw err.notFound('Заявка не найдена');
     assertArchiveVisible(p, dto.deletedAt, 'Заявка не найдена');
-    assertObjectScope(p, dto.objectId);
+    assertRequestScope(p, dto);
     // Список арендодателю чужую заявку не покажет, но карточку он мог бы открыть по прямому id
     // (ADR 0038): область спрашивается там, где запись достают, а не только там, где ищут.
     assertLessorScope(p, dto.assignment?.lessorId ?? null);
@@ -1319,6 +1389,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         id: vehicleRequests.id,
         objectId: vehicleRequests.objectId,
         deletedAt: vehicleRequests.deletedAt,
+        departmentId: vehicleRequests.departmentId,
         createdAt: vehicleRequests.createdAt,
         createdBy: vehicleRequests.createdBy,
         createdByName: users.fullName,
@@ -1337,7 +1408,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
     if (!row) throw err.notFound('Заявка не найдена');
     // Архивная заявка видна только тем, кому открыт архив, — как и сама карточка (GET /:id).
     assertArchiveVisible(p, row.deletedAt, 'Заявка не найдена');
-    assertObjectScope(p, row.objectId);
+    assertRequestScope(p, row);
     assertLessorScope(p, row.assignedLessorId);
     return loadVehicleRequestHistory(row.id, {
       at: row.createdAt,
@@ -1353,15 +1424,19 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
     async (req, reply) => {
       const p = requirePrincipal(req);
       const body = req.body;
-      assertObjectScope(p, body.objectId);
-      // Заявку завёл тот, кто за объект и отвечает, — согласование уже состоялось (ADR 0025):
-      // просить руководителя строительства завизировать собственную заявку незачем. Право визы
-      // само по себе автовизы не даёт (ADR 0032) — администратор заводит заявку не за себя.
-      const selfApproved = approvesOwnRequestOnCreate(p, body.objectId);
+      // Отдел заказывает только грузоперевозки (ADR 0040) — проверяется до области: «вам такой
+      // заказ не положен» точнее, чем «это не ваш объект», когда объекта у роли нет вовсе.
+      assertVehicleRequestTypeAllowed(p, body.requestType);
+      const customer = customerOf(body);
+      assertRequestScope(p, customer);
+      // Заявку завёл тот, кто за объект или отдел и отвечает, — согласование уже состоялось
+      // (ADR 0025): просить его завизировать собственную заявку незачем. Право визы само по себе
+      // автовизы не даёт (ADR 0032) — администратор заводит заявку не за себя.
+      const selfApproved = approvesOwnRequestOnCreate(p, customer);
       const approvedAt = new Date();
 
       const createdId = await db.transaction(async (tx) => {
-        await assertObjectActive(tx, body.objectId);
+        await assertCustomerActive(tx, customer);
         await resolveClassification(
           tx,
           body.vehicleTypeId,
@@ -1372,7 +1447,8 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           .insert(vehicleRequests)
           .values({
             requestType: body.requestType,
-            objectId: body.objectId,
+            objectId: customer.objectId,
+            departmentId: customer.departmentId,
             vehicleTypeId: body.vehicleTypeId,
             vehicleCategoryId: body.vehicleCategoryId ?? null,
             status: 'new',
@@ -1461,10 +1537,12 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       if (before.requestType !== body.requestType) {
         throw err.unprocessable('Тип заявки изменить нельзя');
       }
-      assertObjectScope(p, before.objectId);
+      assertRequestScope(p, before);
       assertObjectRoleEditable(p, before.status, 'редактировать');
 
-      const objectId = body.objectId ?? before.objectId;
+      // Заказчик после правки: переданный заменяет прежнего целиком — объект снимает отдел и
+      // наоборот (ADR 0040). Не переданный оставляет всё как было.
+      const customer: RequestCustomer = customerAfterEdit(before, body);
       const nextTypeId = body.vehicleTypeId ?? before.vehicleTypeId;
       // Тип и категория меняются одной позицией классификатора (ADR 0028). Сменили тип, а
       // категорию не прислали — прежняя относится к прежнему типу, и оставлять её нельзя:
@@ -1482,13 +1560,17 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       // подтверждает изменение самим фактом правки.
       const dropApproval =
         !!before.approvedAt &&
-        !canApproveForObject(p, objectId) &&
+        !canApproveRequest(p, customer) &&
         editChangesSubstance(before, body);
 
       await db.transaction(async (tx) => {
-        if (body.objectId && body.objectId !== before.objectId) {
-          assertObjectScope(p, body.objectId);
-          await assertObjectActive(tx, body.objectId);
+        const customerChanged =
+          customer.objectId !== before.objectId || customer.departmentId !== before.departmentId;
+        if (customerChanged) {
+          // Переносить заявку можно только внутрь своей области: иначе объектная роль сдвигала бы
+          // её на чужую площадку, а отдельская — уводила бы из-под своего руководителя.
+          assertRequestScope(p, customer);
+          await assertCustomerActive(tx, customer);
         }
         if (classificationChanged) {
           await resolveClassification(tx, nextTypeId, nextCategoryId, before.requestType);
@@ -1507,7 +1589,8 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         const [updated] = await tx
           .update(vehicleRequests)
           .set({
-            objectId,
+            objectId: customer.objectId,
+            departmentId: customer.departmentId,
             vehicleTypeId: nextTypeId,
             vehicleCategoryId: nextCategoryId,
             comment: body.comment ?? before.comment,
@@ -1643,7 +1726,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
    *
    * Причина «лист не выписывается» отдаётся текстом там, где о ней есть что сказать: диспетчер
    * должен видеть, почему полей нет, а не отсутствующий блок. У заказа техники на объект причины
-   * нет и быть не должно — этот вид заявки путевого листа не знает вовсе (ADR 0040), и форма о
+   * нет и быть не должно — этот вид заявки путевого листа не знает вовсе (ADR 0041), и форма о
    * нём не спрашивает.
    */
   r.get(
@@ -1656,7 +1739,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       const p = requirePrincipal(req);
       const before = await getDto(req.params.id);
       if (!before) throw err.notFound('Заявка не найдена');
-      assertObjectScope(p, before.objectId);
+      assertRequestScope(p, before);
 
       const requirement = await waybillRequirementFor(db, {
         requestType: before.requestType,
@@ -1674,7 +1757,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
   );
 
   /**
-   * Лист, выписанный по этой заявке (ADR 0040). Отдельной ручкой, а не полем DTO: лист нужен
+   * Лист, выписанный по этой заявке (ADR 0041). Отдельной ручкой, а не полем DTO: лист нужен
    * одной карточке одного вида заявок, а в списочный запрос он добавил бы три join'а к каждой
    * строке — ради колонки, которой в списке нет.
    *
@@ -1691,7 +1774,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       const p = requirePrincipal(req);
       const request = await getDto(req.params.id);
       if (!request) throw err.notFound('Заявка не найдена');
-      assertObjectScope(p, request.objectId);
+      assertRequestScope(p, request);
 
       const [row] = await db
         .select({
@@ -1735,7 +1818,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       // отката может сменить и машину, и ставки).
       const before = await getDto(req.params.id);
       if (!before || before.deletedAt) throw err.notFound('Заявка не найдена');
-      assertObjectScope(p, before.objectId);
+      assertRequestScope(p, before);
       // Заявку закрывает тот, чья техника на неё вышла (ADR 0038): без этой проверки арендодатель
       // закрыл бы чужую заявку по прямому id — право на переход у него есть, область спрашивается
       // отдельно.
@@ -1913,7 +1996,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       if (!existing || existing.deletedAt) throw err.notFound('Заявка не найдена');
       // Право на маршруте общее, а визирует руководитель своего объекта: чужую заявку он не
       // согласовывает, даже видя её.
-      assertObjectScope(p, existing.objectId);
+      assertRequestScope(p, existing);
 
       const isApproved = existing.approvedAt !== null;
       if (isApproved === approved) return (await getDto(existing.id))!;
@@ -1952,7 +2035,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
     const { id } = req.params;
     const [existing] = await db.select().from(vehicleRequests).where(eq(vehicleRequests.id, id));
     if (!existing || existing.deletedAt) throw err.notFound('Заявка не найдена');
-    assertObjectScope(p, existing.objectId);
+    assertRequestScope(p, existing);
     assertObjectRoleEditable(p, existing.status, 'удалять');
 
     if (existing.status === 'new') {

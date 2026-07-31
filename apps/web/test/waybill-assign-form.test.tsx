@@ -2,7 +2,11 @@ import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { App } from 'antd';
-import type { FreightTransportRequestDto, VehicleDto } from '@technic/contracts';
+import type {
+  FreightTransportRequestDto,
+  SpecialEquipmentRequestDto,
+  VehicleDto,
+} from '@technic/contracts';
 
 /**
  * Форма перевода заявки в работу выписывает путевой лист (ADR 0037): здесь проверяется, что она
@@ -10,6 +14,10 @@ import type { FreightTransportRequestDto, VehicleDto } from '@technic/contracts'
  *
  * Отсутствие блока читалось бы как поломка, поэтому «на аренду лист выписывает арендодатель» —
  * это текст на экране, а не пустое место.
+ *
+ * Ровно одно исключение — заказ техники на объект (ADR 0041): там нет ни блока, ни текста, ни
+ * запроса к серверу. Объяснять отсутствие документа, которого в этом процессе не существует,
+ * значит наводить на мысль, что где-то он всё же выписывается.
  */
 
 const OWN_VEHICLE: VehicleDto = {
@@ -58,6 +66,9 @@ const REQUEST: FreightTransportRequestDto = {
   objectId: 'obj-1',
   objectCode: 'OBJ-A',
   objectName: 'Объект Химки',
+  departmentId: null,
+  departmentCode: null,
+  departmentName: null,
   vehicleTypeId: 'type-dump',
   vehicleTypeName: 'Самосвалы',
   vehicleCategoryId: null,
@@ -91,8 +102,48 @@ const REQUEST: FreightTransportRequestDto = {
   unloadingResponsiblePhone: '+7 926 000-00-02',
 };
 
+/**
+ * Заказ техники на объект той же машиной: разница с грузоперевозкой — только в виде заявки, и
+ * этого достаточно, чтобы путевого листа не было (ADR 0041).
+ */
+const ON_SITE_REQUEST: SpecialEquipmentRequestDto = {
+  id: 'r-2',
+  num: 502,
+  displayNumber: 'ТС-502',
+  requestType: 'special_equipment',
+  objectId: REQUEST.objectId,
+  objectCode: REQUEST.objectCode,
+  objectName: REQUEST.objectName,
+  departmentId: null,
+  departmentCode: null,
+  departmentName: null,
+  vehicleTypeId: REQUEST.vehicleTypeId,
+  vehicleTypeName: REQUEST.vehicleTypeName,
+  vehicleCategoryId: null,
+  vehicleCategoryName: null,
+  status: 'new',
+  comment: '',
+  cancelReason: null,
+  approvedBy: REQUEST.approvedBy,
+  approvedByName: REQUEST.approvedByName,
+  approvedAt: REQUEST.approvedAt,
+  assignment: null,
+  completion: null,
+  files: [],
+  version: 1,
+  createdBy: REQUEST.createdBy,
+  createdByName: REQUEST.createdByName,
+  createdAt: REQUEST.createdAt,
+  updatedAt: REQUEST.updatedAt,
+  deletedAt: null,
+  dateFrom: '2026-08-10',
+  dateTo: null,
+  responsibleName: 'Петров П. П.',
+  responsiblePhone: '+7 926 000-00-01',
+};
+
 /** Подсказка о листе приходит по машине: собственная его получает, аренда — нет. */
-const prefill = async (_id: string, vehicleId: string) =>
+const prefill = vi.fn(async (_id: string, vehicleId: string) =>
   vehicleId === 'v-own'
     ? {
         required: true,
@@ -116,7 +167,8 @@ const prefill = async (_id: string, vehicleId: string) =>
         reason: 'Путевой лист на арендную технику выписывает арендодатель',
         tripDate: '2026-08-10',
         fields: null,
-      };
+      },
+);
 
 /** Отбор водителей — шпион: по нему видно, на какую дату форма их спрашивает. */
 const availableDrivers = vi.fn(async (_q: { vehicleId: string; on: string }) => ({
@@ -176,6 +228,7 @@ function renderModal(
   vehicleId?: string,
   ownership: 'own' | 'rental' = 'own',
   onSubmit: (v: unknown) => void = () => {},
+  request: FreightTransportRequestDto | SpecialEquipmentRequestDto = REQUEST,
 ) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -183,7 +236,7 @@ function renderModal(
       <App>
         <VehicleAssignModal
           request={{
-            ...REQUEST,
+            ...request,
             assignment: vehicleId ? assignment(vehicleId, ownership) : null,
           }}
           confirmLoading={false}
@@ -230,6 +283,19 @@ describe('путевой лист в форме перевода в работу
       const last = availableDrivers.mock.calls.at(-1)![0];
       expect(last.on).toBe('2026-08-12');
     });
+  });
+
+  it('у заказа техники на объект листа нет и объяснения тоже: документа в этом процессе нет', async () => {
+    prefill.mockClear();
+    renderModal('v-own', 'own', () => {}, ON_SITE_REQUEST);
+    await waitFor(() => expect(screen.getByText('Конкретная техника')).toBeDefined());
+
+    expect(screen.queryByText('Путевой лист')).toBeNull();
+    expect(screen.queryByText('Путевой лист не выписывается')).toBeNull();
+    expect(screen.queryByText('Водитель')).toBeNull();
+    // Сервер о листе даже не спрашивается: спрашивать нечего, и лишний запрос выдал бы, что
+    // портал всё-таки держит документ в уме.
+    expect(prefill).not.toHaveBeenCalled();
   });
 
   it('на аренду объясняет, почему листа нет, а не прячет блок', async () => {

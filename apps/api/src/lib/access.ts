@@ -1,7 +1,9 @@
 import { eq, inArray, type AnyColumn, type SQL } from 'drizzle-orm';
 import {
   actsForCounterparty,
+  allowedVehicleRequestTypes,
   can,
+  canOrderVehicleRequestType,
   canTransitionStatus,
   isCounterpartyScopedRole,
   isDepartmentScopedRole,
@@ -10,8 +12,10 @@ import {
   requestStatusLabels,
   roleLabels,
   type CounterpartyType,
+  vehicleRequestTypeLabels,
   type Permission,
   type RequestStatus,
+  type VehicleRequestType,
 } from '@technic/contracts';
 import type { Principal } from '../auth/principal';
 import { err } from './errors';
@@ -123,16 +127,55 @@ export function assertArchiveVisible(
 }
 
 /**
- * Может ли учётка визировать заявку ТС этого объекта (ADR 0025): право визы плюс область —
- * руководитель строительства отвечает за свой объект и чужие заявки не согласовывает.
- * Предикат, а не проверка с отказом: им же решается, снимать ли визу при правке заявки.
+ * Заказчик заявки на технику (ADR 0040): объект строительства **или** отдел — заполнено ровно
+ * одно поле. Один тип на все проверки области в модуле, чтобы «чья это заявка» не отвечалось
+ * в каждом маршруте заново.
  */
-export function canApproveForObject(p: Principal, objectId: string): boolean {
+export interface RequestCustomer {
+  objectId: string | null;
+  departmentId: string | null;
+}
+
+/**
+ * Видимость заявок на технику по области учётки (ADR 0025, ADR 0040). Ось у роли одна: объектная
+ * сравнивается с объектом заявки, отдельская — с её отделом. Пустой набор означает «не видит
+ * ничего», а не «видит всё»: активировать такую учётку API не даёт, но выборка не должна
+ * зависеть от того, удержалась ли эта проверка.
+ *
+ * Отдельно от `requestVisibilityWhere`: у вывоза мусора колонки отдела нет и не будет — мусор
+ * вывозят с площадки, и заказчик там всегда объект.
+ */
+export function vehicleRequestVisibilityWhere(
+  p: Principal,
+  objectIdColumn: AnyColumn,
+  departmentIdColumn: AnyColumn,
+): SQL | undefined {
+  if (isObjectScopedRole(p.role)) {
+    const ids = p.constructionObjectIds;
+    return ids.length > 0 ? inArray(objectIdColumn, ids) : eq(objectIdColumn, NEVER_MATCH);
+  }
+  if (isDepartmentScopedRole(p.role)) {
+    const ids = p.departmentIds;
+    return ids.length > 0 ? inArray(departmentIdColumn, ids) : eq(departmentIdColumn, NEVER_MATCH);
+  }
+  return undefined;
+}
+
+/**
+ * Может ли учётка визировать эту заявку (ADR 0025, ADR 0040): право визы плюс область —
+ * руководитель строительства отвечает за свои объекты, руководитель отдела за свои отделы, и
+ * чужие заявки не согласовывает ни тот, ни другой. Предикат, а не проверка с отказом: им же
+ * решается, снимать ли визу при правке заявки.
+ */
+export function canApproveRequest(p: Principal, customer: RequestCustomer): boolean {
   if (!can(p, 'vehicleRequests.approve')) return false;
-  // Руководитель отдела визирует заявки своего отдела, а не площадки: право визы у него есть,
-  // но объектная заявка вне его области (ADR 0040).
-  if (isDepartmentScopedRole(p.role)) return false;
-  return !isObjectScopedRole(p.role) || p.constructionObjectIds.includes(objectId);
+  if (isObjectScopedRole(p.role)) {
+    return !!customer.objectId && p.constructionObjectIds.includes(customer.objectId);
+  }
+  if (isDepartmentScopedRole(p.role)) {
+    return !!customer.departmentId && p.departmentIds.includes(customer.departmentId);
+  }
+  return true;
 }
 
 /**
@@ -145,8 +188,8 @@ export function canApproveForObject(p: Principal, objectId: string): boolean {
  * остальными. Иначе на вопрос «кто согласовал» портал отвечал бы именем того, кто решения не
  * принимал, — и обойти визу можно было бы просьбой завести заявку.
  */
-export function approvesOwnRequestOnCreate(p: Principal, objectId: string): boolean {
-  return isPlaceScopedRole(p.role) && canApproveForObject(p, objectId);
+export function approvesOwnRequestOnCreate(p: Principal, customer: RequestCustomer): boolean {
+  return isPlaceScopedRole(p.role) && canApproveRequest(p, customer);
 }
 
 /**
@@ -163,6 +206,43 @@ export function assertObjectScope(p: Principal, objectId: string): void {
   if (isObjectScopedRole(p.role) && !p.constructionObjectIds.includes(objectId)) {
     throw err.forbidden(`${roleLabels[p.role!]} работает только со своими объектами`);
   }
+}
+
+/**
+ * Заявка на технику принадлежит области учётки (ADR 0040): объектная роль работает со своими
+ * объектами, отдельская — со своими отделами, остальные не ограничены. Заявка чужой оси для
+ * обеих ролей чужая: у заявки отдела объекта нет вовсе, и «объект не мой» здесь — не придирка,
+ * а единственно верный ответ.
+ */
+export function assertRequestScope(p: Principal, customer: RequestCustomer): void {
+  if (isObjectScopedRole(p.role)) {
+    if (!customer.objectId || !p.constructionObjectIds.includes(customer.objectId)) {
+      throw err.forbidden(`${roleLabels[p.role!]} работает только со своими объектами`);
+    }
+    return;
+  }
+  if (isDepartmentScopedRole(p.role)) {
+    if (!customer.departmentId || !p.departmentIds.includes(customer.departmentId)) {
+      throw err.forbidden(`${roleLabels[p.role!]} работает только со своими отделами`);
+    }
+  }
+}
+
+/**
+ * Тип заявки доступен роли (ADR 0040): отдел заказывает только грузоперевозки — спецтехника
+ * выходит на площадку, а площадки у отдела нет. 403, а не 422: дело не в состоянии заявки, а в
+ * том, что этой учётке такой заказ не положен вовсе.
+ */
+export function assertVehicleRequestTypeAllowed(
+  p: Principal,
+  requestType: VehicleRequestType,
+): void {
+  if (canOrderVehicleRequestType(p, requestType)) return;
+  throw err.forbidden(
+    `${roleLabels[p.role!]} заказывает только: ${allowedVehicleRequestTypes(p)
+      .map((t) => `«${vehicleRequestTypeLabels[t]}»`)
+      .join(', ')}`,
+  );
 }
 
 /**
