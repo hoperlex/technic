@@ -72,6 +72,27 @@ docker compose -p technic exec api pnpm backfill:routes --clear-orphan-drivers
 прогоните шаги выше и повторите обычный `deploy-auto`. Скрипт переноса идемпотентен: повторный
 запуск ничего не дублирует.
 
+### Реквизиты организации в шапке путевого листа
+
+Основную организацию заводит миграция `0075` (АО «Служба механизации», по шапке бланков 4-П и
+№ 3) — без неё выдача листа отвечает «Не заведена организация-владелец транспорта». Экрана у
+справочника юрлиц пока нет (бэклог ADR 0037), поэтому реквизиты правятся SQL — через тот же
+`db-tools`, которым ходит в базу `deploy-auto` (URL раскрывается внутри контейнера, секрета в
+`argv` нет):
+
+```bash
+docker compose -f deploy/docker-compose.yml -p technic run --rm db-tools sh -c \
+  'psql "${DATABASE_MIGRATION_URL:-$DATABASE_URL}"'
+```
+
+```sql
+select name, address, phone, okpo, ogrn, inn from organizations where is_primary;
+update organizations set inn = '<10 или 12 цифр>', updated_at = now() where is_primary;
+```
+
+Правка меняет шапку **будущих** листов: выданные печатаются из своего снимка `waybills.data` и
+задним числом не переписываются (ADR 0037 п. 10).
+
 ### One-time setup (однократно на VPS)
 
 ```bash
