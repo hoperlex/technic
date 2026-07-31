@@ -961,6 +961,12 @@ export interface VehicleRequestBaseDto {
   objectId: string | null;
   objectCode: string | null;
   objectName: string | null;
+  /**
+   * Адрес объекта. Пусто — заказчик отдел либо адрес у объекта не заполнен: колонка справочника
+   * необязательная. Показывают второй строкой к наименованию — «куда ехать» спрашивают у списка
+   * заявок чаще всего, а своей колонки адрес не стоит: у заявок отдела она пустовала бы.
+   */
+  objectAddress: string | null;
   departmentId: string | null;
   departmentCode: string | null;
   departmentName: string | null;

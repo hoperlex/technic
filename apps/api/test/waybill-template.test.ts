@@ -68,6 +68,66 @@ describe('разметка бланков', () => {
     expect(inspectTemplate(rendered.bytes)).toEqual([]);
   });
 
+  /**
+   * Плейсхолдер внутри чужого объединения (ADR 0041). Excel показывает содержимое только левой
+   * верхней ячейки объединения — остальные молчат. Значение, попавшее в такую ячейку, не
+   * печатается вовсе: ни ошибки, ни пустой графы с плейсхолдером, просто ничего. Так на бланке
+   * теряли «Организацию», гаражный номер и номер листа в обоих талонах — набор ключей при этом
+   * сходился, и проверки выше молчали.
+   */
+  it.each(FORMS)('в бланке %s ни один плейсхолдер не спрятан внутри объединения', (form) => {
+    const sheet = new TextDecoder().decode(unzipSync(template(form))['xl/worksheets/sheet1.xml']!);
+    const colNumber = (ref: string): number =>
+      [.../^([A-Z]+)/.exec(ref)![1]!].reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0);
+    const rowNumber = (ref: string): number => Number(/(\d+)$/.exec(ref)![1]);
+
+    const merges = [...sheet.matchAll(/mergeCell ref="([A-Z]+\d+):([A-Z]+\d+)"/g)].map(
+      ([, from, to]) => ({ from: from!, to: to! }),
+    );
+    // Ячейки со значением портала: их вписывает `mark-waybill-templates.ts`. Разбирается ячейка
+    // целиком, а не «от адреса до первой скобки»: пустые ячейки самозакрыты (`<c r="A1" />`), и
+    // поиск по куску разметки перескакивал бы через них на чужой плейсхолдер. Атрибуты читаются
+    // нежадно ровно поэтому: жадный кусок съедает косую черту самозакрытия, и пустая ячейка
+    // прикидывается открывающим тегом.
+    const marked = [...sheet.matchAll(/<c r="([A-Z]+\d+)"[^>]*?(?:\/>|>([\s\S]*?)<\/c>)/g)]
+      .filter(([, , body]) => body?.includes('{{'))
+      .map(([, ref]) => ref!);
+    expect(marked.length).toBeGreaterThan(10);
+
+    const hidden = marked.filter((ref) =>
+      merges.some(
+        (m) =>
+          ref !== m.from &&
+          rowNumber(m.from) <= rowNumber(ref) &&
+          rowNumber(ref) <= rowNumber(m.to) &&
+          colNumber(m.from) <= colNumber(ref) &&
+          colNumber(ref) <= colNumber(m.to),
+      ),
+    );
+    expect(hidden).toEqual([]);
+  });
+
+  /**
+   * Параметры печати (ADR 0041). Без них бланк печатается портретным в 100% и расползается на
+   * четыре страницы вместо двух — разрезанным по ширине; это не ловит ни одна проверка выше,
+   * потому что значения-то на месте. Сверяется файл, а не скрипт: печатает портал именно его.
+   */
+  it.each(FORMS)('бланк %s размечен под лист A4: иначе печать порвёт его пополам', (form) => {
+    const sheet = new TextDecoder().decode(unzipSync(template(form))['xl/worksheets/sheet1.xml']!);
+
+    expect(sheet).toContain('fitToPage="1"');
+    expect(sheet).toContain('fitToWidth="1"');
+    // В высоту — сколько получится: у бланка две стороны, лицевая и оборот, и сжимать их в один
+    // лист нельзя.
+    expect(sheet).toContain('fitToHeight="0"');
+    expect(sheet).toContain('paperSize="9"');
+  });
+
+  it('4-П печатается альбомным: 166 колонок на портретный лист не ложатся', () => {
+    const sheet = new TextDecoder().decode(unzipSync(template('4p'))['xl/worksheets/sheet1.xml']!);
+    expect(sheet).toContain('orientation="landscape"');
+  });
+
   it.each(FORMS)('подстановка не трогает вёрстку бланка %s: стили и рисунки те же', (form) => {
     const original = template(form);
     const rendered = renderOfficeTemplate(original, { driver_fio: 'Иванов' });

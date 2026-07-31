@@ -62,6 +62,7 @@ import { SummaryBar } from '../../components/SummaryBar';
 import { actionsColumn, textColumn } from '../../components/columns';
 import { TimeInput, optionalWorkTimeRule } from '../../components/TimeInput';
 import { UserAvatar } from '../../components/UserAvatar';
+import { ObjectCell } from '../../components/ObjectCell';
 import { AddressAutoComplete } from '../../components/AddressAutoComplete';
 import { useIsMobile } from '../../hooks/useIsMobile';
 import { useListParams } from '../../hooks/useListParams';
@@ -661,8 +662,7 @@ export function VehicleRequestsTab() {
       dataIndex: 'objectName',
       searchable: false,
       width: 230,
-      ellipsis: true,
-      render: (_v, r) => requestCustomerName(r),
+      render: (_v, r) => <ObjectCell name={requestCustomerName(r)} address={r.objectAddress} />,
     }),
     {
       key: 'vehicleTypeName',

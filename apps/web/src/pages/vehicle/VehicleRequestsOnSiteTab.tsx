@@ -19,6 +19,7 @@ import { TabsExtra } from '../../components/PageTabs';
 import { SummaryBar } from '../../components/SummaryBar';
 import { actionsColumn, textColumn } from '../../components/columns';
 import { UserAvatar } from '../../components/UserAvatar';
+import { ObjectCell } from '../../components/ObjectCell';
 import { useListParams } from '../../hooks/useListParams';
 import { calendarDayCount } from '../../utils/date';
 import { VehicleRequestViewModal } from './VehicleRequestViewModal';
@@ -146,7 +147,7 @@ export function VehicleRequestsOnSiteTab() {
         title: 'Объект',
         dataIndex: 'objectName',
         width: 240,
-        ellipsis: true,
+        render: (_v, r) => <ObjectCell name={r.objectName ?? '—'} address={r.objectAddress} />,
       }),
       defaultSortOrder: 'ascend',
     },

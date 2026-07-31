@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { App, Form, Input, InputNumber, Segmented, Space, Tag, Typography } from 'antd';
 import {
+  requestCustomerName,
   assignmentRateLabel,
   assignmentTitle,
   calcVehicleRequestCost,
@@ -166,115 +167,114 @@ export function VehicleCompleteModal({ request, confirmLoading, onCancel, onSubm
         // договаривались, а не листают к нему прокруткой. На телефоне колонка одна.
         <Form form={form} layout="vertical" onFinish={submit}>
           <FormGrid.Full>
-          <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
-            {request.objectCode} — {request.objectName}
-          </Typography.Paragraph>
-
-          {/* Чем работали и по какой ставке договаривались: сумму считают именно от этого, и
-              видеть основание нужно там же, где вводят факт. */}
-          {assignment ? (
-            <div style={{ marginBottom: 16, lineHeight: 1.5 }}>
-              <Space size={8} wrap>
-                <Typography.Text strong>{assignmentTitle(assignment)}</Typography.Text>
-                <Tag color={vehicleOwnershipColors[assignment.ownership]}>
-                  {vehicleOwnershipLabels[assignment.ownership]}
-                </Tag>
-                {assignment.lessorName && <Tag>{assignment.lessorName}</Tag>}
-              </Space>
-              <div>
-                <Typography.Text type="secondary">
-                  {assignmentRateLabel(assignment) || 'Ставка не указана'}
-                </Typography.Text>
-              </div>
-            </div>
-          ) : (
-            <Typography.Paragraph type="warning">
-              Техника у заявки не назначена — стоимость считать не по чему, укажите её вручную
+            <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
+              {requestCustomerName(request)}
             </Typography.Paragraph>
-          )}
+
+            {/* Чем работали и по какой ставке договаривались: сумму считают именно от этого, и
+              видеть основание нужно там же, где вводят факт. */}
+            {assignment ? (
+              <div style={{ marginBottom: 16, lineHeight: 1.5 }}>
+                <Space size={8} wrap>
+                  <Typography.Text strong>{assignmentTitle(assignment)}</Typography.Text>
+                  <Tag color={vehicleOwnershipColors[assignment.ownership]}>
+                    {vehicleOwnershipLabels[assignment.ownership]}
+                  </Tag>
+                  {assignment.lessorName && <Tag>{assignment.lessorName}</Tag>}
+                </Space>
+                <div>
+                  <Typography.Text type="secondary">
+                    {assignmentRateLabel(assignment) || 'Ставка не указана'}
+                  </Typography.Text>
+                </div>
+              </div>
+            ) : (
+              <Typography.Paragraph type="warning">
+                Техника у заявки не назначена — стоимость считать не по чему, укажите её вручную
+              </Typography.Paragraph>
+            )}
           </FormGrid.Full>
 
           <FormGrid>
-
-          {/* Единица — та, в которой договорились о ставке. Ветка без ставки не запрещена:
+            {/* Единица — та, в которой договорились о ставке. Ветка без ставки не запрещена:
               стоимость можно проставить и руками, а отработанное — это факт, а не расчёт. */}
-          <FormGrid.Full>
-          <Form.Item label="Считаем работу">
-            <Segmented<VehicleWorkUnit>
-              block
-              value={unit}
-              onChange={changeUnit}
-              options={VEHICLE_WORK_UNITS.map((u) => {
-                const unitRate = rateForWorkUnit(assignment, u);
-                return {
-                  value: u,
-                  label: `${vehicleWorkUnitLabels[u]}${unitRate != null ? ` · ${formatMoney(unitRate)}` : ''}`,
-                };
-              })}
-            />
-          </Form.Item>
-          </FormGrid.Full>
+            <FormGrid.Full>
+              <Form.Item label="Считаем работу">
+                <Segmented<VehicleWorkUnit>
+                  block
+                  value={unit}
+                  onChange={changeUnit}
+                  options={VEHICLE_WORK_UNITS.map((u) => {
+                    const unitRate = rateForWorkUnit(assignment, u);
+                    return {
+                      value: u,
+                      label: `${vehicleWorkUnitLabels[u]}${unitRate != null ? ` · ${formatMoney(unitRate)}` : ''}`,
+                    };
+                  })}
+                />
+              </Form.Item>
+            </FormGrid.Full>
 
-          {/* Отработанное и стоимость — соседними ячейками: их сверяют друг с другом. */}
-          <>
-            <Form.Item
-              name="workedAmount"
-              label={unit === 'hours' ? 'Отработано часов' : 'Отработано смен'}
-              rules={[{ required: true, message: 'Укажите отработанное' }]}
-              extra={
-                request.requestType === 'special_equipment'
-                  ? `Заказано: ${calendarDayCount(request.dateFrom, request.dateTo) ?? '—'} дн.`
-                  : undefined
-              }
-            >
-              <InputNumber
-                style={{ width: '100%' }}
-                min={0}
-                step={unit === 'hours' ? 1 : 0.5}
-                precision={2}
-                onChange={changeAmount}
-              />
-            </Form.Item>
-            <Form.Item
-              name="totalCost"
-              label="Стоимость, ₽"
-              extra={
-                calculated != null
-                  ? `Расчёт: ${workedAmountLabel(unit, workedAmount ?? 0)} × ${formatMoney(rate)}`
-                  : rate == null
-                    ? `Ставки ${vehicleWorkUnitRateLabels[unit]} нет — укажите сумму`
+            {/* Отработанное и стоимость — соседними ячейками: их сверяют друг с другом. */}
+            <>
+              <Form.Item
+                name="workedAmount"
+                label={unit === 'hours' ? 'Отработано часов' : 'Отработано смен'}
+                rules={[{ required: true, message: 'Укажите отработанное' }]}
+                extra={
+                  request.requestType === 'special_equipment'
+                    ? `Заказано: ${calendarDayCount(request.dateFrom, request.dateTo) ?? '—'} дн.`
                     : undefined
-              }
-            >
-              <InputNumber
-                style={{ width: '100%' }}
-                min={0}
-                step={1000}
-                precision={2}
-                onChange={() => setCostTouched(true)}
-              />
-            </Form.Item>
-          </>
+                }
+              >
+                <InputNumber
+                  style={{ width: '100%' }}
+                  min={0}
+                  step={unit === 'hours' ? 1 : 0.5}
+                  precision={2}
+                  onChange={changeAmount}
+                />
+              </Form.Item>
+              <Form.Item
+                name="totalCost"
+                label="Стоимость, ₽"
+                extra={
+                  calculated != null
+                    ? `Расчёт: ${workedAmountLabel(unit, workedAmount ?? 0)} × ${formatMoney(rate)}`
+                    : rate == null
+                      ? `Ставки ${vehicleWorkUnitRateLabels[unit]} нет — укажите сумму`
+                      : undefined
+                }
+              >
+                <InputNumber
+                  style={{ width: '100%' }}
+                  min={0}
+                  step={1000}
+                  precision={2}
+                  onChange={() => setCostTouched(true)}
+                />
+              </Form.Item>
+            </>
 
-          <FormGrid.Full>
-            {costDiffers && (
-              <Typography.Text type="warning">
-                Сумма отличается от расчёта ({formatMoney(calculated)}) — в заявке сохранится
-                введённая
-              </Typography.Text>
-            )}
+            <FormGrid.Full>
+              {costDiffers && (
+                <Typography.Text type="warning">
+                  Сумма отличается от расчёта ({formatMoney(calculated)}) — в заявке сохранится
+                  введённая
+                </Typography.Text>
+              )}
 
-          {/* Комментарий описывает конкретное закрытие («простой 2 ч по вине объекта»), поэтому
+              {/* Комментарий описывает конкретное закрытие («простой 2 ч по вине объекта»), поэтому
               уходит в историю заявки, а не в её поле комментария. */}
-          <Form.Item name="comment" label="Комментарий" style={{ marginTop: 16 }}>
-            <Input.TextArea
-              rows={2}
-              maxLength={2000}
-              showCount
-              placeholder="Необязательно: что важно знать об этом выполнении"
-            />
-          </Form.Item>
-          </FormGrid.Full>
+              <Form.Item name="comment" label="Комментарий" style={{ marginTop: 16 }}>
+                <Input.TextArea
+                  rows={2}
+                  maxLength={2000}
+                  showCount
+                  placeholder="Необязательно: что важно знать об этом выполнении"
+                />
+              </Form.Item>
+            </FormGrid.Full>
           </FormGrid>
         </Form>
       )}

@@ -73,6 +73,7 @@ import { sortOptionsFrom, type FilterDefinition } from '../components/listContro
 import { PageTabs, TabsExtra } from '../components/PageTabs';
 import { SummaryBar } from '../components/SummaryBar';
 import { actionsColumn, badgeColumn, textColumn } from '../components/columns';
+import { ObjectCell } from '../components/ObjectCell';
 import { TimeInput, optionalWorkTimeRule } from '../components/TimeInput';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { useListParams } from '../hooks/useListParams';
@@ -839,7 +840,7 @@ function RequestsTab() {
       dataIndex: 'objectName',
       searchable: false,
       width: 230,
-      ellipsis: true,
+      render: (_v, r) => <ObjectCell name={r.objectName} address={r.objectAddress} />,
     }),
     {
       key: 'containerTypeName',

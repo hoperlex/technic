@@ -44,7 +44,7 @@ const rawSchema = z.object({
   FILE_MAX_SIZE_BYTES: z.coerce.number().int().positive().default(52_428_800),
   FILE_MAX_PER_REQUEST: z.coerce.number().int().positive().default(20),
 
-  // Печать путевого листа (ADR 0040): бланк переводит в PDF LibreOffice, поставленный в образ.
+  // Печать путевого листа (ADR 0041): бланк переводит в PDF LibreOffice, поставленный в образ.
   // Путь настраиваемый — на рабочей машине разработчика он может лежать не в PATH.
   SOFFICE_BIN: z.string().default('soffice'),
   SOFFICE_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),

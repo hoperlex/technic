@@ -152,7 +152,7 @@ export const waybillsApi = {
    */
   exportUrl: (id: string) => `${API_BASE}/waybills/${id}/export`,
   /**
-   * Бланк, готовый к печати (ADR 0040): PDF показывается фреймом и печатается диалогом браузера,
+   * Бланк, готовый к печати (ADR 0041): PDF показывается фреймом и печатается диалогом браузера,
    * не оседая файлом на машине. Не ссылкой, а телом ответа — фрейму его отдают из памяти вкладки.
    */
   printPdf: (id: string) => apiFetchBlob(`/waybills/${id}/print`),
@@ -271,7 +271,7 @@ export const vehicleRequestsApi = {
       } | null;
     }>(`/vehicle-requests/${id}/waybill-prefill`, { query: { vehicleId } }),
   /**
-   * Лист, выписанный по заявке (ADR 0040) — его печатают из карточки, не уходя в журнал. `null`
+   * Лист, выписанный по заявке (ADR 0041) — его печатают из карточки, не уходя в журнал. `null`
    * приходит там, где листа нет: аренда, заказ техники на объект, заявка не в работе.
    */
   waybill: (id: string) => apiFetch<RequestWaybillDto | null>(`/vehicle-requests/${id}/waybill`),

@@ -37,6 +37,7 @@ import { TabsExtra } from '../../components/PageTabs';
 import { SummaryBar } from '../../components/SummaryBar';
 import { actionsColumn, textColumn } from '../../components/columns';
 import { UserAvatar } from '../../components/UserAvatar';
+import { ObjectCell } from '../../components/ObjectCell';
 import { useListParams } from '../../hooks/useListParams';
 import { useAuth } from '../../auth/AuthContext';
 import { formatDate, formatDateTimeMaybe, formatMoney } from '../../utils/format';
@@ -208,8 +209,7 @@ export function VehicleRequestsHistoryTab() {
       dataIndex: 'objectName',
       searchable: false,
       width: 220,
-      ellipsis: true,
-      render: (_v, r) => requestCustomerName(r),
+      render: (_v, r) => <ObjectCell name={requestCustomerName(r)} address={r.objectAddress} />,
     }),
     {
       key: 'vehicleTypeName',

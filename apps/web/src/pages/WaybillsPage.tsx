@@ -15,6 +15,7 @@ import { waybillsApi } from '../api/resources';
 import { DataTable } from '../components/DataTable';
 import { PageTableLayout } from '../components/PageTableLayout';
 import { actionsColumn, badgeColumn, textColumn } from '../components/columns';
+import { PrintWaybillButton } from '../components/WaybillPrint';
 import { useListParams } from '../hooks/useListParams';
 import { useAuth } from '../auth/AuthContext';
 import { errorMessage } from '../utils/format';
@@ -172,7 +173,10 @@ export function WaybillsPage() {
       const editable = r.status === 'issued' && isWaybillEditable(r.issuedForDate, today());
       return (
         <Space>
-          {/* Выгрузка доступна и у аннулированного листа: испорченный бланк подшивают к журналу. */}
+          {/* Печать и выгрузка доступны и у аннулированного листа: испорченный бланк подшивают
+              к журналу. Печать первой — ради неё лист и открывают (ADR 0041), а файл забирают
+              тогда, когда бланк дополняют от руки в редакторе таблиц. */}
+          <PrintWaybillButton waybillId={r.id} number={r.number} />
           <Button
             size="small"
             icon={<DownloadOutlined />}

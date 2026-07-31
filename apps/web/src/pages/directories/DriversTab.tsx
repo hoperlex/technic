@@ -14,6 +14,7 @@ import {
   licenseDefect,
   licenseDefectLabels,
   licenseNumberLabel,
+  licenseRequisitesMissing,
   normalizeSnils,
   SNILS_CHECKSUM_MESSAGE,
   SNILS_MESSAGE,
@@ -274,10 +275,18 @@ export function DriversTab() {
         const license = currentLicense(r);
         if (!license) return <Typography.Text type="secondary">Не заведено</Typography.Text>;
         const defect = licenseDefect(license, today());
+        // Реквизитов нет у документов из кадровой выгрузки: без этой ветки строка начиналась бы
+        // с осиротевшего разделителя, и «не внесено» читалось бы как сбой вёрстки.
+        const noRequisites = licenseRequisitesMissing(licenseNumberLabel(license));
         return (
           <Space direction="vertical" size={0}>
             <span>
-              {licenseNumberLabel(license)} · {licenseCategoriesLabel(license)}
+              {noRequisites ? (
+                <Typography.Text type="warning">Серия и номер не внесены</Typography.Text>
+              ) : (
+                licenseNumberLabel(license)
+              )}{' '}
+              · {licenseCategoriesLabel(license)}
             </span>
             <Space size={4}>
               {defect ? (
@@ -422,9 +431,11 @@ export function DriversTab() {
     },
     primary: (r) => {
       const license = currentLicense(r);
-      return license
-        ? `${licenseNumberLabel(license)} · ${licenseCategoriesLabel(license)}`
-        : 'Удостоверение не заведено';
+      if (!license) return 'Удостоверение не заведено';
+      const number = licenseRequisitesMissing(licenseNumberLabel(license))
+        ? 'Серия и номер не внесены'
+        : licenseNumberLabel(license);
+      return `${number} · ${licenseCategoriesLabel(license)}`;
     },
     lines: [
       (r) => {

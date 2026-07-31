@@ -166,6 +166,20 @@ const CASES: Case[] = [
     payload: { reason: 'испорчен при печати' },
     allowed: ['admin', 'manager', 'dispatcher'],
   },
+  {
+    // Печать уносит из портала СНИЛС и номер удостоверения ровно так же, как выгрузка файлом
+    // (ADR 0037 п. 13, ADR 0041): право у неё то же, и шире круг быть не может.
+    title: 'печать бланка — тем же правом, что чтение журнала',
+    method: 'GET',
+    url: `/api/v1/waybills/${RECORD_ID}/print`,
+    allowed: ['admin', 'manager', 'dispatcher'],
+  },
+  {
+    title: 'лист заявки в карточке — правом на листы, а не на заявки',
+    method: 'GET',
+    url: `/api/v1/vehicle-requests/${RECORD_ID}/waybill`,
+    allowed: ['admin', 'manager', 'dispatcher'],
+  },
   // ── Справочники: чтение нужно всем (форма заявки), ведение — трём ролям ──
   {
     title: 'справочник техники — чтение',

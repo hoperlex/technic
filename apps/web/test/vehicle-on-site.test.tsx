@@ -25,6 +25,7 @@ function request(
     objectId: 'obj-1',
     objectCode: 'OBJ-A',
     objectName: 'Альфа-объект',
+    objectAddress: 'г. Москва, ул. Первая, 1',
     departmentId: null,
     departmentCode: null,
     departmentName: null,

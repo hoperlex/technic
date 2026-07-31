@@ -6,6 +6,15 @@ ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
 RUN corepack enable
 
+# Печать путевого листа (ADR 0041): бланк 4-П переводит в PDF LibreOffice. Ставится calc без
+# рекомендуемых пакетов — писать документы и презентации образу API незачем; шрифты Liberation
+# метрически совпадают с Arial и Times бланка, без них кириллица легла бы другой шириной.
+# Слой стоит до COPY: он меняется раз в год, а исходники — каждый деплой, и пересобирать
+# полгигабайта apt'а из-за правки в роутере не надо.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends libreoffice-calc fonts-liberation \
+  && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 # Копируем весь монорепо (node_modules/dist исключены .dockerignore)
 COPY . .

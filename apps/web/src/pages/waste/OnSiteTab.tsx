@@ -6,6 +6,7 @@ import { DataTable, type CardConfig } from '../../components/DataTable';
 import { PageTableLayout } from '../../components/PageTableLayout';
 import { sortOptionsFrom } from '../../components/listControls';
 import { textColumn } from '../../components/columns';
+import { ObjectCell } from '../../components/ObjectCell';
 import { useListParams } from '../../hooks/useListParams';
 import { formatDate, formatDateTimeMaybe } from '../../utils/format';
 
@@ -25,7 +26,12 @@ export function OnSiteTab() {
   });
 
   const columns = [
-    textColumn<WasteRequestDto>({ key: 'objectName', title: 'Площадка', dataIndex: 'objectName' }),
+    textColumn<WasteRequestDto>({
+      key: 'objectName',
+      title: 'Площадка',
+      dataIndex: 'objectName',
+      render: (_v, r) => <ObjectCell name={r.objectName} address={r.objectAddress} />,
+    }),
     textColumn<WasteRequestDto>({
       key: 'containerTypeName',
       title: 'Тип контейнера',

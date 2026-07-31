@@ -19,8 +19,12 @@ import {
   assignmentRateLabel,
   type ConfirmScheduleBody,
   formatMoscowDateTime,
+  LICENSE_REQUISITES_MISSING_HINT,
+  LICENSE_REQUISITES_MISSING_WARNING,
+  licenseRequisitesMissing,
   normalizeTimeInput,
   VEHICLE_OWNERSHIPS,
+  requestCustomerName,
   vehicleClassificationLabel,
   type VehicleDto,
   type VehicleOwnership,
@@ -163,9 +167,7 @@ export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit
     // «12:00». Именно `dayjs(iso).tz(...)`, а не `dayjs.tz(iso, ...)`: второй читает строку как
     // время уже в этой зоне и молча теряет смещение, приехавшее с сервера.
     const scheduled =
-      request.requestType === 'freight_transport'
-        ? dayjs(request.scheduledAt).tz(MOSCOW_TZ)
-        : null;
+      request.requestType === 'freight_transport' ? dayjs(request.scheduledAt).tz(MOSCOW_TZ) : null;
     form.setFieldsValue({
       dateFrom: request.requestType === 'special_equipment' ? dayjs(request.dateFrom) : null,
       dateTo:
@@ -193,6 +195,7 @@ export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit
   const pricePerHour = Form.useWatch('pricePerHour', form);
   const pricePerShift = Form.useWatch('pricePerShift', form);
   const scheduledDate = Form.useWatch('scheduledDate', form);
+  const driverPersonId = Form.useWatch('driverPersonId', form);
 
   const isFreight = request?.requestType === 'freight_transport';
 
@@ -222,7 +225,7 @@ export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit
   // Выписывается ли лист на выбранную машину, на какую дату и чем заполнены графы шапки в прошлый
   // раз. Спрашивается по машине: на аренду лист не выписывается, и полей у неё быть не должно.
   //
-  // У заказа техники на объект не спрашивается вовсе (ADR 0040): лист выписывается на рейс, а
+  // У заказа техники на объект не спрашивается вовсе (ADR 0041): лист выписывается на рейс, а
   // рейса у такой заявки нет — есть период работы машины на площадке. Отсюда и отсутствие блока
   // без объяснения: объяснять нечего, документа в этом процессе не существует.
   const withTrailer = Form.useWatch('withTrailer', form) ?? false;
@@ -256,10 +259,19 @@ export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit
       d.categories.join(', '),
       d.personnelNo && `таб. ${d.personnelNo}`,
       d.verificationStatus === 'unverified' ? 'документ не проверен' : null,
+      licenseRequisitesMissing(d.licenseNumber) ? LICENSE_REQUISITES_MISSING_HINT : null,
     ]
       .filter(Boolean)
       .join(' · '),
   }));
+
+  /**
+   * Выбран водитель без серии и номера удостоверения. Пометки в строке списка мало: её читают
+   * при выборе и забывают, а последствие наступает у того, кто возьмёт напечатанный лист.
+   */
+  const driverRequisitesMissing = selection?.drivers.some(
+    (d) => d.personId === driverPersonId && licenseRequisitesMissing(d.licenseNumber),
+  );
 
   /** Графы шапки наследуются от прошлого листа этой машины — их правят раз в сезон, а не в рейс. */
   useEffect(() => {
@@ -399,269 +411,282 @@ export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit
         // в одну колонку половина из них уходила под прокрутку. На телефоне колонка одна.
         <Form form={form} layout="vertical" onFinish={submit}>
           <FormGrid>
-          <FormGrid.Full>
-          <Typography.Paragraph type="secondary" style={{ marginBottom: 16 }}>
-            {request.objectCode} — {request.objectName} · заказано «
-            {vehicleClassificationLabel({
-              typeName: request.vehicleTypeName,
-              categoryName: request.vehicleCategoryName,
-            })}
-            »
-          </Typography.Paragraph>
-          </FormGrid.Full>
+            <FormGrid.Full>
+              <Typography.Paragraph type="secondary" style={{ marginBottom: 16 }}>
+                {requestCustomerName(request)} · заказано «
+                {vehicleClassificationLabel({
+                  typeName: request.vehicleTypeName,
+                  categoryName: request.vehicleCategoryName,
+                })}
+                »
+              </Typography.Paragraph>
+            </FormGrid.Full>
 
-          {/* Фактический срок: подставлен заказанным, под полями — что просили изначально.
+            {/* Фактический срок: подставлен заказанным, под полями — что просили изначально.
               Спрашивается первым, потому что от даты рейса зависит отбор водителей ниже. */}
-          {request.requestType === 'special_equipment' ? (
-            <>
-              <Form.Item
-                name="dateFrom"
-                label="Фактическая дата начала"
-                rules={[{ required: true, message: 'Укажите дату начала' }]}
-                extra={`Заказано: ${formatDateOnly(request.dateFrom)}`}
-              >
-                <DatePicker
-                  format="DD.MM.YYYY"
-                  style={{ width: '100%' }}
-                  inputReadOnly={isMobile}
-                />
-              </Form.Item>
-              <Form.Item
-                name="dateTo"
-                label="Фактическая дата окончания"
-                extra={
-                  request.dateTo
-                    ? `Заказано: ${formatDateOnly(request.dateTo)}`
-                    : 'Заказан один день'
-                }
-              >
-                <DatePicker
-                  format="DD.MM.YYYY"
-                  style={{ width: '100%' }}
-                  inputReadOnly={isMobile}
-                />
-              </Form.Item>
-            </>
-          ) : (
-            <>
-              <Form.Item
-                name="scheduledDate"
-                label="Фактическая дата подачи"
-                rules={[{ required: true, message: 'Укажите дату подачи' }]}
-                extra={`Заказано: ${formatMoscowDateTime(
-                  new Date(request.scheduledAt),
-                  request.scheduledTimeUnspecified,
-                )}`}
-              >
-                <DatePicker
-                  format="DD.MM.YYYY"
-                  style={{ width: '100%' }}
-                  inputReadOnly={isMobile}
-                />
-              </Form.Item>
-              <Form.Item
-                name="scheduledTime"
-                label="Фактическое время (МСК)"
-                tooltip="Необязательно. Рабочее окно — с 07:00 до 21:00"
-                rules={[optionalWorkTimeRule]}
-              >
-                <TimeInput />
-              </Form.Item>
-            </>
-          )}
+            {request.requestType === 'special_equipment' ? (
+              <>
+                <Form.Item
+                  name="dateFrom"
+                  label="Фактическая дата начала"
+                  rules={[{ required: true, message: 'Укажите дату начала' }]}
+                  extra={`Заказано: ${formatDateOnly(request.dateFrom)}`}
+                >
+                  <DatePicker
+                    format="DD.MM.YYYY"
+                    style={{ width: '100%' }}
+                    inputReadOnly={isMobile}
+                  />
+                </Form.Item>
+                <Form.Item
+                  name="dateTo"
+                  label="Фактическая дата окончания"
+                  extra={
+                    request.dateTo
+                      ? `Заказано: ${formatDateOnly(request.dateTo)}`
+                      : 'Заказан один день'
+                  }
+                >
+                  <DatePicker
+                    format="DD.MM.YYYY"
+                    style={{ width: '100%' }}
+                    inputReadOnly={isMobile}
+                  />
+                </Form.Item>
+              </>
+            ) : (
+              <>
+                <Form.Item
+                  name="scheduledDate"
+                  label="Фактическая дата подачи"
+                  rules={[{ required: true, message: 'Укажите дату подачи' }]}
+                  extra={`Заказано: ${formatMoscowDateTime(
+                    new Date(request.scheduledAt),
+                    request.scheduledTimeUnspecified,
+                  )}`}
+                >
+                  <DatePicker
+                    format="DD.MM.YYYY"
+                    style={{ width: '100%' }}
+                    inputReadOnly={isMobile}
+                  />
+                </Form.Item>
+                <Form.Item
+                  name="scheduledTime"
+                  label="Фактическое время (МСК)"
+                  tooltip="Необязательно. Рабочее окно — с 07:00 до 21:00"
+                  rules={[optionalWorkTimeRule]}
+                >
+                  <TimeInput />
+                </Form.Item>
+              </>
+            )}
 
-          {/* Шаг 1: чья машина. Количество подходящих единиц — в самой подписи: пустая ветка
+            {/* Шаг 1: чья машина. Количество подходящих единиц — в самой подписи: пустая ветка
               видна до того, как в неё зайдут. */}
-          {/* Не поле формы: принадлежность в назначение не уходит — она у самой машины, а
+            {/* Не поле формы: принадлежность в назначение не уходит — она у самой машины, а
               здесь только сужает список. */}
-          <FormGrid.Full>
-          <Form.Item label="Техника">
-            <Segmented<VehicleOwnership>
-              block
-              value={ownership}
-              onChange={changeOwnership}
-              options={VEHICLE_OWNERSHIPS.map((o) => ({
-                value: o,
-                label: `${vehicleOwnershipLabels[o]} · ${byOwnership[o].length}`,
-                disabled: byOwnership[o].length === 0,
-              }))}
-            />
-          </Form.Item>
-          </FormGrid.Full>
+            <FormGrid.Full>
+              <Form.Item label="Техника">
+                <Segmented<VehicleOwnership>
+                  block
+                  value={ownership}
+                  onChange={changeOwnership}
+                  options={VEHICLE_OWNERSHIPS.map((o) => ({
+                    value: o,
+                    label: `${vehicleOwnershipLabels[o]} · ${byOwnership[o].length}`,
+                    disabled: byOwnership[o].length === 0,
+                  }))}
+                />
+              </Form.Item>
+            </FormGrid.Full>
 
-          {/* Шаг 2 (только аренда): у кого берём. */}
-          {isRental && (
+            {/* Шаг 2 (только аренда): у кого берём. */}
+            {isRental && (
+              <Form.Item
+                name="lessorId"
+                label="Арендодатель"
+                rules={[{ required: true, message: 'Выберите арендодателя' }]}
+              >
+                <AutoSelect
+                  options={lessorOptions}
+                  showSearch
+                  optionFilterProp="label"
+                  loading={isFetching}
+                  placeholder="Выберите арендодателя"
+                  onChange={() =>
+                    form.setFieldsValue({
+                      vehicleId: undefined,
+                      pricePerHour: null,
+                      pricePerShift: null,
+                      shiftHours: null,
+                    })
+                  }
+                />
+              </Form.Item>
+            )}
+
+            {/* Шаг 3: конкретная единица. */}
             <Form.Item
-              name="lessorId"
-              label="Арендодатель"
-              rules={[{ required: true, message: 'Выберите арендодателя' }]}
+              name="vehicleId"
+              label="Конкретная техника"
+              rules={[{ required: true, message: 'Выберите технику' }]}
+              extra={vehicleOptions.length === 0 ? emptyText : undefined}
             >
               <AutoSelect
-                options={lessorOptions}
+                options={vehicleOptions}
                 showSearch
                 optionFilterProp="label"
                 loading={isFetching}
-                placeholder="Выберите арендодателя"
-                onChange={() =>
-                  form.setFieldsValue({
-                    vehicleId: undefined,
-                    pricePerHour: null,
-                    pricePerShift: null,
-                    shiftHours: null,
-                  })
+                disabled={isRental && !lessorId}
+                placeholder={
+                  isRental && !lessorId ? 'Сначала выберите арендодателя' : 'Выберите ТС'
                 }
+                onChange={changeVehicle}
               />
             </Form.Item>
-          )}
 
-          {/* Шаг 3: конкретная единица. */}
-          <Form.Item
-            name="vehicleId"
-            label="Конкретная техника"
-            rules={[{ required: true, message: 'Выберите технику' }]}
-            extra={vehicleOptions.length === 0 ? emptyText : undefined}
-          >
-            <AutoSelect
-              options={vehicleOptions}
-              showSearch
-              optionFilterProp="label"
-              loading={isFetching}
-              disabled={isRental && !lessorId}
-              placeholder={isRental && !lessorId ? 'Сначала выберите арендодателя' : 'Выберите ТС'}
-              onChange={changeVehicle}
-            />
-          </Form.Item>
-
-          {selected && (
-            <FormGrid.Full>
-            <Space size={8} wrap style={{ marginBottom: 16 }}>
-              {selected.categoryName && <Tag color="blue">{selected.categoryName}</Tag>}
-              {selected.registrationNumber && <Tag>{selected.registrationNumber}</Tag>}
-              {selected.lessorName && <Tag color="purple">{selected.lessorName}</Tag>}
-            </Space>
-            </FormGrid.Full>
-          )}
-
-          {/* Ставки: подставлены из справочника, но это поля ввода — цену по заявке
-              согласовывают отдельно от прайса. */}
-          <>
-            <Form.Item
-              name="pricePerHour"
-              label="Стоимость за час, ₽"
-              extra={
-                listedRate?.pricePerHour != null
-                  ? `В справочнике: ${formatMoney(listedRate.pricePerHour)}`
-                  : undefined
-              }
-            >
-              <InputNumber style={{ width: '100%' }} min={0} step={100} precision={2} />
-            </Form.Item>
-            <Form.Item
-              name="pricePerShift"
-              label="Стоимость за смену, ₽"
-              extra={
-                listedRate?.pricePerShift != null
-                  ? `В справочнике: ${formatMoney(listedRate.pricePerShift)}`
-                  : undefined
-              }
-            >
-              <InputNumber style={{ width: '100%' }} min={0} step={1000} precision={2} />
-            </Form.Item>
-            <Form.Item name="shiftHours" label="Часов в смене">
-              <InputNumber style={{ width: '100%' }} min={1} max={24} precision={0} />
-            </Form.Item>
-          </>
-
-          <FormGrid.Full>
-            {priceChanged && (
-              <Typography.Text type="warning">
-                Ставка отличается от справочника — в заявке сохранится договорная
-              </Typography.Text>
-            )}
-            {!isRental && (
-              <Typography.Text type="secondary">
-                У собственной техники ставка необязательна: её указывают, если работу считают в
-                деньгах
-              </Typography.Text>
-            )}
-          </FormGrid.Full>
-
-          {/* Путевой лист (ADR 0037): выписывается тут же, вместе с переводом в работу. Причина,
-              по которой лист не нужен, показывается текстом — отсутствие блока читалось бы как
-              поломка. У заказа техники на объект блока нет и текста нет: `prefill` для такой
-              заявки не запрашивается вовсе, и упоминать документ, которого в этом процессе не
-              существует, не о чем (ADR 0040). */}
-          {selected && prefill && !prefill.required && prefill.reason && (
-            <FormGrid.Full>
-            <Alert
-              type="info"
-              showIcon
-              style={{ marginTop: 16 }}
-              message="Путевой лист не выписывается"
-              description={prefill.reason}
-            />
-            </FormGrid.Full>
-          )}
-
-          {needsWaybill && (
-            <>
+            {selected && (
               <FormGrid.Full>
-                <Typography.Title level={5} style={{ marginTop: 16 }}>
-                  Путевой лист
-                </Typography.Title>
-                <Typography.Paragraph type="secondary" style={{ marginTop: -8 }}>
-                  {prefill?.formLabel} · на {tripDate}
-                </Typography.Paragraph>
+                <Space size={8} wrap style={{ marginBottom: 16 }}>
+                  {selected.categoryName && <Tag color="blue">{selected.categoryName}</Tag>}
+                  {selected.registrationNumber && <Tag>{selected.registrationNumber}</Tag>}
+                  {selected.lessorName && <Tag color="purple">{selected.lessorName}</Tag>}
+                </Space>
               </FormGrid.Full>
+            )}
 
+            {/* Ставки: подставлены из справочника, но это поля ввода — цену по заявке
+              согласовывают отдельно от прайса. */}
+            <>
               <Form.Item
-                name="driverPersonId"
-                label="Водитель"
-                rules={[{ required: true, message: 'Выберите водителя' }]}
+                name="pricePerHour"
+                label="Стоимость за час, ₽"
                 extra={
-                  driverOptions.length === 0 && !driversLoading
-                    ? selection?.requiredCategory
-                      ? `Нет водителей с действующей категорией ${selection.requiredCategory} на эту дату`
-                      : 'Нет водителей с действующим удостоверением на эту дату'
+                  listedRate?.pricePerHour != null
+                    ? `В справочнике: ${formatMoney(listedRate.pricePerHour)}`
                     : undefined
                 }
               >
-                <AutoSelect
-                  options={driverOptions}
-                  showSearch
-                  optionFilterProp="label"
-                  loading={driversLoading}
-                  placeholder="Выберите водителя"
-                />
+                <InputNumber style={{ width: '100%' }} min={0} step={100} precision={2} />
               </Form.Item>
-
-              {/* Прицеп — признак рейса, а не свойство машины: он поднимает требуемую категорию
-                  водителя, поэтому список выше пересобирается при его включении. */}
-              <Form.Item name="withTrailer" valuePropName="checked">
-                <Checkbox>Рейс с прицепом</Checkbox>
+              <Form.Item
+                name="pricePerShift"
+                label="Стоимость за смену, ₽"
+                extra={
+                  listedRate?.pricePerShift != null
+                    ? `В справочнике: ${formatMoney(listedRate.pricePerShift)}`
+                    : undefined
+                }
+              >
+                <InputNumber style={{ width: '100%' }} min={0} step={1000} precision={2} />
               </Form.Item>
-              {withTrailer && (
-                <>
-                  <Form.Item name="trailer1Model" label="Марка прицепа">
-                    <Input placeholder="МАЗ-8926" />
-                  </Form.Item>
-                  <Form.Item name="trailer1RegNumber" label="Госномер прицепа">
-                    <Input placeholder="8062 ЕН 77" />
-                  </Form.Item>
-                </>
-              )}
-
-              <Form.Item name="garageNumber" label="Гаражный номер">
-                <Input placeholder="00000389" />
-              </Form.Item>
-              <Form.Item name="communicationKind" label="Вид сообщения">
-                <Input placeholder="пригородное" />
-              </Form.Item>
-              <Form.Item name="transportationKind" label="Вид перевозки">
-                <Input placeholder="коммерческая" />
+              <Form.Item name="shiftHours" label="Часов в смене">
+                <InputNumber style={{ width: '100%' }} min={1} max={24} precision={0} />
               </Form.Item>
             </>
-          )}
+
+            <FormGrid.Full>
+              {priceChanged && (
+                <Typography.Text type="warning">
+                  Ставка отличается от справочника — в заявке сохранится договорная
+                </Typography.Text>
+              )}
+              {!isRental && (
+                <Typography.Text type="secondary">
+                  У собственной техники ставка необязательна: её указывают, если работу считают в
+                  деньгах
+                </Typography.Text>
+              )}
+            </FormGrid.Full>
+
+            {/* Путевой лист (ADR 0037): выписывается тут же, вместе с переводом в работу. Причина,
+              по которой лист не нужен, показывается текстом — отсутствие блока читалось бы как
+              поломка. У заказа техники на объект блока нет и текста нет: `prefill` для такой
+              заявки не запрашивается вовсе, и упоминать документ, которого в этом процессе не
+              существует, не о чем (ADR 0041). */}
+            {selected && prefill && !prefill.required && prefill.reason && (
+              <FormGrid.Full>
+                <Alert
+                  type="info"
+                  showIcon
+                  style={{ marginTop: 16 }}
+                  message="Путевой лист не выписывается"
+                  description={prefill.reason}
+                />
+              </FormGrid.Full>
+            )}
+
+            {needsWaybill && (
+              <>
+                <FormGrid.Full>
+                  <Typography.Title level={5} style={{ marginTop: 16 }}>
+                    Путевой лист
+                  </Typography.Title>
+                  <Typography.Paragraph type="secondary" style={{ marginTop: -8 }}>
+                    {prefill?.formLabel} · на {tripDate}
+                  </Typography.Paragraph>
+                </FormGrid.Full>
+
+                <Form.Item
+                  name="driverPersonId"
+                  label="Водитель"
+                  rules={[{ required: true, message: 'Выберите водителя' }]}
+                  extra={
+                    driverOptions.length === 0 && !driversLoading
+                      ? selection?.requiredCategory
+                        ? `Нет водителей с действующей категорией ${selection.requiredCategory} на эту дату`
+                        : 'Нет водителей с действующим удостоверением на эту дату'
+                      : undefined
+                  }
+                >
+                  <AutoSelect
+                    options={driverOptions}
+                    showSearch
+                    optionFilterProp="label"
+                    loading={driversLoading}
+                    placeholder="Выберите водителя"
+                  />
+                </Form.Item>
+
+                {driverRequisitesMissing && (
+                  <FormGrid.Full>
+                    <Alert
+                      type="warning"
+                      showIcon
+                      message="Лист напечатается без номера удостоверения"
+                      description={LICENSE_REQUISITES_MISSING_WARNING}
+                    />
+                  </FormGrid.Full>
+                )}
+
+                {/* Прицеп — признак рейса, а не свойство машины: он поднимает требуемую категорию
+                  водителя, поэтому список выше пересобирается при его включении. */}
+                <Form.Item name="withTrailer" valuePropName="checked">
+                  <Checkbox>Рейс с прицепом</Checkbox>
+                </Form.Item>
+                {withTrailer && (
+                  <>
+                    <Form.Item name="trailer1Model" label="Марка прицепа">
+                      <Input placeholder="МАЗ-8926" />
+                    </Form.Item>
+                    <Form.Item name="trailer1RegNumber" label="Госномер прицепа">
+                      <Input placeholder="8062 ЕН 77" />
+                    </Form.Item>
+                  </>
+                )}
+
+                <Form.Item name="garageNumber" label="Гаражный номер">
+                  <Input placeholder="00000389" />
+                </Form.Item>
+                <Form.Item name="communicationKind" label="Вид сообщения">
+                  <Input placeholder="пригородное" />
+                </Form.Item>
+                <Form.Item name="transportationKind" label="Вид перевозки">
+                  <Input placeholder="коммерческая" />
+                </Form.Item>
+              </>
+            )}
           </FormGrid>
         </Form>
       )}

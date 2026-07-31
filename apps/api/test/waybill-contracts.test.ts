@@ -7,6 +7,7 @@ import {
   WAYBILL_STATUSES,
   waybillDisplayNumber,
   waybillFormLabels,
+  waybillRequirement,
   waybillStatusLabels,
 } from '@technic/contracts';
 
@@ -48,6 +49,69 @@ describe('состояния и бланки', () => {
     expect(WAYBILL_FORM_CODES).toContain('4p');
     expect(WAYBILL_FORM_CODES).toContain('leg3');
     expect(WAYBILL_FORM_CODES).toContain('esm2');
+  });
+});
+
+/**
+ * На какой рейс выписывается лист (ADR 0037 п. 1, ADR 0041).
+ *
+ * Ограничение идёт и по типу заявки, и по виду ТС — и это не тавтология: заявку на технику для
+ * работы на объекте можно завести и на самосвал, у которого бланк за типом закреплён. Рейса,
+ * маршрута и груза у такой заявки нет, а значит, нет и путевого листа.
+ *
+ * Разница между «не выписывается, потому что…» и «не выписывается вовсе» — не косметика: первое
+ * форма показывает текстом (отсутствие блока читалось бы как поломка), второе не показывает
+ * ничем, потому что упоминать нечего.
+ */
+describe('на какой рейс выписывается путевой лист', () => {
+  const dumpTruck = { ownership: 'own', formCode: '4p', typeName: 'Самосвалы' } as const;
+
+  it('грузоперевозка собственной машиной с бланком — выписывается', () => {
+    expect(waybillRequirement({ requestType: 'freight_transport', ...dumpTruck })).toEqual({
+      formCode: '4p',
+      reason: null,
+    });
+  });
+
+  it('заказ техники на объект — не выписывается и не объясняется: у заявки нет рейса', () => {
+    expect(waybillRequirement({ requestType: 'special_equipment', ...dumpTruck })).toEqual({
+      formCode: null,
+      reason: null,
+    });
+  });
+
+  it('заказ техники на объект не спасает даже машина с бланком: решает вид заявки', () => {
+    const onSite = waybillRequirement({
+      requestType: 'special_equipment',
+      ownership: 'rental',
+      formCode: '4p',
+      typeName: 'Самосвалы',
+    });
+    // Ни «арендодатель выпишет», ни «бланка нет»: об аренде говорить нечего там, где документа
+    // не существует в принципе.
+    expect(onSite).toEqual({ formCode: null, reason: null });
+  });
+
+  it('аренда под грузоперевозку — причина текстом: лист выписывает арендодатель', () => {
+    const rental = waybillRequirement({
+      requestType: 'freight_transport',
+      ownership: 'rental',
+      formCode: '4p',
+      typeName: 'Самосвалы',
+    });
+    expect(rental.formCode).toBeNull();
+    expect(rental.reason).toContain('арендодатель');
+  });
+
+  it('тип без бланка — причина называет тип: это поправимое состояние справочника', () => {
+    const noForm = waybillRequirement({
+      requestType: 'freight_transport',
+      ownership: 'own',
+      formCode: null,
+      typeName: 'Автокраны',
+    });
+    expect(noForm.formCode).toBeNull();
+    expect(noForm.reason).toContain('Автокраны');
   });
 });
 

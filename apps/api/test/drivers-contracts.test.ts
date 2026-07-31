@@ -6,6 +6,8 @@ import {
   hasCategoryOn,
   isValidSnils,
   licenseDefect,
+  licenseNumberLabel,
+  licenseRequisitesMissing,
   normalizeSnils,
   snilsSchema,
   trailerCategoryCode,
@@ -255,5 +257,32 @@ describe('заведение водителя', () => {
 
   it('лишнее поле отклоняется, а не молча теряется', () => {
     expect(createDriverSchema.safeParse({ ...VALID_DRIVER, role: 'admin' }).success).toBe(false);
+  });
+});
+
+describe('реквизиты удостоверения не внесены', () => {
+  it('документ из кадровой выгрузки: категории есть, серии и номера нет', () => {
+    expect(licenseRequisitesMissing(licenseNumberLabel({ series: '', number: '' }))).toBe(true);
+  });
+
+  it('одного номера достаточно: серия есть не во всяком бланке', () => {
+    expect(licenseRequisitesMissing(licenseNumberLabel({ series: '', number: '482645' }))).toBe(
+      false,
+    );
+  });
+
+  it('заполненный документ предупреждения не вызывает', () => {
+    expect(licenseRequisitesMissing(licenseNumberLabel({ series: '99 39', number: '482645' }))).toBe(
+      false,
+    );
+  });
+
+  it('пробелы вместо номера — это не номер', () => {
+    expect(licenseRequisitesMissing('   ')).toBe(true);
+  });
+
+  it('строку выбора сервер склеивает сам — правило то же', () => {
+    expect(licenseRequisitesMissing('')).toBe(true);
+    expect(licenseRequisitesMissing('00 00 000001')).toBe(false);
   });
 });
