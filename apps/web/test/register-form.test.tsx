@@ -121,6 +121,44 @@ describe('форма регистрации', () => {
     expect(screen.getByText('ivanov@example.com')).toBeDefined();
   });
 
+  it('телефон можно не заполнять — заявка уходит с пустым номером', async () => {
+    renderPage();
+    await waitFor(() => expect(captcha).toHaveBeenCalled());
+
+    fillCommonFields();
+    await selectRoleRequest('Диспетчер');
+    await act(async () => submit());
+
+    await waitFor(() => expect(register).toHaveBeenCalledTimes(1));
+    expect(register.mock.calls[0]![0]).toMatchObject({ phone: '' });
+  });
+
+  it('введённый телефон уходит как есть — формат свободный', async () => {
+    renderPage();
+    await waitFor(() => expect(captcha).toHaveBeenCalled());
+
+    fillCommonFields();
+    fill('Телефон', '+7 926 123-45-67');
+    await selectRoleRequest('Диспетчер');
+    await act(async () => submit());
+
+    await waitFor(() => expect(register).toHaveBeenCalledTimes(1));
+    expect(register.mock.calls[0]![0]).toMatchObject({ phone: '+7 926 123-45-67' });
+  });
+
+  it('вместо номера слово — заявка не уходит: по такому телефону не позвонят', async () => {
+    renderPage();
+    await waitFor(() => expect(captcha).toHaveBeenCalled());
+
+    fillCommonFields();
+    fill('Телефон', 'нет');
+    await selectRoleRequest('Диспетчер');
+    await act(async () => submit());
+
+    expect(register).not.toHaveBeenCalled();
+    expect(await screen.findByText('Некорректный телефон')).toBeDefined();
+  });
+
   it('слабый пароль не отправляется: длины мало, если это фамилия или последовательность', async () => {
     renderPage();
     await waitFor(() => expect(captcha).toHaveBeenCalled());

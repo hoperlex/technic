@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
-import { and, count, eq, exists, gte, isNull, lte, sql } from 'drizzle-orm';
+import { and, count, eq, exists, gte, isNull, lte, or, sql } from 'drizzle-orm';
 import {
   can,
   type CounterpartyType,
@@ -26,7 +26,7 @@ import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
 import { hashPassword } from '../auth/password';
 import { revokeAllForUser } from '../auth/sessions';
-import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
+import { orderByFrom, pageParams, phoneSearchCondition, searchCondition } from '../lib/pagination';
 import {
   departmentIdsOfUser,
   departmentsByUserIds,
@@ -59,6 +59,7 @@ interface UserRowJoined {
   firstName: string;
   middleName: string;
   fullName: string;
+  phone: string;
   requestedRole: UserDto['requestedRole'];
   requestedObject: string;
   requestedCompany: string;
@@ -85,6 +86,7 @@ function toDto(
     firstName: r.firstName,
     middleName: r.middleName,
     fullName: r.fullName,
+    phone: r.phone,
     requestedRole: r.requestedRole,
     requestedObject: r.requestedObject,
     requestedCompany: r.requestedCompany,
@@ -109,6 +111,7 @@ const selectCols = {
   firstName: users.firstName,
   middleName: users.middleName,
   fullName: users.fullName,
+  phone: users.phone,
   requestedRole: users.requestedRole,
   requestedObject: users.requestedObject,
   requestedCompany: users.requestedCompany,
@@ -258,7 +261,12 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
       q.createdTo === undefined
         ? undefined
         : lte(users.createdAt, new Date(`${q.createdTo}T23:59:59.999+03:00`)),
-      searchCondition(q.search, [users.email, users.fullName]),
+      // Поиск идёт по трём полям сразу: адрес и ФИО — подстрокой как есть, телефон — по цифрам,
+      // потому что записан он свободно и «9261234567» обязано находить «+7 926 123-45-67».
+      or(
+        searchCondition(q.search, [users.email, users.fullName]),
+        phoneSearchCondition(q.search, users.phone),
+      ),
     );
     const sortCols = {
       email: users.email,
@@ -316,6 +324,7 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
           lastName: body.lastName,
           firstName: body.firstName,
           middleName: body.middleName,
+          phone: body.phone,
           role: body.role,
           passwordHash,
           isActive: body.isActive,
@@ -405,6 +414,8 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
             lastName: body.lastName ?? existing.lastName,
             firstName: body.firstName ?? existing.firstName,
             middleName: body.middleName ?? existing.middleName,
+            // Телефон правится как ФИО: поле не прислали — не трогаем, прислали пустым — стёрли.
+            phone: body.phone ?? existing.phone,
             role: nextRole,
             isActive: body.isActive ?? existing.isActive,
             counterpartyId: nextCounterpartyId,

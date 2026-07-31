@@ -40,6 +40,7 @@ import { FormModal } from '../../components/FormModal';
 import { PageTableLayout } from '../../components/PageTableLayout';
 import { PasswordField } from '../../components/PasswordField';
 import { PersonNameFields } from '../../components/PersonNameFields';
+import { PhoneField, PhoneLink } from '../../components/PhoneField';
 import { ReasonModal } from '../../components/CancelReasonModal';
 import { actionsColumn, badgeColumn, boolBadgeColumn, textColumn } from '../../components/columns';
 import { sortOptionsFrom, type FilterDefinition } from '../../components/listControls';
@@ -53,6 +54,8 @@ interface UserFormValues {
   lastName: string;
   firstName: string;
   middleName?: string;
+  /** Контактный телефон (ADR 0043) — необязателен: у заведённых до него учёток его нет. */
+  phone?: string;
   role: (typeof ROLES)[number];
   password?: string;
   /** Объекты учётки (ADR 0039): объектная роль работает сразу на нескольких площадках. */
@@ -200,6 +203,7 @@ export function UsersTab() {
       lastName: r.lastName,
       firstName: r.firstName,
       middleName: r.middleName,
+      phone: r.phone,
       // Роль по умолчанию не подставляем: у зарегистрировавшегося самостоятельно её нет,
       // а активация без осознанно выбранной роли запрещена — пусть выберет администратор.
       role: r.role ?? undefined,
@@ -215,6 +219,9 @@ export function UsersTab() {
     mutationFn: (values: UserFormValues) => {
       const payload = {
         ...values,
+        // Пустое поле уходит пустой строкой, а не `undefined`: у правки это разные вещи —
+        // «телефон стёрли» и «телефон не трогали» (ADR 0043).
+        phone: values.phone ?? '',
         // Область чужой оси обнуляется здесь же: сменив роль с объектной на отдельскую, форма
         // не должна отправлять оставшийся от прежней роли набор — сервер его всё равно отвергнет
         // как несовместимую пару (ADR 0040).
@@ -383,6 +390,18 @@ export function UsersTab() {
         </Space>
       ),
     }),
+    // Телефон (ADR 0043): администратор рассматривает заявку и звонит с этой же страницы, поэтому
+    // номер стоит в списке, а не только в карточке. Сортировки нет — по номеру не упорядочивают,
+    // и `USER_SORT_FIELDS` его не принимает.
+    textColumn<UserDto>({
+      key: 'phone',
+      title: 'Телефон',
+      dataIndex: 'phone',
+      sortable: false,
+      searchable: false,
+      width: 160,
+      render: (_v, r) => (r.phone ? <PhoneLink phone={r.phone} /> : '—'),
+    }),
     badgeColumn<UserDto>({
       key: 'role',
       title: 'Роль',
@@ -497,7 +516,8 @@ export function UsersTab() {
       {pendingSwitch}
       <Input.Search
         allowClear
-        placeholder="Email или ФИО"
+        // Номер ищется по цифрам: написание — «+7», «8», скобки — значения не имеет.
+        placeholder="Email, ФИО или телефон"
         style={{ width: 240 }}
         defaultValue={params.search}
         onSearch={(v) => applyFilter({ search: v || undefined })}
@@ -680,6 +700,8 @@ export function UsersTab() {
     primary: (r) => (r.role ? <Tag color={roleColors[r.role]}>{roleLabels[r.role]}</Tag> : '—'),
     lines: [
       (r) => r.email,
+      // Номер нажимается: карточку читают с телефона, и звонок — то, ради чего его и оставляли.
+      (r) => (r.phone ? <PhoneLink phone={r.phone} /> : null),
       (r) => {
         // Область: отделы (ADR 0040) либо объекты — показывается то, что у учётки заполнено.
         const places = r.departments.length > 0 ? r.departments : r.constructionObjects;
@@ -710,7 +732,7 @@ export function UsersTab() {
       mobile={{
         search: {
           value: params.search,
-          placeholder: 'Email или ФИО',
+          placeholder: 'Email, ФИО или телефон',
           onChange: (v) => applyFilter({ search: v }),
         },
         filters: mobileFilters,
@@ -762,6 +784,9 @@ export function UsersTab() {
             <Input disabled={!!record} />
           </Form.Item>
           <PersonNameFields />
+          {/* Контакт сотрудника (ADR 0043): необязателен и здесь — заведённые администратором
+              учётки живут без него, а дозаполняется он той же формой. */}
+          <PhoneField extra="Не обязательно. Портал писем не шлёт — связываются звонком" />
           {/* Пожелание заявителя (ADR 0034) — справка, а не подстановка: роль остаётся выбором
               администратора, иначе «Сохранить» не глядя выдавало бы права по чужому заявлению. */}
           {record?.requestedRole ? (

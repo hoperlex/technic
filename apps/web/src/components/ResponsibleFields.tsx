@@ -1,5 +1,6 @@
 import { Col, Form, Input, Row, Space, Typography } from 'antd';
 import { contactIssue } from '@technic/contracts';
+import { PhoneLink } from './PhoneField';
 
 interface Props {
   /** Имя поля ФИО в форме; телефон лежит в `phoneName`. */
@@ -59,18 +60,15 @@ export function ResponsibleFields({
 }
 
 /**
- * Контакт в карточке заявки: ФИО и телефон ссылкой `tel:`. Заявку открывают с телефона (ADR 0030),
- * и звонок ответственному — самое частое, что после этого делают, поэтому номер нажимается, а не
- * перепечатывается. Пусто — заявка заведена до появления контакта (миграция 0062).
+ * Контакт в карточке заявки: ФИО и телефон ссылкой `tel:`. Пусто — заявка заведена до появления
+ * контакта (миграция 0062).
  */
 export function ResponsibleValue({ name, phone }: { name: string; phone: string }) {
   if (!name && !phone) return <Typography.Text type="secondary">—</Typography.Text>;
   return (
     <Space size={8} wrap>
       <span>{name || '—'}</span>
-      {!!phone && (
-        <Typography.Link href={`tel:${phone.replace(/[^+\d]/g, '')}`}>{phone}</Typography.Link>
-      )}
+      {!!phone && <PhoneLink phone={phone} />}
     </Space>
   );
 }

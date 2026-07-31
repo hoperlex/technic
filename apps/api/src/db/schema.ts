@@ -703,6 +703,9 @@ export const users = pgTable(
       .generatedAlwaysAs(
         sql`btrim(regexp_replace(last_name || ' ' || first_name || ' ' || middle_name, '\s+', ' ', 'g'))`,
       ),
+    // Контактный телефон (ADR 0043, миграция 0070). Необязателен: пустая строка — «не указан».
+    // Свободный текст, как у телефона ответственного по заявке, — номер переносят из переписки.
+    phone: text('phone').notNull().default(''),
     passwordHash: text('password_hash').notNull(),
     role: roleEnum('role'), // назначается администратором; до активации может быть null
     // Объекты учётки — в user_construction_objects (миграция 0063): объектная роль работает

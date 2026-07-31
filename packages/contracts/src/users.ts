@@ -7,7 +7,7 @@ import {
   type Role,
 } from './enums';
 import type { CounterpartyType } from './counterparties';
-import { baseListQuery, dateOnlySchema, uuidSchema } from './common';
+import { baseListQuery, dateOnlySchema, optionalPhoneSchema, uuidSchema } from './common';
 import { passwordIdentityIssue, passwordSchema } from './password';
 import { personNameFields, personNamePartialFields, type PersonNameParts } from './person-name';
 import {
@@ -74,6 +74,8 @@ export const createUserSchema = z
   .object({
     email: z.string().email().max(255),
     ...personNameFields,
+    /** Телефон учётки (ADR 0043): необязателен и здесь — контакт сотрудника, а не реквизит входа. */
+    phone: optionalPhoneSchema.optional().default(''),
     role: roleSchema,
     password: passwordSchema,
     isActive: z.boolean().default(true),
@@ -116,6 +118,8 @@ export type CreateUserInput = z.infer<typeof createUserSchema>;
 
 export const updateUserSchema = z.object({
   ...personNamePartialFields,
+  /** Отсутствие поля — не трогать телефон; пустая строка — стереть (номер сменился на «не знаю»). */
+  phone: optionalPhoneSchema.optional(),
   role: roleSchema.optional(),
   isActive: z.boolean().optional(),
   /** Полный список объектов; отсутствие поля — не трогать привязки (как у operatorIds объекта). */
@@ -155,6 +159,11 @@ export interface UserDto extends PersonNameParts {
   email: string;
   /** Считается базой из частей ФИО; отдельно не редактируется. */
   fullName: string;
+  /**
+   * Контактный телефон (ADR 0043). Пусто — не указан: поле необязательное, и заполнено оно
+   * далеко не у всех. Свободный текст того же вида, что телефон ответственного по заявке.
+   */
+  phone: string;
   /**
    * Кем человек назвал себя при регистрации (ADR 0034) и что уточнил. `null` — учётку заводил
    * администратор, пожелания нет. Права из этого не следуют: их даёт только `role`.

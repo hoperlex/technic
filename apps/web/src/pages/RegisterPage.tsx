@@ -12,6 +12,7 @@ import { AutoSelect } from '../components/AutoSelect';
 import { CaptchaField, type CaptchaValue } from '../components/CaptchaField';
 import { PasswordField } from '../components/PasswordField';
 import { PersonNameFields } from '../components/PersonNameFields';
+import { PhoneField } from '../components/PhoneField';
 import { errorFields, errorMessage } from '../utils/format';
 
 interface RegisterFormValues {
@@ -19,6 +20,8 @@ interface RegisterFormValues {
   firstName: string;
   middleName?: string;
   email: string;
+  /** Телефон по желанию (ADR 0043): пустое поле — законный ответ. */
+  phone?: string;
   password: string;
   requestedRole?: RegistrationRoleRequest;
   requestedObject?: string;
@@ -53,6 +56,7 @@ export function RegisterPage() {
         lastName: values.lastName,
         firstName: values.firstName,
         middleName: values.middleName ?? '',
+        phone: values.phone ?? '',
         password: values.password,
         requestedRole: values.requestedRole!,
         requestedObject: values.requestedObject ?? '',
@@ -122,6 +126,12 @@ export function RegisterPage() {
           >
             <Input autoComplete="username" size="large" />
           </Form.Item>
+          {/* Телефон по желанию (ADR 0043): почты у портала нет, и звонок — единственный способ
+              уточнить заявку. Требовать номер, чтобы завести учётку, при этом не за что. */}
+          <PhoneField
+            size="large"
+            extra="Не обязательно. По нему администратор свяжется с вами быстрее — писем портал не шлёт"
+          />
           <PasswordField
             name="password"
             identityFields={['email', 'lastName', 'firstName']}

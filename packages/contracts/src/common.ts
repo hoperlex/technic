@@ -59,26 +59,68 @@ export function baseListQuery(sortFields: readonly string[]) {
 export const contactNameSchema = z.string().trim().min(1, 'Укажите ответственного').max(200);
 
 /**
+ * Единственное, что делает телефон телефоном: цифр в нём столько, чтобы по нему дозвонились.
+ * Формат при этом намеренно свободный — см. `contactPhoneSchema`.
+ */
+const hasEnoughDigits = (v: string) => (v.match(/\d/g) ?? []).length >= 5;
+
+/**
  * Контактный телефон. Формат намеренно свободный: в заявку пишут и «+7 926 123-45-67», и
  * «8(495)123-45-67 доб. 12», и требовать единый вид значило бы заставлять человека править
- * то, что он только что прочитал в переписке. Проверяем единственное, что делает телефон
- * телефоном, — что цифр в нём достаточно, чтобы по нему дозвонились.
+ * то, что он только что прочитал в переписке.
  */
 export const contactPhoneSchema = z
   .string()
   .trim()
   .min(1, 'Укажите контактный телефон')
   .max(50)
-  .refine((v) => (v.match(/\d/g) ?? []).length >= 5, 'Некорректный телефон');
+  .refine(hasEnoughDigits, 'Некорректный телефон');
+
+/**
+ * Тот же телефон там, где его вправе не оставить: пустая строка — «не указан» (телефон учётки,
+ * ADR 0043). Правило проверки одно и то же — необязательность не означает, что вместо номера
+ * годится «-» или «нет»: такое поле хуже пустого, потому что выглядит заполненным.
+ */
+export const optionalPhoneSchema = z
+  .string()
+  .trim()
+  .max(50)
+  .refine((v) => v === '' || hasEnoughDigits(v), 'Некорректный телефон');
+
+const contactSchemas = {
+  name: contactNameSchema,
+  phone: contactPhoneSchema,
+  optionalPhone: optionalPhoneSchema,
+};
+
+/**
+ * Цифры номера для поиска. Хранится телефон так, как его ввели (см. `contactPhoneSchema`),
+ * поэтому «+7 (926) 123-45-67», «8 926 123 45 67» и «9261234567» — одна и та же запись, и найти
+ * её обязано любое из написаний: сравниваются одни цифры, подстрокой.
+ *
+ * Ведущая `7`/`8` одиннадцатизначного номера отбрасывается — ровно этим два российских написания
+ * и различаются, а оставшиеся десять цифр входят в любое из них. Обратное преобразование не
+ * нужно: цифры колонки сравниваются с этой подстрокой, и «79261234567» содержит «9261234567»
+ * так же, как «89261234567».
+ *
+ * Пустая строка — искать по номеру нечего: в запросе меньше трёх цифр. Порог существеннее, чем
+ * кажется, — без него «Иванов 7» отобрал бы каждого, у кого в номере есть семёрка, то есть
+ * почти всех.
+ */
+export function phoneSearchDigits(value: string): string {
+  const digits = value.replace(/\D/g, '');
+  const local =
+    digits.length === 11 && (digits[0] === '7' || digits[0] === '8') ? digits.slice(1) : digits;
+  return local.length >= 3 ? local : '';
+}
 
 /**
  * Что не так с введённым контактом; `null` — годится. Форма проверяет теми же схемами, что и
  * сервер, но zod в неё не тащится: правило одно, а зависимость лишняя (тем же приёмом, что и
  * `namePartIssue`).
  */
-export function contactIssue(value: string, kind: 'name' | 'phone'): string | null {
-  const schema = kind === 'name' ? contactNameSchema : contactPhoneSchema;
-  const parsed = schema.safeParse(value);
+export function contactIssue(value: string, kind: keyof typeof contactSchemas): string | null {
+  const parsed = contactSchemas[kind].safeParse(value);
   return parsed.success ? null : (parsed.error.issues[0]?.message ?? 'Некорректное значение');
 }
 

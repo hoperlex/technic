@@ -122,6 +122,7 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
         lastName,
         firstName,
         middleName,
+        phone,
         password,
         requestedRole,
         requestedObject,
@@ -144,6 +145,8 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
           lastName,
           firstName,
           middleName,
+          // Телефон — по желанию (ADR 0043): пусто, если человек его не оставил.
+          phone,
           passwordHash,
           isActive: false,
           // Роль не назначается: пожелание — подсказка администратору, а не право (ADR 0034).

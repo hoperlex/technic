@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { optionalPhoneSchema } from './common';
 import type { CounterpartyType } from './counterparties';
 import type { Role } from './enums';
 import { passwordIdentityIssue, passwordSchema } from './password';
@@ -25,6 +26,11 @@ export const registerSchema = z
   .object({
     email: z.string().email().max(255),
     ...personNameFields,
+    /**
+     * Телефон — по желанию (ADR 0043): почтовых уведомлений у портала нет, и звонок — единственный
+     * способ уточнить заявку, но требовать номер, чтобы завести учётку, не за что.
+     */
+    phone: optionalPhoneSchema.optional().default(''),
     password: passwordSchema,
     // Кем человек себя назвал и что уточнил (ADR 0034). Роль отсюда не берётся — её назначает
     // администратор; это подсказка ему, а не право.
