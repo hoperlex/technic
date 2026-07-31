@@ -1,7 +1,11 @@
 const BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? '/api/v1';
 
-/** Базовый адрес API: нужен ссылкам на скачивание — их браузер открывает сам, минуя apiFetch. */
-export const API_BASE = BASE;
+/*
+ * Адрес API наружу не отдаётся намеренно. Ссылка на защищённый маршрут, собранная в разметке,
+ * не работает и работать не может: access-токен живёт в памяти вкладки, а переход по `href`
+ * браузер делает сам и без заголовка `Authorization` — сервер отвечает 401 «Требуется
+ * авторизация» прямо в новой вкладке, вместо файла. Скачивание идёт через `apiDownload`.
+ */
 
 let accessToken: string | null = null;
 
@@ -22,6 +26,16 @@ export interface ApiError {
 
 export function isApiError(e: unknown): e is ApiError {
   return typeof e === 'object' && e !== null && 'code' in e && 'status' in e;
+}
+
+let sessionExpired: (() => void) | null = null;
+
+/**
+ * Кого звать, когда refresh-токен уже не обменивается на access: истёк, отозван reuse detection
+ * или учётку выключили. Ставит `AuthProvider` — клиент API не знает про роутер и не должен.
+ */
+export function setSessionExpiredHandler(handler: (() => void) | null): void {
+  sessionExpired = handler;
 }
 
 let refreshing: Promise<boolean> | null = null;
@@ -91,6 +105,10 @@ async function request(path: string, options: RequestOptions): Promise<Response>
   if (res.status === 401 && !options.noRefresh) {
     const ok = await refreshSession();
     if (ok) res = await doFetch(url, options);
+    // Обновить не удалось — сессии больше нет. Без этого страница остаётся на экране как
+    // вошедшая, а каждое действие отвечает «Требуется авторизация»: сообщение верное, но
+    // читается как поломка печати или выгрузки, а не как «войдите заново».
+    else sessionExpired?.();
   }
 
   if (!res.ok) {
@@ -126,4 +144,51 @@ export async function apiFetch<T>(path: string, options: RequestOptions = {}): P
 export async function apiFetchBlob(path: string, options: RequestOptions = {}): Promise<Blob> {
   const res = await request(path, options);
   return res.blob();
+}
+
+/** Имя файла из `Content-Disposition`: серверу виднее, как называется документ. */
+function filenameFromDisposition(header: string | null): string | null {
+  if (!header) return null;
+  // `filename*=UTF-8''...` — им сервер и отдаёт кириллицу; простой `filename=` разбирается следом.
+  const encoded = /filename\*=UTF-8''([^;]+)/i.exec(header);
+  if (encoded?.[1]) {
+    try {
+      return decodeURIComponent(encoded[1]);
+    } catch {
+      /* битую кодировку игнорируем — ниже есть запасное имя */
+    }
+  }
+  const plain = /filename="?([^";]+)"?/i.exec(header);
+  return plain?.[1] ?? null;
+}
+
+/**
+ * Скачивание защищённого файла. Не ссылкой: переход по `href` уходит без заголовка
+ * `Authorization` (access-токен живёт в памяти вкладки, а не в cookie), и вместо файла браузер
+ * показывает 401 «Требуется авторизация» в новой вкладке. Поэтому файл забирается обычным
+ * запросом API — с токеном и с обновлением сессии, как всё остальное, — и уже из памяти
+ * отдаётся на диск.
+ *
+ * Вложения заявок так не качаются: там сервер отдаёт presigned-ссылку на S3, которая
+ * авторизуется сама и живёт минуты. Здесь отдавать нечего — бланк собирается на лету.
+ */
+export async function apiDownload(
+  path: string,
+  fallbackName: string,
+  options: RequestOptions = {},
+): Promise<void> {
+  const res = await request(path, options);
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filenameFromDisposition(res.headers.get('content-disposition')) ?? fallbackName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } finally {
+    // Отпускаем копию не сразу: Safari успевает начать сохранение только после возврата в цикл.
+    setTimeout(() => URL.revokeObjectURL(url), 30_000);
+  }
 }

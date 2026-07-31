@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { App, Button, DatePicker, Input, Space, Typography } from 'antd';
-import { DownloadOutlined, StopOutlined } from '@ant-design/icons';
+import { StopOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -15,7 +15,7 @@ import { waybillsApi } from '../api/resources';
 import { DataTable } from '../components/DataTable';
 import { PageTableLayout } from '../components/PageTableLayout';
 import { actionsColumn, badgeColumn, textColumn } from '../components/columns';
-import { PrintWaybillButton } from '../components/WaybillPrint';
+import { ExportWaybillButton, PrintWaybillButton } from '../components/WaybillPrint';
 import { useListParams } from '../hooks/useListParams';
 import { useAuth } from '../auth/AuthContext';
 import { errorMessage } from '../utils/format';
@@ -177,13 +177,7 @@ export function WaybillsPage() {
               к журналу. Печать первой — ради неё лист и открывают (ADR 0041), а файл забирают
               тогда, когда бланк дополняют от руки в редакторе таблиц. */}
           <PrintWaybillButton waybillId={r.id} number={r.number} />
-          <Button
-            size="small"
-            icon={<DownloadOutlined />}
-            title="Скачать бланк (xlsx)"
-            href={waybillsApi.exportUrl(r.id)}
-            target="_blank"
-          />
+          <ExportWaybillButton waybillId={r.id} number={r.number} />
           {canCancel && (
             <Button
               size="small"

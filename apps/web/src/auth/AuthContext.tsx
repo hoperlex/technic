@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { can as roleCan, type AuthUser, type Permission, type Role } from '@technic/contracts';
 import { authApi } from '../api/auth';
-import { refreshSession } from '../api/client';
+import { refreshSession, setSessionExpiredHandler } from '../api/client';
 
 type Status = 'loading' | 'authenticated' | 'unauthenticated';
 
@@ -57,6 +57,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  /*
+   * Сессия кончилась посреди работы (refresh истёк, отозван или учётку выключили) — уводим на
+   * вход. Без этого страница остаётся на экране как вошедшая, а каждое действие отвечает
+   * «Требуется авторизация»: сообщение верное, но выглядит поломкой печати или выгрузки, а не
+   * концом сессии. Bootstrap сюда не попадает — он зовёт `refreshSession` напрямую.
+   */
+  useEffect(() => {
+    setSessionExpiredHandler(() => {
+      bootstrapPromise = Promise.resolve(null);
+      setUser(null);
+      setStatus('unauthenticated');
+    });
+    return () => setSessionExpiredHandler(null);
   }, []);
 
   const value = useMemo<AuthContextValue>(

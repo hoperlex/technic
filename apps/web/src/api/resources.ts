@@ -77,7 +77,7 @@ import type {
   WasteTypeDto,
   ResolveWasteTariffResultDto,
 } from '@technic/contracts';
-import { API_BASE, apiFetch, apiFetchBlob } from './client';
+import { apiDownload, apiFetch, apiFetchBlob } from './client';
 
 type Query = Record<string, unknown>;
 
@@ -158,11 +158,13 @@ export const waybillsApi = {
   cancel: (id: string, body: CancelWaybillInput) =>
     apiFetch<WaybillDto>(`/waybills/${id}/cancel`, { method: 'POST', body }),
   /**
-   * Выгрузка бланка. Переход по ссылке, а не fetch с blob: ответ приходит с
-   * `Content-Disposition: attachment`, браузер сохраняет файл сам и со страницы не уводит —
-   * тем же приёмом скачиваются вложения заявок.
+   * Выгрузка бланка файлом. Раньше стояла ссылкой на адрес API — и не работала ни разу: маршрут
+   * закрыт `app.authenticate`, а переход по `href` браузер делает без заголовка `Authorization`,
+   * и вместо xlsx открывалась вкладка с 401 «Требуется авторизация». Вложения заявок так качать
+   * можно (там presigned-ссылка на S3), бланк — нет: он собирается на лету.
    */
-  exportUrl: (id: string) => `${API_BASE}/waybills/${id}/export`,
+  exportFile: (id: string, number: string) =>
+    apiDownload(`/waybills/${id}/export`, `Путевой лист ${number}.xlsx`),
   /**
    * Бланк, готовый к печати (ADR 0041): PDF показывается фреймом и печатается диалогом браузера,
    * не оседая файлом на машине. Не ссылкой, а телом ответа — фрейму его отдают из памяти вкладки.

@@ -1,5 +1,5 @@
 import { type ReactNode, useEffect, useRef, useState } from 'react';
-import { Alert, Button, Spin, Tooltip } from 'antd';
+import { Alert, App, Button, Spin, Tooltip } from 'antd';
 import { DownloadOutlined, PrinterOutlined } from '@ant-design/icons';
 import { waybillsApi } from '../api/resources';
 import { useIsMobile } from '../hooks/useIsMobile';
@@ -86,14 +86,9 @@ export function WaybillPrintModal({ waybillId, number, onClose }: Props) {
         >
           Печать
         </Button>,
-        <Button
-          key="export"
-          icon={<DownloadOutlined />}
-          href={waybillId ? waybillsApi.exportUrl(waybillId) : undefined}
-          target="_blank"
-        >
+        <ExportWaybillButton key="export" waybillId={waybillId} number={number} size="middle">
           Скачать xlsx
-        </Button>,
+        </ExportWaybillButton>,
         <Button key="close" onClick={onClose}>
           Закрыть
         </Button>,
@@ -119,6 +114,55 @@ export function WaybillPrintModal({ waybillId, number, onClose }: Props) {
         />
       )}
     </ViewModal>
+  );
+}
+
+/**
+ * Кнопка выгрузки бланка файлом — рядом с печатью и в журнале, и в окне печати.
+ *
+ * Кнопка, а не ссылка: маршрут закрыт авторизацией, а по `href` браузер идёт без заголовка
+ * `Authorization` и получает 401 «Требуется авторизация» в новой вкладке вместо файла. Ссылка
+ * здесь стояла с самого начала и не работала ни разу — сохранить бланк было нельзя.
+ */
+export function ExportWaybillButton({
+  waybillId,
+  number,
+  size = 'small',
+  children,
+}: {
+  /** null — лист ещё не выбран (окно закрыто). */
+  waybillId: string | null;
+  number: string;
+  size?: 'small' | 'middle';
+  children?: ReactNode;
+}) {
+  const { message } = App.useApp();
+  const [saving, setSaving] = useState(false);
+
+  const save = async () => {
+    if (!waybillId) return;
+    setSaving(true);
+    try {
+      await waybillsApi.exportFile(waybillId, number);
+    } catch (e) {
+      message.error(errorMessage(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Tooltip title="Скачать бланк (xlsx)">
+      <Button
+        size={size}
+        icon={<DownloadOutlined />}
+        loading={saving}
+        disabled={!waybillId}
+        onClick={() => void save()}
+      >
+        {children}
+      </Button>
+    </Tooltip>
   );
 }
 
