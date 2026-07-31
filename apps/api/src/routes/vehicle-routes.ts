@@ -12,6 +12,7 @@ import {
   isRouteEditable,
   issueRouteWaybillSchema,
   MAX_ROUTE_REQUESTS,
+  parseVehicleRouteNumberSearch,
   ROUTE_FROZEN_MESSAGE,
   ROUTE_LEGACY_WAYBILL_MESSAGE,
   routeOrderSchema,
@@ -37,7 +38,7 @@ import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
 import { assertRequestScope } from '../lib/access';
-import { orderByFrom, pageParams } from '../lib/pagination';
+import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
 import { issueWaybillForRoute, tripDate } from '../services/waybill-issue';
 import {
   assertRouteVersion,
@@ -202,6 +203,18 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
         q.driverPersonId ? eq(vehicleRoutes.driverPersonId, q.driverPersonId) : undefined,
         q.num ? eq(vehicleRoutes.num, q.num) : undefined,
       ];
+
+      // Ищут рейс двумя способами: по номеру («Р-12», «12») и по тому, чем он запомнился —
+      // госномеру машины или фамилии водителя. Номер разбирается первым: «12» это рейс, а не
+      // кусок госномера.
+      if (q.search) {
+        const num = parseVehicleRouteNumberSearch(q.search);
+        conditions.push(
+          num
+            ? eq(vehicleRoutes.num, num)
+            : searchCondition(q.search, [vehicles.registrationNumber, persons.fullName]),
+        );
+      }
 
       // «Лист ещё не выписан» — то, чем диспетчер закрывает день, поэтому фильтр по документу
       // спрашивает наличие действующего листа, а не любого: аннулированный рейс не держит.

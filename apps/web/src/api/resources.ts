@@ -5,6 +5,7 @@ import type {
   DriverSelectionDto,
   DriversImportBody,
   DriversImportReportDto,
+  VehicleRouteDto,
   WaybillDto,
   DriverLicenseBody,
   RevokeDriverLicenseInput,
@@ -40,6 +41,7 @@ import type {
   RequestVehicleEarlyEndInput,
   RequestType,
   RequestWaybillDto,
+  RouteTripFields,
   UpdateContainerTypeInput,
   UpdateCounterpartyInput,
   UpdateDepartmentInput,
@@ -165,6 +167,53 @@ export const waybillsApi = {
    * не оседая файлом на машине. Не ссылкой, а телом ответа — фрейму его отдают из памяти вкладки.
    */
   printPdf: (id: string) => apiFetchBlob(`/waybills/${id}/print`),
+};
+
+/**
+ * Маршруты — рейс машины на дату (план `docs/vehicle-routes-plan.md`). Заявку кладут в рейс
+ * переводом в работу либо здесь; лист выписывается с рейса, когда состав собран.
+ *
+ * Версия рейса уходит в каждое изменение состава и в выписку: рейс правят несколько диспетчеров
+ * сразу, и «кто последний, тот и прав» означало бы лист не на тот состав.
+ */
+export const vehicleRoutesApi = {
+  list: (q: Query) => apiFetch<ListResult<VehicleRouteDto>>('/vehicle-routes', { query: q }),
+  get: (id: string) => apiFetch<VehicleRouteDto>(`/vehicle-routes/${id}`),
+  create: (body: {
+    vehicleId: string;
+    routeDate: string;
+    driverPersonId?: string | null;
+    trip?: RouteTripFields;
+    comment?: string;
+  }) => apiFetch<VehicleRouteDto>('/vehicle-routes', { method: 'POST', body }),
+  update: (
+    id: string,
+    body: {
+      version: number;
+      driverPersonId?: string | null;
+      trip?: RouteTripFields;
+      comment?: string;
+    },
+  ) => apiFetch<VehicleRouteDto>(`/vehicle-routes/${id}`, { method: 'PATCH', body }),
+  remove: (id: string) => apiFetch<{ ok: boolean }>(`/vehicle-routes/${id}`, { method: 'DELETE' }),
+  /** Положить заявку в рейс или перенести её из другого — тогда `source` обязателен. */
+  attach: (
+    id: string,
+    body: { requestId: string; version: number; source?: { routeId: string; version: number } },
+  ) => apiFetch<VehicleRouteDto>(`/vehicle-routes/${id}/requests`, { method: 'POST', body }),
+  detach: (id: string, requestId: string, version: number) =>
+    apiFetch<VehicleRouteDto>(`/vehicle-routes/${id}/requests/${requestId}`, {
+      method: 'DELETE',
+      query: { version: String(version) },
+    }),
+  /** Новый порядок талонов — полным составом рейса. */
+  order: (id: string, body: { requestIds: string[]; version: number }) =>
+    apiFetch<VehicleRouteDto>(`/vehicle-routes/${id}/order`, { method: 'PUT', body }),
+  issueWaybill: (id: string, version: number) =>
+    apiFetch<VehicleRouteDto>(`/vehicle-routes/${id}/waybill`, {
+      method: 'POST',
+      body: { version },
+    }),
 };
 
 export const counterpartiesApi = {

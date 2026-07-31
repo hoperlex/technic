@@ -142,6 +142,22 @@ describe('пункты меню следуют из прав', () => {
     }
   });
 
+  it('вкладка «Маршруты» — только тем, у кого есть и листы, и ход заявок', () => {
+    // Условие вкладки то же, что на самих ручках рейсов: в рейсе виден водитель (персональные
+    // данные, ADR 0037 п. 13), поэтому одного права на статусы мало. Оно есть у внешнего
+    // арендодателя (ADR 0038) — а рейсы собственного парка не его дело.
+    const showsRoutes = (subject: AccessSubject) =>
+      can(subject, 'waybills.read') && can(subject, 'vehicleRequests.status');
+
+    for (const role of ['admin', 'manager', 'dispatcher'] as Role[]) {
+      expect(showsRoutes({ role }), role).toBe(true);
+    }
+    expect(showsRoutes(executor('vehicle_lessor'))).toBe(false);
+    for (const role of ['shtab', 'rukstroy', 'department', 'observer'] as Role[]) {
+      expect(showsRoutes({ role }), role).toBe(false);
+    }
+  });
+
   it('отделу показывают только заказ ТС: вывоз мусора не его модуль (ADR 0040)', () => {
     for (const role of ['department', 'department_head'] as Role[]) {
       const { unmount } = renderMenu(role);
