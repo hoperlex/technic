@@ -1,5 +1,9 @@
 import { useQuery } from '@tanstack/react-query';
-import { vehicleClassificationKey, type VehicleClassificationDto } from '@technic/contracts';
+import {
+  classificationPriceHint,
+  vehicleClassificationKey,
+  type VehicleClassificationDto,
+} from '@technic/contracts';
 import { vehicleClassificationsApi } from '../api/resources';
 
 // Классификатор ТС для списков выбора (ADR 0028): позиции — категории типа, а у типа без ТТХ
@@ -10,7 +14,19 @@ import { vehicleClassificationsApi } from '../api/resources';
 export interface VehicleClassificationGroup {
   label: string;
   kindCode: string;
-  options: { value: string; label: string; disabled?: boolean }[];
+  options: VehicleClassificationOption[];
+}
+
+export interface VehicleClassificationOption {
+  value: string;
+  label: string;
+  disabled?: boolean;
+  /**
+   * Порядок цены позиции («~ 2 400 ₽/час»), которую список показывает справа от наименования.
+   * Отдельным полем, а не внутри `label`: по label идёт поиск и им же подписывается выбранное
+   * значение, а цена в обоих случаях лишняя. `undefined` — цен у позиции нет.
+   */
+  priceHint?: string;
 }
 
 /** Группа вида ТС, к которой относится позиция; заводится при первой позиции этого вида. */
@@ -26,12 +42,22 @@ function kindGroupOf(
   return group;
 }
 
-/** Позиции для выбора в форме — как их отдал сервер, по видам ТС. */
+/**
+ * Позиции для выбора в форме — как их отдал сервер, по видам ТС. Рядом с наименованием идёт
+ * порядок цены: заказывают, глядя на список, и «во сколько обойдётся» — второй вопрос после «что
+ * нужно», а не отдельный поход в прайс.
+ */
 export function classificationGroups(
   items: VehicleClassificationDto[],
 ): VehicleClassificationGroup[] {
   const groups: VehicleClassificationGroup[] = [];
-  for (const c of items) kindGroupOf(groups, c).options.push({ value: c.key, label: c.label });
+  for (const c of items) {
+    kindGroupOf(groups, c).options.push({
+      value: c.key,
+      label: c.label,
+      priceHint: classificationPriceHint(c) ?? undefined,
+    });
+  }
   return groups;
 }
 

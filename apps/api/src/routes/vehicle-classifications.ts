@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
-import { and, asc, count, eq, exists, isNotNull, not, or, sql } from 'drizzle-orm';
+import { and, asc, count, eq, exists, isNotNull, not, or, sql, type SQL } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import {
   vehicleClassificationKey,
@@ -8,7 +8,13 @@ import {
   type VehicleClassificationDto,
 } from '@technic/contracts';
 import { db } from '../db/client';
-import { vehicleCategories, vehicleKinds, vehicleTypeSpecs, vehicleTypes } from '../db/schema';
+import {
+  vehicleCategories,
+  vehicleKinds,
+  vehicles,
+  vehicleTypeSpecs,
+  vehicleTypes,
+} from '../db/schema';
 import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
 
 // Классификатор ТС одним списком: тип с категориями раскрыт в свои категории, тип без категорий
@@ -29,6 +35,28 @@ const specCount = sql<number>`(
 
 /** Что показывать человеку: наименование категории уже содержит тип (ADR 0016 §11). */
 const label = sql<string>`coalesce(${vehicleCategories.name}, ${vehicleTypes.name})`;
+
+/**
+ * Порядок цены позиции: средняя ставка техники, которую по ней могут выдать. Отбор повторяет то,
+ * что предложит форма перевода в работу (ADR 0027): активные машины заказанного типа, а у позиции
+ * с категорией — ещё и её категории. Принадлежность не сужает — заказчику отвечают на «во сколько
+ * обойдётся», а чьей машиной заявку закроют, на момент заказа неизвестно.
+ *
+ * Машины без ставки в среднее не идут: `avg` пропускает NULL сам, и знаменатель остаётся числом
+ * машин с ценой. Своей колонки у среднего нет и не нужно — прайс живёт в реестре техники, а здесь
+ * его читают.
+ */
+function avgPrice(
+  column: typeof vehicles.pricePerHour | typeof vehicles.pricePerShift,
+): SQL<string | null> {
+  return sql<string | null>`(
+    SELECT avg(${column}) FROM ${vehicles}
+    WHERE ${vehicles.vehicleTypeId} = ${vehicleTypes.id}
+      AND (${vehicleCategories.id} IS NULL OR ${vehicles.vehicleCategoryId} = ${vehicleCategories.id})
+      AND ${vehicles.status} = 'active'
+      AND ${vehicles.deletedAt} IS NULL
+  )`;
+}
 
 /** Активность позиции целиком: неактивный тип не даёт активных позиций. */
 const activeExpr = sql<boolean>`(${vehicleTypes.isActive} AND coalesce(${vehicleCategories.isActive}, true))`;
@@ -103,6 +131,8 @@ export default async function vehicleClassificationsRoutes(app: FastifyInstance)
             categoryName: vehicleCategories.name,
             label,
             specCount,
+            avgPricePerHour: avgPrice(vehicles.pricePerHour),
+            avgPricePerShift: avgPrice(vehicles.pricePerShift),
             isActive: activeExpr,
             typeIsActive: vehicleTypes.isActive,
             categoryIsActive: vehicleCategories.isActive,
@@ -143,6 +173,10 @@ export default async function vehicleClassificationsRoutes(app: FastifyInstance)
         categoryName: row.categoryName,
         label: row.label,
         specCount: Number(row.specCount),
+        // numeric приходит из pg строкой; пустое среднее (ставок нет ни у одной машины) остаётся
+        // null — «нет цены» и «ноль» для читателя списка разные ответы.
+        avgPricePerHour: row.avgPricePerHour == null ? null : Number(row.avgPricePerHour),
+        avgPricePerShift: row.avgPricePerShift == null ? null : Number(row.avgPricePerShift),
         isActive: row.isActive,
         typeIsActive: row.typeIsActive,
         categoryIsActive: row.categoryIsActive,

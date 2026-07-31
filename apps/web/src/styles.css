@@ -33,6 +33,25 @@ body,
   height: 100%;
 }
 
+/* Строка списка выбора с припиской справа (порядок цены у позиции классификатора): наименование
+   занимает свободную ширину и обрезается многоточием, приписка остаётся на месте. */
+.option-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.option-row__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.option-row__hint {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
 /* Блок аккаунта внизу боковой панели */
 .sider-account {
   display: flex;

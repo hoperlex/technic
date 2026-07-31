@@ -26,6 +26,8 @@ function position(
     categoryName: null,
     label: over.categoryName ?? over.typeName,
     specCount: over.vehicleCategoryId ? 1 : 0,
+    avgPricePerHour: null,
+    avgPricePerShift: null,
     isActive: true,
     typeIsActive: true,
     categoryIsActive: over.vehicleCategoryId ? true : null,
@@ -64,6 +66,24 @@ describe('classificationGroups (выбор в форме заявки)', () => {
     expect(groups.map((g) => g.label)).toEqual(['Спецтехника', 'Грузовая техника']);
     expect(groups[0]!.options.map((o) => o.value)).toEqual(['crane:c25', 'crane:c130', 'drill:']);
     expect(groups[1]!.options).toEqual([{ value: 'tipper:', label: 'Самосвал' }]);
+  });
+});
+
+describe('порядок цены у позиции (подсказка выбора)', () => {
+  it('позиция со средней ставкой получает приписку, без ставок — не получает', () => {
+    const priced = { ...crane25, avgPricePerHour: 2400 };
+    const [special] = classificationGroups([priced, drill]);
+    // Пробел разрядов у ru-RU неразрывный — сверяем по цифрам и единице.
+    expect(special!.options[0]!.priceHint).toMatch(/^~ 2.400 ₽\/час$/);
+    // Позиция без единой заполненной ставки остаётся без приписки: «нет цены» — не «бесплатно».
+    expect(special!.options[1]!.priceHint).toBeUndefined();
+  });
+
+  it('в фильтре списка цен нет: там выбирают, что искать, а не что заказать', () => {
+    const [special] = classificationFilterGroups([{ ...crane25, avgPricePerHour: 2400 }]);
+    expect(special!.options.every((o) => !('priceHint' in o) || o.priceHint === undefined)).toBe(
+      true,
+    );
   });
 });
 

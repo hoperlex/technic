@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react';
-import { App, Button, Dropdown, Form, Select, Tag, Tooltip, Upload } from 'antd';
+import { App, Button, Dropdown, Form, Select, Tag, Tooltip, Typography, Upload } from 'antd';
 import {
   CheckCircleOutlined,
   CheckOutlined,
@@ -21,6 +21,7 @@ import { filesApi, objectsApi } from '../../api/resources';
 import {
   useVehicleClassifications,
   type VehicleClassificationGroup,
+  type VehicleClassificationOption,
 } from '../../hooks/useVehicleClassifications';
 import { ActionSheet } from '../../components/ActionSheet';
 import { AutoSelect } from '../../components/AutoSelect';
@@ -375,6 +376,10 @@ export function ApprovalCell({
  * («Автокраны, г/п 130 т») либо сам тип, если ТТХ у него нет («Ямобур»). Список сгруппирован по
  * виду ТС и сужен типом заявки, поэтому до его выбора поле недоступно. В форме лежит ключ
  * позиции, в API уходит пара «тип + категория».
+ *
+ * Справа от наименования — порядок цены позиции: средняя ставка её техники. Приписка живёт только
+ * в раскрытом списке (`optionRender`): поиск идёт по наименованию, и выбранная позиция называется
+ * им же — цена в свёрнутом поле читалась бы как согласованная ставка, а она справочная.
  */
 export function VehicleClassificationSelect({
   groups,
@@ -401,6 +406,18 @@ export function VehicleClassificationSelect({
         loading={loading}
         disabled={disabled}
         placeholder={placeholder}
+        optionRender={(option) => {
+          const hint = (option.data as VehicleClassificationOption).priceHint;
+          if (!hint) return option.label;
+          return (
+            <div className="option-row">
+              <span className="option-row__label">{option.label}</span>
+              <Typography.Text type="secondary" className="option-row__hint">
+                {hint}
+              </Typography.Text>
+            </div>
+          );
+        }}
       />
     </Form.Item>
   );

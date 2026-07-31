@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  classificationPriceHint,
   createVehicleKindSchema,
   createVehicleTypeSchema,
   parseVehicleClassificationKey,
@@ -138,6 +139,31 @@ describe('vehicle_classifications: подпись позиции', () => {
   it('без категории показывается чистый тип', () => {
     expect(vehicleClassificationLabel({ typeName: 'Ямобур', categoryName: null })).toBe('Ямобур');
     expect(vehicleClassificationLabel({ typeName: 'Ямобур' })).toBe('Ямобур');
+  });
+});
+
+describe('vehicle_classifications: порядок цены позиции', () => {
+  // Пробел разрядов в «2 400 ₽» — неразрывный (ru-RU), поэтому сверяем по цифрам и знаку.
+  it('час важнее смены: им заказывают чаще, и позиции сравниваются в одних единицах', () => {
+    expect(classificationPriceHint({ avgPricePerHour: 2400, avgPricePerShift: 18000 })).toMatch(
+      /^~ 2.400 ₽\/час$/,
+    );
+  });
+
+  it('без почасовой показывается смена', () => {
+    expect(classificationPriceHint({ avgPricePerHour: null, avgPricePerShift: 18000 })).toMatch(
+      /^~ 18.000 ₽\/смена$/,
+    );
+  });
+
+  it('ставок нет — приписки нет: пусто и ноль это разные ответы', () => {
+    expect(classificationPriceHint({ avgPricePerHour: null, avgPricePerShift: null })).toBeNull();
+  });
+
+  it('копейки в порядок цены не идут — средняя округляется до рубля', () => {
+    expect(classificationPriceHint({ avgPricePerHour: 2416.667, avgPricePerShift: null })).toMatch(
+      /^~ 2.417 ₽\/час$/,
+    );
   });
 });
 

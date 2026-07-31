@@ -54,6 +54,16 @@ export interface VehicleClassificationDto {
   label: string;
   /** ТТХ у типа (ADR 0016): 0 — категорий у типа нет и быть не может. */
   specCount: number;
+  /**
+   * Порядок цены этой позиции: средняя ставка активной техники, у которой она заполнена. Считается
+   * по всему парку — и по аренде, и по своим машинам: заказчику отвечают на «во сколько обойдётся»,
+   * а чьей машиной заявку закроют, на момент заказа неизвестно.
+   *
+   * `null` — ставки нет ни у одной машины позиции. Это не «бесплатно»: показывать в таком случае
+   * нечего, и место остаётся пустым.
+   */
+  avgPricePerHour: number | null;
+  avgPricePerShift: number | null;
   /** Активность позиции целиком: тип активен и (категории нет либо она активна). */
   isActive: boolean;
   typeIsActive: boolean;
@@ -93,4 +103,23 @@ export function vehicleClassificationLabel(v: {
   categoryName?: string | null;
 }): string {
   return v.categoryName || v.typeName;
+}
+
+/**
+ * Порядок цены позиции одной строкой: «~ 2 400 ₽/час». Тильда здесь не украшение — цифра средняя,
+ * и заказ по ней не считают: у конкретной машины ставка своя, а окончательную согласуют при
+ * переводе заявки в работу (ADR 0027).
+ *
+ * Час важнее смены: им заказывают чаще, и сравнивать позиции между собой в одних единицах честнее.
+ * Ставка за смену показывается, только когда почасовой нет ни у одной машины позиции, — иначе
+ * соседние строки списка отвечали бы разными единицами при живой почасовой.
+ */
+export function classificationPriceHint(v: {
+  avgPricePerHour: number | null;
+  avgPricePerShift: number | null;
+}): string | null {
+  const money = (n: number): string => Math.round(n).toLocaleString('ru-RU');
+  if (v.avgPricePerHour != null) return `~ ${money(v.avgPricePerHour)} ₽/час`;
+  if (v.avgPricePerShift != null) return `~ ${money(v.avgPricePerShift)} ₽/смена`;
+  return null;
 }
