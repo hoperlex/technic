@@ -6,11 +6,15 @@ import {
   assignmentRateLabel,
   assignmentTitle,
   completionLabel,
+  earlyEndDaysSaved,
   type RequestHistoryEntryDto,
   requestStatusColors,
   requestStatusLabels,
   type VehicleRequestDto,
+  type VehicleRequestEarlyEndDto,
   vehicleClassificationLabel,
+  vehicleEarlyEndStatusColors,
+  vehicleEarlyEndStatusLabels,
   vehicleOwnershipColors,
   vehicleOwnershipLabels,
   vehicleRequestChangeLabels,
@@ -46,6 +50,58 @@ interface Props {
   onClose: () => void;
   /** Не передана — правка этой заявки недоступна (роль, статус или архив). */
   onEdit?: (r: VehicleRequestDto) => void;
+  /**
+   * Кнопки решения по досрочному завершению (ADR 0044). Функция, а не флаг: доступность зависит
+   * и от роли, и от состояния запроса, и знает об этом вкладка, а не карточка. Не передана —
+   * карточка показывает запрос на чтение, как и всё остальное в ней.
+   */
+  earlyEndActions?: (r: VehicleRequestDto) => ReactNode;
+}
+
+/**
+ * Запрос на досрочное завершение: до какого числа просят сократить срок, почему, кто попросил и
+ * чем кончилось. Причина здесь обязательна к показу — по ней и принимают решение; отказ без
+ * причины оставил бы заявку на прежнем сроке без объяснений.
+ */
+function EarlyEndDetails({
+  earlyEnd,
+  actions,
+}: {
+  earlyEnd: VehicleRequestEarlyEndDto;
+  actions?: ReactNode;
+}) {
+  return (
+    <div style={{ lineHeight: 1.6 }}>
+      <Space size={8} wrap>
+        <Tag color={vehicleEarlyEndStatusColors[earlyEnd.status]} style={{ marginInlineEnd: 0 }}>
+          {vehicleEarlyEndStatusLabels[earlyEnd.status]}
+        </Tag>
+        <span>
+          {formatDateOnly(earlyEnd.previousDateTo)} → {formatDateOnly(earlyEnd.newDateTo)}
+        </span>
+        {earlyEndDaysSaved(earlyEnd.previousDateTo, earlyEnd.newDateTo) != null && (
+          <Typography.Text type="secondary">
+            освобождается {earlyEndDaysSaved(earlyEnd.previousDateTo, earlyEnd.newDateTo)} дн.
+          </Typography.Text>
+        )}
+      </Space>
+      <div>
+        <Typography.Text type="secondary">
+          {earlyEnd.requestedByName} · {formatDateTime(earlyEnd.requestedAt)} — {earlyEnd.reason}
+        </Typography.Text>
+      </div>
+      {earlyEnd.decidedAt && (
+        <div>
+          <Typography.Text type="secondary">
+            {earlyEnd.status === 'approved' ? 'Согласовал' : 'Отклонил'}{' '}
+            {earlyEnd.decidedByName ?? '—'} · {formatDateTime(earlyEnd.decidedAt)}
+            {earlyEnd.decisionComment ? ` — ${earlyEnd.decisionComment}` : ''}
+          </Typography.Text>
+        </div>
+      )}
+      {actions && <div style={{ marginTop: 8 }}>{actions}</div>}
+    </div>
+  );
 }
 
 function toRows(history: RequestHistoryEntryDto[] | undefined): HistoryRow[] {
@@ -73,7 +129,7 @@ function termOf(r: VehicleRequestDto): ReactNode {
   );
 }
 
-export function VehicleRequestViewModal({ request, onClose, onEdit }: Props) {
+export function VehicleRequestViewModal({ request, onClose, onEdit, earlyEndActions }: Props) {
   const isMobile = useIsMobile();
   const { can } = useAuth();
   const { data: history, isPending } = useQuery({
@@ -243,6 +299,24 @@ export function VehicleRequestViewModal({ request, onClose, onEdit }: Props) {
           label: request.requestType === 'special_equipment' ? 'Период работы' : 'Подача',
           children: termOf(request),
         },
+        // Досрочное завершение (ADR 0044): карточка — то место, где решают по запросу, потому
+        // что решают, прочитав причину, а она только здесь. Строка стоит сразу под сроком: она
+        // о нём и говорит.
+        ...(request.requestType === 'special_equipment' && request.earlyEnd
+          ? [
+              {
+                key: 'earlyEnd',
+                label: 'Досрочное завершение',
+                span: 3,
+                children: (
+                  <EarlyEndDetails
+                    earlyEnd={request.earlyEnd}
+                    actions={earlyEndActions?.(request)}
+                  />
+                ),
+              },
+            ]
+          : []),
         // Кто встречает технику на объекте (миграция 0062): у грузоперевозки контакт свой на
         // каждом конце маршрута — он стоит ниже, рядом со своим адресом.
         ...(request.requestType === 'special_equipment'

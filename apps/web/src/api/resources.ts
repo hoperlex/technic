@@ -35,6 +35,7 @@ import type {
   ObjectDto,
   RequestHistoryEntryDto,
   RequestStatus,
+  RequestVehicleEarlyEndInput,
   RequestType,
   RequestWaybillDto,
   UpdateContainerTypeInput,
@@ -338,6 +339,21 @@ export const vehicleRequestsApi = {
       method: 'PATCH',
       body: { approved, version },
     }),
+  /**
+   * Досрочное завершение заказа спецтехники (ADR 0044): техника освободилась раньше срока.
+   * Запрос уходит на визу руководителя строительства; его собственный сервер применяет сразу.
+   */
+  requestEarlyEnd: (id: string, body: RequestVehicleEarlyEndInput) =>
+    apiFetch<VehicleRequestDto>(`/vehicle-requests/${id}/early-end`, { method: 'POST', body }),
+  /** Решение по запросу: `approved: false` — отказ, и тогда причина обязательна. */
+  decideEarlyEnd: (id: string, approved: boolean, version: number, comment = '') =>
+    apiFetch<VehicleRequestDto>(`/vehicle-requests/${id}/early-end`, {
+      method: 'PATCH',
+      body: { approved, comment, version },
+    }),
+  /** Отозвать запрос, пока он ждёт визы: «отбой, техника нужна». */
+  cancelEarlyEnd: (id: string) =>
+    apiFetch<VehicleRequestDto>(`/vehicle-requests/${id}/early-end`, { method: 'DELETE' }),
   remove: (id: string) =>
     apiFetch<{ ok: boolean; mode: string }>(`/vehicle-requests/${id}`, { method: 'DELETE' }),
   restore: (id: string) =>

@@ -81,7 +81,27 @@ const items: SpecialEquipmentRequestDto[] = [
       assignedAt: '2026-07-23T09:00:00.000Z',
     },
   }),
-  request({ id: 'r2', num: 102, dateFrom: '2026-07-22', dateTo: '2026-07-26' }),
+  // Запрошенное досрочное завершение (ADR 0044): срок в строке пока прежний, а тег уже говорит,
+  // что машина уезжает раньше — если визу поставят.
+  request({
+    id: 'r2',
+    num: 102,
+    dateFrom: '2026-07-22',
+    dateTo: '2026-07-26',
+    earlyEnd: {
+      status: 'pending',
+      newDateTo: '2026-07-25',
+      previousDateTo: '2026-07-26',
+      reason: 'работы на фундаменте закончены',
+      requestedBy: 'user-3',
+      requestedByName: 'Сидоров С. С.',
+      requestedAt: '2026-07-24T06:00:00.000Z',
+      decidedBy: null,
+      decidedByName: null,
+      decidedAt: null,
+      decisionComment: '',
+    },
+  }),
   request({ id: 'r3', num: 103, dateFrom: '2026-07-20', dateTo: ON_DATE }),
 ];
 
@@ -90,7 +110,13 @@ const list: VehicleOnSiteListDto = { items, total: 3, page: 1, pageSize: 50, onD
 vi.mock('../src/api/resources', () => ({
   vehicleRequestsApi: {
     onSite: async () => list,
-    onSiteSummary: async () => ({ total: 3, objects: 1, arrivedToday: 1, leavingToday: 1 }),
+    onSiteSummary: async () => ({
+      total: 3,
+      objects: 1,
+      arrivedToday: 1,
+      leavingToday: 1,
+      earlyEndPending: 1,
+    }),
     history: async () => [],
   },
   objectsApi: { list: async () => ({ items: [], total: 0, page: 1, pageSize: 500 }) },
@@ -148,14 +174,20 @@ describe('вкладка «На объекте»', () => {
     expect(screen.getByText('вышла сегодня')).toBeDefined();
   });
 
-  it('действий у среза нет: заявку только открывают карточкой', async () => {
+  it('срез ведёт одно действие — досрочное завершение; статусы и правка остаются в списке', async () => {
     setViewport(DESKTOP_VIEWPORT);
     renderTab();
 
     expect(await screen.findByText('ООО «Арендатех»')).toBeDefined();
-    // Ни статусов, ни визы, ни правки — их ведут в списке заказов.
-    expect(screen.queryByText('Согласовать')).toBeNull();
+    // Статусы, виза заявки и правка сюда не переехали: их ведут в списке заказов (ADR 0036).
     expect(screen.queryByRole('button', { name: 'Изменить статус' })).toBeNull();
     expect(screen.getAllByText('Карточка')).toHaveLength(3);
+
+    // Заявка, которой есть что сокращать, получает действие; уезжающая сегодня (r3) — нет.
+    expect(screen.getAllByText('Завершить досрочно')).toHaveLength(1);
+    // Ожидающий визы запрос вместо этого предлагает решение — и объявляет себя тегом.
+    expect(screen.getByText('Согласовать')).toBeDefined();
+    expect(screen.getByText('Отклонить')).toBeDefined();
+    expect(screen.getByText('досрочно до 25.07.2026 · ждёт визы')).toBeDefined();
   });
 });

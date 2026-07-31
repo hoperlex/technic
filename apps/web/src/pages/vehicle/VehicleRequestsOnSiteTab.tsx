@@ -1,8 +1,9 @@
 import { useState } from 'react';
-import { Input, Select, Space, Tag, Typography, type TableColumnType } from 'antd';
+import { Button, Input, Select, Space, Tag, Typography, type TableColumnType } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import {
   assignmentTitle,
+  canRequestEarlyEnd,
   onSiteDayLabel,
   onSitePresence,
   parseVehicleRequestNumberSearch,
@@ -22,8 +23,16 @@ import { UserAvatar } from '../../components/UserAvatar';
 import { ObjectCell } from '../../components/ObjectCell';
 import { useListParams } from '../../hooks/useListParams';
 import { calendarDayCount } from '../../utils/date';
+import { VehicleEarlyEndModal } from './VehicleEarlyEndModal';
 import { VehicleRequestViewModal } from './VehicleRequestViewModal';
-import { formatDateOnly, useObjectOptions, useVehicleClassificationFilter } from './shared';
+import {
+  EarlyEndTag,
+  formatDateOnly,
+  useEarlyEnd,
+  useObjectOptions,
+  useVehicleClassificationFilter,
+} from './shared';
+import { useAuth } from '../../auth/AuthContext';
 import { useObjectScope } from '../../hooks/useObjectScope';
 
 /**
@@ -52,11 +61,22 @@ function presenceCell(r: SpecialEquipmentRequestDto, onDate: string) {
           </Typography.Text>
         </div>
       )}
+      {/* Запрошенный досрочный отъезд (ADR 0044) — здесь же: до визы срок заявки прежний, и
+        без тега площадка узнала бы об отъезде техники в день отъезда. */}
+      {r.earlyEnd?.status === 'pending' && (
+        <div style={{ marginTop: 2 }}>
+          <EarlyEndTag earlyEnd={r.earlyEnd} />
+        </div>
+      )}
     </div>
   );
 }
 
-/** Срок работ: период заказа и сколько дней заказано — тем же счётом, что в форме и карточке. */
+/**
+ * Срок работ: период заказа и сколько дней заказано — тем же счётом, что в форме и карточке.
+ * Согласованное сокращение (ADR 0044) уже сидит в самом сроке, поэтому рядом стоит приписка «с
+ * какого числа сократили»: без неё непонятно, почему заказ на две недели кончается послезавтра.
+ */
 function termCell(r: SpecialEquipmentRequestDto) {
   const days = calendarDayCount(r.dateFrom, r.dateTo);
   return (
@@ -70,6 +90,11 @@ function termCell(r: SpecialEquipmentRequestDto) {
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
           заказано {days} дн.
         </Typography.Text>
+      )}
+      {r.earlyEnd?.status === 'approved' && (
+        <div>
+          <EarlyEndTag earlyEnd={r.earlyEnd} />
+        </div>
       )}
     </div>
   );
@@ -115,6 +140,11 @@ export function VehicleRequestsOnSiteTab() {
     queryFn: () => vehicleRequestsApi.onSite(params),
   });
 
+  // День среза считает сервер (ADR 0036): до ответа подписи присутствия не строятся — считать их
+  // по часам браузера значило бы отвечать про другой день, чем отобранные строки. От него же
+  // считается доступность досрочного завершения — правило одно с сервером (ADR 0044).
+  const onDate = data?.onDate;
+
   // Итог считается по тем же фильтрам, что и таблица: сводка, отвечающая не про то, что человек
   // видит перед собой, вводит в заблуждение вернее, чем её отсутствие.
   const { data: summary } = useQuery({
@@ -127,17 +157,28 @@ export function VehicleRequestsOnSiteTab() {
 
   const [viewRecord, setViewRecord] = useState<SpecialEquipmentRequestDto | null>(null);
 
+  // Досрочное завершение (ADR 0044) — единственное действие среза: он отвечает, что стоит на
+  // площадке, и здесь же говорят, что машина уезжает раньше. Всё остальное по-прежнему ведут в
+  // списке заявок.
+  const { can } = useAuth();
+  const earlyEnd = useEarlyEnd();
+  const canRequest = can('vehicleRequests.update');
+  const canDecide = can('vehicleRequests.approve');
+  /** Действие доступно тем же условием, что проверяет сервер, — и по дню среза, а не по часам браузера. */
+  const earlyEndAllowed = (r: SpecialEquipmentRequestDto) =>
+    canRequest && !!onDate && canRequestEarlyEnd(r, onDate) && r.earlyEnd?.status !== 'pending';
+  const decidable = (r: SpecialEquipmentRequestDto) =>
+    canDecide && r.earlyEnd?.status === 'pending';
+
   const summaryItems = [
     { label: 'Единиц техники', value: summary?.total ?? 0 },
     { label: 'Объектов', value: summary?.objects ?? 0 },
     // Две цифры, ради которых вкладку открывают утром: одну машину принимают, другую провожают.
     { label: 'Вышли сегодня', value: summary?.arrivedToday ?? 0 },
     { label: 'Уезжают сегодня', value: summary?.leavingToday ?? 0 },
+    // Пятая — про завтра: эти машины уедут раньше срока, если визу поставят (ADR 0044).
+    { label: 'Ждут визы на отъезд', value: summary?.earlyEndPending ?? 0 },
   ];
-
-  // День среза считает сервер (ADR 0036): до ответа подписи присутствия не строятся — считать их
-  // по часам браузера значило бы отвечать про другой день, чем отобранные строки.
-  const onDate = data?.onDate;
 
   // Ключ колонки — он же поле сортировки на сервере (VEHICLE_ON_SITE_SORT_FIELDS).
   const columns: TableColumnType<SpecialEquipmentRequestDto>[] = [
@@ -224,10 +265,28 @@ export function VehicleRequestsOnSiteTab() {
       ellipsis: true,
     }),
     actionsColumn<SpecialEquipmentRequestDto>(
-      // Действий у среза нет: он на чтение. Карточка — единственное место, где видны файлы,
+      // Срез читают, а не ведут: статусы, виза и правка остаются в списке заявок. Своё действие
+      // у него ровно одно — досрочное завершение (ADR 0044): решение об отъезде техники
+      // принимают, глядя именно на этот список. Карточка — единственное место, где видны файлы,
       // ставки и вся хронология заявки (ADR 0015).
-      (r) => <Typography.Link onClick={() => setViewRecord(r)}>Карточка</Typography.Link>,
-      110,
+      (r) => (
+        <Space size={4} direction="vertical" style={{ lineHeight: 1.35 }}>
+          <Typography.Link onClick={() => setViewRecord(r)}>Карточка</Typography.Link>
+          {decidable(r) ? (
+            <Space size={8}>
+              <Typography.Link onClick={() => earlyEnd.approve(r)}>Согласовать</Typography.Link>
+              <Typography.Link type="danger" onClick={() => earlyEnd.reject(r)}>
+                Отклонить
+              </Typography.Link>
+            </Space>
+          ) : (
+            earlyEndAllowed(r) && (
+              <Typography.Link onClick={() => earlyEnd.open(r)}>Завершить досрочно</Typography.Link>
+            )
+          )}
+        </Space>
+      ),
+      150,
     ),
   ];
 
@@ -298,7 +357,33 @@ export function VehicleRequestsOnSiteTab() {
       (r) => `${r.displayNumber} · ${r.createdByName}`,
     ],
     onOpen: (r) => setViewRecord(r),
-    actions: (r) => [{ key: 'view', label: 'Открыть карточку', onClick: () => setViewRecord(r) }],
+    actions: (r) => [
+      { key: 'view', label: 'Открыть карточку', onClick: () => setViewRecord(r) },
+      ...(decidable(r)
+        ? [
+            {
+              key: 'approve-early-end',
+              label: 'Согласовать досрочное завершение',
+              onClick: () => earlyEnd.approve(r),
+            },
+            {
+              key: 'reject-early-end',
+              label: 'Отклонить досрочное завершение',
+              danger: true,
+              onClick: () => earlyEnd.reject(r),
+            },
+          ]
+        : []),
+      ...(earlyEndAllowed(r)
+        ? [
+            {
+              key: 'early-end',
+              label: 'Завершить досрочно',
+              onClick: () => earlyEnd.open(r),
+            },
+          ]
+        : []),
+    ],
   };
 
   return (
@@ -333,7 +418,42 @@ export function VehicleRequestsOnSiteTab() {
       />
 
       {/* Правка отсюда не предлагается: заявку ведут в списке заказов, здесь — только смотрят. */}
-      <VehicleRequestViewModal request={viewRecord} onClose={() => setViewRecord(null)} />
+      <VehicleRequestViewModal
+        request={viewRecord}
+        onClose={() => setViewRecord(null)}
+        // Решают по запросу здесь же: причина сокращения видна только в карточке.
+        earlyEndActions={(r) =>
+          r.requestType === 'special_equipment' && r.earlyEnd?.status === 'pending' ? (
+            <Space size={8} wrap>
+              {canDecide && (
+                <>
+                  <Button size="small" type="primary" onClick={() => earlyEnd.approve(r)}>
+                    Согласовать
+                  </Button>
+                  <Button size="small" danger onClick={() => earlyEnd.reject(r)}>
+                    Отклонить
+                  </Button>
+                </>
+              )}
+              {canRequest && (
+                <Button size="small" onClick={() => earlyEnd.withdraw(r)}>
+                  Отозвать запрос
+                </Button>
+              )}
+            </Space>
+          ) : null
+        }
+      />
+
+      {/* Досрочное завершение — окно то же, что и в списке заявок: спрашивают в нём одно и то же. */}
+      <VehicleEarlyEndModal
+        request={earlyEnd.target}
+        onDate={onDate ?? ''}
+        approvesOwn={earlyEnd.approvesOwn}
+        confirmLoading={earlyEnd.pending}
+        onCancel={earlyEnd.close}
+        onSubmit={earlyEnd.submit}
+      />
     </PageTableLayout>
   );
 }

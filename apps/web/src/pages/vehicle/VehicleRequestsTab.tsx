@@ -17,6 +17,7 @@ import {
   DeleteOutlined,
   EditOutlined,
   EyeOutlined,
+  FieldTimeOutlined,
   PlusOutlined,
   ReloadOutlined,
 } from '@ant-design/icons';
@@ -28,8 +29,11 @@ import {
   type ConfirmScheduleBody,
   assignmentRateLabel,
   assignmentTitle,
+  canRequestEarlyEnd,
+  canShortenWorkPeriodByEdit,
   type CompleteVehicleRequestInput,
   isAddressVerified,
+  minRequestDateKey,
   isVehicleKindAllowedForRequest,
   normalizeTimeInput,
   parseVehicleClassificationKey,
@@ -38,6 +42,7 @@ import {
   type RequestStatus,
   requestCustomerName,
   requestStatusLabels,
+  type SpecialEquipmentRequestDto,
   statusChangeRequiresReason,
   transitionRequiresAssignment,
   transitionRequiresCompletion,
@@ -83,13 +88,16 @@ import { MOSCOW_TZ } from '../../theme';
 import { FilesCell } from '../../components/FileLinks';
 import { VehicleAssignModal } from './VehicleAssignModal';
 import { VehicleCompleteModal } from './VehicleCompleteModal';
+import { VehicleEarlyEndModal } from './VehicleEarlyEndModal';
 import { VehicleRequestViewModal } from './VehicleRequestViewModal';
 import { useObjectScope } from '../../hooks/useObjectScope';
 import { useDepartmentScope } from '../../hooks/useDepartmentScope';
 import {
   ApprovalCell,
+  EarlyEndTag,
   FileEditor,
   formatDateOnly,
+  useEarlyEnd,
   StatusCell,
   VehicleClassificationSelect,
   useDepartmentOptions,
@@ -291,6 +299,17 @@ export function VehicleRequestsTab() {
   // Ограничение дат: новая заявка — не раньше сегодня по МСК (правило сервера), правка
   // заведённой — не в прошлое (её дата могла быть назначена и вчера).
   const minDateRule = record ? isPastDate : isBeforeMinRequestDate;
+
+  // Срок работающей заявки правкой только продлевают: сокращение идёт досрочным завершением с
+  // визой (ADR 0044), и сервер прямую правку отклоняет.
+  const dateToLocked =
+    !!record &&
+    record.requestType === 'special_equipment' &&
+    !canShortenWorkPeriodByEdit(record.status);
+  const currentLastDay =
+    record?.requestType === 'special_equipment' ? record.dateTo || record.dateFrom : null;
+  const isBeforeCurrentDateTo = (d: Dayjs) =>
+    !!currentLastDay && d.format('YYYY-MM-DD') < currentLastDay;
 
   // Заказ техники на объект допускает технику любого вида, грузоперевозка — только грузовую.
   // Позиция правимой заявки могла выйти из справочника (её выключили) или не существовать вовсе
@@ -593,6 +612,20 @@ export function VehicleRequestsTab() {
     });
   };
 
+  // Досрочное завершение (ADR 0044): запрос сокращения срока, решение по нему и отзыв. Действия
+  // общие со срезом «На объекте» — там их и вызывают чаще, — поэтому живут одним хуком.
+  const earlyEnd = useEarlyEnd();
+  /** «Сегодня» по Москве: тем же днём применимость считает сервер (`earlyEndBlocker`). */
+  const today = minRequestDateKey();
+  /** Предикаты-сужения: досрочно завершают только заказ спецтехники, и окно ждёт именно его. */
+  const earlyEndAllowed = (r: VehicleRequestDto): r is SpecialEquipmentRequestDto =>
+    canEdit &&
+    r.requestType === 'special_equipment' &&
+    canRequestEarlyEnd(r, today) &&
+    r.earlyEnd?.status !== 'pending';
+  const decidableEarlyEnd = (r: VehicleRequestDto): r is SpecialEquipmentRequestDto =>
+    canApprove && r.requestType === 'special_equipment' && r.earlyEnd?.status === 'pending';
+
   const removeMut = useMutation({
     mutationFn: (id: string) => vehicleRequestsApi.remove(id),
     onSuccess: (res) => {
@@ -703,7 +736,15 @@ export function VehicleRequestsTab() {
       width: 170,
       // Срок у типов заявки лежит в разных полях — сортировку сводит сервер.
       sorter: true,
-      render: (_v, r) => termLabel(r),
+      // Досрочное завершение (ADR 0044) читается тут же: запрошенное — тегом «ждёт визы»,
+      // состоявшееся — припиской, с какого числа срок сократили. Иначе заказ на две недели,
+      // кончающийся послезавтра, выглядит опечаткой.
+      render: (_v, r) => (
+        <div style={{ lineHeight: 1.35 }}>
+          <div>{termLabel(r)}</div>
+          {r.requestType === 'special_equipment' && <EarlyEndTag earlyEnd={r.earlyEnd} />}
+        </div>
+      ),
     },
     {
       // Назначенная техника (ADR 0027): у «Новой» заявки пусто, дальше — чем её взяли и почём.
@@ -810,6 +851,29 @@ export function VehicleRequestsTab() {
       return (
         <Space size={4}>
           {view}
+          {/* Досрочное завершение (ADR 0044): у ожидающего визы запроса кнопка ведёт в карточку —
+            решают, прочитав причину, а она там. Пока запроса нет — просят сокращение отсюда. */}
+          {decidableEarlyEnd(r) ? (
+            <Tooltip title="Ждёт визы на досрочное завершение">
+              <Button
+                size="small"
+                icon={<FieldTimeOutlined />}
+                onClick={() => setViewRecord(r)}
+                aria-label="Досрочное завершение ждёт визы"
+              />
+            </Tooltip>
+          ) : (
+            earlyEndAllowed(r) && (
+              <Tooltip title="Завершить досрочно">
+                <Button
+                  size="small"
+                  icon={<FieldTimeOutlined />}
+                  onClick={() => earlyEnd.open(r)}
+                  aria-label="Завершить досрочно"
+                />
+              </Tooltip>
+            )
+          )}
           <Button
             size="small"
             icon={<EditOutlined />}
@@ -825,7 +889,7 @@ export function VehicleRequestsTab() {
           />
         </Space>
       );
-    }, 120),
+    }, 150),
   ];
 
   const filters = (
@@ -1032,6 +1096,32 @@ export function VehicleRequestsTab() {
       const allowed = canModify(r);
       return [
         view,
+        ...(decidableEarlyEnd(r)
+          ? [
+              {
+                key: 'approve-early-end',
+                label: 'Согласовать досрочное завершение',
+                icon: <FieldTimeOutlined />,
+                onClick: () => earlyEnd.approve(r),
+              },
+              {
+                key: 'reject-early-end',
+                label: 'Отклонить досрочное завершение',
+                danger: true,
+                onClick: () => earlyEnd.reject(r),
+              },
+            ]
+          : []),
+        ...(earlyEndAllowed(r)
+          ? [
+              {
+                key: 'early-end',
+                label: 'Завершить досрочно',
+                icon: <FieldTimeOutlined />,
+                onClick: () => earlyEnd.open(r),
+              },
+            ]
+          : []),
         {
           key: 'edit',
           label: 'Редактировать',
@@ -1186,14 +1276,21 @@ export function VehicleRequestsTab() {
                   name="dateTo"
                   label="Дата окончания"
                   // Число дней (столько техника занята на объекте) — подписью под полем: в сетке из
-                  // двух колонок отдельной колонки под него уже нет.
-                  extra={periodHint}
+                  // двух колонок отдельной колонки под него уже нет. У работающей заявки здесь же
+                  // сказано, чем сокращают срок: правкой его сократить нельзя (ADR 0044).
+                  extra={
+                    dateToLocked
+                      ? 'Срок работающей техники сокращают досрочным завершением — с визой'
+                      : periodHint
+                  }
                 >
                   <DatePicker
                     format="DD.MM.YYYY"
                     style={{ width: '100%' }}
                     inputReadOnly={isMobile}
-                    disabledDate={minDateRule}
+                    // Продление правкой остаётся, сокращение — нет: то же правило проверяет
+                    // сервер, и предлагать дату, которую он отклонит, портал не должен.
+                    disabledDate={dateToLocked ? isBeforeCurrentDateTo : minDateRule}
                   />
                 </Form.Item>
                 {/* Кто встречает технику на объекте: без контакта заезд и место работ выясняются
@@ -1297,6 +1394,34 @@ export function VehicleRequestsTab() {
       <VehicleRequestViewModal
         request={viewRecord}
         onClose={() => setViewRecord(null)}
+        // Решение по досрочному завершению принимают, прочитав причину, — а она в карточке.
+        // Решённый запрос кнопок не получает: согласованный уже сократил срок, отклонённый
+        // объясняет, почему этого не случилось.
+        earlyEndActions={(r) => {
+          if (r.requestType !== 'special_equipment' || r.earlyEnd?.status !== 'pending') {
+            return null;
+          }
+          return (
+            <Space size={8} wrap>
+              {canApprove && (
+                <>
+                  <Button size="small" type="primary" onClick={() => earlyEnd.approve(r)}>
+                    Согласовать
+                  </Button>
+                  <Button size="small" danger onClick={() => earlyEnd.reject(r)}>
+                    Отклонить
+                  </Button>
+                </>
+              )}
+              {/* Отзывает тот, кто мог и подать: отбой приходит и диспетчеру, и площадке. */}
+              {canEdit && (
+                <Button size="small" onClick={() => earlyEnd.withdraw(r)}>
+                  Отозвать запрос
+                </Button>
+              )}
+            </Space>
+          );
+        }}
         onEdit={
           viewRecord && canModify(viewRecord)
             ? (r) => {
@@ -1328,6 +1453,16 @@ export function VehicleRequestsTab() {
 
       {/* Выполнение: отработанное время и стоимость (ADR 0029). Факт уходит тем же запросом,
           что и статус, — заявка не бывает выполненной без ответа «сколько стоило». */}
+      {/* Досрочное завершение — то же окно, что и на вкладке «На объекте» (ADR 0044). */}
+      <VehicleEarlyEndModal
+        request={earlyEnd.target}
+        onDate={today}
+        approvesOwn={earlyEnd.approvesOwn}
+        confirmLoading={earlyEnd.pending}
+        onCancel={earlyEnd.close}
+        onSubmit={earlyEnd.submit}
+      />
+
       <VehicleCompleteModal
         request={completeTarget}
         confirmLoading={statusMut.isPending}
