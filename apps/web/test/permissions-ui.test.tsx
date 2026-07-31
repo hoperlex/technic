@@ -37,7 +37,8 @@ const authUser = (subject: AccessSubject): AuthUser | null =>
         role: subject.role,
         isActive: true,
         mustChangePassword: false,
-        constructionObjectId: null,
+        constructionObjectIds: [],
+        departmentIds: [],
         counterpartyType: subject.counterpartyType ?? null,
       }
     : null;
@@ -124,6 +125,18 @@ describe('пункты меню следуют из прав', () => {
     expect(screen.getByText('Вывоз мусора')).toBeDefined();
     expect(screen.queryByText('Заказ ТС')).toBeNull();
     expect(screen.queryByText('Справочники')).toBeNull();
+  });
+
+  it('отделу показывают только заказ ТС: вывоз мусора не его модуль (ADR 0040)', () => {
+    for (const role of ['department', 'department_head'] as Role[]) {
+      const { unmount } = renderMenu(role);
+      expect(screen.getByText('Заказ ТС'), role).toBeDefined();
+      // Раздел закрывается правом, а не списком ролей: прав на вывоз у отдела нет вовсе.
+      expect(screen.queryByText('Вывоз мусора'), role).toBeNull();
+      expect(screen.queryByText('Справочники'), role).toBeNull();
+      expect(screen.queryByText('Администрирование'), role).toBeNull();
+      unmount();
+    }
   });
 
   it('арендодателю ТС показывают заказ техники — и только его (ADR 0038)', () => {

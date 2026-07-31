@@ -97,7 +97,7 @@ vi.mock('../src/api/resources', () => ({
 
 vi.mock('../src/auth/AuthContext', () => ({
   useAuth: () => ({
-    user: { id: 'user-1', role: 'dispatcher', constructionObjectId: null },
+    user: { id: 'user-1', role: 'dispatcher', constructionObjectIds: [] },
     can: () => true,
     hasRole: () => false,
   }),

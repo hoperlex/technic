@@ -20,6 +20,7 @@
     "db:generate": "pnpm --filter @technic/api db:generate",
     "db:migrate": "pnpm --filter @technic/api db:migrate",
     "seed:admin": "pnpm --filter @technic/api seed:admin",
+    "seed:drivers": "pnpm --filter @technic/api seed:drivers",
     "seed:drivers-test": "pnpm --filter @technic/api seed:drivers-test"
   },
   "devDependencies": {

@@ -40,7 +40,7 @@ function principal(
     role,
     isActive: true,
     mustChangePassword: false,
-    constructionObjectId: null,
+    constructionObjectIds: [],
     counterpartyId: null,
     counterpartyType,
     authVersion: 1,

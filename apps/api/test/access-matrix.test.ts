@@ -44,7 +44,7 @@ vi.mock('../src/auth/principal', () => ({
     role: currentSubject.role,
     isActive: true,
     mustChangePassword: false,
-    constructionObjectId: OBJECT_ID,
+    constructionObjectIds: [OBJECT_ID],
     counterpartyId: COUNTERPARTY_ID,
     counterpartyType: currentSubject.counterpartyType ?? null,
     authVersion: 1,
@@ -73,6 +73,8 @@ type ProfileKey =
   | 'dispatcher'
   | 'shtab'
   | 'rukstroy'
+  | 'department'
+  | 'department_head'
   | 'observer'
   | 'operator/operator'
   | 'operator/vehicle_lessor';
@@ -174,6 +176,8 @@ const CASES: Case[] = [
       'dispatcher',
       'shtab',
       'rukstroy',
+      'department',
+      'department_head',
       'operator/operator',
       'operator/vehicle_lessor',
       'observer',
@@ -189,6 +193,8 @@ const CASES: Case[] = [
       'dispatcher',
       'shtab',
       'rukstroy',
+      'department',
+      'department_head',
       'operator/operator',
       'operator/vehicle_lessor',
       'observer',
@@ -206,6 +212,8 @@ const CASES: Case[] = [
       'dispatcher',
       'shtab',
       'rukstroy',
+      'department',
+      'department_head',
       'operator/operator',
       'operator/vehicle_lessor',
       'observer',
@@ -303,6 +311,8 @@ const CASES: Case[] = [
       'dispatcher',
       'shtab',
       'rukstroy',
+      'department',
+      'department_head',
       'operator/vehicle_lessor',
       'observer',
     ],
@@ -317,6 +327,8 @@ const CASES: Case[] = [
       'dispatcher',
       'shtab',
       'rukstroy',
+      'department',
+      'department_head',
       'operator/vehicle_lessor',
       'observer',
     ],
@@ -333,6 +345,8 @@ const CASES: Case[] = [
       'dispatcher',
       'shtab',
       'rukstroy',
+      'department',
+      'department_head',
       'operator/vehicle_lessor',
       'observer',
     ],
@@ -347,6 +361,8 @@ const CASES: Case[] = [
       'dispatcher',
       'shtab',
       'rukstroy',
+      'department',
+      'department_head',
       'operator/vehicle_lessor',
       'observer',
     ],
@@ -355,16 +371,25 @@ const CASES: Case[] = [
     title: 'заказ ТС — удаление заявки',
     method: 'DELETE',
     url: `/api/v1/vehicle-requests/${RECORD_ID}`,
-    allowed: ['admin', 'manager', 'dispatcher', 'shtab', 'rukstroy'],
+    allowed: [
+      'admin',
+      'manager',
+      'dispatcher',
+      'shtab',
+      'rukstroy',
+      'department',
+      'department_head',
+    ],
   },
   {
-    // Виза — решение заказчика со стороны объекта, а не того, кто заявку обрабатывает (ADR 0025):
-    // менеджеру и диспетчеру она недоступна, хотя статусы ведут именно они.
-    title: 'заказ ТС — виза руководителя строительства',
+    // Виза — решение заказчика, а не того, кто заявку обрабатывает (ADR 0025): менеджеру и
+    // диспетчеру она недоступна, хотя статусы ведут именно они. Заказчиков двое — объект и отдел
+    // (ADR 0040), и визирует каждый у себя: право на маршруте одно, разводит их область.
+    title: 'заказ ТС — виза заказчика',
     method: 'PATCH',
     url: `/api/v1/vehicle-requests/${RECORD_ID}/approval`,
     payload: { approved: true, version: 1 },
-    allowed: ['admin', 'rukstroy'],
+    allowed: ['admin', 'rukstroy', 'department_head'],
   },
   {
     title: 'заказ ТС — смена статуса',
@@ -435,6 +460,8 @@ const CASES: Case[] = [
       'dispatcher',
       'shtab',
       'rukstroy',
+      'department',
+      'department_head',
       'operator/operator',
       'operator/vehicle_lessor',
       'observer',

@@ -1,10 +1,12 @@
-import { eq, type AnyColumn, type SQL } from 'drizzle-orm';
+import { eq, inArray, type AnyColumn, type SQL } from 'drizzle-orm';
 import {
   actsForCounterparty,
   can,
   canTransitionStatus,
   isCounterpartyScopedRole,
+  isDepartmentScopedRole,
   isObjectScopedRole,
+  isPlaceScopedRole,
   requestStatusLabels,
   roleLabels,
   type CounterpartyType,
@@ -64,13 +66,23 @@ function assertCounterpartyScope(
 
 /**
  * Ограничение видимости заявок по ролям: роли, работающие в пределах объекта («Штаб»,
- * «Руководитель строительства», ADR 0025), видят только заявки своего объекта; остальные — все.
+ * «Руководитель строительства», ADR 0025), видят только заявки своих объектов; остальные — все.
  * Параметризовано колонкой объекта (переиспользуется модулями «Вывоз мусора» и «Заказ ТС»).
+ *
+ * Объектов у учётки набор (ADR 0039). Пустой набор означает «не видит ничего», а не «видит всё»:
+ * активировать объектную роль без объектов API не даёт, но выборка не должна зависеть от того,
+ * удержалась ли эта проверка.
  */
 export function requestVisibilityWhere(p: Principal, objectIdColumn: AnyColumn): SQL | undefined {
   if (isObjectScopedRole(p.role)) {
-    return eq(objectIdColumn, p.constructionObjectId ?? NEVER_MATCH);
+    const ids = p.constructionObjectIds;
+    return ids.length > 0 ? inArray(objectIdColumn, ids) : eq(objectIdColumn, NEVER_MATCH);
   }
+  // Роль отдела объектных заявок не видит вовсе (ADR 0040): отдел — офис, и заявка площадки не
+  // его. Ветка написана явно, а не оставлена на «нет прав»: право и область выдаются порознь, и
+  // «право есть, а область не написана» означает доступ ко всем строкам сразу — тем же приёмом,
+  // что и у внешнего исполнителя в чужом модуле.
+  if (isDepartmentScopedRole(p.role)) return eq(objectIdColumn, NEVER_MATCH);
   return undefined;
 }
 
@@ -117,7 +129,10 @@ export function assertArchiveVisible(
  */
 export function canApproveForObject(p: Principal, objectId: string): boolean {
   if (!can(p, 'vehicleRequests.approve')) return false;
-  return !isObjectScopedRole(p.role) || p.constructionObjectId === objectId;
+  // Руководитель отдела визирует заявки своего отдела, а не площадки: право визы у него есть,
+  // но объектная заявка вне его области (ADR 0040).
+  if (isDepartmentScopedRole(p.role)) return false;
+  return !isObjectScopedRole(p.role) || p.constructionObjectIds.includes(objectId);
 }
 
 /**
@@ -131,27 +146,37 @@ export function canApproveForObject(p: Principal, objectId: string): boolean {
  * принимал, — и обойти визу можно было бы просьбой завести заявку.
  */
 export function approvesOwnRequestOnCreate(p: Principal, objectId: string): boolean {
-  return isObjectScopedRole(p.role) && canApproveForObject(p, objectId);
+  return isPlaceScopedRole(p.role) && canApproveForObject(p, objectId);
 }
 
-/** Объектная роль работает только со своим объектом (проверка конкретного objectId). */
+/**
+ * Объектная роль работает только со своими объектами (проверка конкретного objectId).
+ *
+ * Роль отдела не работает ни с одним: у неё нет объектов, и заявка площадки — не её (ADR 0040).
+ * Отказ здесь, а не в отсутствии прав: права на модуль у отдела как раз есть, и без этой ветки
+ * сотрудник отдела заводил бы заявки на любой объект компании.
+ */
 export function assertObjectScope(p: Principal, objectId: string): void {
-  if (isObjectScopedRole(p.role) && objectId !== p.constructionObjectId) {
-    throw err.forbidden(`${roleLabels[p.role!]} работает только со своим объектом`);
+  if (isDepartmentScopedRole(p.role)) {
+    throw err.forbidden(`${roleLabels[p.role!]} работает только со своим отделом`);
+  }
+  if (isObjectScopedRole(p.role) && !p.constructionObjectIds.includes(objectId)) {
+    throw err.forbidden(`${roleLabels[p.role!]} работает только со своими объектами`);
   }
 }
 
 /**
- * Со стороны объекта правят и удаляют только заявку, которую ещё не взяли в работу: после
- * «В работе» за заявкой стоят договорённости с исполнителем, и менять её задним числом нельзя.
- * Ограничение по состоянию записи, а не по действию, поэтому это область, а не право.
+ * Со стороны заказчика — объекта или отдела — правят и удаляют только заявку, которую ещё не
+ * взяли в работу: после «В работе» за заявкой стоят договорённости с исполнителем, и менять её
+ * задним числом нельзя. Ограничение по состоянию записи, а не по действию, поэтому это область,
+ * а не право. Правило одно на обе оси, отсюда `isPlaceScopedRole` (ADR 0040).
  */
 export function assertObjectRoleEditable(
   p: Principal,
   status: RequestStatus,
   action: string,
 ): void {
-  if (isObjectScopedRole(p.role) && status !== 'new') {
+  if (isPlaceScopedRole(p.role) && status !== 'new') {
     throw err.forbidden(`${roleLabels[p.role!]} может ${action} заявку только в статусе «Новая»`);
   }
 }

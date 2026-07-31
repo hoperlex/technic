@@ -201,7 +201,7 @@ export function WasteRequestViewModal({ request, onClose, onEdit }: Props) {
         {
           key: 'object',
           label: 'Объект',
-          span: 2,
+          span: 3,
           children: `${request.objectCode} — ${request.objectName}`,
         },
         {
@@ -218,7 +218,7 @@ export function WasteRequestViewModal({ request, onClose, onEdit }: Props) {
         {
           key: 'responsible',
           label: 'Ответственный',
-          span: 2,
+          span: 3,
           children: (
             <ResponsibleValue name={request.responsibleName} phone={request.responsiblePhone} />
           ),
@@ -232,7 +232,7 @@ export function WasteRequestViewModal({ request, onClose, onEdit }: Props) {
               {
                 key: 'containerType',
                 label: 'Контейнер / машина',
-                span: priced ? 1 : 2,
+                span: priced ? 1 : 3,
                 children: request.containerTypeName ?? '—',
               },
             ]),
@@ -273,7 +273,7 @@ export function WasteRequestViewModal({ request, onClose, onEdit }: Props) {
               {
                 key: 'hauled',
                 label: 'Вывезено',
-                span: 2,
+                span: 3,
                 children: (
                   <div style={{ lineHeight: 1.3 }}>
                     <div>
@@ -315,12 +315,12 @@ export function WasteRequestViewModal({ request, onClose, onEdit }: Props) {
               {
                 key: 'cancelReason',
                 label: 'Причина отмены',
-                span: 2,
+                span: 3,
                 children: request.cancelReason,
               },
             ]
           : []),
-        { key: 'comment', label: 'Комментарий', span: 2, children: request.comment || '—' },
+        { key: 'comment', label: 'Комментарий', span: 3, children: request.comment || '—' },
       ]
     : [];
 
@@ -329,7 +329,7 @@ export function WasteRequestViewModal({ request, onClose, onEdit }: Props) {
       title={request ? `Заявка № ${request.displayNumber}` : 'Заявка'}
       open={!!request}
       onClose={onClose}
-      width={760}
+      width={1000}
       // Окно переоткрывают на соседней заявке — раскрытые строки прошлой истории не её дело.
       destroyOnHidden
       footer={[
@@ -352,7 +352,10 @@ export function WasteRequestViewModal({ request, onClose, onEdit }: Props) {
           <Descriptions
             size="small"
             bordered
-            column={isMobile ? 1 : 2}
+            // Три колонки на десктопе: окно шире, и в двух его половина оставалась пустой,
+            // а карточка всё равно скроллилась. `span: 3` у поля означает «во всю ширину» —
+            // раньше ту же роль играла двойка. На телефоне колонка одна, и span не действует.
+            column={isMobile ? 1 : 3}
             layout={isMobile ? 'vertical' : 'horizontal'}
             items={fields}
           />

@@ -1,6 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { db } from '../db/client';
 import { counterparties, users } from '../db/schema';
+import { constructionObjectIdsExpr, departmentIdsExpr } from '../services/user-scopes';
 import type { AccessSubject, CounterpartyType, Role } from '@technic/contracts';
 
 /** Принципал — субъект доступа (ADR 0038): права спрашиваются у пары «роль + тип контрагента». */
@@ -15,7 +16,17 @@ export interface Principal extends AccessSubject {
   role: Role | null;
   isActive: boolean;
   mustChangePassword: boolean;
-  constructionObjectId: string | null;
+  /**
+   * Объекты учётки (ADR 0039): область видимости объектной роли. Набор, а не один объект —
+   * штаб ведёт несколько площадок. Пустой набор у объектной роли означает «не видит ничего»
+   * (`requestVisibilityWhere`), а не «видит всё»: активировать такую учётку API не даёт.
+   */
+  constructionObjectIds: string[];
+  /**
+   * Отделы учётки (ADR 0040): вторая ось области. Заполнена всегда одна из двух — отдел это
+   * офис, объект это площадка, и роль работает ровно на одной из осей.
+   */
+  departmentIds: string[];
   /** Контрагент учётки (ADR 0010): у внешнего исполнителя задаёт, чьи заявки ему видны. */
   counterpartyId: string | null;
   /**
@@ -34,7 +45,12 @@ export interface Principal extends AccessSubject {
  */
 export async function loadPrincipal(userId: string): Promise<Principal | null> {
   const [row] = await db
-    .select({ u: users, counterpartyType: counterparties.type })
+    .select({
+      u: users,
+      counterpartyType: counterparties.type,
+      constructionObjectIds: constructionObjectIdsExpr,
+      departmentIds: departmentIdsExpr,
+    })
     .from(users)
     .leftJoin(counterparties, eq(users.counterpartyId, counterparties.id))
     .where(eq(users.id, userId));
@@ -51,7 +67,8 @@ export async function loadPrincipal(userId: string): Promise<Principal | null> {
     role: u.role,
     isActive: u.isActive,
     mustChangePassword: u.mustChangePassword,
-    constructionObjectId: u.constructionObjectId,
+    constructionObjectIds: row.constructionObjectIds,
+    departmentIds: row.departmentIds,
     counterpartyId: u.counterpartyId,
     counterpartyType: row.counterpartyType,
     authVersion: u.authVersion,

@@ -27,6 +27,7 @@ import {
 } from '../auth/sessions';
 import { loadPrincipal } from '../auth/principal';
 import { requirePrincipal } from '../auth/plugin';
+import { constructionObjectIdsExpr, departmentIdsExpr } from '../services/user-scopes';
 
 interface AuthUserSource {
   id: string;
@@ -38,7 +39,10 @@ interface AuthUserSource {
   role: Role | null;
   isActive: boolean;
   mustChangePassword: boolean;
-  constructionObjectId: string | null;
+  /** Объекты учётки (ADR 0039): по ним портал сужает фильтр объекта и подставляет его в форму. */
+  constructionObjectIds: string[];
+  /** Отделы учётки (ADR 0040): вторая ось области — вместо объектов, а не вместе с ними. */
+  departmentIds: string[];
   /** Тип контрагента учётки (ADR 0038): вместе с ролью задаёт права — портал считает их сам. */
   counterpartyType: CounterpartyType | null;
 }
@@ -54,7 +58,8 @@ function makeAuthUser(u: AuthUserSource): AuthUser {
     role: u.role,
     isActive: u.isActive,
     mustChangePassword: u.mustChangePassword,
-    constructionObjectId: u.constructionObjectId,
+    constructionObjectIds: u.constructionObjectIds,
+    departmentIds: u.departmentIds,
     counterpartyType: u.counterpartyType,
   };
 }
@@ -65,7 +70,12 @@ function makeAuthUser(u: AuthUserSource): AuthUser {
  */
 function userWithCounterpartyType() {
   return db
-    .select({ u: users, counterpartyType: counterparties.type })
+    .select({
+      u: users,
+      counterpartyType: counterparties.type,
+      constructionObjectIds: constructionObjectIdsExpr,
+      departmentIds: departmentIdsExpr,
+    })
     .from(users)
     .leftJoin(counterparties, eq(users.counterpartyId, counterparties.id));
 }
@@ -160,7 +170,14 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
   r.post('/login', { schema: { body: loginSchema }, config: authRateLimit }, async (req, reply) => {
     const { email, password } = req.body;
     const [row] = await userWithCounterpartyType().where(eq(users.email, email));
-    const u = row ? { ...row.u, counterpartyType: row.counterpartyType } : undefined;
+    const u = row
+      ? {
+          ...row.u,
+          counterpartyType: row.counterpartyType,
+          constructionObjectIds: row.constructionObjectIds,
+          departmentIds: row.departmentIds,
+        }
+      : undefined;
     if (!u || u.deletedAt) throw err.invalidCredentials();
     const ok = await verifyPassword(u.passwordHash, password);
     if (!ok) throw err.invalidCredentials();
@@ -229,7 +246,12 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
       const { currentPassword, newPassword } = req.body;
       const [row] = await userWithCounterpartyType().where(eq(users.id, principal.id));
       if (!row) throw err.unauthorized();
-      const u = { ...row.u, counterpartyType: row.counterpartyType };
+      const u = {
+        ...row.u,
+        counterpartyType: row.counterpartyType,
+        constructionObjectIds: row.constructionObjectIds,
+        departmentIds: row.departmentIds,
+      };
       const ok = await verifyPassword(u.passwordHash, currentPassword);
       if (!ok)
         throw err.badRequest('Текущий пароль неверен', { currentPassword: 'Неверный пароль' });

@@ -7,6 +7,9 @@ export const ROLES = [
   'dispatcher',
   'shtab',
   'rukstroy',
+  'commandant',
+  'department',
+  'department_head',
   'operator',
   'observer',
 ] as const;
@@ -19,6 +22,12 @@ export const roleLabels: Record<Role, string> = {
   dispatcher: 'Диспетчер',
   shtab: 'Штаб',
   rukstroy: 'Руководитель строительства',
+  // Комендант — третий заказчик на объекте, но только по мусору: должность на площадке так и
+  // называется, и подпись повторяет её, а не описывает набор прав.
+  commandant: 'Комендант',
+  // Подписи по образцу «Штаба»: роль называет подразделение, а не должность внутри него.
+  department: 'Отдел',
+  department_head: 'Руководитель отдела',
   // Модуль в подписи не назван намеренно: что именно исполняет учётка — вывоз мусора или
   // аренду техники — решает тип её контрагента, а не роль (ADR 0038).
   operator: 'Оператор (внешний исполнитель)',
@@ -31,6 +40,13 @@ export const roleColors: Record<Role, string> = {
   dispatcher: 'cyan',
   shtab: 'orange',
   rukstroy: 'purple',
+  // Комендант работает на той же площадке, что штаб, но в одном модуле — цвет своей, отдельной
+  // пометки: в списке учёток эти две роли различают глазами.
+  commandant: 'lime',
+  // Отдел — заказчик со стороны офиса; цвета своей пары, но той же логики «сотрудник — светлее,
+  // руководитель — насыщеннее», что у штаба и руководителя строительства.
+  department: 'gold',
+  department_head: 'volcano',
   operator: 'green',
   // Серый: роль ничего не ведёт, и в списке учёток она не должна спорить с теми, кто ведёт.
   observer: 'default',
@@ -42,10 +58,34 @@ export const roleColors: Record<Role, string> = {
  * ограничена ничем и одновременно не видит ничего. Список здесь, а не в проверках доступа:
  * по нему и API требует объект при активации, и форма учётки показывает поле.
  */
-export const OBJECT_SCOPED_ROLES = ['shtab', 'rukstroy'] as const;
+export const OBJECT_SCOPED_ROLES = ['shtab', 'rukstroy', 'commandant'] as const;
 
 export function isObjectScopedRole(role: Role | null | undefined): boolean {
   return !!role && (OBJECT_SCOPED_ROLES as readonly string[]).includes(role);
+}
+
+/**
+ * Роли, работающие в пределах отдела (ADR 0040). Отдел — офисное подразделение, и с объектами
+ * строительства он не пересекается: учётка привязана либо к объектам, либо к отделам, третьего
+ * не дано. Поэтому это не расширение объектной оси, а вторая такая же — со своим списком.
+ *
+ * Список здесь, рядом с объектными ролями и ролями от контрагента, по той же причине: по нему
+ * API требует отделы при активации, а форма учётки показывает поле.
+ */
+export const DEPARTMENT_SCOPED_ROLES = ['department', 'department_head'] as const;
+
+export function isDepartmentScopedRole(role: Role | null | undefined): boolean {
+  return !!role && (DEPARTMENT_SCOPED_ROLES as readonly string[]).includes(role);
+}
+
+/**
+ * Работает ли роль в пределах подразделения — объекта или отдела. Нужен там, где правило одно на
+ * обе оси: «правит заявку только пока она Новая», «область обязательна при активации», «поле
+ * области в форме учётки». Перечислять две оси в каждом таком месте значит забыть одну из них
+ * при появлении третьей.
+ */
+export function isPlaceScopedRole(role: Role | null | undefined): boolean {
+  return isObjectScopedRole(role) || isDepartmentScopedRole(role);
 }
 
 /**

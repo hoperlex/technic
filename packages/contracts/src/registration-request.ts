@@ -11,6 +11,7 @@ export const REGISTRATION_ROLE_REQUESTS = [
   'dispatcher',
   'rukstroy',
   'site_staff',
+  'commandant',
   'waste_operator',
   'vehicle_lessor',
   'other',
@@ -23,6 +24,10 @@ export const registrationRoleRequestLabels: Record<RegistrationRoleRequest, stri
   rukstroy: 'Руководитель строительства',
   // «Штаб» — название из таблицы прав; заявителю оно ничего не говорит.
   site_staff: 'Сотрудник объекта',
+  // Комендант, наоборот, назван своей должностью: так он себя и называет, и роль в портале
+  // совпадает с ней. Отдельным вариантом, а не внутри «сотрудника объекта», — это разные роли:
+  // коменданту заказ техники закрыт, и по пожеланию администратор видит, какую назначать.
+  commandant: 'Комендант',
   waste_operator: 'Оператор по вывозу мусора',
   vehicle_lessor: 'Оператор по аренде техники',
   other: 'Другое',
@@ -42,6 +47,7 @@ export const registrationRoleRequestRole: Record<RegistrationRoleRequest, Role |
   dispatcher: 'dispatcher',
   rukstroy: 'rukstroy',
   site_staff: 'shtab',
+  commandant: 'commandant',
   waste_operator: 'operator',
   vehicle_lessor: 'operator',
   other: null,
@@ -56,6 +62,7 @@ export const registrationRequestDetail: Record<RegistrationRoleRequest, Registra
     // Объектные роли работают в пределах объекта (ADR 0025) — без него заявку не рассмотреть.
     rukstroy: 'object',
     site_staff: 'object',
+    commandant: 'object',
     // Оператор работает от лица контрагента (ADR 0010).
     waste_operator: 'company',
     vehicle_lessor: 'company',

@@ -10,7 +10,9 @@ import {
   COUNTERPARTY_TYPES,
   COUNTERPARTY_TYPES_WITH_ACCOUNTS,
   isCounterpartyScopedRole,
+  isDepartmentScopedRole,
   isObjectScopedRole,
+  isPlaceScopedRole,
   PERMISSIONS,
   permissionsFor,
   profilesWith,
@@ -113,11 +115,51 @@ describe('права ролей', () => {
     expect(can(of('rukstroy'), 'wasteRequests.assignOperator')).toBe(false);
   });
 
-  it('визирует заказчик со стороны объекта, а не тот, кто обрабатывает заявку', () => {
+  it('визирует заказчик, а не тот, кто обрабатывает заявку', () => {
+    // Заказчиков двое: объект и отдел (ADR 0040). Право визы у них одно, разводит их область —
+    // руководитель строительства визирует свои объекты, руководитель отдела — свои отделы.
     expect(profilesWith('vehicleRequests.approve').map((s) => s.role)).toEqual([
       'admin',
       'rukstroy',
+      'department_head',
     ]);
+  });
+
+  /**
+   * Отдел (ADR 0040) — заказчик со стороны офиса. Сотрудник и руководитель отдела различаются
+   * ровно визой, как штаб и руководитель строительства на объекте. Сравнением, а не
+   * перечислением: новое право у сотрудника обязано появиться и у руководителя.
+   */
+  it('руководитель отдела = сотрудник отдела плюс виза (ADR 0040)', () => {
+    const withoutApprove = (role: Role) =>
+      permissionsFor(of(role))
+        .filter((p) => p !== 'vehicleRequests.approve')
+        .sort();
+    expect(withoutApprove('department_head')).toEqual(withoutApprove('department'));
+    expect(can(of('department_head'), 'vehicleRequests.approve')).toBe(true);
+    expect(can(of('department'), 'vehicleRequests.approve')).toBe(false);
+  });
+
+  it('отдел не ведёт вывоз мусора: мусор вывозят с площадки, а не из кабинета', () => {
+    for (const role of ['department', 'department_head'] as Role[]) {
+      expect(
+        permissionsFor(of(role)).filter((p) => p.startsWith('wasteRequests.')),
+        role,
+      ).toEqual([]);
+    }
+  });
+
+  it('отдел работает в пределах отдела, а не объекта (ADR 0040)', () => {
+    for (const role of ['department', 'department_head'] as Role[]) {
+      expect(isDepartmentScopedRole(role), role).toBe(true);
+      expect(isObjectScopedRole(role), role).toBe(false);
+      expect(isPlaceScopedRole(role), role).toBe(true);
+    }
+    // Объектные роли на второй оси не оказываются: одна учётка — одна ось.
+    for (const role of ['shtab', 'rukstroy'] as Role[]) {
+      expect(isDepartmentScopedRole(role), role).toBe(false);
+      expect(isPlaceScopedRole(role), role).toBe(true);
+    }
   });
 
   /**

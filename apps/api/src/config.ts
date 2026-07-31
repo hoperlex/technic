@@ -44,6 +44,11 @@ const rawSchema = z.object({
   FILE_MAX_SIZE_BYTES: z.coerce.number().int().positive().default(52_428_800),
   FILE_MAX_PER_REQUEST: z.coerce.number().int().positive().default(20),
 
+  // Печать путевого листа (ADR 0040): бланк переводит в PDF LibreOffice, поставленный в образ.
+  // Путь настраиваемый — на рабочей машине разработчика он может лежать не в PATH.
+  SOFFICE_BIN: z.string().default('soffice'),
+  SOFFICE_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
+
   MAIL_ENABLED: boolFromEnv(false),
   SENTRY_DSN: z.string().optional(),
 });
@@ -137,6 +142,10 @@ function loadConfig() {
     files: {
       maxSize: env.FILE_MAX_SIZE_BYTES,
       maxPerRequest: env.FILE_MAX_PER_REQUEST,
+    },
+    soffice: {
+      bin: env.SOFFICE_BIN,
+      timeoutMs: env.SOFFICE_TIMEOUT_MS,
     },
     mailEnabled: env.MAIL_ENABLED,
     sentryDsn: env.SENTRY_DSN,

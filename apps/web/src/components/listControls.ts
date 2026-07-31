@@ -21,7 +21,7 @@ export interface FilterOptionGroup {
   options: FilterOption[];
 }
 
-interface FilterBase {
+export interface FilterBase {
   key: string;
   label: string;
   /** Считается ли фильтр заданным. По умолчанию — по непустому значению. */

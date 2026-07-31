@@ -42,7 +42,6 @@ import {
   calcWasteAmount,
   type CompleteWasteRequestInput,
   actsForCounterparty,
-  isObjectScopedRole,
   isPricedRequestType,
   requiresWasteFact,
   isVolumeAllowed,
@@ -66,6 +65,7 @@ import { CancelReasonModal } from '../components/CancelReasonModal';
 import { ActionSheet } from '../components/ActionSheet';
 import { DataTable, type CardConfig } from '../components/DataTable';
 import { FileLinkList, FilesCell } from '../components/FileLinks';
+import { FormGrid } from '../components/FormGrid';
 import { FormModal } from '../components/FormModal';
 import { PageTableLayout } from '../components/PageTableLayout';
 import { ResponsibleFields } from '../components/ResponsibleFields';
@@ -76,6 +76,7 @@ import { actionsColumn, badgeColumn, textColumn } from '../components/columns';
 import { TimeInput, optionalWorkTimeRule } from '../components/TimeInput';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { useListParams } from '../hooks/useListParams';
+import { useObjectScope } from '../hooks/useObjectScope';
 import { useAuth } from '../auth/AuthContext';
 import { MOSCOW_TZ } from '../theme';
 import { errorMessage, formatDate, formatDateTimeMaybe, formatMoney } from '../utils/format';
@@ -150,11 +151,9 @@ function RequestsTab() {
   const qc = useQueryClient();
   const isMobile = useIsMobile();
   const { user, can } = useAuth();
-  // Объектные роли и оператор — это область видимости («свой объект», «свои заявки»), а не право:
-  // от неё зависит, что показывать в фильтрах и колонках, а не что разрешено делать. Роль здесь
-  // не перечисляется: заказчиков со стороны объекта двое (ADR 0031), и список ролей разъехался бы
-  // с `OBJECT_SCOPED_ROLES` молча — фильтром объекта, открытым для чужих объектов.
-  const isObjectRole = isObjectScopedRole(user?.role);
+  // Объектные роли и оператор — это область видимости («свои объекты», «свои заявки»), а не
+  // право: от неё зависит, что показывать в фильтрах и колонках, а не что разрешено делать.
+  const { isObjectRole, soleObjectId, objectFieldDisabled, limitObjectOptions } = useObjectScope();
   // «Оператор вывоза» — это роль исполнителя плюс контрагент-оператор (ADR 0038): по одной роли
   // такой вывод уже неверен, ею же работает арендодатель техники в другом разделе.
   const isOperator = actsForCounterparty(user, 'operator');
@@ -165,8 +164,9 @@ function RequestsTab() {
   const canAssignOperator = can('wasteRequests.assignOperator');
   const canRestore = can('archive.restore');
 
-  // Объектной роли фильтр по объекту зафиксирован на её собственном объекте.
-  const ownObjectId = isObjectRole ? (user?.constructionObjectId ?? '') : '';
+  // Объектной роли с одним объектом фильтр зафиксирован на нём; с несколькими — фильтр открыт,
+  // но сужен до своих (ADR 0039), а «все» означает все свои: остального сервер не отдаёт.
+  const ownObjectId = soleObjectId ?? '';
 
   // Фильтры живут в панели над таблицей, а не в выпадашках столбцов: в заголовке их не видно,
   // а половина из них (объект, оператор) — списки справочников, которым там тесно.
@@ -236,10 +236,12 @@ function RequestsTab() {
         sortOrder: 'asc',
       }),
   });
-  const objectOptions = (objects?.items ?? []).map((o) => ({
-    value: o.id,
-    label: `${o.code} — ${o.name}`,
-  }));
+  const objectOptions = limitObjectOptions(
+    (objects?.items ?? []).map((o) => ({
+      value: o.id,
+      label: `${o.code} — ${o.name}`,
+    })),
+  );
   const allTypes = types?.items ?? [];
   // Установка — только контейнеры (type='cont').
   const contTypeOptions = allTypes
@@ -456,8 +458,10 @@ function RequestsTab() {
     form.resetFields();
     // Дата доставки по умолчанию — сегодня: раньше заявку не заводят (правило в контрактах).
     form.setFieldsValue({ deliveryDate: minRequestDate() } as Partial<RequestFormValues>);
-    if (isObjectRole && user?.constructionObjectId) {
-      form.setFieldsValue({ objectId: user.constructionObjectId } as Partial<RequestFormValues>);
+    // Объект подставляется, только когда он у роли один: с несколькими выбирает человек —
+    // подставленный за него первый попавшийся завёл бы заявку не на ту площадку (ADR 0039).
+    if (soleObjectId) {
+      form.setFieldsValue({ objectId: soleObjectId } as Partial<RequestFormValues>);
     }
     setOpen(true);
   };
@@ -999,7 +1003,7 @@ function RequestsTab() {
         options={[{ value: '', label: 'Все объекты' }, ...objectOptions]}
         showSearch
         optionFilterProp="label"
-        disabled={isObjectRole}
+        disabled={objectFieldDisabled}
       />
       <Select
         style={{ width: 190 }}
@@ -1065,8 +1069,8 @@ function RequestsTab() {
       options: objectOptions,
       placeholder: 'Все объекты',
       loading: objectsLoading,
-      // Объектной роли объект зафиксирован на её собственном — фильтр показан, но не меняется.
-      disabled: isObjectRole,
+      // С одним объектом фильтр показан, но не меняется; с несколькими — выбор из своих.
+      disabled: objectFieldDisabled,
       onChange: (v) => applyObjectFilter(v ?? ''),
     },
     {
@@ -1256,7 +1260,9 @@ function RequestsTab() {
         onSubmit={() => operatorForm.submit()}
         confirmLoading={startWorkMut.isPending}
         okText="В работу"
-        width={480}
+        // Поле одно, колонок здесь не нужно — окно просто перестаёт быть тесным: подпись
+        // оператора и подсказка под ней в 480 px переносились по слогам.
+        width={640}
       >
         <Form
           form={operatorForm}
@@ -1332,7 +1338,7 @@ function RequestsTab() {
         onCancel={() => setOpen(false)}
         onSubmit={() => form.submit()}
         confirmLoading={saveMut.isPending}
-        width={520}
+        width={880}
       >
         <Form
           form={form}
@@ -1349,6 +1355,9 @@ function RequestsTab() {
             }
           }}
         >
+          {/* Поля парами (FormGrid): узкое окно прятало половину формы под прокрутку, хотя
+              справа было пусто. На телефоне колонка одна, порядок полей тот же. */}
+          <FormGrid>
           <Form.Item
             name="objectId"
             label="Объект строительства"
@@ -1359,7 +1368,7 @@ function RequestsTab() {
               loading={objectsLoading}
               showSearch
               optionFilterProp="label"
-              disabled={isObjectRole}
+              disabled={objectFieldDisabled}
               onChange={handleObjectChange}
             />
           </Form.Item>
@@ -1397,13 +1406,12 @@ function RequestsTab() {
               под полями (ADR 0009). У замены и снятия этих полей нет вовсе: они не
               тарифицируются (ADR 0019), в форме остаётся только контейнер с объекта. */}
           {isPriced && (
-            // Пара полей в строку; на телефоне класс укладывает их одно под другим (ADR 0030).
-            <div className="form-row" style={{ display: 'flex', gap: 12 }}>
+            // Соседние ячейки сетки: «что вывозим» и «сколько» читаются парой.
+            <>
               <Form.Item
                 name="wasteTypeId"
                 label="Тип мусора"
                 rules={[{ required: true, message: 'Выберите тип мусора' }]}
-                style={{ flex: 3, minWidth: 0 }}
               >
                 <AutoSelect
                   options={formWasteTypeOptions}
@@ -1431,7 +1439,6 @@ function RequestsTab() {
                         : Promise.reject(new Error(volumeStepMessage(volumeStepM3!))),
                   },
                 ]}
-                style={{ flex: 2, minWidth: 0 }}
               >
                 <InputNumber
                   min={MIN_WASTE_VOLUME_M3}
@@ -1443,12 +1450,16 @@ function RequestsTab() {
                   placeholder={volumeStepM3 ? `Кратно ${volumeStepM3}` : 'Например, 20'}
                 />
               </Form.Item>
-            </div>
+            </>
           )}
           {pricingHint && (
-            <div style={{ marginTop: -16, marginBottom: 24 }}>
-              <Typography.Text type="secondary">{pricingHint}</Typography.Text>
-            </div>
+            // Расчёт по прайсу относится к паре «тип мусора — объём» целиком, поэтому идёт
+            // строкой во всю ширину, а не подписью под одним из полей.
+            <FormGrid.Full>
+              <div style={{ marginTop: -16, marginBottom: 24 }}>
+                <Typography.Text type="secondary">{pricingHint}</Typography.Text>
+              </div>
+            </FormGrid.Full>
           )}
           {subjectField && (
             <Form.Item
@@ -1490,12 +1501,11 @@ function RequestsTab() {
               />
             </Form.Item>
           )}
-          <div className="form-row" style={{ display: 'flex', gap: 12 }}>
+          <>
             <Form.Item
               name="deliveryDate"
               label="Дата доставки"
               rules={[{ required: true, message: 'Укажите дату' }]}
-              style={{ flex: 1 }}
             >
               {/* Новую заявку — не раньше чем на сегодня (по МСК); у заведённой дата правится
                   свободно, лишь бы не в прошлое. */}
@@ -1514,28 +1524,30 @@ function RequestsTab() {
               label="Время"
               tooltip="Необязательно. Рабочее окно — с 07:00 до 21:00"
               rules={[optionalWorkTimeRule]}
-              style={{ width: isMobile ? '100%' : 130 }}
             >
               <TimeInput />
             </Form.Item>
-          </div>
+          </>
           {/* Кто принимает машину на площадке: оператор приезжает к человеку, а не к адресу —
               без контакта место установки и подъезд выясняются уже на месте. */}
-          <ResponsibleFields
-            nameField="responsibleName"
-            phoneField="responsiblePhone"
-            nameLabel="Ответственный на площадке"
-            phoneLabel="Контактный телефон"
-          />
-          <Form.Item name="comment" label="Комментарий">
-            <Input.TextArea rows={3} maxLength={2000} showCount />
-          </Form.Item>
+          <FormGrid.Full>
+            <ResponsibleFields
+              nameField="responsibleName"
+              phoneField="responsiblePhone"
+              nameLabel="Ответственный на площадке"
+              phoneLabel="Контактный телефон"
+            />
+            <Form.Item name="comment" label="Комментарий">
+              <Input.TextArea rows={3} maxLength={2000} showCount />
+            </Form.Item>
+          </FormGrid.Full>
 
           {/* Факта выполнения в форме правки нет: сколько вывезли и во сколько это обошлось,
               вводят при закрытии заявки — там же, где виден расчёт по прайсу (ADR 0035). Правят
               его повторным закрытием, после отката администратором. Состав техники прошлых
               закрытий виден в карточке заявки, в истории её выполнения. */}
 
+          <FormGrid.Full>
           <Form.Item label={`Файлы (до ${FILE_MAX_COUNT}, до 50 МБ каждый)`}>
             <Upload
               multiple
@@ -1566,6 +1578,8 @@ function RequestsTab() {
               />
             </div>
           </Form.Item>
+          </FormGrid.Full>
+          </FormGrid>
         </Form>
       </FormModal>
     </PageTableLayout>

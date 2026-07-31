@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { Form, Input } from 'antd';
+import { FormGrid } from '../src/components/FormGrid';
 import { FormModal } from '../src/components/FormModal';
 import { DESKTOP_VIEWPORT, MOBILE_VIEWPORT, setViewport, type Viewport } from './viewport';
 
@@ -75,5 +76,56 @@ describe('оболочка формы', () => {
     rerender(<Harness open />);
 
     expect(shell()).toBe('modal');
+  });
+});
+
+/**
+ * Двухколоночная раскладка полей: длинная форма в узком окне прятала половину полей под
+ * прокрутку. Число колонок задают стили (`.form-grid`, на телефоне — одна), поэтому проверяется
+ * то, что от разметки зависит: обёртка не ломает форму и помечает поля полной ширины.
+ */
+describe('раскладка полей формы', () => {
+  function GridHarness({ onFinish }: { onFinish: (v: unknown) => void }) {
+    return (
+      <FormModal title="Форма" open onCancel={() => {}} onSubmit={() => {}}>
+        <Form layout="vertical" onFinish={onFinish}>
+          <FormGrid>
+            <Form.Item name="code" label="Код">
+              <Input aria-label="Код" />
+            </Form.Item>
+            <Form.Item name="name" label="Название">
+              <Input aria-label="Название" />
+            </Form.Item>
+            <FormGrid.Full>
+              <Form.Item name="comment" label="Комментарий">
+                <Input aria-label="Комментарий" />
+              </Form.Item>
+            </FormGrid.Full>
+          </FormGrid>
+          <button type="submit">Отправить</button>
+        </Form>
+      </FormModal>
+    );
+  }
+
+  it('поля внутри сетки остаются полями формы: значения доходят до отправки', async () => {
+    const onFinish = vi.fn();
+    renderAt(DESKTOP_VIEWPORT, <GridHarness onFinish={onFinish} />);
+
+    fireEvent.change(screen.getByLabelText('Код'), { target: { value: 'OBJ-A' } });
+    fireEvent.change(screen.getByLabelText('Комментарий'), { target: { value: 'со двора' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Отправить' }));
+
+    await waitFor(() => expect(onFinish).toHaveBeenCalled());
+    expect(onFinish.mock.calls[0]![0]).toMatchObject({ code: 'OBJ-A', comment: 'со двора' });
+  });
+
+  it('поле полной ширины помечено — по этой метке стили и растягивают его на строку', () => {
+    renderAt(DESKTOP_VIEWPORT, <GridHarness onFinish={() => {}} />);
+    const grid = document.querySelector('.form-grid');
+    expect(grid).not.toBeNull();
+    // Полной ширины — только комментарий: код и название делят строку между собой.
+    expect(grid!.querySelectorAll('.form-grid__full')).toHaveLength(1);
+    expect(grid!.querySelector('.form-grid__full')!.textContent).toContain('Комментарий');
   });
 });

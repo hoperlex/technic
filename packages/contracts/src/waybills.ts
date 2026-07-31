@@ -1,5 +1,7 @@
 import { z } from 'zod';
 import { baseListQuery, dateOnlySchema, uuidSchema } from './common';
+import type { VehicleOwnership } from './vehicles';
+import type { VehicleRequestType } from './vehicle-requests';
 
 // ── Путевой лист (ADR 0037) ──
 // Лист — документ строгой отчётности: серия, номер, журнал учёта. Черновика у него нет: он
@@ -32,6 +34,52 @@ export const waybillFormLabels: Record<WaybillFormCode, string> = {
   leg3: 'Форма № 3 (легковой автомобиль)',
   esm2: 'Форма ЭСМ-2 (строительная машина)',
 };
+
+// ── На какой рейс выписывается лист (ADR 0037 п. 1, ADR 0040) ──
+
+export interface WaybillRequirementInput {
+  /** Тип заявки: лист выписывается только на грузоперевозку. */
+  requestType: VehicleRequestType;
+  /** Принадлежность машины: на арендную лист выписывает арендодатель. */
+  ownership: VehicleOwnership;
+  /** Бланк, закреплённый за типом ТС (`vehicle_types.waybill_form_code`). */
+  formCode: WaybillFormCode | null;
+  /** Название типа ТС — им объясняется отсутствие бланка. */
+  typeName: string;
+}
+
+export interface WaybillRequirement {
+  /** Бланк, по которому выписывается лист; `null` — на этот рейс лист не выписывается. */
+  formCode: WaybillFormCode | null;
+  /**
+   * Почему не выписывается — это показывают человеку вместо отсутствующего блока. `null` при
+   * пустом `formCode` означает другое: заявка такого вида путевого листа не знает вовсе, и
+   * говорить не о чем — ни блока, ни объяснения (ADR 0040).
+   */
+  reason: string | null;
+}
+
+/**
+ * Нужен ли на этот рейс путевой лист.
+ *
+ * Порядок проверок задаёт и то, что увидит человек. Первым идёт тип заявки: заказ техники на
+ * объект листа не знает — там нет ни рейса, ни маршрута, ни груза, и объяснять в форме нечего.
+ * Дальше идут причины, о которых сказать надо: арендную машину ведёт арендодатель, а тип без
+ * бланка — состояние справочника, которое поправимо (ADR 0040).
+ */
+export function waybillRequirement(input: WaybillRequirementInput): WaybillRequirement {
+  if (input.requestType !== 'freight_transport') return { formCode: null, reason: null };
+  if (input.ownership !== 'own') {
+    return { formCode: null, reason: 'Путевой лист на арендную технику выписывает арендодатель' };
+  }
+  if (!input.formCode) {
+    return {
+      formCode: null,
+      reason: `Для типа «${input.typeName}» бланк путевого листа не заведён`,
+    };
+  }
+  return { formCode: input.formCode, reason: null };
+}
 
 /** Номер бланка с ведущими нулями: «00000004897» при ширине 8 и больше. */
 export function formatWaybillNumber(num: number, width: number): string {
@@ -123,6 +171,23 @@ export interface WaybillDto {
   cancelReason: string;
   /** Заявки, которые машина выполняет по этому листу — талоны заказчиков. */
   requests: WaybillRequestLinkDto[];
+}
+
+/**
+ * Лист, выписанный по заявке (ADR 0040): его показывает карточка грузоперевозки, чтобы печатать
+ * бланк там же, где заявку взяли в работу, а не искать её номер в журнале. `null` — листа нет:
+ * заявку не брали в работу, взяли арендной машиной или это заказ техники на объект.
+ */
+export interface RequestWaybillDto {
+  id: string;
+  /** «260604-646-00000004897» — как номер напечатан на бланке. */
+  number: string;
+  formCode: WaybillFormCode;
+  status: WaybillStatus;
+  issuedForDate: string;
+  /** Талон заказчика, в котором стоит эта заявка: 1–4 (ADR 0037 п. 3). */
+  slot: number;
+  driverName: string;
 }
 
 export const WAYBILL_SORT_FIELDS = ['issuedForDate', 'number', 'issuedAt'] as const;

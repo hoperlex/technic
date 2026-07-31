@@ -30,6 +30,7 @@ import {
 } from '@technic/contracts';
 import { driversApi, vehicleRequestsApi, vehiclesApi } from '../../api/resources';
 import { AutoSelect } from '../../components/AutoSelect';
+import { FormGrid } from '../../components/FormGrid';
 import { FormModal } from '../../components/FormModal';
 import { TimeInput, optionalWorkTimeRule } from '../../components/TimeInput';
 import { useIsMobile } from '../../hooks/useIsMobile';
@@ -220,11 +221,15 @@ export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit
   // ── Путевой лист (ADR 0037) ──
   // Выписывается ли лист на выбранную машину, на какую дату и чем заполнены графы шапки в прошлый
   // раз. Спрашивается по машине: на аренду лист не выписывается, и полей у неё быть не должно.
+  //
+  // У заказа техники на объект не спрашивается вовсе (ADR 0040): лист выписывается на рейс, а
+  // рейса у такой заявки нет — есть период работы машины на площадке. Отсюда и отсутствие блока
+  // без объяснения: объяснять нечего, документа в этом процессе не существует.
   const withTrailer = Form.useWatch('withTrailer', form) ?? false;
   const { data: prefill } = useQuery({
     queryKey: ['waybill-prefill', targetId, vehicleId],
     queryFn: () => vehicleRequestsApi.waybillPrefill(targetId!, vehicleId!),
-    enabled: !!targetId && !!vehicleId,
+    enabled: isFreight && !!targetId && !!vehicleId,
   });
   const needsWaybill = prefill?.required ?? false;
 
@@ -387,10 +392,14 @@ export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit
       onSubmit={() => form.submit()}
       confirmLoading={confirmLoading}
       okText="Взять в работу"
-      width={620}
+      width={880}
     >
       {request && (
+        // Поля парами (FormGrid): окно спрашивает срок, технику, ставки и графы путевого листа —
+        // в одну колонку половина из них уходила под прокрутку. На телефоне колонка одна.
         <Form form={form} layout="vertical" onFinish={submit}>
+          <FormGrid>
+          <FormGrid.Full>
           <Typography.Paragraph type="secondary" style={{ marginBottom: 16 }}>
             {request.objectCode} — {request.objectName} · заказано «
             {vehicleClassificationLabel({
@@ -399,17 +408,17 @@ export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit
             })}
             »
           </Typography.Paragraph>
+          </FormGrid.Full>
 
           {/* Фактический срок: подставлен заказанным, под полями — что просили изначально.
               Спрашивается первым, потому что от даты рейса зависит отбор водителей ниже. */}
           {request.requestType === 'special_equipment' ? (
-            <div className="form-row" style={{ display: 'flex', gap: 12 }}>
+            <>
               <Form.Item
                 name="dateFrom"
                 label="Фактическая дата начала"
                 rules={[{ required: true, message: 'Укажите дату начала' }]}
                 extra={`Заказано: ${formatDateOnly(request.dateFrom)}`}
-                style={{ flex: 1, minWidth: 0 }}
               >
                 <DatePicker
                   format="DD.MM.YYYY"
@@ -421,9 +430,10 @@ export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit
                 name="dateTo"
                 label="Фактическая дата окончания"
                 extra={
-                  request.dateTo ? `Заказано: ${formatDateOnly(request.dateTo)}` : 'Заказан один день'
+                  request.dateTo
+                    ? `Заказано: ${formatDateOnly(request.dateTo)}`
+                    : 'Заказан один день'
                 }
-                style={{ flex: 1, minWidth: 0 }}
               >
                 <DatePicker
                   format="DD.MM.YYYY"
@@ -431,9 +441,9 @@ export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit
                   inputReadOnly={isMobile}
                 />
               </Form.Item>
-            </div>
+            </>
           ) : (
-            <div className="form-row" style={{ display: 'flex', gap: 12 }}>
+            <>
               <Form.Item
                 name="scheduledDate"
                 label="Фактическая дата подачи"
@@ -442,7 +452,6 @@ export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit
                   new Date(request.scheduledAt),
                   request.scheduledTimeUnspecified,
                 )}`}
-                style={{ flex: 1, minWidth: 0 }}
               >
                 <DatePicker
                   format="DD.MM.YYYY"
@@ -455,17 +464,17 @@ export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit
                 label="Фактическое время (МСК)"
                 tooltip="Необязательно. Рабочее окно — с 07:00 до 21:00"
                 rules={[optionalWorkTimeRule]}
-                style={{ flex: 1, minWidth: 0 }}
               >
                 <TimeInput />
               </Form.Item>
-            </div>
+            </>
           )}
 
           {/* Шаг 1: чья машина. Количество подходящих единиц — в самой подписи: пустая ветка
               видна до того, как в неё зайдут. */}
           {/* Не поле формы: принадлежность в назначение не уходит — она у самой машины, а
               здесь только сужает список. */}
+          <FormGrid.Full>
           <Form.Item label="Техника">
             <Segmented<VehicleOwnership>
               block
@@ -478,6 +487,7 @@ export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit
               }))}
             />
           </Form.Item>
+          </FormGrid.Full>
 
           {/* Шаг 2 (только аренда): у кого берём. */}
           {isRental && (
@@ -523,21 +533,18 @@ export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit
           </Form.Item>
 
           {selected && (
+            <FormGrid.Full>
             <Space size={8} wrap style={{ marginBottom: 16 }}>
               {selected.categoryName && <Tag color="blue">{selected.categoryName}</Tag>}
               {selected.registrationNumber && <Tag>{selected.registrationNumber}</Tag>}
               {selected.lessorName && <Tag color="purple">{selected.lessorName}</Tag>}
             </Space>
+            </FormGrid.Full>
           )}
 
           {/* Ставки: подставлены из справочника, но это поля ввода — цену по заявке
               согласовывают отдельно от прайса. */}
-          <Space
-            style={{ width: '100%' }}
-            size="middle"
-            align="start"
-            direction={isMobile ? 'vertical' : 'horizontal'}
-          >
+          <>
             <Form.Item
               name="pricePerHour"
               label="Стоимость за час, ₽"
@@ -563,24 +570,29 @@ export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit
             <Form.Item name="shiftHours" label="Часов в смене">
               <InputNumber style={{ width: '100%' }} min={1} max={24} precision={0} />
             </Form.Item>
-          </Space>
+          </>
 
-          {priceChanged && (
-            <Typography.Text type="warning">
-              Ставка отличается от справочника — в заявке сохранится договорная
-            </Typography.Text>
-          )}
-          {!isRental && (
-            <Typography.Text type="secondary">
-              У собственной техники ставка необязательна: её указывают, если работу считают в
-              деньгах
-            </Typography.Text>
-          )}
+          <FormGrid.Full>
+            {priceChanged && (
+              <Typography.Text type="warning">
+                Ставка отличается от справочника — в заявке сохранится договорная
+              </Typography.Text>
+            )}
+            {!isRental && (
+              <Typography.Text type="secondary">
+                У собственной техники ставка необязательна: её указывают, если работу считают в
+                деньгах
+              </Typography.Text>
+            )}
+          </FormGrid.Full>
 
           {/* Путевой лист (ADR 0037): выписывается тут же, вместе с переводом в работу. Причина,
               по которой лист не нужен, показывается текстом — отсутствие блока читалось бы как
-              поломка. */}
+              поломка. У заказа техники на объект блока нет и текста нет: `prefill` для такой
+              заявки не запрашивается вовсе, и упоминать документ, которого в этом процессе не
+              существует, не о чем (ADR 0040). */}
           {selected && prefill && !prefill.required && prefill.reason && (
+            <FormGrid.Full>
             <Alert
               type="info"
               showIcon
@@ -588,16 +600,19 @@ export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit
               message="Путевой лист не выписывается"
               description={prefill.reason}
             />
+            </FormGrid.Full>
           )}
 
           {needsWaybill && (
             <>
-              <Typography.Title level={5} style={{ marginTop: 16 }}>
-                Путевой лист
-              </Typography.Title>
-              <Typography.Paragraph type="secondary" style={{ marginTop: -8 }}>
-                {prefill?.formLabel} · на {prefill?.tripDate}
-              </Typography.Paragraph>
+              <FormGrid.Full>
+                <Typography.Title level={5} style={{ marginTop: 16 }}>
+                  Путевой лист
+                </Typography.Title>
+                <Typography.Paragraph type="secondary" style={{ marginTop: -8 }}>
+                  {prefill?.formLabel} · на {tripDate}
+                </Typography.Paragraph>
+              </FormGrid.Full>
 
               <Form.Item
                 name="driverPersonId"
@@ -626,37 +641,28 @@ export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit
                 <Checkbox>Рейс с прицепом</Checkbox>
               </Form.Item>
               {withTrailer && (
-                <Space
-                  style={{ width: '100%' }}
-                  size="middle"
-                  direction={isMobile ? 'vertical' : 'horizontal'}
-                >
+                <>
                   <Form.Item name="trailer1Model" label="Марка прицепа">
                     <Input placeholder="МАЗ-8926" />
                   </Form.Item>
                   <Form.Item name="trailer1RegNumber" label="Госномер прицепа">
                     <Input placeholder="8062 ЕН 77" />
                   </Form.Item>
-                </Space>
+                </>
               )}
 
-              <Space
-                style={{ width: '100%' }}
-                size="middle"
-                direction={isMobile ? 'vertical' : 'horizontal'}
-              >
-                <Form.Item name="garageNumber" label="Гаражный номер">
-                  <Input placeholder="00000389" />
-                </Form.Item>
-                <Form.Item name="communicationKind" label="Вид сообщения">
-                  <Input placeholder="пригородное" />
-                </Form.Item>
-                <Form.Item name="transportationKind" label="Вид перевозки">
-                  <Input placeholder="коммерческая" />
-                </Form.Item>
-              </Space>
+              <Form.Item name="garageNumber" label="Гаражный номер">
+                <Input placeholder="00000389" />
+              </Form.Item>
+              <Form.Item name="communicationKind" label="Вид сообщения">
+                <Input placeholder="пригородное" />
+              </Form.Item>
+              <Form.Item name="transportationKind" label="Вид перевозки">
+                <Input placeholder="коммерческая" />
+              </Form.Item>
             </>
           )}
+          </FormGrid>
         </Form>
       )}
     </FormModal>

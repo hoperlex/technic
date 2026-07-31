@@ -3,7 +3,6 @@ import { Input, Select, Space, Tag, Typography, type TableColumnType } from 'ant
 import { useQuery } from '@tanstack/react-query';
 import {
   assignmentTitle,
-  isObjectScopedRole,
   onSiteDayLabel,
   onSitePresence,
   parseVehicleRequestNumberSearch,
@@ -21,10 +20,10 @@ import { SummaryBar } from '../../components/SummaryBar';
 import { actionsColumn, textColumn } from '../../components/columns';
 import { UserAvatar } from '../../components/UserAvatar';
 import { useListParams } from '../../hooks/useListParams';
-import { useAuth } from '../../auth/AuthContext';
 import { calendarDayCount } from '../../utils/date';
 import { VehicleRequestViewModal } from './VehicleRequestViewModal';
 import { formatDateOnly, useObjectOptions, useVehicleClassificationFilter } from './shared';
+import { useObjectScope } from '../../hooks/useObjectScope';
 
 /**
  * Техника, которая работает на объектах прямо сейчас (ADR 0036). Первая вкладка отвечает на «что
@@ -78,11 +77,10 @@ function termCell(r: SpecialEquipmentRequestDto) {
 const dash = <Typography.Text type="secondary">—</Typography.Text>;
 
 export function VehicleRequestsOnSiteTab() {
-  const { user } = useAuth();
-  const isObjectRole = isObjectScopedRole(user?.role);
-  // Объектной роли объект зафиксирован на её собственном — как и в списке заявок; сервер всё
-  // равно отдаёт только свой объект (requestVisibilityWhere).
-  const ownObjectId = isObjectRole ? (user?.constructionObjectId ?? '') : '';
+  const { soleObjectId, objectFieldDisabled, limitObjectOptions } = useObjectScope();
+  // С одним объектом фильтр зафиксирован на нём — как и в списке заявок; с несколькими выбор
+  // сужен до своих (ADR 0039). Сервер всё равно отдаёт только свои (requestVisibilityWhere).
+  const ownObjectId = soleObjectId ?? '';
 
   const { params, setParams, setSort, onTableChange } = useListParams<{
     objectId?: string;
@@ -123,7 +121,8 @@ export function VehicleRequestsOnSiteTab() {
     queryFn: () => vehicleRequestsApi.onSiteSummary(params),
   });
 
-  const { options: objectOptions } = useObjectOptions();
+  const { options: allObjectOptions } = useObjectOptions();
+  const objectOptions = limitObjectOptions(allObjectOptions);
 
   const [viewRecord, setViewRecord] = useState<SpecialEquipmentRequestDto | null>(null);
 
@@ -240,7 +239,7 @@ export function VehicleRequestsOnSiteTab() {
         placeholder="Все объекты"
         style={{ width: 240 }}
         options={objectOptions}
-        disabled={isObjectRole}
+        disabled={objectFieldDisabled}
         value={params.objectId}
         onChange={(v: string | undefined) => applyFilter({ objectId: v })}
       />
@@ -264,7 +263,7 @@ export function VehicleRequestsOnSiteTab() {
       value: params.objectId,
       options: objectOptions,
       placeholder: 'Все объекты',
-      disabled: isObjectRole,
+      disabled: objectFieldDisabled,
       onChange: (v) => applyFilter({ objectId: v }),
     },
     classificationFilter.mobileFilter,

@@ -51,6 +51,7 @@ import { vehicleRequestsApi } from '../../api/resources';
 import { AutoSelect } from '../../components/AutoSelect';
 import { CancelReasonModal } from '../../components/CancelReasonModal';
 import { DataTable, type CardConfig } from '../../components/DataTable';
+import { FormGrid } from '../../components/FormGrid';
 import { FormModal } from '../../components/FormModal';
 import { PageTableLayout } from '../../components/PageTableLayout';
 import { ResponsibleFields } from '../../components/ResponsibleFields';
@@ -1032,9 +1033,12 @@ export function VehicleRequestsTab() {
         onCancel={() => setOpen(false)}
         onSubmit={() => form.submit()}
         confirmLoading={saveMut.isPending}
-        width={560}
+        width={880}
       >
+        {/* Поля парами (FormGrid): в одну колонку форма заявки не помещается в экран и половину
+            полей прячет под прокрутку. На телефоне колонка одна, порядок полей тот же. */}
         <Form form={form} layout="vertical" onFinish={onFinish}>
+          <FormGrid>
           <Form.Item
             name="objectId"
             label="Объект"
@@ -1066,25 +1070,28 @@ export function VehicleRequestsTab() {
               onChange={handleRequestTypeChange}
             />
           </Form.Item>
-          <VehicleClassificationSelect
-            groups={typeGroups}
-            loading={typesLoading}
-            disabled={!watchRequestType}
-            placeholder={
-              watchRequestType ? 'Выберите тип или категорию' : 'Сначала выберите тип заявки'
-            }
-          />
+          {/* Позиция классификатора — во всю ширину: подписи вроде «Автокраны, г/п 130 т» в
+              половине окна обрезаются там, где начинается отличие одной от другой. */}
+          <FormGrid.Full>
+            <VehicleClassificationSelect
+              groups={typeGroups}
+              loading={typesLoading}
+              disabled={!watchRequestType}
+              placeholder={
+                watchRequestType ? 'Выберите тип или категорию' : 'Сначала выберите тип заявки'
+              }
+            />
+          </FormGrid.Full>
 
           {/* Техника на объект: период работы. Новую заявку назначают не раньше чем на сегодня
               (по МСК); у заведённой дата правится свободно, лишь бы не в прошлое. */}
           {isSpecial && (
-            // Пара дат в строку; на телефоне класс укладывает их одну под другой (ADR 0030).
-            <div className="form-row" style={{ display: 'flex', gap: 12 }}>
+            // Даты — соседними ячейками сетки: пара «начало — окончание» читается вместе.
+            <>
               <Form.Item
                 name="dateFrom"
                 label="Дата начала"
                 rules={[{ required: true, message: 'Укажите дату начала' }]}
-                style={{ flex: 1, minWidth: 0 }}
               >
                 <DatePicker
                   format="DD.MM.YYYY"
@@ -1096,10 +1103,9 @@ export function VehicleRequestsTab() {
               <Form.Item
                 name="dateTo"
                 label="Дата окончания"
-                // На телефоне даты идут столбиком, справа от них места нет — там число дней
-                // остаётся подписью под полем.
-                extra={isMobile ? periodHint : undefined}
-                style={{ flex: 1, minWidth: 0 }}
+                // Число дней (столько техника занята на объекте) — подписью под полем: в сетке из
+                // двух колонок отдельной колонки под него уже нет.
+                extra={periodHint}
               >
                 <DatePicker
                   format="DD.MM.YYYY"
@@ -1108,115 +1114,99 @@ export function VehicleRequestsTab() {
                   disabledDate={minDateRule}
                 />
               </Form.Item>
-              {/* Число дней (столько техника занята на объекте) — третьей колонкой справа от дат,
-                  а не подписью под датой окончания: подписью она растила поле в высоту и уводила
-                  соседнюю дату вверх. Пустой лейбл держит ту же высоту шапки, что и у дат, —
-                  строка встаёт вровень с полями ввода. */}
-              {!isMobile && periodHint && (
-                <Form.Item label={'\u00a0'} colon={false} style={{ flex: 'none' }}>
-                  <Typography.Text type="secondary" style={{ whiteSpace: 'nowrap' }}>
-                    {periodHint}
-                  </Typography.Text>
-                </Form.Item>
-              )}
-            </div>
-          )}
-          {/* Кто встречает технику на объекте: без контакта заезд и место работ выясняются
-              звонками через диспетчера уже на воротах. */}
-          {isSpecial && (
-            <ResponsibleFields
-              nameField="responsibleName"
-              phoneField="responsiblePhone"
-              nameLabel="Ответственный на объекте"
-              phoneLabel="Контактный телефон"
-            />
+              {/* Кто встречает технику на объекте: без контакта заезд и место работ выясняются
+                  звонками через диспетчера уже на воротах. */}
+              <FormGrid.Full>
+                <ResponsibleFields
+                  nameField="responsibleName"
+                  phoneField="responsiblePhone"
+                  nameLabel="Ответственный на объекте"
+                  phoneLabel="Контактный телефон"
+                />
+              </FormGrid.Full>
+            </>
           )}
 
           {/* Грузоперевозка: дата/время, объём или масса, адреса. */}
           {isFreight && (
             <>
-              <Space
-                style={{ width: '100%' }}
-                size="middle"
-                direction={isMobile ? 'vertical' : 'horizontal'}
+              <Form.Item
+                name="scheduledDate"
+                label="Дата подачи"
+                rules={[{ required: true, message: 'Укажите дату' }]}
               >
+                <DatePicker
+                  format="DD.MM.YYYY"
+                  style={{ width: '100%' }}
+                  inputReadOnly={isMobile}
+                  disabledDate={minDateRule}
+                />
+              </Form.Item>
+              <Form.Item
+                name="scheduledTime"
+                label="Время (МСК)"
+                tooltip="Необязательно. Рабочее окно — с 07:00 до 21:00"
+                rules={[optionalWorkTimeRule]}
+              >
+                <TimeInput />
+              </Form.Item>
+              <Form.Item name="volumeM3" label="Объём, м³">
+                <InputNumber style={{ width: '100%' }} min={0} step={0.1} />
+              </Form.Item>
+              <Form.Item name="weightTons" label="Масса, т">
+                <InputNumber style={{ width: '100%' }} min={0} step={0.1} />
+              </Form.Item>
+              {/* Адреса и контакты — во всю ширину: подсказка DaData приходит одной длинной
+                  строкой, и в половине окна выбирать пришлось бы из обрезанных вариантов. */}
+              <FormGrid.Full>
                 <Form.Item
-                  name="scheduledDate"
-                  label="Дата подачи"
-                  rules={[{ required: true, message: 'Укажите дату' }]}
+                  name="loadingLocation"
+                  label="Место погрузки"
+                  rules={[{ required: true, message: 'Укажите место погрузки' }]}
                 >
-                  <DatePicker
-                    format="DD.MM.YYYY"
-                    style={{ width: '100%' }}
-                    inputReadOnly={isMobile}
-                    disabledDate={minDateRule}
+                  <AddressAutoComplete
+                    placeholder="Начните вводить адрес"
+                    onMetaChange={setLoadingMeta}
                   />
                 </Form.Item>
+                {/* Контакт стоит под своим адресом, а не общим блоком в конце формы: погрузка и
+                    разгрузка — два разных места, и водитель ищет того, кто откроет ворота здесь. */}
+                <ResponsibleFields
+                  nameField="loadingResponsibleName"
+                  phoneField="loadingResponsiblePhone"
+                  nameLabel="Ответственный за погрузку"
+                  phoneLabel="Телефон"
+                />
                 <Form.Item
-                  name="scheduledTime"
-                  label="Время (МСК)"
-                  tooltip="Необязательно. Рабочее окно — с 07:00 до 21:00"
-                  rules={[optionalWorkTimeRule]}
+                  name="unloadingLocation"
+                  label="Место разгрузки"
+                  rules={[{ required: true, message: 'Укажите место разгрузки' }]}
                 >
-                  <TimeInput />
+                  <AddressAutoComplete
+                    placeholder="Начните вводить адрес"
+                    onMetaChange={setUnloadingMeta}
+                  />
                 </Form.Item>
-              </Space>
-              <Space
-                style={{ width: '100%' }}
-                size="middle"
-                direction={isMobile ? 'vertical' : 'horizontal'}
-              >
-                <Form.Item name="volumeM3" label="Объём, м³" style={{ flex: 1 }}>
-                  <InputNumber style={{ width: '100%' }} min={0} step={0.1} />
-                </Form.Item>
-                <Form.Item name="weightTons" label="Масса, т" style={{ flex: 1 }}>
-                  <InputNumber style={{ width: '100%' }} min={0} step={0.1} />
-                </Form.Item>
-              </Space>
-              <Form.Item
-                name="loadingLocation"
-                label="Место погрузки"
-                rules={[{ required: true, message: 'Укажите место погрузки' }]}
-              >
-                <AddressAutoComplete
-                  placeholder="Начните вводить адрес"
-                  onMetaChange={setLoadingMeta}
+                <ResponsibleFields
+                  nameField="unloadingResponsibleName"
+                  phoneField="unloadingResponsiblePhone"
+                  nameLabel="Ответственный за разгрузку"
+                  phoneLabel="Телефон"
                 />
-              </Form.Item>
-              {/* Контакт стоит под своим адресом, а не общим блоком в конце формы: погрузка и
-                  разгрузка — два разных места, и водитель ищет того, кто откроет ворота здесь. */}
-              <ResponsibleFields
-                nameField="loadingResponsibleName"
-                phoneField="loadingResponsiblePhone"
-                nameLabel="Ответственный за погрузку"
-                phoneLabel="Телефон"
-              />
-              <Form.Item
-                name="unloadingLocation"
-                label="Место разгрузки"
-                rules={[{ required: true, message: 'Укажите место разгрузки' }]}
-              >
-                <AddressAutoComplete
-                  placeholder="Начните вводить адрес"
-                  onMetaChange={setUnloadingMeta}
-                />
-              </Form.Item>
-              <ResponsibleFields
-                nameField="unloadingResponsibleName"
-                phoneField="unloadingResponsiblePhone"
-                nameLabel="Ответственный за разгрузку"
-                phoneLabel="Телефон"
-              />
+              </FormGrid.Full>
             </>
           )}
 
           {/* Заголовок и пример заполнения зависят от типа заявки (COMMENT_HINTS). */}
-          <Form.Item name="comment" label={commentHint?.label ?? 'Комментарий'}>
-            <Input.TextArea rows={3} maxLength={2000} placeholder={commentHint?.placeholder} />
-          </Form.Item>
-          <Form.Item label="Файлы">
-            <FileEditor editor={editor} />
-          </Form.Item>
+          <FormGrid.Full>
+            <Form.Item name="comment" label={commentHint?.label ?? 'Комментарий'}>
+              <Input.TextArea rows={3} maxLength={2000} placeholder={commentHint?.placeholder} />
+            </Form.Item>
+            <Form.Item label="Файлы">
+              <FileEditor editor={editor} />
+            </Form.Item>
+          </FormGrid.Full>
+          </FormGrid>
         </Form>
       </FormModal>
 

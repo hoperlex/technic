@@ -68,7 +68,12 @@ export function useListParams<E extends object>(initialExtra: E, opts: Options<E
       // а не «сброшены» — иначе следующая страница теряла бы поиск по столбцу.
       ...(c.filters
         ? {
-            search: firstFilter(c.filters, opts.searchKeys),
+            // Поиск трогаем, только если он и правда живёт в заголовке столбца: таблица шлёт
+            // объект фильтров даже когда искать в ней негде, и без этой проверки любая сортировка
+            // сбрасывала бы строку поиска, набранную в панели над таблицей.
+            ...(opts.searchKeys.length > 0
+              ? { search: firstFilter(c.filters, opts.searchKeys) }
+              : {}),
             ...(opts.mapFilters ? opts.mapFilters(c.filters) : {}),
           }
         : {}),

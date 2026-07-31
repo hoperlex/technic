@@ -13,6 +13,7 @@ import {
 } from '@technic/contracts';
 import { filesApi, wasteTariffsApi } from '../../api/resources';
 import { FileLinkList } from '../../components/FileLinks';
+import { FormGrid } from '../../components/FormGrid';
 import { FormModal } from '../../components/FormModal';
 import { useIsMobile } from '../../hooks/useIsMobile';
 import { errorMessage, formatMoney } from '../../utils/format';
@@ -210,27 +211,25 @@ export function WasteDoneModal({ request, confirmLoading, onCancel, onSubmit }: 
       onSubmit={() => form.submit()}
       confirmLoading={confirmLoading}
       okText="Выполнена"
-      width={620}
+      width={880}
     >
       {request && (
+        // Факт слева, талоны справа: их прикладывают, глядя на введённый объём. На телефоне
+        // колонка одна, порядок тот же.
         <Form form={form} layout="vertical" onFinish={submit}>
+          <FormGrid>
+          <FormGrid.Full>
           <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
             Заявка № {request.displayNumber}, {request.objectName}
             {request.volumeM3 != null ? ` · заявлено ${request.volumeM3} м³` : ''}
             {request.amount != null ? ` на ${formatMoney(request.amount)}` : ''}
           </Typography.Paragraph>
+          </FormGrid.Full>
 
           {byFact && (
             <>
-              {/* Объём и стоимость стоят рядом — их сверяют друг с другом; на телефоне для двух
-                  числовых полей в строке места нет (ADR 0030). */}
-              <Space
-                style={{ width: '100%' }}
-                size="middle"
-                align="start"
-                direction={isMobile ? 'vertical' : 'horizontal'}
-              >
-                <Form.Item
+              {/* Объём и стоимость — соседними ячейками: их сверяют друг с другом. */}
+              <Form.Item
                   name="volumeM3"
                   label="Вывезено, м³"
                   rules={[
@@ -275,8 +274,8 @@ export function WasteDoneModal({ request, confirmLoading, onCancel, onSubmit }: 
                     onChange={() => setCostTouched(true)}
                   />
                 </Form.Item>
-              </Space>
 
+              <FormGrid.Full>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginBottom: 16 }}>
                 {costDiffers && (
                   <Typography.Text type="warning">
@@ -298,12 +297,14 @@ export function WasteDoneModal({ request, confirmLoading, onCancel, onSubmit }: 
                   </Typography.Text>
                 )}
               </div>
+              </FormGrid.Full>
             </>
           )}
 
           {/* Талоны — общий пул заявки (ADR 0024): бумаги за всё закрытие, без деления по машинам.
               Приложенные прошлым закрытием остаются на заявке и показываются здесь же — чтобы
               не нести те же сканы второй раз. */}
+          <FormGrid.Full>
           <Form.Item label="Талоны" style={{ marginBottom: 16 }}>
             {request.tickets.length > 0 && (
               <div style={{ marginBottom: 8 }}>
@@ -362,6 +363,8 @@ export function WasteDoneModal({ request, confirmLoading, onCancel, onSubmit }: 
               placeholder="Необязательно: что важно знать об этом выполнении"
             />
           </Form.Item>
+          </FormGrid.Full>
+          </FormGrid>
         </Form>
       )}
     </FormModal>

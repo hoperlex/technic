@@ -18,6 +18,7 @@ import type {
   CounterpartyDto,
   CreateContainerTypeInput,
   CreateCounterpartyInput,
+  CreateDepartmentInput,
   CreateObjectInput,
   CreateUserInput,
   CreateVehicleCategoryInput,
@@ -30,12 +31,14 @@ import type {
   FileDisposition,
   FileDto,
   ListResult,
+  DepartmentDto,
   ObjectDto,
   RequestHistoryEntryDto,
   RequestStatus,
   RequestType,
   UpdateContainerTypeInput,
   UpdateCounterpartyInput,
+  UpdateDepartmentInput,
   UpdateObjectInput,
   UpdateUserInput,
   UpdateVehicleCategoryInput,
@@ -83,6 +86,16 @@ export const usersApi = {
   reject: (id: string, reason: string) =>
     apiFetch<{ ok: boolean }>(`/users/${id}/reject`, { method: 'POST', body: { reason } }),
   pendingCount: () => apiFetch<{ count: number }>('/users/pending-count'),
+};
+
+/** Справочник отделов (ADR 0040) — вторая ось области, тот же набор операций, что у объектов. */
+export const departmentsApi = {
+  list: (q: Query) => apiFetch<ListResult<DepartmentDto>>('/departments', { query: q }),
+  create: (body: CreateDepartmentInput) =>
+    apiFetch<DepartmentDto>('/departments', { method: 'POST', body }),
+  update: (id: string, body: UpdateDepartmentInput) =>
+    apiFetch<DepartmentDto>(`/departments/${id}`, { method: 'PATCH', body }),
+  remove: (id: string) => apiFetch<DepartmentDto>(`/departments/${id}`, { method: 'DELETE' }),
 };
 
 export const objectsApi = {

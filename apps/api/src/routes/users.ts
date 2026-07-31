@@ -1,14 +1,16 @@
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
-import { and, count, eq, isNull } from 'drizzle-orm';
+import { and, count, eq, exists, gte, isNull, lte, sql } from 'drizzle-orm';
 import {
+  can,
   type CounterpartyType,
   COUNTERPARTY_TYPES_WITH_ACCOUNTS,
   counterpartyTypeHasAccounts,
   counterpartyTypeLabels,
   createUserSchema,
   isCounterpartyScopedRole,
+  isDepartmentScopedRole,
   isObjectScopedRole,
   rejectUserSchema,
   roleLabels,
@@ -18,13 +20,21 @@ import {
   type UserDto,
 } from '@technic/contracts';
 import { db } from '../db/client';
-import { constructionObjects, counterparties, users } from '../db/schema';
+import { counterparties, userConstructionObjects, users } from '../db/schema';
 import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
 import { hashPassword } from '../auth/password';
 import { revokeAllForUser } from '../auth/sessions';
 import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
+import {
+  departmentIdsOfUser,
+  departmentsByUserIds,
+  objectIdsOfUser,
+  objectsByUserIds,
+  replaceUserDepartments,
+  replaceUserObjects,
+} from '../services/user-scopes';
 
 const idParams = z.object({ id: z.string().uuid() });
 
@@ -33,11 +43,14 @@ const idParams = z.object({ id: z.string().uuid() });
  * рассмотрел. Отличается от деактивированной именно отсутствием роли — роль назначают вместе с
  * активацией, а саморегистрация её не ставит (ADR 0034).
  */
-const pendingRegistration = and(
-  isNull(users.deletedAt),
-  eq(users.isActive, false),
-  isNull(users.role),
-);
+const unreviewedRegistration = and(eq(users.isActive, false), isNull(users.role));
+
+/**
+ * То же среди действующих записей — для счётчика и для списка без архива. Отклонённая заявка
+ * ушла в soft delete и в очереди не висит, но остаётся заявкой: с `includeDeleted` список
+ * показывает и её, поэтому признак «удалена» стоит отдельным условием, а не внутри этого.
+ */
+const pendingRegistration = and(isNull(users.deletedAt), unreviewedRegistration);
 
 interface UserRowJoined {
   id: string;
@@ -52,16 +65,19 @@ interface UserRowJoined {
   role: UserDto['role'];
   isActive: boolean;
   mustChangePassword: boolean;
-  constructionObjectId: string | null;
-  objectName: string | null;
   counterpartyId: string | null;
   counterpartyName: string | null;
   counterpartyType: CounterpartyType | null;
+  deletedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
 
-function toDto(r: UserRowJoined): UserDto {
+function toDto(
+  r: UserRowJoined,
+  objects: UserDto['constructionObjects'],
+  departments: UserDto['departments'],
+): UserDto {
   return {
     id: r.id,
     email: r.email,
@@ -75,11 +91,12 @@ function toDto(r: UserRowJoined): UserDto {
     role: r.role,
     isActive: r.isActive,
     mustChangePassword: r.mustChangePassword,
-    constructionObjectId: r.constructionObjectId,
-    constructionObjectName: r.objectName,
+    constructionObjects: objects,
+    departments,
     counterpartyId: r.counterpartyId,
     counterpartyName: r.counterpartyName,
     counterpartyType: r.counterpartyType,
+    deletedAt: r.deletedAt?.toISOString() ?? null,
     createdAt: r.createdAt.toISOString(),
     updatedAt: r.updatedAt.toISOString(),
   };
@@ -98,11 +115,10 @@ const selectCols = {
   role: users.role,
   isActive: users.isActive,
   mustChangePassword: users.mustChangePassword,
-  constructionObjectId: users.constructionObjectId,
-  objectName: constructionObjects.name,
   counterpartyId: users.counterpartyId,
   counterpartyName: counterparties.name,
   counterpartyType: counterparties.type,
+  deletedAt: users.deletedAt,
   createdAt: users.createdAt,
   updatedAt: users.updatedAt,
 };
@@ -111,13 +127,18 @@ function usersQuery() {
   return db
     .select(selectCols)
     .from(users)
-    .leftJoin(constructionObjects, eq(users.constructionObjectId, constructionObjects.id))
     .leftJoin(counterparties, eq(users.counterpartyId, counterparties.id));
 }
 
+/** Карточка учётки всегда идёт с областью: клиент правит набор, а не отдельные привязки. */
 async function fetchUserDto(id: string): Promise<UserDto | null> {
   const [row] = await usersQuery().where(eq(users.id, id));
-  return row ? toDto(row) : null;
+  if (!row) return null;
+  const [objects, departments] = await Promise.all([
+    objectsByUserIds([id]),
+    departmentsByUserIds([id]),
+  ]);
+  return toDto(row, objects.get(id) ?? [], departments.get(id) ?? []);
 }
 
 /**
@@ -161,24 +182,88 @@ async function resolveCounterpartyId(
   return counterpartyId;
 }
 
+/**
+ * Объекты учётки (ADR 0039). Инвариант «объектной роли обязателен объект» держится здесь:
+ * с переходом на множественную привязку CHECK `users_rukstroy_object_check` снят — он читал
+ * колонку своей строки, а набор лежит в отдельной таблице (миграция 0063).
+ *
+ * У остальных ролей набор пуст, как и контрагент: область у них задана иначе или не ограничена,
+ * а привязка, ни на что не влияющая, в карточке читается как действующее ограничение.
+ */
+function resolveObjectIds(role: UserDto['role'], objectIds: string[]): string[] {
+  if (!isObjectScopedRole(role)) return [];
+  if (objectIds.length === 0) {
+    throw err.badRequest(`Для роли «${roleLabels[role!]}» обязателен объект`, {
+      constructionObjectIds: 'Укажите хотя бы один объект',
+    });
+  }
+  return objectIds;
+}
+
+/**
+ * Отделы учётки (ADR 0040) — вторая ось области, по тому же правилу, что объекты. Пустой набор
+ * у остальных ролей означает и второй инвариант: объекты и отделы вместе не встречаются, потому
+ * что роль работает ровно на одной оси — обнулением набора чужой оси он и держится.
+ *
+ * В БД это не выражается: CHECK читает колонки своей строки, а наборы лежат в двух отдельных
+ * таблицах. Отсюда же требование к клиенту не присылать оба набора — оно проверяется схемой
+ * (`createUserSchema`), чтобы ошибка указала на поле, а не пришла общим 400.
+ */
+function resolveDepartmentIds(role: UserDto['role'], departmentIds: string[]): string[] {
+  if (!isDepartmentScopedRole(role)) return [];
+  if (departmentIds.length === 0) {
+    throw err.badRequest(`Для роли «${roleLabels[role!]}» обязателен отдел`, {
+      departmentIds: 'Укажите хотя бы один отдел',
+    });
+  }
+  return departmentIds;
+}
+
 export default async function usersRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
   const guards = { preHandler: [app.authenticate, app.requirePermission('users.manage')] };
 
   r.get('/', { ...guards, schema: { querystring: userListQuerySchema } }, async (req) => {
     const q = req.query;
+    // Архив просит право `archive.read`, как и в остальных списках: право вести учётки и право
+    // видеть удалённое — разные, и одно другого не подразумевает.
+    const showDeleted = q.includeDeleted && can(requirePrincipal(req), 'archive.read');
     const where = and(
-      isNull(users.deletedAt),
+      showDeleted ? undefined : isNull(users.deletedAt),
       q.role === undefined ? undefined : eq(users.role, q.role),
       q.isActive === undefined ? undefined : eq(users.isActive, q.isActive),
-      q.pending ? pendingRegistration : undefined,
+      q.pending ? unreviewedRegistration : undefined,
+      // Объект в наборе учётки (ADR 0039): EXISTS, а не join, — иначе строка размножилась бы по
+      // числу объектов и `total` считал бы привязки вместо людей.
+      q.constructionObjectId === undefined
+        ? undefined
+        : exists(
+            db
+              .select({ one: sql`1` })
+              .from(userConstructionObjects)
+              .where(
+                and(
+                  eq(userConstructionObjects.userId, users.id),
+                  eq(userConstructionObjects.constructionObjectId, q.constructionObjectId),
+                ),
+              ),
+          ),
+      q.counterpartyId === undefined ? undefined : eq(users.counterpartyId, q.counterpartyId),
+      q.requestedRole === undefined ? undefined : eq(users.requestedRole, q.requestedRole),
+      // Дата регистрации — календарные сутки Europe/Moscow: `created_at` хранит момент времени, и
+      // без явных границ дня «с 1 июля» отрезало бы утро первого числа по UTC.
+      q.createdFrom === undefined
+        ? undefined
+        : gte(users.createdAt, new Date(`${q.createdFrom}T00:00:00.000+03:00`)),
+      q.createdTo === undefined
+        ? undefined
+        : lte(users.createdAt, new Date(`${q.createdTo}T23:59:59.999+03:00`)),
       searchCondition(q.search, [users.email, users.fullName]),
     );
     const sortCols = {
       email: users.email,
       fullName: users.fullName,
       role: users.role,
-      constructionObjectName: constructionObjects.name,
       counterpartyName: counterparties.name,
       isActive: users.isActive,
       createdAt: users.createdAt,
@@ -192,8 +277,13 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
         .offset(p.offset),
       db.select({ c: count() }).from(users).where(where),
     ]);
+    const ids = rows.map((row) => row.id);
+    const [objects, departments] = await Promise.all([
+      objectsByUserIds(ids),
+      departmentsByUserIds(ids),
+    ]);
     return {
-      items: rows.map(toDto),
+      items: rows.map((row) => toDto(row, objects.get(row.id) ?? [], departments.get(row.id) ?? [])),
       total: Number(totalRows[0]!.c),
       page: p.page,
       pageSize: p.pageSize,
@@ -210,34 +300,41 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
   });
 
   r.post('/', { ...guards, schema: { body: createUserSchema } }, async (req, reply) => {
+    const actor = requirePrincipal(req);
     const body = req.body;
-    const dup = await db.select({ id: users.id }).from(users).where(eq(users.email, body.email));
-    if (dup.length > 0) throw err.conflict('Пользователь с таким email уже существует');
     const passwordHash = await hashPassword(body.password);
     const counterpartyId = await resolveCounterpartyId(body.role, body.counterpartyId);
-    const [created] = await db
-      .insert(users)
-      .values({
-        email: body.email,
-        lastName: body.lastName,
-        firstName: body.firstName,
-        middleName: body.middleName,
-        role: body.role,
-        passwordHash,
-        isActive: body.isActive,
-        constructionObjectId: body.constructionObjectId ?? null,
-        counterpartyId,
-      })
-      .returning({ id: users.id });
+    const objectIds = resolveObjectIds(body.role, body.constructionObjectIds);
+    const departmentIds = resolveDepartmentIds(body.role, body.departmentIds);
+    const created = await db.transaction(async (tx) => {
+      const dup = await tx.select({ id: users.id }).from(users).where(eq(users.email, body.email));
+      if (dup.length > 0) throw err.conflict('Пользователь с таким email уже существует');
+      const [row] = await tx
+        .insert(users)
+        .values({
+          email: body.email,
+          lastName: body.lastName,
+          firstName: body.firstName,
+          middleName: body.middleName,
+          role: body.role,
+          passwordHash,
+          isActive: body.isActive,
+          counterpartyId,
+        })
+        .returning({ id: users.id });
+      await replaceUserObjects(tx, row!.id, objectIds, actor.id);
+      await replaceUserDepartments(tx, row!.id, departmentIds, actor.id);
+      return row!;
+    });
     await writeAudit({
-      actorUserId: requirePrincipal(req).id,
+      actorUserId: actor.id,
       action: 'user.create',
       entityType: 'user',
-      entityId: created!.id,
+      entityId: created.id,
       metadata: { role: body.role },
     });
     reply.code(201);
-    return (await fetchUserDto(created!.id))!;
+    return (await fetchUserDto(created.id))!;
   });
 
   r.patch(
@@ -266,17 +363,6 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
       if ((body.isActive ?? existing.isActive) && !nextRole) {
         throw err.badRequest('Нельзя активировать учётку без роли', { role: 'Выберите роль' });
       }
-      const nextObjectId =
-        body.constructionObjectId !== undefined
-          ? body.constructionObjectId
-          : existing.constructionObjectId;
-      // Объектные роли («Штаб», «Руководитель строительства») без объекта не ограничены ничем и
-      // одновременно не видят ни одной заявки — объект назначается вместе с ролью (ADR 0025).
-      if (isObjectScopedRole(nextRole) && !nextObjectId) {
-        throw err.badRequest(`Для роли «${roleLabels[nextRole!]}» обязателен объект`, {
-          constructionObjectId: 'Укажите объект',
-        });
-      }
       const nextCounterpartyId = await resolveCounterpartyId(
         nextRole,
         body.counterpartyId !== undefined ? body.counterpartyId : existing.counterpartyId,
@@ -287,30 +373,61 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
       // Смена контрагента у исполнителя — это смена и модуля, и области видимости (ADR 0038):
       // права учётки после неё другие, поэтому выданные токены гасятся так же, как при смене роли.
       const counterpartyChanged = nextCounterpartyId !== existing.counterpartyId;
-      const bumpAuth = roleChanged || counterpartyChanged || deactivated;
 
-      await db
-        .update(users)
-        .set({
-          lastName: body.lastName ?? existing.lastName,
-          firstName: body.firstName ?? existing.firstName,
-          middleName: body.middleName ?? existing.middleName,
-          role: nextRole,
-          isActive: body.isActive ?? existing.isActive,
-          constructionObjectId: nextObjectId ?? null,
-          counterpartyId: nextCounterpartyId,
-          authVersion: bumpAuth ? existing.authVersion + 1 : existing.authVersion,
-          updatedAt: new Date(),
-        })
-        .where(eq(users.id, id));
+      const scopeChanged = await db.transaction(async (tx) => {
+        // Отсутствие поля — «не трогать привязки»; при этом смена роли на объектную или
+        // отдельскую требует области и без поля: набор, оставшийся от прежней роли, проверяется
+        // наравне с присланным. Смена оси при этом обнуляет чужой набор сама — `resolve*`
+        // возвращают пустой список всем, кроме своей роли.
+        const [currentObjects, currentDepartments] = await Promise.all([
+          objectIdsOfUser(tx, id),
+          departmentIdsOfUser(tx, id),
+        ]);
+        const nextObjectIds = resolveObjectIds(
+          nextRole,
+          body.constructionObjectIds ?? currentObjects,
+        );
+        const nextDepartmentIds = resolveDepartmentIds(
+          nextRole,
+          body.departmentIds ?? currentDepartments,
+        );
+        const objectsChanged = await replaceUserObjects(tx, id, nextObjectIds, actor.id);
+        const departmentsChanged = await replaceUserDepartments(
+          tx,
+          id,
+          nextDepartmentIds,
+          actor.id,
+        );
+        const changed = objectsChanged || departmentsChanged;
+        await tx
+          .update(users)
+          .set({
+            lastName: body.lastName ?? existing.lastName,
+            firstName: body.firstName ?? existing.firstName,
+            middleName: body.middleName ?? existing.middleName,
+            role: nextRole,
+            isActive: body.isActive ?? existing.isActive,
+            counterpartyId: nextCounterpartyId,
+            authVersion:
+              roleChanged || counterpartyChanged || deactivated || changed
+                ? existing.authVersion + 1
+                : existing.authVersion,
+            updatedAt: new Date(),
+          })
+          .where(eq(users.id, id));
+        return changed;
+      });
 
+      // Сменившаяся область гасит токены наравне со сменой роли и контрагента: учётке стали
+      // видны другие заявки.
+      const bumpAuth = roleChanged || counterpartyChanged || deactivated || scopeChanged;
       if (bumpAuth) await revokeAllForUser(id);
       await writeAudit({
         actorUserId: actor.id,
         action: 'user.update',
         entityType: 'user',
         entityId: id,
-        metadata: { roleChanged, counterpartyChanged, deactivated },
+        metadata: { roleChanged, counterpartyChanged, deactivated, scopeChanged },
       });
       return (await fetchUserDto(id))!;
     },

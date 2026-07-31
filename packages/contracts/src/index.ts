@@ -10,6 +10,7 @@ export * from './registration-request';
 export * from './auth';
 export * from './users';
 export * from './objects';
+export * from './departments';
 export * from './counterparties';
 export * from './container-types';
 export * from './vehicle-kinds';

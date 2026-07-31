@@ -40,6 +40,11 @@ export const roleEnum = pgEnum('role', [
   'dispatcher',
   'shtab',
   'rukstroy',
+  // Комендант (миграция 0067) — заказчик на объекте по одному модулю: вывоз мусора.
+  'commandant',
+  // Роли отдела (ADR 0040, миграция 0065) — заказчик со стороны офиса.
+  'department',
+  'department_head',
   'operator',
   'observer',
 ]);
@@ -100,6 +105,7 @@ export const registrationRoleRequestEnum = pgEnum('registration_role_request', [
   'dispatcher',
   'rukstroy',
   'site_staff',
+  'commandant',
   'waste_operator',
   'vehicle_lessor',
   'other',
@@ -120,6 +126,27 @@ export const constructionObjects = pgTable(
   (t) => ({
     codeUnique: uniqueIndex('construction_objects_code_unique').on(t.code),
     nameTrgm: index('construction_objects_name_trgm').using('gin', sql`${t.name} gin_trgm_ops`),
+  }),
+);
+
+/**
+ * Справочник отделов (ADR 0040) — офисные подразделения: снабжение, ПТО, АХО. Заведён по образцу
+ * объектов строительства и отвечает на тот же вопрос с другой стороны: от чьего имени идёт
+ * заявка. С объектами отделы не пересекаются — это вторая ось области, а не её продолжение.
+ */
+export const departments = pgTable(
+  'departments',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    code: text('code').notNull(),
+    name: text('name').notNull(),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    codeUnique: uniqueIndex('departments_code_unique').on(t.code),
+    nameTrgm: index('departments_name_trgm').using('gin', sql`${t.name} gin_trgm_ops`),
   }),
 );
 
@@ -671,9 +698,8 @@ export const users = pgTable(
       ),
     passwordHash: text('password_hash').notNull(),
     role: roleEnum('role'), // назначается администратором; до активации может быть null
-    constructionObjectId: uuid('construction_object_id').references(() => constructionObjects.id, {
-      onDelete: 'set null',
-    }),
+    // Объекты учётки — в user_construction_objects (миграция 0063): объектная роль работает
+    // сразу на нескольких площадках, и колонкой такой набор не выражается.
     isActive: boolean('is_active').notNull().default(false),
     mustChangePassword: boolean('must_change_password').notNull().default(false),
     authVersion: integer('auth_version').notNull().default(0),
@@ -706,7 +732,7 @@ export const users = pgTable(
     // и оператора без компании всё равно не активировать (миграция 0057).
     requestedObjectPresent: check(
       'users_requested_object_check',
-      sql`${t.requestedRole} IS NULL OR ${t.requestedRole} NOT IN ('rukstroy', 'site_staff') OR btrim(${t.requestedObject}) <> ''`,
+      sql`${t.requestedRole} IS NULL OR ${t.requestedRole} NOT IN ('rukstroy', 'site_staff', 'commandant') OR btrim(${t.requestedObject}) <> ''`,
     ),
     requestedCompanyPresent: check(
       'users_requested_company_check',
@@ -720,6 +746,59 @@ export const users = pgTable(
     personUnique: uniqueIndex('users_person_unique')
       .on(t.personId)
       .where(sql`${t.personId} IS NOT NULL`),
+  }),
+);
+
+/**
+ * Объекты учётки (миграция 0063): область видимости объектной роли — набор, а не один объект.
+ * Один штаб ведёт несколько площадок, руководитель строительства отвечает за куст объектов.
+ *
+ * Обязательность набора у объектной роли держит API (`routes/users.ts`), а не БД: CHECK читает
+ * только колонки своей строки, а набор лежит здесь. Цена перехода с колонки, ADR 0039.
+ */
+export const userConstructionObjects = pgTable(
+  'user_construction_objects',
+  {
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    constructionObjectId: uuid('construction_object_id')
+      .notNull()
+      .references(() => constructionObjects.id, { onDelete: 'cascade' }),
+    createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.userId, t.constructionObjectId] }),
+    // «Кто работает на объекте» — вопрос с обратной стороны; PK покрывает только проход от учётки.
+    objectIdx: index('user_construction_objects_object_idx').on(t.constructionObjectId),
+  }),
+);
+
+/**
+ * Отделы учётки (ADR 0040, миграция 0066) — вторая ось области, устроенная как объекты. Заполнена
+ * всегда одна из двух: отдел — офис, объект — площадка, и одновременно учётка не работает там и
+ * там. Инвариант держит API (`routes/users.ts`): он кросс-табличный, и CHECK его не выражает.
+ *
+ * Отсюда же берутся руководители в карточке отдела: это учётки с ролью «Руководитель отдела»,
+ * привязанные к отделу, — своего хранилища у той связи нет.
+ */
+export const userDepartments = pgTable(
+  'user_departments',
+  {
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    departmentId: uuid('department_id')
+      .notNull()
+      .references(() => departments.id, { onDelete: 'cascade' }),
+    createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.userId, t.departmentId] }),
+    // «Кто в отделе» — вопрос карточки отдела; PK покрывает только проход от учётки.
+    departmentIdx: index('user_departments_department_idx').on(t.departmentId),
   }),
 );
 
@@ -1971,6 +2050,9 @@ export const auditLog = pgTable(
 );
 
 export type UserRow = typeof users.$inferSelect;
+export type UserConstructionObjectRow = typeof userConstructionObjects.$inferSelect;
+export type DepartmentRow = typeof departments.$inferSelect;
+export type UserDepartmentRow = typeof userDepartments.$inferSelect;
 export type WasteRequestRow = typeof wasteRequests.$inferSelect;
 export type FileRow = typeof files.$inferSelect;
 export type ObjectRow = typeof constructionObjects.$inferSelect;

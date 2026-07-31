@@ -27,6 +27,7 @@ import { AppError } from '../src/lib/errors';
 
 const OBJECT_A = '11111111-1111-1111-1111-111111111111';
 const OBJECT_B = '22222222-2222-2222-2222-222222222222';
+const DEPARTMENT_A = '55555555-5555-5555-5555-555555555555';
 const COUNTERPARTY_A = '33333333-3333-3333-3333-333333333333';
 const COUNTERPARTY_B = '44444444-4444-4444-4444-444444444444';
 /** Заведомо несуществующий id: им подменяется пустая привязка, чтобы условие не исчезло. */
@@ -45,7 +46,8 @@ function principal(role: Role | null, extra: Partial<Principal> = {}): Principal
     role,
     isActive: true,
     mustChangePassword: false,
-    constructionObjectId: null,
+    constructionObjectIds: [],
+    departmentIds: [],
     counterpartyId: null,
     counterpartyType: null,
     authVersion: 1,
@@ -79,7 +81,7 @@ function statusOf(fn: () => void): number {
 
 describe('видимость заявок по объекту', () => {
   it('штаб видит только свой объект', () => {
-    const p = principal('shtab', { constructionObjectId: OBJECT_A });
+    const p = principal('shtab', { constructionObjectIds: [OBJECT_A] });
     expect(paramsOf(requestVisibilityWhere(p, wasteRequests.objectId))).toEqual([OBJECT_A]);
   });
 
@@ -89,13 +91,35 @@ describe('видимость заявок по объекту', () => {
   });
 
   it('руководитель строительства тоже видит только свой объект (ADR 0025)', () => {
-    const p = principal('rukstroy', { constructionObjectId: OBJECT_A });
+    const p = principal('rukstroy', { constructionObjectIds: [OBJECT_A] });
     expect(paramsOf(requestVisibilityWhere(p, wasteRequests.objectId))).toEqual([OBJECT_A]);
   });
 
   it('остальные роли видят все объекты', () => {
     for (const role of ['admin', 'manager', 'dispatcher', 'operator'] as Role[]) {
       expect(requestVisibilityWhere(principal(role), wasteRequests.objectId), role).toBeUndefined();
+    }
+  });
+
+  // Роль отдела (ADR 0040) объектных заявок не видит: отдел — офис, заявка площадки не его.
+  // Проверяется условием, а не отсутствием прав: право на модуль у отдела как раз есть.
+  it('роль отдела не видит объектных заявок вовсе', () => {
+    for (const role of ['department', 'department_head'] as Role[]) {
+      const p = principal(role, { departmentIds: [DEPARTMENT_A] });
+      expect(paramsOf(requestVisibilityWhere(p, wasteRequests.objectId)), role).toEqual([
+        NEVER_MATCH,
+      ]);
+    }
+  });
+
+  // Множественная привязка (ADR 0039): область объектной роли — набор, а не один объект.
+  it('с несколькими объектами условие перечисляет их все, а не первый из набора', () => {
+    for (const role of ['shtab', 'rukstroy'] as Role[]) {
+      const p = principal(role, { constructionObjectIds: [OBJECT_A, OBJECT_B] });
+      expect(paramsOf(requestVisibilityWhere(p, wasteRequests.objectId)), role).toEqual([
+        OBJECT_A,
+        OBJECT_B,
+      ]);
     }
   });
 });
@@ -162,13 +186,45 @@ describe('видимость заявок ТС по арендодателю (AD
 describe('работа с конкретной записью', () => {
   it('объектная роль не работает с чужим объектом', () => {
     for (const role of ['shtab', 'rukstroy'] as Role[]) {
-      const p = principal(role, { constructionObjectId: OBJECT_A });
+      const p = principal(role, { constructionObjectIds: [OBJECT_A] });
       expect(
         statusOf(() => assertObjectScope(p, OBJECT_A)),
         role,
       ).toBe(200);
       expect(
         statusOf(() => assertObjectScope(p, OBJECT_B)),
+        role,
+      ).toBe(403);
+    }
+  });
+
+  it('объектная роль работает с любым объектом своего набора (ADR 0039)', () => {
+    for (const role of ['shtab', 'rukstroy'] as Role[]) {
+      const p = principal(role, { constructionObjectIds: [OBJECT_A, OBJECT_B] });
+      expect(
+        statusOf(() => assertObjectScope(p, OBJECT_A)),
+        role,
+      ).toBe(200);
+      expect(
+        statusOf(() => assertObjectScope(p, OBJECT_B)),
+        role,
+      ).toBe(200);
+      // Пустой набор — не «работает везде»: активировать такую учётку API не даёт, но проверка
+      // не должна зависеть от того, удержался ли этот запрет.
+      expect(
+        statusOf(() => assertObjectScope(principal(role), OBJECT_A)),
+        role,
+      ).toBe(403);
+    }
+  });
+
+  it('роль отдела не работает ни с одним объектом (ADR 0040)', () => {
+    for (const role of ['department', 'department_head'] as Role[]) {
+      const p = principal(role, { departmentIds: [DEPARTMENT_A] });
+      // Отказ обязателен именно здесь: права на модуль у отдела есть, и без этой ветки сотрудник
+      // отдела заводил бы заявки на любой объект компании.
+      expect(
+        statusOf(() => assertObjectScope(p, OBJECT_A)),
         role,
       ).toBe(403);
     }
@@ -183,9 +239,9 @@ describe('работа с конкретной записью', () => {
     }
   });
 
-  it('объектная роль правит и удаляет заявку только до «В работе»', () => {
-    for (const role of ['shtab', 'rukstroy'] as Role[]) {
-      const p = principal(role, { constructionObjectId: OBJECT_A });
+  it('заказчик правит и удаляет заявку только до «В работе» — обе оси', () => {
+    for (const role of ['shtab', 'rukstroy', 'department', 'department_head'] as Role[]) {
+      const p = principal(role, { constructionObjectIds: [OBJECT_A] });
       expect(
         statusOf(() => assertObjectRoleEditable(p, 'new', 'редактировать')),
         role,
@@ -234,21 +290,38 @@ describe('работа с конкретной записью', () => {
 
 describe('виза на заявке ТС (ADR 0025, 0032)', () => {
   it('визирует тот, у кого есть право, — руководитель строительства только свой объект', () => {
-    const ruk = principal('rukstroy', { constructionObjectId: OBJECT_A });
+    const ruk = principal('rukstroy', { constructionObjectIds: [OBJECT_A] });
     expect(canApproveForObject(ruk, OBJECT_A)).toBe(true);
     expect(canApproveForObject(ruk, OBJECT_B)).toBe(false);
     // Администратор право визы сохраняет, и объект его не ограничивает.
     expect(canApproveForObject(principal('admin'), OBJECT_B)).toBe(true);
     for (const role of ['manager', 'dispatcher', 'shtab', 'operator'] as Role[]) {
       expect(
-        canApproveForObject(principal(role, { constructionObjectId: OBJECT_A }), OBJECT_A),
+        canApproveForObject(principal(role, { constructionObjectIds: [OBJECT_A] }), OBJECT_A),
         role,
       ).toBe(false);
     }
   });
 
+  it('визирует на любом своём объекте, а автовиза встаёт на каждом из них (ADR 0039)', () => {
+    const ruk = principal('rukstroy', { constructionObjectIds: [OBJECT_A, OBJECT_B] });
+    expect(canApproveForObject(ruk, OBJECT_A)).toBe(true);
+    expect(canApproveForObject(ruk, OBJECT_B)).toBe(true);
+    expect(approvesOwnRequestOnCreate(ruk, OBJECT_A)).toBe(true);
+    expect(approvesOwnRequestOnCreate(ruk, OBJECT_B)).toBe(true);
+    // Без объектов права визы не остаётся: визировать нечего — область пуста.
+    expect(canApproveForObject(principal('rukstroy'), OBJECT_A)).toBe(false);
+  });
+
+  it('руководитель отдела не визирует объектную заявку (ADR 0040)', () => {
+    const head = principal('department_head', { departmentIds: [DEPARTMENT_A] });
+    // Право визы у роли есть — разводит их область: у отдела своих заявок на объекте не бывает.
+    expect(canApproveForObject(head, OBJECT_A)).toBe(false);
+    expect(approvesOwnRequestOnCreate(head, OBJECT_A)).toBe(false);
+  });
+
   it('сама собой виза встаёт только у того, кто отвечает за объект', () => {
-    const ruk = principal('rukstroy', { constructionObjectId: OBJECT_A });
+    const ruk = principal('rukstroy', { constructionObjectIds: [OBJECT_A] });
     expect(approvesOwnRequestOnCreate(ruk, OBJECT_A)).toBe(true);
     expect(approvesOwnRequestOnCreate(ruk, OBJECT_B)).toBe(false);
     // Право визы автовизы не даёт: администратор заводит заявку не за себя, и она ждёт визы.

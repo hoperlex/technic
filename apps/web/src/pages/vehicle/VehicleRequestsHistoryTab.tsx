@@ -16,7 +16,6 @@ import {
   assignmentTitle,
   CLOSED_REQUEST_STATUSES,
   actsForCounterparty,
-  isObjectScopedRole,
   parseVehicleRequestNumberSearch,
   type RequestStatus,
   requestStatusColors,
@@ -43,6 +42,7 @@ import { formatDate, formatDateTimeMaybe, formatMoney } from '../../utils/format
 import { calendarDayCount } from '../../utils/date';
 import { VehicleRequestViewModal } from './VehicleRequestViewModal';
 import { formatDateOnly, useObjectOptions, useVehicleClassificationFilter } from './shared';
+import { useObjectScope } from '../../hooks/useObjectScope';
 
 /**
  * Журнал закрытых заказов техники (ADR 0029). Первая вкладка отвечает на «что сейчас в работе»,
@@ -81,13 +81,13 @@ const dash = <Typography.Text type="secondary">—</Typography.Text>;
 
 export function VehicleRequestsHistoryTab() {
   const { user } = useAuth();
-  const isObjectRole = isObjectScopedRole(user?.role);
+  const { soleObjectId, objectFieldDisabled, limitObjectOptions } = useObjectScope();
   // Сам арендодатель видит только свои заявки (ADR 0038) — фильтр «у кого брали» повторял бы ему
   // единственный вариант, а список остальных арендодателей к его работе отношения не имеет.
   const isLessor = actsForCounterparty(user, 'vehicle_lessor');
-  // Штабу объект зафиксирован на его собственном — как и в списке заявок; сервер всё равно
-  // отдаёт только свой объект (requestVisibilityWhere).
-  const ownObjectId = isObjectRole ? (user?.constructionObjectId ?? '') : '';
+  // Штабу с одним объектом фильтр зафиксирован на нём — как и в списке заявок; с несколькими
+  // выбор сужен до своих (ADR 0039). Сервер всё равно отдаёт только свои (requestVisibilityWhere).
+  const ownObjectId = soleObjectId ?? '';
 
   const { params, setParams, setSort, onTableChange } = useListParams<{
     requestType?: string;
@@ -123,7 +123,8 @@ export function VehicleRequestsHistoryTab() {
     queryFn: () => vehicleRequestsApi.historySummary(params),
   });
 
-  const { options: objectOptions } = useObjectOptions();
+  const { options: allObjectOptions } = useObjectOptions();
+  const objectOptions = limitObjectOptions(allObjectOptions);
 
   // Арендодатели — контрагенты роли «Арендодатель (ТС)»: по ним и сводят расходы на аренду.
   // Неактивные из списка не убираем: журнал читают и про тех, с кем уже не работают.
@@ -377,7 +378,7 @@ export function VehicleRequestsHistoryTab() {
         placeholder="Все объекты"
         style={{ width: 240 }}
         options={objectOptions}
-        disabled={isObjectRole}
+        disabled={objectFieldDisabled}
         value={params.objectId}
         onChange={(v: string | undefined) => applyFilter({ objectId: v })}
       />
@@ -451,7 +452,7 @@ export function VehicleRequestsHistoryTab() {
       value: params.objectId,
       options: objectOptions,
       placeholder: 'Все объекты',
-      disabled: isObjectRole,
+      disabled: objectFieldDisabled,
       onChange: (v) => applyFilter({ objectId: v }),
     },
     classificationFilter.mobileFilter,

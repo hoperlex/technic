@@ -1,13 +1,31 @@
 import { useState } from 'react';
-import { Alert, App, Badge, Button, Dropdown, Form, Input, Segmented, Space, Switch } from 'antd';
+import {
+  Alert,
+  App,
+  Badge,
+  Button,
+  Checkbox,
+  DatePicker,
+  Dropdown,
+  Form,
+  Input,
+  Segmented,
+  Select,
+  Space,
+  Switch,
+  Tag,
+} from 'antd';
 import { MoreOutlined, PlusOutlined } from '@ant-design/icons';
+import dayjs from 'dayjs';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   COUNTERPARTY_TYPES_WITH_ACCOUNTS,
   counterpartyTypeHasAccounts,
   counterpartyTypeLabels,
   isCounterpartyScopedRole,
+  isDepartmentScopedRole,
   isObjectScopedRole,
+  REGISTRATION_ROLE_REQUESTS,
   registrationRequestDetail,
   registrationRoleRequestLabels,
   ROLES,
@@ -15,7 +33,7 @@ import {
   roleLabels,
   type UserDto,
 } from '@technic/contracts';
-import { counterpartiesApi, objectsApi, usersApi } from '../../api/resources';
+import { counterpartiesApi, departmentsApi, objectsApi, usersApi } from '../../api/resources';
 import { AutoSelect } from '../../components/AutoSelect';
 import { DataTable } from '../../components/DataTable';
 import { FormModal } from '../../components/FormModal';
@@ -24,6 +42,7 @@ import { PasswordField } from '../../components/PasswordField';
 import { PersonNameFields } from '../../components/PersonNameFields';
 import { ReasonModal } from '../../components/CancelReasonModal';
 import { actionsColumn, badgeColumn, boolBadgeColumn, textColumn } from '../../components/columns';
+import type { FilterDefinition } from '../../components/listControls';
 import { useListParams } from '../../hooks/useListParams';
 import { useAuth } from '../../auth/AuthContext';
 import { UserAvatar } from '../../components/UserAvatar';
@@ -36,7 +55,10 @@ interface UserFormValues {
   middleName?: string;
   role: (typeof ROLES)[number];
   password?: string;
-  constructionObjectId?: string | null;
+  /** Объекты учётки (ADR 0039): объектная роль работает сразу на нескольких площадках. */
+  constructionObjectIds?: string[];
+  /** Отделы учётки (ADR 0040): вторая ось области — вместо объектов, а не вместе с ними. */
+  departmentIds?: string[];
   /**
    * Контрагент учётки: обязателен для внешнего исполнителя (ADR 0010). Его тип задаёт модуль,
    * в котором учётка работает, — вывоз мусора или заказ ТС (ADR 0038).
@@ -63,21 +85,29 @@ function requestedDetailText(u: UserDto): string | undefined {
 export function UsersTab() {
   const { message, modal } = App.useApp();
   const qc = useQueryClient();
-  const { user: currentUser } = useAuth();
+  const { user: currentUser, can } = useAuth();
   const { params, setParams, onTableChange } = useListParams<{
     role?: string;
     isActive?: string;
     pending?: string;
-  }>(
-    {},
-    {
-      searchKeys: ['email', 'fullName'],
-      mapFilters: (f) => ({
-        role: f.role?.[0] as string | undefined,
-        isActive: f.isActive?.[0] as string | undefined,
-      }),
-    },
-  );
+    constructionObjectId?: string;
+    counterpartyId?: string;
+    requestedRole?: string;
+    createdFrom?: string;
+    createdTo?: string;
+    includeDeleted?: string;
+    // Все фильтры задаются панелью над таблицей: объект и контрагент выбирают поиском по списку,
+    // а в выпадашку заголовка столбца такой список не помещается — и на телефоне её нет вовсе.
+    // Дублировать их там же нельзя: в onChange таблицы приходит пустой фильтр, и любая сортировка
+    // сбрасывала бы выбранное.
+  }>({}, { searchKeys: [] });
+
+  /** Правка любого фильтра возвращает на первую страницу: та же страница при другом наборе — уже другие записи. */
+  const applyFilter = (patch: Partial<typeof params>) =>
+    setParams((p) => ({ ...p, ...patch, page: 1 }));
+
+  const showPending = params.pending === 'true';
+  const canSeeArchive = can('archive.read');
 
   const { data, isFetching } = useQuery({
     queryKey: ['users', params],
@@ -101,6 +131,21 @@ export function UsersTab() {
         sortOrder: 'asc',
       }),
   });
+  const { data: departmentsData, isLoading: departmentsLoading } = useQuery({
+    queryKey: ['departments', 'for-select'],
+    queryFn: () =>
+      departmentsApi.list({
+        page: 1,
+        pageSize: 500,
+        isActive: 'true',
+        sortBy: 'name',
+        sortOrder: 'asc',
+      }),
+  });
+  const departmentOptions = (departmentsData?.items ?? []).map((d) => ({
+    value: d.id,
+    label: `${d.code} — ${d.name}`,
+  }));
   // Учётку исполнителя привязываем к контрагенту, за которого в портале работают: оператор
   // вывоза и арендодатель ТС (ADR 0038). У подрядчика заявок нет ни в одном модуле.
   const { data: executors, isLoading: executorsLoading } = useQuery({
@@ -140,7 +185,11 @@ export function UsersTab() {
   const openCreate = () => {
     setRecord(null);
     form.resetFields();
-    form.setFieldsValue({ isActive: true } as UserFormValues);
+    form.setFieldsValue({
+      isActive: true,
+      constructionObjectIds: [],
+      departmentIds: [],
+    } as Partial<UserFormValues>);
     setOpen(true);
   };
   const openEdit = (r: UserDto) => {
@@ -154,7 +203,8 @@ export function UsersTab() {
       // Роль по умолчанию не подставляем: у зарегистрировавшегося самостоятельно её нет,
       // а активация без осознанно выбранной роли запрещена — пусть выберет администратор.
       role: r.role ?? undefined,
-      constructionObjectId: r.constructionObjectId,
+      constructionObjectIds: r.constructionObjects.map((o) => o.id),
+      departmentIds: r.departments.map((d) => d.id),
       counterpartyId: r.counterpartyId,
       isActive: r.isActive,
     });
@@ -165,9 +215,13 @@ export function UsersTab() {
     mutationFn: (values: UserFormValues) => {
       const payload = {
         ...values,
-        constructionObjectId: isObjectScopedRole(values.role)
-          ? (values.constructionObjectId ?? null)
-          : null,
+        // Область чужой оси обнуляется здесь же: сменив роль с объектной на отдельскую, форма
+        // не должна отправлять оставшийся от прежней роли набор — сервер его всё равно отвергнет
+        // как несовместимую пару (ADR 0040).
+        constructionObjectIds: isObjectScopedRole(values.role)
+          ? (values.constructionObjectIds ?? [])
+          : [],
+        departmentIds: isDepartmentScopedRole(values.role) ? (values.departmentIds ?? []) : [],
         counterpartyId: isCounterpartyScopedRole(values.role)
           ? (values.counterpartyId ?? null)
           : null,
@@ -276,11 +330,18 @@ export function UsersTab() {
   };
 
   const columns = [
-    textColumn<UserDto>({ key: 'email', title: 'Email', dataIndex: 'email', width: 220 }),
+    textColumn<UserDto>({
+      key: 'email',
+      title: 'Email',
+      dataIndex: 'email',
+      searchable: false,
+      width: 220,
+    }),
     textColumn<UserDto>({
       key: 'fullName',
       title: 'ФИО',
       dataIndex: 'fullName',
+      searchable: false,
       render: (_v, r) => (
         <Space size={8}>
           <UserAvatar name={r.fullName} size="small" />
@@ -304,15 +365,21 @@ export function UsersTab() {
       dataIndex: 'role',
       labels: roleLabels,
       colors: roleColors,
-      filters: true,
       width: 150,
     }),
     textColumn<UserDto>({
-      key: 'constructionObjectName',
-      title: 'Объект',
-      dataIndex: 'constructionObjectName',
+      key: 'scope',
+      title: 'Область',
+      dataIndex: 'constructionObjects',
+      // Одна колонка на обе оси, а не две: они взаимоисключающие (ADR 0040), и вторая стояла бы
+      // пустой у всех, кроме отделов. Сортировать по набору нечем — «Объект1, Объект7» и
+      // «Объект2» сравнимы только выбранным наугад представителем (ADR 0039).
+      sortable: false,
       searchable: false,
-      render: (v) => (v ? String(v) : '—'),
+      render: (_v, r) => {
+        const places = r.departments.length > 0 ? r.departments : r.constructionObjects;
+        return places.length === 0 ? '—' : places.map((p) => p.name).join(' · ');
+      },
     }),
     textColumn<UserDto>({
       key: 'counterpartyName',
@@ -333,24 +400,254 @@ export function UsersTab() {
       dataIndex: 'isActive',
       trueText: 'Да',
       falseText: 'Нет',
-      filters: true,
       width: 120,
     }),
+    // Дата регистрации: по ней фильтруют период, и без колонки фильтр не на что опереть —
+    // отобранные строки выглядели бы отобранными неизвестно по чему.
+    textColumn<UserDto>({
+      key: 'createdAt',
+      title: 'Зарегистрирован',
+      dataIndex: 'createdAt',
+      searchable: false,
+      width: 150,
+      render: (_v, r) => dayjs(r.createdAt).format('DD.MM.YYYY'),
+    }),
     actionsColumn<UserDto>(
-      (r) => (
-        <Dropdown menu={rowMenu(r)} trigger={['click']}>
-          <Button size="small" icon={<MoreOutlined />} />
-        </Dropdown>
-      ),
+      (r) =>
+        r.deletedAt ? (
+          // Действий над архивной учёткой нет: восстановление не делаем — вернуть доступ
+          // удалённому сотруднику и вернуть в очередь отклонённую заявку это разные действия,
+          // и одной кнопкой «восстановить» они не покрываются.
+          <Tag>в архиве</Tag>
+        ) : (
+          <Dropdown menu={rowMenu(r)} trigger={['click']}>
+            <Button size="small" icon={<MoreOutlined />} />
+          </Dropdown>
+        ),
       90,
     ),
   ];
 
+  const statusOptions = [
+    { value: 'true', label: 'Активные' },
+    { value: 'false', label: 'Неактивные' },
+  ];
+  // Пожелание указывают при саморегистрации (ADR 0034): у заведённых администратором его нет,
+  // поэтому фильтр показывается только в режиме заявок — в общем списке он молча отрезал бы всех.
+  const requestedRoleOptions = REGISTRATION_ROLE_REQUESTS.map((v) => ({
+    value: v,
+    label: registrationRoleRequestLabels[v],
+  }));
+
+  const setPending = (next: boolean) =>
+    applyFilter({
+      pending: next ? 'true' : undefined,
+      // Пожелание уходит вместе с режимом заявок: контрола, которым его снять, на общем списке
+      // уже нет, а оставленный фильтр сузил бы список молча.
+      requestedRole: next ? params.requestedRole : undefined,
+    });
+
+  /* Заявки лежат в общем списке вперемешку с сотрудниками, а рассматривают их отдельным
+     заходом — поэтому переключатель во всю ширину, а не ещё один выпадающий список. */
+  const pendingSwitch = (
+    <Segmented
+      value={showPending ? 'pending' : 'all'}
+      onChange={(v) => setPending(v === 'pending')}
+      options={[
+        { value: 'all', label: 'Все' },
+        {
+          value: 'pending',
+          label: (
+            <Space size={6}>
+              Ожидают активации
+              {pending?.count ? <Badge count={pending.count} color="gold" /> : null}
+            </Space>
+          ),
+        },
+      ]}
+    />
+  );
+
+  const filters = (
+    <Space wrap size={8}>
+      {pendingSwitch}
+      <Input.Search
+        allowClear
+        placeholder="Email или ФИО"
+        style={{ width: 240 }}
+        defaultValue={params.search}
+        onSearch={(v) => applyFilter({ search: v || undefined })}
+      />
+      <Select
+        allowClear
+        placeholder="Все роли"
+        style={{ width: 190 }}
+        options={roleOptions}
+        value={params.role}
+        onChange={(v: string | undefined) => applyFilter({ role: v })}
+      />
+      <Select
+        allowClear
+        placeholder="Активные и нет"
+        style={{ width: 150 }}
+        options={statusOptions}
+        value={params.isActive}
+        onChange={(v: string | undefined) => applyFilter({ isActive: v })}
+      />
+      <Select
+        allowClear
+        showSearch
+        optionFilterProp="label"
+        placeholder="Все объекты"
+        style={{ width: 220 }}
+        options={objectOptions}
+        loading={objectsLoading}
+        value={params.constructionObjectId}
+        onChange={(v: string | undefined) => applyFilter({ constructionObjectId: v })}
+      />
+      <Select
+        allowClear
+        showSearch
+        optionFilterProp="label"
+        placeholder="Все контрагенты"
+        style={{ width: 240 }}
+        options={executorGroups}
+        loading={executorsLoading}
+        value={params.counterpartyId}
+        onChange={(v: string | undefined) => applyFilter({ counterpartyId: v })}
+      />
+      {showPending ? (
+        <Select
+          allowClear
+          placeholder="Любое пожелание"
+          style={{ width: 220 }}
+          options={requestedRoleOptions}
+          value={params.requestedRole}
+          onChange={(v: string | undefined) => applyFilter({ requestedRole: v })}
+        />
+      ) : null}
+      <DatePicker.RangePicker
+        format="DD.MM.YYYY"
+        style={{ width: 250 }}
+        allowEmpty={[true, true]}
+        placeholder={['Зарегистрирован с', 'по']}
+        value={[
+          params.createdFrom ? dayjs(params.createdFrom) : null,
+          params.createdTo ? dayjs(params.createdTo) : null,
+        ]}
+        onChange={(range) =>
+          applyFilter({
+            createdFrom: range?.[0]?.format('YYYY-MM-DD'),
+            createdTo: range?.[1]?.format('YYYY-MM-DD'),
+          })
+        }
+      />
+      {canSeeArchive ? (
+        <Checkbox
+          checked={params.includeDeleted === 'true'}
+          onChange={(e) => applyFilter({ includeDeleted: e.target.checked ? 'true' : undefined })}
+        >
+          Показать архив
+        </Checkbox>
+      ) : null}
+    </Space>
+  );
+
+  /** Те же фильтры описаниями — для шита на телефоне (ADR 0030). */
+  const mobileFilters: FilterDefinition[] = [
+    {
+      kind: 'toggle',
+      key: 'pending',
+      label: 'Только ожидающие активации',
+      value: showPending,
+      onChange: setPending,
+    },
+    {
+      kind: 'text',
+      key: 'search',
+      label: 'Поиск',
+      value: params.search,
+      placeholder: 'Email или ФИО',
+      onChange: (v) => applyFilter({ search: v }),
+    },
+    {
+      kind: 'select',
+      key: 'role',
+      label: 'Роль',
+      value: params.role,
+      options: roleOptions,
+      placeholder: 'Все роли',
+      onChange: (v) => applyFilter({ role: v }),
+    },
+    {
+      kind: 'select',
+      key: 'isActive',
+      label: 'Статус',
+      value: params.isActive,
+      options: statusOptions,
+      placeholder: 'Активные и нет',
+      onChange: (v) => applyFilter({ isActive: v }),
+    },
+    {
+      kind: 'select',
+      key: 'constructionObjectId',
+      label: 'Объект',
+      value: params.constructionObjectId,
+      options: objectOptions,
+      placeholder: 'Все объекты',
+      loading: objectsLoading,
+      onChange: (v) => applyFilter({ constructionObjectId: v }),
+    },
+    {
+      kind: 'select',
+      key: 'counterpartyId',
+      label: 'Контрагент',
+      value: params.counterpartyId,
+      options: executorGroups,
+      placeholder: 'Все контрагенты',
+      loading: executorsLoading,
+      onChange: (v) => applyFilter({ counterpartyId: v }),
+    },
+    ...(showPending
+      ? [
+          {
+            kind: 'select' as const,
+            key: 'requestedRole',
+            label: 'Пожелание при регистрации',
+            value: params.requestedRole,
+            options: requestedRoleOptions,
+            placeholder: 'Любое пожелание',
+            onChange: (v: string | undefined) => applyFilter({ requestedRole: v }),
+          },
+        ]
+      : []),
+    {
+      kind: 'dateRange',
+      key: 'createdAt',
+      label: 'Зарегистрирован',
+      from: params.createdFrom,
+      to: params.createdTo,
+      onChange: (createdFrom, createdTo) => applyFilter({ createdFrom, createdTo }),
+    },
+    ...(canSeeArchive
+      ? [
+          {
+            kind: 'toggle' as const,
+            key: 'includeDeleted',
+            label: 'Показывать архив',
+            value: params.includeDeleted === 'true',
+            onChange: (checked: boolean) =>
+              applyFilter({ includeDeleted: checked ? 'true' : undefined }),
+          },
+        ]
+      : []),
+  ];
+
   return (
     <PageTableLayout
-      // Фильтры этого справочника живут в заголовках столбцов и на телефоне работают там же:
-      // таблица со своей прокруткой остаётся (ADR 0030). В шит выносить нечего.
+      filters={filters}
       mobile={{
+        filters: mobileFilters,
         primaryAction: {
           label: 'Добавить пользователя',
           icon: <PlusOutlined />,
@@ -358,35 +655,9 @@ export function UsersTab() {
         },
       }}
       extra={
-        <Space size={8} wrap>
-          {/* Заявки лежат в общем списке вперемешку с сотрудниками, а рассматривают их
-              отдельным заходом — поэтому переключатель, а не ещё один фильтр в столбце. */}
-          <Segmented
-            value={params.pending === 'true' ? 'pending' : 'all'}
-            onChange={(v) =>
-              setParams((prev) => ({
-                ...prev,
-                pending: v === 'pending' ? 'true' : undefined,
-                page: 1,
-              }))
-            }
-            options={[
-              { value: 'all', label: 'Все' },
-              {
-                value: 'pending',
-                label: (
-                  <Space size={6}>
-                    Ожидают активации
-                    {pending?.count ? <Badge count={pending.count} color="gold" /> : null}
-                  </Space>
-                ),
-              },
-            ]}
-          />
-          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-            Добавить
-          </Button>
-        </Space>
+        <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
+          Добавить
+        </Button>
       }
     >
       <DataTable<UserDto>
@@ -434,19 +705,55 @@ export function UsersTab() {
           >
             <AutoSelect options={roleOptions} />
           </Form.Item>
-          {/* Объектные роли («Штаб», «Руководитель строительства») работают в пределах своего
-              объекта — без него учётку не активировать (ADR 0025). */}
+          {/* Объектные роли («Штаб», «Руководитель строительства») работают в пределах своих
+              объектов — без них учётку не активировать (ADR 0025, ADR 0039). Список, а не один
+              объект: штаб ведёт несколько площадок, и вторая учётка на того же человека была бы
+              вторым паролем и вторым входом ради одной строки в справочнике. */}
           {isObjectScopedRole(watchRole) ? (
             <Form.Item
-              name="constructionObjectId"
-              label={`Объект (для роли «${roleLabels[watchRole!]}»)`}
-              rules={[{ required: true, message: 'Выберите объект' }]}
+              name="constructionObjectIds"
+              label={`Объекты (для роли «${roleLabels[watchRole!]}»)`}
+              rules={[
+                {
+                  validator: (_rule, value: string[] | undefined) =>
+                    value && value.length > 0
+                      ? Promise.resolve()
+                      : Promise.reject(new Error('Выберите хотя бы один объект')),
+                },
+              ]}
             >
-              <AutoSelect
+              <Select
+                mode="multiple"
                 options={objectOptions}
                 loading={objectsLoading}
                 showSearch
                 optionFilterProp="label"
+                placeholder="Выберите объекты"
+              />
+            </Form.Item>
+          ) : null}
+          {/* Отделы — вторая ось области (ADR 0040): офисное подразделение вместо площадки.
+              Показывается вместо поля объектов, а не рядом: учётка работает на одной оси. */}
+          {isDepartmentScopedRole(watchRole) ? (
+            <Form.Item
+              name="departmentIds"
+              label={`Отделы (для роли «${roleLabels[watchRole!]}»)`}
+              rules={[
+                {
+                  validator: (_rule, value: string[] | undefined) =>
+                    value && value.length > 0
+                      ? Promise.resolve()
+                      : Promise.reject(new Error('Выберите хотя бы один отдел')),
+                },
+              ]}
+            >
+              <Select
+                mode="multiple"
+                options={departmentOptions}
+                loading={departmentsLoading}
+                showSearch
+                optionFilterProp="label"
+                placeholder="Выберите отделы"
               />
             </Form.Item>
           ) : null}

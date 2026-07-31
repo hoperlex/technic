@@ -1,6 +1,7 @@
 import { Tabs } from 'antd';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { ObjectsTab } from './directories/ObjectsTab';
+import { DepartmentsTab } from './directories/DepartmentsTab';
 import { CounterpartiesTab } from './directories/CounterpartiesTab';
 import { ContainerTypesTab } from './directories/ContainerTypesTab';
 import { WasteTariffsTab } from './directories/WasteTariffsTab';
@@ -11,9 +12,10 @@ import { DriversTab } from './directories/DriversTab';
 import { useAuth } from '../auth/AuthContext';
 
 export function DirectoriesPage() {
-  // Вкладок семь-восемь: на телефоне они прокручиваются, и компактный размер оставляет им больше
-  // места. Восьмая — «Водители» — появляется по собственному праву: в карточке персональные
-  // данные, и роли, которым открыты справочники, доступа к ним не получают (ADR 0037).
+  // Вкладок восемь-девять: на телефоне они прокручиваются, и компактный размер оставляет им
+  // больше места. Последняя — «Водители» — появляется по собственному праву: в карточке
+  // персональные данные, и роли, которым открыты справочники, доступа к ним не получают
+  // (ADR 0037).
   const isMobile = useIsMobile();
   const { can } = useAuth();
   return (
@@ -24,6 +26,8 @@ export function DirectoriesPage() {
         size={isMobile ? 'small' : undefined}
         items={[
           { key: 'objects', label: 'Объекты', children: <ObjectsTab /> },
+          // Отделы — вторая ось области (ADR 0040): офисные подразделения рядом с площадками.
+          { key: 'departments', label: 'Отделы', children: <DepartmentsTab /> },
           { key: 'counterparties', label: 'Контрагенты', children: <CounterpartiesTab /> },
           { key: 'types', label: 'Типы контейнеров', children: <ContainerTypesTab /> },
           // Отдельной вкладки «Типы мусора» нет (ADR 0017): тип заводится и правится здесь же,

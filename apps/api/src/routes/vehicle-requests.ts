@@ -35,6 +35,7 @@ import {
   moscowDateKeyOf,
   rateForWorkUnit,
   REQUEST_STATUSES,
+  type RequestWaybillDto,
   requestStatusLabels,
   setVehicleRequestApprovalSchema,
   type SpecialEquipmentRequestDto,
@@ -57,6 +58,7 @@ import {
   vehicleRequestSummaryQuerySchema,
   vehicleStatusLabels,
   vehicleWorkUnitRateLabels,
+  waybillDisplayNumber,
 } from '@technic/contracts';
 import { db } from '../db/client';
 import {
@@ -64,6 +66,7 @@ import {
   counterparties,
   files,
   freightTransportRequestDetails,
+  persons,
   specialEquipmentRequestDetails,
   users,
   vehicleCategories,
@@ -76,6 +79,9 @@ import {
   vehicleRequestStatusHistory,
   vehicles,
   vehicleTypes,
+  waybillRequests,
+  waybills,
+  waybillSeries,
 } from '../db/schema';
 import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
@@ -1635,8 +1641,10 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
    * справочниках. Их наследуют от прошлого листа этой машины: гаражный номер, вид сообщения и
    * прицепы от рейса к рейсу те же, и перенабирать их каждый раз незачем.
    *
-   * Причина «лист не выписывается» отдаётся текстом: диспетчер должен видеть, почему полей нет,
-   * а не отсутствующий блок — отсутствие читается как поломка.
+   * Причина «лист не выписывается» отдаётся текстом там, где о ней есть что сказать: диспетчер
+   * должен видеть, почему полей нет, а не отсутствующий блок. У заказа техники на объект причины
+   * нет и быть не должно — этот вид заявки путевого листа не знает вовсе (ADR 0040), и форма о
+   * нём не спрашивает.
    */
   r.get(
     '/:id/waybill-prefill',
@@ -1650,7 +1658,10 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       if (!before) throw err.notFound('Заявка не найдена');
       assertObjectScope(p, before.objectId);
 
-      const requirement = await waybillRequirementFor(db, req.query.vehicleId);
+      const requirement = await waybillRequirementFor(db, {
+        requestType: before.requestType,
+        vehicleId: req.query.vehicleId,
+      });
       return {
         required: requirement.formCode !== null,
         formCode: requirement.formCode,
@@ -1658,6 +1669,57 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         reason: requirement.reason,
         tripDate: await tripDate(db, before.id),
         fields: requirement.formCode ? await lastWaybillFields(req.query.vehicleId) : null,
+      };
+    },
+  );
+
+  /**
+   * Лист, выписанный по этой заявке (ADR 0040). Отдельной ручкой, а не полем DTO: лист нужен
+   * одной карточке одного вида заявок, а в списочный запрос он добавил бы три join'а к каждой
+   * строке — ради колонки, которой в списке нет.
+   *
+   * Право своё, `waybills.read`: в листе персональные данные водителя, и заказчику со стороны
+   * объекта их не показывают (ADR 0037 п. 13).
+   */
+  r.get(
+    '/:id/waybill',
+    {
+      preHandler: [app.authenticate, app.requirePermission('waybills.read')],
+      schema: { params: idParams },
+    },
+    async (req): Promise<RequestWaybillDto | null> => {
+      const p = requirePrincipal(req);
+      const request = await getDto(req.params.id);
+      if (!request) throw err.notFound('Заявка не найдена');
+      assertObjectScope(p, request.objectId);
+
+      const [row] = await db
+        .select({
+          id: waybills.id,
+          number: waybills.number,
+          prefix: waybillSeries.prefix,
+          numberWidth: waybillSeries.numberWidth,
+          formCode: waybills.formCode,
+          status: waybills.status,
+          issuedForDate: waybills.issuedForDate,
+          slot: waybillRequests.slot,
+          driverName: persons.fullName,
+        })
+        .from(waybillRequests)
+        .innerJoin(waybills, eq(waybills.id, waybillRequests.waybillId))
+        .innerJoin(waybillSeries, eq(waybillSeries.id, waybills.seriesId))
+        .innerJoin(persons, eq(persons.id, waybills.driverPersonId))
+        .where(eq(waybillRequests.requestId, request.id));
+      if (!row) return null;
+
+      return {
+        id: row.id,
+        number: waybillDisplayNumber(row.prefix, row.number, row.numberWidth),
+        formCode: row.formCode,
+        status: row.status,
+        issuedForDate: row.issuedForDate,
+        slot: row.slot,
+        driverName: row.driverName,
       };
     },
   );
@@ -1744,11 +1806,12 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           );
 
           // Путевой лист выдаётся в этой же транзакции (ADR 0037): состояния «в работе, а листа
-          // нет» не существует. На аренду и типы без бланка лист не выписывается — сервис
-          // возвращает null, и это нормальный ход, а не ошибка.
+          // нет» не существует. На заказ техники на объект, на аренду и на типы без бланка лист
+          // не выписывается — сервис возвращает null, и это нормальный ход, а не ошибка.
           if (transitionRequiresAssignment(status)) {
             await issueWaybill(tx, {
               requestId: before.id,
+              requestType: before.requestType,
               vehicleId: saved.vehicleId,
               driverPersonId: assignment.driverPersonId ?? null,
               fields: assignment.waybill ?? null,

@@ -2,9 +2,11 @@ import { and, desc, eq, isNull, ne, sql } from 'drizzle-orm';
 import {
   formatSnils,
   licenseNumberLabel,
+  type VehicleRequestType,
+  waybillRequirement,
+  type WaybillRequirement,
   type WaybillSnapshotKey,
   type WaybillFieldsInput,
-  type WaybillFormCode,
 } from '@technic/contracts';
 import { db } from '../db/client';
 import {
@@ -43,28 +45,30 @@ const MAX_SLOTS = 4;
 
 export interface WaybillContext {
   requestId: string;
+  /** Вид заявки: лист выписывается только на грузоперевозку (ADR 0040). */
+  requestType: VehicleRequestType;
   vehicleId: string;
   driverPersonId: string | null;
   fields: WaybillFieldsInput | null;
   actor: { id: string; name: string };
 }
 
-export interface WaybillRequirement {
-  /** Бланк, по которому выписывается лист; `null` — на этот рейс лист не выписывается. */
-  formCode: WaybillFormCode | null;
-  /** Почему не выписывается — это показывают человеку вместо отсутствующей кнопки. */
-  reason: string | null;
-}
-
 /**
- * Нужен ли на этот рейс путевой лист. Лист выписывает владелец транспорта, поэтому арендная
- * машина его не получает: на неё лист выдаёт арендодатель. Спецтехника и легковые не получают,
- * пока за их типом не закреплён бланк (ADR 0037, backlog).
+ * Нужен ли на этот рейс путевой лист. Правило само по себе чистое и живёт в контрактах
+ * (`waybillRequirement`) — здесь только чтение того, чего оно требует: принадлежности машины и
+ * бланка, закреплённого за её типом.
+ *
+ * Тип заявки спрашивается наравне с машиной: ограничение идёт и по нему, и по виду ТС, и это не
+ * тавтология — заявку на технику для работы на объекте можно завести и на самосвал, а рейса,
+ * маршрута и груза у неё нет (ADR 0037 п. 1, ADR 0040).
  */
 export async function waybillRequirementFor(
   tx: Reader,
-  vehicleId: string,
+  params: { requestType: VehicleRequestType; vehicleId: string },
 ): Promise<WaybillRequirement> {
+  // Вида заявки достаточно, чтобы ответить: справочник спрашивать незачем.
+  if (params.requestType !== 'freight_transport') return { formCode: null, reason: null };
+
   const [row] = await tx
     .select({
       ownership: vehicles.ownership,
@@ -73,25 +77,22 @@ export async function waybillRequirementFor(
     })
     .from(vehicles)
     .innerJoin(vehicleTypes, eq(vehicleTypes.id, vehicles.vehicleTypeId))
-    .where(eq(vehicles.id, vehicleId));
+    .where(eq(vehicles.id, params.vehicleId));
 
   if (!row) return { formCode: null, reason: 'Машина не найдена' };
-  if (row.ownership !== 'own') {
-    return {
-      formCode: null,
-      reason: 'Путевой лист на арендную технику выписывает арендодатель',
-    };
-  }
-  if (!row.formCode) {
-    return {
-      formCode: null,
-      reason: `Для типа «${row.typeName}» бланк путевого листа не заведён`,
-    };
-  }
-  return { formCode: row.formCode, reason: null };
+  return waybillRequirement({
+    requestType: params.requestType,
+    ownership: row.ownership,
+    formCode: row.formCode,
+    typeName: row.typeName,
+  });
 }
 
-/** Дата рейса: у грузоперевозки её несёт время подачи, у прочих заявок — день перевода в работу. */
+/**
+ * Дата рейса: её несёт время подачи. Заявок другого вида здесь не бывает — лист выписывается
+ * только на грузоперевозку (ADR 0040), — но `now()` оставлен ответом на случай заявки без
+ * заполненных деталей: лист без даты не выписать вовсе.
+ */
 export async function tripDate(tx: Reader, requestId: string): Promise<string> {
   const [row] = await tx
     .select({ scheduledAt: freightTransportRequestDetails.scheduledAt })
@@ -272,11 +273,14 @@ export interface IssuedWaybill {
 
 /**
  * Выдаёт лист или дописывает заявку талоном в уже выданный. Возвращает `null`, если на этот рейс
- * лист не выписывается (аренда, тип без бланка) — это не ошибка, а нормальный ход для заявки,
- * которую портал ведёт без документа.
+ * лист не выписывается (заказ техники на объект, аренда, тип без бланка) — это не ошибка, а
+ * нормальный ход для заявки, которую портал ведёт без документа.
  */
 export async function issueWaybill(tx: Tx, ctx: WaybillContext): Promise<IssuedWaybill | null> {
-  const requirement = await waybillRequirementFor(tx, ctx.vehicleId);
+  const requirement = await waybillRequirementFor(tx, {
+    requestType: ctx.requestType,
+    vehicleId: ctx.vehicleId,
+  });
   if (!requirement.formCode) return null;
 
   if (!ctx.driverPersonId) {

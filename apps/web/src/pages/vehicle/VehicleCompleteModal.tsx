@@ -15,8 +15,8 @@ import {
   vehicleWorkUnitRateLabels,
   workedAmountLabel,
 } from '@technic/contracts';
+import { FormGrid } from '../../components/FormGrid';
 import { FormModal } from '../../components/FormModal';
-import { useIsMobile } from '../../hooks/useIsMobile';
 import { calendarDayCount } from '../../utils/date';
 import { formatMoney } from '../../utils/format';
 
@@ -73,7 +73,6 @@ function plannedAmount(request: VehicleRequestDto, unit: VehicleWorkUnit): numbe
 
 export function VehicleCompleteModal({ request, confirmLoading, onCancel, onSubmit }: Props) {
   const { message } = App.useApp();
-  const isMobile = useIsMobile();
   const [form] = Form.useForm<FormValues>();
   const [unit, setUnit] = useState<VehicleWorkUnit>('shifts');
   /** Сумму правили руками — расчёт её больше не переписывает. */
@@ -160,10 +159,13 @@ export function VehicleCompleteModal({ request, confirmLoading, onCancel, onSubm
       onSubmit={() => form.submit()}
       confirmLoading={confirmLoading}
       okText="Выполнена"
-      width={620}
+      width={880}
     >
       {request && (
+        // Основание (машина и ставка) и факт стоят рядом: сумму сверяют с тем, о чём
+        // договаривались, а не листают к нему прокруткой. На телефоне колонка одна.
         <Form form={form} layout="vertical" onFinish={submit}>
+          <FormGrid.Full>
           <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
             {request.objectCode} — {request.objectName}
           </Typography.Paragraph>
@@ -190,9 +192,13 @@ export function VehicleCompleteModal({ request, confirmLoading, onCancel, onSubm
               Техника у заявки не назначена — стоимость считать не по чему, укажите её вручную
             </Typography.Paragraph>
           )}
+          </FormGrid.Full>
+
+          <FormGrid>
 
           {/* Единица — та, в которой договорились о ставке. Ветка без ставки не запрещена:
               стоимость можно проставить и руками, а отработанное — это факт, а не расчёт. */}
+          <FormGrid.Full>
           <Form.Item label="Считаем работу">
             <Segmented<VehicleWorkUnit>
               block
@@ -207,15 +213,10 @@ export function VehicleCompleteModal({ request, confirmLoading, onCancel, onSubm
               })}
             />
           </Form.Item>
+          </FormGrid.Full>
 
-          {/* Отработанное и стоимость стоят рядом — их сверяют друг с другом; на телефоне
-              для двух числовых полей в строке места нет (ADR 0030). */}
-          <Space
-            style={{ width: '100%' }}
-            size="middle"
-            align="start"
-            direction={isMobile ? 'vertical' : 'horizontal'}
-          >
+          {/* Отработанное и стоимость — соседними ячейками: их сверяют друг с другом. */}
+          <>
             <Form.Item
               name="workedAmount"
               label={unit === 'hours' ? 'Отработано часов' : 'Отработано смен'}
@@ -253,14 +254,15 @@ export function VehicleCompleteModal({ request, confirmLoading, onCancel, onSubm
                 onChange={() => setCostTouched(true)}
               />
             </Form.Item>
-          </Space>
+          </>
 
-          {costDiffers && (
-            <Typography.Text type="warning">
-              Сумма отличается от расчёта ({formatMoney(calculated)}) — в заявке сохранится
-              введённая
-            </Typography.Text>
-          )}
+          <FormGrid.Full>
+            {costDiffers && (
+              <Typography.Text type="warning">
+                Сумма отличается от расчёта ({formatMoney(calculated)}) — в заявке сохранится
+                введённая
+              </Typography.Text>
+            )}
 
           {/* Комментарий описывает конкретное закрытие («простой 2 ч по вине объекта»), поэтому
               уходит в историю заявки, а не в её поле комментария. */}
@@ -272,6 +274,8 @@ export function VehicleCompleteModal({ request, confirmLoading, onCancel, onSubm
               placeholder="Необязательно: что важно знать об этом выполнении"
             />
           </Form.Item>
+          </FormGrid.Full>
+          </FormGrid>
         </Form>
       )}
     </FormModal>

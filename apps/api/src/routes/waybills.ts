@@ -32,6 +32,7 @@ import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
 import { pageParams } from '../lib/pagination';
+import { renderPdf } from '../services/office-pdf';
 import { renderOfficeTemplate } from '../services/office-template';
 
 /**
@@ -52,6 +53,7 @@ const idParams = z.object({ id: z.string().uuid() });
  * Движок подстановки формат не различает — появится исходник в ods, добавится и он.
  */
 const XLSX_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+const PDF_TYPE = 'application/pdf';
 
 const templatesDir = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'templates');
 
@@ -241,11 +243,37 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
   );
 
   /**
-   * Выгрузка бланка (ADR 0037 п. 10). Печатается из снимка значений, а не из справочников:
-   * переименование объекта или уточнение госномера задним числом уже выданный лист не меняет.
-   *
-   * Аннулированный лист выгружается тоже: его подшивают к журналу как испорченный бланк.
+   * Заполненный бланк листа (ADR 0037 п. 10). Собирается из снимка значений, а не из
+   * справочников: переименование объекта или уточнение госномера задним числом уже выданный лист
+   * не меняет. Аннулированный лист отдаётся тоже — его подшивают к журналу как испорченный бланк.
    */
+  async function renderWaybill(id: string) {
+    const [row] = await db
+      .select({
+        id: waybills.id,
+        formCode: waybills.formCode,
+        number: waybills.number,
+        prefix: waybillSeries.prefix,
+        numberWidth: waybillSeries.numberWidth,
+        data: waybills.data,
+      })
+      .from(waybills)
+      .innerJoin(waybillSeries, eq(waybillSeries.id, waybills.seriesId))
+      .where(eq(waybills.id, id));
+    if (!row) throw err.notFound('Путевой лист не найден');
+
+    const rendered = renderOfficeTemplate(
+      readTemplate(row.formCode),
+      row.data as Record<string, string>,
+    );
+    return {
+      rendered,
+      id: row.id,
+      displayNumber: waybillDisplayNumber(row.prefix, row.number, row.numberWidth),
+    };
+  }
+
+  /** Выгрузка бланка файлом: его правят в редакторе таблиц и печатают оттуда. */
   r.get(
     '/:id/export',
     {
@@ -254,39 +282,57 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
     },
     async (req, reply) => {
       const p = requirePrincipal(req);
-      const [row] = await db
-        .select({
-          id: waybills.id,
-          formCode: waybills.formCode,
-          number: waybills.number,
-          prefix: waybillSeries.prefix,
-          numberWidth: waybillSeries.numberWidth,
-          data: waybills.data,
-        })
-        .from(waybills)
-        .innerJoin(waybillSeries, eq(waybillSeries.id, waybills.seriesId))
-        .where(eq(waybills.id, req.params.id));
-      if (!row) throw err.notFound('Путевой лист не найден');
-
-      const rendered = renderOfficeTemplate(
-        readTemplate(row.formCode),
-        row.data as Record<string, string>,
-      );
+      const { rendered, id, displayNumber } = await renderWaybill(req.params.id);
 
       // Выгрузка уносит персональные данные водителя из портала — это учётное событие.
       await writeAudit({
         actorUserId: p.id,
         action: 'waybill.export',
         entityType: 'waybill',
-        entityId: row.id,
+        entityId: id,
         metadata: { missing: rendered.missing },
       });
 
-      const name = `Путевой лист ${waybillDisplayNumber(row.prefix, row.number, row.numberWidth)}.xlsx`;
+      const name = `Путевой лист ${displayNumber}.xlsx`;
       return reply
         .type(XLSX_TYPE)
         .header('content-disposition', `attachment; filename*=UTF-8''${encodeURIComponent(name)}`)
         .send(Buffer.from(rendered.bytes));
+    },
+  );
+
+  /**
+   * Тот же бланк, но готовым к печати (ADR 0040): PDF отдаётся инлайном, браузер показывает его
+   * сам и печатает своим диалогом. Лист при этом не оседает файлом на машине диспетчера — а его
+   * незачем там держать: документ живёт в журнале, а на руки нужен бумажный.
+   *
+   * Печать — учётное событие наравне с выгрузкой: из портала уходят СНИЛС и номер удостоверения,
+   * и по журналу должно быть видно, кто и когда их печатал.
+   */
+  r.get(
+    '/:id/print',
+    {
+      preHandler: [app.authenticate, canRead],
+      schema: { params: idParams },
+    },
+    async (req, reply) => {
+      const p = requirePrincipal(req);
+      const { rendered, id, displayNumber } = await renderWaybill(req.params.id);
+      const pdf = await renderPdf(rendered.bytes);
+
+      await writeAudit({
+        actorUserId: p.id,
+        action: 'waybill.print',
+        entityType: 'waybill',
+        entityId: id,
+        metadata: { missing: rendered.missing },
+      });
+
+      const name = `Путевой лист ${displayNumber}.pdf`;
+      return reply
+        .type(PDF_TYPE)
+        .header('content-disposition', `inline; filename*=UTF-8''${encodeURIComponent(name)}`)
+        .send(Buffer.from(pdf));
     },
   );
 

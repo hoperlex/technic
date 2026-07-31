@@ -28,6 +28,8 @@ interface Blank {
   out: string;
   /** Ячейка → плейсхолдер. Адреса выверены по линиям заполнения самого бланка. */
   cells: Record<string, string>;
+  /** Как бланк ложится на лист A4 при печати (ADR 0040). */
+  orientation: 'portrait' | 'landscape';
 }
 
 /**
@@ -37,6 +39,8 @@ interface Blank {
 const FORM_4P: Blank = {
   source: '4П.xlsx',
   out: 'waybill-4p.xlsx',
+  // 166 колонок в ширину — на портретном листе бланк рвётся пополам по вертикали.
+  orientation: 'landscape',
   cells: {
     // Шапка: серия, номер и дата — три линии над «(серия)» и правее «№».
     BR2: '{{waybill_series}}',
@@ -88,6 +92,8 @@ const FORM_4P: Blank = {
 const FORM_LEG3: Blank = {
   source: 'пут.лист легков..xlsx',
   out: 'waybill-leg3.xlsx',
+  // Вдвое уже 4-П (88 колонок) и на треть длиннее — ложится на портретный лист.
+  orientation: 'portrait',
   cells: {
     Q8: 'Серия {{waybill_series}}   № {{waybill_number}}   от {{waybill_date}}',
     M11: '{{org_name}}',
@@ -147,6 +153,39 @@ function setCell(sheet: string, address: string, value: string): string {
   return sheet.replace(found[0], `${found[1]}${patched}${found[3]}`);
 }
 
+/**
+ * Параметры печати листа (ADR 0040).
+ *
+ * Бланки приходят из бухгалтерии без `pageSetup`: в Excel их печатали руками, подгоняя масштаб в
+ * диалоге печати. Без него лист печатается портретным в 100%, и бланк 4-П расползается на четыре
+ * страницы вместо двух — разрезанным и по ширине, и по высоте. Разрывы страниц в самом бланке
+ * расставлены (`rowBreaks`, `colBreaks`), то есть замысел известен: страница — это лицевая
+ * сторона и оборот. Здесь этот замысел лишь записывается так, чтобы его понимали и Excel, и
+ * конвертер в PDF.
+ *
+ * `fitToHeight="0"` — «по ширине на страницу, в высоту сколько получится»: иначе обе стороны
+ * бланка сжались бы в один лист. Поля сведены к 5 мм: при подгонке по ширине дюймовые поля
+ * оригинала съедают масштаб, а вместе с ним и читаемость мелких граф.
+ */
+function setPageSetup(sheet: string, orientation: Blank['orientation']): string {
+  const setup =
+    `<pageSetup paperSize="9" orientation="${orientation}" fitToWidth="1" fitToHeight="0" />`;
+  const margins =
+    '<pageMargins left="0.2" right="0.2" top="0.2" bottom="0.2" header="0" footer="0" />';
+
+  let patched = sheet.replace(/<pageMargins[^>]*>/, `${margins}${setup}`);
+  if (patched === sheet) throw new Error('В листе нет <pageMargins> — некуда вписать pageSetup');
+
+  // Подгонка включается флагом в `sheetPr`: без него `fitToWidth` в файле есть, а Excel печатает
+  // по-старому в 100%.
+  if (/<pageSetUpPr[^>]*fitToPage=/.test(patched)) return patched;
+  patched = patched.replace(/<pageSetUpPr([^>]*?)\/>/, '<pageSetUpPr$1 fitToPage="1" />');
+  if (!/fitToPage="1"/.test(patched)) {
+    throw new Error('В листе нет <pageSetUpPr /> — подгонку по ширине включить нечем');
+  }
+  return patched;
+}
+
 function mark(blank: Blank): void {
   const files = unzipSync(new Uint8Array(readFileSync(join(templatesDir, 'source', blank.source))));
   const sheetPath = 'xl/worksheets/sheet1.xml';
@@ -155,6 +194,7 @@ function mark(blank: Blank): void {
   for (const [address, value] of Object.entries(blank.cells)) {
     sheet = setCell(sheet, address, value);
   }
+  sheet = setPageSetup(sheet, blank.orientation);
 
   files[sheetPath] = new TextEncoder().encode(sheet);
   // Время фиксировано: одинаковый исходник обязан давать одинаковый шаблон.

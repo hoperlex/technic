@@ -103,7 +103,7 @@ export function VehicleRequestViewModal({ request, onClose, onEdit }: Props) {
           // Виза (ADR 0025): в карточке важно не только «есть ли», но и кто согласовал.
           key: 'approval',
           label: 'Согласование',
-          span: 2,
+          span: 3,
           children: request.approvedAt ? (
             <Space size={8}>
               <Tag color="green" icon={<CheckCircleOutlined />} style={{ marginInlineEnd: 0 }}>
@@ -122,7 +122,7 @@ export function VehicleRequestViewModal({ request, onClose, onEdit }: Props) {
         {
           key: 'object',
           label: 'Объект',
-          span: 2,
+          span: 3,
           children: `${request.objectCode} — ${request.objectName}`,
         },
         // Заказанная позиция классификатора (ADR 0028): категория с её ТТХ, а у типа без
@@ -140,7 +140,7 @@ export function VehicleRequestViewModal({ request, onClose, onEdit }: Props) {
         {
           key: 'assignment',
           label: 'Техника',
-          span: 2,
+          span: 3,
           children: request.assignment ? (
             <Space direction="vertical" size={2}>
               <Space size={8} wrap>
@@ -171,7 +171,7 @@ export function VehicleRequestViewModal({ request, onClose, onEdit }: Props) {
               {
                 key: 'completion',
                 label: 'Выполнение',
-                span: 2,
+                span: 3,
                 children: (
                   <Space direction="vertical" size={2}>
                     <Space size={8} wrap>
@@ -201,7 +201,7 @@ export function VehicleRequestViewModal({ request, onClose, onEdit }: Props) {
               {
                 key: 'responsible',
                 label: 'Ответственный',
-                span: 2,
+                span: 3,
                 children: (
                   <ResponsibleValue
                     name={request.responsibleName}
@@ -217,7 +217,7 @@ export function VehicleRequestViewModal({ request, onClose, onEdit }: Props) {
               {
                 key: 'amount',
                 label: 'Объём / масса',
-                span: 2,
+                span: 3,
                 children:
                   [
                     request.volumeM3 != null ? `${request.volumeM3} м³` : null,
@@ -229,7 +229,7 @@ export function VehicleRequestViewModal({ request, onClose, onEdit }: Props) {
               {
                 key: 'loading',
                 label: 'Погрузка',
-                span: 2,
+                span: 3,
                 // Отметка о верификации адреса (ADR 0006) — та же, что в таблице.
                 children: (
                   <AddressCell text={request.loadingLocation} meta={request.loadingAddress} />
@@ -238,7 +238,7 @@ export function VehicleRequestViewModal({ request, onClose, onEdit }: Props) {
               {
                 key: 'loadingResponsible',
                 label: 'Ответственный за погрузку',
-                span: 2,
+                span: 3,
                 children: (
                   <ResponsibleValue
                     name={request.loadingResponsibleName}
@@ -249,7 +249,7 @@ export function VehicleRequestViewModal({ request, onClose, onEdit }: Props) {
               {
                 key: 'unloading',
                 label: 'Разгрузка',
-                span: 2,
+                span: 3,
                 children: (
                   <AddressCell text={request.unloadingLocation} meta={request.unloadingAddress} />
                 ),
@@ -257,7 +257,7 @@ export function VehicleRequestViewModal({ request, onClose, onEdit }: Props) {
               {
                 key: 'unloadingResponsible',
                 label: 'Ответственный за разгрузку',
-                span: 2,
+                span: 3,
                 children: (
                   <ResponsibleValue
                     name={request.unloadingResponsibleName}
@@ -283,12 +283,12 @@ export function VehicleRequestViewModal({ request, onClose, onEdit }: Props) {
               {
                 key: 'cancelReason',
                 label: 'Причина отмены',
-                span: 2,
+                span: 3,
                 children: request.cancelReason,
               },
             ]
           : []),
-        { key: 'comment', label: 'Комментарий', span: 2, children: request.comment || '—' },
+        { key: 'comment', label: 'Комментарий', span: 3, children: request.comment || '—' },
       ]
     : [];
 
@@ -297,7 +297,7 @@ export function VehicleRequestViewModal({ request, onClose, onEdit }: Props) {
       title={request ? `Заявка ${request.displayNumber}` : 'Заявка'}
       open={!!request}
       onClose={onClose}
-      width={760}
+      width={1000}
       // Окно переоткрывают на соседней заявке — раскрытые строки прошлой истории не её дело.
       destroyOnHidden
       footer={[
@@ -320,7 +320,10 @@ export function VehicleRequestViewModal({ request, onClose, onEdit }: Props) {
           <Descriptions
             size="small"
             bordered
-            column={isMobile ? 1 : 2}
+            // Три колонки на десктопе: окно шире, и в двух его половина оставалась пустой,
+            // а карточка всё равно скроллилась. `span: 3` у поля означает «во всю ширину» —
+            // раньше ту же роль играла двойка. На телефоне колонка одна, и span не действует.
+            column={isMobile ? 1 : 3}
             layout={isMobile ? 'vertical' : 'horizontal'}
             items={fields}
           />
