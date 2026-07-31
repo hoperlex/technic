@@ -4,13 +4,19 @@ import {
   allowedVehicleRequestTransitions,
   assignmentRateLabel,
   calcVehicleRequestCost,
+  canRequestEarlyEnd,
   changeVehicleRequestStatusSchema,
   CLOSED_REQUEST_STATUSES,
   completeVehicleRequestSchema,
   createVehicleRequestSchema,
+  decideVehicleEarlyEndSchema,
+  earlyEndBlocker,
+  earlyEndDateBounds,
+  earlyEndDaysSaved,
   formatVehicleRequestNumber,
   FREIGHT_VEHICLE_KIND_CODE,
   isAddressVerified,
+  isAllowedEarlyEndDate,
   isApprovalChangeable,
   isClosedRequestStatus,
   isVehicleKindAllowedForRequest,
@@ -18,11 +24,15 @@ import {
   onSitePresence,
   parseVehicleRequestNumberSearch,
   rateForWorkUnit,
+  requestVehicleEarlyEndSchema,
   setVehicleRequestApprovalSchema,
   transitionRequiresApproval,
   transitionRequiresAssignment,
   transitionRequiresCompletion,
   updateVehicleRequestSchema,
+  VEHICLE_EARLY_END_STATUSES,
+  vehicleEarlyEndStatusColors,
+  vehicleEarlyEndStatusLabels,
   vehicleOnSitePresenceColors,
   vehicleOnSitePresenceLabels,
   vehicleRequestHistoryQuerySchema,
@@ -941,5 +951,114 @@ describe('vehicle-requests: виза руководителя строитель
     expect(vehicleRequestListQuerySchema.parse({ approved: 'true' }).approved).toBe(true);
     expect(vehicleRequestListQuerySchema.parse({}).approved).toBeUndefined();
     expect(() => vehicleRequestListQuerySchema.parse({ approved: 'maybe' })).toThrow();
+  });
+});
+
+describe('vehicle-requests: досрочное завершение (ADR 0044)', () => {
+  const ON = '2026-07-24';
+  /** Заказ спецтехники в работе, срок 20–28 июля: сегодня середина срока. */
+  const inWork = {
+    requestType: 'special_equipment' as const,
+    status: 'confirmed' as const,
+    deletedAt: null,
+    dateFrom: '2026-07-20',
+    dateTo: '2026-07-28',
+  };
+
+  it('сокращают срок техники, которая сейчас на объекте', () => {
+    expect(earlyEndBlocker(inWork, ON)).toBe(null);
+    expect(canRequestEarlyEnd(inWork, ON)).toBe(true);
+  });
+
+  it('грузоперевозку не сокращают: у неё не период, а момент подачи', () => {
+    const freightRequest = { ...inWork, requestType: 'freight_transport' as const };
+    expect(canRequestEarlyEnd(freightRequest, ON)).toBe(false);
+    expect(earlyEndBlocker(freightRequest, ON)).toContain('грузоперевозки');
+  });
+
+  it('заявку вне «В работе» не сокращают: новую правят, закрытую не трогают', () => {
+    for (const status of ['new', 'done', 'cancelled'] as const) {
+      expect(canRequestEarlyEnd({ ...inWork, status }, ON)).toBe(false);
+    }
+    // Архивную не сокращают тем более — техники по ней на объекте нет.
+    expect(canRequestEarlyEnd({ ...inWork, deletedAt: '2026-07-22T10:00:00.000Z' }, ON)).toBe(
+      false,
+    );
+  });
+
+  it('до выхода техники и в последний день срока сокращать нечего', () => {
+    // Работы ещё не начались: период целиком впереди.
+    expect(earlyEndBlocker({ ...inWork, dateFrom: '2026-07-25' }, ON)).toContain('не начались');
+    // Последний день срока — сегодня.
+    expect(earlyEndBlocker({ ...inWork, dateTo: ON }, ON)).toContain('заканчивается сегодня');
+    // Пустая дата окончания — однодневный срок: та же ветка, что и «заканчивается сегодня».
+    expect(canRequestEarlyEnd({ ...inWork, dateFrom: ON, dateTo: null }, ON)).toBe(false);
+  });
+
+  it('границы новой даты: от сегодня до предпоследнего дня срока', () => {
+    expect(earlyEndDateBounds(inWork, ON)).toEqual({ min: ON, max: '2026-07-27' });
+    // Ниже границы — вчерашний день, выше — нынешний конец срока: он ничего не сокращает.
+    expect(isAllowedEarlyEndDate(inWork, ON, '2026-07-23')).toBe(false);
+    expect(isAllowedEarlyEndDate(inWork, ON, ON)).toBe(true);
+    expect(isAllowedEarlyEndDate(inWork, ON, '2026-07-27')).toBe(true);
+    expect(isAllowedEarlyEndDate(inWork, ON, '2026-07-28')).toBe(false);
+    // У заявки, которую сокращать нельзя, границ нет вовсе.
+    expect(earlyEndDateBounds({ ...inWork, status: 'new' }, ON)).toBe(null);
+  });
+
+  it('освобождённые дни считаются разницей дат, через границу месяца тоже', () => {
+    expect(earlyEndDaysSaved('2026-07-28', '2026-07-24')).toBe(4);
+    expect(earlyEndDaysSaved('2026-08-02', '2026-07-30')).toBe(3);
+    // Сокращения нет — считать нечего.
+    expect(earlyEndDaysSaved('2026-07-28', '2026-07-28')).toBe(null);
+    expect(earlyEndDaysSaved('2026-07-28', '2026-07-30')).toBe(null);
+  });
+
+  it('в запросе обязательны дата и причина, лишние поля отвергаются', () => {
+    expect(
+      requestVehicleEarlyEndSchema.parse({
+        newDateTo: '2026-07-24',
+        reason: 'Работы на фундаменте закончены',
+        version: 2,
+      }).reason,
+    ).toBe('Работы на фундаменте закончены');
+    // Причина обязательна: визирующему нечего решать, если не сказано, что произошло.
+    expect(() =>
+      requestVehicleEarlyEndSchema.parse({ newDateTo: '2026-07-24', reason: '   ', version: 2 }),
+    ).toThrow();
+    expect(() =>
+      requestVehicleEarlyEndSchema.parse({ newDateTo: '2026-07-24', version: 2 }),
+    ).toThrow();
+    expect(() =>
+      requestVehicleEarlyEndSchema.parse({
+        newDateTo: '2026-07-24',
+        reason: 'ок',
+        version: 2,
+        status: 'approved',
+      }),
+    ).toThrow();
+  });
+
+  it('решение: виза без комментария, отказ — только с причиной', () => {
+    expect(decideVehicleEarlyEndSchema.parse({ approved: true, version: 3 })).toEqual({
+      approved: true,
+      comment: '',
+      version: 3,
+    });
+    expect(() => decideVehicleEarlyEndSchema.parse({ approved: false, version: 3 })).toThrow();
+    expect(
+      decideVehicleEarlyEndSchema.parse({
+        approved: false,
+        comment: 'Техника ещё нужна',
+        version: 3,
+      }).comment,
+    ).toBe('Техника ещё нужна');
+  });
+
+  it('подписи и цвета заданы каждому состоянию запроса', () => {
+    for (const status of VEHICLE_EARLY_END_STATUSES) {
+      expect(vehicleEarlyEndStatusLabels[status]).toBeTruthy();
+      expect(vehicleEarlyEndStatusColors[status]).toBeTruthy();
+    }
   });
 });

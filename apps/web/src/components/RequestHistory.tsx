@@ -39,6 +39,12 @@ const HISTORY_TITLES: Record<RequestHistoryKind, string> = {
   approvalRevoked: 'Виза снята',
   assigned: 'Назначена техника',
   completed: 'Предъявлен факт выполнения',
+  // Досрочное завершение (ADR 0044): сокращение срока — согласуемое изменение, поэтому запрос,
+  // решение и отзыв читаются в истории как разные события, а не как одна «правка срока».
+  earlyEndRequested: 'Запрошено досрочное завершение',
+  earlyEndApproved: 'Досрочное завершение согласовано',
+  earlyEndRejected: 'Досрочное завершение отклонено',
+  earlyEndCancelled: 'Запрос на досрочное завершение снят',
   deleted: 'Перемещена в архив',
   restored: 'Восстановлена из архива',
 };
@@ -54,6 +60,12 @@ const KIND_TAGS: Record<string, { label: string; color?: string }> = {
   assigned: { label: 'Техника', color: 'gold' },
   // Факт выполнения (ADR 0029) — вместе с закрытием, и цвет тот же, что у «Выполнена».
   completed: { label: 'Факт', color: 'green' },
+  // Досрочное завершение (ADR 0044): ожидание визы — оранжевым, как «Ждёт визы» у самой заявки,
+  // состоявшееся сокращение — зелёным, отказ и снятие — красным и серым.
+  earlyEndRequested: { label: 'Досрочно', color: 'orange' },
+  earlyEndApproved: { label: 'Досрочно', color: 'green' },
+  earlyEndRejected: { label: 'Досрочно', color: 'red' },
+  earlyEndCancelled: { label: 'Досрочно' },
   deleted: { label: 'Архив', color: 'red' },
   restored: { label: 'Из архива', color: 'green' },
 };

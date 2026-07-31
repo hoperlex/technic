@@ -50,6 +50,7 @@ import {
   type VehicleRequestAssignmentDto,
   type VehicleRequestCompletionDto,
   type VehicleRequestDto,
+  type VehicleRequestEarlyEndDto,
   type VehicleRequestHistorySummaryDto,
   type VehicleRequestOnSiteQuery,
   type VehicleRequestSummaryDto,
@@ -77,6 +78,7 @@ import {
   vehicleModels,
   vehicleRequestAssignments,
   vehicleRequestCompletions,
+  vehicleRequestEarlyEndings,
   vehicleRequestFiles,
   vehicleRequests,
   vehicleRequestStatusHistory,
@@ -143,6 +145,11 @@ const completers = alias(users, 'completers');
 /** Арендодатель назначенной машины; у собственной техники его нет. */
 const lessors = alias(counterparties, 'lessors');
 
+// Досрочное завершение (ADR 0044): кто попросил сократить срок и кто решил. Две разные учётки —
+// в норме площадка и руководитель строительства, — поэтому два алиаса.
+const earlyEndRequesters = alias(users, 'early_end_requesters');
+const earlyEndDeciders = alias(users, 'early_end_deciders');
+
 const requestSelect = {
   id: vehicleRequests.id,
   num: vehicleRequests.num,
@@ -199,6 +206,18 @@ const requestSelect = {
   completedBy: vehicleRequestCompletions.completedBy,
   completedByName: completers.fullName,
   completedAt: vehicleRequestCompletions.completedAt,
+  // Досрочное завершение (ADR 0044): запрос на сокращение срока и решение по нему.
+  earlyEndStatus: vehicleRequestEarlyEndings.status,
+  earlyEndNewDateTo: vehicleRequestEarlyEndings.newDateTo,
+  earlyEndPreviousDateTo: vehicleRequestEarlyEndings.previousDateTo,
+  earlyEndReason: vehicleRequestEarlyEndings.reason,
+  earlyEndRequestedBy: vehicleRequestEarlyEndings.requestedBy,
+  earlyEndRequestedByName: earlyEndRequesters.fullName,
+  earlyEndRequestedAt: vehicleRequestEarlyEndings.requestedAt,
+  earlyEndDecidedBy: vehicleRequestEarlyEndings.decidedBy,
+  earlyEndDecidedByName: earlyEndDeciders.fullName,
+  earlyEndDecidedAt: vehicleRequestEarlyEndings.decidedAt,
+  earlyEndDecisionComment: vehicleRequestEarlyEndings.decisionComment,
   version: vehicleRequests.version,
   createdBy: vehicleRequests.createdBy,
   createdByName: users.fullName,
@@ -263,6 +282,17 @@ function baseQuery() {
         eq(vehicleRequests.id, vehicleRequestCompletions.requestId),
       )
       .leftJoin(completers, eq(vehicleRequestCompletions.completedBy, completers.id))
+      // Досрочное завершение (ADR 0044): строки нет у подавляющего большинства заявок — срок
+      // сокращают редко, и у грузоперевозки его не сокращают вовсе.
+      .leftJoin(
+        vehicleRequestEarlyEndings,
+        eq(vehicleRequests.id, vehicleRequestEarlyEndings.requestId),
+      )
+      .leftJoin(
+        earlyEndRequesters,
+        eq(vehicleRequestEarlyEndings.requestedBy, earlyEndRequesters.id),
+      )
+      .leftJoin(earlyEndDeciders, eq(vehicleRequestEarlyEndings.decidedBy, earlyEndDeciders.id))
   );
 }
 
@@ -379,6 +409,34 @@ function toCompletionDto(r: RequestRow): VehicleRequestCompletionDto | null {
   };
 }
 
+/**
+ * Досрочное завершение из строки выборки (ADR 0044); null — срок заявки не сокращали. Состояние
+ * запроса и решение по нему хранятся вместе: «ждёт визы» — это ровно строка без решившего.
+ */
+function toEarlyEndDto(r: RequestRow): VehicleRequestEarlyEndDto | null {
+  if (
+    !r.earlyEndStatus ||
+    !r.earlyEndNewDateTo ||
+    !r.earlyEndRequestedBy ||
+    !r.earlyEndRequestedAt
+  ) {
+    return null;
+  }
+  return {
+    status: r.earlyEndStatus,
+    newDateTo: r.earlyEndNewDateTo,
+    previousDateTo: r.earlyEndPreviousDateTo ?? r.earlyEndNewDateTo,
+    reason: r.earlyEndReason ?? '',
+    requestedBy: r.earlyEndRequestedBy,
+    requestedByName: r.earlyEndRequestedByName ?? '',
+    requestedAt: r.earlyEndRequestedAt.toISOString(),
+    decidedBy: r.earlyEndDecidedBy,
+    decidedByName: r.earlyEndDecidedByName,
+    decidedAt: r.earlyEndDecidedAt ? r.earlyEndDecidedAt.toISOString() : null,
+    decisionComment: r.earlyEndDecisionComment ?? '',
+  };
+}
+
 function toDto(r: RequestRow, fileList: FileDto[]): VehicleRequestDto {
   const base = {
     id: r.id,
@@ -419,6 +477,7 @@ function toDto(r: RequestRow, fileList: FileDto[]): VehicleRequestDto {
       dateTo: r.dateTo ?? null,
       responsibleName: r.responsibleName ?? '',
       responsiblePhone: r.responsiblePhone ?? '',
+      earlyEnd: toEarlyEndDto(r),
     };
   }
   return {

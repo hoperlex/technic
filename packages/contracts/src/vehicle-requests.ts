@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import {
+  requestStatusLabels,
   requestStatusSchema,
   statusChangeRequiresReason,
   vehicleRequestTypeSchema,
@@ -356,6 +357,173 @@ export const setVehicleRequestApprovalSchema = z
   })
   .strict();
 export type SetVehicleRequestApprovalInput = z.infer<typeof setVehicleRequestApprovalSchema>;
+
+// ── Досрочное завершение заказа спецтехники (ADR 0044) ──
+
+/**
+ * Состояние запроса на сокращение срока. Сокращение согласуется тем же руководителем
+ * строительства, что визировал заказ, — отсюда три состояния вместо флага: между «попросили» и
+ * «срок изменился» стоит чужое решение, и оно бывает отрицательным.
+ */
+export const VEHICLE_EARLY_END_STATUSES = ['pending', 'approved', 'rejected'] as const;
+export const vehicleEarlyEndStatusSchema = z.enum(VEHICLE_EARLY_END_STATUSES);
+export type VehicleEarlyEndStatus = (typeof VEHICLE_EARLY_END_STATUSES)[number];
+
+export const vehicleEarlyEndStatusLabels: Record<VehicleEarlyEndStatus, string> = {
+  pending: 'Ждёт визы',
+  approved: 'Согласовано',
+  rejected: 'Отклонено',
+};
+
+/** Цвета те же, что у визы заявки: ожидание — оранжевое, решение — зелёное или красное. */
+export const vehicleEarlyEndStatusColors: Record<VehicleEarlyEndStatus, string> = {
+  pending: 'orange',
+  approved: 'green',
+  rejected: 'red',
+};
+
+/** Календарный ключ `YYYY-MM-DD`, сдвинутый на `days` суток (день считается как день, в UTC). */
+function shiftDateKey(dateKey: string, days: number): string {
+  const at = Date.parse(`${dateKey}T00:00:00Z`);
+  if (Number.isNaN(at)) return dateKey;
+  return new Date(at + days * 86_400_000).toISOString().slice(0, 10);
+}
+
+/**
+ * Почему заявку нельзя завершить досрочно — текстом, либо `null`, если можно. Одна функция на
+ * портал и API: сервер отвечает этой строкой (422), портал ею же объясняет недоступный пункт
+ * меню. Разойдись они — человек видел бы кнопку, которая всегда отказывает, или отказ без причины.
+ *
+ * Досрочное завершение применимо к технике, которая **сейчас стоит на объекте** — то же условие,
+ * которым отбирается вкладка «На объекте» (ADR 0036), плюс требование остатка срока: сокращать
+ * нечего у заявки, которая и так заканчивается сегодня.
+ */
+export function earlyEndBlocker(
+  r: Pick<VehicleRequestBaseDto, 'requestType' | 'status' | 'deletedAt'> & {
+    dateFrom?: string;
+    dateTo?: string | null;
+  },
+  onDate: string,
+): string | null {
+  if (r.requestType !== 'special_equipment') {
+    return 'Досрочно завершают заказ техники на объект: у грузоперевозки срока работ нет';
+  }
+  if (r.deletedAt) return 'Заявка в архиве';
+  if (r.status !== 'confirmed') {
+    return `Досрочно завершают заявку в статусе «${requestStatusLabels.confirmed}»`;
+  }
+  const dateFrom = r.dateFrom!;
+  // Пустая дата окончания — однодневный срок: так её читает и отбор среза, и подписи присутствия.
+  const last = r.dateTo || dateFrom;
+  if (dateFrom > onDate) {
+    return 'Работы ещё не начались — на объекте этой техники пока нет';
+  }
+  if (last <= onDate) {
+    return 'Срок заявки заканчивается сегодня — сокращать нечего';
+  }
+  return null;
+}
+
+/** Можно ли запросить досрочное завершение — тот же разбор, что и `earlyEndBlocker`. */
+export function canRequestEarlyEnd(
+  r: Parameters<typeof earlyEndBlocker>[0],
+  onDate: string,
+): boolean {
+  return earlyEndBlocker(r, onDate) === null;
+}
+
+/**
+ * Границы новой даты окончания: не раньше сегодня и строго раньше нынешнего последнего дня.
+ *
+ * Нижняя граница — сегодня, а не начало срока: задним числом период не переписывается, за
+ * прошедшие дни техника на объекте стояла и срез это уже показал. Верхняя — предпоследний день:
+ * дата, равная нынешней, ничего не сокращает.
+ *
+ * `null` — заявку сокращать нельзя вовсе (`earlyEndBlocker` объясняет, почему).
+ */
+export function earlyEndDateBounds(
+  r: Parameters<typeof earlyEndBlocker>[0],
+  onDate: string,
+): { min: string; max: string } | null {
+  if (!canRequestEarlyEnd(r, onDate)) return null;
+  return { min: onDate, max: shiftDateKey(r.dateTo || r.dateFrom!, -1) };
+}
+
+/** Дата попадает в допустимые границы сокращения. */
+export function isAllowedEarlyEndDate(
+  r: Parameters<typeof earlyEndBlocker>[0],
+  onDate: string,
+  newDateTo: string,
+): boolean {
+  const bounds = earlyEndDateBounds(r, onDate);
+  return !!bounds && newDateTo >= bounds.min && newDateTo <= bounds.max;
+}
+
+/**
+ * Сколько дней освобождается: с 20-го до 12-го — восемь (13-е…20-е). Считается разницей
+ * календарных ключей, а не длин периодов: сокращение отвечает на «сколько дней техника не
+ * простоит», и день, оставшийся последним, в этот счёт не входит.
+ */
+export function earlyEndDaysSaved(previousDateTo: string, newDateTo: string): number | null {
+  const from = Date.parse(`${newDateTo}T00:00:00Z`);
+  const to = Date.parse(`${previousDateTo}T00:00:00Z`);
+  if (Number.isNaN(from) || Number.isNaN(to) || to <= from) return null;
+  return Math.round((to - from) / 86_400_000);
+}
+
+/**
+ * Запрос на досрочное завершение. Причина обязательна: визирующему нечего решать, если ему не
+ * сказали, что произошло на объекте, — а решает он не глядя на площадку.
+ */
+export const requestVehicleEarlyEndSchema = z
+  .object({
+    newDateTo: dateOnlySchema,
+    reason: z.string().trim().min(1, 'Укажите причину').max(2000),
+    version: z.number().int().nonnegative(),
+  })
+  .strict();
+export type RequestVehicleEarlyEndInput = z.infer<typeof requestVehicleEarlyEndSchema>;
+
+/**
+ * Решение по запросу: виза и отказ — одним маршрутом, как постановка и снятие визы заявки
+ * (ADR 0025 п. 6). У них одно право, одна область и один инвариант «пока запрос ждёт визы»;
+ * раздельные маршруты разошлись бы в проверках. Отказ объясняется причиной — как отмена заявки.
+ */
+export const decideVehicleEarlyEndSchema = z
+  .object({
+    approved: z.boolean(),
+    comment: commentSchema.optional().default(''),
+    version: z.number().int().nonnegative(),
+  })
+  .strict()
+  .superRefine((v, ctx) => {
+    if (!v.approved && !v.comment) {
+      ctx.addIssue({ code: 'custom', path: ['comment'], message: 'Укажите причину отказа' });
+    }
+  });
+export type DecideVehicleEarlyEndInput = z.infer<typeof decideVehicleEarlyEndSchema>;
+
+/**
+ * Досрочное завершение заявки: запрос и решение по нему. Одна заявка — одна запись: повторный
+ * запрос переписывает её, а цепочка решений остаётся событиями истории (ADR 0044).
+ */
+export interface VehicleRequestEarlyEndDto {
+  status: VehicleEarlyEndStatus;
+  /** Новый последний день работ. У согласованного совпадает с `dateTo` заявки. */
+  newDateTo: string;
+  /** Срок, стоявший в заявке на момент запроса, — снимок: по нему считаются освобождённые дни. */
+  previousDateTo: string;
+  reason: string;
+  requestedBy: string;
+  requestedByName: string;
+  requestedAt: string;
+  /** Кто и когда решил; пусто ровно у ожидающего визы. */
+  decidedBy: string | null;
+  decidedByName: string | null;
+  decidedAt: string | null;
+  /** Причина отказа; у согласованного пуста — срок в заявке говорит сам за себя. */
+  decisionComment: string;
+}
 
 // ── Назначение техники на заявку (ADR 0027) ──
 
@@ -1021,6 +1189,12 @@ export interface SpecialEquipmentRequestDto extends VehicleRequestBaseDto {
   /** Кто встречает технику на объекте; пусто — заявка заведена до миграции 0062. */
   responsibleName: string;
   responsiblePhone: string;
+  /**
+   * Досрочное завершение (ADR 0044): ожидающий визы запрос либо последнее решение по нему.
+   * `null` — срок заявки не сокращали. Поля нет у грузоперевозки: сокращать там нечего — у неё
+   * не период, а момент подачи.
+   */
+  earlyEnd: VehicleRequestEarlyEndDto | null;
 }
 
 export interface FreightTransportRequestDto extends VehicleRequestBaseDto {

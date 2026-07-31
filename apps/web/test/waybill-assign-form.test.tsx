@@ -142,6 +142,7 @@ const ON_SITE_REQUEST: SpecialEquipmentRequestDto = {
   dateTo: null,
   responsibleName: 'Петров П. П.',
   responsiblePhone: '+7 926 000-00-01',
+  earlyEnd: null,
 };
 
 /** Подсказка о листе приходит по машине: собственная его получает, аренда — нет. */
