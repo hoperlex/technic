@@ -2,6 +2,7 @@ import { and, eq, ne } from 'drizzle-orm';
 import {
   formatSnils,
   licenseNumberLabel,
+  routeCargoLabel,
   type VehicleRequestType,
   waybillRequirement,
   type WaybillRequirement,
@@ -122,7 +123,10 @@ async function resolveOrganization(tx: Tx, vehicleId: string): Promise<string> {
 async function collectSnapshot(
   tx: Tx,
   params: {
+    /** Заявка первого талона: она же стоит в шапке задания «в чьё распоряжение». */
     requestId: string;
+    /** Остальные заявки рейса в порядке талонов — строки 2–4 нижней таблицы задания. */
+    restRequestIds: string[];
     vehicleId: string;
     driverPersonId: string | null;
     organizationId: string;
@@ -203,11 +207,40 @@ async function collectSnapshot(
     }
   }
 
-  const cargo = request?.volumeM3
-    ? `${request.volumeM3} м³`
-    : request?.weightTons
-      ? `${request.weightTons} т`
-      : '';
+  const cargo = routeCargoLabel(request?.volumeM3 ?? null, request?.weightTons ?? null);
+
+  /*
+   * Талоны 2–4: в таблице задания четыре строки, и рейс печатается целиком. Пустые строки
+   * остаются пустыми — лист на одну заявку выглядит так же, как выглядел до маршрутов.
+   */
+  const rest = await Promise.all(
+    params.restRequestIds.slice(0, 3).map(async (id) => {
+      const [row] = await tx
+        .select({
+          objectName: constructionObjects.name,
+          departmentName: departments.name,
+          loading: freightTransportRequestDetails.loadingLocation,
+          unloading: freightTransportRequestDetails.unloadingLocation,
+          volumeM3: freightTransportRequestDetails.volumeM3,
+          weightTons: freightTransportRequestDetails.weightTons,
+        })
+        .from(vehicleRequests)
+        .leftJoin(constructionObjects, eq(constructionObjects.id, vehicleRequests.objectId))
+        .leftJoin(departments, eq(departments.id, vehicleRequests.departmentId))
+        .leftJoin(
+          freightTransportRequestDetails,
+          eq(freightTransportRequestDetails.requestId, vehicleRequests.id),
+        )
+        .where(eq(vehicleRequests.id, id));
+      return {
+        customer: row?.objectName ?? row?.departmentName ?? '',
+        from: row?.loading ?? '',
+        to: row?.unloading ?? '',
+        cargo: routeCargoLabel(row?.volumeM3 ?? null, row?.weightTons ?? null),
+      };
+    }),
+  );
+  const slot = (index: number) => rest[index] ?? { customer: '', from: '', to: '', cargo: '' };
   const departure =
     request?.scheduledAt && !request.timeUnspecified
       ? new Date(request.scheduledAt.getTime() + 3 * 60 * 60 * 1000).toISOString().slice(11, 16)
@@ -250,6 +283,19 @@ async function collectSnapshot(
     task_to: request?.unloading ?? '',
     task_cargo: cargo,
     task_departure_time: departure,
+
+    task2_customer: slot(0).customer,
+    task2_from: slot(0).from,
+    task2_to: slot(0).to,
+    task2_cargo: slot(0).cargo,
+    task3_customer: slot(1).customer,
+    task3_from: slot(1).from,
+    task3_to: slot(1).to,
+    task3_cargo: slot(1).cargo,
+    task4_customer: slot(2).customer,
+    task4_from: slot(2).from,
+    task4_to: slot(2).to,
+    task4_cargo: slot(2).cargo,
 
     dispatcher_fio: params.actorName,
   };
@@ -346,14 +392,15 @@ export async function issueWaybillForRoute(
   const organizationId = await resolveOrganization(tx, ctx.vehicleId);
 
   /*
-   * Задание в бланке 4-П набирается одной строкой («в чьё распоряжение», откуда, куда, груз), и
-   * снимок собирается по первому талону рейса. Остальные заявки печатаются пустыми графами
-   * талонов — так же, как печатались до маршрутов: разметка строк 2–4 требует правки самого
-   * бланка и идёт отдельным шагом (план, релиз 3).
+   * Задание печатается всем рейсом: шапка («в чьё распоряжение») — по первому талону, а нижняя
+   * таблица держит четыре строки — ровно столько заявок, сколько бывает в рейсе. Пустые строки
+   * остаются пустыми: лист на одну заявку выглядит так же, как выглядел до маршрутов.
    */
-  const first = [...ctx.requests].sort((a, b) => a.position - b.position)[0]!;
+  const ordered = [...ctx.requests].sort((a, b) => a.position - b.position);
+  const first = ordered[0]!;
   const data = await collectSnapshot(tx, {
     requestId: first.requestId,
+    restRequestIds: ordered.slice(1).map((r) => r.requestId),
     vehicleId: ctx.vehicleId,
     driverPersonId: ctx.driverPersonId,
     organizationId,

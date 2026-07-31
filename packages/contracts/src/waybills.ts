@@ -129,6 +129,21 @@ export const WAYBILL_SNAPSHOT_KEYS = [
   'task_to',
   'task_cargo',
   'task_departure_time',
+  // Талоны 2–4 нижнего задания: в таблице бланка четыре строки, и рейс из четырёх заявок
+  // печатается целиком. Пустые строки остаются пустыми — так же, как до маршрутов печаталась
+  // единственная (ADR 0050 п. 15).
+  'task2_customer',
+  'task2_from',
+  'task2_to',
+  'task2_cargo',
+  'task3_customer',
+  'task3_from',
+  'task3_to',
+  'task3_cargo',
+  'task4_customer',
+  'task4_from',
+  'task4_to',
+  'task4_cargo',
   'dispatcher_fio',
 ] as const;
 
