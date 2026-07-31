@@ -21,6 +21,13 @@ const AUDIT_ACTIONS = [
   'vehicle_request.approval_revoke',
   'vehicle_request.assign',
   'vehicle_request.complete',
+  // Досрочное завершение (ADR 0044) — четырьмя действиями: сокращение срока проходит через визу,
+  // и «попросили», «согласовали», «отказали», «сняли» это разные ответы на вопрос, почему техника
+  // уехала (или не уехала) раньше заказанного.
+  'vehicle_request.early_end_request',
+  'vehicle_request.early_end_approve',
+  'vehicle_request.early_end_reject',
+  'vehicle_request.early_end_cancel',
   'vehicle_request.soft_delete',
   'vehicle_request.restore',
 ] as const;
@@ -35,6 +42,12 @@ const AUDIT_KINDS: Record<string, RequestHistoryKind> = {
   // Факт выполнения (ADR 0029) — тем же приёмом: «Выполнена» отвечает «что с заявкой»,
   // закрытие — «сколько отработали и сколько это стоило».
   'vehicle_request.complete': 'completed',
+  'vehicle_request.early_end_request': 'earlyEndRequested',
+  'vehicle_request.early_end_approve': 'earlyEndApproved',
+  'vehicle_request.early_end_reject': 'earlyEndRejected',
+  // Снятие запроса — не отказ: его снимает правка срока, закрытие заявки или сам инициатор,
+  // и решения по существу за ним не стоит.
+  'vehicle_request.early_end_cancel': 'earlyEndCancelled',
   'vehicle_request.soft_delete': 'deleted',
   'vehicle_request.restore': 'restored',
 };

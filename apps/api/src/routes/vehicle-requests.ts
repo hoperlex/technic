@@ -21,21 +21,27 @@ import {
   type AssignVehicleInput,
   calcVehicleRequestCost,
   can,
+  canShortenWorkPeriodByEdit,
   changeVehicleRequestStatusSchema,
   CLOSED_REQUEST_STATUSES,
   type CompleteVehicleRequestInput,
   type ConfirmScheduleInput,
   createVehicleRequestSchema,
   type CreateVehicleRequestInput,
+  decideVehicleEarlyEndSchema,
+  earlyEndBlocker,
+  earlyEndDateBounds,
   type FileDto,
   formatVehicleRequestNumber,
   waybillFormLabels,
+  isAllowedEarlyEndDate,
   isApprovalChangeable,
   isClosedRequestStatus,
   isVehicleKindAllowedForRequest,
   moscowDateKeyOf,
   rateForWorkUnit,
   REQUEST_STATUSES,
+  requestVehicleEarlyEndSchema,
   type RequestWaybillDto,
   requestStatusLabels,
   setVehicleRequestApprovalSchema,
@@ -117,7 +123,9 @@ import {
 import {
   diffVehicleAssignment,
   diffVehicleCompletion,
+  diffVehicleEarlyEnd,
   diffVehicleRequests,
+  earlyEndReasonChange,
 } from '../services/vehicle-request-diff';
 import { loadVehicleRequestHistory } from '../services/vehicle-request-history';
 import {
@@ -809,6 +817,49 @@ async function saveCompletion(
     });
 }
 
+/** Календарный ключ `YYYY-MM-DD` человеку: `24.07.2026`. Через JS Date он бы поехал на день. */
+function dateKeyRu(key: string): string {
+  const [y, m, d] = key.split('-');
+  return y && m && d ? `${d}.${m}.${y}` : key;
+}
+
+/**
+ * Согласованное сокращение срока (ADR 0044): новый последний день записывается прямо в заявку.
+ * Отдельной пары «план/факт» у срока нет — в заявке одно время, то, о котором договорились, — а
+ * расхождение с первоначальным читается историей. Тем же приёмом пишется срок, уточнённый при
+ * переводе заявки в работу (`applyConfirmedSchedule`).
+ */
+async function applyEarlyEnd(tx: Tx, requestId: string, newDateTo: string): Promise<void> {
+  await tx
+    .update(specialEquipmentRequestDetails)
+    .set({ dateTo: newDateTo })
+    .where(eq(specialEquipmentRequestDetails.requestId, requestId));
+}
+
+/**
+ * Снимает ожидающий визы запрос на досрочное завершение (ADR 0044) и отвечает, был ли он.
+ *
+ * Запрос перестаёт иметь смысл сам по себе в двух случаях: заявку закрыли (сокращать срок больше
+ * нечего) и срок поправили обычной правкой (снимок `previous_date_to` разошёлся с заявкой, и виза
+ * решала бы про другой период). Оба раза строка снимается молча для визирующего, но событием для
+ * истории: иначе «ждёт визы» висело бы на закрытой заявке и считалось в сводке среза.
+ *
+ * Решённые запросы не трогаются: согласованный уже сократил срок, отклонённый объясняет, почему
+ * этого не случилось, — и оба остаются ответом на вопрос «что было с этой заявкой».
+ */
+async function clearPendingEarlyEnd(tx: Tx, requestId: string): Promise<boolean> {
+  const removed = await tx
+    .delete(vehicleRequestEarlyEndings)
+    .where(
+      and(
+        eq(vehicleRequestEarlyEndings.requestId, requestId),
+        eq(vehicleRequestEarlyEndings.status, 'pending'),
+      ),
+    )
+    .returning({ requestId: vehicleRequestEarlyEndings.requestId });
+  return removed.length > 0;
+}
+
 /**
  * Фактический срок, уточнённый при переводе заявки в работу. Пишется в ту же detail-таблицу, что и
  * заказанный: план и факт в заявке одно поле — время, о котором договорились, — а расхождение с
@@ -928,6 +979,41 @@ function editChangesSubstance(
     );
   }
   return false;
+}
+
+/** Срок работ после правки: не переданное поле означает «не трогали». */
+function workPeriodAfterEdit(
+  before: SpecialEquipmentRequestDto,
+  body: Extract<UpdateVehicleRequestInput, { requestType: 'special_equipment' }>,
+): { dateFrom: string; dateTo: string | null } {
+  return {
+    dateFrom: body.dateFrom ?? before.dateFrom,
+    dateTo: body.dateTo !== undefined ? (body.dateTo ?? null) : before.dateTo,
+  };
+}
+
+/** Правка вообще трогает срок работ — по любой из двух границ (ADR 0044: такая правка снимает
+ * ожидающий визы запрос на досрочное завершение: его снимок периода после неё уже не про эту
+ * заявку). */
+function changesWorkPeriod(before: VehicleRequestDto, body: UpdateVehicleRequestInput): boolean {
+  if (before.requestType !== 'special_equipment' || body.requestType !== 'special_equipment') {
+    return false;
+  }
+  const next = workPeriodAfterEdit(before, body);
+  return next.dateFrom !== before.dateFrom || next.dateTo !== before.dateTo;
+}
+
+/**
+ * Правка сокращает срок работ: последний день переезжает назад. Считается по тому же
+ * `coalesce(date_to, date_from)`, которым период читают отбор среза и подписи присутствия —
+ * пустая дата окончания и здесь означает однодневный срок.
+ */
+function shortensWorkPeriod(before: VehicleRequestDto, body: UpdateVehicleRequestInput): boolean {
+  if (before.requestType !== 'special_equipment' || body.requestType !== 'special_equipment') {
+    return false;
+  }
+  const next = workPeriodAfterEdit(before, body);
+  return (next.dateTo || next.dateFrom) < (before.dateTo || before.dateFrom);
 }
 
 /**
@@ -1359,6 +1445,9 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           objects: sql<number>`count(DISTINCT ${vehicleRequests.objectId})`,
           arrivedToday: sql<number>`count(*) FILTER (WHERE ${specialEquipmentRequestDetails.dateFrom} = ${onDate}::date)`,
           leavingToday: sql<number>`count(*) FILTER (WHERE coalesce(${specialEquipmentRequestDetails.dateTo}, ${specialEquipmentRequestDetails.dateFrom}) = ${onDate}::date)`,
+          // Досрочный отъезд (ADR 0044): по статусу заявки его не видно — она всё ещё «В работе»
+          // на весь заказанный срок, а площадка освободится раньше, если визу поставят.
+          earlyEndPending: sql<number>`count(*) FILTER (WHERE ${vehicleRequestEarlyEndings.status} = 'pending')`,
         })
         .from(vehicleRequests)
         // Отдел здесь не присоединяется: срез отбирает спецтехнику, а её заказывает только
@@ -1368,12 +1457,17 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           specialEquipmentRequestDetails,
           eq(vehicleRequests.id, specialEquipmentRequestDetails.requestId),
         )
+        .leftJoin(
+          vehicleRequestEarlyEndings,
+          eq(vehicleRequests.id, vehicleRequestEarlyEndings.requestId),
+        )
         .where(onSiteWhere(p, req.query, onDate));
       return {
         total: Number(agg!.total),
         objects: Number(agg!.objects),
         arrivedToday: Number(agg!.arrivedToday),
         leavingToday: Number(agg!.leavingToday),
+        earlyEndPending: Number(agg!.earlyEndPending),
       } satisfies VehicleOnSiteSummaryDto;
     },
   );
@@ -1619,10 +1713,29 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       // Согласовано было то, что руководитель строительства видел: переписанную по существу
       // заявку он визирует заново (ADR 0025). Правка самим визирующим визу не снимает — он и
       // подтверждает изменение самим фактом правки.
+      //
+      // Снимается виза только там, где её можно поставить обратно, — то есть пока заявка «Новая»
+      // (ADR 0044). У заявки в работе виза уже отработала своё: она основание состоявшихся
+      // договорённостей с исполнителем (ADR 0025 п. 6), и снятая правкой она не возвращается
+      // ничем — заявка навсегда осталась бы в работе и «ждущей визы» одновременно.
       const dropApproval =
         !!before.approvedAt &&
+        isApprovalChangeable(before.status) &&
         !canApproveRequest(p, customer) &&
         editChangesSubstance(before, body);
+
+      // Сокращать срок работающей заявки обычной правкой нельзя (ADR 0044): для этого есть
+      // досрочное завершение с визой, и прямая правка обошла бы её в один шаг. Продление и правка
+      // ещё не начатой заявки остаются как были — это не то, ради чего заводилась виза.
+      if (shortensWorkPeriod(before, body) && !canShortenWorkPeriodByEdit(before.status)) {
+        throw err.unprocessable(
+          'Срок работающей техники сокращают досрочным завершением — с визой руководителя строительства',
+          { dateTo: 'Досрочное завершение' },
+        );
+      }
+
+      const periodEdited = changesWorkPeriod(before, body);
+      let earlyEndDropped = false;
 
       await db.transaction(async (tx) => {
         const customerChanged =
@@ -1752,6 +1865,10 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
 
         if (body.removeFileIds?.length) await detachFiles(tx, id, body.removeFileIds);
         if (body.addFileIds?.length) await attachFiles(tx, id, body.addFileIds, p.id, true);
+
+        // Правка срока делает ожидающий визы запрос на досрочное завершение беспредметным:
+        // он просил сократить другой период (ADR 0044).
+        if (periodEdited) earlyEndDropped = await clearPendingEarlyEnd(tx, id);
       });
 
       const after = (await getDto(id))!;
@@ -1772,6 +1889,17 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           entityType: 'vehicle_request',
           entityId: id,
           metadata: { reason: 'edited' },
+        });
+      }
+      // Снятый правкой запрос на досрочное завершение — тоже своё событие: руководитель
+      // строительства перестанет видеть его в ожидающих визы, и причина должна быть в истории.
+      if (earlyEndDropped) {
+        await writeAudit({
+          actorUserId: p.id,
+          action: 'vehicle_request.early_end_cancel',
+          entityType: 'vehicle_request',
+          entityId: id,
+          metadata: { reason: 'edited', changes: earlyEndReasonChange('Срок заявки изменён') },
         });
       }
       return after;
@@ -1924,7 +2052,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       // Назначение, факт и уточнённый срок проверяются и пишутся в той же транзакции, что и статус:
       // заявка не должна побыть «в работе» ни на чём, «выполненной» без факта или взятой на одно
       // время с листом на другое — даже мгновение.
-      const { assigned, completed } = await db.transaction(async (tx) => {
+      const { assigned, completed, earlyEndDropped } = await db.transaction(async (tx) => {
         // Срок — первым: дату рейса путевой лист берёт из заявки, и записанный после выписки он
         // отправил бы лист на заказанное время вместо согласованного.
         if (schedule) await applyConfirmedSchedule(tx, before.id, schedule);
@@ -1986,7 +2114,14 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           changedBy: p.id,
           comment,
         });
-        return { assigned: saved, completed: closed };
+        // Ожидающий визы запрос на досрочное завершение уходит вместе со статусом (ADR 0044):
+        // у закрытой и отменённой заявки сокращать нечего, а «ждёт визы» на ней висело бы вечно
+        // и считалось бы в сводке среза.
+        const droppedEarlyEnd =
+          before.status === 'confirmed' && status !== 'confirmed'
+            ? await clearPendingEarlyEnd(tx, before.id)
+            : false;
+        return { assigned: saved, completed: closed, earlyEndDropped: droppedEarlyEnd };
       });
       await writeAudit({
         actorUserId: p.id,
@@ -2021,6 +2156,20 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           metadata: { changes: diffVehicleCompletion(before.completion, completed) },
         });
       }
+      // Снятый закрытием запрос на досрочное завершение — своё событие: иначе он просто исчезает
+      // из списка ожидающих визы, и по истории непонятно, чем кончился.
+      if (earlyEndDropped) {
+        await writeAudit({
+          actorUserId: p.id,
+          action: 'vehicle_request.early_end_cancel',
+          entityType: 'vehicle_request',
+          entityId: before.id,
+          metadata: {
+            reason: 'closed',
+            changes: earlyEndReasonChange(`Заявка переведена в «${requestStatusLabels[status]}»`),
+          },
+        });
+      }
       const after = (await getDto(before.id))!;
       // Уточнённый срок — событие правки, а не назначения: заказывали на одно время, вышли на
       // другое, и в истории это читается теми же строками «было → стало», что и обычная правка
@@ -2040,6 +2189,223 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       return after;
     },
   );
+
+  // ── Досрочное завершение заказа спецтехники (ADR 0044) ──
+  /**
+   * Запросить сокращение срока: техника освободилась раньше заказанного.
+   *
+   * Право — общее право правки заявки: состав ролей у него ровно тот, кому это действие и нужно
+   * (площадка, диспетчер, менеджер), а у арендодателя и наблюдателя его нет. Ограничение
+   * «объектная роль правит только "Новую"» здесь **не применяется** осознанно: действие
+   * придумано ровно для заявки в работе, и просит его как раз тот, кто стоит на площадке, —
+   * а решает всё равно не он.
+   *
+   * Запрос того, кто эту заявку визирует, применяется сразу: согласование состоялось самим фактом
+   * обращения (ADR 0025 п. 5, ADR 0032 — администратор под это правило не подпадает, он действует
+   * не за объект).
+   */
+  r.post(
+    '/:id/early-end',
+    { ...canUpdate, schema: { params: idParams, body: requestVehicleEarlyEndSchema } },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const { newDateTo, reason, version } = req.body;
+      const before = await getDto(req.params.id);
+      if (!before || before.deletedAt) throw err.notFound('Заявка не найдена');
+      assertRequestScope(p, before);
+
+      // «Сегодня» считает сервер — тем же способом, что и срез «На объекте» (ADR 0036): часы
+      // клиента бывают сбиты, а браузер восточнее Москвы начинает сутки раньше.
+      const onDate = moscowDateKeyOf(new Date());
+      const blocker = earlyEndBlocker(before, onDate);
+      if (blocker) throw err.unprocessable(blocker);
+      const special = before as SpecialEquipmentRequestDto;
+      if (!isAllowedEarlyEndDate(special, onDate, newDateTo)) {
+        const bounds = earlyEndDateBounds(special, onDate)!;
+        throw err.unprocessable(
+          `Новая дата окончания — с ${dateKeyRu(bounds.min)} по ${dateKeyRu(bounds.max)}`,
+          { newDateTo: 'Дата вне срока заявки' },
+        );
+      }
+
+      const auto = approvesOwnRequestOnCreate(p, before);
+      const previousDateTo = special.dateTo!;
+      await db.transaction(async (tx) => {
+        const values = {
+          // Своя виза не нужна тому, кто её и ставит: запрос сразу записывается согласованным.
+          status: auto ? ('approved' as const) : ('pending' as const),
+          newDateTo,
+          previousDateTo,
+          reason,
+          requestedBy: p.id,
+          requestedAt: new Date(),
+          decidedBy: auto ? p.id : null,
+          decidedAt: auto ? new Date() : null,
+          decisionComment: '',
+        };
+        // Одна заявка — одна запись: повторный запрос переписывает прежний (ADR 0044). Цепочка
+        // при этом не теряется — каждый запрос и каждое решение остаются событием истории.
+        await tx
+          .insert(vehicleRequestEarlyEndings)
+          .values({ requestId: before.id, ...values })
+          .onConflictDoUpdate({
+            target: vehicleRequestEarlyEndings.requestId,
+            set: { ...values, updatedAt: new Date() },
+          });
+        if (auto) await applyEarlyEnd(tx, before.id, newDateTo);
+        // Версию поднимает и запрос: он меняет то, что показывает карточка заявки, и второй
+        // человек, правящий её с прежней версией, должен получить конфликт, а не тихую перезапись.
+        const [updated] = await tx
+          .update(vehicleRequests)
+          .set({ updatedBy: p.id, version: before.version + 1, updatedAt: new Date() })
+          .where(and(eq(vehicleRequests.id, before.id), eq(vehicleRequests.version, version)))
+          .returning({ id: vehicleRequests.id });
+        if (!updated) throw err.conflict();
+      });
+
+      const after = (await getDto(before.id))!;
+      await writeAudit({
+        actorUserId: p.id,
+        action: 'vehicle_request.early_end_request',
+        entityType: 'vehicle_request',
+        entityId: before.id,
+        metadata: {
+          newDateTo,
+          previousDateTo,
+          changes: diffVehicleEarlyEnd({ previousDateTo, newDateTo, reason }),
+        },
+      });
+      // Собственная виза — отдельным событием с пометкой `auto`, как и при заведении заявки:
+      // иначе на вопрос «кто согласовал сокращение» отвечало бы только текущее состояние строки.
+      if (auto) {
+        await writeAudit({
+          actorUserId: p.id,
+          action: 'vehicle_request.early_end_approve',
+          entityType: 'vehicle_request',
+          entityId: before.id,
+          metadata: { auto: true, changes: diffVehicleRequests(before, after) },
+        });
+      }
+      return after;
+    },
+  );
+
+  /**
+   * Решение по запросу: виза или отказ. Одним маршрутом — у них одно право, одна область и один
+   * инвариант «пока запрос ждёт визы»; раздельные разошлись бы в проверках, как и у визы заявки.
+   *
+   * Состояние заявки проверяется заново, а не по снимку запроса: между обращением и визой проходит
+   * ночь, за которую заявку успевают закрыть, поправить ей срок или просто дожить до запрошенного
+   * дня. Виза, поставленная не глядя на это, сократила бы срок задним числом.
+   */
+  r.patch(
+    '/:id/early-end',
+    { ...canApprove, schema: { params: idParams, body: decideVehicleEarlyEndSchema } },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const { approved, comment, version } = req.body;
+      const before = await getDto(req.params.id);
+      if (!before || before.deletedAt) throw err.notFound('Заявка не найдена');
+      assertRequestScope(p, before);
+      // Право на маршруте общее, а решает руководитель своего объекта — тот же, кто визирует
+      // саму заявку (ADR 0025 п. 4).
+      if (!canApproveRequest(p, before)) {
+        throw err.forbidden('Досрочное завершение визирует руководитель этого объекта');
+      }
+
+      const pending =
+        before.requestType === 'special_equipment' && before.earlyEnd?.status === 'pending'
+          ? before.earlyEnd
+          : null;
+      if (!pending) throw err.unprocessable('Запрос на досрочное завершение не найден');
+
+      if (approved) {
+        const onDate = moscowDateKeyOf(new Date());
+        const blocker = earlyEndBlocker(before, onDate);
+        if (blocker) throw err.unprocessable(blocker);
+        if (!isAllowedEarlyEndDate(before, onDate, pending.newDateTo)) {
+          throw err.unprocessable(
+            `Запрошенная дата ${dateKeyRu(pending.newDateTo)} больше не годится: срок заявки изменился или день уже прошёл — нужен новый запрос`,
+          );
+        }
+      }
+
+      await db.transaction(async (tx) => {
+        await tx
+          .update(vehicleRequestEarlyEndings)
+          .set({
+            status: approved ? 'approved' : 'rejected',
+            decidedBy: p.id,
+            decidedAt: new Date(),
+            decisionComment: comment,
+            updatedAt: new Date(),
+          })
+          .where(eq(vehicleRequestEarlyEndings.requestId, before.id));
+        // Срок сокращается той же транзакцией, что и виза: состояния «согласовано, а срок
+        // прежний» не бывает — по нему считают и площадку, и аренду.
+        if (approved) await applyEarlyEnd(tx, before.id, pending.newDateTo);
+        const [updated] = await tx
+          .update(vehicleRequests)
+          .set({ updatedBy: p.id, version: before.version + 1, updatedAt: new Date() })
+          .where(and(eq(vehicleRequests.id, before.id), eq(vehicleRequests.version, version)))
+          .returning({ id: vehicleRequests.id });
+        if (!updated) throw err.conflict();
+      });
+
+      const after = (await getDto(before.id))!;
+      await writeAudit({
+        actorUserId: p.id,
+        action: approved ? 'vehicle_request.early_end_approve' : 'vehicle_request.early_end_reject',
+        entityType: 'vehicle_request',
+        entityId: before.id,
+        // У визы состав изменений — сам срок заявки: она его и меняет. У отказа менять нечего,
+        // и событие несёт причину: заявка живёт дальше по заказанному сроку, и это надо объяснить.
+        metadata: approved
+          ? { changes: diffVehicleRequests(before, after) }
+          : { changes: earlyEndReasonChange(comment) },
+      });
+      return after;
+    },
+  );
+
+  /**
+   * Отозвать запрос, пока он ждёт визы: «отбой, техника нужна». Отзывает любой, кто мог его
+   * подать, — не только автор: запрос ведут вдвоём с диспетчером, и отбой обычно приходит ему.
+   * Решённый запрос не отзывается: согласованный уже сократил срок, отклонённый объясняет, почему
+   * этого не произошло.
+   */
+  r.delete('/:id/early-end', { ...canUpdate, schema: { params: idParams } }, async (req) => {
+    const p = requirePrincipal(req);
+    const before = await getDto(req.params.id);
+    if (!before || before.deletedAt) throw err.notFound('Заявка не найдена');
+    assertRequestScope(p, before);
+
+    const dropped = await db.transaction(async (tx) => {
+      const removed = await clearPendingEarlyEnd(tx, before.id);
+      if (!removed) return false;
+      // Версия считается от текущей строки, а не от прочитанной: отзыв запроса ничего не
+      // переписывает в заявке, и отбирать его у того, кто правит её в этот же момент, незачем.
+      await tx
+        .update(vehicleRequests)
+        .set({
+          updatedBy: p.id,
+          version: sql`${vehicleRequests.version} + 1`,
+          updatedAt: new Date(),
+        })
+        .where(eq(vehicleRequests.id, before.id));
+      return true;
+    });
+    if (!dropped) throw err.unprocessable('Запрос на досрочное завершение не найден');
+
+    await writeAudit({
+      actorUserId: p.id,
+      action: 'vehicle_request.early_end_cancel',
+      entityType: 'vehicle_request',
+      entityId: before.id,
+      metadata: { reason: 'withdrawn', changes: earlyEndReasonChange('Запрос отозван') },
+    });
+    return (await getDto(before.id))!;
+  });
 
   // ── Виза руководителя строительства (ADR 0025) ──
   // Постановка и отзыв — одним маршрутом: у них одно право, одна область и один инвариант

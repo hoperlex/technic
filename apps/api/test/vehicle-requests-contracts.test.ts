@@ -5,6 +5,7 @@ import {
   assignmentRateLabel,
   calcVehicleRequestCost,
   canRequestEarlyEnd,
+  canShortenWorkPeriodByEdit,
   changeVehicleRequestStatusSchema,
   CLOSED_REQUEST_STATUSES,
   completeVehicleRequestSchema,
@@ -1053,6 +1054,14 @@ describe('vehicle-requests: досрочное завершение (ADR 0044)',
         version: 3,
       }).comment,
     ).toBe('Техника ещё нужна');
+  });
+
+  it('срок работающей заявки правкой не сокращают — только досрочным завершением', () => {
+    expect(canShortenWorkPeriodByEdit('confirmed')).toBe(false);
+    // До выхода техники срок правят как обычно, у закрытой заявки правка и так недоступна.
+    expect(canShortenWorkPeriodByEdit('new')).toBe(true);
+    expect(canShortenWorkPeriodByEdit('done')).toBe(true);
+    expect(canShortenWorkPeriodByEdit('cancelled')).toBe(true);
   });
 
   it('подписи и цвета заданы каждому состоянию запроса', () => {

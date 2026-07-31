@@ -411,6 +411,49 @@ const CASES: Case[] = [
     allowed: ['admin', 'rukstroy', 'department_head'],
   },
   {
+    // Досрочное завершение (ADR 0044): попросить сократить срок может тот, кто заявку ведёт, —
+    // площадка замечает освободившуюся технику, диспетчер оформляет. Отдельного права нет:
+    // состав ролей у правки ровно тот же, а «правит только "Новую"» — это область, и она здесь
+    // намеренно не применяется. Арендодателю и наблюдателю действие закрыто отсутствием правки.
+    title: 'заказ ТС — запрос досрочного завершения',
+    method: 'POST',
+    url: `/api/v1/vehicle-requests/${RECORD_ID}/early-end`,
+    payload: { newDateTo: '2026-08-20', reason: 'Работы закончены', version: 1 },
+    allowed: [
+      'admin',
+      'manager',
+      'dispatcher',
+      'shtab',
+      'rukstroy',
+      'department',
+      'department_head',
+    ],
+  },
+  {
+    // Решение по запросу — то же право и та же область, что у визы самой заявки: сокращение
+    // срока согласует тот, кто согласовывал заказ.
+    title: 'заказ ТС — виза досрочного завершения',
+    method: 'PATCH',
+    url: `/api/v1/vehicle-requests/${RECORD_ID}/early-end`,
+    payload: { approved: true, version: 1 },
+    allowed: ['admin', 'rukstroy', 'department_head'],
+  },
+  {
+    // Отзыв запроса — тем же, кто мог его подать: отбой обычно приходит диспетчеру, а не автору.
+    title: 'заказ ТС — отзыв запроса на досрочное завершение',
+    method: 'DELETE',
+    url: `/api/v1/vehicle-requests/${RECORD_ID}/early-end`,
+    allowed: [
+      'admin',
+      'manager',
+      'dispatcher',
+      'shtab',
+      'rukstroy',
+      'department',
+      'department_head',
+    ],
+  },
+  {
     title: 'заказ ТС — смена статуса',
     method: 'PATCH',
     url: `/api/v1/vehicle-requests/${RECORD_ID}/status`,

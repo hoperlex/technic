@@ -6,6 +6,7 @@ import {
   type VehicleRequestAssignmentDto,
   type VehicleRequestCompletionDto,
   type VehicleRequestDto,
+  type VehicleRequestEarlyEndDto,
   workedAmountLabel,
 } from '@technic/contracts';
 import { changeSet, EMPTY, short } from './request-diff';
@@ -114,6 +115,31 @@ export function diffVehicleRequests(
   diff.changed('comment', short(before.comment) || EMPTY, short(after.comment) || EMPTY);
   diff.files(before.files, after.files);
 
+  return diff.changes;
+}
+
+/**
+ * Что несёт запрос на досрочное завершение (ADR 0044): до какого числа просят сократить срок и
+ * почему. Событие запроса, а не правки: срок заявки в этот момент ещё прежний, и ключ у даты
+ * поэтому свой (`earlyEndDate`), а не `dateTo` — иначе история сообщала бы о сокращении, которого
+ * ещё не было. Согласование пишется обычным диффом заявки: там `dateTo` меняется по-настоящему.
+ */
+export function diffVehicleEarlyEnd(
+  e: Pick<VehicleRequestEarlyEndDto, 'previousDateTo' | 'newDateTo' | 'reason'>,
+): RequestChangeDto[] {
+  const diff = changeSet();
+  diff.changed('earlyEndDate', dateOnly(e.previousDateTo), dateOnly(e.newDateTo));
+  diff.changed('earlyEndReason', EMPTY, short(e.reason));
+  return diff.changes;
+}
+
+/**
+ * Причина отказа или снятия запроса — событием-списком: значима только правая часть. «Было» у
+ * причины не бывает: её называют один раз и в тот момент, когда решение принято.
+ */
+export function earlyEndReasonChange(reason: string): RequestChangeDto[] {
+  const diff = changeSet();
+  diff.listed('earlyEndReason', reason ? [reason] : []);
   return diff.changes;
 }
 
