@@ -6,7 +6,9 @@ import {
   changeWasteRequestStatusSchema,
   createWasteRequestSchema,
   fileDownloadQuerySchema,
+  formatWasteRequestNumber,
   isInlineViewable,
+  parseWasteRequestNumberSearch,
   requestStatusTransitions,
 } from '@technic/contracts';
 
@@ -218,5 +220,27 @@ describe('просмотр файлов во вкладке', () => {
     expect(fileDownloadQuerySchema.parse({}).disposition).toBe('attachment');
     expect(fileDownloadQuerySchema.parse({ disposition: 'inline' }).disposition).toBe('inline');
     expect(() => fileDownloadQuerySchema.parse({ disposition: 'что-то' })).toThrow();
+  });
+});
+
+describe('номер заявки на мусор', () => {
+  it('новые заявки нумеруются с префиксом «М-»', () => {
+    expect(formatWasteRequestNumber(128, 'waste_removal', false)).toBe('М-128');
+    // Префикс не зависит от типа: буква типа из номера ушла, тип стоит отдельной колонкой.
+    expect(formatWasteRequestNumber(1, 'container_install', false)).toBe('М-1');
+  });
+
+  it('заведённые до префикса показываются прежним номером', () => {
+    expect(formatWasteRequestNumber(128, 'waste_removal', true)).toBe('128-ВМ');
+    expect(formatWasteRequestNumber(128, 'container_install', true)).toBe('128-У');
+    expect(formatWasteRequestNumber(128, 'container_removal', true)).toBe('128-Сн');
+  });
+
+  it('поиск понимает оба формата и мусор во вводе', () => {
+    expect(parseWasteRequestNumberSearch('М-128')).toBe(128);
+    expect(parseWasteRequestNumberSearch('128-ВМ')).toBe(128);
+    expect(parseWasteRequestNumberSearch(' 128 ')).toBe(128);
+    expect(parseWasteRequestNumberSearch('М-')).toBeUndefined();
+    expect(parseWasteRequestNumberSearch('')).toBeUndefined();
   });
 });

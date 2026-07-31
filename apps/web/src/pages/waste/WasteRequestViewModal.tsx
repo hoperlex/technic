@@ -9,7 +9,6 @@ import {
   requestStatusLabels,
   requestTypeColors,
   requestTypeLabels,
-  requestTypeShort,
   requiresWasteFact,
   vehicleVolume,
   type WasteRequestCompletionDto,
@@ -327,9 +326,7 @@ export function WasteRequestViewModal({ request, onClose, onEdit }: Props) {
 
   return (
     <ViewModal
-      title={
-        request ? `Заявка № ${request.num}-${requestTypeShort[request.requestType]}` : 'Заявка'
-      }
+      title={request ? `Заявка № ${request.displayNumber}` : 'Заявка'}
       open={!!request}
       onClose={onClose}
       width={760}

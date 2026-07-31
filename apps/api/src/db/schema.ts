@@ -925,8 +925,11 @@ export const wasteRequests = pgTable(
   'waste_requests',
   {
     id: uuid('id').primaryKey().defaultRandom(),
-    // Сквозной человекочитаемый номер (отображается как «<num>-<буква типа>»).
+    // Сквозной человекочитаемый номер (отображается как «М-<num>», миграция 0064).
     num: integer('num').generatedAlwaysAsIdentity(),
+    // Заявка заведена до префикса «М-» и показывается прежним номером «<num>-<буква типа>»:
+    // её номер уже разошёлся по талонам и переписке (миграция 0064). Новые строки — false.
+    legacyNumFormat: boolean('legacy_num_format').notNull().default(false),
     objectId: uuid('object_id')
       .notNull()
       .references(() => constructionObjects.id, { onDelete: 'restrict' }),

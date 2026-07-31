@@ -37,7 +37,7 @@ import {
   statusChangeRequiresReason,
   requestTypeColors,
   requestTypeLabels,
-  requestTypeShort,
+  parseWasteRequestNumberSearch,
   normalizeTimeInput,
   calcWasteAmount,
   type CompleteWasteRequestInput,
@@ -191,9 +191,7 @@ function RequestsTab() {
   };
   const applyNumFilter = (raw: string) => {
     setNumInput(raw);
-    // из «123-У» берём числовую часть (num уникален; суффикс — только отображение)
-    const digits = raw.match(/\d+/)?.[0];
-    applyFilter({ num: digits ? Number(digits) : undefined });
+    applyFilter({ num: parseWasteRequestNumberSearch(raw) });
   };
 
   const { data, isFetching } = useQuery({
@@ -826,9 +824,7 @@ function RequestsTab() {
       sorter: true,
       // Номер — только идентификатор заявки; карточка открывается кнопкой в «Действиях».
       render: (_v: unknown, r: WasteRequestDto) => (
-        <span style={{ whiteSpace: 'nowrap' }}>
-          {r.num}-{requestTypeShort[r.requestType]}
-        </span>
+        <span style={{ whiteSpace: 'nowrap' }}>{r.displayNumber}</span>
       ),
     },
     // Ширина задана всем колонкам: при scroll.x='max-content' колонка без ширины тянется по
@@ -1119,7 +1115,7 @@ function RequestsTab() {
       key: 'num',
       label: '№ заявки',
       value: numInput || undefined,
-      placeholder: 'Например, 128',
+      placeholder: 'Например, М-128',
       onChange: (v) => applyNumFilter(v ?? ''),
     },
   ];
@@ -1130,7 +1126,7 @@ function RequestsTab() {
    * иконки с подсказками на касании молчат.
    */
   const card: CardConfig<WasteRequestDto> = {
-    title: (r) => `№ ${r.num}-${requestTypeShort[r.requestType]}`,
+    title: (r) => `№ ${r.displayNumber}`,
     badge: (r) => <StatusCell r={r} />,
     primary: (r) => r.objectName,
     lines: [
@@ -1316,9 +1312,7 @@ function RequestsTab() {
 
       <CancelReasonModal
         open={!!cancelTarget}
-        subject={
-          cancelTarget ? `№ ${cancelTarget.num}-${requestTypeShort[cancelTarget.requestType]}` : ''
-        }
+        subject={cancelTarget ? `№ ${cancelTarget.displayNumber}` : ''}
         confirmLoading={statusMut.isPending}
         onCancel={() => setCancelTarget(null)}
         onSubmit={(reason) =>

@@ -7,7 +7,6 @@ import {
   type CompleteWasteRequestInput,
   type FileDto,
   MAX_TICKETS_PER_REQUEST,
-  requestTypeShort,
   requiresWasteFact,
   WASTE_REMOVAL_CONTAINER_KIND,
   type WasteRequestDto,
@@ -216,7 +215,7 @@ export function WasteDoneModal({ request, confirmLoading, onCancel, onSubmit }: 
       {request && (
         <Form form={form} layout="vertical" onFinish={submit}>
           <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
-            Заявка № {request.num}-{requestTypeShort[request.requestType]}, {request.objectName}
+            Заявка № {request.displayNumber}, {request.objectName}
             {request.volumeM3 != null ? ` · заявлено ${request.volumeM3} м³` : ''}
             {request.amount != null ? ` на ${formatMoney(request.amount)}` : ''}
           </Typography.Paragraph>

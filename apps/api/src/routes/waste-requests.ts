@@ -11,6 +11,7 @@ import {
   type CompleteWasteRequestInput,
   createWasteRequestSchema,
   type FileDto,
+  formatWasteRequestNumber,
   MIN_WASTE_VOLUME_M3,
   REQUEST_STATUSES,
   type RequestType,
@@ -86,6 +87,8 @@ function numToDb(v: number | null | undefined): string | null {
 const requestSelect = {
   id: wasteRequests.id,
   num: wasteRequests.num,
+  // Формат номера: заявки до миграции 0064 показываются прежним «<num>-<буква типа>».
+  legacyNumFormat: wasteRequests.legacyNumFormat,
   objectId: wasteRequests.objectId,
   objectCode: constructionObjects.code,
   objectName: constructionObjects.name,
@@ -199,6 +202,7 @@ function toDto(
   return {
     id: r.id,
     num: r.num,
+    displayNumber: formatWasteRequestNumber(r.num, r.requestType, r.legacyNumFormat),
     objectId: r.objectId,
     objectCode: r.objectCode,
     objectName: r.objectName,

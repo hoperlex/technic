@@ -150,7 +150,10 @@ export const requestTypeColors: Record<RequestType, string> = {
   waste_removal: 'blue',
 };
 
-/** Буква типа заявки для человекочитаемого номера (№ = «<num>-<буква>»). */
+/**
+ * Буква типа в номере заявок, заведённых до префикса «М-» (№ = «<num>-<буква>», миграция 0064).
+ * Новых таких номеров не появляется — суффикс остаётся только у прежних заявок.
+ */
 export const requestTypeShort: Record<RequestType, string> = {
   container_install: 'У',
   container_replace: 'З',

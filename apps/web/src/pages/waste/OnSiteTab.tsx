@@ -1,6 +1,6 @@
 import { Tag, Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
-import { requestTypeShort, type WasteRequestDto } from '@technic/contracts';
+import { type WasteRequestDto } from '@technic/contracts';
 import { wasteRequestsApi } from '../../api/resources';
 import { DataTable, type CardConfig } from '../../components/DataTable';
 import { PageTableLayout } from '../../components/PageTableLayout';
@@ -55,7 +55,7 @@ export function OnSiteTab() {
       width: 150,
       sorter: true,
       render: (_v: unknown, r: WasteRequestDto) => (
-        <Typography.Text copyable>{`${r.num}-${requestTypeShort[r.requestType]}`}</Typography.Text>
+        <Typography.Text copyable>{r.displayNumber}</Typography.Text>
       ),
     },
   ];
@@ -66,7 +66,7 @@ export function OnSiteTab() {
    */
   const card: CardConfig<WasteRequestDto> = {
     title: (r) => r.objectName,
-    badge: (r) => <Tag>{`${r.num}-${requestTypeShort[r.requestType]}`}</Tag>,
+    badge: (r) => <Tag>{r.displayNumber}</Tag>,
     primary: (r) => r.containerTypeName ?? '—',
     lines: [
       (r) => `Доставка: ${formatDateTimeMaybe(r.deliveryAt, r.deliveryTimeUnspecified)}`,

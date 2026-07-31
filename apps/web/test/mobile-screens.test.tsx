@@ -70,6 +70,7 @@ describe('выполнение заявки на вывоз', () => {
   const request = {
     id: 'r1',
     num: 42,
+    displayNumber: 'М-42',
     requestType: 'waste_removal',
     objectCode: 'OBJ-1',
     objectName: 'Объект',

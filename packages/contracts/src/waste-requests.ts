@@ -3,6 +3,7 @@ import {
   MIN_WASTE_VOLUME_M3,
   requestStatusSchema,
   requestTypeSchema,
+  requestTypeShort,
   statusChangeRequiresReason,
 } from './enums';
 import type { ContainerKind, RequestStatus, RequestType } from './enums';
@@ -15,6 +16,36 @@ import {
   isWithinWorkTimeAt,
 } from './time';
 import { calcWasteAmount, isPricedRequestType } from './waste-tariffs';
+
+/** Префикс номера заявки на мусор — как «ТС-» у заявок на технику (миграция 0064). */
+const WASTE_REQUEST_NUM_PREFIX = 'М';
+
+/**
+ * Отображаемый номер заявки: «М-128» (в БД хранится только число).
+ *
+ * `legacyNumFormat` — заявка заведена до префикса и показывается прежним номером «128-ВМ»:
+ * число плюс буква типа. Перерисовать его задним числом нельзя, он уже в талонах и переписке.
+ */
+export function formatWasteRequestNumber(
+  num: number,
+  requestType: RequestType,
+  legacyNumFormat: boolean,
+): string {
+  return legacyNumFormat
+    ? `${num}-${requestTypeShort[requestType]}`
+    : `${WASTE_REQUEST_NUM_PREFIX}-${num}`;
+}
+
+/**
+ * Разбор пользовательского ввода поиска: «128» / «М-128» / «128-ВМ» → 128. Ищут по числу: оно
+ * уникально в обоих форматах, а префикс и буква типа — только отображение.
+ */
+export function parseWasteRequestNumberSearch(input: string): number | undefined {
+  const digits = input.match(/\d+/)?.[0];
+  if (!digits) return undefined;
+  const n = Number(digits);
+  return Number.isSafeInteger(n) && n > 0 ? n : undefined;
+}
 
 // Сортировка доступна во всех столбцах таблицы заявок; ключ поля совпадает с ключом колонки.
 export const WASTE_REQUEST_SORT_FIELDS = [
@@ -348,8 +379,10 @@ export type ChangeWasteRequestStatusInput = z.infer<typeof changeWasteRequestSta
 
 export interface WasteRequestDto {
   id: string;
-  /** Сквозной человекочитаемый номер (отображается как «<num>-<буква типа>»). */
+  /** Сквозной человекочитаемый номер: по нему ищут и сортируют. Показывают `displayNumber`. */
   num: number;
+  /** Номер как его показывают: «М-128», а у заявок до префикса — «128-ВМ» (миграция 0064). */
+  displayNumber: string;
   objectId: string;
   objectCode: string;
   objectName: string;
