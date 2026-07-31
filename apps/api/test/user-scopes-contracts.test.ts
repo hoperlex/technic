@@ -19,7 +19,7 @@ const base = {
 
 describe('объекты учётки при создании (ADR 0039)', () => {
   it('объектной роли нужен хотя бы один объект', () => {
-    for (const role of ['shtab', 'rukstroy'] as const) {
+    for (const role of ['shtab', 'rukstroy', 'commandant'] as const) {
       expect(
         createUserSchema.safeParse({ ...base, role, constructionObjectIds: [] }).success,
         role,

@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes } from 'react-router';
 import {
   can,
+  canOrderVehicleRequestType,
   type AccessSubject,
   type AuthUser,
   type CounterpartyType,
@@ -127,6 +128,20 @@ describe('пункты меню следуют из прав', () => {
     expect(screen.queryByText('Справочники')).toBeNull();
   });
 
+  it('отделу не показывают вкладку «На объекте»: спецтехники у него не бывает (ADR 0040)', () => {
+    // Вкладка отбирает спецтехнику на площадках. Отделу она недоступна как тип заявки, и список
+    // был бы пуст всегда — вкладка обещала бы содержимое, которого не бывает.
+    expect(canOrderVehicleRequestType({ role: 'department' }, 'special_equipment')).toBe(false);
+    expect(canOrderVehicleRequestType({ role: 'department_head' }, 'special_equipment')).toBe(
+      false,
+    );
+    expect(canOrderVehicleRequestType({ role: 'department' }, 'freight_transport')).toBe(true);
+    // Остальным заказчикам доступны оба типа — вкладка на месте.
+    for (const role of ['shtab', 'rukstroy', 'dispatcher'] as Role[]) {
+      expect(canOrderVehicleRequestType({ role }, 'special_equipment'), role).toBe(true);
+    }
+  });
+
   it('отделу показывают только заказ ТС: вывоз мусора не его модуль (ADR 0040)', () => {
     for (const role of ['department', 'department_head'] as Role[]) {
       const { unmount } = renderMenu(role);
@@ -156,6 +171,15 @@ describe('пункты меню следуют из прав', () => {
     renderMenu('shtab');
     expect(screen.getByText('Заказ ТС')).toBeDefined();
     expect(screen.queryByText('Справочники')).toBeNull();
+  });
+
+  it('коменданту показывают вывоз мусора и не показывают заказ ТС', () => {
+    renderMenu('commandant');
+    expect(screen.getByText('Вывоз мусора')).toBeDefined();
+    // Раздел закрывается правом, а не спрятанной вкладкой: прав на технику у коменданта нет.
+    expect(screen.queryByText('Заказ ТС')).toBeNull();
+    expect(screen.queryByText('Справочники')).toBeNull();
+    expect(screen.queryByText('Администрирование')).toBeNull();
   });
 
   it('наблюдатель видит оба модуля заявок и ничего сверх них (ADR 0033)', () => {
@@ -235,6 +259,10 @@ describe('нижняя навигация на мобильном повторя
 
   it('руководитель строительства — оба модуля заявок, как у штаба (ADR 0031)', () => {
     expect(mobileNavLabels('rukstroy')).toEqual(['Вывоз мусора', 'Заказ ТС']);
+  });
+
+  it('комендант — только вывоз мусора: техника не его модуль', () => {
+    expect(mobileNavLabels('commandant')).toEqual(['Вывоз мусора']);
   });
 
   it('оператор вывоза — только вывоз мусора (ADR 0010)', () => {
