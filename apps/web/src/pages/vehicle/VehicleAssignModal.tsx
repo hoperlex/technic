@@ -23,8 +23,11 @@ import {
   LICENSE_REQUISITES_MISSING_WARNING,
   licenseRequisitesMissing,
   normalizeTimeInput,
+  VEHICLE_CATEGORY_MISMATCH_HINT,
   VEHICLE_OWNERSHIPS,
   requestCustomerName,
+  vehicleCategoryMismatch,
+  vehicleCategoryMismatchWarning,
   vehicleClassificationLabel,
   type VehicleDto,
   type VehicleOwnership,
@@ -56,10 +59,10 @@ import { formatDateOnly } from './shared';
  * подходящей техники сразу) на реальном парке нечитаем: у одного типа десятки предложений от
  * разных арендодателей, и различать их приходится по хвосту строки.
  *
- * Список сужен заказанной позицией классификатора (ADR 0028): заказывали «Автокран, г/п 130 т» —
- * машины на 25 т в списке нет, её и сервер не примет. Техника с незаполненной категорией
- * остаётся с пометкой: в справочнике категория необязательна, и «неизвестно» — не то же самое,
- * что «не подходит».
+ * Список сужен типом ТС, но не заказанной категорией (ADR 0045): заказывали «Автокран, г/п 130 т» —
+ * в списке будут все автокраны, включая 25-тонный. Подходит ли соседняя позиция классификатора,
+ * решает диспетчер: он знает и парк, и то, о чём договорились с заказчиком. Расхождение
+ * называется прямо — пометкой в строке и предупреждением под полем, — но выбор не отнимает.
  *
  * Ставки подставляются из предложения аренды и правятся свободно: договариваются по конкретной
  * заявке, и прайс справочника такой договорённости не начальник. Расхождение с прайсом видно
@@ -97,15 +100,22 @@ interface FormValues {
 }
 
 /**
- * Строка выбора: подпись машины плюс то, чем одна единица отличается от другой. Незаполненная
- * категория проговаривается прямо в строке: заявка заказана по ТТХ, и подходит ли эта машина,
- * решает человек — по названию модели и по тому, что он о ней знает.
+ * Строка выбора: подпись машины плюс то, чем одна единица отличается от другой. Категория —
+ * первое, чем они различаются в списке одного типа, поэтому у собственной машины она стоит рядом
+ * с моделью, а не вместо неё. Расхождение с заказанным и незаполненная категория проговариваются
+ * прямо в строке: подходит ли эта машина, решает человек — по названию модели и по тому, что он
+ * о ней знает.
  */
-function vehicleOptionLabel(v: VehicleDto, requestHasCategory: boolean): string {
+function vehicleOptionLabel(v: VehicleDto, requestCategoryId: string | null): string {
   const title = vehicleLabel(v);
   const extra = [
-    v.ownership === 'own' ? v.modelName : v.categoryName,
-    requestHasCategory && !v.vehicleCategoryId ? 'категория не указана' : null,
+    v.ownership === 'own' ? v.modelName : null,
+    v.categoryName,
+    vehicleCategoryMismatch(requestCategoryId, v.vehicleCategoryId)
+      ? VEHICLE_CATEGORY_MISMATCH_HINT
+      : requestCategoryId && !v.vehicleCategoryId
+        ? 'категория не указана'
+        : null,
     assignmentRateLabel(v) || null,
   ].filter((s): s is string => !!s && s !== title);
   return extra.length > 0 ? `${title} — ${extra.join(' · ')}` : title;
@@ -117,10 +127,9 @@ export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit
   const [form] = Form.useForm<FormValues>();
   const [ownership, setOwnership] = useState<VehicleOwnership>('own');
 
-  // Вся подходящая техника одним запросом: обе ветки принадлежности нужны сразу — по их
+  // Вся техника заказанного типа одним запросом: обе ветки принадлежности нужны сразу — по их
   // наполнению подписан сам переключатель («Аренда — 12»), а списки невелики (сужены типом ТС).
-  // Запрашивается тип, а не категория: машина с незаполненной категорией заявке подходит, и
-  // фильтр по категории на сервере отсёк бы её вместе с чужими.
+  // Запрашивается тип, и только тип: категория заявки (ADR 0028) списка не сужает (ADR 0045).
   const vehicleTypeId = request?.vehicleTypeId ?? null;
   const categoryId = request?.vehicleCategoryId ?? null;
   const { data, isFetching } = useQuery({
@@ -136,15 +145,7 @@ export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit
       }),
     enabled: !!vehicleTypeId,
   });
-  // Машина другой категории в список не попадает: заказанная категория — это ТТХ (ADR 0028),
-  // и сервер такое назначение отклонит. Пустая категория у машины — «не разнесена», не «другая».
-  const vehicles = useMemo(
-    () =>
-      (data?.items ?? []).filter(
-        (v) => !categoryId || !v.vehicleCategoryId || v.vehicleCategoryId === categoryId,
-      ),
-    [data, categoryId],
-  );
+  const vehicles = useMemo(() => data?.items ?? [], [data]);
   const byOwnership = useMemo(
     () => ({
       own: vehicles.filter((v) => v.ownership === 'own'),
@@ -199,7 +200,7 @@ export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit
 
   const isFreight = request?.requestType === 'freight_transport';
 
-  /** Арендодатели — только те, у кого есть подходящая техника: пустой пункт выбирать незачем. */
+  /** Арендодатели — только те, у кого есть техника этого типа: пустой пункт выбирать незачем. */
   const lessorOptions = useMemo(() => {
     const byId = new Map<string, string>();
     for (const v of byOwnership.rental) {
@@ -215,11 +216,29 @@ export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit
       ownership === 'own'
         ? byOwnership.own
         : byOwnership.rental.filter((v) => !lessorId || v.lessorId === lessorId);
-    return list.map((v) => ({ value: v.id, label: vehicleOptionLabel(v, !!categoryId) }));
+    return list.map((v) => ({ value: v.id, label: vehicleOptionLabel(v, categoryId) }));
   }, [ownership, lessorId, byOwnership, categoryId]);
 
   const selected = vehicles.find((v) => v.id === vehicleId) ?? null;
   const isRental = ownership === 'rental';
+
+  /** Заказанная позиция классификатора (ADR 0028) — ею подписано окно и с ней сверяют выбор. */
+  const orderedLabel = request
+    ? vehicleClassificationLabel({
+        typeName: request.vehicleTypeName,
+        categoryName: request.vehicleCategoryName,
+      })
+    : '';
+
+  /**
+   * Взяли машину не заказанной категории (ADR 0045). Не запрет: заявку закрывают тем, что есть в
+   * парке. Но пометки в строке списка мало — её читают при выборе и забывают, а предупреждение
+   * под полем остаётся на виду до самого нажатия «Взять в работу».
+   */
+  const categoryMismatch =
+    selected && vehicleCategoryMismatch(categoryId, selected.vehicleCategoryId)
+      ? vehicleCategoryMismatchWarning(orderedLabel, selected.categoryName ?? '')
+      : null;
 
   // ── Путевой лист (ADR 0037) ──
   // Выписывается ли лист на выбранную машину, на какую дату и чем заполнены графы шапки в прошлый
@@ -388,13 +407,15 @@ export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit
     });
   };
 
+  // Пусто — значит пусто по типу ТС: категория список не сужает (ADR 0045), и обещать, что
+  // техника найдётся в соседней категории, нечем.
   const emptyText = isFetching
     ? 'Загружаем технику…'
     : ownership === 'own'
-      ? 'Собственной техники под этот заказ нет — возьмите её в аренду'
+      ? 'Собственной техники этого типа нет — возьмите её в аренду'
       : lessorId
-        ? 'У этого арендодателя нет подходящих предложений'
-        : 'Предложений аренды под этот заказ нет';
+        ? 'У этого арендодателя нет предложений этого типа'
+        : 'Предложений аренды этого типа нет';
 
   return (
     <FormModal
@@ -413,12 +434,7 @@ export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit
           <FormGrid>
             <FormGrid.Full>
               <Typography.Paragraph type="secondary" style={{ marginBottom: 16 }}>
-                {requestCustomerName(request)} · заказано «
-                {vehicleClassificationLabel({
-                  typeName: request.vehicleTypeName,
-                  categoryName: request.vehicleCategoryName,
-                })}
-                »
+                {requestCustomerName(request)} · заказано «{orderedLabel}»
               </Typography.Paragraph>
             </FormGrid.Full>
 
@@ -482,7 +498,7 @@ export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit
               </>
             )}
 
-            {/* Шаг 1: чья машина. Количество подходящих единиц — в самой подписи: пустая ветка
+            {/* Шаг 1: чья машина. Количество единиц этого типа — в самой подписи: пустая ветка
               видна до того, как в неё зайдут. */}
             {/* Не поле формы: принадлежность в назначение не уходит — она у самой машины, а
               здесь только сужает список. */}
@@ -526,12 +542,20 @@ export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit
               </Form.Item>
             )}
 
-            {/* Шаг 3: конкретная единица. */}
+            {/* Шаг 3: конкретная единица. Расхождение с заказанной категорией — подстрочным
+              предупреждением (ADR 0045): назначение оно не отменяет, но и незамеченным не
+              проходит. */}
             <Form.Item
               name="vehicleId"
               label="Конкретная техника"
               rules={[{ required: true, message: 'Выберите технику' }]}
-              extra={vehicleOptions.length === 0 ? emptyText : undefined}
+              extra={
+                categoryMismatch ? (
+                  <Typography.Text type="warning">{categoryMismatch}</Typography.Text>
+                ) : vehicleOptions.length === 0 ? (
+                  emptyText
+                ) : undefined
+              }
             >
               <AutoSelect
                 options={vehicleOptions}
@@ -549,7 +573,9 @@ export function VehicleAssignModal({ request, confirmLoading, onCancel, onSubmit
             {selected && (
               <FormGrid.Full>
                 <Space size={8} wrap style={{ marginBottom: 16 }}>
-                  {selected.categoryName && <Tag color="blue">{selected.categoryName}</Tag>}
+                  {selected.categoryName && (
+                    <Tag color={categoryMismatch ? 'orange' : 'blue'}>{selected.categoryName}</Tag>
+                  )}
                   {selected.registrationNumber && <Tag>{selected.registrationNumber}</Tag>}
                   {selected.lessorName && <Tag color="purple">{selected.lessorName}</Tag>}
                 </Space>

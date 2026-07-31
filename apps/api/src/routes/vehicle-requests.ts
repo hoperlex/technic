@@ -636,7 +636,8 @@ async function resolveClassification(
  * Машина, которой берут заявку в работу (ADR 0027). Проверяется всё, чего не видит БД: живая ли
  * запись, годна ли машина к работе и есть ли ставка там, где без неё нельзя. Совпадение типа ТС
  * держит составной FK, но сверяется и здесь — иначе вместо понятного отказа человек получил бы
- * ошибку целостности.
+ * ошибку целостности. Заказанная категория не проверяется вовсе (ADR 0045) — оттого её здесь и
+ * не спрашивают.
  *
  * Возвращает DTO назначения «как будет после записи»: им же пишется история.
  */
@@ -645,8 +646,6 @@ async function resolveAssignment(
   request: {
     vehicleTypeId: string;
     vehicleTypeName: string;
-    vehicleCategoryId: string | null;
-    vehicleCategoryName: string | null;
   },
   input: AssignVehicleInput,
   actor: { id: string; name: string },
@@ -656,7 +655,6 @@ async function resolveAssignment(
       id: vehicles.id,
       ownership: vehicles.ownership,
       vehicleTypeId: vehicles.vehicleTypeId,
-      vehicleCategoryId: vehicles.vehicleCategoryId,
       status: vehicles.status,
       deletedAt: vehicles.deletedAt,
       registrationNumber: vehicles.registrationNumber,
@@ -677,20 +675,11 @@ async function resolveAssignment(
       vehicleId: 'Техника другого типа',
     });
   }
-  // Категория заказана — значит заказана определённая машина по ТТХ (ADR 0028): автокран на 25 т
-  // вместо 130 т работу не сделает. У машины категория может быть не заполнена (в справочнике
-  // она необязательна, особенно у аренды) — тогда доверяем тому, кто назначает: запретить здесь
-  // означало бы закрыть заявку на технику, которая ей подходит.
-  if (
-    request.vehicleCategoryId &&
-    row.vehicleCategoryId &&
-    row.vehicleCategoryId !== request.vehicleCategoryId
-  ) {
-    throw err.unprocessable(
-      `Заявка заказана на «${request.vehicleCategoryName ?? request.vehicleTypeName}»`,
-      { vehicleId: 'Техника другой категории' },
-    );
-  }
+  // Категория не сверяется (ADR 0045). Заказанная категория — это ТТХ (ADR 0028), но заявку
+  // закрывают тем, что есть в парке: подходит ли соседняя позиция (25 т вместо 20 т, другой
+  // вылет стрелы), знает диспетчер, а не сервер, и отказ здесь оставлял бы заявку без машины
+  // при живой технике. Расхождение показывается предупреждением в окне назначения и остаётся в
+  // истории заявки строкой «Техника» — оно видно, но ничего не блокирует.
   // «Обслуживание», «Списана» и выключенное предложение аренды к работе не годятся: заявка
   // взята в работу означает, что машина выйдет.
   if (row.status !== 'active') {
@@ -2063,8 +2052,6 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
             {
               vehicleTypeId: before.vehicleTypeId,
               vehicleTypeName: before.vehicleTypeName,
-              vehicleCategoryId: before.vehicleCategoryId,
-              vehicleCategoryName: before.vehicleCategoryName,
             },
             assignment,
             { id: p.id, name: p.fullName },

@@ -251,6 +251,36 @@ export function vehicleTitle(v: VehicleDto): string {
   return vehicleLabel(v);
 }
 
+/**
+ * Разошлась ли категория машины с заказанной в заявке (ADR 0045). Не запрет, а повод предупредить:
+ * технику подбирают по типу, а совпадение ТТХ решает тот, кто назначает.
+ *
+ * Пустая категория у машины расхождением не считается: в справочнике она необязательна (особенно
+ * у аренды), и «не разнесли» — не то же самое, что «не подходит». Заявка без категории — тип без
+ * ТТХ или заявка старше миграции `0052` — не расходится ни с чем: сравнивать не с чем.
+ */
+export function vehicleCategoryMismatch(
+  requestCategoryId: string | null | undefined,
+  vehicleCategoryId: string | null | undefined,
+): boolean {
+  return !!requestCategoryId && !!vehicleCategoryId && requestCategoryId !== vehicleCategoryId;
+}
+
+/** Короткая пометка в строке выбора — рядом с «категория не указана». */
+export const VEHICLE_CATEGORY_MISMATCH_HINT = 'другая категория';
+
+/**
+ * Развёрнутое предупреждение там, где машину выбирают: пометки в строке мало — её читают при
+ * выборе и забывают. Названы обе стороны: что заказывали и что берут, — решение остаётся за
+ * человеком, и ему нужны оба наименования, а не факт «не совпало».
+ */
+export function vehicleCategoryMismatchWarning(ordered: string, actual: string): string {
+  return (
+    `Заказано «${ordered}», а у выбранной машины категория «${actual}». ` +
+    'Заявка возьмётся в работу как есть — проверьте, что техника подходит.'
+  );
+}
+
 // ── Марки/модели: read-only список для выбора в форме техники (не отдельный справочник) ──
 export const VEHICLE_MODEL_SORT_FIELDS = ['name', 'createdAt'] as const;
 

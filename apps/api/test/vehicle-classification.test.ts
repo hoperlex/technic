@@ -8,6 +8,8 @@ import {
   vehicleClassificationKey,
   vehicleClassificationLabel,
   vehicleClassificationListQuerySchema,
+  vehicleCategoryMismatch,
+  vehicleCategoryMismatchWarning,
   vehicleTypeCodeSchema,
   vehicleTypeListQuerySchema,
 } from '@technic/contracts';
@@ -180,5 +182,35 @@ describe('vehicle_classifications: list-query', () => {
 
   it('сортировка вне allowlist отклоняется', () => {
     expect(() => vehicleClassificationListQuerySchema.parse({ sortBy: 'specSignature' })).toThrow();
+  });
+});
+
+// ── Категория при назначении: предупреждение, а не запрет (ADR 0045) ──
+const CAT_130 = '33333333-3333-4333-8333-333333333333';
+const CAT_25 = '44444444-4444-4444-8444-444444444444';
+
+describe('расхождение категории машины с заказанной', () => {
+  it('разные категории — расхождение: о нём и предупреждают', () => {
+    expect(vehicleCategoryMismatch(CAT_130, CAT_25)).toBe(true);
+  });
+
+  it('та же категория — расхождения нет', () => {
+    expect(vehicleCategoryMismatch(CAT_130, CAT_130)).toBe(false);
+  });
+
+  it('у машины категория не заполнена — «не разнесли» не равно «не подходит»', () => {
+    expect(vehicleCategoryMismatch(CAT_130, null)).toBe(false);
+  });
+
+  it('заявка без категории не расходится ни с чем: сравнивать не с чем', () => {
+    // Тип без ТТХ (ADR 0028 §3) и заявки старше миграции 0052 — категории у них нет вовсе.
+    expect(vehicleCategoryMismatch(null, CAT_25)).toBe(false);
+    expect(vehicleCategoryMismatch(undefined, undefined)).toBe(false);
+  });
+
+  it('предупреждение называет обе стороны — решение остаётся за человеком', () => {
+    const text = vehicleCategoryMismatchWarning('Автокраны, г/п 130 т', 'Автокраны, г/п 25 т');
+    expect(text).toContain('Автокраны, г/п 130 т');
+    expect(text).toContain('Автокраны, г/п 25 т');
   });
 });

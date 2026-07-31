@@ -223,7 +223,7 @@ describe('дифф назначения техники', () => {
     expect(changes).toContainEqual({
       field: 'vehicle',
       from: '—',
-      to: 'Экскаватор Hitachi 1,5 м³ · ООО «Спецтехника»',
+      to: 'Экскаватор Hitachi 1,5 м³ · Экскаватор 1,5 м³ · ООО «Спецтехника»',
     });
     expect(changes.find((c) => c.field === 'pricePerHour')?.to).toContain('₽');
     // Ставки за смену не было и нет — событию о ней взяться неоткуда.
@@ -252,11 +252,23 @@ describe('дифф назначения техники', () => {
     const changes = diffVehicleAssignment(RENTAL, own);
     expect(changes).toContainEqual({
       field: 'vehicle',
-      from: 'Экскаватор Hitachi 1,5 м³ · ООО «Спецтехника»',
-      to: 'О123ОО197',
+      from: 'Экскаватор Hitachi 1,5 м³ · Экскаватор 1,5 м³ · ООО «Спецтехника»',
+      // Категория рядом с госномером не для красоты: технику подбирают по типу (ADR 0045), и
+      // какой позицией классификатора закрыли заявку, видно только здесь.
+      to: 'О123ОО197 · Экскаватор 1,5 м³',
     });
     // Ставка снята — в истории это «было 2 500 ₽, стало ничего».
     expect(changes.find((c) => c.field === 'pricePerHour')?.to).toBe('—');
+  });
+
+  it('категория, которой машина и подписана, не повторяется дважды', () => {
+    // У предложения аренды без описания подпись — сама категория (`vehicleLabel`).
+    const changes = diffVehicleAssignment(null, { ...RENTAL, description: '' });
+    expect(changes).toContainEqual({
+      field: 'vehicle',
+      from: '—',
+      to: 'Экскаватор 1,5 м³ · ООО «Спецтехника»',
+    });
   });
 });
 
