@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   assignRouteSchema,
+  assignVehicleSchema,
   attachRouteRequestSchema,
   canIssueWaybill,
   canJoinRoute,
@@ -229,5 +230,39 @@ describe('схемы маршрута', () => {
         .success,
     ).toBe(false);
     expect(assignRouteSchema.safeParse({}).success).toBe(false);
+  });
+});
+
+/**
+ * Тело перевода заявки в работу (Р3, Р22): рейс приходит вместе с назначением, а прежние поля —
+ * водитель и графы бланка — принимаются, пока живо старое тело запроса.
+ */
+describe('назначение с маршрутом', () => {
+  const base = { vehicleId: UUID_A };
+
+  it('принимает существующий рейс и новый', () => {
+    expect(assignVehicleSchema.safeParse({ ...base, route: { routeId: UUID_B } }).success).toBe(
+      true,
+    );
+    expect(
+      assignVehicleSchema.safeParse({
+        ...base,
+        route: { newRoute: { driverPersonId: UUID_C, trip: { garageNumber: '00000389' } } },
+      }).success,
+    ).toBe(true);
+  });
+
+  it('старое тело — водитель и графы бланка — ещё принимается: по нему сервер заводит рейс сам', () => {
+    const parsed = assignVehicleSchema.safeParse({
+      ...base,
+      driverPersonId: UUID_C,
+      waybill: { withTrailer: false, garageNumber: '00000389' },
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  it('назначение без рейса проходит схему: рейс обязателен не всегда, и решает это сервер', () => {
+    // Аренда и заказ техники на объект рейса не знают вовсе — отказ на уровне схемы отсёк бы их.
+    expect(assignVehicleSchema.safeParse(base).success).toBe(true);
   });
 });

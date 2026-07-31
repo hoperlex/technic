@@ -91,6 +91,7 @@ const REQUEST: SpecialEquipmentRequestDto = {
   approvedAt: '2026-08-01T09:00:00.000Z',
   assignment: null,
   completion: null,
+  route: null,
   files: [],
   version: 1,
   createdBy: 'user-1',

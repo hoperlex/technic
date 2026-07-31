@@ -246,6 +246,14 @@ const CASES: Case[] = [
     payload: { version: 0 },
     allowed: ['admin', 'manager', 'dispatcher'],
   },
+  {
+    // В ответе — рейсы этой машины на эту дату вместе с водителями. Права на смену статуса тут
+    // мало по той же причине, что и на самих маршрутах.
+    title: 'подсказка рейсов при переводе в работу — теми же двумя правами',
+    method: 'GET',
+    url: `/api/v1/vehicle-requests/${RECORD_ID}/route-prefill?vehicleId=${RECORD_ID}`,
+    allowed: ['admin', 'manager', 'dispatcher'],
+  },
   // ── Справочники: чтение нужно всем (форма заявки), ведение — трём ролям ──
   {
     title: 'справочник техники — чтение',

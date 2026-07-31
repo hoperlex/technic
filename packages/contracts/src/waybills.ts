@@ -188,6 +188,13 @@ export interface RequestWaybillDto {
   /** Талон заказчика, в котором стоит эта заявка: 1–4 (ADR 0037 п. 3). */
   slot: number;
   driverName: string;
+  /**
+   * Рейс, по которому лист выписан (маршруты). `null` — лист выдан до маршрутов и ещё не
+   * перенесён: пока история не перенесена, такие листы живут наравне с новыми, и карточка
+   * показывает их так же — без номера рейса.
+   */
+  routeId: string | null;
+  routeNumber: string | null;
 }
 
 export const WAYBILL_SORT_FIELDS = ['issuedForDate', 'number', 'issuedAt'] as const;

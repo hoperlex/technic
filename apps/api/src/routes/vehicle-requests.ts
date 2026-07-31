@@ -5,6 +5,7 @@ import {
   and,
   asc,
   count,
+  desc,
   eq,
   exists,
   gte,
@@ -32,7 +33,15 @@ import {
   earlyEndBlocker,
   earlyEndDateBounds,
   type FileDto,
+  type AssignRouteInput,
+  canJoinRoute,
   formatVehicleRequestNumber,
+  formatVehicleRouteNumber,
+  isRouteEditable,
+  ROUTE_FROZEN_MESSAGE,
+  ROUTE_LEGACY_WAYBILL_MESSAGE,
+  type RouteTripFields,
+  shouldDetachOnStatus,
   waybillFormLabels,
   isAllowedEarlyEndDate,
   isApprovalChangeable,
@@ -41,6 +50,7 @@ import {
   moscowDateKeyOf,
   rateForWorkUnit,
   REQUEST_STATUSES,
+  type RequestStatus,
   requestVehicleEarlyEndSchema,
   type RequestWaybillDto,
   requestStatusLabels,
@@ -88,6 +98,8 @@ import {
   vehicleRequestFiles,
   vehicleRequests,
   vehicleRequestStatusHistory,
+  vehicleRouteRequests,
+  vehicleRoutes,
   vehicles,
   vehicleTypes,
   waybillRequests,
@@ -129,11 +141,19 @@ import {
 } from '../services/vehicle-request-diff';
 import { loadVehicleRequestHistory } from '../services/vehicle-request-history';
 import {
-  issueWaybill,
-  lastWaybillFields,
-  tripDate,
-  waybillRequirementFor,
-} from '../services/waybill-issue';
+  attachRequest,
+  bumpRouteVersion,
+  detachRequest,
+  lastTripFields,
+  legacyWaybillOf,
+  loadRouteDtos,
+  lockRoute,
+  routeOfRequest,
+  routeQuery,
+  routeRequestCount,
+  routeWaybill,
+} from '../services/vehicle-routes';
+import { lastWaybillFields, tripDate, waybillRequirementFor } from '../services/waybill-issue';
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -206,6 +226,17 @@ const requestSelect = {
   assignedBy: vehicleRequestAssignments.assignedBy,
   assignedByName: assigners.fullName,
   assignedAt: vehicleRequestAssignments.assignedAt,
+  // Рейс, в котором заявка едет (маршруты): номер и позиция — ими список рисует колонку
+  // «Маршрут», а их отсутствие у грузоперевозки в работе — предупреждение «Без маршрута».
+  routeId: vehicleRoutes.id,
+  routeNum: vehicleRoutes.num,
+  routePosition: vehicleRouteRequests.position,
+  // Выписан ли по рейсу действующий лист: подзапросом, а не четвёртым join'ом — в списке нужен
+  // признак, а не сам документ (ADR 0041 п. 8).
+  routeHasWaybill: sql<boolean>`EXISTS (
+    SELECT 1 FROM ${waybills} w
+    WHERE w.route_id = ${vehicleRoutes.id} AND w.status <> 'cancelled'
+  )`.as('route_has_waybill'),
   // Факт выполнения (ADR 0029): отработанное и стоимость — снимок на момент закрытия.
   completionWorkedUnit: vehicleRequestCompletions.workedUnit,
   completionWorkedAmount: vehicleRequestCompletions.workedAmount,
@@ -283,6 +314,11 @@ function baseQuery() {
       .leftJoin(vehicleModels, eq(vehicles.vehicleModelId, vehicleModels.id))
       .leftJoin(lessors, eq(vehicles.lessorId, lessors.id))
       .leftJoin(assigners, eq(vehicleRequestAssignments.assignedBy, assigners.id))
+      // Рейс (маршруты): заявка лежит максимум в одном (UNIQUE request_id), поэтому пара
+      // leftJoin'ов не размножает строки. leftJoin, а не inner: «в работе и без маршрута» —
+      // законное состояние, и такие заявки список обязан показывать первым делом.
+      .leftJoin(vehicleRouteRequests, eq(vehicleRouteRequests.requestId, vehicleRequests.id))
+      .leftJoin(vehicleRoutes, eq(vehicleRoutes.id, vehicleRouteRequests.routeId))
       // Факт выполнения (ADR 0029): есть только у закрытой заявки, и то не у всякой — у
       // выполненных до миграции 0053 его не восстановить.
       .leftJoin(
@@ -469,6 +505,15 @@ function toDto(r: RequestRow, fileList: FileDto[]): VehicleRequestDto {
     approvedAt: r.approvedAt ? r.approvedAt.toISOString() : null,
     assignment: toAssignmentDto(r),
     completion: toCompletionDto(r),
+    route:
+      r.routeId && r.routeNum !== null && r.routePosition !== null
+        ? {
+            id: r.routeId,
+            displayNumber: formatVehicleRouteNumber(r.routeNum),
+            position: r.routePosition,
+            hasWaybill: r.routeHasWaybill,
+          }
+        : null,
     files: fileList,
     version: r.version,
     createdBy: r.createdBy,
@@ -715,6 +760,145 @@ async function resolveAssignment(
 }
 
 /**
+ * Рейс, в который заявка едет (маршруты). Перевод в работу больше не выписывает документ — он
+ * кладёт заявку в маршрут: в существующий рейс этой машины на эту дату либо в новый, заведённый
+ * тут же. Лист выписывается с рейса отдельным действием, когда состав собран.
+ *
+ * Маршрут обязателен ровно там, где выписывается лист (грузоперевозка на собственной машине с
+ * бланком за типом): у аренды рейс ведёт арендодатель, а у заказа техники на объект рейса нет
+ * вовсе — там период стояния машины на площадке (ADR 0041).
+ */
+async function attachToRoute(
+  tx: Tx,
+  params: {
+    request: {
+      id: string;
+      num: number;
+      requestType: VehicleRequestType;
+      objectId: string | null;
+      departmentId: string | null;
+    };
+    assignment: VehicleRequestAssignmentDto;
+    route: AssignRouteInput | undefined;
+    /** Старое тело запроса (Р22): водитель и реквизиты рейса приходили в назначении. */
+    legacy: { driverPersonId?: string; trip?: RouteTripFields };
+    actor: { id: string };
+  },
+): Promise<void> {
+  const requirement = await waybillRequirementFor(tx, {
+    requestType: params.request.requestType,
+    vehicleId: params.assignment.vehicleId,
+  });
+
+  if (!requirement.formCode) {
+    // Водитель и рейс у такой заявки не спрашиваются вовсе: до маршрутов сервер молча записывал
+    // присланного водителя в назначение любой заявки — и колонка заполнялась там, где документа
+    // не бывает.
+    if (params.route || params.legacy.driverPersonId) {
+      throw err.unprocessable(
+        requirement.reason ??
+          'На эту заявку маршрут не ведётся: путевой лист по ней не выписывается',
+        { route: 'Маршрут не ведётся' },
+      );
+    }
+    return;
+  }
+
+  const legacyWaybill = await legacyWaybillOf(tx, params.request.id);
+  if (legacyWaybill) {
+    throw err.unprocessable(`${ROUTE_LEGACY_WAYBILL_MESSAGE} (${legacyWaybill})`);
+  }
+
+  const routeDate = await tripDate(tx, params.request.id);
+  const current = await routeOfRequest(tx, params.request.id);
+
+  // Повторный перевод в работу после отката: заявка уже стоит в рейсе, и трогать его незачем —
+  // ровно так же прежняя выдача не поднимала второй талон для той же заявки.
+  const requestedId = params.route && 'routeId' in params.route ? params.route.routeId : null;
+  if (current && (!requestedId || requestedId === current.routeId)) return;
+
+  let targetId = requestedId;
+  if (targetId) {
+    const route = await lockRoute(tx, targetId);
+    if (route.vehicleId !== params.assignment.vehicleId) {
+      throw err.unprocessable('Маршрут заведён на другую машину', { route: 'Другая машина' });
+    }
+    const waybill = await routeWaybill(tx, route.id);
+    if (!isRouteEditable(waybill?.status ?? null)) throw err.conflict(ROUTE_FROZEN_MESSAGE);
+    const check = canJoinRoute(
+      {
+        requestType: params.request.requestType,
+        // Статус целевой: заявка становится «В работе» в этой же транзакции.
+        status: 'confirmed',
+        deletedAt: null,
+        tripDate: routeDate,
+        ownership: params.assignment.ownership,
+      },
+      { routeDate: route.routeDate, requestCount: await routeRequestCount(tx, route.id) },
+    );
+    if (!check.ok) throw err.unprocessable(check.reason, { route: check.reason });
+  } else {
+    const newRoute = params.route && 'newRoute' in params.route ? params.route.newRoute : null;
+    // Старое тело запроса заводит рейс тем же путём: водитель и графы шапки, которые раньше
+    // уходили прямо в лист, теперь описывают рейс.
+    const driverPersonId = newRoute?.driverPersonId ?? params.legacy.driverPersonId ?? null;
+    const trip = newRoute?.trip ?? params.legacy.trip;
+    if (!params.route && !params.legacy.driverPersonId) {
+      throw err.unprocessable('Выберите маршрут — рейс планируется маршрутом', {
+        route: 'Выберите маршрут',
+      });
+    }
+    const [created] = await tx
+      .insert(vehicleRoutes)
+      .values({
+        vehicleId: params.assignment.vehicleId,
+        routeDate,
+        driverPersonId,
+        withTrailer: trip?.withTrailer ?? false,
+        trailer1Model: trip?.trailer1Model ?? '',
+        trailer1RegNumber: trip?.trailer1RegNumber ?? '',
+        trailer2Model: trip?.trailer2Model ?? '',
+        trailer2RegNumber: trip?.trailer2RegNumber ?? '',
+        garageNumber: trip?.garageNumber ?? '',
+        communicationKind: trip?.communicationKind ?? '',
+        transportationKind: trip?.transportationKind ?? '',
+        createdBy: params.actor.id,
+      })
+      .returning({ id: vehicleRoutes.id });
+    targetId = created!.id;
+  }
+
+  if (current) {
+    await detachRequest(tx, current.routeId, params.request.id);
+    await bumpRouteVersion(tx, current.routeId, params.actor.id);
+  }
+  await attachRequest(tx, targetId!, params.request.id);
+  await bumpRouteVersion(tx, targetId!, params.actor.id);
+}
+
+/**
+ * Заявка уходит из «В работе»: отмена и возврат в «Новую» вынимают её из рейса — рейса не будет,
+ * и держать её в плане незачем. «Выполнена» состав не трогает: рейс состоялся, и связь заявки с
+ * маршрутом стала историей. Из замороженного рейса заявка не выбывает ни при каком статусе —
+ * бланк уже у водителя, и исчезнуть из него она не может.
+ */
+async function detachOnStatus(
+  tx: Tx,
+  requestId: string,
+  next: RequestStatus,
+  actorId: string,
+): Promise<void> {
+  const current = await routeOfRequest(tx, requestId);
+  if (!current) return;
+  const route = await lockRoute(tx, current.routeId);
+  const waybill = await routeWaybill(tx, route.id);
+  const frozen = !isRouteEditable(waybill?.status ?? null);
+  if (!shouldDetachOnStatus(next, frozen)) return;
+  await detachRequest(tx, route.id, requestId);
+  await bumpRouteVersion(tx, route.id, actorId);
+}
+
+/**
  * Назначение заявки: одна строка на заявку, повторный перевод в работу (после отката) её
  * переписывает — вторая машина в заявке одного типа и одного срока не появляется.
  */
@@ -723,7 +907,6 @@ async function saveAssignment(
   requestId: string,
   vehicleTypeId: string,
   a: VehicleRequestAssignmentDto,
-  driverPersonId: string | null,
 ): Promise<void> {
   const values = {
     vehicleId: a.vehicleId,
@@ -731,8 +914,6 @@ async function saveAssignment(
     pricePerHour: numToDb(a.pricePerHour),
     pricePerShift: numToDb(a.pricePerShift),
     shiftHours: a.shiftHours,
-    // Кто за рулём (ADR 0037): у аренды водитель чужой, и колонка остаётся пустой.
-    driverPersonId: driverPersonId ?? null,
     assignedBy: a.assignedBy,
   };
   await tx
@@ -1935,6 +2116,67 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
   );
 
   /**
+   * То же для маршрутов: ведётся ли по этой заявке рейс, на какую дату, какие рейсы этой машины
+   * на неё уже заведены и чем были заполнены графы шапки в прошлый раз.
+   *
+   * Форма перевода в работу спрашивает её после выбора машины: диспетчер либо кладёт заявку в
+   * готовый рейс (в нём уже есть водитель и реквизиты), либо заводит новый. Причина «рейс не
+   * ведётся» отдаётся текстом там, где о ней есть что сказать (аренда, тип без бланка); у заказа
+   * техники на объект её нет и быть не должно — рейса у такой заявки не существует (ADR 0041).
+   */
+  r.get(
+    '/:id/route-prefill',
+    {
+      // Обе проверки, как на всех ручках маршрутов: в ответе лежат чужие рейсы и ФИО водителей
+      // собственного парка, а `vehicleRequests.status` есть и у внешнего арендодателя (ADR 0038).
+      preHandler: [
+        app.authenticate,
+        app.requirePermission('waybills.read'),
+        app.requirePermission('vehicleRequests.status', 'Недостаточно прав для смены статуса'),
+      ],
+      schema: { params: idParams, querystring: z.object({ vehicleId: z.string().uuid() }) },
+    },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const before = await getDto(req.params.id);
+      if (!before) throw err.notFound('Заявка не найдена');
+      assertRequestScope(p, before);
+
+      const requirement = await waybillRequirementFor(db, {
+        requestType: before.requestType,
+        vehicleId: req.query.vehicleId,
+      });
+      const date = await tripDate(db, before.id);
+      if (!requirement.formCode) {
+        return {
+          required: false,
+          formCode: null,
+          formLabel: null,
+          reason: requirement.reason,
+          tripDate: date,
+          routes: [],
+          trip: null,
+        };
+      }
+
+      const rows = await routeQuery(db)
+        .where(
+          and(eq(vehicleRoutes.vehicleId, req.query.vehicleId), eq(vehicleRoutes.routeDate, date)),
+        )
+        .orderBy(asc(vehicleRoutes.num));
+      return {
+        required: true,
+        formCode: requirement.formCode,
+        formLabel: waybillFormLabels[requirement.formCode],
+        reason: null,
+        tripDate: date,
+        routes: await loadRouteDtos(db, rows),
+        trip: await lastTripFields(req.query.vehicleId),
+      };
+    },
+  );
+
+  /**
    * Лист, выписанный по этой заявке (ADR 0041). Отдельной ручкой, а не полем DTO: лист нужен
    * одной карточке одного вида заявок, а в списочный запрос он добавил бы три join'а к каждой
    * строке — ради колонки, которой в списке нет.
@@ -1954,6 +2196,12 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       if (!request) throw err.notFound('Заявка не найдена');
       assertRequestScope(p, request);
 
+      /*
+       * Порядок задан явно, а не оставлен планировщику: «один действующий лист на рейс» не
+       * означает «один лист на заявку». Заявка, побывавшая в нескольких листах (её откатывали и
+       * брали в работу заново), обязана показывать действующий, а не какой придётся; если
+       * действующего нет — последний по дате и номеру.
+       */
       const [row] = await db
         .select({
           id: waybills.id,
@@ -1965,12 +2213,22 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           issuedForDate: waybills.issuedForDate,
           slot: waybillRequests.slot,
           driverName: persons.fullName,
+          routeId: waybills.routeId,
+          routeNum: vehicleRoutes.num,
         })
         .from(waybillRequests)
         .innerJoin(waybills, eq(waybills.id, waybillRequests.waybillId))
         .innerJoin(waybillSeries, eq(waybillSeries.id, waybills.seriesId))
         .innerJoin(persons, eq(persons.id, waybills.driverPersonId))
-        .where(eq(waybillRequests.requestId, request.id));
+        // Рейс — leftJoin: у листов, выданных до маршрутов, его нет, пока история не перенесена.
+        .leftJoin(vehicleRoutes, eq(vehicleRoutes.id, waybills.routeId))
+        .where(eq(waybillRequests.requestId, request.id))
+        .orderBy(
+          sql`(${waybills.status} = 'cancelled')`,
+          desc(waybills.issuedForDate),
+          desc(waybills.number),
+        )
+        .limit(1);
       if (!row) return null;
 
       return {
@@ -1981,6 +2239,8 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         issuedForDate: row.issuedForDate,
         slot: row.slot,
         driverName: row.driverName,
+        routeId: row.routeId,
+        routeNumber: row.routeNum === null ? null : formatVehicleRouteNumber(row.routeNum),
       };
     },
   );
@@ -2056,27 +2316,30 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
             assignment,
             { id: p.id, name: p.fullName },
           );
-          await saveAssignment(
-            tx,
-            before.id,
-            before.vehicleTypeId,
-            saved,
-            assignment.driverPersonId ?? null,
-          );
+          await saveAssignment(tx, before.id, before.vehicleTypeId, saved);
 
-          // Путевой лист выдаётся в этой же транзакции (ADR 0037): состояния «в работе, а листа
-          // нет» не существует. На заказ техники на объект, на аренду и на типы без бланка лист
-          // не выписывается — сервис возвращает null, и это нормальный ход, а не ошибка.
+          // Заявка кладётся в рейс в этой же транзакции (маршруты): состояния «в работе, а рейса
+          // нет» перевод в работу не создаёт. Документ при этом не рождается — лист выписывают с
+          // рейса, когда состав собран. На заказ техники на объект, на аренду и на типы без
+          // бланка рейс не ведётся вовсе, и это нормальный ход, а не ошибка.
           if (transitionRequiresAssignment(status)) {
-            await issueWaybill(tx, {
-              requestId: before.id,
-              requestType: before.requestType,
-              vehicleId: saved.vehicleId,
-              driverPersonId: assignment.driverPersonId ?? null,
-              fields: assignment.waybill ?? null,
-              actor: { id: p.id, name: p.fullName },
+            await attachToRoute(tx, {
+              request: before,
+              assignment: saved,
+              route: assignment.route,
+              legacy: {
+                driverPersonId: assignment.driverPersonId,
+                trip: assignment.waybill,
+              },
+              actor: { id: p.id },
             });
           }
+        }
+        // Уход из «В работе» рейс не ломает: закрытая заявка остаётся талоном состоявшегося
+        // рейса, отменённая и возвращённая в «Новую» выбывает — но только пока рейс не заморожен
+        // выписанным листом.
+        if (before.status === 'confirmed' && status !== 'confirmed') {
+          await detachOnStatus(tx, before.id, status, p.id);
         }
         // Ставка берётся из назначения — того, что стоит на заявке сейчас: сменить машину, не
         // меняя статуса, нельзя (ADR 0027), поэтому оно же и было в работе.

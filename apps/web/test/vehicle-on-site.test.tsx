@@ -41,6 +41,7 @@ function request(
     approvedAt: '2026-07-20T09:00:00.000Z',
     assignment: null,
     completion: null,
+    route: null,
     files: [],
     version: 1,
     createdBy: 'user-1',

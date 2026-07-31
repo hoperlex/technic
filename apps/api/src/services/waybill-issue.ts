@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull, ne, sql } from 'drizzle-orm';
+import { and, desc, eq, isNull, ne } from 'drizzle-orm';
 import {
   formatSnils,
   licenseNumberLabel,
@@ -30,29 +30,16 @@ type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type Reader = Tx | typeof db;
 
 /**
- * Выдача путевого листа при переводе заявки в работу (ADR 0037).
+ * Выдача путевого листа по рейсу (ADR 0037, маршруты).
  *
- * Лист рождается в той же транзакции, что и смена статуса: состояния «в работе, а листа нет» не
- * существует — по той же причине, по которой ADR 0029 отказался от «выполнена, но чем и почём
- * узнаем потом».
- *
- * Один лист на машину и дату: если машина в этот день уже выехала по другой заявке, лист не
- * поднимается второй — заявка дописывается талоном заказчика (форма 4-П держит четыре).
+ * Лист выписывается с маршрута отдельным действием — когда состав рейса собран, а не на первой
+ * же заявке: номер бланка не сгорает на каждой перестановке, а талоны заказчиков заполняются в
+ * том порядке, в котором машина поедет. «Один лист на машину и дату» уступило место «одному
+ * действующему листу на рейс»: день и ночь на одной машине — это два рейса и два бланка.
  */
 
 /** Серия по умолчанию, заведённая миграцией 0061. Пока серия в портале одна. */
 const DEFAULT_SERIES_CODE = 'main';
-const MAX_SLOTS = 4;
-
-export interface WaybillContext {
-  requestId: string;
-  /** Вид заявки: лист выписывается только на грузоперевозку (ADR 0041). */
-  requestType: VehicleRequestType;
-  vehicleId: string;
-  driverPersonId: string | null;
-  fields: WaybillFieldsInput | null;
-  actor: { id: string; name: string };
-}
 
 /**
  * Нужен ли на этот рейс путевой лист. Правило само по себе чистое и живёт в контрактах
@@ -275,148 +262,6 @@ export interface IssuedWaybill {
   slot: number;
   /** Лист уже был выписан на эту машину и дату — заявка дописана талоном. */
   reused: boolean;
-}
-
-/**
- * Выдаёт лист или дописывает заявку талоном в уже выданный. Возвращает `null`, если на этот рейс
- * лист не выписывается (заказ техники на объект, аренда, тип без бланка) — это не ошибка, а
- * нормальный ход для заявки, которую портал ведёт без документа.
- */
-export async function issueWaybill(tx: Tx, ctx: WaybillContext): Promise<IssuedWaybill | null> {
-  const requirement = await waybillRequirementFor(tx, {
-    requestType: ctx.requestType,
-    vehicleId: ctx.vehicleId,
-  });
-  if (!requirement.formCode) return null;
-
-  if (!ctx.driverPersonId) {
-    throw err.unprocessable('Выберите водителя — на рейс выписывается путевой лист', {
-      driverPersonId: 'Выберите водителя',
-    });
-  }
-
-  const date = await tripDate(tx, ctx.requestId);
-
-  // Тот же отбор, что показывает форма: второму набору правил разъехаться с первым негде.
-  const selection = await selectDrivers({
-    vehicleId: ctx.vehicleId,
-    on: date,
-    withTrailer: ctx.fields?.withTrailer ?? false,
-    personId: ctx.driverPersonId,
-  });
-  if (!selection || selection.drivers.length === 0) {
-    throw err.unprocessable(
-      selection?.requiredCategoryName
-        ? `У водителя нет действующей категории ${selection.requiredCategoryName} на ${date}`
-        : 'У водителя нет действующего удостоверения на дату рейса',
-      { driverPersonId: 'Водитель не допущен к этой машине' },
-    );
-  }
-
-  // Один лист на машину и дату: аннулированные не в счёт — испорченный бланк заменяют новым.
-  const [existing] = await tx
-    .select({ id: waybills.id, number: waybills.number, driverPersonId: waybills.driverPersonId })
-    .from(waybills)
-    .where(
-      and(
-        eq(waybills.vehicleId, ctx.vehicleId),
-        eq(waybills.issuedForDate, date),
-        ne(waybills.status, 'cancelled'),
-      ),
-    );
-
-  if (existing) {
-    // Повторный перевод в работу (после отката администратором) не выписывает второй талон: та
-    // же заявка в том же листе уже стоит, и лист остаётся тем, по которому машина вышла.
-    const [already] = await tx
-      .select({ slot: waybillRequests.slot })
-      .from(waybillRequests)
-      .where(
-        and(
-          eq(waybillRequests.waybillId, existing.id),
-          eq(waybillRequests.requestId, ctx.requestId),
-        ),
-      );
-    if (already) {
-      return {
-        id: existing.id,
-        number: String(existing.number),
-        slot: already.slot,
-        reused: true,
-      };
-    }
-
-    // Второй водитель на ту же машину и дату — это вторая смена, а не второй талон: такой лист
-    // портал пока не выписывает (ADR 0037, backlog).
-    if (existing.driverPersonId !== ctx.driverPersonId) {
-      throw err.conflict(
-        'На эту машину и дату уже выписан лист на другого водителя: вторая смена пока не поддерживается',
-      );
-    }
-    const [slots] = await tx
-      .select({ used: sql<number>`count(*)::int` })
-      .from(waybillRequests)
-      .where(eq(waybillRequests.waybillId, existing.id));
-    const used = slots?.used ?? 0;
-    if (used >= MAX_SLOTS) {
-      throw err.conflict(`В листе уже ${MAX_SLOTS} талона заказчиков — больше бланк не держит`);
-    }
-    await tx
-      .insert(waybillRequests)
-      .values({ waybillId: existing.id, requestId: ctx.requestId, slot: used + 1 });
-    return {
-      id: existing.id,
-      number: String(existing.number),
-      slot: used + 1,
-      reused: true,
-    };
-  }
-
-  const series = await findSeriesByCode(DEFAULT_SERIES_CODE);
-  if (!series) throw err.conflict('Не заведена серия путевых листов');
-  const number = await takeNextNumber(tx, series.id);
-  const organizationId = await resolveOrganization(tx, ctx.vehicleId);
-
-  const data = await collectSnapshot(tx, {
-    requestId: ctx.requestId,
-    vehicleId: ctx.vehicleId,
-    driverPersonId: ctx.driverPersonId,
-    organizationId,
-    fields: ctx.fields,
-    number: number.display,
-    seriesPrefix: number.prefix,
-    date,
-    actorName: ctx.actor.name,
-  });
-
-  const [created] = await tx
-    .insert(waybills)
-    .values({
-      seriesId: number.seriesId,
-      number: number.number,
-      formCode: requirement.formCode,
-      organizationId,
-      vehicleId: ctx.vehicleId,
-      driverPersonId: ctx.driverPersonId,
-      issuedForDate: date,
-      withTrailer: ctx.fields?.withTrailer ?? false,
-      trailer1Model: ctx.fields?.trailer1Model ?? '',
-      trailer1RegNumber: ctx.fields?.trailer1RegNumber ?? '',
-      trailer2Model: ctx.fields?.trailer2Model ?? '',
-      trailer2RegNumber: ctx.fields?.trailer2RegNumber ?? '',
-      garageNumber: data.vehicle_garage_number ?? '',
-      communicationKind: ctx.fields?.communicationKind ?? '',
-      transportationKind: ctx.fields?.transportationKind ?? '',
-      data,
-      issuedBy: ctx.actor.id,
-    })
-    .returning({ id: waybills.id });
-
-  await tx
-    .insert(waybillRequests)
-    .values({ waybillId: created!.id, requestId: ctx.requestId, slot: 1 });
-
-  return { id: created!.id, number: number.display, slot: 1, reused: false };
 }
 
 export interface RouteWaybillContext {

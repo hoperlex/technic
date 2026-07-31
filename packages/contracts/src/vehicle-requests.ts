@@ -22,7 +22,12 @@ import {
   type VehicleOwnership,
   vehiclePriceSchema,
 } from './vehicles';
-import { assignRouteSchema, routeTripFieldsSchema, type RouteTripFields } from './vehicle-routes';
+import {
+  assignRouteSchema,
+  routeTripFieldsSchema,
+  type RouteTripFields,
+  type VehicleRequestRouteDto,
+} from './vehicle-routes';
 import {
   MIN_REQUEST_DATE_MESSAGE,
   WORK_TIME_MESSAGE,
@@ -1181,6 +1186,12 @@ export interface VehicleRequestBaseDto {
    * у отменённой не бывает вовсе, а у выполненной до этой версии его не восстановить.
    */
   completion: VehicleRequestCompletionDto | null;
+  /**
+   * Рейс, в котором заявка едет (маршруты). `null` — маршрута нет: у «Новой» его и не бывает, а
+   * у грузоперевозки в работе на собственной машине это состояние, о котором список
+   * предупреждает — заявку вынули из рейса или перенесли, и лист по ней не выпишется.
+   */
+  route: VehicleRequestRouteDto | null;
   files: FileDto[];
   version: number;
 
