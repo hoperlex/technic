@@ -878,6 +878,17 @@ async function detachOnStatus(
   requestId: string,
   next: RequestStatus,
   actorId: string,
+): Promise<void> {
+  const current = await routeOfRequest(tx, requestId);
+  if (!current) return;
+  const route = await lockRoute(tx, current.routeId);
+  const waybill = await routeWaybill(tx, route.id);
+  const frozen = !isRouteEditable(waybill?.status ?? null);
+  if (!shouldDetachOnStatus(next, frozen)) return;
+  await detachRequest(tx, route.id, requestId);
+  await bumpRouteVersion(tx, route.id, actorId);
+}
+
 /**
  * Заявка переезжает в рейс новой машины (ADR 0048). Рейс заведён на конкретную машину, поэтому
  * смена техники — это всегда переезд, а не правка: заявка вынимается из прежнего маршрута и
@@ -910,17 +921,6 @@ async function moveToRouteOfVehicle(
   // маршрут новой машины. Ему же остаётся решить, нужен ли рейс вообще: у аренды и у типов без
   // бланка его не бывает, и тогда заявка просто остаётся без маршрута.
   await attachToRoute(tx, params);
-}
-
-): Promise<void> {
-  const current = await routeOfRequest(tx, requestId);
-  if (!current) return;
-  const route = await lockRoute(tx, current.routeId);
-  const waybill = await routeWaybill(tx, route.id);
-  const frozen = !isRouteEditable(waybill?.status ?? null);
-  if (!shouldDetachOnStatus(next, frozen)) return;
-  await detachRequest(tx, route.id, requestId);
-  await bumpRouteVersion(tx, route.id, actorId);
 }
 
 /**
@@ -2370,6 +2370,59 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           actorUserId: p.id,
           action: 'vehicle_request.assign',
           entityType: 'vehicle_request',
+          entityId: before.id,
+          metadata: {
+            vehicleId: assigned.vehicleId,
+            changes: diffVehicleAssignment(before.assignment, assigned),
+          },
+        });
+      }
+      // Факт выполнения — тоже своё событие: «Выполнена» отвечает «что с заявкой», закрытие —
+      // «сколько отработали и сколько это стоило». Повторное закрытие после отката видно
+      // составом изменений: та же работа, но другое время и другая сумма.
+      if (completed) {
+        await writeAudit({
+          actorUserId: p.id,
+          action: 'vehicle_request.complete',
+          entityType: 'vehicle_request',
+          entityId: before.id,
+          metadata: { changes: diffVehicleCompletion(before.completion, completed) },
+        });
+      }
+      // Снятый закрытием запрос на досрочное завершение — своё событие: иначе он просто исчезает
+      // из списка ожидающих визы, и по истории непонятно, чем кончился.
+      if (earlyEndDropped) {
+        await writeAudit({
+          actorUserId: p.id,
+          action: 'vehicle_request.early_end_cancel',
+          entityType: 'vehicle_request',
+          entityId: before.id,
+          metadata: {
+            reason: 'closed',
+            changes: earlyEndReasonChange(`Заявка переведена в «${requestStatusLabels[status]}»`),
+          },
+        });
+      }
+      const after = (await getDto(before.id))!;
+      // Уточнённый срок — событие правки, а не назначения: заказывали на одно время, вышли на
+      // другое, и в истории это читается теми же строками «было → стало», что и обычная правка
+      // заявки. Совпал с заказанным — события нет: «уточнили и не изменили» истории не событие.
+      if (schedule) {
+        const changes = diffVehicleRequests(before, after);
+        if (changes.length > 0) {
+          await writeAudit({
+            actorUserId: p.id,
+            action: 'vehicle_request.update',
+            entityType: 'vehicle_request',
+            entityId: before.id,
+            metadata: { changes },
+          });
+        }
+      }
+      return after;
+    },
+  );
+
   // ── Смена назначенной техники у заявки в работе (ADR 0048) ──
   /**
    * Сменить машину и ставки, не трогая статус: заказанная техника сломалась, ушла на другой
@@ -2446,59 +2499,6 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         },
       });
       return (await getDto(before.id))!;
-    },
-  );
-
-          entityId: before.id,
-          metadata: {
-            vehicleId: assigned.vehicleId,
-            changes: diffVehicleAssignment(before.assignment, assigned),
-          },
-        });
-      }
-      // Факт выполнения — тоже своё событие: «Выполнена» отвечает «что с заявкой», закрытие —
-      // «сколько отработали и сколько это стоило». Повторное закрытие после отката видно
-      // составом изменений: та же работа, но другое время и другая сумма.
-      if (completed) {
-        await writeAudit({
-          actorUserId: p.id,
-          action: 'vehicle_request.complete',
-          entityType: 'vehicle_request',
-          entityId: before.id,
-          metadata: { changes: diffVehicleCompletion(before.completion, completed) },
-        });
-      }
-      // Снятый закрытием запрос на досрочное завершение — своё событие: иначе он просто исчезает
-      // из списка ожидающих визы, и по истории непонятно, чем кончился.
-      if (earlyEndDropped) {
-        await writeAudit({
-          actorUserId: p.id,
-          action: 'vehicle_request.early_end_cancel',
-          entityType: 'vehicle_request',
-          entityId: before.id,
-          metadata: {
-            reason: 'closed',
-            changes: earlyEndReasonChange(`Заявка переведена в «${requestStatusLabels[status]}»`),
-          },
-        });
-      }
-      const after = (await getDto(before.id))!;
-      // Уточнённый срок — событие правки, а не назначения: заказывали на одно время, вышли на
-      // другое, и в истории это читается теми же строками «было → стало», что и обычная правка
-      // заявки. Совпал с заказанным — события нет: «уточнили и не изменили» истории не событие.
-      if (schedule) {
-        const changes = diffVehicleRequests(before, after);
-        if (changes.length > 0) {
-          await writeAudit({
-            actorUserId: p.id,
-            action: 'vehicle_request.update',
-            entityType: 'vehicle_request',
-            entityId: before.id,
-            metadata: { changes },
-          });
-        }
-      }
-      return after;
     },
   );
 
