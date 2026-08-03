@@ -38,6 +38,16 @@ export function OnSiteTab() {
       dataIndex: 'containerTypeName',
       searchable: false,
     }),
+    // Чей контейнер: оператор заявки установки и есть его владелец (ADR 0054). Без этой колонки
+    // список отвечал на «что стоит», но не на «кому звонить, чтобы увезли».
+    textColumn<WasteRequestDto>({
+      key: 'operatorName',
+      title: 'Оператор',
+      dataIndex: 'operatorName',
+      searchable: false,
+      width: 200,
+      render: (v) => (v as string | null) ?? 'не указан',
+    }),
     textColumn<WasteRequestDto>({
       key: 'createdAt',
       title: 'Дата создания',
@@ -75,6 +85,7 @@ export function OnSiteTab() {
     badge: (r) => <Tag>{r.displayNumber}</Tag>,
     primary: (r) => r.containerTypeName ?? '—',
     lines: [
+      (r) => `Оператор: ${r.operatorName ?? 'не указан'}`,
       (r) => `Доставка: ${formatDateTimeMaybe(r.deliveryAt, r.deliveryTimeUnspecified)}`,
       (r) => `Заявка от ${formatDate(r.createdAt)}`,
     ],

@@ -13,6 +13,7 @@ import {
   type FileDto,
   formatWasteRequestNumber,
   MIN_WASTE_VOLUME_M3,
+  presentContainerGroupsQuerySchema,
   REQUEST_STATUSES,
   type RequestType,
   requiresWasteFact,
@@ -64,7 +65,16 @@ import {
   scheduleFilesDeletion,
 } from '../services/request-files';
 import { priceWasteRequest, resolveWasteTariffByKind, toNum } from '../services/waste-pricing';
-import { diffWasteCompletion, diffWasteRequests } from '../services/waste-request-diff';
+import {
+  assertContainerGroupAvailable,
+  assertContainerOwnerAllowed,
+  loadPresentGroups,
+} from '../services/container-groups';
+import {
+  diffWasteCompletion,
+  diffWasteRequests,
+  ownerMismatchChanges,
+} from '../services/waste-request-diff';
 import { loadWasteRequestHistory } from '../services/waste-request-history';
 import { vehiclesByRequestIds } from '../services/waste-request-vehicles';
 import { assertOperatorServesObject } from '../services/object-operators';
@@ -80,6 +90,9 @@ const FACT_NOT_APPLICABLE = 'Фактический объём указывае�
 
 /** Кто закрыл заявку — второй join на users: первый занят автором заявки. */
 const completers = alias(users, 'completers');
+
+/** Чей контейнер снимаем — второй join на контрагентов: первый занят оператором заявки. */
+const containerOwners = alias(counterparties, 'container_owners');
 
 /** numeric в БД принимает строку; null остаётся null. */
 function numToDb(v: number | null | undefined): string | null {
@@ -98,6 +111,10 @@ const requestSelect = {
   requestType: wasteRequests.requestType,
   containerTypeId: wasteRequests.containerTypeId,
   containerTypeName: containerTypes.name,
+  // Контейнеры на объекте (миграция 0080): сколько единиц трогает заявка и чьи они.
+  containersCount: wasteRequests.containersCount,
+  containerOwnerCounterpartyId: wasteRequests.containerOwnerCounterpartyId,
+  containerOwnerName: containerOwners.name,
   wasteTypeId: wasteRequests.wasteTypeId,
   wasteTypeName: wasteTypes.name,
   volumeM3: wasteRequests.volumeM3,
@@ -215,6 +232,9 @@ function toDto(
     requestType: r.requestType,
     containerTypeId: r.containerTypeId,
     containerTypeName: r.containerTypeName,
+    containersCount: r.containersCount,
+    containerOwnerCounterpartyId: r.containerOwnerCounterpartyId,
+    containerOwnerName: r.containerOwnerName,
     wasteTypeId: r.wasteTypeId,
     wasteTypeName: r.wasteTypeName,
     volumeM3: r.volumeM3,
@@ -255,6 +275,7 @@ function baseQuery() {
     .leftJoin(containerTypes, eq(wasteRequests.containerTypeId, containerTypes.id))
     .leftJoin(wasteTypes, eq(wasteRequests.wasteTypeId, wasteTypes.id))
     .leftJoin(counterparties, eq(wasteRequests.operatorCounterpartyId, counterparties.id))
+    .leftJoin(containerOwners, eq(wasteRequests.containerOwnerCounterpartyId, containerOwners.id))
     .leftJoin(wasteRequestCompletions, eq(wasteRequests.id, wasteRequestCompletions.requestId))
     .leftJoin(completers, eq(wasteRequestCompletions.completedBy, completers.id))
     .innerJoin(users, eq(wasteRequests.createdBy, users.id));
@@ -291,31 +312,19 @@ async function assertOperatorAssignable(
 /** Нормализованный набор «предметных» колонок заявки, включая снимок цены (ADR 0009). */
 interface RequestSubject {
   containerTypeId: string | null;
+  containersCount: number;
+  containerOwnerCounterpartyId: string | null;
   wasteTypeId: string | null;
   volumeM3: number | null;
   wasteTariffId: string | null;
   pricePerM3: string | null;
 }
 
-/** Присутствует ли контейнер этого типа на объекте (по view наличия present_containers). */
-async function isTypePresent(tx: Tx, objectId: string, containerTypeId: string): Promise<boolean> {
-  const [row] = await tx
-    .select({ id: presentContainers.id })
-    .from(presentContainers)
-    .where(
-      and(
-        eq(presentContainers.objectId, objectId),
-        eq(presentContainers.containerTypeId, containerTypeId),
-      ),
-    )
-    .limit(1);
-  return !!row;
-}
-
 /**
  * Проверяет и нормализует поля заявки по её типу:
  *  - установка — сверяет тип контейнера (type='cont');
- *  - замена/снятие — сверяет, что контейнер этого типа присутствует на объекте (view наличия);
+ *  - замена/снятие — сверяет группу присутствия: столько контейнеров этого типа от этого
+ *    владельца на объекте действительно стоит (ADR 0054);
  *  - вывоз — техники не несёт вовсе (ADR 0022): присланный тип отбрасывается.
  * Тарифицируется один вывоз (ADR 0019): у него требуются тип мусора и объём, по ним
  * подбирается тариф и возвращается снимок цены. Прайс берётся у назначенного оператора, а пока
@@ -328,9 +337,13 @@ async function resolveSubject(
     requestType: RequestType;
     objectId: string;
     containerTypeId: string | null;
+    containersCount: number;
+    containerOwnerCounterpartyId: string | null;
     wasteTypeId: string | null;
     volumeM3: number | null;
     operatorCounterpartyId: string | null;
+    /** Правимая заявка: её собственный вклад в присутствие не должен мешать ей самой. */
+    requestId?: string;
   },
 ): Promise<RequestSubject> {
   if (input.requestType === 'container_install') {
@@ -343,6 +356,10 @@ async function resolveSubject(
     if (ct.type !== 'cont') throw err.badRequest('Для установки нужен тип контейнера');
     return {
       containerTypeId: input.containerTypeId,
+      // Установка привозит один контейнер; владельцем её делает назначенный оператор, и
+      // отдельной колонкой это не дублируется.
+      containersCount: 1,
+      containerOwnerCounterpartyId: null,
       wasteTypeId: null,
       volumeM3: null,
       wasteTariffId: null,
@@ -353,13 +370,20 @@ async function resolveSubject(
   if (input.requestType === 'container_replace' || input.requestType === 'container_removal') {
     const what = input.requestType === 'container_replace' ? 'замены' : 'снятия';
     if (!input.containerTypeId) throw err.badRequest(`Выберите тип контейнера для ${what}`);
-    if (!(await isTypePresent(tx, input.objectId, input.containerTypeId))) {
-      throw err.badRequest(`На объекте нет контейнера этого типа для ${what}`);
-    }
+    await assertContainerGroupAvailable(tx, {
+      requestType: input.requestType,
+      objectId: input.objectId,
+      containerTypeId: input.containerTypeId,
+      ownerId: input.containerOwnerCounterpartyId,
+      count: input.containersCount,
+      requestId: input.requestId,
+    });
     // Контейнерная операция не тарифицируется (ADR 0019): присланные тип мусора и объём
     // отбрасываются вместе со снимком цены.
     return {
       containerTypeId: input.containerTypeId,
+      containersCount: input.containersCount,
+      containerOwnerCounterpartyId: input.containerOwnerCounterpartyId,
       wasteTypeId: null,
       volumeM3: null,
       wasteTariffId: null,
@@ -395,6 +419,8 @@ async function resolveSubject(
 
   return {
     containerTypeId: null,
+    containersCount: 1,
+    containerOwnerCounterpartyId: null,
     wasteTypeId: input.wasteTypeId,
     volumeM3,
     wasteTariffId: pricing.wasteTariffId,
@@ -547,6 +573,28 @@ async function saveWasteCompletion(
 
 /** Один текст отказа на все три пути назначения исполнителя: форма, правка, отдельный маршрут. */
 const ASSIGN_OPERATOR_DENIED = 'Оператора назначает диспетчер или менеджер';
+
+/**
+ * Подтверждённый вывоз чужого контейнера — событие истории заявки (ADR 0054), а не колонка: это
+ * не свойство заявки, а решение человека и объяснение почему. Пустая причина означает, что
+ * расхождения не было, — записывать нечего.
+ *
+ * Пишется по сохранённой заявке: имена сторон берутся из её DTO, где они уже собраны.
+ */
+async function writeOwnerMismatchAudit(
+  actorUserId: string,
+  dto: WasteRequestDto,
+  reason: string,
+): Promise<void> {
+  if (!reason) return;
+  await writeAudit({
+    actorUserId,
+    action: 'waste_request.owner_mismatch',
+    entityType: 'waste_request',
+    entityId: dto.id,
+    metadata: { changes: ownerMismatchChanges(dto, reason) },
+  });
+}
 
 export default async function wasteRequestsRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
@@ -717,6 +765,25 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
   );
 
   /**
+   * Группы присутствия на объекте (ADR 0054): что и чьё там стоит, сколько штук. Одна выборка
+   * отвечает сразу на три вопроса формы — из чего выбирать контейнер для замены и снятия,
+   * сколько максимум можно указать и кого звать на этот объект.
+   *
+   * Права те же, что у списка заявок: это сведения о площадке, а не отдельная сущность. Оператор
+   * видит их наравне с остальными — свои контейнеры на объекте он вправе знать, и скрывать от
+   * него чужие означало бы показывать неполную площадку тому, кто на неё выезжает.
+   */
+  r.get(
+    '/present-groups',
+    { ...auth, schema: { querystring: presentContainerGroupsQuerySchema } },
+    async (req) => {
+      const p = requirePrincipal(req);
+      assertObjectScope(p, req.query.objectId);
+      return loadPresentGroups(req.query.objectId);
+    },
+  );
+
+  /**
    * Сводка «сколько заявок в каком статусе» для виджета над таблицей. Считается по тем же
    * правилам видимости, что и список: штаб видит свой объект, оператор — только назначенные
    * ему заявки (ADR 0010). Удалённые в счёт не идут — их нет и в списке.
@@ -795,6 +862,9 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
     if (body.operatorCounterpartyId !== undefined) {
       assertCan(p, 'wasteRequests.assignOperator', ASSIGN_OPERATOR_DENIED);
     }
+    // Подтверждённый вывоз чужого контейнера — своё событие истории, и пишется оно после
+    // фиксации заявки: причина известна внутри транзакции, а номер заявки — только после неё.
+    let mismatchReason = '';
     const created = await db.transaction(async (tx) => {
       // Оператор проверяется до расчёта: цена берётся из его прайса (ADR 0026), и считать её по
       // исполнителю, которого нельзя назначить, незачем.
@@ -805,9 +875,19 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         requestType: body.requestType,
         objectId: body.objectId,
         containerTypeId: body.containerTypeId ?? null,
+        containersCount: body.containersCount,
+        containerOwnerCounterpartyId: body.containerOwnerCounterpartyId ?? null,
         wasteTypeId: body.wasteTypeId ?? null,
         volumeM3: body.volumeM3 ?? null,
         operatorCounterpartyId: body.operatorCounterpartyId ?? null,
+      });
+      // Вывозит тот, кто привёз (ADR 0054). Расхождение возможно уже здесь: исполнителя можно
+      // указать прямо в форме заявки.
+      mismatchReason = await assertContainerOwnerAllowed(tx, {
+        requestType: body.requestType,
+        operatorCounterpartyId: body.operatorCounterpartyId ?? null,
+        containerOwnerCounterpartyId: subject.containerOwnerCounterpartyId,
+        ownerMismatchReason: body.ownerMismatchReason,
       });
       const [row] = await tx
         .insert(wasteRequests)
@@ -840,8 +920,10 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       entityType: 'waste_request',
       entityId: created.id,
     });
+    const dto = (await getRequestDto(created.id))!;
+    await writeOwnerMismatchAudit(p.id, dto, mismatchReason);
     reply.code(201);
-    return (await getRequestDto(created.id))!;
+    return dto;
   });
 
   r.patch(
@@ -870,6 +952,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         body.operatorCounterpartyId !== undefined
           ? body.operatorCounterpartyId
           : before.operatorCounterpartyId;
+      let mismatchReason = '';
       await db.transaction(async (tx) => {
         // Проверяем и при переносе заявки на другой объект: пара «оператор — объект» могла
         // разойтись, даже если исполнителя не меняли. До расчёта: цена идёт из прайса оператора.
@@ -884,9 +967,23 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
           objectId,
           containerTypeId:
             body.containerTypeId !== undefined ? body.containerTypeId : before.containerTypeId,
+          containersCount: body.containersCount ?? before.containersCount,
+          containerOwnerCounterpartyId:
+            body.containerOwnerCounterpartyId !== undefined
+              ? body.containerOwnerCounterpartyId
+              : before.containerOwnerCounterpartyId,
           wasteTypeId: body.wasteTypeId !== undefined ? body.wasteTypeId : before.wasteTypeId,
           volumeM3: body.volumeM3 !== undefined ? body.volumeM3 : before.volumeM3,
           operatorCounterpartyId,
+          // Собственный вклад заявки в присутствие не должен мешать ей самой: снятие вычитает
+          // свои единицы сразу, как только заведено.
+          requestId: id,
+        });
+        mismatchReason = await assertContainerOwnerAllowed(tx, {
+          requestType: rt,
+          operatorCounterpartyId,
+          containerOwnerCounterpartyId: subject.containerOwnerCounterpartyId,
+          ownerMismatchReason: body.ownerMismatchReason,
         });
         const [updated] = await tx
           .update(wasteRequests)
@@ -942,6 +1039,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         // Перечень изменённых полей — то, ради чего история отличает правку от «заявку трогали».
         metadata: { changes: diffWasteRequests(before, after) },
       });
+      await writeOwnerMismatchAudit(p.id, after, mismatchReason);
       return after;
     },
   );
@@ -956,13 +1054,23 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
     { ...canAssignOperator, schema: { params: idParams, body: assignWasteOperatorSchema } },
     async (req) => {
       const p = requirePrincipal(req);
-      const { operatorCounterpartyId, version } = req.body;
+      const { operatorCounterpartyId, ownerMismatchReason, version } = req.body;
       const before = await getRequestDto(req.params.id);
       if (!before || before.deletedAt) throw err.notFound('Заявка не найдена');
+      let mismatchReason = '';
       await db.transaction(async (tx) => {
         if (operatorCounterpartyId) {
           await assertOperatorAssignable(tx, operatorCounterpartyId, before.objectId);
         }
+        // Вывозит тот, кто привёз (ADR 0054). Назначение — тот самый момент, когда расхождение
+        // возникает: заявку заводит площадка, а исполнителя ей выбирает диспетчер, и до этого
+        // спрашивать было не о чем.
+        mismatchReason = await assertContainerOwnerAllowed(tx, {
+          requestType: before.requestType,
+          operatorCounterpartyId,
+          containerOwnerCounterpartyId: before.containerOwnerCounterpartyId,
+          ownerMismatchReason,
+        });
         // Заявки старше тарификации (без типа мусора и объёма) пересчёту не поддаются — у них
         // снимок цены остаётся прежним, а не обнуляется отказом.
         const pricing =
@@ -996,6 +1104,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         // Имя исполнителя в истории — снимком: контрагента могут переименовать.
         metadata: { operatorCounterpartyId, changes: diffWasteRequests(before, after) },
       });
+      await writeOwnerMismatchAudit(p.id, after, mismatchReason);
       return after;
     },
   );

@@ -2,6 +2,7 @@ import { Button, Descriptions, Input, Space, Spin, Tag, Typography } from 'antd'
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
+  containerOwnerMismatch,
   type FileDto,
   isPricedRequestType,
   type RequestHistoryEntryDto,
@@ -10,12 +11,14 @@ import {
   requestTypeColors,
   requestTypeLabels,
   requiresWasteFact,
+  usesContainerGroup,
   vehicleVolume,
   type WasteRequestCompletionDto,
   type WasteRequestDto,
   type WasteRequestVehicleDto,
   wasteRequestChangeLabels,
   wasteRequestCommentLines,
+  wasteSubjectLabel,
 } from '@technic/contracts';
 import { wasteRequestsApi } from '../../api/resources';
 import { FileLinkList, FilesButton } from '../../components/FileLinks';
@@ -305,9 +308,28 @@ export function WasteRequestViewModal({
                 key: 'containerType',
                 label: 'Контейнер / машина',
                 span: priced ? 1 : 3,
-                children: request.containerTypeName ?? '—',
+                // Количество — частью предмета: «Контейнер 8 м³ × 2» (ADR 0054).
+                children: wasteSubjectLabel(request),
               },
             ]),
+        // Чей контейнер трогает заявка и не расходится ли это с исполнителем (ADR 0054).
+        // Только у замены и снятия: у остальных типов контейнер на площадке не стоит.
+        ...(usesContainerGroup(request.requestType)
+          ? [
+              {
+                key: 'containerOwner',
+                label: 'Владелец контейнера',
+                span: 3,
+                children: containerOwnerMismatch(request) ? (
+                  <Typography.Text type="warning">
+                    {`${request.containerOwnerName ?? 'не указан'} — вывозит «${request.operatorName ?? '—'}»`}
+                  </Typography.Text>
+                ) : (
+                  (request.containerOwnerName ?? 'не указан')
+                ),
+              },
+            ]
+          : []),
         ...(priced
           ? [
               {

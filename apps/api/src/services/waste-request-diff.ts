@@ -49,6 +49,14 @@ export function diffWasteRequests(
     before.containerTypeName ?? EMPTY,
     after.containerTypeName ?? EMPTY,
   );
+  // Контейнеры на объекте (ADR 0054): сколько единиц трогает заявка и чьи они. Количество
+  // показывается числом — «1» здесь значимо: им объясняется, что снимали не всё.
+  diff.changed('containersCount', String(before.containersCount), String(after.containersCount));
+  diff.changed(
+    'containerOwner',
+    before.containerOwnerName ?? EMPTY,
+    after.containerOwnerName ?? EMPTY,
+  );
   diff.changed('wasteType', before.wasteTypeName ?? EMPTY, after.wasteTypeName ?? EMPTY);
   diff.changed('volumeM3', volume(before.volumeM3), volume(after.volumeM3));
   diff.changed('pricePerM3', money(before.pricePerM3), money(after.pricePerM3));
@@ -74,6 +82,24 @@ export function diffWasteRequests(
   diff.files(before.files, after.files);
 
   return diff.changes;
+}
+
+/**
+ * Подтверждённый вывоз чужого контейнера (ADR 0054) — своё событие истории: это не правка полей,
+ * а решение человека вывезти контейнер, поставленный другим оператором, и объяснение почему.
+ * Событие-список (`from: null`): значима только правая часть, как у «прикреплены файлы».
+ */
+export function ownerMismatchChanges(
+  r: Pick<WasteRequestDto, 'operatorName' | 'containerOwnerName'>,
+  reason: string,
+): RequestChangeDto[] {
+  return [
+    {
+      field: 'ownerMismatch',
+      from: null,
+      to: `«${r.operatorName ?? '—'}» вывозит контейнер «${r.containerOwnerName ?? '—'}» — ${reason}`,
+    },
+  ];
 }
 
 /**

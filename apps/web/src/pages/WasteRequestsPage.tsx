@@ -41,14 +41,19 @@ import {
   normalizeTimeInput,
   type CompleteWasteRequestInput,
   actsForCounterparty,
+  checkContainerOwner,
+  containerOwnerMismatch,
+  FOREIGN_CONTAINER_SPLIT_MESSAGE,
   isPricedRequestType,
-  requiresWasteFact,
+  presentGroupLabel,
+  usesContainerGroup,
   isVolumeAllowed,
   volumeStepMessage,
   WASTE_REMOVAL_CONTAINER_KIND,
   type WasteRequestDto,
   wasteOperatorCommentEditable,
   wasteRequestCommentLines,
+  wasteSubjectLabel,
 } from '@technic/contracts';
 import {
   containerTypesApi,
@@ -86,6 +91,13 @@ import { applyApiFieldErrors } from '../utils/formErrors';
 import { withSavedOption } from '../utils/selectOptions';
 import { isBeforeMinRequestDate, isPastDate, minRequestDate } from '../utils/date';
 import { OnSiteTab } from './waste/OnSiteTab';
+import {
+  containerGroupKey,
+  containerGroupOptions,
+  findContainerGroup,
+  parseContainerGroupKey,
+  presentGroupsHint,
+} from './waste/containerGroups';
 import { wasteAmountLine, wastePricingHint } from './waste/pricingHint';
 import { WasteDoneModal } from './waste/WasteDoneModal';
 import { WasteRequestViewModal } from './waste/WasteRequestViewModal';
@@ -106,6 +118,14 @@ interface RequestFormValues {
   objectId: string;
   requestType: RequestType;
   containerTypeId?: string;
+  /**
+   * Какой контейнер снимаем или меняем — группа присутствия «тип + владелец» одним значением
+   * (ADR 0054). У установки поля нет: она привозит свой контейнер и выбирает тип из справочника.
+   */
+  containerGroupKey?: string;
+  containersCount?: number;
+  /** Подтверждение вывоза чужого контейнера — причиной; появляется только при расхождении. */
+  ownerMismatchReason?: string;
   wasteTypeId?: string;
   volumeM3?: number;
   /** Оператор вывоза (контрагент); можно не выбирать — назначается при переводе в работу. */
@@ -147,17 +167,24 @@ function CommentCell({ r, truncate }: { r: WasteRequestDto; truncate?: boolean }
   );
 }
 
-/** Человекочитаемое описание предмета заявки для колонки списка. */
-function requestSubject(r: WasteRequestDto): string {
-  // Объём — часть предмета заявки там, где он есть: у вывоза он определяет сумму (ADR 0019),
-  // у контейнерных операций его нет — кроме заявок, заведённых до этого решения.
-  // Техники у вывоза нет вовсе (ADR 0022); у заявок, заведённых раньше, тип в базе остался,
-  // но предметом заявки он больше не является и в списке не показывается.
-  const parts = [
-    requiresWasteFact(r.requestType) ? null : r.containerTypeName,
-    r.volumeM3 != null ? `${r.volumeM3} м³` : null,
-  ].filter(Boolean);
-  return parts.length ? parts.join(', ') : '—';
+/**
+ * Предмет заявки с пометкой о чужом контейнере (ADR 0054). Сама строка собирается контрактом
+ * (`wasteSubjectLabel`) — она нужна и списку, и мобильной карточке, — а тег живёт здесь: это
+ * уже показ, а не описание предмета.
+ */
+function SubjectCell({ r }: { r: WasteRequestDto }) {
+  return (
+    <>
+      {wasteSubjectLabel(r)}
+      {containerOwnerMismatch(r) && (
+        <Tooltip title={`Контейнер установил «${r.containerOwnerName ?? '—'}»`}>
+          <Tag color="volcano" style={{ marginInlineStart: 8 }}>
+            Чужой контейнер
+          </Tag>
+        </Tooltip>
+      )}
+    </>
+  );
 }
 
 export function WasteRequestsPage() {
@@ -418,24 +445,32 @@ function RequestsTab() {
     volumeM3: plannedVolume,
   });
 
-  // Наличие контейнеров на объекте (view: установки − снятия). Для «Замены» и «Снятия».
-  const { data: presentData, isLoading: presentLoading } = useQuery({
-    queryKey: ['waste-requests', 'present-for-object', watchObjectId],
-    queryFn: () => wasteRequestsApi.present({ objectId: watchObjectId, pageSize: 500 }),
+  // Что и чьё стоит на объекте (ADR 0054): группы присутствия. Ими выбирают контейнер для
+  // замены и снятия, ими же считается потолок количества и подсказка «кого звать».
+  const { data: presentGroups, isLoading: presentLoading } = useQuery({
+    queryKey: ['waste-requests', 'present-groups', watchObjectId],
+    queryFn: () => wasteRequestsApi.presentGroups(watchObjectId),
     enabled: !!watchObjectId,
   });
-  // Уникальные присутствующие типы контейнеров на объекте.
-  const presentTypeMap = new Map<string, string>();
-  for (const r of presentData?.items ?? []) {
-    if (!r.containerTypeId) continue;
-    if (!presentTypeMap.has(r.containerTypeId)) {
-      presentTypeMap.set(r.containerTypeId, r.containerTypeName ?? 'Контейнер');
-    }
-  }
-  // Тип контейнера — единственное, что нужно замене и снятию (ADR 0019): вместимость в подписи
-  // не нужна, объёма у такой заявки нет, и тип без вместимости в справочнике ей не мешает.
-  const presentTypeOptions = [...presentTypeMap].map(([value, label]) => ({ value, label }));
-  const objectHasPresent = presentTypeOptions.length > 0;
+  const groups = presentGroups ?? [];
+  const objectHasPresent = groups.length > 0;
+
+  const watchGroupKey = Form.useWatch('containerGroupKey', form);
+  const selectedGroup = findContainerGroup(groups, watchGroupKey);
+  // Сколько единиц можно указать: сверх стоящего на объекте снимать нечего. Правимая заявка
+  // свои единицы из присутствия уже вычла, поэтому её собственное количество к потолку
+  // прибавляется — тем же счётом, что и на сервере.
+  const savedGroupKey = record?.containerTypeId
+    ? containerGroupKey({
+        containerTypeId: record.containerTypeId,
+        ownerCounterpartyId: record.containerOwnerCounterpartyId,
+      })
+    : undefined;
+  const ownContribution =
+    record?.requestType === 'container_removal' && watchGroupKey === savedGroupKey
+      ? record.containersCount
+      : 0;
+  const maxContainers = Math.max(1, (selectedGroup?.quantity ?? 1) + ownContribution);
 
   // Чем оперирует заявка: у замены и снятия выбор ограничен контейнерами, которые сейчас стоят
   // на объекте. У вывоза техники нет вовсе (ADR 0022) — заказывают объём, а чем его увезут,
@@ -444,19 +479,30 @@ function RequestsTab() {
     // Присутствие считается по объекту, а выбор заявки в нём мог и не остаться — его добавляем
     // отдельно. Подпись «На объекте нет контейнеров» при этом остаётся честной: она о самом
     // объекте, а не о том, что стоит в правимой заявке.
-    options: withSavedOption(presentTypeOptions, savedContainerType),
+    options: withSavedOption(containerGroupOptions(groups), {
+      id: savedGroupKey,
+      name: savedContainerType.name
+        ? presentGroupLabel({
+            containerTypeName: savedContainerType.name,
+            ownerName: record?.containerOwnerName ?? null,
+            quantity: record?.containersCount ?? 1,
+          })
+        : undefined,
+    }),
     loading: presentLoading,
-    placeholder: 'Тип, присутствующий на объекте',
+    placeholder: 'Контейнер, стоящий на объекте',
   };
   const subjectFieldByType = {
     container_replace: {
-      label: 'Тип заменяемого контейнера',
-      message: 'Выберите тип контейнера для замены',
+      label: 'Заменяемый контейнер',
+      message: 'Выберите контейнер для замены',
+      countLabel: 'Сколько заменить',
       ...fromObjectField,
     },
     container_removal: {
-      label: 'Тип снимаемого контейнера',
-      message: 'Выберите тип контейнера для снятия',
+      label: 'Снимаемый контейнер',
+      message: 'Выберите контейнер для снятия',
+      countLabel: 'Сколько снять',
       ...fromObjectField,
     },
   } as const;
@@ -465,13 +511,30 @@ function RequestsTab() {
       ? subjectFieldByType[watchRequestType]
       : null;
 
+  // Вывозит тот, кто привёз (ADR 0054). Форма считает расхождение тем же правилом, что и
+  // сервер: предупредить до отправки лучше, чем показать отказ после.
+  const ownerVerdict = watchRequestType
+    ? checkContainerOwner(
+        {
+          requestType: watchRequestType,
+          operatorCounterpartyId: watchOperatorId ?? null,
+          containerOwnerCounterpartyId: selectedGroup?.ownerCounterpartyId ?? null,
+        },
+        false,
+      )
+    : 'ok';
+
   const openCreate = () => {
     setRecord(null);
     setFiles([]);
     setRemovedIds([]);
     form.resetFields();
     // Дата доставки по умолчанию — сегодня: раньше заявку не заводят (правило в контрактах).
-    form.setFieldsValue({ deliveryDate: minRequestDate() } as Partial<RequestFormValues>);
+    // Количество — один контейнер: снимают чаще всего его, и заставлять набирать «1» незачем.
+    form.setFieldsValue({
+      deliveryDate: minRequestDate(),
+      containersCount: 1,
+    } as Partial<RequestFormValues>);
     // Объект подставляется, только когда он у роли один: с несколькими выбирает человек —
     // подставленный за него первый попавшийся завёл бы заявку не на ту площадку (ADR 0039).
     if (soleObjectId) {
@@ -496,6 +559,15 @@ function RequestsTab() {
       objectId: r.objectId,
       requestType: r.requestType,
       containerTypeId: r.containerTypeId ?? undefined,
+      // Замена и снятие выбирают контейнер группой; у установки поля группы нет вовсе.
+      containerGroupKey:
+        usesContainerGroup(r.requestType) && r.containerTypeId
+          ? containerGroupKey({
+              containerTypeId: r.containerTypeId,
+              ownerCounterpartyId: r.containerOwnerCounterpartyId,
+            })
+          : undefined,
+      containersCount: r.containersCount,
       wasteTypeId: r.wasteTypeId ?? undefined,
       volumeM3: r.volumeM3 ?? undefined,
       operatorCounterpartyId: r.operatorCounterpartyId ?? undefined,
@@ -515,13 +587,23 @@ function RequestsTab() {
   const handleRequestTypeChange = () => {
     form.setFieldsValue({
       containerTypeId: undefined,
+      containerGroupKey: undefined,
+      // Количество возвращается к одному контейнеру: «3» от прежнего типа заявки к новому
+      // отношения не имеет, а у установки и вывоза его не бывает вовсе.
+      containersCount: 1,
+      ownerMismatchReason: undefined,
       wasteTypeId: undefined,
       volumeM3: undefined,
     });
   };
-  // Смена объекта сбрасывает тип: для «Замены» список зависит от установок объекта.
+  // Смена объекта сбрасывает контейнер: и справочный тип, и группа зависят от площадки.
   const handleObjectChange = () => {
-    form.setFieldsValue({ containerTypeId: undefined });
+    form.setFieldsValue({
+      containerTypeId: undefined,
+      containerGroupKey: undefined,
+      containersCount: 1,
+      ownerMismatchReason: undefined,
+    });
   };
 
   const handleUpload = async (file: File) => {
@@ -563,12 +645,24 @@ function RequestsTab() {
         `${values.deliveryDate.format('YYYY-MM-DD')} ${time ?? '00:00'}`,
         MOSCOW_TZ,
       );
+      // Замена и снятие выбирают контейнер группой «тип + владелец» (ADR 0054); установка —
+      // типом из справочника, и группы у неё нет.
+      const group = values.containerGroupKey
+        ? parseContainerGroupKey(values.containerGroupKey)
+        : null;
+      const withGroup = usesContainerGroup(values.requestType);
       const base = {
         objectId: values.objectId,
         requestType: values.requestType,
         // Тип из справочника несут только контейнерные операции: у вывоза поля в форме нет,
         // и присланное значение сервер всё равно обнулит (ADR 0022).
-        containerTypeId: values.containerTypeId,
+        containerTypeId: withGroup ? group?.containerTypeId : values.containerTypeId,
+        containerOwnerCounterpartyId: withGroup
+          ? (group?.ownerCounterpartyId ?? undefined)
+          : undefined,
+        containersCount: withGroup ? (values.containersCount ?? 1) : 1,
+        // Причина уходит только вместе с расхождением: у совпавших сторон её поля в форме нет.
+        ownerMismatchReason: withGroup ? values.ownerMismatchReason : undefined,
         // Тип мусора и объём есть только у вывоза (ADR 0019); у контейнерных
         // операций сервер их всё равно обнулит.
         wasteTypeId: isPricedRequestType(values.requestType) ? values.wasteTypeId : undefined,
@@ -590,6 +684,9 @@ function RequestsTab() {
           operatorCounterpartyId: canAssignOperator
             ? (values.operatorCounterpartyId ?? null)
             : undefined,
+          // У правки «не прислали» означает «не трогали», поэтому группа без владельца и смена
+          // типа заявки шлют явный null: иначе владелец пережил бы тип, у которого его не бывает.
+          containerOwnerCounterpartyId: withGroup ? (group?.ownerCounterpartyId ?? null) : null,
           addFileIds: files.filter((f) => f.isNew).map((f) => f.id),
           removeFileIds: removedIds,
           version: record.version,
@@ -619,12 +716,29 @@ function RequestsTab() {
   // (оператор вывоза, причина отмены), поэтому целевая заявка хранится в состоянии.
   const [operatorTarget, setOperatorTarget] = useState<WasteRequestDto | null>(null);
   const [cancelTarget, setCancelTarget] = useState<WasteRequestDto | null>(null);
-  const [operatorForm] = Form.useForm<{ operatorCounterpartyId: string }>();
+  const [operatorForm] = Form.useForm<{
+    operatorCounterpartyId: string;
+    ownerMismatchReason?: string;
+  }>();
   // Список в модальном окне назначения сужается по объекту той заявки, которую переводят в работу.
   const assignOperatorOptions = operatorOptionsFor(operatorTarget?.objectId, {
     id: operatorTarget?.operatorCounterpartyId ?? null,
     name: operatorTarget?.operatorName ?? null,
   });
+  // Что стоит на площадке, которой касается назначение: подсказка «кого звать» и основание для
+  // предупреждения о чужом контейнере (ADR 0054). Запрос тот же, что у формы, — и кэш общий.
+  const { data: targetGroups } = useQuery({
+    queryKey: ['waste-requests', 'present-groups', operatorTarget?.objectId],
+    queryFn: () => wasteRequestsApi.presentGroups(operatorTarget!.objectId),
+    enabled: !!operatorTarget,
+  });
+  const assignOperatorId = Form.useWatch('operatorCounterpartyId', operatorForm);
+  const assignVerdict = operatorTarget
+    ? checkContainerOwner(
+        { ...operatorTarget, operatorCounterpartyId: assignOperatorId ?? null },
+        false,
+      )
+    : 'ok';
 
   // Закрытие заявки: факт (объём и стоимость либо только талон) и комментарий вводятся в отдельном
   // окне и уходят вместе со статусом одним запросом.
@@ -664,11 +778,16 @@ function RequestsTab() {
    * переводится уже по обновлённой версии.
    */
   const startWorkMut = useMutation({
-    mutationFn: async (v: { r: WasteRequestDto; operatorCounterpartyId: string }) => {
+    mutationFn: async (v: {
+      r: WasteRequestDto;
+      operatorCounterpartyId: string;
+      ownerMismatchReason?: string;
+    }) => {
       const assigned = await wasteRequestsApi.assignOperator(
         v.r.id,
         v.operatorCounterpartyId,
         v.r.version,
+        v.ownerMismatchReason,
       );
       return wasteRequestsApi.changeStatus(assigned.id, 'confirmed', assigned.version);
     },
@@ -886,7 +1005,9 @@ function RequestsTab() {
         const amountLine = wasteAmountLine(r);
         return (
           <div style={{ lineHeight: 1.35 }}>
-            <div>{requestSubject(r)}</div>
+            <div>
+              <SubjectCell r={r} />
+            </div>
             {amountLine && (
               <Typography.Text type={amountLine.tone} style={{ fontSize: 12 }}>
                 {amountLine.text}
@@ -1170,7 +1291,11 @@ function RequestsTab() {
     primary: (r) => r.objectName,
     lines: [
       (r) => requestTypeLabels[r.requestType],
-      (r) => [requestSubject(r), r.wasteTypeName].filter(Boolean).join(' · '),
+      (r) => [wasteSubjectLabel(r), r.wasteTypeName].filter(Boolean).join(' · '),
+      // Чужой контейнер — своей строкой: тега рядом с предметом на телефоне не видно, а знать
+      // о расхождении тому, кто смотрит заявку с площадки, нужнее всего (ADR 0054).
+      (r) =>
+        containerOwnerMismatch(r) ? `Контейнер установил «${r.containerOwnerName ?? '—'}»` : null,
       (r) => {
         // Незаданный тариф на телефоне называется тем же текстом, что и в таблице (ADR 0046):
         // цветом строки карточка не располагает, но молчать о непосчитанной сумме нельзя.
@@ -1316,11 +1441,12 @@ function RequestsTab() {
         <Form
           form={operatorForm}
           layout="vertical"
-          onFinish={(v: { operatorCounterpartyId: string }) =>
+          onFinish={(v: { operatorCounterpartyId: string; ownerMismatchReason?: string }) =>
             operatorTarget &&
             startWorkMut.mutate({
               r: operatorTarget,
               operatorCounterpartyId: v.operatorCounterpartyId,
+              ownerMismatchReason: v.ownerMismatchReason,
             })
           }
         >
@@ -1328,10 +1454,12 @@ function RequestsTab() {
             name="operatorCounterpartyId"
             label="Оператор вывоза"
             rules={[{ required: true, message: 'Выберите оператора' }]}
+            // Контейнеры площадки — здесь же: назначение и есть тот момент, когда решают, кому
+            // ехать, а «вывозит тот, кто привёз» — часть этого решения (ADR 0054).
             extra={
               assignOperatorOptions.length === 0
                 ? 'Нет активных контрагентов типа «Оператор» — заведите его в справочнике'
-                : 'Оператор увидит заявку в своём списке и сможет отметить её выполненной'
+                : presentGroupsHint(targetGroups ?? [])
             }
           >
             <AutoSelect
@@ -1341,6 +1469,31 @@ function RequestsTab() {
               optionFilterProp="label"
             />
           </Form.Item>
+          {assignVerdict !== 'ok' && (
+            <>
+              <div style={{ marginBottom: 16 }}>
+                <Typography.Text type="warning">
+                  {`Контейнер установил «${operatorTarget?.containerOwnerName ?? '—'}». `}
+                  {assignVerdict === 'splitRequired'
+                    ? FOREIGN_CONTAINER_SPLIT_MESSAGE
+                    : 'Назначьте его либо объясните, почему вывозит другой оператор'}
+                </Typography.Text>
+              </div>
+              {assignVerdict !== 'splitRequired' && (
+                <Form.Item
+                  name="ownerMismatchReason"
+                  label="Причина вывоза чужого контейнера"
+                  rules={[{ required: true, message: 'Укажите причину' }]}
+                >
+                  <Input.TextArea
+                    rows={2}
+                    maxLength={500}
+                    placeholder="Например: контейнеры переданы по акту"
+                  />
+                </Form.Item>
+              )}
+            </>
+          )}
         </Form>
       </FormModal>
 
@@ -1511,22 +1664,49 @@ function RequestsTab() {
                 </div>
               </FormGrid.Full>
             )}
+            {/* Контейнер выбирается группой присутствия — типом вместе с владельцем (ADR 0054):
+              на площадке могут стоять две одинаковых бочки от разных операторов, и тип без
+              владельца на вопрос «какую снимаем» не отвечает. */}
             {subjectField && (
-              <Form.Item
-                name="containerTypeId"
-                label={subjectField.label}
-                rules={[{ required: true, message: subjectField.message }]}
-                extra={!objectHasPresent ? 'На объекте нет контейнеров' : undefined}
-              >
-                <AutoSelect
-                  options={subjectField.options}
-                  loading={subjectField.loading}
-                  showSearch
-                  optionFilterProp="label"
-                  placeholder={subjectField.placeholder}
-                  notFoundContent="Нет контейнеров на объекте"
-                />
-              </Form.Item>
+              <>
+                <Form.Item
+                  name="containerGroupKey"
+                  label={subjectField.label}
+                  rules={[{ required: true, message: subjectField.message }]}
+                  extra={!objectHasPresent ? 'На объекте нет контейнеров' : undefined}
+                >
+                  <AutoSelect
+                    options={subjectField.options}
+                    loading={subjectField.loading}
+                    showSearch
+                    optionFilterProp="label"
+                    placeholder={subjectField.placeholder}
+                    notFoundContent="Нет контейнеров на объекте"
+                  />
+                </Form.Item>
+                <Form.Item
+                  name="containersCount"
+                  label={subjectField.countLabel}
+                  tooltip="Одной заявкой снимают несколько контейнеров одного типа от одного оператора"
+                  rules={[
+                    { required: true, message: 'Укажите количество' },
+                    {
+                      type: 'number',
+                      min: 1,
+                      max: maxContainers,
+                      message: `На объекте ${maxContainers} шт.`,
+                    },
+                  ]}
+                >
+                  <InputNumber
+                    min={1}
+                    max={maxContainers}
+                    precision={0}
+                    style={{ width: '100%' }}
+                    disabled={!selectedGroup}
+                  />
+                </Form.Item>
+              </>
             )}
             {/* Исполнителя выбирают у уже заведённой заявки: при создании его чаще всего ещё не
               знают, и лишнее поле в форме отвлекало бы. Новой заявке оператора назначают
@@ -1536,10 +1716,12 @@ function RequestsTab() {
                 name="operatorCounterpartyId"
                 label="Оператор вывоза"
                 tooltip="Контрагент, который выполняет заявку; он увидит её в своём списке"
+                // Кто уже работает на площадке — там же, где выбирают исполнителя (ADR 0054):
+                // отвечает и на «кого звать», и на «почему нельзя этого».
                 extra={
                   formOperatorOptions.length === 0
                     ? 'Нет активных контрагентов типа «Оператор» — заведите его в справочнике'
-                    : undefined
+                    : presentGroupsHint(groups)
                 }
               >
                 <Select
@@ -1550,6 +1732,33 @@ function RequestsTab() {
                   placeholder="Можно назначить позже"
                 />
               </Form.Item>
+            )}
+            {/* Расхождение «вывозит не тот, кто привёз»: снятие проходит с объяснённой причиной,
+              замена не проходит вовсе — она меняет владельца контейнера на площадке. */}
+            {ownerVerdict !== 'ok' && (
+              <FormGrid.Full>
+                <div style={{ marginTop: -8, marginBottom: 16 }}>
+                  <Typography.Text type="warning">
+                    {`Контейнер установил «${selectedGroup?.ownerName ?? '—'}». `}
+                    {ownerVerdict === 'splitRequired'
+                      ? FOREIGN_CONTAINER_SPLIT_MESSAGE
+                      : 'Назначьте его либо объясните, почему вывозит другой оператор'}
+                  </Typography.Text>
+                </div>
+                {ownerVerdict !== 'splitRequired' && (
+                  <Form.Item
+                    name="ownerMismatchReason"
+                    label="Причина вывоза чужого контейнера"
+                    rules={[{ required: true, message: 'Укажите причину' }]}
+                  >
+                    <Input.TextArea
+                      rows={2}
+                      maxLength={500}
+                      placeholder="Например: контейнеры переданы по акту"
+                    />
+                  </Form.Item>
+                )}
+              </FormGrid.Full>
             )}
             <>
               <Form.Item

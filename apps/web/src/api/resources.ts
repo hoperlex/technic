@@ -75,6 +75,7 @@ import type {
   WarehouseDto,
   CreateWarehouseInput,
   UpdateWarehouseInput,
+  PresentContainerGroupDto,
   WasteRequestDto,
   WasteRequestSummaryDto,
   WasteTariffDto,
@@ -460,6 +461,11 @@ export interface WasteRequestPayload {
   objectId: string;
   requestType: RequestType;
   containerTypeId?: string;
+  /** Чей контейнер снимаем/меняем и сколько единиц (ADR 0054); только у замены и снятия. */
+  containerOwnerCounterpartyId?: string;
+  containersCount?: number;
+  /** Подтверждение вывоза чужого контейнера — причиной. */
+  ownerMismatchReason?: string;
   wasteTypeId?: string;
   volumeM3?: number;
   /** Контрагент-оператор вывоза; можно назначить позже (ADR 0010). */
@@ -476,6 +482,9 @@ export interface WasteRequestUpdatePayload {
   objectId?: string;
   requestType?: RequestType;
   containerTypeId?: string | null;
+  containerOwnerCounterpartyId?: string | null;
+  containersCount?: number;
+  ownerMismatchReason?: string;
   wasteTypeId?: string | null;
   volumeM3?: number | null;
   operatorCounterpartyId?: string | null;
@@ -532,6 +541,14 @@ export const wasteRequestsApi = {
   /** Наличие контейнеров на площадках (присутствующие заявки установки). */
   present: (q: Query) =>
     apiFetch<ListResult<WasteRequestDto>>('/waste-requests/present', { query: q }),
+  /**
+   * Группы присутствия на объекте: что и чьё там стоит, сколько штук (ADR 0054). Одна выборка на
+   * выбор контейнера в заявке, потолок количества и подсказку «кого звать на этот объект».
+   */
+  presentGroups: (objectId: string) =>
+    apiFetch<PresentContainerGroupDto[]>('/waste-requests/present-groups', {
+      query: { objectId },
+    }),
   /** Счётчики заявок по статусам — сводка над списком; сужается только фильтром по объекту. */
   summary: (q: Query) => apiFetch<WasteRequestSummaryDto>('/waste-requests/summary', { query: q }),
   get: (id: string) => apiFetch<WasteRequestDto>(`/waste-requests/${id}`),
@@ -541,11 +558,20 @@ export const wasteRequestsApi = {
     apiFetch<WasteRequestDto>('/waste-requests', { method: 'POST', body }),
   update: (id: string, body: WasteRequestUpdatePayload) =>
     apiFetch<WasteRequestDto>(`/waste-requests/${id}`, { method: 'PATCH', body }),
-  /** Назначение/снятие оператора вывоза; предмет заявки и тариф не пересчитываются (ADR 0010). */
-  assignOperator: (id: string, operatorCounterpartyId: string | null, version: number) =>
+  /**
+   * Назначение/снятие оператора вывоза; предмет заявки и тариф не пересчитываются (ADR 0010).
+   * `ownerMismatchReason` — подтверждение вывоза чужого контейнера: назначение и есть тот момент,
+   * когда расхождение возникает (ADR 0054).
+   */
+  assignOperator: (
+    id: string,
+    operatorCounterpartyId: string | null,
+    version: number,
+    ownerMismatchReason?: string,
+  ) =>
     apiFetch<WasteRequestDto>(`/waste-requests/${id}/operator`, {
       method: 'PATCH',
-      body: { operatorCounterpartyId, version },
+      body: { operatorCounterpartyId, version, ownerMismatchReason },
     }),
   /**
    * Примечание исполнителя — вторая строка комментария заявки (ADR 0053). Отдельной ручкой:

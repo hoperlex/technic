@@ -180,11 +180,143 @@ export interface WasteRequestCompletionDto {
   completedAt: string;
 }
 
+// ── Контейнеры на объекте: владелец и количество (миграция 0080) ──
+
+/**
+ * Операции над контейнером, который уже стоит на площадке. У них, и только у них, есть владелец
+ * (чей контейнер трогаем) и количество: установка привозит свой контейнер, а вывоз мусора
+ * контейнеров не касается вовсе (ADR 0022).
+ */
+export function usesContainerGroup(t: RequestType): boolean {
+  return t === 'container_replace' || t === 'container_removal';
+}
+
+/** Потолок количества — защита от опечатки: сколько снять можно, ограничено присутствием. */
+export const MAX_CONTAINERS_PER_REQUEST = 20;
+
+export const containersCountSchema = z.coerce
+  .number()
+  .int()
+  .min(1, 'Не меньше одного контейнера')
+  .max(MAX_CONTAINERS_PER_REQUEST, `Не больше ${MAX_CONTAINERS_PER_REQUEST} контейнеров за раз`);
+
+/**
+ * Группа присутствия: что и чьё стоит на объекте, сколько штук. Единицы внутри группы
+ * взаимозаменяемы — какую именно из двух одинаковых бочек одного оператора увезут, вопрос не
+ * учёта, а водителя.
+ */
+export interface PresentContainerGroupDto {
+  objectId: string;
+  containerTypeId: string;
+  containerTypeName: string;
+  /** Оператор, установивший контейнеры; null — установку завели без оператора. */
+  ownerCounterpartyId: string | null;
+  ownerName: string | null;
+  quantity: number;
+}
+
+export const presentContainerGroupsQuerySchema = z.object({ objectId: uuidSchema });
+export type PresentContainerGroupsQuery = z.infer<typeof presentContainerGroupsQuerySchema>;
+
+/**
+ * Подпись группы: «Контейнер 8 м³ — Оператор А (2 шт.)». Показывается в четырёх местах — выбор
+ * контейнера в форме, подсказка под полем оператора, окно назначения при переводе в работу и
+ * вкладка «На объекте», — поэтому собирается здесь, а не в вёрстке каждого из них.
+ */
+export function presentGroupLabel(
+  g: Pick<PresentContainerGroupDto, 'containerTypeName' | 'ownerName' | 'quantity'>,
+): string {
+  return `${g.containerTypeName} — ${g.ownerName ?? 'оператор не указан'} (${g.quantity} шт.)`;
+}
+
+/**
+ * Вывозит ли заявку не тот, кто контейнер привёз. Считается, а не хранится: это отношение двух
+ * колонок, и хранимый признак разошёлся бы с ними при первой же смене оператора.
+ *
+ * Молчит в двух случаях, и оба — «данных нет», а не «всё в порядке»: оператор ещё не назначен
+ * (заявку завела площадка) и владелец не известен (установку завели без оператора).
+ */
+export function containerOwnerMismatch(
+  r: Pick<
+    WasteRequestDto,
+    'requestType' | 'operatorCounterpartyId' | 'containerOwnerCounterpartyId'
+  >,
+): boolean {
+  if (!usesContainerGroup(r.requestType)) return false;
+  if (!r.operatorCounterpartyId || !r.containerOwnerCounterpartyId) return false;
+  return r.operatorCounterpartyId !== r.containerOwnerCounterpartyId;
+}
+
+/**
+ * Чем кончается расхождение «вывозит не тот, кто привёз»:
+ *  - `ok` — расхождения нет либо о нём нечего сказать (оператор или владелец не известны);
+ *  - `reasonRequired` — снятие чужого контейнера: пройдёт, если объяснить причину;
+ *  - `reasonGiven` — то же снятие с объяснённой причиной: проходит и попадает в историю;
+ *  - `splitRequired` — замена чужого контейнера: не проходит вовсе.
+ *
+ * У замены обхода нет намеренно. Заменить чужой контейнер — значит увезти контейнер одного
+ * оператора и оставить контейнер другого, то есть сменить владельца единицы на площадке. Одной
+ * заявкой это описать нечем: либо учёт соврёт (единица останется числиться за прежним), либо в
+ * присутствие придётся заводить перенос владельца — третий механизм ради редкого случая. Две
+ * заявки — снятие чужого и установка своего — описывают ровно то, что произошло.
+ *
+ * Политика одна на сервер и на форму: сервер ею отказывает, форма — предупреждает заранее, и
+ * расходиться им нельзя.
+ */
+export type ContainerOwnerVerdict = 'ok' | 'reasonRequired' | 'reasonGiven' | 'splitRequired';
+
+export function checkContainerOwner(
+  r: Pick<
+    WasteRequestDto,
+    'requestType' | 'operatorCounterpartyId' | 'containerOwnerCounterpartyId'
+  >,
+  reasonGiven = false,
+): ContainerOwnerVerdict {
+  if (!containerOwnerMismatch(r)) return 'ok';
+  if (r.requestType === 'container_replace') return 'splitRequired';
+  return reasonGiven ? 'reasonGiven' : 'reasonRequired';
+}
+
+/** Один текст на отказ сервера и на объяснение в форме — см. `checkContainerOwner`. */
+export const FOREIGN_CONTAINER_SPLIT_MESSAGE =
+  'Замена чужого контейнера оформляется двумя заявками: снятие чужого и установка своего';
+
+/**
+ * Предмет заявки строкой — для колонки списка и мобильной карточки. Объём есть там, где он
+ * определяет сумму (ADR 0019); количество показывается только когда контейнер не один: «× 1»
+ * читателю ничего не сообщает. Техники у вывоза нет вовсе (ADR 0022) — у заявок, заведённых до
+ * этого решения, тип в базе остался, но предметом заявки уже не является.
+ */
+export function wasteSubjectLabel(
+  r: Pick<WasteRequestDto, 'requestType' | 'containerTypeName' | 'containersCount' | 'volumeM3'>,
+): string {
+  const container = requiresWasteFact(r.requestType) ? null : r.containerTypeName;
+  const parts = [
+    container && r.containersCount > 1 ? `${container} × ${r.containersCount}` : container,
+    r.volumeM3 != null ? `${r.volumeM3} м³` : null,
+  ].filter(Boolean);
+  return parts.length ? parts.join(', ') : '—';
+}
+
+/**
+ * Причина вывоза чужого контейнера. Присутствие причины и есть подтверждение: отдельный флаг
+ * «я подтверждаю» рядом с ней означал бы, что подтвердить можно молча — а молча оно и так
+ * происходило до этой правки.
+ *
+ * Хранить причину колонкой заявки не нужно: это не свойство заявки, а факт «человек согласился и
+ * объяснил», и место таких фактов — история (ADR 0012).
+ */
+export const ownerMismatchReasonSchema = z
+  .string()
+  .trim()
+  .min(1, 'Укажите причину')
+  .max(500, 'Слишком длинная причина');
+
 /**
  * Поля заявки зависят от типа операции:
  *  - container_install → containerTypeId (тип контейнера из справочника, type='cont');
- *  - container_replace → containerTypeId (присутствующий на объекте);
- *  - container_removal → containerTypeId (присутствующий на объекте);
+ *  - container_replace → containerTypeId + владелец + количество (группа присутствия);
+ *  - container_removal → containerTypeId + владелец + количество (группа присутствия);
  *  - waste_removal     → wasteTypeId + volumeM3, техника не указывается (ADR 0022).
  * Тип мусора, объём и цена есть только у вывоза (ADR 0019). Кросс-полевые требования
  * проверяет superRefine; тариф и сумму считает сервер — кратность объёма известна только ему.
@@ -194,6 +326,12 @@ export const createWasteRequestSchema = z
     objectId: uuidSchema,
     requestType: requestTypeSchema,
     containerTypeId: uuidSchema.optional(),
+    /** Чей контейнер снимаем/меняем: владелец выбранной группы присутствия. */
+    containerOwnerCounterpartyId: uuidSchema.optional(),
+    /** Сколько контейнеров снимает/меняет заявка; у остальных типов всегда один. */
+    containersCount: containersCountSchema.optional().default(1),
+    /** Подтверждение вывоза чужого контейнера — причиной (см. ownerMismatchReasonSchema). */
+    ownerMismatchReason: ownerMismatchReasonSchema.optional(),
     wasteTypeId: uuidSchema.optional(),
     volumeM3: volumeSchema.optional(),
     /** Кто вывозит: контрагент с типом «Оператор». Можно назначить позже (ADR 0010). */
@@ -243,6 +381,24 @@ export const createWasteRequestSchema = z
         message: 'Выберите тип контейнера для снятия',
       });
     }
+    // Количество и владелец бывают только у операций над стоящим контейнером. Молча отбросить
+    // их (как отбрасывается техника у вывоза) здесь нельзя: это числа, которые вводил человек.
+    if (!usesContainerGroup(v.requestType)) {
+      if (v.containersCount > 1) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['containersCount'],
+          message: 'Несколько контейнеров бывает только у замены и снятия',
+        });
+      }
+      if (v.containerOwnerCounterpartyId) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['containerOwnerCounterpartyId'],
+          message: 'Владелец контейнера указывается при замене и снятии',
+        });
+      }
+    }
     // Вывоз мусора заказывается объёмом, а не техникой (ADR 0022): чем вывозить, решает
     // оператор, а при закрытии предъявляет фактический объём (ADR 0035).
     // Тарифицируемая операция (вывоз): нужны и тип мусора, и объём — вдвоём с
@@ -265,6 +421,11 @@ export const updateWasteRequestSchema = z
     objectId: uuidSchema.optional(),
     requestType: requestTypeSchema.optional(),
     containerTypeId: uuidSchema.nullable().optional(),
+    // Владелец и количество: значимы только у замены и снятия — при смене типа заявки сервер
+    // приводит их к «один контейнер, владельца нет» тем же порядком, что тип мусора и объём.
+    containerOwnerCounterpartyId: uuidSchema.nullable().optional(),
+    containersCount: containersCountSchema.optional(),
+    ownerMismatchReason: ownerMismatchReasonSchema.optional(),
     wasteTypeId: uuidSchema.nullable().optional(),
     /** Значим только у вывоза мусора: у контейнерных операций объёма нет (ADR 0019). */
     volumeM3: volumeSchema.nullable().optional(),
@@ -312,6 +473,11 @@ export type UpdateWasteOperatorCommentInput = z.infer<typeof updateWasteOperator
 export const assignWasteOperatorSchema = z.object({
   /** null — снять назначение (заявка снова «без оператора»). */
   operatorCounterpartyId: uuidSchema.nullable(),
+  /**
+   * Причина вывоза чужого контейнера. Назначение — тот самый момент, когда расхождение и
+   * возникает: заявку заводит площадка, а исполнителя ей выбирает диспетчер.
+   */
+  ownerMismatchReason: ownerMismatchReasonSchema.optional(),
   version: z.number().int().nonnegative(),
 });
 export type AssignWasteOperatorInput = z.infer<typeof assignWasteOperatorSchema>;
@@ -414,6 +580,18 @@ export interface WasteRequestDto {
   // (ADR 0022) — поле остаётся заполненным лишь у заявок, заведённых до этого решения.
   containerTypeId: string | null;
   containerTypeName: string | null;
+  /**
+   * Сколько контейнеров снимает или меняет заявка (миграция 0080). У остальных типов всегда 1:
+   * установка привозит один контейнер, вывоза мусора контейнеры не касаются.
+   */
+  containersCount: number;
+  /**
+   * Чей контейнер снимаем/меняем: оператор его заявки установки. null — владелец не известен
+   * (установку завели без оператора либо заявка старше миграции 0080), и тогда правило
+   * совпадения молчит: запрет там, где нет данных, — не запрет ошибки.
+   */
+  containerOwnerCounterpartyId: string | null;
+  containerOwnerName: string | null;
   // Тарифицируемые операции (замена / снятие / вывоз): что вывозим, сколько и почём.
   wasteTypeId: string | null;
   wasteTypeName: string | null;
@@ -520,6 +698,11 @@ export const wasteRequestChangeLabels: Record<string, string> = {
   object: 'Объект',
   requestType: 'Тип заявки',
   containerType: 'Контейнер / машина',
+  // Контейнеры на объекте (миграция 0080): чей контейнер трогаем и сколько штук.
+  containerOwner: 'Владелец контейнера',
+  containersCount: 'Количество контейнеров',
+  // Подтверждённый вывоз чужого контейнера: событие-список — значима только правая часть.
+  ownerMismatch: 'Вывоз чужого контейнера',
   wasteType: 'Тип мусора',
   volumeM3: 'Объём',
   pricePerM3: 'Цена за м³',

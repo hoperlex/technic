@@ -20,6 +20,9 @@ const AUDIT_ACTIONS = [
   // Факт вывоза (ADR 0035): своё событие рядом с переходом в «Выполнена» — объём и сумма
   // предъявляются составом изменений, а не одной отметкой о статусе.
   'waste_request.complete',
+  // Подтверждённый вывоз чужого контейнера (ADR 0054): решение человека вывезти контейнер,
+  // поставленный другим оператором, и объяснение почему — своё событие рядом с назначением.
+  'waste_request.owner_mismatch',
   'waste_request.soft_delete',
   'waste_request.restore',
 ] as const;
@@ -29,6 +32,8 @@ const AUDIT_KINDS: Record<string, RequestHistoryKind> = {
   'waste_request.assign_operator': 'operator',
   'waste_request.operator_comment': 'updated',
   'waste_request.complete': 'completed',
+  // Вид «оператор»: событие о том, кто вывозит, — оно и стоит рядом с назначением исполнителя.
+  'waste_request.owner_mismatch': 'operator',
   'waste_request.soft_delete': 'deleted',
   'waste_request.restore': 'restored',
 };

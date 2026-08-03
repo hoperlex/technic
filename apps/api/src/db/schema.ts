@@ -1073,6 +1073,18 @@ export const wasteRequests = pgTable(
     containerTypeId: uuid('container_type_id').references(() => containerTypes.id, {
       onDelete: 'restrict',
     }),
+    // Сколько контейнеров снимает или меняет одна заявка (миграция 0080). У остальных типов
+    // всегда 1: у установки остаётся «одна заявка — один контейнер», иначе строка присутствия
+    // перестала бы быть одним контейнером.
+    containersCount: integer('containers_count').notNull().default(1),
+    // Чей контейнер снимаем/меняем: оператор его заявки установки (миграция 0080). Не выводится
+    // из оператора самой заявки — вывоз чужого контейнера бывает и разрешается подтверждением,
+    // но погасить он обязан единицу настоящего владельца. NULL — владелец не известен
+    // (установку завели без оператора либо заявка старше миграции).
+    containerOwnerCounterpartyId: uuid('container_owner_counterparty_id').references(
+      () => counterparties.id,
+      { onDelete: 'restrict' },
+    ),
     // Объём вывоза: только у waste_removal — контейнерные операции его не несут (ADR 0019).
     // У заявок на замену и снятие, заведённых до этого решения, объём остался в истории.
     volumeM3: integer('volume_m3'),
@@ -1130,6 +1142,10 @@ export const wasteRequests = pgTable(
     deliveryIdx: index('waste_requests_delivery_idx').on(t.deliveryAt),
     createdAtIdx: index('waste_requests_created_at_idx').on(t.createdAt),
     wasteTypeIdx: index('waste_requests_waste_type_idx').on(t.wasteTypeId),
+    // По этой тройке считает группы присутствия view present_container_groups (миграция 0080).
+    containerOwnerIdx: index('waste_requests_container_owner_idx')
+      .on(t.objectId, t.containerTypeId, t.containerOwnerCounterpartyId)
+      .where(sql`${t.requestType} IN ('container_replace', 'container_removal')`),
     // Установка нового контейнера не тарифицируется: вывоза мусора в этой операции нет.
     // Замена и снятие тарификацию тоже потеряли (ADR 0019), но CHECK на них не расширен —
     // у заведённых до этого заявок тип мусора и цена сохранены как есть; новые их не пишут.
@@ -1146,15 +1162,44 @@ export const wasteRequests = pgTable(
       'waste_requests_price_positive_check',
       sql`${t.pricePerM3} IS NULL OR ${t.pricePerM3} > 0`,
     ),
+    // Количество и владелец бывают только у операций над стоящим контейнером (миграция 0080).
+    // Потолок — защита от опечатки: сколько снять можно на самом деле, ограничено присутствием
+    // на объекте, и это проверяет сервер по view.
+    containersCountRange: check(
+      'waste_requests_containers_count_check',
+      sql`${t.containersCount} BETWEEN 1 AND 20`,
+    ),
+    containersCountType: check(
+      'waste_requests_containers_count_type_check',
+      sql`${t.containersCount} = 1
+          OR ${t.requestType} IN ('container_replace', 'container_removal')`,
+    ),
+    containerOwnerType: check(
+      'waste_requests_container_owner_type_check',
+      sql`${t.containerOwnerCounterpartyId} IS NULL
+          OR ${t.requestType} IN ('container_replace', 'container_removal')`,
+    ),
   }),
 );
 
-// ── Наличие контейнеров на площадках (view, создаётся миграцией 0007) ──
-// Возвращает id «присутствующих» заявок установки: установки минус снятия по типу (FIFO по num).
+// ── Наличие контейнеров на площадках (view, создаётся миграцией 0007, переписан в 0080) ──
+// Возвращает id «присутствующих» заявок установки: установки минус снятия внутри тройки
+// «объект + тип + владелец» (FIFO по num). Владелец единицы — оператор её заявки установки.
 export const presentContainers = pgView('present_containers', {
   id: uuid('id'),
   objectId: uuid('object_id'),
   containerTypeId: uuid('container_type_id'),
+  ownerCounterpartyId: uuid('owner_counterparty_id'),
+}).existing();
+
+// Группы присутствия (миграция 0080): «что и чьё стоит на объекте, сколько штук». Одна выборка
+// отвечает и на «из чего выбирать контейнер в заявке», и на «сколько максимум можно снять»,
+// и на «кого звать на этот объект».
+export const presentContainerGroups = pgView('present_container_groups', {
+  objectId: uuid('object_id'),
+  containerTypeId: uuid('container_type_id'),
+  ownerCounterpartyId: uuid('owner_counterparty_id'),
+  quantity: integer('quantity'),
 }).existing();
 
 // ── Связь заявка ↔ файлы (ссылочная целостность) ──
