@@ -22,6 +22,7 @@ import {
   isAllowedEarlyEndDate,
   isApprovalChangeable,
   isClosedRequestStatus,
+  isCargoAmountRequired,
   isVehicleKindAllowedForRequest,
   onSiteDayLabel,
   onSitePresence,
@@ -296,11 +297,24 @@ describe('vehicle-requests: кросс-поля и валидация значе
     ).toThrow();
   });
 
-  it('грузоперевозка требует объём или массу', () => {
+  /**
+   * Объём и масса схемой не проверяются: нужны ли они, зависит от бланка заказанного типа ТС, а
+   * бланк живёт в справочнике — схеме его взять неоткуда. Обязательность условная и решается
+   * сервером (`assertCargoAmount`), правило — `isCargoAmountRequired`.
+   */
+  it('грузоперевозка проходит схему без объёма и массы: их требует бланк, а не схема', () => {
     const { volumeM3: _v, ...noAmount } = freight;
-    expect(() => createVehicleRequestSchema.parse(noAmount)).toThrow();
+    expect(createVehicleRequestSchema.parse(noAmount).requestType).toBe('freight_transport');
     const byWeight = createVehicleRequestSchema.parse({ ...noAmount, weightTons: 3.2 });
     expect(byWeight.requestType).toBe('freight_transport');
+  });
+
+  it('груз требуется всем бланкам, кроме формы № 3: легковая возит людей', () => {
+    expect(isCargoAmountRequired('4p')).toBe(true);
+    expect(isCargoAmountRequired('esm2')).toBe(true);
+    // Тип без бланка — состояние справочника, а не «груза не бывает»: требование остаётся.
+    expect(isCargoAmountRequired(null)).toBe(true);
+    expect(isCargoAmountRequired('leg3')).toBe(false);
   });
 
   it('объём/масса: >0 и не более 3 знаков', () => {

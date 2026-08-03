@@ -26,6 +26,8 @@ function position(
     categoryName: null,
     label: over.categoryName ?? over.typeName,
     specCount: over.vehicleCategoryId ? 1 : 0,
+    // Спецтехника: путевой лист на неё не выписывается (ADR 0037 п. 1).
+    waybillFormCode: null,
     avgPricePerHour: null,
     avgPricePerShift: null,
     isActive: true,

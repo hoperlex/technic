@@ -23,6 +23,7 @@ import {
   vehiclePriceSchema,
 } from './vehicles';
 import { assignRouteSchema, type VehicleRequestRouteDto } from './vehicle-routes';
+import type { WaybillFormCode } from './waybills';
 import {
   MIN_REQUEST_DATE_MESSAGE,
   WORK_TIME_MESSAGE,
@@ -47,6 +48,22 @@ export function isVehicleKindAllowedForRequest(
 ): boolean {
   return requestType === 'freight_transport' ? kindCode === FREIGHT_VEHICLE_KIND_CODE : true;
 }
+
+/**
+ * Нужен ли заявке объём или масса груза.
+ *
+ * Не нужен там, где груза не бывает: легковая машина возит людей, и в её бланке (форма № 3)
+ * графа «Груз» заполняется от руки в тех редких рейсах, когда что-то везут. Требовать «объём или
+ * массу» у поездки означало бы заставлять заявителя выдумывать число.
+ *
+ * Правило спрашивает бланк, а не код типа: бланк — это то, чем тип отличается по существу, и
+ * заведённый завтра второй легковой тип попадёт под него сам, без правки списка исключений.
+ */
+export function isCargoAmountRequired(formCode: WaybillFormCode | null): boolean {
+  return formCode !== 'leg3';
+}
+
+export const CARGO_AMOUNT_MESSAGE = 'Укажите объём или массу';
 
 /** Отображаемый номер заявки ТС: «ТС-123» (в БД хранится только число). */
 export function formatVehicleRequestNumber(num: number): string {
@@ -209,9 +226,9 @@ export const createVehicleRequestSchema = z
           message: 'Укажите объект либо отдел — что-то одно',
         });
       }
-      if (v.volumeM3 == null && v.weightTons == null) {
-        ctx.addIssue({ code: 'custom', path: ['volumeM3'], message: 'Укажите объём или массу' });
-      }
+      // Объём и масса здесь не проверяются: нужны ли они, зависит от бланка заказанного типа ТС
+      // (`isCargoAmountRequired`), а бланк живёт в справочнике — схеме его взять неоткуда.
+      // Обязательность условная и решается сервером, как категория ТС и ставки (ADR 0037 п. 4).
       if (!v.scheduledTimeUnspecified && !isWithinWorkTimeAt(new Date(v.scheduledAt))) {
         ctx.addIssue({ code: 'custom', path: ['scheduledAt'], message: WORK_TIME_MESSAGE });
       }

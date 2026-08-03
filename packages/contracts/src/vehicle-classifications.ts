@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { baseListQuery, uuidSchema } from './common';
+import type { WaybillFormCode } from './waybills';
 
 // ── Классификатор ТС: тип и его категории одним списком ──
 //
@@ -54,6 +55,13 @@ export interface VehicleClassificationDto {
   label: string;
   /** ТТХ у типа (ADR 0016): 0 — категорий у типа нет и быть не может. */
   specCount: number;
+  /**
+   * Бланк путевого листа типа (`vehicle_types.waybill_form_code`); `null` — лист на такую технику
+   * не выписывается. Форме заявки он нужен не ради документа: бланком тип отличается по существу
+   * — у формы № 3 (легковой автомобиль) не спрашивают груз, потому что его не бывает
+   * (`isCargoAmountRequired`).
+   */
+  waybillFormCode: WaybillFormCode | null;
   /**
    * Порядок цены этой позиции: средняя ставка активной техники, у которой она заполнена. Считается
    * по всему парку — и по аренде, и по своим машинам: заказчику отвечают на «во сколько обойдётся»,

@@ -87,6 +87,38 @@ describe('разметка бланков', () => {
     }
   });
 
+  /**
+   * Форма № 3 печатает задание на обороте: лицевая сторона держит только «Адрес подачи», а рейс
+   * с его заявками — таблица «Место отправления / назначения, время убытия, груз, заказчик».
+   * Без неё лист выходил бы без единого адреса, ради которого машина выезжала.
+   */
+  it('в форме № 3 размечены реквизиты и задание рейса', () => {
+    const inTemplate = new Set(inspectTemplate(template('leg3')));
+    for (const key of [
+      'org_name',
+      'org_okpo',
+      'waybill_number',
+      'waybill_date',
+      'vehicle_brand',
+      'vehicle_reg_number',
+      'driver_fio',
+      'driver_snils',
+      'driver_license_number',
+      'customer_name',
+      'task_from',
+      'task_to',
+      'task_departure_hh',
+      'task_departure_mm',
+      // Талоны рейса: маршрут держит четыре заявки, и печатаются все четыре.
+      'task2_from',
+      'task3_from',
+      'task4_from',
+      'task4_customer',
+    ]) {
+      expect(inTemplate.has(key), key).toBe(true);
+    }
+  });
+
   it.each(FORMS)('заполненный бланк %s не содержит незакрытых плейсхолдеров', (form) => {
     const values = Object.fromEntries(WAYBILL_SNAPSHOT_KEYS.map((k) => [k, `знач-${k}`]));
     const rendered = renderOfficeTemplate(template(form), values);

@@ -131,6 +131,7 @@ export default async function vehicleClassificationsRoutes(app: FastifyInstance)
             categoryName: vehicleCategories.name,
             label,
             specCount,
+            waybillFormCode: vehicleTypes.waybillFormCode,
             avgPricePerHour: avgPrice(vehicles.pricePerHour),
             avgPricePerShift: avgPrice(vehicles.pricePerShift),
             isActive: activeExpr,
@@ -173,6 +174,7 @@ export default async function vehicleClassificationsRoutes(app: FastifyInstance)
         categoryName: row.categoryName,
         label: row.label,
         specCount: Number(row.specCount),
+        waybillFormCode: row.waybillFormCode,
         // numeric приходит из pg строкой; пустое среднее (ставок нет ни у одной машины) остаётся
         // null — «нет цены» и «ноль» для читателя списка разные ответы.
         avgPricePerHour: row.avgPricePerHour == null ? null : Number(row.avgPricePerHour),

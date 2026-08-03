@@ -48,6 +48,8 @@ import {
   isAllowedEarlyEndDate,
   isApprovalChangeable,
   isClosedRequestStatus,
+  isCargoAmountRequired,
+  CARGO_AMOUNT_MESSAGE,
   isVehicleKindAllowedForRequest,
   moscowDateKeyOf,
   rateForWorkUnit,
@@ -683,6 +685,30 @@ async function resolveClassification(
       });
     }
     throw err.unprocessable('Категория неактивна', { vehicleCategoryId: 'Категория неактивна' });
+  }
+}
+
+/**
+ * Объём или масса груза — там, где груз бывает.
+ *
+ * Условие спрашивает бланк заказанного типа ТС: у формы № 3 (легковой автомобиль) груза нет, и
+ * требовать число значило бы заставлять заявителя его выдумывать. Схема этого не проверяет —
+ * бланк живёт в справочнике, и взять его ей неоткуда (ADR 0037 п. 4, тот же приём, что у
+ * категории ТС и ставок).
+ */
+async function assertCargoAmount(
+  tx: Tx,
+  vehicleTypeId: string,
+  cargo: { volumeM3: string | null; weightTons: string | null },
+): Promise<void> {
+  if (cargo.volumeM3 != null || cargo.weightTons != null) return;
+
+  const [row] = await tx
+    .select({ formCode: vehicleTypes.waybillFormCode })
+    .from(vehicleTypes)
+    .where(eq(vehicleTypes.id, vehicleTypeId));
+  if (isCargoAmountRequired(row?.formCode ?? null)) {
+    throw err.unprocessable(CARGO_AMOUNT_MESSAGE, { volumeM3: CARGO_AMOUNT_MESSAGE });
   }
 }
 
@@ -1826,6 +1852,10 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
             responsiblePhone: body.responsiblePhone,
           });
         } else {
+          await assertCargoAmount(tx, body.vehicleTypeId, {
+            volumeM3: numToDb(body.volumeM3),
+            weightTons: numToDb(body.weightTons),
+          });
           await tx.insert(freightTransportRequestDetails).values({
             requestId: id,
             scheduledAt: new Date(body.scheduledAt),
@@ -2018,9 +2048,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           const volumeM3 = body.volumeM3 !== undefined ? numToDb(body.volumeM3) : ex!.volumeM3;
           const weightTons =
             body.weightTons !== undefined ? numToDb(body.weightTons) : ex!.weightTons;
-          if (volumeM3 == null && weightTons == null) {
-            throw err.badRequest('Укажите объём или массу');
-          }
+          await assertCargoAmount(tx, nextTypeId, { volumeM3, weightTons });
           await tx
             .update(freightTransportRequestDetails)
             .set({

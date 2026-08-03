@@ -273,6 +273,8 @@ async function collectSnapshot(
     request?.scheduledAt && !request.timeUnspecified
       ? new Date(request.scheduledAt.getTime() + 3 * 60 * 60 * 1000).toISOString().slice(11, 16)
       : '';
+  // Форма № 3 держит часы и минуты в разных клетках шириной в две цифры: «08:30» туда не встаёт.
+  const [departureHours = '', departureMinutes = ''] = departure ? departure.split(':') : [];
 
   return {
     org_name: org?.name ?? '',
@@ -311,6 +313,8 @@ async function collectSnapshot(
     task_to: request?.unloading ?? '',
     task_cargo: cargo,
     task_departure_time: departure,
+    task_departure_hh: departureHours,
+    task_departure_mm: departureMinutes,
 
     task2_customer: slot(0).customer,
     task2_from: slot(0).from,
@@ -379,12 +383,15 @@ export async function issueWaybillForRoute(
     withTrailer: ctx.trip.withTrailer,
     personId: ctx.driverPersonId,
   });
+  // Пустой ответ означает неполный комплект документов, а не чужую категорию (ADR 0055): категория
+  // выписку не останавливает. Сообщение перечисляет графы бланка — иначе останется гадать, чего
+  // именно не хватает человеку, который в справочнике выглядит заведённым.
   if (!selection || selection.drivers.length === 0) {
     throw err.unprocessable(
-      selection?.requiredCategoryName
-        ? `У водителя нет действующей категории ${selection.requiredCategoryName} на ${ctx.routeDate}`
-        : 'У водителя нет действующего удостоверения на дату рейса',
-      { driverPersonId: 'Водитель не допущен к этой машине' },
+      `У водителя неполный комплект документов на ${ctx.routeDate}: путевой лист печатает СНИЛС, ` +
+        'серию с номером удостоверения и дату его выдачи, и действовать документ должен на день ' +
+        'рейса. Недостающее вносит администратор в справочнике водителей.',
+      { driverPersonId: 'Документов не хватает для листа' },
     );
   }
 

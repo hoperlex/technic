@@ -36,6 +36,8 @@ import {
   type CompleteVehicleRequestInput,
   isAddressVerified,
   minRequestDateKey,
+  isCargoAmountRequired,
+  CARGO_AMOUNT_MESSAGE,
   isVehicleKindAllowedForRequest,
   normalizeTimeInput,
   parseVehicleClassificationKey,
@@ -327,6 +329,18 @@ export function VehicleRequestsTab() {
   const isFreight = watchRequestType === 'freight_transport';
   const commentHint = watchRequestType ? COMMENT_HINTS[watchRequestType] : null;
 
+  /**
+   * Нужен ли груз. У легковой машины (форма № 3) его не бывает: она возит людей, и требовать
+   * «объём или массу» значило бы заставлять заявителя выдумывать число. Правило то же, которым
+   * отвечает сервер, — и спрашивает оно бланк заказанного типа, а не его код.
+   */
+  const watchClassificationKey = Form.useWatch('classificationKey', form);
+  const cargoRequired = isCargoAmountRequired(
+    (watchClassificationKey
+      ? classificationByKey.get(watchClassificationKey)?.waybillFormCode
+      : null) ?? null,
+  );
+
   // Подсказка о длине периода работы техники: пустая дата окончания — однодневный срок
   // (так же его понимает сервер). Та же подсказка стоит в карточке заявки.
   const watchDateFrom = Form.useWatch('dateFrom', form);
@@ -551,8 +565,8 @@ export function VehicleRequestsTab() {
       saveMut.mutate(v);
       return;
     }
-    if (v.volumeM3 == null && v.weightTons == null) {
-      message.error('Укажите объём или массу');
+    if (cargoRequired && v.volumeM3 == null && v.weightTons == null) {
+      message.error(CARGO_AMOUNT_MESSAGE);
       return;
     }
     // Жёсткая модель (ADR 0006): адрес погрузки/разгрузки обязателен и должен быть выбран
@@ -1471,10 +1485,21 @@ export function VehicleRequestsTab() {
                 >
                   <TimeInput />
                 </Form.Item>
-                <Form.Item name="volumeM3" label="Объём, м³">
+                {/* Груз: одного из двух достаточно. У легковой машины его не спрашивают вовсе —
+                  в её бланке (форма № 3) графа «Груз» заполняется от руки в те редкие рейсы,
+                  когда что-то везут. */}
+                <Form.Item
+                  name="volumeM3"
+                  label="Объём, м³"
+                  tooltip={cargoRequired ? 'Укажите объём или массу' : 'Необязательно'}
+                >
                   <InputNumber style={{ width: '100%' }} min={0} step={0.1} />
                 </Form.Item>
-                <Form.Item name="weightTons" label="Масса, т">
+                <Form.Item
+                  name="weightTons"
+                  label="Масса, т"
+                  tooltip={cargoRequired ? 'Укажите объём или массу' : 'Необязательно'}
+                >
                   <InputNumber style={{ width: '100%' }} min={0} step={0.1} />
                 </Form.Item>
                 {/* Адреса и контакты — во всю ширину: подсказка DaData приходит одной длинной
