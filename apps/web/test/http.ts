@@ -1,5 +1,3 @@
-import { afterEach } from 'vitest';
-
 /**
  * Мок сети для сценарных тестов.
  *
@@ -64,6 +62,20 @@ export interface HttpMock {
 
 const API_PREFIX = '/api/v1';
 
+/**
+ * Настоящий `fetch`, снятый перед первой подменой. Хранится в модуле, а не в замыкании вызова:
+ * `afterEach`, зарегистрированный изнутри `it`, попадает не в ту сюиту и между тестами не
+ * срабатывает, поэтому снимает подмену общий хук в `setup.ts` — один на весь прогон.
+ */
+let originalFetch: typeof globalThis.fetch | null = null;
+
+/** Возвращает настоящий `fetch`. Зовётся из `test/setup.ts` после каждого теста. */
+export function restoreHttpMock(): void {
+  if (!originalFetch) return;
+  globalThis.fetch = originalFetch;
+  originalFetch = null;
+}
+
 interface ParsedRoute {
   method: string;
   segments: string[];
@@ -99,7 +111,9 @@ function matchPath(template: string[], actual: string[]): Record<string, string>
 export function mockHttp(routes: RouteMap): HttpMock {
   const table = new Map<string, RouteHandler>(Object.entries(routes));
   const calls: RecordedCall[] = [];
-  const original = globalThis.fetch;
+  // Настоящий fetch запоминается только при первой подмене: второй вызов mockHttp в том же тесте
+  // (перерисовка под другой ролью) не должен «сохранить» уже подменённый.
+  originalFetch ??= globalThis.fetch;
 
   const handler = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const rawUrl =
@@ -140,10 +154,6 @@ export function mockHttp(routes: RouteMap): HttpMock {
   };
 
   globalThis.fetch = handler as typeof globalThis.fetch;
-
-  afterEach(() => {
-    globalThis.fetch = original;
-  });
 
   const matches = (route: string, call: RecordedCall) => {
     const parsed = parseRouteKey(route);

@@ -1,7 +1,6 @@
-import { describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { MemoryRouter, Route, Routes } from 'react-router';
+import { describe, expect, it } from 'vitest';
+import { screen } from '@testing-library/react';
+import { Navigate, Route, Routes } from 'react-router';
 import {
   can,
   canOrderVehicleRequestType,
@@ -11,7 +10,12 @@ import {
   type Permission,
   type Role,
 } from '@technic/contracts';
-import { MOBILE_VIEWPORT, setViewport } from './viewport';
+import { json, mockHttp } from './http';
+import { renderWithUser } from './render';
+import { authUser } from './factories/auth';
+import { MOBILE_VIEWPORT, type Viewport } from './viewport';
+import { AppLayout } from '../src/components/AppLayout';
+import { RequirePermission } from '../src/auth/ProtectedRoute';
 
 /**
  * Портал скрывает недоступное по той же матрице, по которой API запрещает (ADR 0021).
@@ -20,57 +24,19 @@ import { MOBILE_VIEWPORT, setViewport } from './viewport';
  * внешнего исполнителя пара «роль + тип контрагента» (ADR 0038): один и тот же `operator`
  * видит разные разделы в зависимости от того, кого он исполняет.
  *
- * `useAuth` подменяется целиком: настоящий провайдер поднимает сессию через API, а к правам
- * это отношения не имеет.
+ * Субъект подставляется учёткой в контекст (`renderWithUser`), а не подменой `useAuth`: права
+ * считает та же функция `can`, что и в приложении, и переключаются они между тестами. Сеть
+ * заглушена на уровне HTTP — макету от неё нужен только счётчик заявок на регистрацию.
  */
 
-let currentSubject: AccessSubject = { role: null };
-
-const authUser = (subject: AccessSubject): AuthUser | null =>
+/** Учётка субъекта: роли достаточно, а исполнителю нужен ещё и тип контрагента (ADR 0038). */
+const userFor = (subject: AccessSubject): AuthUser | null =>
   subject.role
-    ? {
-        id: 'user-1',
-        email: 'user@test.local',
-        lastName: 'Пользователь',
-        firstName: 'Тестовый',
-        middleName: '',
-        fullName: 'Пользователь Тестовый',
-        role: subject.role,
-        isActive: true,
-        mustChangePassword: false,
-        constructionObjectIds: [],
-        departmentIds: [],
-        counterpartyType: subject.counterpartyType ?? null,
-      }
+    ? authUser({ role: subject.role, counterpartyType: subject.counterpartyType ?? null })
     : null;
 
-vi.mock('../src/auth/AuthContext', () => ({
-  useAuth: () => ({
-    user: authUser(currentSubject),
-    status: 'authenticated' as const,
-    login: vi.fn(),
-    logout: vi.fn(),
-    setUser: vi.fn(),
-    refreshUser: vi.fn(),
-    hasRole: (...roles: Role[]) => !!currentSubject.role && roles.includes(currentSubject.role),
-    can: (permission: Permission) => can(currentSubject, permission),
-  }),
-}));
-
-// Меню показывает бейдж с числом заявок на регистрацию (ADR 0034) — к правам это отношения не
-// имеет, но без заглушки макет ходил бы в API за счётчиком.
-vi.mock('../src/api/resources', () => ({
-  usersApi: { pendingCount: async () => ({ count: 0 }) },
-}));
-
-/** Провайдер запросов: в приложении он поднят выше макета, в тесте нужен свой. */
-function withQueryClient(ui: React.ReactElement) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return <QueryClientProvider client={client}>{ui}</QueryClientProvider>;
-}
-
-const { AppLayout } = await import('../src/components/AppLayout');
-const { RequirePermission } = await import('../src/auth/ProtectedRoute');
+const asSubject = (subject: AccessSubject | Role | null): AccessSubject =>
+  typeof subject === 'string' ? { role: subject } : (subject ?? { role: null });
 
 /** Внешний исполнитель: роль одна, разделы разные — их называет тип контрагента (ADR 0038). */
 const executor = (counterpartyType: CounterpartyType): AccessSubject => ({
@@ -78,32 +44,33 @@ const executor = (counterpartyType: CounterpartyType): AccessSubject => ({
   counterpartyType,
 });
 
-function renderMenu(subject: AccessSubject | Role | null) {
-  currentSubject = typeof subject === 'string' ? { role: subject } : (subject ?? { role: null });
-  return render(
-    withQueryClient(
-      <MemoryRouter initialEntries={['/waste']}>
-        <Routes>
-          <Route element={<AppLayout />}>
-            <Route path="/waste" element={<div>Список заявок</div>} />
-          </Route>
-        </Routes>
-      </MemoryRouter>,
-    ),
+function renderMenu(subject: AccessSubject | Role | null, viewport?: Viewport) {
+  // Меню показывает бейдж с числом заявок на регистрацию (ADR 0034) — к правам это отношения не
+  // имеет, но без ответа макет администратора ходил бы за счётчиком в настоящую сеть.
+  mockHttp({ 'GET /users/pending-count': () => json({ count: 0 }) });
+  return renderWithUser(
+    <Routes>
+      {/* Роутер поднят оболочкой рендера и стартует с «/», вложить в него второй нельзя —
+          нужный раздел открывается редиректом: подсветку пункта макет считает по адресу. */}
+      <Route path="/" element={<Navigate to="/waste" replace />} />
+      <Route element={<AppLayout />}>
+        <Route path="/waste" element={<div>Список заявок</div>} />
+      </Route>
+    </Routes>,
+    { user: userFor(asSubject(subject)), viewport },
   );
 }
 
 function renderGuarded(role: Role | null, permission: Permission) {
-  currentSubject = { role };
-  return render(
-    <MemoryRouter initialEntries={['/directories']}>
-      <Routes>
-        <Route element={<RequirePermission permission={permission} />}>
-          <Route path="/directories" element={<div>Страница справочников</div>} />
-        </Route>
-        <Route path="/waste" element={<div>Список заявок</div>} />
-      </Routes>
-    </MemoryRouter>,
+  return renderWithUser(
+    <Routes>
+      {/* Адрес защищённой страницы значения не имеет: закрывает её право, а не путь. */}
+      <Route element={<RequirePermission permission={permission} />}>
+        <Route path="/" element={<div>Страница справочников</div>} />
+      </Route>
+      <Route path="/waste" element={<div>Список заявок</div>} />
+    </Routes>,
+    { user: userFor({ role }) },
   );
 }
 
@@ -220,8 +187,7 @@ describe('пункты меню следуют из прав', () => {
  * доступное имя кнопки остаётся полным — по нему пункт и ищется.
  */
 function mobileNavLabels(subject: AccessSubject | Role | null): string[] {
-  setViewport(MOBILE_VIEWPORT);
-  renderMenu(subject);
+  renderMenu(subject, MOBILE_VIEWPORT);
   const nav = screen.getByRole('navigation', { name: 'Разделы портала' });
   return [...nav.querySelectorAll('button')].map((b) => b.getAttribute('aria-label') ?? '');
 }
@@ -294,8 +260,7 @@ describe('нижняя навигация на мобильном повторя
   });
 
   it('открытый раздел помечен для скринридера и подписан в шапке', () => {
-    setViewport(MOBILE_VIEWPORT);
-    renderMenu('admin');
+    renderMenu('admin', MOBILE_VIEWPORT);
     const active = screen.getByRole('button', { name: 'Вывоз мусора' });
     expect(active.getAttribute('aria-current')).toBe('page');
     expect(
@@ -354,17 +319,17 @@ describe('справочник водителей закрыт отдельны�
 
   it('право есть у тех, кто выписывает путевые листы', () => {
     for (const subject of WITH_ACCESS) {
-      expect(can(authUser(subject), 'drivers.read'), String(subject.role)).toBe(true);
-      expect(can(authUser(subject), 'drivers.write'), String(subject.role)).toBe(true);
+      expect(can(userFor(subject), 'drivers.read'), String(subject.role)).toBe(true);
+      expect(can(userFor(subject), 'drivers.write'), String(subject.role)).toBe(true);
     }
   });
 
   it('остальным закрыт — включая тех, кому открыты прочие справочники', () => {
     for (const subject of WITHOUT_ACCESS) {
       const key = `${subject.role}/${subject.counterpartyType ?? ''}`;
-      expect(can(authUser(subject), 'drivers.read'), key).toBe(false);
+      expect(can(userFor(subject), 'drivers.read'), key).toBe(false);
       // Прочие справочники им доступны: право на водителей отделено именно от них.
-      expect(can(authUser(subject), 'directories.read'), key).toBe(true);
+      expect(can(userFor(subject), 'directories.read'), key).toBe(true);
     }
   });
 });

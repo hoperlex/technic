@@ -1,9 +1,17 @@
-import { describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { App } from 'antd';
-import type { SpecialEquipmentRequestDto, VehicleOnSiteListDto } from '@technic/contracts';
-import { DESKTOP_VIEWPORT, MOBILE_VIEWPORT, setViewport } from './viewport';
+import { describe, expect, it } from 'vitest';
+import { screen } from '@testing-library/react';
+import type {
+  SpecialEquipmentRequestDto,
+  VehicleOnSiteListDto,
+  VehicleOnSiteSummaryDto,
+} from '@technic/contracts';
+import { json, mockHttp } from './http';
+import { renderWithUser } from './render';
+import { authUser } from './factories/auth';
+import { emptyList } from './factories/common';
+import { vehicleRequest } from './factories/vehicle';
+import { MOBILE_VIEWPORT, type Viewport } from './viewport';
+import { VehicleRequestsOnSiteTab } from '../src/pages/vehicle/VehicleRequestsOnSiteTab';
 
 /**
  * Вкладка «На объекте» (ADR 0036): техника, которая работает на объектах сегодня.
@@ -12,55 +20,22 @@ import { DESKTOP_VIEWPORT, MOBILE_VIEWPORT, setViewport } from './viewport';
  * и что для неё значит сегодняшний день — вышла, стоит или уезжает. День среза берётся из ответа
  * API (`onDate`), а не из часов браузера, поэтому подписи присутствия проверяются на фиксированном
  * дне без подмены системного времени.
+ *
+ * Данные приходят HTTP-моком, а не подменой `api/resources`: вкладка держится за контракт ручек
+ * среза, а не за то, каким модулем портал их сегодня зовёт.
  */
 
 const ON_DATE = '2026-07-24';
 
-function request(
-  over: Partial<SpecialEquipmentRequestDto> & { id: string; num: number; dateFrom: string },
-): SpecialEquipmentRequestDto {
-  return {
-    requestType: 'special_equipment',
-    displayNumber: `ТС-${over.num}`,
-    objectId: 'obj-1',
-    objectCode: 'OBJ-A',
-    objectName: 'Альфа-объект',
-    objectAddress: 'г. Москва, ул. Первая, 1',
-    departmentId: null,
-    departmentCode: null,
-    departmentName: null,
-    vehicleTypeId: 'type-1',
-    vehicleTypeName: 'Автокраны',
-    vehicleCategoryId: null,
-    vehicleCategoryName: null,
-    status: 'confirmed',
-    comment: '',
-    cancelReason: null,
-    approvedBy: 'user-1',
-    approvedByName: 'Руков Р. Р.',
-    approvedAt: '2026-07-20T09:00:00.000Z',
-    assignment: null,
-    completion: null,
-    route: null,
-    files: [],
-    version: 1,
-    createdBy: 'user-1',
-    createdByName: 'Иванов И. И.',
-    createdAt: '2026-07-19T09:00:00.000Z',
-    updatedAt: '2026-07-19T09:00:00.000Z',
-    deletedAt: null,
-    dateTo: null,
-    responsibleName: 'Петров П. П.',
-    responsiblePhone: '+7 926 000-00-01',
-    earlyEnd: null,
-    ...over,
-  };
-}
+/** Строка среза: спецтехника в работе — только такую отбирает вкладка и только её сокращают. */
+const onSite = (over: Partial<SpecialEquipmentRequestDto>): SpecialEquipmentRequestDto =>
+  vehicleRequest({ status: 'confirmed', objectName: 'Альфа-объект', ...over });
 
 const items: SpecialEquipmentRequestDto[] = [
-  request({
+  onSite({
     id: 'r1',
     num: 101,
+    displayNumber: 'ТС-101',
     dateFrom: ON_DATE,
     dateTo: '2026-07-28',
     comment: 'разработка котлована',
@@ -84,9 +59,10 @@ const items: SpecialEquipmentRequestDto[] = [
   }),
   // Запрошенное досрочное завершение (ADR 0044): срок в строке пока прежний, а тег уже говорит,
   // что машина уезжает раньше — если визу поставят.
-  request({
+  onSite({
     id: 'r2',
     num: 102,
+    displayNumber: 'ТС-102',
     dateFrom: '2026-07-22',
     dateTo: '2026-07-26',
     earlyEnd: {
@@ -103,54 +79,42 @@ const items: SpecialEquipmentRequestDto[] = [
       decisionComment: '',
     },
   }),
-  request({ id: 'r3', num: 103, dateFrom: '2026-07-20', dateTo: ON_DATE }),
+  onSite({ id: 'r3', num: 103, displayNumber: 'ТС-103', dateFrom: '2026-07-20', dateTo: ON_DATE }),
 ];
 
 const list: VehicleOnSiteListDto = { items, total: 3, page: 1, pageSize: 50, onDate: ON_DATE };
 
-vi.mock('../src/api/resources', () => ({
-  vehicleRequestsApi: {
-    onSite: async () => list,
-    onSiteSummary: async () => ({
-      total: 3,
-      objects: 1,
-      arrivedToday: 1,
-      leavingToday: 1,
-      earlyEndPending: 1,
-    }),
-    history: async () => [],
-  },
-  objectsApi: { list: async () => ({ items: [], total: 0, page: 1, pageSize: 500 }) },
-  vehicleClassificationsApi: {
-    list: async () => ({ items: [], total: 0, page: 1, pageSize: 500 }),
-  },
-  filesApi: {},
-}));
+/** Сводка считается сервером по тем же строкам: одна машина выходит, одна уезжает, одна ждёт визы. */
+const summary: VehicleOnSiteSummaryDto = {
+  total: 3,
+  objects: 1,
+  arrivedToday: 1,
+  leavingToday: 1,
+  earlyEndPending: 1,
+};
 
-vi.mock('../src/auth/AuthContext', () => ({
-  useAuth: () => ({
-    user: { id: 'user-1', role: 'dispatcher', constructionObjectIds: [] },
-    can: () => true,
-    hasRole: () => false,
-  }),
-}));
+/**
+ * Смотрит администратор: у него сходятся оба права на сокращение срока — запрос
+ * (`vehicleRequests.update`, право заказчика и диспетчера) и виза на него
+ * (`vehicleRequests.approve`, право руководителя строительства, ADR 0025). Тест разбирает обе
+ * группы действий разом, а роли, у которой есть только одно из прав, вторая была бы не видна.
+ */
+const admin = authUser({ role: 'admin' });
 
-const { VehicleRequestsOnSiteTab } = await import('../src/pages/vehicle/VehicleRequestsOnSiteTab');
-
-function renderTab() {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
-    <QueryClientProvider client={client}>
-      <App>
-        <VehicleRequestsOnSiteTab />
-      </App>
-    </QueryClientProvider>,
-  );
+function renderTab(viewport?: Viewport) {
+  mockHttp({
+    'GET /vehicle-requests/on-site': () => json(list),
+    'GET /vehicle-requests/on-site/summary': () => json(summary),
+    // Справочники наполняют фильтры вкладки; отбор строк ведёт сервер, и на проверяемое они не
+    // влияют — поэтому пусты.
+    'GET /objects': () => json(emptyList()),
+    'GET /vehicle-classifications': () => json(emptyList()),
+  });
+  return renderWithUser(<VehicleRequestsOnSiteTab />, { user: admin, viewport });
 }
 
 describe('вкладка «На объекте»', () => {
   it('строка отвечает, что за машина стоит и что для неё значит сегодня', async () => {
-    setViewport(DESKTOP_VIEWPORT);
     renderTab();
 
     // Машина из назначения (ADR 0027) с арендодателем — по нему и звонят про простой.
@@ -166,8 +130,7 @@ describe('вкладка «На объекте»', () => {
   });
 
   it('на телефоне тот же срез читается карточками', async () => {
-    setViewport(MOBILE_VIEWPORT);
-    renderTab();
+    renderTab(MOBILE_VIEWPORT);
 
     expect(await screen.findByText('ООО «Арендатех»')).toBeDefined();
     expect(document.querySelector('.ant-table')).toBeNull();
@@ -176,7 +139,6 @@ describe('вкладка «На объекте»', () => {
   });
 
   it('срез ведёт одно действие — досрочное завершение; статусы и правка остаются в списке', async () => {
-    setViewport(DESKTOP_VIEWPORT);
     renderTab();
 
     expect(await screen.findByText('ООО «Арендатех»')).toBeDefined();

@@ -1,9 +1,12 @@
-import { describe, expect, it, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { App } from 'antd';
-import { can, type AuthUser, type Permission, type VehicleRequestDto } from '@technic/contracts';
-import { DESKTOP_VIEWPORT, setViewport } from './viewport';
+import { describe, expect, it } from 'vitest';
+import { screen, fireEvent, waitFor } from '@testing-library/react';
+import type { VehicleRequestDto } from '@technic/contracts';
+import { json, mockHttp } from './http';
+import { renderWithUser } from './render';
+import { authUser } from './factories/auth';
+import { emptyList, list } from './factories/common';
+import { vehicleRequest, vehicleSummary } from './factories/vehicle';
+import { VehicleRequestsTab } from '../src/pages/vehicle/VehicleRequestsTab';
 
 /**
  * Форма правки заявки на ТС обязана показывать то, что у заявки есть, а не то, что бывает у роли
@@ -16,34 +19,6 @@ import { DESKTOP_VIEWPORT, setViewport } from './viewport';
  *    не правка заказа, — но действие для неё обязано существовать, иначе поле «Техника» в карточке
  *    видно, а изменить его нечем.
  */
-
-const USER: AuthUser = {
-  id: 'user-1',
-  email: 'd@test.local',
-  lastName: 'Диспетчеров',
-  firstName: 'Дмитрий',
-  middleName: '',
-  fullName: 'Диспетчеров Дмитрий',
-  role: 'dispatcher',
-  isActive: true,
-  mustChangePassword: false,
-  constructionObjectIds: [],
-  departmentIds: [],
-  counterpartyType: null,
-};
-
-vi.mock('../src/auth/AuthContext', () => ({
-  useAuth: () => ({
-    user: USER,
-    status: 'authenticated' as const,
-    login: vi.fn(),
-    logout: vi.fn(),
-    setUser: vi.fn(),
-    refreshUser: vi.fn(),
-    hasRole: () => true,
-    can: (p: Permission) => can({ role: 'dispatcher' }, p),
-  }),
-}));
 
 const ASSIGNMENT = {
   vehicleId: 'v-1',
@@ -64,67 +39,52 @@ const ASSIGNMENT = {
 };
 
 /** Заказ техники на объект — «Новая»: машины нет, менять нечего. */
-const SPECIAL = {
+const SPECIAL = vehicleRequest({
   id: 'r-1',
   num: 601,
   displayNumber: 'ТС-601',
-  requestType: 'special_equipment',
   objectId: 'obj-1',
   objectCode: 'OBJ-A',
   objectName: 'Объект Химки',
   objectAddress: 'Химки, ул. Победы, 10',
-  departmentId: null,
-  departmentCode: null,
-  departmentName: null,
   vehicleTypeId: 'type-crane',
   vehicleTypeName: 'Автокраны',
   vehicleCategoryId: 'cat-130',
   vehicleCategoryName: 'Автокраны, г/п 130 т',
-  status: 'new',
   comment: 'котлован',
-  cancelReason: null,
-  approvedBy: null,
-  approvedByName: null,
-  approvedAt: null,
-  assignment: null,
-  completion: null,
-  route: null,
-  files: [],
-  version: 1,
-  createdBy: 'user-1',
-  createdByName: 'Иванов И. И.',
-  createdAt: '2026-08-01T09:00:00.000Z',
-  updatedAt: '2026-08-01T09:00:00.000Z',
-  deletedAt: null,
   dateFrom: '2026-08-10',
   dateTo: null,
-  responsibleName: 'Петров П. П.',
-  responsiblePhone: '+7 926 000-00-01',
-  earlyEnd: null,
-} as unknown as VehicleRequestDto;
+});
 
-/** Грузоперевозка отдела, уже в работе: и заказчик-отдел, и назначенная машина. */
+/**
+ * Грузоперевозка отдела, уже в работе: и заказчик-отдел, и назначенная машина. Поля подачи и
+ * концов маршрута дописаны к фабрике вручную — она отдаёт заказ техники на объект, а второго
+ * типа заявки в ней нет.
+ */
 const FREIGHT = {
-  ...SPECIAL,
-  id: 'r-2',
-  num: 602,
-  displayNumber: 'ТС-602',
+  ...vehicleRequest({
+    id: 'r-2',
+    num: 602,
+    displayNumber: 'ТС-602',
+    objectId: null,
+    objectCode: null,
+    objectName: null,
+    objectAddress: null,
+    departmentId: 'dep-1',
+    departmentCode: 'SNAB',
+    departmentName: 'Снабжение',
+    vehicleTypeId: 'type-truck',
+    vehicleTypeName: 'Самосвалы',
+    vehicleCategoryId: null,
+    vehicleCategoryName: null,
+    status: 'confirmed',
+    comment: 'плиты',
+    approvedBy: 'user-1',
+    approvedByName: 'Руков Р. Р.',
+    approvedAt: '2026-08-01T09:30:00.000Z',
+    assignment: ASSIGNMENT,
+  }),
   requestType: 'freight_transport',
-  objectId: null,
-  objectCode: null,
-  objectName: null,
-  objectAddress: null,
-  departmentId: 'dep-1',
-  departmentCode: 'SNAB',
-  departmentName: 'Снабжение',
-  vehicleTypeId: 'type-truck',
-  vehicleTypeName: 'Самосвалы',
-  vehicleCategoryId: null,
-  vehicleCategoryName: null,
-  status: 'confirmed',
-  comment: 'плиты',
-  approvedAt: '2026-08-01T09:30:00.000Z',
-  assignment: ASSIGNMENT,
   scheduledAt: '2026-08-10T09:00:00.000Z',
   scheduledTimeUnspecified: false,
   volumeM3: null,
@@ -139,61 +99,37 @@ const FREIGHT = {
   unloadingResponsiblePhone: '+7 926 000-00-03',
 } as unknown as VehicleRequestDto;
 
-const emptyList = { items: [], total: 0, page: 1, pageSize: 500 };
-
-vi.mock('../src/api/resources', () => ({
-  vehicleRequestsApi: {
-    list: async () => ({ items: [SPECIAL, FREIGHT], total: 2, page: 1, pageSize: 20 }),
-    summary: async () => ({ new: 1, awaitingApproval: 0, confirmed: 1 }),
-    history: async () => [],
-    routePrefill: async () => ({
-      required: false,
-      formLabel: null,
-      reason: 'Рейс не ведётся',
-      tripDate: '2026-08-10',
-      routes: [],
-      trip: null,
-    }),
-    waybill: async () => null,
-    changeAssignment: vi.fn(),
-    update: vi.fn(),
-    create: vi.fn(),
-  },
-  objectsApi: {
-    list: async () => ({
-      items: [{ id: 'obj-1', code: 'OBJ-A', name: 'Объект Химки' }],
-      total: 1,
-      page: 1,
-      pageSize: 500,
-    }),
-  },
-  departmentsApi: {
-    list: async () => ({
-      items: [{ id: 'dep-1', code: 'SNAB', name: 'Снабжение' }],
-      total: 1,
-      page: 1,
-      pageSize: 500,
-    }),
-  },
-  vehicleClassificationsApi: { list: async () => emptyList },
-  filesApi: { upload: vi.fn(), remove: vi.fn() },
-  vehiclesApi: { list: async () => emptyList },
-  driversApi: { available: async () => ({ drivers: [], requiredCategory: null }) },
-  counterpartiesApi: { list: async () => emptyList },
-}));
-
-const { VehicleRequestsTab } = await import('../src/pages/vehicle/VehicleRequestsTab');
-
 function renderTab() {
-  setViewport(DESKTOP_VIEWPORT);
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
-    <QueryClientProvider client={qc}>
-      <App>
-        <VehicleRequestsTab />
-      </App>
-    </QueryClientProvider>,
-  );
+  const http = mockHttp({
+    // Сводка описана до списка не для порядка: у обеих ручек общее начало пути, и «/summary»
+    // должно разобраться раньше, чем список.
+    'GET /vehicle-requests/summary': () => json(vehicleSummary({ new: 1, confirmed: 1 })),
+    'GET /vehicle-requests': () => json(list([SPECIAL, FREIGHT])),
+    // Справочники заказчика: по ним форма подставляет объект и отдел заявки — без них поле
+    // осталось бы пустым, и проверка «заказчик подставлен» ничего бы не значила.
+    'GET /objects': () => json(list([{ id: 'obj-1', code: 'OBJ-A', name: 'Объект Химки' }])),
+    'GET /departments': () => json(list([{ id: 'dep-1', code: 'SNAB', name: 'Снабжение' }])),
+    // Классификатор и парк проверяемому не нужны: спрашивается состав полей формы, а не то,
+    // из чего в них выбирают.
+    'GET /vehicle-classifications': () => json(emptyList()),
+    'GET /vehicles': () => json(emptyList()),
+    // Смена техники у грузоперевозки спрашивает рейс. `formCode: null` — рейс этой заявке не
+    // ведётся, и окно сводится к выбору машины: водителя и графы шапки оно не спрашивает.
+    'GET /vehicle-requests/:id/route-prefill': () =>
+      json({
+        required: false,
+        formCode: null,
+        formLabel: null,
+        reason: 'Рейс не ведётся',
+        tripDate: '2026-08-10',
+        routes: [],
+        trip: null,
+      }),
+  });
+  // Смотрит диспетчер: он и правит заявки, и меняет технику, но сам не роль отдела — именно на
+  // такого редактора форма показывала свою ось заказчика вместо оси заявки.
+  renderWithUser(<VehicleRequestsTab />, { user: authUser() });
+  return http;
 }
 
 /** Подписи полей открытого окна — то, что человек в нём действительно видит. */

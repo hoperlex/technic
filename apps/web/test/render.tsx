@@ -29,6 +29,12 @@ export interface RenderOptions {
   /** Режим устройства (ADR 0030): десктоп по умолчанию. */
   viewport?: Viewport;
   queryClient?: QueryClient;
+  /**
+   * Начальный адрес. Нужен экранам, где от него зависит показанное: подсветка пункта меню,
+   * `aria-current`, редиректы прав. Свой `MemoryRouter` внутрь не вложить — react-router
+   * запрещает вложенные роутеры, поэтому адрес задаётся здесь.
+   */
+  route?: string;
 }
 
 export function createTestQueryClient(): QueryClient {
@@ -60,7 +66,7 @@ export function renderWithUser(
     <ConfigProvider locale={ruRU} theme={themeFor(false)}>
       <AntApp>
         <QueryClientProvider client={queryClient}>
-          <MemoryRouter>
+          <MemoryRouter initialEntries={[options.route ?? '/']}>
             <AuthContext.Provider value={auth}>{ui}</AuthContext.Provider>
           </MemoryRouter>
         </QueryClientProvider>

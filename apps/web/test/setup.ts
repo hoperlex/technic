@@ -5,6 +5,7 @@ import 'dayjs/locale/ru';
 import utc from 'dayjs/plugin/utc';
 import timezone from 'dayjs/plugin/timezone';
 import { installMatchMedia, resetViewport } from './viewport';
+import { restoreHttpMock } from './http';
 
 // Даты портал показывает в МСК (utils/format), а плагины dayjs подключает точка входа — в тестах
 // её нет, и без этих трёх строк любой рендер с датой падает на `dayjs(...).tz is not a function`.
@@ -29,4 +30,7 @@ if (!globalThis.ResizeObserver) {
 afterEach(() => {
   cleanup();
   resetViewport();
+  // Подменённый сетью тест не должен утаскивать за собой следующие: снимаем мок здесь, а не в
+  // самом `mockHttp` — хук, зарегистрированный изнутри `it`, до следующего теста не доживает.
+  restoreHttpMock();
 });

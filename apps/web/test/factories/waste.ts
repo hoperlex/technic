@@ -26,6 +26,11 @@ export function wasteRequest(overrides: Partial<WasteRequestDto> = {}): WasteReq
     requestType: 'waste_removal',
     containerTypeId: null,
     containerTypeName: null,
+    // Количество контейнеров (ADR 0054): больше одного бывает у контейнерных операций, а вывоз
+    // мусора считается объёмом — у него значение остаётся единичным, как и задаёт контракт.
+    containersCount: 1,
+    containerOwnerCounterpartyId: null,
+    containerOwnerName: null,
     wasteTypeId: 'wt-1',
     wasteTypeName: 'Строительный мусор',
     volumeM3: 20,

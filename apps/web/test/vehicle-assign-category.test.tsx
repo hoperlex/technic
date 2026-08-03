@@ -1,8 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { App } from 'antd';
-import type { SpecialEquipmentRequestDto, VehicleDto } from '@technic/contracts';
+import { fireEvent, screen, waitFor } from '@testing-library/react';
+import type { VehicleDto } from '@technic/contracts';
+import { json, mockHttp } from './http';
+import { renderWithUser } from './render';
+import { list } from './factories/common';
+import { vehicleRequest } from './factories/vehicle';
+import { VehicleAssignModal } from '../src/pages/vehicle/VehicleAssignModal';
 
 /**
  * Подбор техники в форме перевода в работу идёт по типу ТС, а не по заказанной категории
@@ -67,59 +70,13 @@ const CRANE_UNKNOWN: VehicleDto = {
   pricePerShift: 42000,
 };
 
-const REQUEST: SpecialEquipmentRequestDto = {
-  id: 'r-1',
-  num: 601,
-  displayNumber: 'ТС-601',
-  requestType: 'special_equipment',
-  objectId: 'obj-1',
-  objectCode: 'OBJ-A',
-  objectName: 'Объект Химки',
-  objectAddress: 'Химки, ул. Победы, 10',
-  departmentId: null,
-  departmentCode: null,
-  departmentName: null,
+/** Заказан 130-тонник: с этой позицией классификатора и сверяется выбранная машина. */
+const REQUEST = vehicleRequest({
   vehicleTypeId: 'type-crane',
   vehicleTypeName: 'Автокраны',
   vehicleCategoryId: 'cat-130',
   vehicleCategoryName: 'Автокраны, г/п 130 т',
-  status: 'new',
-  comment: '',
-  cancelReason: null,
-  approvedBy: 'user-1',
-  approvedByName: 'Руков Р. Р.',
-  approvedAt: '2026-08-01T09:00:00.000Z',
-  assignment: null,
-  completion: null,
-  route: null,
-  files: [],
-  version: 1,
-  createdBy: 'user-1',
-  createdByName: 'Иванов И. И.',
-  createdAt: '2026-08-01T09:00:00.000Z',
-  updatedAt: '2026-08-01T09:00:00.000Z',
-  deletedAt: null,
-  dateFrom: '2026-08-10',
-  dateTo: null,
-  responsibleName: 'Петров П. П.',
-  responsiblePhone: '+7 926 000-00-01',
-  earlyEnd: null,
-};
-
-const listVehicles = vi.fn(async () => ({
-  items: [CRANE_130, CRANE_25, CRANE_UNKNOWN],
-  total: 3,
-  page: 1,
-  pageSize: 500,
-}));
-
-vi.mock('../src/api/resources', () => ({
-  vehiclesApi: { list: () => listVehicles() },
-  vehicleRequestsApi: { waybillPrefill: vi.fn() },
-  driversApi: { available: vi.fn() },
-}));
-
-const { VehicleAssignModal } = await import('../src/pages/vehicle/VehicleAssignModal');
+});
 
 /** Окно открывается на уже назначенной машине — так проверяется выбор без возни со списком. */
 function assignment(v: VehicleDto) {
@@ -143,19 +100,21 @@ function assignment(v: VehicleDto) {
 }
 
 function renderModal(selected?: VehicleDto, onSubmit: (v: unknown) => void = () => {}) {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
-    <QueryClientProvider client={qc}>
-      <App>
-        <VehicleAssignModal
-          request={{ ...REQUEST, assignment: selected ? assignment(selected) : null }}
-          confirmLoading={false}
-          onCancel={() => {}}
-          onSubmit={onSubmit}
-        />
-      </App>
-    </QueryClientProvider>,
+  // Парк приезжает ответом справочника техники — тем же запросом, каким его берёт портал.
+  // Весь тип одним списком: сузить его до заказанной категории — забота не сервера, а того,
+  // кто читает ответ, и проверяется это здесь же, по ушедшему запросу.
+  const http = mockHttp({
+    'GET /vehicles': () => json(list([CRANE_130, CRANE_25, CRANE_UNKNOWN])),
+  });
+  renderWithUser(
+    <VehicleAssignModal
+      request={{ ...REQUEST, assignment: selected ? assignment(selected) : null }}
+      confirmLoading={false}
+      onCancel={() => {}}
+      onSubmit={onSubmit}
+    />,
   );
+  return http;
 }
 
 /**
@@ -177,7 +136,7 @@ async function openVehicleList(): Promise<string[]> {
 
 describe('подбор техники по типу, категория — предупреждением', () => {
   it('в списке весь тип: машина соседней категории видна и помечена', async () => {
-    renderModal();
+    const http = renderModal();
     await waitFor(() => expect(screen.getByText('Конкретная техника')).toBeDefined());
 
     const options = await openVehicleList();
@@ -187,6 +146,12 @@ describe('подбор техники по типу, категория — пр
     expect(other).toBeDefined();
     expect(other).toContain('Автокраны, г/п 25 т');
     expect(other).toContain('другая категория');
+
+    // Соседняя категория дошла до списка не по недосмотру фильтра на экране: за технику
+    // спрашивают типом, а категорию сервер не сужает вовсе.
+    const asked = http.lastCall('GET /vehicles')?.query;
+    expect(asked?.get('vehicleTypeId')).toBe('type-crane');
+    expect(asked?.get('vehicleCategoryId')).toBeNull();
   });
 
   it('переключатель принадлежности считает весь тип, а не одну категорию', async () => {

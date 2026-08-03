@@ -67,4 +67,21 @@ describe('HTTP-моки для тестов', () => {
     mockHttp({});
     await expect(apiFetch('/objects')).rejects.toThrow(/Нет мока для «GET \/objects»/);
   });
+
+  /*
+   * Пара тестов на само восстановление сети. Хук снятия мока живёт в `test/setup.ts`, а не внутри
+   * `mockHttp`: зарегистрированный изнутри `it`, он попадал бы не в ту сюиту и до следующего теста
+   * не доживал — подменённый `fetch` утекал бы в соседние тесты, и падали бы они, а не виновник.
+   */
+  let mockedFetch: typeof globalThis.fetch | null = null;
+
+  it('ставит подмену сети внутри теста', () => {
+    mockHttp({ 'GET /objects': () => json([]) });
+    mockedFetch = globalThis.fetch;
+    expect(mockedFetch).toBeTypeOf('function');
+  });
+
+  it('и снимает её до следующего теста', () => {
+    expect(globalThis.fetch).not.toBe(mockedFetch);
+  });
 });
