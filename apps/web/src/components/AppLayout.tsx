@@ -146,7 +146,7 @@ export function AppLayout() {
    * сами (вкладки и тело таблицы со своей прокруткой), и менять это здесь — не дело каркаса.
    */
   if (isMobile) {
-    const title = navItems.find((it) => it.key === selectedKey)?.label ?? 'Заказ Автотехники';
+    const title = navItems.find((it) => it.key === selectedKey)?.label ?? 'АВТО';
     return (
       <div className="mobile-shell">
         {/* На 360 px полное ФИО в панель не помещается; части ФИО есть (ADR 0034) — значит
@@ -191,15 +191,13 @@ export function AppLayout() {
               <span
                 style={{
                   fontWeight: 600,
-                  fontSize: 14,
+                  fontSize: 18,
+                  letterSpacing: 1,
                   lineHeight: 1.05,
-                  textAlign: 'right',
                   whiteSpace: 'nowrap',
                 }}
               >
-                Заказ
-                <br />
-                Автотехники
+                АВТО
               </span>
             )}
           </div>
