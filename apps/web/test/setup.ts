@@ -6,6 +6,8 @@ import utc from 'dayjs/plugin/utc';
 import timezone from 'dayjs/plugin/timezone';
 import { installMatchMedia, resetViewport } from './viewport';
 import { restoreHttpMock } from './http';
+import { __resetAuthForTests } from '../src/auth/AuthContext';
+import { resetSession } from '../src/api/client';
 
 // Даты портал показывает в МСК (utils/format), а плагины dayjs подключает точка входа — в тестах
 // её нет, и без этих трёх строк любой рендер с датой падает на `dayjs(...).tz is not a function`.
@@ -30,6 +32,13 @@ if (!globalThis.ResizeObserver) {
 afterEach(() => {
   cleanup();
   resetViewport();
+  /*
+   * Состояние сессии живёт в модулях (токен, висящее обновление, чья сессия в кэше) и переживает
+   * размонтирование дерева. Не сбросив его, второй тест файла начинал бы с чужой сессии — и
+   * падал бы он, а не тот, кто её оставил.
+   */
+  __resetAuthForTests();
+  resetSession();
   // Подменённый сетью тест не должен утаскивать за собой следующие: снимаем мок здесь, а не в
   // самом `mockHttp` — хук, зарегистрированный изнутри `it`, до следующего теста не доживает.
   restoreHttpMock();

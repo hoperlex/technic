@@ -1,7 +1,8 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { can as roleCan, type AuthUser, type Permission, type Role } from '@technic/contracts';
 import { authApi } from '../api/auth';
-import { refreshSession, setSessionExpiredHandler } from '../api/client';
+import { refreshSession, resetSession, setSessionExpiredHandler } from '../api/client';
 
 type Status = 'loading' | 'authenticated' | 'unauthenticated';
 
@@ -31,6 +32,22 @@ export const AuthContext = createContext<AuthContextValue | undefined>(undefined
 /** Один bootstrap на вкладку: React StrictMode иначе дважды ротирует refresh → reuse detection → разлогин. */
 let bootstrapPromise: Promise<AuthUser | null> | null = null;
 
+/**
+ * Чья сессия сейчас в кэше запросов.
+ *
+ * Держится отдельно от состояния React намеренно: при истечении сессии `user` обнуляется, и
+ * сравнивать вход следующего пользователя было бы не с чем — данные предыдущего остались бы в
+ * кэше и показались бы новому на общем рабочем месте. Ключи запросов учётку не содержат, поэтому
+ * различает сессии только эта переменная.
+ */
+let cachedUserId: string | null = null;
+
+/** Тестам: вернуть модуль в состояние «на вкладку ещё никто не входил». */
+export function __resetAuthForTests(): void {
+  bootstrapPromise = null;
+  cachedUserId = null;
+}
+
 function bootstrapAuth(): Promise<AuthUser | null> {
   if (!bootstrapPromise) {
     bootstrapPromise = (async () => {
@@ -45,12 +62,25 @@ function bootstrapAuth(): Promise<AuthUser | null> {
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [status, setStatus] = useState<Status>('loading');
+  const queryClient = useQueryClient();
+
+  /**
+   * Кэш запросов принадлежит той учётке, при которой он набран: ключи её не содержат, а
+   * `staleTime` у справочников доходит до минут. Поэтому при любой смене или обрыве сессии он
+   * выбрасывается целиком — иначе на общем рабочем месте следующий вошедший увидел бы чужие
+   * заявки, пока данные не протухнут сами.
+   */
+  const adoptSession = (next: AuthUser | null) => {
+    if (next?.id !== cachedUserId) queryClient.clear();
+    cachedUserId = next?.id ?? null;
+  };
 
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       const me = await bootstrapAuth();
       if (cancelled) return;
+      adoptSession(me);
       if (!me) {
         setStatus('unauthenticated');
         return;
@@ -72,6 +102,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     setSessionExpiredHandler(() => {
       bootstrapPromise = Promise.resolve(null);
+      // Сессии больше нет: забываем токен, обесцениваем висящее обновление и чистим кэш — иначе
+      // набранные данные дождались бы следующего вошедшего.
+      resetSession();
+      adoptSession(null);
       setUser(null);
       setStatus('unauthenticated');
     });
@@ -85,6 +119,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       async login(email, password) {
         const res = await authApi.login({ email, password });
         bootstrapPromise = Promise.resolve(res.user);
+        // Вошли под другой учёткой — кэш предыдущей выбрасывается. Сравнение идёт с
+        // `cachedUserId`, а не с `user`: после истечения сессии тот уже пуст.
+        adoptSession(res.user);
         setUser(res.user);
         setStatus('authenticated');
         return res.user;
@@ -92,12 +129,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       async logout() {
         await authApi.logout().catch(() => {});
         bootstrapPromise = Promise.resolve(null);
+        resetSession();
+        adoptSession(null);
         setUser(null);
         setStatus('unauthenticated');
       },
       setUser: (u) => setUser(u),
       async refreshUser() {
         const me = await authApi.me();
+        // Сервер может ответить другой учёткой: вкладку открыли заново после входа под другим
+        // пользователем в соседней. Тогда кэш прежней тоже не наш.
+        adoptSession(me);
         setUser(me);
       },
       hasRole: (...roles) => !!user?.role && roles.includes(user.role),

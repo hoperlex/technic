@@ -6,7 +6,7 @@ import ruRU from 'antd/locale/ru_RU';
 import { MemoryRouter } from 'react-router';
 import type { AuthUser, Permission, Role } from '@technic/contracts';
 import { can as roleCan } from '@technic/contracts';
-import { AuthContext } from '../src/auth/AuthContext';
+import { AuthContext, AuthProvider } from '../src/auth/AuthContext';
 import { themeFor } from '../src/theme';
 import { setViewport, DESKTOP_VIEWPORT, type Viewport } from './viewport';
 import { authUser } from './factories/auth';
@@ -68,6 +68,33 @@ export function renderWithUser(
         <QueryClientProvider client={queryClient}>
           <MemoryRouter initialEntries={[options.route ?? '/']}>
             <AuthContext.Provider value={auth}>{ui}</AuthContext.Provider>
+          </MemoryRouter>
+        </QueryClientProvider>
+      </AntApp>
+    </ConfigProvider>,
+  );
+
+  return { ...result, queryClient };
+}
+
+/**
+ * То же дерево, но с настоящим `AuthProvider`: вход, выход и истечение сессии идут через сеть,
+ * как в приложении. Нужен сценариям про сессию — подставленный значением контекст ни входа, ни
+ * очистки кэша не выполняет, а проверяются именно они.
+ */
+export function renderWithSession(
+  ui: ReactNode,
+  options: Omit<RenderOptions, 'user'> = {},
+): RenderResult & { queryClient: QueryClient } {
+  const queryClient = options.queryClient ?? createTestQueryClient();
+  setViewport(options.viewport ?? DESKTOP_VIEWPORT);
+
+  const result = render(
+    <ConfigProvider locale={ruRU} theme={themeFor(false)}>
+      <AntApp>
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={[options.route ?? '/']}>
+            <AuthProvider>{ui}</AuthProvider>
           </MemoryRouter>
         </QueryClientProvider>
       </AntApp>

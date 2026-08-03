@@ -40,28 +40,54 @@ export function setSessionExpiredHandler(handler: (() => void) | null): void {
 
 let refreshing: Promise<boolean> | null = null;
 
+/**
+ * Номер сессии. Растёт при каждом её обрыве — выходе, истечении, входе другой учётки.
+ *
+ * Нужен из-за висящего обновления токена: запрос уже ушёл, и отменить его нельзя. Без номера
+ * ответ, вернувшийся после выхода, спокойно положил бы свежий access-токен уже чужой сессии —
+ * следующий запрос ушёл бы с ним, а данные предыдущего пользователя попали бы к новому.
+ */
+let sessionGeneration = 0;
+
+/**
+ * Обрыв сессии: токен забыт, висящее обновление обесценено. Зовётся при выходе, истечении и
+ * входе другой учётки; кэш запросов чистит `AuthProvider` — клиент API про него не знает.
+ */
+export function resetSession(): void {
+  sessionGeneration += 1;
+  accessToken = null;
+  refreshing = null;
+}
+
 /** Обновление access-токена по refresh-cookie (одна попытка на несколько 401 сразу). */
 export async function refreshSession(): Promise<boolean> {
   if (!refreshing) {
+    const generation = sessionGeneration;
+    /** Ответ пришёл уже к другой сессии — его результат не наш. */
+    const stale = () => generation !== sessionGeneration;
     refreshing = fetch(`${BASE}/auth/refresh`, {
       method: 'POST',
       credentials: 'include',
     })
       .then(async (res) => {
+        if (stale()) return false;
         if (!res.ok) {
           setAccessToken(null);
           return false;
         }
         const data = (await res.json()) as { accessToken: string };
+        if (stale()) return false;
         setAccessToken(data.accessToken);
         return true;
       })
       .catch(() => {
-        setAccessToken(null);
+        if (!stale()) setAccessToken(null);
         return false;
       })
       .finally(() => {
-        refreshing = null;
+        // Только своё: за время запроса сессию могли оборвать и начать обновление заново —
+        // затирать чужое `refreshing` нельзя.
+        if (!stale()) refreshing = null;
       });
   }
   return refreshing;
