@@ -228,7 +228,9 @@ export function VehicleRequestViewModal({
           label: 'Согласование',
           span: 3,
           children: request.approvedAt ? (
-            <Space size={8}>
+            // Подпись — строкой под тегом, а не рядом: в узком окне на ФИО рядом с тегом
+            // остаётся столбец в пару букв, и оно переносится по слогам.
+            <Space direction="vertical" size={4}>
               <Tag color="green" icon={<CheckCircleOutlined />} style={{ marginInlineEnd: 0 }}>
                 Завизирована
               </Tag>
