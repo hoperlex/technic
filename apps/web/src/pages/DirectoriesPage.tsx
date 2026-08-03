@@ -3,6 +3,7 @@ import { useIsMobile } from '../hooks/useIsMobile';
 import { ObjectsTab } from './directories/ObjectsTab';
 import { DepartmentsTab } from './directories/DepartmentsTab';
 import { CounterpartiesTab } from './directories/CounterpartiesTab';
+import { WarehousesTab } from './directories/WarehousesTab';
 import { ContainerTypesTab } from './directories/ContainerTypesTab';
 import { WasteTariffsTab } from './directories/WasteTariffsTab';
 import { VehicleTypesTab } from './directories/VehicleTypesTab';
@@ -29,6 +30,9 @@ export function DirectoriesPage() {
           // Отделы — вторая ось области (ADR 0040): офисные подразделения рядом с площадками.
           { key: 'departments', label: 'Отделы', children: <DepartmentsTab /> },
           { key: 'counterparties', label: 'Контрагенты', children: <CounterpartiesTab /> },
+          // Склады идут сразу за контрагентами: склад существует только у поставщика (ADR 0051),
+          // и заводят их одного за другим — сначала контрагента, потом его адреса.
+          { key: 'warehouses', label: 'Склады', children: <WarehousesTab /> },
           { key: 'types', label: 'Типы контейнеров', children: <ContainerTypesTab /> },
           // Отдельной вкладки «Типы мусора» нет (ADR 0017): тип заводится и правится здесь же,
           // в прайсе, — сам по себе, без цены, он ничего не значит.
