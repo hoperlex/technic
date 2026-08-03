@@ -6,7 +6,7 @@ import type {
   LoginResult,
   RegisterInput,
 } from '@technic/contracts';
-import { apiFetch, setAccessToken } from './client';
+import { apiFetch, clear as clearSession, renewToken, startSession } from '@shared/api';
 
 export const authApi = {
   /** Новая картинка капчи; челлендж одноразовый, поэтому запрашивается перед каждой отправкой. */
@@ -20,7 +20,8 @@ export const authApi = {
       body: input,
       noRefresh: true,
     });
-    setAccessToken(result.accessToken);
+    // Вход — новая сессия: её номер обесценивает обновление токена, начатое предыдущей.
+    startSession(result.accessToken);
     return result;
   },
 
@@ -34,7 +35,7 @@ export const authApi = {
 
   async logout(): Promise<void> {
     await apiFetch('/auth/logout', { method: 'POST', noRefresh: true });
-    setAccessToken(null);
+    clearSession();
   },
 
   async changePassword(input: ChangePasswordInput): Promise<LoginResult> {
@@ -42,7 +43,8 @@ export const authApi = {
       method: 'POST',
       body: input,
     });
-    setAccessToken(result.accessToken);
+    // Пароль сменил тот же человек: сессия та же, меняется только токен.
+    renewToken(result.accessToken);
     return result;
   },
 };

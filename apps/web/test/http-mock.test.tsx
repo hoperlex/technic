@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { apiError, json, mockHttp, noContent, takeUnmatchedHttp } from './http';
-import { apiFetch, isApiError } from '../src/api/client';
+import { apiFetch, isApiError } from '../src/shared/api';
 
 /**
  * Проверка самой сети безопасности: сценарные тесты держатся на этих моках, и молчаливая

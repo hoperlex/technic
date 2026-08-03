@@ -1,20 +1,18 @@
-const BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? '/api/v1';
-
-/*
- * Адрес API наружу не отдаётся намеренно. Ссылка на защищённый маршрут, собранная в разметке,
- * не работает и работать не может: access-токен живёт в памяти вкладки, а переход по `href`
- * браузер делает сам и без заголовка `Authorization` — сервер отвечает 401 «Требуется
- * авторизация» прямо в новой вкладке, вместо файла. Скачивание идёт через `apiDownload`.
+/**
+ * HTTP-клиент портала: адрес, заголовки, разбор ошибки, скачивание.
+ *
+ * Состояния сессии здесь нет — токен и его обновление живут в `session`: транспорт только
+ * спрашивает токен перед запросом и сверяет с сессией результат обновления, а решение «сессия
+ * кончилась» принимает сама сессия.
+ *
+ * Адрес API наружу не отдаётся намеренно. Ссылка на защищённый маршрут, собранная в разметке, не
+ * работает и работать не может: access-токен живёт в памяти вкладки, а переход по `href` браузер
+ * делает сам и без заголовка `Authorization` — сервер отвечает 401 прямо в новой вкладке, вместо
+ * файла. Скачивание идёт через `apiDownload`.
  */
+import { expireIfCurrent, getToken, refresh } from './session';
 
-let accessToken: string | null = null;
-
-export function setAccessToken(token: string | null): void {
-  accessToken = token;
-}
-export function getAccessToken(): string | null {
-  return accessToken;
-}
+const BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? '/api/v1';
 
 export interface ApiError {
   code: string;
@@ -26,71 +24,6 @@ export interface ApiError {
 
 export function isApiError(e: unknown): e is ApiError {
   return typeof e === 'object' && e !== null && 'code' in e && 'status' in e;
-}
-
-let sessionExpired: (() => void) | null = null;
-
-/**
- * Кого звать, когда refresh-токен уже не обменивается на access: истёк, отозван reuse detection
- * или учётку выключили. Ставит `AuthProvider` — клиент API не знает про роутер и не должен.
- */
-export function setSessionExpiredHandler(handler: (() => void) | null): void {
-  sessionExpired = handler;
-}
-
-let refreshing: Promise<boolean> | null = null;
-
-/**
- * Номер сессии. Растёт при каждом её обрыве — выходе, истечении, входе другой учётки.
- *
- * Нужен из-за висящего обновления токена: запрос уже ушёл, и отменить его нельзя. Без номера
- * ответ, вернувшийся после выхода, спокойно положил бы свежий access-токен уже чужой сессии —
- * следующий запрос ушёл бы с ним, а данные предыдущего пользователя попали бы к новому.
- */
-let sessionGeneration = 0;
-
-/**
- * Обрыв сессии: токен забыт, висящее обновление обесценено. Зовётся при выходе, истечении и
- * входе другой учётки; кэш запросов чистит `AuthProvider` — клиент API про него не знает.
- */
-export function resetSession(): void {
-  sessionGeneration += 1;
-  accessToken = null;
-  refreshing = null;
-}
-
-/** Обновление access-токена по refresh-cookie (одна попытка на несколько 401 сразу). */
-export async function refreshSession(): Promise<boolean> {
-  if (!refreshing) {
-    const generation = sessionGeneration;
-    /** Ответ пришёл уже к другой сессии — его результат не наш. */
-    const stale = () => generation !== sessionGeneration;
-    refreshing = fetch(`${BASE}/auth/refresh`, {
-      method: 'POST',
-      credentials: 'include',
-    })
-      .then(async (res) => {
-        if (stale()) return false;
-        if (!res.ok) {
-          setAccessToken(null);
-          return false;
-        }
-        const data = (await res.json()) as { accessToken: string };
-        if (stale()) return false;
-        setAccessToken(data.accessToken);
-        return true;
-      })
-      .catch(() => {
-        if (!stale()) setAccessToken(null);
-        return false;
-      })
-      .finally(() => {
-        // Только своё: за время запроса сессию могли оборвать и начать обновление заново —
-        // затирать чужое `refreshing` нельзя.
-        if (!stale()) refreshing = null;
-      });
-  }
-  return refreshing;
 }
 
 export interface RequestOptions {
@@ -114,7 +47,8 @@ function buildUrl(path: string, query?: Record<string, unknown>): string {
 async function doFetch(url: string, options: RequestOptions): Promise<Response> {
   const headers: Record<string, string> = {};
   if (options.body !== undefined) headers['Content-Type'] = 'application/json';
-  if (accessToken) headers['Authorization'] = `Bearer ${accessToken}`;
+  const token = getToken();
+  if (token) headers['Authorization'] = `Bearer ${token}`;
   return fetch(url, {
     method: options.method ?? 'GET',
     credentials: 'include',
@@ -129,12 +63,17 @@ async function request(path: string, options: RequestOptions): Promise<Response>
   let res = await doFetch(url, options);
 
   if (res.status === 401 && !options.noRefresh) {
-    const ok = await refreshSession();
-    if (ok) res = await doFetch(url, options);
-    // Обновить не удалось — сессии больше нет. Без этого страница остаётся на экране как
-    // вошедшая, а каждое действие отвечает «Требуется авторизация»: сообщение верное, но
-    // читается как поломка печати или выгрузки, а не как «войдите заново».
-    else sessionExpired?.();
+    /*
+     * Номер сессии снимается ДО обновления: за время запроса человек может выйти и войти заново,
+     * и тогда «обновить не удалось» относится к прошлой сессии, а не к текущей. Без этой сверки
+     * ответ старого refresh выкидывал бы уже нового пользователя.
+     */
+    const outcome = await refresh();
+    if (outcome.status === 'refreshed') res = await doFetch(url, options);
+    // Сессии больше нет — уводим на вход. Без этого страница остаётся на экране как вошедшая, а
+    // каждое действие отвечает «Требуется авторизация»: сообщение верное, но читается как поломка
+    // печати или выгрузки, а не как конец сессии.
+    else if (outcome.status === 'expired') expireIfCurrent(outcome.generation);
   }
 
   if (!res.ok) {

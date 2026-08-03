@@ -2,7 +2,7 @@ import { useCallback, useRef, useState } from 'react';
 import { AutoComplete, Input, Space, Tooltip } from 'antd';
 import { CheckCircleTwoTone, WarningTwoTone } from '@ant-design/icons';
 import { type AddressMeta, isAddressVerified } from '@technic/contracts';
-import { type DadataSuggestion, dadataEnabled, suggestAddress } from '../api/dadata';
+import { type DadataSuggestion, dadataEnabled, suggestAddress } from '@shared/api';
 
 /** Подсказка DaData → метаданные адреса (ADR 0006). */
 function toMeta(s: DadataSuggestion): AddressMeta {

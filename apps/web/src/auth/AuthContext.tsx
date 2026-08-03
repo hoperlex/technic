@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useMemo, useState, type ReactNode
 import { useQueryClient } from '@tanstack/react-query';
 import { can as roleCan, type AuthUser, type Permission, type Role } from '@technic/contracts';
 import { authApi } from '../api/auth';
-import { refreshSession, resetSession, setSessionExpiredHandler } from '../api/client';
+import { clear as clearSession, onExpired, refresh } from '@shared/api';
 
 type Status = 'loading' | 'authenticated' | 'unauthenticated';
 
@@ -51,8 +51,8 @@ export function __resetAuthForTests(): void {
 function bootstrapAuth(): Promise<AuthUser | null> {
   if (!bootstrapPromise) {
     bootstrapPromise = (async () => {
-      const ok = await refreshSession();
-      if (!ok) return null;
+      const outcome = await refresh();
+      if (outcome.status !== 'refreshed') return null;
       return authApi.me();
     })().catch(() => null);
   }
@@ -100,16 +100,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
    * концом сессии. Bootstrap сюда не попадает — он зовёт `refreshSession` напрямую.
    */
   useEffect(() => {
-    setSessionExpiredHandler(() => {
+    // Сессия объявляет о своём конце сама — сверив, что кончилась именно та, к которой относился
+    // запрос. Здесь остаётся React-часть: забыть пользователя, вычистить кэш и увести на вход.
+    return onExpired(() => {
       bootstrapPromise = Promise.resolve(null);
-      // Сессии больше нет: забываем токен, обесцениваем висящее обновление и чистим кэш — иначе
-      // набранные данные дождались бы следующего вошедшего.
-      resetSession();
+      clearSession();
       adoptSession(null);
       setUser(null);
       setStatus('unauthenticated');
     });
-    return () => setSessionExpiredHandler(null);
   }, []);
 
   const value = useMemo<AuthContextValue>(
@@ -129,7 +128,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       async logout() {
         await authApi.logout().catch(() => {});
         bootstrapPromise = Promise.resolve(null);
-        resetSession();
+        clearSession();
         adoptSession(null);
         setUser(null);
         setStatus('unauthenticated');

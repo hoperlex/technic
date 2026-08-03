@@ -83,7 +83,7 @@ import type {
   WasteTypeDto,
   ResolveWasteTariffResultDto,
 } from '@technic/contracts';
-import { apiDownload, apiFetch, apiFetchBlob } from './client';
+import { apiDownload, apiFetch, apiFetchBlob } from '@shared/api';
 
 type Query = Record<string, unknown>;
 
