@@ -19,11 +19,12 @@ import {
   assignmentRateLabel,
   assignmentTitle,
   type ConfirmScheduleBody,
+  DRIVER_CATEGORY_MISMATCH_HINT,
+  driverCategoryMismatchWarning,
+  DRIVER_WORKED_ON_VEHICLE_HINT,
+  driverWorkedOnVehicle,
   formatMoscowDateTime,
   isRouteEditable,
-  LICENSE_REQUISITES_MISSING_HINT,
-  LICENSE_REQUISITES_MISSING_WARNING,
-  licenseRequisitesMissing,
   MAX_ROUTE_REQUESTS,
   normalizeTimeInput,
   VEHICLE_CATEGORY_MISMATCH_HINT,
@@ -39,12 +40,7 @@ import {
   type VehicleRequestDto,
   waybillRequirement,
 } from '@technic/contracts';
-import {
-  driversApi,
-  vehicleRequestsApi,
-  vehicleRoutesApi,
-  vehiclesApi,
-} from '../../api/resources';
+import { driversApi, vehicleRequestsApi, vehicleRoutesApi, vehiclesApi } from '../../api/resources';
 import { AutoSelect } from '../../components/AutoSelect';
 import { FormGrid } from '../../components/FormGrid';
 import { FormModal } from '../../components/FormModal';
@@ -328,8 +324,7 @@ export function VehicleAssignModal({
    * которые он отклонит.
    */
   const routeOptions = (prefill?.routes ?? []).filter(
-    (r) =>
-      r.requests.length < MAX_ROUTE_REQUESTS && isRouteEditable(r.waybill?.status ?? null),
+    (r) => r.requests.length < MAX_ROUTE_REQUESTS && isRouteEditable(r.waybill?.status ?? null),
   );
   /** Выбран готовый рейс: водитель и реквизиты выезда в нём уже свои, спрашивать их незачем. */
   const joiningRoute = !!routeId && routeId !== NEW_ROUTE;
@@ -342,32 +337,40 @@ export function VehicleAssignModal({
     enabled: needsRoute && !joiningRoute && !!vehicleId && !!tripDate,
   });
 
-  // Список водителей — тот же отбор, что проверит сервер: годные к этой машине на дату рейса.
+  // Список водителей — тот же отбор, что проверит сервер: у кого полный комплект документов на
+  // дату рейса (ADR 0055). Категория списка не сужает — расхождение с ней помечается в строке.
   const { data: selection, isFetching: driversLoading } = useQuery({
     queryKey: ['drivers', 'available', vehicleId, tripDate, withTrailer],
     queryFn: () => driversApi.available({ vehicleId: vehicleId!, on: tripDate!, withTrailer }),
     enabled: needsRoute && !joiningRoute && !!vehicleId && !!tripDate,
   });
+  // Порядок задал сервер: подходящие по категории первыми (ADR 0055), внутри них — работавшие на
+  // этой машине (ADR 0056). Пометки в строке объясняют, почему человек там, — без них список
+  // выглядел бы сбитым алфавитом.
   const driverOptions = (selection?.drivers ?? []).map((d) => ({
     value: d.personId,
     label: [
       d.fullName,
       d.categories.join(', '),
       d.personnelNo && `таб. ${d.personnelNo}`,
+      d.matchesRequiredCategory ? null : DRIVER_CATEGORY_MISMATCH_HINT,
+      driverWorkedOnVehicle(d) ? DRIVER_WORKED_ON_VEHICLE_HINT : null,
       d.verificationStatus === 'unverified' ? 'документ не проверен' : null,
-      licenseRequisitesMissing(d.licenseNumber) ? LICENSE_REQUISITES_MISSING_HINT : null,
     ]
       .filter(Boolean)
       .join(' · '),
   }));
 
   /**
-   * Выбран водитель без серии и номера удостоверения. Пометки в строке списка мало: её читают
-   * при выборе и забывают, а последствие наступает у того, кто возьмёт напечатанный лист.
+   * Выбран водитель, у которого нет категории, требуемой машиной. Пометки в строке списка мало:
+   * её читают при выборе и забывают, — а решение садить его или нет остаётся за человеком
+   * (ADR 0055): портал ничего не запрещает, но обе стороны расхождения обязан назвать.
    */
-  const driverRequisitesMissing = selection?.drivers.some(
-    (d) => d.personId === driverPersonId && licenseRequisitesMissing(d.licenseNumber),
-  );
+  const selectedDriver = selection?.drivers.find((d) => d.personId === driverPersonId);
+  const driverCategoryMismatch =
+    selection?.requiredCategory && selectedDriver && !selectedDriver.matchesRequiredCategory
+      ? driverCategoryMismatchWarning(selection.requiredCategory, selectedDriver.categories)
+      : null;
 
   /**
    * Рейс подставляется сам только под уже известную машину: у назначенной единицы (повторный
@@ -880,9 +883,9 @@ export function VehicleAssignModal({
                     rules={[{ required: true, message: 'Выберите водителя' }]}
                     extra={
                       driverOptions.length === 0 && !driversLoading
-                        ? selection?.requiredCategory
-                          ? `Нет водителей с действующей категорией ${selection.requiredCategory} на эту дату`
-                          : 'Нет водителей с действующим удостоверением на эту дату'
+                        ? 'Нет водителей с полным комплектом документов на эту дату: нужны СНИЛС, ' +
+                          'действующее удостоверение, его серия с номером и дата выдачи. ' +
+                          'Недостающее вносит администратор в справочнике водителей.'
                         : undefined
                     }
                   >
@@ -896,13 +899,13 @@ export function VehicleAssignModal({
                   </Form.Item>
                 )}
 
-                {!joiningRoute && driverRequisitesMissing && (
+                {!joiningRoute && driverCategoryMismatch && (
                   <FormGrid.Full>
                     <Alert
                       type="warning"
                       showIcon
-                      message="Лист напечатается без номера удостоверения"
-                      description={LICENSE_REQUISITES_MISSING_WARNING}
+                      message="Категория прав не совпадает с требованием машины"
+                      description={driverCategoryMismatch}
                     />
                   </FormGrid.Full>
                 )}

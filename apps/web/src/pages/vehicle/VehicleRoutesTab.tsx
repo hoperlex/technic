@@ -4,6 +4,9 @@ import { EyeOutlined, PlusOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
+  DRIVER_CATEGORY_MISMATCH_HINT,
+  DRIVER_WORKED_ON_VEHICLE_HINT,
+  driverWorkedOnVehicle,
   MAX_ROUTE_REQUESTS,
   type VehicleRouteDto,
   vehicleLabel,
@@ -346,10 +349,19 @@ function CreateRouteModal({
               label="Водитель"
               extra="Необязательно: рейс собирают заранее, а человека ставят утром. Без водителя лист не выписать."
             >
+              {/* Порядок задал сервер: подходящие по категории первыми (ADR 0055), внутри них —
+                работавшие на этой машине (ADR 0056). Пометки в строке объясняют почему. */}
               <AutoSelect
                 options={(selection?.drivers ?? []).map((d) => ({
                   value: d.personId,
-                  label: [d.fullName, d.categories.join(', ')].filter(Boolean).join(' · '),
+                  label: [
+                    d.fullName,
+                    d.categories.join(', '),
+                    d.matchesRequiredCategory ? null : DRIVER_CATEGORY_MISMATCH_HINT,
+                    driverWorkedOnVehicle(d) ? DRIVER_WORKED_ON_VEHICLE_HINT : null,
+                  ]
+                    .filter(Boolean)
+                    .join(' · '),
                 }))}
                 showSearch
                 allowClear

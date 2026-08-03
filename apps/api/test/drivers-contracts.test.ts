@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   compareDriverOptions,
+  driverCategoryMismatchWarning,
   createDriverSchema,
   driverDocumentGaps,
   driverDocumentsComplete,
@@ -382,11 +383,17 @@ describe('кадровая выгрузка на входе (ADR 0047)', () => {
 });
 
 /**
- * Порядок списка выбора (ADR 0054). Правило живёт в контрактах, потому что применяют его двое:
+ * Порядок списка выбора (ADR 0056). Правило живёт в контрактах, потому что применяют его двое:
  * сервер сортирует ответ, форма его показывает — и разойтись им негде.
  */
 describe('водители, работавшие на этой машине, идут первыми', () => {
-  const worked = (fullName: string, lastWorkedOn: string | null) => ({ fullName, lastWorkedOn });
+  const worked = (fullName: string, lastWorkedOn: string | null) => ({
+    fullName,
+    lastWorkedOn,
+    // Категория у всех подходит: её влияние на порядок проверяется отдельно, а здесь она сравняла
+    // бы всех по первому ключу и спрятала бы разницу в опыте.
+    matchesRequiredCategory: true,
+  });
 
   it('опыт поднимает над алфавитом', () => {
     const list = [

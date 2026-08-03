@@ -1,4 +1,17 @@
-import { and, asc, count, eq, gte, inArray, isNotNull, isNull, lte, or, sql, type SQL } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  count,
+  eq,
+  gte,
+  inArray,
+  isNotNull,
+  isNull,
+  lte,
+  or,
+  sql,
+  type SQL,
+} from 'drizzle-orm';
 import {
   compareDriverOptions,
   type CredentialVerificationStatus,
@@ -86,7 +99,7 @@ export interface DriverOption {
   categories: string[];
   /** Открыта ли требуемая машиной категория на дату рейса. Ничего не запрещает (ADR 0055). */
   matchesRequiredCategory: boolean;
-  /** Состоявшихся рейсов этой машины с этим водителем за последний год (ADR 0054). */
+  /** Состоявшихся рейсов этой машины с этим водителем за последний год (ADR 0056). */
   workedRoutes: number;
   /** День последнего такого рейса; `null` — не работал. По нему список стоит по свежести. */
   lastWorkedOn: string | null;
@@ -185,7 +198,7 @@ async function loadRequirement(
 }
 
 /**
- * Кто из найденных водителей уже работал на этой машине (ADR 0054).
+ * Кто из найденных водителей уже работал на этой машине (ADR 0056).
  *
  * Работой считается состоявшийся рейс, а не назначение: рейс заводят заранее и переигрывают, и
  * «стоял в плане» опытом не является. Состоявшийся — это выполненная заявка в составе рейса либо
@@ -347,7 +360,7 @@ export async function selectDrivers(
     requirement,
     requiredCategoryName: requirement.categoryName,
     // Порядок — тем же правилом, что показывает форма: подходящие по категории наверх (ADR 0055),
-    // внутри них работавшие на этой машине по свежести, остальные по алфавиту (ADR 0054). Запрос
+    // внутри них работавшие на этой машине по свежести, остальные по алфавиту (ADR 0056). Запрос
     // отдаёт список по ФИО, и сортировка здесь его доупорядочивает — стабильная, поэтому равные
     // остаются алфавитными.
     drivers: rows
