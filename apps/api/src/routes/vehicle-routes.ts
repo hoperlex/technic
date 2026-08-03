@@ -627,7 +627,7 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
             transportationKind: route.transportationKind,
           },
           requests: rows.map((row) => ({ requestId: row.requestId, position: row.position })),
-          actor: { id: p.id, name: p.fullName },
+          actor: { id: p.id },
         });
         await bumpRouteVersion(tx, route.id, p.id);
         return result;

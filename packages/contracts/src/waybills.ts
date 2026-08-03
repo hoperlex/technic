@@ -144,7 +144,10 @@ export const WAYBILL_SNAPSHOT_KEYS = [
   'task4_from',
   'task4_to',
   'task4_cargo',
-  'dispatcher_fio',
+  // Графы диспетчера здесь нет намеренно: подпись и её расшифровку портал не печатает, и из
+  // обоих бланков они стёрты. Документ подписывают на бумаге, а напечатанная рядом с пустой
+  // линией фамилия читалась бы как подпись, которой нет. Кто выписал лист, помнят
+  // `waybills.issued_by` и журнал аудита.
 ] as const;
 
 export type WaybillSnapshotKey = (typeof WAYBILL_SNAPSHOT_KEYS)[number];

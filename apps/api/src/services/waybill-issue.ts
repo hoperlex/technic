@@ -163,7 +163,6 @@ async function collectSnapshot(
     number: string;
     seriesPrefix: string;
     date: string;
-    actorName: string;
   },
 ): Promise<Record<WaybillSnapshotKey, string>> {
   const [org] = await tx
@@ -325,8 +324,6 @@ async function collectSnapshot(
     task4_from: slot(2).from,
     task4_to: slot(2).to,
     task4_cargo: slot(2).cargo,
-
-    dispatcher_fio: params.actorName,
   };
 }
 
@@ -345,7 +342,8 @@ export interface RouteWaybillContext {
   trip: RouteTripFields;
   /** Состав рейса в порядке талонов: позиция становится `slot` талона заказчика. */
   requests: readonly { requestId: string; position: number }[];
-  actor: { id: string; name: string };
+  /** Кто выписывает: попадёт в `issued_by` и в журнал аудита. На бланке его нет — подписи там свои. */
+  actor: { id: string };
 }
 
 /**
@@ -423,7 +421,6 @@ export async function issueWaybillForRoute(
     number: number.display,
     seriesPrefix: number.prefix,
     date: ctx.routeDate,
-    actorName: ctx.actor.name,
   });
 
   const [created] = await tx

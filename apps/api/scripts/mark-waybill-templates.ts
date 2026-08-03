@@ -28,6 +28,12 @@ interface Blank {
   out: string;
   /** Ячейка → плейсхолдер. Адреса выверены по линиям заполнения самого бланка. */
   cells: Record<string, string>;
+  /**
+   * Ячейки, содержимое которых стирается: графа диспетчера с подписью и её расшифровкой. Портал
+   * документ не подписывает, а напечатанная рядом с пустой линией фамилия читается как подпись,
+   * которой нет. Стиль ячейки при очистке сохраняется — он несёт рамку и линию графы.
+   */
+  clear?: string[];
   /** Как бланк ложится на лист A4 при печати (ADR 0041). */
   orientation: 'portrait' | 'landscape';
 }
@@ -76,8 +82,6 @@ const FORM_4P: Blank = {
     A30: '{{customer_name}}',
     A31: '{{customer_address}}',
     AN30: '{{task_departure_time}}',
-    // Кто выписал.
-    AD34: '{{dispatcher_fio}}',
     // Талоны заказчиков: левый (третий-четвёртый) и правый (первый-второй). Номер идёт в линию
     // за подписью «к путевому листу №» — она объединена, линия начинается следующей ячейкой.
     AL42: '{{waybill_number}}',
@@ -104,6 +108,10 @@ const FORM_4P: Blank = {
     AT78: '{{task4_cargo}}',
     BG78: '{{task4_customer}}',
   },
+  // Графа диспетчера: сама подпись «Диспетчер» (A34), линия для фамилии (AD34) и подписи под ней
+  // (N35, AD35). Строка выше — «Водительское удостоверение проверил, задание выдал, выдать
+  // горючего ___ литр» — остаётся: её заполняют от руки, как одометр и остатки топлива.
+  clear: ['A34', 'AD34', 'N35', 'AD35'],
 };
 
 /**
@@ -130,8 +138,9 @@ const FORM_LEG3: Blank = {
     M22: '{{driver_license_issued_on}}',
     M24: '{{driver_snils}}',
     N27: '{{customer_name}}, {{customer_address}}',
-    AA39: '{{dispatcher_fio}}',
   },
+  // Графа диспетчера — та же, что в 4-П: подпись, линия для фамилии и подписи под ней.
+  clear: ['A39', 'AA39', 'Q40', 'AA40'],
 };
 
 const COL = /^([A-Z]+)(\d+)$/;
@@ -176,6 +185,24 @@ function setCell(sheet: string, address: string, value: string): string {
 }
 
 /**
+ * Стирает содержимое ячейки, оставляя её саму и её стиль: рамка, линия графы и высота строки —
+ * часть вёрстки бланка, и удалять ячейку целиком нельзя.
+ *
+ * Текст подписей живёт в общем словаре книги (`sharedStrings.xml`), и вырезать его оттуда значит
+ * сбить индексы всех прочих строк бланка. Поэтому очищается ссылка: строка в словаре остаётся, но
+ * на неё больше не смотрит ни одна ячейка листа.
+ */
+function clearCell(sheet: string, address: string): string {
+  const found = new RegExp(`<c r="${address}"((?:(?!/>|>)[\\s\\S])*)(?:/>|>[\\s\\S]*?</c>)`).exec(
+    sheet,
+  );
+  if (!found) throw new Error(`Ячейки ${address} в листе нет — стирать нечего, проверьте адрес`);
+
+  const style = /\ss="(\d+)"/.exec(found[1] ?? '');
+  return sheet.replace(found[0], `<c r="${address}"${style ? ` s="${style[1]}"` : ''} />`);
+}
+
+/**
  * Параметры печати листа (ADR 0041).
  *
  * Бланки приходят из бухгалтерии без `pageSetup`: в Excel их печатали руками, подгоняя масштаб в
@@ -215,12 +242,14 @@ function mark(blank: Blank): void {
   for (const [address, value] of Object.entries(blank.cells)) {
     sheet = setCell(sheet, address, value);
   }
+  for (const address of blank.clear ?? []) sheet = clearCell(sheet, address);
   sheet = setPageSetup(sheet, blank.orientation);
 
   files[sheetPath] = new TextEncoder().encode(sheet);
   // Время фиксировано: одинаковый исходник обязан давать одинаковый шаблон.
   writeFileSync(join(templatesDir, blank.out), zipSync(files, { mtime: Date.UTC(1980, 0, 1) }));
-  console.log(`${blank.out}: размечено граф ${Object.keys(blank.cells).length}`);
+  const cleared = blank.clear?.length ? `, стёрто ${blank.clear.length}` : '';
+  console.log(`${blank.out}: размечено граф ${Object.keys(blank.cells).length}${cleared}`);
 }
 
 for (const blank of [FORM_4P, FORM_LEG3]) mark(blank);

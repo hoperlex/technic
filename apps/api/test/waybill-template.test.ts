@@ -53,6 +53,33 @@ describe('разметка бланков', () => {
     }
   });
 
+  /**
+   * Графа диспетчера стёрта из обоих бланков: портал документ не подписывает, а напечатанная
+   * рядом с пустой линией фамилия читается как подпись, которой нет.
+   *
+   * Проверяется по ячейкам, а не по словарю книги: строка «Диспетчер» остаётся в
+   * `sharedStrings.xml` — вырезать её оттуда значит сбить индексы всех прочих строк бланка, —
+   * но ссылаться на неё не должна ни одна ячейка листа.
+   */
+  it.each(FORMS)('в бланке %s нет графы диспетчера — ни ячейкой, ни плейсхолдером', (form) => {
+    const files = unzipSync(template(form));
+    const sheet = new TextDecoder().decode(files['xl/worksheets/sheet1.xml']!);
+    const strings = new TextDecoder().decode(files['xl/sharedStrings.xml']!);
+
+    const dictionary = [...strings.matchAll(/<si>([\s\S]*?)<\/si>/g)].map(([, si]) =>
+      [...si!.matchAll(/<t[^>]*>([\s\S]*?)<\/t>/g)].map(([, t]) => t).join(''),
+    );
+    const dispatcher = dictionary.flatMap((text, index) =>
+      text.trim() === 'Диспетчер' ? [index] : [],
+    );
+    expect(dispatcher.length, 'подпись «Диспетчер» пропала из словаря книги').toBeGreaterThan(0);
+
+    for (const index of dispatcher) {
+      expect(sheet).not.toMatch(new RegExp(`<c r="[A-Z]+\\d+"[^>]*t="s"[^>]*><v>${index}</v></c>`));
+    }
+    expect(inspectTemplate(template(form))).not.toContain('dispatcher_fio');
+  });
+
   it('в 4-П размечено задание водителю: по нему лист и выписывают', () => {
     const inTemplate = new Set(inspectTemplate(template('4p')));
     for (const key of ['customer_name', 'customer_address', 'task_from', 'task_to', 'task_cargo']) {
