@@ -1,5 +1,5 @@
-import { useEffect } from 'react';
-import { Form, Input } from 'antd';
+import { useEffect, type ReactNode } from 'react';
+import { Alert, Form, Input } from 'antd';
 import { FormModal } from './FormModal';
 
 interface ReasonProps {
@@ -13,6 +13,10 @@ interface ReasonProps {
   cancelText?: string;
   /** Пояснение под полем: зачем эта причина нужна и куда попадёт. */
   placeholderHint?: string;
+  /** Что произойдёт по нажатию — блоком над полем: читают до ввода причины, а не после. */
+  notice?: ReactNode;
+  /** Действие необратимо — кнопка подтверждения красная. */
+  danger?: boolean;
 }
 
 interface Values {
@@ -34,6 +38,8 @@ export function ReasonModal({
   okText,
   cancelText,
   placeholderHint,
+  notice,
+  danger,
 }: ReasonProps) {
   const [form] = Form.useForm<Values>();
 
@@ -51,8 +57,10 @@ export function ReasonModal({
       confirmLoading={confirmLoading}
       okText={okText}
       cancelText={cancelText}
+      okDanger={danger}
       width={440}
     >
+      {notice}
       <Form form={form} layout="vertical" onFinish={(v) => onSubmit(v.reason.trim())}>
         <Form.Item
           name="reason"
@@ -88,6 +96,79 @@ export function CancelReasonModal({ subject, ...rest }: CancelProps) {
       label={subject ? `Причина отмены заявки ${subject}` : 'Причина отмены'}
       okText="Отменить заявку"
       cancelText="Не отменять"
+    />
+  );
+}
+
+interface RollbackProps {
+  open: boolean;
+  onCancel: () => void;
+  onSubmit: (reason: string) => void;
+  confirmLoading?: boolean;
+  /** Пояснение над полем: какую именно заявку возвращаем. */
+  subject?: string;
+  /**
+   * Что возврат сотрёт у этой самой заявки — строками, по её собственным данным. Перечень
+   * собирает вызывающий экран: у заказа техники стирается одно (машина, рейс, виза), у вывоза
+   * мусора другое (факт и талоны), а обещать снятие того, чего у заявки нет, нельзя — общий
+   * список для обоих модулей врал бы половине заявок.
+   */
+  erases: string[];
+  /**
+   * Помеха, из-за которой сервер возврат не пропустит (выписанный путевой лист,
+   * `ROLLBACK_WAYBILL_MESSAGE`). Показывается тут же: узнать о ней после набранной причины
+   * и нажатия — значит проделать работу впустую.
+   */
+  blocker?: string | null;
+}
+
+/**
+ * Возврат заявки из «В работе» в «Новую» (`transitionResetsWork`). От отмены отличается не
+ * подписями, а тем, что стирает нажитое заявкой в работе, — поэтому перечень стираемого стоит
+ * над полем причины, до нажатия: после него восстанавливать будет нечего.
+ *
+ * Окно то же самое, что у отмены: причина обязательна и там, и здесь, и уходит она тем же
+ * запросом смены статуса. Второе окно с полем «Причина» отличалось бы от первого только
+ * заголовком — и разъезжалось бы с ним при каждой правке.
+ */
+export function RollbackReasonModal({ subject, erases, blocker, ...rest }: RollbackProps) {
+  return (
+    <ReasonModal
+      {...rest}
+      title="Возврат заявки в «Новую»"
+      label={subject ? `Причина возврата заявки ${subject}` : 'Причина возврата'}
+      okText="Вернуть в «Новую»"
+      cancelText="Не возвращать"
+      danger
+      notice={
+        <>
+          {blocker && (
+            <Alert type="error" showIcon message={blocker} style={{ marginBottom: 12 }} />
+          )}
+          <Alert
+            type="warning"
+            showIcon
+            message="Заявка вернётся в состояние только что заведённой"
+            description={
+              erases.length > 0 ? (
+                <>
+                  Будет стёрто:
+                  <ul style={{ margin: '4px 0 0', paddingInlineStart: 20 }}>
+                    {erases.map((item) => (
+                      <li key={item}>{item}</li>
+                    ))}
+                  </ul>
+                </>
+              ) : (
+                // Нечего стирать — так и сказано: пустой список «будет стёрто» человек читает
+                // как недогрузившийся, а не как «работы по заявке не завелось».
+                'Стирать у заявки нечего — сменится только статус.'
+              )
+            }
+            style={{ marginBottom: 16 }}
+          />
+        </>
+      }
     />
   );
 }

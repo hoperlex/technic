@@ -35,6 +35,7 @@ import {
   requestStatusColors,
   requestStatusLabels,
   statusChangeRequiresReason,
+  transitionResetsWork,
   requestTypeColors,
   requestTypeLabels,
   parseWasteRequestNumberSearch,
@@ -67,7 +68,7 @@ import {
   type WasteRequestUpdatePayload,
 } from '../api/resources';
 import { AutoSelect } from '../components/AutoSelect';
-import { CancelReasonModal } from '../components/CancelReasonModal';
+import { CancelReasonModal, RollbackReasonModal } from '../components/CancelReasonModal';
 import { ActionSheet } from '../components/ActionSheet';
 import { DataTable, type CardConfig } from '../components/DataTable';
 import { FileLinkList, FilesCell } from '../components/FileLinks';
@@ -86,7 +87,7 @@ import { useListParams } from '../hooks/useListParams';
 import { useObjectScope } from '../hooks/useObjectScope';
 import { useAuth } from '../auth/AuthContext';
 import { MOSCOW_TZ } from '../theme';
-import { errorMessage, formatDate, formatDateTimeMaybe } from '../utils/format';
+import { errorMessage, formatDate, formatDateTimeMaybe, formatMoney } from '../utils/format';
 import { applyApiFieldErrors } from '../utils/formErrors';
 import { withSavedOption } from '../utils/selectOptions';
 import { isBeforeMinRequestDate, isPastDate, minRequestDate } from '../utils/date';
@@ -185,6 +186,29 @@ function SubjectCell({ r }: { r: WasteRequestDto }) {
       )}
     </>
   );
+}
+
+/**
+ * Что возврат в «Новую» сотрёт у этой заявки (`transitionResetsWork`) — строками, по её
+ * собственным данным.
+ *
+ * У вывоза мусора это предъявленный факт (ADR 0035) и талоны вывоза (ADR 0013, ADR 0024): всё,
+ * чем закрывали заявку. Есть они не всегда — заявка попадает в «В работе» и без них, а факт с
+ * талонами появляются у той, которую уже закрывали и откатили назад, — поэтому перечень собирается
+ * по заявке: обещать снятие того, чего у неё нет, значит пугать человека выдуманной потерей.
+ */
+function rollbackErases(r: WasteRequestDto): string[] {
+  const items: string[] = [];
+  if (r.completion) {
+    const cost = r.completion.totalCost != null ? ` · ${formatMoney(r.completion.totalCost)}` : '';
+    items.push(`Предъявленный факт: вывезено ${r.completion.volumeM3} м³${cost}`);
+  }
+  // Талоны — общий пул на заявку (ADR 0024): считаются штуками, перечислять их имена в окне
+  // решения незачем — важно, что бумага открепится от заявки и её придётся прикладывать заново.
+  if (r.tickets.length > 0) {
+    items.push(`Приложенные талоны вывоза: ${r.tickets.length} шт.`);
+  }
+  return items;
 }
 
 export function WasteRequestsPage() {
@@ -716,6 +740,12 @@ function RequestsTab() {
   // (оператор вывоза, причина отмены), поэтому целевая заявка хранится в состоянии.
   const [operatorTarget, setOperatorTarget] = useState<WasteRequestDto | null>(null);
   const [cancelTarget, setCancelTarget] = useState<WasteRequestDto | null>(null);
+  /**
+   * Заявка, которую возвращают из работы в «Новую» (`transitionResetsWork`). Отдельным состоянием
+   * от отмены: окно причины у них одно, а перечень стираемого — свой, и по одному состоянию окно
+   * не отличило бы возврат от отмены.
+   */
+  const [rollbackTarget, setRollbackTarget] = useState<WasteRequestDto | null>(null);
   const [operatorForm] = Form.useForm<{
     operatorCounterpartyId: string;
     ownerMismatchReason?: string;
@@ -763,6 +793,7 @@ function RequestsTab() {
     onSuccess: () => {
       setOperatorTarget(null);
       setCancelTarget(null);
+      setRollbackTarget(null);
       setDoneTarget(null);
       void qc.invalidateQueries({ queryKey: ['waste-requests'] });
     },
@@ -803,11 +834,19 @@ function RequestsTab() {
 
   /**
    * Перевод в работу — через назначение оператора вывоза; закрытие — через окно предъявления
-   * факта (машины у вывоза мусора, талоны у контейнерных операций) и комментария; отмена —
-   * через обязательную причину. Остальные переходы (откаты) выполняются сразу.
+   * факта (машины у вывоза мусора, талоны у контейнерных операций) и комментария; отмена и
+   * возврат в «Новую» — через обязательную причину. Остальные откаты выполняются сразу: они
+   * ничего не стирают, и объяснять там нечего.
    */
   const requestStatusChange = (r: WasteRequestDto, status: RequestStatus) => {
-    if (statusChangeRequiresReason(status)) {
+    // Возврат из работы в «Новую» стирает нажитое в работе (`transitionResetsWork`) — факт и
+    // талоны вывоза. Причину он спрашивает тем же окном, что отмена, но перечисляет над полем,
+    // что именно потеряет эта заявка: после нажатия восстанавливать будет нечего.
+    if (transitionResetsWork(r.status, status)) {
+      setRollbackTarget(r);
+      return;
+    }
+    if (statusChangeRequiresReason(status, r.status)) {
       setCancelTarget(r);
       return;
     }
@@ -1529,6 +1568,25 @@ function RequestsTab() {
             id: cancelTarget.id,
             status: 'cancelled',
             version: cancelTarget.version,
+            comment: reason,
+          })
+        }
+      />
+
+      {/* Возврат в «Новую»: причина обязательна наравне с причиной отмены (её требует и сервер),
+        а над полем — что заявка потеряет: факт и талоны вывоза этой самой заявки. */}
+      <RollbackReasonModal
+        open={!!rollbackTarget}
+        subject={rollbackTarget ? `№ ${rollbackTarget.displayNumber}` : ''}
+        erases={rollbackTarget ? rollbackErases(rollbackTarget) : []}
+        confirmLoading={statusMut.isPending}
+        onCancel={() => setRollbackTarget(null)}
+        onSubmit={(reason) =>
+          rollbackTarget &&
+          statusMut.mutate({
+            id: rollbackTarget.id,
+            status: 'new',
+            version: rollbackTarget.version,
             comment: reason,
           })
         }

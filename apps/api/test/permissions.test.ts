@@ -13,6 +13,7 @@ import {
   isDepartmentScopedRole,
   isObjectScopedRole,
   isPlaceScopedRole,
+  OPERATOR_STATUS_TRANSITIONS,
   PERMISSIONS,
   permissionsFor,
   profilesWith,
@@ -232,6 +233,9 @@ describe('права ролей', () => {
   });
 
   it('архив, откаты и учётки — только администратору', () => {
+    // `requests.rollbackStatus` покрывает и возврат «В работе» → «Новая»: это тот же откат назад
+    // по циклу, и второго права под него не заводили — иначе «кто откатывает заявки» пришлось бы
+    // выяснять по двум строкам матрицы вместо одной.
     const adminOnly: Permission[] = [
       'archive.read',
       'archive.restore',
@@ -360,9 +364,47 @@ describe('переходы статусов следуют из прав', () =>
     expect(allowedStatusTransitions('confirmed', of('operator'))).toEqual([]);
   });
 
+  /**
+   * Свой коридор исполнителя (`OPERATOR_STATUS_TRANSITIONS`) заменяет общий, а не дополняет его:
+   * откаты приходят из `requestStatusRollbacks` мимо коридора, и появление там возврата «В работе»
+   * → «Новая» исполнителя коснуться не должно. Снятие заявки с работы — решение заказчика, а
+   * исполнителю оно стёрло бы уже назначенную ему машину.
+   */
+  it('коридор исполнителя не расширяется новыми откатами', () => {
+    for (const subject of [wasteOperator, vehicleLessor]) {
+      expect(allowedStatusTransitions('confirmed', subject)).toEqual(
+        OPERATOR_STATUS_TRANSITIONS.confirmed,
+      );
+      expect(canTransitionStatus('confirmed', 'new', subject)).toBe(false);
+    }
+    expect(OPERATOR_STATUS_TRANSITIONS.confirmed).not.toContain('new');
+  });
+
   it('откат закрытой заявки идёт от права, а не от имени роли', () => {
     expect(canTransitionStatus('done', 'confirmed', of('admin'))).toBe(true);
     expect(can(of('manager'), 'requests.rollbackStatus')).toBe(false);
     expect(canTransitionStatus('done', 'confirmed', of('manager'))).toBe(false);
+  });
+
+  /**
+   * Возврат «В работе» → «Новая» — тот же откат по тому же праву: заявку, взятую в работу по
+   * ошибке, снимают с неё, а не заводят второй такой же. Отличается он последствием — стирает
+   * назначенную технику, факт, рейс и визу, — и потому тем более не раздаётся всем, кто ведёт
+   * заявки: чужую работу диспетчер стирать не должен.
+   */
+  it('возврат «В работе» → «Новая» доступен по тому же праву отката', () => {
+    expect(canTransitionStatus('confirmed', 'new', of('admin'))).toBe(true);
+    // Ход вперёд остаётся первым: откат дописывается к обычным переходам, а не вместо них.
+    expect(allowedStatusTransitions('confirmed', of('admin'))).toEqual([
+      'done',
+      'cancelled',
+      'new',
+    ]);
+    for (const role of ['manager', 'dispatcher'] as Role[]) {
+      expect(can(of(role), 'requests.rollbackStatus'), role).toBe(false);
+      expect(canTransitionStatus('confirmed', 'new', of(role)), role).toBe(false);
+      // Забрали только откат: заявку в работе они по-прежнему и закрывают, и отменяют.
+      expect(allowedStatusTransitions('confirmed', of(role)), role).toEqual(['done', 'cancelled']);
+    }
   });
 });

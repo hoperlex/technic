@@ -9,7 +9,10 @@ import {
   formatWasteRequestNumber,
   isInlineViewable,
   parseWasteRequestNumberSearch,
+  REQUEST_STATUSES,
   requestStatusTransitions,
+  statusChangeRequiresReason,
+  transitionResetsWork,
 } from '@technic/contracts';
 
 describe('статусы заявок', () => {
@@ -22,16 +25,52 @@ describe('статусы заявок', () => {
 
   it('хронологию нарушать нельзя, закрытые статусы терминальны', () => {
     expect(canTransitionStatus('new', 'done', { role: 'dispatcher' })).toBe(false);
+    // Назад заявку двигает только откат, и он приходит правом, а не рабочим циклом: у менеджера
+    // права нет, поэтому «В работе» → «Новая» для него закрыто по-прежнему.
     expect(canTransitionStatus('confirmed', 'new', { role: 'manager' })).toBe(false);
+    expect(requestStatusTransitions.confirmed).not.toContain('new');
     expect(requestStatusTransitions.done).toEqual([]);
     expect(requestStatusTransitions.cancelled).toEqual([]);
   });
 
-  it('откат закрытой заявки — только администратору', () => {
+  it('откат — только администратору, и снятие заявки с работы тоже', () => {
     expect(canTransitionStatus('done', 'confirmed', { role: 'admin' })).toBe(true);
     expect(canTransitionStatus('cancelled', 'new', { role: 'admin' })).toBe(true);
+    expect(canTransitionStatus('confirmed', 'new', { role: 'admin' })).toBe(true);
     expect(canTransitionStatus('done', 'confirmed', { role: 'manager' })).toBe(false);
     expect(canTransitionStatus('cancelled', 'new', { role: 'dispatcher' })).toBe(false);
+    expect(canTransitionStatus('confirmed', 'new', { role: 'dispatcher' })).toBe(false);
+  });
+
+  /**
+   * «Стирает работу» — про сброс назначенной техники, факта, рейса и визы, и переход с таким
+   * последствием ровно один. Перебором всех пар, а не парой проверок: второй такой переход,
+   * заведённый по недосмотру, обязан уронить проверку, а не тихо очистить чужую заявку.
+   */
+  it('работу стирает единственный переход — возврат «В работе» → «Новая»', () => {
+    const resetting = REQUEST_STATUSES.flatMap((from) =>
+      REQUEST_STATUSES.filter((to) => transitionResetsWork(from, to)).map((to) => `${from}→${to}`),
+    );
+    expect(resetting).toEqual(['confirmed→new']);
+  });
+
+  it('причины требуют отмена и возврат в «Новую» из работы', () => {
+    expect(statusChangeRequiresReason('cancelled')).toBe(true);
+    expect(statusChangeRequiresReason('new', 'confirmed')).toBe(true);
+    // Откат отменённой заявки ведёт в тот же статус, но ничего не стирает: объяснять нечего.
+    expect(statusChangeRequiresReason('new', 'cancelled')).toBe(false);
+    expect(statusChangeRequiresReason('confirmed', 'new')).toBe(false);
+    expect(statusChangeRequiresReason('done', 'confirmed')).toBe(false);
+  });
+
+  /**
+   * Причину при откате схема не спрашивает, и это не пробел: в теле запроса лежит только целевой
+   * статус, а «стирает ли переход работу» решает пара «откуда → куда». Исходный статус знает
+   * сервер — он и требует причину, поэтому проверка здесь фиксирует именно молчание схемы.
+   */
+  it('схема причину при откате не требует: исходного статуса она не знает', () => {
+    expect(changeWasteRequestStatusSchema.parse({ status: 'new', version: 1 }).comment).toBe('');
+    expect(statusChangeRequiresReason('new')).toBe(false);
   });
 
   it('роли без ведения заявок статусы не меняют', () => {

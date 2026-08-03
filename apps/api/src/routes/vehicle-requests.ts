@@ -41,6 +41,7 @@ import {
   formatVehicleRequestNumber,
   formatVehicleRouteNumber,
   isRouteEditable,
+  ROLLBACK_WAYBILL_MESSAGE,
   ROUTE_FROZEN_MESSAGE,
   ROUTE_LEGACY_WAYBILL_MESSAGE,
   shouldDetachOnStatus,
@@ -66,6 +67,7 @@ import {
   transitionRequiresApproval,
   transitionRequiresAssignment,
   transitionRequiresCompletion,
+  transitionResetsWork,
   updateVehicleRequestSchema,
   type UpdateVehicleRequestInput,
   type VehicleOnSiteListDto,
@@ -149,6 +151,7 @@ import {
 } from '../services/vehicle-request-diff';
 import { loadVehicleRequestHistory } from '../services/vehicle-request-history';
 import {
+  activeWaybillOfRequest,
   attachRequest,
   bumpRouteVersion,
   createRelocationRoute,
@@ -2502,12 +2505,37 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       if (schedule && schedule.requestType !== before.requestType) {
         throw err.unprocessable('Тип заявки изменить нельзя', { schedule: 'Другой тип заявки' });
       }
+      // Возврат в «Новую» стирает работу заявки, и причина ему нужна так же, как отмене: в
+      // истории иначе осталась бы пара переходов, по которой не понять, ошиблись машиной,
+      // отказался исполнитель или заявку завели не тому объекту. Схема тела спросить это не
+      // может — она знает только целевой статус, а требование зависит от исходного.
+      const resetsWork = transitionResetsWork(before.status, status);
+      if (resetsWork && !comment) {
+        throw err.unprocessable(
+          `Укажите причину возврата заявки в «${requestStatusLabels.new}» — она снимает технику и рейс`,
+          { comment: 'Укажите причину' },
+        );
+      }
 
       // Назначение, факт и уточнённый срок проверяются и пишутся в той же транзакции, что и статус:
       // заявка не должна побыть «в работе» ни на чём, «выполненной» без факта или взятой на одно
       // время с листом на другое — даже мгновение.
       const { assigned, completed, earlyEndDropped, droppedRelocations } = await db.transaction(
         async (tx) => {
+          // Возврат в «Новую» не спорит с выданной бумагой: заявку, стоящую в действующем листе,
+          // стереть с работы нельзя — она пошла бы в чей-то следующий рейс, и одна работа
+          // оказалась бы сразу в двух документах (ADR 0050). Строка заявки при этом блокируется
+          // тем же `FOR UPDATE`, которым её берёт выписка листа: без блокировки лист успел бы
+          // родиться между проверкой и сбросом.
+          if (resetsWork) {
+            await tx
+              .select({ id: vehicleRequests.id })
+              .from(vehicleRequests)
+              .where(eq(vehicleRequests.id, before.id))
+              .for('update', { of: vehicleRequests });
+            const issued = await activeWaybillOfRequest(tx, before.id);
+            if (issued) throw err.conflict(`${ROLLBACK_WAYBILL_MESSAGE} (${issued})`);
+          }
           // Срок — первым: дату рейса путевой лист берёт из заявки, и записанный после выписки он
           // отправил бы лист на заказанное время вместо согласованного.
           if (schedule) await applyConfirmedSchedule(tx, before.id, schedule);
@@ -2567,9 +2595,32 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
             });
             await saveCompletion(tx, before.id, closed);
           }
+          // Возврат в «Новую» снимает и назначение, и факт: «Новая» с машиной, ставками и суммой
+          // закрытия читалась бы как заявка, которую с работы не снимали, а повторный перевод в
+          // работу молча обошёлся бы прежней техникой (ADR 0027 п. 8) — то есть той самой, из-за
+          // которой заявку и откатили. Факт остаётся у заявок, откатанных из «Выполнена» в
+          // «В работе», — там его берегут намеренно, и снимает его только следующий шаг назад.
+          if (resetsWork) {
+            await tx
+              .delete(vehicleRequestAssignments)
+              .where(eq(vehicleRequestAssignments.requestId, before.id));
+            await tx
+              .delete(vehicleRequestCompletions)
+              .where(eq(vehicleRequestCompletions.requestId, before.id));
+          }
           const [updated] = await tx
             .update(vehicleRequests)
-            .set({ status, updatedBy: p.id, version: before.version + 1, updatedAt: new Date() })
+            // Виза уходит вместе с работой (ADR 0025): заявка возвращается к состоянию «заведена
+            // и ждёт решения», а согласовывали руководителю строительства не её, а то, что с ней
+            // случилось дальше. Оставленная виза дала бы диспетчеру взять заявку в работу снова,
+            // не спросив никого.
+            .set({
+              status,
+              ...(resetsWork ? { approvedBy: null, approvedAt: null } : {}),
+              updatedBy: p.id,
+              version: before.version + 1,
+              updatedAt: new Date(),
+            })
             .where(and(eq(vehicleRequests.id, before.id), eq(vehicleRequests.version, version)))
             .returning({ id: vehicleRequests.id });
           if (!updated) throw err.conflict();
@@ -2607,26 +2658,32 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           // Убранные перегоны — часть того же события: рейс исчез не сам по себе, а вместе со
           // сменой статуса, и в журнале это должно читаться одной записью.
           ...(droppedRelocations.length > 0 ? { droppedRelocations } : {}),
+          // Сброс отмечается и в самом переходе: по журналу должно быть видно, что заявка не
+          // просто вернулась в «Новую», а лишилась всего, чем её собирались выполнять.
+          ...(resetsWork ? { reset: true } : {}),
         },
       });
       // Назначение — отдельное событие истории: «в работе» и «на такой-то машине по такой-то
       // ставке» отвечают на разные вопросы, и второе нужно предъявлять с составом изменений.
-      if (assigned) {
+      // Снятое возвратом в «Новую» назначение — то же событие с прочерками справа: вопрос «чем
+      // выполняли заявку» один, и «ничем, машину сняли» — такой же ответ на него.
+      if (assigned || (resetsWork && before.assignment)) {
         await writeAudit({
           actorUserId: p.id,
           action: 'vehicle_request.assign',
           entityType: 'vehicle_request',
           entityId: before.id,
           metadata: {
-            vehicleId: assigned.vehicleId,
+            vehicleId: assigned?.vehicleId ?? before.assignment!.vehicleId,
             changes: diffVehicleAssignment(before.assignment, assigned),
           },
         });
       }
       // Факт выполнения — тоже своё событие: «Выполнена» отвечает «что с заявкой», закрытие —
       // «сколько отработали и сколько это стоило». Повторное закрытие после отката видно
-      // составом изменений: та же работа, но другое время и другая сумма.
-      if (completed) {
+      // составом изменений: та же работа, но другое время и другая сумма, — а снятый возвратом
+      // в «Новую» факт виден прочерками: предъявлять по этой заявке больше нечего.
+      if (completed || (resetsWork && before.completion)) {
         await writeAudit({
           actorUserId: p.id,
           action: 'vehicle_request.complete',
@@ -2647,6 +2704,17 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
             reason: 'closed',
             changes: earlyEndReasonChange(`Заявка переведена в «${requestStatusLabels[status]}»`),
           },
+        });
+      }
+      // Снятая возвратом виза — событие того же вида, что и обычный отзыв визы (ADR 0025):
+      // руководителю строительства важно, что заявка снова ждёт его решения, а не то, каким
+      // действием она этого дождалась.
+      if (resetsWork && before.approvedAt) {
+        await writeAudit({
+          actorUserId: p.id,
+          action: 'vehicle_request.approval_revoke',
+          entityType: 'vehicle_request',
+          entityId: before.id,
         });
       }
       const after = (await getDto(before.id))!;

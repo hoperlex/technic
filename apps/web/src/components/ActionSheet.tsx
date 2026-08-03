@@ -45,7 +45,11 @@ export function ActionSheet({ title, open, onClose, items }: Props) {
             disabled={item.disabled}
             icon={item.icon}
             className="action-sheet__item"
-            onClick={() => {
+            onClick={(e) => {
+              // Список рисуется порталом, но событие идёт по дереву React — то есть через ту
+              // самую карточку списка, из которой список открыли. Не остановив его, выбор статуса
+              // с телефона заодно открывал бы карточку заявки поверх начатого действия.
+              e.stopPropagation();
               // Окно закрывается до действия: половина пунктов открывает своё окно поверх.
               onClose();
               item.onClick();

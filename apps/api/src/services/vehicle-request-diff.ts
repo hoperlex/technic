@@ -170,19 +170,31 @@ function vehicleValue(a: VehicleRequestAssignmentDto): string {
  * Что изменило назначение техники (ADR 0027). `before === null` — заявку берут в работу впервые,
  * и слева у всех полей прочерк: назначения не было. Ставки сравниваются наравне с машиной —
  * повторный перевод в работу той же машиной, но по другой цене, это тоже событие.
+ *
+ * `after === null` — назначение сняли: заявку вернули из работы в «Новую», и машины у неё больше
+ * нет. Прочерки справа, а не пустое событие: «была такая-то машина по такой-то ставке, стало
+ * ничего» — единственный след того, чем заявку собирались выполнять до отката.
  */
 export function diffVehicleAssignment(
   before: VehicleRequestAssignmentDto | null,
-  after: VehicleRequestAssignmentDto,
+  after: VehicleRequestAssignmentDto | null,
 ): RequestChangeDto[] {
   const diff = changeSet();
-  diff.changed('vehicle', before ? vehicleValue(before) : EMPTY, vehicleValue(after));
-  diff.changed('pricePerHour', rub(before?.pricePerHour ?? null), rub(after.pricePerHour));
-  diff.changed('pricePerShift', rub(before?.pricePerShift ?? null), rub(after.pricePerShift));
+  diff.changed(
+    'vehicle',
+    before ? vehicleValue(before) : EMPTY,
+    after ? vehicleValue(after) : EMPTY,
+  );
+  diff.changed('pricePerHour', rub(before?.pricePerHour ?? null), rub(after?.pricePerHour ?? null));
+  diff.changed(
+    'pricePerShift',
+    rub(before?.pricePerShift ?? null),
+    rub(after?.pricePerShift ?? null),
+  );
   diff.changed(
     'shiftHours',
     before?.shiftHours == null ? EMPTY : `${before.shiftHours} ч`,
-    after.shiftHours == null ? EMPTY : `${after.shiftHours} ч`,
+    after?.shiftHours == null ? EMPTY : `${after.shiftHours} ч`,
   );
   return diff.changes;
 }
@@ -196,14 +208,18 @@ function worked(c: VehicleRequestCompletionDto | null): string {
  * Что предъявило закрытие заявки (ADR 0029). `before === null` — заявку закрывают впервые, и
  * слева прочерки. Повторное закрытие (после отката администратором) сравнивается с прежним
  * фактом: «отработали не 3 смены, а 2, и сумма другая» — это событие, а не уточнение.
+ *
+ * `after === null` — факт сняли возвратом заявки в «Новую»: предъявленного больше нет, и справа
+ * прочерки. Иначе сумма закрытия осталась бы в истории последним словом о заявке, которую с
+ * работы сняли.
  */
 export function diffVehicleCompletion(
   before: VehicleRequestCompletionDto | null,
-  after: VehicleRequestCompletionDto,
+  after: VehicleRequestCompletionDto | null,
 ): RequestChangeDto[] {
   const diff = changeSet();
   diff.changed('worked', worked(before), worked(after));
-  diff.changed('rate', rub(before?.rate ?? null), rub(after.rate));
-  diff.changed('totalCost', rub(before?.totalCost ?? null), rub(after.totalCost));
+  diff.changed('rate', rub(before?.rate ?? null), rub(after?.rate ?? null));
+  diff.changed('totalCost', rub(before?.totalCost ?? null), rub(after?.totalCost ?? null));
   return diff.changes;
 }

@@ -13,6 +13,12 @@ interface Props {
   width?: number;
   okText?: string;
   cancelText?: string;
+  /**
+   * Основное действие необратимо (отмена заявки, возврат в «Новую» со стиранием работы) — кнопка
+   * красная. Тем же признаком, что и у подтверждений `modal.confirm`: человек привык, что красная
+   * кнопка отнимает, а не сохраняет, и окно с формой не должно этому противоречить.
+   */
+  okDanger?: boolean;
   children: ReactNode;
 }
 
@@ -34,6 +40,7 @@ export function FormModal({
   width = 480,
   okText = 'Сохранить',
   cancelText = 'Отмена',
+  okDanger,
   children,
 }: Props) {
   const isMobile = useIsMobile();
@@ -63,7 +70,14 @@ export function FormModal({
             <Button size="large" block onClick={onCancel}>
               {cancelText}
             </Button>
-            <Button size="large" block type="primary" loading={confirmLoading} onClick={onSubmit}>
+            <Button
+              size="large"
+              block
+              type="primary"
+              danger={okDanger}
+              loading={confirmLoading}
+              onClick={onSubmit}
+            >
               {okText}
             </Button>
           </div>
@@ -81,6 +95,7 @@ export function FormModal({
       onCancel={onCancel}
       onOk={onSubmit}
       okText={okText}
+      okButtonProps={{ danger: okDanger }}
       cancelText={cancelText}
       confirmLoading={confirmLoading}
       width={width}

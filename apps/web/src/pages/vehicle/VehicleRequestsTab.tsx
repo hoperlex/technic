@@ -34,6 +34,7 @@ import {
   canRequestEarlyEnd,
   canShortenWorkPeriodByEdit,
   type CompleteVehicleRequestInput,
+  completionLabel,
   isAddressVerified,
   minRequestDateKey,
   isCargoAmountRequired,
@@ -46,20 +47,24 @@ import {
   type RequestStatus,
   requestCustomerName,
   requestStatusLabels,
+  ROLLBACK_WAYBILL_MESSAGE,
+  routePurposeLabels,
   type SpecialEquipmentRequestDto,
   statusChangeRequiresReason,
   transitionRequiresAssignment,
   transitionRequiresCompletion,
+  transitionResetsWork,
   vehicleClassificationLabel,
   type VehicleRequestDto,
   type VehicleRequestType,
   vehicleRequestTypeColors,
   allowedVehicleRequestTypes,
   vehicleRequestTypeLabels,
+  type VehicleRouteDto,
 } from '@technic/contracts';
 import { vehicleRequestsApi } from '../../api/resources';
 import { AutoSelect } from '../../components/AutoSelect';
-import { CancelReasonModal } from '../../components/CancelReasonModal';
+import { CancelReasonModal, RollbackReasonModal } from '../../components/CancelReasonModal';
 import { DataTable, type CardConfig } from '../../components/DataTable';
 import { FormGrid } from '../../components/FormGrid';
 import { FormModal } from '../../components/FormModal';
@@ -189,6 +194,42 @@ function termLabel(r: VehicleRequestDto): string {
       : formatDateOnly(r.dateFrom);
   }
   return formatDateTimeMaybe(r.scheduledAt, r.scheduledTimeUnspecified);
+}
+
+/**
+ * Что возврат в «Новую» сотрёт у этой заявки (`transitionResetsWork`) — строками, по её
+ * собственным данным.
+ *
+ * Перечень не статический намеренно: у арендной машины рейса и перегонов не бывает — их ведёт
+ * арендодатель, — у заявки отдела нет визы, а факт есть только у той, которую уже закрывали и
+ * откатили назад в работу. Обещать снятие того, чего у заявки нет, — врать человеку ровно в том
+ * окне, где он решает, стирать ли работу; поэтому строка появляется только под заполненное поле.
+ */
+function rollbackErases(r: VehicleRequestDto, relocations: VehicleRouteDto[]): string[] {
+  const items: string[] = [];
+  if (r.assignment) {
+    // Ставки — тем же текстом, что и в строке списка: их согласовывали под эту заявку (ADR 0027),
+    // и стирается вместе с машиной именно договорённость, а не строка справочника. Без ставок у
+    // арендной машины называется арендодатель: с ним и договаривались, ему и звонить об отказе.
+    const detail = assignmentRateLabel(r.assignment) || r.assignment.lessorName;
+    items.push(
+      `Назначенная техника: ${assignmentTitle(r.assignment)}${detail ? ` — ${detail}` : ''}`,
+    );
+  }
+  if (r.route) items.push(`Место в рейсе ${r.route.displayNumber}`);
+  for (const route of relocations) {
+    items.push(
+      `${routePurposeLabels[route.purpose]} — рейс ${route.displayNumber} от ${formatDateOnly(route.routeDate)}`,
+    );
+  }
+  // Виза (ADR 0025): её ставят только «Новой» заявке, и вернувшуюся придётся согласовывать заново.
+  if (r.approvedAt) {
+    items.push(
+      `Виза руководителя строительства${r.approvedByName ? ` (${r.approvedByName})` : ''}`,
+    );
+  }
+  if (r.completion) items.push(`Предъявленный факт: ${completionLabel(r.completion)}`);
+  return items;
 }
 
 export function VehicleRequestsTab() {
@@ -589,6 +630,24 @@ export function VehicleRequestsTab() {
 
   // Отмена заявки требует причины — она вводится в отдельном окне.
   const [cancelTarget, setCancelTarget] = useState<VehicleRequestDto | null>(null);
+  /**
+   * Заявка, которую возвращают из работы в «Новую» (`transitionResetsWork`). Отдельно от отмены:
+   * окно причины у них общее, но перечень стираемого — свой, и по нему видно, что именно потеряет
+   * эта заявка. Смешай их в одном состоянии — окно не знало бы, что показывать.
+   */
+  const [rollbackTarget, setRollbackTarget] = useState<VehicleRequestDto | null>(null);
+  /**
+   * Перегоны заявки, которую возвращают в «Новую» (миграция 0082): они едут ради этой заявки и на
+   * назначенной ей машине, поэтому возврат стирает их вместе с назначением. Спрашиваются, только
+   * пока открыто окно, и только у заказа техники на объект — у грузоперевозки перегонов не бывает,
+   * а лишний запрос на каждую строку списка ради окна, которое откроют раз в месяц, ни к чему.
+   * Ключ тот же, что у карточки заявки: открытая перед этим карточка отдаёт ответ из кэша.
+   */
+  const { data: rollbackRelocations } = useQuery({
+    queryKey: ['vehicle-requests', rollbackTarget?.id, 'relocations'],
+    queryFn: () => vehicleRequestsApi.relocations(rollbackTarget!.id),
+    enabled: !!rollbackTarget && rollbackTarget.requestType === 'special_equipment',
+  });
   // Перевод в работу — выбор техники и ставок (ADR 0027): назначение уходит вместе со статусом.
   const [assignTarget, setAssignTarget] = useState<VehicleRequestDto | null>(null);
   // Выполнение — отработанное время и стоимость (ADR 0029): факт тоже уходит со статусом.
@@ -636,15 +695,27 @@ export function VehicleRequestsTab() {
     onSuccess: () => {
       message.success('Статус изменён');
       setCancelTarget(null);
+      setRollbackTarget(null);
       setAssignTarget(null);
       setCompleteTarget(null);
       void qc.invalidateQueries({ queryKey: ['vehicle-requests'] });
+      // Возврат в «Новую» снимает машину, а с ней уходят из рейсов и сама заявка, и её перегоны:
+      // списки маршрутов после такого перехода уже не те. Инвалидация общая на все переходы —
+      // рейсов касается и закрытие заявки, и её отмена.
+      void qc.invalidateQueries({ queryKey: ['vehicle-routes'] });
     },
     onError: (e) => message.error(errorMessage(e)),
   });
 
   const requestStatusChange = (r: VehicleRequestDto, status: RequestStatus) => {
-    if (statusChangeRequiresReason(status)) {
+    // Возврат из работы в «Новую» стирает всё, что заявка нажила в работе (`transitionResetsWork`),
+    // и спрашивает причину тем же окном, что отмена, — но со своим перечнем стираемого: человек
+    // должен увидеть, чего лишится эта заявка, до нажатия, а не после.
+    if (transitionResetsWork(r.status, status)) {
+      setRollbackTarget(r);
+      return;
+    }
+    if (statusChangeRequiresReason(status, r.status)) {
       setCancelTarget(r);
       return;
     }
@@ -1733,6 +1804,35 @@ export function VehicleRequestsTab() {
             id: cancelTarget.id,
             status: 'cancelled',
             version: cancelTarget.version,
+            comment: reason,
+          })
+        }
+      />
+
+      {/* Возврат в «Новую»: причина обязательна наравне с причиной отмены, а над полем — перечень
+        того, что заявка потеряет. Выписанный по ней путевой лист возврат не пропустит
+        (`ROLLBACK_WAYBILL_MESSAGE`): работу заявки, попавшей в выданный бланк, стирать нельзя —
+        об этом сказано здесь же, до набранной впустую причины. */}
+      <RollbackReasonModal
+        open={!!rollbackTarget}
+        subject={rollbackTarget ? `№ ${rollbackTarget.displayNumber}` : ''}
+        erases={rollbackTarget ? rollbackErases(rollbackTarget, rollbackRelocations ?? []) : []}
+        blocker={
+          rollbackTarget?.route?.hasWaybill ||
+          rollbackRelocations?.some(
+            (route) => route.waybill && route.waybill.status !== 'cancelled',
+          )
+            ? ROLLBACK_WAYBILL_MESSAGE
+            : null
+        }
+        confirmLoading={statusMut.isPending}
+        onCancel={() => setRollbackTarget(null)}
+        onSubmit={(reason) =>
+          rollbackTarget &&
+          statusMut.mutate({
+            id: rollbackTarget.id,
+            status: 'new',
+            version: rollbackTarget.version,
             comment: reason,
           })
         }

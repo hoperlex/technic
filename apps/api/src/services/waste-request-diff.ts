@@ -106,14 +106,18 @@ export function ownerMismatchChanges(
  * Что предъявило закрытие заявки (ADR 0035). Отдельным событием от смены статуса: «выполнена» и
  * «вывезли 48 м³ на 40 800 ₽» отвечают на разные вопросы. Повторное закрытие (после отката
  * администратором) сравнивается с прошлым фактом — видно, какую именно цифру исправили.
+ *
+ * Пустая правая сторона — снятый факт: возврат заявки в «Новую» стирает предъявленное
+ * (`transitionResetsWork`), и история обязана показать это теми же строками «48 м³ → —», а не
+ * молчанием. Иначе цифры пропали бы из карточки, ни разу не попав в историю.
  */
 export function diffWasteCompletion(
   before: WasteRequestCompletionDto | null,
-  after: WasteRequestCompletionDto,
+  after: WasteRequestCompletionDto | null,
 ): RequestChangeDto[] {
   const diff = changeSet();
-  diff.changed('factVolume', volume(before?.volumeM3 ?? null), volume(after.volumeM3));
-  diff.changed('factPrice', money(before?.pricePerM3 ?? null), money(after.pricePerM3));
-  diff.changed('factCost', money(before?.totalCost ?? null), money(after.totalCost));
+  diff.changed('factVolume', volume(before?.volumeM3 ?? null), volume(after?.volumeM3 ?? null));
+  diff.changed('factPrice', money(before?.pricePerM3 ?? null), money(after?.pricePerM3 ?? null));
+  diff.changed('factCost', money(before?.totalCost ?? null), money(after?.totalCost ?? null));
   return diff.changes;
 }

@@ -225,6 +225,46 @@ async function waybillsByRoute(
 }
 
 /**
+ * Номер действующего путевого листа, в котором заявка так или иначе стоит, либо `null`.
+ *
+ * Спрашивает возврат заявки в «Новую» (`ROLLBACK_WAYBILL_MESSAGE`): такой откат стирает работу —
+ * машину, рейс, перегоны, — а стирать её у заявки, попавшей в выданный бланк, нельзя. Заявка
+ * снова пошла бы в чей-то рейс, и одна работа оказалась бы сразу в двух действующих документах;
+ * ровно эту дыру закрывал ADR 0050.
+ *
+ * Считаются все три способа попасть в бланк: талоном в грузовом рейсе, основанием рейса-перегона
+ * (ADR 0057) и листом, выписанным ещё вне маршрутов (`legacyWaybillOf`). Аннулированный лист не
+ * держит: испорченный бланк списан, и работа заявки к нему больше не относится.
+ */
+export async function activeWaybillOfRequest(
+  reader: Reader,
+  requestId: string,
+): Promise<string | null> {
+  const [row] = await reader
+    .select({
+      number: waybills.number,
+      prefix: waybillSeries.prefix,
+      width: waybillSeries.numberWidth,
+    })
+    .from(waybills)
+    .innerJoin(waybillSeries, eq(waybillSeries.id, waybills.seriesId))
+    .innerJoin(vehicleRoutes, eq(vehicleRoutes.id, waybills.routeId))
+    .where(
+      and(
+        ne(waybills.status, 'cancelled'),
+        sql`(${vehicleRoutes.sourceRequestId} = ${requestId} OR EXISTS (
+          SELECT 1 FROM ${vehicleRouteRequests}
+          WHERE ${vehicleRouteRequests.routeId} = ${vehicleRoutes.id}
+            AND ${vehicleRouteRequests.requestId} = ${requestId}
+        ))`,
+      ),
+    )
+    .limit(1);
+  if (row) return waybillDisplayNumber(row.prefix, row.number, row.width);
+  return legacyWaybillOf(reader, requestId);
+}
+
+/**
  * Действующий лист заявки, выписанный ещё вне маршрутов (`route_id IS NULL`).
  *
  * Пока история не перенесена `backfill:routes`, у работающей заявки такой лист может быть, а

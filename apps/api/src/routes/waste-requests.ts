@@ -17,6 +17,7 @@ import {
   REQUEST_STATUSES,
   type RequestType,
   requiresWasteFact,
+  transitionResetsWork,
   updateWasteOperatorCommentSchema,
   updateWasteRequestSchema,
   wasteOperatorCommentEditable,
@@ -1177,6 +1178,16 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       assertOperatorScope(p, before.operatorCounterpartyId);
       if (before.status === status) return before;
       assertTransitionAllowed(p, before.status, status);
+      // Возврат «В работе» → «Новая» стирает нажитое в работе (`transitionResetsWork`), и причина
+      // ему нужна наравне с причиной отмены: без неё в истории осталась бы пара переходов, по
+      // которой не понять, зачем стёрли факт и талоны. Спрашивает её сервер, а не схема тела:
+      // схеме известен только целевой статус, а требование держится на паре «откуда → куда».
+      const resetsWork = transitionResetsWork(before.status, status);
+      if (resetsWork && !comment) {
+        throw err.badRequest('Укажите причину возврата заявки в «Новую»', {
+          comment: 'Укажите причину',
+        });
+      }
       // Факт предъявляет один вывоз мусора: у контейнерных операций объёма нет вовсе (ADR 0035).
       if (completion && !requiresWasteFact(before.requestType)) {
         throw err.badRequest(FACT_NOT_APPLICABLE, {
@@ -1197,6 +1208,9 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         });
       }
       let saved: WasteRequestCompletionDto | null = null;
+      // Сколько талонов снял возврат в «Новую» — считается там, где они отвязываются: после
+      // транзакции их уже не по чему пересчитать.
+      let ticketsUnlinked = 0;
       const closed = await db.transaction(async (tx) => {
         // Закрытие заявки — это предъявление факта, и оно проводится тем же запросом, что и смена
         // статуса. Талон обязателен: «Выполнена» без бумаги о вывозе — отметка о работе, которую
@@ -1219,6 +1233,29 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
               ticketFileIds: 'Приложите талон',
             });
           }
+        }
+        // Возврат в «Новую» стирает работу той же транзакцией, что и меняет статус: «Новая» с
+        // предъявленным фактом и талонами прошлого закрытия означала бы, что заявку с работы и не
+        // снимали, а следующее закрытие обошлось бы чужими цифрами и чужой бумагой (ADR 0020,
+        // ADR 0035). Заявка после сброса выглядит как только что заведённая.
+        //
+        // Стирается ровно нажитое в работе. Примечание исполнителя остаётся: его пишут и «Новой»
+        // заявке (ADR 0053). Назначенный исполнитель — тоже: его ставят отдельным правом, и к
+        // переводу в работу это отношения не имеет.
+        if (resetsWork) {
+          const tickets = await tx
+            .select({ fileId: requestFiles.fileId })
+            .from(requestFiles)
+            .where(and(eq(requestFiles.requestId, before.id), eq(requestFiles.kind, 'ticket')));
+          // Талоны именно отвязываются, а не удаляются на месте: файл уходит в отложенное
+          // удаление общим порядком, и месяц его ещё можно достать, если откат был ошибкой.
+          // Обычные вложения не трогаются — они предъявляют саму заявку, а не её выполнение.
+          const ticketIds = tickets.map((t) => t.fileId);
+          await unlinkFiles(tx, before.id, ticketIds);
+          ticketsUnlinked = ticketIds.length;
+          await tx
+            .delete(wasteRequestCompletions)
+            .where(eq(wasteRequestCompletions.requestId, before.id));
         }
         const [updated] = await tx
           .update(wasteRequests)
@@ -1247,6 +1284,10 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
           // Талоны этого закрытия — по одному числу видно, чем подтверждён вывоз (ADR 0024:
           // список общий на заявку, поэтому и число одно).
           ticketsAdded: ticketFileIds.length,
+          // Чего лишила заявку отмотка назад: по этим отметкам видно, было ли что стирать, даже
+          // когда самих строк уже нет. У прочих переходов ключей нет вовсе — «снято ноль талонов,
+          // факт не тронут» на «взята в работу» читалось бы как событие, которого не было.
+          ...(resetsWork ? { ticketsUnlinked, factCleared: before.completion != null } : {}),
         },
       });
       // Факт — отдельное событие истории: «выполнена» и «вывезли столько-то на такую-то сумму»
@@ -1258,6 +1299,18 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
           entityType: 'waste_request',
           entityId: before.id,
           metadata: { changes: diffWasteCompletion(before.completion, closed) },
+        });
+      }
+      // Снятый факт предъявляется тем же событием, что и предъявленный: в истории он читается
+      // строками «48 м³ → —». Одной отметкой о возврате статуса тут не обойтись — иначе цифры
+      // просто исчезли бы из карточки, ни разу не попав в историю.
+      if (resetsWork && before.completion) {
+        await writeAudit({
+          actorUserId: p.id,
+          action: 'waste_request.complete',
+          entityType: 'waste_request',
+          entityId: before.id,
+          metadata: { changes: diffWasteCompletion(before.completion, null) },
         });
       }
       return (await getRequestDto(before.id))!;

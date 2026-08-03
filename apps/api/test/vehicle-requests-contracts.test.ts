@@ -33,6 +33,7 @@ import {
   transitionRequiresApproval,
   transitionRequiresAssignment,
   transitionRequiresCompletion,
+  transitionResetsWork,
   updateVehicleRequestSchema,
   VEHICLE_EARLY_END_STATUSES,
   vehicleEarlyEndStatusColors,
@@ -431,6 +432,34 @@ describe('vehicle-requests: обновление', () => {
         version: 2,
       }).comment,
     ).toBe('Техника не нужна');
+  });
+
+  /**
+   * Возврат в «Новую» — единственный переход, который стирает работу заявки: назначенную технику,
+   * факт, рейс и визу. Причину он требует наравне с отменой, но спрашивает её сервер: в теле лежит
+   * только целевой статус, а «стирает ли переход работу» решает пара «откуда → куда», и `from`
+   * схеме взять неоткуда. Тело здесь — статус, причина и версия: ни назначения, ни факта откату не
+   * передают, стирать их надо, а не досылать.
+   */
+  it('возврат в «Новую» проходит схему со своей причиной и без назначения', () => {
+    const parsed = changeVehicleRequestStatusSchema.parse({
+      status: 'new',
+      comment: 'Ошиблись машиной, собираем заявку заново',
+      version: 4,
+    });
+    expect(parsed.status).toBe('new');
+    expect(parsed.assignment).toBeUndefined();
+    expect(parsed.completion).toBeUndefined();
+    expect(transitionResetsWork('confirmed', parsed.status)).toBe(true);
+    expect(() =>
+      changeVehicleRequestStatusSchema.parse({
+        status: 'new',
+        version: 4,
+        assignment: { vehicleId: '44444444-4444-4444-8444-444444444444' },
+      }),
+    ).toThrow();
+    // Без исходного статуса схема причину не требует — молчание намеренное, а не пробел.
+    expect(changeVehicleRequestStatusSchema.parse({ status: 'new', version: 4 }).comment).toBe('');
   });
 });
 
@@ -1024,6 +1053,22 @@ describe('vehicle-requests: виза руководителя строитель
   it('роль без права на статус визой ничего не приобретает', () => {
     expect(allowedVehicleRequestTransitions('new', { role: 'rukstroy' }, true)).toEqual([]);
     expect(allowedVehicleRequestTransitions('new', { role: 'shtab' }, true)).toEqual([]);
+  });
+
+  /**
+   * Возврат в «Новую» визой не спрашивается, хотя из работы в работу заявка уже не вернётся сама:
+   * этот откат визу как раз стирает (`transitionResetsWork`), и требовать её условием значило бы
+   * запереть завизированную по ошибке заявку — снять визу у заявки «В работе» уже нельзя
+   * (`isApprovalChangeable`).
+   */
+  it('снятие заявки с работы визой не обусловлено — оно её и стирает', () => {
+    for (const approved of [true, false]) {
+      expect(allowedVehicleRequestTransitions('confirmed', { role: 'admin' }, approved)).toContain(
+        'new',
+      );
+    }
+    expect(transitionResetsWork('confirmed', 'new')).toBe(true);
+    expect(isApprovalChangeable('confirmed')).toBe(false);
   });
 
   it('визу ставят и снимают, пока заявка «Новая»', () => {
