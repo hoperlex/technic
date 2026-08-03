@@ -32,27 +32,32 @@ export async function expectModalClosed(title: string): Promise<void> {
 }
 
 /**
- * Выбрать вариант в поле формы (`Select`/`AutoSelect`).
+ * Открыть поле формы (`Select`/`AutoSelect`) и вернуть его выпадашку.
  *
  * Искать `.ant-select-item-option` по всему документу нельзя: закрытые выпадашки других полей
  * остаются в разметке, и выбор молча уходит в чужой список. Список поля — это `<id поля>_list`,
- * поэтому вариант ищется внутри него.
+ * поэтому варианты ищутся в выпадашке, которая его держит.
+ *
+ * Само поле ожидается, а не берётся сразу: в общем прогоне форма к этому моменту бывает ещё не
+ * отрисована, и синхронный поиск роняет тест не на его смысле, а на пустой ссылке.
  *
  * `labelText` — подпись поля; она же связывает `Form.Item` с самим полем через `id`.
  */
-export async function selectOption(labelText: string, optionText: string | RegExp): Promise<void> {
-  const label = [...document.querySelectorAll('label')].find(
-    (el) => el.textContent?.replace(/\s+/g, ' ').trim() === labelText,
-  );
-  if (!label) throw new Error(`поля «${labelText}» на экране нет`);
-  const fieldId = label.getAttribute('for');
-  if (!fieldId) throw new Error(`подпись «${labelText}» ни с чем не связана — у поля нет id`);
-
-  const input = document.getElementById(fieldId);
-  if (!input) throw new Error(`поле «${labelText}» не найдено по id «${fieldId}»`);
+async function openSelect(labelText: string): Promise<HTMLElement> {
+  const input = await waitFor(() => {
+    const label = [...document.querySelectorAll('label')].find(
+      (el) => el.textContent?.replace(/\s+/g, ' ').trim() === labelText,
+    );
+    if (!label) throw new Error(`поля «${labelText}» на экране нет`);
+    const fieldId = label.getAttribute('for');
+    if (!fieldId) throw new Error(`подпись «${labelText}» ни с чем не связана — у поля нет id`);
+    const found = document.getElementById(fieldId);
+    if (!found) throw new Error(`поле «${labelText}» не найдено по id «${fieldId}»`);
+    return found;
+  });
   fireEvent.mouseDown(input);
 
-  const listId = `${fieldId}_list`;
+  const listId = `${input.id}_list`;
   const list = await waitFor(() => {
     const found = document.getElementById(listId);
     if (!found) throw new Error(`список поля «${labelText}» не открылся`);
@@ -60,8 +65,29 @@ export async function selectOption(labelText: string, optionText: string | RegEx
   });
 
   // Варианты antd рисует соседом списка-описания: сам `_list` держит только доступные роли.
-  const dropdown = list.closest('.ant-select-dropdown') ?? list.parentElement!;
-  const option = await within(dropdown as HTMLElement).findByText(optionText, {
+  return (list.closest('.ant-select-dropdown') ?? list.parentElement!) as HTMLElement;
+}
+
+/** Открыть список поля и вернуть его варианты — только из выпадашки этого поля. */
+export async function openSelectOptions(labelText: string): Promise<HTMLElement[]> {
+  const dropdown = await openSelect(labelText);
+  // Варианты тоже ожидаются: список чаще всего приезжает запросом, а открытая пустая выпадашка
+  // ничем в разметке не отличается от той, куда данные ещё не пришли.
+  return await waitFor(() => {
+    const options = [...dropdown.querySelectorAll<HTMLElement>('.ant-select-item-option')];
+    if (options.length === 0) throw new Error(`в списке поля «${labelText}» пока нет вариантов`);
+    return options;
+  });
+}
+
+/**
+ * Выбрать вариант в поле формы (`Select`/`AutoSelect`).
+ *
+ * `labelText` — подпись поля, `optionText` — текст варианта.
+ */
+export async function selectOption(labelText: string, optionText: string | RegExp): Promise<void> {
+  const dropdown = await openSelect(labelText);
+  const option = await within(dropdown).findByText(optionText, {
     selector: '.ant-select-item-option-content, .ant-select-item-option-content *',
   });
   fireEvent.click(option);

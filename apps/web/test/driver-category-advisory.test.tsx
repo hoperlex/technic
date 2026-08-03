@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { fireEvent, screen, waitFor } from '@testing-library/react';
 import type { DriverOptionDto, FreightTransportRequestDto, VehicleDto } from '@technic/contracts';
 import { VehicleAssignModal } from '../src/pages/vehicle/VehicleAssignModal';
+import { openSelectOptions } from './antd';
 import { json, mockHttp } from './http';
 import { renderWithUser } from './render';
 import { list } from './factories/common';
@@ -163,24 +164,13 @@ function renderModal() {
   );
 }
 
-/** Само поле «Водитель»: селектов на форме несколько, и различает их только имя поля. */
-const driverField = () => document.querySelector('#driverPersonId')!.closest('.ant-select')!;
-
-/** Пункты списка водителей — в том виде, в каком их читает диспетчер. */
-async function openDrivers(): Promise<HTMLElement[]> {
-  const field = driverField();
-  fireEvent.mouseDown(field.querySelector('.ant-select-selector') ?? field);
-  await waitFor(() => expect(document.querySelector('.ant-select-item-option')).toBeTruthy());
-  return [...document.querySelectorAll<HTMLElement>('.ant-select-item-option')];
-}
-
 describe('категория прав при выборе водителя', () => {
   it('водитель с чужой категорией остаётся в списке и помечен', async () => {
     mockAssign();
     renderModal();
     await screen.findByText('Новый рейс');
 
-    const options = await openDrivers();
+    const options = await openSelectOptions('Водитель');
     expect(options.map((o) => o.textContent?.split(' ')[0])).toEqual(['Абрамов', 'Петров']);
     expect(options[1]!.textContent).toContain('категория не подходит');
     // У подходящего пометки нет: предупреждение на каждой строке обесценивает себя.
@@ -192,7 +182,7 @@ describe('категория прав при выборе водителя', () 
     renderModal();
     await screen.findByText('Новый рейс');
 
-    const options = await openDrivers();
+    const options = await openSelectOptions('Водитель');
     fireEvent.click(options[1]!);
 
     const warning = await screen.findByText(/Машине нужна категория «CE»/);
@@ -205,10 +195,14 @@ describe('категория прав при выборе водителя', () 
     renderModal();
     await screen.findByText('Новый рейс');
 
-    const options = await openDrivers();
+    const options = await openSelectOptions('Водитель');
     fireEvent.click(options[0]!);
 
-    await waitFor(() => expect(driverField().textContent).toContain('Абрамов'));
+    // Выбранное показывает само поле: селектов на форме несколько, и различает их имя поля.
+    await waitFor(() => {
+      const field = document.querySelector('#driverPersonId')?.closest('.ant-select');
+      expect(field?.textContent).toContain('Абрамов');
+    });
     expect(screen.queryByText(/Машине нужна категория/)).toBeNull();
   });
 
