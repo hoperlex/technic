@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { App, Button, DatePicker, Form, Segmented, Space, Tag, Typography } from 'antd';
-import { PlusOutlined } from '@ant-design/icons';
+import { EyeOutlined, PlusOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -16,7 +16,7 @@ import { DataTable, type CardConfig } from '../../components/DataTable';
 import { FormModal } from '../../components/FormModal';
 import { FormGrid } from '../../components/FormGrid';
 import { PageTableLayout } from '../../components/PageTableLayout';
-import { actionsColumn, textColumn } from '../../components/columns';
+import { actionsColumn, RowActionButton, textColumn } from '../../components/columns';
 import { useIsMobile } from '../../hooks/useIsMobile';
 import { useListParams } from '../../hooks/useListParams';
 import { errorMessage } from '../../utils/format';
@@ -161,11 +161,18 @@ export function VehicleRoutesTab() {
           <Typography.Text type="secondary">не выписан</Typography.Text>
         ),
     }),
-    actionsColumn<VehicleRouteDto>((r) => (
-      <Button size="small" onClick={() => setOpenId(r.id)}>
-        Открыть
-      </Button>
-    )),
+    actionsColumn<VehicleRouteDto>(
+      // Карточка рейса — единственное место, где собирают талоны, ставят водителя и выписывают
+      // лист; из списка рейс только открывают.
+      (r) => (
+        <RowActionButton
+          title="Открыть маршрут"
+          icon={<EyeOutlined />}
+          onClick={() => setOpenId(r.id)}
+        />
+      ),
+      70,
+    ),
   ];
 
   // Карточка телефона (ADR 0030): номер рейса и дата в шапке, машина и водитель — строками;

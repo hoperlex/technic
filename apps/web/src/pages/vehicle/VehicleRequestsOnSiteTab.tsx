@@ -1,5 +1,11 @@
 import { useState } from 'react';
 import { Button, Input, Select, Space, Tag, Typography, type TableColumnType } from 'antd';
+import {
+  CheckOutlined,
+  CloseOutlined,
+  EyeOutlined,
+  FieldTimeOutlined,
+} from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
 import {
   assignmentTitle,
@@ -18,7 +24,7 @@ import { PageTableLayout } from '../../components/PageTableLayout';
 import { sortOptionsFrom, type FilterDefinition } from '../../components/listControls';
 import { TabsExtra } from '../../components/PageTabs';
 import { SummaryBar } from '../../components/SummaryBar';
-import { actionsColumn, textColumn } from '../../components/columns';
+import { actionsColumn, RowActionButton, textColumn } from '../../components/columns';
 import { UserAvatar } from '../../components/UserAvatar';
 import { ObjectCell } from '../../components/ObjectCell';
 import { useListParams } from '../../hooks/useListParams';
@@ -270,23 +276,38 @@ export function VehicleRequestsOnSiteTab() {
       // принимают, глядя именно на этот список. Карточка — единственное место, где видны файлы,
       // ставки и вся хронология заявки (ADR 0015).
       (r) => (
-        <Space size={4} direction="vertical" style={{ lineHeight: 1.35 }}>
-          <Typography.Link onClick={() => setViewRecord(r)}>Карточка</Typography.Link>
+        <Space size={4}>
+          <RowActionButton
+            title="Открыть карточку"
+            icon={<EyeOutlined />}
+            onClick={() => setViewRecord(r)}
+          />
           {decidable(r) ? (
-            <Space size={8}>
-              <Typography.Link onClick={() => earlyEnd.approve(r)}>Согласовать</Typography.Link>
-              <Typography.Link type="danger" onClick={() => earlyEnd.reject(r)}>
-                Отклонить
-              </Typography.Link>
-            </Space>
+            <>
+              <RowActionButton
+                title="Согласовать досрочное завершение"
+                icon={<CheckOutlined />}
+                onClick={() => earlyEnd.approve(r)}
+              />
+              <RowActionButton
+                title="Отклонить досрочное завершение"
+                icon={<CloseOutlined />}
+                danger
+                onClick={() => earlyEnd.reject(r)}
+              />
+            </>
           ) : (
             earlyEndAllowed(r) && (
-              <Typography.Link onClick={() => earlyEnd.open(r)}>Завершить досрочно</Typography.Link>
+              <RowActionButton
+                title="Завершить досрочно"
+                icon={<FieldTimeOutlined />}
+                onClick={() => earlyEnd.open(r)}
+              />
             )
           )}
         </Space>
       ),
-      150,
+      110,
     ),
   ];
 
@@ -357,18 +378,27 @@ export function VehicleRequestsOnSiteTab() {
       (r) => `${r.displayNumber} · ${r.createdByName}`,
     ],
     onOpen: (r) => setViewRecord(r),
+    // Подписи в шите остаются словами (ADR 0030): подсказка на иконке по касанию не открывается.
+    // Иконки идут рядом с ними — те же, что в колонке действий на десктопе.
     actions: (r) => [
-      { key: 'view', label: 'Открыть карточку', onClick: () => setViewRecord(r) },
+      {
+        key: 'view',
+        label: 'Открыть карточку',
+        icon: <EyeOutlined />,
+        onClick: () => setViewRecord(r),
+      },
       ...(decidable(r)
         ? [
             {
               key: 'approve-early-end',
               label: 'Согласовать досрочное завершение',
+              icon: <CheckOutlined />,
               onClick: () => earlyEnd.approve(r),
             },
             {
               key: 'reject-early-end',
               label: 'Отклонить досрочное завершение',
+              icon: <CloseOutlined />,
               danger: true,
               onClick: () => earlyEnd.reject(r),
             },
@@ -379,6 +409,7 @@ export function VehicleRequestsOnSiteTab() {
             {
               key: 'early-end',
               label: 'Завершить досрочно',
+              icon: <FieldTimeOutlined />,
               onClick: () => earlyEnd.open(r),
             },
           ]

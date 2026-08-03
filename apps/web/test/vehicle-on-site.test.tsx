@@ -182,13 +182,15 @@ describe('вкладка «На объекте»', () => {
     expect(await screen.findByText('ООО «Арендатех»')).toBeDefined();
     // Статусы, виза заявки и правка сюда не переехали: их ведут в списке заказов (ADR 0036).
     expect(screen.queryByRole('button', { name: 'Изменить статус' })).toBeNull();
-    expect(screen.getAllByText('Карточка')).toHaveLength(3);
+    // Действия строки — иконки с подсказками (ADR 0030); ищутся по подписи, которую подсказка
+    // дублирует в `aria-label`: сама она в разметку до наведения не попадает.
+    expect(screen.getAllByLabelText('Открыть карточку')).toHaveLength(3);
 
     // Заявка, которой есть что сокращать, получает действие; уезжающая сегодня (r3) — нет.
-    expect(screen.getAllByText('Завершить досрочно')).toHaveLength(1);
+    expect(screen.getAllByLabelText('Завершить досрочно')).toHaveLength(1);
     // Ожидающий визы запрос вместо этого предлагает решение — и объявляет себя тегом.
-    expect(screen.getByText('Согласовать')).toBeDefined();
-    expect(screen.getByText('Отклонить')).toBeDefined();
+    expect(screen.getByLabelText('Согласовать досрочное завершение')).toBeDefined();
+    expect(screen.getByLabelText('Отклонить досрочное завершение')).toBeDefined();
     expect(screen.getByText('досрочно до 25.07.2026 · ждёт визы')).toBeDefined();
   });
 });

@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { Button, Input, Space, Tag, type TableColumnType } from 'antd';
+import { Button, Input, Space, Tag, Tooltip, type TableColumnType } from 'antd';
 import { SearchOutlined } from '@ant-design/icons';
 
 /** Поисковый filterDropdown в заголовке столбца (server-side поиск). */
@@ -132,6 +132,44 @@ export function boolBadgeColumn<T>(opts: {
       <Tag color={value ? 'green' : 'default'}>{value ? opts.trueText : opts.falseText}</Tag>
     ),
   };
+}
+
+/**
+ * Действие строки на десктопе (ADR 0030): иконка с подсказкой, а не подпись словами — колонка
+ * действий иначе съедает ширину, которой в списке заявок и так не хватает.
+ *
+ * Подпись обязана дублироваться в `aria-label`: подсказка antd попадает в разметку только после
+ * наведения, и без него действие остаётся безымянным — и для чтения с экрана, и для теста.
+ * Поэтому кнопка и собрана одним компонентом, а не связкой, переписываемой в каждом списке.
+ *
+ * Выключенная кнопка подсказку не показывает (antd гасит на ней события указателя) — там, где
+ * запрет надо объяснить, оборачивайте её сами или ставьте `title` на обёртке.
+ */
+export function RowActionButton({
+  title,
+  icon,
+  onClick,
+  danger,
+  disabled,
+}: {
+  title: string;
+  icon: ReactNode;
+  onClick: () => void;
+  danger?: boolean;
+  disabled?: boolean;
+}) {
+  return (
+    <Tooltip title={title}>
+      <Button
+        size="small"
+        icon={icon}
+        danger={danger}
+        disabled={disabled}
+        aria-label={title}
+        onClick={onClick}
+      />
+    </Tooltip>
+  );
 }
 
 export function actionsColumn<T>(

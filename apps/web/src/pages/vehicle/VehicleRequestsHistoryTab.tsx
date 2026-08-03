@@ -9,7 +9,7 @@ import {
   Typography,
   type TableColumnType,
 } from 'antd';
-import { CheckCircleOutlined } from '@ant-design/icons';
+import { CheckCircleOutlined, EyeOutlined } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
 import dayjs from 'dayjs';
 import {
@@ -35,7 +35,7 @@ import { PageTableLayout } from '../../components/PageTableLayout';
 import { sortOptionsFrom, type FilterDefinition } from '../../components/listControls';
 import { TabsExtra } from '../../components/PageTabs';
 import { SummaryBar } from '../../components/SummaryBar';
-import { actionsColumn, textColumn } from '../../components/columns';
+import { actionsColumn, RowActionButton, textColumn } from '../../components/columns';
 import { UserAvatar } from '../../components/UserAvatar';
 import { ObjectCell } from '../../components/ObjectCell';
 import { useListParams } from '../../hooks/useListParams';
@@ -349,9 +349,13 @@ export function VehicleRequestsHistoryTab() {
       (r) => (
         // Карточка — единственное место, где видны адреса, файлы и вся хронология заявки
         // (ADR 0015). Строка журнала отвечает «что было», карточка — «как к этому пришли».
-        <Typography.Link onClick={() => setViewRecord(r)}>Карточка</Typography.Link>
+        <RowActionButton
+          title="Открыть карточку"
+          icon={<EyeOutlined />}
+          onClick={() => setViewRecord(r)}
+        />
       ),
-      110,
+      70,
     ),
   ];
 
@@ -539,6 +543,7 @@ export function VehicleRequestsHistoryTab() {
       {
         key: 'view',
         label: 'Открыть карточку',
+        icon: <EyeOutlined />,
         onClick: () => setViewRecord(r),
       },
     ],
