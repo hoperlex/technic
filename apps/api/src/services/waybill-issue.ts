@@ -1,4 +1,4 @@
-import { and, eq, ne } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import {
   formatSnils,
   licenseNumberLabel,
@@ -301,13 +301,10 @@ async function collectSnapshot(
   };
 }
 
+/** Выданный лист: его номер уходит в журнал аудита, а идентификатор — ссылкой на документ. */
 export interface IssuedWaybill {
   id: string;
   number: string;
-  /** Талон заказчика, в который попала заявка: 1–4 (ADR 0037 п. 3). */
-  slot: number;
-  /** Лист уже был выписан на эту машину и дату — заявка дописана талоном. */
-  reused: boolean;
 }
 
 export interface RouteWaybillContext {
@@ -365,27 +362,16 @@ export async function issueWaybillForRoute(
   }
 
   /*
-   * Пока история не перенесена `backfill:routes`, в базе живёт прежний UNIQUE
-   * (vehicle_id, issued_for_date) среди неаннулированных: вторая смена включается только
-   * contract-миграцией. Проверяем это сами и объясняем словами — иначе диспетчер получил бы
-   * ошибку уникального индекса вместо ответа.
+   * Проверки «на эту машину и дату лист уже есть» здесь нет намеренно (ADR 0052). Прежнее
+   * ограничение снято миграцией `0074` вместе с UNIQUE (vehicle_id, issued_for_date): один
+   * действующий лист приходится на рейс, а не на день машины, — день и ночь на одной машине это
+   * два рейса с двумя водителями и двумя бланками. Уникальность рейса держит частичный индекс
+   * `waybills_route_unique`, а состав и статусы проверил вызывающий под блокировками.
+   *
+   * Занятость водителя не проверяется тоже: один человек может стоять в двух действующих листах
+   * одного дня на разных машинах. Портал не ведёт табель и не знает ни смен, ни времени в пути —
+   * решает диспетчер.
    */
-  const [sameDay] = await tx
-    .select({ id: waybills.id })
-    .from(waybills)
-    .where(
-      and(
-        eq(waybills.vehicleId, ctx.vehicleId),
-        eq(waybills.issuedForDate, ctx.routeDate),
-        ne(waybills.status, 'cancelled'),
-      ),
-    );
-  if (sameDay) {
-    throw err.conflict(
-      'На эту машину и дату уже выписан действующий путевой лист: вторая смена станет возможна после переноса истории маршрутов',
-    );
-  }
-
   const series = await findSeriesByCode(DEFAULT_SERIES_CODE);
   if (!series) throw err.conflict('Не заведена серия путевых листов');
   const number = await takeNextNumber(tx, series.id);
@@ -445,5 +431,5 @@ export async function issueWaybillForRoute(
     })),
   );
 
-  return { id: created!.id, number: number.display, slot: first.position, reused: false };
+  return { id: created!.id, number: number.display };
 }
