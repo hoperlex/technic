@@ -485,7 +485,10 @@ describe('комплект документов для путевого лист
 
   it('непроверенный документ комплект не рушит: проверка бумаги — учётная процедура', () => {
     expect(
-      driverDocumentsComplete(driver({ licenses: [license({ verificationStatus: 'unverified' })] }), ON),
+      driverDocumentsComplete(
+        driver({ licenses: [license({ verificationStatus: 'unverified' })] }),
+        ON,
+      ),
     ).toBe(true);
   });
 
@@ -504,5 +507,57 @@ describe('комплект документов для путевого лист
     expect(driverListQuerySchema.safeParse({ documents: 'partial' }).success).toBe(false);
     // Не задан — справочник показывает всех: фильтр не сужает список молча.
     expect(driverListQuerySchema.parse({}).documents).toBeUndefined();
+  });
+});
+
+/**
+ * Категория прав — справочная информация (ADR 0055). Правило проверяется здесь же, где и комплект
+ * документов: одно решает, кого показать, второе — как назвать расхождение, и путать их нельзя.
+ */
+describe('категория прав ничего не запрещает, но порядок и текст задаёт', () => {
+  const option = (
+    fullName: string,
+    matchesRequiredCategory: boolean,
+    lastWorkedOn: string | null = null,
+  ) => ({ fullName, matchesRequiredCategory, lastWorkedOn });
+
+  it('подходящие по категории идут выше — даже без опыта на этой машине', () => {
+    const list = [option('Яковлев Я. Я.', false, '2026-07-14'), option('Абрамов А. А.', true)].sort(
+      compareDriverOptions,
+    );
+    expect(list.map((d) => d.fullName)).toEqual(['Абрамов А. А.', 'Яковлев Я. Я.']);
+  });
+
+  it('внутри группы порядок прежний: опыт, потом алфавит', () => {
+    const list = [
+      option('Борисов Б. Б.', true),
+      option('Абрамов А. А.', true, '2026-02-03'),
+      option('Яковлев Я. Я.', false, '2026-07-14'),
+      option('Васильев В. В.', false),
+    ].sort(compareDriverOptions);
+    expect(list.map((d) => d.fullName)).toEqual([
+      'Абрамов А. А.',
+      'Борисов Б. Б.',
+      'Яковлев Я. Я.',
+      'Васильев В. В.',
+    ]);
+  });
+
+  it('предупреждение называет обе стороны: что требует машина и что открыто у водителя', () => {
+    const text = driverCategoryMismatchWarning('CE', ['B', 'C']);
+    expect(text).toContain('CE');
+    expect(text).toContain('B, C');
+    // Запрета в тексте нет: расхождение — повод проверить документ, а не отказ.
+    expect(text).toContain('Рейс заведётся как есть');
+  });
+
+  it('водитель без единой категории описан словами, а не пустыми кавычками', () => {
+    expect(driverCategoryMismatchWarning('C', [])).toContain('ни одной категории');
+  });
+
+  it('фильтр справочника по категории необязателен и принимает только идентификатор', () => {
+    expect(driverListQuerySchema.parse({}).categoryId).toBeUndefined();
+    expect(driverListQuerySchema.safeParse({ categoryId: CATEGORY_ID }).success).toBe(true);
+    expect(driverListQuerySchema.safeParse({ categoryId: 'ce' }).success).toBe(false);
   });
 });

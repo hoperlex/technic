@@ -108,6 +108,9 @@ function driver(over: Partial<DriverOptionDto> & Pick<DriverOptionDto, 'personId
     licenseExpiresOn: '2031-03-12',
     verificationStatus: 'verified' as const,
     categories: ['C'],
+    // Категория у всех подходит: её влияние на порядок и пометки проверяется отдельно
+    // (`driver-category-advisory`), а здесь она размечала бы весь список одинаково.
+    matchesRequiredCategory: true,
     workedRoutes: 0,
     lastWorkedOn: null,
     ...over,

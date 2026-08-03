@@ -101,6 +101,7 @@ export function DriversTab() {
 
   const { params, setParams, setSort, onTableChange } = useListParams<{
     documents?: DriverDocumentSet;
+    categoryId?: string;
   }>({}, { searchKeys: ['fullName', 'snils'] });
   const { data, isFetching } = useQuery({
     queryKey: ['drivers', params],
@@ -320,8 +321,7 @@ export function DriversTab() {
                 <Typography.Text type="warning">Серия и номер не внесены</Typography.Text>
               ) : (
                 licenseNumberLabel(license)
-              )}{' '}
-              · {licenseCategoriesLabel(license)}
+              )}
             </span>
             <Space size={4}>
               {defect ? (
@@ -340,6 +340,25 @@ export function DriversTab() {
             {missing}
           </Space>
         );
+      },
+    }),
+    /**
+     * Категории — своей колонкой (ADR 0055): отбор водителя под машину ими не сужается, и
+     * единственное место, где о них узнают, — справочник. Приклеенные к номеру удостоверения,
+     * они читались хуже и не искались глазами, а спрашивают их отдельным вопросом: «кто у нас
+     * с CE».
+     */
+    textColumn<DriverDto>({
+      key: 'categories',
+      title: 'Категории',
+      dataIndex: 'licenses',
+      sortable: false,
+      searchable: false,
+      width: 160,
+      render: (_v, r) => {
+        const license = currentLicense(r);
+        const label = license ? licenseCategoriesLabel(license) : '';
+        return label || <Typography.Text type="secondary">—</Typography.Text>;
       },
     }),
     ...(canWrite
@@ -372,21 +391,40 @@ export function DriversTab() {
 
   const setDocuments = (v: DriverDocumentSet | undefined) =>
     setParams((p) => ({ ...p, documents: v, page: 1 }));
+  const setCategory = (v: string | undefined) =>
+    setParams((p) => ({ ...p, categoryId: v, page: 1 }));
 
   /**
-   * Комплект документов — единственный фильтр справочника: путевой лист печатает СНИЛС, номер
-   * удостоверения и дату его выдачи, и половина работы со справочником — это дозаполнить тех, у
-   * кого чего-то из этого нет. Обратное значение нужно не реже: «кем можно закрывать рейсы».
+   * Комплект документов и категория — два вопроса к справочнику. Первый: путевой лист печатает
+   * СНИЛС, номер удостоверения и дату его выдачи, и половина работы со справочником — дозаполнить
+   * тех, у кого чего-то нет; обратное значение нужно не реже — «кем можно закрывать рейсы».
+   * Второй появился, когда категория перестала сужать отбор под машину (ADR 0055): «кого можно
+   * посадить за седельный тягач» спрашивают здесь, и глазами по списку это не считается.
+   *
+   * Категория в фильтре названа буквой с описанием — тем же списком, что и в карточке: искать её
+   * будут по букве из удостоверения, а не по формулировке правил.
    */
   const filters = (
-    <Select<DriverDocumentSet>
-      allowClear
-      placeholder="Комплект документов"
-      style={{ width: 200 }}
-      options={documentSetOptions}
-      value={params.documents}
-      onChange={setDocuments}
-    />
+    <Space wrap>
+      <Select<DriverDocumentSet>
+        allowClear
+        placeholder="Комплект документов"
+        style={{ width: 200 }}
+        options={documentSetOptions}
+        value={params.documents}
+        onChange={setDocuments}
+      />
+      <Select<string>
+        allowClear
+        showSearch
+        optionFilterProp="label"
+        placeholder="Категория"
+        style={{ width: 220 }}
+        options={categoryOptions}
+        value={params.categoryId}
+        onChange={setCategory}
+      />
+    </Space>
   );
 
   const mobileFilters: FilterDefinition[] = [
@@ -398,6 +436,15 @@ export function DriversTab() {
       options: documentSetOptions,
       placeholder: 'Все',
       onChange: (v) => setDocuments(v as DriverDocumentSet | undefined),
+    },
+    {
+      kind: 'select',
+      key: 'categoryId',
+      label: 'Категория',
+      value: params.categoryId,
+      options: categoryOptions,
+      placeholder: 'Любая',
+      onChange: (v) => setCategory(v as string | undefined),
     },
   ];
 
@@ -504,12 +551,18 @@ export function DriversTab() {
     primary: (r) => {
       const license = currentLicense(r);
       if (!license) return 'Удостоверение не заведено';
-      const number = licenseRequisitesMissing(licenseNumberLabel(license))
+      return licenseRequisitesMissing(licenseNumberLabel(license))
         ? 'Серия и номер не внесены'
         : licenseNumberLabel(license);
-      return `${number} · ${licenseCategoriesLabel(license)}`;
     },
     lines: [
+      // Категории — своей строкой, как и своей колонкой на большом экране (ADR 0055): за ними
+      // в справочник и приходят, а приклеенные к номеру они терялись.
+      (r) => {
+        const license = currentLicense(r);
+        const label = license ? licenseCategoriesLabel(license) : '';
+        return label ? `Категории: ${label}` : null;
+      },
       (r) => {
         const license = currentLicense(r);
         if (!license) return null;
