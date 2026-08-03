@@ -211,6 +211,110 @@ function rollbackErases(r: WasteRequestDto): string[] {
   return items;
 }
 
+/**
+ * Ячейка статуса заявки: тег с доступными роли переходами.
+ *
+ * Живёт на уровне модуля, а не внутри страницы: объявленный в теле компонента, он был бы новым
+ * типом на каждый рендер — React разрушал бы поддерево и терял его состояние, из-за чего
+ * открытый список переходов на телефоне закрывался сам при любом обновлении списка.
+ *
+ * Пользователя и режим устройства берёт своими хуками: они одинаковы для всей страницы. Пропсами
+ * приходит только то, что у каждой строки своё.
+ */
+function WasteStatusCell({
+  request,
+  pending,
+  onChange,
+}: {
+  request: WasteRequestDto;
+  /** Идёт смена статуса именно этой заявки: тег ждёт ответа и не принимает нажатий. */
+  pending: boolean;
+  onChange: (request: WasteRequestDto, status: RequestStatus) => void;
+}) {
+  const { user } = useAuth();
+  const isMobile = useIsMobile();
+  const [sheetOpen, setSheetOpen] = useState(false);
+
+  // Набор переходов зависит от прав: линейный цикл для всех, откаты — только администратору,
+  // а у внешнего исполнителя свой коридор — закрытие взятой в работу заявки.
+  const transitions = user ? allowedStatusTransitions(request.status, user) : [];
+  const tag = (
+    <Tag color={requestStatusColors[request.status]} style={{ marginInlineEnd: 0 }}>
+      {requestStatusLabels[request.status]}
+    </Tag>
+  );
+  // Причина отмены — в подсказке на теге: в таблице для неё нет колонки, а знать её нужно.
+  // На телефоне подсказки нет вовсе — там причина выводится строкой карточки.
+  const badge =
+    request.cancelReason && !isMobile ? (
+      <Tooltip title={`Причина отмены: ${request.cancelReason}`}>{tag}</Tooltip>
+    ) : (
+      tag
+    );
+  if (request.deletedAt || transitions.length === 0) {
+    return badge;
+  }
+  const items = transitions.map((s) => ({ key: s, label: requestStatusLabels[s] }));
+
+  // На телефоне переходы показываются списком снизу: выпадающее меню у тега в карточке
+  // открывается под палец мимо цели, а подписи в нём — те же (ADR 0030).
+  if (isMobile) {
+    return (
+      <>
+        <button
+          type="button"
+          className="status-trigger"
+          aria-label="Изменить статус"
+          disabled={pending}
+          onClick={(e) => {
+            e.stopPropagation();
+            setSheetOpen(true);
+          }}
+        >
+          <Space size={4}>
+            {badge}
+            <DownOutlined style={{ fontSize: 10, color: 'rgba(0,0,0,0.45)' }} />
+          </Space>
+        </button>
+        <ActionSheet
+          title="Изменить статус"
+          open={sheetOpen}
+          onClose={() => setSheetOpen(false)}
+          items={items.map((item) => ({
+            key: item.key,
+            label: item.label,
+            onClick: () => onChange(request, item.key as RequestStatus),
+          }))}
+        />
+      </>
+    );
+  }
+
+  return (
+    <Dropdown
+      trigger={['click']}
+      disabled={pending}
+      menu={{
+        items,
+        onClick: ({ key }) => onChange(request, key as RequestStatus),
+      }}
+    >
+      <Button
+        type="text"
+        size="small"
+        loading={pending}
+        aria-label="Изменить статус"
+        style={{ padding: 0, height: 'auto', border: 'none' }}
+      >
+        <Space size={4}>
+          {badge}
+          <DownOutlined style={{ fontSize: 10, color: 'rgba(0,0,0,0.45)' }} />
+        </Space>
+      </Button>
+    </Dropdown>
+  );
+}
+
 export function WasteRequestsPage() {
   // Вкладки управляемые: виджет сводки живёт в строке вкладок и показывается только на «Заявках».
   const [tab, setTab] = useState('requests');
@@ -926,89 +1030,6 @@ function RequestsTab() {
       onOk: () => removeMut.mutateAsync(r.id),
     });
 
-  const StatusCell = ({ r }: { r: WasteRequestDto }) => {
-    // Набор переходов зависит от прав: линейный цикл для всех, откаты — только администратору,
-    // а у внешнего исполнителя свой коридор — закрытие взятой в работу заявки.
-    const transitions = user ? allowedStatusTransitions(r.status, user) : [];
-    const [sheetOpen, setSheetOpen] = useState(false);
-    const tag = (
-      <Tag color={requestStatusColors[r.status]} style={{ marginInlineEnd: 0 }}>
-        {requestStatusLabels[r.status]}
-      </Tag>
-    );
-    // Причина отмены — в подсказке на теге: в таблице для неё нет колонки, а знать её нужно.
-    // На телефоне подсказки нет вовсе — там причина выводится строкой карточки.
-    const badge =
-      r.cancelReason && !isMobile ? (
-        <Tooltip title={`Причина отмены: ${r.cancelReason}`}>{tag}</Tooltip>
-      ) : (
-        tag
-      );
-    if (r.deletedAt || transitions.length === 0) {
-      return badge;
-    }
-    const pending = statusMut.isPending && statusMut.variables?.id === r.id;
-    const items = transitions.map((s) => ({ key: s, label: requestStatusLabels[s] }));
-
-    // На телефоне переходы показываются списком снизу: выпадающее меню у тега в карточке
-    // открывается под палец мимо цели, а подписи в нём — те же (ADR 0030).
-    if (isMobile) {
-      return (
-        <>
-          <button
-            type="button"
-            className="status-trigger"
-            aria-label="Изменить статус"
-            disabled={pending}
-            onClick={(e) => {
-              e.stopPropagation();
-              setSheetOpen(true);
-            }}
-          >
-            <Space size={4}>
-              {badge}
-              <DownOutlined style={{ fontSize: 10, color: 'rgba(0,0,0,0.45)' }} />
-            </Space>
-          </button>
-          <ActionSheet
-            title="Изменить статус"
-            open={sheetOpen}
-            onClose={() => setSheetOpen(false)}
-            items={items.map((item) => ({
-              key: item.key,
-              label: item.label,
-              onClick: () => requestStatusChange(r, item.key as RequestStatus),
-            }))}
-          />
-        </>
-      );
-    }
-
-    return (
-      <Dropdown
-        trigger={['click']}
-        disabled={pending}
-        menu={{
-          items,
-          onClick: ({ key }) => requestStatusChange(r, key as RequestStatus),
-        }}
-      >
-        <Button
-          type="text"
-          size="small"
-          loading={pending}
-          aria-label="Изменить статус"
-          style={{ padding: 0, height: 'auto', border: 'none' }}
-        >
-          <Space size={4}>
-            {badge}
-            <DownOutlined style={{ fontSize: 10, color: 'rgba(0,0,0,0.45)' }} />
-          </Space>
-        </Button>
-      </Dropdown>
-    );
-  };
-
   // Ключ колонки — он же поле сортировки на сервере (WASTE_REQUEST_SORT_FIELDS).
   const columns = [
     {
@@ -1115,7 +1136,13 @@ function RequestsTab() {
       dataIndex: 'status',
       width: 160,
       sorter: true,
-      render: (_v: unknown, r: WasteRequestDto) => <StatusCell r={r} />,
+      render: (_v: unknown, r: WasteRequestDto) => (
+        <WasteStatusCell
+          request={r}
+          pending={statusMut.isPending && statusMut.variables?.id === r.id}
+          onChange={requestStatusChange}
+        />
+      ),
     },
     // Сортировка колонки — по строке площадки (ключ у колонки один): порядок склейки двух
     // текстов ничего не значит. Поиск при этом идёт по обеим строкам — сервером (ADR 0053).
@@ -1326,7 +1353,13 @@ function RequestsTab() {
    */
   const card: CardConfig<WasteRequestDto> = {
     title: (r) => `№ ${r.displayNumber}`,
-    badge: (r) => <StatusCell r={r} />,
+    badge: (r) => (
+      <WasteStatusCell
+        request={r}
+        pending={statusMut.isPending && statusMut.variables?.id === r.id}
+        onChange={requestStatusChange}
+      />
+    ),
     primary: (r) => r.objectName,
     lines: [
       (r) => requestTypeLabels[r.requestType],
