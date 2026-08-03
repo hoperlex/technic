@@ -1407,230 +1407,230 @@ function RequestsTab() {
           {/* Поля парами (FormGrid): узкое окно прятало половину формы под прокрутку, хотя
               справа было пусто. На телефоне колонка одна, порядок полей тот же. */}
           <FormGrid>
-          <Form.Item
-            name="objectId"
-            label="Объект строительства"
-            rules={[{ required: true, message: 'Выберите объект' }]}
-          >
-            <AutoSelect
-              options={objectOptions}
-              loading={objectsLoading}
-              showSearch
-              optionFilterProp="label"
-              disabled={objectFieldDisabled}
-              onChange={handleObjectChange}
-            />
-          </Form.Item>
-          <Form.Item
-            name="requestType"
-            label="Тип заявки"
-            rules={[{ required: true, message: 'Выберите тип заявки' }]}
-          >
-            <AutoSelect
-              options={requestTypeOptions}
-              placeholder={watchObjectId ? 'Выберите тип заявки' : 'Сначала выберите объект'}
-              disabled={!watchObjectId}
-              onChange={handleRequestTypeChange}
-            />
-          </Form.Item>
-
-          {watchRequestType === 'container_install' && (
             <Form.Item
-              name="containerTypeId"
-              label="Тип контейнера"
-              rules={[{ required: true, message: 'Выберите тип контейнера' }]}
+              name="objectId"
+              label="Объект строительства"
+              rules={[{ required: true, message: 'Выберите объект' }]}
             >
               <AutoSelect
-                // Выключенный в справочнике тип остаётся видимым у уже заведённой заявки.
-                options={withSavedOption(contTypeOptions, savedContainerType)}
-                loading={typesLoading}
+                options={objectOptions}
+                loading={objectsLoading}
                 showSearch
                 optionFilterProp="label"
+                disabled={objectFieldDisabled}
+                onChange={handleObjectChange}
               />
             </Form.Item>
-          )}
+            <Form.Item
+              name="requestType"
+              label="Тип заявки"
+              rules={[{ required: true, message: 'Выберите тип заявки' }]}
+            >
+              <AutoSelect
+                options={requestTypeOptions}
+                placeholder={watchObjectId ? 'Выберите тип заявки' : 'Сначала выберите объект'}
+                disabled={!watchObjectId}
+                onChange={handleRequestTypeChange}
+              />
+            </Form.Item>
 
-          {/* Вывоз мусора: что вывозим и сколько — весь предмет заявки. Техники в ней нет
+            {watchRequestType === 'container_install' && (
+              <Form.Item
+                name="containerTypeId"
+                label="Тип контейнера"
+                rules={[{ required: true, message: 'Выберите тип контейнера' }]}
+              >
+                <AutoSelect
+                  // Выключенный в справочнике тип остаётся видимым у уже заведённой заявки.
+                  options={withSavedOption(contTypeOptions, savedContainerType)}
+                  loading={typesLoading}
+                  showSearch
+                  optionFilterProp="label"
+                />
+              </Form.Item>
+            )}
+
+            {/* Вывоз мусора: что вывозим и сколько — весь предмет заявки. Техники в ней нет
               (ADR 0022): чем увезут объём, решает оператор и показывает машинами при закрытии.
               Поля стоимости тоже нет — цену даёт прайс по типу мусора, и расчёт виден подсказкой
               под полями (ADR 0009). У замены и снятия этих полей нет вовсе: они не
               тарифицируются (ADR 0019), в форме остаётся только контейнер с объекта. */}
-          {isPriced && (
-            // Соседние ячейки сетки: «что вывозим» и «сколько» читаются парой.
-            <>
+            {isPriced && (
+              // Соседние ячейки сетки: «что вывозим» и «сколько» читаются парой.
+              <>
+                <Form.Item
+                  name="wasteTypeId"
+                  label="Тип мусора"
+                  rules={[{ required: true, message: 'Выберите тип мусора' }]}
+                >
+                  <AutoSelect
+                    options={formWasteTypeOptions}
+                    loading={wasteTypesLoading}
+                    showSearch
+                    optionFilterProp="label"
+                    placeholder="Что вывозим"
+                  />
+                </Form.Item>
+                <Form.Item
+                  name="volumeM3"
+                  label="Объём, м³"
+                  rules={[
+                    { required: true, message: 'Укажите объём' },
+                    {
+                      type: 'number',
+                      min: MIN_WASTE_VOLUME_M3,
+                      message: `Не менее ${MIN_WASTE_VOLUME_M3} м³`,
+                    },
+                    {
+                      // Тариф «за контейнер» тарифицирует контейнер целиком: половину не вывозят.
+                      validator: (_rule, v: number | undefined) =>
+                        v == null || isVolumeAllowed(v, volumeStepM3)
+                          ? Promise.resolve()
+                          : Promise.reject(new Error(volumeStepMessage(volumeStepM3!))),
+                    },
+                  ]}
+                >
+                  <InputNumber
+                    min={MIN_WASTE_VOLUME_M3}
+                    step={volumeStepM3 ?? 1}
+                    // Заявленный объём — целое (в БД integer): дробное значение сервер отвергал
+                    // бы валидацией уже после отправки формы.
+                    precision={0}
+                    style={{ width: '100%' }}
+                    placeholder={volumeStepM3 ? `Кратно ${volumeStepM3}` : 'Например, 20'}
+                  />
+                </Form.Item>
+              </>
+            )}
+            {pricingHint && (
+              // Расчёт по прайсу относится к паре «тип мусора — объём» целиком, поэтому идёт
+              // строкой во всю ширину, а не подписью под одним из полей.
+              <FormGrid.Full>
+                <div style={{ marginTop: -16, marginBottom: 24 }}>
+                  <Typography.Text type={pricingHint.tone}>{pricingHint.text}</Typography.Text>
+                </div>
+              </FormGrid.Full>
+            )}
+            {subjectField && (
               <Form.Item
-                name="wasteTypeId"
-                label="Тип мусора"
-                rules={[{ required: true, message: 'Выберите тип мусора' }]}
+                name="containerTypeId"
+                label={subjectField.label}
+                rules={[{ required: true, message: subjectField.message }]}
+                extra={!objectHasPresent ? 'На объекте нет контейнеров' : undefined}
               >
                 <AutoSelect
-                  options={formWasteTypeOptions}
-                  loading={wasteTypesLoading}
+                  options={subjectField.options}
+                  loading={subjectField.loading}
                   showSearch
                   optionFilterProp="label"
-                  placeholder="Что вывозим"
+                  placeholder={subjectField.placeholder}
+                  notFoundContent="Нет контейнеров на объекте"
+                />
+              </Form.Item>
+            )}
+            {/* Исполнителя выбирают у уже заведённой заявки: при создании его чаще всего ещё не
+              знают, и лишнее поле в форме отвлекало бы. Новой заявке оператора назначают
+              отдельным действием списка или при переводе в работу. */}
+            {canAssignOperator && record && (
+              <Form.Item
+                name="operatorCounterpartyId"
+                label="Оператор вывоза"
+                tooltip="Контрагент, который выполняет заявку; он увидит её в своём списке"
+                extra={
+                  formOperatorOptions.length === 0
+                    ? 'Нет активных контрагентов типа «Оператор» — заведите его в справочнике'
+                    : undefined
+                }
+              >
+                <Select
+                  options={formOperatorOptions}
+                  showSearch
+                  allowClear
+                  optionFilterProp="label"
+                  placeholder="Можно назначить позже"
+                />
+              </Form.Item>
+            )}
+            <>
+              <Form.Item
+                name="deliveryDate"
+                label="Дата доставки"
+                rules={[{ required: true, message: 'Укажите дату' }]}
+              >
+                {/* Новую заявку — не раньше чем на сегодня (по МСК); у заведённой дата правится
+                  свободно, лишь бы не в прошлое. */}
+                <DatePicker
+                  format="DD.MM.YYYY"
+                  style={{ width: '100%' }}
+                  placeholder="дд.мм.гггг"
+                  // На телефоне календарь открывается вместе с клавиатурой и прячется за ней:
+                  // дату там выбирают, а не набирают.
+                  inputReadOnly={isMobile}
+                  disabledDate={record ? isPastDate : isBeforeMinRequestDate}
                 />
               </Form.Item>
               <Form.Item
-                name="volumeM3"
-                label="Объём, м³"
-                rules={[
-                  { required: true, message: 'Укажите объём' },
-                  {
-                    type: 'number',
-                    min: MIN_WASTE_VOLUME_M3,
-                    message: `Не менее ${MIN_WASTE_VOLUME_M3} м³`,
-                  },
-                  {
-                    // Тариф «за контейнер» тарифицирует контейнер целиком: половину не вывозят.
-                    validator: (_rule, v: number | undefined) =>
-                      v == null || isVolumeAllowed(v, volumeStepM3)
-                        ? Promise.resolve()
-                        : Promise.reject(new Error(volumeStepMessage(volumeStepM3!))),
-                  },
-                ]}
+                name="deliveryTime"
+                label="Время"
+                tooltip="Необязательно. Рабочее окно — с 07:00 до 21:00"
+                rules={[optionalWorkTimeRule]}
               >
-                <InputNumber
-                  min={MIN_WASTE_VOLUME_M3}
-                  step={volumeStepM3 ?? 1}
-                  // Заявленный объём — целое (в БД integer): дробное значение сервер отвергал
-                  // бы валидацией уже после отправки формы.
-                  precision={0}
-                  style={{ width: '100%' }}
-                  placeholder={volumeStepM3 ? `Кратно ${volumeStepM3}` : 'Например, 20'}
-                />
+                <TimeInput />
               </Form.Item>
             </>
-          )}
-          {pricingHint && (
-            // Расчёт по прайсу относится к паре «тип мусора — объём» целиком, поэтому идёт
-            // строкой во всю ширину, а не подписью под одним из полей.
-            <FormGrid.Full>
-              <div style={{ marginTop: -16, marginBottom: 24 }}>
-                <Typography.Text type={pricingHint.tone}>{pricingHint.text}</Typography.Text>
-              </div>
-            </FormGrid.Full>
-          )}
-          {subjectField && (
-            <Form.Item
-              name="containerTypeId"
-              label={subjectField.label}
-              rules={[{ required: true, message: subjectField.message }]}
-              extra={!objectHasPresent ? 'На объекте нет контейнеров' : undefined}
-            >
-              <AutoSelect
-                options={subjectField.options}
-                loading={subjectField.loading}
-                showSearch
-                optionFilterProp="label"
-                placeholder={subjectField.placeholder}
-                notFoundContent="Нет контейнеров на объекте"
-              />
-            </Form.Item>
-          )}
-          {/* Исполнителя выбирают у уже заведённой заявки: при создании его чаще всего ещё не
-              знают, и лишнее поле в форме отвлекало бы. Новой заявке оператора назначают
-              отдельным действием списка или при переводе в работу. */}
-          {canAssignOperator && record && (
-            <Form.Item
-              name="operatorCounterpartyId"
-              label="Оператор вывоза"
-              tooltip="Контрагент, который выполняет заявку; он увидит её в своём списке"
-              extra={
-                formOperatorOptions.length === 0
-                  ? 'Нет активных контрагентов типа «Оператор» — заведите его в справочнике'
-                  : undefined
-              }
-            >
-              <Select
-                options={formOperatorOptions}
-                showSearch
-                allowClear
-                optionFilterProp="label"
-                placeholder="Можно назначить позже"
-              />
-            </Form.Item>
-          )}
-          <>
-            <Form.Item
-              name="deliveryDate"
-              label="Дата доставки"
-              rules={[{ required: true, message: 'Укажите дату' }]}
-            >
-              {/* Новую заявку — не раньше чем на сегодня (по МСК); у заведённой дата правится
-                  свободно, лишь бы не в прошлое. */}
-              <DatePicker
-                format="DD.MM.YYYY"
-                style={{ width: '100%' }}
-                placeholder="дд.мм.гггг"
-                // На телефоне календарь открывается вместе с клавиатурой и прячется за ней:
-                // дату там выбирают, а не набирают.
-                inputReadOnly={isMobile}
-                disabledDate={record ? isPastDate : isBeforeMinRequestDate}
-              />
-            </Form.Item>
-            <Form.Item
-              name="deliveryTime"
-              label="Время"
-              tooltip="Необязательно. Рабочее окно — с 07:00 до 21:00"
-              rules={[optionalWorkTimeRule]}
-            >
-              <TimeInput />
-            </Form.Item>
-          </>
-          {/* Кто принимает машину на площадке: оператор приезжает к человеку, а не к адресу —
+            {/* Кто принимает машину на площадке: оператор приезжает к человеку, а не к адресу —
               без контакта место установки и подъезд выясняются уже на месте. */}
-          <FormGrid.Full>
-            <ResponsibleFields
-              nameField="responsibleName"
-              phoneField="responsiblePhone"
-              nameLabel="Ответственный на площадке"
-              phoneLabel="Контактный телефон"
-            />
-            {/* Комментарий площадки: строку исполнителя он пишет сам, в карточке заявки
+            <FormGrid.Full>
+              <ResponsibleFields
+                nameField="responsibleName"
+                phoneField="responsiblePhone"
+                nameLabel="Ответственный на площадке"
+                phoneLabel="Контактный телефон"
+              />
+              {/* Комментарий площадки: строку исполнителя он пишет сам, в карточке заявки
                 (ADR 0053) — форма заявки её не трогает. */}
-            <Form.Item name="comment" label="Комментарий площадки">
-              <Input.TextArea rows={3} maxLength={2000} showCount />
-            </Form.Item>
-          </FormGrid.Full>
+              <Form.Item name="comment" label="Комментарий площадки">
+                <Input.TextArea rows={3} maxLength={2000} showCount />
+              </Form.Item>
+            </FormGrid.Full>
 
-          {/* Факта выполнения в форме правки нет: сколько вывезли и во сколько это обошлось,
+            {/* Факта выполнения в форме правки нет: сколько вывезли и во сколько это обошлось,
               вводят при закрытии заявки — там же, где виден расчёт по прайсу (ADR 0035). Правят
               его повторным закрытием, после отката администратором. Состав техники прошлых
               закрытий виден в карточке заявки, в истории её выполнения. */}
 
-          <FormGrid.Full>
-          <Form.Item label={`Файлы (до ${FILE_MAX_COUNT}, до 50 МБ каждый)`}>
-            <Upload
-              multiple
-              showUploadList={false}
-              beforeUpload={(file) => {
-                if (files.length >= FILE_MAX_COUNT) {
-                  message.warning(`Не более ${FILE_MAX_COUNT} файлов`);
-                  return Upload.LIST_IGNORE;
-                }
-                if (file.size > FILE_MAX_SIZE) {
-                  message.warning('Файл больше 50 МБ');
-                  return Upload.LIST_IGNORE;
-                }
-                void handleUpload(file);
-                return false;
-              }}
-            >
-              <Button icon={<UploadOutlined />} loading={uploading}>
-                Прикрепить файл
-              </Button>
-            </Upload>
-            <div style={{ marginTop: 8 }}>
-              <FileLinkList
-                files={files}
-                emptyText="Файлы не прикреплены"
-                maxNameWidth={300}
-                onRemove={(f) => void removeFile(f)}
-              />
-            </div>
-          </Form.Item>
-          </FormGrid.Full>
+            <FormGrid.Full>
+              <Form.Item label={`Файлы (до ${FILE_MAX_COUNT}, до 50 МБ каждый)`}>
+                <Upload
+                  multiple
+                  showUploadList={false}
+                  beforeUpload={(file) => {
+                    if (files.length >= FILE_MAX_COUNT) {
+                      message.warning(`Не более ${FILE_MAX_COUNT} файлов`);
+                      return Upload.LIST_IGNORE;
+                    }
+                    if (file.size > FILE_MAX_SIZE) {
+                      message.warning('Файл больше 50 МБ');
+                      return Upload.LIST_IGNORE;
+                    }
+                    void handleUpload(file);
+                    return false;
+                  }}
+                >
+                  <Button icon={<UploadOutlined />} loading={uploading}>
+                    Прикрепить файл
+                  </Button>
+                </Upload>
+                <div style={{ marginTop: 8 }}>
+                  <FileLinkList
+                    files={files}
+                    emptyText="Файлы не прикреплены"
+                    maxNameWidth={300}
+                    onRemove={(f) => void removeFile(f)}
+                  />
+                </div>
+              </Form.Item>
+            </FormGrid.Full>
           </FormGrid>
         </Form>
       </FormModal>
