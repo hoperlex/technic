@@ -1,6 +1,7 @@
 import type {
   CancelWaybillInput,
   CreateDriverBody,
+  CreateRelocationRouteBody,
   DriverDto,
   DriverSelectionDto,
   DriversImportBody,
@@ -365,6 +366,13 @@ export const vehicleRequestsApi = {
    * приходит там, где листа нет: аренда, заказ техники на объект, заявка не в работе.
    */
   waybill: (id: string) => apiFetch<RequestWaybillDto | null>(`/vehicle-requests/${id}/waybill`),
+  /**
+   * Перегоны заявки: доставка техники на объект и вывоз с него. Пусто — их не заводили: технику
+   * могли привезти тралом, и тогда листа на перегон не бывает вовсе.
+   */
+  relocations: (id: string) => apiFetch<VehicleRouteDto[]>(`/vehicle-requests/${id}/relocations`),
+  createRelocation: (id: string, body: CreateRelocationRouteBody) =>
+    apiFetch<VehicleRouteDto>(`/vehicle-requests/${id}/relocations`, { method: 'POST', body }),
   /** Счётчики заявок по статусам — сводка над списком; сужается объектом и типом заявки. */
   summary: (q: Query) =>
     apiFetch<VehicleRequestSummaryDto>('/vehicle-requests/summary', { query: q }),

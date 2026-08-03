@@ -10,6 +10,7 @@ import {
   MAX_ROUTE_REQUESTS,
   parseVehicleRouteNumberSearch,
   routeCargoLabel,
+  routeWaybillForm,
   routeOrderSchema,
   routeTripFieldsSchema,
   shouldDetachOnStatus,
@@ -34,7 +35,7 @@ const goodRequest = {
   ownership: 'own' as const,
 };
 
-const emptyRoute = { routeDate: '2026-08-03', requestCount: 0 };
+const emptyRoute = { routeDate: '2026-08-03', requestCount: 0, purpose: 'freight' as const };
 
 describe('номер маршрута', () => {
   it('читается так же, как его называют в разговоре', () => {
@@ -98,7 +99,11 @@ describe('какая заявка годится для рейса', () => {
   });
 
   it('пятая заявка не добавляется — в бланке четыре талона', () => {
-    const full = { routeDate: '2026-08-03', requestCount: MAX_ROUTE_REQUESTS };
+    const full = {
+      routeDate: '2026-08-03',
+      requestCount: MAX_ROUTE_REQUESTS,
+      purpose: 'freight' as const,
+    };
     const check = canJoinRoute(goodRequest, full);
     expect(check.ok).toBe(false);
     expect(check.ok === false && check.reason).toContain('второй маршрут');
@@ -127,8 +132,10 @@ describe('состав рейса при смене статуса заявки'
 
 describe('готовность рейса к выписке листа', () => {
   const ready = {
+    purpose: 'freight' as const,
     driverPersonId: UUID_A,
     requests: [{ displayNumber: 'ТС-501', status: 'confirmed' as const }],
+    sourceRequest: null,
     waybillStatus: null,
   };
 
@@ -169,6 +176,113 @@ describe('готовность рейса к выписке листа', () => {
       requests: [{ displayNumber: 'ТС-501', status: 'done' }],
     });
     expect(check.ok === false && check.blocking).toEqual(['ТС-501']);
+  });
+
+  /**
+   * У перегона состава нет: вместо талонов заказчиков он держит заявку, ради которой едет, — и
+   * проверяется её состояние. «Выполнена» перегону не мешает: технику вывозят с объекта и после
+   * того, как работы закрыли.
+   */
+  describe('перегон техники', () => {
+    const relocation = {
+      purpose: 'delivery' as const,
+      driverPersonId: UUID_A,
+      requests: [],
+      sourceRequest: { displayNumber: 'ТС-700', status: 'confirmed' as const },
+      waybillStatus: null,
+    };
+
+    it('пустой состав перегону не мешает — он едет по своей заявке', () => {
+      expect(canIssueWaybill(relocation)).toEqual({ ok: true });
+    });
+
+    it('вывоз выписывается и по закрытой заявке: технику увозят после работ', () => {
+      expect(canIssueWaybill({ ...relocation, purpose: 'pickup' })).toEqual({ ok: true });
+      expect(
+        canIssueWaybill({
+          ...relocation,
+          purpose: 'pickup',
+          sourceRequest: { displayNumber: 'ТС-700', status: 'done' },
+        }),
+      ).toEqual({ ok: true });
+    });
+
+    it('отменённая и откатанная в «Новую» заявка перегон не выписывает', () => {
+      for (const status of ['cancelled', 'new'] as const) {
+        const check = canIssueWaybill({
+          ...relocation,
+          sourceRequest: { displayNumber: 'ТС-700', status },
+        });
+        expect(check.ok).toBe(false);
+        expect(check.ok === false && check.blocking).toEqual(['ТС-700']);
+      }
+    });
+
+    it('водитель обязателен и здесь — он реквизит листа, а не состава', () => {
+      expect(canIssueWaybill({ ...relocation, driverPersonId: null }).ok).toBe(false);
+    });
+  });
+});
+
+/**
+ * Бланк рейса (`routeWaybillForm`). У грузового его выбирает тип машины, у перегона он всегда
+ * 4-П: экскаватор идёт по дорогам как транспортное средство, и документ у этой поездки один.
+ */
+describe('бланк рейса', () => {
+  const own = { ownership: 'own' as const, typeName: 'Самосвалы' };
+
+  it('грузовой рейс печатается бланком своего типа', () => {
+    expect(routeWaybillForm({ ...own, purpose: 'freight', formCode: '4p' }).formCode).toBe('4p');
+    expect(
+      routeWaybillForm({ ...own, purpose: 'freight', formCode: 'leg3', typeName: 'Легковые' })
+        .formCode,
+    ).toBe('leg3');
+  });
+
+  it('тип без бланка объясняет себя словами — это поправимое состояние справочника', () => {
+    const check = routeWaybillForm({
+      purpose: 'freight',
+      ownership: 'own',
+      formCode: null,
+      typeName: 'Экскаваторы гусеничные',
+    });
+    expect(check.formCode).toBeNull();
+    expect(check.reason).toContain('Экскаваторы гусеничные');
+  });
+
+  it('перегон печатается 4-П даже у типа без бланка: по дорогам едет транспортное средство', () => {
+    for (const purpose of ['delivery', 'pickup'] as const) {
+      expect(
+        routeWaybillForm({
+          purpose,
+          ownership: 'own',
+          formCode: null,
+          typeName: 'Экскаваторы-погрузчики',
+        }),
+      ).toEqual({ formCode: '4p', reason: null });
+    }
+  });
+
+  it('на арендную технику лист выписывает арендодатель — и перегон её тоже его', () => {
+    for (const purpose of ['freight', 'delivery'] as const) {
+      const check = routeWaybillForm({
+        purpose,
+        ownership: 'rental',
+        formCode: '4p',
+        typeName: 'Самосвалы',
+      });
+      expect(check.formCode).toBeNull();
+      expect(check.reason).toContain('арендодатель');
+    }
+  });
+});
+
+/** Заявки в перегон не кладут: талоны заказчиков — про грузоперевозку. */
+describe('состав перегона', () => {
+  it('заявка в рейс перемещения не встаёт', () => {
+    const check = canJoinRoute(goodRequest, { ...emptyRoute, purpose: 'delivery' });
+    expect(check.ok).toBe(false);
+    expect(check.ok === false && check.reason).toContain('перегон');
   });
 });
 

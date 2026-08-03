@@ -9,6 +9,7 @@ import {
   createVehicleRouteSchema,
   formatVehicleRequestNumber,
   formatVehicleRouteNumber,
+  isRelocationPurpose,
   isRouteEditable,
   issueRouteWaybillSchema,
   MAX_ROUTE_REQUESTS,
@@ -16,7 +17,9 @@ import {
   ROUTE_FROZEN_MESSAGE,
   ROUTE_LEGACY_WAYBILL_MESSAGE,
   routeOrderSchema,
+  type RequestStatus,
   routeVersionQuerySchema,
+  type RoutePurpose,
   type RouteTripFields,
   updateVehicleRouteSchema,
   type VehicleRouteDto,
@@ -92,8 +95,15 @@ function tripValues(trip: RouteTripFields | undefined) {
  * Машина рейса: собственная, живая и с бланком путевого листа за типом. Проверяется при заведении
  * рейса — дальше состав сверяется уже с ней (`canJoinRoute` спрашивает принадлежность назначенной
  * машины заявки).
+ *
+ * У перегона бланк типа не спрашивается: спецтехника его не имеет и иметь не должна (иначе
+ * экскаватор попал бы в подсказки грузовых рейсов), а печатается перегон 4-П — правилом
+ * `routeWaybillForm`.
  */
-async function assertRouteVehicle(vehicleId: string): Promise<void> {
+async function assertRouteVehicle(
+  vehicleId: string,
+  purpose: RoutePurpose = 'freight',
+): Promise<void> {
   const [row] = await db
     .select({
       ownership: vehicles.ownership,
@@ -120,11 +130,28 @@ async function assertRouteVehicle(vehicleId: string): Promise<void> {
       },
     );
   }
-  if (!row.formCode) {
+  if (!isRelocationPurpose(purpose) && !row.formCode) {
     throw err.unprocessable(`Для типа «${row.typeName}» бланк путевого листа не заведён`, {
       vehicleId: 'Тип без бланка',
     });
   }
+}
+
+/**
+ * Заявка перегона под блокировкой: её состояние решает, выписывать ли лист, — так же, как у
+ * грузового рейса решают статусы состава.
+ */
+async function lockRequestForIssue(
+  tx: Parameters<typeof lockRoute>[0],
+  requestId: string,
+): Promise<{ displayNumber: string; status: RequestStatus }> {
+  const [row] = await tx
+    .select({ num: vehicleRequests.num, status: vehicleRequests.status })
+    .from(vehicleRequests)
+    .where(eq(vehicleRequests.id, requestId))
+    .for('update', { of: vehicleRequests });
+  if (!row) throw err.notFound('Заявка перегона не найдена');
+  return { displayNumber: formatVehicleRequestNumber(row.num), status: row.status };
 }
 
 /**
@@ -452,6 +479,7 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
           {
             routeDate: target.routeDate,
             requestCount: await routeRequestCount(tx, target.id),
+            purpose: target.purpose,
           },
         );
         if (!check.ok) throw err.unprocessable(check.reason, { requestId: check.reason });
@@ -595,12 +623,21 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
           .orderBy(asc(vehicleRouteRequests.position))
           .for('update', { of: vehicleRequests });
 
+        // Заявка-основание перегона: у него состава нет, и её состояние решает вместо талонов.
+        // Строка блокируется тем же `FOR UPDATE`, что и состав грузового рейса, — иначе соседний
+        // запрос успел бы отменить заявку между проверкой и вставкой листа.
+        const source = route.sourceRequestId
+          ? await lockRequestForIssue(tx, route.sourceRequestId)
+          : null;
+
         const check = canIssueWaybill({
+          purpose: route.purpose,
           driverPersonId: route.driverPersonId,
           requests: rows.map((row) => ({
             displayNumber: formatVehicleRequestNumber(row.num),
             status: row.status,
           })),
+          sourceRequest: source,
           waybillStatus: waybill?.status ?? null,
         });
         if (!check.ok) {
@@ -613,6 +650,7 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
 
         const result = await issueWaybillForRoute(tx, {
           routeId: route.id,
+          purpose: route.purpose,
           vehicleId: route.vehicleId,
           routeDate: route.routeDate,
           driverPersonId: route.driverPersonId!,
@@ -627,6 +665,9 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
             transportationKind: route.transportationKind,
           },
           requests: rows.map((row) => ({ requestId: row.requestId, position: row.position })),
+          relocation: route.sourceRequestId
+            ? { requestId: route.sourceRequestId, from: route.moveFrom, to: route.moveTo }
+            : null,
           actor: { id: p.id },
         });
         await bumpRouteVersion(tx, route.id, p.id);

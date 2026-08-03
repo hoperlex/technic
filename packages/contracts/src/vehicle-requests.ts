@@ -22,7 +22,11 @@ import {
   type VehicleOwnership,
   vehiclePriceSchema,
 } from './vehicles';
-import { assignRouteSchema, type VehicleRequestRouteDto } from './vehicle-routes';
+import {
+  assignRouteSchema,
+  createRelocationRouteSchema,
+  type VehicleRequestRouteDto,
+} from './vehicle-routes';
 import type { WaybillFormCode } from './waybills';
 import {
   MIN_REQUEST_DATE_MESSAGE,
@@ -636,6 +640,15 @@ export const assignVehicleSchema = z
      * на собственной машине); решает это сервер, потому что состав справочника видит он.
      */
     route: assignRouteSchema.optional(),
+    /**
+     * Перегон техники на объект — по желанию (миграция 0082). Спецтехника доезжает до площадки
+     * по городу своим ходом, и на эту поездку выписывается 4-П; повезут её тралом — листа не
+     * будет, и портал об этом не спрашивает.
+     *
+     * Только доставка: вывоз заводят из карточки заявки, когда работы подходят к концу, — в
+     * момент перевода в работу его дату ещё не знают.
+     */
+    delivery: createRelocationRouteSchema.omit({ purpose: true }).optional(),
   })
   .strict();
 export type AssignVehicleInput = z.infer<typeof assignVehicleSchema>;

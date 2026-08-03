@@ -2208,6 +2208,26 @@ export const vehicleRoutes = pgTable(
     /** День рейса по МСК: все заявки маршрута подаются в этот день. */
     routeDate: date('route_date', { mode: 'string' }).notNull(),
     /**
+     * Зачем этот рейс (миграция 0082). `freight` — маршрут грузоперевозки: состав из заявок и
+     * талоны заказчиков. `delivery` и `pickup` — перегон одной единицы спецтехники на объект и
+     * обратно: состава нет, есть заявка-основание и две строки «откуда — куда».
+     */
+    purpose: text('purpose')
+      .$type<'freight' | 'delivery' | 'pickup'>()
+      .notNull()
+      .default('freight'),
+    /**
+     * Заявка, ради которой едет перегон. Колонкой, а не составом рейса: состав держит
+     * `UNIQUE (request_id)` — «заявка ровно в одном рейсе», — а доставка и вывоз это два рейса
+     * одной заявки. У грузового рейса пусто.
+     */
+    sourceRequestId: uuid('source_request_id').references(() => vehicleRequests.id, {
+      onDelete: 'restrict',
+    }),
+    /** Откуда и куда едет техника — задание водителю перегона. У грузового рейса пусто. */
+    moveFrom: text('move_from').notNull().default(''),
+    moveTo: text('move_to').notNull().default(''),
+    /**
      * Кто за рулём. NULL — водителя ещё не назначили: рейс собирают заранее, человека ставят
      * утром. Один на маршрут: бланк 4-П держит одного, а вторая смена — это второй маршрут.
      */
@@ -2248,6 +2268,31 @@ export const vehicleRoutes = pgTable(
         AND ${t.trailer2Model} = '' AND ${t.trailer2RegNumber} = ''
       )`,
     ),
+    purposeCheck: check(
+      'vehicle_routes_purpose_check',
+      sql`${t.purpose} IN ('freight', 'delivery', 'pickup')`,
+    ),
+    // Состав и основание не смешиваются: у грузового рейса заявки лежат в составе, у перегона
+    // заявка одна и стоит колонкой.
+    sourceRequestCheck: check(
+      'vehicle_routes_source_request_check',
+      sql`(${t.purpose} = 'freight' AND ${t.sourceRequestId} IS NULL)
+        OR (${t.purpose} <> 'freight' AND ${t.sourceRequestId} IS NOT NULL)`,
+    ),
+    // Перегон едет откуда-то куда-то: пустые графы — это лист, по которому нельзя ехать.
+    moveFieldsCheck: check(
+      'vehicle_routes_move_fields_check',
+      sql`${t.purpose} = 'freight'
+        OR (btrim(${t.moveFrom}) <> '' AND btrim(${t.moveTo}) <> '')`,
+    ),
+    // Одна доставка и один вывоз на заявку. Аннулированный лист рейс не отменяет — уникальность
+    // держится на рейсе, а не на его документе.
+    sourceRequestUnique: uniqueIndex('vehicle_routes_source_request_unique')
+      .on(t.sourceRequestId, t.purpose)
+      .where(sql`${t.purpose} <> 'freight'`),
+    sourceRequestIdx: index('vehicle_routes_source_request_idx')
+      .on(t.sourceRequestId)
+      .where(sql`${t.sourceRequestId} IS NOT NULL`),
   }),
 );
 

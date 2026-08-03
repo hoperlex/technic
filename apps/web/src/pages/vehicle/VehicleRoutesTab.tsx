@@ -7,7 +7,9 @@ import {
   DRIVER_CATEGORY_MISMATCH_HINT,
   DRIVER_WORKED_ON_VEHICLE_HINT,
   driverWorkedOnVehicle,
+  isRelocationPurpose,
   MAX_ROUTE_REQUESTS,
+  routePurposeShortLabels,
   type VehicleRouteDto,
   vehicleLabel,
   waybillStatusColors,
@@ -89,7 +91,17 @@ export function VehicleRoutesTab() {
       width: 140,
       render: (_v, r) => (
         <Space direction="vertical" size={0}>
-          <span>{r.displayNumber}</span>
+          <Space size={6}>
+            <span>{r.displayNumber}</span>
+            {/* Перегон техники стоит в том же списке, что и грузовые рейсы: это тот же рейс той
+              же машины на тот же день, и искать его в отдельной вкладке было бы негде. Отличает
+              его пометка — и другое содержимое колонки «Заявки». */}
+            {isRelocationPurpose(r.purpose) && (
+              <Tag color={r.purpose === 'delivery' ? 'blue' : 'gold'}>
+                {routePurposeShortLabels[r.purpose]}
+              </Tag>
+            )}
+          </Space>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             {formatDateOnly(r.routeDate)}
           </Typography.Text>
@@ -130,7 +142,15 @@ export function VehicleRoutesTab() {
       searchable: false,
       width: 280,
       render: (_v, r) =>
-        r.requests.length === 0 ? (
+        // У перегона состава нет: он едет по одной заявке, а «откуда — куда» и есть его задание.
+        isRelocationPurpose(r.purpose) ? (
+          <Space direction="vertical" size={0}>
+            <span>{r.sourceRequest?.displayNumber ?? '—'}</span>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {r.moveFrom} → {r.moveTo}
+            </Typography.Text>
+          </Space>
+        ) : r.requests.length === 0 ? (
           <Typography.Text type="secondary">рейс пуст</Typography.Text>
         ) : (
           <Space direction="vertical" size={0}>

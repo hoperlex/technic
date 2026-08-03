@@ -118,6 +118,13 @@ interface FormValues {
   garageNumber?: string;
   communicationKind?: string;
   transportationKind?: string;
+  // ── Доставка техники на объект: перегон по желанию (миграция 0082) ──
+  /** Спецтехника едет на площадку своим ходом — на эту поездку выписывается 4-П. */
+  deliveryEnabled?: boolean;
+  deliveryDate?: Dayjs | null;
+  deliveryDriverId?: string;
+  deliveryFrom?: string;
+  deliveryTo?: string;
 }
 
 /**
@@ -280,6 +287,31 @@ export function VehicleAssignModal({
   const routeId = Form.useWatch('routeId', form);
 
   /**
+   * Доставка техники на объект (миграция 0082). Спецтехника доезжает до площадки по городу своим
+   * ходом, и на эту поездку выписывается 4-П — но повезти её могут и тралом, поэтому перегон
+   * предлагается, а не требуется. Способ доставки портал не ведёт: он ни на что здесь не влияет.
+   *
+   * Только своя техника: перегон арендной — забота арендодателя, он же выписывает на неё лист.
+   */
+  const deliveryEnabled = Form.useWatch('deliveryEnabled', form) ?? false;
+  const deliveryDate = Form.useWatch('deliveryDate', form);
+  const canOfferDelivery = !reassign && request?.requestType === 'special_equipment' && !isRental;
+  const wantsDelivery = canOfferDelivery && deliveryEnabled;
+
+  /**
+   * Включение подставляет то, что и так известно: технику везут к началу работ и на площадку
+   * заявки. Правится всё: техника приезжает и накануне, а уходит она не обязательно с базы.
+   */
+  const toggleDelivery = (on: boolean) => {
+    if (!on) return;
+    const v = form.getFieldsValue();
+    form.setFieldsValue({
+      deliveryDate: v.deliveryDate ?? v.dateFrom ?? null,
+      deliveryTo: v.deliveryTo || request?.objectAddress || request?.objectName || '',
+    });
+  };
+
+  /**
    * Дата рейса для подсказки, отбора водителей и подписи листа. У грузоперевозки её несёт подача —
    * и берётся она из формы, а не из ответа сервера: время правят прямо здесь, и годность
    * удостоверения обязана проверяться на тот день, на который машина выйдет. У прочих заявок дата
@@ -339,10 +371,18 @@ export function VehicleAssignModal({
 
   // Список водителей — тот же отбор, что проверит сервер: у кого полный комплект документов на
   // дату рейса (ADR 0055). Категория списка не сужает — расхождение с ней помечается в строке.
+  // Дата, на которую проверяется допуск: у рейса — день подачи, у перегона — день, когда технику
+  // повезут. Даты разные, и водитель, годный сегодня, завтра может быть с истёкшим удостоверением.
+  const driverDate = needsRoute
+    ? tripDate
+    : wantsDelivery
+      ? deliveryDate?.format('YYYY-MM-DD')
+      : undefined;
+  const driversNeeded = (needsRoute && !joiningRoute) || wantsDelivery;
   const { data: selection, isFetching: driversLoading } = useQuery({
-    queryKey: ['drivers', 'available', vehicleId, tripDate, withTrailer],
-    queryFn: () => driversApi.available({ vehicleId: vehicleId!, on: tripDate!, withTrailer }),
-    enabled: needsRoute && !joiningRoute && !!vehicleId && !!tripDate,
+    queryKey: ['drivers', 'available', vehicleId, driverDate, withTrailer],
+    queryFn: () => driversApi.available({ vehicleId: vehicleId!, on: driverDate!, withTrailer }),
+    enabled: driversNeeded && !!vehicleId && !!driverDate,
   });
   // Порядок задал сервер: подходящие по категории первыми (ADR 0055), внутри них — работавшие на
   // этой машине (ADR 0056). Пометки в строке объясняют, почему человек там, — без них список
@@ -522,6 +562,16 @@ export function VehicleAssignModal({
       message.warning('Выберите водителя — на рейс выписывается путевой лист');
       return;
     }
+    // Перегон едет откуда-то куда-то и кем-то: пустые графы — это лист, по которому нельзя ехать.
+    // Тем же правилом отвечает сервер, а незаполненный перегон здесь означал бы, что галочку
+    // включили и забыли.
+    if (
+      wantsDelivery &&
+      (!v.deliveryDate || !v.deliveryDriverId || !v.deliveryFrom?.trim() || !v.deliveryTo?.trim())
+    ) {
+      message.warning('Заполните перегон: дату, водителя и откуда — куда');
+      return;
+    }
     onSubmit({
       assignment: {
         vehicleId: v.vehicleId,
@@ -547,6 +597,19 @@ export function VehicleAssignModal({
                         },
                       },
                     },
+            }
+          : {}),
+        // Доставка техники на объект — отдельный рейс на дату перегона, а не часть маршрута
+        // заявки: у спецтехники маршрута нет вовсе, есть период работы машины на площадке.
+        ...(wantsDelivery
+          ? {
+              delivery: {
+                routeDate: v.deliveryDate!.format('YYYY-MM-DD'),
+                driverPersonId: v.deliveryDriverId,
+                moveFrom: v.deliveryFrom!.trim(),
+                moveTo: v.deliveryTo!.trim(),
+                trip: { communicationKind: 'городское' },
+              },
             }
           : {}),
       },
@@ -837,6 +900,77 @@ export function VehicleAssignModal({
                 </Typography.Text>
               )}
             </FormGrid.Full>
+
+            {/* Доставка техники на объект: перегон по городу своим ходом — это рейс, и на него
+              выписывается 4-П. Предлагается, а не требуется: ту же машину могут привезти тралом,
+              и тогда листа не бывает вовсе. Вывоз заводят позже, из карточки заявки: в этот
+              момент его дату ещё не знают. */}
+            {canOfferDelivery && selected && (
+              <>
+                <FormGrid.Full>
+                  <Typography.Title level={5} style={{ marginTop: 16, marginBottom: 0 }}>
+                    Доставка на объект
+                  </Typography.Title>
+                  <Form.Item name="deliveryEnabled" valuePropName="checked" noStyle>
+                    <Checkbox onChange={(e) => toggleDelivery(e.target.checked)}>
+                      Техника едет своим ходом — выписать путевой лист 4-П
+                    </Checkbox>
+                  </Form.Item>
+                  <Typography.Paragraph type="secondary" style={{ marginTop: 8 }}>
+                    Перегон станет отдельным рейсом; лист по нему выписывают в карточке маршрута.
+                    Если технику везут тралом, оставьте выключенным.
+                  </Typography.Paragraph>
+                </FormGrid.Full>
+
+                {wantsDelivery && (
+                  <>
+                    <Form.Item
+                      name="deliveryDate"
+                      label="Дата перегона"
+                      rules={[{ required: true, message: 'Укажите дату перегона' }]}
+                    >
+                      <DatePicker
+                        format="DD.MM.YYYY"
+                        style={{ width: '100%' }}
+                        inputReadOnly={isMobile}
+                      />
+                    </Form.Item>
+                    <Form.Item
+                      name="deliveryDriverId"
+                      label="Водитель перегона"
+                      rules={[{ required: true, message: 'Выберите водителя' }]}
+                      extra={
+                        driverOptions.length === 0 && !driversLoading
+                          ? 'Нет водителей с полным комплектом документов на эту дату'
+                          : undefined
+                      }
+                    >
+                      <AutoSelect
+                        options={driverOptions}
+                        showSearch
+                        optionFilterProp="label"
+                        loading={driversLoading}
+                        placeholder="Выберите водителя"
+                      />
+                    </Form.Item>
+                    <Form.Item
+                      name="deliveryFrom"
+                      label="Откуда"
+                      rules={[{ required: true, message: 'Укажите, откуда идёт техника' }]}
+                    >
+                      <Input placeholder="База, ул. Автомобильная, 3" />
+                    </Form.Item>
+                    <Form.Item
+                      name="deliveryTo"
+                      label="Куда"
+                      rules={[{ required: true, message: 'Укажите, куда идёт техника' }]}
+                    >
+                      <Input placeholder="Объект, адрес площадки" />
+                    </Form.Item>
+                  </>
+                )}
+              </>
+            )}
 
             {/* Причина, по которой рейс не ведётся: аренду ведёт арендодатель, у типа может не
               быть бланка. Показывается текстом — исчезнувший блок «Маршрут» читался бы как

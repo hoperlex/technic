@@ -3,7 +3,7 @@ import { baseListQuery, dateOnlySchema, uuidSchema } from './common';
 import type { RequestStatus, VehicleRequestType } from './enums';
 import { requestStatusLabels } from './enums';
 import type { VehicleOwnership } from './vehicles';
-import type { WaybillStatus } from './waybills';
+import type { WaybillFormCode, WaybillRequirement, WaybillStatus } from './waybills';
 
 // ── Маршрут: рейс одной машины на одну дату (план `docs/vehicle-routes-plan.md`) ──
 //
@@ -12,11 +12,46 @@ import type { WaybillStatus } from './waybills';
 // маршрут правится свободно: заявки переставляют, водителя меняют, реквизиты рейса уточняют.
 //
 // Область та же, где выписывается лист 4-П (ADR 0037, ADR 0041): грузоперевозка на собственной
-// технике. Заказ техники на объект рейса не знает — машина стоит на площадке неделю; арендную
-// машину ведёт арендодатель, он же выписывает на неё лист.
+// технике. Арендную машину ведёт арендодатель, он же выписывает на неё лист.
+//
+// Заказ техники на объект маршрута не знает — машина стоит на площадке неделю, — но **доезжает**
+// она туда своим ходом по городу, и на этот перегон выписывается тот же 4-П. Перегон — тоже рейс,
+// только другого назначения: одна единица техники, одна заявка-основание и две строки «откуда —
+// куда» вместо состава из заявок.
 
 /** Талонов заказчиков в бланке 4-П — столько же заявок держит маршрут. */
 export const MAX_ROUTE_REQUESTS = 4;
+
+// ── Назначение рейса ──
+
+/**
+ * Зачем рейс.
+ *
+ * `freight` — маршрут грузоперевозки: состав из заявок, талоны заказчиков, бланк по типу ТС.
+ * `delivery` и `pickup` — перегон спецтехники на объект и обратно: состава нет, есть заявка,
+ * ради которой едут, и задание «откуда — куда».
+ */
+export const ROUTE_PURPOSES = ['freight', 'delivery', 'pickup'] as const;
+export const routePurposeSchema = z.enum(ROUTE_PURPOSES);
+export type RoutePurpose = (typeof ROUTE_PURPOSES)[number];
+
+export const routePurposeLabels: Record<RoutePurpose, string> = {
+  freight: 'Грузоперевозка',
+  delivery: 'Доставка техники на объект',
+  pickup: 'Вывоз техники с объекта',
+};
+
+/** Короткая пометка в списке рейсов: рядом с номером «Р-12» слово «Доставка» читается само. */
+export const routePurposeShortLabels: Record<RoutePurpose, string> = {
+  freight: 'Рейс',
+  delivery: 'Доставка',
+  pickup: 'Вывоз',
+};
+
+/** Перегон техники: рейс без состава, с заявкой-основанием и заданием «откуда — куда». */
+export function isRelocationPurpose(purpose: RoutePurpose): boolean {
+  return purpose !== 'freight';
+}
 
 /** Отображаемый номер маршрута: «Р-12» (в БД хранится только число). */
 export function formatVehicleRouteNumber(num: number): string {
@@ -98,10 +133,28 @@ export interface VehicleRouteWaybillDto {
   issuedForDate: string;
 }
 
+/** Заявка, ради которой едет перегон: у рейса перемещения она вместо состава. */
+export interface VehicleRouteSourceRequestDto {
+  requestId: string;
+  /** «ТС-501» — номер заявки, как его читают в портале. */
+  displayNumber: string;
+  status: RequestStatus;
+  /** Заказчик: объект строительства или отдел (ADR 0040). */
+  customerName: string;
+}
+
 export interface VehicleRouteDto {
   id: string;
   /** «Р-12» — по нему о рейсе говорят по телефону. */
   displayNumber: string;
+  /** Зачем рейс: грузоперевозка либо перегон техники на объект и обратно. */
+  purpose: RoutePurpose;
+  /**
+   * Бланк, по которому выпишется лист: у грузового рейса — закреплённый за типом машины, у
+   * перегона — всегда 4-П. `null` — лист не выписывается вовсе (тип без бланка). Портал спрашивает
+   * его не ради документа: у формы № 3 нет граф прицепа, и вводить их реквизиты незачем.
+   */
+  formCode: WaybillFormCode | null;
   routeDate: string;
   vehicleId: string;
   /** «КамАЗ 65201 · Е646СК799» — чем едут. */
@@ -119,7 +172,13 @@ export interface VehicleRouteDto {
   communicationKind: string;
   transportationKind: string;
   comment: string;
+  /** Состав грузового рейса; у перегона пуст — талонов заказчиков там не бывает. */
   requests: VehicleRouteRequestDto[];
+  /** Заявка-основание перегона; у грузового рейса `null` — его основание это состав. */
+  sourceRequest: VehicleRouteSourceRequestDto | null;
+  /** Задание перегона: откуда и куда едет техника. У грузового рейса пусто. */
+  moveFrom: string;
+  moveTo: string;
   waybill: VehicleRouteWaybillDto | null;
   createdByName: string;
   createdAt: string;
@@ -160,6 +219,39 @@ export function isRouteEditable(waybillStatus: WaybillStatus | null): boolean {
 export const ROUTE_FROZEN_MESSAGE =
   'По маршруту выписан путевой лист — аннулируйте его, чтобы править рейс';
 
+/**
+ * Бланк, по которому выписывается лист этого рейса.
+ *
+ * У грузового рейса его выбирает тип машины (ADR 0037 п. 1) — самосвалу 4-П, легковой форма № 3.
+ * У перегона бланк всегда 4-П, независимо от типа: экскаватор идёт по дорогам общего пользования
+ * как транспортное средство, и документ у этой поездки один. Проставить `waybill_form_code` типам
+ * спецтехники нельзя — тогда экскаватор попал бы в подсказки грузовых рейсов и прошёл бы проверку
+ * машины маршрута, а заявку на грузоперевозку экскаватором портал собрать не должен.
+ *
+ * Принадлежность спрашивается у обоих: на арендную машину лист выписывает арендодатель, и
+ * перегон арендной техники — его же забота.
+ */
+export function routeWaybillForm(input: {
+  purpose: RoutePurpose;
+  ownership: VehicleOwnership;
+  /** Бланк, закреплённый за типом ТС; решает только грузовой рейс. */
+  formCode: WaybillFormCode | null;
+  /** Название типа ТС — им объясняется отсутствие бланка. */
+  typeName: string;
+}): WaybillRequirement {
+  if (input.ownership !== 'own') {
+    return { formCode: null, reason: 'Путевой лист на арендную технику выписывает арендодатель' };
+  }
+  if (isRelocationPurpose(input.purpose)) return { formCode: '4p', reason: null };
+  if (!input.formCode) {
+    return {
+      formCode: null,
+      reason: `Для типа «${input.typeName}» бланк путевого листа не заведён`,
+    };
+  }
+  return { formCode: input.formCode, reason: null };
+}
+
 export const ROUTE_LEGACY_WAYBILL_MESSAGE =
   'По заявке уже выписан путевой лист вне маршрутов — аннулируйте его или дождитесь переноса истории';
 
@@ -184,8 +276,16 @@ export function canJoinRoute(
     /** Принадлежность назначенной машины; `null` — машина ещё не назначена. */
     ownership: VehicleOwnership | null;
   },
-  route: { routeDate: string; requestCount: number },
+  route: { routeDate: string; requestCount: number; purpose: RoutePurpose },
 ): RouteJoinCheck {
+  // Перегон везёт одну единицу техники по одной заявке-основанию, и состава у него нет вовсе:
+  // талоны заказчиков — про грузоперевозку, где машина за смену объезжает четверых.
+  if (isRelocationPurpose(route.purpose)) {
+    return {
+      ok: false,
+      reason: 'Это перегон техники — заявки в него не кладут, он едет по своей одной',
+    };
+  }
   if (request.requestType !== 'freight_transport') {
     return {
       ok: false,
@@ -249,8 +349,11 @@ export type IssueWaybillCheck =
  * с закрытой: «Выполнена» в маршруте — история состоявшегося рейса, а не задание на новый.
  */
 export function canIssueWaybill(route: {
+  purpose: RoutePurpose;
   driverPersonId: string | null;
   requests: readonly { displayNumber: string; status: RequestStatus }[];
+  /** Заявка-основание перегона: у грузового рейса её нет, у перегона она вместо состава. */
+  sourceRequest: { displayNumber: string; status: RequestStatus } | null;
   /** Лист, уже выписанный по этому рейсу: действующий выписать второй не даёт. */
   waybillStatus: WaybillStatus | null;
 }): IssueWaybillCheck {
@@ -263,6 +366,30 @@ export function canIssueWaybill(route: {
       reason: 'Назначьте водителя — он обязательный реквизит листа',
       blocking: [],
     };
+  }
+  /*
+   * У перегона состава нет: вместо талонов заказчиков он держит заявку, ради которой едет. Её
+   * состояние и проверяется — отменённая означает, что технику никуда не повезут, а «Новая» —
+   * что заявку откатили и машина с неё снята. «Выполнена» перегону не мешает: технику вывозят
+   * с объекта и после того, как работы закрыли.
+   */
+  if (isRelocationPurpose(route.purpose)) {
+    const source = route.sourceRequest;
+    if (!source) {
+      return {
+        ok: false,
+        reason: 'У перегона нет заявки — лист выписывать не на что',
+        blocking: [],
+      };
+    }
+    if (source.status === 'cancelled' || source.status === 'new') {
+      return {
+        ok: false,
+        reason: `Заявка в статусе «${requestStatusLabels[source.status]}» — перегон по ней не выписывают`,
+        blocking: [source.displayNumber],
+      };
+    }
+    return { ok: true };
   }
   if (route.requests.length === 0) {
     return { ok: false, reason: 'В маршруте нет заявок — лист выписывать не на что', blocking: [] };
@@ -296,6 +423,12 @@ export function routeCargoLabel(
 /** Версия маршрута: оптимистическая блокировка, как у заявки. */
 const versionSchema = z.coerce.number().int().min(0);
 
+/**
+ * Откуда и куда едет перегон. Свободная строка, а не адрес из подсказок: техника уходит с базы, с
+ * прошлой площадки или из ремонта, и половина этих мест в ФИАС не значится.
+ */
+const moveLocationSchema = z.string().trim().min(1, 'Укажите место').max(1000);
+
 export const createVehicleRouteSchema = z
   .object({
     vehicleId: uuidSchema,
@@ -314,11 +447,38 @@ export const updateVehicleRouteSchema = z
     driverPersonId: uuidSchema.nullable().optional(),
     trip: routeTripFieldsSchema.optional(),
     comment: z.string().trim().max(2000).optional(),
+    /** Задание перегона: правится, пока лист не выписан. У грузового рейса сервер их не примет. */
+    moveFrom: moveLocationSchema.optional(),
+    moveTo: moveLocationSchema.optional(),
     version: versionSchema,
   })
   .strict();
 export type UpdateVehicleRouteInput = z.infer<typeof updateVehicleRouteSchema>;
 export type UpdateVehicleRouteBody = z.input<typeof updateVehicleRouteSchema>;
+
+/**
+ * Перегон техники по заявке: доставка на объект или вывоз с него (миграция 0082).
+ *
+ * Заводится по желанию — портал не знает, поедет техника своим ходом или тралом, и решать это ему
+ * нечем. Машина не спрашивается: её несёт назначение заявки, и «перегнать одну, а работать другой»
+ * — не состояние, а расхождение.
+ *
+ * Дата отдельная: у заявки спецтехники период работ, а перегон — один день внутри него (обычно
+ * первый и последний, но техника приезжает и накануне).
+ */
+export const createRelocationRouteSchema = z
+  .object({
+    purpose: z.enum(['delivery', 'pickup']),
+    routeDate: dateOnlySchema,
+    driverPersonId: uuidSchema.nullable().optional(),
+    moveFrom: moveLocationSchema,
+    moveTo: moveLocationSchema,
+    trip: routeTripFieldsSchema.optional(),
+    comment: z.string().trim().max(2000).optional().default(''),
+  })
+  .strict();
+export type CreateRelocationRouteInput = z.infer<typeof createRelocationRouteSchema>;
+export type CreateRelocationRouteBody = z.input<typeof createRelocationRouteSchema>;
 
 /**
  * Положить заявку в рейс или перенести её из другого.

@@ -484,3 +484,78 @@ describe('фактический срок в форме перевода в ра
     expect(body.schedule.scheduledTimeUnspecified).toBe(false);
   });
 });
+
+/**
+ * Доставка техники на объект (миграция 0082).
+ *
+ * Заказ техники на объект маршрута не знает — блока «Маршрут» у него нет и быть не должно
+ * (ADR 0041), — но до площадки спецтехника доезжает своим ходом, и на эту поездку выписывается
+ * 4-П. Предлагается она, а не требуется: ту же машину могут привезти тралом, и тогда листа не
+ * бывает вовсе. Портал способ доставки не ведёт и не спрашивает.
+ */
+describe('доставка техники на объект', () => {
+  it('предлагается заказу техники на объект — но блоком «Маршрут» не притворяется', async () => {
+    renderModal('v-own', 'own', () => {}, ON_SITE_REQUEST);
+    await waitFor(() => expect(screen.getByText('Доставка на объект')).toBeDefined());
+
+    expect(screen.queryByText('Маршрут')).toBeNull();
+    // Выключено по умолчанию: перегон — предложение, а не обязательный шаг.
+    expect(screen.queryByLabelText('Дата перегона')).toBeNull();
+  });
+
+  it('включённая подставляет день начала работ и адрес объекта, а водителей просит на эту дату', async () => {
+    availableDrivers.mockClear();
+    renderModal('v-own', 'own', () => {}, ON_SITE_REQUEST);
+    await waitFor(() => expect(screen.getByText('Доставка на объект')).toBeDefined());
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /своим ходом/ }));
+
+    await waitFor(() => expect(screen.getByDisplayValue('Химки, ул. Победы, 10')).toBeDefined());
+    expect(screen.getAllByDisplayValue('10.08.2026').length).toBeGreaterThan(0);
+    // Допуск проверяется на день перегона: удостоверение могло истечь между заказом и выездом.
+    await waitFor(() => expect(availableDrivers).toHaveBeenCalled());
+    expect(availableDrivers.mock.calls.at(-1)![0].on).toBe('2026-08-10');
+  });
+
+  it('уходит вместе с назначением — отдельным перегоном, а не рейсом заявки', async () => {
+    const onSubmit = vi.fn();
+    renderModal('v-own', 'own', onSubmit, ON_SITE_REQUEST);
+    await waitFor(() => expect(screen.getByText('Доставка на объект')).toBeDefined());
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /своим ходом/ }));
+    await waitFor(() => expect(screen.getByDisplayValue('Химки, ул. Победы, 10')).toBeDefined());
+    await pickOption('deliveryDriverId', 'Тестовый Водитель Первый');
+    fireEvent.change(screen.getByPlaceholderText('База, ул. Автомобильная, 3'), {
+      target: { value: 'База, ул. Автомобильная, 3' },
+    });
+    fireEvent.click(screen.getByText('Взять в работу'));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    const body = onSubmit.mock.calls[0]![0] as {
+      assignment: {
+        route?: unknown;
+        delivery?: { routeDate: string; driverPersonId: string; moveFrom: string; moveTo: string };
+      };
+    };
+    // Рейса у заказа техники на объект нет — перегон едет своей записью.
+    expect(body.assignment.route).toBeUndefined();
+    expect(body.assignment.delivery).toEqual({
+      routeDate: '2026-08-10',
+      driverPersonId: 'p-1',
+      moveFrom: 'База, ул. Автомобильная, 3',
+      moveTo: 'Химки, ул. Победы, 10',
+      trip: { communicationKind: 'городское' },
+    });
+  });
+
+  it('без перегона заявка уходит как прежде: галочка ничего не добавляет молча', async () => {
+    const onSubmit = vi.fn();
+    renderModal('v-own', 'own', onSubmit, ON_SITE_REQUEST);
+    await waitFor(() => expect(screen.getByText('Доставка на объект')).toBeDefined());
+
+    fireEvent.click(screen.getByText('Взять в работу'));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    const body = onSubmit.mock.calls[0]![0] as { assignment: { delivery?: unknown } };
+    expect(body.assignment.delivery).toBeUndefined();
+  });
+});

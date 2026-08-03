@@ -33,6 +33,12 @@ const REQUEST_B = { ...REQUEST_A, requestId: 'r-b', displayNumber: 'ТС-502', p
 const ROUTE: VehicleRouteDto = {
   id: 'route-1',
   displayNumber: 'Р-12',
+  // Обычный маршрут грузоперевозки: состав из заявок, бланк по типу машины.
+  purpose: 'freight',
+  formCode: '4p',
+  sourceRequest: null,
+  moveFrom: '',
+  moveTo: '',
   routeDate: '2026-08-03',
   vehicleId: 'v-own',
   vehicleLabel: 'КамАЗ 65201 · Е646СК799',

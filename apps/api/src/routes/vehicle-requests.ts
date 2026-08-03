@@ -44,10 +44,13 @@ import {
   ROUTE_FROZEN_MESSAGE,
   ROUTE_LEGACY_WAYBILL_MESSAGE,
   shouldDetachOnStatus,
+  type VehicleRouteDto,
   waybillFormLabels,
   isAllowedEarlyEndDate,
   isApprovalChangeable,
   isClosedRequestStatus,
+  type CreateRelocationRouteInput,
+  createRelocationRouteSchema,
   isCargoAmountRequired,
   CARGO_AMOUNT_MESSAGE,
   isVehicleKindAllowedForRequest,
@@ -69,6 +72,7 @@ import {
   type VehicleOnSiteSummaryDto,
   type VehicleRequestAssignmentDto,
   type VehicleRequestCompletionDto,
+  type VehicleOwnership,
   type VehicleRequestDto,
   type VehicleRequestEarlyEndDto,
   type VehicleRequestHistorySummaryDto,
@@ -147,11 +151,15 @@ import { loadVehicleRequestHistory } from '../services/vehicle-request-history';
 import {
   attachRequest,
   bumpRouteVersion,
+  createRelocationRoute,
   detachRequest,
+  dropPlannedRelocations,
   lastTripFields,
   legacyWaybillOf,
+  loadRouteDto,
   loadRouteDtos,
   lockRoute,
+  relocationRoutesOfRequest,
   routeOfRequest,
   routeQuery,
   routeRequestCount,
@@ -861,7 +869,11 @@ async function attachToRoute(
         tripDate: routeDate,
         ownership: params.assignment.ownership,
       },
-      { routeDate: route.routeDate, requestCount: await routeRequestCount(tx, route.id) },
+      {
+        routeDate: route.routeDate,
+        requestCount: await routeRequestCount(tx, route.id),
+        purpose: route.purpose,
+      },
     );
     if (!check.ok) throw err.unprocessable(check.reason, { route: check.reason });
   } else {
@@ -902,25 +914,80 @@ async function attachToRoute(
 }
 
 /**
+ * Перегон техники по заявке: доставка на объект или вывоз с него (миграция 0082).
+ *
+ * Спецтехника доезжает до площадки по городу своим ходом, и на эту поездку выписывается 4-П.
+ * Заводится он по желанию: технику могут привезти тралом, и тогда листа не будет вовсе — способ
+ * доставки портал не ведёт и спрашивать его не должен.
+ *
+ * Машина берётся из назначения заявки: «перегнать одной, а работать другой» не состояние, а
+ * расхождение. На арендную технику перегон не заводится — лист на неё выписывает арендодатель.
+ */
+async function addRelocation(
+  tx: Tx,
+  params: {
+    request: { id: string; num: number; requestType: VehicleRequestType };
+    assignment: { vehicleId: string; ownership: VehicleOwnership };
+    purpose: 'delivery' | 'pickup';
+    input: Omit<CreateRelocationRouteInput, 'purpose'>;
+    actor: { id: string };
+  },
+): Promise<{ id: string; num: number }> {
+  if (params.request.requestType !== 'special_equipment') {
+    throw err.unprocessable(
+      'Перегон заводится на заказ техники на объект: у грузоперевозки рейс и есть сама работа',
+      { purpose: 'Не тот вид заявки' },
+    );
+  }
+  if (params.assignment.ownership !== 'own') {
+    throw err.unprocessable('Путевой лист на арендную технику выписывает арендодатель', {
+      purpose: 'Арендная техника',
+    });
+  }
+  return createRelocationRoute(tx, {
+    requestId: params.request.id,
+    vehicleId: params.assignment.vehicleId,
+    purpose: params.purpose,
+    routeDate: params.input.routeDate,
+    driverPersonId: params.input.driverPersonId ?? null,
+    moveFrom: params.input.moveFrom,
+    moveTo: params.input.moveTo,
+    trip: params.input.trip,
+    comment: params.input.comment,
+    actorId: params.actor.id,
+  });
+}
+
+/**
  * Заявка уходит из «В работе»: отмена и возврат в «Новую» вынимают её из рейса — рейса не будет,
  * и держать её в плане незачем. «Выполнена» состав не трогает: рейс состоялся, и связь заявки с
  * маршрутом стала историей. Из замороженного рейса заявка не выбывает ни при каком статусе —
  * бланк уже у водителя, и исчезнуть из него она не может.
+ *
+ * Запланированные перегоны уходят по тому же правилу: рейс без единого выписанного листа
+ * убирается, а с листом — хоть бы и аннулированным — остаётся, потому что на него ссылается
+ * журнал бланков строгой отчётности.
  */
 async function detachOnStatus(
   tx: Tx,
   requestId: string,
   next: RequestStatus,
   actorId: string,
-): Promise<void> {
+): Promise<string[]> {
+  // Перегоны: та же граница «отмена и возврат в „Новую“», но состава у них нет — убирается сам
+  // рейс. «Выполнена» их не трогает: технику вывозят и после того, как работы закрыли.
+  const droppedRelocations =
+    next === 'cancelled' || next === 'new' ? await dropPlannedRelocations(tx, requestId) : [];
+
   const current = await routeOfRequest(tx, requestId);
-  if (!current) return;
+  if (!current) return droppedRelocations;
   const route = await lockRoute(tx, current.routeId);
   const waybill = await routeWaybill(tx, route.id);
   const frozen = !isRouteEditable(waybill?.status ?? null);
-  if (!shouldDetachOnStatus(next, frozen)) return;
+  if (!shouldDetachOnStatus(next, frozen)) return droppedRelocations;
   await detachRequest(tx, route.id, requestId);
   await bumpRouteVersion(tx, route.id, actorId);
+  return droppedRelocations;
 }
 
 /**
@@ -2237,6 +2304,91 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
    * Право своё, `waybills.read`: в листе персональные данные водителя, и заказчику со стороны
    * объекта их не показывают (ADR 0037 п. 13).
    */
+  /**
+   * Перегоны заявки: доставка техники на объект и вывоз с него (миграция 0082).
+   *
+   * Отдельной ручкой по тем же причинам, что и лист (ADR 0041 п. 8): они нужны одной карточке
+   * одного вида заявок, а в списочный запрос добавили бы join'ы ради колонки, которой в списке
+   * нет. Право то же — в рейсе виден водитель, а это персональные данные листа.
+   */
+  r.get(
+    '/:id/relocations',
+    {
+      preHandler: [app.authenticate, app.requirePermission('waybills.read')],
+      schema: { params: idParams },
+    },
+    async (req): Promise<VehicleRouteDto[]> => {
+      const p = requirePrincipal(req);
+      const request = await getDto(req.params.id);
+      if (!request) throw err.notFound('Заявка не найдена');
+      assertRequestScope(p, request);
+      return relocationRoutesOfRequest(db, request.id);
+    },
+  );
+
+  /**
+   * Завести перегон: доставку техники на объект или вывоз с неё.
+   *
+   * Доставку предлагает и форма перевода в работу, но обязательной она не будет никогда: технику
+   * везут и тралом. Вывоз заводится только здесь — в момент перевода в работу его дату ещё не
+   * знают, а к концу работ она известна (в том числе после досрочного завершения, ADR 0044).
+   */
+  r.post(
+    '/:id/relocations',
+    {
+      preHandler: [
+        app.authenticate,
+        app.requirePermission('waybills.read'),
+        app.requirePermission('vehicleRequests.status'),
+      ],
+      schema: { params: idParams, body: createRelocationRouteSchema },
+    },
+    async (req, reply): Promise<VehicleRouteDto> => {
+      const p = requirePrincipal(req);
+      const body = req.body;
+
+      const before = await getDto(req.params.id);
+      if (!before) throw err.notFound('Заявка не найдена');
+      assertRequestScope(p, before);
+
+      const created = await db.transaction(async (tx) => {
+        if (!before.assignment) {
+          throw err.unprocessable('На заявку не назначена техника — перегонять нечего', {
+            purpose: 'Нет техники',
+          });
+        }
+        if (before.status !== 'confirmed') {
+          throw err.unprocessable(
+            `Заявка в статусе «${requestStatusLabels[before.status]}» — перегон заводят по заявке в работе`,
+            { purpose: 'Заявка не в работе' },
+          );
+        }
+        return addRelocation(tx, {
+          request: before,
+          assignment: before.assignment,
+          purpose: body.purpose,
+          input: body,
+          actor: { id: p.id },
+        });
+      });
+
+      await writeAudit({
+        actorUserId: p.id,
+        action: 'vehicle_route.create',
+        entityType: 'vehicle_route',
+        entityId: created.id,
+        metadata: {
+          number: formatVehicleRouteNumber(created.num),
+          purpose: body.purpose,
+          requestId: req.params.id,
+          routeDate: body.routeDate,
+        },
+      });
+      reply.code(201);
+      return (await loadRouteDto(db, created.id))!;
+    },
+  );
+
   r.get(
     '/:id/waybill',
     {
@@ -2354,80 +2506,108 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       // Назначение, факт и уточнённый срок проверяются и пишутся в той же транзакции, что и статус:
       // заявка не должна побыть «в работе» ни на чём, «выполненной» без факта или взятой на одно
       // время с листом на другое — даже мгновение.
-      const { assigned, completed, earlyEndDropped } = await db.transaction(async (tx) => {
-        // Срок — первым: дату рейса путевой лист берёт из заявки, и записанный после выписки он
-        // отправил бы лист на заказанное время вместо согласованного.
-        if (schedule) await applyConfirmedSchedule(tx, before.id, schedule);
-        let saved: VehicleRequestAssignmentDto | null = null;
-        if (assignment) {
-          saved = await resolveAssignment(
-            tx,
-            {
-              vehicleTypeId: before.vehicleTypeId,
-              vehicleTypeName: before.vehicleTypeName,
-            },
-            assignment,
-            { id: p.id, name: p.fullName },
-          );
-          await saveAssignment(tx, before.id, before.vehicleTypeId, saved);
+      const { assigned, completed, earlyEndDropped, droppedRelocations } = await db.transaction(
+        async (tx) => {
+          // Срок — первым: дату рейса путевой лист берёт из заявки, и записанный после выписки он
+          // отправил бы лист на заказанное время вместо согласованного.
+          if (schedule) await applyConfirmedSchedule(tx, before.id, schedule);
+          let saved: VehicleRequestAssignmentDto | null = null;
+          if (assignment) {
+            saved = await resolveAssignment(
+              tx,
+              {
+                vehicleTypeId: before.vehicleTypeId,
+                vehicleTypeName: before.vehicleTypeName,
+              },
+              assignment,
+              { id: p.id, name: p.fullName },
+            );
+            await saveAssignment(tx, before.id, before.vehicleTypeId, saved);
 
-          // Заявка кладётся в рейс в этой же транзакции (маршруты): состояния «в работе, а рейса
-          // нет» перевод в работу не создаёт. Документ при этом не рождается — лист выписывают с
-          // рейса, когда состав собран. На заказ техники на объект, на аренду и на типы без
-          // бланка рейс не ведётся вовсе, и это нормальный ход, а не ошибка.
-          if (transitionRequiresAssignment(status)) {
-            await attachToRoute(tx, {
-              request: before,
-              assignment: saved,
-              route: assignment.route,
-              actor: { id: p.id },
-            });
+            // Заявка кладётся в рейс в этой же транзакции (маршруты): состояния «в работе, а рейса
+            // нет» перевод в работу не создаёт. Документ при этом не рождается — лист выписывают с
+            // рейса, когда состав собран. На заказ техники на объект, на аренду и на типы без
+            // бланка рейс не ведётся вовсе, и это нормальный ход, а не ошибка.
+            if (transitionRequiresAssignment(status)) {
+              await attachToRoute(tx, {
+                request: before,
+                assignment: saved,
+                route: assignment.route,
+                actor: { id: p.id },
+              });
+
+              // Доставка техники на объект — по желанию: спецтехника доезжает до площадки своим
+              // ходом, и на эту поездку выписывается 4-П, но повезти её могут и тралом. Вывоз
+              // заводят позже, из карточки заявки: в этот момент его дату ещё не знают.
+              if (assignment.delivery) {
+                await addRelocation(tx, {
+                  request: before,
+                  assignment: saved,
+                  purpose: 'delivery',
+                  input: assignment.delivery,
+                  actor: { id: p.id },
+                });
+              }
+            }
           }
-        }
-        // Уход из «В работе» рейс не ломает: закрытая заявка остаётся талоном состоявшегося
-        // рейса, отменённая и возвращённая в «Новую» выбывает — но только пока рейс не заморожен
-        // выписанным листом.
-        if (before.status === 'confirmed' && status !== 'confirmed') {
-          await detachOnStatus(tx, before.id, status, p.id);
-        }
-        // Ставка берётся из назначения — того, что стоит на заявке сейчас: сменить машину, не
-        // меняя статуса, нельзя (ADR 0027), поэтому оно же и было в работе.
-        let closed: VehicleRequestCompletionDto | null = null;
-        if (completion) {
-          closed = resolveCompletion(before.assignment, completion, {
-            id: p.id,
-            name: p.fullName,
+          // Уход из «В работе» рейс не ломает: закрытая заявка остаётся талоном состоявшегося
+          // рейса, отменённая и возвращённая в «Новую» выбывает — но только пока рейс не заморожен
+          // выписанным листом.
+          const droppedRelocations =
+            before.status === 'confirmed' && status !== 'confirmed'
+              ? await detachOnStatus(tx, before.id, status, p.id)
+              : [];
+          // Ставка берётся из назначения — того, что стоит на заявке сейчас: сменить машину, не
+          // меняя статуса, нельзя (ADR 0027), поэтому оно же и было в работе.
+          let closed: VehicleRequestCompletionDto | null = null;
+          if (completion) {
+            closed = resolveCompletion(before.assignment, completion, {
+              id: p.id,
+              name: p.fullName,
+            });
+            await saveCompletion(tx, before.id, closed);
+          }
+          const [updated] = await tx
+            .update(vehicleRequests)
+            .set({ status, updatedBy: p.id, version: before.version + 1, updatedAt: new Date() })
+            .where(and(eq(vehicleRequests.id, before.id), eq(vehicleRequests.version, version)))
+            .returning({ id: vehicleRequests.id });
+          if (!updated) throw err.conflict();
+          await tx.insert(vehicleRequestStatusHistory).values({
+            vehicleRequestId: before.id,
+            fromStatus: before.status,
+            toStatus: status,
+            changedBy: p.id,
+            comment,
           });
-          await saveCompletion(tx, before.id, closed);
-        }
-        const [updated] = await tx
-          .update(vehicleRequests)
-          .set({ status, updatedBy: p.id, version: before.version + 1, updatedAt: new Date() })
-          .where(and(eq(vehicleRequests.id, before.id), eq(vehicleRequests.version, version)))
-          .returning({ id: vehicleRequests.id });
-        if (!updated) throw err.conflict();
-        await tx.insert(vehicleRequestStatusHistory).values({
-          vehicleRequestId: before.id,
-          fromStatus: before.status,
-          toStatus: status,
-          changedBy: p.id,
-          comment,
-        });
-        // Ожидающий визы запрос на досрочное завершение уходит вместе со статусом (ADR 0044):
-        // у закрытой и отменённой заявки сокращать нечего, а «ждёт визы» на ней висело бы вечно
-        // и считалось бы в сводке среза.
-        const droppedEarlyEnd =
-          before.status === 'confirmed' && status !== 'confirmed'
-            ? await clearPendingEarlyEnd(tx, before.id)
-            : false;
-        return { assigned: saved, completed: closed, earlyEndDropped: droppedEarlyEnd };
-      });
+          // Ожидающий визы запрос на досрочное завершение уходит вместе со статусом (ADR 0044):
+          // у закрытой и отменённой заявки сокращать нечего, а «ждёт визы» на ней висело бы вечно
+          // и считалось бы в сводке среза.
+          const droppedEarlyEnd =
+            before.status === 'confirmed' && status !== 'confirmed'
+              ? await clearPendingEarlyEnd(tx, before.id)
+              : false;
+          return {
+            assigned: saved,
+            completed: closed,
+            earlyEndDropped: droppedEarlyEnd,
+            droppedRelocations,
+          };
+        },
+      );
       await writeAudit({
         actorUserId: p.id,
         action: 'vehicle_request.status',
         entityType: 'vehicle_request',
         entityId: before.id,
-        metadata: { from: before.status, to: status, comment },
+        metadata: {
+          from: before.status,
+          to: status,
+          comment,
+          // Убранные перегоны — часть того же события: рейс исчез не сам по себе, а вместе со
+          // сменой статуса, и в журнале это должно читаться одной записью.
+          ...(droppedRelocations.length > 0 ? { droppedRelocations } : {}),
+        },
       });
       // Назначение — отдельное событие истории: «в работе» и «на такой-то машине по такой-то
       // ставке» отвечают на разные вопросы, и второе нужно предъявлять с составом изменений.

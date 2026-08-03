@@ -3,6 +3,8 @@ import {
   formatSnils,
   licenseNumberLabel,
   routeCargoLabel,
+  type RoutePurpose,
+  routeWaybillForm,
   type VehicleRequestType,
   waybillRequirement,
   type WaybillRequirement,
@@ -107,6 +109,37 @@ export async function waybillRequirementByType(
 }
 
 /**
+ * Бланк рейса. Правило чистое и живёт в контрактах (`routeWaybillForm`) — здесь только чтение
+ * того, чего оно требует: принадлежности машины и бланка, закреплённого за её типом.
+ *
+ * У перегона тип не спрашивают вовсе: экскаватор идёт по дорогам общего пользования как
+ * транспортное средство, и документ у этой поездки один — 4-П. Проставить бланк типам
+ * спецтехники нельзя: тогда они попали бы в подсказки грузовых рейсов.
+ */
+export async function routeWaybillFormFor(
+  tx: Reader,
+  params: { purpose: RoutePurpose; vehicleId: string },
+): Promise<WaybillRequirement> {
+  const [row] = await tx
+    .select({
+      ownership: vehicles.ownership,
+      formCode: vehicleTypes.waybillFormCode,
+      typeName: vehicleTypes.name,
+    })
+    .from(vehicles)
+    .innerJoin(vehicleTypes, eq(vehicleTypes.id, vehicles.vehicleTypeId))
+    .where(eq(vehicles.id, params.vehicleId));
+
+  if (!row) return { formCode: null, reason: 'Машина не найдена' };
+  return routeWaybillForm({
+    purpose: params.purpose,
+    ownership: row.ownership,
+    formCode: row.formCode,
+    typeName: row.typeName,
+  });
+}
+
+/**
  * Дата рейса: её несёт время подачи. Заявок другого вида здесь не бывает — лист выписывается
  * только на грузоперевозку (ADR 0041), — но `now()` оставлен ответом на случай заявки без
  * заполненных деталей: лист без даты не выписать вовсе.
@@ -163,6 +196,11 @@ async function collectSnapshot(
     number: string;
     seriesPrefix: string;
     date: string;
+    /**
+     * Перегон техники: задание берётся не из заявки, а из самого рейса — «откуда — куда». Груза
+     * нет: машина едет своим ходом, она и есть транспортное средство листа, а не груз.
+     */
+    relocation: { from: string; to: string } | null;
   },
 ): Promise<Record<WaybillSnapshotKey, string>> {
   const [org] = await tx
@@ -309,9 +347,10 @@ async function collectSnapshot(
     // У отдела адреса нет: он не площадка, и маршрут задан адресами погрузки и разгрузки.
     customer_name: request?.objectName ?? request?.departmentName ?? '',
     customer_address: request?.objectAddress ?? '',
-    task_from: request?.loading ?? '',
-    task_to: request?.unloading ?? '',
-    task_cargo: cargo,
+    task_from: params.relocation ? params.relocation.from : (request?.loading ?? ''),
+    task_to: params.relocation ? params.relocation.to : (request?.unloading ?? ''),
+    // У перегона груза нет — графа остаётся пустой, как одометр и движение горючего.
+    task_cargo: params.relocation ? '' : cargo,
     task_departure_time: departure,
     task_departure_hh: departureHours,
     task_departure_mm: departureMinutes,
@@ -339,6 +378,8 @@ export interface IssuedWaybill {
 
 export interface RouteWaybillContext {
   routeId: string;
+  /** Зачем рейс: им выбирается бланк — перегон печатается 4-П независимо от типа машины. */
+  purpose: RoutePurpose;
   vehicleId: string;
   /** День рейса: он же дата листа и дата, на которую проверяется допуск водителя. */
   routeDate: string;
@@ -346,6 +387,11 @@ export interface RouteWaybillContext {
   trip: RouteTripFields;
   /** Состав рейса в порядке талонов: позиция становится `slot` талона заказчика. */
   requests: readonly { requestId: string; position: number }[];
+  /**
+   * Перегон техники: вместо состава у рейса одна заявка-основание и задание «откуда — куда»
+   * (миграция 0082). `null` — обычный маршрут грузоперевозки.
+   */
+  relocation: { requestId: string; from: string; to: string } | null;
   /** Кто выписывает: попадёт в `issued_by` и в журнал аудита. На бланке его нет — подписи там свои. */
   actor: { id: string };
 }
@@ -366,8 +412,8 @@ export async function issueWaybillForRoute(
   tx: Tx,
   ctx: RouteWaybillContext,
 ): Promise<IssuedWaybill> {
-  const requirement = await waybillRequirementFor(tx, {
-    requestType: 'freight_transport',
+  const requirement = await routeWaybillFormFor(tx, {
+    purpose: ctx.purpose,
     vehicleId: ctx.vehicleId,
   });
   if (!requirement.formCode) {
@@ -415,12 +461,15 @@ export async function issueWaybillForRoute(
    * Задание печатается всем рейсом: шапка («в чьё распоряжение») — по первому талону, а нижняя
    * таблица держит четыре строки — ровно столько заявок, сколько бывает в рейсе. Пустые строки
    * остаются пустыми: лист на одну заявку выглядит так же, как выглядел до маршрутов.
+   *
+   * У перегона талон один: заказчик — объект заявки, а «откуда — куда» несёт сам рейс.
    */
   const ordered = [...ctx.requests].sort((a, b) => a.position - b.position);
-  const first = ordered[0]!;
+  const talons = ctx.relocation ? [{ requestId: ctx.relocation.requestId, position: 1 }] : ordered;
+  const first = talons[0]!;
   const data = await collectSnapshot(tx, {
     requestId: first.requestId,
-    restRequestIds: ordered.slice(1).map((r) => r.requestId),
+    restRequestIds: talons.slice(1).map((r) => r.requestId),
     vehicleId: ctx.vehicleId,
     driverPersonId: ctx.driverPersonId,
     organizationId,
@@ -428,6 +477,7 @@ export async function issueWaybillForRoute(
     number: number.display,
     seriesPrefix: number.prefix,
     date: ctx.routeDate,
+    relocation: ctx.relocation ? { from: ctx.relocation.from, to: ctx.relocation.to } : null,
   });
 
   const [created] = await tx
@@ -455,9 +505,10 @@ export async function issueWaybillForRoute(
     .returning({ id: waybills.id });
 
   // Талоны — снимок состава на момент выдачи: рейс потом пересоберут, а бланк в журнале обязан
-  // помнить своё.
+  // помнить своё. У перегона талон один — заявка, ради которой едут: без него журнал показывал бы
+  // лист, выписанный ни на что.
   await tx.insert(waybillRequests).values(
-    ctx.requests.map((r) => ({
+    talons.map((r) => ({
       waybillId: created!.id,
       requestId: r.requestId,
       slot: r.position,

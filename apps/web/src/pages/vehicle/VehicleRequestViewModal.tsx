@@ -20,6 +20,8 @@ import {
   vehicleRequestChangeLabels,
   vehicleRequestTypeColors,
   vehicleRequestTypeLabels,
+  routePurposeLabels,
+  routePurposeShortLabels,
   waybillStatusColors,
   waybillStatusLabels,
 } from '@technic/contracts';
@@ -63,6 +65,11 @@ interface Props {
    * со строкой «Маршрут» по той же причине, что и «Сменить технику» рядом с техникой.
    */
   onTransfer?: (r: VehicleRequestDto) => void;
+  /**
+   * Завести перегон техники: доставку на объект или вывоз с него (миграция 0082). Не передан —
+   * заводить нечем: заявка не в работе, машины на ней нет либо у роли нет прав на рейсы.
+   */
+  onRelocate?: (r: VehicleRequestDto, purpose: 'delivery' | 'pickup') => void;
   /**
    * Кнопки решения по досрочному завершению (ADR 0044). Функция, а не флаг: доступность зависит
    * и от роли, и от состояния запроса, и знает об этом вкладка, а не карточка. Не передана —
@@ -148,6 +155,7 @@ export function VehicleRequestViewModal({
   onEdit,
   onReassign,
   onTransfer,
+  onRelocate,
   earlyEndActions,
 }: Props) {
   const isMobile = useIsMobile();
@@ -177,6 +185,19 @@ export function VehicleRequestViewModal({
     queryKey: ['vehicle-requests', request?.id, 'waybill'],
     queryFn: () => vehicleRequestsApi.waybill(request!.id),
     enabled: asksWaybill,
+  });
+
+  /**
+   * Перегоны заявки: доставка техники на объект и вывоз с него (миграция 0082). Спрашиваются у
+   * заказа техники на объект — там, где они бывают: у грузоперевозки сам рейс и есть работа.
+   * Пусто — перегон не заводили: технику могли привезти тралом, и это законный ход, а не пробел.
+   */
+  const asksRelocations =
+    !!request && request.requestType === 'special_equipment' && can('waybills.read');
+  const { data: relocations } = useQuery({
+    queryKey: ['vehicle-requests', request?.id, 'relocations'],
+    queryFn: () => vehicleRequestsApi.relocations(request!.id),
+    enabled: asksRelocations,
   });
 
   const rows = useMemo(() => toRows(history), [history]);
@@ -329,6 +350,68 @@ export function VehicleRequestViewModal({
                     <PrintWaybillButton waybillId={waybill.id} number={waybill.number}>
                       Печать
                     </PrintWaybillButton>
+                  </Space>
+                ),
+              },
+            ]
+          : []),
+        // Перегоны (миграция 0082): чем и когда технику привезли на объект и увезли с него.
+        // Строка появляется, только когда перегон заведён: его может не быть вовсе — технику
+        // везут тралом, — и «Перегон: —» читалось бы как забытый документ.
+        ...(asksRelocations && (onRelocate || (relocations && relocations.length > 0))
+          ? [
+              {
+                key: 'relocations',
+                label: 'Перегон техники',
+                span: 3,
+                children: (
+                  <Space direction="vertical" size={4}>
+                    {(relocations ?? []).map((route) => (
+                      <Space key={route.id} size={8} wrap>
+                        <Tag color={route.purpose === 'delivery' ? 'blue' : 'gold'}>
+                          {routePurposeShortLabels[route.purpose]}
+                        </Tag>
+                        <span>{route.displayNumber}</span>
+                        <Typography.Text type="secondary">
+                          {formatDateOnly(route.routeDate)} · {route.moveFrom} → {route.moveTo}
+                        </Typography.Text>
+                        {route.waybill ? (
+                          <>
+                            <Tag color={waybillStatusColors[route.waybill.status]}>
+                              {route.waybill.number}
+                            </Tag>
+                            <PrintWaybillButton
+                              waybillId={route.waybill.id}
+                              number={route.waybill.number}
+                            >
+                              Печать
+                            </PrintWaybillButton>
+                          </>
+                        ) : (
+                          <Typography.Text type="secondary">
+                            лист не выписан — выпишите его в карточке маршрута
+                          </Typography.Text>
+                        )}
+                      </Space>
+                    ))}
+                    {/* Заводить перегон предлагается, а не требуется: технику могут привезти
+                      тралом — тогда листа не бывает вовсе. Уже заведённый второй раз не
+                      предлагается: доставка и вывоз бывают по одному разу на заявку. */}
+                    {onRelocate && (
+                      <Space size={8} wrap>
+                        {(['delivery', 'pickup'] as const)
+                          .filter((purpose) => !relocations?.some((r) => r.purpose === purpose))
+                          .map((purpose) => (
+                            <Button
+                              key={purpose}
+                              size="small"
+                              onClick={() => onRelocate(request, purpose)}
+                            >
+                              {routePurposeLabels[purpose]}
+                            </Button>
+                          ))}
+                      </Space>
+                    )}
                   </Space>
                 ),
               },

@@ -3,10 +3,13 @@ import {
   formatVehicleRequestNumber,
   formatVehicleRouteNumber,
   requestCustomerName,
+  type RoutePurpose,
   type RouteTripFields,
   routeCargoLabel,
+  routeWaybillForm,
   type VehicleRouteDto,
   type VehicleRouteRequestDto,
+  type VehicleRouteSourceRequestDto,
   type VehicleRouteWaybillDto,
   waybillDisplayNumber,
 } from '@technic/contracts';
@@ -22,6 +25,7 @@ import {
   vehicleRouteRequests,
   vehicleRoutes,
   vehicles,
+  vehicleTypes,
   waybillRequests,
   waybills,
   waybillSeries,
@@ -43,6 +47,12 @@ type Reader = Tx | typeof db;
 export interface RouteRow {
   id: string;
   num: number;
+  /** Зачем рейс: грузоперевозка либо перегон техники (миграция 0082). */
+  purpose: RoutePurpose;
+  /** Заявка-основание перегона; у грузового рейса `null` — его основание это состав. */
+  sourceRequestId: string | null;
+  moveFrom: string;
+  moveTo: string;
   vehicleId: string;
   routeDate: string;
   driverPersonId: string | null;
@@ -61,6 +71,10 @@ export interface RouteRow {
 const routeColumns = {
   id: vehicleRoutes.id,
   num: vehicleRoutes.num,
+  purpose: vehicleRoutes.purpose,
+  sourceRequestId: vehicleRoutes.sourceRequestId,
+  moveFrom: vehicleRoutes.moveFrom,
+  moveTo: vehicleRoutes.moveTo,
   vehicleId: vehicleRoutes.vehicleId,
   routeDate: vehicleRoutes.routeDate,
   driverPersonId: vehicleRoutes.driverPersonId,
@@ -296,6 +310,41 @@ export async function requestsByRoute(
   return map;
 }
 
+/**
+ * Заявки-основания перегонов пачкой. У рейса перемещения она стоит вместо состава: талонов
+ * заказчиков там не бывает, а знать, ради чего едут, карточке нужно так же.
+ */
+export async function sourceRequestsByRoute(
+  reader: Reader,
+  requestIds: string[],
+): Promise<Map<string, VehicleRouteSourceRequestDto>> {
+  const map = new Map<string, VehicleRouteSourceRequestDto>();
+  if (requestIds.length === 0) return map;
+  const rows = await reader
+    .select({
+      requestId: vehicleRequests.id,
+      num: vehicleRequests.num,
+      status: vehicleRequests.status,
+      objectName: constructionObjects.name,
+      departmentName: departments.name,
+    })
+    .from(vehicleRequests)
+    // Заказчик — объект или отдел (ADR 0040): innerJoin по объекту терял бы заявки отдела.
+    .leftJoin(constructionObjects, eq(constructionObjects.id, vehicleRequests.objectId))
+    .leftJoin(departments, eq(departments.id, vehicleRequests.departmentId))
+    .where(inArray(vehicleRequests.id, requestIds));
+
+  for (const row of rows) {
+    map.set(row.requestId, {
+      requestId: row.requestId,
+      displayNumber: formatVehicleRequestNumber(row.num),
+      status: row.status,
+      customerName: requestCustomerName(row),
+    });
+  }
+  return map;
+}
+
 /** В каком рейсе сейчас заявка; `null` — ни в каком (её вынули или ещё не клали). */
 export async function routeOfRequest(
   tx: Tx,
@@ -383,6 +432,116 @@ export async function attachRequest(tx: Tx, routeId: string, requestId: string):
   return position;
 }
 
+// ── Перегон техники ──
+
+/**
+ * Завести рейс перемещения по заявке: доставку техники на объект или вывоз с него.
+ *
+ * Машина не спрашивается — её несёт назначение заявки: «перегнать одну, а работать другой» не
+ * состояние, а расхождение. Уникальность «одна доставка и один вывоз на заявку» держит частичный
+ * индекс `vehicle_routes_source_request_unique`; здесь она проверяется заранее, чтобы человек
+ * получил ответ словами, а не ошибку целостности.
+ */
+export async function createRelocationRoute(
+  tx: Tx,
+  params: {
+    requestId: string;
+    vehicleId: string;
+    purpose: Exclude<RoutePurpose, 'freight'>;
+    routeDate: string;
+    driverPersonId: string | null;
+    moveFrom: string;
+    moveTo: string;
+    trip: RouteTripFields | undefined;
+    comment: string;
+    actorId: string;
+  },
+): Promise<{ id: string; num: number }> {
+  const [existing] = await tx
+    .select({ num: vehicleRoutes.num })
+    .from(vehicleRoutes)
+    .where(
+      and(
+        eq(vehicleRoutes.sourceRequestId, params.requestId),
+        eq(vehicleRoutes.purpose, params.purpose),
+      ),
+    );
+  if (existing) {
+    throw err.conflict(
+      `Перегон по этой заявке уже заведён — маршрут ${formatVehicleRouteNumber(existing.num)}`,
+    );
+  }
+
+  const [created] = await tx
+    .insert(vehicleRoutes)
+    .values({
+      vehicleId: params.vehicleId,
+      routeDate: params.routeDate,
+      purpose: params.purpose,
+      sourceRequestId: params.requestId,
+      moveFrom: params.moveFrom,
+      moveTo: params.moveTo,
+      driverPersonId: params.driverPersonId,
+      withTrailer: params.trip?.withTrailer ?? false,
+      trailer1Model: params.trip?.trailer1Model ?? '',
+      trailer1RegNumber: params.trip?.trailer1RegNumber ?? '',
+      trailer2Model: params.trip?.trailer2Model ?? '',
+      trailer2RegNumber: params.trip?.trailer2RegNumber ?? '',
+      garageNumber: params.trip?.garageNumber ?? '',
+      communicationKind: params.trip?.communicationKind ?? '',
+      transportationKind: params.trip?.transportationKind ?? '',
+      comment: params.comment,
+      createdBy: params.actorId,
+    })
+    .returning({ id: vehicleRoutes.id, num: vehicleRoutes.num });
+  return created!;
+}
+
+/**
+ * Перегоны заявки: доставка и вывоз. Ими карточка заявки решает, предлагать ли завести рейс, и
+ * показывает выписанный по нему лист.
+ */
+export async function relocationRoutesOfRequest(
+  reader: Reader,
+  requestId: string,
+): Promise<VehicleRouteDto[]> {
+  const rows = await selectRoutes(reader)
+    .where(eq(vehicleRoutes.sourceRequestId, requestId))
+    .orderBy(asc(vehicleRoutes.routeDate), asc(vehicleRoutes.num));
+  return loadRouteDtos(reader, rows);
+}
+
+/**
+ * Запланированный перегон при отмене заявки: рейса не будет, и держать его в плане незачем — так
+ * же, как отменённая заявка выбывает из состава грузового маршрута (`shouldDetachOnStatus`).
+ *
+ * Убирается только рейс, по которому не выписывали ни одного листа. Аннулированный лист рейс тоже
+ * держит: он ссылается на него из журнала, а журнал помнит и списанные бланки — пропуск в
+ * нумерации означал бы утраченный бланк, а не отменённый рейс (ADR 0037 п. 11).
+ *
+ * Возвращает номера убранных рейсов: они уходят в журнал аудита вместе со сменой статуса.
+ */
+export async function dropPlannedRelocations(tx: Tx, requestId: string): Promise<string[]> {
+  const rows = await tx
+    .select({ id: vehicleRoutes.id, num: vehicleRoutes.num })
+    .from(vehicleRoutes)
+    .where(eq(vehicleRoutes.sourceRequestId, requestId))
+    .for('update');
+
+  const dropped: string[] = [];
+  for (const row of rows) {
+    const [documented] = await tx
+      .select({ id: waybills.id })
+      .from(waybills)
+      .where(eq(waybills.routeId, row.id))
+      .limit(1);
+    if (documented) continue;
+    await tx.delete(vehicleRoutes).where(eq(vehicleRoutes.id, row.id));
+    dropped.push(formatVehicleRouteNumber(row.num));
+  }
+  return dropped;
+}
+
 // ── Реквизиты прошлого рейса ──
 
 /**
@@ -418,12 +577,19 @@ function selectRoutes(reader: Reader) {
       ...routeColumns,
       registrationNumber: vehicles.registrationNumber,
       modelName: vehicleModels.name,
+      // Бланк рейса считается правилом из контрактов (`routeWaybillForm`): у грузового его
+      // выбирает тип машины, у перегона он всегда 4-П. Отсюда и принадлежность — на арендную
+      // технику лист выписывает арендодатель.
+      ownership: vehicles.ownership,
+      typeFormCode: vehicleTypes.waybillFormCode,
+      typeName: vehicleTypes.name,
       driverName: persons.fullName,
       createdByName: users.fullName,
       createdAt: vehicleRoutes.createdAt,
     })
     .from(vehicleRoutes)
     .innerJoin(vehicles, eq(vehicles.id, vehicleRoutes.vehicleId))
+    .innerJoin(vehicleTypes, eq(vehicleTypes.id, vehicles.vehicleTypeId))
     .leftJoin(vehicleModels, eq(vehicleModels.id, vehicles.vehicleModelId))
     .leftJoin(persons, eq(persons.id, vehicleRoutes.driverPersonId))
     .innerJoin(users, eq(users.id, vehicleRoutes.createdBy));
@@ -437,10 +603,18 @@ export function toRouteDto(
   row: ListRow,
   requests: VehicleRouteRequestDto[],
   waybill: VehicleRouteWaybillDto | null,
+  sourceRequest: VehicleRouteSourceRequestDto | null = null,
 ): VehicleRouteDto {
   return {
     id: row.id,
     displayNumber: formatVehicleRouteNumber(row.num),
+    purpose: row.purpose,
+    formCode: routeWaybillForm({
+      purpose: row.purpose,
+      ownership: row.ownership,
+      formCode: row.typeFormCode,
+      typeName: row.typeName,
+    }).formCode,
     routeDate: row.routeDate,
     vehicleId: row.vehicleId,
     vehicleLabel: [row.modelName, row.registrationNumber].filter(Boolean).join(' · '),
@@ -457,6 +631,9 @@ export function toRouteDto(
     transportationKind: row.transportationKind,
     comment: row.comment,
     requests,
+    sourceRequest,
+    moveFrom: row.moveFrom,
+    moveTo: row.moveTo,
     waybill,
     createdByName: row.createdByName,
     createdAt: row.createdAt.toISOString(),
@@ -468,20 +645,35 @@ export function toRouteDto(
 export async function loadRouteDto(reader: Reader, id: string): Promise<VehicleRouteDto | null> {
   const [row] = await selectRoutes(reader).where(eq(vehicleRoutes.id, id));
   if (!row) return null;
-  const [requests, waybill] = await Promise.all([
+  const [requests, waybill, sources] = await Promise.all([
     requestsByRoute(reader, [id]),
     routeWaybill(reader, id),
+    sourceRequestsByRoute(reader, row.sourceRequestId ? [row.sourceRequestId] : []),
   ]);
-  return toRouteDto(row, requests.get(id) ?? [], waybill);
+  return toRouteDto(
+    row,
+    requests.get(id) ?? [],
+    waybill,
+    row.sourceRequestId ? (sources.get(row.sourceRequestId) ?? null) : null,
+  );
 }
 
 export async function loadRouteDtos(reader: Reader, rows: ListRow[]): Promise<VehicleRouteDto[]> {
   const ids = rows.map((row) => row.id);
-  const [requests, waybillMap] = await Promise.all([
+  const [requests, waybillMap, sources] = await Promise.all([
     requestsByRoute(reader, ids),
     waybillsByRoute(reader, ids),
+    sourceRequestsByRoute(
+      reader,
+      rows.flatMap((row) => (row.sourceRequestId ? [row.sourceRequestId] : [])),
+    ),
   ]);
   return rows.map((row) =>
-    toRouteDto(row, requests.get(row.id) ?? [], waybillMap.get(row.id) ?? null),
+    toRouteDto(
+      row,
+      requests.get(row.id) ?? [],
+      waybillMap.get(row.id) ?? null,
+      row.sourceRequestId ? (sources.get(row.sourceRequestId) ?? null) : null,
+    ),
   );
 }

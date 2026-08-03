@@ -11,7 +11,9 @@ import {
   canIssueWaybill,
   isRouteEditable,
   isWaybillEditable,
+  isRelocationPurpose,
   MAX_ROUTE_REQUESTS,
+  routePurposeLabels,
   moscowDateKeyOf,
   requestStatusColors,
   requestStatusLabels,
@@ -200,11 +202,16 @@ export function VehicleRouteModal({ routeId, onClose, onChanged }: Props) {
 
   const readiness = route
     ? canIssueWaybill({
+        purpose: route.purpose,
         driverPersonId: route.driverPersonId,
         requests: route.requests,
+        sourceRequest: route.sourceRequest,
         waybillStatus: route.waybill?.status ?? null,
       })
     : null;
+
+  /** Перегон техники: состава у него нет, а задание печатается из самого рейса. */
+  const relocation = !!route && isRelocationPurpose(route.purpose);
 
   const waybillEditable =
     !!route?.waybill &&
@@ -266,6 +273,13 @@ export function VehicleRouteModal({ routeId, onClose, onChanged }: Props) {
             <Descriptions.Item label="Водитель">
               {route.driverName || <Tag color="orange">не назначен</Tag>}
             </Descriptions.Item>
+            {/* Перегон: задание ему даёт не состав, а две строки «откуда — куда» (миграция 0082). */}
+            {relocation && (
+              <Descriptions.Item label={routePurposeLabels[route.purpose]}>
+                {route.moveFrom} → {route.moveTo}
+                {route.sourceRequest && ` · по заявке ${route.sourceRequest.displayNumber}`}
+              </Descriptions.Item>
+            )}
             <Descriptions.Item label="Путевой лист">
               {route.waybill ? (
                 <Space>
@@ -281,36 +295,40 @@ export function VehicleRouteModal({ routeId, onClose, onChanged }: Props) {
           </Descriptions>
 
           {frozen && <Alert type="info" showIcon message={ROUTE_FROZEN_MESSAGE} />}
-          {!frozen && readiness && !readiness.ok && route.requests.length > 0 && (
+          {!frozen && readiness && !readiness.ok && (relocation || route.requests.length > 0) && (
             <Alert type="warning" showIcon message={readiness.reason} />
           )}
 
-          <div>
-            <Typography.Title level={5}>
-              Заявки рейса ({route.requests.length} из {MAX_ROUTE_REQUESTS})
-            </Typography.Title>
-            {route.requests.length === 0 && (
-              <Typography.Paragraph type="secondary">
-                Рейс пуст: положите в него заявку, взятую в работу на эту машину и дату.
-              </Typography.Paragraph>
-            )}
-            <Space direction="vertical" size={8} style={{ width: '100%' }}>
-              {route.requests.map((item, index) => (
-                <RouteRequestRow
-                  key={item.requestId}
-                  item={item}
-                  index={index}
-                  total={route.requests.length}
-                  frozen={frozen}
-                  busy={reorder.isPending || detach.isPending}
-                  onMove={move}
-                  onDetach={() => detach.mutate(item.requestId)}
-                />
-              ))}
-            </Space>
-          </div>
+          {/* Состав — только у грузового рейса: талоны заказчиков это про машину, которая за
+            смену объезжает четверых. Перегон везёт одну единицу техники по одной заявке. */}
+          {!relocation && (
+            <div>
+              <Typography.Title level={5}>
+                Заявки рейса ({route.requests.length} из {MAX_ROUTE_REQUESTS})
+              </Typography.Title>
+              {route.requests.length === 0 && (
+                <Typography.Paragraph type="secondary">
+                  Рейс пуст: положите в него заявку, взятую в работу на эту машину и дату.
+                </Typography.Paragraph>
+              )}
+              <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                {route.requests.map((item, index) => (
+                  <RouteRequestRow
+                    key={item.requestId}
+                    item={item}
+                    index={index}
+                    total={route.requests.length}
+                    frozen={frozen}
+                    busy={reorder.isPending || detach.isPending}
+                    onMove={move}
+                    onDetach={() => detach.mutate(item.requestId)}
+                  />
+                ))}
+              </Space>
+            </div>
+          )}
 
-          {!frozen && route.requests.length < MAX_ROUTE_REQUESTS && (
+          {!relocation && !frozen && route.requests.length < MAX_ROUTE_REQUESTS && (
             <Space direction="vertical" size={4} style={{ width: '100%' }}>
               <Space.Compact style={{ width: '100%' }}>
                 <AutoSelect

@@ -95,6 +95,7 @@ import { VehicleAssignModal } from './VehicleAssignModal';
 import { VehicleCompleteModal } from './VehicleCompleteModal';
 import { VehicleEarlyEndModal } from './VehicleEarlyEndModal';
 import { VehicleRequestViewModal } from './VehicleRequestViewModal';
+import { VehicleRelocationModal } from './VehicleRelocationModal';
 import { VehicleRouteTransferModal } from './VehicleRouteTransferModal';
 import { useObjectScope } from '../../hooks/useObjectScope';
 import { useDepartmentScope } from '../../hooks/useDepartmentScope';
@@ -595,6 +596,11 @@ export function VehicleRequestsTab() {
   // Смена машины у работающей заявки (ADR 0048) — своим запросом: статус при ней не меняется.
   const [reassignTarget, setReassignTarget] = useState<VehicleRequestDto | null>(null);
   /** Заявка, которую переносят в другой рейс (ADR 0052); null — окно переноса закрыто. */
+  /** Заведение перегона: заявка и что именно заводим — доставку или вывоз. */
+  const [relocation, setRelocation] = useState<{
+    request: VehicleRequestDto;
+    purpose: 'delivery' | 'pickup';
+  } | null>(null);
   const [transferTarget, setTransferTarget] = useState<VehicleRequestDto | null>(null);
 
   const reassignMut = useMutation({
@@ -1618,6 +1624,30 @@ export function VehicleRequestsTab() {
               }
             : undefined
         }
+        // Перегон техники (миграция 0082) — тем же правом, что и ход заявки: рейс это ход работы
+        // по ней. Предлагается у заказа техники на объект в работе: доставку и вывоз выписывают
+        // на назначенную машину, а её нет ни у новой заявки, ни у арендной.
+        onRelocate={
+          viewRecord &&
+          canChangeStatus &&
+          viewRecord.requestType === 'special_equipment' &&
+          viewRecord.status === 'confirmed' &&
+          viewRecord.assignment?.ownership === 'own'
+            ? (r, purpose) => {
+                setViewRecord(null);
+                setRelocation({ request: r, purpose });
+              }
+            : undefined
+        }
+      />
+
+      {/* Доставка техники на объект и вывоз с него: рейс перемещения, по которому выписывается
+        4-П. Заводится по желанию — технику могут привезти тралом. */}
+      <VehicleRelocationModal
+        request={relocation?.request ?? null}
+        purpose={relocation?.purpose ?? 'delivery'}
+        onClose={() => setRelocation(null)}
+        onDone={() => setRelocation(null)}
       />
 
       {/* Перенос заявки из рейса в рейс: подходящие рейсы того же дня и того же типа техники. */}
