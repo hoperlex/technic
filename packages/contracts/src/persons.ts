@@ -124,8 +124,17 @@ export function licenseDefect(
   return null;
 }
 
-/** Открыта ли категория этим документом на дату: собственные сроки категории сужают срок документа. */
-export function hasCategoryOn(license: DriverLicenseDto, code: string, on: string): boolean {
+/**
+ * Открыта ли категория этим документом на дату: собственные сроки категории сужают срок документа.
+ *
+ * Принимает только категории, а не документ целиком: тем же правилом сервер считает соответствие
+ * водителя требованию машины (`selectDrivers`), а собирать ради него полный DTO ему незачем.
+ */
+export function hasCategoryOn(
+  license: { categories: readonly Pick<DriverLicenseCategoryDto, 'code' | 'validFrom' | 'validTo'>[] },
+  code: string,
+  on: string,
+): boolean {
   return license.categories.some(
     (c) =>
       c.code === code &&
@@ -190,6 +199,66 @@ export const LICENSE_REQUISITES_MISSING_WARNING =
   'У водителя не внесены серия и номер удостоверения. Лист выпишется, но графа «Удостоверение ' +
   'водителя» напечатается пустой, а без неё документ недействителен (приказ Минтранса № 390). ' +
   'Реквизиты вносит администратор в справочнике водителей.';
+
+// ── Комплект документов для путевого листа ──
+// Бланк печатает о водителе четыре вещи: ФИО, СНИЛС, серию с номером удостоверения и дату его
+// выдачи (`issueWaybillForRoute`). ФИО есть у всякой карточки, остальное — нет: выгрузка приносит
+// людей без реквизитов документа, а руками заводят и до того, как принесли бумаги. Пустая графа
+// делает напечатанный лист недействительным (приказ Минтранса № 390), и обнаруживает это тот, кто
+// взял бумагу в руки, — поэтому справочник обязан уметь показать, кого ещё дозаполнить.
+
+/** Чего не хватает водителю для путевого листа. */
+export type DriverDocumentGap = 'snils' | 'license' | 'requisites' | 'issuedOn';
+
+export const driverDocumentGapLabels: Record<DriverDocumentGap, string> = {
+  snils: 'СНИЛС не внесён',
+  license: 'Действующего удостоверения нет',
+  requisites: 'Серия и номер не внесены',
+  issuedOn: 'Дата выдачи не внесена',
+};
+
+/**
+ * Пробелы одного документа. Срок действия сюда не входит: пустой срок — бессрочный документ
+ * (`licenseDefect`), а не незаполненная графа, и в путевом листе его не печатают.
+ */
+function licenseGaps(license: DriverLicenseDto): DriverDocumentGap[] {
+  const gaps: DriverDocumentGap[] = [];
+  if (licenseRequisitesMissing(licenseNumberLabel(license))) gaps.push('requisites');
+  if (license.issuedOn === null) gaps.push('issuedOn');
+  return gaps;
+}
+
+/**
+ * Чего не хватает водителю для путевого листа на дату; пустой список — комплект полный.
+ *
+ * Считается по годному на эту дату документу, а не по свежему: аннулированное, отклонённое или
+ * просроченное удостоверение листа не даёт, сколько граф в нём ни заполни. Из нескольких годных
+ * берётся самый заполненный — лист выпишется по любому из них, и указывать на пробелы старого,
+ * когда рядом лежит полный документ, незачем.
+ *
+ * То же правило повторено запросом в списке водителей (`documents` в `driverListQuerySchema`):
+ * страницу отбирает сервер, считать полноту в памяти он не может — но набор условий обязан
+ * совпадать, иначе фильтр покажет одно, а строка в нём скажет другое.
+ */
+export function driverDocumentGaps(
+  driver: Pick<DriverDto, 'snils' | 'licenses'>,
+  on: string,
+): DriverDocumentGap[] {
+  const gaps: DriverDocumentGap[] = [];
+  if (driver.snils.trim() === '') gaps.push('snils');
+
+  const valid = driver.licenses.filter((l) => licenseDefect(l, on) === null);
+  if (valid.length === 0) return [...gaps, 'license'];
+  return [...gaps, ...valid.map(licenseGaps).reduce((a, b) => (b.length < a.length ? b : a))];
+}
+
+/** Полный ли комплект — тот же вопрос, что задаёт фильтр справочника. */
+export function driverDocumentsComplete(
+  driver: Pick<DriverDto, 'snils' | 'licenses'>,
+  on: string,
+): boolean {
+  return driverDocumentGaps(driver, on).length === 0;
+}
 
 // ── Ввод ──
 
@@ -310,7 +379,13 @@ export const updateDriverSchema = z
   .strict();
 export type UpdateDriverInput = z.infer<typeof updateDriverSchema>;
 
-// ── Отбор водителя под машину (ADR 0037) ──
+// ── Отбор водителя под машину (ADR 0037, ADR 0055) ──
+//
+// Отбирает комплект документов, а не категория прав: полный комплект (`driverDocumentGaps`) —
+// единственное, без чего рейс не состоится, потому что путевой лист с пустой графой недействителен.
+// Категория машине проставлена скопом по типу техники (миграция `0059`), поэлементно её с ПТС никто
+// не сверял, и запрещать ею работу — значит прятать от диспетчера водителя, который к машине
+// допущен. Она осталась справочной: расхождение видно пометкой и предупреждением, решает человек.
 
 /**
  * Водитель в списке выбора при переводе заявки в работу. СНИЛС сюда не попадает намеренно: он
@@ -327,6 +402,86 @@ export interface DriverOptionDto {
   /** `unverified` — водитель в списке, но с пометкой: проверка бумаги не отменяет допуска. */
   verificationStatus: CredentialVerificationStatus;
   categories: string[];
+  /**
+   * Открыта ли у водителя категория, которую требует машина, на дату рейса. `true` и тогда, когда
+   * требование у машины не заведено: расхождению взяться неоткуда. Ничего не запрещает — по нему
+   * ставится пометка в строке и предупреждение после выбора (ADR 0055).
+   */
+  matchesRequiredCategory: boolean;
+  /**
+   * Рейсов этой машины с этим водителем за последний год — тех, что состоялись
+   * (`driverWorkedOnVehicle`). `0` — не работал либо работал раньше окна.
+   */
+  workedRoutes: number;
+  /** День последнего такого рейса; `null` — не работал. Им же список ставится по свежести. */
+  lastWorkedOn: string | null;
+}
+
+// ── Категория прав как справочная информация (ADR 0055) ──
+
+/** Короткая пометка в строке выбора — рядом с «работал на этой машине». */
+export const DRIVER_CATEGORY_MISMATCH_HINT = 'категория не подходит';
+
+/**
+ * Развёрнутое предупреждение там, где водителя выбирают: пометки в строке мало — её читают при
+ * выборе и забывают. Названы обе стороны — что требует машина и что открыто у водителя: решение
+ * остаётся за человеком, и ему нужны оба набора, а не факт «не совпало» (как у техники —
+ * `vehicleCategoryMismatchWarning`).
+ */
+export function driverCategoryMismatchWarning(required: string, categories: string[]): string {
+  const open = categories.length > 0 ? `«${categories.join(', ')}»` : 'ни одной категории';
+  return (
+    `Машине нужна категория «${required}», а у водителя открыты ${open}. ` +
+    'Рейс заведётся как есть — проверьте по удостоверению, что водитель к этой машине допущен.'
+  );
+}
+
+// ── Опыт водителя на конкретной машине (ADR 0054) ──
+
+/**
+ * Глубина, на которую считается опыт. Год — не круглое число ради круглого: за него меняется и
+ * парк, и люди, и «возил эту машину позапрошлым летом» не то знание, ради которого водителя
+ * поднимают наверх списка.
+ */
+export const DRIVER_EXPERIENCE_MONTHS = 12;
+
+/** Короткая пометка в строке списка — рядом с «документ не проверен». */
+export const DRIVER_WORKED_ON_VEHICLE_HINT = 'работал на этой машине';
+
+/** Работал ли водитель на этой машине: пометку ставит она, и порядок списка считается по ней же. */
+export function driverWorkedOnVehicle(d: Pick<DriverOptionDto, 'lastWorkedOn'>): boolean {
+  return d.lastWorkedOn !== null;
+}
+
+/**
+ * Порядок списка выбора: сначала подходящие по категории, внутри них — работавшие на этой машине
+ * по свежести последнего рейса, остальные по алфавиту, как список стоял до появления опыта.
+ *
+ * Алфавит наверху отвечал на вопрос «как найти человека, которого я уже выбрал в голове», а
+ * диспетчер решает обратную задачу — кого посадить. Тот, кто эту машину уже возил, знает её
+ * повадки, и искать его среди двух десятков однофамильцев по алфавиту незачем. Опыт при этом
+ * ничего не запрещает и никого не прячет: список тот же, изменился только порядок, поэтому
+ * пометка в строке обязательна — иначе непонятно, почему человек оказался первым.
+ *
+ * Категория стоит выше опыта по той же логике порядка, а не запрета (ADR 0055): подходящий по
+ * документу водитель — обычный выбор, несоответствующий — исключение, которое диспетчер принимает
+ * осознанно, и держать его вперемешку значило бы предлагать исключение первым.
+ */
+export function compareDriverOptions(
+  a: Pick<DriverOptionDto, 'fullName' | 'lastWorkedOn' | 'matchesRequiredCategory'>,
+  b: Pick<DriverOptionDto, 'fullName' | 'lastWorkedOn' | 'matchesRequiredCategory'>,
+): number {
+  if (a.matchesRequiredCategory !== b.matchesRequiredCategory) {
+    return a.matchesRequiredCategory ? -1 : 1;
+  }
+  if (a.lastWorkedOn !== b.lastWorkedOn) {
+    // Не работал — вниз, независимо от имени: пустой опыт сравнивать с датой нечем.
+    if (a.lastWorkedOn === null) return 1;
+    if (b.lastWorkedOn === null) return -1;
+    // Даты в ISO-формате: лексикографическое сравнение и есть хронологическое.
+    return b.lastWorkedOn.localeCompare(a.lastWorkedOn);
+  }
+  return a.fullName.localeCompare(b.fullName, 'ru');
 }
 
 export interface DriverSelectionDto {
@@ -359,7 +514,28 @@ export const DRIVER_SORT_FIELDS = [
   'updatedAt',
 ] as const;
 
+/**
+ * Комплект документов для путевого листа — по нему справочник и делится надвое (`driverDocumentGaps`).
+ * Значений два, а не флажок «только неполные»: вопросов к списку тоже два — «кого дозаполнить» и
+ * «кем закрывать рейсы прямо сейчас», и второй задают не реже первого.
+ */
+export const DRIVER_DOCUMENT_SETS = ['complete', 'incomplete'] as const;
+export const driverDocumentSetSchema = z.enum(DRIVER_DOCUMENT_SETS);
+export type DriverDocumentSet = (typeof DRIVER_DOCUMENT_SETS)[number];
+
+export const driverDocumentSetLabels: Record<DriverDocumentSet, string> = {
+  complete: 'Полный комплект',
+  incomplete: 'Неполный комплект',
+};
+
 export const driverListQuerySchema = baseListQuery(DRIVER_SORT_FIELDS).extend({
+  documents: driverDocumentSetSchema.optional(),
+  /**
+   * Кто открыл эту категорию — справочный вопрос, а не отбор под машину (ADR 0055): «кого можно
+   * посадить за седельный тягач» спрашивают у справочника, а не у формы назначения. Считается на
+   * сегодня по годному документу — тем же правилом, что показывает карточка (`hasCategoryOn`).
+   */
+  categoryId: uuidSchema.optional(),
   includeDeleted: z
     .enum(['true', 'false'])
     .optional()

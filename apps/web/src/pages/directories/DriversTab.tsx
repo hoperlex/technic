@@ -12,6 +12,11 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   credentialVerificationStatusColors,
   credentialVerificationStatusLabels,
+  DRIVER_DOCUMENT_SETS,
+  driverDocumentGapLabels,
+  driverDocumentGaps,
+  type DriverDocumentSet,
+  driverDocumentSetLabels,
   type DriverDto,
   type DriverLicenseDto,
   formatSnils,
@@ -31,7 +36,7 @@ import { DataTable, type CardConfig } from '../../components/DataTable';
 import { FormModal } from '../../components/FormModal';
 import { PageTableLayout } from '../../components/PageTableLayout';
 import { actionsColumn, textColumn } from '../../components/columns';
-import { sortOptionsFrom } from '../../components/listControls';
+import { type FilterDefinition, sortOptionsFrom } from '../../components/listControls';
 import { useListParams } from '../../hooks/useListParams';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
@@ -76,16 +81,27 @@ function currentLicense(d: DriverDto): DriverLicenseDto | undefined {
   return d.licenses[0];
 }
 
+/**
+ * Чего не хватает для путевого листа — из того, о чём строка ещё не сказала. «Действующего
+ * удостоверения нет» и «серия и номер не внесены» она называет своими словами и своими местами,
+ * а вот пустая дата выдачи не видна нигде: без неё лист печатается с пустой графой, и человек,
+ * отобравший неполный комплект фильтром, обязан понимать, что именно вносить.
+ */
+function unsaidGaps(d: DriverDto): string[] {
+  return driverDocumentGaps(d, today())
+    .filter((g) => g !== 'license' && g !== 'requisites')
+    .map((g) => driverDocumentGapLabels[g]);
+}
+
 export function DriversTab() {
   const { message, modal } = App.useApp();
   const { can } = useAuth();
   const canWrite = can('drivers.write');
   const qc = useQueryClient();
 
-  const { params, setParams, setSort, onTableChange } = useListParams(
-    {},
-    { searchKeys: ['fullName', 'snils'] },
-  );
+  const { params, setParams, setSort, onTableChange } = useListParams<{
+    documents?: DriverDocumentSet;
+  }>({}, { searchKeys: ['fullName', 'snils'] });
   const { data, isFetching } = useQuery({
     queryKey: ['drivers', params],
     queryFn: () => driversApi.list(params),
@@ -281,7 +297,18 @@ export function DriversTab() {
       width: 260,
       render: (_v, r) => {
         const license = currentLicense(r);
-        if (!license) return <Typography.Text type="secondary">Не заведено</Typography.Text>;
+        const gaps = unsaidGaps(r);
+        const missing = gaps.length > 0 && (
+          <Typography.Text type="warning">{gaps.join(' · ')}</Typography.Text>
+        );
+        if (!license) {
+          return (
+            <Space direction="vertical" size={0}>
+              <Typography.Text type="secondary">Не заведено</Typography.Text>
+              {missing}
+            </Space>
+          );
+        }
         const defect = licenseDefect(license, today());
         // Реквизитов нет у документов из кадровой выгрузки: без этой ветки строка начиналась бы
         // с осиротевшего разделителя, и «не внесено» читалось бы как сбой вёрстки.
@@ -310,6 +337,7 @@ export function DriversTab() {
                 {credentialVerificationStatusLabels[license.verificationStatus]}
               </Tag>
             </Space>
+            {missing}
           </Space>
         );
       },
@@ -335,6 +363,42 @@ export function DriversTab() {
           )),
         ]
       : []),
+  ];
+
+  const documentSetOptions = DRIVER_DOCUMENT_SETS.map((v) => ({
+    value: v,
+    label: driverDocumentSetLabels[v],
+  }));
+
+  const setDocuments = (v: DriverDocumentSet | undefined) =>
+    setParams((p) => ({ ...p, documents: v, page: 1 }));
+
+  /**
+   * Комплект документов — единственный фильтр справочника: путевой лист печатает СНИЛС, номер
+   * удостоверения и дату его выдачи, и половина работы со справочником — это дозаполнить тех, у
+   * кого чего-то из этого нет. Обратное значение нужно не реже: «кем можно закрывать рейсы».
+   */
+  const filters = (
+    <Select<DriverDocumentSet>
+      allowClear
+      placeholder="Комплект документов"
+      style={{ width: 200 }}
+      options={documentSetOptions}
+      value={params.documents}
+      onChange={setDocuments}
+    />
+  );
+
+  const mobileFilters: FilterDefinition[] = [
+    {
+      kind: 'select',
+      key: 'documents',
+      label: 'Комплект документов',
+      value: params.documents,
+      options: documentSetOptions,
+      placeholder: 'Все',
+      onChange: (v) => setDocuments(v as DriverDocumentSet | undefined),
+    },
   ];
 
   /** Документы водителя в карточке: история и учётные действия над действующим. */
@@ -453,6 +517,9 @@ export function DriversTab() {
           ? `Действует до ${dayjs(license.expiresOn).format('DD.MM.YYYY')}`
           : 'Бессрочное';
       },
+      // Недостающее для листа — строкой: на карточке пустой графы не видно, а отобрав неполный
+      // комплект фильтром, человек должен понимать, что именно вносить.
+      (r) => unsaidGaps(r).join(' · ') || null,
       (r) => (r.personnelNo ? `Таб. № ${r.personnelNo}` : null),
       (r) => (r.snils ? `СНИЛС ${formatSnils(r.snils)}` : null),
     ],
@@ -469,6 +536,7 @@ export function DriversTab() {
 
   return (
     <PageTableLayout
+      filters={filters}
       // На телефоне справочник читается карточками, поиск и сортировка — в панели (ADR 0042).
       mobile={{
         search: {
@@ -476,6 +544,7 @@ export function DriversTab() {
           placeholder: 'ФИО или СНИЛС',
           onChange: (v) => setParams((p) => ({ ...p, search: v, page: 1 })),
         },
+        filters: mobileFilters,
         sort: {
           options: sortOptionsFrom(columns),
           sortBy: params.sortBy,

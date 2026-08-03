@@ -37,7 +37,12 @@ import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
 import { assertArchiveVisible } from '../lib/access';
 import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
-import { selectDrivers } from '../services/drivers';
+import {
+  DRIVER_LICENSE_CODE,
+  DRIVER_SPECIALIZATION_CODE,
+  licenseCompleteConditions,
+  selectDrivers,
+} from '../services/drivers';
 import { DriverImportError } from '../services/driver-import';
 import { applyDriverImport, DirectoriesNotSeededError } from '../services/driver-import-apply';
 
@@ -56,9 +61,6 @@ import { applyDriverImport, DirectoriesNotSeededError } from '../services/driver
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 const idParams = z.object({ id: z.string().uuid() });
-
-const DRIVER_SPECIALIZATION_CODE = 'driver';
-const DRIVER_LICENSE_CODE = 'driver_license';
 
 /** Справочные идентификаторы, без которых водителя не завести (наполняет миграция 0058). */
 async function loadDirectoryIds(): Promise<{ specializationId: string; licenseTypeId: string }> {
@@ -236,6 +238,62 @@ const personSelect = {
   ...employmentJoin,
 };
 
+/**
+ * Сегодня по московскому времени — ею меряется срок документа в фильтре комплекта. Тем же
+ * временем берётся дата рейса при выписке листа (`tripDate`): справочник и бланк обязаны считать
+ * просроченным одно и то же, а UTC ночью отстаёт на день.
+ */
+function todayInMoscow(): string {
+  return new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
+/**
+ * Полный комплект данных для путевого листа: СНИЛС человека и годное на сегодня удостоверение,
+ * у которого заполнены номер и дата выдачи. Ровно эти графы бланк и печатает — правило целиком
+ * записано в `driverDocumentGaps` для формы и в `licenseCompleteConditions` для запроса; здесь
+ * оно только оборачивается в EXISTS, потому что фильтр применяется до страницы, и посчитать
+ * полноту по выданным строкам сервер не может.
+ *
+ * Тем же набором условий сужается отбор водителя под машину (ADR 0055) — разъехаться им негде.
+ */
+function documentsCompleteCondition(on: string) {
+  return sql`${persons.snils} <> '' AND EXISTS (
+    SELECT 1 FROM ${personCredentials}
+    JOIN ${credentialTypes} ON ${credentialTypes.id} = ${personCredentials.credentialTypeId}
+    WHERE ${personCredentials.personId} = ${persons.id}
+      AND ${credentialTypes.code} = ${DRIVER_LICENSE_CODE}
+      AND ${and(...licenseCompleteConditions(on))!}
+  )`;
+}
+
+/**
+ * У кого открыта эта категория на сегодня (ADR 0055). Справочный вопрос — «кого можно посадить за
+ * седельный тягач», — а не отбор под конкретную машину: тот считается на дату рейса и категорией
+ * не сужается. Сроки самой категории учитываются: открытая до июня к июлю закрыта, даже если
+ * удостоверение действует.
+ *
+ * Годность документа проверяется, а полнота реквизитов — нет: справочник тем и живёт, что
+ * показывает недозаполненных, и фильтр по категории не должен молча прятать их от того, кто
+ * пришёл именно за ними.
+ */
+function categoryCondition(categoryId: string, on: string) {
+  return sql`EXISTS (
+    SELECT 1 FROM ${personCredentials}
+    JOIN ${personCredentialCategories}
+      ON ${personCredentialCategories.credentialId} = ${personCredentials.id}
+    WHERE ${personCredentials.personId} = ${persons.id}
+      AND ${personCredentialCategories.qualificationCategoryId} = ${categoryId}
+      AND ${personCredentials.deletedAt} IS NULL
+      AND ${personCredentials.revokedAt} IS NULL
+      AND ${personCredentials.verificationStatus} <> 'rejected'
+      AND (${personCredentials.expiresOn} IS NULL OR ${personCredentials.expiresOn} >= ${on}::date)
+      AND (${personCredentialCategories.validFrom} IS NULL
+        OR ${personCredentialCategories.validFrom} <= ${on}::date)
+      AND (${personCredentialCategories.validTo} IS NULL
+        OR ${personCredentialCategories.validTo} >= ${on}::date)
+  )`;
+}
+
 /** Только водители: специализация действующая — уволенного из справочника не показывают. */
 function driverCondition() {
   return sql`EXISTS (
@@ -332,9 +390,21 @@ export default async function driversRoutes(app: FastifyInstance): Promise<void>
       const p = requirePrincipal(req);
       const q = req.query;
       const showDeleted = q.includeDeleted && can(p, 'archive.read');
+      // Комплект и категории считаются на сегодня: справочник открывают, чтобы решить сегодняшний
+      // вопрос — кого дозаполнить и кем закрывать рейсы, — а не чтобы вспомнить прошлый год.
+      const today = todayInMoscow();
+      const complete = documentsCompleteCondition(today);
+      const documents =
+        q.documents === undefined
+          ? undefined
+          : q.documents === 'complete'
+            ? complete
+            : sql`NOT (${complete})`;
       const where = and(
         showDeleted ? undefined : isNull(persons.deletedAt),
         driverCondition(),
+        documents,
+        q.categoryId ? categoryCondition(q.categoryId, today) : undefined,
         // Ищут по тому, что видят: ФИО, номер СНИЛС (как угодно набранный) и табельный.
         q.search
           ? or(
@@ -385,8 +455,12 @@ export default async function driversRoutes(app: FastifyInstance): Promise<void>
   );
 
   /**
-   * Кто может сесть за эту машину в эту дату (ADR 0037). Тем же отбором сервер проверяет
+   * Кто может выйти в рейс на этой машине в эту дату (ADR 0037). Тем же отбором сервер проверяет
    * присланного водителя при переводе заявки в работу — одна функция в двух применениях.
+   *
+   * Сужает комплект документов, а не категория прав (ADR 0055): расхождение с требованием машины
+   * едет в ответе флагом `matchesRequiredCategory`, а `requiredCategory` называет, чего машина
+   * требует, — из этой пары форма и складывает предупреждение.
    */
   r.get(
     '/available',
@@ -409,6 +483,9 @@ export default async function driversRoutes(app: FastifyInstance): Promise<void>
           licenseExpiresOn: d.licenseExpiresOn,
           verificationStatus: d.verificationStatus,
           categories: d.categories,
+          matchesRequiredCategory: d.matchesRequiredCategory,
+          workedRoutes: d.workedRoutes,
+          lastWorkedOn: d.lastWorkedOn,
         })),
       };
     },

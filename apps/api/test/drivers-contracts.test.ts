@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
+  compareDriverOptions,
   createDriverSchema,
+  driverDocumentGaps,
+  driverDocumentsComplete,
   driverLicenseInputSchema,
+  driverListQuerySchema,
+  driverWorkedOnVehicle,
   DRIVERS_IMPORT_MAX_RECORDS,
   driversImportSchema,
   formatSnils,
@@ -13,6 +18,7 @@ import {
   normalizeSnils,
   snilsSchema,
   trailerCategoryCode,
+  type DriverDto,
   type DriverLicenseDto,
 } from '@technic/contracts';
 
@@ -372,5 +378,124 @@ describe('кадровая выгрузка на входе (ADR 0047)', () => {
       file: { drivers: [{ ...record, snils: '123-456-789 00' }] },
     });
     expect(parsed.success).toBe(true);
+  });
+});
+
+/**
+ * Порядок списка выбора (ADR 0054). Правило живёт в контрактах, потому что применяют его двое:
+ * сервер сортирует ответ, форма его показывает — и разойтись им негде.
+ */
+describe('водители, работавшие на этой машине, идут первыми', () => {
+  const worked = (fullName: string, lastWorkedOn: string | null) => ({ fullName, lastWorkedOn });
+
+  it('опыт поднимает над алфавитом', () => {
+    const list = [
+      worked('Абрамов А. А.', null),
+      worked('Яковлев Я. Я.', '2026-07-14'),
+      worked('Борисов Б. Б.', null),
+    ].sort(compareDriverOptions);
+    expect(list.map((d) => d.fullName)).toEqual([
+      'Яковлев Я. Я.',
+      'Абрамов А. А.',
+      'Борисов Б. Б.',
+    ]);
+  });
+
+  it('среди работавших выше тот, кто ездил на ней последним', () => {
+    const list = [
+      worked('Абрамов А. А.', '2026-02-03'),
+      worked('Яковлев Я. Я.', '2026-07-14'),
+    ].sort(compareDriverOptions);
+    expect(list.map((d) => d.fullName)).toEqual(['Яковлев Я. Я.', 'Абрамов А. А.']);
+  });
+
+  it('при равном опыте порядок остаётся алфавитным — и у работавших, и у остальных', () => {
+    const sameDay = [worked('Яковлев Я. Я.', '2026-07-14'), worked('Абрамов А. А.', '2026-07-14')];
+    expect(sameDay.sort(compareDriverOptions).map((d) => d.fullName)).toEqual([
+      'Абрамов А. А.',
+      'Яковлев Я. Я.',
+    ]);
+
+    const noExperience = [worked('Яковлев Я. Я.', null), worked('Абрамов А. А.', null)];
+    expect(noExperience.sort(compareDriverOptions).map((d) => d.fullName)).toEqual([
+      'Абрамов А. А.',
+      'Яковлев Я. Я.',
+    ]);
+  });
+
+  it('пометку ставит факт работы, а не число рейсов', () => {
+    expect(driverWorkedOnVehicle({ lastWorkedOn: '2026-07-14' })).toBe(true);
+    expect(driverWorkedOnVehicle({ lastWorkedOn: null })).toBe(false);
+  });
+});
+
+describe('комплект документов для путевого листа', () => {
+  const ON = '2026-08-03';
+  const driver = (over: Partial<Pick<DriverDto, 'snils' | 'licenses'>> = {}) => ({
+    snils: '11223344595',
+    licenses: [license()],
+    ...over,
+  });
+
+  it('СНИЛС, номер и дата выдачи — полный комплект', () => {
+    expect(driverDocumentGaps(driver(), ON)).toEqual([]);
+    expect(driverDocumentsComplete(driver(), ON)).toBe(true);
+  });
+
+  it('срок в комплект не входит: бессрочный документ — не пустая графа', () => {
+    expect(driverDocumentsComplete(driver({ licenses: [license({ expiresOn: null })] }), ON)).toBe(
+      true,
+    );
+  });
+
+  it('документ из кадровой выгрузки: категории есть, реквизитов нет', () => {
+    expect(
+      driverDocumentGaps(
+        driver({ licenses: [license({ series: '', number: '', issuedOn: null })] }),
+        ON,
+      ),
+    ).toEqual(['requisites', 'issuedOn']);
+  });
+
+  it('одной серии достаточно: она и номер печатаются в листе одной графой', () => {
+    expect(driverDocumentGaps(driver({ licenses: [license({ number: '' })] }), ON)).toEqual([]);
+  });
+
+  it('без СНИЛС лист недействителен, сколько бы граф в документе ни было', () => {
+    expect(driverDocumentGaps(driver({ snils: '' }), ON)).toEqual(['snils']);
+  });
+
+  it('негодный документ комплекта не даёт: по нему в рейс не выйти', () => {
+    const cases: DriverLicenseDto[] = [
+      license({ expiresOn: '2026-08-02' }),
+      license({ revokedAt: '2026-07-01T00:00:00.000Z' }),
+      license({ verificationStatus: 'rejected' }),
+    ];
+    for (const l of cases) {
+      expect(driverDocumentGaps(driver({ licenses: [l] }), ON)).toEqual(['license']);
+    }
+  });
+
+  it('непроверенный документ комплект не рушит: проверка бумаги — учётная процедура', () => {
+    expect(
+      driverDocumentsComplete(driver({ licenses: [license({ verificationStatus: 'unverified' })] }), ON),
+    ).toBe(true);
+  });
+
+  it('из нескольких годных берётся самый заполненный: лист выпишется по любому', () => {
+    const partial = license({ id: 'l2', series: '', number: '', issuedOn: null });
+    expect(driverDocumentGaps(driver({ licenses: [partial, license()] }), ON)).toEqual([]);
+  });
+
+  it('водитель без документов: пробел один — самого удостоверения нет', () => {
+    expect(driverDocumentGaps(driver({ licenses: [] }), ON)).toEqual(['license']);
+  });
+
+  it('фильтр справочника принимает оба значения и отклоняет прочие', () => {
+    expect(driverListQuerySchema.safeParse({ documents: 'complete' }).success).toBe(true);
+    expect(driverListQuerySchema.safeParse({ documents: 'incomplete' }).success).toBe(true);
+    expect(driverListQuerySchema.safeParse({ documents: 'partial' }).success).toBe(false);
+    // Не задан — справочник показывает всех: фильтр не сужает список молча.
+    expect(driverListQuerySchema.parse({}).documents).toBeUndefined();
   });
 });
