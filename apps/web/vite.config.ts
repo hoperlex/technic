@@ -19,6 +19,8 @@ const versionFilePlugin = (): Plugin => ({
 
 export default defineConfig({
   plugins: [react(), versionFilePlugin()],
+  // Алиасы слоёв берутся из tsconfig.json: один источник истины на tsc, vite и vitest.
+  resolve: { tsconfigPaths: true },
   // __BUILD_ID__ вшивается в бандл; хук useVersionCheck сверяет его с /version.json.
   define: { __BUILD_ID__: JSON.stringify(BUILD_ID) },
   server: {

@@ -11,14 +11,13 @@ import {
   WASTE_REMOVAL_CONTAINER_KIND,
   type WasteRequestDto,
 } from '@technic/contracts';
+import { FILE_MAX_SIZE } from '@shared/config/files';
 import { filesApi, wasteTariffsApi } from '../../api/resources';
 import { FileLinkList } from '../../components/FileLinks';
 import { FormGrid } from '../../components/FormGrid';
 import { FormModal } from '../../components/FormModal';
 import { useIsMobile } from '../../hooks/useIsMobile';
 import { errorMessage, formatMoney } from '../../utils/format';
-
-const FILE_MAX_SIZE = 52_428_800; // 50 МБ
 
 /**
  * Закрытие заявки: факт предъявляется вместе со сменой статуса, а не после неё.

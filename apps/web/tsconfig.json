@@ -7,7 +7,20 @@
     "moduleResolution": "Bundler",
     "jsx": "react-jsx",
     "types": ["vite/client", "node"],
-    "noEmit": true
+    "noEmit": true,
+    // Слои FSD адресуются алиасами: путь показывает, с какого этажа берут код, и относительные
+    // «../../» перестают маскировать импорт вверх. Объявлены здесь одни на всех — vite и vitest
+    // читают их через resolve.tsconfigPaths, копий, способных разойтись, нет.
+    // `baseUrl` не задаём: в TS 6 он объявлен устаревшим, а пути в `paths` и без него считаются
+    // от каталога самого tsconfig.
+    "paths": {
+      "@app/*": ["./src/app/*"],
+      "@pages/*": ["./src/pages/*"],
+      "@widgets/*": ["./src/widgets/*"],
+      "@features/*": ["./src/features/*"],
+      "@entities/*": ["./src/entities/*"],
+      "@shared/*": ["./src/shared/*"]
+    }
   },
   "include": ["src", "test", "vite.config.ts", "vitest.config.ts"]
 }
