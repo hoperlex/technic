@@ -1,12 +1,19 @@
 import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { App } from 'antd';
+import { fireEvent, screen, waitFor } from '@testing-library/react';
 import type {
+  DriverSelectionDto,
   FreightTransportRequestDto,
+  RouteTripFields,
   SpecialEquipmentRequestDto,
   VehicleDto,
+  VehicleRouteDto,
 } from '@technic/contracts';
+import { json, mockHttp, type HttpMock, type RecordedCall } from './http';
+import { renderWithUser } from './render';
+import { selectOption } from './antd';
+import { list } from './factories/common';
+import { vehicleRequest } from './factories/vehicle';
+import { VehicleAssignModal } from '../src/pages/vehicle/VehicleAssignModal';
 
 /**
  * Форма перевода заявки в работу кладёт её в рейс (маршруты): здесь проверяется, что она
@@ -21,6 +28,10 @@ import type {
  *
  * Порядок вопросов задан ADR 0052: рейс спрашивается **до** машины и сам её задаёт — рейсы
  * подсказываются по типу заказанной техники, а выбранный запирает поле «Конкретная техника».
+ *
+ * Всё это форма выясняет четырьмя ручками, и мок стоит на них, а не на модуле портала: «запроса о
+ * рейсе нет вовсе» — утверждение про сеть, и проверять его подменённым модулем значит проверять
+ * сегодняшнюю раскладку файлов.
  */
 
 const OWN_VEHICLE: VehicleDto = {
@@ -121,51 +132,35 @@ const REQUEST: FreightTransportRequestDto = {
 
 /**
  * Заказ техники на объект той же машиной: разница с грузоперевозкой — только в виде заявки, и
- * этого достаточно, чтобы путевого листа не было (ADR 0041).
+ * этого достаточно, чтобы путевого листа не было (ADR 0041). Тип ТС и объект те же, что у
+ * грузоперевозки: подбор техники идёт по типу, а перегон подставляет адрес площадки.
  */
-const ON_SITE_REQUEST: SpecialEquipmentRequestDto = {
+const ON_SITE_REQUEST: SpecialEquipmentRequestDto = vehicleRequest({
   id: 'r-2',
   num: 502,
   displayNumber: 'ТС-502',
-  requestType: 'special_equipment',
   objectId: REQUEST.objectId,
   objectCode: REQUEST.objectCode,
   objectName: REQUEST.objectName,
   objectAddress: REQUEST.objectAddress,
-  departmentId: null,
-  departmentCode: null,
-  departmentName: null,
   vehicleTypeId: REQUEST.vehicleTypeId,
   vehicleTypeName: REQUEST.vehicleTypeName,
   vehicleCategoryId: null,
   vehicleCategoryName: null,
-  status: 'new',
-  comment: '',
-  cancelReason: null,
-  approvedBy: REQUEST.approvedBy,
-  approvedByName: REQUEST.approvedByName,
-  approvedAt: REQUEST.approvedAt,
-  assignment: null,
-  completion: null,
-  route: null,
-  files: [],
-  version: 1,
-  createdBy: REQUEST.createdBy,
-  createdByName: REQUEST.createdByName,
-  createdAt: REQUEST.createdAt,
-  updatedAt: REQUEST.updatedAt,
-  deletedAt: null,
+  // Начало работ — тот же день, на который заказана грузоперевозка: с него считается и перегон.
   dateFrom: '2026-08-10',
   dateTo: null,
-  responsibleName: 'Петров П. П.',
-  responsiblePhone: '+7 926 000-00-01',
-  earlyEnd: null,
-};
+});
 
 /** Готовый рейс этой машины на этот день — в него заявка и поедет по умолчанию. */
-const EXISTING_ROUTE = {
+const EXISTING_ROUTE: VehicleRouteDto = {
   id: 'route-1',
   displayNumber: 'Р-12',
+  purpose: 'freight',
+  formCode: '4p',
+  sourceRequest: null,
+  moveFrom: '',
+  moveTo: '',
   routeDate: '2026-08-10',
   vehicleId: 'v-own',
   vehicleLabel: 'КамАЗ 65201 · Е646СК799',
@@ -189,7 +184,7 @@ const EXISTING_ROUTE = {
 };
 
 /** Графы шапки от прошлого рейса машины: их наследует новый рейс, а готовому они уже свои. */
-const LAST_TRIP = {
+const LAST_TRIP: RouteTripFields = {
   withTrailer: false,
   trailer1Model: '',
   trailer1RegNumber: '',
@@ -200,30 +195,8 @@ const LAST_TRIP = {
   transportationKind: 'коммерческая',
 };
 
-/**
- * Подсказка приходит по типу заказанной техники и на дату из формы (ADR 0052): машину диспетчер
- * ещё не выбрал, а бланк закреплён за типом. Ведётся ли рейс на выбранную единицу, форма решает
- * сама правилом из контрактов — по принадлежности машины.
- */
-let routes = [EXISTING_ROUTE];
-const prefill = vi.fn(async (_id: string, params: { vehicleId?: string; date?: string } = {}) => ({
-  required: true,
-  formCode: '4p' as const,
-  formLabel: 'Форма 4-П (грузовой автомобиль)',
-  reason: null,
-  tripDate: params.date ?? '2026-08-10',
-  routes: params.vehicleId ? routes.filter((r) => r.vehicleId === params.vehicleId) : routes,
-  trip: params.vehicleId ? LAST_TRIP : null,
-}));
-
-/** Реквизиты выезда наследуются отдельной ручкой — по выбранной машине и дате рейса. */
-const suggest = vi.fn(async (_q: { vehicleId: string; date: string }) => ({
-  routes: [],
-  trip: LAST_TRIP,
-}));
-
-/** Отбор водителей — шпион: по нему видно, на какую дату форма их спрашивает. */
-const availableDrivers = vi.fn(async (_q: { vehicleId: string; on: string }) => ({
+/** Отбор водителей ведёт сервер: форма показывает его ответ и не пересобирает список. */
+const SELECTION: DriverSelectionDto = {
   requiredCategory: 'C',
   drivers: [
     {
@@ -232,145 +205,162 @@ const availableDrivers = vi.fn(async (_q: { vehicleId: string; on: string }) => 
       personnelNo: 'Т-001',
       licenseNumber: '00 00 000001',
       licenseExpiresOn: '2031-03-12',
-      verificationStatus: 'verified' as const,
+      verificationStatus: 'verified',
       categories: ['B', 'C'],
+      matchesRequiredCategory: true,
+      workedRoutes: 0,
+      lastWorkedOn: null,
     },
   ],
-}));
+};
 
-/** Парк, который видит форма: тест сужает его до одной собственной машины или расширяет до двух. */
-let fleet: VehicleDto[] = [OWN_VEHICLE, RENTAL_VEHICLE];
+/**
+ * Назначение открывает форму на уже выбранной машине — так проверяется блок листа. Собирается из
+ * самой машины, а не перечислением полей: назначение и есть снимок единицы парка, и разойтись с
+ * ним оно не должно даже в тесте.
+ */
+const assignment = (v: VehicleDto) => ({
+  vehicleId: v.id,
+  ownership: v.ownership,
+  typeName: v.typeName,
+  categoryName: v.categoryName,
+  modelName: v.modelName,
+  registrationNumber: v.registrationNumber,
+  description: v.description,
+  lessorId: v.lessorId,
+  lessorName: v.lessorName,
+  pricePerHour: v.pricePerHour,
+  pricePerShift: v.pricePerShift,
+  shiftHours: v.shiftHours,
+  assignedBy: 'user-1',
+  assignedByName: 'Петров П. П.',
+  assignedAt: '2026-08-01T10:00:00.000Z',
+});
 
-vi.mock('../src/api/resources', () => ({
-  vehiclesApi: {
-    list: async () => ({ items: fleet, total: fleet.length, page: 1, pageSize: 500 }),
-  },
-  vehicleRequestsApi: { routePrefill: prefill },
-  vehicleRoutesApi: { suggest },
-  driversApi: {
-    available: (q: { vehicleId: string; on: string }) => availableDrivers(q),
-  },
-}));
-
-const { VehicleAssignModal } = await import('../src/pages/vehicle/VehicleAssignModal');
-
-/** Назначение открывает форму на уже выбранной машине — так проверяется блок листа. */
-function assignment(vehicleId: string, ownership: 'own' | 'rental') {
-  return {
-    vehicleId,
-    ownership,
-    typeName: 'Самосвалы',
-    categoryName: null,
-    modelName: ownership === 'own' ? 'КамАЗ 65201' : null,
-    registrationNumber: ownership === 'own' ? 'Е646СК799' : null,
-    description: ownership === 'rental' ? 'Самосвал 20 м³' : '',
-    lessorId: ownership === 'rental' ? 'c-1' : null,
-    lessorName: ownership === 'rental' ? 'ООО «Арендатех»' : null,
-    pricePerHour: null,
-    pricePerShift: ownership === 'rental' ? 28000 : null,
-    shiftHours: null,
-    assignedBy: 'user-1',
-    assignedByName: 'Петров П. П.',
-    assignedAt: '2026-08-01T10:00:00.000Z',
-  };
+interface Case {
+  /** Уже назначенная машина: окно открывается на ней. */
+  vehicle?: VehicleDto;
+  onSubmit?: (v: unknown) => void;
+  request?: FreightTransportRequestDto | SpecialEquipmentRequestDto;
+  /** Парк, который видит форма: сужается до одной собственной машины или расширяется до двух. */
+  fleet?: VehicleDto[];
+  /** Рейсы, которые сервер подсказывает на дату заявки. */
+  routes?: VehicleRouteDto[];
 }
 
-function renderModal(
-  vehicleId?: string,
-  ownership: 'own' | 'rental' = 'own',
-  onSubmit: (v: unknown) => void = () => {},
-  request: FreightTransportRequestDto | SpecialEquipmentRequestDto = REQUEST,
-) {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
-    <QueryClientProvider client={qc}>
-      <App>
-        <VehicleAssignModal
-          request={{
-            ...request,
-            assignment: vehicleId ? assignment(vehicleId, ownership) : null,
-          }}
-          confirmLoading={false}
-          onCancel={() => {}}
-          onSubmit={onSubmit}
-        />
-      </App>
-    </QueryClientProvider>,
+/**
+ * Форма вместе с четырьмя ручками, которыми она собирает рейс. Состав ответа задаётся тестом, а
+ * не общим состоянием файла: тест, забывший вернуть парк на место, иначе ронял бы следующие.
+ */
+function renderModal({
+  vehicle,
+  onSubmit = () => {},
+  request = REQUEST,
+  fleet = [OWN_VEHICLE, RENTAL_VEHICLE],
+  routes = [],
+}: Case = {}): HttpMock {
+  const http = mockHttp({
+    'GET /vehicles': () => json(list(fleet)),
+    /*
+     * Подсказка приходит по типу заказанной техники и на дату из формы (ADR 0052): машину
+     * диспетчер ещё не выбрал, а бланк закреплён за типом. Графы шапки здесь пусты — наследуются
+     * они отдельной ручкой, уже по выбранной машине.
+     */
+    'GET /vehicle-requests/:id/route-prefill': ({ query }) =>
+      json({
+        required: true,
+        formCode: '4p',
+        formLabel: 'Форма 4-П (грузовой автомобиль)',
+        reason: null,
+        tripDate: query.get('date') ?? '2026-08-10',
+        routes,
+        trip: null,
+      }),
+    /** Реквизиты выезда наследуются по выбранной машине и дате рейса. */
+    'GET /vehicle-routes/suggest': () => json({ routes: [], trip: LAST_TRIP }),
+    'GET /drivers/available': () => json(SELECTION),
+  });
+
+  renderWithUser(
+    <VehicleAssignModal
+      request={{ ...request, assignment: vehicle ? assignment(vehicle) : null }}
+      confirmLoading={false}
+      onCancel={() => {}}
+      onSubmit={onSubmit}
+    />,
   );
+  return http;
 }
 
-/** Выбор значения в AutoSelect: окно живёт в портале, поэтому поле ищется по id (ADR 0052). */
-async function pickOption(fieldId: string, text: string) {
-  const field = document.querySelector(`#${fieldId}`)!.closest('.ant-select')!;
-  fireEvent.mouseDown(field.querySelector('.ant-select-selector') ?? field);
-  await waitFor(() => expect(document.querySelector('.ant-select-item-option')).toBeTruthy());
-  const option = [...document.querySelectorAll('.ant-select-item-option')].find((o) =>
-    o.textContent?.includes(text),
-  );
-  fireEvent.click(option!);
-}
+/** Запросы отбора водителей по порядку: по ним видно, на какую дату форма их спрашивает. */
+const driverCalls = (http: HttpMock): RecordedCall[] =>
+  http.calls.filter((c) => c.method === 'GET' && c.path === '/drivers/available');
+
+/** Запросы подсказки рейсов: по ним видно, с чем форма за ней ходила и ходила ли вообще. */
+const prefillCalls = (http: HttpMock): RecordedCall[] =>
+  http.calls.filter((c) => c.path.endsWith('/route-prefill'));
 
 describe('маршрут в форме перевода в работу', () => {
   it('рейс спрашивается до машины и молча не подставляется', async () => {
-    routes = [EXISTING_ROUTE];
-    fleet = [OWN_VEHICLE, OWN_VEHICLE_2, RENTAL_VEHICLE];
-    prefill.mockClear();
-    renderModal();
-    await waitFor(() => expect(screen.getByText('Маршрут')).toBeDefined());
+    const http = renderModal({
+      fleet: [OWN_VEHICLE, OWN_VEHICLE_2, RENTAL_VEHICLE],
+      routes: [EXISTING_ROUTE],
+    });
+    await screen.findByText('Маршрут');
 
     // Машины ещё нет — и подсказка приходит без неё: рейсы того же типа ТС на дату заявки.
-    expect(prefill.mock.calls[0]![1]?.vehicleId).toBeUndefined();
+    // Проверяются все запросы: машина не должна попасть в них и позже, когда её выберут.
+    expect(prefillCalls(http).length).toBeGreaterThan(0);
+    expect(prefillCalls(http).every((c) => c.query.get('vehicleId') === null)).toBe(true);
     // Подставленный рейс выбрал бы и машину, а её выбирает человек: поле стоит на новом рейсе.
-    expect(screen.getByTitle('Новый маршрут')).toBeDefined();
-    fleet = [OWN_VEHICLE, RENTAL_VEHICLE];
+    // Ожиданием, а не мгновенной проверкой: значение ставит эффект по приходу подсказки, и до
+    // отрисовки поле ещё пустое — на этом тест и был нестабилен в общем прогоне.
+    expect(await screen.findByTitle('Новый маршрут')).toBeDefined();
   });
 
   it('выбранный рейс задаёт машину и запирает её поле', async () => {
-    routes = [EXISTING_ROUTE];
-    fleet = [OWN_VEHICLE, OWN_VEHICLE_2, RENTAL_VEHICLE];
-    renderModal();
-    await waitFor(() => expect(screen.getByText('Маршрут')).toBeDefined());
+    renderModal({
+      fleet: [OWN_VEHICLE, OWN_VEHICLE_2, RENTAL_VEHICLE],
+      routes: [EXISTING_ROUTE],
+    });
+    await screen.findByText('Маршрут');
 
-    await pickOption('routeId', 'Р-12');
+    await selectOption('Рейс', /Р-12/);
 
     // Машина рейса подставлена, а поле заперто: «рейсом Р-12, но другой машиной» — расхождение,
     // на которое сервер ответил бы отказом.
     await waitFor(() => expect(screen.getByText(/Машину задал рейс Р-12/)).toBeDefined());
     expect(document.querySelector('#vehicleId')!.getAttribute('disabled')).not.toBeNull();
     expect(screen.getByText(/водитель и реквизиты выезда там уже свои/)).toBeDefined();
-    fleet = [OWN_VEHICLE, RENTAL_VEHICLE];
   });
 
   it('на собственную машину предлагает готовый рейс этого дня', async () => {
-    routes = [EXISTING_ROUTE];
-    renderModal('v-own');
-    await waitFor(() => expect(screen.getByText('Маршрут')).toBeDefined());
+    renderModal({ vehicle: OWN_VEHICLE, routes: [EXISTING_ROUTE] });
+    await screen.findByText('Маршрут');
 
     // Рейс подставлен сам: диспетчер собирает день машины, а не заводит второй рейс на ту же дату.
-    await waitFor(() => expect(screen.getByTitle(/Р-12/)).toBeDefined());
+    expect(await screen.findByTitle(/Р-12/)).toBeDefined();
     // Водитель и реквизиты выезда — свойства рейса: у готового их не переспрашивают.
     expect(screen.queryByText('Рейс с прицепом')).toBeNull();
     expect(screen.getByText(/водитель и реквизиты выезда там уже свои/)).toBeDefined();
   });
 
   it('когда рейса на этот день нет, спрашивает водителя и реквизиты нового', async () => {
-    routes = [];
-    renderModal('v-own');
-    await waitFor(() => expect(screen.getByText('Маршрут')).toBeDefined());
+    renderModal({ vehicle: OWN_VEHICLE, routes: [] });
+    await screen.findByText('Маршрут');
 
-    expect(screen.getByText('Водитель')).toBeDefined();
+    expect(await screen.findByText('Водитель')).toBeDefined();
     expect(screen.getByText('Рейс с прицепом')).toBeDefined();
     // Графы шапки подставлены от прошлого рейса этой машины — их не перенабирают каждый раз.
     // Приходят они вторым запросом (`suggest`), уже по выбранной машине, — отсюда ожидание.
-    await waitFor(() => expect(screen.getByDisplayValue('00000389')).toBeDefined());
+    expect(await screen.findByDisplayValue('00000389')).toBeDefined();
     expect(screen.getByDisplayValue('пригородное')).toBeDefined();
   });
 
   it('готовый рейс уходит идентификатором, а не водителем и графами', async () => {
-    routes = [EXISTING_ROUTE];
     const onSubmit = vi.fn();
-    renderModal('v-own', 'own', onSubmit);
-    await waitFor(() => expect(screen.getByText(/Р-12/)).toBeDefined());
+    renderModal({ vehicle: OWN_VEHICLE, onSubmit, routes: [EXISTING_ROUTE] });
+    await screen.findByTitle(/Р-12/);
 
     fireEvent.click(screen.getByText('Взять в работу'));
     await waitFor(() => expect(onSubmit).toHaveBeenCalled());
@@ -382,17 +372,17 @@ describe('маршрут в форме перевода в работу', () => 
   });
 
   it('новый рейс уходит вместе с водителем и реквизитами выезда', async () => {
-    routes = [];
     const onSubmit = vi.fn();
-    renderModal('v-own', 'own', onSubmit);
-    await waitFor(() => expect(screen.getByText('Водитель')).toBeDefined());
+    renderModal({ vehicle: OWN_VEHICLE, onSubmit, routes: [] });
+    await screen.findByText('Водитель');
+    // Графы шапки приходят вторым запросом: без ожидания форма уехала бы с пустым гаражным
+    // номером, и проверка ниже поймала бы гонку, а не поведение.
+    await screen.findByDisplayValue('00000389');
 
     // Водителя выбирают из тех, кого отобрал сервер: список — тот же, что проверит выписка листа.
-    // Поле ищется по id: окно живёт в портале, и querySelector надёжнее порядкового номера.
-    const driverField = document.querySelector('#driverPersonId')!.closest('.ant-select')!;
-    fireEvent.mouseDown(driverField.querySelector('.ant-select-selector') ?? driverField);
-    await waitFor(() => expect(document.querySelector('.ant-select-item-option')).toBeTruthy());
-    fireEvent.click(document.querySelector('.ant-select-item-option')!);
+    // Выбор идёт по подписи поля: на форме несколько выпадающих списков, и общий поиск по
+    // документу молча уходил бы в чужой.
+    await selectOption('Водитель', /Тестовый Водитель Первый/);
 
     fireEvent.click(screen.getByText('Взять в работу'));
     await waitFor(() => expect(onSubmit).toHaveBeenCalled());
@@ -407,12 +397,10 @@ describe('маршрут в форме перевода в работу', () => 
   });
 
   it('водителей спрашивает на ту дату, которую назначили в форме, а не на заказанную', async () => {
-    routes = [];
-    availableDrivers.mockClear();
-    renderModal('v-own');
-    await waitFor(() => expect(screen.getByText('Маршрут')).toBeDefined());
-    await waitFor(() => expect(availableDrivers).toHaveBeenCalled());
-    expect(availableDrivers.mock.calls[0]![0].on).toBe('2026-08-10');
+    const http = renderModal({ vehicle: OWN_VEHICLE, routes: [] });
+    await screen.findByText('Маршрут');
+    await waitFor(() => expect(driverCalls(http).length).toBeGreaterThan(0));
+    expect(driverCalls(http)[0]!.query.get('on')).toBe('2026-08-10');
 
     // Подачу сдвинули на два дня — годность удостоверения проверяется уже на новый день.
     const dateInput = screen.getByDisplayValue('10.08.2026');
@@ -420,27 +408,25 @@ describe('маршрут в форме перевода в работу', () => 
     fireEvent.keyDown(dateInput, { key: 'Enter', keyCode: 13 });
 
     await waitFor(() => {
-      const last = availableDrivers.mock.calls.at(-1)![0];
-      expect(last.on).toBe('2026-08-12');
+      expect(driverCalls(http).at(-1)!.query.get('on')).toBe('2026-08-12');
     });
   });
 
   it('у заказа техники на объект рейса нет и объяснения тоже: его в этом процессе не бывает', async () => {
-    prefill.mockClear();
-    renderModal('v-own', 'own', () => {}, ON_SITE_REQUEST);
-    await waitFor(() => expect(screen.getByText('Конкретная техника')).toBeDefined());
+    const http = renderModal({ vehicle: OWN_VEHICLE, request: ON_SITE_REQUEST });
+    await screen.findByText('Конкретная техника');
 
     expect(screen.queryByText('Маршрут')).toBeNull();
     expect(screen.queryByText('Маршрут не ведётся')).toBeNull();
     expect(screen.queryByText('Водитель')).toBeNull();
     // Сервер о рейсе даже не спрашивается: спрашивать нечего, и лишний запрос выдал бы, что
     // портал всё-таки держит рейс в уме.
-    expect(prefill).not.toHaveBeenCalled();
+    expect(prefillCalls(http)).toHaveLength(0);
   });
 
   it('на аренду объясняет, почему рейса нет, а не прячет блок', async () => {
-    renderModal('v-rent', 'rental');
-    await waitFor(() => expect(screen.getByText('Маршрут не ведётся')).toBeDefined());
+    renderModal({ vehicle: RENTAL_VEHICLE });
+    await screen.findByText('Маршрут не ведётся');
 
     expect(
       screen.getByText('Путевой лист на арендную технику выписывает арендодатель'),
@@ -456,7 +442,7 @@ describe('маршрут в форме перевода в работу', () => 
 describe('фактический срок в форме перевода в работу', () => {
   it('поля подставлены заказанным, а заказанное остаётся видно рядом', async () => {
     renderModal();
-    await waitFor(() => expect(screen.getByText('Фактическая дата подачи')).toBeDefined());
+    await screen.findByText('Фактическая дата подачи');
 
     expect(screen.getByDisplayValue('10.08.2026')).toBeDefined();
     expect(screen.getByDisplayValue('09:00')).toBeDefined();
@@ -465,8 +451,8 @@ describe('фактический срок в форме перевода в ра
 
   it('согласованное время уходит вместе с назначением техники', async () => {
     const onSubmit = vi.fn();
-    renderModal('v-rent', 'rental', onSubmit);
-    await waitFor(() => expect(screen.getByDisplayValue('09:00')).toBeDefined());
+    renderModal({ vehicle: RENTAL_VEHICLE, onSubmit });
+    await screen.findByDisplayValue('09:00');
 
     const timeInput = screen.getByDisplayValue('09:00');
     fireEvent.change(timeInput, { target: { value: '10:30' } });
@@ -495,8 +481,8 @@ describe('фактический срок в форме перевода в ра
  */
 describe('доставка техники на объект', () => {
   it('предлагается заказу техники на объект — но блоком «Маршрут» не притворяется', async () => {
-    renderModal('v-own', 'own', () => {}, ON_SITE_REQUEST);
-    await waitFor(() => expect(screen.getByText('Доставка на объект')).toBeDefined());
+    renderModal({ vehicle: OWN_VEHICLE, request: ON_SITE_REQUEST });
+    await screen.findByText('Доставка на объект');
 
     expect(screen.queryByText('Маршрут')).toBeNull();
     // Выключено по умолчанию: перегон — предложение, а не обязательный шаг.
@@ -504,27 +490,26 @@ describe('доставка техники на объект', () => {
   });
 
   it('включённая подставляет день начала работ и адрес объекта, а водителей просит на эту дату', async () => {
-    availableDrivers.mockClear();
-    renderModal('v-own', 'own', () => {}, ON_SITE_REQUEST);
-    await waitFor(() => expect(screen.getByText('Доставка на объект')).toBeDefined());
+    const http = renderModal({ vehicle: OWN_VEHICLE, request: ON_SITE_REQUEST });
+    await screen.findByText('Доставка на объект');
 
     fireEvent.click(screen.getByRole('checkbox', { name: /своим ходом/ }));
 
-    await waitFor(() => expect(screen.getByDisplayValue('Химки, ул. Победы, 10')).toBeDefined());
+    expect(await screen.findByDisplayValue('Химки, ул. Победы, 10')).toBeDefined();
     expect(screen.getAllByDisplayValue('10.08.2026').length).toBeGreaterThan(0);
     // Допуск проверяется на день перегона: удостоверение могло истечь между заказом и выездом.
-    await waitFor(() => expect(availableDrivers).toHaveBeenCalled());
-    expect(availableDrivers.mock.calls.at(-1)![0].on).toBe('2026-08-10');
+    await waitFor(() => expect(driverCalls(http).length).toBeGreaterThan(0));
+    expect(driverCalls(http).at(-1)!.query.get('on')).toBe('2026-08-10');
   });
 
   it('уходит вместе с назначением — отдельным перегоном, а не рейсом заявки', async () => {
     const onSubmit = vi.fn();
-    renderModal('v-own', 'own', onSubmit, ON_SITE_REQUEST);
-    await waitFor(() => expect(screen.getByText('Доставка на объект')).toBeDefined());
+    renderModal({ vehicle: OWN_VEHICLE, onSubmit, request: ON_SITE_REQUEST });
+    await screen.findByText('Доставка на объект');
 
     fireEvent.click(screen.getByRole('checkbox', { name: /своим ходом/ }));
-    await waitFor(() => expect(screen.getByDisplayValue('Химки, ул. Победы, 10')).toBeDefined());
-    await pickOption('deliveryDriverId', 'Тестовый Водитель Первый');
+    await screen.findByDisplayValue('Химки, ул. Победы, 10');
+    await selectOption('Водитель перегона', /Тестовый Водитель Первый/);
     fireEvent.change(screen.getByPlaceholderText('База, ул. Автомобильная, 3'), {
       target: { value: 'База, ул. Автомобильная, 3' },
     });
@@ -550,8 +535,8 @@ describe('доставка техники на объект', () => {
 
   it('без перегона заявка уходит как прежде: галочка ничего не добавляет молча', async () => {
     const onSubmit = vi.fn();
-    renderModal('v-own', 'own', onSubmit, ON_SITE_REQUEST);
-    await waitFor(() => expect(screen.getByText('Доставка на объект')).toBeDefined());
+    renderModal({ vehicle: OWN_VEHICLE, onSubmit, request: ON_SITE_REQUEST });
+    await screen.findByText('Доставка на объект');
 
     fireEvent.click(screen.getByText('Взять в работу'));
     await waitFor(() => expect(onSubmit).toHaveBeenCalled());

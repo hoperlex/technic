@@ -1,8 +1,10 @@
-import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { App } from 'antd';
-import type { VehicleRouteDto } from '@technic/contracts';
+import { describe, expect, it } from 'vitest';
+import { fireEvent, screen, waitFor } from '@testing-library/react';
+import type { VehicleRequestRouteDto, VehicleRouteDto } from '@technic/contracts';
+import { json, mockHttp, type HttpMock } from './http';
+import { renderWithUser } from './render';
+import { list } from './factories/common';
+import { VehicleRouteModal } from '../src/pages/vehicle/VehicleRouteModal';
 
 /**
  * Карточка рейса: порядок заявок — это талоны бланка 4-П, и переставляются они стрелками
@@ -13,6 +15,9 @@ import type { VehicleRouteDto } from '@technic/contracts';
  *      и «подвинуть одну строку» здесь не бывает;
  *   2. выписанный лист карточку замораживает — ни стрелок, ни изъятия, ни добавления, потому что
  *      бланк уже у водителя (ADR 0037 п. 9).
+ *
+ * Данные приходят HTTP-моком: и порядок, и перенос — это то, что уезжает в теле запроса, и
+ * проверять их по подменённому модулю портала значило бы проверять сегодняшнее устройство кода.
  */
 
 const REQUEST_A = {
@@ -82,7 +87,9 @@ const FREE_REQUEST = {
   loadingLocation: 'Карьер',
   unloadingLocation: 'Площадка 3',
   assignment: { ownership: 'own' as const, vehicleId: 'v-own' },
-  route: null,
+  // Тип назван явно: без него у свободной заявки выводится `null`, и соседние записи с рейсом
+  // перестают быть тем же видом данных.
+  route: null as VehicleRequestRouteDto | null,
 };
 
 const REQUEST_IN_OTHER_ROUTE = {
@@ -100,79 +107,38 @@ const REQUEST_IN_FROZEN_ROUTE = {
   route: { id: 'route-8', displayNumber: 'Р-8', position: 1, hasWaybill: true, version: 2 },
 };
 
-const order = vi.fn(async (_id: string, _body: { requestIds: string[]; version: number }) => ROUTE);
-const detach = vi.fn(async () => ROUTE);
-const attach = vi.fn(
-  async (
-    _id: string,
-    _body: { requestId: string; version: number; source?: { routeId: string; version: number } },
-  ) => current,
-);
-let current: VehicleRouteDto = ROUTE;
-let candidates: unknown[] = [];
-
-vi.mock('../src/api/resources', () => ({
-  vehicleRoutesApi: {
-    get: async () => current,
-    order: (id: string, body: { requestIds: string[]; version: number }) => order(id, body),
-    detach: () => detach(),
-    attach: (
-      id: string,
-      body: { requestId: string; version: number; source?: { routeId: string; version: number } },
-    ) => attach(id, body),
-    issueWaybill: async () => current,
-  },
-  vehicleRequestsApi: {
-    list: async () => ({
-      items: candidates,
-      total: candidates.length,
-      page: 1,
-      pageSize: 500,
-    }),
-  },
-  waybillsApi: {
-    cancel: async () => ({}),
-    printPdf: async () => new Blob(),
-    exportUrl: (id: string) => `/waybills/${id}/export`,
-  },
-}));
-
-vi.mock('../src/auth/AuthContext', () => ({
-  useAuth: () => ({ can: () => true, user: { role: 'dispatcher' } }),
-}));
-
-const { VehicleRouteModal } = await import('../src/pages/vehicle/VehicleRouteModal');
-
-function renderModal() {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
-    <QueryClientProvider client={client}>
-      <App>
-        <VehicleRouteModal routeId="route-1" onClose={() => {}} onChanged={() => {}} />
-      </App>
-    </QueryClientProvider>,
-  );
+/**
+ * Карточка вместе с ручками рейса. Изменения отвечают тем же рейсом: карточка после правки
+ * перерисовывается ответом сервера, и подсовывать ей другой состав значило бы проверять не то,
+ * что ушло, а то, что мы сами придумали в ответ.
+ */
+function renderModal(route: VehicleRouteDto, candidates: unknown[] = []): HttpMock {
+  const http = mockHttp({
+    'GET /vehicle-routes/:id': () => json(route),
+    // Что можно положить в рейс, отбирает сервер: карточка сужает список только по рейсу заявки.
+    'GET /vehicle-requests': () => json(list(candidates)),
+    'PUT /vehicle-routes/:id/order': () => json(route),
+    'POST /vehicle-routes/:id/requests': () => json(route),
+  });
+  renderWithUser(<VehicleRouteModal routeId="route-1" onClose={() => {}} onChanged={() => {}} />);
+  return http;
 }
 
 describe('порядок заявок в рейсе', () => {
   it('стрелка вверх отправляет весь состав в новом порядке', async () => {
-    current = ROUTE;
-    order.mockClear();
-    renderModal();
+    const http = renderModal(ROUTE);
 
     const up = await screen.findByLabelText('Поднять ТС-502');
     fireEvent.click(up);
 
-    await waitFor(() => expect(order).toHaveBeenCalledTimes(1));
-    expect(order).toHaveBeenCalledWith('route-1', {
-      requestIds: ['r-b', 'r-a'],
-      version: 3,
-    });
+    await waitFor(() => expect(http.countOf('PUT /vehicle-routes/:id/order')).toBe(1));
+    const call = http.lastCall('PUT /vehicle-routes/:id/order')!;
+    expect(call.path).toBe('/vehicle-routes/route-1/order');
+    expect(call.body).toEqual({ requestIds: ['r-b', 'r-a'], version: 3 });
   });
 
   it('первую заявку выше не поднять, последнюю ниже не опустить', async () => {
-    current = ROUTE;
-    renderModal();
+    renderModal(ROUTE);
 
     // jest-dom в проекте не подключён: смотрим на сам атрибут, как в auto-select.test.tsx.
     expect((await screen.findByLabelText('Поднять ТС-501')).hasAttribute('disabled')).toBe(true);
@@ -180,9 +146,7 @@ describe('порядок заявок в рейсе', () => {
   });
 
   it('выписанный лист замораживает рейс: правок в карточке нет, и сказано почему', async () => {
-    current = ISSUED_ROUTE;
-    candidates = [];
-    renderModal();
+    renderModal(ISSUED_ROUTE);
 
     expect(await screen.findByText(/аннулируйте его, чтобы править рейс/i)).toBeTruthy();
     expect(screen.queryByLabelText('Поднять ТС-502')).toBeNull();
@@ -215,10 +179,7 @@ async function openCandidates() {
  */
 describe('перенос заявки в этот рейс', () => {
   it('заявка чужого рейса подписана рейсом и уходит вместе с ним в source', async () => {
-    current = ROUTE;
-    candidates = [FREE_REQUEST, REQUEST_IN_OTHER_ROUTE];
-    attach.mockClear();
-    renderModal();
+    const http = renderModal(ROUTE, [FREE_REQUEST, REQUEST_IN_OTHER_ROUTE]);
 
     await openCandidates();
     // Подпись говорит, откуда заявку забирают: диспетчер не должен думать, что она свободна.
@@ -228,8 +189,10 @@ describe('перенос заявки в этот рейс', () => {
     // Кнопка называет действие своим именем — это перенос, а не добавление.
     fireEvent.click(await screen.findByText('Перенести'));
 
-    await waitFor(() => expect(attach).toHaveBeenCalledTimes(1));
-    expect(attach).toHaveBeenCalledWith('route-1', {
+    await waitFor(() => expect(http.countOf('POST /vehicle-routes/:id/requests')).toBe(1));
+    const call = http.lastCall('POST /vehicle-routes/:id/requests')!;
+    expect(call.path).toBe('/vehicle-routes/route-1/requests');
+    expect(call.body).toEqual({
       requestId: 'r-other',
       version: 3,
       // Исходный рейс — парой «кто + версия»: одинокая версия совпала бы случайно.
@@ -238,9 +201,7 @@ describe('перенос заявки в этот рейс', () => {
   });
 
   it('заявку из замороженного рейса не предлагают: из бумаги у водителя она не исчезнет', async () => {
-    current = ROUTE;
-    candidates = [FREE_REQUEST, REQUEST_IN_FROZEN_ROUTE];
-    renderModal();
+    renderModal(ROUTE, [FREE_REQUEST, REQUEST_IN_FROZEN_ROUTE]);
 
     await openCandidates();
 
@@ -249,10 +210,7 @@ describe('перенос заявки в этот рейс', () => {
   });
 
   it('свободная заявка добавляется без source — забирать её не у кого', async () => {
-    current = ROUTE;
-    candidates = [FREE_REQUEST];
-    attach.mockClear();
-    renderModal();
+    const http = renderModal(ROUTE, [FREE_REQUEST]);
 
     await openCandidates();
     await waitFor(() => expect(optionTexts().some((t) => t.includes('ТС-701'))).toBe(true));
@@ -262,11 +220,11 @@ describe('перенос заявки в этот рейс', () => {
     fireEvent.click(free);
     fireEvent.click(await screen.findByText('Добавить'));
 
-    await waitFor(() => expect(attach).toHaveBeenCalledTimes(1));
-    expect(attach.mock.calls[0]![1]).toEqual({
+    await waitFor(() => expect(http.countOf('POST /vehicle-routes/:id/requests')).toBe(1));
+    // `source` не ушёл вовсе — не «пустым»: забирать заявку не у кого.
+    expect(http.lastCall('POST /vehicle-routes/:id/requests')!.body).toEqual({
       requestId: 'r-free',
       version: 3,
-      source: undefined,
     });
   });
 });
