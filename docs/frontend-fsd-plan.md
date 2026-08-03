@@ -1,41 +1,50 @@
 # План рефакторинга фронтенда: FSD, переиспользование, запросы
 
-Статус: согласован по ключевым решениям 31.07.2026 (журнал — §10), к исполнению. Затрагивает только
-`apps/web`; контракты (`packages/contracts`) и API не меняются.
+Статус: согласован по ключевым решениям 31.07.2026, доработан по замечаниям ревью того же дня
+(журнал — §10). Затрагивает только `apps/web`; контракты (`packages/contracts`) и API не меняются.
 
 ## 1. Диагноз: что именно болит
 
-Метрики сняты по `apps/web/src` (83 файла, 17 694 строки).
+Метрики сняты по `apps/web/src` 31.07.2026 (88 файлов, 19 116 строк; тесты — 2 545 строк).
+Цифры быстро устаревают: неделей раньше было 83 файла и 17 694 строки, поэтому перед стартом
+этап 0 снимает их заново (§7.2).
 
-| Симптом                                       | Цифры                                                                                                                                                                                                                                                                                  |
-| --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Файлы-«монолиты»                              | 5 крупнейших — 5 070 строк (29 % кода): `WasteRequestsPage` 1576, `VehicleRequestsTab` 1281, `WasteTariffsTab` 871, `VehiclesTab` 774, `UsersTab` 768                                                                                                                                  |
-| Слои не разделены                             | `pages/` содержит формы, мутации, колонки, модалки, бизнес-правила; `components/` — вперемешку ui-kit и доменные блоки                                                                                                                                                                 |
-| Дублирование описания фильтров                | в каждом списке фильтры пишутся дважды: панель десктопа и `mobileFilters` (напр. [WasteRequestsPage.tsx:996-1124](../apps/web/src/pages/WasteRequestsPage.tsx#L996-L1124))                                                                                                             |
-| Копипаста справочных запросов                 | 22 запроса вида `pageSize: 500` в 12 файлах, одни и те же данные под разными ключами                                                                                                                                                                                                   |
-| Магические константы в нескольких копиях      | `FILE_MAX_SIZE`/`FILE_MAX_COUNT` — в трёх файлах ([WasteRequestsPage.tsx:88](../apps/web/src/pages/WasteRequestsPage.tsx#L88), [vehicle/shared.tsx:34](../apps/web/src/pages/vehicle/shared.tsx#L34), [WasteDoneModal.tsx:20](../apps/web/src/pages/waste/WasteDoneModal.tsx#L20))     |
-| Инлайн-стили вместо токенов                   | 280 вхождений `style={{`, 499 строк `styles.css` без переменных (кроме `:root` с парой значений)                                                                                                                                                                                       |
-| Глобальные mutable-переменные                 | `accessToken` ([client.ts:6](../apps/web/src/api/client.ts#L6)), `refreshing` ([client.ts:27](../apps/web/src/api/client.ts#L27)), `bootstrapPromise` ([AuthContext.tsx:28](../apps/web/src/auth/AuthContext.tsx#L28)), `queryClient` в `main.tsx`, side-effect-настройка dayjs там же |
-| Ключи запросов — строковые литералы           | `queryKey` встречается в 24 файлах; реестра нет, инвалидация идёт «по корню»                                                                                                                                                                                                           |
-| Нет code splitting                            | `App.tsx` статически импортирует все страницы; `DirectoriesPage` — 9 тяжёлых вкладок сразу                                                                                                                                                                                             |
-| Импорты вручную по относительным путям        | до `../../` трёх уровней, алиасов нет                                                                                                                                                                                                                                                  |
-| ESLint не проверяет ни хуки, ни границы слоёв | в `eslint.config.mjs` нет `eslint-plugin-react-hooks`, нет `import/no-restricted-paths`                                                                                                                                                                                                |
-| Сценарных тестов нет                          | 2 298 строк тестов на 17 694 строки кода, и это тесты компонентов: потоки «создать заявку», «сменить статус», «назначить оператора» не покрыты                                                                                                                                         |
+| Симптом                                       | Цифры                                                                                                                                                                                                                   |
+| --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Файлы-«монолиты»                              | 5 крупнейших — 5 560 строк (29 % кода): `WasteRequestsPage` 1588, `VehicleRequestsTab` 1364, `UsersTab` 921, `WasteTariffsTab` 871, `VehiclesTab` 816                                                                   |
+| Слои не разделены                             | `pages/` содержит формы, мутации, колонки, модалки, бизнес-правила; `components/` — вперемешку ui-kit и доменные блоки                                                                                                  |
+| Дублирование описания фильтров                | в каждом списке фильтры пишутся дважды: панель десктопа и `mobileFilters` (напр. [WasteRequestsPage.tsx](../apps/web/src/pages/WasteRequestsPage.tsx))                                                                  |
+| Копипаста справочных запросов                 | 22 запроса вида `pageSize: 500` в 12 файлах, часть — под разными ключами при одинаковом запросе                                                                                                                         |
+| Магические константы в нескольких копиях      | `FILE_MAX_SIZE`/`FILE_MAX_COUNT` — в трёх файлах (`WasteRequestsPage`, `vehicle/shared`, `WasteDoneModal`)                                                                                                              |
+| Инлайн-стили вместо токенов                   | ~280 вхождений `style={{`, ~500 строк `styles.css` без переменных                                                                                                                                                       |
+| Глобальные mutable-переменные                 | `accessToken` и `refreshing` ([client.ts](../apps/web/src/api/client.ts)), `bootstrapPromise` ([AuthContext.tsx](../apps/web/src/auth/AuthContext.tsx)), `queryClient` в `main.tsx`, side-effect-настройка dayjs там же |
+| Ключи запросов — строковые литералы           | `queryKey` встречается в 24 файлах; реестра нет, инвалидация идёт «по корню»                                                                                                                                            |
+| Нет code splitting                            | `App.tsx` статически импортирует все страницы; `DirectoriesPage` — все вкладки сразу                                                                                                                                    |
+| Импорты вручную по относительным путям        | до `../../` трёх уровней, алиасов нет                                                                                                                                                                                   |
+| ESLint не проверяет ни хуки, ни границы слоёв | в `eslint.config.mjs` нет `eslint-plugin-react-hooks`, нет правил границ                                                                                                                                                |
+| Сценарных тестов нет                          | 2 545 строк тестов — это тесты компонентов; потоки «создать заявку», «сменить статус», «назначить оператора» не покрыты, а **семь** файлов мокают `api/resources` целиком                                               |
 
-Два дефекта, найденные попутно (чинятся в этапе 5, но их стоит знать сразу):
+Три дефекта, найденные попутно:
 
-1. **`StatusCell` объявлен внутри компонента** ([WasteRequestsPage.tsx:737](../apps/web/src/pages/WasteRequestsPage.tsx#L737)).
-   На каждый рендер `RequestsTab` это новый тип компонента → React размонтирует и монтирует
-   поддерево заново; открытый `ActionSheet` статуса на телефоне теряет своё состояние. Именно это
-   ловит `eslint-plugin-react-hooks`, которого в конфиге нет.
-2. **Поиск по номеру заявки шлёт запрос на каждое нажатие клавиши**
-   ([WasteRequestsPage.tsx:1047-1053](../apps/web/src/pages/WasteRequestsPage.tsx#L1047-L1053)): `applyNumFilter`
-   меняет `params` → меняется `queryKey` → уходит новый запрос. «М-128» — четыре запроса к списку.
+1. **`StatusCell` объявлен внутри компонента** ([WasteRequestsPage.tsx](../apps/web/src/pages/WasteRequestsPage.tsx)).
+   На каждый рендер это новый тип компонента → React размонтирует и монтирует поддерево заново;
+   открытый `ActionSheet` статуса на телефоне теряет состояние. Ловится правилом
+   `react/no-unstable-nested-components` (`eslint-plugin-react`); `eslint-plugin-react-hooks` такие
+   вложения не ловит — там законно объявленный компонент. Чинится в этапе 0 вместе с включением
+   правила.
+2. **Поиск по номеру заявки шлёт запрос на каждое нажатие клавиши**: `applyNumFilter` меняет
+   `params` → меняется `queryKey` → уходит новый запрос. «М-128» — четыре запроса. Чинится в этапе 5.
+3. **Кэш запросов переживает смену пользователя.** `logout` ([AuthContext.tsx](../apps/web/src/auth/AuthContext.tsx))
+   не трогает `QueryClient`; ключи не содержат идентификатора учётки. После выхода и входа другим
+   пользователем на общем рабочем месте свежий экран может показать данные предыдущего — и профили
+   `staleTime` из §5.1 этот риск увеличивают. Утечка закрывается **в этапе 0**: `clear()` при
+   logout, истечении сессии и входе под другой учёткой — с отдельным `lastAuthenticatedUserId`,
+   потому что обработчик истечения обнуляет `user` и сравнивать было бы не с чем. Вынос в
+   `shared/api/session` — этап 1, §4.1, **до** введения профилей.
 
 Что уже сделано правильно и остаётся как есть: `DataTable` с карточным режимом, `PageTableLayout`,
-`useListParams`, `listControls` (декларация фильтров), `FormGrid`, `useObjectScope`,
-`useVehicleClassifications`, лейблы и цвета статусов в `packages/contracts`. Рефакторинг это не
-переписывает — он доводит начатое до правила.
+`useListParams`, `listControls`, `FormGrid`, `useObjectScope`, `useVehicleClassifications`, лейблы и
+цвета статусов в `packages/contracts`. Рефакторинг это не переписывает — он доводит начатое до правила.
 
 ## 2. Целевая архитектура (FSD)
 
@@ -47,164 +56,241 @@ src/
   pages/      композиция экрана: вкладки + виджеты, без бизнес-логики
   widgets/    самостоятельные блоки: список заявок, шапка/навигация, карточка заявки
   features/   пользовательские сценарии: создать заявку, сменить статус, назначить оператора, завизировать
-  entities/   бизнес-сущности: api + queryOptions + доменный ui (тег статуса, ячейки, опции справочников)
-  shared/     ui-kit, lib (хуки/утилиты), api (http-клиент, ключи), config (константы)
+  entities/   бизнес-сущности: api + ключи + queryOptions + доменный ui (тег статуса, ячейки, опции справочников)
+  shared/     ui-kit, lib (хуки/утилиты), api (http-клиент, сессия, generic-фабрики), config (константы)
 ```
 
-`processes/` не заводим: сквозных многошаговых сценариев поверх страниц в портале нет, слой был бы
-пустым.
+`processes/` не заводим: сквозных многошаговых сценариев поверх страниц в портале нет.
 
 ### 2.1 Карта переездов
 
 | Сейчас                                                                                                                                                                                                                          | Куда                                                                                                                                  |
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
 | `components/DataTable, FormModal, ViewModal, ActionSheet, FilterSheet, SortSheet, ListToolbar, PageTableLayout, PageTabs, SummaryBar, Fab, AutoSelect, TimeInput, PasswordField, CaptchaField, FormGrid, columns, listControls` | `shared/ui/*`                                                                                                                         |
+| `components/PersonNameFields, AddressAutoComplete`                                                                                                                                                                              | `shared/ui/*` (общие поля формы; `AddressAutoComplete` использует `entities`-независимый api DaData)                                  |
 | `hooks/useIsMobile, useElementSize, useListParams, useSoleOptionAutoSelect, useVersionCheck`                                                                                                                                    | `shared/lib/*`                                                                                                                        |
 | `utils/format, date, table, formErrors, selectOptions, avatar`                                                                                                                                                                  | `shared/lib/*`                                                                                                                        |
 | `api/client.ts`                                                                                                                                                                                                                 | `shared/api/http.ts` + `shared/api/session.ts`                                                                                        |
-| — (новое)                                                                                                                                                                                                                       | `shared/api/queryKeys.ts`, `shared/config/{files,pagination,time,query}.ts`                                                           |
-| `api/resources.ts` (487 строк, 20 объектов)                                                                                                                                                                                     | `entities/<сущность>/api/*.ts` — по сущности на слайс                                                                                 |
-| `components/FileLinks, RequestHistory, UserAvatar, PersonNameFields, ResponsibleFields, AddressAutoComplete`                                                                                                                    | `entities/file`, `entities/request`, `entities/user`, `shared/ui` (адрес и ФИО — общие поля формы)                                    |
-| `pages/vehicle/shared.tsx` (`StatusCell`, `ApprovalCell`, `useObjectOptions`, `useFileEditor`)                                                                                                                                  | разбирается: ячейки → `entities/vehicle-request/ui`, опции объектов → `entities/object/api`, редактор файлов → `features/file-attach` |
-| формы и модалки из страниц (`WasteDoneModal`, `VehicleAssignModal`, `VehicleCompleteModal`, `CancelReasonModal`, редакторы заявок)                                                                                              | `features/<сценарий>/ui`                                                                                                              |
-| списки с фильтрами и колонками (`RequestsTab`, `VehicleRequestsTab`, `*HistoryTab`, `OnSiteTab`, вкладки справочников)                                                                                                          | `widgets/<список>`                                                                                                                    |
+| `api/dadata.ts`                                                                                                                                                                                                                 | `shared/api/dadata.ts` (внешний сервис, не сущность портала)                                                                          |
+| `api/auth.ts`                                                                                                                                                                                                                   | `entities/session/api` (логин, `me`, смена пароля) — потребитель `shared/api/session`                                                 |
+| — (новое)                                                                                                                                                                                                                       | `shared/api/createQueryKeys.ts` (generic-фабрика), `shared/config/{files,pagination,time,query}.ts`                                   |
+| `api/resources.ts`                                                                                                                                                                                                              | `entities/<сущность>/api/*.ts` — по сущности на слайс, **ключи там же** (`entities/<e>/api/keys.ts`)                                  |
+| `components/FileLinks`                                                                                                                                                                                                          | `entities/file/ui`                                                                                                                    |
+| `components/RequestHistory`                                                                                                                                                                                                     | `entities/request/ui`                                                                                                                 |
+| `components/UserAvatar`, `components/ResponsibleFields`                                                                                                                                                                         | `entities/user/ui`, `entities/request/ui`                                                                                             |
+| `components/WasteVehiclesEditor`                                                                                                                                                                                                | `features/waste-request-complete/ui`                                                                                                  |
+| `components/AppLayout, MobileAppBar, MobileNav, PortalLogo, AppUpdateBanner`                                                                                                                                                    | `widgets/app-layout/*` (навигация зависит от прав — это виджет, не ui-kit)                                                            |
+| `hooks/useObjectScope`, будущий scope-хук отделов                                                                                                                                                                               | `entities/user/model` (область учётки — свойство пользователя)                                                                        |
+| `hooks/useVehicleClassifications`                                                                                                                                                                                               | `entities/vehicle-type/model`                                                                                                         |
+| `pages/vehicle/shared.tsx`                                                                                                                                                                                                      | разбирается: ячейки → `entities/vehicle-request/ui`, опции объектов → `entities/object/api`, редактор файлов → `features/file-attach` |
+| формы и модалки из страниц (`WasteDoneModal`, `VehicleAssignModal`, `VehicleCompleteModal`, `CancelReasonModal`, редакторы заявок, печать бланка)                                                                               | `features/<сценарий>/ui`                                                                                                              |
+| списки с фильтрами и колонками (`RequestsTab`, `VehicleRequestsTab`, `*HistoryTab`, `OnSiteTab`, `FreightTransportRequestsTab`, вкладки справочников)                                                                           | `widgets/<список>`                                                                                                                    |
 | `pages/*Page.tsx`                                                                                                                                                                                                               | `pages/*` — остаются, худеют до вкладок и композиции                                                                                  |
 | `auth/AuthContext, ProtectedRoute`, `App.tsx`, `main.tsx`, `theme.ts`, `styles.css`                                                                                                                                             | `app/*` (`AuthContext` — адаптер над `shared/api/session`)                                                                            |
 
-Именование слайсов — по домену, как в контрактах: `waste-request`, `vehicle-request`, `object`,
-`department`, `counterparty`, `container-type`, `waste-type`, `waste-tariff`, `vehicle`,
-`vehicle-type`, `vehicle-spec`, `driver`, `waybill`, `user`, `file`.
+Именование слайсов — по домену, как в контрактах: `session`, `waste-request`, `vehicle-request`,
+`object`, `department`, `counterparty`, `container-type`, `waste-type`, `waste-tariff`, `vehicle`,
+`vehicle-type`, `vehicle-spec`, `driver`, `waybill`, `user`, `file`, `request` (общее для обоих
+видов заявок: статусы, история).
 
-### 2.2 Публичный API слайса
+### 2.2 Что сознательно остаётся в `pages`
 
-У каждого слайса `index.ts`, наружу видно только то, что в нём перечислено. Внутрь слайса (в
-`ui/`, `model/`, `api/`) импортов извне нет — это и есть то, что удержит структуру от расползания
-обратно.
+Цель «`pages` без бизнес-логики» относится к спискам заявок и справочникам. Явные исключения, не
+входящие в объём этапов 1–7:
 
-### 2.3 Как это удерживается технически
+- `LoginPage`, `RegisterPage`, `ChangePasswordPage` — формы аутентификации; их логика переезжает
+  в `features/auth-*` только если понадобится переиспользование. Пока живут страницами.
+- `WaybillsPage` — аннулирование листа остаётся на странице; журнал путевых листов маленький
+  (~230 строк) и одностраничный.
 
-1. **Алиасы**: `@app`, `@pages`, `@widgets`, `@features`, `@entities`, `@shared` — в `tsconfig.json`
-   (`paths`), `vite.config.ts` (`resolve.alias`) и `vitest.config.ts`. Заодно исчезают `../../`.
-2. **ESLint**: `import/no-restricted-paths` (или `eslint-plugin-boundaries`) — запрет импорта вверх
-   и вбок; плюс `eslint-plugin-react-hooks` (сейчас его нет вовсе) и `max-lines: [warn, 400]` для
-   `apps/web/src`.
-3. **Правило коммита**: перемещение файла и изменение его содержимого — разные коммиты. Иначе
-   ревью превращается в чтение diff'а на 1500 строк, а конфликт с параллельной работой на `main`
-   разводится вслепую.
+Если по ходу окажется, что исключение мешает (например, аннулирование понадобится из карточки
+заявки), оно переезжает отдельным коммитом — но это не блокирует приёмку этапов.
+
+### 2.3 Публичный API слайса
+
+У каждого слайса `index.ts`; наружу видно только перечисленное в нём. Deep import внутрь чужого
+слайса (`@entities/object/api/internal`) запрещён.
+
+### 2.4 Как это удерживается технически
+
+1. **Алиасы**: `@app`, `@pages`, `@widgets`, `@features`, `@entities`, `@shared` — объявляются один
+   раз в `tsconfig.json` (`paths`); Vite и Vitest читают их через `resolve.tsconfigPaths` (Vite 8),
+   поэтому копий, которые могли бы разойтись, нет.
+2. **Линт границ — `eslint-plugin-boundaries`** (выбран вместо `import/no-restricted-paths`:
+   последний контролирует направление, но не запрещает deep import внутрь слайса). Настраиваем
+   правилом `boundaries/dependencies` версии 7.x (`element-types` и `entry-point` из документации
+   6.x устарели); версия плагина закрепляется точно. В этапе 0 правила проверяются четырьмя фикстурами в `apps/web/test/fixtures/boundaries`:
+   - импорт через `index.ts` соседнего нижнего слоя — **разрешён**;
+   - импорт вверх (`entities` → `features`) — **ошибка**;
+   - импорт соседнего слайса того же слоя — **ошибка**;
+   - deep import внутрь чужого слайса — **ошибка**.
+     Фикстуры лежат вне `src/`, поэтому у них собственный конфиг с собственным
+     `boundaries/elements` — иначе production-конфиг их не классифицирует и правило вернёт ноль
+     сообщений. Прогон — через Node API ESLint (`overrideConfigFile`), проверка по конкретному
+     `ruleId`. Для разрешения алиасов нужен `eslint-import-resolver-typescript`. Правило, которое не
+     проверено фикстурой, через месяц окажется выключенным и никто не заметит.
+3. **`eslint-plugin-react-hooks`** (правила хуков; сейчас его нет вовсе) и **`eslint-plugin-react`**
+   ради `react/no-unstable-nested-components` — оно ловит компоненты, объявленные внутри компонентов
+   (дефект §1.1). Плюс `max-lines: [warn, 400]` для `apps/web/src`.
+4. **Правило коммита**: перемещение файла и изменение его содержимого — разные коммиты.
 
 ## 3. Переиспользование: какие абстракции вводим
 
 Каждая — ответ на конкретную копипасту, а не «на будущее».
 
-### 3.1 `createCrudApi` — фабрика ресурса
+### 3.1 Capability-фабрики вместо одной CRUD-фабрики
+
+Единая `createCrudApi` не годится: наборы операций у ресурсов разные, а типы ответов расходятся —
+`objectsApi.remove` и `departmentsApi.remove` возвращают DTO, у `containerTypesApi` удаления нет
+вовсе (деактивация через `update`), у `vehicleSpecsApi` нет ни `get`, ни `remove`. Фабрика «всё
+сразу» либо создала бы несуществующие ручки, либо спрятала различия контрактов.
+
+Поэтому — маленькие композируемые фабрики, каждая добавляет ровно то, что у ресурса есть:
 
 ```ts
-// shared/api/createCrudApi.ts
-export function createCrudApi<Dto, CreateInput, UpdateInput>(path: string) {
-  return {
-    list: (q: Query) => apiFetch<ListResult<Dto>>(path, { query: q }),
-    get: (id: string) => apiFetch<Dto>(`${path}/${id}`),
-    create: (body: CreateInput) => apiFetch<Dto>(path, { method: 'POST', body }),
-    update: (id: string, body: UpdateInput) =>
-      apiFetch<Dto>(`${path}/${id}`, { method: 'PATCH', body }),
-    remove: (id: string) => apiFetch<{ ok: boolean }>(`${path}/${id}`, { method: 'DELETE' }),
-  };
-}
+// shared/api/resource.ts
+export const createListApi = <Dto>(path: string) => ({
+  list: (q: Query) => apiFetch<ListResult<Dto>>(path, { query: q }),
+});
+export const createGetApi = <Dto>(path: string) => ({
+  get: (id: string) => apiFetch<Dto>(`${path}/${id}`),
+});
+export const createWriteApi = <Dto, C, U>(path: string) => ({
+  create: (body: C) => apiFetch<Dto>(path, { method: 'POST', body }),
+  update: (id: string, body: U) => apiFetch<Dto>(`${path}/${id}`, { method: 'PATCH', body }),
+});
+
+// entities/object/api/objectsApi.ts — удаление возвращает DTO, поэтому пишется явно
+export const objectsApi = {
+  ...createListApi<ObjectDto>('/objects'),
+  ...createWriteApi<ObjectDto, CreateObjectInput, UpdateObjectInput>('/objects'),
+  remove: (id: string) => apiFetch<ObjectDto>(`/objects/${id}`, { method: 'DELETE' }),
+};
+
+// entities/container-type/api — удаления нет: деактивация через update({ isActive: false })
+export const containerTypesApi = {
+  ...createListApi<ContainerTypeDto>('/container-types'),
+  ...createWriteApi<ContainerTypeDto, CreateContainerTypeInput, UpdateContainerTypeInput>(
+    '/container-types',
+  ),
+};
 ```
 
-`objectsApi`, `departmentsApi`, `counterpartiesApi`, `containerTypesApi`, `vehicleSpecsApi`,
-`vehicleCategoriesApi`, `vehiclesApi` сводятся к одной строке плюс нестандартные ручки
-(`restore`, `resolve`, `summary`, `waybillPrefill` и т. п.) — они остаются явными, с комментариями,
-как сейчас.
+Нестандартные ручки (`restore`, `resolve`, `summary`, `waybillPrefill`, `available`, `changeStatus`)
+остаются явными, с их нынешними комментариями. Правило: **фабрика описывает то, что у ресурса
+есть, а не то, что у ресурса бывает.**
 
-### 3.2 `queryOptions` на сущность — конец копипасте справочников
+### 3.2 `queryOptions` на запрос, а не на сущность
 
-TanStack Query v5 даёт типизированный `queryOptions()`; кладём его в `entities/*/api/queries.ts`:
+Ключ описывает **конкретный запрос**, а не сущность: варианты справочников осознанные и
+задокументированы в коде — форма контрагентов грузит объекты вместе с неактивными («привязка без
+наименования выглядела бы как чужой идентификатор»), журнал заявок грузит всех арендодателей
+(«журнал читают и про тех, с кем уже не работают»). Слить их в один ключ значит сломать поведение.
 
 ```ts
+// entities/object/api/keys.ts
+export const objectKeys = createQueryKeys('objects', {
+  options: (p: { activeOnly: boolean }) => ['options', p],
+  list: (p: ListParams) => ['list', p],
+});
+
 // entities/object/api/queries.ts
-export const objectOptionsQuery = () =>
+export const objectOptionsQuery = ({ activeOnly = true } = {}) =>
   queryOptions({
-    queryKey: queryKeys.objects.options(),
-    queryFn: () => objectsApi.list(DICTIONARY_QUERY), // page 1, pageSize 500, isActive, sort
+    queryKey: objectKeys.options({ activeOnly }),
+    queryFn: () =>
+      objectsApi.list({ ...DICTIONARY_QUERY, ...(activeOnly ? { isActive: 'true' } : {}) }),
     select: (r) => r.items.map((o) => ({ value: o.id, label: `${o.code} — ${o.name}` })),
-    staleTime: STALE.DICTIONARY, // 10 минут
+    staleTime: STALE.DICTIONARY,
   });
 ```
 
-Вызов: `useQuery(objectOptionsQuery())`. Один ключ на всё приложение вместо
-`['objects','for-select']` / `['objects','for-counterparties']` / `['objects','for-select']` в
-`UsersTab`. То же для операторов вывоза, арендодателей ТС, типов контейнеров, типов мусора,
-классификатора ТС, руководителей отделов — все 22 места.
+Правило: **один ключ на идентичный запрос.** Известные варианты, которые нужно сохранить при
+переносе слайсов (список уточняется при переносе каждого):
 
-### 3.3 Единое описание фильтров (главный источник дублей)
+| Справочник       | Варианты                                                                       |
+| ---------------- | ------------------------------------------------------------------------------ |
+| Объекты          | только активные (формы и фильтры заявок) · все (форма контрагентов)            |
+| Контрагенты      | операторы активные · арендодатели активные (формы) · арендодатели все (журнал) |
+| Типы мусора      | только с действующим тарифом (форма заявки) · все (справочник)                 |
+| Типы контейнеров | активные `cont` (форма установки) · активные все (фильтр списка)               |
 
-Сейчас каждый список описывает фильтры дважды. Вводим одну декларацию `FilterSpec[]` (расширение
-существующего `listControls`) и два рендерера:
+Выигрыш остаётся тот же: сегодня одни и те же запросы живут под разными ключами и грузятся заново
+при каждом переходе между разделами; после переноса совпадающие запросы делят кэш, а различающиеся
+остаются различными явно.
 
-- `FilterBar` — панель десктопа (то, что сейчас пишется руками в JSX);
-- `FilterSheet` — шит на телефоне (уже есть, кормится тем же массивом).
+### 3.3 Единое описание фильтров
 
-Страница описывает фильтры один раз; счётчик активных фильтров, сброс и порядок в обоих режимах
-совпадают по построению, а не по внимательности автора. Минус ~130 строк на каждом из пяти списков.
+Одна декларация `FilterSpec[]` (расширение существующего `listControls`) и два рендерера: `FilterBar`
+для десктопа и уже существующий `FilterSheet` для телефона. Страница описывает фильтры один раз;
+счётчик активных фильтров, сброс и порядок совпадают по построению. Минус ~130 строк на каждом из
+пяти списков.
 
 ### 3.4 `useResourceList` — список как один хук
 
-Объединяет `useListParams` + `useQuery` + `placeholderData: keepPreviousData` + производные
-(`items`, `total`, `isFetching`):
-
-```ts
-const list = useResourceList({
-  key: queryKeys.wasteRequests.list,
-  fetch: wasteRequestsApi.list,
-  initialFilters: { objectId: ownObjectId || undefined },
-  searchKeys: ['comment'],
-  debounceKeys: ['num'], // §5.5
-});
-```
+`useListParams` + `useQuery` + `placeholderData: keepPreviousData` + дебаунс указанных фильтров +
+производные (`items`, `total`, `isFetching`).
 
 ### 3.5 `useCrudMutations` — единый обработчик сохранения
 
-`onSuccess: message + инвалидация`, `onError: applyApiFieldErrors + message` повторяются в ~20
-мутациях слово в слово. Один хук с параметрами `{ messages, invalidate, fieldMap }`.
+`onSuccess: message + инвалидация по матрице §5.4`, `onError: applyApiFieldErrors + message` —
+сейчас повторяется в ~20 мутациях слово в слово.
 
 ### 3.6 Общие доменные ячейки
 
-- `entities/request/ui/StatusCell` — один компонент для обоих модулей: сейчас это два независимых
-  дубля ([waste](../apps/web/src/pages/WasteRequestsPage.tsx#L737), [vehicle](../apps/web/src/pages/vehicle/shared.tsx#L215)),
-  отличающиеся только функцией доступных переходов. Она и становится параметром.
+- `entities/request/ui/StatusCell` — один компонент для обоих модулей вместо двух дублей;
+  функция доступных переходов становится параметром.
 - `shared/ui/ResponsiveMenu` — приём «на десктопе `Dropdown`, на телефоне `ActionSheet`»
-  продублирован минимум трижды; выносится в один компонент.
-- `features/file-attach` — `useFileEditor` + `FileEditor` уже существуют в `vehicle/shared`, но
-  вывоз мусора несёт свою копию на 60 строк. Остаётся одна реализация.
+  продублирован минимум трижды.
+- `features/file-attach` — `useFileEditor` + `FileEditor` уже есть в `vehicle/shared`, вывоз мусора
+  несёт свою копию на 60 строк.
 
 ### 3.7 Справочные вкладки: общие хуки, без шаблона
 
-`ObjectsTab`, `DepartmentsTab`, `ContainerTypesTab`, `CounterpartiesTab`, `VehicleSpecsTab`
-устроены одинаково (список + модалка формы + create/update/toggle), и напрашивается шаблон
-`DirectoryTab` с конфигурацией. **Решено его не вводить**: конфигурация такого шаблона довольно
-быстро становится длиннее и непрозрачнее исходного кода, а любая нетипичная вкладка (`WasteTariffsTab`,
-`VehiclesTab`) всё равно живёт мимо него. Вкладки остаются самостоятельными файлами и читаются
-сверху вниз; повторы снимают `useResourceList` (§3.4) и `useCrudMutations` (§3.5). Ожидаемый размер
-после этого — 150–250 строк вместо 200–350.
+Шаблон `DirectoryTab` с конфигурацией **решено не вводить**: его конфигурация быстро становится
+длиннее исходного кода, а нетипичные вкладки (`WasteTariffsTab`, `VehiclesTab`) всё равно живут
+мимо. Вкладки остаются самостоятельными файлами; повторы снимают `useResourceList` и
+`useCrudMutations`. Ожидаемый размер — 150–250 строк вместо 200–350.
 
 ## 4. Глобальные переменные и состояние
 
-| Что сейчас                                                    | Что делаем                                                                                                                                              |
-| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `let accessToken` + `let refreshing` в модуле `api/client.ts` | `shared/api/session.ts` — замкнутый стор: `getToken/setToken/subscribe/clearSession`; наружу переменная не торчит, `http.ts` спрашивает её функцией     |
-| `let bootstrapPromise` в `AuthContext`                        | переезжает туда же (`session.bootstrap()`): один вход в сессию на вкладку, `AuthContext` становится тонким адаптером на React                           |
-| Разлогин при неудачном refresh                                | подписка `session.onExpired` → `queryClient.clear()` + переход на `/login`; сейчас об этом узнаёт только тот компонент, чей запрос упал                 |
-| `queryClient` создаётся в `main.tsx`                          | `app/providers/query.tsx` — вместе с профилями `staleTime` (§5.1); сам объект остаётся единственным, но его конфиг перестаёт быть строкой в точке входа |
-| `dayjs.extend/locale/tz` побочным эффектом в `main.tsx`       | `shared/lib/dayjs.ts` — один импорт в `app`, тестам доступен тот же модуль                                                                              |
-| `MOSCOW_TZ` живёт в `theme.ts`                                | `shared/config/time.ts` (тема — не место для часового пояса; сейчас его импортируют страницы)                                                           |
-| `FILE_MAX_SIZE`, `FILE_MAX_COUNT` в трёх файлах               | `shared/config/files.ts`                                                                                                                                |
-| Размеры страниц (`100/200/500`, мобильные 50) в двух местах   | `shared/config/pagination.ts` — согласовано с `PAGE_SIZES` контрактов                                                                                   |
-| `queryKey` строками в 24 файлах                               | `shared/api/queryKeys.ts` — иерархический реестр: `queryKeys.wasteRequests.all() / .lists() / .list(params) / .summary(f) / .detail(id)`                |
-| 280 инлайн-`style`                                            | токены в `:root` + классы для повторяющихся раскладок; единичные инлайн-стили не трогаем (§6)                                                           |
+| Что сейчас                                                    | Что делаем                                                                                                                             |
+| ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `let accessToken` + `let refreshing` в модуле `api/client.ts` | `shared/api/session.ts` — замкнутый стор: `getToken/setToken/subscribe/clear`; наружу переменная не торчит                             |
+| `let bootstrapPromise` в `AuthContext`                        | туда же (`session.bootstrap()`); `AuthContext` — тонкий адаптер на React                                                               |
+| `queryClient` создаётся в `main.tsx`                          | `app/providers/query.tsx` вместе с профилями `staleTime` (§5.1)                                                                        |
+| `dayjs.extend/locale/tz` побочным эффектом в `main.tsx`       | `shared/lib/dayjs.ts` — один импорт в `app`                                                                                            |
+| `MOSCOW_TZ` живёт в `theme.ts`                                | `shared/config/time.ts`                                                                                                                |
+| `FILE_MAX_SIZE`, `FILE_MAX_COUNT` в трёх файлах               | `shared/config/files.ts`                                                                                                               |
+| Размеры страниц (`100/200/500`, мобильные 50) в двух местах   | `shared/config/pagination.ts` — согласовано с `PAGE_SIZES` контрактов                                                                  |
+| `queryKey` строками в 24 файлах                               | ключи живут в `entities/<e>/api/keys.ts`; в `shared/api` — только generic-фабрика `createQueryKeys` (§2.1: `shared` не знает о доменe) |
+| ~280 инлайн-`style`                                           | токены в `:root` + классы для повторов; единичные инлайн-стили не трогаем (§6)                                                         |
 
 Отдельный стор состояния (Zustand/Redux) не вводим: серверные данные держит TanStack Query, доступ —
-`AuthContext`, режим устройства — `useIsMobile`. Третий источник истины ради трёх значений не нужен.
+`AuthContext`, режим устройства — `useIsMobile`.
+
+### 4.1 Кэш и сессия (очистка — этап 0, вынос в `session` — этап 1; и то и другое до профилей `staleTime`)
+
+Сейчас `logout` не очищает `QueryClient`, а ключи не содержат идентификатора учётки — на общем
+рабочем месте после смены пользователя экран может показать данные предыдущего. Профили с
+`staleTime` до часа этот риск усиливают, поэтому очистка вводится **раньше** профилей.
+
+Правило: кэш очищается при любом разрыве или смене сессии.
+
+| Событие                                      | Действие                                                                  |
+| -------------------------------------------- | ------------------------------------------------------------------------- |
+| `logout`                                     | `session.clear()` → `queryClient.clear()`                                 |
+| Неудачный refresh (истёк / отозван)          | `session.onExpired` → `queryClient.clear()` + переход на `/login`         |
+| `login` под другой учёткой                   | сравнение с `lastAuthenticatedUserId`; отличается → `queryClient.clear()` |
+| `refreshUser` / bootstrap вернул другой `id` | то же                                                                     |
+
+Сравнивается **не текущий `user`**, а отдельно хранимый `lastAuthenticatedUserId`: обработчик
+истечения сессии обнуляет `user`, и вход следующего пользователя сравнивался бы с `null` — кэш
+предыдущего остался бы жив. Реализация — подпиской в `app/providers/query.tsx` на события
+`shared/api/session`, чтобы `session` не зависел от TanStack Query.
+
+Тесты этапа 0 (обязательны, пишутся до переезда), оба — с настоящим `AuthProvider`:
+A → `logout` → B и A → истечение сессии → B. Во втором случае данные A не должны пережить вход B.
 
 ## 5. Оптимизация запросов
 
@@ -212,157 +298,297 @@ const list = useResourceList({
 
 `shared/config/query.ts`:
 
-| Профиль      | `staleTime` | `refetchOnWindowFocus` | Кому                                                                               |
-| ------------ | ----------- | ---------------------- | ---------------------------------------------------------------------------------- |
-| `LIVE`       | 10 с        | **да**                 | списки заявок, сводки, «на объекте»                                                |
-| `DICTIONARY` | 10 мин      | нет                    | справочники (объекты, контрагенты, типы, классификатор) — их правят руками и редко |
-| `STATIC`     | 1 ч         | нет                    | категории ВУ, виды ТС, `pending-count`                                             |
+| Профиль      | `staleTime` | `refetchOnWindowFocus`       | Кому                                                    |
+| ------------ | ----------- | ---------------------------- | ------------------------------------------------------- |
+| `LIVE`       | 10 с        | да                           | списки заявок, сводки, «на объекте»                     |
+| `SIGNAL`     | 60 с        | да + `refetchInterval` 5 мин | `users/pending-count`                                   |
+| `DICTIONARY` | 10 мин      | нет                          | справочники (объекты, контрагенты, типы, классификатор) |
+| `STATIC`     | 1 ч         | нет                          | категории ВУ, виды ТС — наполняются миграцией           |
 
-`refetchOnWindowFocus` возвращается **только профилю `LIVE`**, не в `defaultOptions`: диспетчер
-держит вкладку открытой часами и сейчас видит вчерашние заявки, пока не нажмёт обновление. Глобально
-включать нельзя — справочники по 500 записей перезапрашивались бы при каждом возврате на вкладку.
+`refetchOnWindowFocus` возвращается **только** профилям `LIVE` и `SIGNAL`, не в `defaultOptions`:
+глобально включённый, он перезапрашивал бы справочники по 500 записей при каждом возврате на вкладку.
+
+Профиль `SIGNAL` заведён отдельно для `pending-count`: заявка на регистрацию приходит из **чужой**
+сессии, локальной мутацией не инвалидируется, а бейдж в меню — единственный сигнал администратору
+(почты у портала нет, ADR 0034). `STATIC` для него означал бы, что администратор узнаёт о заявке
+через час или после перезагрузки страницы.
 
 Мутация справочника инвалидирует свой ключ — «редко меняется» не означает «устаревает молча».
 
-### 5.2 Единые ключи → справочник грузится один раз
+### 5.2 Совпадающие запросы делят кэш
 
-Сегодня объекты приезжают под тремя ключами, контрагенты — под четырьмя; при переходе между
-разделами каждый грузится заново по 500 записей. После §3.2 — один ключ и один запрос на 10 минут.
+Сегодня одинаковые запросы живут под разными ключами (объекты — под тремя, контрагенты — под
+четырьмя) и грузятся заново при каждом переходе между разделами. После §3.2 совпадающие делят кэш,
+различающиеся остаются различными явно.
 
-### 5.3 Ленивая загрузка справочников формы
+### 5.3 Ленивая загрузка справочников — с оговорками
 
-Страница «Вывоз мусора» на первом рендере делает **6 запросов**, из которых 4 — справочники для
-формы, которую могут и не открыть ([WasteRequestsPage.tsx:216-294](../apps/web/src/pages/WasteRequestsPage.tsx#L216-L294)).
-Ставим `enabled` по факту нужды: типы контейнеров и типы мусора — при открытой форме, операторы —
-при открытой форме либо доступном фильтре, «присутствующие контейнеры» — только для «замены» и
-«снятия» (сейчас грузятся при любом выборе объекта, включая установку и вывоз).
-Ожидаемо: **6 → 2 запроса** на входе в раздел.
+Первый экран «Вывоза мусора» сейчас делает 6 запросов, но лениво грузить можно не всё: типы
+контейнеров и операторы нужны **фильтрам** первого экрана, а не только форме. Поэтому приём двойной:
 
-### 5.4 Точечная инвалидация вместо корневой
+| Что                                                   | Когда грузим                                                               | Почему так                                                                                                       |
+| ----------------------------------------------------- | -------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| Справочники **формы** (типы мусора, типы контейнеров) | при открытии формы                                                         | автоподстановка единственного варианта (`useSoleOptionAutoSelect`) требует загруженного списка до отрисовки поля |
+| Справочники **фильтров** (операторы, типы)            | при первом раскрытии соответствующего `Select` (`onDropdownVisibleChange`) | до раскрытия список не виден; подпись выбранного значения приходит из самого фильтра                             |
+| «Присутствующие контейнеры» на объекте                | только при типе заявки «замена»/«снятие»                                   | сейчас грузятся при любом выборе объекта, включая установку и вывоз                                              |
 
-`invalidateQueries({ queryKey: ['waste-requests'] })` после каждой мутации перезапрашивает список,
-сводку, «присутствующие» и историю — до 4 запросов на одно действие. С реестром ключей:
-инвалидируем `lists()` и `summary()`, а карточку обновляем `setQueryData` из ответа мутации —
-он уже содержит свежий DTO.
+Ленивость по раскрытию `Select` применима только к фильтрам: в форме она сломала бы
+автоподстановку — это ограничение зафиксировано здесь, чтобы приём не применили «единообразно».
+
+### 5.4 Матрица инвалидаций
+
+Инвалидировать только `lists()` и `summary()` недостаточно: у мутаций заявки шире след — история
+событий, карточка, срезы «на объекте», а перевод заказа техники в работу ещё и выписывает путевой
+лист (ADR 0037). Матрица составляется в этапе 2 и живёт рядом с `useCrudMutations`; черновик:
+
+| Мутация                                     | Инвалидируем                                                                                                                      |
+| ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| Вывоз: create / update / delete / restore   | `wasteRequests.lists`, `.summary`, `.present` (вкладка «На объекте»), `.detail(id)`, `.history(id)`                               |
+| Вывоз: смена статуса, назначение оператора  | то же + `.history(id)`; карточка обновляется `setQueryData` из ответа                                                             |
+| Техника: create / update / delete / restore | `vehicleRequests.lists`, `.summary`, `.historyList`, `.historySummary`, `.onSite`, `.onSiteSummary`, `.detail(id)`, `.events(id)` |
+| Техника: перевод в работу (assignment)      | то же + `waybills.lists` — лист рождается этим переходом                                                                          |
+| Техника: виза / снятие визы                 | `vehicleRequests.lists`, `.summary` (счётчик «Ждут визы»), `.detail(id)`, `.events(id)`                                           |
+| Справочник объектов / контрагентов          | свой ключ + связанные (`counterparties` ↔ `objects` ↔ `vehicles` — как сейчас в `CounterpartiesTab`)                              |
+| Учётки                                      | `users.lists` + `users.pendingCount` (активация и отказ меняют счётчик)                                                           |
+
+Проверка полноты — часть приёмки этапа: для каждой мутации перечисляются экраны, которые её
+результат обязаны показать, и вкладка, посещённая ранее в этой же сессии, не должна остаться со
+старыми данными.
 
 ### 5.5 Дебаунс поиска
 
-Поиск по номеру заявки (`waste`, `vehicle`) — 300 мс в `useResourceList`. Сейчас запрос уходит на
-каждый символ.
+Поиск по номеру заявки — 300 мс в `useResourceList`. Сейчас запрос уходит на каждый символ.
 
 ### 5.6 `keepPreviousData` на списках
 
-Пагинация и смена фильтра сейчас роняют таблицу в скелет. `placeholderData: keepPreviousData` —
-данные остаются на экране, показывается только индикатор загрузки.
+Пагинация и смена фильтра сейчас роняют таблицу в скелет.
 
 ### 5.7 Разделение бандла
 
-`App.tsx` тянет все страницы статически, `DirectoriesPage` — все девять вкладок. Делаем
 `React.lazy` по маршрутам и по тяжёлым вкладкам (`WasteTariffsTab`, `VehiclesTab`,
-`VehicleTypeCardDrawer`, `DriversTab`), `Suspense` с уже существующим скелетом. Оператор вывоза не
-скачивает код справочников техники, которых не видит.
+`VehicleTypeCardDrawer`, `DriversTab`), `Suspense` со скелетом. Оператор вывоза не скачивает код
+справочников техники, которых не видит.
 
 ### 5.8 Чего не делаем
 
-Batch-ручки справочников на API (`GET /dictionaries?for=...`) **не заводим**. После §5.3 форма
+Batch-ручку справочников на API (`GET /dictionaries?for=...`) не заводим: после §5.3 форма
 открывает 2–4 мелких параллельных запроса, по HTTP/2 это дешевле новой ручки, которую пришлось бы
-держать в согласии с шестью справочниками и их правами доступа.
+держать в согласии с шестью справочниками и их правами.
 
 ### 5.9 Рендер
 
-- `StatusCell` вынести из тела компонента (дефект §1.1);
-- `columns` и производные опции — в `useMemo` (сейчас пересобираются на каждый рендер, для таблицы
-  на 100 строк это заметно на телефоне).
+- `StatusCell` уже вынесен из тела компонента в этапе 0 (дефект §1.1);
+- `columns` и производные опции — в `useMemo`.
 
 ## 6. Стили (сужено ради минимального риска)
 
-Автотестов на вёрстку нет, проверка — глазами по [mobile-acceptance.md](mobile-acceptance.md), поэтому
-объём работ по стилям сознательно ограничен:
+Автотестов на вёрстку нет, проверка — глазами по [mobile-acceptance.md](mobile-acceptance.md):
 
-1. Токены в `:root` (`--gap-*`, `--radius-*`, `--text-secondary`, высоты панелей) — те же значения,
-   что сейчас повторяются числами.
-2. Классы для повторяющихся раскладок, которые и так дублируются в разметке (шапка страницы, строка
-   фильтров); `FormGrid` уже такой.
-3. Единичные инлайн-стили (одна строка, одно место) **не трогаем** — выигрыш нулевой, риск
-   визуальной регрессии реальный.
+1. Токены в `:root` (`--gap-*`, `--radius-*`, `--text-secondary`, высоты панелей).
+2. Классы для повторяющихся раскладок (шапка страницы, строка фильтров); `FormGrid` уже такой.
+3. Единичные инлайн-стили **не трогаем**.
 4. `styles.css` разрезается по разделам рядом со своими компонентами; общий файл оставляет сброс,
    токены и мобильный режим.
 
-## 7. Порядок работ и схема ветвления
+## 7. Порядок работ, ветвление и режим сверок
 
-### 7.1 Ветвление: серия коротких веток, а не одна долгая
+### 7.1 Ветвление: серия коротких веток
 
-Одна долгоживущая ветка под весь рефакторинг отвергнута сознательно: переименование почти всех 83
-файлов против активной разработки на `origin/main` (отделы, почтовая интеграция) даёт «удалён здесь —
-изменён там» на каждом файле, конфликты копятся всё время жизни ветки, и опасны не они сами, а тихо
-потерянная чужая правка — файл после мержа компилируется и проходит тесты, а поведение уехало.
+Одна долгоживущая ветка отвергнута по расчёту §11: при темпе разработки на `main` (91 коммит и
++21,5 тыс. строк по `apps/web/src` за неделю, 90 % файлов затронуто за два дня) её накладные
+составляют 50–110 % сверх стоимости самой работы.
 
-Правила работы:
+Правила:
 
-1. **Ветка на этап, 1–2 дня жизни, мерж в `main` сразу.** Расхождение не успевает накопиться.
-   Перед мержем — `git rebase origin/main`, после мержа ветка удаляется.
-2. **От холодного к горячему.** `shared` (ui-kit, утилиты, http) на `main` почти не правят — едет
-   первым. Страницы заявок — самые горячие файлы — последними, когда остальное уже в `main`.
-3. **Re-export-заглушки.** Старый путь остаётся файлом в одну строку
-   (`export * from '@shared/ui/DataTable'`), поэтому переезд не требует одновременной правки всех
-   импортов, а код, написанный на `main` параллельно, продолжает собираться. Заглушки удаляются
-   последним коммитом своего этапа — незакрытых заглушек между этапами не остаётся.
-4. **Переезд и правка — разные коммиты.** Коммит с `git mv` не меняет ни строки содержимого.
+1. **Ветка на этап, 1–2 дня жизни, мерж в `main` сразу**; перед мержем `git rebase origin/main`.
+2. **От холодного к горячему.** Базовые компоненты правятся 1–4 раза в неделю (`DataTable` — 2,
+   `AutoSelect` — 1, `client.ts` — 2) — едут первыми. Страницы заявок — последними.
+3. **Re-export-заглушки**: старый путь остаётся строкой `export * from '@shared/ui/DataTable'`,
+   поэтому параллельный код продолжает собираться. Удаляются последним коммитом своего этапа.
+   Исключение — `api/resources.ts`: после его разреза **новые ручки добавляются в слайс сущности**,
+   иначе правка в заглушке встретится с разрезом конфликтом.
+4. **Переезд и правка — разные коммиты.**
 5. После каждого коммита — зелёные `pnpm typecheck`, `pnpm --filter @technic/web test`, `pnpm lint`.
 
-### 7.2 Этапы
+### 7.2 Режим сверок: окна по 20–30 минут
 
-| Этап | Содержание                                                                                                                                                                                                                                                                                                                                      | Оценка  |
-| ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
-| 0    | Закоммитить текущую работу (отделы, ADR 0039). **Сценарные тесты-сеть безопасности**: создание заявки, смена статуса, назначение оператора, виза — 3–4 теста на потоки, которые сейчас не покрыты. Алиасы путей. `eslint-plugin-react-hooks`. Замер базовых метрик (размер чанков, число запросов на экран). Черновик ADR о структуре фронтенда | 1,5 дня |
-| 1    | `shared`: перенос ui-kit, хуков, утилит, http-клиента; `shared/config/*`; `shared/api/queryKeys.ts`; правило границ в ESLint как `warn`                                                                                                                                                                                                         | 1,5 дня |
-| 2    | `entities`: разбор `resources.ts` по сущностям, `queryOptions`-фабрики, справочные опции (§3.2), доменные ячейки и теги                                                                                                                                                                                                                         | 2 дня   |
-| 3    | Справочные вкладки: `useResourceList` и `useCrudMutations` (§3.4, §3.5), единое описание фильтров (§3.3). Вкладки холоднее заявок — обкатываем хуки на них                                                                                                                                                                                      | 2 дня   |
-| 4    | `features` + `widgets` + `pages` для заявок (самые горячие файлы, идут последними): формы, смена статуса, назначение оператора, виза, закрытие, вложения. Цель: `WasteRequestsPage` 1576 → ~120 строк, `VehicleRequestsTab` 1281 → ~150                                                                                                         | 3 дня   |
-| 5    | Запросы и рендер: профили `staleTime` и `refetchOnWindowFocus` для `LIVE`, ленивые справочники, точечная инвалидация, дебаунс, `keepPreviousData`, `lazy`-маршруты, мемоизация, вынос `StatusCell`                                                                                                                                              | 1,5 дня |
-| 6    | Стили в объёме §6: токены и классы для повторов                                                                                                                                                                                                                                                                                                 | 0,5 дня |
-| 7    | Закрепление: границы слоёв как `error`, `max-lines`, удаление остаточных заглушек, обновление `README` и `docs/`, ADR получает номер и коммитится, чек-лист для новых экранов                                                                                                                                                                   | 0,5 дня |
+Разработка на `main` не останавливается. Вся подготовка идёт вне окна (в отдельных worktree, в
+`main` ничего не уходит), в окно попадает только механика:
 
-Итого ≈ 12,5 рабочих дней. Этапы дают эффект и по отдельности: после 0–2 (5 дней) исчезает копипаста
-справочников и появляется фундамент; после 5 — половина запросов на экран. Заявки (этап 4) можно
-отложить, не блокируя остальное.
+| Кто         | Что делает в окне                                                                                                         |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------- |
+| Автор фич   | коммитит и пушит текущее; не трогает названный каталог до сигнала «окно закрыто»                                          |
+| Рефакторинг | `git rebase` на свежий `main` → прогон готового кодмода (секунды) → `typecheck` + тесты + `lint` → коммит и push → сигнал |
+
+Если проверки красные и за окно не чинятся — откат; `main` не остаётся в промежуточном состоянии.
+
+Окна нужны там, где цель горячая:
+
+| Окно  | Что переносим                                                               |
+| ----- | --------------------------------------------------------------------------- |
+| 0A–0B | Этап 0: правка `AuthContext` и вынос `StatusCell` (остальное — новые файлы) |
+| 1     | `api/resources.ts` → слайсы `entities` (самый горячий файл фундамента)      |
+| 2     | `shared`: ui-kit, хуки, утилиты, http, config                               |
+| 3     | Общие хуки списков + единые фильтры                                         |
+| 4–5   | Этап 5: профили, ключи, дебаунс, lazy                                       |
+
+### 7.3 Этапы
+
+| Этап | Содержание                                                                                                                                                                                                                                                                                                                                                                                | Оценка  |
+| ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
+| 0    | **Подробно — [frontend-fsd-stage-0.md](frontend-fsd-stage-0.md).** Алиасы и плагины линта с фикстурами границ; HTTP-моки и общий рендер для тестов; 6 сценарных тестов + счётчик запросов первого экрана; перевод семи старых тестов с моков `resources`; точечные исправления (очистка кэша при смене учётки, `StatusCell` из тела компонента); baseline в `docs/reports/`; черновик ADR | 3 дня   |
+| 1    | `shared` + сессия: ui-kit, хуки, утилиты, `http`/`session`, `config/*`, `createQueryKeys`; вынос очистки кэша и generation token из `AuthContext` в `session` (сама очистка сделана в этапе 0); описание новых слоёв в `boundaries/elements`                                                                                                                                              | 1,5 дня |
+| 2    | `entities`: разбор `resources.ts` по слайсам (capability-фабрики §3.1), ключи и `queryOptions` с вариантами (§3.2), матрица инвалидаций (§5.4), доменные ячейки                                                                                                                                                                                                                           | 2,5 дня |
+| 3    | Справочные вкладки: `useResourceList`, `useCrudMutations`, единое описание фильтров                                                                                                                                                                                                                                                                                                       | 2 дня   |
+| 4    | `features` + `widgets` + `pages` для заявок (самые горячие файлы — последними)                                                                                                                                                                                                                                                                                                            | 3 дня   |
+| 5    | Запросы и рендер: профили, ленивость по §5.3, инвалидации по §5.4, дебаунс, `keepPreviousData`, `lazy`, мемоизация колонок (`StatusCell` вынесен в этапе 0)                                                                                                                                                                                                                               | 1,5 дня |
+| 6    | Стили в объёме §6                                                                                                                                                                                                                                                                                                                                                                         | 0,5 дня |
+| 7    | Закрепление: границы как `error`, `max-lines`, удаление заглушек, обновление `README`/`docs`, ADR получает номер                                                                                                                                                                                                                                                                          | 0,5 дня |
+
+Чистая оценка — 14,5 дня. **С резервом 25–30 % — 18–19 дней**; резерв заложен на то, что оценка
+делалась по коду, который за время работ продолжает расти (за неделю до пересъёма метрик было на
+1 400 строк меньше).
+
+Ускорение (детали в §11.3): кодмоды сокращают механическую часть этапов 1–2 примерно втрое,
+параллельные субагенты по непересекающимся слайсам — ещё вдвое на этапах 0, 2, 3. Фундамент
+(этапы 0–2 + 5) при этом укладывается в 3–4 дня вместо 7,5.
 
 ## 8. Критерии приёмки
 
-- Ни одного файла в `apps/web/src` длиннее 400 строк.
-- `pnpm lint` без нарушений границ слоёв (правило включено как `error`).
-- Ни одной re-export-заглушки не осталось (проверяется грепом по `export * from '@`).
-- Первый экран раздела «Вывоз мусора» — не больше 2 запросов до открытия формы (сейчас 6).
-- Справочник объектов за сессию грузится один раз, а не при каждом входе в раздел.
-- Поиск по номеру заявки — один запрос на введённую строку, а не на символ.
-- Начальный чанк уменьшается минимум вдвое (замер этапа 0 против финального).
-- Сценарные тесты этапа 0 проходят на каждом этапе без правки смысла — меняются только пути импорта.
+Измеримо, с указанием условий замера:
 
-## 9. Риски
+1. **Структура.** Ни одного файла в `apps/web/src` длиннее 400 строк; `pnpm lint` без нарушений
+   границ (`boundaries` в режиме `error`); ни одной re-export-заглушки (`grep -r "export \* from '@"`).
+2. **Кэш и сессия.** Тест §4.1 зелёный: после смены пользователя ни один запрос не отдаёт данные
+   предыдущего.
+3. **Запросы первого экрана.** Раздел «Вывоз мусора», роль **диспетчер** (полный набор фильтров),
+   **холодный кэш** (жёсткая перезагрузка), замер по вкладке Network до первого взаимодействия:
+   **не более 3 запросов** (список, сводка, объекты) против нынешних 6. Остальные справочники —
+   по раскрытию фильтра либо по открытию формы (§5.3). Для роли «Штаб» — не более 3.
+4. **Повторные загрузки справочников.** Переход «Вывоз мусора» → «Заказ ТС» → обратно в пределах
+   10 минут не порождает повторный `GET /objects` (проверяется по Network; формулировка «один раз
+   за сессию» заменена на «в пределах окна `staleTime`»).
+5. **Инвалидации.** Для каждой мутации из матрицы §5.4 сценарий «изменить → перейти на ранее
+   посещённую вкладку» показывает свежие данные.
+6. **Поиск.** Ввод «М-128» в фильтр номера порождает один сетевой запрос, а не четыре.
+7. **Бандл.** Начальный JS для маршрута `/waste` (gzip, отчёт `vite build`) уменьшается не менее
+   чем вдвое относительно замера этапа 0; замер фиксируется в `docs/` числом.
+8. **Тесты.** Сценарные тесты этапа 0 проходят на каждом этапе без изменений — они привязаны к
+   HTTP-контракту, а не к структуре модулей. Существующие тесты компонентов меняют только пути
+   импорта; исключение — семь файлов с моками `api/resources` (`vehicle-on-site`, `permissions-ui`,
+   `waybill-assign-form`, `drivers-import`, `vehicle-assign-category`, `vehicle-request-edit-fields`,
+   `vehicle-route-order`), они переводятся на HTTP-моки в этапе 0.
 
-1. **Параллельная разработка.** Снимается схемой §7.1 (короткие ветки, порядок от холодного к
-   горячему, заглушки). Остаточный риск — этап 4: страницы заявок правят чаще всего, поэтому он
-   идёт последним и делится на коммиты по одному сценарию.
-2. **История файлов.** Перемещения — только `git mv`, отдельным коммитом от правок содержимого,
-   иначе `git log --follow` перестаёт находить причины решений, на которых стоит половина
-   комментариев в коде.
-3. **Тесты знают пути.** 14 импортов `../src/...` в `apps/web/test` — обновляются в том же коммите,
-   что и переезд.
-4. **Заглушки живут дольше этапа.** Формально их удаление — часть этапа; проверяется критерием §8,
-   иначе `shared/ui/DataTable` навсегда останется доступен и по старому пути.
-5. **Комментарии — часть кода.** В файлах много объяснений «почему так» со ссылками на ADR. При
-   переносе они едут вместе с кодом; потеря их — потеря обоснований, восстановить которые можно
-   будет только чтением ADR целиком.
+## 9. Тесты: почему HTTP-моки
 
-## 10. Журнал решений (31.07.2026)
+Семь существующих тестов мокают модуль `../src/api/resources` целиком. После разбора на слайсы у них
+ломается не путь, а устройство: мок одного модуля превращается в моки шестнадцати. Поэтому:
 
-| Вопрос                          | Решение                                                                                                                                                                                   |
-| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Слой `widgets`                  | нужен: список заявок переиспользуется вкладками «Заявки» и «История»                                                                                                                      |
-| Шаблон `DirectoryTab`           | не вводим, ограничиваемся общими хуками (§3.7)                                                                                                                                            |
-| `refetchOnWindowFocus`          | возвращаем, но только профилю `LIVE` (§5.1)                                                                                                                                               |
-| Batch-ручка справочников на API | не заводим, решаем средствами фронтенда (§5.8)                                                                                                                                            |
-| Объём работ по стилям           | сужен до токенов и повторяющихся раскладок — приоритет минимального риска (§6)                                                                                                            |
-| Схема ветвления                 | серия коротких веток по этапам с мержем в `main`, от холодного к горячему, заглушки (§7.1)                                                                                                |
-| Сценарные тесты                 | пишутся в этапе 0, до первого переезда                                                                                                                                                    |
-| Нумерация ADR                   | под фронтенд-архитектуру резервируется диапазон **0050+**; до коммита файл живёт как `docs/adr/draft-frontend-architecture.md`, номер присваивается при коммите со сверкой по `docs/adr/` |
+- новые сценарные тесты этапа 0 мокают **сеть** (`vi.stubGlobal('fetch', router)` с маршрутизацией
+  по URL и методу), а не модули приложения;
+- семь существующих тестов переводятся на тот же приём в этапе 0 — до переезда, пока моки ещё
+  описывают одну поверхность.
+
+Это же делает тесты полезными как сеть безопасности: они проверяют, что при сценарии уходят те
+запросы, которые должны, — то самое, что ломается при неверной инвалидации или неверной ленивости.
+
+## 10. Журнал решений
+
+**31.07.2026, согласование:**
+
+| Вопрос                          | Решение                                                              |
+| ------------------------------- | -------------------------------------------------------------------- |
+| Слой `widgets`                  | нужен: список заявок переиспользуется вкладками «Заявки» и «История» |
+| Шаблон `DirectoryTab`           | не вводим, ограничиваемся общими хуками (§3.7)                       |
+| `refetchOnWindowFocus`          | возвращаем профилям `LIVE` и `SIGNAL` (§5.1)                         |
+| Batch-ручка справочников на API | не заводим (§5.8)                                                    |
+| Объём работ по стилям           | сужен до токенов и повторов (§6)                                     |
+| Схема ветвления                 | короткие ветки по этапам, окна сверки 20–30 минут (§7)               |
+| Сценарные тесты                 | пишутся в этапе 0, до первого переезда                               |
+| Параллельные субагенты          | да, по непересекающимся слайсам, в отдельных worktree                |
+
+**31.07.2026, по замечаниям ревью:**
+
+| Замечание                                   | Что изменено                                                                                                                             |
+| ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| Кэш переживает смену пользователя           | §4.1 — очистка при logout/expiry/смене учётки, тест в этапе 0, до профилей                                                               |
+| `createCrudApi` не соответствует контрактам | §3.1 — capability-фабрики + явные исключения (`remove` → DTO, отсутствующие ручки)                                                       |
+| «Один ключ на сущность» ломает варианты     | §3.2 — ключ на **запрос**, таблица известных вариантов                                                                                   |
+| Цель «6 → 2» недостижима описанным способом | §5.3 и критерий §8.3 — ≤3 запроса, роль и холодный кэш названы, ленивость раздельная для формы и фильтров                                |
+| Инвалидация описана слишком узко            | §5.4 — матрица «мутация → семейства ключей», включая `waybills` при переводе в работу                                                    |
+| `pending-count` не `STATIC`                 | §5.1 — отдельный профиль `SIGNAL` (60 с + focus + polling 5 мин)                                                                         |
+| Структура не замкнута                       | §2.1 дополнена (`auth`, `dadata`, `AppLayout`, scope-хуки, `WasteVehiclesEditor`), §2.2 — явные исключения; ключи переехали в `entities` |
+| Публичные API не обеспечены линтером        | §2.4 — выбран `eslint-plugin-boundaries`, 4 фикстуры проверяют правила                                                                   |
+| Тесты привязаны к структуре модулей         | §9 — HTTP-моки; критерий §8.8 уточнён                                                                                                    |
+| Метрики устарели                            | §1 пересняты (88 файлов, 19 116 строк, тесты 2 545); этап 0 снимает заново                                                               |
+| Оценка оптимистична                         | §7.3 — 14,5 дня чистой работы, 18–19 с резервом 25–30 %                                                                                  |
+
+**31.07.2026, второе ревью (редакция 2 этапа 0):** очистка кэша расширена на истечение сессии с
+отдельным `lastAuthenticatedUserId` (§4.1); тестов с моками `api/resources` оказалось семь, а не
+три — объём этапа 0 и оценка выросли (2 → 3 дня, итог 14,5 / 18–19); `boundaries` закреплён на 7.1.0
+с правилом `boundaries/dependencies`; алиасы — через `resolve.tsconfigPaths` Vite 8 с проверкой
+тремя инструментами; baseline бандла считается скриптом по manifest; подробности — в
+[frontend-fsd-stage-0.md](frontend-fsd-stage-0.md).
+
+**Нумерация ADR — резервирование отменено.** За один день 31.07.2026 основной поток прошёл с 0043
+до 0050 (`0050-vehicle-routes.md`): любой зарезервированный диапазон догоняется быстрее, чем
+пишется документ. Черновик живёт как `docs/adr/draft-frontend-architecture.md` без номера; номер
+берётся в момент коммита по факту — последний **числовой** ADR плюс единица
+(`ls docs/adr | grep -E '^[0-9]{4}-' | sort -V | tail -1`; простой `tail -1` вернул бы сам
+черновик), с проверкой, что такого файла ещё нет.
+
+## 11. Обоснование схемы работ
+
+### 11.1 Темп разработки на `main`
+
+Замер 31.07.2026 по `apps/web/src` за 7 дней:
+
+| Метрика                     | Значение                                  |
+| --------------------------- | ----------------------------------------- |
+| Коммитов                    | 91 (13–23 в день)                         |
+| Строк изменено              | +21 574 / −5 800 при кодовой базе ~19 000 |
+| Уникальных файлов затронуто | 88 (все файлы проекта)                    |
+| То же за 2 дня              | 75 файлов — 90 % кодовой базы             |
+| Файлов на коммит            | 4,2                                       |
+
+Горячие зоны: `pages/vehicle` (88 правок за неделю), `components` (71), `pages` (58),
+`pages/directories` (53), `api` (36). При этом базовые компоненты холодные: `DataTable` — 2,
+`FormModal` — 2, `AutoSelect` — 1, `useListParams` — 3, `client.ts` — 2. Отсюда порядок «от
+холодного к горячему» и вывод, что фундамент можно переносить почти без конфликтов.
+
+### 11.2 Почему не долгая ветка
+
+Ветка жила бы 14,5 рабочих дня, сверок — 7; между сверками на `main` накапливается ~23 коммита,
+~95 файло-правок, ~5 500 строк. Переехавший без изменений файл git разводит сам (rename detection),
+но разрезанный на модули (`WasteRequestsPage` 1588 строк → ~10 файлов) приходит конфликтом
+«изменён здесь / удалён там», и правку нужно вручную раскладывать по новым модулям: 25–35 переносов
+на сверку по 15–40 минут.
+
+| Схема                                  | Чистая работа | Накладные   | Итого         |
+| -------------------------------------- | ------------- | ----------- | ------------- |
+| Долгая ветка со сверками между этапами | 14,5 дня      | 6–14 дней   | 20,5–28,5 дня |
+| Короткие ветки по этапам               | 14,5 дня      | 0,5–1,5 дня | 15–16 дней    |
+
+Точка безубыточности долгой ветки — когда параллельный поток трогает менее 10–15 % разрезаемых
+файлов; здесь это 90 % за два дня. Отдельный риск, не измеряемый днями: при ручном переносе 95
+правок потерянная правка не ломает ни сборку, ни тесты — она всплывает у пользователя.
+
+### 11.3 Ускорение
+
+| Способ                                            | Эффект                                                                    |
+| ------------------------------------------------- | ------------------------------------------------------------------------- |
+| Кодмоды (`ts-morph`) на перемещение и импорты     | механическая часть этапов 1–2 — часы вместо дней; скрипт переиспользуется |
+| Параллельные субагенты по непересекающимся файлам | этапы 0 (тесты), 2 (16 слайсов), 3 (вкладки) — примерно вдвое             |
+| Отказ от этапа 6                                  | −0,5 дня без влияния на остальное                                         |
+
+Ограничение: перед параллелью нужен последовательный шаг — фиксация `shared/config/*`,
+`createQueryKeys`, сигнатур `useResourceList`/`useCrudMutations`. Без него параллельные процессы
+напишут разные версии одного хука, и слияние съест выигрыш.
+
+### 11.4 Рентабельность самого рефакторинга
+
+Экономия приходит с нового кода: при +21,5 тыс. строк в неделю каждый новый экран списка приносит
+~150 строк дублей (фильтры дважды, справочники заново), а сквозная правка вроде «добавить фильтр по
+отделу» — пять мест. Порядок величины — 0,5–1 день в неделю. Фундамент (этапы 0–2 + 5) окупается за
+6–10 недель, полный объём — за 13–20 недель. Каждая неделя отсрочки добавляет ~20 тыс. строк,
+написанных по старой структуре.
