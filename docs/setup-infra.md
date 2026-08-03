@@ -100,6 +100,9 @@ aws s3api put-bucket-cors --endpoint-url https://s3.cloud.ru --bucket "$S3_BUCKE
   и `https://suggestions.dadata.ru` (подсказки адресов, ADR 0006) — см. `deploy/nginx/technic.conf`.
   Домена нет в `connect-src` → браузер режет запрос, подсказки не работают, заявку на
   грузоперевозку создать нельзя.
+- Там же `frame-src` должен разрешать `blob:` — бланк путевого листа показывается фреймом из
+  памяти вкладки (ADR 0041). Схемы нет в `frame-src` → фрейм режется, окно печати пустое, хотя
+  выгрузка того же бланка файлом работает: скачивание CSP не проверяет.
 
 ## 4. Edge-nginx (`infra-nginx`)
 
