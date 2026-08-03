@@ -425,6 +425,15 @@ const CASES: Case[] = [
     allowed: ['admin', 'manager', 'dispatcher'],
   },
   {
+    // Примечание исполнителя (ADR 0053): пишет его оператор — правкой заявки это не является, —
+    // и те, кто заявку ведёт. Площадка сюда не входит: у неё своя строка комментария.
+    title: 'вывоз — комментарий исполнителя',
+    method: 'PATCH',
+    url: `/api/v1/waste-requests/${RECORD_ID}/comment`,
+    payload: { operatorComment: 'будем после 15:00', version: 1 },
+    allowed: ['admin', 'manager', 'dispatcher', 'operator/operator'],
+  },
+  {
     title: 'вывоз — восстановление из архива',
     method: 'POST',
     url: `/api/v1/waste-requests/${RECORD_ID}/restore`,

@@ -16,7 +16,9 @@ import {
   REQUEST_STATUSES,
   type RequestType,
   requiresWasteFact,
+  updateWasteOperatorCommentSchema,
   updateWasteRequestSchema,
+  wasteOperatorCommentEditable,
   WASTE_REMOVAL_CONTAINER_KIND,
   type WasteRequestCompletionDto,
   type WasteRequestDto,
@@ -106,7 +108,9 @@ const requestSelect = {
   // Кто принимает машину на площадке (миграция 0062).
   responsibleName: wasteRequests.responsibleName,
   responsiblePhone: wasteRequests.responsiblePhone,
+  // Комментарий двух сторон (ADR 0053): площадка пишет заявку, исполнитель — своё примечание.
   comment: wasteRequests.comment,
+  operatorComment: wasteRequests.operatorComment,
   status: wasteRequests.status,
   // Причина отмены живёт в истории статусов; в списке нужна последняя и только у отменённых
   // заявок — после отката администратором прежняя причина к текущему статусу не относится.
@@ -223,6 +227,7 @@ function toDto(
     responsibleName: r.responsibleName,
     responsiblePhone: r.responsiblePhone,
     comment: r.comment,
+    operatorComment: r.operatorComment,
     status: r.status,
     // Пустой комментарий отмены (история до миграции 0024) читается как «причина не указана».
     cancelReason: r.cancelReason || null,
@@ -579,6 +584,17 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       app.requirePermission('wasteRequests.assignOperator', ASSIGN_OPERATOR_DENIED),
     ],
   };
+  // Примечание исполнителя (ADR 0053) — своё право: у оператора нет права на правку заявки, а
+  // площадка чужую строку не трогает.
+  const canOperatorComment = {
+    preHandler: [
+      app.authenticate,
+      app.requirePermission(
+        'wasteRequests.operatorComment',
+        'Недостаточно прав для комментария исполнителя',
+      ),
+    ],
+  };
 
   r.get('/', { ...auth, schema: { querystring: wasteRequestListQuerySchema } }, async (req) => {
     const p = requirePrincipal(req);
@@ -598,8 +614,10 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       q.num ? eq(wasteRequests.num, q.num) : undefined,
       q.deliveryFrom ? gte(wasteRequests.deliveryAt, q.deliveryFrom) : undefined,
       q.deliveryTo ? lte(wasteRequests.deliveryAt, q.deliveryTo) : undefined,
+      // Ищут по тексту, не помня, чья это была строка, — поэтому обе (ADR 0053).
       searchCondition(q.search, [
         wasteRequests.comment,
+        wasteRequests.operatorComment,
         constructionObjects.name,
         constructionObjects.code,
       ]),
@@ -614,6 +632,8 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       deliveryAt: wasteRequests.deliveryAt,
       status: wasteRequests.status,
       operatorName: counterparties.name,
+      // Колонка «Комментарий» показывает обе стороны, но сортируется по строке площадки: ключ
+      // сортировки у колонки один, а порядок склейки двух текстов ничего не значит (ADR 0053).
       comment: wasteRequests.comment,
       createdAt: wasteRequests.createdAt,
     };
@@ -975,6 +995,61 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         entityId: before.id,
         // Имя исполнителя в истории — снимком: контрагента могут переименовать.
         metadata: { operatorCounterpartyId, changes: diffWasteRequests(before, after) },
+      });
+      return after;
+    },
+  );
+
+  /**
+   * Примечание исполнителя (ADR 0053) — единственная точка записи строки оператора.
+   *
+   * Отдельной ручкой, а не полем общего PATCH: у оператора нет права на правку заявки
+   * (ADR 0038), а сам PATCH пересчитывает предмет заявки и подбирает тариф — к примечанию это
+   * отношения не имеет (та же причина, по которой отдельно живёт назначение оператора).
+   *
+   * Пишут его двое: сам исполнитель — в своих заявках, и тот, кто заявку ведёт (менеджер,
+   * диспетчер): об «будем после 15:00» диспетчер чаще узнаёт звонком, чем из портала.
+   */
+  r.patch(
+    '/:id/comment',
+    {
+      ...canOperatorComment,
+      schema: { params: idParams, body: updateWasteOperatorCommentSchema },
+    },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const { operatorComment, version } = req.body;
+      const before = await getRequestDto(req.params.id);
+      if (!before || before.deletedAt) throw err.notFound('Заявка не найдена');
+      // Своя заявка — для исполнителя; для менеджера и диспетчера обе проверки ничего не сужают.
+      // Область спрашивается и по объекту: право и область выдаются порознь, и «право выдали, а
+      // область не написана» означало бы доступ ко всем заявкам сразу.
+      assertObjectScope(p, before.objectId);
+      assertOperatorScope(p, before.operatorCounterpartyId);
+      if (!wasteOperatorCommentEditable(before.status)) {
+        throw err.badRequest('Заявка закрыта — примечание исполнителя больше не меняют', {
+          operatorComment: 'Заявка закрыта',
+        });
+      }
+      const [updated] = await db
+        .update(wasteRequests)
+        .set({
+          operatorComment,
+          updatedBy: p.id,
+          version: before.version + 1,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(wasteRequests.id, before.id), eq(wasteRequests.version, version)))
+        .returning({ id: wasteRequests.id });
+      if (!updated) throw err.conflict();
+      const after = (await getRequestDto(before.id))!;
+      await writeAudit({
+        actorUserId: p.id,
+        action: 'waste_request.operator_comment',
+        entityType: 'waste_request',
+        entityId: before.id,
+        // Правка примечания — событие истории заявки наравне с правкой её полей (ADR 0012).
+        metadata: { changes: diffWasteRequests(before, after) },
       });
       return after;
     },

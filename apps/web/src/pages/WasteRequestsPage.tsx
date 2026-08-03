@@ -47,6 +47,8 @@ import {
   volumeStepMessage,
   WASTE_REMOVAL_CONTAINER_KIND,
   type WasteRequestDto,
+  wasteOperatorCommentEditable,
+  wasteRequestCommentLines,
 } from '@technic/contracts';
 import {
   containerTypesApi,
@@ -117,6 +119,34 @@ interface RequestFormValues {
   comment?: string;
 }
 
+/**
+ * Комментарий заявки двумя подписанными строками: площадка и исполнитель (ADR 0053). Обрезается
+ * построчно, а не ячейкой целиком: обрезка на уровне колонки оставила бы от второй стороны одну
+ * подпись. Полностью строки видны в карточке заявки и подсказкой при наведении.
+ */
+function CommentCell({ r, truncate }: { r: WasteRequestDto; truncate?: boolean }) {
+  const lines = wasteRequestCommentLines(r);
+  if (lines.length === 0) return null;
+  return (
+    <>
+      {lines.map((l) => (
+        <div
+          key={l.key}
+          title={truncate ? `${l.label}: ${l.text}` : undefined}
+          style={
+            truncate
+              ? { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }
+              : undefined
+          }
+        >
+          <Typography.Text type="secondary">{l.label}: </Typography.Text>
+          {l.text}
+        </div>
+      ))}
+    </>
+  );
+}
+
 /** Человекочитаемое описание предмета заявки для колонки списка. */
 function requestSubject(r: WasteRequestDto): string {
   // Объём — часть предмета заявки там, где он есть: у вывоза он определяет сумму (ADR 0019),
@@ -164,6 +194,8 @@ function RequestsTab() {
   const canEdit = can('wasteRequests.update');
   const canDelete = can('wasteRequests.delete');
   const canAssignOperator = can('wasteRequests.assignOperator');
+  // Примечание исполнителя (ADR 0053): пишут его оператор и те, кто ведёт заявку.
+  const canOperatorComment = can('wasteRequests.operatorComment');
   const canRestore = can('archive.restore');
 
   // Объектной роли с одним объектом фильтр зафиксирован на нём; с несколькими — фильтр открыт,
@@ -678,6 +710,25 @@ function RequestsTab() {
     statusMut.mutate({ id: r.id, status, version: r.version });
   };
 
+  /**
+   * Примечание исполнителя (ADR 0053). Карточка живёт строкой списка, поэтому сохранённая заявка
+   * возвращается в неё сразу: иначе в открытом окне осталась бы прежняя версия, и вторая правка
+   * подряд упёрлась бы в конфликт версий.
+   */
+  const operatorCommentMut = useMutation({
+    mutationFn: (v: { r: WasteRequestDto; text: string }) =>
+      wasteRequestsApi.setOperatorComment(v.r.id, v.text, v.r.version),
+    onSuccess: (updated) => {
+      setViewRecord(updated);
+      message.success('Комментарий сохранён');
+      void qc.invalidateQueries({ queryKey: ['waste-requests'] });
+    },
+    onError: (e) => {
+      message.error(errorMessage(e));
+      void qc.invalidateQueries({ queryKey: ['waste-requests'] });
+    },
+  });
+
   const removeMut = useMutation({
     mutationFn: (id: string) => wasteRequestsApi.remove(id),
     onSuccess: (res) => {
@@ -906,12 +957,14 @@ function RequestsTab() {
       sorter: true,
       render: (_v: unknown, r: WasteRequestDto) => <StatusCell r={r} />,
     },
+    // Сортировка колонки — по строке площадки (ключ у колонки один): порядок склейки двух
+    // текстов ничего не значит. Поиск при этом идёт по обеим строкам — сервером (ADR 0053).
     textColumn<WasteRequestDto>({
       key: 'comment',
       title: 'Комментарий',
       dataIndex: 'comment',
       width: 230,
-      ellipsis: true,
+      render: (_v, r) => <CommentCell r={r} truncate />,
     }),
     {
       key: 'files',
@@ -1129,7 +1182,9 @@ function RequestsTab() {
       (r) => (isOperator ? null : r.operatorName ? `Оператор: ${r.operatorName}` : null),
       // На десктопе причина отмены живёт подсказкой на теге статуса; на телефоне подсказок нет.
       (r) => (r.cancelReason ? `Причина отмены: ${r.cancelReason}` : null),
-      (r) => r.comment || null,
+      // Комментарий — обеими сторонами (ADR 0053), но без обрезки: в карточке места хватает.
+      // Пустой возвращается null, а не пустой компонент: пустые строки карточка отсеивает сама.
+      (r) => (wasteRequestCommentLines(r).length > 0 ? <CommentCell r={r} /> : null),
       (r) => (r.files.length > 0 ? <FilesCell files={r.files} /> : null),
       (r) => (r.deletedAt ? <Tag>в архиве</Tag> : null),
     ],
@@ -1220,8 +1275,9 @@ function RequestsTab() {
         onChange={onTableChange}
       />
 
-      {/* Карточка заявки: поля только на чтение плюс история событий. Правка — той же формой,
-          что и из таблицы, и только если она этой роли доступна. */}
+      {/* Карточка заявки: поля на чтение плюс история событий. Правка заявки — той же формой,
+          что и из таблицы, и только если она этой роли доступна; примечание исполнителя
+          (ADR 0053) правится прямо в карточке — у оператора формы правки нет вовсе. */}
       <WasteRequestViewModal
         request={viewRecord}
         onClose={() => setViewRecord(null)}
@@ -1233,6 +1289,15 @@ function RequestsTab() {
               }
             : undefined
         }
+        onSaveOperatorComment={
+          canOperatorComment &&
+          viewRecord &&
+          !viewRecord.deletedAt &&
+          wasteOperatorCommentEditable(viewRecord.status)
+            ? (r, text) => operatorCommentMut.mutate({ r, text })
+            : undefined
+        }
+        savingOperatorComment={operatorCommentMut.isPending}
       />
 
       {/* Назначение оператора вывоза при переводе заявки в работу: исполнитель обязателен —
@@ -1522,7 +1587,9 @@ function RequestsTab() {
               nameLabel="Ответственный на площадке"
               phoneLabel="Контактный телефон"
             />
-            <Form.Item name="comment" label="Комментарий">
+            {/* Комментарий площадки: строку исполнителя он пишет сам, в карточке заявки
+                (ADR 0053) — форма заявки её не трогает. */}
+            <Form.Item name="comment" label="Комментарий площадки">
               <Input.TextArea rows={3} maxLength={2000} showCount />
             </Form.Item>
           </FormGrid.Full>

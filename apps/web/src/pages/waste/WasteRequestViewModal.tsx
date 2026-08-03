@@ -1,5 +1,5 @@
-import { Button, Descriptions, Space, Spin, Tag, Typography } from 'antd';
-import { useMemo } from 'react';
+import { Button, Descriptions, Input, Space, Spin, Tag, Typography } from 'antd';
+import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   type FileDto,
@@ -15,6 +15,7 @@ import {
   type WasteRequestDto,
   type WasteRequestVehicleDto,
   wasteRequestChangeLabels,
+  wasteRequestCommentLines,
 } from '@technic/contracts';
 import { wasteRequestsApi } from '../../api/resources';
 import { FileLinkList, FilesButton } from '../../components/FileLinks';
@@ -26,9 +27,12 @@ import { useIsMobile } from '../../hooks/useIsMobile';
 import { formatDateTime, formatDateTimeMaybe, formatMoney } from '../../utils/format';
 
 /**
- * Карточка заявки: поля только на чтение и история событий (ADR 0012). Открывается кнопкой в
+ * Карточка заявки: поля на чтение и история событий (ADR 0012). Открывается кнопкой в
  * «Действиях» — в таблице колонок на всё не хватает, а автор, цена за м³ и состав машин нужны
- * не в списке, а при разборе конкретной заявки. Правка — отдельным окном, той же формой.
+ * не в списке, а при разборе конкретной заявки. Правка заявки — отдельным окном, той же формой.
+ *
+ * Исключение одно: примечание исполнителя (ADR 0053) правится прямо здесь. Оно не часть предмета
+ * заявки, и у того, кто его пишет, формы правки может не быть вовсе — у оператора её нет.
  */
 interface Props {
   /** null — окно закрыто; поля берутся из строки списка, отдельный запрос за ними не нужен. */
@@ -36,6 +40,68 @@ interface Props {
   onClose: () => void;
   /** Не передана — правка этой заявки недоступна (роль, статус или архив). */
   onEdit?: (r: WasteRequestDto) => void;
+  /** Не передана — примечание исполнителя этой роли недоступно либо заявка уже закрыта. */
+  onSaveOperatorComment?: (r: WasteRequestDto, operatorComment: string) => void;
+  savingOperatorComment?: boolean;
+}
+
+/**
+ * Комментарий заявки: две подписанные строки (ADR 0053) и, если позволено, правка строки
+ * исполнителя. Пустое поле — «не сказали ничего»: так примечание и снимают.
+ */
+function CommentField({
+  request,
+  onSave,
+  saving,
+}: {
+  request: WasteRequestDto;
+  onSave?: (r: WasteRequestDto, operatorComment: string) => void;
+  saving?: boolean;
+}) {
+  const [draft, setDraft] = useState(request.operatorComment);
+  // Окно переоткрывают на соседней заявке, а список обновляется после сохранения — черновик
+  // следует за самой заявкой, иначе в нём остался бы текст от прошлой.
+  useEffect(() => setDraft(request.operatorComment), [request.id, request.operatorComment]);
+  const lines = wasteRequestCommentLines(request);
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {lines.length > 0
+        ? lines.map((l) => (
+            <div key={l.key}>
+              <Typography.Text type="secondary">{l.label}: </Typography.Text>
+              {l.text}
+            </div>
+          ))
+        : '—'}
+      {onSave && (
+        <>
+          {/* Своей строкой, а не в ряд с кнопкой: текст многострочный, и кнопка в одной группе с
+              ним растягивалась бы на всю высоту поля. */}
+          <Input.TextArea
+            rows={2}
+            maxLength={2000}
+            showCount
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder="Комментарий исполнителя"
+          />
+          <div style={{ textAlign: 'right' }}>
+            <Button
+              type="primary"
+              loading={saving}
+              // Текст не трогали — сохранять нечего: лишняя правка версии заявки сбила бы
+              // открытые карточки у соседей.
+              disabled={draft.trim() === request.operatorComment}
+              onClick={() => onSave(request, draft.trim())}
+            >
+              Сохранить
+            </Button>
+          </div>
+        </>
+      )}
+    </div>
+  );
 }
 
 const secondary = { fontSize: 12 } as const;
@@ -152,7 +218,13 @@ function buildRows(
   return rows;
 }
 
-export function WasteRequestViewModal({ request, onClose, onEdit }: Props) {
+export function WasteRequestViewModal({
+  request,
+  onClose,
+  onEdit,
+  onSaveOperatorComment,
+  savingOperatorComment,
+}: Props) {
   const isMobile = useIsMobile();
   const { data: history, isPending } = useQuery({
     queryKey: ['waste-requests', request?.id, 'history'],
@@ -332,7 +404,18 @@ export function WasteRequestViewModal({ request, onClose, onEdit }: Props) {
               },
             ]
           : []),
-        { key: 'comment', label: 'Комментарий', span: 3, children: request.comment || '—' },
+        {
+          key: 'comment',
+          label: 'Комментарий',
+          span: 3,
+          children: (
+            <CommentField
+              request={request}
+              onSave={onSaveOperatorComment}
+              saving={savingOperatorComment}
+            />
+          ),
+        },
       ]
     : [];
 

@@ -25,6 +25,7 @@ const BASE: WasteRequestDto = {
   responsibleName: 'Петров П. П.',
   responsiblePhone: '+7 926 000-00-01',
   comment: 'Заезд со двора',
+  operatorComment: '',
   status: 'new',
   cancelReason: null,
   files: [],
@@ -98,6 +99,15 @@ describe('дифф правки заявки', () => {
       from: 'Заезд со двора',
       to: '—',
     });
+  });
+
+  // Стороны комментария разведены (ADR 0053): правка примечания исполнителя — своё изменение, и
+  // строку площадки она не трогает.
+  it('комментарий исполнителя — отдельное изменение от комментария площадки', () => {
+    const changes = diffWasteRequests(BASE, { ...BASE, operatorComment: 'будем после 15:00' });
+    expect(changes).toEqual([
+      { field: 'operatorComment', from: '—', to: 'будем после 15:00' },
+    ]);
   });
 
   it('длинный комментарий обрезается', () => {

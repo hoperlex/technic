@@ -63,7 +63,13 @@ export function diffWasteRequests(
     before.responsiblePhone || EMPTY,
     after.responsiblePhone || EMPTY,
   );
+  // Стороны комментария сравниваются порознь (ADR 0053): «изменён комментарий» не отвечает, чей.
   diff.changed('comment', short(before.comment) || EMPTY, short(after.comment) || EMPTY);
+  diff.changed(
+    'operatorComment',
+    short(before.operatorComment) || EMPTY,
+    short(after.operatorComment) || EMPTY,
+  );
 
   diff.files(before.files, after.files);
 

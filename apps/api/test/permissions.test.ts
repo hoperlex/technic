@@ -263,6 +263,9 @@ describe('права внешнего исполнителя зависят от
   it('оператор вывоза: свои заявки вывоза читает и закрывает, заказ ТС ему закрыт', () => {
     expect(can(wasteOperator, 'wasteRequests.read')).toBe(true);
     expect(can(wasteOperator, 'wasteRequests.status')).toBe(true);
+    // Примечание исполнителя (ADR 0053) — не правка заявки: писать своё оператор может, менять
+    // предмет заявки по-прежнему нет.
+    expect(can(wasteOperator, 'wasteRequests.operatorComment')).toBe(true);
     expect(can(wasteOperator, 'wasteRequests.create')).toBe(false);
     expect(can(wasteOperator, 'wasteRequests.update')).toBe(false);
     expect(can(wasteOperator, 'wasteRequests.delete')).toBe(false);
@@ -280,10 +283,21 @@ describe('права внешнего исполнителя зависят от
         .sort();
     // Сравнением, а не перечислением: новое право у оператора вывоза — это решение про
     // исполнителя вообще, и здесь оно обязано появиться тоже (либо разойтись осознанно).
+    //
+    // Разошлись ровно на одном: примечание исполнителя (ADR 0053) заведено в вывозе мусора и в
+    // заказе ТС не повторено. Там исполнитель появляется у заявки вместе с назначением машины
+    // (ADR 0038), и до назначения «строки контрагента» у неё нет вовсе — вопрос решается своим
+    // решением, а не переносом права.
+    const WASTE_ONLY = ['operatorComment'];
     expect(moduleOf(vehicleLessor, 'vehicleRequests.')).toEqual(
-      moduleOf(wasteOperator, 'wasteRequests.'),
+      moduleOf(wasteOperator, 'wasteRequests.').filter((p) => !WASTE_ONLY.includes(p)),
     );
     expect(moduleOf(vehicleLessor, 'vehicleRequests.')).toEqual(['read', 'status']);
+    expect(moduleOf(wasteOperator, 'wasteRequests.')).toEqual([
+      'operatorComment',
+      'read',
+      'status',
+    ]);
     // Вывоз мусора арендодателю закрыт целиком — ровно так же, как ему закрыт заказ ТС.
     for (const permission of PERMISSIONS.filter((p) => p.startsWith('wasteRequests.'))) {
       expect(can(vehicleLessor, permission), permission).toBe(false);

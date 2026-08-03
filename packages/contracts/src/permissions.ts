@@ -50,6 +50,12 @@ export const PERMISSIONS = [
   'wasteRequests.delete',
   'wasteRequests.status',
   'wasteRequests.assignOperator',
+  /**
+   * Примечание исполнителя в заявке (ADR 0053): вторая сторона комментария. Своё право, а не
+   * часть `wasteRequests.update`: исполнитель заявку не редактирует (ADR 0038), а сказать
+   * площадке «будем после 15:00» должен.
+   */
+  'wasteRequests.operatorComment',
 
   // Заказ ТС
   'vehicleRequests.read',
@@ -111,6 +117,9 @@ const WASTE_REQUEST_PERMISSIONS = [
   'wasteRequests.delete',
   'wasteRequests.status',
   'wasteRequests.assignOperator',
+  // Примечание исполнителя пишет и тот, кто ведёт заявку: об «будем после 15:00» диспетчер чаще
+  // узнаёт звонком, а не из портала, и записывает сам (ADR 0053).
+  'wasteRequests.operatorComment',
 ] as const;
 
 /**
@@ -238,9 +247,11 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
 
 /**
  * Права, которые даёт тип контрагента учётки внешнего исполнителя (ADR 0038). Каждый тип —
- * один модуль портала, и набор в нём один и тот же: видеть свои заявки и закрывать
+ * один модуль портала, и основа набора в нём одна и та же: видеть свои заявки и закрывать
  * выполненное. Заводить, править и удалять заявки исполнитель не может ни в одном модуле —
  * заказчик и исполнитель разведены, и это граница модели, а не особенность вывоза мусора.
+ * Примечание оператора (ADR 0053) её не двигает: оно не меняет ни предмет заявки, ни её ход —
+ * это строка исполнителя в комментарии, и своё право у неё именно поэтому.
  *
  * Record по всем типам, а не по тем, у кого учётки есть: новый тип контрагента обязан здесь
  * появиться строкой и ответить на вопрос «а этот что исполняет». Пустой список — «учёток у
@@ -250,8 +261,9 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
 export const COUNTERPARTY_TYPE_PERMISSIONS: Record<CounterpartyType, readonly Permission[]> = {
   general_contractor: [],
   contractor: [],
-  // Оператор вывоза (ADR 0010): видит заявки, назначенные его контрагенту, и закрывает их.
-  operator: ['wasteRequests.read', 'wasteRequests.status'],
+  // Оператор вывоза (ADR 0010): видит заявки, назначенные его контрагенту, закрывает их и пишет
+  // в них своё примечание (ADR 0053) — заявку это не редактирует, границу исполнителя не двигает.
+  operator: ['wasteRequests.read', 'wasteRequests.status', 'wasteRequests.operatorComment'],
   // Арендодатель ТС (ADR 0038): видит заявки, на которые вышла его техника, и закрывает их.
   vehicle_lessor: ['vehicleRequests.read', 'vehicleRequests.status'],
   // Поставщик (ADR 0051) — сторона договора поставки: в портале за него никто не работает, его

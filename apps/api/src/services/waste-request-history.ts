@@ -14,6 +14,9 @@ import { HISTORY_LIMIT, loadAuditEvents, mergeHistory } from './request-history'
 const AUDIT_ACTIONS = [
   'waste_request.update',
   'waste_request.assign_operator',
+  // Примечание исполнителя (ADR 0053): своей ручкой, но в истории — обычная правка заявки, и
+  // чью строку правили, называет состав изменений.
+  'waste_request.operator_comment',
   // Факт вывоза (ADR 0035): своё событие рядом с переходом в «Выполнена» — объём и сумма
   // предъявляются составом изменений, а не одной отметкой о статусе.
   'waste_request.complete',
@@ -24,6 +27,7 @@ const AUDIT_ACTIONS = [
 const AUDIT_KINDS: Record<string, RequestHistoryKind> = {
   'waste_request.update': 'updated',
   'waste_request.assign_operator': 'operator',
+  'waste_request.operator_comment': 'updated',
   'waste_request.complete': 'completed',
   'waste_request.soft_delete': 'deleted',
   'waste_request.restore': 'restored',

@@ -210,6 +210,7 @@ export const createWasteRequestSchema = z
      */
     responsibleName: contactNameSchema,
     responsiblePhone: contactPhoneSchema,
+    /** Комментарий площадки; строку исполнителя он пишет сам, своей ручкой (ADR 0053). */
     comment: z.string().trim().max(2000).optional().default(''),
     fileIds: z.array(uuidSchema).max(20).optional().default([]),
   })
@@ -286,6 +287,22 @@ export const updateWasteRequestSchema = z
     }
   });
 export type UpdateWasteRequestInput = z.infer<typeof updateWasteRequestSchema>;
+
+/**
+ * Примечание исполнителя (ADR 0053) — отдельная операция, как и назначение оператора: общий
+ * PATCH исполнителю недоступен вовсе (заявку он не редактирует, ADR 0038), а вдобавок
+ * пересчитывает предмет заявки и подбирает тариф, к примечанию отношения не имеющие.
+ *
+ * Предел тот же, что у комментария площадки: строки равноправны, и разная длина у них означала бы,
+ * что одной стороне есть что сказать, а другой — вдвое меньше.
+ */
+export const updateWasteOperatorCommentSchema = z
+  .object({
+    operatorComment: z.string().trim().max(2000),
+    version: z.number().int().nonnegative(),
+  })
+  .strict();
+export type UpdateWasteOperatorCommentInput = z.infer<typeof updateWasteOperatorCommentSchema>;
 
 /**
  * Назначение оператора вывоза — отдельная операция (ADR 0010): предмет заявки при ней не
@@ -420,7 +437,14 @@ export interface WasteRequestDto {
   /** Кто принимает машину на площадке; пусто — заявка заведена до миграции 0062. */
   responsibleName: string;
   responsiblePhone: string;
+  /** Комментарий площадки — стороны заказчика; пишется формой заявки. */
   comment: string;
+  /**
+   * Комментарий исполнителя (ADR 0053): что о заявке сказал оператор. Пишется своей ручкой —
+   * заявку исполнитель не редактирует. Показывается второй строкой там же, где комментарий
+   * площадки: обе стороны собирает `wasteRequestCommentLines`.
+   */
+  operatorComment: string;
   status: RequestStatus;
   /** Причина отмены из истории статусов; заполнена только у отменённых заявок. */
   cancelReason: string | null;
@@ -444,6 +468,49 @@ export interface WasteRequestDto {
   deletedAt: string | null;
 }
 
+// ── Комментарий заявки: две стороны (ADR 0053) ──
+
+/** Строка комментария с подписью стороны. */
+export interface WasteCommentLine {
+  key: 'site' | 'operator';
+  /** Подпись строки: «Площадка» либо название контрагента-исполнителя. */
+  label: string;
+  text: string;
+}
+
+/**
+ * Комментарий заявки двумя подписанными строками (ADR 0053). Пустая сторона строкой не
+ * показывается: «Площадка: —» — шум, а не сведения.
+ *
+ * Подпись площадки — слово, а не название объекта: объект виден и в своей колонке списка, и в
+ * шапке карточки. Подпись исполнителя — наоборот, название контрагента: в списке оператора
+ * колонки «Оператор» нет вовсе (ADR 0010), а площадке, у которой операторов несколько, слово
+ * «Оператор» ничего не сообщает. Назначение сняли, а текст остался — подписываем словом: имя
+ * контрагента, которого у заявки уже нет, было бы неправдой.
+ *
+ * Собирается здесь, а не в верстке экрана: мест показа три (таблица, карточка на телефоне,
+ * карточка заявки), и разойтись подписи не должны.
+ */
+export function wasteRequestCommentLines(
+  r: Pick<WasteRequestDto, 'comment' | 'operatorComment' | 'operatorName'>,
+): WasteCommentLine[] {
+  const lines: WasteCommentLine[] = [];
+  if (r.comment) lines.push({ key: 'site', label: 'Площадка', text: r.comment });
+  if (r.operatorComment) {
+    lines.push({ key: 'operator', label: r.operatorName || 'Оператор', text: r.operatorComment });
+  }
+  return lines;
+}
+
+/**
+ * Пишется ли ещё примечание исполнителя. У закрытой заявки — нет: «Выполнена» и «Отменена»
+ * терминальны, заявка стала документом, и дописывать в неё нечего. Понадобилась правка —
+ * администратор откатывает статус, тем же порядком, что и с фактом вывоза (ADR 0035).
+ */
+export function wasteOperatorCommentEditable(status: RequestStatus): boolean {
+  return status !== 'done' && status !== 'cancelled';
+}
+
 // ── История заявки (ADR 0012) ──
 // Сами события описаны в `request-history.ts` — их форма общая для всех модулей заявок.
 // Здесь остаётся своё: как называются поля этого модуля в перечне изменений.
@@ -462,7 +529,10 @@ export const wasteRequestChangeLabels: Record<string, string> = {
   // Контакт ответственного на площадке (миграция 0062).
   responsibleName: 'Ответственный',
   responsiblePhone: 'Телефон ответственного',
-  comment: 'Комментарий',
+  // Комментарий разведён по сторонам (ADR 0053): в истории они названы порознь — иначе «изменён
+  // комментарий» не отвечает, чей.
+  comment: 'Комментарий площадки',
+  operatorComment: 'Комментарий оператора',
   filesAdded: 'Прикреплены файлы',
   filesRemoved: 'Откреплены файлы',
   // Факт выполнения (ADR 0035): своё событие истории — «выполнена» и «вывезено столько-то на
