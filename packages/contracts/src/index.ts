@@ -12,6 +12,7 @@ export * from './users';
 export * from './objects';
 export * from './departments';
 export * from './counterparties';
+export * from './warehouses';
 export * from './container-types';
 export * from './vehicle-kinds';
 export * from './vehicle-types';

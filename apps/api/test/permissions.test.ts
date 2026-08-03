@@ -299,6 +299,9 @@ describe('права внешнего исполнителя зависят от
 
   it('учётки заводятся только на тех контрагентов, за которых кто-то работает', () => {
     expect([...COUNTERPARTY_TYPES_WITH_ACCOUNTS]).toEqual(['operator', 'vehicle_lessor']);
+    // Поставщик (ADR 0051) — сторона договора, а не исполнитель: учётки на него не заводятся,
+    // и войти в портал «от поставщика» нельзя.
+    expect([...COUNTERPARTY_TYPES_WITH_ACCOUNTS]).not.toContain('supplier');
     for (const type of COUNTERPARTY_TYPES) {
       const hasAccounts = COUNTERPARTY_TYPES_WITH_ACCOUNTS.includes(type);
       expect(COUNTERPARTY_TYPE_PERMISSIONS[type].length > 0, type).toBe(hasAccounts);

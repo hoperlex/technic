@@ -104,6 +104,8 @@ export const counterpartyTypeEnum = pgEnum('counterparty_type', [
   'contractor',
   'operator',
   'vehicle_lessor',
+  // Поставщик (ADR 0051, миграция 0076): сторона договора поставки, к которой привязаны склады.
+  'supplier',
 ]);
 // Кем человек назвал себя при регистрации (ADR 0034). Это пожелание, не роль: права даёт
 // только `users.role`, назначаемая администратором. Двум значениям роли в портале не
@@ -910,6 +912,49 @@ export const counterpartySynonyms = pgTable(
     nameUnique: uniqueIndex('counterparty_synonyms_name_unique').on(t.normalizedName),
     counterpartyIdx: index('counterparty_synonyms_counterparty_idx').on(t.counterpartyId),
     nameTrgm: index('counterparty_synonyms_name_trgm').using('gin', sql`${t.name} gin_trgm_ops`),
+  }),
+);
+
+// ── Склады поставщиков (ADR 0051, миграция 0077) ──
+// Склад — адрес, по которому работают с поставщиком; складов у поставщика много, поэтому связь
+// не выражается колонкой в `counterparties`. Идентичность склада — пара «поставщик + адрес»,
+// нормализацию адреса считает БД той же функцией, что и наименования контрагентов.
+// Требование «тип контрагента = supplier» держит сервис — то же решение, что у
+// `waste_requests.operator_counterparty_id` (ADR 0010 §6).
+export const warehouses = pgTable(
+  'warehouses',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    supplierCounterpartyId: uuid('supplier_counterparty_id')
+      .notNull()
+      .references(() => counterparties.id, { onDelete: 'restrict' }),
+    address: text('address').notNull(),
+    normalizedAddress: text('normalized_address').generatedAlwaysAs(
+      sql`counterparty_name_normalize(address)`,
+    ),
+    // Метка склада: пустая строка — «не задана», узнают склад по адресу.
+    name: text('name').notNull().default(''),
+    // Контакт склада: пустая строка — «не указан». Обязательности нет ни здесь, ни в CHECK.
+    contactPerson: text('contact_person').notNull().default(''),
+    contactPhone: text('contact_phone').notNull().default(''),
+    comment: text('comment').notNull().default(''),
+    isActive: boolean('is_active').notNull().default(true),
+    createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+    updatedBy: uuid('updated_by').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    addressNotBlank: check(
+      'warehouses_address_not_blank_check',
+      sql`counterparty_name_normalize(${t.address}) <> ''`,
+    ),
+    // Пара «поставщик + адрес» уникальна; индекс покрывает и проход «склады этого поставщика».
+    supplierAddressUnique: uniqueIndex('warehouses_supplier_address_unique').on(
+      t.supplierCounterpartyId,
+      t.normalizedAddress,
+    ),
+    addressTrgm: index('warehouses_address_trgm').using('gin', sql`${t.address} gin_trgm_ops`),
   }),
 );
 
@@ -2257,6 +2302,7 @@ export type FreightTransportRequestDetailsRow = typeof freightTransportRequestDe
 export type WasteRequestVehicleRow = typeof wasteRequestVehicles.$inferSelect;
 export type CounterpartyRow = typeof counterparties.$inferSelect;
 export type CounterpartySynonymRow = typeof counterpartySynonyms.$inferSelect;
+export type WarehouseRow = typeof warehouses.$inferSelect;
 export type ObjectOperatorRow = typeof constructionObjectOperators.$inferSelect;
 export type PersonRow = typeof persons.$inferSelect;
 export type PersonEmploymentRow = typeof personEmployments.$inferSelect;

@@ -254,6 +254,10 @@ export const COUNTERPARTY_TYPE_PERMISSIONS: Record<CounterpartyType, readonly Pe
   operator: ['wasteRequests.read', 'wasteRequests.status'],
   // Арендодатель ТС (ADR 0038): видит заявки, на которые вышла его техника, и закрывает их.
   vehicle_lessor: ['vehicleRequests.read', 'vehicleRequests.status'],
+  // Поставщик (ADR 0051) — сторона договора поставки: в портале за него никто не работает, его
+  // склады ведут изнутри. Пустой список, как у генподрядчика и подрядчика; появится у поставщика
+  // свой модуль — он будет строкой здесь, а не новой ролью.
+  supplier: [],
 };
 
 /**

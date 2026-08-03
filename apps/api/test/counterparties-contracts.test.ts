@@ -45,7 +45,7 @@ describe('контракт контрагента', () => {
       createCounterpartySchema.parse({ type: 'contractor', name: 'Ромашка', inn: '123' }),
     ).toThrow();
     expect(() =>
-      createCounterpartySchema.parse({ type: 'supplier', name: 'Ромашка', inn: '7707083893' }),
+      createCounterpartySchema.parse({ type: 'bank', name: 'Ромашка', inn: '7707083893' }),
     ).toThrow();
   });
 
@@ -59,6 +59,17 @@ describe('контракт контрагента', () => {
     expect(() =>
       createCounterpartySchema.parse({ type: 'vehicle_lessor', name: 'ООО «ЭВЕРЕНТ»' }),
     ).toThrow();
+  });
+
+  it('принимает поставщика — та же роль наравне с остальными (ADR 0051)', () => {
+    const supplier = createCounterpartySchema.parse({
+      type: 'supplier',
+      name: 'ООО «Стройбаза»',
+      inn: '7707083893',
+    });
+    expect(supplier.type).toBe('supplier');
+    // Объекты обслуживает только оператор — поставщику список привязок не принадлежит.
+    expect(supplier.objectIds).toEqual([]);
   });
 
   it('пустой список синонимов означает «снять все», отсутствие поля — «не трогать»', () => {

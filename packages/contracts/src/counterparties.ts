@@ -9,6 +9,7 @@ export const COUNTERPARTY_TYPES = [
   'contractor',
   'operator',
   'vehicle_lessor',
+  'supplier',
 ] as const;
 export const counterpartyTypeSchema = z.enum(COUNTERPARTY_TYPES);
 export type CounterpartyType = (typeof COUNTERPARTY_TYPES)[number];
@@ -18,6 +19,9 @@ export const counterpartyTypeLabels: Record<CounterpartyType, string> = {
   contractor: 'Подрядчик',
   operator: 'Оператор (вывоз мусора)',
   vehicle_lessor: 'Арендодатель (ТС)',
+  // Модуль в подписи не назван: поставщик — сторона договора поставки, а не исполнитель в
+  // портале. Его склады (ADR 0051) ведёт снабжение, сам он в портале не работает.
+  supplier: 'Поставщик',
 };
 
 export const counterpartyTypeColors: Record<CounterpartyType, string> = {
@@ -25,6 +29,7 @@ export const counterpartyTypeColors: Record<CounterpartyType, string> = {
   contractor: 'blue',
   operator: 'green',
   vehicle_lessor: 'orange',
+  supplier: 'cyan',
 };
 
 // ── ИНН ──
