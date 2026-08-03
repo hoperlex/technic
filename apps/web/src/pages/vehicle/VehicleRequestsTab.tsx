@@ -93,6 +93,7 @@ import { VehicleAssignModal } from './VehicleAssignModal';
 import { VehicleCompleteModal } from './VehicleCompleteModal';
 import { VehicleEarlyEndModal } from './VehicleEarlyEndModal';
 import { VehicleRequestViewModal } from './VehicleRequestViewModal';
+import { VehicleRouteTransferModal } from './VehicleRouteTransferModal';
 import { useObjectScope } from '../../hooks/useObjectScope';
 import { useDepartmentScope } from '../../hooks/useDepartmentScope';
 import {
@@ -579,6 +580,8 @@ export function VehicleRequestsTab() {
   const [completeTarget, setCompleteTarget] = useState<VehicleRequestDto | null>(null);
   // Смена машины у работающей заявки (ADR 0048) — своим запросом: статус при ней не меняется.
   const [reassignTarget, setReassignTarget] = useState<VehicleRequestDto | null>(null);
+  /** Заявка, которую переносят в другой рейс (ADR 0052); null — окно переноса закрыто. */
+  const [transferTarget, setTransferTarget] = useState<VehicleRequestDto | null>(null);
 
   const reassignMut = useMutation({
     mutationFn: (v: { id: string; version: number; assignment: AssignVehicleBody }) =>
@@ -1579,6 +1582,24 @@ export function VehicleRequestsTab() {
               }
             : undefined
         }
+        // Перенос заявки в другой рейс (ADR 0052) — тем же правом, что и ход заявки: рейс это
+        // ход работы по ней. Карточка закрывается, потому что после переноса её поля устареют —
+        // заявка уедет в другой рейс, а с ним, возможно, и на другую машину.
+        onTransfer={
+          viewRecord && canChangeStatus && viewRecord.route && !viewRecord.route.hasWaybill
+            ? (r) => {
+                setViewRecord(null);
+                setTransferTarget(r);
+              }
+            : undefined
+        }
+      />
+
+      {/* Перенос заявки из рейса в рейс: подходящие рейсы того же дня и того же типа техники. */}
+      <VehicleRouteTransferModal
+        request={transferTarget}
+        onClose={() => setTransferTarget(null)}
+        onDone={() => setTransferTarget(null)}
       />
 
       {/* Перевод в работу: техника, ставки (ADR 0027) и фактический срок. Всё уходит тем же

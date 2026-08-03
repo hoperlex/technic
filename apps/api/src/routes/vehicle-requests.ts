@@ -154,7 +154,11 @@ import {
   routeRequestCount,
   routeWaybill,
 } from '../services/vehicle-routes';
-import { tripDate, waybillRequirementFor } from '../services/waybill-issue';
+import {
+  tripDate,
+  waybillRequirementByType,
+  waybillRequirementFor,
+} from '../services/waybill-issue';
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -232,6 +236,8 @@ const requestSelect = {
   routeId: vehicleRoutes.id,
   routeNum: vehicleRoutes.num,
   routePosition: vehicleRouteRequests.position,
+  // Версия рейса: ею перенос заявки в другой маршрут опознаёт исходный (ADR 0052).
+  routeVersion: vehicleRoutes.version,
   // Выписан ли по рейсу действующий лист: подзапросом, а не четвёртым join'ом — в списке нужен
   // признак, а не сам документ (ADR 0041 п. 8).
   routeHasWaybill: sql<boolean>`EXISTS (
@@ -513,6 +519,7 @@ function toDto(r: RequestRow, fileList: FileDto[]): VehicleRequestDto {
             displayNumber: formatVehicleRouteNumber(r.routeNum),
             position: r.routePosition,
             hasWaybill: r.routeHasWaybill,
+            version: r.routeVersion ?? 0,
           }
         : null,
     files: fileList,
@@ -2103,13 +2110,21 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
 
   // ── Смена статуса ──
   /**
-   * То же для маршрутов: ведётся ли по этой заявке рейс, на какую дату, какие рейсы этой машины
-   * на неё уже заведены и чем были заполнены графы шапки в прошлый раз.
+   * То же для маршрутов: ведётся ли по этой заявке рейс, на какую дату, какие рейсы уже заведены
+   * на неё и чем были заполнены графы шапки в прошлый раз.
    *
-   * Форма перевода в работу спрашивает её после выбора машины: диспетчер либо кладёт заявку в
-   * готовый рейс (в нём уже есть водитель и реквизиты), либо заводит новый. Причина «рейс не
-   * ведётся» отдаётся текстом там, где о ней есть что сказать (аренда, тип без бланка); у заказа
-   * техники на объект её нет и быть не должно — рейса у такой заявки не существует (ADR 0041).
+   * Машина необязательна, и от неё зависит, какие рейсы подсказаны (ADR 0052):
+   *
+   * - **без машины** — рейсы того же типа ТС, что заказан в заявке. День планируют с этого
+   *   вопроса: заявка едет рейсом, а рейс уже знает, какой машиной. Принадлежность спрашивать не
+   *   у чего и незачем — рейс заводится только на собственную технику (`assertRouteVehicle`), так
+   *   что список и так сужен ею.
+   * - **с машиной** — рейсы именно этой машины плюс графы шапки от её прошлого рейса: реквизиты
+   *   выезда наследуются от конкретной единицы, и без неё наследовать нечего.
+   *
+   * Причина «рейс не ведётся» отдаётся текстом там, где о ней есть что сказать (аренда, тип без
+   * бланка); у заказа техники на объект её нет и быть не должно — рейса у такой заявки не
+   * существует (ADR 0041).
    */
   r.get(
     '/:id/route-prefill',
@@ -2121,7 +2136,10 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         app.requirePermission('waybills.read'),
         app.requirePermission('vehicleRequests.status', 'Недостаточно прав для смены статуса'),
       ],
-      schema: { params: idParams, querystring: z.object({ vehicleId: z.string().uuid() }) },
+      schema: {
+        params: idParams,
+        querystring: z.object({ vehicleId: z.string().uuid().optional() }),
+      },
     },
     async (req) => {
       const p = requirePrincipal(req);
@@ -2129,10 +2147,16 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       if (!before) throw err.notFound('Заявка не найдена');
       assertRequestScope(p, before);
 
-      const requirement = await waybillRequirementFor(db, {
-        requestType: before.requestType,
-        vehicleId: req.query.vehicleId,
-      });
+      const vehicleId = req.query.vehicleId;
+      const requirement = vehicleId
+        ? await waybillRequirementFor(db, {
+            requestType: before.requestType,
+            vehicleId,
+          })
+        : await waybillRequirementByType(db, {
+            requestType: before.requestType,
+            vehicleTypeId: before.vehicleTypeId,
+          });
       const date = await tripDate(db, before.id);
       if (!requirement.formCode) {
         return {
@@ -2148,7 +2172,12 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
 
       const rows = await routeQuery(db)
         .where(
-          and(eq(vehicleRoutes.vehicleId, req.query.vehicleId), eq(vehicleRoutes.routeDate, date)),
+          and(
+            eq(vehicleRoutes.routeDate, date),
+            vehicleId
+              ? eq(vehicleRoutes.vehicleId, vehicleId)
+              : eq(vehicles.vehicleTypeId, before.vehicleTypeId),
+          ),
         )
         .orderBy(asc(vehicleRoutes.num));
       return {
@@ -2158,7 +2187,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         reason: null,
         tripDate: date,
         routes: await loadRouteDtos(db, rows),
-        trip: await lastTripFields(req.query.vehicleId),
+        trip: vehicleId ? await lastTripFields(vehicleId) : null,
       };
     },
   );

@@ -78,6 +78,35 @@ export async function waybillRequirementFor(
 }
 
 /**
+ * То же, но по одному типу ТС — машина ещё не выбрана (ADR 0052). Этим ответом форма перевода в
+ * работу решает, спрашивать ли рейс до выбора техники: бланк закреплён за типом, и заявка на тип
+ * без бланка рейса не знает независимо от того, какую единицу возьмут.
+ *
+ * Принадлежность здесь не спрашивается: её несёт машина, а не тип. Отбор рейсов сужен ею и без
+ * того — рейс заводится только на собственную технику (`assertRouteVehicle`), и подсказка по типу
+ * чужих машин не покажет.
+ */
+export async function waybillRequirementByType(
+  tx: Reader,
+  params: { requestType: VehicleRequestType; vehicleTypeId: string },
+): Promise<WaybillRequirement> {
+  if (params.requestType !== 'freight_transport') return { formCode: null, reason: null };
+
+  const [row] = await tx
+    .select({ formCode: vehicleTypes.waybillFormCode, typeName: vehicleTypes.name })
+    .from(vehicleTypes)
+    .where(eq(vehicleTypes.id, params.vehicleTypeId));
+
+  if (!row) return { formCode: null, reason: 'Тип техники не найден' };
+  return waybillRequirement({
+    requestType: params.requestType,
+    ownership: 'own',
+    formCode: row.formCode,
+    typeName: row.typeName,
+  });
+}
+
+/**
  * Дата рейса: её несёт время подачи. Заявок другого вида здесь не бывает — лист выписывается
  * только на грузоперевозку (ADR 0041), — но `now()` оставлен ответом на случай заявки без
  * заполненных деталей: лист без даты не выписать вовсе.

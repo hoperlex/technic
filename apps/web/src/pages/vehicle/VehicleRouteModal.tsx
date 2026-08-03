@@ -67,8 +67,13 @@ export function VehicleRouteModal({ routeId, onClose, onChanged }: Props) {
 
   /**
    * Что можно положить в этот рейс: грузоперевозки в работе на собственной технике, поданные в
-   * тот же день и ещё не стоящие ни в одном рейсе. Отбор тот же, что проверит сервер, — иначе
-   * список предлагал бы заявки, которые он отклонит.
+   * тот же день. Отбор тот же, что проверит сервер, — иначе список предлагал бы заявки, которые
+   * он отклонит.
+   *
+   * Заявки чужих рейсов входят сюда наравне со свободными: переложить заявку из Р-7 в Р-9 — это
+   * одно действие переноса, а не «вынуть и положить» двумя, между которыми заявка висит без
+   * маршрута. Не входят только те, чей рейс заморожен выписанным листом: из бумаги, которая у
+   * водителя, заявка исчезнуть не может.
    */
   const { data: candidates } = useQuery({
     queryKey: ['vehicle-requests', 'for-route', route?.routeDate],
@@ -84,7 +89,10 @@ export function VehicleRouteModal({ routeId, onClose, onChanged }: Props) {
     enabled: !!route && !frozen,
   });
   const free = (candidates?.items ?? []).filter(
-    (r: VehicleRequestDto) => !r.route && r.assignment?.ownership === 'own',
+    (r: VehicleRequestDto) =>
+      r.assignment?.ownership === 'own' &&
+      r.route?.id !== route?.id &&
+      !(r.route && r.route.hasWaybill),
   );
 
   const afterChange = (updated: VehicleRouteDto) => {
@@ -94,9 +102,20 @@ export function VehicleRouteModal({ routeId, onClose, onChanged }: Props) {
 
   const fail = (e: unknown) => message.error(errorMessage(e));
 
+  /** Заявка, выбранная в списке добавления: по её рейсу и различаются «положить» и «перенести». */
+  const candidate = free.find((r) => r.id === adding) ?? null;
+
   const attach = useMutation({
-    mutationFn: (requestId: string) =>
-      vehicleRoutesApi.attach(route!.id, { requestId, version: route!.version }),
+    mutationFn: (requestId: string) => {
+      const source = free.find((r) => r.id === requestId)?.route ?? null;
+      return vehicleRoutesApi.attach(route!.id, {
+        requestId,
+        version: route!.version,
+        // Перенос — операция над двумя рейсами, и исходный опознаётся парой «кто + версия»:
+        // версии нумеруются в каждом рейсе отдельно, и одинокая совпала бы случайно.
+        source: source ? { routeId: source.id, version: source.version } : undefined,
+      });
+    },
     onSuccess: (updated) => {
       setAdding(undefined);
       afterChange(updated);
@@ -292,37 +311,52 @@ export function VehicleRouteModal({ routeId, onClose, onChanged }: Props) {
           </div>
 
           {!frozen && route.requests.length < MAX_ROUTE_REQUESTS && (
-            <Space.Compact style={{ width: '100%' }}>
-              <AutoSelect
-                style={{ width: '100%' }}
-                value={adding}
-                onChange={(v) => setAdding(v as string)}
-                options={free.map((r) => ({
-                  value: r.id,
-                  label:
-                    r.requestType === 'freight_transport'
-                      ? `${r.displayNumber} · ${r.loadingLocation} → ${r.unloadingLocation}`
-                      : r.displayNumber,
-                }))}
-                showSearch
-                optionFilterProp="label"
-                placeholder={
-                  free.length > 0
-                    ? 'Заявка в работе без маршрута'
-                    : 'Свободных заявок на эту дату нет'
-                }
-                disabled={free.length === 0}
-              />
-              <Button
-                type="primary"
-                icon={<PlusOutlined />}
-                loading={attach.isPending}
-                disabled={!adding}
-                onClick={() => adding && attach.mutate(adding)}
-              >
-                Добавить
-              </Button>
-            </Space.Compact>
+            <Space direction="vertical" size={4} style={{ width: '100%' }}>
+              <Space.Compact style={{ width: '100%' }}>
+                <AutoSelect
+                  style={{ width: '100%' }}
+                  value={adding}
+                  onChange={(v) => setAdding(v as string)}
+                  // Заявка чужого рейса подписана этим рейсом и талоном: диспетчер должен видеть,
+                  // что забирает её у Р-7, а не берёт со свободных.
+                  options={free.map((r) => ({
+                    value: r.id,
+                    label: [
+                      r.requestType === 'freight_transport'
+                        ? `${r.displayNumber} · ${r.loadingLocation} → ${r.unloadingLocation}`
+                        : r.displayNumber,
+                      r.route ? `из ${r.route.displayNumber}, талон ${r.route.position}` : null,
+                    ]
+                      .filter(Boolean)
+                      .join(' · '),
+                  }))}
+                  showSearch
+                  optionFilterProp="label"
+                  placeholder={
+                    free.length > 0
+                      ? 'Заявка в работе — свободная или из другого рейса'
+                      : 'Подходящих заявок на эту дату нет'
+                  }
+                  disabled={free.length === 0}
+                />
+                <Button
+                  type="primary"
+                  icon={<PlusOutlined />}
+                  loading={attach.isPending}
+                  disabled={!adding}
+                  onClick={() => adding && attach.mutate(adding)}
+                >
+                  {candidate?.route ? 'Перенести' : 'Добавить'}
+                </Button>
+              </Space.Compact>
+              {/* Рейс — источник истины о том, чем едут: заявка, переехавшая сюда с другой
+                машины, поедет этой. Об этом говорят до нажатия, а не после. */}
+              {candidate?.route && candidate.assignment?.vehicleId !== route.vehicleId && (
+                <Typography.Text type="warning">
+                  {candidate.displayNumber} поедет машиной этого рейса — {route.vehicleLabel}
+                </Typography.Text>
+              )}
+            </Space>
           )}
         </Space>
       )}

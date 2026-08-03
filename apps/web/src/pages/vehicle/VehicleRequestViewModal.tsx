@@ -58,6 +58,12 @@ interface Props {
    */
   onReassign?: (r: VehicleRequestDto) => void;
   /**
+   * Перенести заявку в другой рейс (ADR 0052). Не передана — действие недоступно: рейсами
+   * распоряжается тот, кто ведёт маршруты, а карточку заявки читают многие. Кнопка стоит рядом
+   * со строкой «Маршрут» по той же причине, что и «Сменить технику» рядом с техникой.
+   */
+  onTransfer?: (r: VehicleRequestDto) => void;
+  /**
    * Кнопки решения по досрочному завершению (ADR 0044). Функция, а не флаг: доступность зависит
    * и от роли, и от состояния запроса, и знает об этом вкладка, а не карточка. Не передана —
    * карточка показывает запрос на чтение, как и всё остальное в ней.
@@ -141,10 +147,18 @@ export function VehicleRequestViewModal({
   onClose,
   onEdit,
   onReassign,
+  onTransfer,
   earlyEndActions,
 }: Props) {
   const isMobile = useIsMobile();
   const { can } = useAuth();
+
+  /**
+   * Перенос требует обоих прав сразу, как и все операции с рейсами: `vehicleRequests.status` есть
+   * и у внешнего арендодателя (ADR 0038), а в подсказке лежат чужие рейсы и фамилии водителей
+   * собственного парка.
+   */
+  const canTransfer = !!onTransfer && can('waybills.read') && can('vehicleRequests.status');
   const { data: history, isPending } = useQuery({
     queryKey: ['vehicle-requests', request?.id, 'history'],
     queryFn: () => vehicleRequestsApi.history(request!.id),
@@ -262,6 +276,37 @@ export function VehicleRequestViewModal({
             </Typography.Text>
           ),
         },
+        // Рейс, которым заявка едет (ADR 0050). Строка появляется у заявки, стоящей в маршруте:
+        // «Маршрут: —» у новой заявки читалось бы как забытый рейс, а у грузоперевозки в работе
+        // без маршрута об этом говорит тег в списке. Перенос — рядом со значением, как и смена
+        // техники: меняют одно поле, а не заявку целиком (ADR 0052).
+        ...(request.route
+          ? [
+              {
+                key: 'route',
+                label: 'Маршрут',
+                span: 3,
+                children: (
+                  <Space size={8} wrap>
+                    <span>
+                      {request.route.displayNumber} · талон {request.route.position}
+                    </span>
+                    {request.route.hasWaybill ? (
+                      <Typography.Text type="secondary">
+                        лист выписан — состав рейса заморожен
+                      </Typography.Text>
+                    ) : (
+                      canTransfer && (
+                        <Button size="small" onClick={() => onTransfer?.(request)}>
+                          Перенести в другой рейс
+                        </Button>
+                      )
+                    )}
+                  </Space>
+                ),
+              },
+            ]
+          : []),
         // Путевой лист (ADR 0037, печать — ADR 0041). Строка появляется, только когда лист
         // выписан: у аренды его нет вовсе, и «Путевой лист: —» у такой заявки читалось бы как
         // забытый документ. Номер рядом с кнопкой не для красоты — по нему лист ищут в журнале

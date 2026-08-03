@@ -71,6 +71,9 @@ import type {
   VehicleSpecDto,
   VehicleTypeDto,
   VehicleTypeSpecDto,
+  WarehouseDto,
+  CreateWarehouseInput,
+  UpdateWarehouseInput,
   WasteRequestDto,
   WasteRequestSummaryDto,
   WasteTariffDto,
@@ -230,6 +233,19 @@ export const counterpartiesApi = {
     apiFetch<CounterpartyDto>(`/counterparties/${id}/restore`, { method: 'POST' }),
 };
 
+/**
+ * Справочник складов поставщиков (ADR 0051). Удаление здесь настоящее, а не деактивация: ссылок
+ * на склад пока нет, и ошибочный адрес вычищают, а не держат неактивным в списках.
+ */
+export const warehousesApi = {
+  list: (q: Query) => apiFetch<ListResult<WarehouseDto>>('/warehouses', { query: q }),
+  create: (body: CreateWarehouseInput) =>
+    apiFetch<WarehouseDto>('/warehouses', { method: 'POST', body }),
+  update: (id: string, body: UpdateWarehouseInput) =>
+    apiFetch<WarehouseDto>(`/warehouses/${id}`, { method: 'PATCH', body }),
+  remove: (id: string) => apiFetch<{ ok: boolean }>(`/warehouses/${id}`, { method: 'DELETE' }),
+};
+
 export const containerTypesApi = {
   list: (q: Query) => apiFetch<ListResult<ContainerTypeDto>>('/container-types', { query: q }),
   create: (body: CreateContainerTypeInput) =>
@@ -310,11 +326,15 @@ export const vehiclesApi = {
 export const vehicleRequestsApi = {
   list: (q: Query) => apiFetch<ListResult<VehicleRequestDto>>('/vehicle-requests', { query: q }),
   /**
-   * Что портал знает о рейсе до перевода заявки в работу: ведётся ли он на выбранную машину, на
-   * какую дату, какие рейсы этой машины на неё уже заведены и чем были заполнены графы шапки в
-   * прошлый раз. Форма либо кладёт заявку в готовый рейс, либо заводит новый.
+   * Что портал знает о рейсе до перевода заявки в работу: ведётся ли он, на какую дату, какие
+   * рейсы на неё уже заведены и чем были заполнены графы шапки в прошлый раз. Форма либо кладёт
+   * заявку в готовый рейс, либо заводит новый.
+   *
+   * Без `vehicleId` подсказываются рейсы того же типа ТС, что заказан в заявке: день планируют с
+   * вопроса «каким рейсом заявка поедет», а машину задаёт сам рейс. С машиной — её рейсы и графы
+   * шапки от её прошлого рейса (наследовать их без машины неоткуда).
    */
-  routePrefill: (id: string, vehicleId: string) =>
+  routePrefill: (id: string, vehicleId?: string) =>
     apiFetch<{
       required: boolean;
       formLabel: string | null;
@@ -322,7 +342,9 @@ export const vehicleRequestsApi = {
       tripDate: string;
       routes: VehicleRouteDto[];
       trip: RouteTripFields | null;
-    }>(`/vehicle-requests/${id}/route-prefill`, { query: { vehicleId } }),
+    }>(`/vehicle-requests/${id}/route-prefill`, {
+      query: vehicleId ? { vehicleId } : {},
+    }),
   /**
    * Лист, выписанный по заявке (ADR 0041) — его печатают из карточки, не уходя в журнал. `null`
    * приходит там, где листа нет: аренда, заказ техники на объект, заявка не в работе.
@@ -510,6 +532,15 @@ export const wasteRequestsApi = {
     apiFetch<WasteRequestDto>(`/waste-requests/${id}/operator`, {
       method: 'PATCH',
       body: { operatorCounterpartyId, version },
+    }),
+  /**
+   * Примечание исполнителя — вторая строка комментария заявки (ADR 0053). Отдельной ручкой:
+   * оператор заявку не редактирует, а общий PATCH пересчитывает её предмет и тариф.
+   */
+  setOperatorComment: (id: string, operatorComment: string, version: number) =>
+    apiFetch<WasteRequestDto>(`/waste-requests/${id}/comment`, {
+      method: 'PATCH',
+      body: { operatorComment, version },
     }),
   /**
    * `comment` уходит в историю статусов; при отмене это обязательная причина.
