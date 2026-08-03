@@ -11,7 +11,7 @@ import {
   WASTE_REMOVAL_CONTAINER_KIND,
   type WasteRequestDto,
 } from '@technic/contracts';
-import { FILE_MAX_SIZE } from '@shared/config/files';
+import { FILE_MAX_SIZE } from '@shared/config';
 import { filesApi, wasteTariffsApi } from '../../api/resources';
 import { FileLinkList } from '../../components/FileLinks';
 import { FormGrid } from '../../components/FormGrid';

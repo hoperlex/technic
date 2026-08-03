@@ -22,5 +22,8 @@
       "@shared/*": ["./src/shared/*"]
     }
   },
-  "include": ["src", "test", "vite.config.ts", "vitest.config.ts"]
+  "include": ["src", "test", "vite.config.ts", "vitest.config.ts"],
+  // Фикстуры границ живут своим деревом слоёв и своими алиасами (test/fixtures/boundaries/tsconfig.json):
+  // для проверки приложения их импорты заведомо неразрешимы — на то они и материал теста.
+  "exclude": ["test/fixtures"]
 }

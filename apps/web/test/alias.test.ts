@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { FILE_MAX_COUNT, FILE_MAX_SIZE, fileLimitsHint } from '@shared/config/files';
+import { FILE_MAX_COUNT, FILE_MAX_SIZE, fileLimitsHint } from '@shared/config';
 
 /**
  * Алиасы слоёв (`@shared/*`, `@entities/*`, …) объявлены в `tsconfig.json`, а vite и vitest читают
  * их через `resolve.tsconfigPaths`. Разойтись эти три инструмента могут молча: `tsc --noEmit`
  * останется зелёным, а сборка или тесты упадут на «cannot resolve». Здесь проверяется резолвинг
- * vitest; за vite отвечает сборка (в графе приложения `@shared/config/files` импортирует
+ * vitest; за vite отвечает сборка (в графе приложения `@shared/config` импортирует
  * `WasteDoneModal`), за tsc — сам typecheck.
  */
 describe('алиасы слоёв', () => {
