@@ -41,6 +41,9 @@ export const LICENSE_COMMENT =
   'Заведено кадровой выгрузкой: известны только категории. Серию, номер, дату выдачи и срок ' +
   'действия внести по оригиналу удостоверения — заменой документа.';
 
+export const LICENSE_WITH_REQUISITES_COMMENT =
+  'Заведено кадровой выгрузкой с реквизитами ВУ. Документ требует сверки с оригиналом.';
+
 export interface ApplyDriverImportOptions {
   /** Разбор и отчёт без единой записи в базу: первый шаг работы с чужим файлом. */
   dryRun: boolean;
@@ -171,8 +174,17 @@ export async function applyDriverImport(
         .values({
           personId,
           credentialTypeId: licenseType.id,
+          ...(d.license
+            ? {
+                series: d.license.series,
+                number: d.license.number,
+                issuedOn: d.license.issuedOn,
+                expiresOn: d.license.expiresOn,
+                issuedBy: d.license.issuedBy,
+              }
+            : {}),
           verificationStatus: 'unverified',
-          comment: LICENSE_COMMENT,
+          comment: d.license ? LICENSE_WITH_REQUISITES_COMMENT : LICENSE_COMMENT,
         })
         .returning({ id: personCredentials.id });
 

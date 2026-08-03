@@ -377,6 +377,23 @@ export type DriverListQuery = z.infer<typeof driverListQuerySchema>;
 export const DRIVERS_IMPORT_MAX_RECORDS = 500;
 
 /**
+ * Реквизиты ВУ из кадровой таблицы. Даты оставлены строками по той же причине, что даты человека:
+ * единый разбор обоих поддерживаемых форматов и понятные ошибки живут в `prepareDriverImport`.
+ * Категории остаются в поле `categories` строки — это сохраняет совместимость со старой
+ * выгрузкой, где реквизитов документа ещё не было.
+ */
+export const driverImportLicenseSchema = z
+  .object({
+    series: z.string().trim().min(1, 'Серия ВУ обязательна').max(20),
+    number: z.string().trim().min(1, 'Номер ВУ обязателен').max(20),
+    issuedOn: z.string().trim().min(1, 'Дата выдачи ВУ обязательна').max(10),
+    expiresOn: z.string().trim().min(1, 'Срок действия ВУ обязателен').max(10),
+    issuedBy: z.string().trim().max(255).optional(),
+  })
+  .strict();
+export type DriverImportLicenseInput = z.infer<typeof driverImportLicenseSchema>;
+
+/**
  * Одна строка выгрузки. Даты приняты в двух видах намеренно: «ГГГГ-ММ-ДД» отдаёт кадровая
  * система, «ДД.ММ.ГГГГ» набирает человек, а файл правит кадровик, а не программист. Разбор,
  * контрольная сумма СНИЛС и категории — в `prepareDriverImport`: схема проверяет форму, а не
@@ -398,6 +415,8 @@ export const driverImportRecordSchema = z
     snils: z.string().trim().min(1, 'СНИЛС обязателен').max(20),
     /** Категории строкой ровно как в источнике («B,B1,C,C1,BE,CE,C1E»). */
     categories: z.string().trim().max(200).optional(),
+    /** Заполнено, когда к кадровым данным приложены полные реквизиты ВУ. */
+    license: driverImportLicenseSchema.optional(),
   })
   .strict();
 export type DriverImportRecordInput = z.infer<typeof driverImportRecordSchema>;

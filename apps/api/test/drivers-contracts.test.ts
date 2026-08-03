@@ -307,6 +307,40 @@ describe('кадровая выгрузка на входе (ADR 0047)', () => {
     expect(parsed.success && parsed.data.dryRun).toBe(false);
   });
 
+  it('полные реквизиты ВУ принимаются вместе со строкой сотрудника', () => {
+    const parsed = driversImportSchema.safeParse({
+      file: {
+        drivers: [
+          {
+            ...record,
+            license: {
+              series: '99 39',
+              number: '482645',
+              issuedOn: '29.11.2024',
+              expiresOn: '12.07.2027',
+              issuedBy: 'ГИБДД 7711',
+            },
+          },
+        ],
+      },
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  it('неполное ВУ не маскируется под полное: обязательны серия, номер и обе даты', () => {
+    const parsed = driversImportSchema.safeParse({
+      file: {
+        drivers: [
+          {
+            ...record,
+            license: { series: '99 39', number: '482645', issuedOn: '29.11.2024' },
+          },
+        ],
+      },
+    });
+    expect(parsed.success).toBe(false);
+  });
+
   it('лишнее поле — признак другого шаблона выгрузки, а не мелочь', () => {
     const parsed = driversImportSchema.safeParse({
       file: { drivers: [record], tabelNumber: '0001' },

@@ -42,6 +42,44 @@ describe('дата из выгрузки', () => {
   it('американский порядок частей отвергается, а не читается наоборот', () => {
     expect(() => parseImportDate('07/27/1968', 'дата рождения', 'Иванов')).toThrow(/Иванов/u);
   });
+
+  it('нормализует даты полного ВУ вместе с кадровыми датами', () => {
+    const { drivers } = prepareDriverImport(
+      file({
+        license: {
+          series: '99 39',
+          number: '482645',
+          issuedOn: '29.11.2024',
+          expiresOn: '12.07.2027',
+          issuedBy: 'ГИБДД 7711',
+        },
+      }),
+      KNOWN,
+    );
+    expect(drivers[0]!.license).toEqual({
+      series: '99 39',
+      number: '482645',
+      issuedOn: '2024-11-29',
+      expiresOn: '2027-07-12',
+      issuedBy: 'ГИБДД 7711',
+    });
+  });
+
+  it('отвергает ВУ, срок которого раньше даты выдачи', () => {
+    expect(() =>
+      prepareDriverImport(
+        file({
+          license: {
+            series: '99 39',
+            number: '482645',
+            issuedOn: '29.11.2024',
+            expiresOn: '28.11.2024',
+          },
+        }),
+        KNOWN,
+      ),
+    ).toThrow(/срок действия ВУ/u);
+  });
 });
 
 describe('категории из строки источника', () => {
@@ -173,6 +211,27 @@ describe('выгрузка шире водителей (ADR 0049)', () => {
     expect(drivers[0]!.licenseSkipReason).toMatch(/B, C, D, E, F/u);
     // И это не «неизвестные коды»: они известны, просто относятся к другому документу.
     expect(unknownCategories).toEqual([]);
+  });
+
+  it('явные реквизиты ВУ подтверждают тип документа у машиниста', () => {
+    const { drivers } = prepareDriverImport(
+      {
+        drivers: [
+          {
+            ...machinist,
+            license: {
+              series: '99 28',
+              number: '327961',
+              issuedOn: '13.11.2025',
+              expiresOn: '13.11.2035',
+            },
+          },
+        ],
+      },
+      KNOWN,
+    );
+    expect(drivers[0]!.categories).toEqual(['b', 'c', 'd']);
+    expect(drivers[0]!.licenseSkipReason).toBe('');
   });
 
   it('водитель КМУ и водитель легкового — те же водители, документ заводится', () => {

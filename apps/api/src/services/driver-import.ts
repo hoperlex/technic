@@ -38,6 +38,14 @@ export interface DriverImportRecord {
   snils: string;
   /** Категории строкой ровно как в источнике («B,B1,C,C1,BE,CE,C1E»). */
   categories?: string;
+  /** Полные реквизиты ВУ; старые кадровые выгрузки присылают только категории. */
+  license?: {
+    series: string;
+    number: string;
+    issuedOn: string;
+    expiresOn: string;
+    issuedBy?: string;
+  };
 }
 
 export interface DriversImportFile {
@@ -64,6 +72,14 @@ export interface PreparedDriver {
   employedSince: string | null;
   /** Только коды, найденные в справочнике; остальные ушли в `unknownCategories`. */
   categories: string[];
+  /** Нормализованные реквизиты ВУ, если источник их прислал. */
+  license: {
+    series: string;
+    number: string;
+    issuedOn: string;
+    expiresOn: string;
+    issuedBy: string;
+  } | null;
   /**
    * Почему удостоверение не заводится вовсе, хотя категории в строке есть. Пусто — заводится
    * обычным порядком. Заполнено у не водительских должностей (ADR 0049): их категории относятся
@@ -163,6 +179,26 @@ export function prepareDriverImport(
     const jobTitle = d.jobTitle?.trim() || file.jobTitle?.trim() || DEFAULT_JOB_TITLE;
     const department = d.department?.trim() || file.department?.trim() || '';
 
+    const licenseIssuedOn = d.license
+      ? parseImportDate(d.license.issuedOn, 'дата выдачи ВУ', who, problems)
+      : null;
+    const licenseExpiresOn = d.license
+      ? parseImportDate(d.license.expiresOn, 'срок действия ВУ', who, problems)
+      : null;
+    if (licenseIssuedOn && licenseExpiresOn && licenseExpiresOn < licenseIssuedOn) {
+      problems.push(`${who}: срок действия ВУ не может быть раньше даты выдачи`);
+    }
+    const license = d.license
+      ? {
+          series: d.license.series.trim(),
+          number: d.license.number.trim(),
+          // Схема требует обе даты, а разбор возвращает null только после уже записанной ошибки.
+          issuedOn: licenseIssuedOn ?? '',
+          expiresOn: licenseExpiresOn ?? '',
+          issuedBy: d.license.issuedBy?.trim() ?? '',
+        }
+      : null;
+
     const codes = parseCategoryCodes(d.categories);
     const unknown = codes.filter((c) => !known.has(c));
     /**
@@ -175,7 +211,9 @@ export function prepareDriverImport(
      * крана, у которого есть и настоящие права; всё спорное остаётся незаведённым.
      */
     const isDriverLicense =
-      isDriverJobTitle(jobTitle) || (unknown.length === 0 && looksLikeDriverLicense(codes));
+      license !== null ||
+      isDriverJobTitle(jobTitle) ||
+      (unknown.length === 0 && looksLikeDriverLicense(codes));
     const licenseSkipReason =
       isDriverLicense || codes.length === 0
         ? ''
@@ -196,6 +234,7 @@ export function prepareDriverImport(
       birthDate: parseImportDate(d.birthDate, 'дата рождения', who, problems),
       employedSince: parseImportDate(d.employedSince, 'дата приёма', who, problems),
       categories: isDriverLicense ? codes.filter((c) => known.has(c)) : [],
+      license,
       licenseSkipReason,
     };
   });
