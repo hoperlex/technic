@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { apiError, json, mockHttp, noContent } from './http';
+import { apiError, json, mockHttp, noContent, takeUnmatchedHttp } from './http';
 import { apiFetch, isApiError } from '../src/api/client';
 
 /**
@@ -66,6 +66,9 @@ describe('HTTP-моки для тестов', () => {
   it('незаданный маршрут падает с внятным сообщением, а не пустым ответом', async () => {
     mockHttp({});
     await expect(apiFetch('/objects')).rejects.toThrow(/Нет мока для «GET \/objects»/);
+    // Отсутствие мока здесь — предмет проверки, а не оплошность: гасим запись, иначе общая
+    // сверка в setup.ts уронит этот же тест второй раз.
+    expect(takeUnmatchedHttp()).toEqual(['GET /objects']);
   });
 
   /*

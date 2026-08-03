@@ -56,15 +56,21 @@ export function vehicleRequest(
   } as SpecialEquipmentRequestDto;
 }
 
-/** Завизированная заявка: у неё заполнены кто и когда поставил визу. */
+/**
+ * Завизированная заявка: у неё заполнены кто и когда поставил визу.
+ *
+ * Виза проставляется ПОСЛЕ overrides намеренно: иначе `approvedVehicleRequest({ ...vehicleRequest() })`
+ * молча снимал бы её — `approvedAt: null` из распакованной незавизированной заявки перекрывал бы
+ * значение фабрики, и тест «виза стоит» проверял бы ровно противоположное.
+ */
 export function approvedVehicleRequest(
   overrides: Partial<SpecialEquipmentRequestDto> = {},
 ): SpecialEquipmentRequestDto {
   return vehicleRequest({
-    approvedBy: 'user-ruk',
-    approvedByName: 'Рукстроев Р. С.',
-    approvedAt: '2026-08-02T07:00:00.000Z',
     ...overrides,
+    approvedBy: overrides.approvedBy ?? 'user-ruk',
+    approvedByName: overrides.approvedByName ?? 'Рукстроев Р. С.',
+    approvedAt: overrides.approvedAt ?? '2026-08-02T07:00:00.000Z',
   });
 }
 

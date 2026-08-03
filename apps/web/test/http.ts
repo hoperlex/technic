@@ -69,11 +69,43 @@ const API_PREFIX = '/api/v1';
  */
 let originalFetch: typeof globalThis.fetch | null = null;
 
-/** Возвращает настоящий `fetch`. Зовётся из `test/setup.ts` после каждого теста. */
+/**
+ * Запросы, на которые не нашлось маршрута. Собираются отдельно, потому что падение самого
+ * запроса теста не роняет: результат фонового запроса никто не ждёт — TanStack Query проглатывает
+ * ошибку, и экран молча остаётся без данных. Тест при этом зелёный, хотя проверяет не то, что
+ * думает автор. Поэтому список сверяется после каждого теста (`test/setup.ts`).
+ */
+let unmatched: string[] = [];
+
+/**
+ * Забрать список незамоканных запросов, погасив его. Нужен там, где отсутствие мока — предмет
+ * самой проверки: без этого тест на «незаданный маршрут падает внятно» падал бы дважды — по делу
+ * и следом на общей сверке.
+ */
+export function takeUnmatchedHttp(): string[] {
+  const missed = unmatched;
+  unmatched = [];
+  return missed;
+}
+
+/**
+ * Возвращает настоящий `fetch` и сообщает о незамоканных запросах. Зовётся из `test/setup.ts`
+ * после каждого теста.
+ */
 export function restoreHttpMock(): void {
-  if (!originalFetch) return;
-  globalThis.fetch = originalFetch;
-  originalFetch = null;
+  const missed = unmatched;
+  unmatched = [];
+  if (originalFetch) {
+    globalThis.fetch = originalFetch;
+    originalFetch = null;
+  }
+  if (missed.length > 0) {
+    const routes = [...new Set(missed)].join('\n  ');
+    throw new Error(
+      `Экран запросил то, что не описано в mockHttp:\n  ${routes}\n` +
+        'Опишите эти маршруты либо разберитесь, зачем экран их дёргает: без ответа он молча остаётся без данных.',
+    );
+  }
 }
 
 interface ParsedRoute {
@@ -146,8 +178,10 @@ export function mockHttp(routes: RouteMap): HttpMock {
       });
     }
 
-    // Молчаливый `undefined` вместо ответа превращает падение теста в загадку: упадёт он не
-    // здесь, а через три шага — на отсутствующей строке в таблице.
+    // Само по себе это исключение теста не роняет: если результата никто не ждёт, ошибка утонет
+    // в обработке запроса. Поэтому маршрут ещё и записывается — `restoreHttpMock` сверит список
+    // после теста и не даст пропущенному запросу остаться незамеченным.
+    unmatched.push(`${method} ${path}`);
     throw new Error(
       `Нет мока для «${method} ${path}». Опишите маршрут в mockHttp или проверьте, зачем экран его запрашивает.`,
     );
