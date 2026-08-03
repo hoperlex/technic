@@ -18,6 +18,9 @@ import type {
  * Ровно одно исключение — заказ техники на объект (ADR 0041): там нет ни блока, ни текста, ни
  * запроса к серверу. Объяснять отсутствие рейса, которого в этом процессе не существует, значит
  * наводить на мысль, что где-то он всё же бывает.
+ *
+ * Порядок вопросов задан ADR 0052: рейс спрашивается **до** машины и сам её задаёт — рейсы
+ * подсказываются по типу заказанной техники, а выбранный запирает поле «Конкретная техника».
  */
 
 const OWN_VEHICLE: VehicleDto = {
@@ -44,6 +47,18 @@ const OWN_VEHICLE: VehicleDto = {
   createdAt: '2026-01-01T00:00:00.000Z',
   updatedAt: '2026-01-01T00:00:00.000Z',
   deletedAt: null,
+};
+
+/**
+ * Вторая собственная единица того же типа. Нужна там, где проверяется выбор: с одной машиной
+ * `AutoSelect` подставляет её сам (единственный вариант), и «машина не выбрана» — состояние,
+ * которого в такой форме не бывает.
+ */
+const OWN_VEHICLE_2: VehicleDto = {
+  ...OWN_VEHICLE,
+  id: 'v-own-2',
+  modelName: 'МАЗ 6501',
+  registrationNumber: 'А123ВС777',
 };
 
 const RENTAL_VEHICLE: VehicleDto = {
@@ -173,36 +188,39 @@ const EXISTING_ROUTE = {
   version: 1,
 };
 
-/** Подсказка о рейсе приходит по машине: собственная его ведёт, аренда — нет. */
+/** Графы шапки от прошлого рейса машины: их наследует новый рейс, а готовому они уже свои. */
+const LAST_TRIP = {
+  withTrailer: false,
+  trailer1Model: '',
+  trailer1RegNumber: '',
+  trailer2Model: '',
+  trailer2RegNumber: '',
+  garageNumber: '00000389',
+  communicationKind: 'пригородное',
+  transportationKind: 'коммерческая',
+};
+
+/**
+ * Подсказка приходит по типу заказанной техники и на дату из формы (ADR 0052): машину диспетчер
+ * ещё не выбрал, а бланк закреплён за типом. Ведётся ли рейс на выбранную единицу, форма решает
+ * сама правилом из контрактов — по принадлежности машины.
+ */
 let routes = [EXISTING_ROUTE];
-const prefill = vi.fn(async (_id: string, vehicleId: string) =>
-  vehicleId === 'v-own'
-    ? {
-        required: true,
-        formLabel: 'Форма 4-П (грузовой автомобиль)',
-        reason: null,
-        tripDate: '2026-08-10',
-        routes,
-        trip: {
-          withTrailer: false,
-          trailer1Model: '',
-          trailer1RegNumber: '',
-          trailer2Model: '',
-          trailer2RegNumber: '',
-          garageNumber: '00000389',
-          communicationKind: 'пригородное',
-          transportationKind: 'коммерческая',
-        },
-      }
-    : {
-        required: false,
-        formLabel: null,
-        reason: 'Путевой лист на арендную технику выписывает арендодатель',
-        tripDate: '2026-08-10',
-        routes: [],
-        trip: null,
-      },
-);
+const prefill = vi.fn(async (_id: string, params: { vehicleId?: string; date?: string } = {}) => ({
+  required: true,
+  formCode: '4p' as const,
+  formLabel: 'Форма 4-П (грузовой автомобиль)',
+  reason: null,
+  tripDate: params.date ?? '2026-08-10',
+  routes: params.vehicleId ? routes.filter((r) => r.vehicleId === params.vehicleId) : routes,
+  trip: params.vehicleId ? LAST_TRIP : null,
+}));
+
+/** Реквизиты выезда наследуются отдельной ручкой — по выбранной машине и дате рейса. */
+const suggest = vi.fn(async (_q: { vehicleId: string; date: string }) => ({
+  routes: [],
+  trip: LAST_TRIP,
+}));
 
 /** Отбор водителей — шпион: по нему видно, на какую дату форма их спрашивает. */
 const availableDrivers = vi.fn(async (_q: { vehicleId: string; on: string }) => ({
@@ -220,16 +238,15 @@ const availableDrivers = vi.fn(async (_q: { vehicleId: string; on: string }) => 
   ],
 }));
 
+/** Парк, который видит форма: тест сужает его до одной собственной машины или расширяет до двух. */
+let fleet: VehicleDto[] = [OWN_VEHICLE, RENTAL_VEHICLE];
+
 vi.mock('../src/api/resources', () => ({
   vehiclesApi: {
-    list: async () => ({
-      items: [OWN_VEHICLE, RENTAL_VEHICLE],
-      total: 2,
-      page: 1,
-      pageSize: 500,
-    }),
+    list: async () => ({ items: fleet, total: fleet.length, page: 1, pageSize: 500 }),
   },
   vehicleRequestsApi: { routePrefill: prefill },
+  vehicleRoutesApi: { suggest },
   driversApi: {
     available: (q: { vehicleId: string; on: string }) => availableDrivers(q),
   },
@@ -282,12 +299,46 @@ function renderModal(
   );
 }
 
+/** Выбор значения в AutoSelect: окно живёт в портале, поэтому поле ищется по id (ADR 0052). */
+async function pickOption(fieldId: string, text: string) {
+  const field = document.querySelector(`#${fieldId}`)!.closest('.ant-select')!;
+  fireEvent.mouseDown(field.querySelector('.ant-select-selector') ?? field);
+  await waitFor(() => expect(document.querySelector('.ant-select-item-option')).toBeTruthy());
+  const option = [...document.querySelectorAll('.ant-select-item-option')].find((o) =>
+    o.textContent?.includes(text),
+  );
+  fireEvent.click(option!);
+}
+
 describe('маршрут в форме перевода в работу', () => {
-  it('до выбора машины о рейсе не спрашивают: он ведётся на конкретную', async () => {
+  it('рейс спрашивается до машины и молча не подставляется', async () => {
     routes = [EXISTING_ROUTE];
+    fleet = [OWN_VEHICLE, OWN_VEHICLE_2, RENTAL_VEHICLE];
+    prefill.mockClear();
     renderModal();
-    await waitFor(() => expect(screen.getByText('Конкретная техника')).toBeDefined());
-    expect(screen.queryByText('Маршрут')).toBeNull();
+    await waitFor(() => expect(screen.getByText('Маршрут')).toBeDefined());
+
+    // Машины ещё нет — и подсказка приходит без неё: рейсы того же типа ТС на дату заявки.
+    expect(prefill.mock.calls[0]![1]?.vehicleId).toBeUndefined();
+    // Подставленный рейс выбрал бы и машину, а её выбирает человек: поле стоит на новом рейсе.
+    expect(screen.getByTitle('Новый маршрут')).toBeDefined();
+    fleet = [OWN_VEHICLE, RENTAL_VEHICLE];
+  });
+
+  it('выбранный рейс задаёт машину и запирает её поле', async () => {
+    routes = [EXISTING_ROUTE];
+    fleet = [OWN_VEHICLE, OWN_VEHICLE_2, RENTAL_VEHICLE];
+    renderModal();
+    await waitFor(() => expect(screen.getByText('Маршрут')).toBeDefined());
+
+    await pickOption('routeId', 'Р-12');
+
+    // Машина рейса подставлена, а поле заперто: «рейсом Р-12, но другой машиной» — расхождение,
+    // на которое сервер ответил бы отказом.
+    await waitFor(() => expect(screen.getByText(/Машину задал рейс Р-12/)).toBeDefined());
+    expect(document.querySelector('#vehicleId')!.getAttribute('disabled')).not.toBeNull();
+    expect(screen.getByText(/водитель и реквизиты выезда там уже свои/)).toBeDefined();
+    fleet = [OWN_VEHICLE, RENTAL_VEHICLE];
   });
 
   it('на собственную машину предлагает готовый рейс этого дня', async () => {
@@ -296,12 +347,10 @@ describe('маршрут в форме перевода в работу', () => 
     await waitFor(() => expect(screen.getByText('Маршрут')).toBeDefined());
 
     // Рейс подставлен сам: диспетчер собирает день машины, а не заводит второй рейс на ту же дату.
-    expect(screen.getByText(/Р-12/)).toBeDefined();
+    await waitFor(() => expect(screen.getByTitle(/Р-12/)).toBeDefined());
     // Водитель и реквизиты выезда — свойства рейса: у готового их не переспрашивают.
     expect(screen.queryByText('Рейс с прицепом')).toBeNull();
-    expect(
-      screen.getByText(/Водитель и реквизиты выезда берутся из выбранного рейса/),
-    ).toBeDefined();
+    expect(screen.getByText(/водитель и реквизиты выезда там уже свои/)).toBeDefined();
   });
 
   it('когда рейса на этот день нет, спрашивает водителя и реквизиты нового', async () => {
@@ -312,7 +361,8 @@ describe('маршрут в форме перевода в работу', () => 
     expect(screen.getByText('Водитель')).toBeDefined();
     expect(screen.getByText('Рейс с прицепом')).toBeDefined();
     // Графы шапки подставлены от прошлого рейса этой машины — их не перенабирают каждый раз.
-    expect(screen.getByDisplayValue('00000389')).toBeDefined();
+    // Приходят они вторым запросом (`suggest`), уже по выбранной машине, — отсюда ожидание.
+    await waitFor(() => expect(screen.getByDisplayValue('00000389')).toBeDefined());
     expect(screen.getByDisplayValue('пригородное')).toBeDefined();
   });
 
