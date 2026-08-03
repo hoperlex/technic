@@ -63,8 +63,14 @@ export function DriversImportModal({ open, onClose, onImported }: Props) {
     onClose();
   };
 
+  /**
+   * Выгрузка идёт переменной мутации, а не берётся из состояния. Предпросмотр запускается тем же
+   * обработчиком, что разобрал файл, — а состояние к этому моменту ещё не закоммичено, и замыкание
+   * `mutationFn` отдало бы `file` предыдущего рендера, то есть `null` после `reset()`. Сервер на
+   * это отвечает «Ошибка валидации данных: file», что читается как негодный файл, хотя файл цел.
+   */
   const importMut = useMutation({
-    mutationFn: (dryRun: boolean) => driversApi.import({ dryRun, file: file! }),
+    mutationFn: (v: { dryRun: boolean; file: ImportFile }) => driversApi.import(v),
     onSuccess: (r) => {
       setError('');
       setReport(r);
@@ -90,8 +96,9 @@ export function DriversImportModal({ open, onClose, onImported }: Props) {
       setError(`«${f.name}» — не JSON. Кадровая выгрузка приходит файлом .json.`);
       return;
     }
-    setFile(parsed as ImportFile);
-    importMut.mutate(true);
+    const next = parsed as ImportFile;
+    setFile(next);
+    importMut.mutate({ dryRun: true, file: next });
   };
 
   const preview = report?.dryRun === true;
@@ -106,9 +113,9 @@ export function DriversImportModal({ open, onClose, onImported }: Props) {
       <Button onClick={close}>Отмена</Button>
       <Button
         type="primary"
-        disabled={!preview || report.created.length === 0}
+        disabled={!preview || report.created.length === 0 || !file}
         loading={importMut.isPending}
-        onClick={() => importMut.mutate(false)}
+        onClick={() => file && importMut.mutate({ dryRun: false, file })}
       >
         {preview && report.created.length > 0
           ? `Завести водителей: ${report.created.length}`

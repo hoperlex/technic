@@ -25,11 +25,14 @@ const PREVIEW: DriversImportReportDto = {
 const DONE: DriversImportReportDto = { ...PREVIEW, dryRun: false };
 
 const calls: { dryRun: boolean }[] = [];
+/** Содержимое запросов отдельно от флага: за `dryRun` следит один тест, за выгрузкой — другой. */
+const sent: unknown[] = [];
 
 vi.mock('../src/api/resources', () => ({
   driversApi: {
-    import: async (body: { dryRun: boolean }) => {
+    import: async (body: { dryRun: boolean; file: unknown }) => {
       calls.push({ dryRun: body.dryRun });
+      sent.push(body.file);
       return body.dryRun ? PREVIEW : DONE;
     },
   },
@@ -99,6 +102,26 @@ describe('окно кадровой выгрузки', () => {
     // Тот же итог всплывашкой и в самом окне — берём заголовок отчёта, а не первое совпадение.
     expect(document.querySelector('strong')?.textContent).toBe('Заведено водителей: 2');
     expect(onImported).toHaveBeenCalled();
+  });
+
+  /**
+   * Оба запроса несут саму выгрузку. Проверяется потому, что окно уходило в предпросмотр тем же
+   * обработчиком, что разобрал файл: состояние к этому моменту ещё не закоммичено, и запрос уносил
+   * `file` предыдущего рендера — `null`. Внешне это неотличимо от негодного файла: сервер отвечает
+   * «Ошибка валидации данных: file», и человек ищет ошибку в выгрузке, которая цела.
+   */
+  it('в оба запроса уходит разобранная выгрузка, а не пустое поле', async () => {
+    setViewport(DESKTOP_VIEWPORT);
+    calls.length = 0;
+    sent.length = 0;
+    renderModal();
+
+    pickFile(FILE_JSON);
+    fireEvent.click(await screen.findByText(/Завести водителей: 2/u));
+
+    await waitFor(() => expect(sent).toHaveLength(2));
+    expect(sent[0]).toEqual(JSON.parse(FILE_JSON));
+    expect(sent[1]).toEqual(JSON.parse(FILE_JSON));
   });
 
   it('не-JSON дальше окна не уходит: запроса нет, ошибка объяснена', async () => {
