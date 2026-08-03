@@ -1,6 +1,7 @@
 import dayjs from 'dayjs';
-import { MOSCOW_TZ } from '../theme';
+
 import { isApiError } from '../api/client';
+import { MOSCOW_TZ } from '@shared/config';
 
 export function formatDateTime(iso: string | null | undefined): string {
   if (!iso) return '—';

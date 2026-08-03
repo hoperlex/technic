@@ -94,7 +94,7 @@ import {
   isPastDate,
   minRequestDate,
 } from '../../utils/date';
-import { MOSCOW_TZ } from '../../theme';
+
 import { FilesCell } from '../../components/FileLinks';
 import { VehicleAssignModal } from './VehicleAssignModal';
 import { VehicleCompleteModal } from './VehicleCompleteModal';
@@ -104,6 +104,7 @@ import { VehicleRelocationModal } from './VehicleRelocationModal';
 import { VehicleRouteTransferModal } from './VehicleRouteTransferModal';
 import { useObjectScope } from '../../hooks/useObjectScope';
 import { useDepartmentScope } from '../../hooks/useDepartmentScope';
+import { MOSCOW_TZ } from '@shared/config';
 import {
   ApprovalCell,
   EarlyEndTag,

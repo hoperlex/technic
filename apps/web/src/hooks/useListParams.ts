@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { TableChange } from '../components/DataTable';
+import { DESKTOP_PAGE_SIZE, MOBILE_PAGE_SIZE } from '@shared/config';
 import { firstFilter } from '../utils/table';
 import { useIsMobile } from './useIsMobile';
 
@@ -17,14 +18,6 @@ interface Options<E> {
   searchKeys: string[];
   mapFilters?: (filters: NonNullable<TableChange['filters']>) => Partial<E>;
 }
-
-const DESKTOP_PAGE_SIZE = 100;
-/**
- * На телефоне страница меньше (ADR 0030): карточка занимает столько же места, сколько десяток
- * строк таблицы, и сотня записей — это метры прокрутки и лишний трафик. Размер задаётся здесь,
- * а не в таблице: иначе список показывал бы одно число, а запрос уходил бы с другим.
- */
-const MOBILE_PAGE_SIZE = 50;
 
 /** Управление параметрами server-side таблицы (страница/размер/сортировка/поиск/фильтры). */
 export function useListParams<E extends object>(initialExtra: E, opts: Options<E>) {

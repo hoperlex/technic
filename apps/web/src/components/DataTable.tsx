@@ -10,6 +10,7 @@ import {
 } from 'antd';
 import { MoreOutlined } from '@ant-design/icons';
 import type { FilterValue, SorterResult } from 'antd/es/table/interface';
+import { PAGE_SIZE_OPTIONS } from '@shared/config';
 import { useElementSize } from '../hooks/useElementSize';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { ActionSheet, type ActionSheetItem } from './ActionSheet';
@@ -222,7 +223,7 @@ export function DataTable<T extends object>(props: DataTableProps<T>) {
           pageSize: props.pageSize,
           total: props.total,
           showSizeChanger: true,
-          pageSizeOptions: ['100', '200', '500'],
+          pageSizeOptions: PAGE_SIZE_OPTIONS.map(String),
           showTotal: (t) => `Всего: ${t}`,
         }}
       />

@@ -86,7 +86,7 @@ import { useIsMobile } from '../hooks/useIsMobile';
 import { useListParams } from '../hooks/useListParams';
 import { useObjectScope } from '../hooks/useObjectScope';
 import { useAuth } from '../auth/AuthContext';
-import { MOSCOW_TZ } from '../theme';
+
 import { errorMessage, formatDate, formatDateTimeMaybe, formatMoney } from '../utils/format';
 import { applyApiFieldErrors } from '../utils/formErrors';
 import { withSavedOption } from '../utils/selectOptions';
@@ -102,6 +102,7 @@ import {
 import { wasteAmountLine, wastePricingHint } from './waste/pricingHint';
 import { WasteDoneModal } from './waste/WasteDoneModal';
 import { WasteRequestViewModal } from './waste/WasteRequestViewModal';
+import { MOSCOW_TZ } from '@shared/config';
 
 const FILE_MAX_SIZE = 52_428_800; // 50 МБ
 const FILE_MAX_COUNT = 20;

@@ -28,5 +28,3 @@ const mobileTheme: ThemeConfig = {
 export function themeFor(isMobile: boolean): ThemeConfig {
   return isMobile ? mobileTheme : theme;
 }
-
-export const MOSCOW_TZ = 'Europe/Moscow';

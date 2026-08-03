@@ -11,8 +11,9 @@ import { BrowserRouter } from 'react-router';
 import App from './App';
 import { AuthProvider } from './auth/AuthContext';
 import { useIsMobile, useMobileRootClass } from './hooks/useIsMobile';
-import { MOSCOW_TZ, themeFor } from './theme';
+import { themeFor } from './theme';
 import './styles.css';
+import { MOSCOW_TZ } from '@shared/config';
 
 dayjs.extend(utc);
 dayjs.extend(timezone);

@@ -46,9 +46,10 @@ import { FormGrid } from '../../components/FormGrid';
 import { FormModal } from '../../components/FormModal';
 import { TimeInput, optionalWorkTimeRule } from '../../components/TimeInput';
 import { useIsMobile } from '../../hooks/useIsMobile';
-import { MOSCOW_TZ } from '../../theme';
+
 import { formatMoney } from '../../utils/format';
 import { formatDateOnly } from './shared';
+import { MOSCOW_TZ } from '@shared/config';
 
 /**
  * Выбор техники, срока и ставок при переводе заявки в работу (ADR 0027).
