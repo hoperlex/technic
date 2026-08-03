@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   App,
@@ -20,6 +20,7 @@ import {
   assignmentTitle,
   type ConfirmScheduleBody,
   formatMoscowDateTime,
+  isRouteEditable,
   LICENSE_REQUISITES_MISSING_HINT,
   LICENSE_REQUISITES_MISSING_WARNING,
   licenseRequisitesMissing,
@@ -36,8 +37,14 @@ import {
   vehicleLabel,
   vehicleOwnershipLabels,
   type VehicleRequestDto,
+  waybillRequirement,
 } from '@technic/contracts';
-import { driversApi, vehicleRequestsApi, vehiclesApi } from '../../api/resources';
+import {
+  driversApi,
+  vehicleRequestsApi,
+  vehicleRoutesApi,
+  vehiclesApi,
+} from '../../api/resources';
 import { AutoSelect } from '../../components/AutoSelect';
 import { FormGrid } from '../../components/FormGrid';
 import { FormModal } from '../../components/FormModal';
@@ -275,32 +282,65 @@ export function VehicleAssignModal({
   // на площадке, и объяснять отсутствие блока нечем — документа в этом процессе не существует.
   const withTrailer = Form.useWatch('withTrailer', form) ?? false;
   const routeId = Form.useWatch('routeId', form);
-  const { data: prefill } = useQuery({
-    queryKey: ['route-prefill', targetId, vehicleId],
-    queryFn: () => vehicleRequestsApi.routePrefill(targetId!, vehicleId!),
-    enabled: isFreight && !!targetId && !!vehicleId,
-  });
-  const needsRoute = prefill?.required ?? false;
-  /** Рейсы этой машины на эту дату, где ещё остался свободный талон. */
-  const routeOptions = (prefill?.routes ?? []).filter(
-    (r) => r.requests.length < MAX_ROUTE_REQUESTS,
-  );
-  /** Выбран готовый рейс: водитель и реквизиты выезда в нём уже свои, спрашивать их незачем. */
-  const joiningRoute = !!routeId && routeId !== NEW_ROUTE;
 
   /**
-   * Дата рейса для отбора водителей и подписи листа. У грузоперевозки её несёт подача — и берётся
-   * она из формы, а не из ответа сервера: время правят прямо здесь, и годность удостоверения
-   * обязана проверяться на тот день, на который машина выйдет. У прочих заявок дата листа — день
-   * перевода в работу (ADR 0037), его и считает сервер.
+   * Дата рейса для подсказки, отбора водителей и подписи листа. У грузоперевозки её несёт подача —
+   * и берётся она из формы, а не из ответа сервера: время правят прямо здесь, и годность
+   * удостоверения обязана проверяться на тот день, на который машина выйдет. У прочих заявок дата
+   * листа — день перевода в работу (ADR 0037), его и считает сервер.
    */
   // При смене техники (ADR 0048) срок не правят, и дату рейса целиком считает сервер: в форме
   // поля подачи нет, а брать её из невидимого значения значило бы зависеть от того, что осталось
   // в форме от прошлого открытия.
-  const tripDate =
-    isFreight && !reassign
-      ? (scheduledDate?.format('YYYY-MM-DD') ?? prefill?.tripDate)
-      : prefill?.tripDate;
+  const formTripDate = isFreight && !reassign ? scheduledDate?.format('YYYY-MM-DD') : undefined;
+
+  /**
+   * Подсказка рейсов — по типу заказанной техники и без машины (ADR 0052): день планируют с
+   * вопроса «каким рейсом заявка поедет», а машину задаёт сам рейс. Ответ не зависит от выбранной
+   * единицы, поэтому список не пересобирается под каждый клик и не спорит с уже выбранным рейсом.
+   */
+  const { data: prefill } = useQuery({
+    queryKey: ['route-prefill', targetId, formTripDate],
+    queryFn: () => vehicleRequestsApi.routePrefill(targetId!, { date: formTripDate }),
+    enabled: isFreight && !!targetId,
+  });
+  const tripDate = formTripDate ?? prefill?.tripDate;
+
+  /**
+   * Ведётся ли рейс — правилом из контрактов, а не вторым запросом: бланк закреплён за типом ТС
+   * (его и принёс `prefill`), а принадлежность известна из выбранной машины. Так причина
+   * «маршрут не ведётся» появляется в тот же миг, когда выбрана арендная единица.
+   */
+  const requirement =
+    request && isFreight
+      ? waybillRequirement({
+          requestType: request.requestType,
+          ownership: selected?.ownership ?? ownership,
+          formCode: prefill?.formCode ?? null,
+          typeName: request.vehicleTypeName,
+        })
+      : { formCode: null, reason: null };
+  const needsRoute = !!requirement.formCode;
+
+  /**
+   * Рейсы, куда заявку можно положить: со свободным талоном и не замороженные выписанным листом.
+   * Заморозка проверяется тем же правилом, что и на сервере, — иначе список предлагал бы рейсы,
+   * которые он отклонит.
+   */
+  const routeOptions = (prefill?.routes ?? []).filter(
+    (r) =>
+      r.requests.length < MAX_ROUTE_REQUESTS && isRouteEditable(r.waybill?.status ?? null),
+  );
+  /** Выбран готовый рейс: водитель и реквизиты выезда в нём уже свои, спрашивать их незачем. */
+  const joiningRoute = !!routeId && routeId !== NEW_ROUTE;
+  const joinedRoute = routeOptions.find((r) => r.id === routeId) ?? null;
+
+  /** Графы шапки от прошлого рейса выбранной машины — они нужны только новому рейсу. */
+  const { data: suggestion } = useQuery({
+    queryKey: ['vehicle-routes', 'suggest', vehicleId, tripDate],
+    queryFn: () => vehicleRoutesApi.suggest({ vehicleId: vehicleId!, date: tripDate! }),
+    enabled: needsRoute && !joiningRoute && !!vehicleId && !!tripDate,
+  });
 
   // Список водителей — тот же отбор, что проверит сервер: годные к этой машине на дату рейса.
   const { data: selection, isFetching: driversLoading } = useQuery({
@@ -330,26 +370,46 @@ export function VehicleAssignModal({
   );
 
   /**
-   * Рейс подставляется сам: если у машины на этот день уже есть рейс со свободным талоном, заявка
-   * поедет в него — так диспетчер и работает, собирая день машины. Пусто — заводится новый.
+   * Рейс подставляется сам только под уже известную машину: у назначенной единицы (повторный
+   * перевод в работу после отката, смена техники) заявка поедет её сегодняшним рейсом. Пока
+   * машина не выбрана, поле стоит на «Новом маршруте»: подставленный рейс выбрал бы и машину, а
+   * её выбирает человек (ADR 0052).
+   *
+   * Ручной выбор рейса подстановка не трогает: `routeTouched` взводится первым же изменением
+   * поля, и пришедший позже ответ сервера не переписывает выбранное.
    */
+  const routeTouched = useRef(false);
+  useEffect(() => {
+    routeTouched.current = false;
+  }, [targetId]);
+
   useEffect(() => {
     if (!needsRoute) return;
-    form.setFieldsValue({ routeId: routeOptions[0]?.id ?? NEW_ROUTE });
-  }, [needsRoute, prefill?.routes]);
+    // Выбранный рейс пропал из подсказки — правили дату подачи, и рейсы теперь другого дня.
+    // Молча оставить его нельзя: поле показывало бы рейс, которого сервер в этот день не знает.
+    const current = form.getFieldValue('routeId');
+    if (current && current !== NEW_ROUTE && !routeOptions.some((r) => r.id === current)) {
+      form.setFieldsValue({ routeId: NEW_ROUTE });
+      return;
+    }
+    if (routeTouched.current) return;
+    const own = vehicleId ? routeOptions.find((r) => r.vehicleId === vehicleId) : null;
+    form.setFieldsValue({ routeId: own?.id ?? NEW_ROUTE });
+  }, [needsRoute, vehicleId, prefill?.routes]);
 
   /** Графы шапки наследуются от прошлого рейса этой машины — их правят раз в сезон, а не в рейс. */
   useEffect(() => {
-    if (!prefill?.trip) return;
+    const trip = suggestion?.trip;
+    if (!trip) return;
     form.setFieldsValue({
-      withTrailer: prefill.trip.withTrailer,
-      trailer1Model: prefill.trip.trailer1Model,
-      trailer1RegNumber: prefill.trip.trailer1RegNumber,
-      garageNumber: prefill.trip.garageNumber,
-      communicationKind: prefill.trip.communicationKind,
-      transportationKind: prefill.trip.transportationKind,
+      withTrailer: trip.withTrailer,
+      trailer1Model: trip.trailer1Model,
+      trailer1RegNumber: trip.trailer1RegNumber,
+      garageNumber: trip.garageNumber,
+      communicationKind: trip.communicationKind,
+      transportationKind: trip.transportationKind,
     });
-  }, [prefill?.trip]);
+  }, [suggestion?.trip]);
 
   /** Ставки предложения аренды: по ним подставляются поля и видно, что цену изменили вручную. */
   const listedRate = selected?.ownership === 'rental' ? selected : null;
@@ -358,7 +418,10 @@ export function VehicleAssignModal({
     ((pricePerHour ?? null) !== (listedRate.pricePerHour ?? null) ||
       (pricePerShift ?? null) !== (listedRate.pricePerShift ?? null));
 
-  /** Смена ветки: чужие поля сбрасываются — арендодатель у своей машины смысла не имеет. */
+  /**
+   * Смена ветки: чужие поля сбрасываются — арендодатель у своей машины смысла не имеет. Рейс
+   * сбрасывается вместе с машиной: арендную единицу ведёт арендодатель, и рейса у неё нет.
+   */
   const changeOwnership = (next: VehicleOwnership) => {
     setOwnership(next);
     form.setFieldsValue({
@@ -367,18 +430,43 @@ export function VehicleAssignModal({
       pricePerHour: null,
       pricePerShift: null,
       shiftHours: null,
+      routeId: NEW_ROUTE,
     });
   };
 
-  /** Выбор машины подставляет её ставки из справочника; у собственной их нет — поля пустые. */
-  const changeVehicle = (id: string) => {
+  /** Машина и её ставки из справочника: у собственной их нет — поля остаются пустыми. */
+  const vehicleValues = (id: string) => {
     const v = vehicles.find((x) => x.id === id);
-    form.setFieldsValue({
+    return {
       vehicleId: id,
       pricePerHour: v?.pricePerHour ?? null,
       pricePerShift: v?.pricePerShift ?? null,
       shiftHours: v?.shiftHours ?? null,
+    };
+  };
+
+  /**
+   * Выбор машины подставляет её ставки и её сегодняшний рейс: так диспетчер и работает, собирая
+   * день машины. Свободного рейса нет — заводится новый.
+   */
+  const changeVehicle = (id: string) => {
+    const own = routeOptions.find((r) => r.vehicleId === id);
+    form.setFieldsValue({
+      ...vehicleValues(id),
+      ...(needsRoute ? { routeId: own?.id ?? NEW_ROUTE } : {}),
     });
+  };
+
+  /**
+   * Выбор рейса задаёт машину: рейс заведён на конкретную единицу, и «поедет рейсом Р-12, но
+   * другой машиной» — не состояние, а расхождение, на которое сервер ответил бы «маршрут заведён
+   * на другую машину». Поле «Техника» при выбранном рейсе заблокировано; «Новый маршрут» его
+   * освобождает, оставляя выбранное значение.
+   */
+  const changeRoute = (id: string) => {
+    routeTouched.current = true;
+    const target = routeOptions.find((r) => r.id === id) ?? null;
+    form.setFieldsValue({ routeId: id, ...(target ? vehicleValues(target.vehicleId) : {}) });
   };
 
   /**
@@ -575,7 +663,46 @@ export function VehicleAssignModal({
               </>
             )}
 
-            {/* Шаг 1: чья машина. Количество единиц этого типа — в самой подписи: пустая ветка
+            {/* Шаг 1: каким рейсом заявка поедет. Вопрос стоит до техники, потому что так и
+              планируют день: у машины этого типа уже собран рейс, и заявка дописывается в него
+              талоном — а машину задаёт сам рейс (ADR 0052). «Новый маршрут» возвращает прежний
+              порядок: выбирают машину, а рейс заводится под неё.
+
+              Рейсы показываются на дату из формы: подачу правят здесь же, а рейс печатает задание
+              на день — подсказка соседнего дня предлагала бы рейсы, в которые заявка не встанет. */}
+            {needsRoute && (
+              <FormGrid.Full>
+                <Typography.Title level={5} style={{ marginTop: 8 }}>
+                  Маршрут
+                </Typography.Title>
+                <Typography.Paragraph type="secondary" style={{ marginTop: -8 }}>
+                  Рейс на {tripDate}. Путевой лист выписывается с маршрута, когда состав собран —
+                  {prefill?.formLabel ? ` ${prefill.formLabel.toLowerCase()}` : ' по бланку рейса'}.
+                </Typography.Paragraph>
+                <Form.Item name="routeId" label="Рейс">
+                  <AutoSelect
+                    options={[
+                      ...routeOptions.map((r) => ({
+                        value: r.id,
+                        label: [
+                          r.displayNumber,
+                          r.vehicleLabel,
+                          r.driverName || 'водитель не назначен',
+                          `${r.requests.length} из ${MAX_ROUTE_REQUESTS} талонов`,
+                        ].join(' · '),
+                      })),
+                      { value: NEW_ROUTE, label: 'Новый маршрут' },
+                    ]}
+                    showSearch
+                    optionFilterProp="label"
+                    placeholder="Выберите рейс"
+                    onChange={changeRoute}
+                  />
+                </Form.Item>
+              </FormGrid.Full>
+            )}
+
+            {/* Шаг 2: чья машина. Количество единиц этого типа — в самой подписи: пустая ветка
               видна до того, как в неё зайдут. */}
             {/* Не поле формы: принадлежность в назначение не уходит — она у самой машины, а
               здесь только сужает список. */}
@@ -594,7 +721,7 @@ export function VehicleAssignModal({
               </Form.Item>
             </FormGrid.Full>
 
-            {/* Шаг 2 (только аренда): у кого берём. */}
+            {/* Шаг 3 (только аренда): у кого берём. */}
             {isRental && (
               <Form.Item
                 name="lessorId"
@@ -619,15 +746,20 @@ export function VehicleAssignModal({
               </Form.Item>
             )}
 
-            {/* Шаг 3: конкретная единица. Расхождение с заказанной категорией — подстрочным
+            {/* Шаг 4: конкретная единица. Расхождение с заказанной категорией — подстрочным
               предупреждением (ADR 0045): назначение оно не отменяет, но и незамеченным не
-              проходит. */}
+              проходит. Выбранный рейс поле запирает: машину задаёт он (ADR 0052). */}
             <Form.Item
               name="vehicleId"
               label="Конкретная техника"
               rules={[{ required: true, message: 'Выберите технику' }]}
               extra={
-                categoryMismatch ? (
+                joinedRoute ? (
+                  <Typography.Text type="secondary">
+                    Машину задал рейс {joinedRoute.displayNumber} — выберите «Новый маршрут», чтобы
+                    сменить её
+                  </Typography.Text>
+                ) : categoryMismatch ? (
                   <Typography.Text type="warning">{categoryMismatch}</Typography.Text>
                 ) : vehicleOptions.length === 0 ? (
                   emptyText
@@ -639,7 +771,7 @@ export function VehicleAssignModal({
                 showSearch
                 optionFilterProp="label"
                 loading={isFetching}
-                disabled={isRental && !lessorId}
+                disabled={joiningRoute || (isRental && !lessorId)}
                 placeholder={
                   isRental && !lessorId ? 'Сначала выберите арендодателя' : 'Выберите ТС'
                 }
@@ -703,65 +835,41 @@ export function VehicleAssignModal({
               )}
             </FormGrid.Full>
 
-            {/* Маршрут: заявка едет рейсом, а не документом. Причина, по которой рейс не ведётся,
-              показывается текстом — отсутствие блока читалось бы как поломка. У заказа техники на
-              объект блока нет и текста нет: `prefill` для такой заявки не запрашивается вовсе, и
-              упоминать рейс, которого в этом процессе не существует, не о чем (ADR 0041). */}
-            {selected && prefill && !prefill.required && prefill.reason && (
+            {/* Причина, по которой рейс не ведётся: аренду ведёт арендодатель, у типа может не
+              быть бланка. Показывается текстом — исчезнувший блок «Маршрут» читался бы как
+              поломка. У заказа техники на объект ни блока, ни текста: рейса в этом процессе не
+              существует, и объяснять нечего (ADR 0041). */}
+            {selected && !needsRoute && requirement.reason && (
               <FormGrid.Full>
                 <Alert
                   type="info"
                   showIcon
                   style={{ marginTop: 16 }}
                   message="Маршрут не ведётся"
-                  description={prefill.reason}
+                  description={requirement.reason}
                 />
               </FormGrid.Full>
             )}
 
             {needsRoute && (
               <>
-                <FormGrid.Full>
-                  <Typography.Title level={5} style={{ marginTop: 16 }}>
-                    Маршрут
-                  </Typography.Title>
-                  <Typography.Paragraph type="secondary" style={{ marginTop: -8 }}>
-                    Рейс на {tripDate}. Путевой лист выписывается с маршрута, когда состав собран —
-                    {prefill?.formLabel
-                      ? ` ${prefill.formLabel.toLowerCase()}`
-                      : ' по бланку рейса'}
-                    .
-                  </Typography.Paragraph>
-                </FormGrid.Full>
-
-                {/* Готовый рейс этой машины на эту дату — обычный ход дня: машина уже вышла, и
-                  вторая заявка дописывается к тому же рейсу талоном. Новый заводится, когда рейса
-                  ещё нет или свободных талонов не осталось. */}
-                <FormGrid.Full>
-                  <Form.Item name="routeId" label="Рейс">
-                    <AutoSelect
-                      options={[
-                        ...routeOptions.map((r) => ({
-                          value: r.id,
-                          label: [
-                            r.displayNumber,
-                            r.driverName || 'водитель не назначен',
-                            `${r.requests.length} из ${MAX_ROUTE_REQUESTS} талонов`,
-                          ].join(' · '),
-                        })),
-                        { value: NEW_ROUTE, label: 'Новый маршрут' },
-                      ]}
-                      placeholder="Выберите рейс"
-                    />
-                  </Form.Item>
-                </FormGrid.Full>
-
                 {joiningRoute && (
                   <FormGrid.Full>
                     <Typography.Text type="secondary">
-                      Водитель и реквизиты выезда берутся из выбранного рейса — их правят в карточке
-                      маршрута.
+                      Заявка встанет талоном в рейс {joinedRoute?.displayNumber}: водитель и
+                      реквизиты выезда там уже свои, и правят их в карточке маршрута.
                     </Typography.Text>
+                  </FormGrid.Full>
+                )}
+
+                {/* Новый рейс спрашивает то, чего у готового уже спрашивать не надо: кто за рулём
+                  и чем заполнены графы шапки бланка. Заголовок здесь, а не наверху у выбора
+                  рейса: наверху решают, куда заявка едет, а тут заводят сам рейс. */}
+                {!joiningRoute && (
+                  <FormGrid.Full>
+                    <Typography.Title level={5} style={{ marginTop: 16, marginBottom: 0 }}>
+                      Новый рейс
+                    </Typography.Title>
                   </FormGrid.Full>
                 )}
 

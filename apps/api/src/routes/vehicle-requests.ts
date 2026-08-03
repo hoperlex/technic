@@ -27,6 +27,7 @@ import {
   changeVehicleAssignmentSchema,
   changeVehicleRequestStatusSchema,
   CLOSED_REQUEST_STATUSES,
+  dateOnlySchema,
   type CompleteVehicleRequestInput,
   type ConfirmScheduleInput,
   createVehicleRequestSchema,
@@ -2138,7 +2139,15 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       ],
       schema: {
         params: idParams,
-        querystring: z.object({ vehicleId: z.string().uuid().optional() }),
+        querystring: z.object({
+          vehicleId: z.string().uuid().optional(),
+          /**
+           * День рейса, если его правят прямо в форме: подача уточняется при переводе в работу, а
+           * рейс печатает задание на день — подсказка соседнего дня показала бы рейсы, в которые
+           * заявка всё равно не встанет. Не передан — берётся дата, записанная в заявке.
+           */
+          date: dateOnlySchema.optional(),
+        }),
       },
     },
     async (req) => {
@@ -2157,7 +2166,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
             requestType: before.requestType,
             vehicleTypeId: before.vehicleTypeId,
           });
-      const date = await tripDate(db, before.id);
+      const date = req.query.date ?? (await tripDate(db, before.id));
       if (!requirement.formCode) {
         return {
           required: false,

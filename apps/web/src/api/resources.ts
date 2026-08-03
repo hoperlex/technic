@@ -7,6 +7,7 @@ import type {
   DriversImportReportDto,
   VehicleRouteDto,
   WaybillDto,
+  WaybillFormCode,
   DriverLicenseBody,
   RevokeDriverLicenseInput,
   UpdateDriverInput,
@@ -185,6 +186,16 @@ export const waybillsApi = {
 export const vehicleRoutesApi = {
   list: (q: Query) => apiFetch<ListResult<VehicleRouteDto>>('/vehicle-routes', { query: q }),
   get: (id: string) => apiFetch<VehicleRouteDto>(`/vehicle-routes/${id}`),
+  /**
+   * Что у этой машины на этот день: её рейсы и графы шапки от прошлого рейса. Форма перевода в
+   * работу наследует ими реквизиты выезда — прицеп, гаражный номер, вид сообщения и перевозки:
+   * они описывают машину в рейсе и правятся раз в сезон, а не в каждый рейс.
+   */
+  suggest: (q: { vehicleId: string; date: string }) =>
+    apiFetch<{ routes: VehicleRouteDto[]; trip: RouteTripFields | null }>(
+      '/vehicle-routes/suggest',
+      { query: q },
+    ),
   create: (body: {
     vehicleId: string;
     routeDate: string;
@@ -333,18 +344,21 @@ export const vehicleRequestsApi = {
    * Без `vehicleId` подсказываются рейсы того же типа ТС, что заказан в заявке: день планируют с
    * вопроса «каким рейсом заявка поедет», а машину задаёт сам рейс. С машиной — её рейсы и графы
    * шапки от её прошлого рейса (наследовать их без машины неоткуда).
+   *
+   * `date` передаётся, когда подачу правят прямо в форме: рейс печатает задание на день, и
+   * подсказка обязана относиться к тому дню, который уедет на сервер.
    */
-  routePrefill: (id: string, vehicleId?: string) =>
+  routePrefill: (id: string, params: { vehicleId?: string; date?: string } = {}) =>
     apiFetch<{
       required: boolean;
+      /** Бланк, по которому пойдёт лист; `null` — рейс этой заявке не ведётся. */
+      formCode: WaybillFormCode | null;
       formLabel: string | null;
       reason: string | null;
       tripDate: string;
       routes: VehicleRouteDto[];
       trip: RouteTripFields | null;
-    }>(`/vehicle-requests/${id}/route-prefill`, {
-      query: vehicleId ? { vehicleId } : {},
-    }),
+    }>(`/vehicle-requests/${id}/route-prefill`, { query: { ...params } }),
   /**
    * Лист, выписанный по заявке (ADR 0041) — его печатают из карточки, не уходя в журнал. `null`
    * приходит там, где листа нет: аренда, заказ техники на объект, заявка не в работе.
