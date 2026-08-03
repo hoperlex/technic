@@ -22,7 +22,11 @@ interface AuthContextValue {
   can: (permission: Permission) => boolean;
 }
 
-const AuthContext = createContext<AuthContextValue | undefined>(undefined);
+/**
+ * Экспортируется ради тестов: они подставляют пользователя значением контекста, а не мокают
+ * модуль целиком — `vi.mock` поднимается на верх файла и не переключается между сценариями.
+ */
+export const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
 /** Один bootstrap на вкладку: React StrictMode иначе дважды ротирует refresh → reuse detection → разлогин. */
 let bootstrapPromise: Promise<AuthUser | null> | null = null;
