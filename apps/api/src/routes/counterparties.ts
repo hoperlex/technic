@@ -20,6 +20,7 @@ import {
   counterpartySynonyms,
   users,
   vehicles,
+  warehouses,
   wasteTariffs,
   type CounterpartyRow,
 } from '../db/schema';
@@ -256,6 +257,24 @@ async function assertTypeChangeAllowed(
       );
     }
   }
+
+  if (before === 'supplier') {
+    // Склад существует только у поставщика (ADR 0051): перестав им быть, контрагент остался бы
+    // владельцем адресов, которые больше не к кому отнести.
+    const n = await warehouseCount(tx, id);
+    if (n > 0) {
+      throw err.conflict(`На контрагента ссылаются склады (${n}) — удалите их перед сменой типа`);
+    }
+  }
+}
+
+/** Сколько складов заведено на контрагента (ADR 0051). Склад удаляется строкой — счёт точный. */
+async function warehouseCount(tx: Tx, counterpartyId: string): Promise<number> {
+  const [row] = await tx
+    .select({ c: count() })
+    .from(warehouses)
+    .where(eq(warehouses.supplierCounterpartyId, counterpartyId));
+  return Number(row?.c ?? 0);
 }
 
 export default async function counterpartiesRoutes(app: FastifyInstance): Promise<void> {
@@ -520,6 +539,17 @@ export default async function counterpartiesRoutes(app: FastifyInstance): Promis
         // Удаление тоже снимает активность — значит и технику гасим здесь (ADR 0018 §15).
         if (existing.type === 'vehicle_lessor') {
           deactivatedVehicles = await deactivateLessorVehicles(tx, id);
+        }
+        // Со складами наоборот: удалить поставщика, за которым они числятся, нельзя (ADR 0051).
+        // Погасить их заодно значило бы потерять адреса, которые заводил другой человек и по
+        // другому поводу, — и восстановление контрагента вернуло бы его уже без складов.
+        if (existing.type === 'supplier') {
+          const n = await warehouseCount(tx, id);
+          if (n > 0) {
+            throw err.conflict(
+              `На контрагента ссылаются склады (${n}) — удалите их перед удалением поставщика`,
+            );
+          }
         }
         await tx
           .update(counterparties)

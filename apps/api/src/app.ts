@@ -18,6 +18,7 @@ import usersRoutes from './routes/users';
 import objectsRoutes from './routes/objects';
 import departmentsRoutes from './routes/departments';
 import counterpartiesRoutes from './routes/counterparties';
+import warehousesRoutes from './routes/warehouses';
 import containerTypesRoutes from './routes/container-types';
 import vehicleKindsRoutes from './routes/vehicle-kinds';
 import vehicleTypesRoutes from './routes/vehicle-types';
@@ -80,6 +81,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
   await app.register(objectsRoutes, { prefix: '/api/v1/objects' });
   await app.register(departmentsRoutes, { prefix: '/api/v1/departments' });
   await app.register(counterpartiesRoutes, { prefix: '/api/v1/counterparties' });
+  await app.register(warehousesRoutes, { prefix: '/api/v1/warehouses' });
   await app.register(containerTypesRoutes, { prefix: '/api/v1/container-types' });
   await app.register(vehicleKindsRoutes, { prefix: '/api/v1/vehicle-kinds' });
   await app.register(vehicleTypesRoutes, { prefix: '/api/v1/vehicle-types' });

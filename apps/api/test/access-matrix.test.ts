@@ -348,6 +348,45 @@ const CASES: Case[] = [
     url: `/api/v1/counterparties/${RECORD_ID}/restore`,
     allowed: ['admin'],
   },
+  // ── Склады поставщиков (ADR 0051): обычный справочник, своего права не заводит ──
+  {
+    title: 'склады — список',
+    method: 'GET',
+    url: '/api/v1/warehouses',
+    allowed: [
+      'admin',
+      'manager',
+      'dispatcher',
+      'shtab',
+      'rukstroy',
+      'commandant',
+      'department',
+      'department_head',
+      'operator/operator',
+      'operator/vehicle_lessor',
+      'observer',
+    ],
+  },
+  {
+    title: 'склады — создание',
+    method: 'POST',
+    url: '/api/v1/warehouses',
+    payload: { supplierId: COUNTERPARTY_ID, address: 'г. Мытищи, ул. Ленина, д. 1' },
+    allowed: ['admin', 'manager', 'dispatcher'],
+  },
+  {
+    title: 'склады — правка',
+    method: 'PATCH',
+    url: `/api/v1/warehouses/${RECORD_ID}`,
+    payload: { address: 'г. Мытищи, ул. Ленина, д. 2' },
+    allowed: ['admin', 'manager', 'dispatcher'],
+  },
+  {
+    title: 'склады — удаление',
+    method: 'DELETE',
+    url: `/api/v1/warehouses/${RECORD_ID}`,
+    allowed: ['admin', 'manager', 'dispatcher'],
+  },
 
   // ── Вывоз мусора: раньше модуль был открыт любому вошедшему ──
   {
