@@ -3,12 +3,13 @@ import { ESLint } from 'eslint';
 import path from 'node:path';
 
 /**
- * Правила границ слоёв проверяются на фикстурах, а не на живом коде: живой код пока разложен не
- * весь, и «ноль ошибок» в нём ничего не доказывает. Проверяется конкретный `ruleId` — правило,
+ * Правила границ слоёв проверяются на фикстурах, а не на живом коде: живой код разложен не весь, и
+ * «ноль ошибок» в нём ничего не доказывает. Проверяется конкретный `ruleId` — правило,
  * подтверждённое «хоть какой-нибудь ошибкой», молча деградирует при смене конфига.
  *
- * Фикстуры прогоняются своим конфигом (`test/fixtures/boundaries/eslint.config.mjs`): рабочий
- * описывает элементы по путям `src/<слой>`, и файлы вне `src/` он не классифицирует вовсе.
+ * Фикстуры прогоняются своим конфигом (`test/fixtures/boundaries/eslint.config.mjs`), повторяющим
+ * рабочую разметку: рабочий описывает элементы внутри `src`, и файлы вне его он не классифицирует
+ * вовсе.
  */
 // vitest запускается из apps/web (там его конфиг), поэтому путь считается от корня пакета.
 const fixturesDir = path.resolve(process.cwd(), 'test/fixtures/boundaries');
@@ -22,13 +23,16 @@ async function lintFixture(relativePath: string) {
   return (result?.messages ?? []).map((m) => m.ruleId);
 }
 
+/** Разрешённый импорт — это отсутствие сообщений обоих правил границ, а не «хоть что-то прошло». */
+async function expectAllowed(relativePath: string) {
+  const rules = await lintFixture(relativePath);
+  expect(rules).not.toContain('boundaries/dependencies');
+  expect(rules).not.toContain('boundaries/no-unknown-dependencies');
+}
+
 describe('границы слоёв', () => {
   it('импорт вниз через публичный вход слайса разрешён', async () => {
-    const rules = await lintFixture('features/x/ok-down.ts');
-    // Ни нарушения границ, ни «файл не классифицирован»: второе означало бы, что конфиг фикстур
-    // не описывает это дерево, и остальные три проверки ничего не стоят.
-    expect(rules).not.toContain('boundaries/dependencies');
-    expect(rules).not.toContain('boundaries/no-unknown-dependencies');
+    await expectAllowed('features/x/ok-down.ts');
   });
 
   it('импорт вверх запрещён: entities не знает о features', async () => {
@@ -43,7 +47,43 @@ describe('границы слоёв', () => {
 
   it('deep import внутрь чужого слайса запрещён', async () => {
     // Точка входа выражена тем же правилом: разрешение выдано только на `index.ts` слайса,
-    // поэтому импорт внутреннего модуля не подпадает под него и запрещён по умолчанию.
+    // поэтому импорт внутреннего модуля под него не подпадает и запрещён по умолчанию.
     expect(await lintFixture('features/x/bad-deep.ts')).toContain('boundaries/dependencies');
+  });
+});
+
+/**
+ * Сегменты `shared` — отдельные типы, иначе линт не отличит `lib → ui` от `ui → lib`. Разрешения
+ * заданы матрицей, и каждое направление проверяется своим случаем: числа сценариев здесь нет
+ * намеренно — пропущенным окажется тот, о ком забыли, а не «восьмой».
+ */
+describe('границы сегментов shared', () => {
+  it('верхний слой видит ui через публичный вход', async () => {
+    // Без этой проверки можно безупречно описать внутреннюю матрицу и одновременно отрезать
+    // `shared` от всего портала: тип `shared` исчезает из перечисления «что ниже».
+    await expectAllowed('features/x/ok-uses-shared.ts');
+  });
+
+  it('ui берёт хуки из lib', async () => {
+    await expectAllowed('shared/ui/ok-down-to-lib.ts');
+  });
+
+  it('lib не смотрит в ui', async () => {
+    // Именно из-за этого направления протокол таблицы переехал из компонента в `lib`.
+    expect(await lintFixture('shared/lib/bad-up-to-ui.ts')).toContain('boundaries/dependencies');
+  });
+
+  it('config ни от чего не зависит', async () => {
+    expect(await lintFixture('shared/config/bad-up-to-lib.ts')).toContain(
+      'boundaries/dependencies',
+    );
+  });
+
+  it('shared не зависит от неразмеченного кода', async () => {
+    // Пока портал разложен не весь, `api/resources` и подобное остаются вне слоёв. Нижний слой
+    // всё равно не имеет права на них ссылаться — иначе домен просочится в фундамент.
+    expect(await lintFixture('shared/lib/bad-unknown.ts')).toContain(
+      'boundaries/no-unknown-dependencies',
+    );
   });
 });
