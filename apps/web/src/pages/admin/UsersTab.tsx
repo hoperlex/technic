@@ -771,9 +771,18 @@ export function UsersTab() {
         onCancel={() => setOpen(false)}
         onSubmit={() => form.submit()}
         confirmLoading={saveMut.isPending}
-        width={480}
+        // Шире стандартных 480: набор полей здесь задан заранее и целиком, и в 480 px подписи
+        // вида «Объекты (для роли «Руководитель строительства»)» и подсказка о пожелании
+        // заявителя переносились по слогам. Плотный ритм полей — по той же причине: окно
+        // рассмотрения заявки читают целиком, а не листают.
+        width={560}
       >
-        <Form form={form} layout="vertical" onFinish={(v) => saveMut.mutate(v)}>
+        <Form
+          form={form}
+          layout="vertical"
+          className="form-dense"
+          onFinish={(v) => saveMut.mutate(v)}
+        >
           <Form.Item
             name="email"
             label="Email"
@@ -788,12 +797,18 @@ export function UsersTab() {
           {/* Пожелание заявителя (ADR 0034) — справка, а не подстановка: роль остаётся выбором
               администратора, иначе «Сохранить» не глядя выдавало бы права по чужому заявлению. */}
           {record?.requestedRole ? (
+            // Одной строкой, а не парой «заголовок + описание»: справка на полторы строки
+            // занимала блоком высоту целого поля и выдавливала конец формы под прокрутку.
             <Alert
               type="info"
               showIcon
               style={{ marginBottom: 16 }}
-              message={`При регистрации указал: ${registrationRoleRequestLabels[record.requestedRole]}`}
-              description={requestedDetailText(record)}
+              message={[
+                `При регистрации указал: ${registrationRoleRequestLabels[record.requestedRole]}`,
+                requestedDetailText(record),
+              ]
+                .filter(Boolean)
+                .join(' · ')}
             />
           ) : null}
           <Form.Item
