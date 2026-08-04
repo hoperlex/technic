@@ -4,8 +4,13 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   isRouteEditable,
   MAX_ROUTE_REQUESTS,
+  vehicleClassificationLabel,
   type VehicleRequestDto,
   type VehicleRouteDto,
+  vehicleSubstitutionHint,
+  vehicleSubstitutionOf,
+  vehicleSubstitutionRank,
+  vehicleSubstitutionWarning,
 } from '@technic/contracts';
 import { vehicleRequestsApi, vehicleRoutesApi } from '../../api/resources';
 import { AutoSelect } from '@shared/ui';
@@ -40,12 +45,12 @@ export function VehicleRouteTransferModal({ request, onClose, onDone }: Props) {
   const [targetId, setTargetId] = useState<string | undefined>();
 
   /**
-   * Куда можно перенести: рейсы того же дня и того же типа ТС, что заказан в заявке. Подсказку
-   * собирает сервер (`route-prefill` без машины) — тем же отбором, каким форма перевода в работу
-   * предлагает рейс до выбора техники.
+   * Куда можно перенести: рейсы того же дня на технике того же **вида**, что заказан в заявке
+   * (ADR 0059). Подсказку собирает сервер (`route-prefill` без машины) — тем же отбором, каким
+   * форма перевода в работу предлагает рейс до выбора техники.
    */
   const { data: prefill, isFetching } = useQuery({
-    queryKey: ['route-prefill', request?.id, 'by-type'],
+    queryKey: ['route-prefill', request?.id, 'by-kind'],
     queryFn: () => vehicleRequestsApi.routePrefill(request!.id),
     enabled: !!request,
   });
@@ -55,14 +60,52 @@ export function VehicleRouteTransferModal({ request, onClose, onDone }: Props) {
    * четыре талона) и замороженный выписанным листом (из бумаги, которая у водителя, состав не
    * меняют — сначала лист аннулируют). Правило заморозки берётся из контрактов: сервер проверит
    * его же.
+   *
+   * Порядок — по пригодности машины рейса: сначала заказанный тип, потом крупнее, и только в
+   * конце то, что мельче заказанного. Отбрасывать «мелкие» рейсы нельзя — это вернуло бы запрет,
+   * который снимал ADR 0059; но и предлагать их первыми не следует.
    */
-  const options = (prefill?.routes ?? []).filter(
-    (r) =>
-      r.id !== request?.route?.id &&
-      r.requests.length < MAX_ROUTE_REQUESTS &&
-      isRouteEditable(r.waybill?.status ?? null),
-  );
+  const ordered = request
+    ? {
+        vehicleTypeId: request.vehicleTypeId,
+        vehicleCategoryId: request.vehicleCategoryId,
+        categorySpecs: request.vehicleCategorySpecs,
+      }
+    : null;
+  const substitutionOf = (route: VehicleRouteDto) =>
+    // Машина рейса сравнивается с заказом тем же правилом, что и машина в окне назначения:
+    // одна формулировка на оба места, расходиться нечему.
+    vehicleSubstitutionOf(ordered!, {
+      vehicleTypeId: route.vehicleTypeId,
+      vehicleCategoryId: route.vehicleCategoryId,
+      categorySpecs: route.vehicleCategorySpecs,
+    });
+  const options = (prefill?.routes ?? [])
+    .filter(
+      (r) =>
+        r.id !== request?.route?.id &&
+        r.requests.length < MAX_ROUTE_REQUESTS &&
+        isRouteEditable(r.waybill?.status ?? null),
+    )
+    .sort((a, b) =>
+      ordered
+        ? vehicleSubstitutionRank(substitutionOf(a)) - vehicleSubstitutionRank(substitutionOf(b))
+        : 0,
+    );
   const target = options.find((r) => r.id === targetId) ?? null;
+  /** Чем машина выбранного рейса разошлась с заказом — тем же текстом, что в окне назначения. */
+  const targetSubstitution =
+    ordered && target && request
+      ? vehicleSubstitutionWarning({
+          substitution: substitutionOf(target),
+          orderedLabel: vehicleClassificationLabel({
+            typeName: request.vehicleTypeName,
+            categoryName: request.vehicleCategoryName,
+          }),
+          actualTypeName: target.vehicleTypeName,
+          actualCategoryName: null,
+        })
+      : null;
 
   const transfer = useMutation({
     mutationFn: () =>
@@ -103,7 +146,7 @@ export function VehicleRouteTransferModal({ request, onClose, onDone }: Props) {
       <Space direction="vertical" size={12} style={{ width: '100%' }}>
         <Typography.Text type="secondary">
           Рейсы {request?.route ? `на ту же дату, что и ${request.route.displayNumber},` : 'дня'} с
-          машиной заказанного типа и свободным талоном.
+          машиной заказанного вида и свободным талоном. Сначала — заказанный тип, потом крупнее.
         </Typography.Text>
 
         <AutoSelect
@@ -115,9 +158,14 @@ export function VehicleRouteTransferModal({ request, onClose, onDone }: Props) {
             label: [
               r.displayNumber,
               r.vehicleLabel,
+              // Чем рейс отличается от заказанного — прямо в строке: тип машины и направление
+              // («крупнее», «меньше заказанного»). Без этого рейсы вида читались бы вперемешку.
+              ordered ? (vehicleSubstitutionHint(substitutionOf(r)) ?? undefined) : undefined,
               r.driverName || 'водитель не назначен',
               `${r.requests.length} из ${MAX_ROUTE_REQUESTS} талонов`,
-            ].join(' · '),
+            ]
+              .filter(Boolean)
+              .join(' · '),
           }))}
           showSearch
           optionFilterProp="label"
@@ -127,13 +175,19 @@ export function VehicleRouteTransferModal({ request, onClose, onDone }: Props) {
         />
 
         {/* Рейс — источник истины о том, чем едут: заявка, переехавшая на другую машину, меняет
-            назначение вместе с рейсом. Ставки не трогаются — о них договариваются по заявке. */}
+            назначение вместе с рейсом. Ставки не трогаются — о них договариваются по заявке.
+            Если машина рейса разошлась с заказанным (ADR 0059), это сказано здесь же: перенос —
+            то самое место, где заявка молча меняет технику. */}
         {target && target.vehicleId !== request?.assignment?.vehicleId && (
           <Alert
-            type="warning"
+            type={targetSubstitution?.level === 'warning' ? 'warning' : 'info'}
             showIcon
             message="Заявка поедет машиной выбранного рейса"
-            description={`Назначенная техника сменится на ${target.vehicleLabel}. Ставка останется прежней — о ней договариваются по заявке.`}
+            description={
+              `Назначенная техника сменится на ${target.vehicleLabel}. ` +
+              (targetSubstitution ? `${targetSubstitution.text} ` : '') +
+              'Ставка останется прежней — о ней договариваются по заявке.'
+            }
           />
         )}
       </Space>

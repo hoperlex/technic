@@ -21,6 +21,7 @@ import {
   vehicleLabel,
   type VehicleOwnership,
   vehiclePriceSchema,
+  type VehicleSpecValues,
 } from './vehicles';
 import {
   assignRouteSchema,
@@ -1097,9 +1098,17 @@ export type VehicleRequestSummaryDto = Record<RequestStatus, number> & {
 export interface VehicleRequestAssignmentDto {
   vehicleId: string;
   ownership: VehicleOwnership;
-  /** Тип ТС машины; совпадает с типом заявки — это держит составной FK в БД. */
+  /**
+   * Тип ТС **машины** — он же и записан в назначении. С заказанным типом заявки он совпадать не
+   * обязан (ADR 0059): заявку закрывают тем, что есть в парке, а расхождение показывается
+   * пометкой. Заказанный тип остаётся у самой заявки и назначением не переписывается.
+   */
+  vehicleTypeId: string;
   typeName: string;
+  vehicleCategoryId: string | null;
   categoryName: string | null;
+  /** ТТХ категории машины — правая сторона сравнения с заказанным (`compareVehicleSize`). */
+  categorySpecs: VehicleSpecValues | null;
   modelName: string | null;
   registrationNumber: string | null;
   /** Короткий срез предложения аренды («Автокран 70 тн»); у своей машины пуст. */
@@ -1202,11 +1211,21 @@ export interface VehicleRequestBaseDto {
   vehicleTypeId: string;
   vehicleTypeName: string;
   /**
+   * Вид заказанного типа (ADR 0005) — граница замены (ADR 0059): заявку закрывают и машиной
+   * соседнего типа, но чужого вида сервер не примет. Им же окно назначения спрашивает технику.
+   */
+  vehicleKindId: string;
+  /**
    * Категория заказанного типа (ADR 0028). `null` — у типа категорий нет («Ямобур») либо заявка
    * заведена до появления колонки. Показывают одно из двух — см. `vehicleClassificationLabel`.
    */
   vehicleCategoryId: string | null;
   vehicleCategoryName: string | null;
+  /**
+   * Значения ТТХ заказанной категории (ADR 0016) — левая сторона сравнения «крупнее или меньше
+   * заказанного» (`compareVehicleSize`). `null` — категории у заявки нет, сравнивать не с чем.
+   */
+  vehicleCategorySpecs: VehicleSpecValues | null;
 
   status: RequestStatus;
   comment: string;

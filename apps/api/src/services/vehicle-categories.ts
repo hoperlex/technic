@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, sql } from 'drizzle-orm';
+import { and, type AnyColumn, asc, eq, inArray, type SQL, sql } from 'drizzle-orm';
 import {
   buildVehicleCategoryName,
   formatSpecValue,
@@ -259,6 +259,30 @@ export async function valuesByCategoryIds(
   }
   return map;
 }
+
+/**
+ * Значения ТТХ категории одним объектом — `{ "lift_capacity": 25 }` — подзапросом к колонке с
+ * идентификатором категории (ADR 0059).
+ *
+ * Ими портал считает «крупнее или меньше заказанного» (`compareVehicleSize`): сравнение — правило
+ * контрактов, и данные для него обязаны приезжать вместе со строкой, которую человек читает. Здесь
+ * подзапросом, а не пачкой (`valuesByCategoryIds`), потому что спрашивают его три разные выборки —
+ * заявки, техника, рейсы, — и в каждой это одна колонка к уже собранному запросу.
+ *
+ * `NULL` — у категории нет значений (у типа нет ТТХ) либо категория не проставлена вовсе. Числа
+ * приезжают числами: `numeric` внутри `jsonb` остаётся JSON-числом.
+ */
+export function categorySpecsSql(categoryIdColumn: AnyColumn | SQL): SQL<SpecValuesRow | null> {
+  return sql<SpecValuesRow | null>`(
+    SELECT jsonb_object_agg(${vehicleSpecs.code}, ${vehicleCategorySpecValues.valueNum})
+    FROM ${vehicleCategorySpecValues}
+    JOIN ${vehicleSpecs} ON ${vehicleSpecs.id} = ${vehicleCategorySpecValues.specId}
+    WHERE ${vehicleCategorySpecValues.categoryId} = ${categoryIdColumn}
+  )`;
+}
+
+/** Что отдаёт `categorySpecsSql`: тот же тип, что ждут контракты (`VehicleSpecValues`). */
+type SpecValuesRow = Record<string, number>;
 
 /**
  * Пересчёт сигнатур и авто-имён всех категорий типа — после смены состава ТТХ. Сигнатуры считает

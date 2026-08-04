@@ -423,7 +423,7 @@ export const DRIVER_CATEGORY_MISMATCH_HINT = 'категория не подхо
  * Развёрнутое предупреждение там, где водителя выбирают: пометки в строке мало — её читают при
  * выборе и забывают. Названы обе стороны — что требует машина и что открыто у водителя: решение
  * остаётся за человеком, и ему нужны оба набора, а не факт «не совпало» (как у техники —
- * `vehicleCategoryMismatchWarning`).
+ * `vehicleSubstitutionWarning`).
  */
 export function driverCategoryMismatchWarning(required: string, categories: string[]): string {
   const open = categories.length > 0 ? `«${categories.join(', ')}»` : 'ни одной категории';

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { baseListQuery, uuidSchema } from './common';
+import type { WaybillFormCode } from './waybills';
 
 // ── Справочник «Техника»: конкретные ТС (ADR 0007) ──
 // Тип обязателен, марка/модель опциональна (в источнике есть машины без марки). Согласованность
@@ -73,6 +74,11 @@ export const VEHICLE_SORT_FIELDS = [
 export const vehicleListQuerySchema = baseListQuery(VEHICLE_SORT_FIELDS).extend({
   ownership: vehicleOwnershipSchema.optional(),
   vehicleTypeId: uuidSchema.optional(),
+  /**
+   * Вся техника вида, а не одного типа. Спрашивает окно назначения: заявку закрывают и машиной
+   * соседнего типа — крупнее заказанного, — а вид остаётся границей замены (ADR 0059).
+   */
+  vehicleKindId: uuidSchema.optional(),
   vehicleCategoryId: uuidSchema.optional(),
   lessorId: uuidSchema.optional(),
   status: vehicleStatusSchema.optional(),
@@ -180,8 +186,19 @@ export interface VehicleDto {
   ownership: VehicleOwnership;
   vehicleTypeId: string;
   typeName: string;
+  /**
+   * Бланк, закреплённый за типом машины (ADR 0037). Приезжает строкой справочника, потому что
+   * заявку закрывают и машиной другого типа (ADR 0059): бланк рейса задаёт та единица, которая
+   * поедет, а не тип, который заказали, — и форма назначения обязана назвать смену бланка сразу.
+   */
+  waybillFormCode: WaybillFormCode | null;
   vehicleCategoryId: string | null;
   categoryName: string | null;
+  /**
+   * Значения ТТХ категории машины (ADR 0016): `{ lift_capacity: 10 }`. Ими считается «крупнее или
+   * меньше заказанного» (`compareVehicleSize`); `null` — категории нет либо у типа нет ТТХ.
+   */
+  categorySpecs: VehicleSpecValues | null;
   vehicleModelId: string | null;
   modelName: string | null;
   registrationNumber: string | null;
@@ -251,34 +268,192 @@ export function vehicleTitle(v: VehicleDto): string {
   return vehicleLabel(v);
 }
 
+// ── Замена заказанной техники: тип, категория и «крупнее или меньше» (ADR 0045, ADR 0059) ──
+//
+// Заявка заказывает позицию классификатора — тип ТС и, если у типа есть ТТХ, его категорию
+// (ADR 0028). Исполняет диспетчер тем, что есть в парке: категория перестала быть фильтром в
+// ADR 0045, тип — в ADR 0059. Границей осталась не позиция классификатора, а **вид** ТС: самосвал
+// вместо автокрана — не оттенок ТТХ, а другая заявка и другой процесс, и её сервер отклоняет.
+//
+// Всё, что ниже, — про расхождение внутри вида: портал обязан назвать обе стороны и сказать, в
+// какую сторону разошлось, но ничего не запрещает. Правило живёт здесь, а не на сервере: одна
+// формулировка на строку списка, предупреждение и тесты — расходиться нечему.
+
+/** Значения ТТХ категории (ADR 0016): код характеристики → число, `{ lift_capacity: 25 }`. */
+export type VehicleSpecValues = Readonly<Record<string, number>>;
+
 /**
- * Разошлась ли категория машины с заказанной в заявке (ADR 0045). Не запрет, а повод предупредить:
- * технику подбирают по типу, а совпадение ТТХ решает тот, кто назначает.
+ * Как техника соотносится с заказанной по **общим** ТТХ.
  *
- * Пустая категория у машины расхождением не считается: в справочнике она необязательна (особенно
- * у аренды), и «не разнесли» — не то же самое, что «не подходит». Заявка без категории — тип без
- * ТТХ или заявка старше миграции `0052` — не расходится ни с чем: сравнивать не с чем.
+ * `same` — общие характеристики равны, `bigger` / `smaller` — все не меньше (не больше) и хотя бы
+ * одна строго больше (меньше), `mixed` — часть больше, часть меньше (у манипулятора г/п машины
+ * выше, а г/п стрелы ниже). `unknown` — сравнивать не с чем: категория не проставлена (в
+ * справочнике она необязательна) либо у типов нет ни одной общей характеристики.
  */
-export function vehicleCategoryMismatch(
-  requestCategoryId: string | null | undefined,
-  vehicleCategoryId: string | null | undefined,
-): boolean {
-  return !!requestCategoryId && !!vehicleCategoryId && requestCategoryId !== vehicleCategoryId;
+export type VehicleSizeRelation = 'same' | 'bigger' | 'smaller' | 'mixed' | 'unknown';
+
+/**
+ * Сравнение по ТТХ, а не по названию типа: «крупнее» — измеримая величина, и выдумывать её порядок
+ * порталу нечем. Справочник ТТХ глобальный именно ради такого кросс-типового сравнения (ADR 0016
+ * §1): грузоподъёмность у бортового и у малотоннажного — одна и та же характеристика.
+ *
+ * Где общих характеристик нет (самосвал меряется объёмом кузова, а бортовой — грузоподъёмностью;
+ * у тягачей и легковых ТТХ не заведены вовсе), ответ честный — `unknown`: это состояние
+ * справочника, а не повод угадать.
+ */
+export function compareVehicleSize(
+  ordered: VehicleSpecValues | null | undefined,
+  actual: VehicleSpecValues | null | undefined,
+): VehicleSizeRelation {
+  if (!ordered || !actual) return 'unknown';
+  let bigger = false;
+  let smaller = false;
+  let common = 0;
+  for (const [code, orderedValue] of Object.entries(ordered)) {
+    const actualValue = actual[code];
+    if (actualValue === undefined) continue;
+    common += 1;
+    if (actualValue > orderedValue) bigger = true;
+    if (actualValue < orderedValue) smaller = true;
+  }
+  if (common === 0) return 'unknown';
+  if (bigger && smaller) return 'mixed';
+  if (bigger) return 'bigger';
+  if (smaller) return 'smaller';
+  return 'same';
 }
 
-/** Короткая пометка в строке выбора — рядом с «категория не указана». */
-export const VEHICLE_CATEGORY_MISMATCH_HINT = 'другая категория';
+/** Чем выбранная машина разошлась с заказом. `ok` — не разошлась ничем. */
+export interface VehicleSubstitution {
+  /** Тип машины другой. Вид при этом тот же — чужой вид сервер не принимает вовсе. */
+  typeMismatch: boolean;
+  /** Категория другая. У машины другого типа категории всегда разные — поле про свой тип. */
+  categoryMismatch: boolean;
+  /**
+   * Заказана категория, а у машины её нет. Не расхождение (ADR 0045 §6): «не разнесли» — не то же
+   * самое, что «не подходит», но и сравнить в этом случае нечего.
+   */
+  categoryMissing: boolean;
+  relation: VehicleSizeRelation;
+}
+
+/** Заказанная позиция и то, чем её закрывают, — обе стороны сравнения. */
+export interface VehicleClassificationPosition {
+  vehicleTypeId: string;
+  vehicleCategoryId: string | null;
+  categorySpecs: VehicleSpecValues | null;
+}
+
+export function vehicleSubstitutionOf(
+  ordered: VehicleClassificationPosition,
+  actual: VehicleClassificationPosition,
+): VehicleSubstitution {
+  return {
+    typeMismatch: ordered.vehicleTypeId !== actual.vehicleTypeId,
+    categoryMismatch:
+      !!ordered.vehicleCategoryId &&
+      !!actual.vehicleCategoryId &&
+      ordered.vehicleCategoryId !== actual.vehicleCategoryId,
+    categoryMissing: !!ordered.vehicleCategoryId && !actual.vehicleCategoryId,
+    relation: compareVehicleSize(ordered.categorySpecs, actual.categorySpecs),
+  };
+}
+
+/** Разошлась ли машина с заказом хоть чем-нибудь — коротко, для условий показа. */
+export function isVehicleSubstitution(s: VehicleSubstitution): boolean {
+  return s.typeMismatch || s.categoryMismatch;
+}
+
+/**
+ * Короткая пометка в строке выбора — техники, рейса, чего угодно, где строку читают глазами.
+ * Направление называется здесь же: «другой тип» без «крупнее» заставляет открывать справочник.
+ */
+export function vehicleSubstitutionHint(s: VehicleSubstitution): string | null {
+  const size = VEHICLE_SIZE_HINTS[s.relation];
+  if (s.typeMismatch) return size ? `другой тип, ${size}` : 'другой тип';
+  if (s.categoryMismatch) return size ?? 'другая категория';
+  if (s.categoryMissing) return 'категория не указана';
+  return null;
+}
+
+const VEHICLE_SIZE_HINTS: Record<VehicleSizeRelation, string | null> = {
+  bigger: 'крупнее',
+  smaller: 'меньше заказанного',
+  mixed: 'ТТХ расходятся',
+  same: null,
+  unknown: null,
+};
 
 /**
  * Развёрнутое предупреждение там, где машину выбирают: пометки в строке мало — её читают при
- * выборе и забывают. Названы обе стороны: что заказывали и что берут, — решение остаётся за
- * человеком, и ему нужны оба наименования, а не факт «не совпало».
+ * выборе и забывают, а предупреждение под полем видно до самого нажатия «Взять в работу»
+ * (ADR 0045 §4). Названы обе стороны: что заказывали и что берут.
+ *
+ * Уровень отвечает на «есть ли риск»: техника меньше заказанной или расходится по ТТХ — жёлтое
+ * предупреждение (груз может не поместиться), крупнее или «сравнить нечем» — нейтральная справка.
+ * Подтверждения не требуется ни там, ни там (ADR 0045 §5): назначение именное, а чекбокс
+ * превращается в кнопку, которую жмут не читая.
  */
-export function vehicleCategoryMismatchWarning(ordered: string, actual: string): string {
-  return (
-    `Заказано «${ordered}», а у выбранной машины категория «${actual}». ` +
-    'Заявка возьмётся в работу как есть — проверьте, что техника подходит.'
-  );
+export function vehicleSubstitutionWarning(input: {
+  substitution: VehicleSubstitution;
+  /** «Автокраны, г/п 130 т» — заказанная позиция целиком (`vehicleClassificationLabel`). */
+  orderedLabel: string;
+  actualTypeName: string;
+  actualCategoryName: string | null;
+}): { level: 'info' | 'warning'; text: string } | null {
+  const s = input.substitution;
+  if (!isVehicleSubstitution(s)) return null;
+  // Наименование категории уже содержит тип («Автокраны, г/п 25 т», ADR 0016 §11) — тип рядом с
+  // ней не повторяется, тем же правилом, что и у заказанной стороны (`vehicleClassificationLabel`).
+  const actualLabel = input.actualCategoryName || input.actualTypeName;
+  return {
+    level: s.relation === 'smaller' || s.relation === 'mixed' ? 'warning' : 'info',
+    text: `Заказано «${input.orderedLabel}», а выбрана «${actualLabel}». ${VEHICLE_SIZE_WARNINGS[s.relation]}`,
+  };
+}
+
+const VEHICLE_SIZE_WARNINGS: Record<VehicleSizeRelation, string> = {
+  bigger: 'Техника крупнее заказанной — заявка возьмётся в работу как есть.',
+  smaller: 'Техника меньше заказанной — проверьте, что работа выполнима и груз поместится.',
+  mixed: 'Характеристики расходятся с заказанными — проверьте, что техника подходит.',
+  same: 'Характеристики те же — заявка возьмётся в работу как есть.',
+  unknown: 'Сравнить характеристики не с чем — проверьте, что техника подходит.',
+};
+
+/**
+ * Куда строка попадёт в списке: заказанный тип, крупнее, меньше или «прочее вида». Группы задают и
+ * порядок (`vehicleSubstitutionRank`) — им же упорядочена подсказка рейсов: сначала то, что
+ * заказывали, и только в конце то, что меньше заказанного.
+ *
+ * Свой тип — одна группа независимо от категории: внутри типа расхождение помечается в строке
+ * (ADR 0045), и дробить парк на четыре группы там, где привыкли видеть один список, незачем.
+ */
+export type VehicleSubstitutionGroup = 'ordered' | 'bigger' | 'other' | 'smaller';
+
+export function vehicleSubstitutionGroup(s: VehicleSubstitution): VehicleSubstitutionGroup {
+  if (!s.typeMismatch) return 'ordered';
+  if (s.relation === 'bigger') return 'bigger';
+  if (s.relation === 'smaller' || s.relation === 'mixed') return 'smaller';
+  return 'other';
+}
+
+export const vehicleSubstitutionGroupLabels: Record<VehicleSubstitutionGroup, string> = {
+  ordered: 'Заказанный тип',
+  bigger: 'Крупнее заказанного',
+  other: 'Другие типы вида',
+  smaller: 'Меньше заказанного',
+};
+
+const VEHICLE_SUBSTITUTION_ORDER: readonly VehicleSubstitutionGroup[] = [
+  'ordered',
+  'bigger',
+  'other',
+  'smaller',
+];
+
+/** Порядок группы в списке: 0 — заказанный тип, дальше по убыванию пригодности. */
+export function vehicleSubstitutionRank(s: VehicleSubstitution): number {
+  return VEHICLE_SUBSTITUTION_ORDER.indexOf(vehicleSubstitutionGroup(s));
 }
 
 // ── Марки/модели: read-only список для выбора в форме техники (не отдельный справочник) ──

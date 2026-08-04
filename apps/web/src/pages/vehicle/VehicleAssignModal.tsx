@@ -27,17 +27,22 @@ import {
   isRouteEditable,
   MAX_ROUTE_REQUESTS,
   normalizeTimeInput,
-  VEHICLE_CATEGORY_MISMATCH_HINT,
   VEHICLE_OWNERSHIPS,
   requestCustomerName,
-  vehicleCategoryMismatch,
-  vehicleCategoryMismatchWarning,
   vehicleClassificationLabel,
   type VehicleDto,
   type VehicleOwnership,
   vehicleLabel,
   vehicleOwnershipLabels,
   type VehicleRequestDto,
+  type VehicleSubstitution,
+  vehicleSubstitutionGroup,
+  vehicleSubstitutionGroupLabels,
+  vehicleSubstitutionHint,
+  vehicleSubstitutionOf,
+  vehicleSubstitutionRank,
+  vehicleSubstitutionWarning,
+  waybillFormLabels,
   waybillRequirement,
 } from '@technic/contracts';
 import { driversApi, vehicleRequestsApi, vehicleRoutesApi, vehiclesApi } from '../../api/resources';
@@ -65,10 +70,11 @@ import { MOSCOW_TZ } from '@shared/config';
  * подходящей техники сразу) на реальном парке нечитаем: у одного типа десятки предложений от
  * разных арендодателей, и различать их приходится по хвосту строки.
  *
- * Список сужен типом ТС, но не заказанной категорией (ADR 0045): заказывали «Автокран, г/п 130 т» —
- * в списке будут все автокраны, включая 25-тонный. Подходит ли соседняя позиция классификатора,
- * решает диспетчер: он знает и парк, и то, о чём договорились с заказчиком. Расхождение
- * называется прямо — пометкой в строке и предупреждением под полем, — но выбор не отнимает.
+ * Список сужен видом ТС, но не заказанным типом (ADR 0059) и не заказанной категорией (ADR 0045):
+ * заказывали «Автокран, г/п 130 т» — в списке будут и 25-тонный автокран, и самоходный кран на
+ * 200 т. Подходит ли соседняя позиция классификатора, решает диспетчер: он знает и парк, и то, о
+ * чём договорились с заказчиком. Расхождение называется прямо — группой в списке («Крупнее
+ * заказанного»), пометкой в строке и предупреждением под полем, — но выбор не отнимает.
  *
  * Ставки подставляются из предложения аренды и правятся свободно: договариваются по конкретной
  * заявке, и прайс справочника такой договорённости не начальник. Расхождение с прайсом видно
@@ -129,22 +135,19 @@ interface FormValues {
 }
 
 /**
- * Строка выбора: подпись машины плюс то, чем одна единица отличается от другой. Категория —
- * первое, чем они различаются в списке одного типа, поэтому у собственной машины она стоит рядом
- * с моделью, а не вместо неё. Расхождение с заказанным и незаполненная категория проговариваются
- * прямо в строке: подходит ли эта машина, решает человек — по названию модели и по тому, что он
- * о ней знает.
+ * Строка выбора: подпись машины плюс то, чем одна единица отличается от другой. Тип и категория —
+ * первое, чем они различаются в списке вида, поэтому у собственной машины позиция классификатора
+ * стоит рядом с моделью, а не вместо неё. Расхождение с заказанным проговаривается прямо в строке
+ * и с направлением («крупнее», «меньше заказанного»): подходит ли эта машина, решает человек — по
+ * названию модели и по тому, что он о ней знает.
  */
-function vehicleOptionLabel(v: VehicleDto, requestCategoryId: string | null): string {
+function vehicleOptionLabel(v: VehicleDto, substitution: VehicleSubstitution): string {
   const title = vehicleLabel(v);
   const extra = [
     v.ownership === 'own' ? v.modelName : null,
-    v.categoryName,
-    vehicleCategoryMismatch(requestCategoryId, v.vehicleCategoryId)
-      ? VEHICLE_CATEGORY_MISMATCH_HINT
-      : requestCategoryId && !v.vehicleCategoryId
-        ? 'категория не указана'
-        : null,
+    // Наименование категории уже содержит тип (ADR 0016 §11); без категории тип называется сам.
+    v.categoryName ?? v.typeName,
+    vehicleSubstitutionHint(substitution),
     assignmentRateLabel(v) || null,
   ].filter((s): s is string => !!s && s !== title);
   return extra.length > 0 ? `${title} — ${extra.join(' · ')}` : title;
@@ -164,23 +167,39 @@ export function VehicleAssignModal({
   /** Смена машины у работающей заявки (ADR 0048): срок не спрашивается — он уже согласован. */
   const reassign = mode === 'reassign';
 
-  // Вся техника заказанного типа одним запросом: обе ветки принадлежности нужны сразу — по их
-  // наполнению подписан сам переключатель («Аренда — 12»), а списки невелики (сужены типом ТС).
-  // Запрашивается тип, и только тип: категория заявки (ADR 0028) списка не сужает (ADR 0045).
+  // Вся техника заказанного **вида** одним запросом: обе ветки принадлежности нужны сразу — по их
+  // наполнению подписан сам переключатель («Аренда — 12»).
+  //
+  // Спрашивается вид, а не тип (ADR 0059): заявку закрывают и машиной соседнего типа — бортовым
+  // вместо малотоннажного, — а раньше такой единицы в списке не было вовсе. Ни тип, ни категория
+  // заявки список не сужают; порядок и пометки объясняют, чем каждая машина отличается от заказа.
   const vehicleTypeId = request?.vehicleTypeId ?? null;
+  const vehicleKindId = request?.vehicleKindId ?? null;
   const categoryId = request?.vehicleCategoryId ?? null;
+  /** Заказанная позиция — левая сторона всех сравнений в этом окне. */
+  const ordered = useMemo(
+    () =>
+      request
+        ? {
+            vehicleTypeId: request.vehicleTypeId,
+            vehicleCategoryId: request.vehicleCategoryId,
+            categorySpecs: request.vehicleCategorySpecs,
+          }
+        : null,
+    [request?.id, vehicleTypeId, categoryId],
+  );
   const { data, isFetching } = useQuery({
-    queryKey: ['vehicles', 'for-assignment', vehicleTypeId],
+    queryKey: ['vehicles', 'for-assignment', vehicleKindId],
     queryFn: () =>
       vehiclesApi.list({
-        vehicleTypeId: vehicleTypeId!,
+        vehicleKindId: vehicleKindId!,
         status: 'active',
         page: 1,
         pageSize: 500,
         sortBy: 'lessorName',
         sortOrder: 'asc',
       }),
-    enabled: !!vehicleTypeId,
+    enabled: !!vehicleKindId,
   });
   const vehicles = useMemo(() => data?.items ?? [], [data]);
   const byOwnership = useMemo(
@@ -237,7 +256,7 @@ export function VehicleAssignModal({
 
   const isFreight = request?.requestType === 'freight_transport';
 
-  /** Арендодатели — только те, у кого есть техника этого типа: пустой пункт выбирать незачем. */
+  /** Арендодатели — только те, у кого есть техника этого вида: пустой пункт выбирать незачем. */
   const lessorOptions = useMemo(() => {
     const byId = new Map<string, string>();
     for (const v of byOwnership.rental) {
@@ -248,13 +267,34 @@ export function VehicleAssignModal({
       .sort((a, b) => a.label.localeCompare(b.label, 'ru'));
   }, [byOwnership.rental]);
 
+  /**
+   * Список техники группами: заказанный тип → крупнее → другие типы вида → меньше заказанного
+   * (ADR 0059). Порядок и есть ответ на «чем закрыть заявку»: наверху то, что заказывали, внизу
+   * то, что заведомо мельче. Переключателя «показать другие типы» нет — лишнее состояние формы
+   * там, где хватает порядка строк, а поиск по строке идёт по всем группам сразу.
+   */
   const vehicleOptions = useMemo(() => {
+    if (!ordered) return [];
     const list =
       ownership === 'own'
         ? byOwnership.own
         : byOwnership.rental.filter((v) => !lessorId || v.lessorId === lessorId);
-    return list.map((v) => ({ value: v.id, label: vehicleOptionLabel(v, categoryId) }));
-  }, [ownership, lessorId, byOwnership, categoryId]);
+    const groups = new Map<
+      number,
+      { label: string; options: { value: string; label: string }[] }
+    >();
+    for (const v of list) {
+      const substitution = vehicleSubstitutionOf(ordered, v);
+      const rank = vehicleSubstitutionRank(substitution);
+      const group = groups.get(rank) ?? {
+        label: vehicleSubstitutionGroupLabels[vehicleSubstitutionGroup(substitution)],
+        options: [],
+      };
+      group.options.push({ value: v.id, label: vehicleOptionLabel(v, substitution) });
+      groups.set(rank, group);
+    }
+    return [...groups.entries()].sort(([a], [b]) => a - b).map(([, group]) => group);
+  }, [ownership, lessorId, byOwnership, ordered]);
 
   const selected = vehicles.find((v) => v.id === vehicleId) ?? null;
   const isRental = ownership === 'rental';
@@ -268,13 +308,20 @@ export function VehicleAssignModal({
     : '';
 
   /**
-   * Взяли машину не заказанной категории (ADR 0045). Не запрет: заявку закрывают тем, что есть в
-   * парке. Но пометки в строке списка мало — её читают при выборе и забывают, а предупреждение
-   * под полем остаётся на виду до самого нажатия «Взять в работу».
+   * Взяли не то, что заказывали, — другой тип или другую категорию (ADR 0045, ADR 0059). Не
+   * запрет: заявку закрывают тем, что есть в парке. Но пометки в строке списка мало — её читают
+   * при выборе и забывают, а предупреждение под полем остаётся на виду до самого нажатия «Взять в
+   * работу». Уровень зависит от направления: техника меньше заказанной — жёлтое предупреждение,
+   * крупнее или «сравнить нечем» — нейтральная справка.
    */
-  const categoryMismatch =
-    selected && vehicleCategoryMismatch(categoryId, selected.vehicleCategoryId)
-      ? vehicleCategoryMismatchWarning(orderedLabel, selected.categoryName ?? '')
+  const substitution =
+    ordered && selected
+      ? vehicleSubstitutionWarning({
+          substitution: vehicleSubstitutionOf(ordered, selected),
+          orderedLabel,
+          actualTypeName: selected.typeName,
+          actualCategoryName: selected.categoryName,
+        })
       : null;
 
   // ── Маршрут (рейс машины на дату) ──
@@ -336,20 +383,39 @@ export function VehicleAssignModal({
   const tripDate = formTripDate ?? prefill?.tripDate;
 
   /**
-   * Ведётся ли рейс — правилом из контрактов, а не вторым запросом: бланк закреплён за типом ТС
-   * (его и принёс `prefill`), а принадлежность известна из выбранной машины. Так причина
-   * «маршрут не ведётся» появляется в тот же миг, когда выбрана арендная единица.
+   * Ведётся ли рейс — правилом из контрактов, а не вторым запросом: бланк закреплён за типом ТС,
+   * а принадлежность известна из выбранной машины. Так причина «маршрут не ведётся» появляется в
+   * тот же миг, когда выбрана арендная единица.
+   *
+   * Бланк спрашивается у **выбранной машины**, а не у заказанного типа (ADR 0059): лист выпишется
+   * по той единице, которая поедет, и у легковой это форма № 3 там, где у самосвала 4-П. Пока
+   * машина не выбрана, отвечает заказанный тип — его бланк и принёс `prefill`.
+   *
+   * До ответа `prefill` блок маршрута не поднимается, даже если бланк уже известен по машине:
+   * поле «Рейс» подставляет единственный доступный вариант (`AutoSelect`), и на пустой подсказке
+   * этим вариантом оказался бы «Новый маршрут» — выбор считался бы сделанным вручную, а
+   * приехавший следом готовый рейс машины его уже не перебил бы.
    */
   const requirement =
-    request && isFreight
+    request && isFreight && prefill
       ? waybillRequirement({
           requestType: request.requestType,
           ownership: selected?.ownership ?? ownership,
-          formCode: prefill?.formCode ?? null,
-          typeName: request.vehicleTypeName,
+          formCode: selected?.waybillFormCode ?? prefill.formCode,
+          typeName: selected?.typeName ?? request.vehicleTypeName,
         })
       : { formCode: null, reason: null };
   const needsRoute = !!requirement.formCode;
+
+  /**
+   * Машина другого типа печатает другой бланк. Называется отдельной строкой: смена документа —
+   * не мелочь оформления, у формы № 3 нет ни талонов заказчиков, ни граф прицепа, и диспетчер
+   * должен узнать об этом до нажатия, а не при выписке листа.
+   */
+  const formChange =
+    isFreight && selected && prefill?.formCode && requirement.formCode !== prefill.formCode
+      ? `Лист выпишется по бланку ${waybillFormLabels[requirement.formCode!]} — по типу выбранной машины, а не заказанного`
+      : null;
 
   /**
    * Рейсы, куда заявку можно положить: со свободным талоном и не замороженные выписанным листом.
@@ -813,9 +879,9 @@ export function VehicleAssignModal({
               </Form.Item>
             )}
 
-            {/* Шаг 4: конкретная единица. Расхождение с заказанной категорией — подстрочным
-              предупреждением (ADR 0045): назначение оно не отменяет, но и незамеченным не
-              проходит. Выбранный рейс поле запирает: машину задаёт он (ADR 0052). */}
+            {/* Шаг 4: конкретная единица. Расхождение с заказанной позицией — подстрочным
+              предупреждением (ADR 0045, ADR 0059): назначение оно не отменяет, но и незамеченным
+              не проходит. Выбранный рейс поле запирает: машину задаёт он (ADR 0052). */}
             <Form.Item
               name="vehicleId"
               label="Конкретная техника"
@@ -826,8 +892,13 @@ export function VehicleAssignModal({
                     Машину задал рейс {joinedRoute.displayNumber} — выберите «Новый маршрут», чтобы
                     сменить её
                   </Typography.Text>
-                ) : categoryMismatch ? (
-                  <Typography.Text type="warning">{categoryMismatch}</Typography.Text>
+                ) : substitution ? (
+                  <Typography.Text
+                    type={substitution.level === 'warning' ? 'warning' : 'secondary'}
+                  >
+                    {substitution.text}
+                    {formChange ? ` ${formChange}.` : ''}
+                  </Typography.Text>
                 ) : vehicleOptions.length === 0 ? (
                   emptyText
                 ) : undefined
@@ -849,9 +920,15 @@ export function VehicleAssignModal({
             {selected && (
               <FormGrid.Full>
                 <Space size={8} wrap style={{ marginBottom: 16 }}>
-                  {selected.categoryName && (
-                    <Tag color={categoryMismatch ? 'orange' : 'blue'}>{selected.categoryName}</Tag>
-                  )}
+                  {/* Позиция классификатора выбранной машины: цвет меняется, когда она разошлась с
+                    заказом, — тег и предупреждение говорят об одном и том же разными способами. */}
+                  <Tag
+                    color={
+                      substitution ? (substitution.level === 'warning' ? 'orange' : 'gold') : 'blue'
+                    }
+                  >
+                    {selected.categoryName ?? selected.typeName}
+                  </Tag>
                   {selected.registrationNumber && <Tag>{selected.registrationNumber}</Tag>}
                   {selected.lessorName && <Tag color="purple">{selected.lessorName}</Tag>}
                 </Space>

@@ -1516,11 +1516,19 @@ export const freightTransportRequestDetails = pgTable(
 export const vehicleRequestAssignments = pgTable(
   'vehicle_request_assignments',
   {
-    requestId: uuid('request_id').primaryKey(),
+    requestId: uuid('request_id')
+      .primaryKey()
+      .references(() => vehicleRequests.id, { onDelete: 'cascade' }),
     vehicleId: uuid('vehicle_id').notNull(),
-    // Служебная: копия типа ТС заявки. Существует ради двух составных FK — ими инвариант
-    // «назначенная машина того же типа, что заказан» становится физическим, а не проверкой.
+    // Служебная: копия типа ТС **машины** (миграция 0083). Существует ради составного FK на
+    // технику — им «в назначении записан тип той машины, которая назначена» становится
+    // физическим. С заказанным типом заявки совпадать не обязана: заявку закрывают тем, что есть
+    // в парке, а расхождение портал помечает (ADR 0059).
     vehicleTypeId: uuid('vehicle_type_id').notNull(),
+    // Копия ЗАКАЗАННОГО типа — цель второго составного FK: пока на заявке стоит машина, сменить
+    // заказанный тип нельзя (ADR 0028 §9). Nullable до contract-миграции: строки, созданные
+    // откатанным на предыдущий релиз кодом, её не заполняют.
+    orderedVehicleTypeId: uuid('ordered_vehicle_type_id'),
     pricePerHour: numeric('price_per_hour', { precision: 12, scale: 2 }),
     pricePerShift: numeric('price_per_shift', { precision: 12, scale: 2 }),
     shiftHours: smallint('shift_hours'),
@@ -1535,13 +1543,13 @@ export const vehicleRequestAssignments = pgTable(
     updatedAt: updatedAt(),
   },
   (t) => ({
-    // Заявка: каскад — назначение живёт ровно столько же, сколько сама заявка. ON UPDATE не
+    // Заказ заявки: каскад — назначение живёт ровно столько же, сколько сама заявка. ON UPDATE не
     // задан намеренно: смена типа ТС у заявки с назначенной машиной должна отклоняться, а не
     // тянуть за собой строку назначения (сервер отвечает на это 422 с объяснением).
-    requestTypeFk: foreignKey({
-      columns: [t.requestId, t.vehicleTypeId],
+    orderedTypeFk: foreignKey({
+      columns: [t.requestId, t.orderedVehicleTypeId],
       foreignColumns: [vehicleRequests.id, vehicleRequests.vehicleTypeId],
-      name: 'vehicle_request_assignments_request_type_fk',
+      name: 'vehicle_request_assignments_ordered_type_fk',
     }).onDelete('cascade'),
     // Машина: restrict — назначенную технику из справочника не удаляют, на неё ссылается работа.
     vehicleTypeFk: foreignKey({

@@ -14,6 +14,7 @@ import {
   waybillDisplayNumber,
 } from '@technic/contracts';
 import { db } from '../db/client';
+import { categorySpecsSql } from './vehicle-categories';
 import {
   constructionObjects,
   departments,
@@ -622,7 +623,12 @@ function selectRoutes(reader: Reader) {
       // технику лист выписывает арендодатель.
       ownership: vehicles.ownership,
       typeFormCode: vehicleTypes.waybillFormCode,
+      vehicleTypeId: vehicles.vehicleTypeId,
       typeName: vehicleTypes.name,
+      // Категория машины рейса и её ТТХ: ими карточка заявки сверяет заказ с тем, чем рейс поедет
+      // (ADR 0059) — подсказка рейсов больше не сужена равенством типов, а помечает каждый рейс.
+      vehicleCategoryId: vehicles.vehicleCategoryId,
+      vehicleCategorySpecs: categorySpecsSql(vehicles.vehicleCategoryId),
       driverName: persons.fullName,
       createdByName: users.fullName,
       createdAt: vehicleRoutes.createdAt,
@@ -658,6 +664,10 @@ export function toRouteDto(
     routeDate: row.routeDate,
     vehicleId: row.vehicleId,
     vehicleLabel: [row.modelName, row.registrationNumber].filter(Boolean).join(' · '),
+    vehicleTypeId: row.vehicleTypeId,
+    vehicleTypeName: row.typeName,
+    vehicleCategoryId: row.vehicleCategoryId,
+    vehicleCategorySpecs: row.vehicleCategorySpecs,
     driverPersonId: row.driverPersonId,
     driverName: row.driverName ?? '',
     withTrailer: row.withTrailer,

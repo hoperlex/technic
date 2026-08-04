@@ -25,6 +25,8 @@ import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
 import { orderByFrom, pageParams } from '../lib/pagination';
+import { registerPurgeRoute } from '../services/directory-purge';
+import { categorySpecsSql } from '../services/vehicle-categories';
 
 // Справочник техники (ADR 0007) с двумя ветками принадлежности (ADR 0018): собственные машины и
 // предложения аренды. Ветку задаёт `ownership`, и она неизменяема — смена принадлежности означала бы
@@ -37,8 +39,12 @@ const vehicleSelect = {
   ownership: vehicles.ownership,
   vehicleTypeId: vehicles.vehicleTypeId,
   typeName: vehicleTypes.name,
+  // Бланк типа и ТТХ категории — ими окно назначения объясняет замену заказанной техники
+  // (ADR 0059): что машина крупнее заказанной и что лист выпишется по другой форме.
+  waybillFormCode: vehicleTypes.waybillFormCode,
   vehicleCategoryId: vehicles.vehicleCategoryId,
   categoryName: vehicleCategories.name,
+  categorySpecs: categorySpecsSql(vehicles.vehicleCategoryId).as('category_specs'),
   vehicleModelId: vehicles.vehicleModelId,
   modelName: vehicleModels.name,
   registrationNumber: vehicles.registrationNumber,
@@ -79,8 +85,10 @@ function toDto(r: VehicleRow): VehicleDto {
     ownership: r.ownership,
     vehicleTypeId: r.vehicleTypeId,
     typeName: r.typeName,
+    waybillFormCode: r.waybillFormCode,
     vehicleCategoryId: r.vehicleCategoryId,
     categoryName: r.categoryName,
+    categorySpecs: r.categorySpecs,
     vehicleModelId: r.vehicleModelId,
     modelName: r.modelName,
     registrationNumber: r.registrationNumber,
@@ -249,6 +257,9 @@ export default async function vehiclesRoutes(app: FastifyInstance): Promise<void
         showDeleted ? undefined : isNull(vehicles.deletedAt),
         q.ownership ? eq(vehicles.ownership, q.ownership) : undefined,
         q.vehicleTypeId ? eq(vehicles.vehicleTypeId, q.vehicleTypeId) : undefined,
+        // Вся техника вида — этим спрашивает окно назначения (ADR 0059): заявку закрывают и
+        // машиной соседнего типа, а вид остаётся границей замены.
+        q.vehicleKindId ? eq(vehicleTypes.kindId, q.vehicleKindId) : undefined,
         q.vehicleCategoryId ? eq(vehicles.vehicleCategoryId, q.vehicleCategoryId) : undefined,
         q.lessorId ? eq(vehicles.lessorId, q.lessorId) : undefined,
         q.status ? eq(vehicles.status, q.status) : undefined,
@@ -538,4 +549,30 @@ export default async function vehiclesRoutes(app: FastifyInstance): Promise<void
       return (await getById(id))!;
     },
   );
+
+  // Удаление насовсем (ADR 0059) — только из архива, вторым шагом после обычного удаления.
+  // Назначения на заявки, рейсы и путевые листы держат машину внешним ключом: снести ту, что
+  // уже выходила на объект, нельзя — иначе заявка потеряет, кто её выполнял.
+  registerPurgeRoute(app, {
+    load: async (id) => {
+      const [row] = await db.select().from(vehicles).where(eq(vehicles.id, id));
+      return row;
+    },
+    isDown: (row) => !!row.deletedAt,
+    remove: async (tx, row) => {
+      await tx.delete(vehicles).where(eq(vehicles.id, row.id));
+    },
+    notFound: 'Техника не найдена',
+    stillLive: 'Техника не в архиве — сначала удалите её',
+    subject: 'технику',
+    audit: {
+      action: 'vehicle.purge',
+      entityType: 'vehicle',
+      metadata: (row) => ({
+        registrationNumber: row.registrationNumber,
+        ownership: row.ownership,
+        vehicleTypeId: row.vehicleTypeId,
+      }),
+    },
+  });
 }

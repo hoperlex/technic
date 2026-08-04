@@ -28,8 +28,12 @@ export function vehicleRequest(
     departmentName: null,
     vehicleTypeId: 'vt-1',
     vehicleTypeName: 'Автокраны',
+    // Вид — граница замены (ADR 0059): им окно назначения спрашивает технику, а ТТХ заказанной
+    // категории — левая сторона сравнения «крупнее или меньше заказанного».
+    vehicleKindId: 'vk-special',
     vehicleCategoryId: 'vc-1',
     vehicleCategoryName: 'г/п 25 т',
+    vehicleCategorySpecs: { lift_capacity: 25 },
     status: 'new',
     comment: 'разгрузка плит',
     cancelReason: null,

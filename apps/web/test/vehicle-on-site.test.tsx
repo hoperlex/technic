@@ -42,8 +42,11 @@ const items: SpecialEquipmentRequestDto[] = [
     assignment: {
       vehicleId: 'v1',
       ownership: 'rental',
+      vehicleTypeId: 'vt-1',
       typeName: 'Автокраны',
+      vehicleCategoryId: 'vc-130',
       categoryName: 'Автокран, г/п 130 т',
+      categorySpecs: { lift_capacity: 130 },
       modelName: null,
       registrationNumber: null,
       description: 'Автокран 70 тн',

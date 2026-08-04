@@ -186,10 +186,14 @@ async function loadRequestForRoute(tx: Parameters<typeof lockRoute>[0], requestI
       objectId: vehicleRequests.objectId,
       departmentId: vehicleRequests.departmentId,
       vehicleTypeId: vehicleRequests.vehicleTypeId,
+      vehicleTypeName: vehicleTypes.name,
+      // Вид заказанного типа — граница замены (ADR 0059): её и сверяет укладка в чужой рейс.
+      kindId: vehicleTypes.kindId,
       assignedVehicleId: vehicleRequestAssignments.vehicleId,
       ownership: vehicles.ownership,
     })
     .from(vehicleRequests)
+    .innerJoin(vehicleTypes, eq(vehicleTypes.id, vehicleRequests.vehicleTypeId))
     .leftJoin(
       vehicleRequestAssignments,
       eq(vehicleRequestAssignments.requestId, vehicleRequests.id),
@@ -496,16 +500,23 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
         // Рейс — источник истины о том, чем едут: заявка, переехавшая на другую машину, меняет
         // назначение вместе с рейсом. Ставки не трогаются — о них договариваются по заявке.
         if (request.assignedVehicleId !== target.vehicleId) {
-          if (request.vehicleTypeId !== (await vehicleTypeOf(tx, target.vehicleId))) {
-            throw err.unprocessable('Машина маршрута другого типа, чем заказано в заявке', {
-              requestId: 'Другой тип ТС',
-            });
+          const routeVehicle = await vehicleClassOf(tx, target.vehicleId);
+          if (!routeVehicle) throw err.unprocessable('У маршрута не найдена машина');
+          // Сверяется вид, а не тип (ADR 0059): заявку закрывают и машиной крупнее заказанной, и
+          // именно это правило пускает в один рейс заявки разных объектов, заказанные разным.
+          // Расхождение типа портал показывает пометкой — здесь оно ничего не блокирует.
+          if (request.kindId !== routeVehicle.kindId) {
+            throw err.unprocessable(
+              `Заявка заказана на «${request.vehicleTypeName}», а маршрут едет «${routeVehicle.typeName}» — это другой вид техники`,
+              { requestId: 'Другой вид ТС' },
+            );
           }
           await tx
             .update(vehicleRequestAssignments)
             .set({
               vehicleId: target.vehicleId,
-              vehicleTypeId: request.vehicleTypeId,
+              // Тип машины рейса, а не заказанный: назначение отвечает на «чем едут».
+              vehicleTypeId: routeVehicle.vehicleTypeId,
               updatedAt: new Date(),
             })
             .where(eq(vehicleRequestAssignments.requestId, request.id));
@@ -687,14 +698,25 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
   );
 }
 
-/** Тип ТС машины — им сверяется заказанное в заявке при переносе её в чужой рейс. */
-async function vehicleTypeOf(
+/**
+ * Тип и вид машины — ими сверяется заказанное в заявке при переносе её в чужой рейс.
+ *
+ * Вид, а не тип: заявку закрывают и машиной соседнего типа (ADR 0059), и рейс — то место, где это
+ * происходит чаще всего: день машины собирают по объектам, а объекты заказывают разное. Тип из
+ * ответа идёт в назначение — рейс остаётся источником истины о том, чем едут.
+ */
+async function vehicleClassOf(
   tx: Parameters<typeof lockRoute>[0],
   vehicleId: string,
-): Promise<string | null> {
+): Promise<{ vehicleTypeId: string; kindId: string; typeName: string } | null> {
   const [row] = await tx
-    .select({ vehicleTypeId: vehicles.vehicleTypeId })
+    .select({
+      vehicleTypeId: vehicles.vehicleTypeId,
+      kindId: vehicleTypes.kindId,
+      typeName: vehicleTypes.name,
+    })
     .from(vehicles)
+    .innerJoin(vehicleTypes, eq(vehicleTypes.id, vehicles.vehicleTypeId))
     .where(eq(vehicles.id, vehicleId));
-  return row?.vehicleTypeId ?? null;
+  return row ?? null;
 }

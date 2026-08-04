@@ -23,8 +23,11 @@ import { VehicleRequestsTab } from '../src/pages/vehicle/VehicleRequestsTab';
 const ASSIGNMENT = {
   vehicleId: 'v-1',
   ownership: 'own' as const,
+  vehicleTypeId: 'vt-dump',
   typeName: 'Самосвалы',
+  vehicleCategoryId: null,
   categoryName: null,
+  categorySpecs: null,
   modelName: 'КамАЗ-6520',
   registrationNumber: 'Е646СК799',
   description: '',

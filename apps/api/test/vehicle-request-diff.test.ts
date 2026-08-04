@@ -202,8 +202,12 @@ describe('дифф правки заявки на технику', () => {
 const RENTAL: VehicleRequestAssignmentDto = {
   vehicleId: '66666666-6666-4666-8666-666666666666',
   ownership: 'rental',
+  // Тип и категория — машины, а не заказа: с ADR 0059 они расходятся законно.
+  vehicleTypeId: '88888888-8888-4888-8888-888888888888',
   typeName: 'Экскаватор',
+  vehicleCategoryId: '99999999-9999-4999-8999-999999999999',
   categoryName: 'Экскаватор 1,5 м³',
+  categorySpecs: { bucket_volume: 1.5 },
   modelName: null,
   registrationNumber: null,
   description: 'Экскаватор Hitachi 1,5 м³',
@@ -268,6 +272,28 @@ describe('дифф назначения техники', () => {
       field: 'vehicle',
       from: '—',
       to: 'Экскаватор 1,5 м³ · ООО «Спецтехника»',
+    });
+  });
+
+  it('у машины без категории пишется её тип — чем закрыли, видно и так (ADR 0059)', () => {
+    // Тип назначенной машины с заказанным расходится законно, и подпись собственной машины —
+    // госномер: без типа в истории не было бы ответа на «чем именно закрыли заявку».
+    const changes = diffVehicleAssignment(null, {
+      ...RENTAL,
+      ownership: 'own',
+      description: '',
+      registrationNumber: 'О123ОО197',
+      vehicleCategoryId: null,
+      categoryName: null,
+      categorySpecs: null,
+      typeName: 'Тягачи с полуприцепами',
+      lessorId: null,
+      lessorName: null,
+    });
+    expect(changes).toContainEqual({
+      field: 'vehicle',
+      from: '—',
+      to: 'О123ОО197 · Тягачи с полуприцепами',
     });
   });
 });

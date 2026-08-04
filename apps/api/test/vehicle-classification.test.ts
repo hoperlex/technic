@@ -8,8 +8,12 @@ import {
   vehicleClassificationKey,
   vehicleClassificationLabel,
   vehicleClassificationListQuerySchema,
-  vehicleCategoryMismatch,
-  vehicleCategoryMismatchWarning,
+  compareVehicleSize,
+  vehicleSubstitutionGroup,
+  vehicleSubstitutionHint,
+  vehicleSubstitutionOf,
+  vehicleSubstitutionRank,
+  vehicleSubstitutionWarning,
   vehicleTypeCodeSchema,
   vehicleTypeListQuerySchema,
 } from '@technic/contracts';
@@ -185,32 +189,159 @@ describe('vehicle_classifications: list-query', () => {
   });
 });
 
-// ── Категория при назначении: предупреждение, а не запрет (ADR 0045) ──
+// ── Замена заказанной техники: предупреждение, а не запрет (ADR 0045, ADR 0059) ──
+const CRANES = '55555555-5555-4555-8555-555555555555';
+const TRUCKS = '66666666-6666-4666-8666-666666666666';
 const CAT_130 = '33333333-3333-4333-8333-333333333333';
 const CAT_25 = '44444444-4444-4444-8444-444444444444';
 
-describe('расхождение категории машины с заказанной', () => {
-  it('разные категории — расхождение: о нём и предупреждают', () => {
-    expect(vehicleCategoryMismatch(CAT_130, CAT_25)).toBe(true);
+describe('сравнение техники по ТТХ', () => {
+  it('все общие характеристики больше — крупнее', () => {
+    expect(compareVehicleSize({ lift_capacity: 25 }, { lift_capacity: 130 })).toBe('bigger');
   });
 
-  it('та же категория — расхождения нет', () => {
-    expect(vehicleCategoryMismatch(CAT_130, CAT_130)).toBe(false);
+  it('хоть одна меньше — меньше заказанного', () => {
+    expect(compareVehicleSize({ lift_capacity: 130 }, { lift_capacity: 25 })).toBe('smaller');
   });
 
-  it('у машины категория не заполнена — «не разнесли» не равно «не подходит»', () => {
-    expect(vehicleCategoryMismatch(CAT_130, null)).toBe(false);
+  it('одна больше, другая меньше — характеристики расходятся', () => {
+    // Манипулятор: г/п машины выше заказанной, а г/п стрелы ниже — одним словом не описать.
+    const ordered = { lift_capacity: 10, boom_capacity: 7 };
+    expect(compareVehicleSize(ordered, { lift_capacity: 15, boom_capacity: 3 })).toBe('mixed');
+  });
+
+  it('равные значения — та же величина', () => {
+    expect(compareVehicleSize({ lift_capacity: 5 }, { lift_capacity: 5 })).toBe('same');
+  });
+
+  it('сравниваются только общие ТТХ: лишние у машины не мешают', () => {
+    const actual = { lift_capacity: 12, boom_capacity: 3 };
+    expect(compareVehicleSize({ lift_capacity: 5 }, actual)).toBe('bigger');
+  });
+
+  it('общих ТТХ нет — сравнивать не с чем, а не «подходит»', () => {
+    // Самосвал меряется объёмом кузова, бортовой — грузоподъёмностью (0045_vehicle_specs_seed).
+    expect(compareVehicleSize({ body_volume: 12 }, { lift_capacity: 10 })).toBe('unknown');
+  });
+
+  it('категория не проставлена — тоже «сравнить не с чем» (ADR 0045 §6)', () => {
+    expect(compareVehicleSize({ lift_capacity: 10 }, null)).toBe('unknown');
+    expect(compareVehicleSize(null, { lift_capacity: 10 })).toBe('unknown');
+  });
+});
+
+describe('расхождение назначенной техники с заказанной', () => {
+  const ordered = {
+    vehicleTypeId: CRANES,
+    vehicleCategoryId: CAT_130,
+    categorySpecs: { lift_capacity: 130 },
+  };
+
+  it('та же позиция — расхождения нет и говорить не о чем', () => {
+    const s = vehicleSubstitutionOf(ordered, ordered);
+    expect(s.typeMismatch).toBe(false);
+    expect(s.categoryMismatch).toBe(false);
+    expect(vehicleSubstitutionHint(s)).toBeNull();
+    expect(
+      vehicleSubstitutionWarning({
+        substitution: s,
+        orderedLabel: 'Автокраны, г/п 130 т',
+        actualTypeName: 'Автокраны',
+        actualCategoryName: 'Автокраны, г/п 130 т',
+      }),
+    ).toBeNull();
+  });
+
+  it('свой тип, категория меньше — предупреждение о риске', () => {
+    const s = vehicleSubstitutionOf(ordered, {
+      vehicleTypeId: CRANES,
+      vehicleCategoryId: CAT_25,
+      categorySpecs: { lift_capacity: 25 },
+    });
+    expect(vehicleSubstitutionHint(s)).toBe('меньше заказанного');
+    expect(vehicleSubstitutionGroup(s)).toBe('ordered');
+    const w = vehicleSubstitutionWarning({
+      substitution: s,
+      orderedLabel: 'Автокраны, г/п 130 т',
+      actualTypeName: 'Автокраны',
+      actualCategoryName: 'Автокраны, г/п 25 т',
+    })!;
+    expect(w.level).toBe('warning');
+    // Названы обе стороны: решение остаётся за человеком, и ему нужны оба наименования.
+    expect(w.text).toContain('Автокраны, г/п 130 т');
+    expect(w.text).toContain('Автокраны, г/п 25 т');
+  });
+
+  it('другой тип крупнее — пометка, а не предупреждение', () => {
+    const s = vehicleSubstitutionOf(
+      { vehicleTypeId: TRUCKS, vehicleCategoryId: CAT_25, categorySpecs: { lift_capacity: 3.5 } },
+      { vehicleTypeId: CRANES, vehicleCategoryId: CAT_130, categorySpecs: { lift_capacity: 10 } },
+    );
+    expect(vehicleSubstitutionHint(s)).toBe('другой тип, крупнее');
+    expect(vehicleSubstitutionGroup(s)).toBe('bigger');
+    expect(
+      vehicleSubstitutionWarning({
+        substitution: s,
+        orderedLabel: 'Грузовые малотоннажные автомобили, г/п 3.5 т',
+        actualTypeName: 'Бортовые автомобили',
+        actualCategoryName: 'Бортовые автомобили, г/п 10 т',
+      })!.level,
+    ).toBe('info');
+  });
+
+  it('другой тип, сравнить нечем — так и сказано', () => {
+    const s = vehicleSubstitutionOf(ordered, {
+      vehicleTypeId: TRUCKS,
+      vehicleCategoryId: null,
+      categorySpecs: null,
+    });
+    expect(vehicleSubstitutionHint(s)).toBe('другой тип');
+    expect(vehicleSubstitutionGroup(s)).toBe('other');
+    expect(
+      vehicleSubstitutionWarning({
+        substitution: s,
+        orderedLabel: 'Автокраны, г/п 130 т',
+        actualTypeName: 'Тягачи с полуприцепами',
+        actualCategoryName: null,
+      })!.text,
+    ).toContain('Тягачи с полуприцепами');
+  });
+
+  it('свой тип, а категория у машины не заполнена — «не разнесли» не равно «не подходит»', () => {
+    const s = vehicleSubstitutionOf(ordered, {
+      vehicleTypeId: CRANES,
+      vehicleCategoryId: null,
+      categorySpecs: null,
+    });
+    expect(s.categoryMismatch).toBe(false);
+    expect(vehicleSubstitutionHint(s)).toBe('категория не указана');
   });
 
   it('заявка без категории не расходится ни с чем: сравнивать не с чем', () => {
     // Тип без ТТХ (ADR 0028 §3) и заявки старше миграции 0052 — категории у них нет вовсе.
-    expect(vehicleCategoryMismatch(null, CAT_25)).toBe(false);
-    expect(vehicleCategoryMismatch(undefined, undefined)).toBe(false);
+    const s = vehicleSubstitutionOf(
+      { vehicleTypeId: CRANES, vehicleCategoryId: null, categorySpecs: null },
+      { vehicleTypeId: CRANES, vehicleCategoryId: CAT_25, categorySpecs: { lift_capacity: 25 } },
+    );
+    expect(s.categoryMismatch).toBe(false);
+    expect(vehicleSubstitutionHint(s)).toBeNull();
   });
 
-  it('предупреждение называет обе стороны — решение остаётся за человеком', () => {
-    const text = vehicleCategoryMismatchWarning('Автокраны, г/п 130 т', 'Автокраны, г/п 25 т');
-    expect(text).toContain('Автокраны, г/п 130 т');
-    expect(text).toContain('Автокраны, г/п 25 т');
+  it('порядок групп: заказанный тип → крупнее → прочие → меньше заказанного', () => {
+    const rank = (actual: Parameters<typeof vehicleSubstitutionOf>[1]): number =>
+      vehicleSubstitutionRank(vehicleSubstitutionOf(ordered, actual));
+    const own = rank({ vehicleTypeId: CRANES, vehicleCategoryId: CAT_25, categorySpecs: null });
+    const bigger = rank({
+      vehicleTypeId: TRUCKS,
+      vehicleCategoryId: CAT_25,
+      categorySpecs: { lift_capacity: 200 },
+    });
+    const other = rank({ vehicleTypeId: TRUCKS, vehicleCategoryId: null, categorySpecs: null });
+    const smaller = rank({
+      vehicleTypeId: TRUCKS,
+      vehicleCategoryId: CAT_25,
+      categorySpecs: { lift_capacity: 25 },
+    });
+    expect([own, bigger, other, smaller]).toEqual([0, 1, 2, 3]);
   });
 });

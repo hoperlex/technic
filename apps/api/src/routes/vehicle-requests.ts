@@ -150,6 +150,7 @@ import {
   earlyEndReasonChange,
 } from '../services/vehicle-request-diff';
 import { loadVehicleRequestHistory } from '../services/vehicle-request-history';
+import { categorySpecsSql } from '../services/vehicle-categories';
 import {
   activeWaybillOfRequest,
   attachRequest,
@@ -187,6 +188,11 @@ const approvers = alias(users, 'approvers');
 const requestCategories = alias(vehicleCategories, 'request_categories');
 /** Назначивший технику — третий join на учётки (ADR 0027). */
 const assigners = alias(users, 'assigners');
+/**
+ * Тип назначенной машины — своим алиасом рядом с заказанным: `vehicleTypes` в этом запросе уже
+ * занята типом заявки, а с ADR 0059 это разные вещи — заказали одно, вышло может быть крупнее.
+ */
+const assignmentTypes = alias(vehicleTypes, 'assignment_types');
 /** Закрывший заявку фактом — четвёртый join на учётки (ADR 0029). */
 const completers = alias(users, 'completers');
 /** Арендодатель назначенной машины; у собственной техники его нет. */
@@ -212,9 +218,15 @@ const requestSelect = {
   // Плоская модель (ADR 0005): тип ТС — напрямую vehicle_type_id.
   vehicleTypeId: vehicleRequests.vehicleTypeId,
   vehicleTypeName: vehicleTypes.name,
+  // Вид заказанного типа — граница замены (ADR 0059): им окно назначения спрашивает технику.
+  vehicleKindId: vehicleTypes.kindId,
   // Категория заказанного типа (ADR 0028); пусто — у типа категорий нет.
   vehicleCategoryId: vehicleRequests.vehicleCategoryId,
   vehicleCategoryName: requestCategories.name,
+  // ТТХ заказанной категории — левая сторона сравнения «крупнее или меньше» (ADR 0059).
+  vehicleCategorySpecs: categorySpecsSql(vehicleRequests.vehicleCategoryId).as(
+    'request_category_specs',
+  ),
   status: vehicleRequests.status,
   comment: vehicleRequests.comment,
   // Причина отмены живёт в истории статусов; актуальна последняя и только у отменённых заявок.
@@ -233,7 +245,15 @@ const requestSelect = {
   // Назначенная техника (ADR 0027): ставки — снимок из назначения, реквизиты машины — join'ом.
   assignmentVehicleId: vehicleRequestAssignments.vehicleId,
   assignmentOwnership: vehicles.ownership,
+  // Тип и категория — машины, а не заказа: с ADR 0059 они могут расходиться, и карточка обязана
+  // показывать, чем заявку закрыли на самом деле.
+  assignmentVehicleTypeId: vehicles.vehicleTypeId,
+  assignmentTypeName: assignmentTypes.name,
+  assignmentCategoryId: vehicles.vehicleCategoryId,
   assignmentCategoryName: vehicleCategories.name,
+  assignmentCategorySpecs: categorySpecsSql(vehicles.vehicleCategoryId).as(
+    'assignment_category_specs',
+  ),
   assignmentModelName: vehicleModels.name,
   assignmentRegistrationNumber: vehicles.registrationNumber,
   assignmentDescription: vehicles.description,
@@ -331,6 +351,7 @@ function baseQuery() {
         eq(vehicleRequests.id, vehicleRequestAssignments.requestId),
       )
       .leftJoin(vehicles, eq(vehicleRequestAssignments.vehicleId, vehicles.id))
+      .leftJoin(assignmentTypes, eq(vehicles.vehicleTypeId, assignmentTypes.id))
       .leftJoin(vehicleCategories, eq(vehicles.vehicleCategoryId, vehicleCategories.id))
       .leftJoin(vehicleModels, eq(vehicles.vehicleModelId, vehicleModels.id))
       .leftJoin(lessors, eq(vehicles.lessorId, lessors.id))
@@ -431,8 +452,11 @@ async function filesByRequestIds(ids: string[]): Promise<Map<string, FileDto[]>>
 }
 
 /**
- * Назначенная техника из строки выборки (ADR 0027); null — заявку в работу не брали. Тип ТС у
- * машины и у заявки один — это держит составной FK, поэтому в DTO уходит имя типа заявки.
+ * Назначенная техника из строки выборки (ADR 0027); null — заявку в работу не брали.
+ *
+ * Тип и категория здесь — **машины**: с ADR 0059 они с заказанными расходятся, и подставлять в
+ * назначение заказанный тип (как делалось, пока их равенство держал составной FK) значило бы
+ * показывать в карточке не то, чем заявку закрыли.
  */
 function toAssignmentDto(r: RequestRow): VehicleRequestAssignmentDto | null {
   if (!r.assignmentVehicleId || !r.assignmentOwnership || !r.assignedBy || !r.assignedAt) {
@@ -441,8 +465,11 @@ function toAssignmentDto(r: RequestRow): VehicleRequestAssignmentDto | null {
   return {
     vehicleId: r.assignmentVehicleId,
     ownership: r.assignmentOwnership,
-    typeName: r.vehicleTypeName,
+    vehicleTypeId: r.assignmentVehicleTypeId ?? r.vehicleTypeId,
+    typeName: r.assignmentTypeName ?? r.vehicleTypeName,
+    vehicleCategoryId: r.assignmentCategoryId,
     categoryName: r.assignmentCategoryName,
+    categorySpecs: r.assignmentCategorySpecs,
     modelName: r.assignmentModelName,
     registrationNumber: r.assignmentRegistrationNumber,
     description: r.assignmentDescription ?? '',
@@ -516,8 +543,10 @@ function toDto(r: RequestRow, fileList: FileDto[]): VehicleRequestDto {
     departmentName: r.departmentName,
     vehicleTypeId: r.vehicleTypeId,
     vehicleTypeName: r.vehicleTypeName,
+    vehicleKindId: r.vehicleKindId,
     vehicleCategoryId: r.vehicleCategoryId,
     vehicleCategoryName: r.vehicleCategoryName,
+    vehicleCategorySpecs: r.vehicleCategorySpecs,
     status: r.status,
     comment: r.comment,
     cancelReason: r.cancelReason || null,
@@ -725,10 +754,13 @@ async function assertCargoAmount(
 
 /**
  * Машина, которой берут заявку в работу (ADR 0027). Проверяется всё, чего не видит БД: живая ли
- * запись, годна ли машина к работе и есть ли ставка там, где без неё нельзя. Совпадение типа ТС
- * держит составной FK, но сверяется и здесь — иначе вместо понятного отказа человек получил бы
- * ошибку целостности. Заказанная категория не проверяется вовсе (ADR 0045) — оттого её здесь и
- * не спрашивают.
+ * запись, годна ли машина к работе и есть ли ставка там, где без неё нельзя.
+ *
+ * Ни тип, ни категория заказа фильтром больше не работают (ADR 0045, ADR 0059): заявку закрывают
+ * тем, что есть в парке, а подходит ли соседняя позиция — 25 т вместо 20 т, бортовой вместо
+ * малотоннажного — знает диспетчер, а не сервер. Границей осталась одна: **вид** ТС. Самосвал
+ * вместо автокрана — не оттенок ТТХ, а другая заявка и другой процесс (у заказа техники на объект
+ * рейса не бывает вовсе), и такое назначение отклоняется 422 с объяснением.
  *
  * Возвращает DTO назначения «как будет после записи»: им же пишется история.
  */
@@ -746,31 +778,40 @@ async function resolveAssignment(
       id: vehicles.id,
       ownership: vehicles.ownership,
       vehicleTypeId: vehicles.vehicleTypeId,
+      typeName: vehicleTypes.name,
+      kindId: vehicleTypes.kindId,
       status: vehicles.status,
       deletedAt: vehicles.deletedAt,
       registrationNumber: vehicles.registrationNumber,
       description: vehicles.description,
+      categoryId: vehicles.vehicleCategoryId,
       categoryName: vehicleCategories.name,
+      categorySpecs: categorySpecsSql(vehicles.vehicleCategoryId),
       modelName: vehicleModels.name,
       lessorId: vehicles.lessorId,
       lessorName: counterparties.name,
     })
     .from(vehicles)
+    .innerJoin(vehicleTypes, eq(vehicles.vehicleTypeId, vehicleTypes.id))
     .leftJoin(vehicleCategories, eq(vehicles.vehicleCategoryId, vehicleCategories.id))
     .leftJoin(vehicleModels, eq(vehicles.vehicleModelId, vehicleModels.id))
     .leftJoin(counterparties, eq(vehicles.lessorId, counterparties.id))
     .where(eq(vehicles.id, input.vehicleId));
   if (!row || row.deletedAt) throw err.badRequest('Техника не найдена');
   if (row.vehicleTypeId !== request.vehicleTypeId) {
-    throw err.unprocessable(`Заявка заказана на тип ТС «${request.vehicleTypeName}»`, {
-      vehicleId: 'Техника другого типа',
-    });
+    const [ordered] = await tx
+      .select({ kindId: vehicleTypes.kindId, kindName: vehicleKinds.name })
+      .from(vehicleTypes)
+      .innerJoin(vehicleKinds, eq(vehicleTypes.kindId, vehicleKinds.id))
+      .where(eq(vehicleTypes.id, request.vehicleTypeId));
+    if (!ordered || ordered.kindId !== row.kindId) {
+      throw err.unprocessable(
+        `Заявка заказана на «${request.vehicleTypeName}» — это ${(ordered?.kindName ?? '').toLowerCase() || 'другой вид техники'}, ` +
+          `а «${row.typeName}» к нему не относится`,
+        { vehicleId: 'Техника другого вида' },
+      );
+    }
   }
-  // Категория не сверяется (ADR 0045). Заказанная категория — это ТТХ (ADR 0028), но заявку
-  // закрывают тем, что есть в парке: подходит ли соседняя позиция (25 т вместо 20 т, другой
-  // вылет стрелы), знает диспетчер, а не сервер, и отказ здесь оставлял бы заявку без машины
-  // при живой технике. Расхождение показывается предупреждением в окне назначения и остаётся в
-  // истории заявки строкой «Техника» — оно видно, но ничего не блокирует.
   // «Обслуживание», «Списана» и выключенное предложение аренды к работе не годятся: заявка
   // взята в работу означает, что машина выйдет.
   if (row.status !== 'active') {
@@ -789,8 +830,12 @@ async function resolveAssignment(
   return {
     vehicleId: row.id,
     ownership: row.ownership,
-    typeName: request.vehicleTypeName,
+    // Тип и категория — машины: назначение отвечает на «чем закрыли», а не «что заказывали».
+    vehicleTypeId: row.vehicleTypeId,
+    typeName: row.typeName,
+    vehicleCategoryId: row.categoryId,
     categoryName: row.categoryName,
+    categorySpecs: row.categorySpecs,
     modelName: row.modelName,
     registrationNumber: row.registrationNumber,
     description: row.description,
@@ -1034,12 +1079,16 @@ async function moveToRouteOfVehicle(
 async function saveAssignment(
   tx: Tx,
   requestId: string,
-  vehicleTypeId: string,
+  /** Заказанный тип заявки: им держится запрет менять заказ под назначенной машиной. */
+  orderedVehicleTypeId: string,
   a: VehicleRequestAssignmentDto,
 ): Promise<void> {
   const values = {
     vehicleId: a.vehicleId,
-    vehicleTypeId,
+    // Тип машины и заказанный тип пишутся по отдельности (миграция 0083): первый — цель
+    // составного FK на технику, второй — на заявку. Совпадать они не обязаны (ADR 0059).
+    vehicleTypeId: a.vehicleTypeId,
+    orderedVehicleTypeId,
     pricePerHour: numToDb(a.pricePerHour),
     pricePerShift: numToDb(a.pricePerShift),
     shiftHours: a.shiftHours,
@@ -2214,10 +2263,13 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
    *
    * Машина необязательна, и от неё зависит, какие рейсы подсказаны (ADR 0052):
    *
-   * - **без машины** — рейсы того же типа ТС, что заказан в заявке. День планируют с этого
-   *   вопроса: заявка едет рейсом, а рейс уже знает, какой машиной. Принадлежность спрашивать не
-   *   у чего и незачем — рейс заводится только на собственную технику (`assertRouteVehicle`), так
-   *   что список и так сужен ею.
+   * - **без машины** — рейсы дня на технике того же **вида**, что заказан в заявке (ADR 0059).
+   *   День планируют с этого вопроса: заявка едет рейсом, а рейс уже знает, какой машиной.
+   *   Равенством типа список больше не сужается — иначе рейс машины крупнее заказанной, куда
+   *   заявка отлично встаёт, не появлялся бы в подсказке вовсе. Чем каждый рейс отличается от
+   *   заказанного, считает портал правилом из контрактов: в строке рейса приезжают тип его машины
+   *   и ТТХ её категории. Принадлежность спрашивать не у чего и незачем — рейс заводится только
+   *   на собственную технику (`assertRouteVehicle`), так что список и так сужен ею.
    * - **с машиной** — рейсы именно этой машины плюс графы шапки от её прошлого рейса: реквизиты
    *   выезда наследуются от конкретной единицы, и без неё наследовать нечего.
    *
@@ -2283,9 +2335,14 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
             eq(vehicleRoutes.routeDate, date),
             vehicleId
               ? eq(vehicleRoutes.vehicleId, vehicleId)
-              : eq(vehicles.vehicleTypeId, before.vehicleTypeId),
+              : // Вид, а не тип (ADR 0059): рейс машины крупнее заказанной — такой же ответ на
+                // вопрос «чем заявка поедет», и прятать его значило бы вернуть прежний запрет.
+                eq(vehicleTypes.kindId, before.vehicleKindId),
           ),
         )
+        // Заказанный тип — первым: сортировка по пригодности живёт в портале (`vehicleSubstitutionRank`),
+        // а здесь порядок стабильный и предсказуемый, чтобы рейсы одного типа не перемешивались
+        // между запросами.
         .orderBy(asc(vehicleRoutes.num));
       return {
         required: true,

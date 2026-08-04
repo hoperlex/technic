@@ -7,6 +7,7 @@ import {
   assignmentTitle,
   completionLabel,
   earlyEndDaysSaved,
+  isVehicleSubstitution,
   type RequestHistoryEntryDto,
   requestStatusColors,
   requestStatusLabels,
@@ -20,6 +21,8 @@ import {
   vehicleRequestChangeLabels,
   vehicleRequestTypeColors,
   vehicleRequestTypeLabels,
+  vehicleSubstitutionHint,
+  vehicleSubstitutionOf,
   routePurposeLabels,
   routePurposeShortLabels,
   waybillStatusColors,
@@ -202,6 +205,36 @@ export function VehicleRequestViewModal({
 
   const rows = useMemo(() => toRows(history), [history]);
 
+  /**
+   * Чем назначенная машина разошлась с заказанным (ADR 0045, ADR 0059) — тегом рядом с техникой.
+   * Правило то же, что в окне назначения: одна формулировка на выбор, карточку и историю.
+   */
+  const assignmentHint = useMemo(() => {
+    const a = request?.assignment;
+    if (!request || !a) return null;
+    const substitution = vehicleSubstitutionOf(
+      {
+        vehicleTypeId: request.vehicleTypeId,
+        vehicleCategoryId: request.vehicleCategoryId,
+        categorySpecs: request.vehicleCategorySpecs,
+      },
+      {
+        vehicleTypeId: a.vehicleTypeId,
+        vehicleCategoryId: a.vehicleCategoryId,
+        categorySpecs: a.categorySpecs,
+      },
+    );
+    if (!isVehicleSubstitution(substitution)) return null;
+    const hint = vehicleSubstitutionHint(substitution);
+    return {
+      label: [a.categoryName ?? a.typeName, hint].filter(Boolean).join(' · '),
+      level:
+        substitution.relation === 'smaller' || substitution.relation === 'mixed'
+          ? 'warning'
+          : 'info',
+    };
+  }, [request]);
+
   const fields = request
     ? [
         {
@@ -273,6 +306,14 @@ export function VehicleRequestViewModal({
             <Space direction="vertical" size={2}>
               <Space size={8} wrap>
                 <span>{assignmentTitle(request.assignment)}</span>
+                {/* Чем закрыли заявку, когда это не то, что заказывали (ADR 0045, ADR 0059):
+                    позиция классификатора машины плюс направление — «крупнее», «меньше
+                    заказанного». Совпало — тега нет: повторять заказ строкой ниже незачем. */}
+                {assignmentHint && (
+                  <Tag color={assignmentHint.level === 'warning' ? 'orange' : 'gold'}>
+                    {assignmentHint.label}
+                  </Tag>
+                )}
                 <Tag color={vehicleOwnershipColors[request.assignment.ownership]}>
                   {vehicleOwnershipLabels[request.assignment.ownership]}
                 </Tag>

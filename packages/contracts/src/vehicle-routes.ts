@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { baseListQuery, dateOnlySchema, uuidSchema } from './common';
 import type { RequestStatus, VehicleRequestType } from './enums';
 import { requestStatusLabels } from './enums';
-import type { VehicleOwnership } from './vehicles';
+import type { VehicleOwnership, VehicleSpecValues } from './vehicles';
 import type { WaybillFormCode, WaybillRequirement, WaybillStatus } from './waybills';
 
 // ── Маршрут: рейс одной машины на одну дату (план `docs/vehicle-routes-plan.md`) ──
@@ -159,6 +159,16 @@ export interface VehicleRouteDto {
   vehicleId: string;
   /** «КамАЗ 65201 · Е646СК799» — чем едут. */
   vehicleLabel: string;
+  /**
+   * Тип машины рейса и ТТХ её категории. Ими заявка сверяет заказанное с тем, чем рейс поедет
+   * (ADR 0059): подсказка рейсов больше не сужена равенством типов, а помечает каждый рейс —
+   * заказанный тип, крупнее, меньше. Сравнение считает портал правилом из контрактов
+   * (`vehicleSubstitutionOf`): сервер здесь ничего не решает и ничего не запрещает.
+   */
+  vehicleTypeId: string;
+  vehicleTypeName: string;
+  vehicleCategoryId: string | null;
+  vehicleCategorySpecs: VehicleSpecValues | null;
   /** Пусто — водителя ещё не назначили: маршрут собирают заранее, человека ставят утром. */
   driverPersonId: string | null;
   driverName: string;
