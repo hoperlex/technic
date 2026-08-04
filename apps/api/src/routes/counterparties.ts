@@ -29,6 +29,7 @@ import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
 import { assertArchiveVisible } from '../lib/access';
 import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
+import { registerPurgeRoute } from '../services/directory-purge';
 import {
   hasObjectLinks,
   objectsByCounterpartyIds,
@@ -593,4 +594,26 @@ export default async function counterpartiesRoutes(app: FastifyInstance): Promis
       return (await getDto(id))!;
     },
   );
+
+  // Удаление насовсем (ADR 0060) — только из архива: сначала контрагента удаляют обычным
+  // способом, и лишь потом администратор сносит запись. Синонимы и привязки к объектам уходят
+  // каскадом, а учётки, склады, цены прайса и техника держат контрагента внешним ключом.
+  registerPurgeRoute(app, {
+    load: async (id) => {
+      const [row] = await db.select().from(counterparties).where(eq(counterparties.id, id));
+      return row;
+    },
+    isDown: (row) => !!row.deletedAt,
+    remove: async (tx, row) => {
+      await tx.delete(counterparties).where(eq(counterparties.id, row.id));
+    },
+    notFound: 'Контрагент не найден',
+    stillLive: 'Контрагент не в архиве — сначала удалите его',
+    subject: 'контрагента',
+    audit: {
+      action: 'counterparty.purge',
+      entityType: 'counterparty',
+      metadata: (row) => ({ name: row.name, inn: row.inn, type: row.type }),
+    },
+  });
 }

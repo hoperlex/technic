@@ -13,6 +13,7 @@ import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
 import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
+import { registerPurgeRoute } from '../services/directory-purge';
 import { assertWasteTypeNameFree, asWasteTypeNameConflict } from '../services/waste-types';
 
 function toDto(t: WasteTypeRow): WasteTypeDto {
@@ -128,4 +129,25 @@ export default async function wasteTypesRoutes(app: FastifyInstance): Promise<vo
       return toDto(updated);
     },
   );
+
+  // Удаление насовсем (ADR 0060). Цены прайса — не часть типа, а самостоятельные записи своих
+  // операторов: тип с ценами держит внешний ключ, и убирают их из прайса отдельно.
+  registerPurgeRoute(app, {
+    load: async (id) => {
+      const [row] = await db.select().from(wasteTypes).where(eq(wasteTypes.id, id));
+      return row;
+    },
+    isDown: (row) => !row.isActive,
+    remove: async (tx, row) => {
+      await tx.delete(wasteTypes).where(eq(wasteTypes.id, row.id));
+    },
+    notFound: 'Тип мусора не найден',
+    stillLive: 'Тип мусора активен — сначала деактивируйте его',
+    subject: 'тип мусора',
+    audit: {
+      action: 'waste_type.purge',
+      entityType: 'waste_type',
+      metadata: (row) => ({ code: row.code, name: row.name }),
+    },
+  });
 }

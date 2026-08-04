@@ -14,7 +14,7 @@ import {
   Tooltip,
   Typography,
 } from 'antd';
-import { EditOutlined, InfoCircleOutlined, PlusOutlined } from '@ant-design/icons';
+import { DeleteFilled, EditOutlined, InfoCircleOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { TableColumnType } from 'antd';
 import {
@@ -44,6 +44,7 @@ import { useIsMobile } from '@shared/lib';
 import { useListParams } from '@shared/lib';
 import { applyApiFieldErrors } from '../../utils/formErrors';
 import { errorMessage, formatMoney } from '../../utils/format';
+import { usePurgeAction } from './usePurgeAction';
 import {
   buildWasteTariffGrid,
   wasteTariffColumnOperators,
@@ -315,6 +316,23 @@ export function WasteTariffsTab() {
       void qc.invalidateQueries({ queryKey: ['waste-tariffs'] });
     },
     onError: (e) => message.error(errorMessage(e)),
+  });
+
+  /**
+   * Удаление насовсем (ADR 0060). Строк действий в сетке нет — предмет действия задаёт открытая
+   * модалка, поэтому кнопки живут в её подвале: у цены — в карточке цены, у типа мусора — в
+   * карточке типа.
+   */
+  const purgeTariff = usePurgeAction({
+    subject: 'цену',
+    purge: wasteTariffsApi.purge,
+    invalidate: ['waste-tariffs'],
+  });
+  const purgeType = usePurgeAction({
+    subject: 'тип мусора',
+    purge: wasteTypesApi.purge,
+    // Тип виден и строкой сетки, и списком выбора в форме цены.
+    invalidate: ['waste-types', 'waste-tariffs'],
   });
 
   const onToggleActive = (r: WasteTariffDto, next: boolean) => {
@@ -611,6 +629,21 @@ export function WasteTariffsTab() {
         onSubmit={() => form.submit()}
         confirmLoading={saveMut.isPending}
         width={560}
+        footerExtra={
+          record && !record.isActive && purgeTariff.allowed ? (
+            <Button
+              danger
+              icon={<DeleteFilled />}
+              loading={purgeTariff.pending}
+              onClick={() => {
+                setOpen(false);
+                purgeTariff.confirm(record.id, `${record.wasteTypeName} — ${record.operatorName}`);
+              }}
+            >
+              Удалить окончательно
+            </Button>
+          ) : undefined
+        }
       >
         <Form
           form={form}
@@ -836,6 +869,21 @@ export function WasteTariffsTab() {
         onSubmit={() => typeForm.submit()}
         confirmLoading={saveTypeMut.isPending}
         width={480}
+        footerExtra={
+          typeRecord && !typeRecord.isActive && purgeType.allowed ? (
+            <Button
+              danger
+              icon={<DeleteFilled />}
+              loading={purgeType.pending}
+              onClick={() => {
+                setTypeOpen(false);
+                purgeType.confirm(typeRecord.id, typeRecord.name);
+              }}
+            >
+              Удалить окончательно
+            </Button>
+          ) : undefined
+        }
       >
         <Form form={typeForm} layout="vertical" onFinish={(v) => saveTypeMut.mutate(v)}>
           <Form.Item

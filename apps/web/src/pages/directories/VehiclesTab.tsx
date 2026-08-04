@@ -14,6 +14,7 @@ import {
   type TableColumnsType,
 } from 'antd';
 import {
+  DeleteFilled,
   DeleteOutlined,
   EditOutlined,
   ExclamationCircleOutlined,
@@ -61,6 +62,7 @@ import { useIsMobile } from '@shared/lib';
 import { useListParams } from '@shared/lib';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
+import { usePurgeAction } from './usePurgeAction';
 
 // Справочник техники (ADR 0007) с двумя ветками принадлежности (ADR 0018). Один список, а не две
 // вкладки: сравнивать своё и аренду нужно рядом. Переключатель принадлежности не только фильтрует,
@@ -295,6 +297,14 @@ export function VehiclesTab() {
     onError: (e) => message.error(errorMessage(e)),
   });
 
+  // Удаление насовсем (ADR 0060) — из архива и только администратору: обычное удаление здесь и
+  // так лишь перекладывает запись в архив.
+  const purge = usePurgeAction({
+    subject: 'технику',
+    purge: vehiclesApi.purge,
+    invalidate: ['vehicles'],
+  });
+
   const confirmDelete = (r: VehicleDto) =>
     modal.confirm({
       title: `Переместить в архив «${vehicleTitle(r)}»?`,
@@ -431,6 +441,16 @@ export function VehiclesTab() {
               icon={<ReloadOutlined />}
               title="Восстановить"
               onClick={() => restoreMut.mutate(r.id)}
+            />
+          ) : null}
+          {purge.allowed ? (
+            <Button
+              size="small"
+              danger
+              icon={<DeleteFilled />}
+              title="Удалить окончательно"
+              loading={purge.pending}
+              onClick={() => purge.confirm(r.id, vehicleTitle(r))}
             />
           ) : null}
         </Space>
@@ -601,9 +621,21 @@ export function VehiclesTab() {
     onOpen: (r) => (r.deletedAt ? undefined : openEdit(r)),
     actions: (r) =>
       r.deletedAt
-        ? canRestore
-          ? [{ key: 'restore', label: 'Восстановить', onClick: () => restoreMut.mutate(r.id) }]
-          : []
+        ? [
+            ...(canRestore
+              ? [{ key: 'restore', label: 'Восстановить', onClick: () => restoreMut.mutate(r.id) }]
+              : []),
+            ...(purge.allowed
+              ? [
+                  {
+                    key: 'purge',
+                    label: 'Удалить окончательно',
+                    danger: true,
+                    onClick: () => purge.confirm(r.id, vehicleTitle(r)),
+                  },
+                ]
+              : []),
+          ]
         : [
             { key: 'edit', label: 'Редактировать', onClick: () => openEdit(r) },
             {

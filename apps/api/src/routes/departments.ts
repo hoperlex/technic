@@ -9,12 +9,13 @@ import {
   updateDepartmentSchema,
 } from '@technic/contracts';
 import { db } from '../db/client';
-import { departments, type DepartmentRow } from '../db/schema';
+import { departments, type DepartmentRow, userDepartments } from '../db/schema';
 import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
 import { revokeAllForUser } from '../auth/sessions';
 import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
+import { registerPurgeRoute } from '../services/directory-purge';
 import { headsByDepartmentIds, replaceDepartmentHeads } from '../services/user-scopes';
 
 /**
@@ -180,6 +181,39 @@ export default async function departmentsRoutes(app: FastifyInstance): Promise<v
       return (await getDto(id))!;
     },
   );
+
+  // Удаление насовсем (ADR 0060): деактивированный отдел сносится целиком. Заявки его держат
+  // внешним ключом, а привязки учёток — проверкой ниже: каскад снял бы их молча.
+  registerPurgeRoute(app, {
+    load: async (id) => {
+      const [row] = await db.select().from(departments).where(eq(departments.id, id));
+      return row;
+    },
+    isDown: (row) => !row.isActive,
+    remove: async (tx, row) => {
+      // Тот же довод, что и при деактивации: отдел не должен обнулять область своих сотрудников
+      // в обход карточки учётки (ADR 0040). Сначала снимают привязку, потом удаляют отдел.
+      const scoped = await tx
+        .select({ c: count() })
+        .from(userDepartments)
+        .where(eq(userDepartments.departmentId, row.id));
+      const linked = Number(scoped[0]!.c);
+      if (linked > 0) {
+        throw err.conflict(
+          `Отдел привязан к учётным записям (${linked}) — снимите привязку и повторите`,
+        );
+      }
+      await tx.delete(departments).where(eq(departments.id, row.id));
+    },
+    notFound: 'Отдел не найден',
+    stillLive: 'Отдел активен — сначала деактивируйте его',
+    subject: 'отдел',
+    audit: {
+      action: 'department.purge',
+      entityType: 'department',
+      metadata: (row) => ({ code: row.code, name: row.name }),
+    },
+  });
 }
 
 /**

@@ -23,6 +23,7 @@ import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
 import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
+import { registerPurgeRoute } from '../services/directory-purge';
 import {
   assertValueFitsSpec,
   loadTypeSpecs,
@@ -441,4 +442,32 @@ export default async function vehicleTypesRoutes(app: FastifyInstance): Promise<
       return await loadTypeSpecs(db, typeId);
     },
   );
+
+  // Удаление насовсем (ADR 0060). Категории и привязки ТТХ уходят вместе с типом: они существуют
+  // только внутри него и ведутся в его же карточке — требовать вычистить их вручную значило бы
+  // не дать удалить тип вовсе. Порядок задан составными внешними ключами: значения, потом
+  // категории, потом привязки — тот же, что при отвязке ТТХ выше.
+  registerPurgeRoute(app, {
+    load: async (id) => {
+      const [row] = await db.select().from(vehicleTypes).where(eq(vehicleTypes.id, id));
+      return row;
+    },
+    isDown: (row) => !row.isActive,
+    remove: async (tx, row) => {
+      await tx
+        .delete(vehicleCategorySpecValues)
+        .where(eq(vehicleCategorySpecValues.vehicleTypeId, row.id));
+      await tx.delete(vehicleCategories).where(eq(vehicleCategories.vehicleTypeId, row.id));
+      await tx.delete(vehicleTypeSpecs).where(eq(vehicleTypeSpecs.vehicleTypeId, row.id));
+      await tx.delete(vehicleTypes).where(eq(vehicleTypes.id, row.id));
+    },
+    notFound: 'Тип ТС не найден',
+    stillLive: 'Тип ТС активен — сначала деактивируйте его',
+    subject: 'тип ТС',
+    audit: {
+      action: 'vehicle_type.purge',
+      entityType: 'vehicle_type',
+      metadata: (row) => ({ code: row.code, name: row.name }),
+    },
+  });
 }

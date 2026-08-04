@@ -19,6 +19,12 @@ interface Props {
    * кнопка отнимает, а не сохраняет, и окно с формой не должно этому противоречить.
    */
   okDanger?: boolean;
+  /**
+   * Необязательное действие в подвале, слева от «Отмена»: удаление записи насовсем там, где
+   * строки действий нет вовсе (сетка прайса, ADR 0060). Не «ещё одна кнопка ОК» — то, что уводит
+   * от сохранения, и потому стоит по другую сторону от основного действия.
+   */
+  footerExtra?: ReactNode;
   children: ReactNode;
 }
 
@@ -41,6 +47,7 @@ export function FormModal({
   okText = 'Сохранить',
   cancelText = 'Отмена',
   okDanger,
+  footerExtra,
   children,
 }: Props) {
   const isMobile = useIsMobile();
@@ -67,6 +74,7 @@ export function FormModal({
           // Кнопки во всю ширину и в порядке «отказ слева, действие справа» — тем же, что в
           // модалке на десктопе. Отступ снизу — под «домашнюю полоску».
           <div className="sheet-footer">
+            {footerExtra}
             <Button size="large" block onClick={onCancel}>
               {cancelText}
             </Button>
@@ -99,6 +107,18 @@ export function FormModal({
       cancelText={cancelText}
       confirmLoading={confirmLoading}
       width={width}
+      footer={
+        footerExtra
+          ? (originNode) => (
+              // Подвал перекладывается только ради левого края: сами кнопки остаются теми же,
+              // что рисует Modal, иначе `confirmLoading` и порядок «отказ — действие» разъедутся.
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                {footerExtra}
+                <div style={{ marginLeft: 'auto' }}>{originNode}</div>
+              </div>
+            )
+          : undefined
+      }
       centered
       mask={{ closable: false }}
       styles={{

@@ -14,6 +14,7 @@ import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
 import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
+import { registerPurgeRoute } from '../services/directory-purge';
 
 // Справочник ТТХ (ADR 0016): глобальные характеристики, из значений которых складываются категории
 // типов ТС. Удаления нет — деактивация через PATCH isActive, и та запрещена, пока ТТХ привязан
@@ -284,4 +285,25 @@ export default async function vehicleSpecsRoutes(app: FastifyInstance): Promise<
       return (await getDtoById(id))!;
     },
   );
+
+  // Удаление насовсем (ADR 0060). Отдельной проверки на привязки к типам не нужно: деактивировать
+  // привязанный ТТХ и так нельзя, а значит до удаления доходит только отвязанный.
+  registerPurgeRoute(app, {
+    load: async (id) => {
+      const [row] = await db.select().from(vehicleSpecs).where(eq(vehicleSpecs.id, id));
+      return row;
+    },
+    isDown: (row) => !row.isActive,
+    remove: async (tx, row) => {
+      await tx.delete(vehicleSpecs).where(eq(vehicleSpecs.id, row.id));
+    },
+    notFound: 'ТТХ не найден',
+    stillLive: 'ТТХ активен — сначала деактивируйте его',
+    subject: 'ТТХ',
+    audit: {
+      action: 'vehicle_spec.purge',
+      entityType: 'vehicle_spec',
+      metadata: (row) => ({ code: row.code, name: row.name, unit: row.unit }),
+    },
+  });
 }

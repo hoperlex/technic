@@ -20,6 +20,7 @@ import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
 import { orderByFrom, pageParams } from '../lib/pagination';
+import { registerPurgeRoute } from '../services/directory-purge';
 import { resolveWasteTariff, resolveWasteTariffByKind } from '../services/waste-pricing';
 import { asWasteTypeNameConflict, createWasteType } from '../services/waste-types';
 
@@ -419,4 +420,32 @@ export default async function wasteTariffsRoutes(app: FastifyInstance): Promise<
       return loadDto(current.id);
     },
   );
+
+  // Удаление насовсем (ADR 0060). У заявок цена лежит снимком, но ссылка на позицию прайса в них
+  // остаётся — использованную цену БД удалить не даст, и это правильно: иначе заявка потеряла бы
+  // основание своей суммы.
+  registerPurgeRoute(app, {
+    load: async (id) => {
+      const [row] = await db.select().from(wasteTariffs).where(eq(wasteTariffs.id, id));
+      return row;
+    },
+    isDown: (row) => !row.isActive,
+    remove: async (tx, row) => {
+      await tx.delete(wasteTariffs).where(eq(wasteTariffs.id, row.id));
+    },
+    notFound: 'Тариф не найден',
+    stillLive: 'Цена действует — сначала отключите её',
+    subject: 'цену',
+    audit: {
+      action: 'waste_tariff.purge',
+      entityType: 'waste_tariff',
+      metadata: (row) => ({
+        operatorCounterpartyId: row.operatorCounterpartyId,
+        wasteTypeId: row.wasteTypeId,
+        containerTypeId: row.containerTypeId,
+        containerKind: row.containerKind,
+        pricePerM3: row.pricePerM3,
+      }),
+    },
+  });
 }

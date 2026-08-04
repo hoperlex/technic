@@ -1,6 +1,18 @@
 import { useState } from 'react';
-import { App, Button, DatePicker, Form, Input, Select, Space, Tag, Typography } from 'antd';
 import {
+  App,
+  Button,
+  Checkbox,
+  DatePicker,
+  Form,
+  Input,
+  Select,
+  Space,
+  Tag,
+  Typography,
+} from 'antd';
+import {
+  DeleteFilled,
   DeleteOutlined,
   EditOutlined,
   IdcardOutlined,
@@ -40,6 +52,7 @@ import { type FilterDefinition, sortOptionsFrom } from '@shared/ui';
 import { useListParams } from '@shared/lib';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
+import { usePurgeAction } from './usePurgeAction';
 
 /**
  * Справочник водителей (ADR 0037).
@@ -99,9 +112,15 @@ export function DriversTab() {
   const canWrite = can('drivers.write');
   const qc = useQueryClient();
 
+  // Архив справочника (ADR 0021): удалённые водители видны по `archive.read`, сносит их насовсем
+  // администратор (ADR 0060). До этого удалённая карточка не показывалась вовсе — её и не
+  // удалить было, и не проверить.
+  const canSeeArchive = can('archive.read');
+
   const { params, setParams, setSort, onTableChange } = useListParams<{
     documents?: DriverDocumentSet;
     categoryId?: string;
+    includeDeleted?: string;
   }>({}, { searchKeys: ['fullName', 'snils'] });
   const { data, isFetching } = useQuery({
     queryKey: ['drivers', params],
@@ -237,6 +256,14 @@ export function DriversTab() {
     onError: (e) => message.error(errorMessage(e)),
   });
 
+  // Удаление насовсем (ADR 0060): вместе с человеком уходят его документы и сканы. Только из
+  // архива и только администратору — путевые листы держат водителя внешним ключом.
+  const purge = usePurgeAction({
+    subject: 'водителя',
+    purge: driversApi.purge,
+    invalidate: ['drivers'],
+  });
+
   const confirmRemove = (d: DriverDto) =>
     modal.confirm({
       title: `Удалить водителя «${d.fullName}»?`,
@@ -363,23 +390,39 @@ export function DriversTab() {
     }),
     ...(canWrite
       ? [
-          actionsColumn<DriverDto>((r) => (
-            <Space>
-              <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)} />
-              <Button
-                size="small"
-                icon={<IdcardOutlined />}
-                title="Заменить удостоверение"
-                onClick={() => openLicense(r)}
-              />
-              <Button
-                size="small"
-                danger
-                icon={<DeleteOutlined />}
-                onClick={() => confirmRemove(r)}
-              />
-            </Space>
-          )),
+          actionsColumn<DriverDto>((r) =>
+            r.deletedAt ? (
+              <Space>
+                <Tag>в архиве</Tag>
+                {purge.allowed ? (
+                  <Button
+                    size="small"
+                    danger
+                    icon={<DeleteFilled />}
+                    title="Удалить окончательно"
+                    loading={purge.pending}
+                    onClick={() => purge.confirm(r.id, r.fullName)}
+                  />
+                ) : null}
+              </Space>
+            ) : (
+              <Space>
+                <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)} />
+                <Button
+                  size="small"
+                  icon={<IdcardOutlined />}
+                  title="Заменить удостоверение"
+                  onClick={() => openLicense(r)}
+                />
+                <Button
+                  size="small"
+                  danger
+                  icon={<DeleteOutlined />}
+                  onClick={() => confirmRemove(r)}
+                />
+              </Space>
+            ),
+          ),
         ]
       : []),
   ];
@@ -424,6 +467,20 @@ export function DriversTab() {
         value={params.categoryId}
         onChange={setCategory}
       />
+      {canSeeArchive ? (
+        <Checkbox
+          checked={params.includeDeleted === 'true'}
+          onChange={(e) =>
+            setParams((p) => ({
+              ...p,
+              includeDeleted: e.target.checked ? 'true' : undefined,
+              page: 1,
+            }))
+          }
+        >
+          Показать архив
+        </Checkbox>
+      ) : null}
     </Space>
   );
 
@@ -446,6 +503,18 @@ export function DriversTab() {
       placeholder: 'Любая',
       onChange: (v) => setCategory(v as string | undefined),
     },
+    ...(canSeeArchive
+      ? [
+          {
+            kind: 'toggle' as const,
+            key: 'includeDeleted',
+            label: 'Показывать архив',
+            value: params.includeDeleted === 'true',
+            onChange: (checked: boolean) =>
+              setParams((p) => ({ ...p, includeDeleted: checked ? 'true' : undefined, page: 1 })),
+          },
+        ]
+      : []),
   ];
 
   /** Документы водителя в карточке: история и учётные действия над действующим. */
@@ -537,6 +606,8 @@ export function DriversTab() {
   const card: CardConfig<DriverDto> = {
     title: (r) => r.fullName,
     badge: (r) => {
+      // Архив — первым делом: у удалённой карточки состояние документа уже ничего не решает.
+      if (r.deletedAt) return <Tag>в архиве</Tag>;
       const license = currentLicense(r);
       if (!license) return <Tag>нет ВУ</Tag>;
       const defect = licenseDefect(license, today());
@@ -576,15 +647,27 @@ export function DriversTab() {
       (r) => (r.personnelNo ? `Таб. № ${r.personnelNo}` : null),
       (r) => (r.snils ? `СНИЛС ${formatSnils(r.snils)}` : null),
     ],
-    onOpen: canWrite ? openEdit : undefined,
-    actions: (r) =>
-      canWrite
-        ? [
-            { key: 'edit', label: 'Редактировать', onClick: () => openEdit(r) },
-            { key: 'license', label: 'Заменить удостоверение', onClick: () => openLicense(r) },
-            { key: 'delete', label: 'Удалить', danger: true, onClick: () => confirmRemove(r) },
-          ]
-        : [],
+    onOpen: canWrite ? (r) => (r.deletedAt ? undefined : openEdit(r)) : undefined,
+    actions: (r) => {
+      if (!canWrite) return [];
+      if (r.deletedAt) {
+        return purge.allowed
+          ? [
+              {
+                key: 'purge',
+                label: 'Удалить окончательно',
+                danger: true,
+                onClick: () => purge.confirm(r.id, r.fullName),
+              },
+            ]
+          : [];
+      }
+      return [
+        { key: 'edit', label: 'Редактировать', onClick: () => openEdit(r) },
+        { key: 'license', label: 'Заменить удостоверение', onClick: () => openLicense(r) },
+        { key: 'delete', label: 'Удалить', danger: true, onClick: () => confirmRemove(r) },
+      ];
+    },
   };
 
   return (

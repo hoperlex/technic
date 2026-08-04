@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { App, Button, Form, Input, Select, Space, Switch, Tag, Typography } from 'antd';
-import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
+import { DeleteFilled, DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { CreateObjectInput, ObjectDto } from '@technic/contracts';
 import { counterpartiesApi, objectsApi } from '../../api/resources';
@@ -12,6 +12,7 @@ import { actionsColumn, boolBadgeColumn, textColumn } from '@shared/ui';
 import { sortOptionsFrom } from '@shared/ui';
 import { useListParams } from '@shared/lib';
 import { errorMessage } from '../../utils/format';
+import { usePurgeAction } from './usePurgeAction';
 
 export function ObjectsTab() {
   const { message, modal } = App.useApp();
@@ -89,6 +90,13 @@ export function ObjectsTab() {
     onError: (e) => message.error(errorMessage(e)),
   });
 
+  // Удаление насовсем (ADR 0060) — только администратору и только на деактивированной строке.
+  const purge = usePurgeAction({
+    subject: 'объект',
+    purge: objectsApi.purge,
+    invalidate: ['objects'],
+  });
+
   const confirmDelete = (r: ObjectDto) =>
     modal.confirm({
       title: `Деактивировать объект «${r.name}»?`,
@@ -130,6 +138,16 @@ export function ObjectsTab() {
       <Space>
         <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)} />
         <Button size="small" danger icon={<DeleteOutlined />} onClick={() => confirmDelete(r)} />
+        {!r.isActive && purge.allowed && (
+          <Button
+            size="small"
+            danger
+            icon={<DeleteFilled />}
+            title="Удалить окончательно"
+            loading={purge.pending}
+            onClick={() => purge.confirm(r.id, r.name)}
+          />
+        )}
       </Space>
     )),
   ];
@@ -153,6 +171,16 @@ export function ObjectsTab() {
     actions: (r) => [
       { key: 'edit', label: 'Редактировать', onClick: () => openEdit(r) },
       { key: 'delete', label: 'Деактивировать', danger: true, onClick: () => confirmDelete(r) },
+      ...(!r.isActive && purge.allowed
+        ? [
+            {
+              key: 'purge',
+              label: 'Удалить окончательно',
+              danger: true,
+              onClick: () => purge.confirm(r.id, r.name),
+            },
+          ]
+        : []),
     ],
   };
 

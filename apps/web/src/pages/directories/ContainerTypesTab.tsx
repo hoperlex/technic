@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { App, Button, Form, Input, InputNumber, Space, Switch, Tag } from 'antd';
-import { EditOutlined, PlusOutlined } from '@ant-design/icons';
+import { DeleteFilled, EditOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   CONTAINER_KINDS,
@@ -19,6 +19,7 @@ import { actionsColumn, badgeColumn, textColumn } from '@shared/ui';
 import { sortOptionsFrom } from '@shared/ui';
 import { useListParams } from '@shared/lib';
 import { errorMessage } from '../../utils/format';
+import { usePurgeAction } from './usePurgeAction';
 
 const kindOptions = CONTAINER_KINDS.map((k) => ({ value: k, label: containerKindLabels[k] }));
 
@@ -99,6 +100,14 @@ export function ContainerTypesTab() {
     });
   };
 
+  // Удаление насовсем (ADR 0060): деактивация оставляет тип в базе навсегда, а заведённый по
+  // ошибке код убирает отсюда только администратор.
+  const purge = usePurgeAction({
+    subject: 'тип',
+    purge: containerTypesApi.purge,
+    invalidate: ['container-types'],
+  });
+
   const activeColumn: TableColumnType<ContainerTypeDto> = {
     key: 'isActive',
     title: 'Активен',
@@ -135,6 +144,16 @@ export function ContainerTypesTab() {
     actionsColumn<ContainerTypeDto>((r) => (
       <Space>
         <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)} />
+        {!r.isActive && purge.allowed && (
+          <Button
+            size="small"
+            danger
+            icon={<DeleteFilled />}
+            title="Удалить окончательно"
+            loading={purge.pending}
+            onClick={() => purge.confirm(r.id, r.name)}
+          />
+        )}
       </Space>
     )),
   ];
@@ -158,6 +177,16 @@ export function ContainerTypesTab() {
         danger: r.isActive,
         onClick: () => onToggleActive(r, !r.isActive),
       },
+      ...(!r.isActive && purge.allowed
+        ? [
+            {
+              key: 'purge',
+              label: 'Удалить окончательно',
+              danger: true,
+              onClick: () => purge.confirm(r.id, r.name),
+            },
+          ]
+        : []),
     ],
   };
 

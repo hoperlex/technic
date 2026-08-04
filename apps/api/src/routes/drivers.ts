@@ -23,7 +23,9 @@ import {
 import { db } from '../db/client';
 import {
   credentialTypes,
+  files,
   personCredentialCategories,
+  personCredentialFiles,
   personCredentials,
   personEmployments,
   persons,
@@ -45,6 +47,8 @@ import {
 } from '../services/drivers';
 import { DriverImportError } from '../services/driver-import';
 import { applyDriverImport, DirectoriesNotSeededError } from '../services/driver-import-apply';
+import { registerPurgeRoute } from '../services/directory-purge';
+import { hardDeleteFiles } from '../services/request-files';
 
 /**
  * Справочник водителей (ADR 0037, ADR 0008).
@@ -294,13 +298,19 @@ function categoryCondition(categoryId: string, on: string) {
   )`;
 }
 
-/** Только водители: специализация действующая — уволенного из справочника не показывают. */
+/**
+ * Только водители: специализация действующая — уволенного из справочника не показывают.
+ *
+ * У удалённого человека действующей специализации не бывает: удаление само закрывает её сегодняшним
+ * днём. Поэтому для архивной записи условие смягчено — иначе `includeDeleted` не показывал бы
+ * ничего, а карточка удалённого водителя не открывалась бы даже администратору.
+ */
 function driverCondition() {
   return sql`EXISTS (
     SELECT 1 FROM ${personSpecializations} ps
     JOIN ${specializations} s ON s.id = ps.specialization_id
     WHERE ps.person_id = ${persons.id}
-      AND ps.ended_on IS NULL
+      AND (ps.ended_on IS NULL OR ${persons.deletedAt} IS NOT NULL)
       AND s.code = ${DRIVER_SPECIALIZATION_CODE}
   )`;
 }
@@ -857,4 +867,47 @@ export default async function driversRoutes(app: FastifyInstance): Promise<void>
       return reply.code(204).send();
     },
   );
+
+  /**
+   * Удаление насовсем (ADR 0060) — только из архива. Вместе с человеком уходят его документы,
+   * трудовые записи и специализации: они каскадные и без него бессмысленны. Сканы документов
+   * каскад не трогает — строки `files` снимаются явно, вместе с задачей удаления из S3.
+   *
+   * Рейсы и путевые листы держат водителя внешним ключом: того, кто уже ездил, снести нельзя.
+   */
+  registerPurgeRoute(app, {
+    load: async (id) => (await loadDriver(id))?.row,
+    isDown: (row) => !!row.deletedAt,
+    remove: async (tx, row) => {
+      // Учётку внешний ключ не удержит: `users.person_id` объявлен ON DELETE SET NULL и молча
+      // отвязал бы человека от его входа в портал. Такое решение принимают в карточке учётки.
+      // Считаются живые учётки: удалённая и так ничем не распоряжается, а требовать «сначала
+      // почините её» значило бы запереть удаление наглухо — восстанавливать её незачем.
+      const accounts = await tx
+        .select({ c: count() })
+        .from(users)
+        .where(and(eq(users.personId, row.id), isNull(users.deletedAt)));
+      if (Number(accounts[0]!.c) > 0) {
+        throw err.conflict('На водителя заведена учётная запись — сначала отвяжите или удалите её');
+      }
+      const scans = await tx
+        .select({ id: files.id, objectKey: files.objectKey })
+        .from(personCredentialFiles)
+        .innerJoin(files, eq(personCredentialFiles.fileId, files.id))
+        .innerJoin(personCredentials, eq(personCredentials.id, personCredentialFiles.credentialId))
+        .where(eq(personCredentials.personId, row.id));
+      await tx.delete(persons).where(eq(persons.id, row.id));
+      await hardDeleteFiles(tx, scans);
+    },
+    notFound: 'Водитель не найден',
+    stillLive: 'Водитель не в архиве — сначала удалите его',
+    subject: 'водителя',
+    audit: {
+      action: 'driver.purge',
+      entityType: 'person',
+      // ФИО, но не СНИЛС: журнал должен называть, кого удалили, а не хранить вторую копию
+      // персональных данных там, где карточки уже нет.
+      metadata: (row) => ({ fullName: row.fullName }),
+    },
+  });
 }

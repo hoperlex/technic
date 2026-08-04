@@ -14,6 +14,7 @@ import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
 import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
+import { registerPurgeRoute } from '../services/directory-purge';
 
 function toDto(r: ContainerTypeRow): ContainerTypeDto {
   return {
@@ -126,4 +127,25 @@ export default async function containerTypesRoutes(app: FastifyInstance): Promis
       return toDto(updated);
     },
   );
+
+  // Удаление насовсем (ADR 0060) — вторым шагом после деактивации: заведённый по ошибке тип иначе
+  // остаётся в справочнике навсегда. Заявки и цены вывоза держат его внешним ключом.
+  registerPurgeRoute(app, {
+    load: async (id) => {
+      const [row] = await db.select().from(containerTypes).where(eq(containerTypes.id, id));
+      return row;
+    },
+    isDown: (row) => !row.isActive,
+    remove: async (tx, row) => {
+      await tx.delete(containerTypes).where(eq(containerTypes.id, row.id));
+    },
+    notFound: 'Тип контейнера не найден',
+    stillLive: 'Тип контейнера активен — сначала деактивируйте его',
+    subject: 'тип контейнера',
+    audit: {
+      action: 'container_type.purge',
+      entityType: 'container_type',
+      metadata: (row) => ({ code: row.code, name: row.name }),
+    },
+  });
 }

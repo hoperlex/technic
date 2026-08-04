@@ -109,6 +109,13 @@ export const departmentsApi = {
   update: (id: string, body: UpdateDepartmentInput) =>
     apiFetch<DepartmentDto>(`/departments/${id}`, { method: 'PATCH', body }),
   remove: (id: string) => apiFetch<DepartmentDto>(`/departments/${id}`, { method: 'DELETE' }),
+  /**
+   * Удаление насовсем (ADR 0060) — второй шаг после деактивации, право `records.purge`. Отдельная
+   * ручка, а не флаг у `remove`: у них разные права и разная необратимость, и перепутать их в
+   * вызове нельзя.
+   */
+  purge: (id: string) =>
+    apiFetch<{ ok: boolean }>(`/departments/${id}/purge`, { method: 'DELETE' }),
 };
 
 export const objectsApi = {
@@ -117,6 +124,7 @@ export const objectsApi = {
   update: (id: string, body: UpdateObjectInput) =>
     apiFetch<ObjectDto>(`/objects/${id}`, { method: 'PATCH', body }),
   remove: (id: string) => apiFetch<ObjectDto>(`/objects/${id}`, { method: 'DELETE' }),
+  purge: (id: string) => apiFetch<{ ok: boolean }>(`/objects/${id}/purge`, { method: 'DELETE' }),
 };
 
 /**
@@ -130,6 +138,8 @@ export const driversApi = {
   update: (id: string, body: UpdateDriverInput) =>
     apiFetch<DriverDto>(`/drivers/${id}`, { method: 'PATCH', body }),
   remove: (id: string) => apiFetch<void>(`/drivers/${id}`, { method: 'DELETE' }),
+  /** Удаление насовсем из архива (ADR 0060): вместе с человеком уходят его документы и сканы. */
+  purge: (id: string) => apiFetch<{ ok: boolean }>(`/drivers/${id}/purge`, { method: 'DELETE' }),
   addLicense: (id: string, body: DriverLicenseBody) =>
     apiFetch<DriverDto>(`/drivers/${id}/licenses`, { method: 'POST', body }),
   verifyLicense: (id: string, licenseId: string, body: VerifyDriverLicenseBody) =>
@@ -244,6 +254,9 @@ export const counterpartiesApi = {
   remove: (id: string) => apiFetch<{ ok: boolean }>(`/counterparties/${id}`, { method: 'DELETE' }),
   restore: (id: string) =>
     apiFetch<CounterpartyDto>(`/counterparties/${id}/restore`, { method: 'POST' }),
+  /** Удаление насовсем — только из архива (ADR 0060). */
+  purge: (id: string) =>
+    apiFetch<{ ok: boolean }>(`/counterparties/${id}/purge`, { method: 'DELETE' }),
 };
 
 /**
@@ -263,9 +276,12 @@ export const containerTypesApi = {
   list: (q: Query) => apiFetch<ListResult<ContainerTypeDto>>('/container-types', { query: q }),
   create: (body: CreateContainerTypeInput) =>
     apiFetch<ContainerTypeDto>('/container-types', { method: 'POST', body }),
-  // Удаления нет: деактивация через update({ isActive: false }).
+  // Обычного удаления нет: деактивация через update({ isActive: false }).
   update: (id: string, body: UpdateContainerTypeInput) =>
     apiFetch<ContainerTypeDto>(`/container-types/${id}`, { method: 'PATCH', body }),
+  /** Деактивированный тип администратор сносит насовсем (ADR 0060). */
+  purge: (id: string) =>
+    apiFetch<{ ok: boolean }>(`/container-types/${id}/purge`, { method: 'DELETE' }),
 };
 
 export const vehicleKindsApi = {
@@ -291,6 +307,9 @@ export const vehicleTypesApi = {
     }),
   detachSpec: (id: string, specId: string) =>
     apiFetch<VehicleTypeSpecDto[]>(`/vehicle-types/${id}/specs/${specId}`, { method: 'DELETE' }),
+  /** Удаление насовсем (ADR 0060): категории и привязки ТТХ уходят вместе с типом. */
+  purge: (id: string) =>
+    apiFetch<{ ok: boolean }>(`/vehicle-types/${id}/purge`, { method: 'DELETE' }),
 };
 
 // ── ТТХ и категории типов ТС (ADR 0016) ──
@@ -301,6 +320,8 @@ export const vehicleSpecsApi = {
   // `code` неизменяем; `unit`/`decimals` сервер запретит менять, как только ТТХ привязан к типам.
   update: (id: string, body: UpdateVehicleSpecInput) =>
     apiFetch<VehicleSpecDto>(`/vehicle-specs/${id}`, { method: 'PATCH', body }),
+  purge: (id: string) =>
+    apiFetch<{ ok: boolean }>(`/vehicle-specs/${id}/purge`, { method: 'DELETE' }),
 };
 
 export const vehicleCategoriesApi = {
@@ -334,6 +355,8 @@ export const vehiclesApi = {
     apiFetch<VehicleDto>(`/vehicles/${id}`, { method: 'PATCH', body }),
   remove: (id: string) => apiFetch<{ ok: boolean }>(`/vehicles/${id}`, { method: 'DELETE' }),
   restore: (id: string) => apiFetch<VehicleDto>(`/vehicles/${id}/restore`, { method: 'POST' }),
+  /** Удаление насовсем — только из архива (ADR 0060). */
+  purge: (id: string) => apiFetch<{ ok: boolean }>(`/vehicles/${id}/purge`, { method: 'DELETE' }),
 };
 
 export const vehicleRequestsApi = {
@@ -509,11 +532,14 @@ export interface WasteRequestUpdatePayload {
 }
 
 // Заведения типа здесь нет: тип появляется вместе с первой ценой (wasteTariffsApi.create,
-// ADR 0017). Удаления тоже нет — деактивация через update({ isActive: false }).
+// ADR 0017). Обычного удаления тоже нет — деактивация через update({ isActive: false }).
 export const wasteTypesApi = {
   list: (q: Query) => apiFetch<ListResult<WasteTypeDto>>('/waste-types', { query: q }),
   update: (id: string, body: UpdateWasteTypeInput) =>
     apiFetch<WasteTypeDto>(`/waste-types/${id}`, { method: 'PATCH', body }),
+  /** Деактивированный тип администратор сносит насовсем (ADR 0060). */
+  purge: (id: string) =>
+    apiFetch<{ ok: boolean }>(`/waste-types/${id}/purge`, { method: 'DELETE' }),
 };
 
 export const wasteTariffsApi = {
@@ -542,6 +568,9 @@ export const wasteTariffsApi = {
   /** Правка цены не переписывает суммы оформленных заявок: в них снимок тарифа (ADR 0009). */
   update: (id: string, body: UpdateWasteTariffInput) =>
     apiFetch<WasteTariffDto>(`/waste-tariffs/${id}`, { method: 'PATCH', body }),
+  /** Отключённую цену администратор сносит насовсем (ADR 0060). */
+  purge: (id: string) =>
+    apiFetch<{ ok: boolean }>(`/waste-tariffs/${id}/purge`, { method: 'DELETE' }),
 };
 
 export const wasteRequestsApi = {

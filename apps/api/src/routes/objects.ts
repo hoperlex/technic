@@ -8,11 +8,12 @@ import {
   updateObjectSchema,
 } from '@technic/contracts';
 import { db } from '../db/client';
-import { constructionObjects, type ObjectRow } from '../db/schema';
+import { constructionObjects, type ObjectRow, userConstructionObjects } from '../db/schema';
 import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
 import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
+import { registerPurgeRoute } from '../services/directory-purge';
 import { operatorsByObjectIds, replaceObjectOperators } from '../services/object-operators';
 import { z } from 'zod';
 
@@ -167,4 +168,41 @@ export default async function objectsRoutes(app: FastifyInstance): Promise<void>
       return (await getDto(id))!;
     },
   );
+
+  // Удаление насовсем (ADR 0060): деактивированный объект сносится вместе с привязками операторов
+  // вывоза — они каскадные и живут только при нём. Заявки объект держат внешним ключом.
+  registerPurgeRoute(app, {
+    load: async (id) => {
+      const [row] = await db
+        .select()
+        .from(constructionObjects)
+        .where(eq(constructionObjects.id, id));
+      return row;
+    },
+    isDown: (row) => !row.isActive,
+    remove: async (tx, row) => {
+      // Привязки учёток к объекту каскадные, и БД удалению не помешает — а объектная роль без
+      // единого объекта нерабочая (ADR 0039). Область доступа не должна меняться уборкой
+      // справочника, поэтому сначала её снимают в карточках учёток.
+      const scoped = await tx
+        .select({ c: count() })
+        .from(userConstructionObjects)
+        .where(eq(userConstructionObjects.constructionObjectId, row.id));
+      const linked = Number(scoped[0]!.c);
+      if (linked > 0) {
+        throw err.conflict(
+          `Объект привязан к учётным записям (${linked}) — снимите привязку и повторите`,
+        );
+      }
+      await tx.delete(constructionObjects).where(eq(constructionObjects.id, row.id));
+    },
+    notFound: 'Объект не найден',
+    stillLive: 'Объект активен — сначала деактивируйте его',
+    subject: 'объект',
+    audit: {
+      action: 'object.purge',
+      entityType: 'construction_object',
+      metadata: (row) => ({ code: row.code, name: row.name }),
+    },
+  });
 }

@@ -12,7 +12,7 @@ import {
   Tooltip,
   type TableColumnType,
 } from 'antd';
-import { EditOutlined, PlusOutlined } from '@ant-design/icons';
+import { DeleteFilled, EditOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   DEFAULT_PAGE_SIZE,
@@ -29,6 +29,7 @@ import { PageTableLayout } from '@shared/ui';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
 import { actionsColumn, textColumn } from '@shared/ui';
 import { errorMessage } from '../../utils/format';
+import { usePurgeAction } from './usePurgeAction';
 
 // Справочник ТТХ (ADR 0016): характеристики, из значений которых складываются категории типов ТС.
 // Удаления нет — деактивация, и та запрещена, пока ТТХ привязан к типам. Единица измерения и
@@ -60,6 +61,14 @@ interface SpecFormValues {
 export function VehicleSpecsTab() {
   const { message, modal } = App.useApp();
   const qc = useQueryClient();
+
+  // Удаление насовсем (ADR 0060). Отвязанный и деактивированный ТТХ иначе остаётся в справочнике
+  // навсегда: до удаления доходит только тот, что уже не привязан ни к одному типу.
+  const purge = usePurgeAction({
+    subject: 'ТТХ',
+    purge: vehicleSpecsApi.purge,
+    invalidate: ['vehicle-specs'],
+  });
 
   const [params, setParams] = useState<SpecParams>({
     page: 1,
@@ -244,7 +253,19 @@ export function VehicleSpecsTab() {
       ),
     },
     actionsColumn<VehicleSpecDto>((r) => (
-      <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)} />
+      <Space size={4}>
+        <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)} />
+        {!r.isActive && purge.allowed && (
+          <Button
+            size="small"
+            danger
+            icon={<DeleteFilled />}
+            title="Удалить окончательно"
+            loading={purge.pending}
+            onClick={() => purge.confirm(r.id, r.name)}
+          />
+        )}
+      </Space>
     )),
   ];
 
@@ -314,6 +335,16 @@ export function VehicleSpecsTab() {
         disabled: r.isActive && r.usedInTypes > 0,
         onClick: () => onToggleActive(r, !r.isActive),
       },
+      ...(!r.isActive && purge.allowed
+        ? [
+            {
+              key: 'purge',
+              label: 'Удалить окончательно',
+              danger: true,
+              onClick: () => purge.confirm(r.id, r.name),
+            },
+          ]
+        : []),
     ],
   };
 

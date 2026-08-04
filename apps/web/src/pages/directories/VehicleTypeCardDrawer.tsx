@@ -17,6 +17,7 @@ import {
 import {
   ArrowDownOutlined,
   ArrowUpOutlined,
+  DeleteFilled,
   DeleteOutlined,
   EditOutlined,
   PlusOutlined,
@@ -36,6 +37,7 @@ import { AutoSelect } from '@shared/ui';
 import { FormModal } from '@shared/ui';
 import { useIsMobile } from '@shared/lib';
 import { errorMessage } from '../../utils/format';
+import { usePurgeAction } from './usePurgeAction';
 
 // Карточка типа ТС (ADR 0016): состав ТТХ и категории — комбинации их значений. Живут в одной
 // карточке, потому что это один инвариант: привязка ТТХ обязывает каждую категорию иметь по нему
@@ -64,6 +66,14 @@ export function VehicleTypeCardDrawer({ type, onClose }: Props) {
   const qc = useQueryClient();
   const isMobile = useIsMobile();
   const typeId = type?.id ?? '';
+
+  // Тип уходит вместе со своими ТТХ и категориями, поэтому список классификатора устаревает
+  // целиком, а не одной строкой.
+  const purge = usePurgeAction({
+    subject: 'тип',
+    purge: vehicleTypesApi.purge,
+    invalidate: ['vehicle-classifications', 'vehicle-types'],
+  });
 
   const specsQuery = useQuery({
     queryKey: ['vehicle-type-specs', typeId],
@@ -392,6 +402,26 @@ export function VehicleTypeCardDrawer({ type, onClose }: Props) {
       // экрана, но с боковым зазором, за которым видно ненужный сейчас список (ADR 0030).
       size={isMobile ? '100%' : 960}
       destroyOnHidden
+      /**
+       * Удаление типа насовсем (ADR 0060) живёт здесь, а не в строке списка: список — плоский
+       * классификатор, и у типа с категориями собственной строки в нём нет вовсе (ADR 0028).
+       * А карточка вдобавок показывает, что уйдёт вместе с типом: его ТТХ и категории.
+       */
+      footer={
+        type && !type.isActive && purge.allowed ? (
+          <Button
+            danger
+            icon={<DeleteFilled />}
+            loading={purge.pending}
+            onClick={() => {
+              onClose();
+              purge.confirm(type.id, type.name);
+            }}
+          >
+            Удалить тип окончательно
+          </Button>
+        ) : undefined
+      }
     >
       <Space direction="vertical" size="large" style={{ display: 'flex' }}>
         <div>

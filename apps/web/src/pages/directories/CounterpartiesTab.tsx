@@ -1,6 +1,12 @@
 import { useState } from 'react';
-import { App, Button, Form, Input, Select, Space, Switch, Tag, Typography } from 'antd';
-import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
+import { App, Button, Checkbox, Form, Input, Select, Space, Switch, Tag, Typography } from 'antd';
+import {
+  DeleteFilled,
+  DeleteOutlined,
+  EditOutlined,
+  PlusOutlined,
+  ReloadOutlined,
+} from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   COUNTERPARTY_TYPES,
@@ -20,7 +26,9 @@ import { PageTableLayout } from '@shared/ui';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
 import { actionsColumn, badgeColumn, boolBadgeColumn, textColumn } from '@shared/ui';
 import { useListParams } from '@shared/lib';
+import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
+import { usePurgeAction } from './usePurgeAction';
 
 interface CounterpartyFormValues {
   type: CounterpartyType;
@@ -38,9 +46,16 @@ const typeOptions = COUNTERPARTY_TYPES.map((t) => ({ value: t, label: counterpar
 export function CounterpartiesTab() {
   const { message, modal } = App.useApp();
   const qc = useQueryClient();
+  // Архив справочника (ADR 0021): удалённые контрагенты видны по `archive.read`, возвращает и
+  // сносит их насовсем администратор. Кнопки следуют за правом — иначе они ведут в 403.
+  const { can } = useAuth();
+  const canSeeArchive = can('archive.read');
+  const canRestore = can('archive.restore');
+
   const { params, setParams, setSort, onTableChange } = useListParams<{
     type?: string;
     isActive?: string;
+    includeDeleted?: string;
   }>(
     {},
     {
@@ -141,6 +156,24 @@ export function CounterpartiesTab() {
     onError: (e) => message.error(errorMessage(e)),
   });
 
+  const restoreMut = useMutation({
+    mutationFn: (id: string) => counterpartiesApi.restore(id),
+    onSuccess: () => {
+      message.success('Контрагент восстановлен');
+      void qc.invalidateQueries({ queryKey: ['counterparties'] });
+      void qc.invalidateQueries({ queryKey: ['vehicles'] });
+    },
+    onError: (e) => message.error(errorMessage(e)),
+  });
+
+  // Удаление насовсем (ADR 0060) — только из архива: обычное удаление здесь и так лишь помечает
+  // запись удалённой.
+  const purge = usePurgeAction({
+    subject: 'контрагента',
+    purge: counterpartiesApi.purge,
+    invalidate: ['counterparties', 'vehicles', 'objects'],
+  });
+
   const confirmDelete = (r: CounterpartyDto) =>
     modal.confirm({
       title: `Удалить контрагента «${r.name}»?`,
@@ -207,23 +240,67 @@ export function CounterpartiesTab() {
       width: 120,
     }),
     actionsColumn<CounterpartyDto>(
-      (r) => (
-        <Space size={4}>
-          <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)} />
-          <Button size="small" danger icon={<DeleteOutlined />} onClick={() => confirmDelete(r)} />
-        </Space>
-      ),
-      90,
+      (r) =>
+        r.deletedAt ? (
+          <Space size={4}>
+            <Tag>в архиве</Tag>
+            {canRestore ? (
+              <Button
+                size="small"
+                icon={<ReloadOutlined />}
+                title="Восстановить"
+                onClick={() => restoreMut.mutate(r.id)}
+              />
+            ) : null}
+            {purge.allowed ? (
+              <Button
+                size="small"
+                danger
+                icon={<DeleteFilled />}
+                title="Удалить окончательно"
+                loading={purge.pending}
+                onClick={() => purge.confirm(r.id, r.name)}
+              />
+            ) : null}
+          </Space>
+        ) : (
+          <Space size={4}>
+            <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)} />
+            <Button
+              size="small"
+              danger
+              icon={<DeleteOutlined />}
+              onClick={() => confirmDelete(r)}
+            />
+          </Space>
+        ),
+      130,
     ),
   ];
 
   const filters = (
-    <Select
-      style={{ width: 260 }}
-      value={typeFilter}
-      onChange={applyTypeFilter}
-      options={[{ value: '', label: 'Все типы' }, ...typeOptions]}
-    />
+    <Space wrap>
+      <Select
+        style={{ width: 260 }}
+        value={typeFilter}
+        onChange={applyTypeFilter}
+        options={[{ value: '', label: 'Все типы' }, ...typeOptions]}
+      />
+      {canSeeArchive ? (
+        <Checkbox
+          checked={params.includeDeleted === 'true'}
+          onChange={(e) =>
+            setParams((p) => ({
+              ...p,
+              includeDeleted: e.target.checked ? 'true' : undefined,
+              page: 1,
+            }))
+          }
+        >
+          Показать архив
+        </Checkbox>
+      ) : null}
+    </Space>
   );
 
   /** Тот же фильтр описанием — для шита на телефоне (ADR 0030). */
@@ -249,6 +326,18 @@ export function CounterpartiesTab() {
       placeholder: 'Все',
       onChange: (v) => setParams((p) => ({ ...p, isActive: v, page: 1 })),
     },
+    ...(canSeeArchive
+      ? [
+          {
+            kind: 'toggle' as const,
+            key: 'includeDeleted',
+            label: 'Показывать архив',
+            value: params.includeDeleted === 'true',
+            onChange: (checked: boolean) =>
+              setParams((p) => ({ ...p, includeDeleted: checked ? 'true' : undefined, page: 1 })),
+          },
+        ]
+      : []),
   ];
 
   /**
@@ -257,7 +346,14 @@ export function CounterpartiesTab() {
    */
   const card: CardConfig<CounterpartyDto> = {
     title: (r) => r.name,
-    badge: (r) => <Tag color={r.isActive ? 'green' : 'default'}>{r.isActive ? 'Да' : 'Нет'}</Tag>,
+    // Архивную запись на телефоне иначе не отличить от живой: действий у неё другие, а строка
+    // выглядит так же.
+    badge: (r) =>
+      r.deletedAt ? (
+        <Tag>в архиве</Tag>
+      ) : (
+        <Tag color={r.isActive ? 'green' : 'default'}>{r.isActive ? 'Да' : 'Нет'}</Tag>
+      ),
     primary: (r) => (
       <Tag color={counterpartyTypeColors[r.type]}>{counterpartyTypeLabels[r.type]}</Tag>
     ),
@@ -267,11 +363,28 @@ export function CounterpartiesTab() {
       (r) => (r.objects.length > 0 ? `Объекты: ${r.objects.map((o) => o.code).join(' · ')}` : null),
       (r) => r.comment || null,
     ],
-    onOpen: openEdit,
-    actions: (r) => [
-      { key: 'edit', label: 'Редактировать', onClick: () => openEdit(r) },
-      { key: 'delete', label: 'Деактивировать', danger: true, onClick: () => confirmDelete(r) },
-    ],
+    onOpen: (r) => (r.deletedAt ? undefined : openEdit(r)),
+    actions: (r) =>
+      r.deletedAt
+        ? [
+            ...(canRestore
+              ? [{ key: 'restore', label: 'Восстановить', onClick: () => restoreMut.mutate(r.id) }]
+              : []),
+            ...(purge.allowed
+              ? [
+                  {
+                    key: 'purge',
+                    label: 'Удалить окончательно',
+                    danger: true,
+                    onClick: () => purge.confirm(r.id, r.name),
+                  },
+                ]
+              : []),
+          ]
+        : [
+            { key: 'edit', label: 'Редактировать', onClick: () => openEdit(r) },
+            { key: 'delete', label: 'Удалить', danger: true, onClick: () => confirmDelete(r) },
+          ],
   };
 
   return (
