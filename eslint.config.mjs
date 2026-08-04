@@ -12,7 +12,13 @@ import boundaries from 'eslint-plugin-boundaries';
  * обычный `pages → @shared/ui` станет ошибкой.
  */
 const SHARED_TYPES = ['shared-config', 'shared-api', 'shared-lib', 'shared-ui'];
-const LAYER_GROUPS = [SHARED_TYPES, ['entities'], ['features'], ['widgets'], ['pages'], ['app']];
+/**
+ * Слайсы заявок и общий `request` — отдельные типы, а не захват имени слайса: `capture` в элементе
+ * меняет способ сопоставления, и с ним правило переставало запрещать импорт соседа (проверено на
+ * фикстурах).
+ */
+const ENTITY_TYPES = ['entity-request', 'entity-request-kin', 'entities'];
+const LAYER_GROUPS = [SHARED_TYPES, ENTITY_TYPES, ['features'], ['widgets'], ['pages'], ['app']];
 
 /**
  * Слой видит всё, что ниже него, и только через публичный вход слайса (`index.ts`). Точка входа
@@ -51,8 +57,13 @@ const sharedElements = SHARED_TYPES.map((type) => ({
 
 const allElements = [
   ...sharedElements,
+  // Порядок важен: частные шаблоны раньше общего `entities/*`, иначе он перехватит их.
+  { type: 'entity-request', pattern: 'apps/web/src/entities/request' },
+  { type: 'entity-request-kin', pattern: 'apps/web/src/entities/waste-request' },
+  { type: 'entity-request-kin', pattern: 'apps/web/src/entities/vehicle-request' },
   ...LAYER_GROUPS.slice(1)
     .flat()
+    .filter((type) => !type.startsWith('entity-'))
     .map((type) => ({ type, pattern: `apps/web/src/${type}/*` })),
 ];
 
@@ -60,6 +71,21 @@ const sharedPolicies = Object.entries(SHARED_MATRIX).map(([from, to]) => ({
   from: { element: { type: from } },
   allow: { to: { element: { types: { anyOf: to }, fileInternalPath: 'index.ts' } } },
 }));
+
+/**
+ * Единственное разрешённое направление между слайсами одного слоя: оба вида заявок берут общее из
+ * `request` — статусы, историю, коридоры переходов (ADR 0012, ADR 0015). Положить это в `shared`
+ * значило бы протащить домен в фундамент, а продублировать — дать двум копиям разойтись.
+ *
+ * Разрешение точечное, а не «соседям можно»: обратное направление (`request` → заявки) запрещено,
+ * и каждый случай проверяется фикстурой.
+ */
+const entityKinPolicies = [
+  {
+    from: { element: { type: 'entity-request-kin' } },
+    allow: { to: { element: { type: 'entity-request', fileInternalPath: 'index.ts' } } },
+  },
+];
 
 export default tseslint.config(
   {
@@ -136,6 +162,10 @@ export default tseslint.config(
               group: ['@shared/*/*'],
               message: 'Вход в сегмент — только через @shared/<сегмент>, а не вглубь него.',
             },
+            {
+              group: ['@entities/*/*'],
+              message: 'Вход в слайс — только через @entities/<слайс>, а не вглубь него.',
+            },
           ],
         },
       ],
@@ -185,22 +215,22 @@ export default tseslint.config(
         {
           default: 'disallow',
           message: 'слой видит только то, что ниже него, и только через index.ts слайса',
-          policies: [...layerPolicies, ...sharedPolicies],
+          policies: [...layerPolicies, ...sharedPolicies, ...entityKinPolicies],
         },
       ],
     },
   },
   {
     /*
-     * Нижний слой обязан зависеть только от размеченного. Без этого правила `shared` мог бы
-     * импортировать `api/resources` — и линт молчал бы: неклассифицированный элемент под политики
-     * не подпадает вовсе. Проверено экспериментом до этапа 1. Остальной код живёт без этой
-     * проверки до этапа 7, пока разложен не весь.
+     * Нижние слои обязаны зависеть только от размеченного. Без этого правила `shared` и `entities`
+     * могли бы импортировать `api/resources` или `auth/AuthContext` — и линт молчал бы:
+     * неклассифицированный элемент под политики не подпадает вовсе. Проверено экспериментом до
+     * этапа 1. Верхние слои живут без этой проверки до этапа 7, пока разложены не все.
      */
-    files: ['apps/web/src/shared/**/*.{ts,tsx}'],
+    files: ['apps/web/src/shared/**/*.{ts,tsx}', 'apps/web/src/entities/**/*.{ts,tsx}'],
     plugins: { boundaries },
     settings: {
-      'boundaries/elements': sharedElements,
+      'boundaries/elements': allElements,
       'import/resolver': { typescript: { project: 'apps/web/tsconfig.json' } },
     },
     rules: {

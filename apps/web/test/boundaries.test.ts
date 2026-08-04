@@ -87,3 +87,39 @@ describe('границы сегментов shared', () => {
     );
   });
 });
+
+/**
+ * Слой сущностей. Соседи друг друга не видят — иначе слайсы срастутся и переставать быть
+ * самостоятельными начнут незаметно. Единственное исключение — общее двух видов заявок; оно
+ * выражено отдельными типами элементов, а не захватом имени слайса: с `capture` правило переставало
+ * запрещать импорт соседа вовсе.
+ */
+describe('границы слоя entities', () => {
+  it('сущность берёт нижний слой через публичный вход', async () => {
+    await expectAllowed('entities/object/ok-uses-shared.ts');
+  });
+
+  it('оба вида заявок берут общее из request', async () => {
+    await expectAllowed('entities/waste-request/ok-uses-request.ts');
+    await expectAllowed('entities/vehicle-request/ok-uses-request.ts');
+  });
+
+  it('сосед по слою запрещён', async () => {
+    expect(await lintFixture('entities/object/bad-sibling.ts')).toContain(
+      'boundaries/dependencies',
+    );
+  });
+
+  it('общее не знает о частном: request не видит заявок', async () => {
+    // Иначе `request` перестанет быть общим — он начнёт зависеть от того, кто им пользуется.
+    expect(await lintFixture('entities/request/bad-uses-waste.ts')).toContain(
+      'boundaries/dependencies',
+    );
+  });
+
+  it('сущность не ссылается на неразмеченный код', async () => {
+    expect(await lintFixture('entities/object/bad-uses-legacy.ts')).toContain(
+      'boundaries/no-unknown-dependencies',
+    );
+  });
+});

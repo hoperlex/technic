@@ -18,7 +18,12 @@ import boundaries from 'eslint-plugin-boundaries';
 
 /** Сегменты нижнего слоя: для верхних слоёв все они одинаково «ниже». */
 const SHARED_TYPES = ['shared-config', 'shared-api', 'shared-lib', 'shared-ui'];
-const LAYER_GROUPS = [SHARED_TYPES, ['entities'], ['features'], ['widgets'], ['pages'], ['app']];
+/**
+ * Слайсы заявок и общий `request` — отдельные типы, а не захват имени: `capture` в элементе меняет
+ * способ сопоставления, и с ним правило переставало запрещать импорт соседа (проверено).
+ */
+const ENTITY_TYPES = ['entity-request', 'entity-request-kin', 'entities'];
+const LAYER_GROUPS = [SHARED_TYPES, ENTITY_TYPES, ['features'], ['widgets'], ['pages'], ['app']];
 
 /** Слой видит всё, что ниже него, и только через публичный вход слайса. */
 const layerPolicies = LAYER_GROUPS.flatMap((group, index) => {
@@ -41,6 +46,14 @@ const sharedPolicies = Object.entries(SHARED_MATRIX).map(([from, to]) => ({
   allow: { to: { element: { types: { anyOf: to }, fileInternalPath: 'index.ts' } } },
 }));
 
+/** Единственное разрешённое направление между слайсами: оба вида заявок берут общее из `request`. */
+const entityKinPolicies = [
+  {
+    from: { element: { type: 'entity-request-kin' } },
+    allow: { to: { element: { type: 'entity-request', fileInternalPath: 'index.ts' } } },
+  },
+];
+
 export default [
   {
     files: ['**/*.ts'],
@@ -53,8 +66,13 @@ export default [
           type,
           pattern: `shared/${type.replace('shared-', '')}`,
         })),
+        // Порядок важен: частные шаблоны раньше общего `entities/*`, иначе он перехватит их.
+        { type: 'entity-request', pattern: 'entities/request' },
+        { type: 'entity-request-kin', pattern: 'entities/waste-request' },
+        { type: 'entity-request-kin', pattern: 'entities/vehicle-request' },
         ...LAYER_GROUPS.slice(1)
           .flat()
+          .filter((type) => !type.startsWith('entity-'))
           .map((type) => ({ type, pattern: `${type}/*` })),
       ],
       'boundaries/root-path': import.meta.dirname,
@@ -70,7 +88,7 @@ export default [
           message: 'слой видит только то, что ниже него, и только через index.ts слайса',
           // Импорты внутри одного элемента правило не проверяет: разрез на модули — его
           // внутреннее дело, снаружи виден только публичный вход.
-          policies: [...layerPolicies, ...sharedPolicies],
+          policies: [...layerPolicies, ...sharedPolicies, ...entityKinPolicies],
         },
       ],
       'boundaries/no-unknown-dependencies': ['error', { require: 'element' }],
