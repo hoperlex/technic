@@ -57,6 +57,13 @@ const sharedElements = SHARED_TYPES.map((type) => ({
 
 const allElements = [
   ...sharedElements,
+  /*
+   * Общий пакет правил портала. Он живёт в монорепо, поэтому резолвится в файл, а не в
+   * `node_modules`, и без явного описания правило считает его «неизвестным элементом» — как
+   * legacy. Для сущностей контракты законны: там и живут статусы, права и подписи. Запрет на них
+   * для `shared` — отдельным правилом (`no-restricted-imports`), а не молчанием разметки.
+   */
+  { type: 'contracts', pattern: 'packages/contracts/**' },
   // Порядок важен: частные шаблоны раньше общего `entities/*`, иначе он перехватит их.
   { type: 'entity-request', pattern: 'apps/web/src/entities/request' },
   { type: 'entity-request-kin', pattern: 'apps/web/src/entities/waste-request' },
@@ -85,6 +92,8 @@ const entityKinPolicies = [
     from: { element: { type: 'entity-request-kin' } },
     allow: { to: { element: { type: 'entity-request', fileInternalPath: 'index.ts' } } },
   },
+  // Контракты доступны всем слоям: это общий словарь портала, а не чей-то слой.
+  { from: { element: { type: '*' } }, allow: { to: { element: { type: 'contracts' } } } },
 ];
 
 export default tseslint.config(

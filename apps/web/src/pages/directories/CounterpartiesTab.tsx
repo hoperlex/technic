@@ -18,7 +18,7 @@ import {
   INN_MESSAGE,
   isValidInn,
 } from '@technic/contracts';
-import { counterpartiesApi, objectsApi } from '../../api/resources';
+import { counterpartiesApi } from '../../api/resources';
 import { AutoSelect } from '@shared/ui';
 import { DataTable, type CardConfig } from '@shared/ui';
 import { FormModal } from '@shared/ui';
@@ -29,6 +29,7 @@ import { useListParams } from '@shared/lib';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
 import { usePurgeAction } from './usePurgeAction';
+import { objectsApi, objectKeys } from '@entities/object';
 
 interface CounterpartyFormValues {
   type: CounterpartyType;
@@ -79,7 +80,7 @@ export function CounterpartiesTab() {
   // Объекты для привязки к оператору. Неактивные не отфильтровываем: заявки по ним ещё живут,
   // а привязка без наименования в форме выглядела бы как чужой идентификатор.
   const { data: objectsData } = useQuery({
-    queryKey: ['objects', 'for-counterparties'],
+    queryKey: objectKeys.options({ activeOnly: false }),
     queryFn: () => objectsApi.list({ page: 1, pageSize: 500, sortBy: 'name', sortOrder: 'asc' }),
   });
   const objectOptions = (objectsData?.items ?? []).map((o) => ({
@@ -138,7 +139,7 @@ export function CounterpartiesTab() {
       message.success('Сохранено');
       void qc.invalidateQueries({ queryKey: ['counterparties'] });
       // Привязка видна и в справочнике объектов — его список тоже устарел.
-      void qc.invalidateQueries({ queryKey: ['objects'] });
+      void qc.invalidateQueries({ queryKey: objectKeys.root });
       // Деактивация арендодателя гасит его технику — список техники тоже устарел.
       void qc.invalidateQueries({ queryKey: ['vehicles'] });
       setOpen(false);

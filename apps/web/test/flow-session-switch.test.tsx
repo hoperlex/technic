@@ -2,12 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import { useAuth } from '../src/auth/AuthContext';
 import { useQuery } from '@tanstack/react-query';
-import { objectsApi } from '../src/api/resources';
+
 import { json, mockHttp } from './http';
 import { renderWithSession } from './render';
 import { authUser, loginResponse } from './factories/auth';
 import { list } from './factories/common';
 import { objectDto } from './factories/waste';
+import { objectsApi } from '@entities/object';
 
 /**
  * Смена пользователя на одном рабочем месте.

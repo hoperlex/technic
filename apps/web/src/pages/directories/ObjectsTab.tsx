@@ -3,7 +3,7 @@ import { App, Button, Form, Input, Select, Space, Switch, Tag, Typography } from
 import { DeleteFilled, DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { CreateObjectInput, ObjectDto } from '@technic/contracts';
-import { counterpartiesApi, objectsApi } from '../../api/resources';
+import { counterpartiesApi } from '../../api/resources';
 import { AddressAutoComplete } from '../../components/AddressAutoComplete';
 import { DataTable, type CardConfig } from '@shared/ui';
 import { FormModal } from '@shared/ui';
@@ -13,6 +13,7 @@ import { sortOptionsFrom } from '@shared/ui';
 import { useListParams } from '@shared/lib';
 import { errorMessage } from '../../utils/format';
 import { usePurgeAction } from './usePurgeAction';
+import { objectsApi, objectKeys } from '@entities/object';
 
 export function ObjectsTab() {
   const { message, modal } = App.useApp();
@@ -25,7 +26,7 @@ export function ObjectsTab() {
     },
   );
   const { data, isFetching } = useQuery({
-    queryKey: ['objects', params],
+    queryKey: objectKeys.list(params),
     queryFn: () => objectsApi.list(params),
   });
 
@@ -73,7 +74,7 @@ export function ObjectsTab() {
       record ? objectsApi.update(record.id, values) : objectsApi.create(values),
     onSuccess: () => {
       message.success('Сохранено');
-      void qc.invalidateQueries({ queryKey: ['objects'] });
+      void qc.invalidateQueries({ queryKey: objectKeys.root });
       // Та же привязка видна в карточке контрагента — его список тоже устарел.
       void qc.invalidateQueries({ queryKey: ['counterparties'] });
       setOpen(false);
@@ -85,7 +86,7 @@ export function ObjectsTab() {
     mutationFn: (id: string) => objectsApi.remove(id),
     onSuccess: () => {
       message.success('Объект деактивирован');
-      void qc.invalidateQueries({ queryKey: ['objects'] });
+      void qc.invalidateQueries({ queryKey: objectKeys.root });
     },
     onError: (e) => message.error(errorMessage(e)),
   });
@@ -94,7 +95,7 @@ export function ObjectsTab() {
   const purge = usePurgeAction({
     subject: 'объект',
     purge: objectsApi.purge,
-    invalidate: ['objects'],
+    invalidate: objectKeys.root,
   });
 
   const confirmDelete = (r: ObjectDto) =>

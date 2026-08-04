@@ -33,7 +33,7 @@ import {
   roleLabels,
   type UserDto,
 } from '@technic/contracts';
-import { counterpartiesApi, departmentsApi, objectsApi, usersApi } from '../../api/resources';
+import { counterpartiesApi, departmentsApi, usersApi } from '../../api/resources';
 import { AutoSelect } from '@shared/ui';
 import { DataTable, type CardConfig } from '@shared/ui';
 import { FormModal } from '@shared/ui';
@@ -48,6 +48,7 @@ import { useListParams } from '@shared/lib';
 import { useAuth } from '../../auth/AuthContext';
 import { UserAvatar } from '../../components/UserAvatar';
 import { errorMessage } from '../../utils/format';
+import { objectsApi, objectKeys } from '@entities/object';
 
 interface UserFormValues {
   email: string;
@@ -124,7 +125,7 @@ export function UsersTab() {
   });
 
   const { data: objects, isLoading: objectsLoading } = useQuery({
-    queryKey: ['objects', 'for-select'],
+    queryKey: objectKeys.options({ activeOnly: true }),
     queryFn: () =>
       objectsApi.list({
         page: 1,

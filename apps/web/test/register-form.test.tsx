@@ -1,45 +1,60 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { App } from 'antd';
-import { MemoryRouter } from 'react-router';
+import { describe, expect, it } from 'vitest';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react';
+import type { CaptchaChallenge, RegisterInput } from '@technic/contracts';
+import { json, mockHttp, type HttpMock } from './http';
+import { renderWithUser } from './render';
+import { selectOption } from './antd';
+import { RegisterPage } from '../src/pages/RegisterPage';
 
 /**
  * Форма регистрации (ADR 0034). Проверяется то, ради чего её переделывали: ФИО уходит тремя
  * полями, отчество можно не заполнять, а без кода с картинки заявка не отправляется. Сама
  * капча здесь заглушка — её свойства проверяет `apps/api/test/captcha.test.ts`.
+ *
+ * Обе ручки подменяются сетью, а не модулем `api/auth`: «заявка не ушла» — утверждение о том, что
+ * запроса не было, и проверять его подменённым модулем значит держаться за нынешнюю раскладку
+ * файлов портала вместо HTTP-контракта регистрации.
  */
 
-const register = vi.fn();
-const captcha = vi.fn();
+const CHALLENGE: CaptchaChallenge = {
+  token: 'challenge-token',
+  image: 'data:image/png;base64,AA',
+  expiresIn: 180,
+};
 
-vi.mock('../src/api/auth', () => ({
-  authApi: {
-    register: (...args: unknown[]) => register(...args),
-    captcha: () => captcha(),
-  },
-}));
-
-const { RegisterPage } = await import('../src/pages/RegisterPage');
-
-function renderPage() {
-  return render(
-    <MemoryRouter>
-      <App>
-        <RegisterPage />
-      </App>
-    </MemoryRouter>,
-  );
+/**
+ * Страница вместе с двумя своими ручками. Пользователя в дереве нет намеренно: регистрацию
+ * открывает тот, у кого учётной записи ещё не существует.
+ */
+function renderPage(): HttpMock {
+  const http = mockHttp({
+    'GET /auth/captcha': () => json(CHALLENGE),
+    'POST /auth/register': () => json({ ok: true, message: 'ок' }),
+  });
+  renderWithUser(<RegisterPage />, { user: null });
+  return http;
 }
+
+/**
+ * Картинка на экране — значит челлендж приехал и его токен уже лежит в форме. Отправлять до
+ * этого бессмысленно: заявка уехала бы с пустым токеном, и тест ловил бы гонку, а не поведение.
+ */
+const captchaShown = () => screen.findByAltText('Проверочный код на картинке');
+
+/** Сколько заявок на доступ ушло на сервер. */
+const registrations = (http: HttpMock) => http.countOf('POST /auth/register');
+
+/** Что уехало заявкой: тело последнего запроса регистрации. */
+const sent = (http: HttpMock) => http.lastCall('POST /auth/register')?.body as RegisterInput;
 
 /** antd связывает подпись с полем через `for`/`id`, поэтому ищем по подписи, как это делает человек. */
 function fill(label: string, value: string) {
   fireEvent.change(screen.getByLabelText(label), { target: { value } });
 }
 
-/** Выбор в `Select`: открыть список и нажать пункт — как это делает человек. */
-async function selectRoleRequest(optionLabel: string) {
-  fireEvent.mouseDown(document.querySelector('.ant-select-content')!);
-  fireEvent.click(await screen.findByTitle(optionLabel));
+/** Выбор в `Select`: открыть список поля и нажать пункт — как это делает человек. */
+function selectRoleRequest(optionLabel: string) {
+  return selectOption('Выберите наиболее подходящую роль', optionLabel);
 }
 
 function submit() {
@@ -55,19 +70,10 @@ function fillCommonFields() {
   fill('Проверка', '47293');
 }
 
-beforeEach(() => {
-  register.mockReset().mockResolvedValue({ ok: true, message: 'ок' });
-  captcha.mockReset().mockResolvedValue({
-    token: 'challenge-token',
-    image: 'data:image/png;base64,AA',
-    expiresIn: 180,
-  });
-});
-
 describe('форма регистрации', () => {
   it('ФИО спрашивается тремя полями', async () => {
     renderPage();
-    await waitFor(() => expect(captcha).toHaveBeenCalled());
+    await captchaShown();
     expect(screen.getByLabelText('Фамилия')).toBeDefined();
     expect(screen.getByLabelText('Имя')).toBeDefined();
     expect(screen.getByLabelText('Отчество')).toBeDefined();
@@ -75,15 +81,15 @@ describe('форма регистрации', () => {
   });
 
   it('отправляет части ФИО и ответ на капчу, отчество можно не заполнять', async () => {
-    renderPage();
-    await waitFor(() => expect(captcha).toHaveBeenCalled());
+    const http = renderPage();
+    await captchaShown();
 
     fillCommonFields();
     await selectRoleRequest('Диспетчер');
     await act(async () => submit());
 
-    await waitFor(() => expect(register).toHaveBeenCalledTimes(1));
-    expect(register.mock.calls[0]![0]).toMatchObject({
+    await waitFor(() => expect(registrations(http)).toBe(1));
+    expect(sent(http)).toMatchObject({
       email: 'ivanov@example.com',
       lastName: 'Иванов',
       firstName: 'Иван',
@@ -95,8 +101,8 @@ describe('форма регистрации', () => {
   });
 
   it('без кода с картинки заявка не уходит', async () => {
-    renderPage();
-    await waitFor(() => expect(captcha).toHaveBeenCalled());
+    const http = renderPage();
+    await captchaShown();
 
     fill('Фамилия', 'Иванов');
     fill('Имя', 'Иван');
@@ -105,13 +111,13 @@ describe('форма регистрации', () => {
     await selectRoleRequest('Диспетчер');
     await act(async () => submit());
 
-    expect(register).not.toHaveBeenCalled();
+    expect(registrations(http)).toBe(0);
     expect(await screen.findByText('Введите код с картинки')).toBeDefined();
   });
 
   it('после отправки показывает экран ожидания, а не исчезающее сообщение', async () => {
     renderPage();
-    await waitFor(() => expect(captcha).toHaveBeenCalled());
+    await captchaShown();
 
     fillCommonFields();
     await selectRoleRequest('Диспетчер');
@@ -122,71 +128,71 @@ describe('форма регистрации', () => {
   });
 
   it('телефон можно не заполнять — заявка уходит с пустым номером', async () => {
-    renderPage();
-    await waitFor(() => expect(captcha).toHaveBeenCalled());
+    const http = renderPage();
+    await captchaShown();
 
     fillCommonFields();
     await selectRoleRequest('Диспетчер');
     await act(async () => submit());
 
-    await waitFor(() => expect(register).toHaveBeenCalledTimes(1));
-    expect(register.mock.calls[0]![0]).toMatchObject({ phone: '' });
+    await waitFor(() => expect(registrations(http)).toBe(1));
+    expect(sent(http)).toMatchObject({ phone: '' });
   });
 
   it('введённый телефон уходит как есть — формат свободный', async () => {
-    renderPage();
-    await waitFor(() => expect(captcha).toHaveBeenCalled());
+    const http = renderPage();
+    await captchaShown();
 
     fillCommonFields();
     fill('Телефон', '+7 926 123-45-67');
     await selectRoleRequest('Диспетчер');
     await act(async () => submit());
 
-    await waitFor(() => expect(register).toHaveBeenCalledTimes(1));
-    expect(register.mock.calls[0]![0]).toMatchObject({ phone: '+7 926 123-45-67' });
+    await waitFor(() => expect(registrations(http)).toBe(1));
+    expect(sent(http)).toMatchObject({ phone: '+7 926 123-45-67' });
   });
 
   it('вместо номера слово — заявка не уходит: по такому телефону не позвонят', async () => {
-    renderPage();
-    await waitFor(() => expect(captcha).toHaveBeenCalled());
+    const http = renderPage();
+    await captchaShown();
 
     fillCommonFields();
     fill('Телефон', 'нет');
     await selectRoleRequest('Диспетчер');
     await act(async () => submit());
 
-    expect(register).not.toHaveBeenCalled();
+    expect(registrations(http)).toBe(0);
     expect(await screen.findByText('Некорректный телефон')).toBeDefined();
   });
 
   it('слабый пароль не отправляется: длины мало, если это фамилия или последовательность', async () => {
-    renderPage();
-    await waitFor(() => expect(captcha).toHaveBeenCalled());
+    const http = renderPage();
+    await captchaShown();
 
     fillCommonFields();
     await selectRoleRequest('Диспетчер');
     fill('Пароль', '1234567890');
     await act(async () => submit());
 
-    expect(register).not.toHaveBeenCalled();
+    expect(registrations(http)).toBe(0);
   });
 });
 
 describe('пожелание по роли', () => {
   it('без выбора роли заявка не уходит', async () => {
-    renderPage();
-    await waitFor(() => expect(captcha).toHaveBeenCalled());
+    const http = renderPage();
+    await captchaShown();
 
     fillCommonFields();
     await act(async () => submit());
 
-    expect(register).not.toHaveBeenCalled();
+    expect(registrations(http)).toBe(0);
     expect(await screen.findByText('Выберите роль')).toBeDefined();
   });
 
   it('«Сотрудник объекта» открывает поле объекта и требует его заполнить', async () => {
-    renderPage();
-    await waitFor(() => expect(captcha).toHaveBeenCalled());
+    const http = renderPage();
+    await captchaShown();
 
     fillCommonFields();
     expect(screen.queryByLabelText('Объект')).toBeNull();
@@ -194,12 +200,12 @@ describe('пожелание по роли', () => {
     expect(await screen.findByLabelText('Объект')).toBeDefined();
 
     await act(async () => submit());
-    expect(register).not.toHaveBeenCalled();
+    expect(registrations(http)).toBe(0);
 
     fill('Объект', 'ЖК Северный');
     await act(async () => submit());
-    await waitFor(() => expect(register).toHaveBeenCalledTimes(1));
-    expect(register.mock.calls[0]![0]).toMatchObject({
+    await waitFor(() => expect(registrations(http)).toBe(1));
+    expect(sent(http)).toMatchObject({
       requestedRole: 'site_staff',
       requestedObject: 'ЖК Северный',
       requestedCompany: '',
@@ -207,8 +213,8 @@ describe('пожелание по роли', () => {
   });
 
   it('«Оператор по вывозу мусора» спрашивает компанию, а не объект', async () => {
-    renderPage();
-    await waitFor(() => expect(captcha).toHaveBeenCalled());
+    const http = renderPage();
+    await captchaShown();
 
     fillCommonFields();
     await selectRoleRequest('Оператор по вывозу мусора');
@@ -217,8 +223,8 @@ describe('пожелание по роли', () => {
     fill('Компания', 'ООО «Ромашка»');
     await act(async () => submit());
 
-    await waitFor(() => expect(register).toHaveBeenCalledTimes(1));
-    expect(register.mock.calls[0]![0]).toMatchObject({
+    await waitFor(() => expect(registrations(http)).toBe(1));
+    expect(sent(http)).toMatchObject({
       requestedRole: 'waste_operator',
       requestedCompany: 'ООО «Ромашка»',
       requestedObject: '',
@@ -226,8 +232,8 @@ describe('пожелание по роли', () => {
   });
 
   it('«Другое» ничего дополнительно не спрашивает', async () => {
-    renderPage();
-    await waitFor(() => expect(captcha).toHaveBeenCalled());
+    const http = renderPage();
+    await captchaShown();
 
     fillCommonFields();
     await selectRoleRequest('Другое');
@@ -235,7 +241,7 @@ describe('пожелание по роли', () => {
     expect(screen.queryByLabelText('Компания')).toBeNull();
     await act(async () => submit());
 
-    await waitFor(() => expect(register).toHaveBeenCalledTimes(1));
-    expect(register.mock.calls[0]![0]).toMatchObject({ requestedRole: 'other' });
+    await waitFor(() => expect(registrations(http)).toBe(1));
+    expect(sent(http)).toMatchObject({ requestedRole: 'other' });
   });
 });

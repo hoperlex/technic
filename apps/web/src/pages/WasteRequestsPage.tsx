@@ -60,7 +60,6 @@ import {
   containerTypesApi,
   counterpartiesApi,
   filesApi,
-  objectsApi,
   wasteRequestsApi,
   wasteTariffsApi,
   wasteTypesApi,
@@ -103,6 +102,7 @@ import { wasteAmountLine, wastePricingHint } from './waste/pricingHint';
 import { WasteDoneModal } from './waste/WasteDoneModal';
 import { WasteRequestViewModal } from './waste/WasteRequestViewModal';
 import { MOSCOW_TZ } from '@shared/config';
+import { objectsApi, objectKeys } from '@entities/object';
 
 const FILE_MAX_SIZE = 52_428_800; // 50 МБ
 const FILE_MAX_COUNT = 20;
@@ -405,7 +405,7 @@ function RequestsTab() {
   // isLoading у списков нужен полям формы: обязательное поле с единственным вариантом
   // заполняет себя само, и подставлять по недогруженному списку нельзя.
   const { data: objects, isLoading: objectsLoading } = useQuery({
-    queryKey: ['objects', 'for-select'],
+    queryKey: objectKeys.options({ activeOnly: true }),
     queryFn: () =>
       objectsApi.list({
         page: 1,

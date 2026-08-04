@@ -22,7 +22,7 @@ import {
   type VehicleRequestDto,
   type VehicleRequestEarlyEndDto,
 } from '@technic/contracts';
-import { departmentsApi, filesApi, objectsApi, vehicleRequestsApi } from '../../api/resources';
+import { departmentsApi, filesApi, vehicleRequestsApi } from '../../api/resources';
 import {
   useVehicleClassifications,
   type VehicleClassificationGroup,
@@ -35,6 +35,7 @@ import type { FilterDefinition } from '@shared/ui';
 import { useIsMobile } from '@shared/lib';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage, formatDateTime } from '../../utils/format';
+import { objectsApi, objectKeys } from '@entities/object';
 
 export const FILE_MAX_COUNT = 20;
 export const FILE_MAX_SIZE = 52_428_800; // 50 МБ
@@ -60,7 +61,7 @@ export interface EditorFile {
 /** Опции активных объектов для Select (грузятся разом, pageSize=500). */
 export function useObjectOptions() {
   const { data, isFetching } = useQuery({
-    queryKey: ['objects', 'for-select'],
+    queryKey: objectKeys.options({ activeOnly: true }),
     queryFn: () =>
       objectsApi.list({
         page: 1,

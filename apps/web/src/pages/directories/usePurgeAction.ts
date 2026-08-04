@@ -8,8 +8,12 @@ interface Options {
   subject: string;
   /** Ручка справочника: `…Api.purge`. */
   purge: (id: string) => Promise<unknown>;
-  /** Ключи запросов, которые после удаления устарели (первый элемент queryKey). */
-  invalidate: string[];
+  /**
+   * Ключи запросов, которые после удаления устарели. Принимается `readonly`: ключи приходят из
+   * реестра сущности, где заморожены намеренно — случайная запись в общий массив испортила бы
+   * ключи всей сущности разом.
+   */
+  invalidate: readonly unknown[];
 }
 
 interface PurgeAction {

@@ -1,8 +1,16 @@
-import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { App } from 'antd';
-import type { DriverOptionDto, FreightTransportRequestDto, VehicleDto } from '@technic/contracts';
+import { describe, expect, it } from 'vitest';
+import { screen, waitFor } from '@testing-library/react';
+import type {
+  DriverOptionDto,
+  DriverSelectionDto,
+  FreightTransportRequestDto,
+  VehicleDto,
+} from '@technic/contracts';
+import { json, mockHttp, type HttpMock } from './http';
+import { renderWithUser } from './render';
+import { openSelectOptions } from './antd';
+import { list } from './factories/common';
+import { VehicleAssignModal } from '../src/pages/vehicle/VehicleAssignModal';
 
 /**
  * Водители, уже работавшие на выбранной машине, стоят первыми и помечены (ADR 0056).
@@ -11,6 +19,10 @@ import type { DriverOptionDto, FreightTransportRequestDto, VehicleDto } from '@t
  * пересобирает — иначе правило существовало бы в двух видах и разошлось бы при первой правке.
  * Пометка обязательна: список перестал быть алфавитным, и без неё непонятно, почему человек
  * оказался наверху.
+ *
+ * «Порядок приходит с сервера» — утверждение про ответ ручки отбора, поэтому мок стоит на сети, а
+ * не на модуле `api/resources`: подменённый модуль проверял бы, каким файлом портал сегодня зовёт
+ * `/drivers/available`, а не то, что форма показывает пришедший список как есть.
  */
 
 const OWN_VEHICLE: VehicleDto = {
@@ -108,12 +120,14 @@ const REQUEST: FreightTransportRequestDto = {
   unloadingResponsiblePhone: '+7 926 000-00-02',
 };
 
-function driver(over: Partial<DriverOptionDto> & Pick<DriverOptionDto, 'personId' | 'fullName'>) {
+function driver(
+  over: Partial<DriverOptionDto> & Pick<DriverOptionDto, 'personId' | 'fullName'>,
+): DriverOptionDto {
   return {
     personnelNo: '',
     licenseNumber: '00 00 000001',
     licenseExpiresOn: '2031-03-12',
-    verificationStatus: 'verified' as const,
+    verificationStatus: 'verified',
     categories: ['C'],
     // Категория у всех подходит: её влияние на порядок и пометки проверяется отдельно
     // (`driver-category-advisory`), а здесь она размечала бы весь список одинаково.
@@ -128,7 +142,7 @@ function driver(over: Partial<DriverOptionDto> & Pick<DriverOptionDto, 'personId
  * Ответ сервера уже отсортирован: работавшие первыми, по свежести. Алфавит поставил бы первым
  * Абрамова — на нём и видно, что форма не сортирует список заново.
  */
-const availableDrivers = vi.fn(async (_q: { vehicleId: string; on: string }) => ({
+const SELECTION: DriverSelectionDto = {
   requiredCategory: 'C',
   drivers: [
     driver({
@@ -145,66 +159,53 @@ const availableDrivers = vi.fn(async (_q: { vehicleId: string; on: string }) => 
     }),
     driver({ personId: 'p-1', fullName: 'Абрамов Абрам Абрамович' }),
   ],
-}));
+};
 
-/** Рейсов на эту дату нет — форма стоит на «Новом маршруте», где и спрашивают водителя. */
-const prefill = vi.fn(async (_id: string, params: { date?: string } = {}) => ({
-  required: true,
-  formCode: '4p' as const,
-  formLabel: 'Форма 4-П (грузовой автомобиль)',
-  reason: null,
-  tripDate: params.date ?? '2026-08-10',
-  routes: [],
-  trip: null,
-}));
+/**
+ * Форма вместе с ручками, которыми она собирает рейс. Рейсов на эту дату нет — форма стоит на
+ * «Новом рейсе», где и спрашивают водителя; графы шапки пусты, они этой проверке безразличны.
+ */
+function renderModal(): HttpMock {
+  const http = mockHttp({
+    'GET /vehicles': () => json(list([OWN_VEHICLE])),
+    'GET /vehicle-requests/:id/route-prefill': ({ query }) =>
+      json({
+        required: true,
+        formCode: '4p',
+        formLabel: 'Форма 4-П (грузовой автомобиль)',
+        reason: null,
+        tripDate: query.get('date') ?? '2026-08-10',
+        routes: [],
+        trip: null,
+      }),
+    'GET /vehicle-routes/suggest': () => json({ routes: [], trip: null }),
+    'GET /drivers/available': () => json(SELECTION),
+  });
 
-const suggest = vi.fn(async (_q: { vehicleId: string; date: string }) => ({
-  routes: [],
-  trip: null,
-}));
-
-vi.mock('../src/api/resources', () => ({
-  vehiclesApi: {
-    list: async () => ({ items: [OWN_VEHICLE], total: 1, page: 1, pageSize: 500 }),
-  },
-  vehicleRequestsApi: { routePrefill: prefill },
-  vehicleRoutesApi: { suggest },
-  driversApi: {
-    available: (q: { vehicleId: string; on: string }) => availableDrivers(q),
-  },
-}));
-
-const { VehicleAssignModal } = await import('../src/pages/vehicle/VehicleAssignModal');
-
-function renderModal() {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
-    <QueryClientProvider client={qc}>
-      <App>
-        <VehicleAssignModal
-          request={REQUEST}
-          confirmLoading={false}
-          onCancel={() => {}}
-          onSubmit={() => {}}
-        />
-      </App>
-    </QueryClientProvider>,
+  renderWithUser(
+    <VehicleAssignModal
+      request={REQUEST}
+      confirmLoading={false}
+      onCancel={() => {}}
+      onSubmit={() => {}}
+    />,
   );
+  return http;
 }
 
 /** Пункты списка водителей в том порядке, в каком их видит диспетчер. */
 async function driverOptions(): Promise<string[]> {
-  const field = document.querySelector('#driverPersonId')!.closest('.ant-select')!;
-  fireEvent.mouseDown(field.querySelector('.ant-select-selector') ?? field);
-  await waitFor(() => expect(document.querySelector('.ant-select-item-option')).toBeTruthy());
-  return [...document.querySelectorAll('.ant-select-item-option')].map((o) => o.textContent ?? '');
+  // Список берётся из выпадашки самого поля: на форме несколько списков, и общий поиск по
+  // документу молча уходил бы в чужой.
+  const options = await openSelectOptions('Водитель');
+  return options.map((o) => o.textContent ?? '');
 }
 
 describe('водители, работавшие на выбранной машине', () => {
   it('стоят первыми в том порядке, в каком их прислал сервер', async () => {
-    renderModal();
-    await waitFor(() => expect(screen.getByText('Новый рейс')).toBeDefined());
-    await waitFor(() => expect(availableDrivers).toHaveBeenCalled());
+    const http = renderModal();
+    await screen.findByText('Новый рейс');
+    await waitFor(() => expect(http.countOf('GET /drivers/available')).toBeGreaterThan(0));
 
     const options = await driverOptions();
     expect(options.map((o) => o.split(' ')[0])).toEqual(['Яковлев', 'Петров', 'Абрамов']);
@@ -212,7 +213,7 @@ describe('водители, работавшие на выбранной маш�
 
   it('помечены в строке — иначе порядок списка ничем не объяснён', async () => {
     renderModal();
-    await waitFor(() => expect(screen.getByText('Новый рейс')).toBeDefined());
+    await screen.findByText('Новый рейс');
 
     const options = await driverOptions();
     expect(options[0]).toContain('работал на этой машине');

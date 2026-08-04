@@ -4,6 +4,7 @@
  */
 export * from './avatar';
 export * from './dayjs';
+export * from './errors';
 export * from './selectOptions';
 export * from './table';
 export * from './useElementSize';

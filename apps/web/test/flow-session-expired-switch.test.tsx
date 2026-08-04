@@ -2,12 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '../src/auth/AuthContext';
-import { objectsApi } from '../src/api/resources';
+
 import { apiError, json, mockHttp } from './http';
 import { renderWithSession } from './render';
 import { authUser, loginResponse } from './factories/auth';
 import { list } from './factories/common';
 import { objectDto } from './factories/waste';
+import { objectsApi } from '@entities/object';
 
 /**
  * Сессия кончилась сама — и следом вошёл другой человек.

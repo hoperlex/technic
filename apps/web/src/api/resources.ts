@@ -25,7 +25,6 @@ import type {
   CreateContainerTypeInput,
   CreateCounterpartyInput,
   CreateDepartmentInput,
-  CreateObjectInput,
   CreateUserInput,
   CreateVehicleCategoryInput,
   CreateVehicleInput,
@@ -38,7 +37,6 @@ import type {
   FileDto,
   ListResult,
   DepartmentDto,
-  ObjectDto,
   RequestHistoryEntryDto,
   RequestStatus,
   RequestVehicleEarlyEndInput,
@@ -49,7 +47,6 @@ import type {
   UpdateContainerTypeInput,
   UpdateCounterpartyInput,
   UpdateDepartmentInput,
-  UpdateObjectInput,
   UpdateUserInput,
   UpdateVehicleCategoryInput,
   UpdateVehicleInput,
@@ -120,14 +117,12 @@ export const departmentsApi = {
     apiFetch<{ ok: boolean }>(`/departments/${id}/purge`, { method: 'DELETE' }),
 };
 
-export const objectsApi = {
-  list: (q: Query) => apiFetch<ListResult<ObjectDto>>('/objects', { query: q }),
-  create: (body: CreateObjectInput) => apiFetch<ObjectDto>('/objects', { method: 'POST', body }),
-  update: (id: string, body: UpdateObjectInput) =>
-    apiFetch<ObjectDto>(`/objects/${id}`, { method: 'PATCH', body }),
-  remove: (id: string) => apiFetch<ObjectDto>(`/objects/${id}`, { method: 'DELETE' }),
-  purge: (id: string) => apiFetch<{ ok: boolean }>(`/objects/${id}/purge`, { method: 'DELETE' }),
-};
+/**
+ * Объекты переехали в `@entities/object`. Реэкспорт держится до конца этапа 2: по этому пути
+ * импортируют ещё не переведённые экраны, а параллельная работа пишет новый код. Новые ручки
+ * добавляются в слайс, а не сюда, — иначе правка встретится с разрезом конфликтом.
+ */
+export { objectsApi } from '@entities/object';
 
 /**
  * Справочник водителей (ADR 0037). Отдельно от справочников не только маршрутом, но и правом:
