@@ -7,7 +7,7 @@ import { PageTableLayout } from '../../components/PageTableLayout';
 import { sortOptionsFrom } from '../../components/listControls';
 import { textColumn } from '../../components/columns';
 import { ObjectCell } from '../../components/ObjectCell';
-import { useListParams } from '../../hooks/useListParams';
+import { useListParams } from '@shared/lib';
 import { formatDate, formatDateTimeMaybe } from '../../utils/format';
 
 /**

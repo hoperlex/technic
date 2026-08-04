@@ -123,9 +123,7 @@ export function VehicleRouteTransferModal({ request, onClose, onDone }: Props) {
           optionFilterProp="label"
           loading={isFetching}
           disabled={options.length === 0}
-          placeholder={
-            options.length > 0 ? 'Выберите рейс' : 'Подходящих рейсов на эту дату нет'
-          }
+          placeholder={options.length > 0 ? 'Выберите рейс' : 'Подходящих рейсов на эту дату нет'}
         />
 
         {/* Рейс — источник истины о том, чем едут: заявка, переехавшая на другую машину, меняет

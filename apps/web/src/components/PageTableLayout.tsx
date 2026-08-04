@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { Typography } from 'antd';
-import { useIsMobile } from '../hooks/useIsMobile';
+import { useIsMobile } from '@shared/lib';
 import { Fab } from './Fab';
 import { ListToolbar } from './ListToolbar';
 import type { MobileListControls } from './listControls';

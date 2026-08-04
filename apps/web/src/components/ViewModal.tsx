@@ -1,6 +1,6 @@
 import type { CSSProperties, ReactNode } from 'react';
 import { Drawer, Modal } from 'antd';
-import { useIsMobile } from '../hooks/useIsMobile';
+import { useIsMobile } from '@shared/lib';
 
 interface Props {
   title: ReactNode;

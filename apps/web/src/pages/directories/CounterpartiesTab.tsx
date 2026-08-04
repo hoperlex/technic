@@ -19,7 +19,7 @@ import { FormModal } from '../../components/FormModal';
 import { PageTableLayout } from '../../components/PageTableLayout';
 import { sortOptionsFrom, type FilterDefinition } from '../../components/listControls';
 import { actionsColumn, badgeColumn, boolBadgeColumn, textColumn } from '../../components/columns';
-import { useListParams } from '../../hooks/useListParams';
+import { useListParams } from '@shared/lib';
 import { errorMessage } from '../../utils/format';
 
 interface CounterpartyFormValues {

@@ -9,7 +9,7 @@ import { FormModal } from '../../components/FormModal';
 import { PageTableLayout } from '../../components/PageTableLayout';
 import { actionsColumn, boolBadgeColumn, textColumn } from '../../components/columns';
 import { sortOptionsFrom } from '../../components/listControls';
-import { useListParams } from '../../hooks/useListParams';
+import { useListParams } from '@shared/lib';
 import { errorMessage } from '../../utils/format';
 
 /**

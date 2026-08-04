@@ -40,8 +40,8 @@ import { DataTable } from '../../components/DataTable';
 import { FormModal } from '../../components/FormModal';
 import { PageTableLayout } from '../../components/PageTableLayout';
 import type { FilterDefinition } from '../../components/listControls';
-import { useIsMobile } from '../../hooks/useIsMobile';
-import { useListParams } from '../../hooks/useListParams';
+import { useIsMobile } from '@shared/lib';
+import { useListParams } from '@shared/lib';
 import { applyApiFieldErrors } from '../../utils/formErrors';
 import { errorMessage, formatMoney } from '../../utils/format';
 import {

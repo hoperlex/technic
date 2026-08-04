@@ -57,8 +57,8 @@ import { FormModal } from '../../components/FormModal';
 import { PageTableLayout } from '../../components/PageTableLayout';
 import { sortOptionsFrom, type FilterDefinition } from '../../components/listControls';
 import { actionsColumn, badgeColumn, textColumn } from '../../components/columns';
-import { useIsMobile } from '../../hooks/useIsMobile';
-import { useListParams } from '../../hooks/useListParams';
+import { useIsMobile } from '@shared/lib';
+import { useListParams } from '@shared/lib';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
 
@@ -589,7 +589,8 @@ export function VehiclesTab() {
   const card: CardConfig<VehicleDto> = {
     title: (r) => vehicleLabel(r),
     badge: (r) => <Tag color={vehicleStatusColors[r.status]}>{vehicleStatusLabels[r.status]}</Tag>,
-    primary: (r) => vehicleClassificationLabel({ typeName: r.typeName, categoryName: r.categoryName }),
+    primary: (r) =>
+      vehicleClassificationLabel({ typeName: r.typeName, categoryName: r.categoryName }),
     lines: [
       (r) => (r.ownership === 'own' ? r.modelName : r.lessorName),
       (r) => assignmentRateLabel(r) || null,

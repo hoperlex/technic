@@ -14,7 +14,7 @@ import {
   requestStatusColors,
   requestStatusLabels,
 } from '@technic/contracts';
-import { useIsMobile } from '../hooks/useIsMobile';
+import { useIsMobile } from '@shared/lib';
 import { formatDateTime } from '../utils/format';
 
 /**

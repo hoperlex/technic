@@ -6,7 +6,7 @@ import {
   selectableOptions,
   soleOption,
   withSavedOption,
-} from '../src/utils/selectOptions';
+} from '../src/shared/lib';
 
 describe('flattenOptions', () => {
   it('плоский список отдаётся как есть', () => {
@@ -148,8 +148,8 @@ describe('withSavedOption', () => {
   });
 
   it('добавленный вариант не выключен: оставить как есть — законный выбор', () => {
-    expect(selectableOptions(withSavedOption(OPTIONS, { id: 'gone', name: 'Закрыт' }))).toHaveLength(
-      3,
-    );
+    expect(
+      selectableOptions(withSavedOption(OPTIONS, { id: 'gone', name: 'Закрыт' })),
+    ).toHaveLength(3);
   });
 });

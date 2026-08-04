@@ -1,19 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
-
-export function useElementSize<T extends HTMLElement>() {
-  const ref = useRef<T>(null);
-  const [size, setSize] = useState({ width: 0, height: 0 });
-
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const ro = new ResizeObserver((entries) => {
-      const rect = entries[0]?.contentRect;
-      if (rect) setSize({ width: rect.width, height: rect.height });
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-
-  return { ref, ...size };
-}
+/**
+ * Модуль переехал в `@shared/lib` (этап 1 FSD-рефакторинга). Файл остаётся временно: параллельная
+ * работа импортирует его по старому пути, и удаление сломало бы незамерженные ветки. Уходит
+ * последним коммитом этапа.
+ */
+export { useElementSize } from '@shared/lib';

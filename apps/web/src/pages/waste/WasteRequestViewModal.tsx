@@ -26,7 +26,7 @@ import { type HistoryRow, RequestHistoryTable } from '../../components/RequestHi
 import { ResponsibleValue } from '../../components/ResponsibleFields';
 import { UserAvatar } from '../../components/UserAvatar';
 import { ViewModal } from '../../components/ViewModal';
-import { useIsMobile } from '../../hooks/useIsMobile';
+import { useIsMobile } from '@shared/lib';
 import { formatDateTime, formatDateTimeMaybe, formatMoney } from '../../utils/format';
 
 /**

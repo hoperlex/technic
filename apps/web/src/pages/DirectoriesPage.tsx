@@ -1,5 +1,5 @@
 import { Tabs } from 'antd';
-import { useIsMobile } from '../hooks/useIsMobile';
+import { useIsMobile } from '@shared/lib';
 import { ObjectsTab } from './directories/ObjectsTab';
 import { DepartmentsTab } from './directories/DepartmentsTab';
 import { CounterpartiesTab } from './directories/CounterpartiesTab';

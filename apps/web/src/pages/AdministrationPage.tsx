@@ -1,5 +1,5 @@
 import { Tabs } from 'antd';
-import { useIsMobile } from '../hooks/useIsMobile';
+import { useIsMobile } from '@shared/lib';
 import { UsersTab } from './admin/UsersTab';
 
 export function AdministrationPage() {

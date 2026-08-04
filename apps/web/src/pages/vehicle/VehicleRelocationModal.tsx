@@ -12,7 +12,7 @@ import { driversApi, vehicleRequestsApi } from '../../api/resources';
 import { AutoSelect } from '../../components/AutoSelect';
 import { FormGrid } from '../../components/FormGrid';
 import { FormModal } from '../../components/FormModal';
-import { useIsMobile } from '../../hooks/useIsMobile';
+import { useIsMobile } from '@shared/lib';
 import { errorMessage } from '../../utils/format';
 
 /**

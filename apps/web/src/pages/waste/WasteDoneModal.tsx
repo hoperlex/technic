@@ -16,7 +16,7 @@ import { filesApi, wasteTariffsApi } from '../../api/resources';
 import { FileLinkList } from '../../components/FileLinks';
 import { FormGrid } from '../../components/FormGrid';
 import { FormModal } from '../../components/FormModal';
-import { useIsMobile } from '../../hooks/useIsMobile';
+import { useIsMobile } from '@shared/lib';
 import { errorMessage, formatMoney } from '../../utils/format';
 
 /**
@@ -217,18 +217,18 @@ export function WasteDoneModal({ request, confirmLoading, onCancel, onSubmit }: 
         // колонка одна, порядок тот же.
         <Form form={form} layout="vertical" onFinish={submit}>
           <FormGrid>
-          <FormGrid.Full>
-          <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
-            Заявка № {request.displayNumber}, {request.objectName}
-            {request.volumeM3 != null ? ` · заявлено ${request.volumeM3} м³` : ''}
-            {request.amount != null ? ` на ${formatMoney(request.amount)}` : ''}
-          </Typography.Paragraph>
-          </FormGrid.Full>
+            <FormGrid.Full>
+              <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
+                Заявка № {request.displayNumber}, {request.objectName}
+                {request.volumeM3 != null ? ` · заявлено ${request.volumeM3} м³` : ''}
+                {request.amount != null ? ` на ${formatMoney(request.amount)}` : ''}
+              </Typography.Paragraph>
+            </FormGrid.Full>
 
-          {byFact && (
-            <>
-              {/* Объём и стоимость — соседними ячейками: их сверяют друг с другом. */}
-              <Form.Item
+            {byFact && (
+              <>
+                {/* Объём и стоимость — соседними ячейками: их сверяют друг с другом. */}
+                <Form.Item
                   name="volumeM3"
                   label="Вывезено, м³"
                   rules={[
@@ -274,95 +274,99 @@ export function WasteDoneModal({ request, confirmLoading, onCancel, onSubmit }: 
                   />
                 </Form.Item>
 
-              <FormGrid.Full>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginBottom: 16 }}>
-                {costDiffers && (
-                  <Typography.Text type="warning">
-                    Сумма отличается от расчёта ({formatMoney(calculated)}) — в заявке сохранится
-                    введённая
-                  </Typography.Text>
-                )}
-                {/* Заявку оформляли планом, платят за вывезенное: расхождение сумм — не ошибка,
+                <FormGrid.Full>
+                  <div
+                    style={{ display: 'flex', flexDirection: 'column', gap: 2, marginBottom: 16 }}
+                  >
+                    {costDiffers && (
+                      <Typography.Text type="warning">
+                        Сумма отличается от расчёта ({formatMoney(calculated)}) — в заявке
+                        сохранится введённая
+                      </Typography.Text>
+                    )}
+                    {/* Заявку оформляли планом, платят за вывезенное: расхождение сумм — не ошибка,
                     но человек должен увидеть его до нажатия «Выполнена». */}
-                {totalCost != null && request.amount != null && totalCost !== request.amount && (
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    Заявка оформлена на {formatMoney(request.amount)} — закрытие сохранит{' '}
-                    {formatMoney(totalCost)}
-                  </Typography.Text>
-                )}
-                {priceIsMinimum && (
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    Оператор не назначен — расчёт по минимальной цене среди операторов
-                  </Typography.Text>
-                )}
-              </div>
-              </FormGrid.Full>
-            </>
-          )}
+                    {totalCost != null &&
+                      request.amount != null &&
+                      totalCost !== request.amount && (
+                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                          Заявка оформлена на {formatMoney(request.amount)} — закрытие сохранит{' '}
+                          {formatMoney(totalCost)}
+                        </Typography.Text>
+                      )}
+                    {priceIsMinimum && (
+                      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                        Оператор не назначен — расчёт по минимальной цене среди операторов
+                      </Typography.Text>
+                    )}
+                  </div>
+                </FormGrid.Full>
+              </>
+            )}
 
-          {/* Талоны — общий пул заявки (ADR 0024): бумаги за всё закрытие, без деления по машинам.
+            {/* Талоны — общий пул заявки (ADR 0024): бумаги за всё закрытие, без деления по машинам.
               Приложенные прошлым закрытием остаются на заявке и показываются здесь же — чтобы
               не нести те же сканы второй раз. */}
-          <FormGrid.Full>
-          <Form.Item label="Талоны" style={{ marginBottom: 16 }}>
-            {request.tickets.length > 0 && (
-              <div style={{ marginBottom: 8 }}>
-                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  Уже приложены
-                </Typography.Text>
-                <FileLinkList files={request.tickets} maxNameWidth={300} />
-              </div>
-            )}
-            <Space size={8} wrap>
-              {/* Снимок камерой — только на телефоне (ADR 0030): талон подписывают на площадке,
+            <FormGrid.Full>
+              <Form.Item label="Талоны" style={{ marginBottom: 16 }}>
+                {request.tickets.length > 0 && (
+                  <div style={{ marginBottom: 8 }}>
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                      Уже приложены
+                    </Typography.Text>
+                    <FileLinkList files={request.tickets} maxNameWidth={300} />
+                  </div>
+                )}
+                <Space size={8} wrap>
+                  {/* Снимок камерой — только на телефоне (ADR 0030): талон подписывают на площадке,
                   и фотографируют его там же. `capture` — подсказка браузеру, а не гарантия, что
                   откроется именно камера, поэтому обычная загрузка остаётся рядом. Ограничение
                   по типу стоит только на этой кнопке: у соседней его нет и не было. */}
-              {isMobile && (
-                <Upload
-                  showUploadList={false}
-                  accept="image/*"
-                  capture="environment"
-                  beforeUpload={beforeUploadTicket}
-                >
-                  <Button icon={<CameraOutlined />} loading={uploading} danger={noTicketYet}>
-                    Снять камерой
-                  </Button>
-                </Upload>
-              )}
-              <Upload multiple showUploadList={false} beforeUpload={beforeUploadTicket}>
-                <Button
-                  icon={<UploadOutlined />}
-                  loading={uploading}
-                  danger={noTicketYet && !isMobile}
-                >
-                  Прикрепить талон
-                </Button>
-              </Upload>
-              {noTicketYet && (
-                <Typography.Text type="secondary" style={{ lineHeight: '32px' }}>
-                  Талон обязателен: без него заявка не закрывается
-                </Typography.Text>
-              )}
-            </Space>
-            {tickets.length > 0 && (
-              <div style={{ marginTop: 8 }}>
-                <FileLinkList files={tickets} maxNameWidth={300} onRemove={removeTicket} />
-              </div>
-            )}
-          </Form.Item>
+                  {isMobile && (
+                    <Upload
+                      showUploadList={false}
+                      accept="image/*"
+                      capture="environment"
+                      beforeUpload={beforeUploadTicket}
+                    >
+                      <Button icon={<CameraOutlined />} loading={uploading} danger={noTicketYet}>
+                        Снять камерой
+                      </Button>
+                    </Upload>
+                  )}
+                  <Upload multiple showUploadList={false} beforeUpload={beforeUploadTicket}>
+                    <Button
+                      icon={<UploadOutlined />}
+                      loading={uploading}
+                      danger={noTicketYet && !isMobile}
+                    >
+                      Прикрепить талон
+                    </Button>
+                  </Upload>
+                  {noTicketYet && (
+                    <Typography.Text type="secondary" style={{ lineHeight: '32px' }}>
+                      Талон обязателен: без него заявка не закрывается
+                    </Typography.Text>
+                  )}
+                </Space>
+                {tickets.length > 0 && (
+                  <div style={{ marginTop: 8 }}>
+                    <FileLinkList files={tickets} maxNameWidth={300} onRemove={removeTicket} />
+                  </div>
+                )}
+              </Form.Item>
 
-          {/* Комментарий к выполнению — событие истории заявки, а не поле самой заявки: он
+              {/* Комментарий к выполнению — событие истории заявки, а не поле самой заявки: он
               описывает конкретное закрытие (что вывезли не полностью, кто принимал). */}
-          <Form.Item name="comment" label="Комментарий" style={{ marginBottom: 0 }}>
-            <Input.TextArea
-              rows={2}
-              maxLength={2000}
-              showCount
-              placeholder="Необязательно: что важно знать об этом выполнении"
-            />
-          </Form.Item>
-          </FormGrid.Full>
+              <Form.Item name="comment" label="Комментарий" style={{ marginBottom: 0 }}>
+                <Input.TextArea
+                  rows={2}
+                  maxLength={2000}
+                  showCount
+                  placeholder="Необязательно: что важно знать об этом выполнении"
+                />
+              </Form.Item>
+            </FormGrid.Full>
           </FormGrid>
         </Form>
       )}

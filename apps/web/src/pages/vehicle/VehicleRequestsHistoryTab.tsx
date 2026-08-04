@@ -38,7 +38,7 @@ import { SummaryBar } from '../../components/SummaryBar';
 import { actionsColumn, RowActionButton, textColumn } from '../../components/columns';
 import { UserAvatar } from '../../components/UserAvatar';
 import { ObjectCell } from '../../components/ObjectCell';
-import { useListParams } from '../../hooks/useListParams';
+import { useListParams } from '@shared/lib';
 import { useAuth } from '../../auth/AuthContext';
 import { formatDate, formatDateTimeMaybe, formatMoney } from '../../utils/format';
 import { calendarDayCount } from '../../utils/date';

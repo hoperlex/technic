@@ -34,7 +34,7 @@ import {
 import { vehicleCategoriesApi, vehicleSpecsApi, vehicleTypesApi } from '../../api/resources';
 import { AutoSelect } from '../../components/AutoSelect';
 import { FormModal } from '../../components/FormModal';
-import { useIsMobile } from '../../hooks/useIsMobile';
+import { useIsMobile } from '@shared/lib';
 import { errorMessage } from '../../utils/format';
 
 // Карточка типа ТС (ADR 0016): состав ТТХ и категории — комбинации их значений. Живут в одной

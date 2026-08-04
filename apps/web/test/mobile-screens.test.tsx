@@ -82,7 +82,16 @@ describe('выполнение заявки на вывоз', () => {
     completion: null,
     vehicles: [],
     files: [],
-    tickets: [{ id: 'f1', filename: 'талон.pdf', contentType: 'application/pdf', size: 1, status: 'active', createdAt: '2026-07-20T09:00:00.000Z' }],
+    tickets: [
+      {
+        id: 'f1',
+        filename: 'талон.pdf',
+        contentType: 'application/pdf',
+        size: 1,
+        status: 'active',
+        createdAt: '2026-07-20T09:00:00.000Z',
+      },
+    ],
     version: 1,
   } as unknown as WasteRequestDto;
 

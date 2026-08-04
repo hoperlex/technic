@@ -45,7 +45,7 @@ import { AutoSelect } from '../../components/AutoSelect';
 import { FormGrid } from '../../components/FormGrid';
 import { FormModal } from '../../components/FormModal';
 import { TimeInput, optionalWorkTimeRule } from '../../components/TimeInput';
-import { useIsMobile } from '../../hooks/useIsMobile';
+import { useIsMobile } from '@shared/lib';
 
 import { formatMoney } from '../../utils/format';
 import { formatDateOnly } from './shared';

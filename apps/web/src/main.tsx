@@ -3,22 +3,16 @@ import { createRoot } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { App as AntApp, ConfigProvider } from 'antd';
 import ruRU from 'antd/locale/ru_RU';
-import dayjs from 'dayjs';
-import 'dayjs/locale/ru';
-import utc from 'dayjs/plugin/utc';
-import timezone from 'dayjs/plugin/timezone';
 import { BrowserRouter } from 'react-router';
 import App from './App';
 import { AuthProvider } from './auth/AuthContext';
-import { useIsMobile, useMobileRootClass } from './hooks/useIsMobile';
+import { setupDayjs, useIsMobile, useMobileRootClass } from '@shared/lib';
 import { themeFor } from './theme';
 import './styles.css';
-import { MOSCOW_TZ } from '@shared/config';
 
-dayjs.extend(utc);
-dayjs.extend(timezone);
-dayjs.locale('ru');
-dayjs.tz.setDefault(MOSCOW_TZ);
+// Часовой пояс и локаль — одной функцией на приложение и тесты: два места, обязанные совпадать,
+// раньше были связаны только памятью.
+setupDayjs();
 
 const queryClient = new QueryClient({
   defaultOptions: {

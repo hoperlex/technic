@@ -1,5 +1,5 @@
 import { Select, type SelectProps } from 'antd';
-import { useSoleOptionAutoSelect } from '../hooks/useSoleOptionAutoSelect';
+import { useSoleOptionAutoSelect } from '@shared/lib';
 
 type AntdOption = NonNullable<SelectProps['options']>[number];
 

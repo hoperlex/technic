@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { act, render, screen } from '@testing-library/react';
-import { MOBILE_ROOT_CLASS, useIsMobile, useMobileRootClass } from '../src/hooks/useIsMobile';
+import { MOBILE_ROOT_CLASS, useIsMobile, useMobileRootClass } from '../src/shared/lib';
 import { theme, themeFor } from '../src/theme';
 import { DESKTOP_VIEWPORT, MOBILE_VIEWPORT, setViewport, type Viewport } from './viewport';
 

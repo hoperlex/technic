@@ -44,7 +44,7 @@ import { PhoneField, PhoneLink } from '../../components/PhoneField';
 import { ReasonModal } from '../../components/CancelReasonModal';
 import { actionsColumn, badgeColumn, boolBadgeColumn, textColumn } from '../../components/columns';
 import { sortOptionsFrom, type FilterDefinition } from '../../components/listControls';
-import { useListParams } from '../../hooks/useListParams';
+import { useListParams } from '@shared/lib';
 import { useAuth } from '../../auth/AuthContext';
 import { UserAvatar } from '../../components/UserAvatar';
 import { errorMessage } from '../../utils/format';
@@ -714,9 +714,7 @@ export function UsersTab() {
             : r.counterpartyName
           : null,
       (r) =>
-        r.requestedRole
-          ? `Пожелание: ${registrationRoleRequestLabels[r.requestedRole]}`
-          : null,
+        r.requestedRole ? `Пожелание: ${registrationRoleRequestLabels[r.requestedRole]}` : null,
       (r) => (r.deletedAt ? 'В архиве' : null),
     ],
     // Действий над архивной учёткой нет — как и в таблице.

@@ -16,7 +16,7 @@ import { Outlet, useLocation, useNavigate } from 'react-router';
 import { formatShortName, roleLabels } from '@technic/contracts';
 import { usersApi } from '../api/resources';
 import { useAuth } from '../auth/AuthContext';
-import { useIsMobile } from '../hooks/useIsMobile';
+import { useIsMobile } from '@shared/lib';
 import { MobileAppBar } from './MobileAppBar';
 import { MobileNav, type MobileNavItem } from './MobileNav';
 import { PortalLogo } from './PortalLogo';

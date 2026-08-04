@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useState, type ReactNode } from
 import { createPortal } from 'react-dom';
 import { Tabs, type TabsProps } from 'antd';
 import { useQueryClient } from '@tanstack/react-query';
-import { useIsMobile } from '../hooks/useIsMobile';
+import { useIsMobile } from '@shared/lib';
 
 interface SlotValue {
   el: HTMLElement | null;

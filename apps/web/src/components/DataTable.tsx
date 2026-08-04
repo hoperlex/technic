@@ -9,20 +9,12 @@ import {
   type TableProps,
 } from 'antd';
 import { MoreOutlined } from '@ant-design/icons';
-import type { FilterValue, SorterResult } from 'antd/es/table/interface';
+import type { SorterResult } from 'antd/es/table/interface';
 import { PAGE_SIZE_OPTIONS } from '@shared/config';
-import { useElementSize } from '../hooks/useElementSize';
-import { useIsMobile } from '../hooks/useIsMobile';
+import type { TableChange } from '@shared/lib';
+import { useElementSize } from '@shared/lib';
+import { useIsMobile } from '@shared/lib';
 import { ActionSheet, type ActionSheetItem } from './ActionSheet';
-
-export interface TableChange {
-  page: number;
-  pageSize: number;
-  sortBy?: string;
-  sortOrder?: 'asc' | 'desc';
-  /** Не задано — фильтры не менялись (листание на телефоне), а не «сброшены». */
-  filters?: Record<string, FilterValue | null>;
-}
 
 /**
  * Карточное представление строки на телефоне (ADR 0030). Объявляется рядом с колонками и из тех
@@ -129,6 +121,9 @@ function ListCard<T>({ record, card }: { record: T; card: CardConfig<T> }) {
     </div>
   );
 }
+
+/** Протокол перерисовки списка живёт в `shared/lib`; здесь он переэкспортируется для удобства. */
+export type { TableChange };
 
 export function DataTable<T extends object>(props: DataTableProps<T>) {
   const { ref, height } = useElementSize<HTMLDivElement>();

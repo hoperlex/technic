@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { Alert, Button, Space } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
-import { useIsMobile } from '../hooks/useIsMobile';
-import { useVersionCheck } from '../hooks/useVersionCheck';
+import { useIsMobile } from '@shared/lib';
+import { useVersionCheck } from '@shared/lib';
 
 // Ненавязчивый баннер о новой версии приложения. Перезагрузку инициирует пользователь,
 // чтобы не терять заполненные формы. zIndex ниже модалок AntD (1000) — во время

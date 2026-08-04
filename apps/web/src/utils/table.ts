@@ -1,22 +1,6 @@
-import type { FilterValue } from 'antd/es/table/interface';
-
-/** Достаёт первое значение фильтра столбца (server-side single-select). */
-export function filterValue(
-  filters: Record<string, FilterValue | null> | undefined,
-  key: string,
-): string | undefined {
-  const v = filters?.[key];
-  return v && v.length > 0 ? String(v[0]) : undefined;
-}
-
-/** Первое непустое значение из нескольких ключей (для объединённого поиска). */
-export function firstFilter(
-  filters: Record<string, FilterValue | null> | undefined,
-  keys: string[],
-): string | undefined {
-  for (const k of keys) {
-    const v = filterValue(filters, k);
-    if (v) return v;
-  }
-  return undefined;
-}
+/**
+ * Модуль переехал в `@shared/lib` (этап 1 FSD-рефакторинга). Файл остаётся временно: параллельная
+ * работа импортирует его по старому пути, и удаление сломало бы незамерженные ветки. Уходит
+ * последним коммитом этапа.
+ */
+export { filterValue, firstFilter } from '@shared/lib';

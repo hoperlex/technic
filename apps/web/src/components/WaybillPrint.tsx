@@ -2,7 +2,7 @@ import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { Alert, App, Button, Spin, Tooltip } from 'antd';
 import { DownloadOutlined, PrinterOutlined } from '@ant-design/icons';
 import { waybillsApi } from '../api/resources';
-import { useIsMobile } from '../hooks/useIsMobile';
+import { useIsMobile } from '@shared/lib';
 import { errorMessage } from '../utils/format';
 import { ViewModal } from './ViewModal';
 

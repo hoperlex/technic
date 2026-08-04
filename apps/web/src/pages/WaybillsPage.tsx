@@ -16,7 +16,7 @@ import { DataTable } from '../components/DataTable';
 import { PageTableLayout } from '../components/PageTableLayout';
 import { actionsColumn, badgeColumn, textColumn } from '../components/columns';
 import { ExportWaybillButton, PrintWaybillButton } from '../components/WaybillPrint';
-import { useListParams } from '../hooks/useListParams';
+import { useListParams } from '@shared/lib';
 import { useAuth } from '../auth/AuthContext';
 import { errorMessage } from '../utils/format';
 

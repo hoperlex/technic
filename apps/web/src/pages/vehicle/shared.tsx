@@ -32,7 +32,7 @@ import { ActionSheet } from '../../components/ActionSheet';
 import { AutoSelect } from '../../components/AutoSelect';
 import { FileLinkList } from '../../components/FileLinks';
 import type { FilterDefinition } from '../../components/listControls';
-import { useIsMobile } from '../../hooks/useIsMobile';
+import { useIsMobile } from '@shared/lib';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage, formatDateTime } from '../../utils/format';
 
