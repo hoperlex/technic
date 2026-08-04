@@ -18,7 +18,7 @@ import { inspectTemplate, renderOfficeTemplate } from '../src/services/office-te
 const templatesDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'templates');
 
 /** Код формы = имя файла: `vehicle_types.waybill_form_code` выбирает бланк по нему. */
-const FORMS = ['4p', 'leg3'] as const;
+const FORMS = ['4p', 'leg3', 'esm2'] as const;
 
 function template(form: (typeof FORMS)[number]): Uint8Array {
   return new Uint8Array(readFileSync(join(templatesDir, `waybill-${form}.xlsx`)));
@@ -61,23 +61,105 @@ describe('разметка бланков', () => {
    * `sharedStrings.xml` — вырезать её оттуда значит сбить индексы всех прочих строк бланка, —
    * но ссылаться на неё не должна ни одна ячейка листа.
    */
-  it.each(FORMS)('в бланке %s нет графы диспетчера — ни ячейкой, ни плейсхолдером', (form) => {
-    const files = unzipSync(template(form));
+  // Графа диспетчера есть только у листов на рейс: ЭСМ-2 выписывается не на поездку, и подписей
+  // выезда в нём нет вовсе — у него стёрта своя строка (см. тест ниже).
+  it.each(['4p', 'leg3'] as const)(
+    'в бланке %s нет графы диспетчера — ни ячейкой, ни плейсхолдером',
+    (form) => {
+      const files = unzipSync(template(form));
+      const sheet = new TextDecoder().decode(files['xl/worksheets/sheet1.xml']!);
+      const strings = new TextDecoder().decode(files['xl/sharedStrings.xml']!);
+
+      const dictionary = [...strings.matchAll(/<si>([\s\S]*?)<\/si>/g)].map(([, si]) =>
+        [...si!.matchAll(/<t[^>]*>([\s\S]*?)<\/t>/g)].map(([, t]) => t).join(''),
+      );
+      const dispatcher = dictionary.flatMap((text, index) =>
+        text.trim() === 'Диспетчер' ? [index] : [],
+      );
+      expect(dispatcher.length, 'подпись «Диспетчер» пропала из словаря книги').toBeGreaterThan(0);
+
+      for (const index of dispatcher) {
+        expect(sheet).not.toMatch(
+          new RegExp(`<c r="[A-Z]+\\d+"[^>]*t="s"[^>]*><v>${index}</v></c>`),
+        );
+      }
+      expect(inspectTemplate(template(form))).not.toContain('dispatcher_fio');
+    },
+  );
+
+  /**
+   * Тем же решением, что и графа диспетчера: в исходнике ЭСМ-2 над линией «(расшифровка подписи)»
+   * впечатана фамилия начальника отдела автотехники. Напечатанная рядом с пустой линией, она
+   * читается как подпись, которой нет, — и вдобавок это персональные данные живого человека в
+   * публичном репозитории. Должность остаётся: её подписывает человек, а не портал.
+   */
+  it('в ЭСМ-2 стёрта фамилия начальника отдела: подписывает человек, а не портал', () => {
+    const files = unzipSync(template('esm2'));
     const sheet = new TextDecoder().decode(files['xl/worksheets/sheet1.xml']!);
     const strings = new TextDecoder().decode(files['xl/sharedStrings.xml']!);
 
     const dictionary = [...strings.matchAll(/<si>([\s\S]*?)<\/si>/g)].map(([, si]) =>
       [...si!.matchAll(/<t[^>]*>([\s\S]*?)<\/t>/g)].map(([, t]) => t).join(''),
     );
-    const dispatcher = dictionary.flatMap((text, index) =>
-      text.trim() === 'Диспетчер' ? [index] : [],
+    // Строка остаётся в словаре книги — вырезать её значит сбить индексы всех прочих подписей
+    // бланка; проверяется, что на неё не смотрит ни одна ячейка листа.
+    const surname = dictionary.flatMap((text, index) =>
+      /^[А-ЯЁ][а-яё]+\s+[А-ЯЁ]\.\s*[А-ЯЁ]\.$/u.test(text.trim()) ? [index] : [],
     );
-    expect(dispatcher.length, 'подпись «Диспетчер» пропала из словаря книги').toBeGreaterThan(0);
-
-    for (const index of dispatcher) {
+    expect(surname.length, 'фамилия пропала из словаря книги — проверьте исходник').toBeGreaterThan(
+      0,
+    );
+    for (const index of surname) {
       expect(sheet).not.toMatch(new RegExp(`<c r="[A-Z]+\\d+"[^>]*t="s"[^>]*><v>${index}</v></c>`));
     }
-    expect(inspectTemplate(template(form))).not.toContain('dispatcher_fio');
+    // Должность на месте: стирается расшифровка подписи, а не сама графа.
+    expect(dictionary.some((t) => t.includes('Начальник отдела автотехники'))).toBe(true);
+  });
+
+  /**
+   * ЭСМ-2 — документ на неделю работы машины, а не на поездку: в нём нет ни груза, ни задания, ни
+   * СНИЛС с удостоверением. Проверяются обе стороны: то, без чего лист бессмысленен, размечено, а
+   * графы рейса не размечены — их в бланке нет, и появление ключа означало бы, что кто-то вписал
+   * значение в чужую клетку.
+   */
+  it('в ЭСМ-2 размечена неделя работ, и нет граф рейса', () => {
+    const inTemplate = new Set(inspectTemplate(template('esm2')));
+    for (const key of [
+      'org_name',
+      'customer_name',
+      'customer_address',
+      'vehicle_brand',
+      'vehicle_reg_number',
+      'vehicle_inventory_number',
+      'driver_fio',
+      'driver_personnel_no',
+      'object_code',
+      'period_from_day',
+      'period_to_day',
+      'period_month',
+      'period_year',
+      // Семь строк недели: числа месяца и объект — по каждому дню.
+      'day1_date',
+      'day7_date',
+      'day1_object',
+      'day7_object',
+    ]) {
+      expect(inTemplate.has(key), key).toBe(true);
+    }
+    for (const key of [
+      // Машинист работает по удостоверению тракториста-машиниста, которого портал не ведёт
+      // (ADR 0055): этих граф в бланке нет и быть не должно.
+      'driver_snils',
+      'driver_license_number',
+      'driver_license_issued_on',
+      // Задание, груз и время выезда — графы листа на рейс.
+      'task_from',
+      'task_to',
+      'task_cargo',
+      'task_departure_time',
+    ]) {
+      expect(inTemplate.has(key), key).toBe(false);
+    }
   });
 
   it('в 4-П размечено задание водителю: по нему лист и выписывают', () => {
@@ -182,9 +264,13 @@ describe('разметка бланков', () => {
     expect(sheet).toContain('paperSize="9"');
   });
 
-  it('4-П печатается альбомным: 166 колонок на портретный лист не ложатся', () => {
-    const sheet = new TextDecoder().decode(unzipSync(template('4p'))['xl/worksheets/sheet1.xml']!);
+  // 4-П — 166 колонок, ЭСМ-2 — 86 шириной 208 знаков: на портретный лист не ложатся ни тот, ни
+  // другой. У ЭСМ-2 проверка ловит и вторую ошибку: исходник пришёл из LibreOffice со своим
+  // `<pageSetup orientation="portrait">`, и разметка обязана его переписать, а не дописать второй.
+  it.each(['4p', 'esm2'] as const)('бланк %s печатается альбомным', (form) => {
+    const sheet = new TextDecoder().decode(unzipSync(template(form))['xl/worksheets/sheet1.xml']!);
     expect(sheet).toContain('orientation="landscape"');
+    expect(sheet.match(/<pageSetup[^>]*>/g)).toHaveLength(1);
   });
 
   it.each(FORMS)('подстановка не трогает вёрстку бланка %s: стили и рисунки те же', (form) => {

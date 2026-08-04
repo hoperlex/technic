@@ -45,6 +45,7 @@ import type {
   RequestType,
   RequestWaybillDto,
   RouteTripFields,
+  SaveVehicleRequestShiftBody,
   UpdateContainerTypeInput,
   UpdateCounterpartyInput,
   UpdateDepartmentInput,
@@ -68,6 +69,7 @@ import type {
   VehicleOnSiteListDto,
   VehicleOnSiteSummaryDto,
   VehicleRequestDto,
+  VehicleRequestShiftsDto,
   VehicleRequestHistorySummaryDto,
   VehicleRequestSummaryDto,
   VehicleSpecDto,
@@ -186,6 +188,15 @@ export const waybillsApi = {
    * не оседая файлом на машине. Не ссылкой, а телом ответа — фрейму его отдают из памяти вкладки.
    */
   printPdf: (id: string) => apiFetchBlob(`/waybills/${id}/print`),
+  /**
+   * Вложения к бланку: скан заполненного заказчиком оборота ЭСМ-2, отметки 4-П, акт. Файл сначала
+   * уезжает в хранилище (`filesApi.upload`), сюда приходит только его идентификатор — тем же
+   * порядком, что у вложений заявок.
+   */
+  attachFiles: (id: string, addFileIds: string[]) =>
+    apiFetch<FileDto[]>(`/waybills/${id}/files`, { method: 'POST', body: { addFileIds } }),
+  detachFile: (id: string, fileId: string) =>
+    apiFetch<FileDto[]>(`/waybills/${id}/files/${fileId}`, { method: 'DELETE' }),
 };
 
 /**
@@ -385,10 +396,13 @@ export const vehicleRequestsApi = {
       trip: RouteTripFields | null;
     }>(`/vehicle-requests/${id}/route-prefill`, { query: { ...params } }),
   /**
-   * Лист, выписанный по заявке (ADR 0041) — его печатают из карточки, не уходя в журнал. `null`
-   * приходит там, где листа нет: аренда, заказ техники на объект, заявка не в работе.
+   * Листы, выписанные по заявке (ADR 0041) — их печатают из карточки, не уходя в журнал. Пусто
+   * там, где листов нет: аренда, заявка не в работе, тип без бланка.
+   *
+   * Список, а не один: у грузоперевозки лист по-прежнему один — рейс один, — а у заказа техники
+   * на объект их столько, сколько недель в сроке (ЭСМ-2, миграция 0087).
    */
-  waybill: (id: string) => apiFetch<RequestWaybillDto | null>(`/vehicle-requests/${id}/waybill`),
+  waybills: (id: string) => apiFetch<RequestWaybillDto[]>(`/vehicle-requests/${id}/waybills`),
   /**
    * Перегоны заявки: доставка техники на объект и вывоз с него. Пусто — их не заводили: технику
    * могли привезти тралом, и тогда листа на перегон не бывает вовсе.
@@ -482,6 +496,28 @@ export const vehicleRequestsApi = {
   /** Отозвать запрос, пока он ждёт визы: «отбой, техника нужна». */
   cancelEarlyEnd: (id: string) =>
     apiFetch<VehicleRequestDto>(`/vehicle-requests/${id}/early-end`, { method: 'DELETE' }),
+  /**
+   * Смены заказа спецтехники: дни заказа целиком, включая незаполненные. День среза (`onDate`)
+   * считает сервер — по нему таблица решает, какая строка ещё в будущем и потому неактивна.
+   */
+  shifts: (id: string) => apiFetch<VehicleRequestShiftsDto>(`/vehicle-requests/${id}/shifts`),
+  /** Записать смену дня: время, машиночасы, заправку и комментарий. */
+  saveShift: (id: string, date: string, body: SaveVehicleRequestShiftBody) =>
+    apiFetch<VehicleRequestShiftsDto>(`/vehicle-requests/${id}/shifts/${date}`, {
+      method: 'PUT',
+      body,
+    }),
+  /** Убрать ошибочно заведённый день — пока он не подтверждён. */
+  deleteShift: (id: string, date: string) =>
+    apiFetch<VehicleRequestShiftsDto>(`/vehicle-requests/${id}/shifts/${date}`, {
+      method: 'DELETE',
+    }),
+  /** Подпись объекта под днём работы и её снятие — одним маршрутом, как виза заявки. */
+  approveShift: (id: string, date: string, approved: boolean) =>
+    apiFetch<VehicleRequestShiftsDto>(`/vehicle-requests/${id}/shifts/${date}/approval`, {
+      method: 'POST',
+      body: { approved },
+    }),
   remove: (id: string) =>
     apiFetch<{ ok: boolean; mode: string }>(`/vehicle-requests/${id}`, { method: 'DELETE' }),
   restore: (id: string) =>

@@ -246,6 +246,44 @@ export function assertVehicleRequestTypeAllowed(
 }
 
 /**
+ * Может ли учётка подтверждать смены этой заявки: круг «кто мог бы её завести» — право на
+ * заведение, разрешённый тип заказа и своя область.
+ *
+ * Подпись под днём работы ставит заказчик: он один видит, во сколько машина вышла и сколько
+ * простояла. Отдельного права для этого нет по той же причине, что и у досрочного завершения
+ * (ADR 0044 п. 3) — состав ролей у существующего ровно тот, кому действие и нужно: площадка,
+ * диспетчер, менеджер, администратор. Арендодателю и наблюдателю оно недоступно: первый —
+ * вторая сторона в споре о часах, второй не ведёт ничего.
+ *
+ * Предикат, а не проверка с отказом: тем же условием портал решает, показывать ли чекбокс.
+ */
+export function canConfirmShifts(
+  p: Principal,
+  request: RequestCustomer & { requestType: VehicleRequestType },
+): boolean {
+  if (!can(p, 'vehicleRequests.create')) return false;
+  if (!canOrderVehicleRequestType(p, request.requestType)) return false;
+  if (isObjectScopedRole(p.role)) {
+    return !!request.objectId && p.constructionObjectIds.includes(request.objectId);
+  }
+  if (isDepartmentScopedRole(p.role)) {
+    return !!request.departmentId && p.departmentIds.includes(request.departmentId);
+  }
+  return true;
+}
+
+/**
+ * Смены подтверждает тот, кто мог бы завести эту заявку (`canConfirmShifts`); остальным — 403.
+ */
+export function assertShiftApprover(
+  p: Principal,
+  request: RequestCustomer & { requestType: VehicleRequestType },
+): void {
+  if (canConfirmShifts(p, request)) return;
+  throw err.forbidden('Смены подтверждает заказчик этой заявки');
+}
+
+/**
  * Со стороны заказчика — объекта или отдела — правят и удаляют только заявку, которую ещё не
  * взяли в работу: после «В работе» за заявкой стоят договорённости с исполнителем, и менять её
  * задним числом нельзя. Ограничение по состоянию записи, а не по действию, поэтому это область,

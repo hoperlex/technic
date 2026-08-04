@@ -1,4 +1,4 @@
-import { Button, Descriptions, Space, Spin, Tag, Typography } from 'antd';
+import { Button, Space, Spin, Tabs, Tag, Typography } from 'antd';
 import { CheckCircleOutlined, ClockCircleOutlined } from '@ant-design/icons';
 import { type ReactNode, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
@@ -35,12 +35,12 @@ import { FileLinkList } from '../../components/FileLinks';
 import { type HistoryRow, RequestHistoryTable } from '../../components/RequestHistory';
 import { ResponsibleValue } from '../../components/ResponsibleFields';
 import { UserAvatar } from '../../components/UserAvatar';
-import { ViewModal } from '@shared/ui';
+import { ViewFields, ViewModal } from '@shared/ui';
 import { PrintWaybillButton } from '../../components/WaybillPrint';
-import { useIsMobile } from '@shared/lib';
 import { calendarDaysLabel } from '../../utils/date';
 import { formatDateTime, formatDateTimeMaybe, formatMoney } from '../../utils/format';
 import { formatDateOnly } from './shared';
+import { VehicleShiftsView } from './VehicleShiftsView';
 
 /**
  * Карточка заявки на технику: поля только на чтение и история событий (ADR 0015). Открывается
@@ -161,7 +161,6 @@ export function VehicleRequestViewModal({
   onRelocate,
   earlyEndActions,
 }: Props) {
-  const isMobile = useIsMobile();
   const { can } = useAuth();
 
   /**
@@ -177,16 +176,18 @@ export function VehicleRequestViewModal({
   });
 
   /**
-   * Лист, выписанный по заявке (ADR 0041): его печатают отсюда, не уходя в журнал — диспетчер
-   * взял заявку в работу и тут же отдаёт бланк водителю. Спрашивается только у грузоперевозки:
-   * заказ техники на объект путевого листа не знает, и ходить за ним незачем. Права своего нет —
-   * значит, персональные данные водителя этой роли не показывают (ADR 0037 п. 13).
+   * Листы, выписанные по заявке (ADR 0041): их печатают отсюда, не уходя в журнал — диспетчер
+   * взял заявку в работу и тут же отдаёт бланк. Права своего нет — значит, персональные данные
+   * водителя этой роли не показывают (ADR 0037 п. 13).
+   *
+   * Спрашиваются у заявок обоих видов, а не только у грузоперевозки: заказ техники на объект
+   * теперь тоже документ имеет — недельные ЭСМ-2, по листу на каждую неделю срока (миграция
+   * 0087). Их и бывает несколько, поэтому список, а не один.
    */
-  const asksWaybill =
-    !!request && request.requestType === 'freight_transport' && can('waybills.read');
-  const { data: waybill } = useQuery({
-    queryKey: ['vehicle-requests', request?.id, 'waybill'],
-    queryFn: () => vehicleRequestsApi.waybill(request!.id),
+  const asksWaybill = !!request && can('waybills.read');
+  const { data: waybills } = useQuery({
+    queryKey: ['vehicle-requests', request?.id, 'waybills'],
+    queryFn: () => vehicleRequestsApi.waybills(request!.id),
     enabled: asksWaybill,
   });
 
@@ -259,7 +260,7 @@ export function VehicleRequestViewModal({
           // Виза (ADR 0025): в карточке важно не только «есть ли», но и кто согласовал.
           key: 'approval',
           label: 'Согласование',
-          span: 3,
+          full: true,
           children: request.approvedAt ? (
             // Подпись — строкой под тегом, а не рядом: в узком окне на ФИО рядом с тегом
             // остаётся столбец в пару букв, и оно переносится по слогам.
@@ -281,11 +282,15 @@ export function VehicleRequestViewModal({
           key: 'customer',
           // Заказчик заявки (ADR 0040): у объекта показывается код, у отдела — тоже свой.
           label: request.departmentId ? 'Отдел' : 'Объект',
-          span: 3,
+          full: true,
           children: request.departmentId
             ? `${request.departmentCode} — ${request.departmentName}`
             : `${request.objectCode} — ${request.objectName}`,
         },
+        // ─── Что заказали: позиция классификатора, срок, кто встречает, а у грузоперевозки —
+        // груз и адреса. Заказ стоит выше исполнения: карточку открывают с вопроса «что просили»,
+        // а «чем закрыли» отвечает уже на него.
+        //
         // Заказанная позиция классификатора (ADR 0028): категория с её ТТХ, а у типа без
         // характеристик — сам тип.
         {
@@ -296,12 +301,106 @@ export function VehicleRequestViewModal({
             categoryName: request.vehicleCategoryName,
           }),
         },
+        {
+          key: 'term',
+          label: request.requestType === 'special_equipment' ? 'Период работы' : 'Подача',
+          children: termOf(request),
+        },
+        // Досрочное завершение (ADR 0044): карточка — то место, где решают по запросу, потому
+        // что решают, прочитав причину, а она только здесь. Строка стоит сразу под сроком: она
+        // о нём и говорит.
+        ...(request.requestType === 'special_equipment' && request.earlyEnd
+          ? [
+              {
+                key: 'earlyEnd',
+                label: 'Досрочное завершение',
+                full: true,
+                children: (
+                  <EarlyEndDetails
+                    earlyEnd={request.earlyEnd}
+                    actions={earlyEndActions?.(request)}
+                  />
+                ),
+              },
+            ]
+          : []),
+        // Кто встречает технику на объекте (миграция 0062): у грузоперевозки контакт свой на
+        // каждом конце маршрута — он стоит ниже, рядом со своим адресом.
+        ...(request.requestType === 'special_equipment'
+          ? [
+              {
+                key: 'responsible',
+                label: 'Ответственный',
+                children: (
+                  <ResponsibleValue
+                    name={request.responsibleName}
+                    phone={request.responsiblePhone}
+                  />
+                ),
+              },
+            ]
+          : []),
+        // Объём/масса и адреса есть только у грузоперевозки: спецтехника заказывается на срок.
+        ...(request.requestType === 'freight_transport'
+          ? [
+              {
+                key: 'amount',
+                label: 'Объём / масса',
+                children:
+                  [
+                    request.volumeM3 != null ? `${request.volumeM3} м³` : null,
+                    request.weightTons != null ? `${request.weightTons} т` : null,
+                  ]
+                    .filter(Boolean)
+                    .join(' / ') || '—',
+              },
+              {
+                key: 'loading',
+                label: 'Погрузка',
+                full: true,
+                // Отметка о верификации адреса (ADR 0006) — та же, что в таблице.
+                children: (
+                  <AddressCell text={request.loadingLocation} meta={request.loadingAddress} />
+                ),
+              },
+              {
+                key: 'loadingResponsible',
+                label: 'Ответственный за погрузку',
+                children: (
+                  <ResponsibleValue
+                    name={request.loadingResponsibleName}
+                    phone={request.loadingResponsiblePhone}
+                  />
+                ),
+              },
+              {
+                key: 'unloading',
+                label: 'Разгрузка',
+                full: true,
+                children: (
+                  <AddressCell text={request.unloadingLocation} meta={request.unloadingAddress} />
+                ),
+              },
+              {
+                key: 'unloadingResponsible',
+                label: 'Ответственный за разгрузку',
+                children: (
+                  <ResponsibleValue
+                    name={request.unloadingResponsibleName}
+                    phone={request.unloadingResponsiblePhone}
+                  />
+                ),
+              },
+            ]
+          : []),
+        // ─── Чем закрыли: техника, рейс, лист, перегоны, факт выполнения.
+        //
         // Назначенная техника (ADR 0027): у «Новой» заявки её нет, у остальных это ответ на
         // вопрос «чем и почём» — вместе с тем, кто и когда назначил.
         {
           key: 'assignment',
           label: 'Техника',
-          span: 3,
+          full: true,
           children: request.assignment ? (
             <Space direction="vertical" size={2}>
               <Space size={8} wrap>
@@ -349,7 +448,7 @@ export function VehicleRequestViewModal({
               {
                 key: 'route',
                 label: 'Маршрут',
-                span: 3,
+                full: true,
                 children: (
                   <Space size={8} wrap>
                     <span>
@@ -371,28 +470,43 @@ export function VehicleRequestViewModal({
               },
             ]
           : []),
-        // Путевой лист (ADR 0037, печать — ADR 0041). Строка появляется, только когда лист
+        // Путевые листы (ADR 0037, печать — ADR 0041). Строка появляется, только когда лист
         // выписан: у аренды его нет вовсе, и «Путевой лист: —» у такой заявки читалось бы как
         // забытый документ. Номер рядом с кнопкой не для красоты — по нему лист ищут в журнале
         // и на бумаге.
-        ...(waybill
+        //
+        // У заказа техники на объект листов столько, сколько недель в сроке (ЭСМ-2): каждый
+        // подписан своей неделей, иначе в списке одинаковых номеров не разобрать, какой из них
+        // печатать. Аннулированные остаются в списке — сгоревший номер видно там же, где выдан.
+        ...(waybills && waybills.length > 0
           ? [
               {
-                key: 'waybill',
-                label: 'Путевой лист',
-                span: 2,
+                key: 'waybills',
+                label: waybills.length > 1 ? 'Путевые листы' : 'Путевой лист',
+                full: true,
                 children: (
-                  <Space size={8} wrap>
-                    <span>{waybill.number}</span>
-                    <Tag color={waybillStatusColors[waybill.status]}>
-                      {waybillStatusLabels[waybill.status]}
-                    </Tag>
-                    <Typography.Text type="secondary">
-                      {waybill.driverName} · талон {waybill.slot}
-                    </Typography.Text>
-                    <PrintWaybillButton waybillId={waybill.id} number={waybill.number}>
-                      Печать
-                    </PrintWaybillButton>
+                  <Space direction="vertical" size={4}>
+                    {waybills.map((waybill) => (
+                      <Space key={waybill.id} size={8} wrap>
+                        {waybill.periodFrom && waybill.periodTo && (
+                          <Tag>
+                            {formatDateOnly(waybill.periodFrom)} —{' '}
+                            {formatDateOnly(waybill.periodTo)}
+                          </Tag>
+                        )}
+                        <span>{waybill.number}</span>
+                        <Tag color={waybillStatusColors[waybill.status]}>
+                          {waybillStatusLabels[waybill.status]}
+                        </Tag>
+                        <Typography.Text type="secondary">
+                          {waybill.driverName}
+                          {waybill.periodFrom ? '' : ` · талон ${waybill.slot}`}
+                        </Typography.Text>
+                        <PrintWaybillButton waybillId={waybill.id} number={waybill.number}>
+                          Печать
+                        </PrintWaybillButton>
+                      </Space>
+                    ))}
                   </Space>
                 ),
               },
@@ -406,7 +520,7 @@ export function VehicleRequestViewModal({
               {
                 key: 'relocations',
                 label: 'Перегон техники',
-                span: 3,
+                full: true,
                 children: (
                   <Space direction="vertical" size={4}>
                     {(relocations ?? []).map((route) => (
@@ -467,7 +581,7 @@ export function VehicleRequestViewModal({
               {
                 key: 'completion',
                 label: 'Выполнение',
-                span: 3,
+                full: true,
                 children: (
                   <Space direction="vertical" size={2}>
                     <Space size={8} wrap>
@@ -481,102 +595,6 @@ export function VehicleRequestViewModal({
                       {formatDateTime(request.completion.completedAt)}
                     </Typography.Text>
                   </Space>
-                ),
-              },
-            ]
-          : []),
-        {
-          key: 'term',
-          label: request.requestType === 'special_equipment' ? 'Период работы' : 'Подача',
-          children: termOf(request),
-        },
-        // Досрочное завершение (ADR 0044): карточка — то место, где решают по запросу, потому
-        // что решают, прочитав причину, а она только здесь. Строка стоит сразу под сроком: она
-        // о нём и говорит.
-        ...(request.requestType === 'special_equipment' && request.earlyEnd
-          ? [
-              {
-                key: 'earlyEnd',
-                label: 'Досрочное завершение',
-                span: 3,
-                children: (
-                  <EarlyEndDetails
-                    earlyEnd={request.earlyEnd}
-                    actions={earlyEndActions?.(request)}
-                  />
-                ),
-              },
-            ]
-          : []),
-        // Кто встречает технику на объекте (миграция 0062): у грузоперевозки контакт свой на
-        // каждом конце маршрута — он стоит ниже, рядом со своим адресом.
-        ...(request.requestType === 'special_equipment'
-          ? [
-              {
-                key: 'responsible',
-                label: 'Ответственный',
-                span: 3,
-                children: (
-                  <ResponsibleValue
-                    name={request.responsibleName}
-                    phone={request.responsiblePhone}
-                  />
-                ),
-              },
-            ]
-          : []),
-        // Объём/масса и адреса есть только у грузоперевозки: спецтехника заказывается на срок.
-        ...(request.requestType === 'freight_transport'
-          ? [
-              {
-                key: 'amount',
-                label: 'Объём / масса',
-                span: 3,
-                children:
-                  [
-                    request.volumeM3 != null ? `${request.volumeM3} м³` : null,
-                    request.weightTons != null ? `${request.weightTons} т` : null,
-                  ]
-                    .filter(Boolean)
-                    .join(' / ') || '—',
-              },
-              {
-                key: 'loading',
-                label: 'Погрузка',
-                span: 3,
-                // Отметка о верификации адреса (ADR 0006) — та же, что в таблице.
-                children: (
-                  <AddressCell text={request.loadingLocation} meta={request.loadingAddress} />
-                ),
-              },
-              {
-                key: 'loadingResponsible',
-                label: 'Ответственный за погрузку',
-                span: 3,
-                children: (
-                  <ResponsibleValue
-                    name={request.loadingResponsibleName}
-                    phone={request.loadingResponsiblePhone}
-                  />
-                ),
-              },
-              {
-                key: 'unloading',
-                label: 'Разгрузка',
-                span: 3,
-                children: (
-                  <AddressCell text={request.unloadingLocation} meta={request.unloadingAddress} />
-                ),
-              },
-              {
-                key: 'unloadingResponsible',
-                label: 'Ответственный за разгрузку',
-                span: 3,
-                children: (
-                  <ResponsibleValue
-                    name={request.unloadingResponsibleName}
-                    phone={request.unloadingResponsiblePhone}
-                  />
                 ),
               },
             ]
@@ -597,14 +615,44 @@ export function VehicleRequestViewModal({
               {
                 key: 'cancelReason',
                 label: 'Причина отмены',
-                span: 3,
+                full: true,
                 children: request.cancelReason,
               },
             ]
           : []),
-        { key: 'comment', label: 'Комментарий', span: 3, children: request.comment || '—' },
+        { key: 'comment', label: 'Комментарий', full: true, children: request.comment || '—' },
       ]
     : [];
+
+  /** Сама заявка: поля, файлы и её история — то, что карточка показывала до появления вкладок. */
+  const main = request && (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {/* Раскладка — забота карточки: поля говорят только, годится ли им доля строки
+          (`full`). Число колонок и их ширины считает ViewFields, на телефоне колонка одна. */}
+      <ViewFields items={fields} />
+
+      {request.files.length > 0 && (
+        <div>
+          <Typography.Text strong>Файлы</Typography.Text>
+          <FileLinkList files={request.files} maxNameWidth={420} />
+        </div>
+      )}
+
+      <div>
+        <Typography.Text strong>История</Typography.Text>
+        <div style={{ marginTop: 12 }}>
+          {isPending ? (
+            <Spin size="small" />
+          ) : rows.length > 0 ? (
+            // Событие строкой: слева баблы статусов, дальше суть и значения изменений.
+            <RequestHistoryTable rows={rows} labels={vehicleRequestChangeLabels} />
+          ) : (
+            <Typography.Text type="secondary">История недоступна</Typography.Text>
+          )}
+        </div>
+      </div>
+    </div>
+  );
 
   return (
     <ViewModal
@@ -629,39 +677,26 @@ export function VehicleRequestViewModal({
     >
       {request && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          {/* На телефоне поля идут в одну колонку: в две подпись и значение делят 180 px
-              и переносятся по слогам. Набор полей общий — меняется только число колонок. */}
-          <Descriptions
-            size="small"
-            bordered
-            // Три колонки на десктопе: окно шире, и в двух его половина оставалась пустой,
-            // а карточка всё равно скроллилась. `span: 3` у поля означает «во всю ширину» —
-            // раньше ту же роль играла двойка. На телефоне колонка одна, и span не действует.
-            column={isMobile ? 1 : 3}
-            layout={isMobile ? 'vertical' : 'horizontal'}
-            items={fields}
-          />
-
-          {request.files.length > 0 && (
-            <div>
-              <Typography.Text strong>Файлы</Typography.Text>
-              <FileLinkList files={request.files} maxNameWidth={420} />
-            </div>
+          {/* Вкладки появляются только у заказа спецтехники — ровно там, где есть что положить
+              на вторую: смены ведутся по дням работ, а у грузоперевозки не период, а момент
+              подачи. Прятать за вкладку одну-единственную страницу карточки незачем. */}
+          {request.requestType === 'special_equipment' ? (
+            <Tabs
+              items={[
+                { key: 'request', label: 'Заявка', children: main },
+                {
+                  key: 'shifts',
+                  label: 'Смены',
+                  // Только чтение: подтверждают смены на вкладке «На объекте», где видно, что
+                  // стоит на площадке сегодня. Сюда за ними приходят те, кто к площадке
+                  // отношения не имеет, — разобрать счёт и спор о часах.
+                  children: <VehicleShiftsView requestId={request.id} />,
+                },
+              ]}
+            />
+          ) : (
+            main
           )}
-
-          <div>
-            <Typography.Text strong>История</Typography.Text>
-            <div style={{ marginTop: 12 }}>
-              {isPending ? (
-                <Spin size="small" />
-              ) : rows.length > 0 ? (
-                // Событие строкой: слева баблы статусов, дальше суть и значения изменений.
-                <RequestHistoryTable rows={rows} labels={vehicleRequestChangeLabels} />
-              ) : (
-                <Typography.Text type="secondary">История недоступна</Typography.Text>
-              )}
-            </div>
-          </div>
         </div>
       )}
     </ViewModal>

@@ -37,6 +37,10 @@ import {
   waybills,
 } from '../db/schema';
 
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+/** Читающие функции годятся и в транзакции выписки листа, и вне её — форме подбора. */
+type Reader = Tx | typeof db;
+
 /**
  * Отбор водителей под машину (ADR 0037, ADR 0055).
  *
@@ -402,4 +406,53 @@ export async function isDriverAllowed(
 ): Promise<boolean> {
   const selection = await selectDrivers(params);
   return (selection?.drivers.length ?? 0) > 0;
+}
+
+/** Машинист строительной машины: ровно то, что печатает бланк ЭСМ-2, — ФИО и табельный номер. */
+export interface MachinistOption {
+  personId: string;
+  fullName: string;
+  personnelNo: string;
+}
+
+/**
+ * Машинист для листа ЭСМ-2 — рядом с `selectDrivers`, но не внутри него, и это главное здесь.
+ *
+ * Отбора нет никакого. `selectDrivers` требует непустой СНИЛС, годное на дату удостоверение с
+ * заполненными сериями и смотрит на категорию под конкретную машину — всё это графы 4-П, без
+ * которых тот лист недействителен. В ЭСМ-2 таких граф нет вовсе: экскаваторщик работает по
+ * удостоверению тракториста-машиниста, которого портал не ведёт (ADR 0055). Поэтому годится любой
+ * действующий водитель справочника, а ни машина, ни дата на ответ не влияют.
+ *
+ * `null` — человека нет в справочнике водителей: специализация закрыта увольнением либо запись
+ * удалена. Лист ему не выписывается — но по причине «такого водителя нет», а не «документов не
+ * хватает».
+ */
+export async function findMachinist(
+  reader: Reader,
+  personId: string,
+): Promise<MachinistOption | null> {
+  const [row] = await reader
+    .selectDistinct({ personId: persons.id, fullName: persons.fullName })
+    .from(persons)
+    .innerJoin(personSpecializations, eq(personSpecializations.personId, persons.id))
+    .innerJoin(specializations, eq(specializations.id, personSpecializations.specializationId))
+    .where(
+      and(
+        eq(persons.id, personId),
+        isNull(persons.deletedAt),
+        isNull(personSpecializations.endedOn),
+        eq(specializations.code, DRIVER_SPECIALIZATION_CODE),
+      ),
+    );
+  if (!row) return null;
+
+  // Табельный номер — добором: работодателей у человека несколько, и join размножил бы строку.
+  const [employment] = await reader
+    .select({ personnelNo: personEmployments.personnelNo })
+    .from(personEmployments)
+    .where(and(eq(personEmployments.personId, personId), isNull(personEmployments.endedOn)))
+    .limit(1);
+
+  return { ...row, personnelNo: employment?.personnelNo ?? '' };
 }

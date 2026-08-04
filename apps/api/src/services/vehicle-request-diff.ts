@@ -7,6 +7,7 @@ import {
   type VehicleRequestCompletionDto,
   type VehicleRequestDto,
   type VehicleRequestEarlyEndDto,
+  type VehicleRequestShiftDto,
   workedAmountLabel,
 } from '@technic/contracts';
 import { changeSet, EMPTY, short } from './request-diff';
@@ -140,6 +141,23 @@ export function diffVehicleEarlyEnd(
 export function earlyEndReasonChange(reason: string): RequestChangeDto[] {
   const diff = changeSet();
   diff.listed('earlyEndReason', reason ? [reason] : []);
+  return diff.changes;
+}
+
+/**
+ * Что подтвердили (или с чего сняли подпись) — день и его показатели одной строкой:
+ * «12.08.2026 · 08:00–20:00 · 11,5 ч · 120 л». Событием-списком, потому что «было» здесь нет:
+ * решение принимают один раз про один день, а правки самих часов события не пишут вовсе.
+ */
+export function shiftChange(s: VehicleRequestShiftDto): RequestChangeDto[] {
+  const parts = [dateOnly(s.date)];
+  if (s.startedAt && s.endedAt) parts.push(`${s.startedAt}–${s.endedAt}`);
+  parts.push(workedAmountLabel('hours', s.machineHours));
+  if (s.refuel) parts.push(s.refuel);
+  // Причина простоя — часть строки: без неё «0 ч» в истории читается как ошибка ввода.
+  if (s.machineHours === 0 && s.comment) parts.push(s.comment);
+  const diff = changeSet();
+  diff.listed('shift', [parts.join(' · ')]);
   return diff.changes;
 }
 

@@ -1,7 +1,7 @@
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { config } from '../config';
 import { db } from '../db/client';
-import { files, jobs, requestFiles, vehicleRequestFiles } from '../db/schema';
+import { files, jobs, requestFiles, vehicleRequestFiles, waybillFiles } from '../db/schema';
 import { err } from '../lib/errors';
 import { JOB_DELETE_S3_OBJECT } from '../lib/jobs';
 
@@ -14,12 +14,16 @@ type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 export const S3_DELETE_DELAY_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
- * fileId, уже привязанные к какой-либо заявке: вложение или талон заявки вывоза (request_files,
- * ADR 0024) либо вложение заявки на технику.
+ * fileId, уже куда-то привязанные: вложение или талон заявки вывоза (request_files, ADR 0024),
+ * вложение заявки на технику либо скан, подшитый к путевому листу (миграция 0087).
+ *
+ * Список таблиц обязан быть полным. Файл, прошедший мимо этой проверки, оказался бы привязан
+ * дважды — и удаление одной из записей унесло бы его у второй: скан заполненного бланка исчез бы
+ * из журнала строгой отчётности вместе с чужой заявкой.
  */
 async function linkedFileIds(tx: Tx, fileIds: string[]): Promise<Set<string>> {
   if (fileIds.length === 0) return new Set();
-  const [waste, vehicle] = await Promise.all([
+  const [waste, vehicle, waybill] = await Promise.all([
     tx
       .select({ fileId: requestFiles.fileId })
       .from(requestFiles)
@@ -28,8 +32,12 @@ async function linkedFileIds(tx: Tx, fileIds: string[]): Promise<Set<string>> {
       .select({ fileId: vehicleRequestFiles.fileId })
       .from(vehicleRequestFiles)
       .where(inArray(vehicleRequestFiles.fileId, fileIds)),
+    tx
+      .select({ fileId: waybillFiles.fileId })
+      .from(waybillFiles)
+      .where(inArray(waybillFiles.fileId, fileIds)),
   ]);
-  return new Set([...waste, ...vehicle].map((r) => r.fileId));
+  return new Set([...waste, ...vehicle, ...waybill].map((r) => r.fileId));
 }
 
 /**

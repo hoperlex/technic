@@ -28,6 +28,11 @@ const AUDIT_ACTIONS = [
   'vehicle_request.early_end_approve',
   'vehicle_request.early_end_reject',
   'vehicle_request.early_end_cancel',
+  // Подтверждение смены объектом и снятие подписи: «кто принял 11,5 машиночаса за 12 августа» —
+  // вопрос, который задают при разборе счёта через два месяца, и отвечать на него должна история,
+  // а не текущее состояние строки. Заполнение часов события не пишет: это черновик данных.
+  'vehicle_request.shift_approve',
+  'vehicle_request.shift_revoke',
   'vehicle_request.soft_delete',
   'vehicle_request.restore',
 ] as const;
@@ -48,6 +53,8 @@ const AUDIT_KINDS: Record<string, RequestHistoryKind> = {
   // Снятие запроса — не отказ: его снимает правка срока, закрытие заявки или сам инициатор,
   // и решения по существу за ним не стоит.
   'vehicle_request.early_end_cancel': 'earlyEndCancelled',
+  'vehicle_request.shift_approve': 'shiftApproved',
+  'vehicle_request.shift_revoke': 'shiftApprovalRevoked',
   'vehicle_request.soft_delete': 'deleted',
   'vehicle_request.restore': 'restored',
 };

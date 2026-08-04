@@ -347,6 +347,9 @@ async function collectSnapshot(
     // У отдела адреса нет: он не площадка, и маршрут задан адресами погрузки и разгрузки.
     customer_name: request?.objectName ?? request?.departmentName ?? '',
     customer_address: request?.objectAddress ?? '',
+    // Телефон ответственного — графа ЭСМ-2: там машина стоит на объекте неделю, и звонят туда. У
+    // рейса контакты свои на каждом конце маршрута, и в бланк они не печатаются.
+    customer_phone: '',
     task_from: params.relocation ? params.relocation.from : (request?.loading ?? ''),
     task_to: params.relocation ? params.relocation.to : (request?.unloading ?? ''),
     // У перегона груза нет — графа остаётся пустой, как одометр и движение горючего.
@@ -367,6 +370,35 @@ async function collectSnapshot(
     task4_from: slot(2).from,
     task4_to: slot(2).to,
     task4_cargo: slot(2).cargo,
+
+    /*
+     * Графы ЭСМ-2 (миграция 0087) в листе на рейс пустые — и это не заглушки, а разные документы.
+     * Неделя работы машины на площадке не знает ни рейса, ни груза; лист на рейс не знает ни
+     * периода, ни семи дней, ни кода объекта затрат. Набор ключей у снимка один на все бланки —
+     * им тест сверяет разметку, — и «нет такой графы» выражается пустой строкой.
+     */
+    waybill_date_dd: '',
+    waybill_date_mm: '',
+    waybill_date_yyyy: '',
+    object_code: '',
+    period_from_day: '',
+    period_to_day: '',
+    period_month: '',
+    period_year: '',
+    day1_date: '',
+    day2_date: '',
+    day3_date: '',
+    day4_date: '',
+    day5_date: '',
+    day6_date: '',
+    day7_date: '',
+    day1_object: '',
+    day2_object: '',
+    day3_object: '',
+    day4_object: '',
+    day5_object: '',
+    day6_object: '',
+    day7_object: '',
   };
 }
 

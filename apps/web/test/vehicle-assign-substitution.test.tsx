@@ -4,7 +4,7 @@ import type { VehicleDto } from '@technic/contracts';
 import { json, mockHttp } from './http';
 import { renderWithUser } from './render';
 import { list } from './factories/common';
-import { vehicleRequest } from './factories/vehicle';
+import { machinist, vehicleRequest } from './factories/vehicle';
 import { VehicleAssignModal } from '../src/pages/vehicle/VehicleAssignModal';
 
 /**
@@ -89,6 +89,9 @@ const CRANE_UNKNOWN: VehicleDto = {
   pricePerShift: 42000,
 };
 
+/** Машинист: на него выписываются недельные листы ЭСМ-2, и без него заявку в работу не берут. */
+const MACHINIST = machinist();
+
 /** Заказан 130-тонник: с этой позицией классификатора и сверяется выбранная машина. */
 const REQUEST = vehicleRequest({
   vehicleTypeId: 'type-crane',
@@ -129,6 +132,9 @@ function renderModal(selected?: VehicleDto, onSubmit: (v: unknown) => void = () 
   // сервера, а того, кто читает ответ, и проверяется это здесь же, по ушедшему запросу.
   const http = mockHttp({
     'GET /vehicles': () => json(list([CRANE_130, CRANE_25, MOBILE_CRANE_200, CRANE_UNKNOWN])),
+    // Машинист заказа техники на объект: на него выписываются недельные листы ЭСМ-2 (миграция
+    // 0087). Список — весь справочник водителей, без отбора по документам и без привязки к машине.
+    'GET /drivers': () => json(list([MACHINIST])),
   });
   renderWithUser(
     <VehicleAssignModal
@@ -156,6 +162,24 @@ async function openVehicleList(): Promise<string[]> {
     expect(items.length).toBeGreaterThan(0);
     return items;
   });
+}
+
+/**
+ * Машинист — обязательное поле заказа техники на объект: на него выписываются недельные листы
+ * ЭСМ-2 (миграция 0087), и без него заявка в работу не уходит. К подбору техники отношения не
+ * имеет, но без него не проверить, что предупреждение о расхождении ничего не блокирует.
+ */
+async function chooseMachinist(): Promise<void> {
+  const field = document.querySelector('#machinistId')!.closest('.ant-select')!;
+  fireEvent.mouseDown(field.querySelector('.ant-select-selector') ?? field);
+  const option = await waitFor(() => {
+    const found = [...document.querySelectorAll('.ant-select-item-option')].find((o) =>
+      (o.textContent ?? '').includes(MACHINIST.fullName),
+    );
+    expect(found).toBeDefined();
+    return found!;
+  });
+  fireEvent.click(option);
 }
 
 describe('подбор техники по виду, расхождение — предупреждением', () => {
@@ -209,6 +233,7 @@ describe('подбор техники по виду, расхождение — 
     expect(screen.getByText(/Заказано «Автокраны, г\/п 130 т»/)).toBeDefined();
 
     // Предупреждение ничего не блокирует: заявка уходит в работу с выбранной машиной.
+    await chooseMachinist();
     fireEvent.click(screen.getByText('Взять в работу'));
     await waitFor(() => expect(onSubmit).toHaveBeenCalled());
     const body = onSubmit.mock.calls[0]![0] as { assignment: { vehicleId: string } };

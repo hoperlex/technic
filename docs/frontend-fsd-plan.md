@@ -64,33 +64,33 @@ src/
 
 ### 2.1 Карта переездов
 
-| Сейчас                                                                                                                                                                                                                          | Куда                                                                                                                                  |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `components/DataTable, FormModal, ViewModal, ActionSheet, FilterSheet, SortSheet, ListToolbar, PageTableLayout, PageTabs, SummaryBar, Fab, AutoSelect, TimeInput, PasswordField, CaptchaField, FormGrid, columns, listControls` | `shared/ui/*`                                                                                                                         |
-| `components/PersonNameFields, AddressAutoComplete`                                                                                                                                                                              | `shared/ui/*` (общие поля формы; `AddressAutoComplete` использует `entities`-независимый api DaData)                                  |
-| `hooks/useIsMobile, useElementSize, useListParams, useSoleOptionAutoSelect, useVersionCheck`                                                                                                                                    | `shared/lib/*`                                                                                                                        |
-| `utils/format, date, table, formErrors, selectOptions, avatar`                                                                                                                                                                  | `shared/lib/*`                                                                                                                        |
-| `api/client.ts`                                                                                                                                                                                                                 | `shared/api/http.ts` + `shared/api/session.ts`                                                                                        |
-| `api/dadata.ts`                                                                                                                                                                                                                 | `shared/api/dadata.ts` (внешний сервис, не сущность портала)                                                                          |
-| `api/auth.ts`                                                                                                                                                                                                                   | `entities/session/api` (логин, `me`, смена пароля) — потребитель `shared/api/session`                                                 |
-| — (новое)                                                                                                                                                                                                                       | `shared/api/createQueryKeys.ts` (generic-фабрика), `shared/config/{files,pagination,time,query}.ts`                                   |
-| `api/resources.ts`                                                                                                                                                                                                              | `entities/<сущность>/api/*.ts` — по сущности на слайс, **ключи там же** (`entities/<e>/api/keys.ts`)                                  |
-| `components/FileLinks`                                                                                                                                                                                                          | `entities/file/ui`                                                                                                                    |
-| `components/RequestHistory`                                                                                                                                                                                                     | `entities/request/ui`                                                                                                                 |
-| `components/UserAvatar`, `components/ResponsibleFields`                                                                                                                                                                         | `entities/user/ui`, `entities/request/ui`                                                                                             |
-| `components/WasteVehiclesEditor`                                                                                                                                                                                                | `features/waste-request-complete/ui`                                                                                                  |
-| `components/AppLayout, MobileAppBar, MobileNav, PortalLogo, AppUpdateBanner`                                                                                                                                                    | `widgets/app-layout/*` (навигация зависит от прав — это виджет, не ui-kit)                                                            |
-| `hooks/useObjectScope`, будущий scope-хук отделов                                                                                                                                                                               | `entities/user/model` (область учётки — свойство пользователя)                                                                        |
-| `hooks/useVehicleClassifications`                                                                                                                                                                                               | `entities/vehicle-type/model`                                                                                                         |
-| `pages/vehicle/shared.tsx`                                                                                                                                                                                                      | разбирается: ячейки → `entities/vehicle-request/ui`, опции объектов → `entities/object/api`, редактор файлов → `features/file-attach` |
-| формы и модалки из страниц (`WasteDoneModal`, `VehicleAssignModal`, `VehicleCompleteModal`, `CancelReasonModal`, редакторы заявок, печать бланка)                                                                               | `features/<сценарий>/ui`                                                                                                              |
-| списки с фильтрами и колонками (`RequestsTab`, `VehicleRequestsTab`, `*HistoryTab`, `OnSiteTab`, `FreightTransportRequestsTab`, вкладки справочников)                                                                           | `widgets/<список>`                                                                                                                    |
-| `pages/*Page.tsx`                                                                                                                                                                                                               | `pages/*` — остаются, худеют до вкладок и композиции                                                                                  |
-| `auth/AuthContext, ProtectedRoute`, `App.tsx`, `main.tsx`, `theme.ts`, `styles.css`                                                                                                                                             | `app/*` (`AuthContext` — адаптер над `shared/api/session`)                                                                            |
+| Сейчас                                                                                                                                                                        | Куда                                                                                                                                                                    |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `components/DataTable, FormModal, ViewModal, ActionSheet, FilterSheet, SortSheet, ListToolbar, PageTableLayout, SummaryBar, Fab, AutoSelect, FormGrid, columns, listControls` | `shared/ui/*` (этап 1 — только то, что не знает правил портала)                                                                                                         |
+| `components/PersonNameFields, PasswordField, PhoneField, UserAvatar`                                                                                                          | `entities/user/ui` — знают правила ФИО, пароля и контакта из контрактов                                                                                                 |
+| `hooks/useIsMobile, useElementSize, useListParams, useSoleOptionAutoSelect, useVersionCheck`                                                                                  | `shared/lib/*` (+ протокол таблицы `TableChange` — туда же)                                                                                                             |
+| `utils/table, selectOptions, avatar`                                                                                                                                          | `shared/lib/*` (этап 1)                                                                                                                                                 |
+| `api/client.ts`                                                                                                                                                               | `shared/api/http.ts` + `shared/api/session.ts`                                                                                                                          |
+| `api/dadata.ts`                                                                                                                                                               | `shared/api/dadata.ts` (внешний сервис, не сущность портала)                                                                                                            |
+| `api/auth.ts`                                                                                                                                                                 | `entities/session/api` (логин, `me`, смена пароля) — потребитель `shared/api/session`                                                                                   |
+| — (новое)                                                                                                                                                                     | `shared/api/createQueryKeys.ts` (generic-фабрика), `shared/config/{files,pagination,time,query}.ts`                                                                     |
+| `api/resources.ts`                                                                                                                                                            | `entities/<сущность>/api/*.ts` — по сущности на слайс, **ключи там же** (`entities/<e>/api/keys.ts`)                                                                    |
+| `components/FileLinks`                                                                                                                                                        | `entities/file/ui`                                                                                                                                                      |
+| `components/RequestHistory, ResponsibleFields, TimeInput` (правило рабочего окна), `utils/format` (словарь полей), `utils/date` (правило даты заявки), `utils/formErrors`     | `entities/request` — доменная половина; generic-ядро `format`/`date` уходит в `shared/lib` тем же этапом 2                                                              |
+| `components/AddressAutoComplete`                                                                                                                                              | `entities/address` целиком: поле собирает доменный `AddressMeta`, и расщеплять его не на что                                                                            |
+| `components/WasteVehiclesEditor`                                                                                                                                              | `features/waste-request-complete/ui`                                                                                                                                    |
+| `components/AppLayout, MobileAppBar, MobileNav, PortalLogo, AppUpdateBanner, PageTabs`                                                                                        | `widgets/app-layout/*` (навигация зависит от прав; `PageTabs` инвалидирует кэш раздела — это не ui-kit)                                                                 |
+| `hooks/useObjectScope`, `useDepartmentScope`                                                                                                                                  | расщепляются: чистые `objectScopeOf(user)`/`departmentScopeOf(user)` → `entities/user/model`, React-обёртки остаются выше, пока `AuthContext` не уедет в `app` (этап 4) |
+| `hooks/useVehicleClassifications`                                                                                                                                             | `entities/vehicle-type/model`                                                                                                                                           |
+| `pages/vehicle/shared.tsx`                                                                                                                                                    | разбирается: ячейки → `entities/vehicle-request/ui`, опции объектов → `entities/object/api`, редактор файлов → `features/file-attach`                                   |
+| формы и модалки из страниц (`WasteDoneModal`, `VehicleAssignModal`, `VehicleCompleteModal`, `CancelReasonModal`, редакторы заявок, печать бланка)                             | `features/<сценарий>/ui`                                                                                                                                                |
+| списки с фильтрами и колонками (`RequestsTab`, `VehicleRequestsTab`, `*HistoryTab`, `OnSiteTab`, `FreightTransportRequestsTab`, вкладки справочников)                         | `widgets/<список>`                                                                                                                                                      |
+| `pages/*Page.tsx`                                                                                                                                                             | `pages/*` — остаются, худеют до вкладок и композиции                                                                                                                    |
+| `auth/AuthContext, ProtectedRoute`, `App.tsx`, `main.tsx`, `theme.ts`, `styles.css`                                                                                           | `app/*` (`AuthContext` — адаптер над `shared/api/session`)                                                                                                              |
 
 Именование слайсов — по домену, как в контрактах: `session`, `waste-request`, `vehicle-request`,
 `object`, `department`, `counterparty`, `container-type`, `waste-type`, `waste-tariff`, `vehicle`,
-`vehicle-type`, `vehicle-spec`, `driver`, `waybill`, `user`, `file`, `request` (общее для обоих
+`vehicle-type` (типы, виды, категории, ТТХ и классификатор — один справочник), `driver`, `waybill`, `vehicle-route`, `warehouse`, `user`, `file`, `address`, `request` (общее для обоих
 видов заявок: статусы, история).
 
 ### 2.2 Что сознательно остаётся в `pages`
@@ -254,17 +254,17 @@ export const objectOptionsQuery = ({ activeOnly = true } = {}) =>
 
 ## 4. Глобальные переменные и состояние
 
-| Что сейчас                                                    | Что делаем                                                                                                                             |
-| ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `let accessToken` + `let refreshing` в модуле `api/client.ts` | `shared/api/session.ts` — замкнутый стор: `getToken/setToken/subscribe/clear`; наружу переменная не торчит                             |
-| `let bootstrapPromise` в `AuthContext`                        | туда же (`session.bootstrap()`); `AuthContext` — тонкий адаптер на React                                                               |
-| `queryClient` создаётся в `main.tsx`                          | `app/providers/query.tsx` вместе с профилями `staleTime` (§5.1)                                                                        |
-| `dayjs.extend/locale/tz` побочным эффектом в `main.tsx`       | `shared/lib/dayjs.ts` — один импорт в `app`                                                                                            |
-| `MOSCOW_TZ` живёт в `theme.ts`                                | `shared/config/time.ts`                                                                                                                |
-| `FILE_MAX_SIZE`, `FILE_MAX_COUNT` в трёх файлах               | `shared/config/files.ts`                                                                                                               |
-| Размеры страниц (`100/200/500`, мобильные 50) в двух местах   | `shared/config/pagination.ts` — согласовано с `PAGE_SIZES` контрактов                                                                  |
-| `queryKey` строками в 24 файлах                               | ключи живут в `entities/<e>/api/keys.ts`; в `shared/api` — только generic-фабрика `createQueryKeys` (§2.1: `shared` не знает о доменe) |
-| ~280 инлайн-`style`                                           | токены в `:root` + классы для повторов; единичные инлайн-стили не трогаем (§6)                                                         |
+| Что сейчас                                                    | Что делаем                                                                                                                                                                                                                     |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `let accessToken` + `let refreshing` в модуле `api/client.ts` | `shared/api/session.ts`: `getToken`, `startSession`, `refresh` → `refreshed/expired/stale`, `expireIfCurrent(generation)`, `clear`, `onExpired` — поколение сверяется внутри сессии, а не договорённостью снаружи (этап 1, §4) |
+| `let bootstrapPromise` в `AuthContext`                        | **остаётся там**: bootstrap зовёт `authApi.me()`, то есть знает о пользователе, а `shared/api/session` о доменных ручках знать не должен (уточнено этапом 1)                                                                   |
+| `queryClient` создаётся в `main.tsx`                          | `app/providers/query.tsx` вместе с профилями `staleTime` (§5.1) — **этап 5**, вместе с самими профилями                                                                                                                        |
+| `dayjs.extend/locale/tz` побочным эффектом в `main.tsx`       | `shared/lib/dayjs.ts` — один импорт в `app`; **этап 1**, вместе с остальными модулями `lib`                                                                                                                                    |
+| `MOSCOW_TZ` живёт в `theme.ts`                                | `shared/config/time.ts`                                                                                                                                                                                                        |
+| `FILE_MAX_SIZE`, `FILE_MAX_COUNT` в трёх файлах               | `shared/config/files.ts`                                                                                                                                                                                                       |
+| Размеры страниц (`100/200/500`, мобильные 50) в двух местах   | `shared/config/pagination.ts` — согласовано с `PAGE_SIZES` контрактов                                                                                                                                                          |
+| `queryKey` строками в 24 файлах                               | ключи живут в `entities/<e>/api/keys.ts`; в `shared/api` — только generic-фабрика `createQueryKeys` (§2.1: `shared` не знает о доменe)                                                                                         |
+| ~280 инлайн-`style`                                           | токены в `:root` + классы для повторов; единичные инлайн-стили не трогаем (§6)                                                                                                                                                 |
 
 Отдельный стор состояния (Zustand/Redux) не вводим: серверные данные держит TanStack Query, доступ —
 `AuthContext`, режим устройства — `useIsMobile`.
@@ -286,8 +286,10 @@ export const objectOptionsQuery = ({ activeOnly = true } = {}) =>
 
 Сравнивается **не текущий `user`**, а отдельно хранимый `lastAuthenticatedUserId`: обработчик
 истечения сессии обнуляет `user`, и вход следующего пользователя сравнивался бы с `null` — кэш
-предыдущего остался бы жив. Реализация — подпиской в `app/providers/query.tsx` на события
-`shared/api/session`, чтобы `session` не зависел от TanStack Query.
+предыдущего остался бы жив. Очистка кэша остаётся **ответственностью `AuthContext`**: он и так
+подписан на события `shared/api/session` и держит пользователя, а `session` о TanStack Query не
+знает (этап 1, §4). В `app/providers/query.tsx` уезжает только создание клиента с профилями —
+этап 5.
 
 Тесты этапа 0 (обязательны, пишутся до переезда), оба — с настоящим `AuthProvider`:
 A → `logout` → B и A → истечение сессии → B. Во втором случае данные A не должны пережить вход B.
@@ -339,7 +341,15 @@ A → `logout` → B и A → истечение сессии → B. Во вто
 
 Инвалидировать только `lists()` и `summary()` недостаточно: у мутаций заявки шире след — история
 событий, карточка, срезы «на объекте», а перевод заказа техники в работу ещё и выписывает путевой
-лист (ADR 0037). Матрица составляется в этапе 2 и живёт рядом с `useCrudMutations`; черновик:
+лист (ADR 0037).
+
+Матрица живёт **рядом со своим сценарием**, а не внутри сущности: `entities/vehicle-request` не
+может ссылаться на ключи путевых листов, не импортируя соседа, — а строкой обходить собственные
+границы хуже, чем импортом. Сегодня владелец сценария — страница; по мере переезда им становится
+`useCrudMutations` (справочники, этап 3) и features заявок (этап 4).
+
+Полнота поэтому проверяется не разом: этап 2 даёт черновик и критические связи, этап 3 — полноту
+справочных сценариев, этап 4 — сценариев заявок. Общая полнота — приёмка после этапа 4. Черновик:
 
 | Мутация                                     | Инвалидируем                                                                                                                      |
 | ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
@@ -437,21 +447,22 @@ Batch-ручку справочников на API (`GET /dictionaries?for=...`)
 | Этап | Содержание                                                                                                                                                                                                                                                                                                                                                                                | Оценка  |
 | ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
 | 0    | **Подробно — [frontend-fsd-stage-0.md](frontend-fsd-stage-0.md).** Алиасы и плагины линта с фикстурами границ; HTTP-моки и общий рендер для тестов; 6 сценарных тестов + счётчик запросов первого экрана; перевод семи старых тестов с моков `resources`; точечные исправления (очистка кэша при смене учётки, `StatusCell` из тела компонента); baseline в `docs/reports/`; черновик ADR | 3 дня   |
-| 1    | `shared` + сессия: ui-kit, хуки, утилиты, `http`/`session`, `config/*`, `createQueryKeys`; вынос очистки кэша и generation token из `AuthContext` в `session` (сама очистка сделана в этапе 0); описание новых слоёв в `boundaries/elements`                                                                                                                                              | 1,5 дня |
-| 2    | `entities`: разбор `resources.ts` по слайсам (capability-фабрики §3.1), ключи и `queryOptions` с вариантами (§3.2), матрица инвалидаций (§5.4), доменные ячейки                                                                                                                                                                                                                           | 2,5 дня |
+| 1    | **Подробно — [frontend-fsd-stage-1.md](frontend-fsd-stage-1.md).** `shared`: транспорт и сессия (`http`/`session` с проверкой поколения), `config`, `lib`, 14 компонентов ui; границы сегментов и запрет deep import; кодмод импортов и заглушки. Очистка кэша остаётся ответственностью `AuthContext`                                                                                    | 1,5 дня |
+| 2    | **Подробно — [frontend-fsd-stage-2.md](frontend-fsd-stage-2.md).** `entities`: разрез `resources.ts` на 16 слайсов (+`session` из `auth.ts` = 17 с API, всего 19 со слайсами без API), ключи вместо 137 строковых литералов, `queryOptions` с вариантами, черновик матрицы инвалидаций, доменные поля и ячейки                                                                            | 4 дня   |
 | 3    | Справочные вкладки: `useResourceList`, `useCrudMutations`, единое описание фильтров                                                                                                                                                                                                                                                                                                       | 2 дня   |
 | 4    | `features` + `widgets` + `pages` для заявок (самые горячие файлы — последними)                                                                                                                                                                                                                                                                                                            | 3 дня   |
-| 5    | Запросы и рендер: профили, ленивость по §5.3, инвалидации по §5.4, дебаунс, `keepPreviousData`, `lazy`, мемоизация колонок (`StatusCell` вынесен в этапе 0)                                                                                                                                                                                                                               | 1,5 дня |
+| 5    | Запросы и рендер: профили, ленивость по §5.3, дебаунс, `keepPreviousData`, `lazy`, мемоизация колонок. Инвалидации здесь не трогаются: матрица описана в этапе 2, применена в этапах 3–4                                                                                                                                                                                                  | 1,5 дня |
 | 6    | Стили в объёме §6                                                                                                                                                                                                                                                                                                                                                                         | 0,5 дня |
 | 7    | Закрепление: границы как `error`, `max-lines`, удаление заглушек, обновление `README`/`docs`, ADR получает номер                                                                                                                                                                                                                                                                          | 0,5 дня |
 
-Чистая оценка — 14,5 дня. **С резервом 25–30 % — 18–19 дней**; резерв заложен на то, что оценка
+Чистая оценка — 16 дней (этап 2 пересчитан подробным планом: 2,5 → 4). **С резервом 25–30 % — 20–21 день**; резерв заложен на то, что оценка
 делалась по коду, который за время работ продолжает расти (за неделю до пересъёма метрик было на
 1 400 строк меньше).
 
 Ускорение (детали в §11.3): кодмоды сокращают механическую часть этапов 1–2 примерно втрое,
 параллельные субагенты по непересекающимся слайсам — ещё вдвое на этапах 0, 2, 3. Фундамент
-(этапы 0–2 + 5) при этом укладывается в 3–4 дня вместо 7,5.
+(этапы 0–2 + 5) — это 10 дней чистой работы после пересчёта этапа 2; с кодмодами и параллелью он
+укладывается примерно в 5–6 дней.
 
 ## 8. Критерии приёмки
 
@@ -469,7 +480,8 @@ Batch-ручку справочников на API (`GET /dictionaries?for=...`)
    10 минут не порождает повторный `GET /objects` (проверяется по Network; формулировка «один раз
    за сессию» заменена на «в пределах окна `staleTime`»).
 5. **Инвалидации.** Для каждой мутации из матрицы §5.4 сценарий «изменить → перейти на ранее
-   посещённую вкладку» показывает свежие данные.
+   посещённую вкладку» показывает свежие данные. Проверяется по мере сборки мутаций: справочные
+   сценарии — после этапа 3, сценарии заявок — после этапа 4.
 6. **Поиск.** Ввод «М-128» в фильтр номера порождает один сетевой запрос, а не четыре.
 7. **Бандл.** Начальный JS для маршрута `/waste` (gzip, отчёт `vite build`) уменьшается не менее
    чем вдвое относительно замера этапа 0; замер фиксируется в `docs/` числом.
@@ -558,7 +570,7 @@ Batch-ручку справочников на API (`GET /dictionaries?for=...`)
 
 ### 11.2 Почему не долгая ветка
 
-Ветка жила бы 14,5 рабочих дня, сверок — 7; между сверками на `main` накапливается ~23 коммита,
+Ветка жила бы 16 рабочих дней, сверок — 7; между сверками на `main` накапливается ~23 коммита,
 ~95 файло-правок, ~5 500 строк. Переехавший без изменений файл git разводит сам (rename detection),
 но разрезанный на модули (`WasteRequestsPage` 1588 строк → ~10 файлов) приходит конфликтом
 «изменён здесь / удалён там», и правку нужно вручную раскладывать по новым модулям: 25–35 переносов
@@ -566,8 +578,8 @@ Batch-ручку справочников на API (`GET /dictionaries?for=...`)
 
 | Схема                                  | Чистая работа | Накладные   | Итого         |
 | -------------------------------------- | ------------- | ----------- | ------------- |
-| Долгая ветка со сверками между этапами | 14,5 дня      | 6–14 дней   | 20,5–28,5 дня |
-| Короткие ветки по этапам               | 14,5 дня      | 0,5–1,5 дня | 15–16 дней    |
+| Долгая ветка со сверками между этапами | 16 дней       | 6–14 дней   | 22–30 дней    |
+| Короткие ветки по этапам               | 16 дней       | 0,5–1,5 дня | 16,5–17,5 дня |
 
 Точка безубыточности долгой ветки — когда параллельный поток трогает менее 10–15 % разрезаемых
 файлов; здесь это 90 % за два дня. Отдельный риск, не измеряемый днями: при ручном переносе 95

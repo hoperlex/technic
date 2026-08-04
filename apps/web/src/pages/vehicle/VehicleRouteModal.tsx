@@ -10,7 +10,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   canIssueWaybill,
   isRouteEditable,
-  isWaybillEditable,
+  canCancelWaybill,
   isRelocationPurpose,
   MAX_ROUTE_REQUESTS,
   routePurposeLabels,
@@ -220,7 +220,9 @@ export function VehicleRouteModal({ routeId, onClose, onChanged }: Props) {
   const waybillEditable =
     !!route?.waybill &&
     route.waybill.status === 'issued' &&
-    isWaybillEditable(route.waybill.issuedForDate, moscowDateKeyOf(new Date()));
+    // Лист рейса периода не имеет — граница у него по дню выезда (ЭСМ-2 сюда не попадает: у
+    // недели работы машины на площадке рейса нет вовсе).
+    canCancelWaybill(route.waybill, moscowDateKeyOf(new Date()));
 
   return (
     <ViewModal

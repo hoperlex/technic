@@ -1,5 +1,5 @@
 import { eq, sql } from 'drizzle-orm';
-import { waybillDisplayNumber } from '@technic/contracts';
+import { waybillDisplayNumber, type WaybillFormCode } from '@technic/contracts';
 import { db } from '../db/client';
 import { waybillSeries } from '../db/schema';
 
@@ -58,7 +58,24 @@ export async function takeNextNumber(tx: Tx, seriesId: string): Promise<IssuedNu
   };
 }
 
-/** Серия по коду — ею пользуется выдача, пока серия в портале одна («main»). */
+/**
+ * Какой серией нумеруется бланк (миграция 0087).
+ *
+ * Серий стало две. У ЭСМ-2 своя: заявка на месяц забирает пять номеров разом, а каждое досрочное
+ * завершение сжигает и выписывает ещё столько же — в общей серии журнал 4-П получал бы дыры от
+ * документов, которых в нём нет. Листы на рейс остаются в основной.
+ */
+const SERIES_BY_FORM: Record<WaybillFormCode, string> = {
+  '4p': 'main',
+  leg3: 'main',
+  esm2: 'esm2',
+};
+
+export function seriesCodeOfForm(formCode: WaybillFormCode): string {
+  return SERIES_BY_FORM[formCode];
+}
+
+/** Серия по коду — ею пользуется выдача, выбирая счётчик по бланку (`seriesCodeOfForm`). */
 export async function findSeriesByCode(code: string): Promise<{ id: string } | null> {
   const [row] = await db
     .select({ id: waybillSeries.id })

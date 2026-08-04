@@ -35,7 +35,9 @@ import {
   isAllowedRequestDate,
   isAllowedRequestDateAt,
   isWithinWorkTimeAt,
+  shiftDateKey,
 } from './time';
+import type { VehicleRequestShiftsSummaryDto } from './vehicle-request-shifts';
 
 /** Код вида ТС (`vehicle_kinds.code`), которым выполняют грузоперевозки. */
 export const FREIGHT_VEHICLE_KIND_CODE = 'freight_transport';
@@ -405,13 +407,6 @@ export const vehicleEarlyEndStatusColors: Record<VehicleEarlyEndStatus, string> 
   rejected: 'red',
 };
 
-/** Календарный ключ `YYYY-MM-DD`, сдвинутый на `days` суток (день считается как день, в UTC). */
-function shiftDateKey(dateKey: string, days: number): string {
-  const at = Date.parse(`${dateKey}T00:00:00Z`);
-  if (Number.isNaN(at)) return dateKey;
-  return new Date(at + days * 86_400_000).toISOString().slice(0, 10);
-}
-
 /**
  * Почему заявку нельзя завершить досрочно — текстом, либо `null`, если можно. Одна функция на
  * портал и API: сервер отвечает этой строкой (422), портал ею же объясняет недоступный пункт
@@ -642,6 +637,17 @@ export const assignVehicleSchema = z
      */
     route: assignRouteSchema.optional(),
     /**
+     * Машинист заказа техники на объект: на него выписываются недельные листы ЭСМ-2, и без него
+     * бланк недействителен. Обязателен там, где эти листы выписываются (собственная техника на
+     * объект); решает это сервер — вид заявки и принадлежность машины видит он.
+     *
+     * Отбор у машиниста свой и никакой: в бланке нет ни СНИЛС, ни водительского удостоверения —
+     * экскаваторщик работает по удостоверению тракториста-машиниста, которого портал не ведёт
+     * (ADR 0055). Поэтому годится любой действующий водитель справочника, и `selectDrivers`,
+     * отсеивающий людей без документов рейса, здесь не при чём.
+     */
+    driverPersonId: uuidSchema.optional(),
+    /**
      * Перегон техники на объект — по желанию (миграция 0082). Спецтехника доезжает до площадки
      * по городу своим ходом, и на эту поездку выписывается 4-П; повезут её тралом — листа не
      * будет, и портал об этом не спрашивает.
@@ -668,8 +674,13 @@ export function canReassignVehicle(request: {
   status: RequestStatus;
   assignment: VehicleRequestAssignmentDto | null;
   deletedAt: string | null;
+  /** Сводка смен; у грузоперевозки её не бывает — подтверждать там нечего. */
+  shifts?: VehicleRequestShiftsSummaryDto | null;
 }): boolean {
-  return request.status === 'confirmed' && !!request.assignment && !request.deletedAt;
+  if (request.status !== 'confirmed' || !request.assignment || request.deletedAt) return false;
+  // Подтверждённая смена запирает машину: за подписью объекта стоит работа конкретной техники,
+  // и подмена задним числом превратила бы её в подпись под чужими часами (`approvedShiftsBlocker`).
+  return (request.shifts?.approvedDays ?? 0) === 0;
 }
 
 /**
@@ -693,6 +704,12 @@ export const changeVehicleAssignmentSchema = z
      * реквизитами. Обязателен там же, где и при переводе в работу, — решает сервер.
      */
     route: assignRouteSchema.optional(),
+    /**
+     * Машинист новых листов ЭСМ-2. Не передан — берётся с прежнего листа заявки: меняли машину, а
+     * не человека. Требуется только там, где брать его неоткуда — заявку вели арендной техникой,
+     * и листов у неё не было вовсе.
+     */
+    driverPersonId: uuidSchema.optional(),
     version: z.number().int().nonnegative(),
   })
   .strict();
@@ -1005,6 +1022,12 @@ export interface VehicleOnSiteSummaryDto {
    * всё ещё «В работе» на весь заказанный срок.
    */
   earlyEndPending: number;
+  /**
+   * Сколько заявок среза ждёт согласования смен — то есть по скольким работа ещё не принята
+   * объектом. Цифра долга, а не сегодняшнего дня: пока она не ноль, эти заявки не закроются, и
+   * часть из них уже отработала свой срок.
+   */
+  shiftsPending: number;
 }
 
 /**
@@ -1014,13 +1037,17 @@ export interface VehicleOnSiteSummaryDto {
  * Пустая дата окончания — однодневный срок: тем же `coalesce(date_to, date_from)` сервер ищет
  * пересечение периодов, и подпись обязана читать срок так же, как отбор.
  */
-export type VehicleOnSitePresence = 'single' | 'arrives' | 'leaves' | 'ongoing';
+export type VehicleOnSitePresence = 'single' | 'arrives' | 'leaves' | 'ongoing' | 'awaiting';
 
 export function onSitePresence(
   r: { dateFrom: string; dateTo: string | null },
   onDate: string,
 ): VehicleOnSitePresence {
   const last = r.dateTo || r.dateFrom;
+  // Срок кончился, а строка в срезе осталась — держат её неподтверждённые смены: такая заявка не
+  // должна исчезать с экрана, на который смотрят каждое утро, и всплывать через месяц при
+  // попытке её закрыть. Сам отбор ведёт сервер, здесь только подпись.
+  if (last < onDate) return 'awaiting';
   const isFirst = r.dateFrom === onDate;
   if (isFirst && last === onDate) return 'single';
   if (isFirst) return 'arrives';
@@ -1032,6 +1059,7 @@ export const vehicleOnSitePresenceLabels: Record<VehicleOnSitePresence, string> 
   arrives: 'вышла сегодня',
   leaves: 'уезжает сегодня',
   ongoing: 'на объекте',
+  awaiting: 'смены не согласованы',
 };
 
 /** Цвет тега присутствия: выделены дни выхода и отъезда — по ним и планируют площадку. */
@@ -1040,6 +1068,9 @@ export const vehicleOnSitePresenceColors: Record<VehicleOnSitePresence, string> 
   arrives: 'blue',
   leaves: 'orange',
   ongoing: 'default',
+  // Красный, а не оранжевый: срок прошёл, техника уехала, а работа не принята — это не ожидание
+  // решения, а долг, из-за которого заявка не закроется.
+  awaiting: 'red',
 };
 
 /**
@@ -1279,6 +1310,13 @@ export interface SpecialEquipmentRequestDto extends VehicleRequestBaseDto {
    * не период, а момент подачи.
    */
   earlyEnd: VehicleRequestEarlyEndDto | null;
+  /**
+   * Сводка подтверждения смен: сколько дней принято объектом и сколько прошедших дней ещё ждёт
+   * подписи. Едет в каждой строке, потому что от неё зависят три правила сразу — закрытие
+   * заявки, смена машины и предупреждение в срезе «На объекте». Сами смены отдаёт отдельная
+   * ручка: в списке они не нужны, а в карточке их читают целиком.
+   */
+  shifts: VehicleRequestShiftsSummaryDto;
 }
 
 export interface FreightTransportRequestDto extends VehicleRequestBaseDto {
@@ -1353,4 +1391,8 @@ export const vehicleRequestChangeLabels: Record<string, string> = {
   // Одна подпись на три события: причину называют и в запросе, и в отказе, и при снятии — а что
   // именно произошло, сказано названием самого события.
   earlyEndReason: 'Причина',
+  // Подтверждение смен: событие несёт день и то, что за него приняли, — одной строкой
+  // («12.08 · 08:00–20:00 · 11,5 ч»). Заполнение часов события не пишет: это черновик данных,
+  // который правят по нескольку раз в день, а решение здесь — подпись объекта.
+  shift: 'Смена',
 };

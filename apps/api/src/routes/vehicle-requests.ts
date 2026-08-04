@@ -5,7 +5,6 @@ import {
   and,
   asc,
   count,
-  desc,
   eq,
   exists,
   gte,
@@ -61,6 +60,13 @@ import {
   type RequestStatus,
   requestVehicleEarlyEndSchema,
   type RequestWaybillDto,
+  approvedShiftsBlocker,
+  approveVehicleRequestShiftSchema,
+  saveVehicleRequestShiftSchema,
+  shiftDayBlocker,
+  shiftsCompletionBlocker,
+  type VehicleRequestShiftsDto,
+  type VehicleRequestShiftsSummaryDto,
   requestStatusLabels,
   setVehicleRequestApprovalSchema,
   type SpecialEquipmentRequestDto,
@@ -130,6 +136,7 @@ import {
   type RequestCustomer,
   assertVehicleRequestTypeAllowed,
   canApproveRequest,
+  assertShiftApprover,
   vehicleRequestVisibilityWhere,
   lessorVisibilityWhere,
 } from '../lib/access';
@@ -148,7 +155,19 @@ import {
   diffVehicleEarlyEnd,
   diffVehicleRequests,
   earlyEndReasonChange,
+  shiftChange,
 } from '../services/vehicle-request-diff';
+import {
+  deleteRequestShift,
+  dropRequestShifts,
+  hasUnapprovedPastShiftsSql,
+  loadRequestShift,
+  loadRequestShifts,
+  saveRequestShift,
+  setShiftApproval,
+  shiftSummaries,
+  unapprovedPastShiftDates,
+} from '../services/vehicle-request-shifts';
 import { loadVehicleRequestHistory } from '../services/vehicle-request-history';
 import { categorySpecsSql } from '../services/vehicle-categories';
 import {
@@ -174,6 +193,7 @@ import {
   waybillRequirementByType,
   waybillRequirementFor,
 } from '../services/waybill-issue';
+import { auditEsm2Sync, type Esm2SyncResult, syncEsm2Waybills } from '../services/waybill-esm2';
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -529,7 +549,11 @@ function toEarlyEndDto(r: RequestRow): VehicleRequestEarlyEndDto | null {
   };
 }
 
-function toDto(r: RequestRow, fileList: FileDto[]): VehicleRequestDto {
+function toDto(
+  r: RequestRow,
+  fileList: FileDto[],
+  shifts?: VehicleRequestShiftsSummaryDto,
+): VehicleRequestDto {
   const base = {
     id: r.id,
     num: r.num,
@@ -582,6 +606,9 @@ function toDto(r: RequestRow, fileList: FileDto[]): VehicleRequestDto {
       responsibleName: r.responsibleName ?? '',
       responsiblePhone: r.responsiblePhone ?? '',
       earlyEnd: toEarlyEndDto(r),
+      // Сводка смен: пустая пара нулей у заявки, по которой ещё ничего не подтверждали, — так же
+      // читается «долга нет». Считается запросом рядом с файлами (`toDtos`).
+      shifts: shifts ?? { approvedDays: 0, unapprovedPastDays: 0 },
     };
   }
   return {
@@ -602,11 +629,58 @@ function toDto(r: RequestRow, fileList: FileDto[]): VehicleRequestDto {
   };
 }
 
+/**
+ * Строки выборки в DTO: файлы и сводка смен подтягиваются к странице целиком — по запросу на
+ * список, а не по запросу на строку.
+ *
+ * День среза передаётся, когда вызывающий уже его вычислил (вкладка «На объекте»): сводка обязана
+ * считать «сколько дней прошло» по тому же дню, по которому отбирались строки, иначе список и
+ * подписи в нём отвечали бы про разные сутки.
+ */
+async function toDtos(rows: RequestRow[], onDate?: string): Promise<VehicleRequestDto[]> {
+  const [filesMap, shiftsMap] = await Promise.all([
+    filesByRequestIds(rows.map((r) => r.id)),
+    shiftSummaries(rows, onDate ?? moscowDateKeyOf(new Date())),
+  ]);
+  return rows.map((row) => toDto(row, filesMap.get(row.id) ?? [], shiftsMap.get(row.id)));
+}
+
 async function getDto(id: string): Promise<VehicleRequestDto | null> {
   const [row] = await baseQuery().where(eq(vehicleRequests.id, id));
   if (!row) return null;
-  const filesMap = await filesByRequestIds([id]);
-  return toDto(row, filesMap.get(id) ?? []);
+  const [dto] = await toDtos([row]);
+  return dto ?? null;
+}
+
+/** Адрес смены: заявка и день. Дата в теле не дублируется — второй ответ разошёлся бы с первым. */
+const shiftParams = z.object({ id: z.string().uuid(), date: dateOnlySchema });
+
+/**
+ * Заявка, у которой можно вести смену этого дня, — либо отказ той же строкой, какой портал
+ * объясняет неактивную строку таблицы (`shiftDayBlocker`): не спецтехника, не «В работе», архив,
+ * день вне срока или день ещё не наступил.
+ */
+async function requireShiftEditableRequest(
+  p: Principal,
+  id: string,
+  date: string,
+): Promise<SpecialEquipmentRequestDto> {
+  const request = await getDto(id);
+  if (!request || request.deletedAt) throw err.notFound('Заявка не найдена');
+  assertRequestScope(p, request);
+  const blocker = shiftDayBlocker(request, date, moscowDateKeyOf(new Date()));
+  if (blocker) throw err.unprocessable(blocker, { shiftDate: 'День недоступен' });
+  return request as SpecialEquipmentRequestDto;
+}
+
+/** Ответ маршрутов смены: таблица целиком и день среза — тем же составом, что отдаёт чтение. */
+async function shiftsResponse(
+  request: SpecialEquipmentRequestDto,
+): Promise<VehicleRequestShiftsDto> {
+  return {
+    items: await loadRequestShifts(request.id, request),
+    onDate: moscowDateKeyOf(new Date()),
+  };
 }
 
 async function assertObjectActive(tx: Tx, objectId: string): Promise<void> {
@@ -1165,10 +1239,29 @@ async function saveCompletion(
     });
 }
 
+/**
+ * Чем объясняется переписанная бумага в журнале бланков. Причина аннулирования обязательна
+ * (CHECK `waybills_cancel_reason_check`), и «сверка» ею не является: человек, открывший журнал,
+ * должен прочесть, что случилось с заявкой, а не что сработала функция.
+ */
+function esm2StatusReason(status: RequestStatus): string {
+  return `Заявка переведена в «${requestStatusLabels[status]}» — путевые листы переоформлены`;
+}
+
 /** Календарный ключ `YYYY-MM-DD` человеку: `24.07.2026`. Через JS Date он бы поехал на день. */
 function dateKeyRu(key: string): string {
   const [y, m, d] = key.split('-');
   return y && m && d ? `${d}.${m}.${y}` : key;
+}
+
+/** Максимум дат в перечне отказа: заявка бывает на месяц, и весь список в сообщение не влезет. */
+const MAX_LISTED_DATES = 5;
+
+/** Даты перечнем: «12.08.2026, 13.08.2026 и ещё 7». */
+function listDates(dates: string[]): string {
+  const head = dates.slice(0, MAX_LISTED_DATES).map(dateKeyRu).join(', ');
+  const rest = dates.length - MAX_LISTED_DATES;
+  return rest > 0 ? `${head} и ещё ${rest}` : head;
 }
 
 /**
@@ -1513,6 +1606,11 @@ function historyCountQuery() {
  * день `onDate`. Пересечение периодов считает тот же `specialDateConds`, что и фильтр списка, —
  * пустая дата окончания там и здесь означает одно и то же: `coalesce(date_to, date_from)`.
  *
+ * Второе условие — заявка, у которой срок уже прошёл, а дни работы не подтверждены: работа по ней
+ * не принята, закрыть её нельзя, и исчезать из единственного экрана, куда смотрят каждое утро,
+ * она не должна — иначе всплывёт через месяц, при попытке закрытия. В таблице такая строка
+ * помечается тегом присутствия `awaiting`.
+ *
  * Ни статуса, ни типа заявки, ни дат в фильтрах вкладки нет — они этот список определяют, а не
  * сужают. Границы видимости общие со списком: штаб и руководитель строительства видят свой объект,
  * а удалённые заявки не показываются никому — техники по ним на объекте нет.
@@ -1530,7 +1628,7 @@ function onSiteWhere(p: Principal, q: VehicleRequestOnSiteQuery, onDate: string)
     q.vehicleTypeId ? eq(vehicleRequests.vehicleTypeId, q.vehicleTypeId) : undefined,
     q.vehicleCategoryId ? eq(vehicleRequests.vehicleCategoryId, q.vehicleCategoryId) : undefined,
     q.num ? eq(vehicleRequests.num, q.num) : undefined,
-    ...specialDateConds(onDate, onDate),
+    or(and(...specialDateConds(onDate, onDate)), hasUnapprovedPastShiftsSql(onDate)),
     searchCondition(q.search, [
       vehicleRequests.comment,
       constructionObjects.name,
@@ -1633,9 +1731,8 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         eq(vehicleRequests.id, freightTransportRequestDetails.requestId),
       )
       .where(where);
-    const filesMap = await filesByRequestIds(rows.map((row) => row.id));
     return {
-      items: rows.map((row) => toDto(row, filesMap.get(row.id) ?? [])),
+      items: await toDtos(rows),
       total: Number(totalRow!.c),
       page: pg.page,
       pageSize: pg.pageSize,
@@ -1666,9 +1763,8 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         .limit(pg.limit)
         .offset(pg.offset);
       const [totalRow] = await historyCountQuery().where(where);
-      const filesMap = await filesByRequestIds(rows.map((row) => row.id));
       return {
-        items: rows.map((row) => toDto(row, filesMap.get(row.id) ?? [])),
+        items: await toDtos(rows),
         total: Number(totalRow!.c),
         page: pg.page,
         pageSize: pg.pageSize,
@@ -1756,15 +1852,15 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         .limit(pg.limit)
         .offset(pg.offset);
       const [totalRow] = await onSiteCountQuery().where(where);
-      const filesMap = await filesByRequestIds(rows.map((row) => row.id));
+      // День среза передаётся сводке смен: «сколько дней уже прошло» обязано считаться по тому же
+      // дню, по которому отбирались строки.
+      const items = await toDtos(rows, onDate);
       return {
         // Тип заявки задан условием отбора: сужение здесь ничего не отбрасывает, оно лишь
         // сообщает это типам — на объекте стоит спецтехника, а не грузоперевозка.
-        items: rows
-          .map((row) => toDto(row, filesMap.get(row.id) ?? []))
-          .filter(
-            (dto): dto is SpecialEquipmentRequestDto => dto.requestType === 'special_equipment',
-          ),
+        items: items.filter(
+          (dto): dto is SpecialEquipmentRequestDto => dto.requestType === 'special_equipment',
+        ),
         total: Number(totalRow!.c),
         page: pg.page,
         pageSize: pg.pageSize,
@@ -1796,6 +1892,9 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           // Досрочный отъезд (ADR 0044): по статусу заявки его не видно — она всё ещё «В работе»
           // на весь заказанный срок, а площадка освободится раньше, если визу поставят.
           earlyEndPending: sql<number>`count(*) FILTER (WHERE ${vehicleRequestEarlyEndings.status} = 'pending')`,
+          // Долг подписей: по скольким заявкам работа ещё не принята объектом. Пока цифра не
+          // ноль, эти заявки не закроются — а часть из них уже отработала свой срок.
+          shiftsPending: sql<number>`count(*) FILTER (WHERE ${hasUnapprovedPastShiftsSql(onDate)})`,
         })
         .from(vehicleRequests)
         // Отдел здесь не присоединяется: срез отбирает спецтехнику, а её заказывает только
@@ -1816,6 +1915,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         arrivedToday: Number(agg!.arrivedToday),
         leavingToday: Number(agg!.leavingToday),
         earlyEndPending: Number(agg!.earlyEndPending),
+        shiftsPending: Number(agg!.shiftsPending),
       } satisfies VehicleOnSiteSummaryDto;
     },
   );
@@ -2088,6 +2188,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
 
       const periodEdited = changesWorkPeriod(before, body);
       let earlyEndDropped = false;
+      let esm2: Esm2SyncResult = { cancelled: [], issued: [] };
 
       await db.transaction(async (tx) => {
         const customerChanged =
@@ -2218,7 +2319,17 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
 
         // Правка срока делает ожидающий визы запрос на досрочное завершение беспредметным:
         // он просил сократить другой период (ADR 0044).
-        if (periodEdited) earlyEndDropped = await clearPendingEarlyEnd(tx, id);
+        if (periodEdited) {
+          earlyEndDropped = await clearPendingEarlyEnd(tx, id);
+          // Продлённый срок добавляет недели, сдвинутое начало переписывает первую (миграция
+          // 0087). Сокращать срок работающей заявки правкой нельзя вовсе — на это есть досрочное
+          // завершение с визой, — так что здесь бумага чаще прибавляется, чем сгорает.
+          esm2 = await syncEsm2Waybills(tx, {
+            requestId: id,
+            actor: { id: p.id },
+            reason: 'Срок работ изменён правкой заявки — путевые листы переоформлены',
+          });
+        }
       });
 
       const after = (await getDto(id))!;
@@ -2252,6 +2363,12 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           metadata: { reason: 'edited', changes: earlyEndReasonChange('Срок заявки изменён') },
         });
       }
+      await auditEsm2Sync({
+        actorUserId: p.id,
+        requestId: id,
+        reason: 'period_edited',
+        result: esm2,
+      });
       return after;
     },
   );
@@ -2449,25 +2566,29 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
     },
   );
 
+  /**
+   * Путевые листы заявки — списком, а не одним (миграция 0087).
+   *
+   * У грузоперевозки лист по-прежнему один: рейс один. У заказа техники на объект их столько,
+   * сколько недель в сроке, — ЭСМ-2 выписывается на каждую, — и «показать лист заявки» перестало
+   * быть вопросом с единственным ответом.
+   *
+   * Аннулированные отдаются наравне с действующими и идут в конце: испорченный и переоформленный
+   * бланк остаётся частью истории заявки, а сгоревший номер должно быть видно там же, где выдан.
+   */
   r.get(
-    '/:id/waybill',
+    '/:id/waybills',
     {
       preHandler: [app.authenticate, app.requirePermission('waybills.read')],
       schema: { params: idParams },
     },
-    async (req): Promise<RequestWaybillDto | null> => {
+    async (req): Promise<RequestWaybillDto[]> => {
       const p = requirePrincipal(req);
       const request = await getDto(req.params.id);
       if (!request) throw err.notFound('Заявка не найдена');
       assertRequestScope(p, request);
 
-      /*
-       * Порядок задан явно, а не оставлен планировщику: «один действующий лист на рейс» не
-       * означает «один лист на заявку». Заявка, побывавшая в нескольких листах (её откатывали и
-       * брали в работу заново), обязана показывать действующий, а не какой придётся; если
-       * действующего нет — последний по дате и номеру.
-       */
-      const [row] = await db
+      const rows = await db
         .select({
           id: waybills.id,
           number: waybills.number,
@@ -2476,6 +2597,8 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           formCode: waybills.formCode,
           status: waybills.status,
           issuedForDate: waybills.issuedForDate,
+          periodFrom: waybills.periodFrom,
+          periodTo: waybills.periodTo,
           slot: waybillRequests.slot,
           driverName: persons.fullName,
           routeId: waybills.routeId,
@@ -2485,28 +2608,26 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         .innerJoin(waybills, eq(waybills.id, waybillRequests.waybillId))
         .innerJoin(waybillSeries, eq(waybillSeries.id, waybills.seriesId))
         .innerJoin(persons, eq(persons.id, waybills.driverPersonId))
-        // Рейс — leftJoin: у листов, выданных до маршрутов, его нет, пока история не перенесена.
+        // Рейс — leftJoin: у ЭСМ-2 его нет вовсе, а у листов, выданных до маршрутов, ещё нет.
         .leftJoin(vehicleRoutes, eq(vehicleRoutes.id, waybills.routeId))
         .where(eq(waybillRequests.requestId, request.id))
-        .orderBy(
-          sql`(${waybills.status} = 'cancelled')`,
-          desc(waybills.issuedForDate),
-          desc(waybills.number),
-        )
-        .limit(1);
-      if (!row) return null;
+        // Порядок задан явно, а не оставлен планировщику: действующие листы недели за неделей,
+        // аннулированные — следом.
+        .orderBy(sql`(${waybills.status} = 'cancelled')`, waybills.issuedForDate, waybills.number);
 
-      return {
+      return rows.map((row) => ({
         id: row.id,
         number: waybillDisplayNumber(row.prefix, row.number, row.numberWidth),
         formCode: row.formCode,
         status: row.status,
         issuedForDate: row.issuedForDate,
+        periodFrom: row.periodFrom,
+        periodTo: row.periodTo,
         slot: row.slot,
         driverName: row.driverName,
         routeId: row.routeId,
         routeNumber: row.routeNum === null ? null : formatVehicleRouteNumber(row.routeNum),
-      };
+      }));
     },
   );
 
@@ -2557,6 +2678,23 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           completion: 'Укажите отработанное время',
         });
       }
+      // Работу по дням принимает объект: пока за наступивший день никто не расписался, о его
+      // машиночасах ещё не договорились, и закрывать по ним заявку рано. Дни перечисляются в
+      // отказе — иначе непонятно, куда идти их подтверждать.
+      if (transitionRequiresCompletion(status)) {
+        const pendingShifts = shiftsCompletionBlocker(before);
+        if (pendingShifts) {
+          const special = before as SpecialEquipmentRequestDto;
+          const dates = await unapprovedPastShiftDates(
+            special.id,
+            special,
+            moscowDateKeyOf(new Date()),
+          );
+          throw err.unprocessable(`${pendingShifts}: ${listDates(dates)}`, {
+            shifts: 'Согласуйте смены',
+          });
+        }
+      }
       // Срок уточняют полями своего типа заявки: тип неизменяем, и «дата начала» у грузоперевозки
       // означала бы, что заявку подменили по дороге.
       if (schedule && schedule.requestType !== before.requestType) {
@@ -2573,12 +2711,23 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           { comment: 'Укажите причину' },
         );
       }
+      // Откат снимает назначение — и вместе с ним позволил бы поставить другую машину на дни,
+      // работу которых объект уже принял. Тот же запрет, что и у прямой смены техники: иначе он
+      // обходился бы в один шаг. Снятие подписи — отдельное видимое действие, и начинают с него.
+      if (resetsWork) {
+        const approvedShifts = approvedShiftsBlocker(before);
+        if (approvedShifts) {
+          throw err.unprocessable(
+            `${approvedShifts}: возврат в «${requestStatusLabels.new}» снимает технику, а согласованные дни — это работа именно её`,
+          );
+        }
+      }
 
       // Назначение, факт и уточнённый срок проверяются и пишутся в той же транзакции, что и статус:
       // заявка не должна побыть «в работе» ни на чём, «выполненной» без факта или взятой на одно
       // время с листом на другое — даже мгновение.
-      const { assigned, completed, earlyEndDropped, droppedRelocations } = await db.transaction(
-        async (tx) => {
+      const { assigned, completed, earlyEndDropped, droppedRelocations, esm2 } =
+        await db.transaction(async (tx) => {
           // Возврат в «Новую» не спорит с выданной бумагой: заявку, стоящую в действующем листе,
           // стереть с работы нельзя — она пошла бы в чей-то следующий рейс, и одна работа
           // оказалась бы сразу в двух документах (ADR 0050). Строка заявки при этом блокируется
@@ -2664,6 +2813,9 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
             await tx
               .delete(vehicleRequestCompletions)
               .where(eq(vehicleRequestCompletions.requestId, before.id));
+            // Дни работы уходят вместе с машиной: машины нет — нет и её смен. Подтверждённых
+            // среди них уже не бывает, с ними откат отклонён выше, — стираются черновики часов.
+            await dropRequestShifts(tx, before.id);
           }
           const [updated] = await tx
             .update(vehicleRequests)
@@ -2695,14 +2847,28 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
             before.status === 'confirmed' && status !== 'confirmed'
               ? await clearPendingEarlyEnd(tx, before.id)
               : false;
+          /*
+           * Путевые листы ЭСМ-2 (миграция 0087) — после смены статуса, а не до: сверка читает
+           * заявку из базы, и на прежнем статусе она посчитала бы не тот набор недель.
+           *
+           * Переводом в работу листы рождаются на все недели срока; отменой и возвратом в «Новую»
+           * аннулируются вместе с работой. Закрытие срока не меняет и потому ничего не трогает —
+           * сверка на нём молчит сама, отдельного условия для этого не нужно.
+           */
+          const esm2 = await syncEsm2Waybills(tx, {
+            requestId: before.id,
+            actor: { id: p.id },
+            reason: esm2StatusReason(status),
+            driverPersonId: assignment?.driverPersonId ?? null,
+          });
           return {
             assigned: saved,
             completed: closed,
             earlyEndDropped: droppedEarlyEnd,
             droppedRelocations,
+            esm2,
           };
-        },
-      );
+        });
       await writeAudit({
         actorUserId: p.id,
         action: 'vehicle_request.status',
@@ -2718,6 +2884,10 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           // Сброс отмечается и в самом переходе: по журналу должно быть видно, что заявка не
           // просто вернулась в «Новую», а лишилась всего, чем её собирались выполнять.
           ...(resetsWork ? { reset: true } : {}),
+          // Выписанные и сгоревшие номера — тем же событием: бланки строгой отчётности изменились
+          // не сами по себе, а сменой статуса заявки.
+          ...(esm2.issued.length > 0 ? { esm2Issued: esm2.issued } : {}),
+          ...(esm2.cancelled.length > 0 ? { esm2Cancelled: esm2.cancelled } : {}),
         },
       });
       // Назначение — отдельное событие истории: «в работе» и «на такой-то машине по такой-то
@@ -2774,6 +2944,12 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           entityId: before.id,
         });
       }
+      await auditEsm2Sync({
+        actorUserId: p.id,
+        requestId: before.id,
+        reason: `status:${status}`,
+        result: esm2,
+      });
       const after = (await getDto(before.id))!;
       // Уточнённый срок — событие правки, а не назначения: заказывали на одно время, вышли на
       // другое, и в истории это читается теми же строками «было → стало», что и обычная правка
@@ -2818,8 +2994,17 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       // решение: сменить машину он мог бы только на свою, а вместе с ней и исполнителя заявки.
       assertLessorScope(p, before.assignment?.lessorId ?? null);
       // Предикат общий с порталом (`canReassignVehicle`): у «Новой» машину назначает сам перевод
-      // в работу, у закрытой и отменённой менять нечего — там это уже история.
+      // в работу, у закрытой и отменённой менять нечего — там это уже история, а у заявки с
+      // принятыми днями работы подмена машины переписала бы задним числом то, под чем стоит
+      // подпись объекта.
       if (!canReassignVehicle(before)) {
+        const approvedShifts = approvedShiftsBlocker(before);
+        if (approvedShifts) {
+          throw err.unprocessable(
+            `${approvedShifts}: подтверждённые дни — это работа нынешней машины`,
+            { vehicleId: 'Есть согласованные смены' },
+          );
+        }
         throw err.unprocessable(
           before.status === 'confirmed'
             ? 'У заявки нет назначенной техники — её назначает перевод в работу'
@@ -2828,6 +3013,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         );
       }
 
+      let esm2: Esm2SyncResult = { cancelled: [], issued: [] };
       const assigned = await db.transaction(async (tx) => {
         const saved = await resolveAssignment(
           tx,
@@ -2853,9 +3039,24 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           .where(and(eq(vehicleRequests.id, before.id), eq(vehicleRequests.version, version)))
           .returning({ id: vehicleRequests.id });
         if (!updated) throw err.conflict();
+        // В бланке ЭСМ-2 напечатана машина — сменив её, лист исправить нельзя, можно только
+        // выписать заново (миграция 0087). Машинист при этом наследуется с прежнего листа: меняли
+        // технику, а не человека, — если только его не назвали прямо в этом же запросе.
+        esm2 = await syncEsm2Waybills(tx, {
+          requestId: before.id,
+          actor: { id: p.id },
+          reason: 'Заявке назначена другая техника — путевые листы переоформлены',
+          driverPersonId: rates.driverPersonId ?? null,
+        });
         return saved;
       });
 
+      await auditEsm2Sync({
+        actorUserId: p.id,
+        requestId: before.id,
+        reason: 'vehicle_changed',
+        result: esm2,
+      });
       // То же событие истории, что и у назначения при переводе в работу (ADR 0027 п. 9): вопрос
       // «чем и почём выполняют заявку» один, и ответ на него читается одной строкой «было → стало»
       // независимо от того, каким действием машину поменяли.
@@ -2913,6 +3114,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
 
       const auto = approvesOwnRequestOnCreate(p, before);
       const previousDateTo = special.dateTo!;
+      let esm2: Esm2SyncResult = { cancelled: [], issued: [] };
       await db.transaction(async (tx) => {
         const values = {
           // Своя виза не нужна тому, кто её и ставит: запрос сразу записывается согласованным.
@@ -2935,7 +3137,17 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
             target: vehicleRequestEarlyEndings.requestId,
             set: { ...values, updatedAt: new Date() },
           });
-        if (auto) await applyEarlyEnd(tx, before.id, newDateTo);
+        if (auto) {
+          await applyEarlyEnd(tx, before.id, newDateTo);
+          // Сокращённый срок переписывает бумагу той же транзакцией (миграция 0087): недели за
+          // новой датой аннулируются, а текущая — аннулируется и выписывается заново, с днями по
+          // новый последний день включительно. Отработанные недели сверка не трогает.
+          esm2 = await syncEsm2Waybills(tx, {
+            requestId: before.id,
+            actor: { id: p.id },
+            reason: `Срок заявки сокращён до ${dateKeyRu(newDateTo)} — путевые листы переоформлены`,
+          });
+        }
         // Версию поднимает и запрос: он меняет то, что показывает карточка заявки, и второй
         // человек, правящий её с прежней версией, должен получить конфликт, а не тихую перезапись.
         const [updated] = await tx
@@ -2969,6 +3181,12 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           metadata: { auto: true, changes: diffVehicleRequests(before, after) },
         });
       }
+      await auditEsm2Sync({
+        actorUserId: p.id,
+        requestId: before.id,
+        reason: 'early_end',
+        result: esm2,
+      });
       return after;
     },
   );
@@ -3001,6 +3219,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           ? before.earlyEnd
           : null;
       if (!pending) throw err.unprocessable('Запрос на досрочное завершение не найден');
+      let esm2: Esm2SyncResult = { cancelled: [], issued: [] };
 
       if (approved) {
         const onDate = moscowDateKeyOf(new Date());
@@ -3025,8 +3244,17 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           })
           .where(eq(vehicleRequestEarlyEndings.requestId, before.id));
         // Срок сокращается той же транзакцией, что и виза: состояния «согласовано, а срок
-        // прежний» не бывает — по нему считают и площадку, и аренду.
-        if (approved) await applyEarlyEnd(tx, before.id, pending.newDateTo);
+        // прежний» не бывает — по нему считают и площадку, и аренду. Той же транзакцией
+        // переписываются путевые листы (миграция 0087): бумага, утверждающая работу, которой не
+        // будет, не должна пережить визу даже на мгновение.
+        if (approved) {
+          await applyEarlyEnd(tx, before.id, pending.newDateTo);
+          esm2 = await syncEsm2Waybills(tx, {
+            requestId: before.id,
+            actor: { id: p.id },
+            reason: `Срок заявки сокращён до ${dateKeyRu(pending.newDateTo)} — путевые листы переоформлены`,
+          });
+        }
         const [updated] = await tx
           .update(vehicleRequests)
           .set({ updatedBy: p.id, version: before.version + 1, updatedAt: new Date() })
@@ -3046,6 +3274,12 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         metadata: approved
           ? { changes: diffVehicleRequests(before, after) }
           : { changes: earlyEndReasonChange(comment) },
+      });
+      await auditEsm2Sync({
+        actorUserId: p.id,
+        requestId: before.id,
+        reason: 'early_end',
+        result: esm2,
       });
       return after;
     },
@@ -3089,6 +3323,140 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
     });
     return (await getDto(before.id))!;
   });
+
+  // ── Подтверждение смен по заказу спецтехники ──
+  // Техника стоит на объекте неделями, а работа считается по дням: за каждый день заказа — время
+  // смены, машиночасы, заправка и подпись объекта. Без подписи по всем наступившим дням заявка не
+  // закрывается, а сама она не уходит из среза «На объекте», даже когда срок уже прошёл.
+
+  /**
+   * Таблица смен заявки: дни заказа целиком, включая те, за которые ещё ничего не внесли.
+   *
+   * День среза считает сервер и отдаёт в `onDate` — тем же порядком, что и вкладка «На объекте»
+   * (ADR 0036): по нему портал решает, какие строки ещё в будущем и потому неактивны.
+   */
+  r.get('/:id/shifts', { ...auth, schema: { params: idParams } }, async (req) => {
+    const p = requirePrincipal(req);
+    const request = await getDto(req.params.id);
+    if (!request) throw err.notFound('Заявка не найдена');
+    assertArchiveVisible(p, request.deletedAt, 'Заявка не найдена');
+    assertRequestScope(p, request);
+    assertLessorScope(p, request.assignment?.lessorId ?? null);
+    const onDate = moscowDateKeyOf(new Date());
+    // У грузоперевозки смен нет вовсе: у неё не период работ, а момент подачи. Пустая таблица, а
+    // не 422 — карточка спрашивает смены у любой заявки, и отказ ей пришлось бы обходить.
+    if (request.requestType !== 'special_equipment') {
+      return { items: [], onDate } satisfies VehicleRequestShiftsDto;
+    }
+    return {
+      items: await loadRequestShifts(request.id, request),
+      onDate,
+    } satisfies VehicleRequestShiftsDto;
+  });
+
+  /**
+   * Записать смену дня: время, машиночасы, заправку и комментарий. Первое заполнение заводит
+   * строку, повторное её переписывает — заготовок на весь период нет намеренно (иначе пустую
+   * заготовку было бы не отличить от «день не заполнили», а на этом различии держатся и запрет
+   * закрытия, и предупреждение в срезе).
+   *
+   * Право — общее право правки заявки: часы ведёт тот же, кто ведёт саму заявку. Ограничение
+   * «объектная роль правит только "Новую"» здесь **не применяется** осознанно, как и у досрочного
+   * завершения (ADR 0044 п. 3): смены появляются ровно у заявки в работе, и заполняет их тот, кто
+   * стоит на площадке.
+   */
+  r.put(
+    '/:id/shifts/:date',
+    {
+      ...canUpdate,
+      schema: { params: shiftParams, body: saveVehicleRequestShiftSchema },
+    },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const { date } = req.params;
+      const request = await requireShiftEditableRequest(p, req.params.id, date);
+      const before = await loadRequestShift(request.id, date, request);
+      // Принятый день не переписывается: иначе часы менялись бы под уже поставленной подписью.
+      // Снять подпись может тот же круг, кто её ставил, — и это отдельное, видимое действие.
+      if (before?.approvedAt) {
+        throw err.unprocessable(
+          `Смена за ${dateKeyRu(date)} согласована — сначала снимите согласование`,
+        );
+      }
+      await db.transaction(async (tx) => {
+        await saveRequestShift(tx, { requestId: request.id, date, actorId: p.id, input: req.body });
+      });
+      return await shiftsResponse(request);
+    },
+  );
+
+  /**
+   * Убрать ошибочно заведённый день — пока он не подтверждён. Согласованный день удалению не
+   * подлежит: за ним стоит принятая работа, и стирают её снятием подписи, а не молча.
+   */
+  r.delete('/:id/shifts/:date', { ...canUpdate, schema: { params: shiftParams } }, async (req) => {
+    const p = requirePrincipal(req);
+    const { date } = req.params;
+    const request = await requireShiftEditableRequest(p, req.params.id, date);
+    const before = await loadRequestShift(request.id, date, request);
+    if (!before) throw err.notFound('Смена не найдена');
+    if (before.approvedAt) {
+      throw err.unprocessable(
+        `Смена за ${dateKeyRu(date)} согласована — сначала снимите согласование`,
+      );
+    }
+    await db.transaction(async (tx) => {
+      await deleteRequestShift(tx, request.id, date);
+    });
+    return await shiftsResponse(request);
+  });
+
+  /**
+   * Подпись объекта под днём работы — и её снятие. Одним маршрутом, как виза заявки (ADR 0025
+   * п. 6): у них одно право, одна область и один инвариант; раздельные разошлись бы в проверках.
+   *
+   * Подтверждает тот, кто мог бы эту заявку завести (`canConfirmShifts`): решение принимает
+   * заказчик — он один видит, во сколько машина вышла и сколько простояла. Снятие нужно не реже
+   * подписи: им откатывают заявку и меняют машину, запертые подтверждёнными днями.
+   */
+  r.post(
+    '/:id/shifts/:date/approval',
+    {
+      ...canCreate,
+      schema: { params: shiftParams, body: approveVehicleRequestShiftSchema },
+    },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const { date } = req.params;
+      const { approved } = req.body;
+      const request = await requireShiftEditableRequest(p, req.params.id, date);
+      // Право на маршруте общее, а подтверждает заказчик этой заявки — как виза руководителя
+      // строительства проверяется по объекту, а не по одному лишь праву.
+      assertShiftApprover(p, request);
+      const before = await loadRequestShift(request.id, date, request);
+      // Подтверждают внесённые часы, а не пустой день: подпись под ненаписанным ничего не значит.
+      if (!before) {
+        throw err.unprocessable(`Смена за ${dateKeyRu(date)} не заполнена — подтверждать нечего`, {
+          machineHours: 'Заполните смену',
+        });
+      }
+      if (!!before.approvedAt === approved) return await shiftsResponse(request);
+
+      await db.transaction(async (tx) => {
+        await setShiftApproval(tx, { requestId: request.id, date, approved, actorId: p.id });
+      });
+
+      const after = (await loadRequestShift(request.id, date, request))!;
+      await writeAudit({
+        actorUserId: p.id,
+        action: approved ? 'vehicle_request.shift_approve' : 'vehicle_request.shift_revoke',
+        entityType: 'vehicle_request',
+        entityId: request.id,
+        metadata: { shiftDate: date, changes: shiftChange(after) },
+      });
+      return await shiftsResponse(request);
+    },
+  );
 
   // ── Виза руководителя строительства (ADR 0025) ──
   // Постановка и отзыв — одним маршрутом: у них одно право, одна область и один инвариант

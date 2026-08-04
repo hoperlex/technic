@@ -1,12 +1,19 @@
 import { useState } from 'react';
 import { Button, Input, Select, Space, Tag, Typography, type TableColumnType } from 'antd';
-import { CheckOutlined, CloseOutlined, EyeOutlined, FieldTimeOutlined } from '@ant-design/icons';
+import {
+  CheckOutlined,
+  CloseOutlined,
+  EyeOutlined,
+  FieldTimeOutlined,
+  ScheduleOutlined,
+} from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
 import {
   assignmentTitle,
   canRequestEarlyEnd,
   onSiteDayLabel,
   onSitePresence,
+  shiftDaysOf,
   parseVehicleRequestNumberSearch,
   type SpecialEquipmentRequestDto,
   vehicleClassificationLabel,
@@ -25,6 +32,7 @@ import { ObjectCell } from '../../components/ObjectCell';
 import { useListParams } from '@shared/lib';
 import { calendarDayCount } from '../../utils/date';
 import { VehicleEarlyEndModal } from './VehicleEarlyEndModal';
+import { VehicleShiftsModal } from './VehicleShiftsModal';
 import { VehicleRequestViewModal } from './VehicleRequestViewModal';
 import {
   EarlyEndTag,
@@ -101,6 +109,28 @@ function termCell(r: SpecialEquipmentRequestDto) {
   );
 }
 
+/**
+ * Приёмка работы по дням: сколько смен объект подтвердил из заказанных и сколько наступивших
+ * дней ещё ждёт подписи. Долг выделен красным — пока он есть, заявку не закрыть, а машину у неё
+ * не сменить.
+ */
+function shiftsCell(r: SpecialEquipmentRequestDto) {
+  const total = shiftDaysOf(r).length;
+  const pending = r.shifts.unapprovedPastDays;
+  return (
+    <div style={{ lineHeight: 1.35 }}>
+      <div>
+        согласовано {r.shifts.approvedDays} из {total}
+      </div>
+      {pending > 0 && (
+        <Tag color="red" style={{ marginInlineEnd: 0 }}>
+          не согласовано дней: {pending}
+        </Tag>
+      )}
+    </div>
+  );
+}
+
 const dash = <Typography.Text type="secondary">—</Typography.Text>;
 
 export function VehicleRequestsOnSiteTab() {
@@ -157,6 +187,9 @@ export function VehicleRequestsOnSiteTab() {
   const objectOptions = limitObjectOptions(allObjectOptions);
 
   const [viewRecord, setViewRecord] = useState<SpecialEquipmentRequestDto | null>(null);
+  // Подтверждение смен ведут здесь же: вкладка отвечает, что стоит на площадке, — и на ней же
+  // принимают работу по дням. В карточке заявки смены только читают.
+  const [shiftsRecord, setShiftsRecord] = useState<SpecialEquipmentRequestDto | null>(null);
 
   // Досрочное завершение (ADR 0044) — единственное действие среза: он отвечает, что стоит на
   // площадке, и здесь же говорят, что машина уезжает раньше. Всё остальное по-прежнему ведут в
@@ -165,6 +198,10 @@ export function VehicleRequestsOnSiteTab() {
   const earlyEnd = useEarlyEnd();
   const canRequest = can('vehicleRequests.update');
   const canDecide = can('vehicleRequests.approve');
+  // Часы вносит тот, кто ведёт заявку; подпись ставит тот, кто мог бы её завести. Область
+  // (свой объект) сервер проверяет сам — здесь только право.
+  const canFillShifts = can('vehicleRequests.update');
+  const canApproveShifts = can('vehicleRequests.create');
   /** Действие доступно тем же условием, что проверяет сервер, — и по дню среза, а не по часам браузера. */
   const earlyEndAllowed = (r: SpecialEquipmentRequestDto) =>
     canRequest && !!onDate && canRequestEarlyEnd(r, onDate) && r.earlyEnd?.status !== 'pending';
@@ -179,6 +216,8 @@ export function VehicleRequestsOnSiteTab() {
     { label: 'Уезжают сегодня', value: summary?.leavingToday ?? 0 },
     // Пятая — про завтра: эти машины уедут раньше срока, если визу поставят (ADR 0044).
     { label: 'Ждут визы на отъезд', value: summary?.earlyEndPending ?? 0 },
+    // Шестая — про долг: по этим заявкам работа ещё не принята, и закрыть их нельзя.
+    { label: 'Ждут согласования смен', value: summary?.shiftsPending ?? 0 },
   ];
 
   // Ключ колонки — он же поле сортировки на сервере (VEHICLE_ON_SITE_SORT_FIELDS).
@@ -255,6 +294,15 @@ export function VehicleRequestsOnSiteTab() {
         </div>
       ),
     },
+    {
+      // Приёмка работы по дням: сколько смен объект уже подтвердил и сколько наступивших дней
+      // ещё ждёт подписи. Пока долг не погашен, заявку не закрыть — поэтому цифра стоит рядом
+      // со сроком, а не прячется в карточке.
+      key: 'shifts',
+      title: 'Согласование смен',
+      width: 190,
+      render: (_v, r) => shiftsCell(r),
+    },
     textColumn<SpecialEquipmentRequestDto>({
       // Планируемые работы: по ним на объекте и понимают, чем машина занята сегодня.
       key: 'comment',
@@ -276,6 +324,11 @@ export function VehicleRequestsOnSiteTab() {
             title="Открыть карточку"
             icon={<EyeOutlined />}
             onClick={() => setViewRecord(r)}
+          />
+          <RowActionButton
+            title="Смены"
+            icon={<ScheduleOutlined />}
+            onClick={() => setShiftsRecord(r)}
           />
           {decidable(r) ? (
             <>
@@ -369,6 +422,7 @@ export function VehicleRequestsOnSiteTab() {
         }),
       (r) => (r.assignment?.lessorName ? r.assignment.lessorName : 'Своя техника'),
       (r) => termCell(r),
+      (r) => shiftsCell(r),
       (r) => r.comment || null,
       (r) => `${r.displayNumber} · ${r.createdByName}`,
     ],
@@ -381,6 +435,12 @@ export function VehicleRequestsOnSiteTab() {
         label: 'Открыть карточку',
         icon: <EyeOutlined />,
         onClick: () => setViewRecord(r),
+      },
+      {
+        key: 'shifts',
+        label: 'Смены',
+        icon: <ScheduleOutlined />,
+        onClick: () => setShiftsRecord(r),
       },
       ...(decidable(r)
         ? [
@@ -469,6 +529,14 @@ export function VehicleRequestsOnSiteTab() {
             </Space>
           ) : null
         }
+      />
+
+      {/* Подтверждение смен: правят их только здесь, в карточке заявки таблицу читают. */}
+      <VehicleShiftsModal
+        request={shiftsRecord}
+        canEdit={canFillShifts}
+        canApprove={canApproveShifts}
+        onClose={() => setShiftsRecord(null)}
       />
 
       {/* Досрочное завершение — окно то же, что и в списке заявок: спрашивают в нём одно и то же. */}

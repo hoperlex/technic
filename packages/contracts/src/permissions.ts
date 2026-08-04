@@ -78,6 +78,11 @@ export const PERMISSIONS = [
   // работу, и разрешает его `vehicleRequests.status`.
   'waybills.read',
   'waybills.cancel',
+  /**
+   * Подшить к бланку скан: заполненный заказчиком оборот ЭСМ-2, отметки 4-П, акт. Своё право, а
+   * не `waybills.read`: смотреть журнал может и тот, кто документы к нему не подшивает.
+   */
+  'waybills.files',
 
   // Действия над удалёнными и закрытыми записями — общие для заявок и справочников
   /** Видеть удалённые записи (архив): списки с includeDeleted, карточка удалённой заявки. */
@@ -108,7 +113,7 @@ const DIRECTORY_PERMISSIONS = ['directories.read', 'directories.write'] as const
 const DRIVER_PERMISSIONS = ['drivers.read', 'drivers.write'] as const;
 
 /** Журнал путевых листов ведут те же, кто выписывает листы и ведёт водителей (ADR 0037). */
-const WAYBILL_PERMISSIONS = ['waybills.read', 'waybills.cancel'] as const;
+const WAYBILL_PERMISSIONS = ['waybills.read', 'waybills.cancel', 'waybills.files'] as const;
 
 const WASTE_REQUEST_PERMISSIONS = [
   'wasteRequests.read',

@@ -700,8 +700,27 @@ describe('vehicle-requests: смена назначенной техники (AD
     rejects({ status: 'confirmed' });
     rejects({ schedule: { requestType: 'special_equipment', dateFrom: '2026-08-10' } });
     // Устаревшие поля перевода в работу здесь не принимаются: действие заведено после маршрутов.
-    rejects({ driverPersonId: DRIVER });
     rejects({ waybill: { withTrailer: false } });
+  });
+
+  /**
+   * Машинист — не то же самое поле, что когда-то носило это имя. Водителя рейса здесь по-прежнему
+   * не передают (рейс описывается только `route`), а машинист нужен листам ЭСМ-2: сменив машину,
+   * их приходится выписывать заново (миграция 0087). Обычно человек наследуется с прежнего листа,
+   * и поле не передают вовсе; спрашивают его там, где наследовать неоткуда, — заявку вели арендной
+   * техникой, и своих листов у неё не было.
+   */
+  it('машинист принимается: сменив машину, недельные листы выписываются заново', () => {
+    expect(
+      changeVehicleAssignmentSchema.parse({
+        vehicleId: VEHICLE,
+        version: 3,
+        driverPersonId: DRIVER,
+      }).driverPersonId,
+    ).toBe(DRIVER);
+    expect(
+      changeVehicleAssignmentSchema.parse({ vehicleId: VEHICLE, version: 3 }).driverPersonId,
+    ).toBeUndefined();
   });
 
   it('версия заявки обязательна — назначение меняют по оптимистичной блокировке', () => {

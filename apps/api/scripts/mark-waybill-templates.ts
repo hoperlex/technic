@@ -177,6 +177,98 @@ const FORM_LEG3: Blank = {
   clear: ['A39', 'AA39', 'Q40', 'AA40'],
 };
 
+/**
+ * Форма ЭСМ-2 (строительная машина). Единственный бланк, который выписывается не на рейс, а на
+ * неделю работы машины на площадке: семь строк «пн…вс», недельные итоги и оборотная сторона
+ * «Заполняется заказчиком».
+ *
+ * Исходник прислан в `.xls` (BIFF8) — `unzipSync` на нём падает, поэтому рядом лежит `СДМ.xlsx`,
+ * полученный из него LibreOffice:
+ *
+ *   soffice --headless --convert-to xlsx --outdir templates/source templates/source/СДМ.xls
+ *
+ * Заменит бухгалтерия бланк — конвертацию придётся повторить; у двух прежних форм этой ступени
+ * нет, они пришли готовыми `.xlsx`.
+ */
+const FORM_ESM2: Blank = {
+  source: 'СДМ.xlsx',
+  out: 'waybill-esm2.xlsx',
+  // 86 колонок шириной 208 знаков; разрыв строк после 98-й делит книгу на лицевую и оборот.
+  orientation: 'landscape',
+  cells: {
+    // Шапка: номер сразу за заголовком «ПУТЕВОЙ ЛИСТ», дата — на линии за «от» и тремя клетками
+    // «Дата составления» (день, месяц, год порознь).
+    AM3: '№ {{waybill_series}}{{waybill_number}}',
+    BH2: '{{waybill_date}}',
+    BV4: '{{waybill_date_dd}}',
+    BY4: '{{waybill_date_mm}}',
+    CC4: '{{waybill_date_yyyy}}',
+    H5: '{{org_name}}, {{org_address}}, тел. {{org_phone}}',
+    BV5: '{{org_okpo}}',
+    // Заказчик — объект строительства заявки. Клетка «по ОКПО» заказчика остаётся пустой: у
+    // площадки нет ни ОКПО, ни своего телефона организации — есть телефон ответственного.
+    H7: '{{customer_name}}, {{customer_address}}, тел. {{customer_phone}}',
+    H9: '{{vehicle_brand}}',
+    AO9: '{{vehicle_reg_number}}',
+    // Машинист: ФИО и табельный номер — и всё. СНИЛС и водительского удостоверения в бланке нет:
+    // машинист работает по удостоверению тракториста-машиниста, которого портал не ведёт.
+    H11: '{{driver_fio}}',
+    BE11: '{{object_code}}',
+    /*
+     * «Период работы: с __ по __ месяца __ года __» — фактические дни недели, а не понедельник с
+     * воскресеньем. Клетка «по» состоит из двух ячеек: `BJ11` не размечается, иначе число
+     * печатается вторым рядом с первым («09 99»). Месяц один на графу — у недели через границу
+     * месяца туда идёт «08–09» (объединение BK11:BO11 шириной 13 знаков это держит).
+     */
+    BH11: '{{period_from_day}}',
+    BI11: '{{period_to_day}}',
+    BK11: '{{period_month}}',
+    BP11: '{{period_year}}',
+    // Инвентарный номер машины. Соседняя клетка «Машина: марка» (`BV11`) не размечается: восемь
+    // знаков ширины, и «JCB 3CX» налезает на инвентарный номер — а марка уже напечатана строкой
+    // «Машина» выше.
+    BY11: '{{vehicle_inventory_number}}',
+    // Табельный номер начинается с `CD11`: `CC11` шириной 0,65 знака обрезает текст.
+    CD11: '{{driver_personnel_no}}',
+    /*
+     * Семь строк недели, шаг — четыре строки листа. Число месяца печатается вместе с подписью дня
+     * («пн 31»): «пн»…«вс» впечатаны бланком, а объединение C19:C22 — одна ячейка, и дописать
+     * число второй клеткой некуда. Объект — только в дни внутри срока заявки; в остальные графа
+     * остаётся пустой, потому что портал не знает, работала ли машина в субботу.
+     */
+    C19: 'пн {{day1_date}}',
+    D19: '{{day1_object}}',
+    C23: 'вт {{day2_date}}',
+    D23: '{{day2_object}}',
+    C27: 'ср {{day3_date}}',
+    D27: '{{day3_object}}',
+    C31: 'чт {{day4_date}}',
+    D31: '{{day4_object}}',
+    C35: 'пт {{day5_date}}',
+    D35: '{{day5_object}}',
+    C39: 'сб {{day6_date}}',
+    D39: '{{day6_object}}',
+    C43: 'вс {{day7_date}}',
+    D43: '{{day7_object}}',
+    // Оборот заполняет заказчик — часы, простои, стоимость машино-часа и штамп. Портал печатает
+    // там только числа месяца, чтобы не гадать, какая это неделя.
+    B106: 'пн {{day1_date}}',
+    B110: 'вт {{day2_date}}',
+    B114: 'ср {{day3_date}}',
+    B118: 'чт {{day4_date}}',
+    B122: 'пт {{day5_date}}',
+    B126: 'сб {{day6_date}}',
+    B130: 'вс {{day7_date}}',
+  },
+  /*
+   * ФИО начальника отдела автотехники, впечатанное над линией «(расшифровка подписи)». Стирается
+   * тем же решением, что и графа диспетчера в двух прежних бланках: напечатанная рядом с пустой
+   * линией фамилия читается как подпись, которой нет. Сама должность остаётся — её подписывает
+   * человек, а не портал.
+   */
+  clear: ['BT141'],
+};
+
 const COL = /^([A-Z]+)(\d+)$/;
 
 function colNumber(ref: string): number {
@@ -249,19 +341,30 @@ function clearCell(sheet: string, address: string): string {
  * `fitToHeight="0"` — «по ширине на страницу, в высоту сколько получится»: иначе обе стороны
  * бланка сжались бы в один лист. Поля сведены к 5 мм: при подгонке по ширине дюймовые поля
  * оригинала съедают масштаб, а вместе с ним и читаемость мелких граф.
+ *
+ * Бланк, прошедший через LibreOffice (ЭСМ-2, Р1), приходит уже со своими параметрами печати —
+ * и оба места приходится не дополнять, а переписывать. Второй `<pageSetup>` рядом с имеющимся
+ * схеме листа противоречит, а `fitToPage="false"` в `sheetPr` — это выключенная подгонка, а не
+ * её отсутствие: приняв атрибут за признак «уже настроено», портал печатал бы ЭСМ-2 на восьми
+ * страницах вместо двух. Ни то ни другое не падает — оно молча расползается по бумаге.
  */
 function setPageSetup(sheet: string, orientation: Blank['orientation']): string {
   const setup = `<pageSetup paperSize="9" orientation="${orientation}" fitToWidth="1" fitToHeight="0" />`;
   const margins =
     '<pageMargins left="0.2" right="0.2" top="0.2" bottom="0.2" header="0" footer="0" />';
 
-  let patched = sheet.replace(/<pageMargins[^>]*>/, `${margins}${setup}`);
+  let patched = sheet.replace(/<pageMargins[^>]*>/, margins);
   if (patched === sheet) throw new Error('В листе нет <pageMargins> — некуда вписать pageSetup');
+  patched = /<pageSetup[^>]*>/.test(patched)
+    ? patched.replace(/<pageSetup[^>]*>/, setup)
+    : patched.replace(margins, `${margins}${setup}`);
 
   // Подгонка включается флагом в `sheetPr`: без него `fitToWidth` в файле есть, а Excel печатает
   // по-старому в 100%.
-  if (/<pageSetUpPr[^>]*fitToPage=/.test(patched)) return patched;
-  patched = patched.replace(/<pageSetUpPr([^>]*?)\/>/, '<pageSetUpPr$1 fitToPage="1" />');
+  if (/<pageSetUpPr[^>]*fitToPage="(1|true)"/.test(patched)) return patched;
+  patched = /<pageSetUpPr[^>]*fitToPage=/.test(patched)
+    ? patched.replace(/(<pageSetUpPr[^>]*fitToPage=)"[^"]*"/, '$1"1"')
+    : patched.replace(/<pageSetUpPr([^>]*?)\/>/, '<pageSetUpPr$1 fitToPage="1" />');
   if (!/fitToPage="1"/.test(patched)) {
     throw new Error('В листе нет <pageSetUpPr /> — подгонку по ширине включить нечем');
   }
@@ -286,4 +389,4 @@ function mark(blank: Blank): void {
   console.log(`${blank.out}: размечено граф ${Object.keys(blank.cells).length}${cleared}`);
 }
 
-for (const blank of [FORM_4P, FORM_LEG3]) mark(blank);
+for (const blank of [FORM_4P, FORM_LEG3, FORM_ESM2]) mark(blank);

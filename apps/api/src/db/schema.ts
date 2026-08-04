@@ -16,6 +16,7 @@ import {
   primaryKey,
   smallint,
   text,
+  time,
   timestamp,
   unique,
   uniqueIndex,
@@ -1664,6 +1665,70 @@ export const vehicleRequestEarlyEndings = pgTable(
   }),
 );
 
+// ── Подтверждение смен по заказу спецтехники ──
+// Техника стоит на объекте неделями, а работа считается по дням: за каждый день заказа — время
+// смены, машиночасы, заправка и подпись объекта. Строка появляется при первом заполнении: заказ
+// правят, сокращают досрочно (ADR 0044) и откатывают в «Новую» (ADR 0058), и заготовки на весь
+// период пришлось бы синхронизировать с каждым из этих действий — а пустую заготовку потом не
+// отличить от «день не заполнили», на чём держится и запрет закрытия, и предупреждение в срезе.
+export const vehicleRequestShifts = pgTable(
+  'vehicle_request_shifts',
+  {
+    requestId: uuid('request_id')
+      .notNull()
+      .references(() => vehicleRequests.id, { onDelete: 'cascade' }),
+    shiftDate: date('shift_date', { mode: 'string' }).notNull(),
+    // Время смены: «08:00 – 20:00». Ночная переходит через полночь и относится к дню начала —
+    // день здесь заказанный день заявки, а не астрономические сутки. Пусто — часы записали одним
+    // числом, не проставляя границ; обе колонки при этом пусты (CHECK ниже).
+    startedAt: time('started_at'),
+    endedAt: time('ended_at'),
+    machineHours: numeric('machine_hours', { precision: 5, scale: 2 }).notNull(),
+    // Заправка свободным текстом: «120 л», «залили полный», «по талону». Числом станет, когда
+    // формат устоится, — аддитивной миграцией, не переписывая уже записанное.
+    refuel: text('refuel').notNull().default(''),
+    comment: text('comment').notNull().default(''),
+    filledBy: uuid('filled_by')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    // Подпись объекта: кто принял этот день работы. Пусто — день ещё не согласован.
+    approvedBy: uuid('approved_by').references(() => users.id, { onDelete: 'restrict' }),
+    approvedAt: timestamp('approved_at', { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.requestId, t.shiftDate] }),
+    // Сутки длиннее суток не бывают, а опечатка в разряде («115» вместо «11,5») иначе уезжает
+    // прямиком в счёт. Ноль — законное значение: простой тоже часть учёта.
+    hoursRange: check(
+      'vehicle_request_shifts_hours_check',
+      sql`${t.machineHours} >= 0 AND ${t.machineHours} <= 24`,
+    ),
+    // Нулевой день объясняется: «дождь», «не открыли фронт работ», «сломалась». Молчание портала
+    // здесь хуже нуля — за такой день с арендодателем разговаривают отдельно.
+    idleComment: check(
+      'vehicle_request_shifts_idle_comment_check',
+      sql`${t.machineHours} > 0 OR btrim(${t.comment}) <> ''`,
+    ),
+    // Половина смены не описывает ничего: «с 08:00» без конца — это не время работы.
+    timePresence: check(
+      'vehicle_request_shifts_time_check',
+      sql`(${t.startedAt} IS NULL) = (${t.endedAt} IS NULL)`,
+    ),
+    // «Кто» без «когда» — не подпись (тем же CHECK устроена виза заявки, миграция 0049).
+    approvalPresence: check(
+      'vehicle_request_shifts_approval_check',
+      sql`(${t.approvedBy} IS NULL) = (${t.approvedAt} IS NULL)`,
+    ),
+    // «Что по этой заявке не подтверждено» — главный вопрос к таблице: по нему считается сводка
+    // строки списка, и он же не даёт заявке закрыться.
+    unapprovedIdx: index('vehicle_request_shifts_unapproved_idx')
+      .on(t.requestId)
+      .where(sql`${t.approvedAt} IS NULL`),
+  }),
+);
+
 // Связь заявка ТС ↔ файлы. UNIQUE(file_id) — файл не в двух заявках ТС; кросс-модульную
 // уникальность с «Вывозом мусора» обеспечивает общий файловый сервис.
 export const vehicleRequestFiles = pgTable(
@@ -2103,17 +2168,32 @@ export const waybills = pgTable(
       .references(() => persons.id, { onDelete: 'restrict' }),
     /**
      * День, на который выписан лист, и он же граница правки: до этой даты лист аннулируют и
-     * выписывают заново, начиная с неё — нет (ADR 0037 п. 9). Держит это сервис: CURRENT_DATE
-     * не IMMUTABLE и в CHECK запрещён.
+     * выписывают заново, начиная с неё — нет (ADR 0037 п. 9). У ЭСМ-2 это первый рабочий день
+     * недели, а граница считается по `periodTo`. Держит это сервис: CURRENT_DATE не IMMUTABLE и
+     * в CHECK запрещён.
      */
     issuedForDate: date('issued_for_date', { mode: 'string' }).notNull(),
     /**
-     * Рейс, по которому выписан лист (маршруты, миграции 0072 и 0074). Листа без рейса не бывает:
-     * история перенесена скриптом `backfill:routes`, а новый лист выписывается только с рейса.
+     * Рейс, по которому выписан лист (маршруты, миграции 0072 и 0074). NULL — лист ЭСМ-2
+     * (миграция 0087): у недели работы машины на площадке рейса нет, есть заявка и период.
+     * Инвариант «листа без рейса не бывает» этим и отменён — согласованность держит
+     * `waybills_form_source_check`.
      */
-    routeId: uuid('route_id')
-      .notNull()
-      .references(() => vehicleRoutes.id, { onDelete: 'restrict' }),
+    routeId: uuid('route_id').references(() => vehicleRoutes.id, { onDelete: 'restrict' }),
+    /**
+     * Заявка-основание листа ЭСМ-2 (миграция 0087). Тем же приёмом заявку держит рейс-перегон
+     * (`vehicle_routes.source_request_id`, ADR 0057).
+     */
+    sourceRequestId: uuid('source_request_id').references(() => vehicleRequests.id, {
+      onDelete: 'restrict',
+    }),
+    /**
+     * Неделя работы машины: фактические рабочие дни, а не понедельник с воскресеньем — именно они
+     * печатаются в графе «Период работы: с __ по __». Обе даты внутри одной календарной недели
+     * (`waybills_period_check`); границей месяца неделя не режется.
+     */
+    periodFrom: date('period_from', { mode: 'string' }),
+    periodTo: date('period_to', { mode: 'string' }),
     /** Прицеп — признак рейса: в реестре техники его нет, а категорию водителя он поднимает. */
     withTrailer: boolean('with_trailer').notNull().default(false),
     trailer1Model: text('trailer1_model').notNull().default(''),
@@ -2156,6 +2236,31 @@ export const waybills = pgTable(
         AND ${t.trailer2Model} = '' AND ${t.trailer2RegNumber} = ''
       )`,
     ),
+    // Источник документа ровно один (миграция 0087): у 4-П и формы № 3 — рейс, у ЭСМ-2 — заявка
+    // с периодом. Третьего сочетания не бывает, и без CHECK лист оказался бы сразу и рейсовым,
+    // и недельным.
+    formSourceCheck: check(
+      'waybills_form_source_check',
+      sql`(${t.formCode} = 'esm2'
+        AND ${t.routeId} IS NULL
+        AND ${t.sourceRequestId} IS NOT NULL
+        AND ${t.periodFrom} IS NOT NULL
+        AND ${t.periodTo} IS NOT NULL)
+      OR (${t.formCode} <> 'esm2'
+        AND ${t.routeId} IS NOT NULL
+        AND ${t.sourceRequestId} IS NULL
+        AND ${t.periodFrom} IS NULL
+        AND ${t.periodTo} IS NULL)`,
+    ),
+    // Лист не выходит за календарную неделю: в бланке семь строк, пн…вс, и восьмой день печатать
+    // некуда. Границей месяца неделя при этом не режется — графа «месяца» принимает «08–09».
+    periodCheck: check(
+      'waybills_period_check',
+      sql`${t.periodFrom} IS NULL OR (
+        ${t.periodTo} >= ${t.periodFrom}
+        AND date_trunc('week', ${t.periodFrom}::timestamp) = date_trunc('week', ${t.periodTo}::timestamp)
+      )`,
+    ),
     seriesNumberUnique: uniqueIndex('waybills_series_number_unique').on(t.seriesId, t.number),
     // Один действующий лист на рейс (миграция 0074). Аннулированные не мешают: испорченный бланк
     // списывают и выписывают новый по тому же рейсу — на этом держится пересборка состава.
@@ -2163,10 +2268,20 @@ export const waybills = pgTable(
     routeUnique: uniqueIndex('waybills_route_unique')
       .on(t.routeId)
       .where(sql`${t.status} <> 'cancelled'`),
+    // Одна неделя — один действующий лист (миграция 0087). Аннулированные не мешают: сверка
+    // списывает испорченный бланк и выписывает на ту же неделю новый номер.
+    sourceRequestPeriodUnique: uniqueIndex('waybills_source_request_period_unique')
+      .on(t.sourceRequestId, t.periodFrom)
+      .where(sql`${t.status} <> 'cancelled'`),
     issuedForDateIdx: index('waybills_issued_for_date_idx').on(t.issuedForDate.desc()),
     routeIdx: index('waybills_route_idx')
       .on(t.routeId)
       .where(sql`${t.routeId} IS NOT NULL`),
+    // «Какие листы у этой заявки» — вопрос карточки заявки и сверки, читающей их при каждом
+    // изменении срока.
+    sourceRequestIdx: index('waybills_source_request_idx')
+      .on(t.sourceRequestId)
+      .where(sql`${t.sourceRequestId} IS NOT NULL`),
     driverIdx: index('waybills_driver_idx').on(t.driverPersonId),
     // «На чём человек ездил в прошлый раз» — этим сортируется список водителей и наследуются
     // графы шапки.
@@ -2197,6 +2312,27 @@ export const waybillRequests = pgTable(
     // заявку после него выписывают заново. Условие «лист не аннулирован» — в соседней таблице,
     // и держит его сервис.
     requestIdx: index('waybill_requests_request_idx').on(t.requestId),
+  }),
+);
+
+// Вложения к бланку (миграция 0087): скан заполненного заказчиком оборота ЭСМ-2, отметки 4-П,
+// акт. Крепятся к листу, а не к заявке: заявок у листа бывает четыре, а неделя работ распадается
+// на несколько листов — «чей это скан» отвечает только номер бланка.
+export const waybillFiles = pgTable(
+  'waybill_files',
+  {
+    waybillId: uuid('waybill_id')
+      .notNull()
+      .references(() => waybills.id, { onDelete: 'cascade' }),
+    fileId: uuid('file_id')
+      .notNull()
+      .references(() => files.id, { onDelete: 'cascade' }),
+    addedAt: timestamp('added_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.waybillId, t.fileId] }),
+    // Файл живёт максимум в одном месте (ADR 0024); кросс-модульную часть держит `linkedFileIds`.
+    fileUnique: uniqueIndex('waybill_files_file_unique').on(t.fileId),
   }),
 );
 

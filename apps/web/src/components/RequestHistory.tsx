@@ -45,6 +45,10 @@ const HISTORY_TITLES: Record<RequestHistoryKind, string> = {
   earlyEndApproved: 'Досрочное завершение согласовано',
   earlyEndRejected: 'Досрочное завершение отклонено',
   earlyEndCancelled: 'Запрос на досрочное завершение снят',
+  // Подтверждение смен: подпись объекта под днём работы и её снятие. Заполнение часов события
+  // не пишет — в истории читаются решения, а не черновики.
+  shiftApproved: 'Смена согласована',
+  shiftApprovalRevoked: 'Согласование смены снято',
   deleted: 'Перемещена в архив',
   restored: 'Восстановлена из архива',
 };
@@ -66,6 +70,10 @@ const KIND_TAGS: Record<string, { label: string; color?: string }> = {
   earlyEndApproved: { label: 'Досрочно', color: 'green' },
   earlyEndRejected: { label: 'Досрочно', color: 'red' },
   earlyEndCancelled: { label: 'Досрочно' },
+  // Смены: принятый день — зелёным, как факт выполнения; снятая подпись — оранжевым, как снятая
+  // виза заявки: работа не отменена, её приняли обратно на разбор.
+  shiftApproved: { label: 'Смена', color: 'green' },
+  shiftApprovalRevoked: { label: 'Смена', color: 'orange' },
   deleted: { label: 'Архив', color: 'red' },
   restored: { label: 'Из архива', color: 'green' },
 };

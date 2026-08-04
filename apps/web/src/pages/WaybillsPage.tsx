@@ -4,14 +4,16 @@ import { StopOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  isWaybillEditable,
+  canCancelWaybill,
   WAYBILL_LOCKED_MESSAGE,
   type WaybillDto,
   waybillFormLabels,
+  waybillFormShortLabels,
   waybillStatusColors,
   waybillStatusLabels,
 } from '@technic/contracts';
 import { waybillsApi } from '../api/resources';
+import { WaybillFilesCell } from '../components/WaybillFiles';
 import { DataTable } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
 import { actionsColumn, badgeColumn, textColumn } from '@shared/ui';
@@ -35,16 +37,21 @@ export function WaybillsPage() {
   const { message, modal } = App.useApp();
   const { can } = useAuth();
   const canCancel = can('waybills.cancel');
+  const canAttach = can('waybills.files');
   const qc = useQueryClient();
 
   // Период — единственный фильтр, который журнал спрашивает сам: его читают по дням, а не по
-  // всей истории сразу. Остальное сужают столбцами таблицы.
+  // всей истории сразу. Остальное сужают столбцами таблицы — в том числе бланк: журнал у трёх
+  // форм один, а читают их разные люди по разным поводам.
   const [range, setRange] = useState<[dayjs.Dayjs, dayjs.Dayjs] | null>(null);
-  const { params, onTableChange } = useListParams<{ status?: string }>(
+  const { params, onTableChange } = useListParams<{ status?: string; formCode?: string }>(
     {},
     {
       searchKeys: ['number'],
-      mapFilters: (f) => ({ status: f.status?.[0] as string | undefined }),
+      mapFilters: (f) => ({
+        status: f.status?.[0] as string | undefined,
+        formCode: f.formCode?.[0] as string | undefined,
+      }),
     },
   );
   const query = {
@@ -102,12 +109,27 @@ export function WaybillsPage() {
 
   const columns = [
     textColumn<WaybillDto>({ key: 'number', title: 'Номер', dataIndex: 'number', width: 200 }),
+    // Бланк — колонкой с фильтром, как и статус: полная подпись сюда не влезает, а на вопрос
+    // «какой это лист» отвечает и короткая.
+    badgeColumn<WaybillDto>({
+      key: 'formCode',
+      title: 'Форма',
+      dataIndex: 'formCode',
+      width: 110,
+      labels: waybillFormShortLabels,
+      filters: true,
+    }),
     textColumn<WaybillDto>({
       key: 'issuedForDate',
       title: 'На дату',
       dataIndex: 'issuedForDate',
-      width: 120,
-      render: (_v, r) => dayjs(r.issuedForDate).format('DD.MM.YYYY'),
+      width: 150,
+      // У ЭСМ-2 в этой графе не день, а неделя работ: лист выписан на период, и одна дата в нём
+      // ничего не значит — по ней не понять, какую неделю держит бланк.
+      render: (_v, r) =>
+        r.periodFrom && r.periodTo
+          ? `${dayjs(r.periodFrom).format('DD.MM')} — ${dayjs(r.periodTo).format('DD.MM.YYYY')}`
+          : dayjs(r.issuedForDate).format('DD.MM.YYYY'),
     }),
     textColumn<WaybillDto>({
       key: 'vehicleLabel',
@@ -150,6 +172,17 @@ export function WaybillsPage() {
           </Space>
         ),
     }),
+    // Скан заполненного бланка: у ЭСМ-2 оборот заполняет заказчик, у 4-П — отметки о выполнении.
+    // Портал этих значений не разбирает, но журнал обязан отвечать, чем кончился выданный номер.
+    textColumn<WaybillDto>({
+      key: 'files',
+      title: 'Файлы',
+      dataIndex: 'files',
+      sortable: false,
+      searchable: false,
+      width: 100,
+      render: (_v, r) => <WaybillFilesCell waybillId={r.id} files={r.files} canEdit={canAttach} />,
+    }),
     badgeColumn<WaybillDto>({
       key: 'status',
       title: 'Статус',
@@ -171,7 +204,7 @@ export function WaybillsPage() {
       ellipsis: true,
     }),
     actionsColumn<WaybillDto>((r) => {
-      const editable = r.status === 'issued' && isWaybillEditable(r.issuedForDate, today());
+      const editable = r.status === 'issued' && canCancelWaybill(r, today());
       return (
         <Space>
           {/* Печать и выгрузка доступны и у аннулированного листа: испорченный бланк подшивают
@@ -225,8 +258,10 @@ export function WaybillsPage() {
         onChange={onTableChange}
       />
       <Typography.Paragraph type="secondary" style={{ marginTop: 8 }}>
-        Листы выписываются с маршрута — во вкладке «Маршруты» раздела «Заказ ТС», когда состав рейса
-        собран. Формы: {Object.values(waybillFormLabels).join(', ')}.
+        Листы на рейс ({waybillFormLabels['4p']}, {waybillFormLabels.leg3}) выписываются с маршрута
+        — во вкладке «Маршруты» раздела «Заказ ТС», когда состав рейса собран.{' '}
+        {waybillFormLabels.esm2} портал выписывает сам: заявку на технику берут в работу, и лист
+        рождается на каждую неделю её срока.
       </Typography.Paragraph>
     </PageTableLayout>
   );

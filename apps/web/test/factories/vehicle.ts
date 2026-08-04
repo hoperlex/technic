@@ -1,4 +1,5 @@
 import type {
+  DriverDto,
   SpecialEquipmentRequestDto,
   VehicleClassificationDto,
   VehicleRequestSummaryDto,
@@ -50,6 +51,8 @@ export function vehicleRequest(
     responsibleName: 'Петров П. П.',
     responsiblePhone: '+7 900 000-00-02',
     earlyEnd: null,
+    // Сводка смен: по умолчанию долга нет — заявку ещё не вели по дням.
+    shifts: { approvedDays: 0, unapprovedPastDays: 0 },
     version: 1,
     createdBy: 'user-1',
     createdByName: 'Диспетчеров Д. П.',
@@ -100,4 +103,35 @@ export function classification(
     kindCode: 'special',
     ...overrides,
   } as VehicleClassificationDto;
+}
+
+/**
+ * Машинист для листов ЭСМ-2 (миграция 0087) — запись справочника водителей.
+ *
+ * Отбора у неё нет никакого, и это главное: в бланке ЭСМ-2 нет ни СНИЛС, ни водительского
+ * удостоверения — экскаваторщик работает по удостоверению тракториста-машиниста, которого портал
+ * не ведёт (ADR 0055). Поэтому в форме перевода в работу список приходит из `GET /drivers`, а не
+ * из отбора под машину, и человек без документов годится в него наравне с прочими.
+ */
+export function machinist(overrides: Partial<DriverDto> = {}): DriverDto {
+  return {
+    id: 'p-machinist',
+    lastName: 'Семёнов',
+    firstName: 'Семён',
+    middleName: 'Семёнович',
+    fullName: 'Семёнов Семён Семёнович',
+    birthDate: null,
+    phone: '',
+    snils: '',
+    comment: '',
+    personnelNo: '4021',
+    jobTitle: 'Машинист экскаватора',
+    employedSince: null,
+    licenses: [],
+    version: 0,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    deletedAt: null,
+    ...overrides,
+  } as DriverDto;
 }

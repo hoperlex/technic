@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { App, Form, Input, InputNumber, Segmented, Space, Tag, Typography } from 'antd';
+import { useQuery } from '@tanstack/react-query';
 import {
+  approvedMachineHours,
   requestCustomerName,
   assignmentRateLabel,
   assignmentTitle,
@@ -16,6 +18,7 @@ import {
   vehicleWorkUnitRateLabels,
   workedAmountLabel,
 } from '@technic/contracts';
+import { vehicleRequestsApi } from '../../api/resources';
 import { FormGrid } from '@shared/ui';
 import { FormModal } from '@shared/ui';
 import { calendarDayCount } from '../../utils/date';
@@ -82,29 +85,43 @@ export function VehicleCompleteModal({ request, confirmLoading, onCancel, onSubm
   const assignment = request?.assignment ?? null;
   const rate = rateForWorkUnit(assignment, unit);
 
+  // Принятые объектом машиночасы: сервер всё равно не закроет заявку, пока за наступившие дни
+  // не расписались, — и то, что подписано, и есть основание факта. Сумму часов подставляем в
+  // поле, но не запираем: счёт арендодателя включает и перегон, и минимальный срок аренды.
+  const { data: shifts } = useQuery({
+    queryKey: ['vehicle-requests', 'shifts', request?.id],
+    queryFn: () => vehicleRequestsApi.shifts(request!.id),
+    enabled: !!request && request.requestType === 'special_equipment',
+  });
+  const approvedHours = shifts ? approvedMachineHours(shifts.items) : 0;
+
   // Окно переиспользуется под разные заявки, поэтому поля сбрасываются при смене цели, а не при
   // размонтировании. Повторное закрытие (после отката администратором) открывается на прежнем
   // факте: обычно правят одну цифру, а не набирают всё заново.
   const targetId = request?.id ?? null;
   useEffect(() => {
     if (!request) return;
-    const start = defaultUnit(request);
+    // Подтверждённые смены закрывают заявку часами: за них расписался объект, и второй счёт
+    // (в сменах) спорил бы с первым. Прежнее закрытие всё равно главнее — его правят, а не
+    // набирают заново.
+    const start = !request.completion && approvedHours > 0 ? 'hours' : defaultUnit(request);
     const previous = request.completion;
     setUnit(start);
     setCostTouched(!!previous);
+    const amount =
+      previous?.workedAmount ??
+      (start === 'hours' && approvedHours > 0 ? approvedHours : plannedAmount(request, start));
     form.setFieldsValue({
-      workedAmount: previous?.workedAmount ?? plannedAmount(request, start),
+      workedAmount: amount,
       totalCost:
         previous?.totalCost ??
-        calcVehicleRequestCost(
-          rateForWorkUnit(request.assignment, start),
-          previous?.workedAmount ?? plannedAmount(request, start) ?? 0,
-        ),
+        calcVehicleRequestCost(rateForWorkUnit(request.assignment, start), amount ?? 0),
       comment: '',
     });
-    // Зависимость — идентификатор заявки: перерисовка той же заявки (инвалидация списка после
-    // соседнего действия) приходит новым объектом и стёрла бы уже набранное.
-  }, [targetId]);
+    // Зависимости — заявка и подтверждённые часы: таблица смен приходит вторым запросом, и до
+    // её ответа подставлять было нечего. Перерисовка той же заявки поля не трогает — иначе
+    // стёрла бы уже набранное.
+  }, [targetId, approvedHours]);
 
   const workedAmount = Form.useWatch('workedAmount', form);
   const totalCost = Form.useWatch('totalCost', form);
@@ -223,7 +240,16 @@ export function VehicleCompleteModal({ request, confirmLoading, onCancel, onSubm
                 rules={[{ required: true, message: 'Укажите отработанное' }]}
                 extra={
                   request.requestType === 'special_equipment'
-                    ? `Заказано: ${calendarDayCount(request.dateFrom, request.dateTo) ?? '—'} дн.`
+                    ? [
+                        `Заказано: ${calendarDayCount(request.dateFrom, request.dateTo) ?? '—'} дн.`,
+                        // Что приняла площадка — основание факта: расхождение с ним должно быть
+                        // замечено, а не проскочить молча.
+                        approvedHours > 0
+                          ? `согласовано смен: ${workedAmountLabel('hours', approvedHours)}`
+                          : null,
+                      ]
+                        .filter(Boolean)
+                        .join(' · ')
                     : undefined
                 }
               >

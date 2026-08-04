@@ -40,6 +40,7 @@ import {
   vehicleSubstitutionGroupLabels,
   vehicleSubstitutionHint,
   vehicleSubstitutionOf,
+  esm2Periods,
   vehicleSubstitutionRank,
   vehicleSubstitutionWarning,
   waybillFormLabels,
@@ -125,6 +126,12 @@ interface FormValues {
   garageNumber?: string;
   communicationKind?: string;
   transportationKind?: string;
+  /**
+   * Машинист заказа техники на объект: на него выписываются недельные листы ЭСМ-2 (миграция
+   * 0087). Отдельное поле, а не `driverPersonId`: тот — водитель рейса грузоперевозки, отобранный
+   * по документам и категории под машину, а здесь годится любой водитель справочника.
+   */
+  machinistId?: string;
   // ── Доставка техники на объект: перегон по желанию (миграция 0082) ──
   /** Спецтехника едет на площадку своим ходом — на эту поездку выписывается 4-П. */
   deliveryEnabled?: boolean;
@@ -253,6 +260,9 @@ export function VehicleAssignModal({
   const pricePerShift = Form.useWatch('pricePerShift', form);
   const scheduledDate = Form.useWatch('scheduledDate', form);
   const driverPersonId = Form.useWatch('driverPersonId', form);
+  // Срок работ спецтехники: по нему считаются недели, на которые выпишутся листы ЭСМ-2.
+  const dateFrom = Form.useWatch('dateFrom', form);
+  const dateTo = Form.useWatch('dateTo', form);
 
   const isFreight = request?.requestType === 'freight_transport';
 
@@ -469,6 +479,38 @@ export function VehicleAssignModal({
   }));
 
   /**
+   * Машинисты для листов ЭСМ-2 (миграция 0087) — весь справочник водителей, без единого отбора.
+   *
+   * Это не тот же список, что выше, и намеренно. `drivers/available` требует непустой СНИЛС,
+   * годное на дату удостоверение и смотрит на категорию под машину — всё это графы 4-П, без
+   * которых тот лист недействителен. В бланке ЭСМ-2 их нет вовсе: экскаваторщик работает по
+   * удостоверению тракториста-машиниста, которого портал не ведёт (ADR 0055). Поэтому годится
+   * любой действующий водитель, и ни машина, ни дата на список не влияют.
+   */
+  const needsMachinist = !reassign && request?.requestType === 'special_equipment' && !isRental;
+  const { data: machinists, isFetching: machinistsLoading } = useQuery({
+    queryKey: ['drivers', 'machinists'],
+    queryFn: () => driversApi.list({ pageSize: 200, sortBy: 'fullName', sortDir: 'asc' }),
+    enabled: needsMachinist,
+  });
+  const machinistOptions = (machinists?.items ?? []).map((d) => ({
+    value: d.id,
+    label: [d.fullName, d.personnelNo && `таб. ${d.personnelNo}`].filter(Boolean).join(' · '),
+  }));
+
+  /**
+   * Сколько бланков израсходует перевод в работу и на какие недели: лист ЭСМ-2 выписывается на
+   * каждую неделю срока (миграция 0087), и человек должен видеть это до нажатия, а не узнавать
+   * из журнала. Считается тем же `esm2Periods`, которым выписывает сервер.
+   */
+  const esm2Weeks = useMemo(() => {
+    if (!needsMachinist) return [];
+    const from = dateFrom?.format('YYYY-MM-DD');
+    if (!from) return [];
+    return esm2Periods(from, dateTo?.format('YYYY-MM-DD') ?? null);
+  }, [needsMachinist, dateFrom, dateTo]);
+
+  /**
    * Выбран водитель, у которого нет категории, требуемой машиной. Пометки в строке списка мало:
    * её читают при выборе и забывают, — а решение садить его или нет остаётся за человеком
    * (ADR 0055): портал ничего не запрещает, но обе стороны расхождения обязан назвать.
@@ -629,6 +671,12 @@ export function VehicleAssignModal({
       message.warning('Выберите водителя — на рейс выписывается путевой лист');
       return;
     }
+    // Машинист обязателен там, где выписываются недельные листы ЭСМ-2: без него бланк
+    // недействителен. Тем же правилом отвечает сервер — он же видит, чья это машина.
+    if (needsMachinist && !v.machinistId) {
+      message.warning('Выберите машиниста — на него выписываются путевые листы ЭСМ-2');
+      return;
+    }
     // Перегон едет откуда-то куда-то и кем-то: пустые графы — это лист, по которому нельзя ехать.
     // Тем же правилом отвечает сервер, а незаполненный перегон здесь означал бы, что галочку
     // включили и забыли.
@@ -645,6 +693,9 @@ export function VehicleAssignModal({
         pricePerHour: v.pricePerHour ?? null,
         pricePerShift: v.pricePerShift ?? null,
         shiftHours: v.shiftHours ?? null,
+        // Машинист заказа техники на объект: на него выписываются листы ЭСМ-2 за каждую неделю
+        // срока. У грузоперевозки поля нет — там водитель принадлежит рейсу.
+        ...(needsMachinist ? { driverPersonId: v.machinistId } : {}),
         // Рейс: готовый — одним идентификатором, новый — вместе с водителем и реквизитами выезда.
         ...(needsRoute
           ? {
@@ -767,6 +818,33 @@ export function VehicleAssignModal({
                     inputReadOnly={isMobile}
                   />
                 </Form.Item>
+                {/* Машинист: на него выписываются недельные листы ЭСМ-2, и без него бланк
+                  недействителен. Список — весь справочник водителей: граф СНИЛС и удостоверения
+                  в этом бланке нет, и отбирать по ним некого (ADR 0055). */}
+                {needsMachinist && (
+                  <Form.Item
+                    name="machinistId"
+                    label="Машинист"
+                    rules={[{ required: true, message: 'Выберите машиниста' }]}
+                    extra={
+                      esm2Weeks.length > 0
+                        ? `Будет выписано листов ЭСМ-2: ${esm2Weeks.length} — ${esm2Weeks
+                            .map(
+                              (w) =>
+                                `${formatDateOnly(w.from).slice(0, 5)}–${formatDateOnly(w.to).slice(0, 5)}`,
+                            )
+                            .join(', ')}`
+                        : 'На каждую неделю срока работ выписывается свой путевой лист'
+                    }
+                  >
+                    <AutoSelect
+                      options={machinistOptions}
+                      loading={machinistsLoading}
+                      placeholder="Кто сядет за технику"
+                      notFoundContent="В справочнике нет действующих водителей"
+                    />
+                  </Form.Item>
+                )}
               </>
             ) : (
               <>

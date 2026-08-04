@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, screen, waitFor } from '@testing-library/react';
 import type {
+  DriverDto,
   DriverSelectionDto,
   FreightTransportRequestDto,
   RouteTripFields,
@@ -12,7 +13,7 @@ import { json, mockHttp, type HttpMock, type RecordedCall } from './http';
 import { renderWithUser } from './render';
 import { selectOption } from './antd';
 import { list } from './factories/common';
-import { vehicleRequest } from './factories/vehicle';
+import { machinist, vehicleRequest } from './factories/vehicle';
 import { VehicleAssignModal } from '../src/pages/vehicle/VehicleAssignModal';
 
 /**
@@ -134,10 +135,14 @@ const REQUEST: FreightTransportRequestDto = {
   unloadingResponsiblePhone: '+7 926 000-00-02',
 };
 
+/** Машинист недельных листов ЭСМ-2: без него заказ техники на объект в работу не уходит. */
+const MACHINIST = machinist();
+
 /**
  * Заказ техники на объект той же машиной: разница с грузоперевозкой — только в виде заявки, и
- * этого достаточно, чтобы путевого листа не было (ADR 0041). Тип ТС и объект те же, что у
- * грузоперевозки: подбор техники идёт по типу, а перегон подставляет адрес площадки.
+ * этого достаточно, чтобы путевого листа на рейс не было (ADR 0041). Свой документ у неё есть —
+ * недельные ЭСМ-2 (миграция 0087), и их выписывает уже сам перевод в работу. Тип ТС и объект те
+ * же, что у грузоперевозки: подбор техники идёт по типу, а перегон подставляет адрес площадки.
  */
 const ON_SITE_REQUEST: SpecialEquipmentRequestDto = vehicleRequest({
   id: 'r-2',
@@ -257,6 +262,12 @@ interface Case {
   fleet?: VehicleDto[];
   /** Рейсы, которые сервер подсказывает на дату заявки. */
   routes?: VehicleRouteDto[];
+  /**
+   * Справочник водителей, из которого выбирают машиниста. По умолчанию — один: столько их обычно
+   * и нужно сценарию. Единственный вариант поле подставляет само (`AutoSelect`), поэтому там, где
+   * проверяется «машиниста не выбрали», список задают длиннее.
+   */
+  machinists?: DriverDto[];
 }
 
 /**
@@ -269,6 +280,7 @@ function renderModal({
   request = REQUEST,
   fleet = [OWN_VEHICLE, RENTAL_VEHICLE],
   routes = [],
+  machinists = [MACHINIST],
 }: Case = {}): HttpMock {
   const http = mockHttp({
     'GET /vehicles': () => json(list(fleet)),
@@ -290,6 +302,12 @@ function renderModal({
     /** Реквизиты выезда наследуются по выбранной машине и дате рейса. */
     'GET /vehicle-routes/suggest': () => json({ routes: [], trip: LAST_TRIP }),
     'GET /drivers/available': () => json(SELECTION),
+    /*
+     * Машинист заказа техники на объект (миграция 0087): на него выписываются недельные листы
+     * ЭСМ-2. Список приходит из справочника целиком, а не отбором под машину: граф СНИЛС и
+     * удостоверения в том бланке нет, и отбирать по ним некого (ADR 0055).
+     */
+    'GET /drivers': () => json(list(machinists)),
   });
 
   renderWithUser(
@@ -521,6 +539,9 @@ describe('доставка техники на объект', () => {
     fireEvent.click(screen.getByRole('checkbox', { name: /своим ходом/ }));
     await screen.findByDisplayValue('Химки, ул. Победы, 10');
     await selectOption('Водитель перегона', /Тестовый Водитель Первый/);
+    // Машинист — не водитель перегона: тот везёт технику на объект и едет по 4-П, а этот работает
+    // на площадке неделями, и на него выписываются ЭСМ-2.
+    await selectOption('Машинист', new RegExp(MACHINIST.fullName));
     fireEvent.change(screen.getByPlaceholderText('База, ул. Автомобильная, 3'), {
       target: { value: 'База, ул. Автомобильная, 3' },
     });
@@ -549,9 +570,64 @@ describe('доставка техники на объект', () => {
     renderModal({ vehicle: OWN_VEHICLE, onSubmit, request: ON_SITE_REQUEST });
     await screen.findByText('Доставка на объект');
 
+    await selectOption('Машинист', new RegExp(MACHINIST.fullName));
     fireEvent.click(screen.getByText('Взять в работу'));
     await waitFor(() => expect(onSubmit).toHaveBeenCalled());
     const body = onSubmit.mock.calls[0]![0] as { assignment: { delivery?: unknown } };
     expect(body.assignment.delivery).toBeUndefined();
+  });
+});
+
+/**
+ * Машинист заказа техники на объект (миграция 0087).
+ *
+ * Заявку берут в работу — и на каждую неделю её срока рождается лист ЭСМ-2. Выписываются они на
+ * человека, поэтому поле обязательное: лист без машиниста бухгалтерия не примет. Отбора у списка
+ * нет никакого — в бланке нет ни СНИЛС, ни водительского удостоверения, — и это ровно то, чем он
+ * отличается от «Водителя» рейса выше.
+ */
+describe('машинист и недельные листы ЭСМ-2', () => {
+  it('спрашивается у заказа техники на объект и обещает, сколько бланков уйдёт', async () => {
+    renderModal({ vehicle: OWN_VEHICLE, request: ON_SITE_REQUEST });
+
+    expect(await screen.findByLabelText('Машинист')).toBeDefined();
+    // Срок заявки — 10.08–12.08.2026, одна календарная неделя: лист будет один, и человек видит
+    // это до нажатия, а не узнаёт из журнала.
+    expect(await screen.findByText(/Будет выписано листов ЭСМ-2: 1/)).toBeDefined();
+  });
+
+  it('у грузоперевозки его нет: там лист выписывается на рейс, а не на неделю', async () => {
+    renderModal({ vehicle: OWN_VEHICLE });
+    await screen.findByText('Маршрут');
+    expect(screen.queryByLabelText('Машинист')).toBeNull();
+  });
+
+  it('без машиниста заявка в работу не уходит', async () => {
+    const onSubmit = vi.fn();
+    // Двое в справочнике: единственного `AutoSelect` подставил бы сам, и «не выбрали» было бы
+    // состоянием, которого в форме не бывает.
+    renderModal({
+      vehicle: OWN_VEHICLE,
+      onSubmit,
+      request: ON_SITE_REQUEST,
+      machinists: [MACHINIST, machinist({ id: 'p-2', fullName: 'Кузнецов Кузьма Кузьмич' })],
+    });
+    await screen.findByLabelText('Машинист');
+
+    fireEvent.click(screen.getByText('Взять в работу'));
+    await waitFor(() => expect(document.querySelector('.ant-form-item-has-error')).toBeTruthy());
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('уходит полем назначения — на него и выпишутся листы', async () => {
+    const onSubmit = vi.fn();
+    renderModal({ vehicle: OWN_VEHICLE, onSubmit, request: ON_SITE_REQUEST });
+    await screen.findByLabelText('Машинист');
+
+    await selectOption('Машинист', new RegExp(MACHINIST.fullName));
+    fireEvent.click(screen.getByText('Взять в работу'));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    const body = onSubmit.mock.calls[0]![0] as { assignment: { driverPersonId?: string } };
+    expect(body.assignment.driverPersonId).toBe(MACHINIST.id);
   });
 });

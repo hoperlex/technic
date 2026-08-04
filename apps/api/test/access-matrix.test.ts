@@ -202,9 +202,18 @@ const CASES: Case[] = [
     allowed: ['admin', 'manager', 'dispatcher'],
   },
   {
-    title: 'лист заявки в карточке — правом на листы, а не на заявки',
+    title: 'листы заявки в карточке — правом на листы, а не на заявки',
     method: 'GET',
-    url: `/api/v1/vehicle-requests/${RECORD_ID}/waybill`,
+    url: `/api/v1/vehicle-requests/${RECORD_ID}/waybills`,
+    allowed: ['admin', 'manager', 'dispatcher'],
+  },
+  // Вложения к бланку — своё право (`waybills.files`): смотреть журнал может и тот, кто документы
+  // к нему не подшивает. Состав ролей тот же, что у чтения и аннулирования, — журнал ведут они.
+  {
+    title: 'прикрепление скана к бланку — правом waybills.files',
+    method: 'POST',
+    url: `/api/v1/waybills/${RECORD_ID}/files`,
+    payload: { addFileIds: [RECORD_ID] },
     allowed: ['admin', 'manager', 'dispatcher'],
   },
   // ── Маршруты: обе проверки сразу, waybills.read И vehicleRequests.status ──
@@ -580,6 +589,73 @@ const CASES: Case[] = [
     title: 'заказ ТС — отзыв запроса на досрочное завершение',
     method: 'DELETE',
     url: `/api/v1/vehicle-requests/${RECORD_ID}/early-end`,
+    allowed: [
+      'admin',
+      'manager',
+      'dispatcher',
+      'shtab',
+      'rukstroy',
+      'department',
+      'department_head',
+    ],
+  },
+  {
+    // Смены (подтверждение работы по дням): читает их тот же, кто видит заявку, — в том числе
+    // арендодатель и наблюдатель: по этой таблице разбирают спор о часах.
+    title: 'заказ ТС — таблица смен',
+    method: 'GET',
+    url: `/api/v1/vehicle-requests/${RECORD_ID}/shifts`,
+    allowed: [
+      'admin',
+      'manager',
+      'dispatcher',
+      'shtab',
+      'rukstroy',
+      'department',
+      'department_head',
+      'observer',
+      'operator/vehicle_lessor',
+    ],
+  },
+  {
+    // Часы вносит тот, кто ведёт заявку, — тем же правом, что и правку: «объектная роль правит
+    // только "Новую"» здесь не применяется, смены и появляются только у заявки в работе.
+    title: 'заказ ТС — запись смены',
+    method: 'PUT',
+    url: `/api/v1/vehicle-requests/${RECORD_ID}/shifts/2026-08-03`,
+    payload: { machineHours: 8 },
+    allowed: [
+      'admin',
+      'manager',
+      'dispatcher',
+      'shtab',
+      'rukstroy',
+      'department',
+      'department_head',
+    ],
+  },
+  {
+    title: 'заказ ТС — удаление смены',
+    method: 'DELETE',
+    url: `/api/v1/vehicle-requests/${RECORD_ID}/shifts/2026-08-03`,
+    allowed: [
+      'admin',
+      'manager',
+      'dispatcher',
+      'shtab',
+      'rukstroy',
+      'department',
+      'department_head',
+    ],
+  },
+  {
+    // Подпись объекта под днём работы: круг «кто мог бы завести эту заявку» — право на заведение
+    // плюс область. Арендодатель и наблюдатель не подтверждают: первый — вторая сторона в споре
+    // о часах, второй не ведёт ничего.
+    title: 'заказ ТС — согласование смены',
+    method: 'POST',
+    url: `/api/v1/vehicle-requests/${RECORD_ID}/shifts/2026-08-03/approval`,
+    payload: { approved: true },
     allowed: [
       'admin',
       'manager',

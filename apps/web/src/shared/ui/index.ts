@@ -16,4 +16,5 @@ export * from './ListToolbar';
 export * from './PageTableLayout';
 export * from './SortSheet';
 export * from './SummaryBar';
+export * from './ViewFields';
 export * from './ViewModal';

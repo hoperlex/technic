@@ -83,17 +83,28 @@ const items: SpecialEquipmentRequestDto[] = [
     },
   }),
   onSite({ id: 'r3', num: 103, displayNumber: 'ТС-103', dateFrom: '2026-07-20', dateTo: ON_DATE }),
+  // Срок прошёл, а работа не принята: такую заявку срез не отпускает — закрыть её всё равно
+  // нельзя, и без строки о ней вспомнили бы через месяц.
+  onSite({
+    id: 'r4',
+    num: 104,
+    displayNumber: 'ТС-104',
+    dateFrom: '2026-07-18',
+    dateTo: '2026-07-21',
+    shifts: { approvedDays: 1, unapprovedPastDays: 3 },
+  }),
 ];
 
-const list: VehicleOnSiteListDto = { items, total: 3, page: 1, pageSize: 50, onDate: ON_DATE };
+const list: VehicleOnSiteListDto = { items, total: 4, page: 1, pageSize: 50, onDate: ON_DATE };
 
 /** Сводка считается сервером по тем же строкам: одна машина выходит, одна уезжает, одна ждёт визы. */
 const summary: VehicleOnSiteSummaryDto = {
-  total: 3,
+  total: 4,
   objects: 1,
   arrivedToday: 1,
   leavingToday: 1,
   earlyEndPending: 1,
+  shiftsPending: 1,
 };
 
 /**
@@ -137,8 +148,20 @@ describe('вкладка «На объекте»', () => {
 
     expect(await screen.findByText('ООО «Арендатех»')).toBeDefined();
     expect(document.querySelector('.ant-table')).toBeNull();
-    expect(document.querySelectorAll('.list-card')).toHaveLength(3);
+    expect(document.querySelectorAll('.list-card')).toHaveLength(4);
     expect(screen.getByText('вышла сегодня')).toBeDefined();
+  });
+
+  it('приёмка работы по дням видна в строке, а просроченная заявка не исчезает из среза', async () => {
+    renderTab();
+
+    expect(await screen.findByText('ООО «Арендатех»')).toBeDefined();
+    // Заявка, чей срок прошёл, держится в срезе неподтверждёнными сменами — и подписана иначе,
+    // чем работающая: техника уехала, а работа не принята.
+    expect(screen.getByText('смены не согласованы')).toBeDefined();
+    expect(screen.getByText('не согласовано дней: 3')).toBeDefined();
+    // Столбец отвечает и по работающим заявкам: сколько дней уже принято из заказанных.
+    expect(screen.getByText('согласовано 1 из 4')).toBeDefined();
   });
 
   it('срез ведёт одно действие — досрочное завершение; статусы и правка остаются в списке', async () => {
@@ -149,7 +172,9 @@ describe('вкладка «На объекте»', () => {
     expect(screen.queryByRole('button', { name: 'Изменить статус' })).toBeNull();
     // Действия строки — иконки с подсказками (ADR 0030); ищутся по подписи, которую подсказка
     // дублирует в `aria-label`: сама она в разметку до наведения не попадает.
-    expect(screen.getAllByLabelText('Открыть карточку')).toHaveLength(3);
+    expect(screen.getAllByLabelText('Открыть карточку')).toHaveLength(4);
+    // Смены ведут отсюда же: срез отвечает, что стоит на площадке, — и здесь же принимают работу.
+    expect(screen.getAllByLabelText('Смены')).toHaveLength(4);
 
     // Заявка, которой есть что сокращать, получает действие; уезжающая сегодня (r3) — нет.
     expect(screen.getAllByLabelText('Завершить досрочно')).toHaveLength(1);

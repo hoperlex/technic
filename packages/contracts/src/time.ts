@@ -111,6 +111,60 @@ export function moscowDateOf(date: Date): string {
 }
 
 /**
+ * Календарный ключ `YYYY-MM-DD`, сдвинутый на `days` суток. Считается в UTC: день здесь — это
+ * день календаря, а не сутки часового пояса, поэтому переход через границу месяца и високосный
+ * февраль отрабатывают сами, а летнего времени в Москве нет с 2014 года.
+ *
+ * Нераспознанный ключ возвращается как есть: подставлять «сегодня» вместо мусора значило бы
+ * молча посчитать не тот срок.
+ */
+export function shiftDateKey(dateKey: string, days: number): string {
+  const at = Date.parse(`${dateKey}T00:00:00Z`);
+  if (Number.isNaN(at)) return dateKey;
+  return new Date(at + days * 86_400_000).toISOString().slice(0, 10);
+}
+
+/**
+ * Понедельник той календарной недели, в которую попадает день. Неделя здесь начинается с
+ * понедельника — так её читают и производственный календарь, и недельные бланки (ЭСМ-2), тогда
+ * как `Date.getUTCDay()` считает от воскресенья.
+ *
+ * Нераспознанный ключ возвращается как есть — тем же правилом, что и `shiftDateKey`.
+ */
+export function weekStartKey(dateKey: string): string {
+  const at = Date.parse(`${dateKey}T00:00:00Z`);
+  if (Number.isNaN(at)) return dateKey;
+  const weekday = (new Date(at).getUTCDay() + 6) % 7;
+  return new Date(at - weekday * 86_400_000).toISOString().slice(0, 10);
+}
+
+/**
+ * Все календарные дни от `from` до `to` включительно. Пустой список — границы не разбираются
+ * или конец раньше начала: такого периода не существует, и выдумывать за него дни не нужно.
+ */
+export function dateKeysBetween(from: string, to: string): string[] {
+  const start = Date.parse(`${from}T00:00:00Z`);
+  const end = Date.parse(`${to}T00:00:00Z`);
+  if (Number.isNaN(start) || Number.isNaN(end) || end < start) return [];
+  const days: string[] = [];
+  for (let at = start; at <= end; at += 86_400_000) {
+    days.push(new Date(at).toISOString().slice(0, 10));
+  }
+  return days;
+}
+
+/**
+ * Сколько календарных дней в периоде от `from` до `to` включительно; 0 — периода нет.
+ * Тем же счётом считается и «сколько дней заказано», и «сколько из них уже прошло».
+ */
+export function dateKeySpan(from: string, to: string): number {
+  const start = Date.parse(`${from}T00:00:00Z`);
+  const end = Date.parse(`${to}T00:00:00Z`);
+  if (Number.isNaN(start) || Number.isNaN(end) || end < start) return 0;
+  return Math.round((end - start) / 86_400_000) + 1;
+}
+
+/**
  * Отметка «дата и время» по МСК для показа человеку: `DD.MM.YYYY HH:mm`, а при незаданном
  * времени — только дата. Нужна серверу: в историю заявки значения полей уходят снимком уже
  * готовым текстом (справочник мог измениться), и формат там обязан совпадать с таблицей в вебе.

@@ -1,4 +1,4 @@
-import { Button, Descriptions, Input, Space, Spin, Tag, Typography } from 'antd';
+import { Button, Input, Space, Spin, Tag, Typography } from 'antd';
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
@@ -25,8 +25,7 @@ import { FileLinkList, FilesButton } from '../../components/FileLinks';
 import { type HistoryRow, RequestHistoryTable } from '../../components/RequestHistory';
 import { ResponsibleValue } from '../../components/ResponsibleFields';
 import { UserAvatar } from '../../components/UserAvatar';
-import { ViewModal } from '@shared/ui';
-import { useIsMobile } from '@shared/lib';
+import { ViewFields, ViewModal } from '@shared/ui';
 import { formatDateTime, formatDateTimeMaybe, formatMoney } from '../../utils/format';
 
 /**
@@ -228,7 +227,6 @@ export function WasteRequestViewModal({
   onSaveOperatorComment,
   savingOperatorComment,
 }: Props) {
-  const isMobile = useIsMobile();
   const { data: history, isPending } = useQuery({
     queryKey: ['waste-requests', request?.id, 'history'],
     queryFn: () => wasteRequestsApi.history(request!.id),
@@ -276,7 +274,7 @@ export function WasteRequestViewModal({
         {
           key: 'object',
           label: 'Объект',
-          span: 3,
+          full: true,
           children: `${request.objectCode} — ${request.objectName}`,
         },
         {
@@ -293,7 +291,6 @@ export function WasteRequestViewModal({
         {
           key: 'responsible',
           label: 'Ответственный',
-          span: 3,
           children: (
             <ResponsibleValue name={request.responsibleName} phone={request.responsiblePhone} />
           ),
@@ -307,7 +304,6 @@ export function WasteRequestViewModal({
               {
                 key: 'containerType',
                 label: 'Контейнер / машина',
-                span: priced ? 1 : 3,
                 // Количество — частью предмета: «Контейнер 8 м³ × 2» (ADR 0054).
                 children: wasteSubjectLabel(request),
               },
@@ -319,7 +315,7 @@ export function WasteRequestViewModal({
               {
                 key: 'containerOwner',
                 label: 'Владелец контейнера',
-                span: 3,
+                full: true,
                 children: containerOwnerMismatch(request) ? (
                   <Typography.Text type="warning">
                     {`${request.containerOwnerName ?? 'не указан'} — вывозит «${request.operatorName ?? '—'}»`}
@@ -379,7 +375,7 @@ export function WasteRequestViewModal({
               {
                 key: 'hauled',
                 label: 'Вывезено',
-                span: 3,
+                full: true,
                 children: (
                   <div style={{ lineHeight: 1.3 }}>
                     <div>
@@ -421,7 +417,7 @@ export function WasteRequestViewModal({
               {
                 key: 'cancelReason',
                 label: 'Причина отмены',
-                span: 3,
+                full: true,
                 children: request.cancelReason,
               },
             ]
@@ -429,7 +425,7 @@ export function WasteRequestViewModal({
         {
           key: 'comment',
           label: 'Комментарий',
-          span: 3,
+          full: true,
           children: (
             <CommentField
               request={request}
@@ -464,18 +460,9 @@ export function WasteRequestViewModal({
     >
       {request && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          {/* На телефоне поля идут в одну колонку: в две подпись и значение делят 180 px и
-              переносятся по слогам. Разметка полей общая — меняется только число колонок. */}
-          <Descriptions
-            size="small"
-            bordered
-            // Три колонки на десктопе: окно шире, и в двух его половина оставалась пустой,
-            // а карточка всё равно скроллилась. `span: 3` у поля означает «во всю ширину» —
-            // раньше ту же роль играла двойка. На телефоне колонка одна, и span не действует.
-            column={isMobile ? 1 : 3}
-            layout={isMobile ? 'vertical' : 'horizontal'}
-            items={fields}
-          />
+          {/* Раскладка — забота карточки: поля говорят только, годится ли им доля строки
+              (`full`). Число колонок и их ширины считает ViewFields, на телефоне колонка одна. */}
+          <ViewFields items={fields} />
 
           {request.files.length > 0 && (
             <div>

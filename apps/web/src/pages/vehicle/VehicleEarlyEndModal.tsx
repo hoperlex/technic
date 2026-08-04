@@ -4,6 +4,7 @@ import dayjs, { type Dayjs } from 'dayjs';
 import {
   earlyEndDateBounds,
   earlyEndDaysSaved,
+  esm2Periods,
   type RequestVehicleEarlyEndInput,
   requestCustomerName,
   type SpecialEquipmentRequestDto,
@@ -70,6 +71,31 @@ export function VehicleEarlyEndModal({
   // и аренду. Считает контракт, чтобы подпись не разошлась с тем, что запишет сервер.
   const daysSaved =
     request?.dateTo && newDateKey ? earlyEndDaysSaved(request.dateTo, newDateKey) : null;
+
+  /**
+   * Что станет с путевыми листами (миграция 0087). Сокращение срока переписывает бумагу: недели
+   * за новой датой аннулируются целиком, а неделя, в которую попал новый последний день,
+   * аннулируется и выписывается заново — с днями по него включительно. Считается тем же
+   * `esm2Periods`, которым выписывает сервер, поэтому обещание совпадёт с тем, что произойдёт.
+   *
+   * Прошедшие недели в счёт не идут: их листы отработаны, и сверка их не трогает.
+   */
+  const waybillsNote = (() => {
+    if (!request?.assignment || request.assignment.ownership !== 'own' || !newDateKey) return null;
+    const before = esm2Periods(request.dateFrom, request.dateTo).filter((w) => w.to >= onDate);
+    const after = esm2Periods(request.dateFrom, newDateKey).filter((w) => w.to >= onDate);
+    const cancelled = before.filter((w) => !after.some((a) => a.from === w.from && a.to === w.to));
+    const reissued = after.filter((w) => !before.some((b) => b.from === w.from && b.to === w.to));
+    if (cancelled.length === 0 && reissued.length === 0) return null;
+    const weeks = (list: typeof before) =>
+      list.map((w) => `${formatDateOnly(w.from)}–${formatDateOnly(w.to)}`).join(', ');
+    return [
+      cancelled.length > 0 ? `Аннулируются листы ЭСМ-2: ${weeks(cancelled)}` : null,
+      reissued.length > 0 ? `выписываются заново: ${weeks(reissued)}` : null,
+    ]
+      .filter(Boolean)
+      .join('; ');
+  })();
 
   const submit = (v: FormValues) => {
     const dateKey = v.newDateTo?.format('YYYY-MM-DD');
@@ -164,6 +190,14 @@ export function VehicleEarlyEndModal({
                   ? 'Срок заявки изменится сразу — вы её и визируете.'
                   : 'Запрос уйдёт на визу руководителя строительства; до визы срок заявки прежний.'}
               </Typography.Text>
+              {/* Виза не только освобождает технику — она сжигает бланки строгой отчётности.
+                Листы недель за новой датой аннулируются, а текущая неделя выписывается заново с
+                укороченными днями, и об этом надо знать до нажатия, а не из журнала. */}
+              {waybillsNote && (
+                <div style={{ marginTop: 8 }}>
+                  <Typography.Text type="warning">{waybillsNote}</Typography.Text>
+                </div>
+              )}
             </FormGrid.Full>
           </FormGrid>
         </Form>
