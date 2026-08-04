@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "bundle:size": "node scripts/bundle-size.mjs",
-    "check:stage1-layout": "node scripts/check-stage1-layout.mjs"
+    "check:stage1-layout": "node scripts/check-stage1-layout.mjs",
+    "check:stage2-layout": "node scripts/check-stage2-layout.mjs"
   },
   "dependencies": {
     "@ant-design/icons": "6.3.2",
