@@ -12,7 +12,8 @@ import {
   type WasteRequestDto,
 } from '@technic/contracts';
 import { FILE_MAX_SIZE } from '@shared/config';
-import { filesApi, wasteTariffsApi } from '../../api/resources';
+import { filesApi } from '../../api/resources';
+import { wasteTariffResolveQuery } from '@entities/waste-tariff';
 import { FileLinkList } from '../../components/FileLinks';
 import { FormGrid } from '@shared/ui';
 import { FormModal } from '@shared/ui';
@@ -74,13 +75,11 @@ export function WasteDoneModal({ request, confirmLoading, onCancel, onSubmit }: 
   const operatorId = request?.operatorCounterpartyId ?? null;
   const needTariff = byFact && request?.pricePerM3 == null && !!wasteTypeId;
   const { data: tariffResult } = useQuery({
-    queryKey: ['waste-tariffs', 'resolve', wasteTypeId, operatorId],
-    queryFn: () =>
-      wasteTariffsApi.resolve(
-        wasteTypeId!,
-        { containerKind: WASTE_REMOVAL_CONTAINER_KIND },
-        operatorId,
-      ),
+    ...wasteTariffResolveQuery({
+      wasteTypeId,
+      target: { containerKind: WASTE_REMOVAL_CONTAINER_KIND },
+      operatorCounterpartyId: operatorId,
+    }),
     enabled: needTariff,
     staleTime: 60_000,
   });

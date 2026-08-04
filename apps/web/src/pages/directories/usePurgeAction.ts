@@ -9,11 +9,14 @@ interface Options {
   /** Ручка справочника: `…Api.purge`. */
   purge: (id: string) => Promise<unknown>;
   /**
-   * Ключи запросов, которые после удаления устарели. Принимается `readonly`: ключи приходят из
-   * реестра сущности, где заморожены намеренно — случайная запись в общий массив испортила бы
-   * ключи всей сущности разом.
+   * Запросы, устаревшие после удаления, — **список ключей**, а не список их первых сегментов.
+   *
+   * Различие не косметическое: удаление контрагента задевает и машины, и объекты, поэтому ключей
+   * бывает несколько. Прежняя сигнатура принимала плоский массив и оборачивала каждый элемент в
+   * свой ключ — с корнем сущности это работало по совпадению формы, а стоило передать составной
+   * ключ (`objectKeys.list(params)`), и вместо одного запроса погасились бы три чужих, молча.
    */
-  invalidate: readonly unknown[];
+  invalidate: readonly (readonly unknown[])[];
 }
 
 interface PurgeAction {
@@ -44,7 +47,7 @@ export function usePurgeAction({ subject, purge, invalidate }: Options): PurgeAc
     mutationFn: (id: string) => purge(id),
     onSuccess: () => {
       message.success('Запись удалена окончательно');
-      for (const key of invalidate) void qc.invalidateQueries({ queryKey: [key] });
+      for (const key of invalidate) void qc.invalidateQueries({ queryKey: key });
     },
     // Отказ сервера — обычный ответ, а не сбой: чаще всего он называет, кто ещё ссылается
     // на запись, и это единственный способ узнать, что мешает.

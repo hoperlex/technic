@@ -19,24 +19,18 @@ import type {
   CompleteVehicleRequestInput,
   CompleteWasteRequestInput,
   ConfirmScheduleBody,
-  ContainerKind,
-  ContainerTypeDto,
   CounterpartyDto,
-  CreateContainerTypeInput,
   CreateCounterpartyInput,
-  CreateDepartmentInput,
   CreateUserInput,
   CreateVehicleCategoryInput,
   CreateVehicleInput,
   CreateVehicleRequestInput,
   CreateVehicleSpecInput,
   CreateVehicleTypeInput,
-  CreateWasteTariffInput,
   DownloadUrlDto,
   FileDisposition,
   FileDto,
   ListResult,
-  DepartmentDto,
   RequestHistoryEntryDto,
   RequestStatus,
   RequestVehicleEarlyEndInput,
@@ -44,9 +38,7 @@ import type {
   RequestWaybillDto,
   RouteTripFields,
   SaveVehicleRequestShiftBody,
-  UpdateContainerTypeInput,
   UpdateCounterpartyInput,
-  UpdateDepartmentInput,
   UpdateUserInput,
   UpdateVehicleCategoryInput,
   UpdateVehicleInput,
@@ -54,8 +46,6 @@ import type {
   UpdateVehicleSpecInput,
   UpdateVehicleTypeInput,
   UpdateVehicleTypeSpecInput,
-  UpdateWasteTariffInput,
-  UpdateWasteTypeInput,
   UploadSessionDto,
   UserDto,
   VehicleCategoryDto,
@@ -72,15 +62,9 @@ import type {
   VehicleSpecDto,
   VehicleTypeDto,
   VehicleTypeSpecDto,
-  WarehouseDto,
-  CreateWarehouseInput,
-  UpdateWarehouseInput,
   PresentContainerGroupDto,
   WasteRequestDto,
   WasteRequestSummaryDto,
-  WasteTariffDto,
-  WasteTypeDto,
-  ResolveWasteTariffResultDto,
 } from '@technic/contracts';
 import { apiDownload, apiFetch, apiFetchBlob } from '@shared/api';
 
@@ -100,22 +84,11 @@ export const usersApi = {
   pendingCount: () => apiFetch<{ count: number }>('/users/pending-count'),
 };
 
-/** Справочник отделов (ADR 0040) — вторая ось области, тот же набор операций, что у объектов. */
-export const departmentsApi = {
-  list: (q: Query) => apiFetch<ListResult<DepartmentDto>>('/departments', { query: q }),
-  create: (body: CreateDepartmentInput) =>
-    apiFetch<DepartmentDto>('/departments', { method: 'POST', body }),
-  update: (id: string, body: UpdateDepartmentInput) =>
-    apiFetch<DepartmentDto>(`/departments/${id}`, { method: 'PATCH', body }),
-  remove: (id: string) => apiFetch<DepartmentDto>(`/departments/${id}`, { method: 'DELETE' }),
-  /**
-   * Удаление насовсем (ADR 0060) — второй шаг после деактивации, право `records.purge`. Отдельная
-   * ручка, а не флаг у `remove`: у них разные права и разная необратимость, и перепутать их в
-   * вызове нельзя.
-   */
-  purge: (id: string) =>
-    apiFetch<{ ok: boolean }>(`/departments/${id}/purge`, { method: 'DELETE' }),
-};
+/**
+ * Отделы переехали в `@entities/department`. Реэкспорт держится до конца этапа 2 на тех же
+ * условиях, что у объектов: новые ручки добавляются в слайс, а не сюда.
+ */
+export { departmentsApi } from '@entities/department';
 
 /**
  * Объекты переехали в `@entities/object`. Реэкспорт держится до конца этапа 2: по этому пути
@@ -266,29 +239,16 @@ export const counterpartiesApi = {
 };
 
 /**
- * Справочник складов поставщиков (ADR 0051). Удаление здесь настоящее, а не деактивация: ссылок
- * на склад пока нет, и ошибочный адрес вычищают, а не держат неактивным в списках.
+ * Склады поставщиков переехали в `@entities/warehouse`. Реэкспорт держится до конца этапа 2 на тех
+ * же условиях, что у объектов: новые ручки добавляются в слайс, а не сюда.
  */
-export const warehousesApi = {
-  list: (q: Query) => apiFetch<ListResult<WarehouseDto>>('/warehouses', { query: q }),
-  create: (body: CreateWarehouseInput) =>
-    apiFetch<WarehouseDto>('/warehouses', { method: 'POST', body }),
-  update: (id: string, body: UpdateWarehouseInput) =>
-    apiFetch<WarehouseDto>(`/warehouses/${id}`, { method: 'PATCH', body }),
-  remove: (id: string) => apiFetch<{ ok: boolean }>(`/warehouses/${id}`, { method: 'DELETE' }),
-};
+export { warehousesApi } from '@entities/warehouse';
 
-export const containerTypesApi = {
-  list: (q: Query) => apiFetch<ListResult<ContainerTypeDto>>('/container-types', { query: q }),
-  create: (body: CreateContainerTypeInput) =>
-    apiFetch<ContainerTypeDto>('/container-types', { method: 'POST', body }),
-  // Обычного удаления нет: деактивация через update({ isActive: false }).
-  update: (id: string, body: UpdateContainerTypeInput) =>
-    apiFetch<ContainerTypeDto>(`/container-types/${id}`, { method: 'PATCH', body }),
-  /** Деактивированный тип администратор сносит насовсем (ADR 0060). */
-  purge: (id: string) =>
-    apiFetch<{ ok: boolean }>(`/container-types/${id}/purge`, { method: 'DELETE' }),
-};
+/**
+ * Типы контейнеров переехали в `@entities/container-type`; реэкспорт держится до конца этапа 2 тем
+ * же порядком, что у объектов. Новые ручки добавляются в слайс, а не сюда.
+ */
+export { containerTypesApi } from '@entities/container-type';
 
 export const vehicleKindsApi = {
   list: (q: Query) => apiFetch<ListResult<VehicleKindDto>>('/vehicle-kinds', { query: q }),
@@ -562,47 +522,14 @@ export interface WasteRequestUpdatePayload {
   version: number;
 }
 
-// Заведения типа здесь нет: тип появляется вместе с первой ценой (wasteTariffsApi.create,
-// ADR 0017). Обычного удаления тоже нет — деактивация через update({ isActive: false }).
-export const wasteTypesApi = {
-  list: (q: Query) => apiFetch<ListResult<WasteTypeDto>>('/waste-types', { query: q }),
-  update: (id: string, body: UpdateWasteTypeInput) =>
-    apiFetch<WasteTypeDto>(`/waste-types/${id}`, { method: 'PATCH', body }),
-  /** Деактивированный тип администратор сносит насовсем (ADR 0060). */
-  purge: (id: string) =>
-    apiFetch<{ ok: boolean }>(`/waste-types/${id}/purge`, { method: 'DELETE' }),
-};
-
-export const wasteTariffsApi = {
-  list: (q: Query) => apiFetch<ListResult<WasteTariffDto>>('/waste-tariffs', { query: q }),
-  /**
-   * Тариф под пару «тип мусора × техника» — предпросмотр цены в форме заявки. Цель подбора —
-   * либо конкретный тип из справочника, либо вид техники целиком: вывоз мусора заказывает объём
-   * и машину не называет (ADR 0022). Оператор задан — цена его прайса; не задан — минимальная
-   * среди операторов с пометкой `isMinimum` (цена «от», ADR 0026). Незаданный прайс приходит как
-   * `{ tariff: null }`, а не ошибкой: сбой запроса форма показывает иначе, чем отсутствие цены.
-   */
-  resolve: (
-    wasteTypeId: string,
-    target: { containerTypeId: string } | { containerKind: ContainerKind },
-    operatorCounterpartyId?: string | null,
-  ) =>
-    apiFetch<ResolveWasteTariffResultDto>('/waste-tariffs/resolve', {
-      query: {
-        wasteTypeId,
-        ...target,
-        ...(operatorCounterpartyId ? { operatorCounterpartyId } : {}),
-      },
-    }),
-  create: (body: CreateWasteTariffInput) =>
-    apiFetch<WasteTariffDto>('/waste-tariffs', { method: 'POST', body }),
-  /** Правка цены не переписывает суммы оформленных заявок: в них снимок тарифа (ADR 0009). */
-  update: (id: string, body: UpdateWasteTariffInput) =>
-    apiFetch<WasteTariffDto>(`/waste-tariffs/${id}`, { method: 'PATCH', body }),
-  /** Отключённую цену администратор сносит насовсем (ADR 0060). */
-  purge: (id: string) =>
-    apiFetch<{ ok: boolean }>(`/waste-tariffs/${id}/purge`, { method: 'DELETE' }),
-};
+/**
+ * Типы мусора и прайс вывоза переехали в `@entities/waste-type` и `@entities/waste-tariff`. Слайса
+ * два, а не один общий: тип мусора спрашивают и там, где прайса нет вовсе (форма заявки), — и
+ * тянуть за ним весь прайс незачем. Связь между ними односторонняя и живёт в ручках прайса: тип
+ * заводится вместе с первой ценой (ADR 0017).
+ */
+export { wasteTypesApi } from '@entities/waste-type';
+export { wasteTariffsApi } from '@entities/waste-tariff';
 
 export const wasteRequestsApi = {
   list: (q: Query) => apiFetch<ListResult<WasteRequestDto>>('/waste-requests', { query: q }),

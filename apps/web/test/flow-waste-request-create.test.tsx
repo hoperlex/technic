@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { fireEvent, screen, waitFor } from '@testing-library/react';
 import dayjs from 'dayjs';
 import { minRequestDateKey, type WasteRequestDto } from '@technic/contracts';
@@ -22,7 +22,6 @@ import { expectModalClosed } from './antd';
 
 // Сценарий ведёт весь экран — список, форму, сохранение: пяти секунд по умолчанию ему хватает не
 // всегда, а упавший по таймауту тест читается как поломка портала.
-vi.setConfig({ testTimeout: 20_000 });
 
 /** День доставки — от «сегодня по МСК»: тем же правилом форма запирает прошедшие даты. */
 const DELIVERY_DAY = dayjs(minRequestDateKey()).add(3, 'day').format('YYYY-MM-DD');

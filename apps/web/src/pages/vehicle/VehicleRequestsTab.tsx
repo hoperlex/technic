@@ -77,7 +77,7 @@ import { actionsColumn, textColumn } from '@shared/ui';
 import { TimeInput, optionalWorkTimeRule } from '../../components/TimeInput';
 import { UserAvatar } from '../../components/UserAvatar';
 import { ObjectCell } from '../../components/ObjectCell';
-import { AddressAutoComplete } from '../../components/AddressAutoComplete';
+import { AddressAutoComplete } from '@entities/address';
 import { useIsMobile } from '@shared/lib';
 import { useListParams } from '@shared/lib';
 import {

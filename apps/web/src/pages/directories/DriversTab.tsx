@@ -261,7 +261,7 @@ export function DriversTab() {
   const purge = usePurgeAction({
     subject: 'водителя',
     purge: driversApi.purge,
-    invalidate: ['drivers'],
+    invalidate: [['drivers']],
   });
 
   const confirmRemove = (d: DriverDto) =>

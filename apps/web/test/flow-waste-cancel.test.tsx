@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { json, mockHttp } from './http';
 import { renderWithUser } from './render';
@@ -19,7 +19,6 @@ import { expectModalClosed } from './antd';
 
 // Сценарий ведёт весь экран — список, меню статусов, окно причины: пяти секунд по умолчанию ему
 // хватает не всегда, а упавший по таймауту тест читается как поломка портала.
-vi.setConfig({ testTimeout: 20_000 });
 
 /** Заявка в работе: у неё есть что отменять, и версия у неё уже не первая. */
 const REQUEST = wasteRequest({

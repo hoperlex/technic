@@ -30,7 +30,7 @@ import {
 } from '@technic/contracts';
 import { vehicleRequestsApi } from '../../api/resources';
 import { useAuth } from '../../auth/AuthContext';
-import { AddressCell } from '../../components/AddressAutoComplete';
+import { AddressCell } from '@entities/address';
 import { FileLinkList } from '../../components/FileLinks';
 import { type HistoryRow, RequestHistoryTable } from '../../components/RequestHistory';
 import { ResponsibleValue } from '../../components/ResponsibleFields';

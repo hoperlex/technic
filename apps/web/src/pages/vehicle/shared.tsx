@@ -22,7 +22,7 @@ import {
   type VehicleRequestDto,
   type VehicleRequestEarlyEndDto,
 } from '@technic/contracts';
-import { departmentsApi, filesApi, vehicleRequestsApi } from '../../api/resources';
+import { filesApi, vehicleRequestsApi } from '../../api/resources';
 import {
   useVehicleClassifications,
   type VehicleClassificationGroup,
@@ -36,6 +36,7 @@ import { useIsMobile } from '@shared/lib';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage, formatDateTime } from '../../utils/format';
 import { objectsApi, objectKeys } from '@entities/object';
+import { departmentOptionsQuery } from '@entities/department';
 
 export const FILE_MAX_COUNT = 20;
 export const FILE_MAX_SIZE = 52_428_800; // 50 МБ
@@ -82,21 +83,8 @@ export function useObjectOptions() {
  * заявку заводят на действующее подразделение, а у заведённых наименование приходит с заявкой.
  */
 export function useDepartmentOptions() {
-  const { data, isFetching } = useQuery({
-    queryKey: ['departments', 'for-select'],
-    queryFn: () =>
-      departmentsApi.list({
-        page: 1,
-        pageSize: 500,
-        isActive: 'true',
-        sortBy: 'name',
-        sortOrder: 'asc',
-      }),
-  });
-  return {
-    options: (data?.items ?? []).map((d) => ({ value: d.id, label: `${d.code} — ${d.name}` })),
-    loading: isFetching,
-  };
+  const { data, isFetching } = useQuery(departmentOptionsQuery());
+  return { options: data ?? [], loading: isFetching };
 }
 
 /**

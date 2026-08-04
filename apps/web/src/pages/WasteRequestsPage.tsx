@@ -57,12 +57,9 @@ import {
   wasteSubjectLabel,
 } from '@technic/contracts';
 import {
-  containerTypesApi,
   counterpartiesApi,
   filesApi,
   wasteRequestsApi,
-  wasteTariffsApi,
-  wasteTypesApi,
   type WasteRequestPayload,
   type WasteRequestUpdatePayload,
 } from '../api/resources';
@@ -103,6 +100,9 @@ import { WasteDoneModal } from './waste/WasteDoneModal';
 import { WasteRequestViewModal } from './waste/WasteRequestViewModal';
 import { MOSCOW_TZ } from '@shared/config';
 import { objectsApi, objectKeys } from '@entities/object';
+import { containerTypeOptionsQuery } from '@entities/container-type';
+import { wasteTypeOptionsQuery } from '@entities/waste-type';
+import { wasteTariffResolveQuery } from '@entities/waste-tariff';
 
 const FILE_MAX_SIZE = 52_428_800; // 50 МБ
 const FILE_MAX_COUNT = 20;
@@ -415,17 +415,11 @@ function RequestsTab() {
         sortOrder: 'asc',
       }),
   });
-  const { data: types, isLoading: typesLoading } = useQuery({
-    queryKey: ['container-types', 'for-select'],
-    queryFn: () =>
-      containerTypesApi.list({
-        page: 1,
-        pageSize: 500,
-        isActive: 'true',
-        sortBy: 'sortOrder',
-        sortOrder: 'asc',
-      }),
-  });
+  // Справочник берётся целиком и раскладывается по видам ниже: заявке нужны и контейнеры, и
+  // самосвалы, а второй запрос за тем же ответом только удлинил бы первый экран.
+  const { data: types, isLoading: typesLoading } = useQuery(
+    containerTypeOptionsQuery({ activeOnly: true }),
+  );
   const objectOptions = limitObjectOptions(
     (objects?.items ?? []).map((o) => ({
       value: o.id,
@@ -454,18 +448,9 @@ function RequestsTab() {
   // Типы мусора — только для вывоза (ADR 0019). Спрашиваются
   // только типы с действующей ценой (ADR 0017): выбор типа без тарифа кончался бы отказом
   // «тариф не найден» уже при сохранении заявки.
-  const { data: wasteTypes, isLoading: wasteTypesLoading } = useQuery({
-    queryKey: ['waste-types', 'for-select', 'priced'],
-    queryFn: () =>
-      wasteTypesApi.list({
-        page: 1,
-        pageSize: 500,
-        isActive: 'true',
-        hasActiveTariff: 'true',
-        sortBy: 'sortOrder',
-        sortOrder: 'asc',
-      }),
-  });
+  const { data: wasteTypes, isLoading: wasteTypesLoading } = useQuery(
+    wasteTypeOptionsQuery({ pricedOnly: true }),
+  );
   const wasteTypeOptions = (wasteTypes?.items ?? []).map((w) => ({ value: w.id, label: w.name }));
 
   // Операторы вывоза — контрагенты соответствующего типа (ADR 0010). Оператору этот список
@@ -549,13 +534,11 @@ function RequestsTab() {
   // `tariff: null` при 200, поэтому «цены нет» и «запрос не прошёл» — разные ветки, а не общая
   // ошибка.
   const { data: tariffResult, isError: tariffRequestFailed } = useQuery({
-    queryKey: ['waste-tariffs', 'resolve', watchWasteTypeId, watchOperatorId],
-    queryFn: () =>
-      wasteTariffsApi.resolve(
-        watchWasteTypeId!,
-        { containerKind: WASTE_REMOVAL_CONTAINER_KIND },
-        watchOperatorId,
-      ),
+    ...wasteTariffResolveQuery({
+      wasteTypeId: watchWasteTypeId,
+      target: { containerKind: WASTE_REMOVAL_CONTAINER_KIND },
+      operatorCounterpartyId: watchOperatorId,
+    }),
     enabled: isPriced && !!watchWasteTypeId,
   });
   const tariff = tariffResult?.tariff ?? null;

@@ -29,12 +29,10 @@ import {
   wasteTypeDuplicateMessage,
   type WasteTypeDto,
 } from '@technic/contracts';
-import {
-  containerTypesApi,
-  counterpartiesApi,
-  wasteTariffsApi,
-  wasteTypesApi,
-} from '../../api/resources';
+import { counterpartiesApi } from '../../api/resources';
+import { containerTypeOptionsQuery } from '@entities/container-type';
+import { wasteTariffKeys, wasteTariffsApi } from '@entities/waste-tariff';
+import { wasteTypeKeys, wasteTypeOptionsQuery, wasteTypesApi } from '@entities/waste-type';
 import { AutoSelect } from '@shared/ui';
 import { DataTable } from '@shared/ui';
 import { FormModal } from '@shared/ui';
@@ -83,7 +81,6 @@ interface TypeFormValues {
   isActive: boolean;
 }
 
-const selectQuery = { page: 1, pageSize: 500, sortBy: 'sortOrder', sortOrder: 'asc' } as const;
 const operatorsQuery = {
   page: 1,
   pageSize: 200,
@@ -117,7 +114,10 @@ export function WasteTariffsTab() {
   }>({}, { searchKeys: [] });
 
   const { data, isFetching } = useQuery({
-    queryKey: ['waste-tariffs', 'grid', params.wasteTypeId, params.isActive],
+    queryKey: wasteTariffKeys.grid({
+      wasteTypeId: params.wasteTypeId,
+      isActive: params.isActive,
+    }),
     queryFn: () =>
       wasteTariffsApi.list({
         page: 1,
@@ -127,16 +127,14 @@ export function WasteTariffsTab() {
       }),
   });
 
-  // Справочники для селектов. Неактивные не прячем: тариф мог быть заведён до деактивации,
-  // и при его правке выбор должен показывать сохранённое значение, а не пустоту.
-  const { data: wasteTypesData, isLoading: wasteTypesLoading } = useQuery({
-    queryKey: ['waste-types', 'for-select'],
-    queryFn: () => wasteTypesApi.list(selectQuery),
-  });
-  const { data: containerTypesData, isLoading: containerTypesLoading } = useQuery({
-    queryKey: ['container-types', 'for-select'],
-    queryFn: () => containerTypesApi.list(selectQuery),
-  });
+  // Справочники для селектов — целиком, вместе с неактивными: тариф мог быть заведён до
+  // деактивации, и при его правке выбор должен показывать сохранённое значение, а не пустоту.
+  const { data: wasteTypesData, isLoading: wasteTypesLoading } = useQuery(
+    wasteTypeOptionsQuery({ pricedOnly: false }),
+  );
+  const { data: containerTypesData, isLoading: containerTypesLoading } = useQuery(
+    containerTypeOptionsQuery({ activeOnly: false }),
+  );
   const { data: operatorsData, isLoading: operatorsLoading } = useQuery({
     queryKey: ['counterparties', 'operators'],
     queryFn: () => counterpartiesApi.list(operatorsQuery),
@@ -271,9 +269,9 @@ export function WasteTariffsTab() {
     },
     onSuccess: () => {
       message.success('Сохранено');
-      void qc.invalidateQueries({ queryKey: ['waste-tariffs'] });
+      void qc.invalidateQueries({ queryKey: wasteTariffKeys.root });
       // Вместе с ценой мог появиться новый тип мусора — список для выбора устарел.
-      void qc.invalidateQueries({ queryKey: ['waste-types'] });
+      void qc.invalidateQueries({ queryKey: wasteTypeKeys.root });
       setOpen(false);
     },
     onError: (e) => {
@@ -297,9 +295,9 @@ export function WasteTariffsTab() {
     mutationFn: (v: TypeFormValues) => wasteTypesApi.update(typeRecord!.id, v),
     onSuccess: () => {
       message.success('Сохранено');
-      void qc.invalidateQueries({ queryKey: ['waste-types'] });
+      void qc.invalidateQueries({ queryKey: wasteTypeKeys.root });
       // Название типа показано в каждой строке прайса и в заявках.
-      void qc.invalidateQueries({ queryKey: ['waste-tariffs'] });
+      void qc.invalidateQueries({ queryKey: wasteTariffKeys.root });
       setTypeOpen(false);
     },
     onError: (e) => {
@@ -313,7 +311,7 @@ export function WasteTariffsTab() {
       wasteTariffsApi.update(id, { isActive }),
     onSuccess: (_d, v) => {
       message.success(v.isActive ? 'Цена включена' : 'Цена отключена');
-      void qc.invalidateQueries({ queryKey: ['waste-tariffs'] });
+      void qc.invalidateQueries({ queryKey: wasteTariffKeys.root });
     },
     onError: (e) => message.error(errorMessage(e)),
   });
@@ -326,13 +324,13 @@ export function WasteTariffsTab() {
   const purgeTariff = usePurgeAction({
     subject: 'цену',
     purge: wasteTariffsApi.purge,
-    invalidate: ['waste-tariffs'],
+    invalidate: [wasteTariffKeys.root],
   });
   const purgeType = usePurgeAction({
     subject: 'тип мусора',
     purge: wasteTypesApi.purge,
-    // Тип виден и строкой сетки, и списком выбора в форме цены.
-    invalidate: ['waste-types', 'waste-tariffs'],
+    // Тип виден и строкой сетки, и списком выбора в форме цены, поэтому устаревают обе сущности.
+    invalidate: [wasteTypeKeys.root, wasteTariffKeys.root],
   });
 
   const onToggleActive = (r: WasteTariffDto, next: boolean) => {

@@ -67,7 +67,7 @@ export function VehicleSpecsTab() {
   const purge = usePurgeAction({
     subject: 'ТТХ',
     purge: vehicleSpecsApi.purge,
-    invalidate: ['vehicle-specs'],
+    invalidate: [['vehicle-specs']],
   });
 
   const [params, setParams] = useState<SpecParams>({

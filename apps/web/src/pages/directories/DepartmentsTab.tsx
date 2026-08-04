@@ -3,7 +3,7 @@ import { App, Button, Form, Input, Select, Space, Switch, Tag, Typography } from
 import { DeleteFilled, DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { CreateDepartmentInput, DepartmentDto } from '@technic/contracts';
-import { departmentsApi, usersApi } from '../../api/resources';
+import { usersApi } from '../../api/resources';
 import { DataTable, type CardConfig } from '@shared/ui';
 import { FormModal } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
@@ -12,6 +12,7 @@ import { sortOptionsFrom } from '@shared/ui';
 import { useListParams } from '@shared/lib';
 import { errorMessage } from '../../utils/format';
 import { usePurgeAction } from './usePurgeAction';
+import { departmentsApi, departmentKeys } from '@entities/department';
 
 /**
  * Справочник отделов (ADR 0040) — офисные подразделения. Устроен как справочник объектов: тот же
@@ -32,7 +33,7 @@ export function DepartmentsTab() {
     },
   );
   const { data, isFetching } = useQuery({
-    queryKey: ['departments', params],
+    queryKey: departmentKeys.list(params),
     queryFn: () => departmentsApi.list(params),
   });
 
@@ -78,7 +79,7 @@ export function DepartmentsTab() {
       record ? departmentsApi.update(record.id, values) : departmentsApi.create(values),
     onSuccess: () => {
       message.success('Сохранено');
-      void qc.invalidateQueries({ queryKey: ['departments'] });
+      void qc.invalidateQueries({ queryKey: departmentKeys.root });
       // Та же привязка видна в карточке учётки — список пользователей тоже устарел.
       void qc.invalidateQueries({ queryKey: ['users'] });
       setOpen(false);
@@ -90,7 +91,7 @@ export function DepartmentsTab() {
     mutationFn: (id: string) => departmentsApi.remove(id),
     onSuccess: () => {
       message.success('Отдел деактивирован');
-      void qc.invalidateQueries({ queryKey: ['departments'] });
+      void qc.invalidateQueries({ queryKey: departmentKeys.root });
     },
     onError: (e) => message.error(errorMessage(e)),
   });
@@ -99,7 +100,7 @@ export function DepartmentsTab() {
   const purge = usePurgeAction({
     subject: 'отдел',
     purge: departmentsApi.purge,
-    invalidate: ['departments'],
+    invalidate: [departmentKeys.root],
   });
 
   const confirmDelete = (r: DepartmentDto) =>

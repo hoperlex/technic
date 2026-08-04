@@ -10,7 +10,7 @@ import {
   type CreateContainerTypeInput,
 } from '@technic/contracts';
 import type { TableColumnType } from 'antd';
-import { containerTypesApi } from '../../api/resources';
+import { containerTypeKeys, containerTypesApi } from '@entities/container-type';
 import { AutoSelect } from '@shared/ui';
 import { DataTable, type CardConfig } from '@shared/ui';
 import { FormModal } from '@shared/ui';
@@ -40,7 +40,7 @@ export function ContainerTypesTab() {
     },
   );
   const { data, isFetching } = useQuery({
-    queryKey: ['container-types', params],
+    queryKey: containerTypeKeys.list(params),
     queryFn: () => containerTypesApi.list(params),
   });
 
@@ -69,7 +69,7 @@ export function ContainerTypesTab() {
       record ? containerTypesApi.update(record.id, values) : containerTypesApi.create(values),
     onSuccess: () => {
       message.success('Сохранено');
-      void qc.invalidateQueries({ queryKey: ['container-types'] });
+      void qc.invalidateQueries({ queryKey: containerTypeKeys.root });
       setOpen(false);
     },
     onError: (e) => message.error(errorMessage(e)),
@@ -81,7 +81,7 @@ export function ContainerTypesTab() {
       containerTypesApi.update(id, { isActive }),
     onSuccess: (_d, v) => {
       message.success(v.isActive ? 'Активирован' : 'Деактивирован');
-      void qc.invalidateQueries({ queryKey: ['container-types'] });
+      void qc.invalidateQueries({ queryKey: containerTypeKeys.root });
     },
     onError: (e) => message.error(errorMessage(e)),
   });
@@ -105,7 +105,7 @@ export function ContainerTypesTab() {
   const purge = usePurgeAction({
     subject: 'тип',
     purge: containerTypesApi.purge,
-    invalidate: ['container-types'],
+    invalidate: [containerTypeKeys.root],
   });
 
   const activeColumn: TableColumnType<ContainerTypeDto> = {

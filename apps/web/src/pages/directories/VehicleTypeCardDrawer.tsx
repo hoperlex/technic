@@ -72,7 +72,7 @@ export function VehicleTypeCardDrawer({ type, onClose }: Props) {
   const purge = usePurgeAction({
     subject: 'тип',
     purge: vehicleTypesApi.purge,
-    invalidate: ['vehicle-classifications', 'vehicle-types'],
+    invalidate: [['vehicle-classifications'], ['vehicle-types']],
   });
 
   const specsQuery = useQuery({

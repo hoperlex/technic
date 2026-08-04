@@ -172,7 +172,7 @@ export function CounterpartiesTab() {
   const purge = usePurgeAction({
     subject: 'контрагента',
     purge: counterpartiesApi.purge,
-    invalidate: ['counterparties', 'vehicles', 'objects'],
+    invalidate: [['counterparties'], ['vehicles'], objectKeys.root],
   });
 
   const confirmDelete = (r: CounterpartyDto) =>

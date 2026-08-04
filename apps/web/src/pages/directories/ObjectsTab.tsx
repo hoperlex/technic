@@ -4,7 +4,7 @@ import { DeleteFilled, DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-d
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { CreateObjectInput, ObjectDto } from '@technic/contracts';
 import { counterpartiesApi } from '../../api/resources';
-import { AddressAutoComplete } from '../../components/AddressAutoComplete';
+import { AddressAutoComplete } from '@entities/address';
 import { DataTable, type CardConfig } from '@shared/ui';
 import { FormModal } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
@@ -95,7 +95,7 @@ export function ObjectsTab() {
   const purge = usePurgeAction({
     subject: 'объект',
     purge: objectsApi.purge,
-    invalidate: objectKeys.root,
+    invalidate: [objectKeys.root],
   });
 
   const confirmDelete = (r: ObjectDto) =>

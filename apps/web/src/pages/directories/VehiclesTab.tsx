@@ -302,7 +302,7 @@ export function VehiclesTab() {
   const purge = usePurgeAction({
     subject: 'технику',
     purge: vehiclesApi.purge,
-    invalidate: ['vehicles'],
+    invalidate: [['vehicles']],
   });
 
   const confirmDelete = (r: VehicleDto) =>

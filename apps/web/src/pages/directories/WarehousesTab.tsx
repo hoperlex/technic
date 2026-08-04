@@ -3,8 +3,8 @@ import { App, Button, Form, Input, Select, Space, Switch, Tag, Typography } from
 import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { CreateWarehouseInput, WarehouseDto } from '@technic/contracts';
-import { counterpartiesApi, warehousesApi } from '../../api/resources';
-import { AddressAutoComplete } from '../../components/AddressAutoComplete';
+import { counterpartiesApi } from '../../api/resources';
+import { AddressAutoComplete } from '@entities/address';
 import { AutoSelect } from '@shared/ui';
 import { DataTable, type CardConfig } from '@shared/ui';
 import { FormModal } from '@shared/ui';
@@ -13,6 +13,7 @@ import { actionsColumn, boolBadgeColumn, textColumn } from '@shared/ui';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
 import { useListParams } from '@shared/lib';
 import { errorMessage } from '../../utils/format';
+import { warehousesApi, warehouseKeys } from '@entities/warehouse';
 
 /**
  * Справочник складов поставщиков (ADR 0051). Склад — адрес, по которому работают с поставщиком,
@@ -40,7 +41,7 @@ export function WarehousesTab() {
     },
   );
   const { data, isFetching } = useQuery({
-    queryKey: ['warehouses', params],
+    queryKey: warehouseKeys.list(params),
     queryFn: () => warehousesApi.list(params),
   });
 
@@ -100,7 +101,7 @@ export function WarehousesTab() {
       record ? warehousesApi.update(record.id, values) : warehousesApi.create(values),
     onSuccess: () => {
       message.success('Сохранено');
-      void qc.invalidateQueries({ queryKey: ['warehouses'] });
+      void qc.invalidateQueries({ queryKey: warehouseKeys.root });
       setOpen(false);
     },
     onError: (e) => message.error(errorMessage(e)),
@@ -110,7 +111,7 @@ export function WarehousesTab() {
     mutationFn: (id: string) => warehousesApi.remove(id),
     onSuccess: () => {
       message.success('Склад удалён');
-      void qc.invalidateQueries({ queryKey: ['warehouses'] });
+      void qc.invalidateQueries({ queryKey: warehouseKeys.root });
     },
     onError: (e) => message.error(errorMessage(e)),
   });

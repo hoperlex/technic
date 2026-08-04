@@ -33,7 +33,7 @@ import {
   roleLabels,
   type UserDto,
 } from '@technic/contracts';
-import { counterpartiesApi, departmentsApi, usersApi } from '../../api/resources';
+import { counterpartiesApi, usersApi } from '../../api/resources';
 import { AutoSelect } from '@shared/ui';
 import { DataTable, type CardConfig } from '@shared/ui';
 import { FormModal } from '@shared/ui';
@@ -49,6 +49,7 @@ import { useAuth } from '../../auth/AuthContext';
 import { UserAvatar } from '../../components/UserAvatar';
 import { errorMessage } from '../../utils/format';
 import { objectsApi, objectKeys } from '@entities/object';
+import { departmentOptionsQuery } from '@entities/department';
 
 interface UserFormValues {
   email: string;
@@ -135,21 +136,8 @@ export function UsersTab() {
         sortOrder: 'asc',
       }),
   });
-  const { data: departmentsData, isLoading: departmentsLoading } = useQuery({
-    queryKey: ['departments', 'for-select'],
-    queryFn: () =>
-      departmentsApi.list({
-        page: 1,
-        pageSize: 500,
-        isActive: 'true',
-        sortBy: 'name',
-        sortOrder: 'asc',
-      }),
-  });
-  const departmentOptions = (departmentsData?.items ?? []).map((d) => ({
-    value: d.id,
-    label: `${d.code} — ${d.name}`,
-  }));
+  const { data: departmentOptions, isLoading: departmentsLoading } =
+    useQuery(departmentOptionsQuery());
   // Учётку исполнителя привязываем к контрагенту, за которого в портале работают: оператор
   // вывоза и арендодатель ТС (ADR 0038). У подрядчика заявок нет ни в одном модуле.
   const { data: executors, isLoading: executorsLoading } = useQuery({
@@ -863,7 +851,7 @@ export function UsersTab() {
             >
               <Select
                 mode="multiple"
-                options={departmentOptions}
+                options={departmentOptions ?? []}
                 loading={departmentsLoading}
                 showSearch
                 optionFilterProp="label"
