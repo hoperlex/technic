@@ -16,12 +16,12 @@ import {
   waybillStatusLabels,
 } from '@technic/contracts';
 import { driversApi, vehicleRoutesApi, vehiclesApi } from '../../api/resources';
-import { AutoSelect } from '../../components/AutoSelect';
-import { DataTable, type CardConfig } from '../../components/DataTable';
-import { FormModal } from '../../components/FormModal';
-import { FormGrid } from '../../components/FormGrid';
-import { PageTableLayout } from '../../components/PageTableLayout';
-import { actionsColumn, RowActionButton, textColumn } from '../../components/columns';
+import { AutoSelect } from '@shared/ui';
+import { DataTable, type CardConfig } from '@shared/ui';
+import { FormModal } from '@shared/ui';
+import { FormGrid } from '@shared/ui';
+import { PageTableLayout } from '@shared/ui';
+import { actionsColumn, RowActionButton, textColumn } from '@shared/ui';
 import { useIsMobile } from '@shared/lib';
 import { useListParams } from '@shared/lib';
 import { errorMessage } from '../../utils/format';

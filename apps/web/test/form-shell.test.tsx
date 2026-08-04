@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { Form, Input } from 'antd';
-import { FormGrid } from '../src/components/FormGrid';
-import { FormModal } from '../src/components/FormModal';
+import { FormGrid } from '../src/shared/ui';
+import { FormModal } from '../src/shared/ui';
 import { DESKTOP_VIEWPORT, MOBILE_VIEWPORT, setViewport, type Viewport } from './viewport';
 
 /**

@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { act, render, screen, fireEvent } from '@testing-library/react';
-import { DataTable, type CardConfig, type TableChange } from '../src/components/DataTable';
-import { FilterSheet } from '../src/components/FilterSheet';
-import { ListToolbar } from '../src/components/ListToolbar';
-import type { FilterDefinition } from '../src/components/listControls';
-import { sortOptionsFrom } from '../src/components/listControls';
+import { DataTable, type CardConfig, type TableChange } from '../src/shared/ui';
+import { FilterSheet } from '../src/shared/ui';
+import { ListToolbar } from '../src/shared/ui';
+import type { FilterDefinition } from '../src/shared/ui';
+import { sortOptionsFrom } from '../src/shared/ui';
 import { ApprovalCell } from '../src/pages/vehicle/shared';
 import { DESKTOP_VIEWPORT, MOBILE_VIEWPORT, setViewport } from './viewport';
 

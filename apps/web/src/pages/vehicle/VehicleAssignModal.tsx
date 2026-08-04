@@ -41,9 +41,9 @@ import {
   waybillRequirement,
 } from '@technic/contracts';
 import { driversApi, vehicleRequestsApi, vehicleRoutesApi, vehiclesApi } from '../../api/resources';
-import { AutoSelect } from '../../components/AutoSelect';
-import { FormGrid } from '../../components/FormGrid';
-import { FormModal } from '../../components/FormModal';
+import { AutoSelect } from '@shared/ui';
+import { FormGrid } from '@shared/ui';
+import { FormModal } from '@shared/ui';
 import { TimeInput, optionalWorkTimeRule } from '../../components/TimeInput';
 import { useIsMobile } from '@shared/lib';
 

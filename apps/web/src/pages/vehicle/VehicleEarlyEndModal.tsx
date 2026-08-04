@@ -8,8 +8,8 @@ import {
   requestCustomerName,
   type SpecialEquipmentRequestDto,
 } from '@technic/contracts';
-import { FormGrid } from '../../components/FormGrid';
-import { FormModal } from '../../components/FormModal';
+import { FormGrid } from '@shared/ui';
+import { FormModal } from '@shared/ui';
 import { calendarDaysLabel } from '../../utils/date';
 import { formatDateOnly } from './shared';
 

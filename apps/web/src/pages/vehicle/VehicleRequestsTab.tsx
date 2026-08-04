@@ -63,17 +63,17 @@ import {
   type VehicleRouteDto,
 } from '@technic/contracts';
 import { vehicleRequestsApi } from '../../api/resources';
-import { AutoSelect } from '../../components/AutoSelect';
+import { AutoSelect } from '@shared/ui';
 import { CancelReasonModal, RollbackReasonModal } from '../../components/CancelReasonModal';
-import { DataTable, type CardConfig } from '../../components/DataTable';
-import { FormGrid } from '../../components/FormGrid';
-import { FormModal } from '../../components/FormModal';
-import { PageTableLayout } from '../../components/PageTableLayout';
+import { DataTable, type CardConfig } from '@shared/ui';
+import { FormGrid } from '@shared/ui';
+import { FormModal } from '@shared/ui';
+import { PageTableLayout } from '@shared/ui';
 import { ResponsibleFields } from '../../components/ResponsibleFields';
-import { sortOptionsFrom, type FilterDefinition } from '../../components/listControls';
+import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
 import { TabsExtra } from '../../components/PageTabs';
-import { SummaryBar } from '../../components/SummaryBar';
-import { actionsColumn, textColumn } from '../../components/columns';
+import { SummaryBar } from '@shared/ui';
+import { actionsColumn, textColumn } from '@shared/ui';
 import { TimeInput, optionalWorkTimeRule } from '../../components/TimeInput';
 import { UserAvatar } from '../../components/UserAvatar';
 import { ObjectCell } from '../../components/ObjectCell';

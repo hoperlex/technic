@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render } from '@testing-library/react';
 import { Form, type FormInstance } from 'antd';
-import { AutoSelect, type AutoSelectProps } from '../src/components/AutoSelect';
+import { AutoSelect, type AutoSelectProps } from '../src/shared/ui';
 
 /**
  * Поведение проверяется в том виде, в каком оно живёт в приложении: поле внутри `Form.Item`,

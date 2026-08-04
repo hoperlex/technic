@@ -4,11 +4,11 @@ import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { CreateDepartmentInput, DepartmentDto } from '@technic/contracts';
 import { departmentsApi, usersApi } from '../../api/resources';
-import { DataTable, type CardConfig } from '../../components/DataTable';
-import { FormModal } from '../../components/FormModal';
-import { PageTableLayout } from '../../components/PageTableLayout';
-import { actionsColumn, boolBadgeColumn, textColumn } from '../../components/columns';
-import { sortOptionsFrom } from '../../components/listControls';
+import { DataTable, type CardConfig } from '@shared/ui';
+import { FormModal } from '@shared/ui';
+import { PageTableLayout } from '@shared/ui';
+import { actionsColumn, boolBadgeColumn, textColumn } from '@shared/ui';
+import { sortOptionsFrom } from '@shared/ui';
 import { useListParams } from '@shared/lib';
 import { errorMessage } from '../../utils/format';
 

@@ -12,9 +12,9 @@ import {
   waybillStatusLabels,
 } from '@technic/contracts';
 import { waybillsApi } from '../api/resources';
-import { DataTable } from '../components/DataTable';
-import { PageTableLayout } from '../components/PageTableLayout';
-import { actionsColumn, badgeColumn, textColumn } from '../components/columns';
+import { DataTable } from '@shared/ui';
+import { PageTableLayout } from '@shared/ui';
+import { actionsColumn, badgeColumn, textColumn } from '@shared/ui';
 import { ExportWaybillButton, PrintWaybillButton } from '../components/WaybillPrint';
 import { useListParams } from '@shared/lib';
 import { useAuth } from '../auth/AuthContext';

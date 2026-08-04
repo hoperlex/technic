@@ -5,12 +5,12 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { CreateWarehouseInput, WarehouseDto } from '@technic/contracts';
 import { counterpartiesApi, warehousesApi } from '../../api/resources';
 import { AddressAutoComplete } from '../../components/AddressAutoComplete';
-import { AutoSelect } from '../../components/AutoSelect';
-import { DataTable, type CardConfig } from '../../components/DataTable';
-import { FormModal } from '../../components/FormModal';
-import { PageTableLayout } from '../../components/PageTableLayout';
-import { actionsColumn, boolBadgeColumn, textColumn } from '../../components/columns';
-import { sortOptionsFrom, type FilterDefinition } from '../../components/listControls';
+import { AutoSelect } from '@shared/ui';
+import { DataTable, type CardConfig } from '@shared/ui';
+import { FormModal } from '@shared/ui';
+import { PageTableLayout } from '@shared/ui';
+import { actionsColumn, boolBadgeColumn, textColumn } from '@shared/ui';
+import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
 import { useListParams } from '@shared/lib';
 import { errorMessage } from '../../utils/format';
 

@@ -11,12 +11,12 @@ import {
 } from '@technic/contracts';
 import type { TableColumnType } from 'antd';
 import { containerTypesApi } from '../../api/resources';
-import { AutoSelect } from '../../components/AutoSelect';
-import { DataTable, type CardConfig } from '../../components/DataTable';
-import { FormModal } from '../../components/FormModal';
-import { PageTableLayout } from '../../components/PageTableLayout';
-import { actionsColumn, badgeColumn, textColumn } from '../../components/columns';
-import { sortOptionsFrom } from '../../components/listControls';
+import { AutoSelect } from '@shared/ui';
+import { DataTable, type CardConfig } from '@shared/ui';
+import { FormModal } from '@shared/ui';
+import { PageTableLayout } from '@shared/ui';
+import { actionsColumn, badgeColumn, textColumn } from '@shared/ui';
+import { sortOptionsFrom } from '@shared/ui';
 import { useListParams } from '@shared/lib';
 import { errorMessage } from '../../utils/format';
 

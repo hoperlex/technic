@@ -16,8 +16,8 @@ import {
   vehicleWorkUnitRateLabels,
   workedAmountLabel,
 } from '@technic/contracts';
-import { FormGrid } from '../../components/FormGrid';
-import { FormModal } from '../../components/FormModal';
+import { FormGrid } from '@shared/ui';
+import { FormModal } from '@shared/ui';
 import { calendarDayCount } from '../../utils/date';
 import { formatMoney } from '../../utils/format';
 

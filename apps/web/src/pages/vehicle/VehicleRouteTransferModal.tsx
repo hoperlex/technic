@@ -8,8 +8,8 @@ import {
   type VehicleRouteDto,
 } from '@technic/contracts';
 import { vehicleRequestsApi, vehicleRoutesApi } from '../../api/resources';
-import { AutoSelect } from '../../components/AutoSelect';
-import { FormModal } from '../../components/FormModal';
+import { AutoSelect } from '@shared/ui';
+import { FormModal } from '@shared/ui';
 import { errorMessage } from '../../utils/format';
 
 /**

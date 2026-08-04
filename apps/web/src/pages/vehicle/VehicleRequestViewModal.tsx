@@ -32,7 +32,7 @@ import { FileLinkList } from '../../components/FileLinks';
 import { type HistoryRow, RequestHistoryTable } from '../../components/RequestHistory';
 import { ResponsibleValue } from '../../components/ResponsibleFields';
 import { UserAvatar } from '../../components/UserAvatar';
-import { ViewModal } from '../../components/ViewModal';
+import { ViewModal } from '@shared/ui';
 import { PrintWaybillButton } from '../../components/WaybillPrint';
 import { useIsMobile } from '@shared/lib';
 import { calendarDaysLabel } from '../../utils/date';

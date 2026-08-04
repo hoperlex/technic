@@ -32,11 +32,11 @@ import {
 } from '@technic/contracts';
 import { driversApi } from '../../api/resources';
 import { DriversImportModal } from './DriversImportModal';
-import { DataTable, type CardConfig } from '../../components/DataTable';
-import { FormModal } from '../../components/FormModal';
-import { PageTableLayout } from '../../components/PageTableLayout';
-import { actionsColumn, textColumn } from '../../components/columns';
-import { type FilterDefinition, sortOptionsFrom } from '../../components/listControls';
+import { DataTable, type CardConfig } from '@shared/ui';
+import { FormModal } from '@shared/ui';
+import { PageTableLayout } from '@shared/ui';
+import { actionsColumn, textColumn } from '@shared/ui';
+import { type FilterDefinition, sortOptionsFrom } from '@shared/ui';
 import { useListParams } from '@shared/lib';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';

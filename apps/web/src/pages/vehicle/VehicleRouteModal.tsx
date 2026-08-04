@@ -26,8 +26,8 @@ import {
   waybillStatusLabels,
 } from '@technic/contracts';
 import { vehicleRequestsApi, vehicleRoutesApi, waybillsApi } from '../../api/resources';
-import { AutoSelect } from '../../components/AutoSelect';
-import { ViewModal } from '../../components/ViewModal';
+import { AutoSelect } from '@shared/ui';
+import { ViewModal } from '@shared/ui';
 import { PrintWaybillButton } from '../../components/WaybillPrint';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';

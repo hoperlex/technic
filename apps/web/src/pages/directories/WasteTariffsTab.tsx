@@ -35,11 +35,11 @@ import {
   wasteTariffsApi,
   wasteTypesApi,
 } from '../../api/resources';
-import { AutoSelect } from '../../components/AutoSelect';
-import { DataTable } from '../../components/DataTable';
-import { FormModal } from '../../components/FormModal';
-import { PageTableLayout } from '../../components/PageTableLayout';
-import type { FilterDefinition } from '../../components/listControls';
+import { AutoSelect } from '@shared/ui';
+import { DataTable } from '@shared/ui';
+import { FormModal } from '@shared/ui';
+import { PageTableLayout } from '@shared/ui';
+import type { FilterDefinition } from '@shared/ui';
 import { useIsMobile } from '@shared/lib';
 import { useListParams } from '@shared/lib';
 import { applyApiFieldErrors } from '../../utils/formErrors';

@@ -8,7 +8,7 @@ import {
   type DriversImportReportDto,
 } from '@technic/contracts';
 import { driversApi } from '../../api/resources';
-import { ViewModal } from '../../components/ViewModal';
+import { ViewModal } from '@shared/ui';
 import { errorMessage } from '../../utils/format';
 
 /**

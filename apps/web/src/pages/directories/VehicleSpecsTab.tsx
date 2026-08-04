@@ -23,11 +23,11 @@ import {
   type VehicleSpecDto,
 } from '@technic/contracts';
 import { vehicleSpecsApi } from '../../api/resources';
-import { DataTable, type CardConfig, type TableChange } from '../../components/DataTable';
-import { FormModal } from '../../components/FormModal';
-import { PageTableLayout } from '../../components/PageTableLayout';
-import { sortOptionsFrom, type FilterDefinition } from '../../components/listControls';
-import { actionsColumn, textColumn } from '../../components/columns';
+import { DataTable, type CardConfig, type TableChange } from '@shared/ui';
+import { FormModal } from '@shared/ui';
+import { PageTableLayout } from '@shared/ui';
+import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
+import { actionsColumn, textColumn } from '@shared/ui';
 import { errorMessage } from '../../utils/format';
 
 // Справочник ТТХ (ADR 0016): характеристики, из значений которых складываются категории типов ТС.

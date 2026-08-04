@@ -34,16 +34,16 @@ import {
   type UserDto,
 } from '@technic/contracts';
 import { counterpartiesApi, departmentsApi, objectsApi, usersApi } from '../../api/resources';
-import { AutoSelect } from '../../components/AutoSelect';
-import { DataTable, type CardConfig } from '../../components/DataTable';
-import { FormModal } from '../../components/FormModal';
-import { PageTableLayout } from '../../components/PageTableLayout';
+import { AutoSelect } from '@shared/ui';
+import { DataTable, type CardConfig } from '@shared/ui';
+import { FormModal } from '@shared/ui';
+import { PageTableLayout } from '@shared/ui';
 import { PasswordField } from '../../components/PasswordField';
 import { PersonNameFields } from '../../components/PersonNameFields';
 import { PhoneField, PhoneLink } from '../../components/PhoneField';
 import { ReasonModal } from '../../components/CancelReasonModal';
-import { actionsColumn, badgeColumn, boolBadgeColumn, textColumn } from '../../components/columns';
-import { sortOptionsFrom, type FilterDefinition } from '../../components/listControls';
+import { actionsColumn, badgeColumn, boolBadgeColumn, textColumn } from '@shared/ui';
+import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
 import { useListParams } from '@shared/lib';
 import { useAuth } from '../../auth/AuthContext';
 import { UserAvatar } from '../../components/UserAvatar';

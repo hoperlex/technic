@@ -5,7 +5,7 @@ import { isInlineViewable } from '@technic/contracts';
 import { filesApi } from '../api/resources';
 import { useIsMobile } from '@shared/lib';
 import { errorMessage, formatBytes } from '../utils/format';
-import { ViewModal } from './ViewModal';
+import { ViewModal } from '@shared/ui';
 
 /**
  * Минимум, которым описывается прикреплённый файл. `contentType` есть не везде (черновики

@@ -4,7 +4,7 @@ import { DownloadOutlined, PrinterOutlined } from '@ant-design/icons';
 import { waybillsApi } from '../api/resources';
 import { useIsMobile } from '@shared/lib';
 import { errorMessage } from '../utils/format';
-import { ViewModal } from './ViewModal';
+import { ViewModal } from '@shared/ui';
 
 /**
  * Печать путевого листа (ADR 0041).

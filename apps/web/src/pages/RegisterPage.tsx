@@ -8,7 +8,7 @@ import {
   type RegistrationRoleRequest,
 } from '@technic/contracts';
 import { authApi } from '../api/auth';
-import { AutoSelect } from '../components/AutoSelect';
+import { AutoSelect } from '@shared/ui';
 import { CaptchaField, type CaptchaValue } from '../components/CaptchaField';
 import { PasswordField } from '../components/PasswordField';
 import { PersonNameFields } from '../components/PersonNameFields';

@@ -25,7 +25,7 @@ import { FileLinkList, FilesButton } from '../../components/FileLinks';
 import { type HistoryRow, RequestHistoryTable } from '../../components/RequestHistory';
 import { ResponsibleValue } from '../../components/ResponsibleFields';
 import { UserAvatar } from '../../components/UserAvatar';
-import { ViewModal } from '../../components/ViewModal';
+import { ViewModal } from '@shared/ui';
 import { useIsMobile } from '@shared/lib';
 import { formatDateTime, formatDateTimeMaybe, formatMoney } from '../../utils/format';
 

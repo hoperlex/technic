@@ -14,12 +14,12 @@ import {
   vehicleOnSitePresenceLabels,
 } from '@technic/contracts';
 import { vehicleRequestsApi } from '../../api/resources';
-import { DataTable, type CardConfig } from '../../components/DataTable';
-import { PageTableLayout } from '../../components/PageTableLayout';
-import { sortOptionsFrom, type FilterDefinition } from '../../components/listControls';
+import { DataTable, type CardConfig } from '@shared/ui';
+import { PageTableLayout } from '@shared/ui';
+import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
 import { TabsExtra } from '../../components/PageTabs';
-import { SummaryBar } from '../../components/SummaryBar';
-import { actionsColumn, RowActionButton, textColumn } from '../../components/columns';
+import { SummaryBar } from '@shared/ui';
+import { actionsColumn, RowActionButton, textColumn } from '@shared/ui';
 import { UserAvatar } from '../../components/UserAvatar';
 import { ObjectCell } from '../../components/ObjectCell';
 import { useListParams } from '@shared/lib';

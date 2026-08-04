@@ -14,8 +14,8 @@ import {
 import { FILE_MAX_SIZE } from '@shared/config';
 import { filesApi, wasteTariffsApi } from '../../api/resources';
 import { FileLinkList } from '../../components/FileLinks';
-import { FormGrid } from '../../components/FormGrid';
-import { FormModal } from '../../components/FormModal';
+import { FormGrid } from '@shared/ui';
+import { FormModal } from '@shared/ui';
 import { useIsMobile } from '@shared/lib';
 import { errorMessage, formatMoney } from '../../utils/format';
 

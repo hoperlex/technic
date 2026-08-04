@@ -1,6 +1,6 @@
 import { useEffect, type ReactNode } from 'react';
 import { Alert, Form, Input } from 'antd';
-import { FormModal } from './FormModal';
+import { FormModal } from '@shared/ui';
 
 interface ReasonProps {
   open: boolean;

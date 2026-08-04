@@ -51,12 +51,12 @@ import {
   useVehicleClassifications,
   withSavedClassification,
 } from '../../hooks/useVehicleClassifications';
-import { AutoSelect } from '../../components/AutoSelect';
-import { DataTable, type CardConfig } from '../../components/DataTable';
-import { FormModal } from '../../components/FormModal';
-import { PageTableLayout } from '../../components/PageTableLayout';
-import { sortOptionsFrom, type FilterDefinition } from '../../components/listControls';
-import { actionsColumn, badgeColumn, textColumn } from '../../components/columns';
+import { AutoSelect } from '@shared/ui';
+import { DataTable, type CardConfig } from '@shared/ui';
+import { FormModal } from '@shared/ui';
+import { PageTableLayout } from '@shared/ui';
+import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
+import { actionsColumn, badgeColumn, textColumn } from '@shared/ui';
 import { useIsMobile } from '@shared/lib';
 import { useListParams } from '@shared/lib';
 import { useAuth } from '../../auth/AuthContext';

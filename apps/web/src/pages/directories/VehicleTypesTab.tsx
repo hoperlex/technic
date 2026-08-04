@@ -27,12 +27,12 @@ import {
   vehicleKindsApi,
   vehicleTypesApi,
 } from '../../api/resources';
-import { AutoSelect } from '../../components/AutoSelect';
-import { DataTable, type CardConfig, type TableChange } from '../../components/DataTable';
-import { FormModal } from '../../components/FormModal';
-import { PageTableLayout } from '../../components/PageTableLayout';
-import { sortOptionsFrom, type FilterDefinition } from '../../components/listControls';
-import { actionsColumn, textColumn } from '../../components/columns';
+import { AutoSelect } from '@shared/ui';
+import { DataTable, type CardConfig, type TableChange } from '@shared/ui';
+import { FormModal } from '@shared/ui';
+import { PageTableLayout } from '@shared/ui';
+import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
+import { actionsColumn, textColumn } from '@shared/ui';
 import { errorMessage } from '../../utils/format';
 import { VehicleTypeCardDrawer } from './VehicleTypeCardDrawer';
 
