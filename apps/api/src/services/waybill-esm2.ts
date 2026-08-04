@@ -182,7 +182,6 @@ async function collectSnapshot(
       garageNumber: vehicles.garageNumber,
       inventoryNumber: vehicles.inventoryNumber,
       modelName: vehicleModels.name,
-      manufacturer: vehicles.manufacturerName,
     })
     .from(vehicles)
     .leftJoin(vehicleModels, eq(vehicleModels.id, vehicles.vehicleModelId))
@@ -237,7 +236,11 @@ async function collectSnapshot(
     waybill_date_mm: mm,
     waybill_date_yyyy: yyyy,
 
-    vehicle_brand: [vehicle?.manufacturer, vehicle?.modelName].filter(Boolean).join(' ').trim(),
+    // «Машина (наименование, марка)» — запись справочника марок/моделей (ADR 0007), и только она.
+    // Изготовитель («Клинцовский автокрановый завод») — реквизит машины, а не её марка: в графу
+    // шириной в пару сантиметров он не влезает и вытесняет из неё то, ради чего она заведена.
+    // Модели у машины нет — печатается пусто: допишут от руки, придумывать марку портал не станет.
+    vehicle_brand: vehicle?.modelName ?? '',
     vehicle_reg_number: vehicle?.registrationNumber ?? '',
     vehicle_garage_number: vehicle?.garageNumber ?? '',
     vehicle_inventory_number: vehicle?.inventoryNumber ?? '',

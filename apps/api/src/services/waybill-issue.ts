@@ -220,7 +220,6 @@ async function collectSnapshot(
       garageNumber: vehicles.garageNumber,
       inventoryNumber: vehicles.inventoryNumber,
       modelName: vehicleModels.name,
-      manufacturer: vehicles.manufacturerName,
     })
     .from(vehicles)
     .leftJoin(vehicleModels, eq(vehicleModels.id, vehicles.vehicleModelId))
@@ -325,7 +324,11 @@ async function collectSnapshot(
     waybill_number: params.number,
     waybill_date: params.date,
 
-    vehicle_brand: [vehicle?.manufacturer, vehicle?.modelName].filter(Boolean).join(' ').trim(),
+    // В графу «Автомобиль (марка)» идёт марка/модель из справочника (ADR 0007) — без изготовителя.
+    // Завод-изготовитель числится за машиной как реквизит, маркой её не называет никто, а длина
+    // названия съедает узкую графу целиком, не оставив места самой марке. Модель не проставлена —
+    // графа остаётся пустой и заполняется от руки: гадать за справочник портал не берётся.
+    vehicle_brand: vehicle?.modelName ?? '',
     vehicle_reg_number: vehicle?.registrationNumber ?? '',
     vehicle_garage_number: params.fields?.garageNumber || (vehicle?.garageNumber ?? ''),
     vehicle_inventory_number: vehicle?.inventoryNumber ?? '',

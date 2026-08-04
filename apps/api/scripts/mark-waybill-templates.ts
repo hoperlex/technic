@@ -34,6 +34,19 @@ interface Blank {
    * которой нет. Стиль ячейки при очистке сохраняется — он несёт рамку и линию графы.
    */
   clear?: string[];
+  /**
+   * Объединения, которые снимаются с бланка. Внутри объединения длинный текст режется по его
+   * границе, а не переполняет пустых соседей, — и подпись, набранная бухгалтерией в двух узких
+   * клетках, печатается огрызком.
+   */
+  unmerge?: string[];
+  /** Содержимое переезжает из ячейки в ячейку вместе со стилем: «откуда» → «куда». */
+  move?: Record<string, string>;
+  /**
+   * Графы, где текст ужимается по ширине (`shrinkToFit`). Ставится там, где значение приходит из
+   * справочника и его длину бланк не выбирает.
+   */
+  shrink?: string[];
   /** Как бланк ложится на лист A4 при печати (ADR 0041). */
   orientation: 'portrait' | 'landscape';
 }
@@ -208,6 +221,8 @@ const FORM_ESM2: Blank = {
     // Заказчик — объект строительства заявки. Клетка «по ОКПО» заказчика остаётся пустой: у
     // площадки нет ни ОКПО, ни своего телефона организации — есть телефон ответственного.
     H7: '{{customer_name}}, {{customer_address}}, тел. {{customer_phone}}',
+    // Марка/модель машины из справочника (ADR 0007). Графа — объединение H9:Z9 в 39 знаков, а
+    // длину наименования выбирает не бланк, а справочник: см. `shrink` ниже.
     H9: '{{vehicle_brand}}',
     AO9: '{{vehicle_reg_number}}',
     // Машинист: ФИО и табельный номер — и всё. СНИЛС и водительского удостоверения в бланке нет:
@@ -267,6 +282,24 @@ const FORM_ESM2: Blank = {
    * человек, а не портал.
    */
   clear: ['BT141'],
+  /*
+   * Вторая строка заголовка — «строительной машины» — набрана в объединении двух узких клеток
+   * (AI4:AJ4 шириной 4 знака). В объединении текст режется по его границе, и на бумаге от
+   * подписи оставалось «нс»: так печатается и присланный бухгалтерией исходник, ещё до разметки.
+   * Без объединения текст переполняет пустых соседей и печатается целиком.
+   */
+  unmerge: ['AI4:AJ4'],
+  // Переполнение расходится от той клетки, где текст лежит, — а лежал он правее середины, и
+  // подзаголовок вставал не под «ПУТЕВОЙ ЛИСТ», а сдвинутым вправо. AC4 — клетка, чья середина
+  // приходится на середину заголовка (объединение T2:AL3).
+  move: { AI4: 'AC4' },
+  /*
+   * «Машина (наименование, марка)»: наименование приходит из справочника марок и бывает длиннее
+   * графы («Автокран КС-45719-1Р»), а печатает портал через LibreOffice — он по этому флагу
+   * подбирает кегль под ширину. Без флага объединение молча срезает хвост наименования, и
+   * заказчик получает лист с машиной без марки.
+   */
+  shrink: ['H9'],
 };
 
 const COL = /^([A-Z]+)(\d+)$/;
@@ -280,20 +313,21 @@ function escapeXml(value: string): string {
   return value.replace(/&/gu, '&amp;').replace(/</gu, '&lt;').replace(/>/gu, '&gt;');
 }
 
-/**
- * Вписывает значение в ячейку листа. Стиль ячейки сохраняется: он несёт шрифт, выравнивание и
- * линию графы — потеряв его, значение выпало бы из бланка.
- */
-function setCell(sheet: string, address: string, value: string): string {
-  const text = `<is><t xml:space="preserve">${escapeXml(value)}</t></is>`;
-  const existing = new RegExp(`<c r="${address}"([^>]*?)(/>|>[\\s\\S]*?</c>)`).exec(sheet);
+/** Ячейка листа целиком: `$1` — её атрибуты без `r`, `$2` — содержимое (у пустой его нет). */
+function cellRe(address: string): RegExp {
+  return new RegExp(`<c r="${address}"((?:(?!/>|>)[\\s\\S])*)(?:/>|>([\\s\\S]*?)</c>)`);
+}
 
-  if (existing) {
-    const attrs = existing[1] ?? '';
-    const style = /\ss="(\d+)"/.exec(attrs);
-    const s = style ? ` s="${style[1]}"` : '';
-    return sheet.replace(existing[0], `<c r="${address}"${s} t="inlineStr">${text}</c>`);
-  }
+/** Стиль ячейки: он несёт шрифт, выравнивание и линию графы — терять его при правке нельзя. */
+function styleOf(attrs: string): string {
+  const style = /\ss="(\d+)"/.exec(attrs);
+  return style ? ` s="${style[1]}"` : '';
+}
+
+/** Кладёт готовую ячейку на её место в листе — вместо прежней либо между соседями по колонкам. */
+function putCell(sheet: string, address: string, cell: string): string {
+  const existing = cellRe(address).exec(sheet);
+  if (existing) return sheet.replace(existing[0], cell);
 
   // Ячейки в строке нет — вставляем в порядке колонок: Excel требует возрастающего порядка.
   const row = COL.exec(address)![2]!;
@@ -301,13 +335,22 @@ function setCell(sheet: string, address: string, value: string): string {
   const found = rowRe.exec(sheet);
   if (!found) throw new Error(`В листе нет строки ${row} — проверьте адрес ${address}`);
 
-  const cell = `<c r="${address}" t="inlineStr">${text}</c>`;
   const body = found[2]!;
   const target = colNumber(address);
   const cells = [...body.matchAll(/<c r="([A-Z]+\d+)"[\s\S]*?(?:\/>|<\/c>)/g)];
   const next = cells.find((m) => colNumber(m[1]!) > target);
   const patched = next ? body.replace(next[0], `${cell}${next[0]}`) : `${body}${cell}`;
   return sheet.replace(found[0], `${found[1]}${patched}${found[3]}`);
+}
+
+/**
+ * Вписывает значение в ячейку листа. Стиль ячейки сохраняется: он несёт шрифт, выравнивание и
+ * линию графы — потеряв его, значение выпало бы из бланка.
+ */
+function setCell(sheet: string, address: string, value: string): string {
+  const text = `<is><t xml:space="preserve">${escapeXml(value)}</t></is>`;
+  const s = styleOf(cellRe(address).exec(sheet)?.[1] ?? '');
+  return putCell(sheet, address, `<c r="${address}"${s} t="inlineStr">${text}</c>`);
 }
 
 /**
@@ -319,13 +362,105 @@ function setCell(sheet: string, address: string, value: string): string {
  * на неё больше не смотрит ни одна ячейка листа.
  */
 function clearCell(sheet: string, address: string): string {
-  const found = new RegExp(`<c r="${address}"((?:(?!/>|>)[\\s\\S])*)(?:/>|>[\\s\\S]*?</c>)`).exec(
-    sheet,
-  );
+  const found = cellRe(address).exec(sheet);
   if (!found) throw new Error(`Ячейки ${address} в листе нет — стирать нечего, проверьте адрес`);
 
-  const style = /\ss="(\d+)"/.exec(found[1] ?? '');
-  return sheet.replace(found[0], `<c r="${address}"${style ? ` s="${style[1]}"` : ''} />`);
+  return sheet.replace(found[0], `<c r="${address}"${styleOf(found[1] ?? '')} />`);
+}
+
+/**
+ * Снимает объединение ячеек, оставляя сами ячейки и их стили.
+ *
+ * Объединение — это не только внешний вид: текст в нём не переполняет соседей, а обрезается по
+ * границе. Подпись, набранная бухгалтерией в двух узких клетках, печатается из-за этого огрызком —
+ * и в самом бланке, и в PDF портала. Расширить объединение нельзя: содержимое показывает только
+ * его левая верхняя ячейка, а текст всё равно резался бы, только по другой границе.
+ */
+function unmergeCells(sheet: string, ref: string): string {
+  const merge = new RegExp(`<mergeCell ref="${ref}"\\s*/>`);
+  if (!merge.test(sheet)) throw new Error(`В листе нет объединения ${ref} — снимать нечего`);
+
+  // `count` в заголовке списка обязан сойтись с числом объединений: Excel считает книгу
+  // повреждённой, а не пересчитывает молча.
+  const patched = sheet.replace(merge, '');
+  return patched.replace(
+    /<mergeCells count="(\d+)">/,
+    (_, count: string) => `<mergeCells count="${Number(count) - 1}">`,
+  );
+}
+
+/**
+ * Переносит содержимое ячейки в другую вместе со стилем: та несёт шрифт и выравнивание, без
+ * которых подпись легла бы в бланк чужим кеглем.
+ *
+ * Нужен там, где снятое объединение вернуло тексту переполнение: расходится оно от той клетки, где
+ * текст лежит, и подпись встаёт по её середине, а не по середине графы.
+ */
+function moveCell(sheet: string, from: string, to: string): string {
+  const found = cellRe(from).exec(sheet);
+  if (!found?.[2]) throw new Error(`Ячейка ${from} пуста — переносить в ${to} нечего`);
+
+  const attrs = (found[1] ?? '').trim();
+  const moved = `<c r="${to}"${attrs ? ` ${attrs}` : ''}>${found[2]}</c>`;
+  return putCell(clearCell(sheet, from), to, moved);
+}
+
+/**
+ * Ужимает текст графы по её ширине (`shrinkToFit`): кегль подбирается под длину значения.
+ *
+ * Ставится там, где длину выбирает не бланк, а справочник. Готового стиля с этим флагом в книге
+ * нет, а править чужой нельзя — один стиль в бланке носят десятки ячеек, и ужиматься начали бы
+ * все. Поэтому в конец таблицы стилей дописывается копия нужного, и ячейка переводится на неё.
+ *
+ * `applyAlignment` включается вместе с флагом: без него Excel читает выравнивание не из стиля
+ * ячейки, а из именованного, и ужатие тихо пропадает.
+ */
+function shrinkCell(
+  sheet: string,
+  styles: string,
+  address: string,
+): { sheet: string; styles: string } {
+  const found = cellRe(address).exec(sheet);
+  if (!found) throw new Error(`Ячейки ${address} в листе нет — ужимать нечего`);
+
+  const table = /<cellXfs count="(\d+)">([\s\S]*?)<\/cellXfs>/.exec(styles);
+  if (!table) throw new Error('В книге нет таблицы стилей ячеек — ужимать графу нечем');
+  const xfs = table[2]!.match(/<xf [^>]*?(?:\/>|>[\s\S]*?<\/xf>)/g) ?? [];
+
+  const current = Number(/\ss="(\d+)"/.exec(found[1] ?? '')?.[1] ?? 0);
+  const base = xfs[current];
+  if (!base) throw new Error(`Стиля ${current} ячейки ${address} в книге нет`);
+  if (/shrinkToFit="(1|true)"/.test(base)) return { sheet, styles };
+
+  const aligned = /applyAlignment="/.test(base)
+    ? base.replace(/applyAlignment="[^"]*"/, 'applyAlignment="true"')
+    : base.replace('<xf ', '<xf applyAlignment="true" ');
+  const shrunk = /shrinkToFit="/.test(aligned)
+    ? aligned.replace(/shrinkToFit="[^"]*"/, 'shrinkToFit="true"')
+    : aligned.replace('<alignment ', '<alignment shrinkToFit="true" ');
+  if (!/shrinkToFit="true"/.test(shrunk)) {
+    throw new Error(`У стиля ${current} нет выравнивания — флаг ужатия вписать некуда`);
+  }
+
+  // Остальные атрибуты ячейки остаются как были: в них тип значения, и потеряв его, лист
+  // напечатал бы вместо наименования пустоту.
+  const attrs = (found[1] ?? '').trim();
+  const restyled = /\ss="\d+"/.test(found[1] ?? '')
+    ? attrs.replace(/s="\d+"/, `s="${xfs.length}"`)
+    : `s="${xfs.length}"${attrs ? ` ${attrs}` : ''}`;
+
+  return {
+    sheet: sheet.replace(
+      found[0],
+      found[2] === undefined
+        ? `<c r="${address}" ${restyled} />`
+        : `<c r="${address}" ${restyled}>${found[2]}</c>`,
+    ),
+    styles: styles.replace(
+      table[0],
+      `<cellXfs count="${xfs.length + 1}">${table[2]}${shrunk}</cellXfs>`,
+    ),
+  };
 }
 
 /**
@@ -371,22 +506,95 @@ function setPageSetup(sheet: string, orientation: Blank['orientation']): string 
   return patched;
 }
 
+/**
+ * Убирает из бланка эмблему организации — растровую картинку в левом верхнем углу.
+ *
+ * Бланк — типовая межотраслевая форма, и логотипа в ней нет: он попал в файлы вместе с чужой
+ * вёрсткой, которой бухгалтерия печатала листы у себя. Оставаясь на бумаге, он выдаёт документ за
+ * фирменный, а форма от этого перестаёт быть той, что утверждена постановлением.
+ *
+ * Вычёркивается всё вместе — сама картинка, её якорь и связь с ним: осиротевшая ссылка на
+ * несуществующую часть архива делает книгу повреждённой, и её не откроет ни Excel, ни конвертер.
+ * Прочие фигуры рисунка остаются: в ЭСМ-2 ими нарисован сам бланк — рамки клеток недельной
+ * таблицы, и вырезав их, портал напечатал бы форму без разлиновки.
+ */
+function dropPictures(files: Record<string, Uint8Array>): void {
+  const read = (name: string): string => new TextDecoder().decode(files[name]!);
+  const write = (name: string, xml: string): void => {
+    files[name] = new TextEncoder().encode(xml);
+  };
+
+  for (const name of Object.keys(files)) {
+    if (name.startsWith('xl/media/')) delete files[name];
+  }
+
+  for (const name of Object.keys(files)) {
+    if (!/^xl\/drawings\/drawing\d+\.xml$/.test(name)) continue;
+    const rels = name.replace(/^xl\/drawings\//, 'xl/drawings/_rels/') + '.rels';
+    const drawing = read(name).replace(
+      /<xdr:(twoCellAnchor|oneCellAnchor|absoluteAnchor)[\s\S]*?<\/xdr:\1>/g,
+      (anchor) => (anchor.includes('<xdr:pic') ? '' : anchor),
+    );
+
+    if (/<xdr:(twoCell|oneCell|absolute)Anchor/.test(drawing)) {
+      write(name, drawing);
+      if (files[rels]) {
+        write(rels, read(rels).replace(/<Relationship [^>]*relationships\/image[^>]*\/>/g, ''));
+      }
+      continue;
+    }
+
+    // Рисунок состоял из одной эмблемы — вычёркиваем его целиком, вместе со ссылкой листа.
+    delete files[name];
+    delete files[rels];
+    write(
+      '[Content_Types].xml',
+      read('[Content_Types].xml').replace(new RegExp(`<Override PartName="/${name}"[^>]*/>`), ''),
+    );
+    for (const relsName of Object.keys(files)) {
+      if (!/^xl\/worksheets\/_rels\/.+\.rels$/.test(relsName)) continue;
+      const link = new RegExp(
+        `<Relationship Id="([^"]+)"[^>]*${name.replace('xl/', '../')}"[^>]*/>`,
+      );
+      const found = link.exec(read(relsName));
+      if (!found) continue;
+      write(relsName, read(relsName).replace(found[0], ''));
+      const sheetName = relsName.replace('/_rels/', '/').replace(/\.rels$/, '');
+      write(
+        sheetName,
+        read(sheetName).replace(new RegExp(`<drawing r:id="${found[1]}"\\s*/>`), ''),
+      );
+    }
+  }
+}
+
 function mark(blank: Blank): void {
   const files = unzipSync(new Uint8Array(readFileSync(join(templatesDir, 'source', blank.source))));
   const sheetPath = 'xl/worksheets/sheet1.xml';
+  const stylesPath = 'xl/styles.xml';
   let sheet = new TextDecoder().decode(files[sheetPath]!);
+  let styles = new TextDecoder().decode(files[stylesPath]!);
 
+  // Сперва правки самой формы, потом значения портала: адреса в `cells` — это адреса бланка,
+  // каким он уходит на печать, а не каким пришёл.
+  for (const ref of blank.unmerge ?? []) sheet = unmergeCells(sheet, ref);
+  for (const [from, to] of Object.entries(blank.move ?? {})) sheet = moveCell(sheet, from, to);
   for (const [address, value] of Object.entries(blank.cells)) {
     sheet = setCell(sheet, address, value);
   }
   for (const address of blank.clear ?? []) sheet = clearCell(sheet, address);
+  for (const address of blank.shrink ?? [])
+    ({ sheet, styles } = shrinkCell(sheet, styles, address));
   sheet = setPageSetup(sheet, blank.orientation);
 
   files[sheetPath] = new TextEncoder().encode(sheet);
+  files[stylesPath] = new TextEncoder().encode(styles);
+  dropPictures(files);
   // Время фиксировано: одинаковый исходник обязан давать одинаковый шаблон.
   writeFileSync(join(templatesDir, blank.out), zipSync(files, { mtime: Date.UTC(1980, 0, 1) }));
   const cleared = blank.clear?.length ? `, стёрто ${blank.clear.length}` : '';
-  console.log(`${blank.out}: размечено граф ${Object.keys(blank.cells).length}${cleared}`);
+  const shrunk = blank.shrink?.length ? `, ужато ${blank.shrink.length}` : '';
+  console.log(`${blank.out}: размечено граф ${Object.keys(blank.cells).length}${cleared}${shrunk}`);
 }
 
 for (const blank of [FORM_4P, FORM_LEG3, FORM_ESM2]) mark(blank);

@@ -24,6 +24,52 @@ function template(form: (typeof FORMS)[number]): Uint8Array {
   return new Uint8Array(readFileSync(join(templatesDir, `waybill-${form}.xlsx`)));
 }
 
+const decoder = new TextDecoder();
+
+/**
+ * Словарь строк книги. Текст ячейки xlsx хранит не в самой ячейке: `<c t="s"><v>5</v></c>` — это
+ * ссылка на пятую запись `sharedStrings.xml`, и надпись бланка приходится искать по индексу.
+ */
+function dictionaryOf(strings: string): string[] {
+  return [...strings.matchAll(/<si>([\s\S]*?)<\/si>/g)].map(([, si]) =>
+    [...si!.matchAll(/<t[^>]*>([\s\S]*?)<\/t>/g)].map(([, t]) => t).join(''),
+  );
+}
+
+/** Адреса ячеек листа, которые ссылаются на эту запись словаря. */
+function cellsWithString(sheet: string, index: number): string[] {
+  return [
+    ...sheet.matchAll(new RegExp(`<c r="([A-Z]+\\d+)"[^>]*t="s"[^>]*><v>${index}</v></c>`, 'g')),
+  ].map(([, ref]) => ref!);
+}
+
+/** Адрес ячейки: `AI4` → колонка 35, строка 4. Колонки пронумерованы буквами по основанию 26. */
+const colNumber = (ref: string): number =>
+  [.../^([A-Z]+)/.exec(ref)![1]!].reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0);
+const rowNumber = (ref: string): number => Number(/(\d+)$/.exec(ref)![1]);
+
+interface Merge {
+  from: string;
+  to: string;
+}
+
+function mergesOf(sheet: string): Merge[] {
+  return [...sheet.matchAll(/mergeCell ref="([A-Z]+\d+):([A-Z]+\d+)"/g)].map(([, from, to]) => ({
+    from: from!,
+    to: to!,
+  }));
+}
+
+/** Накрывает ли объединение этот адрес — считая и собственный левый верхний угол. */
+function covers(merge: Merge, ref: string): boolean {
+  return (
+    rowNumber(merge.from) <= rowNumber(ref) &&
+    rowNumber(ref) <= rowNumber(merge.to) &&
+    colNumber(merge.from) <= colNumber(ref) &&
+    colNumber(ref) <= colNumber(merge.to)
+  );
+}
+
 describe('разметка бланков', () => {
   it.each(FORMS)('в бланке %s нет графы, которой не собирает сервер', (form) => {
     const inTemplate = inspectTemplate(template(form));
@@ -67,12 +113,9 @@ describe('разметка бланков', () => {
     'в бланке %s нет графы диспетчера — ни ячейкой, ни плейсхолдером',
     (form) => {
       const files = unzipSync(template(form));
-      const sheet = new TextDecoder().decode(files['xl/worksheets/sheet1.xml']!);
-      const strings = new TextDecoder().decode(files['xl/sharedStrings.xml']!);
+      const sheet = decoder.decode(files['xl/worksheets/sheet1.xml']!);
 
-      const dictionary = [...strings.matchAll(/<si>([\s\S]*?)<\/si>/g)].map(([, si]) =>
-        [...si!.matchAll(/<t[^>]*>([\s\S]*?)<\/t>/g)].map(([, t]) => t).join(''),
-      );
+      const dictionary = dictionaryOf(decoder.decode(files['xl/sharedStrings.xml']!));
       const dispatcher = dictionary.flatMap((text, index) =>
         text.trim() === 'Диспетчер' ? [index] : [],
       );
@@ -95,12 +138,9 @@ describe('разметка бланков', () => {
    */
   it('в ЭСМ-2 стёрта фамилия начальника отдела: подписывает человек, а не портал', () => {
     const files = unzipSync(template('esm2'));
-    const sheet = new TextDecoder().decode(files['xl/worksheets/sheet1.xml']!);
-    const strings = new TextDecoder().decode(files['xl/sharedStrings.xml']!);
+    const sheet = decoder.decode(files['xl/worksheets/sheet1.xml']!);
 
-    const dictionary = [...strings.matchAll(/<si>([\s\S]*?)<\/si>/g)].map(([, si]) =>
-      [...si!.matchAll(/<t[^>]*>([\s\S]*?)<\/t>/g)].map(([, t]) => t).join(''),
-    );
+    const dictionary = dictionaryOf(decoder.decode(files['xl/sharedStrings.xml']!));
     // Строка остаётся в словаре книги — вырезать её значит сбить индексы всех прочих подписей
     // бланка; проверяется, что на неё не смотрит ни одна ячейка листа.
     const surname = dictionary.flatMap((text, index) =>
@@ -115,6 +155,36 @@ describe('разметка бланков', () => {
     // Должность на месте: стирается расшифровка подписи, а не сама графа.
     expect(dictionary.some((t) => t.includes('Начальник отдела автотехники'))).toBe(true);
   });
+
+  /**
+   * Логотип убран из всех трёх бланков. Каждый из них — типовая межотраслевая форма, утверждённая
+   * постановлением Госкомстата: её вид задан самой формой, и эмблема, врисованная бухгалтерией в
+   * левый верхний угол поверх готового бланка, к форме отношения не имеет.
+   *
+   * У 4-П и формы № 3 весь рисунок состоял из одного логотипа и удалён целиком — вместе со
+   * ссылкой листа на него; у ЭСМ-2 файл рисунка остаётся, в нём прямоугольники самого бланка.
+   */
+  it.each(FORMS)(
+    'в бланке %s нет логотипа: форма межотраслевая, эмблеме в ней не место',
+    (form) => {
+      const files = unzipSync(template(form));
+
+      expect(Object.keys(files).filter((name) => name.startsWith('xl/media/'))).toEqual([]);
+
+      const drawing = files['xl/drawings/drawing1.xml'];
+      if (drawing) {
+        // Рисунок оставлен ради фигур бланка: картинок в нём не должно остаться ни одной.
+        const xml = decoder.decode(drawing);
+        expect(xml).not.toContain('<xdr:pic');
+        expect(xml).toContain('<xdr:sp');
+      } else {
+        // Рисунка нет — не должно остаться и ссылки на него: битая связь делает книгу
+        // неоткрываемой, а набор плейсхолдеров при этом сходится и прочие проверки молчат.
+        const sheet = decoder.decode(files['xl/worksheets/sheet1.xml']!);
+        expect(sheet).not.toMatch(/<drawing\b/);
+      }
+    },
+  );
 
   /**
    * ЭСМ-2 — документ на неделю работы машины, а не на поездку: в нём нет ни груза, ни задания, ни
@@ -217,14 +287,8 @@ describe('разметка бланков', () => {
    * сходился, и проверки выше молчали.
    */
   it.each(FORMS)('в бланке %s ни один плейсхолдер не спрятан внутри объединения', (form) => {
-    const sheet = new TextDecoder().decode(unzipSync(template(form))['xl/worksheets/sheet1.xml']!);
-    const colNumber = (ref: string): number =>
-      [.../^([A-Z]+)/.exec(ref)![1]!].reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0);
-    const rowNumber = (ref: string): number => Number(/(\d+)$/.exec(ref)![1]);
-
-    const merges = [...sheet.matchAll(/mergeCell ref="([A-Z]+\d+):([A-Z]+\d+)"/g)].map(
-      ([, from, to]) => ({ from: from!, to: to! }),
-    );
+    const sheet = decoder.decode(unzipSync(template(form))['xl/worksheets/sheet1.xml']!);
+    const merges = mergesOf(sheet);
     // Ячейки со значением портала: их вписывает `mark-waybill-templates.ts`. Разбирается ячейка
     // целиком, а не «от адреса до первой скобки»: пустые ячейки самозакрыты (`<c r="A1" />`), и
     // поиск по куску разметки перескакивал бы через них на чужой плейсхолдер. Атрибуты читаются
@@ -235,17 +299,71 @@ describe('разметка бланков', () => {
       .map(([, ref]) => ref!);
     expect(marked.length).toBeGreaterThan(10);
 
-    const hidden = marked.filter((ref) =>
-      merges.some(
-        (m) =>
-          ref !== m.from &&
-          rowNumber(m.from) <= rowNumber(ref) &&
-          rowNumber(ref) <= rowNumber(m.to) &&
-          colNumber(m.from) <= colNumber(ref) &&
-          colNumber(ref) <= colNumber(m.to),
-      ),
-    );
+    // Левый верхний угол объединения — единственное место, где значение видно; остальные адреса
+    // диапазона молчат.
+    const hidden = marked.filter((ref) => merges.some((m) => ref !== m.from && covers(m, ref)));
     expect(hidden).toEqual([]);
+  });
+
+  /**
+   * Подпись формы ЭСМ-2 — «строительной машины» под заголовком «ПУТЕВОЙ ЛИСТ» — не заперта в
+   * объединении. Объединение режет длинный текст по своей границе вместо того, чтобы переполнить
+   * пустых соседей: подпись стояла в объединении шириной в две узкие колонки, и на бумаге от неё
+   * оставалось «нс». Без объединения текст растекается по пустой строке и печатается целиком.
+   *
+   * Ячейка ищется по индексу строки в словаре книги, а не по адресу: подпись центрируется под
+   * заголовком и колонка у неё подобрана на глаз — привязка к адресу сломалась бы от сдвига на
+   * колонку, ничего при этом не проверяя.
+   */
+  it('в ЭСМ-2 подпись формы не заперта в объединении: иначе печатается «нс»', () => {
+    const files = unzipSync(template('esm2'));
+    const sheet = decoder.decode(files['xl/worksheets/sheet1.xml']!);
+    const dictionary = dictionaryOf(decoder.decode(files['xl/sharedStrings.xml']!));
+
+    const caption = dictionary.flatMap((text, index) =>
+      text.trim() === 'строительной машины' ? [index] : [],
+    );
+    expect(caption.length, 'подпись формы пропала из словаря книги').toBeGreaterThan(0);
+
+    const merges = mergesOf(sheet);
+    const cells = caption.flatMap((index) => cellsWithString(sheet, index));
+    expect(cells.length, 'подпись формы не стоит ни в одной ячейке листа').toBeGreaterThan(0);
+
+    // Проверяется вхождение в диапазон целиком, включая левый верхний угол: в отличие от
+    // спрятанного плейсхолдера, тексту мешает само объединение, а не место внутри него.
+    expect(cells.filter((ref) => merges.some((m) => covers(m, ref)))).toEqual([]);
+  });
+
+  /**
+   * Графа «Машина» (H9, объединение H9:Z9) размечена под ужатие текста. Наименование машины
+   * приходит из справочника техники и бывает длиннее графы, а печатает портал через LibreOffice:
+   * по флагу `shrinkToFit` он подбирает кегль под ширину графы. Без флага лишнее молча
+   * обрезается по границе объединения — на экране бланк выглядит верным, на бумаге нет.
+   */
+  it('в ЭСМ-2 графа «Машина» ужимает кегль: наименование из справочника длиннее графы', () => {
+    const files = unzipSync(template('esm2'));
+    const sheet = decoder.decode(files['xl/worksheets/sheet1.xml']!);
+    const styles = decoder.decode(files['xl/styles.xml']!);
+
+    // Ячейка держит не оформление, а номер стиля: `s="19"` — это девятнадцатый `<xf>` из
+    // `<cellXfs>`, и выравнивание графы описано там.
+    const cell = /<c r="H9"[^>]*?(?:\/>|>)/.exec(sheet);
+    expect(cell, 'графа «Машина» пропала из бланка').not.toBeNull();
+    const styleIndex = Number(/ s="(\d+)"/.exec(cell![0])?.[1]);
+    expect(Number.isInteger(styleIndex), 'у графы «Машина» нет своего стиля').toBe(true);
+
+    const cellXfs = /<cellXfs[^>]*>([\s\S]*?)<\/cellXfs>/.exec(styles)![1]!;
+    // Записи бывают и самозакрытыми, и с вложенными `<alignment>`/`<protection>` — нежадный
+    // поиск «до первой косой черты» съедал бы половину записи вместе с выравниванием.
+    const xf = [...cellXfs.matchAll(/<xf\b[^>]*\/>|<xf\b[^>]*>[\s\S]*?<\/xf>/g)].map(([m]) => m)[
+      styleIndex
+    ];
+    expect(xf, `стиля ${styleIndex} нет в книге`).toBeDefined();
+
+    // Флаг проверяется в самом `<alignment>`: `shrinkToFit="false"` стоит в каждой записи книги,
+    // и поиск по всему файлу нашёл бы чужую.
+    const alignment = /<alignment\b[^>]*\/?>/.exec(xf!)?.[0] ?? '';
+    expect(alignment, `выравнивание графы «Машина»: ${xf}`).toContain('shrinkToFit="true"');
   });
 
   /**
@@ -280,7 +398,19 @@ describe('разметка бланков', () => {
     // Бланк прислан бухгалтерией: линии, шрифты и штампы обязаны пережить подстановку без правок.
     const before = unzipSync(original);
     const after = unzipSync(rendered.bytes);
-    for (const part of ['xl/styles.xml', 'xl/drawings/drawing1.xml', 'xl/media/image1.png']) {
+
+    // Список частей берётся из самого бланка, а не пишется в тесте руками: состав у трёх бланков
+    // разный и меняется (логотипа с его `media/` нет ни в одном, рисунок остался только у ЭСМ-2),
+    // а вписанное имя несуществующей части превращает проверку в сравнение двух `undefined`.
+    expect(Object.keys(after).sort()).toEqual(Object.keys(before).sort());
+
+    // Текст книги живёт в словаре строк и на листах — только их подстановка и переписывает.
+    // Всё остальное — стили, тема, рисунки, связи, свойства — обязано совпасть байт в байт.
+    const layout = Object.keys(before).filter(
+      (part) => part !== 'xl/sharedStrings.xml' && !/^xl\/worksheets\/[^/]+\.xml$/.test(part),
+    );
+    expect(layout).toContain('xl/styles.xml');
+    for (const part of layout) {
       expect(Array.from(after[part]!), part).toEqual(Array.from(before[part]!));
     }
   });
