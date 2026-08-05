@@ -5,6 +5,7 @@ import { db } from '../db/client';
 import { requirePrincipal } from '../auth/plugin';
 import { writeAudit } from '../lib/audit';
 import { err } from '../lib/errors';
+import { pgErrorOf } from '../lib/pg-error';
 
 /**
  * Окончательное удаление записи справочника (ADR 0060) — общая механика на все вкладки.
@@ -37,6 +38,7 @@ const REFERENCING_TABLE_LABELS: Record<string, string> = {
   person_employments: 'записи о работе',
   person_specializations: 'специализации работников',
   request_files: 'вложения заявок вывоза',
+  request_status_history: 'история статусов заявок вывоза',
   user_construction_objects: 'объекты учётных записей',
   user_departments: 'отделы учётных записей',
   users: 'учётные записи',
@@ -44,6 +46,10 @@ const REFERENCING_TABLE_LABELS: Record<string, string> = {
   vehicle_category_spec_values: 'значения ТТХ категорий',
   vehicle_models: 'модели техники',
   vehicle_request_assignments: 'назначения техники на заявки',
+  vehicle_request_completions: 'закрытые заказы техники',
+  vehicle_request_early_endings: 'досрочные завершения заказов техники',
+  vehicle_request_shifts: 'смены в заказах техники',
+  vehicle_request_status_history: 'история статусов заказов техники',
   vehicle_requests: 'заказы техники',
   vehicle_route_requests: 'состав рейсов',
   vehicle_routes: 'рейсы',
@@ -68,7 +74,9 @@ const REFERENCING_TABLE_LABELS: Record<string, string> = {
  * foreign key constraint … on table X» ошибка помечена именно ссылающейся таблицей X.
  */
 export function asReferenceConflict(e: unknown, subject: string): unknown {
-  const pg = e as { code?: string; table?: string };
+  // Через `pgErrorOf`, а не с самой ошибки: drizzle оборачивает ошибку драйвера в свою, и на
+  // верхнем объекте ни кода, ни таблицы уже нет — проверка молчала бы, а человек получал 500.
+  const pg = pgErrorOf(e);
   if (pg?.code !== '23503') return e;
   const label = pg.table ? REFERENCING_TABLE_LABELS[pg.table] : undefined;
   return err.conflict(

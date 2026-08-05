@@ -5,6 +5,7 @@ import { wasteTypeDuplicateMessage } from '@technic/contracts';
 import type { db } from '../db/client';
 import { wasteTypes, type WasteTypeRow } from '../db/schema';
 import { err } from '../lib/errors';
+import { pgErrorOf } from '../lib/pg-error';
 
 // Типы мусора (ADR 0017). Отдельного справочника в интерфейсе нет: тип заводится вместе с первой
 // ценой и правится в строке тарифа, поэтому и правила его заведения живут рядом с прайсом.
@@ -142,7 +143,9 @@ export async function createWasteType(
  * хотя человеку нужно то же сообщение, что и при обычном дубле.
  */
 export function asWasteTypeNameConflict(e: unknown, field: string): unknown {
-  const pg = e as { code?: string; constraint?: string };
+  // Через `pgErrorOf`: drizzle оборачивает ошибку драйвера в свою, и на верхнем объекте кода уже
+  // нет — проверка молчала бы, а гонка вместо подсказки давала бы 500.
+  const pg = pgErrorOf(e);
   if (pg?.code === '23505' && pg.constraint === 'waste_types_name_key_unique') {
     return err.validation({
       [field]: 'Такой тип только что завели — обновите список и выберите его',
