@@ -3,16 +3,21 @@ import {
   calcWasteFactCost,
   changeWasteRequestStatusSchema,
   completeWasteRequestSchema,
+  factVolumeOf,
+  factWeightOf,
   requiresWasteFact,
   sumVehicleVolume,
   updateWasteRequestSchema,
   vehicleVolume,
+  type WasteFactAmount,
+  wasteFactLabel,
+  wasteFactUnit,
   type WasteRequestVehicleDto,
 } from '@technic/contracts';
 
 /**
- * Закрытие заявки на вывоз (ADR 0035): предъявляется фактический объём и стоимость, а не состав
- * техники. Здесь проверяется вход: что схема принимает, что отклоняет и что считает сама.
+ * Закрытие заявки на вывоз (ADR 0035, ADR 0067): предъявляется вывезенное и стоимость, а не
+ * состав техники. Здесь проверяется вход: что схема принимает, что отклоняет и что считает сама.
  * Обязательность факта и подбор цены — за сервером: схема не знает ни типа заявки, ни прайса.
  */
 
@@ -22,11 +27,40 @@ const OTHER_VEHICLE_ID = '88888888-8888-4888-8888-888888888888';
 const FILE_ID = '55555555-5555-4555-8555-555555555555';
 
 describe('какие заявки отчитываются фактом', () => {
-  it('только вывоз мусора — контейнерные операции закрываются одним талоном', () => {
+  it('вывоз — да, контейнерные операции закрываются одним талоном', () => {
     expect(requiresWasteFact('waste_removal')).toBe(true);
+    expect(requiresWasteFact('metal_removal')).toBe(true);
     expect(requiresWasteFact('container_install')).toBe(false);
     expect(requiresWasteFact('container_replace')).toBe(false);
     expect(requiresWasteFact('container_removal')).toBe(false);
+  });
+
+  // Единица — свойство типа заявки (ADR 0067): «3,2» без неё не отвечает, кубометры это или тонны.
+  it('мусор меряется объёмом, металлолом — весом', () => {
+    expect(wasteFactUnit('waste_removal')).toBe('volume_m3');
+    expect(wasteFactUnit('metal_removal')).toBe('weight_tons');
+    expect(wasteFactUnit('container_install')).toBeNull();
+    expect(wasteFactUnit('container_replace')).toBeNull();
+    expect(wasteFactUnit('container_removal')).toBeNull();
+  });
+
+  // Величина и её единица — одно неразделимое значение (`WasteFactAmount`): пара необязательных
+  // чисел разъезжалась бы молча, потому что `null` легален и в шаблонной строке, и в JSX.
+  it('вывезенное печатается со своей единицей', () => {
+    expect(wasteFactLabel({ unit: 'volume_m3', volumeM3: 48 })).toBe('48 м³');
+    expect(wasteFactLabel({ unit: 'weight_tons', weightTons: 3.2 })).toBe('3.2 т');
+  });
+
+  it('величину факта достают только по её единице', () => {
+    const volume: WasteFactAmount = { unit: 'volume_m3', volumeM3: 48 };
+    const weight: WasteFactAmount = { unit: 'weight_tons', weightTons: 3.2 };
+    expect(factVolumeOf(volume)).toBe(48);
+    expect(factVolumeOf(weight)).toBeNull();
+    expect(factWeightOf(weight)).toBe(3.2);
+    expect(factWeightOf(volume)).toBeNull();
+    // Факта нет вовсе — у контейнерных операций и у незакрытой заявки.
+    expect(factVolumeOf(null)).toBeNull();
+    expect(factWeightOf(undefined)).toBeNull();
   });
 });
 
@@ -50,9 +84,9 @@ describe('факт вывоза', () => {
   it('стоимость необязательна, допускает ноль и две цифры после запятой', () => {
     expect(completeWasteRequestSchema.parse({ volumeM3: 48 }).totalCost).toBeUndefined();
     expect(completeWasteRequestSchema.parse({ volumeM3: 48, totalCost: 0 }).totalCost).toBe(0);
-    expect(
-      completeWasteRequestSchema.parse({ volumeM3: 48, totalCost: 40_800.5 }).totalCost,
-    ).toBe(40_800.5);
+    expect(completeWasteRequestSchema.parse({ volumeM3: 48, totalCost: 40_800.5 }).totalCost).toBe(
+      40_800.5,
+    );
     expect(() => completeWasteRequestSchema.parse({ volumeM3: 48, totalCost: -1 })).toThrow();
     expect(() =>
       completeWasteRequestSchema.parse({ volumeM3: 48, totalCost: 40_800.555 }),
@@ -62,13 +96,43 @@ describe('факт вывоза', () => {
   // Пустая сумма и отсутствующая — разное: первая означает «закрываем без суммы», вторая —
   // «посчитай сам по прайсу». Различает их сервер, схема обе пропускает.
   it('пустая стоимость принимается явным null', () => {
-    expect(completeWasteRequestSchema.parse({ volumeM3: 48, totalCost: null }).totalCost).toBeNull();
+    expect(
+      completeWasteRequestSchema.parse({ volumeM3: 48, totalCost: null }).totalCost,
+    ).toBeNull();
   });
 
   it('состав техники в факте не передаётся — вывоз считается объёмом', () => {
     expect(() =>
       completeWasteRequestSchema.parse({ volumeM3: 48, vehicles: [{ containerTypeId: TYPE_ID }] }),
     ).toThrow();
+  });
+});
+
+// Металлолом предъявляется весом и без денег (ADR 0067). Что величина прислана именно та, которой
+// меряется эта заявка, проверяет сервер — схеме тип заявки неизвестен.
+describe('факт сдачи металлолома', () => {
+  it('вес обязателен, строго положителен и дробен до трёх знаков', () => {
+    expect(completeWasteRequestSchema.parse({ weightTons: 3.2 }).weightTons).toBe(3.2);
+    expect(completeWasteRequestSchema.parse({ weightTons: 3.125 }).weightTons).toBe(3.125);
+    expect(() => completeWasteRequestSchema.parse({ weightTons: 0 })).toThrow();
+    expect(() => completeWasteRequestSchema.parse({ weightTons: -1 })).toThrow();
+    expect(() => completeWasteRequestSchema.parse({ weightTons: 3.1256 })).toThrow();
+  });
+
+  // Две величины разом — два ответа на вопрос «сколько увезли»; ни одной — закрытие, которое
+  // ничего не предъявило. Тот же инвариант держит CHECK в БД (миграция 0090).
+  it('величина ровно одна', () => {
+    expect(() => completeWasteRequestSchema.parse({ volumeM3: 48, weightTons: 3.2 })).toThrow();
+    expect(() => completeWasteRequestSchema.parse({})).toThrow();
+  });
+
+  // Прайс задан в ₽/м³ на пару «тип мусора × техника», и приложить его к тоннам нечем: сумма
+  // рядом с весом означала бы расчёт, которого не было.
+  it('стоимость к весу не прикладывается', () => {
+    expect(() =>
+      completeWasteRequestSchema.parse({ weightTons: 3.2, totalCost: 15_000 }),
+    ).toThrow();
+    expect(() => completeWasteRequestSchema.parse({ weightTons: 3.2, totalCost: null })).toThrow();
   });
 });
 

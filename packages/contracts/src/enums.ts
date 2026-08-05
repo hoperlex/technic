@@ -197,6 +197,7 @@ export const REQUEST_TYPES = [
   'container_replace',
   'container_removal',
   'waste_removal',
+  'metal_removal',
 ] as const;
 export const requestTypeSchema = z.enum(REQUEST_TYPES);
 export type RequestType = (typeof REQUEST_TYPES)[number];
@@ -206,6 +207,7 @@ export const requestTypeLabels: Record<RequestType, string> = {
   container_replace: 'Замена полного контейнера на пустой',
   container_removal: 'Снятие контейнера (вывоз без замены)',
   waste_removal: 'Вывоз мусора (разовый объём)',
+  metal_removal: 'Вывоз металлолома',
 };
 
 export const requestTypeColors: Record<RequestType, string> = {
@@ -213,17 +215,23 @@ export const requestTypeColors: Record<RequestType, string> = {
   container_replace: 'gold',
   container_removal: 'volcano',
   waste_removal: 'blue',
+  metal_removal: 'purple',
 };
 
 /**
  * Буква типа в номере заявок, заведённых до префикса «М-» (№ = «<num>-<буква>», миграция 0064).
  * Новых таких номеров не появляется — суффикс остаётся только у прежних заявок.
+ *
+ * У металлолома (ADR 0067) буква не используется ни разу: тип появился после префикса, и все его
+ * заявки нумеруются «М-<num>». Стоит она здесь только потому, что перечень полон по типам —
+ * пропуск означал бы, что у какого-то типа номера нет вовсе.
  */
 export const requestTypeShort: Record<RequestType, string> = {
   container_install: 'У',
   container_replace: 'З',
   container_removal: 'Сн',
   waste_removal: 'ВМ',
+  metal_removal: 'МЛ',
 };
 
 /** Минимальный объём вывоза мусора (м³). */

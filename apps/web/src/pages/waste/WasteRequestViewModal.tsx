@@ -10,8 +10,9 @@ import {
   requestStatusLabels,
   requestTypeColors,
   requestTypeLabels,
-  requiresWasteFact,
   usesContainerGroup,
+  usesContainerType,
+  wasteFactLabel,
   vehicleVolume,
   type WasteRequestCompletionDto,
   type WasteRequestDto,
@@ -128,7 +129,9 @@ function ClosingFact({
       {completion && (
         <Space size={8} wrap>
           <Typography.Text>
-            Вывезено {completion.volumeM3} м³
+            {/* Единица берётся из самого факта (ADR 0067): мусор меряют объёмом, металлолом —
+                весом, и подставить «м³» строкой значило бы соврать в половине карточек. */}
+            Вывезено {wasteFactLabel(completion)}
             {completion.totalCost != null ? ` · ${formatMoney(completion.totalCost)}` : ''}
           </Typography.Text>
           {completion.pricePerM3 != null && (
@@ -166,14 +169,17 @@ function ClosingFact({
   );
 }
 
-/** Чем предъявлен факт выполнения: объёмом (ADR 0035) и талонами заявки (ADR 0013, ADR 0024). */
+/**
+ * Чем предъявлен факт выполнения: вывезенным (ADR 0035, ADR 0067) и талонами заявки
+ * (ADR 0013, ADR 0024).
+ */
 function factOf(
   completion: WasteRequestCompletionDto | null,
   vehicles: WasteRequestVehicleDto[],
   tickets: FileDto[],
 ): string {
   const parts = [
-    completion ? `${completion.volumeM3} м³` : null,
+    completion ? wasteFactLabel(completion) : null,
     completion?.totalCost != null ? formatMoney(completion.totalCost) : null,
     // Состав техники — только у закрытий до ADR 0035; у них объёма в факте не было.
     !completion && vehicles.length > 0
@@ -296,18 +302,19 @@ export function WasteRequestViewModal({
           ),
         },
         // Контейнер — предмет только контейнерных операций: вывоз заказывает объём и технику не
-        // называет (ADR 0022). У заявок вывоза, заведённых раньше, тип в базе остался, но строка
-        // о нём в карточке говорила бы о поле, которого у этого типа заявки больше нет.
-        ...(requiresWasteFact(request.requestType)
-          ? []
-          : [
+        // называет (ADR 0022), а у металлолома нет и объёма (ADR 0067). У заявок вывоза,
+        // заведённых раньше, тип в базе остался, но строка о нём в карточке говорила бы о поле,
+        // которого у этого типа заявки больше нет.
+        ...(usesContainerType(request.requestType)
+          ? [
               {
                 key: 'containerType',
                 label: 'Контейнер / машина',
                 // Количество — частью предмета: «Контейнер 8 м³ × 2» (ADR 0054).
                 children: wasteSubjectLabel(request),
               },
-            ]),
+            ]
+          : []),
         // Чей контейнер трогает заявка и не расходится ли это с исполнителем (ADR 0054).
         // Только у замены и снятия: у остальных типов контейнер на площадке не стоит.
         ...(usesContainerGroup(request.requestType)
@@ -379,7 +386,7 @@ export function WasteRequestViewModal({
                 children: (
                   <div style={{ lineHeight: 1.3 }}>
                     <div>
-                      {request.completion.volumeM3} м³
+                      {wasteFactLabel(request.completion)}
                       {request.completion.totalCost != null
                         ? ` · ${formatMoney(request.completion.totalCost)}`
                         : ''}

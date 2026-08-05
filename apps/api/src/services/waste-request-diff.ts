@@ -1,5 +1,8 @@
 import {
+  factVolumeOf,
+  factWeightOf,
   formatMoscowDateTime,
+  formatPhone,
   type RequestChangeDto,
   requestTypeLabels,
   type WasteRequestCompletionDto,
@@ -17,6 +20,10 @@ function money(v: number | null): string {
 
 function volume(v: number | null): string {
   return v == null ? EMPTY : `${v} м³`;
+}
+
+function weight(v: number | null): string {
+  return v == null ? EMPTY : `${v} т`;
 }
 
 function delivery(r: WasteRequestDto): string {
@@ -66,10 +73,12 @@ export function diffWasteRequests(
   // Контакт ответственного (миграция 0062): по нему звонят с площадки, и смена телефона —
   // событие истории наравне с датой доставки.
   diff.changed('responsibleName', before.responsibleName || EMPTY, after.responsibleName || EMPTY);
+  // Номер в истории — тем же видом, что в карточке (ADR 0066): «сменился телефон» читают глазами,
+  // и «9261234567» против «+7 (926) 123-45-67» выглядело бы сменой формата, а не номера.
   diff.changed(
     'responsiblePhone',
-    before.responsiblePhone || EMPTY,
-    after.responsiblePhone || EMPTY,
+    formatPhone(before.responsiblePhone) || EMPTY,
+    formatPhone(after.responsiblePhone) || EMPTY,
   );
   // Стороны комментария сравниваются порознь (ADR 0053): «изменён комментарий» не отвечает, чей.
   diff.changed('comment', short(before.comment) || EMPTY, short(after.comment) || EMPTY);
@@ -116,7 +125,10 @@ export function diffWasteCompletion(
   after: WasteRequestCompletionDto | null,
 ): RequestChangeDto[] {
   const diff = changeSet();
-  diff.changed('factVolume', volume(before?.volumeM3 ?? null), volume(after?.volumeM3 ?? null));
+  diff.changed('factVolume', volume(factVolumeOf(before)), volume(factVolumeOf(after)));
+  // Вес — своей строкой (ADR 0067): у металлолома это другая величина, и общая строка «Вывезено»
+  // превратила бы смену типа заявки в «48 → 3,2» без единиц.
+  diff.changed('factWeight', weight(factWeightOf(before)), weight(factWeightOf(after)));
   diff.changed('factPrice', money(before?.pricePerM3 ?? null), money(after?.pricePerM3 ?? null));
   diff.changed('factCost', money(before?.totalCost ?? null), money(after?.totalCost ?? null));
   return diff.changes;

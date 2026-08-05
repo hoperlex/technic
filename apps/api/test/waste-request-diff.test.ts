@@ -105,9 +105,7 @@ describe('дифф правки заявки', () => {
   // строку площадки она не трогает.
   it('комментарий исполнителя — отдельное изменение от комментария площадки', () => {
     const changes = diffWasteRequests(BASE, { ...BASE, operatorComment: 'будем после 15:00' });
-    expect(changes).toEqual([
-      { field: 'operatorComment', from: '—', to: 'будем после 15:00' },
-    ]);
+    expect(changes).toEqual([{ field: 'operatorComment', from: '—', to: 'будем после 15:00' }]);
   });
 
   it('длинный комментарий обрезается', () => {
@@ -144,9 +142,21 @@ describe('дифф закрытия заявки', () => {
     pricePerM3: number | null,
     totalCost: number | null,
   ): WasteRequestCompletionDto => ({
+    unit: 'volume_m3',
     volumeM3,
     pricePerM3,
     totalCost,
+    completedBy: BASE.createdBy,
+    completedByName: BASE.createdByName,
+    completedAt: '2026-08-01T12:00:00.000Z',
+  });
+
+  /** Закрытие металлолома (ADR 0067): один вес, без цены и суммы. */
+  const metalCompletion = (weightTons: number): WasteRequestCompletionDto => ({
+    unit: 'weight_tons',
+    weightTons,
+    pricePerM3: null,
+    totalCost: null,
     completedBy: BASE.createdBy,
     completedByName: BASE.createdByName,
     completedAt: '2026-08-01T12:00:00.000Z',
@@ -162,10 +172,7 @@ describe('дифф закрытия заявки', () => {
   // Повторное закрытие (после отката администратором) сравнивается с прошлым фактом: видно, какую
   // именно цифру исправили — ради этого закрытие и держит свою историю.
   it('повторное закрытие показывает только исправленное', () => {
-    const changes = diffWasteCompletion(
-      completion(48, 850, 40_800),
-      completion(48, 850, 39_000),
-    );
+    const changes = diffWasteCompletion(completion(48, 850, 40_800), completion(48, 850, 39_000));
     expect(byField(changes)).toEqual(['factCost']);
   });
 
@@ -174,5 +181,20 @@ describe('дифф закрытия заявки', () => {
   it('закрытие без цены не выдумывает её', () => {
     const changes = diffWasteCompletion(null, completion(48, null, 39_000));
     expect(byField(changes)).toEqual(['factVolume', 'factCost']);
+  });
+
+  // Вес — своя строка истории (ADR 0067): у металлолома другая величина, и общая строка
+  // «Вывезено» показала бы «48 → 3,2» без единиц.
+  it('металлолом показывает вес и молчит о цене с суммой', () => {
+    const changes = diffWasteCompletion(null, metalCompletion(3.2));
+    expect(byField(changes)).toEqual(['factWeight']);
+    expect(changes[0]).toEqual({ field: 'factWeight', from: '—', to: '3.2 т' });
+  });
+
+  // Возврат заявки в «Новую» стирает предъявленное: история обязана показать это строками, а не
+  // молчанием — иначе цифры пропали бы из карточки, ни разу в неё не попав.
+  it('снятый факт показывается пустой правой стороной', () => {
+    const changes = diffWasteCompletion(metalCompletion(3.2), null);
+    expect(changes).toContainEqual({ field: 'factWeight', from: '3.2 т', to: '—' });
   });
 });

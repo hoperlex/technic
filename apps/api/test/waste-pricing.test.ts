@@ -32,6 +32,12 @@ describe('тарифицируемые операции (ADR 0019)', () => {
     expect(isPricedRequestType('container_removal')).toBe(false);
   });
 
+  // Прайс задан в ₽/м³ на пару «тип мусора × техника», а у металлолома нет ни того, ни другого
+  // (ADR 0067): считать его нечем, и заявка живёт без цены вовсе.
+  it('вывоз металлолома не тарифицируется', () => {
+    expect(isPricedRequestType('metal_removal')).toBe(false);
+  });
+
   it('тарифицируется один вывоз мусора', () => {
     expect(isPricedRequestType('waste_removal')).toBe(true);
     expect(PRICED_REQUEST_TYPES).toEqual(['waste_removal']);

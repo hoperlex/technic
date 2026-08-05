@@ -7,6 +7,7 @@ import {
   MAX_CONTAINERS_PER_REQUEST,
   presentGroupLabel,
   usesContainerGroup,
+  usesContainerType,
   wasteSubjectLabel,
 } from '@technic/contracts';
 
@@ -53,6 +54,17 @@ describe('у каких операций есть владелец и колич
     expect(usesContainerGroup('container_removal')).toBe(true);
     expect(usesContainerGroup('container_install')).toBe(false);
     expect(usesContainerGroup('waste_removal')).toBe(false);
+    expect(usesContainerGroup('metal_removal')).toBe(false);
+  });
+
+  // Тип контейнера — предмет контейнерных операций и только их: вывоз мусора техники не называет
+  // (ADR 0022), у металлолома нет и её (ADR 0067).
+  it('тип контейнера — предмет только контейнерных операций', () => {
+    expect(usesContainerType('container_install')).toBe(true);
+    expect(usesContainerType('container_replace')).toBe(true);
+    expect(usesContainerType('container_removal')).toBe(true);
+    expect(usesContainerType('waste_removal')).toBe(false);
+    expect(usesContainerType('metal_removal')).toBe(false);
   });
 });
 
@@ -93,6 +105,36 @@ describe('контракт заявки с контейнерами', () => {
         }),
       ),
     ).toThrow();
+  });
+
+  // Заявка на металлолом — самая короткая в модуле (ADR 0067): объект, дата, ответственный.
+  // Ни контейнера, ни типа мусора, ни объёма у неё нет, и требовать их схема не должна.
+  it('принимает вывоз металлолома без предмета заявки', () => {
+    const parsed = createWasteRequestSchema.parse(
+      removal({
+        requestType: 'metal_removal',
+        containerTypeId: undefined,
+        containerOwnerCounterpartyId: undefined,
+      }),
+    );
+    expect(parsed.requestType).toBe('metal_removal');
+    expect(parsed.containerTypeId).toBeUndefined();
+    expect(parsed.wasteTypeId).toBeUndefined();
+    expect(parsed.volumeM3).toBeUndefined();
+    expect(parsed.containersCount).toBe(1);
+  });
+
+  // Предмета у неё нет, а значит нет и строки предмета: «—» в списке честнее выдуманного
+  // контейнера, которого заявка не заказывала.
+  it('предмет заявки на металлолом пуст', () => {
+    expect(
+      wasteSubjectLabel({
+        requestType: 'metal_removal',
+        containerTypeName: null,
+        containersCount: 1,
+        volumeM3: null,
+      }),
+    ).toBe('—');
   });
 
   // Владельца может не быть: установку заводили без оператора, и группа «не указан» — обычная.

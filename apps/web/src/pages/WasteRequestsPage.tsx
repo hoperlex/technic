@@ -45,6 +45,7 @@ import {
   checkContainerOwner,
   containerOwnerMismatch,
   FOREIGN_CONTAINER_SPLIT_MESSAGE,
+  isPlaceScopedRole,
   isPricedRequestType,
   presentGroupLabel,
   usesContainerGroup,
@@ -53,6 +54,7 @@ import {
   WASTE_REMOVAL_CONTAINER_KIND,
   type WasteRequestDto,
   wasteOperatorCommentEditable,
+  wasteFactLabel,
   wasteRequestCommentLines,
   wasteSubjectLabel,
 } from '@technic/contracts';
@@ -80,7 +82,7 @@ import { ObjectCell } from '../components/ObjectCell';
 import { TimeInput, optionalWorkTimeRule } from '../components/TimeInput';
 import { useIsMobile } from '@shared/lib';
 import { useListParams } from '@shared/lib';
-import { useObjectScope } from '../hooks/useObjectScope';
+import { useWasteObjectScope } from '../hooks/useWasteObjectScope';
 import { useAuth } from '../auth/AuthContext';
 
 import { errorMessage, formatDate, formatDateTimeMaybe, formatMoney } from '../utils/format';
@@ -170,6 +172,15 @@ function CommentCell({ r, truncate }: { r: WasteRequestDto; truncate?: boolean }
 }
 
 /**
+ * Сданный вес — второй строкой к предмету заявки на металлолом (ADR 0067). Появляется только
+ * после закрытия: до него у такой заявки нет ни предмета, ни цифр, и обещать вес заранее нечем —
+ * заявка плана не несёт.
+ */
+function weightFactLine(r: WasteRequestDto): string | null {
+  return r.completion?.unit === 'weight_tons' ? `сдано ${wasteFactLabel(r.completion)}` : null;
+}
+
+/**
  * Предмет заявки с пометкой о чужом контейнере (ADR 0054). Сама строка собирается контрактом
  * (`wasteSubjectLabel`) — она нужна и списку, и мобильной карточке, — а тег живёт здесь: это
  * уже показ, а не описание предмета.
@@ -193,16 +204,17 @@ function SubjectCell({ r }: { r: WasteRequestDto }) {
  * Что возврат в «Новую» сотрёт у этой заявки (`transitionResetsWork`) — строками, по её
  * собственным данным.
  *
- * У вывоза мусора это предъявленный факт (ADR 0035) и талоны вывоза (ADR 0013, ADR 0024): всё,
- * чем закрывали заявку. Есть они не всегда — заявка попадает в «В работе» и без них, а факт с
- * талонами появляются у той, которую уже закрывали и откатили назад, — поэтому перечень собирается
- * по заявке: обещать снятие того, чего у неё нет, значит пугать человека выдуманной потерей.
+ * У заявок на вывоз это предъявленный факт (ADR 0035, ADR 0067) и талоны вывоза (ADR 0013,
+ * ADR 0024): всё, чем закрывали заявку. Есть они не всегда — заявка попадает в «В работе» и без
+ * них, а факт с талонами появляются у той, которую уже закрывали и откатили назад, — поэтому
+ * перечень собирается по заявке: обещать снятие того, чего у неё нет, значит пугать человека
+ * выдуманной потерей.
  */
 function rollbackErases(r: WasteRequestDto): string[] {
   const items: string[] = [];
   if (r.completion) {
     const cost = r.completion.totalCost != null ? ` · ${formatMoney(r.completion.totalCost)}` : '';
-    items.push(`Предъявленный факт: вывезено ${r.completion.volumeM3} м³${cost}`);
+    items.push(`Предъявленный факт: вывезено ${wasteFactLabel(r.completion)}${cost}`);
   }
   // Талоны — общий пул на заявку (ADR 0024): считаются штуками, перечислять их имена в окне
   // решения незачем — важно, что бумага открепится от заявки и её придётся прикладывать заново.
@@ -339,9 +351,10 @@ function RequestsTab() {
   const qc = useQueryClient();
   const isMobile = useIsMobile();
   const { user, can } = useAuth();
-  // Объектные роли и оператор — это область видимости («свои объекты», «свои заявки»), а не
-  // право: от неё зависит, что показывать в фильтрах и колонках, а не что разрешено делать.
-  const { isObjectRole, soleObjectId, objectFieldDisabled, limitObjectOptions } = useObjectScope();
+  // Область видимости («свои объекты», «свои заявки»), а не право: от неё зависит, что показывать
+  // в фильтрах и колонках, а не что разрешено делать. У роли отдела объекты производны — это
+  // площадка её отдела (ADR 0062), и спрашивается она хуком этого модуля, а не общим.
+  const { soleObjectId, objectFieldDisabled, limitObjectOptions } = useWasteObjectScope();
   // «Оператор вывоза» — это роль исполнителя плюс контрагент-оператор (ADR 0038): по одной роли
   // такой вывод уже неверен, ею же работает арендодатель техники в другом разделе.
   const isOperator = actsForCounterparty(user, 'operator');
@@ -996,8 +1009,10 @@ function RequestsTab() {
   const canModify = (r: WasteRequestDto): boolean => {
     if (r.deletedAt) return false;
     if (!canEdit && !canDelete) return false;
-    // Объект правит заявку, пока её не взяли в работу: дальше за ней договорённости с исполнителем.
-    if (isObjectRole) return r.status === 'new';
+    // Заказчик правит заявку, пока её не взяли в работу: дальше за ней договорённости с
+    // исполнителем. Предикат тот же, что у сервера (`assertObjectRoleEditable`), — правило про
+    // заказчика, а не про площадку, и роль отдела на своей площадке под него тоже подпадает.
+    if (isPlaceScopedRole(user?.role)) return r.status === 'new';
     return true;
   };
 
@@ -1045,8 +1060,11 @@ function RequestsTab() {
       sorter: true,
       // Стоимость — второй строкой к предмету заявки: своей колонки она стоила дороже, чем
       // помогала, а цена за м³ рядом с суммой объясняет, почему одинаковый объём стоит по-разному.
+      // У металлолома денег нет вовсе (ADR 0067), и вторую строку занимает сданный вес: предмета
+      // у такой заявки нет, и без него строка списка не отвечала бы, чем она кончилась.
       render: (_v: unknown, r: WasteRequestDto) => {
         const amountLine = wasteAmountLine(r);
+        const weightLine = weightFactLine(r);
         return (
           <div style={{ lineHeight: 1.35 }}>
             <div>
@@ -1055,6 +1073,11 @@ function RequestsTab() {
             {amountLine && (
               <Typography.Text type={amountLine.tone} style={{ fontSize: 12 }}>
                 {amountLine.text}
+              </Typography.Text>
+            )}
+            {weightLine && (
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                {weightLine}
               </Typography.Text>
             )}
           </div>
@@ -1347,7 +1370,12 @@ function RequestsTab() {
     primary: (r) => r.objectName,
     lines: [
       (r) => requestTypeLabels[r.requestType],
-      (r) => [wasteSubjectLabel(r), r.wasteTypeName].filter(Boolean).join(' · '),
+      // Предмет заявки строкой; у металлолома его нет вовсе (ADR 0067), и «—» здесь не строка
+      // карточки, а её отсутствие: пустые строки карточка отсеивает сама.
+      (r) => {
+        const subject = [wasteSubjectLabel(r), r.wasteTypeName].filter(Boolean).join(' · ');
+        return subject === '—' ? null : subject;
+      },
       // Чужой контейнер — своей строкой: тега рядом с предметом на телефоне не видно, а знать
       // о расхождении тому, кто смотрит заявку с площадки, нужнее всего (ADR 0054).
       (r) =>
@@ -1356,7 +1384,7 @@ function RequestsTab() {
         // Незаданный тариф на телефоне называется тем же текстом, что и в таблице (ADR 0046):
         // цветом строки карточка не располагает, но молчать о непосчитанной сумме нельзя.
         const amountLine = wasteAmountLine(r);
-        return amountLine?.text ?? null;
+        return amountLine?.text ?? weightFactLine(r);
       },
       (r) => `Доставка: ${formatDateTimeMaybe(r.deliveryAt, r.deliveryTimeUnspecified)}`,
       // Оператору исполнителя не показываем: в его списке все заявки и так его (ADR 0010).

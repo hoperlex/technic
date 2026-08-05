@@ -10,16 +10,21 @@ import {
   changeWasteRequestStatusSchema,
   type CompleteWasteRequestInput,
   createWasteRequestSchema,
+  FACT_UNIT_MISMATCH_MESSAGE,
+  factVolumeOf,
+  factWeightOf,
   type FileDto,
   formatWasteRequestNumber,
   MIN_WASTE_VOLUME_M3,
   presentContainerGroupsQuerySchema,
   REQUEST_STATUSES,
   type RequestType,
-  requiresWasteFact,
   transitionResetsWork,
   updateWasteOperatorCommentSchema,
   updateWasteRequestSchema,
+  type WasteFactAmount,
+  type WasteFactUnit,
+  wasteFactUnit,
   wasteOperatorCommentEditable,
   WASTE_REMOVAL_CONTAINER_KIND,
   type WasteRequestCompletionDto,
@@ -51,10 +56,10 @@ import {
   assertCan,
   assertOperatorScope,
   assertObjectRoleEditable,
-  assertObjectScope,
+  assertWasteObjectScope,
   assertTransitionAllowed,
   operatorVisibilityWhere,
-  requestVisibilityWhere,
+  wasteRequestVisibilityWhere,
 } from '../lib/access';
 import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
 import { nextRequestContact } from '../lib/request-contact';
@@ -84,10 +89,10 @@ type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 const idParams = z.object({ id: z.string().uuid() });
 
-// Факт вывоза есть только у вывоза мусора (ADR 0035): контейнерные операции объёма не несут и
-// закрываются одним талоном. Талоны бывают у заявок любого типа и с ADR 0024 везде крепятся к
+// Факт есть у заявок на вывоз (ADR 0035, ADR 0067): контейнерные операции вывезенного не несут
+// и закрываются одним талоном. Талоны бывают у заявок любого типа и с ADR 0024 везде крепятся к
 // самой заявке — общим пулом.
-const FACT_NOT_APPLICABLE = 'Фактический объём указывается только у заявок на вывоз мусора';
+const FACT_NOT_APPLICABLE = 'Вывезенное указывается только у заявок на вывоз';
 
 /** Кто закрыл заявку — второй join на users: первый занят автором заявки. */
 const completers = alias(users, 'completers');
@@ -144,8 +149,10 @@ const requestSelect = {
   operatorCounterpartyId: wasteRequests.operatorCounterpartyId,
   operatorName: counterparties.name,
   // Факт выполнения (ADR 0035): сколько вывезли, по какой цене считали и во сколько обошлось —
-  // снимок на момент закрытия.
+  // снимок на момент закрытия. Вывезенное — в одной из двух колонок: мусор меряют объёмом,
+  // металлолом принимают по весу (ADR 0067).
   completionVolumeM3: wasteRequestCompletions.volumeM3,
+  completionWeightTons: wasteRequestCompletions.weightTons,
   completionPricePerM3: wasteRequestCompletions.pricePerM3,
   completionTotalCost: wasteRequestCompletions.totalCost,
   completedBy: wasteRequestCompletions.completedBy,
@@ -203,12 +210,28 @@ async function filesByRequestIds(ids: string[]): Promise<Map<string, RequestFile
 
 /**
  * Факт выполнения из строки закрытия (ADR 0035). Пусто — заявка не закрыта либо закрыта
- * контейнерной операцией: у неё объёма нет вовсе.
+ * контейнерной операцией: у неё вывезенного нет вовсе, только талон.
+ *
+ * Наличие строки определяется по автору и времени закрытия, а не по величине: величин две
+ * (объём либо вес, ADR 0067), заполнена всегда одна, и проверка по объёму приняла бы закрытие
+ * металлолома за отсутствие факта.
  */
 function toCompletionDto(r: RequestRow): WasteRequestCompletionDto | null {
-  if (r.completionVolumeM3 == null || !r.completedBy || !r.completedAt) return null;
+  if (!r.completedBy || !r.completedAt) return null;
+  const volumeM3 = toNum(r.completionVolumeM3);
+  const weightTons = toNum(r.completionWeightTons);
+  // Заполнена ровно одна колонка — это держит CHECK `..._measure_check` (миграция 0091). Строка,
+  // у которой пусты обе, схеме БД противоречит, и выдумывать ей ноль нельзя: закрытие без
+  // предъявленной величины — не «вывезли нисколько», а испорченная строка.
+  const amount: WasteFactAmount | null =
+    weightTons != null
+      ? { unit: 'weight_tons', weightTons }
+      : volumeM3 != null
+        ? { unit: 'volume_m3', volumeM3 }
+        : null;
+  if (!amount) return null;
   return {
-    volumeM3: toNum(r.completionVolumeM3) ?? 0,
+    ...amount,
     pricePerM3: toNum(r.completionPricePerM3),
     totalCost: toNum(r.completionTotalCost),
     completedBy: r.completedBy,
@@ -392,6 +415,21 @@ async function resolveSubject(
     };
   }
 
+  // metal_removal — вывоз металлолома (ADR 0067): предмета у заявки нет вовсе. Ветка стоит до
+  // вывоза мусора и именно веткой, а не общим «иначе»: последняя ветка этой функции требует тип
+  // мусора с объёмом, и новый тип провалился бы в неё отказом «Выберите тип мусора».
+  if (input.requestType === 'metal_removal') {
+    return {
+      containerTypeId: null,
+      containersCount: 1,
+      containerOwnerCounterpartyId: null,
+      wasteTypeId: null,
+      volumeM3: null,
+      wasteTariffId: null,
+      pricePerM3: null,
+    };
+  }
+
   // waste_removal — вывоз разового объёма (ADR 0022): техника в предмет заявки не входит, чем
   // вывозить, решает оператор и предъявляет машинами при закрытии (ADR 0011). Тип из
   // справочника здесь не хранится даже у заявок, заведённых раньше: правка приводит их к
@@ -496,8 +534,8 @@ async function unlinkFiles(tx: Tx, requestId: string, fileIds: string[]): Promis
 }
 
 /**
- * Факт закрытия из присланного (ADR 0035): объём — от человека, цена — основание расчёта, сумма —
- * расчёт либо то, что прислал клиент.
+ * Факт закрытия из присланного (ADR 0035): вывезенное — от человека, цена — основание расчёта,
+ * сумма — расчёт либо то, что прислал клиент.
  *
  * Цена берётся снимком самой заявки: по нему её оформляли, и правка прайса уже оформленную заявку
  * не переписывает (ADR 0009). Снимка нет (заявки старше тарификации) — подбор по виду «Самосвал»
@@ -505,6 +543,10 @@ async function unlinkFiles(tx: Tx, requestId: string, fileIds: string[]): Promis
  * заявки (ADR 0026). Нет цены и там — закрытие всё равно проходит: мусор вывезен, талон на руках,
  * и отказ здесь означал бы «сначала заполните справочник», а заявка уже выполнена. Тогда сумму
  * вводят руками — либо правят прайс и закрывают заявку заново.
+ *
+ * Закрытие по весу (металлолом, ADR 0067) через подбор цены не проходит вовсе: прайс задан в
+ * ₽/м³ на пару «тип мусора × техника», а у лома нет ни того, ни другого. Строка сохраняется
+ * одним весом — без цены, тарифа и суммы.
  */
 async function resolveWasteCompletion(
   tx: Tx,
@@ -512,6 +554,23 @@ async function resolveWasteCompletion(
   input: CompleteWasteRequestInput,
   actor: { id: string; name: string },
 ): Promise<{ dto: WasteRequestCompletionDto; wasteTariffId: string | null }> {
+  if (input.weightTons != null) {
+    return {
+      wasteTariffId: null,
+      dto: {
+        unit: 'weight_tons',
+        weightTons: input.weightTons,
+        pricePerM3: null,
+        totalCost: null,
+        completedBy: actor.id,
+        completedByName: actor.name,
+        completedAt: new Date().toISOString(),
+      },
+    };
+  }
+  // Дальше — закрытие объёмом; что величина прислана ровно одна, проверила схема тела запроса,
+  // а что именно та, которой меряется эта заявка, — роут статуса перед вызовом.
+  const volumeM3 = input.volumeM3!;
   const [snapshot] = await tx
     .select({ wasteTariffId: wasteRequests.wasteTariffId, pricePerM3: wasteRequests.pricePerM3 })
     .from(wasteRequests)
@@ -531,14 +590,13 @@ async function resolveWasteCompletion(
     // Тариф хранится только вместе с ценой: ссылка на прайс без цены ничего не объясняет.
     wasteTariffId: pricePerM3 == null ? null : wasteTariffId,
     dto: {
-      volumeM3: input.volumeM3,
+      unit: 'volume_m3',
+      volumeM3,
       pricePerM3,
       // Сумма приходит от клиента — он показывал её человеку перед нажатием. Поле не прислано —
       // считаем по цене сами; прислан пустым — значит закрываем без суммы (счёт выяснят позже).
       totalCost:
-        input.totalCost === undefined
-          ? calcWasteFactCost(input.volumeM3, pricePerM3)
-          : input.totalCost,
+        input.totalCost === undefined ? calcWasteFactCost(volumeM3, pricePerM3) : input.totalCost,
       completedBy: actor.id,
       completedByName: actor.name,
       completedAt: new Date().toISOString(),
@@ -557,7 +615,10 @@ async function saveWasteCompletion(
   wasteTariffId: string | null,
 ): Promise<void> {
   const values = {
-    volumeM3: String(c.volumeM3),
+    // Ровно одна из двух колонок — вторая явным NULL: строка переписывается целиком, и оставшееся
+    // от прошлого закрытия число разошлось бы с CHECK `..._measure_check` (миграция 0091).
+    volumeM3: numToDb(factVolumeOf(c)),
+    weightTons: numToDb(factWeightOf(c)),
     pricePerM3: numToDb(c.pricePerM3),
     wasteTariffId,
     totalCost: numToDb(c.totalCost),
@@ -651,7 +712,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
     const showDeleted = q.includeDeleted && can(p, 'archive.read');
     const where = and(
       showDeleted ? undefined : isNull(wasteRequests.deletedAt),
-      requestVisibilityWhere(p, wasteRequests.objectId),
+      wasteRequestVisibilityWhere(p, wasteRequests.objectId),
       operatorVisibilityWhere(p, wasteRequests.operatorCounterpartyId),
       q.status ? eq(wasteRequests.status, q.status) : undefined,
       q.objectId ? eq(wasteRequests.objectId, q.objectId) : undefined,
@@ -727,7 +788,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       const q = req.query;
       const where = and(
         isNull(wasteRequests.deletedAt),
-        requestVisibilityWhere(p, wasteRequests.objectId),
+        wasteRequestVisibilityWhere(p, wasteRequests.objectId),
         operatorVisibilityWhere(p, wasteRequests.operatorCounterpartyId),
         inArray(wasteRequests.id, db.select({ id: presentContainers.id }).from(presentContainers)),
         q.objectId ? eq(wasteRequests.objectId, q.objectId) : undefined,
@@ -779,7 +840,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
     { ...auth, schema: { querystring: presentContainerGroupsQuerySchema } },
     async (req) => {
       const p = requirePrincipal(req);
-      assertObjectScope(p, req.query.objectId);
+      assertWasteObjectScope(p, req.query.objectId);
       return loadPresentGroups(req.query.objectId);
     },
   );
@@ -800,7 +861,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         .where(
           and(
             isNull(wasteRequests.deletedAt),
-            requestVisibilityWhere(p, wasteRequests.objectId),
+            wasteRequestVisibilityWhere(p, wasteRequests.objectId),
             operatorVisibilityWhere(p, wasteRequests.operatorCounterpartyId),
             req.query.objectId ? eq(wasteRequests.objectId, req.query.objectId) : undefined,
           ),
@@ -819,7 +880,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
     const dto = await getRequestDto(req.params.id);
     if (!dto) throw err.notFound('Заявка не найдена');
     assertArchiveVisible(p, dto.deletedAt, 'Заявка не найдена');
-    assertObjectScope(p, dto.objectId);
+    assertWasteObjectScope(p, dto.objectId);
     assertOperatorScope(p, dto.operatorCounterpartyId);
     return dto;
   });
@@ -843,7 +904,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       .where(eq(wasteRequests.id, req.params.id));
     if (!row) throw err.notFound('Заявка не найдена');
     assertArchiveVisible(p, row.deletedAt, 'Заявка не найдена');
-    assertObjectScope(p, row.objectId);
+    assertWasteObjectScope(p, row.objectId);
     assertOperatorScope(p, row.operatorCounterpartyId);
     return loadWasteRequestHistory(row.id, {
       at: row.createdAt,
@@ -855,7 +916,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
   r.post('/', { ...canCreate, schema: { body: createWasteRequestSchema } }, async (req, reply) => {
     const p = requirePrincipal(req);
     const body = req.body;
-    assertObjectScope(p, body.objectId);
+    assertWasteObjectScope(p, body.objectId);
     // Исполнителя можно указать прямо в форме заявки, но это по-прежнему назначение оператора:
     // без отдельной проверки роль с правом на заявку (штаб) назначала бы его в обход
     // `PATCH /:id/operator`, где право спрашивают. Право требуется по факту присутствия поля,
@@ -943,9 +1004,9 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       // истории — названия справочников и суммы там уже собраны (см. waste-request-history).
       const before = await getRequestDto(id);
       if (!before || before.deletedAt) throw err.notFound('Заявка не найдена');
-      assertObjectScope(p, before.objectId);
+      assertWasteObjectScope(p, before.objectId);
       assertObjectRoleEditable(p, before.status, 'редактировать');
-      if (body.objectId) assertObjectScope(p, body.objectId);
+      if (body.objectId) assertWasteObjectScope(p, body.objectId);
 
       const rt = body.requestType ?? before.requestType;
       const objectId = body.objectId ?? before.objectId;
@@ -1022,11 +1083,14 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
         if (!updated) throw err.conflict();
         if (body.removeFileIds?.length) await unlinkFiles(tx, id, body.removeFileIds);
         if (body.addFileIds?.length) await linkFiles(tx, id, body.addFileIds, p.id, true);
-        // Смена типа на контейнерную операцию оставила бы у заявки факт вывоза, которого у этого
-        // типа не бывает: объёма он не несёт и закрывается одним талоном (ADR 0035).
-        if (!requiresWasteFact(rt) && before.completion) {
+        // Смена типа оставила бы у заявки факт, которого новому типу не полагается: контейнерная
+        // операция не несёт вывезенного вовсе (ADR 0035), а мусор и металлолом меряются разными
+        // величинами (ADR 0067) — заявка на лом с фактом в м³ была бы закрытием в чужих единицах.
+        // Сравниваются именно единицы, а не «нужен ли факт»: между вывозами обе стороны отвечают
+        // «нужен», а величины у них разные.
+        if (before.completion && wasteFactUnit(rt) !== wasteFactUnit(before.requestType)) {
           throw err.badRequest(
-            'У этого типа заявки не бывает фактического объёма — сначала откатите выполнение',
+            'У этого типа заявки предъявленное выполнение меряется иначе — сначала откатите его',
             { requestType: 'Сначала откатите выполнение' },
           );
         }
@@ -1134,7 +1198,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       // Своя заявка — для исполнителя; для менеджера и диспетчера обе проверки ничего не сужают.
       // Область спрашивается и по объекту: право и область выдаются порознь, и «право выдали, а
       // область не написана» означало бы доступ ко всем заявкам сразу.
-      assertObjectScope(p, before.objectId);
+      assertWasteObjectScope(p, before.objectId);
       assertOperatorScope(p, before.operatorCounterpartyId);
       if (!wasteOperatorCommentEditable(before.status)) {
         throw err.badRequest('Заявка закрыта — примечание исполнителя больше не меняют', {
@@ -1174,7 +1238,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       // Состояние «до» берётся как DTO: по нему и проверки, и дифф факта для истории.
       const before = await getRequestDto(req.params.id);
       if (!before || before.deletedAt) throw err.notFound('Заявка не найдена');
-      assertObjectScope(p, before.objectId);
+      assertWasteObjectScope(p, before.objectId);
       assertOperatorScope(p, before.operatorCounterpartyId);
       if (before.status === status) return before;
       assertTransitionAllowed(p, before.status, status);
@@ -1188,24 +1252,35 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
           comment: 'Укажите причину',
         });
       }
-      // Факт предъявляет один вывоз мусора: у контейнерных операций объёма нет вовсе (ADR 0035).
-      if (completion && !requiresWasteFact(before.requestType)) {
+      // Чем меряется вывезенное у этой заявки: объёмом (мусор), весом (металлолом) или ничем
+      // (контейнерные операции — они закрываются одним талоном).
+      const factUnit = wasteFactUnit(before.requestType);
+      if (completion && factUnit == null) {
         throw err.badRequest(FACT_NOT_APPLICABLE, {
-          completion: 'Фактический объём заполняется только у вывоза мусора',
+          completion: 'Вывезенное предъявляют только заявки на вывоз',
         });
       }
-      // «Выполнена» без предъявленного объёма — отметка о вывозе, про который неизвестно, сколько
-      // увезли. При повторном закрытии (после отката администратором) хватает уже предъявленного:
-      // просить те же цифры второй раз незачем.
-      if (
-        status === 'done' &&
-        requiresWasteFact(before.requestType) &&
-        !completion &&
-        !before.completion
-      ) {
-        throw err.badRequest('Укажите фактически вывезенный объём', {
-          completion: 'Укажите объём',
-        });
+      // Величину закрытия схема тела проверила на «ровно одна», но какая именно нужна, знает лишь
+      // заявка: вес в заявке на мусор и объём в заявке на лом — это закрытие в чужих единицах, и
+      // молча пересчитать одно в другое нечем.
+      if (completion && factUnit != null) {
+        const sent: WasteFactUnit = completion.weightTons != null ? 'weight_tons' : 'volume_m3';
+        if (sent !== factUnit) {
+          throw err.badRequest(FACT_UNIT_MISMATCH_MESSAGE, {
+            completion: factUnit === 'weight_tons' ? 'Укажите вес, т' : 'Укажите объём, м³',
+          });
+        }
+      }
+      // «Выполнена» без предъявленного вывезенного — отметка о работе, про которую неизвестно,
+      // сколько увезли. При повторном закрытии (после отката администратором) хватает уже
+      // предъявленного: просить те же цифры второй раз незачем.
+      if (status === 'done' && factUnit != null && !completion && !before.completion) {
+        throw err.badRequest(
+          factUnit === 'weight_tons'
+            ? 'Укажите фактически вывезенный вес'
+            : 'Укажите фактически вывезенный объём',
+          { completion: factUnit === 'weight_tons' ? 'Укажите вес' : 'Укажите объём' },
+        );
       }
       let saved: WasteRequestCompletionDto | null = null;
       // Сколько талонов снял возврат в «Новую» — считается там, где они отвязываются: после
@@ -1322,7 +1397,7 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
     const { id } = req.params;
     const [existing] = await db.select().from(wasteRequests).where(eq(wasteRequests.id, id));
     if (!existing || existing.deletedAt) throw err.notFound('Заявка не найдена');
-    assertObjectScope(p, existing.objectId);
+    assertWasteObjectScope(p, existing.objectId);
     assertObjectRoleEditable(p, existing.status, 'удалять');
 
     if (existing.status === 'new') {

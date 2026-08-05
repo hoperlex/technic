@@ -96,12 +96,45 @@ const volumeSchema = z.coerce.number().int().min(MIN_WASTE_VOLUME_M3);
 // ── Факт вывоза и талоны (ADR 0035, ADR 0013) ──
 
 /**
- * Факт предъявляется только при вывозе мусора: там объём заказан заявкой, а сколько увезли —
- * видно лишь по закрытию. Контейнерные операции (установка, замена, снятие) считаются по самим
- * контейнерам: объёма у них нет, и закрываются они одним талоном.
+ * В чём меряется вывезенное. Единица — свойство типа заявки, а не поле формы: мусор возят
+ * объёмом (ADR 0035), металлолом сдают по весу (ADR 0067), и одной колонкой их не описать —
+ * «3,2» без единицы не отвечает, кубометры это или тонны.
+ */
+export type WasteFactUnit = 'volume_m3' | 'weight_tons';
+
+/** Подпись единицы факта — для полей формы, карточки заявки и истории. */
+export const wasteFactUnitLabels: Record<WasteFactUnit, string> = {
+  volume_m3: 'м³',
+  weight_tons: 'т',
+};
+
+/**
+ * Чем предъявляется закрытие заявки:
+ *  - `volume_m3` — вывоз мусора: объём заказан заявкой, а сколько увезли, видно лишь по закрытию;
+ *  - `weight_tons` — вывоз металлолома: заявка объёма не несёт вовсе, лом принимают по весу;
+ *  - `null` — контейнерные операции: они считаются по самим контейнерам и закрываются талоном.
+ */
+export function wasteFactUnit(t: RequestType): WasteFactUnit | null {
+  if (t === 'waste_removal') return 'volume_m3';
+  if (t === 'metal_removal') return 'weight_tons';
+  return null;
+}
+
+/**
+ * Требует ли тип заявки предъявленного факта. Производная от `wasteFactUnit`: вопрос «нужен ли
+ * факт» задают чаще, чем «в чём он», и раздваивать правило между двумя предикатами нельзя.
  */
 export function requiresWasteFact(t: RequestType): boolean {
-  return t === 'waste_removal';
+  return wasteFactUnit(t) !== null;
+}
+
+/**
+ * Тип контейнера — предмет только контейнерных операций. У вывоза мусора техника не указывается
+ * (ADR 0022), у вывоза металлолома нет и её (ADR 0067): заявка говорит «приезжайте забрать», а
+ * чем забирать, решает исполнитель.
+ */
+export function usesContainerType(t: RequestType): boolean {
+  return t === 'container_install' || t === 'container_replace' || t === 'container_removal';
 }
 
 /**
@@ -118,6 +151,17 @@ export const factVolumeSchema = z.coerce
   .number()
   .positive('Укажите фактический объём')
   .max(999_999.999, 'Слишком большой объём')
+  .multipleOf(0.001, 'Не более 3 знаков после запятой');
+
+/**
+ * Фактически вывезенный вес металлолома, т — то, что стоит в приёмо-сдаточном акте (ADR 0067).
+ * Дробный той же точностью, что и объём (numeric(12,3) в БД): лом взвешивают, а весы дают
+ * килограммы.
+ */
+export const factWeightSchema = z.coerce
+  .number()
+  .positive('Укажите фактический вес')
+  .max(999_999.999, 'Слишком большой вес')
   .multipleOf(0.001, 'Не более 3 знаков после запятой');
 
 /**
@@ -138,22 +182,53 @@ export function calcWasteFactCost(volumeM3: number, pricePerM3: number | null): 
   return pricePerM3 == null ? null : calcWasteAmount(volumeM3, pricePerM3);
 }
 
+/** Один текст на отказ сервера и на проверку формы — единица факта задана типом заявки. */
+export const FACT_UNIT_MISMATCH_MESSAGE =
+  'Закрытие предъявляет не ту величину, которой меряется этот тип заявки';
+
 /**
  * Заявку закрывают фактом: сколько вывезли и во сколько это обошлось (ADR 0035). Состав техники
  * при этом не спрашивается — вывоз тарифицируется самосвалами (ADR 0022), и какими машинами
  * увезли объём, к расчёту отношения не имеет.
  *
+ * Величина одна на закрытие, и какая именно — решает тип заявки (`wasteFactUnit`): мусор меряют
+ * объёмом, металлолом — весом (ADR 0067). Оба поля порознь необязательны, потому что схема типа
+ * заявки не знает; что прислано ровно одно — проверяется здесь, а что прислано именно то —
+ * сервером, у которого заявка перед глазами.
+ *
  * Сумма приходит от клиента — он её и показывал человеку перед нажатием, — но подставляется
  * расчётом по прайсу: счёт оператора включает и подачу, и недогруз, и сходиться сумма должна со
  * счётом, а не с формулой. Не прислана — сервер посчитает сам; цены в прайсе нет — закрытие
- * проходит и без суммы: мусор вывезен, талон на руках, а прайс правят отдельно.
+ * проходит и без суммы: мусор вывезен, талон на руках, а прайс правят отдельно. У металлолома
+ * суммы нет вовсе: прайс задан в ₽/м³ по паре «тип мусора × техника», а у лома нет ни того, ни
+ * другого — считать нечем, и выдуманное число здесь хуже пустого места.
  */
 export const completeWasteRequestSchema = z
   .object({
-    volumeM3: factVolumeSchema,
+    volumeM3: factVolumeSchema.optional(),
+    weightTons: factWeightSchema.optional(),
     totalCost: factCostSchema.nullable().optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((v, ctx) => {
+    if (v.volumeM3 == null && v.weightTons == null) {
+      ctx.addIssue({ code: 'custom', path: ['volumeM3'], message: 'Укажите вывезенное' });
+    }
+    if (v.volumeM3 != null && v.weightTons != null) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['weightTons'],
+        message: 'Вывезенное предъявляется одной величиной — объёмом либо весом',
+      });
+    }
+    if (v.weightTons != null && v.totalCost !== undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['totalCost'],
+        message: 'У вывоза металлолома стоимость не считается',
+      });
+    }
+  });
 export type CompleteWasteRequestInput = z.infer<typeof completeWasteRequestSchema>;
 
 /**
@@ -165,19 +240,71 @@ export function wasteTransitionRequiresFact(to: RequestStatus): boolean {
 }
 
 /**
- * Факт выполнения заявки (ADR 0035): объём, цена-основание и итог. Цена — снимок прайса на
- * момент закрытия, а не текущий тариф: сумма обязана объясняться сама, а прайс могли переписать.
+ * Вывезенное: величина вместе со своей единицей, одним неразделимым значением.
+ *
+ * Размеченное объединение, а не пара необязательных чисел, — и это не стилистика. Пара
+ * `volumeM3: number | null` + `weightTons: number | null` разъезжается молча: `null` легален и в
+ * шаблонной строке, и в JSX, поэтому `Вывезено {c.volumeM3} м³` в заявке на металлолом
+ * компилируется и печатает «Вывезено null м³». Объединение такую строку не пропускает: поля
+ * `volumeM3` у ветки веса нет вовсе, и добраться до числа можно, только назвав единицу.
+ *
+ * Единицу несёт сам факт, а не тип заявки рядом: печатают факт в четырёх местах (карточка, список,
+ * окно отката, история), и в трёх из них типа заявки под рукой нет.
  */
-export interface WasteRequestCompletionDto {
-  /** Фактически вывезено, м³. */
-  volumeM3: number;
-  /** Цена за м³ на момент закрытия; `null` — в прайсе её не было, сумму вводили руками. */
+export type WasteFactAmount =
+  | { unit: 'volume_m3'; volumeM3: number }
+  | { unit: 'weight_tons'; weightTons: number };
+
+/**
+ * Факт выполнения заявки (ADR 0035): вывезенное, цена-основание и итог. Цена — снимок прайса на
+ * момент закрытия, а не текущий тариф: сумма обязана объясняться сама, а прайс могли переписать.
+ *
+ * Вывезенное приходит `WasteFactAmount`-ом — величиной со своей единицей. Общего поля «сколько» с
+ * единицей в соседней колонке нет намеренно: объём умножается на цену прайса, а вес — ни на что,
+ * и единое поле предлагало бы считать тонны по ₽/м³.
+ */
+export type WasteRequestCompletionDto = WasteFactAmount & {
+  /** Цена за м³ на момент закрытия; `null` — в прайсе её не было либо заявка не тарифицируется. */
   pricePerM3: number | null;
   /** Итоговая стоимость; `null` — считать было нечем и руками не ввели. */
   totalCost: number | null;
   completedBy: string;
   completedByName: string;
   completedAt: string;
+};
+
+/**
+ * Вывезенное строкой с единицей: «48 м³», «3,2 т». Собирается здесь, а не в вёрстке: единица не
+ * должна потеряться ни в одном месте показа.
+ *
+ * `switch` с проверкой на `never` вместо цепочки `if`: третья единица (примут лом по штукам,
+ * грунт по тоннам) обязана сломать сборку здесь, а не тихо напечатать прочерк.
+ */
+export function wasteFactLabel(c: WasteFactAmount): string {
+  switch (c.unit) {
+    case 'volume_m3':
+      return `${c.volumeM3} ${wasteFactUnitLabels.volume_m3}`;
+    case 'weight_tons':
+      return `${c.weightTons} ${wasteFactUnitLabels.weight_tons}`;
+    default: {
+      const unhandled: never = c;
+      return unhandled;
+    }
+  }
+}
+
+/**
+ * Объём закрытия — только у закрытия, меряемого объёмом. Отдельной ручкой, потому что объём здесь
+ * нужен для счёта (сверка с заявленным, расчёт по прайсу), а не для показа: показ идёт через
+ * `wasteFactLabel`, и подставлять единицу вызывающему нечего.
+ */
+export function factVolumeOf(c: WasteFactAmount | null | undefined): number | null {
+  return c?.unit === 'volume_m3' ? c.volumeM3 : null;
+}
+
+/** Вес закрытия — только у закрытия, меряемого весом (ADR 0067). Тем же порядком, что и объём. */
+export function factWeightOf(c: WasteFactAmount | null | undefined): number | null {
+  return c?.unit === 'weight_tons' ? c.weightTons : null;
 }
 
 // ── Контейнеры на объекте: владелец и количество (миграция 0080) ──
@@ -285,12 +412,14 @@ export const FOREIGN_CONTAINER_SPLIT_MESSAGE =
  * Предмет заявки строкой — для колонки списка и мобильной карточки. Объём есть там, где он
  * определяет сумму (ADR 0019); количество показывается только когда контейнер не один: «× 1»
  * читателю ничего не сообщает. Техники у вывоза нет вовсе (ADR 0022) — у заявок, заведённых до
- * этого решения, тип в базе остался, но предметом заявки уже не является.
+ * этого решения, тип в базе остался, но предметом заявки уже не является. У вывоза металлолома
+ * предмета нет и подавно (ADR 0067): строка выходит пустой, и это правда — заявка говорит
+ * «приезжайте забрать», а сколько увезли, отвечает уже закрытие.
  */
 export function wasteSubjectLabel(
   r: Pick<WasteRequestDto, 'requestType' | 'containerTypeName' | 'containersCount' | 'volumeM3'>,
 ): string {
-  const container = requiresWasteFact(r.requestType) ? null : r.containerTypeName;
+  const container = usesContainerType(r.requestType) ? r.containerTypeName : null;
   const parts = [
     container && r.containersCount > 1 ? `${container} × ${r.containersCount}` : container,
     r.volumeM3 != null ? `${r.volumeM3} м³` : null,
@@ -317,8 +446,9 @@ export const ownerMismatchReasonSchema = z
  *  - container_install → containerTypeId (тип контейнера из справочника, type='cont');
  *  - container_replace → containerTypeId + владелец + количество (группа присутствия);
  *  - container_removal → containerTypeId + владелец + количество (группа присутствия);
- *  - waste_removal     → wasteTypeId + volumeM3, техника не указывается (ADR 0022).
- * Тип мусора, объём и цена есть только у вывоза (ADR 0019). Кросс-полевые требования
+ *  - waste_removal     → wasteTypeId + volumeM3, техника не указывается (ADR 0022);
+ *  - metal_removal     → ничего сверх общего: ни предмета, ни объёма, ни цены (ADR 0067).
+ * Тип мусора, объём и цена есть только у вывоза мусора (ADR 0019). Кросс-полевые требования
  * проверяет superRefine; тариф и сумму считает сервер — кратность объёма известна только ему.
  */
 export const createWasteRequestSchema = z
@@ -719,8 +849,11 @@ export const wasteRequestChangeLabels: Record<string, string> = {
   filesAdded: 'Прикреплены файлы',
   filesRemoved: 'Откреплены файлы',
   // Факт выполнения (ADR 0035): своё событие истории — «выполнена» и «вывезено столько-то на
-  // такую-то сумму» отвечают на разные вопросы.
+  // такую-то сумму» отвечают на разные вопросы. Вес назван отдельной строкой, а не общим
+  // «Вывезено»: у металлолома это другая величина (ADR 0067), и одна подпись на обе означала бы,
+  // что «48» и «3,2» в истории про одно и то же.
   factVolume: 'Вывезено',
+  factWeight: 'Сдано металлолома',
   factPrice: 'Цена по факту',
   factCost: 'Стоимость по факту',
   // Состав техники прошлых закрытий: события больше не появляются, но в истории остаются.

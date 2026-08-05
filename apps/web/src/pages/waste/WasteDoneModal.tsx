@@ -5,9 +5,11 @@ import { useQuery } from '@tanstack/react-query';
 import {
   calcWasteFactCost,
   type CompleteWasteRequestInput,
+  factVolumeOf,
+  factWeightOf,
   type FileDto,
   MAX_TICKETS_PER_REQUEST,
-  requiresWasteFact,
+  wasteFactUnit,
   WASTE_REMOVAL_CONTAINER_KIND,
   type WasteRequestDto,
 } from '@technic/contracts';
@@ -25,7 +27,9 @@ import { errorMessage, formatMoney } from '../../utils/format';
  *  - вывоз мусора — сколько вывезли и во сколько это обошлось (ADR 0035). Объём вводят руками:
  *    он стоит в талоне и весовой квитанции. Состав техники не спрашивается — вывоз тарифицируется
  *    самосвалами (ADR 0022), и какими машинами увезли объём, к расчёту отношения не имеет;
- *  - контейнерные операции — только талон: ходка одна, и объёма у такой заявки нет (ADR 0013).
+ *  - вывоз металлолома — один вес в тоннах (ADR 0067). Ни расчёта, ни суммы: прайс задан в ₽/м³
+ *    на пару «тип мусора × техника», и приложить его к тоннам нечем;
+ *  - контейнерные операции — только талон: ходка одна, и вывезенного у такой заявки нет (ADR 0013).
  *
  * Стоимость подставляется расчётом «объём × цена по прайсу» и правится свободно: счёт оператора
  * включает и подачу, и недогруз, и сходиться сумма должна со счётом, а не с формулой. Ручная
@@ -50,6 +54,7 @@ interface Props {
 
 interface FormValues {
   volumeM3?: number | null;
+  weightTons?: number | null;
   totalCost?: number | null;
   comment?: string;
 }
@@ -63,7 +68,10 @@ export function WasteDoneModal({ request, confirmLoading, onCancel, onSubmit }: 
   /** Сумму правили руками — расчёт её больше не переписывает. */
   const [costTouched, setCostTouched] = useState(false);
 
-  const byFact = request ? requiresWasteFact(request.requestType) : false;
+  /** Чем меряется вывезенное у этой заявки; null — заявка закрывается одним талоном. */
+  const factUnit = request ? wasteFactUnit(request.requestType) : null;
+  const byVolume = factUnit === 'volume_m3';
+  const byWeight = factUnit === 'weight_tons';
 
   /**
    * Цена-основание: снимок самой заявки — по нему её оформляли, и правка прайса оформленную
@@ -73,7 +81,7 @@ export function WasteDoneModal({ request, confirmLoading, onCancel, onSubmit }: 
    */
   const wasteTypeId = request?.wasteTypeId ?? null;
   const operatorId = request?.operatorCounterpartyId ?? null;
-  const needTariff = byFact && request?.pricePerM3 == null && !!wasteTypeId;
+  const needTariff = byVolume && request?.pricePerM3 == null && !!wasteTypeId;
   const { data: tariffResult } = useQuery({
     ...wasteTariffResolveQuery({
       wasteTypeId,
@@ -95,11 +103,14 @@ export function WasteDoneModal({ request, confirmLoading, onCancel, onSubmit }: 
   useEffect(() => {
     if (!request) return;
     const previous = request.completion;
-    const volumeM3 = previous?.volumeM3 ?? request.volumeM3 ?? null;
+    const volumeM3 = factVolumeOf(previous) ?? request.volumeM3 ?? null;
     setTickets([]);
     setCostTouched(!!previous);
     form.setFieldsValue({
       volumeM3,
+      // Вес подставлять нечем, кроме прошлого закрытия: заявка на металлолом плана не несёт
+      // (ADR 0067), и предзаполнять поле было бы нечем, кроме выдуманного числа.
+      weightTons: factWeightOf(previous),
       totalCost:
         previous?.totalCost ??
         (volumeM3 != null ? calcWasteFactCost(volumeM3, request.pricePerM3) : null),
@@ -178,8 +189,12 @@ export function WasteDoneModal({ request, confirmLoading, onCancel, onSubmit }: 
 
   const submit = (v: FormValues) => {
     if (!request) return;
-    if (byFact && (v.volumeM3 == null || v.volumeM3 <= 0)) {
+    if (byVolume && (v.volumeM3 == null || v.volumeM3 <= 0)) {
       message.warning('Укажите фактически вывезенный объём');
+      return;
+    }
+    if (byWeight && (v.weightTons == null || v.weightTons <= 0)) {
+      message.warning('Укажите фактически вывезенный вес');
       return;
     }
     // Талон обязателен у заявки любого типа; приложенные прошлым закрытием засчитываются.
@@ -187,9 +202,16 @@ export function WasteDoneModal({ request, confirmLoading, onCancel, onSubmit }: 
       message.warning('Приложите талон — без него заявка не закрывается');
       return;
     }
+    // Величина уходит ровно одна — та, которой меряется тип заявки. Сумма — только у объёма:
+    // у металлолома её не считают вовсе, и присланное поле сервер отвергнет (ADR 0067).
+    const completion: CompleteWasteRequestInput | null = byVolume
+      ? { volumeM3: v.volumeM3!, totalCost: v.totalCost ?? null }
+      : byWeight
+        ? { weightTons: v.weightTons! }
+        : null;
     onSubmit({
       comment: (v.comment ?? '').trim(),
-      completion: byFact ? { volumeM3: v.volumeM3!, totalCost: v.totalCost ?? null } : null,
+      completion,
       ticketFileIds: tickets.map((f) => f.id),
     });
   };
@@ -224,7 +246,37 @@ export function WasteDoneModal({ request, confirmLoading, onCancel, onSubmit }: 
               </Typography.Paragraph>
             </FormGrid.Full>
 
-            {byFact && (
+            {/* Металлолом предъявляется одним весом (ADR 0067): ни расчёта, ни суммы, ни сверки
+              с заявленным — заявка плана не несёт. Поле стоит одно и во всю ширину: соседней
+              ячейкой к нему поставить нечего. */}
+            {byWeight && (
+              <FormGrid.Full>
+                <Form.Item
+                  name="weightTons"
+                  label="Сдано металлолома, т"
+                  rules={[
+                    { required: true, message: 'Укажите вес' },
+                    {
+                      // Столько же знаков хранит БД: лишние сервер отвергнет уже после отправки.
+                      validator: (_rule, v: number | undefined) =>
+                        v == null || Math.abs(v * 1000 - Math.round(v * 1000)) < 1e-6
+                          ? Promise.resolve()
+                          : Promise.reject(new Error('Не более 3 знаков после запятой')),
+                    },
+                  ]}
+                  extra="По приёмо-сдаточному акту"
+                >
+                  <InputNumber
+                    style={{ width: '100%' }}
+                    min={0}
+                    step={0.1}
+                    placeholder="Например, 3,2"
+                  />
+                </Form.Item>
+              </FormGrid.Full>
+            )}
+
+            {byVolume && (
               <>
                 {/* Объём и стоимость — соседними ячейками: их сверяют друг с другом. */}
                 <Form.Item
