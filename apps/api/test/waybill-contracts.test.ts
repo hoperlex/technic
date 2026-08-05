@@ -14,6 +14,7 @@ import {
   waybillFormShortLabels,
   waybillRequirement,
   waybillStatusLabels,
+  snapshotForPrint,
 } from '@technic/contracts';
 
 /**
@@ -387,5 +388,38 @@ describe('подписи форм в журнале', () => {
     for (const code of WAYBILL_FORM_CODES) {
       expect(waybillFormShortLabels[code].length).toBeLessThan(waybillFormLabels[code].length);
     }
+  });
+});
+
+/**
+ * Печать листа, выписанного до того, как графа «заказчик, телефон» стала печатать контакты рейса.
+ * Бланк уже размечен новым ключом, а в снимке такого ключа нет — и повторная печать выдала бы
+ * документ, отличный от того, что лежит у водителя.
+ */
+describe('снимок старого листа при печати', () => {
+  it('графе контактов достаётся то, чем она была на момент выдачи', () => {
+    const legacy = {
+      customer_name: 'ЖК «Северный»',
+      task2_customer: 'Склад №3',
+      task_from: 'с. Укурей',
+    };
+    expect(snapshotForPrint(legacy)).toMatchObject({
+      task_contacts: 'ЖК «Северный»',
+      task2_contacts: 'Склад №3',
+      task3_contacts: '',
+      task4_contacts: '',
+      // Прочие графы снимка печатаются как были: подмена касается одной графы.
+      customer_name: 'ЖК «Северный»',
+      task_from: 'с. Укурей',
+    });
+  });
+
+  /*
+   * Признак — отсутствие ключа, а не пустое значение: у нового листа пустые контакты значат «в
+   * заявке их не было», и наименование заказчика в этой графе было бы выдумкой портала.
+   */
+  it('новый снимок не трогается — даже когда контактов в заявке не было', () => {
+    const fresh = { customer_name: 'ЖК «Северный»', task_contacts: '', task2_customer: 'Склад №3' };
+    expect(snapshotForPrint(fresh)).toBe(fresh);
   });
 });

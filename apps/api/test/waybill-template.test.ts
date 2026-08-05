@@ -234,8 +234,39 @@ describe('разметка бланков', () => {
 
   it('в 4-П размечено задание водителю: по нему лист и выписывают', () => {
     const inTemplate = new Set(inspectTemplate(template('4p')));
-    for (const key of ['customer_name', 'customer_address', 'task_from', 'task_to', 'task_cargo']) {
+    for (const key of [
+      'customer_name',
+      'customer_address',
+      'task_from',
+      'task_to',
+      'task_cargo',
+      // Графа «заказчик, телефон» — контакты концов маршрута, по строке на талон рейса.
+      'task_contacts',
+      'task2_contacts',
+      'task3_contacts',
+      'task4_contacts',
+    ]) {
       expect(inTemplate.has(key), key).toBe(true);
+    }
+  });
+
+  /**
+   * Графа «заказчик, телефон» держит две строки, и разводит их перенос внутри ячейки. Работает он
+   * только при `wrapText`: без флага обе строки лягут одна на другую в одну — на бумаге останется
+   * контакт погрузки, а телефон разгрузки исчезнет молча.
+   */
+  it('графа контактов 4-П переносит строки: их там две', () => {
+    const files = unzipSync(template('4p'));
+    const sheet = decoder.decode(files['xl/worksheets/sheet1.xml']!);
+    const styles = decoder.decode(files['xl/styles.xml']!);
+    const xfs = /<cellXfs count="\d+">([\s\S]*?)<\/cellXfs>/
+      .exec(styles)![1]!
+      .match(/<xf [^>]*?(?:\/>|>[\s\S]*?<\/xf>)/g)!;
+
+    for (const address of ['BG75', 'BG76', 'BG77', 'BG78']) {
+      const cell = new RegExp(`<c r="${address}"((?:(?!/>|>)[\\s\\S])*)`).exec(sheet)!;
+      const style = Number(/\ss="(\d+)"/.exec(cell[1]!)![1]);
+      expect(xfs[style], address).toMatch(/wrapText="(1|true)"/);
     }
   });
 

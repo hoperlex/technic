@@ -278,6 +278,9 @@ async function collectSnapshot(
     task_from: '',
     task_to: '',
     task_cargo: '',
+    // Контакты концов маршрута — графа рейса: у недели на площадке конец один, и его человек
+    // печатается графой «Заказчик» вместе с адресом объекта (`customer_phone` выше).
+    task_contacts: '',
     task_departure_time: '',
     task_departure_hh: '',
     task_departure_mm: '',
@@ -285,14 +288,17 @@ async function collectSnapshot(
     task2_from: '',
     task2_to: '',
     task2_cargo: '',
+    task2_contacts: '',
     task3_customer: '',
     task3_from: '',
     task3_to: '',
     task3_cargo: '',
+    task3_contacts: '',
     task4_customer: '',
     task4_from: '',
     task4_to: '',
     task4_cargo: '',
+    task4_contacts: '',
 
     ...dayValues,
   } as Record<WaybillSnapshotKey, string>;

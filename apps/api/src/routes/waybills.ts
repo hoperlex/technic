@@ -10,6 +10,7 @@ import {
   formatVehicleRequestNumber,
   moscowDateKeyOf,
   requestCustomerName,
+  snapshotForPrint,
   waybillDisplayNumber,
   type WaybillDto,
   waybillListQuerySchema,
@@ -343,7 +344,7 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
 
     const rendered = renderOfficeTemplate(
       readTemplate(row.formCode),
-      row.data as Record<string, string>,
+      snapshotForPrint(row.data as Record<string, string>),
     );
     return {
       rendered,

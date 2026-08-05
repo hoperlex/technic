@@ -1,8 +1,8 @@
 import { and, eq } from 'drizzle-orm';
 import {
-  formatSnils,
   licenseNumberLabel,
   routeCargoLabel,
+  routeContactsLabel,
   type RoutePurpose,
   routeWaybillForm,
   type VehicleRequestType,
@@ -17,6 +17,7 @@ import {
   departments,
   freightTransportRequestDetails,
   organizations,
+  specialEquipmentRequestDetails,
   vehicleModels,
   vehicleRequests,
   vehicles,
@@ -238,6 +239,15 @@ async function collectSnapshot(
       weightTons: freightTransportRequestDetails.weightTons,
       scheduledAt: freightTransportRequestDetails.scheduledAt,
       timeUnspecified: freightTransportRequestDetails.scheduledTimeUnspecified,
+      // Контакты на концах маршрута — графа «заказчик, телефон» задания (миграция 0062).
+      loadingResponsibleName: freightTransportRequestDetails.loadingResponsibleName,
+      loadingResponsiblePhone: freightTransportRequestDetails.loadingResponsiblePhone,
+      unloadingResponsibleName: freightTransportRequestDetails.unloadingResponsibleName,
+      unloadingResponsiblePhone: freightTransportRequestDetails.unloadingResponsiblePhone,
+      // Тот же контакт у перегона: заявка-основание — спецтехника, и человек у неё один — тот,
+      // кто встречает машину на площадке.
+      siteResponsibleName: specialEquipmentRequestDetails.responsibleName,
+      siteResponsiblePhone: specialEquipmentRequestDetails.responsiblePhone,
     })
     .from(vehicleRequests)
     .leftJoin(constructionObjects, eq(constructionObjects.id, vehicleRequests.objectId))
@@ -246,9 +256,15 @@ async function collectSnapshot(
       freightTransportRequestDetails,
       eq(freightTransportRequestDetails.requestId, vehicleRequests.id),
     )
+    .leftJoin(
+      specialEquipmentRequestDetails,
+      eq(specialEquipmentRequestDetails.requestId, vehicleRequests.id),
+    )
     .where(eq(vehicleRequests.id, params.requestId));
 
   // Реквизиты водителя — снимком: удостоверение сменят, а лист остаётся с тем, по которому ехали.
+  // Не внесённая графа остаётся пустой строкой (ADR 0063): бланк печатается с пустым местом, а не
+  // с выдумкой, и предупреждали о ней до печати.
   let driver = { fio: '', snils: '', personnelNo: '', license: '', licenseIssuedOn: '' };
   if (params.driverPersonId) {
     const selection = await selectDrivers({
@@ -261,7 +277,7 @@ async function collectSnapshot(
     if (found) {
       driver = {
         fio: found.fullName,
-        snils: formatSnils(found.snils),
+        snils: found.snilsFormatted,
         personnelNo: found.personnelNo,
         license: licenseNumberLabel({
           series: found.licenseSeries,
@@ -273,6 +289,35 @@ async function collectSnapshot(
   }
 
   const cargo = routeCargoLabel(request?.volumeM3 ?? null, request?.weightTons ?? null);
+
+  /*
+   * Графа «заказчик, телефон» задания: контакты рейса, а не наименование заказчика. Заказчик
+   * стоит строкой выше — в шапке «в чьё распоряжение», — а водителю в дороге нужен человек с
+   * телефоном на каждом конце маршрута: грузят и принимают разные люди в разных местах.
+   *
+   * У перегона конец один: машина едет своим ходом на площадку, и встречает её ответственный
+   * заявки-основания.
+   */
+  const contactsOf = (row: {
+    loadingResponsibleName: string | null;
+    loadingResponsiblePhone: string | null;
+    unloadingResponsibleName: string | null;
+    unloadingResponsiblePhone: string | null;
+  }): string =>
+    routeContactsLabel([
+      { name: row.loadingResponsibleName ?? '', phone: row.loadingResponsiblePhone ?? '' },
+      { name: row.unloadingResponsibleName ?? '', phone: row.unloadingResponsiblePhone ?? '' },
+    ]);
+  const contacts = params.relocation
+    ? routeContactsLabel([
+        {
+          name: request?.siteResponsibleName ?? '',
+          phone: request?.siteResponsiblePhone ?? '',
+        },
+      ])
+    : request
+      ? contactsOf(request)
+      : '';
 
   /*
    * Талоны 2–4: в таблице задания четыре строки, и рейс печатается целиком. Пустые строки
@@ -288,6 +333,10 @@ async function collectSnapshot(
           unloading: freightTransportRequestDetails.unloadingLocation,
           volumeM3: freightTransportRequestDetails.volumeM3,
           weightTons: freightTransportRequestDetails.weightTons,
+          loadingResponsibleName: freightTransportRequestDetails.loadingResponsibleName,
+          loadingResponsiblePhone: freightTransportRequestDetails.loadingResponsiblePhone,
+          unloadingResponsibleName: freightTransportRequestDetails.unloadingResponsibleName,
+          unloadingResponsiblePhone: freightTransportRequestDetails.unloadingResponsiblePhone,
         })
         .from(vehicleRequests)
         .leftJoin(constructionObjects, eq(constructionObjects.id, vehicleRequests.objectId))
@@ -302,10 +351,12 @@ async function collectSnapshot(
         from: row?.loading ?? '',
         to: row?.unloading ?? '',
         cargo: routeCargoLabel(row?.volumeM3 ?? null, row?.weightTons ?? null),
+        contacts: row ? contactsOf(row) : '',
       };
     }),
   );
-  const slot = (index: number) => rest[index] ?? { customer: '', from: '', to: '', cargo: '' };
+  const slot = (index: number) =>
+    rest[index] ?? { customer: '', from: '', to: '', cargo: '', contacts: '' };
   const departure =
     request?.scheduledAt && !request.timeUnspecified
       ? new Date(request.scheduledAt.getTime() + 3 * 60 * 60 * 1000).toISOString().slice(11, 16)
@@ -357,6 +408,7 @@ async function collectSnapshot(
     task_to: params.relocation ? params.relocation.to : (request?.unloading ?? ''),
     // У перегона груза нет — графа остаётся пустой, как одометр и движение горючего.
     task_cargo: params.relocation ? '' : cargo,
+    task_contacts: contacts,
     task_departure_time: departure,
     task_departure_hh: departureHours,
     task_departure_mm: departureMinutes,
@@ -365,14 +417,17 @@ async function collectSnapshot(
     task2_from: slot(0).from,
     task2_to: slot(0).to,
     task2_cargo: slot(0).cargo,
+    task2_contacts: slot(0).contacts,
     task3_customer: slot(1).customer,
     task3_from: slot(1).from,
     task3_to: slot(1).to,
     task3_cargo: slot(1).cargo,
+    task3_contacts: slot(1).contacts,
     task4_customer: slot(2).customer,
     task4_from: slot(2).from,
     task4_to: slot(2).to,
     task4_cargo: slot(2).cargo,
+    task4_contacts: slot(2).contacts,
 
     /*
      * Графы ЭСМ-2 (миграция 0087) в листе на рейс пустые — и это не заглушки, а разные документы.
@@ -457,22 +512,27 @@ export async function issueWaybillForRoute(
     });
   }
 
-  // Тот же отбор, что показывает форма: второму набору правил разъехаться с первым негде.
+  // Тот же список, что показывает форма: второму набору правил разъехаться с первым негде.
   const selection = await selectDrivers({
     vehicleId: ctx.vehicleId,
     on: ctx.routeDate,
     withTrailer: ctx.trip.withTrailer,
     personId: ctx.driverPersonId,
   });
-  // Пустой ответ означает неполный комплект документов, а не чужую категорию (ADR 0055): категория
-  // выписку не останавливает. Сообщение перечисляет графы бланка — иначе останется гадать, чего
-  // именно не хватает человеку, который в справочнике выглядит заведённым.
+  /*
+   * Пустой ответ означает единственное: такого водителя нет — запись удалена либо специализация
+   * закрыта увольнением. Неполный комплект документов выписку не останавливает (ADR 0063): графы
+   * СНИЛСа, номера удостоверения и даты выдачи останутся в бланке пустыми, о чём портал предупредил
+   * дважды — при выборе водителя и в подтверждении выписки, — а решение печатать принял человек.
+   *
+   * Пустая графа от этого не перестала быть дефектом бумаги: лист без реквизитов водителя
+   * недействителен. Портал этого не скрывает и не чинит — он ровно поэтому и говорит о ней до
+   * печати, а не оставляет обнаруживать её тому, кто взял бланк в руки.
+   */
   if (!selection || selection.drivers.length === 0) {
     throw err.unprocessable(
-      `У водителя неполный комплект документов на ${ctx.routeDate}: путевой лист печатает СНИЛС, ` +
-        'серию с номером удостоверения и дату его выдачи, и действовать документ должен на день ' +
-        'рейса. Недостающее вносит администратор в справочнике водителей.',
-      { driverPersonId: 'Документов не хватает для листа' },
+      'Водителя нет в справочнике: запись удалена или человек уволен. Назначьте на рейс другого.',
+      { driverPersonId: 'Водитель не найден' },
     );
   }
 

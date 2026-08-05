@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { baseListQuery, dateOnlySchema, uuidSchema } from './common';
 import type { RequestStatus, VehicleRequestType } from './enums';
 import { requestStatusLabels } from './enums';
+import type { DriverDocumentGap } from './persons';
 import type { VehicleOwnership, VehicleSpecValues } from './vehicles';
 import type { WaybillFormCode, WaybillRequirement, WaybillStatus } from './waybills';
 
@@ -160,11 +161,13 @@ export interface VehicleRouteDto {
   /** «КамАЗ 65201 · Е646СК799» — чем едут. */
   vehicleLabel: string;
   /**
-   * Тип машины рейса и ТТХ её категории. Ими заявка сверяет заказанное с тем, чем рейс поедет
-   * (ADR 0059): подсказка рейсов больше не сужена равенством типов, а помечает каждый рейс —
-   * заказанный тип, крупнее, меньше. Сравнение считает портал правилом из контрактов
-   * (`vehicleSubstitutionOf`): сервер здесь ничего не решает и ничего не запрещает.
+   * Вид и тип машины рейса и ТТХ её категории. Ими заявка сверяет заказанное с тем, чем рейс
+   * поедет (ADR 0059, ADR 0063): подсказка рейсов не сужена ни типом, ни видом — она помечает
+   * каждый рейс (заказанный тип, крупнее, меньше, другой вид) и этим же порядком стоит. Сравнение
+   * считает портал правилом из контрактов (`vehicleSubstitutionOf`): сервер здесь ничего не
+   * решает и ничего не запрещает.
    */
+  vehicleKindId: string;
   vehicleTypeId: string;
   vehicleTypeName: string;
   vehicleCategoryId: string | null;
@@ -172,6 +175,12 @@ export interface VehicleRouteDto {
   /** Пусто — водителя ещё не назначили: маршрут собирают заранее, человека ставят утром. */
   driverPersonId: string | null;
   driverName: string;
+  /**
+   * Чего не хватает назначенному водителю для листа на дату рейса (ADR 0063); пусто — комплект
+   * полный либо водителя ещё нет. Выписку не останавливает: по нему карточка предупреждает о
+   * графах, которые в бланке останутся пустыми, — до печати, а не после.
+   */
+  driverGaps: DriverDocumentGap[];
   withTrailer: boolean;
   trailerLabel: string;
   trailer1Model: string;
@@ -436,6 +445,45 @@ export function routeCargoLabel(
   if (volumeM3 !== null && volumeM3 !== '') return `${volumeM3} м³`;
   if (weightTons !== null && weightTons !== '') return `${weightTons} т`;
   return '';
+}
+
+/**
+ * ФИО ответственного так, как его пишет бланк: фамилия с инициалами. В заявке человека называют
+ * полностью, а графа держит около полусотни знаков в строку и ровно две строки по высоте —
+ * «Кузнецова Анна Владимировна, +7 914 123-45-67» переносится на вторую строку и вытесняет с
+ * бумаги контакт разгрузки.
+ *
+ * Сокращается только запись ровно из трёх слов, каждое из которых начинается буквой и точек в
+ * себе не несёт. Всё прочее — одно имя, должность рядом с фамилией, уже сокращённые инициалы —
+ * печатается как есть: разобрать, где здесь отчество, а где примечание, портал не берётся.
+ */
+function contactNameLabel(name: string): string {
+  const trimmed = name.trim();
+  const parts = trimmed.split(/\s+/u);
+  if (parts.length !== 3) return trimmed;
+  const [family, first, patronymic] = parts as [string, string, string];
+  if ([family, first, patronymic].some((part) => part.includes('.') || !/^\p{L}/u.test(part))) {
+    return trimmed;
+  }
+  return `${family} ${first[0]!.toUpperCase()}.${patronymic[0]!.toUpperCase()}.`;
+}
+
+/**
+ * Контакты задания в том виде, в каком их печатает графа «заказчик, телефон» бланка 4-П: строка
+ * на каждый конец маршрута — кто отдаёт груз и кто его принимает.
+ *
+ * Строки не подписаны «погрузка/разгрузка»: порядок тот же, что у граф «откуда» и «куда» той же
+ * строки задания, а подпись вытеснила бы из графы телефон. Пустой контакт пропускается целиком, а
+ * не печатается пустой строкой: у заявок старше миграции 0062 контакта нет вовсе, и одинокая
+ * запятая читалась бы как потерянный номер.
+ */
+export function routeContactsLabel(contacts: readonly { name: string; phone: string }[]): string {
+  return contacts
+    .map(({ name, phone }) =>
+      [contactNameLabel(name), phone.trim()].filter((part) => part !== '').join(', '),
+    )
+    .filter((line) => line !== '')
+    .join('\n');
 }
 
 // ── Схемы ──
