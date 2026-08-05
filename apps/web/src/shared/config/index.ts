@@ -4,4 +4,5 @@
  */
 export * from './files';
 export * from './pagination';
+export * from './support';
 export * from './time';

@@ -3,12 +3,14 @@ import { Badge, Dropdown, Layout, Menu, type MenuProps, Typography } from 'antd'
 import { useQuery } from '@tanstack/react-query';
 import {
   CarOutlined,
+  CustomerServiceOutlined,
   ProfileOutlined,
   DatabaseOutlined,
   FileTextOutlined,
   KeyOutlined,
   LeftOutlined,
   LogoutOutlined,
+  NotificationOutlined,
   RightOutlined,
   TeamOutlined,
 } from '@ant-design/icons';
@@ -20,6 +22,7 @@ import { useIsMobile } from '@shared/lib';
 import { MobileAppBar } from './MobileAppBar';
 import { MobileNav, type MobileNavItem } from './MobileNav';
 import { PortalLogo } from './PortalLogo';
+import { SupportContactsModal } from './SupportContactsModal';
 import { UserAvatar } from './UserAvatar';
 
 const { Sider, Content } = Layout;
@@ -51,6 +54,7 @@ export function AppLayout() {
   const location = useLocation();
   const isMobile = useIsMobile();
   const [collapsed, setCollapsed] = useState(readCollapsed);
+  const [supportOpen, setSupportOpen] = useState(false);
 
   const toggleCollapsed = () =>
     setCollapsed((v) => {
@@ -130,17 +134,61 @@ export function AppLayout() {
   // Подсвечен тот пункт, на страницу которого зашли; если такого пункта у роли нет — никакой.
   const selectedKey = navItems.find((it) => location.pathname.startsWith(it.key))?.key ?? '';
 
+  /**
+   * Служебные пункты: они не разделы портала и не зависят от прав — писать в поддержку вправе
+   * любой вошедший. Страницы за ними нет, поэтому подсветка выключена, а нажатие открывает окно.
+   *
+   * «Обновления» ждут своей реализации и потому выключены. Пометка «скоро» — текстом рядом с
+   * подписью: на касании `Tooltip` не открывается (ADR 0030 п. 6), и на телефоне выключенный
+   * пункт без неё выглядел бы сломанным.
+   */
+  const utilityItems = [
+    {
+      key: 'support',
+      icon: <CustomerServiceOutlined />,
+      label: 'Техподдержка',
+      // Свёрнутой панели остаётся одна иконка, и `title` — единственное, чем пункт назван.
+      title: 'Техподдержка',
+      disabled: false,
+    },
+    {
+      key: 'changelog',
+      icon: <NotificationOutlined />,
+      label: (
+        <span className="menu-soon">
+          Обновления<span className="menu-soon__mark">скоро</span>
+        </span>
+      ),
+      title: 'Обновления — скоро',
+      disabled: true,
+    },
+  ];
+
+  /** Пункт меню antd получает те же поля, что и раньше: `title` нужен только свёрнутой панели. */
+  const utilityMenuItems: MenuProps['items'] = utilityItems.map(
+    ({ key, icon, label, disabled }) => ({ key, icon, label, disabled }),
+  );
+
   const userMenu: MenuProps = {
     items: [
       { key: 'change-password', icon: <KeyOutlined />, label: 'Сменить пароль' },
+      // На телефоне нижняя навигация занята разделами целиком (ADR 0030), и служебным пунктам
+      // место только здесь. На десктопе они стоят в подвале боковой панели — и здесь не
+      // дублируются: два входа в одно окно превращают меню учётки в свалку.
+      ...(isMobile ? [{ type: 'divider' as const }, ...utilityMenuItems] : []),
       { type: 'divider' },
       { key: 'logout', icon: <LogoutOutlined />, label: 'Выйти', danger: true },
     ],
     onClick: ({ key }) => {
       if (key === 'logout') void logout().then(() => navigate('/login'));
       if (key === 'change-password') navigate('/change-password');
+      if (key === 'support') setSupportOpen(true);
     },
   };
+
+  const supportModal = (
+    <SupportContactsModal open={supportOpen} onClose={() => setSupportOpen(false)} />
+  );
 
   /**
    * Мобильная раскладка (ADR 0030): разделы — нижней навигацией, учётная запись — в верхней
@@ -162,6 +210,7 @@ export function AppLayout() {
           <Outlet />
         </main>
         <MobileNav items={navItems} selectedKey={selectedKey} onSelect={(key) => navigate(key)} />
+        {supportModal}
       </div>
     );
   }
@@ -233,6 +282,37 @@ export function AppLayout() {
               />
             )}
           </div>
+          {/* Служебные пункты — над учётной записью и отдельно от разделов: это не места, куда
+              переходят работать, а помощь и новости о самом портале. */}
+          <div className="sider-utility">
+            {collapsed ? (
+              <div className="sider-mini-nav">
+                {utilityItems.map((it) => (
+                  <button
+                    key={it.key}
+                    type="button"
+                    className="sider-mini-item"
+                    disabled={it.disabled}
+                    onClick={() => setSupportOpen(true)}
+                    title={it.title}
+                    aria-label={it.title}
+                  >
+                    {it.icon}
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <Menu
+                mode="inline"
+                selectable={false}
+                items={utilityMenuItems}
+                onClick={({ key }) => {
+                  if (key === 'support') setSupportOpen(true);
+                }}
+                style={{ borderInlineEnd: 'none' }}
+              />
+            )}
+          </div>
           <div style={{ borderTop: '1px solid rgba(0,0,0,0.06)', padding: 8 }}>
             <Dropdown menu={userMenu} trigger={['click']} placement="topLeft">
               <div className={`sider-account${collapsed ? ' sider-account--collapsed' : ''}`}>
@@ -276,6 +356,7 @@ export function AppLayout() {
           <Outlet />
         </Content>
       </Layout>
+      {supportModal}
     </Layout>
   );
 }
