@@ -38,7 +38,7 @@ const columns: TableColumnType<VehicleRequestShiftDto>[] = [
   },
   {
     key: 'machineHours',
-    title: 'Машиночасы',
+    title: 'Моточасы',
     width: 110,
     // Незаполненный день и день простоя читаются по-разному: у первого часов нет вовсе, у
     // второго они честно нулевые, и рядом стоит объяснение.
