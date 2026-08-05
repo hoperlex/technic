@@ -25,7 +25,7 @@ import {
   driverWorkedOnVehicle,
   formatMoscowDateTime,
   isRouteEditable,
-  MAX_ROUTE_REQUESTS,
+  routeRequestCapacity,
   normalizeTimeInput,
   VEHICLE_OWNERSHIPS,
   requestCustomerName,
@@ -55,6 +55,8 @@ import { FormGrid } from '@shared/ui';
 import { FormModal } from '@shared/ui';
 import { TimeInput, optionalWorkTimeRule } from '../../components/TimeInput';
 import { useIsMobile } from '@shared/lib';
+import { useObjectScope } from '../../hooks/useObjectScope';
+import { AddressField } from '@features/address-input';
 
 import { formatMoney } from '../../utils/format';
 import { formatDateOnly } from './shared';
@@ -182,6 +184,13 @@ export function VehicleAssignModal({
   const [ownership, setOwnership] = useState<VehicleOwnership>('own');
   /** Смена машины у работающей заявки (ADR 0048): срок не спрашивается — он уже согласован. */
   const reassign = mode === 'reassign';
+
+  /** Первыми в списке мест перегона — площадка заявки и площадки учётки (ADR 0069). */
+  const { ownObjectIds } = useObjectScope();
+  const suggestObjectIds = useMemo(
+    () => [request?.objectId, ...ownObjectIds].filter((id): id is string => !!id),
+    [request?.objectId, ownObjectIds],
+  );
 
   // Весь активный парк, а не техника заказанного вида (ADR 0064): классификация список больше не
   // сужает — ни категорией (ADR 0045), ни типом (ADR 0059), ни видом. Обе ветки принадлежности
@@ -469,12 +478,15 @@ export function VehicleAssignModal({
       : null;
 
   /**
-   * Рейсы, куда заявку можно положить: со свободным талоном и не замороженные выписанным листом.
+   * Рейсы, куда заявку можно положить: со свободной строкой задания и не замороженные выписанным
+   * листом.
    * Заморозка проверяется тем же правилом, что и на сервере, — иначе список предлагал бы рейсы,
    * которые он отклонит.
    */
   const routeOptions = (prefill?.routes ?? []).filter(
-    (r) => r.requests.length < MAX_ROUTE_REQUESTS && isRouteEditable(r.waybill?.status ?? null),
+    (r) =>
+      r.requests.length < routeRequestCapacity(r.formCode) &&
+      isRouteEditable(r.waybill?.status ?? null),
   );
   /** Выбран готовый рейс: водитель и реквизиты выезда в нём уже свои, спрашивать их незачем. */
   const joiningRoute = !!routeId && routeId !== NEW_ROUTE;
@@ -935,7 +947,7 @@ export function VehicleAssignModal({
 
             {/* Шаг 1: каким рейсом заявка поедет. Вопрос стоит до техники, потому что так и
               планируют день: у машины этого типа уже собран рейс, и заявка дописывается в него
-              талоном — а машину задаёт сам рейс (ADR 0052). «Новый маршрут» возвращает прежний
+              строкой задания — а машину задаёт сам рейс (ADR 0052). «Новый маршрут» возвращает прежний
               порядок: выбирают машину, а рейс заводится под неё.
 
               Рейсы показываются на дату из формы: подачу правят здесь же, а рейс печатает задание
@@ -958,7 +970,7 @@ export function VehicleAssignModal({
                           r.displayNumber,
                           r.vehicleLabel,
                           r.driverName || 'водитель не назначен',
-                          `${r.requests.length} из ${MAX_ROUTE_REQUESTS} талонов`,
+                          `${r.requests.length} из ${routeRequestCapacity(r.formCode)} заявок`,
                         ].join(' · '),
                       })),
                       { value: NEW_ROUTE, label: 'Новый маршрут' },
@@ -1188,20 +1200,27 @@ export function VehicleAssignModal({
                         />
                       </FormGrid.Full>
                     )}
-                    <Form.Item
+                    {/* Адрес перегона (ADR 0069): подсказки DaData либо выбор площадки из
+                      справочника; свободная строка остаётся допустимой — база и стоянка адресами
+                      не описываются. */}
+                    <AddressField
                       name="deliveryFrom"
                       label="Откуда"
-                      rules={[{ required: true, message: 'Укажите, откуда идёт техника' }]}
-                    >
-                      <Input placeholder="База, ул. Автомобильная, 3" />
-                    </Form.Item>
-                    <Form.Item
+                      required
+                      requiredMessage="Укажите, откуда идёт техника"
+                      directory
+                      suggestObjectIds={suggestObjectIds}
+                      placeholder="База, ул. Автомобильная, 3"
+                    />
+                    <AddressField
                       name="deliveryTo"
                       label="Куда"
-                      rules={[{ required: true, message: 'Укажите, куда идёт техника' }]}
-                    >
-                      <Input placeholder="Объект, адрес площадки" />
-                    </Form.Item>
+                      required
+                      requiredMessage="Укажите, куда идёт техника"
+                      directory
+                      suggestObjectIds={suggestObjectIds}
+                      placeholder="Объект, адрес площадки"
+                    />
                   </>
                 )}
               </>
@@ -1228,7 +1247,7 @@ export function VehicleAssignModal({
                 {joiningRoute && (
                   <FormGrid.Full>
                     <Typography.Text type="secondary">
-                      Заявка встанет талоном в рейс {joinedRoute?.displayNumber}: водитель и
+                      Заявка встанет строкой задания в рейс {joinedRoute?.displayNumber}: водитель и
                       реквизиты выезда там уже свои, и правят их в карточке маршрута.
                     </Typography.Text>
                   </FormGrid.Full>

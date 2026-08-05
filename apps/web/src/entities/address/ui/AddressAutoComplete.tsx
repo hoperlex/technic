@@ -98,14 +98,20 @@ export function AddressAutoComplete({
   );
 }
 
+/** Подпись значка: чем именно подтверждён адрес — подсказкой DaData или записью справочника. */
+function verificationTitle(meta: AddressMeta | null): string {
+  if (!isAddressVerified(meta)) return 'Введён вручную — не верифицирован';
+  if (meta?.source === 'object') return 'Адрес выбран из справочника объектов';
+  if (meta?.source === 'warehouse') return 'Адрес выбран из справочника складов поставщиков';
+  return 'Адрес подтверждён (DaData / ФИАС)';
+}
+
 /** Ячейка таблицы: адрес + значок статуса верификации. */
 export function AddressCell({ text, meta }: { text: string; meta: AddressMeta | null }) {
   if (!text) return <>—</>;
   const verified = isAddressVerified(meta);
   return (
-    <Tooltip
-      title={verified ? 'Адрес подтверждён (DaData / ФИАС)' : 'Введён вручную — не верифицирован'}
-    >
+    <Tooltip title={verificationTitle(meta)}>
       <Space size={4}>
         {verified ? (
           <CheckCircleTwoTone twoToneColor="#52c41a" />

@@ -18,6 +18,7 @@ import {
 } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import {
+  type AddressMeta,
   type AssignVehicleInput,
   calcVehicleRequestCost,
   can,
@@ -52,6 +53,7 @@ import {
   type CreateRelocationRouteInput,
   createRelocationRouteSchema,
   isCargoAmountRequired,
+  isDirectoryAddressSource,
   CARGO_AMOUNT_MESSAGE,
   isVehicleKindAllowedForRequest,
   moscowDateKeyOf,
@@ -118,6 +120,7 @@ import {
   vehicleRoutes,
   vehicles,
   vehicleTypes,
+  warehouses,
   waybillRequests,
   waybills,
   waybillSeries,
@@ -189,6 +192,7 @@ import {
   routeWaybill,
 } from '../services/vehicle-routes';
 import {
+  routeWaybillFormFor,
   tripDate,
   waybillRequirementByType,
   waybillRequirementFor,
@@ -829,6 +833,64 @@ async function assertCargoAmount(
 }
 
 /**
+ * Адрес, выбранный из справочника (ADR 0069). Портал присылает строку адреса и ссылку на запись,
+ * из которой её взяли; сервер убеждается, что запись есть, действует и адрес у неё тот же.
+ *
+ * Проверка не формальность: у справочного источника нет ФИАС, и «верифицирован» держится ровно на
+ * том, что за адресом стоит живая запись справочника. Без сверки признак верификации выставлял бы
+ * себе сам клиент — а он в жёсткой модели (ADR 0006) решает, примут заявку или нет.
+ *
+ * Строки сравниваются как есть, с точностью до пробелов по краям: адрес попал в заявку копией из
+ * справочника, и любое расхождение означает, что выбор устарел — запись отредактировали, пока
+ * форма была открыта.
+ */
+async function assertDirectoryAddress(
+  tx: Tx,
+  field: 'loadingLocation' | 'unloadingLocation',
+  location: string,
+  meta: AddressMeta | null | undefined,
+): Promise<void> {
+  if (!meta || !isDirectoryAddressSource(meta.source)) return;
+  // Ссылку требует контракт (`verifiedAddressMetaSchema`); здесь она уже есть.
+  const refId = meta.refId!;
+  const fail = (message: string) => err.unprocessable(message, { [field]: message });
+
+  if (meta.source === 'object') {
+    const [row] = await tx
+      .select({ address: constructionObjects.address, isActive: constructionObjects.isActive })
+      .from(constructionObjects)
+      .where(eq(constructionObjects.id, refId));
+    if (!row) throw fail('Объект из справочника не найден — выберите адрес заново');
+    if (!row.isActive) throw fail('Объект в справочнике выключен — выберите другой адрес');
+    if (row.address.trim() !== location.trim()) {
+      throw fail('Адрес объекта в справочнике изменился — выберите адрес заново');
+    }
+    return;
+  }
+
+  // Склад приостановленного поставщика в списке не предлагают: возить к нему незачем, даже если
+  // сам склад активен (деактивация поставщика склады не гасит).
+  const [row] = await tx
+    .select({
+      address: warehouses.address,
+      isActive: warehouses.isActive,
+      supplierActive: counterparties.isActive,
+      supplierDeletedAt: counterparties.deletedAt,
+    })
+    .from(warehouses)
+    .innerJoin(counterparties, eq(warehouses.supplierCounterpartyId, counterparties.id))
+    .where(eq(warehouses.id, refId));
+  if (!row) throw fail('Склад из справочника не найден — выберите адрес заново');
+  if (!row.isActive) throw fail('Склад в справочнике выключен — выберите другой адрес');
+  if (!row.supplierActive || row.supplierDeletedAt) {
+    throw fail('Поставщик склада больше не работает — выберите другой адрес');
+  }
+  if (row.address.trim() !== location.trim()) {
+    throw fail('Адрес склада в справочнике изменился — выберите адрес заново');
+  }
+}
+
+/**
  * Машина, которой берут заявку в работу (ADR 0027). Проверяется всё, чего не видит БД: живая ли
  * запись, годна ли машина к работе и есть ли ставка там, где без неё нельзя.
  *
@@ -985,6 +1047,13 @@ async function attachToRoute(
         routeDate: route.routeDate,
         requestCount: await routeRequestCount(tx, route.id),
         purpose: route.purpose,
+        // Ёмкость рейса задаёт его бланк: у 4-П семь строк задания, у формы № 3 десять (ADR 0068).
+        formCode: (
+          await routeWaybillFormFor(tx, {
+            purpose: route.purpose,
+            vehicleId: route.vehicleId,
+          })
+        ).formCode,
       },
     );
     if (!check.ok) throw err.unprocessable(check.reason, { route: check.reason });
@@ -2065,6 +2134,18 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
             volumeM3: numToDb(body.volumeM3),
             weightTons: numToDb(body.weightTons),
           });
+          await assertDirectoryAddress(
+            tx,
+            'loadingLocation',
+            body.loadingLocation,
+            body.loadingAddress,
+          );
+          await assertDirectoryAddress(
+            tx,
+            'unloadingLocation',
+            body.unloadingLocation,
+            body.unloadingAddress,
+          );
           await tx.insert(freightTransportRequestDetails).values({
             requestId: id,
             scheduledAt: new Date(body.scheduledAt),
@@ -2259,6 +2340,25 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           const weightTons =
             body.weightTons !== undefined ? numToDb(body.weightTons) : ex!.weightTons;
           await assertCargoAmount(tx, nextTypeId, { volumeM3, weightTons });
+          // Строка и метаданные приходят парой (`updateVehicleRequestSchema`), поэтому проверять
+          // есть что ровно тогда, когда адрес правили: у нетронутого адреса запись справочника
+          // сверять незачем — заявка помнит его таким, каким он был на подаче.
+          if (body.loadingLocation !== undefined) {
+            await assertDirectoryAddress(
+              tx,
+              'loadingLocation',
+              body.loadingLocation,
+              body.loadingAddress,
+            );
+          }
+          if (body.unloadingLocation !== undefined) {
+            await assertDirectoryAddress(
+              tx,
+              'unloadingLocation',
+              body.unloadingLocation,
+              body.unloadingAddress,
+            );
+          }
           await tx
             .update(freightTransportRequestDetails)
             .set({

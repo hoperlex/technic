@@ -1,6 +1,7 @@
 export * from './enums';
 export * from './permissions';
 export * from './common';
+export * from './address';
 export * from './time';
 export * from './person-name';
 export * from './snils';

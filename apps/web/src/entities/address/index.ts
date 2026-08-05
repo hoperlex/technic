@@ -7,3 +7,4 @@
  * маршрут. Транспорт подсказок общий и живёт в `shared/api`; смысл ответа — здесь.
  */
 export { AddressAutoComplete, AddressCell } from './ui/AddressAutoComplete';
+export { directoryAddressMeta, type DirectoryAddressRecord } from './model/directoryAddressMeta';

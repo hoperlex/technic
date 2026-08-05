@@ -13,7 +13,7 @@ import {
   isRouteEditable,
   canCancelWaybill,
   isRelocationPurpose,
-  MAX_ROUTE_REQUESTS,
+  routeRequestCapacity,
   routePurposeLabels,
   moscowDateKeyOf,
   requestStatusColors,
@@ -22,6 +22,8 @@ import {
   type VehicleRequestDto,
   type VehicleRouteDto,
   type VehicleRouteRequestDto,
+  type WaybillFormCode,
+  WAYBILL_COUPONS,
   WAYBILL_LOCKED_MESSAGE,
   waybillFormShortLabels,
   waybillStatusColors,
@@ -38,8 +40,10 @@ import { formatDateOnly } from './shared';
 /**
  * Карточка рейса: кто едет, с кем и в каком порядке.
  *
- * Порядок заявок — это талоны бланка 4-П, поэтому переставляются они стрелками, а не
- * перетаскиванием: позиций максимум четыре, а стрелки одинаково работают и на телефоне.
+ * Порядок заявок — это строки задания бланка, поэтому переставляются они стрелками, а не
+ * перетаскиванием: позиций от семи до десяти по бланку рейса, а стрелки одинаково работают и на
+ * телефоне. В 4-П порядок ещё и значим: первые четыре строки несут отрывной талон заказчика,
+ * остальные три — доп. задание.
  *
  * Выписанный лист карточку замораживает: состав, порядок и водитель правятся только до него —
  * бланк уже у водителя, и запись, разошедшаяся с бумагой на руках, хуже отсутствия записи
@@ -199,7 +203,7 @@ export function VehicleRouteModal({ routeId, onClose, onChanged }: Props) {
     onError: fail,
   });
 
-  /** Сдвиг талона: порядок уходит на сервер целиком — он переписывает его одним заходом. */
+  /** Сдвиг строки: порядок уходит на сервер целиком — он переписывает его одним заходом. */
   const move = (index: number, delta: number) => {
     if (!route) return;
     const ids = route.requests.map((r) => r.requestId);
@@ -245,6 +249,7 @@ export function VehicleRouteModal({ routeId, onClose, onChanged }: Props) {
     ? canIssueWaybill({
         purpose: route.purpose,
         driverPersonId: route.driverPersonId,
+        formCode: route.formCode,
         requests: route.requests,
         sourceRequest: route.sourceRequest,
         waybillStatus: route.waybill?.status ?? null,
@@ -253,6 +258,16 @@ export function VehicleRouteModal({ routeId, onClose, onChanged }: Props) {
 
   /** Перегон техники: состава у него нет, а задание печатается из самого рейса. */
   const relocation = !!route && isRelocationPurpose(route.purpose);
+
+  /**
+   * Есть ли куда положить ещё одну заявку. Сколько строк задания у рейса, решает его бланк
+   * (ADR 0068): у 4-П семь, у формы № 3 — десять.
+   */
+  const canAddRequest =
+    !!route &&
+    !relocation &&
+    !frozen &&
+    route.requests.length < routeRequestCapacity(route.formCode);
 
   const waybillEditable =
     !!route?.waybill &&
@@ -353,12 +368,13 @@ export function VehicleRouteModal({ routeId, onClose, onChanged }: Props) {
             />
           )}
 
-          {/* Состав — только у грузового рейса: талоны заказчиков это про машину, которая за
-            смену объезжает четверых. Перегон везёт одну единицу техники по одной заявке. */}
+          {/* Состав — только у грузового рейса: задание из нескольких строк это про машину,
+            которая за смену объезжает несколько площадок. Перегон везёт одну единицу техники по
+            одной заявке. */}
           {!relocation && (
             <div>
               <Typography.Title level={5}>
-                Заявки рейса ({route.requests.length} из {MAX_ROUTE_REQUESTS})
+                Заявки рейса ({route.requests.length} из {routeRequestCapacity(route.formCode)})
               </Typography.Title>
               {route.requests.length === 0 && (
                 <Typography.Paragraph type="secondary">
@@ -372,6 +388,7 @@ export function VehicleRouteModal({ routeId, onClose, onChanged }: Props) {
                     item={item}
                     index={index}
                     total={route.requests.length}
+                    formCode={route.formCode}
                     frozen={frozen}
                     busy={reorder.isPending || detach.isPending}
                     onMove={move}
@@ -382,15 +399,15 @@ export function VehicleRouteModal({ routeId, onClose, onChanged }: Props) {
             </div>
           )}
 
-          {!relocation && !frozen && route.requests.length < MAX_ROUTE_REQUESTS && (
+          {canAddRequest && (
             <Space direction="vertical" size={4} style={{ width: '100%' }}>
               <Space.Compact style={{ width: '100%' }}>
                 <AutoSelect
                   style={{ width: '100%' }}
                   value={adding}
                   onChange={(v) => setAdding(v as string)}
-                  // Заявка чужого рейса подписана этим рейсом и талоном: диспетчер должен видеть,
-                  // что забирает её у Р-7, а не берёт со свободных.
+                  // Заявка чужого рейса подписана этим рейсом и строкой задания: диспетчер должен
+                  // видеть, что забирает её у Р-7, а не берёт со свободных.
                   options={free.map((r) => ({
                     value: r.id,
                     label: [
@@ -403,7 +420,7 @@ export function VehicleRouteModal({ routeId, onClose, onChanged }: Props) {
                       r.vehicleTypeId !== route.vehicleTypeId
                         ? `заказан ${r.vehicleTypeName}`
                         : null,
-                      r.route ? `из ${r.route.displayNumber}, талон ${r.route.position}` : null,
+                      r.route ? `из ${r.route.displayNumber}, строка ${r.route.position}` : null,
                     ]
                       .filter(Boolean)
                       .join(' · '),
@@ -444,7 +461,7 @@ export function VehicleRouteModal({ routeId, onClose, onChanged }: Props) {
 }
 
 /**
- * Строка талона: номер по порядку, заказчик и маршрут груза. Отменённая или закрытая заявка
+ * Строка задания: номер по порядку, заказчик и маршрут груза. Отменённая или закрытая заявка
  * остаётся в рейсе историей (лист по ней уже выписан) — её помечает тег, и она же не даёт
  * выписать новый лист, пока её не убрали.
  */
@@ -452,6 +469,7 @@ function RouteRequestRow({
   item,
   index,
   total,
+  formCode,
   frozen,
   busy,
   onMove,
@@ -460,6 +478,8 @@ function RouteRequestRow({
   item: VehicleRouteRequestDto;
   index: number;
   total: number;
+  /** Бланк рейса: талоны заказчиков есть только у 4-П, и пометка строки — про него. */
+  formCode: WaybillFormCode | null;
   frozen: boolean;
   busy: boolean;
   onMove: (index: number, delta: number) => void;
@@ -481,6 +501,14 @@ function RouteRequestRow({
         <Space size={8} wrap>
           <strong>{item.displayNumber}</strong>
           <span>{item.customerName}</span>
+          {/* Талонов в бланке 4-П четыре, а строк задания семь (ADR 0068): заявка с пятой
+            позиции печатается доп. заданием, и отрывного талона заказчик по ней не подпишет.
+            Диспетчер видит это, пока рейс ещё собирается, — переставить заявку выше можно только
+            здесь. Формы № 3 пометка не касается: талонов в ней нет вовсе, и все десять строк её
+            задания равноправны. */}
+          {formCode === '4p' && item.position > WAYBILL_COUPONS && (
+            <Tag>доп. задание, без талона</Tag>
+          )}
           {item.status !== 'confirmed' && (
             <Tag color={requestStatusColors[item.status]}>{requestStatusLabels[item.status]}</Tag>
           )}

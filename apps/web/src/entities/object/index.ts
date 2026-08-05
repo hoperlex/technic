@@ -5,4 +5,4 @@
  */
 export { objectsApi } from './api/objectsApi';
 export { objectKeys } from './api/keys';
-export { objectOptionsQuery } from './api/queries';
+export { objectAddressOptionsQuery, objectOptionsQuery } from './api/queries';

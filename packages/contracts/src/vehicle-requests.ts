@@ -15,6 +15,7 @@ import {
   dateOnlySchema,
   uuidSchema,
 } from './common';
+import { type AddressMeta, verifiedAddressMetaSchema } from './address';
 import type { FileDto } from './files';
 import {
   shiftHoursSchema,
@@ -89,41 +90,6 @@ export function parseVehicleRequestNumberSearch(input: string): number | undefin
 const commentSchema = z.string().trim().max(2000);
 const locationSchema = z.string().trim().min(1).max(1000);
 const fileIdsSchema = z.array(uuidSchema).max(20);
-
-// ── Адрес: метаданные верификации (DaData «Подсказки») ──
-// Каноническая строка адреса — в loadingLocation/unloadingLocation; здесь происхождение
-// и ФИАС/гео. Жёсткая модель (ADR 0006): адрес погрузки/разгрузки ОБЯЗАТЕЛЕН и должен быть
-// верифицирован (resolved+ФИАС либо object); неверифицированный/`manual` ввод на запись НЕ
-// принимается. `manual` остаётся в enum только для чтения легаси-строк.
-export const ADDRESS_SOURCES = ['resolved', 'manual', 'object'] as const;
-export const addressSourceSchema = z.enum(ADDRESS_SOURCES);
-export type AddressSource = (typeof ADDRESS_SOURCES)[number];
-
-/** Метаданные адреса. `fiasId` — не строго UUID (DaData отдаёт разные GUID), поэтому просто строка. */
-export const addressMetaSchema = z
-  .object({
-    source: addressSourceSchema,
-    fiasId: z.string().trim().min(1).max(64).nullable().optional(),
-    fiasLevel: z.number().int().min(-1).max(99).nullable().optional(),
-    geoLat: z.number().min(-90).max(90).nullable().optional(),
-    geoLon: z.number().min(-180).max(180).nullable().optional(),
-  })
-  .strict();
-export type AddressMeta = z.infer<typeof addressMetaSchema>;
-
-/** Адрес верифицирован: выбран из справочника объектов или из подсказок DaData (с ФИАС). */
-export function isAddressVerified(meta: AddressMeta | null | undefined): boolean {
-  if (!meta) return false;
-  return meta.source === 'object' || (meta.source === 'resolved' && !!meta.fiasId);
-}
-
-/**
- * Верифицированный адрес для записи (жёсткая модель, ADR 0006): принимаем только адрес,
- * выбранный из подсказки DaData (resolved + ФИАС) либо из справочника объектов (object).
- */
-export const verifiedAddressMetaSchema = addressMetaSchema.refine(isAddressVerified, {
-  message: 'Адрес должен быть выбран из подсказок (верифицирован)',
-});
 
 /** ISO 8601 с обязательным offset (напр. 2026-07-25T14:30:00+03:00). */
 const scheduledAtSchema = z.string().datetime({ offset: true });

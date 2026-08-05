@@ -47,6 +47,12 @@ interface Blank {
    * справочника и его длину бланк не выбирает.
    */
   shrink?: string[];
+  /**
+   * Графы, где текст переносится по словам (`wrapText`) и прижимается к верху. Нужны там, где
+   * бланк отвёл под значение строку в две высоты, а значение в одну строку не влезает: без флага
+   * хвост молча срезается по границе объединения.
+   */
+  wrap?: string[];
   /** Как бланк ложится на лист A4 при печати (ADR 0041). */
   orientation: 'portrait' | 'landscape';
 }
@@ -128,7 +134,24 @@ const FORM_4P: Blank = {
     Y78: '{{task4_to}}',
     AT78: '{{task4_cargo}}',
     BG78: '{{task4_contacts}}',
+    /*
+     * Рейсы 5–7 (ADR 0068). Талонов в бланке четыре, а заявок у машины за смену бывает больше — и
+     * место для них в бланке есть: справа от задания стоит блок «Дополнительное задание водителю»,
+     * три нижние строки которого пусты и идут во всю его ширину (объединения CG76:EG76 … CG78:EG78,
+     * 62 знака при кегле 6 pt и высоте строки в две таких).
+     *
+     * Граф внутри у них нет ни одной, поэтому идёт готовая строка «откуда → куда, груз, контакты»
+     * — тем же порядком, что и графы таблицы слева. Три верхние строки блока (CG72, CG73, CG75)
+     * не размечаются: они узкие (рядом «Расход горючего») и остаются диспетчеру под то, ради чего
+     * блок в бланке и заведён, — задание, которого нет в заявках.
+     */
+    CG76: '{{task5_line}}',
+    CG77: '{{task6_line}}',
+    CG78: '{{task7_line}}',
   },
+  // Строка задания идёт во всю ширину блока и в одну строку не встаёт; стиль бланка перенос не
+  // несёт — без флага хвост срезался бы по границе объединения.
+  wrap: ['CG76', 'CG77', 'CG78'],
   // Графа диспетчера: сама подпись «Диспетчер» (A34), линия для фамилии (AD34) и подписи под ней
   // (N35, AD35). Строка выше — «Водительское удостоверение проверил, задание выдал, выдать
   // горючего ___ литр» — остаётся: её заполняют от руки, как одометр и остатки топлива.
@@ -167,12 +190,14 @@ const FORM_LEG3: Blank = {
     // не размечается: «коммерческая» впечатана в бланк типографией.
     Q31: '{{communication_kind}}',
     /*
-     * Оборотная сторона: задание рейса построчно. Таблица держит десять строк, размечены первые
-     * четыре — столько заявок держит маршрут (`MAX_ROUTE_REQUESTS`, по числу талонов 4-П).
-     * Остальные печатаются пустыми, как и прочие графы, которые заполняют от руки.
+     * Оборотная сторона: задание рейса построчно. Таблица разграфлена и пронумерована самим
+     * бланком на десять строк, и размечены все десять — столько заявок держит маршрут легкового
+     * (`ROUTE_REQUEST_CAPACITY.leg3`, ADR 0068). Ни талонов, ни доп. задания в этой форме нет:
+     * все строки равноправны и заполняются одними и теми же графами.
      *
      * Каждая строка задания — это две строки листа (объединения вида H61:AA62), поэтому шаг по
-     * таблице через одну: 61, 63, 65, 67. Адреса — левые верхние углы объединений.
+     * таблице через одну: 61, 63, 65, 67, 69, 71, 73, 75, 77, 79. Адреса — левые верхние углы
+     * объединений.
      */
     H61: '{{task_from}}',
     AB61: '{{task_to}}',
@@ -193,6 +218,30 @@ const FORM_LEG3: Blank = {
     AB67: '{{task4_to}}',
     BG67: '{{task4_cargo}}',
     BY67: '{{task4_customer}}',
+    H69: '{{task5_from}}',
+    AB69: '{{task5_to}}',
+    BG69: '{{task5_cargo}}',
+    BY69: '{{task5_customer}}',
+    H71: '{{task6_from}}',
+    AB71: '{{task6_to}}',
+    BG71: '{{task6_cargo}}',
+    BY71: '{{task6_customer}}',
+    H73: '{{task7_from}}',
+    AB73: '{{task7_to}}',
+    BG73: '{{task7_cargo}}',
+    BY73: '{{task7_customer}}',
+    H75: '{{task8_from}}',
+    AB75: '{{task8_to}}',
+    BG75: '{{task8_cargo}}',
+    BY75: '{{task8_customer}}',
+    H77: '{{task9_from}}',
+    AB77: '{{task9_to}}',
+    BG77: '{{task9_cargo}}',
+    BY77: '{{task9_customer}}',
+    H79: '{{task10_from}}',
+    AB79: '{{task10_to}}',
+    BG79: '{{task10_cargo}}',
+    BY79: '{{task10_customer}}',
   },
   // Графа диспетчера — та же, что в 4-П: подпись, линия для фамилии и подписи под ней.
   clear: ['A39', 'AA39', 'Q40', 'AA40'],
@@ -413,41 +462,84 @@ function moveCell(sheet: string, from: string, to: string): string {
   return putCell(clearCell(sheet, from), to, moved);
 }
 
+/** Правка выравнивания графы: чем правится стиль и как называется в сообщении об ошибке. */
+interface Restyle {
+  /** Флаги выравнивания, которые получает копия стиля. */
+  flags: Record<string, string>;
+  /** Что делаем с графой: «ужимать», «переносить» — идёт в текст ошибки. */
+  what: string;
+}
+
+/** Текст ужимается по ширине графы: кегль подбирается под длину значения. */
+const SHRINK: Restyle = { flags: { shrinkToFit: 'true' }, what: 'ужимать' };
+
 /**
- * Ужимает текст графы по её ширине (`shrinkToFit`): кегль подбирается под длину значения.
- *
- * Ставится там, где длину выбирает не бланк, а справочник. Готового стиля с этим флагом в книге
- * нет, а править чужой нельзя — один стиль в бланке носят десятки ячеек, и ужиматься начали бы
- * все. Поэтому в конец таблицы стилей дописывается копия нужного, и ячейка переводится на неё.
- *
- * `applyAlignment` включается вместе с флагом: без него Excel читает выравнивание не из стиля
- * ячейки, а из именованного, и ужатие тихо пропадает.
+ * Текст переносится по словам и прижимается к верху графы. Верх, а не середина: перенесённая
+ * вторая строка обязана лечь ниже первой, а не раздвинуть её от середины за границы строки листа.
  */
-function shrinkCell(
+const WRAP: Restyle = { flags: { wrapText: 'true', vertical: 'top' }, what: 'переносить' };
+
+/** Стоят ли флаги правки в записи стиля — тогда копию заводить незачем. */
+function alreadyRestyled(xf: string, flags: Record<string, string>): boolean {
+  return Object.entries(flags).every(([name, value]) =>
+    new RegExp(`${name}="${value === 'true' ? '(1|true)' : value}"`).test(xf),
+  );
+}
+
+/**
+ * Флаги выравнивания в записи стиля. Правится сам `<alignment>`, а не запись целиком: в `<xf>`
+ * лежат ещё шрифт, рамка и числовой формат графы.
+ *
+ * `applyAlignment` включается вместе с флагами: без него Excel читает выравнивание не из стиля
+ * ячейки, а из именованного, и правка тихо пропадает.
+ */
+function withAlignment(xf: string, flags: Record<string, string>): string {
+  const applied = /applyAlignment="/.test(xf)
+    ? xf.replace(/applyAlignment="[^"]*"/, 'applyAlignment="true"')
+    : xf.replace('<xf ', '<xf applyAlignment="true" ');
+
+  return Object.entries(flags).reduce(
+    (patched, [name, value]) =>
+      new RegExp(`\\s${name}="`).test(patched)
+        ? patched.replace(new RegExp(`${name}="[^"]*"`), `${name}="${value}"`)
+        : patched.replace('<alignment ', `<alignment ${name}="${value}" `),
+    applied,
+  );
+}
+
+/**
+ * Переводит графу на копию её стиля с поправленным выравниванием.
+ *
+ * Нужно там, где длину значения выбирает не бланк: наименование приходит из справочника, задание
+ * рейса — из заявки. Готового стиля с нужными флагами в книге нет, а править чужой нельзя — один
+ * стиль в бланке носят десятки ячеек, и ужиматься (или переноситься) начали бы все. Поэтому в
+ * конец таблицы стилей дописывается копия нужного, и ячейка переводится на неё.
+ *
+ * Печатает бланк LibreOffice: по этим флагам он подбирает кегль под ширину графы и переносит
+ * длинную строку. Без них лишнее молча обрезается по границе объединения — на экране бланк
+ * выглядит верным, на бумаге нет.
+ */
+function restyleCell(
   sheet: string,
   styles: string,
   address: string,
+  how: Restyle,
 ): { sheet: string; styles: string } {
   const found = cellRe(address).exec(sheet);
-  if (!found) throw new Error(`Ячейки ${address} в листе нет — ужимать нечего`);
+  if (!found) throw new Error(`Ячейки ${address} в листе нет — ${how.what} нечего`);
 
   const table = /<cellXfs count="(\d+)">([\s\S]*?)<\/cellXfs>/.exec(styles);
-  if (!table) throw new Error('В книге нет таблицы стилей ячеек — ужимать графу нечем');
+  if (!table) throw new Error(`В книге нет таблицы стилей ячеек — ${how.what} графу нечем`);
   const xfs = table[2]!.match(/<xf [^>]*?(?:\/>|>[\s\S]*?<\/xf>)/g) ?? [];
 
   const current = Number(/\ss="(\d+)"/.exec(found[1] ?? '')?.[1] ?? 0);
   const base = xfs[current];
   if (!base) throw new Error(`Стиля ${current} ячейки ${address} в книге нет`);
-  if (/shrinkToFit="(1|true)"/.test(base)) return { sheet, styles };
+  if (alreadyRestyled(base, how.flags)) return { sheet, styles };
 
-  const aligned = /applyAlignment="/.test(base)
-    ? base.replace(/applyAlignment="[^"]*"/, 'applyAlignment="true"')
-    : base.replace('<xf ', '<xf applyAlignment="true" ');
-  const shrunk = /shrinkToFit="/.test(aligned)
-    ? aligned.replace(/shrinkToFit="[^"]*"/, 'shrinkToFit="true"')
-    : aligned.replace('<alignment ', '<alignment shrinkToFit="true" ');
-  if (!/shrinkToFit="true"/.test(shrunk)) {
-    throw new Error(`У стиля ${current} нет выравнивания — флаг ужатия вписать некуда`);
+  const patched = withAlignment(base, how.flags);
+  if (!alreadyRestyled(patched, how.flags)) {
+    throw new Error(`У стиля ${current} нет выравнивания — флаги графы ${address} вписать некуда`);
   }
 
   // Остальные атрибуты ячейки остаются как были: в них тип значения, и потеряв его, лист
@@ -466,7 +558,7 @@ function shrinkCell(
     ),
     styles: styles.replace(
       table[0],
-      `<cellXfs count="${xfs.length + 1}">${table[2]}${shrunk}</cellXfs>`,
+      `<cellXfs count="${xfs.length + 1}">${table[2]}${patched}</cellXfs>`,
     ),
   };
 }
@@ -592,7 +684,9 @@ function mark(blank: Blank): void {
   }
   for (const address of blank.clear ?? []) sheet = clearCell(sheet, address);
   for (const address of blank.shrink ?? [])
-    ({ sheet, styles } = shrinkCell(sheet, styles, address));
+    ({ sheet, styles } = restyleCell(sheet, styles, address, SHRINK));
+  for (const address of blank.wrap ?? [])
+    ({ sheet, styles } = restyleCell(sheet, styles, address, WRAP));
   sheet = setPageSetup(sheet, blank.orientation);
 
   files[sheetPath] = new TextEncoder().encode(sheet);
@@ -602,7 +696,10 @@ function mark(blank: Blank): void {
   writeFileSync(join(templatesDir, blank.out), zipSync(files, { mtime: Date.UTC(1980, 0, 1) }));
   const cleared = blank.clear?.length ? `, стёрто ${blank.clear.length}` : '';
   const shrunk = blank.shrink?.length ? `, ужато ${blank.shrink.length}` : '';
-  console.log(`${blank.out}: размечено граф ${Object.keys(blank.cells).length}${cleared}${shrunk}`);
+  const wrapped = blank.wrap?.length ? `, с переносом ${blank.wrap.length}` : '';
+  console.log(
+    `${blank.out}: размечено граф ${Object.keys(blank.cells).length}${cleared}${shrunk}${wrapped}`,
+  );
 }
 
 for (const blank of [FORM_4P, FORM_LEG3, FORM_ESM2]) mark(blank);

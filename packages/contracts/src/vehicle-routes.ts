@@ -21,8 +21,46 @@ import { RENTAL_WAYBILL_REASON } from './waybills';
 // только другого назначения: одна единица техники, одна заявка-основание и две строки «откуда —
 // куда» вместо состава из заявок.
 
-/** Талонов заказчиков в бланке 4-П — столько же заявок держит маршрут. */
-export const MAX_ROUTE_REQUESTS = 4;
+/**
+ * Заявок в маршруте — столько, сколько строк задания держит его бланк (ADR 0068).
+ *
+ * Число выбирает не портал, а бумага, и у бланков она разная:
+ *
+ * - `4p` — четыре строки таблицы «Задание водителю», каждая со своим талоном заказчика, плюс три
+ *   нижние строки блока «Дополнительное задание водителю», куда рейсы 5–7 печатаются одной
+ *   строкой «откуда — куда, груз, контакты». Талона у них нет (`WAYBILL_COUPONS`);
+ * - `leg3` — таблица на обороте формы № 3 разграфлена на десять строк и пронумерована самим
+ *   бланком; ни талонов, ни доп. задания в ней нет, и все десять равноправны;
+ * - `esm2` — лист на неделю работы машины на площадке: рейса у него нет вовсе, он выписывается на
+ *   одну заявку (ADR 0060). Единица здесь значит «маршрутом такой лист не собирают».
+ */
+export const ROUTE_REQUEST_CAPACITY: Record<WaybillFormCode, number> = {
+  '4p': 7,
+  leg3: 10,
+  esm2: 1,
+};
+
+/**
+ * Сколько заявок держит маршрут с этим бланком. `null` — бланк не выписывается (арендная машина):
+ * ёмкость берётся наибольшая, потому что запрещает такой рейс не она, а `assertRouteVehicle`, и
+ * отвечать «мест нет» там, где дело не в местах, значило бы объяснять человеку не ту причину.
+ */
+export function routeRequestCapacity(formCode: WaybillFormCode | null): number {
+  return formCode ? ROUTE_REQUEST_CAPACITY[formCode] : MAX_ROUTE_REQUESTS;
+}
+
+/**
+ * Потолок по всем бланкам: им ограничены схема перестановки и CHECK позиции в базе. Сколько
+ * заявок влезет в конкретный маршрут, решает его бланк — `routeRequestCapacity`.
+ */
+export const MAX_ROUTE_REQUESTS = Math.max(...Object.values(ROUTE_REQUEST_CAPACITY));
+
+/**
+ * Талонов заказчиков в бланке 4-П. Талон отрывной: заказчик расписывается в нём за выполненный
+ * рейс. Заявки сверх четвёртой едут по строке доп. задания и подписи заказчика не собирают —
+ * диспетчер, собирая маршрут, обязан это видеть. У формы № 3 талонов нет вовсе.
+ */
+export const WAYBILL_COUPONS = 4;
 
 // ── Назначение рейса ──
 
@@ -297,10 +335,17 @@ export function canJoinRoute(
     /** Принадлежность назначенной машины; `null` — машина ещё не назначена. */
     ownership: VehicleOwnership | null;
   },
-  route: { routeDate: string; requestCount: number; purpose: RoutePurpose },
+  route: {
+    routeDate: string;
+    requestCount: number;
+    purpose: RoutePurpose;
+    /** Бланк рейса: им задана вместимость — у 4-П семь строк задания, у формы № 3 десять. */
+    formCode: WaybillFormCode | null;
+  },
 ): RouteJoinCheck {
   // Перегон везёт одну единицу техники по одной заявке-основанию, и состава у него нет вовсе:
-  // талоны заказчиков — про грузоперевозку, где машина за смену объезжает четверых.
+  // задание из нескольких строк — про грузоперевозку, где машина за смену объезжает несколько
+  // площадок.
   if (isRelocationPurpose(route.purpose)) {
     return {
       ok: false,
@@ -335,10 +380,11 @@ export function canJoinRoute(
       reason: `Заявка подаётся ${request.tripDate}, а маршрут заведён на ${route.routeDate}`,
     };
   }
-  if (route.requestCount >= MAX_ROUTE_REQUESTS) {
+  const capacity = routeRequestCapacity(route.formCode);
+  if (route.requestCount >= capacity) {
     return {
       ok: false,
-      reason: `В листе ${MAX_ROUTE_REQUESTS} талона заказчиков — заведите второй маршрут`,
+      reason: `В листе ${capacity} строк задания — заведите второй маршрут`,
     };
   }
   return { ok: true };
@@ -372,6 +418,12 @@ export type IssueWaybillCheck =
 export function canIssueWaybill(route: {
   purpose: RoutePurpose;
   driverPersonId: string | null;
+  /**
+   * Бланк рейса: он задаёт, сколько строк задания напечатается. Состав собирался под него
+   * (`canJoinRoute`), но бланк типа машины правится справочником (ADR 0065) — и рейс, собранный
+   * на десять строк формы № 3, мог остаться с семью строками 4-П.
+   */
+  formCode: WaybillFormCode | null;
   requests: readonly { displayNumber: string; status: RequestStatus }[];
   /** Заявка-основание перегона: у грузового рейса её нет, у перегона она вместо состава. */
   sourceRequest: { displayNumber: string; status: RequestStatus } | null;
@@ -421,6 +473,19 @@ export function canIssueWaybill(route: {
       ok: false,
       reason: 'В маршруте есть заявки не в работе — уберите их из рейса или заведите новый маршрут',
       blocking: blocking.map((r) => r.displayNumber),
+    };
+  }
+  /*
+   * Состав не влезает в бланк. Собрать такой рейс портал не даёт, но бланк типа машины меняют
+   * справочником уже после сборки (ADR 0065) — и лишние заявки напечатались бы пустым местом:
+   * бумага у водителя, а часть работы дня в ней не названа. Лучше отказать до расхода номера.
+   */
+  const capacity = routeRequestCapacity(route.formCode);
+  if (route.requests.length > capacity) {
+    return {
+      ok: false,
+      reason: `В бланке ${capacity} строк задания, а в маршруте заявок ${route.requests.length} — уберите лишние или заведите второй маршрут`,
+      blocking: route.requests.slice(capacity).map((r) => r.displayNumber),
     };
   }
   return { ok: true };
@@ -477,6 +542,37 @@ export function routeContactsLabel(contacts: readonly { name: string; phone: str
     )
     .filter((line) => line !== '')
     .join('\n');
+}
+
+/**
+ * Задание рейсов 5–7 одной строкой — так, как их печатает блок «Дополнительное задание водителю»
+ * бланка 4-П (ADR 0068).
+ *
+ * Графы там нет ни одной: три нижние строки блока — это три объединённые ячейки во всю ширину, и
+ * «откуда», «куда», груз и контакты приходится складывать в строку самим. Порядок тот же, что у
+ * граф таблицы выше, — водитель читает обе части бланка подряд, и менять местами их нельзя.
+ *
+ * Номер рейса в строку не идёт: в четырёх строках таблицы его тоже не печатают, а рядом с адресом
+ * он читался бы как номер дома. Собирается строка на сервере, а не склейкой плейсхолдеров в
+ * ячейке: у пустого рейса из бланка вышли бы осиротевшие стрелка и запятые.
+ *
+ * Контакты приходят готовой подписью `routeContactsLabel` — двумя строками, погрузка и разгрузка.
+ * Здесь они сводятся в одну через «; »: строк у ячейки две, и перенос внутри контактов вытеснил бы
+ * с бумаги вторую половину задания.
+ */
+export function routeExtraTaskLine(task: {
+  from: string;
+  to: string;
+  cargo: string;
+  contacts: string;
+}): string {
+  const route = [task.from.trim(), task.to.trim()].filter((part) => part !== '').join(' → ');
+  const contacts = task.contacts
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line !== '')
+    .join('; ');
+  return [route, task.cargo.trim(), contacts].filter((part) => part !== '').join(', ');
 }
 
 // ── Схемы ──

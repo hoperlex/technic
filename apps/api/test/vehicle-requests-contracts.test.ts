@@ -992,12 +992,66 @@ describe('vehicle-requests: адрес (DaData, ADR 0006 — жёсткая мо
     expect(() => addressMetaSchema.parse({ source: 'bogus' })).toThrow();
   });
 
-  it('isAddressVerified: resolved+fiasId и object — верифицированы; manual и null — нет', () => {
+  it('isAddressVerified: resolved+fiasId и справочник — верифицированы; manual и null — нет', () => {
     expect(isAddressVerified(resolvedMeta)).toBe(true);
     expect(isAddressVerified({ source: 'object' })).toBe(true);
+    expect(isAddressVerified({ source: 'warehouse' })).toBe(true);
     expect(isAddressVerified({ source: 'resolved', fiasId: null })).toBe(false);
     expect(isAddressVerified({ source: 'manual' })).toBe(false);
     expect(isAddressVerified(null)).toBe(false);
+  });
+
+  // Адрес из справочника (ADR 0068): ФИАС у него нет, и «верифицирован» держится на ссылке
+  // на запись — без неё утверждение нечем ни проверить, ни восстановить при правке заявки.
+  it('freight принимает адрес из справочника объектов и складов — со ссылкой на запись', () => {
+    const refId = '11111111-2222-4333-8444-555555555555';
+    for (const source of ['object', 'warehouse'] as const) {
+      const v = createVehicleRequestSchema.parse({
+        ...freight,
+        loadingAddress: { source, refId },
+        unloadingAddress: { source, refId },
+      });
+      if (v.requestType !== 'freight_transport') throw new Error('unreachable');
+      expect(v.loadingAddress?.source).toBe(source);
+      expect(v.loadingAddress?.refId).toBe(refId);
+    }
+  });
+
+  it('freight отклоняет справочный адрес без ссылки на запись', () => {
+    expect(() =>
+      createVehicleRequestSchema.parse({ ...freight, loadingAddress: { source: 'object' } }),
+    ).toThrow();
+    expect(() =>
+      createVehicleRequestSchema.parse({
+        ...freight,
+        loadingAddress: { source: 'warehouse', refId: null },
+      }),
+    ).toThrow();
+  });
+
+  it('freight отклоняет ссылку на запись у адреса из подсказок', () => {
+    expect(() =>
+      createVehicleRequestSchema.parse({
+        ...freight,
+        loadingAddress: { ...resolvedMeta, refId: '11111111-2222-4333-8444-555555555555' },
+      }),
+    ).toThrow();
+  });
+
+  // ФИАС у справочного источника разрешён впрок: когда записи справочника получат свои
+  // метаданные, он будет наследоваться от выбранной записи (целевая модель адреса).
+  it('freight принимает справочный адрес с ФИАС — на будущее наследование от записи', () => {
+    const v = createVehicleRequestSchema.parse({
+      ...freight,
+      loadingAddress: {
+        source: 'object',
+        refId: '11111111-2222-4333-8444-555555555555',
+        fiasId: 'fias-1',
+        fiasLevel: 8,
+      },
+    });
+    if (v.requestType !== 'freight_transport') throw new Error('unreachable');
+    expect(v.loadingAddress?.fiasId).toBe('fias-1');
   });
 });
 

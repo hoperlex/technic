@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { App, DatePicker, Form, Input, Typography } from 'antd';
+import { App, DatePicker, Form, Typography } from 'antd';
 import type { Dayjs } from 'dayjs';
 import dayjs from 'dayjs';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -13,6 +13,8 @@ import { AutoSelect } from '@shared/ui';
 import { FormGrid } from '@shared/ui';
 import { FormModal } from '@shared/ui';
 import { useIsMobile } from '@shared/lib';
+import { useObjectScope } from '../../hooks/useObjectScope';
+import { AddressField } from '@features/address-input';
 import { errorMessage } from '../../utils/format';
 
 /**
@@ -54,6 +56,10 @@ export function VehicleRelocationModal({ request, purpose, onClose, onDone }: Pr
     request?.requestType === 'special_equipment'
       ? request.objectAddress || request.objectName || ''
       : '';
+
+  /** Первыми в списке мест — площадка заявки и площадки учётки (ADR 0069). */
+  const { ownObjectIds } = useObjectScope();
+  const suggestObjectIds = [request?.objectId, ...ownObjectIds].filter((id): id is string => !!id);
 
   /*
    * Подставляется то, что и так известно: доставку везут к началу работ на площадку, вывоз —
@@ -162,20 +168,26 @@ export function VehicleRelocationModal({ request, purpose, onClose, onDone }: Pr
             />
           </Form.Item>
 
-          <Form.Item
+          {/* Адрес перегона (ADR 0069): подсказки DaData либо выбор площадки из справочника.
+            Верификации не требуется — база, стоянка и ремонтный бокс адресами не описываются. */}
+          <AddressField
             name="moveFrom"
             label="Откуда"
-            rules={[{ required: true, message: 'Укажите, откуда идёт техника' }]}
-          >
-            <Input placeholder="База, ул. Автомобильная, 3" />
-          </Form.Item>
-          <Form.Item
+            required
+            requiredMessage="Укажите, откуда идёт техника"
+            directory
+            suggestObjectIds={suggestObjectIds}
+            placeholder="База, ул. Автомобильная, 3"
+          />
+          <AddressField
             name="moveTo"
             label="Куда"
-            rules={[{ required: true, message: 'Укажите, куда идёт техника' }]}
-          >
-            <Input placeholder="Объект, адрес площадки" />
-          </Form.Item>
+            required
+            requiredMessage="Укажите, куда идёт техника"
+            directory
+            suggestObjectIds={suggestObjectIds}
+            placeholder="Объект, адрес площадки"
+          />
         </FormGrid>
       </Form>
     </FormModal>

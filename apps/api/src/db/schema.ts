@@ -2373,9 +2373,9 @@ export const waybills = pgTable(
   }),
 );
 
-// Талоны заказчиков: заявки, которые машина выполняет по этому листу. Форма 4-П держит до
-// четырёх, и вторая заявка на ту же машину в тот же день дописывается талоном, а не поднимает
-// второй лист.
+// Задание листа: заявки, которые машина выполняет по этому бланку. Строк задания в 4-П семь —
+// четыре талона заказчиков и три строки доп. задания, — а в форме № 3 десять (ADR 0068); вторая
+// заявка на ту же машину в тот же день дописывается строкой задания, а не поднимает второй лист.
 export const waybillRequests = pgTable(
   'waybill_requests',
   {
@@ -2390,7 +2390,7 @@ export const waybillRequests = pgTable(
   },
   (t) => ({
     pk: primaryKey({ columns: [t.waybillId, t.requestId] }),
-    slotCheck: check('waybill_requests_slot_check', sql`${t.slot} BETWEEN 1 AND 4`),
+    slotCheck: check('waybill_requests_slot_check', sql`${t.slot} BETWEEN 1 AND 10`),
     slotUnique: uniqueIndex('waybill_requests_slot_unique').on(t.waybillId, t.slot),
     // Заявка в одном листе, но UNIQUE здесь нельзя: аннулированный лист сохраняет свою строку, а
     // заявку после него выписывают заново. Условие «лист не аннулирован» — в соседней таблице,
@@ -2400,7 +2400,7 @@ export const waybillRequests = pgTable(
 );
 
 // Вложения к бланку (миграция 0087): скан заполненного заказчиком оборота ЭСМ-2, отметки 4-П,
-// акт. Крепятся к листу, а не к заявке: заявок у листа бывает четыре, а неделя работ распадается
+// акт. Крепятся к листу, а не к заявке: заявок у листа бывает до десяти, а неделя работ распадается
 // на несколько листов — «чей это скан» отвечает только номер бланка.
 export const waybillFiles = pgTable(
   'waybill_files',
@@ -2524,7 +2524,7 @@ export const vehicleRoutes = pgTable(
   }),
 );
 
-// Состав рейса: заявки в порядке талонов бланка. Позиция и есть slot будущего листа.
+// Состав рейса: заявки в порядке строк задания бланка. Позиция и есть slot будущего листа.
 export const vehicleRouteRequests = pgTable(
   'vehicle_route_requests',
   {
@@ -2539,9 +2539,12 @@ export const vehicleRouteRequests = pgTable(
   },
   (t) => ({
     pk: primaryKey({ columns: [t.routeId, t.requestId] }),
+    // Потолок по бланкам (ADR 0068, миграция 0096): у 4-П семь строк задания, у формы № 3 —
+    // десять. Сколько влезет в конкретный маршрут, решает его бланк, и держит это сервер
+    // (`ROUTE_REQUEST_CAPACITY`): в этой таблице бланка нет, он у типа машины рейса.
     positionCheck: check(
       'vehicle_route_requests_position_check',
-      sql`${t.position} BETWEEN 1 AND 4`,
+      sql`${t.position} BETWEEN 1 AND 10`,
     ),
     // Заявка ровно в одном рейсе: «в работе и без маршрута» — законное состояние, «в двух сразу»
     // — нет.

@@ -7,10 +7,11 @@ import {
   canJoinRoute,
   formatVehicleRouteNumber,
   isRouteEditable,
-  MAX_ROUTE_REQUESTS,
+  ROUTE_REQUEST_CAPACITY,
   parseVehicleRouteNumberSearch,
   routeCargoLabel,
   routeContactsLabel,
+  routeExtraTaskLine,
   routeWaybillForm,
   routeOrderSchema,
   routeTripFieldsSchema,
@@ -36,7 +37,12 @@ const goodRequest = {
   ownership: 'own' as const,
 };
 
-const emptyRoute = { routeDate: '2026-08-03', requestCount: 0, purpose: 'freight' as const };
+const emptyRoute = {
+  routeDate: '2026-08-03',
+  requestCount: 0,
+  purpose: 'freight' as const,
+  formCode: '4p' as const,
+};
 
 describe('номер маршрута', () => {
   it('читается так же, как его называют в разговоре', () => {
@@ -99,18 +105,34 @@ describe('какая заявка годится для рейса', () => {
     expect(check.ok === false && check.reason).toContain('2026-08-04');
   });
 
-  it('пятая заявка не добавляется — в бланке четыре талона', () => {
-    const full = {
-      routeDate: '2026-08-03',
-      requestCount: MAX_ROUTE_REQUESTS,
-      purpose: 'freight' as const,
-    };
+  /*
+   * Вместимость задаёт бумага, и у бланков она разная (ADR 0068): 4-П держит семь строк задания
+   * (четыре талона и три строки доп. задания), а таблица оборота формы № 3 разграфлена на десять.
+   * Одним числом на портал это не выразить — отсюда и `ROUTE_REQUEST_CAPACITY`.
+   */
+  it('восьмая заявка не встаёт в 4-П: в нём семь строк задания', () => {
+    const full = { ...emptyRoute, requestCount: ROUTE_REQUEST_CAPACITY['4p'] };
     const check = canJoinRoute(goodRequest, full);
     expect(check.ok).toBe(false);
+    expect(check.ok === false && check.reason).toContain('7 строк задания');
     expect(check.ok === false && check.reason).toContain('второй маршрут');
-    expect(canJoinRoute(goodRequest, { ...full, requestCount: MAX_ROUTE_REQUESTS - 1 })).toEqual({
-      ok: true,
+    expect(
+      canJoinRoute(goodRequest, { ...full, requestCount: ROUTE_REQUEST_CAPACITY['4p'] - 1 }),
+    ).toEqual({ ok: true });
+  });
+
+  it('легковой держит десять: столько строк в таблице формы № 3', () => {
+    const leg3 = { ...emptyRoute, formCode: 'leg3' as const };
+    // Восьмая заявка, отбитая у 4-П, здесь проходит: бланк другой, и строк в нём больше.
+    expect(
+      canJoinRoute(goodRequest, { ...leg3, requestCount: ROUTE_REQUEST_CAPACITY['4p'] }),
+    ).toEqual({ ok: true });
+    const check = canJoinRoute(goodRequest, {
+      ...leg3,
+      requestCount: ROUTE_REQUEST_CAPACITY.leg3,
     });
+    expect(check.ok).toBe(false);
+    expect(check.ok === false && check.reason).toContain('10 строк задания');
   });
 });
 
@@ -135,6 +157,7 @@ describe('готовность рейса к выписке листа', () => {
   const ready = {
     purpose: 'freight' as const,
     driverPersonId: UUID_A,
+    formCode: '4p' as const,
     requests: [{ displayNumber: 'ТС-501', status: 'confirmed' as const }],
     sourceRequest: null,
     waybillStatus: null,
@@ -171,6 +194,24 @@ describe('готовность рейса к выписке листа', () => {
     expect(check.ok === false && check.blocking).toEqual(['ТС-502']);
   });
 
+  /*
+   * Собрать рейс шире бланка портал не даёт (`canJoinRoute`), но бланк типа машины правится
+   * справочником уже после сборки (ADR 0065): десять заявок легкового могли остаться с семью
+   * строками 4-П. Печатать такой лист нельзя — часть работы дня в бумаге не назовётся.
+   */
+  it('состав шире бланка выписку останавливает и называет лишние заявки', () => {
+    const requests = Array.from({ length: ROUTE_REQUEST_CAPACITY.leg3 }, (_, i) => ({
+      displayNumber: `ТС-${500 + i}`,
+      status: 'confirmed' as const,
+    }));
+    expect(canIssueWaybill({ ...ready, formCode: 'leg3', requests })).toEqual({ ok: true });
+
+    const check = canIssueWaybill({ ...ready, formCode: '4p', requests });
+    expect(check.ok).toBe(false);
+    expect(check.ok === false && check.reason).toContain('7 строк задания');
+    expect(check.ok === false && check.blocking).toEqual(['ТС-507', 'ТС-508', 'ТС-509']);
+  });
+
   it('закрытая заявка — тоже история рейса, а не задание на новый', () => {
     const check = canIssueWaybill({
       ...ready,
@@ -188,6 +229,7 @@ describe('готовность рейса к выписке листа', () => {
     const relocation = {
       purpose: 'delivery' as const,
       driverPersonId: UUID_A,
+      formCode: '4p' as const,
       requests: [],
       sourceRequest: { displayNumber: 'ТС-700', status: 'confirmed' as const },
       waybillStatus: null,
@@ -323,6 +365,57 @@ describe('контакты в графе задания', () => {
 
   it('телефон без имени печатается один: дозвониться по нему можно', () => {
     expect(routeContactsLabel([{ name: '', phone: '9147654321' }])).toBe('+7 (914) 765 43 21');
+  });
+});
+
+/**
+ * Задание рейсов 5–7 (ADR 0068): в бланке 4-П им отведены три нижние строки блока
+ * «Дополнительное задание водителю» — по одной объединённой ячейке без граф внутри.
+ */
+describe('строка доп. задания', () => {
+  const contacts = routeContactsLabel([
+    { name: 'Иванов Иван Иванович', phone: '9141234567' },
+    { name: 'Петров Пётр Петрович', phone: '9147654321' },
+  ]);
+
+  it('складывается порядком граф таблицы выше: откуда, куда, груз, контакты', () => {
+    expect(
+      routeExtraTaskLine({
+        from: 'Зимняя, 666',
+        to: 'Лётная, 555',
+        cargo: '10 м³',
+        contacts,
+      }),
+    ).toBe(
+      'Зимняя, 666 → Лётная, 555, 10 м³, Иванов И.И., +7 (914) 123 45 67; Петров П.П., +7 (914) 765 43 21',
+    );
+  });
+
+  /*
+   * Контакты приходят двумя строками — так их печатает графа «заказчик, телефон» четырёх верхних
+   * строк. Здесь строка одна на всё задание и высотой в две: перенос внутри контактов вытеснил бы
+   * с бумаги вторую половину задания.
+   */
+  it('контакты сводятся в одну строку: переносов внутри задания быть не должно', () => {
+    expect(routeExtraTaskLine({ from: 'А', to: 'Б', cargo: '', contacts })).not.toContain('\n');
+  });
+
+  it('пустой рейс даёт пустую строку — ни стрелки, ни запятых', () => {
+    expect(routeExtraTaskLine({ from: '', to: '', cargo: '', contacts: '' })).toBe('');
+  });
+
+  /*
+   * Заявка без части граф — обычное дело: груз не всегда заведён, контакта у заявок старше
+   * миграции 0062 нет вовсе. Разделители пропадают вместе со значением, иначе строка приезжает на
+   * бумагу с осиротевшими запятыми.
+   */
+  it('пропущенная графа не оставляет разделителя', () => {
+    expect(routeExtraTaskLine({ from: 'Зимняя, 666', to: '', cargo: '', contacts: '' })).toBe(
+      'Зимняя, 666',
+    );
+    expect(
+      routeExtraTaskLine({ from: 'Зимняя, 666', to: 'Лётная, 555', cargo: '', contacts: '' }),
+    ).toBe('Зимняя, 666 → Лётная, 555');
   });
 });
 

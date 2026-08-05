@@ -245,8 +245,63 @@ describe('разметка бланков', () => {
       'task2_contacts',
       'task3_contacts',
       'task4_contacts',
+      // Рейсы 5–7 — строкой в блоке доп. задания: граф там нет, и задание собрано целиком
+      // (ADR 0068).
+      'task5_line',
+      'task6_line',
+      'task7_line',
     ]) {
       expect(inTemplate.has(key), key).toBe(true);
+    }
+  });
+
+  /**
+   * Задание рейсов 5–7 стоит там, где бланк оставил пустое место, — в трёх нижних строках блока
+   * «Дополнительное задание водителю». Проверяется именно оно: адрес, съехавший на строку выше,
+   * затёр бы графу «Расход горючего», а съехавший ниже — примечание, и оба раза лист вышел бы из
+   * принтера правдоподобным.
+   *
+   * Верхние строки блока остаются пустыми намеренно: они узкие (справа «Расход горючего») и
+   * заполняются от руки — ради того блок в бланке и заведён.
+   */
+  it('доп. задание 4-П занимает три нижние строки блока, и только их', () => {
+    const files = unzipSync(template('4p'));
+    const sheet = decoder.decode(files['xl/worksheets/sheet1.xml']!);
+
+    const cellOf = (address: string): string =>
+      new RegExp(`<c r="${address}"[^>]*?(?:/>|>([\\s\\S]*?)</c>)`).exec(sheet)?.[1] ?? '';
+
+    expect(cellOf('CG76')).toContain('{{task5_line}}');
+    expect(cellOf('CG77')).toContain('{{task6_line}}');
+    expect(cellOf('CG78')).toContain('{{task7_line}}');
+    for (const free of ['CG72', 'CG73', 'CG75']) {
+      expect(cellOf(free), `${free} — строка диспетчера, портал её не занимает`).not.toContain(
+        '{{',
+      );
+    }
+  });
+
+  /**
+   * Строка доп. задания идёт во всю ширину блока и в одну строку не встаёт: «откуда → куда, груз,
+   * контакты» длиннее её. Держит это `wrapText` — стиль самого бланка его не несёт, и без флага
+   * хвост задания срезался бы по границе объединения: заказчик, груз или телефон исчезали бы с
+   * бумаги молча.
+   */
+  it('строки доп. задания 4-П переносят текст: задание в одну строку не влезает', () => {
+    const files = unzipSync(template('4p'));
+    const sheet = decoder.decode(files['xl/worksheets/sheet1.xml']!);
+    const styles = decoder.decode(files['xl/styles.xml']!);
+    const xfs = /<cellXfs count="\d+">([\s\S]*?)<\/cellXfs>/
+      .exec(styles)![1]!
+      .match(/<xf [^>]*?(?:\/>|>[\s\S]*?<\/xf>)/g)!;
+
+    for (const address of ['CG76', 'CG77', 'CG78']) {
+      const cell = new RegExp(`<c r="${address}"((?:(?!/>|>)[\\s\\S])*)`).exec(sheet)!;
+      const xf = xfs[Number(/\ss="(\d+)"/.exec(cell[1]!)![1])]!;
+      expect(xf, address).toMatch(/wrapText="(1|true)"/);
+      // Верх, а не середина: вторая строка обязана лечь под первой, а не раздвинуть её за
+      // границы строки листа.
+      expect(xf, address).toMatch(/vertical="top"/);
     }
   });
 
@@ -292,11 +347,21 @@ describe('разметка бланков', () => {
       'task_to',
       'task_departure_hh',
       'task_departure_mm',
-      // Талоны рейса: маршрут держит четыре заявки, и печатаются все четыре.
+      // Задание рейса: таблица оборота разграфлена на десять строк, и маршрут легкового держит
+      // столько же заявок (ADR 0068). Талонов и доп. задания в этой форме нет — все строки
+      // заполняются одними и теми же графами.
       'task2_from',
       'task3_from',
       'task4_from',
       'task4_customer',
+      'task5_from',
+      'task6_from',
+      'task7_from',
+      'task8_from',
+      'task9_from',
+      'task10_from',
+      'task10_cargo',
+      'task10_customer',
     ]) {
       expect(inTemplate.has(key), key).toBe(true);
     }

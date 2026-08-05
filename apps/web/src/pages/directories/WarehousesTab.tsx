@@ -5,7 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { type CreateWarehouseInput, formatPhone, type WarehouseDto } from '@technic/contracts';
 import { counterpartiesApi } from '../../api/resources';
 import { PhoneField, PhoneLink } from '../../components/PhoneField';
-import { AddressAutoComplete } from '@entities/address';
+import { AddressField } from '@features/address-input';
 import { AutoSelect } from '@shared/ui';
 import { DataTable, type CardConfig } from '@shared/ui';
 import { FormModal } from '@shared/ui';
@@ -305,13 +305,16 @@ export function WarehousesTab() {
           >
             <AutoSelect options={supplierOptions} showSearch optionFilterProp="label" />
           </Form.Item>
-          <Form.Item
+          {/* Адрес склада — сам источник списка мест в заявках (ADR 0069), поэтому выбирать его
+            из справочника не из чего: поле общее, но без чекбокса. */}
+          <AddressField
             name="address"
             label="Адрес"
-            rules={[{ required: true, message: 'Укажите адрес склада' }]}
-          >
-            <AddressAutoComplete placeholder="Начните вводить адрес" maxLength={500} />
-          </Form.Item>
+            required
+            requiredMessage="Укажите адрес склада"
+            placeholder="Начните вводить адрес"
+            maxLength={500}
+          />
           <Form.Item
             name="name"
             label="Метка"

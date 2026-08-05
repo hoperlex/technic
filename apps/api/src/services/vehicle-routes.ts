@@ -38,7 +38,7 @@ import { err } from '../lib/errors';
 /**
  * Рейс машины на дату (план `docs/vehicle-routes-plan.md`).
  *
- * Здесь всё, что читает и меняет сам рейс: блокировки, состав, позиции талонов и его DTO.
+ * Здесь всё, что читает и меняет сам рейс: блокировки, состав, позиции строк задания и его DTO.
  * Правила «годится ли заявка» и «можно ли выписать лист» живут в контрактах — их зовёт и форма,
  * и сервер.
  */
@@ -235,7 +235,7 @@ async function waybillsByRoute(
  * снова пошла бы в чей-то рейс, и одна работа оказалась бы сразу в двух действующих документах;
  * ровно эту дыру закрывал ADR 0050.
  *
- * Считаются все три способа попасть в бланк: талоном в грузовом рейсе, основанием рейса-перегона
+ * Считаются все три способа попасть в бланк: строкой задания в грузовом рейсе, основанием рейса-перегона
  * (ADR 0057) и листом, выписанным ещё вне маршрутов (`legacyWaybillOf`). Аннулированный лист не
  * держит: испорченный бланк списан, и работа заявки к нему больше не относится.
  *
@@ -309,7 +309,7 @@ export async function legacyWaybillOf(reader: Reader, requestId: string): Promis
 
 // ── Состав рейса ──
 
-/** Заявки рейсов пачкой, в порядке талонов. */
+/** Заявки рейсов пачкой, в порядке строк задания. */
 export async function requestsByRoute(
   reader: Reader,
   routeIds: string[],
@@ -410,7 +410,7 @@ export async function routeOfRequest(
   return row ?? null;
 }
 
-/** Сколько заявок в рейсе — им же считается свободный талон. */
+/** Сколько заявок в рейсе — им же считается свободная строка задания. */
 export async function routeRequestCount(tx: Tx, routeId: string): Promise<number> {
   const [row] = await tx
     .select({ c: sql<number>`count(*)::int` })
@@ -420,7 +420,7 @@ export async function routeRequestCount(tx: Tx, routeId: string): Promise<number
 }
 
 /**
- * Позиции пишутся одним заходом, поэтому уникальность талонов откладывается до конца транзакции:
+ * Позиции пишутся одним заходом, поэтому их уникальность откладывается до конца транзакции:
  * при перестановке две заявки на мгновение делят номер, и построчная проверка упала бы на первой
  * же строке (ограничение объявлено `DEFERRABLE`, миграция 0072).
  */
@@ -428,7 +428,7 @@ async function deferPositions(tx: Tx): Promise<void> {
   await tx.execute(sql`SET CONSTRAINTS vehicle_route_requests_position_unique DEFERRED`);
 }
 
-/** Переписывает порядок талонов целиком — ровно тем составом, который прислали. */
+/** Переписывает порядок строк задания целиком — ровно тем составом, который прислали. */
 export async function setRouteOrder(tx: Tx, routeId: string, requestIds: string[]): Promise<void> {
   await deferPositions(tx);
   for (const [index, requestId] of requestIds.entries()) {

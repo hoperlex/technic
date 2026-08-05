@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   App,
   Button,
@@ -35,7 +35,6 @@ import {
   canShortenWorkPeriodByEdit,
   type CompleteVehicleRequestInput,
   completionLabel,
-  isAddressVerified,
   minRequestDateKey,
   isCargoAmountRequired,
   CARGO_AMOUNT_MESSAGE,
@@ -78,7 +77,8 @@ import { actionsColumn, textColumn } from '@shared/ui';
 import { TimeInput, optionalWorkTimeRule } from '../../components/TimeInput';
 import { UserAvatar } from '../../components/UserAvatar';
 import { ObjectCell } from '../../components/ObjectCell';
-import { AddressAutoComplete } from '@entities/address';
+import { departmentPlatformQuery } from '@entities/department';
+import { AddressField } from '@features/address-input';
 import { useIsMobile } from '@shared/lib';
 import { useListParams } from '@shared/lib';
 import {
@@ -148,6 +148,13 @@ interface FormValues {
   weightTons?: number | null;
   loadingLocation?: string;
   unloadingLocation?: string;
+  /**
+   * Метаданные адреса (ADR 0006, ADR 0069) — скрытыми полями той же формы, а не состоянием
+   * экрана: так `resetFields` и `setFieldsValue` работают над ними наравне со строкой адреса, и
+   * забыть сбросить их отдельно нечем.
+   */
+  loadingAddress?: AddressMeta | null;
+  unloadingAddress?: AddressMeta | null;
   loadingResponsibleName?: string;
   loadingResponsiblePhone?: string;
   unloadingResponsibleName?: string;
@@ -183,6 +190,8 @@ const FREIGHT_FIELDS = [
   'weightTons',
   'loadingLocation',
   'unloadingLocation',
+  'loadingAddress',
+  'unloadingAddress',
   'loadingResponsibleName',
   'loadingResponsiblePhone',
   'unloadingResponsibleName',
@@ -242,7 +251,8 @@ export function VehicleRequestsTab() {
   const isMobile = useIsMobile();
   // Объектные роли — область видимости (свои объекты, заявка до «В работе»); действия — по
   // правам (ADR 0021). Виза — право руководителя строительства (ADR 0025).
-  const { isObjectRole, soleObjectId, objectFieldDisabled, limitObjectOptions } = useObjectScope();
+  const { isObjectRole, soleObjectId, objectFieldDisabled, limitObjectOptions, ownObjectIds } =
+    useObjectScope();
   // Вторая ось заказчика (ADR 0040): отдел вместо объекта — у роли она ровно одна.
   const { isDepartmentRole, soleDepartmentId, departmentFieldDisabled, limitDepartmentOptions } =
     useDepartmentScope();
@@ -331,9 +341,6 @@ export function VehicleRequestsTab() {
   const [viewRecord, setViewRecord] = useState<VehicleRequestDto | null>(null);
   const [form] = Form.useForm<FormValues>();
   const editor = useFileEditor();
-  // Метаданные верификации адресов держим вне формы (значение — объект, не строка).
-  const [loadingMeta, setLoadingMeta] = useState<AddressMeta | null>(null);
-  const [unloadingMeta, setUnloadingMeta] = useState<AddressMeta | null>(null);
 
   /**
    * Какой осью заказчика спрашивает форма (ADR 0040). У новой заявки её задаёт роль — отдел
@@ -345,6 +352,25 @@ export function VehicleRequestsTab() {
    * молча переносило бы заявку с отдела на площадку.
    */
   const departmentCustomer = record ? !!record.departmentId : isDepartmentRole;
+
+  /**
+   * Что предложить первой строкой в списке мест (ADR 0069): площадку заявки, затем площадки
+   * учётки. Заказчика меняют, не закрывая форму, поэтому объект берётся из самой формы, а не из
+   * заявки; у заказчика-отдела своей площадки в форме нет — её даёт карта отделов (ADR 0062).
+   *
+   * Список короткий и без записей без адреса: чего в справочнике мест нет, того и предлагать
+   * нечем — этим занимается сам компонент поля.
+   */
+  const formObjectId = Form.useWatch('objectId', form);
+  const formDepartmentId = Form.useWatch('departmentId', form);
+  const { data: departmentPlatforms } = useQuery(departmentPlatformQuery());
+  const suggestObjectIds = useMemo(() => {
+    const departmentObjectId = formDepartmentId
+      ? departmentPlatforms?.get(formDepartmentId)
+      : undefined;
+    const ids = [formObjectId, departmentObjectId, ...ownObjectIds];
+    return [...new Set(ids.filter((id): id is string => !!id))];
+  }, [formObjectId, formDepartmentId, departmentPlatforms, ownObjectIds]);
 
   /**
    * Списки формы держат то, что выбрано у правимой заявки, даже если из действующего справочника
@@ -438,9 +464,8 @@ export function VehicleRequestsTab() {
       form.resetFields(['classificationKey']);
     }
     if (next === 'special_equipment') {
+      // Метаданные адресов лежат в тех же `FREIGHT_FIELDS` и сбрасываются вместе со строками.
       form.resetFields([...FREIGHT_FIELDS]);
-      setLoadingMeta(null);
-      setUnloadingMeta(null);
       if (!form.getFieldValue('dateFrom')) form.setFieldsValue({ dateFrom: minRequestDate() });
     } else {
       form.resetFields([...SPECIAL_FIELDS]);
@@ -465,8 +490,6 @@ export function VehicleRequestsTab() {
     if (requestTypeOptions.length === 1) {
       form.setFieldsValue({ requestType: requestTypeOptions[0]!.value } as Partial<FormValues>);
     }
-    setLoadingMeta(null);
-    setUnloadingMeta(null);
     editor.reset([]);
     setOpen(true);
   };
@@ -475,8 +498,6 @@ export function VehicleRequestsTab() {
     setRecord(r);
     form.resetFields();
     if (r.requestType === 'special_equipment') {
-      setLoadingMeta(null);
-      setUnloadingMeta(null);
       form.setFieldsValue({
         requestType: r.requestType,
         objectId: r.objectId ?? undefined,
@@ -488,8 +509,6 @@ export function VehicleRequestsTab() {
         comment: r.comment,
       });
     } else {
-      setLoadingMeta(r.loadingAddress);
-      setUnloadingMeta(r.unloadingAddress);
       // Момент с сервера переводится в МСК, а не читается как московское время: `dayjs.tz(iso,
       // tz)` теряет пришедшее смещение и показывал бы подачу на три часа раньше — а правка
       // сохраняла бы этот сдвиг обратно в заявку. Так же читает подачу заявка на вывоз мусора.
@@ -506,6 +525,10 @@ export function VehicleRequestsTab() {
         weightTons: r.weightTons,
         loadingLocation: r.loadingLocation,
         unloadingLocation: r.unloadingLocation,
+        // Метаданные едут вместе со строкой: по ним поле само откроется в том режиме, каким адрес
+        // и заводили, — набором с подсказками или выбором из справочника.
+        loadingAddress: r.loadingAddress,
+        unloadingAddress: r.unloadingAddress,
         loadingResponsibleName: r.loadingResponsibleName,
         loadingResponsiblePhone: r.loadingResponsiblePhone,
         unloadingResponsibleName: r.unloadingResponsibleName,
@@ -579,9 +602,10 @@ export function VehicleRequestsTab() {
         weightTons: v.weightTons ?? null,
         loadingLocation: v.loadingLocation!,
         unloadingLocation: v.unloadingLocation!,
-        // onFinish гарантирует, что оба адреса верифицированы (жёсткая модель, ADR 0006).
-        loadingAddress: loadingMeta!,
-        unloadingAddress: unloadingMeta!,
+        // Верификацию обоих адресов держит правило самого поля (жёсткая модель, ADR 0006):
+        // невалидная форма до отправки не доходит.
+        loadingAddress: v.loadingAddress!,
+        unloadingAddress: v.unloadingAddress!,
         loadingResponsibleName: v.loadingResponsibleName!,
         loadingResponsiblePhone: v.loadingResponsiblePhone!,
         unloadingResponsibleName: v.unloadingResponsibleName!,
@@ -614,20 +638,8 @@ export function VehicleRequestsTab() {
       message.error(CARGO_AMOUNT_MESSAGE);
       return;
     }
-    // Жёсткая модель (ADR 0006): адрес погрузки/разгрузки обязателен и должен быть выбран
-    // из подсказок DaData (верифицирован). Неверифицированный ввод сохранять нельзя.
-    const fields: { name: keyof FormValues; errors: string[] }[] = [];
-    if (!isAddressVerified(loadingMeta)) {
-      fields.push({ name: 'loadingLocation', errors: ['Выберите адрес из подсказок'] });
-    }
-    if (!isAddressVerified(unloadingMeta)) {
-      fields.push({ name: 'unloadingLocation', errors: ['Выберите адрес из подсказок'] });
-    }
-    if (fields.length) {
-      form.setFields(fields);
-      message.error('Адрес погрузки и разгрузки нужно выбрать из подсказок DaData');
-      return;
-    }
+    // Жёсткая модель адресов (ADR 0006) сюда не доходит: её проверяет правило самого поля, и
+    // невыбранный адрес останавливает отправку с ошибкой на своём поле, а не общим сообщением.
     saveMut.mutate(v);
   };
 
@@ -950,7 +962,7 @@ export function VehicleRequestsTab() {
             <div style={{ lineHeight: 1.35 }}>
               <div>{r.route.displayNumber}</div>
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                талон {r.route.position}
+                строка {r.route.position}
                 {r.route.hasWaybill ? ' · лист выписан' : ''}
               </Typography.Text>
             </div>
@@ -1297,7 +1309,7 @@ export function VehicleRequestsTab() {
       // Рейс и та же потерянная заявка, что помечена в таблице колонкой «Маршрут».
       (r) =>
         r.route ? (
-          `Маршрут ${r.route.displayNumber} · талон ${r.route.position}`
+          `Маршрут ${r.route.displayNumber} · строка ${r.route.position}`
         ) : r.status === 'confirmed' &&
           r.requestType === 'freight_transport' &&
           r.assignment?.ownership === 'own' ? (
@@ -1615,16 +1627,17 @@ export function VehicleRequestsTab() {
                 {/* Адреса и контакты — во всю ширину: подсказка DaData приходит одной длинной
                   строкой, и в половине окна выбирать пришлось бы из обрезанных вариантов. */}
                 <FormGrid.Full>
-                  <Form.Item
+                  <AddressField
                     name="loadingLocation"
                     label="Место погрузки"
-                    rules={[{ required: true, message: 'Укажите место погрузки' }]}
-                  >
-                    <AddressAutoComplete
-                      placeholder="Начните вводить адрес"
-                      onMetaChange={setLoadingMeta}
-                    />
-                  </Form.Item>
+                    required
+                    requiredMessage="Укажите место погрузки"
+                    verified
+                    metaField="loadingAddress"
+                    directory
+                    suggestObjectIds={suggestObjectIds}
+                    placeholder="Начните вводить адрес"
+                  />
                   {/* Контакт стоит под своим адресом, а не общим блоком в конце формы: погрузка и
                     разгрузка — два разных места, и водитель ищет того, кто откроет ворота здесь. */}
                   <ResponsibleFields
@@ -1633,16 +1646,17 @@ export function VehicleRequestsTab() {
                     nameLabel="Ответственный за погрузку"
                     phoneLabel="Телефон"
                   />
-                  <Form.Item
+                  <AddressField
                     name="unloadingLocation"
                     label="Место разгрузки"
-                    rules={[{ required: true, message: 'Укажите место разгрузки' }]}
-                  >
-                    <AddressAutoComplete
-                      placeholder="Начните вводить адрес"
-                      onMetaChange={setUnloadingMeta}
-                    />
-                  </Form.Item>
+                    required
+                    requiredMessage="Укажите место разгрузки"
+                    verified
+                    metaField="unloadingAddress"
+                    directory
+                    suggestObjectIds={suggestObjectIds}
+                    placeholder="Начните вводить адрес"
+                  />
                   <ResponsibleFields
                     nameField="unloadingResponsibleName"
                     phoneField="unloadingResponsiblePhone"

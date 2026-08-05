@@ -458,7 +458,7 @@ export function VehicleRequestViewModal({
                 children: (
                   <Space size={8} wrap>
                     <span>
-                      {request.route.displayNumber} · талон {request.route.position}
+                      {request.route.displayNumber} · строка {request.route.position}
                     </span>
                     {request.route.hasWaybill ? (
                       <Typography.Text type="secondary">
@@ -506,7 +506,7 @@ export function VehicleRequestViewModal({
                         </Tag>
                         <Typography.Text type="secondary">
                           {waybill.driverName}
-                          {waybill.periodFrom ? '' : ` · талон ${waybill.slot}`}
+                          {waybill.periodFrom ? '' : ` · строка ${waybill.slot}`}
                         </Typography.Text>
                         <PrintWaybillButton waybillId={waybill.id} number={waybill.number}>
                           Печать

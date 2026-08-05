@@ -218,7 +218,7 @@ export const vehicleRoutesApi = {
       method: 'DELETE',
       query: { version: String(version) },
     }),
-  /** Новый порядок талонов — полным составом рейса. */
+  /** Новый порядок строк задания — полным составом рейса. */
   order: (id: string, body: { requestIds: string[]; version: number }) =>
     apiFetch<VehicleRouteDto>(`/vehicle-routes/${id}/order`, { method: 'PUT', body }),
   issueWaybill: (id: string, version: number) =>

@@ -25,3 +25,18 @@ export const departmentOptionsQuery = () =>
       }),
     select: (r) => r.items.map((d) => ({ value: d.id, label: `${d.code} — ${d.name}` })),
   });
+
+/**
+ * Площадка отдела (ADR 0062) по его идентификатору. Запрос и ключ — те же, что у выпадающего
+ * списка отделов, отличается только сборка: `id отдела → id объекта`.
+ *
+ * Нужен там, где заявку заводит отдел: объекта в такой заявке нет вовсе (ADR 0040), а предложить
+ * адрес всё-таки есть чем — площадкой отдела, если она у него заведена. Без этой карты форма
+ * знала бы только идентификатор отдела, из которого адрес не выводится.
+ */
+export const departmentPlatformQuery = () =>
+  queryOptions({
+    ...departmentOptionsQuery(),
+    select: (r) =>
+      new Map(r.items.filter((d) => d.object).map((d) => [d.id, d.object!.id] as const)),
+  });

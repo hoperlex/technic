@@ -9,7 +9,7 @@ import {
   driverDocumentGapsHint,
   driverWorkedOnVehicle,
   isRelocationPurpose,
-  MAX_ROUTE_REQUESTS,
+  routeRequestCapacity,
   routePurposeShortLabels,
   type VehicleRouteDto,
   vehicleLabel,
@@ -34,7 +34,7 @@ import { formatDateOnly } from './shared';
  *
  * Первая вкладка отвечает на «что заказали и что с этим делают», эта — на вопрос дня диспетчера:
  * чем занята машина, кто за рулём и выписан ли бланк. Заявки попадают сюда переводом в работу,
- * но собирают рейс здесь: порядок талонов, водитель и реквизиты выезда — свойства рейса, а не
+ * но собирают рейс здесь: порядок заявок, водитель и реквизиты выезда — свойства рейса, а не
  * заявки.
  *
  * Открывается день сегодняшний: рейс планируют накануне и правят утром, а история рейсов
@@ -161,7 +161,7 @@ export function VehicleRoutesTab() {
               </span>
             ))}
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              {r.requests.length} из {MAX_ROUTE_REQUESTS} талонов
+              {r.requests.length} из {routeRequestCapacity(r.formCode)} заявок
             </Typography.Text>
           </Space>
         ),
@@ -186,7 +186,7 @@ export function VehicleRoutesTab() {
         ),
     }),
     actionsColumn<VehicleRouteDto>(
-      // Карточка рейса — единственное место, где собирают талоны, ставят водителя и выписывают
+      // Карточка рейса — единственное место, где собирают состав, ставят водителя и выписывают
       // лист; из списка рейс только открывают.
       (r) => (
         <RowActionButton
@@ -217,7 +217,7 @@ export function VehicleRoutesTab() {
       (r) =>
         r.requests.length === 0
           ? 'рейс пуст'
-          : `${r.requests.length} из ${MAX_ROUTE_REQUESTS} талонов: ${r.requests
+          : `${r.requests.length} из ${routeRequestCapacity(r.formCode)} заявок: ${r.requests
               .map((item) => item.displayNumber)
               .join(', ')}`,
     ],

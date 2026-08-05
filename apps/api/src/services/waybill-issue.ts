@@ -2,8 +2,10 @@ import { and, eq } from 'drizzle-orm';
 import {
   formatPhone,
   licenseNumberLabel,
+  MAX_ROUTE_REQUESTS,
   routeCargoLabel,
   routeContactsLabel,
+  routeExtraTaskLine,
   type RoutePurpose,
   routeWaybillForm,
   type VehicleRequestType,
@@ -183,7 +185,7 @@ async function collectSnapshot(
   params: {
     /** Заявка первого талона: она же стоит в шапке задания «в чьё распоряжение». */
     requestId: string;
-    /** Остальные заявки рейса в порядке талонов — строки 2–4 нижней таблицы задания. */
+    /** Остальные заявки рейса по порядку — строки 2–7 задания водителю (ADR 0068). */
     restRequestIds: string[];
     vehicleId: string;
     driverPersonId: string | null;
@@ -315,11 +317,13 @@ async function collectSnapshot(
       : '';
 
   /*
-   * Талоны 2–4: в таблице задания четыре строки, и рейс печатается целиком. Пустые строки
+   * Задание рейсов 2–10 (ADR 0068): сколько строк напечатается, решает бланк — у 4-П их семь
+   * (четыре строки таблицы и три строки доп. задания), у формы № 3 десять. Снимок собирается по
+   * наибольшей ёмкости и не выбирает: лишние ключи бланк просто не спрашивает, а пустые строки
    * остаются пустыми — лист на одну заявку выглядит так же, как выглядел до маршрутов.
    */
   const rest = await Promise.all(
-    params.restRequestIds.slice(0, 3).map(async (id) => {
+    params.restRequestIds.slice(0, MAX_ROUTE_REQUESTS - 1).map(async (id) => {
       const [row] = await tx
         .select({
           objectName: constructionObjects.name,
@@ -427,6 +431,42 @@ async function collectSnapshot(
     task4_contacts: slot(2).contacts,
 
     /*
+     * Рейсы 5–7. У 4-П это нижние строки блока «Дополнительное задание водителю» — по одной
+     * объединённой ячейке без граф внутри, поэтому туда идёт собранная строка; разобранные графы
+     * рядом печатает форма № 3, чей оборот держит таблицу на десять строк.
+     */
+    task5_customer: slot(3).customer,
+    task5_from: slot(3).from,
+    task5_to: slot(3).to,
+    task5_cargo: slot(3).cargo,
+    task5_line: routeExtraTaskLine(slot(3)),
+    task6_customer: slot(4).customer,
+    task6_from: slot(4).from,
+    task6_to: slot(4).to,
+    task6_cargo: slot(4).cargo,
+    task6_line: routeExtraTaskLine(slot(4)),
+    task7_customer: slot(5).customer,
+    task7_from: slot(5).from,
+    task7_to: slot(5).to,
+    task7_cargo: slot(5).cargo,
+    task7_line: routeExtraTaskLine(slot(5)),
+
+    // Рейсы 8–10 — только форма № 3: её таблица разграфлена на десять строк, и до этих граф
+    // доходят лишь маршруты легкового (`ROUTE_REQUEST_CAPACITY`). В 4-П места под них нет.
+    task8_customer: slot(6).customer,
+    task8_from: slot(6).from,
+    task8_to: slot(6).to,
+    task8_cargo: slot(6).cargo,
+    task9_customer: slot(7).customer,
+    task9_from: slot(7).from,
+    task9_to: slot(7).to,
+    task9_cargo: slot(7).cargo,
+    task10_customer: slot(8).customer,
+    task10_from: slot(8).from,
+    task10_to: slot(8).to,
+    task10_cargo: slot(8).cargo,
+
+    /*
      * Графы ЭСМ-2 (миграция 0087) в листе на рейс пустые — и это не заглушки, а разные документы.
      * Неделя работы машины на площадке не знает ни рейса, ни груза; лист на рейс не знает ни
      * периода, ни семи дней, ни кода объекта затрат. Набор ключей у снимка один на все бланки —
@@ -472,7 +512,7 @@ export interface RouteWaybillContext {
   routeDate: string;
   driverPersonId: string;
   trip: RouteTripFields;
-  /** Состав рейса в порядке талонов: позиция становится `slot` талона заказчика. */
+  /** Состав рейса по порядку: позиция становится `slot` строки задания в листе. */
   requests: readonly { requestId: string; position: number }[];
   /**
    * Перегон техники: вместо состава у рейса одна заявка-основание и задание «откуда — куда»
@@ -550,9 +590,11 @@ export async function issueWaybillForRoute(
   const organizationId = await resolveOrganization(tx, ctx.vehicleId);
 
   /*
-   * Задание печатается всем рейсом: шапка («в чьё распоряжение») — по первому талону, а нижняя
-   * таблица держит четыре строки — ровно столько заявок, сколько бывает в рейсе. Пустые строки
-   * остаются пустыми: лист на одну заявку выглядит так же, как выглядел до маршрутов.
+   * Задание печатается всем рейсом: шапка («в чьё распоряжение») — по первому талону, а ниже
+   * идут строки задания — ровно столько заявок, сколько держит бланк рейса (ADR 0068): у 4-П
+   * семь (четыре строки таблицы с талонами заказчиков и три строки доп. задания), у формы № 3
+   * десять. Пустые строки остаются пустыми: лист на одну заявку выглядит так же, как выглядел до
+   * маршрутов.
    *
    * У перегона талон один: заказчик — объект заявки, а «откуда — куда» несёт сам рейс.
    */

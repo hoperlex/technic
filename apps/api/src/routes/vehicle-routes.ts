@@ -11,7 +11,7 @@ import {
   formatVehicleRouteNumber,
   isRouteEditable,
   issueRouteWaybillSchema,
-  MAX_ROUTE_REQUESTS,
+  ROUTE_REQUEST_CAPACITY,
   parseVehicleRouteNumberSearch,
   ROUTE_FROZEN_MESSAGE,
   ROUTE_LEGACY_WAYBILL_MESSAGE,
@@ -40,7 +40,7 @@ import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
 import { assertRequestScope } from '../lib/access';
 import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
-import { issueWaybillForRoute, tripDate } from '../services/waybill-issue';
+import { issueWaybillForRoute, routeWaybillFormFor, tripDate } from '../services/waybill-issue';
 import {
   assertRouteVersion,
   attachRequest,
@@ -124,6 +124,32 @@ async function assertRouteVehicle(vehicleId: string): Promise<void> {
     );
   }
 }
+
+/**
+ * Ёмкость рейса выражением SQL: сколько заявок он держит — решает бланк (ADR 0068), а бланк
+ * закреплён за типом машины рейса. У 4-П строк задания семь, у формы № 3 — десять.
+ *
+ * Подзапрос самодостаточен и смотрит только на `vehicle_routes`: тем же условием фильтруется и
+ * страница списка, и подсчёт всего найденного, а тот идёт без джойнов машины и её типа.
+ *
+ * `CASE` собирается из самой таблицы ёмкостей: добавится бланк — SQL узнает о нём вместе с
+ * контрактами, а не останется с прежними числами, вписанными руками.
+ */
+const capacityOf = sql`(
+  SELECT CASE
+    WHEN ${vehicleRoutes.purpose} <> 'freight' THEN ${ROUTE_REQUEST_CAPACITY['4p']}
+    ${sql.join(
+      Object.entries(ROUTE_REQUEST_CAPACITY).map(
+        ([code, capacity]) => sql`WHEN ${vehicleTypes.waybillFormCode} = ${code} THEN ${capacity}`,
+      ),
+      sql` `,
+    )}
+    ELSE 0
+  END
+  FROM ${vehicles}
+  JOIN ${vehicleTypes} ON ${vehicleTypes.id} = ${vehicles.vehicleTypeId}
+  WHERE ${vehicles.id} = ${vehicleRoutes.vehicleId}
+)`;
 
 /**
  * Заявка перегона под блокировкой: её состояние решает, выписывать ли лист, — так же, как у
@@ -250,9 +276,7 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
           .from(vehicleRouteRequests)
           .where(eq(vehicleRouteRequests.routeId, vehicleRoutes.id));
         conditions.push(
-          q.hasFreeSlots
-            ? sql`(${used}) < ${MAX_ROUTE_REQUESTS}`
-            : sql`(${used}) >= ${MAX_ROUTE_REQUESTS}`,
+          q.hasFreeSlots ? sql`(${used}) < ${capacityOf}` : sql`(${used}) >= ${capacityOf}`,
         );
       }
 
@@ -424,7 +448,7 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
    * Положить заявку в рейс или перенести её из другого.
    *
    * Перенос — операция над двумя рейсами: заявка уходит из исходного, приходит в целевой, и в
-   * исходном уплотняются талоны. Поэтому блокируются оба (в порядке `id`), связь читается уже под
+   * исходном уплотняются позиции. Поэтому блокируются оба (в порядке `id`), связь читается уже под
    * блокировками, а заморозка проверяется у обоих: из бланка, который у водителя, заявка исчезнуть
    * не может.
    */
@@ -472,6 +496,14 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
             routeDate: target.routeDate,
             requestCount: await routeRequestCount(tx, target.id),
             purpose: target.purpose,
+            // Ёмкость рейса задаёт его бланк: у 4-П семь строк задания, у формы № 3 десять
+            // (ADR 0068).
+            formCode: (
+              await routeWaybillFormFor(tx, {
+                purpose: target.purpose,
+                vehicleId: target.vehicleId,
+              })
+            ).formCode,
           },
         );
         if (!check.ok) throw err.unprocessable(check.reason, { requestId: check.reason });
@@ -552,7 +584,7 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
     },
   );
 
-  /** Новый порядок талонов — полным составом: сервер переписывает его целиком. */
+  /** Новый порядок строк задания — полным составом: сервер переписывает его целиком. */
   r.put(
     '/:id/order',
     { preHandler: guards, schema: { params: idParams, body: routeOrderSchema } },
@@ -632,6 +664,11 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
         const check = canIssueWaybill({
           purpose: route.purpose,
           driverPersonId: route.driverPersonId,
+          // Бланк рейса: им проверяется, что состав в него влезает — его строки задания и
+          // печатают заявки (ADR 0068).
+          formCode: (
+            await routeWaybillFormFor(tx, { purpose: route.purpose, vehicleId: route.vehicleId })
+          ).formCode,
           requests: rows.map((row) => ({
             displayNumber: formatVehicleRequestNumber(row.num),
             status: row.status,

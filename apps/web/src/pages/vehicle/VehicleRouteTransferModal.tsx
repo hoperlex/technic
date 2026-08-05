@@ -3,7 +3,7 @@ import { Alert, App, Space, Typography } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   isRouteEditable,
-  MAX_ROUTE_REQUESTS,
+  routeRequestCapacity,
   vehicleClassificationLabel,
   type VehicleRequestDto,
   type VehicleRouteDto,
@@ -56,8 +56,8 @@ export function VehicleRouteTransferModal({ request, onClose, onDone }: Props) {
   });
 
   /*
-   * Из подсказки убираются три вида рейсов: свой (переносить некуда), заполненный (в бланке
-   * четыре талона) и замороженный выписанным листом (из бумаги, которая у водителя, состав не
+   * Из подсказки убираются три вида рейсов: свой (переносить некуда), заполненный (в бланке семь
+   * строк задания) и замороженный выписанным листом (из бумаги, которая у водителя, состав не
    * меняют — сначала лист аннулируют). Правило заморозки берётся из контрактов: сервер проверит
    * его же.
    *
@@ -86,7 +86,7 @@ export function VehicleRouteTransferModal({ request, onClose, onDone }: Props) {
     .filter(
       (r) =>
         r.id !== request?.route?.id &&
-        r.requests.length < MAX_ROUTE_REQUESTS &&
+        r.requests.length < routeRequestCapacity(r.formCode) &&
         isRouteEditable(r.waybill?.status ?? null),
     )
     .sort((a, b) =>
@@ -148,8 +148,8 @@ export function VehicleRouteTransferModal({ request, onClose, onDone }: Props) {
       <Space direction="vertical" size={12} style={{ width: '100%' }}>
         <Typography.Text type="secondary">
           Рейсы {request?.route ? `на ту же дату, что и ${request.route.displayNumber},` : 'дня'} со
-          свободным талоном — все, без отбора по технике. Сначала заказанный тип, потом крупнее, в
-          конце другой вид.
+          свободной строкой задания — все, без отбора по технике. Сначала заказанный тип, потом
+          крупнее, в конце другой вид.
         </Typography.Text>
 
         <AutoSelect
@@ -165,7 +165,7 @@ export function VehicleRouteTransferModal({ request, onClose, onDone }: Props) {
               // («крупнее», «меньше заказанного»). Без этого рейсы вида читались бы вперемешку.
               ordered ? (vehicleSubstitutionHint(substitutionOf(r)) ?? undefined) : undefined,
               r.driverName || 'водитель не назначен',
-              `${r.requests.length} из ${MAX_ROUTE_REQUESTS} талонов`,
+              `${r.requests.length} из ${routeRequestCapacity(r.formCode)} заявок`,
             ]
               .filter(Boolean)
               .join(' · '),

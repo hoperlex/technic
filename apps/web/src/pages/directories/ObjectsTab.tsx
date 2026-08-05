@@ -4,7 +4,7 @@ import { DeleteFilled, DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-d
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { CreateObjectInput, ObjectDto } from '@technic/contracts';
 import { counterpartiesApi } from '../../api/resources';
-import { AddressAutoComplete } from '@entities/address';
+import { AddressField } from '@features/address-input';
 import { DataTable, type CardConfig } from '@shared/ui';
 import { FormModal } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
@@ -254,9 +254,14 @@ export function ObjectsTab() {
           >
             <Input />
           </Form.Item>
-          <Form.Item name="address" label="Адрес">
-            <AddressAutoComplete placeholder="Начните вводить адрес" maxLength={500} />
-          </Form.Item>
+          {/* Чекбокса «Из справочника» здесь нет: этот адрес и есть та запись, которую выбирают
+            в заявках (ADR 0069). Поле общее с ними — расходиться правилам ввода незачем. */}
+          <AddressField
+            name="address"
+            label="Адрес"
+            placeholder="Начните вводить адрес"
+            maxLength={500}
+          />
           <Form.Item
             name="operatorIds"
             label="Операторы вывоза"
