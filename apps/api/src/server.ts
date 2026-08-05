@@ -1,6 +1,7 @@
 import { buildApp } from './app';
 import { assertSigningKey, config } from './config';
 import { closeDb, pingDb } from './db/client';
+import { assertMigrationsApplied } from './db/migration-check';
 import { logger } from './logger';
 
 async function main(): Promise<void> {
@@ -25,6 +26,10 @@ async function main(): Promise<void> {
     logger.error({ err: e }, 'Не удалось подключиться к PostgreSQL при старте');
     throw e;
   }
+
+  // Схема — до первого запроса: неприменённая миграция иначе выстрелит пятисоткой в середине
+  // чужого действия, и человек прочитает это как поломку формы, а не как несобранную базу.
+  await assertMigrationsApplied();
 
   const app = await buildApp();
   await app.listen({ host: config.host, port: config.port });

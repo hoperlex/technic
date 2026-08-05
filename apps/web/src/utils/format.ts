@@ -2,6 +2,7 @@ import dayjs from 'dayjs';
 
 import { isApiError } from '@shared/api';
 import { MOSCOW_TZ } from '@shared/config';
+import { errorMessage as sharedErrorMessage } from '@shared/lib';
 
 export function formatDateTime(iso: string | null | undefined): string {
   if (!iso) return '—';
@@ -76,28 +77,13 @@ export function errorFields(e: unknown): Record<string, string> | null {
   return isApiError(e) && e.fields && Object.keys(e.fields).length > 0 ? e.fields : null;
 }
 
-function fieldLabel(path: string): string {
-  // zod присылает путь вида `vehicles.0.volumeM3` — для подписи важен последний сегмент.
-  const last =
-    path
-      .split('.')
-      .filter((s) => !/^\d+$/.test(s))
-      .pop() ?? path;
-  return FIELD_LABELS[last] ?? last;
-}
-
 /**
- * Человекочитаемое сообщение об ошибке. У ошибок валидации сервер шлёт общий текст
- * («Ошибка валидации данных») и детали в `fields` — без них человек не понимает, что
- * именно не так, поэтому подписи полей добавляются к сообщению.
+ * Человекочитаемое сообщение об ошибке: механизм общий (`shared/lib`), здесь — только словарь
+ * подписей экранов, не переехавших в слайсы.
+ *
+ * Своей сборки текста тут больше нет намеренно: она уже разошлась бы с общей — номер обращения у
+ * пятисотки печатает только одна из двух копий, и половина портала показывала бы ошибку без него.
  */
 export function errorMessage(e: unknown): string {
-  if (isApiError(e)) {
-    const fields = errorFields(e);
-    if (!fields) return e.message;
-    const labels = [...new Set(Object.keys(fields).map(fieldLabel))];
-    return `${e.message}: ${labels.join(', ')}`;
-  }
-  if (e instanceof Error) return e.message;
-  return 'Произошла ошибка';
+  return sharedErrorMessage(e, FIELD_LABELS);
 }

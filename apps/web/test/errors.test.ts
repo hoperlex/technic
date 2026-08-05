@@ -78,6 +78,39 @@ describe('errorMessage', () => {
     );
   });
 
+  it('у пятисотки к тексту добавляется номер обращения', () => {
+    // В проде сервер прячет причину («Внутренняя ошибка сервера») — и правильно, в ней бывает
+    // SQL. Но без номера человеку не с чем прийти: причина лежит в логе, а найти её там нечем.
+    const internal = {
+      code: 'internal_error',
+      message: 'Внутренняя ошибка сервера',
+      status: 500,
+      requestId: '4781258b-163e-49c2-befa-7626e70b99c6',
+    };
+
+    expect(errorMessage(internal, LABELS)).toBe(
+      'Внутренняя ошибка сервера (обращение 4781258b-163e-49c2-befa-7626e70b99c6)',
+    );
+  });
+
+  it('у 4xx номер не печатается: текст называет проблему сам', () => {
+    // Хвост из uuid у «Заявку уже изменили» ничего не добавляет — идти с ним некуда, читать мешает.
+    const conflict = {
+      code: 'conflict',
+      message: 'Заявку уже изменили',
+      status: 409,
+      requestId: 'cadf0b65-559f-4b04-8c4d-77056a1fc485',
+    };
+
+    expect(errorMessage(conflict, LABELS)).toBe('Заявку уже изменили');
+  });
+
+  it('пятисотка без номера остаётся своим текстом', () => {
+    const internal = { code: 'internal_error', message: 'Внутренняя ошибка сервера', status: 500 };
+
+    expect(errorMessage(internal, LABELS)).toBe('Внутренняя ошибка сервера');
+  });
+
   it('не-API ошибки: свой текст у Error и общий у всего остального', () => {
     expect(errorMessage(new Error('Сеть недоступна'))).toBe('Сеть недоступна');
     expect(errorMessage(new TypeError('Failed to fetch'), LABELS)).toBe('Failed to fetch');
@@ -134,6 +167,26 @@ describe('разбор настоящего ответа сервера', () => 
 
     expect(errorMessage(error, LABELS)).toBe('Ошибка валидации данных: Первое поле');
     expect(errorFields(error)).toEqual({ alpha: 'Обязательное поле' });
+  });
+
+  it('номер обращения доезжает от сервера до текста тоста', async () => {
+    // Сквозная проверка: `requestId` теряется молча — он проходит транспорт, разбор ошибки и
+    // сборку сообщения, и на любом из трёх участков его легко не передать.
+    mockHttp({
+      'PATCH /vehicle-requests/:id/status': () =>
+        apiError(500, {
+          code: 'internal_error',
+          message: 'Внутренняя ошибка сервера',
+          requestId: 'req-42',
+        }),
+    });
+
+    const error: unknown = await apiFetch('/vehicle-requests/r-1/status', {
+      method: 'PATCH',
+      body: {},
+    }).catch((e: unknown) => e);
+
+    expect(errorMessage(error, LABELS)).toBe('Внутренняя ошибка сервера (обращение req-42)');
   });
 
   it('доменная ошибка без полей — своим текстом', async () => {

@@ -22,6 +22,8 @@ interface ApiErrorShape {
   status: number;
   message: string;
   fields?: Record<string, string>;
+  /** Номер обращения из ответа сервера: по нему в логе находится причина пятисотки. */
+  requestId?: string;
 }
 
 function isApiErrorShape(error: unknown): error is ApiErrorShape {
@@ -59,13 +61,22 @@ function fieldLabel(path: string, labels: Record<string, string>): string {
  *
  * Без словаря текст всё равно осмысленный: вместо подписи встанет имя поля с сервера. Это лучше
  * молчания — видно хотя бы, где искать.
+ *
+ * У пятисотки к тексту добавляется номер обращения. В проде сервер прячет причину за общим
+ * «Внутренняя ошибка сервера» (и правильно делает — в ней бывает SQL), а человеку остаётся
+ * сообщение, с которым некуда прийти: воспроизвести его на чужом экране нечем. Номер из ответа —
+ * это то, по чему причина находится в логе одной командой. У 4xx его не печатаем: там текст
+ * называет проблему сам, и хвост из uuid только мешает читать.
  */
 export function errorMessage(error: unknown, labels: Record<string, string> = {}): string {
   if (isApiErrorShape(error)) {
     const fields = errorFields(error);
-    if (!fields) return error.message;
-    const named = [...new Set(Object.keys(fields).map((path) => fieldLabel(path, labels)))];
-    return `${error.message}: ${named.join(', ')}`;
+    const text = fields
+      ? `${error.message}: ${[...new Set(Object.keys(fields).map((path) => fieldLabel(path, labels)))].join(', ')}`
+      : error.message;
+    return error.status >= 500 && error.requestId
+      ? `${text} (обращение ${error.requestId})`
+      : text;
   }
   if (error instanceof Error) return error.message;
   return 'Произошла ошибка';

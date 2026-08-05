@@ -1,11 +1,11 @@
-import { readFileSync, readdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
 import pg from 'pg';
+import { applyMigrations, diffMigrations, type MigrationDiff } from './migration-journal';
 
 // Простой SQL-first раннер миграций (§8): применяет ./drizzle/*.sql по порядку,
 // идемпотентно, с журналом `_migrations`. Не зависит от секретов приложения —
-// нужен только доступ к БД (миграционный пользователь).
+// нужен только доступ к БД (миграционный пользователь). Сама механика журнала живёт в
+// `migration-journal`: тот же вопрос («что не применено») задаёт сервер при старте.
 //
 // Подкоманды (process.argv[2]):
 //   (без аргумента) | apply — накатить новые миграции (создаёт журнал при необходимости)
@@ -18,9 +18,6 @@ import pg from 'pg';
 
 const EXIT_FAILURE = 1;
 const EXIT_PENDING = 3;
-
-const here = dirname(fileURLToPath(import.meta.url));
-const migrationsDir = join(here, '..', '..', 'drizzle');
 
 function buildClient(): pg.Client {
   const migrationUrl = process.env.DATABASE_MIGRATION_URL ?? process.env.DATABASE_URL;
@@ -38,69 +35,13 @@ function buildClient(): pg.Client {
   });
 }
 
-function listMigrationFiles(): string[] {
-  return readdirSync(migrationsDir)
-    .filter((f) => f.endsWith('.sql'))
-    .sort();
-}
-
-interface Diff {
-  applied: string[];
-  pending: string[]; // на диске, но не в журнале
-  missing: string[]; // в журнале, но не на диске (код старше БД)
-}
-
-// Читает журнал БЕЗ его создания: если таблицы `_migrations` ещё нет — все файлы pending.
-async function diff(client: pg.Client): Promise<Diff> {
-  const reg = await client.query<{ t: string | null }>(
-    "SELECT to_regclass('public._migrations') AS t",
-  );
-  const journalExists = reg.rows[0]?.t != null;
-  const appliedRows = journalExists
-    ? (await client.query<{ name: string }>('SELECT name FROM _migrations')).rows
-    : [];
-  const applied = appliedRows.map((r) => r.name).sort();
-  const appliedSet = new Set(applied);
-
-  const files = listMigrationFiles();
-  const fileSet = new Set(files);
-
-  const pending = files.filter((f) => !appliedSet.has(f));
-  const missing = applied.filter((n) => !fileSet.has(n));
-  return { applied, pending, missing };
-}
-
 async function runMigrations(client: pg.Client): Promise<void> {
-  await client.query(
-    'CREATE TABLE IF NOT EXISTS _migrations (name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())',
-  );
-  const appliedRes = await client.query<{ name: string }>('SELECT name FROM _migrations');
-  const applied = new Set(appliedRes.rows.map((r) => r.name));
-
-  const files = listMigrationFiles();
-
-  for (const file of files) {
-    if (applied.has(file)) {
-      console.log(`= пропуск ${file}`);
-      continue;
-    }
-    const sql = readFileSync(join(migrationsDir, file), 'utf8');
-    console.log(`→ применяю ${file}`);
-    await client.query('BEGIN');
-    try {
-      await client.query(sql);
-      await client.query('INSERT INTO _migrations (name) VALUES ($1)', [file]);
-      await client.query('COMMIT');
-    } catch (e) {
-      await client.query('ROLLBACK');
-      throw e;
-    }
-  }
+  await applyMigrations(client, (message) => console.log(message));
   console.log('Миграции применены.');
 }
 
 async function checkCmd(client: pg.Client): Promise<number> {
-  const d = await diff(client);
+  const d: MigrationDiff = await diffMigrations(client);
   if (d.missing.length > 0) {
     console.error(`journal ссылается на отсутствующие файлы: ${d.missing.join(', ')}`);
     return EXIT_FAILURE;
@@ -114,7 +55,7 @@ async function checkCmd(client: pg.Client): Promise<number> {
 }
 
 async function statusCmd(client: pg.Client): Promise<void> {
-  console.log(JSON.stringify(await diff(client)));
+  console.log(JSON.stringify(await diffMigrations(client)));
 }
 
 async function main(): Promise<void> {
