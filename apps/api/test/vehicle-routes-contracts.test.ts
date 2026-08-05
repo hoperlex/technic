@@ -230,36 +230,19 @@ describe('готовность рейса к выписке листа', () => {
  * 4-П: экскаватор идёт по дорогам как транспортное средство, и документ у этой поездки один.
  */
 describe('бланк рейса', () => {
-  const own = { ownership: 'own' as const, typeName: 'Самосвалы' };
+  const own = { ownership: 'own' as const };
 
   it('грузовой рейс печатается бланком своего типа', () => {
     expect(routeWaybillForm({ ...own, purpose: 'freight', formCode: '4p' }).formCode).toBe('4p');
-    expect(
-      routeWaybillForm({ ...own, purpose: 'freight', formCode: 'leg3', typeName: 'Легковые' })
-        .formCode,
-    ).toBe('leg3');
+    expect(routeWaybillForm({ ...own, purpose: 'freight', formCode: 'leg3' }).formCode).toBe(
+      'leg3',
+    );
   });
 
-  it('тип без бланка объясняет себя словами — это поправимое состояние справочника', () => {
-    const check = routeWaybillForm({
-      purpose: 'freight',
-      ownership: 'own',
-      formCode: null,
-      typeName: 'Экскаваторы гусеничные',
-    });
-    expect(check.formCode).toBeNull();
-    expect(check.reason).toContain('Экскаваторы гусеничные');
-  });
-
-  it('перегон печатается 4-П даже у типа без бланка: по дорогам едет транспортное средство', () => {
+  it('перегон печатается 4-П, каким бы бланком ни печатался рейс типа', () => {
     for (const purpose of ['delivery', 'pickup'] as const) {
       expect(
-        routeWaybillForm({
-          purpose,
-          ownership: 'own',
-          formCode: null,
-          typeName: 'Экскаваторы-погрузчики',
-        }),
+        routeWaybillForm({ purpose, ownership: 'own', formCode: 'leg3' }),
       ).toEqual({ formCode: '4p', reason: null });
     }
   });
@@ -270,7 +253,6 @@ describe('бланк рейса', () => {
         purpose,
         ownership: 'rental',
         formCode: '4p',
-        typeName: 'Самосвалы',
       });
       expect(check.formCode).toBeNull();
       expect(check.reason).toContain('арендодатель');
@@ -304,25 +286,25 @@ describe('контакты в графе задания', () => {
   it('строка на погрузку и строка на разгрузку, в порядке маршрута', () => {
     expect(
       routeContactsLabel([
-        { name: 'Иванов Иван Иванович', phone: '+7 914 123-45-67' },
-        { name: 'Петров Пётр Петрович', phone: '+7 914 765-43-21' },
+        { name: 'Иванов Иван Иванович', phone: '9141234567' },
+        { name: 'Петров Пётр Петрович', phone: '9147654321' },
       ]),
-    ).toBe('Иванов И.И., +7 914 123-45-67\nПетров П.П., +7 914 765-43-21');
+    ).toBe('Иванов И.И., +7 (914) 123 45 67\nПетров П.П., +7 (914) 765 43 21');
   });
 
   it('ФИО из трёх слов сокращается до инициалов — иначе строка не влезает в графу', () => {
     expect(
-      routeContactsLabel([{ name: 'Кузнецова Анна Владимировна', phone: '89141112233' }]),
-    ).toBe('Кузнецова А.В., 89141112233');
+      routeContactsLabel([{ name: 'Кузнецова Анна Владимировна', phone: '9141112233' }]),
+    ).toBe('Кузнецова А.В., +7 (914) 111 22 33');
   });
 
   it('запись не из трёх слов печатается как есть: разбирать её портал не берётся', () => {
-    expect(routeContactsLabel([{ name: 'Иванов И.И.', phone: '89141112233' }])).toBe(
-      'Иванов И.И., 89141112233',
+    expect(routeContactsLabel([{ name: 'Иванов И.И.', phone: '9141112233' }])).toBe(
+      'Иванов И.И., +7 (914) 111 22 33',
     );
     expect(
-      routeContactsLabel([{ name: 'прораб Иванов Иван Иванович', phone: '89141112233' }]),
-    ).toBe('прораб Иванов Иван Иванович, 89141112233');
+      routeContactsLabel([{ name: 'прораб Иванов Иван Иванович', phone: '9141112233' }]),
+    ).toBe('прораб Иванов Иван Иванович, +7 (914) 111 22 33');
   });
 
   /*
@@ -333,14 +315,14 @@ describe('контакты в графе задания', () => {
     expect(
       routeContactsLabel([
         { name: '', phone: '' },
-        { name: 'Петров Пётр Петрович', phone: '+7 914 765-43-21' },
+        { name: 'Петров Пётр Петрович', phone: '9147654321' },
       ]),
-    ).toBe('Петров П.П., +7 914 765-43-21');
+    ).toBe('Петров П.П., +7 (914) 765 43 21');
     expect(routeContactsLabel([{ name: '', phone: '' }])).toBe('');
   });
 
   it('телефон без имени печатается один: дозвониться по нему можно', () => {
-    expect(routeContactsLabel([{ name: '', phone: '+7 914 765-43-21' }])).toBe('+7 914 765-43-21');
+    expect(routeContactsLabel([{ name: '', phone: '9147654321' }])).toBe('+7 (914) 765 43 21');
   });
 });
 

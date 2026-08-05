@@ -445,13 +445,15 @@ export function VehicleAssignModal({
    * этим вариантом оказался бы «Новый маршрут» — выбор считался бы сделанным вручную, а
    * приехавший следом готовый рейс машины его уже не перебил бы.
    */
+  // Бланк известен всегда, когда машина выбрана: у типа он обязателен. Пустым он остаётся у
+  // заказанного типа, который листа не знает вовсе, — тогда и спрашивать правило не о чем.
+  const formCode = selected?.waybillFormCode ?? prefill?.formCode ?? null;
   const requirement =
-    request && isFreight && prefill
+    request && isFreight && prefill && formCode
       ? waybillRequirement({
           requestType: request.requestType,
           ownership: selected?.ownership ?? ownership,
-          formCode: selected?.waybillFormCode ?? prefill.formCode,
-          typeName: selected?.typeName ?? request.vehicleTypeName,
+          formCode,
         })
       : { formCode: null, reason: null };
   const needsRoute = !!requirement.formCode;

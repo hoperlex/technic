@@ -2,6 +2,7 @@ import { useState } from 'react';
 import {
   App,
   Button,
+  Checkbox,
   Form,
   Input,
   InputNumber,
@@ -10,12 +11,16 @@ import {
   Switch,
   Tag,
   Tooltip,
+  Typography,
   type TableColumnType,
 } from 'antd';
 import { EditOutlined, PlusOutlined, SettingOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   DEFAULT_PAGE_SIZE,
+  FREIGHT_VEHICLE_KIND_CODE,
+  isPassengerTypeForm,
+  typeWaybillFormOf,
   type CreateVehicleTypeInput,
   type UpdateVehicleTypeInput,
   type VehicleClassificationDto,
@@ -55,6 +60,8 @@ interface VtFormValues {
   description?: string;
   sortOrder?: number;
   isActive?: boolean;
+  /** Легковой ли транспорт: им выбирается бланк листа — форма № 3 вместо 4-П (ADR 0065). */
+  isPassenger?: boolean;
 }
 
 const CODE_PATTERN = /^[a-z][a-z0-9_]*$/;
@@ -102,11 +109,21 @@ export function VehicleTypesTab() {
   const [record, setRecord] = useState<VehicleTypeDto | null>(null);
   const [form] = Form.useForm<VtFormValues>();
   const isEdit = !!record;
+  /**
+   * Вид ТС формы: у правки он свой (вид неизменяем), у заведения — тот, что выбрали. Им решается,
+   * спрашивать ли про легковой транспорт: бланк есть только там, где машина едет рейсом.
+   */
+  const watchKindId = Form.useWatch('kindId', form);
+  const formKindCode = isEdit
+    ? record!.kindCode
+    : (kindsData?.items ?? []).find((k) => k.id === watchKindId)?.code;
 
   const openCreate = () => {
     setRecord(null);
     form.resetFields();
-    form.setFieldsValue({ sortOrder: 100, isActive: true });
+    // Бланк по умолчанию — 4-П (ADR 0065): у собственной техники лист есть всегда, а «легковой»
+    // это исключение, которое отмечают руками.
+    form.setFieldsValue({ sortOrder: 100, isActive: true, isPassenger: false });
     setOpen(true);
   };
   const openEdit = (r: VehicleTypeDto) => {
@@ -119,6 +136,7 @@ export function VehicleTypesTab() {
       description: r.description,
       sortOrder: r.sortOrder,
       isActive: r.isActive,
+      isPassenger: isPassengerTypeForm(r.waybillFormCode),
     });
     setOpen(true);
   };
@@ -147,6 +165,7 @@ export function VehicleTypesTab() {
         description: v.description ?? '',
         sortOrder: v.sortOrder,
         isActive: v.isActive,
+        waybillFormCode: typeWaybillFormOf(v.isPassenger ?? false),
       };
       saveMut.mutate({ id: record!.id, body });
       return;
@@ -158,6 +177,7 @@ export function VehicleTypesTab() {
       description: v.description ?? '',
       sortOrder: v.sortOrder ?? 100,
       isActive: v.isActive ?? true,
+      waybillFormCode: typeWaybillFormOf(v.isPassenger ?? false),
     };
     saveMut.mutate({ create });
   };
@@ -503,6 +523,30 @@ export function VehicleTypesTab() {
           <Form.Item name="isActive" label="Активен" valuePropName="checked">
             <Switch />
           </Form.Item>
+
+          {/* Бланк листа — вопросом «легковой ли это транспорт», а не выбором формы: так его
+            задаёт тот, кто ведёт справочник, и так он звучит на языке парка. Умолчание — 4-П:
+            у собственной техники лист есть всегда (ADR 0065).
+
+            У спецтехники поля нет вовсе: её недельный ЭСМ-2 портал выписывает сам по заявке, а
+            перегон на объект печатается по 4-П независимо от типа — отвечать тут не на что. */}
+          {formKindCode === FREIGHT_VEHICLE_KIND_CODE && (
+            <Form.Item
+              name="isPassenger"
+              valuePropName="checked"
+              extra="Путевой лист выписывается по форме № 3 (легковой автомобиль) вместо 4-П"
+            >
+              <Checkbox>Легковой транспорт</Checkbox>
+            </Form.Item>
+          )}
+          {!!formKindCode && formKindCode !== FREIGHT_VEHICLE_KIND_CODE && (
+            <Form.Item label="Путевой лист">
+              <Typography.Text type="secondary">
+                ЭСМ-2 портал выписывает сам по заявке на технику, а перегон на объект — по 4-П.
+                Бланк такому типу не задаётся.
+              </Typography.Text>
+            </Form.Item>
+          )}
         </Form>
       </FormModal>
       <VehicleTypeCardDrawer type={card} onClose={() => setCard(null)} />

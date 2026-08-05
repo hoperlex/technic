@@ -60,6 +60,8 @@ export const requestTypeEnum = pgEnum('request_type', [
   'container_replace',
   'container_removal',
   'waste_removal',
+  // Вывоз металлолома (ADR 0067, миграция 0090): заявка без предмета и цены, факт — весом.
+  'metal_removal',
 ]);
 export const containerKindEnum = pgEnum('container_kind', ['cont', 'truck']);
 export const fileStatusEnum = pgEnum('file_status', ['pending', 'active', 'deleted']);
@@ -142,7 +144,8 @@ export const constructionObjects = pgTable(
 /**
  * Справочник отделов (ADR 0040) — офисные подразделения: снабжение, ПТО, АХО. Заведён по образцу
  * объектов строительства и отвечает на тот же вопрос с другой стороны: от чьего имени идёт
- * заявка. С объектами отделы не пересекаются — это вторая ось области, а не её продолжение.
+ * заявка. Как заказчик заявки на технику отдел объекту не родня — это вторая ось, а не её
+ * продолжение (ADR 0040).
  */
 export const departments = pgTable(
   'departments',
@@ -150,6 +153,16 @@ export const departments = pgTable(
     id: uuid('id').primaryKey().defaultRandom(),
     code: text('code').notNull(),
     name: text('name').notNull(),
+    /**
+     * Площадка отдела (ADR 0062, миграция 0092): на ней его сотрудники заказывают вывоз мусора
+     * наравне со штабом. NULL — рабочее состояние, а не незаполненность: отдел без площадки
+     * (ПТО, АХО) объектных прав не даёт вовсе.
+     *
+     * Колонка у отдела, а не набор у учётки: у объекта отделов несколько, у отдела объект — один.
+     */
+    constructionObjectId: uuid('construction_object_id').references(() => constructionObjects.id, {
+      onDelete: 'restrict',
+    }),
     isActive: boolean('is_active').notNull().default(true),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -157,6 +170,11 @@ export const departments = pgTable(
   (t) => ({
     codeUnique: uniqueIndex('departments_code_unique').on(t.code),
     nameTrgm: index('departments_name_trgm').using('gin', sql`${t.name} gin_trgm_ops`),
+    // «Какие отделы у объекта» — вопрос карточки объекта и производной области учётки.
+    // Частичный: отделы без площадки в этот запрос не входят никогда.
+    objectIdx: index('departments_construction_object_idx')
+      .on(t.constructionObjectId)
+      .where(sql`${t.constructionObjectId} IS NOT NULL`),
   }),
 );
 
@@ -303,10 +321,18 @@ export const vehicleTypes = pgTable(
       () => qualificationCategories.id,
       { onDelete: 'restrict' },
     ),
-    // Какой бланк путевого листа выписывается на машины этого типа (ADR 0037, миграция 0060).
-    // Код формы, а не флаг: легковые ('leg3') и спецтехника ('esm2') добавятся значением, а не
-    // второй схемой. NULL — лист не выписывается.
-    waybillFormCode: text('waybill_form_code').$type<'4p' | 'leg3' | 'esm2'>(),
+    /**
+     * Каким бланком выписывается лист на машины этого типа (ADR 0037, миграции 0060 и 0094).
+     *
+     * Код формы, а не флаг: легковым отвечает 'leg3', и второй схемы для них не понадобилось.
+     * Пустым не бывает с 0094 (ADR 0065): «лист не выписывается» — это про принадлежность машины,
+     * а не про её тип, и NULL здесь означал бы, что тип отвечает на вопрос, которого ему не
+     * задавали. У собственной техники лист есть всегда, по умолчанию 4-П.
+     */
+    waybillFormCode: text('waybill_form_code')
+      .$type<'4p' | 'leg3' | 'esm2'>()
+      .notNull()
+      .default('4p'),
     sortOrder: integer('sort_order').notNull().default(100),
     isActive: boolean('is_active').notNull().default(true),
     createdAt: createdAt(),
@@ -317,7 +343,7 @@ export const vehicleTypes = pgTable(
     codeFormat: check('vehicle_types_code_format_check', sql`${t.code} ~ '^[a-z][a-z0-9_]*$'`),
     waybillForm: check(
       'vehicle_types_waybill_form_check',
-      sql`${t.waybillFormCode} IS NULL OR ${t.waybillFormCode} IN ('4p', 'leg3', 'esm2')`,
+      sql`${t.waybillFormCode} IN ('4p', 'leg3', 'esm2')`,
     ),
     codeNotBlank: check('vehicle_types_code_not_blank', sql`btrim(${t.code}) <> ''`),
     nameNotBlank: check('vehicle_types_name_not_blank', sql`btrim(${t.name}) <> ''`),
@@ -707,7 +733,10 @@ export const users = pgTable(
         sql`btrim(regexp_replace(last_name || ' ' || first_name || ' ' || middle_name, '\s+', ' ', 'g'))`,
       ),
     // Контактный телефон (ADR 0043, миграция 0070). Необязателен: пустая строка — «не указан».
-    // Свободный текст, как у телефона ответственного по заявке, — номер переносят из переписки.
+    // Хранятся десять цифр без кода страны (ADR 0066, миграция 0095) — регион в портале всегда
+    // +7, а вид «+7 (900) 000-00-00» даёт `formatPhone` на выводе. CHECK нет: записи, заведённые
+    // до нормализации и к десяти цифрам не сводившиеся, остались как есть, и условие роняло бы
+    // на них каждую правку строки. Формат держат контракты — `optionalPhoneSchema`.
     phone: text('phone').notNull().default(''),
     passwordHash: text('password_hash').notNull(),
     role: roleEnum('role'), // назначается администратором; до активации может быть null
@@ -739,7 +768,13 @@ export const users = pgTable(
     updatedAt: updatedAt(),
   },
   (t) => ({
-    emailUnique: uniqueIndex('users_email_unique').on(t.email),
+    // Адрес занимает действующая учётка, а не архивная (ADR 0063, миграция 0095): отказ по заявке
+    // иначе выжигал бы email навсегда. Отсюда обязанность всех выборок по адресу — вход,
+    // регистрация, админское создание, сид — отбрасывать архив: одинаковых адресов в таблице
+    // теперь бывает несколько, и первый попавшийся не тот, кого искали.
+    emailUnique: uniqueIndex('users_email_unique')
+      .on(t.email)
+      .where(sql`${t.deletedAt} IS NULL`),
     lastNameNotBlank: check('users_last_name_not_blank', sql`btrim(${t.lastName}) <> ''`),
     // Пожелание без уточнения там, где оно решает дело, бессмысленно: объектную роль без объекта
     // и оператора без компании всё равно не активировать (миграция 0057).
@@ -755,10 +790,11 @@ export const users = pgTable(
       .on(sql`${t.createdAt} DESC`)
       .where(sql`${t.deletedAt} IS NULL AND ${t.isActive} = false AND ${t.role} IS NULL`),
     fullNameTrgm: index('users_full_name_trgm').using('gin', sql`${t.fullName} gin_trgm_ops`),
-    // Одна учётная запись на человека.
+    // Одна действующая учётная запись на человека (ADR 0063, миграция 0095): архивная физлицо не
+    // занимает — иначе вернувшийся сотрудник обошёл бы блокировку по адресу и упёрся в эту.
     personUnique: uniqueIndex('users_person_unique')
       .on(t.personId)
-      .where(sql`${t.personId} IS NOT NULL`),
+      .where(sql`${t.personId} IS NOT NULL AND ${t.deletedAt} IS NULL`),
   }),
 );
 
@@ -936,6 +972,7 @@ export const warehouses = pgTable(
     // Метка склада: пустая строка — «не задана», узнают склад по адресу.
     name: text('name').notNull().default(''),
     // Контакт склада: пустая строка — «не указан». Обязательности нет ни здесь, ни в CHECK.
+    // Телефон — десять цифр без кода страны, как у остальных номеров портала (ADR 0066).
     contactPerson: text('contact_person').notNull().default(''),
     contactPhone: text('contact_phone').notNull().default(''),
     comment: text('comment').notNull().default(''),
@@ -970,6 +1007,9 @@ export const organizations = pgTable(
     id: uuid('id').primaryKey().defaultRandom(),
     name: text('name').notNull(),
     address: text('address').notNull().default(''),
+    // Телефон шапки бланка. Правится SQL по runbook'у, а не формой, и в реквизите бухгалтерии
+    // бывает не один номер («(495) …, +7-985-…» у основной организации): нормализация (ADR 0066,
+    // миграция 0095) такие записи не тронула, и печатаются они как заведены.
     phone: text('phone').notNull().default(''),
     // Коды из правого верхнего угла бланка. Пусто — реквизит не заполнен: лист печатается и без
     // него, а требовать то, чего у бухгалтерии сейчас нет, значит не дать завести организацию.
@@ -1107,6 +1147,7 @@ export const wasteRequests = pgTable(
     deliveryTimeUnspecified: boolean('delivery_time_unspecified').notNull().default(false),
     // Кто принимает машину на площадке (миграция 0062). Пусто — заявка заведена до этой колонки:
     // CHECK на непустоту сделал бы прежние строки невалидными, поэтому требование держит сервер.
+    // Телефон — десять цифр без кода страны (ADR 0066, миграция 0095).
     responsibleName: text('responsible_name').notNull().default(''),
     responsiblePhone: text('responsible_phone').notNull().default(''),
     // Комментарий площадки — стороны заказчика: штаб, комендант, руководитель строительства, а
@@ -1179,6 +1220,16 @@ export const wasteRequests = pgTable(
       'waste_requests_container_owner_type_check',
       sql`${t.containerOwnerCounterpartyId} IS NULL
           OR ${t.requestType} IN ('container_replace', 'container_removal')`,
+    ),
+    // У вывоза металлолома предмета нет вовсе (ADR 0067, миграция 0091). Запрет строгий, в
+    // отличие от мягкого `install_no_pricing_check` у замены и снятия: заявок этого типа,
+    // заведённых до решения, не бывает — тип и решение появились вместе.
+    metalNoSubject: check(
+      'waste_requests_metal_no_subject_check',
+      sql`${t.requestType} <> 'metal_removal'
+          OR (${t.containerTypeId} IS NULL AND ${t.wasteTypeId} IS NULL
+              AND ${t.wasteTariffId} IS NULL AND ${t.pricePerM3} IS NULL
+              AND ${t.volumeM3} IS NULL)`,
     ),
   }),
 );
@@ -1279,7 +1330,9 @@ export const wasteRequestVehicles = pgTable(
 
 // ── Факт вывоза: сколько вывезли и во сколько это обошлось (ADR 0035, миграция 0056) ──
 // Одна заявка — одно закрытие (PK=FK): повторное после отката администратором переписывает
-// строку. Объём вводится руками — он стоит в талоне и весовой квитанции, — и с заявленным
+// строку. Величина одна, но колонки под неё две (миграция 0091): мусор меряют объёмом,
+// металлолом принимают по весу и без денег (ADR 0067).
+// Объём вводится руками — он стоит в талоне и весовой квитанции, — и с заявленным
 // (waste_requests.volumeM3) расходится законно: заявка это план, а платят за вывезенное.
 // Сумма подставляется расчётом «объём × цена», но правится свободно: счёт оператора включает и
 // подачу, и недогруз, и сходиться сумма должна со счётом, а не с формулой. Цена нужна как
@@ -1290,7 +1343,11 @@ export const wasteRequestCompletions = pgTable(
     requestId: uuid('request_id')
       .primaryKey()
       .references(() => wasteRequests.id, { onDelete: 'cascade' }),
-    volumeM3: numeric('volume_m3', { precision: 12, scale: 3 }).notNull(),
+    // Вывезенное лежит в одной из двух колонок — какой, решает тип заявки (миграция 0091).
+    // Мусор меряют объёмом, металлолом принимают по весу (ADR 0067); общей колонки «сколько» с
+    // единицей рядом нет намеренно: объём умножается на цену прайса, а вес — ни на что.
+    volumeM3: numeric('volume_m3', { precision: 12, scale: 3 }),
+    weightTons: numeric('weight_tons', { precision: 12, scale: 3 }),
     // Снимок цены по виду «Самосвал» на момент закрытия (ADR 0022, ADR 0026): сумма обязана
     // объясняться сама, а правка прайса не переписывает уже закрытые заявки.
     pricePerM3: numeric('price_per_m3', { precision: 12, scale: 2 }),
@@ -1308,6 +1365,22 @@ export const wasteRequestCompletions = pgTable(
     volumePositive: check(
       'waste_request_completions_volume_positive_check',
       sql`${t.volumeM3} > 0`,
+    ),
+    weightPositive: check(
+      'waste_request_completions_weight_positive_check',
+      sql`${t.weightTons} IS NULL OR ${t.weightTons} > 0`,
+    ),
+    // Ровно одна величина на закрытие (миграция 0091): «ни одной» — закрытие, которое ничего не
+    // предъявило, «обе» — два ответа на вопрос, сколько увезли.
+    measure: check(
+      'waste_request_completions_measure_check',
+      sql`(${t.volumeM3} IS NOT NULL) <> (${t.weightTons} IS NOT NULL)`,
+    ),
+    // Вес идёт без денег: цена прайса задана за м³, и приложить её к тоннам нечем (ADR 0067).
+    weightNoPricing: check(
+      'waste_request_completions_weight_no_pricing_check',
+      sql`${t.weightTons} IS NULL
+          OR (${t.pricePerM3} IS NULL AND ${t.wasteTariffId} IS NULL AND ${t.totalCost} IS NULL)`,
     ),
     pricePositive: check(
       'waste_request_completions_price_positive_check',
@@ -1447,7 +1520,8 @@ export const specialEquipmentRequestDetails = pgTable(
       .references(() => vehicleRequests.id, { onDelete: 'cascade' }),
     dateFrom: date('date_from', { mode: 'string' }).notNull(),
     dateTo: date('date_to', { mode: 'string' }),
-    // Кто встречает технику на объекте (миграция 0062); пусто — заявка старше колонки.
+    // Кто встречает технику на объекте (миграция 0062); пусто — заявка старше колонки. Телефон —
+    // десять цифр без кода страны (ADR 0066, миграция 0095).
     responsibleName: text('responsible_name').notNull().default(''),
     responsiblePhone: text('responsible_phone').notNull().default(''),
   },
@@ -1479,7 +1553,8 @@ export const freightTransportRequestDetails = pgTable(
     loadingAddress: jsonb('loading_address').$type<AddressMeta>(),
     unloadingAddress: jsonb('unloading_address').$type<AddressMeta>(),
     // Контакт на каждом конце маршрута (миграция 0062): грузят и принимают разные люди в разных
-    // местах. Пусто — заявка заведена до появления колонок.
+    // местах. Пусто — заявка заведена до появления колонок. Телефоны — десять цифр без кода
+    // страны (ADR 0066, миграция 0095).
     loadingResponsibleName: text('loading_responsible_name').notNull().default(''),
     loadingResponsiblePhone: text('loading_responsible_phone').notNull().default(''),
     unloadingResponsibleName: text('unloading_responsible_name').notNull().default(''),
@@ -1792,6 +1867,8 @@ export const persons = pgTable(
       .notNull()
       .generatedAlwaysAs(sql`btrim(last_name || ' ' || first_name || ' ' || middle_name)`),
     birthDate: date('birth_date', { mode: 'string' }),
+    // Десять цифр без кода страны (ADR 0066): по номеру звонят перед рейсом, и хранить его иначе,
+    // чем телефон учётки или контакт по заявке, было бы вторым правилом на то же самое.
     phone: text('phone').notNull().default(''),
     email: citext('email').notNull().default(''),
     // СНИЛС (ADR 0037, миграция 0058): обязательный реквизит путевого листа. Хранятся 11 цифр,

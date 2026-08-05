@@ -2,11 +2,16 @@ import { describe, expect, it } from 'vitest';
 import {
   cancelWaybillSchema,
   canCancelWaybill,
+  DEFAULT_TYPE_WAYBILL_FORM,
   esm2Periods,
   esm2Required,
   esm2SyncPlan,
   esm2WeekDays,
   formatWaybillNumber,
+  isPassengerTypeForm,
+  TYPE_WAYBILL_FORM_CODES,
+  typeWaybillFormCodeSchema,
+  typeWaybillFormOf,
   WAYBILL_FORM_CODES,
   WAYBILL_STATUSES,
   waybillDisplayNumber,
@@ -59,6 +64,42 @@ describe('состояния и бланки', () => {
 });
 
 /**
+ * Бланк типа ТС в справочнике (ADR 0065). Тип отвечает на вопрос «каким бланком», а не
+ * «выписывается ли»: на второй отвечает принадлежность машины.
+ */
+describe('бланк, закреплённый за типом ТС', () => {
+  it('типу закрепляют 4-П или форму № 3 — ЭСМ-2 портал выписывает сам по заявке', () => {
+    expect(TYPE_WAYBILL_FORM_CODES).toEqual(['4p', 'leg3']);
+    expect(typeWaybillFormCodeSchema.safeParse('esm2').success).toBe(false);
+    expect(typeWaybillFormCodeSchema.safeParse('4p').success).toBe(true);
+    expect(typeWaybillFormCodeSchema.safeParse('leg3').success).toBe(true);
+  });
+
+  it('умолчание — 4-П: у собственной техники лист есть всегда', () => {
+    expect(DEFAULT_TYPE_WAYBILL_FORM).toBe('4p');
+    expect(typeWaybillFormOf(false)).toBe('4p');
+  });
+
+  /*
+   * Признак «легковой транспорт» и код формы — одно знание в двух видах: справочник спрашивает
+   * человека про транспорт, а хранит бланк. Перевод обязан ходить в обе стороны без потерь,
+   * иначе чекбокс откроется снятым у типа, который уже переведён на форму № 3.
+   */
+  it('«легковой транспорт» и код формы переводятся друг в друга без потерь', () => {
+    expect(typeWaybillFormOf(true)).toBe('leg3');
+    expect(isPassengerTypeForm('leg3')).toBe(true);
+    expect(isPassengerTypeForm('4p')).toBe(false);
+    for (const isPassenger of [true, false]) {
+      expect(isPassengerTypeForm(typeWaybillFormOf(isPassenger))).toBe(isPassenger);
+    }
+  });
+
+  it('ЭСМ-2 легковым признаком не является: у него свой путь выписки', () => {
+    expect(isPassengerTypeForm('esm2')).toBe(false);
+  });
+});
+
+/**
  * На какой рейс выписывается лист (ADR 0037 п. 1, ADR 0041).
  *
  * Ограничение идёт и по типу заявки, и по виду ТС — и это не тавтология: заявку на технику для
@@ -103,21 +144,26 @@ describe('на какой рейс выписывается путевой ли�
       requestType: 'freight_transport',
       ownership: 'rental',
       formCode: '4p',
-      typeName: 'Самосвалы',
     });
     expect(rental.formCode).toBeNull();
     expect(rental.reason).toContain('арендодатель');
   });
 
-  it('тип без бланка — причина называет тип: это поправимое состояние справочника', () => {
-    const noForm = waybillRequirement({
-      requestType: 'freight_transport',
-      ownership: 'own',
-      formCode: null,
-      typeName: 'Автокраны',
-    });
-    expect(noForm.formCode).toBeNull();
-    expect(noForm.reason).toContain('Автокраны');
+  /**
+   * Отказа «у типа не заведён бланк» больше нет (ADR 0065): у собственной техники лист есть
+   * всегда, а тип отвечает только на вопрос, каким бланком. Прежнее пустое значение колонки
+   * молча отключало документ у каждого типа, заведённого через справочник.
+   */
+  it('собственная техника получает бланк своего типа — отказать тут больше нечему', () => {
+    for (const formCode of ['4p', 'leg3'] as const) {
+      const own = waybillRequirement({
+        requestType: 'freight_transport',
+        ownership: 'own',
+        formCode,
+      });
+      expect(own.formCode).toBe(formCode);
+      expect(own.reason).toBeNull();
+    }
   });
 });
 

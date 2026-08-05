@@ -1,5 +1,10 @@
 import { z } from 'zod';
 import { baseListQuery, uuidSchema } from './common';
+import {
+  DEFAULT_TYPE_WAYBILL_FORM,
+  typeWaybillFormCodeSchema,
+  type WaybillFormCode,
+} from './waybills';
 
 export const VEHICLE_TYPE_SORT_FIELDS = [
   'code',
@@ -37,17 +42,29 @@ export const createVehicleTypeSchema = z
     description: z.string().trim().max(1000).optional().default(''),
     sortOrder: z.coerce.number().int().optional().default(100),
     isActive: z.boolean().optional().default(true),
+    /**
+     * Каким бланком выписывается лист на машины типа (ADR 0065). Не передан — 4-П: у собственной
+     * техники лист есть всегда, а форма № 3 включается признаком «легковой транспорт» в форме
+     * справочника. Пустого значения у поля нет — оно молча отключало документ у каждого типа,
+     * заведённого через портал.
+     */
+    waybillFormCode: typeWaybillFormCodeSchema.optional().default(DEFAULT_TYPE_WAYBILL_FORM),
   })
   .strict();
 export type CreateVehicleTypeInput = z.infer<typeof createVehicleTypeSchema>;
 
-// ── Обновление: описательные поля + активность. code/kindId менять нельзя (strict отклоняет). ──
+// ── Обновление: описательные поля, активность и бланк. code/kindId менять нельзя (strict отклоняет). ──
 export const updateVehicleTypeSchema = z
   .object({
     name: z.string().trim().min(1).max(255).optional(),
     description: z.string().trim().max(1000).optional(),
     sortOrder: z.coerce.number().int().optional(),
     isActive: z.boolean().optional(),
+    /**
+     * Бланк правится наравне с описательными полями — иначе тип, заведённый не тем бланком,
+     * чинился бы только миграцией, а это и есть тот софтлок, ради которого поле открыли.
+     */
+    waybillFormCode: typeWaybillFormCodeSchema.optional(),
   })
   .strict();
 export type UpdateVehicleTypeInput = z.infer<typeof updateVehicleTypeSchema>;
@@ -63,6 +80,12 @@ export interface VehicleTypeDto {
   description: string;
   isActive: boolean;
   sortOrder: number;
+  /**
+   * Каким бланком выписывается лист на машины этого типа (ADR 0065). Пустым не бывает: «лист не
+   * выписывается» — это про принадлежность машины, а не про её тип. В форме справочника поле
+   * стоит признаком «легковой транспорт» (`isPassengerTypeForm`).
+   */
+  waybillFormCode: WaybillFormCode;
   /** Сколько ТТХ привязано к типу (ADR 0016): 0 — у типа нет и не может быть категорий. */
   specCount: number;
   /** Сколько категорий (комбинаций значений ТТХ) заведено у типа. */

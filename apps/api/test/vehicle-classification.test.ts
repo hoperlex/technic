@@ -44,6 +44,30 @@ describe('vehicle_types: создание (плоская модель, ADR 0005
     expect(t.description).toBe('');
     expect(t.sortOrder).toBe(100);
     expect(t.isActive).toBe(true);
+    // Бланк не спросили — значит 4-П (ADR 0065). Прежнее умолчание («лист не выписывается»)
+    // молча отключало документ у каждого типа, заведённого через справочник.
+    expect(t.waybillFormCode).toBe('4p');
+  });
+
+  it('«легковой транспорт» приходит бланком формы № 3', () => {
+    const t = createVehicleTypeSchema.parse({
+      kindId: KIND_ID,
+      code: 'passenger_cars',
+      name: 'Легковые автомобили',
+      waybillFormCode: 'leg3',
+    });
+    expect(t.waybillFormCode).toBe('leg3');
+  });
+
+  it('ЭСМ-2 типу не закрепляется: его выписывает портал по заявке на технику', () => {
+    expect(() =>
+      createVehicleTypeSchema.parse({
+        kindId: KIND_ID,
+        code: 'crawler_excavators',
+        name: 'Экскаваторы гусеничные',
+        waybillFormCode: 'esm2',
+      }),
+    ).toThrow();
   });
 
   it('kindId обязателен', () => {
@@ -79,6 +103,16 @@ describe('vehicle_types: обновление (strict, без структурн
     const ok = updateVehicleTypeSchema.parse({ name: 'Автокраны 2', isActive: false });
     expect(ok.name).toBe('Автокраны 2');
     expect(ok.isActive).toBe(false);
+  });
+
+  /*
+   * Бланк правится наравне с описательными полями — ради этого поле и открыли: тип, заведённый
+   * не тем бланком, чинился бы иначе только миграцией, а это и есть софтлок.
+   */
+  it('бланк правится, а незаданный не трогается — PATCH не переводит тип на 4-П молча', () => {
+    expect(updateVehicleTypeSchema.parse({ waybillFormCode: 'leg3' }).waybillFormCode).toBe('leg3');
+    expect(updateVehicleTypeSchema.parse({ name: 'Автокраны 2' }).waybillFormCode).toBeUndefined();
+    expect(() => updateVehicleTypeSchema.parse({ waybillFormCode: 'esm2' })).toThrow();
   });
   it('структурные ключи (code/kindId/parentId/level) отклоняются', () => {
     for (const bad of [

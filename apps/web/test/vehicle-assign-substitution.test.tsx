@@ -25,7 +25,8 @@ const CRANE_130: VehicleDto = {
   kindName: 'Спецтехника',
   vehicleTypeId: 'type-crane',
   typeName: 'Автокраны',
-  waybillFormCode: null,
+  // Бланк есть у каждого типа (ADR 0065): у спецтехники это 4-П — им печатается её перегон.
+  waybillFormCode: '4p',
   vehicleCategoryId: 'cat-130',
   categoryName: 'Автокраны, г/п 130 т',
   categorySpecs: { lift_capacity: 130 },

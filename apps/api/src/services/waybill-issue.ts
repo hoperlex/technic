@@ -1,5 +1,6 @@
 import { and, eq } from 'drizzle-orm';
 import {
+  formatPhone,
   licenseNumberLabel,
   routeCargoLabel,
   routeContactsLabel,
@@ -65,7 +66,6 @@ export async function waybillRequirementFor(
     .select({
       ownership: vehicles.ownership,
       formCode: vehicleTypes.waybillFormCode,
-      typeName: vehicleTypes.name,
     })
     .from(vehicles)
     .innerJoin(vehicleTypes, eq(vehicleTypes.id, vehicles.vehicleTypeId))
@@ -76,7 +76,6 @@ export async function waybillRequirementFor(
     requestType: params.requestType,
     ownership: row.ownership,
     formCode: row.formCode,
-    typeName: row.typeName,
   });
 }
 
@@ -96,7 +95,7 @@ export async function waybillRequirementByType(
   if (params.requestType !== 'freight_transport') return { formCode: null, reason: null };
 
   const [row] = await tx
-    .select({ formCode: vehicleTypes.waybillFormCode, typeName: vehicleTypes.name })
+    .select({ formCode: vehicleTypes.waybillFormCode })
     .from(vehicleTypes)
     .where(eq(vehicleTypes.id, params.vehicleTypeId));
 
@@ -105,7 +104,6 @@ export async function waybillRequirementByType(
     requestType: params.requestType,
     ownership: 'own',
     formCode: row.formCode,
-    typeName: row.typeName,
   });
 }
 
@@ -114,8 +112,7 @@ export async function waybillRequirementByType(
  * того, чего оно требует: принадлежности машины и бланка, закреплённого за её типом.
  *
  * У перегона тип не спрашивают вовсе: экскаватор идёт по дорогам общего пользования как
- * транспортное средство, и документ у этой поездки один — 4-П. Проставить бланк типам
- * спецтехники нельзя: тогда они попали бы в подсказки грузовых рейсов.
+ * транспортное средство, и документ у этой поездки один — 4-П.
  */
 export async function routeWaybillFormFor(
   tx: Reader,
@@ -125,7 +122,6 @@ export async function routeWaybillFormFor(
     .select({
       ownership: vehicles.ownership,
       formCode: vehicleTypes.waybillFormCode,
-      typeName: vehicleTypes.name,
     })
     .from(vehicles)
     .innerJoin(vehicleTypes, eq(vehicleTypes.id, vehicles.vehicleTypeId))
@@ -136,7 +132,6 @@ export async function routeWaybillFormFor(
     purpose: params.purpose,
     ownership: row.ownership,
     formCode: row.formCode,
-    typeName: row.typeName,
   });
 }
 
@@ -367,7 +362,9 @@ async function collectSnapshot(
   return {
     org_name: org?.name ?? '',
     org_address: org?.address ?? '',
-    org_phone: org?.phone ?? '',
+    // Телефоны бланка — единым видом (ADR 0066). Реквизит организации при этом бывает и не одним
+    // номером («(495) …, +7-985-…» у основной): такую запись `formatPhone` печатает как есть.
+    org_phone: formatPhone(org?.phone ?? ''),
     org_okpo: org?.okpo ?? '',
     org_ogrn: org?.ogrn ?? '',
 

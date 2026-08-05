@@ -24,12 +24,45 @@ export const waybillStatusColors: Record<WaybillStatus, string> = {
 };
 
 /**
- * Бланки. Сейчас выписывается один — 4-П на грузоперевозки; остальные объявлены, потому что
- * расширение области должно быть значением в справочнике, а не второй схемой (ADR 0037).
+ * Бланки. Расширение области идёт значением в справочнике, а не второй схемой (ADR 0037).
  */
 export const WAYBILL_FORM_CODES = ['4p', 'leg3', 'esm2'] as const;
 export const waybillFormCodeSchema = z.enum(WAYBILL_FORM_CODES);
 export type WaybillFormCode = (typeof WAYBILL_FORM_CODES)[number];
+
+/**
+ * Бланки, которые закрепляются за типом ТС в справочнике (ADR 0065).
+ *
+ * ЭСМ-2 сюда не входит, и это не забывчивость: он выписывается порталом **по виду заявки**
+ * (`esm2Required`), а не по типу техники — заявку на технику берут в работу, и листы на все недели
+ * её срока рождаются сами. Проставленный типу `'esm2'` не включил бы ничего, зато у машины,
+ * которой этот тип стоит, лист на рейс печатался бы недельным бланком строительной машины.
+ *
+ * Умолчание — 4-П: у собственной техники лист есть всегда, а форма № 3 включается признаком
+ * «легковой транспорт» в справочнике типов.
+ */
+export const TYPE_WAYBILL_FORM_CODES = ['4p', 'leg3'] as const;
+export const typeWaybillFormCodeSchema = z.enum(TYPE_WAYBILL_FORM_CODES, {
+  error: 'Типу закрепляют бланк 4-П или форму № 3: ЭСМ-2 портал выписывает сам по заявке',
+});
+export type TypeWaybillFormCode = (typeof TYPE_WAYBILL_FORM_CODES)[number];
+
+/** Бланк типа по умолчанию: им заводится тип, у которого не сказано обратного (миграция 0094). */
+export const DEFAULT_TYPE_WAYBILL_FORM: TypeWaybillFormCode = '4p';
+
+/**
+ * Легковой ли это транспорт — так вопрос стоит в справочнике типов, и бланк из него следует.
+ * Признак и код формы — одно и то же знание в двух видах, поэтому колонки «легковой» нет:
+ * второй источник правды разошёлся бы с первым на первой же правке.
+ */
+export function isPassengerTypeForm(formCode: WaybillFormCode): boolean {
+  return formCode === 'leg3';
+}
+
+/** Обратный перевод: чекбокс формы справочника — в значение, которое ляжет в справочник. */
+export function typeWaybillFormOf(isPassenger: boolean): TypeWaybillFormCode {
+  return isPassenger ? 'leg3' : DEFAULT_TYPE_WAYBILL_FORM;
+}
 
 export const waybillFormLabels: Record<WaybillFormCode, string> = {
   '4p': 'Форма 4-П (грузовой автомобиль)',
@@ -54,10 +87,8 @@ export interface WaybillRequirementInput {
   requestType: VehicleRequestType;
   /** Принадлежность машины: на арендную лист выписывает арендодатель. */
   ownership: VehicleOwnership;
-  /** Бланк, закреплённый за типом ТС (`vehicle_types.waybill_form_code`). */
-  formCode: WaybillFormCode | null;
-  /** Название типа ТС — им объясняется отсутствие бланка. */
-  typeName: string;
+  /** Бланк, закреплённый за типом ТС (`vehicle_types.waybill_form_code`). Пустым не бывает. */
+  formCode: WaybillFormCode;
 }
 
 export interface WaybillRequirement {
@@ -71,25 +102,24 @@ export interface WaybillRequirement {
   reason: string | null;
 }
 
+/** Единственная причина, по которой у рейса не бывает листа при живой заявке-грузоперевозке. */
+export const RENTAL_WAYBILL_REASON = 'Путевой лист на арендную технику выписывает арендодатель';
+
 /**
  * Нужен ли на этот рейс путевой лист.
  *
- * Порядок проверок задаёт и то, что увидит человек. Первым идёт тип заявки: заказ техники на
- * объект листа не знает — там нет ни рейса, ни маршрута, ни груза, и объяснять в форме нечего.
- * Дальше идут причины, о которых сказать надо: арендную машину ведёт арендодатель, а тип без
- * бланка — состояние справочника, которое поправимо (ADR 0041).
+ * Отказов осталось два, и оба — не про тип техники (ADR 0065). Первый: заказ техники на объект
+ * листа не знает вовсе — там нет ни рейса, ни маршрута, ни груза, и объяснять в форме нечего
+ * (ADR 0041). Второй: арендную машину ведёт арендодатель, и об этом сказать надо.
+ *
+ * Третьего отказа — «у типа не заведён бланк» — больше не существует: у собственной техники лист
+ * есть всегда, а тип отвечает лишь на вопрос, каким бланком (миграция 0094). Прежнее пустое
+ * значение означало не решение, а незаполненную колонку, и молча отключало документ у каждого
+ * типа, заведённого через справочник.
  */
 export function waybillRequirement(input: WaybillRequirementInput): WaybillRequirement {
   if (input.requestType !== 'freight_transport') return { formCode: null, reason: null };
-  if (input.ownership !== 'own') {
-    return { formCode: null, reason: 'Путевой лист на арендную технику выписывает арендодатель' };
-  }
-  if (!input.formCode) {
-    return {
-      formCode: null,
-      reason: `Для типа «${input.typeName}» бланк путевого листа не заведён`,
-    };
-  }
+  if (input.ownership !== 'own') return { formCode: null, reason: RENTAL_WAYBILL_REASON };
   return { formCode: input.formCode, reason: null };
 }
 

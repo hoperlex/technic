@@ -9,6 +9,7 @@ import {
   updateVehicleTypeSpecSchema,
   vehicleTypeListQuerySchema,
   type VehicleTypeDto,
+  type WaybillFormCode,
 } from '@technic/contracts';
 import { db } from '../db/client';
 import {
@@ -57,6 +58,7 @@ const dtoColumns = {
   description: vehicleTypes.description,
   isActive: vehicleTypes.isActive,
   sortOrder: vehicleTypes.sortOrder,
+  waybillFormCode: vehicleTypes.waybillFormCode,
   specCount,
   categoryCount,
   createdAt: vehicleTypes.createdAt,
@@ -73,6 +75,7 @@ type DtoRow = {
   description: string;
   isActive: boolean;
   sortOrder: number;
+  waybillFormCode: WaybillFormCode;
   specCount: number;
   categoryCount: number;
   createdAt: Date;
@@ -90,6 +93,7 @@ function toDto(r: DtoRow): VehicleTypeDto {
     description: r.description,
     isActive: r.isActive,
     sortOrder: r.sortOrder,
+    waybillFormCode: r.waybillFormCode,
     specCount: Number(r.specCount),
     categoryCount: Number(r.categoryCount),
     createdAt: r.createdAt.toISOString(),
@@ -196,6 +200,7 @@ export default async function vehicleTypesRoutes(app: FastifyInstance): Promise<
           description: body.description,
           isActive: body.isActive,
           sortOrder: body.sortOrder,
+          waybillFormCode: body.waybillFormCode,
         })
         .returning({ id: vehicleTypes.id });
       const createdId = created!.id;
@@ -204,7 +209,12 @@ export default async function vehicleTypesRoutes(app: FastifyInstance): Promise<
         action: 'vehicle_type.create',
         entityType: 'vehicle_type',
         entityId: createdId,
-        metadata: { code: body.code, kindId: body.kindId, isActive: body.isActive },
+        metadata: {
+          code: body.code,
+          kindId: body.kindId,
+          isActive: body.isActive,
+          waybillFormCode: body.waybillFormCode,
+        },
       });
       reply.code(201);
       return (await getDtoById(createdId))!;
@@ -231,11 +241,21 @@ export default async function vehicleTypesRoutes(app: FastifyInstance): Promise<
         .where(eq(vehicleTypes.id, id));
 
       const activeChanged = body.isActive !== undefined && body.isActive !== row.isActive;
+      /*
+       * Смена бланка — своё действие журнала, а не строка в «обновлён» (ADR 0065): этим полем
+       * переключается документ строгой отчётности, и вопрос «кто перевёл тип на форму № 3»
+       * должен иметь ответ. Активность приоритетнее лишь потому, что она грубее: выключенным
+       * типом не заводят ни заявок, ни рейсов, и бланк у него уже ни на что не влияет.
+       */
+      const formChanged =
+        body.waybillFormCode !== undefined && body.waybillFormCode !== row.waybillFormCode;
       const action = activeChanged
         ? body.isActive
           ? 'vehicle_type.activate'
           : 'vehicle_type.deactivate'
-        : 'vehicle_type.update';
+        : formChanged
+          ? 'vehicle_type.waybill_form'
+          : 'vehicle_type.update';
       await writeAudit({
         actorUserId: actor,
         action,
@@ -248,6 +268,8 @@ export default async function vehicleTypesRoutes(app: FastifyInstance): Promise<
           newName: body.name ?? row.name,
           oldActive: row.isActive,
           newActive: body.isActive ?? row.isActive,
+          oldWaybillFormCode: row.waybillFormCode,
+          newWaybillFormCode: body.waybillFormCode ?? row.waybillFormCode,
         },
       });
       return (await getDtoById(id))!;

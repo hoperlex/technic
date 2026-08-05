@@ -9,7 +9,6 @@ import {
   createVehicleRouteSchema,
   formatVehicleRequestNumber,
   formatVehicleRouteNumber,
-  isRelocationPurpose,
   isRouteEditable,
   issueRouteWaybillSchema,
   MAX_ROUTE_REQUESTS,
@@ -19,7 +18,6 @@ import {
   routeOrderSchema,
   type RequestStatus,
   routeVersionQuerySchema,
-  type RoutePurpose,
   type RouteTripFields,
   updateVehicleRouteSchema,
   type VehicleRouteDto,
@@ -92,28 +90,23 @@ function tripValues(trip: RouteTripFields | undefined) {
 }
 
 /**
- * Машина рейса: собственная, живая и с бланком путевого листа за типом. Проверяется при заведении
- * рейса — дальше состав сверяется уже с ней (`canJoinRoute` спрашивает принадлежность назначенной
- * машины заявки).
+ * Машина рейса: собственная и живая. Проверяется при заведении рейса — дальше состав сверяется уже
+ * с ней (`canJoinRoute` спрашивает принадлежность назначенной машины заявки).
  *
- * У перегона бланк типа не спрашивается: спецтехника его не имеет и иметь не должна (иначе
- * экскаватор попал бы в подсказки грузовых рейсов), а печатается перегон 4-П — правилом
- * `routeWaybillForm`.
+ * Бланк типа здесь больше не спрашивается (ADR 0065). Он и не отвечал на вопрос этой проверки:
+ * заполненная колонка читалась как «этой техникой можно возить грузы», хотя говорит она лишь о
+ * том, какую бумагу печатать. Отвечать на «чем закрывают заявку» перестал и вид ТС — он больше
+ * не граница замены, — так что рейс идёт за назначением: собственная активная машина, а бланк
+ * подберёт `routeWaybillForm` (у перегона — всегда 4-П).
  */
-async function assertRouteVehicle(
-  vehicleId: string,
-  purpose: RoutePurpose = 'freight',
-): Promise<void> {
+async function assertRouteVehicle(vehicleId: string): Promise<void> {
   const [row] = await db
     .select({
       ownership: vehicles.ownership,
       status: vehicles.status,
       deletedAt: vehicles.deletedAt,
-      formCode: vehicleTypes.waybillFormCode,
-      typeName: vehicleTypes.name,
     })
     .from(vehicles)
-    .innerJoin(vehicleTypes, eq(vehicleTypes.id, vehicles.vehicleTypeId))
     .where(eq(vehicles.id, vehicleId));
   if (!row || row.deletedAt) throw err.badRequest('Техника не найдена');
   if (row.ownership !== 'own') {
@@ -129,11 +122,6 @@ async function assertRouteVehicle(
         vehicleId: 'Техника недоступна',
       },
     );
-  }
-  if (!isRelocationPurpose(purpose) && !row.formCode) {
-    throw err.unprocessable(`Для типа «${row.typeName}» бланк путевого листа не заведён`, {
-      vehicleId: 'Тип без бланка',
-    });
   }
 }
 

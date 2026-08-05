@@ -26,8 +26,8 @@ function position(
     categoryName: null,
     label: over.categoryName ?? over.typeName,
     specCount: over.vehicleCategoryId ? 1 : 0,
-    // Спецтехника: путевой лист на неё не выписывается (ADR 0037 п. 1).
-    waybillFormCode: null,
+    // Бланк у типа есть всегда (ADR 0065); у спецтехники это 4-П — им печатается её перегон.
+    waybillFormCode: '4p',
     avgPricePerHour: null,
     avgPricePerShift: null,
     isActive: true,

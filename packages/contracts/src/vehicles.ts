@@ -198,8 +198,9 @@ export interface VehicleDto {
    * Бланк, закреплённый за типом машины (ADR 0037). Приезжает строкой справочника, потому что
    * заявку закрывают и машиной другого типа (ADR 0059): бланк рейса задаёт та единица, которая
    * поедет, а не тип, который заказали, — и форма назначения обязана назвать смену бланка сразу.
+   * Пустым не бывает (ADR 0065).
    */
-  waybillFormCode: WaybillFormCode | null;
+  waybillFormCode: WaybillFormCode;
   vehicleCategoryId: string | null;
   categoryName: string | null;
   /**

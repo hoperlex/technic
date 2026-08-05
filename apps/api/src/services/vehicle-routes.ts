@@ -676,7 +676,6 @@ export function toRouteDto(
       purpose: row.purpose,
       ownership: row.ownership,
       formCode: row.typeFormCode,
-      typeName: row.typeName,
     }).formCode,
     routeDate: row.routeDate,
     vehicleId: row.vehicleId,

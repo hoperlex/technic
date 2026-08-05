@@ -1,10 +1,11 @@
 import { z } from 'zod';
-import { baseListQuery, dateOnlySchema, uuidSchema } from './common';
+import { baseListQuery, dateOnlySchema, formatPhone, uuidSchema } from './common';
 import type { RequestStatus, VehicleRequestType } from './enums';
 import { requestStatusLabels } from './enums';
 import type { DriverDocumentGap } from './persons';
 import type { VehicleOwnership, VehicleSpecValues } from './vehicles';
 import type { WaybillFormCode, WaybillRequirement, WaybillStatus } from './waybills';
+import { RENTAL_WAYBILL_REASON } from './waybills';
 
 // ── Маршрут: рейс одной машины на одну дату (план `docs/vehicle-routes-plan.md`) ──
 //
@@ -253,31 +254,22 @@ export const ROLLBACK_WAYBILL_MESSAGE =
  *
  * У грузового рейса его выбирает тип машины (ADR 0037 п. 1) — самосвалу 4-П, легковой форма № 3.
  * У перегона бланк всегда 4-П, независимо от типа: экскаватор идёт по дорогам общего пользования
- * как транспортное средство, и документ у этой поездки один. Проставить `waybill_form_code` типам
- * спецтехники нельзя — тогда экскаватор попал бы в подсказки грузовых рейсов и прошёл бы проверку
- * машины маршрута, а заявку на грузоперевозку экскаватором портал собрать не должен.
+ * как транспортное средство, и документ у этой поездки один.
  *
- * Принадлежность спрашивается у обоих: на арендную машину лист выписывает арендодатель, и
- * перегон арендной техники — его же забота.
+ * Отказ здесь один — принадлежность: на арендную машину лист выписывает арендодатель, и перегон
+ * арендной техники его же забота. Прежний второй отказ («у типа не заведён бланк») снят вместе с
+ * пустым значением колонки: бланк есть у каждого типа, по умолчанию 4-П (ADR 0065).
  */
 export function routeWaybillForm(input: {
   purpose: RoutePurpose;
   ownership: VehicleOwnership;
   /** Бланк, закреплённый за типом ТС; решает только грузовой рейс. */
-  formCode: WaybillFormCode | null;
-  /** Название типа ТС — им объясняется отсутствие бланка. */
-  typeName: string;
+  formCode: WaybillFormCode;
 }): WaybillRequirement {
   if (input.ownership !== 'own') {
-    return { formCode: null, reason: 'Путевой лист на арендную технику выписывает арендодатель' };
+    return { formCode: null, reason: RENTAL_WAYBILL_REASON };
   }
   if (isRelocationPurpose(input.purpose)) return { formCode: '4p', reason: null };
-  if (!input.formCode) {
-    return {
-      formCode: null,
-      reason: `Для типа «${input.typeName}» бланк путевого листа не заведён`,
-    };
-  }
   return { formCode: input.formCode, reason: null };
 }
 
@@ -480,7 +472,8 @@ function contactNameLabel(name: string): string {
 export function routeContactsLabel(contacts: readonly { name: string; phone: string }[]): string {
   return contacts
     .map(({ name, phone }) =>
-      [contactNameLabel(name), phone.trim()].filter((part) => part !== '').join(', '),
+      // Номер печатается тем же видом, что и везде (ADR 0066): в бланке его читают и набирают.
+      [contactNameLabel(name), formatPhone(phone.trim())].filter((part) => part !== '').join(', '),
     )
     .filter((line) => line !== '')
     .join('\n');
