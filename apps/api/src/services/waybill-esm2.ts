@@ -5,6 +5,7 @@ import {
   esm2Required,
   esm2SyncPlan,
   esm2WeekDays,
+  formatPhone,
   moscowDateKeyOf,
   type VehicleOwnership,
   waybillDisplayNumber,
@@ -224,7 +225,9 @@ async function collectSnapshot(
   return {
     org_name: org?.name ?? '',
     org_address: org?.address ?? '',
-    org_phone: org?.phone ?? '',
+    // Телефоны бланка — единым видом (ADR 0066). Реквизит организации при этом бывает и не одним
+    // номером («(495) …, +7-985-…» у основной): такую запись `formatPhone` печатает как есть.
+    org_phone: formatPhone(org?.phone ?? ''),
     org_okpo: org?.okpo ?? '',
     org_ogrn: org?.ogrn ?? '',
 
@@ -265,7 +268,7 @@ async function collectSnapshot(
 
     customer_name: request?.objectName ?? '',
     customer_address: request?.objectAddress ?? '',
-    customer_phone: request?.responsiblePhone ?? '',
+    customer_phone: formatPhone(request?.responsiblePhone ?? ''),
     object_code: request?.objectCode ?? '',
 
     period_from_day: dayOf(params.period.from),

@@ -66,6 +66,8 @@ function fillCommonFields() {
   fill('Фамилия', 'Иванов');
   fill('Имя', 'Иван');
   fill('Email', 'ivanov@example.com');
+  // Телефон обязателен (ADR 0066): без него заявку рассматривать нечем — портал не пишет писем.
+  fill('Телефон', '9261234567');
   fill('Пароль', 'Sn3-verkhoyansk-77');
   fill('Проверка', '47293');
 }
@@ -127,32 +129,40 @@ describe('форма регистрации', () => {
     expect(screen.getByText('ivanov@example.com')).toBeDefined();
   });
 
-  it('телефон можно не заполнять — заявка уходит с пустым номером', async () => {
+  it('без телефона заявка не уходит — по нему её и рассматривают', async () => {
+    // ADR 0066 отменяет необязательность номера при регистрации (ADR 0043 п. 2): почтовых
+    // уведомлений у портала нет, и без телефона администратору некуда обратиться.
+    const http = renderPage();
+    await captchaShown();
+
+    fill('Фамилия', 'Иванов');
+    fill('Имя', 'Иван');
+    fill('Email', 'ivanov@example.com');
+    fill('Пароль', 'Sn3-verkhoyansk-77');
+    fill('Проверка', '47293');
+    await selectRoleRequest('Диспетчер');
+    await act(async () => submit());
+
+    expect(registrations(http)).toBe(0);
+    expect(await screen.findByText('Укажите контактный телефон')).toBeDefined();
+  });
+
+  it('телефон уходит десятью цифрами, как бы его ни набрали', async () => {
+    // Код страны поле подставляет само, а «8» съедает: наружу из формы уходит то же, что хранит
+    // база, — маска живёт только на экране (ADR 0066).
     const http = renderPage();
     await captchaShown();
 
     fillCommonFields();
+    fill('Телефон', '8 926 123-45-67');
     await selectRoleRequest('Диспетчер');
     await act(async () => submit());
 
     await waitFor(() => expect(registrations(http)).toBe(1));
-    expect(sent(http)).toMatchObject({ phone: '' });
+    expect(sent(http)).toMatchObject({ phone: '9261234567' });
   });
 
-  it('введённый телефон уходит как есть — формат свободный', async () => {
-    const http = renderPage();
-    await captchaShown();
-
-    fillCommonFields();
-    fill('Телефон', '+7 926 123-45-67');
-    await selectRoleRequest('Диспетчер');
-    await act(async () => submit());
-
-    await waitFor(() => expect(registrations(http)).toBe(1));
-    expect(sent(http)).toMatchObject({ phone: '+7 926 123-45-67' });
-  });
-
-  it('вместо номера слово — заявка не уходит: по такому телефону не позвонят', async () => {
+  it('вместо номера слово — в поле не попадает вовсе, и заявка не уходит', async () => {
     const http = renderPage();
     await captchaShown();
 
@@ -162,7 +172,22 @@ describe('форма регистрации', () => {
     await act(async () => submit());
 
     expect(registrations(http)).toBe(0);
-    expect(await screen.findByText('Некорректный телефон')).toBeDefined();
+    // Буквы маска не пропускает, поэтому поле остаётся пустым — и заявка спотыкается о
+    // обязательность номера, а не о его формат.
+    expect(await screen.findByText('Укажите контактный телефон')).toBeDefined();
+  });
+
+  it('недобранный номер заявку не пропускает', async () => {
+    const http = renderPage();
+    await captchaShown();
+
+    fillCommonFields();
+    fill('Телефон', '926 123');
+    await selectRoleRequest('Диспетчер');
+    await act(async () => submit());
+
+    expect(registrations(http)).toBe(0);
+    expect(await screen.findByText('Телефон в формате +7 (900) 000 00 00')).toBeDefined();
   });
 
   it('слабый пароль не отправляется: длины мало, если это фамилия или последовательность', async () => {

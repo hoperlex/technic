@@ -1,6 +1,7 @@
 import { Col, Form, Input, Row, Space, Typography } from 'antd';
 import { contactIssue } from '@technic/contracts';
 import { PhoneLink } from './PhoneField';
+import { PhoneInput } from './PhoneInput';
 
 interface Props {
   /** Имя поля ФИО в форме; телефон лежит в `phoneName`. */
@@ -26,8 +27,8 @@ function rule(kind: 'name' | 'phone') {
  * контакт заводят (техника на объект, погрузка и разгрузка грузоперевозки, вывоз мусора):
  * подписи там разные, а правила ввода обязаны совпадать.
  *
- * Телефон не маскуется намеренно: в заявку переносят номер из переписки — и с добавочным, и
- * городской, — а маска заставляла бы человека переделывать то, что он только что прочитал.
+ * Телефон — под общей маской «+7 (900) 000 00 00» (ADR 0066): номер по нему набирают с площадки,
+ * и вид у него тот же, что в справочниках и в путевом листе.
  */
 export function ResponsibleFields({
   nameField,
@@ -45,14 +46,16 @@ export function ResponsibleFields({
         </Form.Item>
       </Col>
       <Col xs={24} sm={10}>
-        <Form.Item name={phoneField} label={phoneLabel} required rules={[rule('phone')]}>
-          <Input
-            placeholder="+7 900 000-00-00"
-            inputMode="tel"
-            autoComplete="tel"
-            disabled={disabled}
-            maxLength={50}
-          />
+        {/* Проверка по уходу из поля: под маской недобранный номер невалиден, и проверка по
+            вводу держала бы поле красным весь набор. */}
+        <Form.Item
+          name={phoneField}
+          label={phoneLabel}
+          required
+          validateTrigger="onBlur"
+          rules={[rule('phone')]}
+        >
+          <PhoneInput disabled={disabled} />
         </Form.Item>
       </Col>
     </Row>

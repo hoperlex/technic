@@ -1,9 +1,10 @@
 import { useState } from 'react';
-import { App, Button, Form, Input, Select, Space, Switch, Tag, Typography } from 'antd';
+import { App, Button, Form, Input, Select, Space, Switch, Tag } from 'antd';
 import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { CreateWarehouseInput, WarehouseDto } from '@technic/contracts';
+import { type CreateWarehouseInput, formatPhone, type WarehouseDto } from '@technic/contracts';
 import { counterpartiesApi } from '../../api/resources';
+import { PhoneField, PhoneLink } from '../../components/PhoneField';
 import { AddressAutoComplete } from '@entities/address';
 import { AutoSelect } from '@shared/ui';
 import { DataTable, type CardConfig } from '@shared/ui';
@@ -164,7 +165,7 @@ export function WarehousesTab() {
             {r.contactPhone && (
               <>
                 {r.contactPerson && <br />}
-                <Typography.Text type="secondary">{r.contactPhone}</Typography.Text>
+                <PhoneLink phone={r.contactPhone} />
               </>
             )}
           </>
@@ -241,7 +242,7 @@ export function WarehousesTab() {
     primary: (r) => r.supplier.name,
     lines: [
       (r) => r.name || null,
-      (r) => [r.contactPerson, r.contactPhone].filter(Boolean).join(' · ') || null,
+      (r) => [r.contactPerson, formatPhone(r.contactPhone)].filter(Boolean).join(' · ') || null,
       (r) => r.comment || null,
     ],
     onOpen: openEdit,
@@ -321,9 +322,7 @@ export function WarehousesTab() {
           <Form.Item name="contactPerson" label="Контактное лицо">
             <Input maxLength={200} placeholder="Кто принимает машину" />
           </Form.Item>
-          <Form.Item name="contactPhone" label="Телефон">
-            <Input maxLength={50} placeholder="+7 (___) ___-__-__" />
-          </Form.Item>
+          <PhoneField name="contactPhone" />
           <Form.Item name="comment" label="Комментарий">
             <Input.TextArea rows={2} maxLength={2000} />
           </Form.Item>

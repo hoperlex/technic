@@ -1,6 +1,7 @@
 import {
   assignmentTitle,
   formatMoscowDateTime,
+  formatPhone,
   type RequestChangeDto,
   vehicleClassificationLabel,
   type VehicleRequestAssignmentDto,
@@ -66,10 +67,12 @@ export function diffVehicleRequests(
       before.responsibleName || EMPTY,
       after.responsibleName || EMPTY,
     );
+    // Номер в истории — тем же видом, что в карточке (ADR 0066): иначе смена формата хранения
+    // читалась бы как смена телефона.
     diff.changed(
       'responsiblePhone',
-      before.responsiblePhone || EMPTY,
-      after.responsiblePhone || EMPTY,
+      formatPhone(before.responsiblePhone) || EMPTY,
+      formatPhone(after.responsiblePhone) || EMPTY,
     );
   } else if (
     before.requestType === 'freight_transport' &&
@@ -98,8 +101,8 @@ export function diffVehicleRequests(
     );
     diff.changed(
       'loadingResponsiblePhone',
-      before.loadingResponsiblePhone || EMPTY,
-      after.loadingResponsiblePhone || EMPTY,
+      formatPhone(before.loadingResponsiblePhone) || EMPTY,
+      formatPhone(after.loadingResponsiblePhone) || EMPTY,
     );
     diff.changed(
       'unloadingResponsibleName',
@@ -108,8 +111,8 @@ export function diffVehicleRequests(
     );
     diff.changed(
       'unloadingResponsiblePhone',
-      before.unloadingResponsiblePhone || EMPTY,
-      after.unloadingResponsiblePhone || EMPTY,
+      formatPhone(before.unloadingResponsiblePhone) || EMPTY,
+      formatPhone(after.unloadingResponsiblePhone) || EMPTY,
     );
   }
 

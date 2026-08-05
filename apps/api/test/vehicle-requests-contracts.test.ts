@@ -359,16 +359,21 @@ describe('vehicle-requests: ответственный и контактный �
     }
   });
 
-  it('телефон принимается в любой записи, лишь бы цифр хватало на звонок', () => {
-    for (const phone of ['+7 926 000-00-01', '8(495)123-45-67', '495 12-34 доб. 5']) {
+  it('телефон принимается в любом написании, а хранится десятью цифрами', () => {
+    // Скобки, пробелы, «8» и «+7» — привычка того, кто вводил, а не часть номера (ADR 0066):
+    // в заявку он попадает одним видом, каким бы его ни записали.
+    for (const phone of ['+7 926 000-00-01', '8 (926) 000-00-01', '9260000001']) {
       const v = createVehicleRequestSchema.parse({ ...special, responsiblePhone: phone });
       if (v.requestType !== 'special_equipment') throw new Error('unreachable');
-      expect(v.responsiblePhone).toBe(phone);
+      expect(v.responsiblePhone).toBe('9260000001');
     }
-    // Цифр меньше пяти — по такому «номеру» не дозвонятся.
-    expect(() =>
-      createVehicleRequestSchema.parse({ ...special, responsiblePhone: 'позвонить Пете' }),
-    ).toThrow();
+    // Не номер: по «позвонить Пете» не дозвонятся, а городской с добавочным к десяти цифрам не
+    // сводится — такой контакт записывают номером, а добавочный уходит в комментарий.
+    for (const phone of ['позвонить Пете', '495 12-34 доб. 5', '8(495)123-45-67 доб. 12']) {
+      expect(() =>
+        createVehicleRequestSchema.parse({ ...special, responsiblePhone: phone }),
+      ).toThrow();
+    }
   });
 
   it('правка: контакт необязателен, но пустым его не передать', () => {

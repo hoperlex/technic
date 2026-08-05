@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { baseListQuery, dateOnlySchema, uuidSchema } from './common';
+import { baseListQuery, dateOnlySchema, optionalPhoneSchema, uuidSchema } from './common';
 import { personNameFields, personNamePartialFields } from './person-name';
 import { snilsSchema } from './snils';
 
@@ -290,7 +290,9 @@ const numberSchema = z.string().trim().min(1, 'Номер обязателен')
 const issuedBySchema = z.string().trim().max(255);
 const personnelNoSchema = z.string().trim().max(50);
 const jobTitleSchema = z.string().trim().max(255);
-const phoneSchema = z.string().trim().max(50);
+// Телефон водителя — общей схемой (ADR 0066): своя, принимавшая любой текст, разошлась бы с
+// правилом остальных полей, а номер здесь тот же — по нему звонят перед рейсом.
+const phoneSchema = optionalPhoneSchema;
 const commentSchema = z.string().trim().max(2000);
 
 /** Категория документа: ссылка на справочник плюс собственные сроки, если они у неё свои. */
