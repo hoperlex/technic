@@ -44,6 +44,7 @@ import {
 } from '@technic/contracts';
 import { driversApi } from '../../api/resources';
 import { DriversImportModal } from './DriversImportModal';
+import { PhoneField } from '../../components/PhoneField';
 import { DataTable, type CardConfig } from '@shared/ui';
 import { FormModal } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
@@ -52,7 +53,7 @@ import { type FilterDefinition, sortOptionsFrom } from '@shared/ui';
 import { useListParams } from '@shared/lib';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
-import { usePurgeAction } from './usePurgeAction';
+import { usePurgeAction } from '../../hooks/usePurgeAction';
 
 /**
  * Справочник водителей (ADR 0037).
@@ -753,9 +754,7 @@ export function DriversTab() {
           <Form.Item name="personnelNo" label="Табельный номер">
             <Input />
           </Form.Item>
-          <Form.Item name="phone" label="Телефон">
-            <Input />
-          </Form.Item>
+          <PhoneField />
           <Form.Item name="comment" label="Комментарий">
             <Input.TextArea rows={2} />
           </Form.Item>

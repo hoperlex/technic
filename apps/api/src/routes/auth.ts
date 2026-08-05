@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
-import { eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import {
   type AuthUser,
   type CaptchaChallenge,
@@ -27,7 +27,12 @@ import {
 } from '../auth/sessions';
 import { loadPrincipal } from '../auth/principal';
 import { requirePrincipal } from '../auth/plugin';
-import { constructionObjectIdsExpr, departmentIdsExpr } from '../services/user-scopes';
+import {
+  constructionObjectIdsExpr,
+  departmentIdsExpr,
+  departmentObjectIdsExpr,
+} from '../services/user-scopes';
+import { assertEmailFree, asEmailConflict } from '../services/user-email';
 
 interface AuthUserSource {
   id: string;
@@ -43,6 +48,8 @@ interface AuthUserSource {
   constructionObjectIds: string[];
   /** Отделы учётки (ADR 0040): вторая ось области — вместо объектов, а не вместе с ними. */
   departmentIds: string[];
+  /** Площадки отделов (ADR 0062): производная область роли отдела в модуле «Вывоз мусора». */
+  departmentObjectIds: string[];
   /** Тип контрагента учётки (ADR 0038): вместе с ролью задаёт права — портал считает их сам. */
   counterpartyType: CounterpartyType | null;
 }
@@ -60,6 +67,7 @@ function makeAuthUser(u: AuthUserSource): AuthUser {
     mustChangePassword: u.mustChangePassword,
     constructionObjectIds: u.constructionObjectIds,
     departmentIds: u.departmentIds,
+    departmentObjectIds: u.departmentObjectIds,
     counterpartyType: u.counterpartyType,
   };
 }
@@ -75,6 +83,7 @@ function userWithCounterpartyType() {
       counterpartyType: counterparties.type,
       constructionObjectIds: constructionObjectIdsExpr,
       departmentIds: departmentIdsExpr,
+      departmentObjectIds: departmentObjectIdsExpr,
     })
     .from(users)
     .leftJoin(counterparties, eq(users.counterpartyId, counterparties.id));
@@ -133,28 +142,37 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
       // Капча проверяется до всего остального — иначе `/register` работал бы справочником
       // «есть ли такой адрес в портале»: 409 на занятый email отличим от успеха.
       verifyCaptcha(captchaToken, captchaAnswer);
-      const existing = await db.select({ id: users.id }).from(users).where(eq(users.email, email));
-      if (existing.length > 0) {
-        throw err.conflict('Пользователь с таким email уже существует');
-      }
+      // Хеш считается до транзакции: argon2 занимает сотни миллисекунд, и держать на нём открытую
+      // транзакцию незачем.
       const passwordHash = await hashPassword(password);
-      const [created] = await db
-        .insert(users)
-        .values({
-          email,
-          lastName,
-          firstName,
-          middleName,
-          // Телефон — по желанию (ADR 0043): пусто, если человек его не оставил.
-          phone,
-          passwordHash,
-          isActive: false,
-          // Роль не назначается: пожелание — подсказка администратору, а не право (ADR 0034).
-          requestedRole,
-          requestedObject,
-          requestedCompany,
-        })
-        .returning({ id: users.id });
+      let created;
+      try {
+        created = await db.transaction(async (tx) => {
+          // Архивная учётка адрес не занимает (ADR 0063): отказ по заявке иначе закрывал бы
+          // человеку повторную регистрацию навсегда.
+          await assertEmailFree(tx, email);
+          const [row] = await tx
+            .insert(users)
+            .values({
+              email,
+              lastName,
+              firstName,
+              middleName,
+              // Телефон — по желанию (ADR 0043): пусто, если человек его не оставил.
+              phone,
+              passwordHash,
+              isActive: false,
+              // Роль не назначается: пожелание — подсказка администратору, а не право (ADR 0034).
+              requestedRole,
+              requestedObject,
+              requestedCompany,
+            })
+            .returning({ id: users.id });
+          return row!;
+        });
+      } catch (e) {
+        throw asEmailConflict(e);
+      }
       await writeAudit({
         actorUserId: created!.id,
         action: 'user.register',
@@ -172,16 +190,22 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
 
   r.post('/login', { schema: { body: loginSchema }, config: authRateLimit }, async (req, reply) => {
     const { email, password } = req.body;
-    const [row] = await userWithCounterpartyType().where(eq(users.email, email));
+    // Ищется действующая учётка: с частичным индексом (ADR 0063) одинаковых адресов в таблице
+    // бывает несколько — живой и сколько угодно архивных, — и без фильтра вход мог бы выхватить
+    // архивную строку и отказать живому человеку.
+    const [row] = await userWithCounterpartyType().where(
+      and(eq(users.email, email), isNull(users.deletedAt)),
+    );
     const u = row
       ? {
           ...row.u,
           counterpartyType: row.counterpartyType,
           constructionObjectIds: row.constructionObjectIds,
           departmentIds: row.departmentIds,
+          departmentObjectIds: row.departmentObjectIds,
         }
       : undefined;
-    if (!u || u.deletedAt) throw err.invalidCredentials();
+    if (!u) throw err.invalidCredentials();
     const ok = await verifyPassword(u.passwordHash, password);
     if (!ok) throw err.invalidCredentials();
     if (!u.isActive) {
@@ -254,6 +278,7 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
         counterpartyType: row.counterpartyType,
         constructionObjectIds: row.constructionObjectIds,
         departmentIds: row.departmentIds,
+        departmentObjectIds: row.departmentObjectIds,
       };
       const ok = await verifyPassword(u.passwordHash, currentPassword);
       if (!ok)

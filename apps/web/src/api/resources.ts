@@ -81,6 +81,10 @@ export const usersApi = {
   /** Отказ по нерассмотренной заявке на регистрацию: причина уходит в аудит. */
   reject: (id: string, reason: string) =>
     apiFetch<{ ok: boolean }>(`/users/${id}/reject`, { method: 'POST', body: { reason } }),
+  /** Возврат из архива (ADR 0063): учётка остаётся неактивной, отказ снова становится заявкой. */
+  restore: (id: string) => apiFetch<UserDto>(`/users/${id}/restore`, { method: 'POST' }),
+  /** Удаление насовсем (ADR 0063) — только из архива и только администратором. */
+  purge: (id: string) => apiFetch<{ ok: boolean }>(`/users/${id}/purge`, { method: 'DELETE' }),
   pendingCount: () => apiFetch<{ count: number }>('/users/pending-count'),
 };
 

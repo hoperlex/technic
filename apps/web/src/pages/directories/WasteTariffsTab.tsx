@@ -42,7 +42,7 @@ import { useIsMobile } from '@shared/lib';
 import { useListParams } from '@shared/lib';
 import { applyApiFieldErrors } from '../../utils/formErrors';
 import { errorMessage, formatMoney } from '../../utils/format';
-import { usePurgeAction } from './usePurgeAction';
+import { usePurgeAction } from '../../hooks/usePurgeAction';
 import {
   buildWasteTariffGrid,
   wasteTariffColumnOperators,

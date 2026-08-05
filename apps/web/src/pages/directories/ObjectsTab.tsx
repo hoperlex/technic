@@ -12,7 +12,7 @@ import { actionsColumn, boolBadgeColumn, textColumn } from '@shared/ui';
 import { sortOptionsFrom } from '@shared/ui';
 import { useListParams } from '@shared/lib';
 import { errorMessage } from '../../utils/format';
-import { usePurgeAction } from './usePurgeAction';
+import { usePurgeAction } from '../../hooks/usePurgeAction';
 import { objectsApi, objectKeys } from '@entities/object';
 
 export function ObjectsTab() {

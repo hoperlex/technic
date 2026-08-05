@@ -35,6 +35,8 @@ import {
   replaceUserDepartments,
   replaceUserObjects,
 } from '../services/user-scopes';
+import { assertEmailFree, asEmailConflict } from '../services/user-email';
+import { registerPurgeRoute } from '../services/directory-purge';
 
 const idParams = z.object({ id: z.string().uuid() });
 
@@ -314,27 +316,32 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
     const counterpartyId = await resolveCounterpartyId(body.role, body.counterpartyId);
     const objectIds = resolveObjectIds(body.role, body.constructionObjectIds);
     const departmentIds = resolveDepartmentIds(body.role, body.departmentIds);
-    const created = await db.transaction(async (tx) => {
-      const dup = await tx.select({ id: users.id }).from(users).where(eq(users.email, body.email));
-      if (dup.length > 0) throw err.conflict('Пользователь с таким email уже существует');
-      const [row] = await tx
-        .insert(users)
-        .values({
-          email: body.email,
-          lastName: body.lastName,
-          firstName: body.firstName,
-          middleName: body.middleName,
-          phone: body.phone,
-          role: body.role,
-          passwordHash,
-          isActive: body.isActive,
-          counterpartyId,
-        })
-        .returning({ id: users.id });
-      await replaceUserObjects(tx, row!.id, objectIds, actor.id);
-      await replaceUserDepartments(tx, row!.id, departmentIds, actor.id);
-      return row!;
-    });
+    let created;
+    try {
+      created = await db.transaction(async (tx) => {
+        // Архив адрес не занимает (ADR 0063) — та же проверка, что у саморегистрации.
+        await assertEmailFree(tx, body.email);
+        const [row] = await tx
+          .insert(users)
+          .values({
+            email: body.email,
+            lastName: body.lastName,
+            firstName: body.firstName,
+            middleName: body.middleName,
+            phone: body.phone,
+            role: body.role,
+            passwordHash,
+            isActive: body.isActive,
+            counterpartyId,
+          })
+          .returning({ id: users.id });
+        await replaceUserObjects(tx, row!.id, objectIds, actor.id);
+        await replaceUserDepartments(tx, row!.id, departmentIds, actor.id);
+        return row!;
+      });
+    } catch (e) {
+      throw asEmailConflict(e);
+    }
     await writeAudit({
       actorUserId: actor.id,
       action: 'user.create',
@@ -533,5 +540,82 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
       entityId: id,
     });
     return { ok: true };
+  });
+
+  /**
+   * Возврат учётки из архива (ADR 0063) — отдельной ручкой и отдельным правом (`archive.restore`),
+   * как у контрагентов и техники: вести учётки и распоряжаться архивом — разные полномочия.
+   *
+   * Активность не поднимается. Восстановленный отказ снова становится нерассмотренной заявкой и
+   * возвращается в очередь администратора — то есть проходит рассмотрение заново, а не получает
+   * доступ обходным путём; у восстановленного сотрудника учётка деактивирована, и включает её
+   * обычная правка карточки.
+   */
+  r.post(
+    '/:id/restore',
+    {
+      preHandler: [app.authenticate, app.requirePermission('archive.restore')],
+      schema: { params: idParams },
+    },
+    async (req) => {
+      const actor = requirePrincipal(req);
+      const { id } = req.params;
+      await db.transaction(async (tx) => {
+        const [existing] = await tx.select().from(users).where(eq(users.id, id));
+        if (!existing) throw err.notFound('Пользователь не найден');
+        if (!existing.deletedAt) return;
+        // Пока учётка лежала в архиве, её адрес мог занять другой человек (ADR 0063 решение 1):
+        // восстанавливать вслепую нельзя — упрёмся в тот же индекс, но уже пятисоткой.
+        await assertEmailFree(tx, existing.email, {
+          exceptId: id,
+          message: `Email ${existing.email} занят другой учётной записью — восстановить нельзя`,
+        });
+        await tx
+          .update(users)
+          .set({
+            deletedAt: null,
+            // Строка побывала в архиве: выданных до неё токенов у неё быть не должно.
+            authVersion: existing.authVersion + 1,
+            updatedAt: new Date(),
+          })
+          .where(eq(users.id, id));
+      });
+      await writeAudit({
+        actorUserId: actor.id,
+        action: 'user.restore',
+        entityType: 'user',
+        entityId: id,
+      });
+      return (await fetchUserDto(id))!;
+    },
+  );
+
+  /**
+   * Удаление учётки насовсем (ADR 0063) — общая механика справочников (ADR 0060), право
+   * `records.purge`, только из архива.
+   *
+   * Кто держит учётку, решает БД: заявки, история статусов, назначения, путевые листы и рейсы
+   * ссылаются на неё `ON DELETE RESTRICT` — учётка работавшего человека не удалится, и это
+   * правильно. Объекты, отделы и refresh-сессии уходят каскадом: они существуют только при ней.
+   */
+  registerPurgeRoute(app, {
+    load: async (id) => {
+      const [row] = await db.select().from(users).where(eq(users.id, id));
+      return row;
+    },
+    isDown: (row) => !!row.deletedAt,
+    remove: async (tx, row) => {
+      await tx.delete(users).where(eq(users.id, row.id));
+    },
+    notFound: 'Пользователь не найден',
+    stillLive: 'Учётная запись не в архиве — сначала удалите её',
+    subject: 'учётную запись',
+    audit: {
+      action: 'user.purge',
+      entityType: 'user',
+      // Адрес и ФИО — то, чем человека называют: после удаления по entityId искать уже нечего,
+      // а вопрос «куда делась учётка Иванова» задают именно так.
+      metadata: (row) => ({ email: row.email, fullName: row.fullName, role: row.role }),
+    },
   });
 }

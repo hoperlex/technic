@@ -414,6 +414,8 @@ const CASES: Case[] = [
 
   // ── Вывоз мусора: раньше модуль был открыт любому вошедшему ──
   {
+    // Роли отдела здесь есть (ADR 0062): право на модуль у них общее, а есть ли им что показать,
+    // решает площадка отдела — это область, и маршрут её проверяет по строкам, а не отказом.
     title: 'вывоз — список',
     method: 'GET',
     url: '/api/v1/waste-requests',
@@ -424,6 +426,8 @@ const CASES: Case[] = [
       'shtab',
       'rukstroy',
       'commandant',
+      'department',
+      'department_head',
       'operator/operator',
       'observer',
     ],
@@ -432,7 +436,16 @@ const CASES: Case[] = [
     title: 'вывоз — удаление заявки',
     method: 'DELETE',
     url: `/api/v1/waste-requests/${RECORD_ID}`,
-    allowed: ['admin', 'manager', 'dispatcher', 'shtab', 'rukstroy', 'commandant'],
+    allowed: [
+      'admin',
+      'manager',
+      'dispatcher',
+      'shtab',
+      'rukstroy',
+      'commandant',
+      'department',
+      'department_head',
+    ],
   },
   {
     title: 'вывоз — смена статуса',
@@ -757,6 +770,20 @@ const CASES: Case[] = [
 
   // ── Администрирование ──
   { title: 'учётки — список', method: 'GET', url: '/api/v1/users', allowed: ['admin'] },
+  // Архив учёток (ADR 0063): распоряжаться им — не то же, что вести учётки. Права те же, что у
+  // архива справочников, и в матрице они сходятся на одном администраторе.
+  {
+    title: 'учётки — восстановление из архива',
+    method: 'POST',
+    url: `/api/v1/users/${RECORD_ID}/restore`,
+    allowed: ['admin'],
+  },
+  {
+    title: 'учётки — удаление насовсем',
+    method: 'DELETE',
+    url: `/api/v1/users/${RECORD_ID}/purge`,
+    allowed: ['admin'],
+  },
   { title: 'аудит — журнал', method: 'GET', url: '/api/v1/audit', allowed: ['admin'] },
 ];
 

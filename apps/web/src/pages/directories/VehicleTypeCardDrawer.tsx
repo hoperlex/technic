@@ -37,7 +37,7 @@ import { AutoSelect } from '@shared/ui';
 import { FormModal } from '@shared/ui';
 import { useIsMobile } from '@shared/lib';
 import { errorMessage } from '../../utils/format';
-import { usePurgeAction } from './usePurgeAction';
+import { usePurgeAction } from '../../hooks/usePurgeAction';
 
 // Карточка типа ТС (ADR 0016): состав ТТХ и категории — комбинации их значений. Живут в одной
 // карточке, потому что это один инвариант: привязка ТТХ обязывает каждую категорию иметь по нему

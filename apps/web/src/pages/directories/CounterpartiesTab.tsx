@@ -28,7 +28,7 @@ import { actionsColumn, badgeColumn, boolBadgeColumn, textColumn } from '@shared
 import { useListParams } from '@shared/lib';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
-import { usePurgeAction } from './usePurgeAction';
+import { usePurgeAction } from '../../hooks/usePurgeAction';
 import { objectsApi, objectKeys } from '@entities/object';
 
 interface CounterpartyFormValues {

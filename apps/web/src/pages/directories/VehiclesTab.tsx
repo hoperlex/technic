@@ -62,7 +62,7 @@ import { useIsMobile } from '@shared/lib';
 import { useListParams } from '@shared/lib';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
-import { usePurgeAction } from './usePurgeAction';
+import { usePurgeAction } from '../../hooks/usePurgeAction';
 
 // Справочник техники (ADR 0007) с двумя ветками принадлежности (ADR 0018). Один список, а не две
 // вкладки: сравнивать своё и аренду нужно рядом. Переключатель принадлежности не только фильтрует,

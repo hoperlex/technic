@@ -15,7 +15,7 @@ import {
   Switch,
   Tag,
 } from 'antd';
-import { MoreOutlined, PlusOutlined } from '@ant-design/icons';
+import { DeleteFilled, MoreOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -46,6 +46,7 @@ import { actionsColumn, badgeColumn, boolBadgeColumn, textColumn } from '@shared
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
 import { useListParams } from '@shared/lib';
 import { useAuth } from '../../auth/AuthContext';
+import { usePurgeAction } from '../../hooks/usePurgeAction';
 import { UserAvatar } from '../../components/UserAvatar';
 import { errorMessage } from '../../utils/format';
 import { objectsApi, objectKeys } from '@entities/object';
@@ -113,6 +114,8 @@ export function UsersTab() {
 
   const showPending = params.pending === 'true';
   const canSeeArchive = can('archive.read');
+  // Видеть архив и распоряжаться им — разные права (ADR 0021): восстановление отдельно.
+  const canRestore = can('archive.restore');
 
   const { data, isFetching } = useQuery({
     queryKey: ['users', params],
@@ -254,6 +257,28 @@ export function UsersTab() {
     onError: (e) => message.error(errorMessage(e)),
   });
 
+  /**
+   * Возврат из архива (ADR 0063). Гасится тот же ключ `['users']`, что и остальными действиями:
+   * им же накрыт счётчик заявок — восстановленный отказ возвращается в очередь, и бейдж обязан
+   * это показать.
+   */
+  const restoreMut = useMutation({
+    mutationFn: (id: string) => usersApi.restore(id),
+    onSuccess: () => {
+      message.success('Учётная запись восстановлена — она осталась неактивной');
+      void qc.invalidateQueries({ queryKey: ['users'] });
+    },
+    onError: (e) => message.error(errorMessage(e)),
+  });
+
+  // Удаление насовсем (ADR 0063) — общий хук справочников: подтверждение необратимого действия
+  // должно звучать везде одинаково.
+  const purge = usePurgeAction({
+    subject: 'учётную запись',
+    purge: usersApi.purge,
+    invalidate: [['users']],
+  });
+
   const [rejecting, setRejecting] = useState<UserDto | null>(null);
   const rejectMut = useMutation({
     mutationFn: (v: { id: string; reason: string }) => usersApi.reject(v.id, v.reason),
@@ -335,6 +360,26 @@ export function UsersTab() {
         : [{ key: 'delete', label: 'Удалить', danger: true, disabled: isSelf, onClick: remove }]),
     ];
   };
+
+  /**
+   * Что можно сделать с архивной строкой (ADR 0063): вернуть из архива и снести насовсем. Список
+   * тот же, что рисуют кнопки в таблице, — и права те же, каждое своё.
+   */
+  const archivedRowActions = (r: UserDto) => [
+    ...(canRestore
+      ? [{ key: 'restore', label: 'Восстановить', onClick: () => restoreMut.mutate(r.id) }]
+      : []),
+    ...(purge.allowed
+      ? [
+          {
+            key: 'purge',
+            label: 'Удалить окончательно',
+            danger: true,
+            onClick: () => purge.confirm(r.id, r.email),
+          },
+        ]
+      : []),
+  ];
 
   const rowMenu = (r: UserDto) => {
     const actions = rowActions(r);
@@ -447,16 +492,36 @@ export function UsersTab() {
     actionsColumn<UserDto>(
       (r) =>
         r.deletedAt ? (
-          // Действий над архивной учёткой нет: восстановление не делаем — вернуть доступ
-          // удалённому сотруднику и вернуть в очередь отклонённую заявку это разные действия,
-          // и одной кнопкой «восстановить» они не покрываются.
-          <Tag>в архиве</Tag>
+          // Архивная строка (ADR 0063): вернуть из архива и снести насовсем. Восстановление не
+          // активирует — отклонённая заявка возвращается в очередь и рассматривается заново.
+          <Space size={4}>
+            <Tag>в архиве</Tag>
+            {canRestore ? (
+              <Button
+                size="small"
+                icon={<ReloadOutlined />}
+                title="Восстановить"
+                loading={restoreMut.isPending}
+                onClick={() => restoreMut.mutate(r.id)}
+              />
+            ) : null}
+            {purge.allowed ? (
+              <Button
+                size="small"
+                danger
+                icon={<DeleteFilled />}
+                title="Удалить окончательно"
+                loading={purge.pending}
+                onClick={() => purge.confirm(r.id, r.email)}
+              />
+            ) : null}
+          </Space>
         ) : (
           <Dropdown menu={rowMenu(r)} trigger={['click']}>
             <Button size="small" icon={<MoreOutlined />} />
           </Dropdown>
         ),
-      90,
+      140,
     ),
   ];
 
@@ -706,9 +771,10 @@ export function UsersTab() {
         r.requestedRole ? `Пожелание: ${registrationRoleRequestLabels[r.requestedRole]}` : null,
       (r) => (r.deletedAt ? 'В архиве' : null),
     ],
-    // Действий над архивной учёткой нет — как и в таблице.
+    // Карточка архивной строки не открывается на правку, но действия у неё те же, что в таблице
+    // (ADR 0063): расходиться режимам нельзя — иначе восстановление существовало бы только с мышью.
     onOpen: (r) => (r.deletedAt ? undefined : openEdit(r)),
-    actions: (r) => (r.deletedAt ? [] : rowActions(r)),
+    actions: (r) => (r.deletedAt ? archivedRowActions(r) : rowActions(r)),
   };
 
   return (

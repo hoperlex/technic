@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import pg from 'pg';
 import { DeleteObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { pino } from 'pino';
+import { purgeExpiredRegistrations } from './retention';
 
 const logger = pino({
   level: process.env.LOG_LEVEL ?? 'info',
@@ -23,6 +24,12 @@ function required(name: string): string {
 const POLL_INTERVAL_MS = Number(process.env.WORKER_POLL_INTERVAL_MS ?? 5000);
 const BATCH = Number(process.env.WORKER_BATCH ?? 10);
 const CLEANUP_INTERVAL_MS = Number(process.env.WORKER_CLEANUP_INTERVAL_MS ?? 3_600_000); // 1 час
+/**
+ * Срок хранения отклонённых заявок на регистрацию (ADR 0063): неделя на исправление ошибочного
+ * отказа, дальше персональные данные того, кого в портал не пустили, не хранятся. Ноль и меньше —
+ * уборка выключена: срок хранения ПДн задаёт эксплуатация, и «выключить» должно быть выразимо.
+ */
+const REGISTRATION_TTL_DAYS = Number(process.env.USER_REJECTED_REGISTRATION_TTL_DAYS ?? 7);
 const WORKER_ID = `${hostname()}:${process.pid}:${randomUUID().slice(0, 8)}`;
 
 const JOB_DELETE_S3_OBJECT = 'delete_s3_object';
@@ -159,6 +166,30 @@ async function cleanupOrphanUploads(): Promise<void> {
   }
 }
 
+/** Уборка отклонённых заявок на регистрацию по сроку (ADR 0063). */
+async function cleanupRejectedRegistrations(): Promise<void> {
+  if (!Number.isFinite(REGISTRATION_TTL_DAYS) || REGISTRATION_TTL_DAYS <= 0) return;
+  const client = await pool.connect();
+  try {
+    const { purged, skipped } = await purgeExpiredRegistrations(client, {
+      ttlDays: REGISTRATION_TTL_DAYS,
+    });
+    // В лог идут идентификаторы, но не адреса: email — персональные данные, и уборка заводится
+    // ровно затем, чтобы их не хранить. Кого удалили — знает журнал аудита.
+    if (purged.length > 0) {
+      logger.info({ count: purged.length }, 'Удалены отклонённые заявки на регистрацию');
+    }
+    if (skipped.length > 0) {
+      logger.warn(
+        { count: skipped.length, ids: skipped.map((r) => r.id) },
+        'Заявки не удалены: на учётки ссылаются данные',
+      );
+    }
+  } finally {
+    client.release();
+  }
+}
+
 let stopping = false;
 let lastCleanup = 0;
 
@@ -170,6 +201,7 @@ async function loop(): Promise<void> {
       if (Date.now() - lastCleanup > CLEANUP_INTERVAL_MS) {
         lastCleanup = Date.now();
         await cleanupOrphanUploads();
+        await cleanupRejectedRegistrations();
       }
       if (processed === 0) await sleep(POLL_INTERVAL_MS);
     } catch (e) {

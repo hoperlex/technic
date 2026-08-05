@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import { PASSWORD_MIN, splitFullName } from '@technic/contracts';
 import { closeDb, db } from './db/client';
 import { users } from './db/schema';
@@ -33,7 +33,12 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const [existing] = await db.select({ id: users.id }).from(users).where(eq(users.email, email));
+  // Архивная учётка адрес не занимает (ADR 0063): сид смотрит только на действующие, иначе
+  // удалённый когда-то администратор оставил бы портал без входа насовсем.
+  const [existing] = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(and(eq(users.email, email), isNull(users.deletedAt)));
   if (existing) {
     console.log(`Пользователь ${email} уже существует — пропуск.`);
     return;

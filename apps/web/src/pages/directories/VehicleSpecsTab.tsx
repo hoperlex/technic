@@ -29,7 +29,7 @@ import { PageTableLayout } from '@shared/ui';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
 import { actionsColumn, textColumn } from '@shared/ui';
 import { errorMessage } from '../../utils/format';
-import { usePurgeAction } from './usePurgeAction';
+import { usePurgeAction } from '../../hooks/usePurgeAction';
 
 // Справочник ТТХ (ADR 0016): характеристики, из значений которых складываются категории типов ТС.
 // Удаления нет — деактивация, и та запрещена, пока ТТХ привязан к типам. Единица измерения и

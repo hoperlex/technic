@@ -11,8 +11,9 @@ import { actionsColumn, boolBadgeColumn, textColumn } from '@shared/ui';
 import { sortOptionsFrom } from '@shared/ui';
 import { useListParams } from '@shared/lib';
 import { errorMessage } from '../../utils/format';
-import { usePurgeAction } from './usePurgeAction';
+import { usePurgeAction } from '../../hooks/usePurgeAction';
 import { departmentsApi, departmentKeys } from '@entities/department';
+import { objectOptionsQuery } from '@entities/object';
 
 /**
  * Справочник отделов (ADR 0040) — офисные подразделения. Устроен как справочник объектов: тот же
@@ -52,6 +53,12 @@ export function DepartmentsTab() {
   });
   const headOptions = (headsData?.items ?? []).map((u) => ({ value: u.id, label: u.fullName }));
 
+  // Площадка отдела (ADR 0062). Неактивные объекты в списке есть: привязка описывает зону
+  // ответственности, а не готовность принимать заявки — закрытую площадку отдел ещё доубирает.
+  const { data: objectOptions = [], isFetching: objectsLoading } = useQuery(
+    objectOptionsQuery({ activeOnly: false }),
+  );
+
   const [open, setOpen] = useState(false);
   const [record, setRecord] = useState<DepartmentDto | null>(null);
   const [form] = Form.useForm<CreateDepartmentInput>();
@@ -59,7 +66,11 @@ export function DepartmentsTab() {
   const openCreate = () => {
     setRecord(null);
     form.resetFields();
-    form.setFieldsValue({ isActive: true, headUserIds: [] } as Partial<CreateDepartmentInput>);
+    form.setFieldsValue({
+      isActive: true,
+      constructionObjectId: null,
+      headUserIds: [],
+    } as Partial<CreateDepartmentInput>);
     setOpen(true);
   };
   const openEdit = (r: DepartmentDto) => {
@@ -69,6 +80,9 @@ export function DepartmentsTab() {
       code: r.code,
       name: r.name,
       isActive: r.isActive,
+      // `null`, а не `undefined`: отсутствие поля сервер читает как «не трогать площадку», и
+      // снять её из формы стало бы нечем (ADR 0062).
+      constructionObjectId: r.object?.id ?? null,
       headUserIds: r.heads.map((h) => h.id),
     });
     setOpen(true);
@@ -115,6 +129,22 @@ export function DepartmentsTab() {
   const columns = [
     textColumn<DepartmentDto>({ key: 'code', title: 'Код', dataIndex: 'code', width: 160 }),
     textColumn<DepartmentDto>({ key: 'name', title: 'Название', dataIndex: 'name' }),
+    textColumn<DepartmentDto>({
+      key: 'object',
+      title: 'Площадка',
+      dataIndex: 'object',
+      sortable: false,
+      searchable: false,
+      width: 220,
+      // Пусто — рабочее состояние, а не пропуск: у ПТО и АХО площадки нет, и вывоз мусора им
+      // закрыт именно поэтому (ADR 0062).
+      render: (_v, r) =>
+        r.object ? (
+          `${r.object.code} — ${r.object.name}`
+        ) : (
+          <Typography.Text type="secondary">Нет</Typography.Text>
+        ),
+    }),
     textColumn<DepartmentDto>({
       key: 'heads',
       title: 'Руководители',
@@ -167,6 +197,7 @@ export function DepartmentsTab() {
     badge: (r) => <Tag color={r.isActive ? 'green' : 'default'}>{r.isActive ? 'Да' : 'Нет'}</Tag>,
     primary: (r) => r.name,
     lines: [
+      (r) => (r.object ? `Площадка: ${r.object.code} — ${r.object.name}` : 'Площадки нет'),
       (r) =>
         r.heads.length > 0
           ? `Руководители: ${r.heads.map((h) => h.fullName).join(' · ')}`
@@ -246,7 +277,15 @@ export function DepartmentsTab() {
         confirmLoading={saveMut.isPending}
         width={480}
       >
-        <Form form={form} layout="vertical" onFinish={(v) => saveMut.mutate(v)}>
+        {/* Очистка Select даёт `undefined`, а сервер читает отсутствие поля как «площадку не
+            трогать» (ADR 0062): без этого снять её из формы было бы нечем. */}
+        <Form
+          form={form}
+          layout="vertical"
+          onFinish={(v) =>
+            saveMut.mutate({ ...v, constructionObjectId: v.constructionObjectId ?? null })
+          }
+        >
           <Form.Item name="code" label="Код" rules={[{ required: true, message: 'Укажите код' }]}>
             <Input />
           </Form.Item>
@@ -256,6 +295,21 @@ export function DepartmentsTab() {
             rules={[{ required: true, message: 'Укажите название' }]}
           >
             <Input />
+          </Form.Item>
+          <Form.Item
+            name="constructionObjectId"
+            label="Площадка"
+            tooltip="Объект, на котором работает отдел: его сотрудники ведут вывоз мусора с этой площадки наравне со штабом"
+            extra="Смена площадки закрывает открытые сессии всех учёток отдела — у них меняется область"
+          >
+            <Select
+              options={objectOptions}
+              loading={objectsLoading}
+              showSearch
+              allowClear
+              optionFilterProp="label"
+              placeholder="Нет — отдел без площадки"
+            />
           </Form.Item>
           <Form.Item
             name="headUserIds"
