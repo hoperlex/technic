@@ -2,6 +2,13 @@ import type { ReactNode } from 'react';
 import { Button, Input, Space, Tag, Tooltip, type TableColumnType } from 'antd';
 import { SearchOutlined } from '@ant-design/icons';
 
+/**
+ * Класс ячейки, которая не отдаёт клик строке: по нему `DataTable` отличает активное содержимое
+ * от читаемого (см. `opensRow`). Ставится колонкам, отданным нажатиям целиком, — кнопки и ссылки
+ * внутри обычных ячеек отсекаются сами, по тегу элемента.
+ */
+export const NO_ROW_CLICK = 'no-row-click';
+
 /** Поисковый filterDropdown в заголовке столбца (server-side поиск). */
 function searchableHeader<T>(placeholder = 'Поиск'): Partial<TableColumnType<T>> {
   return {
@@ -181,6 +188,9 @@ export function actionsColumn<T>(
     title: 'Действия',
     fixed: 'right',
     width,
+    // Колонка отдана нажатиям целиком: там, где строка открывается кликом, промах мимо кнопки
+    // не должен открывать карточку — целятся здесь в действие, а не в запись.
+    onCell: () => ({ className: NO_ROW_CLICK }),
     render: (_value: unknown, record: T) => render(record),
   };
 }

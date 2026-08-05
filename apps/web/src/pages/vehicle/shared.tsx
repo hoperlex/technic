@@ -30,7 +30,9 @@ import {
 } from '../../hooks/useVehicleClassifications';
 import { ActionSheet } from '@shared/ui';
 import { AutoSelect } from '@shared/ui';
+import { ExpandableCell } from '@shared/ui';
 import { FileLinkList } from '../../components/FileLinks';
+import { PhoneLink } from '../../components/PhoneField';
 import type { FilterDefinition } from '@shared/ui';
 import { useIsMobile } from '@shared/lib';
 import { useAuth } from '../../auth/AuthContext';
@@ -384,6 +386,90 @@ export function ApprovalCell({
     >
       {button}
     </Tooltip>
+  );
+}
+
+/** Контакт заявки: чья это роль, кто им занят, куда ехать и по какому номеру звонить. */
+interface RequestContact {
+  role: string;
+  name: string;
+  phone: string;
+  /** Адрес, к которому контакт приставлен; `null` — у объекта он не заполнен (поле необязательное). */
+  address: string | null;
+}
+
+/**
+ * Контакты заявки по местам работы. У заказа техники на объект контакт один — тот, кто встречает
+ * технику на площадке, и адрес у него объектный; у грузоперевозки их два, по одному на конец
+ * маршрута, и у каждого свой адрес: грузят и принимают разные люди в разных местах.
+ *
+ * Роль в паре с именем неотделима намеренно: «Иванов» без роли в списке ничего не значит — звонить
+ * по нему будут не зная, о каком конце маршрута спрашивать.
+ */
+export function requestContacts(r: VehicleRequestDto): RequestContact[] {
+  const contacts: RequestContact[] =
+    r.requestType === 'special_equipment'
+      ? [
+          {
+            role: 'Отв. на объекте',
+            name: r.responsibleName,
+            phone: r.responsiblePhone,
+            address: r.objectAddress,
+          },
+        ]
+      : [
+          {
+            role: 'Отв. за погрузку',
+            name: r.loadingResponsibleName,
+            phone: r.loadingResponsiblePhone,
+            address: r.loadingLocation,
+          },
+          {
+            role: 'Отв. за разгрузку',
+            name: r.unloadingResponsibleName,
+            phone: r.unloadingResponsiblePhone,
+            address: r.unloadingLocation,
+          },
+        ];
+  // Пустой контакт не занимает строку: у заявок до миграции 0062 его нет вовсе, и «Отв. за
+  // погрузку —» сообщал бы о заявке ровно ничего, отнимая у соседнего контакта видимую строку.
+  return contacts.filter((c) => c.name || c.phone || c.address);
+}
+
+/**
+ * Контакты в строке списка: роль с именем, под ними адрес и телефон. Отвечает на «кому звонить и
+ * куда ехать» — второй вопрос к списку заявок после самой заявки, и до сих пор за ответом
+ * приходилось открывать карточку каждой.
+ *
+ * Ячейка сворачивается (`ExpandableCell`): у грузоперевозки контактов два, адреса длинные, и
+ * пущенные в высоту они растянули бы каждую строку списка на пять-шесть строк текста.
+ */
+export function RequestContactsCell({ request }: { request: VehicleRequestDto }) {
+  const contacts = requestContacts(request);
+  if (contacts.length === 0) return <Typography.Text type="secondary">—</Typography.Text>;
+  return (
+    <ExpandableCell>
+      {contacts.map((c, i) => (
+        <div key={c.role} style={{ marginTop: i === 0 ? 0 : 4 }}>
+          <div>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {c.role}
+            </Typography.Text>{' '}
+            {c.name || '—'}
+          </div>
+          <div style={{ fontSize: 12 }}>
+            {c.address && (
+              <Typography.Text type="secondary" style={{ fontSize: 12 }} title={c.address}>
+                {c.address}
+              </Typography.Text>
+            )}
+            {c.address && c.phone ? ' · ' : null}
+            {/* Номер ссылкой `tel:`: по контакту в списке именно звонят (ADR 0066). */}
+            {c.phone && <PhoneLink phone={c.phone} />}
+          </div>
+        </div>
+      ))}
+    </ExpandableCell>
   );
 }
 

@@ -1,5 +1,6 @@
 import type {
   DriverDto,
+  FreightTransportRequestDto,
   SpecialEquipmentRequestDto,
   VehicleClassificationDto,
   VehicleRequestSummaryDto,
@@ -61,6 +62,65 @@ export function vehicleRequest(
     deletedAt: null,
     ...overrides,
   } as SpecialEquipmentRequestDto;
+}
+
+/**
+ * Грузоперевозка: у неё не период работы, а момент подачи, и два конца маршрута — со своим
+ * адресом и своим ответственным на каждом. Нужна там, где проверяют именно вторую ветку типа
+ * заявки: контакты в строке списка, объём/масса, рейс.
+ */
+export function freightRequest(
+  overrides: Partial<FreightTransportRequestDto> = {},
+): FreightTransportRequestDto {
+  return {
+    id: 'vr-2',
+    num: 43,
+    displayNumber: 'Т-43',
+    requestType: 'freight_transport',
+    objectId: 'obj-1',
+    objectCode: 'ОБ-1',
+    objectName: 'ЖК Северный',
+    objectAddress: 'г. Москва, ул. Северная, 1',
+    departmentId: null,
+    departmentCode: null,
+    departmentName: null,
+    vehicleTypeId: 'vt-2',
+    vehicleTypeName: 'Самосвалы',
+    vehicleKindId: 'vk-truck',
+    vehicleCategoryId: 'vc-2',
+    vehicleCategoryName: '20 м³',
+    vehicleCategorySpecs: { body_volume: 20 },
+    status: 'new',
+    comment: 'плиты перекрытия ПК 60-15, 12 шт',
+    cancelReason: null,
+    approvedBy: null,
+    approvedByName: null,
+    approvedAt: null,
+    assignment: null,
+    completion: null,
+    route: null,
+    files: [],
+    scheduledAt: '2026-08-06T05:00:00.000Z',
+    scheduledTimeUnspecified: false,
+    volumeM3: 12,
+    weightTons: null,
+    loadingLocation: 'г. Москва, ул. Складская, 4',
+    unloadingLocation: 'г. Москва, ул. Северная, 1',
+    // Метаданные верификации адреса (ADR 0006) сценариям списка не нужны: в строке стоит текст.
+    loadingAddress: null,
+    unloadingAddress: null,
+    loadingResponsibleName: 'Сидоров С. С.',
+    loadingResponsiblePhone: '+7 900 000-00-03',
+    unloadingResponsibleName: 'Кузнецов К. К.',
+    unloadingResponsiblePhone: '+7 900 000-00-04',
+    version: 1,
+    createdBy: 'user-1',
+    createdByName: 'Диспетчеров Д. П.',
+    createdAt: '2026-08-01T06:00:00.000Z',
+    updatedAt: '2026-08-01T06:00:00.000Z',
+    deletedAt: null,
+    ...overrides,
+  } as FreightTransportRequestDto;
 }
 
 /**

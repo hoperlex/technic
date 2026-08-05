@@ -7,6 +7,7 @@ export * from './ActionSheet';
 export * from './AutoSelect';
 export * from './columns';
 export * from './DataTable';
+export * from './ExpandableCell';
 export * from './Fab';
 export * from './FilterSheet';
 export * from './FormGrid';

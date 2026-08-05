@@ -66,6 +66,7 @@ import { vehicleRequestsApi } from '../../api/resources';
 import { AutoSelect } from '@shared/ui';
 import { CancelReasonModal, RollbackReasonModal } from '../../components/CancelReasonModal';
 import { DataTable, type CardConfig } from '@shared/ui';
+import { ExpandableCell } from '@shared/ui';
 import { FormGrid } from '@shared/ui';
 import { FormModal } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
@@ -110,6 +111,7 @@ import {
   EarlyEndTag,
   FileEditor,
   formatDateOnly,
+  RequestContactsCell,
   useEarlyEnd,
   StatusCell,
   VehicleClassificationSelect,
@@ -1001,12 +1003,38 @@ export function VehicleRequestsTab() {
         />
       ),
     },
+    {
+      /*
+       * Контакты по местам работы (`requestContacts`): у заказа техники на объект — встречающий на
+       * площадке, у грузоперевозки — по ответственному на каждом конце маршрута. Стоят сразу за
+       * согласованием: завизировав заявку, её отдают в работу, а работа начинается со звонка тому,
+       * кто откроет ворота, — до сих пор за номером открывали карточку каждой заявки.
+       *
+       * Ячейка сворачивается: два контакта с адресами — это пять-шесть строк текста, и пущенные в
+       * высоту они растянули бы каждую строку списка под самую многословную заявку.
+       */
+      key: 'contacts',
+      title: 'Контактные данные',
+      width: 260,
+      render: (_v, r) => <RequestContactsCell request={r} />,
+    },
     textColumn({
       key: 'comment',
       title: 'Комментарий',
       dataIndex: 'comment',
-      width: 230,
-      ellipsis: true,
+      width: 260,
+      // Не `ellipsis`: тот держит комментарий в одну строку и обрезает её там, где у заявки как
+      // раз и начинается суть заказа. Здесь текст переносится по ширине колонки, а свёрнутая
+      // ячейка показывает две строки — столько же, сколько занимают соседние колонки.
+      render: (v) =>
+        typeof v === 'string' && v.trim() ? (
+          <ExpandableCell>
+            {/* Абзацы автора сохраняются: комментарий заводят многострочным полем. */}
+            <span style={{ whiteSpace: 'pre-line' }}>{v}</span>
+          </ExpandableCell>
+        ) : (
+          <Typography.Text type="secondary">—</Typography.Text>
+        ),
     }),
     {
       key: 'files',
@@ -1405,6 +1433,10 @@ export function VehicleRequestsTab() {
       <DataTable<VehicleRequestDto>
         columns={columns}
         card={card}
+        // Карточку открывает клик по строке — тем же движением, что и касание карточки на телефоне
+        // (`card.onOpen`). Кнопка «Открыть карточку» в «Действиях» остаётся: клавиатурой до строки
+        // не добраться, а ячейки с активным содержимым клик строке не отдают (`opensRow`).
+        onRowClick={(r) => setViewRecord(r)}
         data={items}
         total={data?.total ?? 0}
         loading={isFetching}

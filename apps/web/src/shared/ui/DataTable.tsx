@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { useState, type MouseEvent, type ReactNode } from 'react';
 import {
   Empty,
   Pagination,
@@ -15,6 +15,7 @@ import type { TableChange } from '@shared/lib';
 import { useElementSize } from '@shared/lib';
 import { useIsMobile } from '@shared/lib';
 import { ActionSheet, type ActionSheetItem } from './ActionSheet';
+import { NO_ROW_CLICK } from './columns';
 
 /**
  * Карточное представление строки на телефоне (ADR 0030). Объявляется рядом с колонками и из тех
@@ -48,6 +49,12 @@ interface DataTableProps<T> {
   sortOrder?: 'asc' | 'desc';
   /** Есть — на телефоне список показывается карточками; нет — таблицей с прокруткой вбок. */
   card?: CardConfig<T>;
+  /**
+   * Клик по строке таблицы — обычно открыть карточку записи. Ячейки с активным содержимым его
+   * не отдают (см. `opensRow`): нажатие на визу, статус или действие делает своё дело, а не
+   * открывает карточку заодно. На телефоне то же самое делает `card.onOpen`.
+   */
+  onRowClick?: (record: T) => void;
   onChange: (change: TableChange) => void;
 }
 
@@ -69,6 +76,29 @@ function compactColumns<T>(columns: TableColumnsType<T>): TableColumnsType<T> {
     if (index === 0 && next.width != null) next.fixed = 'left';
     return next;
   });
+}
+
+/**
+ * Отдаёт ли этот клик строку тому, кто её открывает. Карточку записи открывают кликом по строке —
+ * это короче, чем целиться в кнопку колонки «Действия», — но строка полна активного содержимого,
+ * и открывать её поверх каждого нажатия нельзя.
+ *
+ * Отсекаются три случая:
+ *
+ * — клик из портала. Меню статуса и поповер файлов antd рисует в конце `body`, но в дереве React
+ *   они остались детьми ячейки, и событие всплывает до строки, хотя в DOM лежит вне её. Без
+ *   проверки принадлежности выбор пункта меню открывал бы заодно карточку;
+ * — клик по управляющему элементу (кнопка, ссылка, поле) и по ячейке, помеченной `NO_ROW_CLICK`:
+ *   колонка действий целиком отдана нажатиям, и промах мимо кнопки открытием карточки не считают;
+ * — клик, которым кончилось выделение текста: адрес или комментарий копировали, а не открывали.
+ */
+function opensRow(e: MouseEvent<HTMLElement>): boolean {
+  const target = e.target as HTMLElement | null;
+  if (!target || !e.currentTarget.contains(target)) return false;
+  if (target.closest(`button, a, input, textarea, label, .ant-select, .${NO_ROW_CLICK}`)) {
+    return false;
+  }
+  return !window.getSelection()?.toString();
 }
 
 function ListCard<T>({ record, card }: { record: T; card: CardConfig<T> }) {
@@ -147,6 +177,18 @@ export function DataTable<T extends object>(props: DataTableProps<T>) {
   const changePage = (page: number, pageSize: number) =>
     props.onChange({ page, pageSize, sortBy: props.sortBy, sortOrder: props.sortOrder });
 
+  const onRowClick = props.onRowClick;
+  const rowProps: Pick<TableProps<T>, 'onRow' | 'rowClassName'> = onRowClick
+    ? {
+        onRow: (record) => ({
+          onClick: (e) => {
+            if (opensRow(e)) onRowClick(record);
+          },
+        }),
+        rowClassName: 'data-row--clickable',
+      }
+    : {};
+
   if (isMobile) {
     const pager = (
       <div className="list-pager">
@@ -196,6 +238,7 @@ export function DataTable<T extends object>(props: DataTableProps<T>) {
           scroll={{ x: 'max-content' }}
           onChange={handleChange}
           pagination={false}
+          {...rowProps}
         />
         {props.total > 0 && pager}
       </div>
@@ -213,6 +256,7 @@ export function DataTable<T extends object>(props: DataTableProps<T>) {
         sticky
         scroll={{ y: scrollY, x: 'max-content' }}
         onChange={handleChange}
+        {...rowProps}
         pagination={{
           current: props.page,
           pageSize: props.pageSize,

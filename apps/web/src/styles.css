@@ -210,6 +210,59 @@ body,
   outline-offset: 2px;
 }
 
+/* Строка списка, открывающая карточку записи кликом: указатель говорит, что по ней нажимают.
+   Ячейки с активным содержимым (колонка действий) клик строке не отдают — и указатель у них
+   обычный, чтобы не обещать открытия там, где его не будет. */
+.data-row--clickable {
+  cursor: pointer;
+}
+.data-row--clickable > td.no-row-click {
+  cursor: default;
+}
+
+/* Сворачиваемая ячейка (ExpandableCell): свёрнутая занимает столько строк, сколько соседние
+   колонки, развёрнутая показывает содержимое целиком. Место под переключатель отведено справа
+   отступом — иначе последняя видимая строка уходила бы под него. */
+.expandable-cell {
+  position: relative;
+  padding-right: 16px;
+}
+.expandable-cell__body {
+  line-height: 1.35;
+  /* Длинный адрес и слово без пробелов переносятся внутри колонки, а не растягивают её. */
+  overflow-wrap: anywhere;
+}
+.expandable-cell__body--clamped {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+/* Полоса во всю высоту ячейки: сама стрелка мелкая, а целятся в неё мышью. */
+.expandable-cell__toggle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 16px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 2px 0 0;
+  border: none;
+  background: transparent;
+  color: rgba(0, 0, 0, 0.45);
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+}
+.expandable-cell__toggle:hover {
+  color: #1677ff;
+}
+.expandable-cell__toggle:focus-visible {
+  outline: 2px solid #1677ff;
+  outline-offset: -2px;
+}
+
 /* ─── Мобильный режим (ADR 0030) ────────────────────────────────────────────────────────────
    Все правила ниже действуют только при классе `is-mobile` на <html>: его ставит useIsMobile
    по единственному медиазапросу портала. Копии медиазапроса в стилях нет намеренно. */
