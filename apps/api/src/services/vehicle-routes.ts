@@ -1,5 +1,6 @@
 import { and, asc, desc, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import {
+  type DriverDocumentGap,
   formatVehicleRequestNumber,
   formatVehicleRouteNumber,
   requestCustomerName,
@@ -14,6 +15,7 @@ import {
   waybillDisplayNumber,
 } from '@technic/contracts';
 import { db } from '../db/client';
+import { driverGapsKey, loadDriverGaps } from './drivers';
 import { categorySpecsSql } from './vehicle-categories';
 import {
   constructionObjects,
@@ -633,13 +635,16 @@ function selectRoutes(reader: Reader) {
       // технику лист выписывает арендодатель.
       ownership: vehicles.ownership,
       typeFormCode: vehicleTypes.waybillFormCode,
+      vehicleKindId: vehicleTypes.kindId,
       vehicleTypeId: vehicles.vehicleTypeId,
       typeName: vehicleTypes.name,
-      // Категория машины рейса и её ТТХ: ими карточка заявки сверяет заказ с тем, чем рейс поедет
-      // (ADR 0059) — подсказка рейсов больше не сужена равенством типов, а помечает каждый рейс.
+      // Вид, категория машины рейса и её ТТХ: ими карточка заявки сверяет заказ с тем, чем рейс
+      // поедет (ADR 0059, ADR 0064) — подсказка рейсов не сужена ни типом, ни видом, она помечает
+      // каждый рейс и этим же порядком стоит.
       vehicleCategoryId: vehicles.vehicleCategoryId,
       vehicleCategorySpecs: categorySpecsSql(vehicles.vehicleCategoryId),
       driverName: persons.fullName,
+      driverSnils: persons.snils,
       createdByName: users.fullName,
       createdAt: vehicleRoutes.createdAt,
     })
@@ -660,6 +665,8 @@ export function toRouteDto(
   requests: VehicleRouteRequestDto[],
   waybill: VehicleRouteWaybillDto | null,
   sourceRequest: VehicleRouteSourceRequestDto | null = null,
+  /** Пробелы документов водителя на дату рейса (ADR 0064); считает их вызывающий — пачкой. */
+  driverGaps: DriverDocumentGap[] = [],
 ): VehicleRouteDto {
   return {
     id: row.id,
@@ -674,12 +681,14 @@ export function toRouteDto(
     routeDate: row.routeDate,
     vehicleId: row.vehicleId,
     vehicleLabel: [row.modelName, row.registrationNumber].filter(Boolean).join(' · '),
+    vehicleKindId: row.vehicleKindId,
     vehicleTypeId: row.vehicleTypeId,
     vehicleTypeName: row.typeName,
     vehicleCategoryId: row.vehicleCategoryId,
     vehicleCategorySpecs: row.vehicleCategorySpecs,
     driverPersonId: row.driverPersonId,
     driverName: row.driverName ?? '',
+    driverGaps,
     withTrailer: row.withTrailer,
     trailerLabel: [row.trailer1Model, row.trailer1RegNumber].filter(Boolean).join(' '),
     trailer1Model: row.trailer1Model,
@@ -701,32 +710,56 @@ export function toRouteDto(
   };
 }
 
+/**
+ * Пробелы документов водителей этих рейсов — одним запросом на всю страницу (ADR 0064). Рейсы без
+ * водителя в счёт не идут: предупреждать не о ком, а карточка и без того скажет «не назначен».
+ */
+function driverGapsOf(reader: Reader, rows: ListRow[]): Promise<Map<string, DriverDocumentGap[]>> {
+  return loadDriverGaps(
+    reader,
+    rows.flatMap((row) =>
+      row.driverPersonId
+        ? [{ personId: row.driverPersonId, snils: row.driverSnils ?? '', on: row.routeDate }]
+        : [],
+    ),
+  );
+}
+
+/** Пробелы этого рейса из общей карты: без водителя их нет. */
+function gapsOfRow(gaps: Map<string, DriverDocumentGap[]>, row: ListRow): DriverDocumentGap[] {
+  if (!row.driverPersonId) return [];
+  return gaps.get(driverGapsKey(row.driverPersonId, row.routeDate)) ?? [];
+}
+
 /** Карточка рейса целиком: состав и лист добираются отдельными запросами, как в журнале листов. */
 export async function loadRouteDto(reader: Reader, id: string): Promise<VehicleRouteDto | null> {
   const [row] = await selectRoutes(reader).where(eq(vehicleRoutes.id, id));
   if (!row) return null;
-  const [requests, waybill, sources] = await Promise.all([
+  const [requests, waybill, sources, gaps] = await Promise.all([
     requestsByRoute(reader, [id]),
     routeWaybill(reader, id),
     sourceRequestsByRoute(reader, row.sourceRequestId ? [row.sourceRequestId] : []),
+    driverGapsOf(reader, [row]),
   ]);
   return toRouteDto(
     row,
     requests.get(id) ?? [],
     waybill,
     row.sourceRequestId ? (sources.get(row.sourceRequestId) ?? null) : null,
+    gapsOfRow(gaps, row),
   );
 }
 
 export async function loadRouteDtos(reader: Reader, rows: ListRow[]): Promise<VehicleRouteDto[]> {
   const ids = rows.map((row) => row.id);
-  const [requests, waybillMap, sources] = await Promise.all([
+  const [requests, waybillMap, sources, gaps] = await Promise.all([
     requestsByRoute(reader, ids),
     waybillsByRoute(reader, ids),
     sourceRequestsByRoute(
       reader,
       rows.flatMap((row) => (row.sourceRequestId ? [row.sourceRequestId] : [])),
     ),
+    driverGapsOf(reader, rows),
   ]);
   return rows.map((row) =>
     toRouteDto(
@@ -734,6 +767,7 @@ export async function loadRouteDtos(reader: Reader, rows: ListRow[]): Promise<Ve
       requests.get(row.id) ?? [],
       waybillMap.get(row.id) ?? null,
       row.sourceRequestId ? (sources.get(row.sourceRequestId) ?? null) : null,
+      gapsOfRow(gaps, row),
     ),
   );
 }

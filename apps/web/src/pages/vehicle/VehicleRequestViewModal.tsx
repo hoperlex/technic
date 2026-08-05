@@ -207,19 +207,21 @@ export function VehicleRequestViewModal({
   const rows = useMemo(() => toRows(history), [history]);
 
   /**
-   * Чем назначенная машина разошлась с заказанным (ADR 0045, ADR 0059) — тегом рядом с техникой.
-   * Правило то же, что в окне назначения: одна формулировка на выбор, карточку и историю.
+   * Чем назначенная машина разошлась с заказанным (ADR 0045, ADR 0059, ADR 0064) — тегом рядом с
+   * техникой. Правило то же, что в окне назначения: одна формулировка на выбор, карточку и историю.
    */
   const assignmentHint = useMemo(() => {
     const a = request?.assignment;
     if (!request || !a) return null;
     const substitution = vehicleSubstitutionOf(
       {
+        vehicleKindId: request.vehicleKindId,
         vehicleTypeId: request.vehicleTypeId,
         vehicleCategoryId: request.vehicleCategoryId,
         categorySpecs: request.vehicleCategorySpecs,
       },
       {
+        vehicleKindId: a.vehicleKindId,
         vehicleTypeId: a.vehicleTypeId,
         vehicleCategoryId: a.vehicleCategoryId,
         categorySpecs: a.categorySpecs,
@@ -230,7 +232,11 @@ export function VehicleRequestViewModal({
     return {
       label: [a.categoryName ?? a.typeName, hint].filter(Boolean).join(' · '),
       level:
-        substitution.relation === 'smaller' || substitution.relation === 'mixed'
+        // Чужой вид — самое крупное расхождение, и тег у него жёлтый независимо от ТТХ: сравнить
+        // их у самосвала с автокраном всё равно нечем.
+        substitution.kindMismatch ||
+        substitution.relation === 'smaller' ||
+        substitution.relation === 'mixed'
           ? 'warning'
           : 'info',
     };

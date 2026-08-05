@@ -19,6 +19,8 @@ import { list } from './factories/common';
 const VEHICLE: VehicleDto = {
   id: 'v-own',
   ownership: 'own',
+  vehicleKindId: 'kind-freight',
+  kindName: 'Грузовой транспорт',
   vehicleTypeId: 'type-dump',
   typeName: 'Самосвалы',
   waybillFormCode: '4p',
@@ -71,6 +73,7 @@ const REQUEST: FreightTransportRequestDto = {
   assignment: {
     vehicleId: 'v-own',
     ownership: 'own',
+    vehicleKindId: 'kind-freight',
     vehicleTypeId: 'type-dump',
     typeName: 'Самосвалы',
     vehicleCategoryId: null,
@@ -118,6 +121,7 @@ function driver(over: Partial<DriverOptionDto> & Pick<DriverOptionDto, 'personId
     licenseExpiresOn: '2031-03-12',
     verificationStatus: 'verified' as const,
     categories: ['C'],
+    gaps: [],
     matchesRequiredCategory: true,
     workedRoutes: 0,
     lastWorkedOn: null,
@@ -213,11 +217,13 @@ describe('категория прав при выборе водителя', () 
     expect(screen.queryByText(/Машине нужна категория/)).toBeNull();
   });
 
-  it('пустой список объясняется комплектом документов, а не категорией', async () => {
+  it('пустой список означает пустой справочник, а не отсеянных отбором', async () => {
+    // Отбора больше нет (ADR 0064): некого показать — значит, действующих водителей нет вовсе,
+    // и объяснять это комплектом документов было бы неправдой.
     mockAssign({ requiredCategory: 'CE', drivers: [] });
     renderModal();
     await screen.findByText('Новый рейс');
 
-    expect(await screen.findByText(/Нет водителей с полным комплектом документов/)).toBeTruthy();
+    expect(await screen.findByText(/В справочнике нет действующих водителей/)).toBeTruthy();
   });
 });

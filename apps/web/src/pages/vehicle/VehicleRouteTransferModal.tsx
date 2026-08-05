@@ -45,9 +45,9 @@ export function VehicleRouteTransferModal({ request, onClose, onDone }: Props) {
   const [targetId, setTargetId] = useState<string | undefined>();
 
   /**
-   * Куда можно перенести: рейсы того же дня на технике того же **вида**, что заказан в заявке
-   * (ADR 0059). Подсказку собирает сервер (`route-prefill` без машины) — тем же отбором, каким
-   * форма перевода в работу предлагает рейс до выбора техники.
+   * Куда можно перенести: рейсы того же дня — все (ADR 0064). Подсказку собирает сервер
+   * (`route-prefill` без машины) — тем же запросом, каким форма перевода в работу предлагает рейс
+   * до выбора техники.
    */
   const { data: prefill, isFetching } = useQuery({
     queryKey: ['route-prefill', request?.id, 'by-kind'],
@@ -61,12 +61,13 @@ export function VehicleRouteTransferModal({ request, onClose, onDone }: Props) {
    * меняют — сначала лист аннулируют). Правило заморозки берётся из контрактов: сервер проверит
    * его же.
    *
-   * Порядок — по пригодности машины рейса: сначала заказанный тип, потом крупнее, и только в
-   * конце то, что мельче заказанного. Отбрасывать «мелкие» рейсы нельзя — это вернуло бы запрет,
-   * который снимал ADR 0059; но и предлагать их первыми не следует.
+   * Порядок — по пригодности машины рейса: сначала заказанный тип, потом крупнее, в конце то, что
+   * мельче заказанного, и совсем внизу — другой вид техники. Отбрасывать дальние рейсы нельзя:
+   * это вернуло бы запреты, снятые ADR 0059 и ADR 0064; но и предлагать их первыми не следует.
    */
   const ordered = request
     ? {
+        vehicleKindId: request.vehicleKindId,
         vehicleTypeId: request.vehicleTypeId,
         vehicleCategoryId: request.vehicleCategoryId,
         categorySpecs: request.vehicleCategorySpecs,
@@ -76,6 +77,7 @@ export function VehicleRouteTransferModal({ request, onClose, onDone }: Props) {
     // Машина рейса сравнивается с заказом тем же правилом, что и машина в окне назначения:
     // одна формулировка на оба места, расходиться нечему.
     vehicleSubstitutionOf(ordered!, {
+      vehicleKindId: route.vehicleKindId,
       vehicleTypeId: route.vehicleTypeId,
       vehicleCategoryId: route.vehicleCategoryId,
       categorySpecs: route.vehicleCategorySpecs,
@@ -145,8 +147,9 @@ export function VehicleRouteTransferModal({ request, onClose, onDone }: Props) {
     >
       <Space direction="vertical" size={12} style={{ width: '100%' }}>
         <Typography.Text type="secondary">
-          Рейсы {request?.route ? `на ту же дату, что и ${request.route.displayNumber},` : 'дня'} с
-          машиной заказанного вида и свободным талоном. Сначала — заказанный тип, потом крупнее.
+          Рейсы {request?.route ? `на ту же дату, что и ${request.route.displayNumber},` : 'дня'} со
+          свободным талоном — все, без отбора по технике. Сначала заказанный тип, потом крупнее, в
+          конце другой вид.
         </Typography.Text>
 
         <AutoSelect

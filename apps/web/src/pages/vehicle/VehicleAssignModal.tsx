@@ -43,7 +43,10 @@ import {
   esm2Periods,
   vehicleSubstitutionRank,
   vehicleSubstitutionWarning,
+  driverDocumentGapsHint,
+  driverDocumentGapsWarning,
   waybillFormLabels,
+  waybillFormShortLabels,
   waybillRequirement,
 } from '@technic/contracts';
 import { driversApi, vehicleRequestsApi, vehicleRoutesApi, vehiclesApi } from '../../api/resources';
@@ -71,11 +74,17 @@ import { MOSCOW_TZ } from '@shared/config';
  * подходящей техники сразу) на реальном парке нечитаем: у одного типа десятки предложений от
  * разных арендодателей, и различать их приходится по хвосту строки.
  *
- * Список сужен видом ТС, но не заказанным типом (ADR 0059) и не заказанной категорией (ADR 0045):
- * заказывали «Автокран, г/п 130 т» — в списке будут и 25-тонный автокран, и самоходный кран на
- * 200 т. Подходит ли соседняя позиция классификатора, решает диспетчер: он знает и парк, и то, о
- * чём договорились с заказчиком. Расхождение называется прямо — группой в списке («Крупнее
- * заказанного»), пометкой в строке и предупреждением под полем, — но выбор не отнимает.
+ * Список не сужен ничем: ни заказанной категорией (ADR 0045), ни типом (ADR 0059), ни видом ТС
+ * (ADR 0064). Заказывали «Автокран, г/п 130 т» — в списке будут и 25-тонный автокран, и самоходный
+ * кран на 200 т, и, ниже всех, самосвал. Подходит ли соседняя позиция классификатора, решает
+ * диспетчер: он знает и парк, и то, о чём договорились с заказчиком, — а справочник заполнен
+ * неровно, и запрет по нему прятал бы машину, которой работу и делают. Расхождение называется
+ * прямо — группой в списке («Крупнее заказанного», «Другой вид техники»), пометкой в строке и
+ * предупреждением под полем, — но выбор не отнимает.
+ *
+ * Так же устроен и выбор водителя (ADR 0064): в списке весь справочник, включая тех, у кого не
+ * внесены СНИЛС или реквизиты удостоверения. Такой водитель стоит ниже, помечен в строке, а под
+ * полем сказано, какие графы бланка из-за этого останутся пустыми.
  *
  * Ставки подставляются из предложения аренды и правятся свободно: договариваются по конкретной
  * заявке, и прайс справочника такой договорённости не начальник. Расхождение с прайсом видно
@@ -174,12 +183,14 @@ export function VehicleAssignModal({
   /** Смена машины у работающей заявки (ADR 0048): срок не спрашивается — он уже согласован. */
   const reassign = mode === 'reassign';
 
-  // Вся техника заказанного **вида** одним запросом: обе ветки принадлежности нужны сразу — по их
-  // наполнению подписан сам переключатель («Аренда — 12»).
+  // Весь активный парк, а не техника заказанного вида (ADR 0064): классификация список больше не
+  // сужает — ни категорией (ADR 0045), ни типом (ADR 0059), ни видом. Обе ветки принадлежности
+  // нужны сразу — по их наполнению подписан сам переключатель («Аренда — 12»).
   //
-  // Спрашивается вид, а не тип (ADR 0059): заявку закрывают и машиной соседнего типа — бортовым
-  // вместо малотоннажного, — а раньше такой единицы в списке не было вовсе. Ни тип, ни категория
-  // заявки список не сужают; порядок и пометки объясняют, чем каждая машина отличается от заказа.
+  // Двумя запросами, а не одним: страница списка ограничена 500 строками, и в парке, который в неё
+  // не помещается, обрезалось бы как раз заказанное. Первый запрос берёт заказанный вид целиком —
+  // это то, чем заявку закрывают в девяти случаях из десяти; второй добирает остальное, и его
+  // неполнота названа под полем прямо.
   const vehicleTypeId = request?.vehicleTypeId ?? null;
   const vehicleKindId = request?.vehicleKindId ?? null;
   const categoryId = request?.vehicleCategoryId ?? null;
@@ -188,6 +199,7 @@ export function VehicleAssignModal({
     () =>
       request
         ? {
+            vehicleKindId: request.vehicleKindId,
             vehicleTypeId: request.vehicleTypeId,
             vehicleCategoryId: request.vehicleCategoryId,
             categorySpecs: request.vehicleCategorySpecs,
@@ -195,20 +207,39 @@ export function VehicleAssignModal({
         : null,
     [request?.id, vehicleTypeId, categoryId],
   );
-  const { data, isFetching } = useQuery({
+  const listParams = {
+    status: 'active',
+    page: 1,
+    pageSize: 500,
+    sortBy: 'lessorName',
+    sortOrder: 'asc',
+  } as const;
+  const ofKind = useQuery({
     queryKey: ['vehicles', 'for-assignment', vehicleKindId],
-    queryFn: () =>
-      vehiclesApi.list({
-        vehicleKindId: vehicleKindId!,
-        status: 'active',
-        page: 1,
-        pageSize: 500,
-        sortBy: 'lessorName',
-        sortOrder: 'asc',
-      }),
+    queryFn: () => vehiclesApi.list({ ...listParams, vehicleKindId: vehicleKindId! }),
     enabled: !!vehicleKindId,
   });
-  const vehicles = useMemo(() => data?.items ?? [], [data]);
+  const wholeFleet = useQuery({
+    queryKey: ['vehicles', 'for-assignment', 'all'],
+    queryFn: () => vehiclesApi.list(listParams),
+    enabled: !!request,
+  });
+  const isFetching = ofKind.isFetching || wholeFleet.isFetching;
+  const vehicles = useMemo(() => {
+    const byId = new Map<string, VehicleDto>();
+    for (const v of [...(ofKind.data?.items ?? []), ...(wholeFleet.data?.items ?? [])]) {
+      byId.set(v.id, v);
+    }
+    return [...byId.values()];
+  }, [ofKind.data, wholeFleet.data]);
+  /**
+   * Сколько машин чужих видов в страницу не поместилось. Молчать об этом нельзя: поиск в поле
+   * ищет по загруженным строкам, и ненайденная машина выглядела бы отсутствующей в парке.
+   */
+  const hiddenVehicles = Math.max(
+    0,
+    (wholeFleet.data?.total ?? 0) - (wholeFleet.data?.items.length ?? 0),
+  );
   const byOwnership = useMemo(
     () => ({
       own: vehicles.filter((v) => v.ownership === 'own'),
@@ -278,10 +309,13 @@ export function VehicleAssignModal({
   }, [byOwnership.rental]);
 
   /**
-   * Список техники группами: заказанный тип → крупнее → другие типы вида → меньше заказанного
-   * (ADR 0059). Порядок и есть ответ на «чем закрыть заявку»: наверху то, что заказывали, внизу
-   * то, что заведомо мельче. Переключателя «показать другие типы» нет — лишнее состояние формы
-   * там, где хватает порядка строк, а поиск по строке идёт по всем группам сразу.
+   * Список техники группами: заказанный тип → крупнее → другие типы вида → меньше заказанного →
+   * другой вид техники (ADR 0059, ADR 0064). Порядок и есть ответ на «чем закрыть заявку»: наверху
+   * соответствие, ниже близкое к нему, в самом низу далёкое. Внутри группы — по алфавиту: строки
+   * там равноценны, и всякий другой порядок пришлось бы объяснять.
+   *
+   * Переключателя «показать другие виды» нет — лишнее состояние формы там, где хватает порядка
+   * строк, а поиск по строке идёт по всем группам сразу.
    */
   const vehicleOptions = useMemo(() => {
     if (!ordered) return [];
@@ -303,7 +337,12 @@ export function VehicleAssignModal({
       group.options.push({ value: v.id, label: vehicleOptionLabel(v, substitution) });
       groups.set(rank, group);
     }
-    return [...groups.entries()].sort(([a], [b]) => a - b).map(([, group]) => group);
+    return [...groups.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([, group]) => ({
+        ...group,
+        options: group.options.sort((a, b) => a.label.localeCompare(b.label, 'ru')),
+      }));
   }, [ownership, lessorId, byOwnership, ordered]);
 
   const selected = vehicles.find((v) => v.id === vehicleId) ?? null;
@@ -446,9 +485,9 @@ export function VehicleAssignModal({
     enabled: needsRoute && !joiningRoute && !!vehicleId && !!tripDate,
   });
 
-  // Список водителей — тот же отбор, что проверит сервер: у кого полный комплект документов на
-  // дату рейса (ADR 0055). Категория списка не сужает — расхождение с ней помечается в строке.
-  // Дата, на которую проверяется допуск: у рейса — день подачи, у перегона — день, когда технику
+  // Список водителей — весь справочник (ADR 0064): ни категория, ни полнота документов из него
+  // никого не убирают, обе помечают строку и объясняются предупреждением под полем.
+  // Дата, на которую считается годность: у рейса — день подачи, у перегона — день, когда технику
   // повезут. Даты разные, и водитель, годный сегодня, завтра может быть с истёкшим удостоверением.
   const driverDate = needsRoute
     ? tripDate
@@ -461,15 +500,16 @@ export function VehicleAssignModal({
     queryFn: () => driversApi.available({ vehicleId: vehicleId!, on: driverDate!, withTrailer }),
     enabled: driversNeeded && !!vehicleId && !!driverDate,
   });
-  // Порядок задал сервер: подходящие по категории первыми (ADR 0055), внутри них — работавшие на
-  // этой машине (ADR 0056). Пометки в строке объясняют, почему человек там, — без них список
-  // выглядел бы сбитым алфавитом.
+  // Порядок задал сервер: пригодные первыми — сперва комплект документов, затем категория
+  // (ADR 0064, ADR 0055), внутри них работавшие на этой машине (ADR 0056). Пометки в строке
+  // объясняют, почему человек там, — без них список выглядел бы сбитым алфавитом.
   const driverOptions = (selection?.drivers ?? []).map((d) => ({
     value: d.personId,
     label: [
       d.fullName,
       d.categories.join(', '),
       d.personnelNo && `таб. ${d.personnelNo}`,
+      driverDocumentGapsHint(d.gaps),
       d.matchesRequiredCategory ? null : DRIVER_CATEGORY_MISMATCH_HINT,
       driverWorkedOnVehicle(d) ? DRIVER_WORKED_ON_VEHICLE_HINT : null,
       d.verificationStatus === 'unverified' ? 'документ не проверен' : null,
@@ -511,14 +551,31 @@ export function VehicleAssignModal({
   }, [needsMachinist, dateFrom, dateTo]);
 
   /**
-   * Выбран водитель, у которого нет категории, требуемой машиной. Пометки в строке списка мало:
-   * её читают при выборе и забывают, — а решение садить его или нет остаётся за человеком
-   * (ADR 0055): портал ничего не запрещает, но обе стороны расхождения обязан назвать.
+   * Что не так с выбранным водителем: нет категории, которой требует машина, и/или не внесены
+   * документы, которые печатает бланк. Пометки в строке списка мало — её читают при выборе и
+   * забывают, — а решение садить человека остаётся за диспетчером (ADR 0055, ADR 0064): портал
+   * ничего не запрещает, но обе стороны расхождения обязан назвать.
+   *
+   * Пробелы документов названы вместе с бланком: пустая графа в 4-П и пустая графа в форме № 3 —
+   * разные графы, и «касается ли это меня» человек должен понять не выходя из окна.
    */
   const selectedDriver = selection?.drivers.find((d) => d.personId === driverPersonId);
   const driverCategoryMismatch =
     selection?.requiredCategory && selectedDriver && !selectedDriver.matchesRequiredCategory
       ? driverCategoryMismatchWarning(selection.requiredCategory, selectedDriver.categories)
+      : null;
+  const driverGaps = selectedDriver
+    ? driverDocumentGapsWarning(
+        selectedDriver.gaps,
+        requirement.formCode ? waybillFormShortLabels[requirement.formCode] : null,
+      )
+    : null;
+  /** Тот же вопрос про водителя перегона: лист по нему — всегда 4-П (миграция 0082). */
+  const deliveryDriverId = Form.useWatch('deliveryDriverId', form);
+  const deliveryDriver = selection?.drivers.find((d) => d.personId === deliveryDriverId);
+  const deliveryDriverGaps =
+    wantsDelivery && deliveryDriver
+      ? driverDocumentGapsWarning(deliveryDriver.gaps, waybillFormShortLabels['4p'])
       : null;
 
   /**
@@ -735,15 +792,15 @@ export function VehicleAssignModal({
     });
   };
 
-  // Пусто — значит пусто по типу ТС: категория список не сужает (ADR 0045), и обещать, что
-  // техника найдётся в соседней категории, нечем.
+  // Пусто — значит пусто в парке целиком: список не сужен ни типом, ни видом (ADR 0064), и
+  // обещать, что техника найдётся где-то ещё, нечем.
   const emptyText = isFetching
     ? 'Загружаем технику…'
     : ownership === 'own'
-      ? 'Собственной техники этого типа нет — возьмите её в аренду'
+      ? 'Собственной техники в работе нет — возьмите её в аренду'
       : lessorId
-        ? 'У этого арендодателя нет предложений этого типа'
-        : 'Предложений аренды этого типа нет';
+        ? 'У этого арендодателя нет активных предложений'
+        : 'Активных предложений аренды нет';
 
   return (
     <FormModal
@@ -958,8 +1015,11 @@ export function VehicleAssignModal({
             )}
 
             {/* Шаг 4: конкретная единица. Расхождение с заказанной позицией — подстрочным
-              предупреждением (ADR 0045, ADR 0059): назначение оно не отменяет, но и незамеченным
-              не проходит. Выбранный рейс поле запирает: машину задаёт он (ADR 0052). */}
+              предупреждением (ADR 0045, ADR 0059, ADR 0064): назначение оно не отменяет, но и
+              незамеченным не проходит. Выбранный рейс поле запирает: машину задаёт он (ADR 0052).
+
+              Обрезанный парк назван там же: поиск в поле ищет по загруженным строкам, и машина,
+              не поместившаяся в страницу, выглядела бы отсутствующей. */}
             <Form.Item
               name="vehicleId"
               label="Конкретная техника"
@@ -979,6 +1039,11 @@ export function VehicleAssignModal({
                   </Typography.Text>
                 ) : vehicleOptions.length === 0 ? (
                   emptyText
+                ) : hiddenVehicles > 0 ? (
+                  <Typography.Text type="secondary">
+                    Заказанный вид техники показан целиком; машин других видов в списке не все —
+                    ещё {hiddenVehicles} в парке
+                  </Typography.Text>
                 ) : undefined
               }
             >
@@ -1097,7 +1162,7 @@ export function VehicleAssignModal({
                       rules={[{ required: true, message: 'Выберите водителя' }]}
                       extra={
                         driverOptions.length === 0 && !driversLoading
-                          ? 'Нет водителей с полным комплектом документов на эту дату'
+                          ? 'В справочнике нет действующих водителей'
                           : undefined
                       }
                     >
@@ -1109,6 +1174,18 @@ export function VehicleAssignModal({
                         placeholder="Выберите водителя"
                       />
                     </Form.Item>
+                    {/* Перегон печатает тот же 4-П, и пустая графа в нём такая же пустая: о ней
+                      говорят здесь, у своего поля, а не одним предупреждением на всё окно. */}
+                    {deliveryDriverGaps && (
+                      <FormGrid.Full>
+                        <Alert
+                          type="warning"
+                          showIcon
+                          message="Документы водителя перегона неполные"
+                          description={deliveryDriverGaps}
+                        />
+                      </FormGrid.Full>
+                    )}
                     <Form.Item
                       name="deliveryFrom"
                       label="Откуда"
@@ -1173,9 +1250,8 @@ export function VehicleAssignModal({
                     rules={[{ required: true, message: 'Выберите водителя' }]}
                     extra={
                       driverOptions.length === 0 && !driversLoading
-                        ? 'Нет водителей с полным комплектом документов на эту дату: нужны СНИЛС, ' +
-                          'действующее удостоверение, его серия с номером и дата выдачи. ' +
-                          'Недостающее вносит администратор в справочнике водителей.'
+                        ? 'В справочнике нет действующих водителей: заведите карточку или ' +
+                          'откройте специализацию «водитель» у существующей.'
                         : undefined
                     }
                   >
@@ -1187,6 +1263,20 @@ export function VehicleAssignModal({
                       placeholder="Выберите водителя"
                     />
                   </Form.Item>
+                )}
+
+                {/* Два предупреждения, а не одно: пустая графа бланка и чужая категория — разные
+                  вещи, и первое проверяют по справочнику водителей, а второе по документу в
+                  руках. Оба ничего не запрещают (ADR 0055, ADR 0064). */}
+                {!joiningRoute && driverGaps && (
+                  <FormGrid.Full>
+                    <Alert
+                      type="warning"
+                      showIcon
+                      message="Документы водителя внесены не полностью"
+                      description={driverGaps}
+                    />
+                  </FormGrid.Full>
                 )}
 
                 {!joiningRoute && driverCategoryMismatch && (

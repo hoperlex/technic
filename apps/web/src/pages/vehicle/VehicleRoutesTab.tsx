@@ -6,6 +6,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   DRIVER_CATEGORY_MISMATCH_HINT,
   DRIVER_WORKED_ON_VEHICLE_HINT,
+  driverDocumentGapsHint,
   driverWorkedOnVehicle,
   isRelocationPurpose,
   MAX_ROUTE_REQUESTS,
@@ -300,8 +301,8 @@ function CreateRouteModal({
     enabled: open,
   });
 
-  // Водитель — из тех, кто допущен к этой машине на эту дату: тот же отбор проверит сервер при
-  // выписке листа.
+  // Водитель — весь справочник (ADR 0064): категория и полнота документов никого не убирают, они
+  // помечают строку. Чем это грозит бланку, скажет карточка рейса — там, где лист выписывают.
   const { data: selection, isFetching: driversLoading } = useQuery({
     queryKey: ['drivers', 'available', vehicleId, routeDate?.format(DATE)],
     queryFn: () =>
@@ -369,14 +370,16 @@ function CreateRouteModal({
               label="Водитель"
               extra="Необязательно: рейс собирают заранее, а человека ставят утром. Без водителя лист не выписать."
             >
-              {/* Порядок задал сервер: подходящие по категории первыми (ADR 0055), внутри них —
-                работавшие на этой машине (ADR 0056). Пометки в строке объясняют почему. */}
+              {/* Порядок задал сервер: пригодные первыми — комплект документов, затем категория
+                (ADR 0064, ADR 0055), внутри них работавшие на этой машине (ADR 0056). Пометки в
+                строке объясняют почему. */}
               <AutoSelect
                 options={(selection?.drivers ?? []).map((d) => ({
                   value: d.personId,
                   label: [
                     d.fullName,
                     d.categories.join(', '),
+                    driverDocumentGapsHint(d.gaps),
                     d.matchesRequiredCategory ? null : DRIVER_CATEGORY_MISMATCH_HINT,
                     driverWorkedOnVehicle(d) ? DRIVER_WORKED_ON_VEHICLE_HINT : null,
                   ]

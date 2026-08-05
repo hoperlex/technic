@@ -23,6 +23,7 @@ import { VehicleRequestsTab } from '../src/pages/vehicle/VehicleRequestsTab';
 const ASSIGNMENT = {
   vehicleId: 'v-1',
   ownership: 'own' as const,
+  vehicleKindId: 'vk-freight',
   vehicleTypeId: 'vt-dump',
   typeName: 'Самосвалы',
   vehicleCategoryId: null,

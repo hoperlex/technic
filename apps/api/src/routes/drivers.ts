@@ -465,12 +465,12 @@ export default async function driversRoutes(app: FastifyInstance): Promise<void>
   );
 
   /**
-   * Кто может выйти в рейс на этой машине в эту дату (ADR 0037). Тем же отбором сервер проверяет
-   * присланного водителя при переводе заявки в работу — одна функция в двух применениях.
+   * Кого можно посадить за эту машину в эту дату (ADR 0037). Тем же запросом сервер собирает
+   * реквизиты присланного водителя при выписке листа — одна функция в двух применениях.
    *
-   * Сужает комплект документов, а не категория прав (ADR 0055): расхождение с требованием машины
-   * едет в ответе флагом `matchesRequiredCategory`, а `requiredCategory` называет, чего машина
-   * требует, — из этой пары форма и складывает предупреждение.
+   * Никого не сужает (ADR 0064): расхождение с требованием машины едет флагом
+   * `matchesRequiredCategory` рядом с `requiredCategory`, пробелы комплекта — списком `gaps`.
+   * Из этих двух пар форма и складывает пометки в строках и предупреждения под полем.
    */
   r.get(
     '/available',
@@ -493,6 +493,7 @@ export default async function driversRoutes(app: FastifyInstance): Promise<void>
           licenseExpiresOn: d.licenseExpiresOn,
           verificationStatus: d.verificationStatus,
           categories: d.categories,
+          gaps: d.gaps,
           matchesRequiredCategory: d.matchesRequiredCategory,
           workedRoutes: d.workedRoutes,
           lastWorkedOn: d.lastWorkedOn,

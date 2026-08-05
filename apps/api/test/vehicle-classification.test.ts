@@ -190,6 +190,9 @@ describe('vehicle_classifications: list-query', () => {
 });
 
 // ── Замена заказанной техники: предупреждение, а не запрет (ADR 0045, ADR 0059) ──
+/** Виды ТС: спецтехника и грузовой транспорт — самое крупное расхождение, какое бывает. */
+const SPECIAL = '77777777-7777-4777-8777-777777777777';
+const FREIGHT = '88888888-8888-4888-8888-888888888888';
 const CRANES = '55555555-5555-4555-8555-555555555555';
 const TRUCKS = '66666666-6666-4666-8666-666666666666';
 const CAT_130 = '33333333-3333-4333-8333-333333333333';
@@ -232,6 +235,7 @@ describe('сравнение техники по ТТХ', () => {
 
 describe('расхождение назначенной техники с заказанной', () => {
   const ordered = {
+    vehicleKindId: SPECIAL,
     vehicleTypeId: CRANES,
     vehicleCategoryId: CAT_130,
     categorySpecs: { lift_capacity: 130 },
@@ -254,6 +258,7 @@ describe('расхождение назначенной техники с зак
 
   it('свой тип, категория меньше — предупреждение о риске', () => {
     const s = vehicleSubstitutionOf(ordered, {
+      vehicleKindId: SPECIAL,
       vehicleTypeId: CRANES,
       vehicleCategoryId: CAT_25,
       categorySpecs: { lift_capacity: 25 },
@@ -274,8 +279,18 @@ describe('расхождение назначенной техники с зак
 
   it('другой тип крупнее — пометка, а не предупреждение', () => {
     const s = vehicleSubstitutionOf(
-      { vehicleTypeId: TRUCKS, vehicleCategoryId: CAT_25, categorySpecs: { lift_capacity: 3.5 } },
-      { vehicleTypeId: CRANES, vehicleCategoryId: CAT_130, categorySpecs: { lift_capacity: 10 } },
+      {
+        vehicleKindId: FREIGHT,
+        vehicleTypeId: TRUCKS,
+        vehicleCategoryId: CAT_25,
+        categorySpecs: { lift_capacity: 3.5 },
+      },
+      {
+        vehicleKindId: FREIGHT,
+        vehicleTypeId: CRANES,
+        vehicleCategoryId: CAT_130,
+        categorySpecs: { lift_capacity: 10 },
+      },
     );
     expect(vehicleSubstitutionHint(s)).toBe('другой тип, крупнее');
     expect(vehicleSubstitutionGroup(s)).toBe('bigger');
@@ -291,6 +306,7 @@ describe('расхождение назначенной техники с зак
 
   it('другой тип, сравнить нечем — так и сказано', () => {
     const s = vehicleSubstitutionOf(ordered, {
+      vehicleKindId: SPECIAL,
       vehicleTypeId: TRUCKS,
       vehicleCategoryId: null,
       categorySpecs: null,
@@ -309,6 +325,7 @@ describe('расхождение назначенной техники с зак
 
   it('свой тип, а категория у машины не заполнена — «не разнесли» не равно «не подходит»', () => {
     const s = vehicleSubstitutionOf(ordered, {
+      vehicleKindId: SPECIAL,
       vehicleTypeId: CRANES,
       vehicleCategoryId: null,
       categorySpecs: null,
@@ -320,28 +337,80 @@ describe('расхождение назначенной техники с зак
   it('заявка без категории не расходится ни с чем: сравнивать не с чем', () => {
     // Тип без ТТХ (ADR 0028 §3) и заявки старше миграции 0052 — категории у них нет вовсе.
     const s = vehicleSubstitutionOf(
-      { vehicleTypeId: CRANES, vehicleCategoryId: null, categorySpecs: null },
-      { vehicleTypeId: CRANES, vehicleCategoryId: CAT_25, categorySpecs: { lift_capacity: 25 } },
+      { vehicleKindId: SPECIAL, vehicleTypeId: CRANES, vehicleCategoryId: null, categorySpecs: null },
+      {
+        vehicleKindId: SPECIAL,
+        vehicleTypeId: CRANES,
+        vehicleCategoryId: CAT_25,
+        categorySpecs: { lift_capacity: 25 },
+      },
     );
     expect(s.categoryMismatch).toBe(false);
     expect(vehicleSubstitutionHint(s)).toBeNull();
   });
 
-  it('порядок групп: заказанный тип → крупнее → прочие → меньше заказанного', () => {
+  it('порядок групп: заказанный тип → крупнее → прочие → меньше → другой вид', () => {
     const rank = (actual: Parameters<typeof vehicleSubstitutionOf>[1]): number =>
       vehicleSubstitutionRank(vehicleSubstitutionOf(ordered, actual));
-    const own = rank({ vehicleTypeId: CRANES, vehicleCategoryId: CAT_25, categorySpecs: null });
+    const own = rank({
+      vehicleKindId: SPECIAL,
+      vehicleTypeId: CRANES,
+      vehicleCategoryId: CAT_25,
+      categorySpecs: null,
+    });
     const bigger = rank({
+      vehicleKindId: SPECIAL,
       vehicleTypeId: TRUCKS,
       vehicleCategoryId: CAT_25,
       categorySpecs: { lift_capacity: 200 },
     });
-    const other = rank({ vehicleTypeId: TRUCKS, vehicleCategoryId: null, categorySpecs: null });
+    const other = rank({
+      vehicleKindId: SPECIAL,
+      vehicleTypeId: TRUCKS,
+      vehicleCategoryId: null,
+      categorySpecs: null,
+    });
     const smaller = rank({
+      vehicleKindId: SPECIAL,
       vehicleTypeId: TRUCKS,
       vehicleCategoryId: CAT_25,
       categorySpecs: { lift_capacity: 25 },
     });
-    expect([own, bigger, other, smaller]).toEqual([0, 1, 2, 3]);
+    // Чужой вид — последним, каким бы крупным он ни был: ТТХ у него сравнивать не с чем.
+    const kind = rank({
+      vehicleKindId: FREIGHT,
+      vehicleTypeId: TRUCKS,
+      vehicleCategoryId: CAT_25,
+      categorySpecs: { lift_capacity: 200 },
+    });
+    expect([own, bigger, other, smaller, kind]).toEqual([0, 1, 2, 3, 4]);
+  });
+
+  /**
+   * Вид ТС перестал быть границей замены (ADR 0064): раньше сервер отклонял такое назначение с
+   * 422, теперь оно проходит с предупреждением. Проверяется то, ради чего правило менялось —
+   * расхождение названо и стоит в конце списка, но ничего не отменяет.
+   */
+  it('другой вид техники — жёлтое предупреждение и последняя группа', () => {
+    const s = vehicleSubstitutionOf(ordered, {
+      vehicleKindId: FREIGHT,
+      vehicleTypeId: TRUCKS,
+      vehicleCategoryId: CAT_25,
+      categorySpecs: { body_volume: 20 },
+    });
+    expect(s.kindMismatch).toBe(true);
+    expect(vehicleSubstitutionHint(s)).toBe('другой вид техники');
+    expect(vehicleSubstitutionGroup(s)).toBe('kind');
+    const w = vehicleSubstitutionWarning({
+      substitution: s,
+      orderedLabel: 'Автокраны, г/п 130 т',
+      actualTypeName: 'Самосвалы',
+      actualCategoryName: 'Самосвалы, 20 м³',
+    })!;
+    // Жёлтое независимо от ТТХ: сравнивать грузоподъёмность с объёмом кузова нечем.
+    expect(w.level).toBe('warning');
+    expect(w.text).toContain('Автокраны, г/п 130 т');
+    expect(w.text).toContain('Самосвалы, 20 м³');
+    expect(w.text).toContain('другого вида');
   });
 });

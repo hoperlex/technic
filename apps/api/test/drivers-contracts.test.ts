@@ -4,7 +4,10 @@ import {
   driverCategoryMismatchWarning,
   createDriverSchema,
   driverDocumentGaps,
+  driverDocumentGapsHint,
+  driverDocumentGapsWarning,
   driverDocumentsComplete,
+  driverRelevanceRank,
   driverLicenseInputSchema,
   driverListQuerySchema,
   driverWorkedOnVehicle,
@@ -19,6 +22,8 @@ import {
   normalizeSnils,
   snilsSchema,
   trailerCategoryCode,
+  waybillLicenseOf,
+  type DriverDocumentGap,
   type DriverDto,
   type DriverLicenseDto,
 } from '@technic/contracts';
@@ -390,9 +395,10 @@ describe('водители, работавшие на этой машине, и�
   const worked = (fullName: string, lastWorkedOn: string | null) => ({
     fullName,
     lastWorkedOn,
-    // Категория у всех подходит: её влияние на порядок проверяется отдельно, а здесь она сравняла
-    // бы всех по первому ключу и спрятала бы разницу в опыте.
+    // Категория подходит и комплект полон у всех: их влияние на порядок проверяется отдельно, а
+    // здесь они сравняли бы всех по первым ключам и спрятали бы разницу в опыте.
     matchesRequiredCategory: true,
+    gaps: [],
   });
 
   it('опыт поднимает над алфавитом', () => {
@@ -519,7 +525,7 @@ describe('категория прав ничего не запрещает, но
     fullName: string,
     matchesRequiredCategory: boolean,
     lastWorkedOn: string | null = null,
-  ) => ({ fullName, matchesRequiredCategory, lastWorkedOn });
+  ) => ({ fullName, matchesRequiredCategory, lastWorkedOn, gaps: [] });
 
   it('подходящие по категории идут выше — даже без опыта на этой машине', () => {
     const list = [option('Яковлев Я. Я.', false, '2026-07-14'), option('Абрамов А. А.', true)].sort(
@@ -559,5 +565,94 @@ describe('категория прав ничего не запрещает, но
     expect(driverListQuerySchema.parse({}).categoryId).toBeUndefined();
     expect(driverListQuerySchema.safeParse({ categoryId: CATEGORY_ID }).success).toBe(true);
     expect(driverListQuerySchema.safeParse({ categoryId: 'ce' }).success).toBe(false);
+  });
+});
+
+/**
+ * Полнота документов — справочная информация (ADR 0064). Раньше она решала, кого показать; теперь
+ * решает, кого показать **первым** и о чём предупредить. Проверяется здесь же, где и сам комплект:
+ * пробелы считаются одним правилом, а называются в трёх местах, и разъехаться им негде.
+ */
+describe('полнота документов задаёт порядок и текст, но никого не убирает', () => {
+  const option = (
+    fullName: string,
+    gaps: DriverDocumentGap[],
+    matchesRequiredCategory = true,
+    lastWorkedOn: string | null = null,
+  ) => ({ fullName, gaps, matchesRequiredCategory, lastWorkedOn });
+
+  it('пригодность считается документами прежде категории', () => {
+    // Пустая графа бланка обнаружится в тот же день, а расхождение с категорией заведено оптом
+    // миграцией 0059 и часто существует только в справочнике (ADR 0055).
+    expect(driverRelevanceRank({ gaps: [], matchesRequiredCategory: true })).toBe(0);
+    expect(driverRelevanceRank({ gaps: [], matchesRequiredCategory: false })).toBe(1);
+    expect(driverRelevanceRank({ gaps: ['requisites'], matchesRequiredCategory: true })).toBe(2);
+    expect(driverRelevanceRank({ gaps: ['snils'], matchesRequiredCategory: false })).toBe(3);
+  });
+
+  it('водитель без реквизитов ВУ уходит вниз, но из списка не исчезает', () => {
+    const list = [
+      option('Абрамов А. А.', ['requisites']),
+      option('Яковлев Я. Я.', []),
+    ].sort(compareDriverOptions);
+    // Алфавит уступил пригодности — и оба на месте: отбора больше нет (ADR 0064).
+    expect(list.map((d) => d.fullName)).toEqual(['Яковлев Я. Я.', 'Абрамов А. А.']);
+    expect(list).toHaveLength(2);
+  });
+
+  it('опыт на машине неполный комплект не перебивает', () => {
+    // Иначе первым предлагался бы тот, на кого лист выпишется с пустыми графами.
+    const list = [
+      option('Абрамов А. А.', ['snils'], true, '2026-07-14'),
+      option('Яковлев Я. Я.', [], true, null),
+    ].sort(compareDriverOptions);
+    expect(list.map((d) => d.fullName)).toEqual(['Яковлев Я. Я.', 'Абрамов А. А.']);
+  });
+
+  it('пометка строки перечисляет пробелы, а полный комплект молчит', () => {
+    expect(driverDocumentGapsHint(['requisites', 'issuedOn'])).toBe(
+      'без номера ВУ, без даты выдачи ВУ',
+    );
+    expect(driverDocumentGapsHint([])).toBeNull();
+  });
+
+  it('предупреждение называет последствие и бланк, а не состояние справочника', () => {
+    const text = driverDocumentGapsWarning(['requisites'], '4-П')!;
+    expect(text).toContain('без номера ВУ');
+    expect(text).toContain('4-П');
+    expect(text).toContain('останутся пустыми');
+    // Запрета в тексте нет: это предупреждение, а не отказ.
+    expect(text).toContain('администратор');
+  });
+
+  it('без известного бланка предупреждение говорит о путевом листе вообще', () => {
+    expect(driverDocumentGapsWarning(['snils'], null)).toContain('в путевом листе эти графы');
+  });
+
+  it('полный комплект предупреждения не поднимает', () => {
+    expect(driverDocumentGapsWarning([], '4-П')).toBeNull();
+  });
+});
+
+/**
+ * Документ, по которому выпишется лист, — тот же, о пробелах которого предупредили. Правило одно
+ * на портал и на сервер (`waybillLicenseOf`): две копии этого выбора означали бы лист, выписанный
+ * по одному удостоверению, и предупреждение — по другому.
+ */
+describe('удостоверение для листа', () => {
+  const ON = '2026-08-03';
+
+  it('годное на дату; негодные не берутся', () => {
+    expect(waybillLicenseOf([license({ expiresOn: '2026-08-02' })], ON)).toBeNull();
+    expect(waybillLicenseOf([license()], ON)?.id).toBe(license().id);
+  });
+
+  it('из нескольких годных — самое заполненное', () => {
+    const partial = license({ id: 'l2', series: '', number: '', issuedOn: null });
+    expect(waybillLicenseOf([partial, license()], ON)?.id).toBe(license().id);
+  });
+
+  it('документов нет вовсе — брать нечего', () => {
+    expect(waybillLicenseOf([], ON)).toBeNull();
   });
 });

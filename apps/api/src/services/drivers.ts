@@ -2,6 +2,7 @@ import {
   and,
   asc,
   count,
+  desc,
   eq,
   gte,
   inArray,
@@ -16,9 +17,13 @@ import {
   compareDriverOptions,
   type CredentialVerificationStatus,
   DRIVER_EXPERIENCE_MONTHS,
+  type DriverDocumentGap,
+  driverDocumentGaps,
   hasCategoryOn,
   trailerCategoryCode,
   formatSnils,
+  type WaybillLicense,
+  waybillLicenseOf,
 } from '@technic/contracts';
 import { db } from '../db/client';
 import {
@@ -42,17 +47,17 @@ type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type Reader = Tx | typeof db;
 
 /**
- * Отбор водителей под машину (ADR 0037, ADR 0055).
+ * Список водителей под машину (ADR 0037, ADR 0055, ADR 0064).
  *
- * Допуск здесь — это отбор, а не проверка, которая отклоняет: портал показывает тех, кто может
- * сесть за эту машину в эту дату, и тем же запросом сервер убеждается в присланном человеке,
- * ограничив отбор одним `personId`. Одна функция в двух применениях — второму набору правил
- * разъехаться с первым негде.
+ * Отбора здесь больше нет: функция отвечает не «кто может сесть за эту машину», а «кого можно
+ * посадить и что при этом будет не так». Тем же запросом сервер собирает реквизиты присланного
+ * человека, ограничив список одним `personId`, — одна функция в двух применениях, второму набору
+ * правил разъехаться с первым негде.
  *
- * Сужает список комплект документов, а не категория прав (ADR 0055): без СНИЛСа, действующего
- * удостоверения, его номера и даты выдачи путевой лист печатается недействительным, и такого
- * водителя предлагать нечем. Категория машине проставлена скопом по типу техники (миграция
- * `0059`) и осталась справочной — расхождение с ней отдаётся флагом, а не пустым списком.
+ * Ни комплект документов, ни категория прав никого не убирают (ADR 0064): первый едет в ответе
+ * списком пробелов (`gaps`), вторая — флагом `matchesRequiredCategory`, а порядок списка считается
+ * по обоим (`compareDriverOptions`). Сужают только два состояния, к качеству данных отношения не
+ * имеющие: человек удалён из справочника или его специализация водителя закрыта увольнением.
  *
  * Закрывает отложенный пункт ADR 0008 («действующие допуски» функцией с датой-параметром).
  */
@@ -64,9 +69,12 @@ export const DRIVER_LICENSE_CODE = 'driver_license';
 
 /**
  * Документ, по которому выпишется действительный путевой лист: годен на дату и заполнены графы,
- * которые печатает бланк. Условия собраны здесь одним набором, потому что их спрашивают в двух
- * местах — отбором под машину (join к `person_credentials`) и фильтром справочника (EXISTS): то же
- * правило в контрактах записано для формы (`driverDocumentGaps`), и третьей копии быть не должно.
+ * которые печатает бланк. Спрашивает их фильтр справочника (`documents=complete`, EXISTS-подзапрос):
+ * страницу отбирает сервер, и считать полноту в памяти он не может. То же правило в контрактах
+ * записано для формы (`driverDocumentGaps`) — третьей копии быть не должно.
+ *
+ * Список водителей под машину этими условиями больше не сужается (ADR 0064): он считает те же
+ * пробелы в памяти и показывает их пометкой.
  *
  * Срок действия в комплект не входит: пустой — бессрочный документ, а не пустая графа. Проверка
  * бумаги (`unverified`) тоже: это состояние учётной процедуры, а не отсутствие прав.
@@ -85,22 +93,30 @@ export function licenseCompleteConditions(on: string): SQL[] {
 export interface DriverOption {
   personId: string;
   fullName: string;
-  /** 11 цифр — как в базе; «112-233-445 95» отдаёт `snilsFormatted`. */
+  /** 11 цифр — как в базе; «112-233-445 95» отдаёт `snilsFormatted`. Пусто — не внесён. */
   snils: string;
   snilsFormatted: string;
   personnelNo: string;
-  licenseId: string;
+  /**
+   * Удостоверение, которым лист выпишется (`waybillLicenseOf`), — годное на дату и самое
+   * заполненное из годных. `null` — годного нет: человек в списке остаётся (ADR 0064), а графы
+   * бланка останутся пустыми, о чём и предупреждает `gaps`.
+   */
+  licenseId: string | null;
   licenseSeries: string;
   licenseNumber: string;
   licenseIssuedOn: string | null;
   licenseExpiresOn: string | null;
   /**
-   * `unverified` в отбор входит: это состояние учётной процедуры, а не отсутствие прав, и
+   * `unverified` в списке остаётся: это состояние учётной процедуры, а не отсутствие прав, и
    * останавливать работу из-за неразобранной бумаги нельзя. Интерфейс такого водителя помечает.
+   * `null` — годного документа нет вовсе, и проверять нечего.
    */
-  verificationStatus: CredentialVerificationStatus;
+  verificationStatus: CredentialVerificationStatus | null;
   /** Все категории документа («B», «C», «CE») — их печатает путевой лист и показывает форма. */
   categories: string[];
+  /** Чего не хватает для листа на эту дату (`driverDocumentGaps`); пусто — комплект полный. */
+  gaps: DriverDocumentGap[];
   /** Открыта ли требуемая машиной категория на дату рейса. Ничего не запрещает (ADR 0055). */
   matchesRequiredCategory: boolean;
   /** Состоявшихся рейсов этой машины с этим водителем за последний год (ADR 0056). */
@@ -260,6 +276,132 @@ async function loadExperience(
   );
 }
 
+/**
+ * Удостоверение водителя в объёме, который спрашивают путевой лист и подсчёт пробелов: годность,
+ * графы бланка и категории со своими сроками. Полного `DriverLicenseDto` здесь не собирают — кто
+ * и когда проверил бумагу, списку выбора не нужно.
+ */
+interface DriverLicenseRow extends WaybillLicense {
+  id: string;
+  categories: { code: string; name: string; validFrom: string | null; validTo: string | null }[];
+}
+
+/**
+ * Удостоверения найденных людей — все, а не только годные: годность считает `waybillLicenseOf`, и
+ * считать её дважды разными способами (условием запроса и функцией контрактов) как раз и означало
+ * бы две правды об одном документе. Удалённые записи не в счёт: это не документ, а стёртая строка.
+ *
+ * Порядок — свежий документ первым, тот же, что в карточке водителя: из двух одинаково заполненных
+ * годных удостоверений лист выпишется по свежему, а не по случайному.
+ */
+async function loadLicenses(
+  reader: Reader,
+  personIds: string[],
+): Promise<Map<string, DriverLicenseRow[]>> {
+  const map = new Map<string, DriverLicenseRow[]>();
+  if (personIds.length === 0) return map;
+
+  const rows = await reader
+    .select({
+      id: personCredentials.id,
+      personId: personCredentials.personId,
+      series: personCredentials.series,
+      number: personCredentials.number,
+      issuedOn: personCredentials.issuedOn,
+      expiresOn: personCredentials.expiresOn,
+      revokedAt: personCredentials.revokedAt,
+      verificationStatus: personCredentials.verificationStatus,
+    })
+    .from(personCredentials)
+    .innerJoin(credentialTypes, eq(credentialTypes.id, personCredentials.credentialTypeId))
+    .where(
+      and(
+        inArray(personCredentials.personId, personIds),
+        eq(credentialTypes.code, DRIVER_LICENSE_CODE),
+        isNull(personCredentials.deletedAt),
+      ),
+    )
+    .orderBy(desc(personCredentials.issuedOn), desc(personCredentials.createdAt));
+
+  const categories = await reader
+    .select({
+      credentialId: personCredentialCategories.credentialId,
+      code: qualificationCategories.code,
+      name: qualificationCategories.name,
+      validFrom: personCredentialCategories.validFrom,
+      validTo: personCredentialCategories.validTo,
+    })
+    .from(personCredentialCategories)
+    .innerJoin(
+      qualificationCategories,
+      eq(qualificationCategories.id, personCredentialCategories.qualificationCategoryId),
+    )
+    .where(
+      inArray(
+        personCredentialCategories.credentialId,
+        rows.map((r) => r.id),
+      ),
+    )
+    .orderBy(asc(qualificationCategories.sortOrder));
+
+  const categoriesByLicense = new Map<string, DriverLicenseRow['categories']>();
+  for (const c of categories) {
+    const list = categoriesByLicense.get(c.credentialId) ?? [];
+    list.push({ code: c.code, name: c.name, validFrom: c.validFrom, validTo: c.validTo });
+    categoriesByLicense.set(c.credentialId, list);
+  }
+
+  for (const row of rows) {
+    const list = map.get(row.personId) ?? [];
+    list.push({
+      id: row.id,
+      series: row.series,
+      number: row.number,
+      issuedOn: row.issuedOn,
+      expiresOn: row.expiresOn,
+      // Аннулирование в контрактах — строка ISO: там его только сравнивают с `null`, а тип берут
+      // от DTO, в котором дат-объектов не бывает вовсе.
+      revokedAt: row.revokedAt?.toISOString() ?? null,
+      verificationStatus: row.verificationStatus,
+      categories: categoriesByLicense.get(row.id) ?? [],
+    });
+    map.set(row.personId, list);
+  }
+  return map;
+}
+
+/**
+ * Чего не хватает этим водителям для листа на их даты (ADR 0064). Спрашивают карточка и список
+ * рейсов: предупредить о пустых графах бланка нужно до выписки, а водитель у каждого рейса свой и
+ * дата своя — тот же человек на вчерашний рейс годен, а на завтрашний уже с истёкшим документом.
+ *
+ * Пара «человек + дата» и есть ключ ответа (`driverGapsKey`): рейсов на странице до полусотни, а
+ * запрос за удостоверениями один на всех.
+ *
+ * СНИЛС приходит вместе с человеком, а не добирается запросом: списки рейсов и так соединены с
+ * `persons` ради ФИО, и второй заход за той же строкой был бы лишним.
+ */
+export function driverGapsKey(personId: string, on: string): string {
+  return `${personId}@${on}`;
+}
+
+export async function loadDriverGaps(
+  reader: Reader,
+  people: readonly { personId: string; snils: string; on: string }[],
+): Promise<Map<string, DriverDocumentGap[]>> {
+  const gaps = new Map<string, DriverDocumentGap[]>();
+  if (people.length === 0) return gaps;
+
+  const licensesByPerson = await loadLicenses(reader, [...new Set(people.map((p) => p.personId))]);
+  for (const p of people) {
+    gaps.set(
+      driverGapsKey(p.personId, p.on),
+      driverDocumentGaps({ snils: p.snils, licenses: licensesByPerson.get(p.personId) ?? [] }, p.on),
+    );
+  }
+  return gaps;
+}
+
 export interface DriverSelectionParams {
   vehicleId: string;
   /** Дата рейса (YYYY-MM-DD). Параметром, а не «сегодня»: заявку берут в работу заранее. */
@@ -270,13 +412,17 @@ export interface DriverSelectionParams {
 }
 
 /**
- * Кто может сесть за эту машину в эту дату. Пустой список — законный ответ: ни у кого нет полного
- * комплекта документов на эту дату, и объяснять это должен интерфейс, а не молчание.
+ * Кого можно посадить за эту машину в эту дату и что с каждым не так. Пустой список означает одно:
+ * действующих водителей в справочнике нет вовсе.
  *
- * Сужает комплект документов (`licenseCompleteConditions`), а не категория прав (ADR 0055): СНИЛС,
- * номер удостоверения и дата его выдачи печатаются в бланке, и без любого из них лист выйдет
- * недействительным — предлагать такого водителя незачем. Категория расхождением не отсекает: она
- * возвращается флагом `matchesRequiredCategory`, а решение оставлено человеку.
+ * Никаких условий, кроме «человек есть и он водитель» (ADR 0064): ни СНИЛС, ни удостоверение, ни
+ * категория из списка никого не убирают. Пробелы комплекта считаются в памяти теми же функциями,
+ * что показывают карточку водителя (`driverDocumentGaps`, `waybillLicenseOf`), и едут в ответе
+ * рядом с человеком — вместе с документом, по которому лист выпишется, если его выписывать.
+ *
+ * Справочник водителей — сотни строк, поэтому три запроса вместо одного join'а осознанны: люди,
+ * их удостоверения и категории этих удостоверений собираются отдельно и склеиваются в памяти.
+ * Join размножил бы строки, а потом их всё равно пришлось бы склеивать обратно.
  */
 export async function selectDrivers(
   params: DriverSelectionParams,
@@ -286,45 +432,31 @@ export async function selectDrivers(
   const requirement = await loadRequirement(vehicleId, withTrailer);
   if (!requirement) return null;
 
-  const conditions = [
-    isNull(persons.deletedAt),
-    sql`${persons.snils} <> ''`,
-    // Водитель — человек с действующей специализацией: увольняясь, её закрывают.
-    isNull(personSpecializations.endedOn),
-    eq(specializations.code, DRIVER_SPECIALIZATION_CODE),
-    // Документ: годный на дату рейса и с заполненными графами бланка.
-    ...licenseCompleteConditions(on),
-  ];
-
-  if (personId) conditions.push(eq(persons.id, personId));
-
   const rows = await db
     .selectDistinct({
       personId: persons.id,
       fullName: persons.fullName,
       snils: persons.snils,
-      licenseId: personCredentials.id,
-      licenseSeries: personCredentials.series,
-      licenseNumber: personCredentials.number,
-      licenseIssuedOn: personCredentials.issuedOn,
-      licenseExpiresOn: personCredentials.expiresOn,
-      verificationStatus: personCredentials.verificationStatus,
     })
     .from(persons)
     .innerJoin(personSpecializations, eq(personSpecializations.personId, persons.id))
     .innerJoin(specializations, eq(specializations.id, personSpecializations.specializationId))
-    .innerJoin(personCredentials, eq(personCredentials.personId, persons.id))
-    .innerJoin(credentialTypes, eq(credentialTypes.id, personCredentials.credentialTypeId))
-    .where(and(...conditions, eq(credentialTypes.code, DRIVER_LICENSE_CODE)))
+    .where(
+      and(
+        isNull(persons.deletedAt),
+        // Водитель — человек с действующей специализацией: увольняясь, её закрывают.
+        isNull(personSpecializations.endedOn),
+        eq(specializations.code, DRIVER_SPECIALIZATION_CODE),
+        personId ? eq(persons.id, personId) : undefined,
+      ),
+    )
     .orderBy(asc(persons.fullName));
 
   if (rows.length === 0)
     return { requirement, requiredCategoryName: requirement.categoryName, drivers: [] };
 
-  // Табельный номер и категории — добором по найденным: join'ить их к основному запросу значило бы
-  // размножить строки и потом склеивать людей обратно.
+  // Табельный номер, удостоверения и категории — добором по найденным.
   const personIds = rows.map((r) => r.personId);
-  const licenseIds = rows.map((r) => r.licenseId);
 
   const employments = await db
     .select({ personId: personEmployments.personId, personnelNo: personEmployments.personnelNo })
@@ -333,79 +465,47 @@ export async function selectDrivers(
   const personnelByPerson = new Map(employments.map((e) => [e.personId, e.personnelNo]));
 
   const experience = await loadExperience(vehicleId, personIds, on);
-
-  // Сроки категории берутся вместе с именем: по ним считается соответствие требованию машины —
-  // той же функцией, что показывает карточку водителя, чтобы правило не разошлось надвое.
-  const categories = await db
-    .select({
-      credentialId: personCredentialCategories.credentialId,
-      code: qualificationCategories.code,
-      name: qualificationCategories.name,
-      validFrom: personCredentialCategories.validFrom,
-      validTo: personCredentialCategories.validTo,
-      sortOrder: qualificationCategories.sortOrder,
-    })
-    .from(personCredentialCategories)
-    .innerJoin(
-      qualificationCategories,
-      eq(qualificationCategories.id, personCredentialCategories.qualificationCategoryId),
-    )
-    .where(inArray(personCredentialCategories.credentialId, licenseIds))
-    .orderBy(asc(qualificationCategories.sortOrder));
-  type LicenseCategory = (typeof categories)[number];
-  const categoriesByLicense = new Map<string, LicenseCategory[]>();
-  for (const c of categories) {
-    const list = categoriesByLicense.get(c.credentialId) ?? [];
-    list.push(c);
-    categoriesByLicense.set(c.credentialId, list);
-  }
+  const licensesByPerson = await loadLicenses(db, personIds);
 
   return {
     requirement,
     requiredCategoryName: requirement.categoryName,
-    // Порядок — тем же правилом, что показывает форма: подходящие по категории наверх (ADR 0055),
-    // внутри них работавшие на этой машине по свежести, остальные по алфавиту (ADR 0056). Запрос
-    // отдаёт список по ФИО, и сортировка здесь его доупорядочивает — стабильная, поэтому равные
-    // остаются алфавитными.
+    // Порядок — тем же правилом, что показывает форма: пригодные наверх (комплект документов,
+    // затем категория — ADR 0055, ADR 0064), внутри них работавшие на этой машине по свежести,
+    // остальные по алфавиту (ADR 0056). Запрос отдаёт список по ФИО, и сортировка здесь его
+    // доупорядочивает — стабильная, поэтому равные остаются алфавитными.
     drivers: rows
       .map((r) => {
         const worked = experience.get(r.personId);
-        const licenseCategories = categoriesByLicense.get(r.licenseId) ?? [];
+        const licenses = licensesByPerson.get(r.personId) ?? [];
+        // Документ листа и пробелы комплекта — одним правилом на портал и на сервер: лист
+        // выпишется по тому же удостоверению, о пробелах которого предупредили в форме.
+        const license = waybillLicenseOf(licenses, on);
         return {
           personId: r.personId,
           fullName: r.fullName,
           snils: r.snils,
-          snilsFormatted: formatSnils(r.snils),
+          snilsFormatted: r.snils === '' ? '' : formatSnils(r.snils),
           personnelNo: personnelByPerson.get(r.personId) ?? '',
-          licenseId: r.licenseId,
-          licenseSeries: r.licenseSeries,
-          licenseNumber: r.licenseNumber,
-          licenseIssuedOn: r.licenseIssuedOn,
-          licenseExpiresOn: r.licenseExpiresOn,
-          verificationStatus: r.verificationStatus,
-          categories: licenseCategories.map((c) => c.name),
+          licenseId: license?.id ?? null,
+          licenseSeries: license?.series ?? '',
+          licenseNumber: license?.number ?? '',
+          licenseIssuedOn: license?.issuedOn ?? null,
+          licenseExpiresOn: license?.expiresOn ?? null,
+          verificationStatus: license?.verificationStatus ?? null,
+          categories: license?.categories.map((c) => c.name) ?? [],
+          gaps: driverDocumentGaps({ snils: r.snils, licenses }, on),
           // Требование не заведено — расхождению взяться неоткуда: пустое требование безопаснее
           // неверного, и помечать им человека значило бы предупреждать о незаполненном справочнике.
           matchesRequiredCategory:
             requirement.categoryCode === null ||
-            hasCategoryOn({ categories: licenseCategories }, requirement.categoryCode, on),
+            hasCategoryOn({ categories: license?.categories ?? [] }, requirement.categoryCode, on),
           workedRoutes: worked?.routes ?? 0,
           lastWorkedOn: worked?.lastWorkedOn ?? null,
         };
       })
       .sort(compareDriverOptions),
   };
-}
-
-/**
- * Хватает ли документов этому человеку, чтобы выйти в рейс на этой машине: тот же отбор,
- * ограниченный одним `personId`. Категория ответа не меняет (ADR 0055) — она справочная.
- */
-export async function isDriverAllowed(
-  params: Omit<DriverSelectionParams, 'personId'> & { personId: string },
-): Promise<boolean> {
-  const selection = await selectDrivers(params);
-  return (selection?.drivers.length ?? 0) > 0;
 }
 
 /** Машинист строительной машины: ровно то, что печатает бланк ЭСМ-2, — ФИО и табельный номер. */

@@ -8,11 +8,11 @@ import { machinist, vehicleRequest } from './factories/vehicle';
 import { VehicleAssignModal } from '../src/pages/vehicle/VehicleAssignModal';
 
 /**
- * Подбор техники в форме перевода в работу идёт по **виду** ТС, а не по заказанной позиции
- * классификатора (ADR 0045, ADR 0059): в списке весь вид — и соседние категории заказанного типа,
- * и машины других типов. Заказ при этом не забыт: расхождение названо пометкой в строке и
- * предупреждением под полем, а направление — «крупнее» или «меньше заказанного» — считается по
- * ТТХ. Назначения это не отменяет: заявку закрывают тем, что есть в парке.
+ * Подбор техники в форме перевода в работу не сужен ничем: ни заказанной категорией (ADR 0045),
+ * ни типом (ADR 0059), ни видом ТС (ADR 0064) — в списке весь активный парк. Заказ при этом не
+ * забыт: он задаёт порядок групп и расхождение названо пометкой в строке и предупреждением под
+ * полем, а направление — «крупнее» или «меньше заказанного» — считается по ТТХ. Назначения это не
+ * отменяет: заявку закрывают тем, что есть в парке.
  *
  * Заявка здесь — заказ техники на объект: путевого листа у неё нет (ADR 0041), и форма сводится
  * ровно к тому, что проверяется, — к выбору машины.
@@ -21,6 +21,8 @@ import { VehicleAssignModal } from '../src/pages/vehicle/VehicleAssignModal';
 const CRANE_130: VehicleDto = {
   id: 'v-130',
   ownership: 'own',
+  vehicleKindId: 'kind-special',
+  kindName: 'Спецтехника',
   vehicleTypeId: 'type-crane',
   typeName: 'Автокраны',
   waybillFormCode: null,
@@ -72,6 +74,25 @@ const MOBILE_CRANE_200: VehicleDto = {
   registrationNumber: 'У777УУ177',
 };
 
+/**
+ * Машина другого **вида**: до ADR 0064 её в списке не было вовсе, а сервер отклонял такое
+ * назначение с 422. Теперь она в конце списка, отдельной группой и с пометкой.
+ */
+const TIPPER: VehicleDto = {
+  ...CRANE_130,
+  id: 'v-tipper',
+  vehicleKindId: 'kind-truck',
+  kindName: 'Грузовой транспорт',
+  vehicleTypeId: 'type-tipper',
+  typeName: 'Самосвалы',
+  vehicleCategoryId: 'cat-tipper-20',
+  categoryName: 'Самосвалы, 20 м³',
+  categorySpecs: { body_volume: 20 },
+  vehicleModelId: 'm-4',
+  modelName: 'КамАЗ 65201',
+  registrationNumber: 'В123ВВ777',
+};
+
 /** Аренда без разнесённой категории: «не разнесли» — не то же самое, что «не подходит». */
 const CRANE_UNKNOWN: VehicleDto = {
   ...CRANE_130,
@@ -107,6 +128,7 @@ function assignment(v: VehicleDto) {
   return {
     vehicleId: v.id,
     ownership: v.ownership,
+    vehicleKindId: v.vehicleKindId,
     vehicleTypeId: v.vehicleTypeId,
     typeName: v.typeName,
     vehicleCategoryId: v.vehicleCategoryId,
@@ -127,11 +149,16 @@ function assignment(v: VehicleDto) {
 }
 
 function renderModal(selected?: VehicleDto, onSubmit: (v: unknown) => void = () => {}) {
-  // Парк приезжает ответом справочника техники — тем же запросом, каким его берёт портал.
-  // Весь вид одним списком: разложить его на «заказанный тип», «крупнее» и «прочее» — забота не
-  // сервера, а того, кто читает ответ, и проверяется это здесь же, по ушедшему запросу.
+  // Парк приезжает ответом справочника техники — теми же двумя запросами, какими его берёт
+  // портал: заказанный вид целиком и весь парк страницей. Мок отвечает как сервер — сужает по
+  // `vehicleKindId`, если о нём спросили; разложить ответ на группы — забота того, кто его читает,
+  // и проверяется это здесь же.
+  const FLEET = [CRANE_130, CRANE_25, MOBILE_CRANE_200, CRANE_UNKNOWN, TIPPER];
   const http = mockHttp({
-    'GET /vehicles': () => json(list([CRANE_130, CRANE_25, MOBILE_CRANE_200, CRANE_UNKNOWN])),
+    'GET /vehicles': ({ query }) => {
+      const kindId = query.get('vehicleKindId');
+      return json(list(kindId ? FLEET.filter((v) => v.vehicleKindId === kindId) : FLEET));
+    },
     // Машинист заказа техники на объект: на него выписываются недельные листы ЭСМ-2 (миграция
     // 0087). Список — весь справочник водителей, без отбора по документам и без привязки к машине.
     'GET /drivers': () => json(list([MACHINIST])),
@@ -182,13 +209,14 @@ async function chooseMachinist(): Promise<void> {
   fireEvent.click(option);
 }
 
-describe('подбор техники по виду, расхождение — предупреждением', () => {
-  it('в списке весь вид: машина другого типа видна и помечена направлением', async () => {
+describe('подбор техники ничем не сужен, расхождение — предупреждением', () => {
+  it('в списке весь парк: машина другого типа видна и помечена направлением', async () => {
     const http = renderModal();
     await waitFor(() => expect(screen.getByText('Конкретная техника')).toBeDefined());
 
     const options = await openVehicleList();
-    expect(options).toHaveLength(3); // три собственные: заказанная, соседняя категория и другой тип
+    // Четыре собственные: заказанная, соседняя категория, другой тип и машина другого вида.
+    expect(options).toHaveLength(4);
 
     const smaller = options.find((o) => o.includes('Ивановец КС-45717'));
     expect(smaller).toContain('Автокраны, г/п 25 т');
@@ -198,12 +226,29 @@ describe('подбор техники по виду, расхождение — 
     expect(bigger).toContain('Кран самоходный, г/п 200 т');
     expect(bigger).toContain('другой тип, крупнее');
 
-    // Другой тип дошёл до списка не по недосмотру фильтра на экране: за технику спрашивают видом,
-    // а тип и категорию сервер не сужает вовсе.
-    const asked = http.lastCall('GET /vehicles')?.query;
-    expect(asked?.get('vehicleKindId')).toBe('kind-special');
-    expect(asked?.get('vehicleTypeId')).toBeNull();
-    expect(asked?.get('vehicleCategoryId')).toBeNull();
+    // Ни тип, ни категорию сервер не сужает вовсе; вид спрашивается отдельным запросом — не ради
+    // отбора, а чтобы заказанное не обрезалось страницей (ADR 0064).
+    const asked = http.calls.filter((c) => c.path === '/vehicles');
+    expect(asked).toHaveLength(2);
+    expect(asked.map((c) => c.query.get('vehicleKindId')).sort()).toEqual([
+      'kind-special',
+      null,
+    ]);
+    for (const call of asked) {
+      expect(call.query.get('vehicleTypeId')).toBeNull();
+      expect(call.query.get('vehicleCategoryId')).toBeNull();
+    }
+  });
+
+  it('машина другого вида — в конце списка, отдельной группой и с пометкой', async () => {
+    renderModal();
+    await waitFor(() => expect(screen.getByText('Конкретная техника')).toBeDefined());
+
+    const options = await openVehicleList();
+    const other = options.find((o) => o.includes('КамАЗ 65201'));
+    expect(other).toContain('другой вид техники');
+    // Последней строкой: это самое далёкое от заказанного, что вообще есть в парке.
+    expect(options.at(-1)).toBe(other);
   });
 
   it('группы идут по пригодности, и свой тип на них не дробится', async () => {
@@ -216,12 +261,12 @@ describe('подбор техники по виду, расхождение — 
     );
     // Обе машины заказанного типа — в одной группе, хотя 25-тонник мельче заказанного: внутри
     // типа расхождение помечается в строке (ADR 0045), и дробить привычный список незачем.
-    expect(groups).toEqual(['Заказанный тип', 'Крупнее заказанного']);
+    expect(groups).toEqual(['Заказанный тип', 'Крупнее заказанного', 'Другой вид техники']);
   });
 
-  it('переключатель принадлежности считает весь вид, а не один тип', async () => {
+  it('переключатель принадлежности считает весь парк, а не один вид', async () => {
     renderModal();
-    await waitFor(() => expect(screen.getByText('Собственная · 3')).toBeDefined());
+    await waitFor(() => expect(screen.getByText('Собственная · 4')).toBeDefined());
     expect(screen.getByText('Аренда · 1')).toBeDefined();
   });
 
@@ -244,6 +289,20 @@ describe('подбор техники по виду, расхождение — 
     renderModal(MOBILE_CRANE_200);
     await waitFor(() => expect(screen.getByText(/Техника крупнее заказанной/)).toBeDefined());
     expect(screen.getByText(/выбрана «Кран самоходный, г\/п 200 т»/)).toBeDefined();
+  });
+
+  it('выбрана машина другого вида — предупреждение под полем, а не отказ', async () => {
+    const onSubmit = vi.fn();
+    renderModal(TIPPER, onSubmit);
+    await waitFor(() => expect(screen.getByText(/это техника другого вида/)).toBeDefined());
+    expect(screen.getByText(/Заказано «Автокраны, г\/п 130 т»/)).toBeDefined();
+
+    // И это по-прежнему предупреждение: заявка уходит в работу самосвалом (ADR 0064).
+    await chooseMachinist();
+    fireEvent.click(screen.getByText('Взять в работу'));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    const body = onSubmit.mock.calls[0]![0] as { assignment: { vehicleId: string } };
+    expect(body.assignment.vehicleId).toBe('v-tipper');
   });
 
   it('заказанная позиция — без предупреждения', async () => {

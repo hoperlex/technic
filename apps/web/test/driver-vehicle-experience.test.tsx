@@ -28,6 +28,8 @@ import { VehicleAssignModal } from '../src/pages/vehicle/VehicleAssignModal';
 const OWN_VEHICLE: VehicleDto = {
   id: 'v-own',
   ownership: 'own',
+  vehicleKindId: 'kind-freight',
+  kindName: 'Грузовой транспорт',
   vehicleTypeId: 'type-dump',
   typeName: 'Самосвалы',
   waybillFormCode: '4p',
@@ -80,6 +82,7 @@ const REQUEST: FreightTransportRequestDto = {
   assignment: {
     vehicleId: 'v-own',
     ownership: 'own',
+    vehicleKindId: 'kind-freight',
     vehicleTypeId: 'type-dump',
     typeName: 'Самосвалы',
     vehicleCategoryId: null,
@@ -129,6 +132,9 @@ function driver(
     licenseExpiresOn: '2031-03-12',
     verificationStatus: 'verified',
     categories: ['C'],
+    // Комплект документов полный у всех: его влияние на порядок и пометки проверяется отдельно
+    // (`driver-documents-advisory`), а здесь он размечал бы весь список одинаково.
+    gaps: [],
     // Категория у всех подходит: её влияние на порядок и пометки проверяется отдельно
     // (`driver-category-advisory`), а здесь она размечала бы весь список одинаково.
     matchesRequiredCategory: true,

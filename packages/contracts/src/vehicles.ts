@@ -75,8 +75,9 @@ export const vehicleListQuerySchema = baseListQuery(VEHICLE_SORT_FIELDS).extend(
   ownership: vehicleOwnershipSchema.optional(),
   vehicleTypeId: uuidSchema.optional(),
   /**
-   * Вся техника вида, а не одного типа. Спрашивает окно назначения: заявку закрывают и машиной
-   * соседнего типа — крупнее заказанного, — а вид остаётся границей замены (ADR 0059).
+   * Вся техника вида, а не одного типа. Границей замены вид быть перестал (ADR 0064), но окно
+   * назначения спрашивает им заказанный вид отдельным запросом: страница списка ограничена 500
+   * строками, и парк, в неё не поместившийся, обрезал бы как раз то, что заказывали.
    */
   vehicleKindId: uuidSchema.optional(),
   vehicleCategoryId: uuidSchema.optional(),
@@ -184,6 +185,13 @@ export type UpdateRentalVehicleInput = z.infer<typeof updateRentalVehicleSchema>
 export interface VehicleDto {
   id: string;
   ownership: VehicleOwnership;
+  /**
+   * Вид ТС типа этой машины. Приезжает строкой справочника, потому что заявку закрывают машиной
+   * любого вида (ADR 0064): вид перестал сужать список и стал последним ключом его порядка, а
+   * считать порядок форме нечем, если вида в строке нет.
+   */
+  vehicleKindId: string;
+  kindName: string;
   vehicleTypeId: string;
   typeName: string;
   /**
@@ -268,16 +276,18 @@ export function vehicleTitle(v: VehicleDto): string {
   return vehicleLabel(v);
 }
 
-// ── Замена заказанной техники: тип, категория и «крупнее или меньше» (ADR 0045, ADR 0059) ──
+// ── Замена заказанной техники: вид, тип, категория и «крупнее или меньше» (ADR 0045, 0059, 0063) ──
 //
 // Заявка заказывает позицию классификатора — тип ТС и, если у типа есть ТТХ, его категорию
 // (ADR 0028). Исполняет диспетчер тем, что есть в парке: категория перестала быть фильтром в
-// ADR 0045, тип — в ADR 0059. Границей осталась не позиция классификатора, а **вид** ТС: самосвал
-// вместо автокрана — не оттенок ТТХ, а другая заявка и другой процесс, и её сервер отклоняет.
+// ADR 0045, тип — в ADR 0059, вид — в ADR 0064. Границы у замены больше нет вовсе: заказанная
+// позиция задаёт порядок списка, а не его состав.
 //
-// Всё, что ниже, — про расхождение внутри вида: портал обязан назвать обе стороны и сказать, в
-// какую сторону разошлось, но ничего не запрещает. Правило живёт здесь, а не на сервере: одна
-// формулировка на строку списка, предупреждение и тесты — расходиться нечему.
+// Причина — качество данных, а не убеждение, что вид неважен (ADR 0064): классификатор заполнен
+// неровно, заявку заводит один человек, а парк ведёт другой, и запрет по неверной строке
+// справочника прячет машину, которой работу как раз и делают. Портал обязан назвать обе стороны
+// расхождения и сказать, в какую сторону разошлось, но ничего не запрещает. Правило живёт здесь,
+// а не на сервере: одна формулировка на строку списка, предупреждение и тесты — расходиться нечему.
 
 /** Значения ТТХ категории (ADR 0016): код характеристики → число, `{ lift_capacity: 25 }`. */
 export type VehicleSpecValues = Readonly<Record<string, number>>;
@@ -325,7 +335,13 @@ export function compareVehicleSize(
 
 /** Чем выбранная машина разошлась с заказом. `ok` — не разошлась ничем. */
 export interface VehicleSubstitution {
-  /** Тип машины другой. Вид при этом тот же — чужой вид сервер не принимает вовсе. */
+  /**
+   * Вид ТС другой: заказывали спецтехнику, а берут грузовик. Самое крупное расхождение, какое
+   * бывает, — и с ADR 0064 оно тоже не запрет, а предупреждение: классификатор заполнен неровно,
+   * и «другой вид» нередко означает не другую работу, а другую строку справочника.
+   */
+  kindMismatch: boolean;
+  /** Тип машины другой. При `kindMismatch` он другой всегда: типы принадлежат видам. */
   typeMismatch: boolean;
   /** Категория другая. У машины другого типа категории всегда разные — поле про свой тип. */
   categoryMismatch: boolean;
@@ -339,6 +355,8 @@ export interface VehicleSubstitution {
 
 /** Заказанная позиция и то, чем её закрывают, — обе стороны сравнения. */
 export interface VehicleClassificationPosition {
+  /** Вид ТС: он больше не граница замены (ADR 0064), но остаётся первым, чем позиции различаются. */
+  vehicleKindId: string;
   vehicleTypeId: string;
   vehicleCategoryId: string | null;
   categorySpecs: VehicleSpecValues | null;
@@ -349,6 +367,7 @@ export function vehicleSubstitutionOf(
   actual: VehicleClassificationPosition,
 ): VehicleSubstitution {
   return {
+    kindMismatch: ordered.vehicleKindId !== actual.vehicleKindId,
     typeMismatch: ordered.vehicleTypeId !== actual.vehicleTypeId,
     categoryMismatch:
       !!ordered.vehicleCategoryId &&
@@ -361,15 +380,20 @@ export function vehicleSubstitutionOf(
 
 /** Разошлась ли машина с заказом хоть чем-нибудь — коротко, для условий показа. */
 export function isVehicleSubstitution(s: VehicleSubstitution): boolean {
-  return s.typeMismatch || s.categoryMismatch;
+  return s.kindMismatch || s.typeMismatch || s.categoryMismatch;
 }
 
 /**
  * Короткая пометка в строке выбора — техники, рейса, чего угодно, где строку читают глазами.
  * Направление называется здесь же: «другой тип» без «крупнее» заставляет открывать справочник.
+ *
+ * У чужого вида направления нет и быть не может: «крупнее» считается по общим ТТХ, а у самосвала
+ * с автокраном их не бывает. Пометка называет само расхождение — оно и есть главное, что о такой
+ * строке нужно знать.
  */
 export function vehicleSubstitutionHint(s: VehicleSubstitution): string | null {
   const size = VEHICLE_SIZE_HINTS[s.relation];
+  if (s.kindMismatch) return 'другой вид техники';
   if (s.typeMismatch) return size ? `другой тип, ${size}` : 'другой тип';
   if (s.categoryMismatch) return size ?? 'другая категория';
   if (s.categoryMissing) return 'категория не указана';
@@ -406,6 +430,16 @@ export function vehicleSubstitutionWarning(input: {
   // Наименование категории уже содержит тип («Автокраны, г/п 25 т», ADR 0016 §11) — тип рядом с
   // ней не повторяется, тем же правилом, что и у заказанной стороны (`vehicleClassificationLabel`).
   const actualLabel = input.actualCategoryName || input.actualTypeName;
+  // Чужой вид — всегда жёлтое: ТТХ у него сравнивать не с чем, а расхождение самое крупное из
+  // возможных. Заявку он не отменяет (ADR 0064), но и нейтральной справкой быть не может.
+  if (s.kindMismatch) {
+    return {
+      level: 'warning',
+      text:
+        `Заказано «${input.orderedLabel}», а выбрана «${actualLabel}» — это техника другого вида. ` +
+        'Заявка возьмётся в работу как есть — проверьте, что работу выполнят именно этой машиной.',
+    };
+  }
   return {
     level: s.relation === 'smaller' || s.relation === 'mixed' ? 'warning' : 'info',
     text: `Заказано «${input.orderedLabel}», а выбрана «${actualLabel}». ${VEHICLE_SIZE_WARNINGS[s.relation]}`,
@@ -421,16 +455,21 @@ const VEHICLE_SIZE_WARNINGS: Record<VehicleSizeRelation, string> = {
 };
 
 /**
- * Куда строка попадёт в списке: заказанный тип, крупнее, меньше или «прочее вида». Группы задают и
- * порядок (`vehicleSubstitutionRank`) — им же упорядочена подсказка рейсов: сначала то, что
- * заказывали, и только в конце то, что меньше заказанного.
+ * Куда строка попадёт в списке: заказанный тип, крупнее, меньше, «прочее вида» или чужой вид.
+ * Группы задают и порядок (`vehicleSubstitutionRank`) — им же упорядочена подсказка рейсов:
+ * сначала соответствие, потом близкое к нему, и только в конце далёкое.
  *
  * Свой тип — одна группа независимо от категории: внутри типа расхождение помечается в строке
  * (ADR 0045), и дробить парк на четыре группы там, где привыкли видеть один список, незачем.
+ *
+ * Чужой вид — последняя группа, и это единственное, что от снятой границы осталось (ADR 0064):
+ * список от неё не сужается, но и предлагать автокран под заявку на самосвал раньше самосвалов
+ * нельзя. Порядок групп и есть та «релевантность», ради которой границу можно было снять.
  */
-export type VehicleSubstitutionGroup = 'ordered' | 'bigger' | 'other' | 'smaller';
+export type VehicleSubstitutionGroup = 'ordered' | 'bigger' | 'other' | 'smaller' | 'kind';
 
 export function vehicleSubstitutionGroup(s: VehicleSubstitution): VehicleSubstitutionGroup {
+  if (s.kindMismatch) return 'kind';
   if (!s.typeMismatch) return 'ordered';
   if (s.relation === 'bigger') return 'bigger';
   if (s.relation === 'smaller' || s.relation === 'mixed') return 'smaller';
@@ -442,6 +481,7 @@ export const vehicleSubstitutionGroupLabels: Record<VehicleSubstitutionGroup, st
   bigger: 'Крупнее заказанного',
   other: 'Другие типы вида',
   smaller: 'Меньше заказанного',
+  kind: 'Другой вид техники',
 };
 
 const VEHICLE_SUBSTITUTION_ORDER: readonly VehicleSubstitutionGroup[] = [
@@ -449,6 +489,7 @@ const VEHICLE_SUBSTITUTION_ORDER: readonly VehicleSubstitutionGroup[] = [
   'bigger',
   'other',
   'smaller',
+  'kind',
 ];
 
 /** Порядок группы в списке: 0 — заказанный тип, дальше по убыванию пригодности. */

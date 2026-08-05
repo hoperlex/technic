@@ -265,8 +265,9 @@ const requestSelect = {
   // Назначенная техника (ADR 0027): ставки — снимок из назначения, реквизиты машины — join'ом.
   assignmentVehicleId: vehicleRequestAssignments.vehicleId,
   assignmentOwnership: vehicles.ownership,
-  // Тип и категория — машины, а не заказа: с ADR 0059 они могут расходиться, и карточка обязана
-  // показывать, чем заявку закрыли на самом деле.
+  // Вид, тип и категория — машины, а не заказа: с ADR 0059 и ADR 0064 они могут расходиться, и
+  // карточка обязана показывать, чем заявку закрыли на самом деле.
+  assignmentVehicleKindId: assignmentTypes.kindId,
   assignmentVehicleTypeId: vehicles.vehicleTypeId,
   assignmentTypeName: assignmentTypes.name,
   assignmentCategoryId: vehicles.vehicleCategoryId,
@@ -485,6 +486,7 @@ function toAssignmentDto(r: RequestRow): VehicleRequestAssignmentDto | null {
   return {
     vehicleId: r.assignmentVehicleId,
     ownership: r.assignmentOwnership,
+    vehicleKindId: r.assignmentVehicleKindId ?? r.vehicleKindId,
     vehicleTypeId: r.assignmentVehicleTypeId ?? r.vehicleTypeId,
     typeName: r.assignmentTypeName ?? r.vehicleTypeName,
     vehicleCategoryId: r.assignmentCategoryId,
@@ -830,20 +832,21 @@ async function assertCargoAmount(
  * Машина, которой берут заявку в работу (ADR 0027). Проверяется всё, чего не видит БД: живая ли
  * запись, годна ли машина к работе и есть ли ставка там, где без неё нельзя.
  *
- * Ни тип, ни категория заказа фильтром больше не работают (ADR 0045, ADR 0059): заявку закрывают
- * тем, что есть в парке, а подходит ли соседняя позиция — 25 т вместо 20 т, бортовой вместо
- * малотоннажного — знает диспетчер, а не сервер. Границей осталась одна: **вид** ТС. Самосвал
- * вместо автокрана — не оттенок ТТХ, а другая заявка и другой процесс (у заказа техники на объект
- * рейса не бывает вовсе), и такое назначение отклоняется 422 с объяснением.
+ * Классификация заказа не проверяется вовсе (ADR 0045, ADR 0059, ADR 0064): ни категория, ни тип,
+ * ни вид ТС назначение не отклоняют. Заявку закрывают тем, что есть в парке, а подходит ли эта
+ * машина, знает диспетчер, а не сервер: справочник заполнен неровно, заявку заводит один человек,
+ * а парк ведёт другой, и отказ по расхождению строк прятал бы машину, которой работу и делают.
+ * Расхождение при этом не замалчивается — портал называет его в списке, предупреждением под полем
+ * и записью в истории заявки (назначение хранит тип и категорию **машины**, а не заказа).
+ *
+ * Осталось то, что к качеству данных отношения не имеет: статус машины. «Обслуживание»,
+ * «Списана» и выключенное предложение аренды — это не расхождение справочников, а состояние: такая
+ * машина не выйдет, сколько её ни назначай.
  *
  * Возвращает DTO назначения «как будет после записи»: им же пишется история.
  */
 async function resolveAssignment(
   tx: Tx,
-  request: {
-    vehicleTypeId: string;
-    vehicleTypeName: string;
-  },
   input: AssignVehicleInput,
   actor: { id: string; name: string },
 ): Promise<VehicleRequestAssignmentDto> {
@@ -872,20 +875,6 @@ async function resolveAssignment(
     .leftJoin(counterparties, eq(vehicles.lessorId, counterparties.id))
     .where(eq(vehicles.id, input.vehicleId));
   if (!row || row.deletedAt) throw err.badRequest('Техника не найдена');
-  if (row.vehicleTypeId !== request.vehicleTypeId) {
-    const [ordered] = await tx
-      .select({ kindId: vehicleTypes.kindId, kindName: vehicleKinds.name })
-      .from(vehicleTypes)
-      .innerJoin(vehicleKinds, eq(vehicleTypes.kindId, vehicleKinds.id))
-      .where(eq(vehicleTypes.id, request.vehicleTypeId));
-    if (!ordered || ordered.kindId !== row.kindId) {
-      throw err.unprocessable(
-        `Заявка заказана на «${request.vehicleTypeName}» — это ${(ordered?.kindName ?? '').toLowerCase() || 'другой вид техники'}, ` +
-          `а «${row.typeName}» к нему не относится`,
-        { vehicleId: 'Техника другого вида' },
-      );
-    }
-  }
   // «Обслуживание», «Списана» и выключенное предложение аренды к работе не годятся: заявка
   // взята в работу означает, что машина выйдет.
   if (row.status !== 'active') {
@@ -904,7 +893,8 @@ async function resolveAssignment(
   return {
     vehicleId: row.id,
     ownership: row.ownership,
-    // Тип и категория — машины: назначение отвечает на «чем закрыли», а не «что заказывали».
+    // Вид, тип и категория — машины: назначение отвечает на «чем закрыли», а не «что заказывали».
+    vehicleKindId: row.kindId,
     vehicleTypeId: row.vehicleTypeId,
     typeName: row.typeName,
     vehicleCategoryId: row.categoryId,
@@ -2380,13 +2370,14 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
    *
    * Машина необязательна, и от неё зависит, какие рейсы подсказаны (ADR 0052):
    *
-   * - **без машины** — рейсы дня на технике того же **вида**, что заказан в заявке (ADR 0059).
-   *   День планируют с этого вопроса: заявка едет рейсом, а рейс уже знает, какой машиной.
-   *   Равенством типа список больше не сужается — иначе рейс машины крупнее заказанной, куда
-   *   заявка отлично встаёт, не появлялся бы в подсказке вовсе. Чем каждый рейс отличается от
-   *   заказанного, считает портал правилом из контрактов: в строке рейса приезжают тип его машины
-   *   и ТТХ её категории. Принадлежность спрашивать не у чего и незачем — рейс заводится только
-   *   на собственную технику (`assertRouteVehicle`), так что список и так сужен ею.
+   * - **без машины** — все рейсы дня (ADR 0064). День планируют с этого вопроса: заявка едет
+   *   рейсом, а рейс уже знает, какой машиной. Классификацией список не сужается ни в одну
+   *   ступень — ни типом (ADR 0059), ни видом: рейс машины другого вида — такой же ответ на
+   *   «чем заявка поедет», и прятать его значило бы вернуть запрет, снятый в назначении. Чем
+   *   каждый рейс отличается от заказанного, считает портал правилом из контрактов: в строке рейса
+   *   приезжают вид и тип его машины и ТТХ её категории, и порядок списка считается по ним.
+   *   Принадлежность спрашивать не у чего и незачем — рейс заводится только на собственную технику
+   *   (`assertRouteVehicle`), так что список и так сужен ею.
    * - **с машиной** — рейсы именно этой машины плюс графы шапки от её прошлого рейса: реквизиты
    *   выезда наследуются от конкретной единицы, и без неё наследовать нечего.
    *
@@ -2450,16 +2441,13 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         .where(
           and(
             eq(vehicleRoutes.routeDate, date),
-            vehicleId
-              ? eq(vehicleRoutes.vehicleId, vehicleId)
-              : // Вид, а не тип (ADR 0059): рейс машины крупнее заказанной — такой же ответ на
-                // вопрос «чем заявка поедет», и прятать его значило бы вернуть прежний запрет.
-                eq(vehicleTypes.kindId, before.vehicleKindId),
+            // Без машины — весь день целиком (ADR 0064): классификация рейса его из подсказки не
+            // убирает, она задаёт только порядок, и считает его портал (`vehicleSubstitutionRank`).
+            vehicleId ? eq(vehicleRoutes.vehicleId, vehicleId) : undefined,
           ),
         )
-        // Заказанный тип — первым: сортировка по пригодности живёт в портале (`vehicleSubstitutionRank`),
-        // а здесь порядок стабильный и предсказуемый, чтобы рейсы одного типа не перемешивались
-        // между запросами.
+        // Порядок здесь стабильный и предсказуемый — по номеру рейса: пригодность машины считает
+        // портал, и рейсы одного типа не должны перемешиваться между запросами.
         .orderBy(asc(vehicleRoutes.num));
       return {
         required: true,
@@ -2747,15 +2735,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           if (schedule) await applyConfirmedSchedule(tx, before.id, schedule);
           let saved: VehicleRequestAssignmentDto | null = null;
           if (assignment) {
-            saved = await resolveAssignment(
-              tx,
-              {
-                vehicleTypeId: before.vehicleTypeId,
-                vehicleTypeName: before.vehicleTypeName,
-              },
-              assignment,
-              { id: p.id, name: p.fullName },
-            );
+            saved = await resolveAssignment(tx, assignment, { id: p.id, name: p.fullName });
             await saveAssignment(tx, before.id, before.vehicleTypeId, saved);
 
             // Заявка кладётся в рейс в этой же транзакции (маршруты): состояния «в работе, а рейса
@@ -3015,12 +2995,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
 
       let esm2: Esm2SyncResult = { cancelled: [], issued: [] };
       const assigned = await db.transaction(async (tx) => {
-        const saved = await resolveAssignment(
-          tx,
-          { vehicleTypeId: before.vehicleTypeId, vehicleTypeName: before.vehicleTypeName },
-          { ...rates, route },
-          { id: p.id, name: p.fullName },
-        );
+        const saved = await resolveAssignment(tx, { ...rates, route }, { id: p.id, name: p.fullName });
         // Область проверяется и по новой машине, а не только по прежней: иначе арендодатель одним
         // запросом увёл бы заявку на чужую технику — и заодно из собственной видимости.
         assertLessorScope(p, saved.lessorId);

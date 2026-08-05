@@ -17,6 +17,7 @@ import { db } from '../db/client';
 import {
   counterparties,
   vehicleCategories,
+  vehicleKinds,
   vehicleModels,
   vehicles,
   vehicleTypes,
@@ -37,6 +38,9 @@ const idParams = z.object({ id: z.string().uuid() });
 const vehicleSelect = {
   id: vehicles.id,
   ownership: vehicles.ownership,
+  // Вид ТС: им окно назначения отделяет «другой вид техники» — последнюю группу списка (ADR 0064).
+  vehicleKindId: vehicleTypes.kindId,
+  kindName: vehicleKinds.name,
   vehicleTypeId: vehicles.vehicleTypeId,
   typeName: vehicleTypes.name,
   // Бланк типа и ТТХ категории — ими окно назначения объясняет замену заказанной техники
@@ -70,6 +74,7 @@ function baseQuery() {
       .select(vehicleSelect)
       .from(vehicles)
       .innerJoin(vehicleTypes, eq(vehicles.vehicleTypeId, vehicleTypes.id))
+      .innerJoin(vehicleKinds, eq(vehicleTypes.kindId, vehicleKinds.id))
       // Марка/модель, категория и арендодатель опциональны — каждая по своей причине.
       .leftJoin(vehicleModels, eq(vehicles.vehicleModelId, vehicleModels.id))
       .leftJoin(vehicleCategories, eq(vehicles.vehicleCategoryId, vehicleCategories.id))
@@ -83,6 +88,8 @@ function toDto(r: VehicleRow): VehicleDto {
   return {
     id: r.id,
     ownership: r.ownership,
+    vehicleKindId: r.vehicleKindId,
+    kindName: r.kindName,
     vehicleTypeId: r.vehicleTypeId,
     typeName: r.typeName,
     waybillFormCode: r.waybillFormCode,

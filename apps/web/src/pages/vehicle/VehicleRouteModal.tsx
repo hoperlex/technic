@@ -9,6 +9,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   canIssueWaybill,
+  driverDocumentGapsWarning,
   isRouteEditable,
   canCancelWaybill,
   isRelocationPurpose,
@@ -22,6 +23,7 @@ import {
   type VehicleRouteDto,
   type VehicleRouteRequestDto,
   WAYBILL_LOCKED_MESSAGE,
+  waybillFormShortLabels,
   waybillStatusColors,
   waybillStatusLabels,
 } from '@technic/contracts';
@@ -152,6 +154,41 @@ export function VehicleRouteModal({ routeId, onClose, onChanged }: Props) {
     onError: fail,
   });
 
+  /**
+   * Чего не хватает водителю рейса для бланка (ADR 0064). Выписку это не останавливает — сервер
+   * её и не остановит, — но графа СНИЛСа или номера удостоверения останется в напечатанном листе
+   * пустой, а лист с пустой графой недействителен.
+   */
+  const driverGaps = route
+    ? driverDocumentGapsWarning(
+        route.driverGaps,
+        route.formCode ? waybillFormShortLabels[route.formCode] : null,
+      )
+    : null;
+
+  /**
+   * Пустые графы спрашиваются подтверждением, а не просто предупреждением над кнопкой: номер
+   * бланка расходуется навсегда, и «выписал не глядя» здесь стоит дороже лишнего клика. Там, где
+   * с документами всё в порядке, лишнего окна нет — лист выписывается сразу.
+   */
+  const confirmIssue = () => {
+    if (!driverGaps) {
+      issue.mutate();
+      return;
+    }
+    modal.confirm({
+      title: 'Выписать лист с незаполненными графами?',
+      content: (
+        <Typography.Paragraph style={{ marginBottom: 0 }}>
+          {driverGaps} Номер бланка израсходуется: чтобы переписать лист, его придётся аннулировать.
+        </Typography.Paragraph>
+      ),
+      okText: 'Всё равно выписать',
+      cancelText: 'Отмена',
+      onOk: () => issue.mutateAsync(),
+    });
+  };
+
   const cancelWaybill = useMutation({
     mutationFn: (reason: string) => waybillsApi.cancel(route!.waybill!.id, { reason }),
     onSuccess: async () => {
@@ -261,7 +298,7 @@ export function VehicleRouteModal({ routeId, onClose, onChanged }: Props) {
               loading={issue.isPending}
               disabled={!readiness?.ok}
               title={readiness?.ok ? 'Выписать путевой лист' : readiness?.reason}
-              onClick={() => issue.mutate()}
+              onClick={confirmIssue}
             >
               Выписать лист
             </Button>
@@ -303,6 +340,17 @@ export function VehicleRouteModal({ routeId, onClose, onChanged }: Props) {
           {frozen && <Alert type="info" showIcon message={ROUTE_FROZEN_MESSAGE} />}
           {!frozen && readiness && !readiness.ok && (relocation || route.requests.length > 0) && (
             <Alert type="warning" showIcon message={readiness.reason} />
+          )}
+          {/* Пробелы документов водителя — до нажатия «Выписать лист», а не в подтверждении:
+            назначить другого человека проще, пока бланк не израсходован. Замороженный рейс
+            молчит — там лист уже напечатан, и говорить о пустых графах поздно. */}
+          {!frozen && driverGaps && (
+            <Alert
+              type="warning"
+              showIcon
+              message="Документы водителя внесены не полностью"
+              description={driverGaps}
+            />
           )}
 
           {/* Состав — только у грузового рейса: талоны заказчиков это про машину, которая за
