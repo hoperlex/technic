@@ -417,6 +417,9 @@ export default async function vehiclesRoutes(app: FastifyInstance): Promise<void
       if (nextCategoryId) await assertCategoryMatchesType(nextCategoryId, typeId);
 
       const set: Partial<typeof vehicles.$inferInsert> = { updatedAt: new Date() };
+      // Переклассификация разрешена и у машины с историей заявок (ADR 0061): копию типа в
+      // назначениях синхронизирует каскад FK, а заказ площадки остаётся неприкосновенным — он
+      // держится вторым ключом и правится только через саму заявку.
       if (parsed.data.vehicleTypeId !== undefined) set.vehicleTypeId = parsed.data.vehicleTypeId;
       if (nextCategoryId !== ex.vehicleCategoryId) set.vehicleCategoryId = nextCategoryId;
       if (parsed.data.status !== undefined) set.status = parsed.data.status;

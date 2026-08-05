@@ -1524,7 +1524,8 @@ export const vehicleRequestAssignments = pgTable(
     // Служебная: копия типа ТС **машины** (миграция 0083). Существует ради составного FK на
     // технику — им «в назначении записан тип той машины, которая назначена» становится
     // физическим. С заказанным типом заявки совпадать не обязана: заявку закрывают тем, что есть
-    // в парке, а расхождение портал помечает (ADR 0059).
+    // в парке, а расхождение портал помечает (ADR 0059). Не читается ни одним запросом: тип
+    // назначенной машины выбирается из самой `vehicles`, здесь он только цель ключа.
     vehicleTypeId: uuid('vehicle_type_id').notNull(),
     // Копия ЗАКАЗАННОГО типа — цель второго составного FK: пока на заявке стоит машина, сменить
     // заказанный тип нельзя (ADR 0028 §9). Nullable до contract-миграции: строки, созданные
@@ -1553,11 +1554,17 @@ export const vehicleRequestAssignments = pgTable(
       name: 'vehicle_request_assignments_ordered_type_fk',
     }).onDelete('cascade'),
     // Машина: restrict — назначенную технику из справочника не удаляют, на неё ссылается работа.
+    // ON UPDATE CASCADE (миграция 0088, ADR 0061) — копия типа едет за машиной: переклассификация
+    // машины в справочнике обычное дело, а копии нечем следовать за оригиналом, кроме каскада.
+    // Прецедент тот же, что у `vehicles_lessor_fk` (ADR 0018). Заказанный тип заявки каскадом
+    // НЕ ходит: у него свой ключ ниже, и смена заказа под назначением отклоняется словами.
     vehicleTypeFk: foreignKey({
       columns: [t.vehicleId, t.vehicleTypeId],
       foreignColumns: [vehicles.id, vehicles.vehicleTypeId],
       name: 'vehicle_request_assignments_vehicle_type_fk',
-    }).onDelete('restrict'),
+    })
+      .onUpdate('cascade')
+      .onDelete('restrict'),
     pricesPositive: check(
       'vehicle_request_assignments_prices_positive_check',
       sql`(${t.pricePerHour} IS NULL OR ${t.pricePerHour} > 0)
