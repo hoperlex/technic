@@ -22,11 +22,17 @@ export const noContent = (): MockResponse => ({ status: 204 });
 
 /**
  * Ошибка в формате портала. `fields` разбирает `applyApiFieldErrors` и показывает текст на самом
- * поле формы, поэтому тест на валидацию без этой формы ответа ничего не проверит.
+ * поле формы, поэтому тест на валидацию без этой формы ответа ничего не проверит. `requestId`
+ * сервер шлёт со всякой ошибкой, а показывается он у пятисотки — им человек и приходит с тостом.
  */
 export const apiError = (
   status: number,
-  body: { code: string; message: string; fields?: Record<string, string> },
+  body: {
+    code: string;
+    message: string;
+    fields?: Record<string, string>;
+    requestId?: string;
+  },
 ): MockResponse => ({ status, body });
 
 export interface RouteContext {
