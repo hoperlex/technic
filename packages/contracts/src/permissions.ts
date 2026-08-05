@@ -1,5 +1,7 @@
 import {
   isCounterpartyScopedRole,
+  isDepartmentScopedRole,
+  isObjectScopedRole,
   OPERATOR_STATUS_TRANSITIONS,
   requestStatusRollbacks,
   requestStatusTransitions,
@@ -214,12 +216,17 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'wasteRequests.delete',
   ],
 
-  // Отдел (ADR 0040) — заказчик со стороны офиса. Устроен как штаб, но в одном модуле: заявки на
-  // технику заводит и правит, вывоза мусора не ведёт вовсе — мусор вывозят с площадки, а не из
-  // кабинета, и права на модуль у роли нет. Чем именно ограничен заказ (только грузоперевозки) —
-  // это область строк, а не право: перечень типов заявки задан отдельной таблицей (ADR 0040).
+  // Отдел (ADR 0040) — заказчик со стороны офиса: заявки на технику заводит от отдела, а не от
+  // площадки. Вывоз мусора у роли есть (ADR 0062), но заказчиком там всегда объект — значит
+  // работает право только у отдела с площадкой, а у остального офиса раздел закрыт пустой
+  // областью (`canUse`), а не отсутствием строки в матрице: право отвечает «что учётка делает»,
+  // и состояние справочника в него не заводят.
   department: [
     'directories.read',
+    'wasteRequests.read',
+    'wasteRequests.create',
+    'wasteRequests.update',
+    'wasteRequests.delete',
     'vehicleRequests.read',
     'vehicleRequests.create',
     'vehicleRequests.update',
@@ -228,9 +235,15 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
 
   // Руководитель отдела (ADR 0040): та же пара «заказчик и визирующий», что «Штаб» и
   // «Руководитель строительства» на объекте. Отличается от сотрудника отдела ровно одним правом —
-  // визой, — и совпадение остального закреплено тестом-сравнением, а не перечислением.
+  // визой, — и совпадение остального закреплено тестом-сравнением, а не перечислением. По вывозу
+  // мусора роли равны намеренно (ADR 0062): виза — право модуля «Заказ ТС», и на площадке штаб с
+  // руководителем строительства по мусору тоже совпадают.
   department_head: [
     'directories.read',
+    'wasteRequests.read',
+    'wasteRequests.create',
+    'wasteRequests.update',
+    'wasteRequests.delete',
     'vehicleRequests.read',
     'vehicleRequests.create',
     'vehicleRequests.update',
@@ -327,6 +340,64 @@ export function can(subject: AccessSubject | null | undefined, permission: Permi
   if (!isCounterpartyScopedRole(role)) return false;
   const type = subject?.counterpartyType;
   return !!type && (COUNTERPARTY_PERMISSION_SETS.get(type)?.has(permission) ?? false);
+}
+
+/**
+ * Субъект вместе с его областью — то, чем открывается раздел портала (`canUse`). Наборы
+ * необязательны: под него подходят как есть и принципал на сервере, и текущий пользователь на
+ * портале, а роль без области их и не читает.
+ */
+export interface ScopedSubject extends AccessSubject {
+  /** Прямая привязка объектной роли (ADR 0039). */
+  constructionObjectIds?: readonly string[];
+  /** Производная привязка роли отдела (ADR 0062): объекты её отделов. */
+  departmentObjectIds?: readonly string[];
+}
+
+/**
+ * Объекты, в пределах которых субъект работает в модуле «Вывоз мусора» (ADR 0062): у объектной
+ * роли — свои, у роли отдела — площадки её отделов. `null` означает «областью не ограничен» и
+ * отличается от пустого набора, как «видит всё» отличается от «не видит ничего».
+ *
+ * Только этот модуль: в «Заказе ТС» у роли отдела заказчик — отдел, и объектной области у неё
+ * там нет вовсе (ADR 0062 п. 3).
+ */
+export function wasteObjectScopeIds(
+  subject: ScopedSubject | null | undefined,
+): readonly string[] | null {
+  const role = subject?.role;
+  if (isObjectScopedRole(role)) return subject?.constructionObjectIds ?? [];
+  if (isDepartmentScopedRole(role)) return subject?.departmentObjectIds ?? [];
+  return null;
+}
+
+function hasWasteObjectScope(subject: ScopedSubject): boolean {
+  const ids = wasteObjectScopeIds(subject);
+  return ids === null || ids.length > 0;
+}
+
+/**
+ * Права, применимость которых зависит от области (ADR 0062). Права, которого здесь нет, область
+ * не сужает — тот же приём, что в `ROLE_VEHICLE_REQUEST_TYPES`: новое право открыто всем, у кого
+ * оно есть, кроме тех, кому его сузили осознанно, строкой здесь.
+ */
+const MODULE_SCOPE = new Map<Permission, (subject: ScopedSubject) => boolean>(
+  WASTE_REQUEST_PERMISSIONS.map((permission) => [permission, hasWasteObjectScope]),
+);
+
+/**
+ * Открыт ли субъекту раздел: право **и** непустая область, в которой это право применимо
+ * (ADR 0062). Отделу без площадки вывоз мусора закрыт именно так — право у роли есть, работать
+ * им не над чем.
+ *
+ * Спрашивается там, где решается «показывать ли раздел»: пункт меню, маршрут портала, стартовая
+ * страница. Действия внутри раздела спрашивают `can`: область по конкретной строке всё равно
+ * проверяет сервер, а пустой она к этому моменту уже не бывает.
+ */
+export function canUse(subject: ScopedSubject | null | undefined, permission: Permission): boolean {
+  if (!subject || !can(subject, permission)) return false;
+  const hasScope = MODULE_SCOPE.get(permission);
+  return !hasScope || hasScope(subject);
 }
 
 /**

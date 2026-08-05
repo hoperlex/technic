@@ -1,6 +1,12 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { can as roleCan, type AuthUser, type Permission, type Role } from '@technic/contracts';
+import {
+  can as roleCan,
+  canUse as scopedCanUse,
+  type AuthUser,
+  type Permission,
+  type Role,
+} from '@technic/contracts';
 import { authApi } from '../api/auth';
 import { clear as clearSession, onExpired, refresh } from '@shared/api';
 
@@ -21,6 +27,12 @@ interface AuthContextValue {
    * решение всё равно за сервером: здесь это удобство, а не защита.
    */
   can: (permission: Permission) => boolean;
+  /**
+   * Открыт ли раздел (ADR 0062): право **и** непустая область, в которой оно применимо. Спрашивают
+   * там, где решается «показывать ли раздел» — меню, маршруты, стартовая страница; действия внутри
+   * раздела спрашивают `can`, потому что пустой область к тому моменту уже не бывает.
+   */
+  canUse: (permission: Permission) => boolean;
 }
 
 /**
@@ -143,6 +155,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       },
       hasRole: (...roles) => !!user?.role && roles.includes(user.role),
       can: (permission) => roleCan(user, permission),
+      canUse: (permission) => scopedCanUse(user, permission),
     }),
     [user, status],
   );

@@ -25,6 +25,12 @@ export const departmentListQuerySchema = baseListQuery(DEPARTMENT_SORT_FIELDS).e
 export const createDepartmentSchema = z.object({
   code: z.string().trim().min(1).max(50),
   name: z.string().trim().min(1).max(255),
+  /**
+   * Площадка отдела (ADR 0062): на ней его сотрудники заказывают вывоз мусора наравне со штабом.
+   * `null` — рабочее состояние, а не пропуск: у ПТО и АХО площадки нет, и объектных прав их
+   * сотрудники не получают.
+   */
+  constructionObjectId: uuidSchema.nullish(),
   isActive: z.boolean().default(true),
   headUserIds: headUserIdsSchema.optional().default([]),
 });
@@ -37,6 +43,12 @@ export const updateDepartmentSchema = createDepartmentSchema.partial().extend({
   isActive: z.boolean().optional(),
   /** Полный список руководителей; отсутствие поля — не трогать привязки. */
   headUserIds: headUserIdsSchema.optional(),
+  /**
+   * Площадка отдела (ADR 0062): отсутствие поля — не трогать, `null` — снять привязку. Разница
+   * существенная: снятие меняет область сотрудникам отдела и гасит их сессии, и «клиент не
+   * прислал поле» не должно означать того же.
+   */
+  constructionObjectId: uuidSchema.nullish(),
 });
 export type UpdateDepartmentInput = z.infer<typeof updateDepartmentSchema>;
 
@@ -46,11 +58,20 @@ export interface DepartmentHeadRefDto {
   fullName: string;
 }
 
+/** Площадка в карточке отдела: код нужен, чтобы различать одноимённые корпуса. */
+export interface DepartmentObjectRefDto {
+  id: string;
+  code: string;
+  name: string;
+}
+
 export interface DepartmentDto {
   id: string;
   code: string;
   name: string;
   isActive: boolean;
+  /** Площадка отдела (ADR 0062); `null` — офис без объекта. */
+  object: DepartmentObjectRefDto | null;
   /** Руководители отдела (ADR 0040); порядок — по ФИО. */
   heads: DepartmentHeadRefDto[];
   createdAt: string;

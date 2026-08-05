@@ -5,7 +5,7 @@ import { App as AntApp, ConfigProvider } from 'antd';
 import ruRU from 'antd/locale/ru_RU';
 import { MemoryRouter } from 'react-router';
 import type { AuthUser, Permission, Role } from '@technic/contracts';
-import { can as roleCan } from '@technic/contracts';
+import { can as roleCan, canUse as scopedCanUse } from '@technic/contracts';
 import { AuthContext, AuthProvider } from '../src/auth/AuthContext';
 import { themeFor } from '../src/theme';
 import { setViewport, DESKTOP_VIEWPORT, type Viewport } from './viewport';
@@ -60,6 +60,7 @@ export function renderWithUser(
     refreshUser: async () => {},
     hasRole: (...roles: Role[]) => !!user?.role && roles.includes(user.role),
     can: (permission: Permission) => roleCan(user, permission),
+    canUse: (permission: Permission) => scopedCanUse(user, permission),
   };
 
   const result = render(

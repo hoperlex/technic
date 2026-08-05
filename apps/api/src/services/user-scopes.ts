@@ -127,6 +127,21 @@ export const departmentIdsExpr = sql<string[]>`(
   WHERE ud.user_id = ${users.id}
 )`;
 
+/**
+ * Площадки отделов учётки (ADR 0062) — производная область: в её пределах роль отдела ведёт
+ * вывоз мусора. Считается из справочника, а не хранится у учётки: объект задаётся отделу, и
+ * второе хранилище разошлось бы с ним при первой же правке.
+ *
+ * `DISTINCT`: два отдела учётки могут стоять на одной площадке, и дубль в наборе означал бы
+ * лишнее значение в `IN` и лишнюю строку в токене — не ошибку, но и не правду о числе объектов.
+ */
+export const departmentObjectIdsExpr = sql<string[]>`(
+  SELECT coalesce(array_agg(DISTINCT d.construction_object_id), '{}')
+  FROM user_departments ud
+  JOIN departments d ON d.id = ud.department_id
+  WHERE ud.user_id = ${users.id} AND d.construction_object_id IS NOT NULL
+)`;
+
 /** Отделы учёток одним запросом — то же, что objectsByUserIds, второй осью. */
 export async function departmentsByUserIds(
   userIds: string[],
@@ -193,6 +208,29 @@ export async function replaceUserDepartments(
       .onConflictDoNothing();
   }
   return true;
+}
+
+/**
+ * Смена площадки отдела (ADR 0062) меняет область **всем** его учёткам — и сотрудникам, и
+ * руководителям, — поэтому `authVersion` поднимается каждой: это не правка набора из карточки,
+ * где меняют конкретных людей, а правка того, что этот набор означает.
+ *
+ * Поднимается здесь, в транзакции с самой привязкой: access-токен сверяется с `authVersion` на
+ * каждом запросе и иначе дожил бы до истечения с прежней областью. Возвращает учётки, чьи
+ * refresh-сессии обязан отозвать маршрут — сервис в сессии не ходит.
+ */
+export async function markDepartmentScopeChanged(tx: Tx, departmentId: string): Promise<string[]> {
+  const rows = await tx
+    .select({ userId: userDepartments.userId })
+    .from(userDepartments)
+    .where(eq(userDepartments.departmentId, departmentId));
+  const userIds = rows.map((r) => r.userId);
+  if (userIds.length === 0) return [];
+  await tx
+    .update(users)
+    .set({ authVersion: sql`${users.authVersion} + 1`, updatedAt: new Date() })
+    .where(inArray(users.id, userIds));
+  return userIds;
 }
 
 /**

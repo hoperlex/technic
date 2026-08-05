@@ -20,6 +20,7 @@ export function authUser(overrides: Partial<AuthUser> = {}): AuthUser {
     mustChangePassword: false,
     constructionObjectIds: [],
     departmentIds: [],
+    departmentObjectIds: [],
     counterpartyType: null,
     ...overrides,
   };
@@ -36,6 +37,29 @@ export function shtabUser(objectId: string, overrides: Partial<AuthUser> = {}): 
     fullName: 'Штабов Сергей Иванович',
     role: 'shtab' as Role,
     constructionObjectIds: [objectId],
+    ...overrides,
+  });
+}
+
+/**
+ * Сотрудник отдела с площадкой (ADR 0062): вывоз мусора ведёт на ней наравне со штабом, и
+ * область у него производная — объект задан отделу, а не учётке.
+ */
+export function departmentUser(
+  departmentId: string,
+  objectIds: string[] = [],
+  overrides: Partial<AuthUser> = {},
+): AuthUser {
+  return authUser({
+    id: 'user-department',
+    email: 'department@example.test',
+    lastName: 'Отделов',
+    firstName: 'Олег',
+    middleName: 'Дмитриевич',
+    fullName: 'Отделов Олег Дмитриевич',
+    role: 'department' as Role,
+    departmentIds: [departmentId],
+    departmentObjectIds: objectIds,
     ...overrides,
   });
 }

@@ -1,7 +1,11 @@
 import { eq } from 'drizzle-orm';
 import { db } from '../db/client';
 import { counterparties, users } from '../db/schema';
-import { constructionObjectIdsExpr, departmentIdsExpr } from '../services/user-scopes';
+import {
+  constructionObjectIdsExpr,
+  departmentIdsExpr,
+  departmentObjectIdsExpr,
+} from '../services/user-scopes';
 import type { AccessSubject, CounterpartyType, Role } from '@technic/contracts';
 
 /** Принципал — субъект доступа (ADR 0038): права спрашиваются у пары «роль + тип контрагента». */
@@ -19,7 +23,7 @@ export interface Principal extends AccessSubject {
   /**
    * Объекты учётки (ADR 0039): область видимости объектной роли. Набор, а не один объект —
    * штаб ведёт несколько площадок. Пустой набор у объектной роли означает «не видит ничего»
-   * (`requestVisibilityWhere`), а не «видит всё»: активировать такую учётку API не даёт.
+   * (`wasteRequestVisibilityWhere`), а не «видит всё»: активировать такую учётку API не даёт.
    */
   constructionObjectIds: string[];
   /**
@@ -27,6 +31,13 @@ export interface Principal extends AccessSubject {
    * офис, объект это площадка, и роль работает ровно на одной из осей.
    */
   departmentIds: string[];
+  /**
+   * Площадки отделов учётки (ADR 0062) — производная область: в её пределах роль отдела ведёт
+   * вывоз мусора наравне со штабом. Считается из справочника на каждом запросе вместе с ролью:
+   * объект правится в карточке отдела, и кэшировать его в токене нельзя по той же причине, по
+   * которой там не хранится роль.
+   */
+  departmentObjectIds: string[];
   /** Контрагент учётки (ADR 0010): у внешнего исполнителя задаёт, чьи заявки ему видны. */
   counterpartyId: string | null;
   /**
@@ -50,6 +61,7 @@ export async function loadPrincipal(userId: string): Promise<Principal | null> {
       counterpartyType: counterparties.type,
       constructionObjectIds: constructionObjectIdsExpr,
       departmentIds: departmentIdsExpr,
+      departmentObjectIds: departmentObjectIdsExpr,
     })
     .from(users)
     .leftJoin(counterparties, eq(users.counterpartyId, counterparties.id))
@@ -69,6 +81,7 @@ export async function loadPrincipal(userId: string): Promise<Principal | null> {
     mustChangePassword: u.mustChangePassword,
     constructionObjectIds: row.constructionObjectIds,
     departmentIds: row.departmentIds,
+    departmentObjectIds: row.departmentObjectIds,
     counterpartyId: u.counterpartyId,
     counterpartyType: row.counterpartyType,
     authVersion: u.authVersion,

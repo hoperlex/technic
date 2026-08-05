@@ -8,7 +8,7 @@ import {
   assertLessorScope,
   assertOperatorScope,
   assertObjectRoleEditable,
-  assertObjectScope,
+  assertWasteObjectScope,
   assertTransitionAllowed,
   assertRequestScope,
   assertVehicleRequestTypeAllowed,
@@ -16,7 +16,7 @@ import {
   vehicleRequestVisibilityWhere,
   lessorVisibilityWhere,
   operatorVisibilityWhere,
-  requestVisibilityWhere,
+  wasteRequestVisibilityWhere,
 } from '../src/lib/access';
 import { vehicleRequests, vehicles, wasteRequests } from '../src/db/schema';
 import type { Principal } from '../src/auth/principal';
@@ -52,6 +52,7 @@ function principal(role: Role | null, extra: Partial<Principal> = {}): Principal
     mustChangePassword: false,
     constructionObjectIds: [],
     departmentIds: [],
+    departmentObjectIds: [],
     counterpartyId: null,
     counterpartyType: null,
     authVersion: 1,
@@ -72,7 +73,7 @@ const onObject = (objectId: string) => ({ objectId, departmentId: null });
 const onDepartment = (departmentId: string) => ({ objectId: null, departmentId });
 
 /** Параметры готового SQL-условия: по ним видно, с чем именно сравнивается колонка. */
-function paramsOf(condition: ReturnType<typeof requestVisibilityWhere>): unknown[] {
+function paramsOf(condition: ReturnType<typeof wasteRequestVisibilityWhere>): unknown[] {
   expect(condition).toBeDefined();
   return dialect.sqlToQuery(condition!).params;
 }
@@ -90,36 +91,54 @@ function statusOf(fn: () => void): number {
 describe('видимость заявок по объекту', () => {
   it('штаб видит только свой объект', () => {
     const p = principal('shtab', { constructionObjectIds: [OBJECT_A] });
-    expect(paramsOf(requestVisibilityWhere(p, wasteRequests.objectId))).toEqual([OBJECT_A]);
+    expect(paramsOf(wasteRequestVisibilityWhere(p, wasteRequests.objectId))).toEqual([OBJECT_A]);
   });
 
   it('штаб без объекта не видит ничего, а не всё', () => {
     const p = principal('shtab');
-    expect(paramsOf(requestVisibilityWhere(p, wasteRequests.objectId))).toEqual([NEVER_MATCH]);
+    expect(paramsOf(wasteRequestVisibilityWhere(p, wasteRequests.objectId))).toEqual([NEVER_MATCH]);
   });
 
   it('руководитель строительства тоже видит только свой объект (ADR 0025)', () => {
     const p = principal('rukstroy', { constructionObjectIds: [OBJECT_A] });
-    expect(paramsOf(requestVisibilityWhere(p, wasteRequests.objectId))).toEqual([OBJECT_A]);
+    expect(paramsOf(wasteRequestVisibilityWhere(p, wasteRequests.objectId))).toEqual([OBJECT_A]);
   });
 
   it('комендант сужен теми же объектами: модуль у него один, а область та же', () => {
     const p = principal('commandant', { constructionObjectIds: [OBJECT_A] });
-    expect(paramsOf(requestVisibilityWhere(p, wasteRequests.objectId))).toEqual([OBJECT_A]);
+    expect(paramsOf(wasteRequestVisibilityWhere(p, wasteRequests.objectId))).toEqual([OBJECT_A]);
   });
 
   it('остальные роли видят все объекты', () => {
     for (const role of ['admin', 'manager', 'dispatcher', 'operator'] as Role[]) {
-      expect(requestVisibilityWhere(principal(role), wasteRequests.objectId), role).toBeUndefined();
+      expect(
+        wasteRequestVisibilityWhere(principal(role), wasteRequests.objectId),
+        role,
+      ).toBeUndefined();
     }
   });
 
-  // Роль отдела (ADR 0040) объектных заявок не видит: отдел — офис, заявка площадки не его.
-  // Проверяется условием, а не отсутствием прав: право на модуль у отдела как раз есть.
-  it('роль отдела не видит объектных заявок вовсе', () => {
+  // Роль отдела (ADR 0062) видит вывоз со своей площадки — той, что задана её отделу. Область
+  // производная, поэтому она в отдельном наборе: прямой привязки объектов у такой учётки нет.
+  it('роль отдела видит вывоз с площадки своего отдела', () => {
+    for (const role of ['department', 'department_head'] as Role[]) {
+      const p = principal(role, {
+        departmentIds: [DEPARTMENT_A],
+        departmentObjectIds: [OBJECT_A],
+      });
+      expect(paramsOf(wasteRequestVisibilityWhere(p, wasteRequests.objectId)), role).toEqual([
+        OBJECT_A,
+      ]);
+    }
+  });
+
+  // Отдел без площадки — рабочее состояние (ПТО, АХО): права на модуль у роли есть, работать
+  // ими не над чем. Условие обязано остаться: без него «право есть, область не написана»
+  // означало бы доступ ко всем заявкам компании сразу.
+  it('роль отдела без площадки не видит ничего, а не всё', () => {
     for (const role of ['department', 'department_head'] as Role[]) {
       const p = principal(role, { departmentIds: [DEPARTMENT_A] });
-      expect(paramsOf(requestVisibilityWhere(p, wasteRequests.objectId)), role).toEqual([
+      expect(paramsOf(wasteRequestVisibilityWhere(p, wasteRequests.objectId)), role).toEqual([
         NEVER_MATCH,
       ]);
     }
@@ -129,7 +148,7 @@ describe('видимость заявок по объекту', () => {
   it('с несколькими объектами условие перечисляет их все, а не первый из набора', () => {
     for (const role of ['shtab', 'rukstroy', 'commandant'] as Role[]) {
       const p = principal(role, { constructionObjectIds: [OBJECT_A, OBJECT_B] });
-      expect(paramsOf(requestVisibilityWhere(p, wasteRequests.objectId)), role).toEqual([
+      expect(paramsOf(wasteRequestVisibilityWhere(p, wasteRequests.objectId)), role).toEqual([
         OBJECT_A,
         OBJECT_B,
       ]);
@@ -161,6 +180,26 @@ describe('видимость заявок ТС по заказчику (ADR 0040
     for (const role of ['admin', 'manager', 'dispatcher', 'observer'] as Role[]) {
       expect(visibility(principal(role)), role).toBeUndefined();
     }
+  });
+
+  /**
+   * Граница ADR 0062: площадка отдела открывает ему вывоз мусора и ничего больше. В «Заказе ТС»
+   * роль отдела по-прежнему сравнивается со своим отделом, а объектных заявок не видит и не
+   * трогает — иначе сотрудник отдела заказал бы технику на чужую площадку от её имени.
+   */
+  it('площадка отдела в заказ ТС не приходит', () => {
+    const withObject = principal('department_head', {
+      departmentIds: [DEPARTMENT_A],
+      departmentObjectIds: [OBJECT_A],
+    });
+    expect(paramsOf(visibility(withObject))).toEqual([DEPARTMENT_A]);
+    expect(statusOf(() => assertRequestScope(withObject, onObject(OBJECT_A)))).toBe(403);
+    expect(canApproveRequest(withObject, onObject(OBJECT_A))).toBe(false);
+    // Тип заказа тоже не меняется: спецтехника выходит на площадку, а заказчиком у отдела
+    // остаётся отдел (ADR 0040 п. 10).
+    expect(statusOf(() => assertVehicleRequestTypeAllowed(withObject, 'special_equipment'))).toBe(
+      403,
+    );
   });
 
   it('заявка чужой оси недоступна: у заявки отдела объекта нет вовсе', () => {
@@ -271,11 +310,11 @@ describe('работа с конкретной записью', () => {
     for (const role of ['shtab', 'rukstroy', 'commandant'] as Role[]) {
       const p = principal(role, { constructionObjectIds: [OBJECT_A] });
       expect(
-        statusOf(() => assertObjectScope(p, OBJECT_A)),
+        statusOf(() => assertWasteObjectScope(p, OBJECT_A)),
         role,
       ).toBe(200);
       expect(
-        statusOf(() => assertObjectScope(p, OBJECT_B)),
+        statusOf(() => assertWasteObjectScope(p, OBJECT_B)),
         role,
       ).toBe(403);
     }
@@ -285,29 +324,46 @@ describe('работа с конкретной записью', () => {
     for (const role of ['shtab', 'rukstroy', 'commandant'] as Role[]) {
       const p = principal(role, { constructionObjectIds: [OBJECT_A, OBJECT_B] });
       expect(
-        statusOf(() => assertObjectScope(p, OBJECT_A)),
+        statusOf(() => assertWasteObjectScope(p, OBJECT_A)),
         role,
       ).toBe(200);
       expect(
-        statusOf(() => assertObjectScope(p, OBJECT_B)),
+        statusOf(() => assertWasteObjectScope(p, OBJECT_B)),
         role,
       ).toBe(200);
       // Пустой набор — не «работает везде»: активировать такую учётку API не даёт, но проверка
       // не должна зависеть от того, удержался ли этот запрет.
       expect(
-        statusOf(() => assertObjectScope(principal(role), OBJECT_A)),
+        statusOf(() => assertWasteObjectScope(principal(role), OBJECT_A)),
         role,
       ).toBe(403);
     }
   });
 
-  it('роль отдела не работает ни с одним объектом (ADR 0040)', () => {
+  it('роль отдела работает с площадкой своего отдела и только с ней (ADR 0062)', () => {
     for (const role of ['department', 'department_head'] as Role[]) {
-      const p = principal(role, { departmentIds: [DEPARTMENT_A] });
+      const p = principal(role, {
+        departmentIds: [DEPARTMENT_A],
+        departmentObjectIds: [OBJECT_A],
+      });
+      expect(
+        statusOf(() => assertWasteObjectScope(p, OBJECT_A)),
+        role,
+      ).toBe(200);
       // Отказ обязателен именно здесь: права на модуль у отдела есть, и без этой ветки сотрудник
       // отдела заводил бы заявки на любой объект компании.
       expect(
-        statusOf(() => assertObjectScope(p, OBJECT_A)),
+        statusOf(() => assertWasteObjectScope(p, OBJECT_B)),
+        role,
+      ).toBe(403);
+    }
+  });
+
+  it('роль отдела без площадки не работает ни с одним объектом (ADR 0062)', () => {
+    for (const role of ['department', 'department_head'] as Role[]) {
+      const p = principal(role, { departmentIds: [DEPARTMENT_A] });
+      expect(
+        statusOf(() => assertWasteObjectScope(p, OBJECT_A)),
         role,
       ).toBe(403);
     }
@@ -316,7 +372,7 @@ describe('работа с конкретной записью', () => {
   it('остальным ролям объект заявки не ограничивает работу', () => {
     for (const role of ['admin', 'manager', 'dispatcher', 'operator'] as Role[]) {
       expect(
-        statusOf(() => assertObjectScope(principal(role), OBJECT_B)),
+        statusOf(() => assertWasteObjectScope(principal(role), OBJECT_B)),
         role,
       ).toBe(200);
     }

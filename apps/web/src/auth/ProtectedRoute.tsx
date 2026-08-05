@@ -28,31 +28,36 @@ export function ProtectedRoute() {
 }
 
 /**
- * Стартовый раздел роли — первый доступный ей по правам. Фиксированной страницы «по умолчанию»
- * у портала больше нет: «Вывоз мусора» закрыт руководителю строительства (ADR 0025), а «Заказ
- * ТС» — оператору вывоза (ADR 0010), и любая жёсткая ссылка отправляла бы половину ролей туда,
- * откуда их тут же выкидывает обратно.
+ * Стартовый раздел роли — первый доступный ей. Фиксированной страницы «по умолчанию» у портала
+ * больше нет: «Вывоз мусора» закрыт руководителю строительства (ADR 0025), а «Заказ ТС» —
+ * оператору вывоза (ADR 0010), и любая жёсткая ссылка отправляла бы половину ролей туда, откуда
+ * их тут же выкидывает обратно.
+ *
+ * Спрашивается `canUse`, а не `can`: у роли отдела без площадки право на вывоз есть, а работать
+ * им не над чем (ADR 0062), и стартовой страницей ей досталось бы пустое место.
  */
-function homePath(can: (permission: Permission) => boolean): string {
-  if (can('wasteRequests.read')) return '/waste';
-  if (can('vehicleRequests.read')) return '/vehicle-requests';
-  if (can('directories.write')) return '/directories';
-  if (can('users.manage')) return '/admin';
+function homePath(canUse: (permission: Permission) => boolean): string {
+  if (canUse('wasteRequests.read')) return '/waste';
+  if (canUse('vehicleRequests.read')) return '/vehicle-requests';
+  if (canUse('directories.write')) return '/directories';
+  if (canUse('users.manage')) return '/admin';
   // Роли без единого раздела быть не должно; смена пароля доступна любому вошедшему.
   return '/change-password';
 }
 
 export function HomeRedirect() {
-  const { can } = useAuth();
-  return <Navigate to={homePath(can)} replace />;
+  const { canUse } = useAuth();
+  return <Navigate to={homePath(canUse)} replace />;
 }
 
 /**
- * Раздел портала закрывается правом, а не списком ролей: список пришлось бы держать в
- * согласии с проверками API вручную, а право одно и то же по обе стороны (ADR 0021).
+ * Раздел портала закрывается правом вместе с областью, а не списком ролей: список пришлось бы
+ * держать в согласии с проверками API вручную, а право одно и то же по обе стороны (ADR 0021).
+ * Область добавлена к нему тем же правилом, что и в меню (ADR 0062): раздел, в котором роли не
+ * над чем работать, не должен открываться и по прямой ссылке.
  */
 export function RequirePermission({ permission }: { permission: Permission }) {
-  const { can } = useAuth();
-  if (!can(permission)) return <Navigate to={homePath(can)} replace />;
+  const { canUse } = useAuth();
+  if (!canUse(permission)) return <Navigate to={homePath(canUse)} replace />;
   return <Outlet />;
 }

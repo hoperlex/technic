@@ -8,7 +8,12 @@ import {
   updateObjectSchema,
 } from '@technic/contracts';
 import { db } from '../db/client';
-import { constructionObjects, type ObjectRow, userConstructionObjects } from '../db/schema';
+import {
+  constructionObjects,
+  departments,
+  type ObjectRow,
+  userConstructionObjects,
+} from '../db/schema';
 import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
@@ -192,6 +197,19 @@ export default async function objectsRoutes(app: FastifyInstance): Promise<void>
       if (linked > 0) {
         throw err.conflict(
           `Объект привязан к учётным записям (${linked}) — снимите привязку и повторите`,
+        );
+      }
+      // Площадка отдела (ADR 0062) — тот же довод, но привязка держится внешним ключом: RESTRICT
+      // удалению помешает и сам, только ответит нарушением целостности. Отдел на этой площадке
+      // даёт своим сотрудникам права по вывозу мусора, и снимают их в карточке отдела.
+      const departmentsOnObject = await tx
+        .select({ c: count() })
+        .from(departments)
+        .where(eq(departments.constructionObjectId, row.id));
+      const linkedDepartments = Number(departmentsOnObject[0]!.c);
+      if (linkedDepartments > 0) {
+        throw err.conflict(
+          `Объект указан площадкой отделов (${linkedDepartments}) — снимите привязку и повторите`,
         );
       }
       await tx.delete(constructionObjects).where(eq(constructionObjects.id, row.id));

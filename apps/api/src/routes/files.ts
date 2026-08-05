@@ -26,7 +26,7 @@ import { requirePrincipal } from '../auth/plugin';
 import {
   lessorVisibilityWhere,
   operatorVisibilityWhere,
-  requestVisibilityWhere,
+  wasteRequestVisibilityWhere,
   vehicleRequestVisibilityWhere,
 } from '../lib/access';
 import { isFileLinked } from '../services/request-files';
@@ -112,7 +112,7 @@ async function canAccessFile(
         and(
           eq(requestFiles.fileId, fileId),
           isNull(wasteRequests.deletedAt),
-          requestVisibilityWhere(p, wasteRequests.objectId),
+          wasteRequestVisibilityWhere(p, wasteRequests.objectId),
           operatorVisibilityWhere(p, wasteRequests.operatorCounterpartyId),
         ),
       )

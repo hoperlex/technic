@@ -6,6 +6,7 @@ import {
   allowedStatusTransitions,
   can,
   canTransitionStatus,
+  canUse,
   COUNTERPARTY_TYPE_PERMISSIONS,
   COUNTERPARTY_TYPES,
   COUNTERPARTY_TYPES_WITH_ACCOUNTS,
@@ -23,6 +24,9 @@ import {
   type Permission,
   type Role,
 } from '@technic/contracts';
+
+/** Площадка для проверок правила видимости раздела (ADR 0062). */
+const OBJECT_A = '11111111-1111-1111-1111-111111111111';
 
 /** Субъект доступа роли без контрагента: у всех ролей, кроме исполнителя, он совпадает с ролью. */
 const of = (role: Role): AccessSubject => ({ role });
@@ -141,13 +145,58 @@ describe('права ролей', () => {
     expect(can(of('department'), 'vehicleRequests.approve')).toBe(false);
   });
 
-  it('отдел не ведёт вывоз мусора: мусор вывозят с площадки, а не из кабинета', () => {
+  /**
+   * Вывоз мусора у отдела — набор заказчика, как у штаба (ADR 0062): заводит, правит и удаляет,
+   * а ход заявки решают те, кто её исполняет. Перечислением, а не выборочной проверкой: смысл
+   * набора в его границе, и «назначить исполнителя», попавшее сюда, обязано уронить тест.
+   */
+  it('отдел ведёт вывоз мусора как заказчик — без статусов и назначений (ADR 0062)', () => {
     for (const role of ['department', 'department_head'] as Role[]) {
       expect(
-        permissionsFor(of(role)).filter((p) => p.startsWith('wasteRequests.')),
+        [...permissionsFor(of(role)).filter((p) => p.startsWith('wasteRequests.'))].sort(),
         role,
-      ).toEqual([]);
+      ).toEqual([
+        'wasteRequests.create',
+        'wasteRequests.delete',
+        'wasteRequests.read',
+        'wasteRequests.update',
+      ]);
     }
+  });
+
+  /**
+   * Правило видимости раздела (ADR 0062): право открывает модуль только вместе с непустой
+   * областью. Права у отдела одни и те же — разводит их площадка, а не матрица.
+   */
+  it('вывоз мусора открыт отделу с площадкой и закрыт отделу без неё', () => {
+    for (const role of ['department', 'department_head'] as Role[]) {
+      const withObject = { ...of(role), departmentObjectIds: [OBJECT_A] };
+      expect(canUse(withObject, 'wasteRequests.read'), role).toBe(true);
+      const officeOnly = of(role);
+      expect(can(officeOnly, 'wasteRequests.read'), role).toBe(true);
+      expect(canUse(officeOnly, 'wasteRequests.read'), role).toBe(false);
+      // «Заказ ТС» областью не сужается: заказчик там сам отдел, и он у роли всегда есть.
+      expect(canUse(officeOnly, 'vehicleRequests.read'), role).toBe(true);
+    }
+  });
+
+  it('область сужает раздел и у объектных ролей, а у остальных — нет', () => {
+    expect(canUse({ role: 'shtab', constructionObjectIds: [OBJECT_A] }, 'wasteRequests.read')).toBe(
+      true,
+    );
+    // Учётку объектной роли без объектов API активировать не даёт, но правило не должно
+    // зависеть от того, удержался ли тот запрет.
+    expect(canUse({ role: 'shtab' }, 'wasteRequests.read')).toBe(false);
+    for (const role of ['admin', 'manager', 'dispatcher', 'observer'] as Role[]) {
+      expect(canUse({ role }, 'wasteRequests.read'), role).toBe(true);
+    }
+    expect(canUse({ role: 'operator', counterpartyType: 'operator' }, 'wasteRequests.read')).toBe(
+      true,
+    );
+    // Права нет — раздела нет, сколько бы области ни было.
+    expect(
+      canUse({ role: 'commandant', constructionObjectIds: [OBJECT_A] }, 'vehicleRequests.read'),
+    ).toBe(false);
   });
 
   it('отдел работает в пределах отдела, а не объекта (ADR 0040)', () => {

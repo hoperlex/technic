@@ -4,11 +4,14 @@ import { Navigate, Route, Routes } from 'react-router';
 import {
   can,
   canOrderVehicleRequestType,
+  isDepartmentScopedRole,
+  isObjectScopedRole,
   type AccessSubject,
   type AuthUser,
   type CounterpartyType,
   type Permission,
   type Role,
+  type ScopedSubject,
 } from '@technic/contracts';
 import { json, mockHttp } from './http';
 import { renderWithUser } from './render';
@@ -29,13 +32,28 @@ import { RequirePermission } from '../src/auth/ProtectedRoute';
  * заглушена на уровне HTTP — макету от неё нужен только счётчик заявок на регистрацию.
  */
 
-/** Учётка субъекта: роли достаточно, а исполнителю нужен ещё и тип контрагента (ADR 0038). */
-const userFor = (subject: AccessSubject): AuthUser | null =>
+const OBJECT_A = '11111111-1111-1111-1111-111111111111';
+const DEPARTMENT_A = '55555555-5555-5555-5555-555555555555';
+
+/**
+ * Учётка субъекта: роли достаточно, исполнителю нужен ещё и тип контрагента (ADR 0038), а роли с
+ * областью — сама область (ADR 0062). Область заполняется рабочая: учётку объектной роли без
+ * объектов API не активирует, и проверять по ней состав меню значило бы описывать состояние,
+ * которого в портале не бывает. Площадка отдела задаётся тестом отдельно — ею как раз и
+ * разводятся два рабочих состояния отдела.
+ */
+const userFor = (subject: ScopedSubject): AuthUser | null =>
   subject.role
-    ? authUser({ role: subject.role, counterpartyType: subject.counterpartyType ?? null })
+    ? authUser({
+        role: subject.role,
+        counterpartyType: subject.counterpartyType ?? null,
+        constructionObjectIds: isObjectScopedRole(subject.role) ? [OBJECT_A] : [],
+        departmentIds: isDepartmentScopedRole(subject.role) ? [DEPARTMENT_A] : [],
+        departmentObjectIds: [...(subject.departmentObjectIds ?? [])],
+      })
     : null;
 
-const asSubject = (subject: AccessSubject | Role | null): AccessSubject =>
+const asSubject = (subject: ScopedSubject | Role | null): ScopedSubject =>
   typeof subject === 'string' ? { role: subject } : (subject ?? { role: null });
 
 /** Внешний исполнитель: роль одна, разделы разные — их называет тип контрагента (ADR 0038). */
@@ -44,7 +62,7 @@ const executor = (counterpartyType: CounterpartyType): AccessSubject => ({
   counterpartyType,
 });
 
-function renderMenu(subject: AccessSubject | Role | null, viewport?: Viewport) {
+function renderMenu(subject: ScopedSubject | Role | null, viewport?: Viewport) {
   // Меню показывает бейдж с числом заявок на регистрацию (ADR 0034) — к правам это отношения не
   // имеет, но без ответа макет администратора ходил бы за счётчиком в настоящую сеть.
   mockHttp({ 'GET /users/pending-count': () => json({ count: 0 }) });
@@ -125,14 +143,26 @@ describe('пункты меню следуют из прав', () => {
     }
   });
 
-  it('отделу показывают только заказ ТС: вывоз мусора не его модуль (ADR 0040)', () => {
+  it('отделу без площадки показывают только заказ ТС (ADR 0062)', () => {
     for (const role of ['department', 'department_head'] as Role[]) {
       const { unmount } = renderMenu(role);
       expect(screen.getByText('Заказ ТС'), role).toBeDefined();
-      // Раздел закрывается правом, а не списком ролей: прав на вывоз у отдела нет вовсе.
+      // Право на вывоз у роли есть, но работать им не над чем: площадки у отдела нет, и раздел
+      // закрывает пустая область — иначе он обещал бы работу, которой не бывает.
       expect(screen.queryByText('Вывоз мусора'), role).toBeNull();
       expect(screen.queryByText('Справочники'), role).toBeNull();
       expect(screen.queryByText('Администрирование'), role).toBeNull();
+      unmount();
+    }
+  });
+
+  it('отделу с площадкой показывают и вывоз мусора (ADR 0062)', () => {
+    for (const role of ['department', 'department_head'] as Role[]) {
+      const { unmount } = renderMenu({ role, departmentObjectIds: [OBJECT_A] });
+      expect(screen.getByText('Вывоз мусора'), role).toBeDefined();
+      expect(screen.getByText('Заказ ТС'), role).toBeDefined();
+      // Разводит их площадка, а не роль: права в обоих состояниях одни и те же.
+      expect(screen.queryByText('Справочники'), role).toBeNull();
       unmount();
     }
   });
@@ -186,7 +216,7 @@ describe('пункты меню следуют из прав', () => {
  * в 403, а недостающий — раздел, невидимый тому, кому он разрешён. Подписи в навигации сокращены,
  * доступное имя кнопки остаётся полным — по нему пункт и ищется.
  */
-function mobileNavLabels(subject: AccessSubject | Role | null): string[] {
+function mobileNavLabels(subject: ScopedSubject | Role | null): string[] {
   renderMenu(subject, MOBILE_VIEWPORT);
   const nav = screen.getByRole('navigation', { name: 'Разделы портала' });
   return [...nav.querySelectorAll('button')].map((b) => b.getAttribute('aria-label') ?? '');

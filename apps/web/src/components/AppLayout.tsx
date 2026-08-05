@@ -46,7 +46,7 @@ function writeCollapsed(value: boolean): void {
 }
 
 export function AppLayout() {
-  const { user, logout, can } = useAuth();
+  const { user, logout, can, canUse } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const isMobile = useIsMobile();
@@ -73,11 +73,13 @@ export function AppLayout() {
   // четверть экрана, и полное название раздела туда не помещается (ADR 0030).
   const navItems: (MobileNavItem & { icon: ReactNode })[] = [
     // Руководитель строительства отвечает за технику на объекте, вывоз мусора ведёт штаб (ADR 0025).
-    ...(can('wasteRequests.read')
+    // `canUse`, а не `can`: у отдела без площадки право на вывоз есть, но работать им не над чем,
+    // и раздел закрывает пустая область (ADR 0062).
+    ...(canUse('wasteRequests.read')
       ? [{ key: '/waste', icon: <FileTextOutlined />, label: 'Вывоз мусора', short: 'Вывоз' }]
       : []),
     // Оператор вывоза — внешний перевозчик: заказ ТС к его работе отношения не имеет (ADR 0010).
-    ...(can('vehicleRequests.read')
+    ...(canUse('vehicleRequests.read')
       ? [
           {
             key: '/vehicle-requests',

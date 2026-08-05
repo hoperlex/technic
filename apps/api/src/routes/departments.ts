@@ -5,18 +5,28 @@ import { z } from 'zod';
 import {
   createDepartmentSchema,
   type DepartmentDto,
+  type DepartmentObjectRefDto,
   departmentListQuerySchema,
   updateDepartmentSchema,
 } from '@technic/contracts';
 import { db } from '../db/client';
-import { departments, type DepartmentRow, userDepartments } from '../db/schema';
+import {
+  constructionObjects,
+  departments,
+  type DepartmentRow,
+  userDepartments,
+} from '../db/schema';
 import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
 import { revokeAllForUser } from '../auth/sessions';
 import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
 import { registerPurgeRoute } from '../services/directory-purge';
-import { headsByDepartmentIds, replaceDepartmentHeads } from '../services/user-scopes';
+import {
+  headsByDepartmentIds,
+  markDepartmentScopeChanged,
+  replaceDepartmentHeads,
+} from '../services/user-scopes';
 
 /**
  * Справочник отделов (ADR 0040) — офисные подразделения. Устроен по образцу объектов
@@ -29,24 +39,69 @@ import { headsByDepartmentIds, replaceDepartmentHeads } from '../services/user-s
  * гасит её сессии так же, как правка из карточки пользователя.
  */
 
-function toDto(r: DepartmentRow, heads: DepartmentDto['heads']): DepartmentDto {
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+function toDto(
+  r: DepartmentRow,
+  object: DepartmentDto['object'],
+  heads: DepartmentDto['heads'],
+): DepartmentDto {
   return {
     id: r.id,
     code: r.code,
     name: r.name,
     isActive: r.isActive,
+    object,
     heads,
     createdAt: r.createdAt.toISOString(),
     updatedAt: r.updatedAt.toISOString(),
   };
 }
 
+/**
+ * Площадка отдела (ADR 0062) — `leftJoin`: отдел без объекта не должен пропадать из справочника,
+ * а таких большинство (ПТО, АХО, снабжение).
+ */
+function departmentsWithObject() {
+  return db
+    .select({
+      d: departments,
+      object: {
+        id: constructionObjects.id,
+        code: constructionObjects.code,
+        name: constructionObjects.name,
+      },
+    })
+    .from(departments)
+    .leftJoin(constructionObjects, eq(departments.constructionObjectId, constructionObjects.id));
+}
+
+/** Строка запроса выше в DTO: у отдела без площадки `leftJoin` отдаёт `null` вместо объекта. */
+function objectOf(object: DepartmentObjectRefDto | null): DepartmentDto['object'] {
+  return object;
+}
+
 /** Карточка отдела всегда идёт с руководителями: клиент правит набор, а не отдельные привязки. */
 async function getDto(id: string): Promise<DepartmentDto | null> {
-  const [row] = await db.select().from(departments).where(eq(departments.id, id));
+  const [row] = await departmentsWithObject().where(eq(departments.id, id));
   if (!row) return null;
   const heads = await headsByDepartmentIds([id]);
-  return toDto(row, heads.get(id) ?? []);
+  return toDto(row.d, objectOf(row.object), heads.get(id) ?? []);
+}
+
+/**
+ * Площадка существует. Активность не проверяется намеренно — тем же правилом, что и у объектов
+ * учётки: привязка описывает зону ответственности, а не готовность принимать заявки прямо
+ * сейчас, и деактивация объекта не должна молча обрезать область сотрудникам отдела.
+ */
+async function assertObjectExists(tx: Tx, objectId: string): Promise<void> {
+  const [row] = await tx
+    .select({ id: constructionObjects.id })
+    .from(constructionObjects)
+    .where(eq(constructionObjects.id, objectId));
+  if (!row) {
+    throw err.badRequest('Объект не найден', { constructionObjectId: 'Объект не найден' });
+  }
 }
 
 const idParams = z.object({ id: z.string().uuid() });
@@ -75,18 +130,16 @@ export default async function departmentsRoutes(app: FastifyInstance): Promise<v
       };
       const p = pageParams(q);
       const [rows, totalRows] = await Promise.all([
-        db
-          .select()
-          .from(departments)
+        departmentsWithObject()
           .where(where)
           .orderBy(orderByFrom(sortCols, q.sortBy, q.sortOrder, 'name'))
           .limit(p.limit)
           .offset(p.offset),
         db.select({ c: count() }).from(departments).where(where),
       ]);
-      const heads = await headsByDepartmentIds(rows.map((row) => row.id));
+      const heads = await headsByDepartmentIds(rows.map((row) => row.d.id));
       return {
-        items: rows.map((row) => toDto(row, heads.get(row.id) ?? [])),
+        items: rows.map((row) => toDto(row.d, objectOf(row.object), heads.get(row.d.id) ?? [])),
         total: Number(totalRows[0]!.c),
         page: p.page,
         pageSize: p.pageSize,
@@ -106,6 +159,7 @@ export default async function departmentsRoutes(app: FastifyInstance): Promise<v
           .from(departments)
           .where(eq(departments.code, body.code));
         if (dup.length > 0) throw err.conflict('Отдел с таким кодом уже существует');
+        if (body.constructionObjectId) await assertObjectExists(tx, body.constructionObjectId);
         const [row] = await tx.insert(departments).values(body).returning({ id: departments.id });
         return {
           created: row!,
@@ -134,17 +188,34 @@ export default async function departmentsRoutes(app: FastifyInstance): Promise<v
       const p = requirePrincipal(req);
       const { id } = req.params;
       const { headUserIds, ...body } = req.body;
-      const affected = await db.transaction(async (tx) => {
-        const [updated] = await tx
+      const { affected, objectChanged } = await db.transaction(async (tx) => {
+        // Прежняя площадка читается до правки: `returning` отдаёт уже новую, а решение «гасить ли
+        // сессии» зависит именно от того, сменилась ли она.
+        const [before] = await tx
+          .select({ constructionObjectId: departments.constructionObjectId })
+          .from(departments)
+          .where(eq(departments.id, id));
+        if (!before) throw err.notFound('Отдел не найден');
+        const beforeObjectId = before.constructionObjectId;
+        if (body.constructionObjectId) await assertObjectExists(tx, body.constructionObjectId);
+        await tx
           .update(departments)
           .set({ ...body, updatedAt: new Date() })
-          .where(eq(departments.id, id))
-          .returning({ id: departments.id });
-        if (!updated) throw err.notFound('Отдел не найден');
+          .where(eq(departments.id, id));
         // Отсутствие поля — «не трогать привязки»: их правят и из карточки учётки.
-        return headUserIds === undefined
-          ? []
-          : await replaceDepartmentHeads(tx, id, headUserIds, p.id);
+        const heads =
+          headUserIds === undefined ? [] : await replaceDepartmentHeads(tx, id, headUserIds, p.id);
+        // Площадка сменилась — область меняется у всех, кто в отделе (ADR 0062), а не только у
+        // тех, кого правили. Сравнение с тем, что записалось: `undefined` в теле означает «не
+        // трогать», и отличить его от присланного `null` иначе нечем.
+        const objectMoved =
+          body.constructionObjectId !== undefined &&
+          (body.constructionObjectId ?? null) !== beforeObjectId;
+        const members = objectMoved ? await markDepartmentScopeChanged(tx, id) : [];
+        return {
+          affected: [...new Set([...heads, ...members])],
+          objectChanged: objectMoved,
+        };
       });
       await revokeScopeChanged(affected);
       await writeAudit({
@@ -152,7 +223,7 @@ export default async function departmentsRoutes(app: FastifyInstance): Promise<v
         action: 'department.update',
         entityType: 'department',
         entityId: id,
-        metadata: { headsChanged: affected.length > 0 },
+        metadata: { headsChanged: affected.length > 0, objectChanged },
       });
       return (await getDto(id))!;
     },
