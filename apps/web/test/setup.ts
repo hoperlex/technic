@@ -5,6 +5,7 @@ import 'dayjs/locale/ru';
 import utc from 'dayjs/plugin/utc';
 import timezone from 'dayjs/plugin/timezone';
 import { installMatchMedia, resetViewport } from './viewport';
+import { restoreContentHeights } from './clamp';
 import { restoreHttpMock } from './http';
 import { __resetAuthForTests } from '../src/auth/AuthContext';
 import { __resetSessionForTests } from '../src/shared/api';
@@ -42,4 +43,7 @@ afterEach(() => {
   // Подменённый сетью тест не должен утаскивать за собой следующие: снимаем мок здесь, а не в
   // самом `mockHttp` — хук, зарегистрированный изнутри `it`, до следующего теста не доживает.
   restoreHttpMock();
+  // По той же причине снимается подмена высот, которой проверяют свёрнутые ячейки: она стоит на
+  // прототипе элемента и пережила бы тест, который её ставил (см. ./clamp).
+  restoreContentHeights();
 });

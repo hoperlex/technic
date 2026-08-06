@@ -1,6 +1,7 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import type { VehicleRequestDto } from '@technic/contracts';
+import { pretendContentOverflows } from './clamp';
 import { json, mockHttp, type HttpMock, type RouteMap } from './http';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
@@ -67,22 +68,6 @@ function cardOf(displayNumber: string): HTMLElement | undefined {
 }
 
 const row = () => document.querySelector<HTMLElement>('.ant-table-tbody tr.ant-table-row')!;
-
-/**
- * Свёрнутая ячейка показывает переключатель, только если содержимое в неё не поместилось, а в
- * jsdom высоты нулевые — раскладки там нет вовсе. Подменяем `scrollHeight`: замер видит текст,
- * который не влез, и переключатель появляется — его поведение и проверяется.
- */
-const SCROLL_HEIGHT = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollHeight');
-function pretendContentOverflows() {
-  Object.defineProperty(HTMLElement.prototype, 'scrollHeight', {
-    configurable: true,
-    get: () => 100,
-  });
-}
-afterEach(() => {
-  if (SCROLL_HEIGHT) Object.defineProperty(HTMLElement.prototype, 'scrollHeight', SCROLL_HEIGHT);
-});
 
 describe('строка списка заявок ТС', () => {
   it('открывает карточку кликом по ячейке без активного содержимого', async () => {
