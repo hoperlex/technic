@@ -15,6 +15,7 @@ import { TIME_FORMAT_MESSAGE, TIME_PATTERN } from './time';
 /** Виды писем, которые умеет отправить отладка. Реестр общий: по нему портал строит список. */
 export const MAIL_TEST_KINDS = [
   'driver_routes',
+  'role_digest',
   'verify_email',
   'password_reset',
   'password_changed',
@@ -23,6 +24,7 @@ export type MailTestKind = (typeof MAIL_TEST_KINDS)[number];
 
 export const mailTestKindLabels: Record<MailTestKind, string> = {
   driver_routes: 'Задание водителю на рейсы',
+  role_digest: 'Сводка по ролям',
   verify_email: 'Подтверждение адреса при регистрации',
   password_reset: 'Восстановление пароля',
   password_changed: 'Уведомление о смене пароля',
@@ -31,10 +33,12 @@ export const mailTestKindLabels: Record<MailTestKind, string> = {
 /**
  * Нужна ли виду письма дата, за которую собирается содержимое. У писем про доступ её нет — они
  * относятся к событию, а не к периоду; заданию водителю она нужна, и именно ею проверяют, что
- * рейсы конкретного дня печатаются так, как ожидалось.
+ * рейсы конкретного дня печатаются так, как ожидалось. У сводки дата означает день рассылки:
+ * период считается от неё так же, как у настоящего запуска расписания.
  */
 export const mailTestKindNeedsDate: Record<MailTestKind, boolean> = {
   driver_routes: true,
+  role_digest: true,
   verify_email: false,
   password_reset: false,
   password_changed: false,
@@ -47,6 +51,23 @@ export const mailTestKindNeedsDate: Record<MailTestKind, boolean> = {
  */
 export const mailTestKindNeedsDriver: Record<MailTestKind, boolean> = {
   driver_routes: true,
+  role_digest: false,
+  verify_email: false,
+  password_reset: false,
+  password_changed: false,
+};
+
+/**
+ * Нужен ли виду письма образец-учётка — человек, чьими глазами собирается письмо. Отдельно от
+ * образца-водителя, потому что это разные справочники: водитель — физлицо из `persons`, а сводку
+ * собирает область видимости учётной записи.
+ *
+ * У сводки такой образец обязателен по смыслу: разделы под разными людьми возвращают разные строки,
+ * и «показать сводку» вообще, ни под кем, нечего — под каждым она своя.
+ */
+export const mailTestKindNeedsSampleUser: Record<MailTestKind, boolean> = {
+  driver_routes: false,
+  role_digest: true,
   verify_email: false,
   password_reset: false,
   password_changed: false,
@@ -67,6 +88,12 @@ export const mailTestSchema = z
      * рейсы: чаще всего проверяют «как вообще выглядит задание», а не письмо конкретного человека.
      */
     driverPersonId: uuidSchema.optional(),
+    /**
+     * Чьими глазами собрать сводку. Пусто — сервер возьмёт самого получателя: администратор видит
+     * всё, и такая сводка отвечает на вопрос «как письмо выглядит вообще». Само письмо в любом
+     * случае уходит получателю, а не образцу: показывать чужую область видимости — не рассылка.
+     */
+    sampleUserId: uuidSchema.optional(),
   })
   .strict()
   .superRefine((v, ctx) => {

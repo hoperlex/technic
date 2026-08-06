@@ -42,6 +42,7 @@ import type {
   RequestStatus,
   RequestVehicleEarlyEndInput,
   RequestType,
+  Role,
   RequestWaybillDto,
   RouteTripFields,
   SaveVehicleRequestShiftBody,
@@ -110,6 +111,18 @@ export interface MailTestDriver {
 }
 
 /**
+ * Учётка-образец для отладочной сводки: чьими глазами её собрать. Роль показывается рядом с именем
+ * не для красоты — по ней и выбирают, чью сводку смотреть: проверяют обычно не человека, а то, что
+ * видит роль.
+ */
+export interface MailDigestSampleUser {
+  id: string;
+  fullName: string;
+  email: string;
+  role: Role;
+}
+
+/**
  * Итоги запуска рассылки. Письмо составляется не каждому: у водителя может не быть адреса, он
  * может стоять в исключениях расписания, а рейсов в окне может не оказаться вовсе — и все три
  * случая считаются отдельно, потому что чинят их по-разному.
@@ -131,6 +144,12 @@ export const mailingsApi = {
   /** Водители с рейсами на дату: список зависит от даты, поэтому запрашивается вместе с ней. */
   driversWithRoutes: (date: string) =>
     apiFetch<MailTestDriver[]>('/admin/mail/drivers-with-routes', { query: { date } }),
+  /**
+   * Кем можно «посмотреть» сводку. Даты в запросе нет намеренно: сводка собирается под любым
+   * действующим человеком, и пустота за выбранный день — это уже её ответ, а не повод прятать его
+   * из списка.
+   */
+  digestSampleUsers: () => apiFetch<MailDigestSampleUser[]>('/admin/mail/digest-sample-users'),
   sendTest: (body: MailTestBody) =>
     apiFetch<{ ok: boolean; message: string }>('/admin/mail/test', { method: 'POST', body }),
   /** Расписания приходят целиком и вместе с исключениями: их в портале единицы, листать нечего. */

@@ -1,15 +1,17 @@
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
-import { and, asc, eq, isNull } from 'drizzle-orm';
+import { and, asc, eq, isNotNull, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import {
   dateOnlySchema,
+  DIGEST_SECTIONS,
   MAIL_TEST_NOTE,
   MAIL_TEST_SUBJECT_PREFIX,
   type MailTestKind,
   mailTestSchema,
 } from '@technic/contracts';
+import { config } from '../config';
 import { db } from '../db/client';
 import { users } from '../db/schema';
 import { err } from '../lib/errors';
@@ -18,6 +20,11 @@ import { requirePrincipal } from '../auth/plugin';
 import { queueMail } from '../services/mail';
 import type { MailContent } from '../services/mail-templates';
 import { buildDriverRoutesMail, driversWithRoutes } from '../services/mailings/driver-routes';
+import {
+  buildRoleDigestMail,
+  digestPeriod,
+  digestUpcoming,
+} from '../services/mailings/role-digest';
 import {
   PASSWORD_CHANGED_SUBJECT,
   passwordChangedContent,
@@ -49,7 +56,7 @@ const FAKE_TOKEN = 'test-link-not-valid';
  */
 async function contentFor(
   kind: MailTestKind,
-  opts: { date?: string; driverPersonId?: string },
+  opts: { date?: string; driverPersonId?: string; sampleUserId?: string },
 ): Promise<{ subject: string; content: MailContent } | null> {
   switch (kind) {
     case 'verify_email':
@@ -72,6 +79,49 @@ async function contentFor(
         driverName: driver.fullName,
         dateFrom: date,
         dateTo: date,
+      });
+      return mail ? { subject: mail.subject, content: mail.content } : null;
+    }
+    case 'role_digest': {
+      // Дата в форме — день рассылки, а не сам период: ежедневная сводка рассказывает о предыдущем
+      // полном дне, и границы считаются тем же кодом, что у настоящего запуска. Полдень по UTC
+      // берётся, чтобы часовой пояс портала не увёл выбранный день на соседние сутки.
+      const plannedAt = new Date(`${opts.date!}T12:00:00Z`);
+      const period = digestPeriod(plannedAt, 'daily', config.mail.timezone);
+      const upcoming = digestUpcoming(plannedAt, config.mail.timezone);
+
+      // Письмо собирается областью видимости образца, а не получателя: сводка у каждого своя, и
+      // проверяют обычно именно чужую — «что увидит начальник участка». Без явного выбора образцом
+      // становится сам получатель-администратор: это ответ на вопрос «как письмо выглядит вообще».
+      //
+      // Образец проверяется отдельно от сборки: у недействующей учётки области видимости нет вовсе,
+      // и письмо получилось бы пустым — а пустое здесь означает «за эту дату ничего не произошло»,
+      // то есть человек чинил бы не ту причину. Подтверждение адреса не требуется: образцу ничего
+      // не отправляется, письмо уходит получателю.
+      const [sample] = await db
+        .select({ userId: users.id, fullName: users.fullName, email: users.email })
+        .from(users)
+        .where(
+          and(eq(users.id, opts.sampleUserId!), eq(users.isActive, true), isNull(users.deletedAt)),
+        );
+      if (!sample) {
+        throw err.badRequest('Учётная запись образца не найдена или недействующая');
+      }
+
+      const mail = await buildRoleDigestMail({
+        recipient: sample,
+        // Разделы берутся все: это отладка, и смотреть надо максимум возможного. Чем ограничить
+        // состав настоящего письма, решает расписание, а не эта форма.
+        sections: [...DIGEST_SECTIONS],
+        periodStart: period.start,
+        periodEnd: period.end,
+        upcomingFrom: upcoming.from,
+        upcomingTo: upcoming.to,
+        // Исключения принадлежат конкретному расписанию; здесь проверяется вид письма, а не
+        // настройка рассылки, поэтому вычитать нечего.
+        excludedObjectIds: [],
+        excludedDepartmentIds: [],
+        periodicity: 'daily',
       });
       return mail ? { subject: mail.subject, content: mail.content } : null;
     }
@@ -105,6 +155,30 @@ export default async function adminMailRoutes(app: FastifyInstance): Promise<voi
     return rows;
   });
 
+  /**
+   * Учётные записи, чьими глазами можно посмотреть сводку. Список не зависит от даты, в отличие от
+   * водителей: сводка собирается под любым действующим человеком, а «пусто» — это уже её ответ.
+   *
+   * Условие то же, что у настоящих получателей сводки (ADR 0078): действующая неархивная учётка с
+   * подтверждённым адресом. Иначе в отладке проверялось бы письмо тому, кому оно всё равно не
+   * уйдёт, и «у него пусто» ничего бы не значило.
+   */
+  r.get('/digest-sample-users', readGuards, async () => {
+    const rows = await db
+      .select({
+        id: users.id,
+        fullName: users.fullName,
+        email: users.email,
+        role: users.role,
+      })
+      .from(users)
+      .where(
+        and(eq(users.isActive, true), isNull(users.deletedAt), isNotNull(users.emailVerifiedAt)),
+      )
+      .orderBy(asc(users.fullName));
+    return rows;
+  });
+
   /** Водители, у которых на дату есть рейсы: из них выбирается образец для проверки задания. */
   r.get(
     '/drivers-with-routes',
@@ -129,6 +203,9 @@ export default async function adminMailRoutes(app: FastifyInstance): Promise<voi
     const built = await contentFor(kind, {
       ...(req.body.date ? { date: req.body.date } : {}),
       ...(req.body.driverPersonId ? { driverPersonId: req.body.driverPersonId } : {}),
+      // Образец по умолчанию — сам получатель: у администратора область видимости полная, и такая
+      // сводка показывает письмо целиком, ничего не пряча.
+      sampleUserId: req.body.sampleUserId ?? toUserId,
     });
     // Пустое письмо не отправляется: молчаливый успех на дате без рейсов читался бы как «письмо
     // ушло», и человек ждал бы его в ящике.
@@ -154,7 +231,13 @@ export default async function adminMailRoutes(app: FastifyInstance): Promise<voi
       action: 'mailing.test_sent',
       entityType: 'user',
       entityId: recipient.id,
-      metadata: { kind, date: req.body.date ?? null },
+      // Образец пишется в журнал: письмо собрано чужой областью видимости, и след «кого именно
+      // показали администратору» — часть ответа на вопрос, кто чьи данные видел.
+      metadata: {
+        kind,
+        date: req.body.date ?? null,
+        sampleUserId: req.body.sampleUserId ?? null,
+      },
     });
 
     return {

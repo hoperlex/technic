@@ -7,7 +7,9 @@ import {
   mailTestKindLabels,
   mailTestKindNeedsDate,
   mailTestKindNeedsDriver,
+  mailTestKindNeedsSampleUser,
   type MailTestKind,
+  roleLabels,
 } from '@technic/contracts';
 import { mailingsApi } from '../../api/resources';
 import { MailingSchedulesBlock } from './MailingSchedulesBlock';
@@ -19,6 +21,7 @@ interface FormValues {
   toUserId: string;
   date?: dayjs.Dayjs;
   driverPersonId?: string;
+  sampleUserId?: string;
 }
 
 const DATE = 'YYYY-MM-DD';
@@ -47,6 +50,7 @@ export function MailingsTab() {
 
   const needsDate = mailTestKindNeedsDate[kind];
   const needsDriver = mailTestKindNeedsDriver[kind];
+  const needsSampleUser = mailTestKindNeedsSampleUser[kind];
   const watchDate = Form.useWatch<dayjs.Dayjs | undefined>('date', form);
   const driversDate = watchDate ? watchDate.format(DATE) : undefined;
 
@@ -60,6 +64,15 @@ export function MailingsTab() {
   const drivers = driversQuery.data ?? [];
   const noDrivers = driversQuery.isSuccess && drivers.length === 0;
 
+  // Список образцов от даты не зависит и меняется редко, поэтому спрашивается один раз на вид
+  // письма, которому он вообще нужен.
+  const sampleUsersQuery = useQuery({
+    queryKey: ['mail-digest-sample-users'],
+    queryFn: () => mailingsApi.digestSampleUsers(),
+    enabled: needsSampleUser,
+  });
+  const sampleUsers = sampleUsersQuery.data ?? [];
+
   const sendMut = useMutation({
     mutationFn: (values: FormValues) =>
       mailingsApi.sendTest({
@@ -67,6 +80,7 @@ export function MailingsTab() {
         toUserId: values.toUserId,
         ...(values.date ? { date: values.date.format(DATE) } : {}),
         ...(values.driverPersonId ? { driverPersonId: values.driverPersonId } : {}),
+        ...(values.sampleUserId ? { sampleUserId: values.sampleUserId } : {}),
       }),
     onSuccess: (res) => message.success(res.message),
     onError: (e) => message.error(errorMessage(e)),
@@ -103,9 +117,12 @@ export function MailingsTab() {
             onValuesChange={(changed: Partial<FormValues>) => {
               // Водитель осмыслен только вместе с видом письма и датой: на другой день у выбранного
               // человека рейсов может не быть вовсе, а уехавший в отправку чужой образец читался бы
-              // как ошибка сервера.
+              // как ошибка сервера. Образец сводки сбрасывается вместе с ним: смена вида или даты —
+              // это новая проверка, и подставлять в неё выбор от прошлой значит однажды отправить
+              // письмо не тем, кем собирались смотреть.
               if ('kind' in changed || 'date' in changed) {
                 form.setFieldValue('driverPersonId', undefined);
+                form.setFieldValue('sampleUserId', undefined);
               }
             }}
           >
@@ -151,6 +168,33 @@ export function MailingsTab() {
                   options={drivers.map((d) => ({
                     value: d.personId,
                     label: `${d.fullName} — ${d.email}`,
+                  }))}
+                />
+              </Form.Item>
+            )}
+
+            {/* Сводка у каждого своя: одни и те же разделы под разными людьми возвращают разные
+              строки, потому что собираются их областью видимости. Поэтому у неё спрашивают не «чьё
+              письмо отправить», а «чьими глазами его собрать» — уходит оно всё равно получателю. */}
+            {needsSampleUser && (
+              <Form.Item
+                name="sampleUserId"
+                label="Чьими глазами смотреть"
+                extra={
+                  'Сводка собирается областью видимости выбранного человека, но письмо уходит ' +
+                  'получателю ниже. Можно не выбирать: тогда сводка соберётся под получателем, а он ' +
+                  'администратор и видит всё.'
+                }
+              >
+                <Select
+                  loading={sampleUsersQuery.isLoading}
+                  allowClear
+                  showSearch
+                  optionFilterProp="label"
+                  placeholder="Получатель письма"
+                  options={sampleUsers.map((u) => ({
+                    value: u.id,
+                    label: `${u.fullName} — ${roleLabels[u.role]} — ${u.email}`,
                   }))}
                 />
               </Form.Item>
