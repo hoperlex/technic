@@ -1,7 +1,8 @@
-import { eq, inArray, type AnyColumn, type SQL } from 'drizzle-orm';
+import { eq, inArray, isNotNull, isNull, type AnyColumn, type SQL } from 'drizzle-orm';
 import {
   actsForCounterparty,
   allowedVehicleRequestTypes,
+  type ArchiveFilter,
   can,
   canOrderVehicleRequestType,
   canTransitionStatus,
@@ -125,6 +126,25 @@ export function assertArchiveVisible(
   notFoundMessage: string,
 ): void {
   if (deletedAt && !can(p, 'archive.read')) throw err.notFound(notFoundMessage);
+}
+
+/**
+ * Условие списка по архиву (ADR 0070): что делать с удалёнными строками — скрыть, показать
+ * вместе с живыми или показать только их (вкладка «Архив»).
+ *
+ * Право спрашивается здесь, а не на маршруте: список открыт всем, кто читает модуль, и запрещать
+ * нужно не запрос, а расширение выдачи. Без `archive.read` любое значение параметра означает
+ * «без архива» — не 403: подобранный в адресной строке параметр не должен ни отдавать чужое, ни
+ * отвечать «такое бывает».
+ */
+export function archiveWhere(
+  p: Principal,
+  filter: ArchiveFilter,
+  deletedAtColumn: AnyColumn,
+): SQL | undefined {
+  if (!can(p, 'archive.read')) return isNull(deletedAtColumn);
+  if (filter === 'only') return isNotNull(deletedAtColumn);
+  return filter === 'include' ? undefined : isNull(deletedAtColumn);
 }
 
 /**

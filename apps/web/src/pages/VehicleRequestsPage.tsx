@@ -6,10 +6,11 @@ import { VehicleRequestsTab } from './vehicle/VehicleRequestsTab';
 import { VehicleRequestsOnSiteTab } from './vehicle/VehicleRequestsOnSiteTab';
 import { VehicleRoutesTab } from './vehicle/VehicleRoutesTab';
 import { VehicleRequestsHistoryTab } from './vehicle/VehicleRequestsHistoryTab';
+import { VehicleRequestsArchiveTab } from './vehicle/VehicleRequestsArchiveTab';
 
 // Спецтехника и грузоперевозки живут в одном списке («Заказ автотехники»): тип заявки —
 // колонка и фильтр, а не отдельная вкладка. Старые ключи вкладок ведут на общий список.
-const TABS = ['requests', 'on-site', 'routes', 'history'] as const;
+const TABS = ['requests', 'on-site', 'routes', 'history', 'archive'] as const;
 
 export function VehicleRequestsPage() {
   const { user, can } = useAuth();
@@ -32,6 +33,13 @@ export function VehicleRequestsPage() {
    */
   const showRoutes = can('waybills.read') && can('vehicleRequests.status');
 
+  /**
+   * «Архив» — удалённые заявки (ADR 0070): по матрице прав это только администратор. Спрашивается
+   * право, а не имя роли: тем же правом закрыта выдача архива на сервере, и разойтись они не
+   * должны — иначе вкладка либо ведёт в пустой список, либо прячет доступное.
+   */
+  const showArchive = can('archive.read');
+
   const items = [
     { key: 'requests', label: 'Заказ автотехники', children: <VehicleRequestsTab /> },
     ...(showOnSite
@@ -39,6 +47,9 @@ export function VehicleRequestsPage() {
       : []),
     ...(showRoutes ? [{ key: 'routes', label: 'Маршруты', children: <VehicleRoutesTab /> }] : []),
     { key: 'history', label: 'История', children: <VehicleRequestsHistoryTab /> },
+    ...(showArchive
+      ? [{ key: 'archive', label: 'Архив', children: <VehicleRequestsArchiveTab /> }]
+      : []),
   ];
 
   const raw = sp.get('tab') ?? '';

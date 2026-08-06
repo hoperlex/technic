@@ -9,6 +9,7 @@ import {
 import type { RequestStatus } from './enums';
 import { allowedStatusTransitions, type AccessSubject } from './permissions';
 import {
+  archiveFilterSchema,
   baseListQuery,
   contactNameSchema,
   contactPhoneSchema,
@@ -847,6 +848,9 @@ export const VEHICLE_REQUEST_SORT_FIELDS = [
   'approval',
   'comment',
   'createdAt',
+  // Столбец вкладки «Архив» (ADR 0070): когда заявку удалили. Порядок по нему там умолчанием —
+  // архив открывают вопросом «что снесли последним».
+  'deletedAt',
   // Столбцы журнала закрытых заявок (вкладка «История», ADR 0029): чья машина и во сколько
   // обошлась. В списке заявок этих столбцов нет, но поля сортировки общие — запрос один.
   'lessorName',
@@ -883,10 +887,8 @@ export const vehicleRequestListQuerySchema = baseListQuery(VEHICLE_REQUEST_SORT_
     .string()
     .regex(/^\d{4}-\d{2}-\d{2}$/)
     .optional(),
-  includeDeleted: z
-    .enum(['true', 'false'])
-    .optional()
-    .transform((v) => v === 'true'),
+  /** Архив (ADR 0070): `only` — вкладка «Архив», остальное сервер отдаёт только праву `archive.read`. */
+  archive: archiveFilterSchema,
 });
 
 /**
@@ -1262,6 +1264,13 @@ export interface VehicleRequestBaseDto {
   createdAt: string;
   updatedAt: string;
   deletedAt: string | null;
+  /**
+   * Кто отправил заявку в архив (ADR 0070). Пусто у живой заявки и у архивной, чей автор удаления
+   * не сохранился (`deleted_by` объявлен `ON DELETE SET NULL` — учётку могли снести насовсем).
+   * Именем, а не только идентификатором: «кто удалил» — первый вопрос к строке архива, и ответ на
+   * него не должен требовать второго запроса.
+   */
+  deletedByName: string | null;
 }
 
 export interface SpecialEquipmentRequestDto extends VehicleRequestBaseDto {

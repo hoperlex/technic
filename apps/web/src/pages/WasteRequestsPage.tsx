@@ -69,6 +69,7 @@ import { AutoSelect } from '@shared/ui';
 import { CancelReasonModal, RollbackReasonModal } from '../components/CancelReasonModal';
 import { ActionSheet } from '@shared/ui';
 import { DataTable, type CardConfig } from '@shared/ui';
+import { ExpandableCell } from '@shared/ui';
 import { FileLinkList, FilesCell } from '../components/FileLinks';
 import { FormGrid } from '@shared/ui';
 import { FormModal } from '@shared/ui';
@@ -90,6 +91,7 @@ import { applyApiFieldErrors } from '../utils/formErrors';
 import { withSavedOption } from '@shared/lib';
 import { isBeforeMinRequestDate, isPastDate, minRequestDate } from '../utils/date';
 import { OnSiteTab } from './waste/OnSiteTab';
+import { WasteArchiveTab } from './waste/WasteArchiveTab';
 import {
   containerGroupKey,
   containerGroupOptions,
@@ -144,31 +146,31 @@ interface RequestFormValues {
 }
 
 /**
- * Комментарий заявки двумя подписанными строками: площадка и исполнитель (ADR 0053). Обрезается
- * построчно, а не ячейкой целиком: обрезка на уровне колонки оставила бы от второй стороны одну
- * подпись. Полностью строки видны в карточке заявки и подсказкой при наведении.
+ * Комментарий заявки двумя подписанными строками: площадка и исполнитель (ADR 0053).
+ *
+ * В строке списка (`collapsible`) сворачивается ячейкой целиком — тем же `ExpandableCell`, что
+ * держит комментарий и контакты в списке заказов техники: текст переносится по ширине колонки,
+ * свёрнутая ячейка показывает две строки (столько же занимают соседние колонки), остальное
+ * открывает нажатие. До этого каждая строка обрезалась своим многоточием, и обрезка приходилась
+ * ровно на то место, где у заявки начинается суть, — прочесть комментарий целиком можно было
+ * только подсказкой наведения или открыв карточку.
+ *
+ * Свёрнутой ячейке случается отрезать вторую сторону вместе с подписью: многословной площадке
+ * хватает и двух строк. Это принято сознательно — сторона возвращается тем же нажатием, не
+ * открытием карточки, — а обратное, пустить обе стороны в высоту, растянуло бы каждую строку
+ * списка под самую многословную заявку.
  */
-function CommentCell({ r, truncate }: { r: WasteRequestDto; truncate?: boolean }) {
+function CommentCell({ r, collapsible }: { r: WasteRequestDto; collapsible?: boolean }) {
   const lines = wasteRequestCommentLines(r);
   if (lines.length === 0) return null;
-  return (
-    <>
-      {lines.map((l) => (
-        <div
-          key={l.key}
-          title={truncate ? `${l.label}: ${l.text}` : undefined}
-          style={
-            truncate
-              ? { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }
-              : undefined
-          }
-        >
-          <Typography.Text type="secondary">{l.label}: </Typography.Text>
-          {l.text}
-        </div>
-      ))}
-    </>
-  );
+  const body = lines.map((l) => (
+    <div key={l.key}>
+      <Typography.Text type="secondary">{l.label}: </Typography.Text>
+      {/* Абзацы автора сохраняются: комментарий заводят многострочным полем. */}
+      <span style={{ whiteSpace: 'pre-line' }}>{l.text}</span>
+    </div>
+  ));
+  return collapsible ? <ExpandableCell>{body}</ExpandableCell> : <>{body}</>;
 }
 
 /**
@@ -331,6 +333,13 @@ function WasteStatusCell({
 export function WasteRequestsPage() {
   // Вкладки управляемые: виджет сводки живёт в строке вкладок и показывается только на «Заявках».
   const [tab, setTab] = useState('requests');
+  const { can } = useAuth();
+  /**
+   * «Архив» — удалённые заявки (ADR 0070): по матрице прав это только администратор. Спрашивается
+   * право, а не имя роли: тем же правом закрыта выдача архива на сервере, и разойтись они не
+   * должны — иначе вкладка либо ведёт в пустой список, либо прячет доступное.
+   */
+  const showArchive = can('archive.read');
   return (
     <div style={{ height: '100%' }}>
       <PageTabs
@@ -340,6 +349,9 @@ export function WasteRequestsPage() {
         items={[
           { key: 'requests', label: 'Заявки', children: <RequestsTab /> },
           { key: 'on-site', label: 'На объекте', children: <OnSiteTab /> },
+          ...(showArchive
+            ? [{ key: 'archive', label: 'Архив', children: <WasteArchiveTab /> }]
+            : []),
         ]}
       />
     </div>
@@ -1157,8 +1169,11 @@ function RequestsTab() {
       key: 'comment',
       title: 'Комментарий',
       dataIndex: 'comment',
-      width: 230,
-      render: (_v, r) => <CommentCell r={r} truncate />,
+      // Шире прочих текстовых колонок и настолько же, насколько комментарий в списке заказов
+      // техники: свёрнутых строк всего две, и на узкой колонке в них не помещается ничего, кроме
+      // подписей сторон.
+      width: 260,
+      render: (_v, r) => <CommentCell r={r} collapsible />,
     }),
     {
       key: 'files',
@@ -1474,6 +1489,11 @@ function RequestsTab() {
       <DataTable<WasteRequestDto>
         columns={columns}
         card={card}
+        // Карточку открывает клик по строке — тем же движением, что и касание карточки на телефоне
+        // (`card.onOpen`), и так же, как в архиве заявок и в списке заказов техники. Кнопка
+        // «Открыть карточку» в «Действиях» остаётся: клавиатурой до строки не добраться, а ячейки
+        // с активным содержимым клик строке не отдают (`opensRow`).
+        onRowClick={(r) => setViewRecord(r)}
         data={data?.items ?? []}
         total={data?.total ?? 0}
         loading={isFetching}

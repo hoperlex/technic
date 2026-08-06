@@ -60,6 +60,7 @@ export function vehicleRequest(
     createdAt: '2026-08-01T06:00:00.000Z',
     updatedAt: '2026-08-01T06:00:00.000Z',
     deletedAt: null,
+    deletedByName: null,
     ...overrides,
   } as SpecialEquipmentRequestDto;
 }
@@ -119,6 +120,7 @@ export function freightRequest(
     createdAt: '2026-08-01T06:00:00.000Z',
     updatedAt: '2026-08-01T06:00:00.000Z',
     deletedAt: null,
+    deletedByName: null,
     ...overrides,
   } as FreightTransportRequestDto;
 }

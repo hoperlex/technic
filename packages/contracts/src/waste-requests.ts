@@ -7,7 +7,13 @@ import {
   statusChangeRequiresReason,
 } from './enums';
 import type { ContainerKind, RequestStatus, RequestType } from './enums';
-import { baseListQuery, contactNameSchema, contactPhoneSchema, uuidSchema } from './common';
+import {
+  archiveFilterSchema,
+  baseListQuery,
+  contactNameSchema,
+  contactPhoneSchema,
+  uuidSchema,
+} from './common';
 import type { FileDto } from './files';
 import {
   MIN_REQUEST_DATE_MESSAGE,
@@ -60,6 +66,9 @@ export const WASTE_REQUEST_SORT_FIELDS = [
   'comment',
   'createdByName',
   'createdAt',
+  // Столбец вкладки «Архив» (ADR 0070): когда заявку удалили. Порядок по нему там умолчанием —
+  // архив открывают вопросом «что снесли последним».
+  'deletedAt',
 ] as const;
 
 export const wasteRequestListQuerySchema = baseListQuery(WASTE_REQUEST_SORT_FIELDS).extend({
@@ -73,10 +82,8 @@ export const wasteRequestListQuerySchema = baseListQuery(WASTE_REQUEST_SORT_FIEL
   num: z.coerce.number().int().positive().optional(),
   deliveryFrom: z.coerce.date().optional(),
   deliveryTo: z.coerce.date().optional(),
-  includeDeleted: z
-    .enum(['true', 'false'])
-    .optional()
-    .transform((v) => v === 'true'),
+  /** Архив (ADR 0070): `only` — вкладка «Архив», остальное сервер отдаёт только праву `archive.read`. */
+  archive: archiveFilterSchema,
 });
 
 /**
@@ -774,6 +781,13 @@ export interface WasteRequestDto {
   createdAt: string;
   updatedAt: string;
   deletedAt: string | null;
+  /**
+   * Кто отправил заявку в архив (ADR 0070). Пусто у живой заявки и у архивной, чей автор удаления
+   * не сохранился (`deleted_by` объявлен `ON DELETE SET NULL` — учётку могли снести насовсем).
+   * Именем, а не только идентификатором: «кто удалил» — первый вопрос к строке архива, и ответ на
+   * него не должен требовать второго запроса.
+   */
+  deletedByName: string | null;
 }
 
 // ── Комментарий заявки: две стороны (ADR 0053) ──

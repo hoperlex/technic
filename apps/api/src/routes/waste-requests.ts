@@ -5,7 +5,6 @@ import { and, asc, count, eq, gte, inArray, isNull, lte, sql } from 'drizzle-orm
 import { alias } from 'drizzle-orm/pg-core';
 import {
   calcWasteFactCost,
-  can,
   assignWasteOperatorSchema,
   changeWasteRequestStatusSchema,
   type CompleteWasteRequestInput,
@@ -52,6 +51,7 @@ import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
 import {
+  archiveWhere,
   assertArchiveVisible,
   assertCan,
   assertOperatorScope,
@@ -70,6 +70,7 @@ import {
   markFilesActive,
   scheduleFilesDeletion,
 } from '../services/request-files';
+import { registerPurgeRoute } from '../services/directory-purge';
 import { priceWasteRequest, resolveWasteTariffByKind, toNum } from '../services/waste-pricing';
 import {
   assertContainerGroupAvailable,
@@ -96,6 +97,9 @@ const FACT_NOT_APPLICABLE = 'Вывезенное указывается тол�
 
 /** Кто закрыл заявку — второй join на users: первый занят автором заявки. */
 const completers = alias(users, 'completers');
+
+/** Кто отправил заявку в архив (ADR 0070) — третий join на users: им подписана строка архива. */
+const deleters = alias(users, 'deleters');
 
 /** Чей контейнер снимаем — второй join на контрагентов: первый занят оператором заявки. */
 const containerOwners = alias(counterparties, 'container_owners');
@@ -164,6 +168,7 @@ const requestSelect = {
   createdAt: wasteRequests.createdAt,
   updatedAt: wasteRequests.updatedAt,
   deletedAt: wasteRequests.deletedAt,
+  deletedByName: deleters.fullName,
 };
 
 type RequestRow = Awaited<ReturnType<typeof baseQuery>>[number];
@@ -285,6 +290,7 @@ function toDto(
     createdAt: r.createdAt.toISOString(),
     updatedAt: r.updatedAt.toISOString(),
     deletedAt: r.deletedAt ? r.deletedAt.toISOString() : null,
+    deletedByName: r.deletedByName,
   };
 }
 
@@ -292,17 +298,21 @@ function toDto(
 // заявки, тип мусора есть только у тарифицируемых операций (ADR 0009), а оператор может быть
 // ещё не назначен (ADR 0010). Факт выполнения — тоже left join: он появляется при закрытии.
 function baseQuery() {
-  return db
-    .select(requestSelect)
-    .from(wasteRequests)
-    .innerJoin(constructionObjects, eq(wasteRequests.objectId, constructionObjects.id))
-    .leftJoin(containerTypes, eq(wasteRequests.containerTypeId, containerTypes.id))
-    .leftJoin(wasteTypes, eq(wasteRequests.wasteTypeId, wasteTypes.id))
-    .leftJoin(counterparties, eq(wasteRequests.operatorCounterpartyId, counterparties.id))
-    .leftJoin(containerOwners, eq(wasteRequests.containerOwnerCounterpartyId, containerOwners.id))
-    .leftJoin(wasteRequestCompletions, eq(wasteRequests.id, wasteRequestCompletions.requestId))
-    .leftJoin(completers, eq(wasteRequestCompletions.completedBy, completers.id))
-    .innerJoin(users, eq(wasteRequests.createdBy, users.id));
+  return (
+    db
+      .select(requestSelect)
+      .from(wasteRequests)
+      .innerJoin(constructionObjects, eq(wasteRequests.objectId, constructionObjects.id))
+      .leftJoin(containerTypes, eq(wasteRequests.containerTypeId, containerTypes.id))
+      .leftJoin(wasteTypes, eq(wasteRequests.wasteTypeId, wasteTypes.id))
+      .leftJoin(counterparties, eq(wasteRequests.operatorCounterpartyId, counterparties.id))
+      .leftJoin(containerOwners, eq(wasteRequests.containerOwnerCounterpartyId, containerOwners.id))
+      .leftJoin(wasteRequestCompletions, eq(wasteRequests.id, wasteRequestCompletions.requestId))
+      .leftJoin(completers, eq(wasteRequestCompletions.completedBy, completers.id))
+      // Кто удалил (ADR 0070): пусто у живой заявки, а у архивной — ещё и если учётку снесли.
+      .leftJoin(deleters, eq(wasteRequests.deletedBy, deleters.id))
+      .innerJoin(users, eq(wasteRequests.createdBy, users.id))
+  );
 }
 
 /**
@@ -709,9 +719,10 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
   r.get('/', { ...auth, schema: { querystring: wasteRequestListQuerySchema } }, async (req) => {
     const p = requirePrincipal(req);
     const q = req.query;
-    const showDeleted = q.includeDeleted && can(p, 'archive.read');
     const where = and(
-      showDeleted ? undefined : isNull(wasteRequests.deletedAt),
+      // Архив (ADR 0070): вкладка «Архив» просит `only`, обычный список — умолчание `exclude`.
+      // Границы видимости при этом те же: свой объект, свои заявки, — архив их не расширяет.
+      archiveWhere(p, q.archive, wasteRequests.deletedAt),
       wasteRequestVisibilityWhere(p, wasteRequests.objectId),
       operatorVisibilityWhere(p, wasteRequests.operatorCounterpartyId),
       q.status ? eq(wasteRequests.status, q.status) : undefined,
@@ -746,6 +757,8 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       // сортировки у колонки один, а порядок склейки двух текстов ничего не значит (ADR 0053).
       comment: wasteRequests.comment,
       createdAt: wasteRequests.createdAt,
+      // Столбец вкладки «Архив» (ADR 0070): когда заявку удалили — им архив и открывают.
+      deletedAt: wasteRequests.deletedAt,
     };
     const p2 = pageParams(q);
     // Сортировка по неуникальному столбцу (status, requestType, deliveryAt) сама по себе не задаёт
@@ -1467,4 +1480,45 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       return (await getRequestDto(existing.id))!;
     },
   );
+
+  /**
+   * Удаление заявки насовсем (ADR 0070) — общая механика справочников (ADR 0060), право
+   * `records.purge`, только из архива. Второй шаг после осознанного первого: пока заявка не
+   * удалена, сносить нечего, и одного неверного клика для необратимого действия мало.
+   *
+   * Машины, талоны, история статусов и связи с файлами уходят каскадом — они существуют только
+   * при заявке. Сами строки `files` каскад не трогает: их удаление вместе с заказом на снос
+   * объекта в S3 повторяет то, что делает hard delete «Новой» заявки.
+   */
+  registerPurgeRoute(app, {
+    load: async (id) => {
+      const [row] = await db.select().from(wasteRequests).where(eq(wasteRequests.id, id));
+      return row;
+    },
+    isDown: (row) => !!row.deletedAt,
+    remove: async (tx, row) => {
+      const linked = await tx
+        .select({ id: files.id, objectKey: files.objectKey })
+        .from(requestFiles)
+        .innerJoin(files, eq(requestFiles.fileId, files.id))
+        .where(eq(requestFiles.requestId, row.id));
+      await tx.delete(wasteRequests).where(eq(wasteRequests.id, row.id));
+      await hardDeleteFiles(tx, linked);
+    },
+    notFound: 'Заявка не найдена',
+    stillLive: 'Заявка не в архиве — сначала удалите её',
+    subject: 'заявку',
+    audit: {
+      action: 'waste_request.purge',
+      entityType: 'waste_request',
+      // Номер, площадка и статус — то, чем заявку называют: после удаления по entityId искать
+      // уже нечего, а спрашивают «куда делась М-128».
+      metadata: (row) => ({
+        num: row.num,
+        objectId: row.objectId,
+        requestType: row.requestType,
+        status: row.status,
+      }),
+    },
+  });
 }

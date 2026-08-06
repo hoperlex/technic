@@ -27,6 +27,18 @@ export const dateOnlySchema = z
   }, 'Некорректная дата');
 
 /**
+ * Что список делает с архивными (удалёнными) строками — ADR 0070.
+ *
+ * Три состояния, а не два флага: «показать вместе с живыми» и «показать только их» отвечают на
+ * разные вопросы, а парой булевых они дают четвёртое сочетание («и только архив, и без архива»),
+ * на которое ответа нет. Значение по умолчанию — `exclude`: список без архива, каким его видит
+ * тот, у кого права на архив нет вовсе.
+ */
+export const ARCHIVE_FILTERS = ['exclude', 'include', 'only'] as const;
+export type ArchiveFilter = (typeof ARCHIVE_FILTERS)[number];
+export const archiveFilterSchema = z.enum(ARCHIVE_FILTERS).default('exclude');
+
+/**
  * Базовая схема списочного запроса. `sortFields` — allowlist сортируемых полей
  * (клиент не передаёт произвольные SQL-идентификаторы).
  */

@@ -481,6 +481,9 @@ export const vehicleRequestsApi = {
     apiFetch<{ ok: boolean; mode: string }>(`/vehicle-requests/${id}`, { method: 'DELETE' }),
   restore: (id: string) =>
     apiFetch<VehicleRequestDto>(`/vehicle-requests/${id}/restore`, { method: 'POST' }),
+  /** Удаление насовсем (ADR 0070) — только из архива и только администратором. */
+  purge: (id: string) =>
+    apiFetch<{ ok: boolean }>(`/vehicle-requests/${id}/purge`, { method: 'DELETE' }),
 };
 
 export interface WasteRequestPayload {
@@ -614,6 +617,9 @@ export const wasteRequestsApi = {
     apiFetch<{ ok: boolean; mode: string }>(`/waste-requests/${id}`, { method: 'DELETE' }),
   restore: (id: string) =>
     apiFetch<WasteRequestDto>(`/waste-requests/${id}/restore`, { method: 'POST' }),
+  /** Удаление насовсем (ADR 0070) — только из архива и только администратором. */
+  purge: (id: string) =>
+    apiFetch<{ ok: boolean }>(`/waste-requests/${id}/purge`, { method: 'DELETE' }),
 };
 
 export const filesApi = {

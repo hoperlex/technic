@@ -36,6 +36,7 @@ import {
   transitionResetsWork,
   updateVehicleRequestSchema,
   VEHICLE_EARLY_END_STATUSES,
+  VEHICLE_REQUEST_SORT_FIELDS,
   vehicleEarlyEndStatusColors,
   vehicleEarlyEndStatusLabels,
   vehicleOnSitePresenceColors,
@@ -1059,12 +1060,34 @@ describe('vehicle-requests: список и номер', () => {
   it('requestType в list-query необязателен: без него — единый список обоих типов', () => {
     const all = vehicleRequestListQuerySchema.parse({});
     expect(all.requestType).toBeUndefined();
-    expect(all.includeDeleted).toBe(false);
+    // Архив в умолчание не входит (ADR 0070): список без параметра — это рабочий список.
+    expect(all.archive).toBe('exclude');
 
     const one = vehicleRequestListQuerySchema.parse({ requestType: 'special_equipment' });
     expect(one.requestType).toBe('special_equipment');
 
     expect(() => vehicleRequestListQuerySchema.parse({ requestType: 'unknown' })).toThrow();
+  });
+
+  /**
+   * Архив — три состояния, а не флаг (ADR 0070): «без архива», «вместе с живыми» и «только
+   * архив». Последнее и есть вкладка «Архив»; неизвестное значение схема отклоняет, иначе опечатка
+   * в адресе молча вернула бы рабочий список вместо архива.
+   */
+  it('фильтр архива принимает три состояния и отклоняет остальные', () => {
+    expect(vehicleRequestListQuerySchema.parse({ archive: 'only' }).archive).toBe('only');
+    expect(vehicleRequestListQuerySchema.parse({ archive: 'include' }).archive).toBe('include');
+    expect(vehicleRequestListQuerySchema.parse({ archive: 'exclude' }).archive).toBe('exclude');
+    expect(() => vehicleRequestListQuerySchema.parse({ archive: 'true' })).toThrow();
+  });
+
+  /**
+   * Порядок по времени удаления — то, чем открывают архив: «что снесли последним». Без поля в
+   * allowlist сортировки сервер отклонил бы запрос вкладки целиком.
+   */
+  it('сортировка по времени удаления входит в список полей', () => {
+    expect(VEHICLE_REQUEST_SORT_FIELDS).toContain('deletedAt');
+    expect(vehicleRequestListQuerySchema.parse({ sortBy: 'deletedAt' }).sortBy).toBe('deletedAt');
   });
 
   it('сводка сужается объектом, типом заявки и заказанной техникой', () => {

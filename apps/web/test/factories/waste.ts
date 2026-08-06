@@ -56,6 +56,7 @@ export function wasteRequest(overrides: Partial<WasteRequestDto> = {}): WasteReq
     createdAt: '2026-08-01T06:00:00.000Z',
     updatedAt: '2026-08-01T06:00:00.000Z',
     deletedAt: null,
+    deletedByName: null,
     ...overrides,
   };
 }

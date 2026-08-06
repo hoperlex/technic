@@ -117,7 +117,14 @@ describe('авторизация маршрутов', () => {
     expect(waste.length).toBeGreaterThan(0);
     for (const route of waste) {
       expect(
-        route.authz.every((a) => a.startsWith('wasteRequests.') || a.startsWith('archive.')),
+        route.authz.every(
+          (a) =>
+            a.startsWith('wasteRequests.') ||
+            a.startsWith('archive.') ||
+            // Удаление насовсем — общее действие над архивом, а не право модуля (ADR 0070):
+            // заявки сносит тот же `records.purge`, что и записи справочников.
+            a === 'records.purge',
+        ),
       ).toBe(true);
     }
   });

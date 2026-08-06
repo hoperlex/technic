@@ -476,6 +476,14 @@ const CASES: Case[] = [
     url: `/api/v1/waste-requests/${RECORD_ID}/restore`,
     allowed: ['admin'],
   },
+  // Удаление заявки насовсем (ADR 0070) — не право модуля: заявки вывоза удаляют менеджер и
+  // диспетчер, а снести удалённую может только администратор, и это разные права.
+  {
+    title: 'вывоз — удаление насовсем',
+    method: 'DELETE',
+    url: `/api/v1/waste-requests/${RECORD_ID}/purge`,
+    allowed: ['admin'],
+  },
 
   // ── Заказ ТС: оператору вывоза недоступен целиком (ADR 0010), арендодателю открыт как
   // исполнителю — он видит заявки, на которые вышла его техника, и закрывает их (ADR 0038) ──
@@ -697,6 +705,20 @@ const CASES: Case[] = [
     url: `/api/v1/vehicle-requests/${RECORD_ID}/assignment`,
     payload: { vehicleId: RECORD_ID, version: 1 },
     allowed: ['admin', 'manager', 'dispatcher', 'operator/vehicle_lessor'],
+  },
+  // Архив заказов техники (ADR 0070): распоряжаться им — не то же, что вести заявки. Заявки
+  // заводят и удаляют многие, а вернуть удалённую и снести её насовсем может администратор.
+  {
+    title: 'заказ ТС — восстановление из архива',
+    method: 'POST',
+    url: `/api/v1/vehicle-requests/${RECORD_ID}/restore`,
+    allowed: ['admin'],
+  },
+  {
+    title: 'заказ ТС — удаление насовсем',
+    method: 'DELETE',
+    url: `/api/v1/vehicle-requests/${RECORD_ID}/purge`,
+    allowed: ['admin'],
   },
 
   // ── Назначение исполнителя не должно обходиться общими маршрутами заявки (ADR 0010) ──

@@ -21,7 +21,6 @@ import {
   type AddressMeta,
   type AssignVehicleInput,
   calcVehicleRequestCost,
-  can,
   canReassignVehicle,
   canShortenWorkPeriodByEdit,
   changeVehicleAssignmentSchema,
@@ -131,6 +130,7 @@ import { requirePrincipal } from '../auth/plugin';
 import type { Principal } from '../auth/principal';
 import {
   approvesOwnRequestOnCreate,
+  archiveWhere,
   assertArchiveVisible,
   assertLessorScope,
   assertObjectRoleEditable,
@@ -152,6 +152,7 @@ import {
   markFilesActive,
   scheduleFilesDeletion,
 } from '../services/request-files';
+import { registerPurgeRoute } from '../services/directory-purge';
 import {
   diffVehicleAssignment,
   diffVehicleCompletion,
@@ -226,6 +227,9 @@ const lessors = alias(counterparties, 'lessors');
 // в норме площадка и руководитель строительства, — поэтому два алиаса.
 const earlyEndRequesters = alias(users, 'early_end_requesters');
 const earlyEndDeciders = alias(users, 'early_end_deciders');
+
+/** Отправивший заявку в архив (ADR 0070): им подписана строка вкладки «Архив». */
+const deleters = alias(users, 'deleters');
 
 const requestSelect = {
   id: vehicleRequests.id,
@@ -329,6 +333,7 @@ const requestSelect = {
   createdAt: vehicleRequests.createdAt,
   updatedAt: vehicleRequests.updatedAt,
   deletedAt: vehicleRequests.deletedAt,
+  deletedByName: deleters.fullName,
   dateFrom: specialEquipmentRequestDetails.dateFrom,
   dateTo: specialEquipmentRequestDetails.dateTo,
   // Контакт ответственного (миграция 0062): у заявки на объект один, у грузоперевозки — по одному
@@ -404,6 +409,8 @@ function baseQuery() {
         eq(vehicleRequestEarlyEndings.requestedBy, earlyEndRequesters.id),
       )
       .leftJoin(earlyEndDeciders, eq(vehicleRequestEarlyEndings.decidedBy, earlyEndDeciders.id))
+      // Кто удалил (ADR 0070): пусто у живой заявки, а у архивной — ещё и если учётку снесли.
+      .leftJoin(deleters, eq(vehicleRequests.deletedBy, deleters.id))
   );
 }
 
@@ -602,6 +609,7 @@ function toDto(
     createdAt: r.createdAt.toISOString(),
     updatedAt: r.updatedAt.toISOString(),
     deletedAt: r.deletedAt ? r.deletedAt.toISOString() : null,
+    deletedByName: r.deletedByName,
   };
   if (r.requestType === 'special_equipment') {
     return {
@@ -1537,6 +1545,8 @@ const sortColumns = {
   approval: vehicleRequests.approvedAt,
   comment: vehicleRequests.comment,
   createdAt: vehicleRequests.createdAt,
+  // Столбец вкладки «Архив» (ADR 0070): когда заявку удалили — им архив и открывают.
+  deletedAt: vehicleRequests.deletedAt,
   // Столбцы журнала (ADR 0029): у кого брали и во сколько обошлось.
   lessorName: lessors.name,
   totalCost: vehicleRequestCompletions.totalCost,
@@ -1609,10 +1619,9 @@ function dateFilters(
 function historyWhere(p: Principal, q: z.infer<typeof vehicleRequestHistoryQuerySchema>): SQL {
   const statuses =
     q.status && isClosedRequestStatus(q.status) ? [q.status] : [...CLOSED_REQUEST_STATUSES];
-  const showDeleted = q.includeDeleted && can(p, 'archive.read');
   return and(
     inArray(vehicleRequests.status, statuses),
-    showDeleted ? undefined : isNull(vehicleRequests.deletedAt),
+    archiveWhere(p, q.archive, vehicleRequests.deletedAt),
     vehicleRequestVisibilityWhere(p, vehicleRequests.objectId, vehicleRequests.departmentId),
     assignedLessorWhere(p),
     q.requestType ? eq(vehicleRequests.requestType, q.requestType) : undefined,
@@ -1746,10 +1755,11 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
   r.get('/', { ...auth, schema: { querystring: vehicleRequestListQuerySchema } }, async (req) => {
     const p = requirePrincipal(req);
     const q = req.query;
-    const showDeleted = q.includeDeleted && can(p, 'archive.read');
     const where = and(
       q.requestType ? eq(vehicleRequests.requestType, q.requestType) : undefined,
-      showDeleted ? undefined : isNull(vehicleRequests.deletedAt),
+      // Архив (ADR 0070): вкладка «Архив» просит `only`, обычный список — умолчание `exclude`.
+      // Границы видимости при этом те же: свой объект, свой отдел, своя техника.
+      archiveWhere(p, q.archive, vehicleRequests.deletedAt),
       vehicleRequestVisibilityWhere(p, vehicleRequests.objectId, vehicleRequests.departmentId),
       assignedLessorWhere(p),
       q.status ? eq(vehicleRequests.status, q.status) : undefined,
@@ -1982,7 +1992,8 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
   /**
    * Сводка «сколько заявок в каком статусе» для виджета над таблицей. Считается по тем же
    * правилам видимости, что и список: штаб видит только свой объект. Удалённые в счёт не идут —
-   * в списке их тоже нет (админский includeDeleted сводку не расширяет).
+   * счётчик отвечает на «сколько работы», а работы по архивной заявке нет (ADR 0070): свою
+   * численность архив показывает своей вкладкой.
    */
   r.get(
     '/summary',
@@ -3095,7 +3106,11 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
 
       let esm2: Esm2SyncResult = { cancelled: [], issued: [] };
       const assigned = await db.transaction(async (tx) => {
-        const saved = await resolveAssignment(tx, { ...rates, route }, { id: p.id, name: p.fullName });
+        const saved = await resolveAssignment(
+          tx,
+          { ...rates, route },
+          { id: p.id, name: p.fullName },
+        );
         // Область проверяется и по новой машине, а не только по прежней: иначе арендодатель одним
         // запросом увёл бы заявку на чужую технику — и заодно из собственной видимости.
         assertLessorScope(p, saved.lessorId);
@@ -3657,4 +3672,47 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       return (await getDto(existing.id))!;
     },
   );
+
+  /**
+   * Удаление заявки насовсем (ADR 0070) — общая механика справочников (ADR 0060), право
+   * `records.purge`, только из архива. Второй шаг после осознанного первого: пока заявка не
+   * удалена, сносить нечего, и одного неверного клика для необратимого действия мало.
+   *
+   * Детали типа, назначение, смены, закрытие, досрочное завершение, история статусов и связи с
+   * файлами уходят каскадом — они существуют только при заявке. Рейс и путевой лист держат её
+   * `RESTRICT`: заявку, по которой выписан документ, стереть нельзя, и отказ БД человек читает
+   * названием того, кто на неё ссылается.
+   */
+  registerPurgeRoute(app, {
+    load: async (id) => {
+      const [row] = await db.select().from(vehicleRequests).where(eq(vehicleRequests.id, id));
+      return row;
+    },
+    isDown: (row) => !!row.deletedAt,
+    remove: async (tx, row) => {
+      const linked = await tx
+        .select({ id: files.id, objectKey: files.objectKey })
+        .from(vehicleRequestFiles)
+        .innerJoin(files, eq(vehicleRequestFiles.fileId, files.id))
+        .where(eq(vehicleRequestFiles.vehicleRequestId, row.id));
+      await tx.delete(vehicleRequests).where(eq(vehicleRequests.id, row.id));
+      await hardDeleteFiles(tx, linked);
+    },
+    notFound: 'Заявка не найдена',
+    stillLive: 'Заявка не в архиве — сначала удалите её',
+    subject: 'заявку',
+    audit: {
+      action: 'vehicle_request.purge',
+      entityType: 'vehicle_request',
+      // Номер, заказчик и статус — то, чем заявку называют: после удаления по entityId искать уже
+      // нечего, а спрашивают «куда делась ТС-123».
+      metadata: (row) => ({
+        num: row.num,
+        objectId: row.objectId,
+        departmentId: row.departmentId,
+        requestType: row.requestType,
+        status: row.status,
+      }),
+    },
+  });
 }

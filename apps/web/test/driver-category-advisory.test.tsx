@@ -100,6 +100,7 @@ const REQUEST: FreightTransportRequestDto = {
   createdAt: '2026-08-01T09:00:00.000Z',
   updatedAt: '2026-08-01T09:00:00.000Z',
   deletedAt: null,
+  deletedByName: null,
   scheduledAt: '2026-08-10T09:00:00+03:00',
   scheduledTimeUnspecified: false,
   volumeM3: 20,
