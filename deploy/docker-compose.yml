@@ -93,29 +93,6 @@ services:
     profiles: [tools]
     networks: [internal]
 
-  # Наполнение справочника водителей из кадровой выгрузки (ADR 0037).
-  # Файл с персональными данными живёт рядом с prod.env и в git не попадает: монтируется ro на
-  # один запуск. `--dry-run` подставляется через `run` аргументом.
-  # Дёргает его deploy-auto — после health и только если файл лежит на месте, а после успеха
-  # затирает его (shred). Вручную запускают для dry-run и разбора неудачи (см. runbook).
-  # Сервис поднимать через `up` нельзя: без файла docker создаст на его месте пустой каталог.
-  seed-drivers:
-    <<: *common-env
-    image: technic-api:${TAG:-latest}
-    volumes:
-      - /etc/technic-portal/certs:/etc/technic-portal/certs:ro
-      - ${DRIVERS_FILE_HOST:-/etc/technic-portal/drivers.json}:/tmp/drivers.json:ro
-    # NODE_ENV/TRUST_PROXY повторены осознанно: `environment` здесь заменяет то, что пришло из
-    # *common-env, а не дополняет его, и без них config.ts поднялся бы в режиме development.
-    environment:
-      NODE_ENV: production
-      TRUST_PROXY: ${TRUST_PROXY:-true}
-      DRIVERS_FILE: /tmp/drivers.json
-    command: ['pnpm', '--filter', '@technic/api', 'seed:drivers']
-    restart: 'no'
-    profiles: [tools]
-    networks: [internal]
-
   # pg_dump/pg_restore для deploy-auto (бэкап БД перед миграциями, restore).
   # Запускается ТОЛЬКО через `run --rm` (deploy-auto подставляет команду); default-команда
   # безобидна, чтобы `up` с профилем tools ничего не поднимал вечно. postgres:17 = мажор

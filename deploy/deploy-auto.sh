@@ -11,7 +11,6 @@
 #
 #   deploy-auto                     git pull(main) + сборка + авто-накат миграций + health
 #   deploy-auto --skip-migrate      деплой кода без наката миграций (даже если есть pending)
-#   deploy-auto --skip-seed-drivers не наполнять справочник водителей, даже если выгрузка лежит
 #   deploy-auto --previous          откат кода на предыдущий SHA (без пересборки); схему НЕ трогает
 #   deploy-auto --restore-db[=файл] восстановление БД из дампа (destructive, требует TTY)
 #   deploy-auto --previous --restore-db[=файл]  согласованный откат кода и БД
@@ -46,11 +45,6 @@ CONFIG_DIR="$STATE_DIR/config-backups"  # снимки конфига: секр�
 DB_TOOLS_IMAGE="postgres:17"            # мажор = серверу Yandex Managed PG (17.x)
 PROD_ENV="/etc/technic-portal/prod.env"
 CA_FILE="/etc/technic-portal/certs/yandex-root.crt"
-# Кадровая выгрузка водителей: персональные данные, файла в норме НЕТ. Лежит рядом с секретами
-# и теми же правами; появляется на диске только под один запуск (ADR 0037 п. 12–13).
-# Экспорт — compose подставляет его в монтирование сервиса seed-drivers.
-DRIVERS_FILE_HOST="${DRIVERS_FILE_HOST:-/etc/technic-portal/drivers.json}"
-export DRIVERS_FILE_HOST
 LIVE_VHOST="/opt/infra/nginx/conf.d/technic.conf"
 REPO_VHOST="deploy/nginx/technic.conf"
 EDGE_NGINX="infra-nginx"                # общий edge-контейнер: nginx -t / reload
@@ -78,7 +72,6 @@ deploy-auto — деплой/обновление портала technic (auto.s
 
   deploy-auto                       git pull(main) + сборка + авто-накат миграций + health
   deploy-auto --skip-migrate        деплой кода без наката миграций (даже при pending)
-  deploy-auto --skip-seed-drivers   не наполнять справочник водителей из кадровой выгрузки
   deploy-auto --previous            откат кода на предыдущий SHA (без пересборки); схему НЕ трогает
   deploy-auto --restore-db[=файл]   восстановление БД из дампа (destructive, требует TTY;
                                     без аргумента — самый свежий дамп)
@@ -91,11 +84,6 @@ deploy-auto — деплой/обновление портала technic (auto.s
   AUTO_STATE_DIR      каталог состояния (по умолчанию /var/lib/technic/deploy)
   AUTO_DEPLOY_USER    владелец портала (по умолчанию — владелец каталога репозитория)
   AUTO_PRUNE_CACHE=0  то же, что --no-prune, для BuildKit-кэша
-  DRIVERS_FILE_HOST   кадровая выгрузка (по умолчанию /etc/technic-portal/drivers.json)
-
-Водители: если выгрузка лежит на месте, деплой после health заводит людей и ЗАТИРАЕТ файл
-(shred) — персональные данные не остаются на диске VPS. Нет файла — шаг пропускается строкой
-в выводе.
 
 Обновление самого deploy-auto: если pull привёз новую версию скрипта, деплой перезапускается
 ею же и идёт дальше — правки вступают в силу тем же деплоем, а не следующим.
@@ -115,7 +103,7 @@ EOF
 # ---------------------------------------------------------------------------
 # Разбор аргументов.
 # ---------------------------------------------------------------------------
-DO_PREVIOUS=0 DO_RESTORE_DB=0 DO_STATUS=0 NO_PRUNE=0 SKIP_MIGRATE=0 SKIP_SEED_DRIVERS=0
+DO_PREVIOUS=0 DO_RESTORE_DB=0 DO_STATUS=0 NO_PRUNE=0 SKIP_MIGRATE=0
 RESTORE_DB_ARG=""
 
 for arg in "$@"; do
@@ -126,7 +114,6 @@ for arg in "$@"; do
     --status)        DO_STATUS=1 ;;
     --no-prune)      NO_PRUNE=1 ;;
     --skip-migrate)  SKIP_MIGRATE=1 ;;
-    --skip-seed-drivers) SKIP_SEED_DRIVERS=1 ;;
     -h|--help)       usage ;;
     *) echo "Неизвестный аргумент: $arg (см. --help)" >&2; exit 2 ;;
   esac
@@ -135,16 +122,11 @@ done
 ROLLBACK_MODE=$(( DO_PREVIOUS || DO_RESTORE_DB ))
 
 # Взаимоисключения — до любых мутаций и до самоповышения.
-if [ "$DO_STATUS" -eq 1 ] && { [ "$ROLLBACK_MODE" -eq 1 ] || [ "$SKIP_MIGRATE" -eq 1 ] \
-     || [ "$SKIP_SEED_DRIVERS" -eq 1 ]; }; then
+if [ "$DO_STATUS" -eq 1 ] && { [ "$ROLLBACK_MODE" -eq 1 ] || [ "$SKIP_MIGRATE" -eq 1 ]; }; then
   echo "--status — режим только для чтения, несовместим с изменяющими флагами" >&2; exit 2
 fi
 if [ "$SKIP_MIGRATE" -eq 1 ] && [ "$ROLLBACK_MODE" -eq 1 ]; then
   echo "--skip-migrate имеет смысл только при обычном деплое" >&2; exit 2
-fi
-# Откат кода справочник не наполняет — отключать там нечего.
-if [ "$SKIP_SEED_DRIVERS" -eq 1 ] && [ "$ROLLBACK_MODE" -eq 1 ]; then
-  echo "--skip-seed-drivers имеет смысл только при обычном деплое" >&2; exit 2
 fi
 
 # Ярлык операции для отчёта.
@@ -358,13 +340,6 @@ if [ "$DO_STATUS" -eq 1 ]; then
   echo "миграции:"
   "${COMPOSE[@]}" run --rm -T migrate pnpm --silent --filter @technic/api db:migrate:status 2>/dev/null | tail -1 || echo "  (не удалось определить)"
   echo
-  echo "водители:"
-  if [ -f "$DRIVERS_FILE_HOST" ]; then
-    echo "  кадровая выгрузка ждёт ($DRIVERS_FILE_HOST) — ближайший деплой заведёт её и затрёт файл"
-  else
-    echo "  выгрузки нет — шаг наполнения справочника пропускается"
-  fi
-  echo
   echo "диск:"; df -h / | tail -1 | sed 's/^/  /'
   exit 0
 fi
@@ -384,7 +359,6 @@ PRE_RESTORE_DUMP="" CACHE_FREED="" BUILT_TAG="" VHOST_SYNC="not-checked"
 # снимать его повторно — двумя копиями одного деплоя ротация keep-2 выбросила бы снимок предыдущего.
 CFG_SNAPSHOT="${AUTO_CFG_SNAPSHOT:-}"
 SERVICES_STOPPED=0 RESTORE_DB_TOUCHED=0 ROLLBACK_UP_STARTED=0 MIGRATION_ATTEMPTED=0
-SEED_DRIVERS="no-file"   # no-file | skipped | done | done-not-shredded | failed
 
 json_escape() {
   local s=${1//\\/\\\\}; s=${s//\"/\\\"}; s=${s//$'\n'/\\n}
@@ -406,8 +380,6 @@ write_report() {
     printf '  "to_tag": "%s",\n'        "$(json_escape "${TARGET_TAG:-$COMMIT_SHA}")"
     printf '  "previous_tag": "%s",\n'  "$(json_escape "$PREVIOUS_BEFORE")"
     printf '  "skip_migrate": %s,\n'    "$SKIP_MIGRATE"
-    # Только статус шага: ни ФИО, ни количество заведённых людей в отчёт не попадают.
-    printf '  "seed_drivers": "%s",\n'  "$(json_escape "$SEED_DRIVERS")"
     printf '  "config_snapshot": "%s",\n' "$(json_escape "$CFG_SNAPSHOT")"
     printf '  "vhost_sync": "%s",\n'     "$(json_escape "$VHOST_SYNC")"
     printf '  "dump_file": "%s",\n'     "$(json_escape "$DUMP_FILE")"
@@ -736,7 +708,7 @@ REMOTE_SHA="$(git_c rev-parse origin/main)"
 # Скрипт стоит симлинком в рабочее дерево и пуллит сам себя. git обновляет файл заменой inode,
 # а запущенный bash дочитывает СТАРЫЙ через уже открытый дескриптор — деплой, который привёз
 # новую версию, целиком идёт по предыдущей, без единой ошибки в выводе. Так молча не выполнился
-# первый деплой шага наполнения справочника водителей: файл на диске новый, отработал старый.
+# первый деплой добавленного тогда шага: файл на диске новый, отработал старый.
 #
 # Точка выбрана здесь: мутаций релиза ещё нет (сборки не было, схему не трогали), а HEAD уже
 # на целевом коммите — второй проход повторяет только идемпотентное. EXIT-trap на exec не
@@ -856,52 +828,6 @@ if curl -fsSI -m 10 "$HEALTH_EXTERNAL" >/dev/null 2>&1; then
 else
   warn "внешний health недоступен ($HEALTH_EXTERNAL) — проверьте infra-nginx/TLS/DNS."
   warn "Приложение при этом здорово изнутри; на выкатку это не влияет."
-fi
-
-# ---------------------------------------------------------------------------
-# Наполнение справочника водителей кадровой выгрузкой (ADR 0037 п. 12–13).
-#
-# Файла в норме нет, и шаг только отмечается строкой. Положили выгрузку рядом с prod.env — деплой
-# заводит людей и затирает файл: персональные данные лежат на диске VPS ровно один деплой,
-# а не постоянно. Дальше шаг снова сам себя пропускает, ручной запуск из runbook'а не нужен.
-#
-# После health, а не рядом с миграциями: это наполнение данными, а не условие
-# работоспособности релиза. Поэтому провал здесь ничего не откатывает и деплой не роняет —
-# код уже выкачен и здоров, а выгрузка остаётся на месте до следующей попытки (повторный
-# запуск ничего не дублирует: ключ человека — СНИЛС). Образ берётся свежий: TAG=$COMMIT_SHA
-# экспортирован выше, схема к этому моменту уже накачена.
-#
-# Разбор идёт целиком до первой записи в базу (seed-drivers.ts), поэтому отдельный
-# --dry-run перед заливкой не нужен: кривой файл не оставит справочник наполовину заведённым.
-# ---------------------------------------------------------------------------
-if [ -f "$DRIVERS_FILE_HOST" ] && [ "$SKIP_SEED_DRIVERS" -eq 1 ]; then
-  SEED_DRIVERS="skipped"
-  warn "кадровая выгрузка лежит ($DRIVERS_FILE_HOST), но передан --skip-seed-drivers:"
-  warn "справочник водителей не наполнялся, файл с персональными данными остался на диске."
-elif [ -f "$DRIVERS_FILE_HOST" ]; then
-  log "кадровая выгрузка найдена — наполнение справочника водителей"
-  if "${COMPOSE[@]}" run --rm -T seed-drivers; then
-    # Затираем только после успеха: иначе выгрузку пришлось бы везти на VPS заново.
-    if sudo -n shred -u "$DRIVERS_FILE_HOST" 2>/dev/null; then
-      SEED_DRIVERS="done"
-      log "  справочник наполнен, выгрузка затёрта ($DRIVERS_FILE_HOST)"
-    else
-      SEED_DRIVERS="done-not-shredded"
-      warn "справочник наполнен, но затереть выгрузку не удалось (нужен sudo). Уберите вручную:"
-      warn "  sudo shred -u $DRIVERS_FILE_HOST"
-      warn "Иначе следующий деплой прогонит её повторно (заведённых он пропустит)."
-    fi
-  else
-    SEED_DRIVERS="failed"
-    warn "наполнение справочника водителей провалилось. Деплой это НЕ откатывает:"
-    warn "код выкачен и здоров, выгрузка оставлена на месте ($DRIVERS_FILE_HOST)."
-    warn "Разбор без записи: ${COMPOSE[*]} run --rm seed-drivers \\"
-    warn "  pnpm --filter @technic/api seed:drivers --dry-run"
-  fi
-else
-  # Штатное состояние, но строкой: молчащий шаг неотличим от неработающего, и пропуск
-  # из-за опечатки в пути или неснятого права на файл искали бы по пустому справочнику.
-  log "кадровой выгрузки нет ($DRIVERS_FILE_HOST) — справочник водителей не наполняется"
 fi
 
 prune_images
