@@ -56,8 +56,12 @@ export function HomeRedirect() {
  * Область добавлена к нему тем же правилом, что и в меню (ADR 0062): раздел, в котором роли не
  * над чем работать, не должен открываться и по прямой ссылке.
  */
-export function RequirePermission({ permission }: { permission: Permission }) {
+export function RequirePermission({ permission }: { permission: Permission | Permission[] }) {
   const { canUse } = useAuth();
-  if (!canUse(permission)) return <Navigate to={homePath(canUse)} replace />;
+  // Список прав — для страницы из нескольких вкладок: администрирование открывается и тому, кто
+  // ведёт учётки, и тому, кто настраивает рассылки. Права разные, страница одна, и требовать оба
+  // значило бы закрыть её каждому, у кого есть только одно.
+  const required = Array.isArray(permission) ? permission : [permission];
+  if (!required.some((p) => canUse(p))) return <Navigate to={homePath(canUse)} replace />;
   return <Outlet />;
 }

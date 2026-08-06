@@ -6,6 +6,7 @@ import { DeleteObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { pino } from 'pino';
 import { archiveUnverifiedRegistrations, purgeExpiredRegistrations } from './retention';
 import { createMailTransport, PermanentMailError } from './mail-transport';
+import { tickMailings } from './mail-scheduler';
 import { MailRateLimiter } from './mail-rate';
 
 const logger = pino({
@@ -50,6 +51,10 @@ const JOB_SEND_EMAIL = 'send_email';
 const MAIL_ENABLED = (process.env.MAIL_ENABLED ?? 'false') === 'true';
 const MAIL_TRANSPORT = process.env.MAIL_TRANSPORT === 'smtp' ? 'smtp' : 'log';
 const MAIL_MAX_PER_MINUTE = Number(process.env.MAIL_MAX_PER_MINUTE ?? 60);
+/** Часы рассылок (ADR 0075): раз в минуту спрашиваем API, чьё время наступило. */
+const MAILING_TICK_MS = Number(process.env.MAILING_TICK_INTERVAL_MS ?? 60_000);
+const INTERNAL_API_URL = process.env.INTERNAL_API_URL ?? 'http://technic-api:3000';
+const INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN ?? '';
 
 /**
  * Настройка проверяется на старте, а не при первом письме: письмо ждёт очереди часами, и отказ
@@ -356,12 +361,35 @@ async function cleanupRejectedRegistrations(): Promise<void> {
 
 let stopping = false;
 let lastCleanup = 0;
+let lastMailingTick = 0;
+
+/**
+ * Тик планировщика рассылок. Пропускается молча, когда почта выключена или секрет не задан: без
+ * него `/internal/mail/*` всё равно откажет, и стучаться туда каждую минуту незачем.
+ */
+async function tickMailingsSafely(): Promise<void> {
+  if (!MAIL_ENABLED || !INTERNAL_API_TOKEN) return;
+  try {
+    await tickMailings({
+      apiBaseUrl: INTERNAL_API_URL,
+      internalToken: INTERNAL_API_TOKEN,
+      log: (meta, msg) => logger.info(meta, msg),
+    });
+  } catch (e) {
+    // API может быть недоступен при выкатке: расписание никуда не денется, следующий тик повторит.
+    logger.warn({ err: e }, 'Планировщик рассылок не смог обратиться к API');
+  }
+}
 
 async function loop(): Promise<void> {
   logger.info({ workerId: WORKER_ID }, 'Worker запущен');
   while (!stopping) {
     try {
       const processed = await processJobs();
+      if (Date.now() - lastMailingTick > MAILING_TICK_MS) {
+        lastMailingTick = Date.now();
+        await tickMailingsSafely();
+      }
       if (Date.now() - lastCleanup > CLEANUP_INTERVAL_MS) {
         lastCleanup = Date.now();
         await cleanupOrphanUploads();

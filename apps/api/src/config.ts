@@ -70,6 +70,9 @@ const rawSchema = z.object({
   MAIL_VERIFY_TTL_SECONDS: z.coerce.number().int().positive().default(86_400),
   MAIL_RESET_TTL_SECONDS: z.coerce.number().int().positive().default(3_600),
   MAIL_REGISTRATION_EXPIRY_DAYS: z.coerce.number().int().positive().default(7),
+  // Общий секрет worker → API для `/internal/mail/*`: у планировщика нет человека, от чьего имени
+  // он действует, поэтому и не JWT.
+  INTERNAL_API_TOKEN: z.string().optional(),
   SENTRY_DSN: z.string().optional(),
 });
 
@@ -83,6 +86,7 @@ const SECRET_KEYS = [
   'JWT_PRIVATE_KEY_PEM',
   'JWT_PUBLIC_KEY_PEM',
   'SMTP_PASSWORD',
+  'INTERNAL_API_TOKEN',
 ] as const;
 
 /** PEM может быть задан inline или путём к файлу. */
@@ -199,6 +203,7 @@ function loadConfig() {
       verifyTtl: env.MAIL_VERIFY_TTL_SECONDS,
       resetTtl: env.MAIL_RESET_TTL_SECONDS,
       registrationExpiryDays: env.MAIL_REGISTRATION_EXPIRY_DAYS,
+      internalToken: env.INTERNAL_API_TOKEN ?? '',
     },
     sentryDsn: env.SENTRY_DSN,
   };

@@ -75,6 +75,17 @@ export const mailKindEnum = pgEnum('mail_kind', [
   'role_digest',
 ]);
 export const mailStatusEnum = pgEnum('mail_status', ['pending', 'sent', 'failed']);
+/** Расписания рассылок (ADR 0075, миграция 0099). */
+export const mailingTypeEnum = pgEnum('mailing_type', ['driver_routes', 'role_digest']);
+export const mailingPeriodicityEnum = pgEnum('mailing_periodicity', ['daily', 'weekly']);
+export const mailingRunStatusEnum = pgEnum('mailing_run_status', [
+  'pending',
+  'running',
+  'done',
+  'failed',
+  'skipped',
+]);
+export const mailingExcludedDateKindEnum = pgEnum('mailing_excluded_date_kind', ['run', 'route']);
 /** Назначение одноразовой ссылки из письма (ADR 0072, миграция 0098). */
 export const emailTokenPurposeEnum = pgEnum('email_token_purpose', [
   'verify_email',
@@ -2698,6 +2709,130 @@ export const mailMessages = pgTable(
     ),
     subjectNotBlank: check('mail_messages_subject_not_blank', sql`btrim(${t.subject}) <> ''`),
     bodyNotBlank: check('mail_messages_body_not_blank', sql`btrim(${t.bodyText}) <> ''`),
+  }),
+);
+
+// ── Расписания рассылок и их запуски (ADR 0075, миграция 0099) ──
+//
+// Настройки в БД, а не в `env`: время, окно дат и исключения меняет администратор, а правка `env` —
+// это перезапуск сервиса руками. Запуск отделён от расписания: расписание отвечает «когда и что
+// рассылать», запуск — «что произошло в 18:00 такого-то числа», и без него история рассылки жила
+// бы только в логах.
+export const mailingSchedules = pgTable(
+  'mailing_schedules',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    type: mailingTypeEnum('type').notNull(),
+    name: text('name').notNull(),
+    /** Выключенное расписание сохраняет настройки: «до понедельника не рассылаем» — не «завести заново». */
+    isEnabled: boolean('is_enabled').notNull().default(false),
+    periodicity: mailingPeriodicityEnum('periodicity').notNull().default('daily'),
+    /** Местное время в часовом поясе портала: «в 18:00 каждый день» не зависит от даты. */
+    sendAt: time('send_at').notNull(),
+    /** ISO-день недели 1..7 — только у недельной рассылки. */
+    weekday: smallint('weekday'),
+    /** По каким дням выполняется ежедневная: суббота и воскресенье чаще всего лишние. */
+    runWeekdays: smallint('run_weekdays')
+      .array()
+      .notNull()
+      .default(sql`'{1,2,3,4,5,6,7}'`),
+    /** Окно рейсов задания: от +N до +M дней, где 1 — завтра. В днях, потому что «завтра» у каждого запуска своё. */
+    windowFromDays: smallint('window_from_days'),
+    windowToDays: smallint('window_to_days'),
+    /** Считает и хранит планировщик: просроченные расписания ищутся индексом, а не перебором. */
+    nextRunAt: timestamp('next_run_at', { withTimezone: true }),
+    version: integer('version').notNull().default(0),
+    createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+    updatedBy: uuid('updated_by').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    dueIdx: index('mailing_schedules_due_idx')
+      .on(t.nextRunAt)
+      .where(sql`${t.isEnabled} AND ${t.nextRunAt} IS NOT NULL`),
+    nameNotBlank: check('mailing_schedules_name_not_blank', sql`btrim(${t.name}) <> ''`),
+    weekdayCheck: check(
+      'mailing_schedules_weekday_check',
+      sql`(${t.periodicity} = 'weekly' AND ${t.weekday} BETWEEN 1 AND 7)
+          OR (${t.periodicity} = 'daily' AND ${t.weekday} IS NULL)`,
+    ),
+    runWeekdaysCheck: check(
+      'mailing_schedules_run_weekdays_check',
+      sql`array_length(${t.runWeekdays}, 1) BETWEEN 1 AND 7
+          AND ${t.runWeekdays} <@ ARRAY[1,2,3,4,5,6,7]::smallint[]`,
+    ),
+    windowCheck: check(
+      'mailing_schedules_window_check',
+      sql`(${t.type} = 'driver_routes'
+            AND ${t.windowFromDays} IS NOT NULL AND ${t.windowToDays} IS NOT NULL
+            AND ${t.windowFromDays} >= 0 AND ${t.windowToDays} >= ${t.windowFromDays})
+          OR (${t.type} <> 'driver_routes'
+            AND ${t.windowFromDays} IS NULL AND ${t.windowToDays} IS NULL)`,
+    ),
+  }),
+);
+
+/** Даты-исключения: «в этот день не рассылаем» и «рейсы этого дня не включаем» — разные вопросы. */
+export const mailingScheduleExcludedDates = pgTable(
+  'mailing_schedule_excluded_dates',
+  {
+    scheduleId: uuid('schedule_id')
+      .notNull()
+      .references(() => mailingSchedules.id, { onDelete: 'cascade' }),
+    kind: mailingExcludedDateKindEnum('kind').notNull(),
+    excludedOn: date('excluded_on', { mode: 'string' }).notNull(),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.scheduleId, t.kind, t.excludedOn] }) }),
+);
+
+/** Исключённые водители: `persons`, потому что учётной записи у водителя может не быть вовсе. */
+export const mailingScheduleExcludedPersons = pgTable(
+  'mailing_schedule_excluded_persons',
+  {
+    scheduleId: uuid('schedule_id')
+      .notNull()
+      .references(() => mailingSchedules.id, { onDelete: 'cascade' }),
+    personId: uuid('person_id')
+      .notNull()
+      .references(() => persons.id, { onDelete: 'cascade' }),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.scheduleId, t.personId] }) }),
+);
+
+export const mailingRuns = pgTable(
+  'mailing_runs',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    scheduleId: uuid('schedule_id')
+      .notNull()
+      .references(() => mailingSchedules.id, { onDelete: 'cascade' }),
+    /** На какое время назначен: вместе с расписанием — ключ запуска против двойной рассылки. */
+    plannedAt: timestamp('planned_at', { withTimezone: true }).notNull(),
+    startedAt: timestamp('started_at', { withTimezone: true }),
+    finishedAt: timestamp('finished_at', { withTimezone: true }),
+    /** Границы данных фиксируются при создании: повтор не пересчитывает их от текущего времени. */
+    periodStart: date('period_start', { mode: 'string' }),
+    periodEnd: date('period_end', { mode: 'string' }),
+    status: mailingRunStatusEnum('status').notNull().default('pending'),
+    /** Итоги запуска: набор причин пропуска у каждого вида рассылки свой и будет меняться. */
+    stats: jsonb('stats')
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    error: text('error').notNull().default(''),
+    /** Запуск «сейчас» из админки: в истории он виден отдельно от расписанных. */
+    isManual: boolean('is_manual').notNull().default(false),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    plannedUnique: uniqueIndex('mailing_runs_planned_unique').on(t.scheduleId, t.plannedAt),
+    historyIdx: index('mailing_runs_history_idx').on(t.scheduleId, sql`${t.createdAt} DESC`),
+    periodCheck: check(
+      'mailing_runs_period_check',
+      sql`(${t.periodStart} IS NULL AND ${t.periodEnd} IS NULL)
+          OR (${t.periodStart} IS NOT NULL AND ${t.periodEnd} IS NOT NULL
+              AND ${t.periodEnd} >= ${t.periodStart})`,
+    ),
   }),
 );
 

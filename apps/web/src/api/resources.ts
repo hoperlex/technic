@@ -1,11 +1,14 @@
 import type {
   CancelWaybillInput,
   CreateDriverBody,
+  CreateMailingScheduleBody,
+  MailingRunDto,
+  MailingScheduleDto,
+  MailTestBody,
+  UpdateMailingScheduleBody,
   CreateRelocationRouteBody,
   DriverDto,
   DriverSelectionDto,
-  DriversImportBody,
-  DriversImportReportDto,
   VehicleRouteDto,
   WaybillDto,
   WaybillFormCode,
@@ -27,6 +30,10 @@ import type {
   CreateVehicleRequestInput,
   CreateVehicleSpecInput,
   CreateVehicleTypeInput,
+  DirectoryImportBody,
+  DirectoryImportReportDto,
+  DirectoryInfoDto,
+  DirectoryKey,
   DownloadUrlDto,
   FileDisposition,
   FileDto,
@@ -88,6 +95,66 @@ export const usersApi = {
   pendingCount: () => apiFetch<{ count: number }>('/users/pending-count'),
 };
 
+/** Получатель отладочного письма: действующий администратор и его адрес. */
+export interface MailTestRecipient {
+  id: string;
+  fullName: string;
+  email: string;
+}
+
+/** Водитель-образец для отладочного письма: чьё задание собрать. */
+export interface MailTestDriver {
+  personId: string;
+  fullName: string;
+  email: string;
+}
+
+/**
+ * Итоги запуска рассылки. Письмо составляется не каждому: у водителя может не быть адреса, он
+ * может стоять в исключениях расписания, а рейсов в окне может не оказаться вовсе — и все три
+ * случая считаются отдельно, потому что чинят их по-разному.
+ */
+export interface MailingRunStats {
+  sent: number;
+  withoutEmail: number;
+  excluded: number;
+  empty: number;
+}
+
+/**
+ * Рассылки: расписания, их история и отладочная отправка (ADR 0075). Отладка стоит рядом с
+ * расписаниями, но отвечает на другой вопрос — «как письмо выглядит в почтовом клиенте», тогда
+ * как расписание отвечает «кому и когда оно уходит само».
+ */
+export const mailingsApi = {
+  testRecipients: () => apiFetch<MailTestRecipient[]>('/admin/mail/test-recipients'),
+  /** Водители с рейсами на дату: список зависит от даты, поэтому запрашивается вместе с ней. */
+  driversWithRoutes: (date: string) =>
+    apiFetch<MailTestDriver[]>('/admin/mail/drivers-with-routes', { query: { date } }),
+  sendTest: (body: MailTestBody) =>
+    apiFetch<{ ok: boolean; message: string }>('/admin/mail/test', { method: 'POST', body }),
+  /** Расписания приходят целиком и вместе с исключениями: их в портале единицы, листать нечего. */
+  schedules: () => apiFetch<MailingScheduleDto[]>('/admin/mail/schedules'),
+  createSchedule: (body: CreateMailingScheduleBody) =>
+    apiFetch<MailingScheduleDto>('/admin/mail/schedules', { method: 'POST', body }),
+  /**
+   * Правка уходит целиком, вместе с `version`: применимость каждого поля решает соседнее, а
+   * несовпавшая версия означает, что расписание успели изменить в другом окне (409).
+   */
+  updateSchedule: (id: string, body: UpdateMailingScheduleBody) =>
+    apiFetch<MailingScheduleDto>(`/admin/mail/schedules/${id}`, { method: 'PATCH', body }),
+  deleteSchedule: (id: string) =>
+    apiFetch<void>(`/admin/mail/schedules/${id}`, { method: 'DELETE' }),
+  /** История запусков — с пагинацией, в отличие от расписаний: она прирастает каждый день. */
+  runs: (q: Query) => apiFetch<ListResult<MailingRunDto>>('/admin/mail/runs', { query: q }),
+  /** Запуск «сейчас»: письма уходят настоящим получателям, поэтому кнопка спрашивает подтверждение. */
+  runNow: (id: string) =>
+    apiFetch<{ ok: boolean; runId: string; stats: MailingRunStats }>(
+      `/admin/mail/schedules/${id}/run`,
+      { method: 'POST' },
+    ),
+};
+
 /**
  * Отделы переехали в `@entities/department`. Реэкспорт держится до конца этапа 2 на тех же
  * условиях, что у объектов: новые ручки добавляются в слайс, а не сюда.
@@ -120,12 +187,6 @@ export const driversApi = {
     apiFetch<DriverDto>(`/drivers/${id}/licenses/${licenseId}/verify`, { method: 'POST', body }),
   revokeLicense: (id: string, licenseId: string, body: RevokeDriverLicenseInput) =>
     apiFetch<DriverDto>(`/drivers/${id}/licenses/${licenseId}/revoke`, { method: 'POST', body }),
-  /**
-   * Наполнение справочника кадровой выгрузкой (ADR 0047). `dryRun` — обязательный первый шаг:
-   * заведение живых людей необратимо, поэтому сначала сервер отвечает отчётом, ничего не записав.
-   */
-  import: (body: DriversImportBody) =>
-    apiFetch<DriversImportReportDto>('/drivers/import', { method: 'POST', body }),
   /** Категории ВУ для формы: справочник наполнен миграцией и на чтение. */
   licenseCategories: () =>
     apiFetch<{ id: string; code: string; name: string; description: string }[]>(
@@ -660,4 +721,28 @@ export const filesApi = {
     a.click();
     a.remove();
   },
+};
+
+/**
+ * Обмен справочниками через файл Excel (ADR 0073). Ручки общие на все справочники: какой именно
+ * выгружается и загружается, задаёт ключ в адресе. Восемнадцать одноимённых ресурсов означали бы
+ * восемнадцать мест, где один и тот же запрос назван по-своему.
+ */
+export const directoriesApi = {
+  /** Список со счётчиками строк — им вкладка обмена и рисуется. */
+  list: () => apiFetch<{ items: DirectoryInfoDto[] }>('/directories'),
+  /**
+   * Выгрузка книгой. Тем же порядком, что бланк путевого листа: маршрут закрыт `app.authenticate`,
+   * а переход по `href` браузер делает без заголовка `Authorization` — вместо файла открылась бы
+   * вкладка с 401. Имя файла портал не придумывает: сервер ставит в него дату выгрузки, а запасное
+   * нужно ровно на случай, когда заголовок не доехал.
+   */
+  exportFile: (key: DirectoryKey, title: string) =>
+    apiDownload(`/directories/${key}/export`, `${title}.xlsx`),
+  /**
+   * Загрузка правленого файла. `dryRun` — обязательный первый шаг: одно нажатие меняет сотни
+   * строк справочника, и сначала сервер отвечает отчётом, не записав ничего.
+   */
+  import: (key: DirectoryKey, body: DirectoryImportBody) =>
+    apiFetch<DirectoryImportReportDto>(`/directories/${key}/import`, { method: 'POST', body }),
 };

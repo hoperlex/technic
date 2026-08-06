@@ -36,6 +36,17 @@ const PUBLIC_ROUTES = new Set([
   '/api/v1/auth/password-reset/confirm',
 ]);
 
+/**
+ * Внутренние маршруты (ADR 0075): ими планировщик из worker просит API собрать рассылку. Прав у них
+ * нет и быть не может — у планировщика нет человека, от чьего имени он действует; доступ закрыт
+ * общим секретом `INTERNAL_API_TOKEN`, который обработчик проверяет первым делом, а наружу префикс
+ * `/internal/` не проксируется (`deploy/nginx/spa.conf`).
+ *
+ * Перечислены поимённо намеренно: список из двух строк заметен в ревью, а «пропустить всё под
+ * /internal/» однажды прикрыло бы забытую ручку без всякой проверки.
+ */
+const INTERNAL_ROUTES = new Set(['/internal/mail/schedules/due', '/internal/mail/runs']);
+
 /** Маршруты «про себя»: доступны любому вошедшему независимо от роли. */
 const SELF_SERVICE_ROUTES = new Set(['/api/v1/auth/me', '/api/v1/auth/change-password']);
 
@@ -96,7 +107,12 @@ describe('авторизация маршрутов', () => {
 
   it('каждый маршрут либо публичный, либо проверяет право', () => {
     const unguarded = routes
-      .filter((r) => !PUBLIC_ROUTES.has(r.url) && !SELF_SERVICE_ROUTES.has(r.url))
+      .filter(
+        (r) =>
+          !PUBLIC_ROUTES.has(r.url) &&
+          !SELF_SERVICE_ROUTES.has(r.url) &&
+          !INTERNAL_ROUTES.has(r.url),
+      )
       .filter((r) => r.authz.length === 0)
       .map((r) => r.key);
     expect(unguarded).toEqual([]);
@@ -104,7 +120,7 @@ describe('авторизация маршрутов', () => {
 
   it('непубличные маршруты требуют входа', () => {
     const anonymous = routes
-      .filter((r) => !PUBLIC_ROUTES.has(r.url))
+      .filter((r) => !PUBLIC_ROUTES.has(r.url) && !INTERNAL_ROUTES.has(r.url))
       .filter((r) => !r.requiresLogin)
       .map((r) => r.key);
     expect(anonymous).toEqual([]);
