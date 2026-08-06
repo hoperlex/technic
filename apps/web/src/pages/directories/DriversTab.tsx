@@ -25,6 +25,7 @@ import {
   credentialVerificationStatusColors,
   credentialVerificationStatusLabels,
   DRIVER_DOCUMENT_SETS,
+  EMAIL_FORMAT_MESSAGE,
   driverDocumentGapLabels,
   driverDocumentGaps,
   type DriverDocumentSet,
@@ -39,6 +40,7 @@ import {
   licenseNumberLabel,
   licenseRequisitesMissing,
   normalizeSnils,
+  optionalEmailSchema,
   SNILS_CHECKSUM_MESSAGE,
   SNILS_MESSAGE,
 } from '@technic/contracts';
@@ -85,6 +87,7 @@ interface DriverFormValues {
   middleName?: string;
   snils: string;
   phone?: string;
+  email?: string;
   personnelNo?: string;
   comment?: string;
   license?: LicenseFormValues;
@@ -122,7 +125,7 @@ export function DriversTab() {
     documents?: DriverDocumentSet;
     categoryId?: string;
     includeDeleted?: string;
-  }>({}, { searchKeys: ['fullName', 'snils'] });
+  }>({}, { searchKeys: ['fullName', 'snils', 'email'] });
   const { data, isFetching } = useQuery({
     queryKey: ['drivers', params],
     queryFn: () => driversApi.list(params),
@@ -162,6 +165,7 @@ export function DriversTab() {
       middleName: d.middleName,
       snils: formatSnils(d.snils),
       phone: d.phone,
+      email: d.email,
       personnelNo: d.personnelNo,
       comment: d.comment,
     });
@@ -184,6 +188,7 @@ export function DriversTab() {
         middleName: values.middleName ?? '',
         snils: values.snils,
         phone: values.phone ?? '',
+        email: values.email ?? '',
         personnelNo: values.personnelNo ?? '',
         comment: values.comment ?? '',
       };
@@ -304,6 +309,18 @@ export function DriversTab() {
 
   const columns = [
     textColumn<DriverDto>({ key: 'fullName', title: 'ФИО', dataIndex: 'fullName' }),
+    // Второй колонкой, сразу за ФИО: с рассылкой заданий адрес спрашивают чаще СНИЛС и
+    // табельного, а пустые ячейки в начале строки видно, не досматривая таблицу до конца.
+    // Сортировки нет: колонка отвечает на «есть ли адрес», а не «кто первый по алфавиту» —
+    // сортировать по ней значит гонять пустые строки то вверх, то вниз.
+    textColumn<DriverDto>({
+      key: 'email',
+      title: 'Email',
+      dataIndex: 'email',
+      sortable: false,
+      width: 220,
+      render: (_v, r) => r.email || <Typography.Text type="secondary">не указан</Typography.Text>,
+    }),
     textColumn<DriverDto>({
       key: 'snils',
       title: 'СНИЛС',
@@ -628,6 +645,16 @@ export function DriversTab() {
         : licenseNumberLabel(license);
     },
     lines: [
+      // Email — первой строкой, как и второй колонкой на большом экране: с рассылкой заданий
+      // его спрашивают чаще прочих реквизитов. Отсутствие пишется словом, а не пропуском строки,
+      // как у недостающего для листа ниже: на карточке пустой графы не видно, а «адреса нет»
+      // означает, что задание такому водителю не уйдёт.
+      (r) =>
+        r.email ? (
+          `Email: ${r.email}`
+        ) : (
+          <Typography.Text type="secondary">Email не указан</Typography.Text>
+        ),
       // Категории — своей строкой, как и своей колонкой на большом экране (ADR 0055): за ними
       // в справочник и приходят, а приклеенные к номеру они терялись.
       (r) => {
@@ -755,6 +782,24 @@ export function DriversTab() {
             <Input />
           </Form.Item>
           <PhoneField />
+          <Form.Item
+            name="email"
+            label="Email"
+            // Проверка по уходу из поля, как у телефона: по мере набора адрес невалиден почти
+            // всегда, и красное поле во время ввода ничего не сообщает.
+            validateTrigger="onBlur"
+            rules={[
+              () => ({
+                validator: (_: unknown, value: unknown) =>
+                  optionalEmailSchema.safeParse(typeof value === 'string' ? value : '').success
+                    ? Promise.resolve()
+                    : Promise.reject(new Error(EMAIL_FORMAT_MESSAGE)),
+              }),
+            ]}
+            extra="На него уходит задание на рейс; пусто — письма водителю не отправляются"
+          >
+            <Input placeholder="ivanov@example.ru" autoComplete="off" />
+          </Form.Item>
           <Form.Item name="comment" label="Комментарий">
             <Input.TextArea rows={2} />
           </Form.Item>

@@ -21,6 +21,7 @@ const PREVIEW: DriversImportReportDto = {
   dryRun: true,
   created: ['Иванов Иван Иванович', 'Петров Пётр Петрович'],
   skipped: ['Сидоров Сидор Сидорович'],
+  emailUpdated: [{ who: 'Сидоров Сидор Сидорович', email: 'sidorov@example.ru' }],
   withoutLicense: [{ who: 'Петров Пётр Петрович', why: 'нет ни одной известной категории' }],
   unknownCategories: [{ who: 'Иванов Иван Иванович', codes: ['am'] }],
   nameCollisions: [],

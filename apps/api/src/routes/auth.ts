@@ -7,8 +7,13 @@ import {
   changePasswordSchema,
   type CounterpartyType,
   loginSchema,
+  NEUTRAL_MAIL_RESPONSE,
+  passwordResetConfirmSchema,
+  passwordResetRequestSchema,
   registerSchema,
+  resendVerificationSchema,
   type Role,
+  verifyEmailSchema,
 } from '@technic/contracts';
 import { config } from '../config';
 import { db } from '../db/client';
@@ -33,6 +38,21 @@ import {
   departmentObjectIdsExpr,
 } from '../services/user-scopes';
 import { assertEmailFree, asEmailConflict } from '../services/user-email';
+import { assertMailEnabled, queueMail } from '../services/mail';
+import {
+  consumeEmailToken,
+  issueEmailToken,
+  lastIssuedAt,
+  revokeEmailTokens,
+} from '../services/email-tokens';
+import {
+  PASSWORD_CHANGED_SUBJECT,
+  passwordChangedContent,
+  passwordResetContent,
+  RESET_SUBJECT,
+  VERIFY_SUBJECT,
+  verifyEmailContent,
+} from '../services/mail-auth';
 
 interface AuthUserSource {
   id: string;
@@ -110,6 +130,24 @@ const registerRateLimit = { rateLimit: { max: 5, timeWindow: '10 minutes' } };
 /** Выдача картинок щедрее: «обновить» нажимают несколько раз подряд, и это нормально. */
 const captchaRateLimit = { rateLimit: { max: 20, timeWindow: '1 minute' } };
 
+/**
+ * Ручки, каждый вызов которых отправляет письмо на названный адрес. Ограничение жёстче обычного и
+ * стоит на IP: письмо уходит не тому, кто просит, а владельцу ящика — и превратить портал в
+ * рассыльщик по чужим адресам не должно получаться даже с разгаданной капчей.
+ */
+const mailRequestRateLimit = { rateLimit: { max: 5, timeWindow: '10 minutes' } };
+
+/**
+ * Одно письмо на учётку за пять минут. Второй уровень поверх лимита по IP: без него хватило бы
+ * менять адрес выхода, чтобы завалить письмами один ящик.
+ */
+const RESEND_COOLDOWN_MS = 5 * 60_000;
+
+async function throttledByAccount(userId: string, purpose: 'verify_email' | 'password_reset') {
+  const last = await lastIssuedAt(userId, purpose);
+  return last !== null && Date.now() - last.getTime() < RESEND_COOLDOWN_MS;
+}
+
 export default async function authRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
   const ctx = (req: FastifyRequest) => ({
@@ -142,6 +180,10 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
       // Капча проверяется до всего остального — иначе `/register` работал бы справочником
       // «есть ли такой адрес в портале»: 409 на занятый email отличим от успеха.
       verifyCaptcha(captchaToken, captchaAnswer);
+      // Регистрация без письма бессмысленна: подтвердить адрес будет нечем, а активировать
+      // неподтверждённую заявку портал не даст. Отказ до записи, а не после — чтобы не заводить
+      // учётку, которой не выбраться из состояния «ждёт подтверждения».
+      assertMailEnabled();
       // Хеш считается до транзакции: argon2 занимает сотни миллисекунд, и держать на нём открытую
       // транзакцию незачем.
       const passwordHash = await hashPassword(password);
@@ -168,6 +210,32 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
               requestedCompany,
             })
             .returning({ id: users.id });
+
+          // Токен и письмо — той же транзакцией (ADR 0072): заявка без письма оставила бы человека
+          // ждать подтверждения, которое не придёт, а письмо без заявки вело бы в никуда.
+          const { token, expiresAt } = await issueEmailToken(
+            {
+              userId: row!.id,
+              purpose: 'verify_email',
+              ttlSeconds: config.mail.verifyTtl,
+              requestedIp: req.ip,
+            },
+            { tx },
+          );
+          await queueMail(
+            {
+              kind: 'verify_email',
+              // Метка выпуска, а не токен: ключ виден в журнале и в диагностике.
+              dedupeKey: `verify:${row!.id}:${expiresAt.getTime()}`,
+              to: email,
+              subject: VERIFY_SUBJECT,
+              content: verifyEmailContent(token),
+              userId: row!.id,
+              entityType: 'user',
+              entityId: row!.id,
+            },
+            { tx },
+          );
           return row!;
         });
       } catch (e) {
@@ -183,8 +251,214 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
       reply.code(201);
       return {
         ok: true,
-        message: 'Регистрация принята. Вход будет доступен после активации администратором.',
+        message:
+          'Регистрация принята. Подтвердите адрес по ссылке из письма — после этого администратор сможет выдать доступ.',
       };
+    },
+  );
+
+  /**
+   * Подтверждение адреса. Только POST: переход по ссылке из письма ничего не меняет сам по себе —
+   * почтовые клиенты и антивирусы предварительно открывают ссылки, и GET-подтверждение срабатывало
+   * бы до того, как письмо увидел человек.
+   */
+  r.post(
+    '/verify-email',
+    { schema: { body: verifyEmailSchema }, config: authRateLimit },
+    async (req) => {
+      const consumed = await db.transaction(async (tx) => {
+        const row = await consumeEmailToken(req.body.token, 'verify_email', { tx });
+        if (!row) return null;
+        await tx
+          .update(users)
+          .set({ emailVerifiedAt: new Date(), updatedAt: new Date() })
+          .where(and(eq(users.id, row.userId), isNull(users.deletedAt)));
+        return row;
+      });
+      // Одинаковый отказ для несуществующей, просроченной и уже использованной ссылки: какая из
+      // них «почти подошла», знать незачем.
+      if (!consumed) {
+        throw err.badRequest('Ссылка недействительна или устарела — запросите письмо заново');
+      }
+      await writeAudit({
+        actorUserId: consumed.userId,
+        action: 'auth.email_verified',
+        entityType: 'user',
+        entityId: consumed.userId,
+      });
+      return { ok: true, message: 'Адрес подтверждён. Дождитесь активации администратором.' };
+    },
+  );
+
+  /**
+   * Повторная отправка письма подтверждения. Ответ нейтральный: по нему нельзя узнать, есть ли
+   * такая заявка, подтверждена ли она и существует ли адрес в портале вообще.
+   */
+  r.post(
+    '/verify-email/resend',
+    { schema: { body: resendVerificationSchema }, config: mailRequestRateLimit },
+    async (req, reply) => {
+      const { email, captchaToken, captchaAnswer } = req.body;
+      verifyCaptcha(captchaToken, captchaAnswer);
+      assertMailEnabled();
+
+      const [user] = await db
+        .select({ id: users.id, verifiedAt: users.emailVerifiedAt })
+        .from(users)
+        .where(and(eq(users.email, email), isNull(users.deletedAt)));
+
+      // Письмо уходит только неподтверждённой живой заявке. Во всех остальных случаях — тот же
+      // ответ и никакого письма: подтверждённому адресу второе подтверждение не нужно, а частые
+      // запросы по одной учётке отсекает пятиминутный интервал.
+      if (user && !user.verifiedAt && !(await throttledByAccount(user.id, 'verify_email'))) {
+        await db.transaction(async (tx) => {
+          const { token, expiresAt } = await issueEmailToken(
+            {
+              userId: user.id,
+              purpose: 'verify_email',
+              ttlSeconds: config.mail.verifyTtl,
+              requestedIp: req.ip,
+            },
+            { tx },
+          );
+          await queueMail(
+            {
+              kind: 'verify_email',
+              dedupeKey: `verify:${user.id}:${expiresAt.getTime()}`,
+              to: email,
+              subject: VERIFY_SUBJECT,
+              content: verifyEmailContent(token),
+              userId: user.id,
+              entityType: 'user',
+              entityId: user.id,
+            },
+            { tx },
+          );
+        });
+      }
+
+      reply.code(202);
+      return { ok: true, message: NEUTRAL_MAIL_RESPONSE };
+    },
+  );
+
+  /**
+   * «Забыли пароль?» — запрос ссылки. Пароль не генерируется и письмом не отправляется: ссылка
+   * подтверждает владение ящиком, а новый пароль человек задаёт сам на странице портала.
+   */
+  r.post(
+    '/password-reset/request',
+    { schema: { body: passwordResetRequestSchema }, config: mailRequestRateLimit },
+    async (req, reply) => {
+      const { email, captchaToken, captchaAnswer } = req.body;
+      verifyCaptcha(captchaToken, captchaAnswer);
+      assertMailEnabled();
+
+      const [user] = await db
+        .select({ id: users.id, isActive: users.isActive, verifiedAt: users.emailVerifiedAt })
+        .from(users)
+        .where(and(eq(users.email, email), isNull(users.deletedAt)));
+
+      // Восстанавливать нечего у заявки, которой ещё не выдали доступ, и у неподтверждённого
+      // адреса: там сценарий другой — подтверждение регистрации.
+      const eligible = user && user.isActive && user.verifiedAt;
+      if (eligible && !(await throttledByAccount(user.id, 'password_reset'))) {
+        await db.transaction(async (tx) => {
+          const { token, expiresAt } = await issueEmailToken(
+            {
+              userId: user.id,
+              purpose: 'password_reset',
+              ttlSeconds: config.mail.resetTtl,
+              requestedIp: req.ip,
+            },
+            { tx },
+          );
+          await queueMail(
+            {
+              kind: 'password_reset',
+              dedupeKey: `reset:${user.id}:${expiresAt.getTime()}`,
+              to: email,
+              subject: RESET_SUBJECT,
+              content: passwordResetContent(token),
+              userId: user.id,
+              entityType: 'user',
+              entityId: user.id,
+            },
+            { tx },
+          );
+        });
+      }
+
+      // Один ответ на все случаи: иначе форма работала бы справочником «кто зарегистрирован».
+      reply.code(202);
+      return { ok: true, message: NEUTRAL_MAIL_RESPONSE };
+    },
+  );
+
+  /** Новый пароль по ссылке из письма. */
+  r.post(
+    '/password-reset/confirm',
+    { schema: { body: passwordResetConfirmSchema }, config: authRateLimit },
+    async (req) => {
+      const { token, newPassword } = req.body;
+      const passwordHash = await hashPassword(newPassword);
+
+      const changed = await db.transaction(async (tx) => {
+        const row = await consumeEmailToken(token, 'password_reset', { tx });
+        if (!row) return null;
+        const [user] = await tx
+          .select({ id: users.id, email: users.email, authVersion: users.authVersion })
+          .from(users)
+          .where(and(eq(users.id, row.userId), isNull(users.deletedAt), eq(users.isActive, true)));
+        if (!user) return null;
+
+        await tx
+          .update(users)
+          .set({
+            passwordHash,
+            // Смена пароля снимает и требование сменить его: человек это только что сделал.
+            mustChangePassword: false,
+            // Версия растёт — выданные access-токены перестают действовать сразу, не дожидаясь
+            // истечения: если пароль меняют из-за угона, ждать четверть часа нечего.
+            authVersion: user.authVersion + 1,
+            updatedAt: new Date(),
+          })
+          .where(eq(users.id, user.id));
+        // Остальные живые ссылки сброса гасятся: письмо, запрошенное дважды, не должно давать
+        // вторую попытку смены после того, как пароль уже сменили.
+        await revokeEmailTokens(user.id, 'password_reset', { tx });
+        return user;
+      });
+
+      if (!changed) {
+        throw err.badRequest(
+          'Ссылка недействительна или устарела — запросите восстановление заново',
+        );
+      }
+
+      // Сессии отзываются после фиксации: refresh-сессии живут своей транзакцией, и откат
+      // основной не должен оставлять учётку без них.
+      await revokeAllForUser(changed.id);
+      await writeAudit({
+        actorUserId: changed.id,
+        action: 'auth.password_reset',
+        entityType: 'user',
+        entityId: changed.id,
+      });
+      // Уведомление о состоявшейся смене: если пароль восстановил не владелец, это единственный
+      // сигнал, который до него дойдёт.
+      await queueMail({
+        kind: 'password_changed',
+        dedupeKey: `password-changed:${changed.id}:${Date.now()}`,
+        to: changed.email,
+        subject: PASSWORD_CHANGED_SUBJECT,
+        content: passwordChangedContent(),
+        userId: changed.id,
+        entityType: 'user',
+        entityId: changed.id,
+      });
+
+      return { ok: true, message: 'Пароль изменён. Войдите с новым паролем.' };
     },
   );
 
@@ -307,6 +581,21 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
         entityType: 'user',
         entityId: u.id,
       });
+      // Уведомление о смене — не подтверждение операции, а сигнал владельцу ящика: пароль сменил
+      // тот, кто знал текущий, и если это не хозяин учётки, узнать об этом он может только так.
+      // Почта выключена — операция всё равно состоялась: смена пароля от письма не зависит.
+      if (config.mail.enabled) {
+        await queueMail({
+          kind: 'password_changed',
+          dedupeKey: `password-changed:${u.id}:${Date.now()}`,
+          to: u.email,
+          subject: PASSWORD_CHANGED_SUBJECT,
+          content: passwordChangedContent(),
+          userId: u.id,
+          entityType: 'user',
+          entityId: u.id,
+        });
+      }
       return {
         accessToken,
         expiresIn: config.auth.accessTtl,

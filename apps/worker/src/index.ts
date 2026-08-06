@@ -4,7 +4,9 @@ import { readFileSync } from 'node:fs';
 import pg from 'pg';
 import { DeleteObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { pino } from 'pino';
-import { purgeExpiredRegistrations } from './retention';
+import { archiveUnverifiedRegistrations, purgeExpiredRegistrations } from './retention';
+import { createMailTransport, PermanentMailError } from './mail-transport';
+import { MailRateLimiter } from './mail-rate';
 
 const logger = pino({
   level: process.env.LOG_LEVEL ?? 'info',
@@ -30,9 +32,67 @@ const CLEANUP_INTERVAL_MS = Number(process.env.WORKER_CLEANUP_INTERVAL_MS ?? 3_6
  * уборка выключена: срок хранения ПДн задаёт эксплуатация, и «выключить» должно быть выразимо.
  */
 const REGISTRATION_TTL_DAYS = Number(process.env.USER_REJECTED_REGISTRATION_TTL_DAYS ?? 7);
+/**
+ * Через сколько дней закрывается заявка, так и не подтвердившая адрес (ADR 0072). Ноль и меньше —
+ * выключено: как и у уборки отклонённых, срок задаёт эксплуатация.
+ */
+const REGISTRATION_EXPIRY_DAYS = Number(process.env.MAIL_REGISTRATION_EXPIRY_DAYS ?? 7);
 const WORKER_ID = `${hostname()}:${process.pid}:${randomUUID().slice(0, 8)}`;
 
 const JOB_DELETE_S3_OBJECT = 'delete_s3_object';
+const JOB_SEND_EMAIL = 'send_email';
+
+// ── Почта ──
+//
+// Worker знает про письма ровно две вещи: как отдать готовое тело SMTP-серверу и сколько писем в
+// минуту разрешено. Составляет письма API — там же, где живут права и область видимости
+// получателя; сюда приходит задача с идентификатором строки `mail_messages`.
+const MAIL_ENABLED = (process.env.MAIL_ENABLED ?? 'false') === 'true';
+const MAIL_TRANSPORT = process.env.MAIL_TRANSPORT === 'smtp' ? 'smtp' : 'log';
+const MAIL_MAX_PER_MINUTE = Number(process.env.MAIL_MAX_PER_MINUTE ?? 60);
+
+/**
+ * Настройка проверяется на старте, а не при первом письме: письмо ждёт очереди часами, и отказ
+ * «не задан SMTP_HOST» обнаружился бы вечером на рассылке заданий, а не при выкатке.
+ */
+function mailConfig() {
+  if (!MAIL_ENABLED) return null;
+  const cfg = {
+    transport: MAIL_TRANSPORT as 'log' | 'smtp',
+    host: process.env.SMTP_HOST ?? '',
+    port: Number(process.env.SMTP_PORT ?? 587),
+    secure: (process.env.SMTP_SECURE ?? 'false') === 'true',
+    user: process.env.SMTP_USER ?? '',
+    password: process.env.SMTP_PASSWORD ?? '',
+    from: process.env.MAIL_FROM ?? '',
+    replyTo: process.env.MAIL_REPLY_TO ?? '',
+  };
+  if (cfg.transport === 'smtp') {
+    const missing = (['host', 'user', 'password', 'from'] as const).filter((k) => !cfg[k]);
+    if (missing.length > 0) {
+      throw new Error(
+        `MAIL_ENABLED=true с MAIL_TRANSPORT=smtp требует SMTP_HOST, SMTP_USER, SMTP_PASSWORD и MAIL_FROM (не заданы: ${missing.join(', ')})`,
+      );
+    }
+  }
+  return cfg;
+}
+
+const mailCfg = mailConfig();
+const mailTransport = mailCfg
+  ? createMailTransport(mailCfg, (msg, meta) => logger.info(meta, msg))
+  : null;
+const mailRate = new MailRateLimiter(MAIL_MAX_PER_MINUTE);
+
+if (mailCfg) {
+  // Без секретов: видно, куда и чем отправляем, — этого хватает, чтобы заметить чужой SMTP в проде.
+  logger.info(
+    { transport: mailCfg.transport, host: mailCfg.host, port: mailCfg.port, from: mailCfg.from },
+    'Почтовый транспорт worker',
+  );
+} else {
+  logger.info('Почта выключена (MAIL_ENABLED=false): задачи send_email не обрабатываются');
+}
 
 const caPath = process.env.PGSSLROOTCERT;
 const ca = caPath ? readFileSync(caPath, 'utf8') : undefined;
@@ -88,16 +148,83 @@ interface JobRow {
   max_attempts: number;
 }
 
-async function handleJob(job: JobRow): Promise<void> {
+interface MailRow {
+  id: string;
+  to_email: string;
+  subject: string;
+  body_text: string;
+  body_html: string;
+  status: 'pending' | 'sent' | 'failed';
+}
+
+/**
+ * Отправка одного письма. Тело уже составлено API и лежит в `mail_messages` — worker его не
+ * пересобирает: повтор упавшей отправки обязан отправить ровно то, что было составлено, а не
+ * пересчитанное по изменившимся с тех пор данным.
+ */
+async function sendEmail(job: JobRow): Promise<void | { deferUntil: Date }> {
+  const mailId = String(job.payload.mailMessageId ?? '');
+  if (!mailId) throw new Error('В задаче send_email нет mailMessageId');
+  if (!mailTransport) {
+    // Почту выключили уже после того, как письмо встало в очередь. Это не ошибка задачи: письмо
+    // подождёт включения, а не потратит попытки и не уйдёт в dead.
+    return { deferUntil: new Date(Date.now() + 15 * 60_000) };
+  }
+
+  const res = await pool.query<MailRow>(
+    `SELECT id, to_email, subject, body_text, body_html, status FROM mail_messages WHERE id = $1`,
+    [mailId],
+  );
+  const mail = res.rows[0];
+  // Письма нет или оно уже отправлено — задача сделана. Так повторный заход после падения между
+  // отправкой и фиксацией не шлёт письмо второй раз.
+  if (!mail || mail.status === 'sent') return;
+
+  if (!mailRate.take()) return { deferUntil: mailRate.freeAt() };
+
+  const { providerId } = await mailTransport.send({
+    to: mail.to_email,
+    subject: mail.subject,
+    text: mail.body_text,
+    html: mail.body_html,
+  });
+
+  await pool.query(
+    `UPDATE mail_messages
+        SET status = 'sent', provider_id = $2, sent_at = now(), last_error = '', updated_at = now()
+      WHERE id = $1`,
+    [mail.id, providerId],
+  );
+}
+
+async function handleJob(job: JobRow): Promise<void | { deferUntil: Date }> {
   switch (job.type) {
     case JOB_DELETE_S3_OBJECT: {
       const objectKey = String(job.payload.objectKey ?? '');
       if (objectKey) await deleteObject(objectKey);
       return;
     }
+    case JOB_SEND_EMAIL:
+      return sendEmail(job);
     default:
       throw new Error(`Неизвестный тип задачи: ${job.type}`);
   }
+}
+
+/**
+ * Письмо, которое уже не уйдёт: адрес не существует, домен не принимает почту или кончились
+ * попытки. Журнал обязан это показывать — иначе `pending` в нём означало бы и «ждёт очереди», и
+ * «никогда не отправится», а разбирают их по-разному.
+ */
+async function markMailFailed(job: JobRow, error: string): Promise<void> {
+  if (job.type !== JOB_SEND_EMAIL) return;
+  const mailId = String(job.payload.mailMessageId ?? '');
+  if (!mailId) return;
+  await pool.query(
+    `UPDATE mail_messages SET status = 'failed', last_error = $2, updated_at = now()
+      WHERE id = $1 AND status <> 'sent'`,
+    [mailId, error],
+  );
 }
 
 function backoffMs(attempts: number): number {
@@ -122,16 +249,37 @@ async function processJobs(): Promise<number> {
 
   for (const job of claimed.rows) {
     try {
-      await handleJob(job);
+      const outcome = await handleJob(job);
+      if (outcome?.deferUntil) {
+        // Отложено, а не выполнено и не провалено: попытки не тратятся. Так упирается в потолок
+        // отправки рассылка на сотню адресов — она растягивается во времени, а не сгорает.
+        await pool.query(
+          `UPDATE jobs SET status='pending', next_run_at=$2, locked_by=NULL, locked_until=NULL, updated_at=now() WHERE id=$1`,
+          [job.id, outcome.deferUntil],
+        );
+        continue;
+      }
       await pool.query(`UPDATE jobs SET status='done', updated_at=now() WHERE id=$1`, [job.id]);
     } catch (e) {
       const attempts = job.attempts + 1;
       const message = e instanceof Error ? e.message : String(e);
+      // Окончательный отказ SMTP (5xx): повторять нечего, а пять заходов по несуществующему адресу
+      // портят репутацию отправителя у провайдера.
+      if (e instanceof PermanentMailError) {
+        await pool.query(
+          `UPDATE jobs SET status='dead', attempts=$2, last_error=$3, updated_at=now() WHERE id=$1`,
+          [job.id, attempts, message],
+        );
+        await markMailFailed(job, message);
+        logger.error({ jobId: job.id, type: job.type }, `Письмо не будет отправлено: ${message}`);
+        continue;
+      }
       if (attempts >= job.max_attempts) {
         await pool.query(
           `UPDATE jobs SET status='dead', attempts=$2, last_error=$3, updated_at=now() WHERE id=$1`,
           [job.id, attempts, message],
         );
+        await markMailFailed(job, message);
         logger.error({ jobId: job.id, type: job.type }, `Задача переведена в dead: ${message}`);
       } else {
         const next = new Date(Date.now() + backoffMs(attempts));
@@ -163,6 +311,22 @@ async function cleanupOrphanUploads(): Promise<void> {
   }
   if (res.rows.length > 0) {
     logger.info({ count: res.rows.length }, 'Очищены orphan-загрузки');
+  }
+}
+
+/**
+ * Заявки, не подтвердившие адрес в срок (ADR 0072), уходят в архив. Отдельно от уборки
+ * отклонённых: там снос по сроку хранения ПДн, здесь — закрытие незавершённой регистрации, после
+ * которого адрес снова свободен и человек может подать заявку заново.
+ */
+async function archiveUnverified(): Promise<void> {
+  if (!Number.isFinite(REGISTRATION_EXPIRY_DAYS) || REGISTRATION_EXPIRY_DAYS <= 0) return;
+  const archived = await archiveUnverifiedRegistrations(pool, {
+    expiryDays: REGISTRATION_EXPIRY_DAYS,
+  });
+  // В лог идут только идентификаторы: адрес — персональные данные, кого закрыли, знает аудит.
+  if (archived.length > 0) {
+    logger.info({ count: archived.length }, 'Заявки без подтверждения адреса отправлены в архив');
   }
 }
 
@@ -201,6 +365,10 @@ async function loop(): Promise<void> {
       if (Date.now() - lastCleanup > CLEANUP_INTERVAL_MS) {
         lastCleanup = Date.now();
         await cleanupOrphanUploads();
+        // Порядок важен: сначала закрываем незавершённые регистрации, потом сносим отклонённые.
+        // Так заявка проходит путь «не подтвердил → архив → снос» в один проход уборки, а не
+        // ждёт следующего часа между шагами.
+        await archiveUnverified();
         await cleanupRejectedRegistrations();
       }
       if (processed === 0) await sleep(POLL_INTERVAL_MS);
@@ -209,6 +377,7 @@ async function loop(): Promise<void> {
       await sleep(POLL_INTERVAL_MS);
     }
   }
+  await mailTransport?.close();
   await pool.end();
   logger.info('Worker остановлен');
   process.exit(0);

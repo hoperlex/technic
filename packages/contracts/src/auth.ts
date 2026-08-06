@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { optionalPhoneSchema } from './common';
+import { emailSchema } from './email';
 import type { CounterpartyType } from './counterparties';
 import type { Role } from './enums';
 import { passwordIdentityIssue, passwordSchema } from './password';
@@ -81,6 +82,54 @@ export const changePasswordSchema = z
     }
   });
 export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;
+
+// ── Подтверждение адреса и восстановление пароля (ADR 0072) ──
+
+/** Токен из ссылки в письме: opaque-строка base64url, портал её не разбирает. */
+const emailTokenSchema = z.string().trim().min(16).max(500);
+
+export const verifyEmailSchema = z.object({ token: emailTokenSchema }).strict();
+export type VerifyEmailInput = z.infer<typeof verifyEmailSchema>;
+
+/**
+ * Повторная отправка письма и запрос сброса пароля устроены одинаково: адрес плюс капча. Капча
+ * здесь не от ботов вообще, а от рассылки писем чужим людям — каждый такой запрос отправляет
+ * письмо на адрес, который называет не владелец ящика.
+ */
+const emailWithCaptchaFields = {
+  email: emailSchema,
+  captchaToken: z.string().min(1).max(1000),
+  captchaAnswer: z
+    .string()
+    .trim()
+    .length(CAPTCHA_ANSWER_LENGTH, `Введите ${CAPTCHA_ANSWER_LENGTH} цифр с картинки`),
+};
+
+export const resendVerificationSchema = z.object(emailWithCaptchaFields).strict();
+export type ResendVerificationInput = z.infer<typeof resendVerificationSchema>;
+
+export const passwordResetRequestSchema = z.object(emailWithCaptchaFields).strict();
+export type PasswordResetRequestInput = z.infer<typeof passwordResetRequestSchema>;
+
+/**
+ * Новый пароль по ссылке. Текущий пароль не спрашивается — его и не знают, ради этого сценарий и
+ * заведён; владение ящиком подтверждает токен. Политика пароля та же, что при регистрации и смене:
+ * иначе через восстановление можно было бы поставить пароль, который портал иначе не принимает.
+ */
+export const passwordResetConfirmSchema = z
+  .object({
+    token: emailTokenSchema,
+    newPassword: passwordSchema,
+  })
+  .strict();
+export type PasswordResetConfirmInput = z.infer<typeof passwordResetConfirmSchema>;
+
+/**
+ * Ответ публичных почтовых ручек. Один и тот же для существующего адреса и для незнакомого:
+ * различие в ответе превратило бы форму в справочник «кто зарегистрирован в портале».
+ */
+export const NEUTRAL_MAIL_RESPONSE =
+  'Если адрес зарегистрирован в портале, письмо с инструкцией уже отправлено. Проверьте почту, в том числе папку «Спам».';
 
 /** Текущий пользователь (ответ /auth/me и /auth/login). */
 export interface AuthUser extends PersonNameParts {

@@ -66,6 +66,20 @@ export const requestTypeEnum = pgEnum('request_type', [
 export const containerKindEnum = pgEnum('container_kind', ['cont', 'truck']);
 export const fileStatusEnum = pgEnum('file_status', ['pending', 'active', 'deleted']);
 export const jobStatusEnum = pgEnum('job_status', ['pending', 'running', 'done', 'failed', 'dead']);
+/** Виды писем портала (миграция 0097): по нему же строится дедупликация и разбор в журнале. */
+export const mailKindEnum = pgEnum('mail_kind', [
+  'verify_email',
+  'password_reset',
+  'password_changed',
+  'driver_routes',
+  'role_digest',
+]);
+export const mailStatusEnum = pgEnum('mail_status', ['pending', 'sent', 'failed']);
+/** Назначение одноразовой ссылки из письма (ADR 0072, миграция 0098). */
+export const emailTokenPurposeEnum = pgEnum('email_token_purpose', [
+  'verify_email',
+  'password_reset',
+]);
 // Тип заявки на технику: заказ спецтехники / грузоперевозка (отдельно от request_type мусора).
 export const vehicleRequestTypeEnum = pgEnum('vehicle_request_type', [
   'special_equipment',
@@ -763,6 +777,12 @@ export const users = pgTable(
     requestedRole: registrationRoleRequestEnum('requested_role'),
     requestedObject: text('requested_object').notNull().default(''),
     requestedCompany: text('requested_company').notNull().default(''),
+    /**
+     * Когда человек подтвердил, что этот ящик его (ADR 0072, миграция 0098). `null` — не
+     * подтверждён: такую заявку нельзя активировать, потому что за адресом может не быть никого.
+     * Учёткам, заведённым администратором, ставится сразу — адрес ввёл и проверил он сам.
+     */
+    emailVerifiedAt: timestamp('email_verified_at', { withTimezone: true }),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -872,6 +892,40 @@ export const refreshSessions = pgTable(
     tokenHashIdx: uniqueIndex('refresh_sessions_token_hash_unique').on(t.tokenHash),
     userIdx: index('refresh_sessions_user_idx').on(t.userId),
     familyIdx: index('refresh_sessions_family_idx').on(t.familyId),
+  }),
+);
+
+// ── Одноразовые ссылки из писем (ADR 0072, миграция 0098) ──
+//
+// Хранится только SHA-256 от значения из ссылки — тем же приёмом, что refresh-сессия: утечка дампа
+// не должна давать ни входа в портал, ни возможности подтвердить чужой адрес. Одноразовость держит
+// условие обновления (`used_at IS NULL` в WHERE), а не проверка в коде: два одновременных перехода
+// по одной ссылке иначе оба сочли бы токен живым.
+export const userEmailTokens = pgTable(
+  'user_email_tokens',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    purpose: emailTokenPurposeEnum('purpose').notNull(),
+    tokenHash: text('token_hash').notNull(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    usedAt: timestamp('used_at', { withTimezone: true }),
+    /** С какого адреса запросили: расследование злоупотреблений — единственная причина хранить. */
+    requestedIp: text('requested_ip').notNull().default(''),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    tokenHashUnique: uniqueIndex('user_email_tokens_hash_unique').on(t.tokenHash),
+    liveIdx: index('user_email_tokens_live_idx')
+      .on(t.userId, t.purpose, sql`${t.createdAt} DESC`)
+      .where(sql`${t.usedAt} IS NULL`),
+    hashFormat: check('user_email_tokens_hash_format', sql`${t.tokenHash} ~ '^[0-9a-f]{64}$'`),
+    expiresAfterCreated: check(
+      'user_email_tokens_expires_after_created',
+      sql`${t.expiresAt} > ${t.createdAt}`,
+    ),
   }),
 );
 
@@ -2582,6 +2636,68 @@ export const jobs = pgTable(
   },
   (t) => ({
     dueIdx: index('jobs_due_idx').on(t.status, t.nextRunAt),
+  }),
+);
+
+// ── Журнал исходящих писем (миграция 0097) ──
+//
+// Отдельно от `jobs`: задача отвечает за выполнение и живёт до `done`, а журнал — за содержание,
+// адресата и результат доставки, и его спрашивают через месяцы. Письмо и задача `send_email`
+// создаются одной транзакцией, причём в таком порядке: сначала строка сюда (с дедупликацией по
+// `(kind, dedupe_key)`), и только если она вставилась — задача. Иначе сработавшая дедупликация
+// оставляла бы задачу без письма.
+export const mailMessages = pgTable(
+  'mail_messages',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    kind: mailKindEnum('kind').notNull(),
+    /** Ключ бизнес-события: «это письмо уже составлено» — пара «запуск + получатель» или событие. */
+    dedupeKey: text('dedupe_key').notNull(),
+    /** Снимок адреса: смена email после отправки не переписывает журнал. */
+    toEmail: citext('to_email').notNull(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
+    /** Водитель: задание на рейс получает физлицо, учётной записи у него может не быть вовсе. */
+    personId: uuid('person_id').references(() => persons.id, { onDelete: 'set null' }),
+    /** Запуск расписания; `null` — письмо вызвано действием человека. FK добавит этап планировщика. */
+    mailingRunId: uuid('mailing_run_id'),
+    /** Отладочная отправка администратору: мимо статистики запусков и мимо алертов. */
+    isTest: boolean('is_test').notNull().default(false),
+    entityType: text('entity_type'),
+    entityId: uuid('entity_id'),
+    /** Готовое тело: worker отправляет составленное, а не пересобранное по изменившимся данным. */
+    subject: text('subject').notNull(),
+    bodyText: text('body_text').notNull(),
+    bodyHtml: text('body_html').notNull().default(''),
+    status: mailStatusEnum('status').notNull().default('pending'),
+    providerId: text('provider_id').notNull().default(''),
+    lastError: text('last_error').notNull().default(''),
+    sentAt: timestamp('sent_at', { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    dedupeUnique: uniqueIndex('mail_messages_dedupe_unique').on(t.kind, t.dedupeKey),
+    statusIdx: index('mail_messages_status_idx').on(t.status, t.createdAt),
+    userIdx: index('mail_messages_user_idx')
+      .on(t.userId, sql`${t.createdAt} DESC`)
+      .where(sql`${t.userId} IS NOT NULL`),
+    personIdx: index('mail_messages_person_idx')
+      .on(t.personId, sql`${t.createdAt} DESC`)
+      .where(sql`${t.personId} IS NOT NULL`),
+    runIdx: index('mail_messages_run_idx')
+      .on(t.mailingRunId)
+      .where(sql`${t.mailingRunId} IS NOT NULL`),
+    // Отправленное письмо обязано знать, когда оно ушло: иначе «отправлено» ничем не подтверждено.
+    sentAtCheck: check(
+      'mail_messages_sent_at_check',
+      sql`(${t.status} = 'sent') = (${t.sentAt} IS NOT NULL)`,
+    ),
+    dedupeKeyNotBlank: check(
+      'mail_messages_dedupe_key_not_blank',
+      sql`btrim(${t.dedupeKey}) <> ''`,
+    ),
+    subjectNotBlank: check('mail_messages_subject_not_blank', sql`btrim(${t.subject}) <> ''`),
+    bodyNotBlank: check('mail_messages_body_not_blank', sql`btrim(${t.bodyText}) <> ''`),
   }),
 );
 

@@ -194,6 +194,18 @@ export function DriversImportModal({ open, onClose, onImported }: Props) {
               </div>
             )}
 
+            {/* Единственная правка, которую выгрузка делает у заведённого человека, — поэтому
+                она названа отдельно, а не растворена в «пропущено». */}
+            {report.emailUpdated.length > 0 && (
+              <div>
+                <Typography.Text>
+                  {preview ? 'Будет проставлен' : 'Проставлен'} email у заведённых:{' '}
+                  {report.emailUpdated.length}
+                </Typography.Text>
+                <NameList items={report.emailUpdated.map((e) => `${e.who} — ${e.email}`)} />
+              </div>
+            )}
+
             {report.withoutLicense.length > 0 && (
               <Alert
                 type="warning"

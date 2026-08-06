@@ -49,7 +49,27 @@ const rawSchema = z.object({
   SOFFICE_BIN: z.string().default('soffice'),
   SOFFICE_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
 
+  // Почта (план `docs/mail-integration-plan.md`). Расписания, роли и состав рассылок сюда не
+  // попадают: их меняет администратор во вкладке «Рассылки», и в `env` им делать нечего.
   MAIL_ENABLED: boolFromEnv(false),
+  // `log` — разработка без внешней доставки: письмо составляется и остаётся в журнале.
+  MAIL_TRANSPORT: z.enum(['log', 'smtp']).default('log'),
+  SMTP_HOST: z.string().optional(),
+  SMTP_PORT: z.coerce.number().int().positive().default(587),
+  // true только для implicit TLS (порт 465); для 587 и 2525 соединение поднимается STARTTLS.
+  SMTP_SECURE: boolFromEnv(false),
+  SMTP_USER: z.string().optional(),
+  SMTP_PASSWORD: z.string().optional(),
+  MAIL_FROM: z.string().optional(),
+  MAIL_REPLY_TO: z.string().optional(),
+  // Потолок отправки: у транзакционных провайдеров есть лимит, и рассылка на несколько сотен
+  // адресов иначе упирается в него и получает отказы пачкой.
+  MAIL_MAX_PER_MINUTE: z.coerce.number().int().positive().default(60),
+  // IANA timezone времени рассылок и границ календарных периодов дайджеста.
+  MAIL_SCHEDULER_TIMEZONE: z.string().default('Europe/Moscow'),
+  MAIL_VERIFY_TTL_SECONDS: z.coerce.number().int().positive().default(86_400),
+  MAIL_RESET_TTL_SECONDS: z.coerce.number().int().positive().default(3_600),
+  MAIL_REGISTRATION_EXPIRY_DAYS: z.coerce.number().int().positive().default(7),
   SENTRY_DSN: z.string().optional(),
 });
 
@@ -62,6 +82,7 @@ const SECRET_KEYS = [
   'S3_SECRET_ACCESS_KEY',
   'JWT_PRIVATE_KEY_PEM',
   'JWT_PUBLIC_KEY_PEM',
+  'SMTP_PASSWORD',
 ] as const;
 
 /** PEM может быть задан inline или путём к файлу. */
@@ -93,6 +114,27 @@ function loadConfig() {
     }
     if (!env.PGSSLROOTCERT) {
       throw new Error('PGSSLROOTCERT обязателен в production (TLS verify-full к PostgreSQL).');
+    }
+  }
+
+  // Почта включается целиком или не включается вовсе: половина настройки хуже выключенной: портал
+  // принял бы регистрацию, которую невозможно подтвердить, и молча не отправил бы задание рейса.
+  // Поэтому проверка на старте, а не отказ первого письма через сутки после выкатки.
+  if (env.MAIL_ENABLED && env.MAIL_TRANSPORT === 'smtp') {
+    const missing = (
+      [
+        ['SMTP_HOST', env.SMTP_HOST],
+        ['SMTP_USER', env.SMTP_USER],
+        ['SMTP_PASSWORD', env.SMTP_PASSWORD],
+        ['MAIL_FROM', env.MAIL_FROM],
+      ] as const
+    )
+      .filter(([, value]) => !value)
+      .map(([key]) => key);
+    if (missing.length > 0) {
+      throw new Error(
+        `MAIL_ENABLED=true с MAIL_TRANSPORT=smtp требует заполнить: ${missing.join(', ')}.`,
+      );
     }
   }
 
@@ -147,7 +189,17 @@ function loadConfig() {
       bin: env.SOFFICE_BIN,
       timeoutMs: env.SOFFICE_TIMEOUT_MS,
     },
-    mailEnabled: env.MAIL_ENABLED,
+    mail: {
+      enabled: env.MAIL_ENABLED,
+      transport: env.MAIL_TRANSPORT,
+      from: env.MAIL_FROM ?? '',
+      replyTo: env.MAIL_REPLY_TO ?? '',
+      maxPerMinute: env.MAIL_MAX_PER_MINUTE,
+      timezone: env.MAIL_SCHEDULER_TIMEZONE,
+      verifyTtl: env.MAIL_VERIFY_TTL_SECONDS,
+      resetTtl: env.MAIL_RESET_TTL_SECONDS,
+      registrationExpiryDays: env.MAIL_REGISTRATION_EXPIRY_DAYS,
+    },
     sentryDsn: env.SENTRY_DSN,
   };
 }

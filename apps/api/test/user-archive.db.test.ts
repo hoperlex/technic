@@ -57,6 +57,10 @@ function prepareEnv(databaseUrl: string): void {
   process.env.S3_ACCESS_KEY_ID ??= 'test';
   process.env.S3_SECRET_ACCESS_KEY ??= 'test-secret';
   process.env.LOG_LEVEL ??= 'error';
+  // Регистрация без почты отклоняется (ADR 0072): заявку, которую невозможно подтвердить, портал
+  // не заводит. Транспорт `log` — письма составляются в журнал и наружу не уходят.
+  process.env.MAIL_ENABLED = 'true';
+  process.env.MAIL_TRANSPORT = 'log';
 }
 
 async function migrate(databaseUrl: string): Promise<void> {

@@ -295,3 +295,26 @@ describe('выгрузка шире водителей (ADR 0049)', () => {
     }
   });
 });
+
+describe('email водителя в выгрузке', () => {
+  it('колонки нет — адрес не задан: заведённый вручную адрес пустой выгрузкой не стирается', () => {
+    const { drivers } = prepareDriverImport(file(), KNOWN);
+    expect(drivers[0]!.email).toBeNull();
+  });
+
+  it('пустая ячейка — то же самое, что отсутствие колонки', () => {
+    const { drivers } = prepareDriverImport(file({ email: '   ' }), KNOWN);
+    expect(drivers[0]!.email).toBeNull();
+  });
+
+  it('адрес из выгрузки очищается от пробелов по краям', () => {
+    const { drivers } = prepareDriverImport(file({ email: '  ivanov@example.ru ' }), KNOWN);
+    expect(drivers[0]!.email).toBe('ivanov@example.ru');
+  });
+
+  it('непохожее на адрес отвергает всю выгрузку — как и опечатка в СНИЛС', () => {
+    expect(() => prepareDriverImport(file({ email: 'ivanov(at)example.ru' }), KNOWN)).toThrow(
+      /Иванов Иван Иванович/u,
+    );
+  });
+});

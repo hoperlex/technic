@@ -59,6 +59,7 @@ function driver(over: Partial<DriverDto> = {}): DriverDto {
     fullName: 'Иванов Иван Иванович',
     birthDate: null,
     phone: '',
+    email: '',
     snils: '11223344595',
     comment: '',
     personnelNo: '0001',

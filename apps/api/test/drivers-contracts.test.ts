@@ -22,6 +22,7 @@ import {
   normalizeSnils,
   snilsSchema,
   trailerCategoryCode,
+  updateDriverSchema,
   waybillLicenseOf,
   type DriverDocumentGap,
   type DriverDto,
@@ -271,6 +272,38 @@ describe('заведение водителя', () => {
 
   it('лишнее поле отклоняется, а не молча теряется', () => {
     expect(createDriverSchema.safeParse({ ...VALID_DRIVER, role: 'admin' }).success).toBe(false);
+  });
+});
+
+describe('email водителя', () => {
+  it('не указан — пустая строка: письма такому водителю не отправляются', () => {
+    expect(createDriverSchema.parse(VALID_DRIVER).email).toBe('');
+  });
+
+  it('адрес принимается и очищается от пробелов по краям', () => {
+    const r = createDriverSchema.parse({ ...VALID_DRIVER, email: ' ivanov@example.ru ' });
+    expect(r.email).toBe('ivanov@example.ru');
+  });
+
+  it('регистр сохраняется: в базе citext, и показывать адрес не так, как его написали, незачем', () => {
+    const r = createDriverSchema.parse({ ...VALID_DRIVER, email: 'Ivanov@Example.RU' });
+    expect(r.email).toBe('Ivanov@Example.RU');
+  });
+
+  it('«-» и «нет» вместо адреса не проходят: такое поле выглядит заполненным, а письмо не уйдёт', () => {
+    for (const value of ['-', 'нет', 'ivanov(at)example.ru', 'ivanov@']) {
+      expect(createDriverSchema.safeParse({ ...VALID_DRIVER, email: value }).success).toBe(false);
+    }
+  });
+
+  it('в правке карточки поле необязательно: не прислали — адрес остаётся прежним', () => {
+    const r = updateDriverSchema.parse({ version: 0 });
+    expect(r.email).toBeUndefined();
+  });
+
+  it('пустая строка в правке — это «убрать адрес», и она проходит', () => {
+    const r = updateDriverSchema.parse({ version: 0, email: '' });
+    expect(r.email).toBe('');
   });
 });
 
@@ -591,10 +624,9 @@ describe('полнота документов задаёт порядок и т�
   });
 
   it('водитель без реквизитов ВУ уходит вниз, но из списка не исчезает', () => {
-    const list = [
-      option('Абрамов А. А.', ['requisites']),
-      option('Яковлев Я. Я.', []),
-    ].sort(compareDriverOptions);
+    const list = [option('Абрамов А. А.', ['requisites']), option('Яковлев Я. Я.', [])].sort(
+      compareDriverOptions,
+    );
     // Алфавит уступил пригодности — и оба на месте: отбора больше нет (ADR 0064).
     expect(list.map((d) => d.fullName)).toEqual(['Яковлев Я. Я.', 'Абрамов А. А.']);
     expect(list).toHaveLength(2);

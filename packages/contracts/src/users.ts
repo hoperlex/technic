@@ -174,6 +174,12 @@ export interface UserDto extends PersonNameParts {
   role: Role | null;
   isActive: boolean;
   mustChangePassword: boolean;
+  /**
+   * Когда человек подтвердил адрес по ссылке из письма (ADR 0072); `null` — не подтверждён, и
+   * активировать такую заявку нельзя. У учёток, заведённых администратором, стоит время создания:
+   * адрес вводил он сам.
+   */
+  emailVerifiedAt: string | null;
   /** Объекты учётки (ADR 0039); порядок — по наименованию. Пусто — область объектами не задана. */
   constructionObjects: UserObjectRefDto[];
   /** Отделы учётки (ADR 0040); непусты только у ролей отдела — вместе с объектами не бывают. */

@@ -59,6 +59,9 @@ export function LoginPage() {
           </Button>
         </Form>
         <div style={{ textAlign: 'center', marginTop: 16 }}>
+          <Link to="/forgot-password">Забыли пароль?</Link>
+        </div>
+        <div style={{ textAlign: 'center', marginTop: 8 }}>
           Нет аккаунта? <Link to="/register">Зарегистрироваться</Link>
         </div>
       </Card>

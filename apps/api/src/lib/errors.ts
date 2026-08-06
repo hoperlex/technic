@@ -23,6 +23,11 @@ export const err = {
   validation: (fields: Record<string, string>) =>
     new AppError(400, 'validation_error', 'Ошибка валидации', fields),
   inactive: (m = 'Аккаунт не активирован') => new AppError(403, 'account_inactive', m),
+  /**
+   * Операция требует того, что сейчас недоступно, — не по вине запроса. Заведена ради почты:
+   * регистрацию, которую невозможно подтвердить письмом, нельзя принять молча, будто всё удалось.
+   */
+  unavailable: (m = 'Сервис временно недоступен') => new AppError(503, 'service_unavailable', m),
   invalidCredentials: (m = 'Неверный логин или пароль') =>
     new AppError(401, 'invalid_credentials', m),
 };

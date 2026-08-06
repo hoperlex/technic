@@ -1,4 +1,6 @@
 import {
+  EMAIL_FORMAT_MESSAGE,
+  emailSchema,
   formatSnils,
   isDriverJobTitle,
   isValidSnils,
@@ -35,6 +37,8 @@ export interface DriverImportRecord {
   department?: string;
   birthDate?: string;
   employedSince?: string;
+  /** Рабочий адрес водителя: по нему уходит задание на рейс. В старых выгрузках колонки нет. */
+  email?: string;
   snils: string;
   /** Категории строкой ровно как в источнике («B,B1,C,C1,BE,CE,C1E»). */
   categories?: string;
@@ -70,6 +74,12 @@ export interface PreparedDriver {
   department: string;
   birthDate: string | null;
   employedSince: string | null;
+  /**
+   * Адрес из выгрузки; `null` — колонки в файле не было или она пуста. Разница существенная:
+   * заведённый вручную адрес пустой ячейкой не стирается — кадровая выгрузка про почту ничего не
+   * знает, и «нет данных» в ней не означает «адреса нет». Убирают адрес в карточке водителя.
+   */
+  email: string | null;
   /** Только коды, найденные в справочнике; остальные ушли в `unknownCategories`. */
   categories: string[];
   /** Нормализованные реквизиты ВУ, если источник их прислал. */
@@ -179,6 +189,11 @@ export function prepareDriverImport(
     const jobTitle = d.jobTitle?.trim() || file.jobTitle?.trim() || DEFAULT_JOB_TITLE;
     const department = d.department?.trim() || file.department?.trim() || '';
 
+    const email = d.email?.trim() || null;
+    if (email !== null && !emailSchema.safeParse(email).success) {
+      problems.push(`${who}: ${EMAIL_FORMAT_MESSAGE} — «${email}»`);
+    }
+
     const licenseIssuedOn = d.license
       ? parseImportDate(d.license.issuedOn, 'дата выдачи ВУ', who, problems)
       : null;
@@ -233,6 +248,7 @@ export function prepareDriverImport(
       department,
       birthDate: parseImportDate(d.birthDate, 'дата рождения', who, problems),
       employedSince: parseImportDate(d.employedSince, 'дата приёма', who, problems),
+      email,
       categories: isDriverLicense ? codes.filter((c) => known.has(c)) : [],
       license,
       licenseSkipReason,

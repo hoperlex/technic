@@ -4,7 +4,11 @@ import type {
   ChangePasswordInput,
   LoginInput,
   LoginResult,
+  PasswordResetConfirmInput,
+  PasswordResetRequestInput,
   RegisterInput,
+  ResendVerificationInput,
+  VerifyEmailInput,
 } from '@technic/contracts';
 import { apiFetch, clear as clearSession, renewToken, startSession } from '@shared/api';
 
@@ -27,6 +31,35 @@ export const authApi = {
 
   register(input: RegisterInput): Promise<{ ok: boolean; message: string }> {
     return apiFetch('/auth/register', { method: 'POST', body: input, noRefresh: true });
+  },
+
+  /** Подтверждение адреса по ссылке из письма (ADR 0072). */
+  verifyEmail(input: VerifyEmailInput): Promise<{ ok: boolean; message: string }> {
+    return apiFetch('/auth/verify-email', { method: 'POST', body: input, noRefresh: true });
+  },
+
+  resendVerification(input: ResendVerificationInput): Promise<{ ok: boolean; message: string }> {
+    return apiFetch('/auth/verify-email/resend', { method: 'POST', body: input, noRefresh: true });
+  },
+
+  requestPasswordReset(
+    input: PasswordResetRequestInput,
+  ): Promise<{ ok: boolean; message: string }> {
+    return apiFetch('/auth/password-reset/request', {
+      method: 'POST',
+      body: input,
+      noRefresh: true,
+    });
+  },
+
+  confirmPasswordReset(
+    input: PasswordResetConfirmInput,
+  ): Promise<{ ok: boolean; message: string }> {
+    return apiFetch('/auth/password-reset/confirm', {
+      method: 'POST',
+      body: input,
+      noRefresh: true,
+    });
   },
 
   me(): Promise<AuthUser> {

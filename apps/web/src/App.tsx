@@ -5,6 +5,9 @@ import { HomeRedirect, ProtectedRoute, RequirePermission } from './auth/Protecte
 import { WaybillsPage } from './pages/WaybillsPage';
 import { LoginPage } from './pages/LoginPage';
 import { RegisterPage } from './pages/RegisterPage';
+import { VerifyEmailPage } from './pages/VerifyEmailPage';
+import { ForgotPasswordPage } from './pages/ForgotPasswordPage';
+import { ResetPasswordPage } from './pages/ResetPasswordPage';
 import { ChangePasswordPage } from './pages/ChangePasswordPage';
 import { WasteRequestsPage } from './pages/WasteRequestsPage';
 import { VehicleRequestsPage } from './pages/VehicleRequestsPage';
@@ -18,6 +21,10 @@ export default function App() {
       <Routes>
         <Route path="/login" element={<LoginPage />} />
         <Route path="/register" element={<RegisterPage />} />
+        {/* Публичные: по ссылкам из писем ходят те, кто ещё не вошёл — и войти как раз не может. */}
+        <Route path="/verify-email" element={<VerifyEmailPage />} />
+        <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+        <Route path="/reset-password" element={<ResetPasswordPage />} />
         <Route element={<ProtectedRoute />}>
           <Route path="/change-password" element={<ChangePasswordPage />} />
           <Route element={<AppLayout />}>

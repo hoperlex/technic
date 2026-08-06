@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { baseListQuery, dateOnlySchema, optionalPhoneSchema, uuidSchema } from './common';
+import { optionalEmailSchema } from './email';
 import { personNameFields, personNamePartialFields } from './person-name';
 import { snilsSchema } from './snils';
 
@@ -80,6 +81,8 @@ export interface DriverDto {
   fullName: string;
   birthDate: string | null;
   phone: string;
+  /** Пусто — адреса нет: письмо с заданием такому водителю не создаётся, он идёт в пропуски. */
+  email: string;
   /** 11 цифр; «112-233-445 95» — оформление вывода (`formatSnils`). */
   snils: string;
   comment: string;
@@ -179,8 +182,8 @@ export function licenseNumberLabel(license: Pick<DriverLicenseDto, 'series' | 'n
 }
 
 /**
- * Реквизиты удостоверения не внесены. Так выглядят документы, заведённые первичным наполнением
- * справочника из кадровой выгрузки (`seed:drivers`): категории в ней есть, серии и номера нет.
+ * Реквизиты удостоверения не внесены. Так выглядят документы, заведённые загрузкой кадровой
+ * выгрузки без объекта `license`: категории в ней есть, серии и номера нет.
  *
  * Номер удостоверения — обязательный реквизит бланка (приказ Минтранса № 390), и без него лист
  * печатается недействительным, поэтому в отбор водителя такой документ не даёт (ADR 0055).
@@ -293,6 +296,10 @@ const jobTitleSchema = z.string().trim().max(255);
 // Телефон водителя — общей схемой (ADR 0066): своя, принимавшая любой текст, разошлась бы с
 // правилом остальных полей, а номер здесь тот же — по нему звонят перед рейсом.
 const phoneSchema = optionalPhoneSchema;
+// Адрес водителя — общей схемой, как и телефон: по нему уходит задание на рейс, и правило проверки
+// у него то же, что у адреса учётной записи. Уникальности нет намеренно: бригада может читать почту
+// с одного рабочего ящика, и запрет на повтор развалил бы такой справочник.
+const emailFieldSchema = optionalEmailSchema;
 const commentSchema = z.string().trim().max(2000);
 
 /** Категория документа: ссылка на справочник плюс собственные сроки, если они у неё свои. */
@@ -353,6 +360,7 @@ export const createDriverSchema = z
     snils: snilsSchema,
     birthDate: dateOnlySchema.nullable().optional(),
     phone: phoneSchema.optional().default(''),
+    email: emailFieldSchema.optional().default(''),
     comment: commentSchema.optional().default(''),
     personnelNo: personnelNoSchema.optional().default(''),
     jobTitle: jobTitleSchema.optional().default('Водитель'),
@@ -395,6 +403,7 @@ export const updateDriverSchema = z
     snils: snilsSchema.optional(),
     birthDate: dateOnlySchema.nullable().optional(),
     phone: phoneSchema.optional(),
+    email: emailFieldSchema.optional(),
     comment: commentSchema.optional(),
     personnelNo: personnelNoSchema.optional(),
     jobTitle: jobTitleSchema.optional(),
@@ -797,6 +806,13 @@ export interface DriversImportReportDto {
   created: string[];
   /** Уже есть в справочнике: совпал СНИЛС — ключ человека (ADR 0037). */
   skipped: string[];
+  /**
+   * Кому выгрузка проставила или сменила email. Единственное, что импорт правит у заведённого
+   * человека: адреса в справочнике появились позже самих водителей, и заносить их в сотню карточек
+   * руками — работа, ради которой выгрузка и существует. Остальные поля заведённого не трогаются:
+   * повторная загрузка не должна переписывать то, что уточняли в портале.
+   */
+  emailUpdated: { who: string; email: string }[];
   /** Заведён без удостоверения: в отбор под машину такой водитель не попадёт. */
   withoutLicense: { who: string; why: string }[];
   /** Коды, которых нет в справочнике категорий: их вносит администратор по оригиналу. */

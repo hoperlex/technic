@@ -1,4 +1,4 @@
-import { eq, inArray } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 import { formatSnils } from '@technic/contracts';
 import type { DriversImportReportDto } from '@technic/contracts';
 import { type DriversImportFile, prepareDriverImport } from './driver-import';
@@ -16,11 +16,9 @@ import {
 
 // Запись разобранной кадровой выгрузки в справочник водителей (ADR 0037, ADR 0047).
 //
-// Отделено от `driver-import.ts` (там решения о том, что считать корректной строкой) и от обоих
-// вызывающих: справочник наполняют из портала (`POST /drivers/import`) и из командной строки
-// (`seed:drivers`, когда файл кладут на VPS). Путь заведения человека при этом обязан быть один:
-// разъехавшись, они завели бы одних и тех же людей по-разному — с документом и без, с трудовым
-// отношением и без него, — а обнаружилось бы это на выписке путевого листа.
+// Отделено от `driver-import.ts` — там решения о том, что считать корректной строкой, здесь
+// только запись. Наполняют справочник выгрузкой из портала (`POST /drivers/import`); пути с
+// сервера больше нет (ADR 0047, изменение от 06.08.2026).
 //
 // Обратной операции нет намеренно: удаление настоящих людей — учётное действие с аудитом, а не
 // побочный эффект повторной загрузки. Повторный запуск ничего не дублирует: ключ человека —
@@ -91,6 +89,7 @@ export async function applyDriverImport(
     dryRun,
     created: [],
     skipped: [],
+    emailUpdated: [],
     withoutLicense: [],
     unknownCategories: prepared.unknownCategories,
     nameCollisions: [],
@@ -110,11 +109,30 @@ export async function applyDriverImport(
 
   for (const d of parsed) {
     const [existing] = await db
-      .select({ id: persons.id })
+      .select({ id: persons.id, email: persons.email })
       .from(persons)
       .where(eq(persons.snils, d.snils));
     if (existing) {
       report.skipped.push(d.who);
+      // Адрес — единственное, что выгрузка правит у заведённого человека, и только когда он в
+      // файле есть и отличается от записанного. Пустая ячейка адрес не стирает: кадровая выгрузка
+      // про почту ничего не знает, и её молчание — не «адреса нет».
+      if (d.email !== null && d.email !== existing.email) {
+        report.emailUpdated.push({ who: d.who, email: d.email });
+        if (!dryRun) {
+          await db
+            .update(persons)
+            .set({
+              email: d.email,
+              ...(actorUserId ? { updatedBy: actorUserId } : {}),
+              updatedAt: new Date(),
+              // Версия растёт, как при правке карточки: иначе открытая у кого-то форма сохранилась
+              // бы поверх и вернула прежний адрес, ничего никому не сказав.
+              version: sql`${persons.version} + 1`,
+            })
+            .where(eq(persons.id, existing.id));
+        }
+      }
       continue;
     }
 
@@ -142,6 +160,7 @@ export async function applyDriverImport(
           ...d.name,
           snils: d.snils,
           birthDate: d.birthDate,
+          ...(d.email ? { email: d.email } : {}),
           ...(actorUserId ? { createdBy: actorUserId } : {}),
         })
         .returning({ id: persons.id });

@@ -453,9 +453,18 @@ export function UsersTab() {
       // «Объект2» сравнимы только выбранным наугад представителем (ADR 0039).
       sortable: false,
       searchable: false,
+      // Отделы стоят кодами, объекты — наименованиями: так их и называют в работе. Полные
+      // наименования отделов — подсказкой наведения, они нужны для сверки, а не для узнавания.
       render: (_v, r) => {
-        const places = r.departments.length > 0 ? r.departments : r.constructionObjects;
-        return places.length === 0 ? '—' : places.map((p) => p.name).join(' · ');
+        if (r.departments.length > 0) {
+          return (
+            <span title={r.departments.map((d) => d.name).join(' · ')}>
+              {r.departments.map((d) => d.code).join(' · ')}
+            </span>
+          );
+        }
+        const objects = r.constructionObjects;
+        return objects.length === 0 ? '—' : objects.map((o) => o.name).join(' · ');
       },
     }),
     textColumn<UserDto>({
@@ -478,6 +487,22 @@ export function UsersTab() {
       trueText: 'Да',
       falseText: 'Нет',
       width: 120,
+    }),
+    // Подтверждение адреса (ADR 0072): пока его нет, заявку не активировать — и администратор
+    // должен видеть это в списке, а не узнавать из отказа при попытке выдать доступ.
+    textColumn<UserDto>({
+      key: 'emailVerifiedAt',
+      title: 'Адрес',
+      dataIndex: 'emailVerifiedAt',
+      sortable: false,
+      searchable: false,
+      width: 140,
+      render: (_v, r) =>
+        r.emailVerifiedAt ? (
+          <Tag color="green">подтверждён</Tag>
+        ) : (
+          <Tag color="orange">не подтверждён</Tag>
+        ),
     }),
     // Дата регистрации: по ней фильтруют период, и без колонки фильтр не на что опереть —
     // отобранные строки выглядели бы отобранными неизвестно по чему.

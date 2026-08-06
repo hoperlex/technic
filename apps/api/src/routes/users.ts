@@ -68,6 +68,7 @@ interface UserRowJoined {
   role: UserDto['role'];
   isActive: boolean;
   mustChangePassword: boolean;
+  emailVerifiedAt: Date | null;
   counterpartyId: string | null;
   counterpartyName: string | null;
   counterpartyType: CounterpartyType | null;
@@ -95,6 +96,7 @@ function toDto(
     role: r.role,
     isActive: r.isActive,
     mustChangePassword: r.mustChangePassword,
+    emailVerifiedAt: r.emailVerifiedAt?.toISOString() ?? null,
     constructionObjects: objects,
     departments,
     counterpartyId: r.counterpartyId,
@@ -120,6 +122,7 @@ const selectCols = {
   role: users.role,
   isActive: users.isActive,
   mustChangePassword: users.mustChangePassword,
+  emailVerifiedAt: users.emailVerifiedAt,
   counterpartyId: users.counterpartyId,
   counterpartyName: counterparties.name,
   counterpartyType: counterparties.type,
@@ -293,7 +296,9 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
       departmentsByUserIds(ids),
     ]);
     return {
-      items: rows.map((row) => toDto(row, objects.get(row.id) ?? [], departments.get(row.id) ?? [])),
+      items: rows.map((row) =>
+        toDto(row, objects.get(row.id) ?? [], departments.get(row.id) ?? []),
+      ),
       total: Number(totalRows[0]!.c),
       page: p.page,
       pageSize: p.pageSize,
@@ -333,6 +338,10 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
             passwordHash,
             isActive: body.isActive,
             counterpartyId,
+            // Учётку завёл администратор — адрес он ввёл и проверил сам (ADR 0072). Требовать
+            // подтверждения здесь значило бы блокировать активацию до того, как человек прочтёт
+            // письмо, — а такие учётки и заводят затем, чтобы выдать доступ немедленно.
+            emailVerifiedAt: new Date(),
           })
           .returning({ id: users.id });
         await replaceUserObjects(tx, row!.id, objectIds, actor.id);
@@ -378,6 +387,15 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
       // и учётка без роли видит все заявки вывоза. Роль назначается вместе с активацией.
       if ((body.isActive ?? existing.isActive) && !nextRole) {
         throw err.badRequest('Нельзя активировать учётку без роли', { role: 'Выберите роль' });
+      }
+      // Доступ выдаётся тому, кто доказал, что ящик его (ADR 0072). Иначе заявку мог подать кто
+      // угодно на чужой адрес, и портал выдал бы права по одному лишь совпадению ФИО с ожидаемым.
+      // Учётки, заведённые администратором, подтверждены по факту создания и сюда не упираются.
+      const activating = body.isActive === true && !existing.isActive;
+      if (activating && !existing.emailVerifiedAt) {
+        throw err.badRequest(
+          'Адрес не подтверждён — активировать учётку нельзя. Попросите пользователя перейти по ссылке из письма.',
+        );
       }
       const nextCounterpartyId = await resolveCounterpartyId(
         nextRole,

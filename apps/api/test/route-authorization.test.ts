@@ -28,6 +28,12 @@ const PUBLIC_ROUTES = new Set([
   '/api/v1/auth/login',
   '/api/v1/auth/refresh',
   '/api/v1/auth/logout',
+  // Ссылки из писем (ADR 0072): по ним ходит тот, кто ещё не вошёл, — и войти как раз не может.
+  // Владение ящиком доказывает одноразовый токен, а запросы письма закрыты капчей и лимитами.
+  '/api/v1/auth/verify-email',
+  '/api/v1/auth/verify-email/resend',
+  '/api/v1/auth/password-reset/request',
+  '/api/v1/auth/password-reset/confirm',
 ]);
 
 /** Маршруты «про себя»: доступны любому вошедшему независимо от роли. */

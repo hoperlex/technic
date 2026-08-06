@@ -93,6 +93,7 @@ interface PersonRow {
   fullName: string;
   birthDate: string | null;
   phone: string;
+  email: string;
   snils: string;
   comment: string;
   version: number;
@@ -205,6 +206,7 @@ function toDto(row: PersonRow, licenses: DriverLicenseDto[]): DriverDto {
     fullName: row.fullName,
     birthDate: row.birthDate,
     phone: row.phone,
+    email: row.email,
     snils: row.snils,
     comment: row.comment,
     personnelNo: row.personnelNo ?? '',
@@ -233,6 +235,7 @@ const personSelect = {
   fullName: persons.fullName,
   birthDate: persons.birthDate,
   phone: persons.phone,
+  email: persons.email,
   snils: persons.snils,
   comment: persons.comment,
   version: persons.version,
@@ -415,10 +418,11 @@ export default async function driversRoutes(app: FastifyInstance): Promise<void>
         driverCondition(),
         documents,
         q.categoryId ? categoryCondition(q.categoryId, today) : undefined,
-        // Ищут по тому, что видят: ФИО, номер СНИЛС (как угодно набранный) и табельный.
+        // Ищут по тому, что видят: ФИО, номер СНИЛС (как угодно набранный), табельный и email —
+        // по адресу водителя ищут, когда разбираются, кому ушло (или не ушло) задание на рейс.
         q.search
           ? or(
-              searchCondition(q.search, [persons.fullName, persons.snils]),
+              searchCondition(q.search, [persons.fullName, persons.snils, persons.email]),
               searchCondition(q.search.replace(/[\s-]/gu, ''), [persons.snils]),
               searchCondition(q.search, [personEmployments.personnelNo]),
             )
@@ -535,6 +539,7 @@ export default async function driversRoutes(app: FastifyInstance): Promise<void>
             snils: body.snils,
             birthDate: body.birthDate ?? null,
             phone: body.phone,
+            email: body.email,
             comment: body.comment,
             createdBy: p.id,
           })
@@ -574,8 +579,9 @@ export default async function driversRoutes(app: FastifyInstance): Promise<void>
   /**
    * Наполнение справочника кадровой выгрузкой (ADR 0047).
    *
-   * Тот же разбор и та же запись, что у `seed:drivers` на сервере, — но доступ к серверу нужен не
-   * всякому, кто ведёт справочник, а выгрузка приходит от кадровика тогда, когда пришла.
+   * Единственный вход для выгрузки: путь с сервера снят (ADR 0047, изменение от 06.08.2026).
+   * Доступ к серверу есть не у всякого, кто ведёт справочник, а выгрузка приходит от кадровика
+   * тогда, когда пришла.
    *
    * Право то же, что у заведения водителя руками: загрузка заводит ровно тех же людей теми же
    * записями, отличаясь только количеством. Отдельное право означало бы, что кому-то можно
@@ -648,6 +654,7 @@ export default async function driversRoutes(app: FastifyInstance): Promise<void>
             ...(body.snils === undefined ? {} : { snils: body.snils }),
             ...(body.birthDate === undefined ? {} : { birthDate: body.birthDate }),
             ...(body.phone === undefined ? {} : { phone: body.phone }),
+            ...(body.email === undefined ? {} : { email: body.email }),
             ...(body.comment === undefined ? {} : { comment: body.comment }),
             updatedBy: p.id,
             updatedAt: new Date(),

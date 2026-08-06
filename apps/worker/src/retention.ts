@@ -11,10 +11,7 @@
  */
 
 export interface RetentionClient {
-  query<R extends Record<string, unknown>>(
-    sql: string,
-    params?: unknown[],
-  ): Promise<{ rows: R[] }>;
+  query<R extends Record<string, unknown>>(sql: string, params?: unknown[]): Promise<{ rows: R[] }>;
 }
 
 /** Псевдоним, а не `interface`: строку из БД принимает только тип с индексной сигнатурой. */
@@ -24,6 +21,47 @@ export interface RetentionResult {
   purged: ExpiredRegistration[];
   /** Строки, которые удержали внешние ключи: таких быть не должно, но молчать о них нельзя. */
   skipped: ExpiredRegistration[];
+}
+
+/**
+ * Заявки, так и не подтвердившие адрес (ADR 0072).
+ *
+ * Уходят в архив, а не удаляются: архив освобождает email (частичный уникальный индекс, ADR 0063),
+ * то есть человек, у которого письмо потерялось в спаме, может зарегистрироваться заново тем же
+ * адресом. Совсем сносит их потом обычная уборка отклонённых — по своему сроку хранения.
+ *
+ * Условие включает `email_verified_at IS NULL`: подтверждённая заявка ждёт решения администратора
+ * сколько угодно — она уже доказала, что за адресом стоит человек, и срок ей не судья.
+ */
+export async function archiveUnverifiedRegistrations(
+  client: RetentionClient,
+  opts: { expiryDays: number; limit?: number },
+): Promise<ExpiredRegistration[]> {
+  if (!Number.isFinite(opts.expiryDays) || opts.expiryDays <= 0) return [];
+  const res = await client.query<ExpiredRegistration>(
+    `UPDATE users SET deleted_at = now(), updated_at = now()
+      WHERE id IN (
+        SELECT id FROM users
+         WHERE deleted_at IS NULL
+           AND role IS NULL
+           AND is_active = false
+           AND email_verified_at IS NULL
+           AND created_at < now() - ($1 || ' days')::interval
+         ORDER BY created_at
+         LIMIT $2
+      )
+      RETURNING id, email`,
+    [String(opts.expiryDays), opts.limit ?? 200],
+  );
+  for (const row of res.rows) {
+    // Актора нет и по существу: заявку закрыл срок, а не человек.
+    await client.query(
+      `INSERT INTO audit_log (action, entity_type, entity_id, metadata)
+       VALUES ('user.archive_unverified', 'user', $1, jsonb_build_object('expiryDays', $2::int))`,
+      [row.id, opts.expiryDays],
+    );
+  }
+  return [...res.rows];
 }
 
 /**
