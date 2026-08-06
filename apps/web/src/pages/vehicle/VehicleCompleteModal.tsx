@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { App, Form, Input, InputNumber, Segmented, Space, Tag, Typography } from 'antd';
+import { Alert, App, Form, Input, InputNumber, Segmented, Space, Tag, Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import {
   approvedMachineHours,
@@ -9,6 +9,8 @@ import {
   calcVehicleRequestCost,
   type CompleteVehicleRequestInput,
   rateForWorkUnit,
+  shiftsCompletionWarning,
+  unapprovedPastShiftDays,
   VEHICLE_WORK_UNITS,
   vehicleOwnershipColors,
   vehicleOwnershipLabels,
@@ -23,6 +25,7 @@ import { FormGrid } from '@shared/ui';
 import { FormModal } from '@shared/ui';
 import { calendarDayCount } from '../../utils/date';
 import { formatMoney } from '../../utils/format';
+import { formatDateOnly } from './shared';
 
 /**
  * Закрытие заявки фактом (ADR 0029): сколько техника отработала и во сколько это обошлось.
@@ -64,6 +67,16 @@ function defaultUnit(request: VehicleRequestDto): VehicleWorkUnit {
   return 'shifts';
 }
 
+/** Максимум дат в перечне: заказ бывает на месяц, и весь список в предупреждение не влезет. */
+const MAX_LISTED_DAYS = 5;
+
+/** Дни без подписи перечнем: «Без подписи: 12.08.2026, 13.08.2026 и ещё 7». */
+function listDays(days: string[]): string {
+  const head = days.slice(0, MAX_LISTED_DAYS).map(formatDateOnly).join(', ');
+  const rest = days.length - MAX_LISTED_DAYS;
+  return `Без подписи: ${head}${rest > 0 ? ` и ещё ${rest}` : ''}`;
+}
+
 /**
  * Сколько отработано «по плану» — им и открывается поле: у спецтехники это длина заказанного
  * периода в сменах (день работы = смена), у грузоперевозки одна подача. Подставленное значение
@@ -85,15 +98,21 @@ export function VehicleCompleteModal({ request, confirmLoading, onCancel, onSubm
   const assignment = request?.assignment ?? null;
   const rate = rateForWorkUnit(assignment, unit);
 
-  // Принятые объектом машиночасы: сервер всё равно не закроет заявку, пока за наступившие дни
-  // не расписались, — и то, что подписано, и есть основание факта. Сумму часов подставляем в
-  // поле, но не запираем: счёт арендодателя включает и перегон, и минимальный срок аренды.
+  // Принятые объектом машиночасы: подписанные дни и есть основание факта. Сумму часов подставляем
+  // в поле, но не запираем: счёт арендодателя включает и перегон, и минимальный срок аренды.
   const { data: shifts } = useQuery({
     queryKey: ['vehicle-requests', 'shifts', request?.id],
     queryFn: () => vehicleRequestsApi.shifts(request!.id),
     enabled: !!request && request.requestType === 'special_equipment',
   });
   const approvedHours = shifts ? approvedMachineHours(shifts.items) : 0;
+
+  // Дни, за которые объект не расписался. Закрытие они не запирают, но проходить незамеченными не
+  // должны: часы таких дней попадают в факт со слов закрывающего, а не с подписи площадки.
+  // Предупреждение считается по сводке из строки списка — она уже здесь, тогда как таблица смен
+  // приходит вторым запросом и до её ответа перечислять было бы нечего.
+  const pendingShifts = request ? shiftsCompletionWarning(request) : null;
+  const pendingDays = shifts ? unapprovedPastShiftDays(shifts.items, shifts.onDate) : [];
 
   // Окно переиспользуется под разные заявки, поэтому поля сбрасываются при смене цели, а не при
   // размонтировании. Повторное закрытие (после отката администратором) открывается на прежнем
@@ -209,6 +228,19 @@ export function VehicleCompleteModal({ request, confirmLoading, onCancel, onSubm
               <Typography.Paragraph type="warning">
                 Техника у заявки не назначена — стоимость считать не по чему, укажите её вручную
               </Typography.Paragraph>
+            )}
+
+            {/* Незакрытые дни — не отказ, а предупреждение: заявку закрывают и без подписей, но
+              закрывающий должен видеть, что принимает работу за площадку. Даты приходят таблицей
+              смен, поэтому появляются на мгновение позже самого предупреждения. */}
+            {pendingShifts && (
+              <Alert
+                type="warning"
+                showIcon
+                style={{ marginBottom: 16 }}
+                message={pendingShifts}
+                description={pendingDays.length > 0 ? listDays(pendingDays) : undefined}
+              />
             )}
           </FormGrid.Full>
 

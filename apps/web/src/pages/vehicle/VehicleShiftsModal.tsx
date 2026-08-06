@@ -353,8 +353,9 @@ export function VehicleShiftsModal({ request, canEdit, canApprove, onClose }: Pr
             scroll={{ x: 'max-content' }}
           />
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            Заявку нельзя завершить, пока не согласованы все наступившие смены. Будущие дни
-            подтверждают по факту — когда они наступят.
+            Пока наступившие смены не согласованы, заявка остаётся в срезе, а её закрытие
+            предупреждает, что работа не принята объектом. Будущие дни подтверждают по факту — когда
+            они наступят.
           </Typography.Text>
         </div>
       )}

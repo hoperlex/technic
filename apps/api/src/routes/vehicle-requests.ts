@@ -65,7 +65,7 @@ import {
   approveVehicleRequestShiftSchema,
   saveVehicleRequestShiftSchema,
   shiftDayBlocker,
-  shiftsCompletionBlocker,
+  shiftsCompletionWarning,
   type VehicleRequestShiftsDto,
   type VehicleRequestShiftsSummaryDto,
   requestStatusLabels,
@@ -1961,8 +1961,8 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           // Досрочный отъезд (ADR 0044): по статусу заявки его не видно — она всё ещё «В работе»
           // на весь заказанный срок, а площадка освободится раньше, если визу поставят.
           earlyEndPending: sql<number>`count(*) FILTER (WHERE ${vehicleRequestEarlyEndings.status} = 'pending')`,
-          // Долг подписей: по скольким заявкам работа ещё не принята объектом. Пока цифра не
-          // ноль, эти заявки не закроются — а часть из них уже отработала свой срок.
+          // Долг подписей: по скольким заявкам работа ещё не принята объектом. Пока цифра не ноль,
+          // эти заявки закрываются только с предупреждением — а часть из них уже отработала срок.
           shiftsPending: sql<number>`count(*) FILTER (WHERE ${hasUnapprovedPastShiftsSql(onDate)})`,
         })
         .from(vehicleRequests)
@@ -2777,23 +2777,18 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           completion: 'Укажите отработанное время',
         });
       }
-      // Работу по дням принимает объект: пока за наступивший день никто не расписался, о его
-      // машиночасах ещё не договорились, и закрывать по ним заявку рано. Дни перечисляются в
-      // отказе — иначе непонятно, куда идти их подтверждать.
-      if (transitionRequiresCompletion(status)) {
-        const pendingShifts = shiftsCompletionBlocker(before);
-        if (pendingShifts) {
-          const special = before as SpecialEquipmentRequestDto;
-          const dates = await unapprovedPastShiftDates(
-            special.id,
-            special,
-            moscowDateKeyOf(new Date()),
-          );
-          throw err.unprocessable(`${pendingShifts}: ${listDates(dates)}`, {
-            shifts: 'Согласуйте смены',
-          });
-        }
-      }
+      // Работу по дням принимает объект, но закрытию неподписанные дни не мешают: заявку закрывают
+      // и тогда, когда подписи ещё не собрали, — это предупреждение, а не запрет
+      // (`shiftsCompletionWarning`). След остаётся в истории: сводка смен у закрытой заявки
+      // обнуляется, и без пометки у события закрытия неподтверждённая работа выглядела бы принятой.
+      const pendingShiftDates =
+        transitionRequiresCompletion(status) && shiftsCompletionWarning(before)
+          ? await unapprovedPastShiftDates(
+              before.id,
+              before as SpecialEquipmentRequestDto,
+              moscowDateKeyOf(new Date()),
+            )
+          : [];
       // Срок уточняют полями своего типа заявки: тип неизменяем, и «дата начала» у грузоперевозки
       // означала бы, что заявку подменили по дороге.
       if (schedule && schedule.requestType !== before.requestType) {
@@ -3007,7 +3002,16 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           action: 'vehicle_request.complete',
           entityType: 'vehicle_request',
           entityId: before.id,
-          metadata: { changes: diffVehicleCompletion(before.completion, completed) },
+          metadata: {
+            changes: [
+              ...diffVehicleCompletion(before.completion, completed),
+              // Дни, за которые объект так и не расписался: закрытие их принимает молча, а спорят о
+              // машиночасах через два месяца — по истории, и она обязана помнить, что подписи не было.
+              ...(completed && pendingShiftDates.length > 0
+                ? [{ field: 'shiftsPending', from: null, to: listDates(pendingShiftDates) }]
+                : []),
+            ],
+          },
         });
       }
       // Снятый закрытием запрос на досрочное завершение — своё событие: иначе он просто исчезает
@@ -3416,8 +3420,8 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
 
   // ── Подтверждение смен по заказу спецтехники ──
   // Техника стоит на объекте неделями, а работа считается по дням: за каждый день заказа — время
-  // смены, машиночасы, заправка и подпись объекта. Без подписи по всем наступившим дням заявка не
-  // закрывается, а сама она не уходит из среза «На объекте», даже когда срок уже прошёл.
+  // смены, машиночасы, заправка и подпись объекта. Пока подписи по наступившим дням нет, заявка не
+  // уходит из среза «На объекте» даже с прошедшим сроком, а её закрытие идёт с предупреждением.
 
   /**
    * Таблица смен заявки: дни заказа целиком, включая те, за которые ещё ничего не внесли.

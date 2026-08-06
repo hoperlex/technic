@@ -12,8 +12,9 @@ import {
   shiftDayBlocker,
   shiftDaysOf,
   shiftsBlocker,
-  shiftsCompletionBlocker,
+  shiftsCompletionWarning,
   shiftSpanHours,
+  unapprovedPastShiftDays,
   onSitePresence,
   vehicleOnSitePresenceLabels,
   type ShiftSubject,
@@ -107,12 +108,13 @@ describe('где смены ведут', () => {
   });
 });
 
-describe('что запирают подтверждённые дни', () => {
-  it('заявка не закрывается, пока за наступившие дни никто не расписался', () => {
+describe('подтверждённые дни: что запирают и о чём предупреждают', () => {
+  it('закрытие без подписей предупреждает, но не запрещается', () => {
     const r = request({ shifts: { approvedDays: 1, unapprovedPastDays: 2 } });
-    expect(shiftsCompletionBlocker(r)).toMatch(/2 смены без согласования/);
+    expect(shiftsCompletionWarning(r)).toMatch(/2 смены без согласования/);
+    expect(shiftsCompletionWarning(r)).toMatch(/без подписи объекта/);
     expect(
-      shiftsCompletionBlocker(request({ shifts: { approvedDays: 3, unapprovedPastDays: 0 } })),
+      shiftsCompletionWarning(request({ shifts: { approvedDays: 3, unapprovedPastDays: 0 } })),
     ).toBeNull();
   });
 
@@ -121,7 +123,20 @@ describe('что запирают подтверждённые дни', () => {
       requestType: 'freight_transport',
       shifts: { approvedDays: 0, unapprovedPastDays: 5 },
     });
-    expect(shiftsCompletionBlocker(freight)).toBeNull();
+    expect(shiftsCompletionWarning(freight)).toBeNull();
+  });
+
+  it('предупреждение перечисляет наступившие дни без подписи — будущие в него не идут', () => {
+    const days = unapprovedPastShiftDays(
+      [
+        shift({ date: '2026-08-03', approvedAt: '2026-08-03T18:00:00.000Z', approvedBy: 'u-2' }),
+        shift({ date: '2026-08-04' }),
+        shift({ date: '2026-08-05' }),
+        shift({ date: '2026-08-06' }),
+      ],
+      ON_DATE,
+    );
+    expect(days).toEqual(['2026-08-04', '2026-08-05']);
   });
 
   it('машину не меняют и заявку не откатывают, пока подпись стоит', () => {
