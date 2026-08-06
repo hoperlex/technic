@@ -214,10 +214,7 @@ async function approvedRequest(): Promise<{ id: string; version: number }> {
 }
 
 /** Тело формы «Взять в работу»: с включённым перегоном либо без него. */
-function confirmPayload(
-  version: number,
-  delivery: boolean,
-): Record<string, unknown> {
+function confirmPayload(version: number, delivery: boolean): Record<string, unknown> {
   return {
     status: 'confirmed',
     comment: '',

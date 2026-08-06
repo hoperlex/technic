@@ -371,7 +371,12 @@ describe('расхождение назначенной техники с зак
   it('заявка без категории не расходится ни с чем: сравнивать не с чем', () => {
     // Тип без ТТХ (ADR 0028 §3) и заявки старше миграции 0052 — категории у них нет вовсе.
     const s = vehicleSubstitutionOf(
-      { vehicleKindId: SPECIAL, vehicleTypeId: CRANES, vehicleCategoryId: null, categorySpecs: null },
+      {
+        vehicleKindId: SPECIAL,
+        vehicleTypeId: CRANES,
+        vehicleCategoryId: null,
+        categorySpecs: null,
+      },
       {
         vehicleKindId: SPECIAL,
         vehicleTypeId: CRANES,

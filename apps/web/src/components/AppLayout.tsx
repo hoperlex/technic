@@ -12,6 +12,7 @@ import {
   LogoutOutlined,
   NotificationOutlined,
   RightOutlined,
+  ScheduleOutlined,
   TeamOutlined,
 } from '@ant-design/icons';
 import { Outlet, useLocation, useNavigate } from 'react-router';
@@ -102,6 +103,18 @@ export function AppLayout() {
             icon: <ProfileOutlined />,
             label: 'Путевые листы',
             short: 'Листы',
+          },
+        ]
+      : []),
+    // Гараж (ADR 0076) — срез дня: чем заняты свои машины и водители. Стоит после листов, рядом
+    // с тем, из чего собран: рейсы, заказы и бланки ведут в соседних разделах.
+    ...(can('garage.read')
+      ? [
+          {
+            key: '/garage',
+            icon: <ScheduleOutlined />,
+            label: 'Гараж',
+            short: 'Гараж',
           },
         ]
       : []),

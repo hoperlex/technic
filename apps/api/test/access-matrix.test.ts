@@ -134,18 +134,10 @@ const CASES: Case[] = [
     },
     allowed: ['admin', 'manager', 'dispatcher'],
   },
-  {
-    // Загрузка кадровой выгрузки (ADR 0047) заводит тех же людей теми же записями, что и форма
-    // заведения, — отличается только количеством. Своего права у неё поэтому нет.
-    title: 'загрузка кадровой выгрузки — тем же, кто заводит водителей',
-    method: 'POST',
-    url: '/api/v1/drivers/import',
-    payload: {
-      dryRun: true,
-      file: { drivers: [{ fullName: 'Тестовый Водитель Водителевич', snils: '112-233-445 95' }] },
-    },
-    allowed: ['admin', 'manager', 'dispatcher'],
-  },
+  // Загрузки кадровой выгрузки у водителей больше нет: справочник грузится файлом .xlsx через
+  // обмен справочниками (ADR 0073), и его маршруты проверяются ниже, в разделе администрирования.
+  // Право там своё — `directories.import`, только у администратора: диспетчер по-прежнему заводит
+  // водителя формой, но справочник целиком файлом не переписывает.
   {
     // Отбор водителя под машину — часть формы перевода заявки в работу. Право на статусы
     // заявок ТС сюда не годится: с ADR 0038 оно есть и у арендодателя, а водителей нашего
@@ -261,6 +253,34 @@ const CASES: Case[] = [
     title: 'подсказка рейсов при переводе в работу — теми же двумя правами',
     method: 'GET',
     url: `/api/v1/vehicle-requests/${RECORD_ID}/route-prefill?vehicleId=${RECORD_ID}`,
+    allowed: ['admin', 'manager', 'dispatcher'],
+  },
+  // ── Гараж (ADR 0076): срез дня по своему парку и водителям ──
+  // Право своё, а не сумма прав источников среза: в строке видно, кто за рулём, — те же
+  // персональные данные, что в карточке водителя. Наблюдателю раздел закрыт вместе с ними, хотя
+  // заявки он читает; арендодателю — тем более: парк и водители тут наши.
+  {
+    title: 'срез техники — закрыт от всех, кроме ведущих водителей и листы',
+    method: 'GET',
+    url: '/api/v1/garage/vehicles',
+    allowed: ['admin', 'manager', 'dispatcher'],
+  },
+  {
+    title: 'сводка по парку — тем же правом',
+    method: 'GET',
+    url: '/api/v1/garage/vehicles/summary',
+    allowed: ['admin', 'manager', 'dispatcher'],
+  },
+  {
+    title: 'срез водителей — тем же правом',
+    method: 'GET',
+    url: '/api/v1/garage/drivers',
+    allowed: ['admin', 'manager', 'dispatcher'],
+  },
+  {
+    title: 'сводка по водителям — тем же правом',
+    method: 'GET',
+    url: '/api/v1/garage/drivers/summary',
     allowed: ['admin', 'manager', 'dispatcher'],
   },
   // ── Справочники: чтение нужно всем (форма заявки), ведение — трём ролям ──
@@ -807,6 +827,30 @@ const CASES: Case[] = [
     allowed: ['admin'],
   },
   { title: 'аудит — журнал', method: 'GET', url: '/api/v1/audit', allowed: ['admin'] },
+
+  // ── Обмен справочниками файлом (ADR 0073) ──
+  // Своё право, а не `directories.write`: выгрузка уносит справочник целиком (у водителей — с
+  // персональными данными), загрузка меняет сотни строк одним действием. Диспетчер и менеджер
+  // ведут справочники, но обмена файлом им не выдано.
+  {
+    title: 'обмен справочниками — список',
+    method: 'GET',
+    url: '/api/v1/directories',
+    allowed: ['admin'],
+  },
+  {
+    title: 'обмен справочниками — выгрузка',
+    method: 'GET',
+    url: '/api/v1/directories/objects/export',
+    allowed: ['admin'],
+  },
+  {
+    title: 'обмен справочниками — загрузка',
+    method: 'POST',
+    url: '/api/v1/directories/objects/import',
+    payload: { dryRun: true, filename: 'objects.xlsx', contentBase64: 'UEsDBBQAAAAIAA==' },
+    allowed: ['admin'],
+  },
 ];
 
 /**

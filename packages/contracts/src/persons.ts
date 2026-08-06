@@ -658,59 +658,12 @@ export const driverListQuerySchema = baseListQuery(DRIVER_SORT_FIELDS).extend({
 });
 export type DriverListQuery = z.infer<typeof driverListQuerySchema>;
 
-// ── Кадровая выгрузка (ADR 0047) ──
-
-/**
- * Сколько строк принимается за раз. Ограничение не про производительность, а про происхождение
- * файла: кадровая выгрузка одного отдела — это десятки человек, и файл на тысячу строк означает,
- * что грузят не то, что собирались. Отказ по размеру объясним, молча заведённая тысяча — нет.
- */
-export const DRIVERS_IMPORT_MAX_RECORDS = 500;
-
-/**
- * Реквизиты ВУ из кадровой таблицы. Даты оставлены строками по той же причине, что даты человека:
- * единый разбор обоих поддерживаемых форматов и понятные ошибки живут в `prepareDriverImport`.
- * Категории остаются в поле `categories` строки — это сохраняет совместимость со старой
- * выгрузкой, где реквизитов документа ещё не было.
- */
-export const driverImportLicenseSchema = z
-  .object({
-    series: z.string().trim().min(1, 'Серия ВУ обязательна').max(20),
-    number: z.string().trim().min(1, 'Номер ВУ обязателен').max(20),
-    issuedOn: z.string().trim().min(1, 'Дата выдачи ВУ обязательна').max(10),
-    expiresOn: z.string().trim().min(1, 'Срок действия ВУ обязателен').max(10),
-    issuedBy: z.string().trim().max(255).optional(),
-  })
-  .strict();
-export type DriverImportLicenseInput = z.infer<typeof driverImportLicenseSchema>;
-
-/**
- * Одна строка выгрузки. Даты приняты в двух видах намеренно: «ГГГГ-ММ-ДД» отдаёт кадровая
- * система, «ДД.ММ.ГГГГ» набирает человек, а файл правит кадровик, а не программист. Разбор,
- * контрольная сумма СНИЛС и категории — в `prepareDriverImport`: схема проверяет форму, а не
- * содержание, и валидировать здесь второй раз значило бы завести второй набор правил.
- */
-export const driverImportRecordSchema = z
-  .object({
-    fullName: z.string().trim().min(1, 'ФИО обязательно').max(255),
-    personnelNo: z.string().trim().max(50).optional(),
-    /**
-     * Должность и подразделение строки. В выгрузке отдела они разные — водители, водители КМУ,
-     * машинисты крана, погрузчика и экскаватора сидят в одном файле, а обособленные подразделения
-     * идут его разделами. Не указаны — берутся общие из файла.
-     */
-    jobTitle: z.string().trim().max(255).optional(),
-    department: z.string().trim().max(255).optional(),
-    birthDate: z.string().trim().max(10).optional(),
-    employedSince: z.string().trim().max(10).optional(),
-    snils: z.string().trim().min(1, 'СНИЛС обязателен').max(20),
-    /** Категории строкой ровно как в источнике («B,B1,C,C1,BE,CE,C1E»). */
-    categories: z.string().trim().max(200).optional(),
-    /** Заполнено, когда к кадровым данным приложены полные реквизиты ВУ. */
-    license: driverImportLicenseSchema.optional(),
-  })
-  .strict();
-export type DriverImportRecordInput = z.infer<typeof driverImportRecordSchema>;
+// ── Кадровая строка: как её читает портал (ADR 0047, формат — ADR 0073) ──
+//
+// Схем самого файла здесь больше нет: справочник водителей грузится тем же `.xlsx`, что и
+// остальные справочники, и форму файла проверяет обмен (`services/directory-transfer`). Осталось
+// то, что описывает не файл, а предметную область: какая должность означает водителя и какие коды
+// бывают только у водительского удостоверения. Ими пользуется и разбор загрузки, и портал.
 
 /**
  * Должности, которым колонка «категории» означает водительское удостоверение. У машиниста в той
@@ -760,42 +713,6 @@ export function looksLikeDriverLicense(codes: readonly string[]): boolean {
 }
 
 /**
- * Файл выгрузки целиком. `source` и `note` описывают происхождение файла и в справочник не
- * попадают; `department` и `jobTitle` — значения по умолчанию для строк, где своих нет
- * (ADR 0049): подразделение становится комментарием трудового отношения, должность — должностью.
- *
- * `.strict()` здесь важнее обычного: лишнее поле в файле означает, что выгрузку делали по другому
- * шаблону, и молча проигнорировать его — значит завести людей не тем, чем собирались.
- */
-export const driversImportFileSchema = z
-  .object({
-    source: z.string().trim().max(255).optional(),
-    note: z.string().trim().max(2000).optional(),
-    department: z.string().trim().max(255).optional(),
-    jobTitle: z.string().trim().max(255).optional(),
-    drivers: z
-      .array(driverImportRecordSchema)
-      .min(1, 'В выгрузке нет ни одной строки')
-      .max(DRIVERS_IMPORT_MAX_RECORDS, `Не больше ${DRIVERS_IMPORT_MAX_RECORDS} строк за раз`),
-  })
-  .strict();
-export type DriversImportFileInput = z.infer<typeof driversImportFileSchema>;
-
-/**
- * Загрузка выгрузки. `dryRun` — не удобство, а обязательный первый шаг работы с чужим файлом:
- * заведение живых людей необратимо (обратной операции у наполнения нет — удаление человека это
- * учётное действие с аудитом), поэтому сначала показывается, что произойдёт.
- */
-export const driversImportSchema = z
-  .object({
-    dryRun: z.boolean().optional().default(false),
-    file: driversImportFileSchema,
-  })
-  .strict();
-export type DriversImportInput = z.infer<typeof driversImportSchema>;
-export type DriversImportBody = z.input<typeof driversImportSchema>;
-
-/**
  * Что получилось. Отчёт перечисляет людей поимённо, а не числами: тот, кто грузит файл, обязан
  * увидеть, кого именно заводит, — сверять он будет с бумажной выгрузкой в руках.
  */
@@ -820,9 +737,3 @@ export interface DriversImportReportDto {
   /** Однофамилец среди заведённых раньше с другим СНИЛС — повод проверить, не один ли человек. */
   nameCollisions: { who: string; existing: string }[];
 }
-
-/** Предупреждение о пустых реквизитах — то же, что печатает CLI после наполнения. */
-export const DRIVERS_IMPORT_LICENSE_HINT =
-  'У заведённых удостоверений пустые серия, номер и сроки: в выгрузке их нет. Пока они пустые, ' +
-  'водитель в отбор под машину не попадает: без номера удостоверения путевой лист печатается ' +
-  'недействительным. Реквизиты вносит администратор в карточке водителя — заменой документа.';

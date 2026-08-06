@@ -2,7 +2,13 @@ import { z } from 'zod';
 import { containerKindSchema, type ContainerKind } from './enums';
 import { baseListQuery } from './common';
 
-export const CONTAINER_TYPE_SORT_FIELDS = ['code', 'name', 'sortOrder', 'type', 'isActive'] as const;
+export const CONTAINER_TYPE_SORT_FIELDS = [
+  'code',
+  'name',
+  'sortOrder',
+  'type',
+  'isActive',
+] as const;
 
 export const containerTypeListQuerySchema = baseListQuery(CONTAINER_TYPE_SORT_FIELDS).extend({
   type: containerKindSchema.optional(),

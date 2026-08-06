@@ -11,6 +11,7 @@ import { ResetPasswordPage } from './pages/ResetPasswordPage';
 import { ChangePasswordPage } from './pages/ChangePasswordPage';
 import { WasteRequestsPage } from './pages/WasteRequestsPage';
 import { VehicleRequestsPage } from './pages/VehicleRequestsPage';
+import { GaragePage } from './pages/GaragePage';
 import { DirectoriesPage } from './pages/DirectoriesPage';
 import { AdministrationPage } from './pages/AdministrationPage';
 
@@ -42,10 +43,17 @@ export default function App() {
             <Route element={<RequirePermission permission="waybills.read" />}>
               <Route path="/waybills" element={<WaybillsPage />} />
             </Route>
+            {/* Гараж (ADR 0076) — срез дня по парку и водителям: своё право, потому что в нём
+                видно, кто за рулём, — те же персональные данные, что в карточке водителя. */}
+            <Route element={<RequirePermission permission="garage.read" />}>
+              <Route path="/garage" element={<GaragePage />} />
+            </Route>
             <Route element={<RequirePermission permission="directories.write" />}>
               <Route path="/directories" element={<DirectoriesPage />} />
             </Route>
-            <Route element={<RequirePermission permission="users.manage" />}>
+            {/* Администрирование — страница из вкладок под разными правами: учётки ведёт один
+                человек, рассылки может настраивать другой. */}
+            <Route element={<RequirePermission permission={['users.manage', 'mailings.read']} />}>
               <Route path="/admin" element={<AdministrationPage />} />
             </Route>
           </Route>

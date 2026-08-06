@@ -10,6 +10,15 @@ import { minRequestDateKey } from '@technic/contracts';
 // Редактирования правило не касается: у заведённой заявки дата бывает и вчерашней, запрет на
 // её выбор мешал бы правкам — там остаётся прежнее «не в прошлое».
 
+/**
+ * Дата без времени (`YYYY-MM-DD`) — как есть, без пересчёта часовых поясов: часа в ней нет,
+ * а перевод в МСК из браузера восточнее Москвы сдвинул бы срок спецтехники на день назад.
+ */
+export function formatDateOnly(value: string): string {
+  const [y, m, d] = value.split('-');
+  return y && m && d ? `${d}.${m}.${y}` : value;
+}
+
 /** Минимальная дата новой заявки: сегодня по МСК. Она же — значение по умолчанию. */
 export function minRequestDate(): Dayjs {
   return dayjs(minRequestDateKey()).startOf('day');

@@ -11,8 +11,6 @@ import {
   driverListQuerySchema,
   type DriverSelectionDto,
   driverSelectionQuerySchema,
-  type DriversImportReportDto,
-  driversImportSchema,
   isValidSnils,
   licenseNumberLabel,
   revokeDriverLicenseSchema,
@@ -42,11 +40,10 @@ import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
 import {
   DRIVER_LICENSE_CODE,
   DRIVER_SPECIALIZATION_CODE,
-  licenseCompleteConditions,
+  documentsCompleteCondition,
+  driverCondition,
   selectDrivers,
 } from '../services/drivers';
-import { DriverImportError } from '../services/driver-import';
-import { applyDriverImport, DirectoriesNotSeededError } from '../services/driver-import-apply';
 import { registerPurgeRoute } from '../services/directory-purge';
 import { hardDeleteFiles } from '../services/request-files';
 
@@ -255,25 +252,6 @@ function todayInMoscow(): string {
 }
 
 /**
- * Полный комплект данных для путевого листа: СНИЛС человека и годное на сегодня удостоверение,
- * у которого заполнены номер и дата выдачи. Ровно эти графы бланк и печатает — правило целиком
- * записано в `driverDocumentGaps` для формы и в `licenseCompleteConditions` для запроса; здесь
- * оно только оборачивается в EXISTS, потому что фильтр применяется до страницы, и посчитать
- * полноту по выданным строкам сервер не может.
- *
- * Тем же набором условий сужается отбор водителя под машину (ADR 0055) — разъехаться им негде.
- */
-function documentsCompleteCondition(on: string) {
-  return sql`${persons.snils} <> '' AND EXISTS (
-    SELECT 1 FROM ${personCredentials}
-    JOIN ${credentialTypes} ON ${credentialTypes.id} = ${personCredentials.credentialTypeId}
-    WHERE ${personCredentials.personId} = ${persons.id}
-      AND ${credentialTypes.code} = ${DRIVER_LICENSE_CODE}
-      AND ${and(...licenseCompleteConditions(on))!}
-  )`;
-}
-
-/**
  * У кого открыта эта категория на сегодня (ADR 0055). Справочный вопрос — «кого можно посадить за
  * седельный тягач», — а не отбор под конкретную машину: тот считается на дату рейса и категорией
  * не сужается. Сроки самой категории учитываются: открытая до июня к июлю закрыта, даже если
@@ -298,23 +276,6 @@ function categoryCondition(categoryId: string, on: string) {
         OR ${personCredentialCategories.validFrom} <= ${on}::date)
       AND (${personCredentialCategories.validTo} IS NULL
         OR ${personCredentialCategories.validTo} >= ${on}::date)
-  )`;
-}
-
-/**
- * Только водители: специализация действующая — уволенного из справочника не показывают.
- *
- * У удалённого человека действующей специализации не бывает: удаление само закрывает её сегодняшним
- * днём. Поэтому для архивной записи условие смягчено — иначе `includeDeleted` не показывал бы
- * ничего, а карточка удалённого водителя не открывалась бы даже администратору.
- */
-function driverCondition() {
-  return sql`EXISTS (
-    SELECT 1 FROM ${personSpecializations} ps
-    JOIN ${specializations} s ON s.id = ps.specialization_id
-    WHERE ps.person_id = ${persons.id}
-      AND (ps.ended_on IS NULL OR ${persons.deletedAt} IS NOT NULL)
-      AND s.code = ${DRIVER_SPECIALIZATION_CODE}
   )`;
 }
 
@@ -576,54 +537,10 @@ export default async function driversRoutes(app: FastifyInstance): Promise<void>
     },
   );
 
-  /**
-   * Наполнение справочника кадровой выгрузкой (ADR 0047).
-   *
-   * Единственный вход для выгрузки: путь с сервера снят (ADR 0047, изменение от 06.08.2026).
-   * Доступ к серверу есть не у всякого, кто ведёт справочник, а выгрузка приходит от кадровика
-   * тогда, когда пришла.
-   *
-   * Право то же, что у заведения водителя руками: загрузка заводит ровно тех же людей теми же
-   * записями, отличаясь только количеством. Отдельное право означало бы, что кому-то можно
-   * завести двадцать восемь человек по одному, но нельзя — файлом.
-   */
-  r.post(
-    '/import',
-    { preHandler: [app.authenticate, canWrite], schema: { body: driversImportSchema } },
-    async (req) => {
-      const p = requirePrincipal(req);
-      const { dryRun, file } = req.body;
-
-      let report: DriversImportReportDto;
-      try {
-        report = await applyDriverImport(file, { dryRun, actorUserId: p.id });
-      } catch (e) {
-        // Разбор упал — это про содержимое присланного файла, и сказать об этом надо дословно:
-        // «Петров Пётр: СНИЛС не проходит проверку контрольной суммы» человек исправит, «422» — нет.
-        if (e instanceof DriverImportError) throw err.unprocessable(e.message);
-        if (e instanceof DirectoriesNotSeededError) throw err.conflict(e.message);
-        throw e;
-      }
-
-      // Пишется только состоявшееся наполнение: dry-run базу не менял. Поимённого состава в
-      // метаданных нет намеренно — заведённые люди и так видны в справочнике с автором записи,
-      // а аудит-лог не место для второго хранилища ФИО (ADR 0037 п. 13).
-      if (!dryRun) {
-        await writeAudit({
-          actorUserId: p.id,
-          action: 'driver.import',
-          entityType: 'person',
-          metadata: {
-            created: report.created.length,
-            skipped: report.skipped.length,
-            source: file.source ?? '',
-            department: file.department ?? '',
-          },
-        });
-      }
-      return report;
-    },
-  );
+  // Наполнение справочника файлом переехало в обмен справочниками (ADR 0073): формат один на все
+  // справочники — .xlsx, и вход у него один — «Администрирование → Обмен справочниками». Своего
+  // маршрута загрузки у водителей больше нет; правила разбора кадровой строки при этом остались
+  // прежними, сменился только источник строк.
 
   r.patch(
     '/:id',

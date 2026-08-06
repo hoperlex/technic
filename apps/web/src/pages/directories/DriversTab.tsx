@@ -17,7 +17,6 @@ import {
   EditOutlined,
   IdcardOutlined,
   PlusOutlined,
-  UploadOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -45,7 +44,6 @@ import {
   SNILS_MESSAGE,
 } from '@technic/contracts';
 import { driversApi } from '../../api/resources';
-import { DriversImportModal } from './DriversImportModal';
 import { PhoneField } from '../../components/PhoneField';
 import { DataTable, type CardConfig } from '@shared/ui';
 import { FormModal } from '@shared/ui';
@@ -144,7 +142,6 @@ export function DriversTab() {
   }));
 
   const [open, setOpen] = useState(false);
-  const [importOpen, setImportOpen] = useState(false);
   const [record, setRecord] = useState<DriverDto | null>(null);
   const [licenseFor, setLicenseFor] = useState<DriverDto | null>(null);
   const [form] = Form.useForm<DriverFormValues>();
@@ -725,16 +722,12 @@ export function DriversTab() {
       }}
       extra={
         canWrite ? (
-          <Space>
-            {/* Кадровая выгрузка приходит файлом на весь отдел: заводить два десятка человек
-                формой по одному — работа на день, а ошибка в СНИЛС обнаружится на путевом листе. */}
-            <Button icon={<UploadOutlined />} onClick={() => setImportOpen(true)}>
-              Загрузить выгрузку
-            </Button>
-            <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-              Добавить водителя
-            </Button>
-          </Space>
+          // Кадровая выгрузка файлом переехала в «Администрирование → Обмен справочниками»
+          // (ADR 0073): формат теперь один на все справочники, и вход у него один. Здесь остаётся
+          // заведение по одному — им пользуется тот же диспетчер, у которого прав на обмен нет.
+          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
+            Добавить водителя
+          </Button>
         ) : undefined
       }
     >
@@ -861,12 +854,6 @@ export function DriversTab() {
           </Form.Item>
         </Form>
       </FormModal>
-
-      <DriversImportModal
-        open={importOpen}
-        onClose={() => setImportOpen(false)}
-        onImported={invalidate}
-      />
     </PageTableLayout>
   );
 }

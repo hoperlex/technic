@@ -31,10 +31,15 @@ import driversRoutes from './routes/drivers';
 import waybillsRoutes from './routes/waybills';
 import vehicleRequestsRoutes from './routes/vehicle-requests';
 import vehicleRoutesRoutes from './routes/vehicle-routes';
+import garageRoutes from './routes/garage';
 import wasteRequestsRoutes from './routes/waste-requests';
 import wasteTypesRoutes from './routes/waste-types';
 import wasteTariffsRoutes from './routes/waste-tariffs';
 import filesRoutes from './routes/files';
+import directoryTransferRoutes from './routes/directory-transfer';
+import adminMailRoutes from './routes/admin-mail';
+import adminMailingsRoutes from './routes/admin-mailings';
+import internalMailRoutes from './routes/internal-mail';
 import auditRoutes from './routes/audit';
 
 function parseTrustProxy(v: string | undefined): boolean | string | string[] {
@@ -93,11 +98,21 @@ export async function buildApp(options: BuildAppOptions = {}) {
   await app.register(driversRoutes, { prefix: '/api/v1/drivers' });
   await app.register(vehicleRequestsRoutes, { prefix: '/api/v1/vehicle-requests' });
   await app.register(vehicleRoutesRoutes, { prefix: '/api/v1/vehicle-routes' });
+  // Гараж (ADR 0076) — срез дня поверх рейсов, заявок и листов: своих таблиц у него нет, поэтому
+  // и префикс свой, а не ветка одного из этих модулей.
+  await app.register(garageRoutes, { prefix: '/api/v1/garage' });
   await app.register(waybillsRoutes, { prefix: '/api/v1/waybills' });
   await app.register(wasteRequestsRoutes, { prefix: '/api/v1/waste-requests' });
   await app.register(wasteTypesRoutes, { prefix: '/api/v1/waste-types' });
   await app.register(wasteTariffsRoutes, { prefix: '/api/v1/waste-tariffs' });
   await app.register(filesRoutes, { prefix: '/api/v1/files' });
+  // Обмен справочниками файлом Excel (ADR 0073) — свой префикс, а не ветка каждого справочника:
+  // выгружает и загружает их один механизм, и открыт он только администратору.
+  await app.register(directoryTransferRoutes, { prefix: '/api/v1/directories' });
+  await app.register(adminMailRoutes, { prefix: '/api/v1/admin/mail' });
+  await app.register(adminMailingsRoutes, { prefix: '/api/v1/admin/mail' });
+  // Наружу не проксируется: этим маршрутом ходит только планировщик из worker (ADR 0075).
+  await app.register(internalMailRoutes, { prefix: '/internal/mail' });
   await app.register(auditRoutes, { prefix: '/api/v1/audit' });
 
   return app;

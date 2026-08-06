@@ -90,6 +90,43 @@ export function licenseCompleteConditions(on: string): SQL[] {
   ];
 }
 
+/**
+ * Полный комплект данных для путевого листа: СНИЛС человека и годное на сегодня удостоверение, у
+ * которого заполнены номер и дата выдачи. Ровно эти графы бланк и печатает — правило целиком
+ * записано в `driverDocumentGaps` для формы и в `licenseCompleteConditions` для запроса; здесь оно
+ * только оборачивается в EXISTS, потому что фильтр применяется до страницы, и посчитать полноту по
+ * выданным строкам сервер не может.
+ *
+ * Спрашивают его двое — справочник водителей и гараж (ADR 0076), — и спрашивают об одном:
+ * выпишется ли по этому человеку лист на эту дату. Второй копии условия быть не должно.
+ */
+export function documentsCompleteCondition(on: string): SQL {
+  return sql`${persons.snils} <> '' AND EXISTS (
+    SELECT 1 FROM ${personCredentials}
+    JOIN ${credentialTypes} ON ${credentialTypes.id} = ${personCredentials.credentialTypeId}
+    WHERE ${personCredentials.personId} = ${persons.id}
+      AND ${credentialTypes.code} = ${DRIVER_LICENSE_CODE}
+      AND ${and(...licenseCompleteConditions(on))!}
+  )`;
+}
+
+/**
+ * Только водители: специализация действующая — уволенного из справочника не показывают.
+ *
+ * У удалённого человека действующей специализации не бывает: удаление само закрывает её сегодняшним
+ * днём. Поэтому для архивной записи условие смягчено — иначе `includeDeleted` не показывал бы
+ * ничего, а карточка удалённого водителя не открывалась бы даже администратору.
+ */
+export function driverCondition(): SQL {
+  return sql`EXISTS (
+    SELECT 1 FROM ${personSpecializations} ps
+    JOIN ${specializations} s ON s.id = ps.specialization_id
+    WHERE ps.person_id = ${persons.id}
+      AND (ps.ended_on IS NULL OR ${persons.deletedAt} IS NOT NULL)
+      AND s.code = ${DRIVER_SPECIALIZATION_CODE}
+  )`;
+}
+
 export interface DriverOption {
   personId: string;
   fullName: string;
@@ -281,7 +318,7 @@ async function loadExperience(
  * графы бланка и категории со своими сроками. Полного `DriverLicenseDto` здесь не собирают — кто
  * и когда проверил бумагу, списку выбора не нужно.
  */
-interface DriverLicenseRow extends WaybillLicense {
+export interface DriverLicenseRow extends WaybillLicense {
   id: string;
   categories: { code: string; name: string; validFrom: string | null; validTo: string | null }[];
 }
@@ -294,7 +331,7 @@ interface DriverLicenseRow extends WaybillLicense {
  * Порядок — свежий документ первым, тот же, что в карточке водителя: из двух одинаково заполненных
  * годных удостоверений лист выпишется по свежему, а не по случайному.
  */
-async function loadLicenses(
+export async function loadDriverLicenses(
   reader: Reader,
   personIds: string[],
 ): Promise<Map<string, DriverLicenseRow[]>> {
@@ -392,7 +429,7 @@ export async function loadDriverGaps(
   const gaps = new Map<string, DriverDocumentGap[]>();
   if (people.length === 0) return gaps;
 
-  const licensesByPerson = await loadLicenses(reader, [...new Set(people.map((p) => p.personId))]);
+  const licensesByPerson = await loadDriverLicenses(reader, [...new Set(people.map((p) => p.personId))]);
   for (const p of people) {
     gaps.set(
       driverGapsKey(p.personId, p.on),
@@ -465,7 +502,7 @@ export async function selectDrivers(
   const personnelByPerson = new Map(employments.map((e) => [e.personId, e.personnelNo]));
 
   const experience = await loadExperience(vehicleId, personIds, on);
-  const licensesByPerson = await loadLicenses(db, personIds);
+  const licensesByPerson = await loadDriverLicenses(db, personIds);
 
   return {
     requirement,

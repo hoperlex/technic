@@ -1,5 +1,5 @@
-import { useState, type ReactNode } from 'react';
-import { App, Button, Dropdown, Form, Input, Select, Tag, Tooltip, Typography, Upload } from 'antd';
+import { useState } from 'react';
+import { App, Button, Dropdown, Form, Input, Tag, Tooltip, Typography, Upload } from 'antd';
 import {
   CheckCircleOutlined,
   CheckOutlined,
@@ -12,31 +12,28 @@ import {
   allowedVehicleRequestTransitions,
   isApprovalChangeable,
   isPlaceScopedRole,
-  parseVehicleClassificationKey,
   type RequestStatus,
   requestStatusColors,
   requestStatusLabels,
   type RequestVehicleEarlyEndInput,
   type SpecialEquipmentRequestDto,
-  vehicleClassificationKey,
   type VehicleRequestDto,
   type VehicleRequestEarlyEndDto,
 } from '@technic/contracts';
 import { filesApi, vehicleRequestsApi } from '../../api/resources';
-import {
-  useVehicleClassifications,
-  type VehicleClassificationGroup,
-  type VehicleClassificationOption,
+import type {
+  VehicleClassificationGroup,
+  VehicleClassificationOption,
 } from '../../hooks/useVehicleClassifications';
 import { ActionSheet } from '@shared/ui';
 import { AutoSelect } from '@shared/ui';
 import { ExpandableCell } from '@shared/ui';
 import { FileLinkList } from '../../components/FileLinks';
 import { PhoneLink } from '../../components/PhoneField';
-import type { FilterDefinition } from '@shared/ui';
 import { useIsMobile } from '@shared/lib';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage, formatDateTime } from '../../utils/format';
+import { formatDateOnly } from '../../utils/date';
 import { objectsApi, objectKeys } from '@entities/object';
 import { departmentOptionsQuery } from '@entities/department';
 
@@ -44,13 +41,10 @@ export const FILE_MAX_COUNT = 20;
 export const FILE_MAX_SIZE = 52_428_800; // 50 МБ
 
 /**
- * Дата без времени (`YYYY-MM-DD`) — как есть, без пересчёта часовых поясов: часа в ней нет,
- * а перевод в МСК из браузера восточнее Москвы сдвинул бы срок спецтехники на день назад.
+ * Дата без времени переехала к остальным правилам дат (`utils/date`): её печатает и гараж
+ * (ADR 0076), которому эта страница не видна. Реэкспорт — для прежних потребителей.
  */
-export function formatDateOnly(value: string): string {
-  const [y, m, d] = value.split('-');
-  return y && m && d ? `${d}.${m}.${y}` : value;
-}
+export { formatDateOnly };
 
 export interface EditorFile {
   id: string;
@@ -90,67 +84,11 @@ export function useDepartmentOptions() {
 }
 
 /**
- * Фильтр по заказанной технике — общий для списка заявок и журнала: вопрос «какую технику
- * заказывали» в них один и тот же.
- *
- * Один список на оба уровня, а не «тип, затем категория» двумя полями: выбор и в форме заявки
- * один (ADR 0028), и в фильтре читается так же — «Автокраны — все категории» рядом с «Автокраны,
- * г/п 130 т». Каскад из двух полей стоил бы двух касаний в шите на телефоне (ADR 0030), где
- * второе поле появлялось бы только после «Применить».
- *
- * Список не сужается выбранным типом заявки: фильтры независимы, а пустой результат
- * («грузоперевозка автокраном») читается сам.
+ * Фильтр по заказанной технике переехал к самому классификатору (`useVehicleClassificationFilter`):
+ * его спрашивает и гараж (ADR 0076), а импорт чужой страницы запрещён границами слоёв. Реэкспорт
+ * держится для прежних потребителей — они берут его отсюда вместе с остальным общим этой страницы.
  */
-export function useVehicleClassificationFilter({
-  vehicleTypeId,
-  vehicleCategoryId,
-  onChange,
-}: {
-  vehicleTypeId: string | undefined;
-  vehicleCategoryId: string | undefined;
-  /** В параметры списка уходит пара полей: ключ позиции — только вид выбора, не запрос. */
-  onChange: (patch: { vehicleTypeId?: string; vehicleCategoryId?: string }) => void;
-}): { controls: ReactNode; mobileFilter: FilterDefinition } {
-  const { filterGroups, loading } = useVehicleClassifications();
-  const value = vehicleTypeId
-    ? vehicleClassificationKey(vehicleTypeId, vehicleCategoryId)
-    : undefined;
-  const pick = (key: string | undefined) => {
-    const picked = parseVehicleClassificationKey(key);
-    onChange({
-      vehicleTypeId: picked?.vehicleTypeId,
-      vehicleCategoryId: picked?.vehicleCategoryId ?? undefined,
-    });
-  };
-
-  const controls = (
-    <Select
-      allowClear
-      showSearch
-      optionFilterProp="label"
-      placeholder="Вся техника"
-      style={{ width: 250 }}
-      options={filterGroups}
-      loading={loading}
-      value={value}
-      onChange={pick}
-    />
-  );
-
-  /** Тот же фильтр описанием — для шита на телефоне (ADR 0030). */
-  const mobileFilter: FilterDefinition = {
-    kind: 'select',
-    key: 'classification',
-    label: 'Тип/категория ТС',
-    value,
-    options: filterGroups,
-    placeholder: 'Вся техника',
-    loading,
-    onChange: pick,
-  };
-
-  return { controls, mobileFilter };
-}
+export { useVehicleClassificationFilter } from '../../hooks/useVehicleClassificationFilter';
 
 /** Редактор прикреплённых файлов (загрузка в S3 + список add/remove). */
 export function useFileEditor() {
