@@ -150,6 +150,9 @@ async function linksByWaybill(ids: string[]): Promise<Map<string, WaybillRequest
       requestId: waybillRequests.requestId,
       slot: waybillRequests.slot,
       num: vehicleRequests.num,
+      // Состояние заявки на сейчас: им портал выбирает, в каком списке её показать по нажатию на
+      // номер талона — в рабочем или в журнале закрытых.
+      status: vehicleRequests.status,
       // Талон заказчика: объект или отдел (ADR 0040) — innerJoin по объекту терял бы заявки
       // отдела вместе с их листами.
       objectName: constructionObjects.name,
@@ -169,6 +172,7 @@ async function linksByWaybill(ids: string[]): Promise<Map<string, WaybillRequest
       displayNumber: formatVehicleRequestNumber(row.num),
       slot: row.slot,
       objectName: requestCustomerName(row),
+      status: row.status,
     });
     map.set(row.waybillId, list);
   }

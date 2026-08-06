@@ -19,7 +19,7 @@ import {
   parseVehicleRequestNumberSearch,
   type RequestStatus,
   requestStatusColors,
-  requestCustomerName,
+  requestCustomerLabel,
   requestStatusLabels,
   VEHICLE_REQUEST_TYPES,
   vehicleClassificationLabel,
@@ -33,12 +33,13 @@ import { counterpartiesApi, vehicleRequestsApi } from '../../api/resources';
 import { DataTable, type CardConfig } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
-import { TabsExtra } from '../../components/PageTabs';
+import { TabsExtra, useActiveTabKey } from '../../components/PageTabs';
 import { SummaryBar } from '@shared/ui';
 import { actionsColumn, RowActionButton, textColumn } from '@shared/ui';
 import { UserAvatar } from '../../components/UserAvatar';
-import { ObjectCell } from '../../components/ObjectCell';
+import { ObjectCell, OBJECT_COLUMN_WIDTH } from '../../components/ObjectCell';
 import { useListParams } from '@shared/lib';
+import { useOpenedRecord } from '@shared/lib';
 import { useAuth } from '../../auth/AuthContext';
 import { formatDate, formatDateTimeMaybe, formatMoney } from '../../utils/format';
 import { calendarDayCount } from '../../utils/date';
@@ -145,6 +146,16 @@ export function VehicleRequestsHistoryTab() {
 
   const [viewRecord, setViewRecord] = useState<VehicleRequestDto | null>(null);
 
+  /**
+   * Закрытая заявка, названная в адресе: ссылка из состава рейса или из журнала листов ведёт
+   * именно сюда — в списке заявок закрытой уже нет (ADR 0029).
+   */
+  const opened = useOpenedRecord<VehicleRequestDto>({
+    active: useActiveTabKey() === 'history',
+    queryKey: (id) => ['vehicle-requests', id],
+    fetch: (id) => vehicleRequestsApi.get(id),
+  });
+
   const summaryItems = [
     { label: 'Закрыто', value: summary?.total ?? 0 },
     { label: requestStatusLabels.done, value: summary?.done ?? 0 },
@@ -208,8 +219,11 @@ export function VehicleRequestsHistoryTab() {
       title: 'Заказчик',
       dataIndex: 'objectName',
       searchable: false,
-      width: 220,
-      render: (_v, r) => <ObjectCell name={requestCustomerName(r)} address={r.objectAddress} />,
+      width: OBJECT_COLUMN_WIDTH,
+      render: (_v, r) => {
+        const customer = requestCustomerLabel(r);
+        return <ObjectCell name={customer.text} hint={customer.hint} address={r.objectAddress} />;
+      },
     }),
     {
       key: 'vehicleTypeName',
@@ -511,7 +525,7 @@ export function VehicleRequestsHistoryTab() {
     primary: (r) =>
       r.completion?.totalCost != null ? formatMoney(r.completion.totalCost) : 'Без суммы',
     lines: [
-      (r) => requestCustomerName(r),
+      (r) => requestCustomerLabel(r).text,
       (r) =>
         `${vehicleClassificationLabel({
           typeName: r.vehicleTypeName,
@@ -581,7 +595,13 @@ export function VehicleRequestsHistoryTab() {
       />
 
       {/* Правка из журнала не предлагается: закрытую заявку не редактируют. */}
-      <VehicleRequestViewModal request={viewRecord} onClose={() => setViewRecord(null)} />
+      <VehicleRequestViewModal
+        request={viewRecord ?? opened.record}
+        onClose={() => {
+          setViewRecord(null);
+          opened.clear();
+        }}
+      />
     </PageTableLayout>
   );
 }

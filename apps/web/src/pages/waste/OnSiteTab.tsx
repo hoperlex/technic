@@ -3,18 +3,22 @@ import { useQuery } from '@tanstack/react-query';
 import { type WasteRequestDto } from '@technic/contracts';
 import { wasteRequestsApi } from '../../api/resources';
 import { DataTable, type CardConfig } from '@shared/ui';
+import { EntityLink } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
 import { sortOptionsFrom } from '@shared/ui';
 import { textColumn } from '@shared/ui';
-import { ObjectCell } from '../../components/ObjectCell';
+import { ObjectCell, OBJECT_COLUMN_WIDTH } from '../../components/ObjectCell';
 import { useListParams } from '@shared/lib';
 import { formatDate, formatDateTimeMaybe } from '../../utils/format';
+import { wasteRequestLink } from '../../utils/links';
+import { useAuth } from '../../auth/AuthContext';
 
 /**
  * Контейнеры, присутствующие или планируемые на площадках — производный вид
  * по заявкам установки (container_install), кроме отменённых. Только чтение.
  */
 export function OnSiteTab() {
+  const { can } = useAuth();
   const { params, setSort, onTableChange } = useListParams<Record<string, never>>(
     {},
     { searchKeys: ['objectName'] },
@@ -30,6 +34,7 @@ export function OnSiteTab() {
       key: 'objectName',
       title: 'Площадка',
       dataIndex: 'objectName',
+      width: OBJECT_COLUMN_WIDTH,
       render: (_v, r) => <ObjectCell name={r.objectName} address={r.objectAddress} />,
     }),
     textColumn<WasteRequestDto>({
@@ -70,8 +75,15 @@ export function OnSiteTab() {
       dataIndex: 'num',
       width: 150,
       sorter: true,
+      // Номер ведёт к самой заявке установки: список площадок отвечает, что стоит и с какого
+      // числа, а «чем и почему» — уже заявка. Копирование номера остаётся: его диктуют по
+      // телефону оператору, и ради этого сюда заходят не реже.
       render: (_v: unknown, r: WasteRequestDto) => (
-        <Typography.Text copyable>{r.displayNumber}</Typography.Text>
+        <Typography.Text copyable={{ text: r.displayNumber }}>
+          <EntityLink to={wasteRequestLink(can, { id: r.id })} title="Открыть заявку">
+            {r.displayNumber}
+          </EntityLink>
+        </Typography.Text>
       ),
     },
   ];

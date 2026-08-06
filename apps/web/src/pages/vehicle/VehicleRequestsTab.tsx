@@ -44,7 +44,7 @@ import {
   parseVehicleRequestNumberSearch,
   REQUEST_STATUSES,
   type RequestStatus,
-  requestCustomerName,
+  requestCustomerLabel,
   requestStatusLabels,
   ROLLBACK_WAYBILL_MESSAGE,
   routePurposeLabels,
@@ -65,22 +65,24 @@ import { vehicleRequestsApi } from '../../api/resources';
 import { AutoSelect } from '@shared/ui';
 import { CancelReasonModal, RollbackReasonModal } from '../../components/CancelReasonModal';
 import { DataTable, type CardConfig } from '@shared/ui';
+import { EntityLink } from '@shared/ui';
 import { ExpandableCell } from '@shared/ui';
 import { FormGrid } from '@shared/ui';
 import { FormModal } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
 import { ResponsibleFields } from '../../components/ResponsibleFields';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
-import { TabsExtra } from '../../components/PageTabs';
+import { TabsExtra, useActiveTabKey } from '../../components/PageTabs';
 import { SummaryBar } from '@shared/ui';
 import { actionsColumn, textColumn } from '@shared/ui';
 import { TimeInput, optionalWorkTimeRule } from '../../components/TimeInput';
 import { UserAvatar } from '../../components/UserAvatar';
-import { ObjectCell } from '../../components/ObjectCell';
+import { ObjectCell, OBJECT_COLUMN_WIDTH } from '../../components/ObjectCell';
 import { departmentPlatformQuery } from '@entities/department';
 import { AddressField } from '@features/address-input';
 import { useIsMobile } from '@shared/lib';
 import { useListParams } from '@shared/lib';
+import { useOpenedRecord } from '@shared/lib';
 import {
   classificationKeyOf,
   useVehicleClassifications,
@@ -88,6 +90,7 @@ import {
 } from '../../hooks/useVehicleClassifications';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage, formatDateTimeMaybe } from '../../utils/format';
+import { vehicleRouteLink } from '../../utils/links';
 import { withSavedOption } from '@shared/lib';
 import {
   calendarDaysLabel,
@@ -339,6 +342,22 @@ export function VehicleRequestsTab() {
   const [record, setRecord] = useState<VehicleRequestDto | null>(null);
   /** Открытая карточка заявки: поля только на чтение и история событий (ADR 0015). */
   const [viewRecord, setViewRecord] = useState<VehicleRequestDto | null>(null);
+
+  /**
+   * Заявка, названная в адресе: сюда приходят по ссылке из состава рейса или из журнала листов.
+   * Запись спрашивается по идентификатору, а не ищется в загруженном списке: та же заявка может
+   * лежать на другой его странице или под другим фильтром.
+   */
+  const opened = useOpenedRecord<VehicleRequestDto>({
+    active: useActiveTabKey() === 'requests',
+    queryKey: (id) => ['vehicle-requests', id],
+    fetch: (id) => vehicleRequestsApi.get(id),
+  });
+  const viewed = viewRecord ?? opened.record;
+  const closeView = () => {
+    setViewRecord(null);
+    opened.clear();
+  };
   const [form] = Form.useForm<FormValues>();
   const editor = useFileEditor();
 
@@ -876,8 +895,11 @@ export function VehicleRequestsTab() {
       title: 'Заказчик',
       dataIndex: 'objectName',
       searchable: false,
-      width: 230,
-      render: (_v, r) => <ObjectCell name={requestCustomerName(r)} address={r.objectAddress} />,
+      width: OBJECT_COLUMN_WIDTH,
+      render: (_v, r) => {
+        const customer = requestCustomerLabel(r);
+        return <ObjectCell name={customer.text} hint={customer.hint} address={r.objectAddress} />;
+      },
     }),
     {
       key: 'vehicleTypeName',
@@ -960,7 +982,13 @@ export function VehicleRequestsTab() {
         if (r.route) {
           return (
             <div style={{ lineHeight: 1.35 }}>
-              <div>{r.route.displayNumber}</div>
+              {/* Номер рейса ведёт на вкладку маршрутов и открывает его карточку: до сих пор
+                  «где эта заявка едет» спрашивали переключением вкладки и поиском по дню. */}
+              <div>
+                <EntityLink to={vehicleRouteLink(can, r.route.id)} title="Открыть маршрут">
+                  {r.route.displayNumber}
+                </EntityLink>
+              </div>
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                 строка {r.route.position}
                 {r.route.hasWaybill ? ' · лист выписан' : ''}
@@ -1294,7 +1322,9 @@ export function VehicleRequestsTab() {
         onChange={(status) => requestStatusChange(r, status)}
       />
     ),
-    primary: (r) => requestCustomerName(r),
+    // Отдел и в карточке телефона стоит кодом — тем же, что в колонке списка: подсказки
+    // наведением на телефоне нет, но и разной подписи у одного заказчика быть не должно.
+    primary: (r) => requestCustomerLabel(r).text,
     lines: [
       (r) =>
         `${vehicleClassificationLabel({
@@ -1683,8 +1713,8 @@ export function VehicleRequestsTab() {
       {/* Карточка заявки: поля только на чтение плюс история событий. Правка — той же формой,
           что и из таблицы, и только если она этой роли доступна. */}
       <VehicleRequestViewModal
-        request={viewRecord}
-        onClose={() => setViewRecord(null)}
+        request={viewed}
+        onClose={closeView}
         // Решение по досрочному завершению принимают, прочитав причину, — а она в карточке.
         // Решённый запрос кнопок не получает: согласованный уже сократил срок, отклонённый
         // объясняет, почему этого не случилось.
@@ -1714,9 +1744,9 @@ export function VehicleRequestsTab() {
           );
         }}
         onEdit={
-          viewRecord && canModify(viewRecord)
+          viewed && canModify(viewed)
             ? (r) => {
-                setViewRecord(null);
+                closeView();
                 openEdit(r);
               }
             : undefined
@@ -1724,9 +1754,9 @@ export function VehicleRequestsTab() {
         // Смена машины прямо из карточки (ADR 0048): поле «Техника» видно здесь, и менять его
         // логично здесь же, а не возвращаясь в строку списка.
         onReassign={
-          viewRecord && reassignAllowed(viewRecord)
+          viewed && reassignAllowed(viewed)
             ? (r) => {
-                setViewRecord(null);
+                closeView();
                 setReassignTarget(r);
               }
             : undefined
@@ -1735,9 +1765,9 @@ export function VehicleRequestsTab() {
         // ход работы по ней. Карточка закрывается, потому что после переноса её поля устареют —
         // заявка уедет в другой рейс, а с ним, возможно, и на другую машину.
         onTransfer={
-          viewRecord && canChangeStatus && viewRecord.route && !viewRecord.route.hasWaybill
+          viewed && canChangeStatus && viewed.route && !viewed.route.hasWaybill
             ? (r) => {
-                setViewRecord(null);
+                closeView();
                 setTransferTarget(r);
               }
             : undefined
@@ -1746,13 +1776,13 @@ export function VehicleRequestsTab() {
         // по ней. Предлагается у заказа техники на объект в работе: доставку и вывоз выписывают
         // на назначенную машину, а её нет ни у новой заявки, ни у арендной.
         onRelocate={
-          viewRecord &&
+          viewed &&
           canChangeStatus &&
-          viewRecord.requestType === 'special_equipment' &&
-          viewRecord.status === 'confirmed' &&
-          viewRecord.assignment?.ownership === 'own'
+          viewed.requestType === 'special_equipment' &&
+          viewed.status === 'confirmed' &&
+          viewed.assignment?.ownership === 'own'
             ? (r, purpose) => {
-                setViewRecord(null);
+                closeView();
                 setRelocation({ request: r, purpose });
               }
             : undefined

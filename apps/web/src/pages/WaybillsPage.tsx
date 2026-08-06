@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { App, Button, DatePicker, Input, Space, Typography } from 'antd';
 import { StopOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useSearchParams } from 'react-router';
 import {
   canCancelWaybill,
   WAYBILL_LOCKED_MESSAGE,
@@ -15,12 +16,14 @@ import {
 import { waybillsApi } from '../api/resources';
 import { WaybillFilesCell } from '../components/WaybillFiles';
 import { DataTable } from '@shared/ui';
+import { EntityLink } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
 import { actionsColumn, badgeColumn, textColumn } from '@shared/ui';
 import { ExportWaybillButton, PrintWaybillButton } from '../components/WaybillPrint';
 import { useListParams } from '@shared/lib';
 import { useAuth } from '../auth/AuthContext';
 import { errorMessage } from '../utils/format';
+import { vehicleRequestLink } from '../utils/links';
 
 /**
  * Журнал учёта путевых листов (ADR 0037).
@@ -44,7 +47,10 @@ export function WaybillsPage() {
   // всей истории сразу. Остальное сужают столбцами таблицы — в том числе бланк: журнал у трёх
   // форм один, а читают их разные люди по разным поводам.
   const [range, setRange] = useState<[dayjs.Dayjs, dayjs.Dayjs] | null>(null);
-  const { params, onTableChange } = useListParams<{ status?: string; formCode?: string }>(
+  const { params, setParams, onTableChange } = useListParams<{
+    status?: string;
+    formCode?: string;
+  }>(
     {},
     {
       searchKeys: ['number'],
@@ -54,6 +60,19 @@ export function WaybillsPage() {
       }),
     },
   );
+
+  /**
+   * Номер из адреса: сюда приходят по ссылке из маршрута и из карточки заявки — «что стало с этим
+   * листом». Карточки у листа нет, журнал и есть карточка, поэтому вместо открытия окна список
+   * сужается до одной строки. Поиск остаётся обычным — его видно в заголовке столбца и оттуда же
+   * сбрасывают.
+   */
+  const [searchParams] = useSearchParams();
+  const numberParam = searchParams.get('number');
+  useEffect(() => {
+    if (!numberParam) return;
+    setParams((p) => ({ ...p, search: numberParam, page: 1 }));
+  }, [numberParam, setParams]);
   const query = {
     ...params,
     dateFrom: range?.[0].format(DATE),
@@ -108,7 +127,13 @@ export function WaybillsPage() {
   };
 
   const columns = [
-    textColumn<WaybillDto>({ key: 'number', title: 'Номер', dataIndex: 'number', width: 200 }),
+    textColumn<WaybillDto>({
+      key: 'number',
+      title: 'Номер',
+      dataIndex: 'number',
+      width: 200,
+      filteredValue: params.search ? [params.search] : null,
+    }),
     // Бланк — колонкой с фильтром, как и статус: полная подпись сюда не влезает, а на вопрос
     // «какой это лист» отвечает и короткая.
     badgeColumn<WaybillDto>({
@@ -164,9 +189,18 @@ export function WaybillsPage() {
           <Typography.Text type="secondary">—</Typography.Text>
         ) : (
           <Space direction="vertical" size={0}>
+            {/* Номер талона ведёт к самой заявке: журнал отвечает, что за бланк выдан, а «что в
+                нём за работа» спрашивают у заявки — и до сих пор искали её номер руками. */}
             {r.requests.map((link) => (
               <span key={link.requestId}>
-                {link.slot}. {link.displayNumber} — {link.objectName}
+                {link.slot}.{' '}
+                <EntityLink
+                  to={vehicleRequestLink(can, { id: link.requestId, status: link.status })}
+                  title="Открыть заявку"
+                >
+                  {link.displayNumber}
+                </EntityLink>{' '}
+                — {link.objectName}
               </span>
             ))}
           </Space>

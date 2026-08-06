@@ -28,7 +28,7 @@ import { TabsExtra } from '../../components/PageTabs';
 import { SummaryBar } from '@shared/ui';
 import { actionsColumn, RowActionButton, textColumn } from '@shared/ui';
 import { UserAvatar } from '../../components/UserAvatar';
-import { ObjectCell } from '../../components/ObjectCell';
+import { ObjectCell, OBJECT_COLUMN_WIDTH } from '../../components/ObjectCell';
 import { useListParams } from '@shared/lib';
 import { calendarDayCount } from '../../utils/date';
 import { VehicleEarlyEndModal } from './VehicleEarlyEndModal';
@@ -111,8 +111,8 @@ function termCell(r: SpecialEquipmentRequestDto) {
 
 /**
  * Приёмка работы по дням: сколько смен объект подтвердил из заказанных и сколько наступивших
- * дней ещё ждёт подписи. Долг выделен красным — пока он есть, заявку не закрыть, а машину у неё
- * не сменить.
+ * дней ещё ждёт подписи. Долг выделен красным — пока он есть, машину у заявки не сменить, а её
+ * закрытие предупреждает, что работу принимают без подписи площадки.
  */
 function shiftsCell(r: SpecialEquipmentRequestDto) {
   const total = shiftDaysOf(r).length;
@@ -227,7 +227,7 @@ export function VehicleRequestsOnSiteTab() {
         key: 'objectName',
         title: 'Объект',
         dataIndex: 'objectName',
-        width: 240,
+        width: OBJECT_COLUMN_WIDTH,
         render: (_v, r) => <ObjectCell name={r.objectName ?? '—'} address={r.objectAddress} />,
       }),
       defaultSortOrder: 'ascend',
@@ -296,8 +296,8 @@ export function VehicleRequestsOnSiteTab() {
     },
     {
       // Приёмка работы по дням: сколько смен объект уже подтвердил и сколько наступивших дней
-      // ещё ждёт подписи. Пока долг не погашен, заявку не закрыть — поэтому цифра стоит рядом
-      // со сроком, а не прячется в карточке.
+      // ещё ждёт подписи. Долг решает, примут ли работу подписью или её закроют со слов
+      // закрывающего, — поэтому цифра стоит рядом со сроком, а не прячется в карточке.
       key: 'shifts',
       title: 'Согласование смен',
       width: 190,

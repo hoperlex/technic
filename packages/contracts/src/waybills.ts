@@ -422,6 +422,12 @@ export interface WaybillRequestLinkDto {
    */
   slot: number;
   objectName: string;
+  /**
+   * Состояние заявки на сейчас. Журналу оно не колонка — им выбирают, куда вести номер талона:
+   * лист выписывают на рейс, а читают журнал позже, когда заявка чаще всего уже закрыта и лежит
+   * не в списке заявок, а в журнале закрытых (ADR 0029).
+   */
+  status: RequestStatus;
 }
 
 export interface WaybillDto {

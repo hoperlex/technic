@@ -699,3 +699,14 @@ body,
 .sort-sheet__option {
   padding: 8px 0;
 }
+
+/* Ссылка на чужую запись в строке списка (`EntityLink`): номер маршрута, номер заявки, номер
+   листа. Выглядит ссылкой портала — иначе переход не отличить от обычного текста колонки. */
+.entity-link {
+  color: #1677ff;
+  text-decoration: none;
+}
+.entity-link:hover {
+  color: #4096ff;
+  text-decoration: underline;
+}

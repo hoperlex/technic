@@ -2,6 +2,7 @@ import { useSearchParams } from 'react-router';
 import { canOrderVehicleRequestType } from '@technic/contracts';
 import { PageTabs } from '../components/PageTabs';
 import { useAuth } from '../auth/AuthContext';
+import { canSeeArchiveTab, canSeeRoutesTab } from '../utils/links';
 import { VehicleRequestsTab } from './vehicle/VehicleRequestsTab';
 import { VehicleRequestsOnSiteTab } from './vehicle/VehicleRequestsOnSiteTab';
 import { VehicleRoutesTab } from './vehicle/VehicleRoutesTab';
@@ -25,20 +26,13 @@ export function VehicleRequestsPage() {
   const showOnSite = canOrderVehicleRequestType(user, 'special_equipment');
 
   /**
-   * «Маршруты» — рейсы собственных машин: кто едет, с кем и в каком порядке. Спрашиваются оба
-   * права, которыми закрыты сами ручки рейсов: `waybills.read` — потому что в рейсе виден
-   * водитель (персональные данные, ADR 0037 п. 13), `vehicleRequests.status` — потому что рейс
-   * ведёт тот же, кто двигает заявки. Заказчику со стороны объекта и арендодателю вкладка не
-   * положена ни на чтение.
+   * «Маршруты» и «Архив» — вкладки, на которые ведут ссылки из соседних списков (номер рейса в
+   * строке заявки, номер заявки в составе рейса). Условие их показа спрашивается там же, где его
+   * спрашивает ссылка (`utils/links`): разойдись эти два места, ссылка вела бы на вкладку,
+   * которой у роли нет, — то есть в пустой экран.
    */
-  const showRoutes = can('waybills.read') && can('vehicleRequests.status');
-
-  /**
-   * «Архив» — удалённые заявки (ADR 0070): по матрице прав это только администратор. Спрашивается
-   * право, а не имя роли: тем же правом закрыта выдача архива на сервере, и разойтись они не
-   * должны — иначе вкладка либо ведёт в пустой список, либо прячет доступное.
-   */
-  const showArchive = can('archive.read');
+  const showRoutes = canSeeRoutesTab(can);
+  const showArchive = canSeeArchiveTab(can);
 
   const items = [
     { key: 'requests', label: 'Заказ автотехники', children: <VehicleRequestsTab /> },

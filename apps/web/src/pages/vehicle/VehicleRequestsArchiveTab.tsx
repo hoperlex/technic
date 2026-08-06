@@ -4,7 +4,7 @@ import { DeleteFilled, EyeOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   parseVehicleRequestNumberSearch,
-  requestCustomerName,
+  requestCustomerLabel,
   requestStatusColors,
   requestStatusLabels,
   vehicleClassificationLabel,
@@ -17,8 +17,10 @@ import { DataTable, type CardConfig } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
 import { actionsColumn, RowActionButton, textColumn } from '@shared/ui';
-import { ObjectCell } from '../../components/ObjectCell';
+import { ObjectCell, OBJECT_COLUMN_WIDTH } from '../../components/ObjectCell';
 import { useListParams } from '@shared/lib';
+import { useOpenedRecord } from '@shared/lib';
+import { useActiveTabKey } from '../../components/PageTabs';
 import { usePurgeAction } from '../../hooks/usePurgeAction';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage, formatDateTime } from '../../utils/format';
@@ -42,6 +44,13 @@ export function VehicleRequestsArchiveTab() {
   const { can } = useAuth();
   const canRestore = can('archive.restore');
   const [viewRecord, setViewRecord] = useState<VehicleRequestDto | null>(null);
+
+  /** Удалённая заявка, названная в адресе: ссылки на неё ведут в архив, а не в список. */
+  const opened = useOpenedRecord<VehicleRequestDto>({
+    active: useActiveTabKey() === 'archive',
+    queryKey: (id) => ['vehicle-requests', id],
+    fetch: (id) => vehicleRequestsApi.get(id),
+  });
 
   const { params, setParams, setSort, onTableChange } = useListParams<{ num?: number }>(
     {},
@@ -114,8 +123,11 @@ export function VehicleRequestsArchiveTab() {
       title: 'Заказчик',
       dataIndex: 'objectName',
       searchable: false,
-      width: 220,
-      render: (_v, r) => <ObjectCell name={requestCustomerName(r)} address={r.objectAddress} />,
+      width: OBJECT_COLUMN_WIDTH,
+      render: (_v, r) => {
+        const customer = requestCustomerLabel(r);
+        return <ObjectCell name={customer.text} hint={customer.hint} address={r.objectAddress} />;
+      },
     }),
     {
       key: 'vehicleTypeName',
@@ -201,7 +213,7 @@ export function VehicleRequestsArchiveTab() {
   const card: CardConfig<VehicleRequestDto> = {
     title: (r) => r.displayNumber,
     badge: (r) => <Tag color={requestStatusColors[r.status]}>{requestStatusLabels[r.status]}</Tag>,
-    primary: (r) => requestCustomerName(r),
+    primary: (r) => requestCustomerLabel(r).text,
     lines: [
       (r) =>
         vehicleClassificationLabel({
@@ -293,7 +305,13 @@ export function VehicleRequestsArchiveTab() {
 
       {/* Карточка архивной заявки только на чтение: править её нечем, а вернуть и снести —
           действия строки. Правку карточка и не предлагает — обработчик ей не передан. */}
-      <VehicleRequestViewModal request={viewRecord} onClose={() => setViewRecord(null)} />
+      <VehicleRequestViewModal
+        request={viewRecord ?? opened.record}
+        onClose={() => {
+          setViewRecord(null);
+          opened.clear();
+        }}
+      />
     </PageTableLayout>
   );
 }

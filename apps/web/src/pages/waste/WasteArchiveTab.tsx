@@ -15,8 +15,10 @@ import { DataTable, type CardConfig } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
 import { actionsColumn, RowActionButton, textColumn } from '@shared/ui';
-import { ObjectCell } from '../../components/ObjectCell';
+import { ObjectCell, OBJECT_COLUMN_WIDTH } from '../../components/ObjectCell';
 import { useListParams } from '@shared/lib';
+import { useOpenedRecord } from '@shared/lib';
+import { useActiveTabKey } from '../../components/PageTabs';
 import { usePurgeAction } from '../../hooks/usePurgeAction';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage, formatDateTime } from '../../utils/format';
@@ -39,6 +41,13 @@ export function WasteArchiveTab() {
   const { can } = useAuth();
   const canRestore = can('archive.restore');
   const [viewRecord, setViewRecord] = useState<WasteRequestDto | null>(null);
+
+  /** Удалённая заявка, названная в адресе: ссылки на неё ведут в архив, а не в список заявок. */
+  const opened = useOpenedRecord<WasteRequestDto>({
+    active: useActiveTabKey() === 'archive',
+    queryKey: (id) => ['waste-requests', id],
+    fetch: (id) => wasteRequestsApi.get(id),
+  });
 
   const { params, setParams, setSort, onTableChange } = useListParams<{ num?: number }>(
     {},
@@ -110,7 +119,7 @@ export function WasteArchiveTab() {
       title: 'Площадка',
       dataIndex: 'objectName',
       searchable: false,
-      width: 220,
+      width: OBJECT_COLUMN_WIDTH,
       render: (_v, r) => <ObjectCell name={r.objectName} address={r.objectAddress} />,
     }),
     {
@@ -284,7 +293,13 @@ export function WasteArchiveTab() {
 
       {/* Карточка архивной заявки только на чтение: править её нечем, а вернуть и снести —
           действия строки. Правку карточка и не предлагает — обработчик ей не передан. */}
-      <WasteRequestViewModal request={viewRecord} onClose={() => setViewRecord(null)} />
+      <WasteRequestViewModal
+        request={viewRecord ?? opened.record}
+        onClose={() => {
+          setViewRecord(null);
+          opened.clear();
+        }}
+      />
     </PageTableLayout>
   );
 }

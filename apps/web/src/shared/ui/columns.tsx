@@ -52,6 +52,12 @@ export function textColumn<T>(opts: {
   searchable?: boolean;
   width?: number;
   ellipsis?: boolean;
+  /**
+   * Значение поиска, заданное снаружи столбца: список открыли по ссылке, уже сузив его до одной
+   * записи (журнал листов по номеру). Без него фильтр действует, но в заголовке его не видно —
+   * отобранные строки выглядят отобранными неизвестно по чему и не сбрасываются.
+   */
+  filteredValue?: string[] | null;
   render?: (value: unknown, record: T) => ReactNode;
 }): TableColumnType<T> {
   return {
@@ -62,6 +68,7 @@ export function textColumn<T>(opts: {
     ...(opts.searchable === false ? {} : searchableHeader<T>()),
     width: opts.width,
     ellipsis: opts.ellipsis,
+    ...(opts.filteredValue === undefined ? {} : { filteredValue: opts.filteredValue }),
     render: opts.render,
   };
 }

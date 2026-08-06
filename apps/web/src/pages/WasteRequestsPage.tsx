@@ -24,6 +24,7 @@ import {
   UploadOutlined,
 } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useSearchParams } from 'react-router';
 import dayjs, { type Dayjs } from 'dayjs';
 import {
   allowedStatusTransitions,
@@ -76,13 +77,14 @@ import { FormModal } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
 import { ResponsibleFields } from '../components/ResponsibleFields';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
-import { PageTabs, TabsExtra } from '../components/PageTabs';
+import { PageTabs, TabsExtra, useActiveTabKey } from '../components/PageTabs';
 import { SummaryBar } from '@shared/ui';
 import { actionsColumn, badgeColumn, textColumn } from '@shared/ui';
-import { ObjectCell } from '../components/ObjectCell';
+import { ObjectCell, OBJECT_COLUMN_WIDTH } from '../components/ObjectCell';
 import { TimeInput, optionalWorkTimeRule } from '../components/TimeInput';
 import { useIsMobile } from '@shared/lib';
 import { useListParams } from '@shared/lib';
+import { useOpenedRecord } from '@shared/lib';
 import { useWasteObjectScope } from '../hooks/useWasteObjectScope';
 import { useAuth } from '../auth/AuthContext';
 
@@ -330,9 +332,13 @@ function WasteStatusCell({
   );
 }
 
+// Вкладка живёт в адресе, а не в состоянии: по ссылке из соседнего раздела («№ заявки установки»
+// в списке площадок) сюда приходят с готовым ответом, какую вкладку показать и что на ней открыть.
+const TABS = ['requests', 'on-site', 'archive'] as const;
+
 export function WasteRequestsPage() {
   // Вкладки управляемые: виджет сводки живёт в строке вкладок и показывается только на «Заявках».
-  const [tab, setTab] = useState('requests');
+  const [sp, setSp] = useSearchParams();
   const { can } = useAuth();
   /**
    * «Архив» — удалённые заявки (ADR 0070): по матрице прав это только администратор. Спрашивается
@@ -340,19 +346,28 @@ export function WasteRequestsPage() {
    * должны — иначе вкладка либо ведёт в пустой список, либо прячет доступное.
    */
   const showArchive = can('archive.read');
+  const items = [
+    { key: 'requests', label: 'Заявки', children: <RequestsTab /> },
+    { key: 'on-site', label: 'На объекте', children: <OnSiteTab /> },
+    ...(showArchive ? [{ key: 'archive', label: 'Архив', children: <WasteArchiveTab /> }] : []),
+  ];
+
+  const raw = sp.get('tab') ?? '';
+  // Ссылка на скрытую вкладку ведёт в список, а не в пустоту: адрес переживает смену роли.
+  const tab =
+    (TABS as readonly string[]).includes(raw) && items.some((i) => i.key === raw)
+      ? raw
+      : 'requests';
+
   return (
     <div style={{ height: '100%' }}>
       <PageTabs
         activeKey={tab}
-        onChange={setTab}
+        // Переключение вкладки руками закрывает карточку, открытую по ссылке: адрес остаётся с
+        // одним параметром `tab`, а `open` из него уходит.
+        onChange={(k) => setSp({ tab: k })}
         refreshQueryKey={['waste-requests']}
-        items={[
-          { key: 'requests', label: 'Заявки', children: <RequestsTab /> },
-          { key: 'on-site', label: 'На объекте', children: <OnSiteTab /> },
-          ...(showArchive
-            ? [{ key: 'archive', label: 'Архив', children: <WasteArchiveTab /> }]
-            : []),
-        ]}
+        items={items}
       />
     </div>
   );
@@ -514,6 +529,23 @@ function RequestsTab() {
   // Просмотр заявки — отдельное окно, только чтение: в таблице нет места ни автору, ни цене за
   // м³, ни машинам, а разбирать конкретную заявку без них нельзя (ADR 0012).
   const [viewRecord, setViewRecord] = useState<WasteRequestDto | null>(null);
+
+  /**
+   * Заявка, названная в адресе: сюда приходят по ссылке из списка площадок («№ заявки установки»).
+   * Спрашивается по идентификатору — та же заявка может лежать на другой странице списка или под
+   * другим фильтром, и искать её в загруженном списке значило бы открывать карточку через раз.
+   */
+  const opened = useOpenedRecord<WasteRequestDto>({
+    active: useActiveTabKey() === 'requests',
+    queryKey: (id) => ['waste-requests', id],
+    fetch: (id) => wasteRequestsApi.get(id),
+  });
+  const viewed = viewRecord ?? opened.record;
+  const closeView = () => {
+    setViewRecord(null);
+    opened.clear();
+  };
+
   const [form] = Form.useForm<RequestFormValues>();
   const [files, setFiles] = useState<EditorFile[]>([]);
   const [removedIds, setRemovedIds] = useState<string[]>([]);
@@ -1061,7 +1093,7 @@ function RequestsTab() {
       title: 'Объект',
       dataIndex: 'objectName',
       searchable: false,
-      width: 230,
+      width: OBJECT_COLUMN_WIDTH,
       render: (_v, r) => <ObjectCell name={r.objectName} address={r.objectAddress} />,
     }),
     {
@@ -1508,21 +1540,21 @@ function RequestsTab() {
           что и из таблицы, и только если она этой роли доступна; примечание исполнителя
           (ADR 0053) правится прямо в карточке — у оператора формы правки нет вовсе. */}
       <WasteRequestViewModal
-        request={viewRecord}
-        onClose={() => setViewRecord(null)}
+        request={viewed}
+        onClose={closeView}
         onEdit={
-          viewRecord && canModify(viewRecord)
+          viewed && canModify(viewed)
             ? (r) => {
-                setViewRecord(null);
+                closeView();
                 openEdit(r);
               }
             : undefined
         }
         onSaveOperatorComment={
           canOperatorComment &&
-          viewRecord &&
-          !viewRecord.deletedAt &&
-          wasteOperatorCommentEditable(viewRecord.status)
+          viewed &&
+          !viewed.deletedAt &&
+          wasteOperatorCommentEditable(viewed.status)
             ? (r, text) => operatorCommentMut.mutate({ r, text })
             : undefined
         }

@@ -35,7 +35,9 @@ import { FileLinkList } from '../../components/FileLinks';
 import { type HistoryRow, RequestHistoryTable } from '../../components/RequestHistory';
 import { ResponsibleValue } from '../../components/ResponsibleFields';
 import { UserAvatar } from '../../components/UserAvatar';
+import { EntityLink } from '@shared/ui';
 import { ViewFields, ViewModal } from '@shared/ui';
+import { vehicleRouteLink, waybillLink } from '../../utils/links';
 import { PrintWaybillButton } from '../../components/WaybillPrint';
 import { calendarDaysLabel } from '../../utils/date';
 import { formatDateTime, formatDateTimeMaybe, formatMoney } from '../../utils/format';
@@ -458,7 +460,13 @@ export function VehicleRequestViewModal({
                 children: (
                   <Space size={8} wrap>
                     <span>
-                      {request.route.displayNumber} · строка {request.route.position}
+                      <EntityLink
+                        to={vehicleRouteLink(can, request.route.id)}
+                        title="Открыть маршрут"
+                      >
+                        {request.route.displayNumber}
+                      </EntityLink>{' '}
+                      · строка {request.route.position}
                     </span>
                     {request.route.hasWaybill ? (
                       <Typography.Text type="secondary">
@@ -500,7 +508,14 @@ export function VehicleRequestViewModal({
                             {formatDateOnly(waybill.periodTo)}
                           </Tag>
                         )}
-                        <span>{waybill.number}</span>
+                        <span>
+                          <EntityLink
+                            to={waybillLink(can, waybill.number)}
+                            title="Открыть в журнале листов"
+                          >
+                            {waybill.number}
+                          </EntityLink>
+                        </span>
                         <Tag color={waybillStatusColors[waybill.status]}>
                           {waybillStatusLabels[waybill.status]}
                         </Tag>

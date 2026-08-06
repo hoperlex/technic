@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { App, Button, DatePicker, Form, Segmented, Space, Tag, Typography } from 'antd';
 import { EyeOutlined, PlusOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
@@ -19,13 +19,18 @@ import {
 import { driversApi, vehicleRoutesApi, vehiclesApi } from '../../api/resources';
 import { AutoSelect } from '@shared/ui';
 import { DataTable, type CardConfig } from '@shared/ui';
+import { EntityLink } from '@shared/ui';
 import { FormModal } from '@shared/ui';
 import { FormGrid } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
 import { actionsColumn, RowActionButton, textColumn } from '@shared/ui';
 import { useIsMobile } from '@shared/lib';
 import { useListParams } from '@shared/lib';
+import { useOpenedRecord } from '@shared/lib';
+import { useActiveTabKey } from '../../components/PageTabs';
 import { errorMessage } from '../../utils/format';
+import { vehicleRequestLink, waybillLink } from '../../utils/links';
+import { useAuth } from '../../auth/AuthContext';
 import { VehicleRouteModal } from './VehicleRouteModal';
 import { formatDateOnly } from './shared';
 
@@ -61,10 +66,34 @@ export function VehicleRoutesTab() {
   const { message } = App.useApp();
   const isMobile = useIsMobile();
   const qc = useQueryClient();
+  const { can } = useAuth();
   const [range, setRange] = useState<[dayjs.Dayjs, dayjs.Dayjs]>([dayjs(), dayjs()]);
   const [waybill, setWaybill] = useState<WaybillFilter>('all');
   const [openId, setOpenId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+
+  /**
+   * Рейс, названный в адресе: сюда приходят по ссылке из строки заявки («Маршрут Р-12»). Ключ
+   * запроса тот же, которым карточка грузит рейс, — рейс спрашивается один раз на двоих.
+   */
+  const opened = useOpenedRecord<VehicleRouteDto>({
+    active: useActiveTabKey() === 'routes',
+    queryKey: (id) => ['vehicle-routes', id],
+    fetch: (id) => vehicleRoutesApi.get(id),
+  });
+
+  /**
+   * Период списка встаёт на день открытого рейса. Иначе за карточкой оставался бы сегодняшний
+   * день — а пришли по ссылке на позавчерашний, и, закрыв карточку, человек оказывался бы в
+   * списке, где этого рейса нет вовсе. Зависимость — сама дата: перебирать период руками при
+   * открытой карточке это не мешает.
+   */
+  const openedRouteDate = opened.record?.routeDate;
+  useEffect(() => {
+    if (!openedRouteDate) return;
+    const day = dayjs(openedRouteDate);
+    setRange([day, day]);
+  }, [openedRouteDate]);
 
   const { params, onTableChange } = useListParams({}, { searchKeys: ['num'] });
   const query = {
@@ -146,7 +175,21 @@ export function VehicleRoutesTab() {
         // У перегона состава нет: он едет по одной заявке, а «откуда — куда» и есть его задание.
         isRelocationPurpose(r.purpose) ? (
           <Space direction="vertical" size={0}>
-            <span>{r.sourceRequest?.displayNumber ?? '—'}</span>
+            <span>
+              {r.sourceRequest ? (
+                <EntityLink
+                  to={vehicleRequestLink(can, {
+                    id: r.sourceRequest.requestId,
+                    status: r.sourceRequest.status,
+                  })}
+                  title="Открыть заявку"
+                >
+                  {r.sourceRequest.displayNumber}
+                </EntityLink>
+              ) : (
+                '—'
+              )}
+            </span>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               {r.moveFrom} → {r.moveTo}
             </Typography.Text>
@@ -155,9 +198,18 @@ export function VehicleRoutesTab() {
           <Typography.Text type="secondary">рейс пуст</Typography.Text>
         ) : (
           <Space direction="vertical" size={0}>
+            {/* Номер заявки — ссылка в её список: состав рейса читают вопросом «а что там за
+                заявка», и до сих пор на него отвечали переключением вкладки и поиском номера. */}
             {r.requests.map((item) => (
               <span key={item.requestId}>
-                {item.position}. {item.displayNumber} — {item.customerName}
+                {item.position}.{' '}
+                <EntityLink
+                  to={vehicleRequestLink(can, { id: item.requestId, status: item.status })}
+                  title="Открыть заявку"
+                >
+                  {item.displayNumber}
+                </EntityLink>{' '}
+                — {item.customerName}
               </span>
             ))}
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
@@ -176,7 +228,13 @@ export function VehicleRoutesTab() {
       render: (_v, r) =>
         r.waybill ? (
           <Space direction="vertical" size={0}>
-            <span>{r.waybill.number}</span>
+            {/* Номер ведёт в журнал учёта с этим же номером в поиске: карточки у листа нет —
+                строка журнала и отвечает, что с бланком стало и чем он подшит (ADR 0037). */}
+            <span>
+              <EntityLink to={waybillLink(can, r.waybill.number)} title="Открыть в журнале листов">
+                {r.waybill.number}
+              </EntityLink>
+            </span>
             <Tag color={waybillStatusColors[r.waybill.status]}>
               {waybillStatusLabels[r.waybill.status]}
             </Tag>
@@ -259,7 +317,14 @@ export function VehicleRoutesTab() {
         />
       </PageTableLayout>
 
-      <VehicleRouteModal routeId={openId} onClose={() => setOpenId(null)} onChanged={refresh} />
+      <VehicleRouteModal
+        routeId={openId ?? opened.id}
+        onClose={() => {
+          setOpenId(null);
+          opened.clear();
+        }}
+        onChanged={refresh}
+      />
 
       <CreateRouteModal
         open={creating}
