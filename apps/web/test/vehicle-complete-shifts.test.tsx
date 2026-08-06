@@ -74,7 +74,10 @@ describe('закрытие заявки без согласованных сме
     fireEvent.click(screen.getByRole('button', { name: 'Выполнена' }));
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalled());
-    expect(onSubmit.mock.calls[0][0].completion.workedAmount).toBeGreaterThan(0);
+    // Тело закрытия читается тем же приёмом, что в соседних тестах формы: у `vi.fn()` без типов
+    // аргументы вызова — `any`, и структура называется здесь, а не выводится из мока.
+    const body = onSubmit.mock.calls[0]![0] as { completion: { workedAmount: number } };
+    expect(body.completion.workedAmount).toBeGreaterThan(0);
   });
 
   it('без долга по сменам предупреждения нет', async () => {
