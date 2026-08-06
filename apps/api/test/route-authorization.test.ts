@@ -50,6 +50,16 @@ const INTERNAL_ROUTES = new Set(['/internal/mail/schedules/due', '/internal/mail
 /** Маршруты «про себя»: доступны любому вошедшему независимо от роли. */
 const SELF_SERVICE_ROUTES = new Set(['/api/v1/auth/me', '/api/v1/auth/change-password']);
 
+/**
+ * Маршруты «про сам портал»: тоже без права, но по другой причине. Журнал обновлений (ADR 0077)
+ * не содержит персональных данных, а право, закрывающее «что нового в портале», пришлось бы выдать
+ * всем — то есть оно не различало бы никого.
+ *
+ * Строкой в списке, а не молчаливым исключением: каждое «права нет» должно быть видно в ревью
+ * рядом с остальными.
+ */
+const COMMON_ROUTES = new Set(['/api/v1/releases']);
+
 interface RouteInfo {
   key: string;
   url: string;
@@ -59,6 +69,15 @@ interface RouteInfo {
 }
 
 const routes: RouteInfo[] = [];
+
+/**
+ * Корень префикса Fastify заводит в двух написаниях — `/api/v1/releases` и с завершающим слешем
+ * (`prefixTrailingSlash`). Списки выше перечисляют путь один раз, поэтому слеш снимаем здесь: иначе
+ * маршрут, разрешённый поимённо, вернулся бы в отчёт своим вторым написанием.
+ */
+function pathOf(url: string): string {
+  return url.length > 1 && url.endsWith('/') ? url.slice(0, -1) : url;
+}
 
 function handlersOf(route: RouteOptions): Record<string, unknown>[] {
   const pre = route.preHandler;
@@ -89,7 +108,7 @@ beforeAll(async () => {
       for (const method of methods) {
         routes.push({
           key: `${method} ${route.url}`,
-          url: route.url,
+          url: pathOf(route.url),
           authz: handlers.flatMap((h) => (h.authz ? [String(h.authz)] : [])),
           // Вход проверяет `authenticate` — единственный страж без пометки authz.
           requiresLogin: handlers.some((h) => !h.authz),
@@ -111,6 +130,7 @@ describe('авторизация маршрутов', () => {
         (r) =>
           !PUBLIC_ROUTES.has(r.url) &&
           !SELF_SERVICE_ROUTES.has(r.url) &&
+          !COMMON_ROUTES.has(r.url) &&
           !INTERNAL_ROUTES.has(r.url),
       )
       .filter((r) => r.authz.length === 0)

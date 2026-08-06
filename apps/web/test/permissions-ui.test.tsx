@@ -64,8 +64,13 @@ const executor = (counterpartyType: CounterpartyType): AccessSubject => ({
 
 function renderMenu(subject: ScopedSubject | Role | null, viewport?: Viewport) {
   // Меню показывает бейдж с числом заявок на регистрацию (ADR 0034) — к правам это отношения не
-  // имеет, но без ответа макет администратора ходил бы за счётчиком в настоящую сеть.
-  mockHttp({ 'GET /users/pending-count': () => json({ count: 0 }) });
+  // имеет, но без ответа макет администратора ходил бы за счётчиком в настоящую сеть. Журнал
+  // обновлений спрашивают все вошедшие независимо от прав (ADR 0077): пустым списком и отвечаем,
+  // содержимое журнала к матрице прав отношения не имеет.
+  mockHttp({
+    'GET /users/pending-count': () => json({ count: 0 }),
+    'GET /releases': () => json([]),
+  });
   return renderWithUser(
     <Routes>
       {/* Роутер поднят оболочкой рендера и стартует с «/», вложить в него второй нельзя —

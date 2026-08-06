@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Badge, Dropdown, Layout, Menu, type MenuProps, Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import {
@@ -19,10 +19,12 @@ import { Outlet, useLocation, useNavigate } from 'react-router';
 import { formatShortName, roleLabels } from '@technic/contracts';
 import { usersApi } from '../api/resources';
 import { useAuth } from '../auth/AuthContext';
+import { useReleases } from '@entities/release';
 import { useIsMobile } from '@shared/lib';
 import { MobileAppBar } from './MobileAppBar';
 import { MobileNav, type MobileNavItem } from './MobileNav';
 import { PortalLogo } from './PortalLogo';
+import { ReleaseNotesModal } from './ReleaseNotesModal';
 import { SupportContactsModal } from './SupportContactsModal';
 import { UserAvatar } from './UserAvatar';
 
@@ -56,6 +58,26 @@ export function AppLayout() {
   const isMobile = useIsMobile();
   const [collapsed, setCollapsed] = useState(readCollapsed);
   const [supportOpen, setSupportOpen] = useState(false);
+  const [changelogOpen, setChangelogOpen] = useState(false);
+
+  /**
+   * Журнал обновлений (ADR 0077). Список спрашивается каркасом, а не самим окном: он нужен раньше
+   * окна — точке в меню, которая и сообщает, что открывать журнал есть зачем.
+   */
+  const { hasNews, markSeen } = useReleases();
+
+  /*
+   * Отметка ставится при открытии окна, а не при закрытии: закрывают и по Esc, и мимо кнопки, — а
+   * выпуск к этому моменту уже увидели (ADR 0077).
+   *
+   * Эффектом, а не строкой в обработчике нажатия: в момент нажатия список мог ещё не доехать, и
+   * отмечать было бы нечего — отметка встаёт, как только есть что отмечать, окно при этом уже
+   * открыто. Живёт здесь, а не в окне, потому что здесь же считается точка в меню: две копии
+   * состояния гасили бы её каждая у себя.
+   */
+  useEffect(() => {
+    if (changelogOpen) markSeen();
+  }, [changelogOpen, markSeen]);
 
   const toggleCollapsed = () =>
     setCollapsed((v) => {
@@ -148,12 +170,10 @@ export function AppLayout() {
   const selectedKey = navItems.find((it) => location.pathname.startsWith(it.key))?.key ?? '';
 
   /**
-   * Служебные пункты: они не разделы портала и не зависят от прав — писать в поддержку вправе
-   * любой вошедший. Страницы за ними нет, поэтому подсветка выключена, а нажатие открывает окно.
-   *
-   * «Обновления» ждут своей реализации и потому выключены. Пометка «скоро» — текстом рядом с
-   * подписью: на касании `Tooltip` не открывается (ADR 0030 п. 6), и на телефоне выключенный
-   * пункт без неё выглядел бы сломанным.
+   * Служебные пункты: они не разделы портала и не зависят от прав — писать в поддержку и читать
+   * журнал обновлений вправе любой вошедший (ADR 0077: право, закрывающее «что нового в портале»,
+   * пришлось бы выдать всем). Страницы за ними нет, поэтому подсветка выключена, а нажатие
+   * открывает окно.
    */
   const utilityItems = [
     {
@@ -166,16 +186,32 @@ export function AppLayout() {
     },
     {
       key: 'changelog',
-      icon: <NotificationOutlined />,
-      label: (
-        <span className="menu-soon">
-          Обновления<span className="menu-soon__mark">скоро</span>
-        </span>
+      /*
+       * Точка, а не число непрочитанных выпусков: в той же панели уже висит счётчик заявок на
+       * регистрацию, и два числа рядом начинают спорить за внимание — выигрывает то, которое
+       * больше, а не то, которое важнее. «Сколько» здесь ничего и не решает: журнал открывают
+       * узнать «что», и одного непрочитанного выпуска для этого достаточно (ADR 0077).
+       */
+      icon: (
+        <Badge dot={hasNews} offset={[4, -2]}>
+          <NotificationOutlined />
+        </Badge>
       ),
-      title: 'Обновления — скоро',
-      disabled: true,
+      label: 'Обновления',
+      title: 'Обновления',
+      disabled: false,
     },
   ];
+
+  /**
+   * Служебные пункты открываются из трёх мест — меню учётной записи, подвал развёрнутой панели и
+   * свёрнутая панель, — и разбор ключа здесь один на всех. Раньше свёрнутая панель звала поддержку
+   * на любой пункт: пока «Обновления» стояли выключенными, ошибка была невидимой.
+   */
+  const openUtility = (key: string) => {
+    if (key === 'support') setSupportOpen(true);
+    if (key === 'changelog') setChangelogOpen(true);
+  };
 
   /** Пункт меню antd получает те же поля, что и раньше: `title` нужен только свёрнутой панели. */
   const utilityMenuItems: MenuProps['items'] = utilityItems.map(
@@ -195,12 +231,16 @@ export function AppLayout() {
     onClick: ({ key }) => {
       if (key === 'logout') void logout().then(() => navigate('/login'));
       if (key === 'change-password') navigate('/change-password');
-      if (key === 'support') setSupportOpen(true);
+      openUtility(key);
     },
   };
 
-  const supportModal = (
-    <SupportContactsModal open={supportOpen} onClose={() => setSupportOpen(false)} />
+  /** Оба окна служебные и живут в каркасе: открывают их из меню, а не переходом на страницу. */
+  const utilityModals = (
+    <>
+      <SupportContactsModal open={supportOpen} onClose={() => setSupportOpen(false)} />
+      <ReleaseNotesModal open={changelogOpen} onClose={() => setChangelogOpen(false)} />
+    </>
   );
 
   /**
@@ -218,12 +258,13 @@ export function AppLayout() {
           title={title}
           userName={user ? formatShortName(user) : undefined}
           menu={userMenu}
+          hasNews={hasNews}
         />
         <main className="mobile-content">
           <Outlet />
         </main>
         <MobileNav items={navItems} selectedKey={selectedKey} onSelect={(key) => navigate(key)} />
-        {supportModal}
+        {utilityModals}
       </div>
     );
   }
@@ -306,7 +347,7 @@ export function AppLayout() {
                     type="button"
                     className="sider-mini-item"
                     disabled={it.disabled}
-                    onClick={() => setSupportOpen(true)}
+                    onClick={() => openUtility(it.key)}
                     title={it.title}
                     aria-label={it.title}
                   >
@@ -319,9 +360,7 @@ export function AppLayout() {
                 mode="inline"
                 selectable={false}
                 items={utilityMenuItems}
-                onClick={({ key }) => {
-                  if (key === 'support') setSupportOpen(true);
-                }}
+                onClick={({ key }) => openUtility(key)}
                 style={{ borderInlineEnd: 'none' }}
               />
             )}
@@ -369,7 +408,7 @@ export function AppLayout() {
           <Outlet />
         </Content>
       </Layout>
-      {supportModal}
+      {utilityModals}
     </Layout>
   );
 }

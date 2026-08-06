@@ -33,3 +33,4 @@ export * from './vehicle-request-shifts';
 export * from './vehicle-requests';
 export * from './waybills';
 export * from './garage';
+export * from './releases';
