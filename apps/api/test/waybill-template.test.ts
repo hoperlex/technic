@@ -43,6 +43,28 @@ function cellsWithString(sheet: string, index: number): string[] {
   ].map(([, ref]) => ref!);
 }
 
+/**
+ * Есть ли у ячейки линия графы — нижняя граница. Линия живёт не в ячейке: ячейка держит номер
+ * стиля, стиль — номер рамки, и только в рамке написано, чем она снизу обведена.
+ */
+function bottomBorderOf(files: Record<string, Uint8Array>, address: string): boolean {
+  const sheet = decoder.decode(files['xl/worksheets/sheet1.xml']!);
+  const styles = decoder.decode(files['xl/styles.xml']!);
+  const cell = new RegExp(`<c r="${address}"((?:(?!/>|>)[\\s\\S])*)`).exec(sheet);
+  expect(cell, `ячейки ${address} в бланке нет`).not.toBeNull();
+
+  const xfs =
+    /<cellXfs count="\d+">([\s\S]*?)<\/cellXfs>/
+      .exec(styles)![1]!
+      .match(/<xf [^>]*?(?:\/>|>[\s\S]*?<\/xf>)/g) ?? [];
+  const xf = xfs[Number(/\ss="(\d+)"/.exec(cell![1]!)?.[1] ?? 0)]!;
+  const borders =
+    /<borders count="\d+">([\s\S]*?)<\/borders>/
+      .exec(styles)![1]!
+      .match(/<border\b[^>]*\/>|<border\b[^>]*>[\s\S]*?<\/border>/g) ?? [];
+  return /<bottom style=/.test(borders[Number(/borderId="(\d+)"/.exec(xf)?.[1] ?? 0)]!);
+}
+
 /** Адрес ячейки: `AI4` → колонка 35, строка 4. Колонки пронумерованы буквами по основанию 26. */
 const colNumber = (ref: string): number =>
   [.../^([A-Z]+)/.exec(ref)![1]!].reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0);
@@ -129,6 +151,43 @@ describe('разметка бланков', () => {
       expect(inspectTemplate(template(form))).not.toContain('dispatcher_fio');
     },
   );
+
+  /**
+   * Блок выдачи задания под таблицей 4-П убран целиком (ADR 0071): две строки подписи
+   * «Водительское удостоверение проверил, / задание выдал, выдать горючего ___ литр» и линии под
+   * ними — под горючее, под подпись диспетчера и под её расшифровку.
+   *
+   * Проверяются обе половины: текст и линия. Стёртая подпись без снятой линии оставляет на бумаге
+   * пустую черту во всю ширину графы — то есть блок, который выглядит как незаполненный, а не как
+   * убранный, и в него что-нибудь впишут.
+   */
+  it('в 4-П убран блок выдачи задания — вместе с линиями под ним', () => {
+    const files = unzipSync(template('4p'));
+    const sheet = decoder.decode(files['xl/worksheets/sheet1.xml']!);
+    const dictionary = dictionaryOf(decoder.decode(files['xl/sharedStrings.xml']!));
+
+    for (const caption of [
+      'Водительское удостоверение проверил,',
+      'задание выдал, выдать горючего',
+      'литр',
+    ]) {
+      const indexes = dictionary.flatMap((text, index) => (text.trim() === caption ? [index] : []));
+      expect(indexes.length, `подпись «${caption}» пропала из словаря книги`).toBeGreaterThan(0);
+      for (const index of indexes) {
+        expect(cellsWithString(sheet, index), caption).toEqual([]);
+      }
+    }
+
+    // Линии графы: под горючее (Y33:BB33), под подпись диспетчера (N34:AA34) и её расшифровку
+    // (AD34:BB34). Правее по тем же строкам идут линии возврата машины — их заполняет механик, и
+    // тронуть их разметка не имеет права: стиль у них тот же самый.
+    for (const address of ['Y33', 'AA33', 'BB33', 'N34', 'AA34', 'AD34', 'BB34']) {
+      expect(bottomBorderOf(files, address), address).toBe(false);
+    }
+    for (const address of ['DR32', 'DY33', 'DR34', 'EH34']) {
+      expect(bottomBorderOf(files, address), `${address} — линия механика`).toBe(true);
+    }
+  });
 
   /**
    * Тем же решением, что и графа диспетчера: в исходнике ЭСМ-2 над линией «(расшифровка подписи)»
@@ -326,11 +385,12 @@ describe('разметка бланков', () => {
   });
 
   /**
-   * Форма № 3 печатает задание на обороте: лицевая сторона держит только «Адрес подачи», а рейс
-   * с его заявками — таблица «Место отправления / назначения, время убытия, груз, заказчик».
-   * Без неё лист выходил бы без единого адреса, ради которого машина выезжала.
+   * Форма № 3 печатается реквизитами, но без задания (ADR 0071): ни таблицы оборота «Место
+   * отправления / назначения, время убытия, груз, заказчик», ни «Адреса подачи» на лицевой.
+   * Порядок поездок легкового портал не решает — напечатанная последовательность выдавала бы за
+   * задание догадку, а оборот бланка разграфлен типографией под отметки водителя по факту.
    */
-  it('в форме № 3 размечены реквизиты и задание рейса', () => {
+  it('в форме № 3 размечены реквизиты, но не задание рейса', () => {
     const inTemplate = new Set(inspectTemplate(template('leg3')));
     for (const key of [
       'org_name',
@@ -342,29 +402,16 @@ describe('разметка бланков', () => {
       'driver_fio',
       'driver_snils',
       'driver_license_number',
-      'customer_name',
-      'task_from',
-      'task_to',
-      'task_departure_hh',
-      'task_departure_mm',
-      // Задание рейса: таблица оборота разграфлена на десять строк, и маршрут легкового держит
-      // столько же заявок (ADR 0068). Талонов и доп. задания в этой форме нет — все строки
-      // заполняются одними и теми же графами.
-      'task2_from',
-      'task3_from',
-      'task4_from',
-      'task4_customer',
-      'task5_from',
-      'task6_from',
-      'task7_from',
-      'task8_from',
-      'task9_from',
-      'task10_from',
-      'task10_cargo',
-      'task10_customer',
     ]) {
       expect(inTemplate.has(key), key).toBe(true);
     }
+
+    // Ни одной графы задания: ни маршрута, ни груза, ни заказчика, ни времени убытия. Проверяется
+    // весь класс ключей, а не перечисленные адреса, — вернувшаяся разметка любой строки означает,
+    // что бланк снова печатает порядок, которого портал не знает.
+    expect([...inTemplate].filter((key) => key.startsWith('task'))).toEqual([]);
+    expect(inTemplate.has('customer_name'), 'адрес подачи из заявки').toBe(false);
+    expect(inTemplate.has('customer_address'), 'адрес подачи из заявки').toBe(false);
   });
 
   it.each(FORMS)('заполненный бланк %s не содержит незакрытых плейсхолдеров', (form) => {

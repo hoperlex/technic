@@ -292,12 +292,28 @@ describe('права ролей', () => {
       'records.purge',
       'users.manage',
       'audit.read',
+      // Пустой бланк (ADR 0071): на начальном этапе — только администратору. Номер строгой
+      // отчётности уходит на лист, задание в котором портал не печатает вовсе.
+      'waybills.issueBlank',
     ];
     for (const permission of adminOnly) {
       expect(
         profilesWith(permission).map((s) => s.role),
         permission,
       ).toEqual(['admin']);
+    }
+  });
+
+  /**
+   * Пустой бланк — отдельное право, а не часть журнала листов. Те, кто листы выписывает каждый
+   * день (менеджер и диспетчер), журнал ведут и бланки аннулируют — но лист без задания не
+   * выписывают: он расходует номер строгой отчётности ни на что.
+   */
+  it('журнал листов ведут менеджер с диспетчером, а пустой бланк выписывает только админ', () => {
+    for (const role of ['manager', 'dispatcher'] as const) {
+      expect(can(of(role), 'waybills.read'), role).toBe(true);
+      expect(can(of(role), 'waybills.cancel'), role).toBe(true);
+      expect(can(of(role), 'waybills.issueBlank'), role).toBe(false);
     }
   });
 });

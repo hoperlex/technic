@@ -35,6 +35,15 @@ interface Blank {
    */
   clear?: string[];
   /**
+   * Диапазоны, у которых снимается линия графы — нижняя граница ячеек. Нужны там, где из бланка
+   * убран целый блок: текст стирается `clear`, а линия под ним живёт в стиле и осталась бы на
+   * бумаге пустой чертой, приглашающей что-то вписать.
+   *
+   * Диапазон, а не ячейка: линию рисует каждая ячейка своей границей, и графа шириной в тридцать
+   * клеток — это тридцать одинаковых стилей.
+   */
+  unline?: string[];
+  /**
    * Объединения, которые снимаются с бланка. Внутри объединения длинный текст режется по его
    * границе, а не переполняет пустых соседей, — и подпись, набранная бухгалтерией в двух узких
    * клетках, печатается огрызком.
@@ -152,10 +161,27 @@ const FORM_4P: Blank = {
   // Строка задания идёт во всю ширину блока и в одну строку не встаёт; стиль бланка перенос не
   // несёт — без флага хвост срезался бы по границе объединения.
   wrap: ['CG76', 'CG77', 'CG78'],
-  // Графа диспетчера: сама подпись «Диспетчер» (A34), линия для фамилии (AD34) и подписи под ней
-  // (N35, AD35). Строка выше — «Водительское удостоверение проверил, задание выдал, выдать
-  // горючего ___ литр» — остаётся: её заполняют от руки, как одометр и остатки топлива.
-  clear: ['A34', 'AD34', 'N35', 'AD35'],
+  /*
+   * Блок выдачи задания под таблицей — целиком (ADR 0071). Это две строки подписи
+   * («Водительское удостоверение проверил, / задание выдал, выдать горючего ___ литр») и графа
+   * диспетчера под ними: «Диспетчер» (A34), линии для подписи и её расшифровки (AD34) и подписи
+   * этих линий (N35, AD35).
+   *
+   * Портал горючего не выдаёт, удостоверений не проверяет и документ не подписывает — блок
+   * заполнялся бы от руки, а на печати он стоит ровно там, где кончается задание водителю, и
+   * читается как часть выданного портала документа.
+   */
+  clear: ['A32', 'A33', 'BC33', 'A34', 'AD34', 'N35', 'AD35'],
+  /*
+   * Линии того же блока: под горючее (Y33:BB33), под подпись диспетчера (N34:AA34) и под её
+   * расшифровку (AD34:BB34). Стёртый текст их не убирает — линия живёт в стиле ячейки, и на
+   * бумаге от блока остались бы три пустые черты во всю ширину графы.
+   *
+   * Правее по тем же строкам идут линии возврата машины («Автомобиль принял», «При возвращении
+   * автомобиль исправен») — их портал не трогает: заполняет их механик от руки, и стиль у них
+   * тот же самый, поэтому снимается граница по ячейкам, а не правкой стиля книги.
+   */
+  unline: ['Y33:BB33', 'N34:AA34', 'AD34:BB34'],
 };
 
 /**
@@ -164,8 +190,12 @@ const FORM_4P: Blank = {
  * входа выдачи ему не понадобилось.
  *
  * Серии и номера в бланке нет вовсе, поэтому они пишутся в свободную строку под заголовком.
- * Задание же печатается на обороте: лицевая сторона держит только «Адрес подачи», а маршрут
- * рейса — таблица «Место отправления / назначения, время убытия, груз, заказчик».
+ *
+ * Задание портал в этот бланк не печатает (ADR 0071) — ни таблицу оборота «Место отправления /
+ * назначения, время убытия, груз, заказчик», ни «Адрес подачи» на лицевой. Легковая машина за
+ * день объезжает адреса в том порядке, в каком складывается день, и портал этого порядка не
+ * знает: напечатанная последовательность выдавала бы за задание догадку. Заявки остаются планом
+ * рейса в портале, а таблица оборота — местом, где водитель отмечает поездки по факту.
  */
 const FORM_LEG3: Blank = {
   source: 'пут.лист легков..xlsx',
@@ -185,63 +215,15 @@ const FORM_LEG3: Blank = {
     N20: '{{driver_license_number}}',
     M22: '{{driver_license_issued_on}}',
     M24: '{{driver_snils}}',
-    N27: '{{customer_name}}, {{customer_address}}',
     // «Вид сообщения:» — подпись занимает объединение A31:P31, линия идёт следом. «Вид перевозки»
     // не размечается: «коммерческая» впечатана в бланк типографией.
     Q31: '{{communication_kind}}',
     /*
-     * Оборотная сторона: задание рейса построчно. Таблица разграфлена и пронумерована самим
-     * бланком на десять строк, и размечены все десять — столько заявок держит маршрут легкового
-     * (`ROUTE_REQUEST_CAPACITY.leg3`, ADR 0068). Ни талонов, ни доп. задания в этой форме нет:
-     * все строки равноправны и заполняются одними и теми же графами.
-     *
-     * Каждая строка задания — это две строки листа (объединения вида H61:AA62), поэтому шаг по
-     * таблице через одну: 61, 63, 65, 67, 69, 71, 73, 75, 77, 79. Адреса — левые верхние углы
-     * объединений.
+     * «Адрес подачи» (N27) и таблица задания на обороте (строки 61…79) не размечаются вовсе
+     * (ADR 0071): и то, и другое пришлось бы брать из одной заявки рейса, выбранной по позиции в
+     * составе, — а порядок поездок легкового портал не решает. Оборот остаётся водителю: он
+     * разграфлен и пронумерован типографией под отметки по факту.
      */
-    H61: '{{task_from}}',
-    AB61: '{{task_to}}',
-    // Часы и минуты убытия — две отдельные графы, одной строкой «08:30» их не заполнить.
-    AU61: '{{task_departure_hh}}',
-    BA61: '{{task_departure_mm}}',
-    BG61: '{{task_cargo}}',
-    BY61: '{{customer_name}}',
-    H63: '{{task2_from}}',
-    AB63: '{{task2_to}}',
-    BG63: '{{task2_cargo}}',
-    BY63: '{{task2_customer}}',
-    H65: '{{task3_from}}',
-    AB65: '{{task3_to}}',
-    BG65: '{{task3_cargo}}',
-    BY65: '{{task3_customer}}',
-    H67: '{{task4_from}}',
-    AB67: '{{task4_to}}',
-    BG67: '{{task4_cargo}}',
-    BY67: '{{task4_customer}}',
-    H69: '{{task5_from}}',
-    AB69: '{{task5_to}}',
-    BG69: '{{task5_cargo}}',
-    BY69: '{{task5_customer}}',
-    H71: '{{task6_from}}',
-    AB71: '{{task6_to}}',
-    BG71: '{{task6_cargo}}',
-    BY71: '{{task6_customer}}',
-    H73: '{{task7_from}}',
-    AB73: '{{task7_to}}',
-    BG73: '{{task7_cargo}}',
-    BY73: '{{task7_customer}}',
-    H75: '{{task8_from}}',
-    AB75: '{{task8_to}}',
-    BG75: '{{task8_cargo}}',
-    BY75: '{{task8_customer}}',
-    H77: '{{task9_from}}',
-    AB77: '{{task9_to}}',
-    BG77: '{{task9_cargo}}',
-    BY77: '{{task9_customer}}',
-    H79: '{{task10_from}}',
-    AB79: '{{task10_to}}',
-    BG79: '{{task10_cargo}}',
-    BY79: '{{task10_customer}}',
   },
   // Графа диспетчера — та же, что в 4-П: подпись, линия для фамилии и подписи под ней.
   clear: ['A39', 'AA39', 'Q40', 'AA40'],
@@ -423,6 +405,114 @@ function clearCell(sheet: string, address: string): string {
   if (!found) throw new Error(`Ячейки ${address} в листе нет — стирать нечего, проверьте адрес`);
 
   return sheet.replace(found[0], `<c r="${address}"${styleOf(found[1] ?? '')} />`);
+}
+
+/** Адреса диапазона `Y33:BB33` по колонкам: линию графы рисует каждая ячейка своей границей. */
+function expandRange(ref: string): string[] {
+  const [from, to] = ref.split(':') as [string, string?];
+  if (!to) return [from];
+  const row = COL.exec(from)![2]!;
+  if (COL.exec(to)![2] !== row) {
+    throw new Error(`Диапазон ${ref} идёт по нескольким строкам — линия графы лежит в одной`);
+  }
+  const cells: string[] = [];
+  for (let col = colNumber(from); col <= colNumber(to); col += 1) {
+    cells.push(`${colLetters(col)}${row}`);
+  }
+  return cells;
+}
+
+/** Номер колонки обратно в буквы: 46 → `AT`. */
+function colLetters(col: number): string {
+  let rest = col;
+  let letters = '';
+  while (rest > 0) {
+    const remainder = (rest - 1) % 26;
+    letters = String.fromCharCode(65 + remainder) + letters;
+    rest = (rest - remainder - 1) / 26;
+  }
+  return letters;
+}
+
+/**
+ * Снимает линию графы — нижнюю границу ячеек диапазона.
+ *
+ * Линия живёт в стиле, а не в содержимом: стёртая графа оставляет на бумаге пустую черту, которая
+ * читается как приглашение вписать. Правится не стиль книги, а ячейки: один и тот же стиль носят
+ * десятки граф бланка, и правка стёрла бы линии, которые заполняет от руки механик. Поэтому в
+ * таблицу рамок дописывается копия без низа, а в таблицу стилей — копия записи, ссылающаяся на
+ * неё; обе кэшируются, иначе на графу шириной в тридцать клеток пришлось бы тридцать одинаковых
+ * записей.
+ *
+ * Ячейка без нижней границы пропускается: в диапазон попадают и клетки-разделители между графами.
+ */
+function unlineCells(
+  sheet: string,
+  styles: string,
+  refs: readonly string[],
+): { sheet: string; styles: string } {
+  const cache = new Map<number, number>();
+  let patchedSheet = sheet;
+  let patchedStyles = styles;
+
+  for (const address of refs.flatMap(expandRange)) {
+    const found = cellRe(address).exec(patchedSheet);
+    if (!found) throw new Error(`Ячейки ${address} в листе нет — линию снимать не с чего`);
+    const current = Number(/\ss="(\d+)"/.exec(found[1] ?? '')?.[1] ?? 0);
+
+    let replacement = cache.get(current);
+    if (replacement === undefined) {
+      const table = /<cellXfs count="(\d+)">([\s\S]*?)<\/cellXfs>/.exec(patchedStyles);
+      if (!table)
+        throw new Error(`В книге нет таблицы стилей ячеек — линию ${address} снимать нечем`);
+      const xfs = table[2]!.match(/<xf [^>]*?(?:\/>|>[\s\S]*?<\/xf>)/g) ?? [];
+      const base = xfs[current];
+      if (!base) throw new Error(`Стиля ${current} ячейки ${address} в книге нет`);
+
+      const borderId = Number(/borderId="(\d+)"/.exec(base)?.[1] ?? 0);
+      const borders = /<borders count="(\d+)">([\s\S]*?)<\/borders>/.exec(patchedStyles);
+      if (!borders) throw new Error(`В книге нет таблицы рамок — линию ${address} снимать нечем`);
+      const list = borders[2]!.match(/<border\b[^>]*\/>|<border\b[^>]*>[\s\S]*?<\/border>/g) ?? [];
+      const border = list[borderId];
+      if (!border) throw new Error(`Рамки ${borderId} ячейки ${address} в книге нет`);
+      if (!/<bottom style=/.test(border)) {
+        // Линии у графы нет — стирать нечего; такие клетки в диапазоне попадаются между графами.
+        cache.set(current, current);
+        continue;
+      }
+
+      const withoutBottom = border.replace(/<bottom style=[\s\S]*?<\/bottom>/, '<bottom />');
+      patchedStyles = patchedStyles
+        .replace(
+          borders[0],
+          `<borders count="${list.length + 1}">${borders[2]}${withoutBottom}</borders>`,
+        )
+        .replace(
+          /<cellXfs count="(\d+)">([\s\S]*?)<\/cellXfs>/,
+          (_, count: string, body: string) =>
+            `<cellXfs count="${Number(count) + 1}">${body}${base.replace(
+              /borderId="\d+"/,
+              `borderId="${list.length}"`,
+            )}</cellXfs>`,
+        );
+      replacement = xfs.length;
+      cache.set(current, replacement);
+    }
+    if (replacement === current) continue;
+
+    const attrs = (found[1] ?? '').trim();
+    const restyled = /\ss="\d+"/.test(found[1] ?? '')
+      ? attrs.replace(/s="\d+"/, `s="${replacement}"`)
+      : `s="${replacement}"${attrs ? ` ${attrs}` : ''}`;
+    patchedSheet = patchedSheet.replace(
+      found[0],
+      found[2] === undefined
+        ? `<c r="${address}" ${restyled} />`
+        : `<c r="${address}" ${restyled}>${found[2]}</c>`,
+    );
+  }
+
+  return { sheet: patchedSheet, styles: patchedStyles };
 }
 
 /**
@@ -683,6 +773,7 @@ function mark(blank: Blank): void {
     sheet = setCell(sheet, address, value);
   }
   for (const address of blank.clear ?? []) sheet = clearCell(sheet, address);
+  if (blank.unline) ({ sheet, styles } = unlineCells(sheet, styles, blank.unline));
   for (const address of blank.shrink ?? [])
     ({ sheet, styles } = restyleCell(sheet, styles, address, SHRINK));
   for (const address of blank.wrap ?? [])
@@ -695,10 +786,11 @@ function mark(blank: Blank): void {
   // Время фиксировано: одинаковый исходник обязан давать одинаковый шаблон.
   writeFileSync(join(templatesDir, blank.out), zipSync(files, { mtime: Date.UTC(1980, 0, 1) }));
   const cleared = blank.clear?.length ? `, стёрто ${blank.clear.length}` : '';
+  const unlined = blank.unline?.length ? `, снято линий ${blank.unline.length}` : '';
   const shrunk = blank.shrink?.length ? `, ужато ${blank.shrink.length}` : '';
   const wrapped = blank.wrap?.length ? `, с переносом ${blank.wrap.length}` : '';
   console.log(
-    `${blank.out}: размечено граф ${Object.keys(blank.cells).length}${cleared}${shrunk}${wrapped}`,
+    `${blank.out}: размечено граф ${Object.keys(blank.cells).length}${cleared}${unlined}${shrunk}${wrapped}`,
   );
 }
 

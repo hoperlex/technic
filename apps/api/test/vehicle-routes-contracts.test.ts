@@ -9,7 +9,9 @@ import {
   isRouteEditable,
   ROUTE_REQUEST_CAPACITY,
   parseVehicleRouteNumberSearch,
+  CARGO_NOTE_LIMIT,
   routeCargoLabel,
+  routeCargoWithNote,
   routeContactsLabel,
   routeExtraTaskLine,
   routeWaybillForm,
@@ -121,9 +123,15 @@ describe('какая заявка годится для рейса', () => {
     ).toEqual({ ok: true });
   });
 
-  it('легковой держит десять: столько строк в таблице формы № 3', () => {
+  /*
+   * У легкового предел свой и не бумажный: задание форма № 3 не печатает вовсе (ADR 0071), и
+   * десять — это «сколько заявок портал ведёт в одном рейсе» (CHECK позиции, миграция 0096).
+   * Отказ поэтому и звучит иначе: ссылаться на строки бланка, которых он не печатает, значило бы
+   * объяснять человеку выдуманную причину.
+   */
+  it('легковой держит десять, но местами рейса, а не строками бланка', () => {
     const leg3 = { ...emptyRoute, formCode: 'leg3' as const };
-    // Восьмая заявка, отбитая у 4-П, здесь проходит: бланк другой, и строк в нём больше.
+    // Восьмая заявка, отбитая у 4-П, здесь проходит: предел другой, и он больше.
     expect(
       canJoinRoute(goodRequest, { ...leg3, requestCount: ROUTE_REQUEST_CAPACITY['4p'] }),
     ).toEqual({ ok: true });
@@ -132,7 +140,8 @@ describe('какая заявка годится для рейса', () => {
       requestCount: ROUTE_REQUEST_CAPACITY.leg3,
     });
     expect(check.ok).toBe(false);
-    expect(check.ok === false && check.reason).toContain('10 строк задания');
+    expect(check.ok === false && check.reason).toContain('10 мест');
+    expect(check.ok === false && check.reason).not.toContain('строк задания');
   });
 });
 
@@ -174,6 +183,34 @@ describe('готовность рейса к выписке листа', () => {
 
   it('пустому рейсу выписывать нечего', () => {
     expect(canIssueWaybill({ ...ready, requests: [] }).ok).toBe(false);
+    expect(canIssueWaybill({ ...ready, requests: [], blankAllowed: false }).ok).toBe(false);
+  });
+
+  /**
+   * Пустой бланк (ADR 0071): по праву `waybills.issueBlank` лист по рейсу без заявок выписывается.
+   * Пустым остаётся только задание — остальное рейс даёт как обычно, и без водителя лист не
+   * выписывается ни с правом, ни без: он обязательный реквизит, а не часть задания.
+   */
+  it('с правом на пустой бланк рейс без заявок выписывается, но водитель всё равно нужен', () => {
+    expect(canIssueWaybill({ ...ready, requests: [], blankAllowed: true })).toEqual({ ok: true });
+
+    const check = canIssueWaybill({
+      ...ready,
+      requests: [],
+      blankAllowed: true,
+      driverPersonId: null,
+    });
+    expect(check.ok === false && check.reason).toContain('водителя');
+  });
+
+  it('право на пустой бланк не делает пустым состав из отменённых заявок', () => {
+    const check = canIssueWaybill({
+      ...ready,
+      blankAllowed: true,
+      requests: [{ displayNumber: 'ТС-501', status: 'cancelled' }],
+    });
+    expect(check.ok).toBe(false);
+    expect(check.ok === false && check.blocking).toEqual(['ТС-501']);
   });
 
   it('действующий лист второго не даёт, аннулированный — даёт', () => {
@@ -283,9 +320,10 @@ describe('бланк рейса', () => {
 
   it('перегон печатается 4-П, каким бы бланком ни печатался рейс типа', () => {
     for (const purpose of ['delivery', 'pickup'] as const) {
-      expect(
-        routeWaybillForm({ purpose, ownership: 'own', formCode: 'leg3' }),
-      ).toEqual({ formCode: '4p', reason: null });
+      expect(routeWaybillForm({ purpose, ownership: 'own', formCode: 'leg3' })).toEqual({
+        formCode: '4p',
+        reason: null,
+      });
     }
   });
 
@@ -317,6 +355,44 @@ describe('груз в подписи рейса', () => {
     expect(routeCargoLabel(null, '8.000')).toBe('8.000 т');
     expect(routeCargoLabel(null, null)).toBe('');
   });
+
+  /**
+   * Комментарий заявки — вторая строка графы «Груз» (ADR 0071). Строк у графы ровно две: первую
+   * занимает количество, вторую комментарий, и на неё влезает около двух десятков знаков.
+   */
+  describe('комментарий заявки второй строкой', () => {
+    it('становится второй строкой графы', () => {
+      expect(routeCargoWithNote('12 м³', 'песок карьерный')).toBe('12 м³\nпесок карьерный');
+    });
+
+    it('пустая часть не оставляет пустой строки', () => {
+      expect(routeCargoWithNote('12 м³', '')).toBe('12 м³');
+      expect(routeCargoWithNote('12 м³', '   ')).toBe('12 м³');
+      // Груза без количества у заявки не бывает (CHECK «объём или масса»), но графа не обязана
+      // об этом знать: одинокий комментарий не должен начинаться с переноса.
+      expect(routeCargoWithNote('', 'песок')).toBe('песок');
+      expect(routeCargoWithNote('', '')).toBe('');
+    });
+
+    it('многострочный комментарий схлопывается: строка в графе одна', () => {
+      expect(routeCargoWithNote('8 т', 'песок\nзвонить за час')).toBe('8 т\nпесок звонить за час');
+    });
+
+    /*
+     * Длинный комментарий режется многоточием, а не бумагой. Обрезка по границе ячейки молчалива
+     * и приходится на середину слова — на бумаге это выглядит как полный текст, которому просто
+     * не хватило места, и понять, что часть примечания потерялась, читателю нечем.
+     */
+    it('длинный комментарий обрезается видимо — многоточием', () => {
+      const long = 'песок карьерный мытый первого класса, звонить за час до подачи';
+      const cargo = routeCargoWithNote('12 м³', long);
+      const note = cargo.split('\n')[1]!;
+
+      expect(note.length).toBe(CARGO_NOTE_LIMIT);
+      expect(note.endsWith('…')).toBe(true);
+      expect(long.startsWith(note.slice(0, -1).trimEnd())).toBe(true);
+    });
+  });
 });
 
 /**
@@ -335,18 +411,18 @@ describe('контакты в графе задания', () => {
   });
 
   it('ФИО из трёх слов сокращается до инициалов — иначе строка не влезает в графу', () => {
-    expect(
-      routeContactsLabel([{ name: 'Кузнецова Анна Владимировна', phone: '9141112233' }]),
-    ).toBe('Кузнецова А.В., +7 (914) 111 22 33');
+    expect(routeContactsLabel([{ name: 'Кузнецова Анна Владимировна', phone: '9141112233' }])).toBe(
+      'Кузнецова А.В., +7 (914) 111 22 33',
+    );
   });
 
   it('запись не из трёх слов печатается как есть: разбирать её портал не берётся', () => {
     expect(routeContactsLabel([{ name: 'Иванов И.И.', phone: '9141112233' }])).toBe(
       'Иванов И.И., +7 (914) 111 22 33',
     );
-    expect(
-      routeContactsLabel([{ name: 'прораб Иванов Иван Иванович', phone: '9141112233' }]),
-    ).toBe('прораб Иванов Иван Иванович, +7 (914) 111 22 33');
+    expect(routeContactsLabel([{ name: 'прораб Иванов Иван Иванович', phone: '9141112233' }])).toBe(
+      'прораб Иванов Иван Иванович, +7 (914) 111 22 33',
+    );
   });
 
   /*
@@ -398,6 +474,21 @@ describe('строка доп. задания', () => {
    */
   it('контакты сводятся в одну строку: переносов внутри задания быть не должно', () => {
     expect(routeExtraTaskLine({ from: 'А', to: 'Б', cargo: '', contacts })).not.toContain('\n');
+  });
+
+  /*
+   * Груз приходит сюда двумя строками — количество и комментарий заявки (ADR 0071), — и сводится
+   * тем же порядком, что и контакты: ячейка блока держит две строки на всё задание.
+   */
+  it('груз с комментарием тоже сводится в строку', () => {
+    const line = routeExtraTaskLine({
+      from: 'Зимняя, 666',
+      to: 'Лётная, 555',
+      cargo: routeCargoWithNote('10 м³', 'песок'),
+      contacts: '',
+    });
+    expect(line).toBe('Зимняя, 666 → Лётная, 555, 10 м³; песок');
+    expect(line).not.toContain('\n');
   });
 
   it('пустой рейс даёт пустую строку — ни стрелки, ни запятых', () => {

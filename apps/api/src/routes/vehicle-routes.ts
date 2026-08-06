@@ -4,6 +4,7 @@ import { and, asc, count, desc, eq, gte, lte, ne, sql, type SQL } from 'drizzle-
 import { z } from 'zod';
 import {
   attachRouteRequestSchema,
+  can,
   canIssueWaybill,
   canJoinRoute,
   createVehicleRouteSchema,
@@ -629,12 +630,17 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
    * Статусы заявок перечитываются под блокировкой их строк: состав лежит в одной таблице, а
    * статусы — в другой, и без этого соседний запрос успел бы закрыть заявку между проверкой и
    * вставкой листа — бланк родился бы на закрытую.
+   *
+   * Пустой бланк (рейс без заявок) спрашивает своё право — `waybills.issueBlank`, ADR 0071.
+   * Отдельным guard'ом его не закрыть: ручка одна на обе выписки, а право решает не «пускать ли
+   * сюда», а «считать ли пустое задание ошибкой».
    */
   r.post(
     '/:id/waybill',
     { preHandler: guards, schema: { params: idParams, body: issueRouteWaybillSchema } },
     async (req): Promise<VehicleRouteDto> => {
       const p = requirePrincipal(req);
+      const blankAllowed = can(p, 'waybills.issueBlank');
 
       const issued = await db.transaction(async (tx) => {
         const route = await lockRoute(tx, req.params.id);
@@ -664,6 +670,7 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
         const check = canIssueWaybill({
           purpose: route.purpose,
           driverPersonId: route.driverPersonId,
+          blankAllowed,
           // Бланк рейса: им проверяется, что состав в него влезает — его строки задания и
           // печатают заявки (ADR 0068).
           formCode: (
@@ -707,16 +714,18 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
           actor: { id: p.id },
         });
         await bumpRouteVersion(tx, route.id, p.id);
-        return result;
+        return { ...result, blank: rows.length === 0 && !route.sourceRequestId };
       });
 
       // Лист уносит из портала персональные данные водителя — выдача учётное событие (ADR 0037).
+      // Пустой бланк помечается отдельно (ADR 0071): номер строгой отчётности ушёл на лист, за
+      // задание в котором портал не отвечает, и в журнале это обязано быть отличимо.
       await writeAudit({
         actorUserId: p.id,
         action: 'waybill.issue',
         entityType: 'waybill',
         entityId: issued.id,
-        metadata: { number: issued.number, routeId: req.params.id },
+        metadata: { number: issued.number, routeId: req.params.id, blank: issued.blank },
       });
       return (await loadRouteDto(db, req.params.id))!;
     },

@@ -8,6 +8,7 @@ import {
 } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
+  BLANK_WAYBILL_CONFIRM,
   canIssueWaybill,
   driverDocumentGapsWarning,
   isRouteEditable,
@@ -170,21 +171,29 @@ export function VehicleRouteModal({ routeId, onClose, onChanged }: Props) {
       )
     : null;
 
+  /** Рейс без заявок: лист по нему выписывается пустым бланком (ADR 0071). */
+  const blank = !!route && !isRelocationPurpose(route.purpose) && route.requests.length === 0;
+
   /**
    * Пустые графы спрашиваются подтверждением, а не просто предупреждением над кнопкой: номер
    * бланка расходуется навсегда, и «выписал не глядя» здесь стоит дороже лишнего клика. Там, где
    * с документами всё в порядке, лишнего окна нет — лист выписывается сразу.
+   *
+   * Пустой бланк спрашивается тем же окном и всегда: задание в нём не печатается вовсе, и «забыл
+   * положить заявки» от «выписываю пустой намеренно» отличает только человек.
    */
   const confirmIssue = () => {
-    if (!driverGaps) {
+    if (!driverGaps && !blank) {
       issue.mutate();
       return;
     }
     modal.confirm({
-      title: 'Выписать лист с незаполненными графами?',
+      title: blank ? 'Выписать пустой лист?' : 'Выписать лист с незаполненными графами?',
       content: (
         <Typography.Paragraph style={{ marginBottom: 0 }}>
-          {driverGaps} Номер бланка израсходуется: чтобы переписать лист, его придётся аннулировать.
+          {blank ? BLANK_WAYBILL_CONFIRM : driverGaps}{' '}
+          {blank && driverGaps ? `${driverGaps} ` : ''}
+          Номер бланка израсходуется: чтобы переписать лист, его придётся аннулировать.
         </Typography.Paragraph>
       ),
       okText: 'Всё равно выписать',
@@ -249,6 +258,9 @@ export function VehicleRouteModal({ routeId, onClose, onChanged }: Props) {
     ? canIssueWaybill({
         purpose: route.purpose,
         driverPersonId: route.driverPersonId,
+        // Пустой бланк — право администратора (ADR 0071). Спрашивается тем же правилом, что и на
+        // сервере: иначе кнопка обещала бы то, чего ручка не сделает.
+        blankAllowed: can('waybills.issueBlank'),
         formCode: route.formCode,
         requests: route.requests,
         sourceRequest: route.sourceRequest,
@@ -376,9 +388,21 @@ export function VehicleRouteModal({ routeId, onClose, onChanged }: Props) {
               <Typography.Title level={5}>
                 Заявки рейса ({route.requests.length} из {routeRequestCapacity(route.formCode)})
               </Typography.Title>
+              {/* Форма № 3 задание не печатает (ADR 0071): порядок выполнения у легкового не
+                гарантирован, и бланк выходит с реквизитами и пустым оборотом. Сказать об этом
+                нужно там, где состав собирают, — иначе расхождение бумаги с рейсом обнаружат
+                после печати. */}
+              {route.formCode === 'leg3' && (
+                <Typography.Paragraph type="secondary">
+                  В бланке легкового задание не печатается: заявки остаются планом рейса, а в лист
+                  не идут.
+                </Typography.Paragraph>
+              )}
               {route.requests.length === 0 && (
                 <Typography.Paragraph type="secondary">
                   Рейс пуст: положите в него заявку, взятую в работу на эту машину и дату.
+                  {can('waybills.issueBlank') &&
+                    ' Либо выпишите пустой лист — с машиной, водителем и датой, но без задания.'}
                 </Typography.Paragraph>
               )}
               <Space direction="vertical" size={8} style={{ width: '100%' }}>
@@ -504,8 +528,8 @@ function RouteRequestRow({
           {/* Талонов в бланке 4-П четыре, а строк задания семь (ADR 0068): заявка с пятой
             позиции печатается доп. заданием, и отрывного талона заказчик по ней не подпишет.
             Диспетчер видит это, пока рейс ещё собирается, — переставить заявку выше можно только
-            здесь. Формы № 3 пометка не касается: талонов в ней нет вовсе, и все десять строк её
-            задания равноправны. */}
+            здесь. Формы № 3 пометка не касается: талонов в ней нет вовсе, а задание она с
+            появления ADR 0071 не печатает и целиком. */}
           {formCode === '4p' && item.position > WAYBILL_COUPONS && (
             <Tag>доп. задание, без талона</Tag>
           )}

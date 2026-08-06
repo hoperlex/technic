@@ -2,8 +2,9 @@ import { and, eq } from 'drizzle-orm';
 import {
   formatPhone,
   licenseNumberLabel,
-  MAX_ROUTE_REQUESTS,
+  ROUTE_REQUEST_CAPACITY,
   routeCargoLabel,
+  routeCargoWithNote,
   routeContactsLabel,
   routeExtraTaskLine,
   type RoutePurpose,
@@ -183,8 +184,12 @@ async function resolveOrganization(tx: Tx, vehicleId: string): Promise<string> {
 async function collectSnapshot(
   tx: Tx,
   params: {
-    /** Заявка первого талона: она же стоит в шапке задания «в чьё распоряжение». */
-    requestId: string;
+    /**
+     * Заявка первого талона: она же стоит в шапке задания «в чьё распоряжение». `null` — рейс без
+     * заявок (ADR 0071): задание в таком листе не печатается вовсе, и графы заказчика, маршрута,
+     * груза и контактов остаются пустыми под то, что впишут от руки.
+     */
+    requestId: string | null;
     /** Остальные заявки рейса по порядку — строки 2–7 задания водителю (ADR 0068). */
     restRequestIds: string[];
     vehicleId: string;
@@ -223,41 +228,45 @@ async function collectSnapshot(
     .leftJoin(vehicleModels, eq(vehicleModels.id, vehicles.vehicleModelId))
     .where(eq(vehicles.id, params.vehicleId));
 
-  const [request] = await tx
-    .select({
-      // Заказчик в бланке — объект или отдел (ADR 0040): у заявки отдела площадки нет вовсе, и
-      // строка «Заказчик» осталась бы пустой при innerJoin по объекту — вместе со всем листом.
-      objectName: constructionObjects.name,
-      objectAddress: constructionObjects.address,
-      departmentName: departments.name,
-      loading: freightTransportRequestDetails.loadingLocation,
-      unloading: freightTransportRequestDetails.unloadingLocation,
-      volumeM3: freightTransportRequestDetails.volumeM3,
-      weightTons: freightTransportRequestDetails.weightTons,
-      scheduledAt: freightTransportRequestDetails.scheduledAt,
-      timeUnspecified: freightTransportRequestDetails.scheduledTimeUnspecified,
-      // Контакты на концах маршрута — графа «заказчик, телефон» задания (миграция 0062).
-      loadingResponsibleName: freightTransportRequestDetails.loadingResponsibleName,
-      loadingResponsiblePhone: freightTransportRequestDetails.loadingResponsiblePhone,
-      unloadingResponsibleName: freightTransportRequestDetails.unloadingResponsibleName,
-      unloadingResponsiblePhone: freightTransportRequestDetails.unloadingResponsiblePhone,
-      // Тот же контакт у перегона: заявка-основание — спецтехника, и человек у неё один — тот,
-      // кто встречает машину на площадке.
-      siteResponsibleName: specialEquipmentRequestDetails.responsibleName,
-      siteResponsiblePhone: specialEquipmentRequestDetails.responsiblePhone,
-    })
-    .from(vehicleRequests)
-    .leftJoin(constructionObjects, eq(constructionObjects.id, vehicleRequests.objectId))
-    .leftJoin(departments, eq(departments.id, vehicleRequests.departmentId))
-    .leftJoin(
-      freightTransportRequestDetails,
-      eq(freightTransportRequestDetails.requestId, vehicleRequests.id),
-    )
-    .leftJoin(
-      specialEquipmentRequestDetails,
-      eq(specialEquipmentRequestDetails.requestId, vehicleRequests.id),
-    )
-    .where(eq(vehicleRequests.id, params.requestId));
+  const [request] = params.requestId
+    ? await tx
+        .select({
+          // Заказчик в бланке — объект или отдел (ADR 0040): у заявки отдела площадки нет вовсе, и
+          // строка «Заказчик» осталась бы пустой при innerJoin по объекту — вместе со всем листом.
+          objectName: constructionObjects.name,
+          objectAddress: constructionObjects.address,
+          departmentName: departments.name,
+          // Комментарий заявки — вторая строка графы «Груз» (ADR 0071).
+          comment: vehicleRequests.comment,
+          loading: freightTransportRequestDetails.loadingLocation,
+          unloading: freightTransportRequestDetails.unloadingLocation,
+          volumeM3: freightTransportRequestDetails.volumeM3,
+          weightTons: freightTransportRequestDetails.weightTons,
+          scheduledAt: freightTransportRequestDetails.scheduledAt,
+          timeUnspecified: freightTransportRequestDetails.scheduledTimeUnspecified,
+          // Контакты на концах маршрута — графа «заказчик, телефон» задания (миграция 0062).
+          loadingResponsibleName: freightTransportRequestDetails.loadingResponsibleName,
+          loadingResponsiblePhone: freightTransportRequestDetails.loadingResponsiblePhone,
+          unloadingResponsibleName: freightTransportRequestDetails.unloadingResponsibleName,
+          unloadingResponsiblePhone: freightTransportRequestDetails.unloadingResponsiblePhone,
+          // Тот же контакт у перегона: заявка-основание — спецтехника, и человек у неё один — тот,
+          // кто встречает машину на площадке.
+          siteResponsibleName: specialEquipmentRequestDetails.responsibleName,
+          siteResponsiblePhone: specialEquipmentRequestDetails.responsiblePhone,
+        })
+        .from(vehicleRequests)
+        .leftJoin(constructionObjects, eq(constructionObjects.id, vehicleRequests.objectId))
+        .leftJoin(departments, eq(departments.id, vehicleRequests.departmentId))
+        .leftJoin(
+          freightTransportRequestDetails,
+          eq(freightTransportRequestDetails.requestId, vehicleRequests.id),
+        )
+        .leftJoin(
+          specialEquipmentRequestDetails,
+          eq(specialEquipmentRequestDetails.requestId, vehicleRequests.id),
+        )
+        .where(eq(vehicleRequests.id, params.requestId))
+    : [];
 
   // Реквизиты водителя — снимком: удостоверение сменят, а лист остаётся с тем, по которому ехали.
   // Не внесённая графа остаётся пустой строкой (ADR 0064): бланк печатается с пустым местом, а не
@@ -285,7 +294,12 @@ async function collectSnapshot(
     }
   }
 
-  const cargo = routeCargoLabel(request?.volumeM3 ?? null, request?.weightTons ?? null);
+  // Груз графы бланка: количество, а под ним комментарий заявки (ADR 0071) — то, чего в
+  // количестве не выразить: «песок, звонить за час».
+  const cargo = routeCargoWithNote(
+    routeCargoLabel(request?.volumeM3 ?? null, request?.weightTons ?? null),
+    request?.comment ?? '',
+  );
 
   /*
    * Графа «заказчик, телефон» задания: контакты рейса, а не наименование заказчика. Заказчик
@@ -317,17 +331,16 @@ async function collectSnapshot(
       : '';
 
   /*
-   * Задание рейсов 2–10 (ADR 0068): сколько строк напечатается, решает бланк — у 4-П их семь
-   * (четыре строки таблицы и три строки доп. задания), у формы № 3 десять. Снимок собирается по
-   * наибольшей ёмкости и не выбирает: лишние ключи бланк просто не спрашивает, а пустые строки
+   * Задание рейсов 2–7 (ADR 0068): четыре строки таблицы 4-П и три строки его блока доп. задания.
+   * Больше строк не собирается — печатать их некуда: задание формы № 3 портал не заполняет вовсе
+   * (ADR 0071), а её оборот и был единственным местом, где стояли строки 8–10. Пустые строки
    * остаются пустыми — лист на одну заявку выглядит так же, как выглядел до маршрутов.
    */
   const rest = await Promise.all(
-    params.restRequestIds.slice(0, MAX_ROUTE_REQUESTS - 1).map(async (id) => {
+    params.restRequestIds.slice(0, ROUTE_REQUEST_CAPACITY['4p'] - 1).map(async (id) => {
       const [row] = await tx
         .select({
-          objectName: constructionObjects.name,
-          departmentName: departments.name,
+          comment: vehicleRequests.comment,
           loading: freightTransportRequestDetails.loadingLocation,
           unloading: freightTransportRequestDetails.unloadingLocation,
           volumeM3: freightTransportRequestDetails.volumeM3,
@@ -338,30 +351,27 @@ async function collectSnapshot(
           unloadingResponsiblePhone: freightTransportRequestDetails.unloadingResponsiblePhone,
         })
         .from(vehicleRequests)
-        .leftJoin(constructionObjects, eq(constructionObjects.id, vehicleRequests.objectId))
-        .leftJoin(departments, eq(departments.id, vehicleRequests.departmentId))
         .leftJoin(
           freightTransportRequestDetails,
           eq(freightTransportRequestDetails.requestId, vehicleRequests.id),
         )
         .where(eq(vehicleRequests.id, id));
       return {
-        customer: row?.objectName ?? row?.departmentName ?? '',
         from: row?.loading ?? '',
         to: row?.unloading ?? '',
-        cargo: routeCargoLabel(row?.volumeM3 ?? null, row?.weightTons ?? null),
+        cargo: routeCargoWithNote(
+          routeCargoLabel(row?.volumeM3 ?? null, row?.weightTons ?? null),
+          row?.comment ?? '',
+        ),
         contacts: row ? contactsOf(row) : '',
       };
     }),
   );
-  const slot = (index: number) =>
-    rest[index] ?? { customer: '', from: '', to: '', cargo: '', contacts: '' };
+  const slot = (index: number) => rest[index] ?? { from: '', to: '', cargo: '', contacts: '' };
   const departure =
     request?.scheduledAt && !request.timeUnspecified
       ? new Date(request.scheduledAt.getTime() + 3 * 60 * 60 * 1000).toISOString().slice(11, 16)
       : '';
-  // Форма № 3 держит часы и минуты в разных клетках шириной в две цифры: «08:30» туда не встаёт.
-  const [departureHours = '', departureMinutes = ''] = departure ? departure.split(':') : [];
 
   return {
     org_name: org?.name ?? '',
@@ -411,20 +421,15 @@ async function collectSnapshot(
     task_cargo: params.relocation ? '' : cargo,
     task_contacts: contacts,
     task_departure_time: departure,
-    task_departure_hh: departureHours,
-    task_departure_mm: departureMinutes,
 
-    task2_customer: slot(0).customer,
     task2_from: slot(0).from,
     task2_to: slot(0).to,
     task2_cargo: slot(0).cargo,
     task2_contacts: slot(0).contacts,
-    task3_customer: slot(1).customer,
     task3_from: slot(1).from,
     task3_to: slot(1).to,
     task3_cargo: slot(1).cargo,
     task3_contacts: slot(1).contacts,
-    task4_customer: slot(2).customer,
     task4_from: slot(2).from,
     task4_to: slot(2).to,
     task4_cargo: slot(2).cargo,
@@ -432,39 +437,11 @@ async function collectSnapshot(
 
     /*
      * Рейсы 5–7. У 4-П это нижние строки блока «Дополнительное задание водителю» — по одной
-     * объединённой ячейке без граф внутри, поэтому туда идёт собранная строка; разобранные графы
-     * рядом печатает форма № 3, чей оборот держит таблицу на десять строк.
+     * объединённой ячейке без граф внутри, поэтому туда идёт собранная строка целиком.
      */
-    task5_customer: slot(3).customer,
-    task5_from: slot(3).from,
-    task5_to: slot(3).to,
-    task5_cargo: slot(3).cargo,
     task5_line: routeExtraTaskLine(slot(3)),
-    task6_customer: slot(4).customer,
-    task6_from: slot(4).from,
-    task6_to: slot(4).to,
-    task6_cargo: slot(4).cargo,
     task6_line: routeExtraTaskLine(slot(4)),
-    task7_customer: slot(5).customer,
-    task7_from: slot(5).from,
-    task7_to: slot(5).to,
-    task7_cargo: slot(5).cargo,
     task7_line: routeExtraTaskLine(slot(5)),
-
-    // Рейсы 8–10 — только форма № 3: её таблица разграфлена на десять строк, и до этих граф
-    // доходят лишь маршруты легкового (`ROUTE_REQUEST_CAPACITY`). В 4-П места под них нет.
-    task8_customer: slot(6).customer,
-    task8_from: slot(6).from,
-    task8_to: slot(6).to,
-    task8_cargo: slot(6).cargo,
-    task9_customer: slot(7).customer,
-    task9_from: slot(7).from,
-    task9_to: slot(7).to,
-    task9_cargo: slot(7).cargo,
-    task10_customer: slot(8).customer,
-    task10_from: slot(8).from,
-    task10_to: slot(8).to,
-    task10_cargo: slot(8).cargo,
 
     /*
      * Графы ЭСМ-2 (миграция 0087) в листе на рейс пустые — и это не заглушки, а разные документы.
@@ -591,18 +568,21 @@ export async function issueWaybillForRoute(
 
   /*
    * Задание печатается всем рейсом: шапка («в чьё распоряжение») — по первому талону, а ниже
-   * идут строки задания — ровно столько заявок, сколько держит бланк рейса (ADR 0068): у 4-П
-   * семь (четыре строки таблицы с талонами заказчиков и три строки доп. задания), у формы № 3
-   * десять. Пустые строки остаются пустыми: лист на одну заявку выглядит так же, как выглядел до
-   * маршрутов.
+   * идут строки задания — ровно столько заявок, сколько держит бланк 4-П (ADR 0068): семь, из них
+   * четыре строки таблицы с талонами заказчиков и три строки доп. задания. Пустые строки остаются
+   * пустыми: лист на одну заявку выглядит так же, как выглядел до маршрутов. Форма № 3 задания не
+   * печатает вовсе (ADR 0071) — её лист выходит с реквизитами и пустым оборотом.
    *
    * У перегона талон один: заказчик — объект заявки, а «откуда — куда» несёт сам рейс.
+   *
+   * У рейса без заявок талонов нет ни одного (ADR 0071): бланк выходит с машиной, водителем и
+   * датой, а задание в него вписывают от руки. Такой лист разрешён правом `waybills.issueBlank` —
+   * проверил его вызывающий (`canIssueWaybill`).
    */
   const ordered = [...ctx.requests].sort((a, b) => a.position - b.position);
   const talons = ctx.relocation ? [{ requestId: ctx.relocation.requestId, position: 1 }] : ordered;
-  const first = talons[0]!;
   const data = await collectSnapshot(tx, {
-    requestId: first.requestId,
+    requestId: talons[0]?.requestId ?? null,
     restRequestIds: talons.slice(1).map((r) => r.requestId),
     vehicleId: ctx.vehicleId,
     driverPersonId: ctx.driverPersonId,
@@ -640,14 +620,17 @@ export async function issueWaybillForRoute(
 
   // Талоны — снимок состава на момент выдачи: рейс потом пересоберут, а бланк в журнале обязан
   // помнить своё. У перегона талон один — заявка, ради которой едут: без него журнал показывал бы
-  // лист, выписанный ни на что.
-  await tx.insert(waybillRequests).values(
-    talons.map((r) => ({
-      waybillId: created!.id,
-      requestId: r.requestId,
-      slot: r.position,
-    })),
-  );
+  // лист, выписанный ни на что. У пустого бланка талонов нет вовсе, и журнал показывает его без
+  // заявок — так он и выдан (ADR 0071).
+  if (talons.length > 0) {
+    await tx.insert(waybillRequests).values(
+      talons.map((r) => ({
+        waybillId: created!.id,
+        requestId: r.requestId,
+        slot: r.position,
+      })),
+    );
+  }
 
   return { id: created!.id, number: number.display };
 }
