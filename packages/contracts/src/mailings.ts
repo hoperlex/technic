@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { baseListQuery, dateOnlySchema, uuidSchema } from './common';
+import { type Role, roleSchema } from './enums';
 import { TIME_FORMAT_MESSAGE, TIME_PATTERN } from './time';
 
 /**
@@ -85,6 +86,57 @@ export const MAIL_TEST_SUBJECT_PREFIX = '[ТЕСТ]';
  */
 export const MAIL_TEST_NOTE =
   'Письмо отправлено вручную для проверки вёрстки и доставки. Ссылки в нём недействительны.';
+
+// ── Разделы ролевого дайджеста (ADR 0078) ──
+//
+// Реестр закрытый: администратор выбирает разделы из списка, а не описывает выборку сам. Причина не
+// в удобстве — в области видимости. Каждый раздел знает, чем ограничить данные под конкретного
+// получателя, и произвольный запрос из настройки этого знать не может.
+//
+// Стоит выше расписаний намеренно: набором разделов проверяется настройка сводки, и схема
+// расписания ссылается на этот реестр — объявить его ниже значило бы читать его до объявления.
+
+export const DIGEST_SECTIONS = [
+  'vehicle_requests_changes',
+  'vehicle_requests_open',
+  'vehicle_requests_awaiting_approval',
+  'vehicle_routes_upcoming',
+  'waybills_issued',
+  'waste_requests_changes',
+  'waste_requests_open',
+  'waste_requests_upcoming',
+] as const;
+export type DigestSection = (typeof DIGEST_SECTIONS)[number];
+
+export const digestSectionLabels: Record<DigestSection, string> = {
+  vehicle_requests_changes: 'Заявки на технику: заведено и сменило статус',
+  vehicle_requests_open: 'Заявки на технику: незакрытые',
+  vehicle_requests_awaiting_approval: 'Заявки на технику: ждут визы',
+  vehicle_routes_upcoming: 'Рейсы на ближайшие дни',
+  waybills_issued: 'Выписанные путевые листы',
+  waste_requests_changes: 'Вывоз мусора: заведено и сменило статус',
+  waste_requests_open: 'Вывоз мусора: незакрытые',
+  waste_requests_upcoming: 'Вывоз мусора: ожидают подачи',
+};
+
+/**
+ * Разделы, которые видны только ролям с глобальным доступом. У путевых листов и рейсов в портале
+ * нет объектной области видимости вовсе: доступ к ним закрыт правом, а не набором площадок. Значит
+ * сузить такой раздел под штаб или отдел нечем — и в их письмо он просто не попадает.
+ */
+export const GLOBAL_ONLY_DIGEST_SECTIONS: readonly DigestSection[] = [
+  'vehicle_routes_upcoming',
+  'waybills_issued',
+];
+
+/** Сколько строк раздела печатается в письме; остальное — счётчиком и ссылкой в портал. */
+export const DIGEST_SECTION_ROW_LIMIT = 5;
+
+/**
+ * На сколько дней вперёд смотрят разделы «ближайшие»: рейсы и заявки с плановой подачей. Дальше
+ * этого горизонта планы всё равно меняются, а письмо превращается в выгрузку.
+ */
+export const DIGEST_UPCOMING_DAYS = 3;
 
 // ── Расписания рассылок (ADR 0075) ──
 //
@@ -172,6 +224,20 @@ export interface MailingScheduleDto {
   excludedRouteDates: string[];
   /** Водители (`persons`), которым эта рассылка не адресуется. */
   excludedPersonIds: string[];
+  /**
+   * Роли-получатели сводки (ADR 0078). Это фильтр получателей, а не выдача прав: что человек
+   * увидит в письме, решает его собственная область видимости, а роль отвечает лишь на вопрос
+   * «кому вообще отправлять».
+   */
+  roles: Role[];
+  /** Разделы письма в том порядке, в котором они печатаются. */
+  sections: DigestSection[];
+  /** Учётные записи, которым сводка не уходит, хотя роль подходит. */
+  excludedUserIds: string[];
+  /** Площадки, данные которых в сводку не попадают: вычитаются из области получателя. */
+  excludedObjectIds: string[];
+  /** Отделы, данные которых в сводку не попадают. */
+  excludedDepartmentIds: string[];
 }
 
 export interface MailingRunDto {
@@ -219,6 +285,14 @@ const mailingScheduleObject = z
     excludedRunDates: z.array(dateOnlySchema).optional().default([]),
     excludedRouteDates: z.array(dateOnlySchema).optional().default([]),
     excludedPersonIds: z.array(uuidSchema).optional().default([]),
+    // Настройки сводки (ADR 0078). Умолчание — пустой набор: у задания водителям их не бывает
+    // вовсе, и требовать от формы присылать пустые массивы ради чужого типа рассылки незачем.
+    roles: z.array(roleSchema).optional().default([]),
+    /** Порядок важен: в этом же порядке разделы печатаются в письме. */
+    sections: z.array(z.enum(DIGEST_SECTIONS)).optional().default([]),
+    excludedUserIds: z.array(uuidSchema).optional().default([]),
+    excludedObjectIds: z.array(uuidSchema).optional().default([]),
+    excludedDepartmentIds: z.array(uuidSchema).optional().default([]),
   })
   .strict();
 
@@ -281,6 +355,52 @@ function checkMailingSchedule(v: MailingScheduleFields, ctx: z.RefinementCtx): v
       path: ['windowFromDays'],
       message: 'Окно рейсов бывает только у задания водителям',
     });
+  }
+
+  // Роли и разделы — принадлежность сводки (ADR 0078), как окно дат — задания водителям.
+  if (v.type === 'role_digest') {
+    // Расписание без ролей не найдёт ни одного получателя, а без разделов соберёт пустое письмо,
+    // которое всё равно не отправится. И то и другое — рассылка, каждое утро работающая вхолостую:
+    // выключить её флагом честнее, чем оставить включённой и ничего не делающей.
+    if (v.roles.length === 0) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['roles'],
+        message: 'Выберите хотя бы одну роль-получателя',
+      });
+    }
+    if (v.sections.length === 0) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['sections'],
+        message: 'Выберите хотя бы один раздел сводки',
+      });
+    }
+  } else {
+    if (v.roles.length > 0) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['roles'],
+        message: 'Роли-получатели бывают только у сводки по ролям',
+      });
+    }
+    if (v.sections.length > 0) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['sections'],
+        message: 'Разделы письма бывают только у сводки по ролям',
+      });
+    }
+  }
+
+  // Повтор в выборе из закрытого списка — сбой формы, а не «то же самое дважды», и отвергается
+  // так же, как повтор дня недели. У разделов он вдобавок делает порядок печати неоднозначным.
+  // Молча схлопываются только наборы дат и карточек, где повтор ничего не решает.
+  if (new Set(v.roles).size !== v.roles.length) {
+    ctx.addIssue({ code: 'custom', path: ['roles'], message: 'Роль указана дважды' });
+  }
+  if (new Set(v.sections).size !== v.sections.length) {
+    ctx.addIssue({ code: 'custom', path: ['sections'], message: 'Раздел указан дважды' });
   }
 }
 

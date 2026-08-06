@@ -1,22 +1,33 @@
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { asc, count, eq, inArray } from 'drizzle-orm';
+import type { PgColumn, PgTable } from 'drizzle-orm/pg-core';
 import { z } from 'zod';
 import {
   createMailingScheduleSchema,
+  DIGEST_SECTIONS,
+  type DigestSection,
   type MailingPeriodicity,
   type MailingRunDto,
   mailingRunListQuerySchema,
   type MailingScheduleDto,
+  type Role,
   updateMailingScheduleSchema,
 } from '@technic/contracts';
 import { db } from '../db/client';
 import {
+  constructionObjects,
+  departments,
   mailingRuns,
   mailingScheduleExcludedDates,
   mailingScheduleExcludedPersons,
+  mailingScheduleExcludedScopes,
+  mailingScheduleExcludedUsers,
+  mailingScheduleRoles,
   mailingSchedules,
+  mailingScheduleSections,
   persons,
+  users,
 } from '../db/schema';
 import { config } from '../config';
 import { err } from '../lib/errors';
@@ -41,15 +52,35 @@ type ScheduleRow = typeof mailingSchedules.$inferSelect;
 
 const idParams = z.object({ id: z.string().uuid() });
 
-interface ScheduleExclusions {
+/**
+ * Всё, что хранится у расписания отдельными строками: исключения (ADR 0075) и настройки сводки
+ * (ADR 0078). Собираются и заменяются вместе — расписание правится целиком, одной формой.
+ */
+interface ScheduleSettings {
   excludedRunDates: string[];
   excludedRouteDates: string[];
   excludedPersonIds: string[];
+  roles: Role[];
+  sections: DigestSection[];
+  excludedUserIds: string[];
+  excludedObjectIds: string[];
+  excludedDepartmentIds: string[];
 }
 
 /** Повтор в присланном списке означает ровно то же, что одна запись; первичный ключ — отказ БД. */
-function unique(values: string[]): string[] {
+function unique<T extends string>(values: readonly T[]): T[] {
   return [...new Set(values)];
+}
+
+/**
+ * Ключ раздела лежит текстом (реестр закрыт контрактами, а не типом в БД), и в старой строке мог
+ * остаться раздел, снятый с поддержки. В настройку он не возвращается: показывать и отправлять по
+ * нему всё равно нечего, а править расписание с непонятным пунктом в списке администратор не смог
+ * бы — схема правки такой ключ отвергнет.
+ */
+const KNOWN_SECTIONS = new Set<string>(DIGEST_SECTIONS);
+function isDigestSection(value: string): value is DigestSection {
+  return KNOWN_SECTIONS.has(value);
 }
 
 /** Порядок дней смысла не несёт, а набор читают глазами — и в форме, и в списке расписаний. */
@@ -57,16 +88,21 @@ function sortedWeekdays(values: number[]): number[] {
   return [...values].sort((a, b) => a - b);
 }
 
-/** Исключения сразу всех расписаний: их три набора, а самих расписаний в портале единицы. */
-async function exclusionsByScheduleId(ids: string[]): Promise<Map<string, ScheduleExclusions>> {
-  const map = new Map<string, ScheduleExclusions>();
+/** Настройки сразу всех расписаний: наборов много, а самих расписаний в портале единицы. */
+async function settingsByScheduleId(ids: string[]): Promise<Map<string, ScheduleSettings>> {
+  const map = new Map<string, ScheduleSettings>();
   if (ids.length === 0) return map;
 
-  const of = (scheduleId: string): ScheduleExclusions => {
+  const of = (scheduleId: string): ScheduleSettings => {
     const found = map.get(scheduleId) ?? {
       excludedRunDates: [],
       excludedRouteDates: [],
       excludedPersonIds: [],
+      roles: [],
+      sections: [],
+      excludedUserIds: [],
+      excludedObjectIds: [],
+      excludedDepartmentIds: [],
     };
     map.set(scheduleId, found);
     return found;
@@ -97,10 +133,63 @@ async function exclusionsByScheduleId(ids: string[]): Promise<Map<string, Schedu
     .orderBy(asc(mailingScheduleExcludedPersons.personId));
   for (const row of people) of(row.scheduleId).excludedPersonIds.push(row.personId);
 
+  // Роли — в порядке самого типа `role`: сортировка по enum-колонке идёт по объявлению значений, а
+  // объявлены они от администратора к наблюдателю, то есть тем же порядком, каким их показывает
+  // портал. Алфавит по коду роли такого порядка не дал бы.
+  const roles = await db
+    .select({ scheduleId: mailingScheduleRoles.scheduleId, role: mailingScheduleRoles.role })
+    .from(mailingScheduleRoles)
+    .where(inArray(mailingScheduleRoles.scheduleId, ids))
+    .orderBy(asc(mailingScheduleRoles.role));
+  for (const row of roles) of(row.scheduleId).roles.push(row.role);
+
+  // Разделы — по `position`: порядок здесь и есть настройка, ею задан порядок печати в письме.
+  const sections = await db
+    .select({
+      scheduleId: mailingScheduleSections.scheduleId,
+      section: mailingScheduleSections.section,
+    })
+    .from(mailingScheduleSections)
+    .where(inArray(mailingScheduleSections.scheduleId, ids))
+    .orderBy(asc(mailingScheduleSections.position));
+  for (const row of sections) {
+    if (isDigestSection(row.section)) of(row.scheduleId).sections.push(row.section);
+  }
+
+  const excludedUsers = await db
+    .select({
+      scheduleId: mailingScheduleExcludedUsers.scheduleId,
+      userId: mailingScheduleExcludedUsers.userId,
+    })
+    .from(mailingScheduleExcludedUsers)
+    .where(inArray(mailingScheduleExcludedUsers.scheduleId, ids))
+    .orderBy(asc(mailingScheduleExcludedUsers.userId));
+  for (const row of excludedUsers) of(row.scheduleId).excludedUserIds.push(row.userId);
+
+  // Площадки и отделы лежат одной таблицей (в строке заполнено ровно одно из полей), а в настройку
+  // расходятся двумя наборами: в форме это два разных справочника.
+  const scopes = await db
+    .select({
+      scheduleId: mailingScheduleExcludedScopes.scheduleId,
+      objectId: mailingScheduleExcludedScopes.objectId,
+      departmentId: mailingScheduleExcludedScopes.departmentId,
+    })
+    .from(mailingScheduleExcludedScopes)
+    .where(inArray(mailingScheduleExcludedScopes.scheduleId, ids))
+    .orderBy(
+      asc(mailingScheduleExcludedScopes.objectId),
+      asc(mailingScheduleExcludedScopes.departmentId),
+    );
+  for (const row of scopes) {
+    const target = of(row.scheduleId);
+    if (row.objectId) target.excludedObjectIds.push(row.objectId);
+    else if (row.departmentId) target.excludedDepartmentIds.push(row.departmentId);
+  }
+
   return map;
 }
 
-function toDto(row: ScheduleRow, exclusions: ScheduleExclusions | undefined): MailingScheduleDto {
+function toDto(row: ScheduleRow, settings: ScheduleSettings | undefined): MailingScheduleDto {
   return {
     id: row.id,
     type: row.type,
@@ -118,9 +207,14 @@ function toDto(row: ScheduleRow, exclusions: ScheduleExclusions | undefined): Ma
     version: row.version,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
-    excludedRunDates: exclusions?.excludedRunDates ?? [],
-    excludedRouteDates: exclusions?.excludedRouteDates ?? [],
-    excludedPersonIds: exclusions?.excludedPersonIds ?? [],
+    excludedRunDates: settings?.excludedRunDates ?? [],
+    excludedRouteDates: settings?.excludedRouteDates ?? [],
+    excludedPersonIds: settings?.excludedPersonIds ?? [],
+    roles: settings?.roles ?? [],
+    sections: settings?.sections ?? [],
+    excludedUserIds: settings?.excludedUserIds ?? [],
+    excludedObjectIds: settings?.excludedObjectIds ?? [],
+    excludedDepartmentIds: settings?.excludedDepartmentIds ?? [],
   };
 }
 
@@ -153,8 +247,8 @@ async function loadSchedule(
 ): Promise<{ row: ScheduleRow; dto: MailingScheduleDto } | null> {
   const [row] = await db.select().from(mailingSchedules).where(eq(mailingSchedules.id, id));
   if (!row) return null;
-  const exclusions = await exclusionsByScheduleId([row.id]);
-  return { row, dto: toDto(row, exclusions.get(row.id)) };
+  const settings = await settingsByScheduleId([row.id]);
+  return { row, dto: toDto(row, settings.get(row.id)) };
 }
 
 /**
@@ -188,14 +282,25 @@ function nextRunFor(v: {
 }
 
 /**
- * Наборы исключений заменяются целиком: они приходят списками, и складывать разницу по строкам
+ * Наборы настроек заменяются целиком: они приходят списками, и складывать разницу по строкам
  * незачем. Замена идёт той же транзакцией, что и само расписание, — иначе между удалением старых
- * дат и вставкой новых расписание успело бы сработать с половиной исключений.
+ * строк и вставкой новых расписание успело бы сработать с половиной настроек: без части ролей, с
+ * половиной разделов или уже без исключённой площадки.
  */
-async function replaceExclusions(
+async function replaceSettings(
   tx: Tx,
   scheduleId: string,
-  v: Pick<MailingScheduleDto, 'excludedRunDates' | 'excludedRouteDates' | 'excludedPersonIds'>,
+  v: Pick<
+    MailingScheduleDto,
+    | 'excludedRunDates'
+    | 'excludedRouteDates'
+    | 'excludedPersonIds'
+    | 'roles'
+    | 'sections'
+    | 'excludedUserIds'
+    | 'excludedObjectIds'
+    | 'excludedDepartmentIds'
+  >,
 ): Promise<void> {
   await tx
     .delete(mailingScheduleExcludedDates)
@@ -203,6 +308,16 @@ async function replaceExclusions(
   await tx
     .delete(mailingScheduleExcludedPersons)
     .where(eq(mailingScheduleExcludedPersons.scheduleId, scheduleId));
+  await tx.delete(mailingScheduleRoles).where(eq(mailingScheduleRoles.scheduleId, scheduleId));
+  await tx
+    .delete(mailingScheduleSections)
+    .where(eq(mailingScheduleSections.scheduleId, scheduleId));
+  await tx
+    .delete(mailingScheduleExcludedUsers)
+    .where(eq(mailingScheduleExcludedUsers.scheduleId, scheduleId));
+  await tx
+    .delete(mailingScheduleExcludedScopes)
+    .where(eq(mailingScheduleExcludedScopes.scheduleId, scheduleId));
 
   const dates = [
     ...unique(v.excludedRunDates).map((excludedOn) => ({
@@ -220,19 +335,85 @@ async function replaceExclusions(
 
   const people = unique(v.excludedPersonIds).map((personId) => ({ scheduleId, personId }));
   if (people.length > 0) await tx.insert(mailingScheduleExcludedPersons).values(people);
+
+  const roles = unique(v.roles).map((role) => ({ scheduleId, role }));
+  if (roles.length > 0) await tx.insert(mailingScheduleRoles).values(roles);
+
+  // Порядок присланного массива и есть порядок разделов в письме: нумеруем 1..N по месту в нём.
+  // Хранить порядок отдельным полем приходится потому, что строки таблицы порядка не имеют.
+  const sections = unique(v.sections).map((section, index) => ({
+    scheduleId,
+    section,
+    position: index + 1,
+  }));
+  if (sections.length > 0) await tx.insert(mailingScheduleSections).values(sections);
+
+  const excludedUsers = unique(v.excludedUserIds).map((userId) => ({ scheduleId, userId }));
+  if (excludedUsers.length > 0) await tx.insert(mailingScheduleExcludedUsers).values(excludedUsers);
+
+  // Площадки и отделы — одна таблица с заполненным ровно одним полем: так же, как заказчик заявки.
+  const scopes = [
+    ...unique(v.excludedObjectIds).map((objectId) => ({
+      scheduleId,
+      objectId,
+      departmentId: null,
+    })),
+    ...unique(v.excludedDepartmentIds).map((departmentId) => ({
+      scheduleId,
+      objectId: null,
+      departmentId,
+    })),
+  ];
+  if (scopes.length > 0) await tx.insert(mailingScheduleExcludedScopes).values(scopes);
 }
 
 /**
- * Исключённые водители обязаны существовать. Без проверки вставка упирается во внешний ключ, и
- * человек получает внутреннюю ошибку сервера вместо «в списке неизвестная карточка».
+ * Ссылки в наборах обязаны существовать. Без проверки вставка упирается во внешний ключ, и человек
+ * получает внутреннюю ошибку сервера вместо внятного «в списке неизвестная запись».
  */
-async function assertPersonsExist(ids: string[]): Promise<void> {
+async function assertRowsExist(
+  table: PgTable,
+  column: PgColumn,
+  ids: string[],
+  message: string,
+): Promise<void> {
   const wanted = unique(ids);
   if (wanted.length === 0) return;
-  const [found] = await db.select({ c: count() }).from(persons).where(inArray(persons.id, wanted));
-  if (Number(found!.c) !== wanted.length) {
-    throw err.badRequest('В списке исключённых водителей есть неизвестная карточка');
-  }
+  const [found] = await db.select({ c: count() }).from(table).where(inArray(column, wanted));
+  if (Number(found!.c) !== wanted.length) throw err.badRequest(message);
+}
+
+/** Все ссылочные наборы расписания разом: на создании и на правке проверяется одно и то же. */
+async function assertScheduleRefs(
+  v: Pick<
+    MailingScheduleDto,
+    'excludedPersonIds' | 'excludedUserIds' | 'excludedObjectIds' | 'excludedDepartmentIds'
+  >,
+): Promise<void> {
+  await assertRowsExist(
+    persons,
+    persons.id,
+    v.excludedPersonIds,
+    'В списке исключённых водителей есть неизвестная карточка',
+  );
+  await assertRowsExist(
+    users,
+    users.id,
+    v.excludedUserIds,
+    'В списке исключённых получателей есть неизвестная учётная запись',
+  );
+  await assertRowsExist(
+    constructionObjects,
+    constructionObjects.id,
+    v.excludedObjectIds,
+    'В списке исключённых площадок есть неизвестный объект',
+  );
+  await assertRowsExist(
+    departments,
+    departments.id,
+    v.excludedDepartmentIds,
+    'В списке исключённых отделов есть неизвестный отдел',
+  );
 }
 
 export default async function adminMailingsRoutes(app: FastifyInstance): Promise<void> {
@@ -251,8 +432,8 @@ export default async function adminMailingsRoutes(app: FastifyInstance): Promise
       .from(mailingSchedules)
       // Порядок по названию, а не по времени заведения: список читают как перечень настроек.
       .orderBy(asc(mailingSchedules.name), asc(mailingSchedules.createdAt));
-    const exclusions = await exclusionsByScheduleId(rows.map((row) => row.id));
-    return rows.map((row) => toDto(row, exclusions.get(row.id)));
+    const settings = await settingsByScheduleId(rows.map((row) => row.id));
+    return rows.map((row) => toDto(row, settings.get(row.id)));
   });
 
   r.post(
@@ -261,7 +442,7 @@ export default async function adminMailingsRoutes(app: FastifyInstance): Promise
     async (req, reply) => {
       const actor = requirePrincipal(req);
       const body = req.body;
-      await assertPersonsExist(body.excludedPersonIds);
+      await assertScheduleRefs(body);
       const runWeekdays = sortedWeekdays(body.runWeekdays);
 
       const id = await db.transaction(async (tx) => {
@@ -289,7 +470,7 @@ export default async function adminMailingsRoutes(app: FastifyInstance): Promise
             updatedBy: actor.id,
           })
           .returning({ id: mailingSchedules.id });
-        await replaceExclusions(tx, inserted!.id, body);
+        await replaceSettings(tx, inserted!.id, body);
         return inserted!.id;
       });
 
@@ -321,7 +502,7 @@ export default async function adminMailingsRoutes(app: FastifyInstance): Promise
       if (body.type !== found.row.type) {
         throw err.badRequest('Тип рассылки менять нельзя — заведите отдельное расписание');
       }
-      await assertPersonsExist(body.excludedPersonIds);
+      await assertScheduleRefs(body);
       const runWeekdays = sortedWeekdays(body.runWeekdays);
 
       await db.transaction(async (tx) => {
@@ -349,7 +530,7 @@ export default async function adminMailingsRoutes(app: FastifyInstance): Promise
             version: found.row.version + 1,
           })
           .where(eq(mailingSchedules.id, found.row.id));
-        await replaceExclusions(tx, found.row.id, body);
+        await replaceSettings(tx, found.row.id, body);
       });
 
       await writeAudit({
@@ -397,33 +578,29 @@ export default async function adminMailingsRoutes(app: FastifyInstance): Promise
    * Выполняется тем же кодом, что и запуск по времени, — иначе «работает по кнопке, не работает по
    * расписанию» стало бы возможным состоянием.
    */
-  r.post(
-    '/schedules/:id/run',
-    { ...manageGuards, schema: { params: idParams } },
-    async (req) => {
-      const actor = requirePrincipal(req);
-      const found = await loadSchedule(req.params.id);
-      if (!found) throw err.notFound('Расписание не найдено');
+  r.post('/schedules/:id/run', { ...manageGuards, schema: { params: idParams } }, async (req) => {
+    const actor = requirePrincipal(req);
+    const found = await loadSchedule(req.params.id);
+    if (!found) throw err.notFound('Расписание не найдено');
 
-      // Момент запуска — «сейчас» с точностью до секунды: уникальность `(schedule_id, planned_at)`
-      // заодно гасит второе нажатие кнопки подряд.
-      const plannedAt = new Date(Math.floor(Date.now() / 1000) * 1000);
-      const runId = await createRun({ scheduleId: found.row.id, plannedAt, isManual: true });
-      if (!runId) {
-        throw err.conflict('Такой запуск уже создан — посмотрите историю');
-      }
+    // Момент запуска — «сейчас» с точностью до секунды: уникальность `(schedule_id, planned_at)`
+    // заодно гасит второе нажатие кнопки подряд.
+    const plannedAt = new Date(Math.floor(Date.now() / 1000) * 1000);
+    const runId = await createRun({ scheduleId: found.row.id, plannedAt, isManual: true });
+    if (!runId) {
+      throw err.conflict('Такой запуск уже создан — посмотрите историю');
+    }
 
-      const stats = await performRun(runId);
-      await writeAudit({
-        actorUserId: actor.id,
-        action: 'mailing.run_manual',
-        entityType: 'mailing_schedule',
-        entityId: found.row.id,
-        metadata: { runId, ...stats },
-      });
-      return { ok: true, runId, stats };
-    },
-  );
+    const stats = await performRun(runId);
+    await writeAudit({
+      actorUserId: actor.id,
+      action: 'mailing.run_manual',
+      entityType: 'mailing_schedule',
+      entityId: found.row.id,
+      metadata: { runId, ...stats },
+    });
+    return { ok: true, runId, stats };
+  });
 
   /** История запусков — с пагинацией, в отличие от расписаний: она прирастает каждый день. */
   r.get(

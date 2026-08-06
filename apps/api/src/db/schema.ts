@@ -2800,6 +2800,85 @@ export const mailingScheduleExcludedPersons = pgTable(
   (t) => ({ pk: primaryKey({ columns: [t.scheduleId, t.personId] }) }),
 );
 
+// ── Настройки ролевых дайджестов (ADR 0078, миграция 0100) ──
+//
+// Роль в расписании — фильтр получателей, а не выдача прав: что человек увидит в письме, решает его
+// собственная область видимости. Отдельными таблицами, а не массивами в строке расписания: по ним
+// идут выборки получателей, и массив в `WHERE` означал бы разворачивание на каждом запуске.
+
+/** Роли-получатели сводки. */
+export const mailingScheduleRoles = pgTable(
+  'mailing_schedule_roles',
+  {
+    scheduleId: uuid('schedule_id')
+      .notNull()
+      .references(() => mailingSchedules.id, { onDelete: 'cascade' }),
+    role: roleEnum('role').notNull(),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.scheduleId, t.role] }) }),
+);
+
+/**
+ * Разделы письма и их порядок. Ключ текстом, а не enum: набор разделов будет прирастать, и новый не
+ * должен требовать `ALTER TYPE`. Допустимые ключи держит реестр в контрактах.
+ */
+export const mailingScheduleSections = pgTable(
+  'mailing_schedule_sections',
+  {
+    scheduleId: uuid('schedule_id')
+      .notNull()
+      .references(() => mailingSchedules.id, { onDelete: 'cascade' }),
+    section: text('section').notNull(),
+    position: smallint('position').notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.scheduleId, t.section] }),
+    positionCheck: check(
+      'mailing_schedule_sections_position_check',
+      sql`${t.position} BETWEEN 1 AND 50`,
+    ),
+  }),
+);
+
+/** Исключённые получатели-учётки: не путать с водителями, которым уходит задание на рейс. */
+export const mailingScheduleExcludedUsers = pgTable(
+  'mailing_schedule_excluded_users',
+  {
+    scheduleId: uuid('schedule_id')
+      .notNull()
+      .references(() => mailingSchedules.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.scheduleId, t.userId] }) }),
+);
+
+/** Исключённые области: вычитаются из области получателя — расширить её исключение не может. */
+export const mailingScheduleExcludedScopes = pgTable(
+  'mailing_schedule_excluded_scopes',
+  {
+    scheduleId: uuid('schedule_id')
+      .notNull()
+      .references(() => mailingSchedules.id, { onDelete: 'cascade' }),
+    objectId: uuid('object_id').references(() => constructionObjects.id, { onDelete: 'cascade' }),
+    departmentId: uuid('department_id').references(() => departments.id, { onDelete: 'cascade' }),
+  },
+  (t) => ({
+    objectUnique: uniqueIndex('mailing_schedule_excluded_scopes_object_unique')
+      .on(t.scheduleId, t.objectId)
+      .where(sql`${t.objectId} IS NOT NULL`),
+    departmentUnique: uniqueIndex('mailing_schedule_excluded_scopes_department_unique')
+      .on(t.scheduleId, t.departmentId)
+      .where(sql`${t.departmentId} IS NOT NULL`),
+    // Ровно одно из двух: строка описывает либо площадку, либо отдел — как и заказчик заявки.
+    oneCheck: check(
+      'mailing_schedule_excluded_scopes_one_check',
+      sql`num_nonnulls(${t.objectId}, ${t.departmentId}) = 1`,
+    ),
+  }),
+);
+
 export const mailingRuns = pgTable(
   'mailing_runs',
   {
@@ -2856,6 +2935,34 @@ export const auditLog = pgTable(
   }),
 );
 
+/**
+ * Журнал обновлений портала (ADR 0077). Наполняется миграциями: выпуск заводит тот, кто его
+ * выкатывает, — экрана редактирования нет, поэтому здесь только чтение.
+ *
+ * `seq` первичным ключом и он же порядок: дата выпуски не упорядочивает (несколько блоков доезжают
+ * в один день), строка версии — тем более ('0.1.10' меньше '0.1.9' как текст). `adrs` хранит
+ * номера решений, наружу из них идёт только их количество.
+ */
+export const appReleases = pgTable(
+  'app_releases',
+  {
+    seq: integer('seq').primaryKey(),
+    version: text('version').notNull().unique(),
+    /** Дата выкладки: справочная, порядок задаёт `seq`. */
+    releasedOn: date('released_on', { mode: 'string' }).notNull(),
+    title: text('title').notNull(),
+    adrs: smallint('adrs').array().notNull(),
+    /** Пункты выпуска: читаются целиком вместе с ним, разбирает их `releaseItemsSchema`. */
+    items: jsonb('items').notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    titleNotBlank: check('app_releases_title_not_blank', sql`btrim(${t.title}) <> ''`),
+    itemsIsArray: check('app_releases_items_is_array', sql`jsonb_typeof(${t.items}) = 'array'`),
+    adrsNotEmpty: check('app_releases_adrs_not_empty', sql`array_length(${t.adrs}, 1) >= 1`),
+  }),
+);
+
 export type UserRow = typeof users.$inferSelect;
 export type UserConstructionObjectRow = typeof userConstructionObjects.$inferSelect;
 export type DepartmentRow = typeof departments.$inferSelect;
@@ -2891,3 +2998,4 @@ export type QualificationCategoryRow = typeof qualificationCategories.$inferSele
 export type PersonCredentialRow = typeof personCredentials.$inferSelect;
 export type PersonCredentialCategoryRow = typeof personCredentialCategories.$inferSelect;
 export type JobRow = typeof jobs.$inferSelect;
+export type AppReleaseRow = typeof appReleases.$inferSelect;

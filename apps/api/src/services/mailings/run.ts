@@ -9,6 +9,14 @@ import {
 import { config } from '../../config';
 import { queueMail } from '../mail';
 import { buildDriverRoutesMail, driversWithRoutes } from './driver-routes';
+import {
+  buildRoleDigestMail,
+  digestExcludedScopes,
+  digestPeriod,
+  digestRecipients,
+  digestSectionsOf,
+  digestUpcoming,
+} from './role-digest';
 import { nextRunAt, routeWindowOf, type SchedulePlan } from './schedule';
 
 /**
@@ -126,19 +134,13 @@ export async function performRun(runId: string): Promise<RunStats> {
     const stats =
       schedule.type === 'driver_routes'
         ? await runDriverRoutes({ run, schedule, excludedRouteDates })
-        : // Ролевые дайджесты приедут своим этапом; до тех пор такой запуск честно помечается
-          // пропущенным, а не изображает выполненный.
-          null;
+        : await runRoleDigest({ run, schedule });
 
     await db
       .update(mailingRuns)
-      .set({
-        status: stats ? 'done' : 'skipped',
-        finishedAt: new Date(),
-        stats: stats ?? { reason: 'Вид рассылки пока не поддерживается' },
-      })
+      .set({ status: 'done', finishedAt: new Date(), stats })
       .where(eq(mailingRuns.id, runId));
-    return stats ?? { sent: 0, withoutEmail: 0, excluded: 0, empty: 0 };
+    return stats;
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     await db
@@ -218,6 +220,65 @@ async function runDriverRoutes(input: {
     stats.sent += 1;
   }
 
+  return stats;
+}
+
+/**
+ * Ролевая сводка: письмо у каждого получателя своё, потому что собирается его областью видимости.
+ *
+ * Получатели берутся по ролям расписания, но роль — только фильтр адресатов: что попадёт в письмо,
+ * решает `Principal` каждого. Пустая сводка не отправляется и считается отдельно — по этой цифре
+ * видно, что рассылка настроена на роль, которой нечего показать.
+ */
+async function runRoleDigest(input: {
+  run: typeof mailingRuns.$inferSelect;
+  schedule: typeof mailingSchedules.$inferSelect;
+}): Promise<RunStats> {
+  const { run, schedule } = input;
+  const period = digestPeriod(run.plannedAt, schedule.periodicity, config.mail.timezone);
+  const upcoming = digestUpcoming(run.plannedAt, config.mail.timezone);
+  // Границы периода фиксируются в запуске: повтор обязан собрать сводку за те же сутки.
+  await db
+    .update(mailingRuns)
+    .set({ periodStart: period.start, periodEnd: period.end })
+    .where(eq(mailingRuns.id, run.id));
+
+  const [sections, scopes, recipients] = await Promise.all([
+    digestSectionsOf(schedule.id),
+    digestExcludedScopes(schedule.id),
+    digestRecipients(schedule.id),
+  ]);
+  const stats: RunStats = { sent: 0, withoutEmail: 0, excluded: 0, empty: 0 };
+  if (sections.length === 0) return stats;
+
+  for (const recipient of recipients) {
+    const mail = await buildRoleDigestMail({
+      recipient,
+      sections,
+      periodStart: period.start,
+      periodEnd: period.end,
+      upcomingFrom: upcoming.from,
+      upcomingTo: upcoming.to,
+      excludedObjectIds: scopes.objectIds,
+      excludedDepartmentIds: scopes.departmentIds,
+      periodicity: schedule.periodicity,
+    });
+    if (!mail) {
+      stats.empty += 1;
+      continue;
+    }
+
+    await queueMail({
+      kind: 'role_digest',
+      dedupeKey: `role-digest:${run.id}:${recipient.userId}`,
+      to: recipient.email,
+      subject: mail.subject,
+      content: mail.content,
+      userId: recipient.userId,
+      mailingRunId: run.id,
+    });
+    stats.sent += 1;
+  }
   return stats;
 }
 

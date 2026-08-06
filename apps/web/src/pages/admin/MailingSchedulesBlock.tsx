@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import {
+  Alert,
   App,
   Button,
   Card,
@@ -20,23 +21,32 @@ import { DeleteOutlined, EditOutlined, PlusOutlined, ThunderboltOutlined } from 
 import dayjs, { type Dayjs } from 'dayjs';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
+  DIGEST_SECTIONS,
+  GLOBAL_ONLY_DIGEST_SECTIONS,
   MAILING_PERIODICITIES,
   MAILING_TYPES,
   MAILING_WINDOW_MAX_DAYS,
+  ROLES,
+  digestSectionLabels,
   mailingPeriodicityLabels,
   mailingRunStatusColors,
   mailingRunStatusLabels,
   mailingTypeLabels,
+  roleLabels,
   type CreateMailingScheduleBody,
+  type DigestSection,
   type MailingPeriodicity,
   type MailingRunDto,
   type MailingScheduleDto,
   type MailingType,
+  type Role,
 } from '@technic/contracts';
 import { isApiError } from '@shared/api';
 import { DICTIONARY_PAGE_SIZE } from '@shared/config';
 import { actionsColumn, DataTable, FormModal, RowActionButton, textColumn } from '@shared/ui';
-import { driversApi, mailingsApi } from '../../api/resources';
+import { departmentOptionsQuery } from '@entities/department';
+import { objectOptionsQuery } from '@entities/object';
+import { driversApi, mailingsApi, usersApi } from '../../api/resources';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage, formatDateTime } from '../../utils/format';
 import { formatDateOnly } from '../../utils/date';
@@ -116,6 +126,49 @@ function toDayjsList(values: string[]): Dayjs[] {
   return values.map((d) => dayjs(d));
 }
 
+interface SelectOption {
+  value: string;
+  label: string;
+}
+
+/**
+ * Список выбора вместе со строками для уже сохранённых значений, которых в справочнике нет: запись
+ * могли закрыть, отправить в архив или она не попала в выборку. Без своей строки Select показал бы
+ * вместо названия uuid, а «Сохранить» молча унесло бы это значение из набора исключений.
+ */
+function withMissing(
+  options: SelectOption[],
+  selected: string[] | undefined,
+  missingLabel: string,
+): SelectOption[] {
+  const known = new Set(options.map((o) => o.value));
+  const missing = (selected ?? []).filter((id) => !known.has(id));
+  return [...options, ...missing.map((id) => ({ value: id, label: missingLabel }))];
+}
+
+/**
+ * Краткая настройка расписания для списка. Колонка одна на оба типа рассылки: настройка у них
+ * разная и непересекающаяся, и вторая колонка стояла бы пустой у половины строк. У задания
+ * водителю это окно рейсов (считается в днях от дня рассылки, поэтому и печатается днями), у
+ * сводки — объём письма: сколько ролей получает и сколько разделов в нём печатается.
+ */
+function setupText(r: MailingScheduleDto): string {
+  if (r.type === 'role_digest') {
+    return `Ролей: ${r.roles.length} · разделов: ${r.sections.length}`;
+  }
+  return r.windowFromDays == null || r.windowToDays == null
+    ? '—'
+    : `+${r.windowFromDays}…+${r.windowToDays} дн.`;
+}
+
+/** Расшифровка настройки под курсором: в колонку названия ролей и разделов целиком не влезают. */
+function setupHint(r: MailingScheduleDto): string | undefined {
+  if (r.type !== 'role_digest') return undefined;
+  const roles = r.roles.map((role) => roleLabels[role]).join(', ');
+  const sections = r.sections.map((s) => digestSectionLabels[s]).join(', ');
+  return `Роли: ${roles || '—'}\nРазделы: ${sections || '—'}`;
+}
+
 interface ScheduleFormValues {
   type: MailingType;
   name: string;
@@ -129,6 +182,12 @@ interface ScheduleFormValues {
   excludedRunDates?: Dayjs[];
   excludedRouteDates?: Dayjs[];
   excludedPersonIds?: string[];
+  // Настройки сводки (ADR 0076): непусты только у неё, у задания водителям их не бывает вовсе.
+  roles?: Role[];
+  sections?: DigestSection[];
+  excludedUserIds?: string[];
+  excludedObjectIds?: string[];
+  excludedDepartmentIds?: string[];
 }
 
 /**
@@ -150,12 +209,20 @@ function bodyOf(r: MailingScheduleDto): CreateMailingScheduleBody {
     excludedRunDates: r.excludedRunDates,
     excludedRouteDates: r.excludedRouteDates,
     excludedPersonIds: r.excludedPersonIds,
+    // Настройки сводки уходят вместе со всем остальным: без ролей и разделов сервер отверг бы
+    // запись сводки как пустую, и переключатель «включена» перестал бы работать на ней вовсе.
+    roles: r.roles,
+    sections: r.sections,
+    excludedUserIds: r.excludedUserIds,
+    excludedObjectIds: r.excludedObjectIds,
+    excludedDepartmentIds: r.excludedDepartmentIds,
   };
 }
 
 function formToBody(v: ScheduleFormValues): CreateMailingScheduleBody {
   const daily = v.periodicity === 'daily';
   const withWindow = v.type === 'driver_routes';
+  const digest = v.type === 'role_digest';
   return {
     type: v.type,
     name: v.name,
@@ -171,8 +238,18 @@ function formToBody(v: ScheduleFormValues): CreateMailingScheduleBody {
     windowFromDays: withWindow ? (v.windowFromDays ?? null) : null,
     windowToDays: withWindow ? (v.windowToDays ?? null) : null,
     excludedRunDates: toDateKeys(v.excludedRunDates),
-    excludedRouteDates: toDateKeys(v.excludedRouteDates),
-    excludedPersonIds: v.excludedPersonIds ?? [],
+    // Исключения чужого типа гасятся здесь по той же причине, что и поля чужой периодичности:
+    // скрытое поле формы сохраняет прежнее значение, а водители и даты рейсов у сводки не значат
+    // ничего — она собирается не из рейсов.
+    excludedRouteDates: withWindow ? toDateKeys(v.excludedRouteDates) : [],
+    excludedPersonIds: withWindow ? (v.excludedPersonIds ?? []) : [],
+    // Роли и разделы у задания водителям сервер отвергает: получателей ему задаёт не роль, а
+    // наличие рейса в окне.
+    roles: digest ? (v.roles ?? []) : [],
+    sections: digest ? (v.sections ?? []) : [],
+    excludedUserIds: digest ? (v.excludedUserIds ?? []) : [],
+    excludedObjectIds: digest ? (v.excludedObjectIds ?? []) : [],
+    excludedDepartmentIds: digest ? (v.excludedDepartmentIds ?? []) : [],
   };
 }
 
@@ -231,24 +308,72 @@ export function MailingSchedulesBlock() {
   const watchType = Form.useWatch('type', form);
   const watchPeriodicity = Form.useWatch('periodicity', form);
   const watchExcludedPersons = Form.useWatch('excludedPersonIds', form);
+  const watchSections = Form.useWatch('sections', form);
+  const watchExcludedUsers = Form.useWatch('excludedUserIds', form);
+  const watchExcludedObjects = Form.useWatch('excludedObjectIds', form);
+  const watchExcludedDepartments = Form.useWatch('excludedDepartmentIds', form);
+  const isDigest = watchType === 'role_digest';
 
-  // Справочник водителей спрашиваем только при открытой форме: в нём персональные данные, и
-  // держать его в кэше ради колонки «включено» незачем.
+  // Справочник водителей спрашиваем только при открытой форме задания водителям: в нём
+  // персональные данные, и держать его в кэше ради колонки «включено» или чужого типа рассылки
+  // незачем. По той же причине справочник учёток спрашивается только у сводки.
   const driversQuery = useQuery({
     queryKey: ['drivers', 'mailing-exclusions'],
     queryFn: () =>
       driversApi.list({ page: 1, pageSize: 500, sortBy: 'fullName', sortOrder: 'asc' }),
-    enabled: open,
+    enabled: open && !isDigest,
   });
-  const driverOptions = (() => {
-    const items = driversQuery.data?.items ?? [];
-    const options = items.map((d) => ({ value: d.id, label: d.fullName }));
-    const known = new Set(items.map((d) => d.id));
-    // Исключённый водитель мог уйти в архив или не попасть в первые 500 строк справочника. Без
-    // своей строки Select показал бы вместо него uuid, а «Сохранить» молча унесло бы его из набора.
-    const missing = (watchExcludedPersons ?? []).filter((id) => !known.has(id));
-    return [...options, ...missing.map((id) => ({ value: id, label: 'Карточка вне справочника' }))];
-  })();
+  const driverOptions = withMissing(
+    (driversQuery.data?.items ?? []).map((d) => ({ value: d.id, label: d.fullName })),
+    watchExcludedPersons,
+    'Карточка вне справочника',
+  );
+
+  const usersQuery = useQuery({
+    queryKey: ['users', 'mailing-exclusions'],
+    queryFn: () =>
+      usersApi.list({
+        page: 1,
+        pageSize: DICTIONARY_PAGE_SIZE,
+        // Выключенная учётка писем не получает и так — исключать её из рассылки нечего.
+        isActive: 'true',
+        sortBy: 'fullName',
+        sortOrder: 'asc',
+      }),
+    enabled: open && isDigest,
+  });
+  const userOptions = withMissing(
+    (usersQuery.data?.items ?? []).map((u) => ({
+      value: u.id,
+      // Роль в подписи не украшение: получателей отбирает именно она, и по списку сразу видно,
+      // из-за какой роли человек попал в рассылку, которую ему отключают.
+      label: u.role ? `${u.fullName} · ${roleLabels[u.role]}` : u.fullName,
+    })),
+    watchExcludedUsers,
+    'Учётная запись вне списка',
+  );
+
+  // Площадки и отделы — общие запросы справочников: ключ у них общий с прочими экранами, и
+  // открытая форма чаще всего берёт их из кэша.
+  const objectsQuery = useQuery({ ...objectOptionsQuery(), enabled: open && isDigest });
+  const objectOptions = withMissing(
+    objectsQuery.data ?? [],
+    watchExcludedObjects,
+    'Площадка вне справочника',
+  );
+  const departmentsQuery = useQuery({ ...departmentOptionsQuery(), enabled: open && isDigest });
+  const departmentOptions = withMissing(
+    departmentsQuery.data ?? [],
+    watchExcludedDepartments,
+    'Отдел вне справочника',
+  );
+
+  // Разделы без объектной области видимости, попавшие в набор: письмо штабу или отделу они
+  // пропустят, и об этом честнее предупредить в форме, а не оставлять на разбор «почему у одних
+  // раздел есть, а у других нет».
+  const globalOnlyChosen = (watchSections ?? []).filter((s) =>
+    GLOBAL_ONLY_DIGEST_SECTIONS.includes(s),
+  );
 
   const openCreate = () => {
     setEditing(null);
@@ -266,6 +391,11 @@ export function MailingSchedulesBlock() {
       excludedRunDates: [],
       excludedRouteDates: [],
       excludedPersonIds: [],
+      roles: [],
+      sections: [],
+      excludedUserIds: [],
+      excludedObjectIds: [],
+      excludedDepartmentIds: [],
     });
     setOpen(true);
   };
@@ -286,6 +416,12 @@ export function MailingSchedulesBlock() {
       excludedRunDates: toDayjsList(r.excludedRunDates),
       excludedRouteDates: toDayjsList(r.excludedRouteDates),
       excludedPersonIds: r.excludedPersonIds,
+      roles: r.roles,
+      // Порядок разделов приходит тем же, каким они печатаются в письме, и правится перевыбором.
+      sections: r.sections,
+      excludedUserIds: r.excludedUserIds,
+      excludedObjectIds: r.excludedObjectIds,
+      excludedDepartmentIds: r.excludedDepartmentIds,
     });
     setOpen(true);
   };
@@ -348,9 +484,12 @@ export function MailingSchedulesBlock() {
     modal.confirm({
       title: `Запустить рассылку «${r.name}» сейчас?`,
       // Предупреждение обязано быть прямым: это не отладочная отправка администратору, а рабочая
-      // рассылка живым людям, и отозвать ушедшее письмо нельзя.
+      // рассылка живым людям, и отозвать ушедшее письмо нельзя. Кому именно — называется по типу:
+      // «водителям» в подтверждении сводки по ролям было бы прямой неправдой.
       content:
-        'Письма уйдут настоящим получателям — водителям, а не на проверочный адрес. Отменить ' +
+        `Письма уйдут настоящим получателям — ${
+          r.type === 'role_digest' ? 'учётным записям выбранных ролей' : 'водителям'
+        }, а не на проверочный адрес. Отменить ` +
         'отправку после подтверждения нельзя. Расписание при этом не сдвигается: очередной ' +
         'запуск по времени всё равно состоится.',
       okText: 'Запустить',
@@ -424,18 +563,16 @@ export function MailingSchedulesBlock() {
             ? 'Все дни'
             : r.runWeekdays.map(weekdayShort).join(', '),
     }),
+    // Настройка у каждого типа своя: окно рейсов у задания водителям, объём письма у сводки.
+    // Названия ролей и разделов в колонку не влезают — они остаются подсказкой под курсором.
     textColumn<MailingScheduleDto>({
-      key: 'window',
-      title: 'Окно рейсов',
+      key: 'setup',
+      title: 'Настройка',
       dataIndex: 'windowFromDays',
       sortable: false,
       searchable: false,
-      width: 130,
-      // Окно считается в днях от дня рассылки, поэтому и печатается днями: «+1…+1» — завтрашние.
-      render: (_v, r) =>
-        r.windowFromDays == null || r.windowToDays == null
-          ? '—'
-          : `+${r.windowFromDays}…+${r.windowToDays} дн.`,
+      width: 180,
+      render: (_v, r) => <span title={setupHint(r)}>{setupText(r)}</span>,
     }),
     textColumn<MailingScheduleDto>({
       key: 'isEnabled',
@@ -769,6 +906,123 @@ export function MailingSchedulesBlock() {
             </Space>
           ) : null}
 
+          {/* Роли, разделы и исключения сводки (ADR 0076) — принадлежность сводки по ролям, как
+              окно рейсов принадлежность задания водителям. У задания водителям получателей задаёт
+              не роль, а наличие рейса в окне, и сервер такую пару отвергает. */}
+          {isDigest ? (
+            <>
+              <Form.Item
+                name="roles"
+                label="Роли-получатели"
+                extra="Письмо уйдёт учётным записям этих ролей. Что человек в нём увидит, решает его собственная область видимости — роль отвечает только на вопрос «кому отправлять»"
+                rules={[
+                  {
+                    validator: (_rule, value: Role[] | undefined) =>
+                      value && value.length > 0
+                        ? Promise.resolve()
+                        : Promise.reject(new Error('Выберите хотя бы одну роль-получателя')),
+                  },
+                ]}
+              >
+                <Select
+                  mode="multiple"
+                  allowClear
+                  showSearch
+                  optionFilterProp="label"
+                  placeholder="Выберите роли"
+                  options={ROLES.map((r) => ({ value: r, label: roleLabels[r] }))}
+                />
+              </Form.Item>
+
+              <Form.Item
+                name="sections"
+                label="Разделы письма"
+                extra="Порядок выбора — порядок разделов в письме: первый выбранный печатается первым. Чтобы переставить, снимите разделы и выберите заново"
+                rules={[
+                  {
+                    validator: (_rule, value: DigestSection[] | undefined) =>
+                      value && value.length > 0
+                        ? Promise.resolve()
+                        : Promise.reject(new Error('Выберите хотя бы один раздел сводки')),
+                  },
+                ]}
+              >
+                <Select
+                  mode="multiple"
+                  allowClear
+                  showSearch
+                  optionFilterProp="label"
+                  placeholder="Выберите разделы"
+                  options={DIGEST_SECTIONS.map((s) => ({
+                    value: s,
+                    label: digestSectionLabels[s],
+                  }))}
+                />
+              </Form.Item>
+
+              {globalOnlyChosen.length > 0 ? (
+                <Alert
+                  type="info"
+                  showIcon
+                  style={{ marginBottom: 16 }}
+                  message={`${globalOnlyChosen
+                    .map((s) => `«${digestSectionLabels[s]}»`)
+                    .join(
+                      ', ',
+                    )} — только получателям без привязки к площадкам и отделам: у путевых листов и рейсов в портале нет объектной области видимости, и сузить такой раздел под штаб или отдел нечем. В их письме он просто не появится.`}
+                />
+              ) : null}
+
+              <Form.Item
+                name="excludedUserIds"
+                label="Исключённые получатели"
+                extra="Этим учётным записям сводка не уходит, хотя роль подходит"
+              >
+                <Select
+                  mode="multiple"
+                  allowClear
+                  showSearch
+                  optionFilterProp="label"
+                  placeholder="Никто не исключён"
+                  loading={usersQuery.isLoading}
+                  options={userOptions}
+                />
+              </Form.Item>
+
+              <Form.Item
+                name="excludedObjectIds"
+                label="Исключённые площадки"
+                extra="Данные этих площадок в сводку не попадают: они вычитаются из области видимости получателя"
+              >
+                <Select
+                  mode="multiple"
+                  allowClear
+                  showSearch
+                  optionFilterProp="label"
+                  placeholder="Все площадки"
+                  loading={objectsQuery.isLoading}
+                  options={objectOptions}
+                />
+              </Form.Item>
+
+              <Form.Item
+                name="excludedDepartmentIds"
+                label="Исключённые отделы"
+                extra="Данные этих отделов в сводку не попадают"
+              >
+                <Select
+                  mode="multiple"
+                  allowClear
+                  showSearch
+                  optionFilterProp="label"
+                  placeholder="Все отделы"
+                  loading={departmentsQuery.isLoading}
+                  options={departmentOptions}
+                />
+              </Form.Item>
+            </>
+          ) : null}
+
           <Form.Item
             name="excludedRunDates"
             label="Даты без рассылки"
@@ -777,29 +1031,35 @@ export function MailingSchedulesBlock() {
             <DatePicker multiple format="DD.MM.YYYY" style={{ width: '100%' }} />
           </Form.Item>
 
-          <Form.Item
-            name="excludedRouteDates"
-            label="Даты рейсов, которые не печатать"
-            extra="Рейсы этих дней в письмо не попадут, сама рассылка при этом уходит"
-          >
-            <DatePicker multiple format="DD.MM.YYYY" style={{ width: '100%' }} />
-          </Form.Item>
+          {/* Рейсы и водители — те же поля задания водителям: сводка собирается не из рейсов, и
+              исключать в ней даты рейсов или водителей нечего. */}
+          {!isDigest ? (
+            <>
+              <Form.Item
+                name="excludedRouteDates"
+                label="Даты рейсов, которые не печатать"
+                extra="Рейсы этих дней в письмо не попадут, сама рассылка при этом уходит"
+              >
+                <DatePicker multiple format="DD.MM.YYYY" style={{ width: '100%' }} />
+              </Form.Item>
 
-          <Form.Item
-            name="excludedPersonIds"
-            label="Исключённые водители"
-            extra="Этим людям рассылка не адресуется — например, они получают задание другим способом"
-          >
-            <Select
-              mode="multiple"
-              allowClear
-              showSearch
-              optionFilterProp="label"
-              placeholder="Никто не исключён"
-              loading={driversQuery.isLoading}
-              options={driverOptions}
-            />
-          </Form.Item>
+              <Form.Item
+                name="excludedPersonIds"
+                label="Исключённые водители"
+                extra="Этим людям рассылка не адресуется — например, они получают задание другим способом"
+              >
+                <Select
+                  mode="multiple"
+                  allowClear
+                  showSearch
+                  optionFilterProp="label"
+                  placeholder="Никто не исключён"
+                  loading={driversQuery.isLoading}
+                  options={driverOptions}
+                />
+              </Form.Item>
+            </>
+          ) : null}
 
           <Form.Item
             name="isEnabled"
