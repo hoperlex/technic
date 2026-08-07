@@ -95,6 +95,18 @@ if (mailCfg) {
     { transport: mailCfg.transport, host: mailCfg.host, port: mailCfg.port, from: mailCfg.from },
     'Почтовый транспорт worker',
   );
+  /**
+   * Почтовые службы общего назначения (Яндекс, Mail.ru) отправляют письмо только от адреса самого
+   * ящика: чужой `From` они отвергают ответом 550, и произойдёт это на первом же письме, ночью, а
+   * выглядеть будет как «рассылка не работает». Предупреждение, а не отказ старта: у транзакционных
+   * провайдеров отправка от произвольного адреса подтверждённого домена — норма.
+   */
+  if (mailCfg.transport === 'smtp' && mailCfg.user && !mailCfg.from.includes(mailCfg.user)) {
+    logger.warn(
+      { from: mailCfg.from, user: mailCfg.user },
+      'MAIL_FROM не содержит адрес SMTP-ящика: почтовые службы общего назначения такие письма отвергают',
+    );
+  }
 } else {
   logger.info('Почта выключена (MAIL_ENABLED=false): задачи send_email не обрабатываются');
 }
