@@ -19,6 +19,9 @@ import objectsRoutes from './routes/objects';
 import departmentsRoutes from './routes/departments';
 import counterpartiesRoutes from './routes/counterparties';
 import warehousesRoutes from './routes/warehouses';
+import officeEquipmentTypesRoutes from './routes/office-equipment-types';
+import officeEquipmentRoutes from './routes/office-equipment';
+import serviceRequestsRoutes from './routes/service-requests';
 import containerTypesRoutes from './routes/container-types';
 import vehicleKindsRoutes from './routes/vehicle-kinds';
 import vehicleTypesRoutes from './routes/vehicle-types';
@@ -30,6 +33,7 @@ import vehiclesRoutes from './routes/vehicles';
 import driversRoutes from './routes/drivers';
 import waybillsRoutes from './routes/waybills';
 import vehicleRequestsRoutes from './routes/vehicle-requests';
+import weeklyVehicleRequestsRoutes from './routes/weekly-vehicle-requests';
 import vehicleRoutesRoutes from './routes/vehicle-routes';
 import garageRoutes from './routes/garage';
 import wasteRequestsRoutes from './routes/waste-requests';
@@ -88,6 +92,13 @@ export async function buildApp(options: BuildAppOptions = {}) {
   await app.register(departmentsRoutes, { prefix: '/api/v1/departments' });
   await app.register(counterpartiesRoutes, { prefix: '/api/v1/counterparties' });
   await app.register(warehousesRoutes, { prefix: '/api/v1/warehouses' });
+  // Справочник оргтехники (ADR 0085): перечень типов идёт перед единицами — окно ведения типов
+  // открывается из той же вкладки, и без него единицу не завести.
+  await app.register(officeEquipmentTypesRoutes, { prefix: '/api/v1/office-equipment-types' });
+  await app.register(officeEquipmentRoutes, { prefix: '/api/v1/office-equipment' });
+  // Заявки на обслуживание оргтехники (ADR 0085) — третий модуль заявок: свой префикс, свои права
+  // и свой перечень статусов, а не ветка справочника, из которого приходит только предмет заявки.
+  await app.register(serviceRequestsRoutes, { prefix: '/api/v1/service-requests' });
   await app.register(containerTypesRoutes, { prefix: '/api/v1/container-types' });
   await app.register(vehicleKindsRoutes, { prefix: '/api/v1/vehicle-kinds' });
   await app.register(vehicleTypesRoutes, { prefix: '/api/v1/vehicle-types' });
@@ -98,6 +109,9 @@ export async function buildApp(options: BuildAppOptions = {}) {
   await app.register(vehiclesRoutes, { prefix: '/api/v1/vehicles' });
   await app.register(driversRoutes, { prefix: '/api/v1/drivers' });
   await app.register(vehicleRequestsRoutes, { prefix: '/api/v1/vehicle-requests' });
+  // Недельная заявка (ADR 0085) — документ-основание **над** заказами ТС: свой префикс, а не ветка
+  // `/vehicle-requests`, потому что и права у неё свои, и область видимости своя.
+  await app.register(weeklyVehicleRequestsRoutes, { prefix: '/api/v1/weekly-vehicle-requests' });
   await app.register(vehicleRoutesRoutes, { prefix: '/api/v1/vehicle-routes' });
   // Гараж (ADR 0076) — срез дня поверх рейсов, заявок и листов: своих таблиц у него нет, поэтому
   // и префикс свой, а не ветка одного из этих модулей.

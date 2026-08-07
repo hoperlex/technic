@@ -25,6 +25,7 @@ import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
 import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
 import { registerPurgeRoute } from '../services/directory-purge';
+import { dropWeeklyItemsOfVehicleType } from '../services/weekly-request-cleanup';
 import {
   assertValueFitsSpec,
   loadTypeSpecs,
@@ -475,13 +476,22 @@ export default async function vehicleTypesRoutes(app: FastifyInstance): Promise<
       return row;
     },
     isDown: (row) => !row.isActive,
-    remove: async (tx, row) => {
+    remove: async (tx, row, actor) => {
+      // Первым делом — следы в неприменённых недельных заявках (ADR 0085 Р15): строка «нужна
+      // дополнительно» заказывает погашенную позицию классификатора, а держать ею тип вечно
+      // нельзя. Категории типа снимаются тем же условием: у строки с категорией этого типа и сам
+      // тип — этот (составной внешний ключ), поэтому второго прохода по категориям не нужно.
+      const cleanup = await dropWeeklyItemsOfVehicleType(tx, actor, {
+        id: row.id,
+        name: row.name,
+      });
       await tx
         .delete(vehicleCategorySpecValues)
         .where(eq(vehicleCategorySpecValues.vehicleTypeId, row.id));
       await tx.delete(vehicleCategories).where(eq(vehicleCategories.vehicleTypeId, row.id));
       await tx.delete(vehicleTypeSpecs).where(eq(vehicleTypeSpecs.vehicleTypeId, row.id));
       await tx.delete(vehicleTypes).where(eq(vehicleTypes.id, row.id));
+      return cleanup;
     },
     notFound: 'Тип ТС не найден',
     stillLive: 'Тип ТС активен — сначала деактивируйте его',

@@ -12,7 +12,9 @@ import { ResetPasswordPage } from './pages/ResetPasswordPage';
 import { ChangePasswordPage } from './pages/ChangePasswordPage';
 import { WasteRequestsPage } from './pages/WasteRequestsPage';
 import { VehicleRequestsPage } from './pages/VehicleRequestsPage';
+import { WeeklyRequestPage } from './pages/vehicle/WeeklyRequestPage';
 import { GaragePage } from './pages/GaragePage';
+import { ServiceRequestsPage } from './pages/service/ServiceRequestsPage';
 import { DirectoriesPage } from './pages/DirectoriesPage';
 import { AdministrationPage } from './pages/AdministrationPage';
 
@@ -43,6 +45,20 @@ export default function App() {
             <Route element={<RequirePermission permission="vehicleRequests.read" />}>
               <Route path="/vehicle-requests" element={<VehicleRequestsPage />} />
             </Route>
+            {/* Недельная заявка (ADR 0085) — своя страница с адресом, а не окно поверх списка:
+                три блока состава, история и документы в модалку не помещаются, а ссылку на
+                неделю нужно уметь послать. Право своё: `vehicleRequests.read` есть у
+                наблюдателя и арендодателя, которым планы площадок не показывают (Р12). */}
+            <Route element={<RequirePermission permission="weeklyRequests.read" />}>
+              <Route path="/vehicle-requests/weekly/:id" element={<WeeklyRequestPage />} />
+            </Route>
+            {/* Орг.техника (ADR 0085) — третий модуль заявок: обслуживание оргтехники ведут
+                три стороны (заказчик, оператор оргтехники, сервисная компания). Раздел
+                закрывает одно право `serviceRequests.read`; что внутри него доступно,
+                решает коридор переходов, а не список ролей. */}
+            <Route element={<RequirePermission permission="serviceRequests.read" />}>
+              <Route path="/office-equipment" element={<ServiceRequestsPage />} />
+            </Route>
             {/* Справочники открыты тем, кто их ведёт: смотреть их отдельной страницей
                 остальным незачем — значения и так видны в карточках заявок. */}
             <Route element={<RequirePermission permission="waybills.read" />}>
@@ -53,7 +69,16 @@ export default function App() {
             <Route element={<RequirePermission permission="garage.read" />}>
               <Route path="/garage" element={<GaragePage />} />
             </Route>
-            <Route element={<RequirePermission permission="directories.write" />}>
+            {/* Справочники — тоже страница из вкладок под разными правами (Р7): весь набор
+                ведёт `directories.write`, одну вкладку «Оргтехника» — `officeEquipment.write`
+                (ADR 0085). Требовать оба значило бы закрыть раздел ответственному за
+                оргтехнику, а выдать ему `directories.write` — отдать заодно объекты,
+                контрагентов и прайс вывоза. */}
+            <Route
+              element={
+                <RequirePermission permission={['directories.write', 'officeEquipment.write']} />
+              }
+            >
               <Route path="/directories" element={<DirectoriesPage />} />
             </Route>
             {/* Администрирование — страница из вкладок под разными правами: учётки ведёт один

@@ -134,6 +134,8 @@ export const counterpartyTypeEnum = pgEnum('counterparty_type', [
   'vehicle_lessor',
   // Поставщик (ADR 0051, миграция 0076): сторона договора поставки, к которой привязаны склады.
   'supplier',
+  // Сервисная компания (ADR 0085, миграция 0103): исполнитель заявок на обслуживание оргтехники.
+  'service',
 ]);
 // Кем человек назвал себя при регистрации (ADR 0034). Это пожелание, не роль: права даёт
 // только `users.role`, назначаемая администратором. Двум значениям роли в портале не
@@ -882,6 +884,35 @@ export const userDepartments = pgTable(
   }),
 );
 
+/**
+ * Надстройки роли (ADR 0086, миграция 0106) — третья ось субъекта доступа рядом с ролью и типом
+ * контрагента. Хранится набором, как объекты и отделы учётки: одному человеку ничто не мешает
+ * отвечать и за оргтехнику, и за то, что появится следующим.
+ *
+ * Совместимость надстройки с базовой ролью держит API (`ROLE_ADDON_BASE_ROLES` в контрактах), а не
+ * CHECK: условие читало бы колонку соседней таблицы — тот же случай, из-за которого миграция 0063
+ * сняла `users_rukstroy_object_check`.
+ */
+export const roleAddonEnum = pgEnum('role_addon', ['office_equipment_operator']);
+
+export const userRoleAddons = pgTable(
+  'user_role_addons',
+  {
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    addon: roleAddonEnum('addon').notNull(),
+    // Кто и когда выдал: надстройка расширяет доступ, и в журнале учёток это должно читаться так
+    // же ясно, как смена роли. Отсюда и имена, отличные от `created_by`/`created_at` соседних
+    // связей: там привязка описывает область, здесь — выданное полномочие.
+    grantedBy: uuid('granted_by').references(() => users.id, { onDelete: 'set null' }),
+    grantedAt: timestamp('granted_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.userId, t.addon] }),
+  }),
+);
+
 // ── Refresh-сессии (ротация + reuse detection) ──
 export const refreshSessions = pgTable(
   'refresh_sessions',
@@ -1058,6 +1089,398 @@ export const warehouses = pgTable(
       t.normalizedAddress,
     ),
     addressTrgm: index('warehouses_address_trgm').using('gin', sql`${t.address} gin_trgm_ops`),
+  }),
+);
+
+// ── Справочник оргтехники (ADR 0085, миграция 0104) ──
+// Что стоит по кабинетам и площадкам: МФУ, ноутбуки, мониторы. Две таблицы — перечень типов и сами
+// единицы; заявки на обслуживание ссылаются на единицу и хранят снимок её реквизитов.
+export const officeEquipmentTypes = pgTable(
+  'office_equipment_types',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    code: text('code').notNull(),
+    name: text('name').notNull(),
+    sortOrder: integer('sort_order').notNull().default(100),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    codeUnique: uniqueIndex('office_equipment_types_code_unique').on(t.code),
+    nameNotBlank: check('office_equipment_types_name_not_blank_check', sql`btrim(${t.name}) <> ''`),
+  }),
+);
+
+export const officeEquipment = pgTable(
+  'office_equipment',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    equipmentTypeId: uuid('equipment_type_id')
+      .notNull()
+      .references(() => officeEquipmentTypes.id, { onDelete: 'restrict' }),
+    // Наименование модели: «Kyocera ECOSYS M3145». Опознают единицу номерами, но выбирают глазами
+    // по модели — поэтому поле обязательное.
+    name: text('name').notNull(),
+    serialNumber: text('serial_number').notNull().default(''),
+    inventoryNumber: text('inventory_number').notNull().default(''),
+    // Где стоит. Офис заводится таким же объектом строительства: площадка у техники есть всегда.
+    objectId: uuid('object_id')
+      .notNull()
+      .references(() => constructionObjects.id, { onDelete: 'restrict' }),
+    // За каким отделом числится. NULL — не закреплена: на область заявок это не влияет (у заявки
+    // свой заказчик), но от разметки зависит, увидит ли отдел «заявки по нашей технике».
+    ownerDepartmentId: uuid('owner_department_id').references(() => departments.id, {
+      onDelete: 'restrict',
+    }),
+    // Место внутри объекта: «кабинет 214», «прорабская». Свободный текст — планировок в портале нет.
+    location: text('location').notNull().default(''),
+    purchasedOn: date('purchased_on'),
+    // Гарантия поставщика на саму единицу; гарантии на запчасти и работы живут в заявках.
+    warrantyUntil: date('warranty_until'),
+    comment: text('comment').notNull().default(''),
+    isActive: boolean('is_active').notNull().default(true),
+    createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+    updatedBy: uuid('updated_by').references(() => users.id, { onDelete: 'set null' }),
+    deletedBy: uuid('deleted_by').references(() => users.id, { onDelete: 'set null' }),
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    nameNotBlank: check('office_equipment_name_not_blank_check', sql`btrim(${t.name}) <> ''`),
+    // Единицу нужно чем-то опознать при приёмке из ремонта: хотя бы один номер обязателен.
+    identity: check(
+      'office_equipment_identity_check',
+      sql`btrim(${t.serialNumber}) <> '' OR btrim(${t.inventoryNumber}) <> ''`,
+    ),
+    // Номера уникальны среди живых записей: удалённая карточка номер не держит.
+    serialUnique: uniqueIndex('office_equipment_serial_unique')
+      .on(sql`upper(btrim(${t.serialNumber}))`)
+      .where(sql`${t.deletedAt} IS NULL AND btrim(${t.serialNumber}) <> ''`),
+    inventoryUnique: uniqueIndex('office_equipment_inventory_unique')
+      .on(sql`upper(btrim(${t.inventoryNumber}))`)
+      .where(sql`${t.deletedAt} IS NULL AND btrim(${t.inventoryNumber}) <> ''`),
+    objectIdx: index('office_equipment_object_idx')
+      .on(t.objectId)
+      .where(sql`${t.deletedAt} IS NULL`),
+    departmentIdx: index('office_equipment_department_idx')
+      .on(t.ownerDepartmentId)
+      .where(sql`${t.deletedAt} IS NULL AND ${t.ownerDepartmentId} IS NOT NULL`),
+    typeIdx: index('office_equipment_type_idx').on(t.equipmentTypeId),
+    nameTrgm: index('office_equipment_name_trgm').using('gin', sql`${t.name} gin_trgm_ops`),
+    warrantyIdx: index('office_equipment_warranty_idx')
+      .on(t.warrantyUntil)
+      .where(sql`${t.deletedAt} IS NULL AND ${t.warrantyUntil} IS NOT NULL`),
+  }),
+);
+
+// ── Заявки на обслуживание оргтехники (ADR 0085, миграция 0105) ──
+// Цикл длиннее, чем у вывоза мусора и заказа техники: между «приняли» и «сделали» стоит смета,
+// которую согласует заказчик, а после работ — приёмка. Отсюда собственный набор статусов:
+// дописать диагностику, согласование и приёмку в общий `request_status` значило бы поменять
+// смысл статусов сразу в двух работающих модулях.
+export const serviceRequestStatusEnum = pgEnum('service_request_status', [
+  'new',
+  'assigned',
+  'diagnostics',
+  'estimate_review',
+  'in_work',
+  'done',
+  'accepted',
+  'cancelled',
+]);
+
+export const serviceRequests = pgTable(
+  'service_requests',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    // Сквозной человекочитаемый номер (отображается как «СО-<num>»).
+    num: integer('num').generatedAlwaysAsIdentity(),
+    officeEquipmentId: uuid('office_equipment_id')
+      .notNull()
+      .references(() => officeEquipment.id, { onDelete: 'restrict' }),
+    // Чья это заявка — тремя снимками на момент заведения: единицу могут закрепить за отделом
+    // позже, и прошлогодняя заявка не должна от этого менять область видимости. NULL у отделов
+    // означает «к отделам не относится», а не «видна всем».
+    equipmentObjectId: uuid('equipment_object_id')
+      .notNull()
+      .references(() => constructionObjects.id, { onDelete: 'restrict' }),
+    // Отдел, от имени которого заведена заявка. Подсказывается владельцем техники, но выбирается
+    // человеком: сотрудник соседнего отдела чинит «чужой» принтер чаще, чем кажется.
+    customerDepartmentId: uuid('customer_department_id').references(() => departments.id, {
+      onDelete: 'restrict',
+    }),
+    // За каким отделом числилась единица. Вместе с заказчиком задаёт область роли отдела: заявку
+    // видит и тот, кто её подал, и тот, за кем закреплена техника.
+    equipmentDepartmentId: uuid('equipment_department_id').references(() => departments.id, {
+      onDelete: 'restrict',
+    }),
+    // Снимок предмета: карточку переименуют, перенесут и перезакрепят, а заявка должна остаться
+    // рассказом о том, что чинили тогда.
+    equipmentName: text('equipment_name').notNull(),
+    equipmentSerialNumber: text('equipment_serial_number').notNull().default(''),
+    equipmentInventoryNumber: text('equipment_inventory_number').notNull().default(''),
+    description: text('description').notNull(),
+    dueDate: date('due_date'),
+    responsibleName: text('responsible_name').notNull().default(''),
+    // Десять цифр без кода страны, как все номера портала (ADR 0066).
+    responsiblePhone: text('responsible_phone').notNull().default(''),
+    status: serviceRequestStatusEnum('status').notNull().default('new'),
+    // Возраст в текущем статусе — колонкой, а не latest-подзапросом по истории: «кто ждёт дольше
+    // всех» спрашивает каждый список, и признак зависшей заявки читается отсюда же.
+    statusChangedAt: timestamp('status_changed_at', { withTimezone: true }).notNull().defaultNow(),
+    // Обращение по гарантии хранится источником, а не флагом: 'equipment' — гарантия поставщика
+    // на саму единицу, 'item' — гарантия на запчасть или работу прошлой заявки (ссылка ниже).
+    // Без источника «гарантийная заявка» не отвечает на главный вопрос спора с сервисом.
+    warrantyClaimSource: text('warranty_claim_source').$type<'equipment' | 'item'>(),
+    // FK → service_request_items.id ON DELETE RESTRICT ставится отдельным ALTER в миграции 0105:
+    // обе таблицы создаются одной миграцией, и раньше строк ссылку объявить нельзя. Здесь она не
+    // типизирована, чтобы не замыкать цикл service_requests ↔ service_request_items, — тот же
+    // приём, что у users.counterpartyId и users.personId.
+    warrantyClaimItemId: uuid('warranty_claim_item_id'),
+    serviceCounterpartyId: uuid('service_counterparty_id').references(() => counterparties.id, {
+      onDelete: 'restrict',
+    }),
+    // Смета версионируется: ревизия растёт при каждом предъявлении, согласована та, чей номер
+    // записан в соседней колонке. Закрытие требует их совпадения — иначе правка проходила бы
+    // между открытием окна согласования и нажатием кнопки.
+    estimateRevision: integer('estimate_revision').notNull().default(0),
+    approvedEstimateRevision: integer('approved_estimate_revision'),
+    estimateSubmittedAt: timestamp('estimate_submitted_at', { withTimezone: true }),
+    estimateApprovedBy: uuid('estimate_approved_by').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    estimateApprovedAt: timestamp('estimate_approved_at', { withTimezone: true }),
+    // Согласованная сумма и сумма по акту разведены: одной колонкой после закрытия уже не
+    // ответить, ту ли сумму согласовывали. Итоги считает сервер из строк сметы; корректировка
+    // акта (скидка, округление) — только вниз и только с причиной.
+    estimatedTotalAmount: numeric('estimated_total_amount', { precision: 14, scale: 2 }),
+    finalTotalAmount: numeric('final_total_amount', { precision: 14, scale: 2 }),
+    finalAdjustmentAmount: numeric('final_adjustment_amount', { precision: 14, scale: 2 }),
+    finalAdjustmentReason: text('final_adjustment_reason').notNull().default(''),
+    completedAt: timestamp('completed_at', { withTimezone: true }),
+    acceptedBy: uuid('accepted_by').references(() => users.id, { onDelete: 'set null' }),
+    acceptedAt: timestamp('accepted_at', { withTimezone: true }),
+    comment: text('comment').notNull().default(''),
+    serviceComment: text('service_comment').notNull().default(''),
+    createdBy: uuid('created_by')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    updatedBy: uuid('updated_by').references(() => users.id, { onDelete: 'set null' }),
+    deletedBy: uuid('deleted_by').references(() => users.id, { onDelete: 'set null' }),
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
+    // Оптимистическая блокировка: согласование и закрытие нажимают из окна, простоявшего минуту.
+    version: integer('version').notNull().default(0),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    descriptionNotBlank: check(
+      'service_requests_description_not_blank_check',
+      sql`btrim(${t.description}) <> ''`,
+    ),
+    amounts: check(
+      'service_requests_amounts_check',
+      sql`(${t.estimatedTotalAmount} IS NULL OR ${t.estimatedTotalAmount} >= 0)
+          AND (${t.finalTotalAmount} IS NULL OR ${t.finalTotalAmount} >= 0)`,
+    ),
+    // Без исполнителя заявку никто не ведёт; исключение — «Новая» и «Отменена».
+    executor: check(
+      'service_requests_executor_check',
+      sql`${t.status} IN ('new','cancelled') OR ${t.serviceCounterpartyId} IS NOT NULL`,
+    ),
+    // Согласование — снимок из трёх полей: кто, когда и что именно. Любое поле по отдельности на
+    // вопрос «что согласовали» не отвечает.
+    approval: check(
+      'service_requests_approval_check',
+      sql`(${t.estimateApprovedBy} IS NULL) = (${t.estimateApprovedAt} IS NULL)
+          AND (${t.estimateApprovedBy} IS NULL) = (${t.approvedEstimateRevision} IS NULL)`,
+    ),
+    approvedRevision: check(
+      'service_requests_approved_revision_check',
+      sql`${t.approvedEstimateRevision} IS NULL
+          OR ${t.approvedEstimateRevision} <= ${t.estimateRevision}`,
+    ),
+    accepted: check(
+      'service_requests_accepted_check',
+      sql`(${t.acceptedBy} IS NULL) = (${t.acceptedAt} IS NULL)`,
+    ),
+    // Корректировка акта — неразрывная пара «сумма + причина»: причина без суммы ничего не
+    // корректирует, сумма без причины делает итог необъяснимым. Только вниз — наценка это
+    // удорожание, и её путь один, через пересогласование сметы.
+    finalAdjustment: check(
+      'service_requests_final_adjustment_check',
+      sql`(${t.finalAdjustmentAmount} IS NULL AND btrim(${t.finalAdjustmentReason}) = '')
+          OR (${t.finalAdjustmentAmount} < 0 AND btrim(${t.finalAdjustmentReason}) <> '')`,
+    ),
+    warrantyClaim: check(
+      'service_requests_warranty_claim_check',
+      sql`${t.warrantyClaimSource} IS NULL
+          OR (${t.warrantyClaimSource} = 'equipment' AND ${t.warrantyClaimItemId} IS NULL)
+          OR (${t.warrantyClaimSource} = 'item' AND ${t.warrantyClaimItemId} IS NOT NULL)`,
+    ),
+    numUnique: uniqueIndex('service_requests_num_unique').on(t.num),
+    // Одна открытая заявка на единицу: две параллельные означали бы два сервиса, два акта и две
+    // гарантии на одну работу. Индекс сторожит и заведение, и восстановление из архива — сервер
+    // обязан отвечать на оба случая понятным 409 со ссылкой на открытую заявку, а не ошибкой БД.
+    openPerEquipmentUnique: uniqueIndex('service_requests_open_per_equipment_unique')
+      .on(t.officeEquipmentId)
+      .where(sql`${t.deletedAt} IS NULL AND ${t.status} NOT IN ('accepted','cancelled')`),
+    // Очереди спрашивают «что в этом статусе ждёт дольше всех» — статус и возраст читаются
+    // вместе; отдельного индекса по одному статусу нет, этот покрывает его префиксом.
+    statusChangedIdx: index('service_requests_status_changed_idx').on(t.status, t.statusChangedAt),
+    objectIdx: index('service_requests_object_idx').on(t.equipmentObjectId),
+    customerDeptIdx: index('service_requests_customer_dept_idx')
+      .on(t.customerDepartmentId)
+      .where(sql`${t.customerDepartmentId} IS NOT NULL`),
+    equipmentDeptIdx: index('service_requests_equipment_dept_idx')
+      .on(t.equipmentDepartmentId)
+      .where(sql`${t.equipmentDepartmentId} IS NOT NULL`),
+    equipmentIdx: index('service_requests_equipment_idx').on(t.officeEquipmentId),
+    serviceIdx: index('service_requests_service_idx')
+      .on(t.serviceCounterpartyId)
+      .where(sql`${t.serviceCounterpartyId} IS NOT NULL`),
+    createdAtIdx: index('service_requests_created_at_idx').on(t.createdAt),
+  }),
+);
+
+// Смета: запчасти и услуги строками одной таблицы — набор полей у них общий (наименование,
+// количество, цена, сумма, гарантия), различает строку её вид. План и факт разведены: иначе
+// «запчасть не понадобилась» оставляло бы в реестре гарантию на деталь, которую не ставили.
+export const serviceRequestItems = pgTable(
+  'service_request_items',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    requestId: uuid('request_id')
+      .notNull()
+      .references(() => serviceRequests.id, { onDelete: 'cascade' }),
+    kind: text('kind').notNull().$type<'part' | 'service'>(),
+    name: text('name').notNull(),
+    // План: сколько согласовали и по какой цене.
+    quantity: numeric('quantity', { precision: 12, scale: 3 }).notNull().default('1'),
+    unitPrice: numeric('unit_price', { precision: 12, scale: 2 }).notNull(),
+    // Сумму считает БД (GENERATED): производная не может разойтись со слагаемыми.
+    amount: numeric('amount', { precision: 14, scale: 2 }).generatedAlwaysAs(
+      sql`round(quantity * unit_price, 2)`,
+    ),
+    // Факт: NULL — «не заполнено», до закрытия работ факта у строки нет вовсе. Ни NOT NULL, ни
+    // DEFAULT здесь быть не должно — иначе план читался бы как факт.
+    performed: boolean('performed'),
+    actualQuantity: numeric('actual_quantity', { precision: 12, scale: 3 }),
+    // Три ветки по состоянию факта: не заполнен — суммы нет, сделали — по фактическому
+    // количеству (плановому, если его не уточняли), не делали — ноль.
+    actualAmount: numeric('actual_amount', { precision: 14, scale: 2 }).generatedAlwaysAs(
+      sql`CASE
+      WHEN performed IS NULL THEN NULL
+      WHEN performed THEN round(coalesce(actual_quantity, quantity) * unit_price, 2)
+      ELSE 0
+    END`,
+    ),
+    // Гарантия строки: сколько обещали и до какой даты действует. Дата ставится при закрытии как
+    // «дата выполнения + N месяцев», но правится руками — в талоне может стоять своя.
+    warrantyMonths: smallint('warranty_months'),
+    warrantyUntil: date('warranty_until'),
+    warrantyUntilManual: boolean('warranty_until_manual').notNull().default(false),
+    sortOrder: integer('sort_order').notNull().default(100),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    kindCheck: check('service_request_items_kind_check', sql`${t.kind} IN ('part','service')`),
+    nameNotBlank: check('service_request_items_name_not_blank_check', sql`btrim(${t.name}) <> ''`),
+    quantityPositive: check('service_request_items_quantity_check', sql`${t.quantity} > 0`),
+    priceNonNegative: check('service_request_items_price_check', sql`${t.unitPrice} >= 0`),
+    actualQuantityPositive: check(
+      'service_request_items_actual_quantity_check',
+      sql`${t.actualQuantity} IS NULL OR ${t.actualQuantity} > 0`,
+    ),
+    // Количество факта бывает только у явно выполненной строки: и «не ставили, но две штуки», и
+    // «факта ещё нет, а количество уже есть» — испорченные строки. Условие написано от
+    // количества: `performed IS NOT FALSE` в Postgres истинно и для NULL и такую пару пропустило
+    // бы.
+    actualAbsent: check(
+      'service_request_items_actual_absent_check',
+      sql`${t.actualQuantity} IS NULL OR ${t.performed} IS TRUE`,
+    ),
+    // Вверх факт не идёт: рост объёма — удорожание, и его путь один, через пересогласование.
+    actualLePlan: check(
+      'service_request_items_actual_le_plan_check',
+      sql`${t.actualQuantity} IS NULL OR ${t.actualQuantity} <= ${t.quantity}`,
+    ),
+    warrantyMonthsRange: check(
+      'service_request_items_warranty_months_check',
+      sql`${t.warrantyMonths} IS NULL OR ${t.warrantyMonths} BETWEEN 1 AND 120`,
+    ),
+    warrantyManual: check(
+      'service_request_items_warranty_manual_check',
+      sql`NOT ${t.warrantyUntilManual} OR ${t.warrantyUntil} IS NOT NULL`,
+    ),
+    // Гарантии на то, чего не делали, не бывает; до закрытия (performed IS NULL) её тоже нет.
+    warrantyPerformed: check(
+      'service_request_items_warranty_performed_check',
+      sql`${t.performed} IS TRUE OR ${t.warrantyUntil} IS NULL`,
+    ),
+    requestIdx: index('service_request_items_request_idx').on(t.requestId),
+    // Реестр действующих гарантий: интересны только сделанные строки с непустым сроком.
+    warrantyIdx: index('service_request_items_warranty_idx')
+      .on(t.warrantyUntil)
+      .where(sql`${t.warrantyUntil} IS NOT NULL AND ${t.performed}`),
+  }),
+);
+
+// Вложения. Вид называет документ, а не «прочее»: по нему собирается срез «ожидаются документы»,
+// без которого «акт подошью завтра» превращается в потерянную бумагу.
+export const serviceRequestFiles = pgTable(
+  'service_request_files',
+  {
+    requestId: uuid('request_id')
+      .notNull()
+      .references(() => serviceRequests.id, { onDelete: 'cascade' }),
+    fileId: uuid('file_id')
+      .notNull()
+      .references(() => files.id, { onDelete: 'cascade' }),
+    kind: text('kind')
+      .notNull()
+      .default('attachment')
+      .$type<'attachment' | 'estimate' | 'act' | 'invoice' | 'warranty_card'>(),
+    attachedBy: uuid('attached_by').references(() => users.id, { onDelete: 'set null' }),
+    attachedAt: timestamp('attached_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.requestId, t.fileId] }),
+    kindCheck: check(
+      'service_request_files_kind_check',
+      sql`${t.kind} IN ('attachment','estimate','act','invoice','warranty_card')`,
+    ),
+    fileIdx: index('service_request_files_file_idx').on(t.fileId),
+    // «У каких закрытых заявок нет акта» — вопрос очереди «Ожидаются документы».
+    docIdx: index('service_request_files_doc_idx')
+      .on(t.requestId)
+      .where(sql`${t.kind} IN ('act','invoice')`),
+  }),
+);
+
+// История статусов. Ревизия сметы на момент события: по истории должно читаться, что именно
+// согласовали и что поменялось между двумя согласованиями.
+export const serviceRequestStatusHistory = pgTable(
+  'service_request_status_history',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    requestId: uuid('request_id')
+      .notNull()
+      .references(() => serviceRequests.id, { onDelete: 'cascade' }),
+    fromStatus: serviceRequestStatusEnum('from_status'),
+    toStatus: serviceRequestStatusEnum('to_status').notNull(),
+    estimateRevision: integer('estimate_revision'),
+    changedBy: uuid('changed_by')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    changedAt: timestamp('changed_at', { withTimezone: true }).notNull().defaultNow(),
+    comment: text('comment').notNull().default(''),
+  },
+  (t) => ({
+    requestIdx: index('service_request_status_history_request_idx').on(t.requestId, t.changedAt),
   }),
 );
 
@@ -2963,10 +3386,308 @@ export const appReleases = pgTable(
   }),
 );
 
+// ── Недельная заявка на технику (план docs/weekly-vehicle-request-plan.md, миграция 0107) ──
+// Документ-основание над заказами ТС, а не третий их тип: заявка ТС физически одномашинная
+// (`vehicle_request_assignments` — одна строка на заявку), ЭСМ-2 привязан к паре «заявка + неделя»
+// (ADR 0060), срок у каждой единицы свой. Виза недельной заявки порождает и продлевает обычные
+// заказы, и дальше всё работает как раньше.
+export const weeklyRequestStatusEnum = pgEnum('weekly_request_status', [
+  'draft',
+  'pending',
+  'applied',
+  'cancelled',
+]);
+// Три вида строки: «остаётся», «нужна дополнительно» и «уезжает». Третий заведён потому, что
+// решение об отъезде — часть недельного документа: снятая галка не «отсутствие строки».
+export const weeklyRequestItemKindEnum = pgEnum('weekly_request_item_kind', [
+  'extend',
+  'new',
+  'leave',
+]);
+export const weeklyRequestItemResultEnum = pgEnum('weekly_request_item_result', [
+  'pending',
+  'extended',
+  'created',
+  'left',
+  'skipped',
+]);
+export const weeklyRequestEventEnum = pgEnum('weekly_request_event', [
+  'status',
+  'items_changed',
+  'item_dropped',
+]);
+
+export const weeklyVehicleRequests = pgTable(
+  'weekly_vehicle_requests',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    // Свой сквозной номер, на экране — «НЗ-12»: на пакет ссылаются («продлено по НЗ-12» в истории
+    // заказа, «НЗ-12 ждёт визы» в списке руководителя).
+    num: integer('num').generatedAlwaysAsIdentity(),
+    objectId: uuid('object_id')
+      .notNull()
+      .references(() => constructionObjects.id, { onDelete: 'restrict' }),
+    // Единица — будущая календарная неделя пн–вс. Хранится один ключ, понедельник; конец недели
+    // вычисляется прибавлением шести дней и в базе не лежит: две колонки на одно значение рано или
+    // поздно разойдутся. Неделя — та же, которой режет свои периоды ЭСМ-2 (`weekStartKey`).
+    weekStart: date('week_start', { mode: 'string' }).notNull(),
+    status: weeklyRequestStatusEnum('status').notNull().default('draft'),
+    comment: text('comment').notNull().default(''),
+    createdBy: uuid('created_by')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    updatedBy: uuid('updated_by').references(() => users.id, { onDelete: 'set null' }),
+    // Виза руководителя строительства. Отдельного действия «применить» нет: оно создавало бы
+    // состояние «завизировано, но ничего не произошло».
+    approvedBy: uuid('approved_by').references(() => users.id, { onDelete: 'restrict' }),
+    approvedAt: timestamp('approved_at', { withTimezone: true }),
+    appliedAt: timestamp('applied_at', { withTimezone: true }),
+    cancelReason: text('cancel_reason').notNull().default(''),
+    // Токен оптимистичной блокировки: состав правят несколько человек, а виза применяет ровно тот
+    // состав, который видел визирующий.
+    version: integer('version').notNull().default(0),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    // Неделя начинается с понедельника — иначе `week_start + 6` перестаёт быть неделей, а границы
+    // дат строки проверяли бы произвольный семидневный отрезок.
+    weekMonday: check(
+      'weekly_requests_week_monday_check',
+      sql`extract(isodow from ${t.weekStart}) = 1`,
+    ),
+    approvalPair: check(
+      'weekly_requests_approval_pair_check',
+      sql`(${t.approvedBy} is null) = (${t.approvedAt} is null)`,
+    ),
+    // Виза и применение — одно событие, поэтому инвариант жизненного цикла записывается двумя
+    // равенствами, а не тремя «или»: завизированная — это ровно применённая.
+    appliedStatus: check(
+      'weekly_requests_applied_check',
+      sql`(${t.status} = 'applied') = (${t.appliedAt} is not null)`,
+    ),
+    approvedStatus: check(
+      'weekly_requests_approved_status_check',
+      sql`(${t.status} = 'applied') = (${t.approvedBy} is not null)`,
+    ),
+    cancelReasonRequired: check(
+      'weekly_requests_cancel_check',
+      sql`${t.status} <> 'cancelled' or btrim(${t.cancelReason}) <> ''`,
+    ),
+    // Цель составного FK из строк: неделя строки физически не может разойтись с неделей шапки —
+    // тем же приёмом, что `vehicle_requests.id_type_unique` у назначения.
+    idWeekUnique: unique('weekly_requests_id_week_unique').on(t.id, t.weekStart),
+    // Одна заявка на пару «объект + неделя»: две означали бы два состава, которые при согласовании
+    // подерутся за один и тот же заказ. Отменённые из ограничения выпадают.
+    objectWeekUniq: uniqueIndex('weekly_requests_object_week_uniq')
+      .on(t.objectId, t.weekStart)
+      .where(sql`${t.status} <> 'cancelled'`),
+    numUniq: uniqueIndex('weekly_requests_num_uniq').on(t.num),
+    // «Что ждёт визы»: в очередь руководителя попадает только `pending` — черновик виден, но не
+    // отвлекает.
+    pendingIdx: index('weekly_requests_pending_idx')
+      .on(t.weekStart, t.objectId)
+      .where(sql`${t.status} = 'pending'`),
+  }),
+);
+
+export const weeklyVehicleRequestItems = pgTable(
+  'weekly_vehicle_request_items',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    // Ссылка на шапку — только составным ключом ниже: одиночный FK к тому же родителю дублировал
+    // бы его и требовал бы держать два каскада согласованными.
+    weeklyRequestId: uuid('weekly_request_id').notNull(),
+    // Денормализованная неделя шапки: только она даёт проверить границы дат строки внутри CHECK.
+    weekStart: date('week_start', { mode: 'string' }).notNull(),
+    position: integer('position').notNull(),
+    kind: weeklyRequestItemKindEnum('kind').notNull(),
+    // Заказ-основание у строк `extend` и `leave`. RESTRICT: применённая заявка не должна терять
+    // свои следствия; брошенный черновик развязывает `purge`, убирая свои строки.
+    sourceRequestId: uuid('source_request_id').references(() => vehicleRequests.id, {
+      onDelete: 'restrict',
+    }),
+    // Позиция классификатора у строки `new` (ADR 0028). Конкретную машину строка не называет — её
+    // подбирает диспетчер при переводе в работу: площадка не видит парка и не знает занятости.
+    vehicleTypeId: uuid('vehicle_type_id').references(() => vehicleTypes.id, {
+      onDelete: 'restrict',
+    }),
+    vehicleCategoryId: uuid('vehicle_category_id'),
+    dateFrom: date('date_from', { mode: 'string' }),
+    dateTo: date('date_to', { mode: 'string' }),
+    responsibleName: text('responsible_name').notNull().default(''),
+    responsiblePhone: text('responsible_phone').notNull().default(''),
+    deliveryNeeded: boolean('delivery_needed').notNull().default(false),
+    deliveryFrom: text('delivery_from').notNull().default(''),
+    comment: text('comment').notNull().default(''),
+    // Что видел составитель при подаче: эффективный конец срока заказа (`coalesce(date_to,
+    // date_from)`). Им сверяется применимость строки, и он же объясняет отказ словами «было 11.08,
+    // стало 15.08». Сверяется срок, а не версия: версия растёт от любой правки, включая телефон
+    // ответственного, и выбрасывала бы строки по поводам, к решению не относящимся.
+    expectedDateTo: date('expected_date_to', { mode: 'string' }),
+    // Снимок момента применения. Разведён с ожиданием намеренно: одно поле под обе задачи не
+    // работает — ожидание и снимок расходятся ровно тогда, когда это важнее всего.
+    previousDateTo: date('previous_date_to', { mode: 'string' }),
+    appliedSourceVersion: integer('applied_source_version'),
+    // Хранится идентичность машины, а не её подпись: вопрос снимка — «та же ли это физическая
+    // машина»; госномер и модель берутся join'ом, чтобы карточка показывала их сегодняшними.
+    snapshotVehicleId: uuid('snapshot_vehicle_id').references(() => vehicles.id, {
+      onDelete: 'restrict',
+    }),
+    // Номер порождённого заказа рядом не хранится: пара «идентификатор + номер» проверяема на
+    // полноту, но не на принадлежность одному заказу, а номер и так приходит join'ом.
+    createdRequestId: uuid('created_request_id').references(() => vehicleRequests.id, {
+      onDelete: 'restrict',
+    }),
+    result: weeklyRequestItemResultEnum('result').notNull().default('pending'),
+    skipReason: text('skip_reason').notNull().default(''),
+    // Явное согласие снять ожидающий досрочный отъезд: в недельной заявке состав предвыбран
+    // целиком, и молчаливое снятие десятка запросов означало бы отмену чужих решений оптом.
+    earlyEndOverride: boolean('early_end_override').notNull().default(false),
+  },
+  (t) => ({
+    weekFk: foreignKey({
+      columns: [t.weeklyRequestId, t.weekStart],
+      foreignColumns: [weeklyVehicleRequests.id, weeklyVehicleRequests.weekStart],
+      name: 'weekly_items_week_fk',
+    }).onDelete('cascade'),
+    // Категория чужого типа невозможна физически (ADR 0028) — тем же приёмом, что у заявки ТС.
+    categoryTypeFk: foreignKey({
+      columns: [t.vehicleCategoryId, t.vehicleTypeId],
+      foreignColumns: [vehicleCategories.id, vehicleCategories.vehicleTypeId],
+      name: 'weekly_items_category_type_fk',
+    }).onDelete('restrict'),
+    // Форма строки задана её видом целиком: у продления есть заказ и дата, по которую продлить, у
+    // новой — позиция классификатора и срок, у отъезда — только заказ.
+    kindShape: check(
+      'weekly_items_kind_shape_check',
+      sql`(${t.kind} = 'extend' and ${t.sourceRequestId} is not null and ${t.vehicleTypeId} is null
+       and ${t.vehicleCategoryId} is null and ${t.dateFrom} is null and ${t.dateTo} is not null
+       and ${t.expectedDateTo} is not null)
+    or (${t.kind} = 'new' and ${t.sourceRequestId} is null and ${t.vehicleTypeId} is not null
+       and ${t.dateFrom} is not null and ${t.dateTo} is not null and ${t.dateFrom} <= ${t.dateTo}
+       and ${t.expectedDateTo} is null)
+    or (${t.kind} = 'leave' and ${t.sourceRequestId} is not null and ${t.vehicleTypeId} is null
+       and ${t.vehicleCategoryId} is null and ${t.dateFrom} is null and ${t.dateTo} is null
+       and ${t.expectedDateTo} is not null)`,
+    ),
+    // Поля, значимые только у своего вида строки: контакт и доставка — принадлежность `new`,
+    // согласие на снятие досрочного отъезда — принадлежность `extend`. Без этих проверок в базе
+    // заводится строка «уезжает с запрошенной доставкой», которую никто не собирался разрешать.
+    newFields: check(
+      'weekly_items_new_fields_check',
+      sql`${t.kind} = 'new'
+    or (btrim(${t.responsibleName}) = '' and ${t.responsiblePhone} = ''
+        and not ${t.deliveryNeeded} and btrim(${t.deliveryFrom}) = '')`,
+    ),
+    overrideKind: check(
+      'weekly_items_override_kind_check',
+      sql`${t.kind} = 'extend' or not ${t.earlyEndOverride}`,
+    ),
+    // Границы недели: строка не выходит за пн–вс своей заявки.
+    weekBounds: check(
+      'weekly_items_week_bounds_check',
+      sql`(${t.dateFrom} is null or (${t.dateFrom} >= ${t.weekStart} and ${t.dateFrom} <= ${t.weekStart} + 6))
+    and (${t.dateTo} is null or (${t.dateTo} >= ${t.weekStart} and ${t.dateTo} <= ${t.weekStart} + 6))`,
+    ),
+    resultKind: check(
+      'weekly_items_result_kind_check',
+      sql`${t.result} = 'pending'
+    or (${t.kind} = 'extend' and ${t.result} in ('extended', 'skipped'))
+    or (${t.kind} = 'new' and ${t.result} in ('created', 'skipped'))
+    or (${t.kind} = 'leave' and ${t.result} in ('left', 'skipped'))`,
+    ),
+    // Развилка, а не равенство: порождённый заказ есть ровно у применённой строки `new`, и у любой
+    // другой его быть не может — ссылка на чужой заказ читалась бы как «этот заказ создан неделей».
+    createdShape: check(
+      'weekly_items_created_check',
+      sql`(${t.result} = 'created' and ${t.kind} = 'new' and ${t.createdRequestId} is not null)
+    or (${t.result} <> 'created' and ${t.createdRequestId} is null)`,
+    ),
+    // Снимок обязателен у обеих строк, ссылающихся на заказ: «уезжает» — такое же согласованное
+    // решение, и через месяц вопрос к нему тот же — какая машина и до какого числа стояла. Развилка
+    // симметричная по той же причине: полуснимок у `pending` или `skipped` — это мусор, который
+    // однажды прочитают как факт.
+    sourceSnapshot: check(
+      'weekly_items_source_snapshot_check',
+      sql`(${t.result} in ('extended', 'left')
+      and ${t.previousDateTo} is not null and ${t.appliedSourceVersion} is not null
+      and ${t.snapshotVehicleId} is not null)
+    or (${t.result} not in ('extended', 'left')
+      and ${t.previousDateTo} is null and ${t.appliedSourceVersion} is null
+      and ${t.snapshotVehicleId} is null)`,
+    ),
+    skipReasonRequired: check(
+      'weekly_items_skip_check',
+      sql`${t.result} <> 'skipped' or btrim(${t.skipReason}) <> ''`,
+    ),
+    positionNonNegative: check('weekly_items_position_check', sql`${t.position} >= 0`),
+    // Контакт встречающего у новой строки обязателен, как в обычной заявке; телефон — десять цифр
+    // без кода страны (ADR 0066).
+    contact: check(
+      'weekly_items_contact_check',
+      sql`${t.kind} <> 'new' or (btrim(${t.responsibleName}) <> '' and ${t.responsiblePhone} ~ '^[0-9]{10}$')`,
+    ),
+    deliveryFromRequired: check(
+      'weekly_items_delivery_from_check',
+      sql`not ${t.deliveryNeeded} or btrim(${t.deliveryFrom}) <> ''`,
+    ),
+    positionUniq: uniqueIndex('weekly_items_position_uniq').on(t.weeklyRequestId, t.position),
+    // Один заказ — одна строка в неделе: два решения об одной машине на одну неделю противоречивы
+    // по определению. Между разными неделями запрета нет — планировать через неделю нормально.
+    sourceUniq: uniqueIndex('weekly_items_source_uniq')
+      .on(t.weeklyRequestId, t.sourceRequestId)
+      .where(sql`${t.sourceRequestId} is not null`),
+    // Порождённый заказ имеет ровно одно основание: «Создан по НЗ-12» — одна ссылка, а
+    // «Продления: НЗ-15, НЗ-18» — список, и он идёт по `source_request_id`.
+    createdUniq: uniqueIndex('weekly_items_created_uniq')
+      .on(t.createdRequestId)
+      .where(sql`${t.createdRequestId} is not null`),
+    sourceIdx: index('weekly_items_source_idx').on(t.sourceRequestId),
+  }),
+);
+
+// История заявки: и статусы, и изменения состава — одной транзакционной таблицей. Узкой «истории
+// статусов» не хватает: состав правится и без перехода (в том числе не человеком — уборкой при
+// `purge`), а `writeAudit` такую запись может потерять, потому что намеренно не роняет операцию
+// при сбое.
+export const weeklyVehicleRequestHistory = pgTable(
+  'weekly_vehicle_request_history',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    weeklyRequestId: uuid('weekly_request_id')
+      .notNull()
+      .references(() => weeklyVehicleRequests.id, { onDelete: 'cascade' }),
+    event: weeklyRequestEventEnum('event').notNull(),
+    fromStatus: weeklyRequestStatusEnum('from_status'),
+    toStatus: weeklyRequestStatusEnum('to_status'),
+    /** Что именно изменилось: снятые строки с номерами заказов, состав до и после. */
+    payload: jsonb('payload').notNull().default({}),
+    // Событий без автора здесь не бывает: состав меняет человек, и уборку при `purge` тоже делает
+    // администратор осознанным действием.
+    changedBy: uuid('changed_by')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    changedAt: timestamp('changed_at', { withTimezone: true }).notNull().defaultNow(),
+    comment: text('comment').notNull().default(''),
+  },
+  (t) => ({
+    // Развилка полная: равенство по `to_status` оставляло бы у не-статусного события заполненный
+    // `from_status` — строку, которая читается как несостоявшийся переход.
+    statusShape: check(
+      'weekly_history_status_check',
+      sql`(${t.event} = 'status' and ${t.toStatus} is not null)
+    or (${t.event} <> 'status' and ${t.fromStatus} is null and ${t.toStatus} is null)`,
+    ),
+    requestIdx: index('weekly_history_request_idx').on(t.weeklyRequestId, t.changedAt),
+  }),
+);
+
 export type UserRow = typeof users.$inferSelect;
 export type UserConstructionObjectRow = typeof userConstructionObjects.$inferSelect;
 export type DepartmentRow = typeof departments.$inferSelect;
 export type UserDepartmentRow = typeof userDepartments.$inferSelect;
+export type UserRoleAddonRow = typeof userRoleAddons.$inferSelect;
 export type WasteRequestRow = typeof wasteRequests.$inferSelect;
 export type FileRow = typeof files.$inferSelect;
 export type ObjectRow = typeof constructionObjects.$inferSelect;
@@ -2988,6 +3709,12 @@ export type WasteRequestVehicleRow = typeof wasteRequestVehicles.$inferSelect;
 export type CounterpartyRow = typeof counterparties.$inferSelect;
 export type CounterpartySynonymRow = typeof counterpartySynonyms.$inferSelect;
 export type WarehouseRow = typeof warehouses.$inferSelect;
+export type OfficeEquipmentTypeRow = typeof officeEquipmentTypes.$inferSelect;
+export type OfficeEquipmentRow = typeof officeEquipment.$inferSelect;
+export type ServiceRequestRow = typeof serviceRequests.$inferSelect;
+export type ServiceRequestItemRow = typeof serviceRequestItems.$inferSelect;
+export type ServiceRequestFileRow = typeof serviceRequestFiles.$inferSelect;
+export type ServiceRequestStatusHistoryRow = typeof serviceRequestStatusHistory.$inferSelect;
 export type ObjectOperatorRow = typeof constructionObjectOperators.$inferSelect;
 export type PersonRow = typeof persons.$inferSelect;
 export type PersonEmploymentRow = typeof personEmployments.$inferSelect;
@@ -2999,3 +3726,6 @@ export type PersonCredentialRow = typeof personCredentials.$inferSelect;
 export type PersonCredentialCategoryRow = typeof personCredentialCategories.$inferSelect;
 export type JobRow = typeof jobs.$inferSelect;
 export type AppReleaseRow = typeof appReleases.$inferSelect;
+export type WeeklyVehicleRequestRow = typeof weeklyVehicleRequests.$inferSelect;
+export type WeeklyVehicleRequestItemRow = typeof weeklyVehicleRequestItems.$inferSelect;
+export type WeeklyVehicleRequestHistoryRow = typeof weeklyVehicleRequestHistory.$inferSelect;

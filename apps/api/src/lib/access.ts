@@ -1,4 +1,4 @@
-import { eq, inArray, isNotNull, isNull, type AnyColumn, type SQL } from 'drizzle-orm';
+import { eq, inArray, isNotNull, isNull, or, type AnyColumn, type SQL } from 'drizzle-orm';
 import {
   actsForCounterparty,
   allowedVehicleRequestTypes,
@@ -12,6 +12,8 @@ import {
   isPlaceScopedRole,
   requestStatusLabels,
   roleLabels,
+  serviceRequestStatusLabels,
+  type ServiceRequestStatus,
   type CounterpartyType,
   vehicleRequestTypeLabels,
   type Permission,
@@ -349,6 +351,244 @@ export function assertLessorScope(p: Principal, assignedLessorId: string | null)
     assignedLessorId,
     'Арендодатель работает только с заявками, на которые назначена его техника',
   );
+}
+
+/**
+ * Единица оргтехники со стороны области (ADR 0085): где стоит и за каким отделом числится. Оба
+ * реквизита — свои колонки карточки, и «чья это техника» отвечается ими вместе, а не по очереди.
+ */
+export interface OfficeEquipmentPlace {
+  objectId: string;
+  /** `null` — не закреплена ни за кем; такую единицу справочник и открывают, чтобы разметить. */
+  ownerDepartmentId: string | null;
+}
+
+/**
+ * Видимость справочника оргтехники по области учётки (ADR 0085, план Р5/Р7). Оси те же две, что у
+ * заявок на технику, но правило у второй другое, поэтому и функция своя, а не
+ * `vehicleRequestVisibilityWhere`: общее имя обещало бы одинаковое поведение.
+ *
+ * Объектная роль сравнивается с объектом, на котором техника стоит: штаб отвечает за свою
+ * площадку, и принтер соседней ему не виден.
+ *
+ * Роль отдела видит технику своих отделов **и технику без владельца**. Второе — не послабление, а
+ * смысл справочника: `owner_department_id IS NULL` означает «не размечена», и спрятать такую
+ * единицу от того, кто единственный может её разметить, значит закрыть разметку навсегда. На
+ * область заявок это не влияет — у заявки свой заказчик (Р5).
+ *
+ * Пустой набор означает «не видит ничего», а не «видит всё»: у объектной роли это состояние,
+ * которого API не допускает, но выборка не должна зависеть от того, удержалась ли та проверка. У
+ * роли отдела пустой набор оставляет ровно неразмеченную технику — «своих» отделов у неё ноль, и
+ * выдать ей весь парк компании было бы тихим расширением доступа.
+ */
+export function officeEquipmentScopeWhere(
+  p: Principal,
+  objectIdColumn: AnyColumn,
+  ownerDepartmentIdColumn: AnyColumn,
+): SQL | undefined {
+  if (isObjectScopedRole(p.role)) {
+    const ids = p.constructionObjectIds;
+    return ids.length > 0 ? inArray(objectIdColumn, ids) : eq(objectIdColumn, NEVER_MATCH);
+  }
+  if (isDepartmentScopedRole(p.role)) {
+    const ids = p.departmentIds;
+    const unassigned = isNull(ownerDepartmentIdColumn);
+    return ids.length > 0 ? or(inArray(ownerDepartmentIdColumn, ids), unassigned) : unassigned;
+  }
+  return undefined;
+}
+
+/**
+ * Конкретная единица оргтехники принадлежит области учётки (ADR 0085) — то же правило, что в
+ * `officeEquipmentScopeWhere`, но по одной записи: список чужое прячет, а карточка, правка и
+ * удаление получают строку по id и без этой проверки отдали бы её любому, кто знает id.
+ *
+ * Проверяется на обеих сторонах правки: и на нынешнем месте единицы, и на целевом — перенос на
+ * чужой объект это тот же выход за область, только в другую сторону (Р7).
+ */
+export function assertOfficeEquipmentScope(p: Principal, place: OfficeEquipmentPlace): void {
+  if (isObjectScopedRole(p.role)) {
+    if (!p.constructionObjectIds.includes(place.objectId)) {
+      throw err.forbidden(`${roleLabels[p.role!]} работает только со своими объектами`);
+    }
+    return;
+  }
+  if (isDepartmentScopedRole(p.role)) {
+    // Техника без владельца доступна роли отдела намеренно: разметить её больше некому.
+    if (place.ownerDepartmentId === null) return;
+    if (!p.departmentIds.includes(place.ownerDepartmentId)) {
+      throw err.forbidden(`${roleLabels[p.role!]} работает только с техникой своих отделов`);
+    }
+  }
+}
+
+/**
+ * Заявка на обслуживание оргтехники: чья она (ADR 0085 §8).
+ *
+ * Область считается по **заказчику заявки**, а не по справочнику: у заявки три снимка — объект
+ * техники, отдел, от имени которого её завели, и отдел-владелец единицы на момент заведения. Роль
+ * отдела видит заявку, если совпал любой из двух отделов: подавший её сотрудник и отдел, за которым
+ * закреплена техника, оба имеют к ней отношение.
+ *
+ * `NULL` в отдельских колонках означает «к отделам не относится» (заявку завёл штаб на площадочную
+ * технику), а не «видна всем»: снимок разметкой справочника не догоняется, и «ничья» заявка иначе
+ * осталась бы видна каждому отделу навсегда.
+ */
+export function serviceRequestScopeWhere(
+  p: Principal,
+  objectIdColumn: AnyColumn,
+  customerDepartmentIdColumn: AnyColumn,
+  equipmentDepartmentIdColumn: AnyColumn,
+): SQL | undefined {
+  if (isObjectScopedRole(p.role)) {
+    const ids = p.constructionObjectIds;
+    return ids.length > 0 ? inArray(objectIdColumn, ids) : eq(objectIdColumn, NEVER_MATCH);
+  }
+  if (isDepartmentScopedRole(p.role)) {
+    const ids = p.departmentIds;
+    if (ids.length === 0) return eq(customerDepartmentIdColumn, NEVER_MATCH);
+    return or(inArray(customerDepartmentIdColumn, ids), inArray(equipmentDepartmentIdColumn, ids));
+  }
+  return undefined;
+}
+
+/**
+ * Видимость заявок для сервисной компании (ADR 0038, ADR 0085): только те, что назначены её
+ * контрагенту. Отсюда следствие, принятое сознательно: **«Новую» заявку сервис не видит** — до
+ * назначения исполнителя в ней нет, и заявка ничья.
+ */
+export function serviceExecutorVisibilityWhere(
+  p: Principal,
+  serviceCounterpartyColumn: AnyColumn,
+): SQL | undefined {
+  return counterpartyVisibilityWhere(p, 'service', serviceCounterpartyColumn);
+}
+
+/** Заявка на обслуживание: то, чем определяется её принадлежность области учётки. */
+export interface ServiceRequestPlace {
+  objectId: string;
+  customerDepartmentId: string | null;
+  equipmentDepartmentId: string | null;
+}
+
+/**
+ * Конкретная заявка принадлежит области учётки — то же правило, что в `serviceRequestScopeWhere`,
+ * но по одной записи: список чужое прячет, а карточка, правка и ход заявки получают строку по id и
+ * без этой проверки отдали бы её любому, кто знает id.
+ */
+export function assertServiceRequestScope(p: Principal, place: ServiceRequestPlace): void {
+  if (isObjectScopedRole(p.role)) {
+    if (!p.constructionObjectIds.includes(place.objectId)) {
+      throw err.forbidden(`${roleLabels[p.role!]} работает только со своими объектами`);
+    }
+    return;
+  }
+  if (isDepartmentScopedRole(p.role)) {
+    const own = (id: string | null): boolean => !!id && p.departmentIds.includes(id);
+    if (!own(place.customerDepartmentId) && !own(place.equipmentDepartmentId)) {
+      throw err.forbidden(`${roleLabels[p.role!]} работает только с заявками своих отделов`);
+    }
+  }
+}
+
+/**
+ * Со стороны заказчика правят и удаляют только «Новую» заявку: после назначения сервиса за ней
+ * стоят договорённости с исполнителем, и менять её предмет задним числом нельзя. Правило то же, что
+ * в двух действующих модулях (`assertObjectRoleEditable`), но статус свой — у модуля собственный
+ * перечень (ADR 0085 §8).
+ */
+export function assertServiceRequestEditable(
+  p: Principal,
+  status: ServiceRequestStatus,
+  action: string,
+): void {
+  if (isPlaceScopedRole(p.role) && status !== 'new') {
+    throw err.forbidden(
+      `${roleLabels[p.role!]} может ${action} заявку только в статусе «${serviceRequestStatusLabels.new}»`,
+    );
+  }
+}
+
+// ── Недельная заявка на технику (ADR 0085) ──
+//
+// Область у модуля одна — объектная, но правило пишется **поимённо по ролям**, а не выводится из
+// «есть ли у роли объекты». Вывод здесь ошибочен в обе стороны: у диспетчера и менеджера объектов
+// нет, и «нет объектов → ничего не видит» закрыло бы им список, который они ведут; у коменданта
+// объекты есть, а недельных заявок он не ведёт вовсе. Отсюда явный разбор с последней веткой
+// «не видит ничего» — той самой, ради которой предикат пишется отдельно от
+// `vehicleRequestVisibilityWhere`, где неизвестная роль получает «видит всё».
+
+/** Роли, ведущие недельные заявки по всем площадкам: своей объектной оси у них нет. */
+function isWeeklyOfficeRole(role: Principal['role']): boolean {
+  return role === 'admin' || role === 'manager' || role === 'dispatcher';
+}
+
+/** Роли, ведущие недельные заявки своих площадок. Комендант сюда не входит — модуль не его. */
+function isWeeklySiteRole(role: Principal['role']): boolean {
+  return role === 'shtab' || role === 'rukstroy';
+}
+
+/**
+ * Область видимости недельных заявок (план §10). Разбор явный:
+ *   admin | manager | dispatcher → `undefined` (ограничений нет — ведут все площадки);
+ *   shtab | rukstroy            → свои объекты, пустой набор → «не видит ничего»;
+ *   всё остальное               → «не видит ничего».
+ *
+ * Пустой набор у объектной роли — состояние, которого API не допускает, но выборка не должна
+ * зависеть от того, удержалась ли та проверка.
+ */
+export function weeklyRequestVisibilityWhere(
+  p: Principal,
+  objectColumn: AnyColumn,
+): SQL | undefined {
+  if (isWeeklyOfficeRole(p.role)) return undefined;
+  if (isWeeklySiteRole(p.role)) {
+    const ids = p.constructionObjectIds;
+    return ids.length > 0 ? inArray(objectColumn, ids) : eq(objectColumn, NEVER_MATCH);
+  }
+  return eq(objectColumn, NEVER_MATCH);
+}
+
+/**
+ * Может ли учётка визировать недельную заявку этой площадки: право визы плюс область. Предикат, а
+ * не проверка с отказом: им же решается, применяется ли заявка сразу при подаче.
+ *
+ * Роли вне двух перечисленных ветвей не визируют ничего, даже получив право: у отдела и
+ * контрагента объектной области нет вовсе, и «ограничений нет» означало бы визу чужой площадке.
+ */
+export function canApproveWeeklyRequest(p: Principal, objectId: string): boolean {
+  if (!can(p, 'weeklyRequests.approve')) return false;
+  if (isWeeklyOfficeRole(p.role)) return true;
+  if (isWeeklySiteRole(p.role)) return p.constructionObjectIds.includes(objectId);
+  return false;
+}
+
+/**
+ * Применяется ли заявка сразу, самой подачей (план Р8) — как `approvesOwnRequestOnCreate` у
+ * заявок ТС (ADR 0032).
+ *
+ * Администратор под правило не подпадает, хотя право визы у него есть: он действует не за
+ * площадку, и «кто согласовал неделю» отвечалось бы именем того, кто решения не принимал. Виза
+ * недельной заявки к тому же необратима — она той же транзакцией двигает сроки.
+ */
+export function approvesOwnWeeklyRequest(p: Principal, objectId: string): boolean {
+  return isWeeklySiteRole(p.role) && canApproveWeeklyRequest(p, objectId);
+}
+
+/**
+ * Недельная заявка принадлежит области учётки (план §10): объектная роль работает только со
+ * своими площадками, офисная — с любой, остальные — ни с одной.
+ *
+ * Отдельно от `assertRequestScope`: там роль без объектной и отдельской оси не ограничена вовсе, и
+ * применить его здесь значило бы открыть модуль тому, у кого области нет, — стоит появиться праву.
+ */
+export function assertWeeklyRequestScope(p: Principal, objectId: string): void {
+  if (isWeeklyOfficeRole(p.role)) return;
+  if (isWeeklySiteRole(p.role) && p.constructionObjectIds.includes(objectId)) return;
+  if (isWeeklySiteRole(p.role)) {
+    throw err.forbidden(`${roleLabels[p.role!]} работает только со своими объектами`);
+  }
+  throw err.forbidden('Недельные заявки ведут площадка, диспетчер и менеджер');
 }
 
 /**

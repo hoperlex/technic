@@ -1294,6 +1294,35 @@ export interface VehicleRequestBaseDto {
   deletedByName: string | null;
 }
 
+/**
+ * Строка недельной заявки, породившая заказ (ADR 0085 Р11, Р17). Основание у заказа ровно одно —
+ * частичный `UNIQUE (created_request_id)` в базе держит именно это, — поэтому поле одиночное.
+ *
+ * Одной обратной ссылки на номер мало: форме перевода в работу нужны **значения** — просила ли
+ * площадка доставку и откуда везти, — а не повод сходить за ними вторым запросом. Сам 4-П
+ * выписывается там же, где и раньше, рейсом: недельная заявка бланков не выписывает.
+ */
+export interface VehicleRequestWeeklyOriginDto {
+  weeklyRequestId: string;
+  /** Число, а не «НЗ-12»: подпись собирает `formatWeeklyRequestNumber` — она одна на весь портал. */
+  weeklyRequestNum: number;
+  /** Строка состава: по ней неделю открывают ровно на том месте, откуда заказ взялся. */
+  itemId: string;
+  deliveryNeeded: boolean;
+  deliveryFrom: string;
+}
+
+/**
+ * Недельная заявка, которой срок заказа продлевали (ADR 0085 Р17). Списком, а не полем: один и тот
+ * же заказ продлевается неделю за неделей, и одно поле «Основание» солгало бы на второй же неделе.
+ */
+export interface VehicleRequestWeeklyExtensionDto {
+  weeklyRequestId: string;
+  weeklyRequestNum: number;
+  /** Понедельник продлённой недели; им же список и упорядочен — по порядку продлений. */
+  weekStart: string;
+}
+
 export interface SpecialEquipmentRequestDto extends VehicleRequestBaseDto {
   requestType: 'special_equipment';
   dateFrom: string;
@@ -1314,6 +1343,17 @@ export interface SpecialEquipmentRequestDto extends VehicleRequestBaseDto {
    * ручка: в списке они не нужны, а в карточке их читают целиком.
    */
   shifts: VehicleRequestShiftsSummaryDto;
+  /**
+   * Откуда заказ появился и что просила недельная заявка (ADR 0085 Р11): `null` — заказ завели
+   * обычной формой. Полей нет у грузоперевозки: неделя её не касается вовсе — у грузоперевозки не
+   * период работ, а момент подачи, и `sourceItemBlocker` не пускает такой заказ в состав.
+   */
+  weeklyOrigin: VehicleRequestWeeklyOriginDto | null;
+  /**
+   * Недельные заявки, которыми срок продлевали (ADR 0085 Р17): у одного заказа их бывает несколько.
+   * Пусто — недельной заявкой заказ не продлевали.
+   */
+  weeklyExtensions: VehicleRequestWeeklyExtensionDto[];
 }
 
 export interface FreightTransportRequestDto extends VehicleRequestBaseDto {
@@ -1384,6 +1424,9 @@ export const vehicleRequestChangeLabels: Record<string, string> = {
   // Досрочное завершение (ADR 0044). Запрошенный срок — отдельным ключом от `dateTo`: пока визы
   // нет, срок заявки не менялся, и «Дата окончания: 28.07 → 24.07» в событии запроса читалось бы
   // как состоявшееся сокращение. Согласование меняет сам `dateTo` и пишется уже им.
+  // Продление недельной заявкой (ADR 0085): номером пакета читатель истории отвечает на вопрос
+  // «чьим решением сдвинулся срок» — сам сдвиг стоит рядом обычной парой «было → стало».
+  weeklyRequest: 'Недельная заявка',
   earlyEndDate: 'Досрочно до',
   // Одна подпись на три события: причину называют и в запросе, и в отказе, и при снятии — а что
   // именно произошло, сказано названием самого события.

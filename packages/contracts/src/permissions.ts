@@ -17,6 +17,13 @@ import {
   counterpartyTypeLabels,
   type CounterpartyType,
 } from './counterparties';
+import {
+  canAttachAddon,
+  ROLE_ADDON_BASE_ROLES,
+  ROLE_ADDONS,
+  roleAddonLabels,
+  type RoleAddon,
+} from './role-addons';
 
 /**
  * Единая модель прав портала (ADR 0021, дополнена ADR 0038).
@@ -79,6 +86,28 @@ export const PERMISSIONS = [
   /** Виза руководителя строительства: без неё заявку не берут в работу (ADR 0025). */
   'vehicleRequests.approve',
 
+  /**
+   * Недельная заявка на технику: документ-основание над заказами ТС — площадка недельным пакетом
+   * решает, что остаётся, что уезжает и что нужно добавить, а виза руководителя строительства
+   * этот пакет применяет (продлевает сроки и порождает заказы).
+   *
+   * Права свои, а не `vehicleRequests.*`, и причина не в аккуратности, а в области видимости.
+   * `vehicleRequests.read` есть у наблюдателя, у оператора вывоза и у арендодателя через тип
+   * контрагента, а `vehicleRequestVisibilityWhere` для ролей без объектной и отдельской оси
+   * возвращает «ограничений нет». Переиспользуй мы его — наблюдатель, задуманный как «только
+   * просмотр», получил бы полный список недельных планов всех площадок, а арендодатель — чужие
+   * планы работ. Своя группа даёт свой предикат области, у которого последняя ветка не «видит
+   * всё», а «не видит ничего».
+   *
+   * Виза отдельным правом по той же причине, что у заявок ТС: согласование — решение заказчика со
+   * стороны объекта, а не того, кто заявку обрабатывает. Здесь оно к тому же необратимо
+   * (применение идёт той же транзакцией), и раздавать его вместе с ведением состава нельзя.
+   */
+  'weeklyRequests.read',
+  'weeklyRequests.create',
+  'weeklyRequests.update',
+  'weeklyRequests.approve',
+
   // Водители (ADR 0037). Отдельно от справочников: в карточке водителя лежат персональные
   // данные — СНИЛС, номер удостоверения, — и открывать их каждому, кому нужен список типов ТС,
   // нельзя. По той же причине права нет ни у наблюдателя, ни у объектных ролей.
@@ -103,6 +132,42 @@ export const PERMISSIONS = [
    * появится от руки, и портал уже не отвечает за то, что в нём напишут.
    */
   'waybills.issueBlank',
+
+  /**
+   * Заявки на обслуживание оргтехники (ADR 0085). Прав девять, и дробность у них не от
+   * аккуратности, а от того, что заявку ведут три разные стороны.
+   *
+   * `assign` и `approveEstimate` — решения заказчика: кого позвать чинить и согласны ли мы на эти
+   * деньги. `estimate` — работа исполнителя: собрать смету, предъявить её и закрыть работы.
+   * `status` — движение по остальным дугам (приёмка, возврат на доработку, отмена); что именно
+   * доступно, решает не матрица, а коридор субъекта, потому что одно и то же право у сервиса и у
+   * оператора открывает разные переходы.
+   *
+   * `files` отдельно от `update` по той же причине, что `waybills.files`: исполнитель заявку не
+   * редактирует, но акт и счёт подшивает — и подшивает даже после приёмки, когда правки закрыты.
+   */
+  'serviceRequests.read',
+  'serviceRequests.create',
+  'serviceRequests.update',
+  'serviceRequests.delete',
+  'serviceRequests.assign',
+  'serviceRequests.estimate',
+  'serviceRequests.approveEstimate',
+  'serviceRequests.status',
+  'serviceRequests.files',
+
+  /**
+   * Справочник оргтехники (ADR 0085): что стоит по кабинетам и площадкам.
+   *
+   * Своя пара прав, а не общие справочниковые. Чтение отдельно от `directories.read`, потому что то
+   * есть у всех ролей — включая коменданта и исполнителя чужого модуля, — а карточка единицы
+   * рассказывает и про её обслуживание. Ведение отдельно от `directories.write`, потому что то
+   * открывает **весь** раздел (объекты, контрагенты, прайс, техника), а ответственному за
+   * оргтехнику нужен один справочник: иначе он либо получит лишнее, либо не сможет завести только
+   * что купленный принтер.
+   */
+  'officeEquipment.read',
+  'officeEquipment.write',
 
   /**
    * Гараж (ADR 0076): срез дня — чем заняты собственная техника и водители на выбранную дату.
@@ -163,6 +228,21 @@ const DRIVER_PERMISSIONS = ['drivers.read', 'drivers.write'] as const;
  */
 const WAYBILL_PERMISSIONS = ['waybills.read', 'waybills.cancel', 'waybills.files'] as const;
 
+/**
+ * Что делает с заявкой на обслуживание оргтехники её заказчик (ADR 0085): заводит, правит и
+ * удаляет. Ход заявки — назначение сервиса, согласование сметы, приёмка — сюда не входит: это
+ * работа ответственного за оргтехнику, и приходит она надстройкой роли (ADR 0086).
+ */
+const SERVICE_REQUEST_CUSTOMER_PERMISSIONS = [
+  'serviceRequests.read',
+  'serviceRequests.create',
+  'serviceRequests.update',
+  'serviceRequests.delete',
+  // Фотография поломки — половина заявки: без неё сервис едет смотреть, вместо того чтобы везти
+  // запчасть. Поэтому вложения заказчик подшивает наравне с исполнителем.
+  'serviceRequests.files',
+] as const;
+
 const WASTE_REQUEST_PERMISSIONS = [
   'wasteRequests.read',
   'wasteRequests.create',
@@ -188,6 +268,23 @@ const VEHICLE_REQUEST_PERMISSIONS = [
 ] as const;
 
 /**
+ * Ведение недельных заявок. Общим списком, а не построчно у каждой роли, потому что набор у всех
+ * пяти совпадает буквально: кто видит модуль, тот и правит состав — и это осознанно. Развести
+ * чтение и правку значило бы отрезать от черновика второго штабиста и руководителя строительства
+ * той же площадки, а частичный `UNIQUE (object_id, week_start)` не дал бы им завести свою заявку:
+ * получился бы тупик, из которого выходят через администратора.
+ *
+ * Визы (`weeklyRequests.approve`) здесь нет намеренно — как и у заявок ТС: её раздают поимённо.
+ * Удаления нет вовсе: до применения заявка снимается отменой с причиной, после — она история,
+ * которую не стирают (архива у недельной заявки тоже нет).
+ */
+const WEEKLY_REQUEST_PERMISSIONS = [
+  'weeklyRequests.read',
+  'weeklyRequests.create',
+  'weeklyRequests.update',
+] as const;
+
+/**
  * Права ролей. Перечислены полностью и явно, без наследования «роль X = роль Y плюс N прав»:
  * при наследовании новое право у базовой роли расходится по производным незаметно, а здесь
  * каждое расширение доступа видно в диффе строкой.
@@ -206,9 +303,17 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     ...WAYBILL_PERMISSIONS,
     ...WASTE_REQUEST_PERMISSIONS,
     ...VEHICLE_REQUEST_PERMISSIONS,
+    // Недельные заявки менеджер и диспетчер заводят за площадку и правят состав: половина недель
+    // собирается звонком на диспетчерскую, и оформлять их должен тот, кому позвонили. Визы у них
+    // нет — она остаётся решением объекта.
+    ...WEEKLY_REQUEST_PERMISSIONS,
     // Гараж (ADR 0076) идёт вместе с водителями и листами: день парка распределяет тот же
     // человек, который заводит рейсы и выписывает бланки.
     'garage.read',
+    // Справочник оргтехники (ADR 0085) — та же работа со справочниками; модуль заявок по нему
+    // менеджер не ведёт: ремонтом занимается ответственный за оргтехнику, а не диспетчер вывоза.
+    'officeEquipment.read',
+    'officeEquipment.write',
     'files.manageAny',
   ],
 
@@ -218,7 +323,10 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     ...WAYBILL_PERMISSIONS,
     ...WASTE_REQUEST_PERMISSIONS,
     ...VEHICLE_REQUEST_PERMISSIONS,
+    ...WEEKLY_REQUEST_PERMISSIONS,
     'garage.read',
+    'officeEquipment.read',
+    'officeEquipment.write',
     'files.manageAny',
   ],
 
@@ -226,6 +334,10 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
   // но их ход — «в работе», «выполнена» — решают те, кто исполняет.
   shtab: [
     'directories.read',
+    // Справочник оргтехники (ADR 0085) — только чтение: заявку заводят по конкретной единице, и
+    // без карточек её не выбрать. Ведение справочника — у ответственного за оргтехнику.
+    'officeEquipment.read',
+    ...SERVICE_REQUEST_CUSTOMER_PERMISSIONS,
     'wasteRequests.read',
     'wasteRequests.create',
     'wasteRequests.update',
@@ -234,6 +346,11 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'vehicleRequests.create',
     'vehicleRequests.update',
     'vehicleRequests.delete',
+    // Недельная заявка — рабочий инструмент штаба: он и решает каждую неделю, что из стоящей на
+    // площадке техники остаётся. Продление, которое даёт применение, обходит запрет объектным
+    // ролям править работающий заказ — и это осознанное исключение: продлевает не тот, кто просил,
+    // а виза руководителя строительства.
+    ...WEEKLY_REQUEST_PERMISSIONS,
   ],
 
   // Руководитель строительства (ADR 0025, 0031): вторая роль заказчика на объекте. Заявки обоих
@@ -242,6 +359,8 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
   // берут в работу.
   rukstroy: [
     'directories.read',
+    'officeEquipment.read',
+    ...SERVICE_REQUEST_CUSTOMER_PERMISSIONS,
     'wasteRequests.read',
     'wasteRequests.create',
     'wasteRequests.update',
@@ -251,6 +370,12 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'vehicleRequests.update',
     'vehicleRequests.delete',
     'vehicleRequests.approve',
+    // Неделю руководитель строительства собирает наравне со штабом и визирует один: его подпись —
+    // единственное согласование на весь пакет, и она же двигает сроки. Своя заявка применяется в
+    // момент подачи (правилом автовизы объектной роли); администратор под него не подпадает —
+    // право визы у него есть, но действует он не за объект (ADR 0032).
+    ...WEEKLY_REQUEST_PERMISSIONS,
+    'weeklyRequests.approve',
   ],
 
   // Комендант — третий заказчик на объекте, но только по мусору: контейнеры и вывоз на площадке
@@ -273,6 +398,8 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
   // и состояние справочника в него не заводят.
   department: [
     'directories.read',
+    'officeEquipment.read',
+    ...SERVICE_REQUEST_CUSTOMER_PERMISSIONS,
     'wasteRequests.read',
     'wasteRequests.create',
     'wasteRequests.update',
@@ -288,8 +415,14 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
   // визой, — и совпадение остального закреплено тестом-сравнением, а не перечислением. По вывозу
   // мусора роли равны намеренно (ADR 0062): виза — право модуля «Заказ ТС», и на площадке штаб с
   // руководителем строительства по мусору тоже совпадают.
+  //
+  // Недельных заявок у обеих ролей отдела нет вовсе — ни ведения, ни визы: неделя описывает
+  // занятость **площадки** (что на ней остаётся, что уезжает), а площадки у отдела нет. Виза
+  // здесь не «такое же согласование, только от офиса»: она двигает сроки заказов объекта.
   department_head: [
     'directories.read',
+    'officeEquipment.read',
+    ...SERVICE_REQUEST_CUSTOMER_PERMISSIONS,
     'wasteRequests.read',
     'wasteRequests.create',
     'wasteRequests.update',
@@ -310,7 +443,14 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
   // Наблюдатель (ADR 0033) — сквозной просмотр обоих модулей без единого действия: заявки всех
   // объектов видны, но ни завести, ни изменить, ни продвинуть по статусу их нельзя. Объекта у
   // роли нет намеренно: она заводится ради общей картины по компании, а не работы на площадке.
-  observer: ['directories.read', 'wasteRequests.read', 'vehicleRequests.read'],
+  observer: [
+    'directories.read',
+    'officeEquipment.read',
+    'wasteRequests.read',
+    'vehicleRequests.read',
+    // Третий модуль заявок — той же сквозной картиной по компании, без единого действия.
+    'serviceRequests.read',
+  ],
 };
 
 /**
@@ -338,6 +478,43 @@ export const COUNTERPARTY_TYPE_PERMISSIONS: Record<CounterpartyType, readonly Pe
   // склады ведут изнутри. Пустой список, как у генподрядчика и подрядчика; появится у поставщика
   // свой модуль — он будет строкой здесь, а не новой ролью.
   supplier: [],
+  // Сервисная компания (ADR 0085) — исполнитель заявок на обслуживание оргтехники: видит
+  // назначенные ему заявки, ведёт смету, двигает свою часть цикла и подшивает акт со счётом.
+  //
+  // Справочника оргтехники у сервиса нет намеренно: «его» техника в справочнике ничем не отмечена,
+  // и право означало бы доступ ко всему парку компании — реквизиты нужной единицы приходят
+  // снимком в самой заявке. Заводить и править заявки он тоже не может: заказчик и исполнитель
+  // разведены во всех трёх модулях, и это граница модели (ADR 0038).
+  service: [
+    'serviceRequests.read',
+    'serviceRequests.estimate',
+    'serviceRequests.status',
+    'serviceRequests.files',
+  ],
+};
+
+/**
+ * Права, которые даёт надстройка роли (ADR 0086) — третья ось субъекта доступа.
+ *
+ * `Record` по всем надстройкам, как и у типов контрагента: новая надстройка обязана появиться
+ * строкой и ответить на вопрос «что именно она добавляет». Пустой список означал бы надстройку,
+ * которую можно выдать, ничего при этом не выдав, — такой в матрице быть не должно.
+ *
+ * У «Оператора (оргтехника)» здесь пока одно право: справочник оргтехники ведёт он, а не общий
+ * держатель справочников (ADR 0085 §3). Права модуля заявок на обслуживание придут сюда вместе с
+ * самим модулем — заранее выданное право открывало бы маршруты, которых ещё нет.
+ */
+export const ROLE_ADDON_PERMISSIONS: Record<RoleAddon, readonly Permission[]> = {
+  office_equipment_operator: [
+    // Справочник ведёт он, а не общий держатель справочников (ADR 0085 §3).
+    'officeEquipment.write',
+    // Решения по заявке: кого позвать, согласны ли на эти деньги, принята ли работа. Права сметы
+    // здесь нет намеренно — смету пишет исполнитель, а оператор её согласует; выданные одному
+    // субъекту, эти два права превратили бы согласование в подпись под собственной работой.
+    'serviceRequests.assign',
+    'serviceRequests.approveEstimate',
+    'serviceRequests.status',
+  ],
 };
 
 /**
@@ -365,6 +542,12 @@ export interface AccessSubject {
   role: Role | null;
   /** Тип контрагента учётки; у ролей вне `COUNTERPARTY_SCOPED_ROLES` не читается. */
   counterpartyType?: CounterpartyType | null;
+  /**
+   * Надстройки роли (ADR 0086): набор дополнительных прав поверх роли. Необязателен — учёток без
+   * надстроек большинство, и требовать пустой массив от каждого вызова `can` значило бы менять
+   * все места, где субъектом служит роль как есть.
+   */
+  addons?: readonly RoleAddon[] | null;
 }
 
 // Проверка прав идёт на каждом запросе, поэтому списки сразу разложены по множествам.
@@ -374,6 +557,10 @@ const ROLE_PERMISSION_SETS = new Map<Role, ReadonlySet<Permission>>(
 
 const COUNTERPARTY_PERMISSION_SETS = new Map<CounterpartyType, ReadonlySet<Permission>>(
   COUNTERPARTY_TYPES.map((type) => [type, new Set(COUNTERPARTY_TYPE_PERMISSIONS[type])]),
+);
+
+const ROLE_ADDON_PERMISSION_SETS = new Map<RoleAddon, ReadonlySet<Permission>>(
+  ROLE_ADDONS.map((addon) => [addon, new Set(ROLE_ADDON_PERMISSIONS[addon])]),
 );
 
 /**
@@ -387,6 +574,15 @@ export function can(subject: AccessSubject | null | undefined, permission: Permi
   const role = subject?.role;
   if (!role) return false;
   if (ROLE_PERMISSION_SETS.get(role)?.has(permission)) return true;
+  // Надстройки роли (ADR 0086) — третий источник прав, и спрашивается он до контрагента:
+  // надстройка бывает у любой базовой роли, а тип контрагента читается только у исполнителя.
+  // Несовместимую с ролью надстройку сюда не пропускает API учёток, но проверка стоит и здесь:
+  // матрица обязана отвечать одинаково на любой субъект, откуда бы он ни пришёл.
+  for (const addon of subject?.addons ?? []) {
+    if (canAttachAddon(role, addon) && ROLE_ADDON_PERMISSION_SETS.get(addon)?.has(permission)) {
+      return true;
+    }
+  }
   if (!isCounterpartyScopedRole(role)) return false;
   const type = subject?.counterpartyType;
   return !!type && (COUNTERPARTY_PERMISSION_SETS.get(type)?.has(permission) ?? false);
@@ -474,11 +670,19 @@ export function permissionsFor(subject: AccessSubject | null | undefined): reado
  * по разу на каждый тип контрагента с учётками. Список нужен там, где перебирают «всех, кто
  * бывает в портале»: тесты матрицы, обратный поиск по праву.
  */
-export const ACCESS_PROFILES: readonly AccessSubject[] = ROLES.flatMap((role) =>
-  isCounterpartyScopedRole(role)
-    ? COUNTERPARTY_TYPES_WITH_ACCOUNTS.map((counterpartyType) => ({ role, counterpartyType }))
-    : [{ role }],
-);
+export const ACCESS_PROFILES: readonly AccessSubject[] = [
+  ...ROLES.flatMap((role) =>
+    isCounterpartyScopedRole(role)
+      ? COUNTERPARTY_TYPES_WITH_ACCOUNTS.map((counterpartyType) => ({ role, counterpartyType }))
+      : [{ role }],
+  ),
+  // Надстройка (ADR 0086) даёт свой различимый субъект: «штаб» и «штаб с надстройкой» отвечают
+  // на `can` по-разному, и тесты доступа обязаны перебирать оба. По разу на каждую пару
+  // «базовая роль × надстройка» — сочетания надстроек друг с другом прав не меняют.
+  ...ROLE_ADDONS.flatMap((addon) =>
+    ROLE_ADDON_BASE_ROLES[addon].map((role) => ({ role, addons: [addon] as const })),
+  ),
+];
 
 /** Субъекты, у которых есть указанное право (обратный поиск: подсказки интерфейса и тесты). */
 export function profilesWith(permission: Permission): AccessSubject[] {
@@ -490,7 +694,11 @@ export function accessProfileLabel(subject: AccessSubject): string {
   if (subject.role && isCounterpartyScopedRole(subject.role) && subject.counterpartyType) {
     return `${roleLabels[subject.role]} — ${counterpartyTypeLabels[subject.counterpartyType]}`;
   }
-  return subject.role ? roleLabels[subject.role] : 'Без роли';
+  if (!subject.role) return 'Без роли';
+  // Надстройки (ADR 0086) дописываются к роли, а не заменяют её: человек остаётся штабом своего
+  // объекта, и в списке учёток это должно читаться именно так — «Штаб + Оператор (оргтехника)».
+  const addons = (subject.addons ?? []).map((addon) => roleAddonLabels[addon]);
+  return [roleLabels[subject.role], ...addons].join(' + ');
 }
 
 /**

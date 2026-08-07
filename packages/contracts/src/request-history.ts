@@ -46,8 +46,31 @@ export type RequestHistoryKind =
   | 'earlyEndApproved'
   | 'earlyEndRejected'
   | 'earlyEndCancelled'
+  /**
+   * Срок продлён недельной заявкой (ADR 0085). Своё событие, а не «правка заявки»: заказ
+   * продлевает не тот, кто его ведёт, а виза руководителя строительства под недельным пакетом, и
+   * читателю истории нужен номер этого пакета — иначе срок меняется будто сам собой.
+   */
+  | 'weeklyExtended'
   | 'shiftApproved'
   | 'shiftApprovalRevoked'
+  /**
+   * Заявка на обслуживание оргтехники (ADR 0085). Событий у неё больше, чем у соседних модулей,
+   * потому что стороны три: заказчик заводит, оператор назначает и согласует, исполнитель ведёт
+   * смету и закрывает работы. Каждое из них отвечает на свой вопрос читателя истории — «кого
+   * позвали», «почему отказались», «какую ревизию согласовали», «что в итоге не поставили», — и
+   * одним видом «изменено» они не заменяются.
+   */
+  | 'serviceAssigned'
+  | 'serviceReassigned'
+  | 'serviceDeclined'
+  | 'estimateSubmitted'
+  | 'estimateApproved'
+  | 'estimateRejected'
+  | 'estimateReopened'
+  | 'accepted'
+  | 'returnedToWork'
+  | 'documentAttached'
   | 'deleted'
   | 'restored';
 

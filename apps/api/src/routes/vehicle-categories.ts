@@ -21,6 +21,8 @@ import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
 import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
+import { asReferenceConflict } from '../services/directory-purge';
+import { dropWeeklyItemsOfVehicleCategory } from '../services/weekly-request-cleanup';
 import {
   assertNameFree,
   assertSignatureFree,
@@ -311,27 +313,49 @@ export default async function vehicleCategoriesRoutes(app: FastifyInstance): Pro
   // ── Удаление ──
   // Осознанное отступление от «удаления нет» (ADR 0016 §13): категории заводятся при наполнении
   // справочника, ошибочную запись нужно вычищать, а не держать неактивным мусором в списках.
-  // Ссылающихся сущностей пока нет; с их появлением здесь встанет проверка ссылок и 409.
   r.delete(
     '/:id',
     { preHandler: [app.authenticate, canWrite], schema: { params: idParams } },
     async (req) => {
       const id = req.params.id;
-      await db.transaction(async (tx) => {
-        const [row] = await tx
-          .select({ id: vehicleCategories.id, vehicleTypeId: vehicleCategories.vehicleTypeId })
-          .from(vehicleCategories)
-          .where(eq(vehicleCategories.id, id));
-        if (!row) throw err.notFound('Категория не найдена');
-        await lockType(tx, row.vehicleTypeId);
-        // Значения уйдут каскадом по составному FK на (id, vehicle_type_id).
-        await tx.delete(vehicleCategories).where(eq(vehicleCategories.id, id));
-      });
+      const actor = requirePrincipal(req);
+      let cleanup: Record<string, unknown> | void;
+      try {
+        cleanup = await db.transaction(async (tx) => {
+          const [row] = await tx
+            .select({
+              id: vehicleCategories.id,
+              name: vehicleCategories.name,
+              vehicleTypeId: vehicleCategories.vehicleTypeId,
+            })
+            .from(vehicleCategories)
+            .where(eq(vehicleCategories.id, id));
+          if (!row) throw err.notFound('Категория не найдена');
+          // Намерение уступает, факт держит (ADR 0085 Р15): строка «нужна дополнительно»
+          // неприменённой недельной заявки снимается, применённая — держит `RESTRICT` и отвечает
+          // человеку названием того, кто на категорию ссылается.
+          //
+          // До блокировки типа, а не после: применение недельной заявки берёт шапку, а потом
+          // ссылается на тип созданным заказом, и обратный порядок здесь дал бы двум транзакциям
+          // взаимный клинч на ровном месте.
+          const dropped = await dropWeeklyItemsOfVehicleCategory(tx, actor, {
+            id: row.id,
+            name: row.name,
+          });
+          await lockType(tx, row.vehicleTypeId);
+          // Значения уйдут каскадом по составному FK на (id, vehicle_type_id).
+          await tx.delete(vehicleCategories).where(eq(vehicleCategories.id, id));
+          return dropped;
+        });
+      } catch (e) {
+        throw asReferenceConflict(e, 'категорию');
+      }
       await writeAudit({
-        actorUserId: requirePrincipal(req).id,
+        actorUserId: actor.id,
         action: 'vehicle_category.delete',
         entityType: 'vehicle_category',
         entityId: id,
+        metadata: cleanup ? { ...cleanup } : undefined,
       });
       return { ok: true };
     },

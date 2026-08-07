@@ -54,7 +54,6 @@ import {
   isCargoAmountRequired,
   isDirectoryAddressSource,
   CARGO_AMOUNT_MESSAGE,
-  isVehicleKindAllowedForRequest,
   moscowDateKeyOf,
   rateForWorkUnit,
   REQUEST_STATUSES,
@@ -88,6 +87,8 @@ import {
   type VehicleRequestOnSiteQuery,
   type VehicleRequestSummaryDto,
   type VehicleRequestType,
+  type VehicleRequestWeeklyExtensionDto,
+  type VehicleRequestWeeklyOriginDto,
   vehicleRequestHistoryQuerySchema,
   vehicleRequestListQuerySchema,
   vehicleRequestOnSiteQuerySchema,
@@ -107,7 +108,6 @@ import {
   specialEquipmentRequestDetails,
   users,
   vehicleCategories,
-  vehicleKinds,
   vehicleModels,
   vehicleRequestAssignments,
   vehicleRequestCompletions,
@@ -123,6 +123,8 @@ import {
   waybillRequests,
   waybills,
   waybillSeries,
+  weeklyVehicleRequestItems,
+  weeklyVehicleRequests,
 } from '../db/schema';
 import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
@@ -153,6 +155,9 @@ import {
   scheduleFilesDeletion,
 } from '../services/request-files';
 import { registerPurgeRoute } from '../services/directory-purge';
+// Уборка следов недельной заявки при удалении насовсем (ADR 0085 Р15): общая на все четыре
+// вкладки, откуда `purge` доходит до её ссылок.
+import { dropWeeklyItemsOfRequest } from '../services/weekly-request-cleanup';
 import {
   diffVehicleAssignment,
   diffVehicleCompletion,
@@ -199,6 +204,19 @@ import {
   waybillRequirementFor,
 } from '../services/waybill-issue';
 import { auditEsm2Sync, type Esm2SyncResult, syncEsm2Waybills } from '../services/waybill-esm2';
+// Последствия изменившегося срока работ — общим сервисом: их же зовёт применение недельной заявки,
+// и два описания одного правила разошлись бы при первой правке.
+import {
+  afterWorkPeriodChanged,
+  clearPendingEarlyEnd,
+} from '../services/vehicle-request-period';
+// Условия появления заказа спецтехники — общим сервисом с применением недельной заявки (ADR 0085):
+// иначе проверки классификации и активности площадки разойдутся у формы и у недели.
+import {
+  assertObjectActive,
+  createSpecialEquipmentRequest,
+  resolveClassification,
+} from '../services/vehicle-request-create';
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -486,6 +504,85 @@ async function filesByRequestIds(ids: string[]): Promise<Map<string, FileDto[]>>
   return map;
 }
 
+/** Обратные ссылки недельной заявки у страницы заказов: основание и продления (ADR 0085). */
+interface WeeklyLinks {
+  origins: Map<string, VehicleRequestWeeklyOriginDto>;
+  extensions: Map<string, VehicleRequestWeeklyExtensionDto[]>;
+}
+
+/**
+ * Откуда заказ появился и какими неделями его продлевали (ADR 0085 Р11, Р17) — двумя запросами на
+ * страницу, а не на строку: тем же приёмом, что файлы и сводка смен.
+ *
+ * Ветки разные по смыслу, и объединять их в один запрос нечем: основание ищется по
+ * `created_request_id` и всегда одно (частичный `UNIQUE` в базе), продления — по
+ * `source_request_id` со строками результата `extended`, и их бывает несколько. Строки `leave` и
+ * непримененные строки `extend` сюда не попадают намеренно: они говорят о намерении, а карточка
+ * заказа объясняет **состоявшееся** продление срока.
+ */
+async function weeklyLinksByRequestIds(ids: string[]): Promise<WeeklyLinks> {
+  const origins = new Map<string, VehicleRequestWeeklyOriginDto>();
+  const extensions = new Map<string, VehicleRequestWeeklyExtensionDto[]>();
+  if (ids.length === 0) return { origins, extensions };
+  const [created, extended] = await Promise.all([
+    db
+      .select({
+        requestId: weeklyVehicleRequestItems.createdRequestId,
+        itemId: weeklyVehicleRequestItems.id,
+        weeklyRequestId: weeklyVehicleRequests.id,
+        weeklyRequestNum: weeklyVehicleRequests.num,
+        deliveryNeeded: weeklyVehicleRequestItems.deliveryNeeded,
+        deliveryFrom: weeklyVehicleRequestItems.deliveryFrom,
+      })
+      .from(weeklyVehicleRequestItems)
+      .innerJoin(
+        weeklyVehicleRequests,
+        eq(weeklyVehicleRequestItems.weeklyRequestId, weeklyVehicleRequests.id),
+      )
+      .where(inArray(weeklyVehicleRequestItems.createdRequestId, ids)),
+    db
+      .select({
+        requestId: weeklyVehicleRequestItems.sourceRequestId,
+        weeklyRequestId: weeklyVehicleRequests.id,
+        weeklyRequestNum: weeklyVehicleRequests.num,
+        weekStart: weeklyVehicleRequests.weekStart,
+      })
+      .from(weeklyVehicleRequestItems)
+      .innerJoin(
+        weeklyVehicleRequests,
+        eq(weeklyVehicleRequestItems.weeklyRequestId, weeklyVehicleRequests.id),
+      )
+      .where(
+        and(
+          inArray(weeklyVehicleRequestItems.sourceRequestId, ids),
+          eq(weeklyVehicleRequestItems.result, 'extended'),
+        ),
+      )
+      .orderBy(asc(weeklyVehicleRequests.weekStart), asc(weeklyVehicleRequests.num)),
+  ]);
+  for (const row of created) {
+    if (!row.requestId) continue;
+    origins.set(row.requestId, {
+      weeklyRequestId: row.weeklyRequestId,
+      weeklyRequestNum: row.weeklyRequestNum,
+      itemId: row.itemId,
+      deliveryNeeded: row.deliveryNeeded,
+      deliveryFrom: row.deliveryFrom,
+    });
+  }
+  for (const row of extended) {
+    if (!row.requestId) continue;
+    const list = extensions.get(row.requestId) ?? [];
+    list.push({
+      weeklyRequestId: row.weeklyRequestId,
+      weeklyRequestNum: row.weeklyRequestNum,
+      weekStart: row.weekStart,
+    });
+    extensions.set(row.requestId, list);
+  }
+  return { origins, extensions };
+}
+
 /**
  * Назначенная техника из строки выборки (ADR 0027); null — заявку в работу не брали.
  *
@@ -569,6 +666,10 @@ function toDto(
   r: RequestRow,
   fileList: FileDto[],
   shifts?: VehicleRequestShiftsSummaryDto,
+  weekly?: {
+    origin: VehicleRequestWeeklyOriginDto | null;
+    extensions: VehicleRequestWeeklyExtensionDto[];
+  },
 ): VehicleRequestDto {
   const base = {
     id: r.id,
@@ -627,6 +728,10 @@ function toDto(
       // Сводка смен: пустая пара нулей у заявки, по которой ещё ничего не подтверждали, — так же
       // читается «долга нет». Считается запросом рядом с файлами (`toDtos`).
       shifts: shifts ?? { approvedDays: 0, unapprovedPastDays: 0 },
+      // «Создан по НЗ-12» и «Продления: НЗ-15, НЗ-18» (ADR 0085): основание одно, продлений бывает
+      // несколько. Считаются запросом на страницу там же, где файлы и смены.
+      weeklyOrigin: weekly?.origin ?? null,
+      weeklyExtensions: weekly?.extensions ?? [],
     };
   }
   return {
@@ -656,11 +761,17 @@ function toDto(
  * подписи в нём отвечали бы про разные сутки.
  */
 async function toDtos(rows: RequestRow[], onDate?: string): Promise<VehicleRequestDto[]> {
-  const [filesMap, shiftsMap] = await Promise.all([
+  const [filesMap, shiftsMap, weekly] = await Promise.all([
     filesByRequestIds(rows.map((r) => r.id)),
     shiftSummaries(rows, onDate ?? moscowDateKeyOf(new Date())),
+    weeklyLinksByRequestIds(rows.map((r) => r.id)),
   ]);
-  return rows.map((row) => toDto(row, filesMap.get(row.id) ?? [], shiftsMap.get(row.id)));
+  return rows.map((row) =>
+    toDto(row, filesMap.get(row.id) ?? [], shiftsMap.get(row.id), {
+      origin: weekly.origins.get(row.id) ?? null,
+      extensions: weekly.extensions.get(row.id) ?? [],
+    }),
+  );
 }
 
 async function getDto(id: string): Promise<VehicleRequestDto | null> {
@@ -699,15 +810,6 @@ async function shiftsResponse(
     items: await loadRequestShifts(request.id, request),
     onDate: moscowDateKeyOf(new Date()),
   };
-}
-
-async function assertObjectActive(tx: Tx, objectId: string): Promise<void> {
-  const [o] = await tx
-    .select({ isActive: constructionObjects.isActive })
-    .from(constructionObjects)
-    .where(eq(constructionObjects.id, objectId));
-  if (!o) throw err.badRequest('Объект не найден');
-  if (!o.isActive) throw err.badRequest('Объект неактивен');
 }
 
 async function assertDepartmentActive(tx: Tx, departmentId: string): Promise<void> {
@@ -755,69 +857,6 @@ function customerOf(body: CreateVehicleRequestInput): RequestCustomer {
 async function assertCustomerActive(tx: Tx, customer: RequestCustomer): Promise<void> {
   if (customer.objectId) await assertObjectActive(tx, customer.objectId);
   if (customer.departmentId) await assertDepartmentActive(tx, customer.departmentId);
-}
-
-/**
- * Заказанная позиция классификатора (ADR 0028): активный тип ТС (ADR 0005) активного вида,
- * разрешённого этому типу заявки, и — если у типа есть активные категории (ADR 0016) — одна из
- * них. Тип заявки задаётся в форме явно: на объект заказывают технику любого вида,
- * грузоперевозку — только грузовым (`isVehicleKindAllowedForRequest`).
- *
- * Категория не «ещё одно поле формы», а часть выбора: у типа с категориями заказ без неё
- * неадресен («нужен автокран» — какой?), а у типа без ТТХ её неоткуда взять. Принадлежность
- * категории типу держит составной FK, но сверяется и здесь — вместо ошибки целостности человек
- * должен получить ответ.
- */
-async function resolveClassification(
-  tx: Tx,
-  typeId: string,
-  categoryId: string | null,
-  requestType: VehicleRequestType,
-): Promise<void> {
-  const [row] = await tx
-    .select({
-      name: vehicleTypes.name,
-      isActive: vehicleTypes.isActive,
-      kindCode: vehicleKinds.code,
-      kindActive: vehicleKinds.isActive,
-    })
-    .from(vehicleTypes)
-    .innerJoin(vehicleKinds, eq(vehicleTypes.kindId, vehicleKinds.id))
-    .where(eq(vehicleTypes.id, typeId));
-  if (!row) throw err.badRequest('Тип ТС не найден');
-  if (!row.isActive) throw err.badRequest('Тип ТС неактивен');
-  if (!row.kindActive) throw err.badRequest('Вид ТС неактивен');
-  if (!isVehicleKindAllowedForRequest(requestType, row.kindCode)) {
-    throw err.unprocessable('Грузоперевозку выполняет только грузовая техника');
-  }
-
-  const activeCategories = await tx
-    .select({ id: vehicleCategories.id })
-    .from(vehicleCategories)
-    .where(and(eq(vehicleCategories.vehicleTypeId, typeId), eq(vehicleCategories.isActive, true)));
-
-  if (!categoryId) {
-    if (activeCategories.length > 0) {
-      throw err.unprocessable(`Выберите категорию типа «${row.name}»`, {
-        vehicleCategoryId: 'Выберите категорию',
-      });
-    }
-    return;
-  }
-  // Категория чужого типа и выключенная категория — разные ошибки: первая означает сломанный
-  // клиент, вторая — что позицию убрали из справочника, пока форма была открыта.
-  if (!activeCategories.some((c) => c.id === categoryId)) {
-    const [existing] = await tx
-      .select({ isActive: vehicleCategories.isActive, typeId: vehicleCategories.vehicleTypeId })
-      .from(vehicleCategories)
-      .where(eq(vehicleCategories.id, categoryId));
-    if (!existing || existing.typeId !== typeId) {
-      throw err.badRequest('Категория не найдена у этого типа ТС', {
-        vehicleCategoryId: 'Категория другого типа',
-      });
-    }
-    throw err.unprocessable('Категория неактивна', { vehicleCategoryId: 'Категория неактивна' });
-  }
 }
 
 /**
@@ -1346,30 +1385,6 @@ async function applyEarlyEnd(tx: Tx, requestId: string, newDateTo: string): Prom
     .update(specialEquipmentRequestDetails)
     .set({ dateTo: newDateTo })
     .where(eq(specialEquipmentRequestDetails.requestId, requestId));
-}
-
-/**
- * Снимает ожидающий визы запрос на досрочное завершение (ADR 0044) и отвечает, был ли он.
- *
- * Запрос перестаёт иметь смысл сам по себе в двух случаях: заявку закрыли (сокращать срок больше
- * нечего) и срок поправили обычной правкой (снимок `previous_date_to` разошёлся с заявкой, и виза
- * решала бы про другой период). Оба раза строка снимается молча для визирующего, но событием для
- * истории: иначе «ждёт визы» висело бы на закрытой заявке и считалось в сводке среза.
- *
- * Решённые запросы не трогаются: согласованный уже сократил срок, отклонённый объясняет, почему
- * этого не случилось, — и оба остаются ответом на вопрос «что было с этой заявкой».
- */
-async function clearPendingEarlyEnd(tx: Tx, requestId: string): Promise<boolean> {
-  const removed = await tx
-    .delete(vehicleRequestEarlyEndings)
-    .where(
-      and(
-        eq(vehicleRequestEarlyEndings.requestId, requestId),
-        eq(vehicleRequestEarlyEndings.status, 'pending'),
-      ),
-    )
-    .returning({ requestId: vehicleRequestEarlyEndings.requestId });
-  return removed.length > 0;
 }
 
 /**
@@ -2113,38 +2128,47 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       const approvedAt = new Date();
 
       const createdId = await db.transaction(async (tx) => {
-        await assertCustomerActive(tx, customer);
-        await resolveClassification(
-          tx,
-          body.vehicleTypeId,
-          body.vehicleCategoryId ?? null,
-          body.requestType,
-        );
-        const [row] = await tx
-          .insert(vehicleRequests)
-          .values({
-            requestType: body.requestType,
-            objectId: customer.objectId,
-            departmentId: customer.departmentId,
+        // Заказ спецтехники заводится общим сервисом: тем же кодом его порождает применение
+        // недельной заявки (ADR 0085), и проверки площадки с классификатором обязаны быть одни.
+        let id: string;
+        if (body.requestType === 'special_equipment') {
+          id = await createSpecialEquipmentRequest(tx, {
+            objectId: body.objectId,
             vehicleTypeId: body.vehicleTypeId,
             vehicleCategoryId: body.vehicleCategoryId ?? null,
-            status: 'new',
-            comment: body.comment,
-            createdBy: p.id,
-            approvedBy: selfApproved ? p.id : null,
-            approvedAt: selfApproved ? approvedAt : null,
-          })
-          .returning({ id: vehicleRequests.id });
-        const id = row!.id;
-        if (body.requestType === 'special_equipment') {
-          await tx.insert(specialEquipmentRequestDetails).values({
-            requestId: id,
             dateFrom: body.dateFrom,
             dateTo: body.dateTo ?? null,
             responsibleName: body.responsibleName,
             responsiblePhone: body.responsiblePhone,
+            comment: body.comment,
+            createdBy: p.id,
+            approvedBy: selfApproved ? p.id : null,
+            approvedAt: selfApproved ? approvedAt : null,
           });
         } else {
+          await assertCustomerActive(tx, customer);
+          await resolveClassification(
+            tx,
+            body.vehicleTypeId,
+            body.vehicleCategoryId ?? null,
+            body.requestType,
+          );
+          const [row] = await tx
+            .insert(vehicleRequests)
+            .values({
+              requestType: body.requestType,
+              objectId: customer.objectId,
+              departmentId: customer.departmentId,
+              vehicleTypeId: body.vehicleTypeId,
+              vehicleCategoryId: body.vehicleCategoryId ?? null,
+              status: 'new',
+              comment: body.comment,
+              createdBy: p.id,
+              approvedBy: selfApproved ? p.id : null,
+              approvedAt: selfApproved ? approvedAt : null,
+            })
+            .returning({ id: vehicleRequests.id });
+          id = row!.id;
           await assertCargoAmount(tx, body.vehicleTypeId, {
             volumeM3: numToDb(body.volumeM3),
             weightTons: numToDb(body.weightTons),
@@ -2176,13 +2200,13 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
             unloadingResponsibleName: body.unloadingResponsibleName,
             unloadingResponsiblePhone: body.unloadingResponsiblePhone,
           });
+          await tx.insert(vehicleRequestStatusHistory).values({
+            vehicleRequestId: id,
+            fromStatus: null,
+            toStatus: 'new',
+            changedBy: p.id,
+          });
         }
-        await tx.insert(vehicleRequestStatusHistory).values({
-          vehicleRequestId: id,
-          fromStatus: null,
-          toStatus: 'new',
-          changedBy: p.id,
-        });
         await attachFiles(tx, id, body.fileIds, p.id);
         return id;
       });
@@ -2422,18 +2446,22 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         if (body.removeFileIds?.length) await detachFiles(tx, id, body.removeFileIds);
         if (body.addFileIds?.length) await attachFiles(tx, id, body.addFileIds, p.id, true);
 
-        // Правка срока делает ожидающий визы запрос на досрочное завершение беспредметным:
-        // он просил сократить другой период (ADR 0044).
+        // Последствия изменившегося срока — общим сервисом: ожидающий визы запрос на досрочное
+        // завершение становится беспредметным (он просил сократить другой период, ADR 0044), а
+        // недельные листы ЭСМ-2 переоформляются под новый срок (миграция 0087). Продлённый срок
+        // добавляет недели, сдвинутое начало переписывает первую; сокращать срок работающей заявки
+        // правкой нельзя вовсе, так что здесь бумага чаще прибавляется, чем сгорает.
+        //
+        // Снятие запроса здесь молчаливое, и это осознанно: правит один заказ один человек, глядя
+        // на него. Недельная заявка тем же сервисом пользуется иначе — там согласие спрашивают
+        // построчно.
         if (periodEdited) {
-          earlyEndDropped = await clearPendingEarlyEnd(tx, id);
-          // Продлённый срок добавляет недели, сдвинутое начало переписывает первую (миграция
-          // 0087). Сокращать срок работающей заявки правкой нельзя вовсе — на это есть досрочное
-          // завершение с визой, — так что здесь бумага чаще прибавляется, чем сгорает.
-          esm2 = await syncEsm2Waybills(tx, {
+          ({ earlyEndDropped, esm2 } = await afterWorkPeriodChanged(tx, {
             requestId: id,
             actor: { id: p.id },
             reason: 'Срок работ изменён правкой заявки — путевые листы переоформлены',
-          });
+            dropPendingEarlyEnd: true,
+          }));
         }
       });
 
@@ -3697,14 +3725,22 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       return row;
     },
     isDown: (row) => !!row.deletedAt,
-    remove: async (tx, row) => {
+    remove: async (tx, row, actor) => {
       const linked = await tx
         .select({ id: files.id, objectKey: files.objectKey })
         .from(vehicleRequestFiles)
         .innerJoin(files, eq(vehicleRequestFiles.fileId, files.id))
         .where(eq(vehicleRequestFiles.vehicleRequestId, row.id));
+      // Намерение уступает, факт держит (ADR 0085 Р15): строки «остаётся» и «уезжает»
+      // неприменённых недельных заявок снимаются здесь же, а применённая заявка удалению помешает
+      // и объяснится словами — заказ, ставший её следствием, снести насовсем нельзя.
+      const cleanup = await dropWeeklyItemsOfRequest(tx, actor, {
+        id: row.id,
+        displayNumber: formatVehicleRequestNumber(row.num),
+      });
       await tx.delete(vehicleRequests).where(eq(vehicleRequests.id, row.id));
       await hardDeleteFiles(tx, linked);
+      return cleanup;
     },
     notFound: 'Заявка не найдена',
     stillLive: 'Заявка не в архиве — сначала удалите её',

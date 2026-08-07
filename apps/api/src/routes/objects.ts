@@ -19,6 +19,7 @@ import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
 import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
 import { registerPurgeRoute } from '../services/directory-purge';
+import { purgeWeeklyRequestsOfObject } from '../services/weekly-request-cleanup';
 import { operatorsByObjectIds, replaceObjectOperators } from '../services/object-operators';
 import { z } from 'zod';
 
@@ -212,7 +213,13 @@ export default async function objectsRoutes(app: FastifyInstance): Promise<void>
           `Объект указан площадкой отделов (${linkedDepartments}) — снимите привязку и повторите`,
         );
       }
+      // Неприменённые недельные заявки этой площадки сносятся целиком (ADR 0085 Р15): заявка на
+      // снесённую площадку — документ ни о чём, а строки уйдут каскадом вместе с шапкой. Версией
+      // ветка не занимается: клиент, державший страницу открытой, получит 404 — обновлять нечего.
+      // Применённая заявка останется и удалению помешает, объяснившись словами.
+      const cleanup = await purgeWeeklyRequestsOfObject(tx, { id: row.id });
       await tx.delete(constructionObjects).where(eq(constructionObjects.id, row.id));
+      return cleanup;
     },
     notFound: 'Объект не найден',
     stillLive: 'Объект активен — сначала деактивируйте его',

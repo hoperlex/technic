@@ -34,6 +34,7 @@ const purgeParams = z.object({ id: z.string().uuid() });
 const REFERENCING_TABLE_LABELS: Record<string, string> = {
   construction_object_operators: 'привязки операторов вывоза к объектам',
   counterparty_synonyms: 'синонимы контрагентов',
+  office_equipment: 'карточки оргтехники',
   person_credentials: 'документы работников',
   person_employments: 'записи о работе',
   person_specializations: 'специализации работников',
@@ -51,6 +52,12 @@ const REFERENCING_TABLE_LABELS: Record<string, string> = {
   vehicle_request_shifts: 'смены в заказах техники',
   vehicle_request_status_history: 'история статусов заказов техники',
   vehicle_requests: 'заказы техники',
+  // Строки неприменённых недельных заявок уборка снимает сама (ADR 0085), поэтому досюда доходят
+  // только применённые: там строка — уже не намерение, а объяснение, откуда взялось продление.
+  weekly_vehicle_request_items: 'строки применённых недельных заявок',
+  // Сама заявка ссылается на площадку: неприменённые уборка сносит целиком, а применённую площадка
+  // пережить не может — это её документ-основание.
+  weekly_vehicle_requests: 'применённые недельные заявки',
   vehicle_route_requests: 'состав рейсов',
   vehicle_routes: 'рейсы',
   vehicle_type_specs: 'привязки ТТХ к типам',
@@ -91,8 +98,21 @@ export interface PurgeRouteConfig<Row> {
   load: (id: string) => Promise<Row | undefined>;
   /** Погашена ли запись — неактивна или в архиве. Активную насовсем не удаляют. */
   isDown: (row: Row) => boolean;
-  /** Что снести внутри транзакции: саму строку и её собственные подчинённые записи. */
-  remove: (tx: Tx, row: Row) => Promise<void>;
+  /**
+   * Что снести внутри транзакции: саму строку и её собственные подчинённые записи.
+   *
+   * Возвращённый объект попадает в журнал вместе с реквизитами строки. Это нужно там, где
+   * удаление не только сносит запись, но и **убирает следы из чужих незавершённых документов**:
+   * строки недельных заявок, ссылавшиеся на удаляемый заказ или тип техники (ADR 0085), находятся
+   * уже внутри транзакции, и снятыми до неё реквизитами их не назовёшь. Молчать о такой уборке
+   * нельзя: состав чужого документа изменился, и в журнале должно быть видно, чей и на что.
+   *
+   * Ничего не убиравшая реализация возвращает `void` — тогда в журнале только реквизиты строки.
+   *
+   * Третьим аргументом идёт тот, кто удаляет: у чужого документа своя транзакционная история, и
+   * событие «строка снята» без автора там невозможно (`changed_by` объявлен `NOT NULL`).
+   */
+  remove: (tx: Tx, row: Row, actor: { id: string }) => Promise<Record<string, unknown> | void>;
   notFound: string;
   /** Отказ на живой записи: называет первый шаг, который человек не сделал. */
   stillLive: string;
@@ -120,24 +140,28 @@ export function registerPurgeRoute<Row>(app: FastifyInstance, cfg: PurgeRouteCon
     },
     async (req) => {
       const { id } = req.params;
+      const actor = requirePrincipal(req);
       const row = await cfg.load(id);
       if (!row) throw err.notFound(cfg.notFound);
       if (!cfg.isDown(row)) throw err.conflict(cfg.stillLive);
       // Реквизиты снимаются до удаления: журнал — единственное, что останется от строки.
       const metadata = cfg.audit.metadata(row);
+      let cleanup: Record<string, unknown> | void;
       try {
-        await db.transaction(async (tx) => {
-          await cfg.remove(tx, row);
+        cleanup = await db.transaction(async (tx) => {
+          return cfg.remove(tx, row, { id: actor.id });
         });
       } catch (e) {
         throw asReferenceConflict(e, cfg.subject);
       }
       await writeAudit({
-        actorUserId: requirePrincipal(req).id,
+        actorUserId: actor.id,
         action: cfg.audit.action,
         entityType: cfg.audit.entityType,
         entityId: id,
-        metadata,
+        // Убранные следы — рядом с реквизитами, а не отдельным событием: удаление одно, и
+        // «что снесли» с «что при этом задели» читаются вместе.
+        metadata: cleanup ? { ...metadata, ...cleanup } : metadata,
       });
       return { ok: true };
     },
