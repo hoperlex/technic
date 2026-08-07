@@ -22,6 +22,7 @@ import {
   COUNTERPARTY_TYPES_WITH_ACCOUNTS,
   counterpartyTypeHasAccounts,
   counterpartyTypeLabels,
+  EMAIL_VERIFICATION_ENABLED,
   isCounterpartyScopedRole,
   isDepartmentScopedRole,
   isObjectScopedRole,
@@ -489,21 +490,27 @@ export function UsersTab() {
       width: 120,
     }),
     // Подтверждение адреса (ADR 0072): пока его нет, заявку не активировать — и администратор
-    // должен видеть это в списке, а не узнавать из отказа при попытке выдать доступ.
-    textColumn<UserDto>({
-      key: 'emailVerifiedAt',
-      title: 'Адрес',
-      dataIndex: 'emailVerifiedAt',
-      sortable: false,
-      searchable: false,
-      width: 140,
-      render: (_v, r) =>
-        r.emailVerifiedAt ? (
-          <Tag color="green">подтверждён</Tag>
-        ) : (
-          <Tag color="orange">не подтверждён</Tag>
-        ),
-    }),
+    // должен видеть это в списке, а не узнавать из отказа при попытке выдать доступ. Пока
+    // подтверждение выключено (EMAIL_VERIFICATION_ENABLED), колонки нет: активации она не мешает,
+    // а «не подтверждён» у свежей заявки означало бы то, чего портал уже не требует.
+    ...(EMAIL_VERIFICATION_ENABLED
+      ? [
+          textColumn<UserDto>({
+            key: 'emailVerifiedAt',
+            title: 'Адрес',
+            dataIndex: 'emailVerifiedAt',
+            sortable: false,
+            searchable: false,
+            width: 140,
+            render: (_v, r) =>
+              r.emailVerifiedAt ? (
+                <Tag color="green">подтверждён</Tag>
+              ) : (
+                <Tag color="orange">не подтверждён</Tag>
+              ),
+          }),
+        ]
+      : []),
     // Дата регистрации: по ней фильтруют период, и без колонки фильтр не на что опереть —
     // отобранные строки выглядели бы отобранными неизвестно по чему.
     textColumn<UserDto>({

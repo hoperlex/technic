@@ -9,6 +9,7 @@ import {
   counterpartyTypeHasAccounts,
   counterpartyTypeLabels,
   createUserSchema,
+  EMAIL_VERIFICATION_ENABLED,
   isCounterpartyScopedRole,
   isDepartmentScopedRole,
   isObjectScopedRole,
@@ -391,8 +392,10 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
       // Доступ выдаётся тому, кто доказал, что ящик его (ADR 0072). Иначе заявку мог подать кто
       // угодно на чужой адрес, и портал выдал бы права по одному лишь совпадению ФИО с ожидаемым.
       // Учётки, заведённые администратором, подтверждены по факту создания и сюда не упираются.
+      // Пока подтверждение выключено (EMAIL_VERIFICATION_ENABLED), проверка снята — иначе заявки,
+      // поданные до отключения, остались бы неактивируемыми.
       const activating = body.isActive === true && !existing.isActive;
-      if (activating && !existing.emailVerifiedAt) {
+      if (EMAIL_VERIFICATION_ENABLED && activating && !existing.emailVerifiedAt) {
         throw err.badRequest(
           'Адрес не подтверждён — активировать учётку нельзя. Попросите пользователя перейти по ссылке из письма.',
         );

@@ -2,6 +2,7 @@ import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { EMAIL_VERIFICATION_ENABLED } from '@technic/contracts';
 import { applyMigrations } from '../src/db/migration-journal';
 // Только типы: значения берутся через `await import` после того, как выставлено окружение.
 import type { buildApp } from '../src/app';
@@ -18,6 +19,10 @@ import type { db as AppDb } from '../src/db/client';
  *
  * Токен тест достаёт оттуда же, откуда его берёт человек, — из тела письма: в базе лежит только
  * хеш, и другого способа нет ни у кого.
+ *
+ * Пока подтверждение выключено (`EMAIL_VERIFICATION_ENABLED`), проверки самого подтверждения
+ * пропускаются, а вместо них проверяется обещание отключения: заявка заводится без письма и
+ * активируется сразу. Восстановление пароля от флага не зависит и проверяется в обоих состояниях.
  *
  * Запуск:
  *
@@ -131,6 +136,33 @@ async function userRow(email: string) {
   return res.rows[0];
 }
 
+/**
+ * Подтверждение адреса, если оно включено. Сценариям, которым важна только действующая учётка
+ * (восстановление пароля), состояние флага знать незачем: с выключенным подтверждением заявка и
+ * так приходит подтверждённой.
+ */
+async function confirmAddress(email: string): Promise<void> {
+  if (!EMAIL_VERIFICATION_ENABLED) return;
+  const token = await tokenFromMail(email, 'verify_email');
+  await ctx.app.inject({
+    method: 'POST',
+    url: '/api/v1/auth/verify-email',
+    remoteAddress: nextAddress(),
+    payload: { token },
+  });
+}
+
+/** Выдача доступа администратором: то, во что упирается заявка после подачи. */
+async function activate(userId: string): Promise<number> {
+  const res = await ctx.app.inject({
+    method: 'PATCH',
+    url: `/api/v1/users/${userId}`,
+    headers: ctx.auth,
+    payload: { isActive: true, role: 'dispatcher' },
+  });
+  return res.statusCode;
+}
+
 async function mailCount(email: string, kind: string): Promise<number> {
   const res = await ctx.db.execute<{ count: string }>(
     sql`SELECT count(*)::text AS count FROM mail_messages
@@ -200,76 +232,125 @@ describe.skipIf(!DB_URL)('подтверждение адреса и сброс 
     await ctx.closeDb();
   });
 
-  it('регистрация создаёт неподтверждённую заявку и письмо со ссылкой', async () => {
-    const email = freshEmail();
-    expect(await register(email)).toBe(201);
+  describe.skipIf(!EMAIL_VERIFICATION_ENABLED)('подтверждение адреса включено', () => {
+    it('регистрация создаёт неподтверждённую заявку и письмо со ссылкой', async () => {
+      const email = freshEmail();
+      expect(await register(email)).toBe(201);
 
-    const user = await userRow(email);
-    expect(user?.email_verified_at).toBeNull();
-    expect(await mailCount(email, 'verify_email')).toBe(1);
-    // Ссылка ведёт на портал и несёт токен — иначе подтверждать нечем.
-    expect(await tokenFromMail(email, 'verify_email')).not.toBe('');
+      const user = await userRow(email);
+      expect(user?.email_verified_at).toBeNull();
+      expect(await mailCount(email, 'verify_email')).toBe(1);
+      // Ссылка ведёт на портал и несёт токен — иначе подтверждать нечем.
+      expect(await tokenFromMail(email, 'verify_email')).not.toBe('');
+    });
+
+    it('активировать неподтверждённую заявку нельзя — ради этого всё и заведено', async () => {
+      const email = freshEmail();
+      await register(email);
+      const user = await userRow(email);
+
+      const res = await ctx.app.inject({
+        method: 'PATCH',
+        url: `/api/v1/users/${user!.id}`,
+        headers: ctx.auth,
+        payload: { isActive: true, role: 'dispatcher' },
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(res.json<{ message: string }>().message).toMatch(/не подтверждён/u);
+    });
+
+    it('после подтверждения активация проходит', async () => {
+      const email = freshEmail();
+      await register(email);
+      const token = await tokenFromMail(email, 'verify_email');
+
+      const verify = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/v1/auth/verify-email',
+        remoteAddress: nextAddress(),
+        payload: { token },
+      });
+      expect(verify.statusCode).toBe(200);
+      expect((await userRow(email))?.email_verified_at).not.toBeNull();
+
+      expect(await activate((await userRow(email))!.id)).toBe(200);
+    });
+
+    it('ссылка подтверждения срабатывает один раз', async () => {
+      const email = freshEmail();
+      await register(email);
+      const token = await tokenFromMail(email, 'verify_email');
+
+      await ctx.app.inject({
+        method: 'POST',
+        url: '/api/v1/auth/verify-email',
+        remoteAddress: nextAddress(),
+        payload: { token },
+      });
+      const second = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/v1/auth/verify-email',
+        remoteAddress: nextAddress(),
+        payload: { token },
+      });
+
+      expect(second.statusCode).toBe(400);
+    });
+
+    it('неподтверждённой заявке ссылку на сброс не присылают: у неё другой сценарий', async () => {
+      const email = freshEmail();
+      await register(email);
+
+      const captcha = ctx.issueCaptcha(Date.now() - 5_000);
+      const res = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/v1/auth/password-reset/request',
+        remoteAddress: nextAddress(),
+        payload: { email, captchaToken: captcha.token, captchaAnswer: captcha.code },
+      });
+
+      expect(res.statusCode).toBe(202);
+      expect(await mailCount(email, 'password_reset')).toBe(0);
+    });
   });
 
-  it('активировать неподтверждённую заявку нельзя — ради этого всё и заведено', async () => {
-    const email = freshEmail();
-    await register(email);
-    const user = await userRow(email);
+  /**
+   * Обещание временного отключения (`EMAIL_VERIFICATION_ENABLED = false`): заявка проходит без
+   * письма и активируется сразу. Второе не мелочь — именно на нём заявка застряла бы навсегда,
+   * если бы отключили только отправку письма.
+   */
+  describe.skipIf(EMAIL_VERIFICATION_ENABLED)('подтверждение адреса выключено', () => {
+    it('заявка заводится без письма и считается подтверждённой', async () => {
+      const email = freshEmail();
+      expect(await register(email)).toBe(201);
 
-    const res = await ctx.app.inject({
-      method: 'PATCH',
-      url: `/api/v1/users/${user!.id}`,
-      headers: ctx.auth,
-      payload: { isActive: true, role: 'dispatcher' },
+      expect((await userRow(email))?.email_verified_at).not.toBeNull();
+      expect(await mailCount(email, 'verify_email')).toBe(0);
     });
 
-    expect(res.statusCode).toBe(400);
-    expect(res.json<{ message: string }>().message).toMatch(/не подтверждён/u);
-  });
+    it('администратор выдаёт доступ сразу', async () => {
+      const email = freshEmail();
+      await register(email);
 
-  it('после подтверждения активация проходит', async () => {
-    const email = freshEmail();
-    await register(email);
-    const token = await tokenFromMail(email, 'verify_email');
-
-    const verify = await ctx.app.inject({
-      method: 'POST',
-      url: '/api/v1/auth/verify-email',
-      remoteAddress: nextAddress(),
-      payload: { token },
-    });
-    expect(verify.statusCode).toBe(200);
-    expect((await userRow(email))?.email_verified_at).not.toBeNull();
-
-    const user = await userRow(email);
-    const activate = await ctx.app.inject({
-      method: 'PATCH',
-      url: `/api/v1/users/${user!.id}`,
-      headers: ctx.auth,
-      payload: { isActive: true, role: 'dispatcher' },
-    });
-    expect(activate.statusCode).toBe(200);
-  });
-
-  it('ссылка подтверждения срабатывает один раз', async () => {
-    const email = freshEmail();
-    await register(email);
-    const token = await tokenFromMail(email, 'verify_email');
-
-    await ctx.app.inject({
-      method: 'POST',
-      url: '/api/v1/auth/verify-email',
-      remoteAddress: nextAddress(),
-      payload: { token },
-    });
-    const second = await ctx.app.inject({
-      method: 'POST',
-      url: '/api/v1/auth/verify-email',
-      remoteAddress: nextAddress(),
-      payload: { token },
+      expect(await activate((await userRow(email))!.id)).toBe(200);
     });
 
-    expect(second.statusCode).toBe(400);
+    it('повторная отправка письма отвечает нейтрально и письма не шлёт', async () => {
+      const email = freshEmail();
+      await register(email);
+
+      const captcha = ctx.issueCaptcha(Date.now() - 5_000);
+      const res = await ctx.app.inject({
+        method: 'POST',
+        url: '/api/v1/auth/verify-email/resend',
+        remoteAddress: nextAddress(),
+        payload: { email, captchaToken: captcha.token, captchaAnswer: captcha.code },
+      });
+
+      expect(res.statusCode).toBe(202);
+      expect(await mailCount(email, 'verify_email')).toBe(0);
+    });
   });
 
   it('запрос сброса не рассказывает, есть ли такой адрес', async () => {
@@ -291,20 +372,8 @@ describe.skipIf(!DB_URL)('подтверждение адреса и сброс 
   it('сброс меняет пароль, поднимает auth_version и шлёт уведомление', async () => {
     const email = freshEmail();
     await register(email);
-    const verifyToken = await tokenFromMail(email, 'verify_email');
-    await ctx.app.inject({
-      method: 'POST',
-      url: '/api/v1/auth/verify-email',
-      remoteAddress: nextAddress(),
-      payload: { token: verifyToken },
-    });
-    const user = await userRow(email);
-    await ctx.app.inject({
-      method: 'PATCH',
-      url: `/api/v1/users/${user!.id}`,
-      headers: ctx.auth,
-      payload: { isActive: true, role: 'dispatcher' },
-    });
+    await confirmAddress(email);
+    await activate((await userRow(email))!.id);
     const before = await userRow(email);
 
     const captcha = ctx.issueCaptcha(Date.now() - 5_000);
@@ -355,21 +424,5 @@ describe.skipIf(!DB_URL)('подтверждение адреса и сброс 
       payload: { token: resetToken, newPassword: USER_PASSWORD },
     });
     expect(again.statusCode).toBe(400);
-  });
-
-  it('неподтверждённой заявке ссылку на сброс не присылают: у неё другой сценарий', async () => {
-    const email = freshEmail();
-    await register(email);
-
-    const captcha = ctx.issueCaptcha(Date.now() - 5_000);
-    const res = await ctx.app.inject({
-      method: 'POST',
-      url: '/api/v1/auth/password-reset/request',
-      remoteAddress: nextAddress(),
-      payload: { email, captchaToken: captcha.token, captchaAnswer: captcha.code },
-    });
-
-    expect(res.statusCode).toBe(202);
-    expect(await mailCount(email, 'password_reset')).toBe(0);
   });
 });

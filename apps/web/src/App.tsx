@@ -1,4 +1,5 @@
 import { Route, Routes } from 'react-router';
+import { EMAIL_VERIFICATION_ENABLED } from '@technic/contracts';
 import { AppLayout } from './components/AppLayout';
 import { AppUpdateBanner } from './components/AppUpdateBanner';
 import { HomeRedirect, ProtectedRoute, RequirePermission } from './auth/ProtectedRoute';
@@ -23,7 +24,11 @@ export default function App() {
         <Route path="/login" element={<LoginPage />} />
         <Route path="/register" element={<RegisterPage />} />
         {/* Публичные: по ссылкам из писем ходят те, кто ещё не вошёл — и войти как раз не может. */}
-        <Route path="/verify-email" element={<VerifyEmailPage />} />
+        {/* Подтверждение адреса выключено (EMAIL_VERIFICATION_ENABLED): страницы нет, старые
+            ссылки уводит на вход общий `*`. Сервер такую ссылку по-прежнему принимает. */}
+        {EMAIL_VERIFICATION_ENABLED ? (
+          <Route path="/verify-email" element={<VerifyEmailPage />} />
+        ) : null}
         <Route path="/forgot-password" element={<ForgotPasswordPage />} />
         <Route path="/reset-password" element={<ResetPasswordPage />} />
         <Route element={<ProtectedRoute />}>

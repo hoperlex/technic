@@ -3,6 +3,7 @@ import { App, Alert, Button, Card, DatePicker, Form, Select, Space, Typography }
 import { useMutation, useQuery } from '@tanstack/react-query';
 import dayjs from 'dayjs';
 import {
+  EMAIL_VERIFICATION_ENABLED,
   MAIL_TEST_KINDS,
   mailTestKindLabels,
   mailTestKindNeedsDate,
@@ -27,6 +28,15 @@ interface FormValues {
 const DATE = 'YYYY-MM-DD';
 
 /**
+ * Виды писем, которые предлагает отладка. Письмо подтверждения адреса из списка убрано, пока
+ * подтверждение выключено (EMAIL_VERIFICATION_ENABLED): портал его не отправляет, и проверять
+ * вёрстку письма, которого нет, незачем.
+ */
+const TEST_KINDS = MAIL_TEST_KINDS.filter(
+  (k) => EMAIL_VERIFICATION_ENABLED || k !== 'verify_email',
+);
+
+/**
  * Рассылки: расписания с историей запусков (ADR 0075) и отладочная отправка одного письма.
  *
  * Отладка стоит ниже расписаний намеренно: вкладку открывают, чтобы посмотреть, что и когда
@@ -41,7 +51,7 @@ export function MailingsTab() {
   const { can } = useAuth();
   const canManage = can('mailings.manage');
   const [form] = Form.useForm<FormValues>();
-  const [kind, setKind] = useState<MailTestKind>(MAIL_TEST_KINDS[0]);
+  const [kind, setKind] = useState<MailTestKind>(TEST_KINDS[0]!);
 
   const { data: recipients, isLoading } = useQuery({
     queryKey: ['mail-test-recipients'],
@@ -112,7 +122,7 @@ export function MailingsTab() {
             form={form}
             layout="vertical"
             requiredMark={false}
-            initialValues={{ kind: MAIL_TEST_KINDS[0] }}
+            initialValues={{ kind: TEST_KINDS[0] }}
             onFinish={(v) => sendMut.mutate(v)}
             onValuesChange={(changed: Partial<FormValues>) => {
               // Водитель осмыслен только вместе с видом письма и датой: на другой день у выбранного
@@ -128,7 +138,7 @@ export function MailingsTab() {
           >
             <Form.Item name="kind" label="Тип письма" rules={[{ required: true }]}>
               <Select
-                options={MAIL_TEST_KINDS.map((k) => ({ value: k, label: mailTestKindLabels[k] }))}
+                options={TEST_KINDS.map((k) => ({ value: k, label: mailTestKindLabels[k] }))}
                 onChange={(v: MailTestKind) => setKind(v)}
               />
             </Form.Item>

@@ -6,6 +6,7 @@ import {
   type CaptchaChallenge,
   changePasswordSchema,
   type CounterpartyType,
+  EMAIL_VERIFICATION_ENABLED,
   loginSchema,
   NEUTRAL_MAIL_RESPONSE,
   passwordResetConfirmSchema,
@@ -182,8 +183,9 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
       verifyCaptcha(captchaToken, captchaAnswer);
       // Регистрация без письма бессмысленна: подтвердить адрес будет нечем, а активировать
       // неподтверждённую заявку портал не даст. Отказ до записи, а не после — чтобы не заводить
-      // учётку, которой не выбраться из состояния «ждёт подтверждения».
-      assertMailEnabled();
+      // учётку, которой не выбраться из состояния «ждёт подтверждения». С выключенным
+      // подтверждением (EMAIL_VERIFICATION_ENABLED) письма нет и требовать почту не за что.
+      if (EMAIL_VERIFICATION_ENABLED) assertMailEnabled();
       // Хеш считается до транзакции: argon2 занимает сотни миллисекунд, и держать на нём открытую
       // транзакцию незачем.
       const passwordHash = await hashPassword(password);
@@ -208,34 +210,40 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
               requestedRole,
               requestedObject,
               requestedCompany,
+              // Подтверждение выключено (EMAIL_VERIFICATION_ENABLED): заявка сразу считается
+              // подтверждённой. Иначе её нечем было бы активировать — и через неделю её закрыл бы
+              // срок хранения неподтверждённых.
+              emailVerifiedAt: EMAIL_VERIFICATION_ENABLED ? null : new Date(),
             })
             .returning({ id: users.id });
 
           // Токен и письмо — той же транзакцией (ADR 0072): заявка без письма оставила бы человека
           // ждать подтверждения, которое не придёт, а письмо без заявки вело бы в никуда.
-          const { token, expiresAt } = await issueEmailToken(
-            {
-              userId: row!.id,
-              purpose: 'verify_email',
-              ttlSeconds: config.mail.verifyTtl,
-              requestedIp: req.ip,
-            },
-            { tx },
-          );
-          await queueMail(
-            {
-              kind: 'verify_email',
-              // Метка выпуска, а не токен: ключ виден в журнале и в диагностике.
-              dedupeKey: `verify:${row!.id}:${expiresAt.getTime()}`,
-              to: email,
-              subject: VERIFY_SUBJECT,
-              content: verifyEmailContent(token),
-              userId: row!.id,
-              entityType: 'user',
-              entityId: row!.id,
-            },
-            { tx },
-          );
+          if (EMAIL_VERIFICATION_ENABLED) {
+            const { token, expiresAt } = await issueEmailToken(
+              {
+                userId: row!.id,
+                purpose: 'verify_email',
+                ttlSeconds: config.mail.verifyTtl,
+                requestedIp: req.ip,
+              },
+              { tx },
+            );
+            await queueMail(
+              {
+                kind: 'verify_email',
+                // Метка выпуска, а не токен: ключ виден в журнале и в диагностике.
+                dedupeKey: `verify:${row!.id}:${expiresAt.getTime()}`,
+                to: email,
+                subject: VERIFY_SUBJECT,
+                content: verifyEmailContent(token),
+                userId: row!.id,
+                entityType: 'user',
+                entityId: row!.id,
+              },
+              { tx },
+            );
+          }
           return row!;
         });
       } catch (e) {
@@ -251,8 +259,9 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
       reply.code(201);
       return {
         ok: true,
-        message:
-          'Регистрация принята. Подтвердите адрес по ссылке из письма — после этого администратор сможет выдать доступ.',
+        message: EMAIL_VERIFICATION_ENABLED
+          ? 'Регистрация принята. Подтвердите адрес по ссылке из письма — после этого администратор сможет выдать доступ.'
+          : 'Заявка на доступ принята. Администратор рассмотрит её и выдаст доступ.',
       };
     },
   );
@@ -300,6 +309,13 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
     async (req, reply) => {
       const { email, captchaToken, captchaAnswer } = req.body;
       verifyCaptcha(captchaToken, captchaAnswer);
+      // Подтверждение выключено (EMAIL_VERIFICATION_ENABLED): слать нечего. Ответ прежний
+      // нейтральный — ручка и так не различает «адреса нет» и «письмо ушло», и портал, где кнопки
+      // уже не осталось, ничего нового по нему не узнает.
+      if (!EMAIL_VERIFICATION_ENABLED) {
+        reply.code(202);
+        return { ok: true, message: NEUTRAL_MAIL_RESPONSE };
+      }
       assertMailEnabled();
 
       const [user] = await db
