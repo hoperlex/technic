@@ -27,8 +27,19 @@ const PENDING_API = ['api/resources.ts', 'api/auth.ts'];
  * куда он относится, а не привычка. Причины — в docs/frontend-fsd-stage-2.md §2.1.
  */
 const LEGACY = {
-  hooks: ['useDepartmentScope.ts', 'useObjectScope.ts', 'useVehicleClassifications.ts'],
-  utils: ['date.ts', 'format.ts', 'formErrors.ts'],
+  hooks: [
+    'useDepartmentScope.ts',
+    'useObjectScope.ts',
+    // Удаление насовсем одинаково у справочников и учёток (ADR 0060, 0063), а учётки ведутся в
+    // другом разделе: слайсу справочников хук не принадлежит, импорт между соседями запрещён.
+    'usePurgeAction.ts',
+    'useVehicleClassificationFilter.tsx',
+    'useVehicleClassifications.ts',
+    // Область модуля «Вывоз мусора» (ADR 0062): уедет вместе со слайсом заявок на вывоз.
+    'useWasteObjectScope.ts',
+  ],
+  // Адреса записей портала: знают вкладки обоих модулей заявок сразу — переедут, когда переедут оба.
+  utils: ['date.ts', 'format.ts', 'formErrors.ts', 'links.ts'],
   components: [
     'AddressAutoComplete.tsx',
     'AppLayout.tsx',
@@ -43,9 +54,15 @@ const LEGACY = {
     'PasswordField.tsx',
     'PersonNameFields.tsx',
     'PhoneField.tsx',
+    // Маска телефона — часть поля `PhoneField`, и переедет вместе с ним.
+    'PhoneInput.tsx',
     'PortalLogo.tsx',
+    // Окна каркаса: журнал обновлений (ADR 0077) и контакты поддержки — их открывает `AppLayout`,
+    // и уедут они вместе с ним, когда каркас станет виджетом.
+    'ReleaseNotesModal.tsx',
     'RequestHistory.tsx',
     'ResponsibleFields.tsx',
+    'SupportContactsModal.tsx',
     'TimeInput.tsx',
     'UserAvatar.tsx',
     // Вложения путевого листа: зовут waybillsApi и filesApi — уедут в `waybill` вместе с печатью.

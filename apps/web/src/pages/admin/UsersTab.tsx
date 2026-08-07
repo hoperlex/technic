@@ -19,6 +19,7 @@ import { DeleteFilled, MoreOutlined, PlusOutlined, ReloadOutlined } from '@ant-d
 import dayjs from 'dayjs';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
+  canAttachAddon,
   COUNTERPARTY_TYPES_WITH_ACCOUNTS,
   counterpartyTypeHasAccounts,
   counterpartyTypeLabels,
@@ -29,9 +30,13 @@ import {
   REGISTRATION_ROLE_REQUESTS,
   registrationRequestDetail,
   registrationRoleRequestLabels,
+  ROLE_ADDONS,
+  roleAddonColors,
+  roleAddonLabels,
   ROLES,
   roleColors,
   roleLabels,
+  type RoleAddon,
   type UserDto,
 } from '@technic/contracts';
 import { counterpartiesApi, usersApi } from '../../api/resources';
@@ -43,7 +48,7 @@ import { PasswordField } from '../../components/PasswordField';
 import { PersonNameFields } from '../../components/PersonNameFields';
 import { PhoneField, PhoneLink } from '../../components/PhoneField';
 import { ReasonModal } from '../../components/CancelReasonModal';
-import { actionsColumn, badgeColumn, boolBadgeColumn, textColumn } from '@shared/ui';
+import { actionsColumn, boolBadgeColumn, textColumn } from '@shared/ui';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
 import { useListParams } from '@shared/lib';
 import { useAuth } from '../../auth/AuthContext';
@@ -71,11 +76,36 @@ interface UserFormValues {
    * в котором учётка работает, — вывоз мусора или заказ ТС (ADR 0038).
    */
   counterpartyId?: string | null;
+  /**
+   * Надстройки роли (ADR 0086): набор прав поверх роли, а не вторая роль. Область учётки они не
+   * трогают — человек остаётся на своих объектах и в своём отделе.
+   */
+  addons?: RoleAddon[];
   isActive: boolean;
 }
 
 /** Заявка на регистрацию: человек зарегистрировался сам, роли ему ещё не назначили. */
 const isPendingRegistration = (u: UserDto) => !u.isActive && !u.role;
+
+/**
+ * Роль и надстройки одной ячейкой (ADR 0086). Надстройка дополняет роль, а не заменяет её,
+ * поэтому стоит рядом с тегом роли, а не вместо него: «Штаб» с оргтехникой и «Штаб» без неё
+ * различаются только этим тегом. Отдельная колонка не годится — она стояла бы пустой почти у всех,
+ * а читают надстройку всегда вместе с ролью.
+ */
+function roleTags(u: UserDto) {
+  if (!u.role) return '—';
+  return (
+    <Space size={4} wrap>
+      <Tag color={roleColors[u.role]}>{roleLabels[u.role]}</Tag>
+      {u.addons.map((addon) => (
+        <Tag key={addon} color={roleAddonColors[addon]}>
+          {roleAddonLabels[addon]}
+        </Tag>
+      ))}
+    </Space>
+  );
+}
 
 /**
  * Уточнение из заявки — свободный текст, а не ссылка на справочник: список объектов
@@ -175,6 +205,16 @@ export function UsersTab() {
   const [form] = Form.useForm<UserFormValues>();
   const watchRole = Form.useWatch('role', form);
 
+  /**
+   * Надстройки, доступные выбранной в форме роли (ADR 0086). Пустой список означает, что роли
+   * надстройки не положены вовсе, — и поля в форме тогда нет: недоступное портал не показывает
+   * даже выключенным (ADR 0033 §6), иначе выключенный чекбокс обещал бы доступ, которого не
+   * бывает.
+   */
+  const addonOptions = ROLE_ADDONS.filter((addon) => canAttachAddon(watchRole, addon)).map(
+    (addon) => ({ value: addon, label: roleAddonLabels[addon] }),
+  );
+
   const [pwUser, setPwUser] = useState<UserDto | null>(null);
   const [pwForm] = Form.useForm<{ newPassword: string }>();
 
@@ -185,6 +225,7 @@ export function UsersTab() {
       isActive: true,
       constructionObjectIds: [],
       departmentIds: [],
+      addons: [],
     } as Partial<UserFormValues>);
     setOpen(true);
   };
@@ -203,6 +244,7 @@ export function UsersTab() {
       constructionObjectIds: r.constructionObjects.map((o) => o.id),
       departmentIds: r.departments.map((d) => d.id),
       counterpartyId: r.counterpartyId,
+      addons: [...r.addons],
       isActive: r.isActive,
     });
     setOpen(true);
@@ -225,6 +267,11 @@ export function UsersTab() {
         counterpartyId: isCounterpartyScopedRole(values.role)
           ? (values.counterpartyId ?? null)
           : null,
+        // Надстройки той же меркой (ADR 0086): роли, которой они не положены, уходит пустой набор.
+        // Форма их снимает уже при смене роли, но поле формы переживает своё скрытие (antd хранит
+        // значения размонтированных полей), и отправлять сюда несовместимую пару нельзя — сервер
+        // ответит на неё 400.
+        addons: (values.addons ?? []).filter((addon) => canAttachAddon(values.role, addon)),
       };
       if (record) {
         const { password: _pw, email: _email, ...rest } = payload;
@@ -437,13 +484,16 @@ export function UsersTab() {
       width: 160,
       render: (_v, r) => (r.phone ? <PhoneLink phone={r.phone} /> : '—'),
     }),
-    badgeColumn<UserDto>({
+    // Роль с надстройками (ADR 0086) рисуется сама, а не `badgeColumn`: тег там один на ячейку, а
+    // здесь их бывает несколько. Сортировка остаётся по роли — `USER_SORT_FIELDS` знает только её,
+    // и надстройка порядка строк не задаёт.
+    textColumn<UserDto>({
       key: 'role',
       title: 'Роль',
       dataIndex: 'role',
-      labels: roleLabels,
-      colors: roleColors,
-      width: 150,
+      searchable: false,
+      width: 200,
+      render: (_v, r) => roleTags(r),
     }),
     textColumn<UserDto>({
       key: 'scope',
@@ -783,7 +833,9 @@ export function UsersTab() {
       ) : (
         <Tag color={r.isActive ? 'green' : 'default'}>{r.isActive ? 'Активен' : 'Отключён'}</Tag>
       ),
-    primary: (r) => (r.role ? <Tag color={roleColors[r.role]}>{roleLabels[r.role]}</Tag> : '—'),
+    // Роль и надстройки (ADR 0086) — тем же тегом, что и в таблице: карточка на телефоне не должна
+    // рассказывать о человеке меньше, чем строка списка на десктопе.
+    primary: (r) => roleTags(r),
     lines: [
       (r) => r.email,
       // Номер нажимается: карточку читают с телефона, и звонок — то, ради чего его и оставляли.
@@ -869,6 +921,30 @@ export function UsersTab() {
           layout="vertical"
           className="form-dense"
           onFinish={(v) => saveMut.mutate(v)}
+          /*
+           * Роль сменили на ту, которой надстройка не положена (ADR 0086), — снимаем её и говорим
+           * об этом. Ошибка поля тут не годится: поле к этому моменту уже скрыто (недоступного
+           * портал не показывает), и показать ошибку было бы негде — форма молча не сохранялась
+           * бы. Молча снять тоже нельзя: человек только что выдал права, и их исчезновение он
+           * должен увидеть, а не обнаружить потом в списке. Сервер такую пару отвергает с 400 —
+           * до него доводить нечего.
+           */
+          onValuesChange={(changed: Partial<UserFormValues>) => {
+            if (!changed.role) return;
+            const selected = (form.getFieldValue('addons') as RoleAddon[] | undefined) ?? [];
+            const dropped = selected.filter((addon) => !canAttachAddon(changed.role, addon));
+            if (dropped.length === 0) return;
+            form.setFieldValue(
+              'addons',
+              selected.filter((addon) => canAttachAddon(changed.role, addon)),
+            );
+            const names = dropped.map((addon) => `«${roleAddonLabels[addon]}»`).join(', ');
+            message.info(
+              dropped.length === 1
+                ? `Надстройка ${names} снята: роли «${roleLabels[changed.role]}» она не положена`
+                : `Надстройки ${names} сняты: роли «${roleLabels[changed.role]}» они не положены`,
+            );
+          }}
         >
           <Form.Item
             name="email"
@@ -975,6 +1051,19 @@ export function UsersTab() {
                 showSearch
                 optionFilterProp="label"
               />
+            </Form.Item>
+          ) : null}
+          {/* Надстройка роли (ADR 0086): что человек умеет сверх своей роли. Стоит после области —
+              сначала «кто и где», потом «что ещё». Чекбоксами, а не выпадающим списком: надстроек
+              наперечёт, и список из одной строки под кликом прятал бы то, что помещается в строку
+              формы. Поля нет вовсе у ролей, которым надстройки не положены (ADR 0033 §6). */}
+          {addonOptions.length > 0 ? (
+            <Form.Item
+              name="addons"
+              label="Надстройки"
+              tooltip="Дополнительные права поверх роли. Область не меняют: человек остаётся на своих объектах и в своём отделе"
+            >
+              <Checkbox.Group options={addonOptions} />
             </Form.Item>
           ) : null}
           {!record ? (

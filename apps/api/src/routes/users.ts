@@ -14,10 +14,12 @@ import {
   isDepartmentScopedRole,
   isObjectScopedRole,
   rejectUserSchema,
+  roleAddonIssue,
   roleLabels,
   setUserPasswordSchema,
   updateUserSchema,
   userListQuerySchema,
+  type RoleAddon,
   type UserDto,
 } from '@technic/contracts';
 import { db } from '../db/client';
@@ -29,10 +31,13 @@ import { hashPassword } from '../auth/password';
 import { revokeAllForUser } from '../auth/sessions';
 import { orderByFrom, pageParams, phoneSearchCondition, searchCondition } from '../lib/pagination';
 import {
+  addonsByUserIds,
+  addonsOfUser,
   departmentIdsOfUser,
   departmentsByUserIds,
   objectIdsOfUser,
   objectsByUserIds,
+  replaceUserAddons,
   replaceUserDepartments,
   replaceUserObjects,
 } from '../services/user-scopes';
@@ -82,6 +87,7 @@ function toDto(
   r: UserRowJoined,
   objects: UserDto['constructionObjects'],
   departments: UserDto['departments'],
+  addons: UserDto['addons'],
 ): UserDto {
   return {
     id: r.id,
@@ -100,6 +106,7 @@ function toDto(
     emailVerifiedAt: r.emailVerifiedAt?.toISOString() ?? null,
     constructionObjects: objects,
     departments,
+    addons,
     counterpartyId: r.counterpartyId,
     counterpartyName: r.counterpartyName,
     counterpartyType: r.counterpartyType,
@@ -143,11 +150,12 @@ function usersQuery() {
 async function fetchUserDto(id: string): Promise<UserDto | null> {
   const [row] = await usersQuery().where(eq(users.id, id));
   if (!row) return null;
-  const [objects, departments] = await Promise.all([
+  const [objects, departments, addons] = await Promise.all([
     objectsByUserIds([id]),
     departmentsByUserIds([id]),
+    addonsByUserIds([id]),
   ]);
-  return toDto(row, objects.get(id) ?? [], departments.get(id) ?? []);
+  return toDto(row, objects.get(id) ?? [], departments.get(id) ?? [], addons.get(id) ?? []);
 }
 
 /**
@@ -228,6 +236,25 @@ function resolveDepartmentIds(role: UserDto['role'], departmentIds: string[]): s
   return departmentIds;
 }
 
+/**
+ * Надстройки учётки (ADR 0086) — третья ось субъекта доступа, а не третья ось области: набор
+ * обнулять по роли, как это делают `resolve*` выше, здесь нечего. Проверяется одно — что каждая
+ * надстройка прикрепляется к этой роли (`ROLE_ADDON_BASE_ROLES`).
+ *
+ * Сверяется **итоговое** состояние учётки: и присланный набор с присланной ролью, и оставшийся от
+ * прежней правки набор с новой ролью. Поэтому смена роли на несовместимую при живой надстройке —
+ * 400, а не тихое снятие: снять доступ молча значило бы отобрать его так, что этого никто не
+ * заметит, и администратор снимает надстройку явно.
+ */
+function resolveAddons(role: UserDto['role'], addons: RoleAddon[]): RoleAddon[] {
+  // Дубль убирается здесь, а не только при записи: этот же набор уходит в журнал, и «выдано
+  // дважды» рассказывало бы о клиенте, а не о правах учётки.
+  const next = [...new Set(addons)];
+  const issue = roleAddonIssue(role, next);
+  if (issue) throw err.badRequest(issue, { addons: issue });
+  return next;
+}
+
 export default async function usersRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
   const guards = { preHandler: [app.authenticate, app.requirePermission('users.manage')] };
@@ -292,13 +319,19 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
       db.select({ c: count() }).from(users).where(where),
     ]);
     const ids = rows.map((row) => row.id);
-    const [objects, departments] = await Promise.all([
+    const [objects, departments, addons] = await Promise.all([
       objectsByUserIds(ids),
       departmentsByUserIds(ids),
+      addonsByUserIds(ids),
     ]);
     return {
       items: rows.map((row) =>
-        toDto(row, objects.get(row.id) ?? [], departments.get(row.id) ?? []),
+        toDto(
+          row,
+          objects.get(row.id) ?? [],
+          departments.get(row.id) ?? [],
+          addons.get(row.id) ?? [],
+        ),
       ),
       total: Number(totalRows[0]!.c),
       page: p.page,
@@ -322,6 +355,7 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
     const counterpartyId = await resolveCounterpartyId(body.role, body.counterpartyId);
     const objectIds = resolveObjectIds(body.role, body.constructionObjectIds);
     const departmentIds = resolveDepartmentIds(body.role, body.departmentIds);
+    const addons = resolveAddons(body.role, body.addons);
     let created;
     try {
       created = await db.transaction(async (tx) => {
@@ -347,6 +381,7 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
           .returning({ id: users.id });
         await replaceUserObjects(tx, row!.id, objectIds, actor.id);
         await replaceUserDepartments(tx, row!.id, departmentIds, actor.id);
+        await replaceUserAddons(tx, row!.id, addons, actor.id);
         return row!;
       });
     } catch (e) {
@@ -357,7 +392,9 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
       action: 'user.create',
       entityType: 'user',
       entityId: created.id,
-      metadata: { role: body.role },
+      // Надстройка — выданный доступ (ADR 0086), и в журнале она стоит рядом с ролью: вопрос «кто
+      // сделал человека оператором оргтехники» задают так же, как «кто выдал ему роль».
+      metadata: { role: body.role, addons },
     });
     reply.code(201);
     return (await fetchUserDto(created.id))!;
@@ -411,14 +448,15 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
       // права учётки после неё другие, поэтому выданные токены гасятся так же, как при смене роли.
       const counterpartyChanged = nextCounterpartyId !== existing.counterpartyId;
 
-      const scopeChanged = await db.transaction(async (tx) => {
+      const { scopeChanged, addonsChanged, addons } = await db.transaction(async (tx) => {
         // Отсутствие поля — «не трогать привязки»; при этом смена роли на объектную или
         // отдельскую требует области и без поля: набор, оставшийся от прежней роли, проверяется
         // наравне с присланным. Смена оси при этом обнуляет чужой набор сама — `resolve*`
         // возвращают пустой список всем, кроме своей роли.
-        const [currentObjects, currentDepartments] = await Promise.all([
+        const [currentObjects, currentDepartments, currentAddons] = await Promise.all([
           objectIdsOfUser(tx, id),
           departmentIdsOfUser(tx, id),
+          addonsOfUser(tx, id),
         ]);
         const nextObjectIds = resolveObjectIds(
           nextRole,
@@ -428,6 +466,10 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
           nextRole,
           body.departmentIds ?? currentDepartments,
         );
+        // Тем же правилом, но с другим исходом: выданная надстройка от смены роли не отваливается,
+        // а запрещает саму смену — 400 из `resolveAddons`. Транзакция при этом откатывается, и
+        // учётка остаётся ровно такой, какой была.
+        const nextAddons = resolveAddons(nextRole, body.addons ?? currentAddons);
         const objectsChanged = await replaceUserObjects(tx, id, nextObjectIds, actor.id);
         const departmentsChanged = await replaceUserDepartments(
           tx,
@@ -436,6 +478,7 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
           actor.id,
         );
         const changed = objectsChanged || departmentsChanged;
+        const addonsSetChanged = await replaceUserAddons(tx, id, nextAddons, actor.id);
         await tx
           .update(users)
           .set({
@@ -448,25 +491,37 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
             isActive: body.isActive ?? existing.isActive,
             counterpartyId: nextCounterpartyId,
             authVersion:
-              roleChanged || counterpartyChanged || deactivated || changed
+              roleChanged || counterpartyChanged || deactivated || changed || addonsSetChanged
                 ? existing.authVersion + 1
                 : existing.authVersion,
             updatedAt: new Date(),
           })
           .where(eq(users.id, id));
-        return changed;
+        return { scopeChanged: changed, addonsChanged: addonsSetChanged, addons: nextAddons };
       });
 
       // Сменившаяся область гасит токены наравне со сменой роли и контрагента: учётке стали
-      // видны другие заявки.
-      const bumpAuth = roleChanged || counterpartyChanged || deactivated || scopeChanged;
+      // видны другие заявки. Сменившийся набор надстроек (ADR 0086) — то же самое с другой
+      // стороны: заявки те же, но действий над ними стало больше или меньше.
+      const bumpAuth =
+        roleChanged || counterpartyChanged || deactivated || scopeChanged || addonsChanged;
       if (bumpAuth) await revokeAllForUser(id);
       await writeAudit({
         actorUserId: actor.id,
         action: 'user.update',
         entityType: 'user',
         entityId: id,
-        metadata: { roleChanged, counterpartyChanged, deactivated, scopeChanged },
+        metadata: {
+          roleChanged,
+          counterpartyChanged,
+          deactivated,
+          scopeChanged,
+          addonsChanged,
+          // Что именно осталось у учётки — только когда набор менялся: снятие надстройки уносит из
+          // `user_role_addons` и строку с `granted_by`, и без этой записи в журнале не осталось бы
+          // следа, чем доступ был до правки.
+          ...(addonsChanged ? { addons } : {}),
+        },
       });
       return (await fetchUserDto(id))!;
     },
@@ -617,7 +672,8 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
    *
    * Кто держит учётку, решает БД: заявки, история статусов, назначения, путевые листы и рейсы
    * ссылаются на неё `ON DELETE RESTRICT` — учётка работавшего человека не удалится, и это
-   * правильно. Объекты, отделы и refresh-сессии уходят каскадом: они существуют только при ней.
+   * правильно. Объекты, отделы, надстройки роли и refresh-сессии уходят каскадом: они существуют
+   * только при ней.
    */
   registerPurgeRoute(app, {
     load: async (id) => {

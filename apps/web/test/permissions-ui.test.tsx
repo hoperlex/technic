@@ -50,6 +50,8 @@ const userFor = (subject: ScopedSubject): AuthUser | null =>
         constructionObjectIds: isObjectScopedRole(subject.role) ? [OBJECT_A] : [],
         departmentIds: isDepartmentScopedRole(subject.role) ? [DEPARTMENT_A] : [],
         departmentObjectIds: [...(subject.departmentObjectIds ?? [])],
+        // Надстройки роли (ADR 0086) — третья ось субъекта: права поверх роли, область не трогают.
+        addons: [...(subject.addons ?? [])],
       })
     : null;
 
@@ -191,6 +193,17 @@ describe('пункты меню следуют из прав', () => {
     expect(screen.queryByText('Справочники')).toBeNull();
   });
 
+  it('надстройка «Оператор (оргтехника)» открывает штабу справочники (ADR 0086)', () => {
+    // Права `officeEquipment.write` у роли штаба нет — его даёт надстройка поверх роли, и раздел
+    // открывается ей одной. Проверяются оба состояния подряд: видимый пункт сам по себе ничего не
+    // доказывает, доказывает разница между учёткой с надстройкой и той же учёткой без неё.
+    const { unmount } = renderMenu({ role: 'shtab', addons: ['office_equipment_operator'] });
+    expect(screen.getByText('Справочники')).toBeDefined();
+    unmount();
+    renderMenu('shtab');
+    expect(screen.queryByText('Справочники')).toBeNull();
+  });
+
   it('коменданту показывают вывоз мусора и не показывают заказ ТС', () => {
     renderMenu('commandant');
     expect(screen.getByText('Вывоз мусора')).toBeDefined();
@@ -235,6 +248,9 @@ describe('нижняя навигация на мобильном повторя
       'Путевые листы',
       // Гараж (ADR 0076) стоит после листов — рядом с тем, из чего собран его срез.
       'Гараж',
+      // Орг.техника (ADR 0085) — третий модуль заявок; стоит перед справочниками, потому что
+      // справочник оргтехники ведут уже в них.
+      'Орг.техника',
       'Справочники',
       'Администрирование',
     ]);
@@ -289,12 +305,14 @@ describe('нижняя навигация на мобильном повторя
     expect(mobileNavLabels(executor('vehicle_lessor'))).not.toContain('Гараж');
   });
 
-  it('штаб — оба модуля заявок, без справочников', () => {
-    expect(mobileNavLabels('shtab')).toEqual(['Вывоз мусора', 'Заказ ТС']);
+  // Заявки на обслуживание оргтехники (ADR 0085) заводит заказчик — штаб объекта и отдел, —
+  // поэтому раздел встаёт третьим у тех же ролей, что ведут вывоз и заказ техники.
+  it('штаб — три модуля заявок, без справочников', () => {
+    expect(mobileNavLabels('shtab')).toEqual(['Вывоз мусора', 'Заказ ТС', 'Орг.техника']);
   });
 
-  it('руководитель строительства — оба модуля заявок, как у штаба (ADR 0031)', () => {
-    expect(mobileNavLabels('rukstroy')).toEqual(['Вывоз мусора', 'Заказ ТС']);
+  it('руководитель строительства — те же модули, что у штаба (ADR 0031)', () => {
+    expect(mobileNavLabels('rukstroy')).toEqual(['Вывоз мусора', 'Заказ ТС', 'Орг.техника']);
   });
 
   it('комендант — только вывоз мусора: техника не его модуль', () => {
@@ -309,8 +327,8 @@ describe('нижняя навигация на мобильном повторя
     expect(mobileNavLabels(executor('vehicle_lessor'))).toEqual(['Заказ ТС']);
   });
 
-  it('наблюдатель — оба модуля заявок, смотреть их можно и с телефона (ADR 0033)', () => {
-    expect(mobileNavLabels('observer')).toEqual(['Вывоз мусора', 'Заказ ТС']);
+  it('наблюдатель — все модули заявок, смотреть их можно и с телефона (ADR 0033)', () => {
+    expect(mobileNavLabels('observer')).toEqual(['Вывоз мусора', 'Заказ ТС', 'Орг.техника']);
   });
 
   it('открытый раздел помечен для скринридера и подписан в шапке', () => {

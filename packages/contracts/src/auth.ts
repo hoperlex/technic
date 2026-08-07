@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { optionalPhoneSchema } from './common';
 import { emailSchema } from './email';
 import type { CounterpartyType } from './counterparties';
+import type { RoleAddon } from './role-addons';
 import type { Role } from './enums';
 import { passwordIdentityIssue, passwordSchema } from './password';
 import { personNameFields, type PersonNameParts } from './person-name';
@@ -175,6 +176,12 @@ export interface AuthUser extends PersonNameParts {
    * котором она работает, поэтому портал спрашивает права по паре «роль + тип», а не по роли.
    */
   counterpartyType: CounterpartyType | null;
+  /**
+   * Надстройки роли (ADR 0086) — третий источник прав. Портал считает права тем же `can`, что и
+   * сервер, и без этого поля он о надстройке не узнал бы вовсе: раздел и кнопки остались бы
+   * скрытыми у человека, которому сервер их разрешает.
+   */
+  addons: RoleAddon[];
 }
 
 export interface LoginResult {

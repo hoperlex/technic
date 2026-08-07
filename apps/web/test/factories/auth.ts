@@ -22,6 +22,9 @@ export function authUser(overrides: Partial<AuthUser> = {}): AuthUser {
     departmentIds: [],
     departmentObjectIds: [],
     counterpartyType: null,
+    // Надстроек роли (ADR 0086) у большинства учёток нет: сценарий, которому они нужны, задаёт их
+    // сам — умолчанием здесь стоит «прав сверх роли не выдано».
+    addons: [],
     ...overrides,
   };
 }

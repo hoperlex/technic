@@ -3,9 +3,17 @@ import {
   isCounterpartyScopedRole,
   isDepartmentScopedRole,
   isObjectScopedRole,
+  roleLabels,
   roleSchema,
   type Role,
 } from './enums';
+import {
+  incompatibleAddon,
+  roleAddonLabels,
+  roleAddonsSchema,
+  ROLE_ADDON_BASE_ROLES,
+  type RoleAddon,
+} from './role-addons';
 import type { CounterpartyType } from './counterparties';
 import { baseListQuery, dateOnlySchema, optionalPhoneSchema, uuidSchema } from './common';
 import { passwordIdentityIssue, passwordSchema } from './password';
@@ -70,6 +78,25 @@ export const constructionObjectIdsSchema = z.array(uuidSchema).max(50);
  */
 export const departmentIdsSchema = z.array(uuidSchema).max(50);
 
+/**
+ * Почему набор надстроек не годится этой роли (ADR 0086) — одним текстом на форму и на сервер.
+ *
+ * Сообщение называет виноватую надстройку и роли, которым она положена: «сохранить не вышло» без
+ * имени читается как отказ всей карточки, а список надстроек в портале один на все роли, и почему
+ * именно эта не подошла, из формы не видно.
+ */
+export function roleAddonIssue(
+  role: Role | null | undefined,
+  addons: readonly RoleAddon[],
+): string | null {
+  const bad = incompatibleAddon(role, addons);
+  if (!bad) return null;
+  const allowed = ROLE_ADDON_BASE_ROLES[bad].map((r) => `«${roleLabels[r]}»`).join(' или ');
+  return role
+    ? `Надстройка «${roleAddonLabels[bad]}» не прикрепляется к роли «${roleLabels[role]}»: она для ${allowed}`
+    : `Надстройка «${roleAddonLabels[bad]}» выдаётся вместе с ролью — сначала назначьте ${allowed}`;
+}
+
 export const createUserSchema = z
   .object({
     email: z.string().email().max(255),
@@ -81,6 +108,11 @@ export const createUserSchema = z
     isActive: z.boolean().default(true),
     constructionObjectIds: constructionObjectIdsSchema.optional().default([]),
     departmentIds: departmentIdsSchema.optional().default([]),
+    /**
+     * Надстройки роли (ADR 0086): набор дополнительных прав поверх роли, область он не меняет
+     * (Р4). Полным списком, как объекты и отделы, — сервер синхронизирует набор.
+     */
+    addons: roleAddonsSchema.optional().default([]),
     /**
      * Контрагент учётки: обязателен для внешнего исполнителя — задаёт и чьи заявки он видит
      * (ADR 0010), и в каком модуле работает, потому что модуль следует из типа контрагента
@@ -113,21 +145,41 @@ export const createUserSchema = z
   .superRefine((v, ctx) => {
     const issue = passwordIdentityIssue(v.password, [v.email, v.lastName, v.firstName]);
     if (issue) ctx.addIssue({ code: 'custom', message: issue, path: ['password'] });
+  })
+  // Надстройка прикрепляется не к любой роли (ADR 0086, `ROLE_ADDON_BASE_ROLES`): «Оператор
+  // (оргтехника)» на арендодателе ТС — доступ, которого никто не назначал. На форме, а не только
+  // на сервере, по той же причине, что и остальные пары «роль ↔ набор»: иначе ошибка придёт общим
+  // 400 без указания поля.
+  .superRefine((v, ctx) => {
+    const issue = roleAddonIssue(v.role, v.addons);
+    if (issue) ctx.addIssue({ code: 'custom', message: issue, path: ['addons'] });
   });
 export type CreateUserInput = z.infer<typeof createUserSchema>;
 
-export const updateUserSchema = z.object({
-  ...personNamePartialFields,
-  /** Отсутствие поля — не трогать телефон; пустая строка — стереть (номер сменился на «не знаю»). */
-  phone: optionalPhoneSchema.optional(),
-  role: roleSchema.optional(),
-  isActive: z.boolean().optional(),
-  /** Полный список объектов; отсутствие поля — не трогать привязки (как у operatorIds объекта). */
-  constructionObjectIds: constructionObjectIdsSchema.optional(),
-  /** Полный список отделов; отсутствие поля — не трогать привязки (ADR 0040). */
-  departmentIds: departmentIdsSchema.optional(),
-  counterpartyId: uuidSchema.nullish(),
-});
+export const updateUserSchema = z
+  .object({
+    ...personNamePartialFields,
+    /** Отсутствие поля — не трогать телефон; пустая строка — стереть (номер сменился на «не знаю»). */
+    phone: optionalPhoneSchema.optional(),
+    role: roleSchema.optional(),
+    isActive: z.boolean().optional(),
+    /** Полный список объектов; отсутствие поля — не трогать привязки (как у operatorIds объекта). */
+    constructionObjectIds: constructionObjectIdsSchema.optional(),
+    /** Полный список отделов; отсутствие поля — не трогать привязки (ADR 0040). */
+    departmentIds: departmentIdsSchema.optional(),
+    /** Полный список надстроек; отсутствие поля — не трогать выданные (ADR 0086). */
+    addons: roleAddonsSchema.optional(),
+    counterpartyId: uuidSchema.nullish(),
+  })
+  // Совместимость сверяется только когда в правке есть и роль, и набор: иначе судить не о чем —
+  // недостающую половину знает лишь сервер, и он же отвечает 400 по итоговому состоянию учётки.
+  // Смена роли на несовместимую при живой надстройке отсюда не видна намеренно: молча снимать
+  // доступ нельзя, и отказ приходит с сервера.
+  .superRefine((v, ctx) => {
+    if (v.role === undefined || v.addons === undefined) return;
+    const issue = roleAddonIssue(v.role, v.addons);
+    if (issue) ctx.addIssue({ code: 'custom', message: issue, path: ['addons'] });
+  });
 export type UpdateUserInput = z.infer<typeof updateUserSchema>;
 
 export const setUserPasswordSchema = z.object({
@@ -184,6 +236,12 @@ export interface UserDto extends PersonNameParts {
   constructionObjects: UserObjectRefDto[];
   /** Отделы учётки (ADR 0040); непусты только у ролей отдела — вместе с объектами не бывают. */
   departments: UserDepartmentRefDto[];
+  /**
+   * Надстройки роли (ADR 0086) — кодами, а не подписями: подпись у надстройки одна на портал
+   * (`roleAddonLabels`), и вторая её копия в ответе сервера разошлась бы с первой. Пустой массив —
+   * надстроек нет; список учёток по нему решает, рисовать ли пометку рядом с ролью.
+   */
+  addons: RoleAddon[];
   counterpartyId: string | null;
   counterpartyName: string | null;
   /** Тип контрагента: у внешнего исполнителя им заданы модуль и набор прав (ADR 0038). */

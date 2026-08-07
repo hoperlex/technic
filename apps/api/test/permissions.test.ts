@@ -3,6 +3,7 @@ import {
   ACCESS_PROFILES,
   accessProfileLabel,
   actsForCounterparty,
+  allowedServiceStatusTransitions,
   allowedStatusTransitions,
   can,
   canTransitionStatus,
@@ -10,6 +11,7 @@ import {
   COUNTERPARTY_TYPE_PERMISSIONS,
   COUNTERPARTY_TYPES,
   COUNTERPARTY_TYPES_WITH_ACCOUNTS,
+  counterpartyTypeHasAccounts,
   isCounterpartyScopedRole,
   isDepartmentScopedRole,
   isObjectScopedRole,
@@ -18,9 +20,12 @@ import {
   PERMISSIONS,
   permissionsFor,
   profilesWith,
+  ROLE_ADDON_PERMISSIONS,
   ROLE_PERMISSIONS,
   ROLES,
+  SERVICE_REQUEST_PERMISSIONS,
   type AccessSubject,
+  type CounterpartyType,
   type Permission,
   type Role,
 } from '@technic/contracts';
@@ -33,6 +38,34 @@ const of = (role: Role): AccessSubject => ({ role });
 /** Внешний исполнитель: роль плюс тип контрагента — модуль работы задаёт он (ADR 0038). */
 const wasteOperator: AccessSubject = { role: 'operator', counterpartyType: 'operator' };
 const vehicleLessor: AccessSubject = { role: 'operator', counterpartyType: 'vehicle_lessor' };
+/** Сервисная компания (ADR 0085) — третий тип с учётками: исполнитель заявок на обслуживание. */
+const serviceCompany: AccessSubject = { role: 'operator', counterpartyType: 'service' };
+
+/** Заказчики модуля обслуживания (ADR 0085): площадка и офис — по две роли с каждой стороны. */
+const SERVICE_CUSTOMER_ROLES: Role[] = ['shtab', 'rukstroy', 'department', 'department_head'];
+
+/** Оператор оргтехники (ADR 0086) — надстройка на своих базовых ролях. */
+const officeOperators: AccessSubject[] = [
+  { role: 'shtab', addons: ['office_equipment_operator'] },
+  { role: 'department', addons: ['office_equipment_operator'] },
+];
+
+/**
+ * Профиль без надстроек (ADR 0086) — субъект «роль как есть» (плюс тип контрагента у исполнителя).
+ * Надстройка выдаётся поимённо, конкретной учётке, а роль означает «всем, кто так работает»: круги
+ * этих двух ответов считаются по отдельности и сравниваются тоже по отдельности.
+ */
+const isPlainProfile = (s: AccessSubject): boolean => !s.addons?.length;
+
+/** Роли, которым право даёт сама роль, — обратный поиск без профилей с надстройкой. */
+const rolesWith = (permission: Permission): (Role | null)[] =>
+  profilesWith(permission)
+    .filter(isPlainProfile)
+    .map((s) => s.role);
+
+/** Профили, у которых право есть при надстройке (ADR 0086), — второй половиной того же поиска. */
+const addonProfilesWith = (permission: Permission): AccessSubject[] =>
+  profilesWith(permission).filter((s) => !isPlainProfile(s));
 
 describe('матрица прав', () => {
   it('у каждой роли объявлен свой набор прав, и все права из него существуют', () => {
@@ -73,6 +106,24 @@ describe('матрица прав', () => {
       expect(can(of('admin'), permission), permission).toBe(true);
     }
   });
+
+  /**
+   * Надстройка (ADR 0086) — третий источник прав, и в матрице она обязана оставаться добавкой:
+   * профиль с надстройкой отличается от своей базовой роли ровно на её права — не больше и не в
+   * другую сторону. Проверка идёт по всем профилям сразу, а не по одному штабу: следующая
+   * надстройка попадёт сюда сама, и первое же лишнее право уронит тест — в том числе право,
+   * приписанное надстройке вместо роли (тогда оно потерялось бы у всех, кому надстройку не выдали).
+   */
+  it('профиль с надстройкой = базовая роль плюс права надстройки', () => {
+    const withAddons = ACCESS_PROFILES.filter((s) => !isPlainProfile(s));
+    expect(withAddons).not.toEqual([]);
+    for (const profile of withAddons) {
+      const granted = (profile.addons ?? []).flatMap((addon) => ROLE_ADDON_PERMISSIONS[addon]);
+      expect(new Set(permissionsFor(profile)), accessProfileLabel(profile)).toEqual(
+        new Set([...permissionsFor({ role: profile.role }), ...granted]),
+      );
+    }
+  });
 });
 
 describe('права ролей', () => {
@@ -91,6 +142,61 @@ describe('права ролей', () => {
       'manager',
       'dispatcher',
     ]);
+  });
+
+  /**
+   * Справочник оргтехники (ADR 0085) — своя пара прав, а не общая справочниковая. Чтение шире
+   * ведения ровно потому, что заявку на ремонт заводят по конкретной единице: не увидев карточек,
+   * заказчик не выберет ту, которая сломалась. Перечислением, а не выборочными проверками: круг
+   * читающих — это и есть решение, и роль, попавшая сюда по недосмотру, обязана уронить тест.
+   *
+   * С ADR 0086 ведение получают четвёртым способом — надстройкой «Оператор (оргтехника)», — и это
+   * не отменяет главного: ролью справочник по-прежнему ведут те же трое, кто ведёт остальные.
+   * Круги считаются по отдельности (`rolesWith` против `addonProfilesWith`) именно поэтому: сложи
+   * их в один список — и право, случайно выданное целой роли, затерялось бы среди выданных
+   * поимённо, а тест бы этого не заметил.
+   */
+  it('справочник оргтехники: читают заказчики и наблюдатель, ведут те же, кто ведёт справочники', () => {
+    expect(rolesWith('officeEquipment.read')).toEqual([
+      'admin',
+      'manager',
+      'dispatcher',
+      'shtab',
+      'rukstroy',
+      'department',
+      'department_head',
+      'observer',
+    ]);
+    expect(rolesWith('officeEquipment.write')).toEqual(['admin', 'manager', 'dispatcher']);
+    // Надстройка — единственная добавка к этому кругу, и достаётся она ровно тем двум базовым
+    // ролям, за которыми справочник закреплён (ADR 0086): площадке и офису. Пара сверх этих двух
+    // означала бы ведение парка, которого никто не назначал.
+    expect(addonProfilesWith('officeEquipment.write').map(accessProfileLabel)).toEqual([
+      'Штаб + Оператор (оргтехника)',
+      'Отдел + Оператор (оргтехника)',
+    ]);
+    // Чтение надстройка не расширяет: его базовые роли и так имеют, а больше её никому не дают.
+    expect(addonProfilesWith('officeEquipment.read').map(accessProfileLabel)).toEqual([
+      'Штаб + Оператор (оргтехника)',
+      'Отдел + Оператор (оргтехника)',
+    ]);
+    // Комендант закрыт целиком, как и в «Заказе ТС»: оргтехнику на площадке заказывает штаб, а
+    // `directories.read` (оно у коменданта есть) карточку единицы не открывает — право своё.
+    expect(can(of('commandant'), 'officeEquipment.read')).toBe(false);
+    expect(can(of('commandant'), 'officeEquipment.write')).toBe(false);
+    expect(can(of('commandant'), 'directories.read')).toBe(true);
+    // Заказчики только читают: справочник ведёт ответственный за оргтехнику, а не тот, кто подаёт
+    // заявку на ремонт. Ролью — никто из них: надстройка выдаётся учётке, и «штаб» вообще ей не
+    // равен (иначе оператором оргтехники стал бы каждый штаб компании, ADR 0086).
+    for (const role of [
+      'shtab',
+      'rukstroy',
+      'department',
+      'department_head',
+      'observer',
+    ] as Role[]) {
+      expect(can(of(role), 'officeEquipment.write'), role).toBe(false);
+    }
   });
 
   it('руководитель строительства ведёт заявки своего объекта и визирует технику (ADR 0025, 0031)', () => {
@@ -217,15 +323,30 @@ describe('права ролей', () => {
    * проверками, потому что смысл роли в том, чего у неё нет. Новое право, попавшее сюда по
    * недосмотру, обязано уронить этот тест.
    */
-  it('наблюдатель только смотрит: три права на чтение и ничего больше (ADR 0033)', () => {
+  it('наблюдатель только смотрит: одни права на чтение и ничего больше (ADR 0033)', () => {
+    // Набор сверяется целиком, а не выборочно: смысл роли — в том, чего у неё нет, и право,
+    // попавшее сюда по недосмотру, обязано ронять тест. Справочник оргтехники (ADR 0085) добавлен
+    // осознанно: у наблюдателя сквозной просмотр, а карточка единицы — часть картины по компании.
+    // Третий модуль заявок (ADR 0085) пришёл к нему тем же одним чтением: чтений стало три, а
+    // действий по-прежнему ноль — именно это и делает роль наблюдателем.
     expect([...permissionsFor(of('observer'))].sort()).toEqual([
       'directories.read',
+      'officeEquipment.read',
+      'serviceRequests.read',
       'vehicleRequests.read',
       'wasteRequests.read',
     ]);
-    // Оба модуля заявок видны целиком, без сужения по объекту.
+    // Ни одного права, которое не кончается на `.read`: перечень выше сверяет состав, а это —
+    // правило, по которому он собран, и следующий модуль обязан прийти сюда одним чтением.
+    for (const permission of permissionsFor(of('observer'))) {
+      expect(permission.endsWith('.read'), permission).toBe(true);
+    }
+    // Все три модуля заявок видны целиком, без сужения по объекту.
     expect(isObjectScopedRole('observer')).toBe(false);
     expect(allowedStatusTransitions('new', of('observer'))).toEqual([]);
+    // Ход сервисной заявки наблюдателю закрыт так же, как ход двух остальных модулей: чтение
+    // раздела не даёт ни одной дуги (полный перебор статусов — в `service-corridors.test.ts`).
+    expect(allowedServiceStatusTransitions('new', of('observer'))).toEqual([]);
   });
 
   it('объектные роли работают в пределах своего объекта', () => {
@@ -380,11 +501,41 @@ describe('права внешнего исполнителя зависят от
     }
   });
 
+  /**
+   * Сервисная компания (ADR 0085) — исполнитель заявок на обслуживание оргтехники, и справочника
+   * оргтехники у неё нет намеренно. Связи «единица ↔ обслуживающий её сервис» в портале не
+   * существует: «его» техника в справочнике ничем не отмечена, и право означало бы доступ ко
+   * всему парку компании — к каждому кабинету и к каждому инвентарному номеру. Реквизиты нужной
+   * единицы приходят к нему снимком в самой заявке (Р10), и этого для ремонта достаточно.
+   */
+  it('сервисной компании справочник оргтехники закрыт (ADR 0085)', () => {
+    const service = serviceCompany;
+    expect(can(service, 'officeEquipment.read')).toBe(false);
+    expect(can(service, 'officeEquipment.write')).toBe(false);
+    // И это не особенность сервиса: справочник закрыт любому внешнему исполнителю.
+    for (const subject of [wasteOperator, vehicleLessor, of('operator')]) {
+      expect(can(subject, 'officeEquipment.read'), String(subject.counterpartyType)).toBe(false);
+      expect(can(subject, 'officeEquipment.write'), String(subject.counterpartyType)).toBe(false);
+    }
+  });
+
   it('учётки заводятся только на тех контрагентов, за которых кто-то работает', () => {
-    expect([...COUNTERPARTY_TYPES_WITH_ACCOUNTS]).toEqual(['operator', 'vehicle_lessor']);
+    // Список полный и в порядке самого перечня типов: сервисная компания (ADR 0085) пришла сюда
+    // третьей — не строкой второго списка, а тем, что у типа появились права.
+    expect([...COUNTERPARTY_TYPES_WITH_ACCOUNTS]).toEqual([
+      'operator',
+      'vehicle_lessor',
+      'service',
+    ]);
     // Поставщик (ADR 0051) — сторона договора, а не исполнитель: учётки на него не заводятся,
-    // и войти в портал «от поставщика» нельзя.
-    expect([...COUNTERPARTY_TYPES_WITH_ACCOUNTS]).not.toContain('supplier');
+    // и войти в портал «от поставщика» нельзя. Генподрядчик и подрядчик — там же: их сотрудники
+    // работают в портале под собственными ролями, а не «от контрагента».
+    for (const type of ['general_contractor', 'contractor', 'supplier'] as CounterpartyType[]) {
+      expect([...COUNTERPARTY_TYPES_WITH_ACCOUNTS], type).not.toContain(type);
+      expect(counterpartyTypeHasAccounts(type), type).toBe(false);
+    }
+    expect(counterpartyTypeHasAccounts('service')).toBe(true);
+    expect(counterpartyTypeHasAccounts(null)).toBe(false);
     for (const type of COUNTERPARTY_TYPES) {
       const hasAccounts = COUNTERPARTY_TYPES_WITH_ACCOUNTS.includes(type);
       expect(COUNTERPARTY_TYPE_PERMISSIONS[type].length > 0, type).toBe(hasAccounts);
@@ -401,15 +552,153 @@ describe('права внешнего исполнителя зависят от
   });
 
   it('профили доступа перечисляют исполнителя по разу на каждый тип контрагента', () => {
+    // Три профиля, а не два: тип с правами — это тип, за который в портале работают, и своим
+    // субъектом он обязан попасть в перебор «всех, кто бывает в портале». Перечислением, а не
+    // счётом: пропавший профиль означал бы субъекта, которого перестали проверять тесты доступа.
     expect(ACCESS_PROFILES.filter((s) => s.role === 'operator')).toEqual([
       wasteOperator,
       vehicleLessor,
+      serviceCompany,
     ]);
-    // Остальные роли — по одному профилю: контрагента у них нет.
-    expect(ACCESS_PROFILES.filter((s) => s.role !== 'operator')).toHaveLength(ROLES.length - 1);
+    // Ровно по разу на тип с учётками — и в том же порядке: перечень профилей выводится из
+    // матрицы, а не поддерживается вторым списком.
+    expect(
+      ACCESS_PROFILES.filter((s) => s.role === 'operator').map((s) => s.counterpartyType),
+    ).toEqual([...COUNTERPARTY_TYPES_WITH_ACCOUNTS]);
+    // Остальные роли — по одному профилю: контрагента у них нет. Профили с надстройкой (ADR 0086)
+    // из этого счёта исключены намеренно: надстройка — не второй профиль роли, а третья ось
+    // субъекта, и перечисляется она отдельно, следующей проверкой.
+    expect(
+      ACCESS_PROFILES.filter(isPlainProfile).filter((s) => s.role !== 'operator'),
+    ).toHaveLength(ROLES.length - 1);
     expect(accessProfileLabel(vehicleLessor)).toBe(
       'Оператор (внешний исполнитель) — Арендодатель (ТС)',
     );
+  });
+
+  /**
+   * Надстройка даёт свой различимый субъект (ADR 0086): «штаб» и «штаб с надстройкой» отвечают на
+   * `can` по-разному, и перебор «всех, кто бывает в портале» обязан видеть обоих. Перечислением, а
+   * не счётом пар: пара, попавшая сюда лишней, — это доступ, которого никто не назначал, а
+   * пропавшая — субъект, которого перестали проверять тесты доступа.
+   */
+  it('профили доступа перечисляют пары «базовая роль × надстройка» (ADR 0086)', () => {
+    expect(ACCESS_PROFILES.filter((s) => !isPlainProfile(s))).toEqual([
+      { role: 'shtab', addons: ['office_equipment_operator'] },
+      { role: 'department', addons: ['office_equipment_operator'] },
+    ]);
+    expect(accessProfileLabel({ role: 'shtab', addons: ['office_equipment_operator'] })).toBe(
+      'Штаб + Оператор (оргтехника)',
+    );
+  });
+});
+
+/**
+ * Модуль заявок на обслуживание оргтехники (ADR 0085) — первый, чьи девять прав раздаются трём
+ * разным сторонам сразу: заказчик заводит, оператор оргтехники решает, сервис работает. Проверяется
+ * здесь именно раздача; какие переходы из этих прав следуют — в `service-corridors.test.ts`.
+ */
+describe('заявки на обслуживание оргтехники (ADR 0085)', () => {
+  /** Права модуля у субъекта, без общего префикса: так их сравнивать между сторонами. */
+  const moduleOf = (subject: AccessSubject) =>
+    permissionsFor(subject)
+      .filter((p) => p.startsWith('serviceRequests.'))
+      .map((p) => p.slice('serviceRequests.'.length))
+      .sort();
+
+  /**
+   * Список прав модуля — не второй перечень рядом с матрицей, а её же срез: он нужен и проверке
+   * «открыт ли раздел», и тестам. Разъехавшись с матрицей, он молча перестал бы кого-нибудь
+   * закрывать.
+   */
+  it('прав у модуля девять, и список модуля выводится из матрицы', () => {
+    expect([...SERVICE_REQUEST_PERMISSIONS]).toEqual(
+      PERMISSIONS.filter((p) => p.startsWith('serviceRequests.')),
+    );
+    expect(SERVICE_REQUEST_PERMISSIONS).toHaveLength(9);
+    // Право без единого держателя — мёртвая строка матрицы: она выглядит как раздача доступа, а
+    // означает «этого не может никто».
+    for (const permission of SERVICE_REQUEST_PERMISSIONS) {
+      expect(profilesWith(permission).length, permission).toBeGreaterThan(0);
+    }
+  });
+
+  /**
+   * Заказчиков четверо: обе роли площадки и обе роли офиса. Сравнением, а не четырьмя
+   * перечислениями: разойдясь, два заказчика одной и той же заявки получили бы разный портал —
+   * штаб завёл бы, а руководитель строительства не смог бы приложить к ней фотографию.
+   */
+  it('заказчик заводит, правит, удаляет и подшивает — и все четыре роли одинаково', () => {
+    for (const role of SERVICE_CUSTOMER_ROLES) {
+      expect(moduleOf(of(role)), role).toEqual(['create', 'delete', 'files', 'read', 'update']);
+    }
+    // Комендант закрыт целиком: оргтехника на площадке идёт через штаб, как и заказ техники.
+    expect(moduleOf(of('commandant'))).toEqual([]);
+    // Менеджер и диспетчер ведут справочник оргтехники, но не модуль заявок: ремонтом занимается
+    // ответственный за оргтехнику, а не диспетчер вывоза.
+    expect(moduleOf(of('manager'))).toEqual([]);
+    expect(moduleOf(of('dispatcher'))).toEqual([]);
+  });
+
+  it('ход заявки заказчику не выдан: он её просит, а не ведёт', () => {
+    for (const role of SERVICE_CUSTOMER_ROLES) {
+      for (const permission of [
+        'serviceRequests.assign',
+        'serviceRequests.estimate',
+        'serviceRequests.approveEstimate',
+        'serviceRequests.status',
+      ] as Permission[]) {
+        expect(can(of(role), permission), `${role}: ${permission}`).toBe(false);
+      }
+    }
+  });
+
+  /**
+   * Решения по заявке приходят надстройкой (ADR 0086), а не ролью: назначает сервис и принимает
+   * работу один назначенный человек, а не всякий, кто завёл заявку. Обратным поиском — так видно,
+   * что второго держателя у этих прав нет.
+   */
+  it('решения по заявке — у оператора оргтехники и администратора', () => {
+    for (const permission of [
+      'serviceRequests.assign',
+      'serviceRequests.approveEstimate',
+    ] as Permission[]) {
+      expect(rolesWith(permission), permission).toEqual(['admin']);
+      expect(addonProfilesWith(permission).map(accessProfileLabel), permission).toEqual([
+        'Штаб + Оператор (оргтехника)',
+        'Отдел + Оператор (оргтехника)',
+      ]);
+    }
+    // Смету оператор согласует, но не пишет: выданные одному субъекту, эти два права превратили бы
+    // согласование в подпись под собственной работой (перебор коридоров — в service-corridors).
+    for (const subject of officeOperators) {
+      expect(can(subject, 'serviceRequests.approveEstimate'), accessProfileLabel(subject)).toBe(
+        true,
+      );
+      expect(can(subject, 'serviceRequests.estimate'), accessProfileLabel(subject)).toBe(false);
+    }
+  });
+
+  /**
+   * Исполнителя задаёт тип контрагента, а не роль (ADR 0038): «оператор» с контрагентом-сервисом
+   * ведёт смету, тот же «оператор» с контрагентом вывоза не видит модуля вовсе. Заводить и править
+   * заявки исполнитель не может ни в одном из трёх модулей — это граница модели.
+   */
+  it('сервисная компания ведёт смету и свою часть цикла, но заявок не заводит', () => {
+    expect(moduleOf(serviceCompany)).toEqual(['estimate', 'files', 'read', 'status']);
+    expect(moduleOf(wasteOperator)).toEqual([]);
+    expect(moduleOf(vehicleLessor)).toEqual([]);
+    // Право сметы — стороны исполнителя: вне контрагента `service` оно есть только у
+    // администратора, и именно оно (а не имя роли) открывает ему шаги исполнителя.
+    expect(profilesWith('serviceRequests.estimate').map(accessProfileLabel)).toEqual([
+      'Администратор',
+      'Оператор (внешний исполнитель) — Сервисная компания',
+    ]);
+  });
+
+  /** Наблюдатель — сквозной просмотр без единого действия, тем же одним чтением (полный набор выше). */
+  it('наблюдатель видит модуль и не делает в нём ничего', () => {
+    expect(moduleOf(of('observer'))).toEqual(['read']);
   });
 });
 

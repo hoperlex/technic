@@ -5,8 +5,9 @@ import {
   constructionObjectIdsExpr,
   departmentIdsExpr,
   departmentObjectIdsExpr,
+  roleAddonsExpr,
 } from '../services/user-scopes';
-import type { AccessSubject, CounterpartyType, Role } from '@technic/contracts';
+import type { AccessSubject, CounterpartyType, Role, RoleAddon } from '@technic/contracts';
 
 /** Принципал — субъект доступа (ADR 0038): права спрашиваются у пары «роль + тип контрагента». */
 export interface Principal extends AccessSubject {
@@ -47,6 +48,14 @@ export interface Principal extends AccessSubject {
    * нельзя по той же причине, по которой там не хранится роль.
    */
   counterpartyType: CounterpartyType | null;
+  /**
+   * Надстройки роли (ADR 0086): третий источник прав. Массив всегда, пусть и пустой, — `can`
+   * читает его как есть, и «нет надстроек» не должно отличаться в коде от «надстройки есть».
+   *
+   * Читается из БД на каждом запросе вместе с ролью и типом контрагента: набор меняет права
+   * учётки, и кэшировать его в токене нельзя по той же причине, по которой там не хранится роль.
+   */
+  addons: RoleAddon[];
   authVersion: number;
 }
 
@@ -62,6 +71,7 @@ export async function loadPrincipal(userId: string): Promise<Principal | null> {
       constructionObjectIds: constructionObjectIdsExpr,
       departmentIds: departmentIdsExpr,
       departmentObjectIds: departmentObjectIdsExpr,
+      addons: roleAddonsExpr,
     })
     .from(users)
     .leftJoin(counterparties, eq(users.counterpartyId, counterparties.id))
@@ -84,6 +94,7 @@ export async function loadPrincipal(userId: string): Promise<Principal | null> {
     departmentObjectIds: row.departmentObjectIds,
     counterpartyId: u.counterpartyId,
     counterpartyType: row.counterpartyType,
+    addons: row.addons,
     authVersion: u.authVersion,
   };
 }

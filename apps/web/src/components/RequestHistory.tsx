@@ -122,7 +122,22 @@ export interface HistoryRow {
   details?: ReactNode;
 }
 
-function StatusBubbles({ row }: { row: HistoryRow }) {
+/**
+ * Подписи и цвета статусов модуля. По умолчанию — общий перечень заявок («Вывоз мусора», «Заказ
+ * ТС»), но у модуля обслуживания оргтехники цикл свой (ADR 0085), и его статусы этот словарь не
+ * знает: без параметра переход подписывался бы чужими словами или пустотой.
+ */
+export interface HistoryStatusDict {
+  labels: Record<string, string>;
+  colors: Record<string, string>;
+}
+
+const DEFAULT_STATUS_DICT: HistoryStatusDict = {
+  labels: requestStatusLabels,
+  colors: requestStatusColors,
+};
+
+function StatusBubbles({ row, statuses }: { row: HistoryRow; statuses: HistoryStatusDict }) {
   const e = row.entry;
   if (!e) return <Tag style={tagStyle}>{row.tag ?? '—'}</Tag>;
   if (e.kind === 'status' || e.kind === 'created') {
@@ -132,14 +147,14 @@ function StatusBubbles({ row }: { row: HistoryRow }) {
       <Space size={4} wrap>
         {e.fromStatus && (
           <>
-            <Tag color={requestStatusColors[e.fromStatus]} style={tagStyle}>
-              {requestStatusLabels[e.fromStatus]}
+            <Tag color={statuses.colors[e.fromStatus]} style={tagStyle}>
+              {statuses.labels[e.fromStatus]}
             </Tag>
             <Typography.Text type="secondary">→</Typography.Text>
           </>
         )}
-        <Tag color={requestStatusColors[to]} style={tagStyle}>
-          {requestStatusLabels[to]}
+        <Tag color={statuses.colors[to]} style={tagStyle}>
+          {statuses.labels[to]}
         </Tag>
       </Space>
     );
@@ -229,12 +244,15 @@ function HistoryContent({ row, labels }: { row: HistoryRow; labels: Record<strin
 
 // Ширины держат колонки в пределах окна: шире суммы столбцы вытолкнули бы таблицу
 // в горизонтальную прокрутку, а история читается только сверху вниз.
-function columnsWith(labels: Record<string, string>): TableColumnsType<HistoryRow> {
+function columnsWith(
+  labels: Record<string, string>,
+  statuses: HistoryStatusDict,
+): TableColumnsType<HistoryRow> {
   return [
     {
       key: 'bubbles',
       width: 190,
-      render: (_v, row) => <StatusBubbles row={row} />,
+      render: (_v, row) => <StatusBubbles row={row} statuses={statuses} />,
     },
     {
       key: 'summary',
@@ -270,10 +288,12 @@ function columnsWith(labels: Record<string, string>): TableColumnsType<HistoryRo
 function MobileHistoryList({
   rows,
   labels,
+  statuses,
   defaultExpandedKeys,
 }: {
   rows: HistoryRow[];
   labels: Record<string, string>;
+  statuses: HistoryStatusDict;
   defaultExpandedKeys?: string[];
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set(defaultExpandedKeys ?? []));
@@ -298,7 +318,7 @@ function MobileHistoryList({
             onClick={expandable ? () => toggle(row.key) : undefined}
           >
             <div className="history-item__head">
-              <StatusBubbles row={row} />
+              <StatusBubbles row={row} statuses={statuses} />
               {row.entry && (
                 <Typography.Text type="secondary" style={secondary}>
                   {formatDateTime(row.entry.at)}
@@ -328,18 +348,26 @@ export function RequestHistoryTable({
   rows,
   /** Подписи полей модуля: сервер шлёт технические ключи (`wasteRequestChangeLabels`). */
   labels,
+  /** Подписи и цвета статусов модуля; по умолчанию — общий перечень заявок. */
+  statuses = DEFAULT_STATUS_DICT,
   /** Строки, раскрытые сразу на телефоне: за приложенными к ним файлами карточку и открывают. */
   defaultExpandedKeys,
 }: {
   rows: HistoryRow[];
   labels: Record<string, string>;
+  statuses?: HistoryStatusDict;
   defaultExpandedKeys?: string[];
 }) {
   const isMobile = useIsMobile();
 
   if (isMobile) {
     return (
-      <MobileHistoryList rows={rows} labels={labels} defaultExpandedKeys={defaultExpandedKeys} />
+      <MobileHistoryList
+        rows={rows}
+        labels={labels}
+        statuses={statuses}
+        defaultExpandedKeys={defaultExpandedKeys}
+      />
     );
   }
 
@@ -351,7 +379,7 @@ export function RequestHistoryTable({
         showHeader={false}
         pagination={false}
         rowKey="key"
-        columns={columnsWith(labels)}
+        columns={columnsWith(labels, statuses)}
         dataSource={rows}
       />
     </ConfigProvider>

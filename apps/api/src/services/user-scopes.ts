@@ -1,6 +1,7 @@
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import type {
   DepartmentHeadRefDto,
+  RoleAddon,
   UserDepartmentRefDto,
   UserObjectRefDto,
 } from '@technic/contracts';
@@ -10,6 +11,7 @@ import {
   departments,
   userConstructionObjects,
   userDepartments,
+  userRoleAddons,
   users,
 } from '../db/schema';
 import { err } from '../lib/errors';
@@ -18,6 +20,9 @@ import { err } from '../lib/errors';
 // многие-ко-многим. Отдельным сервисом, а не внутри routes/users.ts, по той же причине, что и
 // связь «объект ↔ оператор»: набор правится не из одного места — отделы правятся ещё и из
 // карточки справочника, — и правила синхронизации должны быть одни и те же с любой стороны.
+//
+// Здесь же живут надстройки роли (ADR 0086): область они не меняют, но читаются и синхронизируются
+// тем же приёмом и в тех же местах — принципал на каждом запросе и карточка учётки.
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -205,6 +210,84 @@ export async function replaceUserDepartments(
     await tx
       .insert(userDepartments)
       .values(ids.map((departmentId) => ({ userId, departmentId, createdBy: actorUserId })))
+      .onConflictDoNothing();
+  }
+  return true;
+}
+
+/**
+ * Надстройки учётки (ADR 0086) одним выражением — рядом с объектами и отделами и по той же
+ * причине: принципал читается на каждом запросе, и размножать строку пользователя ради набора
+ * из нескольких значений незачем.
+ *
+ * `::text` обязателен: pg разбирает только встроенные типы массивов, а у массива пользовательского
+ * enum'а OID свой в каждой базе — такой столбец вернулся бы строкой `{office_equipment_operator}`
+ * вместо массива, и `can` молча не нашёл бы ни одной надстройки.
+ */
+export const roleAddonsExpr = sql<RoleAddon[]>`(
+  SELECT coalesce(array_agg(ura.addon::text ORDER BY ura.addon), '{}')
+  FROM user_role_addons ura
+  WHERE ura.user_id = ${users.id}
+)`;
+
+/** Надстройки учёток одним запросом — то же, что objectsByUserIds, третьей осью. */
+export async function addonsByUserIds(userIds: string[]): Promise<Map<string, RoleAddon[]>> {
+  const map = new Map<string, RoleAddon[]>();
+  if (userIds.length === 0) return map;
+  const rows = await db
+    .select({ userId: userRoleAddons.userId, addon: userRoleAddons.addon })
+    .from(userRoleAddons)
+    .where(inArray(userRoleAddons.userId, userIds))
+    // Порядок — объявления enum'а: набор показывается пометками рядом с ролью, и он не должен
+    // переставляться от того, в каком порядке надстройки выдавали.
+    .orderBy(userRoleAddons.addon);
+  for (const row of rows) {
+    const list = map.get(row.userId) ?? [];
+    list.push(row.addon);
+    map.set(row.userId, list);
+  }
+  return map;
+}
+
+/**
+ * Текущий набор надстроек учётки. Нужен ровно затем же, зачем наборы объектов и отделов: по нему
+ * видно, менялись ли права (отзыв токенов), и он же служит «итоговым состоянием», с которым
+ * сверяется новая роль, когда набор не прислали.
+ */
+export async function addonsOfUser(tx: Tx, userId: string): Promise<RoleAddon[]> {
+  const rows = await tx
+    .select({ addon: userRoleAddons.addon })
+    .from(userRoleAddons)
+    .where(eq(userRoleAddons.userId, userId))
+    .orderBy(userRoleAddons.addon);
+  return rows.map((r) => r.addon);
+}
+
+/**
+ * Заменяет набор надстроек учётки целиком — тем же приёмом, что объекты и отделы: клиент
+ * присылает то, что должно остаться, сервер считает разницу. Возвращает `true`, если набор
+ * изменился, — по этому ответу маршрут гасит выданные токены: надстройка меняет набор прав, а не
+ * область, но access-токен сверяется с `authVersion` на каждом запросе одинаково в обоих случаях.
+ *
+ * Совместимость с ролью проверяет маршрут: она зависит от роли, которая правится той же ручкой, и
+ * ответ обязан назвать поле формы, а не прийти общим 400 из глубины сервиса.
+ */
+export async function replaceUserAddons(
+  tx: Tx,
+  userId: string,
+  addons: RoleAddon[],
+  actorUserId: string,
+): Promise<boolean> {
+  const next = [...new Set(addons)];
+  const before = new Set(await addonsOfUser(tx, userId));
+  const changed = before.size !== next.length || next.some((addon) => !before.has(addon));
+  if (!changed) return false;
+
+  await tx.delete(userRoleAddons).where(eq(userRoleAddons.userId, userId));
+  if (next.length > 0) {
+    await tx
+      .insert(userRoleAddons)
+      .values(next.map((addon) => ({ userId, addon, grantedBy: actorUserId })))
       .onConflictDoNothing();
   }
   return true;

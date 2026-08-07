@@ -15,6 +15,8 @@ import {
   files,
   type FileRow,
   requestFiles,
+  serviceRequestFiles,
+  serviceRequests,
   vehicleRequestAssignments,
   vehicleRequestFiles,
   vehicleRequests,
@@ -26,6 +28,8 @@ import { requirePrincipal } from '../auth/plugin';
 import {
   lessorVisibilityWhere,
   operatorVisibilityWhere,
+  serviceExecutorVisibilityWhere,
+  serviceRequestScopeWhere,
   wasteRequestVisibilityWhere,
   vehicleRequestVisibilityWhere,
 } from '../lib/access';
@@ -61,12 +65,20 @@ export async function softDeleteFile(fileId: string, objectKey: string): Promise
   );
 }
 
-/** Где найден файл: связи проверяются только по тем модулям, которые роли вообще доступны. */
+/**
+ * Где найден файл: связи проверяются только по тем модулям, которые роли вообще доступны.
+ *
+ * Признак на модуль, а не общий «файл виден»: право читать чужой модуль ничего не открывает, и
+ * оператор вывоза не должен получать вложение заявки на технику только потому, что связь нашлась.
+ * Каждый новый модуль с вложениями заводит здесь своё поле — молча пройти по чужой ветке нельзя.
+ */
 export interface FileLinkage {
   /** Файл связан с видимой пользователю заявкой вывоза (вложение заявки или талон машины). */
   visibleWaste: boolean;
   /** Файл связан с видимой пользователю заявкой на технику. */
   visibleVehicle: boolean;
+  /** Файл связан с видимой пользователю заявкой на обслуживание оргтехники (ADR 0084). */
+  visibleService: boolean;
   /** Файл вообще привязан хоть к чему-нибудь — неважно, видно это пользователю или нет. */
   linkedAnywhere: boolean;
 }
@@ -78,6 +90,10 @@ export interface FileLinkage {
  * до сохранения заявки и до этого момента виден лишь тому, кто его выбрал. Как только файл
  * попал в заявку, он живёт по её правилам: иначе загрузивший сохранял бы доступ и после смены
  * роли, объекта или контрагента, а сама заявка ему уже не видна.
+ *
+ * Отсюда же требование к `linkedAnywhere`: последняя строка держится на полноте перечисления
+ * таблиц привязки в `isFileLinked`. Модуль, о котором та функция не знает, попадает сюда как
+ * «файл ничей» — и ветка авторства отдаёт документ бессрочно.
  */
 export function decideFileAccess(
   p: Principal,
@@ -86,6 +102,7 @@ export function decideFileAccess(
 ): boolean {
   if (linkage.visibleWaste && can(p, 'wasteRequests.read')) return true;
   if (linkage.visibleVehicle && can(p, 'vehicleRequests.read')) return true;
+  if (linkage.visibleService && can(p, 'serviceRequests.read')) return true;
   return !linkage.linkedAnywhere && !!uploadedBy && uploadedBy === p.id;
 }
 
@@ -99,6 +116,7 @@ async function canAccessFile(
   // оператора.
   const canReadWaste = can(p, 'wasteRequests.read');
   const canReadVehicle = can(p, 'vehicleRequests.read');
+  const canReadService = can(p, 'serviceRequests.read');
 
   let visibleWaste = false;
   if (canReadWaste) {
@@ -145,15 +163,48 @@ async function canAccessFile(
     visibleVehicle = vehicle.length > 0;
   }
 
-  // Привязку целиком спрашиваем только у того, кому иначе отказали бы: это три запроса.
+  let visibleService = false;
+  if (!visibleWaste && !visibleVehicle && canReadService) {
+    // Документы заявки на обслуживание оргтехники (ADR 0084, миграция 0105). Область — та же, что
+    // в списке заявок, и считается теми же функциями: две оси заказчика (объект, где стоит
+    // техника, и оба отдела — подавший заявку и владелец единицы) плюс контрагент исполнителя.
+    // Своя копия правил здесь разъехалась бы с модулем на первой же правке — и отдала бы чужое
+    // вложение по прямой ссылке, пока список продолжал бы честно прятать саму заявку.
+    const service = await db
+      .select({ id: serviceRequests.id })
+      .from(serviceRequestFiles)
+      .innerJoin(serviceRequests, eq(serviceRequestFiles.requestId, serviceRequests.id))
+      .where(
+        and(
+          eq(serviceRequestFiles.fileId, fileId),
+          isNull(serviceRequests.deletedAt),
+          serviceRequestScopeWhere(
+            p,
+            serviceRequests.equipmentObjectId,
+            serviceRequests.customerDepartmentId,
+            serviceRequests.equipmentDepartmentId,
+          ),
+          serviceExecutorVisibilityWhere(p, serviceRequests.serviceCounterpartyId),
+        ),
+      )
+      .limit(1);
+    visibleService = service.length > 0;
+  }
+
+  // Привязку целиком спрашиваем только у того, кому иначе отказали бы: это ещё несколько запросов.
   const linkedAnywhere =
-    visibleWaste || visibleVehicle
+    visibleWaste || visibleVehicle || visibleService
       ? true
       : uploadedBy === p.id
         ? await isFileLinked(fileId)
         : false;
 
-  return decideFileAccess(p, uploadedBy, { visibleWaste, visibleVehicle, linkedAnywhere });
+  return decideFileAccess(p, uploadedBy, {
+    visibleWaste,
+    visibleVehicle,
+    visibleService,
+    linkedAnywhere,
+  });
 }
 
 export default async function filesRoutes(app: FastifyInstance): Promise<void> {

@@ -14,6 +14,7 @@ import {
   registerSchema,
   resendVerificationSchema,
   type Role,
+  type RoleAddon,
   verifyEmailSchema,
 } from '@technic/contracts';
 import { config } from '../config';
@@ -37,6 +38,7 @@ import {
   constructionObjectIdsExpr,
   departmentIdsExpr,
   departmentObjectIdsExpr,
+  roleAddonsExpr,
 } from '../services/user-scopes';
 import { assertEmailFree, asEmailConflict } from '../services/user-email';
 import { assertMailEnabled, queueMail } from '../services/mail';
@@ -73,6 +75,8 @@ interface AuthUserSource {
   departmentObjectIds: string[];
   /** Тип контрагента учётки (ADR 0038): вместе с ролью задаёт права — портал считает их сам. */
   counterpartyType: CounterpartyType | null;
+  /** Надстройки роли (ADR 0086): третий источник прав, и порталу он нужен по той же причине. */
+  addons: RoleAddon[];
 }
 
 function makeAuthUser(u: AuthUserSource): AuthUser {
@@ -90,6 +94,7 @@ function makeAuthUser(u: AuthUserSource): AuthUser {
     departmentIds: u.departmentIds,
     departmentObjectIds: u.departmentObjectIds,
     counterpartyType: u.counterpartyType,
+    addons: u.addons,
   };
 }
 
@@ -105,6 +110,7 @@ function userWithCounterpartyType() {
       constructionObjectIds: constructionObjectIdsExpr,
       departmentIds: departmentIdsExpr,
       departmentObjectIds: departmentObjectIdsExpr,
+      addons: roleAddonsExpr,
     })
     .from(users)
     .leftJoin(counterparties, eq(users.counterpartyId, counterparties.id));
@@ -493,6 +499,7 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
           constructionObjectIds: row.constructionObjectIds,
           departmentIds: row.departmentIds,
           departmentObjectIds: row.departmentObjectIds,
+          addons: row.addons,
         }
       : undefined;
     if (!u) throw err.invalidCredentials();
@@ -569,6 +576,7 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
         constructionObjectIds: row.constructionObjectIds,
         departmentIds: row.departmentIds,
         departmentObjectIds: row.departmentObjectIds,
+        addons: row.addons,
       };
       const ok = await verifyPassword(u.passwordHash, currentPassword);
       if (!ok)

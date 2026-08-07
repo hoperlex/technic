@@ -11,6 +11,7 @@ import {
   LeftOutlined,
   LogoutOutlined,
   NotificationOutlined,
+  PrinterOutlined,
   RightOutlined,
   ScheduleOutlined,
   TeamOutlined,
@@ -140,7 +141,23 @@ export function AppLayout() {
           },
         ]
       : []),
-    ...(can('directories.write')
+    // Орг.техника (ADR 0085) — заявки на обслуживание: их видят заказчик (штаб и отдел),
+    // оператор оргтехники и сервисная компания. `can`, а не `canUse`: область раздела —
+    // объекты и отделы учётки, и пустой она у видящей роли не бывает.
+    ...(can('serviceRequests.read')
+      ? [
+          {
+            key: '/office-equipment',
+            icon: <PrinterOutlined />,
+            label: 'Орг.техника',
+            short: 'Оргтех.',
+          },
+        ]
+      : []),
+    // Раздел открывают два права (ADR 0085, Р7): весь набор справочников ведёт
+    // `directories.write`, одну вкладку «Оргтехника» — `officeEquipment.write`. Второе право
+    // заведено как раз затем, чтобы ответственному за оргтехнику не выдавать первое.
+    ...(can('directories.write') || can('officeEquipment.write')
       ? [
           {
             key: '/directories',
