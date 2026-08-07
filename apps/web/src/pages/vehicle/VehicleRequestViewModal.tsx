@@ -7,6 +7,7 @@ import {
   assignmentTitle,
   completionLabel,
   earlyEndDaysSaved,
+  formatWeeklyRequestNumber,
   isVehicleSubstitution,
   type RequestHistoryEntryDto,
   requestStatusColors,
@@ -27,6 +28,7 @@ import {
   routePurposeShortLabels,
   waybillStatusColors,
   waybillStatusLabels,
+  weeklyWeekLabel,
 } from '@technic/contracts';
 import { vehicleRequestsApi } from '../../api/resources';
 import { useAuth } from '../../auth/AuthContext';
@@ -43,6 +45,7 @@ import { calendarDaysLabel } from '../../utils/date';
 import { formatDateTime, formatDateTimeMaybe, formatMoney } from '../../utils/format';
 import { formatDateOnly } from './shared';
 import { VehicleShiftsView } from './VehicleShiftsView';
+import { weeklyRequestPath } from './weeklyShared';
 
 /**
  * Карточка заявки на технику: поля только на чтение и история событий (ADR 0015). Открывается
@@ -209,6 +212,22 @@ export function VehicleRequestViewModal({
   const rows = useMemo(() => toRows(history), [history]);
 
   /**
+   * Откуда заказ взялся и чем его продлевали (ADR 0085 Р11, Р16). Приходит в самом DTO — второго
+   * запроса на это не нужно.
+   *
+   * Только тем, у кого есть право на раздел: ссылка, ведущая в отказ, хуже номера обычным
+   * текстом. И только у заказа техники на объект: недельная заявка грузоперевозки не касается —
+   * у той не период работ, а момент подачи.
+   */
+  const weekly =
+    request?.requestType === 'special_equipment' && can('weeklyRequests.read')
+      ? {
+          origin: request.weeklyOrigin ?? null,
+          extensions: request.weeklyExtensions ?? [],
+        }
+      : null;
+
+  /**
    * Чем назначенная машина разошлась с заказанным (ADR 0045, ADR 0059, ADR 0064) — тегом рядом с
    * техникой. Правило то же, что в окне назначения: одна формулировка на выбор, карточку и историю.
    */
@@ -328,6 +347,54 @@ export function VehicleRequestViewModal({
                     earlyEnd={request.earlyEnd}
                     actions={earlyEndActions?.(request)}
                   />
+                ),
+              },
+            ]
+          : []),
+        // Недельная заявка, породившая заказ (ADR 0085 Р11). Стоит рядом со сроком: заказ обязан
+        // объяснять своё появление, а появился он там же, где решали, что машина останется на
+        // площадке ещё на неделю.
+        ...(weekly?.origin
+          ? [
+              {
+                key: 'weeklyOrigin',
+                label: 'Создан по недельной заявке',
+                children: (
+                  <EntityLink
+                    to={weeklyRequestPath(weekly.origin.weeklyRequestId)}
+                    title="Открыть недельную заявку"
+                  >
+                    {formatWeeklyRequestNumber(weekly.origin.weeklyRequestNum)}
+                  </EntityLink>
+                ),
+              },
+            ]
+          : []),
+        // Продления — отдельной строкой и списком (ADR 0085 Р16): создан заказ ровно одной
+        // недельной заявкой, а продлевают его неделю за неделей. Одно поле «Основание» солгало бы
+        // на второй же неделе. Рядом с номером — сама неделя: по ней и понимают, за что продление.
+        ...(weekly && weekly.extensions.length > 0
+          ? [
+              {
+                key: 'weeklyExtensions',
+                label: 'Продления',
+                full: true,
+                children: (
+                  <Space size={12} wrap>
+                    {weekly.extensions.map((e) => (
+                      <span key={`${e.weeklyRequestId}-${e.weekStart}`}>
+                        <EntityLink
+                          to={weeklyRequestPath(e.weeklyRequestId)}
+                          title="Открыть недельную заявку"
+                        >
+                          {formatWeeklyRequestNumber(e.weeklyRequestNum)}
+                        </EntityLink>{' '}
+                        <Typography.Text type="secondary">
+                          ({weeklyWeekLabel(e.weekStart)})
+                        </Typography.Text>
+                      </span>
+                    ))}
+                  </Space>
                 ),
               },
             ]

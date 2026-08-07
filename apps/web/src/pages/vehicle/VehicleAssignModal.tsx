@@ -24,6 +24,7 @@ import {
   DRIVER_WORKED_ON_VEHICLE_HINT,
   driverWorkedOnVehicle,
   formatMoscowDateTime,
+  formatWeeklyRequestNumber,
   isRouteEditable,
   routeRequestCapacity,
   normalizeTimeInput,
@@ -419,6 +420,51 @@ export function VehicleAssignModal({
       deliveryTo: v.deliveryTo || request?.objectAddress || request?.objectName || '',
     });
   };
+
+  /**
+   * Доставку запросила недельная заявка (ADR 0085 Р11): строка её состава несла и «нужна доставка
+   * на объект», и место отправления — форма открывается с уже включённым перегоном и
+   * подставленным «Откуда». Значения остаются правимыми: это подсказка, а не решение за
+   * диспетчера, и способ доставки на площадке всё равно выясняют разговором.
+   *
+   * Арендной технике не подставляется ничего — тем же правилом, что и весь блок
+   * (`canOfferDelivery`): её перегоняет арендодатель, и включённая галочка обещала бы лист,
+   * которого портал не выпишет.
+   */
+  const weeklyDelivery =
+    !reassign &&
+    request?.requestType === 'special_equipment' &&
+    request.weeklyOrigin?.deliveryNeeded
+      ? request.weeklyOrigin
+      : null;
+
+  /**
+   * Подстановка — один раз на заявку. Повторная переписывала бы снятую вручную галочку, а
+   * оставленные от прошлой цели поля перегона читались бы как решение по этой: окно
+   * переиспользуется, и delivery-поля обнуляются при смене заявки вместе с остальными.
+   */
+  const weeklyDeliveryApplied = useRef(false);
+  useEffect(() => {
+    weeklyDeliveryApplied.current = false;
+    form.setFieldsValue({
+      deliveryEnabled: false,
+      deliveryDate: null,
+      deliveryDriverId: undefined,
+      deliveryFrom: '',
+      deliveryTo: '',
+    });
+  }, [targetId]);
+
+  useEffect(() => {
+    // Ветка принадлежности решает, предлагается ли перегон вообще: у аренды его не бывает, и
+    // подстановка ждёт возврата на собственную технику, а не пропадает насовсем.
+    if (!weeklyDelivery || ownership !== 'own' || weeklyDeliveryApplied.current) return;
+    weeklyDeliveryApplied.current = true;
+    form.setFieldsValue({ deliveryEnabled: true, deliveryFrom: weeklyDelivery.deliveryFrom });
+    // «Куда» подставляется тем же способом, что и при включении галочки руками: площадка заявки —
+    // единственное «куда», какое у доставки бывает.
+    toggleDelivery(true);
+  }, [targetId, ownership, weeklyDelivery]);
 
   /**
    * Дата рейса для подсказки, отбора водителей и подписи листа. У грузоперевозки её несёт подача —
@@ -1158,6 +1204,15 @@ export function VehicleAssignModal({
                       Техника едет своим ходом — выписать путевой лист 4-П
                     </Checkbox>
                   </Form.Item>
+                  {/* Откуда взялась включённая галочка: подстановка обязана назвать себя, иначе
+                    её читают как чужую забытую правку (ADR 0085 Р11). */}
+                  {weeklyDelivery && (
+                    <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0 }}>
+                      Доставку запросила недельная заявка{' '}
+                      {formatWeeklyRequestNumber(weeklyDelivery.weeklyRequestNum)} — поля
+                      подставлены ею и правятся здесь же.
+                    </Typography.Paragraph>
+                  )}
                   <Typography.Paragraph type="secondary" style={{ marginTop: 8 }}>
                     Перегон станет отдельным рейсом; лист по нему выписывают в карточке маршрута.
                     Если технику везут тралом, оставьте выключенным.
