@@ -38,6 +38,8 @@ const TRIP: WaybillDto = {
   cancelledByName: null,
   cancelledAt: null,
   cancelReason: '',
+  printedAt: null,
+  exportedAt: null,
   requests: [],
   files: [],
 };
@@ -65,10 +67,45 @@ const WEEK: WaybillDto = {
   ],
 };
 
+/**
+ * Панель фильтров спрашивает справочники: техника и водители стоят в ней выпадающими списками.
+ * Отвечаем пустыми — тесты журнала не про них, а незаявленный маршрут ронял бы прогон.
+ */
+const DIRECTORIES = {
+  'GET /vehicles': () => json(list([])),
+  'GET /drivers': () => json(list([])),
+};
+
 function renderJournal(items: WaybillDto[] = [TRIP, WEEK]) {
-  const http = mockHttp({ 'GET /waybills': () => json(list(items)) });
+  const http = mockHttp({ 'GET /waybills': () => json(list(items)), ...DIRECTORIES });
   renderWithUser(<WaybillsPage />);
   return http;
+}
+
+/**
+ * Выбрать значение фильтра в панели над таблицей. Поле опознаётся своей подсказкой: подписи у
+ * фильтров нет — её место занимает сам placeholder («Все бланки»).
+ */
+async function pickFilter(placeholder: string, option: string | RegExp) {
+  const field = await waitFor(() => {
+    // Незаполненное поле показывает одну лишь подсказку — по ней его и опознаём.
+    const found = [...document.querySelectorAll<HTMLElement>('.ant-select')].find(
+      (el) => el.textContent?.trim() === placeholder,
+    );
+    if (!found) throw new Error(`фильтра «${placeholder}» на экране нет`);
+    return found;
+  });
+  fireEvent.mouseDown(field.querySelector('.ant-select-selector') ?? field);
+  await waitFor(() => {
+    const match = [...document.querySelectorAll<HTMLElement>('.ant-select-item-option')].find(
+      (o) =>
+        typeof option === 'string'
+          ? o.textContent?.includes(option)
+          : option.test(o.textContent ?? ''),
+    );
+    expect(match).toBeTruthy();
+    fireEvent.click(match!);
+  });
 }
 
 /** Строка листа по его номеру: искать по тексту в таблице надёжнее, чем по индексу строки. */
@@ -96,21 +133,31 @@ describe('журнал путевых листов: три бланка в од�
     expect(within(rowOf('ЭСМ-00000004')).getByText('31.08 — 06.09.2026')).toBeDefined();
   });
 
-  it('фильтр по форме уходит на сервер отдельным параметром', async () => {
+  it('фильтр по бланку уходит на сервер отдельным параметром', async () => {
     const http = renderJournal();
     await waitFor(() => expect(http.countOf('GET /waybills')).toBe(1));
     expect(http.lastCall('GET /waybills')!.query.get('formCode')).toBeNull();
 
-    // Фильтр столбца — тот же приём, что и у статуса: журнал сам спрашивает только период.
-    const header = screen.getByRole('columnheader', { name: /Форма/ });
-    fireEvent.click(header.querySelector('.ant-table-filter-trigger')!);
-    fireEvent.click(
-      await screen.findByText('ЭСМ-2', { selector: '.ant-dropdown-menu-title-content span' }),
-    );
-    fireEvent.click(screen.getByText('OK'));
+    // Фильтр — полем панели над таблицей, как на остальных списках портала: в подсказке помещается
+    // полная подпись бланка, которой в колонке места нет.
+    await pickFilter('Все бланки', 'ЭСМ-2');
 
-    await waitFor(() => expect(http.countOf('GET /waybills')).toBe(2));
-    expect(http.lastCall('GET /waybills')!.query.get('formCode')).toBe('esm2');
+    await waitFor(() => expect(http.lastCall('GET /waybills')!.query.get('formCode')).toBe('esm2'));
+  });
+
+  it('поиск по номеру уходит на сервер, а не отбирает загруженную страницу', async () => {
+    const http = renderJournal();
+    await waitFor(() => expect(http.countOf('GET /waybills')).toBe(1));
+
+    // Номер листа ищут хвостом («4897»), и найтись он обязан на любой странице журнала: отбирает
+    // сервер, а поле лишь спрашивает.
+    const input = screen.getByPlaceholderText('Номер листа');
+    fireEvent.change(input, { target: { value: '00000004' } });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter', charCode: 13 });
+
+    await waitFor(() =>
+      expect(http.lastCall('GET /waybills')!.query.get('search')).toBe('00000004'),
+    );
   });
 
   it('вложения — своей колонкой: скрепка со счётчиком, по клику список', async () => {
@@ -124,7 +171,7 @@ describe('журнал путевых листов: три бланка в од�
   });
 
   it('без права на файлы прикрепить нечем, а прочесть — можно', async () => {
-    const http = mockHttp({ 'GET /waybills': () => json(list([WEEK])) });
+    const http = mockHttp({ 'GET /waybills': () => json(list([WEEK])), ...DIRECTORIES });
     renderWithUser(<WaybillsPage />, { user: authUser({ role: 'observer' }) });
     await waitFor(() => expect(http.countOf('GET /waybills')).toBe(1));
 

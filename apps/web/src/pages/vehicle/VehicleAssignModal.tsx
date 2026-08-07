@@ -405,14 +405,17 @@ export function VehicleAssignModal({
   const wantsDelivery = canOfferDelivery && deliveryEnabled;
 
   /**
-   * Включение подставляет то, что и так известно: технику везут к началу работ и на площадку
-   * заявки. Правится всё: техника приезжает и накануне, а уходит она не обязательно с базы.
+   * Включение подставляет площадку заявки — место, а не дату: адрес объекта у заявки один, и
+   * другого «куда» у доставки не бывает.
+   *
+   * Дата перегона не подставляется: техника приезжает и накануне, и через день после начала
+   * работ, а подставленное начало срока читается как уже принятое решение — его пролистывают, и
+   * в путевой лист уходит день, в который никто никуда не ехал.
    */
   const toggleDelivery = (on: boolean) => {
     if (!on) return;
     const v = form.getFieldsValue();
     form.setFieldsValue({
-      deliveryDate: v.deliveryDate ?? v.dateFrom ?? null,
       deliveryTo: v.deliveryTo || request?.objectAddress || request?.objectName || '',
     });
   };
@@ -908,7 +911,11 @@ export function VehicleAssignModal({
                         : 'На каждую неделю срока работ выписывается свой путевой лист'
                     }
                   >
+                    {/* Человека за технику портал не назначает сам: даже когда в справочнике один
+                      водитель, за руль его сажает диспетчер. Подсказки в строках списка остаются —
+                      они помогают выбрать, а не выбирают. */}
                     <AutoSelect
+                      autoSelectSole={false}
                       options={machinistOptions}
                       loading={machinistsLoading}
                       placeholder="Кто сядет за технику"
@@ -1175,17 +1182,25 @@ export function VehicleAssignModal({
                       label="Водитель перегона"
                       rules={[{ required: true, message: 'Выберите водителя' }]}
                       extra={
-                        driverOptions.length === 0 && !driversLoading
-                          ? 'В справочнике нет действующих водителей'
-                          : undefined
+                        !deliveryDate
+                          ? 'Сначала укажите дату: годность удостоверения считается на день перегона'
+                          : driverOptions.length === 0 && !driversLoading
+                            ? 'В справочнике нет действующих водителей'
+                            : undefined
                       }
                     >
+                      {/* Единственный водитель справочника сам в поле не встаёт: кто поедет,
+                        решает диспетчер (см. поле водителя нового рейса ниже). */}
                       <AutoSelect
+                        autoSelectSole={false}
                         options={driverOptions}
                         showSearch
                         optionFilterProp="label"
                         loading={driversLoading}
-                        placeholder="Выберите водителя"
+                        disabled={!deliveryDate}
+                        placeholder={
+                          deliveryDate ? 'Выберите водителя' : 'Сначала укажите дату перегона'
+                        }
                       />
                     </Form.Item>
                     {/* Перегон печатает тот же 4-П, и пустая графа в нём такая же пустая: о ней
@@ -1276,7 +1291,13 @@ export function VehicleAssignModal({
                         : undefined
                     }
                   >
+                    {/* Водитель не подставляется никогда — ни единственным в справочнике, ни
+                      вчерашним на этой машине. За руль человека сажает диспетчер, и подставленная
+                      фамилия читается как уже принятое решение: её пролистывают, а в бланк она
+                      попадает настоящей. Список остаётся подсказывающим — пригодные первыми, с
+                      пометками о категории и документах (ADR 0055, ADR 0064). */}
                     <AutoSelect
+                      autoSelectSole={false}
                       options={driverOptions}
                       showSearch
                       optionFilterProp="label"

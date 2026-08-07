@@ -9,10 +9,12 @@ import {
   isRouteEditable,
   ROUTE_REQUEST_CAPACITY,
   parseVehicleRouteNumberSearch,
+  updateVehicleRouteSchema,
   CARGO_NOTE_LIMIT,
   routeCargoLabel,
   routeCargoWithNote,
   routeContactsLabel,
+  routeDateMismatch,
   routeExtraTaskLine,
   routeWaybillForm,
   routeOrderSchema,
@@ -596,5 +598,50 @@ describe('назначение с маршрутом', () => {
   it('назначение без рейса проходит схему: рейс обязателен не всегда, и решает это сервер', () => {
     // Аренда и заказ техники на объект рейса не знают вовсе — отказ на уровне схемы отсёк бы их.
     expect(assignVehicleSchema.safeParse(base).success).toBe(true);
+  });
+});
+
+/**
+ * Расхождение дат заявки и её рейса.
+ *
+ * Правило нужно порталу с обеих сторон: рейс переносят вместе с заявками (там расхождения не
+ * возникает вовсе), а заявку правят отдельной формой — и тогда она может уехать на другой день,
+ * оставив рейс на прежнем. Запретить это нельзя: заявку и рейс ведут разные люди в разное время.
+ * Но и молчать нельзя — лист напечатает задание на день рейса, а работы в этот день уже нет.
+ */
+describe('расхождение дня заявки и дня рейса', () => {
+  const route = { displayNumber: 'Р-12', routeDate: '2026-08-10' };
+
+  it('совпали — говорить не о чем', () => {
+    expect(routeDateMismatch({ tripDate: '2026-08-10' }, route)).toBeNull();
+  });
+
+  it('разошлись — обе даты названы, и сказано, чем это грозит бумаге', () => {
+    const message = routeDateMismatch({ tripDate: '2026-08-12' }, route);
+    expect(message).toContain('2026-08-12');
+    expect(message).toContain('Р-12');
+    expect(message).toContain('2026-08-10');
+  });
+});
+
+/**
+ * Дата в теле правки рейса. Она появилась вместе с переносом заявок (сервер двигает и подачу
+ * состава), поэтому схема обязана её принимать — и по-прежнему требовать версию: перенос меняет
+ * чужие записи, и делать это по устаревшему представлению о рейсе нельзя.
+ */
+describe('правка рейса: дата в теле запроса', () => {
+  it('принимает дату рейса вместе с версией', () => {
+    const parsed = updateVehicleRouteSchema.safeParse({ routeDate: '2026-08-12', version: 3 });
+    expect(parsed.success).toBe(true);
+  });
+
+  it('без версии не принимает: перенос идёт под оптимистической блокировкой', () => {
+    expect(updateVehicleRouteSchema.safeParse({ routeDate: '2026-08-12' }).success).toBe(false);
+  });
+
+  it('дата разбирается только календарная', () => {
+    expect(
+      updateVehicleRouteSchema.safeParse({ routeDate: '12.08.2026', version: 1 }).success,
+    ).toBe(false);
   });
 });

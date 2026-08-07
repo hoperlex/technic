@@ -117,6 +117,8 @@ const WAYBILL: WaybillDto = {
   cancelledByName: null,
   cancelledAt: null,
   cancelReason: '',
+  printedAt: null,
+  exportedAt: null,
   requests: [
     {
       requestId: 'r-done',
@@ -133,10 +135,20 @@ const WAYBILL: WaybillDto = {
 const linkFor = (text: string): HTMLAnchorElement | null =>
   [...document.querySelectorAll('a')].find((a) => a.textContent === text) ?? null;
 
+/**
+ * Справочники панели фильтров: техника и водители спрашиваются обоими списками — маршрутами и
+ * журналом листов. Здесь они пустые: тест про ссылки между вкладками, а не про отбор.
+ */
+const DIRECTORIES: RouteMap = {
+  'GET /vehicles': () => json(list([])),
+  'GET /drivers': () => json(list([])),
+};
+
 function routesRoutes(over: RouteMap = {}): RouteMap {
   return {
     'GET /vehicle-routes': () => json(list([ROUTE])),
     'GET /vehicle-routes/:id': () => json(ROUTE),
+    ...DIRECTORIES,
     ...over,
   };
 }
@@ -170,7 +182,14 @@ describe('переход по номеру записи между вкладк�
     const inRoute = vehicleRequest({
       id: 'vr-1',
       status: 'confirmed',
-      route: { id: 'route-1', displayNumber: 'Р-12', position: 1, hasWaybill: false, version: 3 },
+      route: {
+        id: 'route-1',
+        displayNumber: 'Р-12',
+        routeDate: '2026-07-20',
+        position: 1,
+        hasWaybill: false,
+        version: 3,
+      },
     });
     mockHttp({
       'GET /vehicle-requests': () => json(list([inRoute])),
@@ -189,7 +208,14 @@ describe('переход по номеру записи между вкладк�
     const inRoute = vehicleRequest({
       id: 'vr-1',
       status: 'confirmed',
-      route: { id: 'route-1', displayNumber: 'Р-12', position: 1, hasWaybill: false, version: 3 },
+      route: {
+        id: 'route-1',
+        displayNumber: 'Р-12',
+        routeDate: '2026-07-20',
+        position: 1,
+        hasWaybill: false,
+        version: 3,
+      },
     });
     mockHttp({
       'GET /vehicle-requests': () => json(list([inRoute])),
@@ -206,7 +232,7 @@ describe('переход по номеру записи между вкладк�
   });
 
   it('талон заказчика в журнале листов ведёт к заявке', async () => {
-    mockHttp({ 'GET /waybills': () => json(list([WAYBILL])) });
+    mockHttp({ 'GET /waybills': () => json(list([WAYBILL])), ...DIRECTORIES });
     renderWithUser(<WaybillsPage />, { user: admin });
 
     await screen.findByText('260604-646-00000004897');
@@ -216,7 +242,7 @@ describe('переход по номеру записи между вкладк�
   });
 
   it('журнал листов открывается по номеру из адреса', async () => {
-    const http = mockHttp({ 'GET /waybills': () => json(list([WAYBILL])) });
+    const http = mockHttp({ 'GET /waybills': () => json(list([WAYBILL])), ...DIRECTORIES });
     renderWithUser(<WaybillsPage />, {
       user: admin,
       route: `/waybills?number=${encodeURIComponent('260604-646-00000004897')}`,
@@ -224,6 +250,13 @@ describe('переход по номеру записи между вкладк�
 
     await waitFor(() =>
       expect(http.lastCall('GET /waybills')!.query.get('search')).toBe('260604-646-00000004897'),
+    );
+    // Номер из адреса виден и в самом поле поиска: иначе журнал выглядел бы отобранным
+    // неизвестно по чему, и сбросить отбор было бы нечем.
+    await waitFor(() =>
+      expect(screen.getByPlaceholderText<HTMLInputElement>('Номер листа').value).toBe(
+        '260604-646-00000004897',
+      ),
     );
   });
 

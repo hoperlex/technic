@@ -19,8 +19,9 @@ import {
   type SpecialEquipmentRequestDto,
   type VehicleRequestDto,
   type VehicleRequestEarlyEndDto,
+  vehicleLabel,
 } from '@technic/contracts';
-import { filesApi, vehicleRequestsApi } from '../../api/resources';
+import { driversApi, filesApi, vehicleRequestsApi, vehiclesApi } from '../../api/resources';
 import type {
   VehicleClassificationGroup,
   VehicleClassificationOption,
@@ -81,6 +82,44 @@ export function useObjectOptions() {
 export function useDepartmentOptions() {
   const { data, isFetching } = useQuery(departmentOptionsQuery());
   return { options: data ?? [], loading: isFetching };
+}
+
+/**
+ * Собственная техника для фильтров маршрутов и журнала листов.
+ *
+ * Только `own`: рейс ведётся и лист выписывается лишь на свою машину — арендную ведёт
+ * арендодатель, и в этих двух списках её не бывает вовсе. Списанная и стоящая в ремонте из
+ * фильтра не убираются: вчерашние рейсы и выданные листы никуда не делись, а фильтр, не находящий
+ * собственной строки списка, читается как поломка.
+ */
+export function useOwnVehicleOptions() {
+  const { data, isFetching } = useQuery({
+    queryKey: ['vehicles', 'own-options'],
+    queryFn: () =>
+      vehiclesApi.list({ page: 1, pageSize: 500, ownership: 'own', sortBy: 'createdAt' }),
+  });
+  return {
+    options: (data?.items ?? [])
+      .map((v) => ({ value: v.id, label: vehicleLabel(v) }))
+      .sort((a, b) => a.label.localeCompare(b.label, 'ru')),
+    loading: isFetching,
+  };
+}
+
+/**
+ * Водители для фильтров: весь действующий справочник, по алфавиту. Ни категория, ни полнота
+ * документов здесь никого не убирают — это фильтр списка, а не подбор под машину (ADR 0064).
+ */
+export function useDriverOptions() {
+  const { data, isFetching } = useQuery({
+    queryKey: ['drivers', 'options'],
+    queryFn: () =>
+      driversApi.list({ page: 1, pageSize: 500, sortBy: 'fullName', sortOrder: 'asc' }),
+  });
+  return {
+    options: (data?.items ?? []).map((d) => ({ value: d.id, label: d.fullName })),
+    loading: isFetching,
+  };
 }
 
 /**

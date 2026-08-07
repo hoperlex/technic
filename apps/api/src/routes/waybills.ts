@@ -1,12 +1,16 @@
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
-import { and, asc, count, desc, eq, gte, inArray, isNull, lte, ne } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gte, inArray, isNull, lte, ne, or, sql } from 'drizzle-orm';
+import type { SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import {
   attachWaybillFilesSchema,
   cancelWaybillSchema,
   canCancelWaybill,
+  canPrintWaybill,
   type FileDto,
+  printWaybillsBatchSchema,
+  WAYBILL_CANCELLED_PRINT_MESSAGE,
   formatVehicleRequestNumber,
   moscowDateKeyOf,
   requestCustomerName,
@@ -22,6 +26,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { db } from '../db/client';
 import {
+  auditLog,
   constructionObjects,
   departments,
   files,
@@ -39,9 +44,10 @@ import {
 import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
-import { pageParams } from '../lib/pagination';
-import { renderPdf } from '../services/office-pdf';
+import { orderByFrom, pageParams } from '../lib/pagination';
+import { renderPdf, renderPdfBatch } from '../services/office-pdf';
 import { renderOfficeTemplate } from '../services/office-template';
+import { mergePdfs } from '../services/pdf-merge';
 import {
   assertFilesAttachable,
   assertTotalWithinLimit,
@@ -72,12 +78,20 @@ const PDF_TYPE = 'application/pdf';
 const templatesDir = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'templates');
 
 /**
- * Бланк читается с диска при каждой выгрузке, а не кэшируется: файл меняют редко, зато правку
- * подхватывает следующий же запрос, без перезапуска сервиса.
+ * Бланк читается с диска при каждой выгрузке, а не кэшируется между запросами: файл меняют редко,
+ * зато правку подхватывает следующий же запрос, без перезапуска сервиса.
+ *
+ * Внутри одного запроса чтение всё же переиспользуется (`cache`): пачка из полусотни листов идёт
+ * по двум-трём бланкам, и полсотни синхронных чтений подряд встали бы поперёк цикла событий ради
+ * тех же самых байтов.
  */
-function readTemplate(formCode: string): Uint8Array {
+function readTemplate(formCode: string, cache?: Map<string, Uint8Array>): Uint8Array {
+  const cached = cache?.get(formCode);
+  if (cached) return cached;
   try {
-    return new Uint8Array(readFileSync(join(templatesDir, `waybill-${formCode}.xlsx`)));
+    const bytes = new Uint8Array(readFileSync(join(templatesDir, `waybill-${formCode}.xlsx`)));
+    cache?.set(formCode, bytes);
+    return bytes;
   } catch {
     throw err.conflict(
       `Бланк ${formCode} не размечен: положите оригинал в templates/source и прогоните template:waybill`,
@@ -94,6 +108,47 @@ const issuers = users;
  */
 function today(): string {
   return moscowDateKeyOf(new Date());
+}
+
+/** Сам номер с ведущими нулями — то, что напечатано в бланке после серии: «00000004897». */
+const paddedNumberSql = sql<string>`lpad(${waybills.number}::text, ${waybillSeries.numberWidth}, '0')`;
+
+/**
+ * Номер бланка так, как его читает человек: «260604-646-00000004897». Собирается в SQL из серии и
+ * числа — искать по нему нужно там же, где отбирают строки, а не после выборки.
+ */
+const displayNumberSql = sql<string>`${waybillSeries.prefix} || ${paddedNumberSql}`;
+
+/**
+ * Наибольшее число, которое `Number` держит без потери точности. Колонка номера — bigint, и
+ * шестнадцатизначный ввод, пройдя через `Number`, сравнивался бы с округлённым значением, то есть
+ * находил бы соседний бланк или не находил ничего.
+ */
+const SAFE_NUMBER_DIGITS = 15;
+
+/**
+ * Поиск по номеру листа. Называют его тремя способами: целиком («260604-646-00000004897»), хвостом
+ * («4897» — так и говорят вслух) и без ведущих нулей.
+ *
+ * Разделение по виду ввода не украшательство. Одни цифры — это номер, и подстрока ищется **только
+ * в самом номере**: захвати она серию, запрос «646» вернул бы весь журнал — префикс серии
+ * «260604-646-» содержит эти цифры у каждой строки. Есть посторонние знаки (дефис, буквы) — значит
+ * набрали напечатанный номер целиком, и тогда подстрока идёт по склейке с серией.
+ *
+ * Точное равенство числа стоит рядом с подстрокой: «4897» обязано находить «00000004897», где
+ * подстрока с началом не совпала бы.
+ *
+ * Отбор по номеру нужен не только полю поиска: журнал открывают ссылкой `?number=…` из маршрута и
+ * из карточки заявки — до сих пор такая ссылка приводила в неотфильтрованный журнал.
+ */
+function numberSearchCondition(term: string | undefined): SQL | undefined {
+  const trimmed = term?.trim();
+  if (!trimmed) return undefined;
+  const digits = trimmed.replace(/\D/gu, '');
+  const exact =
+    digits && digits.length <= SAFE_NUMBER_DIGITS ? eq(waybills.number, Number(digits)) : undefined;
+  const like = digits === trimmed ? paddedNumberSql : displayNumberSql;
+  return or(sql`${like} ILIKE ${`%${trimmed}%`}`, exact);
 }
 
 const waybillSelect = {
@@ -124,7 +179,22 @@ const waybillSelect = {
 
 type WaybillRow = Awaited<ReturnType<typeof loadRows>>[number];
 
-async function loadRows(where: ReturnType<typeof and>, limit?: number, offset?: number) {
+/**
+ * Чем журнал сортируется. Ключи — те же, что объявлены в `WAYBILL_SORT_FIELDS` и стоят ключами
+ * колонок таблицы: до этого порядок был жёстко зашит, и заголовки столбцов сортировали в никуда.
+ */
+const sortColumns = {
+  issuedForDate: waybills.issuedForDate,
+  number: waybills.number,
+  issuedAt: waybills.issuedAt,
+};
+
+async function loadRows(
+  where: ReturnType<typeof and>,
+  limit?: number,
+  offset?: number,
+  sort?: { sortBy?: string; sortOrder: 'asc' | 'desc' },
+) {
   const q = db
     .select(waybillSelect)
     .from(waybills)
@@ -135,7 +205,17 @@ async function loadRows(where: ReturnType<typeof and>, limit?: number, offset?: 
     .innerJoin(persons, eq(persons.id, waybills.driverPersonId))
     .innerJoin(issuers, eq(issuers.id, waybills.issuedBy))
     .where(where)
-    .orderBy(desc(waybills.issuedForDate), desc(waybills.number));
+    // Вторым ключом номер: листов одного дня десятки, и без него страницы разъезжались бы между
+    // запросами. Когда сортируют по самому номеру, второго ключа нет — он повторял бы первый и
+    // спорил бы с выбранным направлением.
+    .orderBy(
+      ...(sort?.sortBy === 'number'
+        ? [orderByFrom(sortColumns, sort.sortBy, sort.sortOrder, 'issuedForDate')]
+        : [
+            orderByFrom(sortColumns, sort?.sortBy, sort?.sortOrder ?? 'desc', 'issuedForDate'),
+            desc(waybills.number),
+          ]),
+    );
   if (limit === undefined) return q;
   return q.limit(limit).offset(offset ?? 0);
 }
@@ -190,11 +270,61 @@ async function cancelledByNames(rows: WaybillRow[]): Promise<Map<string, string>
   return new Map(found.map((u) => [u.id, u.fullName]));
 }
 
+/** Когда лист печатали и когда выгружали в последний раз; пусто — ни разу. */
+interface PrintMarks {
+  printedAt: string | null;
+  exportedAt: string | null;
+}
+
+const NO_MARKS: PrintMarks = { printedAt: null, exportedAt: null };
+
+/**
+ * Отметки о печати и выгрузке — из журнала аудита, где эти события пишутся с самого появления
+ * печати (ADR 0041). Своих колонок у листа под это нет и не заводится: две записи об одном факте
+ * разошлись бы при первой же правке одной из них, а журнал аудита — то место, где факт уже лежит.
+ *
+ * Отметка означает «эта бумага уже уезжала», поэтому автор события не спрашивается: чужая печать
+ * ничем не отличается от своей, а массовая — от одиночной (пачка пишет запись на каждый лист).
+ *
+ * Одним запросом на страницу журнала, как талоны и вложения: индекс `audit_log_entity_idx` держит
+ * пару «тип + id», и полсотни отдельных походов в базу здесь ни к чему.
+ */
+async function printMarksByWaybill(ids: string[]): Promise<Map<string, PrintMarks>> {
+  const map = new Map<string, PrintMarks>();
+  if (ids.length === 0) return map;
+  const rows = await db
+    .select({
+      entityId: auditLog.entityId,
+      action: auditLog.action,
+      at: sql<Date>`max(${auditLog.createdAt})`,
+    })
+    .from(auditLog)
+    .where(
+      and(
+        eq(auditLog.entityType, 'waybill'),
+        inArray(auditLog.action, ['waybill.print', 'waybill.export']),
+        inArray(auditLog.entityId, ids),
+      ),
+    )
+    .groupBy(auditLog.entityId, auditLog.action);
+
+  for (const row of rows) {
+    if (!row.entityId) continue;
+    const marks = map.get(row.entityId) ?? { ...NO_MARKS };
+    const at = new Date(row.at).toISOString();
+    if (row.action === 'waybill.print') marks.printedAt = at;
+    else marks.exportedAt = at;
+    map.set(row.entityId, marks);
+  }
+  return map;
+}
+
 function toDto(
   row: WaybillRow,
   links: WaybillRequestLinkDto[],
   cancelledByName: string | null,
   files: FileDto[],
+  marks: PrintMarks = NO_MARKS,
 ): WaybillDto {
   const trailer = [row.trailer1Model, row.trailer1RegNumber].filter(Boolean).join(' ');
   return {
@@ -217,6 +347,8 @@ function toDto(
     cancelledByName,
     cancelledAt: row.cancelledAt?.toISOString() ?? null,
     cancelReason: row.cancelReason,
+    printedAt: marks.printedAt,
+    exportedAt: marks.exportedAt,
     requests: links,
     files,
   };
@@ -278,17 +410,25 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
         // Бланк: журнал у трёх форм один, а читают их разные люди по разным поводам — без этого
         // сужения недельные листы спецтехники тонут в ежедневных рейсовых.
         q.formCode ? eq(waybills.formCode, q.formCode) : undefined,
+        numberSearchCondition(q.search),
       );
       const pg = pageParams(q);
       const [rows, totalRows] = await Promise.all([
-        loadRows(where, pg.limit, pg.offset),
-        db.select({ c: count() }).from(waybills).where(where),
+        loadRows(where, pg.limit, pg.offset, { sortBy: q.sortBy, sortOrder: q.sortOrder }),
+        // Счётчик идёт теми же join'ами, что и выборка: поиск по номеру читает серию, а без неё
+        // условие сослалось бы на таблицу, которой в запросе нет.
+        db
+          .select({ c: count() })
+          .from(waybills)
+          .innerJoin(waybillSeries, eq(waybillSeries.id, waybills.seriesId))
+          .where(where),
       ]);
       const ids = rows.map((row) => row.id);
-      const [links, cancelled, attachments] = await Promise.all([
+      const [links, cancelled, attachments, marks] = await Promise.all([
         linksByWaybill(ids),
         cancelledByNames(rows),
         filesByWaybill(ids),
+        printMarksByWaybill(ids),
       ]);
       return {
         items: rows.map((row) =>
@@ -297,6 +437,7 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
             links.get(row.id) ?? [],
             cancelled.get(row.cancelledBy ?? '') ?? null,
             attachments.get(row.id) ?? [],
+            marks.get(row.id),
           ),
         ),
         total: Number(totalRows[0]!.c),
@@ -312,16 +453,18 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
     async (req) => {
       const [row] = await loadRows(and(eq(waybills.id, req.params.id)));
       if (!row) throw err.notFound('Путевой лист не найден');
-      const [links, cancelled, attachments] = await Promise.all([
+      const [links, cancelled, attachments, marks] = await Promise.all([
         linksByWaybill([row.id]),
         cancelledByNames([row]),
         filesByWaybill([row.id]),
+        printMarksByWaybill([row.id]),
       ]);
       return toDto(
         row,
         links.get(row.id) ?? [],
         cancelled.get(row.cancelledBy ?? '') ?? null,
         attachments.get(row.id) ?? [],
+        marks.get(row.id),
       );
     },
   );
@@ -329,13 +472,18 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
   /**
    * Заполненный бланк листа (ADR 0037 п. 10). Собирается из снимка значений, а не из
    * справочников: переименование объекта или уточнение госномера задним числом уже выданный лист
-   * не меняет. Аннулированный лист отдаётся тоже — его подшивают к журналу как испорченный бланк.
+   * не меняет.
+   *
+   * Аннулированный лист бумагой больше не отдаётся никому: напечатанный, он неотличим от
+   * действующего и, попав к водителю, ездит документом, которого нет (`canPrintWaybill`). Чем
+   * кончился номер, отвечает строка журнала, а пришедший скан подшивают вложением.
    */
-  async function renderWaybill(id: string) {
+  async function renderWaybill(id: string, templates?: Map<string, Uint8Array>) {
     const [row] = await db
       .select({
         id: waybills.id,
         formCode: waybills.formCode,
+        status: waybills.status,
         number: waybills.number,
         prefix: waybillSeries.prefix,
         numberWidth: waybillSeries.numberWidth,
@@ -345,9 +493,10 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
       .innerJoin(waybillSeries, eq(waybillSeries.id, waybills.seriesId))
       .where(eq(waybills.id, id));
     if (!row) throw err.notFound('Путевой лист не найден');
+    if (!canPrintWaybill(row.status)) throw err.conflict(WAYBILL_CANCELLED_PRINT_MESSAGE);
 
     const rendered = renderOfficeTemplate(
-      readTemplate(row.formCode),
+      readTemplate(row.formCode, templates),
       snapshotForPrint(row.data as Record<string, string>),
     );
     return {
@@ -413,6 +562,95 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
       });
 
       const name = `Путевой лист ${displayNumber}.pdf`;
+      return reply
+        .type(PDF_TYPE)
+        .header('content-disposition', `inline; filename*=UTF-8''${encodeURIComponent(name)}`)
+        .send(Buffer.from(pdf));
+    },
+  );
+
+  /**
+   * Пачка листов одним документом.
+   *
+   * Диспетчер печатает день машины или день всей колонны разом, и до сих пор это означало
+   * «открыть лист, напечатать, закрыть» столько раз, сколько листов, — с отдельным диалогом
+   * печати на каждый. Здесь бланки собираются в один PDF, и диалог остаётся один.
+   *
+   * `POST`, а не `GET` со списком в адресе: полсотни идентификаторов в строке запроса упираются в
+   * её длину, а печать пачки — действие, а не адресуемая страница.
+   *
+   * Порядок задаёт портал (тот же, что в журнале), и сервер его не пересобирает: пачку разбирают
+   * по столу в том виде, в каком её видели на экране. Аннулированные отсеиваются с называнием
+   * номеров — молча пропустить лист значило бы отдать пачку, в которой не хватает бумаги, о чём
+   * узнают уже у принтера.
+   *
+   * Каждый лист получает свою запись в журнале аудита — такую же, как при одиночной печати: отметка
+   * «печатали» не должна зависеть от того, каким способом бумага ушла.
+   */
+  r.post(
+    '/print-batch',
+    {
+      preHandler: [app.authenticate, canRead],
+      schema: { body: printWaybillsBatchSchema },
+    },
+    async (req, reply) => {
+      const p = requirePrincipal(req);
+      // Повторы убираются, а порядок первого появления сохраняется: дважды выбранный лист дал бы
+      // лишнюю страницу в пачке, вторую запись в аудит и съел бы место в пределе.
+      const ids = [...new Set(req.body.ids)];
+
+      const rows = await db
+        .select({
+          id: waybills.id,
+          status: waybills.status,
+          number: waybills.number,
+          prefix: waybillSeries.prefix,
+          numberWidth: waybillSeries.numberWidth,
+        })
+        .from(waybills)
+        .innerJoin(waybillSeries, eq(waybillSeries.id, waybills.seriesId))
+        .where(inArray(waybills.id, ids));
+
+      const byId = new Map(rows.map((row) => [row.id, row]));
+      const missing = ids.filter((id) => !byId.has(id));
+      if (missing.length > 0) throw err.notFound('Часть листов не найдена — обновите журнал');
+      const cancelled = rows.filter((row) => !canPrintWaybill(row.status));
+      if (cancelled.length > 0) {
+        // Номера перечисляются в том же порядке, в каком листы стоят в пачке: выборка их порядка
+        // не гарантирует, а человек сверяет перечень со своим выбором на экране.
+        const numbers = ids
+          .map((id) => cancelled.find((row) => row.id === id))
+          .filter((row) => row !== undefined)
+          .map((row) => waybillDisplayNumber(row.prefix, row.number, row.numberWidth))
+          .join(', ');
+        throw err.conflict(`${WAYBILL_CANCELLED_PRINT_MESSAGE}. Уберите из выбора: ${numbers}`);
+      }
+
+      // Бланки собираются по одному (снимок у каждого свой), а в PDF переводятся разом: запуск
+      // конвертера дороже самой конвертации. Сам файл бланка на всю пачку читается по разу на
+      // форму — их в пачке две-три, а листов до полусотни.
+      const templates = new Map<string, Uint8Array>();
+      const rendered = [];
+      for (const id of ids) rendered.push(await renderWaybill(id, templates));
+      const pdfs = await renderPdfBatch(rendered.map((item) => item.rendered.bytes));
+      const pdf = await mergePdfs(pdfs);
+
+      await Promise.all(
+        rendered.map((item) =>
+          writeAudit({
+            actorUserId: p.id,
+            action: 'waybill.print',
+            entityType: 'waybill',
+            entityId: item.id,
+            metadata: { missing: item.rendered.missing, batch: ids.length },
+          }),
+        ),
+      );
+
+      const name =
+        rendered.length === 1
+          ? `Путевой лист ${rendered[0]!.displayNumber}.pdf`
+          : `Путевые листы (${rendered.length}).pdf`;
       return reply
         .type(PDF_TYPE)
         .header('content-disposition', `inline; filename*=UTF-8''${encodeURIComponent(name)}`)

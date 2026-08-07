@@ -1,7 +1,6 @@
 import { useEffect } from 'react';
 import { App, DatePicker, Form, Typography } from 'antd';
 import type { Dayjs } from 'dayjs';
-import dayjs from 'dayjs';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   routePurposeLabels,
@@ -62,18 +61,17 @@ export function VehicleRelocationModal({ request, purpose, onClose, onDone }: Pr
   const suggestObjectIds = [request?.objectId, ...ownObjectIds].filter((id): id is string => !!id);
 
   /*
-   * Подставляется то, что и так известно: доставку везут к началу работ на площадку, вывоз —
-   * с площадки в день окончания. Правится всё: техника приезжает и накануне, а уходит она не
-   * обязательно на базу.
+   * Подставляется место, а не дата: доставку везут на площадку заявки, вывоз — с неё, и другого
+   * конца у перегона не бывает. Правится и это: техника уходит не обязательно на базу.
+   *
+   * День перегона спрашивается пустым полем. Начало и конец срока работ — не он: технику
+   * привозят накануне, а забирают через день-другой после закрытия, и подставленная граница
+   * срока молча уезжала бы в путевой лист датой выезда.
    */
   useEffect(() => {
     if (!request) return;
-    const period =
-      request.requestType === 'special_equipment'
-        ? { from: request.dateFrom, to: request.dateTo ?? request.dateFrom }
-        : null;
     form.setFieldsValue({
-      routeDate: period ? dayjs(purpose === 'delivery' ? period.from : period.to) : null,
+      routeDate: null,
       driverPersonId: undefined,
       moveFrom: purpose === 'pickup' ? objectPlace : '',
       moveTo: purpose === 'delivery' ? objectPlace : '',
@@ -148,23 +146,29 @@ export function VehicleRelocationModal({ request, purpose, onClose, onDone }: Pr
           </Form.Item>
 
           {/* Водитель необязателен: рейс планируют заранее, человека ставят утром — так же, как
-            у грузового маршрута. Без него лист не выпишется, и об этом скажет карточка рейса. */}
+            у грузового маршрута. Без него лист не выпишется, и об этом скажет карточка рейса.
+            Сам собой в поле он не встаёт даже единственным в справочнике: за руль сажает
+            диспетчер. */}
           <Form.Item
             name="driverPersonId"
             label="Водитель"
             extra={
-              driverOptions.length === 0 && !driversLoading
-                ? 'Нет водителей с полным комплектом документов на эту дату'
-                : 'Можно назначить позже, в карточке маршрута'
+              !routeDate
+                ? 'Сначала укажите дату: годность удостоверения считается на день перегона'
+                : driverOptions.length === 0 && !driversLoading
+                  ? 'Нет водителей с полным комплектом документов на эту дату'
+                  : 'Можно назначить позже, в карточке маршрута'
             }
           >
             <AutoSelect
+              autoSelectSole={false}
               options={driverOptions}
               showSearch
               optionFilterProp="label"
               loading={driversLoading}
               allowClear
-              placeholder="Выберите водителя"
+              disabled={!routeDate}
+              placeholder={routeDate ? 'Выберите водителя' : 'Сначала укажите дату перегона'}
             />
           </Form.Item>
 

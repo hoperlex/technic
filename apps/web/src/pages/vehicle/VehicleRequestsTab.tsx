@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { useNavigate } from 'react-router';
 import {
   App,
   Button,
@@ -39,6 +40,7 @@ import {
   isCargoAmountRequired,
   CARGO_AMOUNT_MESSAGE,
   isVehicleKindAllowedForRequest,
+  moscowDateKeyOf,
   normalizeTimeInput,
   parseVehicleClassificationKey,
   parseVehicleRequestNumberSearch,
@@ -47,6 +49,7 @@ import {
   requestCustomerLabel,
   requestStatusLabels,
   ROLLBACK_WAYBILL_MESSAGE,
+  routeDateMismatch,
   routePurposeLabels,
   type SpecialEquipmentRequestDto,
   statusChangeRequiresReason,
@@ -105,6 +108,7 @@ import { VehicleCompleteModal } from './VehicleCompleteModal';
 import { VehicleEarlyEndModal } from './VehicleEarlyEndModal';
 import { VehicleRequestViewModal } from './VehicleRequestViewModal';
 import { VehicleRelocationModal } from './VehicleRelocationModal';
+import { RequestRelocationsField } from './RequestRelocationsField';
 import { VehicleRouteTransferModal } from './VehicleRouteTransferModal';
 import { useObjectScope } from '../../hooks/useObjectScope';
 import { useDepartmentScope } from '../../hooks/useDepartmentScope';
@@ -252,6 +256,8 @@ export function VehicleRequestsTab() {
   const { user, can } = useAuth();
   const qc = useQueryClient();
   const isMobile = useIsMobile();
+  // Переход на вкладку маршрутов: им кончается предупреждение о расхождении дат — чинят его там.
+  const navigate = useNavigate();
   // Объектные роли — область видимости (свои объекты, заявка до «В работе»); действия — по
   // правам (ADR 0021). Виза — право руководителя строительства (ADR 0025).
   const { isObjectRole, soleObjectId, objectFieldDisabled, limitObjectOptions, ownObjectIds } =
@@ -454,6 +460,19 @@ export function VehicleRequestsTab() {
   const isBeforeCurrentDateTo = (d: Dayjs) =>
     !!currentLastDay && d.format('YYYY-MM-DD') < currentLastDay;
 
+  /**
+   * Правятся ли у этой заявки перегоны 4-П (миграция 0082): доставка техники на площадку и вывоз
+   * с неё. Условия те же, что проверит сервер, — заказ техники на объект, взятый в работу
+   * собственной машиной: перегон едет назначенной единицей, а на арендную лист выписывает
+   * арендодатель. У новой заявки блока нет вовсе — машины ещё не выбрали.
+   */
+  const relocationsEditable =
+    !!record &&
+    record.requestType === 'special_equipment' &&
+    record.status === 'confirmed' &&
+    record.assignment?.ownership === 'own' &&
+    canChangeStatus;
+
   // Заказ техники на объект допускает технику любого вида, грузоперевозка — только грузовую.
   // Позиция правимой заявки могла выйти из справочника (её выключили) или не существовать вовсе
   // (заявка старше категорий) — её добавляем отдельной заблокированной строкой, иначе поле
@@ -639,13 +658,47 @@ export function VehicleRequestsTab() {
           })
         : vehicleRequestsApi.create({ ...base, fileIds: editor.newFileIds() });
     },
-    onSuccess: () => {
+    onSuccess: (saved) => {
       message.success('Сохранено');
       void qc.invalidateQueries({ queryKey: ['vehicle-requests'] });
       setOpen(false);
+      warnRouteDateMismatch(saved);
     },
     onError: (e) => message.error(errorMessage(e)),
   });
+
+  /**
+   * Заявку подвинули по дате, а она лежит в рейсе прежнего дня.
+   *
+   * Портал такую правку не запрещает: заявку и рейс правят разные люди в разное время, и
+   * запрещать значило бы требовать чинить рейс до того, как узнал о расхождении. Но и молчать
+   * нельзя — рейс останется на прежнем дне, а лист напечатает задание, которого в этот день уже
+   * нет. Поэтому окно называет расхождение и ведёт туда, где оно чинится: в карточку маршрута,
+   * где день рейса переносится вместе с заявками.
+   */
+  const warnRouteDateMismatch = (saved: VehicleRequestDto) => {
+    if (saved.requestType !== 'freight_transport' || !saved.route) return;
+    const routeLink = vehicleRouteLink(can, saved.route.id);
+    const mismatch = routeDateMismatch(
+      { tripDate: moscowDateKeyOf(new Date(saved.scheduledAt)) },
+      { displayNumber: saved.route.displayNumber, routeDate: saved.route.routeDate },
+    );
+    if (!mismatch) return;
+    modal.warning({
+      title: 'Дата заявки разошлась с днём маршрута',
+      content: mismatch,
+      okText: 'Понятно',
+      // Кнопка перехода — там же, где объяснение: иначе человек закроет окно и пойдёт искать
+      // маршрут руками, а половина расхождений так и останется незамеченной.
+      ...(routeLink
+        ? {
+            cancelText: `Открыть маршрут ${saved.route.displayNumber}`,
+            okCancel: true,
+            onCancel: () => navigate(routeLink),
+          }
+        : {}),
+    });
+  };
 
   /** Доваливаем правила, которые зависят от типа заявки и не выражаются rules-ами полей. */
   const onFinish = (v: FormValues) => {
@@ -1611,6 +1664,18 @@ export function VehicleRequestsTab() {
                     phoneLabel="Контактный телефон"
                   />
                 </FormGrid.Full>
+
+                {/* Перегоны 4-П работающей заявки: доставка на площадку и вывоз с неё. Правятся
+                  здесь, потому что здесь их и вспоминают — открыв заявку, по которой технику
+                  повезли не так, как собирались. У новой заявки блока нет: перегон едет на
+                  назначенной машине, а её ещё не выбрали. */}
+                {relocationsEditable && (
+                  <FormGrid.Full>
+                    <Form.Item label="Перегон техники (4-П)">
+                      <RequestRelocationsField request={record!} />
+                    </Form.Item>
+                  </FormGrid.Full>
+                )}
               </>
             )}
 

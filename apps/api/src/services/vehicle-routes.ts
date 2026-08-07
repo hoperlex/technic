@@ -3,6 +3,9 @@ import {
   type DriverDocumentGap,
   formatVehicleRequestNumber,
   formatVehicleRouteNumber,
+  moscowDateKeyOf,
+  moscowInstantOf,
+  moscowTimeOf,
   requestCustomerName,
   type RoutePurpose,
   type RouteTripFields,
@@ -476,6 +479,55 @@ export async function detachRequest(tx: Tx, routeId: string, requestId: string):
   if (!removed) return false;
   await compactRoutePositions(tx, routeId);
   return true;
+}
+
+/**
+ * Переносит рейс на другой день вместе с его заявками.
+ *
+ * Дата рейса и дата подачи заявки — одно и то же событие с двух сторон: заявка едет в тот день, в
+ * который заведён рейс, и лист печатает задание на него (`canJoinRoute`). Поэтому «перенести
+ * рейс» означает перенести и подачу его заявок — иначе рейс уехал бы на завтра, а бумага
+ * напечатала бы работу, которой в этот день никто не заказывал, и портал сам себе отказал бы в
+ * следующей же правке состава.
+ *
+ * Время суток остаётся прежним: переносят день, а не час подачи. Заявке «на дату» (без времени)
+ * это ничего не меняет — в поле у неё полночь МСК, и она же остаётся.
+ *
+ * Возвращает номера переехавших заявок: их называют человеку до нажатия и записывают в аудит.
+ */
+export async function moveRouteToDate(
+  tx: Tx,
+  routeId: string,
+  routeDate: string,
+): Promise<string[]> {
+  await tx.update(vehicleRoutes).set({ routeDate }).where(eq(vehicleRoutes.id, routeId));
+
+  const rows = await tx
+    .select({
+      requestId: vehicleRouteRequests.requestId,
+      num: vehicleRequests.num,
+      scheduledAt: freightTransportRequestDetails.scheduledAt,
+    })
+    .from(vehicleRouteRequests)
+    .innerJoin(vehicleRequests, eq(vehicleRequests.id, vehicleRouteRequests.requestId))
+    .innerJoin(
+      freightTransportRequestDetails,
+      eq(freightTransportRequestDetails.requestId, vehicleRouteRequests.requestId),
+    )
+    .where(eq(vehicleRouteRequests.routeId, routeId))
+    .orderBy(asc(vehicleRouteRequests.position));
+
+  const moved: string[] = [];
+  for (const row of rows) {
+    if (!row.scheduledAt) continue;
+    if (moscowDateKeyOf(row.scheduledAt) === routeDate) continue;
+    await tx
+      .update(freightTransportRequestDetails)
+      .set({ scheduledAt: moscowInstantOf(routeDate, moscowTimeOf(row.scheduledAt)) })
+      .where(eq(freightTransportRequestDetails.requestId, row.requestId));
+    moved.push(formatVehicleRequestNumber(row.num));
+  }
+  return moved;
 }
 
 /** Кладёт заявку последним талоном рейса. */

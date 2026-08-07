@@ -241,6 +241,12 @@ export const waybillsApi = {
    */
   printPdf: (id: string) => apiFetchBlob(`/waybills/${id}/print`),
   /**
+   * Пачка листов одним документом: сервер собирает бланки подряд в один PDF, и диалог печати
+   * остаётся один на всю пачку. Порядок листов задаёт портал — тот же, в каком их видно в журнале.
+   */
+  printBatch: (ids: string[]) =>
+    apiFetchBlob('/waybills/print-batch', { method: 'POST', body: { ids } }),
+  /**
    * Вложения к бланку: скан заполненного заказчиком оборота ЭСМ-2, отметки 4-П, акт. Файл сначала
    * уезжает в хранилище (`filesApi.upload`), сюда приходит только его идентификатор — тем же
    * порядком, что у вложений заявок.
@@ -282,9 +288,14 @@ export const vehicleRoutesApi = {
     id: string,
     body: {
       version: number;
+      /** День рейса: сервер переносит вместе с ним и подачу заявок состава. */
+      routeDate?: string;
       driverPersonId?: string | null;
       trip?: RouteTripFields;
       comment?: string;
+      /** Задание перегона; у грузового рейса сервер их не примет. */
+      moveFrom?: string;
+      moveTo?: string;
     },
   ) => apiFetch<VehicleRouteDto>(`/vehicle-routes/${id}`, { method: 'PATCH', body }),
   remove: (id: string) => apiFetch<{ ok: boolean }>(`/vehicle-routes/${id}`, { method: 'DELETE' }),

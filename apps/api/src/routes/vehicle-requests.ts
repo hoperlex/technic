@@ -298,6 +298,9 @@ const requestSelect = {
   // «Маршрут», а их отсутствие у грузоперевозки в работе — предупреждение «Без маршрута».
   routeId: vehicleRoutes.id,
   routeNum: vehicleRoutes.num,
+  // День рейса: им портал ловит расхождение с датой подачи — заявку подвинули, а рейс остался на
+  // прежнем дне (`routeDateMismatch`).
+  routeDate: vehicleRoutes.routeDate,
   routePosition: vehicleRouteRequests.position,
   // Версия рейса: ею перенос заявки в другой маршрут опознаёт исходный (ADR 0052).
   routeVersion: vehicleRoutes.version,
@@ -597,6 +600,7 @@ function toDto(
         ? {
             id: r.routeId,
             displayNumber: formatVehicleRouteNumber(r.routeNum),
+            routeDate: r.routeDate ?? '',
             position: r.routePosition,
             hasWaybill: r.routeHasWaybill,
             version: r.routeVersion ?? 0,

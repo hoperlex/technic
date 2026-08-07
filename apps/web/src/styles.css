@@ -670,6 +670,33 @@ body,
   padding: 8px 0 4px;
 }
 
+/* Полоса выбранного на телефоне: стоит над листалкой, чтобы не спорить с ней за ширину */
+.list-pager--selection {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+
+/*
+ * Подвал таблицы со списком, где выбирают строки: слева полоса выбранного, справа управление
+ * страницами. Одна строка на двоих — выбор относится ко всему списку, и его место там же, где
+ * листалка, а не поверх таблицы.
+ */
+.table-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 16px 0 0;
+}
+
+.table-footer__bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+}
+
 /* Фильтры в шите: каждый во всю ширину, подпись сверху */
 .filter-sheet {
   display: flex;

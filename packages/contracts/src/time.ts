@@ -104,6 +104,17 @@ export function moscowDateKeyOf(date: Date): string {
   return `${shifted.getUTCFullYear()}-${mm}-${dd}`;
 }
 
+/**
+ * Обратная сборка: момент по календарному дню и времени суток МСК.
+ *
+ * Нужна там, где день записи меняют, а время суток остаётся прежним, — при переносе рейса на
+ * другую дату вместе с его заявками. Сдвиг фиксированный, как и в разборе: летнего времени в
+ * России нет, а хранить момент по чужому поясу портал не умеет.
+ */
+export function moscowInstantOf(dateKey: string, time: string): Date {
+  return new Date(`${dateKey}T${time}:00.000+03:00`);
+}
+
 /** Дата по МСК в виде `DD.MM.YYYY`. */
 export function moscowDateOf(date: Date): string {
   const [yyyy, mm, dd] = moscowDateKeyOf(date).split('-');

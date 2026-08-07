@@ -139,7 +139,14 @@ const IN_WORK = approvedVehicleRequest({
   version: 5,
   assignment: OWN_VEHICLE,
   completion: COMPLETION,
-  route: { id: 'route-3', displayNumber: 'Р-3', position: 2, hasWaybill: false, version: 4 },
+  route: {
+    id: 'route-3',
+    displayNumber: 'Р-3',
+    routeDate: '2026-08-05',
+    position: 2,
+    hasWaybill: false,
+    version: 4,
+  },
 });
 
 const REASON = 'Заказчик перенёс работы, машину сняли';

@@ -4,6 +4,7 @@ import {
   ArrowDownOutlined,
   ArrowUpOutlined,
   DeleteOutlined,
+  EditOutlined,
   PlusOutlined,
 } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -58,9 +59,15 @@ interface Props {
   onClose: () => void;
   /** Список рейсов и список заявок после правки устарели — их обновляет вкладка. */
   onChanged: () => void;
+  /**
+   * Открыть правку реквизитов рейса: день, водитель, графы шапки. Отдельным окном, а не полями
+   * прямо здесь: карточка отвечает на «что за рейс и что с ним делать», и поля ввода посреди
+   * состава превратили бы её в форму.
+   */
+  onEdit?: (route: VehicleRouteDto) => void;
 }
 
-export function VehicleRouteModal({ routeId, onClose, onChanged }: Props) {
+export function VehicleRouteModal({ routeId, onClose, onChanged, onEdit }: Props) {
   const { message, modal } = App.useApp();
   const { can } = useAuth();
   const qc = useQueryClient();
@@ -191,8 +198,7 @@ export function VehicleRouteModal({ routeId, onClose, onChanged }: Props) {
       title: blank ? 'Выписать пустой лист?' : 'Выписать лист с незаполненными графами?',
       content: (
         <Typography.Paragraph style={{ marginBottom: 0 }}>
-          {blank ? BLANK_WAYBILL_CONFIRM : driverGaps}{' '}
-          {blank && driverGaps ? `${driverGaps} ` : ''}
+          {blank ? BLANK_WAYBILL_CONFIRM : driverGaps} {blank && driverGaps ? `${driverGaps} ` : ''}
           Номер бланка израсходуется: чтобы переписать лист, его придётся аннулировать.
         </Typography.Paragraph>
       ),
@@ -300,8 +306,27 @@ export function VehicleRouteModal({ routeId, onClose, onChanged }: Props) {
       footer={
         route && (
           <Space wrap>
+            {/* Правка рейса — тем же правом, что и всё остальное в карточке: день переставляют и
+              водителя меняют утром того же дня, ради этого карточку чаще всего и открывают. */}
+            {onEdit && (
+              <Button
+                icon={<EditOutlined />}
+                disabled={frozen}
+                title={frozen ? ROUTE_FROZEN_MESSAGE : 'Изменить дату, водителя и реквизиты'}
+                onClick={() => onEdit(route)}
+              >
+                Редактировать
+              </Button>
+            )}
+            {/* Аннулированный лист печатать нельзя (`canPrintWaybill`) — кнопка о нём и не
+              заикается: рейс уже разморожен, и говорить здесь надо о новом бланке, а не о
+              списанном номере. */}
             {route.waybill && route.waybill.status !== 'cancelled' && (
-              <PrintWaybillButton waybillId={route.waybill.id} number={route.waybill.number} />
+              <PrintWaybillButton
+                waybillId={route.waybill.id}
+                number={route.waybill.number}
+                status={route.waybill.status}
+              />
             )}
             {route.waybill && can('waybills.cancel') && (
               <Button

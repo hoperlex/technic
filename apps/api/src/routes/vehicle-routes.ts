@@ -53,6 +53,7 @@ import {
   loadRouteDtos,
   lockRoute,
   lockRoutePair,
+  moveRouteToDate,
   routeOfRequest,
   routeQuery,
   routeRequestCount,
@@ -294,7 +295,15 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
           )
           .limit(pg.limit)
           .offset(pg.offset),
-        db.select({ c: count() }).from(vehicleRoutes).where(where),
+        // Счётчик идёт теми же join'ами, что и выборка: поиск рейса смотрит на госномер машины и
+        // фамилию водителя, и без этих таблиц условие ссылалось бы на то, чего в запросе нет —
+        // Postgres отвечает «missing FROM-clause entry», то есть поиск ронял бы весь список.
+        db
+          .select({ c: count() })
+          .from(vehicleRoutes)
+          .innerJoin(vehicles, eq(vehicles.id, vehicleRoutes.vehicleId))
+          .leftJoin(persons, eq(persons.id, vehicleRoutes.driverPersonId))
+          .where(where),
       ]);
 
       return {
@@ -377,7 +386,13 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
     },
   );
 
-  /** Водитель, реквизиты рейса и комментарий. Состав правится своими ручками — он про заявки. */
+  /**
+   * Дата рейса, водитель, реквизиты и комментарий. Состав правится своими ручками — он про заявки.
+   *
+   * Дата переносит рейс вместе с его заявками (`moveRouteToDate`): день рейса и день подачи —
+   * одно и то же событие с двух сторон, и разъехаться им нельзя. У перегона переносить нечего:
+   * состава у него нет, а срок работ заявки задаёт не он.
+   */
   r.patch(
     '/:id',
     { preHandler: guards, schema: { params: idParams, body: updateVehicleRouteSchema } },
@@ -386,10 +401,23 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
       const body = req.body;
       if (body.driverPersonId) await assertDriver(body.driverPersonId);
 
+      let moved: string[] = [];
+      let movedTo: string | null = null;
       await db.transaction(async (tx) => {
         const route = await lockRoute(tx, req.params.id);
         assertRouteVersion(route, body.version);
         await assertRouteEditable(tx, route.id);
+
+        // «Откуда — куда» есть только у перегона: у грузового рейса задание собирается из заявок,
+        // и записанное сюда место в бланк не попало бы никуда.
+        if (
+          (body.moveFrom !== undefined || body.moveTo !== undefined) &&
+          route.purpose === 'freight'
+        ) {
+          throw err.unprocessable('Задание «откуда — куда» бывает только у перегона техники', {
+            moveFrom: 'Не тот вид рейса',
+          });
+        }
 
         await tx
           .update(vehicleRoutes)
@@ -399,8 +427,15 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
               : undefined),
             ...(body.trip ? tripValues(body.trip) : undefined),
             ...(body.comment !== undefined ? { comment: body.comment } : undefined),
+            ...(body.moveFrom !== undefined ? { moveFrom: body.moveFrom } : undefined),
+            ...(body.moveTo !== undefined ? { moveTo: body.moveTo } : undefined),
           })
           .where(eq(vehicleRoutes.id, route.id));
+
+        if (body.routeDate && body.routeDate !== route.routeDate) {
+          moved = await moveRouteToDate(tx, route.id, body.routeDate);
+          movedTo = body.routeDate;
+        }
         await bumpRouteVersion(tx, route.id, p.id);
       });
 
@@ -409,7 +444,12 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
         action: 'vehicle_route.update',
         entityType: 'vehicle_route',
         entityId: req.params.id,
-        metadata: { driverPersonId: body.driverPersonId ?? null },
+        // Переехавшие заявки называются поимённо: перенос рейса меняет и их подачу, а по одной
+        // дате в записи потом не понять, что именно уехало вместе с рейсом.
+        metadata: {
+          driverPersonId: body.driverPersonId ?? null,
+          ...(movedTo ? { routeDate: movedTo, movedRequests: moved } : {}),
+        },
       });
       return (await loadRouteDto(db, req.params.id))!;
     },

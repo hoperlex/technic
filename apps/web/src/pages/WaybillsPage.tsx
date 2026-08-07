@@ -1,11 +1,14 @@
 import { useEffect, useState } from 'react';
-import { App, Button, DatePicker, Input, Space, Typography } from 'antd';
-import { StopOutlined } from '@ant-design/icons';
+import { App, Button, Input, Space, Typography } from 'antd';
+import { PrinterOutlined, StopOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router';
 import {
   canCancelWaybill,
+  canPrintWaybill,
+  selectedWaybillsLabel,
+  WAYBILL_CANCELLED_PRINT_MESSAGE,
   WAYBILL_LOCKED_MESSAGE,
   type WaybillDto,
   waybillFormLabels,
@@ -19,7 +22,15 @@ import { DataTable } from '@shared/ui';
 import { EntityLink } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
 import { actionsColumn, badgeColumn, textColumn } from '@shared/ui';
-import { ExportWaybillButton, PrintWaybillButton } from '../components/WaybillPrint';
+import { sortOptionsFrom } from '@shared/ui';
+import { useDriverOptions, useOwnVehicleOptions } from './vehicle/shared';
+import { waybillFiltersBar, waybillMobileFilters, type WaybillDateRange } from './waybills/filters';
+import {
+  ExportWaybillButton,
+  PrintWaybillButton,
+  WaybillPrintModal,
+  type PrintTarget,
+} from '../components/WaybillPrint';
 import { useListParams } from '@shared/lib';
 import { useAuth } from '../auth/AuthContext';
 import { errorMessage } from '../utils/format';
@@ -43,29 +54,32 @@ export function WaybillsPage() {
   const canAttach = can('waybills.files');
   const qc = useQueryClient();
 
-  // Период — единственный фильтр, который журнал спрашивает сам: его читают по дням, а не по
-  // всей истории сразу. Остальное сужают столбцами таблицы — в том числе бланк: журнал у трёх
-  // форм один, а читают их разные люди по разным поводам.
-  const [range, setRange] = useState<[dayjs.Dayjs, dayjs.Dayjs] | null>(null);
-  const { params, setParams, onTableChange } = useListParams<{
+  /**
+   * Фильтры журнала — полосой над таблицей, как на остальных списках портала: часть значений
+   * (техника, водитель) это справочники, которым в выпадашке столбца места нет, а период и
+   * подавно. Раньше они были разделены надвое — период в шапке страницы, бланк и статус в
+   * заголовках столбцов, — и «чем сейчас сужен журнал» приходилось собирать глазами по экрану.
+   */
+  const [range, setRange] = useState<[dayjs.Dayjs | null, dayjs.Dayjs | null] | null>(null);
+  const { params, setParams, setSort, onTableChange } = useListParams<{
     status?: string;
     formCode?: string;
-  }>(
-    {},
-    {
-      searchKeys: ['number'],
-      mapFilters: (f) => ({
-        status: f.status?.[0] as string | undefined,
-        formCode: f.formCode?.[0] as string | undefined,
-      }),
-    },
-  );
+    vehicleId?: string;
+    driverPersonId?: string;
+  }>({}, { searchKeys: [] });
+
+  /** Смена любого фильтра возвращает журнал на первую страницу. */
+  const applyFilter = (patch: Partial<typeof params>) =>
+    setParams((p) => ({ ...p, ...patch, page: 1 }));
+
+  const { options: vehicleOptions, loading: vehiclesLoading } = useOwnVehicleOptions();
+  const { options: driverOptions, loading: driversLoading } = useDriverOptions();
 
   /**
    * Номер из адреса: сюда приходят по ссылке из маршрута и из карточки заявки — «что стало с этим
    * листом». Карточки у листа нет, журнал и есть карточка, поэтому вместо открытия окна список
-   * сужается до одной строки. Поиск остаётся обычным — его видно в заголовке столбца и оттуда же
-   * сбрасывают.
+   * сужается до одной строки. Поиск остаётся обычным — он стоит полем в панели фильтров, там его
+   * видно и оттуда же сбрасывают.
    */
   const [searchParams] = useSearchParams();
   const numberParam = searchParams.get('number');
@@ -73,15 +87,39 @@ export function WaybillsPage() {
     if (!numberParam) return;
     setParams((p) => ({ ...p, search: numberParam, page: 1 }));
   }, [numberParam, setParams]);
+
+  /**
+   * Текст в поле поиска — своим состоянием: искомое приходит и снаружи (ссылка `?number=…`), и
+   * поле обязано показывать, чем список сужен. Без этого журнал, открытый по ссылке, выглядел бы
+   * отобранным неизвестно по чему.
+   */
+  const [searchText, setSearchText] = useState('');
+  useEffect(() => setSearchText(params.search ?? ''), [params.search]);
+
+  /**
+   * Выбранные для печати пачкой листы (ADR 0041 в редакции массовой печати).
+   *
+   * Выбор живёт в пределах показанного списка: сменили страницу, отбор или период — он сбрасывается.
+   * Иначе кнопка «Напечатать» отправляла бы в принтер листы, которых человек уже не видит, а
+   * счётчик «выбрано 30» относился бы неизвестно к чему.
+   */
+  const [selected, setSelected] = useState<string[]>([]);
+  const [printing, setPrinting] = useState<PrintTarget | null>(null);
+
   const query = {
     ...params,
-    dateFrom: range?.[0].format(DATE),
-    dateTo: range?.[1].format(DATE),
+    dateFrom: range?.[0]?.format(DATE),
+    dateTo: range?.[1]?.format(DATE),
   };
   const { data, isFetching } = useQuery({
     queryKey: ['waybills', query],
     queryFn: () => waybillsApi.list(query),
   });
+
+  // Список сменился — выбор снят. Зависимость сама выдача, а не параметры запроса: перерисовка
+  // теми же строками (обновление после печати) выбор не трогает, а другая страница или другой
+  // отбор его обнуляют.
+  useEffect(() => setSelected([]), [data]);
 
   const cancelMut = useMutation({
     mutationFn: ({ id, reason }: { id: string; reason: string }) =>
@@ -132,17 +170,21 @@ export function WaybillsPage() {
       title: 'Номер',
       dataIndex: 'number',
       width: 200,
-      filteredValue: params.search ? [params.search] : null,
+      // Поиск переехал в панель над таблицей: там его видно вместе с остальными сужениями.
+      searchable: false,
     }),
-    // Бланк — колонкой с фильтром, как и статус: полная подпись сюда не влезает, а на вопрос
-    // «какой это лист» отвечает и короткая.
+    // Полная подпись бланка в колонку не влезает, а на вопрос «какой это лист» отвечает и
+    // короткая. Отбор по бланку — в панели фильтров, там для полной подписи место есть.
     badgeColumn<WaybillDto>({
       key: 'formCode',
       title: 'Форма',
       dataIndex: 'formCode',
       width: 110,
       labels: waybillFormShortLabels,
-      filters: true,
+      // Сортировки по бланку сервер не знает (`WAYBILL_SORT_FIELDS`), и заголовок не должен её
+      // обещать: отправленное поле схема отклонит, а список ответит ошибкой вместо строк.
+      // Отбирают по бланку фильтром в панели — этот вопрос и задают.
+      sortable: false,
     }),
     textColumn<WaybillDto>({
       key: 'issuedForDate',
@@ -161,6 +203,7 @@ export function WaybillsPage() {
       title: 'Техника',
       dataIndex: 'vehicleLabel',
       sortable: false,
+      searchable: false,
       render: (_v, r) => (
         <Space direction="vertical" size={0}>
           <span>{r.vehicleLabel}</span>
@@ -175,6 +218,7 @@ export function WaybillsPage() {
       title: 'Водитель',
       dataIndex: 'driverName',
       sortable: false,
+      searchable: false,
       width: 220,
     }),
     textColumn<WaybillDto>({
@@ -224,7 +268,8 @@ export function WaybillsPage() {
       width: 130,
       labels: waybillStatusLabels,
       colors: waybillStatusColors,
-      filters: true,
+      // Как и у бланка: сортировки по статусу сервер не знает, а сужают по нему фильтром.
+      sortable: false,
     }),
     // Причина отдельной колонкой, а не подписью к статусу: аннулированный лист объясняют, и
     // читают это объяснение вместе с номером, а не вместо него.
@@ -241,11 +286,24 @@ export function WaybillsPage() {
       const editable = r.status === 'issued' && canCancelWaybill(r, today());
       return (
         <Space>
-          {/* Печать и выгрузка доступны и у аннулированного листа: испорченный бланк подшивают
-              к журналу. Печать первой — ради неё лист и открывают (ADR 0041), а файл забирают
-              тогда, когда бланк дополняют от руки в редакторе таблиц. */}
-          <PrintWaybillButton waybillId={r.id} number={r.number} />
-          <ExportWaybillButton waybillId={r.id} number={r.number} />
+          {/* Печать первой — ради неё лист и открывают (ADR 0041), а файл забирают тогда, когда
+              бланк дополняют от руки в редакторе таблиц. У аннулированного не работает ни то, ни
+              другое: номер списан, а напечатанный бланк неотличим от действующего.
+
+              Синяя точка в углу кнопки — «эта бумага уже уходила»: печатали или выгружали, кто
+              угодно и когда угодно, в том числе пачкой. */}
+          <PrintWaybillButton
+            waybillId={r.id}
+            number={r.number}
+            status={r.status}
+            printedAt={r.printedAt}
+          />
+          <ExportWaybillButton
+            waybillId={r.id}
+            number={r.number}
+            status={r.status}
+            exportedAt={r.exportedAt}
+          />
           {canCancel && (
             <Button
               size="small"
@@ -269,18 +327,41 @@ export function WaybillsPage() {
     }),
   ];
 
+  /**
+   * Фильтры собираются рядом с журналом, но живут своим файлом: их шесть, и каждый описан дважды —
+   * полосой для десктопа и описанием для шита телефона.
+   */
+  const filterOptions = {
+    values: params,
+    onChange: applyFilter,
+    searchText,
+    onSearchTextChange: setSearchText,
+    range,
+    onRangeChange: (next: WaybillDateRange) => {
+      setRange(next);
+      applyFilter({});
+    },
+    vehicles: { options: vehicleOptions, loading: vehiclesLoading },
+    drivers: { options: driverOptions, loading: driversLoading },
+  };
+
   return (
     <PageTableLayout
-      extra={
-        <Space>
-          <DatePicker.RangePicker
-            format="DD.MM.YYYY"
-            value={range}
-            onChange={(v) => setRange(v as [dayjs.Dayjs, dayjs.Dayjs] | null)}
-            allowClear
-          />
-        </Space>
-      }
+      filters={waybillFiltersBar(filterOptions)}
+      mobile={{
+        search: {
+          value: params.search,
+          placeholder: 'Номер листа',
+          onChange: (v) => applyFilter({ search: v }),
+        },
+        filters: waybillMobileFilters(filterOptions),
+        sort: {
+          options: sortOptionsFrom(columns, { number: 'Номер', issuedForDate: 'На дату' }),
+          sortBy: params.sortBy,
+          sortOrder: params.sortOrder,
+          onChange: setSort,
+        },
+      }}
     >
       <DataTable<WaybillDto>
         columns={columns}
@@ -289,8 +370,45 @@ export function WaybillsPage() {
         loading={isFetching}
         page={params.page}
         pageSize={params.pageSize}
+        sortBy={params.sortBy}
+        sortOrder={params.sortOrder}
         onChange={onTableChange}
+        /*
+         * Выбор строк — ради печати пачкой: день машины или день колонны печатают разом, и до
+         * сих пор это значило открыть, напечатать и закрыть столько раз, сколько листов.
+         * Аннулированные не выбираются вовсе: их не печатают ни поодиночке, ни в пачке.
+         */
+        selection={{
+          keys: selected,
+          onChange: setSelected,
+          disabled: (r) => (canPrintWaybill(r.status) ? null : WAYBILL_CANCELLED_PRINT_MESSAGE),
+          bar: (keys) => (
+            <>
+              <Typography.Text strong>{selectedWaybillsLabel(keys.length)}</Typography.Text>
+              <Button
+                type="primary"
+                icon={<PrinterOutlined />}
+                onClick={() =>
+                  setPrinting({
+                    ids: keys,
+                    title:
+                      keys.length === 1
+                        ? 'Путевой лист'
+                        : `Путевые листы: ${keys.length} в одном документе`,
+                  })
+                }
+              >
+                Напечатать
+              </Button>
+              <Button onClick={() => setSelected([])}>Снять выбор</Button>
+            </>
+          ),
+        }}
       />
+
+      {/* Пачка печатается тем же окном, что и один лист: сервер собирает бланки в один PDF, и
+        диалог печати браузера остаётся один. */}
+      <WaybillPrintModal target={printing} onClose={() => setPrinting(null)} />
       <Typography.Paragraph type="secondary" style={{ marginTop: 8 }}>
         Листы на рейс ({waybillFormLabels['4p']}, {waybillFormLabels.leg3}) выписываются с маршрута
         — во вкладке «Маршруты» раздела «Заказ ТС», когда состав рейса собран.{' '}

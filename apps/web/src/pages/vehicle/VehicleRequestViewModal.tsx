@@ -523,7 +523,14 @@ export function VehicleRequestViewModal({
                           {waybill.driverName}
                           {waybill.periodFrom ? '' : ` · строка ${waybill.slot}`}
                         </Typography.Text>
-                        <PrintWaybillButton waybillId={waybill.id} number={waybill.number}>
+                        {/* Аннулированный лист печатать нельзя ни отсюда, ни из журнала: номер
+                          списан, а бумага от действующего бланка неотличима. Кнопка остаётся
+                          выключенной с объяснением — исчезнувшая читалась бы как поломка. */}
+                        <PrintWaybillButton
+                          waybillId={waybill.id}
+                          number={waybill.number}
+                          status={waybill.status}
+                        >
                           Печать
                         </PrintWaybillButton>
                       </Space>
@@ -561,6 +568,7 @@ export function VehicleRequestViewModal({
                             <PrintWaybillButton
                               waybillId={route.waybill.id}
                               number={route.waybill.number}
+                              status={route.waybill.status}
                             >
                               Печать
                             </PrintWaybillButton>

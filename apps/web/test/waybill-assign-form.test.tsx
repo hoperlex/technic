@@ -11,7 +11,7 @@ import type {
 } from '@technic/contracts';
 import { json, mockHttp, type HttpMock, type RecordedCall } from './http';
 import { renderWithUser } from './render';
-import { selectOption } from './antd';
+import { dateInput, selectOption, typeDate } from './antd';
 import { list } from './factories/common';
 import { machinist, vehicleRequest } from './factories/vehicle';
 import { VehicleAssignModal } from '../src/pages/vehicle/VehicleAssignModal';
@@ -525,15 +525,21 @@ describe('доставка техники на объект', () => {
     expect(screen.queryByLabelText('Дата перегона')).toBeNull();
   });
 
-  it('включённая подставляет день начала работ и адрес объекта, а водителей просит на эту дату', async () => {
+  it('включённая подставляет адрес объекта, но не дату: её называет человек', async () => {
     const http = renderModal({ vehicle: OWN_VEHICLE, request: ON_SITE_REQUEST });
     await screen.findByText('Доставка на объект');
 
     fireEvent.click(screen.getByRole('checkbox', { name: /своим ходом/ }));
 
+    // Место известно заранее — техника едет на площадку заявки. День не известен никому: её
+    // привозят и накануне, и через день после начала работ.
     expect(await screen.findByDisplayValue('Химки, ул. Победы, 10')).toBeDefined();
-    expect(screen.getAllByDisplayValue('10.08.2026').length).toBeGreaterThan(0);
-    // Допуск проверяется на день перегона: удостоверение могло истечь между заказом и выездом.
+    expect(dateInput('Дата перегона').value).toBe('');
+    // Пока дня нет, водителей не спрашивают вовсе: годность удостоверения считается на него.
+    expect(driverCalls(http)).toHaveLength(0);
+
+    typeDate('Дата перегона', '10.08.2026');
+
     await waitFor(() => expect(driverCalls(http).length).toBeGreaterThan(0));
     expect(driverCalls(http).at(-1)!.query.get('on')).toBe('2026-08-10');
   });
@@ -545,6 +551,9 @@ describe('доставка техники на объект', () => {
 
     fireEvent.click(screen.getByRole('checkbox', { name: /своим ходом/ }));
     await screen.findByDisplayValue('Химки, ул. Победы, 10');
+    // День перегона называет диспетчер — поле открывается пустым, и без него список водителей
+    // заперт: удостоверение проверяется на день выезда.
+    typeDate('Дата перегона', '10.08.2026');
     await selectOption('Водитель перегона', /Тестовый Водитель Первый/);
     // Машинист — не водитель перегона: тот везёт технику на объект и едет по 4-П, а этот работает
     // на площадке неделями, и на него выписываются ЭСМ-2.

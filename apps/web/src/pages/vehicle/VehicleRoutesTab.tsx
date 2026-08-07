@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { App, Button, DatePicker, Form, Segmented, Space, Tag, Typography } from 'antd';
-import { EyeOutlined, PlusOutlined } from '@ant-design/icons';
+import { App, Button, DatePicker, Form, Input, Select, Space, Tag, Typography } from 'antd';
+import { EditOutlined, EyeOutlined, PlusOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -9,6 +9,8 @@ import {
   driverDocumentGapsHint,
   driverWorkedOnVehicle,
   isRelocationPurpose,
+  isRouteEditable,
+  ROUTE_FROZEN_MESSAGE,
   routeRequestCapacity,
   routePurposeShortLabels,
   type VehicleRouteDto,
@@ -24,6 +26,7 @@ import { FormModal } from '@shared/ui';
 import { FormGrid } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
 import { actionsColumn, RowActionButton, textColumn } from '@shared/ui';
+import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
 import { useIsMobile } from '@shared/lib';
 import { useListParams } from '@shared/lib';
 import { useOpenedRecord } from '@shared/lib';
@@ -32,7 +35,8 @@ import { errorMessage } from '../../utils/format';
 import { vehicleRequestLink, waybillLink } from '../../utils/links';
 import { useAuth } from '../../auth/AuthContext';
 import { VehicleRouteModal } from './VehicleRouteModal';
-import { formatDateOnly } from './shared';
+import { VehicleRouteEditModal } from './VehicleRouteEditModal';
+import { formatDateOnly, useDriverOptions, useOwnVehicleOptions } from './shared';
 
 /**
  * Рейсы: что и с кем едет в конкретный день (план `docs/vehicle-routes-plan.md`).
@@ -50,7 +54,6 @@ const DATE = 'YYYY-MM-DD';
 
 /** Состояние документа — им диспетчер закрывает день: «что ещё без листа». */
 const WAYBILL_FILTERS = [
-  { value: 'all', label: 'Все' },
   { value: 'none', label: 'Без листа' },
   { value: 'issued', label: 'Лист выписан' },
 ] as const;
@@ -68,9 +71,10 @@ export function VehicleRoutesTab() {
   const qc = useQueryClient();
   const { can } = useAuth();
   const [range, setRange] = useState<[dayjs.Dayjs, dayjs.Dayjs]>([dayjs(), dayjs()]);
-  const [waybill, setWaybill] = useState<WaybillFilter>('all');
   const [openId, setOpenId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  /** Рейс, открытый на правку: день, водитель и реквизиты выезда. */
+  const [editing, setEditing] = useState<VehicleRouteDto | null>(null);
 
   /**
    * Рейс, названный в адресе: сюда приходят по ссылке из строки заявки («Маршрут Р-12»). Ключ
@@ -95,17 +99,34 @@ export function VehicleRoutesTab() {
     setRange([day, day]);
   }, [openedRouteDate]);
 
-  const { params, onTableChange } = useListParams({}, { searchKeys: ['num'] });
+  /**
+   * Фильтры живут полосой над таблицей, а не выпадашками столбцов: в заголовке их не видно, а
+   * часть значений — списки справочников (техника, водители), которым в выпадашке столбца места
+   * нет. Тем же порядком собраны «Заявки ТС» и «Пользователи» — списки портала фильтруются
+   * одинаково.
+   */
+  const { params, setParams, setSort, onTableChange } = useListParams<{
+    vehicleId?: string;
+    driverPersonId?: string;
+    waybill?: WaybillFilter;
+  }>({}, { searchKeys: [] });
+
+  /** Смена любого фильтра возвращает список на первую страницу. */
+  const applyFilter = (patch: Partial<typeof params>) =>
+    setParams((p) => ({ ...p, ...patch, page: 1 }));
+
   const query = {
     ...params,
     dateFrom: range[0].format(DATE),
     dateTo: range[1].format(DATE),
-    waybill: waybill === 'all' ? undefined : waybill,
   };
   const { data, isFetching } = useQuery({
     queryKey: ['vehicle-routes', query],
     queryFn: () => vehicleRoutesApi.list(query),
   });
+
+  const { options: vehicleOptions, loading: vehiclesLoading } = useOwnVehicleOptions();
+  const { options: driverOptions, loading: driversLoading } = useDriverOptions();
 
   const refresh = () => {
     void qc.invalidateQueries({ queryKey: ['vehicle-routes'] });
@@ -119,6 +140,9 @@ export function VehicleRoutesTab() {
       title: 'Маршрут',
       dataIndex: 'displayNumber',
       width: 140,
+      // Поиск ушёл в панель над таблицей: он один на номер рейса, госномер и фамилию водителя, и
+      // лупа в заголовке одного столбца обещала бы поиск только по нему.
+      searchable: false,
       render: (_v, r) => (
         <Space direction="vertical" size={0}>
           <Space size={6}>
@@ -143,6 +167,7 @@ export function VehicleRoutesTab() {
       title: 'Техника',
       dataIndex: 'vehicleLabel',
       sortable: false,
+      searchable: false,
       render: (_v, r) => (
         <Space direction="vertical" size={0}>
           <span>{r.vehicleLabel}</span>
@@ -159,6 +184,7 @@ export function VehicleRoutesTab() {
       title: 'Водитель',
       dataIndex: 'driverName',
       sortable: false,
+      searchable: false,
       width: 220,
       // Пустой водитель — не поломка, а состояние: рейс собрали заранее, человека ставят утром.
       // Но лист без него не выписать, и молчать об этом нельзя.
@@ -244,16 +270,31 @@ export function VehicleRoutesTab() {
         ),
     }),
     actionsColumn<VehicleRouteDto>(
-      // Карточка рейса — единственное место, где собирают состав, ставят водителя и выписывают
-      // лист; из списка рейс только открывают.
-      (r) => (
-        <RowActionButton
-          title="Открыть маршрут"
-          icon={<EyeOutlined />}
-          onClick={() => setOpenId(r.id)}
-        />
-      ),
-      70,
+      // Состав рейса и выписка листа — в карточке; отсюда рейс открывают и правят его реквизиты:
+      // «переставить день» и «сменить водителя» это утренние действия, ради которых открывать
+      // карточку незачем.
+      (r) => {
+        const frozen = !isRouteEditable(r.waybill?.status ?? null);
+        return (
+          <Space>
+            <RowActionButton
+              title="Открыть маршрут"
+              icon={<EyeOutlined />}
+              onClick={() => setOpenId(r.id)}
+            />
+            {/* Выключенная кнопка объясняется обёрткой: подсказку antd на ней не показывает. */}
+            <span title={frozen ? ROUTE_FROZEN_MESSAGE : undefined}>
+              <RowActionButton
+                title="Редактировать маршрут"
+                icon={<EditOutlined />}
+                disabled={frozen}
+                onClick={() => setEditing(r)}
+              />
+            </span>
+          </Space>
+        );
+      },
+      110,
     ),
   ];
 
@@ -282,28 +323,137 @@ export function VehicleRoutesTab() {
     onOpen: (r) => setOpenId(r.id),
   };
 
+  /** Полоса фильтров над таблицей: поиск, техника, водитель, состояние листа и период рейсов. */
+  const filters = (
+    <Space size={[12, 8]} wrap>
+      <Input.Search
+        allowClear
+        // Ищет сервер сразу по трём приметам рейса: номер («Р-12»), госномер машины и фамилия
+        // водителя — рейс запоминают то одним, то другим.
+        placeholder="Р-12, госномер или водитель"
+        style={{ width: 240 }}
+        defaultValue={params.search}
+        onSearch={(v) => applyFilter({ search: v.trim() || undefined })}
+      />
+      <Select
+        allowClear
+        showSearch
+        optionFilterProp="label"
+        placeholder="Вся техника"
+        style={{ width: 220 }}
+        options={vehicleOptions}
+        loading={vehiclesLoading}
+        value={params.vehicleId}
+        onChange={(v: string | undefined) => applyFilter({ vehicleId: v })}
+      />
+      <Select
+        allowClear
+        showSearch
+        optionFilterProp="label"
+        placeholder="Все водители"
+        style={{ width: 220 }}
+        options={driverOptions}
+        loading={driversLoading}
+        value={params.driverPersonId}
+        onChange={(v: string | undefined) => applyFilter({ driverPersonId: v })}
+      />
+      <Select
+        allowClear
+        placeholder="Лист: любой"
+        style={{ width: 170 }}
+        options={[...WAYBILL_FILTERS]}
+        value={params.waybill}
+        onChange={(v: WaybillFilter | undefined) => applyFilter({ waybill: v })}
+      />
+      {/* Период рейсов остаётся обязательным: маршруты читают по дням, и «вся история сразу» —
+        не тот вопрос, который здесь задают. Поэтому без крестика. */}
+      <DatePicker.RangePicker
+        format="DD.MM.YYYY"
+        value={range}
+        allowClear={false}
+        inputReadOnly={isMobile}
+        onChange={(v) => {
+          if (!v) return;
+          setRange(v as [dayjs.Dayjs, dayjs.Dayjs]);
+          applyFilter({});
+        }}
+      />
+    </Space>
+  );
+
+  /** Те же фильтры описаниями — для шита на телефоне (ADR 0030). */
+  const mobileFilters: FilterDefinition[] = [
+    {
+      kind: 'select',
+      key: 'vehicleId',
+      label: 'Техника',
+      value: params.vehicleId,
+      options: vehicleOptions,
+      placeholder: 'Вся техника',
+      loading: vehiclesLoading,
+      onChange: (v) => applyFilter({ vehicleId: v }),
+    },
+    {
+      kind: 'select',
+      key: 'driverPersonId',
+      label: 'Водитель',
+      value: params.driverPersonId,
+      options: driverOptions,
+      placeholder: 'Все водители',
+      loading: driversLoading,
+      onChange: (v) => applyFilter({ driverPersonId: v }),
+    },
+    {
+      kind: 'select',
+      key: 'waybill',
+      label: 'Путевой лист',
+      value: params.waybill,
+      options: [...WAYBILL_FILTERS],
+      placeholder: 'Лист: любой',
+      onChange: (v) => applyFilter({ waybill: v as WaybillFilter | undefined }),
+    },
+    {
+      kind: 'dateRange',
+      key: 'range',
+      label: 'Период рейсов',
+      from: range[0].format(DATE),
+      to: range[1].format(DATE),
+      isActive: false,
+      onChange: (from, to) => {
+        setRange([from ? dayjs(from) : dayjs(), to ? dayjs(to) : dayjs()]);
+        applyFilter({});
+      },
+    },
+  ];
+
   return (
     <>
       <PageTableLayout
+        filters={filters}
         extra={
-          <Space wrap>
-            <DatePicker.RangePicker
-              format="DD.MM.YYYY"
-              value={range}
-              allowClear={false}
-              inputReadOnly={isMobile}
-              onChange={(v) => v && setRange(v as [dayjs.Dayjs, dayjs.Dayjs])}
-            />
-            <Segmented<WaybillFilter>
-              value={waybill}
-              onChange={setWaybill}
-              options={[...WAYBILL_FILTERS]}
-            />
-            <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreating(true)}>
-              Новый маршрут
-            </Button>
-          </Space>
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreating(true)}>
+            Новый маршрут
+          </Button>
         }
+        mobile={{
+          search: {
+            value: params.search,
+            placeholder: 'Р-12, госномер или водитель',
+            onChange: (v) => applyFilter({ search: v }),
+          },
+          filters: mobileFilters,
+          sort: {
+            options: sortOptionsFrom(columns, { num: 'Маршрут' }),
+            sortBy: params.sortBy,
+            sortOrder: params.sortOrder,
+            onChange: setSort,
+          },
+          primaryAction: {
+            label: 'Новый маршрут',
+            icon: <PlusOutlined />,
+            onClick: () => setCreating(true),
+          },
+        }}
       >
         <DataTable<VehicleRouteDto>
           columns={columns}
@@ -313,6 +463,8 @@ export function VehicleRoutesTab() {
           loading={isFetching}
           page={params.page}
           pageSize={params.pageSize}
+          sortBy={params.sortBy}
+          sortOrder={params.sortOrder}
           onChange={onTableChange}
         />
       </PageTableLayout>
@@ -324,6 +476,20 @@ export function VehicleRoutesTab() {
           opened.clear();
         }}
         onChanged={refresh}
+        onEdit={setEditing}
+      />
+
+      <VehicleRouteEditModal
+        route={editing}
+        onClose={() => setEditing(null)}
+        onSaved={(updated) => {
+          setEditing(null);
+          refresh();
+          // Список стоит на дне: рейс, уехавший на другую дату, из текущего периода пропадает —
+          // и человек должен увидеть его там, куда перенёс, а не гадать, куда он делся.
+          const day = dayjs(updated.routeDate);
+          setRange([day, day]);
+        }}
       />
 
       <CreateRouteModal
@@ -421,11 +587,13 @@ function CreateRouteModal({
               placeholder="Выберите машину"
             />
           </Form.Item>
+          {/* Дата спрашивается пустым полем: рейс заводят и на завтра, и на послезавтра, а
+            подставленное «сегодня» проскакивают не глядя — и рейс оказывается не в том дне, где
+            его потом ищут. */}
           <Form.Item
             name="routeDate"
             label="Дата рейса"
             rules={[{ required: true, message: 'Укажите дату' }]}
-            initialValue={dayjs()}
           >
             <DatePicker format="DD.MM.YYYY" style={{ width: '100%' }} inputReadOnly={isMobile} />
           </Form.Item>
@@ -437,8 +605,10 @@ function CreateRouteModal({
             >
               {/* Порядок задал сервер: пригодные первыми — комплект документов, затем категория
                 (ADR 0064, ADR 0055), внутри них работавшие на этой машине (ADR 0056). Пометки в
-                строке объясняют почему. */}
+                строке объясняют почему — но выбирает человек: сам собой водитель в поле не
+                встаёт даже тогда, когда пригоден он один. */}
               <AutoSelect
+                autoSelectSole={false}
                 options={(selection?.drivers ?? []).map((d) => ({
                   value: d.personId,
                   label: [

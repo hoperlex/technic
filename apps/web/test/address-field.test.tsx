@@ -6,6 +6,7 @@ import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { emptyList, list } from './factories/common';
 import { objectDto } from './factories/waste';
+import { typeDate } from './antd';
 import {
   classification,
   freightRequest,
@@ -343,6 +344,8 @@ describe('перегон и справочники: тот же компонен
     fireEvent.change(addressInput(from), { target: { value: 'Складская' } });
     fireEvent.click(within(openDropdown()).getByTitle(/Складская/));
 
+    // Дату перегона называет человек: она больше не подставляется границей срока работ.
+    typeDate('Дата перегона', '10.08.2026');
     fireEvent.click(screen.getByText('Завести перегон'));
     await waitFor(() => expect(http.countOf('POST /vehicle-requests/:id/relocations')).toBe(1));
     const body = http.lastCall('POST /vehicle-requests/:id/relocations')!.body as Record<

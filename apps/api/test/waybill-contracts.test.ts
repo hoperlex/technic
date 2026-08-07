@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   cancelWaybillSchema,
   canCancelWaybill,
+  canPrintWaybill,
   DEFAULT_TYPE_WAYBILL_FORM,
   esm2Periods,
   esm2Required,
@@ -9,6 +10,9 @@ import {
   esm2WeekDays,
   formatWaybillNumber,
   isPassengerTypeForm,
+  printWaybillsBatchSchema,
+  selectedWaybillsLabel,
+  WAYBILL_PRINT_BATCH_LIMIT,
   TYPE_WAYBILL_FORM_CODES,
   typeWaybillFormCodeSchema,
   typeWaybillFormOf,
@@ -467,5 +471,51 @@ describe('снимок старого листа при печати', () => {
   it('новый снимок не трогается — даже когда контактов в заявке не было', () => {
     const fresh = { customer_name: 'ЖК «Северный»', task_contacts: '', task2_customer: 'Склад №3' };
     expect(snapshotForPrint(fresh)).toBe(fresh);
+  });
+});
+
+/**
+ * Бумага у аннулированного листа.
+ *
+ * Прежде испорченный бланк печатали и выгружали наравне с выданным — его подшивают к журналу. Но
+ * напечатанный аннулированный лист неотличим от действующего: те же реквизиты, тот же номер, — и
+ * попав к водителю, он ездит документом, которого уже нет. Правило одно на портал и на сервер:
+ * кнопка не должна обещать того, чем ручка ответит отказом.
+ */
+describe('печать и выгрузка по состоянию листа', () => {
+  it('выданный печатается, аннулированный — нет', () => {
+    expect(canPrintWaybill('issued')).toBe(true);
+    expect(canPrintWaybill('cancelled')).toBe(false);
+  });
+});
+
+/**
+ * Пачка листов одним документом. Предел здесь не про сервер, а про бумагу: полсотни бланков A4 —
+ * это уже пачка в лотке, и он же держит время сборки (каждый лист переводит в PDF LibreOffice).
+ */
+describe('печать пачкой', () => {
+  const uuid = (n: number) => `1111111${n}-1111-4111-8111-111111111111`;
+
+  it('пустой список не принимается: печатать нечего', () => {
+    expect(printWaybillsBatchSchema.safeParse({ ids: [] }).success).toBe(false);
+  });
+
+  it('сверх предела не принимается', () => {
+    const ids = Array.from({ length: WAYBILL_PRINT_BATCH_LIMIT + 1 }, () => uuid(1));
+    expect(printWaybillsBatchSchema.safeParse({ ids }).success).toBe(false);
+  });
+
+  it('обычный выбор проходит', () => {
+    expect(printWaybillsBatchSchema.safeParse({ ids: [uuid(1), uuid(2)] }).success).toBe(true);
+  });
+
+  /** Подпись виджета склоняет «лист» — её читают десятки раз на дню. */
+  it('счётчик выбранного склоняется по-русски', () => {
+    expect(selectedWaybillsLabel(1)).toBe('Выбрано 1 лист');
+    expect(selectedWaybillsLabel(2)).toBe('Выбрано 2 листа');
+    expect(selectedWaybillsLabel(5)).toBe('Выбрано 5 листов');
+    expect(selectedWaybillsLabel(11)).toBe('Выбрано 11 листов');
+    expect(selectedWaybillsLabel(21)).toBe('Выбрано 21 лист');
+    expect(selectedWaybillsLabel(112)).toBe('Выбрано 112 листов');
   });
 });

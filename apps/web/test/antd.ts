@@ -92,3 +92,33 @@ export async function selectOption(labelText: string, optionText: string | RegEx
   });
   fireEvent.click(option);
 }
+
+/**
+ * Поле даты (`DatePicker`) по подписи. Отдельно от `openSelect`: у выбора вариантов возвращается
+ * выпадашка, а у даты нужен сам `input` — тесты и читают его значение, и печатают в него.
+ */
+export function dateInput(labelText: string): HTMLInputElement {
+  const label = [...document.querySelectorAll('label')].find(
+    (el) => el.textContent?.replace(/\s+/g, ' ').trim() === labelText,
+  );
+  if (!label) throw new Error(`поля «${labelText}» на экране нет`);
+  const fieldId = label.getAttribute('for');
+  const found = fieldId ? document.getElementById(fieldId) : null;
+  if (!found) throw new Error(`поле «${labelText}» не найдено по id «${fieldId}»`);
+  return found as HTMLInputElement;
+}
+
+/**
+ * Ввести дату руками — так, как её вводит человек: календарь в jsdom не открывается мышью, а
+ * набранное значение antd принимает по Enter. Формат тот же, что показывает поле, — «10.08.2026».
+ */
+export function typeDate(labelText: string, text: string): void {
+  const input = dateInput(labelText);
+  fireEvent.mouseDown(input);
+  fireEvent.focus(input);
+  fireEvent.change(input, { target: { value: text } });
+  fireEvent.keyDown(input, { key: 'Enter', code: 'Enter', charCode: 13 });
+  // Поле с уже заполненной датой по Enter значение иногда не принимает — «ввод закончен» antd
+  // слышит и по уходу фокуса. Оба события вместе безопасны: второе застаёт уже принятое.
+  fireEvent.blur(input);
+}

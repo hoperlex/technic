@@ -252,6 +252,13 @@ export interface VehicleRouteDto {
 export interface VehicleRequestRouteDto {
   id: string;
   displayNumber: string;
+  /**
+   * День рейса. Заявке он не свой — свой у неё день подачи, — но они обязаны совпадать
+   * (`canJoinRoute`), и разойтись могут только правкой одной из сторон. По этому полю портал и
+   * ловит расхождение (`routeDateMismatch`): без него «заявка уехала на завтра, а рейс остался
+   * на сегодня» обнаруживалось бы у принтера.
+   */
+  routeDate: string;
   position: number;
   hasWaybill: boolean;
   /**
@@ -288,6 +295,21 @@ export const ROUTE_FROZEN_MESSAGE =
  */
 export const ROLLBACK_WAYBILL_MESSAGE =
   'По заявке выписан действующий путевой лист — аннулируйте его, чтобы вернуть заявку в «Новую»';
+
+/**
+ * Предупреждение о расхождении дат: заявку правят, а она лежит в рейсе другого дня.
+ *
+ * Такое расхождение портал не запрещает — заявку и рейс правят разные люди в разное время, — но и
+ * молчать о нём нельзя: рейс останется на прежнем дне, а лист напечатает задание, которого в этот
+ * день уже нет. Человека отправляют туда, где это чинится, — в карточку маршрута.
+ */
+export function routeDateMismatch(
+  request: { tripDate: string },
+  route: { displayNumber: string; routeDate: string },
+): string | null {
+  if (request.tripDate === route.routeDate) return null;
+  return `Заявка теперь на ${request.tripDate}, а маршрут ${route.displayNumber} заведён на ${route.routeDate}. Лист печатает задание на день рейса — перенесите маршрут или выньте из него заявку.`;
+}
 
 /**
  * Бланк, по которому выписывается лист этого рейса.
@@ -679,6 +701,13 @@ export type CreateVehicleRouteBody = z.input<typeof createVehicleRouteSchema>;
 
 export const updateVehicleRouteSchema = z
   .object({
+    /**
+     * День рейса. Меняется вместе с составом: заявка едет в тот день, в который заведён рейс, и
+     * лист печатает задание на него (`canJoinRoute`). Поэтому сервер переносит и время подачи
+     * заявок рейса — иначе рейс и его заявки разошлись бы по разным дням, а бумага напечатала бы
+     * работу, которой в этот день никто не заказывал.
+     */
+    routeDate: dateOnlySchema.optional(),
     driverPersonId: uuidSchema.nullable().optional(),
     trip: routeTripFieldsSchema.optional(),
     comment: z.string().trim().max(2000).optional(),
