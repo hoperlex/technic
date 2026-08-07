@@ -28,6 +28,9 @@ const AUDIT_ACTIONS = [
   'vehicle_request.early_end_approve',
   'vehicle_request.early_end_reject',
   'vehicle_request.early_end_cancel',
+  // Продление срока недельной заявкой (ADR 0085): срок двигает виза руководителя строительства
+  // под пакетом, а не правка заказа, и в истории это должно читаться номером пакета.
+  'vehicle_request.weekly_extend',
   // Подтверждение смены объектом и снятие подписи: «кто принял 11,5 машиночаса за 12 августа» —
   // вопрос, который задают при разборе счёта через два месяца, и отвечать на него должна история,
   // а не текущее состояние строки. Заполнение часов события не пишет: это черновик данных.
@@ -53,6 +56,7 @@ const AUDIT_KINDS: Record<string, RequestHistoryKind> = {
   // Снятие запроса — не отказ: его снимает правка срока, закрытие заявки или сам инициатор,
   // и решения по существу за ним не стоит.
   'vehicle_request.early_end_cancel': 'earlyEndCancelled',
+  'vehicle_request.weekly_extend': 'weeklyExtended',
   'vehicle_request.shift_approve': 'shiftApproved',
   'vehicle_request.shift_revoke': 'shiftApprovalRevoked',
   'vehicle_request.soft_delete': 'deleted',

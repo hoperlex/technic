@@ -148,6 +148,24 @@ export function earlyEndReasonChange(reason: string): RequestChangeDto[] {
 }
 
 /**
+ * Продление срока недельной заявкой (ADR 0085): дата — той же парой «было → стало», что и у
+ * обычной правки, а рядом номер пакета, которым её сдвинули.
+ */
+export function weeklyExtendChanges(
+  weeklyNumber: string,
+  previousDateTo: string | null,
+  newDateTo: string | null,
+): RequestChangeDto[] {
+  const diff = changeSet();
+  // Номер пакета — тоже изменением, а не только реквизитом события: до карточки заказа доезжают
+  // именно `changes`, и без этой строки история сообщала бы, что срок сдвинулся, но не сказала бы,
+  // чьим решением.
+  diff.listed('weeklyRequest', [weeklyNumber]);
+  diff.changed('dateTo', dateOnly(previousDateTo), dateOnly(newDateTo));
+  return diff.changes;
+}
+
+/**
  * Что подтвердили (или с чего сняли подпись) — день и его показатели одной строкой:
  * «12.08.2026 · 08:00–20:00 · 11,5 ч · 120 л». Событием-списком, потому что «было» здесь нет:
  * решение принимают один раз про один день, а правки самих часов события не пишут вовсе.

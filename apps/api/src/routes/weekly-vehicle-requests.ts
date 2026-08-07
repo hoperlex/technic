@@ -64,6 +64,8 @@ import {
 } from '../db/schema';
 import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
+// Изменения для истории заказа — тем же модулем, что и у обычной правки: подписи полей общие.
+import { earlyEndReasonChange, weeklyExtendChanges } from '../services/vehicle-request-diff';
 import { requirePrincipal } from '../auth/plugin';
 import type { Principal } from '../auth/principal';
 import {
@@ -797,6 +799,51 @@ async function auditWeeklyEsm2(
   }
 }
 
+/**
+ * События истории **заказов**, которых коснулось применение (Р6, Р15).
+ *
+ * Пишутся отдельно от аудита самой недельной заявки и по каждому заказу: человек, открывший
+ * карточку заказа, должен прочесть, почему у него сдвинулся срок, — иначе дата меняется будто
+ * сама собой, а решение об этом принималось в чужом документе. По той же причине снятый запрос на
+ * досрочный отъезд получает своё событие: обычная правка срока пишет его давно, и применение
+ * недельной заявки не имеет права молчать там, где правка говорит.
+ */
+async function auditWeeklyOrderEvents(
+  actorUserId: string,
+  weeklyNum: number,
+  apply: WeeklyApplyResultDto | null,
+): Promise<void> {
+  if (!apply) return;
+  const number = formatWeeklyRequestNumber(weeklyNum);
+  for (const item of apply.items) {
+    if (!item.requestId) continue;
+    if (item.result === 'extended') {
+      await writeAudit({
+        actorUserId,
+        action: 'vehicle_request.weekly_extend',
+        entityType: 'vehicle_request',
+        entityId: item.requestId,
+        metadata: {
+          weeklyRequest: number,
+          changes: weeklyExtendChanges(number, item.previousDateTo, item.newDateTo),
+        },
+      });
+    }
+    if (item.earlyEndDropped) {
+      await writeAudit({
+        actorUserId,
+        action: 'vehicle_request.early_end_cancel',
+        entityType: 'vehicle_request',
+        entityId: item.requestId,
+        metadata: {
+          reason: 'weekly',
+          changes: earlyEndReasonChange(`Срок продлён недельной заявкой ${number}`),
+        },
+      });
+    }
+  }
+}
+
 // ── Чек-лист готовности недели (§5 шаг 6) ──
 
 const CELL_NONE: WeeklyDocumentCellDto = { state: 'none', number: null, text: '—' };
@@ -1226,6 +1273,7 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
         metadata: { status: body.status, reason: body.reason, auto: selfApplies || undefined },
       });
       await auditWeeklyEsm2(p.id, outcome.esm2);
+      await auditWeeklyOrderEvents(p.id, header.num, outcome.apply);
       return { request: (await getDto(header.id))!, apply: outcome.apply };
     },
   );
@@ -1302,6 +1350,7 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
           : { comment: body.comment },
       });
       await auditWeeklyEsm2(p.id, outcome.esm2);
+      await auditWeeklyOrderEvents(p.id, header.num, outcome.apply);
       return { request: (await getDto(header.id))!, apply: outcome.apply };
     },
   );

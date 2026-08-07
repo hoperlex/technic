@@ -345,6 +345,7 @@ export async function applyWeeklyRequest(
         previousDateTo: null,
         newDateTo: null,
         skipReason: decision.skipReason,
+        earlyEndDropped: false,
       });
       continue;
     }
@@ -370,7 +371,12 @@ export async function applyWeeklyRequest(
           snapshotVehicleId: order!.vehicleId,
         })
         .where(eq(weeklyVehicleRequestItems.id, item.id));
-      esm2.push({ requestId: order!.id, sync: extended.esm2 });
+      // Молчаливая сверка записью не считается: у арендного заказа листов нет вовсе, и пустая
+      // строка «аннулировано 0, выписано 0» читалась бы в ответе как расход бланков, которого
+      // не было. Тем же правилом молчит `auditEsm2Sync` (ADR 0060 п. 3).
+      if (extended.esm2.cancelled.length > 0 || extended.esm2.issued.length > 0) {
+        esm2.push({ requestId: order!.id, sync: extended.esm2 });
+      }
       results.push({
         itemId: item.id,
         kind: 'extend',
@@ -380,6 +386,9 @@ export async function applyWeeklyRequest(
         previousDateTo: extended.previousDateTo,
         newDateTo: item.dateTo,
         skipReason: '',
+        // Снятый запрос на отъезд доезжает до маршрута: событие о нём пишется после транзакции,
+        // как и у обычной правки срока (Р15).
+        earlyEndDropped: extended.earlyEndDropped,
       });
       continue;
     }
@@ -407,6 +416,7 @@ export async function applyWeeklyRequest(
         previousDateTo: last,
         newDateTo: null,
         skipReason: '',
+        earlyEndDropped: false,
       });
       continue;
     }
@@ -443,6 +453,7 @@ export async function applyWeeklyRequest(
       previousDateTo: null,
       newDateTo: item.dateTo,
       skipReason: '',
+      earlyEndDropped: false,
     });
   }
 
