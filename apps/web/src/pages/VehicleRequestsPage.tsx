@@ -5,13 +5,14 @@ import { useAuth } from '../auth/AuthContext';
 import { canSeeArchiveTab, canSeeRoutesTab } from '../utils/links';
 import { VehicleRequestsTab } from './vehicle/VehicleRequestsTab';
 import { VehicleRequestsOnSiteTab } from './vehicle/VehicleRequestsOnSiteTab';
+import { WeeklyRequestsTab } from './vehicle/WeeklyRequestsTab';
 import { VehicleRoutesTab } from './vehicle/VehicleRoutesTab';
 import { VehicleRequestsHistoryTab } from './vehicle/VehicleRequestsHistoryTab';
 import { VehicleRequestsArchiveTab } from './vehicle/VehicleRequestsArchiveTab';
 
 // Спецтехника и грузоперевозки живут в одном списке («Заказ автотехники»): тип заявки —
 // колонка и фильтр, а не отдельная вкладка. Старые ключи вкладок ведут на общий список.
-const TABS = ['requests', 'on-site', 'routes', 'history', 'archive'] as const;
+const TABS = ['requests', 'on-site', 'weekly', 'routes', 'history', 'archive'] as const;
 
 export function VehicleRequestsPage() {
   const { user, can } = useAuth();
@@ -34,10 +35,20 @@ export function VehicleRequestsPage() {
   const showRoutes = canSeeRoutesTab(can);
   const showArchive = canSeeArchiveTab(can);
 
+  /**
+   * «Недельные заявки» (ADR 0085) — своё право, а не заимствованное у заказов: `vehicleRequests.read`
+   * есть у наблюдателя, оператора вывоза и арендодателя, а недельная заявка — это план площадки,
+   * который им не показывают (Р12).
+   */
+  const showWeekly = can('weeklyRequests.read');
+
   const items = [
     { key: 'requests', label: 'Заказ автотехники', children: <VehicleRequestsTab /> },
     ...(showOnSite
       ? [{ key: 'on-site', label: 'На объекте', children: <VehicleRequestsOnSiteTab /> }]
+      : []),
+    ...(showWeekly
+      ? [{ key: 'weekly', label: 'Недельные заявки', children: <WeeklyRequestsTab /> }]
       : []),
     ...(showRoutes ? [{ key: 'routes', label: 'Маршруты', children: <VehicleRoutesTab /> }] : []),
     { key: 'history', label: 'История', children: <VehicleRequestsHistoryTab /> },

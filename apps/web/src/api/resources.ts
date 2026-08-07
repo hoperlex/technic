@@ -73,6 +73,15 @@ import type {
   PresentContainerGroupDto,
   WasteRequestDto,
   WasteRequestSummaryDto,
+  ApproveWeeklyRequestBody,
+  CreateWeeklyRequestBody,
+  UpdateWeeklyRequestBody,
+  WeeklyApplyResultDto,
+  WeeklyRequestDocumentsDto,
+  WeeklyRequestStatus,
+  WeeklyRequestStatusBody,
+  WeeklySuggestionDto,
+  WeeklyVehicleRequestDto,
 } from '@technic/contracts';
 import { apiDownload, apiFetch, apiFetchBlob } from '@shared/api';
 
@@ -575,6 +584,96 @@ export const vehicleRequestsApi = {
   /** Удаление насовсем (ADR 0070) — только из архива и только администратором. */
   purge: (id: string) =>
     apiFetch<{ ok: boolean }>(`/vehicle-requests/${id}/purge`, { method: 'DELETE' }),
+};
+
+/**
+ * Список недельных заявок вместе со счётчиком «ждут визы» (§8 плана). Счётчик едет с самим
+ * списком, а не отдельной ручкой: он считается по тем же фильтрам, и второй запрос отвечал бы про
+ * другую выборку — ту, которую человек перед собой не видит.
+ */
+export interface WeeklyRequestListDto extends ListResult<WeeklyVehicleRequestDto> {
+  /** Сколько заявок области учётки ждут визы — счётчик очереди, а не выборки. */
+  pendingCount: number;
+}
+
+/** Событие истории недельной заявки: и переход статуса, и правка состава (Р17). */
+export type WeeklyRequestHistoryEvent = 'status' | 'items_changed' | 'item_dropped';
+
+/**
+ * Строка истории недельной заявки. Своя, а не общая `RequestHistoryEntryDto`: у недельной заявки
+ * события шире статусов — состав меняется и без перехода (правкой черновика, уборкой строк при
+ * `purge`), и такое событие обязано пережить сбой записи аудита (Р17).
+ */
+export interface WeeklyRequestHistoryEntryDto {
+  id: string;
+  event: WeeklyRequestHistoryEvent;
+  fromStatus: WeeklyRequestStatus | null;
+  toStatus: WeeklyRequestStatus | null;
+  /** Что именно изменилось: снятые строки с номерами заказов, состав до и после. */
+  payload: Record<string, unknown>;
+  changedByName: string;
+  changedAt: string;
+  comment: string;
+}
+
+/**
+ * Ответ решения — визы, отказа, подачи и снятия: заявка после него и итог применения, если оно
+ * состоялось. Двумя половинами, а не одной: виза применяет заявку той же транзакцией (Р6), а
+ * подача заявки тем, кто её и визирует, применяет её сразу же (Р8) — и «сколько строк прошло»
+ * отвечает только применение. У отказа и снятия итога нет вовсе, поэтому `apply` бывает `null`.
+ */
+export interface WeeklyDecisionResultDto {
+  request: WeeklyVehicleRequestDto;
+  apply: WeeklyApplyResultDto | null;
+}
+
+/**
+ * Недельная заявка на технику (ADR 0085) — документ-основание **над** заказами ТС: площадка
+ * заказывает не машину на срок, а неделю целиком, а виза руководителя строительства продлевает
+ * сроки и порождает обычные заказы той же транзакцией (Р1, Р6).
+ *
+ * Состав правится целиком (`items` переписывается массивом), а не операциями «добавить строку»:
+ * две одновременные правки иначе собрали бы дубли. `version` в теле — токен оптимистичной
+ * блокировки: сервер сверяет его с текущей версией и присваивает колонке своё значение.
+ */
+export const weeklyRequestsApi = {
+  list: (q: Query) => apiFetch<WeeklyRequestListDto>('/weekly-vehicle-requests', { query: q }),
+  /**
+   * Предложение состава на пару «объект + неделя» (Р4): что продлевать, что уезжает, что заказано
+   * дольше недели и что в состав не годится — с причинами. Здесь же приходит `existingRequestId`:
+   * заявка на эту неделю уже собирается, и кнопка обязана открыть её, а не заводить вторую (Р3).
+   */
+  suggestion: (q: { objectId: string; weekStart: string }) =>
+    apiFetch<WeeklySuggestionDto>('/weekly-vehicle-requests/suggestion', { query: q }),
+  create: (body: CreateWeeklyRequestBody) =>
+    apiFetch<WeeklyVehicleRequestDto>('/weekly-vehicle-requests', { method: 'POST', body }),
+  get: (id: string) => apiFetch<WeeklyVehicleRequestDto>(`/weekly-vehicle-requests/${id}`),
+  update: (id: string, body: UpdateWeeklyRequestBody) =>
+    apiFetch<WeeklyVehicleRequestDto>(`/weekly-vehicle-requests/${id}`, {
+      method: 'PATCH',
+      body,
+    }),
+  /**
+   * Переходы составителя: подать и снять с причиной. Визы здесь нет — она отдельным решением; но
+   * подача руководителем строительства своей площадки применяет заявку тем же запросом (Р8),
+   * поэтому ответ тот же, что и у визы.
+   */
+  changeStatus: (id: string, body: WeeklyRequestStatusBody) =>
+    apiFetch<WeeklyDecisionResultDto>(`/weekly-vehicle-requests/${id}/status`, {
+      method: 'POST',
+      body,
+    }),
+  /** Виза либо отказ. Виза применяет заявку сразу: отдельного «применить» не существует (Р6). */
+  approval: (id: string, body: ApproveWeeklyRequestBody) =>
+    apiFetch<WeeklyDecisionResultDto>(`/weekly-vehicle-requests/${id}/approval`, {
+      method: 'POST',
+      body,
+    }),
+  /** Чек-лист готовности недели (§5 шаг 6) — экран, ради которого модуль и делается. */
+  documents: (id: string) =>
+    apiFetch<WeeklyRequestDocumentsDto>(`/weekly-vehicle-requests/${id}/documents`),
+  history: (id: string) =>
+    apiFetch<WeeklyRequestHistoryEntryDto[]>(`/weekly-vehicle-requests/${id}/history`),
 };
 
 export interface WasteRequestPayload {

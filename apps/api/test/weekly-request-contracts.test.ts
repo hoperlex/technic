@@ -576,6 +576,17 @@ describe('словари состояний', () => {
   });
 });
 
+/**
+ * Роли, у которых есть право, — по одному разу каждая и в порядке матрицы.
+ *
+ * `profilesWith` перечисляет **субъекты доступа**, а не роли, и одна роль встречается в нём
+ * столько раз, сколько у неё надстроек (ADR 0086). Здесь спрашивается другое — «кому из ролей
+ * открыт модуль», — и повтор роли этому вопросу ничего не добавляет.
+ */
+function rolesWith(permission: Parameters<typeof profilesWith>[0]): string[] {
+  return [...new Set(profilesWith(permission).map((s) => s.role))];
+}
+
 describe('права модуля', () => {
   /**
    * Права свои, а не `vehicleRequests.*` (§10): у наблюдателя, оператора вывоза и арендодателя
@@ -588,15 +599,15 @@ describe('права модуля', () => {
       'weeklyRequests.create',
       'weeklyRequests.update',
     ] as const) {
-      expect(
-        profilesWith(permission).map((s) => s.role),
-        permission,
-      ).toEqual(['admin', 'manager', 'dispatcher', 'shtab', 'rukstroy']);
+      expect(rolesWith(permission), permission).toEqual([
+        'admin',
+        'manager',
+        'dispatcher',
+        'shtab',
+        'rukstroy',
+      ]);
     }
-    expect(profilesWith('weeklyRequests.approve').map((s) => s.role)).toEqual([
-      'admin',
-      'rukstroy',
-    ]);
+    expect(rolesWith('weeklyRequests.approve')).toEqual(['admin', 'rukstroy']);
   });
 
   it('наблюдатель, комендант, отдел, оператор и арендодатель модуля не видят вовсе', () => {

@@ -5,6 +5,7 @@ import {
   CloseOutlined,
   EyeOutlined,
   FieldTimeOutlined,
+  PlusOutlined,
   ScheduleOutlined,
 } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
@@ -43,6 +44,7 @@ import {
 } from './shared';
 import { useAuth } from '../../auth/AuthContext';
 import { useObjectScope } from '../../hooks/useObjectScope';
+import { useWeeklyRequestCreate } from './weeklyShared';
 
 /**
  * Техника, которая работает на объектах прямо сейчас (ADR 0036). Первая вкладка отвечает на «что
@@ -196,6 +198,12 @@ export function VehicleRequestsOnSiteTab() {
   // списке заявок.
   const { can } = useAuth();
   const earlyEnd = useEarlyEnd();
+  /**
+   * Второй вход в недельную заявку (ADR 0085, §5 шаг 1) — и он важнее первого: неделю собирают,
+   * глядя именно на этот срез, а не открыв пустой список недельных заявок.
+   */
+  const weeklyCreate = useWeeklyRequestCreate();
+  const canOrderWeek = can('weeklyRequests.create');
   const canRequest = can('vehicleRequests.update');
   const canDecide = can('vehicleRequests.approve');
   // Часы вносит тот, кто ведёт заявку; подпись ставит тот, кто мог бы её завести. Область
@@ -475,6 +483,13 @@ export function VehicleRequestsOnSiteTab() {
   return (
     <PageTableLayout
       filters={filters}
+      extra={
+        canOrderWeek ? (
+          <Button type="primary" icon={<PlusOutlined />} onClick={weeklyCreate.open}>
+            Заявка на неделю
+          </Button>
+        ) : null
+      }
       mobile={{
         filters: mobileFilters,
         sort: {
@@ -483,6 +498,9 @@ export function VehicleRequestsOnSiteTab() {
           sortOrder: params.sortOrder,
           onChange: setSort,
         },
+        primaryAction: canOrderWeek
+          ? { label: 'Заявка на неделю', icon: <PlusOutlined />, onClick: weeklyCreate.open }
+          : undefined,
       }}
     >
       {/* Сводка — на уровне вкладок, над фильтрами: она относится ко всему срезу. */}
@@ -538,6 +556,9 @@ export function VehicleRequestsOnSiteTab() {
         canApprove={canApproveShifts}
         onClose={() => setShiftsRecord(null)}
       />
+
+      {/* Окно недельной заявки: спрашивает площадку и неделю, дальше уводит на страницу сборки. */}
+      {weeklyCreate.node}
 
       {/* Досрочное завершение — окно то же, что и в списке заявок: спрашивают в нём одно и то же. */}
       <VehicleEarlyEndModal
