@@ -5,6 +5,7 @@ import {
   and,
   asc,
   count,
+  desc,
   eq,
   exists,
   gte,
@@ -82,6 +83,7 @@ import {
   type VehicleRequestCompletionDto,
   type VehicleOwnership,
   type VehicleRequestDto,
+  type VehicleRequestDriverDto,
   type VehicleRequestEarlyEndDto,
   type VehicleRequestHistorySummaryDto,
   type VehicleRequestOnSiteQuery,
@@ -206,10 +208,7 @@ import {
 import { auditEsm2Sync, type Esm2SyncResult, syncEsm2Waybills } from '../services/waybill-esm2';
 // Последствия изменившегося срока работ — общим сервисом: их же зовёт применение недельной заявки,
 // и два описания одного правила разошлись бы при первой правке.
-import {
-  afterWorkPeriodChanged,
-  clearPendingEarlyEnd,
-} from '../services/vehicle-request-period';
+import { afterWorkPeriodChanged, clearPendingEarlyEnd } from '../services/vehicle-request-period';
 // Условия появления заказа спецтехники — общим сервисом с применением недельной заявки (ADR 0085):
 // иначе проверки классификации и активности площадки разойдутся у формы и у недели.
 import {
@@ -2694,6 +2693,58 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       });
       reply.code(201);
       return (await loadRouteDto(db, created.id))!;
+    },
+  );
+
+  /**
+   * Водитель или машинист назначенной техники в карточке заявки.
+   *
+   * Отдельная ручка сохраняет границу персональных данных: основной список заявок читают также
+   * объектные роли, которым ФИО и телефон водителя не положены. Источник зависит от вида работы:
+   * у грузоперевозки водитель принадлежит маршруту, у заказа спецтехники машинист записан в
+   * недельных листах ЭСМ-2. Последний лист остаётся запасным источником и для снятого маршрута —
+   * закрытая заявка должна по-прежнему объяснять, кто выполнял работу.
+   */
+  r.get(
+    '/:id/driver',
+    {
+      preHandler: [app.authenticate, app.requirePermission('waybills.read')],
+      schema: { params: idParams },
+    },
+    async (req): Promise<VehicleRequestDriverDto | null> => {
+      const p = requirePrincipal(req);
+      const request = await getDto(req.params.id);
+      if (!request) throw err.notFound('Заявка не найдена');
+      assertRequestScope(p, request);
+      if (!request.assignment) return null;
+
+      // У грузоперевозки водитель известен уже после включения заявки в маршрут — ждать выпуска
+      // путевого листа для показа контакта нельзя.
+      if (request.route) {
+        const [routeDriver] = await db
+          .select({ personId: persons.id, fullName: persons.fullName, phone: persons.phone })
+          .from(vehicleRoutes)
+          .innerJoin(persons, eq(persons.id, vehicleRoutes.driverPersonId))
+          .where(eq(vehicleRoutes.id, request.route.id))
+          .limit(1);
+        if (routeDriver) return routeDriver;
+      }
+
+      // Для ЭСМ-2 берём действующий лист, а если работа уже закрыта и лист аннулирован — последний
+      // исторический. У одной заявки недель несколько, но сверка выписывает их одному машинисту.
+      const [waybillDriver] = await db
+        .select({ personId: persons.id, fullName: persons.fullName, phone: persons.phone })
+        .from(waybillRequests)
+        .innerJoin(waybills, eq(waybills.id, waybillRequests.waybillId))
+        .innerJoin(persons, eq(persons.id, waybills.driverPersonId))
+        .where(eq(waybillRequests.requestId, request.id))
+        .orderBy(
+          sql`(${waybills.status} = 'cancelled')`,
+          desc(waybills.issuedAt),
+          desc(waybills.periodFrom),
+        )
+        .limit(1);
+      return waybillDriver ?? null;
     },
   );
 

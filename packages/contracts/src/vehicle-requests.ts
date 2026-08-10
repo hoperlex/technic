@@ -1123,6 +1123,20 @@ export interface VehicleRequestAssignmentDto {
   assignedAt: string;
 }
 
+/**
+ * Водитель или машинист, который сейчас связан с работой по заявке.
+ *
+ * Контакт не входит в основной `VehicleRequestDto` намеренно: заявки видят в том числе объектные
+ * роли, а персональные данные водителей закрыты правом `waybills.read`. Карточка получает этот
+ * объект отдельным защищённым запросом только для тех, кому доступен журнал путевых листов.
+ */
+export interface VehicleRequestDriverDto {
+  personId: string;
+  fullName: string;
+  /** Пусто — водитель назначен, но телефон в справочнике не заполнен. */
+  phone: string;
+}
+
 /** Как назначенная машина называется в списке заявок и в карточке. */
 export function assignmentTitle(a: VehicleRequestAssignmentDto): string {
   return vehicleLabel(a);

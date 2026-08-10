@@ -33,6 +33,7 @@ const DB_URL = process.env.TEST_DATABASE_URL;
 
 /** Тестовый машинист: СНИЛС из одинаковых цифр с верной контрольной суммой, серия «00 00». */
 const DRIVER_SNILS = '11111111145';
+const DRIVER_PHONE = '9001234567';
 const ADMIN_EMAIL = 'db-links-admin@example.invalid';
 const PASSWORD = 'db-test-password-123';
 
@@ -103,7 +104,12 @@ async function seed(): Promise<{ personId: string }> {
     .select({ id: schema.persons.id })
     .from(schema.persons)
     .where(sql`${schema.persons.snils} = ${DRIVER_SNILS}`);
-  if (existing) return { personId: existing.id };
+  if (existing) {
+    await db.execute(
+      sql`UPDATE persons SET phone = ${DRIVER_PHONE}, updated_at = now() WHERE id = ${existing.id}`,
+    );
+    return { personId: existing.id };
+  }
 
   const [specialization] = await db
     .select({ id: schema.specializations.id })
@@ -125,6 +131,7 @@ async function seed(): Promise<{ personId: string }> {
         lastName: 'Тестовый',
         firstName: 'Машинист',
         middleName: 'Интеграционный',
+        phone: DRIVER_PHONE,
         snils: DRIVER_SNILS,
         comment: 'ТЕСТОВЫЕ ДАННЫЕ: интеграционный тест талонов журнала',
       })
@@ -330,5 +337,41 @@ describe.skipIf(!DB_URL)('талоны заказчиков в журнале л
     // Лист остаётся в журнале и после отмены заявки: выданный бланк из него не исчезает.
     const talon = await talonOf(request.id);
     expect(talon.status).toBe('cancelled');
+  });
+
+  it('карточка получает машиниста с телефоном и после аннулирования листов', async () => {
+    const request = await requestInWork();
+
+    const active = await ctx.app.inject({
+      method: 'GET',
+      url: `/api/v1/vehicle-requests/${request.id}/driver`,
+      headers: ctx.auth,
+    });
+    expect(active.statusCode, active.body).toBe(200);
+    expect(active.json()).toMatchObject({
+      personId: ctx.personId,
+      fullName: 'Тестовый Машинист Интеграционный',
+      phone: DRIVER_PHONE,
+    });
+
+    const cancelled = await ctx.app.inject({
+      method: 'PATCH',
+      url: `/api/v1/vehicle-requests/${request.id}/status`,
+      headers: ctx.auth,
+      payload: {
+        status: 'cancelled',
+        comment: 'Работы отменены заказчиком',
+        version: request.version,
+      },
+    });
+    expect(cancelled.statusCode, cancelled.body).toBe(200);
+
+    const historical = await ctx.app.inject({
+      method: 'GET',
+      url: `/api/v1/vehicle-requests/${request.id}/driver`,
+      headers: ctx.auth,
+    });
+    expect(historical.statusCode, historical.body).toBe(200);
+    expect(historical.json()).toMatchObject({ personId: ctx.personId, phone: DRIVER_PHONE });
   });
 });

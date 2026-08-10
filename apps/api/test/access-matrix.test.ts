@@ -286,6 +286,12 @@ const CASES: Case[] = [
     url: `/api/v1/vehicle-requests/${RECORD_ID}/waybills`,
     allowed: ['admin', 'manager', 'dispatcher'],
   },
+  {
+    title: 'контакт водителя в карточке — тем же правом на персональные данные листа',
+    method: 'GET',
+    url: `/api/v1/vehicle-requests/${RECORD_ID}/driver`,
+    allowed: ['admin', 'manager', 'dispatcher'],
+  },
   // Вложения к бланку — своё право (`waybills.files`): смотреть журнал может и тот, кто документы
   // к нему не подшивает. Состав ролей тот же, что у чтения и аннулирования, — журнал ведут они.
   {

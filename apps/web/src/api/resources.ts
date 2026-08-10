@@ -64,6 +64,7 @@ import type {
   VehicleOnSiteListDto,
   VehicleOnSiteSummaryDto,
   VehicleRequestDto,
+  VehicleRequestDriverDto,
   VehicleRequestShiftsDto,
   VehicleRequestHistorySummaryDto,
   VehicleRequestSummaryDto,
@@ -431,6 +432,9 @@ export const vehiclesApi = {
 
 export const vehicleRequestsApi = {
   list: (q: Query) => apiFetch<ListResult<VehicleRequestDto>>('/vehicle-requests', { query: q }),
+  /** Контакт водителя защищён правом на путевые листы и поэтому не входит в основной DTO. */
+  driver: (id: string) =>
+    apiFetch<VehicleRequestDriverDto | null>(`/vehicle-requests/${id}/driver`),
   /**
    * Что портал знает о рейсе до перевода заявки в работу: ведётся ли он, на какую дату, какие
    * рейсы на неё уже заведены и чем были заполнены графы шапки в прошлый раз. Форма либо кладёт

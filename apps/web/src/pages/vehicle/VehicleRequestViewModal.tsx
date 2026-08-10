@@ -41,6 +41,7 @@ import { EntityLink } from '@shared/ui';
 import { ViewFields, ViewModal } from '@shared/ui';
 import { vehicleRouteLink, waybillLink } from '../../utils/links';
 import { PrintWaybillButton } from '../../components/WaybillPrint';
+import { PhoneLink } from '../../components/PhoneField';
 import { calendarDaysLabel } from '../../utils/date';
 import { formatDateTime, formatDateTimeMaybe, formatMoney } from '../../utils/format';
 import { formatDateOnly } from './shared';
@@ -178,6 +179,18 @@ export function VehicleRequestViewModal({
     queryKey: ['vehicle-requests', request?.id, 'history'],
     queryFn: () => vehicleRequestsApi.history(request!.id),
     enabled: !!request,
+  });
+
+  /**
+   * Контакт водителя — персональные данные путевого листа, поэтому он приходит отдельным
+   * запросом и только роли с `waybills.read`. Основной DTO заявки намеренно его не содержит:
+   * карточку читают также заказчики со стороны объекта.
+   */
+  const asksDriver = !!request?.assignment && can('waybills.read');
+  const { data: driver, isPending: isDriverPending } = useQuery({
+    queryKey: ['vehicle-requests', request?.id, 'driver'],
+    queryFn: () => vehicleRequestsApi.driver(request!.id),
+    enabled: asksDriver,
   });
 
   /**
@@ -500,9 +513,32 @@ export function VehicleRequestViewModal({
                   </Button>
                 )}
               </Space>
-              <Typography.Text>
-                {assignmentRateLabel(request.assignment) || 'Ставка не указана'}
-              </Typography.Text>
+              {/* Ставка и человек, который работает на машине, — один уровень ответа «чем и
+                  почём выполняют заявку». На узком экране Space перенесёт контакт целиком. */}
+              <Space size={[16, 4]} wrap>
+                <Typography.Text>
+                  {assignmentRateLabel(request.assignment) || 'Ставка не указана'}
+                </Typography.Text>
+                {asksDriver ? (
+                  <Space size={8} wrap>
+                    <Typography.Text type="secondary">Водитель:</Typography.Text>
+                    {isDriverPending ? (
+                      <Spin size="small" />
+                    ) : driver ? (
+                      <>
+                        <span>{driver.fullName}</span>
+                        {driver.phone ? (
+                          <PhoneLink phone={driver.phone} />
+                        ) : (
+                          <Typography.Text type="secondary">телефон не указан</Typography.Text>
+                        )}
+                      </>
+                    ) : (
+                      <Typography.Text type="secondary">не назначен</Typography.Text>
+                    )}
+                  </Space>
+                ) : null}
+              </Space>
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                 Назначил {request.assignment.assignedByName || '—'} ·{' '}
                 {formatDateTime(request.assignment.assignedAt)}
