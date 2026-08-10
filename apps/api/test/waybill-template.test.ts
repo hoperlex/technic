@@ -44,10 +44,10 @@ function cellsWithString(sheet: string, index: number): string[] {
 }
 
 /**
- * Есть ли у ячейки линия графы — нижняя граница. Линия живёт не в ячейке: ячейка держит номер
- * стиля, стиль — номер рамки, и только в рамке написано, чем она снизу обведена.
+ * Запись стиля ячейки. Оформление живёт не в ячейке: ячейка держит номер стиля, а рамка, шрифт и
+ * выравнивание графы описаны в нём.
  */
-function bottomBorderOf(files: Record<string, Uint8Array>, address: string): boolean {
+function xfOf(files: Record<string, Uint8Array>, address: string): string {
   const sheet = decoder.decode(files['xl/worksheets/sheet1.xml']!);
   const styles = decoder.decode(files['xl/styles.xml']!);
   const cell = new RegExp(`<c r="${address}"((?:(?!/>|>)[\\s\\S])*)`).exec(sheet);
@@ -57,12 +57,36 @@ function bottomBorderOf(files: Record<string, Uint8Array>, address: string): boo
     /<cellXfs count="\d+">([\s\S]*?)<\/cellXfs>/
       .exec(styles)![1]!
       .match(/<xf [^>]*?(?:\/>|>[\s\S]*?<\/xf>)/g) ?? [];
-  const xf = xfs[Number(/\ss="(\d+)"/.exec(cell![1]!)?.[1] ?? 0)]!;
+  return xfs[Number(/\ss="(\d+)"/.exec(cell![1]!)?.[1] ?? 0)]!;
+}
+
+/** Есть ли у ячейки линия графы: в стиле записан номер рамки, и только в рамке — чем она обведена. */
+function bottomBorderOf(files: Record<string, Uint8Array>, address: string): boolean {
+  const styles = decoder.decode(files['xl/styles.xml']!);
   const borders =
     /<borders count="\d+">([\s\S]*?)<\/borders>/
       .exec(styles)![1]!
       .match(/<border\b[^>]*\/>|<border\b[^>]*>[\s\S]*?<\/border>/g) ?? [];
-  return /<bottom style=/.test(borders[Number(/borderId="(\d+)"/.exec(xf)?.[1] ?? 0)]!);
+  const borderId = Number(/borderId="(\d+)"/.exec(xfOf(files, address))?.[1] ?? 0);
+  return /<bottom style=/.test(borders[borderId]!);
+}
+
+/** Шрифт графы: в стиле записан его номер, а кегль с начертанием — в самой записи шрифта. */
+function fontOf(files: Record<string, Uint8Array>, address: string): string {
+  const styles = decoder.decode(files['xl/styles.xml']!);
+  const fonts =
+    /<fonts count="\d+"[^>]*>([\s\S]*?)<\/fonts>/
+      .exec(styles)![1]!
+      .match(/<font\b[^>]*\/>|<font\b[^>]*>[\s\S]*?<\/font>/g) ?? [];
+  return fonts[Number(/fontId="(\d+)"/.exec(xfOf(files, address))?.[1] ?? 0)]!;
+}
+
+/** Высота строки листа в пунктах. */
+function rowHeightOf(files: Record<string, Uint8Array>, row: number): number {
+  const sheet = decoder.decode(files['xl/worksheets/sheet1.xml']!);
+  const found = new RegExp(`<row r="${row}"[^>]*>`).exec(sheet);
+  expect(found, `строки ${row} в бланке нет`).not.toBeNull();
+  return Number(/\sht="([\d.]+)"/.exec(found![0])?.[1] ?? 0);
 }
 
 /** Адрес ячейки: `AI4` → колонка 35, строка 4. Колонки пронумерованы буквами по основанию 26. */
@@ -507,6 +531,40 @@ describe('разметка бланков', () => {
     // и поиск по всему файлу нашёл бы чужую.
     const alignment = /<alignment\b[^>]*\/?>/.exec(xf!)?.[0] ?? '';
     expect(alignment, `выравнивание графы «Машина»: ${xf}`).toContain('shrinkToFit="true"');
+  });
+
+  /**
+   * Номер листа, его дата и ФИО машиниста идут в линию заполнения, а не в клетку бланка: ячеек под
+   * них в исходнике нет, и портал заводит их сам. Своего стиля у такой ячейки нет — она получает
+   * шрифт книги по умолчанию (Arial 8 при наборе бланка Times 11), и номер документа печатался
+   * мельче любой своей подписи. Кегль сверяется с госномером — соседней графой той же шапки.
+   */
+  it('в ЭСМ-2 номер, дата и машинист набраны кеглем госномера, а не мельче бланка', () => {
+    const files = unzipSync(template('esm2'));
+    const sample = fontOf(files, 'AO9');
+    expect(sample, 'у госномера — эталона кегля — нет своего шрифта').toContain('<sz val="11"/>');
+
+    for (const [address, what] of [
+      ['AM3', 'номер листа'],
+      ['BH2', 'дата листа'],
+      ['H11', 'ФИО машиниста'],
+    ] as const) {
+      expect(fontOf(files, address), `${what} (${address}) набран не кеглем госномера`).toBe(
+        sample,
+      );
+    }
+  });
+
+  /**
+   * Высота строки в бланке задана жёстко, и шрифт крупнее прежнего она не раздвигает: LibreOffice
+   * при печати такую строку не режет, а Excel режет — и в скачанном файле у номера с датой пропала
+   * бы верхушка букв. Строкам шапки высота поднята под кегль 11 pt.
+   */
+  it('в ЭСМ-2 строки номера и даты вмещают их кегль: иначе Excel срежет верхушки', () => {
+    const files = unzipSync(template('esm2'));
+    for (const row of [2, 3]) {
+      expect(rowHeightOf(files, row), `строка ${row} ниже кегля 11 pt`).toBeGreaterThanOrEqual(14);
+    }
   });
 
   /**

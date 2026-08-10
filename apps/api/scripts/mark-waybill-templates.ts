@@ -62,6 +62,18 @@ interface Blank {
    * хвост молча срезается по границе объединения.
    */
   wrap?: string[];
+  /**
+   * Графы, которым ставится шрифт другой графы бланка: «кому» → «эталон». Нужны там, где значение
+   * идёт в линию заполнения, а не в готовую клетку: такой ячейки в исходнике нет вовсе, портал
+   * заводит её сам, и она рождается со стилем книги по умолчанию — мелким шрифтом, каким бланк не
+   * набран нигде.
+   */
+  font?: Record<string, string>;
+  /**
+   * Высота строк листа в пунктах: «номер строки» → «сколько». Высота в бланке задана жёстко, и
+   * строка, набранная кеглем крупнее прежнего, срезается по её границе, а не раздвигает её.
+   */
+  height?: Record<number, number>;
   /** Как бланк ложится на лист A4 при печати (ADR 0041). */
   orientation: 'portrait' | 'landscape';
 }
@@ -339,6 +351,21 @@ const FORM_ESM2: Blank = {
    * заказчик получает лист с машиной без марки.
    */
   shrink: ['H9'],
+  /*
+   * Номер листа, его дата и ФИО машиниста — кеглем госномера (`AO9`).
+   *
+   * Все три идут в линию заполнения, а не в клетку бланка: ячеек под них в исходнике нет, портал
+   * заводит их сам, и они получали шрифт книги по умолчанию — Arial 8 при наборе бланка Times 11.
+   * На бумаге это читалось припиской: номер документа мельче любой его подписи, а ФИО машиниста —
+   * вдвое мельче марки машины строкой выше. Эталоном взят госномер: это соседняя графа той же
+   * шапки, набранная бухгалтерией, и кегль у неё крупнейший из тех, что бланк отвёл под значения.
+   *
+   * Строки шапки под кегль 11 pt низковаты (2-я — 11,25 pt, 3-я — 10,5 pt), поэтому им поднята
+   * высота: у строки бланка она задана жёстко (`customHeight`), и не поднять — значит срезать
+   * крупный шрифт по границе строки.
+   */
+  font: { AM3: 'AO9', BH2: 'AO9', H11: 'AO9' },
+  height: { 2: 14, 3: 14 },
 };
 
 const COL = /^([A-Z]+)(\d+)$/;
@@ -361,6 +388,49 @@ function cellRe(address: string): RegExp {
 function styleOf(attrs: string): string {
   const style = /\ss="(\d+)"/.exec(attrs);
   return style ? ` s="${style[1]}"` : '';
+}
+
+/** Атрибут открывающего тега: правит имеющийся либо дописывает его к прочим. */
+function withAttr(tag: string, name: string, value: string): string {
+  return new RegExp(`\\s${name}="`).test(tag)
+    ? tag.replace(new RegExp(`${name}="[^"]*"`), `${name}="${value}"`)
+    : tag.replace(/^<(\w+)/, `<$1 ${name}="${value}"`);
+}
+
+/** Номер стиля ячейки: у ячейки без `s` он нулевой — это стиль книги по умолчанию. */
+function styleIndexOf(attrs: string): number {
+  return Number(/\ss="(\d+)"/.exec(attrs)?.[1] ?? 0);
+}
+
+/** Номер шрифта в записи стиля: у записи без `fontId` он нулевой — шрифт книги по умолчанию. */
+function fontIdOf(xf: string): string {
+  return /fontId="(\d+)"/.exec(xf)?.[1] ?? '0';
+}
+
+/** Таблица стилей ячеек книги: сама запись `<cellXfs>` и разобранный на записи список. */
+function cellXfs(styles: string, what: string): { table: RegExpExecArray; xfs: string[] } {
+  const table = /<cellXfs count="(\d+)">([\s\S]*?)<\/cellXfs>/.exec(styles);
+  if (!table) throw new Error(`В книге нет таблицы стилей ячеек — ${what} нечем`);
+  return { table, xfs: table[2]!.match(/<xf [^>]*?(?:\/>|>[\s\S]*?<\/xf>)/g) ?? [] };
+}
+
+/** Дописывает стиль в конец таблицы книги: его номером и станет длина прежнего списка. */
+function appendXf(styles: string, table: RegExpExecArray, xf: string, count: number): string {
+  return styles.replace(table[0], `<cellXfs count="${count + 1}">${table[2]}${xf}</cellXfs>`);
+}
+
+/**
+ * Та же ячейка на другом стиле. Остальные её атрибуты и содержимое остаются как были: в них тип
+ * значения, и потеряв его, лист напечатал бы вместо значения пустоту.
+ */
+function withStyle(found: RegExpExecArray, address: string, style: number): string {
+  const attrs = (found[1] ?? '').trim();
+  const restyled = /\ss="\d+"/.test(found[1] ?? '')
+    ? attrs.replace(/s="\d+"/, `s="${style}"`)
+    : `s="${style}"${attrs ? ` ${attrs}` : ''}`;
+  return found[2] === undefined
+    ? `<c r="${address}" ${restyled} />`
+    : `<c r="${address}" ${restyled}>${found[2]}</c>`;
 }
 
 /** Кладёт готовую ячейку на её место в листе — вместо прежней либо между соседями по колонкам. */
@@ -458,14 +528,11 @@ function unlineCells(
   for (const address of refs.flatMap(expandRange)) {
     const found = cellRe(address).exec(patchedSheet);
     if (!found) throw new Error(`Ячейки ${address} в листе нет — линию снимать не с чего`);
-    const current = Number(/\ss="(\d+)"/.exec(found[1] ?? '')?.[1] ?? 0);
+    const current = styleIndexOf(found[1] ?? '');
 
     let replacement = cache.get(current);
     if (replacement === undefined) {
-      const table = /<cellXfs count="(\d+)">([\s\S]*?)<\/cellXfs>/.exec(patchedStyles);
-      if (!table)
-        throw new Error(`В книге нет таблицы стилей ячеек — линию ${address} снимать нечем`);
-      const xfs = table[2]!.match(/<xf [^>]*?(?:\/>|>[\s\S]*?<\/xf>)/g) ?? [];
+      const { table, xfs } = cellXfs(patchedStyles, `линию ${address} снимать`);
       const base = xfs[current];
       if (!base) throw new Error(`Стиля ${current} ячейки ${address} в книге нет`);
 
@@ -482,34 +549,21 @@ function unlineCells(
       }
 
       const withoutBottom = border.replace(/<bottom style=[\s\S]*?<\/bottom>/, '<bottom />');
-      patchedStyles = patchedStyles
-        .replace(
+      patchedStyles = appendXf(
+        patchedStyles.replace(
           borders[0],
           `<borders count="${list.length + 1}">${borders[2]}${withoutBottom}</borders>`,
-        )
-        .replace(
-          /<cellXfs count="(\d+)">([\s\S]*?)<\/cellXfs>/,
-          (_, count: string, body: string) =>
-            `<cellXfs count="${Number(count) + 1}">${body}${base.replace(
-              /borderId="\d+"/,
-              `borderId="${list.length}"`,
-            )}</cellXfs>`,
-        );
+        ),
+        table,
+        base.replace(/borderId="\d+"/, `borderId="${list.length}"`),
+        xfs.length,
+      );
       replacement = xfs.length;
       cache.set(current, replacement);
     }
     if (replacement === current) continue;
 
-    const attrs = (found[1] ?? '').trim();
-    const restyled = /\ss="\d+"/.test(found[1] ?? '')
-      ? attrs.replace(/s="\d+"/, `s="${replacement}"`)
-      : `s="${replacement}"${attrs ? ` ${attrs}` : ''}`;
-    patchedSheet = patchedSheet.replace(
-      found[0],
-      found[2] === undefined
-        ? `<c r="${address}" ${restyled} />`
-        : `<c r="${address}" ${restyled}>${found[2]}</c>`,
-    );
+    patchedSheet = patchedSheet.replace(found[0], withStyle(found, address, replacement));
   }
 
   return { sheet: patchedSheet, styles: patchedStyles };
@@ -584,9 +638,7 @@ function alreadyRestyled(xf: string, flags: Record<string, string>): boolean {
  * ячейки, а из именованного, и правка тихо пропадает.
  */
 function withAlignment(xf: string, flags: Record<string, string>): string {
-  const applied = /applyAlignment="/.test(xf)
-    ? xf.replace(/applyAlignment="[^"]*"/, 'applyAlignment="true"')
-    : xf.replace('<xf ', '<xf applyAlignment="true" ');
+  const applied = withAttr(xf, 'applyAlignment', 'true');
 
   return Object.entries(flags).reduce(
     (patched, [name, value]) =>
@@ -618,11 +670,8 @@ function restyleCell(
   const found = cellRe(address).exec(sheet);
   if (!found) throw new Error(`Ячейки ${address} в листе нет — ${how.what} нечего`);
 
-  const table = /<cellXfs count="(\d+)">([\s\S]*?)<\/cellXfs>/.exec(styles);
-  if (!table) throw new Error(`В книге нет таблицы стилей ячеек — ${how.what} графу нечем`);
-  const xfs = table[2]!.match(/<xf [^>]*?(?:\/>|>[\s\S]*?<\/xf>)/g) ?? [];
-
-  const current = Number(/\ss="(\d+)"/.exec(found[1] ?? '')?.[1] ?? 0);
+  const { table, xfs } = cellXfs(styles, `${how.what} графу ${address}`);
+  const current = styleIndexOf(found[1] ?? '');
   const base = xfs[current];
   if (!base) throw new Error(`Стиля ${current} ячейки ${address} в книге нет`);
   if (alreadyRestyled(base, how.flags)) return { sheet, styles };
@@ -632,25 +681,79 @@ function restyleCell(
     throw new Error(`У стиля ${current} нет выравнивания — флаги графы ${address} вписать некуда`);
   }
 
-  // Остальные атрибуты ячейки остаются как были: в них тип значения, и потеряв его, лист
-  // напечатал бы вместо наименования пустоту.
-  const attrs = (found[1] ?? '').trim();
-  const restyled = /\ss="\d+"/.test(found[1] ?? '')
-    ? attrs.replace(/s="\d+"/, `s="${xfs.length}"`)
-    : `s="${xfs.length}"${attrs ? ` ${attrs}` : ''}`;
-
   return {
-    sheet: sheet.replace(
-      found[0],
-      found[2] === undefined
-        ? `<c r="${address}" ${restyled} />`
-        : `<c r="${address}" ${restyled}>${found[2]}</c>`,
-    ),
-    styles: styles.replace(
-      table[0],
-      `<cellXfs count="${xfs.length + 1}">${table[2]}${patched}</cellXfs>`,
-    ),
+    sheet: sheet.replace(found[0], withStyle(found, address, xfs.length)),
+    styles: appendXf(styles, table, patched, xfs.length),
   };
+}
+
+/**
+ * Переводит графу на шрифт другой графы бланка.
+ *
+ * Значение портала идёт то в готовую клетку, то в линию заполнения. Клетки в бланке набраны
+ * бухгалтерией — со своим шрифтом, рамкой и выравниванием; линия — это подчёркнутый низ пустых
+ * ячеек, которых в файле нет вовсе, и ячейку под значение портал заводит сам. Стиля у такой ячейки
+ * нет — она получает шрифт книги по умолчанию, а он мельче того, каким набран бланк: ФИО машиниста
+ * выходило вдвое мельче марки машины строкой выше.
+ *
+ * Кегль берётся у графы-эталона, а не задаётся числом: заменит бухгалтерия бланк на набранный
+ * иначе — вписанные портала последуют за ним, а не останутся чужим кеглем посреди формы.
+ *
+ * Правится не стиль книги, а его копия: стиль по умолчанию носят сотни пустых клеток бланка.
+ */
+function refontCells(
+  sheet: string,
+  styles: string,
+  pairs: Record<string, string>,
+): { sheet: string; styles: string } {
+  const cache = new Map<string, number>();
+  let patchedSheet = sheet;
+  let patchedStyles = styles;
+
+  for (const [address, sample] of Object.entries(pairs)) {
+    const source = cellRe(sample).exec(patchedSheet);
+    if (!source) throw new Error(`Ячейки-эталона ${sample} в листе нет — кегль брать не с чего`);
+    const found = cellRe(address).exec(patchedSheet);
+    if (!found) throw new Error(`Ячейки ${address} в листе нет — кегль ставить нечему`);
+
+    const current = styleIndexOf(found[1] ?? '');
+    const { table, xfs } = cellXfs(patchedStyles, `кегль графы ${address} менять`);
+    const base = xfs[current];
+    if (!base) throw new Error(`Стиля ${current} ячейки ${address} в книге нет`);
+    const sampleXf = xfs[styleIndexOf(source[1] ?? '')];
+    if (!sampleXf) throw new Error(`Стиля ячейки-эталона ${sample} в книге нет`);
+    const fontId = fontIdOf(sampleXf);
+    if (fontIdOf(base) === fontId) continue;
+
+    const key = `${current}:${fontId}`;
+    let replacement = cache.get(key);
+    if (replacement === undefined) {
+      // `applyFont` включается вместе со шрифтом: без него Excel читает шрифт не из стиля ячейки,
+      // а из именованного, и правка тихо пропадает — как и с выравниванием выше.
+      const patched = withAttr(withAttr(base, 'fontId', fontId), 'applyFont', 'true');
+      patchedStyles = appendXf(patchedStyles, table, patched, xfs.length);
+      replacement = xfs.length;
+      cache.set(key, replacement);
+    }
+    patchedSheet = patchedSheet.replace(found[0], withStyle(found, address, replacement));
+  }
+
+  return { sheet: patchedSheet, styles: patchedStyles };
+}
+
+/**
+ * Поднимает высоту строки листа. Ниже прежней не опускает: высоты бланка — часть его вёрстки, и
+ * правка здесь нужна ровно затем, чтобы вместить кегль покрупнее, а не чтобы перерисовать форму.
+ */
+function setRowHeight(sheet: string, row: number, points: number): string {
+  const found = new RegExp(`<row r="${row}"[^>]*>`).exec(sheet);
+  if (!found) throw new Error(`В листе нет строки ${row} — высоту поднимать нечему`);
+  if (Number(/\sht="([\d.]+)"/.exec(found[0])?.[1] ?? 0) >= points) return sheet;
+
+  // Высота считается заданной только вместе с `customHeight`: без флага и Excel, и LibreOffice
+  // подбирают её сами по содержимому строки, и вписанное значение пропадает молча.
+  const raised = withAttr(withAttr(found[0], 'ht', String(points)), 'customHeight', 'true');
+  return sheet.replace(found[0], raised);
 }
 
 /**
@@ -778,6 +881,9 @@ function mark(blank: Blank): void {
     ({ sheet, styles } = restyleCell(sheet, styles, address, SHRINK));
   for (const address of blank.wrap ?? [])
     ({ sheet, styles } = restyleCell(sheet, styles, address, WRAP));
+  if (blank.font) ({ sheet, styles } = refontCells(sheet, styles, blank.font));
+  for (const [row, points] of Object.entries(blank.height ?? {}))
+    sheet = setRowHeight(sheet, Number(row), points);
   sheet = setPageSetup(sheet, blank.orientation);
 
   files[sheetPath] = new TextEncoder().encode(sheet);
@@ -789,8 +895,9 @@ function mark(blank: Blank): void {
   const unlined = blank.unline?.length ? `, снято линий ${blank.unline.length}` : '';
   const shrunk = blank.shrink?.length ? `, ужато ${blank.shrink.length}` : '';
   const wrapped = blank.wrap?.length ? `, с переносом ${blank.wrap.length}` : '';
+  const refonted = blank.font ? `, кеглем эталона ${Object.keys(blank.font).length}` : '';
   console.log(
-    `${blank.out}: размечено граф ${Object.keys(blank.cells).length}${cleared}${unlined}${shrunk}${wrapped}`,
+    `${blank.out}: размечено граф ${Object.keys(blank.cells).length}${cleared}${unlined}${shrunk}${wrapped}${refonted}`,
   );
 }
 
