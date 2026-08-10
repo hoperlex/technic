@@ -1,4 +1,4 @@
-import { Checkbox, DatePicker, Radio, Table, Typography, type TableColumnType } from 'antd';
+import { DatePicker, Radio, Table, Tooltip, Typography, type TableColumnType } from 'antd';
 import dayjs from 'dayjs';
 import {
   dateKeySpan,
@@ -9,7 +9,7 @@ import {
 import { useIsMobile } from '@shared/lib';
 import { formatDateOnly } from '../../utils/date';
 import type { WeeklyOrderDecision, WeeklyOrderRow } from './weeklyComposition';
-import { ItemWarnings } from './weeklyShared';
+import { ItemWarnings, weeklyPreviousText } from './weeklyShared';
 
 /**
  * Блоки «Остаётся» и «Уезжает» (§5 шаги 2 и 4): решение по каждой единице, которая стоит на
@@ -36,8 +36,16 @@ interface RowProps {
   onChange: (patch: Partial<WeeklyOrderDecision>) => void;
 }
 
-/** Выбор решения по единице: остаётся или уезжает. Незаполненное значение — «решение не принято». */
+/**
+ * Выбор решения по единице: остаётся или уезжает. Незаполненное значение — «решение не принято».
+ *
+ * «Остаётся» гасится причиной с сервера (`extendBlockedReason`), а не собственным условием формы:
+ * предикат один на портал и API (Р4), и второе его описание здесь разошлось бы с первым — площадка
+ * увидела бы вариант, который всегда отказывает. Живой случай ровно один — срок, идущий до
+ * воскресенья недели: продлевать внутри неё нечего, и «оставить дальше» решает следующая неделя.
+ */
 function DecisionControl({ row, decision, editable, onChange }: RowProps) {
+  const blocked = row.extendBlockedReason;
   return (
     <Radio.Group
       size="small"
@@ -46,7 +54,22 @@ function DecisionControl({ row, decision, editable, onChange }: RowProps) {
       value={decision.kind ?? undefined}
       onChange={(e) => onChange({ kind: e.target.value as 'extend' | 'leave' })}
       options={[
-        { label: 'Остаётся', value: 'extend' },
+        {
+          label: blocked ? (
+            // Подсказка объясняет не только запрет, но и выход: заявка на следующую неделю
+            // подтянет этот заказ штатно, и это одна из основных функций недельного документа, а
+            // не обход ограничения.
+            <Tooltip
+              title={`${blocked}. Чтобы оставить дальше — соберите заявку на следующую неделю`}
+            >
+              Остаётся
+            </Tooltip>
+          ) : (
+            'Остаётся'
+          ),
+          value: 'extend',
+          disabled: !!blocked,
+        },
         { label: 'Уезжает', value: 'leave' },
       ]}
       aria-label={`Решение по заказу ${row.displayNumber}`}
@@ -56,6 +79,9 @@ function DecisionControl({ row, decision, editable, onChange }: RowProps) {
 
 /** «Продлить до»: любой день недели, но строго позже нынешнего конца срока (Р4). */
 function ExtendDateControl({ row, decision, editable, weekStart, weekEnd, onChange }: RowProps) {
+  // Продлевать нечем — и выбирать дату не из чего: единственный день, который сюда влез бы, сервер
+  // тут же и отверг бы.
+  if (row.extendBlockedReason) return <Typography.Text type="secondary">—</Typography.Text>;
   if (decision.kind !== 'extend') return <Typography.Text type="secondary">—</Typography.Text>;
   const min = row.effectiveDateTo > weekStart ? shiftDateKey(row.effectiveDateTo, 1) : weekStart;
   const gain = gainLabel(row.effectiveDateTo, decision.dateTo);
@@ -86,29 +112,19 @@ function ExtendDateControl({ row, decision, editable, weekStart, weekEnd, onChan
 }
 
 /** Что строка говорит человеку: предупреждения, пропавший заказ, причина отказа применения. */
-function RowNotes(props: RowProps) {
-  const { row, decision, editable, skipReason, onChange } = props;
-  const earlyEnd = row.warnings.some((w) => w.kind === 'early_end_pending');
+function RowNotes({ row, skipReason }: RowProps) {
   return (
     <div style={{ lineHeight: 1.35 }}>
       <ItemWarnings warnings={row.warnings} />
+      {/* Запрет продления объясняется здесь же, а не только подсказкой на кнопке: на телефоне
+          подсказку не наведёшь, а решение по единице принимать всё равно надо. */}
+      {row.extendBlockedReason && (
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {row.extendBlockedReason}. Чтобы оставить дальше — соберите заявку на следующую неделю
+        </Typography.Text>
+      )}
       {row.staleReason && <Typography.Text type="danger">{row.staleReason}</Typography.Text>}
       {skipReason && <Typography.Text type="danger">Не применена: {skipReason}</Typography.Text>}
-      {/* Ожидающий отъезд молча не снимается (Р15): согласие даётся явным действием — иначе
-          неделя отменяла бы чужие решения оптом. */}
-      {earlyEnd && decision.kind === 'extend' && (
-        <div>
-          <Checkbox
-            disabled={!editable}
-            checked={decision.earlyEndOverride}
-            onChange={(e) => onChange({ earlyEndOverride: e.target.checked })}
-          >
-            <Typography.Text style={{ fontSize: 12 }}>
-              Подтверждаю продление — запрос на досрочный отъезд снять
-            </Typography.Text>
-          </Checkbox>
-        </div>
-      )}
     </div>
   );
 }
@@ -123,6 +139,26 @@ interface Props {
   weekEnd: string;
   editable: boolean;
   suggestion: WeeklySuggestionDto | undefined;
+}
+
+/**
+ * Отчёт по прошлой неделе — строкой **над** составом (§3 п. 4 плана «Отбор состава»).
+ *
+ * Сверху, а не в конце, потому что читается он до решений: каждая следующая заявка пытается
+ * продлить все позиции прошлой, и первый вопрос штаба — «всё ли, о чём договорились неделю назад,
+ * доехало сюда». Выбывшие названы поимённо с причиной: без этого пропажу знакомой машины из
+ * состава заметить нечем, и на площадке заведут вторую строку.
+ */
+function PreviousWeekNote({ suggestion }: { suggestion: WeeklySuggestionDto | undefined }) {
+  const previous = suggestion?.previous;
+  if (!previous) return null;
+  return (
+    <div style={{ marginBottom: 8, lineHeight: 1.4 }}>
+      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+        {weeklyPreviousText(previous)}
+      </Typography.Text>
+    </div>
+  );
 }
 
 /** Единицы, заказанные дольше недели, и заказы, не годные в состав, — одной припиской (§7). */
@@ -155,7 +191,7 @@ export function WeeklyRequestComposition(props: Props) {
   const isMobile = useIsMobile();
   const rowProps = (row: WeeklyOrderRow): RowProps => ({
     row,
-    decision: props.decisions[row.requestId] ?? { kind: null, dateTo: '', earlyEndOverride: false },
+    decision: props.decisions[row.requestId] ?? { kind: null, dateTo: '' },
     editable: props.editable,
     weekStart: props.weekStart,
     weekEnd: props.weekEnd,
@@ -165,10 +201,16 @@ export function WeeklyRequestComposition(props: Props) {
 
   if (props.rows.length === 0) {
     return (
-      <Typography.Text type="secondary">
-        На площадке нет техники, срок которой кончается на этой неделе, — состав собирается из одной
-        дополнительной техники.
-      </Typography.Text>
+      <div>
+        {/* Отчёт по прошлой неделе показывается и здесь: пустой состав при непустой прошлой
+            неделе — это как раз тот случай, когда объяснение нужнее всего. */}
+        <PreviousWeekNote suggestion={props.suggestion} />
+        <Typography.Text type="secondary">
+          На площадке нет техники, срок которой кончается на этой неделе, — состав собирается из
+          одной дополнительной техники.
+        </Typography.Text>
+        <SuggestionNotes suggestion={props.suggestion} />
+      </div>
     );
   }
 
@@ -206,6 +248,7 @@ export function WeeklyRequestComposition(props: Props) {
     // не помещается ни одна из них целиком.
     return (
       <div className="list-cards">
+        <PreviousWeekNote suggestion={props.suggestion} />
         {props.rows.map((row) => {
           const p = rowProps(row);
           return (
@@ -238,6 +281,7 @@ export function WeeklyRequestComposition(props: Props) {
 
   return (
     <div>
+      <PreviousWeekNote suggestion={props.suggestion} />
       <Table<WeeklyOrderRow>
         rowKey="requestId"
         size="small"

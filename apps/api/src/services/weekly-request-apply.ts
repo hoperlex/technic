@@ -23,6 +23,7 @@ import {
   vehicleRequestAssignments,
   vehicleRequestEarlyEndings,
   vehicleRequests,
+  vehicleRoutes,
   vehicleTypes,
   weeklyVehicleRequestHistory,
   weeklyVehicleRequestItems,
@@ -31,6 +32,7 @@ import {
 import { err } from '../lib/errors';
 import { extendSpecialEquipmentPeriod } from './vehicle-request-period';
 import { createSpecialEquipmentRequest } from './vehicle-request-create';
+import { loadLeftBy } from './weekly-request-blockers';
 import type { Esm2SyncResult } from './waybill-esm2';
 
 /**
@@ -66,7 +68,6 @@ interface LockedOrder extends WeeklySourceOrder {
   num: number;
   version: number;
   vehicleId: string | null;
-  pendingEarlyEndDate: string | null;
 }
 
 /** Строка состава, прочитанная под блокировкой шапки. */
@@ -114,7 +115,11 @@ async function loadClassification(
  * Деталь срока блокируется отдельным запросом и после заказов: `date_to` живёт в ней, и читать её
  * без блокировки значило бы сверять `expected_date_to` со сроком, который правят прямо сейчас.
  */
-async function lockOrders(tx: Tx, ids: string[]): Promise<Map<string, LockedOrder>> {
+async function lockOrders(
+  tx: Tx,
+  ids: string[],
+  exceptWeeklyId: string,
+): Promise<Map<string, LockedOrder>> {
   const locked = new Map<string, LockedOrder>();
   if (ids.length === 0) return locked;
 
@@ -145,9 +150,12 @@ async function lockOrders(tx: Tx, ids: string[]): Promise<Map<string, LockedOrde
     .for('update');
   const detailByRequest = new Map(details.map((d) => [d.requestId, d]));
 
-  // Назначение и ожидающий отъезд читаются без блокировки: назначенную машину недельная заявка не
-  // трогает (замена техники — отдельное решение со своей визой, ADR 0048), а запрос на отъезд
-  // снимается по заказу, уже взятому `FOR UPDATE`.
+  // Назначение, вывоз и ожидающий отъезд читаются без блокировки: ни одну из этих сущностей
+  // недельная заявка не трогает — назначенную машину меняет отдельное решение со своей визой
+  // (ADR 0048), рейс-перегон ведёт диспетчер, а запрос на отъезд снимается по заказу, уже взятому
+  // `FOR UPDATE`. Читаются они здесь потому, что каждая из них делает строку негодной, и узнать об
+  // этом надо **на применении**: между подачей и визой проходят часы, и вывоз вполне успевают
+  // оформить.
   const assignments = await tx
     .select({
       requestId: vehicleRequestAssignments.requestId,
@@ -171,6 +179,26 @@ async function lockOrders(tx: Tx, ids: string[]): Promise<Map<string, LockedOrde
     );
   const earlyEndByRequest = new Map(earlyEnds.map((e) => [e.requestId, e.newDateTo]));
 
+  // Вывоз — рейс-перегон по заказу; на заказ он один (частичный
+  // `vehicle_routes_source_request_unique`), поэтому одной строкой на заказ и читается.
+  const pickups = await tx
+    .select({
+      requestId: vehicleRoutes.sourceRequestId,
+      num: vehicleRoutes.num,
+      routeDate: vehicleRoutes.routeDate,
+    })
+    .from(vehicleRoutes)
+    .where(and(inArray(vehicleRoutes.sourceRequestId, ids), eq(vehicleRoutes.purpose, 'pickup')));
+  const pickupByRequest = new Map(
+    pickups
+      .filter((r) => r.requestId !== null)
+      .map((r) => [r.requestId!, { num: r.num, routeDate: r.routeDate }] as const),
+  );
+
+  // Чужое «уезжает» — правилом «последняя применённая неделя» одним на все точки (`loadLeftBy`):
+  // применённых недель с решением об отъезде по одному заказу бывает несколько.
+  const leftBy = await loadLeftBy(tx, ids, exceptWeeklyId);
+
   for (const head of heads) {
     const detail = detailByRequest.get(head.id);
     locked.set(head.id, {
@@ -185,9 +213,11 @@ async function lockOrders(tx: Tx, ids: string[]): Promise<Map<string, LockedOrde
       dateFrom: detail?.dateFrom ?? '',
       dateTo: detail?.dateTo ?? null,
       hasAssignment: vehicleByRequest.has(head.id),
+      pickupRoute: pickupByRequest.get(head.id) ?? null,
+      leftBy: leftBy.get(head.id) ?? null,
+      pendingEarlyEndDate: earlyEndByRequest.get(head.id) ?? null,
       version: head.version,
       vehicleId: vehicleByRequest.get(head.id) ?? null,
-      pendingEarlyEndDate: earlyEndByRequest.get(head.id) ?? null,
     });
   }
   return locked;
@@ -229,23 +259,14 @@ async function decide(
   // применение отвечает за то, что оно пишет.
   if (!order) return { item, skipReason: 'Заказ удалён из портала', order: null };
 
+  // Оформленный вывоз, чужое «уезжает» и ожидающий визы отъезд сидят внутри `sourceItemBlocker`, и
+  // спрашиваются здесь ровно поэтому: между подачей и визой проходят часы, и вывоз, оформленный в
+  // эти часы, обязан выбросить строку с той же причиной, которую площадка увидела бы при сборке.
   const blocker =
     item.kind === 'extend'
       ? extendBlocker(order, scope, item.expectedDateTo, item.dateTo!)
       : sourceItemBlocker(order, scope, item.expectedDateTo);
-  if (blocker) return { item, skipReason: blocker, order };
-
-  // Молчаливого снятия ожидающего отъезда здесь не бывает (план Р15): в недельной заявке состав
-  // предвыбран целиком, и снятие десятка чужих решений оптом — не то, на что подписывался
-  // визирующий. Отъезд не мешает только строке «уезжает»: она с ним не спорит.
-  if (item.kind === 'extend' && order.pendingEarlyEndDate && !item.earlyEndOverride) {
-    return {
-      item,
-      skipReason: `На заказе ждёт визы досрочный отъезд ${order.pendingEarlyEndDate} — решите его или подтвердите продление в составе`,
-      order,
-    };
-  }
-  return { item, skipReason: null, order };
+  return { item, skipReason: blocker, order };
 }
 
 export async function applyWeeklyRequest(
@@ -302,7 +323,7 @@ export async function applyWeeklyRequest(
     .orderBy(asc(weeklyVehicleRequestItems.position));
 
   const sourceIds = [...new Set(items.map((i) => i.sourceRequestId).filter((v) => v !== null))];
-  const orders = await lockOrders(tx, sourceIds);
+  const orders = await lockOrders(tx, sourceIds, header.id);
 
   // Предвалидация **всех** строк до первой записи: бизнес-негодная строка не должна ронять неделю,
   // но и узнавать о ней после половины изменений нельзя.
@@ -360,7 +381,11 @@ export async function applyWeeklyRequest(
         newDateTo: item.dateTo!,
         actor: params.actor,
         reason: `${reason}: срок продлён`,
-        dropPendingEarlyEnd: item.earlyEndOverride,
+        // Чужой запрос на досрочный отъезд неделя не снимает никогда: единица с нерешённым
+        // запросом в состав не идёт вовсе (`sourceItemBlocker`), и второго — молчаливого — способа
+        // отменить чужое решение у модуля быть не должно. Умолчания у параметра нет намеренно
+        // (`vehicle-request-period.ts`): ответ на этот вопрос даёт вызывающий, а не забывчивость.
+        dropPendingEarlyEnd: false,
       });
       await tx
         .update(weeklyVehicleRequestItems)
@@ -386,8 +411,9 @@ export async function applyWeeklyRequest(
         previousDateTo: extended.previousDateTo,
         newDateTo: item.dateTo,
         skipReason: '',
-        // Снятый запрос на отъезд доезжает до маршрута: событие о нём пишется после транзакции,
-        // как и у обычной правки срока (Р15).
+        // Ответ общего сервиса, а не своё вычисление: здесь он всегда `false` — недельная заявка
+        // чужих запросов на отъезд не снимает, — но пересказывать это константой значило бы
+        // разойтись с сервисом молча, если правило когда-нибудь изменится в нём.
         earlyEndDropped: extended.earlyEndDropped,
       });
       continue;

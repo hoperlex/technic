@@ -44,7 +44,12 @@ import { useAuth } from '../../auth/AuthContext';
 import { formatDate, formatDateTimeMaybe, formatMoney } from '../../utils/format';
 import { calendarDayCount } from '../../utils/date';
 import { VehicleRequestViewModal } from './VehicleRequestViewModal';
-import { formatDateOnly, useObjectOptions, useVehicleClassificationFilter } from './shared';
+import {
+  formatDateOnly,
+  RequestAssignmentCell,
+  useObjectOptions,
+  useVehicleClassificationFilter,
+} from './shared';
 import { useObjectScope } from '../../hooks/useObjectScope';
 
 /**
@@ -257,22 +262,21 @@ export function VehicleRequestsHistoryTab() {
     },
     {
       // Чем работали и у кого брали. Арендодатель второй строкой: по нему сводят расходы на
-      // аренду, а у собственной машины на этом месте так и написано.
+      // аренду, а у собственной машины на этом месте так и написано. Ставки тут не нужны — в
+      // журнале под них есть «Отработано» и «Стоимость», и это факт закрытия, а не назначения.
+      //
+      // Ячейка та же, что в списке заявок (`RequestAssignmentCell`): колонка «Техника» на всех
+      // вкладках одна, и высоту строки она обязана держать одинаково.
       key: 'lessorName',
       title: 'Техника',
       width: 210,
       sorter: true,
-      render: (_v, r) =>
-        r.assignment ? (
-          <div style={{ lineHeight: 1.35 }}>
-            <div>{assignmentTitle(r.assignment)}</div>
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              {r.assignment.lessorName ?? 'Своя техника'}
-            </Typography.Text>
-          </div>
-        ) : (
-          dash
-        ),
+      render: (_v, r) => (
+        <RequestAssignmentCell
+          assignment={r.assignment}
+          detail={(a) => a.lessorName ?? 'Своя техника'}
+        />
+      ),
     },
     {
       // «На сколько» по факту, а не по заказу: заказывали три дня — отработала полторы смены.

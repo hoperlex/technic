@@ -17,11 +17,12 @@ import {
   sql,
   type SQL,
 } from 'drizzle-orm';
-import { alias } from 'drizzle-orm/pg-core';
+import { alias, unionAll } from 'drizzle-orm/pg-core';
 import {
   type AddressMeta,
   type AssignVehicleInput,
   calcVehicleRequestCost,
+  can,
   canReassignVehicle,
   canShortenWorkPeriodByEdit,
   changeVehicleAssignmentSchema,
@@ -35,6 +36,7 @@ import {
   decideVehicleEarlyEndSchema,
   earlyEndBlocker,
   earlyEndDateBounds,
+  type FeedKind,
   type FileDto,
   type AssignRouteInput,
   canJoinRoute,
@@ -56,6 +58,7 @@ import {
   isDirectoryAddressSource,
   CARGO_AMOUNT_MESSAGE,
   moscowDateKeyOf,
+  onlyWeeklyRows,
   rateForWorkUnit,
   REQUEST_STATUSES,
   type RequestStatus,
@@ -77,6 +80,10 @@ import {
   transitionResetsWork,
   updateVehicleRequestSchema,
   type UpdateVehicleRequestInput,
+  type VehicleFeedListDto,
+  type VehicleFeedQuery,
+  type VehicleFeedRow,
+  vehicleFeedQuerySchema,
   type VehicleOnSiteListDto,
   type VehicleOnSiteSummaryDto,
   type VehicleRequestAssignmentDto,
@@ -93,11 +100,13 @@ import {
   type VehicleRequestWeeklyOriginDto,
   vehicleRequestHistoryQuerySchema,
   vehicleRequestListQuerySchema,
+  type VehicleRequestListQuery,
   vehicleRequestOnSiteQuerySchema,
   vehicleRequestSummaryQuerySchema,
   vehicleStatusLabels,
   vehicleWorkUnitRateLabels,
   waybillDisplayNumber,
+  weeklyRowsExcludedBy,
 } from '@technic/contracts';
 import { db } from '../db/client';
 import {
@@ -160,6 +169,13 @@ import { registerPurgeRoute } from '../services/directory-purge';
 // Уборка следов недельной заявки при удалении насовсем (ADR 0085 Р15): общая на все четыре
 // вкладки, откуда `purge` доходит до её ссылок.
 import { dropWeeklyItemsOfRequest } from '../services/weekly-request-cleanup';
+// Недельная часть ленты: область видимости документа и его сборщик DTO. Оба берутся готовыми —
+// собери лента свои, они разошлись бы с карточкой недели при первой же правке.
+import {
+  weeklyRequestObjectScopeWhere,
+  weeklyRequestReadWhereOnTable,
+} from '../services/weekly-request-access';
+import { loadWeeklyDtosByIds } from './weekly-vehicle-requests';
 import {
   diffVehicleAssignment,
   diffVehicleCompletion,
@@ -1688,6 +1704,28 @@ function historyCountQuery() {
 }
 
 /**
+ * Счётчик строк списка: те же join'ы, что нужны его условиям (объект — поиску, detail-таблицы —
+ * датам). Отдельной функцией, потому что спрашивают его двое — сам список и лента раздела: цифра
+ * «всего» обязана считаться по тем же условиям, по которым выбирается страница, и разъедься эти
+ * два запроса, пагинация обещала бы страницы, которых нет.
+ */
+function listCountQuery() {
+  return db
+    .select({ c: count() })
+    .from(vehicleRequests)
+    .leftJoin(constructionObjects, eq(vehicleRequests.objectId, constructionObjects.id))
+    .leftJoin(departments, eq(vehicleRequests.departmentId, departments.id))
+    .leftJoin(
+      specialEquipmentRequestDetails,
+      eq(vehicleRequests.id, specialEquipmentRequestDetails.requestId),
+    )
+    .leftJoin(
+      freightTransportRequestDetails,
+      eq(vehicleRequests.id, freightTransportRequestDetails.requestId),
+    );
+}
+
+/**
  * Условия вкладки «На объекте» (ADR 0036): заказ спецтехники, взятый в работу, чей срок накрывает
  * день `onDate`. Пересечение периодов считает тот же `specialDateConds`, что и фильтр списка, —
  * пустая дата окончания там и здесь означает одно и то же: `coalesce(date_to, date_from)`.
@@ -1739,6 +1777,108 @@ function onSiteCountQuery() {
     );
 }
 
+// ── Лента раздела: заказы ТС и недельные заявки одним списком ──
+
+/**
+ * Недельная часть диапазона дат: пересечение недели `week_start … week_start + 6` с заданным
+ * отрезком — тем же правилом, каким пересекается срок спецтехники (`specialDateConds`).
+ *
+ * Недельный документ не «происходит в день», он занимает неделю целиком, и вопрос «что было в
+ * августе» обязан отвечать про заявку, чья неделя началась в июле и кончилась в августе. Границы
+ * считаются по `week_start`, а не по хранимому концу: конца недели в таблице нет вовсе — он
+ * выводится из начала (`weeklyWeekBounds`), и второе его определение в SQL разошлось бы с первым.
+ */
+function weeklyDateConds(
+  dateFrom: string | undefined,
+  dateTo: string | undefined,
+): (SQL | undefined)[] {
+  const conds: (SQL | undefined)[] = [];
+  if (dateTo) conds.push(sql`${weeklyVehicleRequests.weekStart} <= ${dateTo}::date`);
+  if (dateFrom) conds.push(sql`${weeklyVehicleRequests.weekStart} + 6 >= ${dateFrom}::date`);
+  return conds;
+}
+
+/**
+ * Условие недельной части ленты — те фильтры списка заказов, которым у недельного документа есть
+ * соответствие (объект, поиск по шапке, виза, диапазон дат) плюс два своих: вид документа и
+ * неделя. Фильтры без соответствия сюда не попадают вовсе — они убирают недельные строки из
+ * выдачи целиком (`weeklyRowsExcludedBy`), и «применить их как-нибудь» означало бы отвечать
+ * документами, у которых спрошенного признака не бывает.
+ *
+ * Видимость — `weeklyRequestReadWhereOnTable`, тот же перевод области, которым проверяется доступ
+ * к карточке недели. Своего условия здесь нет намеренно: два похожих разошлись бы молча, и
+ * разошлись бы в сторону «в ленте видно, а по ссылке 404».
+ *
+ * Поиск по тексту ищет по шапке — комментарию и площадке. Состав он не ищет: ответ «ТС-341 стоит в
+ * НЗ-15» сам по себе есть выдача состава, а её арендодателю сужают строками (ADR 0085), и второе
+ * место с тем же условием видимости разошлось бы с первым.
+ */
+function weeklyFeedWhere(p: Principal, q: VehicleFeedQuery): SQL | undefined {
+  return and(
+    weeklyRequestReadWhereOnTable(p),
+    q.objectId ? eq(weeklyVehicleRequests.objectId, q.objectId) : undefined,
+    q.weekStart ? eq(weeklyVehicleRequests.weekStart, q.weekStart) : undefined,
+    // Номер спрашивают парой «вид документа + номер» (`parseFeedNumberSearch`): «НЗ-12» и «ТС-12» —
+    // две независимые последовательности, и одного числа мало, чтобы понять, что ищут.
+    q.kind === 'weekly' && q.num !== undefined ? eq(weeklyVehicleRequests.num, q.num) : undefined,
+    q.approved === undefined
+      ? undefined
+      : q.approved
+        ? isNotNull(weeklyVehicleRequests.approvedAt)
+        : isNull(weeklyVehicleRequests.approvedAt),
+    ...weeklyDateConds(q.dateFrom, q.dateTo),
+    searchCondition(q.search, [
+      weeklyVehicleRequests.comment,
+      constructionObjects.name,
+      constructionObjects.code,
+    ]),
+  );
+}
+
+/**
+ * Ключ сортировки ленты — своим выражением на каждой стороне: у заказа и у недели одно и то же
+ * поле хранится по-разному (срок заказа лежит в двух detail-таблицах, срок недели — в `week_start`),
+ * а объединение сортируется одним столбцом.
+ *
+ * `null` на недельной стороне — не пробел в данных, а честный ответ: позиции классификатора,
+ * статуса заказа и комментария заявки ТС у недельного документа не бывает вовсе. Такие строки
+ * уходят в конец (`NULLS LAST`), а не притворяются пустыми значениями в середине списка.
+ *
+ * Незнакомый ключ (столбцы журнала и архива — их лента не показывает) откатывается к дате
+ * создания тем же правилом, что и `orderByFrom`: сортировать по столбцу, которого в выдаче нет,
+ * нечем.
+ */
+function feedSortExprs(sortBy: string | undefined): { order: SQL; weekly: SQL } {
+  const none = sql`null`;
+  const byField: Record<string, { order: SQL; weekly: SQL }> = {
+    createdAt: {
+      order: sql`${vehicleRequests.createdAt}`,
+      weekly: sql`${weeklyVehicleRequests.createdAt}`,
+    },
+    objectName: {
+      order: sql`${constructionObjects.name}`,
+      weekly: sql`${constructionObjects.name}`,
+    },
+    term: {
+      order: sql`coalesce(${freightTransportRequestDetails.scheduledAt}, ${specialEquipmentRequestDetails.dateFrom}::timestamptz)`,
+      weekly: sql`${weeklyVehicleRequests.weekStart}::timestamptz`,
+    },
+    approval: {
+      order: sql`${vehicleRequests.approvedAt}`,
+      weekly: sql`${weeklyVehicleRequests.approvedAt}`,
+    },
+    // Столбцы, которых у недельного документа нет: заказанная позиция классификатора, статус
+    // заявки ТС и её комментарий. Сортировка по ним осмысленна для заказов и оставлена им.
+    vehicleTypeName: {
+      order: sql`coalesce(${requestCategories.name}, ${vehicleTypes.name})`,
+      weekly: none,
+    },
+    status: { order: sql`${vehicleRequests.status}`, weekly: none },
+    comment: { order: sql`${vehicleRequests.comment}`, weekly: none },
+  };
+  return byField[sortBy ?? ''] ?? byField.createdAt!;
+}
+
 export default async function vehicleRequestsRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
   // Право на каждое действие отдельно (ADR 0021): модуль «Заказ ТС» оператору вывоза недоступен
@@ -1769,11 +1909,14 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
     ],
   };
 
-  // ── Список (единый по обоим типам; requestType — необязательное сужение) ──
-  r.get('/', { ...auth, schema: { querystring: vehicleRequestListQuerySchema } }, async (req) => {
-    const p = requirePrincipal(req);
-    const q = req.query;
-    const where = and(
+  /**
+   * Условие списка заказов — одной функцией, потому что спрашивают его двое: сам список и лента
+   * раздела, где заказы идут вперемешку с недельными заявками. Разойдись эти два места, фильтр в
+   * ленте отвечал бы не то же самое, что тот же фильтр во вкладке, — а человек считает их одним
+   * списком, потому что это и есть один список.
+   */
+  const listWhere = (p: Principal, q: VehicleRequestListQuery) =>
+    and(
       q.requestType ? eq(vehicleRequests.requestType, q.requestType) : undefined,
       // Архив (ADR 0070): вкладка «Архив» просит `only`, обычный список — умолчание `exclude`.
       // Границы видимости при этом те же: свой объект, свой отдел, своя техника.
@@ -1794,6 +1937,12 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         constructionObjects.code,
       ]),
     );
+
+  // ── Список (единый по обоим типам; requestType — необязательное сужение) ──
+  r.get('/', { ...auth, schema: { querystring: vehicleRequestListQuerySchema } }, async (req) => {
+    const p = requirePrincipal(req);
+    const q = req.query;
+    const where = listWhere(p, q);
     const pg = pageParams(q);
     const rows = await baseQuery()
       .where(where)
@@ -1804,20 +1953,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       )
       .limit(pg.limit)
       .offset(pg.offset);
-    const [totalRow] = await db
-      .select({ c: count() })
-      .from(vehicleRequests)
-      .leftJoin(constructionObjects, eq(vehicleRequests.objectId, constructionObjects.id))
-      .leftJoin(departments, eq(vehicleRequests.departmentId, departments.id))
-      .leftJoin(
-        specialEquipmentRequestDetails,
-        eq(vehicleRequests.id, specialEquipmentRequestDetails.requestId),
-      )
-      .leftJoin(
-        freightTransportRequestDetails,
-        eq(vehicleRequests.id, freightTransportRequestDetails.requestId),
-      )
-      .where(where);
+    const [totalRow] = await listCountQuery().where(where);
     return {
       items: await toDtos(rows),
       total: Number(totalRow!.c),
@@ -1825,6 +1961,184 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       pageSize: pg.pageSize,
     };
   });
+
+  /**
+   * Лента раздела «Заказ автотехники»: заказы ТС и недельные заявки одним списком (ADR 0085).
+   *
+   * Отдельным маршрутом, а не флагом у `GET /`: тем списком пользуются вкладка «Архив» и форма
+   * подбора заявок в рейс, и подмешивать туда документ, который в рейс не ставится, значило бы
+   * предлагать диспетчеру строку, которую нельзя выбрать.
+   *
+   * Страница выбирается объединением **ключей** двух выборок, а не двумя списками, склеенными
+   * после: только так пагинация честная. Склей их клиент — пятидесятая строка ленты зависела бы от
+   * того, чего в выдаче больше, а вторая страница повторяла бы часть первой. Готовые карточки
+   * догружаются по идентификаторам уже выбранной страницы, каждая своим сборщиком: у заказа это
+   * `toDtos`, у недели — `loadWeeklyDtosByIds`, и третьего, «общего», DTO не заводится.
+   */
+  r.get(
+    '/feed',
+    { ...auth, schema: { querystring: vehicleFeedQuerySchema } },
+    async (req): Promise<VehicleFeedListDto> => {
+      const p = requirePrincipal(req);
+      const q = req.query;
+      const pg = pageParams(q);
+
+      /**
+       * Кого лента показывает. Заказы уходят из неё, когда спрошены только недельные строки;
+       * недельные — когда задан фильтр без соответствия у документа либо у учётки нет права их
+       * читать. Право спрашивается здесь, а не областью выборки: у арендодателя и наблюдателя
+       * `vehicleRequests.read` есть, и без этой проверки лента открывала бы им недельные заявки
+       * тем же запросом, которым они смотрят свои заказы.
+       */
+      const withOrders = !onlyWeeklyRows(q);
+      const withWeekly = can(p, 'weeklyRequests.read') && !weeklyRowsExcludedBy(q);
+
+      const orderWhere = listWhere(p, q);
+      const weeklyWhere = weeklyFeedWhere(p, q);
+      const sortExpr = feedSortExprs(q.sortBy);
+
+      // Ключи обеих выборок одной формы — иначе их не объединить: вид документа (он же
+      // дискриминатор строки), идентификатор, номер и то единственное выражение, которым лента
+      // сортируется. Псевдонимы заданы явно: `ORDER BY` над объединением умеет ссылаться только на
+      // имена столбцов выдачи, а не на выражения.
+      const orderKeys = db
+        .select({
+          kind: sql<FeedKind>`'order'::text`.as('feed_kind'),
+          id: sql<string>`${vehicleRequests.id}`.as('feed_id'),
+          num: sql<number>`${vehicleRequests.num}`.as('feed_num'),
+          sort: sql`${sortExpr.order}`.as('feed_sort'),
+        })
+        .from(vehicleRequests)
+        // Те же join'ы, что нужны условиям списка и его сортировке: объект — поиску и порядку по
+        // площадке, detail-таблицы — датам и сроку, классификатор — порядку по типу ТС.
+        .leftJoin(constructionObjects, eq(vehicleRequests.objectId, constructionObjects.id))
+        .leftJoin(departments, eq(vehicleRequests.departmentId, departments.id))
+        .innerJoin(vehicleTypes, eq(vehicleRequests.vehicleTypeId, vehicleTypes.id))
+        .leftJoin(requestCategories, eq(vehicleRequests.vehicleCategoryId, requestCategories.id))
+        .leftJoin(
+          specialEquipmentRequestDetails,
+          eq(vehicleRequests.id, specialEquipmentRequestDetails.requestId),
+        )
+        .leftJoin(
+          freightTransportRequestDetails,
+          eq(vehicleRequests.id, freightTransportRequestDetails.requestId),
+        )
+        .where(orderWhere);
+      const weeklyKeys = db
+        .select({
+          kind: sql<FeedKind>`'weekly'::text`.as('feed_kind'),
+          id: sql<string>`${weeklyVehicleRequests.id}`.as('feed_id'),
+          num: sql<number>`${weeklyVehicleRequests.num}`.as('feed_num'),
+          sort: sql`${sortExpr.weekly}`.as('feed_sort'),
+        })
+        .from(weeklyVehicleRequests)
+        .innerJoin(constructionObjects, eq(weeklyVehicleRequests.objectId, constructionObjects.id))
+        .where(weeklyWhere);
+
+      /**
+       * Порядок ленты. По номеру она сортирует парой «вид, номер»: «НЗ-12» и «ТС-12» не лежат на
+       * одной числовой оси, и смешать их значило бы выдать недельную заявку за заказ с тем же
+       * числом. По остальным ключам — общим столбцом, и всегда `NULLS LAST`: сторона, у которой
+       * такого столбца нет, уходит в конец, а не встаёт в середину списка.
+       *
+       * Замыкает порядок пара «вид, номер, идентификатор» — устойчивый разделитель совпадений. Без
+       * него две строки с одинаковой датой создания вставали бы в произвольном порядке на каждом
+       * запросе, и листание теряло бы одни строки и повторяло другие.
+       */
+      const dir = sql.raw(q.sortOrder === 'asc' ? 'asc' : 'desc');
+      const orderBy =
+        q.sortBy === 'num'
+          ? [sql`${sql.identifier('feed_kind')} asc`, sql`${sql.identifier('feed_num')} ${dir}`]
+          : [
+              sql`${sql.identifier('feed_sort')} ${dir} nulls last`,
+              sql`${sql.identifier('feed_kind')} asc`,
+              sql`${sql.identifier('feed_num')} asc`,
+            ];
+      const tail = [...orderBy, sql`${sql.identifier('feed_id')} asc`];
+
+      const keys =
+        withOrders && withWeekly
+          ? await unionAll(orderKeys, weeklyKeys)
+              .orderBy(...tail)
+              .limit(pg.limit)
+              .offset(pg.offset)
+          : withOrders
+            ? await orderKeys
+                .orderBy(...tail)
+                .limit(pg.limit)
+                .offset(pg.offset)
+            : withWeekly
+              ? await weeklyKeys
+                  .orderBy(...tail)
+                  .limit(pg.limit)
+                  .offset(pg.offset)
+              : [];
+
+      // Карточки — по идентификаторам выбранной страницы, каждая своим сборщиком. Множества не
+      // пересекаются, поэтому и `total` считается суммой двух счётчиков: объединять выборки ради
+      // счёта незачем, а два запроса дешевле одного с `UNION`.
+      const orderIds = keys.filter((k) => k.kind === 'order').map((k) => k.id);
+      const weeklyIds = keys.filter((k) => k.kind === 'weekly').map((k) => k.id);
+      const [orderDtos, weeklyDtos, orderTotal, weeklyTotal, pendingCount] = await Promise.all([
+        orderIds.length > 0
+          ? baseQuery()
+              .where(inArray(vehicleRequests.id, orderIds))
+              .then((rows) => toDtos(rows))
+          : Promise.resolve([]),
+        loadWeeklyDtosByIds(weeklyIds, p),
+        withOrders
+          ? listCountQuery()
+              .where(orderWhere)
+              .then((rows) => Number(rows[0]!.c))
+          : Promise.resolve(0),
+        withWeekly
+          ? db
+              .select({ c: count() })
+              .from(weeklyVehicleRequests)
+              .innerJoin(
+                constructionObjects,
+                eq(weeklyVehicleRequests.objectId, constructionObjects.id),
+              )
+              .where(weeklyWhere)
+              .then((rows) => Number(rows[0]!.c))
+          : Promise.resolve(0),
+        // Цифра «ждут визы» — та, ради которой открывали отдельную вкладку. Считается по области
+        // учётки, а не по фильтрам ленты: она о работе, а не о выдаче. Область объектная
+        // (`weeklyRequestObjectScopeWhere`) — «сколько недель ждёт подписи» есть счёт площадки, и
+        // арендодателю он не отвечает ни на что: визу он не ставит.
+        can(p, 'weeklyRequests.read')
+          ? db
+              .select({ c: count() })
+              .from(weeklyVehicleRequests)
+              .where(
+                and(weeklyRequestObjectScopeWhere(p), eq(weeklyVehicleRequests.status, 'pending')),
+              )
+              .then((rows) => Number(rows[0]!.c))
+          : Promise.resolve(0),
+      ]);
+
+      const orderById = new Map(orderDtos.map((dto) => [dto.id, dto]));
+      // Раскладка строго в порядке ключей: он и есть порядок ленты. Строка, карточка которой не
+      // собралась, пропускается — документ снесли между двумя запросами, и показывать вместо него
+      // пустую строку хуже, чем не показывать ничего.
+      const items = keys.flatMap((key): VehicleFeedRow[] => {
+        if (key.kind === 'order') {
+          const order = orderById.get(key.id);
+          return order ? [{ kind: 'order', order }] : [];
+        }
+        const weekly = weeklyDtos.get(key.id);
+        return weekly ? [{ kind: 'weekly', weekly }] : [];
+      });
+
+      return {
+        items,
+        total: orderTotal + weeklyTotal,
+        page: pg.page,
+        pageSize: pg.pageSize,
+        weeklyPendingCount: pendingCount,
+      };
+    },
+  );
 
   // ── Журнал закрытых заявок: вкладка «История» (ADR 0029) ──
   // Тот же список, суженный до состоявшегося: «Выполнена» и «Отменена». Отдельным маршрутом, а

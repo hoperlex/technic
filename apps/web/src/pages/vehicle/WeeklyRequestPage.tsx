@@ -225,7 +225,10 @@ export function WeeklyRequestPage() {
     onError,
   });
 
-  const leave = () => void navigate('/vehicle-requests?tab=weekly');
+  // Своей вкладки у недельных заявок больше нет: они строки общего списка «Заказ автотехники», и
+  // «Назад» возвращает туда — в список, заранее суженный до недельных, а не в общую выдачу, где
+  // только что оставленный документ пришлось бы искать среди заказов.
+  const leave = () => void navigate('/vehicle-requests?tab=requests&kind=weekly');
   const goBack = () => {
     if (!composition.dirty) return leave();
     modal.confirm({

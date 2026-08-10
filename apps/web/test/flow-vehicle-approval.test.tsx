@@ -9,6 +9,7 @@ import { objectDto } from './factories/waste';
 import {
   approvedVehicleRequest,
   classification,
+  vehicleFeed,
   vehicleRequest,
   vehicleSummary,
 } from './factories/vehicle';
@@ -46,7 +47,7 @@ function renderTab(over: RouteMap = {}): HttpMock {
   let summary: VehicleRequestSummaryDto = vehicleSummary({ new: 1, awaitingApproval: 1 });
 
   const http = mockHttp({
-    'GET /vehicle-requests': () => json(list([current])),
+    'GET /vehicle-requests/feed': () => json(vehicleFeed([current])),
     'GET /vehicle-requests/summary': () => json(summary),
     // Справочники экрана: сценарию не нужны, но вкладка их спрашивает при первом рендере.
     'GET /objects': () => json(list([objectDto()])),
@@ -125,7 +126,7 @@ describe('виза руководителя строительства на за
   it('после успеха перезапрашивает список и сводку — счётчик «Ждут визы» гаснет', async () => {
     const http = renderTab();
     expect(await screen.findByText('Т-42')).toBeDefined();
-    expect(http.countOf('GET /vehicle-requests')).toBe(1);
+    expect(http.countOf('GET /vehicle-requests/feed')).toBe(1);
     expect(http.countOf('GET /vehicle-requests/summary')).toBe(1);
     expect(summaryCounter('Ждут визы')).toBe('Ждут визы: 1');
 
@@ -133,7 +134,7 @@ describe('виза руководителя строительства на за
 
     // Список и сводка перезапрашиваются оба: статус заявки виза не меняет, и без перезапроса
     // сводки счётчик «Ждут визы» остался бы прежним — заявка ушла бы из него незаметно.
-    await waitFor(() => expect(http.countOf('GET /vehicle-requests')).toBe(2));
+    await waitFor(() => expect(http.countOf('GET /vehicle-requests/feed')).toBe(2));
     await waitFor(() => expect(http.countOf('GET /vehicle-requests/summary')).toBe(2));
 
     await waitFor(() => expect(summaryCounter('Ждут визы')).toBe('Ждут визы: 0'));
@@ -145,7 +146,7 @@ describe('виза руководителя строительства на за
 
   it('снятие визы спрашивает подтверждение и уходит тем же маршрутом с approved: false', async () => {
     // Уже завизированная заявка: у неё кнопка предлагает снять визу.
-    const http = renderTab({ 'GET /vehicle-requests': () => json(list([APPROVED])) });
+    const http = renderTab({ 'GET /vehicle-requests/feed': () => json(vehicleFeed([APPROVED])) });
     expect(await screen.findByText('Т-42')).toBeDefined();
 
     clickButton('Завизирована');

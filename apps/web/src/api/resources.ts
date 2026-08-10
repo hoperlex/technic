@@ -624,16 +624,6 @@ export const vehicleRequestsApi = {
     apiFetch<{ ok: boolean }>(`/vehicle-requests/${id}/purge`, { method: 'DELETE' }),
 };
 
-/**
- * Список недельных заявок вместе со счётчиком «ждут визы» (§8 плана). Счётчик едет с самим
- * списком, а не отдельной ручкой: он считается по тем же фильтрам, и второй запрос отвечал бы про
- * другую выборку — ту, которую человек перед собой не видит.
- */
-export interface WeeklyRequestListDto extends ListResult<WeeklyVehicleRequestDto> {
-  /** Сколько заявок области учётки ждут визы — счётчик очереди, а не выборки. */
-  pendingCount: number;
-}
-
 /** Событие истории недельной заявки: и переход статуса, и правка состава (Р17). */
 export type WeeklyRequestHistoryEvent = 'status' | 'items_changed' | 'item_dropped';
 
@@ -675,7 +665,6 @@ export interface WeeklyDecisionResultDto {
  * блокировки: сервер сверяет его с текущей версией и присваивает колонке своё значение.
  */
 export const weeklyRequestsApi = {
-  list: (q: Query) => apiFetch<WeeklyRequestListDto>('/weekly-vehicle-requests', { query: q }),
   /**
    * Предложение состава на пару «объект + неделя» (Р4): что продлевать, что уезжает, что заказано
    * дольше недели и что в состав не годится — с причинами. Здесь же приходит `existingRequestId`:

@@ -890,6 +890,8 @@ export const vehicleRequestListQuerySchema = baseListQuery(VEHICLE_REQUEST_SORT_
   /** Архив (ADR 0070): `only` — вкладка «Архив», остальное сервер отдаёт только праву `archive.read`. */
   archive: archiveFilterSchema,
 });
+/** Разобранный запрос списка: им же типизируется общее условие выборки, одно на список и ленту. */
+export type VehicleRequestListQuery = z.infer<typeof vehicleRequestListQuerySchema>;
 
 /**
  * Журнал закрытых заявок (вкладка «История», ADR 0029). Тот же список, суженный до состоявшегося:

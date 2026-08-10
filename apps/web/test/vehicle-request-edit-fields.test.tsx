@@ -5,7 +5,7 @@ import { json, mockHttp } from './http';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { emptyList, list } from './factories/common';
-import { vehicleRequest, vehicleSummary } from './factories/vehicle';
+import { vehicleFeed, vehicleRequest, vehicleSummary } from './factories/vehicle';
 import { VehicleRequestsTab } from '../src/pages/vehicle/VehicleRequestsTab';
 
 /**
@@ -108,7 +108,7 @@ function renderTab() {
     // Сводка описана до списка не для порядка: у обеих ручек общее начало пути, и «/summary»
     // должно разобраться раньше, чем список.
     'GET /vehicle-requests/summary': () => json(vehicleSummary({ new: 1, confirmed: 1 })),
-    'GET /vehicle-requests': () => json(list([SPECIAL, FREIGHT])),
+    'GET /vehicle-requests/feed': () => json(vehicleFeed([SPECIAL, FREIGHT])),
     // Справочники заказчика: по ним форма подставляет объект и отдел заявки — без них поле
     // осталось бы пустым, и проверка «заказчик подставлен» ничего бы не значила.
     'GET /objects': () => json(list([{ id: 'obj-1', code: 'OBJ-A', name: 'Объект Химки' }])),

@@ -10,6 +10,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   allowedVehicleRequestTransitions,
+  assignmentTitle,
   isApprovalChangeable,
   isPlaceScopedRole,
   type RequestStatus,
@@ -17,6 +18,7 @@ import {
   requestStatusLabels,
   type RequestVehicleEarlyEndInput,
   type SpecialEquipmentRequestDto,
+  type VehicleRequestAssignmentDto,
   type VehicleRequestDto,
   type VehicleRequestEarlyEndDto,
   vehicleLabel,
@@ -446,6 +448,41 @@ export function RequestContactsCell({ request }: { request: VehicleRequestDto })
           </div>
         </div>
       ))}
+    </ExpandableCell>
+  );
+}
+
+/**
+ * Назначенная техника в строке списка (ADR 0027): чем заявку взяли, а под этим — приписка, ради
+ * которой колонку читают дальше. Саму приписку задаёт вкладка, и намеренно: в работе спрашивают
+ * «во сколько встало» и там стоит ставка, а в журнале стоимость разнесена по своим колонкам, и на
+ * этом месте полезнее арендодатель. Общей вынесена оболочка ячейки — иначе одна и та же колонка
+ * «Техника» держала бы высоту строки по-разному на каждой вкладке.
+ *
+ * Ячейка сворачивается (`ExpandableCell`): у назначения ровно две строки, замер скрытого ничего не
+ * найдёт и кнопки не покажет, — фиксированная высота заведена не ради него, а ради состава
+ * недельной заявки, который ложится в эту же колонку строкой на каждую единицу техники.
+ *
+ * Заявка без назначения — прочерк без обёртки: сворачивать в нём нечего, а лишний замер и
+ * позиционирование кнопки пришлись бы на каждую «Новую» заявку списка.
+ */
+export function RequestAssignmentCell({
+  assignment,
+  detail,
+}: {
+  assignment: VehicleRequestAssignmentDto | null;
+  /** Вторая строка. Функцией, а не строкой: у вкладок она разная и считается по назначению. */
+  detail: (assignment: VehicleRequestAssignmentDto) => string;
+}) {
+  if (!assignment) return <Typography.Text type="secondary">—</Typography.Text>;
+  return (
+    <ExpandableCell>
+      <div>{assignmentTitle(assignment)}</div>
+      <div>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {detail(assignment)}
+        </Typography.Text>
+      </div>
     </ExpandableCell>
   );
 }

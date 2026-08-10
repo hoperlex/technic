@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react';
-import { useNavigate } from 'react-router';
+import { useMemo, useState, type ReactNode } from 'react';
+import { useNavigate, useSearchParams } from 'react-router';
 import {
   App,
   Button,
@@ -36,14 +36,16 @@ import {
   canShortenWorkPeriodByEdit,
   type CompleteVehicleRequestInput,
   completionLabel,
+  type FeedKind,
+  feedKindLabels,
   minRequestDateKey,
   isCargoAmountRequired,
   CARGO_AMOUNT_MESSAGE,
   isVehicleKindAllowedForRequest,
   moscowDateKeyOf,
   normalizeTimeInput,
+  parseFeedNumberSearch,
   parseVehicleClassificationKey,
-  parseVehicleRequestNumberSearch,
   REQUEST_STATUSES,
   type RequestStatus,
   requestCustomerLabel,
@@ -57,12 +59,14 @@ import {
   transitionRequiresCompletion,
   transitionResetsWork,
   vehicleClassificationLabel,
+  type VehicleFeedRow,
   type VehicleRequestDto,
   type VehicleRequestType,
   vehicleRequestTypeColors,
   allowedVehicleRequestTypes,
   vehicleRequestTypeLabels,
   type VehicleRouteDto,
+  type WeeklyVehicleRequestDto,
 } from '@technic/contracts';
 import { vehicleRequestsApi } from '../../api/resources';
 import { AutoSelect } from '@shared/ui';
@@ -77,7 +81,7 @@ import { ResponsibleFields } from '../../components/ResponsibleFields';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
 import { TabsExtra, useActiveTabKey } from '../../components/PageTabs';
 import { SummaryBar } from '@shared/ui';
-import { actionsColumn, textColumn } from '@shared/ui';
+import { actionsColumn, RowActionButton, textColumn } from '@shared/ui';
 import { TimeInput, optionalWorkTimeRule } from '../../components/TimeInput';
 import { UserAvatar } from '../../components/UserAvatar';
 import { ObjectCell, OBJECT_COLUMN_WIDTH } from '../../components/ObjectCell';
@@ -92,7 +96,7 @@ import {
   withSavedClassification,
 } from '../../hooks/useVehicleClassifications';
 import { useAuth } from '../../auth/AuthContext';
-import { errorMessage, formatDateTimeMaybe } from '../../utils/format';
+import { errorMessage, formatDateTime, formatDateTimeMaybe } from '../../utils/format';
 import { vehicleRouteLink } from '../../utils/links';
 import { withSavedOption } from '@shared/lib';
 import {
@@ -118,6 +122,7 @@ import {
   EarlyEndTag,
   FileEditor,
   formatDateOnly,
+  RequestAssignmentCell,
   RequestContactsCell,
   useEarlyEnd,
   StatusCell,
@@ -128,6 +133,19 @@ import {
   useVehicleClassificationFilter,
   type EditorFile,
 } from './shared';
+import {
+  WeeklyApprovalCell,
+  WeeklyCommentCell,
+  WeeklyCompositionCell,
+  WeeklyContactsCell,
+} from './weeklyFeedRow';
+import {
+  useWeeklyRequestCreate,
+  weekSelectOptions,
+  weeklyCountsText,
+  weeklyRequestPath,
+  WeeklyStatusTag,
+} from './weeklyShared';
 
 /**
  * Единая форма заявки на автотехнику. Тип заявки выбирают явно — он задаёт и набор полей,
@@ -205,6 +223,20 @@ const FREIGHT_FIELDS = [
   'unloadingResponsiblePhone',
 ] as const;
 
+/**
+ * Строка ленты с ключом таблицы. `id` дописывается на клиенте: у размеченного объединения общего
+ * поля идентификатора нет и быть не должно — заказ и неделя это разные документы, — а `DataTable`
+ * различает строки одним именем поля. Идентификаторы UUID из двух таблиц не совпадают, поэтому
+ * ключ остаётся уникальным по всей ленте.
+ */
+type FeedRow = VehicleFeedRow & { id: string };
+
+const feedRowId = (row: VehicleFeedRow): string =>
+  row.kind === 'order' ? row.order.id : row.weekly.id;
+
+/** Прочерк колонки, у которой в недельной строке значения нет по существу документа. */
+const dash = <Typography.Text type="secondary">—</Typography.Text>;
+
 /** Колонка «Срок»: у спецтехники это период, у грузоперевозки — дата (и время, если задано). */
 function termLabel(r: VehicleRequestDto): string {
   if (r.requestType === 'special_equipment') {
@@ -277,10 +309,27 @@ export function VehicleRequestsTab() {
   const canRestore = can('archive.restore');
   /** Ведение хода заявки: перевод в работу и, тем же правом, смена назначенной машины (ADR 0048). */
   const canChangeStatus = can('vehicleRequests.status');
+  /**
+   * Заведение недельной заявки (ADR 0085) — по своему праву, а не по факту показа недельных
+   * строк: видеть документ теперь могут и те, кто его не заводит (наблюдатель, отдел,
+   * арендодатель), и кнопка, выключенная у половины списка, объясняла бы им несуществующий запрет.
+   */
+  const canCreateWeekly = can('weeklyRequests.create');
+  const weeklyCreate = useWeeklyRequestCreate();
 
   // С одним объектом он зафиксирован и в фильтре списка, и в форме заявки; с несколькими —
   // выбор сужен до своих (ADR 0039). Сервер всё равно отвечает 403 на чужой — assertObjectScope.
   const ownObjectId = soleObjectId ?? '';
+
+  /**
+   * Вид документа из адреса: старая вкладка «Недельные заявки» переехала сюда, и её закладки
+   * (`?tab=weekly`) ведут теперь на `?tab=requests&kind=weekly` — то есть на этот список,
+   * заранее суженный до недельных. Читается один раз, при первом состоянии фильтров: дальше
+   * видом распоряжается селект, и адрес перестал бы отвечать тому, что на экране.
+   */
+  const [searchParams] = useSearchParams();
+  const initialKind: FeedKind | undefined =
+    searchParams.get('kind') === 'weekly' ? 'weekly' : undefined;
 
   // requestType не задан — список обоих типов; фильтр в шапке сужает до одного.
   // Все фильтры собраны в панели над таблицей, а не в выпадашках столбцов: в заголовке их
@@ -296,8 +345,20 @@ export function VehicleRequestsTab() {
     num?: number;
     /** Виза (ADR 0025): 'false' — заявки, ждущие согласования. */
     approved?: string;
+    /**
+     * Вид документа ленты: `weekly` — только недельные заявки. В интерфейсе это третье значение
+     * того же селекта, что и тип заявки, но в запрос уходит своим параметром: `requestType` едет
+     * ещё и в тело заявки, где третьего значения не существует вовсе.
+     */
+    kind?: FeedKind;
+    /** Неделя недельной заявки; спрашивается только при выбранном её виде. */
+    weekStart?: string;
   }>(
-    { objectId: ownObjectId || undefined, departmentId: soleDepartmentId ?? undefined },
+    {
+      objectId: ownObjectId || undefined,
+      departmentId: soleDepartmentId ?? undefined,
+      kind: initialKind,
+    },
     { searchKeys: ['comment'] },
   );
 
@@ -311,11 +372,17 @@ export function VehicleRequestsTab() {
     onChange: applyFilter,
   });
 
+  /**
+   * Лента раздела, а не список заказов: заказы ТС и недельные заявки приходят одним запросом,
+   * одной страницей и в одном порядке (`vehicleRequestsApi.feed`). Отдельным маршрутом, а не
+   * флагом у списка: тем списком пользуются «Архив» и подбор заявок в рейс, и недельный документ,
+   * который в рейс не ставится, там был бы строкой, которую нельзя выбрать.
+   */
   const { data, isFetching } = useQuery({
-    queryKey: ['vehicle-requests', 'all', params],
-    queryFn: () => vehicleRequestsApi.list(params),
+    queryKey: ['vehicle-requests', 'feed', params],
+    queryFn: () => vehicleRequestsApi.feed(params),
   });
-  const items = data?.items ?? [];
+  const items: FeedRow[] = (data?.items ?? []).map((row) => ({ ...row, id: feedRowId(row) }));
 
   // Сводка в шапке: сколько заявок ждёт обработки и сколько в работе. Ключ начинается с
   // 'vehicle-requests' — значит счётчики обновляются теми же инвалидациями, что и список.
@@ -336,6 +403,10 @@ export function VehicleRequestsTab() {
     // Заявка без визы не двинется дальше «Новой», и по статусам это не видно (ADR 0025).
     { label: 'Ждут визы', value: summary?.awaitingApproval ?? 0 },
     { label: requestStatusLabels.confirmed, value: summary?.confirmed ?? 0 },
+    // Цифра, ради которой у недельных заявок была отдельная вкладка: неделя площадки стоит и ждёт
+    // решения, а сроки продлятся только визой (ADR 0085 Р6). Считается по области учётки, а не по
+    // фильтрам ленты, — как и три цифры слева, она о работе, а не о текущей выдаче.
+    { label: 'Недельных ждут визы', value: data?.weeklyPendingCount ?? 0 },
   ];
 
   const { options: allObjectOptions, loading: objectsLoading } = useObjectOptions();
@@ -353,6 +424,11 @@ export function VehicleRequestsTab() {
    * Заявка, названная в адресе: сюда приходят по ссылке из состава рейса или из журнала листов.
    * Запись спрашивается по идентификатору, а не ищется в загруженном списке: та же заявка может
    * лежать на другой его странице или под другим фильтром.
+   *
+   * Недельных идентификаторов здесь не бывает и появиться им неоткуда: недельная строка ведёт на
+   * свою страницу (`/vehicle-requests/weekly/:id`), а не открывает карточку в списке, и параметра
+   * `open` ни одна ссылка на неделю не ставит. Иначе лента спрашивала бы недельный документ у
+   * маршрута заказов и получала бы «Запись не найдена» на каждый такой адрес.
    */
   const opened = useOpenedRecord<VehicleRequestDto>({
     active: useActiveTabKey() === 'requests',
@@ -913,112 +989,146 @@ export function VehicleRequestsTab() {
       onOk: () => removeMut.mutateAsync(r.id),
     });
 
-  // Единая таблица обоих типов: колонки чужого типа остаются пустыми.
+  /** Открыть неделю: у недельной строки это единственное действие и оно же клик по строке. */
+  const openWeekly = (weekly: WeeklyVehicleRequestDto) =>
+    void navigate(weeklyRequestPath(weekly.id));
+
+  // Единая таблица трёх видов документа: два типа заявки ТС и недельная заявка (ADR 0085).
+  // Колонки чужого типа остаются пустыми, а у недельной строки каждая колонка отвечает своей
+  // веткой — рендеры вынесены в `weeklyFeedRow`, иначе ветвление размазалось бы по всему файлу.
   // Ключ колонки — он же поле сортировки на сервере (VEHICLE_REQUEST_SORT_FIELDS).
   //
   // Объём/массы и адресов погрузки-разгрузки в строке нет: они есть только у грузоперевозки, а
   // список читают по номеру, объекту и сроку. Всё это — в карточке заявки. Автор и тип заявки
   // тоже своих колонок не занимают: они уточняют номер и тип ТС и стоят вторыми строками к ним.
-  const columns: TableColumnType<VehicleRequestDto>[] = [
+  const columns: TableColumnType<FeedRow>[] = [
     {
       key: 'num',
       title: '№',
-      dataIndex: 'displayNumber',
       width: 190,
       sorter: true,
-      render: (_v, r) => (
-        <div style={{ lineHeight: 1.35 }}>
-          <div>{r.displayNumber}</div>
-          <Space size={6}>
-            <UserAvatar name={r.createdByName} size={18} />
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              {r.createdByName}
-            </Typography.Text>
-          </Space>
-        </div>
-      ),
+      // Вид документа читается по самому номеру — «НЗ-12» против «ТС-341», — и отдельного тега
+      // вида в строке нет: он повторял бы то, что и так написано первым, что видит глаз.
+      render: (_v, row) => {
+        const r = row.kind === 'order' ? row.order : row.weekly;
+        return (
+          <div style={{ lineHeight: 1.35 }}>
+            <div>{r.displayNumber}</div>
+            <Space size={6}>
+              <UserAvatar name={r.createdByName} size={18} />
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                {r.createdByName}
+              </Typography.Text>
+            </Space>
+          </div>
+        );
+      },
     },
     // Ширина задана всем колонкам: при scroll.x='max-content' колонка без ширины тянется по
     // содержимому, и один длинный комментарий возвращал бы горизонтальный скролл всей таблице.
     // Заказчик заявки: объект или отдел (ADR 0040). Одна колонка на обе оси — у заявки заказчик
     // один, и вторая стояла бы пустой в каждой строке. Сортировка осталась по `objectName`:
     // ключ колонки — он же поле сортировки на сервере.
-    textColumn({
+    textColumn<FeedRow>({
       key: 'objectName',
       title: 'Заказчик',
       dataIndex: 'objectName',
       searchable: false,
       width: OBJECT_COLUMN_WIDTH,
-      render: (_v, r) => {
-        const customer = requestCustomerLabel(r);
-        return <ObjectCell name={customer.text} hint={customer.hint} address={r.objectAddress} />;
+      render: (_v, row) => {
+        // У недельной заявки заказчик всегда площадка — второй оси у документа нет вовсе: неделю
+        // собирают из техники, стоящей на объекте, а отдел спецтехнику не заказывает.
+        if (row.kind === 'weekly') {
+          return <ObjectCell name={row.weekly.objectName} address={row.weekly.objectCode} />;
+        }
+        const customer = requestCustomerLabel(row.order);
+        return (
+          <ObjectCell name={customer.text} hint={customer.hint} address={row.order.objectAddress} />
+        );
       },
     }),
     {
       key: 'vehicleTypeName',
       title: 'Тип/категория',
-      dataIndex: 'vehicleTypeName',
       width: 200,
       sorter: true,
-      render: (_v, r) => (
-        <div style={{ lineHeight: 1.35 }}>
-          {/* Заказанная позиция классификатора (ADR 0028): категория, а без неё — сам тип.
-              Наименование категории уже начинается с типа, повторять его незачем. */}
-          <div>
-            {vehicleClassificationLabel({
-              typeName: r.vehicleTypeName,
-              categoryName: r.vehicleCategoryName,
-            })}
+      // У недельной строки колонка пуста намеренно: позиции классификатора у документа нет —
+      // единиц в нём много и они разные, — и заполнить её нечем. Прочерк честнее, чем перечень
+      // типов состава: он читался бы как «заказано вот это», а заказано оно построчно.
+      render: (_v, row) => {
+        if (row.kind === 'weekly') return dash;
+        const r = row.order;
+        return (
+          <div style={{ lineHeight: 1.35 }}>
+            {/* Заказанная позиция классификатора (ADR 0028): категория, а без неё — сам тип.
+                Наименование категории уже начинается с типа, повторять его незачем. */}
+            <div>
+              {vehicleClassificationLabel({
+                typeName: r.vehicleTypeName,
+                categoryName: r.vehicleCategoryName,
+              })}
+            </div>
+            {/* Подписи типов развёрнутые («Техника для работы на объекте») — тег переносится
+                на вторую строку, иначе колонка растянулась бы на них одну строку в пол-экрана. */}
+            <Tag
+              color={vehicleRequestTypeColors[r.requestType]}
+              style={{
+                whiteSpace: 'normal',
+                lineHeight: 1.25,
+                maxWidth: '100%',
+                wordBreak: 'break-word',
+                marginTop: 2,
+              }}
+            >
+              {vehicleRequestTypeLabels[r.requestType]}
+            </Tag>
           </div>
-          {/* Подписи типов развёрнутые («Техника для работы на объекте») — тег переносится
-              на вторую строку, иначе колонка растянулась бы на них одну строку в пол-экрана. */}
-          <Tag
-            color={vehicleRequestTypeColors[r.requestType]}
-            style={{
-              whiteSpace: 'normal',
-              lineHeight: 1.25,
-              maxWidth: '100%',
-              wordBreak: 'break-word',
-              marginTop: 2,
-            }}
-          >
-            {vehicleRequestTypeLabels[r.requestType]}
-          </Tag>
-        </div>
-      ),
+        );
+      },
     },
     {
       key: 'term',
       title: 'Срок',
       width: 170,
-      // Срок у типов заявки лежит в разных полях — сортировку сводит сервер.
+      // Срок у типов заявки лежит в разных полях — сортировку сводит сервер. Неделя встаёт в тот
+      // же порядок своим понедельником: документ занимает неделю целиком, и «срок» у него — она.
       sorter: true,
       // Досрочное завершение (ADR 0044) читается тут же: запрошенное — тегом «ждёт визы»,
       // состоявшееся — припиской, с какого числа срок сократили. Иначе заказ на две недели,
       // кончающийся послезавтра, выглядит опечаткой.
-      render: (_v, r) => (
-        <div style={{ lineHeight: 1.35 }}>
-          <div>{termLabel(r)}</div>
-          {r.requestType === 'special_equipment' && <EarlyEndTag earlyEnd={r.earlyEnd} />}
-        </div>
-      ),
+      render: (_v, row) => {
+        // Подпись недели приходит с сервера готовой (`weekLabel`, «17–23 августа 2026»): второго
+        // понятия недели в портале быть не должно — сложи её здесь заново, и список обещал бы не
+        // те дни, которые применит виза.
+        if (row.kind === 'weekly') return row.weekly.weekLabel;
+        const r = row.order;
+        return (
+          <div style={{ lineHeight: 1.35 }}>
+            <div>{termLabel(r)}</div>
+            {r.requestType === 'special_equipment' && <EarlyEndTag earlyEnd={r.earlyEnd} />}
+          </div>
+        );
+      },
     },
     {
       // Назначенная техника (ADR 0027): у «Новой» заявки пусто, дальше — чем её взяли и почём.
       // Ставка второй строкой: без неё в списке видно «кто поехал», но не «во сколько встало».
+      // Арендодатель — запасной вариант: у назначения без ставок иначе стояла бы пустая строка.
+      //
+      // Ячейка сворачиваемая (`RequestAssignmentCell`): у заказа тут ровно две строки и внешне не
+      // меняется ничего, но эту же колонку заполняет состав недельной заявки — строка на каждую
+      // единицу техники, — и без ограничения высоты одна такая строка растянула бы весь список.
       key: 'assignment',
       title: 'Техника',
       width: 200,
-      render: (_v, r) =>
-        r.assignment ? (
-          <div style={{ lineHeight: 1.35 }}>
-            <div>{assignmentTitle(r.assignment)}</div>
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              {assignmentRateLabel(r.assignment) || r.assignment.lessorName || '—'}
-            </Typography.Text>
-          </div>
+      render: (_v, row) =>
+        row.kind === 'weekly' ? (
+          <WeeklyCompositionCell weekly={row.weekly} />
         ) : (
-          <Typography.Text type="secondary">—</Typography.Text>
+          <RequestAssignmentCell
+            assignment={row.order.assignment}
+            detail={(a) => assignmentRateLabel(a) || a.lessorName || '—'}
+          />
         ),
     },
     {
@@ -1031,7 +1141,11 @@ export function VehicleRequestsTab() {
       key: 'route',
       title: 'Маршрут',
       width: 150,
-      render: (_v, r) => {
+      render: (_v, row) => {
+        // Недельная заявка сама никуда не едет: рейсы заводятся по заказам, которые она продлила
+        // или породила, и каждый виден в своей строке ленты.
+        if (row.kind === 'weekly') return dash;
+        const r = row.order;
         if (r.route) {
           return (
             <div style={{ lineHeight: 1.35 }}>
@@ -1063,38 +1177,50 @@ export function VehicleRequestsTab() {
     {
       key: 'status',
       title: 'Статус',
-      dataIndex: 'status',
       width: 150,
       sorter: true,
-      render: (_v, r) => (
-        <StatusCell
-          status={r.status}
-          deleted={!!r.deletedAt}
-          approved={!!r.approvedAt}
-          cancelReason={r.cancelReason}
-          pending={statusMut.isPending && statusMut.variables?.id === r.id}
-          onChange={(status) => requestStatusChange(r, status)}
-        />
-      ),
+      // Статусы у документов разные и общего перечня у них нет: у заказа их пять с переходами
+      // (ADR 0021), у недели — четыре своих (ADR 0085). Поэтому и ячейки разные: у недельной
+      // строки это просто тег — переходы недели решают на её странице, вместе с составом.
+      render: (_v, row) => {
+        if (row.kind === 'weekly') return <WeeklyStatusTag status={row.weekly.status} />;
+        const r = row.order;
+        return (
+          <StatusCell
+            status={r.status}
+            deleted={!!r.deletedAt}
+            approved={!!r.approvedAt}
+            cancelReason={r.cancelReason}
+            pending={statusMut.isPending && statusMut.variables?.id === r.id}
+            onChange={(status) => requestStatusChange(r, status)}
+          />
+        );
+      },
     },
     {
       // Виза руководителя строительства (ADR 0025): без неё диспетчер не берёт заявку в работу.
+      // У недельной заявки виза та же по смыслу и стоит в той же колонке — но ставится только на
+      // её странице: она той же транзакцией двигает сроки заказов (ADR 0085 Р6).
       key: 'approval',
       title: 'Согласование',
       width: 160,
       sorter: true,
-      render: (_v, r) => (
-        <ApprovalCell
-          status={r.status}
-          deleted={!!r.deletedAt}
-          approved={!!r.approvedAt}
-          approvedByName={r.approvedByName}
-          approvedAt={r.approvedAt}
-          canApprove={canApprove}
-          pending={approvalMut.isPending && approvalMut.variables?.id === r.id}
-          onChange={(approved) => requestApprovalChange(r, approved)}
-        />
-      ),
+      render: (_v, row) => {
+        if (row.kind === 'weekly') return <WeeklyApprovalCell weekly={row.weekly} />;
+        const r = row.order;
+        return (
+          <ApprovalCell
+            status={r.status}
+            deleted={!!r.deletedAt}
+            approved={!!r.approvedAt}
+            approvedByName={r.approvedByName}
+            approvedAt={r.approvedAt}
+            canApprove={canApprove}
+            pending={approvalMut.isPending && approvalMut.variables?.id === r.id}
+            onChange={(approved) => requestApprovalChange(r, approved)}
+          />
+        );
+      },
     },
     {
       /*
@@ -1109,9 +1235,14 @@ export function VehicleRequestsTab() {
       key: 'contacts',
       title: 'Контактные данные',
       width: 260,
-      render: (_v, r) => <RequestContactsCell request={r} />,
+      render: (_v, row) =>
+        row.kind === 'weekly' ? (
+          <WeeklyContactsCell weekly={row.weekly} />
+        ) : (
+          <RequestContactsCell request={row.order} />
+        ),
     },
-    textColumn({
+    textColumn<FeedRow>({
       key: 'comment',
       title: 'Комментарий',
       dataIndex: 'comment',
@@ -1119,23 +1250,40 @@ export function VehicleRequestsTab() {
       // Не `ellipsis`: тот держит комментарий в одну строку и обрезает её там, где у заявки как
       // раз и начинается суть заказа. Здесь текст переносится по ширине колонки, а свёрнутая
       // ячейка показывает две строки — столько же, сколько занимают соседние колонки.
-      render: (v) =>
-        typeof v === 'string' && v.trim() ? (
+      render: (_v, row) => {
+        if (row.kind === 'weekly') return <WeeklyCommentCell weekly={row.weekly} />;
+        const text = row.order.comment;
+        return text.trim() ? (
           <ExpandableCell>
             {/* Абзацы автора сохраняются: комментарий заводят многострочным полем. */}
-            <span style={{ whiteSpace: 'pre-line' }}>{v}</span>
+            <span style={{ whiteSpace: 'pre-line' }}>{text}</span>
           </ExpandableCell>
         ) : (
-          <Typography.Text type="secondary">—</Typography.Text>
-        ),
+          dash
+        );
+      },
     }),
     {
       key: 'files',
       title: 'Файлы',
       width: 110,
-      render: (_v, r) => <FilesCell files={r.files} />,
+      // Файлов у недельной заявки не бывает: вложения носит заказ — счёт, схема заезда, письмо, —
+      // а неделя это решение по срокам, к которому прикладывать нечего.
+      render: (_v, row) => (row.kind === 'weekly' ? dash : <FilesCell files={row.order.files} />),
     },
-    actionsColumn<VehicleRequestDto>((r) => {
+    actionsColumn<FeedRow>((row) => {
+      // Действие недельной строки ровно одно: открыть неделю. Состав правят, визируют и снимают
+      // на самой странице — там же, где видно, что именно согласуют.
+      if (row.kind === 'weekly') {
+        return (
+          <RowActionButton
+            title="Открыть неделю"
+            icon={<EyeOutlined />}
+            onClick={() => openWeekly(row.weekly)}
+          />
+        );
+      }
+      const r = row.order;
       // Карточка открывается и у архивной заявки: понять, что и почему в ней было, можно
       // только там — в строке таблицы ни истории, ни адресов целиком нет.
       const view = (
@@ -1225,16 +1373,70 @@ export function VehicleRequestsTab() {
     }, 150),
   ];
 
+  /**
+   * «Тип заявки» с третьим значением — видом документа. В интерфейсе это один селект: человек
+   * спрашивает «что показать», и «Недельная заявка» стоит для него в одном ряду с «Техникой на
+   * объект» и «Грузоперевозкой». В запрос при этом уходит либо `requestType`, либо `kind` —
+   * смешивать их в одном параметре нельзя, `requestType` едет ещё и в тело заявки.
+   */
+  const documentTypeOptions = [
+    ...requestTypeOptions,
+    { value: 'weekly', label: feedKindLabels.weekly },
+  ];
+  // В фильтр попадают те же недели, что предлагаются при заведении: прошедшие ищут по номеру —
+  // список недель, растущий с каждой неделей, к концу года стал бы нечитаемым.
+  const weekOptions = weekSelectOptions();
+  const documentTypeValue = params.kind === 'weekly' ? 'weekly' : params.requestType;
+  const applyDocumentType = (v: string | undefined) =>
+    v === 'weekly'
+      ? applyFilter({ kind: 'weekly', requestType: undefined })
+      : // Уходя с недельного вида, снимаем и неделю: фильтр, который не показан, продолжал бы
+        // сужать выдачу — и заказы вернулись бы не все, а неизвестно почему не все.
+        applyFilter({ kind: undefined, weekStart: undefined, requestType: v });
+
+  /**
+   * Поиск по номеру разбирает оба префикса: «НЗ-12» ищет неделю, «ТС-341» и голое число — заказ.
+   * Номера — две независимые последовательности, поэтому ввод отвечает **парой** «вид + номер», и
+   * пара эта уезжает в запрос как есть: искать «12» сразу в обеих значило бы отвечать двумя
+   * документами на вопрос об одном.
+   *
+   * Пустой ввод снимает только номер, а выбранный вид оставляет: очистка строки поиска — это «не
+   * ищу конкретный документ», а не «покажи всё подряд».
+   */
+  const applyNumberSearch = (value: string) => {
+    const found = parseFeedNumberSearch(value);
+    if (!found) return applyFilter({ num: undefined });
+    return applyFilter({
+      num: found.num,
+      // Заказ ищут и среди недельных строк выбранного вида: номер заказа сам называет, что нужно
+      // показать, и держать вид «Недельная заявка» значило бы ответить пустым списком.
+      kind: found.kind === 'weekly' ? 'weekly' : undefined,
+      ...(found.kind === 'weekly' ? {} : { weekStart: undefined }),
+    });
+  };
+
   const filters = (
     <Space size={[12, 8]} wrap>
       <Select
         allowClear
         placeholder="Все типы заявок"
         style={{ width: 200 }}
-        options={requestTypeOptions}
-        value={params.requestType as VehicleRequestType | undefined}
-        onChange={(v: VehicleRequestType | undefined) => applyFilter({ requestType: v })}
+        options={documentTypeOptions}
+        value={documentTypeValue}
+        onChange={applyDocumentType}
       />
+      {/* Неделя — фильтр одного вида документа, и показывается он только при выбранном виде: у
+          заказа недели нет вовсе, и заданный фильтр отсекал бы заказы целиком. */}
+      {params.kind === 'weekly' && (
+        <Select
+          allowClear
+          placeholder="Все недели"
+          style={{ width: 210 }}
+          options={weekOptions}
+          value={params.weekStart}
+          onChange={(v: string | undefined) => applyFilter({ weekStart: v })}
+        />
+      )}
       <Select
         allowClear
         placeholder="Все статусы"
@@ -1285,9 +1487,9 @@ export function VehicleRequestsTab() {
       {classificationFilter.controls}
       <Input.Search
         allowClear
-        placeholder="Поиск по № (ТС-123)"
-        style={{ width: 180 }}
-        onSearch={(val) => applyFilter({ num: parseVehicleRequestNumberSearch(val) })}
+        placeholder="Поиск по № (ТС-123, НЗ-12)"
+        style={{ width: 210 }}
+        onSearch={applyNumberSearch}
       />
     </Space>
   );
@@ -1298,11 +1500,26 @@ export function VehicleRequestsTab() {
       kind: 'select',
       key: 'requestType',
       label: 'Тип заявки',
-      value: params.requestType,
-      options: requestTypeOptions,
+      value: documentTypeValue,
+      options: documentTypeOptions,
       placeholder: 'Все типы заявок',
-      onChange: (v) => applyFilter({ requestType: v }),
+      onChange: applyDocumentType,
     },
+    // Неделя — только при выбранном виде документа, как и в панели над таблицей: у заказа недели
+    // нет, и заданный фильтр отсекал бы заказы целиком.
+    ...(params.kind === 'weekly'
+      ? [
+          {
+            kind: 'select',
+            key: 'weekStart',
+            label: 'Неделя',
+            value: params.weekStart,
+            options: weekOptions,
+            placeholder: 'Все недели',
+            onChange: (v: string | undefined) => applyFilter({ weekStart: v }),
+          } as const,
+        ]
+      : []),
     {
       kind: 'select',
       key: 'status',
@@ -1351,72 +1568,116 @@ export function VehicleRequestsTab() {
     {
       kind: 'text',
       key: 'num',
-      label: '№ заявки',
+      label: '№ документа',
       value: params.num != null ? String(params.num) : undefined,
-      placeholder: 'Например, ТС-123',
-      onChange: (v) => applyFilter({ num: parseVehicleRequestNumberSearch(v ?? '') }),
+      placeholder: 'Например, ТС-123 или НЗ-12',
+      onChange: (v) => applyNumberSearch(v ?? ''),
     },
   ];
 
   /**
-   * Строка списка на телефоне (ADR 0030): номер и статус, объект, что заказано и на когда, чем
-   * взяли и во сколько встало. Виза — кнопкой прямо в карточке: у руководителя строительства это
-   * главное действие списка, и прятать его в меню значило бы добавить к нему два касания.
+   * Строки карточки заказа на телефоне (ADR 0030): что заказано и на когда, чем взяли и во сколько
+   * встало. Виза — кнопкой прямо в карточке: у руководителя строительства это главное действие
+   * списка, и прятать его в меню значило бы добавить к нему два касания.
    */
-  const card: CardConfig<VehicleRequestDto> = {
-    title: (r) => r.displayNumber,
-    badge: (r) => (
-      <StatusCell
+  const orderCardLines: ((r: VehicleRequestDto) => ReactNode)[] = [
+    (r) =>
+      `${vehicleClassificationLabel({
+        typeName: r.vehicleTypeName,
+        categoryName: r.vehicleCategoryName,
+      })} · ${vehicleRequestTypeLabels[r.requestType]}`,
+    (r) => `Срок: ${termLabel(r)}`,
+    (r) =>
+      r.assignment
+        ? `${assignmentTitle(r.assignment)} · ${assignmentRateLabel(r.assignment) || r.assignment.lessorName || 'без ставки'}`
+        : null,
+    // Рейс и та же потерянная заявка, что помечена в таблице колонкой «Маршрут».
+    (r) =>
+      r.route ? (
+        `Маршрут ${r.route.displayNumber} · строка ${r.route.position}`
+      ) : r.status === 'confirmed' &&
+        r.requestType === 'freight_transport' &&
+        r.assignment?.ownership === 'own' ? (
+        <Tag color="orange">Без маршрута</Tag>
+      ) : null,
+    (r) => (r.cancelReason ? `Причина отмены: ${r.cancelReason}` : null),
+    (r) => r.comment || null,
+    (r) => (
+      <ApprovalCell
         status={r.status}
         deleted={!!r.deletedAt}
         approved={!!r.approvedAt}
-        cancelReason={r.cancelReason}
-        pending={statusMut.isPending && statusMut.variables?.id === r.id}
-        onChange={(status) => requestStatusChange(r, status)}
+        approvedByName={r.approvedByName}
+        approvedAt={r.approvedAt}
+        canApprove={canApprove}
+        pending={approvalMut.isPending && approvalMut.variables?.id === r.id}
+        onChange={(approved) => requestApprovalChange(r, approved)}
       />
     ),
-    // Отдел и в карточке телефона стоит кодом — тем же, что в колонке списка: подсказки
-    // наведением на телефоне нет, но и разной подписи у одного заказчика быть не должно.
-    primary: (r) => requestCustomerLabel(r).text,
-    lines: [
-      (r) =>
-        `${vehicleClassificationLabel({
-          typeName: r.vehicleTypeName,
-          categoryName: r.vehicleCategoryName,
-        })} · ${vehicleRequestTypeLabels[r.requestType]}`,
-      (r) => `Срок: ${termLabel(r)}`,
-      (r) =>
-        r.assignment
-          ? `${assignmentTitle(r.assignment)} · ${assignmentRateLabel(r.assignment) || r.assignment.lessorName || 'без ставки'}`
-          : null,
-      // Рейс и та же потерянная заявка, что помечена в таблице колонкой «Маршрут».
-      (r) =>
-        r.route ? (
-          `Маршрут ${r.route.displayNumber} · строка ${r.route.position}`
-        ) : r.status === 'confirmed' &&
-          r.requestType === 'freight_transport' &&
-          r.assignment?.ownership === 'own' ? (
-          <Tag color="orange">Без маршрута</Tag>
-        ) : null,
-      (r) => (r.cancelReason ? `Причина отмены: ${r.cancelReason}` : null),
-      (r) => r.comment || null,
-      (r) => (
-        <ApprovalCell
+    (r) => (r.files.length > 0 ? <FilesCell files={r.files} /> : null),
+    (r) => (r.deletedAt ? <Tag>в архиве</Tag> : null),
+  ];
+
+  /**
+   * Строки карточки недельной заявки — те же, что были у её собственного списка: площадка, итог
+   * состава словами, ожидание визы, причина снятия и автор. Состав здесь считается, а не
+   * перечисляется: на телефоне десять единиц техники — это экран прокрутки на одну строку списка.
+   */
+  const weeklyCardLines: ((w: WeeklyVehicleRequestDto) => ReactNode)[] = [
+    (w) => w.objectName,
+    (w) => weeklyCountsText(w.counts),
+    (w) => (w.status === 'pending' ? 'Ждёт визы' : null),
+    (w) => (w.cancelReason ? `Причина снятия: ${w.cancelReason}` : null),
+    (w) => `${w.createdByName} · ${formatDateTime(w.createdAt)}`,
+  ];
+
+  /**
+   * Карточка строки ленты: заказ и неделя рисуются своими наборами строк, а не общим — полей у них
+   * общих ровно два, номер и площадка. Наборы склеиваются в один список, потому что строка
+   * принадлежит одному виду документа: чужие строки в ней возвращают `null` и не показываются.
+   */
+  const card: CardConfig<FeedRow> = {
+    title: (row) => (row.kind === 'weekly' ? row.weekly.displayNumber : row.order.displayNumber),
+    badge: (row) => {
+      if (row.kind === 'weekly') return <WeeklyStatusTag status={row.weekly.status} />;
+      const r = row.order;
+      return (
+        <StatusCell
           status={r.status}
           deleted={!!r.deletedAt}
           approved={!!r.approvedAt}
-          approvedByName={r.approvedByName}
-          approvedAt={r.approvedAt}
-          canApprove={canApprove}
-          pending={approvalMut.isPending && approvalMut.variables?.id === r.id}
-          onChange={(approved) => requestApprovalChange(r, approved)}
+          cancelReason={r.cancelReason}
+          pending={statusMut.isPending && statusMut.variables?.id === r.id}
+          onChange={(status) => requestStatusChange(r, status)}
         />
+      );
+    },
+    // Отдел и в карточке телефона стоит кодом — тем же, что в колонке списка: подсказки
+    // наведением на телефоне нет, но и разной подписи у одного заказчика быть не должно.
+    // У недели главная строка — сама неделя: её документ и называет.
+    primary: (row) =>
+      row.kind === 'weekly' ? row.weekly.weekLabel : requestCustomerLabel(row.order).text,
+    lines: [
+      ...weeklyCardLines.map(
+        (line) => (row: FeedRow) => (row.kind === 'weekly' ? line(row.weekly) : null),
       ),
-      (r) => (r.files.length > 0 ? <FilesCell files={r.files} /> : null),
-      (r) => (r.deletedAt ? <Tag>в архиве</Tag> : null),
+      ...orderCardLines.map(
+        (line) => (row: FeedRow) => (row.kind === 'order' ? line(row.order) : null),
+      ),
     ],
-    onOpen: (r) => setViewRecord(r),
-    actions: (r) => {
+    onOpen: (row) => (row.kind === 'weekly' ? openWeekly(row.weekly) : setViewRecord(row.order)),
+    actions: (row) => {
+      if (row.kind === 'weekly') {
+        return [
+          {
+            key: 'open-weekly',
+            label: 'Открыть неделю',
+            icon: <EyeOutlined />,
+            onClick: () => openWeekly(row.weekly),
+          },
+        ];
+      }
+      const r = row.order;
       const view = {
         key: 'view',
         label: 'Открыть карточку',
@@ -1501,20 +1762,35 @@ export function VehicleRequestsTab() {
     <PageTableLayout
       filters={filters}
       extra={
-        canCreate ? (
-          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-            Создать заявку
-          </Button>
+        /* Два входа рядом: обычный заказ и заявка на неделю. Недельная — не «ещё один тип
+           заявки», а документ-основание над заказами (ADR 0085), и вести её из того же списка,
+           где эти заказы видны, — единственное место, где оба вопроса решают вместе. Право на
+           неё своё: видеть документ теперь могут и те, кто его не заводит. */
+        canCreate || canCreateWeekly ? (
+          <Space size={8} wrap>
+            {canCreateWeekly && (
+              <Button icon={<PlusOutlined />} onClick={weeklyCreate.open}>
+                Заявка на неделю
+              </Button>
+            )}
+            {canCreate && (
+              <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
+                Создать заявку
+              </Button>
+            )}
+          </Space>
         ) : null
       }
       mobile={{
         filters: mobileFilters,
         sort: {
-          options: sortOptionsFrom(columns, { num: 'Номер заявки' }),
+          options: sortOptionsFrom(columns, { num: 'Номер документа' }),
           sortBy: params.sortBy,
           sortOrder: params.sortOrder,
           onChange: setSort,
         },
+        // Круглая кнопка на телефоне одна, и это заказ: недельную заявку собирают за столом —
+        // состав в неё правят построчно, и на экране телефона такой работы не делают.
         primaryAction: canCreate
           ? { label: 'Создать заявку', icon: <PlusOutlined />, onClick: openCreate }
           : undefined,
@@ -1525,13 +1801,18 @@ export function VehicleRequestsTab() {
         <SummaryBar title="Заявок" items={summaryItems} />
       </TabsExtra>
 
-      <DataTable<VehicleRequestDto>
+      <DataTable<FeedRow>
         columns={columns}
         card={card}
         // Карточку открывает клик по строке — тем же движением, что и касание карточки на телефоне
         // (`card.onOpen`). Кнопка «Открыть карточку» в «Действиях» остаётся: клавиатурой до строки
         // не добраться, а ячейки с активным содержимым клик строке не отдают (`opensRow`).
-        onRowClick={(r) => setViewRecord(r)}
+        //
+        // Недельная строка карточки не открывает вовсе: у документа её нет — сборка живёт
+        // отдельной страницей с адресом, и клик ведёт туда.
+        onRowClick={(row) =>
+          row.kind === 'weekly' ? openWeekly(row.weekly) : setViewRecord(row.order)
+        }
         data={items}
         total={data?.total ?? 0}
         loading={isFetching}
@@ -1979,6 +2260,10 @@ export function VehicleRequestsTab() {
           })
         }
       />
+
+      {/* Окно «Заявка на неделю»: спрашивает площадку и неделю, а дальше уводит на страницу
+          сборки — состав в модалку не помещается (ADR 0085 §5). */}
+      {weeklyCreate.node}
     </PageTableLayout>
   );
 }

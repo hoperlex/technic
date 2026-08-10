@@ -70,6 +70,12 @@ const order: WeeklySourceOrder = {
   dateFrom: '2026-08-01',
   dateTo: '2026-08-09',
   hasAssignment: true,
+  // Отъезд этой машины не назначен и не заявлен ни в каком виде: вывоза нет, чужой недели с
+  // решением «уезжает» нет, запрос на досрочный отъезд не подан. Три поля вместе и означают
+  // «решения по единице ещё не принято» — только тогда его принимает неделя.
+  pickupRoute: null,
+  leftBy: null,
+  pendingEarlyEndDate: null,
 };
 
 const orderWith = (patch: Partial<WeeklySourceOrder>): WeeklySourceOrder => ({
@@ -186,10 +192,69 @@ describe('годность строки, ссылающейся на заказ'
    */
   it('заказ, заказанный дольше недели, в состав не попадает', () => {
     const long = orderWith({ dateTo: '2026-08-20' });
+    expect(sourceItemBlocker(long, weekly, '2026-08-20')).toContain('дальше недели заявки');
     expect(extendBlocker(long, weekly, '2026-08-20', WEEK_END)).toContain('дальше недели заявки');
-    // Граница включительно: срок ровно до воскресенья — это уже «вся неделя занята».
+  });
+
+  /**
+   * Граница строгая: воскресенье — последний день недели заявки, и решение по такой единице как
+   * раз и принимают — «уезжает»; вывоз заказывают заранее, ради этого она в составе и нужна.
+   *
+   * Продлить её внутри этой недели нельзя арифметически, и отвечает об этом `extendBlocker`
+   * словами «заказ и так идёт до …» — второго описания одного запрета в `sourceItemBlocker` нет.
+   * «Оставить дальше» решает заявка на следующую неделю: 24.08 − 7 = 17.08 ≤ 23.08, и заказ
+   * подтянется в неё штатно.
+   */
+  it('срок ровно до воскресенья остаётся в составе, но продлению не подлежит', () => {
     const exact = orderWith({ dateTo: WEEK_END });
-    expect(extendBlocker(exact, weekly, WEEK_END, WEEK_END)).toContain('дальше недели заявки');
+    expect(sourceItemBlocker(exact, weekly, WEEK_END)).toBeNull();
+    expect(extendBlocker(exact, weekly, WEEK_END, WEEK_END)).toContain('Заказ и так идёт до 16.08');
+    // Ни одного дня недели, который был бы строго позже воскресенья, не существует: отказ один на
+    // любой выбор внутри недели.
+    expect(extendBlocker(exact, weekly, WEEK_END, WEEK_START)).toContain(
+      'продление не сокращает срок',
+    );
+    // День дальше воскресенья — уже не «эта неделя», и предикат называет другую причину.
+    expect(extendBlocker(exact, weekly, WEEK_END, '2026-08-17')).toContain('внутри недели заявки');
+  });
+
+  /**
+   * Единица, чей отъезд уже назначен или заявлен, в подбор не идёт: решение по ней принято, и
+   * второе решение о той же машине ему противоречило бы. Молча она не исчезает — причина называет
+   * документ, которым решение и отменяют.
+   */
+  it('оформленный вывоз, чужое «уезжает» и ожидающий отъезд исключают заказ из подбора', () => {
+    const withPickup = orderWith({ pickupRoute: { num: 12, routeDate: '2026-08-21' } });
+    expect(sourceItemBlocker(withPickup, weekly, '2026-08-09')).toBe(
+      'Вывоз оформлен рейсом Р-12 на 21.08 — отмените рейс, если техника остаётся',
+    );
+    const left = orderWith({ leftBy: { num: 15 } });
+    expect(sourceItemBlocker(left, weekly, '2026-08-09')).toBe(
+      'Уезжает по НЗ-15 — решение уже принято',
+    );
+    const early = orderWith({ pendingEarlyEndDate: '2026-08-12' });
+    expect(sourceItemBlocker(early, weekly, '2026-08-09')).toBe(
+      'Запрос на досрочный отъезд 12.08 ждёт визы — решите его, потом собирайте неделю',
+    );
+    // Продление отвечает тем же предикатом: второго списка условий у него нет.
+    expect(extendBlocker(withPickup, weekly, '2026-08-09', WEEK_END)).toContain('Р-12');
+    // Решённый запрос на отъезд — одобренный или отклонённый — блокировщиком не считается: в поле
+    // приходит только ожидающий визы, а решённая запись остаётся историей заказа.
+    expect(sourceItemBlocker(order, weekly, '2026-08-09')).toBeNull();
+  });
+
+  /**
+   * Порядок причин: сначала то, что говорит о самом заказе, потом принятое по нему решение, и
+   * только потом сроки. Иначе исчезновение машины объяснялось бы «заказ кончился больше недели
+   * назад» там, где на неё уже выписан вывоз, — и человек искал бы не ту кнопку.
+   */
+  it('причина одна и называется в порядке от заказа к решению и к срокам', () => {
+    const closed = orderWith({ status: 'done', pickupRoute: { num: 12, routeDate: '2026-08-21' } });
+    expect(sourceItemBlocker(closed, weekly, null)).toBe('Заказ не в статусе «В работе»');
+    const stale = orderWith({ dateTo: '2026-08-02', leftBy: { num: 15 } });
+    expect(sourceItemBlocker(stale, weekly, null)).toBe('Уезжает по НЗ-15 — решение уже принято');
+    const moved = orderWith({ dateTo: '2026-08-15', pendingEarlyEndDate: '2026-08-12' });
+    expect(sourceItemBlocker(moved, weekly, '2026-08-11')).toContain('ждёт визы');
   });
 
   it('заказ, кончившийся больше недели назад, продлевается новым заказом, а не продлением', () => {
@@ -361,27 +426,25 @@ describe('годность строки «нужна дополнительно�
 });
 
 describe('предупреждения строки', () => {
-  it('сплошное продление, перевыписка листа, ожидающий отъезд, аренда и вторая неделя', () => {
+  it('сплошное продление, перевыписка листа и вторая неделя на тот же заказ', () => {
     const warnings = itemWarnings(
       {
         ...orderWith({ dateTo: '2026-08-05' }),
         ownership: 'own',
-        pendingEarlyEndDate: '2026-08-12',
         otherWeekly: { num: 15, weekStart: '2026-08-17' },
       },
       { ...weekly, today: TODAY },
       WEEK_END,
     );
     const kinds = warnings.map((w) => w.kind);
-    expect(kinds).toEqual(['idle_days', 'esm2_reissue', 'early_end_pending', 'other_weekly']);
+    expect(kinds).toEqual(['idle_days', 'esm2_reissue', 'other_weekly']);
     expect(warnings[0]?.text).toContain('4 дн. до начала недели');
-    expect(warnings[2]?.text).toContain('12.08');
-    expect(warnings[3]?.text).toContain('НЗ-15 (17–23 августа 2026)');
+    expect(warnings[2]?.text).toContain('НЗ-15 (17–23 августа 2026)');
   });
 
   it('выходные между сроком и понедельником поводом не считаются', () => {
     const quiet = itemWarnings(
-      { ...order, ownership: 'own', pendingEarlyEndDate: null, otherWeekly: null },
+      { ...order, ownership: 'own', otherWeekly: null },
       { ...weekly, today: TODAY },
       WEEK_END,
     );
@@ -390,9 +453,27 @@ describe('предупреждения строки', () => {
     expect(quiet).toEqual([]);
   });
 
+  /**
+   * Ожидающий досрочный отъезд предупреждением больше не бывает: такая единица в состав не идёт
+   * вовсе, и предупреждать под строкой, которой нет, некому. Согласие снять чужой запрос прямо в
+   * составе ушло вместе с предупреждением — второго, недостижимого способа отменить чужое решение
+   * в модуле остаться не должно.
+   */
+  it('ожидающий досрочный отъезд предупреждением не приходит — он причина негодности', () => {
+    const pending = orderWith({ pendingEarlyEndDate: '2026-08-12' });
+    expect(
+      itemWarnings(
+        { ...pending, ownership: 'own', otherWeekly: null },
+        { ...weekly, today: TODAY },
+        WEEK_END,
+      ),
+    ).toEqual([]);
+    expect(sourceItemBlocker(pending, weekly, null)).toContain('ждёт визы');
+  });
+
   it('аренда объясняется словами, а не пустым местом (Р19)', () => {
     const rental = itemWarnings(
-      { ...order, ownership: 'rental', pendingEarlyEndDate: null, otherWeekly: null },
+      { ...order, ownership: 'rental', otherWeekly: null },
       { ...weekly, today: TODAY },
       WEEK_END,
     );
@@ -416,7 +497,7 @@ describe('схемы запросов', () => {
 
   it('три вида строки разбираются по `kind` и добираются умолчаниями', () => {
     const extend = weeklyRequestItemSchema.parse(extendItem);
-    expect(extend).toMatchObject({ kind: 'extend', earlyEndOverride: false, comment: '' });
+    expect(extend).toMatchObject({ kind: 'extend', comment: '' });
     const created = weeklyRequestItemSchema.parse(newItem);
     expect(created).toMatchObject({ kind: 'new', deliveryNeeded: false, deliveryFrom: '' });
     // Телефон нормализуется схемой: в колонке не должно заводиться второго формата (ADR 0066).
@@ -455,6 +536,12 @@ describe('схемы запросов', () => {
     expect(weeklyRequestItemSchema.safeParse({ ...extendItem, kind: 'prolong' }).success).toBe(
       false,
     );
+    // Согласия снять чужой запрос на досрочный отъезд у строки больше нет: единица с нерешённым
+    // запросом в состав не идёт вовсе, и старый клиент, приславший галку, обязан получить отказ, а
+    // не молчаливое согласие сервера её проглотить.
+    expect(
+      weeklyRequestItemSchema.safeParse({ ...extendItem, earlyEndOverride: true }).success,
+    ).toBe(false);
   });
 
   it('создание: объект, неделя и состав; пустой состав допустим', () => {
@@ -589,16 +676,13 @@ function rolesWith(permission: Parameters<typeof profilesWith>[0]): string[] {
 
 describe('права модуля', () => {
   /**
-   * Права свои, а не `vehicleRequests.*` (§10): у наблюдателя, оператора вывоза и арендодателя
-   * право чтения заказов есть, а область видимости для ролей без объектной оси ничем не
-   * ограничена — переиспользование открыло бы им недельные планы всех площадок.
+   * Права свои, а не `vehicleRequests.*`: **ведение** недели — работа площадки и офиса, и набор
+   * «читает, заводит, правит» совпадает у всех пятерых буквально. Чтение при этом стоит шире —
+   * см. следующий тест: документ переехал в общий список «Заказ автотехники», и объяснять
+   * продления он обязан всем, кто видит сами заказы.
    */
   it('ведут недельные заявки офис и площадка, визирует — руководитель строительства', () => {
-    for (const permission of [
-      'weeklyRequests.read',
-      'weeklyRequests.create',
-      'weeklyRequests.update',
-    ] as const) {
+    for (const permission of ['weeklyRequests.create', 'weeklyRequests.update'] as const) {
       expect(rolesWith(permission), permission).toEqual([
         'admin',
         'manager',
@@ -610,20 +694,53 @@ describe('права модуля', () => {
     expect(rolesWith('weeklyRequests.approve')).toEqual(['admin', 'rukstroy']);
   });
 
-  it('наблюдатель, комендант, отдел, оператор и арендодатель модуля не видят вовсе', () => {
-    const outsiders = [
+  /**
+   * Читают неделю все, кто видит заказы площадки, — но **область** им считает предикат, а не
+   * право: у отдела это площадка отдела (ADR 0062), у арендодателя — наличие его машины в
+   * составе, и по объекту его видимость не выражается вовсе. Само право отвечает только на
+   * вопрос «модуль открыт?».
+   */
+  it('читают неделю и те, кто её не ведёт: наблюдатель, отдел и арендодатель', () => {
+    expect(rolesWith('weeklyRequests.read')).toEqual([
+      'admin',
+      'manager',
+      'dispatcher',
+      'shtab',
+      'rukstroy',
+      'department',
+      'department_head',
+      // «Внешний исполнитель» стоит здесь не сам по себе: право ему даёт тип контрагента
+      // (ADR 0038), и получает его один тип из двух — проверка ниже.
+      'operator',
+      'observer',
+    ]);
+    expect(
+      can({ role: 'operator', counterpartyType: 'vehicle_lessor' }, 'weeklyRequests.read'),
+    ).toBe(true);
+    // Ни один из них неделю не ведёт и не визирует: чтение — это чтение.
+    for (const subject of [
       { role: 'observer' as const },
-      { role: 'commandant' as const },
       { role: 'department' as const },
       { role: 'department_head' as const },
-      { role: 'operator' as const, counterpartyType: 'operator' as const },
       { role: 'operator' as const, counterpartyType: 'vehicle_lessor' as const },
-    ];
-    for (const subject of outsiders) {
+    ]) {
+      expect(can(subject, 'weeklyRequests.create'), subject.role).toBe(false);
+      expect(can(subject, 'weeklyRequests.update'), subject.role).toBe(false);
+      expect(can(subject, 'weeklyRequests.approve'), subject.role).toBe(false);
+    }
+  });
+
+  it('комендант и оператор вывоза модуля не видят вовсе', () => {
+    // Комендант — заказчик на площадке, но только по мусору: заказов ТС он не видит, и объяснять
+    // ему продления нечем. Оператор вывоза к технике не относится вовсе.
+    for (const subject of [
+      { role: 'commandant' as const },
+      { role: 'operator' as const, counterpartyType: 'operator' as const },
+    ]) {
       expect(can(subject, 'weeklyRequests.read'), subject.role).toBe(false);
       expect(can(subject, 'weeklyRequests.approve'), subject.role).toBe(false);
     }
-    // Заказы ТС при этом им по-прежнему видны — ровно то различие, ради которого права свои.
-    expect(can({ role: 'observer' }, 'vehicleRequests.read')).toBe(true);
+    // У коменданта нет и чтения заказов — именно поэтому у него нет и недели.
+    expect(can({ role: 'commandant' }, 'vehicleRequests.read')).toBe(false);
   });
 });

@@ -10,6 +10,7 @@ import { typeDate } from './antd';
 import {
   classification,
   freightRequest,
+  vehicleFeed,
   vehicleRequest,
   vehicleSummary,
 } from './factories/vehicle';
@@ -78,7 +79,7 @@ const WAREHOUSE_OF_STOPPED_SUPPLIER = {
 function renderTab(over: RouteMap = {}, items: VehicleRequestDto[] = []): HttpMock {
   const http = mockHttp({
     'GET /vehicle-requests/summary': () => json(vehicleSummary({ new: items.length })),
-    'GET /vehicle-requests': () => json(list(items)),
+    'GET /vehicle-requests/feed': () => json(vehicleFeed(items)),
     'GET /objects': () => json(list([OWN_OBJECT, OTHER_OBJECT, NO_ADDRESS_OBJECT])),
     'GET /departments': () => json(emptyList()),
     'GET /warehouses': () => json(list([WAREHOUSE, WAREHOUSE_OF_STOPPED_SUPPLIER])),

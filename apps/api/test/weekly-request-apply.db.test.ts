@@ -18,11 +18,12 @@ import type { db as AppDb } from '../src/db/client';
  * Недельная заявка на технику (ADR 0085, план §11 «По базе») — применение визой на живой схеме.
  *
  * Зачем база. Применение — единственное место портала, которое одной транзакцией трогает **чужие
- * конкурентные сущности**: двигает срок заказа, поднимает его версию, снимает чужой запрос на
- * досрочный отъезд, жжёт и выписывает бланки строгой отчётности и порождает заказы. Ни одно из
- * этих последствий контрактным тестом не видно: расходятся здесь не правила, а код, схема и
- * сверка ЭСМ-2 — и ценой расхождения будет либо сгоревший номер бланка, либо согласованное
- * продление, которого не случилось.
+ * конкурентные сущности**: двигает срок заказа, поднимает его версию, жжёт и выписывает бланки
+ * строгой отчётности и порождает заказы, а перед этим перечитывает то, что решили о машине в
+ * других модулях, — оформленный вывоз и запрос на досрочный отъезд. Ни одно из этих последствий
+ * контрактным тестом не видно: расходятся здесь не правила, а код, схема и сверка ЭСМ-2 — и ценой
+ * расхождения будет либо сгоревший номер бланка, либо согласованное продление, которого не
+ * случилось.
  *
  * Данные готовятся настоящими HTTP-путями везде, где портал это умеет: так проверяется и маршрут
  * тоже. Прямой SQL остаётся ровно там, где путь закрыт по существу: заказ задним числом
@@ -121,7 +122,6 @@ interface WeeklyItemRow {
   applied_source_version: number | null;
   snapshot_vehicle_id: string | null;
   created_request_id: string | null;
-  early_end_override: boolean;
 }
 
 interface WeeklyDto {
@@ -149,6 +149,8 @@ interface Ctx {
   department: TestUser;
   wasteOperator: TestUser;
   lessor: TestUser;
+  /** Контрагент-арендодатель: им помечается машина, которой открывается его видимость недели. */
+  lessorCounterpartyId: string;
   foreignObjectId: string;
   personId: string;
   /** Пул техники: своя машина на каждый заказ — снимок строки хранит именно её идентичность. */
@@ -320,8 +322,8 @@ async function makeOrder(opts: {
 
 type WeeklyItemPayload = Record<string, unknown>;
 
-function extendItem(order: Order, dateTo: string, earlyEndOverride = false): WeeklyItemPayload {
-  return { kind: 'extend', sourceRequestId: order.id, dateTo, earlyEndOverride };
+function extendItem(order: Order, dateTo: string): WeeklyItemPayload {
+  return { kind: 'extend', sourceRequestId: order.id, dateTo };
 }
 
 function leaveItem(order: Order): WeeklyItemPayload {
@@ -344,6 +346,34 @@ function newItem(
     responsiblePhone: CONTACT_PHONE,
     ...extra,
   };
+}
+
+/**
+ * ИНН из девяти произвольных цифр плюс контрольная — по тому же правилу, которым его проверяет
+ * портал (веса 2·4·10·3·5·9·4·6·8, остаток от 11, затем от 10).
+ *
+ * Считается, а не берётся «каким-нибудь»: тестовые контрагенты остаются в общей тестовой базе
+ * после прогона, а обмен справочниками (ADR 0073) выгружает её целиком и загружает обратно —
+ * невалидный ИНН роняет **чужой** тест, и виноватого в нём не видно.
+ */
+function testInn(nineDigits: string): string {
+  const weights = [2, 4, 10, 3, 5, 9, 4, 6, 8];
+  const sum = weights.reduce((acc, w, i) => acc + w * Number(nineDigits[i]), 0);
+  return `${nineDigits}${((sum % 11) % 10).toString()}`;
+}
+
+/**
+ * Выдача недельных заявок — лента раздела «Заказ автотехники» (ADR 0089): своего списка у модуля
+ * не осталось, и видимость проверяется там же, где её видит человек.
+ */
+const FEED_WEEKLY = '/api/v1/vehicle-requests/feed?kind=weekly&pageSize=200';
+
+/** Идентификаторы недельных строк ленты: строка размечена видом документа, а не угадывается. */
+function feedWeeklyIds(res: { json: () => { items: { kind: string; weekly?: WeeklyDto }[] } }) {
+  return res
+    .json()
+    .items.filter((row) => row.kind === 'weekly')
+    .map((row) => row.weekly!.id);
 }
 
 async function makeWeekly(
@@ -414,7 +444,7 @@ async function itemRows(weeklyId: string): Promise<WeeklyItemRow[]> {
   const res = await ctx.db.execute<WeeklyItemRow>(sql`
     SELECT id, position, kind::text, result::text, skip_reason, date_to::text,
            expected_date_to::text, previous_date_to::text, applied_source_version,
-           snapshot_vehicle_id, created_request_id, early_end_override
+           snapshot_vehicle_id, created_request_id
     FROM weekly_vehicle_request_items WHERE weekly_request_id = ${weeklyId} ORDER BY position`);
   return res.rows;
 }
@@ -475,7 +505,9 @@ async function pendingEarlyEnds(requestId: string): Promise<number> {
 
 /** Свой тип ТС на тест: гасить и сносить общий из наполнения нельзя — на нём стоят соседи. */
 async function makeVehicleType(prefix: string): Promise<{ id: string; name: string }> {
-  const code = `${prefix}_${randomUUID().replace(/[^a-z0-9]/g, '').slice(0, 10)}`;
+  const code = `${prefix}_${randomUUID()
+    .replace(/[^a-z0-9]/g, '')
+    .slice(0, 10)}`;
   const res = await ctx.db.execute<{ id: string; name: string }>(sql`
     INSERT INTO vehicle_types (kind_id, code, name)
     SELECT id, ${code}, ${`Тестовый тип ${code}`} FROM vehicle_kinds WHERE code = 'special_equipment'
@@ -530,13 +562,62 @@ async function insertWeekly(status: 'draft' | 'pending'): Promise<{ id: string; 
   return res.rows[0]!;
 }
 
+/**
+ * Оформленный вывоз — рейс-перегон по заказу (`purpose = 'pickup'`). Прямым SQL: выписка перегона
+ * живёт в чужом модуле со своими правами и своей формой, а проверяется здесь не она, а то, что
+ * оформленный вывоз выбрасывает строку недели.
+ */
+async function insertPickupRoute(order: Order): Promise<number> {
+  const res = await ctx.db.execute<{ num: number }>(sql`
+    INSERT INTO vehicle_routes (vehicle_id, route_date, purpose, source_request_id,
+                                move_from, move_to, created_by)
+    VALUES (${order.vehicleId}, ${shiftDateKey(TODAY, 3)}::date, 'pickup', ${order.id},
+            'Объект', 'База', ${ctx.admin.id})
+    RETURNING num`);
+  return res.rows[0]!.num;
+}
+
+/**
+ * Применённая недельная заявка прошедшей недели с решением «уезжает» по заказу — целиком SQL'ом.
+ *
+ * Через API такого состояния теперь не собрать: первая же применённая неделя закрывает заказ для
+ * всех следующих. Но в базе оно есть — его завели до этого правила, — и предложение обязано его
+ * пережить: именно на нём и проверяется, что кандидат не размножается.
+ */
+async function insertAppliedLeave(
+  objectId: string,
+  order: Order,
+  weekStart: string,
+): Promise<number> {
+  const weekly = await ctx.db.execute<{ id: string; num: number }>(sql`
+    INSERT INTO weekly_vehicle_requests (object_id, week_start, status, created_by,
+                                         approved_by, approved_at, applied_at)
+    VALUES (${objectId}, ${weekStart}::date, 'applied'::weekly_request_status, ${ctx.admin.id},
+            ${ctx.admin.id}, now(), now())
+    RETURNING id, num`);
+  const row = weekly.rows[0]!;
+  await ctx.db.execute(sql`
+    INSERT INTO weekly_vehicle_request_items
+      (weekly_request_id, week_start, position, kind, source_request_id, expected_date_to,
+       previous_date_to, applied_source_version, snapshot_vehicle_id, result)
+    VALUES (${row.id}, ${weekStart}::date, 0, 'leave'::weekly_request_item_kind, ${order.id},
+            ${order.effectiveDateTo}::date, ${order.effectiveDateTo}::date, ${order.version},
+            ${order.vehicleId}, 'left'::weekly_request_item_result)`);
+  return row.num;
+}
+
 /** Запрос на досрочный отъезд, оставшийся ждать визы: администратор автовизы не получает. */
 async function requestEarlyEnd(order: Order): Promise<void> {
-  const res = await inject('POST', `/api/v1/vehicle-requests/${order.id}/early-end`, ctx.admin.auth, {
-    newDateTo: TODAY,
-    reason: 'Работы на площадке закончились раньше',
-    version: order.version,
-  });
+  const res = await inject(
+    'POST',
+    `/api/v1/vehicle-requests/${order.id}/early-end`,
+    ctx.admin.auth,
+    {
+      newDateTo: TODAY,
+      reason: 'Работы на площадке закончились раньше',
+      version: order.version,
+    },
+  );
   expect(res.statusCode, res.body).toBe(200);
   expect(await pendingEarlyEnds(order.id)).toBe(1);
 }
@@ -578,8 +659,8 @@ describe.skipIf(!DB_URL)('недельная заявка: применение 
       return res.rows[0]!.id;
     };
     const digits = String(Date.now()).slice(-6);
-    const operatorCp = await counterparty('operator', `10${digits}01`);
-    const lessorCp = await counterparty('vehicle_lessor', `10${digits}02`);
+    const operatorCp = await counterparty('operator', testInn(`10${digits}0`));
+    const lessorCp = await counterparty('vehicle_lessor', testInn(`10${digits}1`));
 
     const users = {
       admin: await makeUser({ tag: 'admin', role: 'admin' }),
@@ -668,7 +749,8 @@ describe.skipIf(!DB_URL)('недельная заявка: применение 
           (o, j) => j > i && o.typeId === v.typeId && o.categoryId === v.categoryId,
         ) >= 0,
     );
-    if (pairIndex < 0) throw new Error('В базе нет двух арендных машин одной позиции классификатора');
+    if (pairIndex < 0)
+      throw new Error('В базе нет двух арендных машин одной позиции классификатора');
     const first = rentalVehicles.splice(pairIndex, 1)[0]!;
     const secondIndex = rentalVehicles.findIndex(
       (o) => o.typeId === first.typeId && o.categoryId === first.categoryId,
@@ -707,6 +789,7 @@ describe.skipIf(!DB_URL)('недельная заявка: применение 
       department: await withAuth(users.department),
       wasteOperator: await withAuth(users.wasteOperator),
       lessor: await withAuth(users.lessor),
+      lessorCounterpartyId: lessorCp,
       foreignObjectId,
       personId,
       ownVehicles,
@@ -723,87 +806,79 @@ describe.skipIf(!DB_URL)('недельная заявка: применение 
   // ── Продление: срок, версия, снимок ──
 
   describe('продление заказа', () => {
-    it(
-      'двигает срок, поднимает версию с автором и пишет снимок момента применения',
-      async () => {
-        const objectId = await freshObject();
-        const order = await makeOrder({ objectId, ownership: 'rental' });
-        const weekly = await makeWeekly(ctx.admin.auth, {
-          objectId,
-          weekStart: W1,
-          items: [extendItem(order, W1_END)],
-        });
+    it('двигает срок, поднимает версию с автором и пишет снимок момента применения', async () => {
+      const objectId = await freshObject();
+      const order = await makeOrder({ objectId, ownership: 'rental' });
+      const weekly = await makeWeekly(ctx.admin.auth, {
+        objectId,
+        weekStart: W1,
+        items: [extendItem(order, W1_END)],
+      });
 
-        const before = await orderRow(order.id);
-        const { approval } = await submitAndApprove(weekly);
-        expect(approval.statusCode, approval.body).toBe(200);
-        const apply = approval.json().apply;
-        expect(apply.applied).toBe(1);
-        expect(apply.skipped).toBe(0);
+      const before = await orderRow(order.id);
+      const { approval } = await submitAndApprove(weekly);
+      expect(approval.statusCode, approval.body).toBe(200);
+      const apply = approval.json().apply;
+      expect(apply.applied).toBe(1);
+      expect(apply.skipped).toBe(0);
 
-        // Срок двинулся ровно на дату строки, а не «на неделю вперёд».
-        const after = await orderRow(order.id);
-        expect(after.date_to).toBe(W1_END);
-        // Версия и автор — без них следующий читатель заказа получил бы старую версию (Р6).
-        expect(after.version).toBe(before.version + 1);
-        expect(after.updated_by).toBe(ctx.admin.id);
+      // Срок двинулся ровно на дату строки, а не «на неделю вперёд».
+      const after = await orderRow(order.id);
+      expect(after.date_to).toBe(W1_END);
+      // Версия и автор — без них следующий читатель заказа получил бы старую версию (Р6).
+      expect(after.version).toBe(before.version + 1);
+      expect(after.updated_by).toBe(ctx.admin.id);
 
-        // Снимок момента применения (Р14): три поля обязаны быть заполнены вместе — полуснимок
-        // однажды прочитают как факт.
-        const [item] = await itemRows(weekly.id);
-        expect(item!.result).toBe('extended');
-        expect(item!.previous_date_to).toBe(order.effectiveDateTo);
-        expect(item!.applied_source_version).toBe(before.version);
-        expect(item!.snapshot_vehicle_id).toBe(order.vehicleId);
-        // `expected_date_to` сервер читает из самого заказа, а не из тела (§7), и им же сверяет
-        // применимость строки.
-        expect(item!.expected_date_to).toBe(order.effectiveDateTo);
+      // Снимок момента применения (Р14): три поля обязаны быть заполнены вместе — полуснимок
+      // однажды прочитают как факт.
+      const [item] = await itemRows(weekly.id);
+      expect(item!.result).toBe('extended');
+      expect(item!.previous_date_to).toBe(order.effectiveDateTo);
+      expect(item!.applied_source_version).toBe(before.version);
+      expect(item!.snapshot_vehicle_id).toBe(order.vehicleId);
+      // `expected_date_to` сервер читает из самого заказа, а не из тела (§7), и им же сверяет
+      // применимость строки.
+      expect(item!.expected_date_to).toBe(order.effectiveDateTo);
 
-        const header = await weeklyRow(weekly.id);
-        expect(header!.status).toBe('applied');
-        expect(header!.approved_by).toBe(ctx.admin.id);
-        expect(header!.applied_at).not.toBeNull();
-        // Подача и применение — два перехода, каждый поднимает версию шапки.
-        expect(header!.version).toBe(weekly.version + 2);
+      const header = await weeklyRow(weekly.id);
+      expect(header!.status).toBe('applied');
+      expect(header!.approved_by).toBe(ctx.admin.id);
+      expect(header!.applied_at).not.toBeNull();
+      // Подача и применение — два перехода, каждый поднимает версию шапки.
+      expect(header!.version).toBe(weekly.version + 2);
 
-        // История — своей транзакционной таблицей, а не только аудитом (Р17).
-        const history = await historyRows(weekly.id);
-        expect(
-          history.some((h) => h.event === 'status' && h.to_status === 'applied'),
-          JSON.stringify(history),
-        ).toBe(true);
-      },
-      60_000,
-    );
+      // История — своей транзакционной таблицей, а не только аудитом (Р17).
+      const history = await historyRows(weekly.id);
+      expect(
+        history.some((h) => h.event === 'status' && h.to_status === 'applied'),
+        JSON.stringify(history),
+      ).toBe(true);
+    }, 60_000);
 
-    it(
-      'строка «уезжает» заказ не трогает, но снимок пишет',
-      async () => {
-        const objectId = await freshObject();
-        const order = await makeOrder({ objectId, ownership: 'rental' });
-        const weekly = await makeWeekly(ctx.admin.auth, {
-          objectId,
-          weekStart: W1,
-          items: [leaveItem(order)],
-        });
-        const before = await orderRow(order.id);
-        const { approval } = await submitAndApprove(weekly);
-        expect(approval.statusCode, approval.body).toBe(200);
+    it('строка «уезжает» заказ не трогает, но снимок пишет', async () => {
+      const objectId = await freshObject();
+      const order = await makeOrder({ objectId, ownership: 'rental' });
+      const weekly = await makeWeekly(ctx.admin.auth, {
+        objectId,
+        weekStart: W1,
+        items: [leaveItem(order)],
+      });
+      const before = await orderRow(order.id);
+      const { approval } = await submitAndApprove(weekly);
+      expect(approval.statusCode, approval.body).toBe(200);
 
-        const after = await orderRow(order.id);
-        // «Уезжает» — решение, а не действие: срок кончится сам, версия заказа не растёт.
-        expect(after.date_to).toBe(before.date_to);
-        expect(after.version).toBe(before.version);
+      const after = await orderRow(order.id);
+      // «Уезжает» — решение, а не действие: срок кончится сам, версия заказа не растёт.
+      expect(after.date_to).toBe(before.date_to);
+      expect(after.version).toBe(before.version);
 
-        const [item] = await itemRows(weekly.id);
-        expect(item!.result).toBe('left');
-        // Снимок обязателен и здесь: через месяц к строке придут с тем же вопросом — какая машина
-        // и до какого числа стояла.
-        expect(item!.previous_date_to).toBe(order.effectiveDateTo);
-        expect(item!.snapshot_vehicle_id).toBe(order.vehicleId);
-      },
-      60_000,
-    );
+      const [item] = await itemRows(weekly.id);
+      expect(item!.result).toBe('left');
+      // Снимок обязателен и здесь: через месяц к строке придут с тем же вопросом — какая машина
+      // и до какого числа стояла.
+      expect(item!.previous_date_to).toBe(order.effectiveDateTo);
+      expect(item!.snapshot_vehicle_id).toBe(order.vehicleId);
+    }, 60_000);
   });
 
   // ── ЭСМ-2: план сверки, а не «ровно один новый лист» ──
@@ -901,55 +976,12 @@ describe.skipIf(!DB_URL)('недельная заявка: применение 
       60_000,
     );
 
-    it(
-      'аренда: продление арендного заказа листов не порождает, чек-лист отвечает «ведёт арендодатель»',
-      async () => {
-        const objectId = await freshObject();
-        const order = await makeOrder({ objectId, ownership: 'rental' });
-        // Бумаги у аренды нет и до продления: `esm2Required` требует собственной машины.
-        expect(await sheetsOf(order.id)).toHaveLength(0);
-
-        const weekly = await makeWeekly(ctx.admin.auth, {
-          objectId,
-          weekStart: W1,
-          items: [extendItem(order, W1_END)],
-        });
-        const { approval } = await submitAndApprove(weekly);
-        expect(approval.statusCode, approval.body).toBe(200);
-
-        expect(await sheetsOf(order.id)).toHaveLength(0);
-        // Строка в ответе есть — применение кладёт по одной на каждый продлённый заказ, — но она
-        // пустая: сверка ничего не аннулировала и ничего не выписала. Проверяется именно это, а не
-        // отсутствие строки: пустой итог сверки и есть «портал в бумагу арендодателя не лезет».
-        const esm2 = approval.json().apply.esm2;
-        expect(esm2.every((e: { cancelled: string[]; issued: number }) => e.cancelled.length === 0))
-          .toBe(true);
-        expect(esm2.every((e: { issued: number }) => e.issued === 0)).toBe(true);
-        expect((await orderRow(order.id)).date_to).toBe(W1_END);
-
-        const docs = await inject(
-          'GET',
-          `/api/v1/weekly-vehicle-requests/${weekly.id}/documents`,
-          ctx.admin.auth,
-        );
-        expect(docs.statusCode, docs.body).toBe(200);
-        // Нейтральное состояние, а не красное «не выписано»: иначе неделя из арендной техники
-        // всегда выглядела бы незаконченной (Р19).
-        const row = docs.json().rows[0];
-        expect(row.esm2.state).toBe('lessor');
-        expect(row.esm2.text.toLowerCase()).toContain('арендодател');
-      },
-      60_000,
-    );
-  });
-
-  // ── Идемпотентность визы ──
-
-  it(
-    'повторная виза не применяет дважды и не жжёт номеров',
-    async () => {
+    it('аренда: продление арендного заказа листов не порождает, чек-лист отвечает «ведёт арендодатель»', async () => {
       const objectId = await freshObject();
-      const order = await makeOrder({ objectId });
+      const order = await makeOrder({ objectId, ownership: 'rental' });
+      // Бумаги у аренды нет и до продления: `esm2Required` требует собственной машины.
+      expect(await sheetsOf(order.id)).toHaveLength(0);
+
       const weekly = await makeWeekly(ctx.admin.auth, {
         objectId,
         weekStart: W1,
@@ -958,296 +990,489 @@ describe.skipIf(!DB_URL)('недельная заявка: применение 
       const { approval } = await submitAndApprove(weekly);
       expect(approval.statusCode, approval.body).toBe(200);
 
-      const appliedHeader = await weeklyRow(weekly.id);
-      const sheetsAfterFirst = await sheetsOf(order.id);
-      const orderAfterFirst = await orderRow(order.id);
+      expect(await sheetsOf(order.id)).toHaveLength(0);
+      // Строка в ответе есть — применение кладёт по одной на каждый продлённый заказ, — но она
+      // пустая: сверка ничего не аннулировала и ничего не выписала. Проверяется именно это, а не
+      // отсутствие строки: пустой итог сверки и есть «портал в бумагу арендодателя не лезет».
+      const esm2 = approval.json().apply.esm2;
+      expect(
+        esm2.every((e: { cancelled: string[]; issued: number }) => e.cancelled.length === 0),
+      ).toBe(true);
+      expect(esm2.every((e: { issued: number }) => e.issued === 0)).toBe(true);
+      expect((await orderRow(order.id)).date_to).toBe(W1_END);
 
-      // Виза и применение — одно событие, поэтому вторая виза не повторяет его, а упирается в
-      // статус: применённая заявка уже история (Р13).
-      const second = await approveWeekly(ctx.admin.auth, weekly.id, appliedHeader!.version);
-      expect(second.statusCode, second.body).toBe(422);
-      expect(second.json().message).toContain('уже применена');
+      const docs = await inject(
+        'GET',
+        `/api/v1/weekly-vehicle-requests/${weekly.id}/documents`,
+        ctx.admin.auth,
+      );
+      expect(docs.statusCode, docs.body).toBe(200);
+      // Нейтральное состояние, а не красное «не выписано»: иначе неделя из арендной техники
+      // всегда выглядела бы незаконченной (Р19).
+      const row = docs.json().rows[0];
+      expect(row.esm2.state).toBe('lessor');
+      expect(row.esm2.text.toLowerCase()).toContain('арендодател');
+    }, 60_000);
+  });
 
-      expect(await weeklyRow(weekly.id)).toEqual(appliedHeader);
-      // Ни одного нового номера: сгоревший на ровном месте бланк — худшее последствие
-      // неидемпотентной визы.
-      expect(await sheetsOf(order.id)).toEqual(sheetsAfterFirst);
-      expect(await orderRow(order.id)).toEqual(orderAfterFirst);
-    },
-    60_000,
-  );
+  // ── Идемпотентность визы ──
+
+  it('повторная виза не применяет дважды и не жжёт номеров', async () => {
+    const objectId = await freshObject();
+    const order = await makeOrder({ objectId });
+    const weekly = await makeWeekly(ctx.admin.auth, {
+      objectId,
+      weekStart: W1,
+      items: [extendItem(order, W1_END)],
+    });
+    const { approval } = await submitAndApprove(weekly);
+    expect(approval.statusCode, approval.body).toBe(200);
+
+    const appliedHeader = await weeklyRow(weekly.id);
+    const sheetsAfterFirst = await sheetsOf(order.id);
+    const orderAfterFirst = await orderRow(order.id);
+
+    // Виза и применение — одно событие, поэтому вторая виза не повторяет его, а упирается в
+    // статус: применённая заявка уже история (Р13).
+    const second = await approveWeekly(ctx.admin.auth, weekly.id, appliedHeader!.version);
+    expect(second.statusCode, second.body).toBe(422);
+    expect(second.json().message).toContain('уже применена');
+
+    expect(await weeklyRow(weekly.id)).toEqual(appliedHeader);
+    // Ни одного нового номера: сгоревший на ровном месте бланк — худшее последствие
+    // неидемпотентной визы.
+    expect(await sheetsOf(order.id)).toEqual(sheetsAfterFirst);
+    expect(await orderRow(order.id)).toEqual(orderAfterFirst);
+  }, 60_000);
 
   // ── Строка «нужна дополнительно» ──
 
-  it(
-    'строка «нужна дополнительно» рождает завизированный заказ «Новая» с нужным сроком и основанием',
-    async () => {
-      const objectId = await freshObject();
-      const classification = ctx.ownVehicles[0]!;
-      const weekly = await makeWeekly(ctx.admin.auth, {
-        objectId,
-        weekStart: W1,
-        items: [
-          newItem(
-            { typeId: classification.typeId, categoryId: classification.categoryId },
-            W1,
-            shiftDateKey(W1, 4),
-            { deliveryNeeded: true, deliveryFrom: 'г Москва, ул Складская, д 5' },
-          ),
-        ],
-      });
-      const { approval } = await submitAndApprove(weekly);
-      expect(approval.statusCode, approval.body).toBe(200);
+  it('строка «нужна дополнительно» рождает завизированный заказ «Новая» с нужным сроком и основанием', async () => {
+    const objectId = await freshObject();
+    const classification = ctx.ownVehicles[0]!;
+    const weekly = await makeWeekly(ctx.admin.auth, {
+      objectId,
+      weekStart: W1,
+      items: [
+        newItem(
+          { typeId: classification.typeId, categoryId: classification.categoryId },
+          W1,
+          shiftDateKey(W1, 4),
+          { deliveryNeeded: true, deliveryFrom: 'г Москва, ул Складская, д 5' },
+        ),
+      ],
+    });
+    const { approval } = await submitAndApprove(weekly);
+    expect(approval.statusCode, approval.body).toBe(200);
 
-      const [item] = await itemRows(weekly.id);
-      expect(item!.result).toBe('created');
-      expect(item!.created_request_id).not.toBeNull();
-      // Снимка у порождённой строки быть не должно: снимок отвечает на «что застали», а застали
-      // здесь пустоту — заказа до применения не существовало.
-      expect(item!.previous_date_to).toBeNull();
-      expect(item!.snapshot_vehicle_id).toBeNull();
+    const [item] = await itemRows(weekly.id);
+    expect(item!.result).toBe('created');
+    expect(item!.created_request_id).not.toBeNull();
+    // Снимка у порождённой строки быть не должно: снимок отвечает на «что застали», а застали
+    // здесь пустоту — заказа до применения не существовало.
+    expect(item!.previous_date_to).toBeNull();
+    expect(item!.snapshot_vehicle_id).toBeNull();
 
-      const created = await orderDto(item!.created_request_id!);
-      expect(created.status).toBe('new');
-      expect(created.requestType).toBe('special_equipment');
-      expect(created.dateFrom).toBe(W1);
-      expect(created.dateTo).toBe(shiftDateKey(W1, 4));
-      expect(created.objectId).toBe(objectId);
-      expect(created.vehicleTypeId).toBe(classification.typeId);
-      // Виза одна на пакет: порождённый заказ второй визы не спрашивает (Р8).
-      expect(created.approvedAt).not.toBeNull();
-      expect(created.approvedBy).toBe(ctx.admin.id);
-      // Форме перевода в работу нужны значения, а не повод сходить за ними вторым запросом (Р11).
-      expect(created.weeklyOrigin).not.toBeNull();
-      expect(created.weeklyOrigin.weeklyRequestId).toBe(weekly.id);
-      expect(created.weeklyOrigin.weeklyRequestNum).toBe(weekly.num);
-      expect(created.weeklyOrigin.deliveryNeeded).toBe(true);
-      expect(created.weeklyOrigin.deliveryFrom).toBe('г Москва, ул Складская, д 5');
-    },
-    60_000,
-  );
+    const created = await orderDto(item!.created_request_id!);
+    expect(created.status).toBe('new');
+    expect(created.requestType).toBe('special_equipment');
+    expect(created.dateFrom).toBe(W1);
+    expect(created.dateTo).toBe(shiftDateKey(W1, 4));
+    expect(created.objectId).toBe(objectId);
+    expect(created.vehicleTypeId).toBe(classification.typeId);
+    // Виза одна на пакет: порождённый заказ второй визы не спрашивает (Р8).
+    expect(created.approvedAt).not.toBeNull();
+    expect(created.approvedBy).toBe(ctx.admin.id);
+    // Форме перевода в работу нужны значения, а не повод сходить за ними вторым запросом (Р11).
+    expect(created.weeklyOrigin).not.toBeNull();
+    expect(created.weeklyOrigin.weeklyRequestId).toBe(weekly.id);
+    expect(created.weeklyOrigin.weeklyRequestNum).toBe(weekly.num);
+    expect(created.weeklyOrigin.deliveryNeeded).toBe(true);
+    expect(created.weeklyOrigin.deliveryFrom).toBe('г Москва, ул Складская, д 5');
+  }, 60_000);
 
   // ── Предвалидация: негодная строка неделю не роняет ──
 
   describe('предвалидация строк', () => {
-    it(
-      'заказ отменили после сборки — строка пропущена, соседняя применяется',
-      async () => {
-        const objectId = await freshObject();
-        const cancelled = await makeOrder({ objectId, ownership: 'rental' });
-        const alive = await makeOrder({ objectId, ownership: 'rental' });
-        const weekly = await makeWeekly(ctx.admin.auth, {
-          objectId,
-          weekStart: W1,
-          items: [extendItem(cancelled, W1_END), extendItem(alive, W1_END)],
-        });
+    it('заказ отменили после сборки — строка пропущена, соседняя применяется', async () => {
+      const objectId = await freshObject();
+      const cancelled = await makeOrder({ objectId, ownership: 'rental' });
+      const alive = await makeOrder({ objectId, ownership: 'rental' });
+      const weekly = await makeWeekly(ctx.admin.auth, {
+        objectId,
+        weekStart: W1,
+        items: [extendItem(cancelled, W1_END), extendItem(alive, W1_END)],
+      });
 
-        const closed = await inject(
-          'PATCH',
-          `/api/v1/vehicle-requests/${cancelled.id}/status`,
-          ctx.admin.auth,
-          {
-            status: 'cancelled',
-            comment: 'Работы отменены заказчиком',
-            version: cancelled.version,
-          },
-        );
-        expect(closed.statusCode, closed.body).toBe(200);
+      const closed = await inject(
+        'PATCH',
+        `/api/v1/vehicle-requests/${cancelled.id}/status`,
+        ctx.admin.auth,
+        {
+          status: 'cancelled',
+          comment: 'Работы отменены заказчиком',
+          version: cancelled.version,
+        },
+      );
+      expect(closed.statusCode, closed.body).toBe(200);
 
-        const { approval } = await submitAndApprove(weekly);
-        expect(approval.statusCode, approval.body).toBe(200);
-        const apply = approval.json().apply;
-        expect(apply.applied).toBe(1);
-        expect(apply.skipped).toBe(1);
+      const { approval } = await submitAndApprove(weekly);
+      expect(approval.statusCode, approval.body).toBe(200);
+      const apply = approval.json().apply;
+      expect(apply.applied).toBe(1);
+      expect(apply.skipped).toBe(1);
 
-        const items = await itemRows(weekly.id);
-        expect(items[0]!.result).toBe('skipped');
-        expect(items[0]!.skip_reason).toContain('В работе');
-        expect(items[1]!.result).toBe('extended');
-        expect((await orderRow(alive.id)).date_to).toBe(W1_END);
-      },
-      60_000,
-    );
+      const items = await itemRows(weekly.id);
+      expect(items[0]!.result).toBe('skipped');
+      expect(items[0]!.skip_reason).toContain('В работе');
+      expect(items[1]!.result).toBe('extended');
+      expect((await orderRow(alive.id)).date_to).toBe(W1_END);
+    }, 60_000);
 
-    it(
-      'срок изменился после подачи — строка уходит в skipped с обеими датами в причине',
-      async () => {
-        const objectId = await freshObject();
-        const moved = await makeOrder({ objectId, ownership: 'rental' });
-        const alive = await makeOrder({ objectId, ownership: 'rental' });
-        const weekly = await makeWeekly(ctx.admin.auth, {
-          objectId,
-          weekStart: W1,
-          items: [extendItem(moved, W1_END), extendItem(alive, W1_END)],
-        });
+    it('срок изменился после подачи — строка уходит в skipped с обеими датами в причине', async () => {
+      const objectId = await freshObject();
+      const moved = await makeOrder({ objectId, ownership: 'rental' });
+      const alive = await makeOrder({ objectId, ownership: 'rental' });
+      const weekly = await makeWeekly(ctx.admin.auth, {
+        objectId,
+        weekStart: W1,
+        items: [extendItem(moved, W1_END), extendItem(alive, W1_END)],
+      });
 
-        // Заказ продлили обычной правкой между сборкой и визой: решение принималось про другой
-        // срок, и провести его через визу молча нельзя (Р14).
-        const movedTo = shiftDateKey(W1, 2);
-        const patched = await inject(
-          'PATCH',
-          `/api/v1/vehicle-requests/${moved.id}`,
-          ctx.admin.auth,
-          { requestType: 'special_equipment', dateTo: movedTo, version: moved.version },
-        );
-        expect(patched.statusCode, patched.body).toBe(200);
+      // Заказ продлили обычной правкой между сборкой и визой: решение принималось про другой
+      // срок, и провести его через визу молча нельзя (Р14).
+      const movedTo = shiftDateKey(W1, 2);
+      const patched = await inject(
+        'PATCH',
+        `/api/v1/vehicle-requests/${moved.id}`,
+        ctx.admin.auth,
+        { requestType: 'special_equipment', dateTo: movedTo, version: moved.version },
+      );
+      expect(patched.statusCode, patched.body).toBe(200);
 
-        const { approval } = await submitAndApprove(weekly);
-        expect(approval.statusCode, approval.body).toBe(200);
+      const { approval } = await submitAndApprove(weekly);
+      expect(approval.statusCode, approval.body).toBe(200);
 
-        const items = await itemRows(weekly.id);
-        expect(items[0]!.result).toBe('skipped');
-        // Обе даты в причине: площадка пересобирает неделю, зная факт, а не «что-то изменилось».
-        expect(items[0]!.skip_reason).toContain('изменился');
-        expect(items[0]!.skip_reason).toContain(dayMonth(moved.effectiveDateTo));
-        expect(items[0]!.skip_reason).toContain(dayMonth(movedTo));
-        expect(items[1]!.result).toBe('extended');
-      },
-      60_000,
-    );
+      const items = await itemRows(weekly.id);
+      expect(items[0]!.result).toBe('skipped');
+      // Обе даты в причине: площадка пересобирает неделю, зная факт, а не «что-то изменилось».
+      expect(items[0]!.skip_reason).toContain('изменился');
+      expect(items[0]!.skip_reason).toContain(dayMonth(moved.effectiveDateTo));
+      expect(items[0]!.skip_reason).toContain(dayMonth(movedTo));
+      expect(items[1]!.result).toBe('extended');
+    }, 60_000);
 
-    it(
-      'правка, не трогающая срок, строку не выбрасывает — сверяется срок, а не версия',
-      async () => {
-        const objectId = await freshObject();
-        const order = await makeOrder({ objectId, ownership: 'rental' });
-        const weekly = await makeWeekly(ctx.admin.auth, {
-          objectId,
-          weekStart: W1,
-          items: [extendItem(order, W1_END)],
-        });
+    it('правка, не трогающая срок, строку не выбрасывает — сверяется срок, а не версия', async () => {
+      const objectId = await freshObject();
+      const order = await makeOrder({ objectId, ownership: 'rental' });
+      const weekly = await makeWeekly(ctx.admin.auth, {
+        objectId,
+        weekStart: W1,
+        items: [extendItem(order, W1_END)],
+      });
 
-        // Версия заказа растёт от любой правки, включая телефон ответственного; сверка по версии
-        // выбрасывала бы строки по поводам, к решению не относящимся.
-        const patched = await inject(
-          'PATCH',
-          `/api/v1/vehicle-requests/${order.id}`,
-          ctx.admin.auth,
-          {
-            requestType: 'special_equipment',
-            comment: 'Уточнили въезд с северных ворот',
-            responsiblePhone: '+79990000009',
-            version: order.version,
-          },
-        );
-        expect(patched.statusCode, patched.body).toBe(200);
-        expect(patched.json().version).toBe(order.version + 1);
+      // Версия заказа растёт от любой правки, включая телефон ответственного; сверка по версии
+      // выбрасывала бы строки по поводам, к решению не относящимся.
+      const patched = await inject(
+        'PATCH',
+        `/api/v1/vehicle-requests/${order.id}`,
+        ctx.admin.auth,
+        {
+          requestType: 'special_equipment',
+          comment: 'Уточнили въезд с северных ворот',
+          responsiblePhone: '+79990000009',
+          version: order.version,
+        },
+      );
+      expect(patched.statusCode, patched.body).toBe(200);
+      expect(patched.json().version).toBe(order.version + 1);
 
-        const { approval } = await submitAndApprove(weekly);
-        expect(approval.statusCode, approval.body).toBe(200);
-        expect(approval.json().apply.applied).toBe(1);
+      const { approval } = await submitAndApprove(weekly);
+      expect(approval.statusCode, approval.body).toBe(200);
+      expect(approval.json().apply.applied).toBe(1);
 
-        const [item] = await itemRows(weekly.id);
-        expect(item!.result).toBe('extended');
-        // В снимок ушла версия, прочитанная под блокировкой, — та, что была на момент применения.
-        expect(item!.applied_source_version).toBe(order.version + 1);
-      },
-      60_000,
-    );
+      const [item] = await itemRows(weekly.id);
+      expect(item!.result).toBe('extended');
+      // В снимок ушла версия, прочитанная под блокировкой, — та, что была на момент применения.
+      expect(item!.applied_source_version).toBe(order.version + 1);
+    }, 60_000);
 
-    it(
-      'все строки негодны — 422, статус остаётся pending, skipped в строках не сохраняется',
-      async () => {
-        const objectId = await freshObject();
-        const order = await makeOrder({ objectId, ownership: 'rental' });
-        const weekly = await makeWeekly(ctx.admin.auth, {
-          objectId,
-          weekStart: W1,
-          items: [extendItem(order, W1_END)],
-        });
-        const closed = await inject(
-          'PATCH',
-          `/api/v1/vehicle-requests/${order.id}/status`,
-          ctx.admin.auth,
-          { status: 'cancelled', comment: 'Отменено', version: order.version },
-        );
-        expect(closed.statusCode, closed.body).toBe(200);
+    it('все строки негодны — 422, статус остаётся pending, skipped в строках не сохраняется', async () => {
+      const objectId = await freshObject();
+      const order = await makeOrder({ objectId, ownership: 'rental' });
+      const weekly = await makeWeekly(ctx.admin.auth, {
+        objectId,
+        weekStart: W1,
+        items: [extendItem(order, W1_END)],
+      });
+      const closed = await inject(
+        'PATCH',
+        `/api/v1/vehicle-requests/${order.id}/status`,
+        ctx.admin.auth,
+        { status: 'cancelled', comment: 'Отменено', version: order.version },
+      );
+      expect(closed.statusCode, closed.body).toBe(200);
 
-        const submitted = await submitWeekly(ctx.admin.auth, weekly.id, weekly.version);
-        expect(submitted.statusCode, submitted.body).toBe(200);
-        const pending = submitted.json().request as WeeklyDto;
+      const submitted = await submitWeekly(ctx.admin.auth, weekly.id, weekly.version);
+      expect(submitted.statusCode, submitted.body).toBe(200);
+      const pending = submitted.json().request as WeeklyDto;
 
-        const approval = await approveWeekly(ctx.admin.auth, weekly.id, pending.version);
-        expect(approval.statusCode, approval.body).toBe(422);
-        // Причины считаются в памяти и уходят в ответ: документа-основания без единого следствия
-        // не бывает (Р9).
-        expect(approval.json().message).toContain(formatWeeklyRequestNumber(weekly.num));
+      const approval = await approveWeekly(ctx.admin.auth, weekly.id, pending.version);
+      expect(approval.statusCode, approval.body).toBe(422);
+      // Причины считаются в памяти и уходят в ответ: документа-основания без единого следствия
+      // не бывает (Р9).
+      expect(approval.json().message).toContain(formatWeeklyRequestNumber(weekly.num));
 
-        const header = await weeklyRow(weekly.id);
-        expect(header!.status).toBe('pending');
-        expect(header!.approved_by).toBeNull();
-        expect(header!.applied_at).toBeNull();
-        // Транзакция откачена целиком: хранимый результат бывает только у применённой заявки.
-        const [item] = await itemRows(weekly.id);
-        expect(item!.result).toBe('pending');
-        expect(item!.skip_reason).toBe('');
-      },
-      60_000,
-    );
+      const header = await weeklyRow(weekly.id);
+      expect(header!.status).toBe('pending');
+      expect(header!.approved_by).toBeNull();
+      expect(header!.applied_at).toBeNull();
+      // Транзакция откачена целиком: хранимый результат бывает только у применённой заявки.
+      const [item] = await itemRows(weekly.id);
+      expect(item!.result).toBe('pending');
+      expect(item!.skip_reason).toBe('');
+    }, 60_000);
 
-    it(
-      'деактивированный тип ТС в строке «нужна дополнительно» пропускает строку, а не роняет неделю',
-      async () => {
-        const objectId = await freshObject();
-        const type = await makeVehicleType('wk_dead_type');
-        const alive = await makeOrder({ objectId, ownership: 'rental' });
-        const weekly = await makeWeekly(ctx.admin.auth, {
-          objectId,
-          weekStart: W1,
-          items: [
-            newItem({ typeId: type.id, categoryId: null }, W1, W1_END),
-            extendItem(alive, W1_END),
-          ],
-        });
+    it('деактивированный тип ТС в строке «нужна дополнительно» пропускает строку, а не роняет неделю', async () => {
+      const objectId = await freshObject();
+      const type = await makeVehicleType('wk_dead_type');
+      const alive = await makeOrder({ objectId, ownership: 'rental' });
+      const weekly = await makeWeekly(ctx.admin.auth, {
+        objectId,
+        weekStart: W1,
+        items: [
+          newItem({ typeId: type.id, categoryId: null }, W1, W1_END),
+          extendItem(alive, W1_END),
+        ],
+      });
 
-        await ctx.db.execute(sql`UPDATE vehicle_types SET is_active = false WHERE id = ${type.id}`);
+      await ctx.db.execute(sql`UPDATE vehicle_types SET is_active = false WHERE id = ${type.id}`);
 
-        const { approval } = await submitAndApprove(weekly);
-        // Погашенная позиция классификатора неделю не роняет, но и заказ на неё молча не рождает
-        // (Р9).
-        expect(approval.statusCode, approval.body).toBe(200);
-        const items = await itemRows(weekly.id);
-        expect(items[0]!.result).toBe('skipped');
-        expect(items[0]!.skip_reason).toContain('огашен');
-        expect(items[0]!.created_request_id).toBeNull();
-        expect(items[1]!.result).toBe('extended');
-      },
-      60_000,
-    );
+      const { approval } = await submitAndApprove(weekly);
+      // Погашенная позиция классификатора неделю не роняет, но и заказ на неё молча не рождает
+      // (Р9).
+      expect(approval.statusCode, approval.body).toBe(200);
+      const items = await itemRows(weekly.id);
+      expect(items[0]!.result).toBe('skipped');
+      expect(items[0]!.skip_reason).toContain('огашен');
+      expect(items[0]!.created_request_id).toBeNull();
+      expect(items[1]!.result).toBe('extended');
+    }, 60_000);
 
-    it(
-      'деактивированная категория в строке «нужна дополнительно» тоже пропускает строку',
-      async () => {
-        const objectId = await freshObject();
-        const { typeId, categoryId } = await makeTypeWithCategory('wk_dead_cat', 'Под гашение');
-        const alive = await makeOrder({ objectId, ownership: 'rental' });
-        const weekly = await makeWeekly(ctx.admin.auth, {
-          objectId,
-          weekStart: W1,
-          items: [newItem({ typeId, categoryId }, W1, W1_END), extendItem(alive, W1_END)],
-        });
+    it('деактивированная категория в строке «нужна дополнительно» тоже пропускает строку', async () => {
+      const objectId = await freshObject();
+      const { typeId, categoryId } = await makeTypeWithCategory('wk_dead_cat', 'Под гашение');
+      const alive = await makeOrder({ objectId, ownership: 'rental' });
+      const weekly = await makeWeekly(ctx.admin.auth, {
+        objectId,
+        weekStart: W1,
+        items: [newItem({ typeId, categoryId }, W1, W1_END), extendItem(alive, W1_END)],
+      });
 
-        await ctx.db.execute(
-          sql`UPDATE vehicle_categories SET is_active = false WHERE id = ${categoryId}`,
-        );
+      await ctx.db.execute(
+        sql`UPDATE vehicle_categories SET is_active = false WHERE id = ${categoryId}`,
+      );
 
-        const { approval } = await submitAndApprove(weekly);
-        expect(approval.statusCode, approval.body).toBe(200);
-        const items = await itemRows(weekly.id);
-        expect(items[0]!.result).toBe('skipped');
-        expect(items[0]!.skip_reason).toContain('огашен');
-        expect(items[1]!.result).toBe('extended');
-      },
-      60_000,
-    );
+      const { approval } = await submitAndApprove(weekly);
+      expect(approval.statusCode, approval.body).toBe(200);
+      const items = await itemRows(weekly.id);
+      expect(items[0]!.result).toBe('skipped');
+      expect(items[0]!.skip_reason).toContain('огашен');
+      expect(items[1]!.result).toBe('extended');
+    }, 60_000);
   });
 
-  it(
-    'машину переназначили между подачей и визой: снимок берёт новую, расхождение показывается только после применения',
-    async () => {
+  it('машину переназначили между подачей и визой: снимок берёт новую, расхождение показывается только после применения', async () => {
+    const objectId = await freshObject();
+    const [before, after] = ctx.rentalPair;
+    const order = await makeOrder({ objectId, ownership: 'rental', vehicle: before });
+    const weekly = await makeWeekly(ctx.admin.auth, {
+      objectId,
+      weekStart: W1,
+      items: [extendItem(order, W1_END)],
+    });
+    const submitted = await submitWeekly(ctx.admin.auth, weekly.id, weekly.version);
+    expect(submitted.statusCode, submitted.body).toBe(200);
+    const pending = submitted.json().request as WeeklyDto;
+
+    // Замена техники — отдельное решение со своей визой (ADR 0048), и строку недели она не
+    // выбрасывает никогда: сверяется срок, а не машина и не версия.
+    const swapped = await inject(
+      'PATCH',
+      `/api/v1/vehicle-requests/${order.id}/assignment`,
+      ctx.admin.auth,
+      { vehicleId: after.id, pricePerHour: 1500, version: order.version },
+    );
+    expect(swapped.statusCode, swapped.body).toBe(200);
+
+    const approval = await approveWeekly(ctx.admin.auth, weekly.id, pending.version);
+    expect(approval.statusCode, approval.body).toBe(200);
+    // Снимок берётся **при применении**, поэтому переназначение до визы в него просто попадает.
+    const [item] = await itemRows(weekly.id);
+    expect(item!.result).toBe('extended');
+    expect(item!.snapshot_vehicle_id).toBe(after.id);
+
+    const docsUrl = `/api/v1/weekly-vehicle-requests/${weekly.id}/documents`;
+    const quiet = await inject('GET', docsUrl, ctx.admin.auth);
+    expect(quiet.statusCode, quiet.body).toBe(200);
+    expect(quiet.json().rows[0].vehicleChanged).toBe(false);
+
+    // А вот переназначение **после** применения — уже расхождение с согласованным, и чек-лист
+    // обязан его показать.
+    const current = await orderDto(order.id);
+    const swappedBack = await inject(
+      'PATCH',
+      `/api/v1/vehicle-requests/${order.id}/assignment`,
+      ctx.admin.auth,
+      { vehicleId: before.id, pricePerHour: 1500, version: current.version },
+    );
+    expect(swappedBack.statusCode, swappedBack.body).toBe(200);
+    const loud = await inject('GET', docsUrl, ctx.admin.auth);
+    expect(loud.statusCode, loud.body).toBe(200);
+    expect(loud.json().rows[0].vehicleChanged).toBe(true);
+  }, 60_000);
+
+  // ── Назначенный и заявленный вывоз исключают единицу из недели ──
+  //
+  // Правило одно на три источника: вывоз оформлен рейсом-перегоном, отъезд решён другой применённой
+  // неделей, отъезд заявлен и ждёт визы. По такой единице решение уже принято, и второе решение о
+  // той же машине ему противоречило бы. Проверка живёт в `sourceItemBlocker`, поэтому действует и
+  // при сборке, и **на применении**: между подачей и визой проходят часы, и вывоз в эти часы
+  // вполне успевают оформить.
+
+  describe('назначенный и заявленный вывоз', () => {
+    /** Заказ с запасом в два дня: сокращать нечего у срока, кончающегося сегодня. */
+    const earlyEndOrder = (objectId: string) =>
+      makeOrder({ objectId, ownership: 'rental', dateTo: shiftDateKey(TODAY, 2) });
+
+    it('запрос на отъезд, поданный между подачей и визой, выбрасывает строку с причиной', async () => {
       const objectId = await freshObject();
-      const [before, after] = ctx.rentalPair;
-      const order = await makeOrder({ objectId, ownership: 'rental', vehicle: before });
+      const order = await earlyEndOrder(objectId);
+      const weekly = await makeWeekly(ctx.admin.auth, {
+        objectId,
+        weekStart: W1,
+        items: [extendItem(order, W1_END)],
+      });
+      await requestEarlyEnd(order);
+
+      const { approval } = await submitAndApprove(weekly);
+      // Единственная строка негодна — заявка остаётся на визе.
+      expect(approval.statusCode, approval.body).toBe(422);
+      expect(approval.json().message).toContain('досрочный отъезд');
+
+      const [item] = await itemRows(weekly.id);
+      expect(item!.result).toBe('pending');
+      // Чужое решение неделя не отменяет ни молча, ни согласием: запрос остаётся на месте, срок
+      // заказа — прежним. Согласия в составе больше нет вовсе — второго способа снять чужой
+      // запрос у модуля быть не должно.
+      expect(await pendingEarlyEnds(order.id)).toBe(1);
+      expect((await orderRow(order.id)).date_to).toBe(order.effectiveDateTo);
+    }, 60_000);
+
+    it('единицу с нерешённым запросом на отъезд в состав не принимают вовсе', async () => {
+      const objectId = await freshObject();
+      const order = await earlyEndOrder(objectId);
+      await requestEarlyEnd(order);
+
+      const res = await inject('POST', '/api/v1/weekly-vehicle-requests', ctx.admin.auth, {
+        objectId,
+        weekStart: W1,
+        items: [extendItem(order, W1_END)],
+      });
+      // Отказ на сохранении, а не молчаливое включение: решать запрос — отдельное действие со
+      // своей визой (ADR 0044), и неделя его не заменяет.
+      expect(res.statusCode, res.body).toBe(422);
+      expect(res.json().message).toContain('ждёт визы');
+    }, 60_000);
+
+    it('вывоз, оформленный между подачей и визой, выбрасывает строку и называет рейс', async () => {
+      const objectId = await freshObject();
+      const order = await makeOrder({ objectId });
+      const weekly = await makeWeekly(ctx.admin.auth, {
+        objectId,
+        weekStart: W1,
+        items: [extendItem(order, W1_END)],
+      });
+      const routeNum = await insertPickupRoute(order);
+
+      const { approval } = await submitAndApprove(weekly);
+      expect(approval.statusCode, approval.body).toBe(422);
+      // Причина называет рейс: отменяют вывоз им, а не поиском по журналу.
+      expect(approval.json().message).toContain(`Р-${routeNum}`);
+      expect((await orderRow(order.id)).date_to).toBe(order.effectiveDateTo);
+    }, 60_000);
+
+    /**
+     * Тест ради того, зачем «уезжает» вынесено из `leftJoin` в отдельную выборку: применённых
+     * недель с решением об отъезде по одному заказу бывает несколько (машина уехала по одной
+     * неделе, потом заказ продлили обычной правкой и снова отпустили по другой), и join размножил
+     * бы кандидата — то есть строку в предложении и в составе.
+     *
+     * Обе недели заводятся прямым SQL: собрать их через API теперь нельзя вовсе — первая же
+     * применённая закрывает заказ для второй, — но данные такого вида в базе есть, и предложение
+     * обязано их пережить.
+     */
+    it('заказ, уехавший в двух применённых неделях, приходит одной строкой и называет последнюю', async () => {
+      const objectId = await freshObject();
+      const order = await makeOrder({ objectId });
+      const older = await insertAppliedLeave(objectId, order, shiftDateKey(CUR_MON, -14));
+      const newer = await insertAppliedLeave(objectId, order, shiftDateKey(CUR_MON, -7));
+
+      const res = await inject(
+        'GET',
+        `/api/v1/weekly-vehicle-requests/suggestion?objectId=${objectId}&weekStart=${W1}`,
+        ctx.admin.auth,
+      );
+      expect(res.statusCode, res.body).toBe(200);
+      const suggestion = res.json();
+
+      const rows = [...suggestion.extend, ...suggestion.leaving, ...suggestion.beyond].filter(
+        (o: { requestId: string }) => o.requestId === order.id,
+      );
+      expect(rows).toHaveLength(0);
+      const blocked = suggestion.blocked.filter(
+        (b: { requestId: string }) => b.requestId === order.id,
+      );
+      // Ровно одна строка — размножения кандидата не случилось.
+      expect(blocked).toHaveLength(1);
+      // И названа последняя из двух недель: «уезжает по НЗ-19» и «по НЗ-15» — разные сообщения,
+      // и выбор «какой-нибудь» строки давал бы разный текст между двумя одинаковыми запросами.
+      expect(blocked[0].reason).toContain(formatWeeklyRequestNumber(newer));
+      expect(blocked[0].reason).not.toContain(formatWeeklyRequestNumber(older));
+    }, 60_000);
+  });
+
+  /**
+   * История заказа объясняет продление (Р6, §5 шаг 7, §8 шаг 7): срок сдвинула виза под чужим
+   * документом, и без события дата менялась бы будто сама собой. Номер пакета виден и join'ом
+   * (`weeklyExtensions`), но на вопрос «почему у заказа другой срок» отвечает история.
+   */
+  it('история заказа объясняет продление номером недельной заявки', async () => {
+    const objectId = await freshObject();
+    const order = await makeOrder({ objectId, ownership: 'rental' });
+    const weekly = await makeWeekly(ctx.admin.auth, {
+      objectId,
+      weekStart: W1,
+      items: [extendItem(order, W1_END)],
+    });
+    const { approval } = await submitAndApprove(weekly);
+    expect(approval.statusCode, approval.body).toBe(200);
+
+    const history = await inject(
+      'GET',
+      `/api/v1/vehicle-requests/${order.id}/history`,
+      ctx.admin.auth,
+    );
+    expect(history.statusCode, history.body).toBe(200);
+    expect(JSON.stringify(history.json())).toContain(formatWeeklyRequestNumber(weekly.num));
+  }, 60_000);
+
+  // ── Версии, недели и уникальность документа ──
+
+  describe('версии и недели', () => {
+    it('применение с устаревшей версией — 409, а не тихая виза чужого состава', async () => {
+      const objectId = await freshObject();
+      const order = await makeOrder({ objectId, ownership: 'rental' });
       const weekly = await makeWeekly(ctx.admin.auth, {
         objectId,
         weekStart: W1,
@@ -1257,138 +1482,551 @@ describe.skipIf(!DB_URL)('недельная заявка: применение 
       expect(submitted.statusCode, submitted.body).toBe(200);
       const pending = submitted.json().request as WeeklyDto;
 
-      // Замена техники — отдельное решение со своей визой (ADR 0048), и строку недели она не
-      // выбрасывает никогда: сверяется срок, а не машина и не версия.
-      const swapped = await inject(
-        'PATCH',
-        `/api/v1/vehicle-requests/${order.id}/assignment`,
+      // Версия доходит до сервиса, а не остаётся в маршруте: иначе согласовали бы не тот состав,
+      // который видел визирующий (Р6).
+      const stale = await approveWeekly(ctx.admin.auth, weekly.id, pending.version - 1);
+      expect(stale.statusCode, stale.body).toBe(409);
+      expect((await weeklyRow(weekly.id))!.status).toBe('pending');
+      expect((await orderRow(order.id)).date_to).toBe(order.effectiveDateTo);
+
+      const fresh = await approveWeekly(ctx.admin.auth, weekly.id, pending.version);
+      expect(fresh.statusCode, fresh.body).toBe(200);
+    }, 60_000);
+
+    it('недопустимая неделя в теле запроса — 422 от API, а не только от формы', async () => {
+      const objectId = await freshObject();
+      const cases: [string, string][] = [
+        [shiftDateKey(CUR_MON, -7), 'прошедшая неделя'],
+        [CUR_MON, 'текущая неделя'],
+        [W5, 'пятая будущая неделя'],
+        [shiftDateKey(W1, 1), 'вторник вместо понедельника'],
+      ];
+      for (const [weekStart, what] of cases) {
+        const res = await inject('POST', '/api/v1/weekly-vehicle-requests', ctx.admin.auth, {
+          objectId,
+          weekStart,
+          items: [],
+        });
+        expect(res.statusCode, `${what}: ${res.body}`).toBe(422);
+      }
+      // Четвёртая будущая — последняя допустимая: граница проверяется с обеих сторон.
+      const ok = await makeWeekly(ctx.admin.auth, { objectId, weekStart: W4 });
+      expect(ok.status).toBe('draft');
+    }, 60_000);
+
+    it('черновик дожил до своей недели: подача и виза — 422, отмена проходит', async () => {
+      // Заявку на текущую неделю API не заводит вовсе, поэтому состояние «черновик пролежал до
+      // понедельника» воспроизводится вставкой — ради него и существует проверка на подаче.
+      const stale = await insertWeekly('draft');
+      const submitted = await submitWeekly(ctx.admin.auth, stale.id, stale.version);
+      expect(submitted.statusCode, submitted.body).toBe(422);
+      expect((await weeklyRow(stale.id))!.status).toBe('draft');
+
+      // Та же заявка, доживи она до недели уже поданной: виза обязана отказать под блокировкой,
+      // иначе портал продлил бы сроки задним числом относительно собственного правила.
+      const pending = await insertWeekly('pending');
+      const approval = await approveWeekly(ctx.admin.auth, pending.id, pending.version);
+      expect(approval.statusCode, approval.body).toBe(422);
+      expect((await weeklyRow(pending.id))!.status).toBe('pending');
+
+      // Снять с рассмотрения нужно уметь всегда — проверка недели к отмене не применяется (§8).
+      const cancelled = await cancelWeekly(
         ctx.admin.auth,
-        { vehicleId: after.id, pricePerHour: 1500, version: order.version },
+        pending.id,
+        pending.version,
+        'Неделя прошла',
       );
-      expect(swapped.statusCode, swapped.body).toBe(200);
+      expect(cancelled.statusCode, cancelled.body).toBe(200);
+      expect((await weeklyRow(pending.id))!.status).toBe('cancelled');
+    }, 60_000);
 
-      const approval = await approveWeekly(ctx.admin.auth, weekly.id, pending.version);
-      expect(approval.statusCode, approval.body).toBe(200);
-      // Снимок берётся **при применении**, поэтому переназначение до визы в него просто попадает.
-      const [item] = await itemRows(weekly.id);
-      expect(item!.result).toBe('extended');
-      expect(item!.snapshot_vehicle_id).toBe(after.id);
+    it('вторая заявка на ту же пару «объект + неделя» — отказ с номером первой', async () => {
+      const objectId = await freshObject();
+      const first = await makeWeekly(ctx.admin.auth, { objectId, weekStart: W3 });
+      const second = await inject('POST', '/api/v1/weekly-vehicle-requests', ctx.admin.auth, {
+        objectId,
+        weekStart: W3,
+        items: [],
+      });
+      expect(second.statusCode, second.body).toBe(409);
+      // Ответ называет существующую: кнопка открывает её, а не заводит вторую (Р3).
+      expect(second.json().message).toContain(formatWeeklyRequestNumber(first.num));
 
-      const docsUrl = `/api/v1/weekly-vehicle-requests/${weekly.id}/documents`;
-      const quiet = await inject('GET', docsUrl, ctx.admin.auth);
-      expect(quiet.statusCode, quiet.body).toBe(200);
-      expect(quiet.json().rows[0].vehicleChanged).toBe(false);
-
-      // А вот переназначение **после** применения — уже расхождение с согласованным, и чек-лист
-      // обязан его показать.
-      const current = await orderDto(order.id);
-      const swappedBack = await inject(
-        'PATCH',
-        `/api/v1/vehicle-requests/${order.id}/assignment`,
-        ctx.admin.auth,
-        { vehicleId: before.id, pricePerHour: 1500, version: current.version },
-      );
-      expect(swappedBack.statusCode, swappedBack.body).toBe(200);
-      const loud = await inject('GET', docsUrl, ctx.admin.auth);
-      expect(loud.statusCode, loud.body).toBe(200);
-      expect(loud.json().rows[0].vehicleChanged).toBe(true);
-    },
-    60_000,
-  );
-
-  // ── Ожидающий досрочный отъезд (Р15) ──
-
-  describe('ожидающий досрочный отъезд', () => {
-    /** Заказ с запасом в два дня: сокращать нечего у срока, кончающегося сегодня. */
-    const earlyEndOrder = (objectId: string) =>
-      makeOrder({ objectId, ownership: 'rental', dateTo: shiftDateKey(TODAY, 2) });
-
-    it(
-      'без явного согласия строка не применяется, а запрос остаётся на месте',
-      async () => {
-        const objectId = await freshObject();
-        const order = await earlyEndOrder(objectId);
-        const weekly = await makeWeekly(ctx.admin.auth, {
-          objectId,
-          weekStart: W1,
-          items: [extendItem(order, W1_END)],
-        });
-        await requestEarlyEnd(order);
-
-        const { approval } = await submitAndApprove(weekly);
-        // Единственная строка негодна — заявка остаётся на визе.
-        expect(approval.statusCode, approval.body).toBe(422);
-        expect(approval.json().message).toContain('досрочный отъезд');
-
-        const [item] = await itemRows(weekly.id);
-        expect(item!.result).toBe('pending');
-        // Снятие десятка чужих решений оптом — не то, на что подписывался визирующий.
-        expect(await pendingEarlyEnds(order.id)).toBe(1);
-        expect((await orderRow(order.id)).date_to).toBe(order.effectiveDateTo);
-      },
-      60_000,
-    );
-
-    it(
-      'с явным согласием по строке запрос снимается, а срок продлевается',
-      async () => {
-        const objectId = await freshObject();
-        const order = await earlyEndOrder(objectId);
-        const weekly = await makeWeekly(ctx.admin.auth, {
-          objectId,
-          weekStart: W1,
-          items: [extendItem(order, W1_END, true)],
-        });
-        await requestEarlyEnd(order);
-
-        const { approval } = await submitAndApprove(weekly);
-        expect(approval.statusCode, approval.body).toBe(200);
-        expect(approval.json().apply.applied).toBe(1);
-
-        expect(await pendingEarlyEnds(order.id)).toBe(0);
-        expect((await orderRow(order.id)).date_to).toBe(W1_END);
-        const [item] = await itemRows(weekly.id);
-        expect(item!.early_end_override).toBe(true);
-        expect(item!.result).toBe('extended');
-      },
-      60_000,
-    );
-
-    /**
-     * Снятый запрос на отъезд объясняется событием (Р15, ADR 0085 п. 11): обычная правка срока
-     * пишет `vehicle_request.early_end_cancel` давно, и применение недельной заявки не вправе
-     * молчать там, где правка говорит. Иначе руководитель перестаёт видеть запрос в ожидающих
-     * визы, а история заказа об этом не сообщает.
-     */
-    it(
-      'снятый запрос объясняется событием в истории заказа',
-      async () => {
-        const objectId = await freshObject();
-        const order = await earlyEndOrder(objectId);
-        const weekly = await makeWeekly(ctx.admin.auth, {
-          objectId,
-          weekStart: W1,
-          items: [extendItem(order, W1_END, true)],
-        });
-        await requestEarlyEnd(order);
-        const { approval } = await submitAndApprove(weekly);
-        expect(approval.statusCode, approval.body).toBe(200);
-
-        expect(await auditActions(order.id)).toContain('vehicle_request.early_end_cancel');
-      },
-      60_000,
-    );
+      // Снятая заявка место не занимает — частичный UNIQUE её не считает.
+      const dropped = await cancelWeekly(ctx.admin.auth, first.id, first.version);
+      expect(dropped.statusCode, dropped.body).toBe(200);
+      const third = await makeWeekly(ctx.admin.auth, { objectId, weekStart: W3 });
+      expect(third.id).not.toBe(first.id);
+    }, 60_000);
   });
 
-  /**
-   * История заказа объясняет продление (Р6, §5 шаг 7, §8 шаг 7): срок сдвинула виза под чужим
-   * документом, и без события дата менялась бы будто сама собой. Номер пакета виден и join'ом
-   * (`weeklyExtensions`), но на вопрос «почему у заказа другой срок» отвечает история.
-   */
-  it(
-    'история заказа объясняет продление номером недельной заявки',
-    async () => {
+  // ── Две недели на один заказ ──
+
+  it('дальняя неделя применена раньше ближней: ближняя пропускает строку, остальные применяются', async () => {
+    const objectId = await freshObject();
+    // Заказ, кончающийся внутри ближней недели: только такой годится сразу в обе — дальняя
+    // требует конца не раньше своего понедельника минус семь дней.
+    const shared = await makeOrder({
+      objectId,
+      ownership: 'rental',
+      dateTo: shiftDateKey(W1, 5),
+    });
+    const own = await makeOrder({ objectId, ownership: 'rental' });
+
+    const near = await makeWeekly(ctx.admin.auth, {
+      objectId,
+      weekStart: W1,
+      items: [extendItem(shared, W1_END), extendItem(own, W1_END)],
+    });
+    const far = await makeWeekly(ctx.admin.auth, {
+      objectId,
+      weekStart: W2,
+      items: [extendItem(shared, W2_END)],
+    });
+
+    // Запрета на две недели у одного заказа нет намеренно: порядок применения свободен, а
+    // результат определён сроком, а не очередью (§8).
+    const farApplied = await submitAndApprove(far);
+    expect(farApplied.approval.statusCode, farApplied.approval.body).toBe(200);
+    expect((await orderRow(shared.id)).date_to).toBe(W2_END);
+
+    const nearApplied = await submitAndApprove(near);
+    expect(nearApplied.approval.statusCode, nearApplied.approval.body).toBe(200);
+    const items = await itemRows(near.id);
+    expect(items[0]!.result).toBe('skipped');
+    // Причина обязана называть дату, до которой заказ уже продлён: без неё площадка не поймёт,
+    // почему знакомая строка не прошла.
+    expect(items[0]!.skip_reason).toContain(dayMonth(W2_END));
+    expect(items[1]!.result).toBe('extended');
+    expect((await orderRow(own.id)).date_to).toBe(W1_END);
+    // Дальняя неделя не откатилась: срок заказа остался её.
+    expect((await orderRow(shared.id)).date_to).toBe(W2_END);
+  }, 60_000);
+
+  it('заказ, продлённый двумя неделями подряд, показывает обе ссылки в карточке', async () => {
+    const objectId = await freshObject();
+    const order = await makeOrder({ objectId, ownership: 'rental' });
+    const first = await makeWeekly(ctx.admin.auth, {
+      objectId,
+      weekStart: W1,
+      items: [extendItem(order, W1_END)],
+    });
+    const firstApplied = await submitAndApprove(first);
+    expect(firstApplied.approval.statusCode, firstApplied.approval.body).toBe(200);
+
+    // Вторая неделя собирается уже после применения первой: снимок `expected_date_to` берётся
+    // из заказа сейчас, и расхождения не будет.
+    const second = await makeWeekly(ctx.admin.auth, {
+      objectId,
+      weekStart: W2,
+      items: [extendItem(order, W2_END)],
+    });
+    const secondApplied = await submitAndApprove(second);
+    expect(secondApplied.approval.statusCode, secondApplied.approval.body).toBe(200);
+
+    const dto = await orderDto(order.id);
+    // Одно поле «Основание» солгало бы на второй же неделе (Р16): у продлённого заказа основания
+    // нет вовсе, а продлений список.
+    expect(dto.weeklyOrigin).toBeNull();
+    expect(
+      dto.weeklyExtensions.map((e: { weeklyRequestNum: number }) => e.weeklyRequestNum),
+    ).toEqual([first.num, second.num]);
+    expect((await orderRow(order.id)).date_to).toBe(W2_END);
+  }, 60_000);
+
+  // ── Права и область ──
+
+  describe('права и область', () => {
+    it('модуль закрыт коменданту и оператору вывоза', async () => {
+      const denied: [string, Auth][] = [
+        ['комендант', ctx.commandant.auth],
+        ['оператор вывоза', ctx.wasteOperator.auth],
+      ];
+      for (const [who, auth] of denied) {
+        // У обоих нет и чтения заказов ТС: комендант — заказчик только по мусору, оператор вывоза
+        // к технике не относится вовсе. Объяснять им продления нечем, и модуль закрыт правом.
+        const res = await inject('GET', FEED_WEEKLY, auth);
+        expect(res.statusCode, `${who}: ${res.body}`).toBe(403);
+      }
+    });
+
+    it('штаб чужой площадки заявку не видит, штаб своей — видит', async () => {
       const objectId = await freshObject();
+      const weekly = await makeWeekly(ctx.admin.auth, { objectId, weekStart: W2 });
+
+      const foreign = await inject(
+        'GET',
+        `/api/v1/weekly-vehicle-requests/${weekly.id}`,
+        ctx.shtabForeign.auth,
+      );
+      // 404, а не 403: проверка чтения идёт тем же предикатом, что фильтрует список, и о
+      // документе, которого учётка не видит, портал не сообщает даже факта существования.
+      // Внятный отказ «работает только со своими объектами» остался на правке и визе.
+      expect(foreign.statusCode, foreign.body).toBe(404);
+
+      const own = await inject(
+        'GET',
+        `/api/v1/weekly-vehicle-requests/${weekly.id}`,
+        ctx.shtab.auth,
+      );
+      expect(own.statusCode, own.body).toBe(200);
+    }, 60_000);
+
+    it('наблюдатель читает недели всех площадок и не правит ни одной', async () => {
+      const objectId = await freshObject();
+      const weekly = await makeWeekly(ctx.admin.auth, { objectId, weekStart: W2 });
+
+      const list = await inject('GET', FEED_WEEKLY, ctx.observer.auth);
+      expect(list.statusCode, list.body).toBe(200);
+      expect(feedWeeklyIds(list)).toContain(weekly.id);
+
+      const card = await inject(
+        'GET',
+        `/api/v1/weekly-vehicle-requests/${weekly.id}`,
+        ctx.observer.auth,
+      );
+      expect(card.statusCode, card.body).toBe(200);
+      // Сквозной просмотр — это просмотр: ни собрать неделю, ни подать, ни завизировать.
+      const submit = await submitWeekly(ctx.observer.auth, weekly.id, weekly.version);
+      expect(submit.statusCode, submit.body).toBe(403);
+    }, 60_000);
+
+    /**
+     * Отдел видит неделю **своей площадки** (ADR 0062) и только её: собственной объектной оси у
+     * роли нет, а площадка приходит из справочника отдела. Отдел без площадки не видит ни одной —
+     * пустая область означает «ничего», а не «всё».
+     */
+    it('сотрудник отдела видит неделю площадки своего отдела и не видит соседнюю', async () => {
+      const own = await freshObject();
+      const foreign = await freshObject();
+      const digits = String(Date.now()).slice(-6);
+      const dept = await ctx.db.execute<{ id: string }>(sql`
+          INSERT INTO departments (code, name, construction_object_id)
+          VALUES (${`WK-DEP-${digits}`}, ${`Тестовый отдел ${digits}`}, ${own})
+          RETURNING id`);
+      await ctx.db.execute(sql`
+          INSERT INTO user_departments (user_id, department_id)
+          VALUES (${ctx.department.id}, ${dept.rows[0]!.id})
+          ON CONFLICT DO NOTHING`);
+
+      const mine = await makeWeekly(ctx.admin.auth, { objectId: own, weekStart: W2 });
+      const alien = await makeWeekly(ctx.admin.auth, { objectId: foreign, weekStart: W2 });
+
+      const list = await inject('GET', FEED_WEEKLY, ctx.department.auth);
+      expect(list.statusCode, list.body).toBe(200);
+      const ids = feedWeeklyIds(list);
+      expect(ids).toContain(mine.id);
+      expect(ids).not.toContain(alien.id);
+
+      const denied = await inject(
+        'GET',
+        `/api/v1/weekly-vehicle-requests/${alien.id}`,
+        ctx.department.auth,
+      );
+      expect(denied.statusCode, denied.body).toBe(404);
+    }, 90_000);
+
+    /**
+     * Арендодатель — единственный субъект, чья область считается не площадкой, а составом: неделю
+     * ему открывает его же машина. Всё, что показывает чужой состав, обязано сузиться тем же
+     * условием — строки, счётчики и `payload` истории, — иначе документ отдаёт ему парк площадки:
+     * номера чужих заказов, машины конкурентов и их сроки.
+     */
+    it('арендодатель видит неделю со своей машиной, в ней — только свои строки и историю без payload', async () => {
+      const objectId = await freshObject();
+      const mineOrder = await makeOrder({ objectId, ownership: 'rental' });
+      const foreignOrder = await makeOrder({ objectId, ownership: 'rental' });
+      // Машина заказа помечается его контрагентом: роль арендодателя появляется в заявке вместе
+      // с назначением (ADR 0027, 0038), своего поля исполнителя у заявки ТС нет.
+      await ctx.db.execute(sql`
+          UPDATE vehicles SET lessor_id = ${ctx.lessorCounterpartyId}
+          WHERE id = ${mineOrder.vehicleId}`);
+
+      const weekly = await makeWeekly(ctx.admin.auth, {
+        objectId,
+        weekStart: W1,
+        items: [extendItem(mineOrder, W1_END), extendItem(foreignOrder, W1_END)],
+      });
+      const without = await makeWeekly(ctx.admin.auth, {
+        objectId: await freshObject(),
+        weekStart: W1,
+      });
+
+      const list = await inject('GET', FEED_WEEKLY, ctx.lessor.auth);
+      expect(list.statusCode, list.body).toBe(200);
+      const ids = feedWeeklyIds(list);
+      expect(ids).toContain(weekly.id);
+      // Неделя без его техники не видна вовсе — и в списке, и по прямой ссылке.
+      expect(ids).not.toContain(without.id);
+      const alien = await inject(
+        'GET',
+        `/api/v1/weekly-vehicle-requests/${without.id}`,
+        ctx.lessor.auth,
+      );
+      expect(alien.statusCode, alien.body).toBe(404);
+
+      const card = await inject(
+        'GET',
+        `/api/v1/weekly-vehicle-requests/${weekly.id}`,
+        ctx.lessor.auth,
+      );
+      expect(card.statusCode, card.body).toBe(200);
+      const dto = card.json() as WeeklyDto;
+      expect(dto.items).toHaveLength(1);
+      expect(dto.items[0]!.sourceRequestId).toBe(mineOrder.id);
+      // Счётчик считается по видимым строкам: «2 единицы» рядом с одной строкой сказали бы ровно
+      // то, что от него закрыто.
+      expect(dto.counts.extend).toBe(1);
+
+      const history = await inject(
+        'GET',
+        `/api/v1/weekly-vehicle-requests/${weekly.id}/history`,
+        ctx.lessor.auth,
+      );
+      expect(history.statusCode, history.body).toBe(200);
+      const events = history.json() as { event: string; payload: unknown }[];
+      expect(events.length).toBeGreaterThan(0);
+      // `payload` несёт содержание документа отдельно от строк: размер состава у
+      // `items_changed`, номера и сроки всех заказов у `applied`. Сужения строк тут мало.
+      for (const event of events) expect(event.payload, event.event).toBeNull();
+
+      // Полный состав при этом видит тот, кому площадка своя, — сравнение с той же заявкой.
+      const full = await inject(
+        'GET',
+        `/api/v1/weekly-vehicle-requests/${weekly.id}`,
+        ctx.admin.auth,
+      );
+      expect((full.json() as WeeklyDto).items).toHaveLength(2);
+    }, 120_000);
+
+    it('диспетчер и менеджер без объектов видят все площадки', async () => {
+      const first = await freshObject();
+      const second = await freshObject();
+      const onFirst = await makeWeekly(ctx.admin.auth, { objectId: first, weekStart: W3 });
+      const onSecond = await makeWeekly(ctx.admin.auth, { objectId: second, weekStart: W3 });
+
+      for (const [who, auth] of [
+        ['диспетчер', ctx.dispatcher.auth],
+        ['менеджер', ctx.manager.auth],
+      ] as [string, Auth][]) {
+        const res = await inject('GET', FEED_WEEKLY, auth);
+        expect(res.statusCode, `${who}: ${res.body}`).toBe(200);
+        const ids = feedWeeklyIds(res);
+        // Та самая ветка, которую легко потерять: объектов у офисной роли нет, и правило,
+        // выведенное из «есть ли у роли объекты», закрыло бы ей список, а не открыло.
+        expect(ids, who).toContain(onFirst.id);
+        expect(ids, who).toContain(onSecond.id);
+      }
+    }, 60_000);
+
+    it('штаб продлевает заказ недельной заявкой, хотя править работающий заказ ему закрыто', async () => {
+      const objectId = await freshObject();
+      const order = await makeOrder({ objectId, ownership: 'rental' });
+
+      // Прямая правка срока штабу закрыта: `assertObjectRoleEditable` не даёт объектной роли
+      // трогать заказ вне статуса «Новая» — именно это и делало продление невозможным.
+      const direct = await inject('PATCH', `/api/v1/vehicle-requests/${order.id}`, ctx.shtab.auth, {
+        requestType: 'special_equipment',
+        dateTo: W1_END,
+        version: order.version,
+      });
+      expect(direct.statusCode, direct.body).toBe(403);
+
+      const weekly = await makeWeekly(ctx.shtab.auth, {
+        objectId,
+        weekStart: W1,
+        items: [extendItem(order, W1_END)],
+      });
+      // У штаба нет `weeklyRequests.approve`: подача оставляет заявку на визе.
+      const submitted = await submitWeekly(ctx.shtab.auth, weekly.id, weekly.version);
+      expect(submitted.statusCode, submitted.body).toBe(200);
+      const pending = submitted.json().request as WeeklyDto;
+      expect(pending.status).toBe('pending');
+      expect(submitted.json().apply).toBeNull();
+
+      const approval = await approveWeekly(ctx.rukstroy.auth, weekly.id, pending.version);
+      expect(approval.statusCode, approval.body).toBe(200);
+      // Продлевает не тот, кто просил, а виза руководителя строительства — осознанное
+      // исключение (Р7).
+      expect((await orderRow(order.id)).date_to).toBe(W1_END);
+      expect((await weeklyRow(weekly.id))!.approved_by).toBe(ctx.rukstroy.id);
+    }, 60_000);
+
+    it('руководитель строительства своей площадки: подача применяет заявку сразу', async () => {
+      const objectId = await freshObject();
+      const order = await makeOrder({ objectId, ownership: 'rental' });
+      const weekly = await makeWeekly(ctx.rukstroy.auth, {
+        objectId,
+        weekStart: W1,
+        items: [extendItem(order, W1_END)],
+      });
+      const submitted = await submitWeekly(ctx.rukstroy.auth, weekly.id, weekly.version);
+      expect(submitted.statusCode, submitted.body).toBe(200);
+      // Виза применяет заявку той же транзакцией: состояния «завизировано, но сроки прежние» не
+      // бывает (Р6, Р8).
+      expect(submitted.json().request.status).toBe('applied');
+      expect(submitted.json().apply.applied).toBe(1);
+      expect((await orderRow(order.id)).date_to).toBe(W1_END);
+    }, 60_000);
+
+    it('администратор визирует вручную, но автовизы при подаче не получает', async () => {
+      const objectId = await freshObject();
+      const order = await makeOrder({ objectId, ownership: 'rental' });
+      const weekly = await makeWeekly(ctx.admin.auth, {
+        objectId,
+        weekStart: W1,
+        items: [extendItem(order, W1_END)],
+      });
+      const submitted = await submitWeekly(ctx.admin.auth, weekly.id, weekly.version);
+      expect(submitted.statusCode, submitted.body).toBe(200);
+      // Право визы у администратора есть, но действует он не за объект (ADR 0032, Р12).
+      expect(submitted.json().request.status).toBe('pending');
+      expect(submitted.json().apply).toBeNull();
+      expect((await orderRow(order.id)).date_to).toBe(order.effectiveDateTo);
+
+      const approval = await approveWeekly(
+        ctx.admin.auth,
+        weekly.id,
+        submitted.json().request.version,
+      );
+      expect(approval.statusCode, approval.body).toBe(200);
+      expect((await orderRow(order.id)).date_to).toBe(W1_END);
+    }, 60_000);
+
+    it('черновик виден руководителю своей площадки, но в очередь визы не попадает', async () => {
+      const objectId = await freshObject();
+      const before = await inject('GET', FEED_WEEKLY, ctx.rukstroy.auth);
+      expect(before.statusCode, before.body).toBe(200);
+      const pendingBefore = before.json().weeklyPendingCount as number;
+
+      const draft = await makeWeekly(ctx.admin.auth, { objectId, weekStart: W4 });
+      const seen = await inject(
+        'GET',
+        `/api/v1/weekly-vehicle-requests/${draft.id}`,
+        ctx.rukstroy.auth,
+      );
+      expect(seen.statusCode, seen.body).toBe(200);
+
+      const after = await inject('GET', FEED_WEEKLY, ctx.rukstroy.auth);
+      expect(after.statusCode, after.body).toBe(200);
+      // Черновик в ленте есть — руководителю своей площадки он виден.
+      expect(feedWeeklyIds(after)).toContain(draft.id);
+      // Но очередь визы им не выросла: вместо запрета видеть — фильтр счётчика, решать по
+      // черновику пока нечего (§10 ADR 0085).
+      expect(after.json().weeklyPendingCount).toBe(pendingBefore);
+    }, 60_000);
+  });
+
+  // ── Уборка следов при удалении насовсем (Р15) ──
+
+  describe('purge: намерение уступает, факт держит', () => {
+    it('purge заказа снимает строки неприменённой заявки, поднимает версию и пишет item_dropped', async () => {
+      const objectId = await freshObject();
+      const order = await makeOrder({ objectId, ownership: 'rental' });
+      const weekly = await makeWeekly(ctx.admin.auth, {
+        objectId,
+        weekStart: W1,
+        items: [extendItem(order, W1_END)],
+      });
+      const submitted = await submitWeekly(ctx.admin.auth, weekly.id, weekly.version);
+      expect(submitted.statusCode, submitted.body).toBe(200);
+      const pending = submitted.json().request as WeeklyDto;
+
+      const archived = await inject(
+        'DELETE',
+        `/api/v1/vehicle-requests/${order.id}`,
+        ctx.admin.auth,
+      );
+      expect(archived.statusCode, archived.body).toBe(200);
+      const purged = await inject(
+        'DELETE',
+        `/api/v1/vehicle-requests/${order.id}/purge`,
+        ctx.admin.auth,
+      );
+      expect(purged.statusCode, purged.body).toBe(200);
+
+      expect(await itemRows(weekly.id)).toHaveLength(0);
+      const header = await weeklyRow(weekly.id);
+      // Версия здесь не формальность: без неё виза прошла бы по составу, которого уже нет.
+      expect(header!.version).toBe(pending.version + 1);
+      const dropped = (await historyRows(weekly.id)).filter((h) => h.event === 'item_dropped');
+      expect(dropped).toHaveLength(1);
+      expect(dropped[0]!.comment).toContain(order.displayNumber);
+
+      // Состав, открытый до `purge`, при применении получает 409, а не молча визирует
+      // исчезнувшую строку.
+      const stale = await approveWeekly(ctx.admin.auth, weekly.id, pending.version);
+      expect(stale.statusCode, stale.body).toBe(409);
+    }, 60_000);
+
+    it('удаление категории и purge типа ТС снимают строки «нужна дополнительно»', async () => {
+      const objectId = await freshObject();
+      const { typeId, categoryId } = await makeTypeWithCategory('wk_purge_cat', 'Под снос');
+      const weekly = await makeWeekly(ctx.admin.auth, {
+        objectId,
+        weekStart: W1,
+        items: [newItem({ typeId, categoryId }, W1, W1_END)],
+      });
+
+      // Категория сносится обычным удалением справочника: уборка сидит внутри его транзакции.
+      const catRes = await inject(
+        'DELETE',
+        `/api/v1/vehicle-categories/${categoryId}`,
+        ctx.admin.auth,
+      );
+      expect(catRes.statusCode, catRes.body).toBe(200);
+      expect(await itemRows(weekly.id)).toHaveLength(0);
+      const droppedCat = (await historyRows(weekly.id)).filter((h) => h.event === 'item_dropped');
+      expect(droppedCat).toHaveLength(1);
+      expect(droppedCat[0]!.comment).toContain('атегория');
+      expect((await weeklyRow(weekly.id))!.version).toBe(weekly.version + 1);
+
+      // Тип сносится своим `purge` и только погашенным.
+      const typeOnly = await makeVehicleType('wk_purge_type');
+      const weekly2 = await makeWeekly(ctx.admin.auth, {
+        objectId,
+        weekStart: W2,
+        items: [newItem({ typeId: typeOnly.id, categoryId: null }, W2, W2_END)],
+      });
+      await ctx.db.execute(
+        sql`UPDATE vehicle_types SET is_active = false WHERE id = ${typeOnly.id}`,
+      );
+      const typeRes = await inject(
+        'DELETE',
+        `/api/v1/vehicle-types/${typeOnly.id}/purge`,
+        ctx.admin.auth,
+      );
+      expect(typeRes.statusCode, typeRes.body).toBe(200);
+      expect(await itemRows(weekly2.id)).toHaveLength(0);
+      expect(
+        (await historyRows(weekly2.id)).filter((h) => h.event === 'item_dropped'),
+      ).toHaveLength(1);
+      expect((await weeklyRow(weekly2.id))!.version).toBe(weekly2.version + 1);
+    }, 60_000);
+
+    it('purge площадки сносит неприменённые заявки целиком — открытая страница получает 404', async () => {
+      // Без привязки учёток: `purge` объекта отказывает, пока на нём висит хоть одна.
+      const objectId = await freshObject('WK-PURGE', false);
+      const weekly = await makeWeekly(ctx.admin.auth, { objectId, weekStart: W1, items: [] });
+      await ctx.db.execute(
+        sql`UPDATE construction_objects SET is_active = false WHERE id = ${objectId}`,
+      );
+
+      const purged = await inject('DELETE', `/api/v1/objects/${objectId}/purge`, ctx.admin.auth);
+      expect(purged.statusCode, purged.body).toBe(200);
+
+      // Не «строки сняты», а документа больше нет: заявка на снесённую площадку — документ ни о
+      // чём, и клиенту здесь положен 404, а не 409.
+      const gone = await inject(
+        'GET',
+        `/api/v1/weekly-vehicle-requests/${weekly.id}`,
+        ctx.admin.auth,
+      );
+      expect(gone.statusCode, gone.body).toBe(404);
+    }, 60_000);
+
+    it('применённая заявка держит и заказ, и площадку: отказ называет того, кто ссылается', async () => {
+      const objectId = await freshObject('WK-HELD', false);
       const order = await makeOrder({ objectId, ownership: 'rental' });
       const weekly = await makeWeekly(ctx.admin.auth, {
         objectId,
@@ -1398,613 +2036,94 @@ describe.skipIf(!DB_URL)('недельная заявка: применение 
       const { approval } = await submitAndApprove(weekly);
       expect(approval.statusCode, approval.body).toBe(200);
 
-      const history = await inject(
-        'GET',
-        `/api/v1/vehicle-requests/${order.id}/history`,
+      const archived = await inject(
+        'DELETE',
+        `/api/v1/vehicle-requests/${order.id}`,
         ctx.admin.auth,
       );
-      expect(history.statusCode, history.body).toBe(200);
-      expect(JSON.stringify(history.json())).toContain(formatWeeklyRequestNumber(weekly.num));
-    },
-    60_000,
-  );
+      expect(archived.statusCode, archived.body).toBe(200);
+      const purged = await inject(
+        'DELETE',
+        `/api/v1/vehicle-requests/${order.id}/purge`,
+        ctx.admin.auth,
+      );
+      expect(purged.statusCode, purged.body).toBe(409);
+      expect(purged.json().message).toContain('применённых недельных заявок');
+      // Строка на месте: факт, объясняющий, откуда взялось продление, не затирается.
+      expect(await itemRows(weekly.id)).toHaveLength(1);
 
-  // ── Версии, недели и уникальность документа ──
+      await ctx.db.execute(
+        sql`UPDATE construction_objects SET is_active = false WHERE id = ${objectId}`,
+      );
+      const objectPurge = await inject(
+        'DELETE',
+        `/api/v1/objects/${objectId}/purge`,
+        ctx.admin.auth,
+      );
+      expect(objectPurge.statusCode, objectPurge.body).toBe(409);
+      expect((await weeklyRow(weekly.id))!.status).toBe('applied');
+    }, 60_000);
 
-  describe('версии и недели', () => {
-    it(
-      'применение с устаревшей версией — 409, а не тихая виза чужого состава',
-      async () => {
-        const objectId = await freshObject();
-        const order = await makeOrder({ objectId, ownership: 'rental' });
-        const weekly = await makeWeekly(ctx.admin.auth, {
-          objectId,
-          weekStart: W1,
-          items: [extendItem(order, W1_END)],
-        });
-        const submitted = await submitWeekly(ctx.admin.auth, weekly.id, weekly.version);
-        expect(submitted.statusCode, submitted.body).toBe(200);
-        const pending = submitted.json().request as WeeklyDto;
-
-        // Версия доходит до сервиса, а не остаётся в маршруте: иначе согласовали бы не тот состав,
-        // который видел визирующий (Р6).
-        const stale = await approveWeekly(ctx.admin.auth, weekly.id, pending.version - 1);
-        expect(stale.statusCode, stale.body).toBe(409);
-        expect((await weeklyRow(weekly.id))!.status).toBe('pending');
-        expect((await orderRow(order.id)).date_to).toBe(order.effectiveDateTo);
-
-        const fresh = await approveWeekly(ctx.admin.auth, weekly.id, pending.version);
-        expect(fresh.statusCode, fresh.body).toBe(200);
-      },
-      60_000,
-    );
-
-    it(
-      'недопустимая неделя в теле запроса — 422 от API, а не только от формы',
-      async () => {
-        const objectId = await freshObject();
-        const cases: [string, string][] = [
-          [shiftDateKey(CUR_MON, -7), 'прошедшая неделя'],
-          [CUR_MON, 'текущая неделя'],
-          [W5, 'пятая будущая неделя'],
-          [shiftDateKey(W1, 1), 'вторник вместо понедельника'],
-        ];
-        for (const [weekStart, what] of cases) {
-          const res = await inject('POST', '/api/v1/weekly-vehicle-requests', ctx.admin.auth, {
-            objectId,
-            weekStart,
-            items: [],
-          });
-          expect(res.statusCode, `${what}: ${res.body}`).toBe(422);
-        }
-        // Четвёртая будущая — последняя допустимая: граница проверяется с обеих сторон.
-        const ok = await makeWeekly(ctx.admin.auth, { objectId, weekStart: W4 });
-        expect(ok.status).toBe('draft');
-      },
-      60_000,
-    );
-
-    it(
-      'черновик дожил до своей недели: подача и виза — 422, отмена проходит',
-      async () => {
-        // Заявку на текущую неделю API не заводит вовсе, поэтому состояние «черновик пролежал до
-        // понедельника» воспроизводится вставкой — ради него и существует проверка на подаче.
-        const stale = await insertWeekly('draft');
-        const submitted = await submitWeekly(ctx.admin.auth, stale.id, stale.version);
-        expect(submitted.statusCode, submitted.body).toBe(422);
-        expect((await weeklyRow(stale.id))!.status).toBe('draft');
-
-        // Та же заявка, доживи она до недели уже поданной: виза обязана отказать под блокировкой,
-        // иначе портал продлил бы сроки задним числом относительно собственного правила.
-        const pending = await insertWeekly('pending');
-        const approval = await approveWeekly(ctx.admin.auth, pending.id, pending.version);
-        expect(approval.statusCode, approval.body).toBe(422);
-        expect((await weeklyRow(pending.id))!.status).toBe('pending');
-
-        // Снять с рассмотрения нужно уметь всегда — проверка недели к отмене не применяется (§8).
-        const cancelled = await cancelWeekly(
-          ctx.admin.auth,
-          pending.id,
-          pending.version,
-          'Неделя прошла',
-        );
-        expect(cancelled.statusCode, cancelled.body).toBe(200);
-        expect((await weeklyRow(pending.id))!.status).toBe('cancelled');
-      },
-      60_000,
-    );
-
-    it(
-      'вторая заявка на ту же пару «объект + неделя» — отказ с номером первой',
-      async () => {
-        const objectId = await freshObject();
-        const first = await makeWeekly(ctx.admin.auth, { objectId, weekStart: W3 });
-        const second = await inject('POST', '/api/v1/weekly-vehicle-requests', ctx.admin.auth, {
-          objectId,
-          weekStart: W3,
-          items: [],
-        });
-        expect(second.statusCode, second.body).toBe(409);
-        // Ответ называет существующую: кнопка открывает её, а не заводит вторую (Р3).
-        expect(second.json().message).toContain(formatWeeklyRequestNumber(first.num));
-
-        // Снятая заявка место не занимает — частичный UNIQUE её не считает.
-        const dropped = await cancelWeekly(ctx.admin.auth, first.id, first.version);
-        expect(dropped.statusCode, dropped.body).toBe(200);
-        const third = await makeWeekly(ctx.admin.auth, { objectId, weekStart: W3 });
-        expect(third.id).not.toBe(first.id);
-      },
-      60_000,
-    );
-  });
-
-  // ── Две недели на один заказ ──
-
-  it(
-    'дальняя неделя применена раньше ближней: ближняя пропускает строку, остальные применяются',
-    async () => {
-      const objectId = await freshObject();
-      // Заказ, кончающийся внутри ближней недели: только такой годится сразу в обе — дальняя
-      // требует конца не раньше своего понедельника минус семь дней.
-      const shared = await makeOrder({
-        objectId,
-        ownership: 'rental',
-        dateTo: shiftDateKey(W1, 5),
-      });
-      const own = await makeOrder({ objectId, ownership: 'rental' });
-
-      const near = await makeWeekly(ctx.admin.auth, {
-        objectId,
-        weekStart: W1,
-        items: [extendItem(shared, W1_END), extendItem(own, W1_END)],
-      });
-      const far = await makeWeekly(ctx.admin.auth, {
-        objectId,
-        weekStart: W2,
-        items: [extendItem(shared, W2_END)],
-      });
-
-      // Запрета на две недели у одного заказа нет намеренно: порядок применения свободен, а
-      // результат определён сроком, а не очередью (§8).
-      const farApplied = await submitAndApprove(far);
-      expect(farApplied.approval.statusCode, farApplied.approval.body).toBe(200);
-      expect((await orderRow(shared.id)).date_to).toBe(W2_END);
-
-      const nearApplied = await submitAndApprove(near);
-      expect(nearApplied.approval.statusCode, nearApplied.approval.body).toBe(200);
-      const items = await itemRows(near.id);
-      expect(items[0]!.result).toBe('skipped');
-      // Причина обязана называть дату, до которой заказ уже продлён: без неё площадка не поймёт,
-      // почему знакомая строка не прошла.
-      expect(items[0]!.skip_reason).toContain(dayMonth(W2_END));
-      expect(items[1]!.result).toBe('extended');
-      expect((await orderRow(own.id)).date_to).toBe(W1_END);
-      // Дальняя неделя не откатилась: срок заказа остался её.
-      expect((await orderRow(shared.id)).date_to).toBe(W2_END);
-    },
-    60_000,
-  );
-
-  it(
-    'заказ, продлённый двумя неделями подряд, показывает обе ссылки в карточке',
-    async () => {
+    it('заявка стала applied, пока purge ждал блокировку: строки не снимаются, приходит отказ', async () => {
       const objectId = await freshObject();
       const order = await makeOrder({ objectId, ownership: 'rental' });
-      const first = await makeWeekly(ctx.admin.auth, {
+      const weekly = await makeWeekly(ctx.admin.auth, {
         objectId,
         weekStart: W1,
         items: [extendItem(order, W1_END)],
       });
-      const firstApplied = await submitAndApprove(first);
-      expect(firstApplied.approval.statusCode, firstApplied.approval.body).toBe(200);
+      const archived = await inject(
+        'DELETE',
+        `/api/v1/vehicle-requests/${order.id}`,
+        ctx.admin.auth,
+      );
+      expect(archived.statusCode, archived.body).toBe(200);
 
-      // Вторая неделя собирается уже после применения первой: снимок `expected_date_to` берётся
-      // из заказа сейчас, и расхождения не будет.
-      const second = await makeWeekly(ctx.admin.auth, {
-        objectId,
-        weekStart: W2,
-        items: [extendItem(order, W2_END)],
-      });
-      const secondApplied = await submitAndApprove(second);
-      expect(secondApplied.approval.statusCode, secondApplied.approval.body).toBe(200);
-
-      const dto = await orderDto(order.id);
-      // Одно поле «Основание» солгало бы на второй же неделе (Р16): у продлённого заказа основания
-      // нет вовсе, а продлений список.
-      expect(dto.weeklyOrigin).toBeNull();
-      expect(
-        dto.weeklyExtensions.map((e: { weeklyRequestNum: number }) => e.weeklyRequestNum),
-      ).toEqual([first.num, second.num]);
-      expect((await orderRow(order.id)).date_to).toBe(W2_END);
-    },
-    60_000,
-  );
-
-  // ── Права и область ──
-
-  describe('права и область', () => {
-    it('модуль закрыт наблюдателю, отделу, коменданту, оператору и арендодателю', async () => {
-      const denied: [string, Auth][] = [
-        ['наблюдатель', ctx.observer.auth],
-        ['отдел', ctx.department.auth],
-        ['комендант', ctx.commandant.auth],
-        ['оператор вывоза', ctx.wasteOperator.auth],
-        ['арендодатель', ctx.lessor.auth],
-      ];
-      for (const [who, auth] of denied) {
-        const res = await inject('GET', '/api/v1/weekly-vehicle-requests', auth);
-        // Права `weeklyRequests.read` у них нет вовсе: наблюдатель, задуманный как «только
-        // просмотр», не должен получить недельные планы всех площадок (Р12).
-        expect(res.statusCode, `${who}: ${res.body}`).toBe(403);
-      }
-    });
-
-    it(
-      'штаб чужой площадки заявку не видит, штаб своей — видит',
-      async () => {
-        const objectId = await freshObject();
-        const weekly = await makeWeekly(ctx.admin.auth, { objectId, weekStart: W2 });
-
-        const foreign = await inject(
-          'GET',
-          `/api/v1/weekly-vehicle-requests/${weekly.id}`,
-          ctx.shtabForeign.auth,
-        );
-        expect(foreign.statusCode, foreign.body).toBe(403);
-
-        const own = await inject(
-          'GET',
-          `/api/v1/weekly-vehicle-requests/${weekly.id}`,
-          ctx.shtab.auth,
-        );
-        expect(own.statusCode, own.body).toBe(200);
-      },
-      60_000,
-    );
-
-    it(
-      'диспетчер и менеджер без объектов видят все площадки',
-      async () => {
-        const first = await freshObject();
-        const second = await freshObject();
-        const onFirst = await makeWeekly(ctx.admin.auth, { objectId: first, weekStart: W3 });
-        const onSecond = await makeWeekly(ctx.admin.auth, { objectId: second, weekStart: W3 });
-
-        for (const [who, auth] of [
-          ['диспетчер', ctx.dispatcher.auth],
-          ['менеджер', ctx.manager.auth],
-        ] as [string, Auth][]) {
-          const res = await inject('GET', '/api/v1/weekly-vehicle-requests?pageSize=200', auth);
-          expect(res.statusCode, `${who}: ${res.body}`).toBe(200);
-          const ids = res.json().items.map((i: { id: string }) => i.id);
-          // Та самая ветка, которую легко потерять: объектов у офисной роли нет, и правило,
-          // выведенное из «есть ли у роли объекты», закрыло бы ей список, а не открыло.
-          expect(ids, who).toContain(onFirst.id);
-          expect(ids, who).toContain(onSecond.id);
-        }
-      },
-      60_000,
-    );
-
-    it(
-      'штаб продлевает заказ недельной заявкой, хотя править работающий заказ ему закрыто',
-      async () => {
-        const objectId = await freshObject();
-        const order = await makeOrder({ objectId, ownership: 'rental' });
-
-        // Прямая правка срока штабу закрыта: `assertObjectRoleEditable` не даёт объектной роли
-        // трогать заказ вне статуса «Новая» — именно это и делало продление невозможным.
-        const direct = await inject(
-          'PATCH',
-          `/api/v1/vehicle-requests/${order.id}`,
-          ctx.shtab.auth,
-          { requestType: 'special_equipment', dateTo: W1_END, version: order.version },
-        );
-        expect(direct.statusCode, direct.body).toBe(403);
-
-        const weekly = await makeWeekly(ctx.shtab.auth, {
-          objectId,
-          weekStart: W1,
-          items: [extendItem(order, W1_END)],
-        });
-        // У штаба нет `weeklyRequests.approve`: подача оставляет заявку на визе.
-        const submitted = await submitWeekly(ctx.shtab.auth, weekly.id, weekly.version);
-        expect(submitted.statusCode, submitted.body).toBe(200);
-        const pending = submitted.json().request as WeeklyDto;
-        expect(pending.status).toBe('pending');
-        expect(submitted.json().apply).toBeNull();
-
-        const approval = await approveWeekly(ctx.rukstroy.auth, weekly.id, pending.version);
-        expect(approval.statusCode, approval.body).toBe(200);
-        // Продлевает не тот, кто просил, а виза руководителя строительства — осознанное
-        // исключение (Р7).
-        expect((await orderRow(order.id)).date_to).toBe(W1_END);
-        expect((await weeklyRow(weekly.id))!.approved_by).toBe(ctx.rukstroy.id);
-      },
-      60_000,
-    );
-
-    it(
-      'руководитель строительства своей площадки: подача применяет заявку сразу',
-      async () => {
-        const objectId = await freshObject();
-        const order = await makeOrder({ objectId, ownership: 'rental' });
-        const weekly = await makeWeekly(ctx.rukstroy.auth, {
-          objectId,
-          weekStart: W1,
-          items: [extendItem(order, W1_END)],
-        });
-        const submitted = await submitWeekly(ctx.rukstroy.auth, weekly.id, weekly.version);
-        expect(submitted.statusCode, submitted.body).toBe(200);
-        // Виза применяет заявку той же транзакцией: состояния «завизировано, но сроки прежние» не
-        // бывает (Р6, Р8).
-        expect(submitted.json().request.status).toBe('applied');
-        expect(submitted.json().apply.applied).toBe(1);
-        expect((await orderRow(order.id)).date_to).toBe(W1_END);
-      },
-      60_000,
-    );
-
-    it(
-      'администратор визирует вручную, но автовизы при подаче не получает',
-      async () => {
-        const objectId = await freshObject();
-        const order = await makeOrder({ objectId, ownership: 'rental' });
-        const weekly = await makeWeekly(ctx.admin.auth, {
-          objectId,
-          weekStart: W1,
-          items: [extendItem(order, W1_END)],
-        });
-        const submitted = await submitWeekly(ctx.admin.auth, weekly.id, weekly.version);
-        expect(submitted.statusCode, submitted.body).toBe(200);
-        // Право визы у администратора есть, но действует он не за объект (ADR 0032, Р12).
-        expect(submitted.json().request.status).toBe('pending');
-        expect(submitted.json().apply).toBeNull();
-        expect((await orderRow(order.id)).date_to).toBe(order.effectiveDateTo);
-
-        const approval = await approveWeekly(
-          ctx.admin.auth,
+      // Соседняя сессия держит шапку `FOR UPDATE` — ровно так её берёт применение. `purge`
+      // встаёт на этой блокировке и обязан перечитать статус после неё, а не работать по
+      // снимку, снятому до ожидания.
+      const holder = new pg.Client({ connectionString: DB_URL! });
+      await holder.connect();
+      let purgeRes: Awaited<ReturnType<typeof inject>>;
+      try {
+        await holder.query('BEGIN');
+        await holder.query('SELECT id FROM weekly_vehicle_requests WHERE id = $1 FOR UPDATE', [
           weekly.id,
-          submitted.json().request.version,
-        );
-        expect(approval.statusCode, approval.body).toBe(200);
-        expect((await orderRow(order.id)).date_to).toBe(W1_END);
-      },
-      60_000,
-    );
-
-    it(
-      'черновик виден руководителю своей площадки, но в очередь визы не попадает',
-      async () => {
-        const objectId = await freshObject();
-        const draft = await makeWeekly(ctx.admin.auth, { objectId, weekStart: W4 });
-        const seen = await inject(
-          'GET',
-          `/api/v1/weekly-vehicle-requests/${draft.id}`,
-          ctx.rukstroy.auth,
-        );
-        expect(seen.statusCode, seen.body).toBe(200);
-
-        const list = await inject(
-          'GET',
-          '/api/v1/weekly-vehicle-requests?status=pending&pageSize=200',
-          ctx.rukstroy.auth,
-        );
-        expect(list.statusCode, list.body).toBe(200);
-        // Вместо запрета — фильтр очереди: решать по черновику пока нечего (§10).
-        expect(list.json().items.map((i: { id: string }) => i.id)).not.toContain(draft.id);
-      },
-      60_000,
-    );
-  });
-
-  // ── Уборка следов при удалении насовсем (Р15) ──
-
-  describe('purge: намерение уступает, факт держит', () => {
-    it(
-      'purge заказа снимает строки неприменённой заявки, поднимает версию и пишет item_dropped',
-      async () => {
-        const objectId = await freshObject();
-        const order = await makeOrder({ objectId, ownership: 'rental' });
-        const weekly = await makeWeekly(ctx.admin.auth, {
-          objectId,
-          weekStart: W1,
-          items: [extendItem(order, W1_END)],
-        });
-        const submitted = await submitWeekly(ctx.admin.auth, weekly.id, weekly.version);
-        expect(submitted.statusCode, submitted.body).toBe(200);
-        const pending = submitted.json().request as WeeklyDto;
-
-        const archived = await inject(
-          'DELETE',
-          `/api/v1/vehicle-requests/${order.id}`,
-          ctx.admin.auth,
-        );
-        expect(archived.statusCode, archived.body).toBe(200);
-        const purged = await inject(
+        ]);
+        const pending = inject(
           'DELETE',
           `/api/v1/vehicle-requests/${order.id}/purge`,
           ctx.admin.auth,
         );
-        expect(purged.statusCode, purged.body).toBe(200);
-
-        expect(await itemRows(weekly.id)).toHaveLength(0);
-        const header = await weeklyRow(weekly.id);
-        // Версия здесь не формальность: без неё виза прошла бы по составу, которого уже нет.
-        expect(header!.version).toBe(pending.version + 1);
-        const dropped = (await historyRows(weekly.id)).filter((h) => h.event === 'item_dropped');
-        expect(dropped).toHaveLength(1);
-        expect(dropped[0]!.comment).toContain(order.displayNumber);
-
-        // Состав, открытый до `purge`, при применении получает 409, а не молча визирует
-        // исчезнувшую строку.
-        const stale = await approveWeekly(ctx.admin.auth, weekly.id, pending.version);
-        expect(stale.statusCode, stale.body).toBe(409);
-      },
-      60_000,
-    );
-
-    it(
-      'удаление категории и purge типа ТС снимают строки «нужна дополнительно»',
-      async () => {
-        const objectId = await freshObject();
-        const { typeId, categoryId } = await makeTypeWithCategory('wk_purge_cat', 'Под снос');
-        const weekly = await makeWeekly(ctx.admin.auth, {
-          objectId,
-          weekStart: W1,
-          items: [newItem({ typeId, categoryId }, W1, W1_END)],
-        });
-
-        // Категория сносится обычным удалением справочника: уборка сидит внутри его транзакции.
-        const catRes = await inject(
-          'DELETE',
-          `/api/v1/vehicle-categories/${categoryId}`,
-          ctx.admin.auth,
-        );
-        expect(catRes.statusCode, catRes.body).toBe(200);
-        expect(await itemRows(weekly.id)).toHaveLength(0);
-        const droppedCat = (await historyRows(weekly.id)).filter((h) => h.event === 'item_dropped');
-        expect(droppedCat).toHaveLength(1);
-        expect(droppedCat[0]!.comment).toContain('атегория');
-        expect((await weeklyRow(weekly.id))!.version).toBe(weekly.version + 1);
-
-        // Тип сносится своим `purge` и только погашенным.
-        const typeOnly = await makeVehicleType('wk_purge_type');
-        const weekly2 = await makeWeekly(ctx.admin.auth, {
-          objectId,
-          weekStart: W2,
-          items: [newItem({ typeId: typeOnly.id, categoryId: null }, W2, W2_END)],
-        });
-        await ctx.db.execute(
-          sql`UPDATE vehicle_types SET is_active = false WHERE id = ${typeOnly.id}`,
-        );
-        const typeRes = await inject(
-          'DELETE',
-          `/api/v1/vehicle-types/${typeOnly.id}/purge`,
-          ctx.admin.auth,
-        );
-        expect(typeRes.statusCode, typeRes.body).toBe(200);
-        expect(await itemRows(weekly2.id)).toHaveLength(0);
-        expect(
-          (await historyRows(weekly2.id)).filter((h) => h.event === 'item_dropped'),
-        ).toHaveLength(1);
-        expect((await weeklyRow(weekly2.id))!.version).toBe(weekly2.version + 1);
-      },
-      60_000,
-    );
-
-    it(
-      'purge площадки сносит неприменённые заявки целиком — открытая страница получает 404',
-      async () => {
-        // Без привязки учёток: `purge` объекта отказывает, пока на нём висит хоть одна.
-        const objectId = await freshObject('WK-PURGE', false);
-        const weekly = await makeWeekly(ctx.admin.auth, { objectId, weekStart: W1, items: [] });
-        await ctx.db.execute(
-          sql`UPDATE construction_objects SET is_active = false WHERE id = ${objectId}`,
-        );
-
-        const purged = await inject('DELETE', `/api/v1/objects/${objectId}/purge`, ctx.admin.auth);
-        expect(purged.statusCode, purged.body).toBe(200);
-
-        // Не «строки сняты», а документа больше нет: заявка на снесённую площадку — документ ни о
-        // чём, и клиенту здесь положен 404, а не 409.
-        const gone = await inject(
-          'GET',
-          `/api/v1/weekly-vehicle-requests/${weekly.id}`,
-          ctx.admin.auth,
-        );
-        expect(gone.statusCode, gone.body).toBe(404);
-      },
-      60_000,
-    );
-
-    it(
-      'применённая заявка держит и заказ, и площадку: отказ называет того, кто ссылается',
-      async () => {
-        const objectId = await freshObject('WK-HELD', false);
-        const order = await makeOrder({ objectId, ownership: 'rental' });
-        const weekly = await makeWeekly(ctx.admin.auth, {
-          objectId,
-          weekStart: W1,
-          items: [extendItem(order, W1_END)],
-        });
-        const { approval } = await submitAndApprove(weekly);
-        expect(approval.statusCode, approval.body).toBe(200);
-
-        const archived = await inject(
-          'DELETE',
-          `/api/v1/vehicle-requests/${order.id}`,
-          ctx.admin.auth,
-        );
-        expect(archived.statusCode, archived.body).toBe(200);
-        const purged = await inject(
-          'DELETE',
-          `/api/v1/vehicle-requests/${order.id}/purge`,
-          ctx.admin.auth,
-        );
-        expect(purged.statusCode, purged.body).toBe(409);
-        expect(purged.json().message).toContain('применённых недельных заявок');
-        // Строка на месте: факт, объясняющий, откуда взялось продление, не затирается.
-        expect(await itemRows(weekly.id)).toHaveLength(1);
-
-        await ctx.db.execute(
-          sql`UPDATE construction_objects SET is_active = false WHERE id = ${objectId}`,
-        );
-        const objectPurge = await inject(
-          'DELETE',
-          `/api/v1/objects/${objectId}/purge`,
-          ctx.admin.auth,
-        );
-        expect(objectPurge.statusCode, objectPurge.body).toBe(409);
-        expect((await weeklyRow(weekly.id))!.status).toBe('applied');
-      },
-      60_000,
-    );
-
-    it(
-      'заявка стала applied, пока purge ждал блокировку: строки не снимаются, приходит отказ',
-      async () => {
-        const objectId = await freshObject();
-        const order = await makeOrder({ objectId, ownership: 'rental' });
-        const weekly = await makeWeekly(ctx.admin.auth, {
-          objectId,
-          weekStart: W1,
-          items: [extendItem(order, W1_END)],
-        });
-        const archived = await inject(
-          'DELETE',
-          `/api/v1/vehicle-requests/${order.id}`,
-          ctx.admin.auth,
-        );
-        expect(archived.statusCode, archived.body).toBe(200);
-
-        // Соседняя сессия держит шапку `FOR UPDATE` — ровно так её берёт применение. `purge`
-        // встаёт на этой блокировке и обязан перечитать статус после неё, а не работать по
-        // снимку, снятому до ожидания.
-        const holder = new pg.Client({ connectionString: DB_URL! });
-        await holder.connect();
-        let purgeRes: Awaited<ReturnType<typeof inject>>;
-        try {
-          await holder.query('BEGIN');
-          await holder.query('SELECT id FROM weekly_vehicle_requests WHERE id = $1 FOR UPDATE', [
-            weekly.id,
-          ]);
-          const pending = inject(
-            'DELETE',
-            `/api/v1/vehicle-requests/${order.id}/purge`,
-            ctx.admin.auth,
-          );
-          await sleep(500);
-          await holder.query(
-            `UPDATE weekly_vehicle_request_items
+        await sleep(500);
+        await holder.query(
+          `UPDATE weekly_vehicle_request_items
              SET result = 'extended', previous_date_to = current_date,
                  applied_source_version = 1, snapshot_vehicle_id = $2
              WHERE weekly_request_id = $1`,
-            [weekly.id, order.vehicleId],
-          );
-          await holder.query(
-            `UPDATE weekly_vehicle_requests
+          [weekly.id, order.vehicleId],
+        );
+        await holder.query(
+          `UPDATE weekly_vehicle_requests
              SET status = 'applied', approved_by = $2, approved_at = now(), applied_at = now(),
                  version = version + 1
              WHERE id = $1`,
-            [weekly.id, ctx.admin.id],
-          );
-          await holder.query('COMMIT');
-          purgeRes = await pending;
-        } finally {
-          await holder.query('ROLLBACK').catch(() => undefined);
-          await holder.end();
-        }
+          [weekly.id, ctx.admin.id],
+        );
+        await holder.query('COMMIT');
+        purgeRes = await pending;
+      } finally {
+        await holder.query('ROLLBACK').catch(() => undefined);
+        await holder.end();
+      }
 
-        // Статус перечитан под блокировкой: строка применённой заявки не снята, и удаление честно
-        // упирается в `RESTRICT`.
-        expect(purgeRes.statusCode, purgeRes.body).toBe(409);
-        expect(await itemRows(weekly.id)).toHaveLength(1);
-        expect(
-          (await historyRows(weekly.id)).filter((h) => h.event === 'item_dropped'),
-        ).toHaveLength(0);
-      },
-      60_000,
-    );
+      // Статус перечитан под блокировкой: строка применённой заявки не снята, и удаление честно
+      // упирается в `RESTRICT`.
+      expect(purgeRes.statusCode, purgeRes.body).toBe(409);
+      expect(await itemRows(weekly.id)).toHaveLength(1);
+      expect((await historyRows(weekly.id)).filter((h) => h.event === 'item_dropped')).toHaveLength(
+        0,
+      );
+    }, 60_000);
   });
 });

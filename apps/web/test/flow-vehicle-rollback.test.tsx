@@ -10,7 +10,12 @@ import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { emptyList, list } from './factories/common';
 import { objectDto } from './factories/waste';
-import { approvedVehicleRequest, classification, vehicleSummary } from './factories/vehicle';
+import {
+  approvedVehicleRequest,
+  classification,
+  vehicleFeed,
+  vehicleSummary,
+} from './factories/vehicle';
 import { VehicleRequestsTab } from '../src/pages/vehicle/VehicleRequestsTab';
 import { MOBILE_VIEWPORT } from './viewport';
 import { expectModalClosed } from './antd';
@@ -157,7 +162,7 @@ const REASON = 'Заказчик перенёс работы, машину сн�
  */
 function renderTab(over: RouteMap = {}, mobile = false): HttpMock {
   const http = mockHttp({
-    'GET /vehicle-requests': () => json(list([IN_WORK])),
+    'GET /vehicle-requests/feed': () => json(vehicleFeed([IN_WORK])),
     'GET /vehicle-requests/summary': () => json(vehicleSummary({ confirmed: 1 })),
     // Справочники экрана: сценарию не нужны, но вкладка их спрашивает при первом рендере.
     'GET /objects': () => json(list([objectDto()])),
@@ -242,9 +247,9 @@ describe('возврат заявки на технику в «Новую»', ()
     // Та же заявка, но арендной машиной, без рейса, перегонов и факта: стирать у неё нечего,
     // кроме назначения и визы.
     renderTab({
-      'GET /vehicle-requests': () =>
+      'GET /vehicle-requests/feed': () =>
         json(
-          list([
+          vehicleFeed([
             approvedVehicleRequest({
               ...IN_WORK,
               assignment: RENTAL_VEHICLE,
@@ -324,7 +329,7 @@ describe('возврат заявки на технику в «Новую»', ()
   it('после возврата список перезапрашивается, а окно закрывается', async () => {
     const http = renderTab();
     expect(await screen.findByText('Т-42')).toBeDefined();
-    expect(http.countOf('GET /vehicle-requests')).toBe(1);
+    expect(http.countOf('GET /vehicle-requests/feed')).toBe(1);
 
     await openStatusMenu('Новая');
     expect(await screen.findByText('Возврат заявки в «Новую»')).toBeDefined();
@@ -335,7 +340,7 @@ describe('возврат заявки на технику в «Новую»', ()
 
     // Строка списка обязана показать новый статус сама: перезапрос — единственное, что об этом
     // заботится, а прежний статус на экране читался бы как «возврат не прошёл».
-    await waitFor(() => expect(http.countOf('GET /vehicle-requests')).toBe(2));
+    await waitFor(() => expect(http.countOf('GET /vehicle-requests/feed')).toBe(2));
     await expectModalClosed('Возврат заявки в «Новую»');
   });
 

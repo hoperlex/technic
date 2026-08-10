@@ -10,6 +10,7 @@ import { objectDto } from './factories/waste';
 import {
   classification,
   freightRequest,
+  vehicleFeed,
   vehicleRequest,
   vehicleSummary,
 } from './factories/vehicle';
@@ -46,7 +47,7 @@ function renderTab(
   user = authUser({ role: 'rukstroy', constructionObjectIds: ['obj-1'] }),
 ): HttpMock {
   const http = mockHttp({
-    'GET /vehicle-requests': () => json(list(items)),
+    'GET /vehicle-requests/feed': () => json(vehicleFeed(items)),
     'GET /vehicle-requests/summary': () => json(vehicleSummary({ new: items.length })),
     'GET /objects': () => json(list([objectDto()])),
     'GET /departments': () => json(emptyList()),

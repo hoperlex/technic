@@ -1,11 +1,10 @@
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
-import { and, asc, count, eq, gte, inArray, isNull, ne, sql, type SQL } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gte, inArray, isNull, lt, ne, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import {
   approveWeeklyRequestSchema,
-  baseListQuery,
   createWeeklyRequestSchema,
   dateOnlySchema,
   extendBlocker,
@@ -24,7 +23,6 @@ import {
   weekStartKey,
   weeklyItemKindLabels,
   weeklyRequestStatusSchema,
-  weeklyRequestStatusValueSchema,
   weeklyWeekBlocker,
   weeklyWeekBounds,
   weeklyWeekLabel,
@@ -33,6 +31,7 @@ import {
   type WeeklyDocumentRowDto,
   type WeeklyItemCounts,
   type WeeklyItemWarning,
+  type WeeklyPreviousWeekDto,
   type WeeklyRequestDocumentsDto,
   type WeeklyRequestItemDto,
   type WeeklyRequestItemInput,
@@ -72,10 +71,14 @@ import {
   approvesOwnWeeklyRequest,
   assertWeeklyRequestScope,
   canApproveWeeklyRequest,
-  weeklyRequestVisibilityWhere,
+  seesWholeWeeklyRequest,
 } from '../lib/access';
-import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
 import { applyWeeklyRequest } from '../services/weekly-request-apply';
+import {
+  assertWeeklyRequestReadable,
+  weeklyItemsReadWhere,
+} from '../services/weekly-request-access';
+import { loadLeftBy } from '../services/weekly-request-blockers';
 import { auditEsm2Sync } from '../services/waybill-esm2';
 
 /**
@@ -95,20 +98,6 @@ import { auditEsm2Sync } from '../services/waybill-esm2';
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 const idParams = z.object({ id: z.string().uuid() });
-
-const WEEKLY_SORT_FIELDS = ['weekStart', 'num', 'status', 'createdAt', 'updatedAt'] as const;
-
-/**
- * Фильтры списка. Схема живёт здесь, а не в контрактах: портал строит список теми же именами, что
- * и остальные модули (`baseListQuery`), и своего словаря у неё нет — только сужения по площадке,
- * неделе и статусу.
- */
-const weeklyListQuerySchema = baseListQuery(WEEKLY_SORT_FIELDS).extend({
-  status: weeklyRequestStatusValueSchema.optional(),
-  objectId: uuidSchema.optional(),
-  weekStart: dateOnlySchema.optional(),
-  num: z.coerce.number().int().positive().optional(),
-});
 
 /** Предложение состава: пара «площадка + неделя» — всё, что нужно, чтобы его собрать. */
 const suggestionQuerySchema = z.object({
@@ -140,6 +129,8 @@ const itemVehicleCategories = alias(vehicleCategories, 'weekly_item_vehicle_cate
 /** Заказанная позиция классификатора строки `new` — не путать с типом назначенной машины. */
 const orderedTypes = alias(vehicleTypes, 'weekly_ordered_types');
 const orderedCategories = alias(vehicleCategories, 'weekly_ordered_categories');
+/** Рейс-перегон «вывоз» по заказу: оформленный вывоз исключает единицу из подбора (этап 2 плана). */
+const pickupRoutes = alias(vehicleRoutes, 'weekly_pickup_routes');
 
 const weeklySelect = {
   id: weeklyVehicleRequests.id,
@@ -200,7 +191,6 @@ const itemSelect = {
   deliveryNeeded: weeklyVehicleRequestItems.deliveryNeeded,
   deliveryFrom: weeklyVehicleRequestItems.deliveryFrom,
   comment: weeklyVehicleRequestItems.comment,
-  earlyEndOverride: weeklyVehicleRequestItems.earlyEndOverride,
   expectedDateTo: weeklyVehicleRequestItems.expectedDateTo,
   previousDateTo: weeklyVehicleRequestItems.previousDateTo,
   appliedSourceVersion: weeklyVehicleRequestItems.appliedSourceVersion,
@@ -262,7 +252,15 @@ function labelOf(row: ItemRow): string | null {
   });
 }
 
-/** Заказ строки глазами предикатов состава — из тех же колонок, что читает применение. */
+/**
+ * Заказ строки глазами предикатов состава — из тех же колонок, что читает применение.
+ *
+ * Оформленный вывоз и чужое «уезжает» здесь не спрашиваются: этот объект нужен ровно для
+ * `itemWarnings` — предупреждений под сохранённой строкой, — а годность строки решается там, где
+ * её решают, и негодность объясняется причиной из предложения (`blocked`) либо отказом применения.
+ * Читать ради предупреждений ещё два запроса на список значило бы платить за то, чего никто не
+ * показывает.
+ */
 function orderOf(row: ItemRow): WeeklySourceOrder | null {
   if (!row.sourceRequestId || !row.sourceRequestType) return null;
   return {
@@ -274,6 +272,9 @@ function orderOf(row: ItemRow): WeeklySourceOrder | null {
     dateFrom: row.sourceDateFrom ?? '',
     dateTo: row.sourceDateTo,
     hasAssignment: !!row.currentVehicleId,
+    pickupRoute: null,
+    leftBy: null,
+    pendingEarlyEndDate: row.pendingEarlyEndDate,
   };
 }
 
@@ -296,12 +297,24 @@ async function loadItems(
   weeklyIds: string[],
   scopes: Map<string, WeeklyRequestScope & { editable: boolean }>,
   withWarnings: boolean,
+  /**
+   * Учётка, которой собирают состав. Нужна ради одной ветки: арендодателю документ открыли его же
+   * строки, и показывать рядом с ними чужие заказы, машины и сроки — значит отдать ему парк
+   * площадки. Условие сужения то же самое, что открыло заявку (`weeklyItemsReadWhere`), — второго
+   * места, где живёт это правило, быть не должно.
+   */
+  viewer?: Principal,
 ): Promise<Map<string, WeeklyRequestItemDto[]>> {
   const byRequest = new Map<string, WeeklyRequestItemDto[]>();
   if (weeklyIds.length === 0) return byRequest;
 
   const rows = await itemsQuery()
-    .where(inArray(weeklyVehicleRequestItems.weeklyRequestId, weeklyIds))
+    .where(
+      and(
+        inArray(weeklyVehicleRequestItems.weeklyRequestId, weeklyIds),
+        viewer ? weeklyItemsReadWhere(viewer) : undefined,
+      ),
+    )
     .orderBy(
       asc(weeklyVehicleRequestItems.weeklyRequestId),
       asc(weeklyVehicleRequestItems.position),
@@ -348,7 +361,6 @@ async function loadItems(
       deliveryNeeded: row.deliveryNeeded,
       deliveryFrom: row.deliveryFrom,
       comment: row.comment,
-      earlyEndOverride: row.earlyEndOverride,
       expectedDateTo: row.expectedDateTo,
       previousDateTo: row.previousDateTo,
       appliedSourceVersion: row.appliedSourceVersion,
@@ -452,6 +464,7 @@ function scopeOf(
 async function loadDtos(
   headers: HeaderRow[],
   withWarnings: boolean,
+  viewer?: Principal,
 ): Promise<WeeklyVehicleRequestDto[]> {
   const today = moscowDateKeyOf(new Date());
   const scopes = new Map(
@@ -464,15 +477,37 @@ async function loadDtos(
     headers.map((h) => h.id),
     scopes,
     withWarnings,
+    viewer,
   );
+  // `counts` считается по тем строкам, что уехали человеку: «8 единиц» рядом с одной видимой
+  // строкой само по себе есть выдача состава — цифра сказала бы арендодателю ровно то, что от
+  // него закрыли строками.
   return headers.map((h) => toDto(h, items.get(h.id) ?? []));
 }
 
-async function getDto(id: string): Promise<WeeklyVehicleRequestDto | null> {
+async function getDto(id: string, viewer?: Principal): Promise<WeeklyVehicleRequestDto | null> {
   const [header] = await headerQuery().where(eq(weeklyVehicleRequests.id, id));
   if (!header) return null;
-  const [dto] = await loadDtos([header], true);
+  const [dto] = await loadDtos([header], true, viewer);
   return dto ?? null;
+}
+
+/**
+ * Недельные заявки по идентификаторам — для ленты раздела «Заказ автотехники», где строки
+ * догружаются после того, как порядок и страница выбраны объединённым запросом.
+ *
+ * Экспортируется отсюда, а не собирается лентой заново: сборщик DTO у документа один, и второй,
+ * «облегчённый», разошёлся бы с ним при первой же правке состава — в списке появились бы поля,
+ * которых нет в карточке, или наоборот.
+ */
+export async function loadWeeklyDtosByIds(
+  ids: string[],
+  viewer: Principal,
+): Promise<Map<string, WeeklyVehicleRequestDto>> {
+  if (ids.length === 0) return new Map();
+  const headers = await headerQuery().where(inArray(weeklyVehicleRequests.id, ids));
+  const dtos = await loadDtos(headers, false, viewer);
+  return new Map(dtos.map((dto) => [dto.id, dto]));
 }
 
 /** Шапка под правку: читается до транзакции — область и статус решаются по ней. */
@@ -495,6 +530,12 @@ async function requireHeader(id: string): Promise<HeaderRow> {
  * «Новую» или ушедший в архив пропал бы из выборки, а человек получил бы «не найден» вместо
  * причины. Поэтому здесь фильтров нет — на все эти вопросы отвечает `sourceItemBlocker`, один и
  * тот же на портал и сервер.
+ *
+ * Оформленный вывоз и ожидающий визы отъезд едут `leftJoin`'ами, и оба безопасны — кандидата они
+ * не размножают: у рейса-перегона это держит частичный `vehicle_routes_source_request_unique` на
+ * пару `(source_request_id, purpose)`, у запроса на отъезд — первичный ключ по `request_id`.
+ * Третий источник негодности, чужое «уезжает», join'ом брать нельзя вовсе — он читается отдельной
+ * map-выборкой (`loadLeftBy`) и приходит сюда параметром.
  */
 async function loadCandidates(tx: Tx | typeof db, objectId: string, ids?: string[]) {
   return tx
@@ -515,6 +556,8 @@ async function loadCandidates(tx: Tx | typeof db, objectId: string, ids?: string
       vehicleTypeName: vehicleTypes.name,
       vehicleCategoryName: vehicleCategories.name,
       pendingEarlyEndDate: vehicleRequestEarlyEndings.newDateTo,
+      pickupRouteNum: pickupRoutes.num,
+      pickupRouteDate: pickupRoutes.routeDate,
     })
     .from(vehicleRequests)
     .innerJoin(
@@ -536,6 +579,10 @@ async function loadCandidates(tx: Tx | typeof db, objectId: string, ids?: string
         eq(vehicleRequestEarlyEndings.status, 'pending'),
       ),
     )
+    .leftJoin(
+      pickupRoutes,
+      and(eq(vehicleRequests.id, pickupRoutes.sourceRequestId), eq(pickupRoutes.purpose, 'pickup')),
+    )
     .where(
       ids
         ? inArray(vehicleRequests.id, ids)
@@ -551,7 +598,12 @@ async function loadCandidates(tx: Tx | typeof db, objectId: string, ids?: string
 
 type Candidate = Awaited<ReturnType<typeof loadCandidates>>[number];
 
-function candidateOrder(c: Candidate): WeeklySourceOrder {
+/**
+ * Кандидат глазами предикатов. `leftBy` приходит параметром, а не колонкой выборки: решений
+ * «уезжает» по одному заказу бывает несколько, и join размножил бы кандидата — читается оно
+ * отдельной map-выборкой (`loadLeftBy`).
+ */
+function candidateOrder(c: Candidate, leftBy: { num: number } | null): WeeklySourceOrder {
   return {
     id: c.id,
     objectId: c.objectId,
@@ -561,15 +613,29 @@ function candidateOrder(c: Candidate): WeeklySourceOrder {
     dateFrom: c.dateFrom,
     dateTo: c.dateTo,
     hasAssignment: !!c.vehicleId,
+    pickupRoute:
+      c.pickupRouteNum !== null && c.pickupRouteDate !== null
+        ? { num: c.pickupRouteNum, routeDate: c.pickupRouteDate }
+        : null,
+    leftBy,
+    pendingEarlyEndDate: c.pendingEarlyEndDate,
   };
 }
 
 function candidateDto(
   c: Candidate,
+  order: WeeklySourceOrder,
   scope: WeeklyRequestScope,
   otherWeekly: { num: number; weekStart: string } | null,
 ): WeeklySuggestionOrderDto {
-  const order = candidateOrder(c);
+  // Почему по этой единице нельзя выбрать «Остаётся» — считает сервер, и тем же предикатом, каким
+  // он потом откажет: разойдись форма с сервером, площадка видела бы вариант, который всегда
+  // отвечает отказом. Живой случай один — срок, идущий ровно до воскресенья недели: продлевать
+  // внутри этой недели нечем, а «оставить дальше» решает заявка на следующую неделю.
+  const extendBlockedReason = extendBlocker(order, scope, null, scope.weekEnd);
+  // Даты продления у такой единицы нет: воскресенье — это её же конец срока, то есть день, который
+  // сервер тут же и отвергнет. Отдать его значило бы вернуть форме дату, которой не должно быть.
+  const suggestedDateTo = extendBlockedReason ? null : scope.weekEnd;
   return {
     requestId: c.id,
     num: c.num,
@@ -592,21 +658,82 @@ function candidateDto(
           })
         : null,
     ownership: c.ownership,
-    suggestedDateTo: scope.weekEnd,
-    // Строка с ожидающим визы отъездом приходит отмеченной, но не включённой: снимать чужое
-    // решение оптом галкой нельзя (план Р15).
-    included: !c.pendingEarlyEndDate,
+    suggestedDateTo,
+    extendBlockedReason,
+    // Умолчание — «остаётся»: неделя чаще продлевается, чем сокращается. Единица, которую
+    // продлить нечем, приходит без решения — за неё выбирают «Уезжает» или не выбирают ничего.
+    included: !extendBlockedReason,
+    // Предупреждения считаются от той же даты, что предложена: продления нет — нет ни сплошного
+    // срока, ни перевыписки листа, и говорить о них было бы рассказом о том, чего не будет.
     warnings: itemWarnings(
-      {
-        ...order,
-        ownership: c.ownership,
-        pendingEarlyEndDate: c.pendingEarlyEndDate,
-        otherWeekly,
-      },
+      { ...order, ownership: c.ownership, otherWeekly },
       scope,
-      scope.weekEnd,
+      suggestedDateTo,
     ),
   };
+}
+
+/**
+ * Последняя применённая недельная заявка этой площадки до целевой недели — и заказы её позиций.
+ *
+ * «Прошлая» — это именно **последняя применённая**, а не «неделя минус семь дней»: неделю
+ * пропускают, и тогда преемственность тянется от той заявки, что была. Черновик и заявка на визе
+ * прошлой не считаются: они ещё ничего не решили, а их состав человек и так видит у себя.
+ *
+ * Строки `leave` в кандидаты не тянутся вовсе: решение по ним принято, и этап 2 их же и
+ * заблокировал бы («уезжает по НЗ-15»). Заказ у остальных ровно один — основание у продления,
+ * порождённый у новой строки, — и CHECK `weekly_items_kind_shape_check` не даёт им встретиться
+ * вместе, поэтому `coalesce` здесь читается однозначно.
+ */
+async function loadPreviousApplied(
+  objectId: string,
+  weekStart: string,
+): Promise<{ id: string; num: number; weekStart: string; orders: Map<string, number> } | null> {
+  const [previous] = await db
+    .select({
+      id: weeklyVehicleRequests.id,
+      num: weeklyVehicleRequests.num,
+      weekStart: weeklyVehicleRequests.weekStart,
+    })
+    .from(weeklyVehicleRequests)
+    .where(
+      and(
+        eq(weeklyVehicleRequests.objectId, objectId),
+        eq(weeklyVehicleRequests.status, 'applied'),
+        lt(weeklyVehicleRequests.weekStart, weekStart),
+      ),
+    )
+    .orderBy(desc(weeklyVehicleRequests.weekStart), desc(weeklyVehicleRequests.num))
+    .limit(1);
+  if (!previous) return null;
+
+  const rows = await db
+    .select({
+      sourceRequestId: weeklyVehicleRequestItems.sourceRequestId,
+      createdRequestId: weeklyVehicleRequestItems.createdRequestId,
+      sourceNum: sourceRequests.num,
+      createdNum: createdRequests.num,
+    })
+    .from(weeklyVehicleRequestItems)
+    .leftJoin(sourceRequests, eq(weeklyVehicleRequestItems.sourceRequestId, sourceRequests.id))
+    .leftJoin(createdRequests, eq(weeklyVehicleRequestItems.createdRequestId, createdRequests.id))
+    .where(
+      and(
+        eq(weeklyVehicleRequestItems.weeklyRequestId, previous.id),
+        ne(weeklyVehicleRequestItems.kind, 'leave'),
+      ),
+    )
+    .orderBy(asc(weeklyVehicleRequestItems.position));
+
+  const orders = new Map<string, number>();
+  for (const row of rows) {
+    const requestId = row.sourceRequestId ?? row.createdRequestId;
+    const num = row.sourceNum ?? row.createdNum;
+    // Строка `new`, не дошедшая до применения, заказа не породила — тянуть за неё нечего.
+    if (!requestId || num === null) continue;
+    orders.set(requestId, num);
+  }
+  return { ...previous, orders };
 }
 
 /** Строки состава к записи: серверные поля проставляются здесь и только здесь (план §7). */
@@ -639,6 +766,9 @@ async function buildItemRows(
       ? (await loadCandidates(tx, weekly.objectId, sourceIds)).map((c) => [c.id, c] as const)
       : [],
   );
+  // Чужое решение «уезжает» — второй источник негодности строки, и join'ом его брать нельзя:
+  // применённых недель с таким решением по одному заказу бывает несколько (`loadLeftBy`).
+  const leftBy = await loadLeftBy(tx, sourceIds, weekly.id);
 
   const rows: (typeof weeklyVehicleRequestItems.$inferInsert)[] = [];
   for (const [index, item] of items.entries()) {
@@ -695,7 +825,7 @@ async function buildItemRows(
     // Принадлежность объекту проверяется всегда и отдельно (`sourceItemBlocker` первым условием):
     // `source_request_id` — обычный внешний ключ, и без явной проверки клиент подсунул бы заказ
     // чужой площадки, а сервер продлил бы его.
-    const order = candidateOrder(candidate);
+    const order = candidateOrder(candidate, leftBy.get(candidate.id) ?? null);
     // `expected_date_to` читается из самого заказа, а не из тела: прими его сервер от клиента —
     // тот подменил бы контрольный снимок и провёл бы через визу продление заказа, срок которого
     // давно другой (план §7).
@@ -717,7 +847,6 @@ async function buildItemRows(
             sourceRequestId: item.sourceRequestId,
             dateTo: item.dateTo,
             expectedDateTo,
-            earlyEndOverride: item.earlyEndOverride,
           }
         : {
             ...base,
@@ -800,13 +929,16 @@ async function auditWeeklyEsm2(
 }
 
 /**
- * События истории **заказов**, которых коснулось применение (Р6, Р15).
+ * События истории **заказов**, которых коснулось применение (Р6).
  *
  * Пишутся отдельно от аудита самой недельной заявки и по каждому заказу: человек, открывший
  * карточку заказа, должен прочесть, почему у него сдвинулся срок, — иначе дата меняется будто
- * сама собой, а решение об этом принималось в чужом документе. По той же причине снятый запрос на
- * досрочный отъезд получает своё событие: обычная правка срока пишет его давно, и применение
- * недельной заявки не имеет права молчать там, где правка говорит.
+ * сама собой, а решение об этом принималось в чужом документе.
+ *
+ * Ветка снятого запроса на отъезд остаётся при том, что недельная заявка его больше не снимает
+ * (единица с нерешённым запросом в состав не идёт): она следует ответу общего сервиса правки
+ * срока, а не собственному знанию, — и если снятие однажды придёт оттуда, история заказа не
+ * промолчит там, где обычная правка говорит.
  */
 async function auditWeeklyOrderEvents(
   actorUserId: string,
@@ -925,64 +1057,20 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
     ],
   };
 
-  /** Область видимости списка: у офисных ролей её нет, у площадки — свои объекты, у прочих — ничего. */
-  function visibility(p: Principal): SQL | undefined {
-    return weeklyRequestVisibilityWhere(p, weeklyVehicleRequests.objectId);
-  }
+  /**
+   * Область видимости списка — тем же переводом, которым фильтруется лента раздела и проверяется
+   * доступ к карточке (`services/weekly-request-access.ts`). Своего условия здесь нет намеренно:
+   * два похожих разошлись бы молча, и разошлись бы в сторону «в списке видно, а по ссылке 404».
+   */
+  // ── Списка у модуля нет ──
+  //
+  // Недельная заявка живёт строкой в общем списке «Заказ автотехники» (ADR 0089), и своей выдачи
+  // у неё не осталось: два маршрута, отвечающих на один вопрос «какие недели я вижу», разошлись бы
+  // фильтрами и областью — а расхождение здесь означает либо строку, видимую в списке и закрытую
+  // по ссылке, либо обратное. Ленту отдаёт `GET /vehicle-requests/feed`, состав ей собирает
+  // `loadWeeklyDtosByIds` ниже — тем же сборщиком, что и карточку.
 
-  // ── Список и счётчик «ждут визы» ──
-  r.get('/', { ...auth, schema: { querystring: weeklyListQuerySchema } }, async (req) => {
-    const p = requirePrincipal(req);
-    const q = req.query;
-    const where = and(
-      visibility(p),
-      q.status ? eq(weeklyVehicleRequests.status, q.status) : undefined,
-      q.objectId ? eq(weeklyVehicleRequests.objectId, q.objectId) : undefined,
-      q.weekStart ? eq(weeklyVehicleRequests.weekStart, q.weekStart) : undefined,
-      q.num ? eq(weeklyVehicleRequests.num, q.num) : undefined,
-      searchCondition(q.search, [
-        weeklyVehicleRequests.comment,
-        constructionObjects.name,
-        constructionObjects.code,
-      ]),
-    );
-    const pg = pageParams(q);
-    const sortColumns = {
-      weekStart: weeklyVehicleRequests.weekStart,
-      num: weeklyVehicleRequests.num,
-      status: weeklyVehicleRequests.status,
-      createdAt: weeklyVehicleRequests.createdAt,
-      updatedAt: weeklyVehicleRequests.updatedAt,
-    };
-    const rows = await headerQuery()
-      .where(where)
-      .orderBy(
-        orderByFrom(sortColumns, q.sortBy, q.sortOrder, 'weekStart'),
-        asc(weeklyVehicleRequests.num),
-      )
-      .limit(pg.limit)
-      .offset(pg.offset);
-    const [totalRow] = await db
-      .select({ c: count() })
-      .from(weeklyVehicleRequests)
-      .innerJoin(constructionObjects, eq(weeklyVehicleRequests.objectId, constructionObjects.id))
-      .where(where);
-    // Счётчик очереди визы: в неё попадает только `pending` — черновик виден, но не отвлекает
-    // (план §10). Считается по области учётки, а не по фильтрам списка: он о работе, а не о выдаче.
-    const [pendingRow] = await db
-      .select({ c: count() })
-      .from(weeklyVehicleRequests)
-      .where(and(visibility(p), eq(weeklyVehicleRequests.status, 'pending')));
-    return {
-      items: await loadDtos(rows, false),
-      total: Number(totalRow!.c),
-      pendingCount: Number(pendingRow!.c),
-      page: pg.page,
-      pageSize: pg.pageSize,
-    };
-  });
-
-  // ── Предложение состава (план Р4, Р15) ──
+  // ── Предложение состава (план Р4, преемственность недель — план «Отбор состава» §3) ──
   r.get(
     '/suggestion',
     { ...canCreate, schema: { querystring: suggestionQuerySchema } },
@@ -1004,7 +1092,27 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
           ),
         );
 
-      const candidates = await loadCandidates(db, objectId);
+      // Источников кандидатов два, и второй — не удобство, а правило: каждая следующая недельная
+      // заявка пытается продлить **все** позиции прошлой. Срез площадки один этого не даёт —
+      // позиция, вышедшая из среза (закрыта фактом, отменена, откачена в «Новую», потеряла
+      // назначение), до предикатов бы не дошла и исчезла бы из сборки молча, ни в `blocked`, ни
+      // где-либо ещё.
+      const previous = await loadPreviousApplied(objectId, scope.weekStart);
+      const snapshot = await loadCandidates(db, objectId);
+      const known = new Set(snapshot.map((c) => c.id));
+      const carriedIds = [...(previous?.orders.keys() ?? [])].filter((id) => !known.has(id));
+      const candidates =
+        carriedIds.length > 0
+          ? [...snapshot, ...(await loadCandidates(db, objectId, carriedIds))].sort(
+              (a, b) => a.num - b.num,
+            )
+          : snapshot;
+      const leftBy = await loadLeftBy(
+        db,
+        candidates.map((c) => c.id),
+        existing?.id ?? null,
+      );
+
       // Решения, уже принятые в собираемой заявке: строка «уезжает» показывается своим блоком, а
       // не предлагается к продлению повторно.
       const leaving = new Set<string>();
@@ -1033,28 +1141,61 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
         leaving: [],
         beyond: [],
         blocked: [],
+        previous: null,
         existingRequestId: existing?.id ?? null,
       };
+      /** Позиции прошлой недели, не доехавшие до состава, — каждая с причиной (план §3 п. 3). */
+      const dropped: WeeklyPreviousWeekDto['dropped'] = [];
+      let carried = 0;
       for (const c of candidates) {
-        const order = candidateOrder(c);
-        const dto = candidateDto(c, scope, otherWeekly.get(c.id) ?? null);
-        // Заказ, заказанный за пределы недели, в состав не входит вовсе: решать по нему на этой
-        // неделе нечего. В шапке формы такие считаются строкой «ещё 3 единицы заказаны дольше».
-        if (order.hasAssignment && orderEffectiveDateTo(order) >= scope.weekEnd) {
-          result.beyond.push(dto);
-          continue;
-        }
+        const order = candidateOrder(c, leftBy.get(c.id) ?? null);
+        const dto = candidateDto(c, order, scope, otherWeekly.get(c.id) ?? null);
+        const fromPrevious = previous?.orders.has(c.id) ?? false;
         const blocker = sourceItemBlocker(order, scope, null);
         if (blocker) {
-          result.blocked.push({
-            requestId: c.id,
-            displayNumber: formatVehicleRequestNumber(c.num),
-            reason: blocker,
-          });
+          // Заказ, заказанный **дальше** недели, — не негодность, а отдельный список: решать по
+          // нему на этой неделе нечего, и в шапке формы он считается строкой «ещё 3 единицы
+          // заказаны дольше недели». Отделяется по причине, а не по одному сроку: заказ чужой
+          // площадки или без назначения — это `blocked`, каким бы длинным ни был его срок.
+          // Проверяется тем же предикатом с концом срока, приведённым к воскресенью: годен во
+          // всём, кроме собственной длины, — значит «дольше недели», иначе «не годится».
+          const onlyTooLong =
+            orderEffectiveDateTo(order) > scope.weekEnd &&
+            sourceItemBlocker({ ...order, dateTo: scope.weekEnd }, scope, null) === null;
+          if (onlyTooLong) result.beyond.push(dto);
+          else {
+            result.blocked.push({
+              requestId: c.id,
+              displayNumber: formatVehicleRequestNumber(c.num),
+              reason: blocker,
+            });
+          }
+          if (fromPrevious) dropped.push({ displayNumber: dto.displayNumber, reason: blocker });
           continue;
         }
+        if (fromPrevious) carried += 1;
         if (leaving.has(c.id)) result.leaving.push({ ...dto, included: false });
         else result.extend.push(dto);
+      }
+      if (previous) {
+        // Позиция, которой не нашлось даже в выборке по идентификаторам: заказ снесён насовсем.
+        // Практически недостижимо — `ON DELETE RESTRICT` не даёт `purge` тронуть заказ,
+        // на который ссылается применённая заявка, — но молчать об этом всё равно нельзя.
+        const seen = new Set(candidates.map((c) => c.id));
+        for (const [requestId, num] of previous.orders) {
+          if (seen.has(requestId)) continue;
+          dropped.push({
+            displayNumber: formatVehicleRequestNumber(num),
+            reason: 'Заказ удалён из портала',
+          });
+        }
+        result.previous = {
+          weeklyRequestId: previous.id,
+          num: previous.num,
+          weekLabel: weeklyWeekLabel(previous.weekStart),
+          carried,
+          dropped,
+        };
       }
       return result;
     },
@@ -1126,11 +1267,16 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
   });
 
   // ── Карточка ──
+  //
+  // Доступ спрашивается не по площадке, а тем же предикатом, что фильтрует список: у арендодателя
+  // область выражается составом заявки, и синхронная проверка по `objectId` её не выражает вовсе.
+  // Ответ на «не видно» — 404: для наблюдателя, отдела и арендодателя сам факт существования
+  // недели у чужой площадки тоже не их дело (внятный отказ остался на правке и визе).
   r.get('/:id', { ...auth, schema: { params: idParams } }, async (req) => {
     const p = requirePrincipal(req);
-    const dto = await getDto(req.params.id);
+    await assertWeeklyRequestReadable(p, req.params.id);
+    const dto = await getDto(req.params.id, p);
     if (!dto) throw err.notFound('Недельная заявка не найдена');
-    assertWeeklyRequestScope(p, dto.objectId);
     return dto;
   });
 
@@ -1361,11 +1507,16 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
     { ...auth, schema: { params: idParams } },
     async (req): Promise<WeeklyRequestDocumentsDto> => {
       const p = requirePrincipal(req);
+      await assertWeeklyRequestReadable(p, req.params.id);
       const header = await requireHeader(req.params.id);
-      assertWeeklyRequestScope(p, header.objectId);
 
+      // Строки сужаются тем же условием, что и состав карточки: чек-лист перечисляет ЭСМ-2 и
+      // перегоны по каждой единице, и без сужения он рассказал бы арендодателю о документах чужих
+      // машин площадки — в обход того, что закрыто в самом составе.
       const rows = await itemsQuery()
-        .where(eq(weeklyVehicleRequestItems.weeklyRequestId, header.id))
+        .where(
+          and(eq(weeklyVehicleRequestItems.weeklyRequestId, header.id), weeklyItemsReadWhere(p)),
+        )
         .orderBy(asc(weeklyVehicleRequestItems.position));
       const requestIds = [
         ...new Set(
@@ -1476,8 +1627,8 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
   // записи, и тогда причина отклонения и сам факт перехода могли бы исчезнуть.
   r.get('/:id/history', { ...auth, schema: { params: idParams } }, async (req) => {
     const p = requirePrincipal(req);
+    await assertWeeklyRequestReadable(p, req.params.id);
     const header = await requireHeader(req.params.id);
-    assertWeeklyRequestScope(p, header.objectId);
     const rows = await db
       .select({
         id: weeklyVehicleRequestHistory.id,
@@ -1494,6 +1645,24 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
       .innerJoin(historyActors, eq(weeklyVehicleRequestHistory.changedBy, historyActors.id))
       .where(eq(weeklyVehicleRequestHistory.weeklyRequestId, header.id))
       .orderBy(asc(weeklyVehicleRequestHistory.changedAt));
-    return rows.map((row) => ({ ...row, changedAt: row.changedAt.toISOString() }));
+    /*
+     * `payload` уходит целиком только тому, кто видит весь состав. Сужения строк здесь мало:
+     * события несут содержание документа **отдельно** от них — `items_changed` называет размер
+     * состава числом, `item_dropped` — сколько строк сняли и на каких позициях, `applied` — отчёт
+     * по каждой строке с номером заказа и сроками. Арендодателю, которому документ открыли его же
+     * машины, это раскрыло бы ровно то, что от него закрыто строками.
+     *
+     * Пересчитать нельзя честно: у `items_changed` привязки к строкам нет вовсе (число на момент
+     * события, а состав с тех пор менялся), `item_dropped` говорит о строках, которых больше не
+     * существует. Пересчёт одного лишь `applied` дал бы худшее — вид полной истории, из которой
+     * молча вынуто остальное. Поэтому `null`, а событие, переход, автор, дата и комментарий
+     * остаются: они объясняют, что с документом происходило, и состава не раскрывают.
+     */
+    const wholeVisible = seesWholeWeeklyRequest(p);
+    return rows.map((row) => ({
+      ...row,
+      payload: wholeVisible ? row.payload : null,
+      changedAt: row.changedAt.toISOString(),
+    }));
   });
 }

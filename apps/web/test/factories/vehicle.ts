@@ -3,7 +3,12 @@ import type {
   FreightTransportRequestDto,
   SpecialEquipmentRequestDto,
   VehicleClassificationDto,
+  VehicleFeedListDto,
+  VehicleFeedRow,
+  VehicleRequestDto,
   VehicleRequestSummaryDto,
+  WeeklyRequestItemDto,
+  WeeklyVehicleRequestDto,
 } from '@technic/contracts';
 
 /**
@@ -141,6 +146,117 @@ export function approvedVehicleRequest(
     approvedByName: overrides.approvedByName ?? 'Рукстроев Р. С.',
     approvedAt: overrides.approvedAt ?? '2026-08-02T07:00:00.000Z',
   });
+}
+
+/**
+ * Строка состава недельной заявки. По умолчанию — продление заказа до воскресенья недели: это
+ * основной вид строки, ради которого документ и заводят (ADR 0085).
+ */
+export function weeklyItem(
+  overrides: Partial<WeeklyRequestItemDto> = {},
+): WeeklyRequestItemDto {
+  return {
+    id: 'wi-1',
+    position: 1,
+    kind: 'extend',
+    sourceRequestId: 'vr-1',
+    sourceRequestNum: 42,
+    sourceDisplayNumber: 'ТС-42',
+    sourceStatus: 'confirmed',
+    sourceDateFrom: '2026-08-05',
+    sourceDateTo: '2026-08-14',
+    vehicleTypeId: null,
+    vehicleTypeName: null,
+    vehicleCategoryId: null,
+    vehicleCategoryName: null,
+    dateFrom: null,
+    dateTo: '2026-08-23',
+    responsibleName: '',
+    responsiblePhone: '',
+    deliveryNeeded: false,
+    deliveryFrom: '',
+    comment: '',
+    expectedDateTo: '2026-08-14',
+    previousDateTo: null,
+    appliedSourceVersion: null,
+    snapshotVehicleId: null,
+    currentVehicleId: 'v-1',
+    currentVehicleLabel: 'Экскаватор JCB · А123АА77',
+    createdRequestId: null,
+    createdRequestNum: null,
+    result: 'pending',
+    skipReason: '',
+    warnings: [],
+    ...overrides,
+  };
+}
+
+/**
+ * Недельная заявка (ADR 0085) — документ-основание над заказами: строка ленты «Заказ автотехники»
+ * наравне с ними. По умолчанию ждёт визы: в этом состоянии её и читают в списке.
+ */
+export function weeklyRequest(
+  overrides: Partial<WeeklyVehicleRequestDto> = {},
+): WeeklyVehicleRequestDto {
+  const items = overrides.items ?? [weeklyItem()];
+  return {
+    id: 'wr-1',
+    num: 12,
+    displayNumber: 'НЗ-12',
+    objectId: 'obj-1',
+    objectCode: 'ОБ-1',
+    objectName: 'ЖК Северный',
+    weekStart: '2026-08-17',
+    weekEnd: '2026-08-23',
+    weekLabel: '17–23 августа 2026',
+    status: 'pending',
+    comment: 'продлеваем всё, кроме крана',
+    cancelReason: '',
+    approvedBy: null,
+    approvedByName: null,
+    approvedAt: null,
+    appliedAt: null,
+    counts: {
+      extend: items.filter((i) => i.kind === 'extend').length,
+      new: items.filter((i) => i.kind === 'new').length,
+      leave: items.filter((i) => i.kind === 'leave').length,
+    },
+    createdBy: 'user-shtab',
+    createdByName: 'Штабов Ш. Ш.',
+    createdAt: '2026-08-10T06:00:00.000Z',
+    updatedByName: null,
+    updatedAt: '2026-08-10T06:00:00.000Z',
+    version: 1,
+    ...overrides,
+    items,
+  };
+}
+
+/**
+ * Ответ ленты «Заказ автотехники» (`GET /vehicle-requests/feed`): заказы ТС и недельные заявки
+ * одним списком (ADR 0085).
+ *
+ * Вид строки дописывает сама фабрика: сценариям, где недельного документа нет, незачем помнить,
+ * что заказ теперь приезжает завёрнутым, — а тем, где он есть, недельные строки передаются
+ * готовыми через `weekly`.
+ */
+export function vehicleFeed(
+  orders: VehicleRequestDto[],
+  weekly: WeeklyVehicleRequestDto[] = [],
+  overrides: Partial<VehicleFeedListDto> = {},
+): VehicleFeedListDto {
+  const items: VehicleFeedRow[] = [
+    ...orders.map((order): VehicleFeedRow => ({ kind: 'order', order })),
+    ...weekly.map((week): VehicleFeedRow => ({ kind: 'weekly', weekly: week })),
+  ];
+  return {
+    items,
+    total: items.length,
+    page: 1,
+    pageSize: 100,
+    weeklyPendingCount: weekly.filter((w) => w.status === 'pending').length,
+    ...overrides,
+  };
 }
 
 /** Счётчики над списком: статусы плюс «ждут визы» — по статусам это состояние не видно. */

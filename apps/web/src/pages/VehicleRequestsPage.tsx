@@ -1,22 +1,37 @@
-import { useSearchParams } from 'react-router';
+import { Navigate, useSearchParams } from 'react-router';
 import { canOrderVehicleRequestType } from '@technic/contracts';
 import { PageTabs } from '../components/PageTabs';
 import { useAuth } from '../auth/AuthContext';
 import { canSeeArchiveTab, canSeeRoutesTab } from '../utils/links';
 import { VehicleRequestsTab } from './vehicle/VehicleRequestsTab';
 import { VehicleRequestsOnSiteTab } from './vehicle/VehicleRequestsOnSiteTab';
-import { WeeklyRequestsTab } from './vehicle/WeeklyRequestsTab';
 import { VehicleRoutesTab } from './vehicle/VehicleRoutesTab';
 import { VehicleRequestsHistoryTab } from './vehicle/VehicleRequestsHistoryTab';
 import { VehicleRequestsArchiveTab } from './vehicle/VehicleRequestsArchiveTab';
 
-// Спецтехника и грузоперевозки живут в одном списке («Заказ автотехники»): тип заявки —
-// колонка и фильтр, а не отдельная вкладка. Старые ключи вкладок ведут на общий список.
-const TABS = ['requests', 'on-site', 'weekly', 'routes', 'history', 'archive'] as const;
+// Спецтехника, грузоперевозки и недельные заявки живут в одном списке («Заказ автотехники»): вид
+// документа — колонка и фильтр, а не отдельная вкладка. Старые ключи вкладок ведут на общий список.
+const TABS = ['requests', 'on-site', 'routes', 'history', 'archive'] as const;
 
 export function VehicleRequestsPage() {
   const { user, can } = useAuth();
   const [sp, setSp] = useSearchParams();
+
+  /**
+   * Старый адрес вкладки «Недельные заявки» (`?tab=weekly`) ведёт в общий список, заранее суженный
+   * до недельных, — а не в пустоту. Он остался в закладках и в кнопке «Назад» страницы недели, и
+   * молчаливый сброс на «все заявки» читался бы как «мои недельные пропали».
+   *
+   * Переходом на отрисовке, а не эффектом после неё: вид документа список читает из адреса ровно
+   * один раз, при первом состоянии фильтров, — успей вкладка смонтироваться до правки адреса, она
+   * запомнила бы «все виды», и правка адреса ничего бы уже не изменила.
+   *
+   * Заменой записи в истории (`replace`): «назад» после перехода обязан вернуть туда, откуда
+   * человек пришёл, а не на адрес, с которого его только что увели.
+   */
+  if (sp.get('tab') === 'weekly') {
+    return <Navigate to="/vehicle-requests?tab=requests&kind=weekly" replace />;
+  }
 
   /**
    * «На объекте» — срез спецтехники на площадках (ADR 0036). Роли, которой спецтехника не
@@ -35,20 +50,10 @@ export function VehicleRequestsPage() {
   const showRoutes = canSeeRoutesTab(can);
   const showArchive = canSeeArchiveTab(can);
 
-  /**
-   * «Недельные заявки» (ADR 0085) — своё право, а не заимствованное у заказов: `vehicleRequests.read`
-   * есть у наблюдателя, оператора вывоза и арендодателя, а недельная заявка — это план площадки,
-   * который им не показывают (Р12).
-   */
-  const showWeekly = can('weeklyRequests.read');
-
   const items = [
     { key: 'requests', label: 'Заказ автотехники', children: <VehicleRequestsTab /> },
     ...(showOnSite
       ? [{ key: 'on-site', label: 'На объекте', children: <VehicleRequestsOnSiteTab /> }]
-      : []),
-    ...(showWeekly
-      ? [{ key: 'weekly', label: 'Недельные заявки', children: <WeeklyRequestsTab /> }]
       : []),
     ...(showRoutes ? [{ key: 'routes', label: 'Маршруты', children: <VehicleRoutesTab /> }] : []),
     { key: 'history', label: 'История', children: <VehicleRequestsHistoryTab /> },

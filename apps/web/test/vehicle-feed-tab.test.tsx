@@ -1,0 +1,294 @@
+import { describe, expect, it } from 'vitest';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { useLocation } from 'react-router';
+import { json, mockHttp, type HttpMock, type RouteMap } from './http';
+import { renderWithUser } from './render';
+import { authUser } from './factories/auth';
+import { emptyList, list } from './factories/common';
+import { objectDto } from './factories/waste';
+import {
+  classification,
+  vehicleFeed,
+  vehicleRequest,
+  vehicleSummary,
+  weeklyItem,
+  weeklyRequest,
+} from './factories/vehicle';
+import { VehicleRequestsTab } from '../src/pages/vehicle/VehicleRequestsTab';
+import { PageTabs } from '../src/components/PageTabs';
+import { VehicleRequestsPage } from '../src/pages/VehicleRequestsPage';
+
+/**
+ * Недельная заявка строкой общего списка «Заказ автотехники» (ADR 0085).
+ *
+ * Своей вкладки у документа больше нет: он основание над заказами, и человек решает им одну
+ * задачу — «что у нас с техникой», — вместе с самими заказами. Проверяется поэтому не «строка
+ * рисуется», а границы объединения: где недельная строка отвечает своим (состав, неделя, виза), а
+ * где честно пуста (тип ТС, маршрут, файлы); куда ведёт клик по ней; и что уезжает на сервер, когда
+ * фильтр и поиск спрашивают вид документа. Ошибка в любой из этих границ не падает тестом — она
+ * показывает человеку заказ вместо недели или недельный документ в форме подбора заявок в рейс.
+ */
+
+const ORDER = vehicleRequest({ id: 'vr-1' });
+const WEEKLY = weeklyRequest({
+  items: [weeklyItem(), weeklyItem({ id: 'wi-2', kind: 'leave', sourceDisplayNumber: 'ТС-77' })],
+});
+
+/** Кто смотрит: штаб площадки — он и заводит недельную заявку, и читает список заказов. */
+const SHTAB = authUser({ role: 'shtab', constructionObjectIds: ['obj-1'] });
+
+/** Адрес после перехода: недельная строка обязана уводить со списка на страницу недели. */
+function LocationProbe() {
+  const location = useLocation();
+  return <div data-testid="path">{location.pathname}</div>;
+}
+
+function renderTab(over: RouteMap = {}, user = SHTAB, route = '/vehicle-requests'): HttpMock {
+  const http = mockHttp({
+    'GET /vehicle-requests/feed': () => json(vehicleFeed([ORDER], [WEEKLY])),
+    'GET /vehicle-requests/summary': () => json(vehicleSummary({ new: 1 })),
+    'GET /objects': () => json(list([objectDto()])),
+    'GET /departments': () => json(emptyList()),
+    'GET /vehicle-classifications': () => json(list([classification()])),
+    ...over,
+  });
+  // Вкладка рисуется внутри `PageTabs`: сводка живёт на их уровне (`TabsExtra`), и без обёртки
+  // экран остался бы без единственной цифры, ради которой у недельных заявок была своя вкладка.
+  renderWithUser(
+    <>
+      <PageTabs
+        activeKey="requests"
+        items={[{ key: 'requests', label: 'Заказ автотехники', children: <VehicleRequestsTab /> }]}
+      />
+      <LocationProbe />
+    </>,
+    { user, route },
+  );
+  return http;
+}
+
+/** Строка таблицы по номеру документа — искать её по индексу значило бы держаться за порядок. */
+function rowOf(displayNumber: string): HTMLElement {
+  const rows = [...document.querySelectorAll<HTMLElement>('.ant-table-tbody tr.ant-table-row')];
+  const found = rows.find((r) => r.textContent?.includes(displayNumber));
+  expect(found, `строка ${displayNumber}`).toBeTruthy();
+  return found!;
+}
+
+/** Ячейки строки по порядку колонок: №, заказчик, тип ТС, срок, техника, маршрут, статус, виза… */
+function cells(row: HTMLElement): HTMLElement[] {
+  return [...row.querySelectorAll<HTMLElement>('td')];
+}
+
+/** Поле панели фильтров опознаётся подсказкой: подписи у фильтров нет, её место занимает placeholder. */
+async function pickFilter(placeholder: string, option: string) {
+  const field = await waitFor(() => {
+    const found = [...document.querySelectorAll<HTMLElement>('.ant-select')].find(
+      (el) => el.textContent?.trim() === placeholder,
+    );
+    if (!found) throw new Error(`фильтра «${placeholder}» на экране нет`);
+    return found;
+  });
+  fireEvent.mouseDown(field.querySelector('.ant-select-selector') ?? field);
+  await waitFor(() => {
+    const match = [...document.querySelectorAll<HTMLElement>('.ant-select-item-option')].find((o) =>
+      o.textContent?.includes(option),
+    );
+    expect(match, `вариант «${option}»`).toBeTruthy();
+    fireEvent.click(match!);
+  });
+}
+
+/**
+ * Ввод в строку поиска и Enter. Отпускание клавиши обязательно: поле держит замок повторного
+ * нажатия до `keyup` (`keyLockRef` в rc-input), и без него второй поиск подряд не случился бы —
+ * ровно то, что делает человек, набирая номер за номером.
+ */
+function search(value: string) {
+  const input = screen.getByPlaceholderText('Поиск по № (ТС-123, НЗ-12)');
+  fireEvent.change(input, { target: { value } });
+  fireEvent.keyDown(input, { key: 'Enter', code: 'Enter', charCode: 13 });
+  fireEvent.keyUp(input, { key: 'Enter', code: 'Enter', charCode: 13 });
+}
+
+describe('лента «Заказ автотехники»: недельная заявка строкой списка', () => {
+  it('заказы и недельные заявки приходят одним запросом и стоят в одной таблице', async () => {
+    const http = renderTab();
+
+    expect(await screen.findByText('Т-42')).toBeDefined();
+    expect(screen.getByText('НЗ-12')).toBeDefined();
+    // Один запрос, а не два склеенных на клиенте: страница и порядок ленты выбраны сервером.
+    expect(http.countOf('GET /vehicle-requests/feed')).toBe(1);
+    expect(http.countOf('GET /vehicle-requests')).toBe(0);
+  });
+
+  it('недельная строка отвечает своим, а колонки без соответствия оставляет пустыми', async () => {
+    renderTab();
+    await screen.findByText('НЗ-12');
+    const row = cells(rowOf('НЗ-12'));
+
+    // Автор документа стоит второй строкой к номеру — так же, как у заказа.
+    expect(row[0]!.textContent).toContain('Штабов Ш. Ш.');
+    expect(row[1]!.textContent).toContain('ЖК Северный');
+    // Тип ТС — прочерк: позиции классификатора у недельного документа не бывает вовсе, и тега
+    // вида здесь тоже нет — вид называет сам номер.
+    expect(row[2]!.textContent).toBe('—');
+    // Срок — подпись недели с сервера: второго понятия недели в портале нет.
+    expect(row[3]!.textContent).toBe('17–23 августа 2026');
+    // Техника — состав документа: строка на единицу, с решением по ней.
+    expect(row[4]!.textContent).toContain('ТС-42');
+    expect(row[4]!.textContent).toContain('Остаётся до 23.08.2026');
+    expect(row[4]!.textContent).toContain('ТС-77');
+    expect(row[4]!.textContent).toContain('Уезжает');
+    // Маршрут — прочерк: рейсы заводятся по заказам, а не по документу-основанию.
+    expect(row[5]!.textContent).toBe('—');
+    expect(row[6]!.textContent).toBe('Ждёт визы');
+    expect(row[7]!.textContent).toBe('Ждёт визы');
+    // Файлы — прочерк: вложения носит заказ, а не решение по срокам.
+    expect(row[10]!.textContent).toBe('—');
+  });
+
+  it('визой недельной заявки из строки не распоряжаются — кнопки в ячейке нет', async () => {
+    // Виза недели той же транзакцией двигает сроки заказов: ставить её, не увидев состава,
+    // нельзя. У заказа кнопка в этой же колонке есть — и это единственное отличие двух ячеек.
+    renderTab({}, authUser({ role: 'rukstroy', constructionObjectIds: ['obj-1'] }));
+    await screen.findByText('НЗ-12');
+
+    expect(within(cells(rowOf('НЗ-12'))[7]!).queryByRole('button')).toBeNull();
+    expect(within(cells(rowOf('Т-42'))[7]!).getByText('Согласовать')).toBeDefined();
+  });
+
+  it('клик по недельной строке уводит на страницу недели, а не открывает карточку заявки', async () => {
+    renderTab();
+    await screen.findByText('НЗ-12');
+
+    fireEvent.click(within(rowOf('НЗ-12')).getByText('17–23 августа 2026'));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('path').textContent).toBe('/vehicle-requests/weekly/wr-1'),
+    );
+    // Карточки заявки при этом не появилось: у недельного документа её нет — сборка живёт
+    // отдельной страницей, и окно поверх списка означало бы второе место для того же документа.
+    expect(document.querySelector('.ant-modal')).toBeNull();
+  });
+
+  it('«Тип заявки» третьим значением спрашивает вид документа, а не тип заявки', async () => {
+    const http = renderTab();
+    await screen.findByText('НЗ-12');
+
+    await pickFilter('Все типы заявок', 'Недельная заявка');
+
+    await waitFor(() => {
+      const call = http.lastCall('GET /vehicle-requests/feed')!;
+      // Вид уходит своим параметром: `requestType` едет ещё и в тело заявки, где третьего
+      // значения не существует.
+      expect(call.query.get('kind')).toBe('weekly');
+      expect(call.query.get('requestType')).toBeNull();
+    });
+  });
+
+  it('фильтр «Неделя» показывается только при выбранном виде документа', async () => {
+    const http = renderTab();
+    await screen.findByText('НЗ-12');
+    // До выбора вида недели в панели нет: у заказа её не бывает, и заданный фильтр отсекал бы
+    // заказы целиком.
+    expect(screen.queryByText('Все недели')).toBeNull();
+
+    await pickFilter('Все типы заявок', 'Недельная заявка');
+    await waitFor(() => expect(screen.getByText('Все недели')).toBeDefined());
+
+    // Возврат к обычному типу снимает и неделю: невидимый фильтр продолжал бы сужать выдачу.
+    await pickFilter('Недельная заявка', 'Техника');
+    await waitFor(() => {
+      const call = http.lastCall('GET /vehicle-requests/feed')!;
+      expect(call.query.get('kind')).toBeNull();
+      expect(call.query.get('weekStart')).toBeNull();
+    });
+    expect(screen.queryByText('Все недели')).toBeNull();
+  });
+
+  it('поиск по номеру уходит парой «вид документа + номер»', async () => {
+    const http = renderTab();
+    await screen.findByText('НЗ-12');
+
+    search('НЗ-12');
+    await waitFor(() => {
+      const call = http.lastCall('GET /vehicle-requests/feed')!;
+      expect(call.query.get('num')).toBe('12');
+      expect(call.query.get('kind')).toBe('weekly');
+    });
+
+    // «ТС-341» ищет заказ и с недельного вида уводит: номер заказа сам говорит, что показать.
+    search('ТС-341');
+    await waitFor(() => {
+      const call = http.lastCall('GET /vehicle-requests/feed')!;
+      expect(call.query.get('num')).toBe('341');
+      expect(call.query.get('kind')).toBeNull();
+    });
+
+    // Пустой ввод снимает только номер: «не ищу конкретный документ» — не «покажи всё подряд».
+    search('');
+    await waitFor(() => expect(http.lastCall('GET /vehicle-requests/feed')!.query.get('num')).toBeNull());
+  });
+
+  it('старый адрес вкладки недельных открывает список уже суженным до них', async () => {
+    // `?tab=weekly` переведён страницей раздела на `?tab=requests&kind=weekly`: закладка на
+    // исчезнувшую вкладку обязана вести к тому же, что показывала она.
+    const http = renderTab({}, SHTAB, '/vehicle-requests?tab=requests&kind=weekly');
+
+    await waitFor(() =>
+      expect(http.lastCall('GET /vehicle-requests/feed')!.query.get('kind')).toBe('weekly'),
+    );
+  });
+
+  it('раздел уводит с исчезнувшей вкладки на список, а не сбрасывает вид документа', async () => {
+    // Вся цепочка целиком: адрес `?tab=weekly` — переход раздела — первый запрос ленты. Сделай
+    // раздел этот переход эффектом после отрисовки, и список успел бы запомнить «все виды»: вид
+    // читается из адреса ровно один раз, при первом состоянии фильтров.
+    const http = mockHttp({
+      'GET /vehicle-requests/feed': () => json(vehicleFeed([ORDER], [WEEKLY])),
+      'GET /vehicle-requests/summary': () => json(vehicleSummary()),
+      'GET /vehicle-requests/history': () => json(emptyList()),
+      'GET /vehicle-requests/history/summary': () =>
+        json({ total: 0, done: 0, cancelled: 0, totalCost: 0, withoutCost: 0 }),
+      'GET /objects': () => json(list([objectDto()])),
+      'GET /departments': () => json(emptyList()),
+      'GET /vehicle-classifications': () => json(list([classification()])),
+      'GET /counterparties': () => json(emptyList()),
+    });
+    renderWithUser(<VehicleRequestsPage />, {
+      user: SHTAB,
+      route: '/vehicle-requests?tab=weekly',
+    });
+
+    await waitFor(() => {
+      const call = http.lastCall('GET /vehicle-requests/feed');
+      expect(call, 'запрос ленты').toBeTruthy();
+      expect(call!.query.get('kind')).toBe('weekly');
+    });
+    // Вкладки «Недельные заявки» на экране больше нет: документ живёт строкой общего списка.
+    expect(screen.queryByText('Недельные заявки')).toBeNull();
+  });
+
+  it('в сводке появляется очередь визы недельных — цифра бывшей вкладки', async () => {
+    renderTab();
+    await screen.findByText('НЗ-12');
+
+    // Подпись и число — соседние узлы одной строки сводки, поэтому читается их общий родитель.
+    const counter = screen.getByText('Недельных ждут визы:').parentElement;
+    await waitFor(() => expect(counter?.textContent?.trim()).toBe('Недельных ждут визы: 1'));
+  });
+
+  it('кнопка «Заявка на неделю» стоит по праву заведения, а не по показу недельных строк', async () => {
+    renderTab();
+    expect(await screen.findByText('НЗ-12')).toBeDefined();
+    expect(screen.getByRole('button', { name: /Заявка на неделю/ })).toBeDefined();
+
+    // Наблюдатель недельные заявки видит (сквозной просмотр), но не заводит ни одной — кнопки у
+    // него нет вовсе: выключенная читалась бы как «сейчас нельзя», а нельзя ему всегда.
+    document.body.innerHTML = '';
+    renderTab({}, authUser({ role: 'observer' }));
+    expect(await screen.findByText('НЗ-12')).toBeDefined();
+    expect(screen.queryByRole('button', { name: /Заявка на неделю/ })).toBeNull();
+  });
+});

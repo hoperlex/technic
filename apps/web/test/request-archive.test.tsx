@@ -6,7 +6,7 @@ import { VehicleRequestsArchiveTab } from '../src/pages/vehicle/VehicleRequestsA
 import { WasteArchiveTab } from '../src/pages/waste/WasteArchiveTab';
 import { emptyList, list } from './factories/common';
 import { authUser } from './factories/auth';
-import { vehicleRequest } from './factories/vehicle';
+import { vehicleFeed, vehicleRequest } from './factories/vehicle';
 import { wasteRequest, wasteSummary } from './factories/waste';
 import { json, mockHttp } from './http';
 import { renderWithUser } from './render';
@@ -44,6 +44,8 @@ const archivedWaste = wasteRequest({
 function vehiclePageRoutes() {
   return {
     'GET /vehicle-requests': () => json(emptyList()),
+    // Вкладка «Заказ автотехники» читает ленту: заказы и недельные заявки одним списком.
+    'GET /vehicle-requests/feed': () => json(vehicleFeed([])),
     'GET /vehicle-requests/summary': () =>
       json({ new: 0, confirmed: 0, done: 0, cancelled: 0, awaitingApproval: 0 }),
     'GET /objects': () => json(emptyList()),

@@ -29,10 +29,8 @@ import { weeklyToday } from './weeklyShared';
 /** Решение по стоящей единице: остаётся до такого-то числа, уезжает или ещё не принято. */
 export interface WeeklyOrderDecision {
   kind: 'extend' | 'leave' | null;
-  /** До какого числа продлить; значим только у «остаётся». */
+  /** До какого числа продлить; значим только у «остаётся». Пусто — продлевать эту единицу нечем. */
   dateTo: string;
-  /** Явное согласие снять ожидающий запрос на досрочный отъезд (Р15). */
-  earlyEndOverride: boolean;
 }
 
 /** Строка блоков «остаётся»/«уезжает»: заказ, который стоит на площадке. */
@@ -43,7 +41,17 @@ export interface WeeklyOrderRow {
   title: string;
   /** Эффективный конец срока заказа сейчас — от него считается прибавка. */
   effectiveDateTo: string;
-  suggestedDateTo: string;
+  /**
+   * Дата продления умолчанием — воскресенье недели; `null` — продлевать нечем (см.
+   * `extendBlockedReason`). Именно `null`, а не «сегодня» и не воскресенье: подставь форма дату,
+   * которую сервер тут же отвергнет, — «Остаётся» снова стало бы доступным.
+   */
+  suggestedDateTo: string | null;
+  /**
+   * Почему вариант «Остаётся» по этой единице недоступен; `null` — доступен. Считает сервер тем
+   * же предикатом, каким потом откажет (`extendBlocker`), — правило здесь не повторяется.
+   */
+  extendBlockedReason: string | null;
   warnings: WeeklyItemWarning[];
   /**
    * Строка осталась от прежнего состава, а её заказа в предложении больше нет: отменили, закрыли,
@@ -100,6 +108,9 @@ function staleRow(
     title: item.currentVehicleLabel ?? '—',
     effectiveDateTo: last,
     suggestedDateTo: item.dateTo ?? last,
+    // Заказа нет в предложении — спросить сервер о годности продления не у кого, и запрещать
+    // «Остаётся» самим здесь нельзя: причина строки уже сказана `staleReason`.
+    extendBlockedReason: null,
     warnings: item.warnings,
     staleReason: known
       ? (reason ?? 'Заказа больше нет в срезе площадки — решите строку заново')
@@ -133,8 +144,8 @@ interface BuildResult {
  * Начальное состояние: предложение портала, поверх которого лежат уже сохранённые решения.
  *
  * Умолчание берётся у предложения (`included`): неделя чаще продлевается, чем сокращается, — но
- * строка с ожидающим досрочным отъездом приходит **без** решения (Р15): снять чужой запрос оптом
- * галкой нельзя, включить её в состав можно только явным действием.
+ * единица, которую продлить нечем (её срок и так идёт до воскресенья), приходит **без** решения:
+ * ей доступно только «Уезжает», а «оставить дальше» решает заявка на следующую неделю.
  */
 function buildState(
   request: WeeklyVehicleRequestDto,
@@ -157,14 +168,16 @@ function buildState(
       title: orderTitle(order),
       effectiveDateTo: order.effectiveDateTo,
       suggestedDateTo: order.suggestedDateTo,
+      extendBlockedReason: order.extendBlockedReason,
       warnings: order.warnings,
       staleReason: null,
       itemId: item?.id ?? null,
     });
     decisions[order.requestId] = {
       kind: item ? (item.kind === 'new' ? null : item.kind) : order.included ? 'extend' : null,
-      dateTo: item?.dateTo ?? order.suggestedDateTo,
-      earlyEndOverride: item?.earlyEndOverride ?? false,
+      // Даты, которой сервер не предложил, здесь не выдумывается: у единицы, чей срок и так идёт
+      // до воскресенья, поле остаётся пустым, а вариант «Остаётся» ей и не показывается.
+      dateTo: item?.dateTo ?? order.suggestedDateTo ?? '',
     };
   }
   // Сохранённые строки, которых в предложении нет: заказ отменили, закрыли или он уехал. Строка
@@ -175,7 +188,6 @@ function buildState(
     decisions[item.sourceRequestId] = {
       kind: item.kind === 'new' ? null : item.kind,
       dateTo: item.dateTo ?? item.expectedDateTo ?? '',
-      earlyEndOverride: item.earlyEndOverride,
     };
   }
 
@@ -212,12 +224,7 @@ function serialize(
     const decision = decisions[row.requestId];
     if (!decision?.kind) continue;
     if (decision.kind === 'extend') {
-      items.push({
-        kind: 'extend',
-        sourceRequestId: row.requestId,
-        dateTo: decision.dateTo,
-        earlyEndOverride: decision.earlyEndOverride,
-      });
+      items.push({ kind: 'extend', sourceRequestId: row.requestId, dateTo: decision.dateTo });
     } else {
       items.push({ kind: 'leave', sourceRequestId: row.requestId });
     }

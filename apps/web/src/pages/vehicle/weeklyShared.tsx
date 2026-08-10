@@ -8,6 +8,7 @@ import {
   selectableWeeks,
   type WeeklyItemCounts,
   type WeeklyItemWarning,
+  type WeeklyPreviousWeekDto,
   type WeeklyRequestItemDto,
   type WeeklyRequestStatus,
   weeklyRequestStatusColors,
@@ -78,6 +79,33 @@ export function weeklyCountsText(counts: WeeklyItemCounts): string {
     parts.push(`${counts.leave} ${plural(counts.leave, 'уезжает', 'уезжают', 'уезжают')}`);
   }
   return `${total} ${plural(total, 'единица', 'единицы', 'единиц')}: ${parts.join(', ')}`;
+}
+
+/**
+ * Отчёт по прошлой неделе одной строкой: «Из НЗ-15 (10–16 августа 2026): 6 позиций продлеваются,
+ * 2 выбыли — ТС-341 — заказ закрыт фактом; ТС-352 — вывоз оформлен рейсом Р-12».
+ *
+ * Выбывшие перечисляются поимённо и с причиной, а не считаются числом: цифра «2 выбыли» заставит
+ * штаб сверять состав с прошлой неделей глазами — а именно этого преемственность и должна была
+ * избавить. Причины приходят с сервера теми же текстами, что и остальные отказы модуля.
+ */
+export function weeklyPreviousText(previous: WeeklyPreviousWeekDto): string {
+  const from = `Из ${formatWeeklyRequestNumber(previous.num)} (${previous.weekLabel})`;
+  const carried =
+    previous.carried === 0
+      ? 'ни одна позиция не продлевается'
+      : `${previous.carried} ${plural(
+          previous.carried,
+          'позиция продлевается',
+          'позиции продлеваются',
+          'позиций продлеваются',
+        )}`;
+  if (previous.dropped.length === 0) return `${from}: ${carried}`;
+  const dropped = previous.dropped.map((d) => `${d.displayNumber} — ${d.reason}`).join('; ');
+  return (
+    `${from}: ${carried}, ${previous.dropped.length} ` +
+    `${plural(previous.dropped.length, 'выбыла', 'выбыли', 'выбыли')} — ${dropped}`
+  );
 }
 
 export function WeeklyStatusTag({ status }: { status: WeeklyRequestStatus }) {

@@ -6,7 +6,7 @@ import { json, mockHttp, type RouteMap } from './http';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { emptyList, list } from './factories/common';
-import { vehicleRequest, vehicleSummary } from './factories/vehicle';
+import { vehicleFeed, vehicleRequest, vehicleSummary } from './factories/vehicle';
 import { wasteRequest } from './factories/waste';
 import { VehicleRoutesTab } from '../src/pages/vehicle/VehicleRoutesTab';
 import { VehicleRequestsTab } from '../src/pages/vehicle/VehicleRequestsTab';
@@ -192,7 +192,7 @@ describe('переход по номеру записи между вкладк�
       },
     });
     mockHttp({
-      'GET /vehicle-requests': () => json(list([inRoute])),
+      'GET /vehicle-requests/feed': () => json(vehicleFeed([inRoute])),
       'GET /vehicle-requests/summary': () => json(vehicleSummary({ confirmed: 1 })),
       'GET /objects': () => json(emptyList()),
       'GET /departments': () => json(emptyList()),
@@ -218,7 +218,7 @@ describe('переход по номеру записи между вкладк�
       },
     });
     mockHttp({
-      'GET /vehicle-requests': () => json(list([inRoute])),
+      'GET /vehicle-requests/feed': () => json(vehicleFeed([inRoute])),
       'GET /vehicle-requests/summary': () => json(vehicleSummary({ confirmed: 1 })),
       'GET /objects': () => json(emptyList()),
       'GET /departments': () => json(emptyList()),
@@ -285,6 +285,8 @@ function UrlSpy() {
 function vehiclePageRoutes(over: RouteMap = {}): RouteMap {
   return {
     'GET /vehicle-requests': () => json(emptyList()),
+    // Вкладка «Заказ автотехники» читает ленту: заказы и недельные заявки одним списком.
+    'GET /vehicle-requests/feed': () => json(vehicleFeed([])),
     'GET /vehicle-requests/summary': () => json(vehicleSummary()),
     'GET /vehicle-requests/history': () => json(emptyList()),
     'GET /vehicle-requests/history/summary': () =>
