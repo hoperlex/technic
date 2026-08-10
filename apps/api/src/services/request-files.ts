@@ -116,7 +116,7 @@ export async function markFilesActive(tx: Tx, fileIds: string[]): Promise<void> 
  * означает, что автор загрузки в обход заявки уносит из неё документ.
  */
 export async function isFileLinked(fileId: string): Promise<boolean> {
-  const [waste, vehicle, service] = await Promise.all([
+  const [waste, vehicle, waybill, service] = await Promise.all([
     db
       .select({ f: requestFiles.fileId })
       .from(requestFiles)
@@ -127,13 +127,21 @@ export async function isFileLinked(fileId: string): Promise<boolean> {
       .from(vehicleRequestFiles)
       .where(eq(vehicleRequestFiles.fileId, fileId))
       .limit(1),
+    // Путевые листы (миграция 0087). Ровно тот пропуск, о котором предупреждает комментарий выше:
+    // таблица была заведена в `linkedFileIds`, здесь — забыта, и оба правила портала для сканов
+    // журнала не действовали.
+    db
+      .select({ f: waybillFiles.fileId })
+      .from(waybillFiles)
+      .where(eq(waybillFiles.fileId, fileId))
+      .limit(1),
     db
       .select({ f: serviceRequestFiles.fileId })
       .from(serviceRequestFiles)
       .where(eq(serviceRequestFiles.fileId, fileId))
       .limit(1),
   ]);
-  return waste.length > 0 || vehicle.length > 0 || service.length > 0;
+  return waste.length > 0 || vehicle.length > 0 || waybill.length > 0 || service.length > 0;
 }
 
 /**

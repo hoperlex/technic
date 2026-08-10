@@ -22,6 +22,7 @@ import {
   vehicleRequests,
   vehicles,
   wasteRequests,
+  waybillFiles,
 } from '../db/schema';
 import { err } from '../lib/errors';
 import { requirePrincipal } from '../auth/plugin';
@@ -79,6 +80,13 @@ export interface FileLinkage {
   visibleVehicle: boolean;
   /** Файл связан с видимой пользователю заявкой на обслуживание оргтехники (ADR 0084). */
   visibleService: boolean;
+  /**
+   * Файл подшит к путевому листу (миграция 0087). Своей области у журнала листов нет — его
+   * закрывает одно право `waybills.read`, — поэтому «видим» здесь означает ровно «связь нашлась»,
+   * а не «лист попал в область». Аннулированный лист вложения не теряет: испорченный бланк
+   * подшивают к журналу вместе с тем, что к нему пришло.
+   */
+  visibleWaybill: boolean;
   /** Файл вообще привязан хоть к чему-нибудь — неважно, видно это пользователю или нет. */
   linkedAnywhere: boolean;
 }
@@ -103,6 +111,7 @@ export function decideFileAccess(
   if (linkage.visibleWaste && can(p, 'wasteRequests.read')) return true;
   if (linkage.visibleVehicle && can(p, 'vehicleRequests.read')) return true;
   if (linkage.visibleService && can(p, 'serviceRequests.read')) return true;
+  if (linkage.visibleWaybill && can(p, 'waybills.read')) return true;
   return !linkage.linkedAnywhere && !!uploadedBy && uploadedBy === p.id;
 }
 
@@ -117,6 +126,7 @@ async function canAccessFile(
   const canReadWaste = can(p, 'wasteRequests.read');
   const canReadVehicle = can(p, 'vehicleRequests.read');
   const canReadService = can(p, 'serviceRequests.read');
+  const canReadWaybills = can(p, 'waybills.read');
 
   let visibleWaste = false;
   if (canReadWaste) {
@@ -191,9 +201,23 @@ async function canAccessFile(
     visibleService = service.length > 0;
   }
 
+  let visibleWaybill = false;
+  if (!visibleWaste && !visibleVehicle && !visibleService && canReadWaybills) {
+    // Скан, подшитый к бланку строгой отчётности (миграция 0087): оборот, заполненный заказчиком,
+    // отметки, акт. Условие одно — связь: журнал листов не сужается ни объектом, ни контрагентом
+    // (`GET /waybills` фильтрует только запрошенным), и придумывать вложениям область, которой нет
+    // у самого журнала, значило бы прятать файл, который портал в строке показывает.
+    const waybill = await db
+      .select({ id: waybillFiles.waybillId })
+      .from(waybillFiles)
+      .where(eq(waybillFiles.fileId, fileId))
+      .limit(1);
+    visibleWaybill = waybill.length > 0;
+  }
+
   // Привязку целиком спрашиваем только у того, кому иначе отказали бы: это ещё несколько запросов.
   const linkedAnywhere =
-    visibleWaste || visibleVehicle || visibleService
+    visibleWaste || visibleVehicle || visibleService || visibleWaybill
       ? true
       : uploadedBy === p.id
         ? await isFileLinked(fileId)
@@ -203,6 +227,7 @@ async function canAccessFile(
     visibleWaste,
     visibleVehicle,
     visibleService,
+    visibleWaybill,
     linkedAnywhere,
   });
 }

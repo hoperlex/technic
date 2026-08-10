@@ -98,24 +98,36 @@ const NOWHERE = {
   visibleWaste: false,
   visibleVehicle: false,
   visibleService: false,
+  visibleWaybill: false,
   linkedAnywhere: false,
 };
 const IN_WASTE = {
   visibleWaste: true,
   visibleVehicle: false,
   visibleService: false,
+  visibleWaybill: false,
   linkedAnywhere: true,
 };
 const IN_VEHICLE = {
   visibleWaste: false,
   visibleVehicle: true,
   visibleService: false,
+  visibleWaybill: false,
   linkedAnywhere: true,
 };
 const IN_SERVICE = {
   visibleWaste: false,
   visibleVehicle: false,
   visibleService: true,
+  visibleWaybill: false,
+  linkedAnywhere: true,
+};
+/** Скан, подшитый к путевому листу (миграция 0087): у журнала листов своей области нет. */
+const IN_WAYBILL = {
+  visibleWaste: false,
+  visibleVehicle: false,
+  visibleService: false,
+  visibleWaybill: true,
   linkedAnywhere: true,
 };
 /** Файл лежит в заявке, которую этот пользователь не видит (чужой объект, чужой контрагент). */
@@ -123,6 +135,7 @@ const IN_INVISIBLE_REQUEST = {
   visibleWaste: false,
   visibleVehicle: false,
   visibleService: false,
+  visibleWaybill: false,
   linkedAnywhere: true,
 };
 
@@ -251,6 +264,7 @@ describe('привязка документа сервисной заявки (�
       visibleVehicle: false,
       // Заявку он больше не видит: сменились роль, объект, отдел или контрагент.
       visibleService: false,
+      visibleWaybill: false,
       linkedAnywhere: await isFileLinked(FILE_ID),
     });
     expect(decideFileAccess(uploader, UPLOADER, await linkage())).toBe(true);
@@ -278,5 +292,61 @@ describe('привязка документа сервисной заявки (�
       );
       stored.delete(table);
     }
+  });
+});
+
+/**
+ * Скан путевого листа (миграция 0087) — тот же Р28, только для журнала строгой отчётности.
+ *
+ * Таблица `waybill_files` была заведена в `linkedFileIds`, но забыта в `isFileLinked` и в
+ * `canAccessFile`, и оба правила портала для сканов не действовали разом: скан не отдавался
+ * никому, кроме загрузившего (журнал показывал строку, а скачивание отвечало 403 даже
+ * администратору), и удалялся мимо журнала обычным `DELETE /files/:id`.
+ *
+ * Область здесь не проверяется, и это не упущение: журнал листов не сужается ни объектом, ни
+ * контрагентом — его закрывает одно право `waybills.read`. Придумай вложениям область, которой
+ * нет у самого журнала, — и портал стал бы прятать файл, который сам же в строке показывает.
+ */
+describe('скан путевого листа (миграция 0087)', () => {
+  beforeEach(() => {
+    stored.clear();
+    stored.set(filesTable, [FILE_ID]);
+  });
+
+  it('`isFileLinked` знает про подшитые к листу сканы', async () => {
+    expect(await isFileLinked(FILE_ID)).toBe(false);
+    stored.set(waybillFiles, [FILE_ID]);
+    expect(await isFileLinked(FILE_ID)).toBe(true);
+  });
+
+  it('скан виден каждому, кто читает журнал, — и тому, кто его не подшивал', () => {
+    for (const role of ['admin', 'manager', 'dispatcher'] as const) {
+      expect(decideFileAccess(principal(role, 'other-user'), UPLOADER, IN_WAYBILL)).toBe(true);
+    }
+  });
+
+  it('и не виден тому, у кого журнала нет', () => {
+    // У штаба, руководителя строительства и внешних исполнителей `waybills.read` нет: бланк
+    // строгой отчётности — работа диспетчерской.
+    expect(decideFileAccess(principal('shtab', 'other-user'), UPLOADER, IN_WAYBILL)).toBe(false);
+    expect(decideFileAccess(vehicleLessor(), UPLOADER, IN_WAYBILL)).toBe(false);
+  });
+
+  it('подшивший теряет прямой доступ к скану, как только тот лёг в лист', async () => {
+    // Ловушка та же, что у сервисной заявки: до подшивки файл открыт автору загрузки, после —
+    // живёт по правилам журнала, и «после» узнаётся только из `isFileLinked`.
+    const uploader = principal('shtab');
+    const linkage = async () => ({
+      visibleWaste: false,
+      visibleVehicle: false,
+      visibleService: false,
+      // Журнала у него нет, поэтому и связь по листу для него не «видима».
+      visibleWaybill: false,
+      linkedAnywhere: await isFileLinked(FILE_ID),
+    });
+    expect(decideFileAccess(uploader, UPLOADER, await linkage())).toBe(true);
+
+    stored.set(waybillFiles, [FILE_ID]);
+    expect(decideFileAccess(uploader, UPLOADER, await linkage())).toBe(false);
   });
 });
