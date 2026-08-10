@@ -5,8 +5,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   formatServiceRequestNumber,
   moscowDateKeyOf,
+  WARRANTY_EXPIRING_DAYS,
+  type OfficeEquipmentServiceEntryDto,
   type ServiceRequestDto,
   type ServiceRequestItemDto,
+  type ServiceWarrantyRowDto,
 } from '@technic/contracts';
 import { applyMigrations } from '../src/db/migration-journal';
 // Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
@@ -79,8 +82,25 @@ interface Ctx {
   foreignShtab: TestUser;
   /** Сотрудник отдела: у него своя ось области — по отделам, а не по объектам. */
   department: TestUser;
+  /**
+   * Держатель справочников (роль `manager`): ведёт карточки техники, но заявок на обслуживание не
+   * видит. Только им и проверяется, что секция обслуживания закрыта правом модуля, а не
+   * справочника (§8.2): у всех прочих учёток файла оба права либо есть, либо нет разом.
+   */
+  keeper: TestUser;
+  /**
+   * Сотрудник **двух** отделов: без него ветки выбора заказчика (Р5) неразличимы — у учётки с
+   * одним отделом подсказка из техники и «единственный отдел» дают один и тот же ответ.
+   */
+  multiDepartment: TestUser;
   objectId: string;
+  /** Чужая площадка: её видит `foreignShtab`, и на неё же не переносится техника (Р7). */
+  foreignObjectId: string;
   departmentId: string;
+  /** Второй отдел учётки `multiDepartment`. */
+  secondDepartmentId: string;
+  /** Отдел, к которому ни одна учётка теста не приписана. */
+  foreignDepartmentId: string;
   serviceCounterpartyId: string;
   /** Второй сервис: им проверяется, что исполнитель не видит чужие назначенные заявки. */
   otherServiceCounterpartyId: string;
@@ -92,6 +112,12 @@ interface Ctx {
   deptPrinter: { id: string };
   /** Техника без владельца: на ней отдел заводит заявку от своего имени. */
   freePrinter: { id: string };
+  /** Техника второго отдела: на ней проверяется подсказка из владельца единицы (Р5). */
+  hintPrinter: { id: string };
+  /** Неразмеченная техника: подсказки из неё нет, и отдел выбирают руками. */
+  choicePrinter: { id: string };
+  /** Техника чужого отдела: роли отдела она в справочнике не видна (Р7). */
+  foreignDeptPrinter: { id: string };
 }
 
 let ctx: Ctx;
@@ -117,6 +143,8 @@ const state: {
   performedItemId: string;
   notPerformedItemId: string;
   expiredItemId: string;
+  /** Счёт, подшитый в закрытую заявку: его же снимает распорядитель чужих файлов (§8.3). */
+  attachedInvoiceId: string;
 } = {
   main: { id: '', num: 0 },
   cancelled: { id: '', num: 0, itemId: '' },
@@ -127,6 +155,7 @@ const state: {
   performedItemId: '',
   notPerformedItemId: '',
   expiredItemId: '',
+  attachedInvoiceId: '',
 };
 
 /** Конфиг читается при импорте, поэтому окружение выставляется до первого `import('../src/...')`. */
@@ -186,6 +215,12 @@ function innOf(base9: string): string {
   return `${base9}${(sum % 11) % 10}`;
 }
 
+/** «Дата плюс N дней» — порог «истекает» считается сутками, а не месяцами (`WARRANTY_EXPIRING_DAYS`). */
+function plusDays(dateKey: string, days: number): string {
+  const [y, m, d] = dateKey.split('-').map(Number);
+  return new Date(Date.UTC(y!, m! - 1, d! + days)).toISOString().slice(0, 10);
+}
+
 const EXPIRED_ON = plusMonths(TODAY, -12);
 /**
  * Дата из талона при закрытии: сервер не принимает гарантию, истекающую раньше даты выполнения
@@ -229,6 +264,13 @@ async function listIds(auth: Auth, query = ''): Promise<string[]> {
   const res = await inject('GET', `/api/v1/service-requests?pageSize=200${query}`, auth);
   expect(res.statusCode, res.body).toBe(200);
   return (res.json().items as ServiceRequestDto[]).map((row) => row.id);
+}
+
+/** Идентификаторы единиц справочника, видимых субъекту (Р7): страница заведомо больше данных. */
+async function equipmentIds(auth: Auth): Promise<string[]> {
+  const res = await inject('GET', '/api/v1/office-equipment?pageSize=200', auth);
+  expect(res.statusCode, res.body).toBe(200);
+  return (res.json().items as { id: string }[]).map((row) => row.id);
 }
 
 /**
@@ -338,9 +380,10 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
         RETURNING id`);
       return res.rows[0]!.id;
     };
-    // ИНН — с настоящей контрольной суммой, а не «77…01»: тест оставляет контрагентов в общей
-    // базе, а обмен справочниками (`directory-transfer.db`) выгружает её целиком и загружает
-    // обратно — на выдуманном ИНН он падает, и падение выглядит как дефект чужого модуля.
+    // ИНН — с настоящей контрольной суммой, а не «77…01»: пока идёт прогон, контрагенты лежат в
+    // общей базе (а после падения остаются там и вовсе), а обмен справочниками
+    // (`directory-transfer.db`) выгружает её целиком и загружает обратно — на выдуманном ИНН он
+    // падает, и падение выглядит как дефект чужого модуля.
     const digits = String(Date.now()).slice(-6);
     const serviceCounterpartyId = await counterparty(`Сервис-Про ${RUN}`, innOf(`77${digits}0`));
     const otherServiceCounterpartyId = await counterparty(
@@ -359,10 +402,17 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       RETURNING id`);
     const foreignObjectId = foreignRow.rows[0]!.id;
 
-    const departmentRow = await db.execute<{ id: string }>(sql`
-      INSERT INTO departments (code, name) VALUES (${`OE-D-${RUN}`}, ${`Тестовый отдел ${RUN}`})
-      RETURNING id`);
-    const departmentId = departmentRow.rows[0]!.id;
+    /** Отдел — три штуки: свой, второй у сотрудника двух отделов и заведомо чужой (Р5, Р7). */
+    const makeDepartment = async (tag: string): Promise<string> => {
+      const row = await db.execute<{ id: string }>(sql`
+        INSERT INTO departments (code, name)
+        VALUES (${`OE-${tag}-${RUN}`}, ${`Тестовый отдел ${tag} ${RUN}`})
+        RETURNING id`);
+      return row.rows[0]!.id;
+    };
+    const departmentId = await makeDepartment('D');
+    const secondDepartmentId = await makeDepartment('D2');
+    const foreignDepartmentId = await makeDepartment('DF');
 
     const admin = await makeUser({ tag: 'admin', role: 'admin' });
     const customer = await makeUser({ tag: 'cust', role: 'shtab' });
@@ -374,13 +424,18 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
     });
     const foreignShtab = await makeUser({ tag: 'fshtab', role: 'shtab' });
     const department = await makeUser({ tag: 'dept', role: 'department' });
+    const multiDepartment = await makeUser({ tag: 'dept2', role: 'department' });
+    const keeper = await makeUser({ tag: 'keeper', role: 'manager' });
 
     await db.execute(sql`
       INSERT INTO user_construction_objects (user_id, construction_object_id)
       VALUES (${customer.id}, ${objectId}), (${operator.id}, ${objectId}),
              (${foreignShtab.id}, ${foreignObjectId})`);
     await db.execute(sql`
-      INSERT INTO user_departments (user_id, department_id) VALUES (${department.id}, ${departmentId})`);
+      INSERT INTO user_departments (user_id, department_id)
+      VALUES (${department.id}, ${departmentId}),
+             (${multiDepartment.id}, ${departmentId}),
+             (${multiDepartment.id}, ${secondDepartmentId})`);
     // Надстройка роли (ADR 0086): тот же штаб, но со стороной оператора оргтехники. Роль у него
     // остаётся `shtab` — именно это и проверяет коридор: право статуса у надстройки есть, а шаги
     // исполнителя ей всё равно не положены.
@@ -421,14 +476,22 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       service: await withAuth(service),
       foreignShtab: await withAuth(foreignShtab),
       department: await withAuth(department),
+      multiDepartment: await withAuth(multiDepartment),
+      keeper: await withAuth(keeper),
       objectId,
+      foreignObjectId,
       departmentId,
+      secondDepartmentId,
+      foreignDepartmentId,
       serviceCounterpartyId,
       otherServiceCounterpartyId,
       mfp: { id: '', inventoryNumber: '' },
       scanner: { id: '' },
       deptPrinter: { id: '' },
       freePrinter: { id: '' },
+      hintPrinter: { id: '' },
+      choicePrinter: { id: '' },
+      foreignDeptPrinter: { id: '' },
     };
 
     const inventoryNumber = `ОЕ-${RUN}-1`;
@@ -466,10 +529,73 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
         objectId,
       }),
     };
+    // Владелец — **второй** отдел учётки: подсказка обязана прийти из карточки техники, а не из
+    // набора отделов автора, и на первом отделе набора эти два ответа неразличимы.
+    ctx.hintPrinter = {
+      id: await makeEquipment({
+        typeId,
+        name: 'Canon i-SENSYS LBP223',
+        inventoryNumber: `ОЕ-${RUN}-5`,
+        objectId,
+        departmentId: secondDepartmentId,
+      }),
+    };
+    ctx.choicePrinter = {
+      id: await makeEquipment({
+        typeId,
+        name: 'Pantum P3300',
+        inventoryNumber: `ОЕ-${RUN}-6`,
+        objectId,
+      }),
+    };
+    ctx.foreignDeptPrinter = {
+      id: await makeEquipment({
+        typeId,
+        name: 'Ricoh SP 330',
+        inventoryNumber: `ОЕ-${RUN}-7`,
+        objectId,
+        departmentId: foreignDepartmentId,
+      }),
+    };
   }, 180_000);
 
+  /**
+   * Уборка: база у db-тестов общая и живёт между прогонами, поэтому файл уносит ровно то, что
+   * завёл сам. Опознаётся всё по суффиксу прогона (`RUN`), а порядок задан внешними ключами:
+   * гарантийная ссылка объявлена `RESTRICT` и держит строку сметы, заявки держат технику,
+   * учётку-автора и контрагента-исполнителя, техника — площадку и отдел. Каскады остального
+   * (строки сметы, документы, история статусов, объекты и отделы учёток) сработают сами.
+   */
   afterAll(async () => {
     await ctx?.app.close();
+    if (ctx?.db) {
+      const equipment = sql`SELECT id FROM office_equipment WHERE inventory_number LIKE ${`ОЕ-${RUN}-%`}`;
+      const users = sql`SELECT id FROM users WHERE email LIKE ${`db-oe-%-${RUN}@example.invalid`}`;
+      // Обращение по гарантии ссылается на строку сметы другой заявки: пока ссылка стоит, ни ту,
+      // ни другую заявку не удалить одним запросом — `RESTRICT` проверяется построчно.
+      await ctx.db.execute(sql`
+        UPDATE service_requests SET warranty_claim_source = NULL, warranty_claim_item_id = NULL
+        WHERE office_equipment_id IN (${equipment})`);
+      await ctx.db.execute(
+        sql`DELETE FROM service_requests WHERE office_equipment_id IN (${equipment})`,
+      );
+      await ctx.db.execute(
+        sql`DELETE FROM office_equipment WHERE inventory_number LIKE ${`ОЕ-${RUN}-%`}`,
+      );
+      // Отложенное удаление из S3 (задача outbox) вместе с самим файлом: хранилища в тесте нет,
+      // и задача осталась бы висеть в очереди живого планировщика.
+      await ctx.db.execute(sql`DELETE FROM jobs WHERE payload->>'objectKey' LIKE ${`oe/${RUN}/%`}`);
+      await ctx.db.execute(sql`DELETE FROM files WHERE object_key LIKE ${`oe/${RUN}/%`}`);
+      await ctx.db.execute(sql`DELETE FROM audit_log WHERE actor_user_id IN (${users})`);
+      await ctx.db.execute(
+        sql`DELETE FROM users WHERE email LIKE ${`db-oe-%-${RUN}@example.invalid`}`,
+      );
+      await ctx.db.execute(sql`DELETE FROM counterparties WHERE name LIKE ${`Сервис-% ${RUN}`}`);
+      // Отделы раньше площадок: у отдела бывает своя площадка (ADR 0062), и ссылка на неё —
+      // `RESTRICT`. У отделов этого теста её нет, но порядок не должен зависеть от этого.
+      await ctx.db.execute(sql`DELETE FROM departments WHERE code LIKE ${`OE-%${RUN}`}`);
+      await ctx.db.execute(sql`DELETE FROM construction_objects WHERE code LIKE ${`OE-%${RUN}`}`);
+    }
     await ctx?.closeDb();
   });
 
@@ -1323,5 +1449,324 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
     const still = await inject('GET', `/api/v1/office-equipment/${ctx.mfp.id}`, ctx.operator.auth);
     expect(still.statusCode, still.body).toBe(200);
     expect(still.json().deletedAt).toBeNull();
+  });
+
+  // ── Шаг 14. Остальные правила документов (§8.3) ──
+  //
+  // Шаг 9 закрыл главную пару: акт после приёмки принимают, вложение — нет, и снять документ
+  // приложивший уже не может. Здесь дописано остальное из таблицы §8.3, потому что «принимает
+  // только документы» — это три вида из пяти, а не один, и «снять нельзя» — правило про право, а
+  // не про человека.
+
+  it('закрытая заявка принимает счёт и гарантийный талон, но не смету', async () => {
+    const attach = async (kind: string, filename: string) => {
+      const fileId = await uploadedFile(ctx.service.id, filename);
+      const res = await inject(
+        'POST',
+        `/api/v1/service-requests/${state.main.id}/files`,
+        ctx.service.auth,
+        { fileIds: [fileId], kind },
+      );
+      return { fileId, res };
+    };
+
+    const invoice = await attach('invoice', 'schet.pdf');
+    expect(invoice.res.statusCode, invoice.res.body).toBe(200);
+    const warrantyCard = await attach('warranty_card', 'talon.pdf');
+    expect(warrantyCard.res.statusCode, warrantyCard.res.body).toBe(200);
+
+    // Смета — вид исполнителя из середины цикла: после приёмки она не «ещё один документ», а
+    // попытка переписать то, что уже согласовали и приняли.
+    const estimate = await attach('estimate', 'smeta.pdf');
+    expect(estimate.res.statusCode, estimate.res.body).toBe(422);
+    expect(estimate.res.json().message).toContain('принимает только документы');
+
+    // В заявке остались акт шага 9 и две принятые бумаги: отказ ничего не подшил побочно.
+    const files = (await card(state.main.id)).files;
+    expect(files.map((f) => f.kind).sort()).toEqual(['act', 'invoice', 'warranty_card']);
+    state.attachedInvoiceId = invoice.fileId;
+  });
+
+  it('снимает документ из закрытой заявки только распорядитель чужих файлов', async () => {
+    // Отказ исполнителю проверен шагом 9; здесь — вторая половина того же правила: закрывает
+    // снятие отсутствие `files.manageAny`, а не то, кто именно подшивал бумагу. Иначе «снять
+    // нельзя» читалось бы как «нельзя никому», и ошибочно подшитый счёт остался бы в заявке
+    // навсегда.
+    const res = await inject(
+      'DELETE',
+      `/api/v1/service-requests/${state.main.id}/files/${state.attachedInvoiceId}`,
+      ctx.admin.auth,
+    );
+    expect(res.statusCode, res.body).toBe(200);
+    expect((res.json() as ServiceRequestDto).files.map((f) => f.kind).sort()).toEqual([
+      'act',
+      'warranty_card',
+    ]);
+  });
+
+  it('смету снимают в «Диагностике» и не снимают после предъявления', async () => {
+    // Заявка на сканере стоит в «Диагностике» со своей строкой сметы — на ней и проверяется
+    // единственное исключение из «вложение снимает приложивший»: предъявленную смету не вынимают
+    // из карточки, её возвращают в диагностику (Р14).
+    const attach = async (filename: string) => {
+      const fileId = await uploadedFile(ctx.service.id, filename);
+      const res = await inject(
+        'POST',
+        `/api/v1/service-requests/${state.otherUnit.id}/files`,
+        ctx.service.auth,
+        { fileIds: [fileId], kind: 'estimate' },
+      );
+      expect(res.statusCode, res.body).toBe(200);
+      return fileId;
+    };
+    const detach = (fileId: string) =>
+      inject(
+        'DELETE',
+        `/api/v1/service-requests/${state.otherUnit.id}/files/${fileId}`,
+        ctx.service.auth,
+      );
+
+    const draft = await attach('kp-chernovik.pdf');
+    const removed = await detach(draft);
+    expect(removed.statusCode, removed.body).toBe(200);
+    expect((removed.json() as ServiceRequestDto).files).toEqual([]);
+
+    const final = await attach('kp.pdf');
+    const submitted = await inject(
+      'PATCH',
+      `/api/v1/service-requests/${state.otherUnit.id}/estimate/submit`,
+      ctx.service.auth,
+      { version: await version(state.otherUnit.id) },
+    );
+    expect(submitted.statusCode, submitted.body).toBe(200);
+    expect(submitted.json().status).toBe('estimate_review');
+
+    const locked = await detach(final);
+    expect(locked.statusCode, locked.body).toBe(422);
+    expect(locked.json().message).toContain('Предъявленная смета не снимается');
+    expect((await card(state.otherUnit.id)).files).toHaveLength(1);
+  });
+
+  // ── Шаг 15. От чьего имени заявка: выбор отдела заказчика (Р5) ──
+  //
+  // Ветка «у автора ровно один отдел» пройдена шагом 12 (заявка сотрудника отдела на неразмеченную
+  // технику), ветки «отделов нет вовсе» — шагом 1 (штаб) и тем же шагом 12 (администратор). Здесь
+  // остаются три, которые видны только на учётке с **двумя** отделами: на одном подсказка из
+  // техники и единственный отдел дают один и тот же ответ.
+
+  it('подсказка приходит из отдела-владельца техники, а не из набора отделов автора', async () => {
+    const dto = await createRequest(
+      ctx.multiDepartment.auth,
+      ctx.hintPrinter.id,
+      'Печатает с полосой по краю',
+    );
+    // Техника числится за вторым отделом учётки — от его имени заявка и заведена, хотя выбор
+    // человеку не предъявляли: спрашивать нечего, ответ уже есть в карточке техники.
+    expect(dto.customerDepartment?.id).toBe(ctx.secondDepartmentId);
+    expect(dto.equipmentDepartment?.id).toBe(ctx.secondDepartmentId);
+  });
+
+  it('без подсказки из техники отдел у автора нескольких отделов обязателен — 422', async () => {
+    const payload = {
+      officeEquipmentId: ctx.choicePrinter.id,
+      description: 'Не включается',
+      responsibleName: 'Иванов Иван Иванович',
+      responsiblePhone: '+79990000000',
+    };
+    const res = await inject('POST', '/api/v1/service-requests', ctx.multiDepartment.auth, payload);
+    // 422, а не «взяли первый отдел набора»: первый элемент массива — это случайный отдел, и
+    // заявка ушла бы в область, к которой человек её не относил.
+    expect(res.statusCode, res.body).toBe(422);
+    expect(res.json().message).toContain('Укажите отдел');
+
+    // Тупика при этом нет: названный свой отдел принимается тем же запросом.
+    const chosen = await inject('POST', '/api/v1/service-requests', ctx.multiDepartment.auth, {
+      ...payload,
+      customerDepartmentId: ctx.secondDepartmentId,
+    });
+    expect(chosen.statusCode, chosen.body).toBe(201);
+    const dto = chosen.json() as ServiceRequestDto;
+    expect(dto.customerDepartment?.id).toBe(ctx.secondDepartmentId);
+    // Техника не размечена — второй отдельской оси у заявки нет вовсе.
+    expect(dto.equipmentDepartment).toBeNull();
+  });
+
+  it('заявку от чужого отдела роль отдела не заводит — 403', async () => {
+    const res = await inject('POST', '/api/v1/service-requests', ctx.multiDepartment.auth, {
+      officeEquipmentId: ctx.freePrinter.id,
+      description: 'Проверка чужого отдела',
+      responsibleName: 'Иванов Иван Иванович',
+      responsiblePhone: '+79990000000',
+      customerDepartmentId: ctx.foreignDepartmentId,
+    });
+    // 403, а не 422: дело не в состоянии заявки, а в том, что от имени этого отдела учётке
+    // работать не положено вовсе (`resolveCustomerDepartment`, Р5).
+    expect(res.statusCode, res.body).toBe(403);
+    expect(res.json().message).toContain('только от своих отделов');
+  });
+
+  // ── Шаг 16. Область справочника оргтехники (Р7) ──
+  //
+  // Коды ответов по правам — предмет `access-matrix.test.ts`: там закреплено, что справочник
+  // закрыт коменданту и сервисной компании целиком, а ведение приходит надстройкой. Здесь
+  // проверяется то, чего матрица прав не видит, — **область**: право есть, а строка чужая.
+
+  it('единицу не переносят на площадку вне области — 403', async () => {
+    const res = await inject('PATCH', `/api/v1/office-equipment/${ctx.mfp.id}`, ctx.operator.auth, {
+      objectId: ctx.foreignObjectId,
+    });
+    // Перенос — тот же выход за область, только наружу: без проверки целевой стороны штаб увёз бы
+    // технику на чужую площадку и потерял бы её из своего справочника.
+    expect(res.statusCode, res.body).toBe(403);
+    expect(res.json().message).toContain('только со своими объектами');
+
+    const still = await inject('GET', `/api/v1/office-equipment/${ctx.mfp.id}`, ctx.operator.auth);
+    expect(still.statusCode, still.body).toBe(200);
+    expect(still.json().object.id).toBe(ctx.objectId);
+  });
+
+  it('штаб чужой площадки техники не видит — ни в списке, ни по прямому id', async () => {
+    expect(await equipmentIds(ctx.foreignShtab.auth)).not.toContain(ctx.mfp.id);
+    const direct = await inject(
+      'GET',
+      `/api/v1/office-equipment/${ctx.mfp.id}`,
+      ctx.foreignShtab.auth,
+    );
+    expect(direct.statusCode, direct.body).toBe(403);
+  });
+
+  it('роль отдела видит свою и неразмеченную технику, но не технику чужого отдела', async () => {
+    const visible = await equipmentIds(ctx.department.auth);
+    expect(visible).toContain(ctx.deptPrinter.id);
+    // Неразмеченная техника открыта намеренно: разметить её больше некому, и спрятать её от
+    // единственного, кто может проставить владельца, значит закрыть разметку навсегда.
+    expect(visible).toContain(ctx.freePrinter.id);
+    expect(visible).not.toContain(ctx.foreignDeptPrinter.id);
+    // Второй отдел этой учётке не принадлежит: техника соседнего отдела ей так же чужая.
+    expect(visible).not.toContain(ctx.hintPrinter.id);
+
+    const direct = await inject(
+      'GET',
+      `/api/v1/office-equipment/${ctx.foreignDeptPrinter.id}`,
+      ctx.department.auth,
+    );
+    expect(direct.statusCode, direct.body).toBe(403);
+    expect(direct.json().message).toContain('только с техникой своих отделов');
+  });
+
+  /**
+   * Реестр действующих гарантий (§9.5) и секция обслуживания в карточке единицы (§8.2).
+   *
+   * Оба ответа собираются из одних и тех же данных, но по разным правилам видимости, и проверяются
+   * вместе именно поэтому: реестр сужается **двумя** областями сразу — парк техники отдаётся по
+   * области справочника, ремонты по области заявок, — а секция карточки открывается правом модуля,
+   * хотя живёт в справочнике.
+   */
+  describe('гарантии: реестр и карточка единицы', () => {
+    /** Гарантия поставщика — своя, не из ремонта: без неё в реестре был бы один носитель из двух. */
+    const SUPPLIER_WARRANTY_ON = plusMonths(TODAY, 24);
+
+    async function warranties(auth: Auth, query = ''): Promise<ServiceWarrantyRowDto[]> {
+      const res = await inject('GET', `/api/v1/service-requests/warranties${query}`, auth);
+      expect(res.statusCode, res.body).toBe(200);
+      return res.json().items as ServiceWarrantyRowDto[];
+    }
+
+    it('оператор видит оба носителя: гарантию поставщика и гарантию на выполненный ремонт', async () => {
+      const patch = await inject(
+        'PATCH',
+        `/api/v1/office-equipment/${ctx.mfp.id}`,
+        ctx.operator.auth,
+        {
+          warrantyUntil: SUPPLIER_WARRANTY_ON,
+        },
+      );
+      expect(patch.statusCode, patch.body).toBe(200);
+
+      const rows = await warranties(ctx.operator.auth);
+      const supplier = rows.find((r) => r.kind === 'equipment' && r.equipmentId === ctx.mfp.id);
+      expect(supplier, 'гарантия поставщика в реестре').toBeDefined();
+      expect(supplier).toMatchObject({ warrantyUntil: SUPPLIER_WARRANTY_ON, state: 'active' });
+      // Заявки у гарантии поставщика нет: её источник — покупка, а не ремонт.
+      expect(supplier!.requestId).toBeNull();
+
+      const repair = rows.find((r) => r.itemId === state.performedItemId);
+      expect(repair, 'гарантия на выполненный ремонт в реестре').toBeDefined();
+      // Реестр — единственное место, где портал берёт `itemId` для обращения по прошлому ремонту
+      // (Р26): без него ссылку на позицию сметы человеку взять негде.
+      expect(repair).toMatchObject({
+        kind: 'repair',
+        equipmentId: ctx.mfp.id,
+        requestId: state.main.id,
+        displayNumber: `СО-${state.main.num}`,
+      });
+
+      // Истёкшая гарантия — история: реестр отвечает на вопрос «что ещё покрыто», и просроченная
+      // строка в нём означала бы, что по ней ещё можно обратиться.
+      expect(rows.some((r) => r.itemId === state.expiredItemId)).toBe(false);
+      // Невыполненная позиция гарантии не несёт вовсе (Р12) — ни в реестре, ни в базе.
+      expect(rows.some((r) => r.itemId === state.notPerformedItemId)).toBe(false);
+    });
+
+    it('сервисная компания видит свои ремонты и не видит парка заказчика', async () => {
+      const rows = await warranties(ctx.service.auth);
+      expect(rows.some((r) => r.itemId === state.performedItemId)).toBe(true);
+      // Справочник исполнителю закрыт (Р7), и реестр — не обход этого запрета: «его» техника в
+      // справочнике ничем не отмечена, поэтому гарантии парка означали бы для сервиса весь парк.
+      expect(rows.every((r) => r.kind === 'repair')).toBe(true);
+    });
+
+    it('штаб чужой площадки не видит ни гарантий техники, ни гарантий её ремонтов', async () => {
+      expect(await warranties(ctx.foreignShtab.auth)).toEqual([]);
+    });
+
+    it('фильтр «истекает» отбирает по порогу подсветки, а не по всему сроку', async () => {
+      // Гарантия, которая правда кончается на днях: месячный срок ремонта в порог не попадает —
+      // тридцать дней порога короче календарного месяца, и проверять фильтр им значило бы
+      // проверять длину августа.
+      const soon = plusDays(TODAY, 10);
+      const patch = await inject(
+        'PATCH',
+        `/api/v1/office-equipment/${ctx.scanner.id}`,
+        ctx.operator.auth,
+        { warrantyUntil: soon },
+      );
+      expect(patch.statusCode, patch.body).toBe(200);
+
+      const rows = await warranties(ctx.operator.auth, '?expiring=true');
+      expect(rows.some((r) => r.equipmentId === ctx.scanner.id && r.kind === 'equipment')).toBe(
+        true,
+      );
+      // Гарантия поставщика на два года — не «истекает»: иначе срез «что продлевать в этом
+      // месяце» вернул бы весь парк.
+      expect(rows.some((r) => r.kind === 'equipment' && r.equipmentId === ctx.mfp.id)).toBe(false);
+      expect(rows.every((r) => (r.daysLeft ?? 0) <= WARRANTY_EXPIRING_DAYS)).toBe(true);
+    });
+
+    it('карточка единицы рассказывает оператору, что с техникой уже делали', async () => {
+      const res = await inject('GET', `/api/v1/office-equipment/${ctx.mfp.id}`, ctx.operator.auth);
+      expect(res.statusCode, res.body).toBe(200);
+      const history = res.json().serviceHistory as OfficeEquipmentServiceEntryDto[];
+      expect(history, 'секция обслуживания').toBeDefined();
+
+      const main = history.find((e) => e.id === state.main.id);
+      expect(main, 'закрытая заявка в истории').toBeDefined();
+      expect(main).toMatchObject({ displayNumber: `СО-${state.main.num}`, status: 'accepted' });
+      // Гарантии — только действующие и только по выполненным позициям: карточку открывают, чтобы
+      // понять, за что второй раз платить не нужно.
+      const covered = main!.warranties.map((w) => w.itemId);
+      expect(covered).toContain(state.performedItemId);
+      expect(covered).not.toContain(state.expiredItemId);
+      expect(covered).not.toContain(state.notPerformedItemId);
+    });
+
+    it('держателю справочника секции нет вовсе — право справочника её не открывает', async () => {
+      const res = await inject('GET', `/api/v1/office-equipment/${ctx.mfp.id}`, ctx.keeper.auth);
+      // Карточка ему открыта: техникой он и занимается.
+      expect(res.statusCode, res.body).toBe(200);
+      // А поля нет совсем, а не пустым списком: пустой список означал бы «ремонтов не было», и
+      // менеджер решил бы, что аппарат ни разу не чинили.
+      expect(res.json().serviceHistory).toBeUndefined();
+    });
   });
 });

@@ -72,6 +72,11 @@ function renderMenu(subject: ScopedSubject | Role | null, viewport?: Viewport) {
   mockHttp({
     'GET /users/pending-count': () => json({ count: 0 }),
     'GET /releases': () => json([]),
+    // Счётчик «ждут меня» на разделе оргтехники (Р39) спрашивают только те, у кого в цикле заявки
+    // есть шаг: оператор оргтехники и сервисная компания. К составу меню он отношения не имеет —
+    // отвечаем нулём, чтобы бейдж не подмешивал число в подписи пунктов; чей это запрос и у кого
+    // его не бывает вовсе, проверяет `service-waiting-badge.test.tsx`.
+    'GET /service-requests/waiting-count': () => json({ count: 0 }),
   });
   return renderWithUser(
     <Routes>

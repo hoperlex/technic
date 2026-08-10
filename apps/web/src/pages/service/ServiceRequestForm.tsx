@@ -11,13 +11,16 @@ import {
 } from '@technic/contracts';
 import { officeEquipmentOptionsQuery, WarrantyTag } from '@entities/office-equipment';
 import { departmentOptionsQuery } from '@entities/department';
+import { objectOptionsQuery } from '@entities/object';
 import { serviceRequestKeys, serviceRequestsApi } from '@entities/service-request';
+import { EquipmentNotFoundLink } from '@features/quick-create-equipment';
 import { AutoSelect, FormModal } from '@shared/ui';
 import { filesApi } from '../../api/resources';
 import { FileLinkList } from '../../components/FileLinks';
 import { ResponsibleFields } from '../../components/ResponsibleFields';
 import { useAuth } from '../../auth/AuthContext';
 import { useDepartmentScope } from '../../hooks/useDepartmentScope';
+import { useObjectScope } from '../../hooks/useObjectScope';
 import { errorMessage } from '../../utils/format';
 import { applyApiFieldErrors } from '../../utils/formErrors';
 
@@ -42,6 +45,20 @@ interface UploadedFile {
 }
 
 /**
+ * Обращение по гарантии, начатое из реестра (§9.5): техника и источник уже названы строкой
+ * реестра, и в форме они не правятся — `itemId` позиции прошлого ремонта взять больше неоткуда,
+ * а «поправленный» источник означал бы ссылку не на ту работу.
+ */
+export interface WarrantyClaimPreset {
+  equipmentId: string;
+  source: WarrantyClaimSource;
+  /** Позиция сметы прошлой заявки; у гарантии поставщика её нет (Р26). */
+  itemId: string | null;
+  /** На что гарантия — подпись для подсказки: человек должен видеть, на что ссылается. */
+  subject: string;
+}
+
+/**
  * Форма заявки на обслуживание (§9.3): что сломалось, у какой единицы, к какому сроку и с кем
  * связываться.
  *
@@ -56,11 +73,14 @@ interface UploadedFile {
 export function ServiceRequestForm({
   open,
   request,
+  claim,
   onClose,
 }: {
   open: boolean;
   /** `null` — заведение новой заявки. */
   request: ServiceRequestDto | null;
+  /** Заявка заводится по гарантии из реестра: техника и источник заданы заранее. */
+  claim?: WarrantyClaimPreset | null;
   onClose: () => void;
 }) {
   const { message } = App.useApp();
@@ -69,15 +89,38 @@ export function ServiceRequestForm({
   const [form] = Form.useForm<Values>();
   const [files, setFiles] = useState<UploadedFile[]>([]);
   const [uploading, setUploading] = useState(false);
+  // Что набрали в поле техники: строка уходит контекстом в обращение к поддержке, когда единицы
+  // в справочнике не оказалось. Держится и после того, как список закрылся, — искали именно это.
+  const [equipmentSearch, setEquipmentSearch] = useState('');
   const equipmentId = Form.useWatch('officeEquipmentId', form);
   const warrantySource = Form.useWatch('warrantySource', form);
   const scope = useDepartmentScope();
+  const objectScope = useObjectScope();
 
   const { data: equipmentOptions = [], isFetching: equipmentLoading } = useQuery({
     ...officeEquipmentOptionsQuery(),
     enabled: open && can('officeEquipment.read'),
   });
   const { data: departmentOptions = [] } = useQuery(departmentOptionsQuery());
+
+  /**
+   * Ссылка «Не нашли технику?» — только там, где технику вообще выбирают: при правке и в обращении
+   * по гарантии единица задана и не правится, и разбирать в этих режимах нечего.
+   */
+  const equipmentMissing = !request && !claim && !equipmentId;
+  /*
+   * Площадка учётки — контекст обращения в поддержку. Спрашивается только у объектной роли с
+   * единственным объектом: с несколькими портал не знает, на какой из них стоит ненайденная
+   * техника, и называть первый попавшийся значило бы отправить поддержку не туда. Список объектов
+   * тот же, что у фильтров списка заявок, — второго запроса это не стоит.
+   */
+  const { data: objectOptions = [] } = useQuery({
+    ...objectOptionsQuery({ activeOnly: false }),
+    enabled: open && equipmentMissing && !!objectScope.soleObjectId,
+  });
+  const ownObjectName = objectOptions.find(
+    (option) => option.value === objectScope.soleObjectId,
+  )?.label;
 
   const selected = equipmentOptions.find((option) => option.value === equipmentId);
   const warrantyActive = isWarrantyActive(selected?.warrantyUntil);
@@ -86,6 +129,7 @@ export function ServiceRequestForm({
     if (!open) return;
     form.resetFields();
     setFiles([]);
+    setEquipmentSearch('');
     if (request) {
       form.setFieldsValue({
         officeEquipmentId: request.equipment.id,
@@ -100,8 +144,13 @@ export function ServiceRequestForm({
       return;
     }
     // Единственный отдел учётки подставляется сам: выбор из одного варианта — лишний шаг.
-    form.setFieldsValue({ customerDepartmentId: scope.soleDepartmentId ?? undefined } as Values);
-  }, [open, request, form, scope.soleDepartmentId]);
+    form.setFieldsValue({
+      customerDepartmentId: scope.soleDepartmentId ?? undefined,
+      // Обращение из реестра приходит с готовым источником: заполнять его руками человек и не
+      // смог бы — позиция прошлого ремонта опознаётся идентификатором, которого он не видит.
+      ...(claim ? { officeEquipmentId: claim.equipmentId, warrantySource: claim.source } : {}),
+    } as Values);
+  }, [open, request, claim, form, scope.soleDepartmentId]);
 
   const upload = async (file: File) => {
     setUploading(true);
@@ -126,8 +175,13 @@ export function ServiceRequestForm({
 
   const mutation = useMutation({
     mutationFn: (values: Values) => {
+      // Позиция прошлого ремонта уходит только вместе с источником `item` и только той, что
+      // назвал реестр: сервер сверяет её с техникой заявки и отвечает 422, если она чужая (Р26).
       const warrantyClaim = values.warrantySource
-        ? { source: values.warrantySource, itemId: null }
+        ? {
+            source: values.warrantySource,
+            itemId: values.warrantySource === 'item' ? (claim?.itemId ?? null) : null,
+          }
         : undefined;
       const common = {
         description: values.description.trim(),
@@ -177,8 +231,11 @@ export function ServiceRequestForm({
             optionFilterProp="label"
             loading={equipmentLoading}
             options={equipmentOptions}
-            disabled={!!request}
+            // Технику не меняют ни при правке (это другая заявка), ни в обращении по гарантии:
+            // источник гарантии относится к конкретной единице, и подмена сделала бы ссылку ложной.
+            disabled={!!request || !!claim}
             placeholder="Модель, инвентарный или серийный номер"
+            onSearch={setEquipmentSearch}
             notFoundContent={
               can('officeEquipment.read')
                 ? 'Ничего не нашлось — техники нет в справочнике'
@@ -186,6 +243,19 @@ export function ServiceRequestForm({
             }
           />
         </Form.Item>
+
+        {/* Ответ на «ничего не нашлось» — под самим полем: тупик разбирается, не выходя из заявки.
+            Ответа два, и различает их право вести справочник, а не роль (Р40). */}
+        {equipmentMissing && (
+          <EquipmentNotFoundLink
+            canCreate={can('officeEquipment.write')}
+            search={equipmentSearch}
+            objectName={ownObjectName}
+            // Заведённая единица становится значением поля — тем же, каким её выбрали бы из
+            // списка: заявка продолжается с того же места, где встала.
+            onCreated={(equipment) => form.setFieldValue('officeEquipmentId', equipment.id)}
+          />
+        )}
 
         {/* Состояние гарантии — под самим полем: от него зависит следующий вопрос формы. */}
         {equipmentId && (
@@ -195,27 +265,34 @@ export function ServiceRequestForm({
           </Space>
         )}
 
-        {warrantyActive && (
+        {(warrantyActive || claim) && (
           <Form.Item
             name="warrantySource"
             label="Обращение по гарантии"
             extra={
-              warrantySource
-                ? 'Источник уйдёт в заявку: по нему сервис и разбирает, чинить бесплатно или за деньги'
-                : 'Не выбрано — заявка обычная, платная'
+              claim
+                ? `Источник: ${claim.subject}`
+                : warrantySource
+                  ? 'Источник уйдёт в заявку: по нему сервис и разбирает, чинить бесплатно или за деньги'
+                  : 'Не выбрано — заявка обычная, платная'
             }
           >
             <Select
-              allowClear
+              allowClear={!claim}
+              // Источник, пришедший из реестра, не правится: позиция прошлого ремонта опознаётся
+              // идентификатором, и «переключить» её на другую строку в форме нечем.
+              disabled={!!claim}
               placeholder="Обычная заявка"
               options={[
                 { value: 'equipment', label: warrantyClaimSourceLabels.equipment },
                 {
                   value: 'item',
-                  label: `${warrantyClaimSourceLabels.item} — выбирается в реестре гарантий`,
+                  label: claim?.itemId
+                    ? warrantyClaimSourceLabels.item
+                    : `${warrantyClaimSourceLabels.item} — выбирается в реестре гарантий`,
                   // Гарантия на прошлый ремонт требует ссылки на позицию закрытой заявки; её
                   // отдаёт реестр гарантий, и заводят такое обращение оттуда (§9.5).
-                  disabled: true,
+                  disabled: !claim?.itemId,
                 },
               ]}
             />

@@ -10,3 +10,10 @@ export { officeEquipmentApi, officeEquipmentTypesApi } from './api/officeEquipme
 export { officeEquipmentKeys, officeEquipmentTypeKeys } from './api/keys';
 export { officeEquipmentOptionsQuery, officeEquipmentTypeOptionsQuery } from './api/queries';
 export { WarrantyTag } from './ui/WarrantyTag';
+/**
+ * Поля карточки единицы. Живут в слое сущности, а не у вкладки справочника: заводят единицу из
+ * двух мест — из самого справочника и из формы заявки, когда техники в списке не нашлось, — и два
+ * набора одиннадцати полей с правилом «нужен хотя бы один номер» разъехались бы при первой правке.
+ */
+export { OfficeEquipmentFields } from './ui/OfficeEquipmentFields';
+export { officeEquipmentPayload, type OfficeEquipmentFormValues } from './model/form';

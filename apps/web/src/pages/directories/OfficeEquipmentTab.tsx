@@ -1,10 +1,9 @@
 import { useState } from 'react';
 import { App, Button, Checkbox, Form, Select, Space } from 'antd';
 import { PlusOutlined, TagsOutlined } from '@ant-design/icons';
-import dayjs, { type Dayjs } from 'dayjs';
+import dayjs from 'dayjs';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  type CreateOfficeEquipmentInput,
   OFFICE_EQUIPMENT_WARRANTY_FILTERS,
   type OfficeEquipmentDto,
   type OfficeEquipmentWarrantyFilter,
@@ -17,7 +16,10 @@ import { PageTableLayout } from '@shared/ui';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
 import { useListParams } from '@shared/lib';
 import {
+  OfficeEquipmentFields,
+  type OfficeEquipmentFormValues,
   officeEquipmentApi,
+  officeEquipmentPayload,
   officeEquipmentKeys,
   officeEquipmentTypeOptionsQuery,
 } from '@entities/office-equipment';
@@ -27,7 +29,7 @@ import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
 import { applyApiFieldErrors } from '../../utils/formErrors';
 import { OfficeEquipmentTypesModal } from './OfficeEquipmentTypesModal';
-import { OfficeEquipmentFields } from './OfficeEquipmentFields';
+import { OfficeEquipmentServiceHistory } from './OfficeEquipmentServiceHistory';
 import { officeEquipmentCard, officeEquipmentColumns } from './officeEquipmentGrid';
 
 /**
@@ -43,8 +45,6 @@ import { officeEquipmentCard, officeEquipmentColumns } from './officeEquipmentGr
  * подсветка обязана совпадать со списком заявок и реестром гарантий.
  */
 
-const DATE = 'YYYY-MM-DD';
-
 /** Три вопроса, которые задают справочнику про гарантию. Порог — общий с подсветкой (Р25). */
 const warrantyFilterLabels: Record<OfficeEquipmentWarrantyFilter, string> = {
   active: 'Действует',
@@ -56,41 +56,6 @@ const warrantyOptions = OFFICE_EQUIPMENT_WARRANTY_FILTERS.map((value) => ({
   value,
   label: warrantyFilterLabels[value],
 }));
-
-interface FormValues {
-  equipmentTypeId: string;
-  name: string;
-  serialNumber?: string;
-  inventoryNumber?: string;
-  objectId: string;
-  departmentId?: string;
-  location?: string;
-  purchasedOn?: Dayjs;
-  warrantyUntil?: Dayjs;
-  comment?: string;
-  isActive: boolean;
-}
-
-/**
- * Тело запроса собирается явно, а не отдаётся значениями формы как есть: даты в форме — объекты
- * `Dayjs`, а сервер ждёт календарный день строкой, и пустое поле обязано прийти `null`, иначе
- * стереть однажды заведённый срок было бы нечем.
- */
-function toPayload(v: FormValues): CreateOfficeEquipmentInput {
-  return {
-    equipmentTypeId: v.equipmentTypeId,
-    name: v.name,
-    serialNumber: v.serialNumber?.trim() ?? '',
-    inventoryNumber: v.inventoryNumber?.trim() ?? '',
-    objectId: v.objectId,
-    departmentId: v.departmentId ?? null,
-    location: v.location?.trim() ?? '',
-    purchasedOn: v.purchasedOn ? v.purchasedOn.format(DATE) : null,
-    warrantyUntil: v.warrantyUntil ? v.warrantyUntil.format(DATE) : null,
-    comment: v.comment?.trim() ?? '',
-    isActive: v.isActive,
-  };
-}
 
 export function OfficeEquipmentTab() {
   const { message, modal } = App.useApp();
@@ -131,7 +96,7 @@ export function OfficeEquipmentTab() {
   const [typesOpen, setTypesOpen] = useState(false);
   const [open, setOpen] = useState(false);
   const [record, setRecord] = useState<OfficeEquipmentDto | null>(null);
-  const [form] = Form.useForm<FormValues>();
+  const [form] = Form.useForm<OfficeEquipmentFormValues>();
 
   /**
    * Отдел и «без владельца» — один вопрос с двумя ответами, а не два фильтра: сервер их вместе не
@@ -156,7 +121,7 @@ export function OfficeEquipmentTab() {
       isActive: true,
       objectId: params.objectId,
       equipmentTypeId: params.equipmentTypeId,
-    } as FormValues);
+    } as OfficeEquipmentFormValues);
     setOpen(true);
   };
 
@@ -182,10 +147,10 @@ export function OfficeEquipmentTab() {
   };
 
   const saveMut = useMutation({
-    mutationFn: (values: FormValues) =>
+    mutationFn: (values: OfficeEquipmentFormValues) =>
       record
-        ? officeEquipmentApi.update(record.id, toPayload(values))
-        : officeEquipmentApi.create(toPayload(values)),
+        ? officeEquipmentApi.update(record.id, officeEquipmentPayload(values))
+        : officeEquipmentApi.create(officeEquipmentPayload(values)),
     onSuccess: () => {
       message.success('Сохранено');
       void qc.invalidateQueries({ queryKey: officeEquipmentKeys.root });
@@ -400,6 +365,9 @@ export function OfficeEquipmentTab() {
             departmentOptions={departmentOptions}
           />
         </Form>
+        {/* Только у заведённой карточки: у новой единицы истории нет по определению, и раздел
+            «Обслуживание — ничего» в форме заведения был бы шумом. */}
+        {record && <OfficeEquipmentServiceHistory equipmentId={record.id} />}
       </FormModal>
     </PageTableLayout>
   );

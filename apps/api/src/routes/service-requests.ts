@@ -26,7 +26,6 @@ import {
   approveServiceEstimateSchema,
   assignServiceSchema,
   attachServiceFilesSchema,
-  baseListQuery,
   can,
   canTransitionServiceStatus,
   completeServiceRequestSchema,
@@ -59,18 +58,18 @@ import {
   startServiceRequestSchema,
   submitServiceEstimateSchema,
   updateServiceRequestSchema,
-  uuidSchema,
   WARRANTY_EXPIRING_DAYS,
   WARRANTY_REPAIR_ITEM_NAME,
   warrantyDaysLeft,
+  warrantyListQuerySchema,
   warrantyState,
   warrantyToday,
   type ServiceFileKind,
+  type ServiceWarrantyRowDto,
   type ServiceRequestDto,
   type ServiceRequestFileDto,
   type ServiceRequestItemDto,
   type ServiceRequestStatus,
-  type WarrantyState,
 } from '@technic/contracts';
 import { db } from '../db/client';
 import {
@@ -756,48 +755,8 @@ function assertFileKindAllowed(status: ServiceRequestStatus, kind: ServiceFileKi
   }
 }
 
-// ── Реестр гарантий (§9.5) ──
-
-const WARRANTY_KINDS = ['equipment', 'repair'] as const;
-type WarrantyRowKind = (typeof WARRANTY_KINDS)[number];
-
-/**
- * Фильтры реестра. Схема живёт здесь, а не в контрактах: своего словаря у неё нет — это те же
- * объект, отдел и тип, что в справочнике, плюс носитель гарантии и порог «истекает».
- */
-const warrantyListQuerySchema = baseListQuery(['warrantyUntil', 'equipment']).extend({
-  objectId: uuidSchema.optional(),
-  departmentId: uuidSchema.optional(),
-  equipmentTypeId: uuidSchema.optional(),
-  kind: z.enum(WARRANTY_KINDS).optional(),
-  /** «Что продлевать в ближайший месяц»: порог общий с подсветкой (`WARRANTY_EXPIRING_DAYS`). */
-  expiring: z
-    .enum(['true', 'false'])
-    .optional()
-    .transform((v) => v === 'true'),
-});
-
-interface ServiceWarrantyRowDto {
-  id: string;
-  kind: WarrantyRowKind;
-  equipmentId: string;
-  equipmentName: string;
-  serialNumber: string;
-  inventoryNumber: string;
-  typeName: string;
-  objectName: string;
-  departmentName: string | null;
-  /** На что гарантия: «Гарантия поставщика» либо наименование позиции ремонта. */
-  subject: string;
-  warrantyUntil: string;
-  state: WarrantyState;
-  daysLeft: number | null;
-  /** Заявка-источник: по её номеру и обращаются (`item` в гарантийном обращении). */
-  requestId: string | null;
-  requestNum: number | null;
-  displayNumber: string | null;
-  itemId: string | null;
-}
+// Реестр гарантий (§9.5): схема фильтров и форма строки живут в контрактах (`warranty.ts`) —
+// реестр читает портал, и второй такой же тип на его стороне разъехался бы с этим.
 
 export default async function serviceRequestsRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
@@ -1135,6 +1094,10 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       // Два источника сходятся в одном списке, поэтому сортировка и страница считаются здесь, а не
       // в SQL: у реестра одна колонка порядка — «когда кончится», и объединять две выборки ради
       // неё в базе значило бы писать UNION с одинаковыми колонками из разных таблиц.
+      //
+      // Порог у этого решения назван числом, а не «когда станет много» (Р43): пока действующих
+      // гарантий меньше 5 000, выборка целиком в память дешевле UNION ALL с приведением колонок.
+      // Больше — переписывать на SQL, иначе вкладка узаконит выборку без предела.
       const desc = q.sortOrder === 'desc';
       rows.sort((a, b) => {
         const byField =
@@ -1152,6 +1115,44 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       };
     },
   );
+
+  // ── Счётчик «ждут меня» ──
+  /**
+   * Сколько заявок области субъекта стоит именно за ним — число для бейджа на пункте меню.
+   * Отдельной ручкой, а не полем списка (образец — `/users/pending-count`): бейдж живёт в каркасе
+   * портала и виден на любой странице, и тянуть ради одного числа страницу заявок значило бы
+   * грузить список на каждый вход в портал.
+   *
+   * Сторону называет `isWaitingOn` — по правам и типу контрагента, а не по имени роли (Р35):
+   * оператор оргтехники приходит надстройкой над штабом или отделом, сервис — типом контрагента,
+   * и сравнение `waitingOn` с ролью развалилось бы на обоих.
+   *
+   * Область — та же `visibility`, что у списка: разойдись они, бейдж считал бы заявки, которых в
+   * списке не видно, и вёл бы в пустую очередь. Архивные не в счёт — удалённую заявку не двигают.
+   *
+   * У субъекта без шага в цикле (заказчик, наблюдатель) счёт нулевой без запроса в БД: портал
+   * такому счётчик и не спрашивает (Р39), но ручка открыта всем читателям модуля, и пустая
+   * сторона не должна стоить обращения к базе.
+   *
+   * Маршрут стоит рядом с `/warranties` — до `/:id`: оба пути статические, и держать их вместе
+   * значит не перечитывать потом весь файл в поисках, не перехватил ли их параметр.
+   */
+  r.get('/waiting-count', auth, async (req) => {
+    const p = requirePrincipal(req);
+    const mine = waitingStatuses(p);
+    if (mine.length === 0) return { count: 0 };
+    const [row] = await db
+      .select({ c: count() })
+      .from(serviceRequests)
+      .where(
+        and(
+          isNull(serviceRequests.deletedAt),
+          visibility(p),
+          inArray(serviceRequests.status, mine),
+        ),
+      );
+    return { count: Number(row!.c) };
+  });
 
   // ── Карточка ──
   r.get('/:id', { ...auth, schema: { params: idParams } }, async (req) => {

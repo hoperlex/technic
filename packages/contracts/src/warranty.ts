@@ -1,5 +1,5 @@
 /**
- * Состояние гарантии (ADR 0085).
+ * Состояние гарантии и реестр действующих гарантий (ADR 0085).
  *
  * Гарантию в портале несут три носителя: сама единица оргтехники (гарантия поставщика), запчасть и
  * услуга в смете ремонта. Показывается она в пяти местах — справочник, карточка единицы, форма
@@ -10,6 +10,9 @@
  * списке и зелёной в карточке. Функция чистая и принимает «сегодня» аргументом — тесты проверяют
  * границы, не подменяя часы.
  */
+
+import { z } from 'zod';
+import { baseListQuery, uuidSchema } from './common';
 
 /** За сколько дней до конца гарантия считается истекающей. */
 export const WARRANTY_EXPIRING_DAYS = 30;
@@ -101,3 +104,66 @@ export function warrantyLabel(
   if (state === 'expired') return `истекла ${date}`;
   return state === 'expiring' ? `истекает ${date}` : `до ${date}`;
 }
+
+// ── Реестр действующих гарантий (`GET /service-requests/warranties`) ──
+// Форма строки живёт здесь, а не в маршруте: реестр читает портал, и описывать одну и ту же строку
+// вторым, независимо правящимся типом — верный способ разъехаться на первой же новой колонке.
+
+/** Носитель гарантии: сама единица техники либо выполненная позиция ремонта. */
+export const WARRANTY_ROW_KINDS = ['equipment', 'repair'] as const;
+export type WarrantyRowKind = (typeof WARRANTY_ROW_KINDS)[number];
+
+export const WARRANTY_SORT_FIELDS = ['warrantyUntil', 'equipment'] as const;
+
+export const warrantyListQuerySchema = baseListQuery(WARRANTY_SORT_FIELDS).extend({
+  objectId: uuidSchema.optional(),
+  departmentId: uuidSchema.optional(),
+  equipmentTypeId: uuidSchema.optional(),
+  kind: z.enum(WARRANTY_ROW_KINDS).optional(),
+  /** «Что продлевать в ближайший месяц»: порог общий с подсветкой (`WARRANTY_EXPIRING_DAYS`). */
+  expiring: z
+    .enum(['true', 'false'])
+    .optional()
+    .transform((v) => v === 'true'),
+});
+
+export type WarrantyListQuery = z.infer<typeof warrantyListQuerySchema>;
+
+/**
+ * Строка реестра. Идентификатор составной (`equipment:<uuid>` / `item:<uuid>`), потому что строки
+ * приходят из двух таблиц и в одном списке их ключи обязаны не совпасть.
+ *
+ * Ссылка на заявку-источник заполнена только у ремонта: по ней и заводится обращение по гарантии
+ * (Р26), поэтому `itemId` отдаётся рядом — без него портал не может назвать источник.
+ */
+export interface ServiceWarrantyRowDto {
+  id: string;
+  kind: WarrantyRowKind;
+  equipmentId: string;
+  equipmentName: string;
+  serialNumber: string;
+  inventoryNumber: string;
+  typeName: string;
+  objectName: string;
+  departmentName: string | null;
+  /** На что гарантия: «Гарантия поставщика» либо наименование позиции ремонта. */
+  subject: string;
+  warrantyUntil: string;
+  state: WarrantyState;
+  daysLeft: number | null;
+  /** Заявка-источник: по её номеру и обращаются (`item` в гарантийном обращении). */
+  requestId: string | null;
+  requestNum: number | null;
+  displayNumber: string | null;
+  itemId: string | null;
+}
+
+/**
+ * Подписи носителей. Названы существительным — «Техника», «Ремонт», — а не «Гарантия поставщика»:
+ * рядом в строке стоит колонка «На что гарантия», и у единицы техники она говорит ровно эти слова.
+ * Совпадай подписи, строка повторяла бы саму себя дважды и ничего не добавляла.
+ */
+export const warrantyRowKindLabels: Record<WarrantyRowKind, string> = {
+  equipment: 'Техника',
+  repair: 'Ремонт',
+};

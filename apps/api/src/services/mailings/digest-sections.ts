@@ -1,16 +1,21 @@
-import { and, asc, count, eq, gte, isNull, lte, ne, sql } from 'drizzle-orm';
+import { and, asc, count, eq, gte, inArray, isNull, lte, ne, sql } from 'drizzle-orm';
 import {
   DIGEST_SECTION_ROW_LIMIT,
   type DigestSection,
   digestSectionLabels,
+  formatServiceRequestNumber,
   formatVehicleRequestNumber,
   formatVehicleRouteNumber,
   formatWasteRequestNumber,
+  isWaitingOn,
   type RequestStatus,
   type RequestType,
   requestCustomerName,
   requestStatusLabels,
   requestTypeLabels,
+  SERVICE_REQUEST_STATUSES,
+  serviceRequestStatusLabels,
+  serviceWaitingOn,
   vehicleLabel,
   waybillDisplayNumber,
 } from '@technic/contracts';
@@ -23,6 +28,7 @@ import {
   freightTransportRequestDetails,
   persons,
   requestStatusHistory,
+  serviceRequests,
   specialEquipmentRequestDetails,
   vehicleCategories,
   vehicleModels,
@@ -46,6 +52,7 @@ import {
   limitRows,
   openStatuses,
   realStatusChange,
+  serviceRequestScope,
   vehicleRequestScope,
   wasteRequestScope,
 } from './digest-context';
@@ -55,11 +62,11 @@ import { localDate } from './schedule';
 /**
  * Разделы ролевого дайджеста (ADR 0078): по провайдеру на каждую строку реестра `DIGEST_SECTIONS`.
  *
- * Что здесь общего у всех восьми:
+ * Что здесь общего у всех девяти:
  *
  * 1. Область видимости не выбирается разделом, а берётся у получателя: любая выборка заявок идёт
- *    через `vehicleRequestScope`/`wasteRequestScope`. Забыть их — значит положить в письмо чужие
- *    площадки, и никакой фильтр строкой этого потом не исправит.
+ *    через `vehicleRequestScope`/`wasteRequestScope`/`serviceRequestScope`. Забыть их — значит
+ *    положить в письмо чужие площадки, и никакой фильтр строкой этого потом не исправит.
  * 2. Раздел, в котором нет ни одной записи, возвращает `null`: пустой блок в письме читается как
  *    «данные не собрались», а не как «событий не было».
  * 3. Печатается не больше `DIGEST_SECTION_ROW_LIMIT` строк, но `total` всегда полный: письмо — это
@@ -646,6 +653,81 @@ const wasteRequestsUpcoming: DigestSectionProvider = async (ctx) => {
   });
 };
 
+// ── Заявки на обслуживание оргтехники ──
+
+/**
+ * Раздел «Заявки на обслуживание: ждут вас» (ADR 0085, план оргтехники Р38).
+ *
+ * Модуль межорганизационный: половина шагов цикла за сервисной компанией, у которой нет служебной
+ * причины заходить в портал, пока её не позвали. Очередь «Требуют решения» и бейдж работают только
+ * для того, кто уже вошёл, — письмо и есть тот единственный канал, которым назначенную заявку
+ * замечают в тот же день, а не через неделю.
+ *
+ * Сторона получателя определяется правами и типом контрагента, а не именем роли: у оператора
+ * оргтехники роль — «Штаб» или «Отдел» (сторону задаёт надстройка, ADR 0086), у сервиса — «Внешний
+ * исполнитель» (сторону задаёт тип контрагента). Отсюда `isWaitingOn` — тот же предикат, которым
+ * очередь собирает список в портале: сравнение с ролью разошлось бы с ним на первой же надстройке.
+ *
+ * У заказчика — штаба и ролей отдела — шага в цикле нет вовсе (Р35): приёмку делает оператор, и
+ * статусов, в которых ждут заказчика, не бывает. Раздел ему возвращает `null`, и письмо его не
+ * печатает — это не «сегодня пусто», а «в цикле его не ждут».
+ */
+const serviceRequestsWaiting: DigestSectionProvider = async (ctx) => {
+  const statuses = SERVICE_REQUEST_STATUSES.filter((status) =>
+    isWaitingOn(ctx.principal, serviceWaitingOn(status)),
+  );
+  // Своих статусов нет — субъект решений в цикле не принимает: запроса не делаем вовсе. Условие
+  // «ни один статус не подходит» иначе пришлось бы выражать заведомо ложным предикатом.
+  if (statuses.length === 0) return null;
+
+  const where = and(serviceRequestScope(ctx), inArray(serviceRequests.status, statuses));
+
+  const [total, rows] = await Promise.all([
+    db.select({ total: count() }).from(serviceRequests).where(where).then(firstCount),
+    db
+      .select({
+        num: serviceRequests.num,
+        status: serviceRequests.status,
+        // Реквизиты предмета — из снимка заявки, а не из справочника: единицу переносят и
+        // переименовывают, а письмо обязано называть её так же, как карточка заявки (ADR 0085 §7).
+        equipmentName: serviceRequests.equipmentName,
+        objectName: constructionObjects.name,
+        statusChangedAt: serviceRequests.statusChangedAt,
+      })
+      .from(serviceRequests)
+      // Площадка у заявки есть всегда (`NOT NULL`): техника где-то стоит, даже когда заказчик —
+      // отдел. Поэтому `innerJoin`, в отличие от заявок ТС, где площадки может не быть вовсе.
+      .innerJoin(constructionObjects, eq(constructionObjects.id, serviceRequests.equipmentObjectId))
+      .where(where)
+      // Дольше всех стоящее — сверху: раздел заведён ради зависших заявок, и письмо, начинающееся
+      // со вчерашней, отвечает не на тот вопрос.
+      .orderBy(asc(serviceRequests.statusChangedAt))
+      .limit(DIGEST_SECTION_ROW_LIMIT),
+  ]);
+
+  const now = Date.now();
+  return section({
+    section: 'service_requests_waiting',
+    total,
+    rows: rows.map((r) => {
+      // Возраст в текущем статусе — то, ради чего раздел и читают: «Назначен сервис» четвёртый
+      // день значит, что исполнитель заявку не открывал.
+      const days = Math.floor((now - r.statusChangedAt.getTime()) / 86_400_000);
+      return {
+        text: line([
+          formatServiceRequestNumber(r.num),
+          serviceRequestStatusLabels[r.status],
+          r.equipmentName,
+          `«${r.objectName}»`,
+          // Сутки ещё не прошли — «ждёт 0 дней» читалось бы как «не ждёт вовсе».
+          days < 1 ? 'ждёт меньше суток' : `ждёт ${days} ${dayWord(days)}`,
+        ]),
+      };
+    }),
+    link: portalLink('/office-equipment?tab=requests'),
+  });
+};
+
 /**
  * Реестр провайдеров: ключи те же, что в `DIGEST_SECTIONS`. `Record` по типу раздела, а не
  * словарь-«как получится»: раздел, добавленный в контракты и забытый здесь, обязан валить сборку —
@@ -660,4 +742,5 @@ export const DIGEST_PROVIDERS: Record<DigestSection, DigestSectionProvider> = {
   waste_requests_changes: wasteRequestsChanges,
   waste_requests_open: wasteRequestsOpen,
   waste_requests_upcoming: wasteRequestsUpcoming,
+  service_requests_waiting: serviceRequestsWaiting,
 };

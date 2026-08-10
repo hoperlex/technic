@@ -9,6 +9,7 @@ import type {
   ServiceFileKind,
   ServiceRequestDto,
   ServiceStatusChangeInput,
+  ServiceWarrantyRowDto,
   SubmitServiceEstimateInput,
   UpdateServiceRequestInput,
 } from '@technic/contracts';
@@ -18,6 +19,8 @@ import {
   createListApi,
   createRemoveApi,
   createWriteApi,
+  type ListResult,
+  type Query,
 } from '@shared/api';
 
 const PATH = '/service-requests';
@@ -62,6 +65,21 @@ export const serviceRequestsApi = {
   ...createRemoveApi<{ ok: boolean }>(PATH),
 
   history: (id: string) => apiFetch<RequestHistoryEntryDto[]>(`${PATH}/${id}/history`),
+
+  /**
+   * Реестр действующих гарантий (§9.5): строки двух видов — гарантия поставщика на единицу и
+   * гарантия на выполненную позицию ремонта. Своей ручки создания у реестра нет: он отвечает на
+   * вопрос «что ещё покрыто», а обращение по гарантии заводится обычной заявкой с источником.
+   */
+  warranties: (query: Query) =>
+    apiFetch<ListResult<ServiceWarrantyRowDto>>(`${PATH}/warranties`, { query }),
+
+  /**
+   * Сколько заявок ждёт решения самого спрашивающего — число для бейджа в меню. Счётчиком, а не
+   * первой страницей списка: бейдж рисуется в каркасе портала на любом экране, а сами заявки
+   * нужны уже в разделе. Сторону считает сервер по правам учётки — портал её не передаёт.
+   */
+  waitingCount: () => apiFetch<{ count: number }>(`${PATH}/waiting-count`),
 
   /** Назначение и переназначение исполнителя: при смене сервиса причина обязательна (§5.3). */
   assignService: (id: string, body: AssignServiceInput) =>

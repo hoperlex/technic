@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { archiveFilterSchema, baseListQuery, dateOnlySchema, uuidSchema } from './common';
+import type { ServiceRequestStatus } from './service-requests';
 
 // ── Справочник оргтехники (ADR 0085) ──
 // Единица: тип, модель, номера, место (объект и уточнение внутри него), отдел-владелец, гарантия
@@ -165,6 +166,31 @@ export interface OfficeEquipmentDepartmentRefDto {
   name: string;
 }
 
+/** Действующая гарантия на выполненную позицию ремонта — строка в истории обслуживания. */
+export interface OfficeEquipmentItemWarrantyDto {
+  itemId: string;
+  name: string;
+  warrantyUntil: string;
+}
+
+/**
+ * Заявка на обслуживание в карточке единицы (§8.2): что с этим аппаратом уже делали.
+ *
+ * Не ссылка на список, а короткий срез: оператор смотрит карточку перед назначением сервиса, и
+ * вопрос у него один — чинили ли уже и что именно меняли. Итог приходит только у закрытых заявок,
+ * гарантии — только по выполненным позициям (Р12).
+ */
+export interface OfficeEquipmentServiceEntryDto {
+  id: string;
+  displayNumber: string;
+  status: ServiceRequestStatus;
+  createdAt: string;
+  completedAt: string | null;
+  serviceName: string | null;
+  totalAmount: number | null;
+  warranties: OfficeEquipmentItemWarrantyDto[];
+}
+
 export interface OfficeEquipmentDto {
   id: string;
   type: OfficeEquipmentTypeRefDto;
@@ -182,6 +208,16 @@ export interface OfficeEquipmentDto {
   createdAt: string;
   updatedAt: string;
   deletedAt: string | null;
+  /**
+   * История обслуживания и гарантии ремонтов (§8.2). Поле необязательное, и это содержательно:
+   * его отсутствие означает «не положено видеть» (у смотрящего нет `serviceRequests.read`), а не
+   * «ремонтов не было» — последнее выражается пустым массивом. Пустой массив вместо отсутствия
+   * заставил бы портал рисовать раздел «Обслуживание — ничего» тому, кому модуль вообще закрыт.
+   *
+   * Приходит только в карточке (`GET /office-equipment/:id`): в списке справочника этот срез
+   * означал бы подзапрос на каждую строку ради данных, которых в списке не видно.
+   */
+  serviceHistory?: OfficeEquipmentServiceEntryDto[];
 }
 
 /**

@@ -4,8 +4,10 @@ import { eq, inArray, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   type DigestSection,
+  formatServiceRequestNumber,
   formatVehicleRequestNumber,
   formatVehicleRouteNumber,
+  type ServiceRequestStatus,
 } from '@technic/contracts';
 import { applyMigrations } from '../src/db/migration-journal';
 // Сборка тела письма из блоков — чистая функция без конфига, поэтому импортируется обычным путём.
@@ -65,6 +67,11 @@ const ROUTE_DATE = '2099-07-16';
 /** Разделы письма в тестах задаются явно: в настоящем расписании их выбирает администратор. */
 const CHANGES: DigestSection[] = ['vehicle_requests_changes'];
 const CHANGES_AND_ROUTES: DigestSection[] = ['vehicle_requests_changes', 'vehicle_routes_upcoming'];
+/**
+ * Раздел обслуживания оргтехники (ADR 0085) — снимок, а не события периода: он отвечает на «что
+ * стоит на вас сейчас», и датой запуска не ограничивается вовсе.
+ */
+const SERVICE: DigestSection[] = ['service_requests_waiting'];
 
 /** Учётка-получатель: ровно то, что письму нужно от человека. */
 interface TestUser {
@@ -98,6 +105,14 @@ interface Ctx {
   dept: TestUser;
   /** Диспетчер — роль без области: ей видно всё, и на ней видно, что фильтр не режет всё подряд. */
   global: TestUser;
+  /**
+   * Оператор оргтехники (ADR 0086): тот же штаб первой площадки, но с надстройкой роли. Сторону в
+   * цикле заявок задаёт право `serviceRequests.assign`, а не имя роли, — на нём и видно, что
+   * раздел собирается правами, а не сравнением с ролью.
+   */
+  operator: TestUser;
+  /** Сервисная компания: сторону задаёт тип контрагента, область — назначение исполнителем. */
+  service: TestUser;
   /** Штаб с неподтверждённым адресом: получателем не становится (ADR 0072). */
   unverified: TestUser;
   /** Штаб, вычеркнутый администратором из этого расписания. */
@@ -116,6 +131,17 @@ interface Ctx {
   requestB: TestRequest;
   requestDept: TestRequest;
   requestDeleted: TestRequest;
+  /**
+   * Заявки на обслуживание — шесть ответов на «кого сейчас ждут и чьё это»: две ждут оператора
+   * (разного возраста — ими проверяется порядок), одна ждёт назначенный сервис, одна ждёт **чужой**
+   * сервис, одна стоит на чужой площадке, последняя закрыта и не ждёт никого.
+   */
+  srOperatorOld: TestRequest;
+  srOperatorNew: TestRequest;
+  srService: TestRequest;
+  srOtherService: TestRequest;
+  srForeignObject: TestRequest;
+  srClosed: TestRequest;
   /** Рейс в окне «ближайших»: раздел рейсов положен только роли без области. */
   routeNumber: string;
 }
@@ -125,6 +151,29 @@ let ctx: Ctx;
 const createdUserIds: string[] = [];
 const createdRequestIds: string[] = [];
 const createdRouteIds: string[] = [];
+const createdServiceRequestIds: string[] = [];
+const createdEquipmentIds: string[] = [];
+const createdCounterpartyIds: string[] = [];
+
+/**
+ * Момент «N дней назад» от настоящего сейчас, а не от `PLANNED_AT`: возраст в статусе раздел
+ * считает от текущего времени — заявка, простоявшая неделю, столько же и стоит, когда бы письмо
+ * ни собиралось.
+ */
+function daysAgo(days: number): Date {
+  return new Date(Date.now() - days * 86_400_000);
+}
+
+/**
+ * Десятизначный ИНН по девяти цифрам основы: контрольная цифра считается по весам приказа ФНС.
+ * Выдуманный «77…01» здесь не годится — контрагенты остаются в общей базе, а обмен справочниками
+ * выгружает её целиком и загружает обратно, проверяя ИНН по-настоящему.
+ */
+function innOf(base9: string): string {
+  const weights = [2, 4, 10, 3, 5, 9, 4, 6, 8];
+  const sum = weights.reduce((acc, w, i) => acc + w * Number(base9[i]), 0);
+  return `${base9}${(sum % 11) % 10}`;
+}
 
 function prepareEnv(databaseUrl: string): void {
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
@@ -164,6 +213,16 @@ async function freightTypeId(db: typeof AppDb): Promise<string> {
     LIMIT 1`);
   const id = res.rows[0]?.id;
   if (!id) throw new Error('В базе нет типа ТС грузового вида: миграции наполнения не применены');
+  return id;
+}
+
+/** Тип оргтехники — из сида модуля (ADR 0085): карточки без типа схема не принимает. */
+async function officeEquipmentTypeId(db: typeof AppDb): Promise<string> {
+  const res = await db.execute<{ id: string }>(
+    sql`SELECT id FROM office_equipment_types WHERE code = 'mfp' LIMIT 1`,
+  );
+  const id = res.rows[0]?.id;
+  if (!id) throw new Error('В базе нет типов оргтехники: миграция 0104 не применена');
   return id;
 }
 
@@ -237,10 +296,12 @@ describe.skipIf(!DB_URL)('ролевой дайджест: область вид
     /** Учётка с подтверждённым адресом: без него человек не получатель, а тут проверяется другое. */
     async function makeUser(input: {
       tag: string;
-      role: 'admin' | 'shtab' | 'department' | 'dispatcher';
+      role: 'admin' | 'shtab' | 'department' | 'dispatcher' | 'operator';
       isActive?: boolean;
       verified?: boolean;
       deleted?: boolean;
+      /** Контрагент внешнего исполнителя (ADR 0038): им и задаётся его сторона в цикле. */
+      counterpartyId?: string;
     }): Promise<TestUser> {
       const email = `db-digest-${input.tag}-${suffix}@example.invalid`;
       const [row] = await db
@@ -256,17 +317,42 @@ describe.skipIf(!DB_URL)('ролевой дайджест: область вид
           isActive: input.isActive ?? true,
           emailVerifiedAt: (input.verified ?? true) ? new Date() : null,
           deletedAt: input.deleted ? new Date() : null,
+          counterpartyId: input.counterpartyId ?? null,
         })
         .returning({ id: schema.users.id, fullName: schema.users.fullName });
       createdUserIds.push(row!.id);
       return { id: row!.id, email, fullName: row!.fullName };
     }
 
+    /** Контрагент-сервис: их два — «свой» и чужой, иначе область исполнителя нечем проверить. */
+    async function makeServiceCounterparty(tag: string, inn: string): Promise<string> {
+      const [row] = await db
+        .insert(schema.counterparties)
+        .values({ type: 'service', name: `Тестовый сервис ${tag} ${suffix}`, inn })
+        .returning({ id: schema.counterparties.id });
+      createdCounterpartyIds.push(row!.id);
+      return row!.id;
+    }
+
+    // ИНН уникален среди живых контрагентов: основа берётся от времени прогона, а не константой.
+    const innBase = String(Date.now()).slice(-6);
+    const serviceCounterpartyId = await makeServiceCounterparty('свой', innOf(`78${innBase}0`));
+    const otherServiceCounterpartyId = await makeServiceCounterparty(
+      'чужой',
+      innOf(`78${innBase}1`),
+    );
+
     const author = await makeUser({ tag: 'author', role: 'admin' });
     const shtab = await makeUser({ tag: 'shtab', role: 'shtab' });
     const shtabNoScope = await makeUser({ tag: 'noscope', role: 'shtab' });
     const dept = await makeUser({ tag: 'dept', role: 'department' });
     const global = await makeUser({ tag: 'global', role: 'dispatcher' });
+    const operator = await makeUser({ tag: 'oper', role: 'shtab' });
+    const service = await makeUser({
+      tag: 'serv',
+      role: 'operator',
+      counterpartyId: serviceCounterpartyId,
+    });
     const unverified = await makeUser({ tag: 'unverified', role: 'shtab', verified: false });
     const excludedRecipient = await makeUser({ tag: 'excluded', role: 'shtab' });
     const inactive = await makeUser({ tag: 'inactive', role: 'shtab', isActive: false });
@@ -304,6 +390,14 @@ describe.skipIf(!DB_URL)('ролевой дайджест: область вид
     await db
       .insert(schema.userDepartments)
       .values({ userId: dept.id, departmentId: department!.id });
+    // Оператор оргтехники — обычный штаб первой площадки плюс надстройка (ADR 0086): роль у него
+    // остаётся `shtab`, и сторону в цикле заявок ему даёт только право из надстройки.
+    await db
+      .insert(schema.userConstructionObjects)
+      .values({ userId: operator.id, constructionObjectId: objectA!.id });
+    await db
+      .insert(schema.userRoleAddons)
+      .values({ userId: operator.id, addon: 'office_equipment_operator' });
 
     const typeId = await freightTypeId(db);
     const [model] = await db
@@ -374,6 +468,105 @@ describe.skipIf(!DB_URL)('ролевой дайджест: область вид
       loading: `г Москва, ул Удалённая, д 4 (${suffix})`,
     });
 
+    const equipmentTypeId = await officeEquipmentTypeId(db);
+
+    /**
+     * Единица справочника — своя на каждую заявку: схема не допускает двух открытых заявок на одну
+     * единицу (`service_requests_open_per_equipment_unique`), и общий принтер развалил бы набор.
+     */
+    async function makeEquipment(tag: string, objectId: string): Promise<{ id: string }> {
+      const [row] = await db
+        .insert(schema.officeEquipment)
+        .values({
+          equipmentTypeId,
+          name: `Тестовый МФУ ${tag} ${suffix}`,
+          inventoryNumber: `DIG-OE-${tag}-${suffix}`,
+          objectId,
+        })
+        .returning({ id: schema.officeEquipment.id });
+      createdEquipmentIds.push(row!.id);
+      return { id: row!.id };
+    }
+
+    /**
+     * Заявка на обслуживание прямо в таблице: цикл её ведёт своя ручка на каждый переход, и
+     * проходить его целиком ради снимка «кто кого ждёт» значило бы проверять здесь чужой сценарий.
+     * Возраст в статусе задаётся явно — им раздел и сортирует строки.
+     */
+    async function makeServiceRequest(input: {
+      tag: string;
+      objectId: string;
+      status: ServiceRequestStatus;
+      serviceCounterpartyId?: string;
+      daysInStatus: number;
+    }): Promise<TestRequest> {
+      const equipment = await makeEquipment(input.tag, input.objectId);
+      const [row] = await db
+        .insert(schema.serviceRequests)
+        .values({
+          officeEquipmentId: equipment.id,
+          equipmentObjectId: input.objectId,
+          // Снимок предмета: письмо называет технику так же, как карточка заявки (ADR 0085 §7).
+          equipmentName: `Тестовый МФУ ${input.tag} ${suffix}`,
+          equipmentInventoryNumber: `DIG-OE-${input.tag}-${suffix}`,
+          description: `Не печатает (${input.tag} ${suffix})`,
+          status: input.status,
+          statusChangedAt: daysAgo(input.daysInStatus),
+          serviceCounterpartyId: input.serviceCounterpartyId ?? null,
+          createdBy: author.id,
+        })
+        .returning({ id: schema.serviceRequests.id, num: schema.serviceRequests.num });
+      createdServiceRequestIds.push(row!.id);
+      return { id: row!.id, number: formatServiceRequestNumber(row!.num) };
+    }
+
+    // «Ожидает приёмки» и «Новая» ждут оператора, «Назначен сервис» — исполнителя (Р35). Возрасты
+    // разные и заданы намеренно: по ним проверяется и порядок строк, и колонка «сколько стоит».
+    const srOperatorOld = await makeServiceRequest({
+      tag: 'accept',
+      objectId: objectA!.id,
+      status: 'done',
+      serviceCounterpartyId,
+      daysInStatus: 6,
+    });
+    const srOperatorNew = await makeServiceRequest({
+      tag: 'new',
+      objectId: objectA!.id,
+      status: 'new',
+      daysInStatus: 1,
+    });
+    const srService = await makeServiceRequest({
+      tag: 'assigned',
+      objectId: objectA!.id,
+      status: 'assigned',
+      serviceCounterpartyId,
+      daysInStatus: 3,
+    });
+    // Та же площадка и тот же статус, но исполнитель другой: без неё «сервис видит свои заявки»
+    // проходило бы и на выборке, отдающей исполнителю вообще все назначенные кому-либо заявки.
+    const srOtherService = await makeServiceRequest({
+      tag: 'foreign-service',
+      objectId: objectA!.id,
+      status: 'assigned',
+      serviceCounterpartyId: otherServiceCounterpartyId,
+      daysInStatus: 4,
+    });
+    const srForeignObject = await makeServiceRequest({
+      tag: 'foreign-object',
+      objectId: objectB!.id,
+      status: 'new',
+      daysInStatus: 5,
+    });
+    // Закрытая не ждёт никого: `waitingOn = nobody` — и в разделе её быть не должно ни у одной
+    // стороны, хотя область у обеих подходит.
+    const srClosed = await makeServiceRequest({
+      tag: 'closed',
+      objectId: objectA!.id,
+      status: 'accepted',
+      serviceCounterpartyId,
+      daysInStatus: 2,
+    });
+
     const [route] = await db
       .insert(schema.vehicleRoutes)
       .values({
@@ -424,6 +617,8 @@ describe.skipIf(!DB_URL)('ролевой дайджест: область вид
       shtabNoScope,
       dept,
       global,
+      operator,
+      service,
       unverified,
       excludedRecipient,
       inactive,
@@ -438,6 +633,12 @@ describe.skipIf(!DB_URL)('ролевой дайджест: область вид
       requestB,
       requestDept,
       requestDeleted,
+      srOperatorOld,
+      srOperatorNew,
+      srService,
+      srOtherService,
+      srForeignObject,
+      srClosed,
       routeNumber: formatVehicleRouteNumber(route!.num),
     };
   }, 120_000);
@@ -459,11 +660,29 @@ describe.skipIf(!DB_URL)('ролевой дайджест: область вид
         .delete(schema.vehicleRequests)
         .where(inArray(schema.vehicleRequests.id, createdRequestIds));
     }
+    // Заявка на обслуживание держит `RESTRICT`'ом и единицу справочника, и контрагента, и автора:
+    // порядок здесь тот же, что у заявок ТС, — сначала заявки, потом то, на что они ссылаются.
+    if (createdServiceRequestIds.length > 0) {
+      await db
+        .delete(schema.serviceRequests)
+        .where(inArray(schema.serviceRequests.id, createdServiceRequestIds));
+    }
+    if (createdEquipmentIds.length > 0) {
+      await db
+        .delete(schema.officeEquipment)
+        .where(inArray(schema.officeEquipment.id, createdEquipmentIds));
+    }
     await db.delete(schema.vehicles).where(eq(schema.vehicles.id, ctx.vehicleId));
     await db.delete(schema.vehicleModels).where(eq(schema.vehicleModels.id, ctx.modelId));
-    // Связи учёток с площадками и отделами уходят каскадом за учёткой.
+    // Связи учёток с площадками, отделами и надстройками уходят каскадом за учёткой. Контрагент
+    // удаляется после неё: на нём висит учётка исполнителя.
     if (createdUserIds.length > 0) {
       await db.delete(schema.users).where(inArray(schema.users.id, createdUserIds));
+    }
+    if (createdCounterpartyIds.length > 0) {
+      await db
+        .delete(schema.counterparties)
+        .where(inArray(schema.counterparties.id, createdCounterpartyIds));
     }
     await db.delete(schema.departments).where(eq(schema.departments.id, ctx.departmentId));
     await db
@@ -572,6 +791,82 @@ describe.skipIf(!DB_URL)('ролевой дайджест: область вид
     expect(hasNumber(globalText, ctx.requestDeleted.number)).toBe(false);
     expect(shtabText).not.toContain('ул Удалённая');
     expect(globalText).not.toContain('ул Удалённая');
+  });
+
+  it('оператору оргтехники приходят ждущие его заявки его площадки, дольше всех стоящая — первой', async () => {
+    const mail = await digestFor(ctx.operator, SERVICE);
+    expect(mail).not.toBeNull();
+    const text = renderMail(mail!.content).text;
+
+    // Ждут оператора «Новая», «Смета на согласовании» и «Ожидает приёмки» (Р35) — обе его заявки
+    // на месте, обе с площадки, которую он ведёт.
+    expect(hasNumber(text, ctx.srOperatorOld.number)).toBe(true);
+    expect(hasNumber(text, ctx.srOperatorNew.number)).toBe(true);
+    // Ждущая исполнителя — не его шаг: раздел отвечает на «что стоит на вас», а не «что открыто».
+    expect(hasNumber(text, ctx.srService.number)).toBe(false);
+    expect(hasNumber(text, ctx.srOtherService.number)).toBe(false);
+    // Чужая площадка: у оператора роль объектная, и надстройка область не расширяет (Р4).
+    expect(hasNumber(text, ctx.srForeignObject.number)).toBe(false);
+    expect(hasNumber(text, ctx.srClosed.number)).toBe(false);
+    expect(headings(mail!.content.blocks)).toEqual(['Заявки на обслуживание: ждут вас — 2']);
+
+    // Порядок — по возрасту в статусе: письмо начинается с того, что стоит дольше всех, иначе
+    // зависшая на неделю заявка окажется под свежими и раздел перестанет отвечать на свой вопрос.
+    expect(text.indexOf(ctx.srOperatorOld.number)).toBeLessThan(
+      text.indexOf(ctx.srOperatorNew.number),
+    );
+    // Колонки строки: статус и возраст в нём — ради них раздел и читают.
+    expect(text).toContain('Ожидает приёмки');
+    expect(text).toContain('ждёт 6 дней');
+    expect(text).toContain('ждёт 1 день');
+  });
+
+  it('сервисной компании приходят только назначенные ей заявки', async () => {
+    const mail = await digestFor(ctx.service, SERVICE);
+    expect(mail).not.toBeNull();
+    const text = renderMail(mail!.content).text;
+
+    expect(hasNumber(text, ctx.srService.number)).toBe(true);
+    // Главная проверка стороны исполнителя: заявка того же статуса и той же площадки, назначенная
+    // другому сервису, — чужая работа, чужие сроки и чужой заказчик.
+    expect(hasNumber(text, ctx.srOtherService.number)).toBe(false);
+    // Шаги оператора сервису не показываются даже по своим заявкам: «Ожидает приёмки» — не его
+    // очередь, и заявка до назначения («Новая») ему не видна вовсе.
+    expect(hasNumber(text, ctx.srOperatorOld.number)).toBe(false);
+    expect(hasNumber(text, ctx.srOperatorNew.number)).toBe(false);
+    expect(hasNumber(text, ctx.srForeignObject.number)).toBe(false);
+    expect(hasNumber(text, ctx.srClosed.number)).toBe(false);
+    expect(headings(mail!.content.blocks)).toEqual(['Заявки на обслуживание: ждут вас — 1']);
+    expect(text).toContain('Назначен сервис');
+    expect(text).toContain('ждёт 3 дня');
+  });
+
+  it('заказчику раздел не собирается: право модуля у него есть, а шага в цикле нет', async () => {
+    // Штаб и отдел видят заявки в портале и заводят их, но решений по ним не принимают: приёмку
+    // делает оператор (Р35). Раздел у них пуст всегда — и потому письма нет вовсе.
+    expect(await digestFor(ctx.shtab, SERVICE)).toBeNull();
+    expect(await digestFor(ctx.dept, SERVICE)).toBeNull();
+
+    // Пусто — не то же самое, что нельзя: право модуля у заказчика есть, и раздел до запроса
+    // допускается. Различие важно ровно тем, что «нельзя» проверяется до выборки, а «пусто» — после.
+    const shtabPrincipal = await ctx.loadPrincipal(ctx.shtab.id);
+    expect(ctx.sectionAllowed('service_requests_waiting', shtabPrincipal!)).toBe(true);
+  });
+
+  it('роли без права модуля раздел обслуживания не достаётся вовсе', async () => {
+    // У диспетчера справочник оргтехники есть, а заявок на обслуживание нет: их ведёт
+    // ответственный за оргтехнику. Проверка у двери, а не по телу письма: области у роли нет, и
+    // собранный раздел отдал бы ей заявки всей компании разом.
+    const globalPrincipal = await ctx.loadPrincipal(ctx.global.id);
+    expect(ctx.sectionAllowed('service_requests_waiting', globalPrincipal!)).toBe(false);
+    expect(await digestFor(ctx.global, SERVICE)).toBeNull();
+
+    // А обе стороны цикла раздел получают: без этого предыдущая проверка проходила бы и на
+    // ветке, закрывающей раздел вообще всем.
+    const operatorPrincipal = await ctx.loadPrincipal(ctx.operator.id);
+    const servicePrincipal = await ctx.loadPrincipal(ctx.service.id);
+    expect(ctx.sectionAllowed('service_requests_waiting', operatorPrincipal!)).toBe(true);
+    expect(ctx.sectionAllowed('service_requests_waiting', servicePrincipal!)).toBe(true);
   });
 
   it('получателями становятся только действующие учётки с ролью набора и подтверждённым адресом', async () => {

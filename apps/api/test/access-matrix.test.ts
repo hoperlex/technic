@@ -699,6 +699,16 @@ const CASES: Case[] = [
     allowed: SERVICE_REQUEST_READERS,
   },
   {
+    // Счётчик «ждут меня» для бейджа в меню закрыт правом чтения модуля, а не правом решения:
+    // ответ у него — число заявок области, и стороне без шага в цикле он честно отвечает нулём.
+    // Закрой его `serviceRequests.assign`, и сервисная компания — вторая сторона цикла — получала
+    // бы 403 на собственную очередь.
+    title: 'заявки на обслуживание — счётчик «ждут меня»',
+    method: 'GET',
+    url: '/api/v1/service-requests/waiting-count',
+    allowed: SERVICE_REQUEST_READERS,
+  },
+  {
     title: 'заявки на обслуживание — заведение',
     method: 'POST',
     url: '/api/v1/service-requests',

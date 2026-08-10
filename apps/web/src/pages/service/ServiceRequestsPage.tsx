@@ -4,19 +4,21 @@ import { PageTabs } from '../../components/PageTabs';
 import { useAuth } from '../../auth/AuthContext';
 import { canSeeArchiveTab } from '../../utils/links';
 import { RequestsTab } from './RequestsTab';
+import { WarrantiesTab } from './WarrantiesTab';
 import { ServiceArchiveTab } from './ArchiveTab';
 
 /**
  * Раздел «Орг.техника» (ADR 0085): заявки на обслуживание оргтехники.
  *
- * Раздел закрывает одно право — `serviceRequests.read` (маршрут в `App.tsx`), вкладок пока две.
- * Реестр гарантий (§9.5) придёт третьей вкладкой отдельным этапом: он отвечает на свой вопрос —
- * «что ещё на гарантии», — и заводить его пустым значило бы обещать ответ, которого нет.
+ * Раздел закрывает одно право — `serviceRequests.read` (маршрут в `App.tsx`). Вкладки отвечают на
+ * разные вопросы: «что чинится сейчас» (заявки), «что ещё покрыто гарантией» (реестр) и «что было»
+ * (архив). Реестр — не срез списка заявок: гарантия поставщика существует и без единого ремонта, а
+ * строкой в нём стоит носитель гарантии, а не заявка.
  *
  * Справочник оргтехники живёт не здесь, а в «Справочниках» (Р7): его ведёт тот же человек, что
  * объекты и контрагентов, а исполнителю справочник закрыт вовсе.
  */
-const TABS = ['requests', 'archive'] as const;
+const TABS = ['requests', 'warranties', 'archive'] as const;
 
 export function ServiceRequestsPage() {
   const { can } = useAuth();
@@ -28,6 +30,7 @@ export function ServiceRequestsPage() {
 
   const items = [
     { key: 'requests', label: 'Заявки', children: <RequestsTab /> },
+    { key: 'warranties', label: 'Гарантии', children: <WarrantiesTab /> },
     ...(showArchive ? [{ key: 'archive', label: 'Архив', children: <ServiceArchiveTab /> }] : []),
   ];
 

@@ -9,9 +9,11 @@ import {
   isDepartmentScopedRole,
 } from '@technic/contracts';
 import type { Principal } from '../../auth/principal';
-import { vehicleRequests, wasteRequests } from '../../db/schema';
+import { serviceRequests, vehicleRequests, wasteRequests } from '../../db/schema';
 import {
   operatorVisibilityWhere,
+  serviceExecutorVisibilityWhere,
+  serviceRequestScopeWhere,
   vehicleRequestVisibilityWhere,
   wasteRequestVisibilityWhere,
 } from '../../lib/access';
@@ -80,6 +82,11 @@ export function sectionAllowed(section: DigestSection, principal: Principal): bo
   }
   if (section.startsWith('vehicle_')) return can(principal, 'vehicleRequests.read');
   if (section.startsWith('waste_')) return canUse(principal, 'wasteRequests.read');
+  // Модуль обслуживания оргтехники закрыт одним правом (ADR 0085): что внутри доступно, решает
+  // коридор переходов, а не список ролей. `can`, а не `canUse`: областью раздел не открывается —
+  // пустой она у видящей роли не бывает, и у сервисной компании её задаёт не набор площадок, а
+  // назначение исполнителем.
+  if (section.startsWith('service_')) return can(principal, 'serviceRequests.read');
   return false;
 }
 
@@ -148,6 +155,52 @@ export function wasteRequestScope(ctx: DigestContext): SQL | undefined {
     wasteRequestVisibilityWhere(ctx.principal, wasteRequests.objectId),
     operatorVisibilityWhere(ctx.principal, wasteRequests.operatorCounterpartyId),
     excludedObjects,
+  );
+}
+
+/**
+ * Условие видимости заявок на обслуживание оргтехники (ADR 0085).
+ *
+ * Обе оси сразу и ровно теми же функциями, что и список модуля: заказчик заявки — объект техники и
+ * два отдела (подавший и владелец единицы), исполнитель — назначенный контрагент-сервис. Своего
+ * запроса области у письма быть не может: разойдись он со списком хоть на одну ветку, письмо стало
+ * бы каналом, через который наружу уходит то, чего человеку в портале не показывают.
+ */
+export function serviceRequestScope(ctx: DigestContext): SQL | undefined {
+  const excludedObjects =
+    ctx.excludedObjectIds.length > 0
+      ? notInArray(serviceRequests.equipmentObjectId, ctx.excludedObjectIds)
+      : undefined;
+  /**
+   * Отдел вычитается по обеим колонкам: заявка относится и к тому, кто её подал, и к тому, за кем
+   * числится техника, — исключение убирает её вместе с любой из двух сторон. `isNull` обязателен:
+   * `NULL NOT IN (...)` даёт `NULL`, и «к отделам не относящаяся» заявка выпала бы из письма молча,
+   * стоило администратору исключить хоть один отдел.
+   */
+  const excludedDepartments =
+    ctx.excludedDepartmentIds.length > 0
+      ? and(
+          or(
+            isNull(serviceRequests.customerDepartmentId),
+            notInArray(serviceRequests.customerDepartmentId, ctx.excludedDepartmentIds),
+          ),
+          or(
+            isNull(serviceRequests.equipmentDepartmentId),
+            notInArray(serviceRequests.equipmentDepartmentId, ctx.excludedDepartmentIds),
+          ),
+        )
+      : undefined;
+  return and(
+    isNull(serviceRequests.deletedAt),
+    serviceRequestScopeWhere(
+      ctx.principal,
+      serviceRequests.equipmentObjectId,
+      serviceRequests.customerDepartmentId,
+      serviceRequests.equipmentDepartmentId,
+    ),
+    serviceExecutorVisibilityWhere(ctx.principal, serviceRequests.serviceCounterpartyId),
+    excludedObjects,
+    excludedDepartments,
   );
 }
 

@@ -15,7 +15,8 @@ import { z } from 'zod';
  *
  * Порядок — тот, в котором справочники показываются на вкладке, и он же подсказывает порядок
  * загрузки: связанное идёт после того, на что ссылается (объекты раньше отделов, контрагенты
- * раньше складов и прайса, виды ТС раньше типов).
+ * раньше складов и прайса, виды ТС раньше типов, типы оргтехники раньше самой оргтехники — а она
+ * сама после объектов и отделов, на которые ссылается карточка).
  */
 export const DIRECTORY_KEYS = [
   'objects',
@@ -32,6 +33,8 @@ export const DIRECTORY_KEYS = [
   'vehicle-categories',
   'vehicle-models',
   'vehicles',
+  'office-equipment-types',
+  'office-equipment',
   'specializations',
   'credential-types',
   'qualification-categories',
@@ -58,6 +61,8 @@ export const directoryTitles: Record<DirectoryKey, string> = {
   'vehicle-categories': 'Категории типов ТС',
   'vehicle-models': 'Модели техники',
   vehicles: 'Техника',
+  'office-equipment-types': 'Типы оргтехники',
+  'office-equipment': 'Оргтехника',
   specializations: 'Специализации',
   'credential-types': 'Виды документов',
   'qualification-categories': 'Категории квалификаций',

@@ -17,10 +17,11 @@ import {
   TeamOutlined,
 } from '@ant-design/icons';
 import { Outlet, useLocation, useNavigate } from 'react-router';
-import { formatShortName, roleLabels } from '@technic/contracts';
+import { actsForCounterparty, formatShortName, roleLabels } from '@technic/contracts';
 import { usersApi } from '../api/resources';
 import { useAuth } from '../auth/AuthContext';
 import { useReleases } from '@entities/release';
+import { serviceRequestKeys, serviceRequestsApi } from '@entities/service-request';
 import { useIsMobile } from '@shared/lib';
 import { MobileAppBar } from './MobileAppBar';
 import { MobileNav, type MobileNavItem } from './MobileNav';
@@ -97,6 +98,53 @@ export function AppLayout() {
     staleTime: 60_000,
   });
 
+  /**
+   * Бейдж «ждёт меня» на разделе оргтехники (ADR 0085, Р39).
+   *
+   * Счётчик спрашивается **не у всех, кто видит раздел**, и это не экономия, а суть: ход заявки
+   * стоит только за двоими — оператором оргтехники (право `serviceRequests.assign`, приходит
+   * надстройкой роли, ADR 0086) и сервисной компанией (тип контрагента, ADR 0038). У заказчика —
+   * штаба и ролей отдела, то есть у основной массы видящих пункт меню, — шага в цикле нет
+   * намеренно: заявку принимает оператор, а не тот, кто её завёл. Сервер ответил бы такой учётке
+   * нулём всегда, и бейдж превратился бы в обещание «непрочитанного», которого в портале нет
+   * вовсе, — плюс лишний запрос на каждый вход.
+   *
+   * Поэтому здесь именно «не спрашиваем», а не «показываем ноль». Прежде чем заводить бейдж
+   * заказчику, заведите ему шаг в цикле (значение `customer` в `SERVICE_WAITING_ON` и ветку в
+   * `isWaitingOn`) — иначе счётчик будет считать чужое ожидание.
+   */
+  const inServiceLoop = can('serviceRequests.assign') || actsForCounterparty(user, 'service');
+  const { data: waitingService } = useQuery({
+    queryKey: serviceRequestKeys.waitingCount(),
+    queryFn: () => serviceRequestsApi.waitingCount(),
+    enabled: inServiceLoop,
+    staleTime: 60_000,
+  });
+  const waitingServiceCount = waitingService?.count ?? 0;
+
+  /**
+   * Бейдж ведёт не в раздел, а в саму очередь «Требуют решения» — тот же пресет списка, что и
+   * кнопка на вкладке заявок. Обработчик гасит всплытие: нажатие мимо бейджа остаётся нажатием на
+   * пункт меню и открывает раздел целиком. Ставится он только на зажжённый бейдж — у погасшего
+   * иконка обязана вести туда же, куда весь пункт.
+   */
+  const serviceMenuIcon =
+    waitingServiceCount > 0 ? (
+      <span
+        title="Требуют решения"
+        onClick={(e) => {
+          e.stopPropagation();
+          navigate('/office-equipment?tab=requests&waitingOnMe=true');
+        }}
+      >
+        <Badge count={waitingServiceCount} size="small" offset={[4, -2]} color="gold">
+          <PrinterOutlined />
+        </Badge>
+      </span>
+    ) : (
+      <PrinterOutlined />
+    );
+
   // `short` — подпись для нижней навигации мобильного режима: на 360 px пункту достаётся
   // четверть экрана, и полное название раздела туда не помещается (ADR 0030).
   const navItems: (MobileNavItem & { icon: ReactNode })[] = [
@@ -148,7 +196,7 @@ export function AppLayout() {
       ? [
           {
             key: '/office-equipment',
-            icon: <PrinterOutlined />,
+            icon: serviceMenuIcon,
             label: 'Орг.техника',
             short: 'Оргтех.',
           },

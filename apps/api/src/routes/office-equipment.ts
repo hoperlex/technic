@@ -1,13 +1,29 @@
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
-import { and, count, eq, isNotNull, isNull, ne, notInArray, or, sql, type SQL } from 'drizzle-orm';
+import {
+  and,
+  count,
+  desc,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  ne,
+  notInArray,
+  or,
+  sql,
+  type SQL,
+} from 'drizzle-orm';
 import { z } from 'zod';
 import {
+  can,
   createOfficeEquipmentSchema,
   formatServiceRequestNumber,
   officeEquipmentListQuerySchema,
   officeEquipmentTitle,
   type OfficeEquipmentDto,
+  type OfficeEquipmentItemWarrantyDto,
+  type OfficeEquipmentServiceEntryDto,
   type OfficeEquipmentWarrantyFilter,
   updateOfficeEquipmentSchema,
   WARRANTY_EXPIRING_DAYS,
@@ -15,19 +31,23 @@ import {
 import { db } from '../db/client';
 import {
   constructionObjects,
+  counterparties,
   departments,
   officeEquipment,
   officeEquipmentTypes,
+  serviceRequestItems,
   serviceRequests,
 } from '../db/schema';
 import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
+import type { Principal } from '../auth/principal';
 import {
   archiveWhere,
   assertArchiveVisible,
   assertOfficeEquipmentScope,
   officeEquipmentScopeWhere,
+  serviceRequestScopeWhere,
 } from '../lib/access';
 import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
 import { registerPurgeRoute } from '../services/directory-purge';
@@ -255,6 +275,94 @@ async function assertNoOpenServiceRequest(equipmentId: string): Promise<void> {
   }
 }
 
+/** Сколько ремонтов показывает карточка: срез, а не журнал — за полным списком идут в раздел. */
+const SERVICE_HISTORY_LIMIT = 10;
+
+/**
+ * История обслуживания и действующие гарантии ремонтов для карточки единицы (§8.2).
+ *
+ * Отдаётся только при `serviceRequests.read` и **в области заявок**, а не справочника: у ролей
+ * отдела это разные области (справочник — по владельцу техники, заявки — по заказчику заявки, Р5),
+ * и показать здесь заявку соседнего отдела значило бы обойти область модуля через справочник.
+ *
+ * Область исполнителя (`serviceExecutorVisibilityWhere`) не повторяется намеренно: справочник
+ * сервисной компании закрыт целиком (Р7), и до этого места её учётка не доходит.
+ */
+async function loadServiceHistory(
+  p: Principal,
+  equipmentId: string,
+): Promise<OfficeEquipmentServiceEntryDto[]> {
+  const rows = await db
+    .select({
+      id: serviceRequests.id,
+      num: serviceRequests.num,
+      status: serviceRequests.status,
+      createdAt: serviceRequests.createdAt,
+      completedAt: serviceRequests.completedAt,
+      totalAmount: serviceRequests.finalTotalAmount,
+      serviceName: counterparties.name,
+    })
+    .from(serviceRequests)
+    .leftJoin(counterparties, eq(serviceRequests.serviceCounterpartyId, counterparties.id))
+    .where(
+      and(
+        eq(serviceRequests.officeEquipmentId, equipmentId),
+        isNull(serviceRequests.deletedAt),
+        serviceRequestScopeWhere(
+          p,
+          serviceRequests.equipmentObjectId,
+          serviceRequests.customerDepartmentId,
+          serviceRequests.equipmentDepartmentId,
+        ),
+      ),
+    )
+    .orderBy(desc(serviceRequests.createdAt))
+    .limit(SERVICE_HISTORY_LIMIT);
+  if (rows.length === 0) return [];
+
+  // Гарантии одним запросом на все показанные заявки: строка на заявку превратила бы карточку в
+  // десять походов в базу ради двух строчек текста. Только выполненные и только действующие —
+  // гарантия на невыполненную позицию невозможна (Р12), а истёкшая здесь уже история.
+  const warrantyRows = await db
+    .select({
+      requestId: serviceRequestItems.requestId,
+      itemId: serviceRequestItems.id,
+      name: serviceRequestItems.name,
+      warrantyUntil: serviceRequestItems.warrantyUntil,
+    })
+    .from(serviceRequestItems)
+    .where(
+      and(
+        inArray(
+          serviceRequestItems.requestId,
+          rows.map((row) => row.id),
+        ),
+        eq(serviceRequestItems.performed, true),
+        isNotNull(serviceRequestItems.warrantyUntil),
+        sql`${serviceRequestItems.warrantyUntil} >= CURRENT_DATE`,
+      ),
+    )
+    .orderBy(serviceRequestItems.sortOrder);
+
+  const byRequest = new Map<string, OfficeEquipmentItemWarrantyDto[]>();
+  for (const row of warrantyRows) {
+    const list = byRequest.get(row.requestId) ?? [];
+    list.push({ itemId: row.itemId, name: row.name, warrantyUntil: row.warrantyUntil! });
+    byRequest.set(row.requestId, list);
+  }
+
+  return rows.map((row) => ({
+    id: row.id,
+    displayNumber: formatServiceRequestNumber(row.num),
+    status: row.status,
+    createdAt: row.createdAt.toISOString(),
+    completedAt: row.completedAt ? row.completedAt.toISOString() : null,
+    serviceName: row.serviceName,
+    totalAmount: row.totalAmount === null ? null : Number(row.totalAmount),
+    warranties: byRequest.get(row.id) ?? [],
+  }));
+}
+
 export default async function officeEquipmentRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
   const canRead = app.requirePermission('officeEquipment.read');
@@ -351,7 +459,11 @@ export default async function officeEquipmentRoutes(app: FastifyInstance): Promi
         objectId: dto.object.id,
         ownerDepartmentId: dto.department?.id ?? null,
       });
-      return dto;
+      // Секция обслуживания — по праву модуля, а не справочника (§8.2): менеджер и диспетчер ведут
+      // карточки техники, но ремонтом не занимаются, и заявки с суммами им знать незачем. Поля
+      // просто нет в ответе — пустой список означал бы «ремонтов не было».
+      if (!can(p, 'serviceRequests.read')) return dto;
+      return { ...dto, serviceHistory: await loadServiceHistory(p, dto.id) };
     },
   );
 

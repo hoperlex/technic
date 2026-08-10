@@ -19,6 +19,9 @@ export const MAIL_TEST_KINDS = [
   'verify_email',
   'password_reset',
   'password_changed',
+  'registration_rejected',
+  'registration_approved',
+  'account_created',
 ] as const;
 export type MailTestKind = (typeof MAIL_TEST_KINDS)[number];
 
@@ -28,6 +31,9 @@ export const mailTestKindLabels: Record<MailTestKind, string> = {
   verify_email: 'Подтверждение адреса при регистрации',
   password_reset: 'Восстановление пароля',
   password_changed: 'Уведомление о смене пароля',
+  registration_rejected: 'Отказ по заявке на регистрацию',
+  registration_approved: 'Одобрение заявки на регистрацию',
+  account_created: 'Учётная запись заведена администратором',
 };
 
 /**
@@ -42,6 +48,13 @@ export const mailTestKindNeedsDate: Record<MailTestKind, boolean> = {
   verify_email: false,
   password_reset: false,
   password_changed: false,
+  // Письма про решение по конкретной учётной записи. Периода у них нет по той же причине, что у
+  // писем про доступ, а образца нет тем более: ни водителя, ни чужой области видимости в них не
+  // участвует — весь текст известен из самого решения. Проверяются в отладке только вёрстка и
+  // доставка, поэтому и в соседних картах у этих трёх видов `false`.
+  registration_rejected: false,
+  registration_approved: false,
+  account_created: false,
 };
 
 /**
@@ -55,6 +68,9 @@ export const mailTestKindNeedsDriver: Record<MailTestKind, boolean> = {
   verify_email: false,
   password_reset: false,
   password_changed: false,
+  registration_rejected: false,
+  registration_approved: false,
+  account_created: false,
 };
 
 /**
@@ -71,6 +87,9 @@ export const mailTestKindNeedsSampleUser: Record<MailTestKind, boolean> = {
   verify_email: false,
   password_reset: false,
   password_changed: false,
+  registration_rejected: false,
+  registration_approved: false,
+  account_created: false,
 };
 
 export const mailTestSchema = z
@@ -132,6 +151,11 @@ export const DIGEST_SECTIONS = [
   'waste_requests_changes',
   'waste_requests_open',
   'waste_requests_upcoming',
+  // Третий модуль заявок (ADR 0085). Раздел у него один и отвечает не на «что произошло», а на
+  // «что стоит на вас»: половина шагов цикла за сервисной компанией, у которой нет служебной
+  // причины заходить в портал, пока её не позвали, — и назначенная заявка иначе неделю лежит
+  // непрочитанной (план оргтехники, Р38).
+  'service_requests_waiting',
 ] as const;
 export type DigestSection = (typeof DIGEST_SECTIONS)[number];
 
@@ -144,12 +168,18 @@ export const digestSectionLabels: Record<DigestSection, string> = {
   waste_requests_changes: 'Вывоз мусора: заведено и сменило статус',
   waste_requests_open: 'Вывоз мусора: незакрытые',
   waste_requests_upcoming: 'Вывоз мусора: ожидают подачи',
+  // «Ждут вас», а не «ждут решения»: строки раздела отбираются стороной самого получателя
+  // (`isWaitingOn`), и у двух людей с одним и тем же расписанием он собирается разный.
+  service_requests_waiting: 'Заявки на обслуживание: ждут вас',
 };
 
 /**
  * Разделы, которые видны только ролям с глобальным доступом. У путевых листов и рейсов в портале
  * нет объектной области видимости вовсе: доступ к ним закрыт правом, а не набором площадок. Значит
  * сузить такой раздел под штаб или отдел нечем — и в их письмо он просто не попадает.
+ *
+ * Заявок на обслуживание здесь нет намеренно: у них обе оси области на месте — объект техники и два
+ * отдела заказчика, а у внешнего исполнителя третья, назначение, — сузить раздел есть чем.
  */
 export const GLOBAL_ONLY_DIGEST_SECTIONS: readonly DigestSection[] = [
   'vehicle_routes_upcoming',

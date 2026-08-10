@@ -12,6 +12,12 @@ import { createQueryKeys, type Query } from '@shared/api';
 export const officeEquipmentKeys = createQueryKeys('office-equipment', {
   list: (params: Query) => ['list', params],
   options: () => ['options'],
+  /**
+   * Карточка по идентификатору: только она приносит историю обслуживания и гарантии ремонтов
+   * (§8.2) — в списке этого среза нет, и держать её под ключом списка значило бы либо потерять
+   * секцию, либо тащить подзапрос на каждую строку справочника.
+   */
+  detail: (id: string) => ['detail', id],
 });
 
 /**
