@@ -10,6 +10,7 @@ import {
   MAIL_TEST_SUBJECT_PREFIX,
   type MailTestKind,
   mailTestSchema,
+  type Role,
 } from '@technic/contracts';
 import { config } from '../config';
 import { db } from '../db/client';
@@ -26,9 +27,15 @@ import {
   digestUpcoming,
 } from '../services/mailings/role-digest';
 import {
+  ACCOUNT_CREATED_SUBJECT,
+  accountCreatedContent,
   PASSWORD_CHANGED_SUBJECT,
   passwordChangedContent,
   passwordResetContent,
+  REGISTRATION_APPROVED_SUBJECT,
+  REGISTRATION_REJECTED_SUBJECT,
+  registrationApprovedContent,
+  registrationRejectedContent,
   RESET_SUBJECT,
   VERIFY_SUBJECT,
   verifyEmailContent,
@@ -51,6 +58,21 @@ import {
 const FAKE_TOKEN = 'test-link-not-valid';
 
 /**
+ * Ответ заявителю в отладочном отказе. В настоящем письме этот абзац набирает администратор — и
+ * ровно он в письме непредсказуем; образец взят такой же длины, как обычная причина отказа, чтобы
+ * абзац лёг в письмо так же, как ляжет в жизни.
+ */
+const SAMPLE_REJECT_MESSAGE =
+  'Учётная запись на этот адрес уже заведена — войдите под ней или воспользуйтесь восстановлением пароля.';
+
+/**
+ * Роль в отладочных письмах про учётную запись. Роль получателя сюда не годится: тест уходит только
+ * администратору (маршрут иначе отказывает), и подпись всегда была бы одна и та же — самая короткая
+ * из возможных. Взята самая длинная: подпись роли стоит в середине абзаца, и переносится он на ней.
+ */
+const SAMPLE_ROLE: Role = 'operator';
+
+/**
  * Содержимое письма для отладки. Задание водителю собирается тем же кодом, что и настоящая
  * рассылка, — иначе проверка показывала бы не то письмо, которое потом уйдёт людям.
  */
@@ -65,6 +87,18 @@ async function contentFor(
       return { subject: RESET_SUBJECT, content: passwordResetContent(FAKE_TOKEN) };
     case 'password_changed':
       return { subject: PASSWORD_CHANGED_SUBJECT, content: passwordChangedContent() };
+    case 'registration_rejected':
+      return {
+        subject: REGISTRATION_REJECTED_SUBJECT,
+        content: registrationRejectedContent(SAMPLE_REJECT_MESSAGE),
+      };
+    case 'registration_approved':
+      return {
+        subject: REGISTRATION_APPROVED_SUBJECT,
+        content: registrationApprovedContent(SAMPLE_ROLE),
+      };
+    case 'account_created':
+      return { subject: ACCOUNT_CREATED_SUBJECT, content: accountCreatedContent(SAMPLE_ROLE) };
     case 'driver_routes': {
       const date = opts.date!;
       const drivers = await driversWithRoutes(date, date);

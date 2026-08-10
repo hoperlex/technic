@@ -18,13 +18,14 @@ import type {
   VerifyDriverLicenseBody,
   AssignVehicleBody,
   AttachVehicleTypeSpecInput,
+  AuditEntryDto,
   ChangeVehicleAssignmentBody,
   CompleteVehicleRequestInput,
   CompleteWasteRequestInput,
   ConfirmScheduleBody,
   CounterpartyDto,
   CreateCounterpartyInput,
-  CreateUserInput,
+  CreateUserBody,
   CreateVehicleCategoryInput,
   CreateVehicleInput,
   CreateVehicleRequestInput,
@@ -38,6 +39,8 @@ import type {
   FileDisposition,
   FileDto,
   ListResult,
+  RejectUserBody,
+  RejectUserResult,
   RequestHistoryEntryDto,
   RequestStatus,
   RequestVehicleEarlyEndInput,
@@ -47,7 +50,7 @@ import type {
   RouteTripFields,
   SaveVehicleRequestShiftBody,
   UpdateCounterpartyInput,
-  UpdateUserInput,
+  UpdateUserBody,
   UpdateVehicleCategoryInput,
   UpdateVehicleInput,
   UpdateVehicleRequestInput,
@@ -56,6 +59,7 @@ import type {
   UpdateVehicleTypeSpecInput,
   UploadSessionDto,
   UserDto,
+  UserMutationResult,
   VehicleCategoryDto,
   VehicleClassificationDto,
   VehicleDto,
@@ -63,6 +67,7 @@ import type {
   VehicleModelDto,
   VehicleOnSiteListDto,
   VehicleOnSiteSummaryDto,
+  VehicleFeedListDto,
   VehicleRequestDto,
   VehicleRequestDriverDto,
   VehicleRequestShiftsDto,
@@ -90,20 +95,41 @@ type Query = Record<string, unknown>;
 
 export const usersApi = {
   list: (q: Query) => apiFetch<ListResult<UserDto>>('/users', { query: q }),
-  create: (body: CreateUserInput) => apiFetch<UserDto>('/users', { method: 'POST', body }),
-  update: (id: string, body: UpdateUserInput) =>
-    apiFetch<UserDto>(`/users/${id}`, { method: 'PATCH', body }),
+  /**
+   * Заведение и правка учётки отвечают не голой карточкой, а карточкой с исходом письма о выданном
+   * доступе: письмо уходит не всякий раз, и портал обязан сказать, ушло ли оно.
+   */
+  create: (body: CreateUserBody) =>
+    apiFetch<UserMutationResult>('/users', { method: 'POST', body }),
+  update: (id: string, body: UpdateUserBody) =>
+    apiFetch<UserMutationResult>(`/users/${id}`, { method: 'PATCH', body }),
   setPassword: (id: string, newPassword: string) =>
     apiFetch<{ ok: boolean }>(`/users/${id}/password`, { method: 'POST', body: { newPassword } }),
   remove: (id: string) => apiFetch<{ ok: boolean }>(`/users/${id}`, { method: 'DELETE' }),
-  /** Отказ по нерассмотренной заявке на регистрацию: причина уходит в аудит. */
-  reject: (id: string, reason: string) =>
-    apiFetch<{ ok: boolean }>(`/users/${id}/reject`, { method: 'POST', body: { reason } }),
+  /**
+   * Отказ по нерассмотренной заявке на регистрацию. Причин две, и они не дублируют друг друга:
+   * `reason` уходит в аудит и заявителю не показывается, `applicantMessage` — это и есть письмо,
+   * которое он прочитает. Уйдёт ли оно, говорит `notified`: почта бывает выключена, а отметку об
+   * отправке — снята.
+   */
+  reject: (id: string, body: RejectUserBody) =>
+    apiFetch<RejectUserResult>(`/users/${id}/reject`, { method: 'POST', body }),
   /** Возврат из архива (ADR 0063): учётка остаётся неактивной, отказ снова становится заявкой. */
   restore: (id: string) => apiFetch<UserDto>(`/users/${id}/restore`, { method: 'POST' }),
   /** Удаление насовсем (ADR 0063) — только из архива и только администратором. */
   purge: (id: string) => apiFetch<{ ok: boolean }>(`/users/${id}/purge`, { method: 'DELETE' }),
   pendingCount: () => apiFetch<{ count: number }>('/users/pending-count'),
+};
+
+/**
+ * Журнал действий с учётными записями (ADR 0088) — подвкладка «Аудит» во вкладке «Пользователи».
+ *
+ * Одна ручка и без карточки: строка журнала и есть карточка события, а всё, чем её сужают, —
+ * фильтры списка. Набор действий уходит одним параметром через запятую (`actions`): реестр
+ * закрытый и лежит в контрактах, поэтому портал не собирает его сам, а перечисляет отмеченное.
+ */
+export const auditApi = {
+  list: (q: Query) => apiFetch<ListResult<AuditEntryDto>>('/audit', { query: q }),
 };
 
 /** Получатель отладочного письма: действующий администратор и его адрес. */
@@ -432,6 +458,14 @@ export const vehiclesApi = {
 
 export const vehicleRequestsApi = {
   list: (q: Query) => apiFetch<ListResult<VehicleRequestDto>>('/vehicle-requests', { query: q }),
+  /**
+   * Лента раздела: заказы ТС и недельные заявки одним списком (ADR 0085 переехал в общий список).
+   *
+   * Отдельный маршрут, а не флаг у `list`: тем списком пользуются архив и подбор заявок в рейс, и
+   * подмешивать туда документы, которые в рейс не ставятся, нельзя. Строка ленты размечена видом,
+   * поэтому таблица разбирает её ветками, а не гадает по пустым полям.
+   */
+  feed: (q: Query) => apiFetch<VehicleFeedListDto>('/vehicle-requests/feed', { query: q }),
   /** Контакт водителя защищён правом на путевые листы и поэтому не входит в основной DTO. */
   driver: (id: string) =>
     apiFetch<VehicleRequestDriverDto | null>(`/vehicle-requests/${id}/driver`),

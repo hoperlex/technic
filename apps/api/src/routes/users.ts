@@ -19,11 +19,23 @@ import {
   setUserPasswordSchema,
   updateUserSchema,
   userListQuerySchema,
+  type MailOutcome,
   type RoleAddon,
   type UserDto,
 } from '@technic/contracts';
 import { db } from '../db/client';
 import { counterparties, userConstructionObjects, users } from '../db/schema';
+import { config } from '../config';
+import { queueMail, type MailKind } from '../services/mail';
+import { type MailContent } from '../services/mail-templates';
+import {
+  ACCOUNT_CREATED_SUBJECT,
+  accountCreatedContent,
+  REGISTRATION_APPROVED_SUBJECT,
+  REGISTRATION_REJECTED_SUBJECT,
+  registrationApprovedContent,
+  registrationRejectedContent,
+} from '../services/mail-auth';
 import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
@@ -45,6 +57,53 @@ import { assertEmailFree, asEmailConflict } from '../services/user-email';
 import { registerPurgeRoute } from '../services/directory-purge';
 
 const idParams = z.object({ id: z.string().uuid() });
+
+/** Транзакция drizzle: письмо о доступе ставится вместе с решением, ради которого отправляется. */
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * Поставить письмо о решении по учётной записи и назвать исход отправки.
+ *
+ * Три письма — отказ, одобрение, заведение учётки — отличаются только содержимым, а правило
+ * отправки у них одно, и живёт оно здесь, а не трижды в маршрутах. Правило такое: письма не было,
+ * потому что его не просили; письмо поставлено; письмо просили, но почта выключена. Последний
+ * случай нельзя проглотить молча — администратор уйдёт уверенным, что человека предупредили, —
+ * и нельзя превратить в отказ: решение по учётке административное и от состояния почтового
+ * контура зависеть не должно.
+ *
+ * Содержимое строится лениво: при выключенной почте собирать его незачем, а сборка письма о
+ * доступе ещё и проверяет адрес портала (`assertOwnOrigin`) и падала бы на неверном
+ * `PUBLIC_ORIGIN` там, где письма всё равно не будет.
+ */
+async function queueAccessMail(
+  tx: Tx,
+  input: {
+    requested: boolean;
+    kind: MailKind;
+    dedupeKey: string;
+    to: string;
+    subject: string;
+    content: () => MailContent;
+    userId: string;
+  },
+): Promise<MailOutcome> {
+  if (!input.requested) return 'not_requested';
+  if (!config.mail.enabled) return 'mail_disabled';
+  await queueMail(
+    {
+      kind: input.kind,
+      dedupeKey: input.dedupeKey,
+      to: input.to,
+      subject: input.subject,
+      content: input.content(),
+      userId: input.userId,
+      entityType: 'user',
+      entityId: input.userId,
+    },
+    { tx },
+  );
+  return 'queued';
+}
 
 /**
  * Заявка на регистрацию: учётка, которую завёл сам пользователь и которую администратор ещё не
@@ -357,6 +416,7 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
     const departmentIds = resolveDepartmentIds(body.role, body.departmentIds);
     const addons = resolveAddons(body.role, body.addons);
     let created;
+    let notified: MailOutcome = 'not_requested';
     try {
       created = await db.transaction(async (tx) => {
         // Архив адрес не занимает (ADR 0063) — та же проверка, что у саморегистрации.
@@ -382,6 +442,17 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
         await replaceUserObjects(tx, row!.id, objectIds, actor.id);
         await replaceUserDepartments(tx, row!.id, departmentIds, actor.id);
         await replaceUserAddons(tx, row!.id, addons, actor.id);
+        // Письмо только активной учётке: звать человека в портал, который его не пустит, хуже
+        // молчания. Ключ без времени — учётку заводят один раз, различать в нём нечего.
+        notified = await queueAccessMail(tx, {
+          requested: body.notifyUser && body.isActive,
+          kind: 'account_created',
+          dedupeKey: `account-created:${row!.id}`,
+          to: body.email,
+          subject: ACCOUNT_CREATED_SUBJECT,
+          content: () => accountCreatedContent(body.role),
+          userId: row!.id,
+        });
         return row!;
       });
     } catch (e) {
@@ -394,10 +465,12 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
       entityId: created.id,
       // Надстройка — выданный доступ (ADR 0086), и в журнале она стоит рядом с ролью: вопрос «кто
       // сделал человека оператором оргтехники» задают так же, как «кто выдал ему роль».
-      metadata: { role: body.role, addons },
+      // Активность записывается тут же: заведённая сразу активной учётка и заготовка «на потом» —
+      // разные события, а по одной лишь роли они неразличимы.
+      metadata: { role: body.role, addons, isActive: body.isActive, notified },
     });
     reply.code(201);
-    return (await fetchUserDto(created.id))!;
+    return { user: (await fetchUserDto(created.id))!, notified };
   });
 
   r.patch(
@@ -407,48 +480,99 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
       const actor = requirePrincipal(req);
       const { id } = req.params;
       const body = req.body;
-      const [existing] = await db.select().from(users).where(eq(users.id, id));
-      if (!existing || existing.deletedAt) throw err.notFound('Пользователь не найден');
 
-      // защита от самоблокировки
-      if (actor.id === id) {
-        if (body.isActive === false)
-          throw err.badRequest('Нельзя деактивировать собственный аккаунт');
-        if (body.role && body.role !== existing.role) {
-          throw err.badRequest('Нельзя менять собственную роль');
+      const {
+        scopeChanged,
+        addonsChanged,
+        addons,
+        roleChanged,
+        counterpartyChanged,
+        deactivated,
+        approving,
+        notified,
+        roleBefore,
+        roleAfter,
+        activeBefore,
+        activeAfter,
+        activeChanged,
+      } = await db.transaction(async (tx) => {
+        // Строка учётки читается под блокировкой и внутри транзакции, а не перед ней: решение по
+        // заявке считается по её состоянию, и снимок, взятый до транзакции, устаревает ровно в тот
+        // момент, когда двое рассматривают одну заявку одновременно. Тот же приём — у номера
+        // путевого листа и у состава рейса.
+        const [existing] = await tx.select().from(users).where(eq(users.id, id)).for('update');
+        if (!existing || existing.deletedAt) throw err.notFound('Пользователь не найден');
+
+        // защита от самоблокировки
+        if (actor.id === id) {
+          if (body.isActive === false)
+            throw err.badRequest('Нельзя деактивировать собственный аккаунт');
+          if (body.role && body.role !== existing.role) {
+            throw err.badRequest('Нельзя менять собственную роль');
+          }
         }
-      }
 
-      const nextRole = body.role ?? existing.role;
-      // Активная учётка без роли не попадает ни под одно ограничение доступа: проверки
-      // сформулированы от конкретных ролей («штаб — свой объект», «оператор — свой контрагент»),
-      // и учётка без роли видит все заявки вывоза. Роль назначается вместе с активацией.
-      if ((body.isActive ?? existing.isActive) && !nextRole) {
-        throw err.badRequest('Нельзя активировать учётку без роли', { role: 'Выберите роль' });
-      }
-      // Доступ выдаётся тому, кто доказал, что ящик его (ADR 0072). Иначе заявку мог подать кто
-      // угодно на чужой адрес, и портал выдал бы права по одному лишь совпадению ФИО с ожидаемым.
-      // Учётки, заведённые администратором, подтверждены по факту создания и сюда не упираются.
-      // Пока подтверждение выключено (EMAIL_VERIFICATION_ENABLED), проверка снята — иначе заявки,
-      // поданные до отключения, остались бы неактивируемыми.
-      const activating = body.isActive === true && !existing.isActive;
-      if (EMAIL_VERIFICATION_ENABLED && activating && !existing.emailVerifiedAt) {
-        throw err.badRequest(
-          'Адрес не подтверждён — активировать учётку нельзя. Попросите пользователя перейти по ссылке из письма.',
+        const nextRole = body.role ?? existing.role;
+        const nextIsActive = body.isActive ?? existing.isActive;
+        // Активная учётка без роли не попадает ни под одно ограничение доступа: проверки
+        // сформулированы от конкретных ролей («штаб — свой объект», «оператор — свой контрагент»),
+        // и учётка без роли видит все заявки вывоза. Роль назначается вместе с активацией.
+        if (nextIsActive && !nextRole) {
+          throw err.badRequest('Нельзя активировать учётку без роли', { role: 'Выберите роль' });
+        }
+        // Доступ выдаётся тому, кто доказал, что ящик его (ADR 0072). Иначе заявку мог подать кто
+        // угодно на чужой адрес, и портал выдал бы права по одному лишь совпадению ФИО с ожидаемым.
+        // Учётки, заведённые администратором, подтверждены по факту создания и сюда не упираются.
+        // Пока подтверждение выключено (EMAIL_VERIFICATION_ENABLED), проверка снята — иначе заявки,
+        // поданные до отключения, остались бы неактивируемыми.
+        const activating = body.isActive === true && !existing.isActive;
+        if (EMAIL_VERIFICATION_ENABLED && activating && !existing.emailVerifiedAt) {
+          throw err.badRequest(
+            'Адрес не подтверждён — активировать учётку нельзя. Попросите пользователя перейти по ссылке из письма.',
+          );
+        }
+
+        // Рассмотрение заявки — объявленное намерение, а не догадка по телу запроса (ADR 0087).
+        //
+        // Одной блокировки мало: `PATCH` здесь маршрут общей правки, и второй администратор,
+        // дождавшись первого, спокойно переписал бы его решение о роли и области, оставив в
+        // журнале вторую запись. Поэтому намерение сверяется с состоянием строки и с итогом
+        // правки, а не с одним лишь состоянием.
+        const wasRegistration = !existing.isActive && existing.role === null;
+        const approvingNow = wasRegistration && nextIsActive && nextRole !== null;
+        // Назначить заявке роль, не активируя её, нельзя вместе с тем же запретом на активацию:
+        // иначе запись перестала бы быть заявкой, а следующая правка активировала бы её уже как
+        // обычную учётку — мимо журнала одобрения и мимо письма.
+        const decidesRegistration =
+          wasRegistration && (body.role !== undefined || body.isActive === true);
+        if (body.approveRegistration) {
+          if (!wasRegistration) {
+            throw err.conflict('Заявку уже рассмотрел другой администратор — обновите список');
+          }
+          if (!approvingNow) {
+            throw err.badRequest(
+              'Заявку рассматривают целиком: назначьте роль и включите «Активен» — или оставьте заявку в очереди',
+            );
+          }
+        } else if (decidesRegistration) {
+          throw err.badRequest(
+            'Роль и активность заявки меняются только её рассмотрением: откройте карточку заявки и рассмотрите её целиком',
+          );
+        }
+
+        // Чтение справочника контрагентов идёт своим соединением и блокировок не ждёт: строка
+        // `users` заблокирована нами, а `counterparties` эта операция не трогает вовсе.
+        const nextCounterpartyId = await resolveCounterpartyId(
+          nextRole,
+          body.counterpartyId !== undefined ? body.counterpartyId : existing.counterpartyId,
         );
-      }
-      const nextCounterpartyId = await resolveCounterpartyId(
-        nextRole,
-        body.counterpartyId !== undefined ? body.counterpartyId : existing.counterpartyId,
-      );
 
-      const roleChanged = body.role !== undefined && body.role !== existing.role;
-      const deactivated = body.isActive === false && existing.isActive;
-      // Смена контрагента у исполнителя — это смена и модуля, и области видимости (ADR 0038):
-      // права учётки после неё другие, поэтому выданные токены гасятся так же, как при смене роли.
-      const counterpartyChanged = nextCounterpartyId !== existing.counterpartyId;
+        const roleWasChanged = body.role !== undefined && body.role !== existing.role;
+        const wasDeactivated = body.isActive === false && existing.isActive;
+        // Смена контрагента у исполнителя — это смена и модуля, и области видимости (ADR 0038):
+        // права учётки после неё другие, поэтому выданные токены гасятся так же, как при смене роли.
+        const counterpartyWasChanged = nextCounterpartyId !== existing.counterpartyId;
 
-      const { scopeChanged, addonsChanged, addons } = await db.transaction(async (tx) => {
         // Отсутствие поля — «не трогать привязки»; при этом смена роли на объектную или
         // отдельскую требует области и без поля: набор, оставшийся от прежней роли, проверяется
         // наравне с присланным. Смена оси при этом обнуляет чужой набор сама — `resolve*`
@@ -488,16 +612,49 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
             // Телефон правится как ФИО: поле не прислали — не трогаем, прислали пустым — стёрли.
             phone: body.phone ?? existing.phone,
             role: nextRole,
-            isActive: body.isActive ?? existing.isActive,
+            isActive: nextIsActive,
             counterpartyId: nextCounterpartyId,
             authVersion:
-              roleChanged || counterpartyChanged || deactivated || changed || addonsSetChanged
+              roleWasChanged ||
+              counterpartyWasChanged ||
+              wasDeactivated ||
+              changed ||
+              addonsSetChanged
                 ? existing.authVersion + 1
                 : existing.authVersion,
             updatedAt: new Date(),
           })
           .where(eq(users.id, id));
-        return { scopeChanged: changed, addonsChanged: addonsSetChanged, addons: nextAddons };
+
+        // Письмо об открытом доступе — той же транзакцией, что и само одобрение: заявка,
+        // рассмотренная без письма, и письмо по нерассмотренной заявке одинаково недопустимы.
+        // Ключ дедупликации без времени: одобрение по построению однократно (после него роль уже
+        // назначена), и постоянный ключ вдобавок ловит повтор, если строка успела измениться дважды.
+        const mailed = await queueAccessMail(tx, {
+          requested: approvingNow && body.notifyUser,
+          kind: 'registration_approved',
+          dedupeKey: `registration-approved:${id}`,
+          to: existing.email,
+          subject: REGISTRATION_APPROVED_SUBJECT,
+          content: () => registrationApprovedContent(nextRole!),
+          userId: id,
+        });
+
+        return {
+          scopeChanged: changed,
+          addonsChanged: addonsSetChanged,
+          addons: nextAddons,
+          roleChanged: roleWasChanged,
+          counterpartyChanged: counterpartyWasChanged,
+          deactivated: wasDeactivated,
+          approving: approvingNow,
+          notified: mailed,
+          roleBefore: existing.role,
+          roleAfter: nextRole,
+          activeBefore: existing.isActive,
+          activeAfter: nextIsActive,
+          activeChanged: nextIsActive !== existing.isActive,
+        };
       });
 
       // Сменившаяся область гасит токены наравне со сменой роли и контрагента: учётке стали
@@ -506,24 +663,35 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
       const bumpAuth =
         roleChanged || counterpartyChanged || deactivated || scopeChanged || addonsChanged;
       if (bumpAuth) await revokeAllForUser(id);
+      // У рассмотрения заявки своё действие журнала, а не признак внутри общей правки: одобрение и
+      // отказ — два исхода одного решения, и в журнале они обязаны стоять рядом и одинаково
+      // фильтроваться. Заодно «одобрение было ровно одно» становится проверяемым в один запрос.
       await writeAudit({
         actorUserId: actor.id,
-        action: 'user.update',
+        action: approving ? 'user.approve_registration' : 'user.update',
         entityType: 'user',
         entityId: id,
-        metadata: {
-          roleChanged,
-          counterpartyChanged,
-          deactivated,
-          scopeChanged,
-          addonsChanged,
-          // Что именно осталось у учётки — только когда набор менялся: снятие надстройки уносит из
-          // `user_role_addons` и строку с `granted_by`, и без этой записи в журнале не осталось бы
-          // следа, чем доступ был до правки.
-          ...(addonsChanged ? { addons } : {}),
-        },
+        metadata: approving
+          ? { role: roleAfter, addons, notified }
+          : {
+              roleChanged,
+              counterpartyChanged,
+              deactivated,
+              scopeChanged,
+              addonsChanged,
+              // Не только «роль менялась», но и чем она была и стала: подвкладка аудита обязана
+              // отвечать «кто сделал человека диспетчером», а по одному булеву флагу это вопрос
+              // без ответа. Тем же правилом — активность: раньше в журнале была видна только
+              // деактивация, и включение доступа не оставляло следа вовсе.
+              ...(roleChanged ? { role: { from: roleBefore, to: roleAfter } } : {}),
+              ...(activeChanged ? { isActive: { from: activeBefore, to: activeAfter } } : {}),
+              // Что именно осталось у учётки — только когда набор менялся: снятие надстройки уносит
+              // из `user_role_addons` и строку с `granted_by`, и без этой записи в журнале не
+              // осталось бы следа, чем доступ был до правки.
+              ...(addonsChanged ? { addons } : {}),
+            },
       });
-      return (await fetchUserDto(id))!;
+      return { user: (await fetchUserDto(id))!, notified };
     },
   );
 
@@ -566,30 +734,58 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
     async (req) => {
       const actor = requirePrincipal(req);
       const { id } = req.params;
-      const [existing] = await db.select().from(users).where(eq(users.id, id));
-      if (!existing || existing.deletedAt) throw err.notFound('Пользователь не найден');
-      // Отклонять можно только нерассмотренную заявку: у действующей учётки для этого есть
-      // деактивация и удаление, и подменять их отказом — терять смысл записи в аудите.
-      if (existing.isActive || existing.role) {
-        throw err.badRequest('Отклонить можно только заявку, которая ещё не рассмотрена');
-      }
-      await db
-        .update(users)
-        .set({
-          deletedAt: new Date(),
-          authVersion: existing.authVersion + 1,
-          updatedAt: new Date(),
-        })
-        .where(eq(users.id, id));
+      const { reason, notifyApplicant, applicantMessage } = req.body;
+
+      const { email, notified } = await db.transaction(async (tx) => {
+        // Под блокировкой и внутри транзакции — по той же причине, что и правка учётки: два
+        // одновременных отказа иначе прошли бы оба и поставили два письма. Дедупликация здесь не
+        // спасает — ключ содержит время отказа, и у двух запросов оно разное.
+        const [existing] = await tx.select().from(users).where(eq(users.id, id)).for('update');
+        if (!existing || existing.deletedAt) throw err.notFound('Пользователь не найден');
+        // Отклонять можно только нерассмотренную заявку: у действующей учётки для этого есть
+        // деактивация и удаление, и подменять их отказом — терять смысл записи в аудите.
+        if (existing.isActive || existing.role) {
+          throw err.badRequest('Отклонить можно только заявку, которая ещё не рассмотрена');
+        }
+        const rejectedAt = new Date();
+        await tx
+          .update(users)
+          .set({
+            deletedAt: rejectedAt,
+            authVersion: existing.authVersion + 1,
+            updatedAt: rejectedAt,
+          })
+          .where(eq(users.id, id));
+        // Время отказа в ключе: восстановленную из архива заявку (ADR 0063) могут отклонить снова,
+        // и это новое событие с новым письмом. От одновременных запросов защищает блокировка выше.
+        const mailed = await queueAccessMail(tx, {
+          requested: notifyApplicant,
+          kind: 'registration_rejected',
+          dedupeKey: `registration-rejected:${id}:${rejectedAt.getTime()}`,
+          to: existing.email,
+          subject: REGISTRATION_REJECTED_SUBJECT,
+          content: () => registrationRejectedContent(applicantMessage!),
+          userId: id,
+        });
+        return { email: existing.email, notified: mailed };
+      });
+
       await revokeAllForUser(id);
       await writeAudit({
         actorUserId: actor.id,
         action: 'user.reject_registration',
         entityType: 'user',
         entityId: id,
-        metadata: { reason: req.body.reason, email: existing.email },
+        // Текст ответа — только если он действительно ушёл: сохранённая формулировка, которой
+        // никто не получил, в разборе означала бы обратное тому, что было.
+        metadata: {
+          reason,
+          email,
+          notified,
+          ...(notified === 'queued' ? { applicantMessage } : {}),
+        },
       });
-      return { ok: true };
+      return { ok: true, notified };
     },
   );
 

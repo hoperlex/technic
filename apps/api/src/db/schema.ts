@@ -66,13 +66,19 @@ export const requestTypeEnum = pgEnum('request_type', [
 export const containerKindEnum = pgEnum('container_kind', ['cont', 'truck']);
 export const fileStatusEnum = pgEnum('file_status', ['pending', 'active', 'deleted']);
 export const jobStatusEnum = pgEnum('job_status', ['pending', 'running', 'done', 'failed', 'dead']);
-/** Виды писем портала (миграция 0097): по нему же строится дедупликация и разбор в журнале. */
+/**
+ * Виды писем портала (миграция 0097): по нему же строится дедупликация и разбор в журнале.
+ * `registration_rejected`, `registration_approved`, `account_created` — миграция 0114.
+ */
 export const mailKindEnum = pgEnum('mail_kind', [
   'verify_email',
   'password_reset',
   'password_changed',
   'driver_routes',
   'role_digest',
+  'registration_rejected',
+  'registration_approved',
+  'account_created',
 ]);
 export const mailStatusEnum = pgEnum('mail_status', ['pending', 'sent', 'failed']);
 /** Расписания рассылок (ADR 0075, миграция 0099). */
@@ -3541,8 +3547,13 @@ export const weeklyVehicleRequestItems = pgTable(
     }),
     result: weeklyRequestItemResultEnum('result').notNull().default('pending'),
     skipReason: text('skip_reason').notNull().default(''),
-    // Явное согласие снять ожидающий досрочный отъезд: в недельной заявке состав предвыбран
-    // целиком, и молчаливое снятие десятка запросов означало бы отмену чужих решений оптом.
+    // Явное согласие снять ожидающий досрочный отъезд. **Больше не заполняется**: единица с
+    // нерешённым запросом на отъезд в состав не идёт вовсе, и второго — недостижимого — способа
+    // отменить чужое решение у модуля быть не должно. Новые строки всегда `false`.
+    //
+    // Колонка при этом остаётся вместе со своим CHECK: она хранит историю уже применённых заявок,
+    // где согласие давали, и стереть её значит потерять объяснение, почему запрос на отъезд тогда
+    // исчез. Миграции здесь нет — колонка просто перестала заполняться.
     earlyEndOverride: boolean('early_end_override').notNull().default(false),
   },
   (t) => ({

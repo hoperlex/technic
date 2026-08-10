@@ -131,7 +131,8 @@ async function rejectedRegistration(email: string): Promise<string> {
     method: 'POST',
     url: `/api/v1/users/${row!.id}/reject`,
     headers: ctx.auth,
-    payload: { reason: 'Проверка архива' },
+    // Письма заявителю здесь не нужно: проверяется архив, а не почта (ADR 0087).
+    payload: { reason: 'Проверка архива', notifyApplicant: false },
   });
   expect(res.statusCode, res.body).toBe(200);
   return row!.id;

@@ -13,9 +13,16 @@ import {
   Select,
   Space,
   Switch,
+  Tabs,
   Tag,
 } from 'antd';
-import { DeleteFilled, MoreOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
+import {
+  DeleteFilled,
+  HistoryOutlined,
+  MoreOutlined,
+  PlusOutlined,
+  ReloadOutlined,
+} from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -36,6 +43,8 @@ import {
   ROLES,
   roleColors,
   roleLabels,
+  type MailOutcome,
+  type RejectUserBody,
   type RoleAddon,
   type UserDto,
 } from '@technic/contracts';
@@ -47,7 +56,9 @@ import { PageTableLayout } from '@shared/ui';
 import { PasswordField } from '../../components/PasswordField';
 import { PersonNameFields } from '../../components/PersonNameFields';
 import { PhoneField, PhoneLink } from '../../components/PhoneField';
-import { ReasonModal } from '../../components/CancelReasonModal';
+import { RejectRegistrationModal } from './RejectRegistrationModal';
+import { UsersAuditTab, type AuditTarget } from './UsersAuditTab';
+import { isApiError } from '@shared/api';
 import { actionsColumn, boolBadgeColumn, textColumn } from '@shared/ui';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
 import { useListParams } from '@shared/lib';
@@ -82,10 +93,57 @@ interface UserFormValues {
    */
   addons?: RoleAddon[];
   isActive: boolean;
+  /** Сообщить ли человеку о выданном доступе. Спрашивается не всегда — см. `asksAboutMail`. */
+  notifyUser: boolean;
 }
 
 /** Заявка на регистрацию: человек зарегистрировался сам, роли ему ещё не назначили. */
 const isPendingRegistration = (u: UserDto) => !u.isActive && !u.role;
+
+/**
+ * Эта правка выводит заявку из очереди: у нерассмотренной заявки появляются роль и активность
+ * разом. Условие одно на две вещи — на объявленное серверу намерение `approveRegistration` и на
+ * чекбокс письма, — и разойтись им нельзя: тот же предикат сервер считает по строке под
+ * блокировкой и отвечает 400, если портал решил иначе.
+ *
+ * Выполнимо оно ровно однажды: после рассмотрения роль у учётки уже есть, и заявкой она быть
+ * перестаёт.
+ */
+const approvesRegistration = (
+  record: UserDto | null,
+  role: UserFormValues['role'] | undefined,
+  isActive: boolean | undefined,
+) => !!record && isPendingRegistration(record) && !!role && !!isActive;
+
+/**
+ * Спрашивать ли в форме про письмо о выданном доступе. У новой учётки повод — сама активность:
+ * звать человека в портал, который его не пустит, хуже молчания. У существующей повод один —
+ * рассмотрение заявки: у повторной активации и смены роли заявку рассмотрели однажды и давно, и
+ * «вам открыт доступ» действующему сотруднику было бы ложью.
+ */
+const asksAboutMail = (
+  record: UserDto | null,
+  role: UserFormValues['role'] | undefined,
+  isActive: boolean | undefined,
+) => (record ? approvesRegistration(record, role, isActive) : !!isActive);
+
+/**
+ * Сообщение об успехе вместе с судьбой письма. Молча проглотить неотправку нельзя: администратор
+ * уходит уверенным, что человека предупредили, — а выключенная почта означает ровно обратное.
+ */
+function withMailOutcome(done: string, notified: MailOutcome, sent: string): string {
+  if (notified === 'queued') return `${done}, ${sent}`;
+  if (notified === 'mail_disabled') return `${done}. Письмо не отправлено — почта выключена`;
+  return done;
+}
+
+/**
+ * Заявку рассматривают целиком: роль назначается вместе с активацией. Половинчатое состояние
+ * («роль есть, доступа нет») не значит ничего, кроме недоделанной работы, и сервер такую правку
+ * отвергает 400 — форма лишь не доводит до впустую нажатой кнопки.
+ */
+const HALF_APPROVAL =
+  'Заявку рассматривают целиком: назначьте роль и включите „Активен“ — или оставьте заявку в очереди';
 
 /**
  * Роль и надстройки одной ячейкой (ADR 0086). Надстройка дополняет роль, а не заменяет её,
@@ -119,7 +177,15 @@ function requestedDetailText(u: UserDto): string | undefined {
   return undefined;
 }
 
-export function UsersTab() {
+interface AccountsProps {
+  /**
+   * Открыть журнал по этой учётке. Не передан — права на журнал у роли нет, и пункта меню тоже:
+   * недоступное портал не показывает даже выключенным (ADR 0033 §6).
+   */
+  onShowHistory?: (user: UserDto) => void;
+}
+
+function UsersAccountsTab({ onShowHistory }: AccountsProps) {
   const { message, modal } = App.useApp();
   const qc = useQueryClient();
   const { user: currentUser, can } = useAuth();
@@ -204,6 +270,13 @@ export function UsersTab() {
   const [record, setRecord] = useState<UserDto | null>(null);
   const [form] = Form.useForm<UserFormValues>();
   const watchRole = Form.useWatch('role', form);
+  // Роль и активность читаются из формы вживую, а не из записи: чекбокс письма и намерение
+  // рассмотреть заявку следуют из того, что администратор набрал прямо сейчас, а запись показывает
+  // состояние до правки.
+  const watchIsActive = Form.useWatch('isActive', form);
+  /** Заявка, открытая на рассмотрение: у неё роль и активация ходят парой (Р8). */
+  const pendingRecord = !!record && isPendingRegistration(record);
+  const notifyShown = asksAboutMail(record, watchRole, watchIsActive);
 
   /**
    * Надстройки, доступные выбранной в форме роли (ADR 0086). Пустой список означает, что роли
@@ -226,6 +299,9 @@ export function UsersTab() {
       constructionObjectIds: [],
       departmentIds: [],
       addons: [],
+      // Умолчание — «сообщить»: учётку заводят, чтобы человек ею пользовался, и узнать об этом он
+      // должен не со слов администратора.
+      notifyUser: true,
     } as Partial<UserFormValues>);
     setOpen(true);
   };
@@ -246,14 +322,20 @@ export function UsersTab() {
       counterpartyId: r.counterpartyId,
       addons: [...r.addons],
       isActive: r.isActive,
+      notifyUser: true,
     });
     setOpen(true);
   };
 
   const saveMut = useMutation({
     mutationFn: (values: UserFormValues) => {
+      const { notifyUser, ...fields } = values;
+      // Оба флага считаются по отправляемым значениям, а не по подсмотренным в форме: тело запроса
+      // и показанный чекбокс обязаны говорить об одном и том же решении.
+      const approving = approvesRegistration(record, values.role, values.isActive);
+      const notifying = asksAboutMail(record, values.role, values.isActive);
       const payload = {
-        ...values,
+        ...fields,
         // Пустое поле уходит пустой строкой, а не `undefined`: у правки это разные вещи —
         // «телефон стёрли» и «телефон не трогали» (ADR 0043).
         phone: values.phone ?? '',
@@ -275,16 +357,36 @@ export function UsersTab() {
       };
       if (record) {
         const { password: _pw, email: _email, ...rest } = payload;
-        return usersApi.update(record.id, rest);
+        return usersApi.update(record.id, {
+          ...rest,
+          // Просьба о письме и объявленное намерение уходят только вместе со своим случаем: на
+          // обычной правке серверу незачем получать ни то, ни другое, а умолчания схемы
+          // («сообщить», «это не одобрение») описывают её точнее, чем присланные вслепую поля.
+          ...(notifying ? { notifyUser } : {}),
+          ...(approving ? { approveRegistration: true } : {}),
+        });
       }
-      return usersApi.create(payload as Required<UserFormValues>);
+      return usersApi.create({
+        ...(payload as Required<Omit<UserFormValues, 'notifyUser'>>),
+        ...(notifying ? { notifyUser } : {}),
+      });
     },
-    onSuccess: () => {
-      message.success('Сохранено');
+    onSuccess: ({ notified }) => {
+      message.success(withMailOutcome('Сохранено', notified, 'пользователю отправлено письмо'));
       void qc.invalidateQueries({ queryKey: ['users'] });
       setOpen(false);
     },
-    onError: (e) => message.error(errorMessage(e)),
+    onError: (e) => {
+      // 409 приходит на одно: заявку успел рассмотреть другой администратор, и сервер не дал
+      // переписать его решение. Повторять своё не по чему — сначала нужно увидеть чужое, поэтому
+      // список перезапрашивается тут же.
+      if (isApiError(e) && e.status === 409) {
+        message.error('Заявку уже рассмотрел другой администратор — обновите список');
+        void qc.invalidateQueries({ queryKey: ['users'] });
+        return;
+      }
+      message.error(errorMessage(e));
+    },
   });
 
   const toggleActiveMut = useMutation({
@@ -329,9 +431,9 @@ export function UsersTab() {
 
   const [rejecting, setRejecting] = useState<UserDto | null>(null);
   const rejectMut = useMutation({
-    mutationFn: (v: { id: string; reason: string }) => usersApi.reject(v.id, v.reason),
-    onSuccess: () => {
-      message.success('Заявка отклонена');
+    mutationFn: (v: { id: string; body: RejectUserBody }) => usersApi.reject(v.id, v.body),
+    onSuccess: ({ notified }) => {
+      message.success(withMailOutcome('Заявка отклонена', notified, 'заявителю отправлено письмо'));
       setRejecting(null);
       void qc.invalidateQueries({ queryKey: ['users'] });
     },
@@ -394,6 +496,12 @@ export function UsersTab() {
           }
         },
       },
+      // История учётки (ADR 0088) — отсюда, а не поиском в общем журнале: искать человека там
+      // руками и есть та работа, от которой экран должен избавлять. Пункт открывает подвкладку
+      // «Аудит», уже суженную до этой учётки.
+      ...(onShowHistory
+        ? [{ key: 'history', label: 'История', onClick: () => onShowHistory(r) }]
+        : []),
       // Отказ по нерассмотренной заявке и удаление сотрудника — разные события: в аудите
       // остаётся причина отказа, и путать их не нужно ни администратору, ни разбору потом.
       ...(pendingRegistration
@@ -414,6 +522,11 @@ export function UsersTab() {
    * тот же, что рисуют кнопки в таблице, — и права те же, каждое своё.
    */
   const archivedRowActions = (r: UserDto) => [
+    // История у архивной учётки спрашивается чаще, чем у действующей: в списке от неё осталась
+    // одна строка, а чем всё кончилось — рассказывает только журнал.
+    ...(onShowHistory
+      ? [{ key: 'history', label: 'История', onClick: () => onShowHistory(r) }]
+      : []),
     ...(canRestore
       ? [{ key: 'restore', label: 'Восстановить', onClick: () => restoreMut.mutate(r.id) }]
       : []),
@@ -578,6 +691,14 @@ export function UsersTab() {
           // активирует — отклонённая заявка возвращается в очередь и рассматривается заново.
           <Space size={4}>
             <Tag>в архиве</Tag>
+            {onShowHistory ? (
+              <Button
+                size="small"
+                icon={<HistoryOutlined />}
+                title="История"
+                onClick={() => onShowHistory(r)}
+              />
+            ) : null}
             {canRestore ? (
               <Button
                 size="small"
@@ -974,10 +1095,28 @@ export function UsersTab() {
                 .join(' · ')}
             />
           ) : null}
+          {/* Роль у заявки обязательна не всегда: исправить в ней опечатку в ФИО или телефон
+              можно, не рассматривая её, — заявка остаётся в очереди. А вот назначить роль,
+              не активируя, нельзя: запись перестала бы быть заявкой, и следующая правка
+              активировала бы «обычную учётку с ролью» мимо журнала одобрений (Р8). */}
           <Form.Item
             name="role"
             label="Роль"
-            rules={[{ required: true, message: 'Выберите роль' }]}
+            // Звёздочка обязательности — по тому же правилу: у заявки роль ждёт решения, а не
+            // заполнения, и помеченной обязательной она обещала бы, что без неё не сохранить.
+            required={!pendingRecord}
+            dependencies={pendingRecord ? ['isActive'] : undefined}
+            rules={[
+              {
+                validator: (_rule, value: UserFormValues['role'] | undefined) => {
+                  if (value) return Promise.resolve();
+                  if (!pendingRecord) return Promise.reject(new Error('Выберите роль'));
+                  return form.getFieldValue('isActive')
+                    ? Promise.reject(new Error(HALF_APPROVAL))
+                    : Promise.resolve();
+                },
+              },
+            ]}
           >
             <AutoSelect options={roleOptions} />
           </Form.Item>
@@ -1069,9 +1208,39 @@ export function UsersTab() {
           {!record ? (
             <PasswordField name="password" identityFields={['email', 'lastName', 'firstName']} />
           ) : null}
-          <Form.Item name="isActive" label="Активен" valuePropName="checked">
+          <Form.Item
+            name="isActive"
+            label="Активен"
+            valuePropName="checked"
+            dependencies={pendingRecord ? ['role'] : undefined}
+            rules={
+              pendingRecord
+                ? [
+                    {
+                      validator: (_rule, value: boolean | undefined) =>
+                        !value && form.getFieldValue('role')
+                          ? Promise.reject(new Error(HALF_APPROVAL))
+                          : Promise.resolve(),
+                    },
+                  ]
+                : undefined
+            }
+          >
             <Switch />
           </Form.Item>
+          {/* Письмо о выданном доступе — по чекбоксу, включённому по умолчанию: портал не рассылает
+              писем сам по себе, их отправляет человек, понимая, что делает. Поля нет там, где
+              письма не бывает вовсе (Р7), — выключенный чекбокс обещал бы отправку, которой не
+              случится. */}
+          {notifyShown ? (
+            <Form.Item
+              name="notifyUser"
+              valuePropName="checked"
+              extra="Письмо с адресом портала и назначенной ролью. Пароль в письме не отправляется"
+            >
+              <Checkbox>Сообщить пользователю по почте</Checkbox>
+            </Form.Item>
+          ) : null}
         </Form>
       </FormModal>
 
@@ -1094,17 +1263,86 @@ export function UsersTab() {
         </Form>
       </FormModal>
 
-      <ReasonModal
+      <RejectRegistrationModal
         open={!!rejecting}
-        title="Отклонение заявки"
-        label={rejecting ? `Причина отказа по заявке ${rejecting.email}` : 'Причина отказа'}
-        okText="Отклонить"
-        cancelText="Не отклонять"
-        placeholderHint="Причина попадёт в аудит — по ней потом видно, почему доступ не дали."
+        email={rejecting?.email}
         onCancel={() => setRejecting(null)}
-        onSubmit={(reason) => rejecting && rejectMut.mutate({ id: rejecting.id, reason })}
+        onSubmit={(body) => rejecting && rejectMut.mutate({ id: rejecting.id, body })}
         confirmLoading={rejectMut.isPending}
       />
     </PageTableLayout>
+  );
+}
+
+/**
+ * Вкладка «Пользователи»: учётные записи и журнал действий над ними (ADR 0088).
+ *
+ * Подвкладки живут здесь, а не вторым уровнем в `AdministrationPage`: журнал читают по ходу
+ * разбора конкретной учётки, и уводить за ним на соседнюю вкладку раздела значит терять контекст —
+ * а заодно разровнять по глубине «Рассылки» и «Обмен справочниками», которым делиться не на что.
+ *
+ * Полоса всегда компактная, а не только на телефоне: второй уровень навигации не должен спорить
+ * по весу с первым — две одинаковые полосы подряд читаются как одна, и непонятно, какая из них
+ * где находится.
+ */
+export function UsersTab() {
+  const { can } = useAuth();
+  // Журнал закрыт своим правом, а не ролью (ADR 0021): вкладка целиком открывается `users.manage`,
+  // и разъехаться этим правам ничто не мешает — тем же порядком отделены «Рассылки».
+  const canReadAudit = can('audit.read');
+
+  const [tab, setTab] = useState('accounts');
+  /**
+   * Чья история показана в журнале. Состояние общее у двух подвкладок, потому что задаёт его одна
+   * (пункт «История» в списке учёток), а показывает другая; в адрес страницы оно не уходит —
+   * `AdministrationPage` своей вкладки там тоже не хранит, и половина адреса не восстановила бы,
+   * где человек находился.
+   */
+  const [auditTarget, setAuditTarget] = useState<AuditTarget | null>(null);
+
+  const qc = useQueryClient();
+  /**
+   * Скрытая подвкладка не размонтируется и по возвращении показала бы кэш — а журнал прирастает от
+   * каждого действия портала, в том числе от только что сделанного на соседней подвкладке. Переход
+   * на журнал означает «покажи, как сейчас», поэтому запрос обновляется, а фильтры сохраняются;
+   * тем же приёмом устроены вкладки разделов (`PageTabs`).
+   */
+  const openTab = (key: string) => {
+    if (key === 'audit') void qc.invalidateQueries({ queryKey: ['audit'] });
+    setTab(key);
+  };
+
+  const showHistory = (user: UserDto) => {
+    setAuditTarget({ id: user.id, name: user.fullName });
+    openTab('audit');
+  };
+
+  const items = [
+    {
+      key: 'accounts',
+      label: 'Учётные записи',
+      children: <UsersAccountsTab onShowHistory={canReadAudit ? showHistory : undefined} />,
+    },
+    ...(canReadAudit
+      ? [
+          {
+            key: 'audit',
+            label: 'Аудит',
+            children: <UsersAuditTab target={auditTarget} onTargetChange={setAuditTarget} />,
+          },
+        ]
+      : []),
+  ];
+
+  return (
+    <div style={{ height: '100%' }}>
+      <Tabs
+        className="full-height-tabs"
+        size="small"
+        activeKey={tab}
+        onChange={openTab}
+        items={items}
+      />
+    </div>
   );
 }

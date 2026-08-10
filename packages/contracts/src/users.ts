@@ -119,6 +119,11 @@ export const createUserSchema = z
      * (ADR 0038).
      */
     counterpartyId: uuidSchema.nullish(),
+    /**
+     * Сообщить ли человеку, что для него завели учётную запись. Просьба, а не команда: письмо
+     * уходит только активной учётке — звать в портал, который не пустит, хуже молчания.
+     */
+    notifyUser: z.boolean().optional().default(true),
   })
   // Объектные роли («Штаб», «Руководитель строительства») работают в пределах своих объектов —
   // без них у учётки нет ни области видимости, ни ограничения (ADR 0025, ADR 0039).
@@ -155,6 +160,8 @@ export const createUserSchema = z
     if (issue) ctx.addIssue({ code: 'custom', message: issue, path: ['addons'] });
   });
 export type CreateUserInput = z.infer<typeof createUserSchema>;
+/** Тело запроса до умолчаний: клиенту незачем присылать то, что схема проставит сама. */
+export type CreateUserBody = z.input<typeof createUserSchema>;
 
 export const updateUserSchema = z
   .object({
@@ -170,6 +177,20 @@ export const updateUserSchema = z
     /** Полный список надстроек; отсутствие поля — не трогать выданные (ADR 0086). */
     addons: roleAddonsSchema.optional(),
     counterpartyId: uuidSchema.nullish(),
+    /**
+     * Эта правка — рассмотрение заявки на регистрацию, а не обычное сохранение карточки.
+     *
+     * Намерение объявляется, а не выводится сервером из тела запроса. Без него два администратора,
+     * открывшие одну заявку, оба бы её «одобрили»: второй, дождавшись первого, переписал бы его
+     * решение о роли и области и оставил бы в журнале лишнюю запись. С объявленным намерением
+     * сервер сверяет его с состоянием строки под блокировкой и отвечает второму конфликтом.
+     *
+     * Умолчание обратное остальным флагам — `false`: одобрение объявляют, а не получают по
+     * умолчанию.
+     */
+    approveRegistration: z.boolean().optional().default(false),
+    /** Сообщить ли человеку о выданном доступе; учитывается только при рассмотрении заявки. */
+    notifyUser: z.boolean().optional().default(true),
   })
   // Совместимость сверяется только когда в правке есть и роль, и набор: иначе судить не о чем —
   // недостающую половину знает лишь сервер, и он же отвечает 400 по итоговому состоянию учётки.
@@ -181,16 +202,71 @@ export const updateUserSchema = z
     if (issue) ctx.addIssue({ code: 'custom', message: issue, path: ['addons'] });
   });
 export type UpdateUserInput = z.infer<typeof updateUserSchema>;
+export type UpdateUserBody = z.input<typeof updateUserSchema>;
 
 export const setUserPasswordSchema = z.object({
   newPassword: passwordSchema,
 });
 
-/** Отказ по заявке на регистрацию: причина попадает в аудит, учётка уходит в soft delete. */
-export const rejectUserSchema = z.object({
-  reason: z.string().trim().min(3).max(500),
-});
+/**
+ * Что стало с письмом операции: его либо не требовалось, либо поставили в очередь, либо почта
+ * выключена.
+ *
+ * Булев флаг здесь не годится: «письма не было, потому что администратор так решил» и «письмо не
+ * ушло, хотя его ждали» — разные новости, а внешне одинаковы. Портал по этому значению выбирает,
+ * что сказать после сохранения, и `mail_disabled` он обязан произнести вслух: иначе администратор
+ * уйдёт уверенным, что человека предупредили.
+ */
+export const MAIL_OUTCOMES = ['not_requested', 'queued', 'mail_disabled'] as const;
+export type MailOutcome = (typeof MAIL_OUTCOMES)[number];
+
+/**
+ * Отказ по заявке на регистрацию: причина попадает в аудит, учётка уходит в soft delete.
+ *
+ * Полей причины два, и они не дублируют друг друга. `reason` — служебная запись для разбора внутри
+ * («дубль, человек уже заведён под другим адресом»), она видна только в аудите портала.
+ * `applicantMessage` — то, что прочитает сам заявитель. Одно общее поле заставляло бы писать
+ * обтекаемо, и запись в аудите перестала бы отвечать на вопрос, почему доступ не дали.
+ */
+export const rejectUserSchema = z
+  .object({
+    reason: z.string().trim().min(3).max(500),
+    /**
+     * Сообщить ли заявителю. По умолчанию да: человек ждёт ответа. Снимают его на регистрациях
+     * ботов и явном мусоре — обязательное письмо превратило бы уборку очереди заявок в рассылку
+     * по случайным адресам.
+     */
+    notifyApplicant: z.boolean().optional().default(true),
+    /** Текст письма. Обязателен ровно тогда, когда письмо просят; иначе игнорируется. */
+    applicantMessage: z.string().trim().min(3).max(1000).optional(),
+  })
+  .superRefine((v, ctx) => {
+    if (v.notifyApplicant && !v.applicantMessage) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Напишите ответ заявителю или снимите отметку об отправке письма',
+        path: ['applicantMessage'],
+      });
+    }
+  });
 export type RejectUserInput = z.infer<typeof rejectUserSchema>;
+export type RejectUserBody = z.input<typeof rejectUserSchema>;
+
+/** Результат отказа: письма могло и не быть, и портал должен сказать об этом честно. */
+export interface RejectUserResult {
+  ok: true;
+  notified: MailOutcome;
+}
+
+/**
+ * Результат создания и правки учётки. Голый `UserDto` больше не годится: у обеих операций есть
+ * второй исход — письмо о выданном доступе, — и портал не может о нём умолчать. Поле лежит рядом
+ * с карточкой, а не внутри неё: это исход операции, а не свойство учётной записи.
+ */
+export interface UserMutationResult {
+  user: UserDto;
+  notified: MailOutcome;
+}
 
 /** Объект в карточке учётки: столько, сколько нужно для показа и повторного выбора. */
 export interface UserObjectRefDto {
