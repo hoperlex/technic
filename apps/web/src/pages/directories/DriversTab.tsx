@@ -44,7 +44,7 @@ import {
   SNILS_MESSAGE,
 } from '@technic/contracts';
 import { driversApi } from '../../api/resources';
-import { PhoneField } from '../../components/PhoneField';
+import { PhoneField, PhoneLink } from '../../components/PhoneField';
 import { DataTable, type CardConfig } from '@shared/ui';
 import { FormModal } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
@@ -123,7 +123,9 @@ export function DriversTab() {
     documents?: DriverDocumentSet;
     categoryId?: string;
     includeDeleted?: string;
-  }>({}, { searchKeys: ['fullName', 'snils', 'email'] });
+    // Ключ столбца, а не поле записи: поиск в шапке «Контактов» ищет и по адресу, и по номеру —
+    // разбирает запрос сервер (`phoneSearchCondition`).
+  }>({}, { searchKeys: ['fullName', 'snils', 'contacts'] });
   const { data, isFetching } = useQuery({
     queryKey: ['drivers', params],
     queryFn: () => driversApi.list(params),
@@ -306,17 +308,31 @@ export function DriversTab() {
 
   const columns = [
     textColumn<DriverDto>({ key: 'fullName', title: 'ФИО', dataIndex: 'fullName' }),
-    // Второй колонкой, сразу за ФИО: с рассылкой заданий адрес спрашивают чаще СНИЛС и
-    // табельного, а пустые ячейки в начале строки видно, не досматривая таблицу до конца.
-    // Сортировки нет: колонка отвечает на «есть ли адрес», а не «кто первый по алфавиту» —
+    // Второй колонкой, сразу за ФИО: с рассылкой заданий и звонком водителю контакты спрашивают
+    // чаще СНИЛС и табельного, а пустые ячейки в начале строки видно, не досматривая таблицу до
+    // конца. Адрес и номер — одна графа в две строки, а не два столбца: их читают вместе, вопрос
+    // у человека один — «как достать этого водителя».
+    // Сортировки нет: колонка отвечает на «есть ли контакты», а не «кто первый по алфавиту» —
     // сортировать по ней значит гонять пустые строки то вверх, то вниз.
+    // Отсутствие пишется словом, а не пустотой: пустая ячейка читается как «не досмотрели», а
+    // «не указан» — как «звонить некуда, и это известно».
     textColumn<DriverDto>({
-      key: 'email',
-      title: 'Email',
+      key: 'contacts',
+      title: 'Контакты',
       dataIndex: 'email',
       sortable: false,
       width: 220,
-      render: (_v, r) => r.email || <Typography.Text type="secondary">не указан</Typography.Text>,
+      render: (_v, r) => (
+        <>
+          {r.email || <Typography.Text type="secondary">email не указан</Typography.Text>}
+          <br />
+          {r.phone ? (
+            <PhoneLink phone={r.phone} />
+          ) : (
+            <Typography.Text type="secondary">телефон не указан</Typography.Text>
+          )}
+        </>
+      ),
     }),
     textColumn<DriverDto>({
       key: 'snils',
@@ -642,15 +658,25 @@ export function DriversTab() {
         : licenseNumberLabel(license);
     },
     lines: [
-      // Email — первой строкой, как и второй колонкой на большом экране: с рассылкой заданий
-      // его спрашивают чаще прочих реквизитов. Отсутствие пишется словом, а не пропуском строки,
-      // как у недостающего для листа ниже: на карточке пустой графы не видно, а «адреса нет»
-      // означает, что задание такому водителю не уйдёт.
+      // Контакты — первыми строками, как и второй колонкой на большом экране: с рассылкой заданий
+      // и звонком водителю их спрашивают чаще прочих реквизитов. Отсутствие пишется словом, а не
+      // пропуском строки, как у недостающего для листа ниже: на карточке пустой графы не видно, а
+      // «адреса нет» означает, что задание такому водителю не уйдёт.
       (r) =>
         r.email ? (
           `Email: ${r.email}`
         ) : (
           <Typography.Text type="secondary">Email не указан</Typography.Text>
+        ),
+      // Номер ссылкой: карточками справочник читают с телефона, и звонок — то, ради чего номер
+      // здесь и стоит (ADR 0030).
+      (r) =>
+        r.phone ? (
+          <>
+            Телефон: <PhoneLink phone={r.phone} />
+          </>
+        ) : (
+          <Typography.Text type="secondary">Телефон не указан</Typography.Text>
         ),
       // Категории — своей строкой, как и своей колонкой на большом экране (ADR 0055): за ними
       // в справочник и приходят, а приклеенные к номеру они терялись.
@@ -702,7 +728,9 @@ export function DriversTab() {
       mobile={{
         search: {
           value: params.search,
-          placeholder: 'ФИО или СНИЛС',
+          // Поле одно, а ищет по всему, что видно в карточке: подсказка перечисляет то же, что
+          // разбирает сервер, — иначе по номеру телефона его пробуют и не пробуют.
+          placeholder: 'ФИО, СНИЛС или контакты',
           onChange: (v) => setParams((p) => ({ ...p, search: v, page: 1 })),
         },
         filters: mobileFilters,

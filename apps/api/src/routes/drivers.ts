@@ -36,7 +36,7 @@ import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
 import { assertArchiveVisible } from '../lib/access';
-import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
+import { orderByFrom, pageParams, phoneSearchCondition, searchCondition } from '../lib/pagination';
 import {
   DRIVER_LICENSE_CODE,
   DRIVER_SPECIALIZATION_CODE,
@@ -379,13 +379,16 @@ export default async function driversRoutes(app: FastifyInstance): Promise<void>
         driverCondition(),
         documents,
         q.categoryId ? categoryCondition(q.categoryId, today) : undefined,
-        // Ищут по тому, что видят: ФИО, номер СНИЛС (как угодно набранный), табельный и email —
-        // по адресу водителя ищут, когда разбираются, кому ушло (или не ушло) задание на рейс.
+        // Ищут по тому, что видят: ФИО, номер СНИЛС (как угодно набранный), табельный и контакты —
+        // по ним ищут, когда разбираются, кому ушло (или не ушло) задание на рейс и кому звонить.
+        // Телефон — по цифрам, как у учёток: в графе он показан «+7 (926) 123 45 67», а набирают
+        // его в поиске как придётся.
         q.search
           ? or(
               searchCondition(q.search, [persons.fullName, persons.snils, persons.email]),
               searchCondition(q.search.replace(/[\s-]/gu, ''), [persons.snils]),
               searchCondition(q.search, [personEmployments.personnelNo]),
+              phoneSearchCondition(q.search, persons.phone),
             )
           : undefined,
       );
