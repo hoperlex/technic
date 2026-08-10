@@ -11,21 +11,77 @@
  * Одна и та же функция считает и базовый замер, и любой последующий: сравнение «до/после» имеет
  * смысл, только если обе стороны посчитаны одинаково.
  *
- * Запуск: node scripts/bundle-size.mjs [маршрут]
- *   node scripts/bundle-size.mjs            → точка входа
- *   node scripts/bundle-size.mjs waste      → точка входа + чанк раздела «Вывоз мусора»
+ * Запуск: node scripts/bundle-size.mjs [--build] [--route <подстрока>]
+ *   node scripts/bundle-size.mjs --build                → свежая сборка, затем точка входа
+ *   node scripts/bundle-size.mjs --build --route waste  → она же плюс чанк раздела «Вывоз мусора»
+ *   node scripts/bundle-size.mjs waste                  → готовый dist, маршрут можно и позиционно
  */
 import { readFileSync, existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { gzipSync } from 'node:zlib';
 import path from 'node:path';
 
 const DIST = path.resolve(process.cwd(), 'dist');
 const MANIFEST = path.join(DIST, '.vite', 'manifest.json');
 
+/**
+ * Разбор аргументов вручную: позиционный маршрут появился раньше флагов, и `process.argv[2]`
+ * иначе принял бы за подсказку сам `--build`. Обе формы маршрута оставлены живыми — прежние
+ * вызовы из плана и из истории переписывать незачем.
+ */
+function parseArgs(argv) {
+  let build = false;
+  let route;
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === '--build') {
+      build = true;
+    } else if (arg === '--route' || arg.startsWith('--route=')) {
+      const value = arg === '--route' ? argv[++index] : arg.slice('--route='.length);
+      if (!value || value.startsWith('-')) {
+        console.error('У --route нет значения: укажите подстроку пути, например --route waste');
+        process.exit(1);
+      }
+      route = value;
+    } else if (arg.startsWith('-')) {
+      console.error(`Неизвестный аргумент: ${arg}`);
+      process.exit(1);
+    } else {
+      route ??= arg;
+    }
+  }
+  return { build, route };
+}
+
+const { build, route: routeHint } = parseArgs(process.argv.slice(2));
+
+if (build) {
+  /*
+   * BUILD_ID задаёт замер, а не vite.config.ts: без переменной конфиг подставляет текущее время,
+   * оно вшивается в бандл через `define` — и один и тот же код от сборки к сборке весит
+   * по-разному. Бюджет по плавающему числу не сторожат, поэтому у проверки свой постоянный
+   * идентификатор; релизный BUILD_ID (commit SHA) приходит от deploy-auto и сюда не относится.
+   */
+  console.log('Сборка с BUILD_ID=quality-check…');
+  try {
+    execFileSync('pnpm', ['--filter', '@technic/web', 'build'], {
+      stdio: 'inherit',
+      env: { ...process.env, BUILD_ID: 'quality-check' },
+    });
+  } catch {
+    // Своя причина уже напечатана самой сборкой; мерить старый dist после провала нельзя — число
+    // получится от кода, которого больше нет.
+    console.error('Сборка не прошла — замер отменён.');
+    process.exit(1);
+  }
+} else {
+  // Считается то, что лежит в dist прямо сейчас: это может быть сборка недельной давности, и
+  // расхождение с текущим кодом ничем себя не выдаёт — отсюда и предупреждение.
+  console.warn('Без --build меряется готовый dist: замер может быть устаревшим.');
+}
+
 if (!existsSync(MANIFEST)) {
-  console.error(
-    'Нет dist/.vite/manifest.json — соберите приложение: pnpm --filter @technic/web build',
-  );
+  console.error('Нет dist/.vite/manifest.json — соберите приложение: запустите с флагом --build');
   process.exit(1);
 }
 
@@ -64,16 +120,30 @@ function sizeOf(chunkKeys) {
   return { raw, gzip, files };
 }
 
-const routeHint = process.argv[2];
 const entryKeys = Object.keys(manifest).filter((key) => manifest[key].isEntry);
 
 /**
- * Чанк маршрута ищется по подстроке в `src`. Пока разделения нет, он лежит внутри точки входа —
- * тогда замер честно показывает, что первый экран тянет всё приложение целиком.
+ * Чанк маршрута ищется по подстроке в `src` без учёта регистра: файлы страниц названы
+ * `WasteRequestsPage.tsx`, а подсказку набирают строчными — точное сравнение не находило ничего.
  */
-const routeKeys = routeHint
-  ? Object.keys(manifest).filter((key) => (manifest[key].src ?? key).includes(routeHint))
+const needle = routeHint?.toLowerCase();
+const routeKeys = needle
+  ? Object.keys(manifest).filter((key) => (manifest[key].src ?? key).toLowerCase().includes(needle))
   : [];
+
+/*
+ * Промах — всегда ошибка, а не заметка внизу вывода: замер без чанка маршрута выглядит как
+ * обычный замер точки входа, только меньше, и такое число легко принять за улучшение. Две
+ * причины промаха неразличимы отсюда, поэтому названы обе.
+ */
+if (routeHint && routeKeys.length === 0) {
+  console.error(
+    `Маршрут «${routeHint}» не совпал ни с одним ключом манифеста: либо опечатка в подстроке, ` +
+      'либо у маршрута ещё нет своего чанка — тогда его код внутри точки входа, и мерить его ' +
+      'отдельно нечем (запустите без маршрута).',
+  );
+  process.exit(1);
+}
 
 const keys = closure([...entryKeys, ...routeKeys]);
 const { raw, gzip, files } = sizeOf(keys);
@@ -82,9 +152,7 @@ const kb = (bytes) => `${(bytes / 1024).toFixed(1)} КБ`;
 
 console.log(`Точка входа: ${entryKeys.join(', ') || '—'}`);
 if (routeHint) {
-  console.log(
-    `Маршрут «${routeHint}»: ${routeKeys.length > 0 ? routeKeys.join(', ') : 'своего чанка нет — код внутри точки входа'}`,
-  );
+  console.log(`Маршрут «${routeHint}»: ${routeKeys.join(', ')}`);
 }
 console.log(`Чанков в замыкании: ${keys.size}`);
 for (const f of files.sort((a, b) => b.bytes - a.bytes)) {
