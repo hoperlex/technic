@@ -2,6 +2,7 @@ import { Tabs } from 'antd';
 import { useIsMobile } from '@shared/lib';
 import { useAuth } from '../auth/AuthContext';
 import { UsersTab } from './admin/UsersTab';
+import { AccessTab } from './admin/AccessTab';
 import { MailingsTab } from './admin/MailingsTab';
 import { DirectoryTransferTab } from './admin/DirectoryTransferTab';
 
@@ -16,6 +17,10 @@ export function AdministrationPage() {
     ...(can('users.manage')
       ? [{ key: 'users', label: 'Пользователи', children: <UsersTab /> }]
       : []),
+    // Витрина прав (`docs/permissions-tab-plan.md`) стоит рядом с учётками и открыта тем же
+    // правом: доступ выдают на соседней вкладке, а здесь смотрят, что из этого вышло. Своего
+    // права у неё нет — действий в ней нет тоже.
+    ...(can('users.manage') ? [{ key: 'access', label: 'Права', children: <AccessTab /> }] : []),
     ...(can('mailings.read')
       ? [{ key: 'mailings', label: 'Рассылки', children: <MailingsTab /> }]
       : []),

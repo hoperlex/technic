@@ -1,5 +1,6 @@
 export * from './enums';
 export * from './permissions';
+export * from './permission-catalog';
 export * from './common';
 export * from './address';
 export * from './time';
