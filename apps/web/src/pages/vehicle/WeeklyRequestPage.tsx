@@ -117,6 +117,9 @@ export function WeeklyRequestPage() {
     void qc.invalidateQueries({ queryKey: WEEKLY_QUERY_KEY });
     // Применение двигает сроки заказов и порождает новые: список заявок ТС тоже устарел.
     void qc.invalidateQueries({ queryKey: ['vehicle-requests'] });
+    // Продление срока перевыписывает ЭСМ-2 заказа (`extendSpecialEquipmentPeriod` → `syncEsm2Waybills`),
+    // поэтому журнал листов после визы недели показывает смены, которых уже нет.
+    void qc.invalidateQueries({ queryKey: ['waybills'] });
   };
 
   /** Удавшееся действие снимает объяснения прошлого отказа: они относились к прежнему составу. */
