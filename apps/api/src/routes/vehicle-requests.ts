@@ -27,6 +27,8 @@ import {
   canShortenWorkPeriodByEdit,
   changeVehicleAssignmentSchema,
   changeVehicleRequestStatusSchema,
+  changeVehicleRequestTypeSchema,
+  type ChangeVehicleRequestTypeInput,
   CLOSED_REQUEST_STATUSES,
   dateOnlySchema,
   type CompleteVehicleRequestInput,
@@ -62,6 +64,7 @@ import {
   rateForWorkUnit,
   REQUEST_STATUSES,
   type RequestStatus,
+  requestTypeChangeBlocker,
   requestVehicleEarlyEndSchema,
   type RequestWaybillDto,
   approvedShiftsBlocker,
@@ -124,6 +127,7 @@ import {
   vehicleRequestCompletions,
   vehicleRequestEarlyEndings,
   vehicleRequestFiles,
+  vehicleKinds,
   vehicleRequests,
   vehicleRequestStatusHistory,
   vehicleRouteRequests,
@@ -861,8 +865,13 @@ function customerAfterEdit(
  * Заказчик из тела запроса (ADR 0040). У спецтехники он всегда объект: её заказывают на площадку,
  * и отдела в схеме такой заявки нет вовсе — читать оттуда `departmentId` было бы неправдой о том,
  * что клиент может прислать.
+ *
+ * Одна функция на заведение и на переоформление (ADR 0091): тело у них одной формы — полный состав
+ * своего типа, — и заказчик читается из него одинаково.
  */
-function customerOf(body: CreateVehicleRequestInput): RequestCustomer {
+function customerOf(
+  body: CreateVehicleRequestInput | ChangeVehicleRequestTypeInput,
+): RequestCustomer {
   if (body.requestType === 'special_equipment') {
     return { objectId: body.objectId, departmentId: null };
   }
@@ -2565,7 +2574,8 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       const before = await getDto(id);
       if (!before || before.deletedAt) throw err.notFound('Заявка не найдена');
       if (before.requestType !== body.requestType) {
-        throw err.unprocessable('Тип заявки изменить нельзя');
+        // Правка ведёт поля одного типа; смена типа — переоформление, у него своя ручка (ADR 0091).
+        throw err.unprocessable('Тип заявки меняют переоформлением заявки');
       }
       assertRequestScope(p, before);
       assertObjectRoleEditable(p, before.status, 'редактировать');
@@ -2815,6 +2825,180 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         reason: 'period_edited',
         result: esm2,
       });
+      return after;
+    },
+  );
+
+  // ── Переоформление в другой тип (ADR 0091) ──
+  /**
+   * Заявку заводят одним типом, а нужна она другим: самосвал под вывоз грунта заказывают то
+   * работой на объекте, то рейсом, и ошибиться при заведении легко. До сих пор это чинилось только
+   * отменой заявки и заведением новой — с потерей номера, вложений и истории, по которой заказ и
+   * ищут.
+   *
+   * Отдельная ручка, а не послабление в правке. Правка присылает поля частично и меняет значения;
+   * здесь меняется то, **из каких полей заявка состоит**: старая деталь снимается целиком, новая
+   * приходит полным составом — тем самым, каким её завели бы этим типом сразу. Одной схемой это не
+   * выражается, и `PATCH /:id` на чужой тип по-прежнему отвечает отказом.
+   */
+  r.patch(
+    '/:id/request-type',
+    { ...canUpdate, schema: { params: idParams, body: changeVehicleRequestTypeSchema } },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const { id } = req.params;
+      const body = req.body;
+      const before = await getDto(id);
+      if (!before || before.deletedAt) throw err.notFound('Заявка не найдена');
+      // Область — по нынешнему заказчику: переоформляет тот, кому эта заявка и так доступна.
+      assertRequestScope(p, before);
+      assertObjectRoleEditable(p, before.status, 'переоформить');
+      // Тип, в который переоформляют, должен быть доступен роли (ADR 0040): отделу спецтехника
+      // закрыта, и обойти это переоформлением своей же грузоперевозки нельзя.
+      assertVehicleRequestTypeAllowed(p, body.requestType);
+
+      // Заказчик приходит целиком, как при заведении: у заказа на объект это площадка, у
+      // грузоперевозки — площадка либо отдел. Переехать он может только внутрь своей области.
+      const customer = customerOf(body);
+      assertRequestScope(p, customer);
+
+      /**
+       * Виза снимается по тому же правилу, что и у существенной правки (ADR 0025): переоформление
+       * существенно всегда — согласовывали не то, чем заявка стала. Правка самим визирующим визу
+       * не снимает: он подтверждает изменение самим фактом правки.
+       *
+       * `isApprovalChangeable` здесь не спрашивается отдельно: тип меняют только у «Новой», а это
+       * ровно то состояние, в котором визу можно поставить обратно.
+       */
+      const dropApproval = !!before.approvedAt && !canApproveRequest(p, customer);
+
+      await db.transaction(async (tx) => {
+        // Вид заказанной техники — по типу, который стоит в заявке **сейчас**: им решается, годится
+        // ли эта позиция обоим типам заявки. Новую позицию (её могли сменить тем же окном) проверит
+        // `resolveClassification` уже под новый тип.
+        const [ordered] = await tx
+          .select({ kindCode: vehicleKinds.code })
+          .from(vehicleTypes)
+          .innerJoin(vehicleKinds, eq(vehicleTypes.kindId, vehicleKinds.id))
+          .where(eq(vehicleTypes.id, before.vehicleTypeId));
+        const blocker = requestTypeChangeBlocker(
+          before,
+          ordered?.kindCode ?? null,
+          body.requestType,
+        );
+        if (blocker) throw err.unprocessable(blocker, { requestType: 'Тип менять нельзя' });
+
+        const customerChanged =
+          customer.objectId !== before.objectId || customer.departmentId !== before.departmentId;
+        if (customerChanged) await assertCustomerActive(tx, customer);
+        // Позиция классификатора проверяется всегда, даже нетронутая: годность решает тип заявки,
+        // а он как раз и сменился.
+        await resolveClassification(
+          tx,
+          body.vehicleTypeId,
+          body.vehicleCategoryId ?? null,
+          body.requestType,
+        );
+
+        const [updated] = await tx
+          .update(vehicleRequests)
+          .set({
+            requestType: body.requestType,
+            objectId: customer.objectId,
+            departmentId: customer.departmentId,
+            vehicleTypeId: body.vehicleTypeId,
+            vehicleCategoryId: body.vehicleCategoryId ?? null,
+            comment: body.comment,
+            ...(dropApproval ? { approvedBy: null, approvedAt: null } : {}),
+            updatedBy: p.id,
+            version: before.version + 1,
+            updatedAt: new Date(),
+          })
+          .where(and(eq(vehicleRequests.id, id), eq(vehicleRequests.version, body.version)))
+          .returning({ id: vehicleRequests.id });
+        if (!updated) throw err.conflict();
+
+        if (body.requestType === 'special_equipment') {
+          await tx
+            .delete(freightTransportRequestDetails)
+            .where(eq(freightTransportRequestDetails.requestId, id));
+          await tx.insert(specialEquipmentRequestDetails).values({
+            requestId: id,
+            dateFrom: body.dateFrom,
+            dateTo: body.dateTo ?? null,
+            responsibleName: body.responsibleName,
+            responsiblePhone: body.responsiblePhone,
+          });
+        } else {
+          await assertCargoAmount(tx, body.vehicleTypeId, {
+            volumeM3: numToDb(body.volumeM3),
+            weightTons: numToDb(body.weightTons),
+          });
+          await assertDirectoryAddress(
+            tx,
+            'loadingLocation',
+            body.loadingLocation,
+            body.loadingAddress,
+          );
+          await assertDirectoryAddress(
+            tx,
+            'unloadingLocation',
+            body.unloadingLocation,
+            body.unloadingAddress,
+          );
+          await tx
+            .delete(specialEquipmentRequestDetails)
+            .where(eq(specialEquipmentRequestDetails.requestId, id));
+          // Следы срока работ уходят вместе с ним: у грузоперевозки не период, а момент подачи, и
+          // ни решения об отъезде (ADR 0044), ни дней работы (миграция 0086) у неё не бывает. У
+          // «Новой» заявки этих строк почти никогда нет — но откат из работы (ADR 0058) снимает
+          // машину, а решённый запрос на досрочный отъезд оставляет, и брошенный он вернулся бы
+          // в карточку при обратном переоформлении.
+          await tx
+            .delete(vehicleRequestEarlyEndings)
+            .where(eq(vehicleRequestEarlyEndings.requestId, id));
+          await dropRequestShifts(tx, id);
+          await tx.insert(freightTransportRequestDetails).values({
+            requestId: id,
+            scheduledAt: new Date(body.scheduledAt),
+            scheduledTimeUnspecified: body.scheduledTimeUnspecified,
+            volumeM3: numToDb(body.volumeM3),
+            weightTons: numToDb(body.weightTons),
+            loadingLocation: body.loadingLocation,
+            unloadingLocation: body.unloadingLocation,
+            loadingAddress: body.loadingAddress ?? null,
+            unloadingAddress: body.unloadingAddress ?? null,
+            loadingResponsibleName: body.loadingResponsibleName,
+            loadingResponsiblePhone: body.loadingResponsiblePhone,
+            unloadingResponsibleName: body.unloadingResponsibleName,
+            unloadingResponsiblePhone: body.unloadingResponsiblePhone,
+          });
+        }
+
+        if (body.removeFileIds?.length) await detachFiles(tx, id, body.removeFileIds);
+        if (body.addFileIds?.length) await attachFiles(tx, id, body.addFileIds, p.id, true);
+      });
+
+      const after = (await getDto(id))!;
+      await writeAudit({
+        actorUserId: p.id,
+        action: 'vehicle_request.change_type',
+        entityType: 'vehicle_request',
+        entityId: id,
+        // Дифф здесь шире, чем у правки: в нём стоят поля обеих деталей — одни ушли в прочерк,
+        // другие из прочерка появились. Иначе история сообщала бы, что заявка сменила тип, но
+        // молчала бы о том, что стало с заказанным сроком.
+        metadata: { changes: diffVehicleRequests(before, after) },
+      });
+      if (dropApproval) {
+        await writeAudit({
+          actorUserId: p.id,
+          action: 'vehicle_request.approval_revoke',
+          entityType: 'vehicle_request',
+          entityId: id,
+          metadata: { reason: 'retyped' },
+        });
+      }
       return after;
     },
   );

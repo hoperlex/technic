@@ -4,11 +4,13 @@ import {
   allowedVehicleRequestTransitions,
   assignmentRateLabel,
   calcVehicleRequestCost,
+  canChangeRequestType,
   canReassignVehicle,
   canRequestEarlyEnd,
   canShortenWorkPeriodByEdit,
   changeVehicleAssignmentSchema,
   changeVehicleRequestStatusSchema,
+  changeVehicleRequestTypeSchema,
   CLOSED_REQUEST_STATUSES,
   completeVehicleRequestSchema,
   createVehicleRequestSchema,
@@ -28,6 +30,7 @@ import {
   onSitePresence,
   parseVehicleRequestNumberSearch,
   rateForWorkUnit,
+  requestTypeChangeBlocker,
   requestVehicleEarlyEndSchema,
   setVehicleRequestApprovalSchema,
   transitionRequiresApproval,
@@ -466,6 +469,128 @@ describe('vehicle-requests: обновление', () => {
     ).toThrow();
     // Без исходного статуса схема причину не требует — молчание намеренное, а не пробел.
     expect(changeVehicleRequestStatusSchema.parse({ status: 'new', version: 4 }).comment).toBe('');
+  });
+});
+
+// ── Переоформление в другой тип (ADR 0091) ──
+describe('vehicle-requests: смена типа заявки (ADR 0091)', () => {
+  const DEPT = '44444444-4444-4444-8444-444444444444';
+  const newFreight = {
+    requestType: 'freight_transport' as const,
+    status: 'new' as const,
+    deletedAt: null,
+  };
+  const newSpecial = {
+    requestType: 'special_equipment' as const,
+    status: 'new' as const,
+    deletedAt: null,
+  };
+
+  it('смену допускает грузовой вид заказанной техники: он один годится обоим типам', () => {
+    expect(
+      requestTypeChangeBlocker(newSpecial, FREIGHT_VEHICLE_KIND_CODE, 'freight_transport'),
+    ).toBeNull();
+    expect(
+      requestTypeChangeBlocker(newFreight, FREIGHT_VEHICLE_KIND_CODE, 'special_equipment'),
+    ).toBeNull();
+    // Экскаватор грузоперевозкой не станет — то же правило, что и при заведении заявки.
+    expect(requestTypeChangeBlocker(newSpecial, 'special_equipment', 'freight_transport')).toMatch(
+      /грузовой техники/,
+    );
+    // Позиция выпала из справочника — вид неизвестен, и предлагать смену не на чем.
+    expect(requestTypeChangeBlocker(newSpecial, null, 'freight_transport')).not.toBeNull();
+  });
+
+  it('тип меняют только у «Новой» и только у живой заявки', () => {
+    for (const status of ['confirmed', 'done', 'cancelled'] as const) {
+      expect(
+        requestTypeChangeBlocker(
+          { ...newSpecial, status },
+          FREIGHT_VEHICLE_KIND_CODE,
+          'freight_transport',
+        ),
+      ).toMatch(/Новая/);
+    }
+    expect(
+      requestTypeChangeBlocker(
+        { ...newSpecial, deletedAt: '2026-07-24T09:00:00.000Z' },
+        FREIGHT_VEHICLE_KIND_CODE,
+        'freight_transport',
+      ),
+    ).toBe('Заявка в архиве');
+    // Тот же тип — не смена: форма такого и не пришлёт, а сервер не должен переписывать деталь.
+    expect(
+      requestTypeChangeBlocker(newSpecial, FREIGHT_VEHICLE_KIND_CODE, 'special_equipment'),
+    ).not.toBeNull();
+    expect(canChangeRequestType(newSpecial, FREIGHT_VEHICLE_KIND_CODE, 'freight_transport')).toBe(
+      true,
+    );
+  });
+
+  it('тело — полный состав нового типа плюс версия: частичным переоформление не бывает', () => {
+    expect(
+      changeVehicleRequestTypeSchema.safeParse({ ...freight, version: 3 }).success,
+    ).toBe(true);
+    expect(changeVehicleRequestTypeSchema.safeParse({ ...special, version: 3 }).success).toBe(true);
+    // Ни версии, ни половины состава: у нового типа заполнять деталь нечем.
+    expect(changeVehicleRequestTypeSchema.safeParse(freight).success).toBe(false);
+    expect(
+      changeVehicleRequestTypeSchema.safeParse({
+        requestType: 'special_equipment',
+        objectId: OBJ,
+        vehicleTypeId: TYPE,
+        version: 3,
+      }).success,
+    ).toBe(false);
+    // strict(): поле чужого типа не игнорируется — оно означает, что клиент собрал не то тело.
+    expect(
+      changeVehicleRequestTypeSchema.safeParse({
+        ...special,
+        version: 3,
+        scheduledAt: '2026-07-25T14:30:00+03:00',
+      }).success,
+    ).toBe(false);
+  });
+
+  it('заказчик и рабочее окно проверяются, как при заведении', () => {
+    expect(
+      changeVehicleRequestTypeSchema.safeParse({
+        ...freight,
+        objectId: undefined,
+        departmentId: DEPT,
+        version: 1,
+      }).success,
+    ).toBe(true);
+    expect(
+      changeVehicleRequestTypeSchema.safeParse({ ...freight, departmentId: DEPT, version: 1 })
+        .success,
+    ).toBe(false);
+    expect(
+      changeVehicleRequestTypeSchema.safeParse({
+        ...freight,
+        scheduledAt: '2026-07-25T05:00:00+03:00',
+        version: 1,
+      }).success,
+    ).toBe(false);
+    expect(
+      changeVehicleRequestTypeSchema.safeParse({
+        ...special,
+        dateTo: '2026-07-24',
+        version: 1,
+      }).success,
+    ).toBe(false);
+  });
+
+  /**
+   * Дата в прошлом при переоформлении допустима — как и при правке: заявку, заведённую вчера,
+   * переоформляют сегодня, и требовать сдвинуть срок вперёд значило бы менять заказ ради смены
+   * его вида. Тем и отличается от заведения, где та же схема полей проверяется ещё и минимальной
+   * датой.
+   */
+  it('минимальной даты у переоформления нет, а у заведения есть', () => {
+    const past = { ...special, dateFrom: '2026-07-01' };
+    expect(createVehicleRequestSchema.safeParse(past).success).toBe(false);
+    expect(changeVehicleRequestTypeSchema.safeParse({ ...past, version: 2 }).success).toBe(true);
   });
 });
 

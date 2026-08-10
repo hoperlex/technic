@@ -17,6 +17,9 @@ import { HISTORY_LIMIT, loadAuditEvents, mergeHistory } from './request-history'
  */
 const AUDIT_ACTIONS = [
   'vehicle_request.update',
+  // Переоформление в другой тип (ADR 0091): у заявки сменился не набор значений, а набор полей, и
+  // «правкой» это читаться не должно — по такому событию потом и объясняют, куда делся срок работ.
+  'vehicle_request.change_type',
   'vehicle_request.approve',
   'vehicle_request.approval_revoke',
   'vehicle_request.assign',
@@ -42,6 +45,7 @@ const AUDIT_ACTIONS = [
 
 const AUDIT_KINDS: Record<string, RequestHistoryKind> = {
   'vehicle_request.update': 'updated',
+  'vehicle_request.change_type': 'typeChanged',
   'vehicle_request.approve': 'approved',
   'vehicle_request.approval_revoke': 'approvalRevoked',
   // Назначение техники (ADR 0027) идёт вместе с переводом в работу, но событием остаётся своим:

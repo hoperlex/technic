@@ -219,7 +219,7 @@ export type CreateFreightTransportRequestInput = z.infer<
 >;
 export type CreateVehicleRequestInput = z.infer<typeof createVehicleRequestSchema>;
 
-// ── Обновление (discriminatedUnion; requestType неизменяем — сверяется backend) ──
+// ── Обновление (discriminatedUnion; правка типа не меняет — сверяется backend, ADR 0091) ──
 // Кросс-полевые правила (dateTo>=dateFrom, объём|масса) добьёт backend после мержа + CHECK БД.
 export const updateSpecialEquipmentRequestSchema = z
   .object({
@@ -274,6 +274,8 @@ export const updateVehicleRequestSchema = z
     updateSpecialEquipmentRequestSchema,
     updateFreightTransportRequestSchema,
   ])
+  // Тип заявки правкой не меняется: у неё поля одного типа, и присланный чужой означал бы, что
+  // заявку подменили по дороге. Меняют тип отдельным действием — переоформлением (ADR 0091).
   .superRefine((v, ctx) => {
     // Жёсткая модель (ADR 0006): строка адреса и его метаданные передаются вместе.
     if (v.requestType === 'freight_transport') {
@@ -309,6 +311,106 @@ export const updateVehicleRequestSchema = z
     }
   });
 export type UpdateVehicleRequestInput = z.infer<typeof updateVehicleRequestSchema>;
+
+// ── Смена типа заявки: переоформление (ADR 0091) ──
+
+/**
+ * Почему тип заявки сменить нельзя — текстом, либо `null`, если можно. Одна функция на портал и
+ * API, как у досрочного завершения (`earlyEndBlocker`): портал этой строкой объясняет запертое
+ * поле, сервер ею же отвечает 422 — иначе человек видел бы выбор, который сервер не примет.
+ *
+ * Смену допускает **вид заказанной техники**, а не тип заявки: заказ на объект принимает технику
+ * любого вида, грузоперевозку выполняет только грузовая (`isVehicleKindAllowedForRequest`), и
+ * годной обоим типам позиция бывает ровно одна — грузовая. Самосвал под вывоз грунта заказывают то
+ * работой на объекте, то рейсом, и ошибиться в этом выборе при заведении легко; экскаватор
+ * грузоперевозкой не станет никогда, и предлагать там смену типа не о чем.
+ *
+ * Статус — «Новая» и только: у заявки в работе за типом стоят назначенная машина, рейс, бумага и
+ * принятые объектом смены, и переоформление сняло бы основание у всего этого разом. То же
+ * ограничение, которым живут виза (`isApprovalChangeable`) и правка со стороны заказчика.
+ */
+export function requestTypeChangeBlocker(
+  r: Pick<VehicleRequestBaseDto, 'requestType' | 'status' | 'deletedAt'>,
+  /** Код вида заказанного типа ТС (`vehicle_kinds.code`); `null` — вид неизвестен. */
+  orderedKindCode: string | null,
+  next: VehicleRequestType,
+): string | null {
+  if (next === r.requestType) return 'Тип заявки уже такой';
+  if (r.deletedAt) return 'Заявка в архиве';
+  if (r.status !== 'new') {
+    return `Тип меняют у заявки в статусе «${requestStatusLabels.new}»`;
+  }
+  if (orderedKindCode !== FREIGHT_VEHICLE_KIND_CODE) {
+    return 'Тип меняют у заказов грузовой техники: технику другого вида грузоперевозкой не заказать';
+  }
+  return null;
+}
+
+/** Можно ли сменить тип заявки — тот же разбор, что и `requestTypeChangeBlocker`. */
+export function canChangeRequestType(
+  r: Parameters<typeof requestTypeChangeBlocker>[0],
+  orderedKindCode: string | null,
+  next: VehicleRequestType,
+): boolean {
+  return requestTypeChangeBlocker(r, orderedKindCode, next) === null;
+}
+
+const requestVersionSchema = z.number().int().nonnegative();
+const editFilesSchema = {
+  addFileIds: fileIdsSchema.optional(),
+  removeFileIds: z.array(uuidSchema).optional(),
+};
+
+/**
+ * Переоформление заявки в другой тип: тело — полный состав целевого типа, как при заведении.
+ *
+ * Полный, а не частичный, как у правки: у нового типа своя деталь (срок работ против момента
+ * подачи, адреса против площадки), и заполнить её нечем — брать значения из детали прежнего типа
+ * сервер не вправе, они про другое. Поэтому схемы заведения переиспользуются целиком: заявка
+ * переоформляется ровно тем составом, каким её завели бы этим типом сразу.
+ *
+ * Своё здесь — версия и файлы: переоформляют из той же формы, что и правят, и вложения в ней тем
+ * временем добавляют и снимают. Правила «не раньше сегодня» тут нет намеренно — его же нет и у
+ * правки: заявку, заведённую вчера, переоформляют сегодня, и требовать сдвинуть срок вперёд
+ * значило бы менять заказ ради смены его вида.
+ */
+export const changeVehicleRequestTypeSchema = z
+  .discriminatedUnion('requestType', [
+    createSpecialEquipmentRequestSchema.omit({ fileIds: true }).extend({
+      version: requestVersionSchema,
+      ...editFilesSchema,
+    }),
+    createFreightTransportRequestSchema.omit({ fileIds: true }).extend({
+      version: requestVersionSchema,
+      ...editFilesSchema,
+    }),
+  ])
+  .superRefine((v, ctx) => {
+    if (v.requestType === 'special_equipment') {
+      if (v.dateTo && v.dateTo < v.dateFrom) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['dateTo'],
+          message: 'Дата окончания раньше даты начала',
+        });
+      }
+      return;
+    }
+    // Заказчик ровно один (ADR 0040) — то же условие, что при заведении: у грузоперевозки им
+    // бывает и отдел, и площадка, а у заказа на объект отдела не бывает вовсе.
+    if ((v.objectId == null) === (v.departmentId == null)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['objectId'],
+        message: 'Укажите объект либо отдел — что-то одно',
+      });
+    }
+    if (!v.scheduledTimeUnspecified && !isWithinWorkTimeAt(new Date(v.scheduledAt))) {
+      ctx.addIssue({ code: 'custom', path: ['scheduledAt'], message: WORK_TIME_MESSAGE });
+    }
+  });
+export type ChangeVehicleRequestTypeInput = z.infer<typeof changeVehicleRequestTypeSchema>;
+export type ChangeVehicleRequestTypeBody = z.input<typeof changeVehicleRequestTypeSchema>;
 
 // ── Виза руководителя строительства (ADR 0025) ──
 
@@ -1396,15 +1498,19 @@ export type VehicleRequestDto = SpecialEquipmentRequestDto | FreightTransportReq
 
 // ── История заявки (ADR 0012, ADR 0015) ──
 // События описаны в `request-history.ts` — форма у обоих модулей заявок одна. Своё здесь только
-// подписи полей: тип заявки неизменяем, поэтому набор полей у правки известен заранее.
+// подписи полей.
 
 /**
  * Подписи полей в истории; ключи проставляет сервер при вычислении изменений. Поля обоих типов
- * заявки лежат в одном словаре: правка не может сменить тип, а читателю истории всё равно, из
- * какой detail-таблицы пришло значение.
+ * заявки лежат в одном словаре: у переоформления (ADR 0091) в одном событии стоят поля обеих
+ * деталей — одни уходят в прочерк, другие из прочерка появляются, — а читателю истории и вовсе
+ * всё равно, из какой detail-таблицы пришло значение.
  */
 export const vehicleRequestChangeLabels: Record<string, string> = {
   object: 'Объект',
+  // Переоформление в другой тип (ADR 0091). Пара «было → стало» здесь главная строка события:
+  // без неё срок работ в истории сменялся бы моментом подачи будто сам собой.
+  requestType: 'Тип заявки',
   // Заказанная позиция классификатора — одной строкой (ADR 0028): смена категории внутри типа
   // и смена самого типа для читателя истории одно и то же событие — «заказали другое».
   vehicleType: 'Тип/категория',

@@ -20,6 +20,7 @@ import type {
   AttachVehicleTypeSpecInput,
   AuditEntryDto,
   ChangeVehicleAssignmentBody,
+  ChangeVehicleRequestTypeBody,
   CompleteVehicleRequestInput,
   CompleteWasteRequestInput,
   ConfirmScheduleBody,
@@ -534,6 +535,13 @@ export const vehicleRequestsApi = {
     apiFetch<VehicleRequestDto>('/vehicle-requests', { method: 'POST', body }),
   update: (id: string, body: UpdateVehicleRequestInput) =>
     apiFetch<VehicleRequestDto>(`/vehicle-requests/${id}`, { method: 'PATCH', body }),
+  /**
+   * Переоформить заявку в другой тип (ADR 0091): заказ завели работой на объекте, а нужен рейс —
+   * или наоборот. Номер, вложения и история остаются за заявкой; тело — полный состав нового типа,
+   * потому что деталь прежнего снимается целиком, а взять её значения новому типу неоткуда.
+   */
+  changeRequestType: (id: string, body: ChangeVehicleRequestTypeBody) =>
+    apiFetch<VehicleRequestDto>(`/vehicle-requests/${id}/request-type`, { method: 'PATCH', body }),
   /**
    * `comment` уходит в историю статусов; при отмене это обязательная причина. Остальное
    * предъявляется вместе со статусом и потому собрано в объект: `assignment` — техника и ставки

@@ -31,6 +31,7 @@ import {
   type ConfirmScheduleBody,
   assignmentRateLabel,
   assignmentTitle,
+  canOrderVehicleRequestType,
   canReassignVehicle,
   canRequestEarlyEnd,
   canShortenWorkPeriodByEdit,
@@ -50,6 +51,7 @@ import {
   type RequestStatus,
   requestCustomerLabel,
   requestStatusLabels,
+  requestTypeChangeBlocker,
   ROLLBACK_WAYBILL_MESSAGE,
   routeDateMismatch,
   routePurposeLabels,
@@ -283,6 +285,52 @@ function rollbackErases(r: VehicleRequestDto, relocations: VehicleRouteDto[]): s
   return items;
 }
 
+/**
+ * Что заявка теряет при переоформлении в другой тип (ADR 0091) — строками, по её собственным
+ * данным. Тем же приёмом, что и `rollbackErases`: перечень собирается под заполненное поле, а не
+ * пишется заранее — обещать пропажу того, чего у заявки нет, значит врать ровно в том окне, где
+ * человек решает, переоформлять ли.
+ *
+ * Контакта на месте в перечне нет намеренно: он не теряется, а переезжает в поле нового типа
+ * (`handleRequestTypeChange`), и человек видит его в форме перед сохранением.
+ */
+function retypeErases(r: VehicleRequestDto, dropsApproval: boolean): string[] {
+  const items: string[] = [];
+  if (r.requestType === 'special_equipment') {
+    items.push(`Срок работ (${termLabel(r)}) — у грузоперевозки вместо него момент подачи`);
+  } else {
+    items.push(`Место погрузки: ${r.loadingLocation}`);
+    items.push(`Место разгрузки: ${r.unloadingLocation}`);
+    if (r.volumeM3 != null) items.push(`Объём: ${r.volumeM3} м³`);
+    if (r.weightTons != null) items.push(`Масса: ${r.weightTons} т`);
+    // Заказчик-отдел (ADR 0040): спецтехника выходит на площадку, и заказать её отдел не может —
+    // заявка переезжает на объект, выбранный в форме.
+    if (r.departmentName) {
+      items.push(`Заказчик-отдел (${r.departmentName}) — заказ техники на объект ведёт площадка`);
+    }
+  }
+  if (dropsApproval) {
+    items.push(
+      `Виза руководителя строительства${r.approvedByName ? ` (${r.approvedByName})` : ''}`,
+    );
+  }
+  return items;
+}
+
+/**
+ * Какой осью заказчика спрашивает форма (ADR 0040) — по выбранному в ней типу заявки, а не только
+ * по самой заявке. Заказ техники на объект бывает лишь у площадки, отдела в нём нет вовсе: заявку
+ * отдела, переоформляемую в такой заказ (ADR 0091), форма обязана спросить об объекте.
+ */
+function departmentCustomerFor(
+  requestType: VehicleRequestType | undefined,
+  record: VehicleRequestDto | null,
+  isDepartmentRole: boolean,
+): boolean {
+  if (requestType === 'special_equipment') return false;
+  return record ? !!record.departmentId : isDepartmentRole;
+}
+
 export function VehicleRequestsTab() {
   const { message, modal } = App.useApp();
   const { user, can } = useAuth();
@@ -452,7 +500,10 @@ export function VehicleRequestsTab() {
    * отдела, видел бы обязательный пустой «Объект» — отдела в форме нет вовсе, — и сохранение
    * молча переносило бы заявку с отдела на площадку.
    */
-  const departmentCustomer = record ? !!record.departmentId : isDepartmentRole;
+  // Тип заявки выбирают в форме первым — от него зависят и поля, и список типов ТС, и ось
+  // заказчика: переоформленная в заказ на объект грузоперевозка отдела спрашивает площадку.
+  const watchRequestType = Form.useWatch('requestType', form);
+  const departmentCustomer = departmentCustomerFor(watchRequestType, record, isDepartmentRole);
 
   /**
    * Что предложить первой строкой в списке мест (ADR 0069): площадку заявки, затем площадки
@@ -487,16 +538,42 @@ export function VehicleRequestsTab() {
     name: record ? `${record.departmentCode} — ${record.departmentName}` : null,
   });
   /**
-   * Тип правимой заявки остаётся в списке, даже если роли он недоступен (ADR 0040). Поле заперто —
-   * тип неизменяем, — но подписать значение вне списка `AutoSelect` нечем: показался бы код.
+   * Тип правимой заявки остаётся в списке, даже если роли он недоступен (ADR 0040): подписать
+   * значение вне списка `AutoSelect` нечем — показался бы код.
    */
   const formRequestTypeOptions = withSavedOption(requestTypeOptions, {
     id: record?.requestType,
     name: record ? vehicleRequestTypeLabels[record.requestType] : null,
   });
 
-  // Тип заявки выбирают в форме первым — от него зависят и поля, и список типов ТС.
-  const watchRequestType = Form.useWatch('requestType', form);
+  /**
+   * Можно ли переоформить правимую заявку в другой тип (ADR 0091) — и если нет, то почему.
+   * Правило и текст берутся из контрактов: сервер отвечает ими же, и разойдись они, поле
+   * предлагало бы выбор, который потом отклоняют.
+   *
+   * Вид заказанной техники берётся из справочника классификации по позиции самой заявки. Позиции
+   * может там не оказаться — её выключили или заявка старше категорий, — и тогда смена типа
+   * закрыта: сервер такую позицию всё равно не примет (`resolveClassification`).
+   */
+  const recordKindCode = record
+    ? (classificationByKey.get(classificationKeyOf(record))?.kindCode ?? null)
+    : null;
+  const otherRequestType: VehicleRequestType | null = record
+    ? record.requestType === 'special_equipment'
+      ? 'freight_transport'
+      : 'special_equipment'
+    : null;
+  /** Причина, по которой тип заперт; `null` — менять можно, `undefined` — заявка новая. */
+  const retypeBlocker =
+    record && otherRequestType
+      ? requestTypeChangeBlocker(record, recordKindCode, otherRequestType)
+      : undefined;
+  // Второй тип должен быть и доступен роли: отдел спецтехнику не заказывает вовсе (ADR 0040).
+  const canRetype =
+    retypeBlocker === null &&
+    !!otherRequestType &&
+    canOrderVehicleRequestType(user, otherRequestType);
+
   const isSpecial = watchRequestType === 'special_equipment';
   const isFreight = watchRequestType === 'freight_transport';
   const commentHint = watchRequestType ? COMMENT_HINTS[watchRequestType] : null;
@@ -570,6 +647,11 @@ export function VehicleRequestsTab() {
   /**
    * Смена типа заявки: поля чужого типа очищаем, своей дате подставляем сегодня — раньше
    * нельзя; выбранную технику сбрасываем, если новому типу заявки её вид не подходит.
+   *
+   * Что можно — переносим, а не спрашиваем заново (ADR 0091). Однозначны две вещи: день (заказанная
+   * подача становится первым днём работ и наоборот) и контакт на месте — техника на объект едет к
+   * тому, кто её встретит, а в рейсе этот же человек стоит на разгрузке. Адреса, груз и срок
+   * окончания не переносятся: у другого типа их либо нет, либо они означают другое.
    */
   const handleRequestTypeChange = (next: VehicleRequestType) => {
     const key: string | undefined = form.getFieldValue('classificationKey');
@@ -578,14 +660,26 @@ export function VehicleRequestsTab() {
       form.resetFields(['classificationKey']);
     }
     if (next === 'special_equipment') {
+      const scheduledDate: Dayjs | undefined = form.getFieldValue('scheduledDate');
+      const name: string | undefined = form.getFieldValue('unloadingResponsibleName');
+      const phone: string | undefined = form.getFieldValue('unloadingResponsiblePhone');
       // Метаданные адресов лежат в тех же `FREIGHT_FIELDS` и сбрасываются вместе со строками.
       form.resetFields([...FREIGHT_FIELDS]);
-      if (!form.getFieldValue('dateFrom')) form.setFieldsValue({ dateFrom: minRequestDate() });
+      form.setFieldsValue({
+        dateFrom: form.getFieldValue('dateFrom') ?? scheduledDate ?? minRequestDate(),
+        responsibleName: form.getFieldValue('responsibleName') || name,
+        responsiblePhone: form.getFieldValue('responsiblePhone') || phone,
+      });
     } else {
+      const dateFrom: Dayjs | undefined = form.getFieldValue('dateFrom');
+      const name: string | undefined = form.getFieldValue('responsibleName');
+      const phone: string | undefined = form.getFieldValue('responsiblePhone');
       form.resetFields([...SPECIAL_FIELDS]);
-      if (!form.getFieldValue('scheduledDate')) {
-        form.setFieldsValue({ scheduledDate: minRequestDate() });
-      }
+      form.setFieldsValue({
+        scheduledDate: form.getFieldValue('scheduledDate') ?? dateFrom ?? minRequestDate(),
+        unloadingResponsibleName: form.getFieldValue('unloadingResponsibleName') || name,
+        unloadingResponsiblePhone: form.getFieldValue('unloadingResponsiblePhone') || phone,
+      });
     }
   };
 
@@ -672,6 +766,17 @@ export function VehicleRequestsTab() {
         vehicleCategoryId: picked.vehicleCategoryId,
         comment: v.comment ?? '',
       };
+      // Смена типа у заведённой заявки — не правка, а переоформление (ADR 0091): у него своя
+      // ручка, потому что деталь прежнего типа снимается целиком, а новая приходит полным составом.
+      const retyping = !!record && record.requestType !== v.requestType;
+      const edit = record
+        ? {
+            version: record.version,
+            addFileIds: editor.newFileIds(),
+            removeFileIds: editor.removedIds,
+          }
+        : null;
+
       if (v.requestType === 'special_equipment') {
         // Спецтехнику заказывает только объект: она выходит на площадку, и отдела в такой заявке
         // нет вовсе (ADR 0040) — роль отдела до этой ветки не доходит, ей закрыт сам тип.
@@ -684,14 +789,11 @@ export function VehicleRequestsTab() {
           responsibleName: v.responsibleName!,
           responsiblePhone: v.responsiblePhone!,
         };
-        return record
-          ? vehicleRequestsApi.update(record.id, {
-              ...base,
-              version: record.version,
-              addFileIds: editor.newFileIds(),
-              removeFileIds: editor.removedIds,
-            })
-          : vehicleRequestsApi.create({ ...base, fileIds: editor.newFileIds() });
+        if (!record || !edit)
+          return vehicleRequestsApi.create({ ...base, fileIds: editor.newFileIds() });
+        return retyping
+          ? vehicleRequestsApi.changeRequestType(record.id, { ...base, ...edit })
+          : vehicleRequestsApi.update(record.id, { ...base, ...edit });
       }
 
       // Заказчик грузоперевозки — объект либо отдел, ровно один (ADR 0040): присылать обе оси
@@ -725,14 +827,11 @@ export function VehicleRequestsTab() {
         unloadingResponsibleName: v.unloadingResponsibleName!,
         unloadingResponsiblePhone: v.unloadingResponsiblePhone!,
       };
-      return record
-        ? vehicleRequestsApi.update(record.id, {
-            ...base,
-            version: record.version,
-            addFileIds: editor.newFileIds(),
-            removeFileIds: editor.removedIds,
-          })
-        : vehicleRequestsApi.create({ ...base, fileIds: editor.newFileIds() });
+      if (!record || !edit)
+        return vehicleRequestsApi.create({ ...base, fileIds: editor.newFileIds() });
+      return retyping
+        ? vehicleRequestsApi.changeRequestType(record.id, { ...base, ...edit })
+        : vehicleRequestsApi.update(record.id, { ...base, ...edit });
     },
     onSuccess: (saved) => {
       message.success('Сохранено');
@@ -776,10 +875,46 @@ export function VehicleRequestsTab() {
     });
   };
 
+  /**
+   * Переоформление спрашиваем, обычное сохранение — нет. Заявка при смене типа не просто меняет
+   * значения: поля прежнего типа исчезают вместе с деталью, и виза, если её ставил не тот, кто
+   * правит, уходит следом. Перечень — по самой заявке (`retypeErases`), а не общими словами:
+   * человек должен увидеть, что именно перестанет существовать, до нажатия, а не в истории после.
+   */
+  const submit = (v: FormValues) => {
+    if (!record || record.requestType === v.requestType) {
+      saveMut.mutate(v);
+      return;
+    }
+    // Право визы у себя же заявку не отбирает (ADR 0025): визирующий подтверждает переоформление
+    // самим фактом правки — тем же правилом отвечает сервер.
+    const erased = retypeErases(record, !!record.approvedAt && !canApprove);
+    modal.confirm({
+      title: `Переоформить заявку ${record.displayNumber} в «${vehicleRequestTypeLabels[v.requestType]}»?`,
+      content: (
+        <>
+          <div>У заявки не станет:</div>
+          <ul style={{ margin: '4px 0 8px', paddingLeft: 20 }}>
+            {erased.map((line) => (
+              <li key={line}>{line}</li>
+            ))}
+          </ul>
+          <Typography.Text type="secondary">
+            Номер, вложения и история остаются за заявкой.
+          </Typography.Text>
+        </>
+      ),
+      okText: 'Переоформить',
+      okButtonProps: { danger: true },
+      cancelText: 'Отмена',
+      onOk: () => saveMut.mutateAsync(v),
+    });
+  };
+
   /** Доваливаем правила, которые зависят от типа заявки и не выражаются rules-ами полей. */
   const onFinish = (v: FormValues) => {
     if (v.requestType === 'special_equipment') {
-      saveMut.mutate(v);
+      submit(v);
       return;
     }
     if (cargoRequired && v.volumeM3 == null && v.weightTons == null) {
@@ -788,7 +923,7 @@ export function VehicleRequestsTab() {
     }
     // Жёсткая модель адресов (ADR 0006) сюда не доходит: её проверяет правило самого поля, и
     // невыбранный адрес останавливает отправку с ошибкой на своём поле, а не общим сообщением.
-    saveMut.mutate(v);
+    submit(v);
   };
 
   // Отмена заявки требует причины — она вводится в отдельном окне.
@@ -1868,19 +2003,21 @@ export function VehicleRequestsTab() {
                 />
               </Form.Item>
             )}
-            {/* Тип заявки неизменяем после создания (сервер отдаёт 422) — при правке поле заперто. */}
+            {/* Тип заведённой заявки меняется переоформлением (ADR 0091) — там, где заказанная
+              позиция годится обоим типам. Где не годится, поле заперто и говорит почему. */}
             <Form.Item
               name="requestType"
               label="Тип заявки"
               tooltip="Заказ техники на объект — техника любого вида; грузоперевозка — только грузовая"
+              extra={record ? (retypeBlocker ?? 'Смена типа переоформит заявку') : undefined}
               rules={[{ required: true, message: 'Выберите тип заявки' }]}
             >
               <AutoSelect
                 options={formRequestTypeOptions}
                 placeholder="Выберите тип заявки"
-                // Заперто и при правке (тип неизменяем), и когда роли доступен один тип: выбор,
+                // Заперто, когда переоформлять нельзя, и когда роли доступен один тип: выбор,
                 // которого нет, поле обещать не должно.
-                disabled={!!record || requestTypeOptions.length === 1}
+                disabled={(!!record && !canRetype) || requestTypeOptions.length === 1}
                 onChange={handleRequestTypeChange}
               />
             </Form.Item>

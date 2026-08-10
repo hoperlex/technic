@@ -2,13 +2,16 @@ import {
   assignmentTitle,
   formatMoscowDateTime,
   formatPhone,
+  type FreightTransportRequestDto,
   type RequestChangeDto,
+  type SpecialEquipmentRequestDto,
   vehicleClassificationLabel,
   type VehicleRequestAssignmentDto,
   type VehicleRequestCompletionDto,
   type VehicleRequestDto,
   type VehicleRequestEarlyEndDto,
   type VehicleRequestShiftDto,
+  vehicleRequestTypeLabels,
   workedAmountLabel,
 } from '@technic/contracts';
 import { changeSet, EMPTY, short } from './request-diff';
@@ -28,9 +31,34 @@ function measure(v: number | null, unit: string): string {
 }
 
 /**
+ * Заказчик заявки (ADR 0040) — «код — наименование» объекта либо отдела. Одной строкой на обе оси:
+ * заказчик у заявки один, и его переезд с отдела на площадку — одно событие, а не пара «отдел
+ * пропал» / «объект появился». Без этого у заявки отдела в истории стояло бы «null — null»:
+ * колонки объекта у неё пусты по устройству, а не по недосмотру.
+ */
+function customerValue(r: VehicleRequestDto): string {
+  if (r.objectId) return `${r.objectCode} — ${r.objectName}`;
+  if (r.departmentId) return `${r.departmentCode} — ${r.departmentName}`;
+  return EMPTY;
+}
+
+/** Заявка этой стороны сравнения — если она того самого типа; иначе `null` (поля читаются пустыми). */
+function asSpecial(r: VehicleRequestDto): SpecialEquipmentRequestDto | null {
+  return r.requestType === 'special_equipment' ? r : null;
+}
+
+function asFreight(r: VehicleRequestDto): FreightTransportRequestDto | null {
+  return r.requestType === 'freight_transport' ? r : null;
+}
+
+/**
  * Изменённые поля заявки. Значения — готовый текст на момент правки: тип ТС могли переименовать
- * или деактивировать, а история обязана показывать то, что было. Тип заявки неизменяем (сервер
- * отдаёт 422 при попытке смены), поэтому поля деталей сравниваются парой своего типа.
+ * или деактивировать, а история обязана показывать то, что было.
+ *
+ * Стороны бывают разных типов — так выглядит переоформление (ADR 0091). Тогда сравниваются поля
+ * **обеих** деталей: срок работ уходит в прочерк, момент подачи из прочерка появляется. Пустая
+ * сторона — это и есть ответ «у заявки такого поля больше нет»; пропусти её дифф, и в истории
+ * заявка сменила бы тип, не сказав, что стало с заказанным сроком.
  */
 export function diffVehicleRequests(
   before: VehicleRequestDto,
@@ -38,11 +66,13 @@ export function diffVehicleRequests(
 ): RequestChangeDto[] {
   const diff = changeSet();
 
+  // Первой строкой — сам тип: остальные поля события объясняются им, а не наоборот.
   diff.changed(
-    'object',
-    `${before.objectCode} — ${before.objectName}`,
-    `${after.objectCode} — ${after.objectName}`,
+    'requestType',
+    vehicleRequestTypeLabels[before.requestType],
+    vehicleRequestTypeLabels[after.requestType],
   );
+  diff.changed('object', customerValue(before), customerValue(after));
   // Заказанная позиция классификатора одной строкой (ADR 0028): наименование категории уже
   // начинается с типа, и две строки «Тип ТС» + «Категория» повторяли бы друг друга.
   diff.changed(
@@ -57,62 +87,98 @@ export function diffVehicleRequests(
     }),
   );
 
-  if (before.requestType === 'special_equipment' && after.requestType === 'special_equipment') {
-    diff.changed('dateFrom', dateOnly(before.dateFrom), dateOnly(after.dateFrom));
-    diff.changed('dateTo', dateOnly(before.dateTo), dateOnly(after.dateTo));
+  // Детали сравниваются по отдельности, а не парой одного типа: у переоформления (ADR 0091)
+  // стороны разных типов, и заполнена у каждой своя. Блок целиком пропускается там, где такой
+  // детали нет ни до, ни после, — иначе всякая правка грузоперевозки писала бы «Дата начала: — → —».
+  const specialBefore = asSpecial(before);
+  const specialAfter = asSpecial(after);
+  if (specialBefore || specialAfter) {
+    diff.changed(
+      'dateFrom',
+      dateOnly(specialBefore?.dateFrom ?? null),
+      dateOnly(specialAfter?.dateFrom ?? null),
+    );
+    diff.changed(
+      'dateTo',
+      dateOnly(specialBefore?.dateTo ?? null),
+      dateOnly(specialAfter?.dateTo ?? null),
+    );
     // Контакт ответственного (миграция 0062): в истории он читается наравне со сроком — по нему
     // звонят, и «телефон сменился» это событие, а не оформление.
     diff.changed(
       'responsibleName',
-      before.responsibleName || EMPTY,
-      after.responsibleName || EMPTY,
+      specialBefore?.responsibleName || EMPTY,
+      specialAfter?.responsibleName || EMPTY,
     );
     // Номер в истории — тем же видом, что в карточке (ADR 0066): иначе смена формата хранения
     // читалась бы как смена телефона.
     diff.changed(
       'responsiblePhone',
-      formatPhone(before.responsiblePhone) || EMPTY,
-      formatPhone(after.responsiblePhone) || EMPTY,
+      formatPhone(specialBefore?.responsiblePhone ?? '') || EMPTY,
+      formatPhone(specialAfter?.responsiblePhone ?? '') || EMPTY,
     );
-  } else if (
-    before.requestType === 'freight_transport' &&
-    after.requestType === 'freight_transport'
-  ) {
+  }
+
+  const freightBefore = asFreight(before);
+  const freightAfter = asFreight(after);
+  if (freightBefore || freightAfter) {
     diff.changed(
       'scheduledAt',
-      formatMoscowDateTime(new Date(before.scheduledAt), before.scheduledTimeUnspecified),
-      formatMoscowDateTime(new Date(after.scheduledAt), after.scheduledTimeUnspecified),
+      freightBefore
+        ? formatMoscowDateTime(
+            new Date(freightBefore.scheduledAt),
+            freightBefore.scheduledTimeUnspecified,
+          )
+        : EMPTY,
+      freightAfter
+        ? formatMoscowDateTime(
+            new Date(freightAfter.scheduledAt),
+            freightAfter.scheduledTimeUnspecified,
+          )
+        : EMPTY,
     );
-    diff.changed('volumeM3', measure(before.volumeM3, 'м³'), measure(after.volumeM3, 'м³'));
-    diff.changed('weightTons', measure(before.weightTons, 'т'), measure(after.weightTons, 'т'));
+    diff.changed(
+      'volumeM3',
+      measure(freightBefore?.volumeM3 ?? null, 'м³'),
+      measure(freightAfter?.volumeM3 ?? null, 'м³'),
+    );
+    diff.changed(
+      'weightTons',
+      measure(freightBefore?.weightTons ?? null, 'т'),
+      measure(freightAfter?.weightTons ?? null, 'т'),
+    );
     // Адрес сравнивается по строке, а не по ФИАС: в истории читают, откуда и куда везли.
-    diff.changed('loadingLocation', short(before.loadingLocation), short(after.loadingLocation));
+    diff.changed(
+      'loadingLocation',
+      short(freightBefore?.loadingLocation ?? '') || EMPTY,
+      short(freightAfter?.loadingLocation ?? '') || EMPTY,
+    );
     diff.changed(
       'unloadingLocation',
-      short(before.unloadingLocation),
-      short(after.unloadingLocation),
+      short(freightBefore?.unloadingLocation ?? '') || EMPTY,
+      short(freightAfter?.unloadingLocation ?? '') || EMPTY,
     );
     // Контакты на концах маршрута (миграция 0062) — четырьмя строками: сменился ответственный
     // за погрузку или за разгрузку, читателю истории это разные события.
     diff.changed(
       'loadingResponsibleName',
-      before.loadingResponsibleName || EMPTY,
-      after.loadingResponsibleName || EMPTY,
+      freightBefore?.loadingResponsibleName || EMPTY,
+      freightAfter?.loadingResponsibleName || EMPTY,
     );
     diff.changed(
       'loadingResponsiblePhone',
-      formatPhone(before.loadingResponsiblePhone) || EMPTY,
-      formatPhone(after.loadingResponsiblePhone) || EMPTY,
+      formatPhone(freightBefore?.loadingResponsiblePhone ?? '') || EMPTY,
+      formatPhone(freightAfter?.loadingResponsiblePhone ?? '') || EMPTY,
     );
     diff.changed(
       'unloadingResponsibleName',
-      before.unloadingResponsibleName || EMPTY,
-      after.unloadingResponsibleName || EMPTY,
+      freightBefore?.unloadingResponsibleName || EMPTY,
+      freightAfter?.unloadingResponsibleName || EMPTY,
     );
     diff.changed(
       'unloadingResponsiblePhone',
-      formatPhone(before.unloadingResponsiblePhone) || EMPTY,
-      formatPhone(after.unloadingResponsiblePhone) || EMPTY,
+      formatPhone(freightBefore?.unloadingResponsiblePhone ?? '') || EMPTY,
+      formatPhone(freightAfter?.unloadingResponsiblePhone ?? '') || EMPTY,
     );
   }
 

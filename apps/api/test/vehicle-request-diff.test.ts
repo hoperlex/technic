@@ -198,6 +198,72 @@ describe('дифф правки заявки на технику', () => {
   });
 });
 
+// ── Переоформление в другой тип (ADR 0091) ──
+describe('дифф переоформления заявки', () => {
+  // Позиция классификатора у обеих сторон одна: переоформление её не трогает, и в событии не
+  // должно быть строки «Тип/категория» — иначе непонятно, сменили заказ или его вид.
+  const SAME_TYPE = { ...FREIGHT, vehicleTypeName: SPECIAL.vehicleTypeName };
+
+  it('тип заявки — первой строкой, детали обоих типов — парами «было → стало»', () => {
+    const changes = diffVehicleRequests(SPECIAL, SAME_TYPE);
+    expect(changes[0]).toEqual({
+      field: 'requestType',
+      from: 'Техника для работы на объекте',
+      to: 'Грузоперевозка',
+    });
+    // Срок работ ушёл в прочерк — иначе по истории не понять, куда он делся.
+    expect(changes).toContainEqual({ field: 'dateFrom', from: '01.08.2026', to: '—' });
+    expect(changes).toContainEqual({ field: 'responsibleName', from: 'Петров П. П.', to: '—' });
+    // Поля грузоперевозки появились из прочерка.
+    expect(changes).toContainEqual({ field: 'volumeM3', from: '—', to: '20 м³' });
+    expect(changes).toContainEqual({
+      field: 'loadingLocation',
+      from: '—',
+      to: 'г Москва, ул Тверская, д 1',
+    });
+    expect(changes).toContainEqual({
+      field: 'unloadingResponsibleName',
+      from: '—',
+      to: 'Кузнецов К. К.',
+    });
+    expect(changes.some((c) => c.field === 'vehicleType')).toBe(false);
+  });
+
+  it('обратное переоформление читается зеркально', () => {
+    const changes = diffVehicleRequests(SAME_TYPE, SPECIAL);
+    expect(changes[0]).toEqual({
+      field: 'requestType',
+      from: 'Грузоперевозка',
+      to: 'Техника для работы на объекте',
+    });
+    expect(changes).toContainEqual({ field: 'scheduledAt', from: '01.08.2026 10:00', to: '—' });
+    expect(changes).toContainEqual({ field: 'dateFrom', from: '—', to: '01.08.2026' });
+  });
+
+  /**
+   * Заказчик-отдел (ADR 0040) читается наименованием отдела, а не «null — null»: колонки объекта
+   * у такой заявки пусты по устройству. Заметно это стало на переоформлении — оно как раз и
+   * переводит заявку отдела на площадку, — но касается и обычной правки заказчика.
+   */
+  it('переезд с отдела на объект — одна строка заказчика', () => {
+    const ofDepartment = {
+      ...SAME_TYPE,
+      objectId: null,
+      objectCode: null,
+      objectName: null,
+      departmentId: '88888888-8888-4888-8888-888888888888',
+      departmentCode: 'ПТО',
+      departmentName: 'Производственно-технический отдел',
+    };
+    const changes = diffVehicleRequests(ofDepartment, SPECIAL);
+    expect(changes).toContainEqual({
+      field: 'object',
+      from: 'ПТО — Производственно-технический отдел',
+      to: 'ОБ-1 — Жилой комплекс',
+    });
+  });
+});
+
 // ── Назначение техники (ADR 0027) ──
 const RENTAL: VehicleRequestAssignmentDto = {
   vehicleId: '66666666-6666-4666-8666-666666666666',
