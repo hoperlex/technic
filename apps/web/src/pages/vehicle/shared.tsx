@@ -578,7 +578,14 @@ export function useEarlyEnd() {
   const qc = useQueryClient();
   const [target, setTarget] = useState<SpecialEquipmentRequestDto | null>(null);
 
-  const invalidate = () => void qc.invalidateQueries({ queryKey: ['vehicle-requests'] });
+  /**
+   * Сокращённый срок переписывает и путевые листы: сервер сводит ЭСМ-2 заявки заново (ADR 0037),
+   * и журнал листов без этого показывает смены, которых уже нет.
+   */
+  const invalidate = () => {
+    void qc.invalidateQueries({ queryKey: ['vehicle-requests'] });
+    void qc.invalidateQueries({ queryKey: ['waybills'] });
+  };
 
   const requestMut = useMutation({
     mutationFn: (v: { id: string; body: RequestVehicleEarlyEndInput }) =>

@@ -969,6 +969,8 @@ export function VehicleRequestsTab() {
       void qc.invalidateQueries({ queryKey: ['vehicle-requests'] });
       // Заявка переезжает в рейс новой машины — списки маршрутов после этого не те же.
       void qc.invalidateQueries({ queryKey: ['vehicle-routes'] });
+      // Смена машины переписывает и путевые листы: сервер сводит ЭСМ-2 рейса заново (ADR 0037).
+      void qc.invalidateQueries({ queryKey: ['waybills'] });
     },
     onError: (e) => message.error(errorMessage(e)),
   });
@@ -1001,6 +1003,9 @@ export function VehicleRequestsTab() {
       // списки маршрутов после такого перехода уже не те. Инвалидация общая на все переходы —
       // рейсов касается и закрытие заявки, и её отмена.
       void qc.invalidateQueries({ queryKey: ['vehicle-routes'] });
+      // Перевод в работу выписывает путевой лист, а закрытие и отмена его переписывают (ADR 0037):
+      // журнал листов после смены статуса показывает не то, что в базе.
+      void qc.invalidateQueries({ queryKey: ['waybills'] });
     },
     onError: (e) => message.error(errorMessage(e)),
   });
