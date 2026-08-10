@@ -33,6 +33,7 @@ import {
   EMAIL_VERIFICATION_ENABLED,
   isCounterpartyScopedRole,
   isDepartmentScopedRole,
+  isExternalRegistrationEmail,
   isObjectScopedRole,
   REGISTRATION_ROLE_REQUESTS,
   registrationRequestDetail,
@@ -175,6 +176,24 @@ function requestedDetailText(u: UserDto): string | undefined {
   if (detail === 'object' && u.requestedObject) return `Объект: ${u.requestedObject}`;
   if (detail === 'company' && u.requestedCompany) return `Компания: ${u.requestedCompany}`;
   return undefined;
+}
+
+/**
+ * Заявка, поданная с адреса вне домена компании (ADR 0090). Только у нерассмотренных: у активной
+ * учётки адрес уже принят решением администратора, и пометка на ней осталась бы висеть навсегда,
+ * ничего не решая, — а у операторов чужой адрес и вовсе в порядке вещей и признаком не считается.
+ */
+const hasExternalEmail = (u: UserDto) => isPendingRegistration(u) && isExternalRegistrationEmail(u);
+
+/** Адрес заявки вместе с пометкой о чужом домене — одинаково в списке и в карточке на телефоне. */
+function emailCell(u: UserDto) {
+  if (!hasExternalEmail(u)) return u.email;
+  return (
+    <Space size={4} wrap>
+      <span>{u.email}</span>
+      <Tag color="orange">Внешняя почта</Tag>
+    </Space>
+  );
 }
 
 interface AccountsProps {
@@ -562,6 +581,9 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
       dataIndex: 'email',
       searchable: false,
       width: 220,
+      // Пометка о чужом домене стоит у самого адреса, а не отдельным столбцом: она бывает у одной
+      // строки из десятка, и столбец под неё стоял бы пустым.
+      render: (_v, r) => emailCell(r),
     }),
     textColumn<UserDto>({
       key: 'fullName',
@@ -958,7 +980,7 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
     // рассказывать о человеке меньше, чем строка списка на десктопе.
     primary: (r) => roleTags(r),
     lines: [
-      (r) => r.email,
+      (r) => emailCell(r),
       // Номер нажимается: карточку читают с телефона, и звонок — то, ради чего его и оставляли.
       (r) => (r.phone ? <PhoneLink phone={r.phone} /> : null),
       (r) => {
@@ -1090,6 +1112,9 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
               message={[
                 `При регистрации указал: ${registrationRoleRequestLabels[record.requestedRole]}`,
                 requestedDetailText(record),
+                // Тот же признак, что и пометкой в списке (ADR 0090): решение принимается в этом
+                // окне, и увиденное в списке к этому моменту уже забыто.
+                hasExternalEmail(record) ? 'Адрес внешней почты' : undefined,
               ]
                 .filter(Boolean)
                 .join(' · ')}

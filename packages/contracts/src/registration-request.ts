@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isInternalEmail } from './email';
 import type { Role } from './enums';
 
 // ── Пожелание по роли в заявке на регистрацию ──
@@ -68,6 +69,43 @@ export const registrationRequestDetail: Record<RegistrationRoleRequest, Registra
     vehicle_lessor: 'company',
     other: 'none',
   };
+
+/**
+ * Ждут ли от заявителя рабочий адрес в домене компании (ADR 0090).
+ *
+ * У операторов — нет: они работают от лица сторонней организации (ADR 0010), рабочая почта у них
+ * по определению не наша, и предупреждение о «внешнем» адресе требовало бы от них невозможного.
+ * У «другого» — да: так себя называет чаще свой сотрудник, которому роль подберут при
+ * рассмотрении.
+ *
+ * Таблица отдельная, а не вывод из `registrationRequestDetail`: совпадение с «спрашиваем
+ * компанию» случайное, и следующее пожелание сломало бы его молча.
+ */
+const requestExpectsCorporateEmail: Record<RegistrationRoleRequest, boolean> = {
+  dispatcher: true,
+  rukstroy: true,
+  site_staff: true,
+  commandant: true,
+  waste_operator: false,
+  vehicle_lessor: false,
+  other: true,
+};
+
+export function expectsCorporateEmail(request: RegistrationRoleRequest): boolean {
+  return requestExpectsCorporateEmail[request];
+}
+
+/**
+ * Заявка подана с чужого адреса там, где ждали рабочий. Отказом это не является — признак нужен
+ * администратору, чтобы приглядеться к заявке, и заявителю, чтобы одуматься до отправки.
+ */
+export function isExternalRegistrationEmail(value: {
+  email: string;
+  requestedRole: RegistrationRoleRequest | null;
+}): boolean {
+  if (!value.requestedRole || !expectsCorporateEmail(value.requestedRole)) return false;
+  return !isInternalEmail(value.email);
+}
 
 /** Уточнение — свободный текст: справочники неаутентифицированному не отдаются (ADR 0034). */
 const detailField = z.string().trim().max(200);

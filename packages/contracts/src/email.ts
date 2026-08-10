@@ -26,3 +26,29 @@ export const optionalEmailSchema = z
   .trim()
   .max(EMAIL_MAX)
   .refine((v) => v === '' || z.email().safeParse(v).success, EMAIL_FORMAT_MESSAGE);
+
+// ── Свой домен и чужой (ADR 0090) ──
+
+/**
+ * Домены компании. Список короткий и меняется раз в годы, поэтому он константа, а не настройка
+ * окружения: настройкой его пришлось бы держать одинаковым и у сервера, и в сборке портала, а
+ * разойдись они — портал предупреждал бы о «внешнем» адресе, который для сервера свой.
+ */
+export const INTERNAL_EMAIL_DOMAINS = ['su10.ru', 'zakupka.pro', 'mstroy.pro'] as const;
+
+/**
+ * Адрес в домене компании — сам домен или его поддомен (`auto.su10.ru`). Ничего не решает и никого
+ * не пускает: признак нужен предупреждению на форме регистрации и пометке в списке заявок.
+ *
+ * Сравнивается хвост после **последней** `@` и только целыми метками домена: `su10.ru.example.com`
+ * и `nesu10.ru` — чужие, как бы похоже они ни выглядели.
+ */
+export function isInternalEmail(email: string): boolean {
+  const at = email.lastIndexOf('@');
+  if (at < 0) return false;
+  const domain = email
+    .slice(at + 1)
+    .trim()
+    .toLowerCase();
+  return INTERNAL_EMAIL_DOMAINS.some((own) => domain === own || domain.endsWith(`.${own}`));
+}

@@ -1,7 +1,11 @@
 import { useState } from 'react';
-import { App, Button, Card, Form, Input, Result, Typography } from 'antd';
+import { Alert, App, Button, Card, Form, Input, Result, Typography } from 'antd';
 import { Link, useNavigate } from 'react-router';
 import {
+  emailSchema,
+  expectsCorporateEmail,
+  INTERNAL_EMAIL_DOMAINS,
+  isInternalEmail,
   REGISTRATION_ROLE_REQUESTS,
   registrationRequestDetail,
   registrationRoleRequestLabels,
@@ -45,8 +49,21 @@ export function RegisterPage() {
   // Челлендж капчи одноразовый: после любой неудачной отправки нужна новая картинка.
   const [captchaNonce, setCaptchaNonce] = useState(0);
   const watchRoleRequest = Form.useWatch('requestedRole', form);
+  const watchEmail = Form.useWatch('email', form) ?? '';
   // Объект или компанию спрашиваем только там, где без них заявку не рассмотреть.
   const detail = watchRoleRequest ? registrationRequestDetail[watchRoleRequest] : 'none';
+  /**
+   * Адрес не в домене компании (ADR 0090). Предупреждение, а не запрет: заявку с любого адреса
+   * портал принимает — решает по ней всё равно администратор.
+   *
+   * Смотрим на дописанный адрес: на «ива» в поле предупреждать не о чем. Пока пожелание по роли не
+   * выбрано, предупреждение показывается — оно должно попасться на глаза там, где адрес и правят;
+   * оператору, работающему от лица сторонней компании, его снимет выбор роли.
+   */
+  const externalEmail =
+    emailSchema.safeParse(watchEmail).success &&
+    !isInternalEmail(watchEmail) &&
+    (!watchRoleRequest || expectsCorporateEmail(watchRoleRequest));
 
   const onFinish = async (values: RegisterFormValues) => {
     setLoading(true);
@@ -94,8 +111,8 @@ export function RegisterPage() {
             subTitle={
               <>
                 Заявка с адреса <b>{submittedEmail}</b> ушла администратору. Подтверждать ничего не
-                нужно: он рассмотрит её и свяжется с вами по указанному телефону. Войти можно
-                будет, когда доступ выдадут.
+                нужно: он рассмотрит её и свяжется с вами по указанному телефону. Войти можно будет,
+                когда доступ выдадут.
               </>
             }
             extra={
@@ -128,6 +145,18 @@ export function RegisterPage() {
           >
             <Input autoComplete="username" size="large" />
           </Form.Item>
+          {/* Заявку с чужого адреса форма отправляет как любую другую: правило рекомендательное, и
+              отказ формы превратил бы его в запрет — а рабочая почта есть не у всех, кому доступ
+              нужен по делу. */}
+          {externalEmail ? (
+            <Alert
+              type="warning"
+              showIcon
+              style={{ marginBottom: 24 }}
+              message="Указан адрес внешней почтовой службы"
+              description={`Заявка с такого адреса рассматривается дольше и может быть отклонена. Если у вас есть рабочая почта в домене ${INTERNAL_EMAIL_DOMAINS.join(', ')} — укажите её.`}
+            />
+          ) : null}
           {/* Телефон обязателен (ADR 0066): почтовых уведомлений у портала нет, и заявку на
               регистрацию рассматривают звонком — без номера администратору некуда обратиться.
               Требование стоит на форме; схема `registerSchema` пустой номер по-прежнему принимает

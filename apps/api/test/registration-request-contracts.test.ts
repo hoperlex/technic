@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  expectsCorporateEmail,
+  INTERNAL_EMAIL_DOMAINS,
+  isExternalRegistrationEmail,
+  isInternalEmail,
   REGISTRATION_ROLE_REQUESTS,
   registerSchema,
   registrationRequestDetail,
@@ -109,6 +113,74 @@ describe('уточнение к пожеланию', () => {
     expect(() =>
       registerSchema.parse({ ...BASE, requestedRole: 'site_staff', requestedObject: '   ' }),
     ).toThrow();
+  });
+});
+
+/**
+ * Домен адреса в заявке (ADR 0090). Признак ничего не запрещает — по нему портал предупреждает
+ * заявителя и помечает заявку администратору, — поэтому цена ошибки здесь односторонняя: чужой
+ * адрес, принятый за свой, молча снимает предупреждение там, где оно и нужно.
+ */
+describe('свой домен и чужой', () => {
+  it('адреса в доменах компании — свои, включая поддомены', () => {
+    for (const domain of INTERNAL_EMAIL_DOMAINS) {
+      expect(isInternalEmail(`ivanov@${domain}`)).toBe(true);
+      // Поддомен принадлежит тому же домену: почта с `auto.su10.ru` — не внешняя служба.
+      expect(isInternalEmail(`ivanov@auto.${domain}`)).toBe(true);
+    }
+  });
+
+  it('регистр домена значения не имеет', () => {
+    expect(isInternalEmail('Ivanov@SU10.RU')).toBe(true);
+  });
+
+  it('похожий домен своим не считается', () => {
+    // Хвост сравнивается целыми метками, иначе домен, дописанный слева или справа, выдавал бы
+    // себя за наш.
+    expect(isInternalEmail('ivanov@su10.ru.example.com')).toBe(false);
+    expect(isInternalEmail('ivanov@nesu10.ru')).toBe(false);
+    expect(isInternalEmail('ivanov@mail.ru')).toBe(false);
+  });
+
+  it('строка без адреса своей не бывает', () => {
+    expect(isInternalEmail('su10.ru')).toBe(false);
+    expect(isInternalEmail('')).toBe(false);
+  });
+});
+
+describe('рабочий адрес по пожеланию', () => {
+  it('операторы работают от лица сторонней компании — своей почты от них не ждут', () => {
+    for (const request of ['waste_operator', 'vehicle_lessor'] as const) {
+      expect(expectsCorporateEmail(request)).toBe(false);
+      expect(
+        isExternalRegistrationEmail({ email: 'operator@mail.ru', requestedRole: request }),
+      ).toBe(false);
+    }
+  });
+
+  it('от остальных пожеланий ждут — это заявка своего сотрудника', () => {
+    for (const request of [
+      'dispatcher',
+      'rukstroy',
+      'site_staff',
+      'commandant',
+      'other',
+    ] as const) {
+      expect(expectsCorporateEmail(request)).toBe(true);
+      expect(isExternalRegistrationEmail({ email: 'ivanov@mail.ru', requestedRole: request })).toBe(
+        true,
+      );
+      expect(isExternalRegistrationEmail({ email: 'ivanov@su10.ru', requestedRole: request })).toBe(
+        false,
+      );
+    }
+  });
+
+  it('учётка без пожелания признаком не помечается', () => {
+    // Её завёл администратор, а не заявитель: адрес он выбрал сам, и предупреждать его не о чем.
+    expect(isExternalRegistrationEmail({ email: 'ivanov@mail.ru', requestedRole: null })).toBe(
+      false,
+    );
   });
 });
 

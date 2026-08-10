@@ -203,6 +203,64 @@ describe('форма регистрации', () => {
   });
 });
 
+/**
+ * Предупреждение о чужом почтовом домене (ADR 0090). Проверяется прежде всего то, чем оно не
+ * является: заявку с внешнего адреса форма отправляет как любую другую. Стань оно запретом —
+ * закрылась бы регистрация тем, у кого рабочей почты нет, а доступ нужен по делу.
+ */
+const WARNING = 'Указан адрес внешней почтовой службы';
+const warned = () => screen.queryByText(WARNING) !== null;
+
+describe('предупреждение о внешней почте', () => {
+  it('появляется на дописанном адресе чужого домена и не мешает отправить заявку', async () => {
+    const http = renderPage();
+    await captchaShown();
+
+    fillCommonFields();
+    fill('Email', 'ivanov@mail.ru');
+    await selectRoleRequest('Диспетчер');
+    expect(await screen.findByText(WARNING)).toBeDefined();
+
+    await act(async () => submit());
+    await waitFor(() => expect(registrations(http)).toBe(1));
+    expect(sent(http)).toMatchObject({ email: 'ivanov@mail.ru' });
+  });
+
+  it('на рабочем адресе и его поддомене молчит', async () => {
+    renderPage();
+    await captchaShown();
+
+    fill('Email', 'ivanov@su10.ru');
+    await selectRoleRequest('Диспетчер');
+    await waitFor(() => expect(warned()).toBe(false));
+
+    fill('Email', 'ivanov@auto.su10.ru');
+    await waitFor(() => expect(warned()).toBe(false));
+  });
+
+  it('недописанный адрес предупреждения не вызывает', async () => {
+    renderPage();
+    await captchaShown();
+
+    await selectRoleRequest('Диспетчер');
+    fill('Email', 'ива');
+    await waitFor(() => expect(warned()).toBe(false));
+  });
+
+  it('оператору его не показывают — рабочая почта у него по определению не наша', async () => {
+    // Оператор работает от лица сторонней компании (ADR 0010): требовать от него наш домен
+    // значило бы требовать невозможного.
+    renderPage();
+    await captchaShown();
+
+    fill('Email', 'operator@mail.ru');
+    expect(await screen.findByText(WARNING)).toBeDefined();
+
+    await selectRoleRequest('Оператор по вывозу мусора');
+    await waitFor(() => expect(warned()).toBe(false));
+  });
+});
+
 describe('пожелание по роли', () => {
   it('без выбора роли заявка не уходит', async () => {
     const http = renderPage();
