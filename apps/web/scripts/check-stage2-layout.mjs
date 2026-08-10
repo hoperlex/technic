@@ -13,6 +13,9 @@
  */
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import path from 'node:path';
+// Детекция сырых ключей общая с бюджетами качества: разъехавшись, две проверки начали бы считать
+// по-разному, и расхождение вылезло бы там, где на одну из них полагаются.
+import { walkTs, hasRawQueryKey, isEntityKeysFile } from './lib/source-scan.mjs';
 
 const SRC = path.resolve(process.cwd(), 'src');
 
@@ -71,23 +74,6 @@ const LEGACY = {
   ],
 };
 
-/**
- * Обращения к кэшу запросов, которые обязаны идти через ключи сущности. Проверяется не только
- * `queryKey:` — строковый ключ прячется и в `setQueryData`, и в `invalidateQueries`, и в legacy
- * вроде `AppLayout`.
- */
-const CACHE_CALLS =
-  /(queryKey:\s*\[\s*'|invalidateQueries\(\s*\{\s*queryKey:\s*\[\s*'|setQueryData\(\s*\[\s*'|getQueryData\(\s*\[\s*'|removeQueries\(\s*\{\s*queryKey:\s*\[\s*'|cancelQueries\(\s*\{\s*queryKey:\s*\[\s*')/;
-
-function walk(dir, files = []) {
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) walk(full, files);
-    else if (/\.tsx?$/.test(entry.name)) files.push(full);
-  }
-  return files;
-}
-
 const problems = [];
 const notes = [];
 
@@ -114,12 +100,10 @@ for (const [dir, expected] of Object.entries(LEGACY)) {
 // 3. Строковые ключи запросов вне сущностей.
 const entitiesDir = path.join(SRC, 'entities');
 const stringKeyOwners = [];
-for (const file of walk(SRC)) {
+for (const file of walkTs(SRC)) {
   const rel = path.relative(SRC, file);
-  // Ключи и есть содержимое `keys.ts` — там строки законны.
-  if (rel.startsWith(`entities${path.sep}`) && rel.includes(`api${path.sep}keys`)) continue;
-  const code = readFileSync(file, 'utf8');
-  if (CACHE_CALLS.test(code)) stringKeyOwners.push(rel);
+  if (isEntityKeysFile(rel)) continue;
+  if (hasRawQueryKey(readFileSync(file, 'utf8'))) stringKeyOwners.push(rel);
 }
 if (stringKeyOwners.length > 0) {
   const done = existsSync(entitiesDir) && stillPending.length === 0;
