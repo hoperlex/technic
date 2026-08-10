@@ -1,13 +1,16 @@
 #!/usr/bin/env node
 /**
- * Раскладка после этапа 1: что переехало в `shared`, а что осталось до своего этапа.
+ * Раскладка после этапа 1: переехавшее в `shared` не осталось по старым путям и не превратилось в
+ * заглушку.
  *
  * Грепом это не проверить: оставшиеся файлы обязаны импортировать переехавшее — `AppLayout` берёт
  * режим устройства, `CancelReasonModal` — модальное окно, `api/resources` — транспорт. Поиск
  * «`@shared` в старых каталогах» всегда будет непустым и в правильном результате.
  *
- * Поэтому проверяется три вещи: переехавшего по старым путям больше нет, оставшееся совпадает со
- * списком отложенного, и ни один файл не остался заглушкой-реэкспортом.
+ * Список отложенного скрипт больше не держит: он был и здесь, и в `check-stage2-layout`, и вторая
+ * копия отстала — восемь новых файлов оказались «нарушением», а законно уехавший
+ * `AddressAutoComplete` числился пропавшим. Список живёт в одном месте, в проверке этапа 2; здесь
+ * остаётся то, чего там нет.
  *
  * Запуск: pnpm --filter @technic/web check:stage1-layout
  */
@@ -44,36 +47,8 @@ const MOVED = [
   'components/ViewModal.tsx',
 ];
 
-/**
- * Осталось до своего этапа — каждый со своей причиной (см. docs/frontend-fsd-stage-1.md §1.5).
- * Список точный: новый файл в этих каталогах — повод решить, куда он относится, а не привычка.
- */
-const LEGACY = {
-  api: ['auth.ts', 'resources.ts'],
-  hooks: ['useDepartmentScope.ts', 'useObjectScope.ts', 'useVehicleClassifications.ts'],
-  utils: ['date.ts', 'format.ts', 'formErrors.ts'],
-  components: [
-    'AddressAutoComplete.tsx',
-    'AppLayout.tsx',
-    'AppUpdateBanner.tsx',
-    'CancelReasonModal.tsx',
-    'CaptchaField.tsx',
-    'FileLinks.tsx',
-    'MobileAppBar.tsx',
-    'MobileNav.tsx',
-    'ObjectCell.tsx',
-    'PageTabs.tsx',
-    'PasswordField.tsx',
-    'PersonNameFields.tsx',
-    'PhoneField.tsx',
-    'PortalLogo.tsx',
-    'RequestHistory.tsx',
-    'ResponsibleFields.tsx',
-    'TimeInput.tsx',
-    'UserAvatar.tsx',
-    'WaybillPrint.tsx',
-  ],
-};
+/** Старые каталоги, где заглушка после переезда и заводится. */
+const LEGACY_DIRS = ['api', 'hooks', 'utils', 'components'];
 
 const problems = [];
 
@@ -83,33 +58,16 @@ for (const rel of MOVED) {
   }
 }
 
-for (const [dir, expected] of Object.entries(LEGACY)) {
+/**
+ * Заглушка — файл, который только реэкспортирует переехавшее и своего кода не содержит. Проверяются
+ * все файлы старых каталогов, а не перечисленные поимённо: заглушка появляется как раз тогда, когда
+ * модуль уехал, а список обновить забыли, — то есть у файла, которого в списке уже нет.
+ */
+for (const dir of LEGACY_DIRS) {
   const full = path.join(SRC, dir);
-  if (!existsSync(full)) {
-    problems.push(`каталог src/${dir} исчез, хотя в нём должны остаться файлы до своего этапа`);
-    continue;
-  }
-  const actual = readdirSync(full).filter((f) => f.endsWith('.ts') || f.endsWith('.tsx'));
-  for (const file of actual) {
-    if (!expected.includes(file)) {
-      problems.push(
-        `src/${dir}/${file} не значится в списке отложенного: перенесите его в свой слой либо впишите в скрипт с причиной`,
-      );
-    }
-  }
-  for (const file of expected) {
-    if (!actual.includes(file)) {
-      problems.push(`src/${dir}/${file} пропал, хотя должен был остаться до своего этапа`);
-    }
-  }
-}
-
-/** Заглушка — файл, который только реэкспортирует переехавшее и своего кода не содержит. */
-for (const [dir, expected] of Object.entries(LEGACY)) {
-  for (const file of expected) {
-    const full = path.join(SRC, dir, file);
-    if (!existsSync(full)) continue;
-    const code = readFileSync(full, 'utf8')
+  if (!existsSync(full)) continue;
+  for (const file of readdirSync(full).filter((f) => /\.tsx?$/.test(f))) {
+    const code = readFileSync(path.join(full, file), 'utf8')
       .replace(/\/\*[\s\S]*?\*\//g, '')
       .replace(/\/\/.*$/gm, '')
       .trim();
@@ -127,4 +85,4 @@ if (problems.length > 0) {
   process.exit(1);
 }
 
-console.log('Раскладка этапа 1 в порядке: переехавшее убрано, отложенное на месте, заглушек нет.');
+console.log('Раскладка этапа 1 в порядке: переехавшее убрано, заглушек не осталось.');

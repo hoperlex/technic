@@ -8,7 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "pretest": "node scripts/quality.mjs check && node scripts/check-stage2-layout.mjs",
+    "pretest": "node scripts/quality.mjs check && node scripts/check-stage1-layout.mjs && node scripts/check-stage2-layout.mjs",
     "test": "vitest run",
     "quality:check": "node scripts/quality.mjs check",
     "quality:update": "node scripts/quality.mjs update",
