@@ -1,4 +1,5 @@
 import { Tabs } from 'antd';
+import { useQueryClient } from '@tanstack/react-query';
 import { useIsMobile } from '@shared/lib';
 import { useAuth } from '../auth/AuthContext';
 import { UsersTab } from './admin/UsersTab';
@@ -11,6 +12,13 @@ export function AdministrationPage() {
   // высоту, которой не хватает списку.
   const isMobile = useIsMobile();
   const { can } = useAuth();
+  const qc = useQueryClient();
+  /**
+   * То же, что в справочниках: скрытая вкладка не размонтируется, и по возвращении показала бы
+   * кэш. Здесь связи между вкладками прямые — выданное на «Пользователях» право видно в витрине
+   * прав, а импорт справочником меняет то, что показывают все остальные разделы.
+   */
+  const refreshOnSwitch = () => void qc.invalidateQueries();
   // Вкладки — по правам, а не по роли: рассылками занимается тот, кто отвечает за оповещения, и
   // это не обязательно тот же человек, который выдаёт доступы.
   const items = [
@@ -43,6 +51,7 @@ export function AdministrationPage() {
         className="full-height-tabs"
         size={isMobile ? 'small' : undefined}
         defaultActiveKey={items[0]?.key}
+        onChange={refreshOnSwitch}
         items={items}
       />
     </div>
