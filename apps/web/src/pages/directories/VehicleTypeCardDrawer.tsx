@@ -68,11 +68,12 @@ export function VehicleTypeCardDrawer({ type, onClose }: Props) {
   const typeId = type?.id ?? '';
 
   // Тип уходит вместе со своими ТТХ и категориями, поэтому список классификатора устаревает
-  // целиком, а не одной строкой.
+  // целиком, а не одной строкой. Заодно сервер снимает строки «нужна дополнительно» из
+  // неприменённых недельных заявок — заказать погашенную позицию нечем (ADR 0085 Р15).
   const purge = usePurgeAction({
     subject: 'тип',
     purge: vehicleTypesApi.purge,
-    invalidate: [['vehicle-classifications'], ['vehicle-types']],
+    invalidate: [['vehicle-classifications'], ['vehicle-types'], ['weekly-vehicle-requests']],
   });
 
   const specsQuery = useQuery({
@@ -322,6 +323,9 @@ export function VehicleTypeCardDrawer({ type, onClose }: Props) {
     onSuccess: () => {
       message.success('Категория удалена');
       invalidate();
+      // Тем же удалением сервер снимает строки неприменённых недельных заявок, заказывавших эту
+      // категорию: состав недели уже другой (ADR 0085 Р15).
+      void qc.invalidateQueries({ queryKey: ['weekly-vehicle-requests'] });
     },
     onError: (e) => message.error(errorMessage(e)),
   });

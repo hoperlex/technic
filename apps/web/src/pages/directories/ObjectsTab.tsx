@@ -92,10 +92,12 @@ export function ObjectsTab() {
   });
 
   // Удаление насовсем (ADR 0060) — только администратору и только на деактивированной строке.
+  // Вместе с площадкой сервер сносит целиком её неприменённые недельные заявки: заявка на
+  // снесённую площадку — документ ни о чём (ADR 0085 Р15).
   const purge = usePurgeAction({
     subject: 'объект',
     purge: objectsApi.purge,
-    invalidate: [objectKeys.root],
+    invalidate: [objectKeys.root, ['weekly-vehicle-requests']],
   });
 
   const confirmDelete = (r: ObjectDto) =>

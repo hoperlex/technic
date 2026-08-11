@@ -25,6 +25,7 @@ import { usePurgeAction } from '../../hooks/usePurgeAction';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage, formatDateTime } from '../../utils/format';
 import { VehicleRequestViewModal } from './VehicleRequestViewModal';
+import { WEEKLY_QUERY_KEY } from './weeklyShared';
 
 /**
  * Архив заказов техники (ADR 0070) — удалённые заявки и два действия над ними: вернуть в работу
@@ -89,11 +90,12 @@ export function VehicleRequestsArchiveTab() {
   });
 
   // Удаление насовсем — общий хук справочников и учёток (ADR 0060, ADR 0063): подтверждение
-  // необратимого действия должно звучать везде одинаково.
+  // необратимого действия должно звучать везде одинаково. Заодно сервер снимает строки «остаётся»
+  // и «уезжает» неприменённых недельных заявок, ссылавшиеся на этот заказ (ADR 0085 Р15).
   const purge = usePurgeAction({
     subject: 'заявку',
     purge: vehicleRequestsApi.purge,
-    invalidate: [['vehicle-requests']],
+    invalidate: [['vehicle-requests'], WEEKLY_QUERY_KEY],
   });
 
   const removePermanently = (r: VehicleRequestDto) => {
