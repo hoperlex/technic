@@ -127,6 +127,8 @@ export function WaybillsPage() {
     onSuccess: () => {
       message.success('Лист аннулирован');
       void qc.invalidateQueries({ queryKey: ['waybills'] });
+      // Аннулирование размораживает рейс: с выписанным листом его править нельзя, без него — можно.
+      void qc.invalidateQueries({ queryKey: ['vehicle-routes'] });
     },
     onError: (e) => message.error(errorMessage(e)),
   });

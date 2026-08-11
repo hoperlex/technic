@@ -132,6 +132,10 @@ export function VehicleRoutesTab() {
     void qc.invalidateQueries({ queryKey: ['vehicle-routes'] });
     // Список заявок показывает номер рейса и предупреждение «без маршрута» — он тоже устарел.
     void qc.invalidateQueries({ queryKey: ['vehicle-requests'] });
+    // Тем же обновлением заканчивается выдача листа: он рождается ручкой рейса, а печатают его из
+    // журнала — и диспетчер идёт туда сразу. Правка состава и даты рейса переписывает уже
+    // выписанный лист, поэтому гасится журнал на любое изменение, а не только на выдачу.
+    void qc.invalidateQueries({ queryKey: ['waybills'] });
   };
 
   const columns = [

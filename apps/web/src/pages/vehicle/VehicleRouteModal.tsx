@@ -213,6 +213,9 @@ export function VehicleRouteModal({ routeId, onClose, onChanged, onEdit }: Props
     onSuccess: async () => {
       message.success('Лист аннулирован — маршрут снова можно править');
       await qc.invalidateQueries({ queryKey: ['vehicle-routes'] });
+      // Аннулированный лист остаётся в журнале со своим состоянием: там его и ищут, чтобы понять,
+      // почему номер бланка израсходован.
+      await qc.invalidateQueries({ queryKey: ['waybills'] });
       onChanged();
     },
     onError: fail,

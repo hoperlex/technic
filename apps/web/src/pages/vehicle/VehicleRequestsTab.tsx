@@ -836,6 +836,9 @@ export function VehicleRequestsTab() {
     onSuccess: (saved) => {
       message.success('Сохранено');
       void qc.invalidateQueries({ queryKey: ['vehicle-requests'] });
+      // Изменившийся срок работ сводит ЭСМ-2 заново (`afterWorkPeriodChanged`), как и досрочное
+      // завершение: правка заявки переписывает уже выписанные листы.
+      void qc.invalidateQueries({ queryKey: ['waybills'] });
       setOpen(false);
       warnRouteDateMismatch(saved);
     },
