@@ -35,12 +35,11 @@ import { wasteTariffKeys, wasteTariffsApi } from '@entities/waste-tariff';
 import { wasteTypeKeys, wasteTypeOptionsQuery, wasteTypesApi } from '@entities/waste-type';
 import { AutoSelect } from '@shared/ui';
 import { DataTable } from '@shared/ui';
-import { FormModal } from '@shared/ui';
+import { FormModal, useFormBlockers } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
 import type { FilterDefinition } from '@shared/ui';
 import { useIsMobile } from '@shared/lib';
 import { useListParams } from '@shared/lib';
-import { applyApiFieldErrors } from '../../utils/formErrors';
 import { errorMessage, formatMoney } from '../../utils/format';
 import { usePurgeAction } from '../../hooks/usePurgeAction';
 import {
@@ -175,6 +174,28 @@ export function WasteTariffsTab() {
   const [open, setOpen] = useState(false);
   const [record, setRecord] = useState<WasteTariffDto | null>(null);
   const [form] = Form.useForm<FormValues>();
+  const blockers = useFormBlockers(form, {
+    onValuesChange: (changed: Partial<FormValues>) => {
+          // Источник типа переключён — поле предыдущего варианта очищается, иначе на сервер
+          // ушли бы и id, и название сразу.
+          if ('wasteTypeSource' in changed) {
+            form.setFieldsValue({ wasteTypeId: undefined, wasteTypeName: '' });
+          }
+          // Область действия и режим тарификации связаны: цена за контейнер существует
+          // только у конкретного типа с известной вместимостью.
+          if ('target' in changed) {
+            form.setFieldsValue({ containerTypeId: undefined, containerKind: undefined });
+            if (changed.target !== 'container_type') form.setFieldValue('pricing', 'per_m3');
+          }
+          if ('containerTypeId' in changed) {
+            const volume =
+              containerTypes.find((t) => t.id === changed.containerTypeId)?.volumeM3 ?? null;
+            if (volume == null && form.getFieldValue('pricing') === 'per_container') {
+              form.setFieldValue('pricing', 'per_m3');
+            }
+          }
+    },
+  });
   const watchWasteTypeSource = Form.useWatch('wasteTypeSource', form);
   const watchWasteTypeName = Form.useWatch('wasteTypeName', form);
   const watchTarget = Form.useWatch('target', form);
@@ -275,7 +296,7 @@ export function WasteTariffsTab() {
       setOpen(false);
     },
     onError: (e) => {
-      if (!applyApiFieldErrors(form, e)) message.error(errorMessage(e));
+      if (!blockers.fromApi(e)) message.error(errorMessage(e));
     },
   });
 
@@ -283,6 +304,7 @@ export function WasteTariffsTab() {
   const [typeOpen, setTypeOpen] = useState(false);
   const [typeRecord, setTypeRecord] = useState<WasteTypeDto | null>(null);
   const [typeForm] = Form.useForm<TypeFormValues>();
+  const typeBlockers = useFormBlockers(typeForm);
 
   const openTypeEdit = (t: WasteTypeDto) => {
     setTypeRecord(t);
@@ -301,7 +323,7 @@ export function WasteTariffsTab() {
       setTypeOpen(false);
     },
     onError: (e) => {
-      if (!applyApiFieldErrors(typeForm, e)) message.error(errorMessage(e));
+      if (!typeBlockers.fromApi(e)) message.error(errorMessage(e));
     },
   });
 
@@ -647,26 +669,7 @@ export function WasteTariffsTab() {
           form={form}
           layout="vertical"
           onFinish={(v) => saveMut.mutate(v)}
-          onValuesChange={(changed: Partial<FormValues>) => {
-            // Источник типа переключён — поле предыдущего варианта очищается, иначе на сервер
-            // ушли бы и id, и название сразу.
-            if ('wasteTypeSource' in changed) {
-              form.setFieldsValue({ wasteTypeId: undefined, wasteTypeName: '' });
-            }
-            // Область действия и режим тарификации связаны: цена за контейнер существует
-            // только у конкретного типа с известной вместимостью.
-            if ('target' in changed) {
-              form.setFieldsValue({ containerTypeId: undefined, containerKind: undefined });
-              if (changed.target !== 'container_type') form.setFieldValue('pricing', 'per_m3');
-            }
-            if ('containerTypeId' in changed) {
-              const volume =
-                containerTypes.find((t) => t.id === changed.containerTypeId)?.volumeM3 ?? null;
-              if (volume == null && form.getFieldValue('pricing') === 'per_container') {
-                form.setFieldValue('pricing', 'per_m3');
-              }
-            }
-          }}
+          {...blockers.formProps}
         >
           <Form.Item
             name="operatorCounterpartyId"
@@ -883,7 +886,12 @@ export function WasteTariffsTab() {
           ) : undefined
         }
       >
-        <Form form={typeForm} layout="vertical" onFinish={(v) => saveTypeMut.mutate(v)}>
+        <Form
+          form={typeForm}
+          layout="vertical"
+          onFinish={(v) => saveTypeMut.mutate(v)}
+          {...typeBlockers.formProps}
+        >
           <Form.Item
             name="name"
             label="Название"

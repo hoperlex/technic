@@ -22,6 +22,14 @@ dayjs.tz.setDefault('Europe/Moscow');
 // переключают режим устройства (см. ./viewport и ADR 0030).
 installMatchMedia();
 
+// Прокрутка к полю-блокеру (ADR 0094) зовёт `element.scroll`, которого в jsdom нет вовсе: без
+// заглушки любой тест на отказ формы падал бы не на смысле, а на отсутствующем методе. Проверять
+// саму прокрутку в jsdom всё равно нельзя — размеры там нулевые, поэтому тесты следят за вызовом
+// `scrollToField`, а не за положением экрана.
+if (!Element.prototype.scroll) {
+  Element.prototype.scroll = () => {};
+}
+
 if (!globalThis.ResizeObserver) {
   globalThis.ResizeObserver = class {
     observe() {}

@@ -1,14 +1,15 @@
-import { useEffect, useState } from 'react';
-import { Alert, App, Button, Input, Space, Typography } from 'antd';
+import { useEffect } from 'react';
+import { Alert, App, Button, Form, Input, Space, Typography } from 'antd';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { ServiceRequestDto } from '@technic/contracts';
 import {
   ServiceEstimateTable,
+  ServiceRequestContext,
   serviceRequestKeys,
   serviceRequestsApi,
 } from '@entities/service-request';
 import { officeEquipmentKeys } from '@entities/office-equipment';
-import { ViewModal } from '@shared/ui';
+import { useFormBlockers, ViewModal } from '@shared/ui';
 import { errorMessage } from '@shared/lib';
 import { FileLinkList } from '../../../components/FileLinks';
 
@@ -40,17 +41,20 @@ export function EstimateApprovalModal({
 }) {
   const { message } = App.useApp();
   const qc = useQueryClient();
-  const [reason, setReason] = useState('');
+  const [form] = Form.useForm<{ reason?: string }>();
+  const blockers = useFormBlockers(form);
+  /** Причина живёт формой, а не окном: на ней же показывается отказ (ADR 0094). */
+  const reason = () => (form.getFieldValue('reason') as string | undefined) ?? '';
 
   useEffect(() => {
-    if (request) setReason('');
+    if (request) form.resetFields();
   }, [request]);
 
   const mutation = useMutation({
     mutationFn: (approved: boolean) =>
       serviceRequestsApi.decideEstimate(request!.id, {
         approved,
-        reason: reason.trim() || undefined,
+        reason: reason().trim() || undefined,
         version: request!.version,
       }),
     onSuccess: (_dto, approved) => {
@@ -64,10 +68,7 @@ export function EstimateApprovalModal({
 
   const reject = () => {
     // Причина отказа обязательна и на сервере: без неё исполнитель не узнает, что переделывать.
-    if (!reason.trim()) {
-      message.warning('Укажите причину отклонения');
-      return;
-    }
+    if (blockers.raise({ reason: !reason().trim() && 'Укажите причину отклонения' })) return;
     mutation.mutate(false);
   };
 
@@ -99,6 +100,8 @@ export function EstimateApprovalModal({
     >
       {request && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {/* Деньги согласуют, видя предмет: что за аппарат и где он стоит (Р57). */}
+          <ServiceRequestContext request={request} />
           <Alert
             type="info"
             showIcon
@@ -125,17 +128,15 @@ export function EstimateApprovalModal({
             </div>
           )}
 
-          <div>
-            <Typography.Text strong>Причина отклонения</Typography.Text>
-            <Input.TextArea
-              rows={2}
-              maxLength={1000}
-              value={reason}
-              placeholder="Обязательна при отказе: что именно не так со сметой"
-              style={{ marginTop: 4 }}
-              onChange={(e) => setReason(e.target.value)}
-            />
-          </div>
+          <Form form={form} layout="vertical" {...blockers.formProps}>
+            <Form.Item name="reason" label="Причина отклонения" style={{ marginBottom: 0 }}>
+              <Input.TextArea
+                rows={2}
+                maxLength={1000}
+                placeholder="Обязательна при отказе: что именно не так со сметой"
+              />
+            </Form.Item>
+          </Form>
         </div>
       )}
     </ViewModal>

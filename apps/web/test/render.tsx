@@ -8,6 +8,7 @@ import type { AuthUser, Permission, Role } from '@technic/contracts';
 import { can as roleCan, canUse as scopedCanUse } from '@technic/contracts';
 import { AuthContext, AuthProvider } from '../src/auth/AuthContext';
 import { themeFor } from '../src/theme';
+import { FORM_VALIDATE_MESSAGES } from '../src/shared/config';
 import { setViewport, DESKTOP_VIEWPORT, type Viewport } from './viewport';
 import { authUser } from './factories/auth';
 
@@ -64,7 +65,11 @@ export function renderWithUser(
   };
 
   const result = render(
-    <ConfigProvider locale={ruRU} theme={themeFor(false)}>
+    <ConfigProvider
+      locale={ruRU}
+      theme={themeFor(false)}
+      form={{ validateMessages: FORM_VALIDATE_MESSAGES }}
+    >
       <AntApp>
         <QueryClientProvider client={queryClient}>
           <MemoryRouter initialEntries={[options.route ?? '/']}>
@@ -91,7 +96,11 @@ export function renderWithSession(
   setViewport(options.viewport ?? DESKTOP_VIEWPORT);
 
   const result = render(
-    <ConfigProvider locale={ruRU} theme={themeFor(false)}>
+    <ConfigProvider
+      locale={ruRU}
+      theme={themeFor(false)}
+      form={{ validateMessages: FORM_VALIDATE_MESSAGES }}
+    >
       <AntApp>
         <QueryClientProvider client={queryClient}>
           <MemoryRouter initialEntries={[options.route ?? '/']}>

@@ -47,6 +47,69 @@ body,
   grid-column: 1 / -1;
 }
 
+/* Вспышка полей-блокеров при отказе формы (ADR 0094).
+
+   Красная рамка сама по себе беззвучна: в длинной форме отказ выглядит так же, как её обычный
+   вид, и повторное нажатие кнопки читается как «она не работает». Вспышка отвечает именно на
+   нажатие — она идёт от тёмного к целевому красному, то есть заканчивается там, где поле и так
+   стоит, и ничем не мигает после себя.
+
+   Цвета заданы числами, а не токенами: `cssVar` у antd не включён (см. theme.ts), а это ровно
+   палитра его состояния ошибки — #ff4d4f и тёмный #a8071a из того же ряда.
+
+   Два набора кадров с одинаковым телом — не копипаста, а условие перезапуска: анимация
+   стартует заново только при смене `animation-name`, и второе нажатие с тем же блокером иначе
+   не дало бы ничего (класс на форме чередуется, см. useFormBlockers). */
+.form-blockers--a .ant-form-item-has-error,
+.form-blockers--a
+  .ant-form-item-has-error
+  :is(.ant-input, .ant-input-affix-wrapper, .ant-input-number, .ant-picker, .ant-select-selector) {
+  animation: blocker-flash-a 420ms ease-out;
+}
+.form-blockers--b .ant-form-item-has-error,
+.form-blockers--b
+  .ant-form-item-has-error
+  :is(.ant-input, .ant-input-affix-wrapper, .ant-input-number, .ant-picker, .ant-select-selector) {
+  animation: blocker-flash-b 420ms ease-out;
+}
+
+@keyframes blocker-flash-a {
+  from {
+    border-color: #a8071a;
+    background-color: #fff1f0;
+    box-shadow: 0 0 0 3px rgba(255, 77, 79, 0.28);
+  }
+  to {
+    border-color: #ff4d4f;
+    background-color: transparent;
+    box-shadow: 0 0 0 0 rgba(255, 77, 79, 0);
+  }
+}
+@keyframes blocker-flash-b {
+  from {
+    border-color: #a8071a;
+    background-color: #fff1f0;
+    box-shadow: 0 0 0 3px rgba(255, 77, 79, 0.28);
+  }
+  to {
+    border-color: #ff4d4f;
+    background-color: transparent;
+    box-shadow: 0 0 0 0 rgba(255, 77, 79, 0);
+  }
+}
+
+/* Кому движение мешает — тому только пометка и прокрутка: сама по себе вспышка ничего не
+   сообщает сверх красного поля с подстрочником. Правило идёт после и той же силы, поэтому
+   `!important` не нужен. */
+@media (prefers-reduced-motion: reduce) {
+  .form-blockers .ant-form-item-has-error,
+  .form-blockers
+    .ant-form-item-has-error
+    :is(.ant-input, .ant-input-affix-wrapper, .ant-input-number, .ant-picker, .ant-select-selector) {
+    animation: none;
+  }
+}
+
 /* Адресное поле: переключатель «Из справочника» стоит напротив заголовка (ADR 0069).
 
    Он вынесен из самого заголовка и посажен поверх строки: внутри `<label>` чекбокс — это вложенный

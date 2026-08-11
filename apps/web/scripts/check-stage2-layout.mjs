@@ -42,7 +42,7 @@ const LEGACY = {
     'useWasteObjectScope.ts',
   ],
   // Адреса записей портала: знают вкладки обоих модулей заявок сразу — переедут, когда переедут оба.
-  utils: ['date.ts', 'format.ts', 'formErrors.ts', 'links.ts'],
+  utils: ['date.ts', 'format.ts', 'links.ts'],
   components: [
     'AddressAutoComplete.tsx',
     'AppLayout.tsx',

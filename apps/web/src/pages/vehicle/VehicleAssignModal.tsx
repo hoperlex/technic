@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
-  App,
   Checkbox,
   DatePicker,
   Form,
@@ -53,7 +52,7 @@ import {
 import { driversApi, vehicleRequestsApi, vehicleRoutesApi, vehiclesApi } from '../../api/resources';
 import { AutoSelect } from '@shared/ui';
 import { FormGrid } from '@shared/ui';
-import { FormModal } from '@shared/ui';
+import { FormModal, useFormBlockers } from '@shared/ui';
 import { TimeInput, optionalWorkTimeRule } from '../../components/TimeInput';
 import { useIsMobile } from '@shared/lib';
 import { useObjectScope } from '../../hooks/useObjectScope';
@@ -179,9 +178,9 @@ export function VehicleAssignModal({
   onCancel,
   onSubmit,
 }: Props) {
-  const { message } = App.useApp();
   const isMobile = useIsMobile();
   const [form] = Form.useForm<FormValues>();
+  const blockers = useFormBlockers(form);
   const [ownership, setOwnership] = useState<VehicleOwnership>('own');
   /** Смена машины у работающей заявки (ADR 0048): срок не спрашивается — он уже согласован. */
   const reassign = mode === 'reassign';
@@ -572,7 +571,9 @@ export function VehicleAssignModal({
       d.fullName,
       d.categories.join(', '),
       d.personnelNo && `таб. ${d.personnelNo}`,
-      driverDocumentGapsHint(d.gaps),
+      // Пробелы подписаны тем документом, которым человек допущен по должности (ADR 0093):
+      // «без номера ВУ» и «без номера УТМ» — разные бумаги и разные люди.
+      driverDocumentGapsHint(d.gaps, d.credentialTypeCode),
       d.matchesRequiredCategory ? null : DRIVER_CATEGORY_MISMATCH_HINT,
       driverWorkedOnVehicle(d) ? DRIVER_WORKED_ON_VEHICLE_HINT : null,
       d.verificationStatus === 'unverified' ? 'документ не проверен' : null,
@@ -586,9 +587,10 @@ export function VehicleAssignModal({
    *
    * Это не тот же список, что выше, и намеренно. `drivers/available` требует непустой СНИЛС,
    * годное на дату удостоверение и смотрит на категорию под машину — всё это графы 4-П, без
-   * которых тот лист недействителен. В бланке ЭСМ-2 их нет вовсе: экскаваторщик работает по
-   * удостоверению тракториста-машиниста, которого портал не ведёт (ADR 0055). Поэтому годится
-   * любой действующий водитель, и ни машина, ни дата на список не влияют.
+   * которых тот лист недействителен. В бланке ЭСМ-2 их нет вовсе: граф под удостоверение и СНИЛС
+   * Госкомстат в нём не разметил, и портал их туда не печатает (ADR 0093, решение В1) — хотя
+   * удостоверение тракториста-машиниста он с тех пор ведёт. Поэтому годится любой действующий
+   * водитель, и ни машина, ни дата на список не влияют.
    */
   const needsMachinist = !reassign && request?.requestType === 'special_equipment' && !isRental;
   const { data: machinists, isFetching: machinistsLoading } = useQuery({
@@ -623,13 +625,24 @@ export function VehicleAssignModal({
    * разные графы, и «касается ли это меня» человек должен понять не выходя из окна.
    */
   const selectedDriver = selection?.drivers.find((d) => d.personId === driverPersonId);
+  // У обеих сторон расхождения назван вид документа (ADR 0093): требование машины ссылается на
+  // категорию любого вида, и «нужна C, а открыта C» без него читалось бы как ошибка портала.
   const driverCategoryMismatch =
-    selection?.requiredCategory && selectedDriver && !selectedDriver.matchesRequiredCategory
-      ? driverCategoryMismatchWarning(selection.requiredCategory, selectedDriver.categories)
+    selection?.requiredCategory &&
+    selection.requiredCategoryType &&
+    selectedDriver &&
+    !selectedDriver.matchesRequiredCategory
+      ? driverCategoryMismatchWarning(
+          selection.requiredCategory,
+          selection.requiredCategoryType,
+          selectedDriver.categories,
+          selectedDriver.credentialTypeCode,
+        )
       : null;
   const driverGaps = selectedDriver
     ? driverDocumentGapsWarning(
         selectedDriver.gaps,
+        selectedDriver.credentialTypeCode,
         requirement.formCode ? waybillFormShortLabels[requirement.formCode] : null,
       )
     : null;
@@ -638,7 +651,11 @@ export function VehicleAssignModal({
   const deliveryDriver = selection?.drivers.find((d) => d.personId === deliveryDriverId);
   const deliveryDriverGaps =
     wantsDelivery && deliveryDriver
-      ? driverDocumentGapsWarning(deliveryDriver.gaps, waybillFormShortLabels['4p'])
+      ? driverDocumentGapsWarning(
+          deliveryDriver.gaps,
+          deliveryDriver.credentialTypeCode,
+          waybillFormShortLabels['4p'],
+        )
       : null;
 
   /**
@@ -771,42 +788,40 @@ export function VehicleAssignModal({
     // Срок уточняют только при переводе в работу: у работающей заявки он уже согласован, и
     // смена машины его не трогает (ADR 0048) — сервер `schedule` вне перевода и не примет.
     const schedule = reassign ? null : scheduleOf(v);
-    if (!reassign && !schedule) {
-      message.warning('Укажите фактическую дату');
-      return;
-    }
-    if (!v.vehicleId) {
-      message.warning('Выберите технику');
-      return;
-    }
-    // Аренда — это счёт от контрагента: без ставки заявка в работе означала бы, что цену
-    // выяснят потом. Тем же правилом отвечает сервер.
-    if (isRental && v.pricePerHour == null && v.pricePerShift == null) {
-      message.warning('Укажите стоимость аренды — за час или за смену');
-      return;
-    }
-    // Водитель обязателен ровно там, где выписывается лист: у аренды он чужой, и портал его
-    // не ведёт. Тем же правилом отвечает сервер.
-    if (needsRoute && v.routeId === NEW_ROUTE && !v.driverPersonId) {
-      message.warning('Выберите водителя — на рейс выписывается путевой лист');
-      return;
-    }
-    // Машинист обязателен там, где выписываются недельные листы ЭСМ-2: без него бланк
-    // недействителен. Тем же правилом отвечает сервер — он же видит, чья это машина.
-    if (needsMachinist && !v.machinistId) {
-      message.warning('Выберите машиниста — на него выписываются путевые листы ЭСМ-2');
-      return;
-    }
-    // Перегон едет откуда-то куда-то и кем-то: пустые графы — это лист, по которому нельзя ехать.
-    // Тем же правилом отвечает сервер, а незаполненный перегон здесь означал бы, что галочку
-    // включили и забыли.
-    if (
-      wantsDelivery &&
-      (!v.deliveryDate || !v.deliveryDriverId || !v.deliveryFrom?.trim() || !v.deliveryTo?.trim())
-    ) {
-      message.warning('Заполните перегон: дату, водителя и откуда — куда');
-      return;
-    }
+    // Правила, которые проверяет и сервер. Каждое названо своим полем, а не тостом поверх формы:
+    // порядок причин здесь — порядок полей в окне, и к первой из них уедет экран (ADR 0094).
+    const blocked = blockers.raise({
+      [request?.requestType === 'special_equipment' ? 'dateFrom' : 'scheduledDate']:
+        !reassign && !schedule && 'Укажите фактическую дату',
+      // Машинист обязателен там, где выписываются недельные листы ЭСМ-2: без него бланк
+      // недействителен. Тем же правилом отвечает сервер — он же видит, чья это машина.
+      machinistId:
+        needsMachinist &&
+        !v.machinistId &&
+        'Выберите машиниста — на него выписываются путевые листы ЭСМ-2',
+      vehicleId: !v.vehicleId && 'Выберите технику',
+      // Аренда — это счёт от контрагента: без ставки заявка в работе означала бы, что цену
+      // выяснят потом.
+      pricePerHour:
+        isRental &&
+        v.pricePerHour == null &&
+        v.pricePerShift == null &&
+        'Укажите стоимость аренды — за час или за смену',
+      // Перегон едет откуда-то куда-то и кем-то: пустые графы — это лист, по которому нельзя
+      // ехать. Каждая графа отвечает за себя: «заполните перегон» не говорит, чего не хватает.
+      deliveryDate: wantsDelivery && !v.deliveryDate && 'Укажите дату перегона',
+      deliveryDriverId: wantsDelivery && !v.deliveryDriverId && 'Выберите водителя перегона',
+      deliveryFrom: wantsDelivery && !v.deliveryFrom?.trim() && 'Укажите, откуда идёт техника',
+      deliveryTo: wantsDelivery && !v.deliveryTo?.trim() && 'Укажите, куда идёт техника',
+      // Водитель обязателен ровно там, где выписывается лист: у аренды он чужой, и портал его
+      // не ведёт.
+      driverPersonId:
+        needsRoute &&
+        v.routeId === NEW_ROUTE &&
+        !v.driverPersonId &&
+        'Выберите водителя — на рейс выписывается путевой лист',
+    });
+    if (blocked || !v.vehicleId) return;
     onSubmit({
       assignment: {
         vehicleId: v.vehicleId,
@@ -884,7 +899,7 @@ export function VehicleAssignModal({
       {request && (
         // Поля парами (FormGrid): окно спрашивает срок, технику, ставки и графы путевого листа —
         // в одну колонку половина из них уходила под прокрутку. На телефоне колонка одна.
-        <Form form={form} layout="vertical" onFinish={submit}>
+        <Form form={form} layout="vertical" onFinish={submit} {...blockers.formProps}>
           <FormGrid>
             <FormGrid.Full>
               <Typography.Paragraph type="secondary" style={{ marginBottom: 16 }}>
@@ -1108,8 +1123,8 @@ export function VehicleAssignModal({
                   emptyText
                 ) : hiddenVehicles > 0 ? (
                   <Typography.Text type="secondary">
-                    Заказанный вид техники показан целиком; машин других видов в списке не все —
-                    ещё {hiddenVehicles} в парке
+                    Заказанный вид техники показан целиком; машин других видов в списке не все — ещё{' '}
+                    {hiddenVehicles} в парке
                   </Typography.Text>
                 ) : undefined
               }
@@ -1207,7 +1222,10 @@ export function VehicleAssignModal({
                   {/* Откуда взялась включённая галочка: подстановка обязана назвать себя, иначе
                     её читают как чужую забытую правку (ADR 0085 Р11). */}
                   {weeklyDelivery && (
-                    <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0 }}>
+                    <Typography.Paragraph
+                      type="secondary"
+                      style={{ marginTop: 8, marginBottom: 0 }}
+                    >
                       Доставку запросила недельная заявка{' '}
                       {formatWeeklyRequestNumber(weeklyDelivery.weeklyRequestNum)} — поля
                       подставлены ею и правятся здесь же.

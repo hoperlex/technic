@@ -1,14 +1,15 @@
-import { useEffect, useState } from 'react';
-import { Alert, App, Input, Space, Typography } from 'antd';
+import { useEffect } from 'react';
+import { Alert, App, Form, Input, Space } from 'antd';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { serviceFileKindLabels, type ServiceRequestDto } from '@technic/contracts';
 import {
   missingClosingDocuments,
+  ServiceRequestContext,
   serviceRequestKeys,
   serviceRequestsApi,
 } from '@entities/service-request';
 import { officeEquipmentKeys } from '@entities/office-equipment';
-import { FormModal } from '@shared/ui';
+import { FormModal, useFormBlockers } from '@shared/ui';
 import { errorMessage } from '@shared/lib';
 
 export type AcceptMode = 'accept' | 'rework';
@@ -40,22 +41,23 @@ export function ServiceAcceptModal({
 }) {
   const { message } = App.useApp();
   const qc = useQueryClient();
-  const [text, setText] = useState('');
+  const [form] = Form.useForm<{ text?: string }>();
+  const blockers = useFormBlockers(form);
   const rework = mode === 'rework';
 
   useEffect(() => {
-    if (request) setText('');
+    if (request) form.resetFields();
   }, [request, mode]);
 
   const mutation = useMutation({
     mutationFn: () =>
       rework
         ? serviceRequestsApi.rework(request!.id, {
-            reason: text.trim(),
+            reason: text().trim(),
             version: request!.version,
           })
         : serviceRequestsApi.accept(request!.id, {
-            comment: text.trim(),
+            comment: text().trim(),
             version: request!.version,
           }),
     onSuccess: () => {
@@ -67,11 +69,12 @@ export function ServiceAcceptModal({
     onError: (e) => message.error(errorMessage(e)),
   });
 
+  /** Значение поля берётся у формы: окно об этом ничего не помнит и хранить не должно. */
+  const text = () => form.getFieldValue('text') ?? '';
+
   const submit = () => {
-    if (rework && !text.trim()) {
-      message.warning('Укажите, что доделать');
-      return;
-    }
+    // Причина возврата — обязательное поле, а не тост поверх окна: правят её здесь же (ADR 0094).
+    if (blockers.raise({ text: rework && !text().trim() && 'Укажите, что доделать' })) return;
     mutation.mutate();
   };
 
@@ -86,7 +89,7 @@ export function ServiceAcceptModal({
       }
       open={!!request}
       onCancel={onClose}
-      onSubmit={submit}
+      onSubmit={() => form.submit()}
       confirmLoading={mutation.isPending}
       okText={rework ? 'Вернуть на доработку' : 'Принять'}
       okDanger={rework}
@@ -94,6 +97,7 @@ export function ServiceAcceptModal({
     >
       {request && (
         <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <ServiceRequestContext request={request} />
           <Alert
             type={rework ? 'warning' : 'info'}
             showIcon
@@ -118,22 +122,24 @@ export function ServiceAcceptModal({
             />
           )}
 
-          <div>
-            <Typography.Text strong>{rework ? 'Что доделать' : 'Комментарий'}</Typography.Text>
-            <Input.TextArea
-              rows={3}
-              maxLength={1000}
-              value={text}
-              autoFocus
-              style={{ marginTop: 4 }}
-              placeholder={
-                rework
-                  ? 'Причина возврата: она уйдёт в историю и будет видна исполнителю'
-                  : 'Необязательно'
-              }
-              onChange={(e) => setText(e.target.value)}
-            />
-          </div>
+          <Form form={form} layout="vertical" onFinish={submit} {...blockers.formProps}>
+            <Form.Item
+              name="text"
+              label={rework ? 'Что доделать' : 'Комментарий'}
+              style={{ marginBottom: 0 }}
+            >
+              <Input.TextArea
+                rows={3}
+                maxLength={1000}
+                autoFocus
+                placeholder={
+                  rework
+                    ? 'Причина возврата: она уйдёт в историю и будет видна исполнителю'
+                    : 'Необязательно'
+                }
+              />
+            </Form.Item>
+          </Form>
         </Space>
       )}
     </FormModal>

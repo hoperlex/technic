@@ -15,7 +15,7 @@ import {
 import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { CreateOfficeEquipmentTypeInput, OfficeEquipmentTypeDto } from '@technic/contracts';
-import { FormModal } from '@shared/ui';
+import { FormModal, useFormBlockers } from '@shared/ui';
 import { DICTIONARY_PAGE_SIZE } from '@shared/config';
 import {
   officeEquipmentKeys,
@@ -23,7 +23,6 @@ import {
   officeEquipmentTypesApi,
 } from '@entities/office-equipment';
 import { errorMessage } from '../../utils/format';
-import { applyApiFieldErrors } from '../../utils/formErrors';
 
 /**
  * Ведение типов оргтехники — окном из вкладки справочника (Р34, приём ADR 0017).
@@ -64,6 +63,7 @@ export function OfficeEquipmentTypesModal({ open, onClose }: Props) {
   const [formOpen, setFormOpen] = useState(false);
   const [record, setRecord] = useState<OfficeEquipmentTypeDto | null>(null);
   const [form] = Form.useForm<CreateOfficeEquipmentTypeInput>();
+  const blockers = useFormBlockers(form);
 
   /**
    * Список типов устарел после любой правки, и вместе с ним — список единиц: тип стоит в его
@@ -105,7 +105,7 @@ export function OfficeEquipmentTypesModal({ open, onClose }: Props) {
     },
     // Занятый код сервер называет полем — показываем его у поля, а не тостом поверх формы.
     onError: (e) => {
-      if (!applyApiFieldErrors(form, e)) message.error(errorMessage(e));
+      if (!blockers.fromApi(e)) message.error(errorMessage(e));
     },
   });
 
@@ -201,7 +201,7 @@ export function OfficeEquipmentTypesModal({ open, onClose }: Props) {
         confirmLoading={saveMut.isPending}
         width={440}
       >
-        <Form form={form} layout="vertical" onFinish={(v) => saveMut.mutate(v)}>
+        <Form form={form} layout="vertical" onFinish={(v) => saveMut.mutate(v)} {...blockers.formProps}>
           <Form.Item
             name="code"
             label="Код"

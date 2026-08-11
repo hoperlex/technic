@@ -11,7 +11,7 @@ import {
   WARRANTY_EXPIRING_DAYS,
 } from '@technic/contracts';
 import { DataTable } from '@shared/ui';
-import { FormModal } from '@shared/ui';
+import { FormModal, useFormBlockers } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
 import { useListParams } from '@shared/lib';
@@ -27,7 +27,6 @@ import { objectOptionsQuery } from '@entities/object';
 import { departmentOptionsQuery } from '@entities/department';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
-import { applyApiFieldErrors } from '../../utils/formErrors';
 import { OfficeEquipmentTypesModal } from './OfficeEquipmentTypesModal';
 import { OfficeEquipmentServiceHistory } from './OfficeEquipmentServiceHistory';
 import { officeEquipmentCard, officeEquipmentColumns } from './officeEquipmentGrid';
@@ -97,6 +96,7 @@ export function OfficeEquipmentTab() {
   const [open, setOpen] = useState(false);
   const [record, setRecord] = useState<OfficeEquipmentDto | null>(null);
   const [form] = Form.useForm<OfficeEquipmentFormValues>();
+  const blockers = useFormBlockers(form);
 
   /**
    * Отдел и «без владельца» — один вопрос с двумя ответами, а не два фильтра: сервер их вместе не
@@ -157,7 +157,7 @@ export function OfficeEquipmentTab() {
       setOpen(false);
     },
     onError: (e) => {
-      if (!applyApiFieldErrors(form, e)) message.error(errorMessage(e));
+      if (!blockers.fromApi(e)) message.error(errorMessage(e));
     },
   });
 
@@ -357,7 +357,7 @@ export function OfficeEquipmentTab() {
         confirmLoading={saveMut.isPending}
         width={560}
       >
-        <Form form={form} layout="vertical" onFinish={(v) => saveMut.mutate(v)}>
+        <Form form={form} layout="vertical" onFinish={(v) => saveMut.mutate(v)} {...blockers.formProps}>
           <OfficeEquipmentFields
             typeOptions={typeOptions}
             typesLoading={typesLoading}

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Alert, App, Form, Input, InputNumber, Segmented, Space, Tag, Typography } from 'antd';
+import { Alert, Form, Input, InputNumber, Segmented, Space, Tag, Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import {
   approvedMachineHours,
@@ -22,7 +22,7 @@ import {
 } from '@technic/contracts';
 import { vehicleRequestsApi } from '../../api/resources';
 import { FormGrid } from '@shared/ui';
-import { FormModal } from '@shared/ui';
+import { FormModal, useFormBlockers } from '@shared/ui';
 import { calendarDayCount } from '../../utils/date';
 import { formatMoney } from '../../utils/format';
 import { formatDateOnly } from './shared';
@@ -89,8 +89,8 @@ function plannedAmount(request: VehicleRequestDto, unit: VehicleWorkUnit): numbe
 }
 
 export function VehicleCompleteModal({ request, confirmLoading, onCancel, onSubmit }: Props) {
-  const { message } = App.useApp();
   const [form] = Form.useForm<FormValues>();
+  const blockers = useFormBlockers(form);
   const [unit, setUnit] = useState<VehicleWorkUnit>('shifts');
   /** Сумму правили руками — расчёт её больше не переписывает. */
   const [costTouched, setCostTouched] = useState(false);
@@ -168,16 +168,17 @@ export function VehicleCompleteModal({ request, confirmLoading, onCancel, onSubm
   };
 
   const submit = (v: FormValues) => {
-    if (v.workedAmount == null || v.workedAmount <= 0) {
-      message.warning('Укажите, сколько отработала техника');
-      return;
-    }
     // Аренда — счёт от контрагента (ADR 0027): закрытие без суммы означало бы «сколько заплатили,
     // выясним потом». Тем же правилом отвечает сервер.
-    if (assignment?.ownership === 'rental' && v.totalCost == null) {
-      message.warning('Укажите стоимость — по арендованной технике заявка закрывается со счётом');
-      return;
-    }
+    const blocked = blockers.raise({
+      workedAmount:
+        (v.workedAmount == null || v.workedAmount <= 0) && 'Укажите, сколько отработала техника',
+      totalCost:
+        assignment?.ownership === 'rental' &&
+        v.totalCost == null &&
+        'Укажите стоимость — по арендованной технике заявка закрывается со счётом',
+    });
+    if (blocked || v.workedAmount == null) return;
     onSubmit({
       completion: {
         workedUnit: unit,
@@ -201,7 +202,7 @@ export function VehicleCompleteModal({ request, confirmLoading, onCancel, onSubm
       {request && (
         // Основание (машина и ставка) и факт стоят рядом: сумму сверяют с тем, о чём
         // договаривались, а не листают к нему прокруткой. На телефоне колонка одна.
-        <Form form={form} layout="vertical" onFinish={submit}>
+        <Form form={form} layout="vertical" onFinish={submit} {...blockers.formProps}>
           <FormGrid.Full>
             <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
               {requestCustomerName(request)}

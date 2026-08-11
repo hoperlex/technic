@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { App, Button, Dropdown, Form, Input, Tag, Tooltip, Typography, Upload } from 'antd';
+import { App, Button, Dropdown, Form, Tag, Tooltip, Typography, Upload } from 'antd';
 import {
   CheckCircleOutlined,
   CheckOutlined,
@@ -31,6 +31,7 @@ import type {
 import { ActionSheet } from '@shared/ui';
 import { AutoSelect } from '@shared/ui';
 import { ExpandableCell } from '@shared/ui';
+import { ReasonModal } from '../../components/CancelReasonModal';
 import { FileLinkList } from '../../components/FileLinks';
 import { PhoneLink } from '../../components/PhoneField';
 import { useIsMobile } from '@shared/lib';
@@ -609,6 +610,7 @@ export function useEarlyEnd() {
       vehicleRequestsApi.decideEarlyEnd(v.id, v.approved, v.version, v.comment ?? ''),
     onSuccess: (_res, v) => {
       message.success(v.approved ? 'Досрочное завершение согласовано' : 'Запрос отклонён');
+      setRejectTarget(null);
       invalidate();
     },
     onError: (e) => message.error(errorMessage(e)),
@@ -626,38 +628,13 @@ export function useEarlyEnd() {
   /** Своя виза применяется сразу — тем же правилом, что и при заведении заявки (ADR 0032). */
   const approvesOwn = isPlaceScopedRole(user?.role ?? null) && can('vehicleRequests.approve');
 
-  /** Отказ спрашивает причину: заявка остаётся на заказанном сроке, и это надо объяснить. */
-  const reject = (r: VehicleRequestDto) => {
-    let reason = '';
-    modal.confirm({
-      title: `Отклонить досрочное завершение ${r.displayNumber}?`,
-      content: (
-        <Input.TextArea
-          rows={2}
-          maxLength={2000}
-          placeholder="Причина отказа: например, техника ещё нужна на объекте"
-          onChange={(e) => {
-            reason = e.target.value;
-          }}
-        />
-      ),
-      okText: 'Отклонить',
-      okButtonProps: { danger: true },
-      cancelText: 'Отмена',
-      onOk: async () => {
-        if (!reason.trim()) {
-          message.warning('Укажите причину отказа');
-          throw new Error('reason required');
-        }
-        await decideMut.mutateAsync({
-          id: r.id,
-          approved: false,
-          version: r.version,
-          comment: reason.trim(),
-        });
-      },
-    });
-  };
+  /**
+   * Отказ спрашивает причину: заявка остаётся на заказанном сроке, и это надо объяснить.
+   *
+   * Окно — общий `ReasonModal`, а не `confirm` со своим полем внутри: у самодельного поля отказ
+   * «причина не заполнена» показывался тостом поверх окна и не помечал ничего (ADR 0094).
+   */
+  const [rejectTarget, setRejectTarget] = useState<VehicleRequestDto | null>(null);
 
   const withdraw = (r: VehicleRequestDto) =>
     modal.confirm({
@@ -671,6 +648,32 @@ export function useEarlyEnd() {
   return {
     /** Заявка, для которой открыто окно запроса. */
     target,
+    /** Окно отказа: рисуется тем, кто хуком пользуется, — хук сам ничего не монтирует. */
+    node: (
+      <ReasonModal
+        open={!!rejectTarget}
+        title={
+          rejectTarget
+            ? `Отклонить досрочное завершение ${rejectTarget.displayNumber}`
+            : 'Отклонить досрочное завершение'
+        }
+        label="Причина отказа"
+        placeholderHint="Например: техника ещё нужна на объекте"
+        okText="Отклонить"
+        danger
+        confirmLoading={decideMut.isPending}
+        onCancel={() => setRejectTarget(null)}
+        onSubmit={(reason) =>
+          rejectTarget &&
+          decideMut.mutate({
+            id: rejectTarget.id,
+            approved: false,
+            version: rejectTarget.version,
+            comment: reason,
+          })
+        }
+      />
+    ),
     open: setTarget,
     close: () => setTarget(null),
     approvesOwn,
@@ -679,7 +682,7 @@ export function useEarlyEnd() {
     },
     approve: (r: VehicleRequestDto) =>
       decideMut.mutate({ id: r.id, approved: true, version: r.version }),
-    reject,
+    reject: setRejectTarget,
     withdraw,
     pending: requestMut.isPending || decideMut.isPending || cancelMut.isPending,
   };

@@ -3,6 +3,7 @@
  * Так линт границ отличает «слой пользуется тем, что ему разрешено» от «кто-то залез внутрь».
  */
 export * from './files';
+export * from './forms';
 export * from './pagination';
 export * from './support';
 export * from './time';

@@ -12,9 +12,8 @@ import {
 } from '@entities/office-equipment';
 import { objectOptionsQuery } from '@entities/object';
 import { departmentOptionsQuery } from '@entities/department';
-import { FormModal } from '@shared/ui';
+import { FormModal, useFormBlockers } from '@shared/ui';
 import { errorMessage } from '@shared/lib';
-import { applyApiFieldErrors } from '../../../utils/formErrors';
 
 /**
  * Быстрое заведение карточки оргтехники прямо из формы заявки (этап 7, Р40).
@@ -42,6 +41,7 @@ export function QuickCreateEquipmentModal({
   const { message } = App.useApp();
   const qc = useQueryClient();
   const [form] = Form.useForm<OfficeEquipmentFormValues>();
+  const blockers = useFormBlockers(form);
 
   // Справочники спрашиваются только при открытом окне: большинство заводящих заявку сюда не
   // заходит вовсе, и три запроса на каждое открытие формы были бы платой ни за что.
@@ -83,7 +83,7 @@ export function QuickCreateEquipmentModal({
     onError: (e) => {
       // «Серийный номер уже заведён карточкой …» — обычный ответ сервера, и показать его нужно на
       // самом поле: иначе человек заведёт дубль, не поняв, какой из номеров занят.
-      if (!applyApiFieldErrors(form, e)) message.error(errorMessage(e));
+      if (!blockers.fromApi(e)) message.error(errorMessage(e));
     },
   });
 
@@ -97,7 +97,7 @@ export function QuickCreateEquipmentModal({
       okText="Завести и выбрать"
       width={560}
     >
-      <Form form={form} layout="vertical" onFinish={(v) => mutation.mutate(v)}>
+      <Form form={form} layout="vertical" onFinish={(v) => mutation.mutate(v)} {...blockers.formProps}>
         <OfficeEquipmentFields
           typeOptions={typeOptions}
           typesLoading={typesLoading}

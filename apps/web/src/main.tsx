@@ -7,6 +7,7 @@ import { BrowserRouter } from 'react-router';
 import App from './App';
 import { AuthProvider } from './auth/AuthContext';
 import { setupDayjs, useIsMobile, useMobileRootClass } from '@shared/lib';
+import { FORM_VALIDATE_MESSAGES } from '@shared/config';
 import { themeFor } from './theme';
 import './styles.css';
 
@@ -30,7 +31,11 @@ function Root() {
   useMobileRootClass(isMobile);
 
   return (
-    <ConfigProvider locale={ruRU} theme={themeFor(isMobile)}>
+    <ConfigProvider
+      locale={ruRU}
+      theme={themeFor(isMobile)}
+      form={{ validateMessages: FORM_VALIDATE_MESSAGES }}
+    >
       <AntApp>
         <QueryClientProvider client={queryClient}>
           <BrowserRouter>

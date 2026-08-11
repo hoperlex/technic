@@ -1,5 +1,17 @@
 import { useEffect, useState } from 'react';
-import { App, Button, DatePicker, Form, Input, Select, Space, Typography, Upload } from 'antd';
+import {
+  App,
+  Button,
+  Checkbox,
+  DatePicker,
+  Descriptions,
+  Form,
+  Input,
+  Select,
+  Space,
+  Typography,
+  Upload,
+} from 'antd';
 import { UploadOutlined } from '@ant-design/icons';
 import dayjs, { type Dayjs } from 'dayjs';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -18,7 +30,7 @@ import { departmentOptionsQuery } from '@entities/department';
 import { objectOptionsQuery } from '@entities/object';
 import { serviceRequestKeys, serviceRequestsApi } from '@entities/service-request';
 import { EquipmentNotFoundLink } from '@features/quick-create-equipment';
-import { AutoSelect, FormModal } from '@shared/ui';
+import { AutoSelect, FormModal, useFormBlockers } from '@shared/ui';
 import { filesApi } from '../../api/resources';
 import { FileLinkList } from '../../components/FileLinks';
 import { ResponsibleFields } from '../../components/ResponsibleFields';
@@ -26,7 +38,6 @@ import { useAuth } from '../../auth/AuthContext';
 import { useDepartmentScope } from '../../hooks/useDepartmentScope';
 import { useObjectScope } from '../../hooks/useObjectScope';
 import { errorMessage } from '../../utils/format';
-import { applyApiFieldErrors } from '../../utils/formErrors';
 
 const DATE = 'YYYY-MM-DD';
 
@@ -39,6 +50,8 @@ interface Values {
   responsiblePhone: string;
   comment?: string;
   warrantySource?: WarrantyClaimSource;
+  isUrgent?: boolean;
+  urgencyReason?: string;
 }
 
 interface UploadedFile {
@@ -89,8 +102,9 @@ export function ServiceRequestForm({
 }) {
   const { message } = App.useApp();
   const qc = useQueryClient();
-  const { can } = useAuth();
+  const { can, user } = useAuth();
   const [form] = Form.useForm<Values>();
+  const blockers = useFormBlockers(form);
   const [files, setFiles] = useState<UploadedFile[]>([]);
   const [uploading, setUploading] = useState(false);
   // Что набрали в поле техники: строка уходит контекстом в обращение к поддержке, когда единицы
@@ -98,6 +112,7 @@ export function ServiceRequestForm({
   const [equipmentSearch, setEquipmentSearch] = useState('');
   const equipmentId = Form.useWatch('officeEquipmentId', form);
   const warrantySource = Form.useWatch('warrantySource', form);
+  const isUrgent = Form.useWatch('isUrgent', form);
   const scope = useDepartmentScope();
   const objectScope = useObjectScope();
 
@@ -144,17 +159,24 @@ export function ServiceRequestForm({
         responsiblePhone: request.responsiblePhone,
         comment: request.comment,
         warrantySource: request.warrantyClaim?.source,
+        isUrgent: request.isUrgent,
+        urgencyReason: request.urgencyReason,
       });
       return;
     }
     // Единственный отдел учётки подставляется сам: выбор из одного варианта — лишний шаг.
     form.setFieldsValue({
       customerDepartmentId: scope.soleDepartmentId ?? undefined,
+      // Заявитель — тот, кто заводит заявку: ФИО и телефон подставляются из его же учётки и
+      // правятся. Поля обязательны (Р49), и заставлять человека набирать собственный номер, зная
+      // его, значило бы разводить прочерки вместо контактов.
+      responsibleName: user?.fullName ?? '',
+      responsiblePhone: user?.phone ?? '',
       // Обращение из реестра приходит с готовым источником: заполнять его руками человек и не
       // смог бы — позиция прошлого ремонта опознаётся идентификатором, которого он не видит.
       ...(claim ? { officeEquipmentId: claim.equipmentId, warrantySource: claim.source } : {}),
     } as Values);
-  }, [open, request, claim, form, scope.soleDepartmentId]);
+  }, [open, request, claim, form, scope.soleDepartmentId, user?.fullName, user?.phone]);
 
   const upload = async (file: File) => {
     setUploading(true);
@@ -187,6 +209,7 @@ export function ServiceRequestForm({
             itemId: values.warrantySource === 'item' ? (claim?.itemId ?? null) : null,
           }
         : undefined;
+      const isUrgent = !!values.isUrgent;
       const common = {
         description: values.description.trim(),
         dueDate: values.dueDate ? values.dueDate.format(DATE) : null,
@@ -195,6 +218,10 @@ export function ServiceRequestForm({
         responsiblePhone: values.responsiblePhone?.trim() ?? '',
         comment: values.comment?.trim() ?? '',
         warrantyClaim,
+        // Пара уходит целиком: снятая галочка обязана унести и причину — порознь их не принимает
+        // ни схема, ни CHECK в базе.
+        isUrgent,
+        urgencyReason: isUrgent ? (values.urgencyReason?.trim() ?? '') : '',
       };
       return request
         ? serviceRequestsApi.update(request.id, { ...common, version: request.version })
@@ -212,7 +239,7 @@ export function ServiceRequestForm({
     },
     onError: (e) => {
       // 409 «по этой технике уже есть открытая заявка» (Р21) — обычный ответ, а не сбой.
-      if (!applyApiFieldErrors(form, e)) message.error(errorMessage(e));
+      if (!blockers.fromApi(e)) message.error(errorMessage(e));
     },
   });
 
@@ -225,7 +252,12 @@ export function ServiceRequestForm({
       confirmLoading={mutation.isPending}
       width={620}
     >
-      <Form form={form} layout="vertical" onFinish={(v) => mutation.mutate(v)}>
+      <Form
+        form={form}
+        layout="vertical"
+        onFinish={(v) => mutation.mutate(v)}
+        {...blockers.formProps}
+      >
         <Form.Item
           name="officeEquipmentId"
           label="Техника"
@@ -262,12 +294,87 @@ export function ServiceRequestForm({
           />
         )}
 
-        {/* Состояние гарантии — под самим полем: от него зависит следующий вопрос формы. */}
-        {equipmentId && (
-          <Space size={8} wrap style={{ marginBottom: 16 }}>
-            <Typography.Text type="secondary">Гарантия на технику:</Typography.Text>
-            <WarrantyTag until={selected?.warrantyUntil} />
-          </Space>
+        {/* Реквизиты выбранной единицы (Р48, Р57): наименование, номера, объект и место внутри
+            него. Не правятся — они приходят из справочника и уходят в заявку снимком; показаны
+            потому, что именно по ним сервис опознаёт аппарат и едет по адресу, а до сих пор
+            заказчик отправлял заявку, не видя ни одного из них. */}
+        {equipmentId && selected && (
+          <Descriptions
+            size="small"
+            column={1}
+            style={{ marginBottom: 16 }}
+            labelStyle={{ width: 140 }}
+            items={[
+              { key: 'name', label: 'Наименование', children: selected.name },
+              {
+                key: 'numbers',
+                label: 'Номера',
+                children: (
+                  <Space size={12} wrap>
+                    <span>
+                      инв. №{' '}
+                      {selected.inventoryNumber || (
+                        <Typography.Text type="secondary">—</Typography.Text>
+                      )}
+                    </span>
+                    <span>
+                      сер. №{' '}
+                      {selected.serialNumber || (
+                        <Typography.Text type="secondary">—</Typography.Text>
+                      )}
+                    </span>
+                  </Space>
+                ),
+              },
+              {
+                key: 'object',
+                label: 'Объект',
+                children: (
+                  <Space size={8} wrap>
+                    <span>{selected.objectLabel}</span>
+                    {selected.location && (
+                      <Typography.Text type="secondary">{selected.location}</Typography.Text>
+                    )}
+                  </Space>
+                ),
+              },
+              {
+                key: 'warranty',
+                label: 'Гарантия на технику',
+                children: <WarrantyTag until={selected.warrantyUntil} />,
+              },
+            ]}
+          />
+        )}
+        {/* Заявка на правке технику не показывает списком: поле выключено, а реквизиты приходят
+            снимком самой заявки — тем, что видел сервис, а не тем, что в карточке сегодня. */}
+        {request && (
+          <Descriptions
+            size="small"
+            column={1}
+            style={{ marginBottom: 16 }}
+            labelStyle={{ width: 140 }}
+            items={[
+              { key: 'name', label: 'Наименование', children: request.equipment.name },
+              {
+                key: 'numbers',
+                label: 'Номера',
+                children: `инв. № ${request.equipment.inventoryNumber || '—'} · сер. № ${
+                  request.equipment.serialNumber || '—'
+                }`,
+              },
+              {
+                key: 'object',
+                label: 'Объект',
+                children: [
+                  `${request.object.code} — ${request.object.name}`,
+                  request.equipment.location,
+                ]
+                  .filter(Boolean)
+                  .join(' · '),
+              },
+            ]}
+          />
         )}
 
         {(warrantyActive || claim) && (
@@ -347,12 +454,37 @@ export function ServiceRequestForm({
           </Form.Item>
         </Space>
 
+        {/* Заявитель, а не «ответственный»: это тот, к кому мастер придёт и кому позвонят, если
+            аппарата не окажется на месте. Оба поля обязательны и на сервере тоже (Р49). */}
         <ResponsibleFields
           nameField="responsibleName"
           phoneField="responsiblePhone"
-          nameLabel="Ответственный"
-          phoneLabel="Телефон"
+          nameLabel="Заявитель"
+          phoneLabel="Контактный телефон"
         />
+
+        {/* Срочность — пара «галочка + причина» (Р56). Причина появляется вместе с галочкой и
+            обязательна: без неё через месяц срочными окажутся все заявки, и очередь, в которую
+            смотрит оператор, перестанет что-либо означать. */}
+        <Form.Item
+          name="isUrgent"
+          valuePropName="checked"
+          style={{ marginBottom: isUrgent ? 8 : 24 }}
+        >
+          <Checkbox>Срочная заявка</Checkbox>
+        </Form.Item>
+        {isUrgent && (
+          <Form.Item
+            name="urgencyReason"
+            label="Почему срочно"
+            rules={[{ required: true, message: 'Объясните, почему заявка срочная' }]}
+          >
+            <Input
+              maxLength={500}
+              placeholder="Например: единственный принтер на площадке, встала выдача пропусков"
+            />
+          </Form.Item>
+        )}
 
         <Form.Item name="comment" label="Комментарий">
           <Input.TextArea rows={2} maxLength={2000} placeholder="Необязательно" />
@@ -360,7 +492,12 @@ export function ServiceRequestForm({
 
         {!request && (
           <div>
-            {/* Фото неисправности — самое частое вложение: по нему сервис понимает, что везти. */}
+            {/* Фото неисправности — самое частое вложение: по нему сервис понимает, что везти.
+                Обязательным его не делаем (Р50): «не включается» и «не видит сеть» не
+                фотографируются, и требование обернулось бы снимком стены ради кнопки «Отправить». */}
+            <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 8 }}>
+              Фото неисправности
+            </Typography.Text>
             <Upload
               multiple
               showUploadList={false}

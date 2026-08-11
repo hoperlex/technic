@@ -18,7 +18,7 @@ import { filesApi } from '../../api/resources';
 import { wasteTariffResolveQuery } from '@entities/waste-tariff';
 import { FileLinkList } from '../../components/FileLinks';
 import { FormGrid } from '@shared/ui';
-import { FormModal } from '@shared/ui';
+import { FormModal, useFormBlockers } from '@shared/ui';
 import { useIsMobile } from '@shared/lib';
 import { errorMessage, formatMoney } from '../../utils/format';
 
@@ -57,12 +57,19 @@ interface FormValues {
   weightTons?: number | null;
   totalCost?: number | null;
   comment?: string;
+  /**
+   * Держатель поля для талонов: сами файлы лежат состоянием окна, а отказ «нет талона» должен
+   * показываться формой наравне с остальными (ADR 0094). Значение не читается и на сервер не
+   * уходит — форме нужно только имя, к которому привязан отказ.
+   */
+  ticketIds?: string;
 }
 
 export function WasteDoneModal({ request, confirmLoading, onCancel, onSubmit }: Props) {
   const { message } = App.useApp();
   const isMobile = useIsMobile();
   const [form] = Form.useForm<FormValues>();
+  const blockers = useFormBlockers(form);
   const [tickets, setTickets] = useState<FileDto[]>([]);
   const [uploading, setUploading] = useState(false);
   /** Сумму правили руками — расчёт её больше не переписывает. */
@@ -155,6 +162,9 @@ export function WasteDoneModal({ request, confirmLoading, onCancel, onSubmit }: 
     try {
       const uploaded = await filesApi.upload(file);
       setTickets((prev) => [...prev, uploaded]);
+      // Талон приложен — отказ снимается сразу: поле-держатель значением не правят, и само оно
+      // об этом не узнает (ADR 0094).
+      form.setFields([{ name: 'ticketIds', errors: [] }]);
     } catch (e) {
       message.error(errorMessage(e));
     } finally {
@@ -189,17 +199,22 @@ export function WasteDoneModal({ request, confirmLoading, onCancel, onSubmit }: 
 
   const submit = (v: FormValues) => {
     if (!request) return;
-    if (byVolume && (v.volumeM3 == null || v.volumeM3 <= 0)) {
-      message.warning('Укажите фактически вывезенный объём');
-      return;
-    }
-    if (byWeight && (v.weightTons == null || v.weightTons <= 0)) {
-      message.warning('Укажите фактически вывезенный вес');
-      return;
-    }
     // Талон обязателен у заявки любого типа; приложенные прошлым закрытием засчитываются.
-    if (request.tickets.length + tickets.length === 0) {
-      message.warning('Приложите талон — без него заявка не закрывается');
+    if (
+      blockers.raise({
+        volumeM3:
+          byVolume &&
+          (v.volumeM3 == null || v.volumeM3 <= 0) &&
+          'Укажите фактически вывезенный объём',
+        weightTons:
+          byWeight &&
+          (v.weightTons == null || v.weightTons <= 0) &&
+          'Укажите фактически вывезенный вес',
+        ticketIds:
+          request.tickets.length + tickets.length === 0 &&
+          'Приложите талон — без него заявка не закрывается',
+      })
+    ) {
       return;
     }
     // Величина уходит ровно одна — та, которой меряется тип заявки. Сумма — только у объёма:
@@ -236,7 +251,7 @@ export function WasteDoneModal({ request, confirmLoading, onCancel, onSubmit }: 
       {request && (
         // Факт слева, талоны справа: их прикладывают, глядя на введённый объём. На телефоне
         // колонка одна, порядок тот же.
-        <Form form={form} layout="vertical" onFinish={submit}>
+        <Form form={form} layout="vertical" onFinish={submit} {...blockers.formProps}>
           <FormGrid>
             <FormGrid.Full>
               <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
@@ -360,6 +375,12 @@ export function WasteDoneModal({ request, confirmLoading, onCancel, onSubmit }: 
               не нести те же сканы второй раз. */}
             <FormGrid.Full>
               <Form.Item label="Талоны" style={{ marginBottom: 16 }}>
+                {/* Держатель поля: талоны лежат состоянием окна, а отказ обязан показываться
+                  там же, где у остальных полей. `noStyle` отдаёт ошибку внешнему полю
+                  «Талоны» — и прокрутка с вспышкой находят его наравне с прочими (ADR 0094). */}
+                <Form.Item name="ticketIds" noStyle>
+                  <Input type="hidden" />
+                </Form.Item>
                 {request.tickets.length > 0 && (
                   <div style={{ marginBottom: 8 }}>
                     <Typography.Text type="secondary" style={{ fontSize: 12 }}>

@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { App, DatePicker, Form, Input, Typography } from 'antd';
+import { DatePicker, Form, Input, Typography } from 'antd';
 import dayjs, { type Dayjs } from 'dayjs';
 import {
   earlyEndDateBounds,
@@ -10,7 +10,7 @@ import {
   type SpecialEquipmentRequestDto,
 } from '@technic/contracts';
 import { FormGrid } from '@shared/ui';
-import { FormModal } from '@shared/ui';
+import { FormModal, useFormBlockers } from '@shared/ui';
 import { calendarDaysLabel } from '../../utils/date';
 import { formatDateOnly } from './shared';
 
@@ -50,8 +50,8 @@ export function VehicleEarlyEndModal({
   onCancel,
   onSubmit,
 }: Props) {
-  const { message } = App.useApp();
   const [form] = Form.useForm<FormValues>();
+  const blockers = useFormBlockers(form);
 
   const bounds = request ? earlyEndDateBounds(request, onDate) : null;
 
@@ -100,7 +100,7 @@ export function VehicleEarlyEndModal({
   const submit = (v: FormValues) => {
     const dateKey = v.newDateTo?.format('YYYY-MM-DD');
     if (!dateKey || !bounds || dateKey < bounds.min || dateKey > bounds.max) {
-      message.warning('Выберите дату внутри срока заявки');
+      blockers.raise({ newDateTo: 'Выберите дату внутри срока заявки' });
       return;
     }
     onSubmit({ newDateTo: dateKey, reason: (v.reason ?? '').trim(), version: request!.version });
@@ -121,7 +121,7 @@ export function VehicleEarlyEndModal({
       width={720}
     >
       {request && (
-        <Form form={form} layout="vertical" onFinish={submit}>
+        <Form form={form} layout="vertical" onFinish={submit} {...blockers.formProps}>
           <FormGrid.Full>
             <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
               {requestCustomerName(request)}

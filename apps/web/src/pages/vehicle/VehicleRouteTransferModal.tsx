@@ -1,5 +1,4 @@
-import { useState } from 'react';
-import { Alert, App, Space, Typography } from 'antd';
+import { Alert, App, Form, Space, Typography } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   isRouteEditable,
@@ -15,7 +14,7 @@ import {
 import { vehicleRequestsApi, vehicleRoutesApi } from '../../api/resources';
 import { garageKeys } from '@entities/garage';
 import { AutoSelect } from '@shared/ui';
-import { FormModal } from '@shared/ui';
+import { FormModal, useFormBlockers } from '@shared/ui';
 import { errorMessage } from '../../utils/format';
 
 /**
@@ -43,7 +42,11 @@ interface Props {
 export function VehicleRouteTransferModal({ request, onClose, onDone }: Props) {
   const { message } = App.useApp();
   const qc = useQueryClient();
-  const [targetId, setTargetId] = useState<string | undefined>();
+  const [form] = Form.useForm<{ routeId?: string }>();
+  const blockers = useFormBlockers(form);
+  // Выбранный рейс живёт формой: раньше кнопка «Перенести» при пустом выборе молча ничего не
+  // делала — теперь отказ виден на самом поле (ADR 0094).
+  const targetId = Form.useWatch('routeId', form);
 
   /**
    * Куда можно перенести: рейсы того же дня — все (ADR 0064). Подсказку собирает сервер
@@ -121,7 +124,7 @@ export function VehicleRouteTransferModal({ request, onClose, onDone }: Props) {
       }),
     onSuccess: async (updated) => {
       message.success(`${request!.displayNumber} перенесена в ${updated.displayNumber}`);
-      setTargetId(undefined);
+      form.resetFields();
       await Promise.all([
         qc.invalidateQueries({ queryKey: ['vehicle-routes'] }),
         qc.invalidateQueries({ queryKey: ['vehicle-requests'] }),
@@ -133,7 +136,7 @@ export function VehicleRouteTransferModal({ request, onClose, onDone }: Props) {
   });
 
   const close = () => {
-    setTargetId(undefined);
+    form.resetFields();
     onClose();
   };
 
@@ -142,60 +145,72 @@ export function VehicleRouteTransferModal({ request, onClose, onDone }: Props) {
       title={request ? `Перенести ${request.displayNumber} в другой рейс` : 'Перенос заявки'}
       open={!!request}
       onCancel={close}
-      onSubmit={() => targetId && transfer.mutate()}
+      onSubmit={() => form.submit()}
       confirmLoading={transfer.isPending}
       okText="Перенести"
       width={520}
     >
-      <Space direction="vertical" size={12} style={{ width: '100%' }}>
-        <Typography.Text type="secondary">
-          Рейсы {request?.route ? `на ту же дату, что и ${request.route.displayNumber},` : 'дня'} со
-          свободной строкой задания — все, без отбора по технике. Сначала заказанный тип, потом
-          крупнее, в конце другой вид.
-        </Typography.Text>
+      <Form
+        form={form}
+        layout="vertical"
+        onFinish={() => {
+          if (blockers.raise({ routeId: !targetId && 'Выберите рейс' })) return;
+          transfer.mutate();
+        }}
+        {...blockers.formProps}
+      >
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <Typography.Text type="secondary">
+            Рейсы {request?.route ? `на ту же дату, что и ${request.route.displayNumber},` : 'дня'}{' '}
+            со свободной строкой задания — все, без отбора по технике. Сначала заказанный тип, потом
+            крупнее, в конце другой вид.
+          </Typography.Text>
 
-        <AutoSelect
-          style={{ width: '100%' }}
-          value={targetId}
-          onChange={(v) => setTargetId(v as string)}
-          options={options.map((r) => ({
-            value: r.id,
-            label: [
-              r.displayNumber,
-              r.vehicleLabel,
-              // Чем рейс отличается от заказанного — прямо в строке: тип машины и направление
-              // («крупнее», «меньше заказанного»). Без этого рейсы вида читались бы вперемешку.
-              ordered ? (vehicleSubstitutionHint(substitutionOf(r)) ?? undefined) : undefined,
-              r.driverName || 'водитель не назначен',
-              `${r.requests.length} из ${routeRequestCapacity(r.formCode)} заявок`,
-            ]
-              .filter(Boolean)
-              .join(' · '),
-          }))}
-          showSearch
-          optionFilterProp="label"
-          loading={isFetching}
-          disabled={options.length === 0}
-          placeholder={options.length > 0 ? 'Выберите рейс' : 'Подходящих рейсов на эту дату нет'}
-        />
+          <Form.Item name="routeId" style={{ marginBottom: 0 }}>
+            <AutoSelect
+              style={{ width: '100%' }}
+              options={options.map((r) => ({
+                value: r.id,
+                label: [
+                  r.displayNumber,
+                  r.vehicleLabel,
+                  // Чем рейс отличается от заказанного — прямо в строке: тип машины и направление
+                  // («крупнее», «меньше заказанного»). Без этого рейсы вида читались бы вперемешку.
+                  ordered ? (vehicleSubstitutionHint(substitutionOf(r)) ?? undefined) : undefined,
+                  r.driverName || 'водитель не назначен',
+                  `${r.requests.length} из ${routeRequestCapacity(r.formCode)} заявок`,
+                ]
+                  .filter(Boolean)
+                  .join(' · '),
+              }))}
+              showSearch
+              optionFilterProp="label"
+              loading={isFetching}
+              disabled={options.length === 0}
+              placeholder={
+                options.length > 0 ? 'Выберите рейс' : 'Подходящих рейсов на эту дату нет'
+              }
+            />
+          </Form.Item>
 
-        {/* Рейс — источник истины о том, чем едут: заявка, переехавшая на другую машину, меняет
+          {/* Рейс — источник истины о том, чем едут: заявка, переехавшая на другую машину, меняет
             назначение вместе с рейсом. Ставки не трогаются — о них договариваются по заявке.
             Если машина рейса разошлась с заказанным (ADR 0059), это сказано здесь же: перенос —
             то самое место, где заявка молча меняет технику. */}
-        {target && target.vehicleId !== request?.assignment?.vehicleId && (
-          <Alert
-            type={targetSubstitution?.level === 'warning' ? 'warning' : 'info'}
-            showIcon
-            message="Заявка поедет машиной выбранного рейса"
-            description={
-              `Назначенная техника сменится на ${target.vehicleLabel}. ` +
-              (targetSubstitution ? `${targetSubstitution.text} ` : '') +
-              'Ставка останется прежней — о ней договариваются по заявке.'
-            }
-          />
-        )}
-      </Space>
+          {target && target.vehicleId !== request?.assignment?.vehicleId && (
+            <Alert
+              type={targetSubstitution?.level === 'warning' ? 'warning' : 'info'}
+              showIcon
+              message="Заявка поедет машиной выбранного рейса"
+              description={
+                `Назначенная техника сменится на ${target.vehicleLabel}. ` +
+                (targetSubstitution ? `${targetSubstitution.text} ` : '') +
+                'Ставка останется прежней — о ней договариваются по заявке.'
+              }
+            />
+          )}
+        </Space>
+      </Form>
     </FormModal>
   );
 }

@@ -73,7 +73,7 @@ import { DataTable, type CardConfig } from '@shared/ui';
 import { ExpandableCell } from '@shared/ui';
 import { FileLinkList, FilesCell } from '../components/FileLinks';
 import { FormGrid } from '@shared/ui';
-import { FormModal } from '@shared/ui';
+import { FormModal, useFormBlockers } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
 import { ResponsibleFields } from '../components/ResponsibleFields';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
@@ -89,7 +89,6 @@ import { useWasteObjectScope } from '../hooks/useWasteObjectScope';
 import { useAuth } from '../auth/AuthContext';
 
 import { errorMessage, formatDate, formatDateTimeMaybe, formatMoney } from '../utils/format';
-import { applyApiFieldErrors } from '../utils/formErrors';
 import { withSavedOption } from '@shared/lib';
 import { isBeforeMinRequestDate, isPastDate, minRequestDate } from '../utils/date';
 import { OnSiteTab } from './waste/OnSiteTab';
@@ -547,6 +546,18 @@ function RequestsTab() {
   };
 
   const [form] = Form.useForm<RequestFormValues>();
+  const blockers = useFormBlockers(form, {
+    // Смена объекта может сделать выбранного исполнителя недопустимым — снимаем его сразу,
+    // а не отказом сервера при сохранении.
+    onValuesChange: (changed: Partial<RequestFormValues>) => {
+      if (!changed.objectId) return;
+      const selected = form.getFieldValue('operatorCounterpartyId') as string | undefined;
+      const allowed = operatorOptionsFor(changed.objectId);
+      if (selected && !allowed.some((o) => o.value === selected)) {
+        form.setFieldValue('operatorCounterpartyId', undefined);
+      }
+    },
+  });
   const [files, setFiles] = useState<EditorFile[]>([]);
   const [removedIds, setRemovedIds] = useState<string[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -876,8 +887,7 @@ function RequestsTab() {
     onError: (e) => {
       // Ошибку валидации показываем на самом поле: тост «Ошибка валидации данных» не говорит,
       // что именно править. `deliveryAt` в форме разложен на дату и время — правим дату.
-      applyApiFieldErrors(form, e, { deliveryAt: 'deliveryDate' });
-      message.error(errorMessage(e));
+      if (!blockers.fromApi(e, { deliveryAt: 'deliveryDate' })) message.error(errorMessage(e));
     },
   });
 
@@ -1701,16 +1711,7 @@ function RequestsTab() {
           form={form}
           layout="vertical"
           onFinish={(v) => saveMut.mutate(v)}
-          // Смена объекта может сделать выбранного исполнителя недопустимым — снимаем его сразу,
-          // а не отказом сервера при сохранении.
-          onValuesChange={(changed: Partial<RequestFormValues>) => {
-            if (!changed.objectId) return;
-            const selected = form.getFieldValue('operatorCounterpartyId') as string | undefined;
-            const allowed = operatorOptionsFor(changed.objectId);
-            if (selected && !allowed.some((o) => o.value === selected)) {
-              form.setFieldValue('operatorCounterpartyId', undefined);
-            }
-          }}
+          {...blockers.formProps}
         >
           {/* Поля парами (FormGrid): узкое окно прятало половину формы под прокрутку, хотя
               справа было пусто. На телефоне колонка одна, порядок полей тот же. */}
