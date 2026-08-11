@@ -672,13 +672,38 @@ describe('водители', () => {
     ]);
   });
 
-  it('реквизиты без категорий документа не заводят, и об этом предупреждают', () => {
+  it('реквизиты без категорий документ заводят, но о пустом наборе предупреждают', () => {
     const model = def.blank();
     const { ctx, problems, warnings } = rowContext();
     applyCells(def, env, model, newDriverCells({ 'Номер ВУ': '482645' }), ctx);
     expect(problems).toEqual([]);
     expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toMatch(/не открывает ни одной машины/u);
+    expect(warnings[0]).toMatch(/документ заводится, но открытых категорий у него не будет/u);
+  });
+
+  // Тот самый случай, ради которого правило и менялось: УТМ машиниста заводят по документу в
+  // руках, а категории самоходных машин в кадровой выгрузке не приходят вовсе.
+  it('УТМ по одним реквизитам, без категорий, заводится и попадает в изменения строки', () => {
+    const model = def.blank();
+    const { ctx, problems, warnings } = rowContext();
+    applyCells(
+      def,
+      env,
+      model,
+      newDriverCells({
+        Должность: 'Машинист экскаватора',
+        'Серия УТМ': '99 39',
+        'Номер УТМ': '112233',
+        'Выдано УТМ': '05.04.2023',
+      }),
+      ctx,
+    );
+    expect(problems).toEqual([]);
+    expect(warnings).toHaveLength(1);
+    expect(cellsOf(def, env, model)).toMatchObject({
+      'Номер УТМ': '112233',
+      'Категории УТМ': '',
+    });
   });
 
   it('первая строка справки предупреждает о персональных данных', () => {

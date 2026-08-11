@@ -241,9 +241,11 @@ export function documentsBlock(
           const defect = licenseDefect(l, today());
           return (
             <Space key={l.id} size={8} wrap>
+              {/* Категории — через разделитель, но только когда они есть: документ бывает и без
+                  них (реквизиты внесли, набор ещё нет), и висящая точка читалась бы как обрыв. */}
               <span>
-                {i === 0 ? 'Действующее:' : 'Прежнее:'} {licenseNumberLabel(l)} ·{' '}
-                {licenseCategoriesLabel(l)}
+                {i === 0 ? 'Действующее:' : 'Прежнее:'} {licenseNumberLabel(l)}
+                {licenseCategoriesLabel(l) ? ` · ${licenseCategoriesLabel(l)}` : ''}
               </span>
               {l.expiresOn && <span>до {dayjs(l.expiresOn).format('DD.MM.YYYY')}</span>}
               {defect && <Tag color="red">{licenseDefectLabels[defect]}</Tag>}

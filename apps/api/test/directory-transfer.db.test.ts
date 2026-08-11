@@ -1,4 +1,4 @@
-import { generateKeyPairSync } from 'node:crypto';
+import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { beforeAll, describe, expect, it } from 'vitest';
@@ -201,6 +201,109 @@ suite('обмен справочниками на живой схеме', () => 
       );
       expect(check.rows[0]?.n).toBe('0');
       expect(directoryTitles.objects).toBe('Объекты');
+    },
+  );
+
+  it(
+    'удостоверение тракториста по одним реквизитам, без категорий, доезжает до базы',
+    { timeout: 30_000 },
+    async () => {
+      /**
+       * Синтетический СНИЛС: блок «9xx» ПФР не выдаёт, и живому человеку такой номер не
+       * принадлежит. Контрольная сумма у него при этом настоящая — иначе строку отвергнет
+       * `check()`: девять цифр 900 000 000 на позициях 9…1 дают 9×9 = 81, и последние две цифры
+       * номера её повторяют.
+       */
+      const snils = '900-000-000 81';
+      const snilsDigits = '90000000081';
+      /** Номер удостоверения — единственный реквизит, по которому документ обязан завестись. */
+      const number = '112233';
+
+      const def = ctx.directories.find((d) => d.key === 'drivers')!;
+      const { bytes } = await ctx.engine.exportDirectory(def);
+      const sheet = ctx.xlsx.readWorkbook(bytes).find((s) => s.name === DIRECTORY_DATA_SHEET)!;
+      const header = sheet.rows[0]!;
+      const at = (column: string): number => {
+        const index = header.indexOf(column);
+        expect(index, `в выгрузке водителей нет колонки «${column}»`).toBeGreaterThan(0);
+        return index;
+      };
+
+      // Строка дописывается новой: колонка идентификатора пуста, по СНИЛС человек в справочнике не
+      // найдётся — загрузка заведёт его. Ячейки ставятся по именам колонок, а не по местам: блоки
+      // документов собираются перечнем видов, и порядок колонок меняется вместе с ним.
+      const added = header.map(() => '');
+      added[at('ФИО')] = 'Тестовый Обмен Механизаторович';
+      added[at('СНИЛС')] = snils;
+      added[at('Должность')] = 'Машинист экскаватора';
+      added[at('Номер УТМ')] = number;
+      added[at('Выдано УТМ')] = '05.04.2023';
+      // «Категории УТМ» остаются пустыми: ровно эту строку файл прежде и терял — документ по ней
+      // не заводился вовсе, и загруженные реквизиты удостоверения молча пропадали.
+      const editedBytes = ctx.xlsx.writeWorkbook([
+        { name: DIRECTORY_DATA_SHEET, rows: [...sheet.rows, added] },
+      ]);
+
+      // Автор записи проставляется и человеку, и документу, а `persons.created_by` смотрит в
+      // `users`: вымышленный ноль-UUID соседних тестов внешний ключ не пропустит. Учётка заводится
+      // ради одного этого поля — войти по ней нельзя — и убирается вместе с человеком.
+      const actor = await ctx.db.execute<{ id: string }>(sql`
+        INSERT INTO users (email, last_name, first_name, password_hash)
+        VALUES (${`directory-transfer-${randomUUID()}@example.invalid`},
+                'Обменов', 'Тест', 'не пароль: учётка нужна только как автор записи')
+        RETURNING id`);
+      const actorUserId = actor.rows[0]!.id;
+
+      try {
+        const report = await ctx.engine.importDirectory(def, editedBytes, {
+          dryRun: false,
+          actorUserId,
+        });
+        expect(report.created, JSON.stringify(report.problems)).toHaveLength(1);
+
+        const document = await ctx.db.execute<{
+          id: string;
+          number: string;
+          issued_on: string;
+        }>(sql`
+          SELECT pc.id, pc.number, pc.issued_on::text AS issued_on
+            FROM person_credentials pc
+            JOIN credential_types ct ON ct.id = pc.credential_type_id
+            JOIN persons p ON p.id = pc.person_id
+           WHERE p.snils = ${snilsDigits} AND ct.code = 'tractor_license'`);
+        expect(document.rows, 'документ УТМ по одним реквизитам до базы не доехал').toHaveLength(1);
+        expect(document.rows[0]!.number).toBe(number);
+        expect(document.rows[0]!.issued_on).toBe('2023-04-05');
+
+        const categories = await ctx.db.execute<{ n: string }>(
+          sql`SELECT count(*)::text AS n FROM person_credential_categories
+               WHERE credential_id = ${document.rows[0]!.id}::uuid`,
+        );
+        expect(categories.rows[0]?.n).toBe('0');
+
+        // Обратная половина того же правила: пустой блок ВУ документа не заводит — иначе первая же
+        // загрузка выдала бы каждому машинисту по пустому водительскому удостоверению.
+        const empty = await ctx.db.execute<{ n: string }>(sql`
+          SELECT count(*)::text AS n
+            FROM person_credentials pc
+            JOIN credential_types ct ON ct.id = pc.credential_type_id
+            JOIN persons p ON p.id = pc.person_id
+           WHERE p.snils = ${snilsDigits} AND ct.code = 'driver_license'`);
+        expect(empty.rows[0]?.n).toBe('0');
+      } finally {
+        // База у db-тестов общая, и человек с персональными данными в ней не остаётся ни в каком
+        // виде: удаляется всё, что завела строка, — снизу вверх по внешним ключам.
+        const person = sql`(SELECT id FROM persons WHERE snils = ${snilsDigits})`;
+        await ctx.db.execute(
+          sql`DELETE FROM person_credential_categories WHERE credential_id IN
+                (SELECT id FROM person_credentials WHERE person_id IN ${person})`,
+        );
+        await ctx.db.execute(sql`DELETE FROM person_credentials WHERE person_id IN ${person}`);
+        await ctx.db.execute(sql`DELETE FROM person_employments WHERE person_id IN ${person}`);
+        await ctx.db.execute(sql`DELETE FROM person_specializations WHERE person_id IN ${person}`);
+        await ctx.db.execute(sql`DELETE FROM persons WHERE snils = ${snilsDigits}`);
+        await ctx.db.execute(sql`DELETE FROM users WHERE id = ${actorUserId}::uuid`);
+      }
     },
   );
 });
