@@ -18,6 +18,8 @@ export interface Principal extends AccessSubject {
   middleName: string;
   /** Считается базой из частей ФИО (ADR 0034). */
   fullName: string;
+  /** Телефон учётки (ADR 0043): контакт заявителя в заявке на обслуживание подставляется из него. */
+  phone: string;
   role: Role | null;
   isActive: boolean;
   mustChangePassword: boolean;
@@ -86,6 +88,7 @@ export async function loadPrincipal(userId: string): Promise<Principal | null> {
     firstName: u.firstName,
     middleName: u.middleName,
     fullName: u.fullName,
+    phone: u.phone,
     role: u.role,
     isActive: u.isActive,
     mustChangePassword: u.mustChangePassword,

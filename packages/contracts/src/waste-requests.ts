@@ -259,8 +259,7 @@ export function wasteTransitionRequiresFact(to: RequestStatus): boolean {
  * окно отката, история), и в трёх из них типа заявки под рукой нет.
  */
 export type WasteFactAmount =
-  | { unit: 'volume_m3'; volumeM3: number }
-  | { unit: 'weight_tons'; weightTons: number };
+  { unit: 'volume_m3'; volumeM3: number } | { unit: 'weight_tons'; weightTons: number };
 
 /**
  * Факт выполнения заявки (ADR 0035): вывезенное, цена-основание и итог. Цена — снимок прайса на

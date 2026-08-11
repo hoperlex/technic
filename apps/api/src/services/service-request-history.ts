@@ -47,6 +47,8 @@ export interface ServiceRequestHistoryEntryDto extends Omit<
 const AUDIT_ACTIONS = [
   'serviceRequest.update',
   'serviceRequest.estimate_update',
+  'serviceRequest.it_approve',
+  'serviceRequest.it_reject',
   'serviceRequest.assign',
   'serviceRequest.reassign',
   'serviceRequest.decline',
@@ -58,6 +60,7 @@ const AUDIT_ACTIONS = [
   'serviceRequest.accept',
   'serviceRequest.rework',
   'serviceRequest.service_comment',
+  'serviceRequest.urgency',
   'serviceRequest.files_attach',
   'serviceRequest.files_detach',
   'serviceRequest.soft_delete',
@@ -69,6 +72,10 @@ const AUDIT_KINDS: Record<string, RequestHistoryKind> = {
   // Правка сметы — тоже правка, но своя: её ведёт исполнитель, а заявку правит заказчик.
   // Различает их не вид события, а перечень изменений (`diffServiceEstimate`).
   'serviceRequest.estimate_update': 'updated',
+  // Виза ИТ (Р51): согласие и отказ читаются разными событиями — «решение ИТ» одним словом не
+  // отвечает, чем кончилось.
+  'serviceRequest.it_approve': 'itApproved',
+  'serviceRequest.it_reject': 'itRejected',
   'serviceRequest.assign': 'serviceAssigned',
   'serviceRequest.reassign': 'serviceReassigned',
   'serviceRequest.decline': 'serviceDeclined',
@@ -80,6 +87,9 @@ const AUDIT_KINDS: Record<string, RequestHistoryKind> = {
   'serviceRequest.accept': 'accepted',
   'serviceRequest.rework': 'returnedToWork',
   'serviceRequest.service_comment': 'updated',
+  // Срочность — своё событие, а не правка: её ставят и снимают тогда, когда сама заявка уже не
+  // правится, и «Правка» в этом месте истории читалась бы как смена предмета заявки у сервиса.
+  'serviceRequest.urgency': 'urgencyChanged',
   'serviceRequest.files_attach': 'documentAttached',
   // Снятие документа — не подшивка: вид события у него общий («изменено»), а что именно сняли,
   // видно в перечне изменений.

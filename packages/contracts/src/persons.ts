@@ -36,6 +36,97 @@ export const credentialVerificationStatusColors: Record<CredentialVerificationSt
   rejected: 'red',
 };
 
+// ── Виды документов допуска (ADR 0008, ADR 0095) ──
+// Их два: за грузовик садятся по водительскому удостоверению, за погрузчик и экскаватор — по
+// удостоверению тракториста-машиниста. Разводятся они видом документа, а не буквой категории:
+// «C» водительского и «C» тракториста — разные машины, и приписать одно к другому значит выдать
+// человеку допуск, которого у него нет (`credential_types`, миграции 0058 и 0123).
+
+export const CREDENTIAL_TYPE_CODES = ['driver_license', 'tractor_license'] as const;
+export type CredentialTypeCode = (typeof CREDENTIAL_TYPE_CODES)[number];
+
+export const credentialTypeLabels: Record<CredentialTypeCode, string> = {
+  driver_license: 'Водительское удостоверение',
+  tractor_license: 'Удостоверение тракториста-машиниста',
+};
+
+/** Как документ называют в колонке таблицы и в короткой пометке: места там на две буквы. */
+export const credentialTypeShortLabels: Record<CredentialTypeCode, string> = {
+  driver_license: 'ВУ',
+  tractor_license: 'УТМ',
+};
+
+// ── Должность решает, каким документом человек допущен (ADR 0095) ──
+//
+// Должность лежит в действующем трудовом отношении (`person_employments.job_title`) и приходит из
+// кадровой выгрузки. Отдельной сущности для неё не заводится: справочник должностей, который никто
+// не ведёт, разошёлся бы с кадрами в первый же месяц.
+//
+// Сопоставление — явным списком, а не префиксом «машинист»: у машиниста автокрана в кадрах стоит
+// водительское удостоверение (автокран ездит по дорогам общего пользования), а у машиниста
+// погрузчика и экскаватора — тракторное. Список короткий, потому что он перечисляет должности,
+// которые в кадровой выгрузке действительно есть, а не все мыслимые.
+
+/** Нормализованная должность: регистр и лишние пробелы — оформление кадровой строки, не смысл. */
+export function normalizeJobTitle(jobTitle: string): string {
+  return jobTitle.trim().replace(/\s+/gu, ' ').toLowerCase();
+}
+
+/**
+ * Должности, про которые известно, каким документом они допускают. Ключи — нормализованные
+ * (`normalizeJobTitle`). Сервер собирает из этой же таблицы SQL-выражение: фильтр справочника
+ * отбирает страницу до выдачи строк и посчитать должность в памяти не может, а двух правд о
+ * должности быть не должно.
+ */
+export const JOB_TITLE_CREDENTIALS: Readonly<Record<string, CredentialTypeCode>> = {
+  водитель: 'driver_license',
+  'машинист автокрана': 'driver_license',
+  'машинист погрузчика': 'tractor_license',
+  'машинист экскаватора': 'tractor_license',
+};
+
+/**
+ * Должности, которым колонка «категории» кадровой выгрузки означает водительское удостоверение.
+ * У машиниста в той же колонке стоят категории тракторного, и коды у них те же буквы: «B, C, D, E,
+ * F» самоходной машины — это не B, C и D автомобиля (ADR 0049).
+ *
+ * Префикс остался рядом со списком: «водитель-экспедитор» и «водитель погрузчика» в кадрах
+ * встречаются, перечислить их все нельзя, а слово в начале называет документ прямо.
+ */
+export const DRIVER_JOB_TITLE_PREFIX = 'водител';
+
+/**
+ * Вид документа, названный должностью; `null` — должность порталу незнакома.
+ *
+ * Разница между `null` и умолчанием существенна, и потому функции две. Там, где спрашивают «какой
+ * документ у человека смотреть» (`requiredCredentialType`), незнакомая должность безопасно
+ * трактуется как водительская — так портал вёл себя всегда. Там, где решают «куда записать
+ * категории из файла», незнакомая должность обязана остаться неизвестной: приписать тракторные
+ * категории к ВУ значит молча выдать допуск к автобусу (ADR 0049).
+ */
+export function jobTitleCredentialType(jobTitle: string): CredentialTypeCode | null {
+  const key = normalizeJobTitle(jobTitle);
+  const known = JOB_TITLE_CREDENTIALS[key];
+  if (known) return known;
+  return key.startsWith(DRIVER_JOB_TITLE_PREFIX) ? 'driver_license' : null;
+}
+
+/**
+ * Каким документом человек допущен: по нему считаются пробелы комплекта, он подставляется в
+ * путевой лист и им же меряется соответствие требованию машины.
+ *
+ * Умолчание — водительское: справочник заводили под водителей, и незнакомая должность не должна
+ * менять поведение молча. Такие должности видно в фильтре справочника — по нему список и пополняют.
+ */
+export function requiredCredentialType(jobTitle: string): CredentialTypeCode {
+  return jobTitleCredentialType(jobTitle) ?? 'driver_license';
+}
+
+/** Водительская ли должность — тот же вопрос, что задаёт разбор кадровой строки (ADR 0049). */
+export function isDriverJobTitle(jobTitle: string): boolean {
+  return jobTitleCredentialType(jobTitle) === 'driver_license';
+}
+
 // ── DTO ──
 
 /**
@@ -55,9 +146,18 @@ export interface DriverLicenseCategoryDto {
   restrictions: string;
 }
 
-/** Водительское удостоверение. У человека их может быть несколько: новое не стирает старое. */
+/**
+ * Документ допуска: водительское удостоверение или удостоверение тракториста-машиниста. У человека
+ * их может быть несколько — новое не стирает старое, а по должности он допущен одним из видов.
+ *
+ * Имя типа осталось прежним (`DriverLicenseDto`): переименовывать его во всех формах ради второго
+ * вида документа значило бы поменять полсотни мест, ничего не изменив по существу — вид документа
+ * несёт поле.
+ */
 export interface DriverLicenseDto {
   id: string;
+  /** Вид документа: им и разводятся одинаковые буквы категорий (ADR 0095). */
+  credentialTypeCode: CredentialTypeCode;
   series: string;
   number: string;
   issuedOn: string | null;
@@ -88,9 +188,13 @@ export interface DriverDto {
   comment: string;
   /** Из действующего трудового отношения (`ended_on IS NULL`); пусто — отношение не заведено. */
   personnelNo: string;
+  /** Должность из кадров: ею решается, каким документом человек допущен (`requiredCredentialType`). */
   jobTitle: string;
   employedSince: string | null;
-  /** Удостоверения от свежего к старому; пусто — документ ещё не заведён. */
+  /**
+   * Документы обоих видов от свежего к старому; пусто — ни одного не заведено. Списком, а не парой
+   * полей: у человека бывают и ВУ, и тракторное сразу, а строка справочника показывает оба.
+   */
   licenses: DriverLicenseDto[];
   version: number;
   createdAt: string;
@@ -209,21 +313,39 @@ export function licenseRequisitesMissing(numberLabel: string): boolean {
 /** Чего не хватает водителю для путевого листа. */
 export type DriverDocumentGap = 'snils' | 'license' | 'requisites' | 'issuedOn';
 
-export const driverDocumentGapLabels: Record<DriverDocumentGap, string> = {
-  snils: 'СНИЛС не внесён',
-  license: 'Действующего удостоверения нет',
-  requisites: 'Серия и номер не внесены',
-  issuedOn: 'Дата выдачи не внесена',
-};
+/**
+ * Как пробел называется в карточке. Документ назван коротко («ВУ», «УТМ»), а не общим словом
+ * «удостоверение»: человек, который пришёл дозаполнять карточки, должен видеть, какую бумагу
+ * спрашивать, — у машиниста погрузчика это не то же самое, что у водителя (ADR 0095).
+ */
+export function driverDocumentGapLabel(gap: DriverDocumentGap, type: CredentialTypeCode): string {
+  const doc = credentialTypeShortLabels[type];
+  switch (gap) {
+    case 'snils':
+      return 'СНИЛС не внесён';
+    case 'license':
+      return `Действующего ${doc} нет`;
+    case 'requisites':
+      return `Серия и номер ${doc} не внесены`;
+    case 'issuedOn':
+      return `Дата выдачи ${doc} не внесена`;
+  }
+}
 
 /**
- * Документ в том объёме, в каком его спрашивает путевой лист: годность на дату и графы, которые
- * бланк печатает. Структурным типом, а не `DriverLicenseDto`: те же вопросы задаёт сервер строкам
- * своего запроса (`selectDrivers`), и собирать ради них полный DTO ему незачем.
+ * Документ в том объёме, в каком его спрашивает путевой лист: вид, годность на дату и графы,
+ * которые бланк печатает. Структурным типом, а не `DriverLicenseDto`: те же вопросы задаёт сервер
+ * строкам своего запроса (`selectDrivers`), и собирать ради них полный DTO ему незачем.
  */
 export type WaybillLicense = Pick<
   DriverLicenseDto,
-  'series' | 'number' | 'issuedOn' | 'expiresOn' | 'revokedAt' | 'verificationStatus'
+  | 'credentialTypeCode'
+  | 'series'
+  | 'number'
+  | 'issuedOn'
+  | 'expiresOn'
+  | 'revokedAt'
+  | 'verificationStatus'
 >;
 
 /**
@@ -256,33 +378,56 @@ export function waybillLicenseOf<T extends WaybillLicense>(
 }
 
 /**
+ * Документ, которым человек допущен по своей должности, — и только он: у водителя лист выпишется
+ * по водительскому, у машиниста экскаватора по тракторному, даже если рядом лежит второе (ADR 0095).
+ *
+ * Чужой вид не подставляется никогда, в том числе когда своего нет вовсе: напечатанный в графе
+ * «водительское удостоверение» номер тракторного делает лист недействительным ровно так же, как
+ * пустая графа, — но пустую графу видно, а чужой номер выглядит заполненным.
+ */
+export function waybillDocumentOf<T extends WaybillLicense>(
+  licenses: readonly T[],
+  jobTitle: string,
+  on: string,
+): T | null {
+  const type = requiredCredentialType(jobTitle);
+  return waybillLicenseOf(
+    licenses.filter((l) => l.credentialTypeCode === type),
+    on,
+  );
+}
+
+/** Кого спрашивают о пробелах: человек с должностью, СНИЛСом и своими документами. */
+export interface DriverDocumentSubject {
+  snils: string;
+  /** Должность из кадров: ею выбран вид документа (`requiredCredentialType`). */
+  jobTitle: string;
+  licenses: readonly WaybillLicense[];
+}
+
+/**
  * Чего не хватает водителю для путевого листа на дату; пустой список — комплект полный.
  *
- * Считается по документу, которым лист выпишется (`waybillLicenseOf`): указывать на пробелы
- * старого удостоверения, когда рядом лежит полное, незачем.
+ * Считается по документу, которым лист выпишется (`waybillDocumentOf`): указывать на пробелы
+ * старого удостоверения, когда рядом лежит полное, незачем, — и по документу того вида, которым
+ * человек допущен, а не по любому имеющемуся.
  *
  * То же правило повторено запросом — фильтром списка водителей (`documents` в
  * `driverListQuerySchema`, `licenseCompleteConditions` на сервере): страницу отбирает сервер,
  * считать полноту в памяти он не может — но набор условий обязан совпадать, иначе фильтр покажет
  * одно, а строка в нём скажет другое.
  */
-export function driverDocumentGaps(
-  driver: { snils: string; licenses: readonly WaybillLicense[] },
-  on: string,
-): DriverDocumentGap[] {
+export function driverDocumentGaps(driver: DriverDocumentSubject, on: string): DriverDocumentGap[] {
   const gaps: DriverDocumentGap[] = [];
   if (driver.snils.trim() === '') gaps.push('snils');
 
-  const license = waybillLicenseOf(driver.licenses, on);
+  const license = waybillDocumentOf(driver.licenses, driver.jobTitle, on);
   if (!license) return [...gaps, 'license'];
   return [...gaps, ...licenseGaps(license)];
 }
 
 /** Полный ли комплект — тот же вопрос, что задаёт фильтр справочника. */
-export function driverDocumentsComplete(
-  driver: { snils: string; licenses: readonly WaybillLicense[] },
-  on: string,
-): boolean {
+export function driverDocumentsComplete(driver: DriverDocumentSubject, on: string): boolean {
   return driverDocumentGaps(driver, on).length === 0;
 }
 
@@ -317,22 +462,28 @@ export const driverLicenseCategoryInputSchema = z
   });
 
 /**
- * Удостоверение целиком. Хотя бы одна категория обязательна: документ без категорий не открывает
- * ничего, и водителя по нему не отобрать ни под одну машину.
+ * Документ целиком.
+ *
+ * У водительского удостоверения хотя бы одна категория обязательна: документ без категорий не
+ * открывает ничего, и водителя по нему не отобрать ни под одну машину. У тракторного — нет: в
+ * кадровой выгрузке его категорий не бывает вовсе, а печатному листу нужны номер и дата выдачи, и
+ * требовать букву, которой нет в присланных данных, значило бы не дать завести документ совсем.
  */
 export const driverLicenseInputSchema = z
   .object({
+    credentialType: z.enum(CREDENTIAL_TYPE_CODES).optional().default('driver_license'),
     series: seriesSchema.optional().default(''),
     number: numberSchema,
     issuedOn: dateOnlySchema.nullable().optional(),
     expiresOn: dateOnlySchema.nullable().optional(),
     issuedBy: issuedBySchema.optional().default(''),
-    categories: z
-      .array(driverLicenseCategoryInputSchema)
-      .min(1, 'Укажите хотя бы одну категорию')
-      .max(16),
+    categories: z.array(driverLicenseCategoryInputSchema).max(16),
   })
   .strict()
+  .refine((l) => l.credentialType !== 'driver_license' || l.categories.length > 0, {
+    message: 'Укажите хотя бы одну категорию',
+    path: ['categories'],
+  })
   .refine((l) => !l.issuedOn || !l.expiresOn || l.expiresOn >= l.issuedOn, {
     message: 'Срок действия не может истечь раньше выдачи',
     path: ['expiresOn'],
@@ -439,6 +590,12 @@ export interface DriverOptionDto {
   personId: string;
   fullName: string;
   personnelNo: string;
+  /**
+   * Каким документом человек допущен по должности (`requiredCredentialType`). Им подписаны и
+   * пробелы, и расхождение с требованием машины: «без номера ВУ» и «без номера УТМ» — разные
+   * бумаги, и нести их в кабину будут разные люди.
+   */
+  credentialTypeCode: CredentialTypeCode;
   /** «00 00 000001» — серия и номер, как напечатаны в удостоверении; пусто — не внесены. */
   licenseNumber: string;
   licenseExpiresOn: string | null;
@@ -479,11 +636,23 @@ export const DRIVER_CATEGORY_MISMATCH_HINT = 'категория не подхо
  * выборе и забывают. Названы обе стороны — что требует машина и что открыто у водителя: решение
  * остаётся за человеком, и ему нужны оба набора, а не факт «не совпало» (как у техники —
  * `vehicleSubstitutionWarning`).
+ *
+ * Вид документа назван у каждой стороны (ADR 0095): «C» водительского и «C» тракториста — разные
+ * машины, и предупреждение «нужна C, а открыта C» читалось бы как ошибка портала.
  */
-export function driverCategoryMismatchWarning(required: string, categories: string[]): string {
-  const open = categories.length > 0 ? `«${categories.join(', ')}»` : 'ни одной категории';
+export function driverCategoryMismatchWarning(
+  required: string,
+  requiredType: CredentialTypeCode,
+  categories: string[],
+  documentType: CredentialTypeCode,
+): string {
+  const need = `${credentialTypeShortLabels[requiredType]} «${required}»`;
+  const open =
+    categories.length > 0
+      ? `по ${credentialTypeShortLabels[documentType]} открыты «${categories.join(', ')}»`
+      : `по ${credentialTypeShortLabels[documentType]} не открыто ни одной категории`;
   return (
-    `Машине нужна категория «${required}», а у водителя открыты ${open}. ` +
+    `Машине нужна категория ${need}, а у водителя ${open}. ` +
     'Рейс заведётся как есть — проверьте по удостоверению, что водитель к этой машине допущен.'
   );
 }
@@ -495,16 +664,26 @@ export function driverCategoryMismatchWarning(required: string, categories: stri
  * (а не «чего нет»): в строке она стоит после ФИО и категорий, и «Иванов · C, CE · без номера ВУ»
  * читается одним куском, а «Иванов · C, CE · номер ВУ не внесён» — двумя.
  */
-export const driverDocumentGapHints: Record<DriverDocumentGap, string> = {
-  snils: 'без СНИЛС',
-  license: 'без действующего ВУ',
-  requisites: 'без номера ВУ',
-  issuedOn: 'без даты выдачи ВУ',
-};
+export function driverDocumentGapHint(gap: DriverDocumentGap, type: CredentialTypeCode): string {
+  const doc = credentialTypeShortLabels[type];
+  switch (gap) {
+    case 'snils':
+      return 'без СНИЛС';
+    case 'license':
+      return `без действующего ${doc}`;
+    case 'requisites':
+      return `без номера ${doc}`;
+    case 'issuedOn':
+      return `без даты выдачи ${doc}`;
+  }
+}
 
 /** Пробелы одной строкой для строки списка: «без номера ВУ, без даты выдачи ВУ». */
-export function driverDocumentGapsHint(gaps: readonly DriverDocumentGap[]): string | null {
-  return gaps.length > 0 ? gaps.map((g) => driverDocumentGapHints[g]).join(', ') : null;
+export function driverDocumentGapsHint(
+  gaps: readonly DriverDocumentGap[],
+  type: CredentialTypeCode,
+): string | null {
+  return gaps.length > 0 ? gaps.map((g) => driverDocumentGapHint(g, type)).join(', ') : null;
 }
 
 /**
@@ -520,9 +699,10 @@ export function driverDocumentGapsHint(gaps: readonly DriverDocumentGap[]): stri
  */
 export function driverDocumentGapsWarning(
   gaps: readonly DriverDocumentGap[],
+  type: CredentialTypeCode,
   formLabel: string | null,
 ): string | null {
-  const what = driverDocumentGapsHint(gaps);
+  const what = driverDocumentGapsHint(gaps, type);
   if (!what) return null;
   const where = formLabel ? `в путевом листе ${formLabel}` : 'в путевом листе';
   return (
@@ -601,6 +781,11 @@ export interface DriverSelectionDto {
    */
   requiredCategory: string | null;
   /**
+   * Какого документа эта категория (ADR 0095): требование машины ссылается на категорию любого
+   * вида, и без вида «нужна C» ничего не значит. `null` — требования нет.
+   */
+  requiredCategoryType: CredentialTypeCode | null;
+  /**
    * Весь справочник водителей в порядке пригодности (ADR 0064). Пустой список означает ровно одно:
    * действующих водителей нет вовсе — интерфейсу больше не нужно объяснять, кого именно отсеял
    * отбор, потому что отбора нет.
@@ -643,8 +828,27 @@ export const driverDocumentSetLabels: Record<DriverDocumentSet, string> = {
   incomplete: 'Неполный комплект',
 };
 
+/**
+ * Должность в фильтре справочника (ADR 0095). Приходит из кадров текстом, поэтому и фильтруется
+ * текстом — сравнением нормализованных значений (`normalizeJobTitle`), а не идентификатором:
+ * справочника должностей нет, и заводить его ради выпадающего списка не стали.
+ */
+export interface DriverJobTitleDto {
+  /** Как должность записана в кадрах — ею же и фильтруют. */
+  jobTitle: string;
+  /** Каким документом эта должность допускает: по нему справочник прячет чужие колонки. */
+  credentialTypeCode: CredentialTypeCode;
+  /** Сколько человек с такой должностью — по нему видно опечатку кадровой выгрузки. */
+  count: number;
+}
+
 export const driverListQuerySchema = baseListQuery(DRIVER_SORT_FIELDS).extend({
   documents: driverDocumentSetSchema.optional(),
+  /**
+   * Должность целиком, как её отдал `GET /drivers/job-titles`. Сравнение нормализованное: «Машинист
+   *  экскаватора» с двумя пробелами и «машинист экскаватора» — одна должность, а не две.
+   */
+  jobTitle: z.string().trim().max(255).optional(),
   /**
    * Кто открыл эту категорию — справочный вопрос, а не отбор под машину (ADR 0055): «кого можно
    * посадить за седельный тягач» спрашивают у справочника, а не у формы назначения. Считается на
@@ -662,24 +866,9 @@ export type DriverListQuery = z.infer<typeof driverListQuerySchema>;
 //
 // Схем самого файла здесь больше нет: справочник водителей грузится тем же `.xlsx`, что и
 // остальные справочники, и форму файла проверяет обмен (`services/directory-transfer`). Осталось
-// то, что описывает не файл, а предметную область: какая должность означает водителя и какие коды
-// бывают только у водительского удостоверения. Ими пользуется и разбор загрузки, и портал.
-
-/**
- * Должности, которым колонка «категории» означает водительское удостоверение. У машиниста в той
- * же колонке стоят категории удостоверения тракториста-машиниста, и коды у них те же буквы:
- * «B, C, D, E, F» самоходной машины — это не B, C и D автомобиля. Сопоставить их со справочником
- * ВУ значит выдать человеку допуск к автобусу, которого у него нет, — молча и в базе.
- *
- * Поэтому удостоверение заводится только там, где должность прямо называет водителя, а у всех
- * прочих категории уходят в отчёт нетронутыми: их внесёт администратор, когда в справочнике
- * появится вид документа «удостоверение тракториста-машиниста».
- */
-export const DRIVER_JOB_TITLE_PREFIX = 'водител';
-
-export function isDriverJobTitle(jobTitle: string): boolean {
-  return jobTitle.trim().toLowerCase().startsWith(DRIVER_JOB_TITLE_PREFIX);
-}
+// то, что описывает не файл, а предметную область: какие коды бывают только у водительского
+// удостоверения. Правило «должность называет документ» стоит выше — им пользуется не только
+// загрузка, но и весь справочник (`jobTitleCredentialType`).
 
 /**
  * Коды, которые бывают только у водительского удостоверения: подкатегории (B1, C1, D1), составы

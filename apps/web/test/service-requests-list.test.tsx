@@ -34,6 +34,7 @@ function serviceRequest(overrides: Partial<ServiceRequestDto> = {}): ServiceRequ
       serialNumber: 'SN-1',
       inventoryNumber: '0012345',
       typeName: 'МФУ',
+      location: 'Корпус 3, каб. 214',
     },
     object: { id: 'obj-1', code: 'ОБ-1', name: 'ЖК Северный' },
     customerDepartment: null,
@@ -42,7 +43,10 @@ function serviceRequest(overrides: Partial<ServiceRequestDto> = {}): ServiceRequ
     dueDate: '2026-08-12',
     responsibleName: 'Иванов И. И.',
     responsiblePhone: '9000000000',
+    isUrgent: false,
+    urgencyReason: '',
     service: null,
+    itApproval: null,
     warrantyClaim: null,
     estimateRevision: 0,
     estimateSubmittedAt: null,
@@ -69,6 +73,13 @@ const OPERATOR: AuthUser = authUser({
   role: 'shtab',
   constructionObjectIds: ['obj-1'],
   addons: ['office_equipment_operator'],
+});
+
+/** Согласующий от ИТ (Р51): та же базовая роль, но своя надстройка — она даёт визу. */
+const IT_APPROVER: AuthUser = authUser({
+  role: 'shtab',
+  constructionObjectIds: ['obj-1'],
+  addons: ['office_equipment_it_approver'],
 });
 
 /** Исполнитель: роль «оператор» плюс контрагент типа `service` — второго коридора без него нет. */
@@ -125,13 +136,30 @@ describe('список заявок на обслуживание: колонк�
 });
 
 describe('действия строятся из коридора переходов', () => {
-  it('оператору «Новая» предлагает назначить сервис и отменить заявку', async () => {
+  it('оператору «Новая» назначения не предлагает: сначала виза ИТ', async () => {
     renderTab(OPERATOR, [serviceRequest()]);
     await openRowActions();
-    expect(await screen.findByText('Назначить сервис')).toBeDefined();
-    expect(screen.getByText('Отменить заявку')).toBeDefined();
+    expect(await screen.findByText('Отменить заявку')).toBeDefined();
+    // До визы отдела ИТ дуги «Новая → Назначен сервис» нет ни у кого (Р51).
+    expect(screen.queryByText('Назначить сервис')).toBeNull();
+    // Виза — не его решение: подписывать заявку самому себе оператор не может (Р55).
+    expect(screen.queryByText('Согласование ИТ')).toBeNull();
     // Шаги исполнителя оператору недоступны ни через портал, ни через сервер (Р17).
     expect(screen.queryByText('Взять в диагностику')).toBeNull();
+  });
+
+  it('согласованную ИТ заявку оператор назначает', async () => {
+    renderTab(OPERATOR, [serviceRequest({ status: 'it_approved', waitingOn: 'operator' })]);
+    await openRowActions();
+    expect(await screen.findByText('Назначить сервис')).toBeDefined();
+  });
+
+  it('визу предлагают согласующему от ИТ и только на «Новой»', async () => {
+    renderTab(IT_APPROVER, [serviceRequest()]);
+    await openRowActions();
+    expect(await screen.findByText('Согласование ИТ')).toBeDefined();
+    // Дальше цикл ведут другие: назначения у него нет.
+    expect(screen.queryByText('Назначить сервис')).toBeNull();
   });
 
   it('исполнителю назначенная заявка предлагает диагностику и отказ, но не назначение', async () => {
@@ -141,6 +169,60 @@ describe('действия строятся из коридора переход
     expect(screen.getByText('Отказаться от заявки')).toBeDefined();
     expect(screen.queryByText('Назначить сервис')).toBeNull();
     expect(screen.queryByText('Отменить заявку')).toBeNull();
+  });
+});
+
+/**
+ * Приём заявки и срочность (план модернизации, Р49, Р56, Р57).
+ *
+ * Проверяется то, что раньше зависело от роли смотрящего: объект видел только исполнитель, а
+ * признака срочности не было вовсе. Оба ответа — про список, а не про сервер: сервер эти поля
+ * отдаёт всем, и потерять их можно ровно здесь.
+ */
+describe('объект и срочность в списке', () => {
+  it('объект виден и заказчику, и оператору — колонка перестала быть набором исполнителя', async () => {
+    renderTab(OPERATOR, [serviceRequest()]);
+    await screen.findByText('СО-14');
+    expect(shown('Объект')).toBe(true);
+    // Место внутри объекта — подписью под ним: по нему едет мастер.
+    expect(shown('Корпус 3, каб. 214')).toBe(true);
+  });
+
+  it('срочная заявка помечена в списке, обычная — нет', async () => {
+    renderTab(OPERATOR, [
+      serviceRequest({ isUrgent: true, urgencyReason: 'Единственный принтер на площадке' }),
+    ]);
+    expect(await screen.findByText('СО-14')).toBeDefined();
+    expect(shown('Срочная')).toBe(true);
+  });
+
+  it('оператор ставит и снимает срочность, исполнитель — не трогает вовсе', async () => {
+    renderTab(OPERATOR, [serviceRequest({ status: 'assigned', waitingOn: 'service' })]);
+    await openRowActions();
+    // Срочность — не переход: она доступна оператору и после назначения сервиса.
+    expect(await screen.findByText('Отметить срочной')).toBeDefined();
+  });
+
+  it('исполнителю срочности не предлагают: признак заказывающей стороны', async () => {
+    renderTab(EXECUTOR, [serviceRequest({ status: 'assigned', waitingOn: 'service' })]);
+    await openRowActions();
+    await screen.findByText('Взять в диагностику');
+    expect(screen.queryByText('Отметить срочной')).toBeNull();
+    expect(screen.queryByText('Снять срочность')).toBeNull();
+  });
+
+  it('у помеченной заявки действие называется снятием', async () => {
+    renderTab(OPERATOR, [serviceRequest({ isUrgent: true, urgencyReason: 'встала бухгалтерия' })]);
+    await openRowActions();
+    expect(await screen.findByText('Снять срочность')).toBeDefined();
+  });
+
+  it('фильтр «Только срочные» уходит на сервер признаком', async () => {
+    const http = renderTab(OPERATOR, [serviceRequest()]);
+    await screen.findByText('СО-14');
+    fireEvent.click(screen.getByLabelText('Только срочные'));
+    await screen.findByText('СО-14');
+    expect(http.lastCall('GET /service-requests')?.query.get('urgent')).toBe('true');
   });
 });
 

@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { baseListQuery, dateOnlySchema, uuidSchema } from './common';
 import type { RequestStatus } from './enums';
-import type { DriverDocumentGap } from './persons';
+import type { CredentialTypeCode, DriverDocumentGap } from './persons';
 import type { RoutePurpose } from './vehicle-routes';
 import type { VehicleStatus } from './vehicles';
 import type { WaybillStatus } from './waybills';
@@ -209,6 +209,12 @@ export interface GarageDriverDto {
   personnelNo: string;
   /** Десять цифр без кода страны (ADR 0066); пусто — не указан. */
   phone: string;
+  /**
+   * Чем подписаны пробелы: каким документом человек допущен по должности (ADR 0095). Портал
+   * показывает пробелы подсказкой («без номера ВУ»), и без вида документа подпись врёт — у
+   * машиниста экскаватора в кабину едет удостоверение тракториста-машиниста.
+   */
+  credentialTypeCode: CredentialTypeCode;
   /** «7712 345678» — серия с номером удостоверения, которым выпишется лист на этот день. */
   licenseNumber: string;
   licenseExpiresOn: string | null;

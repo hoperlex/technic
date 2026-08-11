@@ -1,12 +1,15 @@
-import { and, asc, desc, eq, isNull, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import {
+  CREDENTIAL_TYPE_CODES,
+  type CredentialTypeCode,
+  credentialTypeShortLabels,
   EMAIL_FORMAT_MESSAGE,
   emailSchema,
   formatFullName,
   formatPhone,
   formatSnils,
-  isDriverJobTitle,
   isValidSnils,
+  jobTitleCredentialType,
   looksLikeDriverLicense,
   normalizePhone,
   normalizeSnils,
@@ -30,9 +33,9 @@ import { parseCategoryCodes } from '../../driver-import';
 import {
   DirectoriesNotSeededError,
   LICENSE_COMMENT,
-  LICENSE_WITH_REQUISITES_COMMENT,
+  licenseWithRequisitesComment,
 } from '../../driver-import-apply';
-import { DRIVER_LICENSE_CODE, DRIVER_SPECIALIZATION_CODE } from '../../drivers';
+import { DRIVER_SPECIALIZATION_CODE } from '../../drivers';
 import {
   boolCell,
   dateCell,
@@ -44,23 +47,29 @@ import {
   parseList,
   parseRequired,
 } from '../cells';
-import { directory, type AnyDirectory, type DirectoryColumn, type Tx } from '../types';
+import {
+  directory,
+  type AnyDirectory,
+  type DirectoryColumn,
+  type RowContext,
+  type Tx,
+} from '../types';
 
 /**
  * Кадровые справочники обмена (ADR 0073): специализации, виды документов, категории квалификаций
  * и водители.
  *
- * Самая чувствительная часть обмена: в строке водителя лежат ФИО, СНИЛС и реквизиты
- * удостоверения живого человека. Отсюда два правила, которых нет у остальных справочников.
+ * Самая чувствительная часть обмена: в строке водителя лежат ФИО, СНИЛС и реквизиты двух
+ * документов живого человека. Отсюда два правила, которых нет у остальных справочников.
  *
  * Первое: правила разбора кадровой строки не переписываются. Контрольная сумма СНИЛС, разбор ФИО,
- * коды категорий и распознавание «водительское ли это удостоверение» (ADR 0049) остаются там, где
- * их уже проверяет тест, — в `driver-import.ts` и общем пакете; здесь они только вызываются.
- * Второй набор тех же правил означал бы, что через файл в справочник попадает то, чего не
- * принимает форма, — и наоборот.
+ * коды категорий и правило «должность называет документ» (ADR 0049, ADR 0095) остаются там, где их
+ * уже проверяет тест, — в `driver-import.ts` и общем пакете; здесь они только вызываются. Второй
+ * набор тех же правил означал бы, что через файл в справочник попадает то, чего не принимает
+ * форма, — и наоборот.
  *
- * Второе: файл добавляет и уточняет, но не отнимает. Категории удостоверения строкой таблицы не
- * снимаются (см. колонку «Категории ВУ»), заведённые реквизиты пустой ячейкой не стираются, а
+ * Второе: файл добавляет и уточняет, но не отнимает. Категории документа строкой таблицы не
+ * снимаются (см. `distributeCategories`), заведённые реквизиты пустой ячейкой не стираются, а
  * удалённых людей в выгрузке нет вовсе.
  */
 
@@ -177,9 +186,12 @@ function keepColumn<M>(
   hint: string,
   get: (m: M) => string,
   put: (m: M, value: string) => void,
+  /** Прежние имена колонки: файл, скачанный до переименования, обязан грузиться (`types.ts`). */
+  aliases?: string[],
 ): DirectoryColumn<M> {
   return {
     header,
+    ...(aliases ? { aliases } : {}),
     width,
     hint,
     get,
@@ -197,9 +209,11 @@ function dateColumn<M>(
   hint: string,
   get: (m: M) => string | null,
   put: (m: M, value: string) => void,
+  aliases?: string[],
 ): DirectoryColumn<M> {
   return {
     header,
+    ...(aliases ? { aliases } : {}),
     width,
     hint,
     get: (m) => dateCell(get(m)),
@@ -317,7 +331,8 @@ const credentialTypesDirectory = directory<CredentialTypeRow, CredentialTypeMode
       'тракториста-машиниста, медицинское заключение.',
     'Категории принадлежат виду документа, а не человеку: «C» водительского и «C» тракториста — ' +
       'разные допуски, и разводятся они именно здесь (ADR 0008).',
-    'Код «driver_license» менять нельзя: по нему портал находит водительские удостоверения.',
+    'Коды «driver_license» и «tractor_license» менять нельзя: по ним портал находит документы ' +
+      'допуска и по должности решает, каким из двух человек допущен (ADR 0095).',
     'Ключ строки — код. Загрузка заводит новые записи и правит заведённые; удалять строки файлом ' +
       'нельзя — ненужную гасят колонкой «Активен».',
   ],
@@ -526,9 +541,26 @@ const qualificationCategoriesDirectory = directory<
 // ── Водители ──
 
 /**
- * Строка справочника водителей: человек, его действующее трудовое отношение и водительское
- * удостоверение вместе. Отдельной таблицы водителей нет (ADR 0008), поэтому строку собирает
- * `load()` — тремя запросами на весь файл, а не запросом на человека.
+ * Документ допуска в строке справочника. Видов документа два — водительское удостоверение и
+ * удостоверение тракториста-машиниста (ADR 0095), — и устроены они одинаково: реквизиты плюс
+ * открытые категории. Поэтому у них общие колонки, общий разбор и общая запись: разойдись правила
+ * у двух половин одной строки, человек с файлом в руках объяснения этому не найдёт.
+ */
+interface DriverDocumentRow {
+  id: string;
+  series: string;
+  number: string;
+  issuedOn: string | null;
+  expiresOn: string | null;
+  issuedBy: string;
+  /** Коды открытых категорий в порядке справочника. */
+  categories: string[];
+}
+
+/**
+ * Строка справочника водителей: человек, его действующее трудовое отношение и документы допуска
+ * вместе. Отдельной таблицы водителей нет (ADR 0008), поэтому строку собирает `load()` — тремя
+ * запросами на весь файл, а не запросом на человека.
  */
 interface DriverRow {
   personId: string;
@@ -544,17 +576,25 @@ interface DriverRow {
   jobTitle: string;
   department: string;
   employedSince: string | null;
-  /** Действующее удостоверение; `null` — его нет, и загрузка вправе его завести. */
-  license: {
-    id: string;
-    series: string;
-    number: string;
-    issuedOn: string | null;
-    expiresOn: string | null;
-    issuedBy: string;
-    /** Коды открытых категорий в порядке справочника. */
-    categories: string[];
-  } | null;
+  /** Действующие документы по видам; вида нет в ключах — документа нет, и загрузка вправе завести. */
+  documents: Partial<Record<CredentialTypeCode, DriverDocumentRow>>;
+}
+
+/** Тот же документ глазами человека: колонки правят его поля, а не строку базы. */
+interface DriverDocumentModel {
+  /** Коды открытых категорий в нижнем регистре. */
+  categories: string[];
+  series: string;
+  number: string;
+  issuedOn: string | null;
+  expiresOn: string | null;
+  issuedBy: string;
+  /**
+   * Заведён ли документ этого вида. Колонки у поля нет — в файле его не правят: оно отвечает на
+   * вопрос «завести документ или дополнить заведённый», от которого зависят и запись, и то, куда
+   * лягут категории строки (`categoryTarget`).
+   */
+  exists: boolean;
 }
 
 interface DriverModel {
@@ -571,29 +611,48 @@ interface DriverModel {
   /** Обособленное подразделение — комментарий трудового отношения, как в кадровой выгрузке. */
   department: string;
   employedSince: string | null;
-  /** Коды открытых категорий в нижнем регистре. */
-  categories: string[];
-  licenseSeries: string;
-  licenseNumber: string;
-  licenseIssuedOn: string | null;
-  licenseExpiresOn: string | null;
-  licenseIssuedBy: string;
-  comment: string;
+  /** Реквизиты по видам документов: у человека их бывает два сразу. */
+  documents: Record<CredentialTypeCode, DriverDocumentModel>;
   /**
-   * Заведено ли у человека действующее удостоверение. Колонки у поля нет — в файле его не правят:
-   * оно отвечает на вопрос «завести документ или дополнить заведённый», от которого зависят и
-   * запись, и предупреждение по ADR 0049.
+   * Коды из колонок категорий, ещё не разложенные по документам; ключ — вид самой колонки.
+   *
+   * Колонка их только собирает: куда они лягут, зависит от всей строки — от должности, от уже
+   * заведённого документа, от реквизитов, — а колонки в файле стоят в любом порядке, и любой из
+   * них может не быть вовсе. Раскладывает их `distributeCategories`, когда строка собрана целиком.
    */
-  hasLicense: boolean;
+  pendingCategories: Record<CredentialTypeCode, string[]>;
+  comment: string;
 }
 
 interface DriversEnv {
   /** Специализация «driver»; `null` — справочники не наполнены (миграция 0058). */
   specializationId: string | null;
-  licenseTypeId: string | null;
-  /** Категории водительского удостоверения кодами: кода достаточно — он уникален внутри вида. */
-  categoryIdByCode: Map<string, string>;
+  /** Виды документов; `null` — вид не заведён (миграции 0058 и 0123). */
+  typeIds: Record<CredentialTypeCode, string | null>;
+  /**
+   * Категории кодами — свой словарь на каждый вид документа. Общего быть не может: код уникален
+   * внутри вида, а не глобально, и «C» тракториста нашлась бы среди водительских — молча выданный
+   * допуск к грузовику (ADR 0008).
+   */
+  categoryIds: Record<CredentialTypeCode, Map<string, string>>;
 }
+
+/**
+ * Значение на каждый вид документа. Через эту функцию собираются и окружение, и модель: перечень
+ * видов один (`CREDENTIAL_TYPE_CODES`), и забыть вид, заводя третий, здесь негде.
+ */
+function byCredentialType<T>(make: (type: CredentialTypeCode) => T): Record<CredentialTypeCode, T> {
+  return Object.fromEntries(CREDENTIAL_TYPE_CODES.map((t) => [t, make(t)])) as Record<
+    CredentialTypeCode,
+    T
+  >;
+}
+
+/** Родительный падеж названия документа: им подписаны сообщения «нет в справочнике категорий …». */
+const credentialTypeGenitive: Record<CredentialTypeCode, string> = {
+  driver_license: 'водительского удостоверения',
+  tractor_license: 'удостоверения тракториста-машиниста',
+};
 
 /** Водитель — человек с действующей специализацией «driver»: своей таблицы у него нет. */
 function driverSpecializationExists() {
@@ -607,73 +666,278 @@ function driverSpecializationExists() {
 }
 
 /**
- * Водительское ли это удостоверение — то же правило, что у кадровой выгрузки (ADR 0049,
- * `prepareDriverImport`). У водителя колонка категорий про ВУ; у машиниста в ней стоят категории
- * удостоверения тракториста-машиниста, где те же буквы означают другие машины, и завести по ним ВУ
- * значит молча выдать человеку допуск к автобусу.
+ * В какой документ лягут категории из колонки; `null` — этого из строки не видно.
  *
- * Условие выгрузки «и ни одного незнакомого кода» здесь выполняется само: незнакомый код — ошибка
- * строки, и до записи такая строка не доходит.
+ * Колонка «Категории УТМ» однозначна: человек написал коды там, где написано «УТМ». Приписать их
+ * к водительскому нельзя ни при каких условиях — это молча выданный допуск к автобусу.
+ *
+ * Колонка «Категории ВУ» такой однозначности не имеет и иметь не может: именно её приносит кадровая
+ * выгрузка, где колонка категорий одна на всех, а в ней вперемешку категории водительского и
+ * тракторного (ADR 0049). Кому они принадлежат, называет должность (ADR 0095, решение Р2): у
+ * водителя и машиниста автокрана — водительскому, у машиниста погрузчика и экскаватора —
+ * тракторному. Прежде такие категории терялись в предупреждении; теперь у них есть свой дом.
+ *
+ * Порядок проверок — от самого достоверного признака к догадке.
  */
-function looksLikeDriverDocument(m: DriverModel): boolean {
-  return (
-    m.licenseSeries !== '' ||
-    m.licenseNumber !== '' ||
-    isDriverJobTitle(m.jobTitle) ||
-    looksLikeDriverLicense(m.categories)
-  );
-}
-
-/** Почему удостоверение не заводится, хотя категории в строке есть; пусто — заводится. */
-function licenseSkipReason(m: DriverModel): string {
-  if (m.hasLicense || m.categories.length === 0 || looksLikeDriverDocument(m)) return '';
-  return (
-    `должность «${m.jobTitle}» не водительская: категории ` +
-    `${m.categories.map((c) => c.toUpperCase()).join(', ')} относятся к другому удостоверению и ` +
-    'не заведены'
-  );
+function categoryTarget(m: DriverModel, column: CredentialTypeCode): CredentialTypeCode | null {
+  if (column !== 'driver_license') return column;
+  // Заведённый документ портал сам и выгрузил: колонка описывает его, а не чужой. Иначе выгрузка
+  // машиниста с настоящим ВУ вернулась бы загрузкой, переносящей его категории в тракторное.
+  if (m.documents.driver_license.exists) return 'driver_license';
+  const byJobTitle = jobTitleCredentialType(m.jobTitle);
+  if (byJobTitle !== null) return byJobTitle;
+  // Должность порталу незнакома — остаётся прежнее правило ADR 0049: водительское заводится только
+  // по явным признакам. Реквизиты в строке — признак прямой: у тракторного они стояли бы в своих
+  // колонках. Коды-маркеры (подкатегории и составы с прицепом) у тракторного невозможны.
+  const document = m.documents.driver_license;
+  return document.series !== '' ||
+    document.number !== '' ||
+    looksLikeDriverLicense(m.pendingCategories.driver_license)
+    ? 'driver_license'
+    : null;
 }
 
 /**
- * Завести удостоверение с категориями. Документа без категорий не бывает: он не открывает ничего,
- * и водителя по нему не отобрать ни под одну машину — такой человек остаётся карточкой без ВУ.
+ * Разложить категории строки по документам — по одному разу на всю строку, а не в разборе ячейки.
+ *
+ * Здесь, а не в `set()`, потому что решение зависит от всей строки: от должности (её колонка может
+ * стоять после категорий и может отсутствовать вовсе), от уже заведённого документа и от реквизитов
+ * соседних колонок. И проверять коды по справочнику раньше этого решения нельзя: словарь категорий
+ * у каждого вида свой, а «CE» водительского и «F» тракторного друг у друга неизвестны.
+ *
+ * Вызывается из `check()` — то есть после разбора всех колонок и до сравнения «что изменится» и
+ * записи. Поэтому раскладка видна в отчёте предпросмотра: человек читает «Категории УТМ: пусто →
+ * B; C», а не узнаёт о переносе из базы.
  */
-async function insertLicense(
+function distributeCategories(m: DriverModel, ctx: RowContext, env: DriversEnv): void {
+  for (const column of CREDENTIAL_TYPE_CODES) {
+    const codes = m.pendingCategories[column];
+    if (codes.length === 0) continue;
+    const label = `Категории ${credentialTypeShortLabels[column]}`;
+
+    const target = categoryTarget(m, column);
+    if (target === null) {
+      ctx.warn(
+        `удостоверение не заводится — должность «${m.jobTitle}» порталу незнакома, и вид документа ` +
+          `по ней не определён: ${codes.map((c) => c.toUpperCase()).join(', ')} могут быть ` +
+          'категориями и водительского удостоверения, и тракторного, а те же буквы означают у них ' +
+          'разные машины (ADR 0049). Категории не заведены, человек заведён',
+      );
+      continue;
+    }
+    // Вид не заведён вовсе: об этом уже сказала одна ошибка строки, и разбирать по нему коды
+    // означало бы вторую — про каждый код, которого «нет в пустом справочнике».
+    if (env.typeIds[target] === null) continue;
+
+    const known = env.categoryIds[target];
+    const unknown = codes.filter((c) => !known.has(c));
+    if (unknown.length > 0) {
+      ctx.fail(
+        `${label} — ${unknown.map((c) => `«${c.toUpperCase()}»`).join(', ')} нет в справочнике ` +
+          `категорий ${credentialTypeGenitive[target]} — сначала загрузите справочник категорий ` +
+          'квалификаций',
+      );
+      continue;
+    }
+
+    /**
+     * Категории только добавляются. Меньший набор в файле — не снятие допуска: допуск к машине
+     * снимают документом — заменой удостоверения или его аннулированием, — а не строкой таблицы,
+     * которую кто-то сократил, потому что в его выгрузке этой колонки не было. Ошибкой это тоже не
+     * считается: файл собирают из кадровой системы, где категорий может не быть вовсе. Поэтому —
+     * предупреждение, а заведённое остаётся на месте.
+     */
+    const document = m.documents[target];
+    const missing = document.categories.filter((c) => !codes.includes(c));
+    if (missing.length > 0) {
+      ctx.warn(
+        `${label} — по ${credentialTypeShortLabels[target]} открыты ${missing
+          .map((c) => c.toUpperCase())
+          .join(', ')}, а в файле их нет: файлом допуск не снимают, заведённое осталось`,
+      );
+    }
+    document.categories = [
+      ...document.categories,
+      ...codes.filter((c) => !document.categories.includes(c)),
+    ];
+  }
+}
+
+/**
+ * Завести документ с категориями. Документа без категорий не бывает: он не открывает ничего, и
+ * водителя по нему не отобрать ни под одну машину — такой человек остаётся карточкой без документа.
+ * Категории к этому месту уже разложены по видам (`distributeCategories`), и решать здесь нечего.
+ */
+async function insertDocument(
   tx: Tx,
   personId: string,
+  type: CredentialTypeCode,
   m: DriverModel,
   env: DriversEnv,
   actorUserId: string,
 ): Promise<void> {
-  const licenseTypeId = env.licenseTypeId;
-  if (licenseTypeId === null) throw new DirectoriesNotSeededError();
-  if (m.categories.length === 0 || licenseSkipReason(m) !== '') return;
+  const document = m.documents[type];
+  if (document.categories.length === 0) return;
+  const typeId = env.typeIds[type];
+  if (typeId === null) throw new DirectoriesNotSeededError();
 
-  const withRequisites = m.licenseSeries !== '' || m.licenseNumber !== '';
+  const withRequisites = document.series !== '' || document.number !== '';
   const [credential] = await tx
     .insert(personCredentials)
     .values({
       personId,
-      credentialTypeId: licenseTypeId,
-      series: m.licenseSeries,
-      number: m.licenseNumber,
-      issuedOn: m.licenseIssuedOn,
-      expiresOn: m.licenseExpiresOn,
-      issuedBy: m.licenseIssuedBy,
+      credentialTypeId: typeId,
+      series: document.series,
+      number: document.number,
+      issuedOn: document.issuedOn,
+      expiresOn: document.expiresOn,
+      issuedBy: document.issuedBy,
       // Бумагу никто не сверял: файл её не заменяет, и допуска эта отметка не отменяет (ADR 0047).
       verificationStatus: 'unverified',
-      comment: withRequisites ? LICENSE_WITH_REQUISITES_COMMENT : LICENSE_COMMENT,
+      comment: withRequisites
+        ? licenseWithRequisitesComment(credentialTypeShortLabels[type])
+        : LICENSE_COMMENT,
       createdBy: actorUserId,
     })
     .returning({ id: personCredentials.id });
 
   await tx.insert(personCredentialCategories).values(
-    m.categories.map((code) => ({
+    document.categories.map((code) => ({
       credentialId: credential!.id,
-      qualificationCategoryId: env.categoryIdByCode.get(code)!,
-      credentialTypeId: licenseTypeId,
+      qualificationCategoryId: env.categoryIds[type].get(code)!,
+      credentialTypeId: typeId,
     })),
   );
+}
+
+/** Чем заполняют колонки блока документа: правила у двух видов одни, слова разные. */
+interface DocumentHints {
+  categories: string;
+  series: string;
+  number: string;
+  issuedOn: string;
+  expiresOn: string;
+  issuedBy: string;
+}
+
+const documentHints: Record<CredentialTypeCode, DocumentHints> = {
+  driver_license: {
+    categories:
+      'Коды открытых категорий через «;»: «B; C; CE». Файлом их только добавляют — снять допуск ' +
+      'строкой таблицы нельзя. Если должность требует тракторного удостоверения, коды из этой ' +
+      'колонки заводятся в него: кадровая выгрузка присылает категории одной колонкой (ADR 0095).',
+    series: 'Как напечатана в удостоверении: «99 39». Пустая ячейка заведённую серию не стирает.',
+    number: 'Без номера путевой лист печатается недействительным (ADR 0055).',
+    issuedOn: 'Дата выдачи водительского удостоверения, ДД.ММ.ГГГГ: её печатает путевой лист.',
+    expiresOn: 'Срок действия водительского удостоверения, ДД.ММ.ГГГГ; пусто — срок не внесён.',
+    issuedBy: 'Подразделение ГИБДД из удостоверения.',
+  },
+  tractor_license: {
+    categories:
+      'Коды открытых категорий самоходных машин через «;»: «A1; B; C». Те же буквы, что у ' +
+      'водительского удостоверения, означают здесь другие машины, и в водительское коды из этой ' +
+      'колонки не попадают никогда (ADR 0008).',
+    series: 'Как напечатана в удостоверении тракториста-машиниста; пустая ячейка её не стирает.',
+    number: 'Номер удостоверения тракториста-машиниста.',
+    issuedOn: 'Дата выдачи удостоверения тракториста-машиниста, ДД.ММ.ГГГГ.',
+    expiresOn:
+      'Срок действия удостоверения тракториста-машиниста, ДД.ММ.ГГГГ; пусто — срок не внесён.',
+    issuedBy: 'Инспекция гостехнадзора, выдавшая удостоверение.',
+  },
+};
+
+/**
+ * Как колонки водительского блока назывались до ADR 0095. Пока документ был один, вида они не
+ * называли, и файл, скачанный до разделения колонок, обязан грузиться — псевдонимами он и грузится
+ * (`types.ts`, `aliases`). Категории, серия и номер переименования не требовали: «ВУ» в их
+ * заголовках стояло и раньше.
+ */
+const DRIVER_LICENSE_LEGACY_HEADERS: Partial<Record<keyof DocumentHints, string>> = {
+  issuedOn: 'Выдано',
+  expiresOn: 'Действительно до',
+  issuedBy: 'Кем выдано',
+};
+
+function legacyAliases(type: CredentialTypeCode, field: keyof DocumentHints): string[] | undefined {
+  if (type !== 'driver_license') return undefined;
+  const was = DRIVER_LICENSE_LEGACY_HEADERS[field];
+  return was === undefined ? undefined : [was];
+}
+
+/**
+ * Шесть колонок одного документа. Два блока собираются одной функцией, а не двумя списками: разойдись
+ * у них правило «пустая ячейка не стирает» или разбор даты — и один и тот же файл вёл бы себя
+ * по-разному в двух половинах одной строки.
+ */
+function documentColumns(type: CredentialTypeCode): DirectoryColumn<DriverModel>[] {
+  const short = credentialTypeShortLabels[type];
+  const hints = documentHints[type];
+  const document = (m: DriverModel): DriverDocumentModel => m.documents[type];
+  return [
+    {
+      header: `Категории ${short}`,
+      width: 22,
+      hint: hints.categories,
+      get: (m) => listCell(document(m).categories.map((c) => c.toUpperCase())),
+      set: (m, text) => {
+        // Разделитель ячейки общий (`parseList`: «;» и «,»), приведение кодов — то же, что у
+        // кадровой выгрузки: нижний регистр, без пустых элементов и без повторов. Дальше коды
+        // ждут всей строки: чей это документ, решает `distributeCategories`.
+        const codes = parseCategoryCodes(parseList(text).join(','));
+        if (codes.length > 0) m.pendingCategories[type] = codes;
+      },
+    },
+    keepColumn<DriverModel>(
+      `Серия ${short}`,
+      12,
+      hints.series,
+      (m) => document(m).series,
+      (m, v) => {
+        document(m).series = v;
+      },
+      legacyAliases(type, 'series'),
+    ),
+    keepColumn<DriverModel>(
+      `Номер ${short}`,
+      14,
+      hints.number,
+      (m) => document(m).number,
+      (m, v) => {
+        document(m).number = v;
+      },
+      legacyAliases(type, 'number'),
+    ),
+    dateColumn<DriverModel>(
+      `Выдано ${short}`,
+      15,
+      hints.issuedOn,
+      (m) => document(m).issuedOn,
+      (m, v) => {
+        document(m).issuedOn = v;
+      },
+      legacyAliases(type, 'issuedOn'),
+    ),
+    dateColumn<DriverModel>(
+      `Действительно до ${short}`,
+      21,
+      hints.expiresOn,
+      (m) => document(m).expiresOn,
+      (m, v) => {
+        document(m).expiresOn = v;
+      },
+      legacyAliases(type, 'expiresOn'),
+    ),
+    keepColumn<DriverModel>(
+      `Кем выдано ${short}`,
+      26,
+      hints.issuedBy,
+      (m) => document(m).issuedBy,
+      (m, v) => {
+        document(m).issuedBy = v;
+      },
+      legacyAliases(type, 'issuedBy'),
+    ),
+  ];
 }
 
 const driversDirectory = directory<DriverRow, DriverModel, DriversEnv>({
@@ -683,23 +947,43 @@ const driversDirectory = directory<DriverRow, DriverModel, DriversEnv>({
       .select({ id: specializations.id })
       .from(specializations)
       .where(eq(specializations.code, DRIVER_SPECIALIZATION_CODE));
-    const [licenseType] = await db
-      .select({ id: credentialTypes.id })
+    const types = await db
+      .select({ id: credentialTypes.id, code: credentialTypes.code })
       .from(credentialTypes)
-      .where(eq(credentialTypes.code, DRIVER_LICENSE_CODE));
-    const categories = licenseType
-      ? await db
-          .select({ id: qualificationCategories.id, code: qualificationCategories.code })
-          .from(qualificationCategories)
-          .where(eq(qualificationCategories.credentialTypeId, licenseType.id))
-      : [];
+      .where(inArray(credentialTypes.code, [...CREDENTIAL_TYPE_CODES]));
+    const idByCode = new Map(types.map((t) => [t.code, t.id]));
+    // Категории обоих видов одним запросом, но словарями врозь: код уникален внутри вида, и общий
+    // словарь нашёл бы «C» тракториста по требованию «C» водительского (ADR 0008).
+    const categories =
+      types.length > 0
+        ? await db
+            .select({
+              id: qualificationCategories.id,
+              code: qualificationCategories.code,
+              credentialTypeId: qualificationCategories.credentialTypeId,
+            })
+            .from(qualificationCategories)
+            .where(
+              inArray(
+                qualificationCategories.credentialTypeId,
+                types.map((t) => t.id),
+              ),
+            )
+        : [];
     return {
       specializationId: specialization?.id ?? null,
-      licenseTypeId: licenseType?.id ?? null,
-      categoryIdByCode: new Map(categories.map((c) => [c.code, c.id])),
+      typeIds: byCredentialType((type) => idByCode.get(type) ?? null),
+      categoryIds: byCredentialType(
+        (type) =>
+          new Map(
+            categories
+              .filter((c) => c.credentialTypeId === idByCode.get(type))
+              .map((c) => [c.code, c.id]),
+          ),
+      ),
     };
   },
-  columns: (env) => [
+  columns: () => [
     {
       header: 'ФИО',
       width: 32,
@@ -779,8 +1063,9 @@ const driversDirectory = directory<DriverRow, DriverModel, DriversEnv>({
     keepColumn<DriverModel>(
       'Должность',
       26,
-      'Как должность записана в кадрах. Слово «Водитель» в начале означает, что колонка категорий ' +
-        'про водительское удостоверение (ADR 0049).',
+      'Как должность записана в кадрах. Ею решается, каким документом человек допущен: водитель и ' +
+        'машинист автокрана — водительским удостоверением, машинист погрузчика и экскаватора — ' +
+        'тракторным (ADR 0095). В незнакомой должности портал документа не угадывает.',
       (m) => m.jobTitle,
       (m, v) => {
         m.jobTitle = v;
@@ -804,94 +1089,10 @@ const driversDirectory = directory<DriverRow, DriverModel, DriversEnv>({
         m.employedSince = v;
       },
     ),
-    {
-      header: 'Категории ВУ',
-      width: 22,
-      hint:
-        'Коды открытых категорий через «;»: «B; C; CE». Файлом их только добавляют — снять ' +
-        'допуск строкой таблицы нельзя.',
-      get: (m) => listCell(m.categories.map((c) => c.toUpperCase())),
-      set: (m, text, ctx) => {
-        // Справочник не наполнен — об этом скажет `check()` один раз, а не по коду на строку.
-        if (env.licenseTypeId === null) return;
-        // Разделитель ячейки общий (`parseList`: «;» и «,»), приведение кодов — то же, что у
-        // кадровой выгрузки: нижний регистр, без пустых элементов и без повторов.
-        const codes = parseCategoryCodes(parseList(text).join(','));
-        if (codes.length === 0) return;
-
-        const unknown = codes.filter((c) => !env.categoryIdByCode.has(c));
-        if (unknown.length > 0) {
-          ctx.fail(
-            `Категории ВУ — ${unknown.map((c) => `«${c.toUpperCase()}»`).join(', ')} нет в ` +
-              'справочнике категорий водительского удостоверения — сначала загрузите справочник ' +
-              'категорий квалификаций',
-          );
-          return;
-        }
-
-        /**
-         * Категории только добавляются. Меньший набор в файле — не снятие допуска: допуск к машине
-         * снимают документом — заменой удостоверения или его аннулированием, — а не строкой
-         * таблицы, которую кто-то сократил, потому что в его выгрузке этой колонки не было. Ошибкой
-         * это тоже не считается: файл собирают из кадровой системы, где категорий может не быть
-         * вовсе. Поэтому — предупреждение, а заведённое остаётся на месте.
-         */
-        const missing = m.categories.filter((c) => !codes.includes(c));
-        if (missing.length > 0) {
-          ctx.warn(
-            `Категории ВУ — у водителя открыты ${missing
-              .map((c) => c.toUpperCase())
-              .join(', ')}, а в файле их нет: файлом допуск не снимают, заведённое осталось`,
-          );
-        }
-        m.categories = [...m.categories, ...codes.filter((c) => !m.categories.includes(c))];
-      },
-    },
-    keepColumn<DriverModel>(
-      'Серия ВУ',
-      12,
-      'Как напечатана в удостоверении: «99 39». Пустая ячейка заведённую серию не стирает.',
-      (m) => m.licenseSeries,
-      (m, v) => {
-        m.licenseSeries = v;
-      },
-    ),
-    keepColumn<DriverModel>(
-      'Номер ВУ',
-      14,
-      'Без номера путевой лист печатается недействительным (ADR 0055).',
-      (m) => m.licenseNumber,
-      (m, v) => {
-        m.licenseNumber = v;
-      },
-    ),
-    dateColumn<DriverModel>(
-      'Выдано',
-      13,
-      'Дата выдачи удостоверения, ДД.ММ.ГГГГ: её печатает путевой лист.',
-      (m) => m.licenseIssuedOn,
-      (m, v) => {
-        m.licenseIssuedOn = v;
-      },
-    ),
-    dateColumn<DriverModel>(
-      'Действительно до',
-      18,
-      'Срок действия удостоверения, ДД.ММ.ГГГГ; пусто — срок не внесён.',
-      (m) => m.licenseExpiresOn,
-      (m, v) => {
-        m.licenseExpiresOn = v;
-      },
-    ),
-    keepColumn<DriverModel>(
-      'Кем выдано',
-      26,
-      'Подразделение ГИБДД из удостоверения.',
-      (m) => m.licenseIssuedBy,
-      (m, v) => {
-        m.licenseIssuedBy = v;
-      },
-    ),
+    // Блоки документов — после человека и кадровых полей и в порядке `CREDENTIAL_TYPE_CODES`:
+    // сначала водительское удостоверение, потом тракторное. Так файл и читают глазами — сверяя
+    // левую половину строки с кадровой выгрузкой, а правую с документом в руках.
+    ...CREDENTIAL_TYPE_CODES.flatMap((type) => documentColumns(type)),
     {
       header: 'Комментарий',
       width: 40,
@@ -904,23 +1105,34 @@ const driversDirectory = directory<DriverRow, DriverModel, DriversEnv>({
     },
   ],
   help: () => [
-    'ВНИМАНИЕ: файл содержит персональные данные — ФИО, СНИЛС, дату рождения и реквизиты ' +
-      'водительского удостоверения. Его не пересылают почтой и мессенджерами, не кладут в общие ' +
-      'папки и удаляют с рабочей станции, когда он больше не нужен.',
-    'Справочник водителей — человек, его трудовое отношение и водительское удостоверение одной ' +
-      'строкой: отдельной таблицы водителей в портале нет (ADR 0008).',
+    'ВНИМАНИЕ: файл содержит персональные данные — ФИО, СНИЛС, дату рождения и реквизиты сразу ' +
+      'двух документов: водительского удостоверения и удостоверения тракториста-машиниста. Его не ' +
+      'пересылают почтой и мессенджерами, не кладут в общие папки и удаляют с рабочей станции, ' +
+      'когда он больше не нужен.',
+    'Справочник водителей — человек, его трудовое отношение и документы допуска одной строкой: ' +
+      'отдельной таблицы водителей в портале нет (ADR 0008).',
+    'Документов два, и колонки у них свои: «ВУ» — водительское удостоверение, «УТМ» — ' +
+      'удостоверение тракториста-машиниста. Одна и та же буква означает у них разные машины, ' +
+      'поэтому категории из колонок «УТМ» в водительское удостоверение не попадают никогда.',
+    'Каким документом человек допущен, говорит должность: водитель и машинист автокрана — ' +
+      'водительским, машинист погрузчика и экскаватора — тракторным (ADR 0095). Ею же портал ' +
+      'решает, к какому документу отнести категории из колонки «Категории ВУ»: кадровая выгрузка ' +
+      'присылает их одной колонкой на всех, и у машиниста экскаватора в ней стоят тракторные.',
+    'Если должность порталу незнакома, а категории в строке есть, удостоверение не заводится: по ' +
+      'одной букве не видно, водительская она или тракторная (ADR 0049). Строка при этом заведёт ' +
+      'человека, а расхождение уйдёт в предупреждения — там незнакомую должность и замечают.',
     'Ключ строки — СНИЛС. Он принимается в любом написании, но контрольная сумма проверяется ' +
       'всегда: опечатка в одной цифре — это другой человек.',
-    'Категории ВУ файлом только добавляются. Если в строке их меньше, чем открыто у водителя, ' +
+    'Категории файлом только добавляются. Если в строке их меньше, чем открыто у человека, ' +
       'заведённое остаётся, а расхождение попадает в предупреждения: допуск к машине снимают ' +
       'документом, а не строкой таблицы.',
-    'Реквизиты удостоверения (серия, номер, даты, кем выдано) заводятся вместе с документом и ' +
+    'Реквизиты удостоверений (серия, номер, даты, кем выдано) заводятся вместе с документом и ' +
       'уточняются из файла. Пустая ячейка заведённое не стирает — так же ведут себя все колонки ' +
       'человека, кроме «Комментарий».',
-    'Если должность не водительская, а категории в строке есть, удостоверение не заводится: в той ' +
-      'же колонке у машиниста стоят категории удостоверения тракториста-машиниста, где те же буквы ' +
-      'означают другие машины (ADR 0049). Строка при этом заведёт человека, а расхождение уйдёт в ' +
-      'предупреждения.',
+    'Прежние заголовки «Выдано», «Действительно до» и «Кем выдано» по-прежнему принимаются: файл, ' +
+      'скачанный до разделения колонок по документам, грузится как раньше — он про водительское ' +
+      'удостоверение. Ставить в одном файле и прежний заголовок, и нынешний нельзя: какой из двух ' +
+      'читать, неизвестно.',
     'Удалённых водителей в файле нет, и удалить человека загрузкой нельзя: это учётное действие ' +
       'с аудитом, а не побочный эффект повторной загрузки.',
   ],
@@ -968,10 +1180,19 @@ const driversDirectory = directory<DriverRow, DriverModel, DriversEnv>({
         jobTitle: p.jobTitle ?? '',
         department: p.department ?? '',
         employedSince: p.employedSince,
-        license: null,
+        documents: {},
       });
     }
-    if (env.licenseTypeId === null) return [...rows.values()];
+
+    // Виды документов идентификаторами и обратно кодами: строка `person_credentials` называет вид
+    // ссылкой, а модель — кодом, и переводить одно в другое незачем дважды.
+    const typeByCode = new Map<string, CredentialTypeCode>();
+    for (const type of CREDENTIAL_TYPE_CODES) {
+      const id = env.typeIds[type];
+      if (id !== null) typeByCode.set(id, type);
+    }
+    const typeIds = [...typeByCode.keys()];
+    if (typeIds.length === 0) return [...rows.values()];
 
     const categories = await db
       .select({
@@ -983,8 +1204,9 @@ const driversDirectory = directory<DriverRow, DriverModel, DriversEnv>({
         qualificationCategories,
         eq(qualificationCategories.id, personCredentialCategories.qualificationCategoryId),
       )
-      .where(eq(personCredentialCategories.credentialTypeId, env.licenseTypeId))
+      .where(inArray(personCredentialCategories.credentialTypeId, typeIds))
       .orderBy(asc(qualificationCategories.sortOrder), asc(qualificationCategories.code));
+    // Ключ — документ, а не вид: у документа вид один, и коды двух видов в одном списке не сойдутся.
     const codesByCredential = new Map<string, string[]>();
     for (const c of categories) {
       const list = codesByCredential.get(c.credentialId) ?? [];
@@ -992,10 +1214,11 @@ const driversDirectory = directory<DriverRow, DriverModel, DriversEnv>({
       codesByCredential.set(c.credentialId, list);
     }
 
-    const licenses = await db
+    const credentials = await db
       .select({
         id: personCredentials.id,
         personId: personCredentials.personId,
+        credentialTypeId: personCredentials.credentialTypeId,
         series: personCredentials.series,
         number: personCredentials.number,
         issuedOn: personCredentials.issuedOn,
@@ -1005,7 +1228,7 @@ const driversDirectory = directory<DriverRow, DriverModel, DriversEnv>({
       .from(personCredentials)
       .where(
         and(
-          eq(personCredentials.credentialTypeId, env.licenseTypeId),
+          inArray(personCredentials.credentialTypeId, typeIds),
           isNull(personCredentials.deletedAt),
           // Аннулированный документ допуска не даёт: выгружать его реквизиты значило бы предлагать
           // их правку, тогда как заменяют такой документ новым — в карточке водителя.
@@ -1015,17 +1238,19 @@ const driversDirectory = directory<DriverRow, DriverModel, DriversEnv>({
       // Свежий документ первым: им человек и ездит, старые остаются историей.
       .orderBy(desc(personCredentials.issuedOn), desc(personCredentials.createdAt));
 
-    for (const l of licenses) {
-      const row = rows.get(l.personId);
-      if (!row || row.license !== null) continue;
-      row.license = {
-        id: l.id,
-        series: l.series,
-        number: l.number,
-        issuedOn: l.issuedOn,
-        expiresOn: l.expiresOn,
-        issuedBy: l.issuedBy,
-        categories: codesByCredential.get(l.id) ?? [],
+    for (const c of credentials) {
+      const row = rows.get(c.personId);
+      const type = typeByCode.get(c.credentialTypeId);
+      // Свежий по своему виду уже взят: у человека бывает и ВУ, и УТМ, и по два каждого.
+      if (!row || type === undefined || row.documents[type] !== undefined) continue;
+      row.documents[type] = {
+        id: c.id,
+        series: c.series,
+        number: c.number,
+        issuedOn: c.issuedOn,
+        expiresOn: c.expiresOn,
+        issuedBy: c.issuedBy,
+        categories: codesByCredential.get(c.id) ?? [],
       };
     }
     return [...rows.values()];
@@ -1041,14 +1266,20 @@ const driversDirectory = directory<DriverRow, DriverModel, DriversEnv>({
     jobTitle: row.jobTitle,
     department: row.department,
     employedSince: row.employedSince,
-    categories: row.license?.categories ?? [],
-    licenseSeries: row.license?.series ?? '',
-    licenseNumber: row.license?.number ?? '',
-    licenseIssuedOn: row.license?.issuedOn ?? null,
-    licenseExpiresOn: row.license?.expiresOn ?? null,
-    licenseIssuedBy: row.license?.issuedBy ?? '',
+    documents: byCredentialType((type) => {
+      const document = row.documents[type];
+      return {
+        categories: document?.categories ?? [],
+        series: document?.series ?? '',
+        number: document?.number ?? '',
+        issuedOn: document?.issuedOn ?? null,
+        expiresOn: document?.expiresOn ?? null,
+        issuedBy: document?.issuedBy ?? '',
+        exists: document !== undefined,
+      };
+    }),
+    pendingCategories: byCredentialType(() => []),
     comment: row.comment,
-    hasLicense: row.license !== null,
   }),
   blank: () => ({
     fullName: '',
@@ -1061,14 +1292,17 @@ const driversDirectory = directory<DriverRow, DriverModel, DriversEnv>({
     jobTitle: 'Водитель',
     department: '',
     employedSince: null,
-    categories: [],
-    licenseSeries: '',
-    licenseNumber: '',
-    licenseIssuedOn: null,
-    licenseExpiresOn: null,
-    licenseIssuedBy: '',
+    documents: byCredentialType(() => ({
+      categories: [],
+      series: '',
+      number: '',
+      issuedOn: null,
+      expiresOn: null,
+      issuedBy: '',
+      exists: false,
+    })),
+    pendingCategories: byCredentialType(() => []),
     comment: '',
-    hasLicense: false,
   }),
   // Ключ человека — СНИЛС (ADR 0037). Негодный номер ключом не притворяется: об этом уже сказала
   // ошибка разбора, а искать по нему значило бы найти не того или завести второго.
@@ -1097,19 +1331,41 @@ const driversDirectory = directory<DriverRow, DriverModel, DriversEnv>({
       ctx.fail(`СНИЛС ${formatSnils(m.snils)} не проходит проверку контрольной суммы`);
     }
 
-    if (m.licenseIssuedOn && m.licenseExpiresOn && m.licenseExpiresOn < m.licenseIssuedOn) {
-      ctx.fail('Действительно до — срок действия ВУ не может быть раньше даты выдачи');
+    for (const type of CREDENTIAL_TYPE_CODES) {
+      const document = m.documents[type];
+      const short = credentialTypeShortLabels[type];
+      if (document.issuedOn && document.expiresOn && document.expiresOn < document.issuedOn) {
+        ctx.fail(
+          `Действительно до ${short} — срок действия ${short} не может быть раньше даты выдачи`,
+        );
+      }
     }
 
-    if (env.specializationId === null || env.licenseTypeId === null) {
+    if (
+      env.specializationId === null ||
+      CREDENTIAL_TYPE_CODES.some((type) => env.typeIds[type] === null)
+    ) {
       ctx.fail(
-        'справочники не наполнены: примените миграцию 0058 (специализация «driver» и вид ' +
-          'документа «driver_license»)',
+        'справочники не наполнены: примените миграции 0058 (специализация «driver» и вид ' +
+          'документа «driver_license») и 0123 (вид документа «tractor_license»)',
       );
     }
 
-    const skip = licenseSkipReason(m);
-    if (skip !== '') ctx.warn(`удостоверение не заводится — ${skip}`);
+    distributeCategories(m, ctx, env);
+
+    // После раскладки видно и обратное: реквизиты есть, а открывать документу нечего. Заводить его
+    // без категорий бессмысленно — под машину такого человека не отобрать, — но и промолчать нельзя:
+    // человек внёс номер и вправе знать, что документа по нему не появилось.
+    for (const type of CREDENTIAL_TYPE_CODES) {
+      const document = m.documents[type];
+      if (document.exists || document.categories.length > 0) continue;
+      if (document.series === '' && document.number === '') continue;
+      const short = credentialTypeShortLabels[type];
+      ctx.warn(
+        `${short}: реквизиты в строке есть, а категорий нет — документ не заводится, потому что не ` +
+          'открывает ни одной машины. Внесите категории или заведите документ в карточке водителя',
+      );
+    }
   },
   create: async (tx, m, env, actorUserId) => {
     const specializationId = env.specializationId;
@@ -1148,7 +1404,11 @@ const driversDirectory = directory<DriverRow, DriverModel, DriversEnv>({
       ...(m.employedSince ? { startedOn: m.employedSince } : {}),
     });
 
-    await insertLicense(tx, personId, m, env, actorUserId);
+    // Оба документа: категории к этому месту уже разложены по видам, и заводится ровно то, для
+    // чего они есть. У машиниста экскаватора это тракторное удостоверение, у водителя — ВУ.
+    for (const type of CREDENTIAL_TYPE_CODES) {
+      await insertDocument(tx, personId, type, m, env, actorUserId);
+    }
   },
   update: async (tx, row, m, env, actorUserId) => {
     await tx
@@ -1185,39 +1445,43 @@ const driversDirectory = directory<DriverRow, DriverModel, DriversEnv>({
         .where(eq(personEmployments.id, row.employmentId));
     }
 
-    const license = row.license;
-    if (license === null) {
-      await insertLicense(tx, row.personId, m, env, actorUserId);
-      return;
-    }
+    for (const type of CREDENTIAL_TYPE_CODES) {
+      const existing = row.documents[type];
+      if (existing === undefined) {
+        await insertDocument(tx, row.personId, type, m, env, actorUserId);
+        continue;
+      }
+      const document = m.documents[type];
 
-    // Реквизиты пишутся из модели целиком, и стереть заведённое это не может: пустую ячейку
-    // колонка в модель не переносит, так что в ней остаётся то, что уже заведено.
-    await tx
-      .update(personCredentials)
-      .set({
-        series: m.licenseSeries,
-        number: m.licenseNumber,
-        issuedOn: m.licenseIssuedOn,
-        expiresOn: m.licenseExpiresOn,
-        issuedBy: m.licenseIssuedBy,
-        updatedBy: actorUserId,
-        updatedAt: new Date(),
-        version: sql`${personCredentials.version} + 1`,
-      })
-      .where(eq(personCredentials.id, license.id));
+      // Реквизиты пишутся из модели целиком, и стереть заведённое это не может: пустую ячейку
+      // колонка в модель не переносит, так что в ней остаётся то, что уже заведено.
+      await tx
+        .update(personCredentials)
+        .set({
+          series: document.series,
+          number: document.number,
+          issuedOn: document.issuedOn,
+          expiresOn: document.expiresOn,
+          issuedBy: document.issuedBy,
+          updatedBy: actorUserId,
+          updatedAt: new Date(),
+          version: sql`${personCredentials.version} + 1`,
+        })
+        .where(eq(personCredentials.id, existing.id));
 
-    // Категории только добавляются — см. колонку «Категории ВУ»: снятие допуска документом, а не
-    // файлом. Модель к этому месту уже собрана так, что заведённое из неё не пропало.
-    const added = m.categories.filter((c) => !license.categories.includes(c));
-    if (added.length > 0) {
-      await tx.insert(personCredentialCategories).values(
-        added.map((code) => ({
-          credentialId: license.id,
-          qualificationCategoryId: env.categoryIdByCode.get(code)!,
-          credentialTypeId: env.licenseTypeId!,
-        })),
-      );
+      // Категории только добавляются — см. `distributeCategories`: снятие допуска документом, а не
+      // файлом. Модель к этому месту уже собрана так, что заведённое из неё не пропало.
+      const added = document.categories.filter((c) => !existing.categories.includes(c));
+      if (added.length > 0) {
+        await tx.insert(personCredentialCategories).values(
+          added.map((code) => ({
+            credentialId: existing.id,
+            qualificationCategoryId: env.categoryIds[type].get(code)!,
+            // Вид заведённого документа известен: по нему он и найден в `load()`.
+            credentialTypeId: env.typeIds[type]!,
+          })),
+        );
+      }
     }
   },
 });

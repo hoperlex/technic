@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   createOfficeEquipmentSchema,
+  moveOfficeEquipmentSchema,
   createOfficeEquipmentTypeSchema,
   officeEquipmentListQuerySchema,
   officeEquipmentTitle,
@@ -114,8 +115,26 @@ describe('контракт единицы оргтехники', () => {
     ).toBe('0012345');
   });
 
-  it('единицу переносят на другой объект и перезакрепляют за отделом; null снимает владельца', () => {
-    expect(updateOfficeEquipmentSchema.parse({ objectId: OBJECT_ID }).objectId).toBe(OBJECT_ID);
+  it('правка перезакрепляет единицу за отделом, но объект ею не меняется (ADR 0097)', () => {
+    // Объект убран из правки: переезд — событие с датой, причиной и журналом, и тихая смена
+    // площадки в форме оставляла бы вопрос «где этот аппарат стоял в мае» без ответа.
+    expect(updateOfficeEquipmentSchema.safeParse({ objectId: OBJECT_ID }).success).toBe(false);
+    expect(
+      moveOfficeEquipmentSchema.parse({
+        objectId: OBJECT_ID,
+        movedOn: '2026-08-11',
+        reason: 'Перевод бухгалтерии',
+      }).objectId,
+    ).toBe(OBJECT_ID);
+    // «На складе» без уточнения не проходит: искать такую технику негде.
+    expect(
+      moveOfficeEquipmentSchema.safeParse({
+        objectId: OBJECT_ID,
+        state: 'in_stock',
+        movedOn: '2026-08-11',
+        reason: 'До переезда',
+      }).success,
+    ).toBe(false);
     expect(updateOfficeEquipmentSchema.parse({ departmentId: DEPARTMENT_ID }).departmentId).toBe(
       DEPARTMENT_ID,
     );

@@ -168,15 +168,14 @@ export function VehicleRouteModal({ routeId, onClose, onChanged, onEdit }: Props
   });
 
   /**
-   * Чего не хватает водителю рейса для бланка (ADR 0064). Выписку это не останавливает — сервер
-   * её и не остановит, — но графа СНИЛСа или номера удостоверения останется в напечатанном листе
-   * пустой, а лист с пустой графой недействителен.
+   * Чего не хватает водителю рейса для бланка (ADR 0064): выписку это не останавливает, но графа
+   * СНИЛСа или номера удостоверения останется в листе пустой, а лист с пустой графой
+   * недействителен. Вид документа назван водительским жёстко: `driverGaps` его не несёт, а 4-П и
+   * форму № 3 возит водитель (ADR 0095).
    */
+  const formLabel = route?.formCode ? waybillFormShortLabels[route.formCode] : null;
   const driverGaps = route
-    ? driverDocumentGapsWarning(
-        route.driverGaps,
-        route.formCode ? waybillFormShortLabels[route.formCode] : null,
-      )
+    ? driverDocumentGapsWarning(route.driverGaps, 'driver_license', formLabel)
     : null;
 
   /** Рейс без заявок: лист по нему выписывается пустым бланком (ADR 0071). */

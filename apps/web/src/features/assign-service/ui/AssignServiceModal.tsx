@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ServiceRequestDto } from '@technic/contracts';
 import {
   serviceCompanyOptionsQuery,
+  ServiceRequestContext,
   serviceRequestKeys,
   serviceRequestsApi,
 } from '@entities/service-request';
@@ -80,6 +81,9 @@ export function AssignServiceModal({
       okText={reassign ? 'Переназначить' : 'Назначить'}
       width={520}
     >
+      {/* О какой заявке речь (Р57): исполнителя выбирают по тому, что чинят и где оно стоит, —
+          до этой шапки в окне не было ни техники, ни объекта. */}
+      {request && <ServiceRequestContext request={request} />}
       {reassign && (
         <Alert
           type="warning"

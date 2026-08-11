@@ -57,6 +57,45 @@ export interface OfficeEquipmentTypeDto {
   updatedAt: string;
 }
 
+// ── Местонахождение единицы (план модернизации, Р61) ──
+//
+// Не «статус жизненного цикла»: списание и ввод в эксплуатацию модуль не ведёт (§12 плана модуля),
+// а `isActive` отвечает на другой вопрос — «эксплуатируется ли». Здесь только физическое место, и
+// меняется оно перемещением, а не правкой карточки.
+
+export const OFFICE_EQUIPMENT_STATES = [
+  'on_site',
+  'at_service',
+  'in_stock',
+  'with_employee',
+] as const;
+export const officeEquipmentStateSchema = z.enum(OFFICE_EQUIPMENT_STATES);
+export type OfficeEquipmentState = (typeof OFFICE_EQUIPMENT_STATES)[number];
+
+export const officeEquipmentStateLabels: Record<OfficeEquipmentState, string> = {
+  on_site: 'На объекте',
+  at_service: 'В ремонте',
+  in_stock: 'На складе',
+  with_employee: 'У сотрудника',
+};
+
+export const officeEquipmentStateColors: Record<OfficeEquipmentState, string | undefined> = {
+  // «На объекте» — рабочее состояние, и цветом его не выделяют: иначе в списке горит каждая строка.
+  on_site: undefined,
+  at_service: 'orange',
+  in_stock: 'blue',
+  with_employee: 'geekblue',
+};
+
+/**
+ * Состояния, которые обязаны быть уточнены (то же держит CHECK в БД): «на складе» и «у сотрудника»
+ * без уточнения — потерянная техника, искать её по такой записи негде. У «на объекте» место уже
+ * есть колонкой `location`, у «в ремонте» — сервисная компания в заявке.
+ */
+export function officeEquipmentStateNeedsNote(state: OfficeEquipmentState): boolean {
+  return state === 'in_stock' || state === 'with_employee';
+}
+
 // ── Единица оргтехники ──
 
 export const OFFICE_EQUIPMENT_SORT_FIELDS = [
@@ -87,6 +126,15 @@ export const officeEquipmentListQuerySchema = baseListQuery(OFFICE_EQUIPMENT_SOR
   objectId: uuidSchema.optional(),
   equipmentTypeId: uuidSchema.optional(),
   departmentId: uuidSchema.optional(),
+  state: officeEquipmentStateSchema.optional(),
+  /**
+   * «В ремонте, а открытых заявок нет» — срез «Требуют внимания» (Р61). Портал не знает, вернули
+   * ли аппарат: он знает только то, что ему сказали, — поэтому это отчёт, а не запрет.
+   */
+  strandedAtService: z
+    .enum(['true', 'false'])
+    .optional()
+    .transform((v) => v === 'true'),
   /** «Не закреплена ни за кем» — срез для разметки парка; с `departmentId` не сочетается. */
   unassignedDepartment: z
     .enum(['true', 'false'])
@@ -99,6 +147,8 @@ export const officeEquipmentListQuerySchema = baseListQuery(OFFICE_EQUIPMENT_SOR
     .transform((v) => (v === undefined ? undefined : v === 'true')),
   archive: archiveFilterSchema,
 });
+
+const stateNoteSchema = z.string().trim().max(255);
 
 const equipmentFields = {
   equipmentTypeId: uuidSchema,
@@ -128,9 +178,18 @@ export const createOfficeEquipmentSchema = z
   });
 export type CreateOfficeEquipmentInput = z.infer<typeof createOfficeEquipmentSchema>;
 
+/**
+ * Правка карточки объект больше не меняет (Р59): переезд — событие с датой, причиной и обеими
+ * сторонами, и тихая смена площадки в форме оставляла бы вопрос «где этот аппарат стоял в мае» без
+ * ответа. Поле уезжает в свою ручку `POST /office-equipment/:id/move`.
+ *
+ * Отдел-владелец при этом остаётся здесь: разметка парка (кто за что отвечает) — не переезд, и
+ * писать перемещение там, где технику никуда не везли, значило бы засорять журнал.
+ */
 export const updateOfficeEquipmentSchema = z
   .object({
     ...equipmentFields,
+    objectId: z.never().optional(),
     serialNumber: numberSchema.optional(),
     inventoryNumber: numberSchema.optional(),
     location: locationSchema.optional(),
@@ -191,6 +250,51 @@ export interface OfficeEquipmentServiceEntryDto {
   warranties: OfficeEquipmentItemWarrantyDto[];
 }
 
+/** Одно перемещение единицы: откуда, куда, когда и почему (Р59). */
+export interface OfficeEquipmentMovementDto {
+  id: string;
+  movedOn: string;
+  fromObject: OfficeEquipmentObjectRefDto;
+  toObject: OfficeEquipmentObjectRefDto;
+  fromDepartment: OfficeEquipmentDepartmentRefDto | null;
+  toDepartment: OfficeEquipmentDepartmentRefDto | null;
+  fromLocation: string;
+  toLocation: string;
+  fromState: OfficeEquipmentState;
+  toState: OfficeEquipmentState;
+  reason: string;
+  comment: string;
+  /** Заявка, из-за которой единицу увезли или вернули; `null` — переезд сам по себе. */
+  serviceRequestId: string | null;
+  serviceRequestNum: number | null;
+  movedByName: string;
+  createdAt: string;
+}
+
+/**
+ * Перемещение (Р59, Р60). Область проверяется по **исходной** стороне: перемещение — утрата, а не
+ * захват, и требование «обе стороны в области» сделало бы штатный перенос между площадками
+ * невозможным именно для того, кто технику отдаёт.
+ */
+export const moveOfficeEquipmentSchema = z
+  .object({
+    objectId: uuidSchema,
+    departmentId: uuidSchema.nullish(),
+    location: locationSchema.optional().default(''),
+    state: officeEquipmentStateSchema.optional().default('on_site'),
+    stateNote: stateNoteSchema.optional().default(''),
+    movedOn: dateOnlySchema,
+    reason: z.string().trim().min(3, 'Укажите причину перемещения').max(1000),
+    comment: z.string().trim().max(1000).optional().default(''),
+    /** Переезд из-за ремонта: «увезли в сервис» и «вернулась» заводятся из карточки заявки. */
+    serviceRequestId: uuidSchema.nullish(),
+  })
+  .refine((v) => !officeEquipmentStateNeedsNote(v.state) || !!v.stateNote, {
+    message: 'Уточните, где именно находится техника',
+    path: ['stateNote'],
+  });
+export type MoveOfficeEquipmentInput = z.infer<typeof moveOfficeEquipmentSchema>;
+
 export interface OfficeEquipmentDto {
   id: string;
   type: OfficeEquipmentTypeRefDto;
@@ -201,6 +305,9 @@ export interface OfficeEquipmentDto {
   /** Отдел-владелец; `null` — не закреплена (такую единицу и надо разметить). */
   department: OfficeEquipmentDepartmentRefDto | null;
   location: string;
+  /** Где единица находится физически и уточнение к этому (Р61). */
+  state: OfficeEquipmentState;
+  stateNote: string;
   purchasedOn: string | null;
   warrantyUntil: string | null;
   comment: string;

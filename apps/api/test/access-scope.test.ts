@@ -15,10 +15,20 @@ import {
   canApproveRequest,
   vehicleRequestVisibilityWhere,
   lessorVisibilityWhere,
+  officeEquipmentScopeWhere,
   operatorVisibilityWhere,
+  assertOfficeEquipmentScope,
+  assertServiceRequestScope,
+  serviceRequestScopeWhere,
   wasteRequestVisibilityWhere,
 } from '../src/lib/access';
-import { vehicleRequests, vehicles, wasteRequests } from '../src/db/schema';
+import {
+  officeEquipment,
+  serviceRequests,
+  vehicleRequests,
+  vehicles,
+  wasteRequests,
+} from '../src/db/schema';
 import type { Principal } from '../src/auth/principal';
 import { AppError } from '../src/lib/errors';
 
@@ -574,5 +584,91 @@ describe('переход статуса', () => {
       expect((e as AppError).statusCode).toBe(403);
       expect((e as AppError).message).toBe('Недостаточно прав для смены статуса');
     }
+  });
+});
+
+/**
+ * Сквозная область модуля у надстройки «Согласование ИТ» (план модернизации, Р54).
+ *
+ * Это единственное место в портале, где надстройка меняет **область**, а не набор действий, — и
+ * потому проверяется двусторонне. Положительная половина: без неё виза бессмысленна — согласующий,
+ * видящий только свой отдел, не сможет подписать ничего. Отрицательная важнее: расширение обязано
+ * кончаться на границе модуля, иначе учётка ИТ тихо получает все заявки на вывоз мусора и все
+ * заказы техники компании — ровно то, из-за чего ADR 0086 запрещал надстройкам трогать область.
+ */
+describe('сквозная область модуля оргтехники у согласующего от ИТ (Р54)', () => {
+  const itApprover = principal('department', {
+    departmentIds: [DEPARTMENT_A],
+    addons: ['office_equipment_it_approver'],
+  });
+  /** Та же роль и тот же отдел, но с обычной надстройкой: область у неё прежняя. */
+  const operator = principal('department', {
+    departmentIds: [DEPARTMENT_A],
+    addons: ['office_equipment_operator'],
+  });
+
+  it('заявки модуля и справочник не сужаются вовсе', () => {
+    expect(
+      serviceRequestScopeWhere(
+        itApprover,
+        serviceRequests.equipmentObjectId,
+        serviceRequests.customerDepartmentId,
+        serviceRequests.equipmentDepartmentId,
+      ),
+    ).toBeUndefined();
+    expect(
+      officeEquipmentScopeWhere(
+        itApprover,
+        officeEquipment.objectId,
+        officeEquipment.ownerDepartmentId,
+      ),
+    ).toBeUndefined();
+    // Поштучные проверки отвечают так же: чужая заявка и чужая карточка ему открыты.
+    expect(
+      statusOf(() =>
+        assertServiceRequestScope(itApprover, {
+          objectId: OBJECT_B,
+          customerDepartmentId: DEPARTMENT_B,
+          equipmentDepartmentId: DEPARTMENT_B,
+        }),
+      ),
+    ).toBe(200);
+    expect(
+      statusOf(() =>
+        assertOfficeEquipmentScope(itApprover, {
+          objectId: OBJECT_B,
+          ownerDepartmentId: DEPARTMENT_B,
+        }),
+      ),
+    ).toBe(200);
+  });
+
+  it('в соседних модулях он остаётся собой: вывоз и заявки ТС сужены его отделом', () => {
+    const waste = wasteRequestVisibilityWhere(itApprover, wasteRequests);
+    expect(waste, 'вывоз мусора сужен').toBeDefined();
+    const vehicle = vehicleRequestVisibilityWhere(itApprover, vehicleRequests);
+    expect(vehicle, 'заявки ТС сужены').toBeDefined();
+    expect(paramsOf(vehicle)).toContain(DEPARTMENT_A);
+  });
+
+  it('вторая надстройка область не трогает — решение 2 ADR 0086 в силе', () => {
+    expect(
+      serviceRequestScopeWhere(
+        operator,
+        serviceRequests.equipmentObjectId,
+        serviceRequests.customerDepartmentId,
+        serviceRequests.equipmentDepartmentId,
+      ),
+      'оператор оргтехники видит только свой отдел',
+    ).toBeDefined();
+    expect(
+      statusOf(() =>
+        assertServiceRequestScope(operator, {
+          objectId: OBJECT_B,
+          customerDepartmentId: DEPARTMENT_B,
+          equipmentDepartmentId: DEPARTMENT_B,
+        }),
+      ),
+    ).toBe(403);
   });
 });

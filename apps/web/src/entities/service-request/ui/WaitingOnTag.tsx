@@ -1,8 +1,12 @@
 import { Tag } from 'antd';
 import { serviceWaitingOnLabels, type ServiceWaitingOn } from '@technic/contracts';
 
-/** Цвет стороны: оператор — золотой (решение о деньгах), сервис — синий (работа на его стороне). */
+/**
+ * Цвет стороны: ИТ — фиолетовый (тот же, что у статуса «Согласована ИТ»), оператор — золотой
+ * (решение о деньгах), сервис — синий (работа на его стороне).
+ */
 const colors: Record<ServiceWaitingOn, string | undefined> = {
+  it: 'purple',
   operator: 'gold',
   service: 'blue',
   nobody: undefined,

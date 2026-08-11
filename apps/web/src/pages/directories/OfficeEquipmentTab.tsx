@@ -20,6 +20,7 @@ import {
   type OfficeEquipmentFormValues,
   officeEquipmentApi,
   officeEquipmentPayload,
+  officeEquipmentUpdatePayload,
   officeEquipmentKeys,
   officeEquipmentTypeOptionsQuery,
 } from '@entities/office-equipment';
@@ -29,7 +30,9 @@ import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
 import { OfficeEquipmentTypesModal } from './OfficeEquipmentTypesModal';
 import { OfficeEquipmentServiceHistory } from './OfficeEquipmentServiceHistory';
+import { EquipmentMoveModal } from '@features/equipment-move';
 import { officeEquipmentCard, officeEquipmentColumns } from './officeEquipmentGrid';
+import { EquipmentHistoryModal } from './EquipmentHistoryModal';
 
 /**
  * Справочник оргтехники (ADR 0085): что стоит по кабинетам и площадкам, за каким отделом
@@ -149,7 +152,7 @@ export function OfficeEquipmentTab() {
   const saveMut = useMutation({
     mutationFn: (values: OfficeEquipmentFormValues) =>
       record
-        ? officeEquipmentApi.update(record.id, officeEquipmentPayload(values))
+        ? officeEquipmentApi.update(record.id, officeEquipmentUpdatePayload(values))
         : officeEquipmentApi.create(officeEquipmentPayload(values)),
     onSuccess: () => {
       message.success('Сохранено');
@@ -183,7 +186,17 @@ export function OfficeEquipmentTab() {
       onOk: () => removeMut.mutateAsync(r.id),
     });
 
-  const grid = { canWrite, onEdit: openEdit, onDelete: confirmDelete };
+  /** Что открыто в окне перемещения и в ленте истории; `null` — окно закрыто (Р59, Р62). */
+  const [moving, setMoving] = useState<OfficeEquipmentDto | null>(null);
+  const [historyOf, setHistoryOf] = useState<OfficeEquipmentDto | null>(null);
+
+  const grid = {
+    canWrite,
+    onEdit: openEdit,
+    onDelete: confirmDelete,
+    onMove: setMoving,
+    onHistory: setHistoryOf,
+  };
   const columns = officeEquipmentColumns(grid);
 
   const filters = (
@@ -357,7 +370,12 @@ export function OfficeEquipmentTab() {
         confirmLoading={saveMut.isPending}
         width={560}
       >
-        <Form form={form} layout="vertical" onFinish={(v) => saveMut.mutate(v)} {...blockers.formProps}>
+        <Form
+          form={form}
+          layout="vertical"
+          onFinish={(v) => saveMut.mutate(v)}
+          {...blockers.formProps}
+        >
           <OfficeEquipmentFields
             typeOptions={typeOptions}
             typesLoading={typesLoading}
@@ -369,6 +387,9 @@ export function OfficeEquipmentTab() {
             «Обслуживание — ничего» в форме заведения был бы шумом. */}
         {record && <OfficeEquipmentServiceHistory equipmentId={record.id} />}
       </FormModal>
+
+      <EquipmentMoveModal equipment={moving} onClose={() => setMoving(null)} />
+      <EquipmentHistoryModal equipment={historyOf} onClose={() => setHistoryOf(null)} />
     </PageTableLayout>
   );
 }

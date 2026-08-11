@@ -47,6 +47,8 @@ function equipmentDto(over: Partial<OfficeEquipmentDto> = {}): OfficeEquipmentDt
     object: { id: 'obj-1', code: 'ОБ-1', name: 'ЖК Северный' },
     department: null,
     location: '',
+    state: 'on_site',
+    stateNote: '',
     purchasedOn: null,
     warrantyUntil: null,
     comment: '',

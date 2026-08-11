@@ -18,6 +18,7 @@ import { list } from './factories/common';
 function license(over: Partial<DriverLicenseDto> = {}): DriverLicenseDto {
   return {
     id: 'l1',
+    credentialTypeCode: 'driver_license',
     series: '99 39',
     number: '482645',
     issuedOn: '2021-03-12',
@@ -83,12 +84,14 @@ function mockDirectory(items: DriverDto[] = [driver()]) {
   return mockHttp({
     'GET /drivers': () => json(list(items)),
     'GET /drivers/license-categories': () => json(CATEGORIES),
+    'GET /drivers/job-titles': () =>
+      json([{ jobTitle: 'Водитель', credentialTypeCode: 'driver_license', count: 1 }]),
   });
 }
 
-/** Категория выбирается вторым фильтром панели: первый — комплект документов. */
+/** Категория выбирается третьим фильтром панели: перед ней комплект документов и должность. */
 async function pickCategory(label: string) {
-  const field = document.querySelectorAll('.ant-select')[1]!;
+  const field = document.querySelectorAll('.ant-select')[2]!;
   fireEvent.mouseDown(field.querySelector('.ant-select-selector') ?? field);
   await waitFor(() => {
     const option = [...document.querySelectorAll('.ant-select-item-option')].find((o) =>
@@ -106,7 +109,8 @@ describe('справочник водителей: категории прав',
 
     await screen.findByText('Иванов Иван Иванович');
     // Заголовок таблица рисует дважды (видимая шапка и слой измерения) — важно, что он есть.
-    expect(screen.getAllByText('Категории').length).toBeGreaterThan(0);
+    // Колонка названа видом документа: «C» водительского и «C» тракториста — разные машины.
+    expect(screen.getAllByText('Категории ВУ').length).toBeGreaterThan(0);
     expect(screen.getByText('C, CE')).toBeTruthy();
   });
 
@@ -115,7 +119,8 @@ describe('справочник водителей: категории прав',
     renderWithUser(<DriversTab />);
 
     await screen.findByText('Петров Пётр Петрович');
-    expect(screen.getByText('—')).toBeTruthy();
+    // Прочерк стоит у обеих колонок категорий: документов у человека нет ни того вида, ни другого.
+    expect(screen.getAllByText('—')).toHaveLength(2);
   });
 
   it('без выбора категории список не сужается: параметр в запрос не уходит', async () => {

@@ -129,6 +129,7 @@ function driver(
 ): DriverOptionDto {
   return {
     personnelNo: '',
+    credentialTypeCode: 'driver_license',
     licenseNumber: '00 00 000001',
     licenseExpiresOn: '2031-03-12',
     verificationStatus: 'verified',
@@ -151,6 +152,7 @@ function driver(
  */
 const SELECTION: DriverSelectionDto = {
   requiredCategory: 'C',
+  requiredCategoryType: 'driver_license',
   drivers: [
     driver({
       personId: 'p-2',

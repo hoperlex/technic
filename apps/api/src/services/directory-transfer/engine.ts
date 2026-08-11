@@ -134,12 +134,25 @@ function dataSheet(bytes: Uint8Array): string[][] {
  * пропуск: она означает файл по другому шаблону, и завести по нему справочник значит завести не
  * то, что собирались (ADR 0047 п. 7). Отсутствие известной колонки отказом не считается — человек
  * вправе удалить то, чего не правит, а обязательность недостающего поймает разбор строки.
+ *
+ * Своим именем колонка отзывается и на прежние (`aliases`): иначе переименование колонки отвергало
+ * бы файл, скачанный до него. На повтор это не влияет — прежнее имя рядом с нынешним остаётся
+ * повтором колонки, и такой файл не принимается.
  */
 function mapHeader(
   header: readonly string[],
   columns: DirectoryColumn<unknown>[],
 ): { idAt: number; at: Map<DirectoryColumn<unknown>, number> } {
   const known = new Map(columns.map((c) => [headerKey(c.header), c]));
+  // Псевдонимы кладутся вторым проходом, поверх ничего не затирая: столкнись прежнее имя одной
+  // колонки с нынешним именем другой — читается та, которая называется так сейчас, потому что
+  // именно её человек в файле и видит.
+  for (const column of columns) {
+    for (const alias of column.aliases ?? []) {
+      const key = headerKey(alias);
+      if (!known.has(key)) known.set(key, column);
+    }
+  }
   const at = new Map<DirectoryColumn<unknown>, number>();
   const unknown: string[] = [];
   const duplicates: string[] = [];

@@ -2,12 +2,15 @@ import type {
   CancelWaybillInput,
   CreateDriverBody,
   CreateMailingScheduleBody,
+  MailingRecipientCandidateDto,
   MailingRunDto,
   MailingScheduleDto,
   MailTestBody,
   UpdateMailingScheduleBody,
   CreateRelocationRouteBody,
+  CredentialTypeCode,
   DriverDto,
+  DriverJobTitleDto,
   DriverSelectionDto,
   VehicleRouteDto,
   WaybillDto,
@@ -211,6 +214,14 @@ export const mailingsApi = {
     apiFetch<MailingScheduleDto>(`/admin/mail/schedules/${id}`, { method: 'PATCH', body }),
   deleteSchedule: (id: string) =>
     apiFetch<void>(`/admin/mail/schedules/${id}`, { method: 'DELETE' }),
+  /**
+   * Кого зацепит сводка при таком наборе ролей и областей. Считает сервер тем же отбором, каким
+   * рассылка выбирает адресатов: правило «нет площадко-отдельной оси — фильтр по площадкам не
+   * применяется» в общий список учёток не встроить, а цифра под формой обязана совпадать с тем,
+   * кого возьмёт планировщик.
+   */
+  recipientCandidates: (q: Query) =>
+    apiFetch<MailingRecipientCandidateDto[]>('/admin/mail/recipient-candidates', { query: q }),
   /** История запусков — с пагинацией, в отличие от расписаний: она прирастает каждый день. */
   runs: (q: Query) => apiFetch<ListResult<MailingRunDto>>('/admin/mail/runs', { query: q }),
   /** Запуск «сейчас»: письма уходят настоящим получателям, поэтому кнопка спрашивает подтверждение. */
@@ -253,11 +264,21 @@ export const driversApi = {
     apiFetch<DriverDto>(`/drivers/${id}/licenses/${licenseId}/verify`, { method: 'POST', body }),
   revokeLicense: (id: string, licenseId: string, body: RevokeDriverLicenseInput) =>
     apiFetch<DriverDto>(`/drivers/${id}/licenses/${licenseId}/revoke`, { method: 'POST', body }),
-  /** Категории ВУ для формы: справочник наполнен миграцией и на чтение. */
-  licenseCategories: () =>
+  /**
+   * Категории одного вида документа для формы: справочник наполнен миграцией и на чтение. Вид —
+   * обязательным параметром (ADR 0095): «C» водительского и «C» тракториста это разные машины, и
+   * общий список молча предложил бы приписать документу чужую букву.
+   */
+  licenseCategories: (type: CredentialTypeCode) =>
     apiFetch<{ id: string; code: string; name: string; description: string }[]>(
       '/drivers/license-categories',
+      { query: { type } },
     ),
+  /**
+   * Должности справочника с числом людей — значения фильтра. Списком с сервера, а не константой:
+   * должность приходит из кадров свободным текстом, и перечислить её наперёд портал не может.
+   */
+  jobTitles: () => apiFetch<DriverJobTitleDto[]>('/drivers/job-titles'),
   /** Кто может сесть за эту машину в эту дату — список выбора при переводе заявки в работу. */
   available: (q: { vehicleId: string; on: string; withTrailer?: boolean }) =>
     apiFetch<DriverSelectionDto>('/drivers/available', {

@@ -176,24 +176,24 @@ export function WasteTariffsTab() {
   const [form] = Form.useForm<FormValues>();
   const blockers = useFormBlockers(form, {
     onValuesChange: (changed: Partial<FormValues>) => {
-          // Источник типа переключён — поле предыдущего варианта очищается, иначе на сервер
-          // ушли бы и id, и название сразу.
-          if ('wasteTypeSource' in changed) {
-            form.setFieldsValue({ wasteTypeId: undefined, wasteTypeName: '' });
-          }
-          // Область действия и режим тарификации связаны: цена за контейнер существует
-          // только у конкретного типа с известной вместимостью.
-          if ('target' in changed) {
-            form.setFieldsValue({ containerTypeId: undefined, containerKind: undefined });
-            if (changed.target !== 'container_type') form.setFieldValue('pricing', 'per_m3');
-          }
-          if ('containerTypeId' in changed) {
-            const volume =
-              containerTypes.find((t) => t.id === changed.containerTypeId)?.volumeM3 ?? null;
-            if (volume == null && form.getFieldValue('pricing') === 'per_container') {
-              form.setFieldValue('pricing', 'per_m3');
-            }
-          }
+      // Источник типа переключён — поле предыдущего варианта очищается, иначе на сервер
+      // ушли бы и id, и название сразу.
+      if ('wasteTypeSource' in changed) {
+        form.setFieldsValue({ wasteTypeId: undefined, wasteTypeName: '' });
+      }
+      // Область действия и режим тарификации связаны: цена за контейнер существует
+      // только у конкретного типа с известной вместимостью.
+      if ('target' in changed) {
+        form.setFieldsValue({ containerTypeId: undefined, containerKind: undefined });
+        if (changed.target !== 'container_type') form.setFieldValue('pricing', 'per_m3');
+      }
+      if ('containerTypeId' in changed) {
+        const volume =
+          containerTypes.find((t) => t.id === changed.containerTypeId)?.volumeM3 ?? null;
+        if (volume == null && form.getFieldValue('pricing') === 'per_container') {
+          form.setFieldValue('pricing', 'per_m3');
+        }
+      }
     },
   });
   const watchWasteTypeSource = Form.useWatch('wasteTypeSource', form);

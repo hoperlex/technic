@@ -66,7 +66,9 @@ function cellsOf(def: AnyDirectory, env: unknown, model: unknown): Record<string
 
 /**
  * Разбор строки файла поверх модели — ровно так, как это делает движок: колонки, которых в файле
- * нет, не вызываются вовсе, а проверки строки идут последними.
+ * нет, не вызываются вовсе, колонка отзывается и на прежние свои имена (`aliases`), а проверки
+ * строки идут последними. Последнее существенно: у водителей `check()` не только проверяет, но и
+ * раскладывает категории по документам — решение зависит от всей строки сразу.
  */
 function applyCells(
   def: AnyDirectory,
@@ -76,9 +78,9 @@ function applyCells(
   ctx: RowContext,
 ): void {
   for (const column of def.columns(env)) {
-    const text = cells[column.header];
-    if (text === undefined || !column.set) continue;
-    column.set(model, text, ctx);
+    const named = [column.header, ...(column.aliases ?? [])].find((h) => cells[h] !== undefined);
+    if (named === undefined || !column.set) continue;
+    column.set(model, cells[named]!, ctx);
   }
   def.check?.(model, ctx, env);
 }
@@ -249,16 +251,24 @@ describe('категории квалификаций', () => {
 describe('водители', () => {
   const def = directoryOf('drivers');
 
-  /** Категории водительского удостоверения по миграции 0058 — кодами, как их знает справочник. */
+  /**
+   * Категории по видам документов — кодами, как их знает справочник: водительские завела миграция
+   * 0058, тракторные 0123. Словари врозь не для красоты: код уникален внутри вида, и «C» в них
+   * означает разные машины (ADR 0008).
+   */
   const env = {
     specializationId: 'sp-1',
-    licenseTypeId: 'ct-1',
-    categoryIdByCode: new Map(
-      ['a', 'a1', 'b', 'b1', 'c', 'c1', 'd', 'd1', 'be', 'ce', 'c1e', 'de', 'd1e', 'm'].map((c) => [
-        c,
-        `qc-${c}`,
-      ]),
-    ),
+    typeIds: { driver_license: 'ct-1', tractor_license: 'ct-2' },
+    categoryIds: {
+      driver_license: new Map(
+        ['a', 'a1', 'b', 'b1', 'c', 'c1', 'd', 'd1', 'be', 'ce', 'c1e', 'de', 'd1e', 'm'].map(
+          (c) => [c, `qc-${c}`],
+        ),
+      ),
+      tractor_license: new Map(
+        ['a1', 'a2', 'a3', 'a4', 'b', 'c', 'd', 'e', 'f'].map((c) => [c, `tc-${c}`]),
+      ),
+    },
   };
 
   /** Настоящий СНИЛС с верной контрольной суммой — из тестового набора кадровой выгрузки. */
@@ -277,16 +287,36 @@ describe('водители', () => {
     jobTitle: 'Водитель',
     department: 'СУ-10',
     employedSince: '2020-03-01',
-    license: {
-      id: 'cr-1',
-      series: '99 39',
-      number: '482645',
-      issuedOn: '2024-11-29',
-      expiresOn: '2027-07-12',
-      issuedBy: 'ГИБДД 7711',
-      categories: ['b', 'c', 'ce'],
+    documents: {
+      driver_license: {
+        id: 'cr-1',
+        series: '99 39',
+        number: '482645',
+        issuedOn: '2024-11-29',
+        expiresOn: '2027-07-12',
+        issuedBy: 'ГИБДД 7711',
+        categories: ['b', 'c', 'ce'],
+      },
     },
   };
+
+  /**
+   * Круг «выгрузили — загрузили» поверх заведённой строки. Именно так его делает движок: строку он
+   * находит по идентификатору из файла и кладёт ячейки на её модель, а не на пустую. Для водителей
+   * разница предметная — заведённый документ сам говорит, чьи категории стоят в колонке.
+   */
+  function roundTripOnExisting(source: unknown): {
+    before: Record<string, string>;
+    after: Record<string, string>;
+    problems: string[];
+    warnings: string[];
+  } {
+    const before = cellsOf(def, env, def.model(source, env));
+    const model = def.model(source, env);
+    const { ctx, problems, warnings } = rowContext();
+    applyCells(def, env, model, before, ctx);
+    return { before, after: cellsOf(def, env, model), problems, warnings };
+  }
 
   /** Строка файла на нового человека: минимум, которым водитель заводится. */
   function newDriverCells(over: Record<string, string> = {}): Record<string, string> {
@@ -302,15 +332,88 @@ describe('водители', () => {
       'Дата рождения': '27.07.1968',
       Телефон: '+7 (900) 123 45 67',
       'Категории ВУ': 'B; C; CE',
-      Выдано: '29.11.2024',
+      'Выдано ВУ': '29.11.2024',
+      // Колонки второго документа у водителя пусты, но в файле они есть: справочник для того и
+      // открывают, чтобы увидеть, у кого чего нет.
+      'Категории УТМ': '',
+      'Выдано УТМ': '',
     });
   });
 
   it('водитель без удостоверения выгружается и загружается так же', () => {
-    const { before, after, problems } = roundTrip(def, env, { ...row, license: null });
+    const { before, after, problems } = roundTrip(def, env, { ...row, documents: {} });
     expect(problems).toEqual([]);
     expect(after).toEqual(before);
     expect(before['Категории ВУ']).toBe('');
+  });
+
+  it('оба документа выгружаются и загружаются, не путаясь буквами категорий', () => {
+    const { before, after, problems } = roundTripOnExisting({
+      ...row,
+      jobTitle: 'Машинист экскаватора',
+      documents: {
+        ...row.documents,
+        tractor_license: {
+          id: 'cr-2',
+          series: '',
+          number: '112233',
+          issuedOn: '2023-04-05',
+          expiresOn: '2033-04-05',
+          issuedBy: 'Гостехнадзор',
+          categories: ['c', 'd'],
+        },
+      },
+    });
+    expect(problems).toEqual([]);
+    expect(after).toEqual(before);
+    expect(before).toMatchObject({
+      'Категории ВУ': 'B; C; CE',
+      'Категории УТМ': 'C; D',
+      'Номер УТМ': '112233',
+      'Выдано УТМ': '05.04.2023',
+    });
+  });
+
+  it('порядок колонок: человек, кадровые поля, блок ВУ, блок УТМ', () => {
+    const headers = def.columns(env).map((c) => c.header);
+    expect(headers.slice(headers.indexOf('Дата приёма'))).toEqual([
+      'Дата приёма',
+      'Категории ВУ',
+      'Серия ВУ',
+      'Номер ВУ',
+      'Выдано ВУ',
+      'Действительно до ВУ',
+      'Кем выдано ВУ',
+      'Категории УТМ',
+      'Серия УТМ',
+      'Номер УТМ',
+      'Выдано УТМ',
+      'Действительно до УТМ',
+      'Кем выдано УТМ',
+      'Комментарий',
+    ]);
+  });
+
+  it('прежние заголовки блока ВУ остались псевдонимами: файл до разделения колонок грузится', () => {
+    const aliases = new Map(def.columns(env).map((c) => [c.header, c.aliases ?? []]));
+    expect(aliases.get('Выдано ВУ')).toEqual(['Выдано']);
+    expect(aliases.get('Действительно до ВУ')).toEqual(['Действительно до']);
+    expect(aliases.get('Кем выдано ВУ')).toEqual(['Кем выдано']);
+    // У тракторного блока прежних имён нет: до ADR 0095 таких колонок не существовало.
+    expect(aliases.get('Выдано УТМ')).toEqual([]);
+  });
+
+  it('файл с прежним заголовком «Выдано» правит водительское удостоверение', () => {
+    const model = def.model(row, env);
+    const { ctx, problems } = rowContext();
+    applyCells(def, env, model, { Выдано: '01.02.2025', 'Кем выдано': 'ГИБДД 5005' }, ctx);
+    expect(problems).toEqual([]);
+    expect(cellsOf(def, env, model)).toMatchObject({
+      'Выдано ВУ': '01.02.2025',
+      'Кем выдано ВУ': 'ГИБДД 5005',
+      // Тракторного документа прежний файл не касается вовсе.
+      'Выдано УТМ': '',
+    });
   });
 
   it('СНИЛС с неверной контрольной суммой отвергается: опечатка в цифре — другой человек', () => {
@@ -401,9 +504,9 @@ describe('водители', () => {
         Email: '',
         'Серия ВУ': '',
         'Номер ВУ': '',
-        Выдано: '',
-        'Действительно до': '',
-        'Кем выдано': '',
+        'Выдано ВУ': '',
+        'Действительно до ВУ': '',
+        'Кем выдано ВУ': '',
         'Категории ВУ': '',
         Телефон: '',
       },
@@ -414,9 +517,9 @@ describe('водители', () => {
       Email: 'ivanov@example.com',
       'Серия ВУ': '99 39',
       'Номер ВУ': '482645',
-      Выдано: '29.11.2024',
-      'Действительно до': '12.07.2027',
-      'Кем выдано': 'ГИБДД 7711',
+      'Выдано ВУ': '29.11.2024',
+      'Действительно до ВУ': '12.07.2027',
+      'Кем выдано ВУ': 'ГИБДД 7711',
       'Категории ВУ': 'B; C; CE',
       Телефон: '+7 (900) 123 45 67',
     });
@@ -438,7 +541,7 @@ describe('водители', () => {
     expect(problems[0]).toMatch(/Email/u);
   });
 
-  it('у не водительской должности категории в ВУ не заводятся, и об этом сказано (ADR 0049)', () => {
+  it('у незнакомой должности категории в ВУ не заводятся, и об этом сказано (ADR 0049)', () => {
     const model = def.blank();
     const { ctx, problems, warnings } = rowContext();
     applyCells(
@@ -451,7 +554,69 @@ describe('водители', () => {
     // Строка не отбрасывается: человек заводится, а категории ждут своего вида документа.
     expect(problems).toEqual([]);
     expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toMatch(/не водительская/u);
+    expect(warnings[0]).toMatch(/должность «Машинист крана» порталу незнакома/u);
+    expect(cellsOf(def, env, model)).toMatchObject({ 'Категории ВУ': '', 'Категории УТМ': '' });
+  });
+
+  it('категории машиниста экскаватора заводятся в тракторное удостоверение, а не в ВУ (ADR 0095)', () => {
+    const model = def.blank();
+    const { ctx, problems, warnings } = rowContext();
+    applyCells(
+      def,
+      env,
+      model,
+      // Так их присылает кадровая выгрузка: колонка категорий в ней одна на всех.
+      newDriverCells({ Должность: 'Машинист экскаватора', 'Категории ВУ': 'B; C' }),
+      ctx,
+    );
+    expect(problems).toEqual([]);
+    expect(warnings).toEqual([]);
+    expect(cellsOf(def, env, model)).toMatchObject({
+      // «C» тракториста и «C» водительского — разные машины: приписать их к ВУ значило бы молча
+      // выдать допуск к грузовику.
+      'Категории УТМ': 'B; C',
+      'Категории ВУ': '',
+    });
+  });
+
+  it('категория, которой нет у тракторного удостоверения, — ошибка строки, а не запись в ВУ', () => {
+    const model = def.blank();
+    const { ctx, problems } = rowContext();
+    applyCells(
+      def,
+      env,
+      model,
+      newDriverCells({ Должность: 'Машинист погрузчика', 'Категории ВУ': 'B; CE' }),
+      ctx,
+    );
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toMatch(/«CE».*тракториста-машиниста/u);
+  });
+
+  it('колонка УТМ в водительское удостоверение не попадает ни при какой должности', () => {
+    const model = def.blank();
+    const { ctx, problems, warnings } = rowContext();
+    applyCells(def, env, model, newDriverCells({ 'Категории УТМ': 'C; F' }), ctx);
+    // Должность по умолчанию водительская, но колонка названа своим документом — и он же её примет.
+    expect(problems).toEqual([]);
+    expect(warnings).toEqual([]);
+    expect(cellsOf(def, env, model)).toMatchObject({
+      'Категории УТМ': 'C; F',
+      'Категории ВУ': '',
+    });
+  });
+
+  it('заведённое ВУ машиниста экскаватора остаётся своим: выгрузка возвращается без правок', () => {
+    // Машинист с водительским, заведённым до ADR 0049: колонку «Категории ВУ» ему заполнил сам
+    // портал, и загрузка того же файла не вправе перенести её в тракторное.
+    const { before, after, problems } = roundTripOnExisting({
+      ...row,
+      jobTitle: 'Машинист экскаватора',
+    });
+    expect(problems).toEqual([]);
+    expect(after).toEqual(before);
+    expect(after['Категории ВУ']).toBe('B; C; CE');
+    expect(after['Категории УТМ']).toBe('');
   });
 
   it('у машиниста с настоящим ВУ удостоверение заводится: набор бывает только у водительского', () => {
@@ -478,13 +643,42 @@ describe('водители', () => {
       newDriverCells({
         'Категории ВУ': 'B',
         'Номер ВУ': '482645',
-        Выдано: '29.11.2024',
-        'Действительно до': '12.07.2019',
+        'Выдано ВУ': '29.11.2024',
+        'Действительно до ВУ': '12.07.2019',
       }),
       ctx,
     );
     expect(problems).toHaveLength(1);
     expect(problems[0]).toMatch(/раньше даты выдачи/u);
+  });
+
+  it('срок тракторного удостоверения проверяется так же, как срок ВУ', () => {
+    const model = def.blank();
+    const { ctx, problems } = rowContext();
+    applyCells(
+      def,
+      env,
+      model,
+      newDriverCells({
+        Должность: 'Машинист погрузчика',
+        'Категории УТМ': 'C',
+        'Выдано УТМ': '29.11.2024',
+        'Действительно до УТМ': '12.07.2019',
+      }),
+      ctx,
+    );
+    expect(problems).toEqual([
+      'Действительно до УТМ — срок действия УТМ не может быть раньше даты выдачи',
+    ]);
+  });
+
+  it('реквизиты без категорий документа не заводят, и об этом предупреждают', () => {
+    const model = def.blank();
+    const { ctx, problems, warnings } = rowContext();
+    applyCells(def, env, model, newDriverCells({ 'Номер ВУ': '482645' }), ctx);
+    expect(problems).toEqual([]);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/не открывает ни одной машины/u);
   });
 
   it('первая строка справки предупреждает о персональных данных', () => {

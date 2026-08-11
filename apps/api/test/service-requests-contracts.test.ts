@@ -19,13 +19,14 @@ import {
   SERVICE_REQUEST_STATUSES,
   serviceCommentSchema,
   serviceEstimateItemSchema,
+  type ServiceFileKind,
   serviceRequestListQuerySchema,
   serviceStatusChangeSchema,
+  setServiceUrgencySchema,
   startServiceRequestSchema,
   submitServiceEstimateSchema,
   updateServiceRequestSchema,
   warrantyClaimSchema,
-  type ServiceFileKind,
 } from '@technic/contracts';
 
 /**
@@ -100,46 +101,134 @@ describe('версия обязательна во всех изменяющих
    */
   it('заведение заявки и подшивка документа версии не требуют', () => {
     expect(
-      createServiceRequestSchema.safeParse({ officeEquipmentId: UUID, description: 'не печатает' })
-        .success,
+      createServiceRequestSchema.safeParse({
+        officeEquipmentId: UUID,
+        description: 'не печатает',
+        responsibleName: 'Иванов И. И.',
+        responsiblePhone: '9000000000',
+      }).success,
     ).toBe(true);
     expect(attachServiceFilesSchema.safeParse({ fileIds: [UUID] }).success).toBe(true);
   });
 });
 
 describe('заведение и правка заявки', () => {
-  it('требует единицу и описание неисправности; контакт и отдел подставляются пустыми', () => {
+  /** Минимально полная заявка: техника, неисправность и заявитель с телефоном (Р49). */
+  const NEW_REQUEST = {
+    officeEquipmentId: UUID,
+    description: 'не захватывает бумагу',
+    responsibleName: 'Иванов И. И.',
+    responsiblePhone: '+7 (900) 000 00 00',
+  };
+
+  it('требует единицу, описание неисправности и заявителя; отдел подставляется пустым', () => {
     const parsed = createServiceRequestSchema.parse({
-      officeEquipmentId: UUID,
+      ...NEW_REQUEST,
       description: '  не захватывает бумагу  ',
     });
     expect(parsed.description).toBe('не захватывает бумагу');
-    expect(parsed.responsibleName).toBe('');
-    expect(parsed.responsiblePhone).toBe('');
+    expect(parsed.responsibleName).toBe('Иванов И. И.');
+    // Номер приводится к виду хранения схемой, а не обработчиком: мимо неё не пройдёт ни форма,
+    // ни импорт, ни прямой запрос (ADR 0066).
+    expect(parsed.responsiblePhone).toBe('9000000000');
     expect(parsed.comment).toBe('');
     expect(parsed.fileIds).toEqual([]);
+    expect(parsed.isUrgent).toBe(false);
     // «Заявка объектная, от площадки» — это `null`, а не пропущенное поле, и подставлять сюда
     // отдел автора схема не берётся: сотрудник соседнего отдела чинит «чужой» принтер чаще, чем
     // кажется (§8).
     expect(parsed.customerDepartmentId).toBeUndefined();
   });
 
+  /**
+   * Контакт заявителя обязателен на сервере, а не только в форме (Р49). До этой проверки портал
+   * помечал оба поля `required`, а схема принимала пустые строки — заявка без контакта заводилась
+   * любым клиентом мимо формы, и именно её сервис получал первой.
+   */
+  it('заявка без заявителя и телефона не заводится', () => {
+    expect(
+      createServiceRequestSchema.safeParse({ ...NEW_REQUEST, responsibleName: '' }).success,
+    ).toBe(false);
+    expect(
+      createServiceRequestSchema.safeParse({ ...NEW_REQUEST, responsiblePhone: '' }).success,
+    ).toBe(false);
+    expect(
+      createServiceRequestSchema.safeParse({ ...NEW_REQUEST, responsiblePhone: '123' }).success,
+    ).toBe(false);
+  });
+
   it('«не печатает» описанием не считается: неисправность нужна словами', () => {
-    const short = { officeEquipmentId: UUID, description: 'ааа' };
-    expect(createServiceRequestSchema.safeParse(short).success).toBe(false);
+    expect(
+      createServiceRequestSchema.safeParse({ ...NEW_REQUEST, description: 'ааа' }).success,
+    ).toBe(false);
     expect(
       createServiceRequestSchema.safeParse({ description: 'не захватывает бумагу' }).success,
     ).toBe(false);
     expect(
-      createServiceRequestSchema.safeParse({ officeEquipmentId: 'нет', description: 'сломалась' })
-        .success,
+      createServiceRequestSchema.safeParse({ ...NEW_REQUEST, officeEquipmentId: 'нет' }).success,
     ).toBe(false);
+  });
+
+  /**
+   * Срочность — пара «флаг + причина» (Р56), и обе половины проверяются в обе стороны: флаг без
+   * объяснения превращает признак в общий фон, а причина без флага ничего не объявляет.
+   */
+  it('срочность без причины и причина без срочности не проходят', () => {
+    expect(createServiceRequestSchema.safeParse({ ...NEW_REQUEST, isUrgent: true }).success).toBe(
+      false,
+    );
+    expect(
+      createServiceRequestSchema.safeParse({
+        ...NEW_REQUEST,
+        isUrgent: false,
+        urgencyReason: 'очень надо',
+      }).success,
+    ).toBe(false);
+    const parsed = createServiceRequestSchema.parse({
+      ...NEW_REQUEST,
+      isUrgent: true,
+      urgencyReason: '  единственный принтер на площадке  ',
+    });
+    expect(parsed.isUrgent).toBe(true);
+    expect(parsed.urgencyReason).toBe('единственный принтер на площадке');
+  });
+
+  /**
+   * У правки значения по умолчанию нет намеренно: `PATCH` присылает только изменившееся, и
+   * `default(false)` означал бы, что правка телефона молча снимает срочность. Пару в этом случае
+   * сверяет сервер по склеенному состоянию — схема видит половину.
+   */
+  it('правка без полей срочности их не трогает', () => {
+    const parsed = updateServiceRequestSchema.parse({
+      version: 3,
+      comment: 'перезвонить после 15',
+    });
+    expect(parsed.isUrgent).toBeUndefined();
+    expect(parsed.urgencyReason).toBeUndefined();
+  });
+
+  it('своя ручка срочности требует пару целиком', () => {
+    expect(setServiceUrgencySchema.safeParse({ isUrgent: true, version: 1 }).success).toBe(false);
+    expect(
+      setServiceUrgencySchema.safeParse({
+        isUrgent: true,
+        urgencyReason: 'встал приём заявок',
+        version: 1,
+      }).success,
+    ).toBe(true);
+    // Снятие причины не требует: она снимается вместе с флагом.
+    expect(setServiceUrgencySchema.safeParse({ isUrgent: false, version: 1 }).success).toBe(true);
   });
 
   /** Правка заявки — только «Новой» (§5.3): дальше за заявкой стоят договорённости с исполнителем. */
   it('правится заявка, которую ещё не начали вести', () => {
+    // Статуса два: «Новая» и «Согласована ИТ» (Р51). Виза отвечает на «нужен ли внешний ремонт», а
+    // не на «как он описан», и запирать ею правку значило бы заводить новую заявку из-за опечатки.
     expect(isServiceRequestEditable('new')).toBe(true);
-    for (const status of SERVICE_REQUEST_STATUSES.filter((s) => s !== 'new')) {
+    expect(isServiceRequestEditable('it_approved')).toBe(true);
+    for (const status of SERVICE_REQUEST_STATUSES.filter(
+      (s) => s !== 'new' && s !== 'it_approved',
+    )) {
       expect(isServiceRequestEditable(status), status).toBe(false);
     }
     // Закрытая заявка — «Принята» и «Отменена»: ни хода, ни правки ей больше не положено.
@@ -335,6 +424,8 @@ describe('источник гарантийного обращения', () => {
       createServiceRequestSchema.safeParse({
         officeEquipmentId: UUID,
         description: 'опять не печатает',
+        responsibleName: 'Иванов И. И.',
+        responsiblePhone: '9000000000',
         warrantyClaim: { source: 'item', itemId: OTHER_UUID },
       }).success,
     ).toBe(true);

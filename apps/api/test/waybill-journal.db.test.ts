@@ -46,6 +46,22 @@ const DB_URL = process.env.TEST_DATABASE_URL;
 
 /** Тестовый машинист: СНИЛС из одинаковых цифр с верной контрольной суммой, серия «00 00». */
 const DRIVER_SNILS = '11111111145';
+const DRIVER_LICENSE_SERIES = '00 00';
+const DRIVER_LICENSE_NUMBER = '000103';
+const DRIVER_LICENSE_ISSUED_ON = '2021-03-12';
+
+/**
+ * Второй сотрудник — машинист экскаватора: его должность требует удостоверения
+ * тракториста-машиниста, а не водительского (ADR 0095). Заведён ради снимка недельного листа: по
+ * нему и видно, что документ выбирается должностью. СНИЛС такой же выдуманный — одинаковые цифры с
+ * верной контрольной суммой, — но свой: база db-тестов общая, человек ищется по СНИЛС, и «11…» с
+ * «22…» уже заняты соседними файлами (перегон, срез гаража).
+ */
+const MACHINIST_SNILS = '33333333334';
+const MACHINIST_JOB_TITLE = 'Машинист экскаватора';
+const TRACTOR_LICENSE_SERIES = '00 01';
+const TRACTOR_LICENSE_NUMBER = '000104';
+const TRACTOR_LICENSE_ISSUED_ON = '2022-05-16';
 const ADMIN_EMAIL = 'db-journal-admin@example.invalid';
 const PASSWORD = 'db-test-password-123';
 
@@ -65,6 +81,8 @@ interface Ctx {
   vehicle: { id: string; typeId: string; categoryId: string | null };
   objectId: string;
   personId: string;
+  /** Машинист экскаватора: допущен тракторным удостоверением, а не водительским (ADR 0095). */
+  machinistPersonId: string;
   date: string;
 }
 
@@ -104,8 +122,105 @@ async function migrate(databaseUrl: string): Promise<void> {
   }
 }
 
-/** Учётка и машинист: организация, объекты, парк и серии бланков приходят миграциями. */
-async function seed(): Promise<{ personId: string }> {
+/**
+ * Сотрудник с одним документом: специализация «водитель» (ею человек попадает в подбор), должность
+ * действующим трудовым отношением и удостоверение того вида, которого эта должность требует.
+ *
+ * Заводится однажды: база теста живёт между прогонами, и человек ищется по СНИЛС — он его ключ.
+ */
+async function seedPerson(person: {
+  snils: string;
+  firstName: string;
+  personnelNo: string;
+  jobTitle: string;
+  credentialTypeCode: 'driver_license' | 'tractor_license';
+  series: string;
+  number: string;
+  issuedOn: string;
+  categoryCodes: string[];
+}): Promise<string> {
+  const { db } = await import('../src/db/client');
+  const schema = await import('../src/db/schema');
+
+  const [existing] = await db
+    .select({ id: schema.persons.id })
+    .from(schema.persons)
+    .where(sql`${schema.persons.snils} = ${person.snils}`);
+  if (existing) return existing.id;
+
+  const [specialization] = await db
+    .select({ id: schema.specializations.id })
+    .from(schema.specializations)
+    .where(sql`${schema.specializations.code} = 'driver'`);
+  const [licenseType] = await db
+    .select({ id: schema.credentialTypes.id })
+    .from(schema.credentialTypes)
+    .where(sql`${schema.credentialTypes.code} = ${person.credentialTypeCode}`);
+  // Категории — внутри своего вида документа: «B» и «C» есть и у водительского удостоверения, и у
+  // тракторного (миграция 0123), а составной внешний ключ чужую категорию в документ не пустит.
+  const categories = await db
+    .select({ id: schema.qualificationCategories.id })
+    .from(schema.qualificationCategories)
+    .where(
+      sql`${schema.qualificationCategories.credentialTypeId} = ${licenseType!.id}
+          AND ${schema.qualificationCategories.code} = ANY(${sql.param(person.categoryCodes)}::text[])`,
+    );
+
+  return db.transaction(async (tx) => {
+    const [created] = await tx
+      .insert(schema.persons)
+      .values({
+        lastName: 'Тестовый',
+        firstName: person.firstName,
+        middleName: 'Интеграционный',
+        snils: person.snils,
+        comment: 'ТЕСТОВЫЕ ДАННЫЕ: интеграционный тест журнала листов',
+      })
+      .returning({ id: schema.persons.id });
+    const personId = created!.id;
+
+    await tx.insert(schema.personSpecializations).values({
+      personId,
+      specializationId: specialization!.id,
+      isPrimary: true,
+      startedOn: '2024-01-15',
+    });
+    await tx.insert(schema.personEmployments).values({
+      personId,
+      employmentType: 'staff',
+      personnelNo: person.personnelNo,
+      jobTitle: person.jobTitle,
+      startedOn: '2024-01-15',
+    });
+    const [credential] = await tx
+      .insert(schema.personCredentials)
+      .values({
+        personId,
+        credentialTypeId: licenseType!.id,
+        series: person.series,
+        number: person.number,
+        issuedOn: person.issuedOn,
+        // Срок заведомо длинный: тест идёт «на сегодня», и истечение сломало бы отбор водителя
+        // через несколько лет молча — пустым списком вместо понятного отказа.
+        expiresOn: '2099-03-12',
+        verificationStatus: 'verified',
+        verifiedAt: new Date('2021-03-12T12:00:00Z'),
+      })
+      .returning({ id: schema.personCredentials.id });
+    await tx.insert(schema.personCredentialCategories).values(
+      categories.map((c) => ({
+        credentialId: credential!.id,
+        qualificationCategoryId: c.id,
+        credentialTypeId: licenseType!.id,
+        validFrom: person.issuedOn,
+      })),
+    );
+    return personId;
+  });
+}
+
+/** Учётка и двое работников: организация, объекты, парк и серии бланков приходят миграциями. */
+async function seed(): Promise<{ personId: string; machinistPersonId: string }> {
   const { db } = await import('../src/db/client');
   const { hashPassword } = await import('../src/auth/password');
   const schema = await import('../src/db/schema');
@@ -126,84 +241,42 @@ async function seed(): Promise<{ personId: string }> {
     });
   }
 
-  const [existing] = await db
-    .select({ id: schema.persons.id })
-    .from(schema.persons)
-    .where(sql`${schema.persons.snils} = ${DRIVER_SNILS}`);
-  if (existing) return { personId: existing.id };
-
-  const [specialization] = await db
-    .select({ id: schema.specializations.id })
-    .from(schema.specializations)
-    .where(sql`${schema.specializations.code} = 'driver'`);
-  const [licenseType] = await db
-    .select({ id: schema.credentialTypes.id })
-    .from(schema.credentialTypes)
-    .where(sql`${schema.credentialTypes.code} = 'driver_license'`);
-  const categories = await db
-    .select({ id: schema.qualificationCategories.id })
-    .from(schema.qualificationCategories)
-    .where(sql`${schema.qualificationCategories.code} in ('b', 'c')`);
-
-  return db.transaction(async (tx) => {
-    const [person] = await tx
-      .insert(schema.persons)
-      .values({
-        lastName: 'Тестовый',
-        firstName: 'Машинист',
-        middleName: 'Интеграционный',
-        snils: DRIVER_SNILS,
-        comment: 'ТЕСТОВЫЕ ДАННЫЕ: интеграционный тест журнала листов',
-      })
-      .returning({ id: schema.persons.id });
-    const personId = person!.id;
-
-    await tx.insert(schema.personSpecializations).values({
-      personId,
-      specializationId: specialization!.id,
-      isPrimary: true,
-      startedOn: '2024-01-15',
-    });
-    await tx.insert(schema.personEmployments).values({
-      personId,
-      employmentType: 'staff',
-      personnelNo: 'Т-103',
-      jobTitle: 'Машинист',
-      startedOn: '2024-01-15',
-    });
-    const [credential] = await tx
-      .insert(schema.personCredentials)
-      .values({
-        personId,
-        credentialTypeId: licenseType!.id,
-        series: '00 00',
-        number: '000103',
-        issuedOn: '2021-03-12',
-        // Срок заведомо длинный: тест идёт «на сегодня», и истечение сломало бы отбор водителя
-        // через несколько лет молча — пустым списком вместо понятного отказа.
-        expiresOn: '2099-03-12',
-        verificationStatus: 'verified',
-        verifiedAt: new Date('2021-03-12T12:00:00Z'),
-      })
-      .returning({ id: schema.personCredentials.id });
-    await tx.insert(schema.personCredentialCategories).values(
-      categories.map((c) => ({
-        credentialId: credential!.id,
-        qualificationCategoryId: c.id,
-        credentialTypeId: licenseType!.id,
-        validFrom: '2021-03-12',
-      })),
-    );
-    return { personId };
+  // Должность «Машинист» в списке ADR 0095 не значится, и документ у неё умолчанием водительский:
+  // незнакомая должность поведения не меняет.
+  const personId = await seedPerson({
+    snils: DRIVER_SNILS,
+    firstName: 'Машинист',
+    personnelNo: 'Т-103',
+    jobTitle: 'Машинист',
+    credentialTypeCode: 'driver_license',
+    series: DRIVER_LICENSE_SERIES,
+    number: DRIVER_LICENSE_NUMBER,
+    issuedOn: DRIVER_LICENSE_ISSUED_ON,
+    categoryCodes: ['b', 'c'],
   });
+  const machinistPersonId = await seedPerson({
+    snils: MACHINIST_SNILS,
+    firstName: 'Экскаваторщик',
+    personnelNo: 'Т-104',
+    jobTitle: MACHINIST_JOB_TITLE,
+    credentialTypeCode: 'tractor_license',
+    series: TRACTOR_LICENSE_SERIES,
+    number: TRACTOR_LICENSE_NUMBER,
+    issuedOn: TRACTOR_LICENSE_ISSUED_ON,
+    categoryCodes: ['c', 'e'],
+  });
+  return { personId, machinistPersonId };
 }
 
 /**
  * Заявка на спецтехнику, взятая в работу: этим и выписывается лист ЭСМ-2 — отдельной ручки
  * «выписать» у журнала нет, лист рождается решением по заявке. Срок в один день, чтобы неделя
  * была ровно одна и на заявку приходился ровно один бланк.
+ *
+ * Машинист — параметром: снимок листа берёт его документ по должности, и проверяется это разными
+ * людьми.
  */
-async function requestInWork(): Promise<{ id: string }> {
+async function requestInWork(driverPersonId = ctx.personId): Promise<{ id: string }> {
   const created = await ctx.app.inject({
     method: 'POST',
     url: '/api/v1/vehicle-requests',
@@ -243,7 +316,7 @@ async function requestInWork(): Promise<{ id: string }> {
         pricePerHour: null,
         pricePerShift: null,
         shiftHours: null,
-        driverPersonId: ctx.personId,
+        driverPersonId,
       },
       schedule: {
         requestType: 'special_equipment',
@@ -303,8 +376,8 @@ async function numbersOf(ids: string[]): Promise<Map<string, number>> {
  * базы, а не выкусывается из напечатанного вида: серия у бланка своя, и разбор строки сломался бы
  * от первого же префикса.
  */
-async function issueWaybill(): Promise<Sheet> {
-  const request = await requestInWork();
+async function issueWaybill(driverPersonId?: string): Promise<Sheet> {
+  const request = await requestInWork(driverPersonId);
   const sheets = (await journal()).filter((w) =>
     w.requests.some((link) => link.requestId === request.id),
   );
@@ -332,7 +405,7 @@ describe.skipIf(!DB_URL)('журнал путевых листов: поиск, 
     prepareEnv(DB_URL!);
     await migrate(DB_URL!);
 
-    const { personId } = await seed();
+    const { personId, machinistPersonId } = await seed();
     const { buildApp } = await import('../src/app');
     const { db, closeDb } = await import('../src/db/client');
     const app = await buildApp();
@@ -380,6 +453,7 @@ describe.skipIf(!DB_URL)('журнал путевых листов: поиск, 
       vehicle: { id: vehicle.id, typeId: vehicle.type_id, categoryId: vehicle.category_id },
       objectId: object.id,
       personId,
+      machinistPersonId,
       // Заявку задним числом сервер не принимает (`isAllowedRequestDate`), а лист аннулируют по
       // последний день периода включительно — поэтому и заявка, и бланк живут сегодняшним днём.
       date: moscowDateKeyOf(new Date()),
@@ -546,6 +620,57 @@ describe.skipIf(!DB_URL)('журнал путевых листов: поиск, 
     });
     expect(unknown.statusCode, unknown.body).toBe(404);
   });
+
+  /**
+   * Документ листа выбирается должностью (ADR 0095): у машиниста экскаватора это удостоверение
+   * тракториста-машиниста, у прочих — водительское. В снимке недельного листа оба лежат в одних и
+   * тех же ключах — графа в бланке одна, а вид документа её не меняет.
+   *
+   * Проверяется именно снимок, а не бумага: граф под удостоверение форма ЭСМ-2 не содержит, и
+   * клетки в шаблоне не размечены намеренно (`waybill-template.test.ts`). Ключи снимка от разметки
+   * не зависят — лист обязан помнить, по какому документу работали, иначе размеченная когда-нибудь
+   * клетка печатала бы пустое место у листов, выданных до неё.
+   */
+  it('снимок ЭСМ-2 берёт документ по должности: тракторное у машиниста, ВУ у прочих', async () => {
+    const machinistSheet = await issueWaybill(ctx.machinistPersonId);
+    const driverSheet = await issueWaybill();
+
+    const rows = await ctx.db.execute<{ id: string; data: Record<string, string> }>(
+      sql`SELECT id, data FROM waybills WHERE id IN (${machinistSheet.id}, ${driverSheet.id})`,
+    );
+    const dataById = new Map(rows.rows.map((row) => [row.id, row.data]));
+
+    /*
+     * Водительское удостоверение читается из базы, а не берётся константой: база db-тестов общая,
+     * человек ищется по СНИЛС, и завести его мог соседний файл со своими реквизитами. Тракторное
+     * сверяется с константами — этого машиниста заводит только здешний сид.
+     */
+    const licenses = await ctx.db.execute<{ requisites: string; issued_on: string }>(sql`
+      SELECT btrim(c.series || ' ' || c.number) AS requisites,
+             to_char(c.issued_on, 'YYYY-MM-DD') AS issued_on
+      FROM person_credentials c
+      JOIN credential_types t ON t.id = c.credential_type_id
+      WHERE c.person_id = ${ctx.personId} AND c.deleted_at IS NULL AND t.code = 'driver_license'`);
+    const license = licenses.rows[0]!;
+
+    const machinist = dataById.get(machinistSheet.id)!;
+    expect(machinist.driver_license_number).toBe(
+      `${TRACTOR_LICENSE_SERIES} ${TRACTOR_LICENSE_NUMBER}`,
+    );
+    expect(machinist.driver_license_issued_on).toBe(TRACTOR_LICENSE_ISSUED_ON);
+    // Водительского у этого человека нет вовсе, и чужой документ в графу не подставляется.
+    expect(machinist.driver_license_number).not.toBe(license.requisites);
+
+    // А у должности, которой требуется ВУ, в тех же ключах стоит оно: тракторное удостоверение не
+    // «побеждает» просто потому, что бланк недельный.
+    const driver = dataById.get(driverSheet.id)!;
+    expect(driver.driver_license_number).toBe(license.requisites);
+    expect(driver.driver_license_issued_on).toBe(license.issued_on);
+
+    // СНИЛС пуст у обоих: этой графы в бланке ЭСМ-2 нет, и реквизит этот — листа на рейс.
+    expect(machinist.driver_snils).toBe('');
+    expect(driver.driver_snils).toBe('');
+  }, 60_000);
 
   it('выгрузка отмечается в журнале у своего листа и только у него', async () => {
     const sheet = await issueWaybill();

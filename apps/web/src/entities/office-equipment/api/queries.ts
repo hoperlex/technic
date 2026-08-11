@@ -59,5 +59,15 @@ export const officeEquipmentOptionsQuery = () =>
         value: item.id,
         label: officeEquipmentTitle(item),
         warrantyUntil: item.warrantyUntil,
+        // Реквизиты выбранной единицы форма заявки показывает отдельными строками (Р48): человек
+        // должен увидеть, что именно уйдёт в заявку снимком, до отправки, а не после. Второго
+        // запроса за карточкой это не стоит — список всё равно загружен целиком.
+        name: item.name,
+        serialNumber: item.serialNumber,
+        inventoryNumber: item.inventoryNumber,
+        typeName: item.type.name,
+        objectLabel: `${item.object.code} — ${item.object.name}`,
+        departmentName: item.department?.name ?? '',
+        location: item.location,
       })),
   });

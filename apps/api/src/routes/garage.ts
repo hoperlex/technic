@@ -13,8 +13,9 @@ import {
   type GarageVehicleState,
   licenseNumberLabel,
   moscowDateKeyOf,
+  requiredCredentialType,
   vehicleLabel,
-  waybillLicenseOf,
+  waybillDocumentOf,
 } from '@technic/contracts';
 import { db } from '../db/client';
 import {
@@ -173,7 +174,11 @@ function driverWhere(
   )!;
 }
 
-/** Строка перечня водителей: человек и его действующее трудовое отношение (табельный номер). */
+/**
+ * Строка перечня водителей: человек и его действующее трудовое отношение — табельный номер и
+ * должность. Должность здесь не для показа: ею выбирается вид документа, по которому считаются
+ * пробелы комплекта и берётся удостоверение для листа (ADR 0095).
+ */
 function driverQuery(state: SQL<GarageDriverState>) {
   return db
     .select({
@@ -183,6 +188,7 @@ function driverQuery(state: SQL<GarageDriverState>) {
       snils: persons.snils,
       phone: persons.phone,
       personnelNo: personEmployments.personnelNo,
+      jobTitle: personEmployments.jobTitle,
     })
     .from(persons)
     .leftJoin(
@@ -344,19 +350,23 @@ export default async function garageRoutes(app: FastifyInstance): Promise<void> 
       return {
         items: rows.map((row) => {
           const own = licenses.get(row.personId) ?? [];
+          const jobTitle = row.jobTitle ?? '';
           // Документ, которым лист выпишется на этот день, и пробелы комплекта — теми же двумя
-          // функциями, что показывают карточку водителя и форму выписки (ADR 0064).
-          const license = waybillLicenseOf(own, on);
+          // функциями, что показывают карточку водителя и форму выписки (ADR 0064). Вид документа
+          // задаёт должность (ADR 0095): у машиниста погрузчика лист выпишется по тракторному, и
+          // водительское, лежащее рядом, ни граф не заполнит, ни пробел не закроет.
+          const license = waybillDocumentOf(own, jobTitle, on);
           return {
             personId: row.personId,
             state: row.state,
             fullName: row.fullName,
             personnelNo: row.personnelNo ?? '',
             phone: row.phone,
+            credentialTypeCode: requiredCredentialType(jobTitle),
             licenseNumber: license ? licenseNumberLabel(license) : '',
             licenseExpiresOn: license?.expiresOn ?? null,
             categories: license?.categories.map((c) => c.name) ?? [],
-            gaps: driverDocumentGaps({ snils: row.snils, licenses: own }, on),
+            gaps: driverDocumentGaps({ snils: row.snils, jobTitle, licenses: own }, on),
             busy: busy.get(row.personId) ?? [],
           };
         }),

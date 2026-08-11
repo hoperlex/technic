@@ -1,5 +1,5 @@
 import type { Dayjs } from 'dayjs';
-import type { CreateOfficeEquipmentInput } from '@technic/contracts';
+import type { CreateOfficeEquipmentInput, UpdateOfficeEquipmentInput } from '@technic/contracts';
 
 /**
  * Карточка единицы в форме: значения полей (`OfficeEquipmentFields`) и сборка тела запроса.
@@ -46,4 +46,16 @@ export function officeEquipmentPayload(v: OfficeEquipmentFormValues): CreateOffi
     comment: v.comment?.trim() ?? '',
     isActive: v.isActive,
   };
+}
+
+/**
+ * Тело правки карточки: то же самое **без объекта** (план модернизации, Р59). Переезд — событие с
+ * датой, причиной и обеими сторонами, и тихая смена площадки в форме оставляла бы вопрос «где этот
+ * аппарат стоял в мае» без ответа. Сервер такое тело и не примет: поле из схемы правки убрано.
+ */
+export function officeEquipmentUpdatePayload(
+  v: OfficeEquipmentFormValues,
+): UpdateOfficeEquipmentInput {
+  const { objectId: _objectId, ...rest } = officeEquipmentPayload(v);
+  return rest;
 }

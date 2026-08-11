@@ -42,6 +42,14 @@ const OPERATORS: AccessSubject[] = [shtabOperator, departmentOperator];
 
 const admin: AccessSubject = { role: 'admin' };
 
+/** Согласующий от ИТ (Р51): базовая роль плюс своя надстройка — она даёт визу и сквозную область. */
+const shtabIt: AccessSubject = { role: 'shtab', addons: ['office_equipment_it_approver'] };
+const departmentIt: AccessSubject = {
+  role: 'department',
+  addons: ['office_equipment_it_approver'],
+};
+const IT_APPROVERS: AccessSubject[] = [shtabIt, departmentIt];
+
 /** Заказчик без надстройки — тот, кто заявку завёл: он её не двигает вовсе. */
 const CUSTOMERS: AccessSubject[] = [
   { role: 'shtab' },
@@ -60,7 +68,8 @@ const from = (status: ServiceRequestStatus, subject: AccessSubject | null | unde
 
 describe('коридор исполнителя: сервис делает только то, что делает сам', () => {
   it('берёт в диагностику и отказывается, предъявляет смету, закрывает и переоткрывает', () => {
-    expect(from('assigned', service)).toEqual(['diagnostics', 'new']);
+    // Отказ возвращает заявку оператору, а не в «Новую»: виза ИТ уже дана (Р51).
+    expect(from('assigned', service)).toEqual(['diagnostics', 'it_approved']);
     expect(from('diagnostics', service)).toEqual(['estimate_review']);
     expect(from('in_work', service)).toEqual(['diagnostics', 'done']);
   });
@@ -68,7 +77,14 @@ describe('коридор исполнителя: сервис делает то�
   it('в остальных статусах ход заявки не его: ждут не сервис', () => {
     // «Новую» заявку сервис не видит вовсе (Р22), смету согласует не он, приёмку делает оператор,
     // а из терминальных статусов заявку не двигает никто, кроме администратора.
-    for (const status of ['new', 'estimate_review', 'done', 'accepted', 'cancelled'] as const) {
+    for (const status of [
+      'new',
+      'it_approved',
+      'estimate_review',
+      'done',
+      'accepted',
+      'cancelled',
+    ] as const) {
       expect(from(status, service), status).toEqual([]);
     }
   });
@@ -79,8 +95,10 @@ describe('коридор исполнителя: сервис делает то�
     expect(canTransitionServiceStatus('estimate_review', 'diagnostics', service)).toBe(false);
     expect(canTransitionServiceStatus('done', 'accepted', service)).toBe(false);
     expect(canTransitionServiceStatus('done', 'in_work', service)).toBe(false);
+    // Виза ИТ — не его решение вовсе: сервис не подтверждает сам себе, что его надо звать (Р55).
+    expect(canTransitionServiceStatus('new', 'it_approved', service)).toBe(false);
     // Назначение и переназначение — тоже решение заказчика: исполнитель себе работу не выбирает.
-    expect(canTransitionServiceStatus('new', 'assigned', service)).toBe(false);
+    expect(canTransitionServiceStatus('it_approved', 'assigned', service)).toBe(false);
     expect(canTransitionServiceStatus('assigned', 'assigned', service)).toBe(false);
     expect(canTransitionServiceStatus('diagnostics', 'assigned', service)).toBe(false);
     // Отмена: ни из одного статуса.
@@ -90,6 +108,7 @@ describe('коридор исполнителя: сервис делает то�
     // Административные откаты. `assigned → new` в этот перечень не входит намеренно: у сервиса это
     // не откат, а собственный отказ от работы (Р20), и дуга у них общая.
     for (const [a, b] of [
+      ['it_approved', 'new'],
       ['diagnostics', 'assigned'],
       ['estimate_review', 'diagnostics'],
       ['done', 'in_work'],
@@ -117,7 +136,9 @@ describe('коридор оператора оргтехники: решения
   it('назначает и переназначает, согласует и отклоняет, принимает, возвращает и отменяет', () => {
     for (const operator of OPERATORS) {
       const who = accessProfileLabel(operator);
-      expect(from('new', operator), who).toEqual(['assigned', 'cancelled']);
+      // Из «Новой» оператор только отменяет: назначить сервис до визы ИТ нечем (Р51).
+      expect(from('new', operator), who).toEqual(['cancelled']);
+      expect(from('it_approved', operator), who).toEqual(['assigned', 'cancelled']);
       // Переназначение — тот же статус, другой исполнитель (Р20).
       expect(from('assigned', operator), who).toEqual(['assigned', 'cancelled']);
       expect(from('diagnostics', operator), who).toEqual(['assigned', 'cancelled']);
@@ -151,7 +172,9 @@ describe('коридор оператора оргтехники: решения
       expect(canTransitionServiceStatus('in_work', 'diagnostics', operator), who).toBe(false);
       // Отказаться от заявки за сервис он тоже не может: отказ — шаг исполнителя, у оператора на
       // этот случай есть переназначение.
-      expect(canTransitionServiceStatus('assigned', 'new', operator), who).toBe(false);
+      expect(canTransitionServiceStatus('assigned', 'it_approved', operator), who).toBe(false);
+      // И визы у него нет: решение «звать ли сервис» принимает отдел ИТ, а не тот, кто зовёт.
+      expect(canTransitionServiceStatus('new', 'it_approved', operator), who).toBe(false);
       // Откаты остаются администратору: у оператора нет `requests.rollbackStatus`.
       expect(canTransitionServiceStatus('accepted', 'done', operator), who).toBe(false);
       expect(canTransitionServiceStatus('cancelled', 'new', operator), who).toBe(false);
@@ -166,15 +189,64 @@ describe('коридор оператора оргтехники: решения
   });
 });
 
+describe('коридор ИТ: одно решение — звать ли внешний сервис', () => {
+  it('визирует и отклоняет «Новую», и больше не делает ничего', () => {
+    for (const approver of IT_APPROVERS) {
+      const who = accessProfileLabel(approver);
+      expect(from('new', approver), who).toEqual(['cancelled', 'it_approved']);
+      // Дальше цикл ведут другие: назначает оператор, работает сервис, принимает снова оператор.
+      for (const status of [
+        'it_approved',
+        'assigned',
+        'diagnostics',
+        'estimate_review',
+        'in_work',
+        'done',
+        'accepted',
+        'cancelled',
+      ] as const) {
+        expect(from(status, approver), `${who}: ${status}`).toEqual([]);
+      }
+    }
+  });
+
+  /**
+   * Виза не требует права хода (`serviceRequests.status`): согласующий заявки не ведёт, он
+   * отвечает на один вопрос. Требуй мы это право, полномочие пришлось бы выдавать вместе с
+   * возможностью двигать заявку по всему циклу — то есть отдавать ИТ работу оператора.
+   */
+  it('шагов оператора у него нет: ни назначения, ни согласования сметы, ни приёмки', () => {
+    for (const approver of IT_APPROVERS) {
+      const who = accessProfileLabel(approver);
+      expect(canTransitionServiceStatus('it_approved', 'assigned', approver), who).toBe(false);
+      expect(canTransitionServiceStatus('estimate_review', 'in_work', approver), who).toBe(false);
+      expect(canTransitionServiceStatus('done', 'accepted', approver), who).toBe(false);
+      expect(canTransitionServiceStatus('in_work', 'cancelled', approver), who).toBe(false);
+    }
+  });
+
+  it('надстройка и есть источник визы: без неё та же роль не визирует', () => {
+    expect(canTransitionServiceStatus('new', 'it_approved', { role: 'shtab' })).toBe(false);
+    expect(
+      canTransitionServiceStatus('new', 'it_approved', {
+        role: 'shtab',
+        addons: ['office_equipment_operator'],
+      }),
+    ).toBe(false);
+  });
+});
+
 /**
  * Администратор получает **объединение** коридоров: он разбирает ошибки и доводит заявку за любую
  * сторону. Перебор положительный — каждая дуга обоих коридоров плюс откаты: запрещающий тест
  * пропустил бы зависшую заявку, разобрать которую администратору оказалось бы нечем.
  */
-describe('администратор проходит каждую дугу обоих коридоров', () => {
+describe('администратор проходит каждую дугу всех коридоров', () => {
   const ADMIN_ARCS: [ServiceRequestStatus, ServiceRequestStatus, string][] = [
+    // Коридор ИТ
+    ['new', 'it_approved', 'завизировать от ИТ'],
     // Коридор оператора
-    ['new', 'assigned', 'назначить сервис'],
+    ['it_approved', 'assigned', 'назначить сервис'],
     ['new', 'cancelled', 'отменить новую'],
     ['assigned', 'assigned', 'переназначить'],
     ['assigned', 'cancelled', 'отменить назначенную'],
@@ -188,11 +260,12 @@ describe('администратор проходит каждую дугу об
     ['done', 'in_work', 'вернуть на доработку'],
     // Коридор исполнителя
     ['assigned', 'diagnostics', 'взять в диагностику'],
-    ['assigned', 'new', 'отказаться от заявки'],
+    ['assigned', 'it_approved', 'отказаться от заявки'],
     ['diagnostics', 'estimate_review', 'предъявить смету'],
     ['in_work', 'done', 'закрыть работы'],
     ['in_work', 'diagnostics', 'переоткрыть смету'],
     // Откаты
+    ['it_approved', 'new', 'откатить визу ИТ'],
     ['accepted', 'done', 'откатить приёмку'],
     ['cancelled', 'new', 'вернуть отменённую в работу'],
   ];
@@ -203,9 +276,15 @@ describe('администратор проходит каждую дугу об
     }
   });
 
-  it('набор из каждого статуса — объединение трёх таблиц', () => {
-    expect(from('new', admin)).toEqual(['assigned', 'cancelled']);
-    expect(from('assigned', admin)).toEqual(['assigned', 'cancelled', 'diagnostics', 'new']);
+  it('набор из каждого статуса — объединение четырёх таблиц', () => {
+    expect(from('new', admin)).toEqual(['cancelled', 'it_approved']);
+    expect(from('it_approved', admin)).toEqual(['assigned', 'cancelled', 'new']);
+    expect(from('assigned', admin)).toEqual([
+      'assigned',
+      'cancelled',
+      'diagnostics',
+      'it_approved',
+    ]);
     expect(from('diagnostics', admin)).toEqual(['assigned', 'cancelled', 'estimate_review']);
     expect(from('estimate_review', admin)).toEqual(['cancelled', 'diagnostics', 'in_work']);
     expect(from('in_work', admin)).toEqual(['cancelled', 'diagnostics', 'done']);
@@ -266,6 +345,8 @@ describe('кому ход заявки закрыт целиком', () => {
       'Оператор (внешний исполнитель) — Сервисная компания',
       'Штаб + Оператор (оргтехника)',
       'Отдел + Оператор (оргтехника)',
+      'Штаб + Согласование ИТ',
+      'Отдел + Согласование ИТ',
     ]);
   });
 
@@ -292,7 +373,8 @@ describe('кому ход заявки закрыт целиком', () => {
  */
 describe('причина перехода', () => {
   const REQUIRE_REASON = new Set([
-    'assigned→new', // отказ исполнителя и откат назначения
+    'assigned→it_approved', // отказ исполнителя и откат назначения
+    'it_approved→new', // откат визы ИТ
     'estimate_review→diagnostics', // отклонение сметы
     'in_work→diagnostics', // переоткрытие сметы
     'done→in_work', // возврат на доработку
@@ -310,7 +392,8 @@ describe('причина перехода', () => {
 
   it('движение вперёд объяснений не требует', () => {
     for (const [a, b] of [
-      ['new', 'assigned'],
+      ['new', 'it_approved'],
+      ['it_approved', 'assigned'],
       ['assigned', 'diagnostics'],
       ['diagnostics', 'estimate_review'],
       ['estimate_review', 'in_work'],
@@ -334,8 +417,16 @@ describe('сброс при возвратах и откатах', () => {
   const keysOf = (a: ServiceRequestStatus, b: ServiceRequestStatus) =>
     resetKeys(serviceResetOnTransition(a, b));
 
-  it('отказ и откат назначения: заявка снова ничья', () => {
-    expect(keysOf('assigned', 'new')).toEqual(['executor']);
+  it('отказ и откат назначения: заявка снова ничья, но виза ИТ при ней остаётся', () => {
+    expect(keysOf('assigned', 'it_approved')).toEqual(['executor']);
+  });
+
+  /**
+   * Откат самой визы — единственная дуга, снимающая подпись отдела ИТ: заявка возвращается к нему
+   * на решение, и сохранённая виза означала бы согласие, которого больше нет.
+   */
+  it('откат визы снимает подпись ИТ и ничего больше', () => {
+    expect(keysOf('it_approved', 'new')).toEqual(['itApproval']);
   });
 
   it('отмена из любого статуса снимает исполнителя и согласование', () => {
@@ -348,7 +439,12 @@ describe('сброс при возвратах и откатах', () => {
   });
 
   it('откат отменённой заявки возвращает её в состояние «ничего не делали»', () => {
-    expect(keysOf('cancelled', 'new')).toEqual(['approval', 'estimate', 'executor']);
+    expect(keysOf('cancelled', 'new')).toEqual([
+      'approval',
+      'estimate',
+      'executor',
+      'itApproval',
+    ]);
   });
 
   it('возврат в диагностику отменяет согласование, а смету и её ревизию оставляет', () => {
@@ -398,7 +494,9 @@ describe('сброс при возвратах и откатах', () => {
 describe('кого ждёт заявка', () => {
   it('сторона следует из статуса', () => {
     const byStatus: Record<ServiceRequestStatus, ServiceWaitingOn> = {
-      new: 'operator',
+      // «Новая» ждёт отдел ИТ, а не оператора: до визы назначать сервис нечем (Р51).
+      new: 'it',
+      it_approved: 'operator',
       assigned: 'service',
       diagnostics: 'service',
       estimate_review: 'operator',
@@ -412,7 +510,7 @@ describe('кого ждёт заявка', () => {
     }
     // Значение `customer` не заведено: заказчик в цикле решений не участвует — приёмку делает
     // оператор. Появится его шаг — появится и значение вместе с веткой предиката.
-    expect([...SERVICE_WAITING_ON]).toEqual(['operator', 'service', 'nobody']);
+    expect([...SERVICE_WAITING_ON]).toEqual(['it', 'operator', 'service', 'nobody']);
   });
 
   it('сторону задают права, а не роль: у штаба-оператора роль «Штаб», а сторона — оператор', () => {
@@ -432,6 +530,18 @@ describe('кого ждёт заявка', () => {
     // становится: заявку он ведёт за компанию, а не за подрядчика.
     expect(isWaitingOn(admin, 'operator')).toBe(true);
     expect(isWaitingOn(admin, 'service')).toBe(false);
+    // Сторона ИТ — тоже по праву, а не по надстройке: у администратора виза есть, и «Новая»
+    // ждёт в том числе его.
+    for (const approver of IT_APPROVERS) {
+      const who = accessProfileLabel(approver);
+      expect(isWaitingOn(approver, 'it'), who).toBe(true);
+      expect(isWaitingOn(approver, 'operator'), who).toBe(false);
+      expect(isWaitingOn(approver, 'service'), who).toBe(false);
+    }
+    expect(isWaitingOn(admin, 'it')).toBe(true);
+    // У оператора визы нет: очередь ИТ — не его работа.
+    expect(isWaitingOn(shtabOperator, 'it')).toBe(false);
+    expect(isWaitingOn(service, 'it')).toBe(false);
   });
 
   it('заказчика и наблюдателя не ждут: решений в цикле у них нет', () => {

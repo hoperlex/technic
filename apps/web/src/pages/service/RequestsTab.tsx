@@ -24,6 +24,9 @@ import { ServiceRequestViewModal } from './ServiceRequestViewModal';
 const QUEUES = [
   { value: 'all', label: 'Все заявки' },
   { value: 'waiting', label: 'Требуют решения' },
+  // Срочные — вход, а не фильтр: с них начинают день, и прятать их в шит значило бы прятать саму
+  // работу (план модернизации, Р56).
+  { value: 'urgent', label: 'Срочные' },
   { value: 'documents', label: 'Ожидаются документы' },
 ] as const;
 
@@ -159,14 +162,17 @@ export function RequestsTab() {
   const queue =
     params.waitingOnMe === 'true'
       ? 'waiting'
-      : params.awaitingDocuments === 'true'
-        ? 'documents'
-        : 'all';
+      : params.urgent === 'true'
+        ? 'urgent'
+        : params.awaitingDocuments === 'true'
+          ? 'documents'
+          : 'all';
 
   const setQueue = (value: string) =>
     setParams((p) => ({
       ...p,
       waitingOnMe: value === 'waiting' ? 'true' : undefined,
+      urgent: value === 'urgent' ? 'true' : undefined,
       awaitingDocuments: value === 'documents' ? 'true' : undefined,
       page: 1,
     }));

@@ -4,21 +4,18 @@ import {
   actsForCounterparty,
   can,
   type AuthUser,
-  serviceFileKindLabels,
   type ServiceRequestDto,
-  warrantyClaimSourceLabels,
 } from '@technic/contracts';
 import {
   isServiceRequestOverdue,
-  missingClosingDocuments,
   ServiceStatusTag,
-  serviceDocumentCounts,
   serviceTodoLabel,
   statusAgeLabel,
+  UrgentTag,
   WaitingOnTag,
 } from '@entities/service-request';
-import { WarrantyTag } from '@entities/office-equipment';
 import { actionsColumn, type ActionSheetItem, type CardConfig, ExpandableCell } from '@shared/ui';
+import { DocumentsCell, EquipmentCell } from './serviceRequestCells';
 import { textColumn } from '@shared/ui';
 import { PhoneLink } from '../../components/PhoneField';
 import { formatDateOnly } from '../../utils/date';
@@ -73,80 +70,6 @@ export interface ServiceGridOptions {
   onOpen: (request: ServiceRequestDto) => void;
 }
 
-/** Реквизиты единицы: модель сверху, номер и тип — подписью. Ими технику и опознают. */
-function EquipmentCell({
-  request,
-  warrantyUntil,
-}: {
-  request: ServiceRequestDto;
-  warrantyUntil: string | null | undefined;
-}) {
-  const equipment = request.equipment;
-  const number = equipment.inventoryNumber
-    ? `инв. ${equipment.inventoryNumber}`
-    : equipment.serialNumber
-      ? `SN ${equipment.serialNumber}`
-      : '';
-  return (
-    <div style={{ lineHeight: 1.35 }}>
-      <div>{equipment.name}</div>
-      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-        {[number, equipment.typeName].filter(Boolean).join(' · ')}
-      </Typography.Text>
-      <div style={{ marginTop: 2 }}>
-        <Space size={4} wrap>
-          {/* Два разных признака гарантии (§9.2): слева — состояние гарантии самой техники,
-              справа — пометка «эта заявка заявлена по гарантии». Их путают постоянно: техника
-              может быть на гарантии, а заявка заведена обычной, и наоборот.
-              `undefined` — справочник этой роли не виден (сервису он закрыт), и молчание честнее
-              прочерка: портал про гарантию единицы попросту не знает. */}
-          {warrantyUntil !== undefined && <WarrantyTag until={warrantyUntil} />}
-          {request.warrantyClaim && (
-            <Tooltip
-              title={`${warrantyClaimSourceLabels[request.warrantyClaim.source]}${
-                request.warrantyClaim.itemName ? `: ${request.warrantyClaim.itemName}` : ''
-              }${
-                request.warrantyClaim.sourceRequestNum
-                  ? ` · заявка СО-${request.warrantyClaim.sourceRequestNum}`
-                  : ''
-              }`}
-            >
-              <Tag color="purple" style={{ marginInlineEnd: 0 }}>
-                Гарантийная
-              </Tag>
-            </Tooltip>
-          )}
-        </Space>
-      </div>
-    </div>
-  );
-}
-
-/** Что подшито и чего не хватает (Р16): по этой ячейке и собирают очередь «Ожидаются документы». */
-function DocumentsCell({ request }: { request: ServiceRequestDto }) {
-  const counts = serviceDocumentCounts(request.files);
-  const missing = missingClosingDocuments(request);
-  if (request.files.length === 0 && missing.length === 0) {
-    return <Typography.Text type="secondary">—</Typography.Text>;
-  }
-  return (
-    <Space size={4} wrap>
-      {(['act', 'invoice', 'warranty_card'] as const)
-        .filter((kind) => counts[kind])
-        .map((kind) => (
-          <Tag key={kind} color="green" style={{ marginInlineEnd: 0 }}>
-            {serviceFileKindLabels[kind]}
-          </Tag>
-        ))}
-      {missing.map((kind) => (
-        <Tag key={kind} color="red" style={{ marginInlineEnd: 0 }}>
-          нет: {serviceFileKindLabels[kind].toLowerCase()}
-        </Tag>
-      ))}
-    </Space>
-  );
-}
-
 /** Итог заявки: пока работы не закрыты — согласованная смета, после — то, что по акту. */
 function amountLabel(request: ServiceRequestDto): { value: string; hint: string } {
   if (request.completion?.totalAmount != null) {
@@ -171,7 +94,12 @@ export function serviceRequestColumns(
       sorter: true,
       render: (_v: unknown, r: ServiceRequestDto) => (
         <div style={{ lineHeight: 1.35 }}>
-          <div>{r.displayNumber}</div>
+          <Space size={4} wrap>
+            <span>{r.displayNumber}</span>
+            {/* Срочность — у номера, а не в отдельной колонке: список читают слева направо, и
+                признак, ради которого заявку берут вне очереди, обязан попасться первым. */}
+            {r.isUrgent && <UrgentTag reason={r.urgencyReason} />}
+          </Space>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             завёл {r.createdByName}
           </Typography.Text>
@@ -199,29 +127,26 @@ export function serviceRequestColumns(
         <EquipmentCell request={r} warrantyUntil={opts.warrantyOf(r.equipment.id)} />
       ),
     }),
-    ...(view.service
-      ? [
-          {
-            key: 'object',
-            title: 'Объект',
-            dataIndex: 'object',
-            width: 200,
-            sorter: true,
-            render: (_v: unknown, r: ServiceRequestDto) => (
-              <div style={{ lineHeight: 1.35 }}>
-                <div>
-                  {r.object.code} — {r.object.name}
-                </div>
-                {r.customerDepartment && (
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    {r.customerDepartment.name}
-                  </Typography.Text>
-                )}
-              </div>
-            ),
-          },
-        ]
-      : []),
+    // Объект — колонка ядра, а не набора сервиса (Р57). До этого её видел только исполнитель, и
+    // заказчик с оператором отвечали на вопрос «где стоит аппарат», открывая карточку: у отдела
+    // заявки бывают на разных площадках, а у оператора — на всех сразу.
+    {
+      key: 'object',
+      title: 'Объект',
+      dataIndex: 'object',
+      width: 200,
+      sorter: true,
+      render: (_v: unknown, r: ServiceRequestDto) => (
+        <div style={{ lineHeight: 1.35 }}>
+          <div>
+            {r.object.code} — {r.object.name}
+          </div>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            {[r.equipment.location, r.customerDepartment?.name].filter(Boolean).join(' · ')}
+          </Typography.Text>
+        </div>
+      ),
+    },
     ...(view.customer
       ? [
           {
@@ -385,13 +310,22 @@ export function serviceRequestColumns(
 export function serviceRequestCard(opts: ServiceGridOptions): CardConfig<ServiceRequestDto> {
   return {
     title: (r) => r.displayNumber,
-    badge: (r) => <ServiceStatusTag status={r.status} />,
+    badge: (r) => (
+      <Space size={4}>
+        {r.isUrgent && <UrgentTag reason="" />}
+        <ServiceStatusTag status={r.status} />
+      </Space>
+    ),
     primary: (r) =>
       [r.equipment.name, r.equipment.inventoryNumber && `инв. ${r.equipment.inventoryNumber}`]
         .filter(Boolean)
         .join(' · '),
     lines: [
-      (r) => `${r.object.code} — ${r.object.name}`,
+      // Подсказок на телефоне нет, поэтому причина срочности выносится строкой — иначе красная
+      // метка сообщала бы «срочно», не отвечая «почему».
+      (r) => (r.isUrgent ? `Срочно: ${r.urgencyReason}` : null),
+      (r) =>
+        [`${r.object.code} — ${r.object.name}`, r.equipment.location].filter(Boolean).join(' · '),
       (r) => r.description,
       (r) => (r.service ? `Сервис: ${r.service.name}` : 'Сервис не назначен'),
       (r) => {

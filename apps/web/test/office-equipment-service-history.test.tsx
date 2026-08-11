@@ -25,6 +25,8 @@ function equipmentDto(overrides: Partial<OfficeEquipmentDto> = {}): OfficeEquipm
     object: { id: 'obj-1', code: 'ОБ-1', name: 'ЖК Северный' },
     department: null,
     location: 'каб. 12',
+    state: 'on_site',
+    stateNote: '',
     purchasedOn: '2025-03-01',
     warrantyUntil: '2027-03-01',
     comment: '',

@@ -23,5 +23,7 @@ export {
   serviceDocumentCounts,
 } from './model/documents';
 export { ServiceEstimateTable } from './ui/ServiceEstimateTable';
+export { ServiceRequestContext } from './ui/ServiceRequestContext';
 export { ServiceStatusTag } from './ui/ServiceStatusTag';
+export { UrgentTag } from './ui/UrgentTag';
 export { WaitingOnTag } from './ui/WaitingOnTag';

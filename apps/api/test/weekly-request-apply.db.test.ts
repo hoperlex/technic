@@ -718,8 +718,12 @@ describe.skipIf(!DB_URL)('недельная заявка: применение 
       await db.execute(sql`
         INSERT INTO person_credential_categories (credential_id, qualification_category_id,
                                                   credential_type_id, valid_from)
+        -- Категория берётся вместе со своим видом документа: с миграции 0123 «B» и «C» есть и у
+        -- тракторного удостоверения, а перекрёстный подбор положил бы его категорию в ВУ — такую
+        -- пару не пропускает составной внешний ключ.
         SELECT ${credential.rows[0]!.id}, qc.id, ct.id, '2021-03-12'
-        FROM qualification_categories qc, credential_types ct
+        FROM qualification_categories qc
+        JOIN credential_types ct ON ct.id = qc.credential_type_id
         WHERE qc.code IN ('b', 'c') AND ct.code = 'driver_license'`);
     }
 

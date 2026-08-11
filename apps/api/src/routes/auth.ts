@@ -64,6 +64,8 @@ interface AuthUserSource {
   firstName: string;
   middleName: string;
   fullName: string;
+  /** Телефон учётки (ADR 0043): портал подставляет его контактом заявителя в заявку на ремонт. */
+  phone: string;
   role: Role | null;
   isActive: boolean;
   mustChangePassword: boolean;
@@ -87,6 +89,7 @@ function makeAuthUser(u: AuthUserSource): AuthUser {
     firstName: u.firstName,
     middleName: u.middleName,
     fullName: u.fullName,
+    phone: u.phone,
     role: u.role,
     isActive: u.isActive,
     mustChangePassword: u.mustChangePassword,

@@ -62,6 +62,8 @@ const def = directory<Row, Model, Record<string, never>>({
     },
     {
       header: 'Наименование',
+      // Колонку когда-то звали иначе: файл, скачанный до переименования, обязан грузиться.
+      aliases: ['Название'],
       get: (m) => m.name,
       set: (m, text, ctx) => {
         const v = parseRequired(text, ctx, 'Наименование', m.name);
@@ -204,6 +206,39 @@ describe('разбор файла', () => {
     const report = await importDirectory(def, bytes, { dryRun: true, actorUserId: 'u' });
     expect(report.totalRows).toBe(1);
     expect(report.created).toHaveLength(1);
+  });
+
+  it('прежнее имя колонки принимается: переименование не отвергает ранее скачанный файл', async () => {
+    const bytes = writeWorkbook([
+      {
+        name: 'Данные',
+        rows: [
+          ['Код', 'Название'],
+          ['msk', 'Москва-2'],
+        ],
+      },
+    ]);
+    const report = await importDirectory(def, bytes, { dryRun: true, actorUserId: 'u' });
+    expect(report.problems).toEqual([]);
+    // Правка показана нынешним именем колонки: в файле его нет, но человек читает отчёт портала.
+    expect(report.updated[0]!.changes).toEqual([
+      { column: 'Наименование', from: 'Москва', to: 'Москва-2' },
+    ]);
+  });
+
+  it('выгрузка пишет только нынешнее имя колонки, а не оба', async () => {
+    const { bytes } = await exportDirectory(def);
+    expect(readWorkbook(bytes)[0]!.rows[0]).not.toContain('Название');
+  });
+
+  it('прежнее имя рядом с нынешним — отказ: какую из двух колонок читать, неизвестно', async () => {
+    const bytes = book([
+      [...HEADER, 'Название'],
+      ['', 'msk', 'Москва', '', 'да', 'Москва-2'],
+    ]);
+    await expect(importDirectory(def, bytes, { dryRun: true, actorUserId: 'u' })).rejects.toThrow(
+      /повторяется/u,
+    );
   });
 
   it('незнакомая колонка — отказ: это файл по другому шаблону', async () => {

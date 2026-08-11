@@ -31,7 +31,10 @@ const kindColors: Record<WarrantyRowKind, string> = {
 
 /** Номера второй строкой — ими единицу опознают, а называют её моделью. */
 function numbers(row: ServiceWarrantyRowDto): string {
-  return [row.inventoryNumber && `инв. ${row.inventoryNumber}`, row.serialNumber && `SN ${row.serialNumber}`]
+  return [
+    row.inventoryNumber && `инв. ${row.inventoryNumber}`,
+    row.serialNumber && `SN ${row.serialNumber}`,
+  ]
     .filter(Boolean)
     .join(' · ');
 }
@@ -173,7 +176,9 @@ export function warrantyCard({
       (r) => (r.daysLeft === null ? null : `Осталось: ${daysLeftText(r.daysLeft)}`),
     ],
     actions: (r) => [
-      ...(canClaim ? [{ key: 'claim', label: 'Заявка по гарантии', onClick: () => onClaim(r) }] : []),
+      ...(canClaim
+        ? [{ key: 'claim', label: 'Заявка по гарантии', onClick: () => onClaim(r) }]
+        : []),
       ...(r.requestId
         ? [{ key: 'source', label: `Открыть ${r.displayNumber}`, onClick: () => onOpenRequest(r) }]
         : []),

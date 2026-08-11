@@ -4,8 +4,12 @@ import { and, asc, count, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm
 import { z } from 'zod';
 import {
   can,
+  CREDENTIAL_TYPE_CODES,
   createDriverSchema,
+  type CredentialTypeCode,
+  credentialTypeLabels,
   type DriverDto,
+  type DriverJobTitleDto,
   type DriverLicenseDto,
   driverLicenseInputSchema,
   driverListQuerySchema,
@@ -13,6 +17,8 @@ import {
   driverSelectionQuerySchema,
   isValidSnils,
   licenseNumberLabel,
+  normalizeJobTitle,
+  requiredCredentialType,
   revokeDriverLicenseSchema,
   SNILS_CHECKSUM_MESSAGE,
   updateDriverSchema,
@@ -38,22 +44,29 @@ import { requirePrincipal } from '../auth/plugin';
 import { assertArchiveVisible } from '../lib/access';
 import { orderByFrom, pageParams, phoneSearchCondition, searchCondition } from '../lib/pagination';
 import {
-  DRIVER_LICENSE_CODE,
   DRIVER_SPECIALIZATION_CODE,
   documentsCompleteCondition,
   driverCondition,
+  normalizedJobTitleSql,
   selectDrivers,
 } from '../services/drivers';
 import { registerPurgeRoute } from '../services/directory-purge';
 import { hardDeleteFiles } from '../services/request-files';
 
 /**
- * Справочник водителей (ADR 0037, ADR 0008).
+ * Справочник водителей (ADR 0037, ADR 0008, ADR 0095).
  *
  * Отдельной таблицы водителей нет: карточка собирает физлицо, его специализацию, трудовое
- * отношение и водительское удостоверение с категориями. Заводить их четырьмя экранами значило бы
- * дать остановиться на полпути — водитель без документа в отбор не попадёт и молча пропадёт из
- * формы перевода заявки в работу.
+ * отношение и документы допуска с категориями. Заводить их четырьмя экранами значило бы дать
+ * остановиться на полпути — водитель без документа в отбор не попадёт и молча пропадёт из формы
+ * перевода заявки в работу.
+ *
+ * Документов справочник ведёт два вида — водительское удостоверение и удостоверение
+ * тракториста-машиниста, — и оба показывает у каждого человека: у водителя, пересевшего на
+ * погрузчик, они бывают сразу оба. А какой из них у человека спрашивают — комплект документов,
+ * путевой лист, требование машины, — решает должность действующего трудового отношения
+ * (`requiredCredentialType`), а не выбор в форме: за экскаватор садятся по тракторному, и
+ * водительское его не заменяет, даже когда оно заполнено лучше.
  *
  * Право своё, а не `directories.*`: в карточке лежат персональные данные, и открывать их каждому,
  * кому нужен список типов ТС, нельзя.
@@ -63,23 +76,39 @@ type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 const idParams = z.object({ id: z.string().uuid() });
 
-/** Справочные идентификаторы, без которых водителя не завести (наполняет миграция 0058). */
-async function loadDirectoryIds(): Promise<{ specializationId: string; licenseTypeId: string }> {
+/**
+ * Справочные идентификаторы, без которых водителя не завести: специализация и виды документов
+ * (миграции 0058 и 0123).
+ *
+ * Виды берутся оба сразу, а не запрошенный: их всего два, справочник их не меняет, а ходить за
+ * идентификатором вида на каждое действие с документом значило бы делать второй запрос ради
+ * строки, которая уже в руках.
+ */
+async function loadDirectoryIds(): Promise<{
+  specializationId: string;
+  credentialTypeIds: Record<CredentialTypeCode, string>;
+}> {
   const [specialization] = await db
     .select({ id: specializations.id })
     .from(specializations)
     .where(eq(specializations.code, DRIVER_SPECIALIZATION_CODE));
-  const [licenseType] = await db
-    .select({ id: credentialTypes.id })
+  const types = await db
+    .select({ id: credentialTypes.id, code: credentialTypes.code })
     .from(credentialTypes)
-    .where(eq(credentialTypes.code, DRIVER_LICENSE_CODE));
+    .where(inArray(credentialTypes.code, [...CREDENTIAL_TYPE_CODES]));
 
-  if (!specialization || !licenseType) {
+  const byCode = new Map(types.map((t) => [t.code, t.id]));
+  if (!specialization || CREDENTIAL_TYPE_CODES.some((code) => !byCode.has(code))) {
     throw err.conflict(
-      'Справочник специализаций и видов документов не наполнен: примените миграцию 0058',
+      'Справочник специализаций и видов документов не наполнен: примените миграции 0058 и 0123',
     );
   }
-  return { specializationId: specialization.id, licenseTypeId: licenseType.id };
+  return {
+    specializationId: specialization.id,
+    credentialTypeIds: Object.fromEntries(
+      CREDENTIAL_TYPE_CODES.map((code) => [code, byCode.get(code)!]),
+    ) as Record<CredentialTypeCode, string>,
+  };
 }
 
 interface PersonRow {
@@ -102,7 +131,13 @@ interface PersonRow {
   employedSince: string | null;
 }
 
-/** Удостоверения найденных людей — добором: join'ить их к списку значило бы размножить строки. */
+/**
+ * Документы найденных людей — добором: join'ить их к списку значило бы размножить строки.
+ *
+ * Оба вида сразу (ADR 0095): карточка показывает и водительское, и тракторное удостоверение, а
+ * какой из них подставится в лист, решает должность (`waybillDocumentOf`) — отбирать вид запросом
+ * значило бы завести второе место, где это решается.
+ */
 async function licensesByPerson(personIds: string[]): Promise<Map<string, DriverLicenseDto[]>> {
   const map = new Map<string, DriverLicenseDto[]>();
   if (personIds.length === 0) return map;
@@ -111,6 +146,7 @@ async function licensesByPerson(personIds: string[]): Promise<Map<string, Driver
     .select({
       id: personCredentials.id,
       personId: personCredentials.personId,
+      credentialTypeCode: sql<CredentialTypeCode>`${credentialTypes.code}`,
       series: personCredentials.series,
       number: personCredentials.number,
       issuedOn: personCredentials.issuedOn,
@@ -125,13 +161,7 @@ async function licensesByPerson(personIds: string[]): Promise<Map<string, Driver
     .from(personCredentials)
     .innerJoin(credentialTypes, eq(credentialTypes.id, personCredentials.credentialTypeId))
     .leftJoin(users, eq(users.id, personCredentials.verifiedBy))
-    .where(
-      and(
-        inArray(personCredentials.personId, personIds),
-        eq(credentialTypes.code, DRIVER_LICENSE_CODE),
-        isNull(personCredentials.deletedAt),
-      ),
-    )
+    .where(and(inArray(personCredentials.personId, personIds), isNull(personCredentials.deletedAt)))
     // Свежий документ первым: им человек и ездит, старые остаются историей.
     .orderBy(desc(personCredentials.issuedOn), desc(personCredentials.createdAt));
 
@@ -177,6 +207,7 @@ async function licensesByPerson(personIds: string[]): Promise<Map<string, Driver
     const list = map.get(row.personId) ?? [];
     list.push({
       id: row.id,
+      credentialTypeCode: row.credentialTypeCode,
       series: row.series,
       number: row.number,
       issuedOn: row.issuedOn,
@@ -216,6 +247,15 @@ function toDto(row: PersonRow, licenses: DriverLicenseDto[]): DriverDto {
     deletedAt: row.deletedAt?.toISOString() ?? null,
   };
 }
+
+/**
+ * Нормализованная должность действующего трудового отношения — одним выражением на список
+ * должностей и на фильтр по ним (ADR 0095): группируется и сравнивается одно и то же, иначе фильтр
+ * не нашёл бы строку, которую сам же и предложил. Приведение общее с фильтром комплекта документов
+ * (`normalizedJobTitleSql`) и парное `normalizeJobTitle` из контрактов — трёх правд о должности
+ * быть не должно.
+ */
+const jobTitleKeySql = normalizedJobTitleSql(personEmployments.jobTitle);
 
 /** Действующее трудовое отношение — источник табельного номера и должности для бланка. */
 const employmentJoin = {
@@ -279,6 +319,39 @@ function categoryCondition(categoryId: string, on: string) {
   )`;
 }
 
+/**
+ * Все ли присланные категории принадлежат этому виду документа (ADR 0095).
+ *
+ * Пару «документ + категория» держит составной внешний ключ (`0019`), и без этой проверки портал
+ * отвечал бы на «B» тракторного в водительском удостоверении ошибкой базы — то есть 500 и текстом
+ * про ограничение. Категории у видов называются одними буквами, перепутать их в форме — обычное
+ * дело, и ответ должен называть причину.
+ */
+async function assertCategoriesOf(
+  tx: Tx,
+  type: CredentialTypeCode,
+  credentialTypeId: string,
+  categories: readonly { categoryId: string }[],
+): Promise<void> {
+  if (categories.length === 0) return;
+  const ids = [...new Set(categories.map((c) => c.categoryId))];
+  const rows = await tx
+    .select({ id: qualificationCategories.id })
+    .from(qualificationCategories)
+    .where(
+      and(
+        inArray(qualificationCategories.id, ids),
+        eq(qualificationCategories.credentialTypeId, credentialTypeId),
+      ),
+    );
+  if (rows.length === ids.length) return;
+  throw err.validation({
+    categories:
+      `Категория не из документа «${credentialTypeLabels[type]}»: ` +
+      'у водительского и тракторного удостоверений свои списки категорий',
+  });
+}
+
 async function loadDriver(id: string): Promise<{ row: PersonRow; dto: DriverDto } | null> {
   const [row] = await db
     .select(personSelect)
@@ -294,13 +367,27 @@ async function loadDriver(id: string): Promise<{ row: PersonRow; dto: DriverDto 
   return { row, dto: toDto(row, licenses.get(row.id) ?? []) };
 }
 
-/** Документ водителя вместе с категориями — одной транзакцией: документ без категорий бесполезен. */
+/**
+ * Документ водителя вместе с категориями — одной транзакцией: водительское удостоверение без
+ * категорий бесполезно, и заводить его двумя действиями значило бы дать остановиться на полпути.
+ *
+ * У тракторного удостоверения категорий может не быть вовсе (`driverLicenseInputSchema`): в
+ * кадровой выгрузке их не бывает, а бланку нужны номер и дата выдачи. Поэтому вставка категорий
+ * условная — пустой `values([])` в drizzle это ошибка, а не пустая работа.
+ *
+ * Вид документа приходит в теле, а идентификаторы обоих видов — картой: подобрать не тот id к не
+ * тому коду так попросту негде. Категории перед вставкой сверяются с видом (`assertCategoriesOf`):
+ * составной внешний ключ этого и так не пропустит, но ответом была бы ошибка базы.
+ */
 async function insertLicense(
   tx: Tx,
   personId: string,
-  licenseTypeId: string,
+  credentialTypeIds: Record<CredentialTypeCode, string>,
   license: NonNullable<z.infer<typeof createDriverSchema>['license']>,
 ): Promise<void> {
+  const licenseTypeId = credentialTypeIds[license.credentialType];
+  await assertCategoriesOf(tx, license.credentialType, licenseTypeId, license.categories);
+
   const [credential] = await tx
     .insert(personCredentials)
     .values({
@@ -314,6 +401,7 @@ async function insertLicense(
     })
     .returning({ id: personCredentials.id });
 
+  if (license.categories.length === 0) return;
   await tx.insert(personCredentialCategories).values(
     license.categories.map((c) => ({
       credentialId: credential!.id,
@@ -335,27 +423,99 @@ export default async function driversRoutes(app: FastifyInstance): Promise<void>
   // водителей нашего парка не назначает — лист выписывается только на собственные машины.
 
   /**
-   * Категории водительского удостоверения — ими заполняется форма. Справочник наполнен миграцией
-   * и не меняется, поэтому отдельного CRUD у него нет: список нужен только на чтение.
+   * Категории документа — ими заполняется форма. Справочник наполнен миграциями (0058 и 0123) и не
+   * меняется, поэтому отдельного CRUD у него нет: список нужен только на чтение.
+   *
+   * Вид документа — параметром, и категории отдаются только его: буквы у видов одни и те же, и
+   * общий список молча позволил бы приписать водительскому «C» тракторного (ADR 0095). Умолчание —
+   * водительское: так эту ручку зовёт форма, заведённая до второго вида документа.
    */
-  r.get('/license-categories', { preHandler: [app.authenticate, canRead] }, async () => {
-    const { licenseTypeId } = await loadDirectoryIds();
-    return db
-      .select({
-        id: qualificationCategories.id,
-        code: qualificationCategories.code,
-        name: qualificationCategories.name,
-        description: qualificationCategories.description,
-      })
-      .from(qualificationCategories)
-      .where(
-        and(
-          eq(qualificationCategories.credentialTypeId, licenseTypeId),
-          eq(qualificationCategories.isActive, true),
-        ),
-      )
-      .orderBy(asc(qualificationCategories.sortOrder));
-  });
+  r.get(
+    '/license-categories',
+    {
+      preHandler: [app.authenticate, canRead],
+      schema: {
+        querystring: z.object({
+          type: z.enum(CREDENTIAL_TYPE_CODES).optional().default('driver_license'),
+        }),
+      },
+    },
+    async (req) => {
+      const { credentialTypeIds } = await loadDirectoryIds();
+      return db
+        .select({
+          id: qualificationCategories.id,
+          code: qualificationCategories.code,
+          name: qualificationCategories.name,
+          description: qualificationCategories.description,
+        })
+        .from(qualificationCategories)
+        .where(
+          and(
+            eq(qualificationCategories.credentialTypeId, credentialTypeIds[req.query.type]),
+            eq(qualificationCategories.isActive, true),
+          ),
+        )
+        .orderBy(asc(qualificationCategories.sortOrder));
+    },
+  );
+
+  /**
+   * Должности справочника — список для фильтра (ADR 0095).
+   *
+   * Справочника должностей в базе нет и не заводится: должность приходит из кадровой выгрузки
+   * свободным текстом (`person_employments.job_title`), и портал ей не хозяин. Поэтому список
+   * собирается из самих карточек и группируется нормализованным значением — тем же выражением, что
+   * сравнивает фильтр списка: «Машинист  экскаватора» с двумя пробелами и «машинист экскаватора» —
+   * одна должность, а не две.
+   *
+   * Количество здесь не украшение: по нему администратор и замечает опечатку кадровой выгрузки —
+   * должность-двойник с единицей рядом стоит в списке отдельной строкой. По той же причине
+   * перечисляются все должности, а не только знакомые порталу: незнакомую видно, и по ней
+   * пополняют `JOB_TITLE_CREDENTIALS`. Пустая должность в список не идёт — фильтровать по ней
+   * нечего.
+   */
+  r.get(
+    '/job-titles',
+    { preHandler: [app.authenticate, canRead] },
+    async (): Promise<DriverJobTitleDto[]> => {
+      // Человек, а не трудовое отношение: у одного бывает два действующих договора с одной
+      // должностью, и в счётчике он должен остаться одним.
+      const people = sql<number>`count(DISTINCT ${persons.id})`;
+      const rows = await db
+        .select({
+          // Написание — как в кадрах: нормализованное значение годится для сравнения, но в
+          // выпадающем списке «машинист экскаватора» с маленькой буквы выглядит опечаткой портала.
+          jobTitle: sql<string>`min(${personEmployments.jobTitle})`,
+          count: people,
+        })
+        .from(persons)
+        .innerJoin(
+          personEmployments,
+          and(eq(personEmployments.personId, persons.id), isNull(personEmployments.endedOn)),
+        )
+        .where(
+          and(
+            isNull(persons.deletedAt),
+            driverCondition(),
+            sql`btrim(${personEmployments.jobTitle}) <> ''`,
+          ),
+        )
+        .groupBy(jobTitleKeySql)
+        // Частые сверху: фильтром пользуются ради «машиниста экскаватора», а не ради строки,
+        // которая встретилась однажды. Равные — по алфавиту, иначе порядок плавал бы между
+        // запросами.
+        .orderBy(sql`${people} DESC`, sql`${jobTitleKeySql} ASC`);
+
+      return rows.map((row) => ({
+        jobTitle: row.jobTitle,
+        // Вид документа считается в памяти: правило живёт в контрактах, а SQL нужен только там,
+        // где по нему отбирают страницу (`documentsCompleteCondition`).
+        credentialTypeCode: requiredCredentialType(row.jobTitle),
+        count: Number(row.count),
+      }));
+    },
+  );
 
   r.get(
     '/',
@@ -378,6 +538,9 @@ export default async function driversRoutes(app: FastifyInstance): Promise<void>
         showDeleted ? undefined : isNull(persons.deletedAt),
         driverCondition(),
         documents,
+        // Должность сравнивается нормализованной с обеих сторон: в фильтр она приходит написанием
+        // из кадров, а в справочнике у соседней карточки то же самое набрано другим регистром.
+        q.jobTitle ? eq(jobTitleKeySql, normalizeJobTitle(q.jobTitle)) : undefined,
         q.categoryId ? categoryCondition(q.categoryId, today) : undefined,
         // Ищут по тому, что видят: ФИО, номер СНИЛС (как угодно набранный), табельный и контакты —
         // по ним ищут, когда разбираются, кому ушло (или не ушло) задание на рейс и кому звонить.
@@ -453,10 +616,16 @@ export default async function driversRoutes(app: FastifyInstance): Promise<void>
 
       return {
         requiredCategory: selection.requiredCategoryName,
+        // Вид требуемой категории — рядом с самой категорией: «нужна C» без вида документа ничего
+        // не значит, и предупреждение о расхождении собирается из обеих сторон (ADR 0095).
+        requiredCategoryType: selection.requirement.categoryTypeCode,
         drivers: selection.drivers.map((d) => ({
           personId: d.personId,
           fullName: d.fullName,
           personnelNo: d.personnelNo,
+          // Каким документом человек допущен: им подписаны его пробелы в форме — «без номера ВУ»
+          // и «без номера УТМ» несут в кабину разные бумаги.
+          credentialTypeCode: d.credentialTypeCode,
           licenseNumber: licenseNumberLabel({ series: d.licenseSeries, number: d.licenseNumber }),
           licenseExpiresOn: d.licenseExpiresOn,
           verificationStatus: d.verificationStatus,
@@ -491,7 +660,7 @@ export default async function driversRoutes(app: FastifyInstance): Promise<void>
       // Контрольная сумма — здесь, а не в схеме: формат ловит длину, а опечатку в одной цифре
       // видит только она (приём ИНН контрагента).
       if (!isValidSnils(body.snils)) throw err.validation({ snils: SNILS_CHECKSUM_MESSAGE });
-      const { specializationId, licenseTypeId } = await loadDirectoryIds();
+      const { specializationId, credentialTypeIds } = await loadDirectoryIds();
 
       const id = await db.transaction(async (tx) => {
         const [person] = await tx
@@ -525,7 +694,12 @@ export default async function driversRoutes(app: FastifyInstance): Promise<void>
           ...(body.employedSince ? { startedOn: body.employedSince } : {}),
         });
 
-        if (body.license) await insertLicense(tx, person!.id, licenseTypeId, body.license);
+        // Вид документа приходит из формы, а не выводится из должности карточки: он объявлен в
+        // схеме со значением по умолчанию (`driverLicenseInputSchema`), и разобранное тело уже не
+        // отличает «прислали водительское» от «не прислали ничего». Подставлять вид по должности
+        // здесь значило бы менять смысл присланного `driver_license` — а форма, которая заводит
+        // документ, вид спрашивает.
+        if (body.license) await insertLicense(tx, person!.id, credentialTypeIds, body.license);
         return person!.id;
       });
 
@@ -614,11 +788,17 @@ export default async function driversRoutes(app: FastifyInstance): Promise<void>
 
   const licenseParams = z.object({ id: z.string().uuid(), licenseId: z.string().uuid() });
 
-  /** Найденный документ этого водителя; чужой документ по прямому id недоступен. */
+  /**
+   * Найденный документ этого водителя; чужой документ по прямому id недоступен.
+   *
+   * Ищется среди обоих видов (ADR 0095): проверяют и аннулируют тракторное удостоверение теми же
+   * действиями, что водительское, — а вид едет рядом, потому что им подписано действие в журнале.
+   */
   async function loadLicense(personId: string, licenseId: string) {
     const [row] = await db
       .select({
         id: personCredentials.id,
+        credentialTypeCode: sql<CredentialTypeCode>`${credentialTypes.code}`,
         revokedAt: personCredentials.revokedAt,
         version: personCredentials.version,
       })
@@ -628,7 +808,6 @@ export default async function driversRoutes(app: FastifyInstance): Promise<void>
         and(
           eq(personCredentials.id, licenseId),
           eq(personCredentials.personId, personId),
-          eq(credentialTypes.code, DRIVER_LICENSE_CODE),
           isNull(personCredentials.deletedAt),
         ),
       );
@@ -638,6 +817,11 @@ export default async function driversRoutes(app: FastifyInstance): Promise<void>
   /**
    * Новое удостоверение не стирает старое: замена по истечении срока — обычное дело, а история
    * документов объясняет, по какому листу человек ездил в прошлом году.
+   *
+   * Вид документа — из тела: у человека бывают оба, и «второй документ» здесь не всегда замена
+   * первого. Умолчание схемы — водительское (`driverLicenseInputSchema`); по должности карточки
+   * его не подменяют, потому что разобранное тело уже не отличает присланный `driver_license` от
+   * неприсланного, а форма вид спрашивает.
    */
   r.post(
     '/:id/licenses',
@@ -651,9 +835,9 @@ export default async function driversRoutes(app: FastifyInstance): Promise<void>
       if (!found) throw err.notFound('Водитель не найден');
       if (found.row.deletedAt) throw err.conflict('Водитель удалён');
 
-      const { licenseTypeId } = await loadDirectoryIds();
+      const { credentialTypeIds } = await loadDirectoryIds();
       await db.transaction(async (tx) => {
-        await insertLicense(tx, found.row.id, licenseTypeId, req.body);
+        await insertLicense(tx, found.row.id, credentialTypeIds, req.body);
       });
 
       await writeAudit({
@@ -661,7 +845,9 @@ export default async function driversRoutes(app: FastifyInstance): Promise<void>
         action: 'driver.license.add',
         entityType: 'person',
         entityId: found.row.id,
-        metadata: { number: req.body.number },
+        // Вид документа — в журнале: у человека их два, и «добавлено удостоверение № 000001» без
+        // вида не отвечает на вопрос, что именно завели (ADR 0095).
+        metadata: { number: req.body.number, credentialType: req.body.credentialType },
       });
       const updated = await loadDriver(found.row.id);
       return reply.code(201).send(updated!.dto);
@@ -703,7 +889,10 @@ export default async function driversRoutes(app: FastifyInstance): Promise<void>
         action: 'driver.license.verify',
         entityType: 'person',
         entityId: req.params.id,
-        metadata: { status: req.body.verificationStatus },
+        metadata: {
+          status: req.body.verificationStatus,
+          credentialType: license.credentialTypeCode,
+        },
       });
       const updated = await loadDriver(req.params.id);
       return updated!.dto;
@@ -742,7 +931,7 @@ export default async function driversRoutes(app: FastifyInstance): Promise<void>
         action: 'driver.license.revoke',
         entityType: 'person',
         entityId: req.params.id,
-        metadata: { reason: req.body.revokeReason },
+        metadata: { reason: req.body.revokeReason, credentialType: license.credentialTypeCode },
       });
       const updated = await loadDriver(req.params.id);
       return updated!.dto;

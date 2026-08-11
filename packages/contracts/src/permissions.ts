@@ -153,6 +153,13 @@ export const PERMISSIONS = [
   'serviceRequests.assign',
   'serviceRequests.estimate',
   'serviceRequests.approveEstimate',
+  /**
+   * Виза отдела ИТ: нужен ли внешний ремонт вообще (план модернизации, Р51). Отдельно от
+   * `approveEstimate` — это разные решения и разные люди: ИТ отвечает «зовём ли сервис», оператор
+   * — «согласны ли на эти деньги». Слитые в одно право, они превратили бы двухступенчатое
+   * согласование в одну подпись.
+   */
+  'serviceRequests.approveIt',
   'serviceRequests.status',
   'serviceRequests.files',
 
@@ -536,6 +543,14 @@ export const ROLE_ADDON_PERMISSIONS: Record<RoleAddon, readonly Permission[]> = 
     'serviceRequests.approveEstimate',
     'serviceRequests.status',
   ],
+  /**
+   * Согласование ИТ (Р51, Р54). Право ровно одно: чтение модуля и справочника приходит от базовой
+   * роли — надстройка расширяет не набор действий, а **область** (`ADDON_MODULE_WIDE_SCOPE`).
+   *
+   * Права сметы здесь нет и быть не может (Р55): подтверждать необходимость работы, которую сам же
+   * и продаёшь, — не согласование. По той же причине его нет у сервисной компании.
+   */
+  office_equipment_it_approver: ['serviceRequests.approveIt'],
 };
 
 /**

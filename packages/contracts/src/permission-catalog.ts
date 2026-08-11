@@ -202,6 +202,11 @@ export const PERMISSION_CATALOG: Record<Permission, PermissionCatalogEntry> = {
     action: 'approve',
     label: 'Согласует смету ремонта',
   },
+  'serviceRequests.approveIt': {
+    module: 'service',
+    action: 'approve',
+    label: 'Визирует заявку от отдела ИТ',
+  },
   'serviceRequests.status': {
     module: 'service',
     action: 'status',

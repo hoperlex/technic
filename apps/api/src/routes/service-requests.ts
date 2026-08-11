@@ -24,6 +24,7 @@ import {
   acceptServiceRequestSchema,
   actsForCounterparty,
   approveServiceEstimateSchema,
+  approveServiceItSchema,
   assignServiceSchema,
   attachServiceFilesSchema,
   can,
@@ -55,9 +56,11 @@ import {
   serviceStatusChangeRequiresReason,
   serviceStatusChangeSchema,
   serviceWaitingOn,
+  setServiceUrgencySchema,
   startServiceRequestSchema,
   submitServiceEstimateSchema,
   updateServiceRequestSchema,
+  urgencyIssue,
   WARRANTY_EXPIRING_DAYS,
   WARRANTY_REPAIR_ITEM_NAME,
   warrantyDaysLeft,
@@ -171,6 +174,8 @@ const customerDepartments = alias(departments, 'service_customer_departments');
 const equipmentDepartments = alias(departments, 'service_equipment_departments');
 const creators = alias(users, 'service_creators');
 const approvers = alias(users, 'service_approvers');
+/** Кто завизировал от ИТ: своя копия таблицы — согласующий и согласовавший смету бывают разными. */
+const itApprovers = alias(users, 'service_it_approvers');
 const acceptors = alias(users, 'service_acceptors');
 /** Строка сметы, по гарантии которой обращаются, и её заявка: спор ведут по её номеру. */
 const claimItems = alias(serviceRequestItems, 'service_claim_items');
@@ -204,6 +209,7 @@ function requestQuery() {
       serviceName: counterparties.name,
       createdByName: creators.fullName,
       approvedByName: approvers.fullName,
+      itApprovedByName: itApprovers.fullName,
       acceptedByName: acceptors.fullName,
       claimItemName: claimItems.name,
       claimRequestNum: claimRequests.num,
@@ -220,6 +226,7 @@ function requestQuery() {
     )
     .leftJoin(counterparties, eq(serviceRequests.serviceCounterpartyId, counterparties.id))
     .leftJoin(approvers, eq(serviceRequests.estimateApprovedBy, approvers.id))
+    .leftJoin(itApprovers, eq(serviceRequests.itApprovedBy, itApprovers.id))
     .leftJoin(acceptors, eq(serviceRequests.acceptedBy, acceptors.id))
     .leftJoin(claimItems, eq(serviceRequests.warrantyClaimItemId, claimItems.id))
     .leftJoin(claimRequests, eq(claimItems.requestId, claimRequests.id));
@@ -308,6 +315,7 @@ function toDto(
       serialNumber: r.equipmentSerialNumber,
       inventoryNumber: r.equipmentInventoryNumber,
       typeName: row.typeName,
+      location: r.equipmentLocation,
     },
     object: { id: row.objectId, code: row.objectCode, name: row.objectName },
     customerDepartment: row.customerDepartmentId
@@ -328,6 +336,17 @@ function toDto(
     dueDate: r.dueDate,
     responsibleName: r.responsibleName,
     responsiblePhone: r.responsiblePhone,
+    isUrgent: r.isUrgent,
+    urgencyReason: r.urgencyReason,
+    // Виза ИТ: снимок решения. `null` — заявка ещё ждёт отдел (Р51).
+    itApproval: r.itApprovedAt
+      ? {
+          by: r.itApprovedBy,
+          byName: row.itApprovedByName ?? '',
+          at: r.itApprovedAt.toISOString(),
+          auto: r.itApprovedAuto,
+        }
+      : null,
     service: r.serviceCounterpartyId
       ? { id: r.serviceCounterpartyId, name: row.serviceName ?? '' }
       : null,
@@ -641,6 +660,11 @@ async function applyTransition(
   const now = new Date();
   const set: RequestPatch = {};
 
+  if (reset.itApproval) {
+    set.itApprovedBy = null;
+    set.itApprovedAt = null;
+    set.itApprovedAuto = false;
+  }
   if (reset.executor) set.serviceCounterpartyId = null;
   if (reset.estimate) {
     await assertEstimateReplaceable(tx, row.id);
@@ -732,7 +756,7 @@ async function estimateItems(tx: Tx, requestId: string) {
  * нечего.
  */
 const FILE_KIND_STATUSES: Record<ServiceFileKind, ServiceRequestStatus[]> = {
-  attachment: ['new', 'assigned', 'diagnostics', 'estimate_review', 'in_work', 'done'],
+  attachment: ['new', 'it_approved', 'assigned', 'diagnostics', 'estimate_review', 'in_work', 'done'],
   estimate: ['diagnostics', 'estimate_review'],
   act: ['in_work', 'done', 'accepted', 'cancelled'],
   invoice: ['in_work', 'done', 'accepted', 'cancelled'],
@@ -786,6 +810,12 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
     preHandler: [
       app.authenticate,
       app.requirePermission('serviceRequests.approveEstimate', 'Смету согласует заказчик'),
+    ],
+  };
+  const canApproveIt = {
+    preHandler: [
+      app.authenticate,
+      app.requirePermission('serviceRequests.approveIt', 'Заявку визирует отдел ИТ'),
     ],
   };
   const canChangeStatus = {
@@ -871,6 +901,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         ? and(inArray(serviceRequests.status, ['done', 'accepted']), not(hasClosingDocument))
         : undefined,
       q.warrantyClaim ? isNotNull(serviceRequests.warrantyClaimSource) : undefined,
+      q.urgent ? eq(serviceRequests.isUrgent, true) : undefined,
       q.createdFrom
         ? gte(serviceRequests.createdAt, new Date(`${q.createdFrom}T00:00:00Z`))
         : undefined,
@@ -899,10 +930,17 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       createdAt: serviceRequests.createdAt,
     };
     const pg = pageParams(q);
+    /**
+     * Срочные — первыми, каким бы ни была остальная сортировка (Р56). Признак стоит **перед**
+     * выбранной колонкой, а не вместо неё: внутри срочных порядок остаётся тем, который человек
+     * выбрал сам. Закрытые заявки из этого правила выпадают — срочность у них уже ничего не
+     * значит, и красная строка в архиве только мешала бы читать список.
+     */
+    const urgentFirst = sql`(${serviceRequests.isUrgent} AND ${serviceRequests.status} NOT IN ('accepted','cancelled')) DESC`;
     const [rows, totalRows] = await Promise.all([
       requestQuery()
         .where(where)
-        .orderBy(orderByFrom(sortColumns, q.sortBy, q.sortOrder, 'statusChangedAt'))
+        .orderBy(urgentFirst, orderByFrom(sortColumns, q.sortBy, q.sortOrder, 'statusChangedAt'))
         .limit(pg.limit)
         .offset(pg.offset),
       db
@@ -1204,6 +1242,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           inventoryNumber: officeEquipment.inventoryNumber,
           objectId: officeEquipment.objectId,
           ownerDepartmentId: officeEquipment.ownerDepartmentId,
+          location: officeEquipment.location,
           warrantyUntil: officeEquipment.warrantyUntil,
         })
         .from(officeEquipment)
@@ -1223,6 +1262,14 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         equipmentDepartmentId: equipment.ownerDepartmentId,
       });
 
+      /**
+       * Заявку, заведённую обладателем визы, визирует сама система (Р52) — приём ADR 0025
+       * (решение 5). Администратора это не касается (ADR 0032): он заводит заявку не от имени
+       * отдела ИТ, и его заявка ждёт визы наравне с остальными.
+       */
+      const autoApproved = p.role !== 'admin' && can(p, 'serviceRequests.approveIt');
+      const now = new Date();
+
       const created = await db.transaction(async (tx) => {
         await assertNoOpenRequest(tx, equipment.id);
         const claim = await resolveWarrantyClaim(tx, body.warrantyClaim, equipment, null);
@@ -1236,10 +1283,23 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
             equipmentName: equipment.name,
             equipmentSerialNumber: equipment.serialNumber,
             equipmentInventoryNumber: equipment.inventoryNumber,
+            // Место — часть того же снимка: сервис поедет по нему, а карточка к тому времени
+            // могла переехать (Р57).
+            equipmentLocation: equipment.location,
             description: body.description,
             dueDate: body.dueDate ?? null,
             responsibleName: body.responsibleName,
             responsiblePhone: body.responsiblePhone,
+            isUrgent: body.isUrgent,
+            urgencyReason: body.urgencyReason,
+            ...(autoApproved
+              ? {
+                  status: 'it_approved' as const,
+                  itApprovedBy: p.id,
+                  itApprovedAt: now,
+                  itApprovedAuto: true,
+                }
+              : {}),
             warrantyClaimSource: claim.source,
             warrantyClaimItemId: claim.itemId,
             comment: body.comment,
@@ -1251,9 +1311,12 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         await tx.insert(serviceRequestStatusHistory).values({
           requestId: request.id,
           fromStatus: null,
-          toStatus: 'new',
+          // Автовиза видна в истории тем же переходом, что и заведение: заявка не была «Новой»
+          // ни секунды, и рисовать событие, которого не происходило, незачем.
+          toStatus: autoApproved ? 'it_approved' : 'new',
           estimateRevision: 0,
           changedBy: p.id,
+          comment: autoApproved ? 'Заявку завёл согласующий от ИТ — виза проставлена сразу' : '',
         });
         if (body.fileIds.length > 0) {
           await assertFilesAttachable(tx, body.fileIds, p.id);
@@ -1279,6 +1342,8 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           objectId: equipment.objectId,
           customerDepartmentId,
           warrantyClaim: dto.warrantyClaim?.source ?? null,
+          isUrgent: dto.isUrgent,
+          itAutoApproved: autoApproved,
         },
       });
       reply.code(201);
@@ -1363,6 +1428,19 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         if (body.responsibleName !== undefined) patch.responsibleName = body.responsibleName;
         if (body.responsiblePhone !== undefined) patch.responsiblePhone = body.responsiblePhone;
         if (body.comment !== undefined) patch.comment = body.comment;
+        if (body.isUrgent !== undefined || body.urgencyReason !== undefined) {
+          // Пара сверяется по склеенному состоянию: `PATCH` присылает половину, и «поставили
+          // срочность, причину оставили прежней» — законная правка, а «сняли срочность, забыли
+          // причину» — нет. Схема этого не видит, CHECK в базе увидит и ответит ошибкой БД.
+          const urgency = {
+            isUrgent: body.isUrgent ?? row.isUrgent,
+            urgencyReason: body.urgencyReason ?? row.urgencyReason,
+          };
+          const issue = urgencyIssue(urgency);
+          if (issue) throw err.unprocessable(issue, { urgencyReason: issue });
+          patch.isUrgent = urgency.isUrgent;
+          patch.urgencyReason = urgency.urgencyReason;
+        }
         if (body.warrantyClaim !== undefined) {
           // Обращение по гарантии проверяется заново: за время правки срок мог кончиться, а
           // заявка-источник — уехать в архив.
@@ -1393,6 +1471,62 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         entityId: row.id,
         // Перечень изменённых полей — то, ради чего история отличает правку от «заявку трогали».
         metadata: { changes: diffServiceRequests(before, after) },
+      });
+      return after;
+    },
+  );
+
+  // ── Срочность ──
+  /**
+   * Своя ручка, а не поле правки (Р56). Заказчик правит заявку только «Новой», а «сломался
+   * единственный принтер на площадке» выясняется и тогда, когда заявка уже у сервиса: срочность
+   * должна ставиться и сниматься до самого закрытия — но не всеми.
+   *
+   * Кто именно, решает право `serviceRequests.assign`, а не имя роли: оператор оргтехники — тот же
+   * «Штаб» или «Отдел», и правило «место — только Новую» отобрало бы у него признак вместе с
+   * заказчиком.
+   */
+  r.patch(
+    '/:id/urgency',
+    { ...canUpdate, schema: { params: idParams, body: setServiceUrgencySchema } },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const body = req.body;
+      const row = await requireEditable(p, req.params.id);
+      if (isServiceRequestClosed(row.status)) {
+        throw err.unprocessable(
+          `Заявка в статусе «${serviceRequestStatusLabels[row.status]}» уже закрыта — срочность ей ничего не меняет`,
+        );
+      }
+      if (!can(p, 'serviceRequests.assign')) {
+        assertServiceRequestEditable(p, row.status, 'менять срочность');
+      }
+
+      const before = (await getDto(row.id))!;
+      await db.transaction(async (tx) => {
+        const [updated] = await tx
+          .update(serviceRequests)
+          .set({
+            isUrgent: body.isUrgent,
+            urgencyReason: body.urgencyReason,
+            updatedBy: p.id,
+            updatedAt: new Date(),
+            version: row.version + 1,
+          })
+          .where(and(eq(serviceRequests.id, row.id), eq(serviceRequests.version, body.version)))
+          .returning({ id: serviceRequests.id });
+        if (!updated) throw err.conflict();
+      });
+
+      const after = (await getDto(row.id))!;
+      // Возраст в статусе срочность не сбрасывает: она не ожидание, и очередь «дольше всех ждут»
+      // не должна обнуляться от того, что заявку пометили красным.
+      await writeAudit({
+        actorUserId: p.id,
+        action: 'serviceRequest.urgency',
+        entityType: 'serviceRequest',
+        entityId: row.id,
+        metadata: { changes: diffServiceRequests(before, after), isUrgent: after.isUrgent },
       });
       return after;
     },
@@ -1434,11 +1568,11 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
     async (req) => {
       const p = requirePrincipal(req);
       const body = req.body;
-      assertSideAllowed(p, 'assigned', ['new', 'assigned', 'diagnostics']);
+      assertSideAllowed(p, 'assigned', ['it_approved', 'assigned', 'diagnostics']);
       const row = await requireEditable(p, req.params.id);
       assertTransition(p, row.status, 'assigned');
 
-      const reassignment = row.status !== 'new';
+      const reassignment = row.status !== 'it_approved';
       if (reassignment && !body.reason) {
         throw err.unprocessable(
           'Укажите причину переназначения — у прежнего сервиса отбирают работу',
@@ -1475,7 +1609,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       const executorChanged = row.serviceCounterpartyId !== service.id;
       await db.transaction(async (tx) => {
         const patch: RequestPatch = { serviceCounterpartyId: service.id };
-        if (executorChanged && row.status !== 'new') {
+        if (executorChanged && row.status !== 'it_approved') {
           // Смета прежнего исполнителя вместе с ревизией и снимком предъявления (§5.4).
           await assertEstimateReplaceable(tx, row.id);
           await tx.delete(serviceRequestItems).where(eq(serviceRequestItems.requestId, row.id));
@@ -1512,6 +1646,51 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
     },
   );
 
+  // ── Виза отдела ИТ ──
+  /**
+   * Одна ручка на «да» и «нет» (Р51): у решения одно право, одна область и один момент — тот же
+   * приём, что у согласования сметы. Отказ закрывает заявку с причиной (Р53): своего терминального
+   * статуса у него нет, «закрыта без результата» у модуля уже есть, и второе имя для того же
+   * состояния делило бы отчёты пополам.
+   */
+  r.patch(
+    '/:id/it-approval',
+    { ...canApproveIt, schema: { params: idParams, body: approveServiceItSchema } },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const body = req.body;
+      const to: ServiceRequestStatus = body.approved ? 'it_approved' : 'cancelled';
+      assertSideAllowed(p, to, ['new']);
+      const row = await requireEditable(p, req.params.id);
+      assertTransition(p, row.status, to);
+
+      const now = new Date();
+      await db.transaction(async (tx) => {
+        await applyTransition(tx, {
+          row,
+          to,
+          version: body.version,
+          actor: p,
+          comment: body.reason,
+          // Отказ визы снимать нечего: подписи ещё не было. Согласие пишет снимок решения —
+          // «кто и когда», как виза заказа ТС (ADR 0025).
+          patch: body.approved
+            ? { itApprovedBy: p.id, itApprovedAt: now, itApprovedAuto: false }
+            : {},
+        });
+      });
+
+      await writeAudit({
+        actorUserId: p.id,
+        action: body.approved ? 'serviceRequest.it_approve' : 'serviceRequest.it_reject',
+        entityType: 'serviceRequest',
+        entityId: row.id,
+        metadata: { reason: body.reason ?? '' },
+      });
+      return (await getDto(row.id))!;
+    },
+  );
+
   // ── Отказ исполнителя ──
   r.patch(
     '/:id/decline',
@@ -1519,14 +1698,16 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
     async (req) => {
       const p = requirePrincipal(req);
       const body = req.body;
-      assertSideAllowed(p, 'new', ['assigned']);
+      // Отказ возвращает заявку оператору, а не в «Новую» (Р51): виза ИТ уже дана, и решение
+      // «внешний ремонт нужен» отказом подрядчика не отменяется — менять надо исполнителя.
+      assertSideAllowed(p, 'it_approved', ['assigned']);
       const row = await requireEditable(p, req.params.id);
-      assertTransition(p, row.status, 'new');
+      assertTransition(p, row.status, 'it_approved');
       await db.transaction(async (tx) => {
-        // Исполнителя снимает матрица возвратов: заявка снова ничья.
+        // Исполнителя снимает матрица возвратов: заявка снова ничья, но виза ИТ при ней остаётся.
         await applyTransition(tx, {
           row,
-          to: 'new',
+          to: 'it_approved',
           version: body.version,
           actor: p,
           comment: body.reason,

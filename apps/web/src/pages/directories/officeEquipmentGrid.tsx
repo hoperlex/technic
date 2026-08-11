@@ -1,8 +1,8 @@
-import { Button, Space, Tag, Typography, type TableColumnType } from 'antd';
-import { DeleteOutlined, EditOutlined } from '@ant-design/icons';
+import { Button, Space, Tag, Tooltip, Typography, type TableColumnType } from 'antd';
+import { DeleteOutlined, EditOutlined, HistoryOutlined, SwapOutlined } from '@ant-design/icons';
 import { officeEquipmentTitle, type OfficeEquipmentDto } from '@technic/contracts';
 import { actionsColumn, boolBadgeColumn, textColumn, type CardConfig } from '@shared/ui';
-import { WarrantyTag } from '@entities/office-equipment';
+import { EquipmentStateTag, WarrantyTag } from '@entities/office-equipment';
 
 /**
  * Как справочник оргтехники выглядит списком: колонки таблицы и карточка строки на телефоне
@@ -19,6 +19,10 @@ export interface OfficeEquipmentGridActions {
   canWrite: boolean;
   onEdit: (record: OfficeEquipmentDto) => void;
   onDelete: (record: OfficeEquipmentDto) => void;
+  /** Перемещение (Р59): объект правкой карточки больше не меняется — у переезда своя ручка. */
+  onMove: (record: OfficeEquipmentDto) => void;
+  /** История единицы (Р62): перемещения и ремонты одной лентой. */
+  onHistory: (record: OfficeEquipmentDto) => void;
 }
 
 /** Номера второй строкой: ими единицу и опознают, а называют её моделью. */
@@ -35,6 +39,8 @@ export function officeEquipmentColumns({
   canWrite,
   onEdit,
   onDelete,
+  onMove,
+  onHistory,
 }: OfficeEquipmentGridActions): TableColumnType<OfficeEquipmentDto>[] {
   return [
     textColumn<OfficeEquipmentDto>({
@@ -115,6 +121,19 @@ export function officeEquipmentColumns({
       sortable: false,
       searchable: false,
       ellipsis: true,
+      // Под местом — состояние (Р61): «кабинет 214» и «в ремонте» отвечают на один и тот же
+      // вопрос «где искать аппарат», и разносить их по разным колонкам незачем.
+      render: (_v, r) => (
+        <>
+          {r.location || <Typography.Text type="secondary">—</Typography.Text>}
+          {r.state !== 'on_site' && (
+            <>
+              <br />
+              <EquipmentStateTag state={r.state} note={r.stateNote} />
+            </>
+          )}
+        </>
+      ),
     }),
     textColumn<OfficeEquipmentDto>({
       key: 'warrantyUntil',
@@ -133,16 +152,24 @@ export function officeEquipmentColumns({
       filters: true,
       width: 120,
     }),
-    ...(canWrite
-      ? [
-          actionsColumn<OfficeEquipmentDto>((r) => (
-            <Space>
-              <Button size="small" icon={<EditOutlined />} onClick={() => onEdit(r)} />
-              <Button size="small" danger icon={<DeleteOutlined />} onClick={() => onDelete(r)} />
-            </Space>
-          )),
-        ]
-      : []),
+    actionsColumn<OfficeEquipmentDto>((r) => (
+      <Space>
+        {/* История видна всем, кому открыт справочник: «что с этим аппаратом делали» — вопрос
+            читателя, а не только того, кто его ведёт. */}
+        <Tooltip title="История">
+          <Button size="small" icon={<HistoryOutlined />} onClick={() => onHistory(r)} />
+        </Tooltip>
+        {canWrite && (
+          <>
+            <Tooltip title="Переместить">
+              <Button size="small" icon={<SwapOutlined />} onClick={() => onMove(r)} />
+            </Tooltip>
+            <Button size="small" icon={<EditOutlined />} onClick={() => onEdit(r)} />
+            <Button size="small" danger icon={<DeleteOutlined />} onClick={() => onDelete(r)} />
+          </>
+        )}
+      </Space>
+    )),
   ];
 }
 
@@ -155,6 +182,8 @@ export function officeEquipmentCard({
   canWrite,
   onEdit,
   onDelete,
+  onMove,
+  onHistory,
 }: OfficeEquipmentGridActions): CardConfig<OfficeEquipmentDto> {
   return {
     title: (r) => officeEquipmentTitle(r),
@@ -163,7 +192,14 @@ export function officeEquipmentCard({
     lines: [
       (r) => `${r.object.code} — ${r.object.name}`,
       (r) => (r.department ? `Отдел: ${r.department.name}` : 'Отдел: не закреплена'),
-      (r) => r.location || null,
+      (r) =>
+        r.state === 'on_site' ? (
+          r.location || null
+        ) : (
+          <Space size={4}>
+            {r.location || 'Место:'} <EquipmentStateTag state={r.state} note={r.stateNote} />
+          </Space>
+        ),
       (r) =>
         r.warrantyUntil ? (
           <Space size={4}>
@@ -171,12 +207,16 @@ export function officeEquipmentCard({
           </Space>
         ) : null,
     ],
-    onOpen: canWrite ? onEdit : undefined,
-    actions: canWrite
-      ? (r) => [
-          { key: 'edit', label: 'Редактировать', onClick: () => onEdit(r) },
-          { key: 'delete', label: 'Удалить', danger: true, onClick: () => onDelete(r) },
-        ]
-      : undefined,
+    onOpen: canWrite ? onEdit : onHistory,
+    actions: (r) => [
+      { key: 'history', label: 'История', onClick: () => onHistory(r) },
+      ...(canWrite
+        ? [
+            { key: 'move', label: 'Переместить', onClick: () => onMove(r) },
+            { key: 'edit', label: 'Редактировать', onClick: () => onEdit(r) },
+            { key: 'delete', label: 'Удалить', danger: true, onClick: () => onDelete(r) },
+          ]
+        : []),
+    ],
   };
 }

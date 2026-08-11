@@ -181,6 +181,17 @@ const SERVICE_REQUEST_OPERATORS: ProfileKey[] = [
   'department+office_equipment_operator',
 ];
 
+/**
+ * Виза отдела ИТ (план модернизации, Р51): решение о том, звать ли внешний сервис. Ни у заказчика,
+ * ни у оператора, ни у исполнителя её нет — подтверждать необходимость работы, которую сам же и
+ * продаёшь либо сам же и заказал, не согласование (Р55).
+ */
+const SERVICE_REQUEST_IT_APPROVERS: ProfileKey[] = [
+  'admin',
+  'shtab+office_equipment_it_approver',
+  'department+office_equipment_it_approver',
+];
+
 /** Работа исполнителя: смета, диагностика, закрытие. Вне контрагента `service` — только админ. */
 const SERVICE_REQUEST_EXECUTORS: ProfileKey[] = ['admin', 'operator/service'];
 
@@ -208,6 +219,15 @@ const CASES: Case[] = [
     title: 'справочник водителей — чтение закрыто от всех, кроме ведущих заявки',
     method: 'GET',
     url: '/api/v1/drivers',
+    allowed: ['admin', 'manager', 'dispatcher'],
+  },
+  {
+    // Список должностей — тот же справочник, вид в него другой: должности живых сотрудников с
+    // числами рядом. Отдельным правом не закрыт и открытым не оставлен — читает его тот же, кто
+    // читает карточки, потому что должность из карточки и берётся (ADR 0095).
+    title: 'должности справочника водителей — тем же, кто читает справочник',
+    method: 'GET',
+    url: '/api/v1/drivers/job-titles',
     allowed: ['admin', 'manager', 'dispatcher'],
   },
   {
@@ -712,7 +732,14 @@ const CASES: Case[] = [
     title: 'заявки на обслуживание — заведение',
     method: 'POST',
     url: '/api/v1/service-requests',
-    payload: { officeEquipmentId: RECORD_ID, description: 'не захватывает бумагу' },
+    // Контакт заявителя обязателен (Р49): без него схема отвечает 400 раньше, чем страж —
+    // 403, и матрица прав проверяла бы не то.
+    payload: {
+      officeEquipmentId: RECORD_ID,
+      description: 'не захватывает бумагу',
+      responsibleName: 'Иванов И. И.',
+      responsiblePhone: '9000000000',
+    },
     allowed: SERVICE_REQUEST_CUSTOMERS,
   },
   {
@@ -737,6 +764,13 @@ const CASES: Case[] = [
     url: `/api/v1/service-requests/${RECORD_ID}/service`,
     payload: { serviceCounterpartyId: COUNTERPARTY_ID, version: 1 },
     allowed: SERVICE_REQUEST_OPERATORS,
+  },
+  {
+    title: 'заявки на обслуживание — виза отдела ИТ',
+    method: 'PATCH',
+    url: `/api/v1/service-requests/${RECORD_ID}/it-approval`,
+    payload: { approved: true, version: 1 },
+    allowed: SERVICE_REQUEST_IT_APPROVERS,
   },
   {
     title: 'заявки на обслуживание — согласование сметы',

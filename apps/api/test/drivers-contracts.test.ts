@@ -17,10 +17,14 @@ import {
   licenseDefect,
   licenseNumberLabel,
   licenseRequisitesMissing,
+  normalizeJobTitle,
   normalizeSnils,
+  requiredCredentialType,
+  jobTitleCredentialType,
   snilsSchema,
   trailerCategoryCode,
   updateDriverSchema,
+  waybillDocumentOf,
   waybillLicenseOf,
   type DriverDocumentGap,
   type DriverDto,
@@ -31,6 +35,11 @@ import {
  * Справочник водителей и его реквизиты (ADR 0037). Проверяется вход и правила годности документа:
  * по ним же отбирается водитель под машину, поэтому расхождение правил формы и сервера дало бы
  * список, в котором человек есть, а сохранить его нельзя — или наоборот.
+ *
+ * Документов у справочника два вида (ADR 0095), и какой из них смотреть — решает должность.
+ * Поэтому там, где раньше спрашивали «есть ли годное удостоверение», теперь спрашивают «есть ли
+ * годный документ **того** вида»: у машиниста экскаватора комплект закрывает тракторное, а
+ * водительское, лежащее рядом, не закрывает ничего.
  */
 
 const CATEGORY_ID = '11111111-1111-4111-8111-111111111111';
@@ -46,6 +55,7 @@ const VALID_DRIVER = {
 function license(over: Partial<DriverLicenseDto> = {}): DriverLicenseDto {
   return {
     id: 'l1',
+    credentialTypeCode: 'driver_license',
     series: '00 00',
     number: '000001',
     issuedOn: '2021-03-12',
@@ -69,6 +79,23 @@ function license(over: Partial<DriverLicenseDto> = {}): DriverLicenseDto {
     ...over,
   };
 }
+
+/**
+ * Тракторное удостоверение: те же графы, другой вид и другой смысл у той же буквы. «C» здесь —
+ * колёсная машина до 110 кВт, а не грузовик, и подменять им водительское нельзя ни в листе, ни в
+ * подсчёте пробелов.
+ */
+function tractorLicense(over: Partial<DriverLicenseDto> = {}): DriverLicenseDto {
+  return license({
+    id: 't1',
+    credentialTypeCode: 'tractor_license',
+    series: 'AB',
+    number: '900001',
+    ...over,
+  });
+}
+
+const MACHINIST = 'Машинист экскаватора';
 
 describe('СНИЛС: нормализация и формат', () => {
   it('разделители — оформление, а не часть номера', () => {
@@ -214,6 +241,30 @@ describe('ввод удостоверения', () => {
   it('документ без категорий не открывает ничего', () => {
     const r = driverLicenseInputSchema.safeParse({ number: '000001', categories: [] });
     expect(r.success).toBe(false);
+  });
+
+  it('вид документа необязателен: не прислали — заводится водительское', () => {
+    expect(
+      driverLicenseInputSchema.parse({ number: '000001', categories: [CATEGORY] }).credentialType,
+    ).toBe('driver_license');
+    expect(
+      driverLicenseInputSchema.safeParse({
+        number: '000001',
+        credentialType: 'medical',
+        categories: [CATEGORY],
+      }).success,
+    ).toBe(false);
+  });
+
+  it('у тракторного категории необязательны: в кадровой выгрузке их не бывает вовсе', () => {
+    // Требовать букву, которой нет в присланных данных, значило бы не дать завести документ, по
+    // которому машинист ездит, — а листу нужны номер и дата выдачи, а не категория.
+    const r = driverLicenseInputSchema.safeParse({
+      number: '900001',
+      credentialType: 'tractor_license',
+      categories: [],
+    });
+    expect(r.success).toBe(true);
   });
 
   it('одна и та же категория дважды — ошибка ввода, а не два допуска', () => {
@@ -389,8 +440,9 @@ describe('водители, работавшие на этой машине, и�
 
 describe('комплект документов для путевого листа', () => {
   const ON = '2026-08-03';
-  const driver = (over: Partial<Pick<DriverDto, 'snils' | 'licenses'>> = {}) => ({
+  const driver = (over: Partial<Pick<DriverDto, 'snils' | 'jobTitle' | 'licenses'>> = {}) => ({
     snils: '11223344595',
+    jobTitle: 'Водитель',
     licenses: [license()],
     ...over,
   });
@@ -452,12 +504,95 @@ describe('комплект документов для путевого лист
     expect(driverDocumentGaps(driver({ licenses: [] }), ON)).toEqual(['license']);
   });
 
+  /**
+   * Комплект машиниста считается по тракторному удостоверению (ADR 0095). Это и есть смена смысла
+   * фильтра «Полный комплект»: у машиниста, заведённого с одним ВУ, комплект неполон — по ВУ его за
+   * экскаватор не сажают, и лист по нему выписывать нечем.
+   */
+  it('машинисту комплект закрывает тракторное удостоверение, а водительское — нет', () => {
+    const machinist = { jobTitle: MACHINIST, licenses: [tractorLicense()] };
+    expect(driverDocumentGaps(driver(machinist), ON)).toEqual([]);
+    expect(driverDocumentsComplete(driver(machinist), ON)).toBe(true);
+
+    expect(driverDocumentGaps(driver({ jobTitle: MACHINIST, licenses: [license()] }), ON)).toEqual([
+      'license',
+    ]);
+  });
+
+  it('водителю комплект не закрывает тракторное — даже когда другого документа нет', () => {
+    // Симметрия обязательна: иначе номер тракторного уехал бы в графу «водительское
+    // удостоверение» листа 4-П, и заполненная графа выглядела бы верной.
+    expect(driverDocumentGaps(driver({ licenses: [tractorLicense()] }), ON)).toEqual(['license']);
+  });
+
+  it('оба документа сразу: каждому спрашивают свой', () => {
+    const both = [license(), tractorLicense()];
+    expect(driverDocumentGaps(driver({ licenses: both }), ON)).toEqual([]);
+    expect(driverDocumentGaps(driver({ jobTitle: MACHINIST, licenses: both }), ON)).toEqual([]);
+    // Пробелы считаются по своему документу, а не по худшему из двух.
+    const partialTractor = tractorLicense({ series: '', number: '', issuedOn: null });
+    expect(driverDocumentGaps(driver({ licenses: [license(), partialTractor] }), ON)).toEqual([]);
+    expect(
+      driverDocumentGaps(
+        driver({ jobTitle: MACHINIST, licenses: [license(), partialTractor] }),
+        ON,
+      ),
+    ).toEqual(['requisites', 'issuedOn']);
+  });
+
+  it('незнакомая должность считается водительской: молча менять поведение нельзя', () => {
+    expect(driverDocumentsComplete(driver({ jobTitle: 'Экскаваторщик' }), ON)).toBe(true);
+    expect(driverDocumentsComplete(driver({ jobTitle: '' }), ON)).toBe(true);
+  });
+
   it('фильтр справочника принимает оба значения и отклоняет прочие', () => {
     expect(driverListQuerySchema.safeParse({ documents: 'complete' }).success).toBe(true);
     expect(driverListQuerySchema.safeParse({ documents: 'incomplete' }).success).toBe(true);
     expect(driverListQuerySchema.safeParse({ documents: 'partial' }).success).toBe(false);
     // Не задан — справочник показывает всех: фильтр не сужает список молча.
     expect(driverListQuerySchema.parse({}).documents).toBeUndefined();
+  });
+});
+
+/**
+ * Должность называет документ (ADR 0095). Правило живёт в контрактах, потому что спрашивают его
+ * трое: карточка справочника, подстановка в путевой лист и SQL-фильтр комплекта — и разойтись им
+ * негде.
+ */
+describe('должность решает, каким документом человек допущен', () => {
+  it('список закрытый: автокран ездит по дорогам, экскаватор — нет', () => {
+    expect(requiredCredentialType('Водитель')).toBe('driver_license');
+    expect(requiredCredentialType('Машинист автокрана')).toBe('driver_license');
+    expect(requiredCredentialType('Машинист погрузчика')).toBe('tractor_license');
+    expect(requiredCredentialType(MACHINIST)).toBe('tractor_license');
+  });
+
+  it('регистр и лишние пробелы — оформление кадровой строки, а не другая должность', () => {
+    expect(normalizeJobTitle('  Машинист   Экскаватора ')).toBe('машинист экскаватора');
+    expect(requiredCredentialType('  МАШИНИСТ  ЭКСКАВАТОРА ')).toBe('tractor_license');
+  });
+
+  it('незнакомая должность отвечает умолчанием, но остаётся неизвестной для загрузки', () => {
+    // Разница существенна: приписать тракторные категории к ВУ значит выдать допуск к автобусу.
+    expect(requiredCredentialType('Экскаваторщик')).toBe('driver_license');
+    expect(jobTitleCredentialType('Экскаваторщик')).toBeNull();
+    expect(jobTitleCredentialType('Водитель-экспедитор')).toBe('driver_license');
+  });
+
+  it('документ листа берётся своего вида — чужой не подставляется даже вместо пустого', () => {
+    const ON = '2026-08-03';
+    const both = [license(), tractorLicense()];
+    expect(waybillDocumentOf(both, 'Водитель', ON)?.id).toBe('l1');
+    expect(waybillDocumentOf(both, MACHINIST, ON)?.id).toBe('t1');
+    expect(waybillDocumentOf([license()], MACHINIST, ON)).toBeNull();
+  });
+
+  it('фильтр списка по должности необязателен и приходит текстом', () => {
+    expect(driverListQuerySchema.parse({}).jobTitle).toBeUndefined();
+    expect(driverListQuerySchema.parse({ jobTitle: ' Машинист экскаватора ' }).jobTitle).toBe(
+      'Машинист экскаватора',
+    );
+    expect(driverListQuerySchema.safeParse({ jobTitle: 'а'.repeat(256) }).success).toBe(false);
   });
 });
 
@@ -495,15 +630,29 @@ describe('категория прав ничего не запрещает, но
   });
 
   it('предупреждение называет обе стороны: что требует машина и что открыто у водителя', () => {
-    const text = driverCategoryMismatchWarning('CE', ['B', 'C']);
+    const text = driverCategoryMismatchWarning(
+      'CE',
+      'driver_license',
+      ['B', 'C'],
+      'driver_license',
+    );
     expect(text).toContain('CE');
     expect(text).toContain('B, C');
     // Запрета в тексте нет: расхождение — повод проверить документ, а не отказ.
     expect(text).toContain('Рейс заведётся как есть');
   });
 
+  it('вид документа назван у каждой стороны: «C» тракториста — не «C» водительского', () => {
+    // Иначе предупреждение читалось бы как ошибка портала: «нужна C, а открыта C».
+    const text = driverCategoryMismatchWarning('C', 'driver_license', ['C'], 'tractor_license');
+    expect(text).toContain('ВУ «C»');
+    expect(text).toContain('по УТМ открыты «C»');
+  });
+
   it('водитель без единой категории описан словами, а не пустыми кавычками', () => {
-    expect(driverCategoryMismatchWarning('C', [])).toContain('ни одной категории');
+    expect(driverCategoryMismatchWarning('C', 'driver_license', [], 'driver_license')).toContain(
+      'ни одной категории',
+    );
   });
 
   it('фильтр справочника по категории необязателен и принимает только идентификатор', () => {
@@ -554,14 +703,19 @@ describe('полнота документов задаёт порядок и т�
   });
 
   it('пометка строки перечисляет пробелы, а полный комплект молчит', () => {
-    expect(driverDocumentGapsHint(['requisites', 'issuedOn'])).toBe(
+    expect(driverDocumentGapsHint(['requisites', 'issuedOn'], 'driver_license')).toBe(
       'без номера ВУ, без даты выдачи ВУ',
     );
-    expect(driverDocumentGapsHint([])).toBeNull();
+    expect(driverDocumentGapsHint([], 'driver_license')).toBeNull();
+  });
+
+  it('пробелы машиниста подписаны его документом: в кабину поедет другая бумага', () => {
+    expect(driverDocumentGapsHint(['license'], 'tractor_license')).toBe('без действующего УТМ');
+    expect(driverDocumentGapsHint(['requisites'], 'tractor_license')).toBe('без номера УТМ');
   });
 
   it('предупреждение называет последствие и бланк, а не состояние справочника', () => {
-    const text = driverDocumentGapsWarning(['requisites'], '4-П')!;
+    const text = driverDocumentGapsWarning(['requisites'], 'driver_license', '4-П')!;
     expect(text).toContain('без номера ВУ');
     expect(text).toContain('4-П');
     expect(text).toContain('останутся пустыми');
@@ -570,11 +724,13 @@ describe('полнота документов задаёт порядок и т�
   });
 
   it('без известного бланка предупреждение говорит о путевом листе вообще', () => {
-    expect(driverDocumentGapsWarning(['snils'], null)).toContain('в путевом листе эти графы');
+    expect(driverDocumentGapsWarning(['snils'], 'driver_license', null)).toContain(
+      'в путевом листе эти графы',
+    );
   });
 
   it('полный комплект предупреждения не поднимает', () => {
-    expect(driverDocumentGapsWarning([], '4-П')).toBeNull();
+    expect(driverDocumentGapsWarning([], 'driver_license', '4-П')).toBeNull();
   });
 });
 

@@ -119,10 +119,15 @@ async function seed(): Promise<{ personId: string }> {
     .select({ id: schema.credentialTypes.id })
     .from(schema.credentialTypes)
     .where(sql`${schema.credentialTypes.code} = 'driver_license'`);
+  // Категории — своего вида документа: «B» и «C» есть и у удостоверения тракториста-машиниста
+  // (миграция 0123), а составной внешний ключ чужую категорию в ВУ не пустит.
   const categories = await db
     .select({ id: schema.qualificationCategories.id })
     .from(schema.qualificationCategories)
-    .where(sql`${schema.qualificationCategories.code} in ('b', 'c')`);
+    .where(
+      sql`${schema.qualificationCategories.credentialTypeId} = ${licenseType!.id}
+          AND ${schema.qualificationCategories.code} in ('b', 'c')`,
+    );
 
   return db.transaction(async (tx) => {
     const [person] = await tx

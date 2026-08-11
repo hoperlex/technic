@@ -15,7 +15,7 @@ import type { Role } from './enums';
  * дополнительно может», а не на «над какими строками»: смешение слоёв дало бы либо 403 на своей же
  * заявке, либо доступ к чужой (ADR 0021).
  */
-export const ROLE_ADDONS = ['office_equipment_operator'] as const;
+export const ROLE_ADDONS = ['office_equipment_operator', 'office_equipment_it_approver'] as const;
 export const roleAddonSchema = z.enum(ROLE_ADDONS);
 export type RoleAddon = (typeof ROLE_ADDONS)[number];
 
@@ -23,12 +23,16 @@ export const roleAddonLabels: Record<RoleAddon, string> = {
   // Подпись называет предмет работы, а не набор прав: в списке учёток её читают рядом с ролью, и
   // «Оператор» без уточнения спорил бы с «Оператором (внешним исполнителем)».
   office_equipment_operator: 'Оператор (оргтехника)',
+  office_equipment_it_approver: 'Согласование ИТ',
 };
 
 export const roleAddonColors: Record<RoleAddon, string> = {
   // Цвет отличается от цветов ролей: надстройка — не роль, и в списке учёток они не должны
   // выглядеть одинаковыми пометками.
   office_equipment_operator: 'purple',
+  // Своим цветом, а не тем же: у этой надстройки есть то, чего нет у первой, — сквозная область
+  // модуля, и в списке учёток две пометки не должны читаться как одна и та же выдача.
+  office_equipment_it_approver: 'magenta',
 };
 
 /**
@@ -43,6 +47,10 @@ export const roleAddonColors: Record<RoleAddon, string> = {
  */
 export const ROLE_ADDON_BASE_ROLES: Record<RoleAddon, readonly Role[]> = {
   office_equipment_operator: ['shtab', 'department'],
+  // Отдел ИТ сидит в офисе, но «айтишник на площадке» — обычный случай для строительной компании,
+  // и обе роли получают надстройку на равных. Базовая роль здесь важна меньше обычного: область
+  // модуля надстройка задаёт сама (`ADDON_MODULE_WIDE_SCOPE`).
+  office_equipment_it_approver: ['shtab', 'department'],
 };
 
 /** Можно ли навесить надстройку на эту роль. Учётка без роли не получает надстроек вовсе. */
@@ -56,6 +64,42 @@ export function canAttachAddon(role: Role | null | undefined, addon: RoleAddon):
  * рабочего случая.
  */
 export const roleAddonsSchema = z.array(roleAddonSchema).max(ROLE_ADDONS.length);
+
+/**
+ * Модули, в которых надстройка снимает сужение области (план модернизации оргтехники, Р54).
+ *
+ * Это изменение решения 2 ADR 0086 («надстройка добавляет действия и не трогает область»), и
+ * сделано оно ровно одним способом — таблицей, а не проверкой по месту. Причина в самой работе
+ * согласующего: виза ИТ решает, звать ли внешний сервис, и решение это принимается по всем
+ * заявкам компании. Согласующий, видящий только свой отдел, подписывать не может ничего.
+ *
+ * Расширение **всегда модульное**. Учётка со всеми объектами (способ, который предлагал ADR 0086)
+ * расширила бы область во всех модулях сразу: ИТ-шник увидел бы каждую заявку на вывоз мусора и
+ * каждый заказ техники. Здесь же в вывозе мусора, заказе ТС и путевых листах он остаётся тем, кем
+ * был по своей роли, — это закреплено отрицательным тестом, а не только словами.
+ *
+ * Пустой список у оператора оргтехники — не забытая строка, а решение 2 ADR 0086 в неизменном
+ * виде: он ведёт свою площадку и свой отдел.
+ */
+export const ADDON_SCOPE_MODULES = ['serviceRequests', 'officeEquipment'] as const;
+export type AddonScopeModule = (typeof ADDON_SCOPE_MODULES)[number];
+
+export const ADDON_MODULE_WIDE_SCOPE: Record<RoleAddon, readonly AddonScopeModule[]> = {
+  office_equipment_operator: [],
+  office_equipment_it_approver: ['serviceRequests', 'officeEquipment'],
+};
+
+/**
+ * Видит ли субъект модуль целиком, минуя область своей роли. Спрашивается по надстройкам учётки, а
+ * не по праву: право отвечает на «что можно делать», область — на «над какими строками», и
+ * смешение слоёв даёт либо 403 на своей же заявке, либо доступ к чужой (ADR 0021).
+ */
+export function hasModuleWideScope(
+  addons: readonly RoleAddon[] | null | undefined,
+  module: AddonScopeModule,
+): boolean {
+  return (addons ?? []).some((addon) => ADDON_MODULE_WIDE_SCOPE[addon]?.includes(module));
+}
 
 /**
  * Совместим ли набор надстроек с ролью — вопрос формы учётки и сервера сразу. Возвращает первую

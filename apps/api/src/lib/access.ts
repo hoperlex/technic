@@ -6,19 +6,20 @@ import {
   can,
   canOrderVehicleRequestType,
   canTransitionStatus,
+  type CounterpartyType,
+  hasModuleWideScope,
   isCounterpartyScopedRole,
   isDepartmentScopedRole,
   isObjectScopedRole,
   isPlaceScopedRole,
-  requestStatusLabels,
-  roleLabels,
-  serviceRequestStatusLabels,
-  type ServiceRequestStatus,
-  type CounterpartyType,
-  vehicleRequestTypeLabels,
+  isServiceRequestEditable,
   type Permission,
   type RequestStatus,
+  requestStatusLabels,
+  roleLabels,
+  type ServiceRequestStatus,
   type VehicleRequestType,
+  vehicleRequestTypeLabels,
   wasteObjectScopeIds,
 } from '@technic/contracts';
 import type { Principal } from '../auth/principal';
@@ -386,6 +387,10 @@ export function officeEquipmentScopeWhere(
   objectIdColumn: AnyColumn,
   ownerDepartmentIdColumn: AnyColumn,
 ): SQL | undefined {
+  // Сквозная область модуля (план модернизации, Р54): согласующий от ИТ решает по всему парку
+  // компании, и сузить ему справочник до своей площадки значило бы дать право, которым нельзя
+  // воспользоваться. Расширение модульное — в вывозе мусора и заказе ТС он остаётся собой.
+  if (hasModuleWideScope(p.addons, 'officeEquipment')) return undefined;
   if (isObjectScopedRole(p.role)) {
     const ids = p.constructionObjectIds;
     return ids.length > 0 ? inArray(objectIdColumn, ids) : eq(objectIdColumn, NEVER_MATCH);
@@ -407,6 +412,7 @@ export function officeEquipmentScopeWhere(
  * чужой объект это тот же выход за область, только в другую сторону (Р7).
  */
 export function assertOfficeEquipmentScope(p: Principal, place: OfficeEquipmentPlace): void {
+  if (hasModuleWideScope(p.addons, 'officeEquipment')) return;
   if (isObjectScopedRole(p.role)) {
     if (!p.constructionObjectIds.includes(place.objectId)) {
       throw err.forbidden(`${roleLabels[p.role!]} работает только со своими объектами`);
@@ -440,6 +446,9 @@ export function serviceRequestScopeWhere(
   customerDepartmentIdColumn: AnyColumn,
   equipmentDepartmentIdColumn: AnyColumn,
 ): SQL | undefined {
+  // Согласующий от ИТ видит заявки всей компании (Р54): виза решает, звать ли внешний сервис, и
+  // принимается она по всем площадкам разом. В соседних модулях его область прежняя.
+  if (hasModuleWideScope(p.addons, 'serviceRequests')) return undefined;
   if (isObjectScopedRole(p.role)) {
     const ids = p.constructionObjectIds;
     return ids.length > 0 ? inArray(objectIdColumn, ids) : eq(objectIdColumn, NEVER_MATCH);
@@ -477,6 +486,7 @@ export interface ServiceRequestPlace {
  * без этой проверки отдали бы её любому, кто знает id.
  */
 export function assertServiceRequestScope(p: Principal, place: ServiceRequestPlace): void {
+  if (hasModuleWideScope(p.addons, 'serviceRequests')) return;
   if (isObjectScopedRole(p.role)) {
     if (!p.constructionObjectIds.includes(place.objectId)) {
       throw err.forbidden(`${roleLabels[p.role!]} работает только со своими объектами`);
@@ -492,19 +502,24 @@ export function assertServiceRequestScope(p: Principal, place: ServiceRequestPla
 }
 
 /**
- * Со стороны заказчика правят и удаляют только «Новую» заявку: после назначения сервиса за ней
- * стоят договорённости с исполнителем, и менять её предмет задним числом нельзя. Правило то же, что
- * в двух действующих модулях (`assertObjectRoleEditable`), но статус свой — у модуля собственный
- * перечень (ADR 0085 §8).
+ * Со стороны заказчика правят и удаляют заявку, которую ещё никому не отдали: после назначения
+ * сервиса за ней стоят договорённости с исполнителем, и менять её предмет задним числом нельзя.
+ * Правило то же, что в двух действующих модулях (`assertObjectRoleEditable`), но статусов у этого
+ * состояния два (ADR 0085 §8, план модернизации Р51): «Новая» и «Согласована ИТ».
+ *
+ * Виза ИТ правку не запирает намеренно. Она отвечает на вопрос «нужен ли этому аппарату внешний
+ * ремонт», а не «какими словами описана неисправность»; деньги стережёт вторая подпись — согласие
+ * оператора со сметой. Запирай мы заявку визой, заказчику пришлось бы заводить новую из-за
+ * опечатки, а отделу ИТ — визировать её второй раз.
  */
 export function assertServiceRequestEditable(
   p: Principal,
   status: ServiceRequestStatus,
   action: string,
 ): void {
-  if (isPlaceScopedRole(p.role) && status !== 'new') {
+  if (isPlaceScopedRole(p.role) && !isServiceRequestEditable(status)) {
     throw err.forbidden(
-      `${roleLabels[p.role!]} может ${action} заявку только в статусе «${serviceRequestStatusLabels.new}»`,
+      `${roleLabels[p.role!]} может ${action} заявку только до назначения сервиса`,
     );
   }
 }

@@ -33,6 +33,7 @@ export interface ServiceListFilters {
   overdue?: string;
   awaitingDocuments?: string;
   warrantyClaim?: string;
+  urgent?: string;
   createdFrom?: string;
   createdTo?: string;
 }
@@ -82,6 +83,15 @@ export function useServiceRequestFilters({
       label: 'Ждут меня',
       value: params.waitingOnMe === 'true',
       onChange: (v) => apply({ waitingOnMe: flag(v) }),
+    },
+    // Срочные стоят рядом с «Ждут меня»: это две очереди, с которых начинают день, и обе
+    // отвечают на вопрос «за что браться сейчас», а не «что вообще есть».
+    {
+      kind: 'toggle',
+      key: 'urgent',
+      label: 'Только срочные',
+      value: params.urgent === 'true',
+      onChange: (v) => apply({ urgent: flag(v) }),
     },
     {
       kind: 'select',

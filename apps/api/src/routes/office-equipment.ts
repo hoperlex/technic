@@ -14,15 +14,18 @@ import {
   sql,
   type SQL,
 } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
 import { z } from 'zod';
 import {
   can,
   createOfficeEquipmentSchema,
   formatServiceRequestNumber,
+  moveOfficeEquipmentSchema,
   officeEquipmentListQuerySchema,
   officeEquipmentTitle,
   type OfficeEquipmentDto,
   type OfficeEquipmentItemWarrantyDto,
+  type OfficeEquipmentMovementDto,
   type OfficeEquipmentServiceEntryDto,
   type OfficeEquipmentWarrantyFilter,
   updateOfficeEquipmentSchema,
@@ -34,9 +37,11 @@ import {
   counterparties,
   departments,
   officeEquipment,
+  officeEquipmentMovements,
   officeEquipmentTypes,
   serviceRequestItems,
   serviceRequests,
+  users,
 } from '../db/schema';
 import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
@@ -91,6 +96,23 @@ const departmentRef = {
 };
 
 /**
+ * Обе стороны перемещения join'ятся дважды — «откуда» и «куда», — поэтому каждой нужна своя копия
+ * таблицы: без алиасов SQL сложил бы их в одно условие и вернул бы пустой журнал.
+ */
+const fromObjects = alias(constructionObjects, 'movement_from_objects');
+const toObjects = alias(constructionObjects, 'movement_to_objects');
+const fromDepartments = alias(departments, 'movement_from_departments');
+const toDepartments = alias(departments, 'movement_to_departments');
+const movers = alias(users, 'movement_movers');
+
+/**
+ * Сколько перемещений отдаётся в ленту карточки. Столько же, сколько событий у истории заявки
+ * (`HISTORY_LIMIT`): карточку открывают вопросом «что было недавно», а полный журнал за пять лет —
+ * это выгрузка, и заводится она отдельно, если понадобится.
+ */
+const MOVEMENT_LIMIT = 50;
+
+/**
  * Тип и объект у единицы есть всегда (`NOT NULL`), поэтому они `innerJoin`; отдел — необязателен,
  * и `leftJoin` здесь означает ровно «не размечена», а не потерянную ссылку.
  */
@@ -117,6 +139,8 @@ function toDto(r: EquipmentRow): OfficeEquipmentDto {
     location: r.e.location,
     purchasedOn: r.e.purchasedOn,
     warrantyUntil: r.e.warrantyUntil,
+    state: r.e.state,
+    stateNote: r.e.stateNote,
     comment: r.e.comment,
     isActive: r.e.isActive,
     createdAt: r.e.createdAt.toISOString(),
@@ -396,6 +420,19 @@ export default async function officeEquipmentRoutes(app: FastifyInstance): Promi
         // Срез для разметки парка: что ещё ни за кем не числится.
         q.unassignedDepartment ? isNull(officeEquipment.ownerDepartmentId) : undefined,
         warrantyCondition(q.warranty),
+        q.state ? eq(officeEquipment.state, q.state) : undefined,
+        // «В ремонте, а заявок нет» (Р61): портал не знает, вернули ли аппарат, — он знает лишь
+        // то, что ему сказали. Поэтому срез, а не запрет: строку показывают, чтобы спросили.
+        q.strandedAtService
+          ? and(
+              eq(officeEquipment.state, 'at_service'),
+              sql`NOT EXISTS (
+                SELECT 1 FROM service_requests sr
+                 WHERE sr.office_equipment_id = ${officeEquipment.id}
+                   AND sr.deleted_at IS NULL
+                   AND sr.status NOT IN ('accepted','cancelled'))`,
+            )
+          : undefined,
         q.isActive === undefined ? undefined : eq(officeEquipment.isActive, q.isActive),
         // Ищут единицу и по модели, и по любому из номеров, и по месту: как её называют в
         // разговоре, зависит от того, кто спрашивает — бухгалтерия по инвентарному, сервис по
@@ -548,18 +585,18 @@ export default async function officeEquipmentRoutes(app: FastifyInstance): Promi
         // PATCH присылает только изменившееся, поэтому все проверки идут по «склеенному»
         // состоянию: половина условий (оба номера пусты, чужой целевой отдел) видна лишь на нём.
         const equipmentTypeId = b.equipmentTypeId ?? ex.equipmentTypeId;
-        const objectId = b.objectId ?? ex.objectId;
+        // Объект правкой не меняется (Р59): переезд — своя ручка с датой, причиной и журналом.
+        const objectId = ex.objectId;
         const ownerDepartmentId =
           b.departmentId !== undefined ? (b.departmentId ?? null) : ex.ownerDepartmentId;
         const serialNumber = b.serialNumber ?? ex.serialNumber;
         const inventoryNumber = b.inventoryNumber ?? ex.inventoryNumber;
 
         if (equipmentTypeId !== ex.equipmentTypeId) await assertTypeUsable(tx, equipmentTypeId);
-        if (objectId !== ex.objectId) await assertObjectExists(tx, objectId);
         if (ownerDepartmentId && ownerDepartmentId !== ex.ownerDepartmentId) {
           await assertDepartmentExists(tx, ownerDepartmentId);
         }
-        if (objectId !== ex.objectId || ownerDepartmentId !== ex.ownerDepartmentId) {
+        if (ownerDepartmentId !== ex.ownerDepartmentId) {
           assertOfficeEquipmentScope(p, { objectId, ownerDepartmentId });
         }
 
@@ -593,7 +630,6 @@ export default async function officeEquipmentRoutes(app: FastifyInstance): Promi
         if (b.name !== undefined) set.name = b.name;
         if (b.serialNumber !== undefined) set.serialNumber = b.serialNumber;
         if (b.inventoryNumber !== undefined) set.inventoryNumber = b.inventoryNumber;
-        if (b.objectId !== undefined) set.objectId = b.objectId;
         if (b.departmentId !== undefined) set.ownerDepartmentId = b.departmentId ?? null;
         if (b.location !== undefined) set.location = b.location;
         if (b.purchasedOn !== undefined) set.purchasedOn = b.purchasedOn ?? null;
@@ -656,6 +692,234 @@ export default async function officeEquipmentRoutes(app: FastifyInstance): Promi
         },
       });
       return { ok: true };
+    },
+  );
+
+  // ── Перемещение единицы (Р59–Р63) ──
+  /**
+   * Переезд — событие, а не поле карточки. До этой ручки объект менялся тихой правкой: техника
+   * оказывалась на другой площадке без даты, причины и следа, и вопрос «где этот аппарат стоял в
+   * мае» отвечался только по заявкам, если они были.
+   *
+   * **Область проверяется по исходной стороне, а целевой объект — любой активный (Р60).** Прежнее
+   * правило «обе стороны в области» делало штатный перенос между площадками невозможным именно
+   * для того, кто технику отдаёт: у штаба своя площадка одна. Перемещение — утрата, а не захват:
+   * отдающий ничего не получает на чужой площадке, он теряет единицу из своего списка. Кто отдал —
+   * видно в журнале и в аудите.
+   *
+   * Открытая заявка переезду не мешает (Р63): именно при ремонте технику и возят. Заявка хранит
+   * снимок объекта и остаётся у своего заказчика — иначе она уехала бы из его области вместе с
+   * аппаратом.
+   */
+  r.post(
+    '/:id/move',
+    {
+      preHandler: [app.authenticate, canWrite],
+      schema: { params: idParams, body: moveOfficeEquipmentSchema },
+    },
+    async (req, reply) => {
+      const p = requirePrincipal(req);
+      const { id } = req.params;
+      const b = req.body;
+
+      const movement = await db.transaction(async (tx) => {
+        const [ex] = await tx
+          .select()
+          .from(officeEquipment)
+          .where(and(eq(officeEquipment.id, id), isNull(officeEquipment.deletedAt)));
+        if (!ex) throw err.notFound('Единица оргтехники не найдена');
+        // Только исходная сторона: см. Р60 выше.
+        assertOfficeEquipmentScope(p, {
+          objectId: ex.objectId,
+          ownerDepartmentId: ex.ownerDepartmentId,
+        });
+
+        const toDepartmentId =
+          b.departmentId !== undefined ? (b.departmentId ?? null) : ex.ownerDepartmentId;
+        if (b.objectId !== ex.objectId) await assertObjectExists(tx, b.objectId);
+        if (toDepartmentId && toDepartmentId !== ex.ownerDepartmentId) {
+          await assertDepartmentExists(tx, toDepartmentId);
+        }
+
+        const unchanged =
+          b.objectId === ex.objectId &&
+          b.state === ex.state &&
+          b.location === ex.location &&
+          toDepartmentId === ex.ownerDepartmentId;
+        // Перемещение, которое ничего не переместило, — запись ни о чём (то же держит CHECK).
+        if (unchanged) {
+          throw err.unprocessable('Ничего не изменилось: перемещение записывать нечего');
+        }
+
+        if (b.serviceRequestId) {
+          // Ссылка на заявку принимается только по этой же единице: «увезли в сервис» относится к
+          // конкретному ремонту, и чужой номер сделал бы журнал бесполезным.
+          const [request] = await tx
+            .select({ id: serviceRequests.id })
+            .from(serviceRequests)
+            .where(
+              and(
+                eq(serviceRequests.id, b.serviceRequestId),
+                eq(serviceRequests.officeEquipmentId, id),
+              ),
+            );
+          if (!request) {
+            throw err.badRequest('Заявка не найдена или заведена не на эту технику', {
+              serviceRequestId: 'Чужая заявка',
+            });
+          }
+        }
+
+        const now = new Date();
+        const [row] = await tx
+          .insert(officeEquipmentMovements)
+          .values({
+            equipmentId: id,
+            fromObjectId: ex.objectId,
+            toObjectId: b.objectId,
+            fromDepartmentId: ex.ownerDepartmentId,
+            toDepartmentId,
+            fromLocation: ex.location,
+            toLocation: b.location,
+            fromState: ex.state,
+            toState: b.state,
+            movedOn: b.movedOn,
+            reason: b.reason,
+            comment: b.comment,
+            serviceRequestId: b.serviceRequestId ?? null,
+            movedBy: p.id,
+          })
+          .returning({ id: officeEquipmentMovements.id });
+
+        await tx
+          .update(officeEquipment)
+          .set({
+            objectId: b.objectId,
+            ownerDepartmentId: toDepartmentId,
+            location: b.location,
+            state: b.state,
+            stateNote: b.stateNote,
+            updatedBy: p.id,
+            updatedAt: now,
+          })
+          .where(eq(officeEquipment.id, id));
+
+        return { id: row!.id, from: ex.objectId, to: b.objectId };
+      });
+
+      await writeAudit({
+        actorUserId: p.id,
+        action: 'officeEquipment.move',
+        entityType: 'officeEquipment',
+        entityId: id,
+        metadata: {
+          movementId: movement.id,
+          fromObjectId: movement.from,
+          toObjectId: movement.to,
+          state: b.state,
+          movedOn: b.movedOn,
+          reason: b.reason,
+        },
+      });
+      reply.code(201);
+      return (await getDto(id))!;
+    },
+  );
+
+  /**
+   * История единицы одной лентой (Р62): перемещения и обслуживание вперемешку по датам.
+   *
+   * Ремонтная часть отдаётся только при `serviceRequests.read` — то же правило, что у секции
+   * `serviceHistory` в карточке: право справочника карточку открывает, а обслуживание — нет.
+   */
+  r.get(
+    '/:id/history',
+    { preHandler: [app.authenticate, canRead], schema: { params: idParams } },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const { id } = req.params;
+      const [ex] = await db
+        .select({
+          id: officeEquipment.id,
+          objectId: officeEquipment.objectId,
+          ownerDepartmentId: officeEquipment.ownerDepartmentId,
+          deletedAt: officeEquipment.deletedAt,
+        })
+        .from(officeEquipment)
+        .where(eq(officeEquipment.id, id));
+      if (!ex) throw err.notFound('Единица оргтехники не найдена');
+      assertArchiveVisible(p, ex.deletedAt, 'Единица оргтехники не найдена');
+      assertOfficeEquipmentScope(p, {
+        objectId: ex.objectId,
+        ownerDepartmentId: ex.ownerDepartmentId,
+      });
+
+      const rows = await db
+        .select({
+          m: officeEquipmentMovements,
+          fromObject: {
+            id: fromObjects.id,
+            code: fromObjects.code,
+            name: fromObjects.name,
+          },
+          toObject: { id: toObjects.id, code: toObjects.code, name: toObjects.name },
+          fromDepartment: {
+            id: fromDepartments.id,
+            code: fromDepartments.code,
+            name: fromDepartments.name,
+          },
+          toDepartment: {
+            id: toDepartments.id,
+            code: toDepartments.code,
+            name: toDepartments.name,
+          },
+          movedByName: movers.fullName,
+          requestNum: serviceRequests.num,
+        })
+        .from(officeEquipmentMovements)
+        .innerJoin(fromObjects, eq(officeEquipmentMovements.fromObjectId, fromObjects.id))
+        .innerJoin(toObjects, eq(officeEquipmentMovements.toObjectId, toObjects.id))
+        .leftJoin(
+          fromDepartments,
+          eq(officeEquipmentMovements.fromDepartmentId, fromDepartments.id),
+        )
+        .leftJoin(toDepartments, eq(officeEquipmentMovements.toDepartmentId, toDepartments.id))
+        .innerJoin(movers, eq(officeEquipmentMovements.movedBy, movers.id))
+        .leftJoin(
+          serviceRequests,
+          eq(officeEquipmentMovements.serviceRequestId, serviceRequests.id),
+        )
+        .where(eq(officeEquipmentMovements.equipmentId, id))
+        .orderBy(desc(officeEquipmentMovements.movedOn), desc(officeEquipmentMovements.createdAt))
+        .limit(MOVEMENT_LIMIT);
+
+      const movements: OfficeEquipmentMovementDto[] = rows.map((row) => ({
+        id: row.m.id,
+        movedOn: row.m.movedOn,
+        fromObject: row.fromObject,
+        toObject: row.toObject,
+        // `leftJoin` отдаёт `null` целиком, когда отдела не было: «не закреплена» — рабочее
+        // состояние единицы, а не потерянная ссылка.
+        fromDepartment: row.fromDepartment?.id ? row.fromDepartment : null,
+        toDepartment: row.toDepartment?.id ? row.toDepartment : null,
+        fromLocation: row.m.fromLocation,
+        toLocation: row.m.toLocation,
+        fromState: row.m.fromState,
+        toState: row.m.toState,
+        reason: row.m.reason,
+        comment: row.m.comment,
+        serviceRequestId: row.m.serviceRequestId,
+        serviceRequestNum: row.requestNum,
+        movedByName: row.movedByName,
+        createdAt: row.m.createdAt.toISOString(),
+      }));
+
+      // Обслуживание — тем же запросом, что и в карточке: два разных ответа на «что с этим
+      // аппаратом делали» разъехались бы на первой же правке.
+      const serviceHistory = can(p, 'serviceRequests.read')
+        ? await loadServiceHistory(p, id)
+        : undefined;
+      return { movements, serviceHistory };
     },
   );
 

@@ -3,7 +3,11 @@ import { Alert, App, DatePicker, Divider, Input, InputNumber, Space, Typography 
 import dayjs, { type Dayjs } from 'dayjs';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { ServiceRequestDto } from '@technic/contracts';
-import { serviceRequestKeys, serviceRequestsApi } from '@entities/service-request';
+import {
+  ServiceRequestContext,
+  serviceRequestKeys,
+  serviceRequestsApi,
+} from '@entities/service-request';
 import { officeEquipmentKeys } from '@entities/office-equipment';
 import { FormModal } from '@shared/ui';
 import { errorMessage } from '@shared/lib';
@@ -102,6 +106,7 @@ export function ServiceCompleteModal({
     >
       {request && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <ServiceRequestContext request={request} />
           <Alert
             type="info"
             showIcon

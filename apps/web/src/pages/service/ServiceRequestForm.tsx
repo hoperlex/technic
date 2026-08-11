@@ -1,38 +1,22 @@
 import { useEffect, useState } from 'react';
-import {
-  App,
-  Button,
-  Checkbox,
-  DatePicker,
-  Descriptions,
-  Form,
-  Input,
-  Select,
-  Space,
-  Typography,
-  Upload,
-} from 'antd';
-import { UploadOutlined } from '@ant-design/icons';
+import { App, Checkbox, DatePicker, Form, Input, Select, Space } from 'antd';
 import dayjs, { type Dayjs } from 'dayjs';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   isWarrantyActive,
   type ServiceRequestDto,
   type WarrantyClaimSource,
-  warrantyClaimSourceLabels,
 } from '@technic/contracts';
-import {
-  officeEquipmentKeys,
-  officeEquipmentOptionsQuery,
-  WarrantyTag,
-} from '@entities/office-equipment';
+import { officeEquipmentKeys, officeEquipmentOptionsQuery } from '@entities/office-equipment';
 import { departmentOptionsQuery } from '@entities/department';
 import { objectOptionsQuery } from '@entities/object';
 import { serviceRequestKeys, serviceRequestsApi } from '@entities/service-request';
 import { EquipmentNotFoundLink } from '@features/quick-create-equipment';
 import { AutoSelect, FormModal, useFormBlockers } from '@shared/ui';
+import { ServiceRequestAttachments, type UploadedFile } from './ServiceRequestAttachments';
+import { ServiceRequestWarrantyClaim } from './ServiceRequestWarrantyClaim';
+import { ServiceRequestSubject } from './ServiceRequestSubject';
 import { filesApi } from '../../api/resources';
-import { FileLinkList } from '../../components/FileLinks';
 import { ResponsibleFields } from '../../components/ResponsibleFields';
 import { useAuth } from '../../auth/AuthContext';
 import { useDepartmentScope } from '../../hooks/useDepartmentScope';
@@ -52,13 +36,6 @@ interface Values {
   warrantySource?: WarrantyClaimSource;
   isUrgent?: boolean;
   urgencyReason?: string;
-}
-
-interface UploadedFile {
-  id: string;
-  filename: string;
-  contentType: string;
-  size: number;
 }
 
 /**
@@ -193,8 +170,9 @@ export function ServiceRequestForm({
     }
   };
 
-  const removeFile = (id: string) => {
-    setFiles((prev) => prev.filter((file) => file.id !== id));
+  const removeFile = (file: UploadedFile) => {
+    const id = file.id;
+    setFiles((prev) => prev.filter((f) => f.id !== id));
     // Файл ещё ничей: заявки, к которой он привязан, нет — сносим его сразу, чтобы не копить мусор.
     void filesApi.remove(id).catch(() => undefined);
   };
@@ -294,122 +272,15 @@ export function ServiceRequestForm({
           />
         )}
 
-        {/* Реквизиты выбранной единицы (Р48, Р57): наименование, номера, объект и место внутри
-            него. Не правятся — они приходят из справочника и уходят в заявку снимком; показаны
-            потому, что именно по ним сервис опознаёт аппарат и едет по адресу, а до сих пор
-            заказчик отправлял заявку, не видя ни одного из них. */}
-        {equipmentId && selected && (
-          <Descriptions
-            size="small"
-            column={1}
-            style={{ marginBottom: 16 }}
-            labelStyle={{ width: 140 }}
-            items={[
-              { key: 'name', label: 'Наименование', children: selected.name },
-              {
-                key: 'numbers',
-                label: 'Номера',
-                children: (
-                  <Space size={12} wrap>
-                    <span>
-                      инв. №{' '}
-                      {selected.inventoryNumber || (
-                        <Typography.Text type="secondary">—</Typography.Text>
-                      )}
-                    </span>
-                    <span>
-                      сер. №{' '}
-                      {selected.serialNumber || (
-                        <Typography.Text type="secondary">—</Typography.Text>
-                      )}
-                    </span>
-                  </Space>
-                ),
-              },
-              {
-                key: 'object',
-                label: 'Объект',
-                children: (
-                  <Space size={8} wrap>
-                    <span>{selected.objectLabel}</span>
-                    {selected.location && (
-                      <Typography.Text type="secondary">{selected.location}</Typography.Text>
-                    )}
-                  </Space>
-                ),
-              },
-              {
-                key: 'warranty',
-                label: 'Гарантия на технику',
-                children: <WarrantyTag until={selected.warrantyUntil} />,
-              },
-            ]}
-          />
-        )}
-        {/* Заявка на правке технику не показывает списком: поле выключено, а реквизиты приходят
-            снимком самой заявки — тем, что видел сервис, а не тем, что в карточке сегодня. */}
-        {request && (
-          <Descriptions
-            size="small"
-            column={1}
-            style={{ marginBottom: 16 }}
-            labelStyle={{ width: 140 }}
-            items={[
-              { key: 'name', label: 'Наименование', children: request.equipment.name },
-              {
-                key: 'numbers',
-                label: 'Номера',
-                children: `инв. № ${request.equipment.inventoryNumber || '—'} · сер. № ${
-                  request.equipment.serialNumber || '—'
-                }`,
-              },
-              {
-                key: 'object',
-                label: 'Объект',
-                children: [
-                  `${request.object.code} — ${request.object.name}`,
-                  request.equipment.location,
-                ]
-                  .filter(Boolean)
-                  .join(' · '),
-              },
-            ]}
-          />
-        )}
+        {/* Реквизиты предмета (Р48, Р57): что именно уйдёт в заявку снимком. Отдельным
+            компонентом — источников у них два: справочник при заведении и сама заявка при правке. */}
+        <ServiceRequestSubject request={request} selected={selected} />
 
-        {(warrantyActive || claim) && (
-          <Form.Item
-            name="warrantySource"
-            label="Обращение по гарантии"
-            extra={
-              claim
-                ? `Источник: ${claim.subject}`
-                : warrantySource
-                  ? 'Источник уйдёт в заявку: по нему сервис и разбирает, чинить бесплатно или за деньги'
-                  : 'Не выбрано — заявка обычная, платная'
-            }
-          >
-            <Select
-              allowClear={!claim}
-              // Источник, пришедший из реестра, не правится: позиция прошлого ремонта опознаётся
-              // идентификатором, и «переключить» её на другую строку в форме нечем.
-              disabled={!!claim}
-              placeholder="Обычная заявка"
-              options={[
-                { value: 'equipment', label: warrantyClaimSourceLabels.equipment },
-                {
-                  value: 'item',
-                  label: claim?.itemId
-                    ? warrantyClaimSourceLabels.item
-                    : `${warrantyClaimSourceLabels.item} — выбирается в реестре гарантий`,
-                  // Гарантия на прошлый ремонт требует ссылки на позицию закрытой заявки; её
-                  // отдаёт реестр гарантий, и заводят такое обращение оттуда (§9.5).
-                  disabled: !claim?.itemId,
-                },
-              ]}
-            />
-          </Form.Item>
-        )}
+        <ServiceRequestWarrantyClaim
+          active={warrantyActive}
+          claim={claim}
+          source={warrantySource}
+        />
 
         <Form.Item
           name="description"
@@ -490,34 +361,15 @@ export function ServiceRequestForm({
           <Input.TextArea rows={2} maxLength={2000} placeholder="Необязательно" />
         </Form.Item>
 
+        {/* Вложения — только при заведении: после него они живут вкладкой «Документы» карточки,
+            где у каждого файла есть вид (акт, счёт, талон). */}
         {!request && (
-          <div>
-            {/* Фото неисправности — самое частое вложение: по нему сервис понимает, что везти.
-                Обязательным его не делаем (Р50): «не включается» и «не видит сеть» не
-                фотографируются, и требование обернулось бы снимком стены ради кнопки «Отправить». */}
-            <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 8 }}>
-              Фото неисправности
-            </Typography.Text>
-            <Upload
-              multiple
-              showUploadList={false}
-              beforeUpload={(file) => {
-                void upload(file);
-                return false;
-              }}
-            >
-              <Button icon={<UploadOutlined />} loading={uploading}>
-                Прикрепить фото и документы
-              </Button>
-            </Upload>
-            <div style={{ marginTop: 8 }}>
-              <FileLinkList
-                files={files}
-                emptyText="Файлов нет"
-                onRemove={(file) => removeFile(file.id)}
-              />
-            </div>
-          </div>
+          <ServiceRequestAttachments
+            files={files}
+            uploading={uploading}
+            onUpload={upload}
+            onRemove={removeFile}
+          />
         )}
       </Form>
     </FormModal>

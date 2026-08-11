@@ -7,7 +7,10 @@ import {
   FileTextOutlined,
   PlayCircleOutlined,
   RollbackOutlined,
+  SafetyCertificateOutlined,
   StopOutlined,
+  SwapOutlined,
+  ThunderboltOutlined,
   UndoOutlined,
   UserSwitchOutlined,
 } from '@ant-design/icons';
@@ -16,6 +19,7 @@ import {
   actsForCounterparty,
   allowedServiceStatusTransitions,
   can as hasPermission,
+  isServiceRequestEditable,
   type ServiceRequestDto,
 } from '@technic/contracts';
 import { serviceRequestKeys, serviceRequestsApi } from '@entities/service-request';
@@ -25,20 +29,14 @@ import { EstimateEditorModal } from '@features/estimate-editor';
 import { EstimateApprovalModal } from '@features/estimate-approval';
 import { ServiceCompleteModal } from '@features/service-complete';
 import { ServiceAcceptModal, type AcceptMode } from '@features/service-accept';
+import { EquipmentMoveFromRequest } from '@features/equipment-move';
+import { ItApprovalModal } from '@features/it-approval';
+import { ServiceUrgencyModal } from '@features/service-urgency';
 import type { ActionSheetItem } from '@shared/ui';
 import { useAuth } from '../../auth/AuthContext';
+import { serviceReasonPrompts, type ReasonPrompt } from './serviceRequestPrompts';
 import { ReasonModal } from '../../components/CancelReasonModal';
 import { errorMessage } from '../../utils/format';
-
-/** Действие, которому нужна причина: окно одно, различаются подписи и сама ручка. */
-interface ReasonPrompt {
-  title: string;
-  label: string;
-  okText: string;
-  danger?: boolean;
-  success: string;
-  submit: (reason: string) => Promise<unknown>;
-}
 
 /**
  * Действия заявки строятся из **коридора переходов**, а не из списка ролей (§5.2).
@@ -70,6 +68,9 @@ export function useServiceRequestActions(): {
     request: ServiceRequestDto;
     mode: AcceptMode;
   } | null>(null);
+  const [urgencyTarget, setUrgencyTarget] = useState<ServiceRequestDto | null>(null);
+  const [itTarget, setItTarget] = useState<ServiceRequestDto | null>(null);
+  const [moveTarget, setMoveTarget] = useState<ServiceRequestDto | null>(null);
   const [prompt, setPrompt] = useState<ReasonPrompt | null>(null);
 
   /**
@@ -108,9 +109,26 @@ export function useServiceRequestActions(): {
     const executor = actsForCounterparty(user, 'service');
     const items: ActionSheetItem[] = [];
     const ask = (p: ReasonPrompt) => setPrompt(p);
+    // Переходы «только с причиной» собраны отдельно: их шесть, и различаются они подписями, а не
+    // поведением (`serviceRequestPrompts.ts`).
+    const prompts = serviceReasonPrompts(request, executor);
+
+    /*
+     * Виза ИТ (Р51) — первый шаг цикла: до неё сервис не назначают. Одно действие на согласие и
+     * отказ: решение одно, и разводить его двумя кнопками в меню значило бы предлагать отказ
+     * наравне с согласием там, где чаще нужно второе.
+     */
+    if (has('it_approved')) {
+      items.push({
+        key: 'it-approval',
+        label: 'Согласование ИТ',
+        icon: <SafetyCertificateOutlined />,
+        onClick: () => setItTarget(request),
+      });
+    }
 
     if (has('assigned')) {
-      const reassign = request.status !== 'new';
+      const reassign = request.status !== 'it_approved';
       items.push({
         key: 'assign',
         label: reassign ? 'Переназначить сервис' : 'Назначить сервис',
@@ -128,28 +146,13 @@ export function useServiceRequestActions(): {
       });
     }
 
-    if (request.status === 'assigned' && has('new')) {
+    if (request.status === 'assigned' && has('it_approved')) {
       items.push({
         key: 'decline',
         label: executor ? 'Отказаться от заявки' : 'Вернуть в «Новую»',
         icon: <CloseCircleOutlined />,
         danger: true,
-        onClick: () =>
-          ask({
-            title: executor ? 'Отказ от заявки' : 'Возврат заявки в «Новую»',
-            label: 'Причина',
-            okText: executor ? 'Отказаться' : 'Вернуть',
-            danger: true,
-            success: executor ? 'Заявка возвращена оператору' : 'Заявка возвращена в «Новую»',
-            submit: (reason) =>
-              executor
-                ? serviceRequestsApi.decline(request.id, { reason, version: request.version })
-                : serviceRequestsApi.changeStatus(request.id, {
-                    status: 'new',
-                    reason,
-                    version: request.version,
-                  }),
-          }),
+        onClick: () => ask(prompts.decline),
       });
     }
 
@@ -175,19 +178,7 @@ export function useServiceRequestActions(): {
           key: 'reject-estimate',
           label: 'Вернуть в диагностику',
           icon: <RollbackOutlined />,
-          onClick: () =>
-            ask({
-              title: 'Возврат сметы в диагностику',
-              label: 'Причина',
-              okText: 'Вернуть',
-              success: 'Смета возвращена в диагностику',
-              submit: (reason) =>
-                serviceRequestsApi.changeStatus(request.id, {
-                  status: 'diagnostics',
-                  reason,
-                  version: request.version,
-                }),
-            }),
+          onClick: () => ask(prompts.rejectEstimate),
         });
       }
     }
@@ -206,18 +197,7 @@ export function useServiceRequestActions(): {
           key: 'reopen',
           label: 'Переоткрыть смету',
           icon: <UndoOutlined />,
-          onClick: () =>
-            ask({
-              title: 'Переоткрытие сметы',
-              label: 'Причина',
-              okText: 'Переоткрыть',
-              success: 'Смета переоткрыта — согласование снято',
-              submit: (reason) =>
-                serviceRequestsApi.reopenEstimate(request.id, {
-                  reason,
-                  version: request.version,
-                }),
-            }),
+          onClick: () => ask(prompts.reopenEstimate),
         });
       }
     }
@@ -248,20 +228,7 @@ export function useServiceRequestActions(): {
         label: 'Отменить приёмку',
         icon: <UndoOutlined />,
         danger: true,
-        onClick: () =>
-          ask({
-            title: 'Отмена приёмки',
-            label: 'Причина',
-            okText: 'Отменить приёмку',
-            danger: true,
-            success: 'Приёмка отменена',
-            submit: (reason) =>
-              serviceRequestsApi.changeStatus(request.id, {
-                status: 'done',
-                reason,
-                version: request.version,
-              }),
-          }),
+        onClick: () => ask(prompts.rollbackAcceptance),
       });
     }
 
@@ -270,19 +237,42 @@ export function useServiceRequestActions(): {
         key: 'reopen-request',
         label: 'Вернуть в работу',
         icon: <UndoOutlined />,
-        onClick: () =>
-          ask({
-            title: 'Возврат отменённой заявки',
-            label: 'Причина',
-            okText: 'Вернуть в «Новую»',
-            success: 'Заявка снова в работе',
-            submit: (reason) =>
-              serviceRequestsApi.changeStatus(request.id, {
-                status: 'new',
-                reason,
-                version: request.version,
-              }),
-          }),
+        onClick: () => ask(prompts.reopenRequest),
+      });
+    }
+
+    /*
+     * Срочность (Р56) — не переход, поэтому она не в коридоре: её ставят и снимают до самого
+     * закрытия. Кто вправе, решает право, а не роль: оператор оргтехники — тот же «Штаб» или
+     * «Отдел», и правило «правит только Новую» отобрало бы у него признак вместе с заказчиком.
+     */
+    const closed = request.status === 'accepted' || request.status === 'cancelled';
+    const mayUrgency =
+      !executor &&
+      !closed &&
+      hasPermission(user, 'serviceRequests.update') &&
+      (hasPermission(user, 'serviceRequests.assign') || isServiceRequestEditable(request.status));
+    if (mayUrgency) {
+      items.push({
+        key: 'urgency',
+        label: request.isUrgent ? 'Снять срочность' : 'Отметить срочной',
+        icon: <ThunderboltOutlined />,
+        onClick: () => setUrgencyTarget(request),
+      });
+    }
+
+    /*
+     * Переезд техники, вызванный ремонтом (Р61): «увезли в сервис» и «вернулась». Ход заявки
+     * состояние единицы сам не меняет — чинят и на месте, — но узнают о переезде именно здесь, и
+     * записать его надо там же, где узнали. Действие видно только тому, кто ведёт справочник:
+     * сервисной компании он закрыт целиком (Р7).
+     */
+    if (!executor && !closed && hasPermission(user, 'officeEquipment.write')) {
+      items.push({
+        key: 'move-equipment',
+        label: 'Записать перемещение техники',
+        icon: <SwapOutlined />,
+        onClick: () => setMoveTarget(request),
       });
     }
 
@@ -292,20 +282,7 @@ export function useServiceRequestActions(): {
         label: 'Отменить заявку',
         icon: <StopOutlined />,
         danger: true,
-        onClick: () =>
-          ask({
-            title: `Отмена заявки ${request.displayNumber}`,
-            label: 'Причина отмены',
-            okText: 'Отменить заявку',
-            danger: true,
-            success: 'Заявка отменена',
-            submit: (reason) =>
-              serviceRequestsApi.changeStatus(request.id, {
-                status: 'cancelled',
-                reason,
-                version: request.version,
-              }),
-          }),
+        onClick: () => ask(prompts.cancel),
       });
     }
 
@@ -323,6 +300,16 @@ export function useServiceRequestActions(): {
         mode={acceptTarget?.mode ?? 'accept'}
         onClose={() => setAcceptTarget(null)}
       />
+      <ServiceUrgencyModal request={urgencyTarget} onClose={() => setUrgencyTarget(null)} />
+      <ItApprovalModal request={itTarget} onClose={() => setItTarget(null)} />
+      {moveTarget && (
+        <EquipmentMoveFromRequest
+          equipmentId={moveTarget.equipment.id}
+          serviceRequestId={moveTarget.id}
+          open
+          onClose={() => setMoveTarget(null)}
+        />
+      )}
       <ReasonModal
         open={!!prompt}
         title={prompt?.title}

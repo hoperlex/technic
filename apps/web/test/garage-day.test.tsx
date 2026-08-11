@@ -136,6 +136,7 @@ const drivers: GarageDriverDto[] = [
     fullName: 'Петров Пётр Петрович',
     personnelNo: 'Т-100',
     phone: '9990000000',
+    credentialTypeCode: 'driver_license',
     licenseNumber: '00 00 000100',
     licenseExpiresOn: '2099-03-12',
     categories: ['B', 'C'],
@@ -164,6 +165,7 @@ const drivers: GarageDriverDto[] = [
     fullName: 'Сидоров Сидор Сидорович',
     personnelNo: 'Т-101',
     phone: '',
+    credentialTypeCode: 'driver_license',
     licenseNumber: '',
     licenseExpiresOn: null,
     // Пробелы комплекта не убирают человека из списка и не делают его занятым (ADR 0064).

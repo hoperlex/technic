@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { archiveFilterSchema, baseListQuery, dateOnlySchema, uuidSchema } from './common';
-import { contactNameSchema, optionalPhoneSchema } from './common';
+import { contactNameSchema, contactPhoneSchema } from './common';
 import { actsForCounterparty, can, type AccessSubject, type Permission } from './permissions';
 
 // ── Заявки на обслуживание оргтехники (ADR 0085) ──
@@ -12,6 +12,7 @@ import { actsForCounterparty, can, type AccessSubject, type Permission } from '.
 
 export const SERVICE_REQUEST_STATUSES = [
   'new',
+  'it_approved',
   'assigned',
   'diagnostics',
   'estimate_review',
@@ -25,6 +26,9 @@ export type ServiceRequestStatus = (typeof SERVICE_REQUEST_STATUSES)[number];
 
 export const serviceRequestStatusLabels: Record<ServiceRequestStatus, string> = {
   new: 'Новая',
+  // Подпись говорит о состоявшемся решении, а не об ожидании: «На согласовании ИТ» пришлось бы
+  // ставить «Новой», в которой заявка и ждёт визы. Здесь виза уже есть, и ждут оператора.
+  it_approved: 'Согласована ИТ',
   assigned: 'Назначен сервис',
   diagnostics: 'Диагностика',
   estimate_review: 'Смета на согласовании',
@@ -38,6 +42,7 @@ export const serviceRequestStatusLabels: Record<ServiceRequestStatus, string> = 
 
 export const serviceRequestStatusColors: Record<ServiceRequestStatus, string> = {
   new: 'blue',
+  it_approved: 'purple',
   assigned: 'cyan',
   diagnostics: 'geekblue',
   estimate_review: 'gold',
@@ -53,14 +58,18 @@ export function isServiceRequestClosed(status: ServiceRequestStatus): boolean {
 }
 
 // ── Коридоры переходов ──
-// Их три, а не один общий: у надстройки «Оператор (оргтехника)» есть право `serviceRequests.status`,
-// и по общей таблице она смогла бы выполнить шаги сервиса — взять заявку в диагностику, предъявить
-// смету, закрыть работы. Портал скрывает кнопки, сервер отказывает, и второе не зависит от первого.
+// Их четыре, а не один общий: у надстройки «Оператор (оргтехника)» есть право
+// `serviceRequests.status`, и по общей таблице она смогла бы выполнить шаги сервиса — взять заявку
+// в диагностику, предъявить смету, закрыть работы. Портал скрывает кнопки, сервер отказывает, и
+// второе не зависит от первого.
 
 /** Исполнитель: только то, что делает сам. */
 export const SERVICE_EXECUTOR_TRANSITIONS: Record<ServiceRequestStatus, ServiceRequestStatus[]> = {
   new: [],
-  assigned: ['diagnostics', 'new'], // взять в диагностику · отказаться (причина)
+  it_approved: [],
+  // Отказ возвращает заявку оператору, а не в «Новую»: виза ИТ уже дана, и решение «внешний
+  // ремонт нужен» отказом исполнителя не отменяется — менять надо исполнителя, а не решение.
+  assigned: ['diagnostics', 'it_approved'], // взять в диагностику · отказаться (причина)
   diagnostics: ['estimate_review'], // предъявить смету
   estimate_review: [],
   in_work: ['done', 'diagnostics'], // закрыть · переоткрыть смету (причина)
@@ -69,9 +78,29 @@ export const SERVICE_EXECUTOR_TRANSITIONS: Record<ServiceRequestStatus, ServiceR
   cancelled: [],
 };
 
-/** Оператор оргтехники: назначение, согласование, приёмка, отмена. */
+/**
+ * Отдел ИТ (план модернизации, Р51): решение одно — нужен ли внешний ремонт вообще. Отказ — это
+ * отмена с причиной, а не свой терминальный статус: «закрыта без результата» у модуля уже есть, и
+ * второе имя для того же состояния только делило бы отчёты пополам (Р53).
+ */
+export const SERVICE_IT_TRANSITIONS: Record<ServiceRequestStatus, ServiceRequestStatus[]> = {
+  new: ['it_approved', 'cancelled'],
+  it_approved: [],
+  assigned: [],
+  diagnostics: [],
+  estimate_review: [],
+  in_work: [],
+  done: [],
+  accepted: [],
+  cancelled: [],
+};
+
+/** Оператор оргтехники: назначение, согласование сметы, приёмка, отмена. */
 export const SERVICE_OPERATOR_TRANSITIONS: Record<ServiceRequestStatus, ServiceRequestStatus[]> = {
-  new: ['assigned', 'cancelled'],
+  // Назначить сервис из «Новой» больше нельзя: сначала виза ИТ (Р51). Отменить — можно: заявку,
+  // которую отзывает сам заказчик, незачем гонять через согласование.
+  new: ['cancelled'],
+  it_approved: ['assigned', 'cancelled'],
   // Переназначение — тот же статус, другой исполнитель: заявка не откатывается назад, но её
   // возраст в статусе обнуляется, иначе новый сервис наследовал бы чужое ожидание.
   assigned: ['assigned', 'cancelled'],
@@ -87,10 +116,14 @@ export const SERVICE_OPERATOR_TRANSITIONS: Record<ServiceRequestStatus, ServiceR
  * Откаты администратора. Дуги `in_work → estimate_review` здесь намеренно нет: единственный путь
  * изменить согласованную смету — переоткрытие в «Диагностику», и второй путь назад сделал бы этот
  * инвариант необязательным.
+ *
+ * Откат назначения ведёт в «Согласована ИТ», а не в «Новую»: виза — состоявшееся решение, и
+ * отматывать её заодно с назначением значило бы отправлять заявку к ИТ второй раз без причины.
  */
 export const SERVICE_ADMIN_ROLLBACKS: Record<ServiceRequestStatus, ServiceRequestStatus[]> = {
   new: [],
-  assigned: ['new'],
+  it_approved: ['new'],
+  assigned: ['it_approved'],
   diagnostics: ['assigned'],
   estimate_review: ['diagnostics'],
   in_work: [],
@@ -114,8 +147,14 @@ export function allowedServiceStatusTransitions(
 ): ServiceRequestStatus[] {
   if (!subject) return [];
   if (actsForCounterparty(subject, 'service')) return [...SERVICE_EXECUTOR_TRANSITIONS[from]];
-  if (!can(subject, 'serviceRequests.status')) return [];
-  const allowed = new Set<ServiceRequestStatus>(SERVICE_OPERATOR_TRANSITIONS[from]);
+  // Виза ИТ — единственный шаг, который не требует права хода: согласующий заявки не ведёт, он
+  // отвечает на один вопрос. Требуй мы здесь `serviceRequests.status`, полномочие пришлось бы
+  // выдавать вместе с правом двигать заявку по всему циклу.
+  const allowed = new Set<ServiceRequestStatus>(
+    can(subject, 'serviceRequests.approveIt') ? SERVICE_IT_TRANSITIONS[from] : [],
+  );
+  if (!can(subject, 'serviceRequests.status')) return [...allowed];
+  for (const to of SERVICE_OPERATOR_TRANSITIONS[from]) allowed.add(to);
   if (can(subject, 'serviceRequests.estimate')) {
     for (const to of SERVICE_EXECUTOR_TRANSITIONS[from]) allowed.add(to);
   }
@@ -142,7 +181,8 @@ export function serviceStatusChangeRequiresReason(
   to: ServiceRequestStatus,
 ): boolean {
   if (to === 'cancelled') return true;
-  if (from === 'assigned' && to === 'new') return true; // отказ исполнителя и откат назначения
+  if (from === 'assigned' && to === 'it_approved') return true; // отказ исполнителя и откат назначения
+  if (from === 'it_approved' && to === 'new') return true; // откат визы ИТ
   if (from === 'estimate_review' && to === 'diagnostics') return true; // отклонение сметы
   if (from === 'in_work' && to === 'diagnostics') return true; // переоткрытие сметы
   if (from === 'done' && to === 'in_work') return true; // возврат на доработку
@@ -161,6 +201,8 @@ export function serviceStatusChangeRequiresReason(
  * повторное закрытие не перетёрло дату из талона своим расчётом.
  */
 export interface ServiceTransitionReset {
+  /** Снять визу отдела ИТ (кто и когда). */
+  itApproval: boolean;
   /** Снять назначенного исполнителя. */
   executor: boolean;
   /** Стереть смету целиком вместе с её ревизией и снимком предъявления. */
@@ -174,6 +216,7 @@ export interface ServiceTransitionReset {
 }
 
 const NO_RESET: ServiceTransitionReset = {
+  itApproval: false,
   executor: false,
   estimate: false,
   approval: false,
@@ -185,13 +228,18 @@ export function serviceResetOnTransition(
   from: ServiceRequestStatus,
   to: ServiceRequestStatus,
 ): ServiceTransitionReset {
-  // Отказ исполнителя и откат назначения: заявка снова ничья.
-  if (from === 'assigned' && to === 'new') return { ...NO_RESET, executor: true };
+  // Отказ исполнителя и откат назначения: заявка снова ничья, но виза ИТ остаётся — решение
+  // «внешний ремонт нужен» отказом подрядчика не отменяется.
+  if (from === 'assigned' && to === 'it_approved') return { ...NO_RESET, executor: true };
+  // Откат самой визы: заявка возвращается к отделу ИТ, и подпись под ней держаться не должна.
+  if (from === 'it_approved' && to === 'new') return { ...NO_RESET, itApproval: true };
   // Отмена возвращает заявку в состояние «ничего не делали»: она остаётся историей того, что
   // собирались чинить, но ни исполнителя, ни согласованной сметы у неё больше нет.
   if (to === 'cancelled') return { ...NO_RESET, executor: true, approval: true };
   if (from === 'cancelled' && to === 'new') {
-    return { ...NO_RESET, executor: true, estimate: true, approval: true };
+    // Возвращённая отменённая заявка проходит цикл заново — в том числе визу ИТ: отклонить её мог
+    // как раз он, и сохранённая подпись означала бы согласие, которого не было.
+    return { ...NO_RESET, itApproval: true, executor: true, estimate: true, approval: true };
   }
   // Отклонение сметы, её переоткрытие и откат согласования — снимок согласования недействителен.
   if (to === 'diagnostics') return { ...NO_RESET, approval: true };
@@ -209,10 +257,11 @@ export function serviceResetOnTransition(
  * заказчика (например, подтверждение стоимости площадкой) — появится и значение вместе с веткой
  * предиката.
  */
-export const SERVICE_WAITING_ON = ['operator', 'service', 'nobody'] as const;
+export const SERVICE_WAITING_ON = ['it', 'operator', 'service', 'nobody'] as const;
 export type ServiceWaitingOn = (typeof SERVICE_WAITING_ON)[number];
 
 export const serviceWaitingOnLabels: Record<ServiceWaitingOn, string> = {
+  it: 'Ждёт ИТ',
   operator: 'Ждёт оператора',
   service: 'Ждёт сервис',
   nobody: 'Закрыта',
@@ -220,7 +269,10 @@ export const serviceWaitingOnLabels: Record<ServiceWaitingOn, string> = {
 
 export function serviceWaitingOn(status: ServiceRequestStatus): ServiceWaitingOn {
   switch (status) {
+    // «Новая» ждёт не оператора, а отдел ИТ: до визы назначать сервис нечем (Р51).
     case 'new':
+      return 'it';
+    case 'it_approved':
     case 'estimate_review':
     case 'done':
       return 'operator';
@@ -245,6 +297,7 @@ export function isWaitingOn(
 ): boolean {
   if (!subject || waiting === 'nobody') return false;
   if (waiting === 'service') return actsForCounterparty(subject, 'service');
+  if (waiting === 'it') return can(subject, 'serviceRequests.approveIt');
   return can(subject, 'serviceRequests.assign');
 }
 
@@ -385,40 +438,106 @@ export const serviceRequestListQuerySchema = baseListQuery(SERVICE_REQUEST_SORT_
     .enum(['true', 'false'])
     .optional()
     .transform((v) => v === 'true'),
+  /** Только срочные: очередь, с которой начинают день оператор и ИТ. */
+  urgent: z
+    .enum(['true', 'false'])
+    .optional()
+    .transform((v) => v === 'true'),
   createdFrom: dateOnlySchema.optional(),
   createdTo: dateOnlySchema.optional(),
   archive: archiveFilterSchema,
 });
 
-export const createServiceRequestSchema = z.object({
-  officeEquipmentId: uuidSchema,
-  description: descriptionSchema,
-  dueDate: dateOnlySchema.nullish(),
-  /**
-   * Отдел, от имени которого заявка (ADR 0085 §8). Подсказывается владельцем техники либо
-   * единственным отделом автора, но выбирается человеком: сотрудник соседнего отдела чинит «чужой»
-   * принтер чаще, чем кажется. `null` — заявка объектная, от площадки.
-   */
-  customerDepartmentId: uuidSchema.nullish(),
-  responsibleName: contactNameSchema.optional().default(''),
-  responsiblePhone: optionalPhoneSchema.optional().default(''),
-  comment: z.string().trim().max(2000).optional().default(''),
-  warrantyClaim: warrantyClaimSchema.optional(),
-  fileIds: z.array(uuidSchema).max(20).optional().default([]),
-});
+/**
+ * Срочность: флаг и объяснение неразрывны (то же CHECK держит и БД). Чекбокс без причины через
+ * месяц стоит у всех заявок — отбирать им становится нечего, а очередь, отсортированная по
+ * признаку, который есть у каждого, ничем не отличается от несортированной.
+ *
+ * Проверка вынесена функцией, а не написана схемой на месте: срочность ставят в трёх местах
+ * (заведение, правка, своя ручка), и в правке пара приходит наполовину — `PATCH` присылает только
+ * изменившееся. Там условие считается по «склеенному» состоянию на сервере, а не по телу запроса.
+ */
+export const urgencyReasonSchema = z.string().trim().max(500);
+
+export function urgencyIssue(value: { isUrgent: boolean; urgencyReason: string }): string | null {
+  const reason = value.urgencyReason.trim();
+  if (value.isUrgent && !reason) return 'Объясните, почему заявка срочная';
+  if (!value.isUrgent && reason) return 'Причина без отметки «Срочная» ничего не объявляет';
+  return null;
+}
+
+/** Схема с полной парой: заведение и своя ручка присылают оба поля разом. */
+const withUrgency = <T extends z.ZodType<{ isUrgent: boolean; urgencyReason: string }>>(
+  schema: T,
+): T =>
+  schema.superRefine((value, ctx) => {
+    const issue = urgencyIssue(value);
+    if (issue) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: issue, path: ['urgencyReason'] });
+    }
+  }) as unknown as T;
+
+export const createServiceRequestSchema = withUrgency(
+  z.object({
+    officeEquipmentId: uuidSchema,
+    description: descriptionSchema,
+    dueDate: dateOnlySchema.nullish(),
+    /**
+     * Отдел, от имени которого заявка (ADR 0085 §8). Подсказывается владельцем техники либо
+     * единственным отделом автора, но выбирается человеком: сотрудник соседнего отдела чинит «чужой»
+     * принтер чаще, чем кажется. `null` — заявка объектная, от площадки.
+     */
+    customerDepartmentId: uuidSchema.nullish(),
+    /**
+     * Заявитель и его телефон — обязательны (план модернизации, Р49). До этого обязательность жила
+     * только в форме портала (`ResponsibleFields`), а схема принимала пустые строки: заявка без
+     * контакта заводилась любым клиентом мимо формы, и именно её сервис получал первой — ехать по
+     * адресу, не зная, к кому.
+     */
+    responsibleName: contactNameSchema,
+    responsiblePhone: contactPhoneSchema,
+    comment: z.string().trim().max(2000).optional().default(''),
+    warrantyClaim: warrantyClaimSchema.optional(),
+    isUrgent: z.boolean().optional().default(false),
+    urgencyReason: urgencyReasonSchema.optional().default(''),
+    fileIds: z.array(uuidSchema).max(20).optional().default([]),
+  }),
+);
 export type CreateServiceRequestInput = z.infer<typeof createServiceRequestSchema>;
 
+/**
+ * Правка присылает только изменившееся, поэтому у срочности здесь **нет значения по умолчанию**:
+ * `default(false)` означал бы, что правка телефона молча снимает срочность — тот же подвох, из-за
+ * которого поля со значением по умолчанию переобъявляются в `updateOfficeEquipmentTypeSchema`.
+ * Пару сверяет сервер по склеенному состоянию (`urgencyIssue`), потому что схема видит половину.
+ */
 export const updateServiceRequestSchema = z.object({
   description: descriptionSchema.optional(),
   dueDate: dateOnlySchema.nullish(),
   customerDepartmentId: uuidSchema.nullish(),
   responsibleName: contactNameSchema.optional(),
-  responsiblePhone: optionalPhoneSchema.optional(),
+  responsiblePhone: contactPhoneSchema.optional(),
   comment: z.string().trim().max(2000).optional(),
   warrantyClaim: warrantyClaimSchema.optional(),
+  isUrgent: z.boolean().optional(),
+  urgencyReason: urgencyReasonSchema.optional(),
   version: z.number().int().nonnegative(),
 });
 export type UpdateServiceRequestInput = z.infer<typeof updateServiceRequestSchema>;
+
+/**
+ * Срочность отдельной ручкой: её ставят и снимают не только при правке заявки. Заказчик правит
+ * только «Новую» (ADR 0085 §8), а «сломался единственный принтер на площадке» выясняется и когда
+ * заявка уже у сервиса, — поэтому оператор меняет признак в любой момент до закрытия.
+ */
+export const setServiceUrgencySchema = withUrgency(
+  z.object({
+    isUrgent: z.boolean(),
+    urgencyReason: urgencyReasonSchema.default(''),
+    version: z.number().int().nonnegative(),
+  }),
+);
+export type SetServiceUrgencyInput = z.infer<typeof setServiceUrgencySchema>;
 
 // ── Ход заявки ──
 // Каждый переход с содержанием — своя ручка со своей схемой (ADR 0085 §18): так проверка условия
@@ -470,6 +589,23 @@ export const approveServiceEstimateSchema = z
     path: ['reason'],
   });
 export type ApproveServiceEstimateInput = z.infer<typeof approveServiceEstimateSchema>;
+
+/**
+ * Виза отдела ИТ (Р51): одна ручка на «да» и «нет» — у них одно право, одна область и один момент
+ * решения, тот же приём, что у согласования сметы. Отказ закрывает заявку, поэтому причина
+ * обязательна: «ИТ отказал» без объяснения заказчик прочитает как молчание.
+ */
+export const approveServiceItSchema = z
+  .object({
+    approved: z.boolean(),
+    reason: reasonSchema.optional(),
+    version: z.number().int().nonnegative(),
+  })
+  .refine((v) => v.approved || !!v.reason, {
+    message: 'Укажите причину отказа',
+    path: ['reason'],
+  });
+export type ApproveServiceItInput = z.infer<typeof approveServiceItSchema>;
 
 export const reopenServiceEstimateSchema = z.object({
   reason: reasonSchema,
@@ -573,6 +709,8 @@ export interface ServiceRequestEquipmentDto {
   serialNumber: string;
   inventoryNumber: string;
   typeName: string;
+  /** Место внутри объекта на момент заведения: «Корпус 3, каб. 214». Тот же снимок (Р57). */
+  location: string;
 }
 
 export interface ServiceRequestObjectDto {
@@ -617,6 +755,18 @@ export interface ServiceRequestFileDto {
   attachedAt: string;
 }
 
+/**
+ * Виза отдела ИТ: кто и когда решил, что внешний ремонт нужен (Р51). Имя — снимком, как у
+ * согласования сметы: подпись должна читаться и после того, как учётку закрыли.
+ */
+export interface ServiceRequestItApprovalDto {
+  by: string | null;
+  byName: string;
+  at: string;
+  /** Виза проставлена самим заведением: заявку завёл обладатель права (Р52). */
+  auto: boolean;
+}
+
 export interface ServiceRequestApprovalDto {
   by: string | null;
   byName: string;
@@ -656,9 +806,15 @@ export interface ServiceRequestDto {
   equipmentDepartment: ServiceRequestDepartmentDto | null;
   description: string;
   dueDate: string | null;
+  /** Заявитель: кто обратился и по какому номеру с ним связываться (Р49). */
   responsibleName: string;
   responsiblePhone: string;
+  /** Срочность и её объяснение: без второго первое не показывается — их и не бывает порознь. */
+  isUrgent: boolean;
+  urgencyReason: string;
   service: ServiceRequestCounterpartyDto | null;
+  /** Виза ИТ; `null` — заявка ещё ждёт решения отдела (Р51). */
+  itApproval: ServiceRequestItApprovalDto | null;
   warrantyClaim: ServiceRequestWarrantyClaimDto | null;
   /** Смета: текущая ревизия и её строки. */
   estimateRevision: number;
@@ -680,11 +836,16 @@ export interface ServiceRequestDto {
 }
 
 /**
- * Правит ли субъект саму заявку: заказчик — только пока она «Новая». После назначения за заявкой
- * стоят договорённости с исполнителем, и менять её предмет задним числом нельзя.
+ * Правит ли субъект саму заявку: заказчик — пока её никому не отдали. После назначения сервиса за
+ * заявкой стоят договорённости с исполнителем, и менять её предмет задним числом нельзя.
+ *
+ * Статуса два, а не один: виза ИТ (Р51) стоит между заведением и назначением, и запирать правку
+ * ею значило бы заводить новую заявку из-за опечатки в описании. Виза отвечает на «нужен ли
+ * внешний ремонт», а не на «как он описан»; деньги стережёт вторая подпись — согласие оператора
+ * со сметой.
  */
 export function isServiceRequestEditable(status: ServiceRequestStatus): boolean {
-  return status === 'new';
+  return status === 'new' || status === 'it_approved';
 }
 
 /** Права модуля — одним списком: он нужен и матрице, и проверке «открыт ли раздел». */
@@ -696,6 +857,7 @@ export const SERVICE_REQUEST_PERMISSIONS: readonly Permission[] = [
   'serviceRequests.assign',
   'serviceRequests.estimate',
   'serviceRequests.approveEstimate',
+  'serviceRequests.approveIt',
   'serviceRequests.status',
   'serviceRequests.files',
 ];
@@ -709,8 +871,11 @@ export const serviceRequestChangeLabels: Record<string, string> = {
   description: 'Неисправность',
   dueDate: 'Желаемый срок',
   customerDepartment: 'Отдел-заказчик',
-  responsibleName: 'Ответственный',
+  responsibleName: 'Заявитель',
   responsiblePhone: 'Телефон',
+  isUrgent: 'Срочная',
+  urgencyReason: 'Причина срочности',
+  itApproval: 'Виза ИТ',
   comment: 'Комментарий',
   warrantyClaim: 'Обращение по гарантии',
   filesAdded: 'Прикреплены файлы',

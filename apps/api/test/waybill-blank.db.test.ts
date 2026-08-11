@@ -31,6 +31,13 @@ const DB_URL = process.env.TEST_DATABASE_URL;
 
 /** Тестовый водитель: СНИЛС из одинаковых цифр с верной контрольной суммой, серия «00 00». */
 const DRIVER_SNILS = '11111111145';
+/**
+ * Реквизиты его водительского удостоверения: должность «Водитель» требует именно ВУ (ADR 0095), и
+ * снимок листа обязан заполнить графу из него. Значения — выдуманные, как и СНИЛС.
+ */
+const LICENSE_SERIES = '00 00';
+const LICENSE_NUMBER = '000101';
+const LICENSE_ISSUED_ON = '2021-03-12';
 const ADMIN_EMAIL = 'db-blank-admin@example.invalid';
 /** Диспетчер: листы выписывает каждый день, а пустой бланк — не его право. */
 const DISPATCHER_EMAIL = 'db-blank-dispatcher@example.invalid';
@@ -116,10 +123,15 @@ async function seed(): Promise<{ personId: string }> {
     .select({ id: schema.credentialTypes.id })
     .from(schema.credentialTypes)
     .where(sql`${schema.credentialTypes.code} = 'driver_license'`);
+  // Категории — своего вида документа: «B» и «C» есть и у удостоверения тракториста-машиниста
+  // (миграция 0123), а составной внешний ключ чужую категорию в ВУ не пустит.
   const categories = await db
     .select({ id: schema.qualificationCategories.id })
     .from(schema.qualificationCategories)
-    .where(sql`${schema.qualificationCategories.code} in ('b', 'c', 'ce')`);
+    .where(
+      sql`${schema.qualificationCategories.credentialTypeId} = ${licenseType!.id}
+          AND ${schema.qualificationCategories.code} in ('b', 'c', 'ce')`,
+    );
 
   return db.transaction(async (tx) => {
     const [person] = await tx
@@ -152,9 +164,9 @@ async function seed(): Promise<{ personId: string }> {
       .values({
         personId,
         credentialTypeId: licenseType!.id,
-        series: '00 00',
-        number: '000101',
-        issuedOn: '2021-03-12',
+        series: LICENSE_SERIES,
+        number: LICENSE_NUMBER,
+        issuedOn: LICENSE_ISSUED_ON,
         // Срок заведомо длинный: тест идёт «на сегодня», и истечение сломало бы отбор водителя
         // через несколько лет молча — пустым списком вместо понятного отказа.
         expiresOn: '2099-03-12',
@@ -273,6 +285,24 @@ describe.skipIf(!DB_URL)('пустой путевой лист по рейсу �
     expect(Number(row.talons)).toBe(0);
     expect(row.data.driver_fio).not.toBe('');
     expect(row.data.vehicle_reg_number).not.toBe('');
+    /*
+     * Документ листа выбирается должностью (ADR 0095), и у водителя это по-прежнему водительское
+     * удостоверение: серия с номером склеены, как напечатаны в документе. Проверка стоит здесь,
+     * потому что 4-П его печатает — в отличие от ЭСМ-2, где граф под удостоверение нет вовсе.
+     *
+     * Сверяется с живой записью, а не с константой: база db-тестов общая, человек ищется по СНИЛС,
+     * и завести его мог соседний файл со своими реквизитами. Доказывается тут не значение, а то,
+     * что в графу попало водительское удостоверение этого человека.
+     */
+    const licenses = await ctx.db.execute<{ requisites: string; issued_on: string }>(sql`
+      SELECT btrim(c.series || ' ' || c.number) AS requisites,
+             to_char(c.issued_on, 'YYYY-MM-DD') AS issued_on
+      FROM person_credentials c
+      JOIN credential_types t ON t.id = c.credential_type_id
+      WHERE c.person_id = ${ctx.personId} AND c.deleted_at IS NULL AND t.code = 'driver_license'`);
+    const license = licenses.rows[0]!;
+    expect(row.data.driver_license_number).toBe(license.requisites);
+    expect(row.data.driver_license_issued_on).toBe(license.issued_on);
     expect(row.data.customer_name).toBe('');
     expect(row.data.task_from).toBe('');
     expect(row.data.task_cargo).toBe('');

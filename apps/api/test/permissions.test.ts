@@ -168,17 +168,20 @@ describe('права ролей', () => {
       'observer',
     ]);
     expect(rolesWith('officeEquipment.write')).toEqual(['admin', 'manager', 'dispatcher']);
-    // Надстройка — единственная добавка к этому кругу, и достаётся она ровно тем двум базовым
-    // ролям, за которыми справочник закреплён (ADR 0086): площадке и офису. Пара сверх этих двух
-    // означала бы ведение парка, которого никто не назначал.
+    // Ведение парка добавляет ровно одна надстройка — «Оператор (оргтехника)», и достаётся она
+    // тем двум базовым ролям, за которыми справочник закреплён (ADR 0086): площадке и офису.
+    // Согласующего от ИТ здесь нет намеренно (Р54): он видит весь парк, но не правит его —
+    // область и права это разные слои, и полномочие расширяет только первый.
     expect(addonProfilesWith('officeEquipment.write').map(accessProfileLabel)).toEqual([
       'Штаб + Оператор (оргтехника)',
       'Отдел + Оператор (оргтехника)',
     ]);
-    // Чтение надстройка не расширяет: его базовые роли и так имеют, а больше её никому не дают.
+    // Чтение надстройки не расширяют: его базовые роли и так имеют, а больше его никому не дают.
     expect(addonProfilesWith('officeEquipment.read').map(accessProfileLabel)).toEqual([
       'Штаб + Оператор (оргтехника)',
       'Отдел + Оператор (оргтехника)',
+      'Штаб + Согласование ИТ',
+      'Отдел + Согласование ИТ',
     ]);
     // Комендант закрыт целиком, как и в «Заказе ТС»: оргтехнику на площадке заказывает штаб, а
     // `directories.read` (оно у коменданта есть) карточку единицы не открывает — право своё.
@@ -589,6 +592,8 @@ describe('права внешнего исполнителя зависят от
     expect(ACCESS_PROFILES.filter((s) => !isPlainProfile(s))).toEqual([
       { role: 'shtab', addons: ['office_equipment_operator'] },
       { role: 'department', addons: ['office_equipment_operator'] },
+      { role: 'shtab', addons: ['office_equipment_it_approver'] },
+      { role: 'department', addons: ['office_equipment_it_approver'] },
     ]);
     expect(accessProfileLabel({ role: 'shtab', addons: ['office_equipment_operator'] })).toBe(
       'Штаб + Оператор (оргтехника)',
@@ -614,11 +619,11 @@ describe('заявки на обслуживание оргтехники (ADR 0
    * «открыт ли раздел», и тестам. Разъехавшись с матрицей, он молча перестал бы кого-нибудь
    * закрывать.
    */
-  it('прав у модуля девять, и список модуля выводится из матрицы', () => {
+  it('прав у модуля десять, и список модуля выводится из матрицы', () => {
     expect([...SERVICE_REQUEST_PERMISSIONS]).toEqual(
       PERMISSIONS.filter((p) => p.startsWith('serviceRequests.')),
     );
-    expect(SERVICE_REQUEST_PERMISSIONS).toHaveLength(9);
+    expect(SERVICE_REQUEST_PERMISSIONS).toHaveLength(10);
     // Право без единого держателя — мёртвая строка матрицы: она выглядит как раздача доступа, а
     // означает «этого не может никто».
     for (const permission of SERVICE_REQUEST_PERMISSIONS) {

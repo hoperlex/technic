@@ -78,6 +78,15 @@ export function diffServiceRequests(
   );
   diff.changed('comment', short(before.comment) || EMPTY, short(after.comment) || EMPTY);
   diff.changed('warrantyClaim', warrantyClaimLabel(before), warrantyClaimLabel(after));
+  // Срочность и её причина — два поля, а не одно: снятая срочность с сохранившимся текстом
+  // читалась бы как «причина осталась, а признак сам собой пропал», и спорить об этом было бы не о
+  // чем. Пара обязана меняться вместе, и в истории это видно двумя строками.
+  diff.changed('isUrgent', before.isUrgent ? 'да' : 'нет', after.isUrgent ? 'да' : 'нет');
+  diff.changed(
+    'urgencyReason',
+    short(before.urgencyReason) || EMPTY,
+    short(after.urgencyReason) || EMPTY,
+  );
   // Файлы сравниваются по составу, а не по количеству: «было 3, стало 3» скрыло бы замену акта.
   // Своим кодом, а не общим `diff.files`: у вложения заявки на обслуживание есть вид документа
   // (акт, счёт, гарантийный талон), и в истории он значим — «прикреплён акт» и «прикреплено фото»

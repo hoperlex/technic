@@ -122,6 +122,8 @@ const REQUEST: FreightTransportRequestDto = {
 function driver(over: Partial<DriverOptionDto> & Pick<DriverOptionDto, 'personId' | 'fullName'>) {
   return {
     personnelNo: '',
+    // Вид документа приходит с сервера: им подписаны и пометки, и предупреждение (ADR 0095).
+    credentialTypeCode: 'driver_license' as const,
     licenseNumber: '00 00 000001',
     licenseExpiresOn: '2031-03-12',
     verificationStatus: 'verified' as const,
@@ -140,6 +142,7 @@ function driver(over: Partial<DriverOptionDto> & Pick<DriverOptionDto, 'personId
  */
 const SELECTION = {
   requiredCategory: 'C',
+  requiredCategoryType: 'driver_license',
   drivers: [
     driver({ personId: 'p-1', fullName: 'Яковлев Яков Яковлевич' }),
     driver({
@@ -299,7 +302,9 @@ describe('неполные документы водителя при выпис
     });
     // Подтверждение — потому что номер бланка расходуется навсегда. Заголовок antd печатает
     // дважды (видимый и для чтения с экрана), поэтому спрашивается набор, а не единственный узел.
-    expect(screen.getAllByText('Выписать лист с незаполненными графами?').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Выписать лист с незаполненными графами?').length).toBeGreaterThan(
+      0,
+    );
     expect(issued).not.toHaveBeenCalled();
 
     await act(async () => {

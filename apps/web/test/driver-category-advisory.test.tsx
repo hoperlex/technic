@@ -118,6 +118,8 @@ const REQUEST: FreightTransportRequestDto = {
 function driver(over: Partial<DriverOptionDto> & Pick<DriverOptionDto, 'personId' | 'fullName'>) {
   return {
     personnelNo: '',
+    // Вид документа приходит с сервера: им названы обе стороны расхождения (ADR 0095).
+    credentialTypeCode: 'driver_license' as const,
     licenseNumber: '00 00 000001',
     licenseExpiresOn: '2031-03-12',
     verificationStatus: 'verified' as const,
@@ -136,6 +138,7 @@ function driver(over: Partial<DriverOptionDto> & Pick<DriverOptionDto, 'personId
  */
 const SELECTION = {
   requiredCategory: 'CE',
+  requiredCategoryType: 'driver_license',
   drivers: [
     driver({ personId: 'p-1', fullName: 'Абрамов Абрам Абрамович', categories: ['C', 'CE'] }),
     driver({
@@ -197,8 +200,10 @@ describe('категория прав при выборе водителя', () 
     const options = await openSelectOptions('Водитель');
     fireEvent.click(options[1]!);
 
-    const warning = await screen.findByText(/Машине нужна категория «CE»/);
-    expect(warning.textContent).toContain('C');
+    // Вид документа назван у обеих сторон: «C» водительского и «C» тракториста — разные машины,
+    // и расхождение без вида читалось бы как ошибка портала (ADR 0095).
+    const warning = await screen.findByText(/Машине нужна категория ВУ «CE»/);
+    expect(warning.textContent).toContain('по ВУ открыты «C»');
     expect(warning.textContent).toContain('Рейс заведётся как есть');
   });
 
@@ -221,7 +226,7 @@ describe('категория прав при выборе водителя', () 
   it('пустой список означает пустой справочник, а не отсеянных отбором', async () => {
     // Отбора больше нет (ADR 0064): некого показать — значит, действующих водителей нет вовсе,
     // и объяснять это комплектом документов было бы неправдой.
-    mockAssign({ requiredCategory: 'CE', drivers: [] });
+    mockAssign({ requiredCategory: 'CE', requiredCategoryType: 'driver_license', drivers: [] });
     renderModal();
     await screen.findByText('Новый рейс');
 

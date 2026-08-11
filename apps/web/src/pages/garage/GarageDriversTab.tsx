@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 import { Select, Space, Tag, Tooltip, Typography, type TableColumnType } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import {
-  driverDocumentGapLabels,
+  driverDocumentGapLabel,
   formatPhone,
   GARAGE_DRIVER_STATES,
   type GarageDriverDto,
@@ -40,11 +40,17 @@ const DOCUMENT_OPTIONS = [
   { value: 'incomplete', label: 'Есть пробелы' },
 ];
 
-/** Чего не хватает для листа: тег с расшифровкой — теми же словами, что в справочнике. */
+/**
+ * Чего не хватает для листа: тег с расшифровкой — теми же словами, что в справочнике. Документ
+ * назван своим именем (ADR 0095): за экскаватор садятся по удостоверению тракториста-машиниста, и
+ * «нет действующего ВУ» отправило бы искать не ту бумагу.
+ */
 function gapsTag(r: GarageDriverDto) {
   if (r.gaps.length === 0) return null;
   return (
-    <Tooltip title={r.gaps.map((gap) => driverDocumentGapLabels[gap]).join('; ')}>
+    <Tooltip
+      title={r.gaps.map((gap) => driverDocumentGapLabel(gap, r.credentialTypeCode)).join('; ')}
+    >
       <Tag color="orange" style={{ marginInlineEnd: 0 }}>
         документы: {r.gaps.length}
       </Tag>
@@ -207,7 +213,9 @@ export function GarageDriversTab({
         return entry ? `${entry.vehicleLabel} · ${busyLine(entry)}` : null;
       }),
       (r) =>
-        r.gaps.length === 0 ? null : r.gaps.map((gap) => driverDocumentGapLabels[gap]).join('; '),
+        r.gaps.length === 0
+          ? null
+          : r.gaps.map((gap) => driverDocumentGapLabel(gap, r.credentialTypeCode)).join('; '),
     ],
   };
 

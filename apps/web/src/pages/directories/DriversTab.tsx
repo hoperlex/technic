@@ -18,28 +18,24 @@ import {
   IdcardOutlined,
   PlusOutlined,
 } from '@ant-design/icons';
-import dayjs from 'dayjs';
+import type dayjs from 'dayjs';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  credentialVerificationStatusColors,
-  credentialVerificationStatusLabels,
+  CREDENTIAL_TYPE_CODES,
+  type CredentialTypeCode,
+  credentialTypeLabels,
+  credentialTypeShortLabels,
   DRIVER_DOCUMENT_SETS,
   EMAIL_FORMAT_MESSAGE,
-  driverDocumentGapLabels,
-  driverDocumentGaps,
   type DriverDocumentSet,
   driverDocumentSetLabels,
   type DriverDto,
   type DriverLicenseDto,
   formatSnils,
   isValidSnils,
-  licenseCategoriesLabel,
-  licenseDefect,
-  licenseDefectLabels,
-  licenseNumberLabel,
-  licenseRequisitesMissing,
   normalizeSnils,
   optionalEmailSchema,
+  requiredCredentialType,
   SNILS_CHECKSUM_MESSAGE,
   SNILS_MESSAGE,
 } from '@technic/contracts';
@@ -55,9 +51,17 @@ import { useListParams } from '@shared/lib';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
 import { usePurgeAction } from '../../hooks/usePurgeAction';
+import {
+  documentBadge,
+  documentCardLines,
+  documentColumns,
+  documentPrimary,
+  documentsBlock,
+  type DriverDocumentActions,
+} from './driverDocuments';
 
 /**
- * Справочник водителей (ADR 0037).
+ * Справочник водителей (ADR 0037, ADR 0095).
  *
  * Карточка заводит человека вместе с удостоверением: водитель без документа не попадёт в отбор
  * при переводе заявки в работу и молча пропадёт из формы — поэтому документ спрашивается сразу,
@@ -65,19 +69,25 @@ import { usePurgeAction } from '../../hooks/usePurgeAction';
  *
  * Действующее удостоверение показано в строке: по нему решают, выйдет ли человек в рейс, и
  * просроченное видно списком, а не только в карточке.
+ *
+ * Документов два вида — водительское и тракториста-машиниста, — и каждый показан своей парой
+ * колонок: у машиниста погрузчика «C» стоит в тракторном, и сведённые в одну графу буквы читались
+ * бы как допуск к грузовику. Каким документом человек допущен, говорит должность
+ * (`requiredCredentialType`), она же убирает лишнюю пару колонок, когда по должности фильтруют.
+ *
+ * Сам показ бумаг — колонки, строки карточки и блоки в форме — живёт соседним модулем
+ * `driverDocuments`: здесь остаются состояние справочника, запросы и окна.
  */
 
 const DATE = 'YYYY-MM-DD';
-
-/** Сегодняшняя дата — ею меряется годность документа в списке. */
-const today = () => dayjs().format(DATE);
 
 interface LicenseFormValues {
   series?: string;
   number: string;
   issuedOn?: dayjs.Dayjs;
   expiresOn?: dayjs.Dayjs;
-  categoryIds: string[];
+  /** У тракторного категорий может не быть вовсе: в кадровой выгрузке их не присылают. */
+  categoryIds?: string[];
 }
 
 interface DriverFormValues {
@@ -92,21 +102,18 @@ interface DriverFormValues {
   license?: LicenseFormValues;
 }
 
-/** Действующий документ — первый в списке: сервер отдаёт их от свежего к старому. */
-function currentLicense(d: DriverDto): DriverLicenseDto | undefined {
-  return d.licenses[0];
-}
-
 /**
- * Чего не хватает для путевого листа — из того, о чём строка ещё не сказала. «Действующего
- * удостоверения нет» и «серия и номер не внесены» она называет своими словами и своими местами,
- * а вот пустая дата выдачи не видна нигде: без неё лист печатается с пустой графой, и человек,
- * отобравший неполный комплект фильтром, обязан понимать, что именно вносить.
+ * Категории вида документа для формы и для фильтра: справочник наполнен миграцией и не меняется,
+ * поэтому берётся один раз на вид и живёт в кэше до перезагрузки страницы. Ключом стоит вид: два
+ * места на экране спрашивают его одновременно, и общий ключ подсунул бы одному из них чужие буквы.
  */
-function unsaidGaps(d: DriverDto): string[] {
-  return driverDocumentGaps(d, today())
-    .filter((g) => g !== 'license' && g !== 'requisites')
-    .map((g) => driverDocumentGapLabels[g]);
+function useLicenseCategoryOptions(type: CredentialTypeCode) {
+  const { data } = useQuery({
+    queryKey: ['license-categories', type],
+    queryFn: () => driversApi.licenseCategories(type),
+    staleTime: Infinity,
+  });
+  return (data ?? []).map((c) => ({ value: c.id, label: `${c.name} — ${c.description}` }));
 }
 
 export function DriversTab() {
@@ -122,6 +129,7 @@ export function DriversTab() {
 
   const { params, setParams, setSort, onTableChange } = useListParams<{
     documents?: DriverDocumentSet;
+    jobTitle?: string;
     categoryId?: string;
     includeDeleted?: string;
     // Ключ столбца, а не поле записи: поиск в шапке «Контактов» ищет и по адресу, и по номеру —
@@ -132,23 +140,39 @@ export function DriversTab() {
     queryFn: () => driversApi.list(params),
   });
 
-  // Категории водительского удостоверения: справочник наполнен миграцией и не меняется, поэтому
-  // берётся один раз и живёт в кэше до перезагрузки страницы.
-  const { data: categories } = useQuery({
-    queryKey: ['license-categories'],
-    queryFn: () => driversApi.licenseCategories(),
-    staleTime: Infinity,
+  // Должности для фильтра — списком с сервера: справочника должностей нет, они приходят из кадров
+  // свободным текстом (ADR 0095), и перечислить их наперёд портал не может. Ключ начинается с
+  // `drivers`, чтобы заведённый водитель обновлял и счётчики должностей.
+  const { data: jobTitles } = useQuery({
+    queryKey: ['drivers', 'job-titles'],
+    queryFn: () => driversApi.jobTitles(),
   });
-  const categoryOptions = (categories ?? []).map((c) => ({
-    value: c.id,
-    label: `${c.name} — ${c.description}`,
-  }));
+
+  /**
+   * Вид документа, о котором справочник спрашивает сейчас: его называет фильтр по должности. Без
+   * фильтра — водительское, как справочник и открывался: он про водителей, а вторая пара колонок
+   * рядом видна и так.
+   */
+  const filterType = params.jobTitle ? requiredCredentialType(params.jobTitle) : 'driver_license';
+  const filterCategoryOptions = useLicenseCategoryOptions(filterType);
+  // Форма заведения водителя спрашивает только водительское: должность там не выбирают, а новый
+  // человек заводится водителем (`createDriverSchema`). Тракторное заводят вторым шагом — окном
+  // «Новое удостоверение», где вид документа спрашивается прямо.
+  const driverLicenseOptions = useLicenseCategoryOptions('driver_license');
 
   const [open, setOpen] = useState(false);
   const [record, setRecord] = useState<DriverDto | null>(null);
   const [licenseFor, setLicenseFor] = useState<DriverDto | null>(null);
   const [form] = Form.useForm<DriverFormValues>();
   const [licenseForm] = Form.useForm<LicenseFormValues>();
+  /**
+   * Вид документа окна «Новое удостоверение» — состоянием рядом с формой, а не её полем: окно
+   * открывается с видом по должности, а форма к этому моменту ещё не смонтирована — значение,
+   * положенное в неё до первого показа, теряется. Смена вида ещё и чистит выбранные категории:
+   * они записи справочника своего вида, и отправить на сервер буквы чужого документа нельзя.
+   */
+  const [licenseType, setLicenseType] = useState<CredentialTypeCode>('driver_license');
+  const licenseCategoryOptions = useLicenseCategoryOptions(licenseType);
 
   const openCreate = () => {
     setRecord(null);
@@ -172,8 +196,14 @@ export function DriversTab() {
     setOpen(true);
   };
 
-  const openLicense = (d: DriverDto) => {
+  /**
+   * Заведение документа. Вид подставляется по должности карточки: у машиниста экскаватора заводят
+   * тракторное в девяти случаях из десяти, а выбор остаётся — у машиниста автокрана в кадрах стоит
+   * водительское, и должность списку известна не всякая (ADR 0095).
+   */
+  const openLicense = (d: DriverDto, type = requiredCredentialType(d.jobTitle)) => {
     setLicenseFor(d);
+    setLicenseType(type);
     licenseForm.resetFields();
     setOpen(false);
   };
@@ -205,7 +235,9 @@ export function DriversTab() {
                 number: values.license.number,
                 issuedOn: values.license.issuedOn?.format(DATE) ?? null,
                 expiresOn: values.license.expiresOn?.format(DATE) ?? null,
-                categories: values.license.categoryIds.map((categoryId) => ({ categoryId })),
+                categories: (values.license.categoryIds ?? []).map((categoryId) => ({
+                  categoryId,
+                })),
               },
             }
           : {}),
@@ -222,11 +254,12 @@ export function DriversTab() {
   const licenseMut = useMutation({
     mutationFn: (values: LicenseFormValues) =>
       driversApi.addLicense(licenseFor!.id, {
+        credentialType: licenseType,
         series: values.series ?? '',
         number: values.number,
         issuedOn: values.issuedOn?.format(DATE) ?? null,
         expiresOn: values.expiresOn?.format(DATE) ?? null,
-        categories: values.categoryIds.map((categoryId) => ({ categoryId })),
+        categories: (values.categoryIds ?? []).map((categoryId) => ({ categoryId })),
       }),
     onSuccess: () => {
       message.success('Удостоверение добавлено');
@@ -236,9 +269,18 @@ export function DriversTab() {
     onError: (e) => message.error(errorMessage(e)),
   });
 
+  // Документ адресуется идентификатором, а не «действующим у водителя»: документов у человека два
+  // вида, и «действующий» без вида означал бы отметку проверки, поставленную не той бумаге.
   const verifyMut = useMutation({
-    mutationFn: ({ d, status }: { d: DriverDto; status: 'verified' | 'rejected' }) =>
-      driversApi.verifyLicense(d.id, currentLicense(d)!.id, { verificationStatus: status }),
+    mutationFn: ({
+      d,
+      license,
+      status,
+    }: {
+      d: DriverDto;
+      license: DriverLicenseDto;
+      status: 'verified' | 'rejected';
+    }) => driversApi.verifyLicense(d.id, license.id, { verificationStatus: status }),
     onSuccess: () => {
       message.success('Отметка проверки сохранена');
       invalidate();
@@ -247,8 +289,15 @@ export function DriversTab() {
   });
 
   const revokeMut = useMutation({
-    mutationFn: ({ d, reason }: { d: DriverDto; reason: string }) =>
-      driversApi.revokeLicense(d.id, currentLicense(d)!.id, { revokeReason: reason }),
+    mutationFn: ({
+      d,
+      license,
+      reason,
+    }: {
+      d: DriverDto;
+      license: DriverLicenseDto;
+      reason: string;
+    }) => driversApi.revokeLicense(d.id, license.id, { revokeReason: reason }),
     onSuccess: () => {
       message.success('Удостоверение аннулировано');
       invalidate();
@@ -284,10 +333,10 @@ export function DriversTab() {
       onOk: () => removeMut.mutateAsync(d.id),
     });
 
-  const confirmRevoke = (d: DriverDto) => {
+  const confirmRevoke = (d: DriverDto, license: DriverLicenseDto) => {
     let reason = '';
     modal.confirm({
-      title: 'Аннулировать удостоверение?',
+      title: `Аннулировать ${credentialTypeShortLabels[license.credentialTypeCode]}?`,
       content: (
         <Input.TextArea
           rows={2}
@@ -305,10 +354,19 @@ export function DriversTab() {
           message.error('Укажите причину');
           throw new Error('reason required');
         }
-        await revokeMut.mutateAsync({ d, reason });
+        await revokeMut.mutateAsync({ d, license, reason });
       },
     });
   };
+
+  /**
+   * Какие виды документов показывать. Без фильтра — оба: справочник для того и открывают, чтобы
+   * увидеть, у кого чего нет. С выбранной должностью — только её собственный: колонки ВУ у
+   * машиниста экскаватора пусты у всех строк и лишь занимают ширину (ADR 0095).
+   */
+  const visibleTypes: CredentialTypeCode[] = params.jobTitle
+    ? [filterType]
+    : [...CREDENTIAL_TYPE_CODES];
 
   const columns = [
     textColumn<DriverDto>({ key: 'fullName', title: 'ФИО', dataIndex: 'fullName' }),
@@ -351,78 +409,19 @@ export function DriversTab() {
       dataIndex: 'personnelNo',
       width: 130,
     }),
+    // Должность — рядом с табельным: она приходит из тех же кадров и отвечает на вопрос, какой
+    // документ у человека спрашивать. Сортировки нет: должностей десяток, и порядок по ним
+    // заменяется фильтром, который к тому же убирает лишние колонки.
     textColumn<DriverDto>({
-      key: 'license',
-      title: 'Удостоверение',
-      dataIndex: 'licenses',
+      key: 'jobTitle',
+      title: 'Должность',
+      dataIndex: 'jobTitle',
       sortable: false,
       searchable: false,
-      width: 260,
-      render: (_v, r) => {
-        const license = currentLicense(r);
-        const gaps = unsaidGaps(r);
-        const missing = gaps.length > 0 && (
-          <Typography.Text type="warning">{gaps.join(' · ')}</Typography.Text>
-        );
-        if (!license) {
-          return (
-            <Space direction="vertical" size={0}>
-              <Typography.Text type="secondary">Не заведено</Typography.Text>
-              {missing}
-            </Space>
-          );
-        }
-        const defect = licenseDefect(license, today());
-        // Реквизитов нет у документов из кадровой выгрузки: без этой ветки строка начиналась бы
-        // с осиротевшего разделителя, и «не внесено» читалось бы как сбой вёрстки.
-        const noRequisites = licenseRequisitesMissing(licenseNumberLabel(license));
-        return (
-          <Space direction="vertical" size={0}>
-            <span>
-              {noRequisites ? (
-                <Typography.Text type="warning">Серия и номер не внесены</Typography.Text>
-              ) : (
-                licenseNumberLabel(license)
-              )}
-            </span>
-            <Space size={4}>
-              {defect ? (
-                <Tag color="red">{licenseDefectLabels[defect]}</Tag>
-              ) : (
-                <Typography.Text type="secondary">
-                  {license.expiresOn
-                    ? `до ${dayjs(license.expiresOn).format('DD.MM.YYYY')}`
-                    : 'бессрочно'}
-                </Typography.Text>
-              )}
-              <Tag color={credentialVerificationStatusColors[license.verificationStatus]}>
-                {credentialVerificationStatusLabels[license.verificationStatus]}
-              </Tag>
-            </Space>
-            {missing}
-          </Space>
-        );
-      },
+      width: 180,
+      render: (_v, r) => r.jobTitle || <Typography.Text type="secondary">—</Typography.Text>,
     }),
-    /**
-     * Категории — своей колонкой (ADR 0055): отбор водителя под машину ими не сужается, и
-     * единственное место, где о них узнают, — справочник. Приклеенные к номеру удостоверения,
-     * они читались хуже и не искались глазами, а спрашивают их отдельным вопросом: «кто у нас
-     * с CE».
-     */
-    textColumn<DriverDto>({
-      key: 'categories',
-      title: 'Категории',
-      dataIndex: 'licenses',
-      sortable: false,
-      searchable: false,
-      width: 160,
-      render: (_v, r) => {
-        const license = currentLicense(r);
-        const label = license ? licenseCategoriesLabel(license) : '';
-        return label || <Typography.Text type="secondary">—</Typography.Text>;
-      },
-    }),
+    ...visibleTypes.flatMap((type) => documentColumns(type)),
     ...(canWrite
       ? [
           actionsColumn<DriverDto>((r) =>
@@ -467,20 +466,39 @@ export function DriversTab() {
     label: driverDocumentSetLabels[v],
   }));
 
+  /**
+   * Должности со счётчиком: «машинист экскаватора (12)». Число не украшение — им видно опечатку
+   * кадровой выгрузки: та же должность, записанная иначе, встанет второй строкой на одного
+   * человека, и это повод поправить кадры, а не портал (ADR 0095).
+   */
+  const jobTitleOptions = (jobTitles ?? []).map((t) => ({
+    value: t.jobTitle,
+    label: `${t.jobTitle} (${t.count})`,
+  }));
+
   const setDocuments = (v: DriverDocumentSet | undefined) =>
     setParams((p) => ({ ...p, documents: v, page: 1 }));
+  // Вместе с должностью сбрасывается категория: буквы у видов документов одни и те же, но
+  // категория — запись справочника своего вида, и «C» водительского не найдёт ни одного машиниста
+  // экскаватора. Список молча опустел бы, а человек читал бы это как «таких нет».
+  const setJobTitle = (v: string | undefined) =>
+    setParams((p) => ({ ...p, jobTitle: v, categoryId: undefined, page: 1 }));
   const setCategory = (v: string | undefined) =>
     setParams((p) => ({ ...p, categoryId: v, page: 1 }));
 
   /**
-   * Комплект документов и категория — два вопроса к справочнику. Первый: путевой лист печатает
-   * СНИЛС, номер удостоверения и дату его выдачи, и половина работы со справочником — дозаполнить
-   * тех, у кого чего-то нет; обратное значение нужно не реже — «кем можно закрывать рейсы».
-   * Второй появился, когда категория перестала сужать отбор под машину (ADR 0055): «кого можно
-   * посадить за седельный тягач» спрашивают здесь, и глазами по списку это не считается.
+   * Комплект документов, должность и категория — три вопроса к справочнику. Первый: путевой лист
+   * печатает СНИЛС, номер удостоверения и дату его выдачи, и половина работы со справочником —
+   * дозаполнить тех, у кого чего-то нет; обратное значение нужно не реже — «кем можно закрывать
+   * рейсы». Второй пришёл со вторым видом документа (ADR 0095): «что с бумагами у машинистов»
+   * спрашивают отдельно от водителей, и лишние колонки этому мешают. Третий появился, когда
+   * категория перестала сужать отбор под машину (ADR 0055): «кого можно посадить за седельный
+   * тягач» спрашивают здесь, и глазами по списку это не считается.
    *
    * Категория в фильтре названа буквой с описанием — тем же списком, что и в карточке: искать её
-   * будут по букве из удостоверения, а не по формулировке правил.
+   * будут по букве из удостоверения, а не по формулировке правил. Список — того вида документа,
+   * который назвала должность: буквы у видов совпадают, и общий перечень предлагал бы выбрать
+   * категорию, которой у отобранных людей быть не может.
    */
   const filters = (
     <Space wrap>
@@ -496,9 +514,19 @@ export function DriversTab() {
         allowClear
         showSearch
         optionFilterProp="label"
-        placeholder="Категория"
+        placeholder="Должность"
         style={{ width: 220 }}
-        options={categoryOptions}
+        options={jobTitleOptions}
+        value={params.jobTitle}
+        onChange={setJobTitle}
+      />
+      <Select<string>
+        allowClear
+        showSearch
+        optionFilterProp="label"
+        placeholder={`Категория ${credentialTypeShortLabels[filterType]}`}
+        style={{ width: 220 }}
+        options={filterCategoryOptions}
         value={params.categoryId}
         onChange={setCategory}
       />
@@ -531,10 +559,19 @@ export function DriversTab() {
     },
     {
       kind: 'select',
+      key: 'jobTitle',
+      label: 'Должность',
+      value: params.jobTitle,
+      options: jobTitleOptions,
+      placeholder: 'Любая',
+      onChange: (v) => setJobTitle(v as string | undefined),
+    },
+    {
+      kind: 'select',
       key: 'categoryId',
-      label: 'Категория',
+      label: `Категория ${credentialTypeShortLabels[filterType]}`,
       value: params.categoryId,
-      options: categoryOptions,
+      options: filterCategoryOptions,
       placeholder: 'Любая',
       onChange: (v) => setCategory(v as string | undefined),
     },
@@ -552,72 +589,13 @@ export function DriversTab() {
       : []),
   ];
 
-  /** Документы водителя в карточке: история и учётные действия над действующим. */
-  function licensesBlock(d: DriverDto) {
-    const license = currentLicense(d);
-    return (
-      <>
-        <Typography.Title level={5}>Удостоверения</Typography.Title>
-        {d.licenses.length === 0 && (
-          <Typography.Paragraph type="secondary">
-            Не заведено — в выбор при переводе заявки в работу водитель не попадёт.
-          </Typography.Paragraph>
-        )}
-        <Space direction="vertical" size={4} style={{ width: '100%' }}>
-          {d.licenses.map((l, i) => {
-            const defect = licenseDefect(l, today());
-            return (
-              <Space key={l.id} size={8} wrap>
-                <span>
-                  {i === 0 ? 'Действующее:' : 'Прежнее:'} {licenseNumberLabel(l)} ·{' '}
-                  {licenseCategoriesLabel(l)}
-                </span>
-                {l.expiresOn && <span>до {dayjs(l.expiresOn).format('DD.MM.YYYY')}</span>}
-                {defect && <Tag color="red">{licenseDefectLabels[defect]}</Tag>}
-                <Tag color={credentialVerificationStatusColors[l.verificationStatus]}>
-                  {credentialVerificationStatusLabels[l.verificationStatus]}
-                </Tag>
-                {l.verifiedByName && (
-                  <Typography.Text type="secondary">проверил {l.verifiedByName}</Typography.Text>
-                )}
-                {l.revokeReason && (
-                  <Typography.Text type="danger">{l.revokeReason}</Typography.Text>
-                )}
-              </Space>
-            );
-          })}
-        </Space>
-        {canWrite && (
-          <Space wrap style={{ marginTop: 12 }}>
-            <Button size="small" icon={<IdcardOutlined />} onClick={() => openLicense(d)}>
-              Заменить
-            </Button>
-            {license && !license.revokedAt && (
-              <>
-                <Button
-                  size="small"
-                  onClick={() => verifyMut.mutate({ d, status: 'verified' })}
-                  disabled={license.verificationStatus === 'verified'}
-                >
-                  Отметить проверенным
-                </Button>
-                <Button
-                  size="small"
-                  onClick={() => verifyMut.mutate({ d, status: 'rejected' })}
-                  disabled={license.verificationStatus === 'rejected'}
-                >
-                  Отклонить
-                </Button>
-                <Button size="small" danger onClick={() => confirmRevoke(d)}>
-                  Аннулировать
-                </Button>
-              </>
-            )}
-          </Space>
-        )}
-      </>
-    );
-  }
+  /** Учётные действия блоков документов: сами блоки — в `driverDocuments`, запросы и окна здесь. */
+  const documentActions: DriverDocumentActions = {
+    canWrite,
+    onReplace: openLicense,
+    onVerify: (d, license, status) => verifyMut.mutate({ d, license, status }),
+    onRevoke: confirmRevoke,
+  };
 
   /** СНИЛС набирают так, как он напечатан; контрольная сумма ловит опечатку в одной цифре. */
   const snilsRules = [
@@ -637,30 +615,16 @@ export function DriversTab() {
    * Карточка водителя на телефоне (ADR 0042): ФИО и состояние удостоверения — то, ради чего
    * справочник и открывают. Дефект документа выведен строкой, а не подсказкой на теге: на
    * касании подсказка не открывается (ADR 0030 п. 6).
+   *
+   * Заголовок карточки говорит о документе по должности: у машиниста экскаватора спрашивают
+   * тракторное, и пустое ВУ выносить наверх незачем. Второй документ виден строками ниже — но
+   * только пока по должности не отфильтровали (`visibleTypes`).
    */
   const card: CardConfig<DriverDto> = {
     title: (r) => r.fullName,
-    badge: (r) => {
-      // Архив — первым делом: у удалённой карточки состояние документа уже ничего не решает.
-      if (r.deletedAt) return <Tag>в архиве</Tag>;
-      const license = currentLicense(r);
-      if (!license) return <Tag>нет ВУ</Tag>;
-      const defect = licenseDefect(license, today());
-      return defect ? (
-        <Tag color="red">{licenseDefectLabels[defect]}</Tag>
-      ) : (
-        <Tag color={credentialVerificationStatusColors[license.verificationStatus]}>
-          {credentialVerificationStatusLabels[license.verificationStatus]}
-        </Tag>
-      );
-    },
-    primary: (r) => {
-      const license = currentLicense(r);
-      if (!license) return 'Удостоверение не заведено';
-      return licenseRequisitesMissing(licenseNumberLabel(license))
-        ? 'Серия и номер не внесены'
-        : licenseNumberLabel(license);
-    },
+    // Архив — первым делом: у удалённой карточки состояние документа уже ничего не решает.
+    badge: (r) => (r.deletedAt ? <Tag>в архиве</Tag> : documentBadge(r)),
+    primary: documentPrimary,
     lines: [
       // Контакты — первыми строками, как и второй колонкой на большом экране: с рассылкой заданий
       // и звонком водителю их спрашивают чаще прочих реквизитов. Отсутствие пишется словом, а не
@@ -682,23 +646,10 @@ export function DriversTab() {
         ) : (
           <Typography.Text type="secondary">Телефон не указан</Typography.Text>
         ),
-      // Категории — своей строкой, как и своей колонкой на большом экране (ADR 0055): за ними
-      // в справочник и приходят, а приклеенные к номеру они терялись.
-      (r) => {
-        const license = currentLicense(r);
-        const label = license ? licenseCategoriesLabel(license) : '';
-        return label ? `Категории: ${label}` : null;
-      },
-      (r) => {
-        const license = currentLicense(r);
-        if (!license) return null;
-        return license.expiresOn
-          ? `Действует до ${dayjs(license.expiresOn).format('DD.MM.YYYY')}`
-          : 'Бессрочное';
-      },
-      // Недостающее для листа — строкой: на карточке пустой графы не видно, а отобрав неполный
-      // комплект фильтром, человек должен понимать, что именно вносить.
-      (r) => unsaidGaps(r).join(' · ') || null,
+      // Должность — до документов: ею объясняется, какую бумагу у человека спрашивают, и без неё
+      // «нет УТМ» на карточке машиниста читается как ошибка портала.
+      (r) => (r.jobTitle ? `Должность: ${r.jobTitle}` : null),
+      ...documentCardLines(visibleTypes),
       (r) => (r.personnelNo ? `Таб. № ${r.personnelNo}` : null),
       (r) => (r.snils ? `СНИЛС ${formatSnils(r.snils)}` : null),
     ],
@@ -829,10 +780,14 @@ export function DriversTab() {
             <Input.TextArea rows={2} />
           </Form.Item>
 
-          {record && licensesBlock(record)}
+          {record &&
+            CREDENTIAL_TYPE_CODES.map((type) => documentsBlock(record, type, documentActions))}
 
           {!record && (
             <>
+              {/* Новый человек заводится водителем (`createDriverSchema`), и вид документа здесь
+                  не спрашивается: должность приходит из кадров, а не из этой формы (ADR 0095).
+                  Тракторное заводят вторым шагом — окном «Новое удостоверение» в карточке. */}
               <Typography.Title level={5}>Водительское удостоверение</Typography.Title>
               <Typography.Paragraph type="secondary" style={{ marginTop: -8 }}>
                 Без документа водитель не попадёт в выбор при переводе заявки в работу.
@@ -850,7 +805,7 @@ export function DriversTab() {
                 <DatePicker style={{ width: '100%' }} format="DD.MM.YYYY" />
               </Form.Item>
               <Form.Item name={['license', 'categoryIds']} label="Категории">
-                <Select mode="multiple" options={categoryOptions} placeholder="B, C, CE" />
+                <Select mode="multiple" options={driverLicenseOptions} placeholder="B, C, CE" />
               </Form.Item>
             </>
           )}
@@ -869,6 +824,24 @@ export function DriversTab() {
           <Typography.Paragraph type="secondary">
             Прежнее удостоверение останется в карточке: по нему объясняются листы прошлых лет.
           </Typography.Paragraph>
+          {/* Вид документа — первым полем: им определяются и список категорий ниже, и то, какая
+              бумага у человека появится. Подставлен по должности карточки, но не заперт: у
+              машиниста автокрана в кадрах стоит водительское (ADR 0095). */}
+          <Form.Item label="Вид документа">
+            <Select
+              value={licenseType}
+              onChange={(v: CredentialTypeCode) => {
+                setLicenseType(v);
+                // Выбранные категории — записи справочника прежнего вида: у нового документа их
+                // не существует, и уехали бы они на сервер отказом, а не новой бумагой.
+                licenseForm.setFieldValue('categoryIds', []);
+              }}
+              options={CREDENTIAL_TYPE_CODES.map((code) => ({
+                value: code,
+                label: credentialTypeLabels[code],
+              }))}
+            />
+          </Form.Item>
           <Form.Item name="series" label="Серия">
             <Input placeholder="99 39" />
           </Form.Item>
@@ -881,8 +854,19 @@ export function DriversTab() {
           <Form.Item name="expiresOn" label="Действительно до">
             <DatePicker style={{ width: '100%' }} format="DD.MM.YYYY" />
           </Form.Item>
-          <Form.Item name="categoryIds" label="Категории" rules={[{ required: true }]}>
-            <Select mode="multiple" options={categoryOptions} placeholder="B, C, CE" />
+          {/* Категории обязательны только у водительского: документ без них не открывает ничего.
+              У тракторного их в кадровой выгрузке не бывает вовсе, и требовать букву, которой
+              неоткуда взяться, значило бы не дать завести документ совсем. */}
+          <Form.Item
+            name="categoryIds"
+            label={`Категории ${credentialTypeShortLabels[licenseType]}`}
+            rules={[{ required: licenseType === 'driver_license' }]}
+          >
+            <Select
+              mode="multiple"
+              options={licenseCategoryOptions}
+              placeholder={licenseType === 'driver_license' ? 'B, C, CE' : 'B, C, D, E'}
+            />
           </Form.Item>
         </Form>
       </FormModal>

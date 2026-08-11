@@ -1,7 +1,10 @@
 import type {
   CreateOfficeEquipmentInput,
   CreateOfficeEquipmentTypeInput,
+  MoveOfficeEquipmentInput,
   OfficeEquipmentDto,
+  OfficeEquipmentMovementDto,
+  OfficeEquipmentServiceEntryDto,
   OfficeEquipmentTypeDto,
   UpdateOfficeEquipmentInput,
   UpdateOfficeEquipmentTypeInput,
@@ -35,6 +38,18 @@ export const officeEquipmentApi = {
     PATH,
   ),
   ...createRemoveApi<{ ok: boolean }>(PATH),
+  /**
+   * Перемещение (Р59): переезд — событие с датой, причиной и обеими сторонами, а не поле правки.
+   * Ответ — обновлённая карточка: следующее действие делают уже по новому месту.
+   */
+  move: (id: string, body: MoveOfficeEquipmentInput) =>
+    apiFetch<OfficeEquipmentDto>(`${PATH}/${id}/move`, { method: 'POST', body }),
+  /** Лента карточки (Р62): перемещения и обслуживание одним ответом — их читают вместе. */
+  history: (id: string) =>
+    apiFetch<{
+      movements: OfficeEquipmentMovementDto[];
+      serviceHistory?: OfficeEquipmentServiceEntryDto[];
+    }>(`${PATH}/${id}/history`),
   restore: (id: string) =>
     apiFetch<OfficeEquipmentDto>(`${PATH}/${id}/restore`, { method: 'POST' }),
   /** Удаление насовсем — только из архива и только без ссылок (ADR 0060). */

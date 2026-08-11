@@ -15,6 +15,7 @@ export function authUser(overrides: Partial<AuthUser> = {}): AuthUser {
     firstName,
     middleName,
     fullName: `${lastName} ${firstName} ${middleName}`.trim(),
+    phone: '',
     role: 'dispatcher' as Role,
     isActive: true,
     mustChangePassword: false,

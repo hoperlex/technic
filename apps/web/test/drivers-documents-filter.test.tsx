@@ -18,6 +18,7 @@ import { list } from './factories/common';
 function license(over: Partial<DriverLicenseDto> = {}): DriverLicenseDto {
   return {
     id: 'l1',
+    credentialTypeCode: 'driver_license',
     series: '99 39',
     number: '482645',
     issuedOn: '2021-03-12',
@@ -81,21 +82,29 @@ function mockDirectory(items: DriverDto[] = [driver(), INCOMPLETE]) {
   return mockHttp({
     'GET /drivers': () => json(list(items)),
     'GET /drivers/license-categories': () => json([]),
+    'GET /drivers/job-titles': () =>
+      json([
+        { jobTitle: 'Водитель', credentialTypeCode: 'driver_license', count: 2 },
+        { jobTitle: 'машинист экскаватора', credentialTypeCode: 'tractor_license', count: 1 },
+      ]),
   });
 }
 
-/** Единственный фильтр справочника — выпадашка комплекта в панели над таблицей. */
-function pickDocumentSet(label: string) {
-  const field = document.querySelector('.ant-select')!;
+/** Выбор в выпадашке панели: комплект документов стоит первым, должность — второй. */
+function pickInFilter(index: number, startsWith: string) {
+  const field = document.querySelectorAll('.ant-select')[index]!;
   fireEvent.mouseDown(field.querySelector('.ant-select-selector') ?? field);
   return waitFor(() => {
-    const option = [...document.querySelectorAll('.ant-select-item-option')].find(
-      (o) => o.textContent === label,
+    const option = [...document.querySelectorAll('.ant-select-item-option')].find((o) =>
+      o.textContent?.startsWith(startsWith),
     );
     expect(option).toBeTruthy();
     fireEvent.click(option!);
   });
 }
+
+const pickDocumentSet = (label: string) => pickInFilter(0, label);
+const pickJobTitle = (label: string) => pickInFilter(1, label);
 
 describe('справочник водителей: комплект документов', () => {
   it('без выбора список не сужается: фильтр в запрос не уходит', async () => {
@@ -135,8 +144,29 @@ describe('справочник водителей: комплект докуме
     renderWithUser(<DriversTab />);
 
     await screen.findByText('Петров Пётр Петрович');
-    expect(screen.getByText('Дата выдачи не внесена')).toBeTruthy();
+    // Документ назван своим именем: у водителя это ВУ, у машиниста экскаватора было бы УТМ.
+    expect(screen.getByText('Дата выдачи ВУ не внесена')).toBeTruthy();
     // У полного комплекта пометки нет: предупреждение при заполненной карточке обесценивает себя.
     expect(screen.queryByText('СНИЛС не внесён')).toBeNull();
+  });
+
+  it('колонки чужого документа фильтр по должности не строит', async () => {
+    // Машинист экскаватора допущен тракторным (ADR 0095): колонки ВУ у отобранных пусты у всех
+    // строк и лишь занимают ширину, а «Категории ВУ» рядом с «Категориями УТМ» читаются как
+    // второй набор букв у одного человека.
+    const http = mockDirectory();
+    renderWithUser(<DriversTab />);
+    await waitFor(() => expect(http.countOf('GET /drivers')).toBe(1));
+    expect(screen.getAllByText('ВУ').length).toBeGreaterThan(0);
+
+    await pickJobTitle('машинист экскаватора');
+
+    await waitFor(() =>
+      expect(http.lastCall('GET /drivers')!.query.get('jobTitle')).toBe('машинист экскаватора'),
+    );
+    await waitFor(() => expect(screen.queryAllByText('ВУ')).toHaveLength(0));
+    expect(screen.queryAllByText('Категории ВУ')).toHaveLength(0);
+    expect(screen.getAllByText('УТМ').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Категории УТМ').length).toBeGreaterThan(0);
   });
 });

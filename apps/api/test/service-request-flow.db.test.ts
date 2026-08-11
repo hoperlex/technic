@@ -76,6 +76,8 @@ interface Ctx {
   customer: TestUser;
   /** Оператор оргтехники — тот же штаб плюс надстройка роли (ADR 0086). */
   operator: TestUser;
+  /** Согласующий от ИТ (Р51): виза плюс сквозная область модуля — заявки всех площадок. */
+  itApprover: TestUser;
   /** Исполнитель — учётка сервисной компании. */
   service: TestUser;
   /** Штаб чужой площадки: ни одна заявка этого файла на неё не заводится. */
@@ -104,6 +106,8 @@ interface Ctx {
   serviceCounterpartyId: string;
   /** Второй сервис: им проверяется, что исполнитель не видит чужие назначенные заявки. */
   otherServiceCounterpartyId: string;
+  /** Тип оргтехники из сида: им заводятся единицы, в том числе по ходу самих шагов. */
+  typeId: string;
   /** Единица, вокруг которой идёт весь цикл. */
   mfp: { id: string; inventoryNumber: string };
   /** Вторая единица: её заявка даёт «чужую» позицию ремонта для гарантийного обращения. */
@@ -145,6 +149,8 @@ const state: {
   expiredItemId: string;
   /** Счёт, подшитый в закрытую заявку: его же снимает распорядитель чужих файлов (§8.3). */
   attachedInvoiceId: string;
+  /** Заявка со срочностью: на своей единице — по единице разрешена одна открытая заявка (Р21). */
+  urgent: { id: string; num: number; equipmentId: string };
 } = {
   main: { id: '', num: 0 },
   cancelled: { id: '', num: 0, itemId: '' },
@@ -156,6 +162,7 @@ const state: {
   notPerformedItemId: '',
   expiredItemId: '',
   attachedInvoiceId: '',
+  urgent: { id: '', num: 0, equipmentId: '' },
 };
 
 /** Конфиг читается при импорте, поэтому окружение выставляется до первого `import('../src/...')`. */
@@ -326,8 +333,28 @@ async function createRequest(
   return res.json() as ServiceRequestDto;
 }
 
+/**
+ * Виза отдела ИТ (Р51) — первый шаг цикла: без неё сервис не назначают. Отдельной функцией,
+ * потому что через неё проходит **каждая** ветка сценария: заявка, не прошедшая ИТ, дальше
+ * «Новой» не двигается вовсе.
+ */
+async function approveByIt(id: string): Promise<void> {
+  const before = await card(id, ctx.itApprover.auth);
+  // Повторная виза не нужна и невозможна: заявка, вернувшаяся от исполнителя, подпись сохраняет
+  // (Р51). Помощник это учитывает — иначе ветки, продолжающие отказ, ломались бы о собственный шаг.
+  if (before.status !== 'new') return;
+  const res = await inject(
+    'PATCH',
+    `/api/v1/service-requests/${id}/it-approval`,
+    ctx.itApprover.auth,
+    { approved: true, version: before.version },
+  );
+  expect(res.statusCode, res.body).toBe(200);
+}
+
 /** Назначение → диагностика → смета: три шага, которыми открывается любая ветка со сметой. */
 async function toDiagnostics(id: string): Promise<void> {
+  await approveByIt(id);
   const assigned = await inject(
     'PATCH',
     `/api/v1/service-requests/${id}/service`,
@@ -426,6 +453,9 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
     const department = await makeUser({ tag: 'dept', role: 'department' });
     const multiDepartment = await makeUser({ tag: 'dept2', role: 'department' });
     const keeper = await makeUser({ tag: 'keeper', role: 'manager' });
+    // Согласующий от ИТ: роль отдела и **чужой** отдел в области. Именно чужой — так проверяется,
+    // что заявки он видит не по своей роли, а по надстройке (Р54).
+    const itApprover = await makeUser({ tag: 'it', role: 'department' });
 
     await db.execute(sql`
       INSERT INTO user_construction_objects (user_id, construction_object_id)
@@ -435,13 +465,15 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       INSERT INTO user_departments (user_id, department_id)
       VALUES (${department.id}, ${departmentId}),
              (${multiDepartment.id}, ${departmentId}),
-             (${multiDepartment.id}, ${secondDepartmentId})`);
+             (${multiDepartment.id}, ${secondDepartmentId}),
+             (${itApprover.id}, ${foreignDepartmentId})`);
     // Надстройка роли (ADR 0086): тот же штаб, но со стороной оператора оргтехники. Роль у него
     // остаётся `shtab` — именно это и проверяет коридор: право статуса у надстройки есть, а шаги
     // исполнителя ей всё равно не положены.
     await db.execute(sql`
       INSERT INTO user_role_addons (user_id, addon)
-      VALUES (${operator.id}, 'office_equipment_operator'::role_addon)`);
+      VALUES (${operator.id}, 'office_equipment_operator'::role_addon),
+             (${itApprover.id}, 'office_equipment_it_approver'::role_addon)`);
 
     const app = await buildApp();
 
@@ -478,6 +510,7 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       department: await withAuth(department),
       multiDepartment: await withAuth(multiDepartment),
       keeper: await withAuth(keeper),
+      itApprover: await withAuth(itApprover),
       objectId,
       foreignObjectId,
       departmentId,
@@ -485,6 +518,7 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       foreignDepartmentId,
       serviceCounterpartyId,
       otherServiceCounterpartyId,
+      typeId,
       mfp: { id: '', inventoryNumber: '' },
       scanner: { id: '' },
       deptPrinter: { id: '' },
@@ -601,7 +635,7 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
 
   // ── Шаг 1. Заявка заведена ──
 
-  it('заказчик заводит заявку: снимок предмета, статус «Новая», ждут оператора', async () => {
+  it('заказчик заводит заявку: снимок предмета, статус «Новая», ждут ИТ', async () => {
     const dto = await createRequest(
       ctx.customer.auth,
       ctx.mfp.id,
@@ -612,7 +646,9 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
 
     expect(dto.status).toBe('new');
     // Кого ждут — считает сервер: правило одно на список, карточку и бейдж раздела (Р35).
-    expect(dto.waitingOn).toBe('operator');
+    // «Новая» ждёт отдел ИТ: до визы сервис не назначают (Р51).
+    expect(dto.waitingOn).toBe('it');
+    expect(dto.itApproval).toBeNull();
     expect(dto.displayNumber).toBe(formatServiceRequestNumber(dto.num));
     // Реквизиты предмета — снимок: единицу перенесут и переименуют, а заявка обязана остаться
     // рассказом о том, что чинили тогда (Р10).
@@ -621,6 +657,9 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       name: 'Kyocera ECOSYS M3145',
       inventoryNumber: ctx.mfp.inventoryNumber,
       typeName: 'МФУ',
+      // Место внутри объекта — часть того же снимка (Р57): по нему едет мастер, а карточка к
+      // моменту ремонта могла переехать.
+      location: 'кабинет 214',
     });
     expect(dto.object.id).toBe(ctx.objectId);
     // Заявку завёл штаб: отделов у него нет, и заявка объектная, а не «ничья, видная всем».
@@ -655,7 +694,151 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
     expect(direct.statusCode, direct.body).toBe(403);
   });
 
-  // ── Шаг 2. Исполнитель назначен ──
+  // ── Шаг 2. Виза отдела ИТ (Р51) ──
+
+  it('до визы ИТ сервис не назначают: решение «звать ли подрядчика» принимает не оператор', async () => {
+    const res = await inject(
+      'PATCH',
+      `/api/v1/service-requests/${state.main.id}/service`,
+      ctx.operator.auth,
+      { serviceCounterpartyId: ctx.serviceCounterpartyId, version: await version(state.main.id) },
+    );
+    // 403, а не 422: дуги «Новая → Назначен сервис» нет ни у кого — коридор оператора начинается
+    // после визы, и дело не в состоянии записи, а в том, что такого шага у него не бывает.
+    expect(res.statusCode, res.body).toBe(403);
+  });
+
+  it('согласующий от ИТ видит чужую площадку: область даёт надстройка, а не роль', async () => {
+    // Учётка ИТ приписана к постороннему отделу и не имеет ни одного объекта: по своей роли она не
+    // увидела бы эту заявку вовсе (Р54).
+    expect(await listIds(ctx.itApprover.auth)).toContain(state.main.id);
+    const card = await inject(
+      'GET',
+      `/api/v1/service-requests/${state.main.id}`,
+      ctx.itApprover.auth,
+    );
+    expect(card.statusCode, card.body).toBe(200);
+    // Справочник — тоже: перед визой смотрят, что за аппарат и что с ним уже делали.
+    const equipment = await inject(
+      'GET',
+      `/api/v1/office-equipment/${ctx.mfp.id}`,
+      ctx.itApprover.auth,
+    );
+    expect(equipment.statusCode, equipment.body).toBe(200);
+  });
+
+  it('«Новая» ждёт ИТ, и очередь «ждут меня» у оператора её не показывает', async () => {
+    const card = await inject(
+      'GET',
+      `/api/v1/service-requests/${state.main.id}`,
+      ctx.operator.auth,
+    );
+    expect(card.json().waitingOn).toBe('it');
+    expect(await listIds(ctx.operator.auth, '&waitingOnMe=true')).not.toContain(state.main.id);
+    expect(await listIds(ctx.itApprover.auth, '&waitingOnMe=true')).toContain(state.main.id);
+  });
+
+  it('отдел ИТ визирует заявку: снимок «кто и когда», дальше ход у оператора', async () => {
+    const res = await inject(
+      'PATCH',
+      `/api/v1/service-requests/${state.main.id}/it-approval`,
+      ctx.itApprover.auth,
+      { approved: true, version: await version(state.main.id, ctx.itApprover.auth) },
+    );
+    expect(res.statusCode, res.body).toBe(200);
+    const dto = res.json() as ServiceRequestDto;
+    expect(dto.status).toBe('it_approved');
+    expect(dto.waitingOn).toBe('operator');
+    expect(dto.itApproval?.by).toBe(ctx.itApprover.id);
+    expect(dto.itApproval?.auto).toBe(false);
+    expect(dto.itApproval?.byName).toBeTruthy();
+  });
+
+  it('оператор визы не имеет: подписать заявку себе он не может', async () => {
+    const res = await inject(
+      'PATCH',
+      `/api/v1/service-requests/${state.main.id}/it-approval`,
+      ctx.operator.auth,
+      { approved: true, version: await version(state.main.id) },
+    );
+    expect(res.statusCode, res.body).toBe(403);
+  });
+
+  it('отказ ИТ закрывает заявку с причиной, и без причины его не принимают', async () => {
+    const dto = await createRequest(
+      ctx.customer.auth,
+      ctx.choicePrinter.id,
+      'Хочу второй монитор к рабочему месту',
+    );
+
+    const silent = await inject(
+      'PATCH',
+      `/api/v1/service-requests/${dto.id}/it-approval`,
+      ctx.itApprover.auth,
+      { approved: false, version: dto.version },
+    );
+    // Причина обязательна схемой: «ИТ отказал» без объяснения заказчик прочитает как молчание.
+    expect(silent.statusCode, silent.body).toBe(400);
+
+    const rejected = await inject(
+      'PATCH',
+      `/api/v1/service-requests/${dto.id}/it-approval`,
+      ctx.itApprover.auth,
+      {
+        approved: false,
+        reason: 'Второй монитор выдаём со склада, ремонт не нужен',
+        version: dto.version,
+      },
+    );
+    expect(rejected.statusCode, rejected.body).toBe(200);
+    // Своего терминального статуса у отказа нет (Р53): заявка закрыта тем же «Отменена», а
+    // отличает его событие истории.
+    expect(rejected.json().status).toBe('cancelled');
+    expect(rejected.json().itApproval).toBeNull();
+
+    const history = await inject(
+      'GET',
+      `/api/v1/service-requests/${dto.id}/history`,
+      ctx.itApprover.auth,
+    );
+    const kinds = (history.json() as { kind: string; comment: string }[]).map((e) => e.kind);
+    expect(kinds).toContain('itRejected');
+  });
+
+  it('заявку согласующего от ИТ визирует сама система, а заявку администратора — нет', async () => {
+    const own = await createRequest(
+      ctx.itApprover.auth,
+      ctx.foreignDeptPrinter.id,
+      'Гудит блок питания',
+    );
+    // Виза проставлена заведением (Р52): подписывать себе заявку вторым действием — ритуал.
+    expect(own.status).toBe('it_approved');
+    expect(own.itApproval?.auto).toBe(true);
+    expect(own.itApproval?.by).toBe(ctx.itApprover.id);
+
+    // Администратор заводит заявку не от имени ИТ (ADR 0032): его заявка ждёт визы наравне со
+    // всеми, и автовиза ему не положена.
+    const byAdmin = await createRequest(ctx.admin.auth, ctx.hintPrinter.id, 'Не включается');
+    expect(byAdmin.status).toBe('new');
+    expect(byAdmin.itApproval).toBeNull();
+
+    // Прибираем за собой: обе заявки открытые, а по единице разрешена одна (Р21).
+    for (const id of [own.id, byAdmin.id]) {
+      const cancelled = await inject(
+        'PATCH',
+        `/api/v1/service-requests/${id}/status`,
+        ctx.admin.auth,
+        {
+          status: 'cancelled',
+          reason: 'Служебная заявка теста',
+          version: await version(id, ctx.admin.auth),
+        },
+      );
+      expect(cancelled.statusCode, cancelled.body).toBe(200);
+    }
+  });
+
+  // ── Шаг 3. Исполнитель назначен ──
 
   it('оператор назначает сервис — заявка становится видна исполнителю', async () => {
     const res = await inject(
@@ -1230,15 +1413,16 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
     expect(after.items).toHaveLength(1);
   });
 
-  it('отказ исполнителя возвращает заявку в «Новую» и снимает сервис', async () => {
+  it('отказ исполнителя возвращает заявку оператору и снимает сервис, но не визу ИТ', async () => {
     const dto = await createRequest(ctx.customer.auth, ctx.scanner.id, 'Не протягивает лист');
     state.otherUnit = { id: dto.id, itemId: '' };
+    await approveByIt(dto.id);
 
     const assigned = await inject(
       'PATCH',
       `/api/v1/service-requests/${dto.id}/service`,
       ctx.operator.auth,
-      { serviceCounterpartyId: ctx.serviceCounterpartyId, version: dto.version },
+      { serviceCounterpartyId: ctx.serviceCounterpartyId, version: await version(dto.id) },
     );
     expect(assigned.statusCode, assigned.body).toBe(200);
 
@@ -1250,10 +1434,12 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
     );
     expect(declined.statusCode, declined.body).toBe(200);
     const after = declined.json() as ServiceRequestDto;
-    // Матрица §5.4: исполнителя снимает сам переход — заявка снова ничья и ждёт оператора.
-    expect(after.status).toBe('new');
+    // Матрица §5.4: исполнителя снимает сам переход — заявка снова ничья и ждёт оператора. Виза
+    // ИТ при ней остаётся: решение «внешний ремонт нужен» отказом подрядчика не отменяется (Р51).
+    expect(after.status).toBe('it_approved');
     expect(after.service).toBeNull();
     expect(after.waitingOn).toBe('operator');
+    expect(after.itApproval?.at).toBeTruthy();
     // И она снова невидима исполнителю, который от неё отказался.
     expect(await listIds(ctx.service.auth)).not.toContain(dto.id);
   });
@@ -1408,6 +1594,7 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
   it('сервис видит только назначенные ему заявки', async () => {
     // Заявку отдела назначают другому исполнителю: она перестаёт быть «Новой», но нашему сервису
     // от этого видна не становится — область исполнителя считается по контрагенту, а не по статусу.
+    await approveByIt(state.deptOwned.id);
     const assigned = await inject(
       'PATCH',
       `/api/v1/service-requests/${state.deptOwned.id}/service`,
@@ -1611,18 +1798,32 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
   // закрыт коменданту и сервисной компании целиком, а ведение приходит надстройкой. Здесь
   // проверяется то, чего матрица прав не видит, — **область**: право есть, а строка чужая.
 
-  it('единицу не переносят на площадку вне области — 403', async () => {
+  it('объект правкой карточки не меняется вовсе — для переезда есть своя ручка (Р59)', async () => {
     const res = await inject('PATCH', `/api/v1/office-equipment/${ctx.mfp.id}`, ctx.operator.auth, {
       objectId: ctx.foreignObjectId,
     });
-    // Перенос — тот же выход за область, только наружу: без проверки целевой стороны штаб увёз бы
-    // технику на чужую площадку и потерял бы её из своего справочника.
-    expect(res.statusCode, res.body).toBe(403);
-    expect(res.json().message).toContain('только со своими объектами');
+    // 400 схемы, а не 403 области: поле из правки убрано — переезд обязан оставлять след в
+    // журнале, и тихая смена площадки в форме такого следа не оставляла.
+    expect(res.statusCode, res.body).toBe(400);
 
     const still = await inject('GET', `/api/v1/office-equipment/${ctx.mfp.id}`, ctx.operator.auth);
     expect(still.statusCode, still.body).toBe(200);
     expect(still.json().object.id).toBe(ctx.objectId);
+  });
+
+  it('чужую единицу не перемещают: область проверяется по исходной стороне (Р60)', async () => {
+    const res = await inject(
+      'POST',
+      `/api/v1/office-equipment/${ctx.foreignDeptPrinter.id}/move`,
+      ctx.department.auth,
+      {
+        objectId: ctx.objectId,
+        movedOn: TODAY,
+        reason: 'Забираем к себе',
+      },
+    );
+    // «Забрать» чужую технику нельзя: перемещение фиксирует отдающая сторона.
+    expect(res.statusCode, res.body).toBe(403);
   });
 
   it('штаб чужой площадки техники не видит — ни в списке, ни по прямому id', async () => {
@@ -1766,6 +1967,326 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       expect(res.statusCode, res.body).toBe(200);
       // А поля нет совсем, а не пустым списком: пустой список означал бы «ремонтов не было», и
       // менеджер решил бы, что аппарат ни разу не чинили.
+      expect(res.json().serviceHistory).toBeUndefined();
+    });
+  });
+
+  // ── Шаг 18. Приём заявки и срочность (план модернизации, Р49, Р56, Р57) ──
+
+  describe('заявитель и срочность', () => {
+    it('заявка без ФИО и телефона не заводится — обязательность живёт на сервере, а не в форме', async () => {
+      // Своя единица: по каждой разрешена одна открытая заявка (Р21), и занимать чужую нельзя.
+      state.urgent.equipmentId = await makeEquipment({
+        typeId: ctx.typeId,
+        name: 'HP LaserJet M404',
+        inventoryNumber: `ОЕ-${RUN}-9`,
+        objectId: ctx.objectId,
+      });
+
+      const noName = await inject('POST', '/api/v1/service-requests', ctx.customer.auth, {
+        officeEquipmentId: state.urgent.equipmentId,
+        description: 'Мигает лампа замятия',
+        responsiblePhone: '+79990000000',
+      });
+      expect(noName.statusCode, noName.body).toBe(400);
+
+      const noPhone = await inject('POST', '/api/v1/service-requests', ctx.customer.auth, {
+        officeEquipmentId: state.urgent.equipmentId,
+        description: 'Мигает лампа замятия',
+        responsibleName: 'Иванов Иван Иванович',
+      });
+      expect(noPhone.statusCode, noPhone.body).toBe(400);
+    });
+
+    it('срочность ставится парой «флаг + причина» и снимается вместе с причиной', async () => {
+      const dto = await createRequest(
+        ctx.customer.auth,
+        state.urgent.equipmentId,
+        'Не тянет бумагу',
+        {
+          isUrgent: true,
+          urgencyReason: 'Единственный принтер на площадке',
+        },
+      );
+      state.urgent = { ...state.urgent, id: dto.id, num: dto.num };
+      expect(dto.isUrgent).toBe(true);
+      expect(dto.urgencyReason).toBe('Единственный принтер на площадке');
+
+      // Флаг без объяснения не проходит ни в заведении, ни в своей ручке: срочность без причины
+      // через месяц стоит у всех заявок, и отбирать ею становится нечего (Р56).
+      const halfPair = await inject(
+        'PATCH',
+        `/api/v1/service-requests/${dto.id}/urgency`,
+        ctx.operator.auth,
+        { isUrgent: true, version: dto.version },
+      );
+      expect(halfPair.statusCode, halfPair.body).toBe(400);
+
+      const cleared = await inject(
+        'PATCH',
+        `/api/v1/service-requests/${dto.id}/urgency`,
+        ctx.operator.auth,
+        { isUrgent: false, version: await version(dto.id) },
+      );
+      expect(cleared.statusCode, cleared.body).toBe(200);
+      expect(cleared.json().isUrgent).toBe(false);
+      // Причина уходит вместе с флагом: оставшийся текст читался бы как «срочность сняли, но
+      // повод остался».
+      expect(cleared.json().urgencyReason).toBe('');
+    });
+
+    it('оператор ставит срочность и после назначения сервиса, а исполнитель — не ставит вовсе', async () => {
+      const id = state.urgent.id;
+      await approveByIt(id);
+      const assigned = await inject(
+        'PATCH',
+        `/api/v1/service-requests/${id}/service`,
+        ctx.operator.auth,
+        {
+          serviceCounterpartyId: ctx.serviceCounterpartyId,
+          version: await version(id),
+        },
+      );
+      expect(assigned.statusCode, assigned.body).toBe(200);
+
+      // Заказчику заявка уже не правится (§5.3), и срочность вместе с ней: «Новой» она больше не
+      // является.
+      const byCustomer = await inject(
+        'PATCH',
+        `/api/v1/service-requests/${id}/urgency`,
+        ctx.customer.auth,
+        { isUrgent: true, urgencyReason: 'Совсем встало', version: await version(id) },
+      );
+      expect(byCustomer.statusCode, byCustomer.body).toBe(403);
+
+      // Исполнителю признак не принадлежит вовсе: срочность — решение заказывающей стороны.
+      const byService = await inject(
+        'PATCH',
+        `/api/v1/service-requests/${id}/urgency`,
+        ctx.service.auth,
+        { isUrgent: true, urgencyReason: 'Поставим себе в приоритет', version: await version(id) },
+      );
+      expect(byService.statusCode, byService.body).toBe(403);
+
+      const byOperator = await inject(
+        'PATCH',
+        `/api/v1/service-requests/${id}/urgency`,
+        ctx.operator.auth,
+        { isUrgent: true, urgencyReason: 'Встала выдача пропусков', version: await version(id) },
+      );
+      expect(byOperator.statusCode, byOperator.body).toBe(200);
+      expect(byOperator.json().isUrgent).toBe(true);
+      // Возраст в статусе срочность не сбрасывает: она не ожидание, и очередь «дольше всех ждут»
+      // не должна обнуляться от того, что заявку пометили красным.
+      expect(byOperator.json().statusChangedAt).toBe(assigned.json().statusChangedAt);
+    });
+
+    it('срочные идут первыми в списке и отбираются своим фильтром', async () => {
+      const all = await inject('GET', '/api/v1/service-requests?pageSize=100', ctx.operator.auth);
+      expect(all.statusCode, all.body).toBe(200);
+      const items = all.json().items as ServiceRequestDto[];
+      expect(items[0]?.id, 'срочная заявка первой строкой').toBe(state.urgent.id);
+
+      const onlyUrgent = await inject(
+        'GET',
+        '/api/v1/service-requests?urgent=true&pageSize=100',
+        ctx.operator.auth,
+      );
+      expect(onlyUrgent.statusCode, onlyUrgent.body).toBe(200);
+      const urgentItems = onlyUrgent.json().items as ServiceRequestDto[];
+      expect(urgentItems.every((r) => r.isUrgent)).toBe(true);
+      expect(urgentItems.map((r) => r.id)).toContain(state.urgent.id);
+    });
+
+    it('снимок места в заявке не переписывается переездом карточки', async () => {
+      const moved = await inject(
+        'PATCH',
+        `/api/v1/office-equipment/${state.urgent.equipmentId}`,
+        ctx.operator.auth,
+        { location: 'кабинет 305' },
+      );
+      expect(moved.statusCode, moved.body).toBe(200);
+      expect(moved.json().location).toBe('кабинет 305');
+
+      const request = await inject(
+        'GET',
+        `/api/v1/service-requests/${state.urgent.id}`,
+        ctx.operator.auth,
+      );
+      expect(request.statusCode, request.body).toBe(200);
+      // Заявка помнит место, где аппарат стоял в момент заведения: по нему ехали, и переезд
+      // карточки этого не отменяет (Р57).
+      expect(request.json().equipment.location).toBe('кабинет 214');
+    });
+
+    it('история заявки читает срочность отдельным событием, а не правкой', async () => {
+      const res = await inject(
+        'GET',
+        `/api/v1/service-requests/${state.urgent.id}/history`,
+        ctx.operator.auth,
+      );
+      expect(res.statusCode, res.body).toBe(200);
+      const kinds = (res.json() as { kind: string; changes: { field: string }[] }[]).filter(
+        (e) => e.kind === 'urgencyChanged',
+      );
+      expect(kinds.length, 'событий срочности').toBeGreaterThanOrEqual(2);
+      expect(kinds.some((e) => e.changes.some((c) => c.field === 'isUrgent'))).toBe(true);
+    });
+  });
+
+  // ── Шаг 19. Перемещения и местонахождение единицы (Р59–Р63) ──
+
+  describe('перемещения техники', () => {
+    it('перемещение записывает обе стороны, меняет карточку и попадает в ленту (Р59, Р62)', async () => {
+      const equipmentId = state.urgent.equipmentId;
+      const before = await inject(
+        'GET',
+        `/api/v1/office-equipment/${equipmentId}`,
+        ctx.operator.auth,
+      );
+      expect(before.json().state).toBe('on_site');
+
+      // Увезли в сервис — переезд, вызванный ремонтом: у записи есть ссылка на заявку.
+      const away = await inject(
+        'POST',
+        `/api/v1/office-equipment/${equipmentId}/move`,
+        ctx.operator.auth,
+        {
+          objectId: ctx.objectId,
+          location: '',
+          state: 'at_service',
+          movedOn: TODAY,
+          reason: 'Увезли в сервис по заявке',
+          serviceRequestId: state.urgent.id,
+        },
+      );
+      expect(away.statusCode, away.body).toBe(201);
+      expect(away.json().state).toBe('at_service');
+
+      // Переезд на чужую площадку разрешён (Р60): отдающий теряет технику из своего списка.
+      const moved = await inject(
+        'POST',
+        `/api/v1/office-equipment/${equipmentId}/move`,
+        ctx.operator.auth,
+        {
+          objectId: ctx.foreignObjectId,
+          location: 'кабинет 12',
+          state: 'on_site',
+          movedOn: TODAY,
+          reason: 'Перевод бухгалтерии на другую площадку',
+        },
+      );
+      expect(moved.statusCode, moved.body).toBe(201);
+      expect(moved.json().object.id).toBe(ctx.foreignObjectId);
+      expect(moved.json().location).toBe('кабинет 12');
+
+      // И из справочника отдающего она исчезла — это и есть «утрата, а не захват».
+      expect(
+        (await inject('GET', '/api/v1/office-equipment?pageSize=200', ctx.operator.auth))
+          .json()
+          .items.map((row: { id: string }) => row.id),
+      ).not.toContain(equipmentId);
+
+      // Лента карточки читается администратором: у него область сквозная.
+      const history = await inject(
+        'GET',
+        `/api/v1/office-equipment/${equipmentId}/history`,
+        ctx.admin.auth,
+      );
+      expect(history.statusCode, history.body).toBe(200);
+      const movements = history.json().movements as {
+        fromObject: { id: string };
+        toObject: { id: string };
+        toState: string;
+        serviceRequestNum: number | null;
+        reason: string;
+      }[];
+      expect(movements).toHaveLength(2);
+      // Свежее сверху: карточку открывают вопросом «где оно сейчас и откуда приехало».
+      expect(movements[0]).toMatchObject({
+        toObject: { id: ctx.foreignObjectId },
+        toState: 'on_site',
+      });
+      expect(movements[1]).toMatchObject({
+        toState: 'at_service',
+        serviceRequestNum: state.urgent.num,
+      });
+      // Ремонты — во второй половине ленты, и только тому, кому открыт модуль.
+      expect(history.json().serviceHistory).toBeDefined();
+    });
+
+    it('перемещение без изменений и без причины не записывается', async () => {
+      const equipmentId = ctx.scanner.id;
+      const same = await inject(
+        'POST',
+        `/api/v1/office-equipment/${equipmentId}/move`,
+        ctx.operator.auth,
+        { objectId: ctx.objectId, location: 'кабинет 214', movedOn: TODAY, reason: 'Просто так' },
+      );
+      // Запись «переехало туда, где стояло» — строка ни о чём: журнал, которому нельзя верить,
+      // хуже отсутствующего.
+      expect(same.statusCode, same.body).toBe(422);
+
+      const noReason = await inject(
+        'POST',
+        `/api/v1/office-equipment/${equipmentId}/move`,
+        ctx.operator.auth,
+        { objectId: ctx.foreignObjectId, movedOn: TODAY, reason: '' },
+      );
+      expect(noReason.statusCode, noReason.body).toBe(400);
+    });
+
+    it('«на складе» без уточнения не принимается: искать такую технику негде (Р61)', async () => {
+      const res = await inject(
+        'POST',
+        `/api/v1/office-equipment/${ctx.scanner.id}/move`,
+        ctx.operator.auth,
+        {
+          objectId: ctx.objectId,
+          state: 'in_stock',
+          movedOn: TODAY,
+          reason: 'Сняли с эксплуатации до переезда',
+        },
+      );
+      expect(res.statusCode, res.body).toBe(400);
+
+      const ok = await inject(
+        'POST',
+        `/api/v1/office-equipment/${ctx.scanner.id}/move`,
+        ctx.operator.auth,
+        {
+          objectId: ctx.objectId,
+          state: 'in_stock',
+          stateNote: 'Склад АХО, стеллаж 3',
+          movedOn: TODAY,
+          reason: 'Сняли с эксплуатации до переезда',
+        },
+      );
+      expect(ok.statusCode, ok.body).toBe(201);
+      expect(ok.json().stateNote).toBe('Склад АХО, стеллаж 3');
+
+      // Срез «в ремонте, а заявок нет» её не показывает: она на складе, а не в сервисе.
+      const stranded = await inject(
+        'GET',
+        '/api/v1/office-equipment?strandedAtService=true&pageSize=200',
+        ctx.admin.auth,
+      );
+      expect(stranded.statusCode, stranded.body).toBe(200);
+      expect(stranded.json().items.map((row: { id: string }) => row.id)).not.toContain(
+        ctx.scanner.id,
+      );
+    });
+
+    it('ленту обслуживания не отдают тому, кому закрыт модуль', async () => {
+      const res = await inject(
+        'GET',
+        `/api/v1/office-equipment/${ctx.mfp.id}/history`,
+        ctx.keeper.auth,
+      );
+      expect(res.statusCode, res.body).toBe(200);
+      // Перемещения он видит: это справочник, который он и ведёт.
+      expect(res.json().movements).toBeDefined();
+      // А ремонтов нет вовсе — то же правило, что у секции карточки.
       expect(res.json().serviceHistory).toBeUndefined();
     });
   });

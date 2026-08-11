@@ -2,7 +2,12 @@ import { generateKeyPairSync } from 'node:crypto';
 import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { type GarageBusyEntry, type GarageVehicleDto, moscowDateKeyOf } from '@technic/contracts';
+import {
+  type GarageBusyEntry,
+  type GarageDriverDto,
+  type GarageVehicleDto,
+  moscowDateKeyOf,
+} from '@technic/contracts';
 import { applyMigrations } from '../src/db/migration-journal';
 // Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
 // окружение, — конфиг проверяет его при импорте и без него падает.
@@ -114,10 +119,16 @@ async function seed(): Promise<{ personId: string }> {
     .select({ id: schema.credentialTypes.id })
     .from(schema.credentialTypes)
     .where(sql`${schema.credentialTypes.code} = 'driver_license'`);
+  // Категории — водительские, и вид документа в условии обязателен: с миграции 0123 «b» и «c»
+  // есть и у удостоверения тракториста-машиниста (буквы у видов общие, ADR 0095), а составной
+  // внешний ключ не пустит тракторную категорию в водительское удостоверение.
   const categories = await db
     .select({ id: schema.qualificationCategories.id })
     .from(schema.qualificationCategories)
-    .where(sql`${schema.qualificationCategories.code} in ('b', 'c')`);
+    .where(
+      sql`${schema.qualificationCategories.code} in ('b', 'c')
+        AND ${schema.qualificationCategories.credentialTypeId} = ${licenseType!.id}`,
+    );
 
   return db.transaction(async (tx) => {
     const [person] = await tx
@@ -185,6 +196,25 @@ async function vehicleRow(vehicleId: string, query = ''): Promise<GarageVehicleD
 
 function busyKinds(entries: readonly GarageBusyEntry[]): string[] {
   return entries.map((entry) => entry.kind);
+}
+
+/** Строка гаража по водителю теста — с любым набором фильтров перечня. */
+async function driverRow(query = ''): Promise<GarageDriverDto | undefined> {
+  const res = await ctx.app.inject({
+    method: 'GET',
+    url: `/api/v1/garage/drivers?on=${ctx.today}&pageSize=500${query}`,
+    headers: ctx.auth,
+  });
+  expect(res.statusCode, res.body).toBe(200);
+  return (res.json().items as GarageDriverDto[]).find((row) => row.personId === ctx.personId);
+}
+
+/** Должность действующего трудового отношения — ею тест и меняет вид требуемого документа. */
+async function setJobTitle(jobTitle: string): Promise<void> {
+  await ctx.db.execute(
+    sql`UPDATE person_employments SET job_title = ${jobTitle}
+        WHERE person_id = ${ctx.personId} AND ended_on IS NULL`,
+  );
 }
 
 describe.skipIf(!DB_URL)('гараж: срез дня на живой схеме', () => {
@@ -422,20 +452,47 @@ describe.skipIf(!DB_URL)('гараж: срез дня на живой схеме
       waybill: null,
     });
 
-    const drivers = await ctx.app.inject({
-      method: 'GET',
-      url: `/api/v1/garage/drivers?on=${ctx.today}&pageSize=500`,
-      headers: ctx.auth,
-    });
-    expect(drivers.statusCode, drivers.body).toBe(200);
-    const driver = drivers
-      .json()
-      .items.find((d: { personId: string }) => d.personId === ctx.personId);
+    const driver = await driverRow();
     expect(driver?.state).toBe('assigned');
     expect(driver?.personnelNo).toBe('Г-100');
     // Комплект документов полон — пустой список пробелов означает «лист выпишется без пропусков».
     expect(driver?.gaps).toEqual([]);
-    expect(driver.busy.map((entry: GarageBusyEntry) => entry.kind)).toContain('route');
+    // Должность водительская, и пробелы гараж подписывает водительским удостоверением (ADR 0095).
+    expect(driver?.credentialTypeCode).toBe('driver_license');
+    expect(driver!.busy.map((entry: GarageBusyEntry) => entry.kind)).toContain('route');
+  });
+
+  /**
+   * Должность решает, каким документом закрывается комплект (ADR 0095), — и решает одинаково в
+   * двух местах сразу: в строке перечня её считает TypeScript (`driverDocumentGaps`), а в фильтре и
+   * в сводке — SQL (`documentsCompleteCondition`). Тому и другому нужна живая база: приведение
+   * должности к сравнимому виду делает Postgres, и разойтись эти два счёта могут только здесь.
+   *
+   * Должность записывается с двумя пробелами намеренно: кадровая выгрузка так и присылает, а
+   * лишний пробел не должен превращать машиниста в водителя.
+   */
+  it('машинисту тот же комплект документов больше не полон: за экскаватор садятся по УТМ', async () => {
+    await setJobTitle('Машинист  экскаватора');
+    try {
+      const row = await driverRow();
+      expect(row?.credentialTypeCode).toBe('tractor_license');
+      // Водительское удостоверение у человека то же самое и заполнено целиком — но оно не того
+      // вида, и лист по нему не выпишется: пробел ровно один — самого документа нет.
+      expect(row?.gaps).toEqual(['license']);
+      expect(row?.licenseNumber).toBe('');
+      expect(row?.categories).toEqual([]);
+
+      // Фильтр перечня отбирает тем же правилом, что показывает строка.
+      expect(await driverRow('&documents=complete')).toBeUndefined();
+      expect(await driverRow('&documents=incomplete')).toBeDefined();
+    } finally {
+      // База общая: должность возвращается на место, иначе соседние db-тесты увидят машиниста.
+      await setJobTitle('Водитель');
+    }
+
+    const restored = await driverRow('&documents=complete');
+    expect(restored?.credentialTypeCode).toBe('driver_license');
+    expect(restored?.gaps).toEqual([]);
   });
 
   it('нерабочий статус машины перекрывает всё остальное', async () => {

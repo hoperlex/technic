@@ -81,11 +81,13 @@ const FROZEN: VehicleRouteDto = {
 
 const SELECTION = {
   requiredCategory: 'C',
+  requiredCategoryType: 'driver_license',
   drivers: [
     {
       personId: 'p-1',
       fullName: 'Тестовый Водитель Первый',
       personnelNo: 'Т-001',
+      credentialTypeCode: 'driver_license',
       licenseNumber: '00 00 000001',
       licenseExpiresOn: '2031-03-12',
       verificationStatus: 'verified',

@@ -201,7 +201,12 @@ export function OfficeEquipmentTypesModal({ open, onClose }: Props) {
         confirmLoading={saveMut.isPending}
         width={440}
       >
-        <Form form={form} layout="vertical" onFinish={(v) => saveMut.mutate(v)} {...blockers.formProps}>
+        <Form
+          form={form}
+          layout="vertical"
+          onFinish={(v) => saveMut.mutate(v)}
+          {...blockers.formProps}
+        >
           <Form.Item
             name="code"
             label="Код"

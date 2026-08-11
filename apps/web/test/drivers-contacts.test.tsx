@@ -45,6 +45,8 @@ function mockDirectory(items: DriverDto[] = [driver()]) {
   return mockHttp({
     'GET /drivers': () => json(list(items)),
     'GET /drivers/license-categories': () => json([]),
+    'GET /drivers/job-titles': () =>
+      json([{ jobTitle: 'Водитель', credentialTypeCode: 'driver_license', count: 1 }]),
   });
 }
 

@@ -15,6 +15,7 @@ import {
   serviceRequestsApi,
   ServiceStatusTag,
   statusAgeLabel,
+  UrgentTag,
   WaitingOnTag,
 } from '@entities/service-request';
 import { WarrantyTag } from '@entities/office-equipment';
@@ -180,13 +181,18 @@ export function ServiceRequestViewModal({
         },
         {
           key: 'customer',
-          label: 'Заказчик',
+          label: 'Объект и заказчик',
           full: true,
           children: (
             <Space size={8} wrap>
               <span>
                 {request.object.code} — {request.object.name}
               </span>
+              {/* Место внутри объекта — снимок на момент заведения (Р57): по нему сервис и едет,
+                  а карточка единицы к моменту ремонта могла уже переехать. */}
+              {request.equipment.location && (
+                <Typography.Text type="secondary">{request.equipment.location}</Typography.Text>
+              )}
               {request.customerDepartment && <Tag>{request.customerDepartment.name}</Tag>}
               {/* Отдел-владелец техники: по нему считается область, и он бывает не тем же, что
                   отдел-заказчик — соседний отдел чинит «чужой» принтер чаще, чем кажется. */}
@@ -212,11 +218,28 @@ export function ServiceRequestViewModal({
         },
         {
           key: 'responsible',
-          label: 'Ответственный',
+          label: 'Заявитель',
           children: (
             <ResponsibleValue name={request.responsibleName} phone={request.responsiblePhone} />
           ),
         },
+        // Срочность показывается строкой, а не одной меткой в заголовке: решение принимают по
+        // причине, а не по красному цвету, и в карточке для неё есть место (Р56).
+        ...(request.isUrgent
+          ? [
+              {
+                key: 'urgency',
+                label: 'Срочность',
+                full: true,
+                children: (
+                  <Space size={8} wrap>
+                    <UrgentTag reason="" />
+                    <span>{request.urgencyReason}</span>
+                  </Space>
+                ),
+              },
+            ]
+          : []),
         {
           key: 'service',
           label: 'Сервис',

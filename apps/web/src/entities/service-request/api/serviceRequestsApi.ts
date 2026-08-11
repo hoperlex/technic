@@ -7,9 +7,11 @@ import type {
   PutServiceEstimateInput,
   RequestHistoryEntryDto,
   ServiceFileKind,
+  ApproveServiceItInput,
   ServiceRequestDto,
   ServiceStatusChangeInput,
   ServiceWarrantyRowDto,
+  SetServiceUrgencyInput,
   SubmitServiceEstimateInput,
   UpdateServiceRequestInput,
 } from '@technic/contracts';
@@ -111,12 +113,24 @@ export const serviceRequestsApi = {
     patch<ServiceRequestDto>(id, '/complete', body),
   accept: (id: string, body: CommentInput) => patch<ServiceRequestDto>(id, '/accept', body),
   rework: (id: string, body: ReasonInput) => patch<ServiceRequestDto>(id, '/rework', body),
+  /**
+   * Виза отдела ИТ (Р51): согласие либо отказ с причиной. Одна ручка на оба ответа — у решения
+   * одно право и один момент, как у согласования сметы.
+   */
+  itApproval: (id: string, body: ApproveServiceItInput) =>
+    patch<ServiceRequestDto>(id, '/it-approval', body),
   /** Только отмена и административные откаты (Р18) — остальное ходит своими ручками. */
   changeStatus: (id: string, body: ServiceStatusChangeInput) =>
     patch<ServiceRequestDto>(id, '/status', body),
   /** Примечание исполнителя: заявку не редактирует, границу сторон не двигает (приём ADR 0053). */
   saveServiceComment: (id: string, body: { serviceComment: string; version: number }) =>
     patch<ServiceRequestDto>(id, '/service-comment', body),
+  /**
+   * Срочность своей ручкой, а не полем правки (Р56): её ставят и снимают до самого закрытия, в том
+   * числе когда саму заявку править уже нельзя.
+   */
+  setUrgency: (id: string, body: SetServiceUrgencyInput) =>
+    patch<ServiceRequestDto>(id, '/urgency', body),
 
   /** Подшивка документа: вид говорит, чем именно закрыта работа (§8.3). */
   attachFiles: (id: string, fileIds: string[], kind: ServiceFileKind) =>

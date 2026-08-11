@@ -17,11 +17,11 @@ import {
   TeamOutlined,
 } from '@ant-design/icons';
 import { Outlet, useLocation, useNavigate } from 'react-router';
-import { actsForCounterparty, formatShortName, roleLabels } from '@technic/contracts';
+import { formatShortName, roleLabels } from '@technic/contracts';
 import { usersApi } from '../api/resources';
 import { useAuth } from '../auth/AuthContext';
+import { useServiceWaitingCount } from '@features/service-waiting-badge';
 import { useReleases } from '@entities/release';
-import { serviceRequestKeys, serviceRequestsApi } from '@entities/service-request';
 import { useIsMobile } from '@shared/lib';
 import { MobileAppBar } from './MobileAppBar';
 import { MobileNav, type MobileNavItem } from './MobileNav';
@@ -98,29 +98,7 @@ export function AppLayout() {
     staleTime: 60_000,
   });
 
-  /**
-   * Бейдж «ждёт меня» на разделе оргтехники (ADR 0085, Р39).
-   *
-   * Счётчик спрашивается **не у всех, кто видит раздел**, и это не экономия, а суть: ход заявки
-   * стоит только за двоими — оператором оргтехники (право `serviceRequests.assign`, приходит
-   * надстройкой роли, ADR 0086) и сервисной компанией (тип контрагента, ADR 0038). У заказчика —
-   * штаба и ролей отдела, то есть у основной массы видящих пункт меню, — шага в цикле нет
-   * намеренно: заявку принимает оператор, а не тот, кто её завёл. Сервер ответил бы такой учётке
-   * нулём всегда, и бейдж превратился бы в обещание «непрочитанного», которого в портале нет
-   * вовсе, — плюс лишний запрос на каждый вход.
-   *
-   * Поэтому здесь именно «не спрашиваем», а не «показываем ноль». Прежде чем заводить бейдж
-   * заказчику, заведите ему шаг в цикле (значение `customer` в `SERVICE_WAITING_ON` и ветку в
-   * `isWaitingOn`) — иначе счётчик будет считать чужое ожидание.
-   */
-  const inServiceLoop = can('serviceRequests.assign') || actsForCounterparty(user, 'service');
-  const { data: waitingService } = useQuery({
-    queryKey: serviceRequestKeys.waitingCount(),
-    queryFn: () => serviceRequestsApi.waitingCount(),
-    enabled: inServiceLoop,
-    staleTime: 60_000,
-  });
-  const waitingServiceCount = waitingService?.count ?? 0;
+  const waitingServiceCount = useServiceWaitingCount();
 
   /**
    * Бейдж ведёт не в раздел, а в саму очередь «Требуют решения» — тот же пресет списка, что и

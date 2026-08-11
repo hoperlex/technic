@@ -620,7 +620,7 @@ function CreateRouteModal({
                   label: [
                     d.fullName,
                     d.categories.join(', '),
-                    driverDocumentGapsHint(d.gaps),
+                    driverDocumentGapsHint(d.gaps, d.credentialTypeCode),
                     d.matchesRequiredCategory ? null : DRIVER_CATEGORY_MISMATCH_HINT,
                     driverWorkedOnVehicle(d) ? DRIVER_WORKED_ON_VEHICLE_HINT : null,
                   ]

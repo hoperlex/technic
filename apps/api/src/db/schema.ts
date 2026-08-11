@@ -85,7 +85,6 @@ export const mailKindEnum = pgEnum('mail_kind', [
 export const mailStatusEnum = pgEnum('mail_status', ['pending', 'sent', 'failed']);
 /** Расписания рассылок (ADR 0075, миграция 0099). */
 export const mailingTypeEnum = pgEnum('mailing_type', ['driver_routes', 'role_digest']);
-export const mailingPeriodicityEnum = pgEnum('mailing_periodicity', ['daily', 'weekly']);
 export const mailingRunStatusEnum = pgEnum('mailing_run_status', [
   'pending',
   'running',
@@ -901,7 +900,12 @@ export const userDepartments = pgTable(
  * CHECK: условие читало бы колонку соседней таблицы — тот же случай, из-за которого миграция 0063
  * сняла `users_rukstroy_object_check`.
  */
-export const roleAddonEnum = pgEnum('role_addon', ['office_equipment_operator']);
+export const roleAddonEnum = pgEnum('role_addon', [
+  'office_equipment_operator',
+  // Согласование ИТ (миграция 0117): вторая надстройка и первая, которая меняет область — в
+  // пределах модуля оргтехники (`ADDON_MODULE_WIDE_SCOPE` в контрактах).
+  'office_equipment_it_approver',
+]);
 
 export const userRoleAddons = pgTable(
   'user_role_addons',
@@ -1120,6 +1124,18 @@ export const officeEquipmentTypes = pgTable(
   }),
 );
 
+/**
+ * Где физически находится единица (миграция 0120). Не «статус жизненного цикла»: списание и ввод
+ * в эксплуатацию модулем не ведутся (§12 плана модуля), а `is_active` отвечает на другой вопрос —
+ * «эксплуатируется ли». Здесь только местонахождение, и меняет его перемещение.
+ */
+export const officeEquipmentStateEnum = pgEnum('office_equipment_state', [
+  'on_site',
+  'at_service',
+  'in_stock',
+  'with_employee',
+]);
+
 export const officeEquipment = pgTable(
   'office_equipment',
   {
@@ -1143,6 +1159,10 @@ export const officeEquipment = pgTable(
     }),
     // Место внутри объекта: «кабинет 214», «прорабская». Свободный текст — планировок в портале нет.
     location: text('location').notNull().default(''),
+    // Местонахождение и уточнение к нему (миграция 0120): меняются только перемещением, не правкой
+    // карточки — переезд обязан оставлять след в журнале.
+    state: officeEquipmentStateEnum('state').notNull().default('on_site'),
+    stateNote: text('state_note').notNull().default(''),
     purchasedOn: date('purchased_on'),
     // Гарантия поставщика на саму единицу; гарантии на запчасти и работы живут в заявках.
     warrantyUntil: date('warranty_until'),
@@ -1180,6 +1200,74 @@ export const officeEquipment = pgTable(
     warrantyIdx: index('office_equipment_warranty_idx')
       .on(t.warrantyUntil)
       .where(sql`${t.deletedAt} IS NULL AND ${t.warrantyUntil} IS NOT NULL`),
+    // «На складе» и «у сотрудника» без уточнения — потерянная техника: искать её негде.
+    stateNote: check(
+      'office_equipment_state_note_check',
+      sql`${t.state} IN ('on_site','at_service') OR btrim(${t.stateNote}) <> ''`,
+    ),
+  }),
+);
+
+/**
+ * Журнал перемещений (миграция 0120, Р59): куда, когда и почему уехала единица.
+ *
+ * Своя таблица, а не аудит: перемещение — предмет отчёта («что приехало на площадку за месяц»), а
+ * не след действия, и у него есть дата переезда, отличная от даты записи. Обе стороны хранятся
+ * ссылками: по целевому объекту строится срез принимающей стороны, а строка журнала должна
+ * оставаться читаемой после переименования площадок.
+ */
+export const officeEquipmentMovements = pgTable(
+  'office_equipment_movements',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    equipmentId: uuid('equipment_id')
+      .notNull()
+      .references(() => officeEquipment.id, { onDelete: 'cascade' }),
+    fromObjectId: uuid('from_object_id')
+      .notNull()
+      .references(() => constructionObjects.id, { onDelete: 'restrict' }),
+    toObjectId: uuid('to_object_id')
+      .notNull()
+      .references(() => constructionObjects.id, { onDelete: 'restrict' }),
+    fromDepartmentId: uuid('from_department_id').references(() => departments.id, {
+      onDelete: 'restrict',
+    }),
+    toDepartmentId: uuid('to_department_id').references(() => departments.id, {
+      onDelete: 'restrict',
+    }),
+    fromLocation: text('from_location').notNull().default(''),
+    toLocation: text('to_location').notNull().default(''),
+    fromState: officeEquipmentStateEnum('from_state').notNull(),
+    toState: officeEquipmentStateEnum('to_state').notNull(),
+    // Дата переезда, а не момент записи: технику увозят в пятницу, а заносят в понедельник.
+    movedOn: date('moved_on').notNull(),
+    reason: text('reason').notNull(),
+    comment: text('comment').notNull().default(''),
+    // Переезд, вызванный ремонтом: «увезли в сервис» и «вернулась». SET NULL — заявку могут снести
+    // насовсем, а факт переезда от этого не отменяется.
+    serviceRequestId: uuid('service_request_id').references(() => serviceRequests.id, {
+      onDelete: 'set null',
+    }),
+    movedBy: uuid('moved_by')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    reasonNotBlank: check(
+      'office_equipment_movements_reason_not_blank_check',
+      sql`btrim(${t.reason}) <> ''`,
+    ),
+    // Перемещение, которое ничего не переместило, — запись ни о чём.
+    change: check(
+      'office_equipment_movements_change_check',
+      sql`${t.fromObjectId} <> ${t.toObjectId}
+          OR ${t.fromState} <> ${t.toState}
+          OR ${t.fromLocation} <> ${t.toLocation}
+          OR ${t.fromDepartmentId} IS DISTINCT FROM ${t.toDepartmentId}`,
+    ),
+    equipmentIdx: index('office_equipment_movements_equipment_idx').on(t.equipmentId, t.movedOn),
+    toObjectIdx: index('office_equipment_movements_to_object_idx').on(t.toObjectId, t.movedOn),
   }),
 );
 
@@ -1190,6 +1278,9 @@ export const officeEquipment = pgTable(
 // смысл статусов сразу в двух работающих модулях.
 export const serviceRequestStatusEnum = pgEnum('service_request_status', [
   'new',
+  // Порядок значений здесь тот же, что в типе БД (миграция 0117 добавила значение `AFTER 'new'`):
+  // список заявок сортируется по колонке статуса, и порядок сортировки задаёт объявление типа.
+  'it_approved',
   'assigned',
   'diagnostics',
   'estimate_review',
@@ -1229,12 +1320,25 @@ export const serviceRequests = pgTable(
     equipmentName: text('equipment_name').notNull(),
     equipmentSerialNumber: text('equipment_serial_number').notNull().default(''),
     equipmentInventoryNumber: text('equipment_inventory_number').notNull().default(''),
+    // Место внутри объекта — часть того же снимка (миграция 0118): сервис едет по адресу
+    // «Корпус 3, каб. 214», и читать его из карточки нельзя — она к тому времени переехала.
+    equipmentLocation: text('equipment_location').notNull().default(''),
     description: text('description').notNull(),
     dueDate: date('due_date'),
     responsibleName: text('responsible_name').notNull().default(''),
     // Десять цифр без кода страны, как все номера портала (ADR 0066).
     responsiblePhone: text('responsible_phone').notNull().default(''),
+    // Срочность — пара «флаг + причина», и порознь они не бывают (CHECK в миграции 0118): чекбокс
+    // без объяснения через месяц стоит у всех заявок, и отбирать им становится нечего.
+    isUrgent: boolean('is_urgent').notNull().default(false),
+    urgencyReason: text('urgency_reason').notNull().default(''),
     status: serviceRequestStatusEnum('status').notNull().default('new'),
+    // Виза отдела ИТ (миграция 0119): решение о том, звать ли внешний сервис. Снимок из двух
+    // полей, как виза заказа ТС (ADR 0025); третий флаг отличает автоматическую — заявку завёл
+    // сам обладатель права, и подписывать её вторым действием было бы ритуалом.
+    itApprovedBy: uuid('it_approved_by').references(() => users.id, { onDelete: 'set null' }),
+    itApprovedAt: timestamp('it_approved_at', { withTimezone: true }),
+    itApprovedAuto: boolean('it_approved_auto').notNull().default(false),
     // Возраст в текущем статусе — колонкой, а не latest-подзапросом по истории: «кто ждёт дольше
     // всех» спрашивает каждый список, и признак зависшей заявки читается отсюда же.
     statusChangedAt: timestamp('status_changed_at', { withTimezone: true }).notNull().defaultNow(),
@@ -1293,10 +1397,11 @@ export const serviceRequests = pgTable(
       sql`(${t.estimatedTotalAmount} IS NULL OR ${t.estimatedTotalAmount} >= 0)
           AND (${t.finalTotalAmount} IS NULL OR ${t.finalTotalAmount} >= 0)`,
     ),
-    // Без исполнителя заявку никто не ведёт; исключение — «Новая» и «Отменена».
+    // Без исполнителя заявку никто не ведёт; исключение — три статуса до его назначения:
+    // «Новая», «Согласована ИТ» (виза есть, сервис ещё не выбран) и «Отменена».
     executor: check(
       'service_requests_executor_check',
-      sql`${t.status} IN ('new','cancelled') OR ${t.serviceCounterpartyId} IS NOT NULL`,
+      sql`${t.status} IN ('new','it_approved','cancelled') OR ${t.serviceCounterpartyId} IS NOT NULL`,
     ),
     // Согласование — снимок из трёх полей: кто, когда и что именно. Любое поле по отдельности на
     // вопрос «что согласовали» не отвечает.
@@ -1328,6 +1433,22 @@ export const serviceRequests = pgTable(
           OR (${t.warrantyClaimSource} = 'equipment' AND ${t.warrantyClaimItemId} IS NULL)
           OR (${t.warrantyClaimSource} = 'item' AND ${t.warrantyClaimItemId} IS NOT NULL)`,
     ),
+    // Виза ИТ — снимок из двух полей: «кто» без «когда» согласованием не является.
+    itApproval: check(
+      'service_requests_it_approval_check',
+      sql`(${t.itApprovedBy} IS NULL) = (${t.itApprovedAt} IS NULL)`,
+    ),
+    itAuto: check(
+      'service_requests_it_auto_check',
+      sql`NOT ${t.itApprovedAuto} OR ${t.itApprovedBy} IS NOT NULL`,
+    ),
+    // Срочность — такая же неразрывная пара, как корректировка акта выше: флаг без причины
+    // отбирает заявки, ничего про них не объясняя, причина без флага ничего не объявляет.
+    urgency: check(
+      'service_requests_urgency_check',
+      sql`(NOT ${t.isUrgent} AND btrim(${t.urgencyReason}) = '')
+          OR (${t.isUrgent} AND btrim(${t.urgencyReason}) <> '')`,
+    ),
     numUnique: uniqueIndex('service_requests_num_unique').on(t.num),
     // Одна открытая заявка на единицу: две параллельные означали бы два сервиса, два акта и две
     // гарантии на одну работу. Индекс сторожит и заведение, и восстановление из архива — сервер
@@ -1349,6 +1470,13 @@ export const serviceRequests = pgTable(
     serviceIdx: index('service_requests_service_idx')
       .on(t.serviceCounterpartyId)
       .where(sql`${t.serviceCounterpartyId} IS NOT NULL`),
+    // Очередь «что срочное ждёт дольше всех»: закрытые и удалённые заявки в ней не участвуют,
+    // поэтому индекс частичный — он остаётся размером с очередь, а не с таблицей.
+    urgentIdx: index('service_requests_urgent_idx')
+      .on(t.statusChangedAt)
+      .where(
+        sql`${t.isUrgent} AND ${t.deletedAt} IS NULL AND ${t.status} NOT IN ('accepted','cancelled')`,
+      ),
     createdAtIdx: index('service_requests_created_at_idx').on(t.createdAt),
   }),
 );
@@ -3157,19 +3285,39 @@ export const mailingSchedules = pgTable(
     name: text('name').notNull(),
     /** Выключенное расписание сохраняет настройки: «до понедельника не рассылаем» — не «завести заново». */
     isEnabled: boolean('is_enabled').notNull().default(false),
-    periodicity: mailingPeriodicityEnum('periodicity').notNull().default('daily'),
     /** Местное время в часовом поясе портала: «в 18:00 каждый день» не зависит от даты. */
     sendAt: time('send_at').notNull(),
-    /** ISO-день недели 1..7 — только у недельной рассылки. */
-    weekday: smallint('weekday'),
-    /** По каким дням выполняется ежедневная: суббота и воскресенье чаще всего лишние. */
+    /**
+     * По каким дням выполняется рассылка. Недельная — это набор из одного дня: периодичности
+     * отдельным полем больше нет, потому что она сливала в одно слово три независимых числа.
+     */
     runWeekdays: smallint('run_weekdays')
       .array()
       .notNull()
       .default(sql`'{1,2,3,4,5,6,7}'`),
-    /** Окно рейсов задания: от +N до +M дней, где 1 — завтра. В днях, потому что «завтра» у каждого запуска своё. */
-    windowFromDays: smallint('window_from_days'),
-    windowToDays: smallint('window_to_days'),
+    /**
+     * Окно данных: с какого дня относительно дня рассылки (0 — сегодняшний, 1 — завтрашний) и
+     * сколько дней в нём, считая первый. В днях, а не датами, потому что «завтра» у каждого
+     * запуска своё; началом и длительностью, а не парой границ, потому что «конец раньше начала»
+     * длительностью невыразимо.
+     */
+    windowFromDays: smallint('window_from_days').notNull().default(1),
+    windowDays: smallint('window_days').notNull().default(1),
+    /** Чьи заявки показывать в сводке: `author` — свои, `scope` — своей области, `all` — отмеченных. */
+    requestScope: text('request_scope')
+      .notNull()
+      .default('scope')
+      .$type<'author' | 'scope' | 'all'>(),
+    /** Какие таблицы печатает сводка: перевозки (4-П, № 3) и техника на объектах (ЭСМ-2). */
+    showTrips: boolean('show_trips').notNull().default(true),
+    showOnsite: boolean('show_onsite').notNull().default(true),
+    /**
+     * Как задан набор у осей аудитории. `all` — «все и будущие», перечень при этом пуст;
+     * `selected` — перечисленные в своей таблице. Без режима отбор молча терял бы каждую новую
+     * площадку и каждую новую учётку: их не было в списке, когда его отмечали.
+     */
+    scopeMode: text('scope_mode').notNull().default('all').$type<'all' | 'selected'>(),
+    recipientMode: text('recipient_mode').notNull().default('all').$type<'all' | 'selected'>(),
     /** Считает и хранит планировщик: просроченные расписания ищутся индексом, а не перебором. */
     nextRunAt: timestamp('next_run_at', { withTimezone: true }),
     version: integer('version').notNull().default(0),
@@ -3183,23 +3331,30 @@ export const mailingSchedules = pgTable(
       .on(t.nextRunAt)
       .where(sql`${t.isEnabled} AND ${t.nextRunAt} IS NOT NULL`),
     nameNotBlank: check('mailing_schedules_name_not_blank', sql`btrim(${t.name}) <> ''`),
-    weekdayCheck: check(
-      'mailing_schedules_weekday_check',
-      sql`(${t.periodicity} = 'weekly' AND ${t.weekday} BETWEEN 1 AND 7)
-          OR (${t.periodicity} = 'daily' AND ${t.weekday} IS NULL)`,
-    ),
     runWeekdaysCheck: check(
       'mailing_schedules_run_weekdays_check',
       sql`array_length(${t.runWeekdays}, 1) BETWEEN 1 AND 7
           AND ${t.runWeekdays} <@ ARRAY[1,2,3,4,5,6,7]::smallint[]`,
     ),
+    // Окно одинаково у обоих типов рассылки: и задание водителю, и сводка отвечают на вопрос «что
+    // будет в эти дни», и считать его двумя способами не из чего.
     windowCheck: check(
       'mailing_schedules_window_check',
-      sql`(${t.type} = 'driver_routes'
-            AND ${t.windowFromDays} IS NOT NULL AND ${t.windowToDays} IS NOT NULL
-            AND ${t.windowFromDays} >= 0 AND ${t.windowToDays} >= ${t.windowFromDays})
-          OR (${t.type} <> 'driver_routes'
-            AND ${t.windowFromDays} IS NULL AND ${t.windowToDays} IS NULL)`,
+      sql`${t.windowFromDays} BETWEEN 0 AND 30 AND ${t.windowDays} BETWEEN 1 AND 31`,
+    ),
+    requestScopeCheck: check(
+      'mailing_schedules_request_scope_check',
+      sql`${t.requestScope} IN ('author', 'scope', 'all')`,
+    ),
+    modeCheck: check(
+      'mailing_schedules_mode_check',
+      sql`${t.scopeMode} IN ('all', 'selected') AND ${t.recipientMode} IN ('all', 'selected')`,
+    ),
+    // Сводка без единой таблицы собрала бы пустое письмо, которое всё равно не отправится:
+    // выключается такая рассылка флагом, а не снятием обеих галочек.
+    digestContentCheck: check(
+      'mailing_schedules_digest_content_check',
+      sql`${t.type} <> 'role_digest' OR ${t.showTrips} OR ${t.showOnsite}`,
     ),
   }),
 );
@@ -3231,11 +3386,14 @@ export const mailingScheduleExcludedPersons = pgTable(
   (t) => ({ pk: primaryKey({ columns: [t.scheduleId, t.personId] }) }),
 );
 
-// ── Настройки ролевых дайджестов (ADR 0078, миграция 0100) ──
+// ── Аудитория ролевой сводки (ADR 0078, миграция 0100; отбор вместо исключений — ADR 0093, 0124) ──
 //
 // Роль в расписании — фильтр получателей, а не выдача прав: что человек увидит в письме, решает его
 // собственная область видимости. Отдельными таблицами, а не массивами в строке расписания: по ним
 // идут выборки получателей, и массив в `WHERE` означал бы разворачивание на каждом запуске.
+//
+// Все три оси — выбор, а не исключение. Прежние «исключённые» таблицы описывали ту же аудиторию
+// наизнанку: по форме нельзя было прочитать, кому уйдёт письмо, не вычитая в уме одно из другого.
 
 /** Роли-получатели сводки. */
 export const mailingScheduleRoles = pgTable(
@@ -3250,30 +3408,11 @@ export const mailingScheduleRoles = pgTable(
 );
 
 /**
- * Разделы письма и их порядок. Ключ текстом, а не enum: набор разделов будет прирастать, и новый не
- * должен требовать `ALTER TYPE`. Допустимые ключи держит реестр в контрактах.
+ * Отмеченные получатели-учётки: не путать с водителями, которым уходит задание на рейс. Пусто при
+ * `recipient_mode = 'all'` — тогда отбор идёт только ролями и областями.
  */
-export const mailingScheduleSections = pgTable(
-  'mailing_schedule_sections',
-  {
-    scheduleId: uuid('schedule_id')
-      .notNull()
-      .references(() => mailingSchedules.id, { onDelete: 'cascade' }),
-    section: text('section').notNull(),
-    position: smallint('position').notNull(),
-  },
-  (t) => ({
-    pk: primaryKey({ columns: [t.scheduleId, t.section] }),
-    positionCheck: check(
-      'mailing_schedule_sections_position_check',
-      sql`${t.position} BETWEEN 1 AND 50`,
-    ),
-  }),
-);
-
-/** Исключённые получатели-учётки: не путать с водителями, которым уходит задание на рейс. */
-export const mailingScheduleExcludedUsers = pgTable(
-  'mailing_schedule_excluded_users',
+export const mailingScheduleRecipients = pgTable(
+  'mailing_schedule_recipients',
   {
     scheduleId: uuid('schedule_id')
       .notNull()
@@ -3285,9 +3424,13 @@ export const mailingScheduleExcludedUsers = pgTable(
   (t) => ({ pk: primaryKey({ columns: [t.scheduleId, t.userId] }) }),
 );
 
-/** Исключённые области: вычитаются из области получателя — расширить её исключение не может. */
-export const mailingScheduleExcludedScopes = pgTable(
-  'mailing_schedule_excluded_scopes',
+/**
+ * Отмеченные площадки и отделы рассылки. Работают дважды: отбирают получателей, у которых эта ось
+ * есть, и — при охвате заявок `all` — ограничивают данные. Расширить область получателя не могут
+ * ни в одном из двух случаев: условие всегда пересекается с его собственной областью.
+ */
+export const mailingScheduleScopes = pgTable(
+  'mailing_schedule_scopes',
   {
     scheduleId: uuid('schedule_id')
       .notNull()
@@ -3296,15 +3439,15 @@ export const mailingScheduleExcludedScopes = pgTable(
     departmentId: uuid('department_id').references(() => departments.id, { onDelete: 'cascade' }),
   },
   (t) => ({
-    objectUnique: uniqueIndex('mailing_schedule_excluded_scopes_object_unique')
+    objectUnique: uniqueIndex('mailing_schedule_scopes_object_unique')
       .on(t.scheduleId, t.objectId)
       .where(sql`${t.objectId} IS NOT NULL`),
-    departmentUnique: uniqueIndex('mailing_schedule_excluded_scopes_department_unique')
+    departmentUnique: uniqueIndex('mailing_schedule_scopes_department_unique')
       .on(t.scheduleId, t.departmentId)
       .where(sql`${t.departmentId} IS NOT NULL`),
     // Ровно одно из двух: строка описывает либо площадку, либо отдел — как и заказчик заявки.
     oneCheck: check(
-      'mailing_schedule_excluded_scopes_one_check',
+      'mailing_schedule_scopes_one_check',
       sql`num_nonnulls(${t.objectId}, ${t.departmentId}) = 1`,
     ),
   }),

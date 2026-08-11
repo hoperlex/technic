@@ -6,12 +6,7 @@ import { serviceRequestKeys, serviceRequestsApi } from '@entities/service-reques
 import { officeEquipmentTypeOptionsQuery } from '@entities/office-equipment';
 import { objectOptionsQuery } from '@entities/object';
 import { departmentOptionsQuery } from '@entities/department';
-import {
-  DataTable,
-  PageTableLayout,
-  sortOptionsFrom,
-  type FilterDefinition,
-} from '@shared/ui';
+import { DataTable, PageTableLayout, sortOptionsFrom, type FilterDefinition } from '@shared/ui';
 import { useListParams } from '@shared/lib';
 import { OPEN_PARAM } from '@shared/lib';
 import { useAuth } from '../../auth/AuthContext';
