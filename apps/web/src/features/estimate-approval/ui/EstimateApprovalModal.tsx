@@ -7,6 +7,7 @@ import {
   serviceRequestKeys,
   serviceRequestsApi,
 } from '@entities/service-request';
+import { officeEquipmentKeys } from '@entities/office-equipment';
 import { ViewModal } from '@shared/ui';
 import { errorMessage } from '@shared/lib';
 import { FileLinkList } from '../../../components/FileLinks';
@@ -55,6 +56,7 @@ export function EstimateApprovalModal({
     onSuccess: (_dto, approved) => {
       message.success(approved ? 'Смета согласована — заявка в работе' : 'Смета отклонена');
       void qc.invalidateQueries({ queryKey: serviceRequestKeys.root });
+      void qc.invalidateQueries({ queryKey: officeEquipmentKeys.root });
       onClose();
     },
     onError: (e) => message.error(errorMessage(e)),

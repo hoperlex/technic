@@ -4,6 +4,7 @@ import dayjs, { type Dayjs } from 'dayjs';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { ServiceRequestDto } from '@technic/contracts';
 import { serviceRequestKeys, serviceRequestsApi } from '@entities/service-request';
+import { officeEquipmentKeys } from '@entities/office-equipment';
 import { FormModal } from '@shared/ui';
 import { errorMessage } from '@shared/lib';
 import { factIssue, factRowsFrom, factToPayload, factTotal, type FactRow } from '../model/fact';
@@ -75,6 +76,7 @@ export function ServiceCompleteModal({
     onSuccess: () => {
       message.success('Работы закрыты — заявка ждёт приёмки');
       void qc.invalidateQueries({ queryKey: serviceRequestKeys.root });
+      void qc.invalidateQueries({ queryKey: officeEquipmentKeys.root });
       onClose();
     },
     onError: (e) => message.error(errorMessage(e)),

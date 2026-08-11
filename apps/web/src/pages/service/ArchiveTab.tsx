@@ -8,6 +8,7 @@ import {
   serviceRequestsApi,
   ServiceStatusTag,
 } from '@entities/service-request';
+import { officeEquipmentKeys } from '@entities/office-equipment';
 import {
   actionsColumn,
   DataTable,
@@ -73,6 +74,7 @@ export function ServiceArchiveTab() {
       message.success('Заявка восстановлена');
       setViewRecord(null);
       void qc.invalidateQueries({ queryKey: serviceRequestKeys.root });
+      void qc.invalidateQueries({ queryKey: officeEquipmentKeys.root });
     },
     // 409 «по этой технике уже есть открытая заявка» (Р21) — обычный ответ, а не сбой.
     onError: (e) => message.error(errorMessage(e)),
@@ -83,7 +85,7 @@ export function ServiceArchiveTab() {
   const purge = usePurgeAction({
     subject: 'заявку',
     purge: serviceRequestsApi.purge,
-    invalidate: [serviceRequestKeys.root],
+    invalidate: [serviceRequestKeys.root, officeEquipmentKeys.root],
   });
 
   const removePermanently = (r: ServiceRequestDto) => {

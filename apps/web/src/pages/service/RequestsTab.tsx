@@ -4,7 +4,7 @@ import { PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { isServiceRequestEditable, isWaitingOn, type ServiceRequestDto } from '@technic/contracts';
 import { serviceRequestKeys, serviceRequestsApi } from '@entities/service-request';
-import { officeEquipmentOptionsQuery } from '@entities/office-equipment';
+import { officeEquipmentKeys, officeEquipmentOptionsQuery } from '@entities/office-equipment';
 import { DataTable, PageTableLayout, sortOptionsFrom, type ActionSheetItem } from '@shared/ui';
 import { useListParams, useOpenedRecord } from '@shared/lib';
 import { useActiveTabKey } from '../../components/PageTabs';
@@ -100,6 +100,7 @@ export function RequestsTab() {
       setViewRecord(null);
       opened.clear();
       void qc.invalidateQueries({ queryKey: serviceRequestKeys.root });
+      void qc.invalidateQueries({ queryKey: officeEquipmentKeys.root });
     },
     onError: (e) => message.error(errorMessage(e)),
   });

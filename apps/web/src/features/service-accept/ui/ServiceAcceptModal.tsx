@@ -7,6 +7,7 @@ import {
   serviceRequestKeys,
   serviceRequestsApi,
 } from '@entities/service-request';
+import { officeEquipmentKeys } from '@entities/office-equipment';
 import { FormModal } from '@shared/ui';
 import { errorMessage } from '@shared/lib';
 
@@ -60,6 +61,7 @@ export function ServiceAcceptModal({
     onSuccess: () => {
       message.success(rework ? 'Заявка возвращена в работу' : 'Работы приняты');
       void qc.invalidateQueries({ queryKey: serviceRequestKeys.root });
+      void qc.invalidateQueries({ queryKey: officeEquipmentKeys.root });
       onClose();
     },
     onError: (e) => message.error(errorMessage(e)),

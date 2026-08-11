@@ -7,6 +7,7 @@ import {
   serviceRequestKeys,
   serviceRequestsApi,
 } from '@entities/service-request';
+import { officeEquipmentKeys } from '@entities/office-equipment';
 import { AutoSelect, FormModal } from '@shared/ui';
 import { errorMessage } from '@shared/lib';
 
@@ -62,6 +63,7 @@ export function AssignServiceModal({
     onSuccess: () => {
       message.success(reassign ? 'Исполнитель заменён' : 'Сервис назначен');
       void qc.invalidateQueries({ queryKey: serviceRequestKeys.root });
+      void qc.invalidateQueries({ queryKey: officeEquipmentKeys.root });
       onClose();
     },
     // Отказ сервера здесь содержателен: контрагент приостановлен, заявку уже подвинули (409).

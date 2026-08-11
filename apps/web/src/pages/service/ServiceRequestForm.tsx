@@ -9,7 +9,11 @@ import {
   type WarrantyClaimSource,
   warrantyClaimSourceLabels,
 } from '@technic/contracts';
-import { officeEquipmentOptionsQuery, WarrantyTag } from '@entities/office-equipment';
+import {
+  officeEquipmentKeys,
+  officeEquipmentOptionsQuery,
+  WarrantyTag,
+} from '@entities/office-equipment';
 import { departmentOptionsQuery } from '@entities/department';
 import { objectOptionsQuery } from '@entities/object';
 import { serviceRequestKeys, serviceRequestsApi } from '@entities/service-request';
@@ -203,6 +207,7 @@ export function ServiceRequestForm({
     onSuccess: () => {
       message.success(request ? 'Заявка сохранена' : 'Заявка заведена');
       void qc.invalidateQueries({ queryKey: serviceRequestKeys.root });
+      void qc.invalidateQueries({ queryKey: officeEquipmentKeys.root });
       onClose();
     },
     onError: (e) => {

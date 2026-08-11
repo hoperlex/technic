@@ -3,6 +3,7 @@ import { Alert, App, Button, Input, Space, Tooltip, Typography } from 'antd';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { ServiceItemKind, ServiceRequestDto } from '@technic/contracts';
 import { serviceRequestKeys, serviceRequestsApi } from '@entities/service-request';
+import { officeEquipmentKeys } from '@entities/office-equipment';
 import { ViewModal } from '@shared/ui';
 import { errorMessage } from '@shared/lib';
 import {
@@ -58,7 +59,10 @@ export function EstimateEditorModal({
     setRows((prev) => prev.map((row) => (row.key === key ? { ...row, ...patch } : row)));
   const removeRow = (key: string) => setRows((prev) => prev.filter((row) => row.key !== key));
 
-  const refresh = () => void qc.invalidateQueries({ queryKey: serviceRequestKeys.root });
+  const refresh = () => {
+    void qc.invalidateQueries({ queryKey: serviceRequestKeys.root });
+    void qc.invalidateQueries({ queryKey: officeEquipmentKeys.root });
+  };
 
   /**
    * Сохранение и предъявление — одна цепочка, а не две кнопки с одинаковым телом: предъявить

@@ -15,6 +15,7 @@ import {
   serviceRequestKeys,
   serviceRequestsApi,
 } from '@entities/service-request';
+import { officeEquipmentKeys } from '@entities/office-equipment';
 import { filesApi } from '../../api/resources';
 import { FileLinkList } from '../../components/FileLinks';
 import { useAuth } from '../../auth/AuthContext';
@@ -68,7 +69,10 @@ export function ServiceRequestDocuments({ request }: { request: ServiceRequestDt
     (can('files.manageAny') ||
       (can('serviceRequests.files') && !isServiceRequestClosed(request.status)));
 
-  const refresh = () => void qc.invalidateQueries({ queryKey: serviceRequestKeys.root });
+  const refresh = () => {
+    void qc.invalidateQueries({ queryKey: serviceRequestKeys.root });
+    void qc.invalidateQueries({ queryKey: officeEquipmentKeys.root });
+  };
 
   const attach = useMutation({
     mutationFn: async (file: File) => {

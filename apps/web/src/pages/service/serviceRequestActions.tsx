@@ -19,6 +19,7 @@ import {
   type ServiceRequestDto,
 } from '@technic/contracts';
 import { serviceRequestKeys, serviceRequestsApi } from '@entities/service-request';
+import { officeEquipmentKeys } from '@entities/office-equipment';
 import { AssignServiceModal } from '@features/assign-service';
 import { EstimateEditorModal } from '@features/estimate-editor';
 import { EstimateApprovalModal } from '@features/estimate-approval';
@@ -80,6 +81,7 @@ export function useServiceRequestActions(): {
     onSuccess: (_result, task) => {
       message.success(task.success);
       void qc.invalidateQueries({ queryKey: serviceRequestKeys.root });
+      void qc.invalidateQueries({ queryKey: officeEquipmentKeys.root });
       setPrompt(null);
     },
     onError: (e) => message.error(errorMessage(e)),
@@ -92,6 +94,7 @@ export function useServiceRequestActions(): {
     onSuccess: () => {
       message.success('Заявка взята в диагностику');
       void qc.invalidateQueries({ queryKey: serviceRequestKeys.root });
+      void qc.invalidateQueries({ queryKey: officeEquipmentKeys.root });
     },
     onError: (e) => message.error(errorMessage(e)),
   });
