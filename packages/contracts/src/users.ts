@@ -16,7 +16,8 @@ import {
 } from './role-addons';
 import type { CounterpartyType } from './counterparties';
 import { baseListQuery, dateOnlySchema, optionalPhoneSchema, uuidSchema } from './common';
-import { passwordIdentityIssue, passwordSchema } from './password';
+import { emailSchema } from './email';
+import { passwordIdentityIssue, passwordSchema, PASSWORD_MAX } from './password';
 import { personNameFields, personNamePartialFields, type PersonNameParts } from './person-name';
 import {
   registrationRoleRequestSchema,
@@ -209,6 +210,26 @@ export const setUserPasswordSchema = z.object({
 });
 
 /**
+ * Смена адреса учётной записи администратором (ADR 0092).
+ *
+ * Отдельной схемой и отдельной ручкой, а не полем правки карточки: адрес — это логин, и смена
+ * тянет за собой отзыв сессий, гашение живых ссылок из писем и два уведомления. Приехав «ещё
+ * одним полем формы», всё это происходило бы мимоходом при сохранении телефона.
+ *
+ * `currentPassword` спрашивается ровно в одном случае — когда администратор меняет адрес **себе**:
+ * подтверждение паролем удостоверяет, что за клавиатурой владелец учётки, а не тот, кому досталась
+ * оставленная открытой сессия. Обязательность проверяет сервер: он один знает, чья это учётка.
+ */
+export const changeUserEmailSchema = z
+  .object({
+    newEmail: emailSchema,
+    currentPassword: z.string().min(1).max(PASSWORD_MAX).optional(),
+  })
+  .strict();
+export type ChangeUserEmailInput = z.infer<typeof changeUserEmailSchema>;
+export type ChangeUserEmailBody = z.input<typeof changeUserEmailSchema>;
+
+/**
  * Что стало с письмом операции: его либо не требовалось, либо поставили в очередь, либо почта
  * выключена.
  *
@@ -266,6 +287,23 @@ export interface RejectUserResult {
 export interface UserMutationResult {
   user: UserDto;
   notified: MailOutcome;
+}
+
+/**
+ * Результат смены адреса (ADR 0092). Исходов отправки два, потому что письма два и уходят они на
+ * разные ящики: сообщить человеку новый логин и предупредить прежний ящик — разные новости, и
+ * «письма отправлены» одним словом скрыло бы, что одно из них не ушло.
+ *
+ * `shadowsArchived` — новый адрес занят архивной учёткой. Смене это не мешает (архив адрес не
+ * занимает, ADR 0063), но у архивной с этого момента нет пути назад: восстановление требует
+ * свободного адреса. Администратор узнаёт об этом в момент решения, а не через полгода при
+ * попытке восстановить.
+ */
+export interface ChangeEmailResult {
+  user: UserDto;
+  notifiedNew: MailOutcome;
+  notifiedOld: MailOutcome;
+  shadowsArchived: boolean;
 }
 
 /** Объект в карточке учётки: столько, сколько нужно для показа и повторного выбора. */

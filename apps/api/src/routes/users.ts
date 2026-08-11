@@ -1,9 +1,11 @@
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
-import { and, count, eq, exists, gte, isNull, lte, or, sql } from 'drizzle-orm';
+import { and, count, eq, exists, gte, isNotNull, isNull, lte, or, sql } from 'drizzle-orm';
 import {
   can,
+  type ChangeEmailResult,
+  changeUserEmailSchema,
   type CounterpartyType,
   COUNTERPARTY_TYPES_WITH_ACCOUNTS,
   counterpartyTypeHasAccounts,
@@ -27,19 +29,23 @@ import { db } from '../db/client';
 import { counterparties, userConstructionObjects, users } from '../db/schema';
 import { config } from '../config';
 import { queueMail, type MailKind } from '../services/mail';
-import { type MailContent } from '../services/mail-templates';
+import { maskEmail, type MailContent } from '../services/mail-templates';
 import {
   ACCOUNT_CREATED_SUBJECT,
   accountCreatedContent,
+  EMAIL_CHANGED_SUBJECT,
+  emailChangedContent,
+  emailChangedNoticeContent,
   REGISTRATION_APPROVED_SUBJECT,
   REGISTRATION_REJECTED_SUBJECT,
   registrationApprovedContent,
   registrationRejectedContent,
 } from '../services/mail-auth';
+import { revokeEmailTokens } from '../services/email-tokens';
 import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
-import { hashPassword } from '../auth/password';
+import { hashPassword, verifyPassword } from '../auth/password';
 import { revokeAllForUser } from '../auth/sessions';
 import { orderByFrom, pageParams, phoneSearchCondition, searchCondition } from '../lib/pagination';
 import {
@@ -720,6 +726,182 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
         entityId: id,
       });
       return { ok: true };
+    },
+  );
+
+  /**
+   * Смена адреса учётной записи (ADR 0092).
+   *
+   * Своей ручкой, а не полем `PATCH`: адрес — это логин, и смена тянет за собой отзыв сессий,
+   * гашение живых ссылок из писем и два уведомления. Приехав «ещё одним полем формы», всё это
+   * случалось бы мимоходом при сохранении телефона — и неотличимо от него в журнале.
+   *
+   * Порядок проверок здесь — это порядок отказов, который увидит администратор, и он выстроен от
+   * «кого трогать нельзя» к «на что менять нельзя»: сперва запреты по самой учётке, потом по
+   * новому адресу. Обратный порядок сообщал бы «адрес занят» про учётку, которую всё равно не
+   * дали бы тронуть.
+   */
+  r.post(
+    '/:id/email',
+    { ...guards, schema: { params: idParams, body: changeUserEmailSchema } },
+    async (req): Promise<ChangeEmailResult> => {
+      const actor = requirePrincipal(req);
+      const { id } = req.params;
+      const { newEmail, currentPassword } = req.body;
+      const self = actor.id === id;
+
+      let result;
+      try {
+        result = await db.transaction(async (tx) => {
+          // Под блокировкой и внутри транзакции — по той же причине, что и рассмотрение заявки:
+          // решение принимается по состоянию строки, а снимок, взятый до транзакции, устаревает
+          // ровно тогда, когда двое правят одну учётку одновременно.
+          const [existing] = await tx.select().from(users).where(eq(users.id, id)).for('update');
+          if (!existing || existing.deletedAt) throw err.notFound('Пользователь не найден');
+
+          // Учётку с полными правами уводит только её владелец: смена логина отдаёт доступ
+          // целиком и тихо — владелец узнаёт о ней лишь письмом, — а администраторов в портале
+          // несколько. Роль читается из заблокированной строки, а не из карточки, показанной
+          // порталу: роль, выданную секундой раньше параллельной правкой, снимок бы не увидел.
+          // Потерявшему доступ к ящику администратору путь остаётся прежний: второй сбрасывает
+          // ему пароль, тот входит и меняет адрес себе.
+          if (!self && existing.role === 'admin') {
+            throw err.forbidden(
+              'Адрес учётной записи администратора меняет только её владелец. Если доступ к ящику утрачен — сбросьте пароль и попросите сменить адрес самостоятельно',
+            );
+          }
+
+          // Заявка на регистрацию — утверждение заявителя о себе, включая ящик. Переписав адрес и
+          // одобрив заявку, администратор выдал бы доступ ящику, который заявку не подавал, а
+          // подтверждение адреса (ADR 0072) перестало бы что-либо значить. Такую заявку отклоняют.
+          if (!existing.isActive && existing.role === null) {
+            throw err.badRequest(
+              'У заявки на регистрацию адрес не меняют: отклоните её — человек подаст новую со своего адреса',
+            );
+          }
+
+          // Сравнение регистронезависимое: адрес лежит в `citext`, и «Ivan@su10.ru» — тот же
+          // адрес, что и «ivan@su10.ru». Письмо о несостоявшейся смене и запись в журнале о ней
+          // одинаково вводят в заблуждение, поэтому это отказ, а не тихий успех.
+          if (existing.email.toLowerCase() === newEmail.toLowerCase()) {
+            throw err.badRequest('Адрес совпадает с текущим', {
+              newEmail: 'Это и есть текущий адрес',
+            });
+          }
+
+          // Свой адрес — с подтверждением паролем: он удостоверяет, что за клавиатурой владелец
+          // учётки, а не тот, кому досталась оставленная открытой сессия. Проверка идёт под уже
+          // взятой блокировкой — строка своя же, и ждать её больше некому.
+          if (self) {
+            if (!currentPassword) {
+              throw err.badRequest('Подтвердите смену своего адреса текущим паролем', {
+                currentPassword: 'Введите текущий пароль',
+              });
+            }
+            const ok = await verifyPassword(existing.passwordHash, currentPassword);
+            if (!ok) {
+              throw err.badRequest('Текущий пароль неверен', {
+                currentPassword: 'Неверный пароль',
+              });
+            }
+          }
+
+          // Архив адрес не занимает (ADR 0063) — та же проверка, что у создания и восстановления.
+          await assertEmailFree(tx, newEmail);
+          // ...но архивная учётка с таким адресом после смены станет невосстановимой:
+          // восстановление требует свободного адреса. Мешать этому незачем — адрес освободила она
+          // сама, — а вот узнать об этом администратор должен в момент решения.
+          const shadowed = await tx
+            .select({ id: users.id })
+            .from(users)
+            .where(and(eq(users.email, newEmail), isNotNull(users.deletedAt)));
+
+          const changedAt = new Date();
+          await tx
+            .update(users)
+            .set({
+              email: newEmail,
+              // Адрес, который ввёл администратор, он же и проверил — то же правило, что при
+              // заведении учётки (ADR 0072). Сброс в `null` тихо выключил бы человеку ролевые
+              // дайджесты: они рассылаются только подтверждённым.
+              emailVerifiedAt: changedAt,
+              // Сменился логин — выданные токены гасятся, как при смене пароля: адрес меняют в
+              // том числе тогда, когда прежний ящик потерян или скомпрометирован.
+              authVersion: existing.authVersion + 1,
+              updatedAt: changedAt,
+            })
+            .where(eq(users.id, id));
+
+          // Живые ссылки из уже отправленных писем гасятся обе. Иначе ссылка сброса, ушедшая на
+          // прежний ящик, остаётся действующим ключом от учётки — теперь уже с новым адресом.
+          await revokeEmailTokens(id, 'password_reset', { tx });
+          await revokeEmailTokens(id, 'verify_email', { tx });
+
+          // Письма — правило, а не просьба администратора: на новый адрес человеку сообщают, чем
+          // теперь входить, на прежний уходит сигнал владельцу ящика. Галочка «уведомить» здесь
+          // превратила бы сигнал в необязательный — а снимут её как раз в том случае, ради
+          // которого он и нужен. Время в ключе: адрес меняют и обратно, и это новое событие.
+          const stamp = changedAt.getTime();
+          const notifiedNew = await queueAccessMail(tx, {
+            requested: true,
+            kind: 'email_changed',
+            dedupeKey: `email-changed:${id}:${stamp}:new`,
+            to: newEmail,
+            subject: EMAIL_CHANGED_SUBJECT,
+            content: () => emailChangedContent(newEmail),
+            userId: id,
+          });
+          const notifiedOld = await queueAccessMail(tx, {
+            requested: true,
+            kind: 'email_changed',
+            dedupeKey: `email-changed:${id}:${stamp}:old`,
+            to: existing.email,
+            subject: EMAIL_CHANGED_SUBJECT,
+            content: () => emailChangedNoticeContent(maskEmail(newEmail)),
+            userId: id,
+          });
+
+          return {
+            oldEmail: existing.email,
+            notifiedNew,
+            notifiedOld,
+            shadowsArchived: shadowed.length > 0,
+          };
+        });
+      } catch (e) {
+        // Между проверкой и записью адрес мог занять параллельный запрос — удержать это может
+        // только сам индекс, и человеку нужно то же сообщение, что и при обычном дубле.
+        throw asEmailConflict(e);
+      }
+
+      // Сессии отзываются после фиксации: они живут своей транзакцией, и откат основной не должен
+      // оставлять учётку без них. Сменивший адрес себе выходит из портала здесь же — и входит
+      // заново уже по новому адресу.
+      await revokeAllForUser(id);
+      await writeAudit({
+        actorUserId: actor.id,
+        action: 'user.change_email',
+        entityType: 'user',
+        entityId: id,
+        // Оба адреса: прежнего после смены нет больше нигде — в учётке лежит уже новый, — а
+        // вопрос разбора звучит «с какого адреса и на какой увели вход». Тем же составом пишется
+        // удаление учётки насовсем.
+        metadata: {
+          oldEmail: result.oldEmail,
+          newEmail,
+          notifiedNew: result.notifiedNew,
+          notifiedOld: result.notifiedOld,
+          shadowsArchived: result.shadowsArchived,
+          self,
+        },
+      });
+
+      return {
+        user: (await fetchUserDto(id))!,
+        notifiedNew: result.notifiedNew,
+        notifiedOld: result.notifiedOld,
+        shadowsArchived: result.shadowsArchived,
+      };
     },
   );
 

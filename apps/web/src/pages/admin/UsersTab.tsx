@@ -57,6 +57,7 @@ import { PageTableLayout } from '@shared/ui';
 import { PasswordField } from '../../components/PasswordField';
 import { PersonNameFields } from '../../components/PersonNameFields';
 import { PhoneField, PhoneLink } from '../../components/PhoneField';
+import { useChangeEmailAction } from './ChangeEmailModal';
 import { RejectRegistrationModal } from './RejectRegistrationModal';
 import { UsersAuditTab, type AuditTarget } from './UsersAuditTab';
 import { isApiError } from '@shared/api';
@@ -469,6 +470,13 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
     onError: (e) => message.error(errorMessage(e)),
   });
 
+  // Смена адреса (ADR 0092) — своим хуком: у неё два письма, архивная тень и выход из портала при
+  // смене себе, и разбирать это посреди вкладки о ролях и области значит смешать два разговора.
+  const changeEmail = useChangeEmailAction({
+    currentUserId: currentUser?.id,
+    onChanged: () => void qc.invalidateQueries({ queryKey: ['users'] }),
+  });
+
   /**
    * Что можно сделать со строкой. Список один на оба режима: на десктопе он раскрывается меню,
    * на телефоне — шитом с подписями (ADR 0030 п. 6, ADR 0042). Расходиться им нельзя — иначе
@@ -500,6 +508,14 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
           setPwUser(r);
         },
       },
+      // Смена адреса — он же логин (ADR 0092). Пункта нет там, где сервер откажет: у заявки на
+      // регистрацию (её рассматривают целиком, а не правят адрес заявителя) и у чужой
+      // администраторской учётки — такую уводит только её владелец. Недоступное портал не
+      // показывает даже выключенным (ADR 0033 §6): выключенный пункт обещал бы действие, которого
+      // не бывает.
+      ...(!pendingRegistration && (isSelf || r.role !== 'admin')
+        ? [{ key: 'email', label: 'Сменить email', onClick: () => changeEmail.openFor(r) }]
+        : []),
       {
         key: 'toggle',
         label: r.isActive ? 'Деактивировать' : 'Активировать',
@@ -1295,6 +1311,8 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
         onSubmit={(body) => rejecting && rejectMut.mutate({ id: rejecting.id, body })}
         confirmLoading={rejectMut.isPending}
       />
+
+      {changeEmail.modal}
     </PageTableLayout>
   );
 }

@@ -19,6 +19,8 @@ import type {
   AssignVehicleBody,
   AttachVehicleTypeSpecInput,
   AuditEntryDto,
+  ChangeEmailResult,
+  ChangeUserEmailBody,
   ChangeVehicleAssignmentBody,
   ChangeVehicleRequestTypeBody,
   CompleteVehicleRequestInput,
@@ -106,6 +108,14 @@ export const usersApi = {
     apiFetch<UserMutationResult>(`/users/${id}`, { method: 'PATCH', body }),
   setPassword: (id: string, newPassword: string) =>
     apiFetch<{ ok: boolean }>(`/users/${id}/password`, { method: 'POST', body: { newPassword } }),
+  /**
+   * Смена адреса — он же логин (ADR 0092). Ответ говорит про оба письма отдельно: сообщить
+   * человеку новый адрес и предупредить прежний ящик — разные новости, и одна из них может не
+   * уйти. `shadowsArchived` предупреждает, что адрес принадлежал архивной учётке и восстановить
+   * её теперь нельзя.
+   */
+  changeEmail: (id: string, body: ChangeUserEmailBody) =>
+    apiFetch<ChangeEmailResult>(`/users/${id}/email`, { method: 'POST', body }),
   remove: (id: string) => apiFetch<{ ok: boolean }>(`/users/${id}`, { method: 'DELETE' }),
   /**
    * Отказ по нерассмотренной заявке на регистрацию. Причин две, и они не дублируют друг друга:

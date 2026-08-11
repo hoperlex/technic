@@ -79,6 +79,8 @@ export const mailKindEnum = pgEnum('mail_kind', [
   'registration_rejected',
   'registration_approved',
   'account_created',
+  /** Смена адреса учётки администратором (ADR 0092, миграция 0122) — письма на оба адреса. */
+  'email_changed',
 ]);
 export const mailStatusEnum = pgEnum('mail_status', ['pending', 'sent', 'failed']);
 /** Расписания рассылок (ADR 0075, миграция 0099). */

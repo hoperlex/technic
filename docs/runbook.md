@@ -131,6 +131,10 @@ docker compose -f deploy/docker-compose.yml -p technic --profile tools run --rm 
   -e ADMIN_EMAIL=admin@company.ru -e ADMIN_PASSWORD='<strong>' seed
 ```
 
+Сид идемпотентен по адресу: «такой уже есть — пропуск». Поэтому если адрес администратора сменили в
+портале (ADR 0092), `ADMIN_EMAIL` нужно поправить здесь же — иначе следующий запуск сида заведёт
+вторую учётку со старым адресом и с паролем из команды.
+
 ## Startup checks
 
 API при старте падает с понятной ошибкой, если: нет обязательных env/секретов, есть

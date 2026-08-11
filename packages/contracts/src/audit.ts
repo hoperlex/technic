@@ -54,6 +54,7 @@ export const USER_AUDIT_ACTIONS = [
   'user.restore',
   'user.purge',
   'user.reset_password',
+  'user.change_email',
   'auth.email_verified',
   'auth.password_reset_requested',
   'auth.password_reset',
@@ -79,6 +80,7 @@ export const userAuditActionLabels: Record<UserAuditAction, string> = {
   'user.restore': 'Учётная запись восстановлена из архива',
   'user.purge': 'Учётная запись удалена насовсем',
   'user.reset_password': 'Пароль сброшен администратором',
+  'user.change_email': 'Адрес электронной почты изменён',
   'auth.email_verified': 'Адрес электронной почты подтверждён',
   'auth.password_reset_requested': 'Запрошено восстановление пароля',
   'auth.password_reset': 'Пароль восстановлен по ссылке из письма',
@@ -215,6 +217,15 @@ export function describeAuditEntry(entry: AuditEntryDto): string {
     case 'user.update': {
       const parts = describeUpdate(metadata);
       return parts.length > 0 ? parts.join('; ') : label;
+    }
+    case 'user.change_email': {
+      // Оба адреса или ни одного: «изменён на новый» без прежнего не отвечает на вопрос, ради
+      // которого эту строку и открывают, — с какого ящика ушёл вход. Строкой они и хранятся,
+      // потому что прежнего адреса больше нет нигде: в учётке лежит уже новый.
+      const from = metadata.oldEmail;
+      const to = metadata.newEmail;
+      if (typeof from !== 'string' || typeof to !== 'string') return label;
+      return `${label}: ${from} → ${to}`;
     }
     default:
       return label;
