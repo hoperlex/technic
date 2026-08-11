@@ -10,12 +10,14 @@
  */
 
 export interface SchedulePlan {
-  periodicity: 'daily' | 'weekly';
   /** «18:00» или «18:00:00» — как хранит `time` в БД. */
   sendAt: string;
-  /** ISO-день недели 1..7 (понедельник..воскресенье); нужен недельной рассылке. */
-  weekday?: number | null;
-  /** По каким дням выполняется ежедневная рассылка. Пустой набор считается «по всем». */
+  /**
+   * По каким дням выполняется рассылка. Пустой набор считается «по всем».
+   *
+   * Периодичности отдельным полем нет: «недельная» — это набор из одного дня, и хранить то же
+   * знание вторым способом значило бы держать два ответа на вопрос «когда сработает».
+   */
   runWeekdays?: number[];
   /** Даты, в которые запуск пропускается: праздники и остановки. */
   excludedDates?: string[];
@@ -84,10 +86,8 @@ function momentOf(dateOnly: string, sendAt: string, timeZone: string): Date {
 /** Выполняется ли расписание в этот местный день. */
 function runsOn(plan: SchedulePlan, dateOnly: string): boolean {
   if (plan.excludedDates?.includes(dateOnly)) return false;
-  const weekday = isoWeekday(dateOnly);
-  if (plan.periodicity === 'weekly') return weekday === plan.weekday;
   const days = plan.runWeekdays?.length ? plan.runWeekdays : [1, 2, 3, 4, 5, 6, 7];
-  return days.includes(weekday);
+  return days.includes(isoWeekday(dateOnly));
 }
 
 /**
@@ -110,15 +110,19 @@ export function nextRunAt(plan: SchedulePlan, after: Date, timeZone: string): Da
 }
 
 /**
- * Окно рейсов запуска: «завтра — завтра+N» от местной даты запуска. Считается от даты рассылки, а
- * не от «сегодня» сервера: повтор упавшего вечернего запуска обязан взять те же дни, что и он.
+ * Окно данных запуска: с какого дня относительно дня рассылки и на сколько дней.
+ *
+ * Считается от даты запуска, а не от «сегодня» сервера: повтор упавшего вечернего запуска обязан
+ * взять те же дни, что и он. Длительностью, а не второй границей: «конец раньше начала» так
+ * невыразимо — минимум окна один день, и это его же первый день.
  */
-export function routeWindowOf(
+export function windowOf(
   plannedAt: Date,
   windowFromDays: number,
-  windowToDays: number,
+  windowDays: number,
   timeZone: string,
 ): { from: string; to: string } {
   const base = localDate(plannedAt, timeZone);
-  return { from: addDays(base, windowFromDays), to: addDays(base, windowToDays) };
+  const from = addDays(base, windowFromDays);
+  return { from, to: addDays(from, Math.max(1, windowDays) - 1) };
 }

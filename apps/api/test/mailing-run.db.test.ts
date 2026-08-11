@@ -233,17 +233,19 @@ describe.skipIf(!DB_URL)('запуск рассылки заданий (жива
       })
       .returning({ id: schema.persons.id });
 
-    // Расписание вечернее, окно «завтра»: ровно тот случай, ради которого рассылка и заведена.
+    // Расписание вечернее, окно «завтра, на один день»: ровно тот случай, ради которого рассылка
+    // и заведена. Дни выполнения — все: в проверках запуск создаётся вручную, и пропуск дня
+    // недели сделал бы результат зависимым от того, на какой день пришёлся прогон.
     const [schedule] = await db
       .insert(schema.mailingSchedules)
       .values({
         type: 'driver_routes',
         name: `Тестовая рассылка ${suffix}`,
         isEnabled: true,
-        periodicity: 'daily',
         sendAt: '18:00',
+        runWeekdays: [1, 2, 3, 4, 5, 6, 7],
         windowFromDays: 1,
-        windowToDays: 1,
+        windowDays: 1,
         createdBy: user!.id,
       })
       .returning({ id: schema.mailingSchedules.id });

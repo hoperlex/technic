@@ -5,7 +5,6 @@ import { and, asc, eq, isNotNull, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import {
   dateOnlySchema,
-  DIGEST_SECTIONS,
   MAIL_TEST_NOTE,
   MAIL_TEST_SUBJECT_PREFIX,
   type MailTestKind,
@@ -21,11 +20,8 @@ import { requirePrincipal } from '../auth/plugin';
 import { queueMail } from '../services/mail';
 import type { MailContent } from '../services/mail-templates';
 import { buildDriverRoutesMail, driversWithRoutes } from '../services/mailings/driver-routes';
-import {
-  buildRoleDigestMail,
-  digestPeriod,
-  digestUpcoming,
-} from '../services/mailings/role-digest';
+import { buildRoleDigestMail } from '../services/mailings/role-digest';
+import { windowOf } from '../services/mailings/schedule';
 import {
   ACCOUNT_CREATED_SUBJECT,
   accountCreatedContent,
@@ -78,7 +74,14 @@ const SAMPLE_ROLE: Role = 'operator';
  */
 async function contentFor(
   kind: MailTestKind,
-  opts: { date?: string; driverPersonId?: string; sampleUserId?: string },
+  opts: {
+    date?: string;
+    driverPersonId?: string;
+    sampleUserId?: string;
+    /** Окно данных от дня рассылки — те же два числа, что у расписания (ADR 0093). */
+    windowFromDays: number;
+    windowDays: number;
+  },
 ): Promise<{ subject: string; content: MailContent } | null> {
   switch (kind) {
     case 'verify_email':
@@ -100,8 +103,16 @@ async function contentFor(
     case 'account_created':
       return { subject: ACCOUNT_CREATED_SUBJECT, content: accountCreatedContent(SAMPLE_ROLE) };
     case 'driver_routes': {
-      const date = opts.date!;
-      const drivers = await driversWithRoutes(date, date);
+      // Окно считается от выбранного дня тем же кодом, что у настоящего запуска: умолчание
+      // «сегодняшний, на день» оставляет прежнее поведение отладки — рейсы ровно этой даты.
+      const plannedAt = new Date(`${opts.date!}T12:00:00Z`);
+      const window = windowOf(
+        plannedAt,
+        opts.windowFromDays,
+        opts.windowDays,
+        config.mail.timezone,
+      );
+      const drivers = await driversWithRoutes(window.from, window.to);
       // Без явного выбора берётся первый водитель с рейсами: чаще проверяют «как вообще выглядит
       // задание», а не письмо конкретного человека.
       const driver = opts.driverPersonId
@@ -111,18 +122,22 @@ async function contentFor(
       const mail = await buildDriverRoutesMail({
         personId: driver.personId,
         driverName: driver.fullName,
-        dateFrom: date,
-        dateTo: date,
+        dateFrom: window.from,
+        dateTo: window.to,
       });
       return mail ? { subject: mail.subject, content: mail.content } : null;
     }
     case 'role_digest': {
-      // Дата в форме — день рассылки, а не сам период: ежедневная сводка рассказывает о предыдущем
-      // полном дне, и границы считаются тем же кодом, что у настоящего запуска. Полдень по UTC
-      // берётся, чтобы часовой пояс портала не увёл выбранный день на соседние сутки.
+      // Дата в форме — день рассылки, а не сам период: окно считается от неё тем же кодом, что у
+      // настоящего запуска. Полдень по UTC берётся, чтобы часовой пояс портала не увёл выбранный
+      // день на соседние сутки.
       const plannedAt = new Date(`${opts.date!}T12:00:00Z`);
-      const period = digestPeriod(plannedAt, 'daily', config.mail.timezone);
-      const upcoming = digestUpcoming(plannedAt, config.mail.timezone);
+      const window = windowOf(
+        plannedAt,
+        opts.windowFromDays,
+        opts.windowDays,
+        config.mail.timezone,
+      );
 
       // Письмо собирается областью видимости образца, а не получателя: сводка у каждого своя, и
       // проверяют обычно именно чужую — «что увидит начальник участка». Без явного выбора образцом
@@ -144,18 +159,16 @@ async function contentFor(
 
       const mail = await buildRoleDigestMail({
         recipient: sample,
-        // Разделы берутся все: это отладка, и смотреть надо максимум возможного. Чем ограничить
-        // состав настоящего письма, решает расписание, а не эта форма.
-        sections: [...DIGEST_SECTIONS],
-        periodStart: period.start,
-        periodEnd: period.end,
-        upcomingFrom: upcoming.from,
-        upcomingTo: upcoming.to,
-        // Исключения принадлежат конкретному расписанию; здесь проверяется вид письма, а не
-        // настройка рассылки, поэтому вычитать нечего.
-        excludedObjectIds: [],
-        excludedDepartmentIds: [],
-        periodicity: 'daily',
+        windowFrom: window.from,
+        windowTo: window.to,
+        // Обе таблицы и вся область образца: это отладка, и смотреть надо максимум возможного. Чем
+        // ограничить состав настоящего письма, решает расписание, а не эта форма.
+        showTrips: true,
+        showOnsite: true,
+        requestScope: 'scope',
+        scopeMode: 'all',
+        objectIds: [],
+        departmentIds: [],
       });
       return mail ? { subject: mail.subject, content: mail.content } : null;
     }
@@ -240,6 +253,8 @@ export default async function adminMailRoutes(app: FastifyInstance): Promise<voi
       // Образец по умолчанию — сам получатель: у администратора область видимости полная, и такая
       // сводка показывает письмо целиком, ничего не пряча.
       sampleUserId: req.body.sampleUserId ?? toUserId,
+      windowFromDays: req.body.windowFromDays,
+      windowDays: req.body.windowDays,
     });
     // Пустое письмо не отправляется: молчаливый успех на дате без рейсов читался бы как «письмо
     // ушло», и человек ждал бы его в ящике.

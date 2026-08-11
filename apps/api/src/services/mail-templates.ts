@@ -26,6 +26,13 @@ export function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/gu, (c) => HTML_ESCAPES[c]!);
 }
 
+/** Ячейка таблицы: текст и, если он ведёт на запись портала, ссылка; `sub` — вторая строка мелким. */
+export interface MailTableCell {
+  text: string;
+  href?: string;
+  sub?: string;
+}
+
 export type MailBlock =
   /** Заголовок раздела: рейс, блок дайджеста. */
   | { kind: 'heading'; text: string }
@@ -35,6 +42,8 @@ export type MailBlock =
   | { kind: 'list'; items: string[] }
   /** Ссылка действия: подтверждение адреса, сброс пароля, отфильтрованный экран портала. */
   | { kind: 'link'; href: string; label: string }
+  /** Сводка данными: строка на запись портала, первая колонка — то, о чём строка. */
+  | { kind: 'table'; head: string[]; rows: MailTableCell[][] }
   /** Приписка мелким шрифтом: срок действия ссылки, «письмо отправлено вручную для проверки». */
   | { kind: 'note'; text: string };
 
@@ -98,9 +107,50 @@ function blockToText(block: MailBlock): string[] {
     case 'link':
       // Адрес целиком, а не подписанная ссылка: в текстовой версии кликают по самому адресу.
       return ['', `${block.label}: ${block.href}`];
+    case 'table':
+      return tableToText(block.head, block.rows);
     case 'note':
       return ['', block.text];
   }
+}
+
+/**
+ * Таблица в text/plain — блоками «заголовок: значение», а не псевдографикой.
+ *
+ * Рамки из палочек держатся на моноширинном шрифте, которого в текстовой части письма никто не
+ * обещает: колонки разъезжаются уже на втором клиенте, а с телефона такую таблицу не прочесть
+ * вовсе. Поэтому строка таблицы печатается так же, как задание водителю, — по одному полю в строке.
+ */
+function tableToText(head: string[], rows: MailTableCell[][]): string[] {
+  const lines: string[] = [];
+  for (const row of rows) {
+    const rowLines: string[] = [];
+    row.forEach((cell, index) => {
+      // Первая колонка — то, о чём строка (номер рейса, номер листа). Она печатается без заголовка
+      // и без отступа: это подпись всего блока, а «Рейс: Р-48» отодвинуло бы главное вправо и
+      // сравняло бы его с полями строки. Остальные колонки без заголовка неопознаваемы.
+      const label = index === 0 ? '' : `${head[index] ? `${head[index]}: ` : ''}`;
+      const indent = index === 0 ? '' : '  ';
+      // Пустая ячейка пропускается: «Примечание:» без значения читателю ничего не сообщает.
+      // Уточнение (`sub`) остаётся в строке значения — отдельной строкой оно теряет привязку.
+      const value = [cell.text, cell.sub].filter((part) => part?.trim()).join(', ');
+      if (value) rowLines.push(`${indent}${label}${value}`);
+      // Адрес целиком отдельной строкой — как у блока link: кликают по самому адресу.
+      if (cell.href) rowLines.push(`  ${cell.href}`);
+    });
+    // Пустая строка отделяет строки таблицы друг от друга: иначе поля соседних записей сливаются.
+    if (rowLines.length > 0) lines.push('', ...rowLines);
+  }
+  return lines;
+}
+
+/** Ссылка внутри ячейки — тем же цветом, что и блок link: в письме это одна и та же ссылка. */
+function cellToHtml(cell: MailTableCell): string {
+  const text = cell.href
+    ? `<a href="${escapeHtml(cell.href)}" style="color:#1677ff">${escapeHtml(cell.text)}</a>`
+    : escapeHtml(cell.text);
+  if (!cell.sub) return text;
+  return `${text}<br><span style="color:#8c8c8c;font-size:12px">${escapeHtml(cell.sub)}</span>`;
 }
 
 function blockToHtml(block: MailBlock): string {
@@ -119,14 +169,36 @@ function blockToHtml(block: MailBlock): string {
         .join('')}</ul>`;
     case 'link':
       return `<p style="margin:20px 0"><a href="${escapeHtml(block.href)}" style="color:#1677ff">${escapeHtml(block.label)}</a></p>`;
+    // Стили только inline: `<style>` и внешние таблицы стилей часть почтовых клиентов вырезает.
+    case 'table': {
+      const head = block.head
+        .map(
+          (title) =>
+            `<th style="padding:6px 8px;background:#fafafa;border-bottom:1px solid #f0f0f0;text-align:left;font-weight:600">${escapeHtml(title)}</th>`,
+        )
+        .join('');
+      const rows = block.rows
+        .map(
+          (row) =>
+            `<tr>${row
+              .map(
+                (cell) =>
+                  `<td style="padding:6px 8px;border-bottom:1px solid #f0f0f0;vertical-align:top;word-break:break-word">${cellToHtml(cell)}</td>`,
+              )
+              .join('')}</tr>`,
+        )
+        .join('');
+      return `<table style="width:100%;margin:12px 0;border-collapse:collapse;font-size:13px"><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table>`;
+    }
     case 'note':
       return `<p style="margin:12px 0;color:#8c8c8c;font-size:13px;line-height:1.5">${escapeHtml(block.text)}</p>`;
   }
 }
 
 /**
- * Одна колонка, никаких таблиц вёрстки и внешних ресурсов: письмо читают с телефона, а картинки в
- * почтовых клиентах по умолчанию не загружаются — значит и держаться на них ничему нельзя.
+ * Одна колонка, никаких внешних ресурсов: письмо читают с телефона, а картинки в почтовых
+ * клиентах по умолчанию не загружаются — значит и держаться на них ничему нельзя. `<table>`
+ * появляется только внутри блока table, и только с данными: вёрстку таблицами не делаем.
  */
 export function renderMail(content: MailContent): RenderedMail {
   const textLines = [content.title, ...content.blocks.flatMap(blockToText)];

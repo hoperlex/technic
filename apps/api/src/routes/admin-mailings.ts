@@ -1,13 +1,12 @@
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
-import { asc, count, eq, inArray } from 'drizzle-orm';
+import { and, asc, count, eq, inArray, isNull } from 'drizzle-orm';
 import type { PgColumn, PgTable } from 'drizzle-orm/pg-core';
 import { z } from 'zod';
 import {
   createMailingScheduleSchema,
-  DIGEST_SECTIONS,
-  type DigestSection,
-  type MailingPeriodicity,
+  type MailingRecipientCandidateDto,
+  mailingRecipientCandidatesQuerySchema,
   type MailingRunDto,
   mailingRunListQuerySchema,
   type MailingScheduleDto,
@@ -21,12 +20,13 @@ import {
   mailingRuns,
   mailingScheduleExcludedDates,
   mailingScheduleExcludedPersons,
-  mailingScheduleExcludedScopes,
-  mailingScheduleExcludedUsers,
+  mailingScheduleRecipients,
   mailingScheduleRoles,
   mailingSchedules,
-  mailingScheduleSections,
+  mailingScheduleScopes,
   persons,
+  userConstructionObjects,
+  userDepartments,
   users,
 } from '../db/schema';
 import { config } from '../config';
@@ -36,6 +36,7 @@ import { requirePrincipal } from '../auth/plugin';
 import { orderByFrom, pageParams } from '../lib/pagination';
 import { nextRunAt } from '../services/mailings/schedule';
 import { createRun, performRun } from '../services/mailings/run';
+import { recipientScopeWhere } from '../services/mailings/role-digest';
 
 /**
  * Расписания рассылок и их история (ADR 0075).
@@ -53,34 +54,23 @@ type ScheduleRow = typeof mailingSchedules.$inferSelect;
 const idParams = z.object({ id: z.string().uuid() });
 
 /**
- * Всё, что хранится у расписания отдельными строками: исключения (ADR 0075) и настройки сводки
- * (ADR 0078). Собираются и заменяются вместе — расписание правится целиком, одной формой.
+ * Всё, что хранится у расписания отдельными строками: исключения задания водителям (ADR 0075) и
+ * аудитория сводки (ADR 0078, ADR 0093). Собираются и заменяются вместе — расписание правится
+ * целиком, одной формой.
  */
 interface ScheduleSettings {
   excludedRunDates: string[];
   excludedRouteDates: string[];
   excludedPersonIds: string[];
   roles: Role[];
-  sections: DigestSection[];
-  excludedUserIds: string[];
-  excludedObjectIds: string[];
-  excludedDepartmentIds: string[];
+  recipientUserIds: string[];
+  objectIds: string[];
+  departmentIds: string[];
 }
 
 /** Повтор в присланном списке означает ровно то же, что одна запись; первичный ключ — отказ БД. */
 function unique<T extends string>(values: readonly T[]): T[] {
   return [...new Set(values)];
-}
-
-/**
- * Ключ раздела лежит текстом (реестр закрыт контрактами, а не типом в БД), и в старой строке мог
- * остаться раздел, снятый с поддержки. В настройку он не возвращается: показывать и отправлять по
- * нему всё равно нечего, а править расписание с непонятным пунктом в списке администратор не смог
- * бы — схема правки такой ключ отвергнет.
- */
-const KNOWN_SECTIONS = new Set<string>(DIGEST_SECTIONS);
-function isDigestSection(value: string): value is DigestSection {
-  return KNOWN_SECTIONS.has(value);
 }
 
 /** Порядок дней смысла не несёт, а набор читают глазами — и в форме, и в списке расписаний. */
@@ -99,10 +89,9 @@ async function settingsByScheduleId(ids: string[]): Promise<Map<string, Schedule
       excludedRouteDates: [],
       excludedPersonIds: [],
       roles: [],
-      sections: [],
-      excludedUserIds: [],
-      excludedObjectIds: [],
-      excludedDepartmentIds: [],
+      recipientUserIds: [],
+      objectIds: [],
+      departmentIds: [],
     };
     map.set(scheduleId, found);
     return found;
@@ -143,47 +132,31 @@ async function settingsByScheduleId(ids: string[]): Promise<Map<string, Schedule
     .orderBy(asc(mailingScheduleRoles.role));
   for (const row of roles) of(row.scheduleId).roles.push(row.role);
 
-  // Разделы — по `position`: порядок здесь и есть настройка, ею задан порядок печати в письме.
-  const sections = await db
+  const recipients = await db
     .select({
-      scheduleId: mailingScheduleSections.scheduleId,
-      section: mailingScheduleSections.section,
+      scheduleId: mailingScheduleRecipients.scheduleId,
+      userId: mailingScheduleRecipients.userId,
     })
-    .from(mailingScheduleSections)
-    .where(inArray(mailingScheduleSections.scheduleId, ids))
-    .orderBy(asc(mailingScheduleSections.position));
-  for (const row of sections) {
-    if (isDigestSection(row.section)) of(row.scheduleId).sections.push(row.section);
-  }
-
-  const excludedUsers = await db
-    .select({
-      scheduleId: mailingScheduleExcludedUsers.scheduleId,
-      userId: mailingScheduleExcludedUsers.userId,
-    })
-    .from(mailingScheduleExcludedUsers)
-    .where(inArray(mailingScheduleExcludedUsers.scheduleId, ids))
-    .orderBy(asc(mailingScheduleExcludedUsers.userId));
-  for (const row of excludedUsers) of(row.scheduleId).excludedUserIds.push(row.userId);
+    .from(mailingScheduleRecipients)
+    .where(inArray(mailingScheduleRecipients.scheduleId, ids))
+    .orderBy(asc(mailingScheduleRecipients.userId));
+  for (const row of recipients) of(row.scheduleId).recipientUserIds.push(row.userId);
 
   // Площадки и отделы лежат одной таблицей (в строке заполнено ровно одно из полей), а в настройку
   // расходятся двумя наборами: в форме это два разных справочника.
   const scopes = await db
     .select({
-      scheduleId: mailingScheduleExcludedScopes.scheduleId,
-      objectId: mailingScheduleExcludedScopes.objectId,
-      departmentId: mailingScheduleExcludedScopes.departmentId,
+      scheduleId: mailingScheduleScopes.scheduleId,
+      objectId: mailingScheduleScopes.objectId,
+      departmentId: mailingScheduleScopes.departmentId,
     })
-    .from(mailingScheduleExcludedScopes)
-    .where(inArray(mailingScheduleExcludedScopes.scheduleId, ids))
-    .orderBy(
-      asc(mailingScheduleExcludedScopes.objectId),
-      asc(mailingScheduleExcludedScopes.departmentId),
-    );
+    .from(mailingScheduleScopes)
+    .where(inArray(mailingScheduleScopes.scheduleId, ids))
+    .orderBy(asc(mailingScheduleScopes.objectId), asc(mailingScheduleScopes.departmentId));
   for (const row of scopes) {
     const target = of(row.scheduleId);
-    if (row.objectId) target.excludedObjectIds.push(row.objectId);
-    else if (row.departmentId) target.excludedDepartmentIds.push(row.departmentId);
+    if (row.objectId) target.objectIds.push(row.objectId);
+    else if (row.departmentId) target.departmentIds.push(row.departmentId);
   }
 
   return map;
@@ -195,14 +168,12 @@ function toDto(row: ScheduleRow, settings: ScheduleSettings | undefined): Mailin
     type: row.type,
     name: row.name,
     isEnabled: row.isEnabled,
-    periodicity: row.periodicity,
     // `time` отдаётся драйвером как «18:00:00», а правится тем же полем формы, которое схема
     // принимает в виде «ЧЧ:ММ»: отдай как есть — и сохранение вернуло бы ошибку формата.
     sendAt: row.sendAt.slice(0, 5),
-    weekday: row.weekday,
     runWeekdays: row.runWeekdays,
     windowFromDays: row.windowFromDays,
-    windowToDays: row.windowToDays,
+    windowDays: row.windowDays,
     nextRunAt: row.nextRunAt?.toISOString() ?? null,
     version: row.version,
     createdAt: row.createdAt.toISOString(),
@@ -211,11 +182,75 @@ function toDto(row: ScheduleRow, settings: ScheduleSettings | undefined): Mailin
     excludedRouteDates: settings?.excludedRouteDates ?? [],
     excludedPersonIds: settings?.excludedPersonIds ?? [],
     roles: settings?.roles ?? [],
-    sections: settings?.sections ?? [],
-    excludedUserIds: settings?.excludedUserIds ?? [],
-    excludedObjectIds: settings?.excludedObjectIds ?? [],
-    excludedDepartmentIds: settings?.excludedDepartmentIds ?? [],
+    requestScope: row.requestScope,
+    showTrips: row.showTrips,
+    showOnsite: row.showOnsite,
+    scopeMode: row.scopeMode,
+    objectIds: settings?.objectIds ?? [],
+    departmentIds: settings?.departmentIds ?? [],
+    recipientMode: row.recipientMode,
+    recipientUserIds: settings?.recipientUserIds ?? [],
   };
+}
+
+/** Области одной учётки: названия для подписи и идентификаторы для счётчика у строки справочника. */
+interface UserScopes {
+  names: string[];
+  objectIds: string[];
+  departmentIds: string[];
+}
+
+/**
+ * Площадки и отделы кандидатов — пачкой на весь список, иначе форма с полусотней кандидатов задала
+ * бы полсотни запросов ради подписи. Названия и идентификаторы вместе: подпись читает человек, а по
+ * идентификаторам форма считает, скольких получателей задевает отметка площадки.
+ */
+async function scopesByUser(userIds: string[]): Promise<Map<string, UserScopes>> {
+  const map = new Map<string, UserScopes>();
+  if (userIds.length === 0) return map;
+
+  const of = (userId: string): UserScopes => {
+    const found = map.get(userId) ?? { names: [], objectIds: [], departmentIds: [] };
+    map.set(userId, found);
+    return found;
+  };
+
+  const objects = await db
+    .select({
+      userId: userConstructionObjects.userId,
+      objectId: userConstructionObjects.constructionObjectId,
+      name: constructionObjects.name,
+    })
+    .from(userConstructionObjects)
+    .innerJoin(
+      constructionObjects,
+      eq(constructionObjects.id, userConstructionObjects.constructionObjectId),
+    )
+    .where(inArray(userConstructionObjects.userId, userIds))
+    .orderBy(asc(constructionObjects.name));
+  for (const row of objects) {
+    const target = of(row.userId);
+    target.names.push(row.name);
+    target.objectIds.push(row.objectId);
+  }
+
+  const depts = await db
+    .select({
+      userId: userDepartments.userId,
+      departmentId: userDepartments.departmentId,
+      name: departments.name,
+    })
+    .from(userDepartments)
+    .innerJoin(departments, eq(departments.id, userDepartments.departmentId))
+    .where(inArray(userDepartments.userId, userIds))
+    .orderBy(asc(departments.name));
+  for (const row of depts) {
+    const target = of(row.userId);
+    target.names.push(row.name);
+    target.departmentIds.push(row.departmentId);
+  }
+
+  return map;
 }
 
 /** Итоги запуска приходят из `jsonb` нетипизированными: всё, что не объект, — пустые итоги. */
@@ -261,21 +296,13 @@ async function loadSchedule(
  */
 function nextRunFor(v: {
   isEnabled: boolean;
-  periodicity: MailingPeriodicity;
   sendAt: string;
-  weekday: number | null | undefined;
   runWeekdays: number[];
   excludedRunDates: string[];
 }): Date | null {
   if (!v.isEnabled) return null;
   return nextRunAt(
-    {
-      periodicity: v.periodicity,
-      sendAt: v.sendAt,
-      weekday: v.weekday ?? null,
-      runWeekdays: v.runWeekdays,
-      excludedDates: v.excludedRunDates,
-    },
+    { sendAt: v.sendAt, runWeekdays: v.runWeekdays, excludedDates: v.excludedRunDates },
     new Date(),
     config.mail.timezone,
   );
@@ -296,10 +323,9 @@ async function replaceSettings(
     | 'excludedRouteDates'
     | 'excludedPersonIds'
     | 'roles'
-    | 'sections'
-    | 'excludedUserIds'
-    | 'excludedObjectIds'
-    | 'excludedDepartmentIds'
+    | 'recipientUserIds'
+    | 'objectIds'
+    | 'departmentIds'
   >,
 ): Promise<void> {
   await tx
@@ -310,14 +336,9 @@ async function replaceSettings(
     .where(eq(mailingScheduleExcludedPersons.scheduleId, scheduleId));
   await tx.delete(mailingScheduleRoles).where(eq(mailingScheduleRoles.scheduleId, scheduleId));
   await tx
-    .delete(mailingScheduleSections)
-    .where(eq(mailingScheduleSections.scheduleId, scheduleId));
-  await tx
-    .delete(mailingScheduleExcludedUsers)
-    .where(eq(mailingScheduleExcludedUsers.scheduleId, scheduleId));
-  await tx
-    .delete(mailingScheduleExcludedScopes)
-    .where(eq(mailingScheduleExcludedScopes.scheduleId, scheduleId));
+    .delete(mailingScheduleRecipients)
+    .where(eq(mailingScheduleRecipients.scheduleId, scheduleId));
+  await tx.delete(mailingScheduleScopes).where(eq(mailingScheduleScopes.scheduleId, scheduleId));
 
   const dates = [
     ...unique(v.excludedRunDates).map((excludedOn) => ({
@@ -339,32 +360,19 @@ async function replaceSettings(
   const roles = unique(v.roles).map((role) => ({ scheduleId, role }));
   if (roles.length > 0) await tx.insert(mailingScheduleRoles).values(roles);
 
-  // Порядок присланного массива и есть порядок разделов в письме: нумеруем 1..N по месту в нём.
-  // Хранить порядок отдельным полем приходится потому, что строки таблицы порядка не имеют.
-  const sections = unique(v.sections).map((section, index) => ({
-    scheduleId,
-    section,
-    position: index + 1,
-  }));
-  if (sections.length > 0) await tx.insert(mailingScheduleSections).values(sections);
-
-  const excludedUsers = unique(v.excludedUserIds).map((userId) => ({ scheduleId, userId }));
-  if (excludedUsers.length > 0) await tx.insert(mailingScheduleExcludedUsers).values(excludedUsers);
+  const recipients = unique(v.recipientUserIds).map((userId) => ({ scheduleId, userId }));
+  if (recipients.length > 0) await tx.insert(mailingScheduleRecipients).values(recipients);
 
   // Площадки и отделы — одна таблица с заполненным ровно одним полем: так же, как заказчик заявки.
   const scopes = [
-    ...unique(v.excludedObjectIds).map((objectId) => ({
-      scheduleId,
-      objectId,
-      departmentId: null,
-    })),
-    ...unique(v.excludedDepartmentIds).map((departmentId) => ({
+    ...unique(v.objectIds).map((objectId) => ({ scheduleId, objectId, departmentId: null })),
+    ...unique(v.departmentIds).map((departmentId) => ({
       scheduleId,
       objectId: null,
       departmentId,
     })),
   ];
-  if (scopes.length > 0) await tx.insert(mailingScheduleExcludedScopes).values(scopes);
+  if (scopes.length > 0) await tx.insert(mailingScheduleScopes).values(scopes);
 }
 
 /**
@@ -387,7 +395,7 @@ async function assertRowsExist(
 async function assertScheduleRefs(
   v: Pick<
     MailingScheduleDto,
-    'excludedPersonIds' | 'excludedUserIds' | 'excludedObjectIds' | 'excludedDepartmentIds'
+    'excludedPersonIds' | 'recipientUserIds' | 'objectIds' | 'departmentIds'
   >,
 ): Promise<void> {
   await assertRowsExist(
@@ -399,20 +407,20 @@ async function assertScheduleRefs(
   await assertRowsExist(
     users,
     users.id,
-    v.excludedUserIds,
-    'В списке исключённых получателей есть неизвестная учётная запись',
+    v.recipientUserIds,
+    'В списке получателей есть неизвестная учётная запись',
   );
   await assertRowsExist(
     constructionObjects,
     constructionObjects.id,
-    v.excludedObjectIds,
-    'В списке исключённых площадок есть неизвестный объект',
+    v.objectIds,
+    'В списке площадок есть неизвестный объект',
   );
   await assertRowsExist(
     departments,
     departments.id,
-    v.excludedDepartmentIds,
-    'В списке исключённых отделов есть неизвестный отдел',
+    v.departmentIds,
+    'В списке отделов есть неизвестный отдел',
   );
 }
 
@@ -436,6 +444,64 @@ export default async function adminMailingsRoutes(app: FastifyInstance): Promise
     return rows.map((row) => toDto(row, settings.get(row.id)));
   });
 
+  /**
+   * Кого зацепит расписание при таком наборе ролей и областей.
+   *
+   * Своим маршрутом, а не фильтрами `GET /users`, по двум причинам. Правило «нет площадко-отдельной
+   * оси — фильтр по площадкам не применяется» в общий список учёток не встроить, не сломав его для
+   * прочих экранов. И цифра под формой обязана совпадать с тем, кого возьмёт планировщик, —
+   * совпадение двух похожих запросов гарантировать нечем, а расходятся они молча.
+   *
+   * Подтверждённый адрес отдаётся признаком, а не фильтром: человека, которому письмо не уйдёт,
+   * администратор должен увидеть в форме и завести ему адрес, а не гадать, почему список короче
+   * ожидаемого.
+   */
+  r.get(
+    '/recipient-candidates',
+    { ...manageGuards, schema: { querystring: mailingRecipientCandidatesQuerySchema } },
+    async (req): Promise<MailingRecipientCandidateDto[]> => {
+      const q = req.query;
+      const rows = await db
+        .select({
+          userId: users.id,
+          fullName: users.fullName,
+          role: users.role,
+          emailVerifiedAt: users.emailVerifiedAt,
+        })
+        .from(users)
+        .where(
+          and(
+            inArray(users.role, q.roles),
+            eq(users.isActive, true),
+            isNull(users.deletedAt),
+            recipientScopeWhere({
+              scopeMode: q.scopeMode,
+              objectIds: q.objectIds ?? [],
+              departmentIds: q.departmentIds ?? [],
+            }),
+          ),
+        )
+        .orderBy(asc(users.fullName));
+      if (rows.length === 0) return [];
+
+      const scopes = await scopesByUser(rows.map((row) => row.userId));
+      return rows.map((row) => {
+        const scope = scopes.get(row.userId);
+        return {
+          userId: row.userId,
+          fullName: row.fullName,
+          // Роль у действующей учётки заполнена всегда: без неё она не активируется, а неактивные
+          // сюда не попадают. Значение по умолчанию — защита от строки, заведённой в обход портала.
+          role: row.role ?? ('observer' as Role),
+          scopeLabel: scope?.names.join(', ') ?? '',
+          objectIds: scope?.objectIds ?? [],
+          departmentIds: scope?.departmentIds ?? [],
+          emailVerified: row.emailVerifiedAt !== null,
+        };
+      });
+    },
+  );
+
   r.post(
     '/schedules',
     { ...manageGuards, schema: { body: createMailingScheduleSchema } },
@@ -452,17 +518,18 @@ export default async function adminMailingsRoutes(app: FastifyInstance): Promise
             type: body.type,
             name: body.name,
             isEnabled: body.isEnabled,
-            periodicity: body.periodicity,
             sendAt: body.sendAt,
-            weekday: body.weekday ?? null,
             runWeekdays,
-            windowFromDays: body.windowFromDays ?? null,
-            windowToDays: body.windowToDays ?? null,
+            windowFromDays: body.windowFromDays,
+            windowDays: body.windowDays,
+            requestScope: body.requestScope,
+            showTrips: body.showTrips,
+            showOnsite: body.showOnsite,
+            scopeMode: body.scopeMode,
+            recipientMode: body.recipientMode,
             nextRunAt: nextRunFor({
               isEnabled: body.isEnabled,
-              periodicity: body.periodicity,
               sendAt: body.sendAt,
-              weekday: body.weekday,
               runWeekdays,
               excludedRunDates: body.excludedRunDates,
             }),
@@ -511,17 +578,18 @@ export default async function adminMailingsRoutes(app: FastifyInstance): Promise
           .set({
             name: body.name,
             isEnabled: body.isEnabled,
-            periodicity: body.periodicity,
             sendAt: body.sendAt,
-            weekday: body.weekday ?? null,
             runWeekdays,
-            windowFromDays: body.windowFromDays ?? null,
-            windowToDays: body.windowToDays ?? null,
+            windowFromDays: body.windowFromDays,
+            windowDays: body.windowDays,
+            requestScope: body.requestScope,
+            showTrips: body.showTrips,
+            showOnsite: body.showOnsite,
+            scopeMode: body.scopeMode,
+            recipientMode: body.recipientMode,
             nextRunAt: nextRunFor({
               isEnabled: body.isEnabled,
-              periodicity: body.periodicity,
               sendAt: body.sendAt,
-              weekday: body.weekday,
               runWeekdays,
               excludedRunDates: body.excludedRunDates,
             }),

@@ -1,9 +1,21 @@
 import { useState } from 'react';
-import { App, Alert, Button, Card, DatePicker, Form, Select, Space, Typography } from 'antd';
+import {
+  App,
+  Alert,
+  Button,
+  Card,
+  DatePicker,
+  Form,
+  InputNumber,
+  Select,
+  Space,
+  Typography,
+} from 'antd';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import dayjs from 'dayjs';
+import type dayjs from 'dayjs';
 import {
   EMAIL_VERIFICATION_ENABLED,
+  MAILING_WINDOW_MAX_DAYS,
   MAIL_TEST_KINDS,
   mailTestKindLabels,
   mailTestKindNeedsDate,
@@ -14,6 +26,7 @@ import {
 } from '@technic/contracts';
 import { mailingsApi } from '../../api/resources';
 import { MailingSchedulesBlock } from './MailingSchedulesBlock';
+import { WindowFromField } from './MailingScheduleForm';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
 
@@ -21,6 +34,8 @@ interface FormValues {
   kind: MailTestKind;
   toUserId: string;
   date?: dayjs.Dayjs;
+  windowFromDays?: number;
+  windowDays?: number;
   driverPersonId?: string;
   sampleUserId?: string;
 }
@@ -89,6 +104,12 @@ export function MailingsTab() {
         kind: values.kind,
         toUserId: values.toUserId,
         ...(values.date ? { date: values.date.format(DATE) } : {}),
+        // Окно уходит вместе с датой и только с ней: у писем про доступ периода нет вовсе, и
+        // спрашивать про него нечего. Проверяют же им ровно то письмо, которое уйдёт по
+        // расписанию, — те же два числа настраивает и оно.
+        ...(needsDate
+          ? { windowFromDays: values.windowFromDays ?? 0, windowDays: values.windowDays ?? 1 }
+          : {}),
         ...(values.driverPersonId ? { driverPersonId: values.driverPersonId } : {}),
         ...(values.sampleUserId ? { sampleUserId: values.sampleUserId } : {}),
       }),
@@ -122,7 +143,9 @@ export function MailingsTab() {
             form={form}
             layout="vertical"
             requiredMark={false}
-            initialValues={{ kind: TEST_KINDS[0] }}
+            // Окно по умолчанию — «сегодняшний день, на день»: оно отвечает на вопрос «как вообще
+            // выглядит письмо», а конкретную настройку расписания повторяют здесь руками.
+            initialValues={{ kind: TEST_KINDS[0], windowFromDays: 0, windowDays: 1 }}
             onFinish={(v) => sendMut.mutate(v)}
             onValuesChange={(changed: Partial<FormValues>) => {
               // Водитель осмыслен только вместе с видом письма и датой: на другой день у выбранного
@@ -153,6 +176,25 @@ export function MailingsTab() {
               >
                 <DatePicker format="DD.MM.YYYY" style={{ width: '100%' }} />
               </Form.Item>
+            )}
+
+            {/* Окно данных спрашивается теми же двумя полями, что и в расписании: письмо собирается
+                от дня рассылки вперёд, и проверка «как оно выглядит» обязана уметь повторить ровно
+                ту настройку, с которой оно уйдёт само. */}
+            {needsDate && (
+              <Space align="start" size={16} wrap>
+                <Form.Item
+                  name="windowFromDays"
+                  label="Первый день"
+                  rules={[{ required: true }]}
+                  extra="Считается от даты выше — она играет роль дня рассылки"
+                >
+                  <WindowFromField />
+                </Form.Item>
+                <Form.Item name="windowDays" label="На сколько дней" rules={[{ required: true }]}>
+                  <InputNumber min={1} max={MAILING_WINDOW_MAX_DAYS} style={{ width: 160 }} />
+                </Form.Item>
+              </Space>
             )}
 
             {/* Образец нужен только письмам «про человека», и выбирать его не из чего, пока не задана

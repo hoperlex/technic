@@ -1,21 +1,28 @@
-import { isClosedRequestStatus, type Permission, type RequestStatus } from '@technic/contracts';
+import {
+  vehicleRequestPath,
+  vehicleRequestTab,
+  vehicleRoutePath,
+  waybillPath,
+  type Permission,
+  type RequestStatus,
+} from '@technic/contracts';
 
 /**
- * Адреса записей портала: куда ведёт номер, названный в чужом списке.
+ * Право на переход по номеру записи, названному в чужом списке.
  *
- * Одним местом, потому что переход состоит из двух половин, и врозь они расходятся: адрес вкладки
- * («какой список показать») и право на неё («показывать ли ссылку вообще»). Ссылка, ведущая туда,
- * куда роль не пускают, кончается пустым экраном или редиректом — это хуже, чем номер обычным
- * текстом, каким он и был.
+ * Переход состоит из двух половин, и врозь они расходятся: адрес вкладки («какой список
+ * показать») и право на неё («показывать ли ссылку вообще»). Здесь осталась вторая: сами адреса
+ * переехали в контракты (`packages/contracts/src/links.ts`), потому что спрашивают их двое —
+ * портал и почта, печатающая номер заявки в сводке. Разойдись эти два места, ссылка из письма
+ * привела бы на список, в котором записи нет.
  *
- * Каждая функция возвращает `null`, если целевая вкладка этой роли не положена: место вызова
- * тогда рисует прежний текст.
+ * Прав контракты не знают намеренно: у портала это `can`, у письма — область видимости
+ * получателя. Каждая функция здесь возвращает `null`, если целевая вкладка этой роли не положена:
+ * место вызова тогда рисует прежний текст. Ссылка, ведущая туда, куда роль не пускают, кончается
+ * пустым экраном или редиректом — это хуже, чем номер обычным текстом, каким он и был.
  */
 
 type Can = (permission: Permission) => boolean;
-
-/** Ключи вкладок раздела «Заказ автотехники» — те же, что читает `VehicleRequestsPage`. */
-export type VehicleTab = 'requests' | 'on-site' | 'routes' | 'history' | 'archive';
 
 /**
  * «Маршруты» — рейсы собственных машин. Спрашиваются оба права, которыми закрыты ручки рейсов:
@@ -28,34 +35,29 @@ export const canSeeRoutesTab = (can: Can): boolean =>
 /** Архив удалённых записей (ADR 0070, ADR 0063) — по матрице прав это администратор. */
 export const canSeeArchiveTab = (can: Can): boolean => can('archive.read');
 
-/**
- * Вкладка, на которой заявку на технику показывают сейчас: пока её ведут — в списке, закрытую —
- * в журнале (ADR 0029), удалённую — в архиве (ADR 0070). Без этого выбора ссылка приводила бы на
- * список, в котором закрытой заявки нет, и карточка открывалась бы поверх чужих строк.
- */
-export function vehicleRequestTab(status: RequestStatus, deleted = false): VehicleTab {
-  if (deleted) return 'archive';
-  return isClosedRequestStatus(status) ? 'history' : 'requests';
-}
-
 /** Заявка на технику: вкладка по её состоянию плюс просьба открыть карточку. */
 export function vehicleRequestLink(
   can: Can,
   request: { id: string; status: RequestStatus; deleted?: boolean },
 ): string | null {
   if (!can('vehicleRequests.read')) return null;
-  const tab = vehicleRequestTab(request.status, request.deleted);
-  if (tab === 'archive' && !canSeeArchiveTab(can)) return null;
-  return `/vehicle-requests?tab=${tab}&open=${request.id}`;
+  // Вкладка спрашивается тем же правилом, каким её выберет адрес: удалённая заявка живёт в
+  // архиве, и без этой проверки ссылка на неё показалась бы роли, которой архив не положен.
+  if (vehicleRequestTab(request.status, request.deleted) === 'archive' && !canSeeArchiveTab(can))
+    return null;
+  return vehicleRequestPath(request);
 }
 
 /** Рейс: вкладка «Маршруты» с открытой карточкой рейса. */
 export function vehicleRouteLink(can: Can, routeId: string): string | null {
   if (!canSeeRoutesTab(can)) return null;
-  return `/vehicle-requests?tab=routes&open=${routeId}`;
+  return vehicleRoutePath(routeId);
 }
 
-/** Заявка на вывоз мусора: список заявок либо архив, если её удалили. */
+/**
+ * Заявка на вывоз мусора: список заявок либо архив, если её удалили. Адрес остаётся здесь —
+ * в письмах заявки на мусор не печатаются, и второго спрашивающего у него нет.
+ */
 export function wasteRequestLink(
   can: Can,
   request: { id: string; deleted?: boolean },
@@ -65,11 +67,8 @@ export function wasteRequestLink(
   return `/waste?tab=${request.deleted ? 'archive' : 'requests'}&open=${request.id}`;
 }
 
-/**
- * Путевой лист: журнал учёта с поиском по номеру. Карточки у листа нет — журнал и есть карточка:
- * строка отвечает, на какую машину лист выписан, что с ним стало и чем подшит (ADR 0037).
- */
+/** Путевой лист: журнал учёта с поиском по номеру. */
 export function waybillLink(can: Can, number: string): string | null {
   if (!can('waybills.read')) return null;
-  return `/waybills?number=${encodeURIComponent(number)}`;
+  return waybillPath(number);
 }

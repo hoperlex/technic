@@ -9,15 +9,8 @@ import {
 import { config } from '../../config';
 import { queueMail } from '../mail';
 import { buildDriverRoutesMail, driversWithRoutes } from './driver-routes';
-import {
-  buildRoleDigestMail,
-  digestExcludedScopes,
-  digestPeriod,
-  digestRecipients,
-  digestSectionsOf,
-  digestUpcoming,
-} from './role-digest';
-import { nextRunAt, routeWindowOf, type SchedulePlan } from './schedule';
+import { buildRoleDigestMail, digestRecipients, digestScopes } from './role-digest';
+import { nextRunAt, type SchedulePlan, windowOf } from './schedule';
 
 /**
  * Запуск рассылки (ADR 0075): от «наступило время» до «письма в очереди».
@@ -52,9 +45,7 @@ async function planOf(scheduleId: string, row: typeof mailingSchedules.$inferSel
     .from(mailingScheduleExcludedDates)
     .where(eq(mailingScheduleExcludedDates.scheduleId, scheduleId));
   const plan: SchedulePlan = {
-    periodicity: row.periodicity,
     sendAt: row.sendAt,
-    weekday: row.weekday,
     runWeekdays: row.runWeekdays,
     excludedDates: excluded.filter((e) => e.kind === 'run').map((e) => e.on),
   };
@@ -157,10 +148,10 @@ async function runDriverRoutes(input: {
   excludedRouteDates: string[];
 }): Promise<RunStats> {
   const { run, schedule } = input;
-  const window = routeWindowOf(
+  const window = windowOf(
     run.plannedAt,
-    schedule.windowFromDays ?? 1,
-    schedule.windowToDays ?? 1,
+    schedule.windowFromDays,
+    schedule.windowDays,
     config.mail.timezone,
   );
   // Границы данных записываются в запуск: повтор упавшей вечерней рассылки обязан взять те же дни,
@@ -235,33 +226,40 @@ async function runRoleDigest(input: {
   schedule: typeof mailingSchedules.$inferSelect;
 }): Promise<RunStats> {
   const { run, schedule } = input;
-  const period = digestPeriod(run.plannedAt, schedule.periodicity, config.mail.timezone);
-  const upcoming = digestUpcoming(run.plannedAt, config.mail.timezone);
-  // Границы периода фиксируются в запуске: повтор обязан собрать сводку за те же сутки.
+  const window = windowOf(
+    run.plannedAt,
+    schedule.windowFromDays,
+    schedule.windowDays,
+    config.mail.timezone,
+  );
+  // Границы окна фиксируются в запуске: повтор обязан собрать сводку за те же дни, а не сдвинуть
+  // их к моменту повтора.
   await db
     .update(mailingRuns)
-    .set({ periodStart: period.start, periodEnd: period.end })
+    .set({ periodStart: window.from, periodEnd: window.to })
     .where(eq(mailingRuns.id, run.id));
 
-  const [sections, scopes, recipients] = await Promise.all([
-    digestSectionsOf(schedule.id),
-    digestExcludedScopes(schedule.id),
-    digestRecipients(schedule.id),
-  ]);
+  const scopes = await digestScopes(schedule.id);
+  const audience = {
+    scopeMode: schedule.scopeMode,
+    objectIds: scopes.objectIds,
+    departmentIds: scopes.departmentIds,
+    recipientMode: schedule.recipientMode,
+  };
+  const recipients = await digestRecipients(schedule.id, audience);
   const stats: RunStats = { sent: 0, withoutEmail: 0, excluded: 0, empty: 0 };
-  if (sections.length === 0) return stats;
 
   for (const recipient of recipients) {
     const mail = await buildRoleDigestMail({
       recipient,
-      sections,
-      periodStart: period.start,
-      periodEnd: period.end,
-      upcomingFrom: upcoming.from,
-      upcomingTo: upcoming.to,
-      excludedObjectIds: scopes.objectIds,
-      excludedDepartmentIds: scopes.departmentIds,
-      periodicity: schedule.periodicity,
+      windowFrom: window.from,
+      windowTo: window.to,
+      requestScope: schedule.requestScope,
+      showTrips: schedule.showTrips,
+      showOnsite: schedule.showOnsite,
+      scopeMode: audience.scopeMode,
+      objectIds: audience.objectIds,
+      departmentIds: audience.departmentIds,
     });
     if (!mail) {
       stats.empty += 1;

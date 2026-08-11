@@ -103,10 +103,10 @@ describe.skipIf(!DB_URL)('метрики почты (живая схема)', ()
         type: 'driver_routes',
         name: `Метрики ${suffix}`,
         isEnabled: false,
-        periodicity: 'daily',
         sendAt: '18:00',
+        runWeekdays: [1, 2, 3, 4, 5, 6, 7],
         windowFromDays: 1,
-        windowToDays: 1,
+        windowDays: 1,
         nextRunAt: new Date('2000-01-01T00:00:00Z'),
         createdBy: user!.id,
       })

@@ -1,130 +1,86 @@
-import { and, inArray, isNull, notInArray, or, sql, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import {
-  can,
-  canUse,
-  DIGEST_SECTION_ROW_LIMIT,
-  type DigestSection,
-  GLOBAL_ONLY_DIGEST_SECTIONS,
-  isObjectScopedRole,
-  isDepartmentScopedRole,
+  type AudienceMode,
+  DIGEST_TABLE_ROW_LIMIT,
+  type DigestRequestScope,
 } from '@technic/contracts';
 import type { Principal } from '../../auth/principal';
-import { serviceRequests, vehicleRequests, wasteRequests } from '../../db/schema';
-import {
-  operatorVisibilityWhere,
-  serviceExecutorVisibilityWhere,
-  serviceRequestScopeWhere,
-  vehicleRequestVisibilityWhere,
-  wasteRequestVisibilityWhere,
-} from '../../lib/access';
+import { vehicleRequests } from '../../db/schema';
+import { vehicleRequestVisibilityWhere } from '../../lib/access';
 
 /**
- * Область видимости получателя дайджеста (ADR 0078).
+ * Область видимости получателя сводки (ADR 0078, ADR 0093).
  *
  * Главное правило письма: в нём нет ничего, чего человек не увидел бы, открыв портал под собой.
- * Поэтому раздел не «фильтруется под роль» — он строится ровно тем же условием, каким модуль
+ * Поэтому строки не «фильтруются под роль» — они строятся ровно тем же условием, каким модуль
  * ограничивает свой список: те же функции из `lib/access.ts`, тот же `Principal`.
  *
  * Выбранная в расписании роль — фильтр получателей, а не выдача прав. Совпадение роли не добавляет
- * человеку ни строчки: если у него нет права на модуль, раздел этого модуля в его письме
- * отсутствует целиком.
+ * человеку ни строчки: нет права на модуль — письмо не собирается вовсе.
  */
 
 export interface DigestContext {
   principal: Principal;
-  /** Период событий: предыдущий полный день или предыдущая полная неделя. */
-  periodStart: string;
-  periodEnd: string;
-  /** Горизонт разделов «ближайшие»: от даты запуска вперёд. */
-  upcomingFrom: string;
-  upcomingTo: string;
-  /** Площадки, вычтенные администратором из рассылки. */
-  excludedObjectIds: string[];
-  /** Отделы, вычтенные администратором из рассылки. */
-  excludedDepartmentIds: string[];
+  /** Окно данных, календарными датами включительно: `from` — первый день, `to` — последний. */
+  windowFrom: string;
+  windowTo: string;
+  /** Чьи заявки показывать. */
+  requestScope: DigestRequestScope;
+  /** Как заданы площадки и отделы рассылки; при `all` перечни пусты и в условие не идут. */
+  scopeMode: AudienceMode;
+  objectIds: string[];
+  departmentIds: string[];
 }
 
-export interface DigestRow {
-  /** Строка письма целиком: раздел сам решает, что в ней важно. */
-  text: string;
-}
-
-export interface DigestSectionResult {
-  title: string;
-  /** Сколько записей всего — печатается даже когда строк больше лимита. */
-  total: number;
-  rows: DigestRow[];
-  /** Куда идти за остальным; пусто — экрана под этот раздел нет. */
-  link?: string;
-}
-
-export type DigestSectionProvider = (ctx: DigestContext) => Promise<DigestSectionResult | null>;
-
-/** Строк в разделе печатается не больше лимита: письмо — повод открыть портал, а не выгрузка. */
+/** Строк таблицы печатается не больше лимита: письмо — повод открыть портал, а не выгрузка. */
 export function limitRows<T>(rows: T[]): T[] {
-  return rows.slice(0, DIGEST_SECTION_ROW_LIMIT);
+  return rows.slice(0, DIGEST_TABLE_ROW_LIMIT);
 }
 
 /**
- * Доступен ли раздел получателю. Проверяется до запроса: раздел, который человеку не положен, не
- * должен даже пытаться собрать данные — иначе «пусто» и «нельзя» стали бы одним состоянием.
+ * Условие видимости заявок на технику для этого получателя, вместе с охватом расписания.
  *
- * Разделы путевых листов и рейсов идут только тем, у кого нет ни объектной, ни отделовой оси: в
- * портале у этих модулей нет области видимости вовсе, и сузить их под площадку нечем.
- */
-export function sectionAllowed(section: DigestSection, principal: Principal): boolean {
-  if (GLOBAL_ONLY_DIGEST_SECTIONS.includes(section)) {
-    const scoped =
-      (principal.role !== null && isObjectScopedRole(principal.role)) ||
-      (principal.role !== null && isDepartmentScopedRole(principal.role)) ||
-      principal.counterpartyId !== null;
-    return !scoped && can(principal, 'waybills.read');
-  }
-  if (section.startsWith('vehicle_')) return can(principal, 'vehicleRequests.read');
-  if (section.startsWith('waste_')) return canUse(principal, 'wasteRequests.read');
-  // Модуль обслуживания оргтехники закрыт одним правом (ADR 0085): что внутри доступно, решает
-  // коридор переходов, а не список ролей. `can`, а не `canUse`: областью раздел не открывается —
-  // пустой она у видящей роли не бывает, и у сервисной компании её задаёт не набор площадок, а
-  // назначение исполнителем.
-  if (section.startsWith('service_')) return can(principal, 'serviceRequests.read');
-  return false;
-}
-
-/**
- * Условие видимости заявок на технику для этого получателя, вместе с исключёнными областями.
- *
- * Исключение вычитается, а не добавляется: администратор может убрать площадку из рассылки, но не
- * может показать человеку то, чего он в портале не видит.
+ * Три сужения подряд, и порядок здесь не декоративный: сначала своя область получателя, потом —
+ * охват. Ни одно из них не расширяет предыдущее, поэтому «все площадки рассылки» никогда не
+ * покажет человеку больше, чем его собственный список площадок.
  */
 export function vehicleRequestScope(ctx: DigestContext): SQL | undefined {
-  const visibility = vehicleRequestVisibilityWhere(
-    ctx.principal,
-    vehicleRequests.objectId,
-    vehicleRequests.departmentId,
-  );
-  const excludedObjects =
-    ctx.excludedObjectIds.length > 0
-      ? or(
-          isNull(vehicleRequests.objectId),
-          notInArray(vehicleRequests.objectId, ctx.excludedObjectIds),
-        )
-      : undefined;
-  const excludedDepartments =
-    ctx.excludedDepartmentIds.length > 0
-      ? or(
-          isNull(vehicleRequests.departmentId),
-          notInArray(vehicleRequests.departmentId, ctx.excludedDepartmentIds),
-        )
-      : undefined;
   return and(
     // Удалённые в письмо не попадают никогда: право на архив есть только у администратора, а
     // сводка — не журнал удалений.
     isNull(vehicleRequests.deletedAt),
-    visibility,
-    excludedObjects,
-    excludedDepartments,
+    vehicleRequestVisibilityWhere(
+      ctx.principal,
+      vehicleRequests.objectId,
+      vehicleRequests.departmentId,
+    ),
     lessorScope(ctx.principal),
+    requestScopeWhere(ctx),
   );
+}
+
+/**
+ * Охват заявок (ADR 0093): чьи заявки показывать внутри области получателя.
+ *
+ * `author` — только заведённые им самим. `scope` — вся его область, отмеченные площадки при этом не
+ * участвуют: они отбирают получателей, а не данные. `all` — область, пересечённая с отмеченными
+ * площадками и отделами; при режиме «все» пересекать не с чем, и условия нет.
+ */
+function requestScopeWhere(ctx: DigestContext): SQL | undefined {
+  if (ctx.requestScope === 'author') return eq(vehicleRequests.createdBy, ctx.principal.id);
+  if (ctx.requestScope !== 'all' || ctx.scopeMode !== 'selected') return undefined;
+
+  // Пустой набор в `inArray` drizzle разворачивает в `false`; собираем условие только из
+  // непустых половин, иначе отмеченные площадки без единого отдела вынесли бы из письма всё.
+  const parts: SQL[] = [];
+  if (ctx.objectIds.length > 0) parts.push(inArray(vehicleRequests.objectId, ctx.objectIds));
+  if (ctx.departmentIds.length > 0) {
+    parts.push(inArray(vehicleRequests.departmentId, ctx.departmentIds));
+  }
+  // Отмечено «перечисленные», но перечень пуст — такого состояния контракт не допускает; если оно
+  // всё же случилось, честнее показать пусто, чем всё.
+  if (parts.length === 0) return sql`false`;
+  return parts.length === 1 ? parts[0] : or(...parts);
 }
 
 /**
@@ -142,110 +98,4 @@ function lessorScope(principal: Principal): SQL | undefined {
     JOIN vehicles v ON v.id = vra.vehicle_id
     WHERE vra.request_id = ${vehicleRequests.id} AND v.lessor_id = ${lessorId}
   )`;
-}
-
-/** Условие видимости заявок на вывоз мусора для этого получателя. */
-export function wasteRequestScope(ctx: DigestContext): SQL | undefined {
-  const excludedObjects =
-    ctx.excludedObjectIds.length > 0
-      ? notInArray(wasteRequests.objectId, ctx.excludedObjectIds)
-      : undefined;
-  return and(
-    isNull(wasteRequests.deletedAt),
-    wasteRequestVisibilityWhere(ctx.principal, wasteRequests.objectId),
-    operatorVisibilityWhere(ctx.principal, wasteRequests.operatorCounterpartyId),
-    excludedObjects,
-  );
-}
-
-/**
- * Условие видимости заявок на обслуживание оргтехники (ADR 0085).
- *
- * Обе оси сразу и ровно теми же функциями, что и список модуля: заказчик заявки — объект техники и
- * два отдела (подавший и владелец единицы), исполнитель — назначенный контрагент-сервис. Своего
- * запроса области у письма быть не может: разойдись он со списком хоть на одну ветку, письмо стало
- * бы каналом, через который наружу уходит то, чего человеку в портале не показывают.
- */
-export function serviceRequestScope(ctx: DigestContext): SQL | undefined {
-  const excludedObjects =
-    ctx.excludedObjectIds.length > 0
-      ? notInArray(serviceRequests.equipmentObjectId, ctx.excludedObjectIds)
-      : undefined;
-  /**
-   * Отдел вычитается по обеим колонкам: заявка относится и к тому, кто её подал, и к тому, за кем
-   * числится техника, — исключение убирает её вместе с любой из двух сторон. `isNull` обязателен:
-   * `NULL NOT IN (...)` даёт `NULL`, и «к отделам не относящаяся» заявка выпала бы из письма молча,
-   * стоило администратору исключить хоть один отдел.
-   */
-  const excludedDepartments =
-    ctx.excludedDepartmentIds.length > 0
-      ? and(
-          or(
-            isNull(serviceRequests.customerDepartmentId),
-            notInArray(serviceRequests.customerDepartmentId, ctx.excludedDepartmentIds),
-          ),
-          or(
-            isNull(serviceRequests.equipmentDepartmentId),
-            notInArray(serviceRequests.equipmentDepartmentId, ctx.excludedDepartmentIds),
-          ),
-        )
-      : undefined;
-  return and(
-    isNull(serviceRequests.deletedAt),
-    serviceRequestScopeWhere(
-      ctx.principal,
-      serviceRequests.equipmentObjectId,
-      serviceRequests.customerDepartmentId,
-      serviceRequests.equipmentDepartmentId,
-    ),
-    serviceExecutorVisibilityWhere(ctx.principal, serviceRequests.serviceCounterpartyId),
-    excludedObjects,
-    excludedDepartments,
-  );
-}
-
-/** Незакрытая заявка — «Новая» или «В работе»: остальные два статуса терминальные. */
-export function openStatuses(column: typeof vehicleRequests.status | typeof wasteRequests.status) {
-  return inArray(column, ['new', 'confirmed']);
-}
-
-/** Границы суток по часовому поясу портала: `timestamptz` сравнивается моментами, а не датами. */
-export function dayBounds(dateOnly: string, timeZone: string): { from: Date; to: Date } {
-  // Смещение зоны берётся у самой даты: у зон с переводом часов оно разное в разные дни.
-  const probe = new Date(`${dateOnly}T12:00:00Z`);
-  const offsetMinutes = zoneOffset(probe, timeZone);
-  const from = new Date(new Date(`${dateOnly}T00:00:00Z`).getTime() - offsetMinutes * 60_000);
-  const to = new Date(new Date(`${dateOnly}T23:59:59.999Z`).getTime() - offsetMinutes * 60_000);
-  return { from, to };
-}
-
-function zoneOffset(at: Date, timeZone: string): number {
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone,
-    hour12: false,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  }).formatToParts(at);
-  const get = (type: string) => Number(parts.find((p) => p.type === type)?.value ?? '0');
-  const asUtc = Date.UTC(
-    get('year'),
-    get('month') - 1,
-    get('day'),
-    get('hour') % 24,
-    get('minute'),
-    get('second'),
-  );
-  return (asUtc - Math.floor(at.getTime() / 1000) * 1000) / 60_000;
-}
-
-/**
- * Отсекает «создание» из истории статусов: переход «— → Новая» пишется при заведении заявки, и без
- * этого условия заведённые за день посчитались бы дважды — и как новые, и как сменившие статус.
- */
-export function realStatusChange(fromStatusColumn: unknown): SQL {
-  return sql`${fromStatusColumn} IS NOT NULL`;
 }

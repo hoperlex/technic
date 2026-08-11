@@ -186,10 +186,7 @@ export function CheckboxPicker({
           {allowAll ? allLabel : 'Выбрать все'}
         </Checkbox>
         {filterToggle ? (
-          <Checkbox
-            checked={onlyMatching}
-            onChange={(e) => setOnlyMatching(e.target.checked)}
-          >
+          <Checkbox checked={onlyMatching} onChange={(e) => setOnlyMatching(e.target.checked)}>
             {filterToggle.label}
           </Checkbox>
         ) : null}

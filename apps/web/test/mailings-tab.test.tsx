@@ -78,6 +78,15 @@ const shown = (label: string) => screen.queryByLabelText(label) !== null;
 const DATE_FIELD = 'Дата, за которую собрать письмо';
 const DRIVER_FIELD = 'Водитель (образец)';
 const SAMPLE_FIELD = 'Чьими глазами смотреть';
+const WINDOW_FROM_FIELD = 'Первый день';
+const WINDOW_DAYS_FIELD = 'На сколько дней';
+
+/**
+ * Окно данных по умолчанию: «сегодняшний день, на день». Отправляется всегда, когда у письма есть
+ * период, — сервер разбирает его теми же полями, что и расписание, и письмо без окна собралось бы
+ * не за те дни.
+ */
+const DEFAULT_WINDOW = { windowFromDays: 0, windowDays: 1 };
 
 describe('состав полей следует из вида письма', () => {
   for (const kind of KINDS) {
@@ -90,6 +99,11 @@ describe('состав полей следует из вида письма', ()
       await selectOption('Тип письма', mailTestKindLabels[kind]);
 
       await waitFor(() => expect(shown(DATE_FIELD)).toBe(mailTestKindNeedsDate[kind]));
+
+      // Окно данных ходит парой с датой: она играет роль дня рассылки, а окно отсчитывается от
+      // неё. У писем про доступ нет ни того, ни другого — периода у события не бывает.
+      expect(shown(WINDOW_FROM_FIELD)).toBe(mailTestKindNeedsDate[kind]);
+      expect(shown(WINDOW_DAYS_FIELD)).toBe(mailTestKindNeedsDate[kind]);
 
       // Водителя выбирают из тех, у кого на эту дату есть рейсы, поэтому поле появляется только
       // вместе с заданной датой: пустой список читался бы как «водителей нет вовсе».
@@ -136,7 +150,32 @@ describe('отправка отладочного письма', () => {
       toUserId: ADMIN_ID,
       // Дата уходит ключом, а не в том виде, в каком её показывает поле: разбирает её сервер.
       date: '2026-08-10',
+      ...DEFAULT_WINDOW,
       driverPersonId: DRIVER_PERSON_ID,
+    });
+  });
+
+  it('окно данных уходит тем, каким его настроили', async () => {
+    // Отладкой проверяют то самое письмо, которое уйдёт по расписанию: спроси она только дату, на
+    // экране оказалось бы письмо за один день там, где рассылка собирает неделю.
+    const http = renderTab();
+    await screen.findByLabelText('Тип письма');
+
+    typeDate(DATE_FIELD, '10.08.2026');
+    await selectOption(WINDOW_FROM_FIELD, 'Завтрашний день');
+    const days = screen.getByLabelText(WINDOW_DAYS_FIELD);
+    fireEvent.change(days, { target: { value: '7' } });
+    fireEvent.blur(days);
+    await selectOption('Получатель', /Админов Антон/);
+    fireEvent.click(screen.getByRole('button', { name: 'Отправить тест' }));
+
+    await waitFor(() => expect(http.countOf(SEND)).toBe(1));
+    expect(http.lastCall(SEND)?.body as MailTestBody).toEqual({
+      kind: 'driver_routes',
+      toUserId: ADMIN_ID,
+      date: '2026-08-10',
+      windowFromDays: 1,
+      windowDays: 7,
     });
   });
 
@@ -158,6 +197,7 @@ describe('отправка отладочного письма', () => {
       kind: 'role_digest',
       toUserId: ADMIN_ID,
       date: '2026-08-10',
+      ...DEFAULT_WINDOW,
       sampleUserId: SAMPLE_USER_ID,
     });
   });
@@ -181,6 +221,7 @@ describe('отправка отладочного письма', () => {
       kind: 'driver_routes',
       toUserId: ADMIN_ID,
       date: '2026-08-11',
+      ...DEFAULT_WINDOW,
     });
   });
 

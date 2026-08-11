@@ -12,6 +12,34 @@ import { TIME_FORMAT_MESSAGE, TIME_PATTERN } from './time';
  * видно только в доставленном письме.
  */
 
+/**
+ * Окно данных: с какого дня относительно дня рассылки и на сколько дней.
+ *
+ * Начало и длительность, а не пара границ. Пара «от и до» позволяет записать «конец раньше начала»
+ * — состояние, которое приходится проверять и в схеме, и в контракте, и в форме; длительностью оно
+ * невыразимо. Конец считается: `to = from + days - 1`.
+ *
+ * Смотрит только вперёд: `0` — сегодняшний день, `1` — завтрашний. Потолки не физические, а
+ * смысловые: задание водителю на месяц вперёд — это уже не задание, рейсы за такой срок успеют
+ * переназначить.
+ *
+ * Стоит выше отладки намеренно: те же два числа спрашивает отладочная отправка — иначе «проверить
+ * письмо» показывало бы не то письмо, которое уйдёт.
+ */
+export const MAILING_WINDOW_MAX_FROM = 30;
+export const MAILING_WINDOW_MAX_DAYS = 31;
+
+/**
+ * Готовые варианты первого дня для формы. Числом их всё равно вводить можно — это подсказка, а не
+ * закрытый список: «завтрашний» и «+3» покрывают почти все расписания, но не все.
+ */
+export const MAILING_WINDOW_PRESETS = [
+  { value: 0, label: 'Сегодняшний день' },
+  { value: 1, label: 'Завтрашний день' },
+  { value: 2, label: 'Послезавтра (+2)' },
+  { value: 3, label: '+3 дня' },
+] as const;
+
 /** Виды писем, которые умеет отправить отладка. Реестр общий: по нему портал строит список. */
 export const MAIL_TEST_KINDS = [
   'driver_routes',
@@ -100,8 +128,15 @@ export const mailTestSchema = z
      * настоящие рабочие данные, и уходить оно может лишь тому, кто и так видит их все в портале.
      */
     toUserId: uuidSchema,
-    /** Дата, за которую собирается содержимое; нужна не всем видам писем. */
+    /** День рассылки, от которого считается окно данных; нужен не всем видам писем. */
     date: dateOnlySchema.optional(),
+    /**
+     * Окно данных от этого дня — те же две настройки, что у расписания. Умолчание «сегодняшний, на
+     * день» отвечает на вопрос «как вообще выглядит письмо»; проверить конкретную настройку можно,
+     * повторив её здесь.
+     */
+    windowFromDays: z.number().int().min(0).max(MAILING_WINDOW_MAX_FROM).optional().default(0),
+    windowDays: z.number().int().min(1).max(MAILING_WINDOW_MAX_DAYS).optional().default(1),
     /**
      * Чьё письмо собрать. Пусто — сервер возьмёт первого водителя, у которого на эту дату есть
      * рейсы: чаще всего проверяют «как вообще выглядит задание», а не письмо конкретного человека.
@@ -133,67 +168,52 @@ export const MAIL_TEST_SUBJECT_PREFIX = '[ТЕСТ]';
 export const MAIL_TEST_NOTE =
   'Письмо отправлено вручную для проверки вёрстки и доставки. Ссылки в нём недействительны.';
 
-// ── Разделы ролевого дайджеста (ADR 0078) ──
+// ── Содержание ролевой сводки ──
 //
-// Реестр закрытый: администратор выбирает разделы из списка, а не описывает выборку сам. Причина не
-// в удобстве — в области видимости. Каждый раздел знает, чем ограничить данные под конкретного
-// получателя, и произвольный запрос из настройки этого знать не может.
+// Сводка отвечает на вопрос «что оформлено на эти дни», и строки её собираются по действующим
+// путевым листам, а не по заявкам: лист — признак того, что работа не только заказана, но и
+// оформлена, а заявка без листа может ещё двадцать раз переехать.
 //
-// Стоит выше расписаний намеренно: набором разделов проверяется настройка сводки, и схема
-// расписания ссылается на этот реестр — объявить его ниже значило бы читать его до объявления.
+// Таблиц ровно две, и делятся они по бланку, потому что по бланку расходится привязка листа: 4-П и
+// форма № 3 висят на рейсе (перевозки), ЭСМ-2 — на заявке и неделе работы (техника на объектах).
+// Реестра разделов, из которого администратор собирал письмо, больше нет — вместе с ним сняты
+// девять разделов «что произошло за период».
 
-export const DIGEST_SECTIONS = [
-  'vehicle_requests_changes',
-  'vehicle_requests_open',
-  'vehicle_requests_awaiting_approval',
-  'vehicle_routes_upcoming',
-  'waybills_issued',
-  'waste_requests_changes',
-  'waste_requests_open',
-  'waste_requests_upcoming',
-  // Третий модуль заявок (ADR 0085). Раздел у него один и отвечает не на «что произошло», а на
-  // «что стоит на вас»: половина шагов цикла за сервисной компанией, у которой нет служебной
-  // причины заходить в портал, пока её не позвали, — и назначенная заявка иначе неделю лежит
-  // непрочитанной (план оргтехники, Р38).
-  'service_requests_waiting',
-] as const;
-export type DigestSection = (typeof DIGEST_SECTIONS)[number];
+/**
+ * Чьи заявки показывать. Отдельная настройка, потому что вопрос «кому писать» и вопрос «про что
+ * писать» — разные: одному и тому же диспетчеру нужна то вся площадка, то только его собственные
+ * заявки.
+ *
+ * Ни одно значение не расширяет область видимости получателя (ADR 0078 п. 2): `all` — это «всё, что
+ * человек и так видит в портале, за вычетом неотмеченного в расписании», а не «всё, что есть в
+ * базе». Отмеченные площадки и отделы участвуют в данных только при `all` — этим он от `scope` и
+ * отличается.
+ */
+export const DIGEST_REQUEST_SCOPES = ['author', 'scope', 'all'] as const;
+export type DigestRequestScope = (typeof DIGEST_REQUEST_SCOPES)[number];
 
-export const digestSectionLabels: Record<DigestSection, string> = {
-  vehicle_requests_changes: 'Заявки на технику: заведено и сменило статус',
-  vehicle_requests_open: 'Заявки на технику: незакрытые',
-  vehicle_requests_awaiting_approval: 'Заявки на технику: ждут визы',
-  vehicle_routes_upcoming: 'Рейсы на ближайшие дни',
-  waybills_issued: 'Выписанные путевые листы',
-  waste_requests_changes: 'Вывоз мусора: заведено и сменило статус',
-  waste_requests_open: 'Вывоз мусора: незакрытые',
-  waste_requests_upcoming: 'Вывоз мусора: ожидают подачи',
-  // «Ждут вас», а не «ждут решения»: строки раздела отбираются стороной самого получателя
-  // (`isWaitingOn`), и у двух людей с одним и тем же расписанием он собирается разный.
-  service_requests_waiting: 'Заявки на обслуживание: ждут вас',
+export const digestRequestScopeLabels: Record<DigestRequestScope, string> = {
+  author: 'Только заявки получателя',
+  scope: 'Заявки его площадок и отделов',
+  all: 'Все площадки и отделы рассылки',
 };
 
 /**
- * Разделы, которые видны только ролям с глобальным доступом. У путевых листов и рейсов в портале
- * нет объектной области видимости вовсе: доступ к ним закрыт правом, а не набором площадок. Значит
- * сузить такой раздел под штаб или отдел нечем — и в их письмо он просто не попадает.
+ * Как задан набор у оси аудитории: «все и будущие» или перечень.
  *
- * Заявок на обслуживание здесь нет намеренно: у них обе оси области на месте — объект техники и два
- * отдела заказчика, а у внешнего исполнителя третья, назначение, — сузить раздел есть чем.
+ * Режим нужен именно потому, что отбор явный. Сохрани мы перечень всех отмеченных строк, заведённая
+ * завтра площадка или принятый на работу штаб в рассылку не попали бы — их не было в списке, когда
+ * его отмечали, — и проявилось бы это только ненаступившим письмом.
  */
-export const GLOBAL_ONLY_DIGEST_SECTIONS: readonly DigestSection[] = [
-  'vehicle_routes_upcoming',
-  'waybills_issued',
-];
-
-/** Сколько строк раздела печатается в письме; остальное — счётчиком и ссылкой в портал. */
-export const DIGEST_SECTION_ROW_LIMIT = 5;
+export const AUDIENCE_MODES = ['all', 'selected'] as const;
+export type AudienceMode = (typeof AUDIENCE_MODES)[number];
 
 /**
- * На сколько дней вперёд смотрят разделы «ближайшие»: рейсы и заявки с плановой подачей. Дальше
- * этого горизонта планы всё равно меняются, а письмо превращается в выгрузку.
+ * Строк таблицы на один день окна; сверх лимита — счётчик и ссылка на экран с полным списком.
+ * Потолок против письма, которое почтовый клиент обрежет на середине (Gmail — после ~102 КБ), а не
+ * рабочее ограничение: дневная сводка крупной площадки в него укладывается.
  */
-export const DIGEST_UPCOMING_DAYS = 3;
+export const DIGEST_TABLE_ROW_LIMIT = 60;
 
 // ── Расписания рассылок (ADR 0075) ──
 //
@@ -211,14 +231,6 @@ export type MailingType = (typeof MAILING_TYPES)[number];
 export const mailingTypeLabels: Record<MailingType, string> = {
   driver_routes: 'Задание водителям на рейсы',
   role_digest: 'Сводка по ролям',
-};
-
-export const MAILING_PERIODICITIES = ['daily', 'weekly'] as const;
-export type MailingPeriodicity = (typeof MAILING_PERIODICITIES)[number];
-
-export const mailingPeriodicityLabels: Record<MailingPeriodicity, string> = {
-  daily: 'Ежедневно',
-  weekly: 'Раз в неделю',
 };
 
 export const MAILING_RUN_STATUSES = ['pending', 'running', 'done', 'failed', 'skipped'] as const;
@@ -249,27 +261,19 @@ export const mailingRunStatusColors: Record<MailingRunStatus, string> = {
 const WEEKDAY_MESSAGE = 'День недели — число от 1 (понедельник) до 7 (воскресенье)';
 const mailingWeekdaySchema = z.number().int().min(1, WEEKDAY_MESSAGE).max(7, WEEKDAY_MESSAGE);
 
-/**
- * Потолок окна рейсов в днях. Ограничение не физическое, а смысловое: задание водителю на месяц
- * вперёд — это уже не задание, а рейсы за него столько раз успеют переназначить.
- */
-export const MAILING_WINDOW_MAX_DAYS = 30;
-
 export interface MailingScheduleDto {
   id: string;
   type: MailingType;
   name: string;
   isEnabled: boolean;
-  periodicity: MailingPeriodicity;
   /** Местное время отправки в часовом поясе портала, «ЧЧ:ММ». */
   sendAt: string;
-  /** ISO-день недели у недельной рассылки; у ежедневной — `null`. */
-  weekday: number | null;
-  /** По каким дням недели выполняется ежедневная рассылка. */
+  /** По каким дням недели выполняется рассылка. Недельная — это набор из одного дня. */
   runWeekdays: number[];
-  /** Окно рейсов задания водителю в днях от даты запуска; у прочих типов — `null`. */
-  windowFromDays: number | null;
-  windowToDays: number | null;
+  /** С какого дня относительно дня рассылки берутся данные: 0 — сегодняшний, 1 — завтрашний. */
+  windowFromDays: number;
+  /** Сколько дней в окне, считая первый. */
+  windowDays: number;
   /** Когда сработает в следующий раз; `null` — выключено или срабатывать больше нечему. */
   nextRunAt: string | null;
   version: number;
@@ -287,14 +291,19 @@ export interface MailingScheduleDto {
    * «кому вообще отправлять».
    */
   roles: Role[];
-  /** Разделы письма в том порядке, в котором они печатаются. */
-  sections: DigestSection[];
-  /** Учётные записи, которым сводка не уходит, хотя роль подходит. */
-  excludedUserIds: string[];
-  /** Площадки, данные которых в сводку не попадают: вычитаются из области получателя. */
-  excludedObjectIds: string[];
-  /** Отделы, данные которых в сводку не попадают. */
-  excludedDepartmentIds: string[];
+  /** Чьи заявки показывать. */
+  requestScope: DigestRequestScope;
+  /** Печатать ли таблицу перевозок (листы 4-П и формы № 3). */
+  showTrips: boolean;
+  /** Печатать ли таблицу техники на объектах (листы ЭСМ-2). */
+  showOnsite: boolean;
+  /** Как задан набор площадок и отделов рассылки; при `all` перечни пусты. */
+  scopeMode: AudienceMode;
+  objectIds: string[];
+  departmentIds: string[];
+  /** Как задан набор получателей; при `all` перечень пуст. */
+  recipientMode: AudienceMode;
+  recipientUserIds: string[];
 }
 
 export interface MailingRunDto {
@@ -321,35 +330,32 @@ const mailingScheduleObject = z
     name: z.string().trim().min(1, 'Укажите название рассылки').max(200),
     /** Новую рассылку заводят выключенной: сначала настраивают, потом включают. */
     isEnabled: z.boolean().optional().default(false),
-    periodicity: z.enum(MAILING_PERIODICITIES).optional().default('daily'),
     sendAt: z.string().trim().regex(TIME_PATTERN, TIME_FORMAT_MESSAGE),
-    weekday: mailingWeekdaySchema.nullable().optional(),
     runWeekdays: z.array(mailingWeekdaySchema).optional().default([1, 2, 3, 4, 5, 6, 7]),
     windowFromDays: z
       .number()
       .int()
-      .min(0, 'Окно рейсов считается в днях от дня рассылки')
-      .max(MAILING_WINDOW_MAX_DAYS, `Окно рейсов не длиннее ${MAILING_WINDOW_MAX_DAYS} дней`)
-      .nullable()
-      .optional(),
-    windowToDays: z
+      .min(0, 'Окно считается в днях вперёд от дня рассылки')
+      .max(MAILING_WINDOW_MAX_FROM, `Первый день окна не дальше ${MAILING_WINDOW_MAX_FROM} дней`),
+    windowDays: z
       .number()
       .int()
-      .min(0, 'Окно рейсов считается в днях от дня рассылки')
-      .max(MAILING_WINDOW_MAX_DAYS, `Окно рейсов не длиннее ${MAILING_WINDOW_MAX_DAYS} дней`)
-      .nullable()
-      .optional(),
+      .min(1, 'В окне хотя бы один день')
+      .max(MAILING_WINDOW_MAX_DAYS, `Окно не длиннее ${MAILING_WINDOW_MAX_DAYS} дней`),
     excludedRunDates: z.array(dateOnlySchema).optional().default([]),
     excludedRouteDates: z.array(dateOnlySchema).optional().default([]),
     excludedPersonIds: z.array(uuidSchema).optional().default([]),
-    // Настройки сводки (ADR 0078). Умолчание — пустой набор: у задания водителям их не бывает
-    // вовсе, и требовать от формы присылать пустые массивы ради чужого типа рассылки незачем.
+    // Настройки сводки. Умолчание — пустой набор и «все»: у задания водителям их не бывает вовсе,
+    // и требовать от формы присылать пустые массивы ради чужого типа рассылки незачем.
     roles: z.array(roleSchema).optional().default([]),
-    /** Порядок важен: в этом же порядке разделы печатаются в письме. */
-    sections: z.array(z.enum(DIGEST_SECTIONS)).optional().default([]),
-    excludedUserIds: z.array(uuidSchema).optional().default([]),
-    excludedObjectIds: z.array(uuidSchema).optional().default([]),
-    excludedDepartmentIds: z.array(uuidSchema).optional().default([]),
+    requestScope: z.enum(DIGEST_REQUEST_SCOPES).optional().default('scope'),
+    showTrips: z.boolean().optional().default(true),
+    showOnsite: z.boolean().optional().default(true),
+    scopeMode: z.enum(AUDIENCE_MODES).optional().default('all'),
+    objectIds: z.array(uuidSchema).optional().default([]),
+    departmentIds: z.array(uuidSchema).optional().default([]),
+    recipientMode: z.enum(AUDIENCE_MODES).optional().default('all'),
+    recipientUserIds: z.array(uuidSchema).optional().default([]),
   })
   .strict();
 
@@ -358,19 +364,9 @@ type MailingScheduleFields = z.infer<typeof mailingScheduleObject>;
 /**
  * Правила применимости полей — те же, что стоят ограничениями на таблице `mailing_schedules`.
  * Проверяются на всём наборе сразу, а не по полю: применимость каждого из них определяется
- * соседним — днём недели распоряжается периодичность, окном дат — тип рассылки.
+ * соседним — набором аудитории распоряжается тип рассылки, перечнем — режим оси.
  */
 function checkMailingSchedule(v: MailingScheduleFields, ctx: z.RefinementCtx): void {
-  if (v.periodicity === 'weekly' && v.weekday == null) {
-    ctx.addIssue({ code: 'custom', path: ['weekday'], message: 'Выберите день недели' });
-  }
-  if (v.periodicity === 'daily' && v.weekday != null) {
-    ctx.addIssue({
-      code: 'custom',
-      path: ['weekday'],
-      message: 'День недели бывает только у недельной рассылки',
-    });
-  }
   // Расписание, не выполняющееся никогда, выражается флагом «выключено», а не пустым набором дней.
   if (v.runWeekdays.length === 0) {
     ctx.addIssue({
@@ -383,42 +379,12 @@ function checkMailingSchedule(v: MailingScheduleFields, ctx: z.RefinementCtx): v
     ctx.addIssue({ code: 'custom', path: ['runWeekdays'], message: 'День недели указан дважды' });
   }
 
-  // Окно дат — принадлежность задания водителю: у сводки период считается от даты запуска.
-  if (v.type === 'driver_routes') {
-    if (v.windowFromDays == null) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['windowFromDays'],
-        message: 'Укажите, с какого дня брать рейсы',
-      });
-    }
-    if (v.windowToDays == null) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['windowToDays'],
-        message: 'Укажите, по какой день брать рейсы',
-      });
-    }
-    if (v.windowFromDays != null && v.windowToDays != null && v.windowToDays < v.windowFromDays) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['windowToDays'],
-        message: 'Конец окна рейсов раньше его начала',
-      });
-    }
-  } else if (v.windowFromDays != null || v.windowToDays != null) {
-    ctx.addIssue({
-      code: 'custom',
-      path: ['windowFromDays'],
-      message: 'Окно рейсов бывает только у задания водителям',
-    });
-  }
-
-  // Роли и разделы — принадлежность сводки (ADR 0078), как окно дат — задания водителям.
+  // Аудитория и содержание — принадлежность сводки: получателей задания водителям задаёт не роль,
+  // а наличие рейса в окне, и показывать ему нечего, кроме его же рейсов.
   if (v.type === 'role_digest') {
-    // Расписание без ролей не найдёт ни одного получателя, а без разделов соберёт пустое письмо,
-    // которое всё равно не отправится. И то и другое — рассылка, каждое утро работающая вхолостую:
-    // выключить её флагом честнее, чем оставить включённой и ничего не делающей.
+    // Расписание без ролей не найдёт ни одного получателя, а без единой таблицы соберёт пустое
+    // письмо, которое всё равно не отправится. И то и другое — рассылка, каждое утро работающая
+    // вхолостую: выключить её флагом честнее, чем оставить включённой и ничего не делающей.
     if (v.roles.length === 0) {
       ctx.addIssue({
         code: 'custom',
@@ -426,11 +392,28 @@ function checkMailingSchedule(v: MailingScheduleFields, ctx: z.RefinementCtx): v
         message: 'Выберите хотя бы одну роль-получателя',
       });
     }
-    if (v.sections.length === 0) {
+    if (!v.showTrips && !v.showOnsite) {
       ctx.addIssue({
         code: 'custom',
-        path: ['sections'],
-        message: 'Выберите хотя бы один раздел сводки',
+        path: ['showTrips'],
+        message: 'Выберите хотя бы одну таблицу: перевозки или технику на объектах',
+      });
+    }
+    // Перечень при режиме «перечисленные» пуст быть не может: это то же «никогда не выполняется»,
+    // выраженное вторым способом. А при режиме «все» — не может быть непустым: сохранённый рядом с
+    // «все» перечень однажды применили бы вместо него.
+    if (v.scopeMode === 'selected' && v.objectIds.length === 0 && v.departmentIds.length === 0) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['objectIds'],
+        message: 'Отметьте хотя бы одну площадку или отдел',
+      });
+    }
+    if (v.recipientMode === 'selected' && v.recipientUserIds.length === 0) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['recipientUserIds'],
+        message: 'Отметьте хотя бы одного получателя',
       });
     }
   } else {
@@ -441,23 +424,35 @@ function checkMailingSchedule(v: MailingScheduleFields, ctx: z.RefinementCtx): v
         message: 'Роли-получатели бывают только у сводки по ролям',
       });
     }
-    if (v.sections.length > 0) {
+    if (v.recipientUserIds.length > 0 || v.objectIds.length > 0 || v.departmentIds.length > 0) {
       ctx.addIssue({
         code: 'custom',
-        path: ['sections'],
-        message: 'Разделы письма бывают только у сводки по ролям',
+        path: ['recipientUserIds'],
+        message: 'Аудитория настраивается только у сводки по ролям',
       });
     }
   }
 
+  if (v.scopeMode === 'all' && (v.objectIds.length > 0 || v.departmentIds.length > 0)) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['objectIds'],
+      message: 'При отборе «все площадки и отделы» перечень не сохраняется',
+    });
+  }
+  if (v.recipientMode === 'all' && v.recipientUserIds.length > 0) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['recipientUserIds'],
+      message: 'При отборе «все получатели» перечень не сохраняется',
+    });
+  }
+
   // Повтор в выборе из закрытого списка — сбой формы, а не «то же самое дважды», и отвергается
-  // так же, как повтор дня недели. У разделов он вдобавок делает порядок печати неоднозначным.
-  // Молча схлопываются только наборы дат и карточек, где повтор ничего не решает.
+  // так же, как повтор дня недели. Молча схлопываются только наборы дат и карточек, где повтор
+  // ничего не решает.
   if (new Set(v.roles).size !== v.roles.length) {
     ctx.addIssue({ code: 'custom', path: ['roles'], message: 'Роль указана дважды' });
-  }
-  if (new Set(v.sections).size !== v.sections.length) {
-    ctx.addIssue({ code: 'custom', path: ['sections'], message: 'Раздел указан дважды' });
   }
 }
 
@@ -475,6 +470,64 @@ export const updateMailingScheduleSchema = mailingScheduleObject
   .superRefine(checkMailingSchedule);
 export type UpdateMailingScheduleInput = z.infer<typeof updateMailingScheduleSchema>;
 export type UpdateMailingScheduleBody = z.input<typeof updateMailingScheduleSchema>;
+
+/**
+ * Кандидат в получатели сводки: кого зацепит расписание при таком наборе ролей и областей.
+ *
+ * Считает сервер тем же отбором, каким рассылка выбирает адресатов, а не портал по выгруженному
+ * справочнику учёток. Причина не в экономии запроса: правило «нет площадко-отдельной оси — фильтр
+ * по площадкам не применяется» в общий список учёток не встроить, не сломав его для прочих
+ * экранов, а цифра под формой обязана совпадать с тем, кого возьмёт планировщик.
+ */
+export interface MailingRecipientCandidateDto {
+  userId: string;
+  fullName: string;
+  role: Role;
+  /** Площадки и отделы учётки одной строкой: по ней видно, за что человек попал в отбор. */
+  scopeLabel: string;
+  /**
+   * Те же области идентификаторами. Нужны форме, чтобы у строки справочника стоял счётчик
+   * «получателей: N»: список площадок ролями не сужается (иначе нечем было бы ограничить область
+   * данных), и без счётчика по нему не видно, кого именно отметка задевает.
+   */
+  objectIds: string[];
+  departmentIds: string[];
+  /** Адрес не подтверждён — письмо такому человеку не уйдёт (ADR 0072), и это видно в форме. */
+  emailVerified: boolean;
+}
+
+/** Список идентификаторов строкой через запятую — тем же приёмом, что фильтр действий в аудите. */
+const idListSchema = z
+  .string()
+  .max(4000)
+  .transform((v) =>
+    v
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => s !== ''),
+  )
+  .pipe(z.array(uuidSchema).max(100));
+
+export const mailingRecipientCandidatesQuerySchema = z
+  .object({
+    /** Роли-получатели: без них отбор пуст, и спрашивать нечего. */
+    roles: z
+      .string()
+      .max(500)
+      .transform((v) =>
+        v
+          .split(',')
+          .map((s) => s.trim())
+          .filter((s) => s !== ''),
+      )
+      .pipe(z.array(roleSchema).min(1).max(20)),
+    /** Отмеченные области; пусто — «все», и тогда ось в отборе не участвует. */
+    objectIds: idListSchema.optional(),
+    departmentIds: idListSchema.optional(),
+    scopeMode: z.enum(AUDIENCE_MODES).optional().default('all'),
+  })
+  .strict();
+export type MailingRecipientCandidatesQuery = z.infer<typeof mailingRecipientCandidatesQuerySchema>;
 
 export const MAILING_RUN_SORT_FIELDS = ['plannedAt', 'finishedAt', 'createdAt'] as const;
 

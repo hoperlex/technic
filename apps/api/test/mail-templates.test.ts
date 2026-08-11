@@ -89,6 +89,129 @@ describe('текстовая и HTML-версия', () => {
   });
 });
 
+/**
+ * Таблица сводки.
+ *
+ * Свойств здесь два. Первое — экранирование: в ячейки едут название объекта, адрес площадки и
+ * примечание, то есть тот же набранный человеком текст, что и в остальных письмах, только теперь
+ * рядом с разметкой таблицы. Второе — текстовая версия: таблица не рисуется псевдографикой, потому
+ * что моноширинного шрифта в text/plain никто не обещает, и проверка сторожит именно это.
+ */
+describe('таблица в письме', () => {
+  const ROW_HREF = 'https://portal.test/vehicle-requests?tab=requests&open=461';
+
+  const mail = renderMail({
+    title: 'Сводка на 12 августа',
+    blocks: [
+      {
+        kind: 'table',
+        head: ['Рейс', 'Заявка', 'Машина', 'Примечание'],
+        rows: [
+          [
+            { text: 'Р-48', href: 'https://portal.test/vehicle-requests?tab=routes&open=48' },
+            { text: 'ТС-461', href: ROW_HREF, sub: 'объект «Северный»' },
+            { text: 'КамАЗ 65201', sub: 'Е646СК799' },
+            { text: '' },
+          ],
+        ],
+      },
+    ],
+  });
+
+  it('HTML-версия печатает шапку и значения таблицей', () => {
+    expect(mail.html).toContain('<table');
+    for (const title of ['Рейс', 'Заявка', 'Машина', 'Примечание']) {
+      expect(mail.html).toContain(`>${title}</th>`);
+    }
+    expect(mail.html).toContain('Р-48');
+    expect(mail.html).toContain('ТС-461');
+    expect(mail.html).toContain('КамАЗ 65201');
+    expect(mail.html).toContain('Е646СК799');
+  });
+
+  it('ячейка со ссылкой кликабельна, ячейка без ссылки — просто текст', () => {
+    expect(mail.html).toContain(`<a href="${ROW_HREF.replace(/&/gu, '&amp;')}"`);
+    // Ссылок ровно столько, сколько ячеек с href: остальные значения остались текстом.
+    expect(mail.html.match(/<a href=/gu)).toHaveLength(2);
+  });
+
+  it('название объекта из ячейки не уезжает в почтовый клиент разметкой', () => {
+    const { html } = renderMail({
+      title: 'Сводка',
+      blocks: [
+        {
+          kind: 'table',
+          head: ['Заявка'],
+          rows: [
+            [
+              {
+                text: '<img src=x onerror="alert(1)">',
+                href: 'https://portal.test/vehicle-requests?a=1&b="2"',
+                sub: `объект <b>«Северный»</b> & 'Южный'`,
+              },
+            ],
+          ],
+        },
+      ],
+    });
+    expect(html).not.toContain('<img');
+    expect(html).toContain('&lt;img');
+    // Кавычка в адресе закрыла бы атрибут href и вынесла бы остаток строки в разметку.
+    expect(html).toContain('href="https://portal.test/vehicle-requests?a=1&amp;b=&quot;2&quot;"');
+    expect(html).not.toContain('<b>');
+    expect(html).toContain('&lt;b&gt;');
+    expect(html).toContain('&amp; &#39;Южный&#39;');
+  });
+
+  it('заголовок колонки тоже экранируется: его задаёт шаблон, но правило одно на всё письмо', () => {
+    const { html } = renderMail({
+      title: 'Сводка',
+      blocks: [{ kind: 'table', head: ['<Рейс>'], rows: [[{ text: 'Р-48' }]] }],
+    });
+    expect(html).toContain('&lt;Рейс&gt;');
+    expect(html).not.toContain('<Рейс>');
+  });
+
+  it('текстовая версия печатает строку полями, а не псевдографикой', () => {
+    expect(mail.text).toContain('Р-48');
+    expect(mail.text).toContain('Заявка: ТС-461, объект «Северный»');
+    expect(mail.text).toContain('Машина: КамАЗ 65201, Е646СК799');
+    // Адрес целиком: в текстовой версии кликают по самому адресу.
+    expect(mail.text).toContain(ROW_HREF);
+    // Рамки из палочек держатся на моноширинном шрифте, которого в text/plain никто не обещает.
+    expect(mail.text).not.toMatch(/[|+]|[─-╿]/u);
+    // Пустая ячейка пропущена: «Примечание:» без значения читателю ничего не сообщает.
+    expect(mail.text).not.toContain('Примечание');
+  });
+
+  it('строки таблицы не слипаются и не копят пустые строки', () => {
+    const { text } = renderMail({
+      title: 'Сводка',
+      blocks: [
+        {
+          kind: 'table',
+          head: ['Рейс', 'Заявка'],
+          rows: [
+            [{ text: 'Р-48' }, { text: 'ТС-461' }],
+            [{ text: 'Р-49' }, { text: 'ТС-455' }],
+          ],
+        },
+      ],
+    });
+    expect(text).toContain('Р-48\n  Заявка: ТС-461\n\nР-49');
+    expect(text).not.toMatch(/\n{3,}/u);
+  });
+
+  it('пустая таблица не роняет рендер: день окна может оказаться без единой записи', () => {
+    const empty = renderMail({
+      title: 'Сводка',
+      blocks: [{ kind: 'table', head: ['Рейс', 'Заявка'], rows: [] }],
+    });
+    expect(empty.html).toContain('<table');
+    expect(empty.text).toBe('Сводка');
+  });
+});
+
 describe('ссылки в письме', () => {
   const ORIGIN = 'https://auto.su10.ru';
 
