@@ -10,6 +10,7 @@ import {
   waybillStatusLabels,
 } from '@technic/contracts';
 import { vehicleRequestsApi, vehicleRoutesApi } from '../../api/resources';
+import { garageKeys } from '@entities/garage';
 import { errorMessage } from '../../utils/format';
 import { formatDateOnly } from './shared';
 import { VehicleRelocationModal } from './VehicleRelocationModal';
@@ -53,6 +54,7 @@ export function RequestRelocationsField({ request }: Props) {
       qc.invalidateQueries({ queryKey: ['vehicle-requests', request.id, 'relocations'] }),
       qc.invalidateQueries({ queryKey: ['vehicle-routes'] }),
       qc.invalidateQueries({ queryKey: ['vehicle-requests'] }),
+      qc.invalidateQueries({ queryKey: garageKeys.root }),
     ]);
   };
 

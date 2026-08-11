@@ -18,6 +18,7 @@ import {
 } from '@technic/contracts';
 import { waybillsApi } from '../api/resources';
 import { WaybillFilesCell } from '../components/WaybillFiles';
+import { garageKeys } from '@entities/garage';
 import { DataTable } from '@shared/ui';
 import { EntityLink } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
@@ -129,6 +130,7 @@ export function WaybillsPage() {
       void qc.invalidateQueries({ queryKey: ['waybills'] });
       // Аннулирование размораживает рейс: с выписанным листом его править нельзя, без него — можно.
       void qc.invalidateQueries({ queryKey: ['vehicle-routes'] });
+      void qc.invalidateQueries({ queryKey: garageKeys.root });
     },
     onError: (e) => message.error(errorMessage(e)),
   });

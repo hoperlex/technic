@@ -19,6 +19,7 @@ import {
   waybillStatusLabels,
 } from '@technic/contracts';
 import { driversApi, vehicleRoutesApi, vehiclesApi } from '../../api/resources';
+import { garageKeys } from '@entities/garage';
 import { AutoSelect } from '@shared/ui';
 import { DataTable, type CardConfig } from '@shared/ui';
 import { EntityLink } from '@shared/ui';
@@ -136,6 +137,7 @@ export function VehicleRoutesTab() {
     // журнала — и диспетчер идёт туда сразу. Правка состава и даты рейса переписывает уже
     // выписанный лист, поэтому гасится журнал на любое изменение, а не только на выдачу.
     void qc.invalidateQueries({ queryKey: ['waybills'] });
+    void qc.invalidateQueries({ queryKey: garageKeys.root });
   };
 
   const columns = [

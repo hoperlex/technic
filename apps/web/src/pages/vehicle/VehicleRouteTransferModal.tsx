@@ -13,6 +13,7 @@ import {
   vehicleSubstitutionWarning,
 } from '@technic/contracts';
 import { vehicleRequestsApi, vehicleRoutesApi } from '../../api/resources';
+import { garageKeys } from '@entities/garage';
 import { AutoSelect } from '@shared/ui';
 import { FormModal } from '@shared/ui';
 import { errorMessage } from '../../utils/format';
@@ -124,6 +125,7 @@ export function VehicleRouteTransferModal({ request, onClose, onDone }: Props) {
       await Promise.all([
         qc.invalidateQueries({ queryKey: ['vehicle-routes'] }),
         qc.invalidateQueries({ queryKey: ['vehicle-requests'] }),
+        qc.invalidateQueries({ queryKey: garageKeys.root }),
       ]);
       onDone(updated);
     },

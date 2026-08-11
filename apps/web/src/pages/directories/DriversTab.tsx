@@ -45,6 +45,7 @@ import {
 } from '@technic/contracts';
 import { driversApi } from '../../api/resources';
 import { PhoneField, PhoneLink } from '../../components/PhoneField';
+import { garageKeys } from '@entities/garage';
 import { DataTable, type CardConfig } from '@shared/ui';
 import { FormModal } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
@@ -177,7 +178,10 @@ export function DriversTab() {
     setOpen(false);
   };
 
-  const invalidate = () => void qc.invalidateQueries({ queryKey: ['drivers'] });
+  const invalidate = () => {
+    void qc.invalidateQueries({ queryKey: ['drivers'] });
+    void qc.invalidateQueries({ queryKey: garageKeys.root });
+  };
 
   const saveMut = useMutation({
     mutationFn: (values: DriverFormValues) => {

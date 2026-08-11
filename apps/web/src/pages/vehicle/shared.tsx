@@ -37,6 +37,7 @@ import { useIsMobile } from '@shared/lib';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage, formatDateTime } from '../../utils/format';
 import { formatDateOnly } from '../../utils/date';
+import { garageKeys } from '@entities/garage';
 import { objectsApi, objectKeys } from '@entities/object';
 import { departmentOptionsQuery } from '@entities/department';
 
@@ -585,6 +586,7 @@ export function useEarlyEnd() {
   const invalidate = () => {
     void qc.invalidateQueries({ queryKey: ['vehicle-requests'] });
     void qc.invalidateQueries({ queryKey: ['waybills'] });
+    void qc.invalidateQueries({ queryKey: garageKeys.root });
   };
 
   const requestMut = useMutation({

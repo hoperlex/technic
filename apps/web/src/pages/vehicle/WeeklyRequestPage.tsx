@@ -10,6 +10,7 @@ import {
   weeklyWeekBlocker,
 } from '@technic/contracts';
 import { weeklyRequestsApi } from '../../api/resources';
+import { garageKeys } from '@entities/garage';
 import { ReasonModal } from '../../components/CancelReasonModal';
 import { useAuth } from '../../auth/AuthContext';
 import { useVehicleClassifications } from '../../hooks/useVehicleClassifications';
@@ -120,6 +121,7 @@ export function WeeklyRequestPage() {
     // Продление срока перевыписывает ЭСМ-2 заказа (`extendSpecialEquipmentPeriod` → `syncEsm2Waybills`),
     // поэтому журнал листов после визы недели показывает смены, которых уже нет.
     void qc.invalidateQueries({ queryKey: ['waybills'] });
+    void qc.invalidateQueries({ queryKey: garageKeys.root });
   };
 
   /** Удавшееся действие снимает объяснения прошлого отказа: они относились к прежнему составу. */

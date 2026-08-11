@@ -88,6 +88,7 @@ import { TimeInput, optionalWorkTimeRule } from '../../components/TimeInput';
 import { UserAvatar } from '../../components/UserAvatar';
 import { ObjectCell, OBJECT_COLUMN_WIDTH } from '../../components/ObjectCell';
 import { departmentPlatformQuery } from '@entities/department';
+import { garageKeys } from '@entities/garage';
 import { AddressField } from '@features/address-input';
 import { useIsMobile } from '@shared/lib';
 import { useListParams } from '@shared/lib';
@@ -839,6 +840,7 @@ export function VehicleRequestsTab() {
       // Изменившийся срок работ сводит ЭСМ-2 заново (`afterWorkPeriodChanged`), как и досрочное
       // завершение: правка заявки переписывает уже выписанные листы.
       void qc.invalidateQueries({ queryKey: ['waybills'] });
+      void qc.invalidateQueries({ queryKey: garageKeys.root });
       setOpen(false);
       warnRouteDateMismatch(saved);
     },
@@ -974,6 +976,7 @@ export function VehicleRequestsTab() {
       void qc.invalidateQueries({ queryKey: ['vehicle-routes'] });
       // Смена машины переписывает и путевые листы: сервер сводит ЭСМ-2 рейса заново (ADR 0037).
       void qc.invalidateQueries({ queryKey: ['waybills'] });
+      void qc.invalidateQueries({ queryKey: garageKeys.root });
     },
     onError: (e) => message.error(errorMessage(e)),
   });
@@ -1009,6 +1012,7 @@ export function VehicleRequestsTab() {
       // Перевод в работу выписывает путевой лист, а закрытие и отмена его переписывают (ADR 0037):
       // журнал листов после смены статуса показывает не то, что в базе.
       void qc.invalidateQueries({ queryKey: ['waybills'] });
+      void qc.invalidateQueries({ queryKey: garageKeys.root });
     },
     onError: (e) => message.error(errorMessage(e)),
   });

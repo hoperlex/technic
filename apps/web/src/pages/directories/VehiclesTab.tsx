@@ -52,6 +52,7 @@ import {
   useVehicleClassifications,
   withSavedClassification,
 } from '../../hooks/useVehicleClassifications';
+import { garageKeys } from '@entities/garage';
 import { AutoSelect } from '@shared/ui';
 import { DataTable, type CardConfig } from '@shared/ui';
 import { FormModal } from '@shared/ui';
@@ -274,6 +275,7 @@ export function VehiclesTab() {
     onSuccess: () => {
       message.success('Сохранено');
       void qc.invalidateQueries({ queryKey: ['vehicles'] });
+      void qc.invalidateQueries({ queryKey: garageKeys.root });
       setOpen(false);
     },
     onError: (e) => message.error(errorMessage(e)),
@@ -284,6 +286,7 @@ export function VehiclesTab() {
     onSuccess: () => {
       message.success('Перемещено в архив');
       void qc.invalidateQueries({ queryKey: ['vehicles'] });
+      void qc.invalidateQueries({ queryKey: garageKeys.root });
     },
     onError: (e) => message.error(errorMessage(e)),
   });
@@ -293,6 +296,7 @@ export function VehiclesTab() {
     onSuccess: () => {
       message.success('Восстановлено');
       void qc.invalidateQueries({ queryKey: ['vehicles'] });
+      void qc.invalidateQueries({ queryKey: garageKeys.root });
     },
     onError: (e) => message.error(errorMessage(e)),
   });

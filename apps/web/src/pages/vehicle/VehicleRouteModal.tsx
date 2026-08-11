@@ -32,6 +32,7 @@ import {
   waybillStatusLabels,
 } from '@technic/contracts';
 import { vehicleRequestsApi, vehicleRoutesApi, waybillsApi } from '../../api/resources';
+import { garageKeys } from '@entities/garage';
 import { AutoSelect } from '@shared/ui';
 import { ViewModal } from '@shared/ui';
 import { PrintWaybillButton } from '../../components/WaybillPrint';
@@ -216,6 +217,7 @@ export function VehicleRouteModal({ routeId, onClose, onChanged, onEdit }: Props
       // Аннулированный лист остаётся в журнале со своим состоянием: там его и ищут, чтобы понять,
       // почему номер бланка израсходован.
       await qc.invalidateQueries({ queryKey: ['waybills'] });
+      await qc.invalidateQueries({ queryKey: garageKeys.root });
       onChanged();
     },
     onError: fail,

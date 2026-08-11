@@ -8,6 +8,7 @@ import {
   type VehicleRouteDto,
 } from '@technic/contracts';
 import { driversApi, vehicleRequestsApi } from '../../api/resources';
+import { garageKeys } from '@entities/garage';
 import { AutoSelect } from '@shared/ui';
 import { FormGrid } from '@shared/ui';
 import { FormModal } from '@shared/ui';
@@ -112,6 +113,7 @@ export function VehicleRelocationModal({ request, purpose, onClose, onDone }: Pr
       await Promise.all([
         qc.invalidateQueries({ queryKey: ['vehicle-routes'] }),
         qc.invalidateQueries({ queryKey: ['vehicle-requests'] }),
+        qc.invalidateQueries({ queryKey: garageKeys.root }),
       ]);
       onDone(route);
     },
