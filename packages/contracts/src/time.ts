@@ -81,10 +81,22 @@ export function isWithinWorkTime(time: string): boolean {
   return minutes >= WORK_TIME_START_MINUTES && minutes <= WORK_TIME_END_MINUTES;
 }
 
+/**
+ * Минуты от полуночи по МСК для момента `Date`. Нужна там, где момент сравнивают с часом суток —
+ * с отсечкой приёма заявок, например: сравнивать строки `HH:mm` можно, но число честнее, а
+ * разбирать собственный же вывод обратно (`timeToMinutes(moscowTimeOf(d))`) незачем.
+ */
+export function moscowMinutesOf(date: Date): number {
+  const utcMinutes = date.getUTCHours() * 60 + date.getUTCMinutes();
+  return (
+    (((utcMinutes + MOSCOW_UTC_OFFSET_MINUTES) % MINUTES_PER_DAY) + MINUTES_PER_DAY) %
+    MINUTES_PER_DAY
+  );
+}
+
 /** Время суток по московскому времени для момента `Date` (сдвиг фиксированный, см. выше). */
 export function moscowTimeOf(date: Date): string {
-  const utcMinutes = date.getUTCHours() * 60 + date.getUTCMinutes();
-  return minutesToTime(utcMinutes + MOSCOW_UTC_OFFSET_MINUTES);
+  return minutesToTime(moscowMinutesOf(date));
 }
 
 /** Момент приходится на рабочее окно по МСК. */
