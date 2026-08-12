@@ -33,6 +33,7 @@ import {
   type DriverLicenseDto,
   formatSnils,
   isValidSnils,
+  licenseNumberLabel,
   normalizeSnils,
   optionalEmailSchema,
   requiredCredentialType,
@@ -43,7 +44,7 @@ import { driversApi } from '../../api/resources';
 import { PhoneField, PhoneLink } from '../../components/PhoneField';
 import { garageKeys } from '@entities/garage';
 import { DataTable, type CardConfig } from '@shared/ui';
-import { FormModal } from '@shared/ui';
+import { FormModal, useFormBlockers } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
 import { actionsColumn, textColumn } from '@shared/ui';
 import { type FilterDefinition, sortOptionsFrom } from '@shared/ui';
@@ -88,6 +89,8 @@ interface LicenseFormValues {
   expiresOn?: dayjs.Dayjs;
   /** У тракторного категорий может не быть вовсе: в кадровой выгрузке их не присылают. */
   categoryIds?: string[];
+  /** Убрать прежний документ этого вида вместо того, чтобы оставить его историей. */
+  deletePrevious?: boolean;
 }
 
 interface DriverFormValues {
@@ -120,6 +123,9 @@ export function DriversTab() {
   const { message, modal } = App.useApp();
   const { can } = useAuth();
   const canWrite = can('drivers.write');
+  // Убрать документ из карточки — правом администратора (ADR 0021): ведение документов и стирание
+  // заведённого это разные полномочия. Тем же правом закрыта галочка замены со снятием прежнего.
+  const canDeleteLicense = can('records.purge');
   const qc = useQueryClient();
 
   // Архив справочника (ADR 0021): удалённые водители видны по `archive.read`, сносит их насовсем
@@ -166,6 +172,12 @@ export function DriversTab() {
   const [form] = Form.useForm<DriverFormValues>();
   const [licenseForm] = Form.useForm<LicenseFormValues>();
   /**
+   * Отказы сервера по документу помечают поле, а не уходят тостом (ADR 0094). Заведено ради
+   * занятого номера: он теперь отвечает `validation_error` с полем `number`, и подсказка нужна
+   * там, где её правят, — иначе человек ищет в окне то, что портал уже знает.
+   */
+  const licenseBlockers = useFormBlockers(licenseForm);
+  /**
    * Вид документа окна «Новое удостоверение» — состоянием рядом с формой, а не её полем: окно
    * открывается с видом по должности, а форма к этому моменту ещё не смонтирована — значение,
    * положенное в неё до первого показа, теряется. Смена вида ещё и чистит выбранные категории:
@@ -173,6 +185,10 @@ export function DriversTab() {
    */
   const [licenseType, setLicenseType] = useState<CredentialTypeCode>('driver_license');
   const licenseCategoryOptions = useLicenseCategoryOptions(licenseType);
+  /** Что снимет галочка замены: все документы выбранного вида, а не только действующий. */
+  const previousOfType = (licenseFor?.licenses ?? []).filter(
+    (l) => l.credentialTypeCode === licenseType,
+  );
 
   const openCreate = () => {
     setRecord(null);
@@ -260,14 +276,45 @@ export function DriversTab() {
         issuedOn: values.issuedOn?.format(DATE) ?? null,
         expiresOn: values.expiresOn?.format(DATE) ?? null,
         categories: (values.categoryIds ?? []).map((categoryId) => ({ categoryId })),
+        deletePrevious: values.deletePrevious ?? false,
       }),
     onSuccess: () => {
       message.success('Удостоверение добавлено');
       invalidate();
       setLicenseFor(null);
     },
+    onError: (e) => {
+      if (!licenseBlockers.fromApi(e)) message.error(errorMessage(e));
+    },
+  });
+
+  /**
+   * Убрать документ из карточки. Не аннулирование: то говорит «документ был и перестал
+   * действовать», а это — «его тут быть не должно» (опечатка в номере, чужая строка выгрузки,
+   * второй экземпляр того же удостоверения). Заодно освобождается серия с номером: пока лишний
+   * документ лежит в карточке, настоящий с тем же номером не заводится вовсе.
+   */
+  const deleteLicenseMut = useMutation({
+    mutationFn: ({ d, license }: { d: DriverDto; license: DriverLicenseDto }) =>
+      driversApi.deleteLicense(d.id, license.id),
+    onSuccess: () => {
+      message.success('Документ убран из карточки');
+      invalidate();
+    },
     onError: (e) => message.error(errorMessage(e)),
   });
+
+  const confirmDeleteLicense = (d: DriverDto, license: DriverLicenseDto) =>
+    modal.confirm({
+      title: `Убрать ${credentialTypeShortLabels[license.credentialTypeCode]} ${licenseNumberLabel(license)}?`,
+      content:
+        'Документ пропадёт из карточки и из отбора, а выданные по нему путевые листы сохранятся. ' +
+        'Восстановить его из портала нельзя — заводить придётся заново.',
+      okText: 'Убрать',
+      okButtonProps: { danger: true },
+      cancelText: 'Отмена',
+      onOk: () => deleteLicenseMut.mutateAsync({ d, license }),
+    });
 
   // Документ адресуется идентификатором, а не «действующим у водителя»: документов у человека два
   // вида, и «действующий» без вида означал бы отметку проверки, поставленную не той бумаге.
@@ -595,6 +642,8 @@ export function DriversTab() {
     onReplace: openLicense,
     onVerify: (d, license, status) => verifyMut.mutate({ d, license, status }),
     onRevoke: confirmRevoke,
+    canDelete: canDeleteLicense,
+    onDelete: confirmDeleteLicense,
   };
 
   /** СНИЛС набирают так, как он напечатан; контрольная сумма ловит опечатку в одной цифре. */
@@ -820,9 +869,16 @@ export function DriversTab() {
         confirmLoading={licenseMut.isPending}
         width={480}
       >
-        <Form form={licenseForm} layout="vertical" onFinish={(v) => licenseMut.mutate(v)}>
+        <Form
+          form={licenseForm}
+          layout="vertical"
+          onFinish={(v) => licenseMut.mutate(v)}
+          {...licenseBlockers.formProps}
+        >
           <Typography.Paragraph type="secondary">
-            Прежнее удостоверение останется в карточке: по нему объясняются листы прошлых лет.
+            {canDeleteLicense
+              ? 'Прежнее удостоверение останется в карточке — по нему объясняются листы прошлых лет. Убрать его нужно, только если его там быть не должно.'
+              : 'Прежнее удостоверение останется в карточке: по нему объясняются листы прошлых лет.'}
           </Typography.Paragraph>
           {/* Вид документа — первым полем: им определяются и список категорий ниже, и то, какая
               бумага у человека появится. Подставлен по должности карточки, но не заперт: у
@@ -868,6 +924,20 @@ export function DriversTab() {
               placeholder={licenseType === 'driver_license' ? 'B, C, CE' : 'B, C, D, E'}
             />
           </Form.Item>
+          {/* Галочка — только администратору и только когда снимать есть что: у карточки без
+              документа этого вида она обещала бы действие, которого не произойдёт.
+
+              Нужна она ровно там, где история мешает: переоформленный документ сплошь и рядом
+              приходит с той же серией и номером, а их держит прежняя запись — без снятия замена
+              упирается в занятый номер. */}
+          {canDeleteLicense && previousOfType.length > 0 && (
+            <Form.Item name="deletePrevious" valuePropName="checked">
+              <Checkbox>
+                Убрать прежнее {credentialTypeShortLabels[licenseType]} (
+                {previousOfType.map((l) => licenseNumberLabel(l)).join(', ')}) из карточки
+              </Checkbox>
+            </Form.Item>
+          )}
         </Form>
       </FormModal>
     </PageTableLayout>

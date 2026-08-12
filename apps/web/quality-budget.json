@@ -6,7 +6,7 @@
   },
   "rawKeyFiles": 39,
   "maxLines": {
-    "src/api/resources.ts": 944,
+    "src/api/resources.ts": 950,
     "src/components/AppLayout.tsx": 458,
     "src/pages/WasteRequestsPage.tsx": 2005,
     "src/pages/WaybillsPage.tsx": 425,
@@ -15,7 +15,7 @@
     "src/pages/admin/MailingSchedulesBlock.tsx": 486,
     "src/pages/admin/UsersTab.tsx": 1392,
     "src/pages/directories/CounterpartiesTab.tsx": 524,
-    "src/pages/directories/DriversTab.tsx": 876,
+    "src/pages/directories/DriversTab.tsx": 946,
     "src/pages/directories/VehicleSpecsTab.tsx": 481,
     "src/pages/directories/VehicleTypeCardDrawer.tsx": 607,
     "src/pages/directories/VehicleTypesTab.tsx": 556,

@@ -265,6 +265,12 @@ export const driversApi = {
   revokeLicense: (id: string, licenseId: string, body: RevokeDriverLicenseInput) =>
     apiFetch<DriverDto>(`/drivers/${id}/licenses/${licenseId}/revoke`, { method: 'POST', body }),
   /**
+   * Убрать документ из карточки (право `records.purge`): не учётное действие, а исправление —
+   * аннулирование для «перестал действовать», это для «его тут быть не должно».
+   */
+  deleteLicense: (id: string, licenseId: string) =>
+    apiFetch<DriverDto>(`/drivers/${id}/licenses/${licenseId}`, { method: 'DELETE' }),
+  /**
    * Категории одного вида документа для формы: справочник наполнен миграцией и на чтение. Вид —
    * обязательным параметром (ADR 0095): «C» водительского и «C» тракториста это разные машины, и
    * общий список молча предложил бы приписать документу чужую букву.

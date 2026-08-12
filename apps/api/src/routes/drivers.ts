@@ -16,7 +16,9 @@ import {
   type DriverSelectionDto,
   driverSelectionQuerySchema,
   isValidSnils,
+  LICENSE_NUMBER_RACE_MESSAGE,
   licenseNumberLabel,
+  licenseNumberTakenMessage,
   normalizeJobTitle,
   requiredCredentialType,
   revokeDriverLicenseSchema,
@@ -39,6 +41,7 @@ import {
   users,
 } from '../db/schema';
 import { err } from '../lib/errors';
+import { pgErrorOf } from '../lib/pg-error';
 import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
 import { assertArchiveVisible } from '../lib/access';
@@ -368,6 +371,82 @@ async function loadDriver(id: string): Promise<{ row: PersonRow; dto: DriverDto 
 }
 
 /**
+ * Снять документы одного вида у человека — пометкой, как и всё остальное в справочнике.
+ *
+ * Строка остаётся: по ней объясняются выписанные листы и назначения прошлых лет, а `deleted_at`
+ * снимает её со всех чтений разом — все они фильтруют по нему. Заодно освобождается серия с
+ * номером: частичный уникальный индекс стережёт только неудалённые.
+ */
+async function dropLicensesOf(
+  tx: Tx,
+  personId: string,
+  credentialTypeId: string,
+  actorUserId: string,
+): Promise<string[]> {
+  const dropped = await tx
+    .update(personCredentials)
+    .set({
+      deletedAt: new Date(),
+      deletedBy: actorUserId,
+      updatedBy: actorUserId,
+      updatedAt: new Date(),
+      version: sql`${personCredentials.version} + 1`,
+    })
+    .where(
+      and(
+        eq(personCredentials.personId, personId),
+        eq(personCredentials.credentialTypeId, credentialTypeId),
+        isNull(personCredentials.deletedAt),
+      ),
+    )
+    .returning({ id: personCredentials.id });
+  return dropped.map((r) => r.id);
+}
+
+/**
+ * Свободны ли серия с номером — до вставки, ради человеческого ответа.
+ *
+ * Уникальность стережёт БД (`person_credentials_number_unique`), и предпроверка её не заменяет:
+ * гонку ловит `asLicenseNumberConflict`. Но её отказ называет поле формы и говорит, чей это номер,
+ * — а 23505 сам по себе доходил бы до общего обработчика ошибкой 500.
+ */
+async function assertNumberFree(
+  tx: Tx,
+  personId: string,
+  credentialTypeId: string,
+  license: { series: string; number: string },
+  field: string,
+): Promise<void> {
+  // Пустой номер индекс не стережёт (`WHERE number <> ''`): документ по одним категориям заводится
+  // и без него, и сверять тут нечего.
+  if (license.number === '') return;
+  const [taken] = await tx
+    .select({ personId: personCredentials.personId })
+    .from(personCredentials)
+    .where(
+      and(
+        eq(personCredentials.credentialTypeId, credentialTypeId),
+        eq(personCredentials.series, license.series),
+        eq(personCredentials.number, license.number),
+        isNull(personCredentials.deletedAt),
+      ),
+    );
+  if (!taken) return;
+  throw err.validation({ [field]: licenseNumberTakenMessage(taken.personId === personId) });
+}
+
+/** Тот же отказ, но пришедший гонкой: между предпроверкой и вставкой номер занял кто-то другой. */
+function asLicenseNumberConflict(e: unknown, field: string): unknown {
+  // Через `pgErrorOf`: drizzle оборачивает ошибку драйвера в свою, и на верхнем объекте кода уже
+  // нет — проверка молчала бы, а человек получал 500.
+  const pg = pgErrorOf(e);
+  if (pg?.code === '23505' && pg.constraint === 'person_credentials_number_unique') {
+    return err.validation({ [field]: LICENSE_NUMBER_RACE_MESSAGE });
+  }
+  return e;
+}
+
+/**
  * Документ водителя вместе с категориями — одной транзакцией: водительское удостоверение без
  * категорий бесполезно, и заводить его двумя действиями значило бы дать остановиться на полпути.
  *
@@ -378,15 +457,27 @@ async function loadDriver(id: string): Promise<{ row: PersonRow; dto: DriverDto 
  * Вид документа приходит в теле, а идентификаторы обоих видов — картой: подобрать не тот id к не
  * тому коду так попросту негде. Категории перед вставкой сверяются с видом (`assertCategoriesOf`):
  * составной внешний ключ этого и так не пропустит, но ответом была бы ошибка базы.
+ *
+ * Снятие прежних документов (ADR 0099) живёт здесь же, а не в обработчике: заведение нового и
+ * снятие старого обязаны быть одной транзакцией — иначе карточка останется без документа вовсе.
  */
 async function insertLicense(
   tx: Tx,
   personId: string,
   credentialTypeIds: Record<CredentialTypeCode, string>,
   license: NonNullable<z.infer<typeof createDriverSchema>['license']>,
-): Promise<void> {
+  actorUserId: string,
+  /** Поле формы, которому адресован отказ по занятому номеру: у заведения водителя оно вложенное. */
+  numberField: string,
+): Promise<{ dropped: number }> {
   const licenseTypeId = credentialTypeIds[license.credentialType];
   await assertCategoriesOf(tx, license.credentialType, licenseTypeId, license.categories);
+  // Прежний снимается до проверки номера, а не после: ради того галочка и нужна — переоформленный
+  // документ сплошь и рядом приходит с той же серией и номером.
+  const dropped = license.deletePrevious
+    ? await dropLicensesOf(tx, personId, licenseTypeId, actorUserId)
+    : [];
+  await assertNumberFree(tx, personId, licenseTypeId, license, numberField);
 
   const [credential] = await tx
     .insert(personCredentials)
@@ -398,10 +489,14 @@ async function insertLicense(
       issuedOn: license.issuedOn ?? null,
       expiresOn: license.expiresOn ?? null,
       issuedBy: license.issuedBy,
+      createdBy: actorUserId,
     })
-    .returning({ id: personCredentials.id });
+    .returning({ id: personCredentials.id })
+    .catch((e: unknown) => {
+      throw asLicenseNumberConflict(e, numberField);
+    });
 
-  if (license.categories.length === 0) return;
+  if (license.categories.length === 0) return { dropped: dropped.length };
   await tx.insert(personCredentialCategories).values(
     license.categories.map((c) => ({
       credentialId: credential!.id,
@@ -412,6 +507,7 @@ async function insertLicense(
       restrictions: c.restrictions,
     })),
   );
+  return { dropped: dropped.length };
 }
 
 export default async function driversRoutes(app: FastifyInstance): Promise<void> {
@@ -699,7 +795,9 @@ export default async function driversRoutes(app: FastifyInstance): Promise<void>
         // отличает «прислали водительское» от «не прислали ничего». Подставлять вид по должности
         // здесь значило бы менять смысл присланного `driver_license` — а форма, которая заводит
         // документ, вид спрашивает.
-        if (body.license) await insertLicense(tx, person!.id, credentialTypeIds, body.license);
+        if (body.license) {
+          await insertLicense(tx, person!.id, credentialTypeIds, body.license, p.id, 'license.number');
+        }
         return person!.id;
       });
 
@@ -799,6 +897,8 @@ export default async function driversRoutes(app: FastifyInstance): Promise<void>
       .select({
         id: personCredentials.id,
         credentialTypeCode: sql<CredentialTypeCode>`${credentialTypes.code}`,
+        series: personCredentials.series,
+        number: personCredentials.number,
         revokedAt: personCredentials.revokedAt,
         version: personCredentials.version,
       })
@@ -834,11 +934,16 @@ export default async function driversRoutes(app: FastifyInstance): Promise<void>
       const found = await loadDriver(req.params.id);
       if (!found) throw err.notFound('Водитель не найден');
       if (found.row.deletedAt) throw err.conflict('Водитель удалён');
+      // Замена со снятием прежнего убирает заведённое, а не гасит его, — и спрашивается за неё то
+      // же право, что за отдельное удаление документа. Иначе право обходилось бы галочкой в форме.
+      if (req.body.deletePrevious && !can(p, 'records.purge')) {
+        throw err.forbidden('Снять прежнее удостоверение может только администратор');
+      }
 
       const { credentialTypeIds } = await loadDirectoryIds();
-      await db.transaction(async (tx) => {
-        await insertLicense(tx, found.row.id, credentialTypeIds, req.body);
-      });
+      const { dropped } = await db.transaction(async (tx) =>
+        insertLicense(tx, found.row.id, credentialTypeIds, req.body, p.id, 'number'),
+      );
 
       await writeAudit({
         actorUserId: p.id,
@@ -847,7 +952,14 @@ export default async function driversRoutes(app: FastifyInstance): Promise<void>
         entityId: found.row.id,
         // Вид документа — в журнале: у человека их два, и «добавлено удостоверение № 000001» без
         // вида не отвечает на вопрос, что именно завели (ADR 0095).
-        metadata: { number: req.body.number, credentialType: req.body.credentialType },
+        //
+        // Снятие прежнего — там же, а не отдельным событием: замена одна, и «что завели» с «что при
+        // этом сняли» читаются вместе (приём `registerPurgeRoute`).
+        metadata: {
+          number: req.body.number,
+          credentialType: req.body.credentialType,
+          ...(dropped > 0 ? { deletedPrevious: dropped } : {}),
+        },
       });
       const updated = await loadDriver(found.row.id);
       return reply.code(201).send(updated!.dto);
@@ -932,6 +1044,62 @@ export default async function driversRoutes(app: FastifyInstance): Promise<void>
         entityType: 'person',
         entityId: req.params.id,
         metadata: { reason: req.body.revokeReason, credentialType: license.credentialTypeCode },
+      });
+      const updated = await loadDriver(req.params.id);
+      return updated!.dto;
+    },
+  );
+
+  /**
+   * Удаление документа — правом администратора (`records.purge`, ADR 0021), как и всё, что
+   * убирает заведённое насовсем, а не гасит его учётным действием.
+   *
+   * Аннулирование этого не заменяет: оно означает «документ был и перестал действовать», и
+   * аннулированный остаётся в карточке — по нему объясняются прошлогодние листы. Убирают другое —
+   * документ, которого у человека не было: опечатку в номере, чужую строку кадровой выгрузки,
+   * второй экземпляр того же удостоверения. Оставлять такой рядом с настоящим нельзя: серию и
+   * номер держит он же, и настоящий документ после него не заводится вовсе.
+   *
+   * Пометкой, а не строкой из базы: `deleted_at` снимает документ со всех чтений разом и
+   * освобождает номер (индекс частичный), но оставляет след для журнала. Сканы остаются при
+   * снятом документе — из карточки они не видны, а из хранилища их уносит удаление водителя.
+   */
+  r.delete(
+    '/:id/licenses/:licenseId',
+    {
+      preHandler: [app.authenticate, app.requirePermission('records.purge')],
+      schema: { params: licenseParams },
+    },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const found = await loadDriver(req.params.id);
+      if (!found) throw err.notFound('Водитель не найден');
+      const license = await loadLicense(req.params.id, req.params.licenseId);
+      if (!license) throw err.notFound('Удостоверение не найдено');
+
+      await db
+        .update(personCredentials)
+        .set({
+          deletedAt: new Date(),
+          deletedBy: p.id,
+          updatedBy: p.id,
+          updatedAt: new Date(),
+          version: license.version + 1,
+        })
+        .where(eq(personCredentials.id, license.id));
+
+      await writeAudit({
+        actorUserId: p.id,
+        action: 'driver.license.delete',
+        entityType: 'person',
+        entityId: req.params.id,
+        // Реквизиты — в журнале: из карточки документ пропал, и без них событие не отвечает на
+        // вопрос, какую бумагу убрали.
+        metadata: {
+          credentialType: license.credentialTypeCode,
+          series: license.series,
+          number: license.number,
+        },
       });
       const updated = await loadDriver(req.params.id);
       return updated!.dto;

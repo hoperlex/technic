@@ -478,6 +478,17 @@ export const driverLicenseInputSchema = z
     expiresOn: dateOnlySchema.nullable().optional(),
     issuedBy: issuedBySchema.optional().default(''),
     categories: z.array(driverLicenseCategoryInputSchema).max(16),
+    /**
+     * Снять прежние документы этого вида вместе с заведением нового.
+     *
+     * Умолчание — не снимать: замена копит историю, и по какому листу человек ездил в прошлом
+     * году, видно только из старой записи. Но серию и номер держит она же
+     * (`person_credentials_number_unique`), и переоформление с тем же номером — как и правка
+     * ошибочно заведённого документа — иначе упирается в занятый номер.
+     *
+     * При заведении водителя поле бессмысленно, но и не мешает: снимать у новой карточки нечего.
+     */
+    deletePrevious: z.boolean().optional().default(false),
   })
   .strict()
   .refine((l) => l.credentialType !== 'driver_license' || l.categories.length > 0, {
@@ -499,6 +510,24 @@ export type DriverLicenseInput = z.infer<typeof driverLicenseInputSchema>;
  * то, чего сервер не спрашивает.
  */
 export type DriverLicenseBody = z.input<typeof driverLicenseInputSchema>;
+
+/**
+ * Занятый номер — обычный ввод, а не поломка: серию и номер держит частичный уникальный индекс
+ * `person_credentials_number_unique`, и отказ БД без перевода превращался бы во «внутреннюю ошибку
+ * сервера». Текст один на форму и сервер: человек видит одно и то же до и после отправки.
+ *
+ * Свой документ и чужой разведены намеренно: в первом случае человеку править нечего — прежний
+ * документ снимается галочкой замены, во втором номер и правда занят другой карточкой.
+ */
+export function licenseNumberTakenMessage(sameDriver: boolean): string {
+  return sameDriver
+    ? 'Такой документ у водителя уже заведён — снимите прежний галочкой замены или проверьте номер'
+    : 'Документ с такой серией и номером заведён у другого работника';
+}
+
+/** Гонка двух одинаковых номеров: править нечего, но и молчать нельзя. */
+export const LICENSE_NUMBER_RACE_MESSAGE =
+  'Этот номер только что заняли — обновите страницу и повторите';
 
 /**
  * Заведение водителя. СНИЛС обязателен: без него не выписать путевой лист (ADR 0037), а карточка

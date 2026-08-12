@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { Button, Space, Tag, Typography, type TableColumnType } from 'antd';
-import { IdcardOutlined } from '@ant-design/icons';
+import { DeleteOutlined, IdcardOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import {
   type CredentialTypeCode,
@@ -209,6 +209,13 @@ export interface DriverDocumentActions {
   onReplace: (d: DriverDto, type: CredentialTypeCode) => void;
   onVerify: (d: DriverDto, license: DriverLicenseDto, status: 'verified' | 'rejected') => void;
   onRevoke: (d: DriverDto, license: DriverLicenseDto) => void;
+  /**
+   * Право убрать документ из карточки (`records.purge`) — отдельно от `canWrite`: вести документы
+   * и стирать заведённое это разные полномочия, и второе есть только у администратора.
+   */
+  canDelete: boolean;
+  /** Убрать документ — любой, не только действующий: опечатку правят там, где она стоит. */
+  onDelete: (d: DriverDto, license: DriverLicenseDto) => void;
 }
 
 /**
@@ -256,6 +263,19 @@ export function documentsBlock(
                 <Typography.Text type="secondary">проверил {l.verifiedByName}</Typography.Text>
               )}
               {l.revokeReason && <Typography.Text type="danger">{l.revokeReason}</Typography.Text>}
+              {/* Кнопка у каждой строки, а не в общей панели действий: панель говорит о действующем
+                  документе, а убирают чаще как раз лишний — второй экземпляр или опечатку. */}
+              {actions.canDelete && (
+                <Button
+                  size="small"
+                  danger
+                  type="text"
+                  icon={<DeleteOutlined />}
+                  title="Убрать документ из карточки"
+                  aria-label={`Убрать документ ${licenseNumberLabel(l)}`}
+                  onClick={() => actions.onDelete(d, l)}
+                />
+              )}
             </Space>
           );
         })}
