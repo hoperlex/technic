@@ -51,6 +51,8 @@ function vehiclePageRoutes() {
     'GET /objects': () => json(emptyList()),
     'GET /departments': () => json(emptyList()),
     'GET /vehicle-classifications': () => json([]),
+    // Справочник техники — фильтр по назначенной машине (ADR 0098); списку заявок он не важен.
+    'GET /vehicles': () => json(emptyList()),
     'GET /counterparties': () => json(emptyList()),
   };
 }

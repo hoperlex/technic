@@ -197,6 +197,8 @@ describe('переход по номеру записи между вкладк�
       'GET /objects': () => json(emptyList()),
       'GET /departments': () => json(emptyList()),
       'GET /vehicle-classifications': () => json([]),
+      // Справочник техники — фильтр по назначенной машине (ADR 0098); списку заявок он не важен.
+      'GET /vehicles': () => json(emptyList()),
     });
     renderWithUser(<VehicleRequestsTab />, { user: admin });
 
@@ -223,6 +225,8 @@ describe('переход по номеру записи между вкладк�
       'GET /objects': () => json(emptyList()),
       'GET /departments': () => json(emptyList()),
       'GET /vehicle-classifications': () => json([]),
+      // Справочник техники — фильтр по назначенной машине (ADR 0098); списку заявок он не важен.
+      'GET /vehicles': () => json(emptyList()),
     });
     renderWithUser(<VehicleRequestsTab />, { user: shtab });
 
@@ -294,6 +298,8 @@ function vehiclePageRoutes(over: RouteMap = {}): RouteMap {
     'GET /objects': () => json(emptyList()),
     'GET /departments': () => json(emptyList()),
     'GET /vehicle-classifications': () => json([]),
+    // Справочник техники — фильтр по назначенной машине (ADR 0098); списку заявок он не важен.
+    'GET /vehicles': () => json(emptyList()),
     'GET /counterparties': () => json(emptyList()),
     'GET /vehicle-requests/:id/history': () => json([]),
     'GET /vehicle-requests/:id/waybills': () => json([]),

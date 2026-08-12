@@ -117,6 +117,9 @@ export function weeklyRowsExcludedBy(q: VehicleFeedQuery): boolean {
     q.departmentId !== undefined ||
     q.vehicleTypeId !== undefined ||
     q.vehicleCategoryId !== undefined ||
+    // Назначенной машины у недельного документа не бывает вовсе: технику ставят на заказы,
+    // созданные из его состава, а сам он остаётся планом недели (ADR 0085).
+    q.vehicleId !== undefined ||
     // Номер спрашивают парой «вид документа + номер» (`parseFeedNumberSearch`), и одно число без
     // вида не значит ничего: «12» — это и ТС-12, и НЗ-12. Поэтому номер исключает недельные
     // строки, пока ищут **не** их: «ТС-341» недельные заявки не ищет вовсе, а «НЗ-12» приходит

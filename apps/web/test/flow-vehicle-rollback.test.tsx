@@ -168,6 +168,8 @@ function renderTab(over: RouteMap = {}, mobile = false): HttpMock {
     'GET /objects': () => json(list([objectDto()])),
     'GET /departments': () => json(emptyList()),
     'GET /vehicle-classifications': () => json(list([classification()])),
+    // Справочник техники — фильтр по назначенной машине (ADR 0098); списку заявок он не важен.
+    'GET /vehicles': () => json(emptyList()),
     // Перегоны спрашиваются, только когда окно возврата открыто: их портал стирает вместе с
     // машиной и потому обязан назвать по именам.
     'GET /vehicle-requests/:id/relocations': () => json([DELIVERY]),

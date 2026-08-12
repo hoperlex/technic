@@ -1,42 +1,36 @@
-import { useState } from 'react';
-import { App, Button, Dropdown, Form, Tag, Tooltip, Typography, Upload } from 'antd';
-import {
-  CheckCircleOutlined,
-  CheckOutlined,
-  ClockCircleOutlined,
-  DownOutlined,
-  UploadOutlined,
-} from '@ant-design/icons';
+import { useState, type ReactNode } from 'react';
+import { App, Button, Form, Select, Tag, Tooltip, Typography, Upload } from 'antd';
+import { UploadOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  allowedVehicleRequestTransitions,
   assignmentTitle,
-  isApprovalChangeable,
   isPlaceScopedRole,
-  type RequestStatus,
-  requestStatusColors,
-  requestStatusLabels,
   type RequestVehicleEarlyEndInput,
   type SpecialEquipmentRequestDto,
   type VehicleRequestAssignmentDto,
   type VehicleRequestDto,
   type VehicleRequestEarlyEndDto,
-  vehicleLabel,
+  vehicleOptionLabel,
 } from '@technic/contracts';
-import { driversApi, filesApi, vehicleRequestsApi, vehiclesApi } from '../../api/resources';
+import {
+  counterpartiesApi,
+  driversApi,
+  filesApi,
+  vehicleRequestsApi,
+  vehiclesApi,
+} from '../../api/resources';
 import type {
   VehicleClassificationGroup,
   VehicleClassificationOption,
 } from '../../hooks/useVehicleClassifications';
-import { ActionSheet } from '@shared/ui';
 import { AutoSelect } from '@shared/ui';
 import { ExpandableCell } from '@shared/ui';
+import type { FilterDefinition } from '@shared/ui';
 import { ReasonModal } from '../../components/CancelReasonModal';
 import { FileLinkList } from '../../components/FileLinks';
 import { PhoneLink } from '../../components/PhoneField';
-import { useIsMobile } from '@shared/lib';
 import { useAuth } from '../../auth/AuthContext';
-import { errorMessage, formatDateTime } from '../../utils/format';
+import { errorMessage } from '../../utils/format';
 import { formatDateOnly } from '../../utils/date';
 import { garageKeys } from '@entities/garage';
 import { objectsApi, objectKeys } from '@entities/object';
@@ -95,6 +89,9 @@ export function useDepartmentOptions() {
  * арендодатель, и в этих двух списках её не бывает вовсе. Списанная и стоящая в ремонте из
  * фильтра не убираются: вчерашние рейсы и выданные листы никуда не делись, а фильтр, не находящий
  * собственной строки списка, читается как поломка.
+ *
+ * Подпись — `vehicleOptionLabel`, парой «госномер — марка/модель» (ADR 0098): машину выбирают
+ * двумя приметами сразу, и ровно так она представлена в справочнике техники.
  */
 export function useOwnVehicleOptions() {
   const { data, isFetching } = useQuery({
@@ -104,8 +101,93 @@ export function useOwnVehicleOptions() {
   });
   return {
     options: (data?.items ?? [])
-      .map((v) => ({ value: v.id, label: vehicleLabel(v) }))
+      .map((v) => ({ value: v.id, label: vehicleOptionLabel(v) }))
       .sort((a, b) => a.label.localeCompare(b.label, 'ru')),
+    loading: isFetching,
+  };
+}
+
+/**
+ * Фильтр по назначенной машине — для списка заказов и журнала закрытых (ADR 0098).
+ *
+ * Спрашивает единицу парка, а не позицию классификатора: «где сейчас мой КамАЗ» и «какие заявки им
+ * закрыли» — вопросы к конкретной машине, и рядом стоящий фильтр по типу на них не отвечает.
+ * Классификатор остаётся своим фильтром (`useVehicleClassificationFilter`) — он отвечает на «какую
+ * технику заказывали», а заказывают тип, а не машину.
+ *
+ * В списке и своя техника, и арендная: заявку закрывают любой — арендную берут ровно тогда, когда
+ * своей не хватило, — и искать по ней надо тем же полем. Отбор списанных и стоящих в ремонте не
+ * убирает, как и в фильтре маршрутов: вчерашние заявки никуда не делись.
+ *
+ * Заявка без назначенной машины под такой фильтр не попадает — машины у неё ещё нет, а не «строка
+ * пропала»: «Новая» заявка отвечает на «что заказали», и техники в ней не бывает по существу.
+ */
+export function useVehicleFilter({
+  vehicleId,
+  onChange,
+}: {
+  vehicleId: string | undefined;
+  onChange: (patch: { vehicleId?: string }) => void;
+}): { controls: ReactNode; mobileFilter: FilterDefinition } {
+  const { data, isFetching } = useQuery({
+    queryKey: ['vehicles', 'all-options'],
+    queryFn: () => vehiclesApi.list({ page: 1, pageSize: 500, sortBy: 'createdAt' }),
+  });
+  // Порядок — по подписи, а не по заведению в справочнике: машину ищут глазами по госномеру.
+  const options = (data?.items ?? [])
+    .map((v) => ({ value: v.id, label: vehicleOptionLabel(v) }))
+    .sort((a, b) => a.label.localeCompare(b.label, 'ru'));
+
+  const controls = (
+    <Select
+      allowClear
+      showSearch
+      optionFilterProp="label"
+      placeholder="Вся техника"
+      style={{ width: 240 }}
+      options={options}
+      loading={isFetching}
+      value={vehicleId}
+      onChange={(v: string | undefined) => onChange({ vehicleId: v })}
+    />
+  );
+
+  /** Тот же фильтр описанием — для шита на телефоне (ADR 0030). */
+  const mobileFilter: FilterDefinition = {
+    kind: 'select',
+    key: 'vehicleId',
+    label: 'Техника',
+    value: vehicleId,
+    options,
+    placeholder: 'Вся техника',
+    loading: isFetching,
+    onChange: (v) => onChange({ vehicleId: v }),
+  };
+
+  return { controls, mobileFilter };
+}
+
+/**
+ * Арендодатели для фильтра журнала — контрагенты роли «Арендодатель (ТС)»: по ним и сводят расходы
+ * на аренду. Неактивные из списка не убираем: журнал читают и про тех, с кем уже не работают.
+ *
+ * Живёт здесь, рядом с прочими опциями фильтров раздела, а не в самом журнале: список читается
+ * теми же двумя строками, что объекты и водители, и в странице он был запросом посреди экрана.
+ */
+export function useLessorOptions() {
+  const { data, isFetching } = useQuery({
+    queryKey: ['counterparties', 'vehicle-lessors', 'all'],
+    queryFn: () =>
+      counterpartiesApi.list({
+        page: 1,
+        pageSize: 500,
+        type: 'vehicle_lessor',
+        sortBy: 'name',
+        sortOrder: 'asc',
+      }),
+  });
+  return {
+    options: (data?.items ?? []).map((c) => ({ value: c.id, label: c.name })),
     loading: isFetching,
   };
 }
@@ -207,166 +289,6 @@ export function FileEditor({ editor }: { editor: ReturnType<typeof useFileEditor
         />
       </div>
     </div>
-  );
-}
-
-/** Ячейка статуса: дропдаун доступных роли переходов либо тег. */
-export function StatusCell({
-  status,
-  deleted,
-  approved,
-  cancelReason,
-  pending,
-  onChange,
-}: {
-  status: RequestStatus;
-  deleted: boolean;
-  /** Виза руководителя строительства: без неё заявку не берут в работу (ADR 0025). */
-  approved: boolean;
-  /** Причина отмены — подсказкой на теге (колонки под неё в таблице нет). */
-  cancelReason?: string | null;
-  pending: boolean;
-  onChange: (s: RequestStatus) => void;
-}) {
-  const { user } = useAuth();
-  const isMobile = useIsMobile();
-  const [sheetOpen, setSheetOpen] = useState(false);
-  // Линейный цикл доступен ведущим заявки ролям, откаты закрытых заявок — только админу;
-  // «В работе» до визы не предлагается никому — сервер такой переход отклонит.
-  const transitions = user ? allowedVehicleRequestTransitions(status, user, approved) : [];
-  const plain = <Tag color={requestStatusColors[status]}>{requestStatusLabels[status]}</Tag>;
-  // Причина отмены — подсказкой только на десктопе: на телефоне подсказка по касанию не
-  // открывается, и причина выводится строкой карточки (ADR 0030).
-  const tag =
-    cancelReason && !isMobile ? (
-      <Tooltip title={`Причина отмены: ${cancelReason}`}>{plain}</Tooltip>
-    ) : (
-      plain
-    );
-  if (deleted || transitions.length === 0) return tag;
-
-  // На телефоне переходы показываются списком снизу: выпадающее меню открывается под палец
-  // мимо цели, а нажатие по тегу не должно заодно открывать карточку заявки.
-  if (isMobile) {
-    return (
-      <>
-        <button
-          type="button"
-          className="status-trigger"
-          aria-label="Изменить статус"
-          disabled={pending}
-          onClick={(e) => {
-            e.stopPropagation();
-            setSheetOpen(true);
-          }}
-        >
-          {tag}
-          <DownOutlined style={{ fontSize: 10, color: 'rgba(0,0,0,0.45)' }} />
-        </button>
-        <ActionSheet
-          title="Изменить статус"
-          open={sheetOpen}
-          onClose={() => setSheetOpen(false)}
-          items={transitions.map((s) => ({
-            key: s,
-            label: requestStatusLabels[s],
-            onClick: () => onChange(s),
-          }))}
-        />
-      </>
-    );
-  }
-
-  return (
-    <Dropdown
-      trigger={['click']}
-      menu={{
-        items: transitions.map((s) => ({ key: s, label: requestStatusLabels[s] })),
-        onClick: ({ key }) => onChange(key as RequestStatus),
-      }}
-    >
-      <Button size="small" type="text" loading={pending}>
-        {tag}
-        <DownOutlined />
-      </Button>
-    </Dropdown>
-  );
-}
-
-/**
- * Ячейка согласования (ADR 0025). Завизированная заявка — зелёная с галочкой, ждущая визы —
- * оранжевая: состояние читается цветом, не текстом, потому что в списке это первое, на что
- * смотрят и диспетчер, и руководитель строительства.
- *
- * Кнопкой ячейка становится только у того, кто эту заявку визирует, и только пока её не взяли
- * в работу; остальным и в остальных статусах — тег.
- */
-export function ApprovalCell({
-  status,
-  deleted,
-  approved,
-  approvedByName,
-  approvedAt,
-  canApprove,
-  pending,
-  onChange,
-}: {
-  status: RequestStatus;
-  deleted: boolean;
-  approved: boolean;
-  approvedByName: string | null;
-  approvedAt: string | null;
-  /** Право визы у роли; чужой объект сервер отсечёт сам (assertObjectScope). */
-  canApprove: boolean;
-  pending: boolean;
-  onChange: (approved: boolean) => void;
-}) {
-  const isMobile = useIsMobile();
-  const approvedTitle =
-    approved && approvedAt
-      ? `Завизировал ${approvedByName ?? '—'} · ${formatDateTime(approvedAt)}`
-      : 'Заявка ждёт визы руководителя строительства';
-  const editable = canApprove && !deleted && isApprovalChangeable(status);
-
-  if (!editable) {
-    const tag = approved ? (
-      <Tag color="green" icon={<CheckCircleOutlined />} style={{ marginInlineEnd: 0 }}>
-        Завизирована
-      </Tag>
-    ) : (
-      <Tag color="orange" icon={<ClockCircleOutlined />} style={{ marginInlineEnd: 0 }}>
-        Ждёт визы
-      </Tag>
-    );
-    // На телефоне подсказки нет: кто и когда завизировал, видно в карточке заявки.
-    return isMobile ? tag : <Tooltip title={approvedTitle}>{tag}</Tooltip>;
-  }
-
-  const button = (
-    <Button
-      size="small"
-      color={approved ? 'green' : 'orange'}
-      variant="solid"
-      loading={pending}
-      icon={approved ? <CheckOutlined /> : undefined}
-      // Виза стоит внутри карточки списка: нажатие на неё не должно открывать саму карточку.
-      onClick={(e) => {
-        e.stopPropagation();
-        onChange(!approved);
-      }}
-    >
-      {approved ? 'Завизирована' : 'Согласовать'}
-    </Button>
-  );
-
-  return isMobile ? (
-    button
-  ) : (
-    <Tooltip
-      title={approved ? `${approvedTitle}. Нажмите, чтобы снять визу` : 'Согласовать заявку'}
-    >
-      {button}
-    </Tooltip>
   );
 }
 

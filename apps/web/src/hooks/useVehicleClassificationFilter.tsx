@@ -18,6 +18,11 @@ import { useVehicleClassifications } from './useVehicleClassifications';
  * Живёт рядом с `useVehicleClassifications`, а не в странице заказа ТС: раздел «Гараж» (ADR 0076)
  * спрашивает тот же фильтр, а импорт из соседней страницы запрещён границами слоёв — и правильно
  * запрещён: общее двух разделов не может принадлежать одному из них.
+ *
+ * Подсказка называет классификатор, а не технику вообще (ADR 0098). «Вся техника» в соседних
+ * списках раздела — «Маршруты», журнал путевых листов, а теперь и сам «Заказ автотехники» —
+ * означает единицу парка, конкретную машину с госномером. Одна подсказка на два разных вопроса
+ * читалась бы как поломка фильтра: человек ищет свой КамАЗ, а список предлагает «Самосвалы».
  */
 export function useVehicleClassificationFilter({
   vehicleTypeId,
@@ -46,7 +51,7 @@ export function useVehicleClassificationFilter({
       allowClear
       showSearch
       optionFilterProp="label"
-      placeholder="Вся техника"
+      placeholder="Любой тип ТС"
       style={{ width: 250 }}
       options={filterGroups}
       loading={loading}
@@ -62,7 +67,7 @@ export function useVehicleClassificationFilter({
     label: 'Тип/категория ТС',
     value,
     options: filterGroups,
-    placeholder: 'Вся техника',
+    placeholder: 'Любой тип ТС',
     loading,
     onChange: pick,
   };

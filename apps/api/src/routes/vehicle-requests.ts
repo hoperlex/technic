@@ -1672,6 +1672,10 @@ function historyWhere(p: Principal, q: z.infer<typeof vehicleRequestHistoryQuery
     q.departmentId ? eq(vehicleRequests.departmentId, q.departmentId) : undefined,
     q.vehicleTypeId ? eq(vehicleRequests.vehicleTypeId, q.vehicleTypeId) : undefined,
     q.vehicleCategoryId ? eq(vehicleRequests.vehicleCategoryId, q.vehicleCategoryId) : undefined,
+    // Назначенная машина (ADR 0027, ADR 0098): тот же фильтр, что и в списке, — журнал спрашивают
+    // ровно про неё («чем закрывали заказы этой машины»). Заявка без назначения сюда не попадает,
+    // и это верно: машины у неё ещё нет.
+    q.vehicleId ? eq(vehicleRequestAssignments.vehicleId, q.vehicleId) : undefined,
     q.num ? eq(vehicleRequests.num, q.num) : undefined,
     // «У кого брали»: арендодатель лежит у самой машины, а не в назначении, — своя техника под
     // такой фильтр не попадает никогда, и это верно: у неё арендодателя нет.
@@ -1714,24 +1718,32 @@ function historyCountQuery() {
 
 /**
  * Счётчик строк списка: те же join'ы, что нужны его условиям (объект — поиску, detail-таблицы —
- * датам). Отдельной функцией, потому что спрашивают его двое — сам список и лента раздела: цифра
- * «всего» обязана считаться по тем же условиям, по которым выбирается страница, и разъедься эти
- * два запроса, пагинация обещала бы страницы, которых нет.
+ * датам, назначение — фильтру по машине). Отдельной функцией, потому что спрашивают его двое —
+ * сам список и лента раздела: цифра «всего» обязана считаться по тем же условиям, по которым
+ * выбирается страница, и разъедься эти два запроса, пагинация обещала бы страницы, которых нет.
  */
 function listCountQuery() {
-  return db
-    .select({ c: count() })
-    .from(vehicleRequests)
-    .leftJoin(constructionObjects, eq(vehicleRequests.objectId, constructionObjects.id))
-    .leftJoin(departments, eq(vehicleRequests.departmentId, departments.id))
-    .leftJoin(
-      specialEquipmentRequestDetails,
-      eq(vehicleRequests.id, specialEquipmentRequestDetails.requestId),
-    )
-    .leftJoin(
-      freightTransportRequestDetails,
-      eq(vehicleRequests.id, freightTransportRequestDetails.requestId),
-    );
+  return (
+    db
+      .select({ c: count() })
+      .from(vehicleRequests)
+      .leftJoin(constructionObjects, eq(vehicleRequests.objectId, constructionObjects.id))
+      .leftJoin(departments, eq(vehicleRequests.departmentId, departments.id))
+      .leftJoin(
+        specialEquipmentRequestDetails,
+        eq(vehicleRequests.id, specialEquipmentRequestDetails.requestId),
+      )
+      .leftJoin(
+        freightTransportRequestDetails,
+        eq(vehicleRequests.id, freightTransportRequestDetails.requestId),
+      )
+      // Назначение (ADR 0027) — под фильтр по машине: `request_id` там первичный ключ, поэтому
+      // строк join не размножает, и цифра «всего» остаётся числом заявок, как у рейсов в выборке.
+      .leftJoin(
+        vehicleRequestAssignments,
+        eq(vehicleRequests.id, vehicleRequestAssignments.requestId),
+      )
+  );
 }
 
 /**
@@ -1937,6 +1949,10 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       q.departmentId ? eq(vehicleRequests.departmentId, q.departmentId) : undefined,
       q.vehicleTypeId ? eq(vehicleRequests.vehicleTypeId, q.vehicleTypeId) : undefined,
       q.vehicleCategoryId ? eq(vehicleRequests.vehicleCategoryId, q.vehicleCategoryId) : undefined,
+      // Назначенная машина (ADR 0027, ADR 0098) — единица парка, а не позиция классификатора
+      // выше: «где ходил ТС-341» спрашивают госномером. Заявка без назначения под этот фильтр не
+      // попадает никогда, и это верно: машины у неё ещё нет.
+      q.vehicleId ? eq(vehicleRequestAssignments.vehicleId, q.vehicleId) : undefined,
       q.num ? eq(vehicleRequests.num, q.num) : undefined,
       approvedFilter(q.approved),
       ...dateFilters(q.requestType, q.dateFrom, q.dateTo),
@@ -2031,6 +2047,12 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         .leftJoin(
           freightTransportRequestDetails,
           eq(vehicleRequests.id, freightTransportRequestDetails.requestId),
+        )
+        // Назначение (ADR 0027) — под фильтр списка по машине: `request_id` там первичный ключ,
+        // и лишних ключей объединение от него не получит.
+        .leftJoin(
+          vehicleRequestAssignments,
+          eq(vehicleRequests.id, vehicleRequestAssignments.requestId),
         )
         .where(orderWhere);
       const weeklyKeys = db
@@ -2355,6 +2377,11 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         req.query.vehicleCategoryId
           ? eq(vehicleRequests.vehicleCategoryId, req.query.vehicleCategoryId)
           : undefined,
+        // Назначенная машина (ADR 0098): сводка считается по тем же сужающим фильтрам, что и
+        // список под ней, — иначе цифры над таблицей отвечали бы не про её строки.
+        req.query.vehicleId
+          ? eq(vehicleRequestAssignments.vehicleId, req.query.vehicleId)
+          : undefined,
       );
       const rows = await db
         .select({
@@ -2365,6 +2392,12 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           awaiting: sql<number>`count(*) FILTER (WHERE ${vehicleRequests.approvedAt} IS NULL)`,
         })
         .from(vehicleRequests)
+        // Назначение (ADR 0027) — под фильтр по машине: `request_id` там первичный ключ, поэтому
+        // строк join не размножает и счётчики статусов не завышает.
+        .leftJoin(
+          vehicleRequestAssignments,
+          eq(vehicleRequests.id, vehicleRequestAssignments.requestId),
+        )
         .where(where)
         .groupBy(vehicleRequests.status);
       const summary = {

@@ -53,6 +53,8 @@ function renderTab(over: RouteMap = {}): HttpMock {
     'GET /objects': () => json(list([objectDto()])),
     'GET /departments': () => json(emptyList()),
     'GET /vehicle-classifications': () => json(list([classification()])),
+    // Справочник техники — фильтр по назначенной машине (ADR 0098); списку заявок он не важен.
+    'GET /vehicles': () => json(emptyList()),
     'PATCH /vehicle-requests/:id/approval': ({ body }) => {
       const approved = (body as { approved: boolean }).approved;
       current = approved ? APPROVED : vehicleRequest({ id: 'vr-1', status: 'new', version: 9 });

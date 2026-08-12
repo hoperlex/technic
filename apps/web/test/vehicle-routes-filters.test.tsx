@@ -106,7 +106,9 @@ describe('маршруты: фильтры панелью над таблице�
     await waitFor(() => expect(http.countOf('GET /vehicle-routes')).toBe(1));
     expect(http.lastCall('GET /vehicle-routes')!.query.get('vehicleId')).toBeNull();
 
-    await pickFilter('Вся техника', 'Е646СК799');
+    // Машина названа парой «госномер — марка/модель» (ADR 0098): по одному номеру её узнают не
+    // всегда, и в справочнике техники она представлена этими же двумя графами.
+    await pickFilter('Вся техника', 'Е646СК799 — КамАЗ 65201');
 
     await waitFor(() =>
       expect(http.lastCall('GET /vehicle-routes')!.query.get('vehicleId')).toBe('v-own'),

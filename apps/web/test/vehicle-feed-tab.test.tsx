@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { useLocation } from 'react-router';
+import type { VehicleDto } from '@technic/contracts';
 import { json, mockHttp, type HttpMock, type RouteMap } from './http';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
@@ -37,6 +38,32 @@ const WEEKLY = weeklyRequest({
 /** Кто смотрит: штаб площадки — он и заводит недельную заявку, и читает список заказов. */
 const SHTAB = authUser({ role: 'shtab', constructionObjectIds: ['obj-1'] });
 
+/**
+ * Справочник техники для фильтра «Вся техника» (ADR 0098): своя машина и арендная. Обе намеренно —
+ * заявку закрывают и арендной, и искать по ней надо тем же полем.
+ */
+const OWN_VEHICLE = {
+  id: 'v-own',
+  ownership: 'own',
+  description: '',
+  registrationNumber: 'Е646СК799',
+  modelName: 'КамАЗ 65115',
+  typeName: 'Самосвалы',
+  categoryName: null,
+  lessorName: null,
+} as VehicleDto;
+
+const RENTAL_VEHICLE = {
+  id: 'v-rent',
+  ownership: 'rental',
+  description: 'Автокран 70 тн',
+  registrationNumber: null,
+  modelName: null,
+  typeName: 'Автокраны',
+  categoryName: null,
+  lessorName: 'ООО «Ромашка»',
+} as VehicleDto;
+
 /** Адрес после перехода: недельная строка обязана уводить со списка на страницу недели. */
 function LocationProbe() {
   const location = useLocation();
@@ -50,6 +77,7 @@ function renderTab(over: RouteMap = {}, user = SHTAB, route = '/vehicle-requests
     'GET /objects': () => json(list([objectDto()])),
     'GET /departments': () => json(emptyList()),
     'GET /vehicle-classifications': () => json(list([classification()])),
+    'GET /vehicles': () => json(list([OWN_VEHICLE, RENTAL_VEHICLE])),
     ...over,
   });
   // Вкладка рисуется внутри `PageTabs`: сводка живёт на их уровне (`TabsExtra`), и без обёртки
@@ -81,7 +109,7 @@ function cells(row: HTMLElement): HTMLElement[] {
 }
 
 /** Поле панели фильтров опознаётся подсказкой: подписи у фильтров нет, её место занимает placeholder. */
-async function pickFilter(placeholder: string, option: string) {
+async function openFilter(placeholder: string) {
   const field = await waitFor(() => {
     const found = [...document.querySelectorAll<HTMLElement>('.ant-select')].find(
       (el) => el.textContent?.trim() === placeholder,
@@ -90,6 +118,10 @@ async function pickFilter(placeholder: string, option: string) {
     return found;
   });
   fireEvent.mouseDown(field.querySelector('.ant-select-selector') ?? field);
+}
+
+async function pickFilter(placeholder: string, option: string) {
+  await openFilter(placeholder);
   await waitFor(() => {
     const match = [...document.querySelectorAll<HTMLElement>('.ant-select-item-option')].find((o) =>
       o.textContent?.includes(option),
@@ -254,6 +286,7 @@ describe('лента «Заказ автотехники»: недельная �
       'GET /objects': () => json(list([objectDto()])),
       'GET /departments': () => json(emptyList()),
       'GET /vehicle-classifications': () => json(list([classification()])),
+      'GET /vehicles': () => json(list([OWN_VEHICLE, RENTAL_VEHICLE])),
       'GET /counterparties': () => json(emptyList()),
     });
     renderWithUser(<VehicleRequestsPage />, {
@@ -277,6 +310,52 @@ describe('лента «Заказ автотехники»: недельная �
     // Подпись и число — соседние узлы одной строки сводки, поэтому читается их общий родитель.
     const counter = screen.getByText('Недельных ждут визы:').parentElement;
     await waitFor(() => expect(counter?.textContent?.trim()).toBe('Недельных ждут визы: 1'));
+  });
+
+  it('фильтр техники спрашивает машину: выбор уходит параметром vehicleId и в список, и в сводку', async () => {
+    // Жалоба, с которой начался ADR 0098: подсказка «Вся техника» отбирала по типам, а в соседних
+    // списках раздела та же подсказка означает конкретную машину.
+    const http = renderTab();
+    await screen.findByText('Т-42');
+    expect(http.lastCall('GET /vehicle-requests/feed')!.query.get('vehicleId')).toBeNull();
+
+    await pickFilter('Вся техника', 'Е646СК799 — КамАЗ 65115');
+
+    await waitFor(() => {
+      const call = http.lastCall('GET /vehicle-requests/feed')!;
+      expect(call.query.get('vehicleId')).toBe('v-own');
+      // Отбор по машине — не отбор по типу: классификатор своим параметром не уезжает.
+      expect(call.query.get('vehicleTypeId')).toBeNull();
+      // Список возвращается на первую страницу: та же страница при другом отборе — другие заявки.
+      expect(call.query.get('page')).toBe('1');
+    });
+    // Сводка считает по тому же отбору, что видно в таблице: цифры про другой список сбивают вернее,
+    // чем их отсутствие.
+    await waitFor(() =>
+      expect(http.lastCall('GET /vehicle-requests/summary')!.query.get('vehicleId')).toBe('v-own'),
+    );
+  });
+
+  it('машина в списке подбора названа парой примет — как она представлена в справочнике техники', async () => {
+    renderTab();
+    await screen.findByText('Т-42');
+
+    await openFilter('Вся техника');
+
+    // У своей машины пара — «Госномер» и «Марка/модель», у аренды госномера не бывает вовсе
+    // (ADR 0018) и на его месте стоит арендодатель, с которым и договаривались.
+    expect(await screen.findByText('Е646СК799 — КамАЗ 65115')).toBeDefined();
+    expect(screen.getByText('Автокран 70 тн — ООО «Ромашка»')).toBeDefined();
+  });
+
+  it('подсказки двух фильтров техники не спорят: тип называется типом, машина — техникой', async () => {
+    renderTab();
+    await screen.findByText('Т-42');
+
+    // Фильтр классификатора больше не обещает «Всю технику»: этими словами в разделе называют
+    // единицу парка, и одна подсказка на два разных вопроса читалась бы как поломка (ADR 0098).
+    expect(screen.getByText('Любой тип ТС')).toBeDefined();
+    expect(screen.getByText('Вся техника')).toBeDefined();
   });
 
   it('кнопка «Заявка на неделю» стоит по праву заведения, а не по показу недельных строк', async () => {

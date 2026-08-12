@@ -972,6 +972,12 @@ export const vehicleRequestListQuerySchema = baseListQuery(VEHICLE_REQUEST_SORT_
   // Категория задаётся вместе с типом (позиция классификатора выбирается целиком, ADR 0028):
   // одна категория принадлежит одному типу, и фильтр по ней сужает список до неё.
   vehicleCategoryId: uuidSchema.optional(),
+  /**
+   * Назначенная машина (ADR 0027, ADR 0098) — единица парка, а не позиция классификатора: вопрос
+   * «где ходил ТС-341» задают госномером. Заявка без назначения под этот фильтр не попадает
+   * никогда, и это верно: машины у неё ещё нет.
+   */
+  vehicleId: uuidSchema.optional(),
   num: z.coerce.number().int().positive().optional(),
   // Виза (ADR 0025): «false» — заявки, ждущие согласования; ими и открывают день диспетчер
   // и руководитель строительства.
@@ -1170,14 +1176,17 @@ function dayNumberInPeriod(dateFrom: string, onDate: string): number | null {
 
 /**
  * Сводка по статусам для виджета над списком. Из фильтров таблицы учитываются сужающие область —
- * объект, тип заявки и заказанная техника: цифры относятся к тому же списку, что человек видит
- * перед собой. Фильтр по статусу свёл бы сводку к самой себе, а по номеру — к одной заявке.
+ * объект, тип заявки, заказанная позиция классификатора и назначенная машина: цифры относятся к
+ * тому же списку, что человек видит перед собой. Фильтр по статусу свёл бы сводку к самой себе,
+ * а по номеру — к одной заявке.
  */
 export const vehicleRequestSummaryQuerySchema = z.object({
   objectId: uuidSchema.optional(),
   requestType: vehicleRequestTypeSchema.optional(),
   vehicleTypeId: uuidSchema.optional(),
   vehicleCategoryId: uuidSchema.optional(),
+  /** Назначенная машина (ADR 0098): та же единица парка, что и в фильтре списка. */
+  vehicleId: uuidSchema.optional(),
 });
 export type VehicleRequestSummaryQuery = z.infer<typeof vehicleRequestSummaryQuerySchema>;
 

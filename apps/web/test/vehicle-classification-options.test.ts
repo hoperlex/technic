@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import type { VehicleClassificationDto } from '@technic/contracts';
+import {
+  type VehicleClassificationDto,
+  type VehicleDto,
+  vehicleOptionLabel,
+} from '@technic/contracts';
 import {
   classificationFilterGroups,
   classificationGroups,
@@ -85,6 +89,56 @@ describe('порядок цены у позиции (подсказка выбо
     const [special] = classificationFilterGroups([{ ...crane25, avgPricePerHour: 2400 }]);
     expect(special!.options.every((o) => !('priceHint' in o) || o.priceHint === undefined)).toBe(
       true,
+    );
+  });
+});
+
+/**
+ * Подпись машины в строке подбора (ADR 0098) — пара примет, а не одна: госномер помнят не для
+ * всякой машины, марку — не для всякого госномера. Проверяется здесь же, где остальные подписи
+ * выбора техники: список типов и список машин стоят в одной полосе фильтров и читаются вместе.
+ */
+function vehicle(over: Partial<VehicleDto>): VehicleDto {
+  return {
+    ownership: 'own',
+    description: '',
+    categoryName: null,
+    typeName: 'Самосвалы',
+    registrationNumber: null,
+    modelName: null,
+    lessorName: null,
+    ...over,
+  } as VehicleDto;
+}
+
+describe('vehicleOptionLabel (подпись машины в строке подбора)', () => {
+  it('своя машина называется парой «госномер — марка/модель»', () => {
+    expect(
+      vehicleOptionLabel(vehicle({ registrationNumber: 'А123БВ797', modelName: 'КамАЗ 65115' })),
+    ).toBe('А123БВ797 — КамАЗ 65115');
+  });
+
+  it('арендная — парой «описание — арендодатель»: госномера у неё нет вовсе (ADR 0018)', () => {
+    expect(
+      vehicleOptionLabel(
+        vehicle({
+          ownership: 'rental',
+          description: 'Автокран 70 тн',
+          lessorName: 'ООО «Ромашка»',
+        }),
+      ),
+    ).toBe('Автокран 70 тн — ООО «Ромашка»');
+  });
+
+  it('незаполненный реквизит не оставляет половины строки и не рисует прочерка', () => {
+    expect(vehicleOptionLabel(vehicle({ registrationNumber: 'А123БВ797' }))).toBe('А123БВ797');
+    expect(vehicleOptionLabel(vehicle({ modelName: 'КамАЗ 65115' }))).toBe('КамАЗ 65115');
+  });
+
+  it('без обоих реквизитов остаётся то, чем машину называют в прочих списках', () => {
+    // Откат к `vehicleLabel`: за ним стоят категория и тип — тип есть у всякой строки справочника.
+    expect(vehicleOptionLabel(vehicle({ categoryName: 'Самосвалы, 20 м³' }))).toBe(
+      'Самосвалы, 20 м³',
     );
   });
 });

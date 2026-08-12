@@ -83,6 +83,8 @@ function renderTab(over: RouteMap = {}, items: VehicleRequestDto[] = []): HttpMo
     'GET /objects': () => json(list([OWN_OBJECT, OTHER_OBJECT, NO_ADDRESS_OBJECT])),
     'GET /departments': () => json(emptyList()),
     'GET /warehouses': () => json(list([WAREHOUSE, WAREHOUSE_OF_STOPPED_SUPPLIER])),
+    // Справочник техники — фильтр по назначенной машине (ADR 0098); тест про адреса, он пуст.
+    'GET /vehicles': () => json(emptyList()),
     // Классификатор грузового вида: заявку на грузоперевозку другим и не заведёшь.
     'GET /vehicle-classifications': () =>
       json(

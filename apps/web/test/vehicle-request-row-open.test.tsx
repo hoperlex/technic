@@ -52,6 +52,8 @@ function renderTab(
     'GET /objects': () => json(list([objectDto()])),
     'GET /departments': () => json(emptyList()),
     'GET /vehicle-classifications': () => json(list([classification()])),
+    // Справочник техники — фильтр по назначенной машине (ADR 0098); списку заявок он не важен.
+    'GET /vehicles': () => json(emptyList()),
     'PATCH /vehicle-requests/:id/approval': () => json(SPECIAL),
     ...CARD_ROUTES,
     ...over,

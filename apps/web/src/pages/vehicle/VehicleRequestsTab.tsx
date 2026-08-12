@@ -36,7 +36,6 @@ import {
   canRequestEarlyEnd,
   canShortenWorkPeriodByEdit,
   type CompleteVehicleRequestInput,
-  completionLabel,
   type FeedKind,
   feedKindLabels,
   minRequestDateKey,
@@ -54,7 +53,6 @@ import {
   requestTypeChangeBlocker,
   ROLLBACK_WAYBILL_MESSAGE,
   routeDateMismatch,
-  routePurposeLabels,
   type SpecialEquipmentRequestDto,
   statusChangeRequiresReason,
   transitionRequiresAssignment,
@@ -67,7 +65,6 @@ import {
   vehicleRequestTypeColors,
   allowedVehicleRequestTypes,
   vehicleRequestTypeLabels,
-  type VehicleRouteDto,
   type WeeklyVehicleRequestDto,
 } from '@technic/contracts';
 import { vehicleRequestsApi } from '../../api/resources';
@@ -99,7 +96,7 @@ import {
   withSavedClassification,
 } from '../../hooks/useVehicleClassifications';
 import { useAuth } from '../../auth/AuthContext';
-import { errorMessage, formatDateTime, formatDateTimeMaybe } from '../../utils/format';
+import { errorMessage, formatDateTime } from '../../utils/format';
 import { vehicleRouteLink } from '../../utils/links';
 import { withSavedOption } from '@shared/lib';
 import {
@@ -120,20 +117,20 @@ import { VehicleRouteTransferModal } from './VehicleRouteTransferModal';
 import { useObjectScope } from '../../hooks/useObjectScope';
 import { useDepartmentScope } from '../../hooks/useDepartmentScope';
 import { MOSCOW_TZ } from '@shared/config';
+import { ApprovalCell, StatusCell } from './requestRowCells';
+import { rollbackErases, retypeErases, termLabel } from './requestRowText';
 import {
-  ApprovalCell,
   EarlyEndTag,
   FileEditor,
-  formatDateOnly,
   RequestAssignmentCell,
   RequestContactsCell,
   useEarlyEnd,
-  StatusCell,
   VehicleClassificationSelect,
   useDepartmentOptions,
   useFileEditor,
   useObjectOptions,
   useVehicleClassificationFilter,
+  useVehicleFilter,
   type EditorFile,
 } from './shared';
 import {
@@ -240,84 +237,6 @@ const feedRowId = (row: VehicleFeedRow): string =>
 /** Прочерк колонки, у которой в недельной строке значения нет по существу документа. */
 const dash = <Typography.Text type="secondary">—</Typography.Text>;
 
-/** Колонка «Срок»: у спецтехники это период, у грузоперевозки — дата (и время, если задано). */
-function termLabel(r: VehicleRequestDto): string {
-  if (r.requestType === 'special_equipment') {
-    return r.dateTo
-      ? `${formatDateOnly(r.dateFrom)} – ${formatDateOnly(r.dateTo)}`
-      : formatDateOnly(r.dateFrom);
-  }
-  return formatDateTimeMaybe(r.scheduledAt, r.scheduledTimeUnspecified);
-}
-
-/**
- * Что возврат в «Новую» сотрёт у этой заявки (`transitionResetsWork`) — строками, по её
- * собственным данным.
- *
- * Перечень не статический намеренно: у арендной машины рейса и перегонов не бывает — их ведёт
- * арендодатель, — у заявки отдела нет визы, а факт есть только у той, которую уже закрывали и
- * откатили назад в работу. Обещать снятие того, чего у заявки нет, — врать человеку ровно в том
- * окне, где он решает, стирать ли работу; поэтому строка появляется только под заполненное поле.
- */
-function rollbackErases(r: VehicleRequestDto, relocations: VehicleRouteDto[]): string[] {
-  const items: string[] = [];
-  if (r.assignment) {
-    // Ставки — тем же текстом, что и в строке списка: их согласовывали под эту заявку (ADR 0027),
-    // и стирается вместе с машиной именно договорённость, а не строка справочника. Без ставок у
-    // арендной машины называется арендодатель: с ним и договаривались, ему и звонить об отказе.
-    const detail = assignmentRateLabel(r.assignment) || r.assignment.lessorName;
-    items.push(
-      `Назначенная техника: ${assignmentTitle(r.assignment)}${detail ? ` — ${detail}` : ''}`,
-    );
-  }
-  if (r.route) items.push(`Место в рейсе ${r.route.displayNumber}`);
-  for (const route of relocations) {
-    items.push(
-      `${routePurposeLabels[route.purpose]} — рейс ${route.displayNumber} от ${formatDateOnly(route.routeDate)}`,
-    );
-  }
-  // Виза (ADR 0025): её ставят только «Новой» заявке, и вернувшуюся придётся согласовывать заново.
-  if (r.approvedAt) {
-    items.push(
-      `Виза руководителя строительства${r.approvedByName ? ` (${r.approvedByName})` : ''}`,
-    );
-  }
-  if (r.completion) items.push(`Предъявленный факт: ${completionLabel(r.completion)}`);
-  return items;
-}
-
-/**
- * Что заявка теряет при переоформлении в другой тип (ADR 0091) — строками, по её собственным
- * данным. Тем же приёмом, что и `rollbackErases`: перечень собирается под заполненное поле, а не
- * пишется заранее — обещать пропажу того, чего у заявки нет, значит врать ровно в том окне, где
- * человек решает, переоформлять ли.
- *
- * Контакта на месте в перечне нет намеренно: он не теряется, а переезжает в поле нового типа
- * (`handleRequestTypeChange`), и человек видит его в форме перед сохранением.
- */
-function retypeErases(r: VehicleRequestDto, dropsApproval: boolean): string[] {
-  const items: string[] = [];
-  if (r.requestType === 'special_equipment') {
-    items.push(`Срок работ (${termLabel(r)}) — у грузоперевозки вместо него момент подачи`);
-  } else {
-    items.push(`Место погрузки: ${r.loadingLocation}`);
-    items.push(`Место разгрузки: ${r.unloadingLocation}`);
-    if (r.volumeM3 != null) items.push(`Объём: ${r.volumeM3} м³`);
-    if (r.weightTons != null) items.push(`Масса: ${r.weightTons} т`);
-    // Заказчик-отдел (ADR 0040): спецтехника выходит на площадку, и заказать её отдел не может —
-    // заявка переезжает на объект, выбранный в форме.
-    if (r.departmentName) {
-      items.push(`Заказчик-отдел (${r.departmentName}) — заказ техники на объект ведёт площадка`);
-    }
-  }
-  if (dropsApproval) {
-    items.push(
-      `Виза руководителя строительства${r.approvedByName ? ` (${r.approvedByName})` : ''}`,
-    );
-  }
-  return items;
-}
-
 /**
  * Какой осью заказчика спрашивает форма (ADR 0040) — по выбранному в ней типу заявки, а не только
  * по самой заявке. Заказ техники на объект бывает лишь у площадки, отдела в нём нет вовсе: заявку
@@ -391,6 +310,8 @@ export function VehicleRequestsTab() {
     /** Заказанная техника (ADR 0028): тип целиком либо одна его категория. */
     vehicleTypeId?: string;
     vehicleCategoryId?: string;
+    /** Назначенная машина (ADR 0098): единица парка, а не позиция классификатора. */
+    vehicleId?: string;
     num?: number;
     /** Виза (ADR 0025): 'false' — заявки, ждущие согласования. */
     approved?: string;
@@ -420,6 +341,9 @@ export function VehicleRequestsTab() {
     vehicleCategoryId: params.vehicleCategoryId,
     onChange: applyFilter,
   });
+  // Отбор по назначенной машине (ADR 0098) — второй вопрос о технике рядом с первым: «какую
+  // заказывали» спрашивает классификатор, «какой закрыли» — этот.
+  const vehicleFilter = useVehicleFilter({ vehicleId: params.vehicleId, onChange: applyFilter });
 
   /**
    * Лента раздела, а не список заказов: заказы ТС и недельные заявки приходят одним запросом,
@@ -435,13 +359,15 @@ export function VehicleRequestsTab() {
 
   // Сводка в шапке: сколько заявок ждёт обработки и сколько в работе. Ключ начинается с
   // 'vehicle-requests' — значит счётчики обновляются теми же инвалидациями, что и список.
-  // Сужающие фильтры (объект, тип заявки, техника) в сводку идут: цифры относятся к тому же
-  // списку, что человек видит перед собой. Статус и номер — нет, они свели бы её к самой себе.
+  // Сужающие фильтры (объект, тип заявки, тип ТС и сама машина) в сводку идут: цифры относятся к
+  // тому же списку, что человек видит перед собой. Статус и номер — нет, они свели бы её к самой
+  // себе.
   const summaryQuery = {
     objectId: params.objectId,
     requestType: params.requestType,
     vehicleTypeId: params.vehicleTypeId,
     vehicleCategoryId: params.vehicleCategoryId,
+    vehicleId: params.vehicleId,
   };
   const { data: summary } = useQuery({
     queryKey: ['vehicle-requests', 'summary', summaryQuery],
@@ -1632,6 +1558,8 @@ export function VehicleRequestsTab() {
       )}
       {/* Заказанная техника: тип целиком либо одна его категория (ADR 0028). */}
       {classificationFilter.controls}
+      {/* Назначенная машина (ADR 0098): заявки, которые закрыли этой единицей парка. */}
+      {vehicleFilter.controls}
       <Input.Search
         allowClear
         placeholder="Поиск по № (ТС-123, НЗ-12)"
@@ -1712,6 +1640,7 @@ export function VehicleRequestsTab() {
           onChange: (v) => applyFilter({ objectId: v }),
         } as const),
     classificationFilter.mobileFilter,
+    vehicleFilter.mobileFilter,
     {
       kind: 'text',
       key: 'num',

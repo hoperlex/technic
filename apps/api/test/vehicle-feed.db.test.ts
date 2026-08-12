@@ -179,6 +179,31 @@ async function makeWeekly(opts: {
   return { id: row.id, num: row.num, displayNumber: `НЗ-${row.num}` };
 }
 
+/**
+ * Своя машина строкой: фильтр по назначенной технике спрашивают единицей парка («где ходил
+ * ТС-341»), и проверить его нечем, кроме двух разных машин в справочнике.
+ */
+async function makeVehicle(label: string): Promise<string> {
+  const res = await ctx.db.execute<{ id: string }>(sql`
+    INSERT INTO vehicles (ownership, vehicle_type_id, registration_number)
+    VALUES ('own', ${ctx.vehicleTypeId}, ${`FEED${label}${RUN}`})
+    RETURNING id`);
+  return res.rows[0]!.id;
+}
+
+/**
+ * Назначение машины на заказ (ADR 0027) строкой: полный путь — виза, подбор, перевод в работу —
+ * проверяется своими файлами, а фильтру нужна только сама связь. Обе копии типа равны типу заказа:
+ * машина заводится того же типа, и составные ключи назначения на этом и держатся.
+ */
+async function assign(requestId: string, vehicleId: string): Promise<void> {
+  await ctx.db.execute(sql`
+    INSERT INTO vehicle_request_assignments
+      (request_id, vehicle_id, vehicle_type_id, ordered_vehicle_type_id, assigned_by)
+    VALUES (${requestId}, ${vehicleId}, ${ctx.vehicleTypeId}, ${ctx.vehicleTypeId},
+            ${ctx.admin.id})`);
+}
+
 /** Учётка нужной роли: заводится строкой, входит настоящим маршрутом — токен нужен живой. */
 async function makeUser(role: string, objectIds: string[] = []): Promise<TestUser> {
   const { db } = await import('../src/db/client');
@@ -340,6 +365,51 @@ describe.skipIf(!DB_URL)('лента «Заказ автотехники» (жи
     expect(onlyWeekly.total).toBe(1);
     const onlyOrders = await feed(`objectId=${object}&kind=order`);
     expect(numbers(onlyOrders.items)).toEqual([order.displayNumber]);
+  });
+
+  it('фильтр по назначенной машине отбирает по единице парка, а не по позиции классификатора', async () => {
+    const objects = await ctx.db.execute<{ id: string }>(sql`
+      INSERT INTO construction_objects (code, name, address)
+      VALUES (${`FEED-M-${RUN}`}, ${`Площадка машины ${RUN}`}, 'г Москва, ул Гаражная, д 11')
+      RETURNING id`);
+    const object = objects.rows[0]!.id;
+    const withVehicle = await makeOrder({ objectId: object });
+    const withOther = await makeOrder({ objectId: object });
+    // Заявка без назначения: заказанный тип у неё тот же самый, и попади она в выдачу — фильтр
+    // отбирал бы по классификатору, как до ADR 0098, а не по машине.
+    await makeOrder({ objectId: object });
+    await makeWeekly({ objectId: object });
+    const vehicle = await makeVehicle('A');
+    await assign(withVehicle.id, vehicle);
+    await assign(withOther.id, await makeVehicle('B'));
+
+    // `total` считается тем же условием, что и страница: чужая машина, заявка без назначения и
+    // недельная строка (назначения у неё не бывает вовсе) в цифру не идут.
+    const byVehicle = await feed(`objectId=${object}&vehicleId=${vehicle}`);
+    expect(numbers(byVehicle.items)).toEqual([withVehicle.displayNumber]);
+    expect(byVehicle.total).toBe(1);
+
+    // Тот же фильтр во вкладке: список и лента обязаны отвечать одно и то же — человек считает
+    // их одним списком, потому что это и есть один список.
+    const res = await ctx.app.inject({
+      method: 'GET',
+      url: `/api/v1/vehicle-requests?pageSize=500&objectId=${object}&vehicleId=${vehicle}`,
+      headers: ctx.admin.auth,
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    const list = res.json() as { items: { displayNumber: string }[]; total: number };
+    expect(list.items.map((i) => i.displayNumber)).toEqual([withVehicle.displayNumber]);
+    expect(list.total).toBe(1);
+
+    // Сводка над таблицей — по тем же сужающим фильтрам: назначение присоединено первичным
+    // ключом, поэтому счётчик статусов от join'а не завышается.
+    const summaryRes = await ctx.app.inject({
+      method: 'GET',
+      url: `/api/v1/vehicle-requests/summary?objectId=${object}&vehicleId=${vehicle}`,
+      headers: ctx.admin.auth,
+    });
+    expect(summaryRes.statusCode, summaryRes.body).toBe(200);
+    expect((summaryRes.json() as Record<string, number>).new).toBe(1);
   });
 
   it('поиск по номеру разведён по видам: «НЗ-…» не ищет заказы, «ТС-…» не ищет недели', async () => {

@@ -5,7 +5,7 @@ import { FilterSheet } from '../src/shared/ui';
 import { ListToolbar } from '../src/shared/ui';
 import type { FilterDefinition } from '../src/shared/ui';
 import { sortOptionsFrom } from '../src/shared/ui';
-import { ApprovalCell } from '../src/pages/vehicle/shared';
+import { ApprovalCell } from '../src/pages/vehicle/requestRowCells';
 import { DESKTOP_VIEWPORT, MOBILE_VIEWPORT, setViewport } from './viewport';
 
 /**

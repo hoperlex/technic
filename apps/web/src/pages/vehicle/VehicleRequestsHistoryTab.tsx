@@ -29,7 +29,7 @@ import {
   type VehicleRequestType,
   workedAmountLabel,
 } from '@technic/contracts';
-import { counterpartiesApi, vehicleRequestsApi } from '../../api/resources';
+import { vehicleRequestsApi } from '../../api/resources';
 import { DataTable, type CardConfig } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
@@ -47,8 +47,10 @@ import { VehicleRequestViewModal } from './VehicleRequestViewModal';
 import {
   formatDateOnly,
   RequestAssignmentCell,
+  useLessorOptions,
   useObjectOptions,
   useVehicleClassificationFilter,
+  useVehicleFilter,
 } from './shared';
 import { useObjectScope } from '../../hooks/useObjectScope';
 
@@ -104,6 +106,8 @@ export function VehicleRequestsHistoryTab() {
     /** Заказанная техника (ADR 0028): тип целиком либо одна его категория. */
     vehicleTypeId?: string;
     vehicleCategoryId?: string;
+    /** Машина, которой заявку закрыли (ADR 0098) — рядом с «у кого брали». */
+    vehicleId?: string;
     lessorId?: string;
     num?: number;
     dateFrom?: string;
@@ -118,6 +122,9 @@ export function VehicleRequestsHistoryTab() {
     vehicleCategoryId: params.vehicleCategoryId,
     onChange: applyFilter,
   });
+  // «Какой машиной» — вопрос, отдельный от «у кого брали» (фильтр арендодателя ниже): одну и ту же
+  // единицу берут у одного арендодателя, а у одного арендодателя берут разные единицы (ADR 0098).
+  const vehicleFilter = useVehicleFilter({ vehicleId: params.vehicleId, onChange: applyFilter });
 
   const { data, isFetching } = useQuery({
     queryKey: ['vehicle-requests', 'history', params],
@@ -134,20 +141,7 @@ export function VehicleRequestsHistoryTab() {
   const { options: allObjectOptions } = useObjectOptions();
   const objectOptions = limitObjectOptions(allObjectOptions);
 
-  // Арендодатели — контрагенты роли «Арендодатель (ТС)»: по ним и сводят расходы на аренду.
-  // Неактивные из списка не убираем: журнал читают и про тех, с кем уже не работают.
-  const { data: lessorsData } = useQuery({
-    queryKey: ['counterparties', 'vehicle-lessors', 'all'],
-    queryFn: () =>
-      counterpartiesApi.list({
-        page: 1,
-        pageSize: 500,
-        type: 'vehicle_lessor',
-        sortBy: 'name',
-        sortOrder: 'asc',
-      }),
-  });
-  const lessorOptions = (lessorsData?.items ?? []).map((c) => ({ value: c.id, label: c.name }));
+  const { options: lessorOptions } = useLessorOptions();
 
   const [viewRecord, setViewRecord] = useState<VehicleRequestDto | null>(null);
 
@@ -411,6 +405,8 @@ export function VehicleRequestsHistoryTab() {
       />
       {/* Заказанная техника: тип целиком либо одна его категория (ADR 0028). */}
       {classificationFilter.controls}
+      {/* Машина, которой заявку закрыли (ADR 0098). */}
+      {vehicleFilter.controls}
       {isLessor ? null : (
         <Select
           allowClear
@@ -483,6 +479,7 @@ export function VehicleRequestsHistoryTab() {
       onChange: (v) => applyFilter({ objectId: v }),
     },
     classificationFilter.mobileFilter,
+    vehicleFilter.mobileFilter,
     ...(isLessor
       ? []
       : [
