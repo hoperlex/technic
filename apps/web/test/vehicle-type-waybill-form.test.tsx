@@ -50,6 +50,7 @@ function vehicleType(over: Partial<VehicleTypeDto> = {}): VehicleTypeDto {
     isActive: true,
     sortOrder: 20,
     waybillFormCode: '4p',
+    isLinear: false,
     specCount: 0,
     categoryCount: 0,
     createdAt: '2026-01-01T00:00:00.000Z',
@@ -93,12 +94,15 @@ function mockDirectory(types: VehicleTypeDto[]) {
 }
 
 /** Чекбокс формы: у antd подпись стоит рядом с самим полем, поэтому ищем по тексту. */
-function passengerCheckbox(): HTMLInputElement | undefined {
+function checkboxByLabel(text: string): HTMLInputElement | undefined {
   const label = [...document.querySelectorAll('.ant-checkbox-wrapper')].find(
-    (el) => el.textContent?.trim() === 'Легковой транспорт',
+    (el) => el.textContent?.trim() === text,
   );
   return label?.querySelector('input[type="checkbox"]') as HTMLInputElement | undefined;
 }
+
+const passengerCheckbox = () => checkboxByLabel('Легковой транспорт');
+const linearCheckbox = () => checkboxByLabel('Линейная техника');
 
 async function openCreateForm(): Promise<void> {
   const add = await waitFor(() => {
@@ -189,5 +193,102 @@ describe('бланк путевого листа в справочнике ти�
     expect(http.lastCall('PATCH /vehicle-types/:id')!.body).toMatchObject({
       waybillFormCode: 'leg3',
     });
+  });
+});
+
+/**
+ * Линейная техника в справочнике типов.
+ *
+ * Признак отвечает не на вопрос о бланке, а на вопрос о том, как ведётся заказ на объект: машина
+ * вечером возвращается на базу, за день работает на нескольких площадках, и документы у неё
+ * дневные — 4-П на каждый день, ЭСМ-2 только по требованию. Поэтому чекбокс стоит у типов любого
+ * вида (заказать на объект можно и самосвал), а соседний «Легковой транспорт» остаётся у
+ * грузового: он про форму листа.
+ */
+describe('линейная техника в справочнике типов', () => {
+  it('чекбокс есть и у спецтехники — заказ по дням не про бланк, а про режим заявки', async () => {
+    const http = mockDirectory([vehicleType()]);
+    renderWithUser(<VehicleTypesTab />);
+    await openCreateForm();
+
+    await selectOption('Вид', 'Спецтехника');
+    await waitFor(() => expect(linearCheckbox()).toBeTruthy());
+    // Бланк спецтехнике не задаётся, а признак — задаётся: это разные вопросы.
+    expect(passengerCheckbox()).toBeUndefined();
+    expect(linearCheckbox()!.checked).toBe(false);
+    fireEvent.click(linearCheckbox()!);
+
+    fireEvent.change(screen.getByLabelText('Код'), { target: { value: 'excavators' } });
+    fireEvent.change(screen.getByLabelText('Наименование типа'), {
+      target: { value: 'Экскаваторы' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
+
+    await waitFor(() => expect(http.countOf('POST /vehicle-types')).toBe(1));
+    expect(http.lastCall('POST /vehicle-types')!.body).toMatchObject({
+      code: 'excavators',
+      isLinear: true,
+    });
+  });
+
+  it('новый тип со снятым чекбоксом уходит нелинейным, а не без признака', async () => {
+    const http = mockDirectory([vehicleType()]);
+    renderWithUser(<VehicleTypesTab />);
+    await openCreateForm();
+
+    await selectOption('Вид', 'Грузоперевозки');
+    await waitFor(() => expect(linearCheckbox()).toBeTruthy());
+
+    fireEvent.change(screen.getByLabelText('Код'), { target: { value: 'tippers' } });
+    fireEvent.change(screen.getByLabelText('Наименование типа'), { target: { value: 'Тонары' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
+
+    await waitFor(() => expect(http.countOf('POST /vehicle-types')).toBe(1));
+    expect(http.lastCall('POST /vehicle-types')!.body).toMatchObject({ isLinear: false });
+  });
+
+  it('отмеченный признак меняет подпись о путевом листе: ЭСМ-2 сам не выписывается', async () => {
+    mockDirectory([vehicleType()]);
+    renderWithUser(<VehicleTypesTab />);
+    await openCreateForm();
+
+    await selectOption('Вид', 'Спецтехника');
+    await screen.findByText(/ЭСМ-2 портал выписывает сам/);
+
+    fireEvent.click(linearCheckbox()!);
+    // Обещание «выписывает сам» у линейного типа портал не сдержит — подпись обязана уехать.
+    await screen.findByText(/ЭСМ-2 по заявке на технику выписывается по требованию/);
+    expect(screen.queryByText(/ЭСМ-2 портал выписывает сам/)).toBeNull();
+  });
+
+  it('линейный тип помечен в списке и открывается в правке отмеченным', async () => {
+    const linearType = vehicleType({
+      id: 'vt-excavators',
+      kindId: SPECIAL_KIND.id,
+      kindCode: SPECIAL_KIND.code,
+      kindName: SPECIAL_KIND.name,
+      code: 'excavators',
+      name: 'Экскаваторы',
+      isLinear: true,
+    });
+    const http = mockDirectory([linearType]);
+    renderWithUser(<VehicleTypesTab />);
+
+    // Столбец списка: без него признак виден только через открытую форму правки.
+    await screen.findByText('Экскаваторы');
+    await waitFor(() => expect(screen.getAllByText('по дням').length).toBeGreaterThan(0));
+
+    const edit = [...document.querySelectorAll('tbody button')].find((b) =>
+      b.getAttribute('title')?.startsWith('Редактировать тип'),
+    );
+    fireEvent.click(edit!);
+
+    await waitFor(() => expect(linearCheckbox()).toBeTruthy());
+    expect(linearCheckbox()!.checked).toBe(true);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
+    await waitFor(() => expect(http.countOf('PATCH /vehicle-types/:id')).toBe(1));
+    // Правка описательных полей не должна молча снимать признак с работающего типа.
+    expect(http.lastCall('PATCH /vehicle-types/:id')!.body).toMatchObject({ isLinear: true });
   });
 });

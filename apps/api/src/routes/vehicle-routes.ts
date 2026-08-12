@@ -54,7 +54,7 @@ import {
   lockRoute,
   lockRoutePair,
   moveRouteToDate,
-  routeOfRequest,
+  routeOfRequestDay,
   routeQuery,
   routeRequestCount,
   routeWaybill,
@@ -205,6 +205,9 @@ async function loadRequestForRoute(tx: Parameters<typeof lockRoute>[0], requestI
       vehicleTypeName: vehicleTypes.name,
       // Вид заказанного типа — граница замены (ADR 0059): её и сверяет укладка в чужой рейс.
       kindId: vehicleTypes.kindId,
+      // Линейный ли заказанный тип (ADR 0100 §1): такой заказ в рейс тоже ходит, но днём и только
+      // из карточки заявки — отсюда правило и берёт слова для отказа этой двери.
+      isLinear: vehicleTypes.isLinear,
       assignedVehicleId: vehicleRequestAssignments.vehicleId,
       ownership: vehicles.ownership,
     })
@@ -419,18 +422,21 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
           });
         }
 
-        await tx
-          .update(vehicleRoutes)
-          .set({
-            ...(body.driverPersonId !== undefined
-              ? { driverPersonId: body.driverPersonId }
-              : undefined),
-            ...(body.trip ? tripValues(body.trip) : undefined),
-            ...(body.comment !== undefined ? { comment: body.comment } : undefined),
-            ...(body.moveFrom !== undefined ? { moveFrom: body.moveFrom } : undefined),
-            ...(body.moveTo !== undefined ? { moveTo: body.moveTo } : undefined),
-          })
-          .where(eq(vehicleRoutes.id, route.id));
+        const values = {
+          ...(body.driverPersonId !== undefined
+            ? { driverPersonId: body.driverPersonId }
+            : undefined),
+          ...(body.trip ? tripValues(body.trip) : undefined),
+          ...(body.comment !== undefined ? { comment: body.comment } : undefined),
+          ...(body.moveFrom !== undefined ? { moveFrom: body.moveFrom } : undefined),
+          ...(body.moveTo !== undefined ? { moveTo: body.moveTo } : undefined),
+        };
+        // Пустой запрос правки — законное тело: перенос рейса на другую дату присылает одну дату,
+        // и графы шапки при этом не трогает. `UPDATE` без единого значения драйвер не собирает
+        // вовсе («No values to set»), и до появления переноса такого тела просто не приходило.
+        if (Object.keys(values).length > 0) {
+          await tx.update(vehicleRoutes).set(values).where(eq(vehicleRoutes.id, route.id));
+        }
 
         if (body.routeDate && body.routeDate !== route.routeDate) {
           moved = await moveRouteToDate(tx, route.id, body.routeDate);
@@ -514,8 +520,10 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
         const request = await loadRequestForRoute(tx, body.requestId);
         assertRequestScope(p, request);
 
-        // Где заявка лежит на самом деле — после блокировок: до них она могла уехать в третий рейс.
-        const current = await routeOfRequest(tx, body.requestId);
+        // После блокировок: до них заявка могла уехать в третий рейс.
+        // Где заявка лежит на самом деле — её единственная строка без дня: линейные дни этой
+        // дверью не ходят вовсе (ADR 0100 §8), и спрашивать их здесь незачем.
+        const current = await routeOfRequestDay(tx, body.requestId, null);
         if (current && current.routeId !== target.id) {
           if (!body.source || body.source.routeId !== current.routeId) {
             throw err.conflict(
@@ -528,9 +536,13 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
         const check = canJoinRoute(
           {
             requestType: request.requestType,
+            isLinear: request.isLinear,
             status: request.status,
             deletedAt: request.deletedAt?.toISOString() ?? null,
-            tripDate: await tripDate(tx, request.id),
+            // Со стороны рейса заявка приходит целиком, одним днём подачи. Линейный заказ такого
+            // дня не несёт, и правило откажет ему словами (`LINEAR_DAY_DOOR_MESSAGE`): дверь у
+            // дня одна — карточка заявки, где известно, какой именно день срока кладут.
+            day: { kind: 'trip', date: await tripDate(tx, request.id) },
             ownership: request.ownership ?? null,
           },
           {
@@ -605,13 +617,14 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
     },
     async (req): Promise<VehicleRouteDto> => {
       const p = requirePrincipal(req);
-      await db.transaction(async (tx) => {
+      const removed = await db.transaction(async (tx) => {
         const route = await lockRoute(tx, req.params.id);
         assertRouteVersion(route, req.query.version);
         await assertRouteEditable(tx, route.id);
-        const removed = await detachRequest(tx, route.id, req.params.requestId);
-        if (!removed) throw err.notFound('Заявки нет в этом маршруте');
+        const row = await detachRequest(tx, route.id, req.params.requestId);
+        if (!row) throw err.notFound('Заявки нет в этом маршруте');
         await bumpRouteVersion(tx, route.id, p.id);
+        return row;
       });
 
       await writeAudit({
@@ -619,7 +632,9 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
         action: 'vehicle_route.detach',
         entityType: 'vehicle_route',
         entityId: req.params.id,
-        metadata: { requestId: req.params.requestId },
+        // День снятой строки — часть события: линейный день и грузовая заявка выбывают из состава
+        // одинаково, а означают разное (ADR 0100 §2).
+        metadata: { requestId: req.params.requestId, workDate: removed.workDate },
       });
       return (await loadRouteDto(db, req.params.id))!;
     },

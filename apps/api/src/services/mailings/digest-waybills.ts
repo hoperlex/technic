@@ -1,14 +1,17 @@
 import { and, asc, eq, gte, inArray, lte, ne, sql } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
 import {
   formatMoscowDateTime,
   formatPhone,
   formatVehicleRequestNumber,
+  formatVehicleRouteNumber,
   isRelocationPurpose,
   requestCustomerName,
   routePurposeLabels,
   VEHICLE_ON_SITE_PATH,
   VEHICLE_ROUTES_PATH,
   vehicleLabel,
+  type VehicleOwnership,
   vehicleRequestPath,
   vehicleRoutePath,
   type VehicleRouteDto,
@@ -26,6 +29,7 @@ import {
   vehicleCategories,
   vehicleModels,
   vehicleRequests,
+  vehicleRouteRequests,
   vehicleRoutes,
   vehicles,
   vehicleTypes,
@@ -50,6 +54,13 @@ import { type DigestContext, limitRows, vehicleRequestScope } from './digest-con
  *
  * Следствие, которое надо помнить: на арендную технику лист выписывает арендодатель, и в сводку
  * такие рейсы не попадают никак. Сводка отвечает на вопрос «что оформлено», а не «что запланировано».
+ *
+ * Исключение ровно одно, и оно оговорено решением: линейный заказ (ADR 0100 §12). Недельного листа
+ * у него может не быть вовсе — ЭСМ-2 такому заказу выписывают по требованию, — а работа идёт днями,
+ * и отбор по листам потерял бы его целиком и молча. Поэтому у таблицы «Техника на объектах» два
+ * источника, и во втором строка стоит в том числе без документа: день, на который лист ещё не
+ * выписан, печатается номером рейса с пометкой. Это не отмена правила выше, а его цена — молчаливая
+ * потеря в сводке хуже лишней строки: несделанная работа выглядит как несуществующая.
  */
 
 /** Готовая таблица письма: заголовок со счётчиком, шапка, строки и ссылка на полный список. */
@@ -80,7 +91,9 @@ const TRIPS_HEAD = [
 ];
 
 const ONSITE_HEAD = [
-  'Лист ЭСМ-2 · период',
+  // «Документ», а не «Лист ЭСМ-2»: с линейной техникой в графу приходят и номера дневных 4-П, и
+  // номер рейса, которому листа ещё не выписали (ADR 0100 §12).
+  'Документ · период',
   'Заявка · объект',
   'Машина',
   'Машинист',
@@ -340,13 +353,65 @@ export async function digestTripsDays(ctx: DigestContext): Promise<DigestTripsDa
 }
 
 /**
- * Техника на объектах: листы ЭСМ-2, чья неделя работы пересекается с окном.
+ * Строка «Техники на объектах» вместе с тем, чем строки двух источников выстраиваются в одну
+ * таблицу. Порядок общий — объект, потом первый день строки: недельный лист и дни линейных заказов
+ * рассказывают про одни и те же площадки, и разложить их двумя кучами значило бы заставить
+ * читателя искать свой объект дважды.
+ */
+interface OnsiteRow {
+  objectName: string;
+  /** Первый день строки внутри окна: им строки одного объекта идут в порядке работ. */
+  from: string;
+  cells: MailTableCell[];
+}
+
+/** Машина строки: «Камаз 65115 · В123АА777», а у безномерной — то, чем её называют в реестре. */
+function machineCell(v: {
+  ownership: VehicleOwnership;
+  description: string;
+  categoryName: string | null;
+  typeName: string;
+  registrationNumber: string | null;
+  modelName: string | null;
+}): MailTableCell {
+  return cell([v.modelName, v.registrationNumber].filter(Boolean).join(' · ') || vehicleLabel(v));
+}
+
+/**
+ * Техника на объектах: недельные листы ЭСМ-2 и дни линейных заказов, попавшие в окно.
+ *
+ * Два источника, а не один, потому что в портале два способа вести заказ на объект: машина стоит
+ * на площадке неделю (недельный лист) либо приезжает днями и вечером возвращается на базу
+ * (ADR 0100). Ни один из них не отвечает за другой, и таблица собирается из обоих — иначе половина
+ * парка исчезает из письма молча.
+ */
+export async function digestOnsiteTable(ctx: DigestContext): Promise<DigestTable | null> {
+  const [weekly, linear] = await Promise.all([esm2Rows(ctx), linearDayRows(ctx)]);
+  const rows = [...weekly, ...linear].sort(
+    (a, b) => a.objectName.localeCompare(b.objectName, 'ru') || a.from.localeCompare(b.from),
+  );
+  if (rows.length === 0) return null;
+
+  return {
+    title: 'Техника на объектах',
+    total: rows.length,
+    head: ONSITE_HEAD,
+    rows: limitRows(rows.map((row) => row.cells)),
+    link: portalLink(VEHICLE_ON_SITE_PATH),
+  };
+}
+
+/**
+ * Первый источник: листы ЭСМ-2, чья неделя работы пересекается с окном.
  *
  * Пересечением, а не датой выписки: лист живёт неделю, и машина, начавшая работать в понедельник,
  * стоит на площадке и в среду. Тем же условием считает занятость гараж — разойтись им нельзя,
  * иначе «занята» и «показана в сводке» перестанут совпадать.
  */
-export async function digestOnsiteTable(ctx: DigestContext): Promise<DigestTable | null> {
+async function esm2Rows(ctx: DigestContext): Promise<OnsiteRow[]> {
+  // Заказанный тип заявки — не тип машины листа, который уже join'ится ниже ради названия единицы.
+  // Разные вопросы: один про то, как ведётся заказ, другой про то, чем его закрыли.
+  const orderedType = alias(vehicleTypes, 'ordered_vehicle_type');
   const rows = await db
     .select({
       waybillId: waybills.id,
@@ -375,6 +440,7 @@ export async function digestOnsiteTable(ctx: DigestContext): Promise<DigestTable
     .from(waybills)
     .innerJoin(waybillSeries, eq(waybillSeries.id, waybills.seriesId))
     .innerJoin(vehicleRequests, eq(vehicleRequests.id, waybills.sourceRequestId))
+    .innerJoin(orderedType, eq(orderedType.id, vehicleRequests.vehicleTypeId))
     .leftJoin(constructionObjects, eq(constructionObjects.id, vehicleRequests.objectId))
     .leftJoin(
       specialEquipmentRequestDetails,
@@ -394,60 +460,238 @@ export async function digestOnsiteTable(ctx: DigestContext): Promise<DigestTable
         lte(waybills.periodFrom, ctx.windowTo),
         gte(waybills.periodTo, ctx.windowFrom),
         ne(vehicleRequests.status, 'cancelled'),
+        // Линейный заказ этой половиной не показывается (ADR 0100 §12). Его неделя на площадке —
+        // не стояние машины, а набор выездов: строка «7–11 сентября» сказала бы ровно то, что
+        // решение 12 из портала и убрало, — и встала бы вторым разом рядом с днями того же заказа,
+        // пришедшими вторым источником. Признак читается у **заказанного** типа (ADR 0100 §1), а
+        // не у типа машины листа: как ведётся заказ, решает заказ, а не подобранная под него
+        // единица.
+        //
+        // Плата названа прямо: номер выписанного по требованию ЭСМ-2 в письме не печатается вовсе.
+        // Он про моточасы недели, а сводка отвечает на вопрос «кто и чем работает в эти дни», и
+        // ответ на него уже дали дни; за номером идут в журнал листов или в карточку заявки —
+        // ссылка на неё стоит в той же строке.
+        eq(orderedType.isLinear, false),
         vehicleRequestScope(ctx),
       ),
     )
     .orderBy(asc(constructionObjects.name), asc(waybills.periodFrom));
-  if (rows.length === 0) return null;
 
-  const built = rows.map((r): MailTableCell[] => {
+  return rows.map((r): OnsiteRow => {
     // Период печатается пересечённым с окном: лист выписан на неделю, а письмо говорит про свои
     // дни, и «10–16 августа» в сводке на среду отвечает не на тот вопрос, который задан.
     const from = r.periodFrom && r.periodFrom > ctx.windowFrom ? r.periodFrom : ctx.windowFrom;
     const to = r.periodTo && r.periodTo < ctx.windowTo ? r.periodTo : ctx.windowTo;
-    return [
-      cell(waybillDisplayNumber(r.prefix, r.number, r.numberWidth), {
-        href: portalLink(waybillPath(waybillDisplayNumber(r.prefix, r.number, r.numberWidth))),
-        sub: humanRange(from, to),
-      }),
-      cell(
-        `${formatVehicleRequestNumber(r.requestNum)} · ${requestCustomerName({ objectName: r.objectName, departmentName: null })}`,
-        {
-          href: portalLink(
-            vehicleRequestPath({ id: r.requestId, status: r.requestStatus, deleted: false }),
-          ),
-        },
-      ),
-      cell(
-        [r.modelName, r.registrationNumber].filter(Boolean).join(' · ') ||
-          vehicleLabel({
-            ownership: r.ownership,
-            description: r.description,
-            categoryName: r.categoryName,
-            typeName: r.typeName,
-            registrationNumber: r.registrationNumber,
-            modelName: r.modelName,
-          }),
-      ),
-      personCell(r.driverName, r.driverPhone, 'машинист не назначен'),
-      cell(r.objectAddress ?? ''),
-      personCell(r.responsibleName ?? '', r.responsiblePhone ?? '', ''),
-      cell(r.comment),
-    ];
+    return {
+      objectName: r.objectName ?? '',
+      from,
+      cells: [
+        cell(waybillDisplayNumber(r.prefix, r.number, r.numberWidth), {
+          href: portalLink(waybillPath(waybillDisplayNumber(r.prefix, r.number, r.numberWidth))),
+          sub: humanRange(from, to),
+        }),
+        cell(
+          `${formatVehicleRequestNumber(r.requestNum)} · ${requestCustomerName({ objectName: r.objectName, departmentName: null })}`,
+          {
+            href: portalLink(
+              vehicleRequestPath({ id: r.requestId, status: r.requestStatus, deleted: false }),
+            ),
+          },
+        ),
+        machineCell(r),
+        personCell(r.driverName, r.driverPhone, 'машинист не назначен'),
+        cell(r.objectAddress ?? ''),
+        personCell(r.responsibleName ?? '', r.responsiblePhone ?? '', ''),
+        cell(r.comment),
+      ],
+    };
   });
+}
 
-  return {
-    title: 'Техника на объектах',
-    total: built.length,
-    head: ONSITE_HEAD,
-    rows: limitRows(built),
-    link: portalLink(VEHICLE_ON_SITE_PATH),
-  };
+/**
+ * Второй источник: дни линейных заказов, попавшие в окно (ADR 0100 §12).
+ *
+ * Единственное место письма, где строка стоит без документа, и это осознанная плата. У линейного
+ * заказа недельного листа может не быть вовсе — ЭСМ-2 ему выписывают по требованию, — а работа
+ * идёт днями: день кладётся в маршрут дня (`vehicle_route_requests.work_date`, миграция 0127) и
+ * печатается в 4-П этого рейса. Отбор по листам потерял бы такой заказ целиком и молча; день, на
+ * который лист ещё не выписан, показывается номером рейса с пометкой — в этом и польза сводки,
+ * видно, что машина завтра выйдет без бумаги.
+ *
+ * **Область видимости считается по заявке** (`vehicleRequestScope`), а не по документу, как во
+ * всём остальном письме. Иначе никак: документа у дня может не быть, и «область по листу» дала бы
+ * выбор из двух неправд — потерять день без бумаги или показать площадку, которой человек не
+ * видит. Заявка отвечает на этот вопрос всегда и тем же условием, каким ограничен список в портале.
+ */
+async function linearDayRows(ctx: DigestContext): Promise<OnsiteRow[]> {
+  const rows = await db
+    .select({
+      workDate: vehicleRouteRequests.workDate,
+      routeId: vehicleRoutes.id,
+      routeNum: vehicleRoutes.num,
+      waybillNumber: waybills.number,
+      prefix: waybillSeries.prefix,
+      numberWidth: waybillSeries.numberWidth,
+      requestId: vehicleRequests.id,
+      requestNum: vehicleRequests.num,
+      requestStatus: vehicleRequests.status,
+      comment: vehicleRequests.comment,
+      objectName: constructionObjects.name,
+      objectAddress: constructionObjects.address,
+      responsibleName: specialEquipmentRequestDetails.responsibleName,
+      responsiblePhone: specialEquipmentRequestDetails.responsiblePhone,
+      driverPersonId: vehicleRoutes.driverPersonId,
+      driverName: persons.fullName,
+      driverPhone: persons.phone,
+      vehicleId: vehicles.id,
+      ownership: vehicles.ownership,
+      description: vehicles.description,
+      registrationNumber: vehicles.registrationNumber,
+      modelName: vehicleModels.name,
+      categoryName: vehicleCategories.name,
+      typeName: vehicleTypes.name,
+    })
+    .from(vehicleRouteRequests)
+    .innerJoin(vehicleRoutes, eq(vehicleRoutes.id, vehicleRouteRequests.routeId))
+    .innerJoin(vehicleRequests, eq(vehicleRequests.id, vehicleRouteRequests.requestId))
+    .leftJoin(constructionObjects, eq(constructionObjects.id, vehicleRequests.objectId))
+    .leftJoin(
+      specialEquipmentRequestDetails,
+      eq(specialEquipmentRequestDetails.requestId, vehicleRequests.id),
+    )
+    // Машина и водитель — рейса, а не назначения (ADR 0100 §4): назначение у линейного заказа это
+    // машина по умолчанию, а на объект во вторник выехала та, что стоит в рейсе вторника.
+    // Водителя может не быть вовсе — рейс собирают заранее, человека ставят утром.
+    .leftJoin(persons, eq(persons.id, vehicleRoutes.driverPersonId))
+    .innerJoin(vehicles, eq(vehicles.id, vehicleRoutes.vehicleId))
+    .innerJoin(vehicleTypes, eq(vehicleTypes.id, vehicles.vehicleTypeId))
+    .leftJoin(vehicleCategories, eq(vehicleCategories.id, vehicles.vehicleCategoryId))
+    .leftJoin(vehicleModels, eq(vehicleModels.id, vehicles.vehicleModelId))
+    // Действующий лист дня. Join, а не `EXISTS`, как у перевозок: там строка нужна одна и лишь бы
+    // лист был, здесь в графу печатается его номер. Задвоить строку join не может — действующий
+    // лист на рейс один (`waybills_route_unique`), аннулированные отсеяны условием.
+    .leftJoin(
+      waybills,
+      and(eq(waybills.routeId, vehicleRoutes.id), ne(waybills.status, 'cancelled')),
+    )
+    .leftJoin(waybillSeries, eq(waybillSeries.id, waybills.seriesId))
+    .where(
+      and(
+        // Дни окна. Строки грузоперевозок отсеиваются самим сравнением: `work_date` у них NULL, и
+        // отдельного «день заполнен» не требуется.
+        gte(vehicleRouteRequests.workDate, ctx.windowFrom),
+        lte(vehicleRouteRequests.workDate, ctx.windowTo),
+        // Отменённая заявка остаётся в рейсе, пока её день держит выписанный лист (сверка дней его
+        // не снимает — бланк уже у водителя), но ехать по ней не надо: то же правило, что и в
+        // таблице перевозок.
+        ne(vehicleRequests.status, 'cancelled'),
+        vehicleRequestScope(ctx),
+      ),
+    )
+    .orderBy(asc(constructionObjects.name), asc(vehicleRouteRequests.workDate));
+
+  /*
+   * Строка — пара «заявка + машина дня» (ADR 0100 §4). Не строка на день: неделя одной машины на
+   * одной площадке это одна работа, и пять строк подряд с одинаковыми объектом, машиной и
+   * ответственным читаются как пять разных заказов. И не строка на заявку: дни закрывают разные
+   * единицы, а склеив их, письмо назвало бы машину, которой во вторник на объекте не было.
+   */
+  const groups = new Map<string, typeof rows>();
+  for (const row of rows) {
+    const key = `${row.requestId}|${row.vehicleId}`;
+    const group = groups.get(key);
+    if (group) group.push(row);
+    else groups.set(key, [row]);
+  }
+
+  return [...groups.values()].map((days): OnsiteRow => {
+    const first = days[0]!;
+    // Документы идут тем же порядком, что и дни в подписи под ними: читатель складывает номер с
+    // датой глазами, и разойдись эти два перечня — сложил бы неверно.
+    const documents = days.map((day) =>
+      day.waybillNumber === null
+        ? // Лист дня ещё не выписан. Номер рейса вместо прочерка — по нему день и находят в
+          // портале, а пометка называет то, ради чего сводку и читают накануне выезда.
+          `${formatVehicleRouteNumber(day.routeNum)} (лист не выписан)`
+        : waybillDisplayNumber(day.prefix!, day.waybillNumber, day.numberWidth!),
+    );
+    // Ссылка — только у строки одного дня: у нескольких дней документов несколько, а адрес у ячейки
+    // один, и «какой-нибудь» из них увёл бы читателя не в тот документ. Заявка при этом остаётся
+    // ссылкой в соседней графе — из её карточки видны все дни.
+    const href =
+      days.length > 1
+        ? undefined
+        : first.waybillNumber === null
+          ? portalLink(vehicleRoutePath(first.routeId))
+          : portalLink(waybillPath(documents[0]!));
+
+    return {
+      objectName: first.objectName ?? '',
+      from: first.workDate!,
+      cells: [
+        cell(documents.join(', '), { href, sub: humanDays(days.map((day) => day.workDate!)) }),
+        cell(
+          `${formatVehicleRequestNumber(first.requestNum)} · ${requestCustomerName({ objectName: first.objectName, departmentName: null })}`,
+          {
+            href: portalLink(
+              vehicleRequestPath({
+                id: first.requestId,
+                status: first.requestStatus,
+                deleted: false,
+              }),
+            ),
+          },
+        ),
+        machineCell(first),
+        driversCell(days),
+        cell(first.objectAddress ?? ''),
+        personCell(first.responsibleName ?? '', first.responsiblePhone ?? '', ''),
+        cell(first.comment),
+      ],
+    };
+  });
+}
+
+/**
+ * Машинисты строки дней. У линейного заказа водитель у каждого дня свой (ADR 0100 §6), и на паре
+ * «заявка + машина» их бывает несколько: тогда печатаются имена без телефона — номер, приписанный
+ * к списку из двух человек, читается как номер обоих сразу.
+ */
+function driversCell(
+  days: { driverPersonId: string | null; driverName: string | null; driverPhone: string | null }[],
+): MailTableCell {
+  const drivers = new Map<string, { name: string; phone: string }>();
+  for (const day of days) {
+    if (!day.driverPersonId) continue;
+    drivers.set(day.driverPersonId, { name: day.driverName ?? '', phone: day.driverPhone ?? '' });
+  }
+  const names = [...drivers.values()];
+  // Один на все дни — с телефоном: звонить в сводке именно по нему. Пусто — человека на день ещё
+  // не поставили: рейс собирают заранее, водителя называют утром.
+  if (names.length === 1) {
+    return personCell(names[0]!.name, names[0]!.phone, 'машинист не назначен');
+  }
+  return cell(names.map((driver) => driver.name).join(', ') || 'машинист не назначен');
 }
 
 /** «10–16 августа» либо «12 августа»: период работ читается диапазоном, а не парой дат. */
 function humanRange(from: string, to: string): string {
   return from === to ? humanDay(from) : `${dayNumber(from)}–${humanDay(to)}`;
+}
+
+/**
+ * «21, 22 сентября» — дни линейного заказа перечнем, а не диапазоном: между вторником и четвергом
+ * машина работает в другом месте, и «21–24 сентября» сказало бы про площадку неправду. Месяц
+ * называется у последнего дня и у всякого, за которым следующий день уже в другом месяце: иначе
+ * «31, 1 октября» прочиталось бы как тридцать первое октября.
+ */
+function humanDays(dates: string[]): string {
+  return dates
+    .map((date, i) => {
+      const next = dates[i + 1];
+      return next && next.slice(0, 7) === date.slice(0, 7) ? dayNumber(date) : humanDay(date);
+    })
+    .join(', ');
 }
 
 const MONTHS = [

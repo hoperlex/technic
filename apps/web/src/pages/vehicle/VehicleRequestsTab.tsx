@@ -110,6 +110,7 @@ import { FilesCell } from '../../components/FileLinks';
 import { VehicleAssignModal } from './VehicleAssignModal';
 import { VehicleCompleteModal } from './VehicleCompleteModal';
 import { VehicleEarlyEndModal } from './VehicleEarlyEndModal';
+import { VehicleEsm2Modal } from './VehicleEsm2Modal';
 import { VehicleRequestViewModal } from './VehicleRequestViewModal';
 import { VehicleRelocationModal } from './VehicleRelocationModal';
 import { RequestRelocationsField } from './RequestRelocationsField';
@@ -890,6 +891,8 @@ export function VehicleRequestsTab() {
     purpose: 'delivery' | 'pickup';
   } | null>(null);
   const [transferTarget, setTransferTarget] = useState<VehicleRequestDto | null>(null);
+  /** Заявка, по которой выписывают недельный ЭСМ-2 (ADR 0100); null — окно закрыто. */
+  const [esm2Target, setEsm2Target] = useState<VehicleRequestDto | null>(null);
 
   const reassignMut = useMutation({
     mutationFn: (v: { id: string; version: number; assignment: AssignVehicleBody }) =>
@@ -2211,6 +2214,33 @@ export function VehicleRequestsTab() {
               }
             : undefined
         }
+        // Выписка недельного ЭСМ-2 по требованию (ADR 0100 решение 6) — теми же правами, что и
+        // выписка листа с рейса: это тот же документ и тот же коридор решений, отдельного права
+        // ему не заводили. Предлагается только линейному заказу в работе на собственной машине: у
+        // обычного листы выписывает сама заявка, а на арендную бланк выписывает арендодатель.
+        // Карточка закрывается — выписка меняет версию заявки, и её поля позади устареют.
+        onIssueEsm2={
+          viewed &&
+          viewed.requestType === 'special_equipment' &&
+          viewed.isLinear &&
+          viewed.status === 'confirmed' &&
+          viewed.assignment?.ownership === 'own' &&
+          canChangeStatus &&
+          can('waybills.read')
+            ? (r) => {
+                closeView();
+                setEsm2Target(r);
+              }
+            : undefined
+        }
+      />
+
+      {/* Недельный ЭСМ-2 по требованию: линейная заявка листов сама не получает, и человек
+        выписывает их по неделе за раз (ADR 0100). */}
+      <VehicleEsm2Modal
+        request={esm2Target}
+        onClose={() => setEsm2Target(null)}
+        onDone={() => setEsm2Target(null)}
       />
 
       {/* Доставка техники на объект и вывоз с него: рейс перемещения, по которому выписывается

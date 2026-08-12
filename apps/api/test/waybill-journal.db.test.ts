@@ -520,14 +520,24 @@ describe.skipIf(!DB_URL)('журнал путевых листов: поиск, 
     const second = await issueWaybill();
     const third = await issueWaybill();
 
+    /*
+     * Журнал сужается своим машинистом. Серия ЭСМ-2 у портала одна, а файлы db-тестов идут
+     * параллельно и берут из неё номера тоже (заказ техники в работе выписывает недельный лист
+     * сам): без сужения «самые свежие три» в общем журнале оказывались бы чужими, и порядок
+     * сортировки проверялся бы не на той бумаге. Свой человек здесь и есть граница: заявки этого
+     * файла выписываются на него (`requestInWork`).
+     */
+    const mine = { driverPersonId: ctx.personId };
+
     // По убыванию свежие номера открывают журнал…
-    const descending = await journalPage({ sortBy: 'number', sortOrder: 'desc' });
+    const descending = await journalPage({ sortBy: 'number', sortOrder: 'desc', ...mine });
     expect(descending.items.slice(0, 3).map((w) => w.id)).toEqual([third.id, second.id, first.id]);
 
     // …а по возрастанию — закрывают его, и страницей это может быть уже не первая.
     const ascending = await journalPage({
       sortBy: 'number',
       sortOrder: 'asc',
+      ...mine,
       page: String(Math.ceil(descending.total / descending.pageSize)),
     });
     expect(ascending.items.slice(-3).map((w) => w.id)).toEqual([first.id, second.id, third.id]);

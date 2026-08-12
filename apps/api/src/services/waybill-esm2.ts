@@ -1,16 +1,19 @@
 import { and, desc, eq, isNotNull, ne } from 'drizzle-orm';
 import {
   type Esm2Period,
+  esm2Mode,
   esm2Periods,
-  esm2Required,
+  esm2RequestedPeriods,
   esm2SyncPlan,
   esm2WeekDays,
   formatPhone,
   licenseNumberLabel,
   moscowDateKeyOf,
+  requestStatusLabels,
   type VehicleOwnership,
   waybillDisplayNumber,
   type WaybillSnapshotKey,
+  weekStartKey,
 } from '@technic/contracts';
 import type { db } from '../db/client';
 import {
@@ -21,6 +24,7 @@ import {
   vehicleRequestAssignments,
   vehicleRequests,
   vehicles,
+  vehicleTypes,
   waybillRequests,
   waybills,
   waybillSeries,
@@ -36,11 +40,17 @@ import { findSeriesByCode, seriesCodeOfForm, takeNextNumber } from './waybill-nu
  * Отличие от 4-П не в графах, а в том, кто ведёт документ. Лист на рейс выписывает человек —
  * отдельным действием, когда состав рейса собран. ЭСМ-2 ведёт портал: заявку берут в работу, и
  * листы на все недели её срока рождаются сами; срок меняется — листы переписываются; заявку
- * отменяют — аннулируются. Ручной выдачи у этого бланка нет вовсе.
+ * отменяют — аннулируются.
  *
- * Отсюда единственный вход наружу — `syncEsm2Waybills`: сверка «что должно быть» с «что есть».
- * Пять мест зовут её по одному поводу — «состояние заявки изменилось», — и ни одно из них не
- * решает само, что делать с бумагой.
+ * Отсюда главный вход наружу — `syncEsm2Waybills`: сверка «что должно быть» с «что есть». Пять
+ * мест зовут её по одному поводу — «состояние заявки изменилось», — и ни одно из них не решает
+ * само, что делать с бумагой.
+ *
+ * Второй вход появился вместе с линейной техникой (ADR 0100): у заказа линейного типа недели
+ * стояния на площадке нет вовсе — машина вечером возвращается на базу, — и портал недельных
+ * листов ему не выписывает. Нужен лист — человек просит его сам, неделю за неделей
+ * (`issueEsm2OnDemand`). Сверка при этом не выключается: выданный бланк строгой отчётности не
+ * вправе разойтись с заявкой, и уже выписанное она ведёт наравне с автоматическим.
  */
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -63,6 +73,9 @@ interface RequestState {
   dateTo: string | null;
   vehicleId: string | null;
   ownership: VehicleOwnership | null;
+  /** Линейный ли заказанный тип (ADR 0100 §1) и как он называется — им объясняется отказ. */
+  isLinear: boolean;
+  vehicleTypeName: string;
 }
 
 async function loadRequest(tx: Tx, requestId: string): Promise<RequestState | null> {
@@ -77,8 +90,21 @@ async function loadRequest(tx: Tx, requestId: string): Promise<RequestState | nu
       dateTo: specialEquipmentRequestDetails.dateTo,
       vehicleId: vehicleRequestAssignments.vehicleId,
       ownership: vehicles.ownership,
+      isLinear: vehicleTypes.isLinear,
+      vehicleTypeName: vehicleTypes.name,
     })
     .from(vehicleRequests)
+    /*
+     * Признак линейности — у **заказанного** типа, а не у типа назначенной машины (ADR 0100 §1).
+     * Разница видна ровно там, где заявку закрыли машиной соседнего типа (ADR 0059): режим
+     * документооборота задаёт заказ, и меняться от подбора единицы он не вправе — иначе замена
+     * машины на ходу превратила бы недельную заявку в дневную.
+     *
+     * Join обычный, а не левый: `vehicle_type_id` у заявки NOT NULL, и заявки без типа не бывает.
+     * Снимка признака в заявке нет намеренно — справочник и есть то место, где на этот вопрос
+     * отвечают, а сменить признак под работающими заказами портал не даёт (`vehicle-types.ts`).
+     */
+    .innerJoin(vehicleTypes, eq(vehicleTypes.id, vehicleRequests.vehicleTypeId))
     .leftJoin(
       specialEquipmentRequestDetails,
       eq(specialEquipmentRequestDetails.requestId, vehicleRequests.id),
@@ -445,44 +471,112 @@ export async function syncEsm2Waybills(
   const request = await loadRequest(tx, params.requestId);
   if (!request) return EMPTY;
 
-  const required = esm2Required({
+  const mode = esm2Mode({
     requestType: request.requestType,
     status: request.status,
     ownership: request.ownership,
     deletedAt: request.deletedAt ? request.deletedAt.toISOString() : null,
+    isLinear: request.isLinear,
   });
   const existing = await activeSheets(tx, params.requestId);
-  // Заявка листов не требует, а их и нет: самый частый случай — грузоперевозка. Выходим до
+  // Заявке листов не положено, а их и нет: самый частый случай — грузоперевозка. Выходим до
   // единственного оставшегося чтения.
-  if (!required && existing.length === 0) return EMPTY;
+  if (mode === 'none' && existing.length === 0) return EMPTY;
 
-  const wanted = required && request.dateFrom ? esm2Periods(request.dateFrom, request.dateTo) : [];
-  const driverPersonId = params.driverPersonId ?? (await lastMachinistOf(tx, params.requestId));
+  const sheets = existing.map((s) => ({
+    id: s.id,
+    periodFrom: s.periodFrom!,
+    periodTo: s.periodTo!,
+    vehicleId: s.vehicleId,
+    driverPersonId: s.driverPersonId,
+  }));
+  /*
+   * Набор нужных недель. В `auto` его задаёт срок заявки — портал сам решает, сколько бумаги ей
+   * нужно. В `on_demand` решения у портала нет вовсе: недели называет человек, и единственный
+   * след его просьбы — сами выписанные листы, подрезанные сроком (ADR 0100 §5).
+   */
+  const wanted =
+    mode === 'none' || !request.dateFrom
+      ? []
+      : mode === 'auto'
+        ? esm2Periods(request.dateFrom, request.dateTo)
+        : esm2RequestedPeriods(sheets, request.dateFrom, request.dateTo);
+  /*
+   * Машинист заявки. В `auto` он один на все её недели: не назван этим действием — берётся с
+   * прежнего листа (меняли срок или машину, а не человека).
+   *
+   * В `on_demand` «машиниста заявки» не существует: его называют на каждую неделю отдельно
+   * (ADR 0100 §6), и наследование с последнего листа пересадило бы на все недели того, кто
+   * отработал одну. Поэтому там человек берётся только из самого действия, а сверка, получив
+   * `null`, оставляет каждой неделе своего (`esm2SyncPlan`).
+   */
+  const driverPersonId =
+    mode === 'on_demand'
+      ? (params.driverPersonId ?? null)
+      : (params.driverPersonId ?? (await lastMachinistOf(tx, params.requestId)));
 
   const plan = esm2SyncPlan({
+    mode,
     wanted,
-    existing: existing.map((s) => ({
-      id: s.id,
-      periodFrom: s.periodFrom!,
-      periodTo: s.periodTo!,
-      vehicleId: s.vehicleId,
-      driverPersonId: s.driverPersonId,
-    })),
+    existing: sheets,
     vehicleId: request.vehicleId,
     driverPersonId,
     today: today(),
   });
   if (plan.cancel.length === 0 && plan.issue.length === 0) return EMPTY;
 
+  /*
+   * Кем выписывать замену сгоревшему номеру.
+   *
+   * Названный действием машинист старше всего: человек только что сказал, кем теперь ведут
+   * заявку. Не назван — замена печатает того же, кто стоял в аннулированном листе этой недели:
+   * в `auto` это тот же человек, что и на всей заявке, а в `on_demand` — единственный ответ,
+   * какой у портала есть (ADR 0083 — своей волей людей он не подставляет).
+   */
+  const burning = new Set(plan.cancel);
+  const burnedOfWeek = new Map<string, { driverPersonId: string; vehicleId: string }>();
+  for (const sheet of sheets) {
+    if (burning.has(sheet.id)) {
+      burnedOfWeek.set(weekStartKey(sheet.periodFrom), {
+        driverPersonId: sheet.driverPersonId,
+        vehicleId: sheet.vehicleId,
+      });
+    }
+  }
+  const machinistFor = (period: Esm2Period): string | null =>
+    driverPersonId ?? burnedOfWeek.get(weekStartKey(period.from))?.driverPersonId ?? null;
+
+  /*
+   * На какой машине выписывать замену.
+   *
+   * В `auto` это машина заявки: она одна, и переоформление как раз ею и вызвано — назначили
+   * другую технику, значит и бумага переписывается на неё.
+   *
+   * В `on_demand` — та, что стояла в сгоревшем листе этой недели. Машину такого листа выбрал
+   * человек (ADR 0100 §7), и подмена её машиной назначения означала бы, что портал переписал
+   * недельный отчёт второй единицы на первую: моточасы, объект и подпись заказчика на обороте
+   * относятся к той машине, которая там работала. Своих недель режим не заводит, поэтому лист
+   * без предшественника здесь невозможен, а `??` оставлен на случай, если он появится.
+   */
+  const vehicleFor = (period: Esm2Period): string | null =>
+    (mode === 'on_demand' ? burnedOfWeek.get(weekStartKey(period.from))?.vehicleId : null) ??
+    request.vehicleId;
+
   // Машинист нужен до первой же выписки: лист без него бухгалтерия не примет, а графа в бланке
   // одна на всю неделю. Проверка здесь, а не только в форме, — сверку зовут пять мест.
-  if (plan.issue.length > 0 && !driverPersonId) {
+  //
+  // У линейного заказа она не срабатывает никогда, и это не случайность: своих недель `on_demand`
+  // не заводит, а у каждой переоформляемой машинист уже напечатан в сгоревшем листе. Требование
+  // «укажите машиниста» осталось ровно там, где листы рождаются сами.
+  if (plan.issue.some((period) => !machinistFor(period))) {
     throw err.unprocessable(
       'Укажите машиниста — на него выписываются путевые листы ЭСМ-2 за каждую неделю работ',
       { driverPersonId: 'Выберите машиниста' },
     );
   }
-  if (plan.issue.length > 0 && !request.vehicleId) {
+  // Машина нужна тем же порядком, что и машинист: у линейного заказа её несёт переоформляемый
+  // лист, у обычного — назначение, и пустой ответ означает, что выписывать не на что.
+  if (plan.issue.some((period) => !vehicleFor(period))) {
     throw err.unprocessable('На заявке нет техники — путевой лист выписывать не на что');
   }
 
@@ -508,8 +602,8 @@ export async function syncEsm2Waybills(
   for (const period of plan.issue) {
     const created = await issueEsm2Waybill(tx, {
       requestId: params.requestId,
-      vehicleId: request.vehicleId!,
-      driverPersonId: driverPersonId!,
+      vehicleId: vehicleFor(period)!,
+      driverPersonId: machinistFor(period)!,
       period,
       actorId: params.actor.id,
     });
@@ -540,6 +634,148 @@ export async function auditEsm2Sync(params: {
       cancelled: params.result.cancelled,
       issued: params.result.issued,
     },
+  });
+}
+
+// ── Выписка по требованию: линейный заказ (ADR 0100 §6) ──
+
+/** Календарный ключ `YYYY-MM-DD` человеку: «24.07.2026». Через JS Date он бы поехал на день. */
+function dateRu(key: string): string {
+  const [y, m, d] = key.split('-');
+  return y && m && d ? `${d}.${m}.${y}` : key;
+}
+
+/**
+ * Почему по этой заявке нельзя выписать ЭСМ-2 руками; `null` — можно.
+ *
+ * Причины называются словами и по одной: человек нажал кнопку в карточке заявки, и «нельзя»
+ * без объяснения он прочтёт как поломку портала.
+ *
+ * Строже `esm2Mode` ровно в одном месте — закрытая заявка. Сверка её листы ведёт (работа
+ * состоялась, выданная бумага остаётся выданной), но выписывать по ней **новые** бланки уже
+ * нечего: неделя, за которую никто не попросил лист, прошла вместе с заявкой.
+ */
+function onDemandRefusal(request: RequestState): string | null {
+  if (request.requestType !== 'special_equipment') {
+    return 'Лист ЭСМ-2 выписывают по заказу техники на объект: у грузоперевозки лист выписывается с рейса';
+  }
+  if (request.deletedAt) {
+    return 'Заявка в архиве — бланки строгой отчётности по ней не выписывают';
+  }
+  if (request.status !== 'confirmed') {
+    return `Заявка в статусе «${requestStatusLabels[request.status]}» — лист ЭСМ-2 выписывают по заявке в работе`;
+  }
+  if (!request.isLinear) {
+    return `Тип «${request.vehicleTypeName}» не линейный: листы ЭСМ-2 по такому заказу портал выписывает сам, на каждую неделю срока — просить их не нужно`;
+  }
+  if (!request.vehicleId) {
+    return 'На заявку не назначена техника — путевой лист выписывать не на что';
+  }
+  if (request.ownership !== 'own') {
+    return 'Заявку ведут арендной техникой — путевой лист на неё выписывает арендодатель';
+  }
+  if (!request.dateFrom) {
+    return 'У заказа не заполнен срок работ — неделю листа считать не от чего';
+  }
+  return null;
+}
+
+/**
+ * Выписать недельный лист ЭСМ-2 по требованию — одна неделя линейного заказа (ADR 0100 §6).
+ *
+ * Второй и единственный, кроме сверки, вход к этому бланку. Появился он потому, что у линейной
+ * техники недели стояния на площадке нет вовсе: машина вечером возвращается на базу, за день
+ * успевает поработать на нескольких объектах, и выписанный наперёд недельный лист утверждал бы
+ * работу, которой не было. Нужен ли бланк за эту неделю, знает только человек.
+ *
+ * Границы недели считает сервер — тем же `esm2Periods`, которым выписывает автомат: неделя
+ * обрезается сроком заявки с обоих концов, и присланная клиентом пара границ разошлась бы с
+ * выпиской на первом же сроке, начавшемся посреди недели. От человека приходит **день**, а не
+ * период: он выбирает строку недели, а не заполняет графу «Период работы».
+ *
+ * Дальше лист живёт наравне с выписанным автоматом: сменят машину — сверка его переоформит,
+ * сократят срок — подрежет, отменят заявку — аннулирует (`syncEsm2Waybills`). Ручная выдача
+ * добавила бланку одну дверь, а не вывела его из документооборота.
+ */
+export async function issueEsm2OnDemand(
+  tx: Tx,
+  params: {
+    requestId: string;
+    /** День, которым человек назвал неделю; границы считает сервер. */
+    weekOf: string;
+    vehicleId: string;
+    driverPersonId: string;
+    actor: { id: string };
+  },
+): Promise<IssuedEsm2> {
+  const request = await loadRequest(tx, params.requestId);
+  if (!request) throw err.notFound('Заявка не найдена');
+  const refusal = onDemandRefusal(request);
+  if (refusal) throw err.unprocessable(refusal);
+
+  // Неделя — ровно та, какую выписал бы автомат: календарная неделя дня, обрезанная сроком.
+  const period = esm2Periods(request.dateFrom!, request.dateTo).find(
+    (p) => p.from <= params.weekOf && params.weekOf <= p.to,
+  );
+  if (!period) {
+    const last = request.dateTo || request.dateFrom!;
+    throw err.unprocessable(
+      `День ${dateRu(params.weekOf)} вне срока заявки (${dateRu(request.dateFrom!)} — ${dateRu(last)}) — выберите день внутри срока`,
+      { weekOf: 'День вне срока заявки' },
+    );
+  }
+
+  // Машина спрашивается, а не берётся из назначения: за неделю на объекте могли отработать две
+  // разных, и у каждой свои моточасы (ADR 0100 §7). Проверяется она тем же правилом, что и всюду:
+  // в рейсы и в бланки портала ходит только собственная техника.
+  const [vehicle] = await tx
+    .select({ ownership: vehicles.ownership, deletedAt: vehicles.deletedAt })
+    .from(vehicles)
+    .where(eq(vehicles.id, params.vehicleId));
+  if (!vehicle || vehicle.deletedAt) throw err.badRequest('Техника не найдена');
+  if (vehicle.ownership !== 'own') {
+    throw err.unprocessable(
+      'Машина арендная — путевой лист на неё выписывает арендодатель: выберите собственную технику',
+      { vehicleId: 'Арендная техника' },
+    );
+  }
+
+  /*
+   * «Одна неделя — один действующий лист» теперь считается на машину, а не на заявку (миграция
+   * 0127): у линейного заказа неделю закрывают две единицы, и каждой нужен свой бланк. Проверка
+   * повторяет частичный UNIQUE в базе, но словами: 23505 из индекса человек прочесть не может.
+   */
+  const existing = await activeSheets(tx, params.requestId);
+  const clash = existing.find(
+    (s) =>
+      s.periodFrom &&
+      weekStartKey(s.periodFrom) === weekStartKey(period.from) &&
+      s.vehicleId === params.vehicleId,
+  );
+  if (clash) {
+    const number = waybillDisplayNumber(clash.prefix, clash.number, clash.numberWidth);
+    throw err.conflict(
+      `На эту неделю у выбранной машины уже выписан действующий лист ЭСМ-2 № ${number} (${dateRu(clash.periodFrom!)} — ${dateRu(clash.periodTo!)}) — аннулируйте его, если бланк нужно переоформить`,
+    );
+  }
+
+  // Машинист — действующий водитель справочника: отбор у ЭСМ-2 свой и никакой (в бланке нет ни
+  // СНИЛС, ни граф удостоверения), но человек, которого в справочнике нет, напечатался бы пустой
+  // графой ФИО — то есть недействительным бланком.
+  const machinist = await findMachinist(tx, params.driverPersonId, period.from);
+  if (!machinist) {
+    throw err.unprocessable(
+      'Выбранный человек не числится водителем в справочнике — на него нельзя выписать путевой лист',
+      { driverPersonId: 'Выберите машиниста' },
+    );
+  }
+
+  return issueEsm2Waybill(tx, {
+    requestId: params.requestId,
+    vehicleId: params.vehicleId,
+    driverPersonId: params.driverPersonId,
+    period,
+    actorId: params.actor.id,
   });
 }
 

@@ -36,6 +36,7 @@ export * from './waste-tariffs';
 export * from './waste-requests';
 export * from './vehicle-routes';
 export * from './vehicle-request-shifts';
+export * from './vehicle-request-days';
 export * from './vehicle-requests';
 export * from './vehicle-request-feed';
 export * from './weekly-vehicle-requests';

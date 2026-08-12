@@ -26,6 +26,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   formatSpecNumber,
   specLabel,
+  waybillFormLabels,
   type CreateVehicleCategoryInput,
   type UpdateVehicleCategoryInput,
   type VehicleCategoryDto,
@@ -428,6 +429,27 @@ export function VehicleTypeCardDrawer({ type, onClose }: Props) {
       }
     >
       <Space direction="vertical" size="large" style={{ display: 'flex' }}>
+        {/* Реквизиты документооборота типа: бланк листа (ADR 0065) и режим заказа на объект.
+            Правятся они в форме справочника, а спрашивают о них здесь — карточка и так открыта
+            ради ТТХ и категорий, и «по какому листу ходит эта техника» выясняется тем же
+            движением, что и «какие у неё категории». */}
+        {type ? (
+          <Space size={16} wrap>
+            <Typography.Text type="secondary">
+              Путевой лист:{' '}
+              <Typography.Text>{waybillFormLabels[type.waybillFormCode]}</Typography.Text>
+            </Typography.Text>
+            {/* Не «да/нет», а следствие признака: администратору справочника отвечать нужно на
+                вопрос «как пойдут заказы этого типа», а голое «да» его не называет. */}
+            <Typography.Text type="secondary">
+              Линейная техника:{' '}
+              <Typography.Text>
+                {type.isLinear ? 'да, заказы ведутся по дням' : 'нет'}
+              </Typography.Text>
+            </Typography.Text>
+          </Space>
+        ) : null}
+
         <div>
           <div
             style={{

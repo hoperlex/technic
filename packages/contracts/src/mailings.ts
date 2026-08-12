@@ -295,7 +295,7 @@ export interface MailingScheduleDto {
   requestScope: DigestRequestScope;
   /** Печатать ли таблицу перевозок (листы 4-П и формы № 3). */
   showTrips: boolean;
-  /** Печатать ли таблицу техники на объектах (листы ЭСМ-2). */
+  /** Печатать ли таблицу техники на объектах: недельные листы ЭСМ-2 и дни линейных заказов. */
   showOnsite: boolean;
   /** Как задан набор площадок и отделов рассылки; при `all` перечни пусты. */
   scopeMode: AudienceMode;

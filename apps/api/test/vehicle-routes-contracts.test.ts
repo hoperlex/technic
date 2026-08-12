@@ -1,10 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
   assignRouteSchema,
+  dayAlreadyPlannedMessage,
+  LINEAR_DAY_DOOR_MESSAGE,
   assignVehicleSchema,
   attachRouteRequestSchema,
+  canCorrectRoute,
   canIssueWaybill,
   canJoinRoute,
+  correctRouteSchema,
+  transferCorrectionSchema,
   formatVehicleRouteNumber,
   isRouteEditable,
   ROUTE_REQUEST_CAPACITY,
@@ -35,9 +40,30 @@ const UUID_C = '33333333-3333-4333-8333-333333333333';
 /** Заявка, годная для рейса: от неё отталкиваются проверки «чего не хватает». */
 const goodRequest = {
   requestType: 'freight_transport' as const,
+  isLinear: false,
   status: 'confirmed' as const,
   deletedAt: null,
-  tripDate: '2026-08-03',
+  // День грузоперевозки — точка: его несёт время подачи (ADR 0100 §2 — у линейного заказа вместо
+  // точки отрезок срока, и правило спрашивает у заявки не «какой день», а «мой ли он»).
+  day: { kind: 'trip' as const, date: '2026-08-03' },
+  ownership: 'own' as const,
+};
+
+/**
+ * Линейный заказ, годный для рейса дня: заказ техники на объект, у которого вместо дня подачи срок
+ * работ, а вместо «одного рейса» — по рейсу на распланированный день (ADR 0100).
+ */
+const goodLinearRequest = {
+  requestType: 'special_equipment' as const,
+  isLinear: true,
+  status: 'confirmed' as const,
+  deletedAt: null,
+  day: {
+    kind: 'linear' as const,
+    dateFrom: '2026-08-01',
+    dateTo: '2026-08-10',
+    plannedDays: [] as string[],
+  },
   ownership: 'own' as const,
 };
 
@@ -84,6 +110,22 @@ describe('какая заявка годится для рейса', () => {
     expect(check.ok === false && check.reason).toContain('грузоперевозки');
   });
 
+  /*
+   * Линейный заказ (ADR 0100) — единственное исключение из «в рейс ходят только грузоперевозки»:
+   * его дни ездят обычными рейсами. Но приходит он в правило другой стороной — днём срока, — и
+   * попытка положить его целиком, как грузовую заявку, объясняется своими словами: дверь у дня
+   * одна, карточка заявки (§8).
+   */
+  it('линейный заказ со стороны рейса не кладут: у дня своя дверь', () => {
+    const check = canJoinRoute(
+      { ...goodRequest, requestType: 'special_equipment', isLinear: true },
+      emptyRoute,
+    );
+    expect(check.ok).toBe(false);
+    expect(check.ok === false && check.reason).toBe(LINEAR_DAY_DOOR_MESSAGE);
+    expect(check.ok === false && check.reason).toContain('карточки заявки');
+  });
+
   it('заявка не в работе в рейс не кладётся, и статус назван в ответе', () => {
     const check = canJoinRoute({ ...goodRequest, status: 'new' }, emptyRoute);
     expect(check.ok).toBe(false);
@@ -104,7 +146,10 @@ describe('какая заявка годится для рейса', () => {
   });
 
   it('заявка соседнего дня в рейс не попадает: лист печатает задание на день', () => {
-    const check = canJoinRoute({ ...goodRequest, tripDate: '2026-08-04' }, emptyRoute);
+    const check = canJoinRoute(
+      { ...goodRequest, day: { kind: 'trip', date: '2026-08-04' } },
+      emptyRoute,
+    );
     expect(check.ok).toBe(false);
     expect(check.ok === false && check.reason).toContain('2026-08-04');
   });
@@ -144,6 +189,80 @@ describe('какая заявка годится для рейса', () => {
     expect(check.ok).toBe(false);
     expect(check.ok === false && check.reason).toContain('10 мест');
     expect(check.ok === false && check.reason).not.toContain('строк задания');
+  });
+});
+
+/**
+ * Линейный заказ в рейсе (ADR 0100): заявка отвечает правилу не днём подачи, а сроком работ, и
+ * день ей задаёт сам рейс — строка состава и рейс делят дату физически (составной FK, миграция
+ * 0127). Отсюда две проверки, которых у грузоперевозки нет: день внутри срока и день ещё не занят.
+ */
+describe('какой день линейного заказа годится для рейса', () => {
+  const dayRoute = { ...emptyRoute, routeDate: '2026-08-05' };
+
+  it('день внутри срока встаёт в грузовой рейс', () => {
+    expect(canJoinRoute(goodLinearRequest, dayRoute)).toEqual({ ok: true });
+  });
+
+  it('рейс за сроком заказа день не получает — срок назван в отказе', () => {
+    const check = canJoinRoute(goodLinearRequest, { ...dayRoute, routeDate: '2026-08-11' });
+    expect(check.ok).toBe(false);
+    expect(check.ok === false && check.reason).toContain('вне срока заказа');
+    expect(check.ok === false && check.reason).toContain('2026-08-01 — 2026-08-10');
+  });
+
+  it('однодневный срок читается по дате начала: пустой конец — это тот же день', () => {
+    const oneDay = {
+      ...goodLinearRequest,
+      day: { ...goodLinearRequest.day, dateFrom: '2026-08-05', dateTo: null },
+    };
+    expect(canJoinRoute(oneDay, dayRoute)).toEqual({ ok: true });
+    expect(canJoinRoute(oneDay, { ...dayRoute, routeDate: '2026-08-06' }).ok).toBe(false);
+  });
+
+  it('день, уже стоящий в рейсе, вторым не встаёт — и текст отказа общий с карточкой заявки', () => {
+    const check = canJoinRoute(
+      { ...goodLinearRequest, day: { ...goodLinearRequest.day, plannedDays: ['2026-08-05'] } },
+      dayRoute,
+    );
+    expect(check.ok).toBe(false);
+    expect(check.ok === false && check.reason).toBe(dayAlreadyPlannedMessage('2026-08-05'));
+  });
+
+  /*
+   * Соседний день той же заявки помехой не является: ради этого линейный тип и заведён — машина
+   * выходит день за днём, и каждый день едет своим рейсом.
+   */
+  it('другой распланированный день не мешает', () => {
+    const check = canJoinRoute(
+      { ...goodLinearRequest, day: { ...goodLinearRequest.day, plannedDays: ['2026-08-04'] } },
+      dayRoute,
+    );
+    expect(check).toEqual({ ok: true });
+  });
+
+  it('состояние заявки спрашивается раньше дня: не в работе — не планируют', () => {
+    const check = canJoinRoute({ ...goodLinearRequest, status: 'new' }, dayRoute);
+    expect(check.ok).toBe(false);
+    expect(check.ok === false && check.reason).toContain('Новая');
+  });
+
+  it('арендная техника в рейс не идёт и днями: лист на неё выписывает арендодатель', () => {
+    const check = canJoinRoute({ ...goodLinearRequest, ownership: 'rental' }, dayRoute);
+    expect(check.ok === false && check.reason).toContain('арендодатель');
+  });
+
+  /*
+   * Ёмкость у дня та же, что у грузовой заявки: строки задания в бланке общие (ADR 0068). Второй
+   * объект того же дня попадает в тот же лист, пока эти строки есть, — и упирается в семь.
+   */
+  it('восьмой день в 4-П не влезает — в листе семь строк задания', () => {
+    const check = canJoinRoute(goodLinearRequest, {
+      ...dayRoute,
+      requestCount: ROUTE_REQUEST_CAPACITY['4p'],
+    });
+    expect(check.ok).toBe(false);
+    expect(check.ok === false && check.reason).toContain('7 строк задания');
   });
 });
 
@@ -260,6 +379,48 @@ describe('готовность рейса к выписке листа', () => {
   });
 
   /**
+   * Коррекция (ADR 0101, Р36): preflight будущего состояния гоняется **до** первого аннулирования,
+   * когда действующий лист ещё на месте. Контекст снимает ровно одну проверку — «лист уже есть», —
+   * потому что этот лист аннулируется той же транзакцией.
+   */
+  it('коррекция проходит проверку при действующем листе — его же и заменяет', () => {
+    expect(canIssueWaybill({ ...ready, waybillStatus: 'issued' }).ok).toBe(false);
+    expect(
+      canIssueWaybill({ ...ready, waybillStatus: 'issued', correction: { allowed: true } }),
+    ).toEqual({ ok: true });
+  });
+
+  /**
+   * А вот требование «все заявки в работе» коррекция не снимает (Р3), и это главное, что здесь не
+   * меняется: возврат заявки в «Новую» при замороженном рейсе её из состава не вынимает
+   * (`shouldDetachOnStatus`), так что `new` во вчерашнем рейсе — штатное последствие ADR 0058.
+   * Пропустив её, портал напечатал бы бумагу на работу, которую никто не поручал.
+   */
+  it('но состав коррекция не смягчает: не-«В работе» блокирует и её', () => {
+    const check = canIssueWaybill({
+      ...ready,
+      waybillStatus: 'issued',
+      correction: { allowed: true },
+      requests: [
+        { displayNumber: 'ТС-501', status: 'confirmed' },
+        { displayNumber: 'ТС-502', status: 'new' },
+      ],
+    });
+    expect(check.ok).toBe(false);
+    expect(check.ok === false && check.blocking).toEqual(['ТС-502']);
+  });
+
+  it('водителя коррекция тоже не отменяет — он обязательный реквизит листа', () => {
+    const check = canIssueWaybill({
+      ...ready,
+      waybillStatus: 'issued',
+      correction: { allowed: true },
+      driverPersonId: null,
+    });
+    expect(check.ok === false && check.reason).toContain('водителя');
+  });
+
+  /**
    * У перегона состава нет: вместо талонов заказчиков он держит заявку, ради которой едет, — и
    * проверяется её состояние. «Выполнена» перегону не мешает: технику вывозят с объекта и после
    * того, как работы закрыли.
@@ -307,6 +468,189 @@ describe('готовность рейса к выписке листа', () => {
 });
 
 /**
+ * Коррекция рейса (ADR 0101). Предикат отвечает на то, что не зависит от субъекта: глубина по
+ * календарю и состав. Право и причину спрашивает `backdateGuard` — здесь их нет намеренно, иначе
+ * одно и то же правило считалось бы двумя способами.
+ */
+describe('можно ли исправить рейс задним числом', () => {
+  const TODAY = '2026-08-12';
+  const route = {
+    routeDate: '2026-08-11',
+    requests: [{ displayNumber: 'ТС-501', status: 'confirmed' as const }],
+  };
+
+  it('вчерашний рейс с составом в работе — можно', () => {
+    expect(canCorrectRoute(route, TODAY)).toEqual({ ok: true });
+  });
+
+  it('рейс без заявок коррекции не мешает: блокировать в нём нечего', () => {
+    expect(canCorrectRoute({ ...route, requests: [] }, TODAY)).toEqual({ ok: true });
+  });
+
+  /**
+   * Р13: новый лист печатает задание по всему составу. Переписав назначения у части заявок,
+   * получим бумагу, где остальные талоны снова расходятся с порталом, — поэтому отказ, а не
+   * частичная коррекция.
+   */
+  it('закрытая заявка в составе останавливает коррекцию и называет свой номер', () => {
+    const check = canCorrectRoute(
+      {
+        ...route,
+        requests: [
+          { displayNumber: 'ТС-501', status: 'confirmed' },
+          { displayNumber: 'ТС-502', status: 'done' },
+        ],
+      },
+      TODAY,
+    );
+    expect(check.ok).toBe(false);
+    expect(check.ok === false && check.blocking).toEqual(['ТС-502']);
+    // Текст говорит, что делать, а не «нельзя» (Р38): закрытие откатывает администратор.
+    expect(check.ok === false && check.reason).toContain('администратор');
+  });
+
+  /**
+   * «Новая» в составе вчерашнего рейса — штатное последствие ADR 0058, а не редкость. Поручение у
+   * неё другое, чем у закрытой: её берут в работу обычным порядком, и делает это диспетчер сам.
+   */
+  it('«Новая» в составе — тоже отказ, но с другим поручением', () => {
+    const check = canCorrectRoute(
+      { ...route, requests: [{ displayNumber: 'ТС-503', status: 'new' }] },
+      TODAY,
+    );
+    expect(check.ok === false && check.blocking).toEqual(['ТС-503']);
+    expect(check.ok === false && check.reason).toContain('в работу');
+    expect(check.ok === false && check.reason).not.toContain('администратор');
+  });
+
+  it('смешанный состав называет оба поручения и обе заявки', () => {
+    const check = canCorrectRoute(
+      {
+        ...route,
+        requests: [
+          { displayNumber: 'ТС-501', status: 'done' },
+          { displayNumber: 'ТС-502', status: 'new' },
+        ],
+      },
+      TODAY,
+    );
+    expect(check.ok === false && check.blocking).toEqual(['ТС-501', 'ТС-502']);
+    expect(check.ok === false && check.reason).toContain('администратор');
+    expect(check.ok === false && check.reason).toContain('виза');
+  });
+
+  /**
+   * Глубина проверяется раньше состава: за тридцатью днями не поможет ни откат закрытия, ни виза —
+   * там нужен другой человек с другим правом (Р37). Узнать об этом после похода к администратору
+   * за откатом было бы худшим из порядков.
+   */
+  it('старше тридцати дней — отказ по глубине, и он звучит раньше отказа по составу', () => {
+    const old = {
+      routeDate: '2026-07-01',
+      requests: [{ displayNumber: 'ТС-501', status: 'done' as const }],
+    };
+    const check = canCorrectRoute(old, TODAY);
+    expect(check.ok).toBe(false);
+    expect(check.ok === false && check.blocking).toEqual([]);
+    expect(check.ok === false && check.reason).toContain('30 дней');
+    // С правом глубины остаётся только состав — и он называет свою заявку.
+    const withRight = canCorrectRoute(old, TODAY, { unlimited: true });
+    expect(withRight.ok === false && withRight.blocking).toEqual(['ТС-501']);
+  });
+
+  it('ровно тридцать дней — ещё граница диспетчера', () => {
+    expect(canCorrectRoute({ ...route, routeDate: '2026-07-13' }, TODAY).ok).toBe(true);
+    expect(canCorrectRoute({ ...route, routeDate: '2026-07-12' }, TODAY).ok).toBe(false);
+  });
+});
+
+/**
+ * Тела команд коррекции (ADR 0101, Р2 и Р30). Обе идемпотентны по `operationId` и обе требуют
+ * причину: у бланка строгой отчётности повтор запроса не бесплатное действие, а сгоревший номер
+ * без объяснения не разберёт потом никто.
+ */
+describe('схемы коррекции рейса', () => {
+  const base = { operationId: UUID_A, version: 3, reason: 'выехала другая машина' };
+
+  it('принимает машину, водителя, реквизиты и порядок талонов', () => {
+    const parsed = correctRouteSchema.safeParse({
+      ...base,
+      vehicleId: UUID_B,
+      driverPersonId: UUID_C,
+      requestOrder: [UUID_B, UUID_C],
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  it('без ключа идемпотентности, версии или причины — не принимает', () => {
+    expect(
+      correctRouteSchema.safeParse({ ...base, operationId: undefined, vehicleId: UUID_B }).success,
+    ).toBe(false);
+    expect(
+      correctRouteSchema.safeParse({ ...base, version: undefined, vehicleId: UUID_B }).success,
+    ).toBe(false);
+    expect(correctRouteSchema.safeParse({ ...base, reason: '  ', vehicleId: UUID_B }).success).toBe(
+      false,
+    );
+  });
+
+  /** Р31: тело с одной причиной сожгло бы номер, ничего не исправив. */
+  it('коррекция, которая ничего не меняет, отклоняется', () => {
+    expect(correctRouteSchema.safeParse(base).success).toBe(false);
+  });
+
+  it('одна и та же заявка дважды в порядке талонов — не порядок', () => {
+    const parsed = correctRouteSchema.safeParse({ ...base, requestOrder: [UUID_B, UUID_B] });
+    expect(parsed.success).toBe(false);
+  });
+
+  /**
+   * Состав коррекцией не меняется (Р2): приход и уход заявки — это перенос со своей командой,
+   * своими блокировками и версией **обоих** рейсов. Прежний `requestIds` позволял потерять талон в
+   * чужом рейсе, не назвав его, — потому его в теле и нет.
+   */
+  it('состава в теле коррекции нет вовсе', () => {
+    const parsed = correctRouteSchema.safeParse({ ...base, requestIds: [UUID_B] });
+    expect(parsed.success).toBe(false);
+  });
+
+  it('перенос называет оба рейса с их версиями', () => {
+    const parsed = transferCorrectionSchema.safeParse({
+      operationId: UUID_A,
+      version: 2,
+      source: { routeId: UUID_B, version: 5 },
+      requestId: UUID_C,
+      reason: 'заявка ехала вторничным рейсом',
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  it('перенос без версии источника не принимается: жгутся оба номера', () => {
+    const parsed = transferCorrectionSchema.safeParse({
+      operationId: UUID_A,
+      version: 2,
+      source: { routeId: UUID_B },
+      requestId: UUID_C,
+      reason: 'заявка ехала вторничным рейсом',
+    });
+    expect(parsed.success).toBe(false);
+  });
+
+  it('талон в приёмнике — позиция в пределах бланка либо ничего', () => {
+    const body = {
+      operationId: UUID_A,
+      version: 2,
+      source: { routeId: UUID_B, version: 5 },
+      requestId: UUID_C,
+      reason: 'перенос',
+    };
+    expect(transferCorrectionSchema.safeParse({ ...body, position: 1 }).success).toBe(true);
+    expect(transferCorrectionSchema.safeParse({ ...body, position: 0 }).success).toBe(false);
+    expect(transferCorrectionSchema.safeParse({ ...body, position: 99 }).success).toBe(false);
+  });
+});
+
+/**
  * Бланк рейса (`routeWaybillForm`). У грузового его выбирает тип машины, у перегона он всегда
  * 4-П: экскаватор идёт по дорогам как транспортное средство, и документ у этой поездки один.
  */
@@ -348,6 +692,17 @@ describe('состав перегона', () => {
     const check = canJoinRoute(goodRequest, { ...emptyRoute, purpose: 'delivery' });
     expect(check.ok).toBe(false);
     expect(check.ok === false && check.reason).toContain('перегон');
+  });
+
+  /*
+   * У линейной техники перегона не бывает вовсе (ADR 0100 §9): она уезжает вечером домой, и её
+   * выезд — обычный рейс дня. Отказ поэтому свой: «заявки в перегон не кладут» ничего бы здесь не
+   * объяснило — кладут-то не заявку, а день.
+   */
+  it('день линейного заказа в перегон не кладут — перегона у него нет', () => {
+    const check = canJoinRoute(goodLinearRequest, { ...emptyRoute, purpose: 'delivery' });
+    expect(check.ok).toBe(false);
+    expect(check.ok === false && check.reason).toContain('возвращается на базу');
   });
 });
 
@@ -614,6 +969,9 @@ describe('расхождение дня заявки и дня рейса', () =
 
   it('совпали — говорить не о чем', () => {
     expect(routeDateMismatch({ tripDate: '2026-08-10' }, route)).toBeNull();
+    // У линейного дня своего дня нет вовсе: он физически равен дню рейса (составной FK, миграция
+    // 0127), и расхождению взяться неоткуда — молчание здесь единственный правдивый ответ.
+    expect(routeDateMismatch({ tripDate: null }, route)).toBeNull();
   });
 
   it('разошлись — обе даты названы, и сказано, чем это грозит бумаге', () => {

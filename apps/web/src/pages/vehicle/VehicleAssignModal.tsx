@@ -306,6 +306,19 @@ export function VehicleAssignModal({
 
   const isFreight = request?.requestType === 'freight_transport';
 
+  /**
+   * Линейная техника (ADR 0100): машина, которая вечером возвращается на базу, а за день успевает
+   * поработать на двух-трёх площадках. Заказ такого типа портал ведёт по дням, а не неделей
+   * стояния на объекте, и в этом окне из этого следует ровно две вещи: недельные ЭСМ-2 при
+   * переводе в работу не выписываются вовсе (решение 5), а перегона у такой машины не бывает
+   * (решение 9).
+   *
+   * Признак спрашивается у **заказанного** типа и приезжает в самой заявке: как заявка ведётся,
+   * решает заказ — ещё до того, как под него нашли единицу, — поэтому тип выбранной машины здесь
+   * ни при чём. У грузоперевозки признака нет: у неё не период работ, а момент подачи.
+   */
+  const isLinear = request?.requestType === 'special_equipment' && request.isLinear;
+
   /** Арендодатели — только те, у кого есть техника этого вида: пустой пункт выбирать незачем. */
   const lessorOptions = useMemo(() => {
     const byId = new Map<string, string>();
@@ -398,10 +411,15 @@ export function VehicleAssignModal({
    * предлагается, а не требуется. Способ доставки портал не ведёт: он ни на что здесь не влияет.
    *
    * Только своя техника: перегон арендной — забота арендодателя, он же выписывает на неё лист.
+   *
+   * И только не линейная (ADR 0100 решение 9): `delivery`/`pickup` — про машину, которая приехала
+   * на площадку и осталась там. Линейная уезжает вечером домой, её выезд — обычный рейс дня, и
+   * блок доставки предлагал бы завести документ на поездку, которой не существует.
    */
   const deliveryEnabled = Form.useWatch('deliveryEnabled', form) ?? false;
   const deliveryDate = Form.useWatch('deliveryDate', form);
-  const canOfferDelivery = !reassign && request?.requestType === 'special_equipment' && !isRental;
+  const canOfferDelivery =
+    !reassign && request?.requestType === 'special_equipment' && !isRental && !isLinear;
   const wantsDelivery = canOfferDelivery && deliveryEnabled;
 
   /**
@@ -428,10 +446,12 @@ export function VehicleAssignModal({
    *
    * Арендной технике не подставляется ничего — тем же правилом, что и весь блок
    * (`canOfferDelivery`): её перегоняет арендодатель, и включённая галочка обещала бы лист,
-   * которого портал не выпишет.
+   * которого портал не выпишет. Линейной — по той же причине: перегона у неё не бывает вовсе
+   * (ADR 0100 решение 9), и просьба недельной заявки здесь ни о чём.
    */
   const weeklyDelivery =
     !reassign &&
+    !isLinear &&
     request?.requestType === 'special_equipment' &&
     request.weeklyOrigin?.deliveryNeeded
       ? request.weeklyOrigin
@@ -593,6 +613,13 @@ export function VehicleAssignModal({
    * водитель, и ни машина, ни дата на список не влияют.
    */
   const needsMachinist = !reassign && request?.requestType === 'special_equipment' && !isRental;
+  /**
+   * Обязателен ли машинист. У обычного заказа — да: перевод в работу тем же движением выписывает
+   * недельные ЭСМ-2 на весь срок, и лист без человека недействителен. У линейного — нет: листов в
+   * этот момент не рождается ни одного (ADR 0100 решение 5), и требовать имя не за что. Поле
+   * остаётся: назначение хранит машиниста по умолчанию — того, кто обычно выходит на этой машине.
+   */
+  const machinistRequired = needsMachinist && !isLinear;
   const { data: machinists, isFetching: machinistsLoading } = useQuery({
     queryKey: ['drivers', 'machinists'],
     queryFn: () => driversApi.list({ pageSize: 200, sortBy: 'fullName', sortDir: 'asc' }),
@@ -607,13 +634,16 @@ export function VehicleAssignModal({
    * Сколько бланков израсходует перевод в работу и на какие недели: лист ЭСМ-2 выписывается на
    * каждую неделю срока (миграция 0087), и человек должен видеть это до нажатия, а не узнавать
    * из журнала. Считается тем же `esm2Periods`, которым выписывает сервер.
+   *
+   * У линейной заявки перечня нет, потому что нет и расхода: ни одного бланка перевод в работу по
+   * ней не тратит (ADR 0100 решение 5). Обещать недели, которых не будет, здесь хуже молчания.
    */
   const esm2Weeks = useMemo(() => {
-    if (!needsMachinist) return [];
+    if (!needsMachinist || isLinear) return [];
     const from = dateFrom?.format('YYYY-MM-DD');
     if (!from) return [];
     return esm2Periods(from, dateTo?.format('YYYY-MM-DD') ?? null);
-  }, [needsMachinist, dateFrom, dateTo]);
+  }, [needsMachinist, isLinear, dateFrom, dateTo]);
 
   /**
    * Что не так с выбранным водителем: нет категории, которой требует машина, и/или не внесены
@@ -794,9 +824,10 @@ export function VehicleAssignModal({
       [request?.requestType === 'special_equipment' ? 'dateFrom' : 'scheduledDate']:
         !reassign && !schedule && 'Укажите фактическую дату',
       // Машинист обязателен там, где выписываются недельные листы ЭСМ-2: без него бланк
-      // недействителен. Тем же правилом отвечает сервер — он же видит, чья это машина.
+      // недействителен. Тем же правилом отвечает сервер — он же видит, чья это машина. У линейной
+      // заявки листов в этот момент не рождается, и требования нет (ADR 0100 решение 5).
       machinistId:
-        needsMachinist &&
+        machinistRequired &&
         !v.machinistId &&
         'Выберите машиниста — на него выписываются путевые листы ЭСМ-2',
       vehicleId: !v.vehicleId && 'Выберите технику',
@@ -829,7 +860,9 @@ export function VehicleAssignModal({
         pricePerShift: v.pricePerShift ?? null,
         shiftHours: v.shiftHours ?? null,
         // Машинист заказа техники на объект: на него выписываются листы ЭСМ-2 за каждую неделю
-        // срока. У грузоперевозки поля нет — там водитель принадлежит рейсу.
+        // срока. У грузоперевозки поля нет — там водитель принадлежит рейсу. У линейной заявки
+        // поле уходит пустым, если его не заполнили: назначение без машиниста законно, листы по
+        // ней выписывают отдельно и своим человеком (ADR 0100 решение 6).
         ...(needsMachinist ? { driverPersonId: v.machinistId } : {}),
         // Рейс: готовый — одним идентификатором, новый — вместе с водителем и реквизитами выезда.
         ...(needsRoute
@@ -960,16 +993,20 @@ export function VehicleAssignModal({
                   <Form.Item
                     name="machinistId"
                     label="Машинист"
-                    rules={[{ required: true, message: 'Выберите машиниста' }]}
+                    rules={
+                      machinistRequired ? [{ required: true, message: 'Выберите машиниста' }] : []
+                    }
                     extra={
-                      esm2Weeks.length > 0
-                        ? `Будет выписано листов ЭСМ-2: ${esm2Weeks.length} — ${esm2Weeks
-                            .map(
-                              (w) =>
-                                `${formatDateOnly(w.from).slice(0, 5)}–${formatDateOnly(w.to).slice(0, 5)}`,
-                            )
-                            .join(', ')}`
-                        : 'На каждую неделю срока работ выписывается свой путевой лист'
+                      isLinear
+                        ? 'Необязательно: листов ЭСМ-2 перевод в работу не выписывает'
+                        : esm2Weeks.length > 0
+                          ? `Будет выписано листов ЭСМ-2: ${esm2Weeks.length} — ${esm2Weeks
+                              .map(
+                                (w) =>
+                                  `${formatDateOnly(w.from).slice(0, 5)}–${formatDateOnly(w.to).slice(0, 5)}`,
+                              )
+                              .join(', ')}`
+                          : 'На каждую неделю срока работ выписывается свой путевой лист'
                     }
                   >
                     {/* Человека за технику портал не назначает сам: даже когда в справочнике один
@@ -983,6 +1020,21 @@ export function VehicleAssignModal({
                       notFoundContent="В справочнике нет действующих водителей"
                     />
                   </Form.Item>
+                )}
+
+                {/* Линейная техника (ADR 0100): вместо перечня недель и блока доставки — прямая
+                  речь о том, чего в этой заявке не будет. Молчание было бы хуже: диспетчер,
+                  привыкший видеть здесь список недель и галочку перегона, прочитал бы их
+                  исчезновение как поломку портала, а не как другой документооборот. */}
+                {needsMachinist && isLinear && (
+                  <FormGrid.Full>
+                    <Alert
+                      type="info"
+                      showIcon
+                      message="Линейная техника: ЭСМ-2 выписывается по требованию"
+                      description="Недельные листы портал сам не выписывает — их выписывают из карточки заявки, по неделе за раз. Работа каждого дня печатается своим 4-П. Перегона у такой техники нет: вечером она возвращается на базу."
+                    />
+                  </FormGrid.Full>
                 )}
               </>
             ) : (

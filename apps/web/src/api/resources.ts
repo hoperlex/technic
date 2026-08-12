@@ -29,6 +29,9 @@ import type {
   CompleteVehicleRequestInput,
   CompleteWasteRequestInput,
   ConfirmScheduleBody,
+  IssueRequestEsm2Body,
+  PlanVehicleRequestDayBody,
+  VehicleRequestDaysDto,
   CounterpartyDto,
   CreateCounterpartyInput,
   CreateUserBody,
@@ -539,6 +542,18 @@ export const vehicleRequestsApi = {
    */
   waybills: (id: string) => apiFetch<RequestWaybillDto[]>(`/vehicle-requests/${id}/waybills`),
   /**
+   * Выписать недельный ЭСМ-2 по требованию (ADR 0100 решение 6) — у линейного заказа портал
+   * листов сам не выписывает, и это единственная дверь, через которую бланк рождается.
+   *
+   * `weekOf` — любой день нужной недели: границы листа считает сервер, пересекая календарную
+   * неделю со сроком заявки, — тем же правилом, каким режет срок автоматическая выписка. Машина и
+   * машинист приходят выбранными: за неделю на объекте могли отработать две единицы, а водитель у
+   * каждого дня свой. В ответе — заявка целиком: у неё меняется версия, и список листов вместе с
+   * ней.
+   */
+  issueEsm2: (id: string, body: IssueRequestEsm2Body) =>
+    apiFetch<VehicleRequestDto>(`/vehicle-requests/${id}/esm2`, { method: 'POST', body }),
+  /**
    * Перегоны заявки: доставка техники на объект и вывоз с него. Пусто — их не заводили: технику
    * могли привезти тралом, и тогда листа на перегон не бывает вовсе.
    */
@@ -659,6 +674,36 @@ export const vehicleRequestsApi = {
     apiFetch<VehicleRequestShiftsDto>(`/vehicle-requests/${id}/shifts/${date}/approval`, {
       method: 'POST',
       body: { approved },
+    }),
+  /**
+   * Дни линейного заказа (ADR 0100): дни срока целиком — с рейсом дня, его машиной, водителем,
+   * листом и часами смены. День среза (`onDate`) считает сервер, как и у смен.
+   *
+   * `blocker` приходит вместе с таблицей, а не вместо неё: у арендного заказа дней не бывает
+   * вовсе, и блок обязан объяснить это словами — теми же, которыми откажет ручка планирования.
+   */
+  days: (id: string) => apiFetch<VehicleRequestDaysDto>(`/vehicle-requests/${id}/days`),
+  /**
+   * Поставить день заказа в рейс: в уже заведённый рейс машины на этот день (`routeId`) либо в
+   * новый, заводимый тут же (`newRoute`). Ровно одно из двух — «и то, и другое» означало бы два
+   * разных ответа на вопрос, куда едет день.
+   *
+   * День — часть адреса, а не тела: второй ответ на «за какой это день» разошёлся бы с первым,
+   * тем же порядком устроены смены. В ответе — таблица дней целиком: изменился не только этот
+   * день, но и перечень свободных рейсов у соседних.
+   */
+  planDay: (id: string, date: string, body: PlanVehicleRequestDayBody) =>
+    apiFetch<VehicleRequestDaysDto>(`/vehicle-requests/${id}/days/${date}/route`, {
+      method: 'POST',
+      body,
+    }),
+  /**
+   * Снять день с рейса. Сам рейс остаётся: он мог собираться из нескольких заявок, и пустой
+   * маршрут диспетчер убирает своим действием.
+   */
+  unplanDay: (id: string, date: string) =>
+    apiFetch<VehicleRequestDaysDto>(`/vehicle-requests/${id}/days/${date}/route`, {
+      method: 'DELETE',
     }),
   remove: (id: string) =>
     apiFetch<{ ok: boolean; mode: string }>(`/vehicle-requests/${id}`, { method: 'DELETE' }),

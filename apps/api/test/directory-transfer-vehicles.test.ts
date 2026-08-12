@@ -205,6 +205,10 @@ const typesEnv = {
         kindCode: 'special',
         specCodes: ['lift_capacity', 'boom_length'],
         categories: 2,
+        isLinear: false,
+        // Заявок в работе нет: тип, которым проверяется всё остальное, не должен упираться в
+        // запрет на смену линейности. Запрет снимается отдельным окружением ниже.
+        busyRequests: 0,
       },
     ],
   ]),
@@ -219,6 +223,7 @@ const typeRow = {
   name: 'Автокраны',
   description: 'Краны на автомобильном шасси',
   waybillFormCode: '4p',
+  isLinear: false,
   defaultQualificationCategoryId: QUALIFICATION,
   sortOrder: 10,
   isActive: true,
@@ -468,6 +473,50 @@ describe('типы ТС', () => {
     });
     expect(problems).toEqual([]);
     expect(cellsOf(def, typesEnv, model)['Бланк путевого листа']).toBe('Форма № 3');
+  });
+
+  /*
+   * Признак линейности (ADR 0100) ездит файлом наравне с бланком: без колонки перенос справочника
+   * между установками терял бы его молча — тип приезжал бы недельным, а заказы по нему уже ведутся
+   * днями.
+   */
+  it('линейная техника ставится «да» и не сбрасывается пустой ячейкой', () => {
+    const { model, problems } = parseRow(def, typesEnv, {
+      ...filled,
+      'Линейная техника': 'да',
+    });
+    expect(problems).toEqual([]);
+    expect(cellsOf(def, typesEnv, model)['Линейная техника']).toBe('да');
+
+    const untouched = editRow(
+      def,
+      typesEnv,
+      { ...typeRow, isLinear: true },
+      {
+        'Линейная техника': '',
+      },
+    );
+    expect(cellsOf(def, typesEnv, untouched.model)['Линейная техника']).toBe('да');
+  });
+
+  it('у типа с заявками в работе признак файлом не переключается', () => {
+    // Окружение того же типа, но с живыми заказами: файл не должен быть дверью в обход отказа
+    // карточки — там 422, здесь строка файла с той же причиной (ADR 0100 §1).
+    const busyEnv = {
+      ...typesEnv,
+      saved: new Map([
+        ['truck_cranes', { ...typesEnv.saved.get('truck_cranes')!, busyRequests: 3 }],
+      ]),
+    };
+    const { problems } = editRow(def, busyEnv, typeRow, { 'Линейная техника': 'да' });
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toBe(
+      '«Линейная техника» у этого типа не меняется: есть заявки в работе (3) — сначала закройте их, иначе заявка сменит режим документооборота на ходу',
+    );
+
+    // Та же строка без смены признака проходит: запрет держит поле, а не всю запись.
+    const rename = editRow(def, busyEnv, typeRow, { Наименование: 'Автокраны и краны' });
+    expect(rename.problems).toEqual([]);
   });
 });
 

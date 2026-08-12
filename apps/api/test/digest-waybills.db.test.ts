@@ -8,6 +8,7 @@ import {
   formatVehicleRouteNumber,
   vehicleRequestPath,
   vehicleRoutePath,
+  waybillPath,
 } from '@technic/contracts';
 import { applyMigrations } from '../src/db/migration-journal';
 // Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
@@ -75,6 +76,26 @@ const PAST = { from: '2099-08-31', to: '2099-09-04' };
 /** Неделя, на которую выписан 61 лист: ею проверяется лимит строк таблицы. */
 const MANY = { from: '2099-09-14', to: '2099-09-18', day: '2099-09-16' };
 
+/**
+ * Дни линейного заказа (ADR 0100): свои дни у каждого случая и своя неделя, не пересекающаяся с
+ * окнами выше. База общая, а таблица собирается глазами роли без области — она видит в окне всё,
+ * что в него попало, включая заведённое соседним случаем этого же файла.
+ */
+const LINEAR = {
+  /** Понедельник с выписанным дневным 4-П и вторник, на который листа ещё нет. */
+  issued: '2099-09-21',
+  planned: '2099-09-22',
+  /** Среда и четверг одного заказа, закрытые разными машинами. */
+  firstVehicle: '2099-09-23',
+  secondVehicle: '2099-09-24',
+  /** Пятница заказа, которому сверх дней выписали недельный ЭСМ-2 по требованию. */
+  withEsm2: '2099-09-25',
+  /** Неделя этих дней — она же неделя листа по требованию (границы бланка: одна календарная). */
+  week: { from: '2099-09-21', to: '2099-09-25' },
+  /** Понедельник следующей недели: на нём проверяется область видимости получателя. */
+  scope: '2099-09-28',
+};
+
 interface TestRequest {
   id: string;
   /** «ТС-461» — то, чем заявку называют в разговоре и что ищут в письме глазами. */
@@ -93,11 +114,20 @@ interface Ctx {
   /** Автор заявок и рейсов, он же выписавший листы. */
   authorId: string;
   objectId: string;
+  /** Соседняя площадка: ею сужается охват рассылки в проверке области видимости. */
+  otherObjectId: string;
   freightTypeId: string;
   specialTypeId: string;
+  /** Заказанный тип с признаком линейности (ADR 0100 §1): им ведутся дни, а не недели. */
+  linearTypeId: string;
   modelId: string;
   vehicleId: string;
   specialVehicleId: string;
+  /** Машина дня линейного заказа: назначения у неё нет, работу дня закрывает рейс. */
+  linearVehicleId: string;
+  /** Номера этих двух машин — по ним строка сводки и опознаётся глазами. */
+  specialVehicleReg: string;
+  linearVehicleReg: string;
   rentalVehicleId: string;
   lessorId: string;
   driverId: string;
@@ -200,11 +230,22 @@ async function makeFreightRequest(input: {
   return { id: request!.id, number: formatVehicleRequestNumber(request!.num) };
 }
 
+/** Номер листа как он печатается: префикса у своей серии нет, ширина — восемь знаков. */
+function displayNumber(num: number): string {
+  return String(num).padStart(8, '0');
+}
+
 /** Грузовой рейс с составом; позиции — порядок строк в таблице перевозок. */
 async function makeRoute(input: {
   date: string;
   requestIds: string[];
   vehicleId?: string;
+  /**
+   * День линейного заказа, ради которого строка стоит в рейсе (ADR 0100, миграция 0127). Он равен
+   * дню рейса физически — составной внешний ключ другого и не пропустит; у грузоперевозки день
+   * несёт сам рейс, и в строке состава его нет.
+   */
+  linearDay?: boolean;
 }): Promise<{ id: string; displayNumber: string }> {
   const { db, schema } = ctx;
   const [route] = await db
@@ -225,14 +266,24 @@ async function makeRoute(input: {
         routeId: route!.id,
         requestId,
         position: index + 1,
+        workDate: input.linearDay ? input.date : null,
       })),
     );
   }
   return { id: route!.id, displayNumber: formatVehicleRouteNumber(route!.num) };
 }
 
-/** Лист 4-П на рейс: аннулированный отличается от действующего только статусом и причиной. */
-async function makeRouteWaybill(input: { routeId: string; date: string; cancelled?: boolean }) {
+/**
+ * Лист 4-П на рейс: аннулированный отличается от действующего только статусом и причиной. Машина
+ * листа — машина своего рейса: у дня линейного заказа она бывает не той, что назначена заявке
+ * (ADR 0100 §4), и лист на чужую единицу читался бы как чужой.
+ */
+async function makeRouteWaybill(input: {
+  routeId: string;
+  date: string;
+  vehicleId?: string;
+  cancelled?: boolean;
+}): Promise<string> {
   const { db, schema } = ctx;
   const [row] = await db
     .insert(schema.waybills)
@@ -241,7 +292,7 @@ async function makeRouteWaybill(input: { routeId: string; date: string; cancelle
       number: nextWaybillNumber,
       formCode: '4p',
       organizationId: ctx.organizationId,
-      vehicleId: ctx.vehicleId,
+      vehicleId: input.vehicleId ?? ctx.vehicleId,
       driverPersonId: ctx.driverId,
       issuedForDate: input.date,
       routeId: input.routeId,
@@ -255,21 +306,28 @@ async function makeRouteWaybill(input: { routeId: string; date: string; cancelle
           }
         : {}),
     })
-    .returning({ id: schema.waybills.id });
+    .returning({ id: schema.waybills.id, number: schema.waybills.number });
   nextWaybillNumber += 1;
   createdWaybillIds.push(row!.id);
-  return row!.id;
+  return displayNumber(row!.number);
 }
 
-/** Заявка на спецтехнику: основание недельного листа ЭСМ-2. */
-async function makeSpecialRequest(tag: string, period: { from: string; to: string }) {
+/**
+ * Заявка на спецтехнику: основание недельного листа ЭСМ-2, а у линейного типа — ещё и дней.
+ * Заказанный тип передаётся, потому что им и решается режим заявки (ADR 0100 §1).
+ */
+async function makeSpecialRequest(
+  tag: string,
+  period: { from: string; to: string },
+  typeId?: string,
+) {
   const { db, schema } = ctx;
   const [request] = await db
     .insert(schema.vehicleRequests)
     .values({
       requestType: 'special_equipment',
       objectId: ctx.objectId,
-      vehicleTypeId: ctx.specialTypeId,
+      vehicleTypeId: typeId ?? ctx.specialTypeId,
       status: 'confirmed',
       comment: `Работы по графику (${tag})`,
       createdBy: ctx.authorId,
@@ -308,8 +366,30 @@ async function makeEsm2(input: { requestId: string; from: string; to: string }):
     .returning({ id: schema.waybills.id, number: schema.waybills.number });
   nextWaybillNumber += 1;
   createdWaybillIds.push(row!.id);
-  // Ширина серии — 8 знаков, префикса нет: номер печатается как «00000001».
-  return String(row!.number).padStart(8, '0');
+  return displayNumber(row!.number);
+}
+
+/**
+ * День линейного заказа, поставленный в рейс (ADR 0100 §2): рейс машины на эту дату, а день несёт
+ * строка состава. `waybill` — выписан ли на рейс дневной 4-П: сводка обязана показывать день и без
+ * него, ради этого второй источник таблицы и заведён.
+ */
+async function planDay(input: {
+  requestId: string;
+  date: string;
+  vehicleId: string;
+  waybill?: boolean;
+}): Promise<{ routeId: string; routeNumber: string; waybillNumber: string | null }> {
+  const route = await makeRoute({
+    date: input.date,
+    requestIds: [input.requestId],
+    vehicleId: input.vehicleId,
+    linearDay: true,
+  });
+  const number = input.waybill
+    ? await makeRouteWaybill({ routeId: route.id, date: input.date, vehicleId: input.vehicleId })
+    : null;
+  return { routeId: route.id, routeNumber: route.displayNumber, waybillNumber: number };
 }
 
 /** Окно письма от имени получателя — ровно тот контекст, который собирает `runRoleDigest`. */
@@ -334,6 +414,20 @@ async function tripsOn(date: string) {
 /** Таблица техники на объектах за один день окна. */
 async function onsiteOn(date: string) {
   return ctx.digestOnsiteTable(await contextFor(date, date));
+}
+
+/** Она же за окно шире суток: дни одной машины внутри окна собираются в одну строку. */
+async function onsiteBetween(from: string, to: string) {
+  return ctx.digestOnsiteTable(await contextFor(from, to));
+}
+
+/**
+ * Та же таблица, но у рассылки отмечены площадки: охват «все заявки» пересекается с перечнем
+ * (ADR 0093). Им и проверяется, чем считается область видимости строки.
+ */
+async function onsiteForObjects(date: string, objectIds: string[]) {
+  const base = await contextFor(date, date);
+  return ctx.digestOnsiteTable({ ...base, requestScope: 'all', scopeMode: 'selected', objectIds });
 }
 
 describe.skipIf(!DB_URL)('сводка по путевым листам (живая схема)', () => {
@@ -383,9 +477,40 @@ describe.skipIf(!DB_URL)('сводка по путевым листам (жив�
         address: 'г Москва, ул Объектная, д 5',
       })
       .returning({ id: schema.constructionObjects.id });
+    // Соседняя площадка: заявок на ней нет ни одной, и отмеченная в рассылке она обязана оставить
+    // письмо пустым — этим и проверяется, что область считается, а не подразумевается.
+    const [otherObject] = await db
+      .insert(schema.constructionObjects)
+      .values({
+        code: `WB2-${suffix}`,
+        name: `Тестовая площадка (соседняя) ${suffix}`,
+        address: 'г Москва, ул Соседняя, д 7',
+      })
+      .returning({ id: schema.constructionObjects.id });
 
     const freightTypeId = await typeIdOfKind(db, 'freight_transport');
     const specialTypeId = await typeIdOfKind(db, 'special_equipment');
+
+    /*
+     * Свой линейный тип (ADR 0100 §1): признак ставится типу, потому что режим заявки решает
+     * заказ, а не подобранная под него единица. Наименование начинается с «Я» намеренно —
+     * соседние db-тесты берут тип выражением `ORDER BY name LIMIT 1`, и запись, ставшая первой в
+     * справочнике, молча сменила бы им документооборот.
+     */
+    const kinds = await db.execute<{ id: string }>(
+      sql`SELECT id FROM vehicle_kinds WHERE code = 'special_equipment'`,
+    );
+    const kindId = kinds.rows[0]?.id;
+    if (!kindId) throw new Error('В базе нет вида «спецтехника»: миграции наполнения не применены');
+    const [linearType] = await db
+      .insert(schema.vehicleTypes)
+      .values({
+        kindId,
+        code: `digest_linear_${suffix}`,
+        name: `Ямобур тестовый (сводка) ${suffix}`,
+        isLinear: true,
+      })
+      .returning({ id: schema.vehicleTypes.id });
 
     const [model] = await db
       .insert(schema.vehicleModels)
@@ -401,12 +526,25 @@ describe.skipIf(!DB_URL)('сводка по путевым листам (жив�
         status: 'active',
       })
       .returning({ id: schema.vehicles.id });
+    const specialVehicleReg = `В${suffix.slice(0, 3).toUpperCase()}299`;
     const [specialVehicle] = await db
       .insert(schema.vehicles)
       .values({
         ownership: 'own',
         vehicleTypeId: specialTypeId,
-        registrationNumber: `В${suffix.slice(0, 3).toUpperCase()}299`,
+        registrationNumber: specialVehicleReg,
+        status: 'active',
+      })
+      .returning({ id: schema.vehicles.id });
+    // Вторая единица под дни: у линейного заказа на разные дни выходят разные машины, и строка
+    // сводки собирается по паре «заявка + машина дня» (ADR 0100 §4).
+    const linearVehicleReg = `В${suffix.slice(0, 3).toUpperCase()}399`;
+    const [linearVehicle] = await db
+      .insert(schema.vehicles)
+      .values({
+        ownership: 'own',
+        vehicleTypeId: linearType!.id,
+        registrationNumber: linearVehicleReg,
         status: 'active',
       })
       .returning({ id: schema.vehicles.id });
@@ -475,11 +613,16 @@ describe.skipIf(!DB_URL)('сводка по путевым листам (жив�
       recipientId: recipient!.id,
       authorId: author!.id,
       objectId: object!.id,
+      otherObjectId: otherObject!.id,
       freightTypeId,
       specialTypeId,
+      linearTypeId: linearType!.id,
       modelId: model!.id,
       vehicleId: vehicle!.id,
       specialVehicleId: specialVehicle!.id,
+      linearVehicleId: linearVehicle!.id,
+      specialVehicleReg,
+      linearVehicleReg,
       rentalVehicleId: rentalVehicle!.id,
       lessorId: lessor!.id,
       driverId: driver!.id,
@@ -509,15 +652,22 @@ describe.skipIf(!DB_URL)('сводка по путевым листам (жив�
     await db
       .delete(schema.vehicles)
       .where(
-        inArray(schema.vehicles.id, [ctx.vehicleId, ctx.specialVehicleId, ctx.rentalVehicleId]),
+        inArray(schema.vehicles.id, [
+          ctx.vehicleId,
+          ctx.specialVehicleId,
+          ctx.linearVehicleId,
+          ctx.rentalVehicleId,
+        ]),
       );
     await db.delete(schema.vehicleModels).where(eq(schema.vehicleModels.id, ctx.modelId));
+    // Тип уходит после своих машин и заявок: и те и другие держат его RESTRICT'ом.
+    await db.delete(schema.vehicleTypes).where(eq(schema.vehicleTypes.id, ctx.linearTypeId));
     await db.delete(schema.counterparties).where(eq(schema.counterparties.id, ctx.lessorId));
     await db.delete(schema.waybillSeries).where(eq(schema.waybillSeries.id, ctx.seriesId));
     await db.delete(schema.persons).where(eq(schema.persons.id, ctx.driverId));
     await db
       .delete(schema.constructionObjects)
-      .where(eq(schema.constructionObjects.id, ctx.objectId));
+      .where(inArray(schema.constructionObjects.id, [ctx.objectId, ctx.otherObjectId]));
     await db.delete(schema.users).where(inArray(schema.users.id, [ctx.authorId, ctx.recipientId]));
     await ctx.closeDb();
   });
@@ -696,5 +846,128 @@ describe.skipIf(!DB_URL)('сводка по путевым листам (жив�
     expect(table!.rows).toHaveLength(DIGEST_TABLE_ROW_LIMIT);
     expect(table!.total).toBe(count);
     expect(table!.link).toBe(`${ORIGIN}/vehicle-requests?tab=on-site`);
+  });
+
+  it('линейный день окна: с листом — его номер, без листа — номер рейса с пометкой', async () => {
+    const request = await makeSpecialRequest('линейный', LINEAR.week, ctx.linearTypeId);
+    const issued = await planDay({
+      requestId: request.id,
+      date: LINEAR.issued,
+      vehicleId: ctx.linearVehicleId,
+      waybill: true,
+    });
+    const planned = await planDay({
+      requestId: request.id,
+      date: LINEAR.planned,
+      vehicleId: ctx.linearVehicleId,
+    });
+
+    // Заказ, у которого недельного листа нет вовсе, обязан быть в сводке: у линейной техники
+    // ЭСМ-2 выписывают по требованию, и отбор по листам потерял бы его молча.
+    const first = await onsiteOn(LINEAR.issued);
+    expect(first).not.toBeNull();
+    expect(first!.total).toBe(1);
+    const withWaybill = first!.rows[0]!;
+    expect(withWaybill[0]!.text).toBe(issued.waybillNumber);
+    expect(withWaybill[0]!.href).toBe(`${ORIGIN}${waybillPath(issued.waybillNumber!)}`);
+    expect(withWaybill[0]!.sub).toBe('21 сентября');
+    expect(withWaybill[1]!.text).toContain(request.number);
+    // Машина строки — та, что вышла в этот день: её знает рейс, а не назначение заявки.
+    expect(withWaybill[2]!.text).toBe(ctx.linearVehicleReg);
+    expect(withWaybill[4]!.text).toBe('г Москва, ул Объектная, д 5');
+
+    // День, на который лист ещё не выписан. Прочерк здесь означал бы «работы нет», хотя машина
+    // завтра выйдет; номер рейса — то, чем день называют в портале, а пометка — то, ради чего
+    // сводку и читают накануне.
+    const second = await onsiteOn(LINEAR.planned);
+    expect(second!.total).toBe(1);
+    expect(second!.rows[0]![0]!.text).toBe(`${planned.routeNumber} (лист не выписан)`);
+    expect(second!.rows[0]![0]!.href).toBe(`${ORIGIN}${vehicleRoutePath(planned.routeId)}`);
+    expect(second!.rows[0]![0]!.sub).toBe('22 сентября');
+
+    // Окно шире суток: два дня одной машины — одна работа и одна строка. Номера документов идут
+    // тем же порядком, что и дни под ними, — иначе читатель сложил бы номер не с той датой.
+    const both = await onsiteBetween(LINEAR.issued, LINEAR.planned);
+    expect(both!.total).toBe(1);
+    expect(both!.rows[0]![0]!.text).toBe(
+      `${issued.waybillNumber}, ${planned.routeNumber} (лист не выписан)`,
+    );
+    expect(both!.rows[0]![0]!.sub).toBe('21, 22 сентября');
+    // Ссылки у строки нескольких дней нет: документов несколько, адрес у ячейки один, и любой из
+    // них увёл бы читателя не в тот документ. Заявка при этом остаётся ссылкой соседней графой.
+    expect(both!.rows[0]![0]!.href).toBeUndefined();
+    expect(both!.rows[0]![1]!.href).toBe(
+      `${ORIGIN}${vehicleRequestPath({ id: request.id, status: 'confirmed' })}`,
+    );
+  });
+
+  it('дни разных машин дают разные строки: строка — пара «заявка + машина дня»', async () => {
+    const request = await makeSpecialRequest('две машины', LINEAR.week, ctx.linearTypeId);
+    await planDay({
+      requestId: request.id,
+      date: LINEAR.firstVehicle,
+      vehicleId: ctx.linearVehicleId,
+      waybill: true,
+    });
+    await planDay({
+      requestId: request.id,
+      date: LINEAR.secondVehicle,
+      vehicleId: ctx.specialVehicleId,
+    });
+
+    const table = await onsiteBetween(LINEAR.firstVehicle, LINEAR.secondVehicle);
+    expect(table!.total).toBe(2);
+    // Склеить дни в одну строку значило бы напечатать машину, которой в четверг на объекте не
+    // было: назначение у линейного заказа — машина по умолчанию, а работает машина рейса.
+    expect(table!.rows.map((row) => row[2]!.text)).toEqual([
+      ctx.linearVehicleReg,
+      ctx.specialVehicleReg,
+    ]);
+    expect(table!.rows.map((row) => row[0]!.sub)).toEqual(['23 сентября', '24 сентября']);
+    expect(table!.rows.every((row) => row[1]!.text.includes(request.number))).toBe(true);
+  });
+
+  it('линейный заказ не задваивается: недельный ЭСМ-2 по требованию второй строки не даёт', async () => {
+    const request = await makeSpecialRequest('с недельным листом', LINEAR.week, ctx.linearTypeId);
+    const day = await planDay({
+      requestId: request.id,
+      date: LINEAR.withEsm2,
+      vehicleId: ctx.linearVehicleId,
+      waybill: true,
+    });
+    // Тот же заказ, та же неделя: лист выписан человеком по требованию (ADR 0100 §5) и с окном
+    // пересекается — обычному заказу он дал бы строку.
+    const weekly = await makeEsm2({
+      requestId: request.id,
+      from: LINEAR.week.from,
+      to: LINEAR.week.to,
+    });
+
+    const table = await onsiteOn(LINEAR.withEsm2);
+    expect(table!.total).toBe(1);
+    expect(table!.rows[0]![0]!.text).toBe(day.waybillNumber);
+    // Первая половина таблицы линейный заказ не показывает (ADR 0100 §12): её строка — неделя
+    // стояния машины на площадке, а линейная вечером уезжает на базу. Выезды уже названы днями, и
+    // вторая строка про ту же неделю читалась бы как вторая работа.
+    expect(table!.rows.flat().map((cell) => cell.text)).not.toContain(weekly);
+  });
+
+  it('область видимости строки дня считается по заявке, а не по её документу', async () => {
+    const request = await makeSpecialRequest(
+      'чужая площадка',
+      { from: LINEAR.scope, to: LINEAR.scope },
+      ctx.linearTypeId,
+    );
+    // День намеренно без листа: документа у строки нет вовсе, и считать область по нему значило бы
+    // не считать её никак (план У10).
+    await planDay({ requestId: request.id, date: LINEAR.scope, vehicleId: ctx.linearVehicleId });
+
+    const own = await onsiteForObjects(LINEAR.scope, [ctx.objectId]);
+    expect(own).not.toBeNull();
+    expect(own!.total).toBe(1);
+    expect(own!.rows[0]![1]!.text).toContain(request.number);
+
+    // Та же строка, но получателю рассылки положена соседняя площадка: заявка чужая — письма нет.
+    expect(await onsiteForObjects(LINEAR.scope, [ctx.otherObjectId])).toBeNull();
   });
 });

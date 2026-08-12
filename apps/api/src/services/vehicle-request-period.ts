@@ -6,6 +6,7 @@ import {
   vehicleRequests,
 } from '../db/schema';
 import { err } from '../lib/errors';
+import { type LinearDaysSyncResult, syncLinearRouteDays } from './vehicle-request-days';
 import { type Esm2SyncResult, syncEsm2Waybills } from './waybill-esm2';
 
 /**
@@ -13,10 +14,10 @@ import { type Esm2SyncResult, syncEsm2Waybills } from './waybill-esm2';
  *
  * Менять `date_to` умеют три места — обычная правка заявки, согласованное досрочное завершение
  * (ADR 0044) и применение недельной заявки, — а последствия у изменения одни и те же: ожидающий
- * визы запрос на отъезд перестаёт иметь предмет, а недельные листы ЭСМ-2 расходятся с заявкой
- * (ADR 0060). Записанные по разу в каждом вызывающем, эти последствия разойдутся при первой же
- * правке правила, и заявка останется либо с чужим запросом на визу, либо с бумагой на дни, которых
- * не будет.
+ * визы запрос на отъезд перестаёт иметь предмет, недельные листы ЭСМ-2 расходятся с заявкой
+ * (ADR 0060), а распланированные дни линейного заказа оказываются за сроком (ADR 0100). Записанные
+ * по разу в каждом вызывающем, эти последствия разойдутся при первой же правке правила, и заявка
+ * останется либо с чужим запросом на визу, либо с бумагой и рейсами на дни, которых не будет.
  *
  * Поэтому здесь живут именно последствия, а не «обновление полей»: сам срок правка заявки пишет
  * вместе с контактами одним `UPDATE`, и разрезать его ради общего хелпера значило бы усложнить
@@ -49,10 +50,12 @@ export async function clearPendingEarlyEnd(tx: Tx, requestId: string): Promise<b
   return removed.length > 0;
 }
 
-/** Чем кончилось изменение срока: снятый запрос на отъезд и переоформленные листы. */
+/** Чем кончилось изменение срока: снятый запрос на отъезд, переоформленные листы и снятые дни. */
 export interface WorkPeriodChangeResult {
   earlyEndDropped: boolean;
   esm2: Esm2SyncResult;
+  /** Дни линейного заказа, ушедшие за новый срок (ADR 0100 §11); у прочих заявок пусто. */
+  days: LinearDaysSyncResult;
 }
 
 /**
@@ -83,7 +86,15 @@ export async function afterWorkPeriodChanged(
     actor: params.actor,
     reason: params.reason,
   });
-  return { earlyEndDropped, esm2 };
+  // План по дням сверяется той же транзакцией и по той же причине, что и бумага: сокращённый срок
+  // оставил бы рейсы на дни, которых у заказа больше нет. Продление дней не трогает — их просто
+  // становится больше, и распланировать новые день за днём предстоит человеку (ADR 0100 §8).
+  const days = await syncLinearRouteDays(tx, {
+    requestId: params.requestId,
+    actor: params.actor,
+    reason: params.reason,
+  });
+  return { earlyEndDropped, esm2, days };
 }
 
 /** Срок заказа, каким он записан сейчас. `dateTo` пуст у однодневного — читается `dateFrom`. */
@@ -93,10 +104,7 @@ export interface CurrentWorkPeriod {
   effectiveDateTo: string;
 }
 
-export async function loadWorkPeriod(
-  tx: Tx,
-  requestId: string,
-): Promise<CurrentWorkPeriod | null> {
+export async function loadWorkPeriod(tx: Tx, requestId: string): Promise<CurrentWorkPeriod | null> {
   const [row] = await tx
     .select({
       dateFrom: specialEquipmentRequestDetails.dateFrom,

@@ -177,6 +177,116 @@ async function resolveOrganization(tx: Tx, vehicleId: string): Promise<string> {
 }
 
 /**
+ * Колонки, из которых собирается строка задания, — один набор на весь бланк. Читают их дважды:
+ * заявкой шапки («в чьё распоряжение») и строками 2–7 (ADR 0068), и разъехаться этим двум местам
+ * нельзя. Линейный день бывает в рейсе и первым, и пятым (ADR 0100 §2), а печататься обязан
+ * одинаково: заявка не знает, какое место в маршруте ей достанется.
+ *
+ * Вид заявки стоит здесь наравне с деталями — им и решается, откуда берётся задание. Наличие
+ * деталей на этот вопрос не отвечает: у заказа техники на объект деталей грузоперевозки нет
+ * вовсе, все `LEFT JOIN` отдают NULL, и собранная по ним строка вышла бы из принтера пустой,
+ * ничего об этом не сказав.
+ */
+const taskColumns = {
+  requestType: vehicleRequests.requestType,
+  // Комментарий заявки — вторая строка графы «Груз» (ADR 0071). У заказа на объект он в этой
+  // графе единственный: там пишут характер работ, а не тонны.
+  comment: vehicleRequests.comment,
+  // Объект заявки — «Куда» линейного дня (ADR 0100 §10): другого адреса у дня нет, машина едет
+  // работать на площадку. Наименованием и адресом сразу — в строках 2–7 заказчика не печатают
+  // вовсе, и одно название объекта водителю адреса не заменит.
+  objectName: constructionObjects.name,
+  objectAddress: constructionObjects.address,
+  loading: freightTransportRequestDetails.loadingLocation,
+  unloading: freightTransportRequestDetails.unloadingLocation,
+  volumeM3: freightTransportRequestDetails.volumeM3,
+  weightTons: freightTransportRequestDetails.weightTons,
+  // Контакты на концах маршрута — графа «заказчик, телефон» задания (миграция 0062).
+  loadingResponsibleName: freightTransportRequestDetails.loadingResponsibleName,
+  loadingResponsiblePhone: freightTransportRequestDetails.loadingResponsiblePhone,
+  unloadingResponsibleName: freightTransportRequestDetails.unloadingResponsibleName,
+  unloadingResponsiblePhone: freightTransportRequestDetails.unloadingResponsiblePhone,
+  // Тот же контакт у заказа на объект: человек у него один — тот, кто встречает машину на
+  // площадке. Им печатается и перегон, и день линейной техники.
+  siteResponsibleName: specialEquipmentRequestDetails.responsibleName,
+  siteResponsiblePhone: specialEquipmentRequestDetails.responsiblePhone,
+};
+
+/** Строка задания так, как её держит бланк: четыре графы таблицы 4-П. */
+interface TaskLine {
+  from: string;
+  to: string;
+  cargo: string;
+  contacts: string;
+}
+
+/** Ненайденная заявка и незанятая строка бланка печатаются одинаково — пустым местом. */
+const EMPTY_TASK: TaskLine = { from: '', to: '', cargo: '', contacts: '' };
+
+/**
+ * Строка задания по заявке — разбором её вида, а не наличием деталей (ADR 0100 §10).
+ *
+ * Графа «заказчик, телефон» здесь не про наименование заказчика: тот стоит строкой выше, в шапке
+ * «в чьё распоряжение», — а водителю в дороге нужен человек с телефоном на каждом конце маршрута.
+ * У грузоперевозки таких концов два: грузят и принимают разные люди в разных местах. У заказа на
+ * объект конец один — тот, кто встречает машину на площадке (`special_equipment_request_details`,
+ * миграция 0062); этой же веткой печатается перегон, у которого маршрут несёт сам рейс.
+ */
+function taskLineOf(row: {
+  requestType: VehicleRequestType;
+  comment: string;
+  objectName: string | null;
+  objectAddress: string | null;
+  loading: string | null;
+  unloading: string | null;
+  volumeM3: string | null;
+  weightTons: string | null;
+  loadingResponsibleName: string | null;
+  loadingResponsiblePhone: string | null;
+  unloadingResponsibleName: string | null;
+  unloadingResponsiblePhone: string | null;
+  siteResponsibleName: string | null;
+  siteResponsiblePhone: string | null;
+}): TaskLine {
+  if (row.requestType === 'special_equipment') {
+    /*
+     * День линейного заказа (ADR 0100 §2, §10): в строке состава стоит не грузоперевозка, а день
+     * работы машины на площадке, и графы заполняет сам заказ.
+     *
+     * «Откуда» остаётся пустым намеренно: машина выходит из гаража, а места стоянки портал не
+     * ведёт — его вписывают от руки. Подставленный туда объект означал бы, что на площадку
+     * приехали с неё же.
+     *
+     * Груза нет по той же причине, по какой его нет у перегона: линейная техника работает, а не
+     * возит, и количество в этой графе выражать нечем. Комментарий заявки при этом печатается —
+     * у такого заказа в графе груза стоит характер работ, и другого места под него в бланке нет.
+     *
+     * Времени выезда у дня тоже нет: срок заказа задан датами, час выхода машины назначает
+     * диспетчер утром, и графа остаётся под то, что впишут от руки.
+     */
+    return {
+      from: '',
+      to: [row.objectName, row.objectAddress].filter(Boolean).join(', '),
+      cargo: routeCargoWithNote('', row.comment),
+      contacts: routeContactsLabel([
+        { name: row.siteResponsibleName ?? '', phone: row.siteResponsiblePhone ?? '' },
+      ]),
+    };
+  }
+  // Груз графы бланка: количество, а под ним комментарий заявки (ADR 0071) — то, чего в
+  // количестве не выразить: «песок, звонить за час».
+  return {
+    from: row.loading ?? '',
+    to: row.unloading ?? '',
+    cargo: routeCargoWithNote(routeCargoLabel(row.volumeM3, row.weightTons), row.comment),
+    contacts: routeContactsLabel([
+      { name: row.loadingResponsibleName ?? '', phone: row.loadingResponsiblePhone ?? '' },
+      { name: row.unloadingResponsibleName ?? '', phone: row.unloadingResponsiblePhone ?? '' },
+    ]),
+  };
+}
+
+/**
  * Значения бланка снимком (ADR 0037 п. 10). Лист печатается из этого объекта, а не из
  * справочников, поэтому переименование объекта или уточнение госномера задним числом уже выданный
  * документ не меняет.
@@ -231,28 +341,12 @@ async function collectSnapshot(
   const [request] = params.requestId
     ? await tx
         .select({
+          ...taskColumns,
           // Заказчик в бланке — объект или отдел (ADR 0040): у заявки отдела площадки нет вовсе, и
           // строка «Заказчик» осталась бы пустой при innerJoin по объекту — вместе со всем листом.
-          objectName: constructionObjects.name,
-          objectAddress: constructionObjects.address,
           departmentName: departments.name,
-          // Комментарий заявки — вторая строка графы «Груз» (ADR 0071).
-          comment: vehicleRequests.comment,
-          loading: freightTransportRequestDetails.loadingLocation,
-          unloading: freightTransportRequestDetails.unloadingLocation,
-          volumeM3: freightTransportRequestDetails.volumeM3,
-          weightTons: freightTransportRequestDetails.weightTons,
           scheduledAt: freightTransportRequestDetails.scheduledAt,
           timeUnspecified: freightTransportRequestDetails.scheduledTimeUnspecified,
-          // Контакты на концах маршрута — графа «заказчик, телефон» задания (миграция 0062).
-          loadingResponsibleName: freightTransportRequestDetails.loadingResponsibleName,
-          loadingResponsiblePhone: freightTransportRequestDetails.loadingResponsiblePhone,
-          unloadingResponsibleName: freightTransportRequestDetails.unloadingResponsibleName,
-          unloadingResponsiblePhone: freightTransportRequestDetails.unloadingResponsiblePhone,
-          // Тот же контакт у перегона: заявка-основание — спецтехника, и человек у неё один — тот,
-          // кто встречает машину на площадке.
-          siteResponsibleName: specialEquipmentRequestDetails.responsibleName,
-          siteResponsiblePhone: specialEquipmentRequestDetails.responsiblePhone,
         })
         .from(vehicleRequests)
         .leftJoin(constructionObjects, eq(constructionObjects.id, vehicleRequests.objectId))
@@ -300,41 +394,10 @@ async function collectSnapshot(
     }
   }
 
-  // Груз графы бланка: количество, а под ним комментарий заявки (ADR 0071) — то, чего в
-  // количестве не выразить: «песок, звонить за час».
-  const cargo = routeCargoWithNote(
-    routeCargoLabel(request?.volumeM3 ?? null, request?.weightTons ?? null),
-    request?.comment ?? '',
-  );
-
-  /*
-   * Графа «заказчик, телефон» задания: контакты рейса, а не наименование заказчика. Заказчик
-   * стоит строкой выше — в шапке «в чьё распоряжение», — а водителю в дороге нужен человек с
-   * телефоном на каждом конце маршрута: грузят и принимают разные люди в разных местах.
-   *
-   * У перегона конец один: машина едет своим ходом на площадку, и встречает её ответственный
-   * заявки-основания.
-   */
-  const contactsOf = (row: {
-    loadingResponsibleName: string | null;
-    loadingResponsiblePhone: string | null;
-    unloadingResponsibleName: string | null;
-    unloadingResponsiblePhone: string | null;
-  }): string =>
-    routeContactsLabel([
-      { name: row.loadingResponsibleName ?? '', phone: row.loadingResponsiblePhone ?? '' },
-      { name: row.unloadingResponsibleName ?? '', phone: row.unloadingResponsiblePhone ?? '' },
-    ]);
-  const contacts = params.relocation
-    ? routeContactsLabel([
-        {
-          name: request?.siteResponsibleName ?? '',
-          phone: request?.siteResponsiblePhone ?? '',
-        },
-      ])
-    : request
-      ? contactsOf(request)
-      : '';
+  // Задание заявки шапки. У перегона маршрут ниже перебивается самим рейсом, а контакты и груз
+  // приходят отсюда: заявка-основание — заказ техники на объект, и разбор её вида отвечает на оба
+  // вопроса разом.
+  const task = request ? taskLineOf(request) : EMPTY_TASK;
 
   /*
    * Задание рейсов 2–7 (ADR 0068): четыре строки таблицы 4-П и три строки его блока доп. задания.
@@ -345,35 +408,22 @@ async function collectSnapshot(
   const rest = await Promise.all(
     params.restRequestIds.slice(0, ROUTE_REQUEST_CAPACITY['4p'] - 1).map(async (id) => {
       const [row] = await tx
-        .select({
-          comment: vehicleRequests.comment,
-          loading: freightTransportRequestDetails.loadingLocation,
-          unloading: freightTransportRequestDetails.unloadingLocation,
-          volumeM3: freightTransportRequestDetails.volumeM3,
-          weightTons: freightTransportRequestDetails.weightTons,
-          loadingResponsibleName: freightTransportRequestDetails.loadingResponsibleName,
-          loadingResponsiblePhone: freightTransportRequestDetails.loadingResponsiblePhone,
-          unloadingResponsibleName: freightTransportRequestDetails.unloadingResponsibleName,
-          unloadingResponsiblePhone: freightTransportRequestDetails.unloadingResponsiblePhone,
-        })
+        .select(taskColumns)
         .from(vehicleRequests)
+        .leftJoin(constructionObjects, eq(constructionObjects.id, vehicleRequests.objectId))
         .leftJoin(
           freightTransportRequestDetails,
           eq(freightTransportRequestDetails.requestId, vehicleRequests.id),
         )
+        .leftJoin(
+          specialEquipmentRequestDetails,
+          eq(specialEquipmentRequestDetails.requestId, vehicleRequests.id),
+        )
         .where(eq(vehicleRequests.id, id));
-      return {
-        from: row?.loading ?? '',
-        to: row?.unloading ?? '',
-        cargo: routeCargoWithNote(
-          routeCargoLabel(row?.volumeM3 ?? null, row?.weightTons ?? null),
-          row?.comment ?? '',
-        ),
-        contacts: row ? contactsOf(row) : '',
-      };
+      return row ? taskLineOf(row) : EMPTY_TASK;
     }),
   );
-  const slot = (index: number) => rest[index] ?? { from: '', to: '', cargo: '', contacts: '' };
+  const slot = (index: number) => rest[index] ?? EMPTY_TASK;
   const departure =
     request?.scheduledAt && !request.timeUnspecified
       ? new Date(request.scheduledAt.getTime() + 3 * 60 * 60 * 1000).toISOString().slice(11, 16)
@@ -421,11 +471,11 @@ async function collectSnapshot(
     // Телефон ответственного — графа ЭСМ-2: там машина стоит на объекте неделю, и звонят туда. У
     // рейса контакты свои на каждом конце маршрута, и в бланк они не печатаются.
     customer_phone: '',
-    task_from: params.relocation ? params.relocation.from : (request?.loading ?? ''),
-    task_to: params.relocation ? params.relocation.to : (request?.unloading ?? ''),
+    task_from: params.relocation ? params.relocation.from : task.from,
+    task_to: params.relocation ? params.relocation.to : task.to,
     // У перегона груза нет — графа остаётся пустой, как одометр и движение горючего.
-    task_cargo: params.relocation ? '' : cargo,
-    task_contacts: contacts,
+    task_cargo: params.relocation ? '' : task.cargo,
+    task_contacts: task.contacts,
     task_departure_time: departure,
 
     task2_from: slot(0).from,

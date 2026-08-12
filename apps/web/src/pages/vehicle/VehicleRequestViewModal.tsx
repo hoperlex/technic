@@ -45,6 +45,7 @@ import { PhoneLink } from '../../components/PhoneField';
 import { calendarDaysLabel } from '../../utils/date';
 import { formatDateTime, formatDateTimeMaybe, formatMoney } from '../../utils/format';
 import { formatDateOnly } from './shared';
+import { VehicleRequestDays } from './VehicleRequestDays';
 import { VehicleShiftsView } from './VehicleShiftsView';
 import { weeklyRequestPath } from './weeklyShared';
 
@@ -79,6 +80,14 @@ interface Props {
    * заводить нечем: заявка не в работе, машины на ней нет либо у роли нет прав на рейсы.
    */
   onRelocate?: (r: VehicleRequestDto, purpose: 'delivery' | 'pickup') => void;
+  /**
+   * Выписать недельный ЭСМ-2 по требованию (ADR 0100 решение 6). Не передана — выписывать нечем:
+   * у обычного заказа листы портал выписывает сам, у линейного — только пока он в работе на
+   * собственной машине, и распоряжается бланками не всякий, кто карточку читает. Кнопка стоит у
+   * списка листов по той же причине, что «Сменить технику» у техники: видеть документы и не
+   * иметь, чем выписать недостающий, — ровно то, из-за чего действие и появилось.
+   */
+  onIssueEsm2?: (r: VehicleRequestDto) => void;
   /**
    * Кнопки решения по досрочному завершению (ADR 0044). Функция, а не флаг: доступность зависит
    * и от роли, и от состояния запроса, и знает об этом вкладка, а не карточка. Не передана —
@@ -165,6 +174,7 @@ export function VehicleRequestViewModal({
   onReassign,
   onTransfer,
   onRelocate,
+  onIssueEsm2,
   earlyEndActions,
 }: Props) {
   const { can } = useAuth();
@@ -595,15 +605,18 @@ export function VehicleRequestViewModal({
         // У заказа техники на объект листов столько, сколько недель в сроке (ЭСМ-2): каждый
         // подписан своей неделей, иначе в списке одинаковых номеров не разобрать, какой из них
         // печатать. Аннулированные остаются в списке — сгоревший номер видно там же, где выдан.
-        ...(waybills && waybills.length > 0
+        //
+        // У линейного заказа строка появляется и пустой: листов по нему может не быть ни одного —
+        // портал их не выписывает, — но выписать недостающий надо откуда-то (ADR 0100 решение 6).
+        ...((waybills && waybills.length > 0) || onIssueEsm2
           ? [
               {
                 key: 'waybills',
-                label: waybills.length > 1 ? 'Путевые листы' : 'Путевой лист',
+                label: (waybills?.length ?? 0) > 1 ? 'Путевые листы' : 'Путевой лист',
                 full: true,
                 children: (
                   <Space direction="vertical" size={4}>
-                    {waybills.map((waybill) => (
+                    {(waybills ?? []).map((waybill) => (
                       <Space key={waybill.id} size={8} wrap>
                         {waybill.periodFrom && waybill.periodTo && (
                           <Tag>
@@ -638,6 +651,21 @@ export function VehicleRequestViewModal({
                         </PrintWaybillButton>
                       </Space>
                     ))}
+                    {/* Выписка по требованию (ADR 0100): у линейного заказа лист рождается только
+                      этой кнопкой. Пустой список у такой заявки — не пробел, и сказано это
+                      словами: иначе он читался бы как забытый документ. */}
+                    {onIssueEsm2 && (
+                      <Space size={8} wrap>
+                        {(waybills?.length ?? 0) === 0 && (
+                          <Typography.Text type="secondary">
+                            Листов нет — по этой заявке их выписывают по требованию
+                          </Typography.Text>
+                        )}
+                        <Button size="small" onClick={() => onIssueEsm2(request)}>
+                          Выписать ЭСМ-2
+                        </Button>
+                      </Space>
+                    )}
                   </Space>
                 ),
               },
@@ -816,6 +844,20 @@ export function VehicleRequestViewModal({
             <Tabs
               items={[
                 { key: 'request', label: 'Заявка', children: main },
+                // Дни работ (ADR 0100 решение 8) — вкладка линейного заказа и единственное место,
+                // где дни планируют. У обычного заказа их не бывает вовсе: машина стоит на
+                // площадке весь срок, и работа считается неделями, а не выездами. Право своё,
+                // `waybills.read`: в плане стоят машины и ФИО водителей собственного парка, то
+                // есть ровно то, чего заказчику со стороны объекта не показывают (ADR 0037 п. 13).
+                ...(request.isLinear && can('waybills.read')
+                  ? [
+                      {
+                        key: 'days',
+                        label: 'Дни работ',
+                        children: <VehicleRequestDays request={request} />,
+                      },
+                    ]
+                  : []),
                 {
                   key: 'shifts',
                   label: 'Смены',

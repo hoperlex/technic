@@ -1,4 +1,5 @@
 import { and, eq, inArray, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
 import {
   formatVehicleRequestNumber,
   formatVehicleRouteNumber,
@@ -49,6 +50,10 @@ import {
  *   строки: у машины бывает и два рейса за день, и рейс вместе с заказом.
  */
 
+// Заказанный тип заявки (ADR 0100 §1) — своим алиасом: в запросах гаража `vehicle_types` уже
+// присоединён как тип **машины**, которым собирается её подпись, а линейность спрашивают у заказа.
+const orderedTypes = alias(vehicleTypes, 'ordered_types');
+
 // ── Условия занятости ──
 
 /**
@@ -58,15 +63,24 @@ import {
  * накрывает день, а пустая дата окончания читается как однодневный срок — `coalesce(date_to,
  * date_from)`. Разойдись эти два места, гараж и «На объекте» отвечали бы про разные дни одной
  * машины.
+ *
+ * Линейный заказ (ADR 0100 §12) сюда не попадает вовсе, и это не сужение, а исправление неправды:
+ * его машина вечером возвращается на базу, и «занята весь срок» было бы враньём дважды — за
+ * назначенную единицу, которая свободна двадцать девять дней из тридцати, и за ту, что реально
+ * поехала во вторник и занятости не получала. Занятость дня линейного заказа говорит его рейс
+ * (`routeBusyExists`), и говорит он правду про обе машины сразу. Признак читается у **заказанного**
+ * типа (ADR 0100 §1): режим заявки решает заказ, а не то, какую единицу под него нашли.
  */
 function specialBusyExists(on: string): SQL {
   return sql`EXISTS (
     SELECT 1 FROM ${vehicleRequestAssignments} ga_a
     JOIN ${vehicleRequests} ga_r ON ga_r.id = ga_a.request_id
+    JOIN ${vehicleTypes} ga_vt ON ga_vt.id = ga_r.vehicle_type_id
     JOIN ${specialEquipmentRequestDetails} ga_d ON ga_d.request_id = ga_r.id
     WHERE ga_a.vehicle_id = ${vehicles.id}
       AND ga_r.status = 'confirmed'
       AND ga_r.deleted_at IS NULL
+      AND NOT ga_vt.is_linear
       AND ga_d.date_from <= ${on}::date
       AND coalesce(ga_d.date_to, ga_d.date_from) >= ${on}::date
   )`;
@@ -104,6 +118,11 @@ function routeBusyExists(on: string): SQL {
  * заводят заранее, а ломается машина потом), и такая строка обязана называть главное — что машина
  * не поедет. Объект старше рейса: заказ спецтехники держит машину весь срок, а перегон в тот же
  * день лишь довозит её туда и обратно.
+ *
+ * У линейного заказа старшинство не спорит с этим правилом, а следует из него: его машина на
+ * площадке не стоит, и день у неё именно рейсовый — «в рейсе» (ADR 0100 §12). Что за этим рейсом
+ * стоит заказ на объект, а не груз, видно в самой занятости — днём в строке состава
+ * (`GarageBusyRequest.workDate`).
  */
 export function vehicleStateSql(on: string) {
   return sql<GarageVehicleState>`CASE
@@ -171,12 +190,19 @@ function busyRequest(row: {
   status: RequestStatus;
   objectName: string | null;
   departmentName: string | null;
+  /**
+   * День линейного заказа, ради которого строка стоит в рейсе (ADR 0100 §2). Заполнен он только у
+   * состава — заявка-основание перегона и недельного листа дня не несёт, и `null` там честный
+   * ответ, а не пробел.
+   */
+  workDate?: string | null;
 }): GarageBusyRequest {
   return {
     requestId: row.requestId,
     displayNumber: formatVehicleRequestNumber(row.num),
     status: row.status,
     customerName: requestCustomerName(row),
+    workDate: row.workDate ?? null,
   };
 }
 
@@ -266,7 +292,14 @@ async function loadRoutes(on: string, scope: BusyScope): Promise<GarageRouteBusy
   }));
 }
 
-/** Состав рейсов страницы — одним запросом на всех, в порядке строк задания. */
+/**
+ * Состав рейсов страницы — одним запросом на всех, в порядке строк задания.
+ *
+ * Строки линейных дней отбираются наравне с грузовыми и без всякого условия: день линейного заказа
+ * и есть работа машины в этот день (ADR 0100 §2), и убрать его из состава значило бы показать
+ * пустой рейс там, где машина отработала смену на площадке. Отличает его в выдаче свой день
+ * (`workDate`) — по нему строка и читается как «работа на объекте по ТС-N», а не как перевозка.
+ */
 async function loadRouteRequests(routeIds: string[]): Promise<Map<string, GarageBusyRequest[]>> {
   const map = new Map<string, GarageBusyRequest[]>();
   if (routeIds.length === 0) return map;
@@ -275,6 +308,7 @@ async function loadRouteRequests(routeIds: string[]): Promise<Map<string, Garage
     .select({
       routeId: vehicleRouteRequests.routeId,
       requestId: vehicleRouteRequests.requestId,
+      workDate: vehicleRouteRequests.workDate,
       num: vehicleRequests.num,
       status: vehicleRequests.status,
       objectName: constructionObjects.name,
@@ -333,6 +367,10 @@ async function loadRouteWaybills(
  * Заказы спецтехники, накрывающие день. Вместе с ними — смена этого дня и запрошенный досрочный
  * отъезд: и то и другое относится к сегодняшнему состоянию машины на площадке, а не к заявке
  * вообще, и вторым заходом из портала это был бы запрос на каждую строку.
+ *
+ * Линейные заказы отсюда исключены тем же условием, каким они исключены из состояния дня
+ * (`specialBusyExists`): два места считают одну и ту же занятость, и разойдись они — колонка
+ * сказала бы «в рейсе», а строка под ней показала бы стоянку на площадке до конца месяца.
  */
 async function loadSpecials(on: string, vehicleIds: string[]): Promise<GarageSpecialBusy[]> {
   if (vehicleIds.length === 0) return [];
@@ -356,6 +394,9 @@ async function loadSpecials(on: string, vehicleIds: string[]): Promise<GarageSpe
     })
     .from(vehicleRequestAssignments)
     .innerJoin(vehicleRequests, eq(vehicleRequests.id, vehicleRequestAssignments.requestId))
+    // Заказанный тип — своим алиасом: `vehicleTypes` в этом запросе уже занят типом назначенной
+    // машины (подпись строки), а признак линейности спрашивают у заказа (ADR 0100 §1).
+    .innerJoin(orderedTypes, eq(orderedTypes.id, vehicleRequests.vehicleTypeId))
     .innerJoin(
       specialEquipmentRequestDetails,
       eq(specialEquipmentRequestDetails.requestId, vehicleRequests.id),
@@ -382,6 +423,7 @@ async function loadSpecials(on: string, vehicleIds: string[]): Promise<GarageSpe
         inArray(vehicleRequestAssignments.vehicleId, vehicleIds),
         eq(vehicleRequests.status, 'confirmed'),
         isNull(vehicleRequests.deletedAt),
+        eq(orderedTypes.isLinear, false),
         sql`${specialEquipmentRequestDetails.dateFrom} <= ${on}::date`,
         sql`coalesce(${specialEquipmentRequestDetails.dateTo}, ${specialEquipmentRequestDetails.dateFrom}) >= ${on}::date`,
       ),

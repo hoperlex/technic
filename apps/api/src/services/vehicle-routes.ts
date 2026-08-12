@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
 import {
   type DriverDocumentGap,
   formatVehicleRequestNumber,
@@ -25,6 +25,7 @@ import {
   departments,
   freightTransportRequestDetails,
   persons,
+  specialEquipmentRequestDetails,
   users,
   vehicleModels,
   vehicleRequests,
@@ -324,6 +325,9 @@ export async function requestsByRoute(
       routeId: vehicleRouteRequests.routeId,
       requestId: vehicleRouteRequests.requestId,
       position: vehicleRouteRequests.position,
+      // День линейного заказа, ради которого строка стоит в рейсе (ADR 0100, миграция 0127);
+      // NULL — грузоперевозка: день несёт сам рейс.
+      workDate: vehicleRouteRequests.workDate,
       num: vehicleRequests.num,
       status: vehicleRequests.status,
       objectName: constructionObjects.name,
@@ -353,8 +357,11 @@ export async function requestsByRoute(
       requestId: row.requestId,
       displayNumber: formatVehicleRequestNumber(row.num),
       position: row.position,
+      workDate: row.workDate,
       status: row.status,
       customerName: requestCustomerName(row),
+      // Погрузка, разгрузка и груз есть только у грузоперевозки: у линейного дня вместо них
+      // заказчик и сам день — деталей грузового рейса у заказа на объект не существует.
       loadingLocation: row.loadingLocation ?? '',
       unloadingLocation: row.unloadingLocation ?? '',
       scheduledAt: (row.scheduledAt ?? new Date()).toISOString(),
@@ -401,16 +408,78 @@ export async function sourceRequestsByRoute(
   return map;
 }
 
-/** В каком рейсе сейчас заявка; `null` — ни в каком (её вынули или ещё не клали). */
-export async function routeOfRequest(
+/** Строка состава глазами заявки: в каком рейсе она лежит и каким днём (NULL — грузоперевозка). */
+export interface RequestRouteRow {
+  routeId: string;
+  position: number;
+  workDate: string | null;
+}
+
+/**
+ * Все рейсы заявки — по одной строке состава на рейс.
+ *
+ * Прежний `routeOfRequest` отвечал одним рейсом и опирался на `UNIQUE (request_id)`, которого с
+ * миграции 0127 больше нет: у грузоперевозки рейс по-прежнему один (день несёт сам рейс), а
+ * линейный заказ стоит в стольких рейсах, сколько дней распланировано. Оставленная рядом со
+ * здешними двумя, та функция молча возвращала бы «первый попавшийся день» — поэтому она удалена, а
+ * не переименована.
+ *
+ * Порядок задан явно — по дню: у грузоперевозки строка одна и вопрос порядка не возникает вовсе, а
+ * дни читаются от первого к последнему, как их и показывает карточка. Порядок блокировок отсюда не
+ * берётся: рейсы берут по возрастанию `id` (`lockRoutePair`), и вызывающий сортирует сам.
+ */
+export async function routesOfRequest(tx: Tx, requestId: string): Promise<RequestRouteRow[]> {
+  return tx
+    .select({
+      routeId: vehicleRouteRequests.routeId,
+      position: vehicleRouteRequests.position,
+      workDate: vehicleRouteRequests.workDate,
+    })
+    .from(vehicleRouteRequests)
+    .where(eq(vehicleRouteRequests.requestId, requestId))
+    .orderBy(asc(vehicleRouteRequests.workDate));
+}
+
+/**
+ * Рейс конкретного дня заявки; `null` — этот день не распланирован.
+ *
+ * `workDate: null` спрашивает грузоперевозку — ту самую единственную строку без дня, которой
+ * заявка и стоит в рейсе: у неё день несёт сам рейс. Оба случая держат свои частичные UNIQUE
+ * (миграция 0127), поэтому ответ здесь ровно один и «какого-нибудь» рейса не бывает.
+ */
+export async function routeOfRequestDay(
   tx: Tx,
   requestId: string,
-): Promise<{ routeId: string; position: number } | null> {
+  workDate: string | null,
+): Promise<RequestRouteRow | null> {
   const [row] = await tx
-    .select({ routeId: vehicleRouteRequests.routeId, position: vehicleRouteRequests.position })
+    .select({
+      routeId: vehicleRouteRequests.routeId,
+      position: vehicleRouteRequests.position,
+      workDate: vehicleRouteRequests.workDate,
+    })
     .from(vehicleRouteRequests)
-    .where(eq(vehicleRouteRequests.requestId, requestId));
+    .where(
+      and(
+        eq(vehicleRouteRequests.requestId, requestId),
+        workDate === null
+          ? isNull(vehicleRouteRequests.workDate)
+          : eq(vehicleRouteRequests.workDate, workDate),
+      ),
+    );
   return row ?? null;
+}
+
+/** Дни заявки, уже стоящие в рейсах, — ими правила отвечают «этот день ещё свободен». */
+export async function plannedDaysOfRequest(tx: Tx, requestId: string): Promise<string[]> {
+  const rows = await tx
+    .select({ workDate: vehicleRouteRequests.workDate })
+    .from(vehicleRouteRequests)
+    .where(
+      and(eq(vehicleRouteRequests.requestId, requestId), isNotNull(vehicleRouteRequests.workDate)),
+    )
+    .orderBy(asc(vehicleRouteRequests.workDate));
+  return rows.map((row) => row.workDate!);
 }
 
 /** Сколько заявок в рейсе — им же считается свободная строка задания. */
@@ -468,17 +537,28 @@ export async function compactRoutePositions(tx: Tx, routeId: string): Promise<vo
   );
 }
 
-/** Вынимает заявку из рейса и уплотняет талоны; `false` — её там и не было. */
-export async function detachRequest(tx: Tx, routeId: string, requestId: string): Promise<boolean> {
+/**
+ * Вынимает заявку из рейса и уплотняет талоны; `null` — её там и не было.
+ *
+ * Строка ищется парой «рейс + заявка», и второго ответа здесь не бывает даже у линейного заказа:
+ * первичный ключ состава — та же пара, а значит в одном рейсе заявка стоит ровно одной строкой.
+ * День возвращается ради вызывающего: снятая строка это либо грузовая заявка, либо день линейного
+ * заказа, и в журнале эти два события читаются по-разному.
+ */
+export async function detachRequest(
+  tx: Tx,
+  routeId: string,
+  requestId: string,
+): Promise<{ workDate: string | null } | null> {
   const [removed] = await tx
     .delete(vehicleRouteRequests)
     .where(
       and(eq(vehicleRouteRequests.routeId, routeId), eq(vehicleRouteRequests.requestId, requestId)),
     )
-    .returning({ requestId: vehicleRouteRequests.requestId });
-  if (!removed) return false;
+    .returning({ workDate: vehicleRouteRequests.workDate });
+  if (!removed) return null;
   await compactRoutePositions(tx, routeId);
-  return true;
+  return { workDate: removed.workDate };
 }
 
 /**
@@ -493,13 +573,22 @@ export async function detachRequest(tx: Tx, routeId: string, requestId: string):
  * Время суток остаётся прежним: переносят день, а не час подачи. Заявке «на дату» (без времени)
  * это ничего не меняет — в поле у неё полночь МСК, и она же остаётся.
  *
+ * Линейные дни переезжают сами: их день физически равен дню рейса (составной FK с `ON UPDATE
+ * CASCADE`, миграция 0127), и `UPDATE` даты рейса переписывает `work_date` за нас. Но каскад
+ * способен унести день за срок его заказа или столкнуться с другим рейсом той же заявки на новой
+ * дате — и то, и другое здесь спрашивается **до** переноса (`assertLinearDaysMovable`): человек
+ * должен прочитать причину, а не 23505 из глубины транзакции.
+ *
  * Возвращает номера переехавших заявок: их называют человеку до нажатия и записывают в аудит.
+ * Линейные заказы попадают в тот же перечень — «какие заявки уехали вместе с рейсом» вопрос один,
+ * и отвечать на него двумя списками незачем.
  */
 export async function moveRouteToDate(
   tx: Tx,
   routeId: string,
   routeDate: string,
 ): Promise<string[]> {
+  const movedDays = await assertLinearDaysMovable(tx, routeId, routeDate);
   await tx.update(vehicleRoutes).set({ routeDate }).where(eq(vehicleRoutes.id, routeId));
 
   const rows = await tx
@@ -517,7 +606,7 @@ export async function moveRouteToDate(
     .where(eq(vehicleRouteRequests.routeId, routeId))
     .orderBy(asc(vehicleRouteRequests.position));
 
-  const moved: string[] = [];
+  const moved: string[] = [...movedDays];
   for (const row of rows) {
     if (!row.scheduledAt) continue;
     if (moscowDateKeyOf(row.scheduledAt) === routeDate) continue;
@@ -530,10 +619,86 @@ export async function moveRouteToDate(
   return moved;
 }
 
-/** Кладёт заявку последним талоном рейса. */
-export async function attachRequest(tx: Tx, routeId: string, requestId: string): Promise<number> {
+/**
+ * Уедут ли линейные дни рейса вместе с ним — до того, как рейс тронулся с места.
+ *
+ * Каскад по составному ключу перепишет `work_date` молча, и упереться он может в две разные вещи
+ * (план У2): день уедет за срок своего заказа либо столкнётся с другим рейсом той же заявки на
+ * новой дате — там сработает частичный `..._request_day_unique`, и человек получит 23505 вместо
+ * ответа. Поэтому оба случая спрашиваются заранее и объясняются словами.
+ *
+ * Возвращает номера заявок, чьи дни переедут: их называют человеку и пишут в аудит наравне с
+ * переехавшей подачей грузовых заявок.
+ */
+async function assertLinearDaysMovable(
+  tx: Tx,
+  routeId: string,
+  routeDate: string,
+): Promise<string[]> {
+  const rows = await tx
+    .select({
+      requestId: vehicleRouteRequests.requestId,
+      workDate: vehicleRouteRequests.workDate,
+      num: vehicleRequests.num,
+      dateFrom: specialEquipmentRequestDetails.dateFrom,
+      dateTo: specialEquipmentRequestDetails.dateTo,
+      // Рейс той же заявки на новой дате: пустой день там уже занят, и каскад упёрся бы в UNIQUE.
+      clashNum: sql<number | null>`(
+        SELECT r2.num FROM ${vehicleRouteRequests} rr2
+        JOIN ${vehicleRoutes} r2 ON r2.id = rr2.route_id
+        WHERE rr2.request_id = ${vehicleRouteRequests.requestId}
+          AND rr2.work_date = ${routeDate}
+          AND rr2.route_id <> ${routeId}
+        LIMIT 1
+      )`,
+    })
+    .from(vehicleRouteRequests)
+    .innerJoin(vehicleRequests, eq(vehicleRequests.id, vehicleRouteRequests.requestId))
+    // Срок заказа — у детали спецтехники; линейный день бывает только у неё (ADR 0100 §1).
+    .leftJoin(
+      specialEquipmentRequestDetails,
+      eq(specialEquipmentRequestDetails.requestId, vehicleRouteRequests.requestId),
+    )
+    .where(and(eq(vehicleRouteRequests.routeId, routeId), isNotNull(vehicleRouteRequests.workDate)))
+    .orderBy(asc(vehicleRouteRequests.position));
+
+  const moved: string[] = [];
+  for (const row of rows) {
+    const number = formatVehicleRequestNumber(row.num);
+    // Пустой `date_to` — однодневный срок: так его читают все отборы заказа техники на объект.
+    const lastDay = row.dateTo || row.dateFrom;
+    if (!row.dateFrom || !lastDay || routeDate < row.dateFrom || routeDate > lastDay) {
+      throw err.unprocessable(
+        `Перенос уводит день заявки ${number} за срок её заказа (${row.dateFrom ?? '—'} — ${lastDay ?? '—'}) — снимите день с рейса или перенесите рейс внутрь срока`,
+        { routeDate: 'День уедет за срок заявки' },
+      );
+    }
+    if (row.clashNum !== null) {
+      throw err.unprocessable(
+        `У заявки ${number} на ${routeDate} уже есть рейс ${formatVehicleRouteNumber(row.clashNum)} — в один день заявка стоит ровно в одном рейсе`,
+        { routeDate: 'День заявки занят другим рейсом' },
+      );
+    }
+    moved.push(number);
+  }
+  return moved;
+}
+
+/**
+ * Кладёт заявку последним талоном рейса.
+ *
+ * `workDate` — день линейного заказа, ради которого строка встаёт в рейс (ADR 0100 §2); `null` —
+ * грузоперевозка, у которой дня нет вовсе: его несёт сам рейс. Проверять равенство дня и даты
+ * рейса здесь незачем — этого не даст база (составной FK, миграция 0127).
+ */
+export async function attachRequest(
+  tx: Tx,
+  routeId: string,
+  requestId: string,
+  workDate: string | null = null,
+): Promise<number> {
   const position = (await routeRequestCount(tx, routeId)) + 1;
-  await tx.insert(vehicleRouteRequests).values({ routeId, requestId, position });
+  await tx.insert(vehicleRouteRequests).values({ routeId, requestId, position, workDate });
   return position;
 }
 

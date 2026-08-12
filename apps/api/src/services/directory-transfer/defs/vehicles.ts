@@ -1,6 +1,7 @@
 import { and, asc, eq, isNull, sql } from 'drizzle-orm';
 import {
   buildVehicleCategoryName,
+  LINEAR_VEHICLE_TYPE_HINT,
   vehicleOwnershipLabels,
   vehicleStatusLabels,
   type VehicleCategoryValueInput,
@@ -19,6 +20,7 @@ import {
   vehicleCategorySpecValues,
   vehicleKinds,
   vehicleModels,
+  vehicleRequests,
   vehicles,
   vehicleSpecs,
   vehicleTypeSpecs,
@@ -609,6 +611,8 @@ interface TypeModel {
   name: string;
   description: string;
   waybillFormCode: WaybillFormCode;
+  /** Линейная ли техника (ADR 0100): заказ такого типа ведётся днями, а не неделями. */
+  isLinear: boolean;
   /** «вид документа: категория» либо пусто. В идентификатор превращается при записи. */
   defaultQualification: string;
   /** Коды привязанных ТТХ. Привязка = обязательность значения у каждой категории типа. */
@@ -629,6 +633,10 @@ interface TypeState {
   specCodes: string[];
   /** Сколько у типа категорий: от этого зависит, можно ли трогать состав ТТХ. */
   categories: number;
+  /** Линейность, заведённая сейчас: файлом её переключают по тем же правилам, что и в карточке. */
+  isLinear: boolean;
+  /** Сколько заявок типа сейчас в работе: при живых заявках линейность не меняют (ADR 0100 §1). */
+  busyRequests: number;
 }
 
 interface TypesEnv {
@@ -696,37 +704,51 @@ async function syncTypeSpecs(
 const vehicleTypesDirectory = directory<VehicleTypeRow, TypeModel, TypesEnv>({
   key: 'vehicle-types',
   env: async () => {
-    const [kinds, specs, types, bindings, categoryCounts, qualifications] = await Promise.all([
-      db
-        .select({ id: vehicleKinds.id, code: vehicleKinds.code, isActive: vehicleKinds.isActive })
-        .from(vehicleKinds),
-      db
-        .select({
-          id: vehicleSpecs.id,
-          code: vehicleSpecs.code,
-          name: vehicleSpecs.name,
-          isActive: vehicleSpecs.isActive,
-        })
-        .from(vehicleSpecs),
-      db
-        .select({ id: vehicleTypes.id, code: vehicleTypes.code, kindId: vehicleTypes.kindId })
-        .from(vehicleTypes),
-      db
-        .select({
-          vehicleTypeId: vehicleTypeSpecs.vehicleTypeId,
-          code: vehicleSpecs.code,
-          sortOrder: vehicleTypeSpecs.sortOrder,
-          name: vehicleSpecs.name,
-        })
-        .from(vehicleTypeSpecs)
-        .innerJoin(vehicleSpecs, eq(vehicleTypeSpecs.specId, vehicleSpecs.id))
-        .orderBy(asc(vehicleTypeSpecs.sortOrder), asc(vehicleSpecs.name)),
-      db
-        .select({ vehicleTypeId: vehicleCategories.vehicleTypeId, count: sql<number>`count(*)` })
-        .from(vehicleCategories)
-        .groupBy(vehicleCategories.vehicleTypeId),
-      loadQualifications(),
-    ]);
+    const [kinds, specs, types, bindings, categoryCounts, busyCounts, qualifications] =
+      await Promise.all([
+        db
+          .select({ id: vehicleKinds.id, code: vehicleKinds.code, isActive: vehicleKinds.isActive })
+          .from(vehicleKinds),
+        db
+          .select({
+            id: vehicleSpecs.id,
+            code: vehicleSpecs.code,
+            name: vehicleSpecs.name,
+            isActive: vehicleSpecs.isActive,
+          })
+          .from(vehicleSpecs),
+        db
+          .select({
+            id: vehicleTypes.id,
+            code: vehicleTypes.code,
+            kindId: vehicleTypes.kindId,
+            isLinear: vehicleTypes.isLinear,
+          })
+          .from(vehicleTypes),
+        db
+          .select({
+            vehicleTypeId: vehicleTypeSpecs.vehicleTypeId,
+            code: vehicleSpecs.code,
+            sortOrder: vehicleTypeSpecs.sortOrder,
+            name: vehicleSpecs.name,
+          })
+          .from(vehicleTypeSpecs)
+          .innerJoin(vehicleSpecs, eq(vehicleTypeSpecs.specId, vehicleSpecs.id))
+          .orderBy(asc(vehicleTypeSpecs.sortOrder), asc(vehicleSpecs.name)),
+        db
+          .select({ vehicleTypeId: vehicleCategories.vehicleTypeId, count: sql<number>`count(*)` })
+          .from(vehicleCategories)
+          .groupBy(vehicleCategories.vehicleTypeId),
+        // Заявки в работе — тем же условием, каким их считает справочник типов: файл не должен быть
+        // дверью в обход отказа карточки, иначе загрузка переключила бы режим документооборота
+        // работающему заказу молча и целой пачке типов сразу.
+        db
+          .select({ vehicleTypeId: vehicleRequests.vehicleTypeId, count: sql<number>`count(*)` })
+          .from(vehicleRequests)
+          .where(and(eq(vehicleRequests.status, 'confirmed'), isNull(vehicleRequests.deletedAt)))
+          .groupBy(vehicleRequests.vehicleTypeId),
+        loadQualifications(),
+      ]);
 
     const kindCodeById = new Map(kinds.map((k) => [k.id, k.code]));
     const specCodesByTypeId = new Map<string, string[]>();
@@ -737,6 +759,7 @@ const vehicleTypesDirectory = directory<VehicleTypeRow, TypeModel, TypesEnv>({
       ]);
     }
     const counts = new Map(categoryCounts.map((c) => [c.vehicleTypeId, Number(c.count)]));
+    const busy = new Map(busyCounts.map((c) => [c.vehicleTypeId, Number(c.count)]));
 
     return {
       kinds: new Map(kinds.map((k) => [k.code, { id: k.id, isActive: k.isActive }])),
@@ -749,6 +772,8 @@ const vehicleTypesDirectory = directory<VehicleTypeRow, TypeModel, TypesEnv>({
             kindCode: kindCodeById.get(t.kindId) ?? '',
             specCodes: specCodesByTypeId.get(t.id) ?? [],
             categories: counts.get(t.id) ?? 0,
+            isLinear: t.isLinear,
+            busyRequests: busy.get(t.id) ?? 0,
           },
         ]),
       ),
@@ -808,6 +833,19 @@ const vehicleTypesDirectory = directory<VehicleTypeRow, TypeModel, TypesEnv>({
       },
     },
     {
+      // Рядом с бланком: оба поля отвечают на вопрос «какими документами живёт этот тип», и
+      // читают их вместе. Без колонки перенос справочника между установками потерял бы признак
+      // молча — тип приехал бы недельным, а заявки по нему уже ведутся днями.
+      header: 'Линейная техника',
+      width: 16,
+      hint: `«да» ставят типу, который вечером возвращается на базу. ${LINEAR_VEHICLE_TYPE_HINT}. По умолчанию «нет».`,
+      get: (m) => boolCell(m.isLinear),
+      set: (m, text, ctx) => {
+        const v = parseBool(text, ctx, 'Линейная техника');
+        if (v !== undefined) m.isLinear = v;
+      },
+    },
+    {
       header: 'Категория прав по умолчанию',
       width: 26,
       hint: 'Пара «код вида документа: код категории» («driver_license: c»); одного кода категории достаточно, пока он заведён у одного вида документа. Подставляется при заведении машины и отбор не сужает.',
@@ -864,6 +902,7 @@ const vehicleTypesDirectory = directory<VehicleTypeRow, TypeModel, TypesEnv>({
     name: row.name,
     description: row.description,
     waybillFormCode: row.waybillFormCode,
+    isLinear: row.isLinear,
     defaultQualification: qualificationCell(row.defaultQualificationCategoryId, env.qualifications),
     specCodes: env.specCodesByTypeId.get(row.id) ?? [],
     sortOrder: row.sortOrder,
@@ -876,6 +915,7 @@ const vehicleTypesDirectory = directory<VehicleTypeRow, TypeModel, TypesEnv>({
     name: '',
     description: '',
     waybillFormCode: '4p',
+    isLinear: false,
     defaultQualification: '',
     specCodes: [],
     sortOrder: 100,
@@ -913,6 +953,16 @@ const vehicleTypesDirectory = directory<VehicleTypeRow, TypeModel, TypesEnv>({
         `вид ТС меняется с «${saved.kindCode}» на «${m.kindCode}» — вместе с типом переезжает вся его техника`,
       );
     }
+    // Тот же запрет, что в карточке типа (ADR 0100 §1): признак читается живым, и заявка, уже
+    // взятая в работу, сменила бы режим документооборота посреди работы — недельный ЭСМ-2
+    // перестал бы выписываться, а дни повисли бы. Файлом это опаснее, чем галочкой: строк в нём
+    // сотни, и переключение прошло бы незамеченным.
+    if (saved.isLinear !== m.isLinear && saved.busyRequests > 0) {
+      ctx.fail(
+        `«Линейная техника» у этого типа не меняется: есть заявки в работе (${saved.busyRequests}) — сначала закройте их, иначе заявка сменит режим документооборота на ходу`,
+      );
+    }
+
     if (saved.categories === 0) return;
     // Состав ТТХ и категории типа — один инвариант (ADR 0016). Новый ТТХ мгновенно сделал бы все
     // категории неполными, а снятому нужно удалить значения: и то и другое делают в карточке типа,
@@ -941,6 +991,7 @@ const vehicleTypesDirectory = directory<VehicleTypeRow, TypeModel, TypesEnv>({
         name: m.name,
         description: m.description,
         waybillFormCode: m.waybillFormCode,
+        isLinear: m.isLinear,
         defaultQualificationCategoryId: idOf(
           findQualification(m.defaultQualification, env.qualifications),
         ),
@@ -961,6 +1012,7 @@ const vehicleTypesDirectory = directory<VehicleTypeRow, TypeModel, TypesEnv>({
         name: m.name,
         description: m.description,
         waybillFormCode: m.waybillFormCode,
+        isLinear: m.isLinear,
         defaultQualificationCategoryId: idOf(
           findQualification(m.defaultQualification, env.qualifications),
         ),

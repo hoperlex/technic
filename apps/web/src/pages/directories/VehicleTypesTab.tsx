@@ -20,6 +20,8 @@ import {
   DEFAULT_PAGE_SIZE,
   FREIGHT_VEHICLE_KIND_CODE,
   isPassengerTypeForm,
+  LINEAR_VEHICLE_TYPE_HINT,
+  LINEAR_VEHICLE_TYPE_LABEL,
   typeWaybillFormOf,
   type CreateVehicleTypeInput,
   type UpdateVehicleTypeInput,
@@ -62,6 +64,8 @@ interface VtFormValues {
   isActive?: boolean;
   /** Легковой ли транспорт: им выбирается бланк листа — форма № 3 вместо 4-П (ADR 0065). */
   isPassenger?: boolean;
+  /** Линейная техника: заказ такого типа на объект ведётся днями, а не неделями стояния. */
+  isLinear?: boolean;
 }
 
 const CODE_PATTERN = /^[a-z][a-z0-9_]*$/;
@@ -117,13 +121,16 @@ export function VehicleTypesTab() {
   const formKindCode = isEdit
     ? record!.kindCode
     : (kindsData?.items ?? []).find((k) => k.id === watchKindId)?.code;
+  // За признаком следим, потому что им меняется правда о путевых листах типа: у линейного ЭСМ-2
+  // сам не выписывается, и подпись рядом обязана говорить то же, что будет делать портал.
+  const watchIsLinear = Form.useWatch('isLinear', form);
 
   const openCreate = () => {
     setRecord(null);
     form.resetFields();
     // Бланк по умолчанию — 4-П (ADR 0065): у собственной техники лист есть всегда, а «легковой»
     // это исключение, которое отмечают руками.
-    form.setFieldsValue({ sortOrder: 100, isActive: true, isPassenger: false });
+    form.setFieldsValue({ sortOrder: 100, isActive: true, isPassenger: false, isLinear: false });
     setOpen(true);
   };
   const openEdit = (r: VehicleTypeDto) => {
@@ -137,6 +144,7 @@ export function VehicleTypesTab() {
       sortOrder: r.sortOrder,
       isActive: r.isActive,
       isPassenger: isPassengerTypeForm(r.waybillFormCode),
+      isLinear: r.isLinear,
     });
     setOpen(true);
   };
@@ -166,6 +174,7 @@ export function VehicleTypesTab() {
         sortOrder: v.sortOrder,
         isActive: v.isActive,
         waybillFormCode: typeWaybillFormOf(v.isPassenger ?? false),
+        isLinear: v.isLinear ?? false,
       };
       saveMut.mutate({ id: record!.id, body });
       return;
@@ -178,6 +187,7 @@ export function VehicleTypesTab() {
       sortOrder: v.sortOrder ?? 100,
       isActive: v.isActive ?? true,
       waybillFormCode: typeWaybillFormOf(v.isPassenger ?? false),
+      isLinear: v.isLinear ?? false,
     };
     saveMut.mutate({ create });
   };
@@ -231,8 +241,8 @@ export function VehicleTypesTab() {
       sortOrder: c.sortOrder ?? 'asc',
     }));
 
-  // Колонки: Вид → Тип/категория → ТТХ → Активен → Действия. Отдельного счётчика категорий
-  // больше нет — категории и есть строки списка.
+  // Колонки: Вид → Тип/категория → ТТХ → Линейная → Активен → Действия. Отдельного счётчика
+  // категорий больше нет — категории и есть строки списка.
   const columns: TableColumnType<VehicleClassificationDto>[] = [
     textColumn<VehicleClassificationDto>({
       key: 'kindName',
@@ -263,6 +273,18 @@ export function VehicleTypesTab() {
       width: 90,
       sorter: false,
       render: (v: number) => (v > 0 ? <Tag color="blue">{v}</Tag> : <Tag>0</Tag>),
+    },
+    {
+      key: 'isLinear',
+      title: 'Линейная',
+      width: 120,
+      sorter: false,
+      // Признак живёт у типа, а строкой списка бывает и категория (ADR 0028) — берём его из
+      // самого типа и показываем у всех его строк: режим заказа у категории тот же, что у типа.
+      // Пометкой, а не переключателем: правится он в форме, где рядом стоит объяснение, а
+      // переключить его молча из списка нельзя — у типа с заявками в работе сервер откажет.
+      render: (_v, r) =>
+        typeById.get(r.vehicleTypeId)?.isLinear ? <Tag color="blue">по дням</Tag> : '—',
     },
     {
       key: 'isActive',
@@ -397,6 +419,9 @@ export function VehicleTypesTab() {
       <Space size={6} wrap>
         <span>{r.kindName}</span>
         {r.vehicleCategoryId ? null : <Tag>тип целиком</Tag>}
+        {/* Тот же признак, что столбцом на большом экране, но словом «линейная»: заголовка
+            столбца рядом нет, а голое «по дням» на карточке не о чем (ADR 0042). */}
+        {typeById.get(r.vehicleTypeId)?.isLinear ? <Tag color="blue">линейная</Tag> : null}
       </Space>
     ),
     lines: [(r) => (r.specCount > 0 ? `ТТХ: ${r.specCount}` : 'ТТХ не заведены')],
@@ -528,8 +553,9 @@ export function VehicleTypesTab() {
             задаёт тот, кто ведёт справочник, и так он звучит на языке парка. Умолчание — 4-П:
             у собственной техники лист есть всегда (ADR 0065).
 
-            У спецтехники поля нет вовсе: её недельный ЭСМ-2 портал выписывает сам по заявке, а
-            перегон на объект печатается по 4-П независимо от типа — отвечать тут не на что. */}
+            У спецтехники поля нет вовсе: её недельный ЭСМ-2 бланком типа не задаётся (он идёт от
+            заявки), а всё, что печатается на рейс, — перегон на объект и день линейной техники —
+            идёт по 4-П независимо от типа. Отвечать тут не на что. */}
           {formKindCode === FREIGHT_VEHICLE_KIND_CODE && (
             <Form.Item
               name="isPassenger"
@@ -541,12 +567,29 @@ export function VehicleTypesTab() {
           )}
           {!!formKindCode && formKindCode !== FREIGHT_VEHICLE_KIND_CODE && (
             <Form.Item label="Путевой лист">
+              {/* Первая половина подписи зависит от признака: у линейного типа портал ЭСМ-2 сам
+                  не выписывает и перегона не заводит вовсе — техника ночует в гараже, — поэтому
+                  прежняя фраза стала бы обещанием, которого портал не сдержит. Вторая половина
+                  верна в обоих случаях: бланк такому типу не закрепляют. */}
               <Typography.Text type="secondary">
-                ЭСМ-2 портал выписывает сам по заявке на технику, а перегон на объект — по 4-П.
+                {watchIsLinear
+                  ? 'ЭСМ-2 по заявке на технику выписывается по требованию, а день работ на объекте печатается по 4-П.'
+                  : 'ЭСМ-2 портал выписывает сам по заявке на технику, а перегон на объект — по 4-П.'}{' '}
                 Бланк такому типу не задаётся.
               </Typography.Text>
             </Form.Item>
           )}
+
+          {/* Линейная техника — про то, как ведётся заказ, а не про бланк, поэтому вопрос стоит
+              у типов любого вида: на объект заказывают и самосвал под вывоз грунта, и работает
+              он там сменами наравне с экскаватором. Соседний «Легковой транспорт» остаётся у
+              грузового вида: он про форму листа, и у спецтехники отвечать на него нечем.
+
+              Подпись и пояснение — из контрактов: ту же формулировку сервер печатает заголовком
+              колонки в выгрузке справочника, и разойтись им нельзя. */}
+          <Form.Item name="isLinear" valuePropName="checked" extra={LINEAR_VEHICLE_TYPE_HINT}>
+            <Checkbox>{LINEAR_VEHICLE_TYPE_LABEL}</Checkbox>
+          </Form.Item>
         </Form>
       </FormModal>
       <VehicleTypeCardDrawer type={card} onClose={() => setCard(null)} />

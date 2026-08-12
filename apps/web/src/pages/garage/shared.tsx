@@ -108,6 +108,9 @@ function BusyEntry({ entry, showVehicle }: { entry: GarageBusyEntry; showVehicle
               displayNumber: entry.displayNumber,
               status: entry.status,
               customerName: entry.customerName,
+              // Заказ, накрывающий день целиком, дня не несёт: линейного заказа здесь не бывает
+              // вовсе — его занятость говорит рейс дня (ADR 0100 §12).
+              workDate: null,
             }}
           />
           {/* Запрошенный досрочный отъезд (ADR 0044): до визы срок прежний, и без пометки

@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
-import { and, count, eq, sql } from 'drizzle-orm';
+import { and, count, eq, isNull, sql } from 'drizzle-orm';
 import {
   attachVehicleTypeSpecSchema,
   createVehicleTypeSchema,
@@ -16,6 +16,7 @@ import {
   vehicleCategories,
   vehicleCategorySpecValues,
   vehicleKinds,
+  vehicleRequests,
   vehicleSpecs,
   vehicleTypeSpecs,
   vehicleTypes,
@@ -60,6 +61,7 @@ const dtoColumns = {
   isActive: vehicleTypes.isActive,
   sortOrder: vehicleTypes.sortOrder,
   waybillFormCode: vehicleTypes.waybillFormCode,
+  isLinear: vehicleTypes.isLinear,
   specCount,
   categoryCount,
   createdAt: vehicleTypes.createdAt,
@@ -77,6 +79,7 @@ type DtoRow = {
   isActive: boolean;
   sortOrder: number;
   waybillFormCode: WaybillFormCode;
+  isLinear: boolean;
   specCount: number;
   categoryCount: number;
   createdAt: Date;
@@ -95,6 +98,7 @@ function toDto(r: DtoRow): VehicleTypeDto {
     isActive: r.isActive,
     sortOrder: r.sortOrder,
     waybillFormCode: r.waybillFormCode,
+    isLinear: r.isLinear,
     specCount: Number(r.specCount),
     categoryCount: Number(r.categoryCount),
     createdAt: r.createdAt.toISOString(),
@@ -202,6 +206,7 @@ export default async function vehicleTypesRoutes(app: FastifyInstance): Promise<
           isActive: body.isActive,
           sortOrder: body.sortOrder,
           waybillFormCode: body.waybillFormCode,
+          isLinear: body.isLinear,
         })
         .returning({ id: vehicleTypes.id });
       const createdId = created!.id;
@@ -215,6 +220,7 @@ export default async function vehicleTypesRoutes(app: FastifyInstance): Promise<
           kindId: body.kindId,
           isActive: body.isActive,
           waybillFormCode: body.waybillFormCode,
+          isLinear: body.isLinear,
         },
       });
       reply.code(201);
@@ -236,6 +242,36 @@ export default async function vehicleTypesRoutes(app: FastifyInstance): Promise<
       const [row] = await db.select().from(vehicleTypes).where(eq(vehicleTypes.id, id));
       if (!row) throw err.notFound('Тип не найден');
 
+      const linearChanged = body.isLinear !== undefined && body.isLinear !== row.isLinear;
+      /*
+       * Линейность переключать под работающими заказами нельзя (ADR 0100 §1).
+       * Признак читается живым — join `vehicle_requests → vehicle_types.is_linear`, копии в
+       * заявке нет, — поэтому галочка в справочнике мгновенно сменила бы режим документооборота
+       * каждой заявке в работе: ЭСМ-2 перестал бы выписываться сам, а распланированные дни
+       * повисли бы без смысла. Заявки новые, закрытые и отменённые смене не мешают: у первых
+       * ничего не начиналось, у вторых всё уже случилось. Удалённые — тоже: заявка в архиве
+       * работой не является.
+       */
+      if (linearChanged) {
+        const [busy] = await db
+          .select({ c: count() })
+          .from(vehicleRequests)
+          .where(
+            and(
+              eq(vehicleRequests.vehicleTypeId, id),
+              eq(vehicleRequests.status, 'confirmed'),
+              isNull(vehicleRequests.deletedAt),
+            ),
+          );
+        const busyCount = Number(busy!.c);
+        if (busyCount > 0) {
+          throw err.unprocessable(
+            `У типа есть заявки в работе (${busyCount}): сначала закройте их — иначе заявка сменит режим документооборота на ходу`,
+            { isLinear: 'У типа есть заявки в работе' },
+          );
+        }
+      }
+
       await db
         .update(vehicleTypes)
         .set({ ...body, updatedAt: new Date() })
@@ -247,6 +283,11 @@ export default async function vehicleTypesRoutes(app: FastifyInstance): Promise<
        * переключается документ строгой отчётности, и вопрос «кто перевёл тип на форму № 3»
        * должен иметь ответ. Активность приоритетнее лишь потому, что она грубее: выключенным
        * типом не заводят ни заявок, ни рейсов, и бланк у него уже ни на что не влияет.
+       *
+       * Линейность — по той же причине своё действие (ADR 0100), и стоит она выше бланка: бланк
+       * решает, каким листом печатать рейс, а линейность — рождаются ли листы вообще и чем
+       * ведётся заказ, днями или неделями. Когда в одной правке сошлись оба поля, журналу нужнее
+       * то изменение, после которого заявки начинают вести себя иначе.
        */
       const formChanged =
         body.waybillFormCode !== undefined && body.waybillFormCode !== row.waybillFormCode;
@@ -254,9 +295,11 @@ export default async function vehicleTypesRoutes(app: FastifyInstance): Promise<
         ? body.isActive
           ? 'vehicle_type.activate'
           : 'vehicle_type.deactivate'
-        : formChanged
-          ? 'vehicle_type.waybill_form'
-          : 'vehicle_type.update';
+        : linearChanged
+          ? 'vehicle_type.linear'
+          : formChanged
+            ? 'vehicle_type.waybill_form'
+            : 'vehicle_type.update';
       await writeAudit({
         actorUserId: actor,
         action,
@@ -271,6 +314,8 @@ export default async function vehicleTypesRoutes(app: FastifyInstance): Promise<
           newActive: body.isActive ?? row.isActive,
           oldWaybillFormCode: row.waybillFormCode,
           newWaybillFormCode: body.waybillFormCode ?? row.waybillFormCode,
+          oldIsLinear: row.isLinear,
+          newIsLinear: body.isLinear ?? row.isLinear,
         },
       });
       return (await getDtoById(id))!;

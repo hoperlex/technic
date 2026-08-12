@@ -15,6 +15,7 @@ import {
   isRouteEditable,
   canCancelWaybill,
   isRelocationPurpose,
+  LINEAR_DAY_DOOR_MESSAGE,
   routeRequestCapacity,
   routePurposeLabels,
   moscowDateKeyOf,
@@ -504,6 +505,12 @@ export function VehicleRouteModal({ routeId, onClose, onChanged, onEdit }: Props
                   {candidate.displayNumber} поедет машиной этого рейса — {route.vehicleLabel}
                 </Typography.Text>
               )}
+              {/* Линейных заказов в этом списке нет и не будет: день кладут из карточки заявки, а
+                рейс не знает, какой день срока в него ставят (ADR 0100 решение 8). Сказано это
+                там, где их стали бы искать, — иначе отсутствие читалось бы как пропажа. */}
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                {LINEAR_DAY_DOOR_MESSAGE}
+              </Typography.Text>
             </Space>
           )}
         </Space>
@@ -554,6 +561,11 @@ function RouteRequestRow({
         <Space size={8} wrap>
           <strong>{item.displayNumber}</strong>
           <span>{item.customerName}</span>
+          {/* День линейного заказа (ADR 0100 §2): строка стоит в рейсе ради одного дня срока, и
+            читаться она обязана днём заказа, а не безымянной строкой задания. Дата совпадает с
+            днём рейса по построению — она здесь затем, чтобы состав отвечал «что это за работа»
+            без похода в заявку. */}
+          {item.workDate && <Tag color="blue">день заказа {formatDateOnly(item.workDate)}</Tag>}
           {/* Талонов в бланке 4-П четыре, а строк задания семь (ADR 0068): заявка с пятой
             позиции печатается доп. заданием, и отрывного талона заказчик по ней не подпишет.
             Диспетчер видит это, пока рейс ещё собирается, — переставить заявку выше можно только
@@ -568,8 +580,12 @@ function RouteRequestRow({
         </Space>
         <div>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            {item.loadingLocation} → {item.unloadingLocation}
-            {item.cargoLabel && ` · ${item.cargoLabel}`}
+            {/* У заказа техники на объект нет ни погрузки с разгрузкой, ни тонн: в задание дня
+              печатаются объект и характер работ из самой заявки (ADR 0100 решение 10). Общая
+              строка показала бы голую стрелку между двумя пустыми адресами. */}
+            {item.workDate
+              ? 'День работ на объекте: в задание печатаются адрес площадки и характер работ'
+              : `${item.loadingLocation} → ${item.unloadingLocation}${item.cargoLabel ? ` · ${item.cargoLabel}` : ''}`}
           </Typography.Text>
         </div>
       </div>
@@ -595,7 +611,9 @@ function RouteRequestRow({
             size="small"
             danger
             icon={<DeleteOutlined />}
-            title="Убрать из маршрута"
+            // Линейный день со стороны рейса снимается, но не добавляется (ADR 0100 решение 8):
+            // «убрать заявку» о нём неправда — заявка остаётся, уходит один её день.
+            title={item.workDate ? 'Снять день с рейса' : 'Убрать из маршрута'}
             aria-label={`Убрать ${item.displayNumber}`}
             disabled={busy}
             onClick={onDetach}

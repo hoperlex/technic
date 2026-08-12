@@ -47,6 +47,19 @@ describe('vehicle_types: создание (плоская модель, ADR 0005
     // Бланк не спросили — значит 4-П (ADR 0065). Прежнее умолчание («лист не выписывается»)
     // молча отключало документ у каждого типа, заведённого через справочник.
     expect(t.waybillFormCode).toBe('4p');
+    // Линейность не спросили — значит нет (ADR 0100): признак меняет документооборот заказа, и
+    // включиться сам, от старого клиента или из чужой выгрузки, он не вправе.
+    expect(t.isLinear).toBe(false);
+  });
+
+  it('линейная техника заводится признаком', () => {
+    const t = createVehicleTypeSchema.parse({
+      kindId: KIND_ID,
+      code: 'excavators',
+      name: 'Экскаваторы',
+      isLinear: true,
+    });
+    expect(t.isLinear).toBe(true);
   });
 
   it('«легковой транспорт» приходит бланком формы № 3', () => {
@@ -113,6 +126,17 @@ describe('vehicle_types: обновление (strict, без структурн
     expect(updateVehicleTypeSchema.parse({ waybillFormCode: 'leg3' }).waybillFormCode).toBe('leg3');
     expect(updateVehicleTypeSchema.parse({ name: 'Автокраны 2' }).waybillFormCode).toBeUndefined();
     expect(() => updateVehicleTypeSchema.parse({ waybillFormCode: 'esm2' })).toThrow();
+  });
+
+  /*
+   * Линейность правится так же — и так же не подставляется молча: PATCH без поля не переводит тип
+   * обратно на недельный режим. Запрет «пока есть заявки в работе» (ADR 0100 §1) схема не знает:
+   * он про состояние базы и живёт в маршруте — здесь проверяется, что поле вообще открыто.
+   */
+  it('линейность правится, а незаданная не трогается', () => {
+    expect(updateVehicleTypeSchema.parse({ isLinear: true }).isLinear).toBe(true);
+    expect(updateVehicleTypeSchema.parse({ isLinear: false }).isLinear).toBe(false);
+    expect(updateVehicleTypeSchema.parse({ name: 'Автокраны 2' }).isLinear).toBeUndefined();
   });
   it('структурные ключи (code/kindId/parentId/level) отклоняются', () => {
     for (const bad of [

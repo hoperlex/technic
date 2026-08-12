@@ -1,11 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import {
+  backdateGuard,
   cancelWaybillSchema,
   canCancelWaybill,
+  canCorrectWaybill,
   canPrintWaybill,
+  correctionFloorDateKey,
+  WAYBILL_CORRECTION_DAYS,
   DEFAULT_TYPE_WAYBILL_FORM,
+  esm2Mode,
   esm2Periods,
-  esm2Required,
+  esm2RequestedPeriods,
   esm2SyncPlan,
   esm2WeekDays,
   formatWaybillNumber,
@@ -211,6 +216,179 @@ describe('до какого дня лист можно аннулировать'
 });
 
 /**
+ * Единое правило заднего числа (ADR 0101, Р29). Один предикат на все входы — заведение рейса,
+ * выписку листа, заведение и правку заявки, сверку ЭСМ-2, аннулирование, коррекцию и перенос, —
+ * потому что граница, посчитанная в каждом входе по-своему, разъезжается: сегодня она отказывает
+ * там, где соседняя ручка тем же телом отвечает согласием.
+ *
+ * Дни считаются от эффективной даты операции; какая дата эффективная, решает таблица §4 плана, и
+ * этот файл её не проверяет — здесь только сама граница.
+ */
+describe('задним числом: право, глубина и причина', () => {
+  const TODAY = '2026-08-12';
+  /** Полномочный проситель: право есть, причина написана, предел не снят. */
+  const dispatcher = { today: TODAY, allowed: true, unlimited: false, hasReason: true };
+
+  it('сегодня и вперёд — обычная работа: ни права, ни причины', () => {
+    expect(
+      backdateGuard({ ...dispatcher, effectiveDate: TODAY, allowed: false, hasReason: false }),
+    ).toEqual({ ok: true, backdated: false });
+    expect(
+      backdateGuard({
+        ...dispatcher,
+        effectiveDate: '2026-09-01',
+        allowed: false,
+        hasReason: false,
+      }),
+    ).toEqual({ ok: true, backdated: false });
+  });
+
+  it('вчера — уже задним числом: с правом и причиной проходит и помечается', () => {
+    expect(backdateGuard({ ...dispatcher, effectiveDate: '2026-08-11' })).toEqual({
+      ok: true,
+      backdated: true,
+    });
+  });
+
+  /**
+   * `backdated` в успехе — не украшение: им вызывающий решает, заводить ли запись операции (Р16) и
+   * писать ли причину в лист (Р35). Пометив сегодняшнюю выписку коррекцией, портал наполнил бы
+   * фильтр журнала (Р28) обычной дневной работой.
+   */
+  it('признак коррекции ставится только прошлому', () => {
+    const today = backdateGuard({ ...dispatcher, effectiveDate: TODAY });
+    const past = backdateGuard({ ...dispatcher, effectiveDate: '2026-08-11' });
+    expect(today.ok === true && today.backdated).toBe(false);
+    expect(past.ok === true && past.backdated).toBe(true);
+  });
+
+  it('ровно 30 дней — ещё граница диспетчера, 31-й — уже нет', () => {
+    const edge = correctionFloorDateKey(TODAY);
+    expect(edge).toBe('2026-07-13');
+    expect(backdateGuard({ ...dispatcher, effectiveDate: edge }).ok).toBe(true);
+    const beyond = backdateGuard({ ...dispatcher, effectiveDate: '2026-07-12' });
+    expect(beyond).toEqual({ ok: false, code: 'limit', reason: expect.any(String) });
+  });
+
+  it('второе право снимает предел, но не заменяет первое и не отменяет причину', () => {
+    const old = { ...dispatcher, effectiveDate: '2026-01-15' };
+    expect(backdateGuard({ ...old, unlimited: true }).ok).toBe(true);
+    // Право глубины в одиночку не значит ничего: прошлое открывает `waybills.correct`.
+    expect(backdateGuard({ ...old, unlimited: true, allowed: false })).toMatchObject({
+      ok: false,
+      code: 'permission',
+    });
+    expect(backdateGuard({ ...old, unlimited: true, hasReason: false })).toMatchObject({
+      ok: false,
+      code: 'reason',
+    });
+  });
+
+  /**
+   * Коды машинные: по ним маршрут выбирает статус ответа (`permission` → 403, остальные → 422).
+   * Один код на все отказы сделал бы отказ нечитаемым — «нет права», «слишком давно» и «нет
+   * причины» это три разных поручения человеку.
+   */
+  it('каждый отказ называет свою причину', () => {
+    const past = { today: TODAY, effectiveDate: '2026-08-11' };
+    expect(
+      backdateGuard({ ...past, allowed: false, unlimited: false, hasReason: true }),
+    ).toMatchObject({ ok: false, code: 'permission' });
+    expect(
+      backdateGuard({ ...past, allowed: true, unlimited: false, hasReason: false }),
+    ).toMatchObject({ ok: false, code: 'reason' });
+    expect(
+      backdateGuard({
+        ...past,
+        effectiveDate: '2026-06-01',
+        allowed: true,
+        unlimited: false,
+        hasReason: true,
+      }),
+    ).toMatchObject({ ok: false, code: 'limit' });
+  });
+
+  /**
+   * Порядок проверок — это то, что человек прочитает первым. Сначала называется то, чего он не
+   * исправит здесь и сейчас: без права не поможет ни причина, ни давность, а за пределом глубины
+   * не поможет написанное объяснение. Причина спрашивается последней — её проситель добавляет сам.
+   */
+  it('порядок отказов: право, затем глубина, затем причина', () => {
+    const hopeless = {
+      today: TODAY,
+      effectiveDate: '2026-01-15',
+      allowed: false,
+      unlimited: false,
+      hasReason: false,
+    };
+    expect(backdateGuard(hopeless)).toMatchObject({ code: 'permission' });
+    expect(backdateGuard({ ...hopeless, allowed: true })).toMatchObject({ code: 'limit' });
+    expect(backdateGuard({ ...hopeless, allowed: true, unlimited: true })).toMatchObject({
+      code: 'reason',
+    });
+  });
+
+  it('у отказа есть текст: его читает человек, а не только маршрут', () => {
+    const denial = backdateGuard({
+      today: TODAY,
+      effectiveDate: '2026-08-11',
+      allowed: false,
+      unlimited: false,
+      hasReason: false,
+    });
+    expect(denial.ok === false && denial.reason.trim()).not.toBe('');
+  });
+
+  it('глубина — тридцать дней, и считается она одним выражением на весь портал', () => {
+    expect(WAYBILL_CORRECTION_DAYS).toBe(30);
+    expect(correctionFloorDateKey('2026-03-05')).toBe('2026-02-03');
+  });
+});
+
+/**
+ * Подлежит ли коррекции сам лист (ADR 0101). Право и причину спрашивает `backdateGuard`; здесь
+ * только то, что от субъекта не зависит: состояние номера и глубина.
+ */
+describe('какой лист подлежит коррекции', () => {
+  const TODAY = '2026-08-12';
+  const trip = { issuedForDate: '2026-08-11', status: 'issued' as const };
+
+  it('вчерашний выданный — да, сегодняшний и будущий — тоже', () => {
+    expect(canCorrectWaybill(trip, TODAY)).toBe(true);
+    expect(canCorrectWaybill({ ...trip, issuedForDate: '2026-08-20' }, TODAY)).toBe(true);
+  });
+
+  /**
+   * Аннулированный номер уже списан, и заменять в нём нечего: правят тот лист, что выписан взамен.
+   * Разрешив обратное, портал получил бы два листа, заменяющих один номер, — и уникальный индекс
+   * отказал бы уже в транзакции, после сгоревшей работы (Р32).
+   */
+  it('аннулированный — нет: цепочку правят с последнего звена', () => {
+    expect(canCorrectWaybill({ ...trip, status: 'cancelled' }, TODAY)).toBe(false);
+  });
+
+  it('старше тридцати дней — только с правом глубины', () => {
+    const old = { ...trip, issuedForDate: '2026-07-01' };
+    expect(canCorrectWaybill(old, TODAY)).toBe(false);
+    expect(canCorrectWaybill(old, TODAY, { unlimited: true })).toBe(true);
+    // Аннулированный не оживает и правом глубины: причина отказа у него другая.
+    expect(canCorrectWaybill({ ...old, status: 'cancelled' }, TODAY, { unlimited: true })).toBe(
+      false,
+    );
+  });
+
+  /**
+   * У ЭСМ-2 граница считается по концу недели — тем же концом, каким её считает `canCancelWaybill`.
+   * Взяв понедельник, портал отказал бы за шесть дней до настоящей границы.
+   */
+  it('у недельного листа глубина считается от последнего дня периода', () => {
+    const week = { issuedForDate: '2026-07-06', periodTo: '2026-07-12', status: 'issued' as const };
+    expect(canCorrectWaybill(week, '2026-08-11')).toBe(true);
+    expect(canCorrectWaybill(week, '2026-08-12')).toBe(false);
+  });
+});
+
+/**
  * ЭСМ-2 — лист на неделю работы строительной машины на площадке (миграция 0087).
  *
  * Единица бланка — календарная неделя: семь строк «пн…вс» и недельные итоги. Резать срок по
@@ -283,29 +461,118 @@ describe('кому выписывается ЭСМ-2', () => {
     requestType: 'special_equipment' as const,
     status: 'confirmed' as const,
     ownership: 'own' as const,
+    isLinear: false,
   };
 
-  it('заказ техники на объект на своей машине — да', () => {
-    expect(esm2Required(own)).toBe(true);
+  it('заказ техники на объект на своей машине — портал ведёт листы сам', () => {
+    expect(esm2Mode(own)).toBe('auto');
   });
 
   it('грузоперевозка — нет: у неё лист на рейс', () => {
-    expect(esm2Required({ ...own, requestType: 'freight_transport' })).toBe(false);
+    expect(esm2Mode({ ...own, requestType: 'freight_transport' })).toBe('none');
   });
 
   it('арендная техника — нет: лист на неё выписывает арендодатель', () => {
-    expect(esm2Required({ ...own, ownership: 'rental' })).toBe(false);
+    expect(esm2Mode({ ...own, ownership: 'rental' })).toBe('none');
   });
 
   it('заявка вне работы — нет: листов у неё быть не должно', () => {
-    expect(esm2Required({ ...own, status: 'new' })).toBe(false);
-    expect(esm2Required({ ...own, status: 'cancelled' })).toBe(false);
+    expect(esm2Mode({ ...own, status: 'new' })).toBe('none');
+    expect(esm2Mode({ ...own, status: 'cancelled' })).toBe('none');
     // Закрытая — да: работа состоялась, и бумага по ней остаётся выданной.
-    expect(esm2Required({ ...own, status: 'done' })).toBe(true);
+    expect(esm2Mode({ ...own, status: 'done' })).toBe('auto');
   });
 
   it('архивная — нет', () => {
-    expect(esm2Required({ ...own, deletedAt: '2026-08-01T00:00:00Z' })).toBe(false);
+    expect(esm2Mode({ ...own, deletedAt: '2026-08-01T00:00:00Z' })).toBe('none');
+  });
+
+  /**
+   * Линейная техника (ADR 0100): недели стояния на площадке у неё нет — машина вечером
+   * возвращается на базу, — и листы наперёд портал не выписывает.
+   */
+  it('линейный заказ — по требованию: недели называет человек, а не срок заявки', () => {
+    expect(esm2Mode({ ...own, isLinear: true })).toBe('on_demand');
+    // Закрытая линейная — тоже `on_demand`: выписанное сверка ведёт до конца жизни заявки.
+    expect(esm2Mode({ ...own, isLinear: true, status: 'done' })).toBe('on_demand');
+  });
+
+  it('линейность спрашивается последней: аренде и отмене она ничего не меняет', () => {
+    // «Линейная арендная техника ничего не меняет» (ADR 0100): ЭСМ-2 на аренду не выписывался и
+    // раньше, и признак типа не может этого включить.
+    expect(esm2Mode({ ...own, isLinear: true, ownership: 'rental' })).toBe('none');
+    expect(esm2Mode({ ...own, isLinear: true, status: 'cancelled' })).toBe('none');
+    expect(esm2Mode({ ...own, isLinear: true, requestType: 'freight_transport' })).toBe('none');
+  });
+});
+
+/**
+ * Что человек уже попросил (ADR 0100 §5) — набор недель для режима `on_demand`. В `auto` его
+ * задаёт срок заявки, а у линейного заказа портал таких решений не принимает: единственный след
+ * просьбы — сами выписанные листы, подрезанные сроком.
+ */
+describe('недели, выписанные по требованию, подрезанные сроком', () => {
+  const sheet = (from: string, to: string) => ({
+    id: `w-${from}`,
+    periodFrom: from,
+    periodTo: to,
+    vehicleId: 'vehicle-1',
+    driverPersonId: 'driver-1',
+  });
+
+  it('листов нет — просить нечего: пустой набор', () => {
+    expect(esm2RequestedPeriods([], '2026-08-04', '2026-08-16')).toEqual([]);
+  });
+
+  it('лист внутри срока возвращается как есть — сверке нечего переоформлять', () => {
+    expect(
+      esm2RequestedPeriods([sheet('2026-08-10', '2026-08-16')], '2026-08-04', '2026-08-20'),
+    ).toEqual([{ from: '2026-08-10', to: '2026-08-16' }]);
+  });
+
+  it('срок сокращён — крайняя неделя подрезана, а выпавшая не возвращается вовсе', () => {
+    const weeks = esm2RequestedPeriods(
+      [
+        sheet('2026-08-04', '2026-08-09'),
+        sheet('2026-08-10', '2026-08-16'),
+        sheet('2026-08-17', '2026-08-23'),
+      ],
+      '2026-08-04',
+      '2026-08-12',
+    );
+    // Неделя 17–23 ушла за новый срок: её лист аннулируется, а замены не выписывается.
+    expect(weeks).toEqual([
+      { from: '2026-08-04', to: '2026-08-09' },
+      { from: '2026-08-10', to: '2026-08-12' },
+    ]);
+  });
+
+  it('начало срока сдвинуто вперёд — подрезается и левый край', () => {
+    expect(
+      esm2RequestedPeriods([sheet('2026-08-03', '2026-08-09')], '2026-08-06', '2026-08-09'),
+    ).toEqual([{ from: '2026-08-06', to: '2026-08-09' }]);
+  });
+
+  it('продление срока недели не раздвигает: человек просил ровно эти дни', () => {
+    expect(
+      esm2RequestedPeriods([sheet('2026-08-10', '2026-08-12')], '2026-08-10', '2026-08-31'),
+    ).toEqual([{ from: '2026-08-10', to: '2026-08-12' }]);
+  });
+
+  it('одну неделю двумя машинами подрезка не задваивает', () => {
+    const week = [
+      { ...sheet('2026-08-10', '2026-08-16'), id: 'a', vehicleId: 'vehicle-1' },
+      { ...sheet('2026-08-10', '2026-08-16'), id: 'b', vehicleId: 'vehicle-2' },
+    ];
+    expect(esm2RequestedPeriods(week, '2026-08-10', '2026-08-16')).toEqual([
+      { from: '2026-08-10', to: '2026-08-16' },
+    ]);
+  });
+
+  it('пустая дата окончания читается как однодневный срок — тем же правилом, что и в `auto`', () => {
+    expect(esm2RequestedPeriods([sheet('2026-08-10', '2026-08-16')], '2026-08-10', null)).toEqual([
+      { from: '2026-08-10', to: '2026-08-10' },
+    ]);
   });
 });
 
@@ -333,6 +600,7 @@ describe('сверка недельных листов с заявкой', () =>
 
   it('листов нет — выписываются все недели срока', () => {
     const plan = esm2SyncPlan({
+      mode: 'auto',
       wanted: esm2Periods('2026-08-04', '2026-08-16'),
       existing: [],
       vehicleId: VEHICLE,
@@ -345,6 +613,7 @@ describe('сверка недельных листов с заявкой', () =>
 
   it('всё сошлось — сверка молчит: ни один номер не сгорает', () => {
     const plan = esm2SyncPlan({
+      mode: 'auto',
       wanted: esm2Periods('2026-08-04', '2026-08-16'),
       existing: [sheet('a', '2026-08-04', '2026-08-09'), sheet('b', '2026-08-10', '2026-08-16')],
       vehicleId: VEHICLE,
@@ -357,6 +626,7 @@ describe('сверка недельных листов с заявкой', () =>
   it('срок сокращён — лишние недели аннулируются, текущая выписывается заново', () => {
     // Досрочное завершение 12.08 при сроке до 16.08: неделя 10–16 становится 10–12.
     const plan = esm2SyncPlan({
+      mode: 'auto',
       wanted: esm2Periods('2026-08-04', '2026-08-12'),
       existing: [
         sheet('a', '2026-08-04', '2026-08-09'),
@@ -375,6 +645,7 @@ describe('сверка недельных листов с заявкой', () =>
   it('отработанная неделя не трогается и не выписывается заново', () => {
     // Лист недели 04–09 закрыт прошедшим временем: его нельзя ни аннулировать, ни продублировать.
     const plan = esm2SyncPlan({
+      mode: 'auto',
       wanted: [{ from: '2026-08-05', to: '2026-08-09' }],
       existing: [sheet('a', '2026-08-04', '2026-08-09')],
       vehicleId: VEHICLE,
@@ -386,6 +657,7 @@ describe('сверка недельных листов с заявкой', () =>
 
   it('срок продлён — добавляются только новые недели', () => {
     const plan = esm2SyncPlan({
+      mode: 'auto',
       wanted: esm2Periods('2026-08-04', '2026-08-16'),
       existing: [sheet('a', '2026-08-04', '2026-08-09')],
       vehicleId: VEHICLE,
@@ -398,6 +670,7 @@ describe('сверка недельных листов с заявкой', () =>
 
   it('сменилась машина — лист переписывается: в бланке напечатана другая', () => {
     const plan = esm2SyncPlan({
+      mode: 'auto',
       wanted: esm2Periods('2026-08-04', '2026-08-09'),
       existing: [sheet('a', '2026-08-04', '2026-08-09')],
       vehicleId: 'vehicle-2',
@@ -410,6 +683,7 @@ describe('сверка недельных листов с заявкой', () =>
 
   it('сменился машинист — то же самое: правкой бланка это не решается', () => {
     const plan = esm2SyncPlan({
+      mode: 'auto',
       wanted: esm2Periods('2026-08-04', '2026-08-09'),
       existing: [sheet('a', '2026-08-04', '2026-08-09', { driverPersonId: 'driver-2' })],
       vehicleId: VEHICLE,
@@ -422,6 +696,8 @@ describe('сверка недельных листов с заявкой', () =>
 
   it('заявка ушла из работы — аннулируется всё неотработанное, и ничего не выписывается', () => {
     const plan = esm2SyncPlan({
+      // Ушедшая из работы заявка — это `none` (`esm2Mode`): листов у неё быть не должно вовсе.
+      mode: 'none',
       wanted: [],
       existing: [sheet('a', '2026-08-04', '2026-08-09'), sheet('b', '2026-08-10', '2026-08-16')],
       vehicleId: null,
@@ -430,6 +706,347 @@ describe('сверка недельных листов с заявкой', () =>
     });
     expect(plan.cancel).toEqual(['a', 'b']);
     expect(plan.issue).toEqual([]);
+  });
+});
+
+/**
+ * Сверка линейного заказа (ADR 0100 §5). Это не «сверка выключена»: выданный бланк строгой
+ * отчётности не вправе разойтись с заявкой, и сменённая машина по-прежнему жжёт номер. Разница
+ * ровно одна — набор нужных недель берётся из того, что человек уже попросил, а не из срока.
+ */
+describe('сверка недельных листов линейного заказа', () => {
+  const VEHICLE = 'vehicle-1';
+  const DRIVER = 'driver-1';
+  const sheet = (
+    id: string,
+    from: string,
+    to: string,
+    over: Partial<{ vehicleId: string; driverPersonId: string }> = {},
+  ) => ({
+    id,
+    periodFrom: from,
+    periodTo: to,
+    vehicleId: VEHICLE,
+    driverPersonId: DRIVER,
+    ...over,
+  });
+
+  it('листов нет — ни один не выписывается, хотя срок идёт', () => {
+    const plan = esm2SyncPlan({
+      mode: 'on_demand',
+      // Даже если вызывающий посчитает недели сроком, режим их не пустит: это и есть его смысл.
+      wanted: esm2Periods('2026-08-04', '2026-08-16'),
+      existing: [],
+      vehicleId: VEHICLE,
+      driverPersonId: DRIVER,
+      today: '2026-08-04',
+    });
+    expect(plan).toEqual({ cancel: [], issue: [] });
+  });
+
+  it('выписанная неделя внутри срока не трогается: сошлось — не жжём', () => {
+    const existing = [sheet('a', '2026-08-10', '2026-08-16')];
+    const plan = esm2SyncPlan({
+      mode: 'on_demand',
+      wanted: esm2RequestedPeriods(existing, '2026-08-04', '2026-08-31'),
+      existing,
+      vehicleId: VEHICLE,
+      driverPersonId: null,
+      today: '2026-08-04',
+    });
+    expect(plan).toEqual({ cancel: [], issue: [] });
+  });
+
+  /**
+   * Машина у линейного заказа сверяется по той же границе, что и машинист (ADR 0100 §7): в бланке
+   * стоит та единица, которую человек назвал при выписке, а «машина заявки» отвечает на другой
+   * вопрос — какой техникой заказ взяли в работу. Сожги сверка этот номер, и недельный отчёт
+   * второй машины оказался бы перепечатан на первую вместе с её моточасами.
+   */
+  it('сменилась машина заявки — выписанный лист не трогается', () => {
+    const existing = [sheet('a', '2026-08-10', '2026-08-16')];
+    const plan = esm2SyncPlan({
+      mode: 'on_demand',
+      wanted: esm2RequestedPeriods(existing, '2026-08-04', '2026-08-31'),
+      existing,
+      vehicleId: 'vehicle-2',
+      driverPersonId: null,
+      today: '2026-08-04',
+    });
+    expect(plan).toEqual({ cancel: [], issue: [] });
+  });
+
+  it('две машины в одной неделе — законная пара листов, а не расхождение', () => {
+    const existing = [
+      sheet('a', '2026-08-10', '2026-08-16'),
+      sheet('b', '2026-08-10', '2026-08-16', { vehicleId: 'vehicle-2' }),
+    ];
+    const plan = esm2SyncPlan({
+      mode: 'on_demand',
+      wanted: esm2RequestedPeriods(existing, '2026-08-10', '2026-08-31'),
+      existing,
+      vehicleId: VEHICLE,
+      driverPersonId: null,
+      today: '2026-08-10',
+    });
+    expect(plan).toEqual({ cancel: [], issue: [] });
+  });
+
+  /** В `auto` правило прежнее: машина у заявки одна, и разошедшийся с ней лист переписывается. */
+  it('обычный заказ: сменилась машина — лист переоформляется', () => {
+    const existing = [sheet('a', '2026-08-10', '2026-08-16')];
+    const plan = esm2SyncPlan({
+      mode: 'auto',
+      wanted: esm2Periods('2026-08-10', '2026-08-16'),
+      existing,
+      vehicleId: 'vehicle-2',
+      driverPersonId: DRIVER,
+      today: '2026-08-04',
+    });
+    expect(plan.cancel).toEqual(['a']);
+    expect(plan.issue).toEqual([{ from: '2026-08-10', to: '2026-08-16' }]);
+  });
+
+  /**
+   * У линейного заказа машинист свой на каждую неделю (ADR 0100 §6): человек называет его при
+   * каждой выписке. Сверка, которую позвали не ради человека, обязана оставить недели как есть —
+   * иначе смена срока пересадила бы всю бумагу на того, кто отработал одну неделю (ADR 0083).
+   */
+  it('разные машинисты по неделям — не расхождение, пока человека не назвали', () => {
+    const existing = [
+      sheet('a', '2026-08-10', '2026-08-16'),
+      sheet('b', '2026-08-17', '2026-08-23', { driverPersonId: 'driver-2' }),
+    ];
+    const plan = esm2SyncPlan({
+      mode: 'on_demand',
+      wanted: esm2RequestedPeriods(existing, '2026-08-10', '2026-08-31'),
+      existing,
+      vehicleId: VEHICLE,
+      driverPersonId: null,
+      today: '2026-08-10',
+    });
+    expect(plan).toEqual({ cancel: [], issue: [] });
+  });
+
+  it('машиниста назвали этим же действием — расходящиеся листы переписываются', () => {
+    const existing = [
+      sheet('a', '2026-08-10', '2026-08-16'),
+      sheet('b', '2026-08-17', '2026-08-23', { driverPersonId: 'driver-2' }),
+    ];
+    const plan = esm2SyncPlan({
+      mode: 'on_demand',
+      wanted: esm2RequestedPeriods(existing, '2026-08-10', '2026-08-31'),
+      existing,
+      vehicleId: VEHICLE,
+      driverPersonId: 'driver-2',
+      today: '2026-08-10',
+    });
+    expect(plan.cancel).toEqual(['a']);
+    expect(plan.issue).toEqual([{ from: '2026-08-10', to: '2026-08-16' }]);
+  });
+
+  it('срок сокращён — крайняя неделя подрезается, выпавшая аннулируется без замены', () => {
+    const existing = [
+      sheet('a', '2026-08-10', '2026-08-16'),
+      sheet('b', '2026-08-17', '2026-08-23'),
+    ];
+    const plan = esm2SyncPlan({
+      mode: 'on_demand',
+      wanted: esm2RequestedPeriods(existing, '2026-08-10', '2026-08-12'),
+      existing,
+      vehicleId: VEHICLE,
+      driverPersonId: null,
+      today: '2026-08-10',
+    });
+    expect(plan.cancel).toEqual(['a', 'b']);
+    expect(plan.issue).toEqual([{ from: '2026-08-10', to: '2026-08-12' }]);
+  });
+
+  it('продлённый срок новых недель не приносит: их никто не просил', () => {
+    const existing = [sheet('a', '2026-08-10', '2026-08-16')];
+    const plan = esm2SyncPlan({
+      mode: 'on_demand',
+      wanted: esm2RequestedPeriods(existing, '2026-08-10', '2026-08-31'),
+      existing,
+      vehicleId: VEHICLE,
+      driverPersonId: null,
+      today: '2026-08-10',
+    });
+    expect(plan.issue).toEqual([]);
+  });
+
+  it('отработанная неделя не трогается и здесь: бланк уже заполнен заказчиком', () => {
+    const existing = [sheet('a', '2026-08-10', '2026-08-16')];
+    const plan = esm2SyncPlan({
+      mode: 'on_demand',
+      wanted: esm2RequestedPeriods(existing, '2026-08-10', '2026-08-12'),
+      existing,
+      vehicleId: 'vehicle-2',
+      driverPersonId: null,
+      today: '2026-08-20',
+    });
+    expect(plan).toEqual({ cancel: [], issue: [] });
+  });
+
+  it('заявка ушла из работы — линейная бумага аннулируется наравне с обычной', () => {
+    const plan = esm2SyncPlan({
+      // Ушедшая из работы заявка — `none` при любом признаке типа (`esm2Mode`).
+      mode: 'none',
+      wanted: [],
+      existing: [sheet('a', '2026-08-10', '2026-08-16')],
+      vehicleId: null,
+      driverPersonId: null,
+      today: '2026-08-10',
+    });
+    expect(plan.cancel).toEqual(['a']);
+    expect(plan.issue).toEqual([]);
+  });
+});
+
+/**
+ * Сверка ЭСМ-2 под коррекцией (ADR 0101, Р11 и Р21). Два ключа и два разных запрета:
+ * `unlockWaybillIds` открывает **выписанный** лист отработанной недели, `correction` разрешает
+ * выписать прошедшую неделю, листа не имевшую. Оба приходят от сервера, уже спросившего право и
+ * причину: тело запроса авторизацией не является.
+ */
+describe('сверка недельных листов при коррекции', () => {
+  const VEHICLE = 'vehicle-1';
+  const DRIVER = 'driver-1';
+  const sheet = (
+    id: string,
+    from: string,
+    to: string,
+    over: Partial<{ vehicleId: string; driverPersonId: string }> = {},
+  ) => ({
+    id,
+    periodFrom: from,
+    periodTo: to,
+    vehicleId: VEHICLE,
+    driverPersonId: DRIVER,
+    ...over,
+  });
+
+  /**
+   * Дыра 3 из §1 плана: неделя, добавленная сдвигом `dateFrom` назад, листа не имела — и потому в
+   * `locked` не попадала вовсе. Сверка выписывала её сама: без права, без причины и без следа.
+   */
+  it('прошедшая неделя без контекста операции не выписывается', () => {
+    const plan = esm2SyncPlan({
+      mode: 'auto',
+      wanted: esm2Periods('2026-08-03', '2026-08-09'),
+      existing: [],
+      vehicleId: VEHICLE,
+      driverPersonId: DRIVER,
+      today: '2026-08-12',
+    });
+    expect(plan).toEqual({ cancel: [], issue: [] });
+  });
+
+  it('с проверенным контекстом — выписывается: за неё спросили право и причину', () => {
+    const plan = esm2SyncPlan({
+      mode: 'auto',
+      wanted: esm2Periods('2026-08-03', '2026-08-09'),
+      existing: [],
+      vehicleId: VEHICLE,
+      driverPersonId: DRIVER,
+      today: '2026-08-12',
+      correction: { allowed: true },
+    });
+    expect(plan.issue).toEqual([{ from: '2026-08-03', to: '2026-08-09' }]);
+  });
+
+  /** Граница считается по концу недели — тем же концом, что и у `canCancelWaybill`. */
+  it('неделя, кончающаяся сегодня, выписывается и без контекста', () => {
+    const plan = esm2SyncPlan({
+      mode: 'auto',
+      wanted: [{ from: '2026-08-10', to: '2026-08-12' }],
+      existing: [],
+      vehicleId: VEHICLE,
+      driverPersonId: DRIVER,
+      today: '2026-08-12',
+    });
+    expect(plan.issue).toEqual([{ from: '2026-08-10', to: '2026-08-12' }]);
+  });
+
+  it('названный лист отработанной недели переоформляется, неназванный — нет', () => {
+    const existing = [sheet('a', '2026-08-03', '2026-08-09')];
+    const untouched = esm2SyncPlan({
+      mode: 'auto',
+      wanted: esm2Periods('2026-08-03', '2026-08-09'),
+      existing,
+      vehicleId: 'vehicle-2',
+      driverPersonId: DRIVER,
+      today: '2026-08-12',
+      correction: { allowed: true },
+    });
+    // Без разблокировки прошедшая неделя остаётся при своём листе, даже когда машина разошлась:
+    // машина эти дни отстояла, а заказчик заполнил оборот.
+    expect(untouched).toEqual({ cancel: [], issue: [] });
+
+    const corrected = esm2SyncPlan({
+      mode: 'auto',
+      wanted: esm2Periods('2026-08-03', '2026-08-09'),
+      existing,
+      vehicleId: 'vehicle-2',
+      driverPersonId: DRIVER,
+      today: '2026-08-12',
+      unlockWaybillIds: ['a'],
+      correction: { allowed: true },
+    });
+    expect(corrected.cancel).toEqual(['a']);
+    expect(corrected.issue).toEqual([{ from: '2026-08-03', to: '2026-08-09' }]);
+  });
+
+  /**
+   * Р11: в одной неделе у заявки законно живут листы двух машин (ADR 0100 п. 7). Понедельник как
+   * ключ разблокировки сжёг бы оба; идентификатор трогает ровно тот, о котором просили.
+   */
+  it('две машины в одной неделе — правится только названный лист', () => {
+    const existing = [
+      sheet('a', '2026-08-03', '2026-08-09'),
+      sheet('b', '2026-08-03', '2026-08-09', { vehicleId: 'vehicle-2' }),
+    ];
+    const plan = esm2SyncPlan({
+      mode: 'on_demand',
+      wanted: esm2RequestedPeriods(existing, '2026-08-03', '2026-08-09'),
+      existing,
+      vehicleId: VEHICLE,
+      driverPersonId: 'driver-2',
+      today: '2026-08-12',
+      unlockWaybillIds: ['a'],
+      correction: { allowed: true },
+    });
+    expect(plan.cancel).toEqual(['a']);
+  });
+
+  it('разблокировка без контекста операции замену не выписывает: сгоревший номер без бумаги', () => {
+    // Крайний случай, ради которого оба ключа и передаются вместе: разблокировав лист, но не
+    // разрешив прошедшую неделю, вызывающий получил бы аннулирование без перевыписки.
+    const plan = esm2SyncPlan({
+      mode: 'auto',
+      wanted: esm2Periods('2026-08-03', '2026-08-09'),
+      existing: [sheet('a', '2026-08-03', '2026-08-09')],
+      vehicleId: 'vehicle-2',
+      driverPersonId: DRIVER,
+      today: '2026-08-12',
+      unlockWaybillIds: ['a'],
+    });
+    expect(plan.cancel).toEqual(['a']);
+    expect(plan.issue).toEqual([]);
+  });
+
+  it('без обоих ключей сверка ведёт себя ровно как прежде', () => {
+    const existing = [sheet('a', '2026-08-10', '2026-08-16')];
+    const plain = esm2SyncPlan({
+      mode: 'auto',
+      wanted: esm2Periods('2026-08-10', '2026-08-16'),
+      existing,
+      vehicleId: 'vehicle-2',
+      driverPersonId: DRIVER,
+      today: '2026-08-12',
+    });
+    expect(plain.cancel).toEqual(['a']);
+    expect(plain.issue).toEqual([{ from: '2026-08-10', to: '2026-08-16' }]);
   });
 });
 

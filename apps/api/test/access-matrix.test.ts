@@ -312,6 +312,45 @@ const CASES: Case[] = [
     url: `/api/v1/vehicle-requests/${RECORD_ID}/driver`,
     allowed: ['admin', 'manager', 'dispatcher'],
   },
+  {
+    // Выписка ЭСМ-2 по требованию у линейного заказа (ADR 0100 §6). Права те же две, что у
+    // выписки листа с рейса: это тот же документ и тот же коридор решений. Арендодателю сюда
+    // нельзя, хотя `vehicleRequests.status` у него есть, — в бланке машинист нашего парка.
+    title: 'выписка ЭСМ-2 по требованию — правом на листы и на ход заявки',
+    method: 'POST',
+    url: `/api/v1/vehicle-requests/${RECORD_ID}/esm2`,
+    payload: {
+      weekOf: '2026-08-03',
+      vehicleId: RECORD_ID,
+      driverPersonId: RECORD_ID,
+      version: 1,
+    },
+    allowed: ['admin', 'manager', 'dispatcher'],
+  },
+  // ── Дни линейного заказа (ADR 0100 §8) ──
+  // Планирование идёт из карточки заявки, но живёт в рейсах: в ответе — машины, водители и номера
+  // выписанных бланков собственного парка. Отсюда те же две проверки, что у самих маршрутов, и
+  // тот же запрещённый — внешний арендодатель: `vehicleRequests.status` у него есть, а
+  // `waybills.read` нет.
+  {
+    title: 'план по дням — правом на листы: в нём водители и номера бланков',
+    method: 'GET',
+    url: `/api/v1/vehicle-requests/${RECORD_ID}/days`,
+    allowed: ['admin', 'manager', 'dispatcher'],
+  },
+  {
+    title: 'постановка дня в рейс — правом на листы и на ход заявки',
+    method: 'POST',
+    url: `/api/v1/vehicle-requests/${RECORD_ID}/days/2026-08-03/route`,
+    payload: { routeId: RECORD_ID },
+    allowed: ['admin', 'manager', 'dispatcher'],
+  },
+  {
+    title: 'снятие дня с рейса — теми же двумя правами',
+    method: 'DELETE',
+    url: `/api/v1/vehicle-requests/${RECORD_ID}/days/2026-08-03/route`,
+    allowed: ['admin', 'manager', 'dispatcher'],
+  },
   // Вложения к бланку — своё право (`waybills.files`): смотреть журнал может и тот, кто документы
   // к нему не подшивает. Состав ролей тот же, что у чтения и аннулирования, — журнал ведут они.
   {

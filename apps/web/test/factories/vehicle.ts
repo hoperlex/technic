@@ -41,6 +41,9 @@ export function vehicleRequest(
     vehicleCategoryId: 'vc-1',
     vehicleCategoryName: 'г/п 25 т',
     vehicleCategorySpecs: { lift_capacity: 25 },
+    // Линейность заказанного типа (ADR 0100): по умолчанию нет — обычный заказ стоит на площадке
+    // весь срок, и именно он нужен большинству сценариев. Линейный включается в самом сценарии.
+    isLinear: false,
     status: 'new',
     comment: 'разгрузка плит',
     cancelReason: null,
@@ -96,6 +99,7 @@ export function freightRequest(
     vehicleCategoryId: 'vc-2',
     vehicleCategoryName: '20 м³',
     vehicleCategorySpecs: { body_volume: 20 },
+    isLinear: false,
     status: 'new',
     comment: 'плиты перекрытия ПК 60-15, 12 шт',
     cancelReason: null,
@@ -152,9 +156,7 @@ export function approvedVehicleRequest(
  * Строка состава недельной заявки. По умолчанию — продление заказа до воскресенья недели: это
  * основной вид строки, ради которого документ и заводят (ADR 0085).
  */
-export function weeklyItem(
-  overrides: Partial<WeeklyRequestItemDto> = {},
-): WeeklyRequestItemDto {
+export function weeklyItem(overrides: Partial<WeeklyRequestItemDto> = {}): WeeklyRequestItemDto {
   return {
     id: 'wi-1',
     position: 1,

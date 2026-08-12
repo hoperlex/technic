@@ -62,6 +62,8 @@ const vehicles: GarageVehicleDto[] = [
             displayNumber: 'ТС-101',
             status: 'confirmed',
             customerName: 'Альфа-объект',
+            // Грузоперевозка: своего дня у строки состава нет — день несёт сам рейс (ADR 0100 §2).
+            workDate: null,
           },
         ],
         waybill: { waybillId: 'w-1', number: '260604-646-00000004897', status: 'issued' },
