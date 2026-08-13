@@ -67,7 +67,11 @@ function RequestBlock({ request }: { request: DriverAssignmentRequest }) {
       </Space>
       <Field label="Погрузка">{request.loadingLocation}</Field>
       <Field label="Выгрузка">{request.unloadingLocation}</Field>
-      <Field label="Груз">{request.cargoLabel}</Field>
+      {/* Количества груза в кабинете нет: «20 т» водителю не работа — он сверяет её на весах, а не
+          в телефоне, — а то, что действительно описывает груз («песок, звонить за час»), заявитель
+          пишет комментарием, и он же уходит в графу «Груз» бланка. Отдельной строкой количество
+          только повторяло бы цифру из листа. В письме-задании оно остаётся: там строка одна на
+          заявку, и лишним она никого не теснит. */}
       <Field label="Комментарий">{request.comment}</Field>
       {request.contacts.map((contact, index) => (
         <Field key={`${contact.phone}-${index}`} label={contact.label}>
