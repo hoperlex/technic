@@ -17,7 +17,23 @@ import { useDriverDate } from './DriverLayout';
  * `directories.read`, и спросить справочник ей нечем.
  */
 
-const secondary: CSSProperties = { fontSize: 12 };
+/**
+ * Мелкая подпись — долей от размера кабинета, а не двенадцатью пикселями (Р1): масштаб кабинета
+ * задан одной переменной на каркасе, и абсолютное число здесь осталось бы прежним ровно тогда,
+ * когда всё вокруг выросло.
+ */
+const secondary: CSSProperties = { fontSize: '0.85em' };
+
+/**
+ * Порядок карточек — по позиции смены (П5), а не по порядку ответа: первая смена дня сверху.
+ * Сейчас сервер отдаёт их в том же порядке, но порядок на экране — свойство экрана: он читается
+ * сверху вниз так же, как идёт рабочий день, и зависеть от порядка выборки не должен.
+ */
+function byShiftOrder(a: DriverAssignmentEntry, b: DriverAssignmentEntry): number {
+  // Строка без позиции — недельный ЭСМ-2: он накрывает день целиком и своей смены не имеет,
+  // поэтому идёт после сменных карточек, а не перед ними.
+  return (a.shiftOrder ?? Number.MAX_SAFE_INTEGER) - (b.shiftOrder ?? Number.MAX_SAFE_INTEGER);
+}
 
 /** Строка «подпись — значение». Пустые значения не выводятся: прочерк в каждой строке — это шум. */
 function Field({ label, children }: { label: string; children: ReactNode }) {
@@ -131,9 +147,11 @@ export function DriverPage() {
     );
   }
 
+  // Копия перед сортировкой: `entries` лежит в кэше запроса, и сортировка на месте переставила бы
+  // строки всем, кто их читает, — включая оверлей передачи показаний.
   return (
     <Space direction="vertical" size={12} style={{ display: 'flex' }}>
-      {data.entries.map((entry) => (
+      {[...data.entries].sort(byShiftOrder).map((entry) => (
         <EntryCard key={`${entry.sourceKind}-${entry.sourceId}`} entry={entry} />
       ))}
     </Space>

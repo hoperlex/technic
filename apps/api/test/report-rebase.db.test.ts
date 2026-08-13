@@ -45,6 +45,12 @@ const DB_URL = process.env.TEST_DATABASE_URL;
 const RUN = `${Date.now().toString(36)}${randomUUID().slice(0, 4)}`;
 const ADMIN_EMAIL = `db-report-rebase-${RUN}@example.invalid`;
 const PERSON_MARK = 'ТЕСТОВЫЕ ДАННЫЕ: приведение снимка к источнику';
+/**
+ * Своя серия бланков, а не общая: номер уникален внутри серии, и нумеровать листы в чужой серии
+ * значило бы драться за номера с соседним db-тестом того же прогона. Префикс `zz_` — чтобы серия
+ * не стала первой у тестов, берущих её `ORDER BY code LIMIT 1`.
+ */
+const SERIES_CODE = `zz_report_rebase_${RUN}`;
 
 interface Ctx {
   db: typeof AppDb;
@@ -55,18 +61,22 @@ interface Ctx {
   objectId: string;
   vehicleTypeId: string;
   modelId: string;
+  organizationId: string;
+  seriesId: string;
   today: string;
   /** Вчерашний день: окно записи водителя — неделя, и перенос даты в него укладывается (Р11). */
   yesterday: string;
 }
 
 let ctx: Ctx;
+let waybillNo = 0;
 
 const created = {
   personIds: [] as string[],
   vehicleIds: [] as string[],
   routeIds: [] as string[],
   requestIds: [] as string[],
+  waybillIds: [] as string[],
 };
 
 function prepareEnv(databaseUrl: string): void {
@@ -136,7 +146,44 @@ async function makeVehicle(): Promise<string> {
   return vehicle!.id;
 }
 
-/** Грузовой рейс с живой заявкой: без неё рейс в задание дня не попадает вовсе. */
+/**
+ * Лист 4-П по рейсу: `waybills_form_source_check` требует у него заполненный `route_id`. Выписка
+ * идёт фикстурой каждого рейса, потому что кабинет строго документален (ADR 0105, Р5) — рейс без
+ * действительного листа в задание не входит, и переносить у него было бы нечего.
+ *
+ * Лист привязан к рейсу, а не к отчёту: переназначение водителя, смена машины и перенос даты его не
+ * трогают — ровно поэтому строка и переезжает, а не исчезает.
+ */
+async function issueWaybillFor(opts: {
+  routeId: string;
+  vehicleId: string;
+  personId: string;
+  date: string;
+}): Promise<string> {
+  waybillNo += 1;
+  const [waybill] = await ctx.db
+    .insert(ctx.schema.waybills)
+    .values({
+      seriesId: ctx.seriesId,
+      number: waybillNo,
+      formCode: '4p',
+      status: 'issued',
+      organizationId: ctx.organizationId,
+      vehicleId: opts.vehicleId,
+      driverPersonId: opts.personId,
+      issuedForDate: opts.date,
+      routeId: opts.routeId,
+      issuedBy: ctx.userId,
+    })
+    .returning({ id: ctx.schema.waybills.id });
+  created.waybillIds.push(waybill!.id);
+  return waybill!.id;
+}
+
+/**
+ * Грузовой рейс с живой заявкой и выписанным по нему листом: без заявки рейс в задание дня не
+ * попадает вовсе, без листа — тоже (ADR 0105, Р5).
+ */
 async function makeRoute(opts: {
   vehicleId: string;
   personId: string;
@@ -176,6 +223,12 @@ async function makeRoute(opts: {
   await ctx.db
     .insert(schema.vehicleRouteRequests)
     .values({ routeId: route!.id, requestId: request!.id, position: 1 });
+  await issueWaybillFor({
+    routeId: route!.id,
+    vehicleId: opts.vehicleId,
+    personId: opts.personId,
+    date: opts.date,
+  });
   return route!.id;
 }
 
@@ -289,6 +342,21 @@ describe.skipIf(!DB_URL)('приведение снимка к источник�
       .values({ vehicleTypeId, name: `Тестовый тягач ${RUN}` })
       .returning({ id: schema.vehicleModels.id });
 
+    const orgRes = await db.execute<{ id: string }>(
+      sql`SELECT id FROM organizations ORDER BY id LIMIT 1`,
+    );
+    const organizationId = orgRes.rows[0]?.id;
+    if (!organizationId) throw new Error('В базе нет организации: наполнение не применено');
+
+    const [series] = await db
+      .insert(schema.waybillSeries)
+      .values({
+        code: SERIES_CODE,
+        name: `Тестовая серия (перенос) ${RUN}`,
+        prefix: 'ПРН-',
+      })
+      .returning({ id: schema.waybillSeries.id });
+
     const today = moscowDateKeyOf(new Date());
     ctx = {
       db,
@@ -299,6 +367,8 @@ describe.skipIf(!DB_URL)('приведение снимка к источник�
       objectId: object!.id,
       vehicleTypeId,
       modelId: model!.id,
+      organizationId,
+      seriesId: series!.id,
       today,
       yesterday: shiftDateKey(today, -1),
     };
@@ -311,6 +381,11 @@ describe.skipIf(!DB_URL)('приведение снимка к источник�
       await db
         .delete(schema.driverDailyReports)
         .where(inArray(schema.driverDailyReports.personId, created.personIds));
+    }
+    // Листы сносятся перед рейсами и машинами: и тех и других лист держит `RESTRICT`'ом, и без
+    // этого следующий прогон упёрся бы в него при удалении машины.
+    if (created.waybillIds.length > 0) {
+      await db.delete(schema.waybills).where(inArray(schema.waybills.id, created.waybillIds));
     }
     if (created.routeIds.length > 0) {
       await db
@@ -332,6 +407,7 @@ describe.skipIf(!DB_URL)('приведение снимка к источник�
     await db
       .delete(schema.constructionObjects)
       .where(eq(schema.constructionObjects.id, ctx.objectId));
+    await db.delete(schema.waybillSeries).where(eq(schema.waybillSeries.id, ctx.seriesId));
     await db.delete(schema.users).where(eq(schema.users.id, ctx.userId));
     await ctx.closeDb();
   });

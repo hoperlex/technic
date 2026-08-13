@@ -1,8 +1,8 @@
-import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import { Link, Outlet, useNavigate, useSearchParams } from 'react-router';
 import { Button, DatePicker, Dropdown, Tooltip, type MenuProps } from 'antd';
 import { KeyOutlined, LeftOutlined, LogoutOutlined, RightOutlined } from '@ant-design/icons';
-import { useQuery } from '@tanstack/react-query';
+import { useQueries, useQuery } from '@tanstack/react-query';
 import dayjs, { type Dayjs } from 'dayjs';
 import {
   DRIVER_ASSIGNMENT_FUTURE_DAYS,
@@ -17,6 +17,7 @@ import { PortalLogo } from '../../components/PortalLogo';
 import { UserAvatar } from '../../components/UserAvatar';
 import { clearUserDrafts, driverCabinetApi, driverKeys, loadDraft, pruneDrafts } from './api';
 import { DriverReadingsSheet } from './DriverReadingsSheet';
+import { DRIVER_FONT_SCALE } from './readingLimits';
 
 /**
  * Каркас кабинета водителя (ADR 0102, Р9–Р11).
@@ -168,6 +169,83 @@ const accountButtonStyle: CSSProperties = {
   cursor: 'pointer',
 };
 
+/**
+ * Каркас кабинета: масштаб шрифта приходит переменной из TS-константы (Р1), а не правкой каждого
+ * компонента. Переменные CSS в инлайновом стиле React пропускает как есть, а `CSSProperties` о них
+ * не знает — отсюда приведение типа, и другого способа у React нет.
+ */
+const shellStyle = {
+  minHeight: '100dvh',
+  display: 'flex',
+  flexDirection: 'column',
+  '--driver-scale': DRIVER_FONT_SCALE,
+} as CSSProperties;
+
+/**
+ * Сколько прошедших дней окна записи проверяется на долг (П4). Три, а не все восемь: каждый день
+ * стоит двух запросов — отчёта и задания, — и вход в кабинет по сотовой связи в поле дороже
+ * полноты списка. Ближайший долг и есть тот, который водитель ещё закрывает сам; про долг
+ * недельной давности ему уже сказал диспетчер.
+ *
+ * Сегодняшний день в проверку не входит намеренно: смена ещё идёт, показания снимают в конце, и
+ * «не сдано за сегодня» над кнопкой «Передать показания» было бы упрёком за несделанное вовремя.
+ */
+const PENDING_DAYS_CHECKED = 3;
+
+/**
+ * Прошедшие дни, по которым показания не переданы, от ближайшего к дальнему (П4). Сейчас водитель
+ * узнаёт о долге только от диспетчера — а закрыть его можно лишь пока день не вышел из окна записи.
+ *
+ * Задание спрашивается вместе с отчётом, и это не перестраховка: отчёта нет и у выходного — его
+ * заводит открытие оверлея, а в выходной оверлей не открывали. Без задания портал не отличил бы
+ * долг от дня отдыха и кричал бы «не сдано» каждый понедельник; ложная тревога учит не смотреть на
+ * строку вовсе. Ключи запросов те же, что у экрана дня: уже открытый день второй раз не
+ * запрашивается, а отправка показаний сбрасывает весь корень кабинета — строка обновится сама.
+ */
+function usePendingDays(today: string): string[] {
+  const dates = useMemo(
+    () =>
+      Array.from({ length: PENDING_DAYS_CHECKED }, (_, index) =>
+        dayjs(today)
+          .subtract(index + 1, 'day')
+          .format(DATE_FORMAT),
+      ),
+    [today],
+  );
+  const reports = useQueries({
+    queries: dates.map((date) => ({
+      queryKey: driverKeys.report(date),
+      queryFn: () => driverCabinetApi.report(date),
+    })),
+  });
+  const assignments = useQueries({
+    queries: dates.map((date) => ({
+      queryKey: driverKeys.assignment(date),
+      queryFn: () => driverCabinetApi.assignment(date),
+    })),
+  });
+
+  return dates.filter((_, index) => {
+    const assignment = assignments[index];
+    const report = reports[index];
+    // Пока ответ не пришёл, дня в списке нет: строка, мигнувшая и пропавшая, читается как сбой.
+    if (!assignment?.isSuccess || !report?.isSuccess) return false;
+    if (assignment.data.entries.length === 0) return false;
+    // `null` — оверлей не открывали вовсе, `draft` — открыли и не отправили. Прочие состояния
+    // водителя не ждут: принятый и повторно принимаемый ведёт персонал, аннулированный закрыт.
+    return report.data === null || report.data.state === 'draft';
+  });
+}
+
+/**
+ * Подпись строки долга. Числа дней в ней нет намеренно: «2 дня» и «5 дней» требуют склонения ради
+ * строки, которую всё равно читают как «долг есть, вот ближайший день».
+ */
+function pendingLabel(nearest: string, count: number): string {
+  const day = dayjs(nearest).format('D MMM');
+  return count > 1 ? `Не переданы показания за ${day} и раньше` : `Не переданы показания за ${day}`;
+}
+
 export function DriverLayout({ children }: { children?: ReactNode }) {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
@@ -216,9 +294,11 @@ export function DriverLayout({ children }: { children?: ReactNode }) {
   const entries = assignment.data?.entries ?? [];
   const button = submitButtonState(report.data, hasLocalDraft, assignment.data?.canSubmit ?? false);
   const shift = (days: number) => setDate(current.add(days, 'day').format(DATE_FORMAT));
+  const pending = usePendingDays(today);
+  const nearestPending = pending[0];
 
   return (
-    <div style={{ minHeight: '100dvh', display: 'flex', flexDirection: 'column' }}>
+    <div className="driver-shell" style={shellStyle}>
       <header style={headerStyle}>
         <div style={rowStyle}>
           {/* Логотип — ссылка на «сегодня»: единственный способ вернуться из просмотра прошлой
@@ -291,6 +371,15 @@ export function DriverLayout({ children }: { children?: ReactNode }) {
                 </Button>
               </div>
             </Tooltip>
+          </div>
+        )}
+        {/* Долг по прошлым дням — одной строкой и ссылкой на ближайший из них (П4): день,
+            вышедший из окна записи, водитель уже не закроет сам. */}
+        {nearestPending && (
+          <div style={{ ...rowStyle, paddingTop: 0, paddingBottom: 8 }}>
+            <Link className="driver-pending" to={`/driver?date=${nearestPending}`}>
+              {pendingLabel(nearestPending, pending.length)}
+            </Link>
           </div>
         )}
       </header>

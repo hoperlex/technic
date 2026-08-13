@@ -1,10 +1,20 @@
 import type { FocusEvent } from 'react';
-import { Alert, Button, Checkbox, Input, Space, Switch, Typography, Upload } from 'antd';
+import { Alert, Button, Checkbox, Input, Typography, Upload } from 'antd';
 import { PaperClipOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
-import { readingAnomalyLabels, type ReportItemDto } from '@technic/contracts';
+import {
+  readingAnomalyLabels,
+  type DriverPreviousReading,
+  type ReportItemDto,
+} from '@technic/contracts';
 import { FileLinkList } from '../../components/FileLinks';
 import type { DraftItem } from './api';
+import {
+  parseReadingNumber,
+  previousHintText,
+  readingWarnings,
+  type ReadingField,
+} from './readingLimits';
 
 /**
  * Блок передачи показаний по одной строке ожидания (ADR 0103, Р14).
@@ -15,9 +25,13 @@ import type { DraftItem } from './api';
  *
  * Своего состояния у блока нет ни капли: всё введённое живёт в черновике оверлея, и только там —
  * иначе восстановление после закрытия вкладки восстанавливало бы половину.
+ *
+ * Переключателя «нет возможности снять показания» здесь нет намеренно (план кабинета, Р4): такую
+ * строку закрывает персонал видом `no_data` и с причиной, а у водителя поля, которым можно
+ * отписаться от ввода, больше нет.
  */
 
-const hintStyle = { fontSize: 12 } as const;
+const hintStyle = { fontSize: '0.85em' } as const;
 
 /**
  * Экранная клавиатура перекрывает поле, к которому её и вызвали. Браузер прокручивает к нему сам
@@ -34,22 +48,26 @@ function keepVisible(event: FocusEvent<HTMLElement>): void {
  * раскладки, и человек набирает тот, что есть на клавише, — отказывать ему за это нельзя.
  * `integer` — про одометр: он целый по схеме, и не принять дробную часть на вводе лучше, чем
  * отклонить отправкой целого дня.
+ *
+ * Разряды при наборе не группируются (П2): пробел, вставленный между цифрами во время ввода,
+ * сдвигает позицию курсора, и человек дописывает пробег в середину числа. Группировка — только
+ * при выводе, в подписях и предупреждениях.
  */
 function normalizeDecimal(raw: string, integer: boolean): string {
-  const cleaned = raw.replace(/\s/g, '').replace(',', '.');
-  if (!integer) return cleaned.replace(/[^\d.]/g, '');
+  const cleaned = raw.replace(/\s/gu, '').replace(',', '.');
+  if (!integer) return cleaned.replace(/[^\d.]/gu, '');
   // Целое поле отбрасывает дробную часть, а не склеивает её с целой: «145 320,7», превращённое
   // выбрасыванием разделителя в «1453207», — это молча выросший в десять раз пробег, который и
   // схему пройдёт, и в учёт ляжет. Отбросить десятые честнее: одометр целый по схеме.
-  return cleaned.split('.')[0]!.replace(/\D/g, '');
+  return cleaned.split('.')[0]!.replace(/\D/gu, '');
 }
 
 /**
  * Неподтверждённые аномалии показания — словами, с тем значением, с которым сравнивали.
  *
- * Аномалия не отказ, а предупреждение (Р20): опечатку в одометре ловит сверка, но карьерный
- * самосвал за смену действительно проходит больше любого придуманного порога. Показывать её без
- * предшественника бессмысленно — «невероятный прирост» без «от чего» человеку нечем проверить.
+ * Это аномалии, записанные СЕРВЕРОМ по прошлой отправке (Р20), а не предупреждения при вводе:
+ * первые уже лежат в учёте и ждут ответа человека, вторые считаются здесь же по ходу набора.
+ * Показываются они вместе, одним предупреждением — водителю всё равно, кто именно усомнился.
  */
 function anomalyNotes(item: ReportItemDto): string[] {
   const reading = item.reading;
@@ -84,6 +102,7 @@ function FieldError({ text }: { text?: string }) {
 function NumberField({
   label,
   value,
+  hint,
   error,
   integer,
   suffix,
@@ -91,6 +110,8 @@ function NumberField({
 }: {
   label: string;
   value: string;
+  /** «предыдущее: 145 320 (10.08)» — то, с чем водитель сверяет набранное (П1). */
+  hint?: string;
   error?: string;
   integer: boolean;
   suffix: string;
@@ -112,6 +133,15 @@ function NumberField({
         onFocus={keepVisible}
         onChange={(e) => onChange(normalizeDecimal(e.target.value, integer))}
       />
+      {/* Подпись с предыдущим значением остаётся и при ошибке: именно она подсказывает, каким
+          число должно быть, — убрать её там, где она нужнее всего, было бы странно. */}
+      {hint && (
+        <div>
+          <Typography.Text type="secondary" style={hintStyle}>
+            {hint}
+          </Typography.Text>
+        </div>
+      )}
       <FieldError text={error} />
     </label>
   );
@@ -120,6 +150,8 @@ function NumberField({
 export interface ReadingBlockProps {
   item: ReportItemDto;
   value: DraftItem;
+  /** Предыдущий снимок счётчиков этой машины; `null` — начало ряда, сравнивать не с чем. */
+  previous: DriverPreviousReading | null;
   /** Ошибки по именам полей схемы: их же именами их и подсвечивает форма. */
   errors: Record<string, string>;
   uploading: boolean;
@@ -131,6 +163,7 @@ export interface ReadingBlockProps {
 export function ReadingBlock({
   item,
   value,
+  previous,
   errors,
   uploading,
   onChange,
@@ -138,7 +171,27 @@ export function ReadingBlock({
   onRemoveFile,
 }: ReadingBlockProps) {
   const attached = item.reading?.fileIds.length ?? 0;
-  const anomalies = anomalyNotes(item);
+
+  /*
+   * Предупреждения считаются на каждом наборе символа и той же чистой проверкой, которой лист не
+   * пускает отправку: одно правило на показ и на запрет — иначе форма предупреждала бы об одном, а
+   * не пускала за другое.
+   */
+  const warnings = readingWarnings(
+    {
+      odometerKm: parseReadingNumber(value.odometerKm),
+      engineHours: parseReadingNumber(value.engineHours),
+      fuelFilledLiters: parseReadingNumber(value.fuelFilledLiters),
+    },
+    previous,
+  );
+  // Грубое — под полем красным: это не вопрос к человеку, а опечатка в разряде, и подтверждать её
+  // нечем. Мягкое — общим предупреждением с галочкой: странное число бывает правдой (Р6).
+  const hardOf = (field: ReadingField): string | undefined =>
+    warnings.find((w) => w.hard && w.field === field)?.text;
+  const notes = [...anomalyNotes(item), ...warnings.filter((w) => !w.hard).map((w) => w.text)];
+  const closedByStaff = item.reading?.kind === 'no_data';
+
   return (
     <div
       // Идентификатор нужен отказу отправки: он приводит к первому незаполненному блоку.
@@ -161,17 +214,29 @@ export function ReadingBlock({
         </div>
       </div>
 
-      {/* Аномалия показывается по прошлой отправке и требует ответа человека: без подтверждения
-          день не примут (Р22), а исправлять верную цифру нечем. Подтверждение уезжает следующей
-          отправкой — тем же запросом, что и сами числа. */}
-      {anomalies.length > 0 && (
+      {/* Строку без показаний закрывает персонал (Р4). Водителю об этом говорят прямо: иначе он
+          видел бы пустой блок, который отказывается уходить, и не понимал, чего от него хотят. */}
+      {closedByStaff && (
+        <Alert
+          type="info"
+          showIcon
+          message="Строку закрыл диспетчер"
+          description={item.reading?.noDataReason}
+        />
+      )}
+
+      {/* Предупреждение требует ответа человека, а не отказывает: и серверная аномалия (день без
+          подтверждения не примут, Р22), и расхождение с предыдущим снимком бывают правдой —
+          счётчик заменили, машина неделю стояла в поле. Подтверждение уезжает той же отправкой,
+          что и сами числа. */}
+      {notes.length > 0 && (
         <Alert
           type="warning"
           showIcon
-          message="Показание сильно отличается от предыдущего"
+          message="Проверьте показание перед отправкой"
           description={
             <>
-              {anomalies.map((note) => (
+              {notes.map((note) => (
                 <div key={note}>{note}</div>
               ))}
               <Checkbox
@@ -179,79 +244,44 @@ export function ReadingBlock({
                 onChange={(e) => onChange({ confirmAnomaly: e.target.checked })}
                 style={{ marginTop: 8 }}
               >
-                Значение верное, подтверждаю
+                Всё верно, подтверждаю
               </Checkbox>
             </>
           }
         />
       )}
 
-      {/* Переключатель гасит и очищает числа: «нет данных» — это строка с причиной и без чисел
-          (Р18), и оставленное в поле значение противоречило бы виду показания. Без него водитель
-          не мог бы закрыть день по машине с неисправным счётчиком, а приёмка требует закрытых
-          строк (Р22). */}
-      <Space size={8}>
-        <Switch
-          checked={value.noData}
-          onChange={(checked) =>
-            onChange(
-              checked
-                ? { noData: true, odometerKm: '', engineHours: '', fuelFilledLiters: '' }
-                : { noData: false, noDataReason: '' },
-            )
-          }
-        />
-        <span>Нет возможности снять показания</span>
-      </Space>
-
-      {value.noData ? (
-        <label style={{ display: 'block' }}>
-          <Typography.Text type="secondary" style={hintStyle}>
-            Причина
-          </Typography.Text>
-          <Input.TextArea
-            value={value.noDataReason}
-            autoSize={{ minRows: 2 }}
-            maxLength={500}
-            status={errors.noDataReason ? 'error' : undefined}
-            placeholder="Счётчик неисправен, машину увёл сменщик, кабина опечатана"
-            onFocus={keepVisible}
-            onChange={(e) => onChange({ noDataReason: e.target.value })}
-          />
-          <FieldError text={errors.noDataReason} />
-        </label>
-      ) : (
-        <>
-          {/* Показание счётчика НА КОНЕЦ СМЕНЫ, а не работа за смену: хранится снимок, разности
-              считает сервер — вычитать в уме водителю не за чем (ADR 0103). */}
-          <NumberField
-            label="Одометр на конец смены"
-            suffix="км"
-            integer
-            value={value.odometerKm}
-            error={errors.odometerKm}
-            onChange={(next) => onChange({ odometerKm: next })}
-          />
-          <NumberField
-            label="Моточасы на конец смены"
-            suffix="ч"
-            integer={false}
-            value={value.engineHours}
-            error={errors.engineHours}
-            onChange={(next) => onChange({ engineHours: next })}
-          />
-          {/* Заправлено ЗА СМЕНУ, а не остаток в баке: остатков портал не хранит и расхода не
-              считает (Р28) — подпись обязана называть то, что спрашивают. */}
-          <NumberField
-            label="Заправлено за смену"
-            suffix="л"
-            integer={false}
-            value={value.fuelFilledLiters}
-            error={errors.fuelFilledLiters}
-            onChange={(next) => onChange({ fuelFilledLiters: next })}
-          />
-        </>
-      )}
+      {/* Показание счётчика НА КОНЕЦ СМЕНЫ, а не работа за смену: хранится снимок, разности
+          считает сервер — вычитать в уме водителю не за чем (ADR 0103). */}
+      <NumberField
+        label="Одометр на конец смены"
+        suffix="км"
+        integer
+        value={value.odometerKm}
+        hint={previousHintText(previous, 'odometerKm')}
+        error={errors.odometerKm ?? hardOf('odometerKm')}
+        onChange={(next) => onChange({ odometerKm: next })}
+      />
+      <NumberField
+        label="Моточасы на конец смены"
+        suffix="ч"
+        integer={false}
+        value={value.engineHours}
+        hint={previousHintText(previous, 'engineHours')}
+        error={errors.engineHours ?? hardOf('engineHours')}
+        onChange={(next) => onChange({ engineHours: next })}
+      />
+      {/* Заправлено ЗА СМЕНУ, а не остаток в баке: остатков портал не хранит и расхода не
+          считает (Р28) — подпись обязана называть то, что спрашивают. Предыдущего снимка у
+          заправки нет вовсе: она разовая, и сравнивать её не с чем. */}
+      <NumberField
+        label="Заправлено за смену"
+        suffix="л"
+        integer={false}
+        value={value.fuelFilledLiters}
+        error={errors.fuelFilledLiters ?? hardOf('fuelFilledLiters')}
+        onChange={(next) => onChange({ fuelFilledLiters: next })}
+      />
 
       <label style={{ display: 'block' }}>
         <Typography.Text type="secondary" style={hintStyle}>

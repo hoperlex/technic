@@ -99,12 +99,21 @@ async function migrate(databaseUrl: string): Promise<void> {
  * Уборка своих данных — и перед прогоном тоже: упавший прогон оставляет отчёты, а ряд счётчиков
  * следующего прогона они сдвинули бы молча. Порядок обратный ссылкам: отчёты (за ними каскадом
  * строки, показания и обе истории), затем документы, заявки, машины и люди.
+ *
+ * Листы ищутся ещё и по метке машины, а не только по работнику: лист этой машины мог выписать
+ * прежний прогон под другой учёткой, и «свои» по водителю его не нашли бы — а машину он держит
+ * `RESTRICT`'ом, и следующий прогон упёрся бы в неудаляемую строку.
  */
 async function cleanup(db: typeof AppDb): Promise<void> {
   const persons = sql`(SELECT id FROM persons WHERE comment = ${MARK})`;
+  const vehicles = sql`(SELECT id FROM vehicles WHERE note = ${MARK})`;
   await db.execute(sql`DELETE FROM driver_daily_reports WHERE person_id IN ${persons}`);
-  await db.execute(sql`DELETE FROM waybills WHERE driver_person_id IN ${persons}`);
-  await db.execute(sql`DELETE FROM vehicle_routes WHERE driver_person_id IN ${persons}`);
+  await db.execute(
+    sql`DELETE FROM waybills WHERE driver_person_id IN ${persons} OR vehicle_id IN ${vehicles}`,
+  );
+  await db.execute(
+    sql`DELETE FROM vehicle_routes WHERE driver_person_id IN ${persons} OR vehicle_id IN ${vehicles}`,
+  );
   await db.execute(sql`DELETE FROM vehicle_requests WHERE comment = ${MARK}`);
   await db.execute(sql`DELETE FROM vehicles WHERE note = ${MARK}`);
   await db.execute(sql`DELETE FROM persons WHERE comment = ${MARK}`);
@@ -167,8 +176,17 @@ async function newRequest(): Promise<string> {
 /**
  * Рейс-перегон: он виден в задании всегда, тогда как грузовой пропадает, оставшись без живых
  * заявок состава, — а тесту нужен источник, а не проверка отбора заданий.
+ *
+ * Лист 4-П выписывается тут же, если не сказано иного: кабинет строго документален (ADR 0105, Р5),
+ * и рейс без действительного листа не даёт ни строки задания, ни строки ожидания. Фикстура тем
+ * самым описывает жизнь: у рейса, по которому сдают показания, лист выписан.
  */
-async function newRoute(vehicleId: string, date: string, personId: string): Promise<string> {
+async function newRoute(
+  vehicleId: string,
+  date: string,
+  personId: string,
+  opts: { waybill?: boolean } = {},
+): Promise<string> {
   const [route] = await ctx.db
     .insert(ctx.schema.vehicleRoutes)
     .values({
@@ -182,6 +200,7 @@ async function newRoute(vehicleId: string, date: string, personId: string): Prom
       createdBy: ctx.adminId,
     })
     .returning({ id: ctx.schema.vehicleRoutes.id });
+  if (opts.waybill ?? true) await new4p(route!.id, vehicleId, personId, date);
   return route!.id;
 }
 
@@ -354,7 +373,11 @@ describe.skipIf(!DB_URL)('показания техники: отчёт дня �
   });
 
   it('канонический источник: лист 4-П карточки не даёт, ЭСМ-2 даёт', async () => {
-    const routeId = await newRoute(ctx.vehicles.route, ctx.today, ctx.drivers.canon);
+    // Лист выписывается здесь же, руками, а не фикстурой: он и есть предмет проверки, а действующий
+    // лист на рейс всего один (`waybills_route_unique`).
+    const routeId = await newRoute(ctx.vehicles.route, ctx.today, ctx.drivers.canon, {
+      waybill: false,
+    });
     const fourPId = await new4p(routeId, ctx.vehicles.route, ctx.drivers.canon, ctx.today);
     const esm2Id = await newEsm2(ctx.vehicles.esm2, ctx.drivers.canon, ctx.today);
 
@@ -433,6 +456,9 @@ describe.skipIf(!DB_URL)('показания техники: отчёт дня �
           },
           ctx.adminId,
           null,
+          // Вид `no_data` водителю запрещён вовсе (план кабинета, Р4), и его отправка не дошла бы
+          // до CHECK: проверять последний рубеж надо тем, кому этот вид разрешён, — персоналом.
+          { mode: 'staff' },
         ),
       ),
     ).toBe('vehicle_readings_values_check');

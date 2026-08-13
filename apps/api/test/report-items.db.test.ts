@@ -97,12 +97,21 @@ async function migrate(databaseUrl: string): Promise<void> {
  * Уборка своих данных — и перед прогоном тоже: упавший прогон оставляет отчёты, а брошенная строка
  * ожидания держала бы источник занятым и в следующем. Порядок обратный ссылкам: отчёты (за ними
  * каскадом строки, показания и обе истории), затем документы, заявки, машины, люди и серии.
+ *
+ * Листы и рейсы ищутся ещё и по метке машины, а не только по работнику: переназначение водителя
+ * тест делает сам, и после него «свои» по прежнему водителю нашлись бы не все, — а машину они держат
+ * `RESTRICT`'ом, и следующий прогон упёрся бы в неудаляемую строку.
  */
 async function cleanup(db: typeof AppDb): Promise<void> {
   const persons = sql`(SELECT id FROM persons WHERE comment = ${MARK})`;
+  const vehicles = sql`(SELECT id FROM vehicles WHERE note = ${MARK})`;
   await db.execute(sql`DELETE FROM driver_daily_reports WHERE person_id IN ${persons}`);
-  await db.execute(sql`DELETE FROM waybills WHERE driver_person_id IN ${persons}`);
-  await db.execute(sql`DELETE FROM vehicle_routes WHERE driver_person_id IN ${persons}`);
+  await db.execute(
+    sql`DELETE FROM waybills WHERE driver_person_id IN ${persons} OR vehicle_id IN ${vehicles}`,
+  );
+  await db.execute(
+    sql`DELETE FROM vehicle_routes WHERE driver_person_id IN ${persons} OR vehicle_id IN ${vehicles}`,
+  );
   await db.execute(sql`DELETE FROM vehicle_requests WHERE comment = ${MARK}`);
   await db.execute(sql`DELETE FROM vehicles WHERE note = ${MARK}`);
   await db.execute(sql`DELETE FROM persons WHERE comment = ${MARK}`);
@@ -167,6 +176,10 @@ async function newRequest(): Promise<string> {
 /**
  * Рейс-перегон: он виден в задании всегда, тогда как грузовой пропадает, оставшись без живых
  * заявок состава, — а тесту нужен источник, а не проверка отбора заданий.
+ *
+ * Лист 4-П выписывается тут же: кабинет строго документален (ADR 0105, Р5), и рейс без
+ * действительного листа строки ожидания не даёт вовсе. Фикстура тем самым описывает жизнь: у рейса,
+ * по которому сдают показания, лист выписан.
  */
 async function newRoute(vehicleId: string, date: string, personId: string): Promise<string> {
   const [route] = await ctx.db
@@ -182,7 +195,56 @@ async function newRoute(vehicleId: string, date: string, personId: string): Prom
       createdBy: ctx.adminId,
     })
     .returning({ id: ctx.schema.vehicleRoutes.id });
+  await issueWaybillFor(route!.id, vehicleId, personId, date);
   return route!.id;
+}
+
+/**
+ * Лист 4-П по рейсу — та самая бумага, без которой рейса для кабинета нет (Р5). Форма требует
+ * заполненного `route_id` (`waybills_form_source_check`), и своей строки такой лист не даёт (Р16):
+ * его выезд уже представлен рейсом.
+ */
+async function issueWaybillFor(
+  routeId: string,
+  vehicleId: string,
+  personId: string,
+  day: string,
+): Promise<string> {
+  waybillNo += 1;
+  const [waybill] = await ctx.db
+    .insert(ctx.schema.waybills)
+    .values({
+      seriesId: ctx.seriesId,
+      number: waybillNo,
+      formCode: '4p',
+      status: 'issued',
+      organizationId: ctx.organizationId,
+      vehicleId,
+      driverPersonId: personId,
+      issuedForDate: day,
+      routeId,
+      issuedBy: ctx.adminId,
+    })
+    .returning({ id: ctx.schema.waybills.id });
+  return waybill!.id;
+}
+
+/**
+ * Переназначение рейса так, как оно происходит в жизни: вместе с рейсом переписывается и лист.
+ *
+ * Бумага именная, и кабинет спрашивает лист **этого** работника (ADR 0105): передвинуть один рейс
+ * значило бы проверять состав в состоянии, где документ противоречит наряду. Такое состояние —
+ * предмет отдельного теста ниже, а не фон для остальных.
+ */
+async function reassignRoute(routeId: string, personId: string): Promise<void> {
+  await ctx.db
+    .update(ctx.schema.vehicleRoutes)
+    .set({ driverPersonId: personId })
+    .where(eq(ctx.schema.vehicleRoutes.id, routeId));
+  await ctx.db
+    .update(ctx.schema.waybills)
+    .set({ driverPersonId: personId })
+    .where(eq(ctx.schema.waybills.routeId, routeId));
 }
 
 /** Действующий недельный лист ЭСМ-2: неделя целиком, от понедельника (`waybills_period_check`). */
@@ -394,10 +456,7 @@ describe.skipIf(!DB_URL)('строки ожидания: состав отчёт
     expect(before.items.map((i) => i.sourceId)).toEqual([routeId]);
 
     // Переназначение рейса — действие чужого модуля: предмет теста в том, что ему отвечает состав.
-    await ctx.db
-      .update(ctx.schema.vehicleRoutes)
-      .set({ driverPersonId: heir })
-      .where(eq(ctx.schema.vehicleRoutes.id, routeId));
+    await reassignRoute(routeId, heir);
 
     const taken = await ctx.service.openReport(heir, ctx.today, ctx.adminId);
     expect(taken.items.map((i) => i.sourceId)).toEqual([routeId]);
@@ -439,10 +498,7 @@ describe.skipIf(!DB_URL)('строки ожидания: состав отчёт
     );
     expect(sent.state).toBe('submitted');
 
-    await ctx.db
-      .update(ctx.schema.vehicleRoutes)
-      .set({ driverPersonId: heir })
-      .where(eq(ctx.schema.vehicleRoutes.id, openRouteId));
+    await reassignRoute(openRouteId, heir);
 
     // У нового работника рейс в задании есть, а строки нет: отправленный отчёт заморожен, и состав
     // его меняет не синхронизация, а человек — разбором расхождения.

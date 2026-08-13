@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { App, Alert, Button, Drawer, Skeleton, Space } from 'antd';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import dayjs from 'dayjs';
 import {
   readingInputSchema,
+  type DriverPreviousReading,
   type DriverReportDto,
   type ReadingInput,
   type ReportItemDto,
@@ -14,6 +15,7 @@ import { FILE_MAX_COUNT, FILE_MAX_SIZE } from '@shared/config';
 import { errorMessage } from '@shared/lib';
 import { filesApi } from '../../api/resources';
 import { ReadingBlock } from './DriverReadingBlock';
+import { parseReadingNumber, readingWarnings } from './readingLimits';
 import {
   clearDraft,
   driverCabinetApi,
@@ -21,7 +23,6 @@ import {
   loadDraft,
   newIdempotencyKey,
   saveDraft,
-  type DraftFile,
   type DraftItem,
 } from './api';
 
@@ -49,8 +50,6 @@ const emptyItem = (): DraftItem => ({
   engineHours: '',
   fuelFilledLiters: '',
   comment: '',
-  noData: false,
-  noDataReason: '',
   files: [],
   confirmAnomaly: false,
 });
@@ -69,14 +68,14 @@ function seedValues(
   const values: Record<string, DraftItem> = {};
   for (const item of report.items) {
     const reading = item.reading;
+    // Строка, закрытая персоналом видом `no_data`, приходит без чисел — и поля остаются пустыми:
+    // причину её закрытия водитель читает, но не редактирует (Р4).
     const base: DraftItem = reading
       ? {
           odometerKm: show(reading.odometerKm),
           engineHours: show(reading.engineHours),
           fuelFilledLiters: show(reading.fuelFilledLiters),
           comment: reading.comment,
-          noData: reading.kind === 'no_data',
-          noDataReason: reading.noDataReason,
           // Уже привязанные файлы сюда не попадают: отправка принимает только непривязанные
           // (Р18), и повтор их идентификаторов был бы отказом сервера.
           files: [],
@@ -90,13 +89,9 @@ function seedValues(
   return values;
 }
 
-/** Пусто — это `null` (поля нет физически), а не ноль: ноль в учёте счётчика был бы ложью. */
-function parseNumber(raw: string): number | null | 'invalid' {
-  const text = raw.trim();
-  if (text === '') return null;
-  const value = Number(text);
-  return Number.isFinite(value) ? value : 'invalid';
-}
+/** Ключ сопоставления строки ожидания с заданием: источник у них общий, а `itemId` — не всегда. */
+const sourceKey = (entry: { sourceKind: string; sourceId: string }): string =>
+  `${entry.sourceKind}:${entry.sourceId}`;
 
 /**
  * Куда встал низ листа при открытой клавиатуре.
@@ -143,6 +138,23 @@ export function DriverReadingsSheet({ open, date, userId, onClose }: Props) {
   const [uploadingId, setUploadingId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const keyboardInset = useKeyboardInset(open);
+
+  /**
+   * Предыдущий снимок счётчиков живёт в задании, а не в отчёте, и берётся тем же ключом, которым
+   * его уже читает каркас кабинета: второго запроса не будет, данные придут те же. Сопоставление —
+   * по источнику, а не по `itemId`: в задании он появляется только после открытия отчёта.
+   */
+  const assignment = useQuery({
+    queryKey: driverKeys.assignment(date),
+    queryFn: () => driverCabinetApi.assignment(date),
+    enabled: open,
+  });
+  const previousBySource = useMemo(
+    () => new Map((assignment.data?.entries ?? []).map((e) => [sourceKey(e), e.previous])),
+    [assignment.data],
+  );
+  const previousOf = (item: ReportItemDto): DriverPreviousReading | null =>
+    previousBySource.get(sourceKey(item)) ?? null;
 
   /**
    * Открытие оверлея и есть открытие отчёта: сервер заводит черновик и строки ожидания по
@@ -198,14 +210,10 @@ export function DriverReadingsSheet({ open, date, userId, onClose }: Props) {
     }
     setUploadingId(itemId);
     try {
-      const dto = await filesApi.upload(file);
-      const added: DraftFile = {
-        id: dto.id,
-        filename: dto.filename,
-        contentType: dto.contentType,
-        size: dto.size,
-      };
-      update(itemId, { files: [...current.files, added] });
+      // Из ответа берутся ровно те поля, что нужны черновику: он лежит в localStorage, и класть
+      // туда весь ответ хранилища значило бы хранить лишнее о чужом файле.
+      const { id, filename, contentType, size } = await filesApi.upload(file);
+      update(itemId, { files: [...current.files, { id, filename, contentType, size }] });
     } catch (e) {
       message.error(errorMessage(e));
     } finally {
@@ -221,30 +229,38 @@ export function DriverReadingsSheet({ open, date, userId, onClose }: Props) {
     void filesApi.remove(fileId).catch(() => undefined);
   };
 
-  /** Собирает строку отправки либо ошибки блока: числа и вид показания проверяет схема контракта. */
+  /**
+   * Собирает строку отправки либо ошибки блока: числа проверяет схема контракта, правдоподобие —
+   * предупреждения при вводе (Р6). Вида `no_data` здесь больше нет: строку без показаний закрывает
+   * только персонал (Р4), и сервер отправку водителя с таким видом отклоняет.
+   */
   const buildItem = (
     item: ReportItemDto,
-  ): { submit: ReportItemSubmit } | { errors: Record<string, string> } => {
+  ): { submit: ReportItemSubmit } | { errors: Record<string, string> } | { skip: true } => {
     const value = values[item.id] ?? emptyItem();
-    if (value.noData) {
-      const reading: ReadingInput = {
-        kind: 'no_data',
-        noDataReason: value.noDataReason,
-        comment: value.comment,
-      };
-      const parsed = readingInputSchema.safeParse(reading);
-      if (!parsed.success) return { errors: issueMessages(parsed.error.issues) };
-      return { submit: submitItem(item.id, parsed.data, value) };
-    }
-
     const numbers = {
-      odometerKm: parseNumber(value.odometerKm),
-      engineHours: parseNumber(value.engineHours),
-      fuelFilledLiters: parseNumber(value.fuelFilledLiters),
+      odometerKm: parseReadingNumber(value.odometerKm),
+      engineHours: parseReadingNumber(value.engineHours),
+      fuelFilledLiters: parseReadingNumber(value.fuelFilledLiters),
     };
     const broken = Object.entries(numbers).filter(([, v]) => v === 'invalid');
     if (broken.length > 0)
       return { errors: Object.fromEntries(broken.map(([field]) => [field, 'Введите число'])) };
+
+    // Строку, уже закрытую персоналом видом `no_data`, водитель не переоткрывает и пустой не
+    // заполняет: иначе один блок без чисел — а чисел там и не бывает — не давал бы сдать весь день.
+    const untouched = !value.odometerKm && !value.engineHours && !value.fuelFilledLiters;
+    if (item.reading?.kind === 'no_data' && untouched) return { skip: true };
+
+    // Грубое (вне абсолютных границ) отправку не пропускает вовсе: подтверждать опечатку в разряде
+    // бессмысленно — её подтвердят так же, как набрали. Мягкое снимается галочкой: странное число
+    // бывает правдой (Р6).
+    const warnings = readingWarnings(numbers, previousOf(item));
+    const hard = warnings.filter((w) => w.hard);
+    if (hard.length > 0) return { errors: Object.fromEntries(hard.map((w) => [w.field, w.text])) };
+    const soft = warnings.filter((w) => !w.hard);
+    if (soft.length > 0 && !value.confirmAnomaly)
+      return { errors: { [soft[0]!.field]: 'Подтвердите значение галочкой «Всё верно»' } };
 
     const parsed = readingInputSchema.safeParse({
       kind: 'values',
@@ -262,13 +278,18 @@ export function DriverReadingsSheet({ open, date, userId, onClose }: Props) {
     for (const item of report.items) {
       const built = buildItem(item);
       if ('submit' in built) items.push(built.submit);
-      else nextErrors[item.id] = built.errors;
+      else if ('errors' in built) nextErrors[item.id] = built.errors;
     }
     setErrors(nextErrors);
     const firstBad = report.items.find((item) => nextErrors[item.id]);
     if (firstBad) {
       // Отказ называет поле и приводит к нему, а не уходит тостом в угол экрана (ADR 0094).
       document.getElementById(`reading-${firstBad.id}`)?.scrollIntoView({ block: 'center' });
+      return;
+    }
+    if (items.length === 0) {
+      // Все строки дня закрыл персонал: отправлять нечего, а пустое тело сервер и не примет.
+      message.info('Передавать нечего: строки этого дня уже закрыты');
       return;
     }
 
@@ -282,11 +303,9 @@ export function DriverReadingsSheet({ open, date, userId, onClose }: Props) {
       onClose();
     } catch (e) {
       message.error(errorMessage(e));
-      /*
-       * 409 — либо расхождение версий (состав дня успели изменить), либо тот же ключ
-       * идемпотентности с другим телом. И в том, и в другом случае лечится одним: перечитать
-       * строки. Введённое при этом остаётся на экране — оно и есть то, что не доехало.
-       */
+      // 409 — либо расхождение версий (состав дня успели изменить), либо тот же ключ
+      // идемпотентности с другим телом; и то, и другое лечится одним: перечитать строки. Введённое
+      // остаётся на экране — оно и есть то, что не доехало.
       if (isApiError(e) && e.status === 409) {
         const fresh = await driverCabinetApi.open(date).catch(() => null);
         if (fresh) setReport(fresh);
@@ -340,6 +359,7 @@ export function DriverReadingsSheet({ open, date, userId, onClose }: Props) {
               key={item.id}
               item={item}
               value={values[item.id] ?? emptyItem()}
+              previous={previousOf(item)}
               errors={errors[item.id] ?? {}}
               uploading={uploadingId === item.id}
               onChange={(patch) => update(item.id, patch)}

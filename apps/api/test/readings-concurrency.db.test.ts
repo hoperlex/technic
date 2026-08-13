@@ -40,9 +40,17 @@ import type * as ReadingsNs from '../src/services/readings';
 
 const DB_URL = process.env.TEST_DATABASE_URL;
 
+/** Уникальный хвост прогона: база общая и переживает прогоны, а код серии бланков уникален. */
+const RUN = `${Date.now().toString(36)}${randomUUID().slice(0, 4)}`;
 const ADMIN_EMAIL = 'db-readings-concurrency-admin@example.invalid';
 /** Метка своих данных: база у db-тестов общая, и уборка идёт по ней, а не «по последним строкам». */
 const MARK = 'ТЕСТОВЫЕ ДАННЫЕ: сериализация показаний';
+/**
+ * Своя серия бланков, а не общая: номер уникален внутри серии, и нумеровать листы в чужой серии
+ * значило бы драться за номера с соседним db-тестом того же прогона. Префикс `zz_` — чтобы серия не
+ * стала первой у тестов, берущих её `ORDER BY code LIMIT 1`.
+ */
+const SERIES_CODE_PREFIX = 'zz_readings_concurrency_';
 
 interface Ctx {
   db: typeof AppDb;
@@ -52,12 +60,15 @@ interface Ctx {
   adminId: string;
   objectId: string;
   typeId: string;
+  organizationId: string;
+  seriesId: string;
   today: string;
   /** Общая машина двух водителей: на ней проверяются развилка цепочки и перестановка смен. */
   shared: { vehicleId: string; first: string; second: string };
 }
 
 let ctx: Ctx;
+let waybillNo = 0;
 
 function prepareEnv(databaseUrl: string): void {
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
@@ -90,8 +101,9 @@ async function migrate(databaseUrl: string): Promise<void> {
  *
  * Порядок обратный ссылкам и обязателен: показания держат машину и работника `RESTRICT`'ом (ADR
  * 0103) — учётный факт не исчезает вместе со справочной строкой, — а рейсы держат машину. Поэтому
- * сначала отчёты (за ними каскадом строки ожидания, показания и обе истории), затем рейсы, заявки,
- * машины и люди. Рейсы ищутся и по метке машины: их мог завести прежний прогон под другой учёткой.
+ * сначала отчёты (за ними каскадом строки ожидания, показания и обе истории), затем листы, рейсы,
+ * заявки, машины, люди и серии. Листы и рейсы ищутся и по метке машины: их мог завести прежний
+ * прогон под другой учёткой, и «свои» по водителю его не нашли бы.
  */
 async function cleanup(db: typeof AppDb): Promise<void> {
   const persons = sql`(SELECT id FROM persons WHERE comment = ${MARK})`;
@@ -106,6 +118,7 @@ async function cleanup(db: typeof AppDb): Promise<void> {
   await db.execute(sql`DELETE FROM vehicle_requests WHERE comment = ${MARK}`);
   await db.execute(sql`DELETE FROM vehicles WHERE note = ${MARK}`);
   await db.execute(sql`DELETE FROM persons WHERE comment = ${MARK}`);
+  await db.execute(sql`DELETE FROM waybill_series WHERE code LIKE ${`${SERIES_CODE_PREFIX}%`}`);
 }
 
 async function seedAdmin(db: typeof AppDb, schema: typeof SchemaNs): Promise<string> {
@@ -165,6 +178,10 @@ async function newRequest(): Promise<string> {
 /**
  * Рейс-перегон: он виден в задании всегда, тогда как грузовой пропадает, оставшись без живых
  * заявок состава, — а тесту нужен источник, а не проверка отбора заданий.
+ *
+ * Лист 4-П выписывается тут же: кабинет строго документален (ADR 0105, Р5), и рейс без
+ * действительного листа строки ожидания не даёт вовсе. Фикстура тем самым описывает жизнь: у рейса,
+ * по которому сдают показания, лист выписан.
  */
 async function newRoute(vehicleId: string, date: string, personId: string): Promise<string> {
   const [route] = await ctx.db
@@ -180,7 +197,38 @@ async function newRoute(vehicleId: string, date: string, personId: string): Prom
       createdBy: ctx.adminId,
     })
     .returning({ id: ctx.schema.vehicleRoutes.id });
+  await issueWaybillFor(route!.id, vehicleId, personId, date);
   return route!.id;
+}
+
+/**
+ * Лист 4-П по рейсу — та самая бумага, без которой рейса для кабинета нет (Р5). Форма требует
+ * заполненного `route_id` (`waybills_form_source_check`), и своей строки такой лист не даёт: его
+ * выезд уже представлен рейсом.
+ */
+async function issueWaybillFor(
+  routeId: string,
+  vehicleId: string,
+  personId: string,
+  day: string,
+): Promise<string> {
+  waybillNo += 1;
+  const [waybill] = await ctx.db
+    .insert(ctx.schema.waybills)
+    .values({
+      seriesId: ctx.seriesId,
+      number: waybillNo,
+      formCode: '4p',
+      status: 'issued',
+      organizationId: ctx.organizationId,
+      vehicleId,
+      driverPersonId: personId,
+      issuedForDate: day,
+      routeId,
+      issuedBy: ctx.adminId,
+    })
+    .returning({ id: ctx.schema.waybills.id });
+  return waybill!.id;
 }
 
 /** Числа показания: поля с умолчаниями схема заполняет сама, а сервис зовётся уже разобранным телом. */
@@ -288,7 +336,20 @@ describe.skipIf(!DB_URL)('показания: сериализация, цепо
           JOIN vehicle_kinds vk ON vk.id = vt.kind_id
           WHERE vk.code = 'freight_transport' ORDER BY vt.code LIMIT 1`,
     );
-    if (!objects.rows[0] || !types.rows[0]) throw new Error('В базе нет объекта или типа ТС');
+    const organizations = await db.execute<{ id: string }>(
+      sql`SELECT id FROM organizations ORDER BY id LIMIT 1`,
+    );
+    if (!objects.rows[0] || !types.rows[0] || !organizations.rows[0]) {
+      throw new Error('В базе нет объекта, типа ТС или организации');
+    }
+    const [series] = await db
+      .insert(schema.waybillSeries)
+      .values({
+        code: `${SERIES_CODE_PREFIX}${RUN}`,
+        name: `Тестовая серия (сериализация показаний) ${RUN}`,
+        prefix: 'СЕР-',
+      })
+      .returning({ id: schema.waybillSeries.id });
 
     ctx = {
       db,
@@ -298,6 +359,8 @@ describe.skipIf(!DB_URL)('показания: сериализация, цепо
       adminId,
       objectId: objects.rows[0].id,
       typeId: types.rows[0].id,
+      organizationId: organizations.rows[0].id,
+      seriesId: series!.id,
       today: moscowDateKeyOf(new Date()),
       shared: { vehicleId: '', first: '', second: '' },
     };

@@ -1,9 +1,10 @@
-import { and, asc, eq, gte, inArray, isNull, lte, ne } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNull, lt, lte, ne } from 'drizzle-orm';
 import {
   type DriverAssignmentContact,
   type DriverAssignmentDto,
   type DriverAssignmentEntry,
   type DriverAssignmentRequest,
+  type DriverPreviousReading,
   formatMoscowDateTime,
   isRelocationPurpose,
   vehicleLabel,
@@ -18,6 +19,7 @@ import {
   specialEquipmentRequestDetails,
   vehicleCategories,
   vehicleModels,
+  vehicleReadings,
   vehicleRequests,
   vehicleRoutes,
   vehicles,
@@ -25,6 +27,7 @@ import {
   waybills,
   waybillSeries,
 } from '../db/schema';
+import { daysBetween } from './readings-chain';
 import { loadRouteDtos, routeQuery } from './vehicle-routes';
 
 /**
@@ -46,6 +49,13 @@ import { loadRouteDtos, routeQuery } from './vehicle-routes';
  * Чего в задании не бывает: листов 4-П и формы № 3 (Р16). Их выезд уже представлен рейсом —
  * `waybills_form_source_check` требует у этих форм заполненный `route_id`, — и своей строкой такой
  * лист задвоил бы одну и ту же смену.
+ *
+ * Третье свойство появилось после первого показа и разводит двух потребителей: **кабинет строго
+ * документален** (`docs/driver-cabinet-ux-plan.md`, Р5) — рейс входит в задание, только если по
+ * нему выписан действительный путевой лист, потому что показания некуда переносить, пока бланка
+ * нет. Письмо-рассылка этого условия не получает намеренно: оно уходит вечером накануне, когда
+ * листа обычно ещё нет, и лишить водителя адресов накануне выезда хуже расхождения каналов.
+ * Поэтому фильтр стоит на пути кабинета (`loadDayEntries`), а не в общей сборке рейсов.
  */
 
 /** Зачем выезд. Слов ровно три: рейс едет за грузом или перегоном, лист — работать на площадке. */
@@ -220,11 +230,24 @@ function routeEntry(
     moveFrom: route.moveFrom,
     moveTo: route.moveTo,
     comment: route.comment,
+    // Прошлый снимок счётчиков заполняет кабинет, и только он: письму сравнивать нечего — оно
+    // ничего не вводит, и лишний запрос ради непечатаемого поля был бы платой ни за что.
+    previous: null,
     relocation,
     basisLabel: route.sourceRequest
       ? `${route.sourceRequest.displayNumber} · ${route.sourceRequest.customerName}`
       : '',
   };
+}
+
+/**
+ * Строка задания вместе с машиной, на которой её едут. Машина наружу не выходит вовсе (Р13), но
+ * внутри слоя без неё не обойтись: прошлый снимок счётчиков ищется именно по машине, а искать его
+ * по подписи «КамАЗ 65115 · А123ВС45» значило бы держать вторым ключом строку для человека.
+ */
+interface EntrySource<E extends DriverAssignmentEntry> {
+  entry: E;
+  vehicleId: string;
 }
 
 /**
@@ -235,13 +258,16 @@ function routeEntry(
  * уже выписан), но ехать по ним не надо, и показать их — ввести водителя в заблуждение. Рейс,
  * оставшийся без единой живой заявки, не показывается вовсе: строка «Машина: …» без задания
  * сообщает ровно ничего. Перегон остаётся всегда — у него задание не в составе, а в «откуда/куда».
+ *
+ * Действительного листа этот отбор не спрашивает: условие Р5 принадлежит кабинету, а не общей
+ * сборке, — см. `loadDayEntries`.
  */
-export async function loadRouteEntries(
+async function routeSources(
   personId: string,
   dateFrom: string,
   dateTo: string,
-): Promise<Map<string, DriverRouteEntry[]>> {
-  const byDate = new Map<string, DriverRouteEntry[]>();
+): Promise<Map<string, EntrySource<DriverRouteEntry>[]>> {
+  const byDate = new Map<string, EntrySource<DriverRouteEntry>[]>();
 
   const rows = await routeQuery(db)
     .where(
@@ -284,10 +310,57 @@ export async function loadRouteEntries(
     const list = byDate.get(route.routeDate) ?? [];
     // Машина у рейса своя всегда (innerJoin в `routeQuery`), и подпись из карточки маршрута здесь
     // запасной вариант, а не второе правило.
-    list.push(routeEntry(route, labels.get(route.vehicleId) ?? route.vehicleLabel, extras));
+    list.push({
+      entry: routeEntry(route, labels.get(route.vehicleId) ?? route.vehicleLabel, extras),
+      vehicleId: route.vehicleId,
+    });
     byDate.set(route.routeDate, list);
   }
   return byDate;
+}
+
+/**
+ * Рейсы окна для письма-рассылки — те же, что собирает кабинет, но **без условия о листе** (Р5) и
+ * без прошлого снимка счётчиков: письмо адресует водителя к месту работы, а не принимает у него
+ * числа. Расхождение каналов названо в плане прямо и является решением, а не побочным следствием.
+ */
+export async function loadRouteEntries(
+  personId: string,
+  dateFrom: string,
+  dateTo: string,
+): Promise<Map<string, DriverRouteEntry[]>> {
+  const byDate = await routeSources(personId, dateFrom, dateTo);
+  return new Map([...byDate].map(([date, list]) => [date, list.map((source) => source.entry)]));
+}
+
+/**
+ * Рейсы, по которым выписан действительный лист: строка в `waybills` с этим `route_id` и статусом,
+ * отличным от `cancelled`. Спрашивается наличие документа, а не его форма: у рейса это 4-П или
+ * форма № 3 (`waybills_form_source_check`), и перечислять их здесь значило бы завести второе место,
+ * где записано, какими формами закрывается рейс.
+ *
+ * Аннулированный лист не считается выписанным намеренно: его номер списан, переносить показания
+ * некуда, и до перевыписки рейса для кабинета нет.
+ *
+ * Лист спрашивается **этого работника**, а не любой. Кабинет показывает то, на что у водителя есть
+ * бумага (ADR 0105), а бумага именная: `waybills.driver_person_id` заполнен всегда. Переназначили
+ * рейс, не перевыписав лист, — новый водитель рейса не увидит, и это верно: ехать ему не по чему,
+ * а прежний лист по-прежнему обязывает того, на кого выписан. Чинится это коррекцией листа
+ * (ADR 0101), а не показом чужого документа.
+ */
+async function documentedRoutes(routeIds: string[], personId: string): Promise<Set<string>> {
+  if (routeIds.length === 0) return new Set();
+  const rows = await db
+    .select({ routeId: waybills.routeId })
+    .from(waybills)
+    .where(
+      and(
+        inArray(waybills.routeId, routeIds),
+        ne(waybills.status, 'cancelled'),
+        eq(waybills.driverPersonId, personId),
+      ),
+    );
+  return new Set(rows.map((row) => row.routeId).filter((id): id is string => id !== null));
 }
 
 // ── Недельные листы ──
@@ -301,7 +374,10 @@ export async function loadRouteEntries(
  * Прочие формы сюда не попадают по правилу Р16, а не по недосмотру: у 4-П и формы № 3 заполнен
  * `route_id`, их выезд уже показан рейсом.
  */
-async function esm2Entries(personId: string, date: string): Promise<DriverAssignmentEntry[]> {
+async function esm2Sources(
+  personId: string,
+  date: string,
+): Promise<EntrySource<DriverAssignmentEntry>[]> {
   const rows = await db
     .select({
       id: waybills.id,
@@ -334,25 +410,91 @@ async function esm2Entries(personId: string, date: string): Promise<DriverAssign
   const labels = await vehicleLabels([...new Set(rows.map((row) => row.vehicleId))]);
 
   return rows.map((row) => ({
-    sourceKind: 'esm2',
-    sourceId: row.id,
-    sourceLabel: `ЭСМ-2 № ${waybillDisplayNumber(row.prefix, row.number, row.numberWidth)}`,
-    purposeLabel: PURPOSE_SITE,
-    vehicleLabel: labels.get(row.vehicleId) ?? '',
-    garageNumber: row.garageNumber,
-    trailerLabel: row.withTrailer
-      ? [row.trailer1Model, row.trailer1RegNumber].filter(Boolean).join(' ')
-      : '',
-    itemId: null,
-    shiftOrder: null,
-    // Состава у листа не бывает: неделю работы задаёт заявка-основание, а талонов заказчиков на
-    // площадке нет. Нет и «откуда/куда» — машина всю неделю там же, куда её привезли.
-    requests: [],
-    moveFrom: '',
-    moveTo: '',
-    // Комментарий пишут рейсу: у листа графы для слов диспетчера нет.
-    comment: '',
+    vehicleId: row.vehicleId,
+    entry: {
+      sourceKind: 'esm2',
+      sourceId: row.id,
+      sourceLabel: `ЭСМ-2 № ${waybillDisplayNumber(row.prefix, row.number, row.numberWidth)}`,
+      purposeLabel: PURPOSE_SITE,
+      vehicleLabel: labels.get(row.vehicleId) ?? '',
+      garageNumber: row.garageNumber,
+      trailerLabel: row.withTrailer
+        ? [row.trailer1Model, row.trailer1RegNumber].filter(Boolean).join(' ')
+        : '',
+      itemId: null,
+      shiftOrder: null,
+      // Состава у листа не бывает: неделю работы задаёт заявка-основание, а талонов заказчиков на
+      // площадке нет. Нет и «откуда/куда» — машина всю неделю там же, куда её привезли.
+      requests: [],
+      moveFrom: '',
+      moveTo: '',
+      // Комментарий пишут рейсу: у листа графы для слов диспетчера нет.
+      comment: '',
+      // Снимок счётчиков подставляет сборка дня — одним запросом на все машины сразу.
+      previous: null,
+    },
   }));
+}
+
+// ── Прошлый снимок счётчиков ──
+
+/**
+ * Последнее показание каждой машины **строго раньше** дня задания: по нему кабинет подписывает поле
+ * («предыдущее: 145 320 (10.08)») и предупреждает о падении счётчика ещё до отправки (план правок,
+ * Р6).
+ *
+ * Строгость границы существенна: показание того же дня водитель как раз и вводит — сравнивать его с
+ * самим собой значило бы объявить нормой любую цифру, лишь бы её однажды сохранили. Порядок —
+ * `(report_date, shift_order)`, тот же, каким идёт учётная цепочка (`readings-chain`): день без
+ * позиции смены не различает две смены одной машины.
+ *
+ * Берётся именно строка, а не два счётчика по отдельности: это подсказка «что было в прошлый раз», а
+ * не звено учёта. Цепочку по каждому счётчику отдельно ведёт `readings-chain`, и повторять её здесь
+ * значило бы завести второй источник правды о том, с чем сравнивают показание.
+ *
+ * `no_data` пропускается: в такой строке чисел нет по определению (`vehicle_readings_values_check`).
+ */
+async function previousReadings(
+  vehicleIds: string[],
+  date: string,
+): Promise<Map<string, DriverPreviousReading>> {
+  const map = new Map<string, DriverPreviousReading>();
+  if (vehicleIds.length === 0) return map;
+
+  // Один запрос на все машины дня, а не по запросу на строку: у машиниста с двумя листами и рейсом
+  // строк три, а машин обычно одна, и `DISTINCT ON` снимает ровно верхнюю строку каждой машины.
+  const rows = await db
+    .selectDistinctOn([vehicleReadings.vehicleId], {
+      vehicleId: vehicleReadings.vehicleId,
+      odometerKm: vehicleReadings.odometerKm,
+      engineHours: vehicleReadings.engineHours,
+      reportDate: vehicleReadings.reportDate,
+    })
+    .from(vehicleReadings)
+    .where(
+      and(
+        inArray(vehicleReadings.vehicleId, vehicleIds),
+        eq(vehicleReadings.kind, 'values'),
+        lt(vehicleReadings.reportDate, date),
+      ),
+    )
+    .orderBy(
+      asc(vehicleReadings.vehicleId),
+      desc(vehicleReadings.reportDate),
+      desc(vehicleReadings.shiftOrder),
+    );
+
+  for (const row of rows) {
+    map.set(row.vehicleId, {
+      odometerKm: row.odometerKm,
+      // Моточасы лежат `numeric(9,1)` и приходят строкой: портал сравнивает их числом, и оставить
+      // «9812.5» в поле числа значило бы отдать сравнение первому же `<` в браузере.
+      engineHours: row.engineHours === null ? null : Number(row.engineHours),
+      measuredOn: row.reportDate,
+      daysAgo: daysBetween(row.reportDate, date),
+    });
+  }
+  return map;
 }
 
 // ── Задание ──
@@ -363,17 +505,42 @@ async function esm2Entries(personId: string, date: string): Promise<DriverAssign
  *
  * Порядок тот же, каким день машины читает гараж: сначала рейсы, следом документ недели. Два экрана
  * не разойдутся, а водитель читает строку сверху вниз от того, куда сегодня ехать.
+ *
+ * Здесь же стоит условие Р5: рейс без действительного листа не входит в задание вовсе — ни карточкой
+ * ввода, ни адресами. Кабинет строго документален, потому что показание некуда переносить, пока
+ * бланка нет; цена решения — выехавший до выписки водитель не увидит адресов, и она названа в плане
+ * прямо. Недельный ЭСМ-2 фильтра не проходит: он сам себе лист, и в задание входит по своему
+ * периоду.
  */
 export async function loadDayEntries(
   personId: string,
   date: string,
 ): Promise<DriverAssignmentEntry[]> {
   const [byDate, weekly] = await Promise.all([
-    loadRouteEntries(personId, date, date),
-    esm2Entries(personId, date),
+    routeSources(personId, date, date),
+    esm2Sources(personId, date),
   ]);
-  const routes = (byDate.get(date) ?? []).map(cabinetEntry);
-  return [...routes, ...weekly];
+  const routes = byDate.get(date) ?? [];
+  const documented = await documentedRoutes(
+    routes.map((source) => source.entry.sourceId),
+    personId,
+  );
+  const sources: EntrySource<DriverAssignmentEntry>[] = [
+    ...routes
+      .filter((source) => documented.has(source.entry.sourceId))
+      .map((source) => ({ vehicleId: source.vehicleId, entry: cabinetEntry(source.entry) })),
+    ...weekly,
+  ];
+  if (sources.length === 0) return [];
+
+  const previous = await previousReadings(
+    [...new Set(sources.map((source) => source.vehicleId))],
+    date,
+  );
+  return sources.map(({ entry, vehicleId }) => ({
+    ...entry,
+    previous: previous.get(vehicleId) ?? null,
+  }));
 }
 
 /**

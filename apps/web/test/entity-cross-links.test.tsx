@@ -119,6 +119,10 @@ const WAYBILL: WaybillDto = {
   cancelReason: '',
   printedAt: null,
   exportedAt: null,
+  isCorrection: false,
+  correctionReason: '',
+  correctsNumber: null,
+  correctedByNumber: null,
   requests: [
     {
       requestId: 'r-done',

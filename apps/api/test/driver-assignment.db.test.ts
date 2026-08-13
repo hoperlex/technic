@@ -34,6 +34,14 @@ import type * as AssignmentNs from '../src/services/driver-assignment';
  * подписей. Единственный идентификатор в ней — свой, источника; проверка это утверждение читает
  * буквально, вычёсывая из DTO все UUID.
  *
+ * После первого показа (`docs/driver-cabinet-ux-plan.md`) сюда добавились два правила, и оба
+ * меняют состав задания, а не его вид. **Р5**: рейс входит в задание, только если по нему выписан
+ * действительный лист, — кабинет строго документален, и рейса без бумаги водитель не видит вовсе.
+ * Поэтому помощники заводят рейс сразу с листом, а сценарии фильтра просят рейс без листа явно.
+ * **Р6**: строка отдаёт прошлый снимок счётчиков своей машины — по нему кабинет предупреждает о
+ * падении счётчика ещё до отправки; проверяется здесь то, что снимок берётся строго из прошлого и
+ * ближайший, а не первый попавшийся.
+ *
  * Запуск (миграции тест накатывает сам):
  *
  *   TEST_DATABASE_URL=postgres://technic:technic@localhost:5433/technic_archive_test \
@@ -166,6 +174,26 @@ async function newPerson(firstName: string): Promise<string> {
   return person!.id;
 }
 
+/**
+ * Своя машина на сценарий — там, где проверяется прошлый снимок счётчиков: ряд показаний
+ * принадлежит машине, а не человеку, и на общей машине сценарии подсовывали бы друг другу свои
+ * прошлые числа. Марка общая: подпись машины проверяется отдельным тестом, а здесь важны счётчики.
+ */
+async function newVehicle(): Promise<string> {
+  const [vehicle] = await ctx.db
+    .insert(ctx.schema.vehicles)
+    .values({
+      ownership: 'own',
+      vehicleTypeId: ctx.typeId,
+      vehicleModelId: ctx.modelId,
+      registrationNumber: `Т${randomUUID().slice(0, 6).toUpperCase()}ЗД777`,
+      status: 'active',
+      note: MARK,
+    })
+    .returning({ id: ctx.schema.vehicles.id });
+  return vehicle!.id;
+}
+
 /** Заявка на грузоперевозку с деталями: состав рейса читает обе таблицы — адреса и контакты в них. */
 async function newFreightRequest(fixture: {
   loading: string;
@@ -216,12 +244,19 @@ async function newSpecialRequest(): Promise<string> {
   return request!.id;
 }
 
-/** Грузовой рейс с составом: позиции — порядок строк задания бланка. */
+/**
+ * Грузовой рейс с составом: позиции — порядок строк задания бланка.
+ *
+ * Лист 4-П выписывается сразу, если не сказано иного: кабинет строго документален (Р5), и рейс без
+ * действительного листа в задание не входит вовсе. Сценарии самого фильтра просят рейс без листа
+ * явно (`waybill: false`) — там это и есть предмет проверки.
+ */
 async function newFreightRoute(opts: {
   date: string;
   personId: string;
   requestIds: string[];
   comment?: string;
+  waybill?: boolean;
 }): Promise<{ id: string; displayNumber: string }> {
   const [route] = await ctx.db
     .insert(ctx.schema.vehicleRoutes)
@@ -247,20 +282,27 @@ async function newFreightRoute(opts: {
       })),
     );
   }
+  if (opts.waybill ?? true) await new4p(route!.id, opts.personId, opts.date);
   return { id: route!.id, displayNumber: formatVehicleRouteNumber(route!.num) };
 }
 
-/** Перегон: состава у него нет, зато есть заявка-основание и задание «откуда — куда». */
+/**
+ * Перегон: состава у него нет, зато есть заявка-основание и задание «откуда — куда». Лист — как у
+ * грузового рейса: без него кабинет перегона не покажет.
+ */
 async function newRelocationRoute(opts: {
   date: string;
   personId: string;
   moveFrom?: string;
   moveTo?: string;
+  waybill?: boolean;
+  vehicleId?: string;
 }): Promise<{ id: string; displayNumber: string }> {
+  const vehicleId = opts.vehicleId ?? ctx.vehicleId;
   const [route] = await ctx.db
     .insert(ctx.schema.vehicleRoutes)
     .values({
-      vehicleId: ctx.vehicleId,
+      vehicleId,
       routeDate: opts.date,
       purpose: 'delivery',
       sourceRequestId: await newSpecialRequest(),
@@ -271,11 +313,12 @@ async function newRelocationRoute(opts: {
       createdBy: ctx.adminId,
     })
     .returning({ id: ctx.schema.vehicleRoutes.id, num: ctx.schema.vehicleRoutes.num });
+  if (opts.waybill ?? true) await new4p(route!.id, opts.personId, opts.date, vehicleId);
   return { id: route!.id, displayNumber: formatVehicleRouteNumber(route!.num) };
 }
 
 /** Действующий недельный лист ЭСМ-2: неделя целиком, от понедельника (`waybills_period_check`). */
-async function newEsm2(personId: string, day: string): Promise<string> {
+async function newEsm2(personId: string, day: string, vehicleId?: string): Promise<string> {
   waybillNo += 1;
   const from = weekStartKey(day);
   const [waybill] = await ctx.db
@@ -286,7 +329,7 @@ async function newEsm2(personId: string, day: string): Promise<string> {
       formCode: 'esm2',
       status: 'issued',
       organizationId: ctx.organizationId,
-      vehicleId: ctx.vehicleId,
+      vehicleId: vehicleId ?? ctx.vehicleId,
       driverPersonId: personId,
       issuedForDate: from,
       sourceRequestId: await newSpecialRequest(),
@@ -300,7 +343,12 @@ async function newEsm2(personId: string, day: string): Promise<string> {
 }
 
 /** Лист 4-П по рейсу: `waybills_form_source_check` требует у него заполненный `route_id`. */
-async function new4p(routeId: string, personId: string, day: string): Promise<string> {
+async function new4p(
+  routeId: string,
+  personId: string,
+  day: string,
+  vehicleId?: string,
+): Promise<string> {
   waybillNo += 1;
   const [waybill] = await ctx.db
     .insert(ctx.schema.waybills)
@@ -310,7 +358,7 @@ async function new4p(routeId: string, personId: string, day: string): Promise<st
       formCode: '4p',
       status: 'issued',
       organizationId: ctx.organizationId,
-      vehicleId: ctx.vehicleId,
+      vehicleId: vehicleId ?? ctx.vehicleId,
       driverPersonId: personId,
       issuedForDate: day,
       routeId,
@@ -318,6 +366,71 @@ async function new4p(routeId: string, personId: string, day: string): Promise<st
     })
     .returning({ id: ctx.schema.waybills.id });
   return waybill!.id;
+}
+
+/**
+ * Аннулирование листа — так его списывает портал: номер погашен, причина названа
+ * (`waybills_cancel_reason_check`). Рейс после этого остаётся без документа, и кабинет его не
+ * показывает — до перевыписки переносить показания некуда.
+ */
+async function cancelWaybill(waybillId: string): Promise<void> {
+  await ctx.db
+    .update(ctx.schema.waybills)
+    .set({
+      status: 'cancelled',
+      cancelledAt: new Date(),
+      cancelledBy: ctx.adminId,
+      cancelReason: 'Испорчен бланк',
+    })
+    .where(eq(ctx.schema.waybills.id, waybillId));
+}
+
+/**
+ * Показание машины за день: отчёт, строка ожидания и снимок счётчиков — три таблицы, потому что
+ * показание живёт только внутри строки ожидания (ADR 0103, `vehicle_readings_snapshot_fk`).
+ * Источником строки берётся рейс без листа: в кабинет он не попадёт (Р5), а сценарию нужен не он, а
+ * след в ряду показаний машины.
+ */
+async function seedReading(opts: {
+  personId: string;
+  vehicleId: string;
+  date: string;
+  odometerKm: number;
+  engineHours: string;
+}): Promise<void> {
+  const route = await newRelocationRoute({
+    date: opts.date,
+    personId: opts.personId,
+    vehicleId: opts.vehicleId,
+    waybill: false,
+  });
+  const [report] = await ctx.db
+    .insert(ctx.schema.driverDailyReports)
+    .values({ personId: opts.personId, reportDate: opts.date, createdBy: ctx.adminId })
+    .returning({ id: ctx.schema.driverDailyReports.id });
+  const [item] = await ctx.db
+    .insert(ctx.schema.driverDailyReportItems)
+    .values({
+      reportId: report!.id,
+      sourceKind: 'route',
+      routeId: route.id,
+      vehicleId: opts.vehicleId,
+      reportDate: opts.date,
+      shiftOrder: 1,
+    })
+    .returning({ id: ctx.schema.driverDailyReportItems.id });
+  await ctx.db.insert(ctx.schema.vehicleReadings).values({
+    itemId: item!.id,
+    reportId: report!.id,
+    vehicleId: opts.vehicleId,
+    reportDate: opts.date,
+    shiftOrder: 1,
+    kind: 'values',
+    odometerKm: opts.odometerKm,
+    engineHours: opts.engineHours,
+    source: 'driver',
+    createdBy: ctx.adminId,
+  });
 }
 
 /** Задание целиком — так его спрашивает и настоящий кабинет (`GET /driver/assignment`). */
@@ -546,6 +659,8 @@ describe.skipIf(!DB_URL)('задание работника на день (жи�
       date: ctx.today,
       personId: person,
       requestIds: [request.id],
+      // Лист выписывается здесь же, руками: он и есть предмет проверки.
+      waybill: false,
     });
     const fourP = await new4p(route.id, person, ctx.today);
 
@@ -633,5 +748,153 @@ describe.skipIf(!DB_URL)('задание работника на день (жи�
       canSubmit: false,
       entries: [],
     });
+  });
+
+  it('рейс без действительного листа в задание не входит, а с выпиской — входит (Р5)', async () => {
+    const person = await newPerson('Бездокументный');
+    const request = await newFreightRequest({
+      loading: 'г Москва, ул Погрузочная, д 11',
+      unloading: 'г Москва, ул Разгрузочная, д 12',
+      scheduledAt: new Date(`${ctx.today}T06:00:00Z`),
+    });
+    // Рейс, по которому лист ещё не выписали: состав собран, бумаги нет.
+    const bare = await newFreightRoute({
+      date: ctx.today,
+      personId: person,
+      requestIds: [request.id],
+      waybill: false,
+    });
+    // Рейс со списанным листом: номер погашен, и переносить показания снова некуда.
+    const spoiled = await newRelocationRoute({
+      date: ctx.today,
+      personId: person,
+      waybill: false,
+    });
+    await cancelWaybill(await new4p(spoiled.id, person, ctx.today));
+    // Недельный лист фильтра не проходит: он сам себе документ и входит по своему периоду.
+    const esm2 = await newEsm2(person, ctx.today);
+
+    const before = await assignment(person, ctx.today);
+    expect(before.entries.map((entry) => entry.sourceId)).toEqual([esm2]);
+
+    // Выписали лист — рейс появился, и появился целиком: адреса и состав те же, что были бы у него
+    // и до выписки. Фильтр решает «показывать ли», а не «что показывать».
+    const issued = await new4p(bare.id, person, ctx.today);
+    const after = await assignment(person, ctx.today);
+    expect(after.entries.map((entry) => entry.sourceId)).toEqual([bare.id, esm2]);
+    expect(entryOf(after.entries, bare.id)!.requests).toHaveLength(1);
+    expect(entryOf(after.entries, bare.id)!.requests[0]).toMatchObject({
+      loadingLocation: 'г Москва, ул Погрузочная, д 11',
+    });
+    // Строкой сам лист при этом не становится (Р16): выезд представлен рейсом, и он один.
+    expect(after.entries.map((entry) => entry.sourceId)).not.toContain(issued);
+    // Аннулированный лист документом не стал: перегон в задании так и не появился.
+    expect(after.entries.map((entry) => entry.sourceId)).not.toContain(spoiled.id);
+
+    // Списали лист обратно — рейс снова исчез: у кабинета нет памяти о том, что бумага была.
+    await cancelWaybill(issued);
+    const cancelled = await assignment(person, ctx.today);
+    expect(cancelled.entries.map((entry) => entry.sourceId)).toEqual([esm2]);
+  });
+
+  it('лист чужого работника рейс не документирует: бумага именная (Р5)', async () => {
+    const owner = await newPerson('Прежний');
+    const heir = await newPerson('Сменщик');
+    const route = await newRelocationRoute({ date: ctx.today, personId: owner });
+
+    const ownerBefore = await assignment(owner, ctx.today);
+    expect(ownerBefore.entries.map((entry) => entry.sourceId)).toEqual([route.id]);
+
+    // Рейс переназначили, лист оставили на прежнем — состояние, в котором наряд и документ спорят.
+    await ctx.db
+      .update(ctx.schema.vehicleRoutes)
+      .set({ driverPersonId: heir })
+      .where(eq(ctx.schema.vehicleRoutes.id, route.id));
+
+    // Рейса нет ни у кого, и это не пробел, а отказ показывать спорный день: преемнику ехать не по
+    // чему, а прежнего его лист по-прежнему обязывает — пока лист не скорректируют (ADR 0101).
+    expect((await assignment(heir, ctx.today)).entries).toEqual([]);
+    expect((await assignment(owner, ctx.today)).entries).toEqual([]);
+
+    // Перевыписали лист на преемника — рейс появился у него, и только у него.
+    await ctx.db
+      .update(ctx.schema.waybills)
+      .set({ driverPersonId: heir })
+      .where(eq(ctx.schema.waybills.routeId, route.id));
+    expect((await assignment(heir, ctx.today)).entries.map((entry) => entry.sourceId)).toEqual([
+      route.id,
+    ]);
+    expect((await assignment(owner, ctx.today)).entries).toEqual([]);
+  });
+
+  it('строка задания несёт прошлый снимок счётчиков своей машины (Р6)', async () => {
+    const person = await newPerson('Счётчиков');
+    const vehicle = await newVehicle();
+    const older = shiftDateKey(ctx.today, -3);
+    const nearest = shiftDateKey(ctx.today, -1);
+    // Два прошлых показания: в подсказку идёт ближайшее, а не первое найденное — иначе водитель
+    // сверялся бы с числом трёхдневной давности и «падение счётчика» видел бы на ровном месте.
+    await seedReading({
+      personId: person,
+      vehicleId: vehicle,
+      date: older,
+      odometerKm: 145_000,
+      engineHours: '9800.0',
+    });
+    await seedReading({
+      personId: person,
+      vehicleId: vehicle,
+      date: nearest,
+      odometerKm: 145_320,
+      engineHours: '9812.5',
+    });
+    // Показание сегодняшнего дня — то самое, которое водитель сейчас и вводит: сравнивать его с
+    // самим собой значило бы объявить нормой любое сохранённое число.
+    await seedReading({
+      personId: person,
+      vehicleId: vehicle,
+      date: ctx.today,
+      odometerKm: 999_000,
+      engineHours: '9999.0',
+    });
+
+    const route = await newRelocationRoute({
+      date: ctx.today,
+      personId: person,
+      vehicleId: vehicle,
+    });
+    const esm2 = await newEsm2(person, ctx.today, vehicle);
+
+    const dto = await assignment(person, ctx.today);
+    const expected = {
+      odometerKm: 145_320,
+      // Моточасы лежат `numeric` и приходят из базы строкой: в задание они едут числом, иначе
+      // сравнение в браузере сравнивало бы строки.
+      engineHours: 9812.5,
+      measuredOn: nearest,
+      // Сутками масштабируется порог невероятного прироста: «3 200 км за 2 дня» и «за месяц» —
+      // разные новости.
+      daysAgo: 1,
+    };
+    expect(entryOf(dto.entries, route.id)!.previous).toEqual(expected);
+    // Снимок принадлежит машине строки, а не виду источника: недельный лист той же машины получает
+    // тот же — счётчик у них общий.
+    expect(entryOf(dto.entries, esm2)!.previous).toEqual(expected);
+  });
+
+  it('машине без прошлых показаний снимок не выдумывается', async () => {
+    const person = await newPerson('Первосменный');
+    const vehicle = await newVehicle();
+    const route = await newRelocationRoute({
+      date: ctx.today,
+      personId: person,
+      vehicleId: vehicle,
+    });
+
+    const dto = await assignment(person, ctx.today);
+
+    // Начало ряда — это `null`, а не ноль: нулём подсказка объявила бы любой первый одометр
+    // невероятным приростом, и предупреждение сопровождало бы каждую новую машину.
+    expect(entryOf(dto.entries, route.id)!.previous).toBeNull();
   });
 });

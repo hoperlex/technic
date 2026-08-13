@@ -205,8 +205,39 @@ async function newRequest(): Promise<string> {
 }
 
 /**
- * Рейс-перегон: он виден в задании всегда, тогда как грузовой пропадает, оставшись без живых
- * заявок состава, — а тесту нужен источник, а не проверка отбора заданий.
+ * Лист 4-П по рейсу: `waybills_form_source_check` требует у него заполненный `route_id`. Выписка
+ * идёт фикстурой каждого рейса, потому что кабинет строго документален (ADR 0105, Р5) — рейс без
+ * действительного листа в задание не входит и строки ожидания не даёт, а без неё нечего считать ни
+ * колонке дня, ни сводке.
+ */
+async function issueWaybillFor(
+  routeId: string,
+  vehicleId: string,
+  personId: string,
+  date: string,
+): Promise<string> {
+  waybillNo += 1;
+  const [waybill] = await ctx.db
+    .insert(ctx.schema.waybills)
+    .values({
+      seriesId: ctx.seriesId,
+      number: WAYBILL_NUMBER_BASE + waybillNo,
+      formCode: '4p',
+      status: 'issued',
+      organizationId: ctx.organizationId,
+      vehicleId,
+      driverPersonId: personId,
+      issuedForDate: date,
+      routeId,
+      issuedBy: ctx.adminId,
+    })
+    .returning({ id: ctx.schema.waybills.id });
+  return waybill!.id;
+}
+
+/**
+ * Рейс-перегон с выписанным по нему листом: он виден в задании всегда, тогда как грузовой пропадает,
+ * оставшись без живых заявок состава, — а тесту нужен источник, а не проверка отбора заданий.
  */
 async function newRoute(vehicleId: string, date: string, personId: string): Promise<string> {
   const [route] = await ctx.db
@@ -222,6 +253,7 @@ async function newRoute(vehicleId: string, date: string, personId: string): Prom
       createdBy: ctx.adminId,
     })
     .returning({ id: ctx.schema.vehicleRoutes.id });
+  await issueWaybillFor(route!.id, vehicleId, personId, date);
   return route!.id;
 }
 

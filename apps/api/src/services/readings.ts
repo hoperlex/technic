@@ -134,6 +134,28 @@ function assertWriteWindow(date: string, actor: ReadingsActor): void {
   }
 }
 
+/**
+ * Вид `no_data` («работали, но снять нечего») закрывает строку ожидания наравне с числами — и
+ * ставит его ПЕРСОНАЛ, а не водитель (план кабинета, Р4). Водитель такую строку просто не
+ * заполняет: она остаётся ожиданием, день висит в гараже как «частично», и диспетчер закрывает её
+ * видом `no_data` с причиной, которую знает. Так у водителя нет поля, которым можно отписаться от
+ * ввода, а учётной дыры не появляется: причина неввода записана человеком.
+ *
+ * Почему проверка здесь, а не только в форме кабинета: спрятать переключатель и оставить ручку
+ * открытой значило бы запретить кнопкой то, что разрешено API. Это правило доступа, а правило
+ * доступа живёт на сервере — там, где его нельзя обойти мимо экрана.
+ *
+ * Сам вид остаётся и в модели, и в схеме, и в API персонала: убрать его значило бы отобрать у
+ * диспетчера единственный способ закрыть строку по неисправному счётчику.
+ */
+function assertNoDataIsStaffOnly(input: ReportSubmitInput, actor: ReadingsActor): void {
+  if (actor.mode !== 'driver') return;
+  if (!input.items.some((line) => line.reading.kind === 'no_data')) return;
+  throw err.forbidden(
+    'Отметку «нет возможности снять показания» ставит диспетчер: оставьте эту строку незаполненной и отправьте остальные — её закроет диспетчер с причиной',
+  );
+}
+
 // ── Живые источники (Р16, Р21) ──
 
 /**
@@ -647,6 +669,8 @@ function readingColumns(reading: ReadingInput) {
  *
  * `reason` обязателен, когда персонал правит уже сданное число (Р19): чужое число меняют с
  * объяснением, и история без него — след без причины.
+ *
+ * Вид `no_data` принимается только от персонала (`assertNoDataIsStaffOnly`).
  */
 export async function submitReport(
   personId: string,
@@ -659,6 +683,8 @@ export async function submitReport(
   const actor: ReadingsActor = { userId: actorUserId, mode: options.mode ?? 'driver' };
   const reason = options.reason ?? '';
   assertWriteWindow(date, actor);
+  // До транзакции: отказ обязан не оставить следа — ни строки показаний, ни сдвинутой версии.
+  assertNoDataIsStaffOnly(input, actor);
   const fingerprint = submitFingerprint(input);
   const entries: DayEntry[] = await loadDayEntries(personId, date);
 

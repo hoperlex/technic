@@ -6,6 +6,7 @@ import {
   DRIVER_SUBMIT_PAST_DAYS,
   type DriverAssignmentDto,
   type DriverAssignmentEntry,
+  type DriverReportDto,
 } from '@technic/contracts';
 import { MOSCOW_TZ } from '@shared/config';
 import { json, mockHttp } from './http';
@@ -14,6 +15,19 @@ import { authUser } from './factories/auth';
 import { MOBILE_VIEWPORT, type Viewport } from './viewport';
 import { DriverLayout } from '../src/pages/driver/DriverLayout';
 import { DriverPage } from '../src/pages/driver/DriverPage';
+// Таблица стилей — текстом: раскладки jsdom не считает, и правило о прокрутке проверяется по
+// самому правилу (см. тест про узкий экран). `?raw` разрешает путь так же, как импорт кода, —
+// прогон из другого каталога его не сломает.
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+
+/*
+ * Таблица стилей читается с диска от корня пакета, а не импортом `?raw`: в jsdom стили не
+ * подключаются вовсе, `?raw` здесь отдаёт пустую строку, и проверка правил молча проходила бы на
+ * любом содержимом. `import.meta.url` в этом окружении не файловый, поэтому путь — от `cwd`,
+ * который у прогона всегда `apps/web`.
+ */
+const stylesCss = readFileSync(path.resolve(process.cwd(), 'src/styles.css'), 'utf8');
 
 /**
  * Кабинет водителя (ADR 0102): каркас и задание на дату — этап 3 плана, решения Р9–Р13.
@@ -31,6 +45,8 @@ import { DriverPage } from '../src/pages/driver/DriverPage';
 
 const today = dayjs().tz(MOSCOW_TZ).format('YYYY-MM-DD');
 const yesterday = dayjs(today).subtract(1, 'day').format('YYYY-MM-DD');
+/** Позавчера: второй из трёх прошедших дней, которые шапка проверяет на долг (П4). */
+const dayBefore = dayjs(today).subtract(2, 'day').format('YYYY-MM-DD');
 /** Первый день, за который водитель ещё может передать показания: сегодня и семь предыдущих. */
 const firstSubmittable = dayjs(today).subtract(DRIVER_SUBMIT_PAST_DAYS, 'day').format('YYYY-MM-DD');
 /** День старше окна записи, но внутри окна чтения (−30): задание есть, передавать нельзя. */
@@ -65,6 +81,7 @@ const routeEntry: DriverAssignmentEntry = {
   moveFrom: '',
   moveTo: '',
   comment: 'Заправиться на выезде',
+  previous: null,
 };
 
 /** Недельный лист ЭСМ-2 накрывает день своей карточкой: состава у него нет, машина своя (Р16). */
@@ -82,6 +99,7 @@ const esm2Entry: DriverAssignmentEntry = {
   moveFrom: '',
   moveTo: '',
   comment: '',
+  previous: null,
 };
 
 /** Учётка водителя: два права кабинета и ни одного права основного портала (ADR 0102). */
@@ -106,9 +124,12 @@ function renderCabinet(
     route?: string;
     viewport?: Viewport;
     entriesFor?: (date: string) => DriverAssignmentEntry[];
+    /** Отчёт дня: им проверяется строка долга — день без отчёта закрыт не был (П4). */
+    reportFor?: (date: string) => DriverReportDto | null;
   } = {},
 ) {
   const entriesFor = options.entriesFor ?? (() => [routeEntry, esm2Entry]);
+  const reportFor = options.reportFor ?? (() => null);
   const http = mockHttp({
     'GET /driver/assignment': ({ query }) => {
       const date = query.get('date') ?? today;
@@ -121,7 +142,7 @@ function renderCabinet(
       return json(dto);
     },
     // Отчёта за день может не быть вовсе — это законное состояние, и кабинет обязан открыться.
-    'GET /driver/reports/:date': () => json(null),
+    'GET /driver/reports/:date': ({ params }) => json(reportFor(params.date ?? today)),
   });
   const rendered = renderWithUser(
     <>
@@ -177,8 +198,11 @@ describe('кабинет водителя: задание на дату', () => 
   it('стрелки переносят день в адрес и в запрос, а сегодня живёт без параметра', async () => {
     const { http } = renderCabinet();
     expect(await screen.findByText('Рейс Р-142')).toBeDefined();
-    // Первый запрос — на сегодня по Москве, а не на дату часов устройства.
-    expect(http.lastCall('GET /driver/assignment')?.query.get('date')).toBe(today);
+    // Первый запрос — на сегодня по Москве, а не на дату часов устройства. Именно первый: следом
+    // шапка спрашивает прошедшие дни окна записи, проверяя долг (П4), и последним будет один из них.
+    expect(http.calls.find((call) => call.path === '/driver/assignment')?.query.get('date')).toBe(
+      today,
+    );
 
     fireEvent.click(screen.getByLabelText('Предыдущий день'));
 
@@ -221,5 +245,67 @@ describe('кабинет водителя: задание на дату', () => 
     for (const section of ['Заказ ТС', 'Путевые листы', 'Справочники', 'Гараж', 'Вывоз мусора']) {
       expect(screen.queryByText(section), section).toBeNull();
     }
+  });
+
+  it('каркас несёт класс кабинета и переменную масштаба шрифта', async () => {
+    // Масштаб живёт одной переменной на каркасе (Р1): подобрать его на живом телефоне — работа
+    // одного значения, а не поиска по компонентам. Значение приходит из TS-константы кабинета,
+    // поэтому проверяется не число, а то, что переменная вообще доехала до разметки.
+    renderCabinet({ viewport: MOBILE_VIEWPORT });
+    expect(await screen.findByText('Рейс Р-142')).toBeDefined();
+
+    const shell = document.querySelector<HTMLElement>('.driver-shell');
+    expect(shell).not.toBeNull();
+    expect(Number(shell?.style.getPropertyValue('--driver-scale'))).toBeGreaterThan(0);
+  });
+
+  it('на узком экране страница не разъезжается вбок', async () => {
+    renderCabinet({ viewport: MOBILE_VIEWPORT });
+    expect(await screen.findByText('Рейс Р-142')).toBeDefined();
+
+    expect(document.body.scrollWidth).toBeLessThanOrEqual(window.innerWidth);
+    /*
+     * Ширины в jsdom нулевые — раскладку он не считает, и проверка выше сама по себе поймала бы
+     * разъехавшуюся страницу только в настоящем браузере. Поэтому здесь же проверяются оба
+     * правила, которыми прокрутка и запрещена (Р2): без `min-width: 0` потомок flex-строки не
+     * сжимается меньше своего содержимого, а `clip` вместо `hidden` не заводит области прокрутки
+     * и не ломает липкую шапку. Удалить их «за ненадобностью» тест не даст.
+     */
+    expect(stylesCss).toMatch(/\.driver-shell\s*\{[^}]*overflow-x:\s*clip/);
+    expect(stylesCss).toMatch(/\.driver-shell \*\s*\{[^}]*min-width:\s*0/);
+  });
+
+  it('строка «не сдано» ведёт на ближайший незакрытый день, а выходной за долг не считает', async () => {
+    /*
+     * Вчера заданий не было (выходной), позавчера был рейс и отчёта по нему нет — долг именно
+     * там. Отчёта нет у обоих дней: его заводит открытие оверлея, поэтому различает их только
+     * задание. Ложная тревога по выходным научила бы не смотреть на строку вовсе.
+     */
+    renderCabinet({ entriesFor: (date) => (date === yesterday ? [] : [routeEntry]) });
+
+    const link = await screen.findByText(/Не переданы показания/);
+    expect(link.getAttribute('href')).toBe(`/driver?date=${dayBefore}`);
+    expect(link.textContent).toContain(dayjs(dayBefore).format('D MMM'));
+  });
+
+  it('карточки задания идут по позиции смены, а не по порядку ответа', async () => {
+    // Порядок на экране — свойство экрана: день читают сверху вниз так же, как его работают.
+    const second: DriverAssignmentEntry = { ...routeEntry, shiftOrder: 2 };
+    const first: DriverAssignmentEntry = {
+      ...routeEntry,
+      sourceId: 'route-2',
+      sourceLabel: 'Рейс Р-7',
+      shiftOrder: 1,
+    };
+    renderCabinet({ entriesFor: () => [second, first, esm2Entry] });
+
+    expect(await screen.findByText('Рейс Р-7')).toBeDefined();
+    const titles = [...document.querySelectorAll('.ant-card-head-title')].map(
+      (node) => node.textContent ?? '',
+    );
+    expect(titles[0]).toContain('Рейс Р-7');
+    expect(titles[1]).toContain('Рейс Р-142');
+    // Недельный лист смены не имеет вовсе и стоит после сменных карточек, а не перед ними.
+    expect(titles[2]).toContain('ЭСМ-2 № 000123');
   });
 });
