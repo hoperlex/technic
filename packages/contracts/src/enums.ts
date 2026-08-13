@@ -12,6 +12,9 @@ export const ROLES = [
   'department_head',
   'operator',
   'observer',
+  // Водитель (ADR 0102) — работник справочника, получивший вход в свой кабинет. Прав основного
+  // портала у роли нет вовсе: она открывает `/driver` и ничего больше.
+  'driver',
 ] as const;
 export const roleSchema = z.enum(ROLES);
 export type Role = (typeof ROLES)[number];
@@ -32,6 +35,9 @@ export const roleLabels: Record<Role, string> = {
   // аренду техники — решает тип её контрагента, а не роль (ADR 0038).
   operator: 'Оператор (внешний исполнитель)',
   observer: 'Наблюдатель',
+  // Должность в подписи не названа: кабинет открыт машинисту и трактористу наравне с водителем
+  // (ADR 0102), а «водитель» — как эту роль зовут в парке.
+  driver: 'Водитель',
 };
 
 export const roleColors: Record<Role, string> = {
@@ -50,6 +56,8 @@ export const roleColors: Record<Role, string> = {
   operator: 'green',
   // Серый: роль ничего не ведёт, и в списке учёток она не должна спорить с теми, кто ведёт.
   observer: 'default',
+  // Синий — цвет рейса в гараже: водитель и есть тот, кто в этом рейсе едет.
+  driver: 'blue',
 };
 
 /**
@@ -97,6 +105,21 @@ export function isPlaceScopedRole(role: Role | null | undefined): boolean {
  * форма учётки показывает поле, а матрица прав знает, у кого спрашивать тип контрагента.
  */
 export const COUNTERPARTY_SCOPED_ROLES = ['operator'] as const;
+
+/**
+ * Роли, работающие от карточки человека (ADR 0102) — четвёртая ось области после объектов,
+ * отделов и контрагента, и самая узкая: видно только то, что про самого работника.
+ *
+ * Список здесь, рядом с остальными осями, по той же причине: по нему форма учётки требует
+ * человека при активации, а API — при восстановлении из архива. Отличие от прочих осей одно:
+ * область не описывается предикатом в `lib/access.ts`, она описывается отсутствием параметра —
+ * `personId` кабинет не принимает вовсе и берёт из принципала.
+ */
+export const PERSON_SCOPED_ROLES = ['driver'] as const;
+
+export function isPersonScopedRole(role: Role | null | undefined): boolean {
+  return !!role && (PERSON_SCOPED_ROLES as readonly string[]).includes(role);
+}
 
 export function isCounterpartyScopedRole(role: Role | null | undefined): boolean {
   return !!role && (COUNTERPARTY_SCOPED_ROLES as readonly string[]).includes(role);

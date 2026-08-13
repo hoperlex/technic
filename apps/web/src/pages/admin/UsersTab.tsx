@@ -35,6 +35,7 @@ import {
   isDepartmentScopedRole,
   isExternalRegistrationEmail,
   isObjectScopedRole,
+  isPersonScopedRole,
   REGISTRATION_ROLE_REQUESTS,
   registrationRequestDetail,
   registrationRoleRequestLabels,
@@ -47,9 +48,13 @@ import {
   type MailOutcome,
   type RejectUserBody,
   type RoleAddon,
-  type UserDto,
 } from '@technic/contracts';
-import { counterpartiesApi, usersApi } from '../../api/resources';
+import {
+  counterpartiesApi,
+  usersApi,
+  type RestoreUserBody,
+  type UserAccountDto,
+} from '../../api/resources';
 import { AutoSelect } from '@shared/ui';
 import { DataTable, type CardConfig } from '@shared/ui';
 import { FormModal } from '@shared/ui';
@@ -58,6 +63,12 @@ import { PasswordField } from '../../components/PasswordField';
 import { PersonNameFields } from '../../components/PersonNameFields';
 import { PhoneField, PhoneLink } from '../../components/PhoneField';
 import { useChangeEmailAction } from './ChangeEmailModal';
+import {
+  DriverPersonField,
+  DriverRestoreModal,
+  personFactsOf,
+  restoreNeedsPerson,
+} from './DriverPersonField';
 import { RejectRegistrationModal } from './RejectRegistrationModal';
 import { UsersAuditTab, type AuditTarget } from './UsersAuditTab';
 import { isApiError } from '@shared/api';
@@ -94,13 +105,20 @@ interface UserFormValues {
    * трогают — человек остаётся на своих объектах и в своём отделе.
    */
   addons?: RoleAddon[];
+  /**
+   * Работник справочника (ADR 0102): четвёртая ось области и обязательное условие активации
+   * водителя. Объектов, отделов и контрагента у этой роли нет — она работает от карточки человека.
+   */
+  personId?: string;
+  /** Подтверждение расхождения ФИО (Р30): показывается только когда расхождение есть. */
+  confirmNameMismatch?: boolean;
   isActive: boolean;
   /** Сообщить ли человеку о выданном доступе. Спрашивается не всегда — см. `asksAboutMail`. */
   notifyUser: boolean;
 }
 
 /** Заявка на регистрацию: человек зарегистрировался сам, роли ему ещё не назначили. */
-const isPendingRegistration = (u: UserDto) => !u.isActive && !u.role;
+const isPendingRegistration = (u: UserAccountDto) => !u.isActive && !u.role;
 
 /**
  * Эта правка выводит заявку из очереди: у нерассмотренной заявки появляются роль и активность
@@ -112,7 +130,7 @@ const isPendingRegistration = (u: UserDto) => !u.isActive && !u.role;
  * перестаёт.
  */
 const approvesRegistration = (
-  record: UserDto | null,
+  record: UserAccountDto | null,
   role: UserFormValues['role'] | undefined,
   isActive: boolean | undefined,
 ) => !!record && isPendingRegistration(record) && !!role && !!isActive;
@@ -124,7 +142,7 @@ const approvesRegistration = (
  * «вам открыт доступ» действующему сотруднику было бы ложью.
  */
 const asksAboutMail = (
-  record: UserDto | null,
+  record: UserAccountDto | null,
   role: UserFormValues['role'] | undefined,
   isActive: boolean | undefined,
 ) => (record ? approvesRegistration(record, role, isActive) : !!isActive);
@@ -153,7 +171,7 @@ const HALF_APPROVAL =
  * различаются только этим тегом. Отдельная колонка не годится — она стояла бы пустой почти у всех,
  * а читают надстройку всегда вместе с ролью.
  */
-function roleTags(u: UserDto) {
+function roleTags(u: UserAccountDto) {
   if (!u.role) return '—';
   return (
     <Space size={4} wrap>
@@ -171,7 +189,7 @@ function roleTags(u: UserDto) {
  * Уточнение из заявки — свободный текст, а не ссылка на справочник: список объектов
  * неаутентифицированному не отдаётся (ADR 0034), сопоставляет его администратор.
  */
-function requestedDetailText(u: UserDto): string | undefined {
+function requestedDetailText(u: UserAccountDto): string | undefined {
   if (!u.requestedRole) return undefined;
   const detail = registrationRequestDetail[u.requestedRole];
   if (detail === 'object' && u.requestedObject) return `Объект: ${u.requestedObject}`;
@@ -184,10 +202,11 @@ function requestedDetailText(u: UserDto): string | undefined {
  * учётки адрес уже принят решением администратора, и пометка на ней осталась бы висеть навсегда,
  * ничего не решая, — а у операторов чужой адрес и вовсе в порядке вещей и признаком не считается.
  */
-const hasExternalEmail = (u: UserDto) => isPendingRegistration(u) && isExternalRegistrationEmail(u);
+const hasExternalEmail = (u: UserAccountDto) =>
+  isPendingRegistration(u) && isExternalRegistrationEmail(u);
 
 /** Адрес заявки вместе с пометкой о чужом домене — одинаково в списке и в карточке на телефоне. */
-function emailCell(u: UserDto) {
+function emailCell(u: UserAccountDto) {
   if (!hasExternalEmail(u)) return u.email;
   return (
     <Space size={4} wrap>
@@ -202,7 +221,7 @@ interface AccountsProps {
    * Открыть журнал по этой учётке. Не передан — права на журнал у роли нет, и пункта меню тоже:
    * недоступное портал не показывает даже выключенным (ADR 0033 §6).
    */
-  onShowHistory?: (user: UserDto) => void;
+  onShowHistory?: (user: UserAccountDto) => void;
 }
 
 function UsersAccountsTab({ onShowHistory }: AccountsProps) {
@@ -287,7 +306,7 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
   const roleOptions = ROLES.map((r) => ({ value: r, label: roleLabels[r] }));
 
   const [open, setOpen] = useState(false);
-  const [record, setRecord] = useState<UserDto | null>(null);
+  const [record, setRecord] = useState<UserAccountDto | null>(null);
   const [form] = Form.useForm<UserFormValues>();
   const watchRole = Form.useWatch('role', form);
   // Роль и активность читаются из формы вживую, а не из записи: чекбокс письма и намерение
@@ -308,7 +327,7 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
     (addon) => ({ value: addon, label: roleAddonLabels[addon] }),
   );
 
-  const [pwUser, setPwUser] = useState<UserDto | null>(null);
+  const [pwUser, setPwUser] = useState<UserAccountDto | null>(null);
   const [pwForm] = Form.useForm<{ newPassword: string }>();
 
   const openCreate = () => {
@@ -325,7 +344,7 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
     } as Partial<UserFormValues>);
     setOpen(true);
   };
-  const openEdit = (r: UserDto) => {
+  const openEdit = (r: UserAccountDto) => {
     setRecord(r);
     form.resetFields();
     form.setFieldsValue({
@@ -341,6 +360,10 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
       departmentIds: r.departments.map((d) => d.id),
       counterpartyId: r.counterpartyId,
       addons: [...r.addons],
+      // Работник (ADR 0102): у водителя связь уже стоит, и поле открывается с ней — сверка ФИО
+      // повторяется только при выборе другого человека.
+      personId: r.person?.id,
+      confirmNameMismatch: false,
       isActive: r.isActive,
       notifyUser: true,
     });
@@ -349,7 +372,9 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
 
   const saveMut = useMutation({
     mutationFn: (values: UserFormValues) => {
-      const { notifyUser, ...fields } = values;
+      // Работник вынут из общего набора: у не-водительской роли его в теле быть не должно вовсе,
+      // а не «пустым» — пустой означал бы просьбу отвязать (Р6).
+      const { notifyUser, personId, confirmNameMismatch, ...fields } = values;
       // Оба флага считаются по отправляемым значениям, а не по подсмотренным в форме: тело запроса
       // и показанный чекбокс обязаны говорить об одном и том же решении.
       const approving = approvesRegistration(record, values.role, values.isActive);
@@ -374,6 +399,12 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
         // значения размонтированных полей), и отправлять сюда несовместимую пару нельзя — сервер
         // ответит на неё 400.
         addons: (values.addons ?? []).filter((addon) => canAttachAddon(values.role, addon)),
+        // Работник уходит только у своей роли (ADR 0102). Отправить его вместе с другой ролью
+        // нельзя даже пустым: `null` означает «отвяжите», а отвязка живой водительской учётки
+        // запрещена (Р6) — у прочих ролей связь справочная и правится не здесь.
+        ...(isPersonScopedRole(values.role)
+          ? { personId, confirmNameMismatch: confirmNameMismatch ?? false }
+          : {}),
       };
       if (record) {
         const { password: _pw, email: _email, ...rest } = payload;
@@ -410,7 +441,7 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
   });
 
   const toggleActiveMut = useMutation({
-    mutationFn: (r: UserDto) => usersApi.update(r.id, { isActive: !r.isActive }),
+    mutationFn: (r: UserAccountDto) => usersApi.update(r.id, { isActive: !r.isActive }),
     onSuccess: () => {
       message.success('Готово');
       void qc.invalidateQueries({ queryKey: ['users'] });
@@ -433,13 +464,23 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
    * это показать.
    */
   const restoreMut = useMutation({
-    mutationFn: (id: string) => usersApi.restore(id),
+    mutationFn: (v: { id: string; body?: RestoreUserBody }) => usersApi.restore(v.id, v.body),
     onSuccess: () => {
       message.success('Учётная запись восстановлена — она осталась неактивной');
+      setRestoring(null);
       void qc.invalidateQueries({ queryKey: ['users'] });
     },
     onError: (e) => message.error(errorMessage(e)),
   });
+
+  /**
+   * Восстановление водителя спрашивает работника (Р8) — окном, а не отказом сервера: живая учётка
+   * без карточки невозможна, а у архивной связь могла обнулиться вместе с удалённым человеком.
+   * Остальные учётки возвращаются как прежде, одной кнопкой.
+   */
+  const [restoring, setRestoring] = useState<UserAccountDto | null>(null);
+  const restore = (r: UserAccountDto) =>
+    restoreNeedsPerson(r) ? setRestoring(r) : restoreMut.mutate({ id: r.id });
 
   // Удаление насовсем (ADR 0063) — общий хук справочников: подтверждение необратимого действия
   // должно звучать везде одинаково.
@@ -449,7 +490,7 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
     invalidate: [['users']],
   });
 
-  const [rejecting, setRejecting] = useState<UserDto | null>(null);
+  const [rejecting, setRejecting] = useState<UserAccountDto | null>(null);
   const rejectMut = useMutation({
     mutationFn: (v: { id: string; body: RejectUserBody }) => usersApi.reject(v.id, v.body),
     onSuccess: ({ notified }) => {
@@ -482,7 +523,7 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
    * на телефоне — шитом с подписями (ADR 0030 п. 6, ADR 0042). Расходиться им нельзя — иначе
    * «Отклонить заявку» существовало бы только с мышью.
    */
-  const rowActions = (r: UserDto) => {
+  const rowActions = (r: UserAccountDto) => {
     const isSelf = r.id === currentUser?.id;
     const pendingRegistration = isPendingRegistration(r);
     const remove = () =>
@@ -556,15 +597,13 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
    * Что можно сделать с архивной строкой (ADR 0063): вернуть из архива и снести насовсем. Список
    * тот же, что рисуют кнопки в таблице, — и права те же, каждое своё.
    */
-  const archivedRowActions = (r: UserDto) => [
+  const archivedRowActions = (r: UserAccountDto) => [
     // История у архивной учётки спрашивается чаще, чем у действующей: в списке от неё осталась
     // одна строка, а чем всё кончилось — рассказывает только журнал.
     ...(onShowHistory
       ? [{ key: 'history', label: 'История', onClick: () => onShowHistory(r) }]
       : []),
-    ...(canRestore
-      ? [{ key: 'restore', label: 'Восстановить', onClick: () => restoreMut.mutate(r.id) }]
-      : []),
+    ...(canRestore ? [{ key: 'restore', label: 'Восстановить', onClick: () => restore(r) }] : []),
     ...(purge.allowed
       ? [
           {
@@ -577,7 +616,7 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
       : []),
   ];
 
-  const rowMenu = (r: UserDto) => {
+  const rowMenu = (r: UserAccountDto) => {
     const actions = rowActions(r);
     return {
       items: actions.map(({ key, label, danger, disabled }) => ({
@@ -591,7 +630,7 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
   };
 
   const columns = [
-    textColumn<UserDto>({
+    textColumn<UserAccountDto>({
       key: 'email',
       title: 'Email',
       dataIndex: 'email',
@@ -601,7 +640,7 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
       // строки из десятка, и столбец под неё стоял бы пустым.
       render: (_v, r) => emailCell(r),
     }),
-    textColumn<UserDto>({
+    textColumn<UserAccountDto>({
       key: 'fullName',
       title: 'ФИО',
       dataIndex: 'fullName',
@@ -626,7 +665,7 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
     // Телефон (ADR 0043): администратор рассматривает заявку и звонит с этой же страницы, поэтому
     // номер стоит в списке, а не только в карточке. Сортировки нет — по номеру не упорядочивают,
     // и `USER_SORT_FIELDS` его не принимает.
-    textColumn<UserDto>({
+    textColumn<UserAccountDto>({
       key: 'phone',
       title: 'Телефон',
       dataIndex: 'phone',
@@ -638,7 +677,7 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
     // Роль с надстройками (ADR 0086) рисуется сама, а не `badgeColumn`: тег там один на ячейку, а
     // здесь их бывает несколько. Сортировка остаётся по роли — `USER_SORT_FIELDS` знает только её,
     // и надстройка порядка строк не задаёт.
-    textColumn<UserDto>({
+    textColumn<UserAccountDto>({
       key: 'role',
       title: 'Роль',
       dataIndex: 'role',
@@ -646,7 +685,7 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
       width: 200,
       render: (_v, r) => roleTags(r),
     }),
-    textColumn<UserDto>({
+    textColumn<UserAccountDto>({
       key: 'scope',
       title: 'Область',
       dataIndex: 'constructionObjects',
@@ -669,7 +708,7 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
         return objects.length === 0 ? '—' : objects.map((o) => o.name).join(' · ');
       },
     }),
-    textColumn<UserDto>({
+    textColumn<UserAccountDto>({
       key: 'counterpartyName',
       title: 'Контрагент',
       dataIndex: 'counterpartyName',
@@ -682,7 +721,7 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
             : r.counterpartyName
           : '—',
     }),
-    boolBadgeColumn<UserDto>({
+    boolBadgeColumn<UserAccountDto>({
       key: 'isActive',
       title: 'Активен',
       dataIndex: 'isActive',
@@ -696,7 +735,7 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
     // а «не подтверждён» у свежей заявки означало бы то, чего портал уже не требует.
     ...(EMAIL_VERIFICATION_ENABLED
       ? [
-          textColumn<UserDto>({
+          textColumn<UserAccountDto>({
             key: 'emailVerifiedAt',
             title: 'Адрес',
             dataIndex: 'emailVerifiedAt',
@@ -714,7 +753,7 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
       : []),
     // Дата регистрации: по ней фильтруют период, и без колонки фильтр не на что опереть —
     // отобранные строки выглядели бы отобранными неизвестно по чему.
-    textColumn<UserDto>({
+    textColumn<UserAccountDto>({
       key: 'createdAt',
       title: 'Зарегистрирован',
       dataIndex: 'createdAt',
@@ -722,7 +761,7 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
       width: 150,
       render: (_v, r) => dayjs(r.createdAt).format('DD.MM.YYYY'),
     }),
-    actionsColumn<UserDto>(
+    actionsColumn<UserAccountDto>(
       (r) =>
         r.deletedAt ? (
           // Архивная строка (ADR 0063): вернуть из архива и снести насовсем. Восстановление не
@@ -743,7 +782,7 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
                 icon={<ReloadOutlined />}
                 title="Восстановить"
                 loading={restoreMut.isPending}
-                onClick={() => restoreMut.mutate(r.id)}
+                onClick={() => restore(r)}
               />
             ) : null}
             {purge.allowed ? (
@@ -979,7 +1018,7 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
    * email нужен вторым. Нерассмотренная заявка на регистрацию помечена прямо в шапке: в общем
    * списке она лежит вперемешку с сотрудниками и отличается только этим.
    */
-  const card: CardConfig<UserDto> = {
+  const card: CardConfig<UserAccountDto> = {
     title: (r) => (
       <Space size={8}>
         <UserAvatar name={r.fullName} size="small" />
@@ -1050,7 +1089,7 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
         </Button>
       }
     >
-      <DataTable<UserDto>
+      <DataTable<UserAccountDto>
         columns={columns}
         card={card}
         data={data?.items ?? []}
@@ -1233,6 +1272,12 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
               />
             </Form.Item>
           ) : null}
+          {/* Работник справочника — четвёртая ось области (ADR 0102): у водителя вместо объектов,
+              отделов и контрагента стоит человек, чьё задание показывает кабинет. Поле на том же
+              месте, что остальные оси, и по тому же правилу — показывается только своей роли. */}
+          {isPersonScopedRole(watchRole) ? (
+            <DriverPersonField form={form} account={personFactsOf(record)} />
+          ) : null}
           {/* Надстройка роли (ADR 0086): что человек умеет сверх своей роли. Стоит после области —
               сначала «кто и где», потом «что ещё». Чекбоксами, а не выпадающим списком: надстроек
               наперечёт, и список из одной строки под кликом прятал бы то, что помещается в строку
@@ -1312,6 +1357,15 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
         confirmLoading={rejectMut.isPending}
       />
 
+      {/* Восстановление водителя без работника (Р8): человек выбирается тем же действием, что и
+          возврат из архива, — живой учётки без него не бывает. */}
+      <DriverRestoreModal
+        account={restoring ? personFactsOf(restoring) : null}
+        onCancel={() => setRestoring(null)}
+        onSubmit={(body) => restoring && restoreMut.mutate({ id: restoring.id, body })}
+        confirmLoading={restoreMut.isPending}
+      />
+
       {changeEmail.modal}
     </PageTableLayout>
   );
@@ -1355,7 +1409,7 @@ export function UsersTab() {
     setTab(key);
   };
 
-  const showHistory = (user: UserDto) => {
+  const showHistory = (user: UserAccountDto) => {
     setAuditTarget({ id: user.id, name: user.fullName });
     openTab('audit');
   };

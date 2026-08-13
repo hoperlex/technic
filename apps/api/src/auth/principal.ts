@@ -1,13 +1,19 @@
 import { eq } from 'drizzle-orm';
 import { db } from '../db/client';
-import { counterparties, users } from '../db/schema';
+import { counterparties, persons, users } from '../db/schema';
 import {
   constructionObjectIdsExpr,
   departmentIdsExpr,
   departmentObjectIdsExpr,
   roleAddonsExpr,
 } from '../services/user-scopes';
-import type { AccessSubject, CounterpartyType, Role, RoleAddon } from '@technic/contracts';
+import {
+  isPersonScopedRole,
+  type AccessSubject,
+  type CounterpartyType,
+  type Role,
+  type RoleAddon,
+} from '@technic/contracts';
 
 /** Принципал — субъект доступа (ADR 0038): права спрашиваются у пары «роль + тип контрагента». */
 export interface Principal extends AccessSubject {
@@ -44,6 +50,17 @@ export interface Principal extends AccessSubject {
   /** Контрагент учётки (ADR 0010): у внешнего исполнителя задаёт, чьи заявки ему видны. */
   counterpartyId: string | null;
   /**
+   * Человек, которому принадлежит учётка (ADR 0008). У роли `driver` это четвёртая ось области
+   * (ADR 0102), самая узкая: строка кабинета видна, если она про этого человека.
+   *
+   * Предиката области у неё нет намеренно — она держится тем, что кабинет **не принимает
+   * `personId` ни в пути, ни в теле, ни в фильтре** и берёт его отсюда: параметра, который надо
+   * сверять с областью, просто нет, и разойтись проверке с ним не с чем.
+   *
+   * У прочих ролей связь бывает заполнена и ни на что не влияет: она справочная.
+   */
+  personId: string | null;
+  /**
    * Тип контрагента (ADR 0038): у внешнего исполнителя определяет модуль, в котором он работает,
    * — вывоз мусора у оператора, заказ ТС у арендодателя. Читается из справочника на каждом
    * запросе вместе с ролью: смена типа контрагента меняет права учётки, и кэшировать её в токене
@@ -70,6 +87,10 @@ export async function loadPrincipal(userId: string): Promise<Principal | null> {
     .select({
       u: users,
       counterpartyType: counterparties.type,
+      // Карточка человека берётся тем же запросом, а не вторым по факту роли: роль до запроса
+      // неизвестна, и «сходить ещё раз, если водитель» означало бы второй круг к базе на каждом
+      // запросе кабинета — самого частого клиента портала.
+      personDeletedAt: persons.deletedAt,
       constructionObjectIds: constructionObjectIdsExpr,
       departmentIds: departmentIdsExpr,
       departmentObjectIds: departmentObjectIdsExpr,
@@ -77,10 +98,16 @@ export async function loadPrincipal(userId: string): Promise<Principal | null> {
     })
     .from(users)
     .leftJoin(counterparties, eq(users.counterpartyId, counterparties.id))
+    .leftJoin(persons, eq(users.personId, persons.id))
     .where(eq(users.id, userId));
   if (!row) return null;
   const u = row.u;
   if (u.deletedAt || !u.isActive) return null;
+  // Уволенный водитель кабинета не открывает (ADR 0102, Р2). Увольнение закрывает карточку
+  // (`persons.deleted_at`), а учётку не трогает — и без этой проверки человек смотрел бы задания
+  // и телефоны заказчиков ещё две недели, пока жив выданный refresh-токен. Спрашивается на каждом
+  // запросе по той же причине, по которой в токене не лежит роль: состояние меняется без нас.
+  if (isPersonScopedRole(u.role) && (!u.personId || row.personDeletedAt)) return null;
   return {
     id: u.id,
     email: u.email,
@@ -96,6 +123,7 @@ export async function loadPrincipal(userId: string): Promise<Principal | null> {
     departmentIds: row.departmentIds,
     departmentObjectIds: row.departmentObjectIds,
     counterpartyId: u.counterpartyId,
+    personId: u.personId,
     counterpartyType: row.counterpartyType,
     addons: row.addons,
     authVersion: u.authVersion,

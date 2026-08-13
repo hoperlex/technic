@@ -55,6 +55,9 @@ export const USER_AUDIT_ACTIONS = [
   'user.purge',
   'user.reset_password',
   'user.change_email',
+  // Смена привязанного работника (ADR 0102): у учётки водителя это не «правка полей», а замена
+  // того, чьи задания и показания она открывает, — и в фильтре аудита такое событие ищут отдельно.
+  'user.driver_person_relinked',
   'auth.email_verified',
   'auth.password_reset_requested',
   'auth.password_reset',
@@ -81,6 +84,7 @@ export const userAuditActionLabels: Record<UserAuditAction, string> = {
   'user.purge': 'Учётная запись удалена насовсем',
   'user.reset_password': 'Пароль сброшен администратором',
   'user.change_email': 'Адрес электронной почты изменён',
+  'user.driver_person_relinked': 'Работник учётной записи заменён',
   'auth.email_verified': 'Адрес электронной почты подтверждён',
   'auth.password_reset_requested': 'Запрошено восстановление пароля',
   'auth.password_reset': 'Пароль восстановлен по ссылке из письма',

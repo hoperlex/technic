@@ -15,6 +15,7 @@ import {
   driverListQuerySchema,
   type DriverSelectionDto,
   driverSelectionQuerySchema,
+  isPersonScopedRole,
   isValidSnils,
   LICENSE_NUMBER_RACE_MESSAGE,
   licenseNumberLabel,
@@ -796,7 +797,14 @@ export default async function driversRoutes(app: FastifyInstance): Promise<void>
         // здесь значило бы менять смысл присланного `driver_license` — а форма, которая заводит
         // документ, вид спрашивает.
         if (body.license) {
-          await insertLicense(tx, person!.id, credentialTypeIds, body.license, p.id, 'license.number');
+          await insertLicense(
+            tx,
+            person!.id,
+            credentialTypeIds,
+            body.license,
+            p.id,
+            'license.number',
+          );
         }
         return person!.id;
       });
@@ -853,6 +861,31 @@ export default async function driversRoutes(app: FastifyInstance): Promise<void>
             version: found.row.version + 1,
           })
           .where(eq(persons.id, found.row.id));
+
+        /**
+         * ФИО и телефон правит справочник — он их и владелец (ADR 0102): в карточке имя
+         * нормализовано и подтверждено документами, а в учётке оно могло быть введено как попало.
+         * Поэтому правка карточки доезжает до живой учётки этого человека, а обратно — нет.
+         *
+         * Только эти два поля: адрес принадлежит учётке (его меняют через подтверждение владения
+         * ящиком, ADR 0092), а СНИЛС и дата рождения в учётке не живут вовсе.
+         */
+        const nameChanged =
+          body.lastName !== undefined ||
+          body.firstName !== undefined ||
+          body.middleName !== undefined;
+        if (nameChanged || body.phone !== undefined) {
+          await tx
+            .update(users)
+            .set({
+              ...(body.lastName === undefined ? {} : { lastName: body.lastName }),
+              ...(body.firstName === undefined ? {} : { firstName: body.firstName }),
+              ...(body.middleName === undefined ? {} : { middleName: body.middleName }),
+              ...(body.phone === undefined ? {} : { phone: body.phone }),
+              updatedAt: new Date(),
+            })
+            .where(and(eq(users.personId, found.row.id), isNull(users.deletedAt)));
+        }
 
         const employmentChanged =
           body.personnelNo !== undefined ||
@@ -1169,11 +1202,19 @@ export default async function driversRoutes(app: FastifyInstance): Promise<void>
       // Считаются живые учётки: удалённая и так ничем не распоряжается, а требовать «сначала
       // почините её» значило бы запереть удаление наглухо — восстанавливать её незачем.
       const accounts = await tx
-        .select({ c: count() })
+        .select({ role: users.role })
         .from(users)
         .where(and(eq(users.personId, row.id), isNull(users.deletedAt)));
-      if (Number(accounts[0]!.c) > 0) {
-        throw err.conflict('На водителя заведена учётная запись — сначала отвяжите или удалите её');
+      if (accounts.length > 0) {
+        // Совет отвязать выполним не у всякой учётки: у водительской связь с карточкой
+        // обязательна (ADR 0102, Р2, CHECK `users_driver_person_check`), и отвязать её нельзя
+        // вовсе — путь один, в архив. Правило удаления при этом прежнее и не ослаблено: покажем
+        // мы отказ или нет, решает наличие живой учётки, а не её роль.
+        throw err.conflict(
+          accounts.some((a) => isPersonScopedRole(a.role))
+            ? 'На водителя заведена учётная запись — сначала заархивируйте её'
+            : 'На водителя заведена учётная запись — сначала отвяжите или удалите её',
+        );
       }
       const scans = await tx
         .select({ id: files.id, objectKey: files.objectKey })

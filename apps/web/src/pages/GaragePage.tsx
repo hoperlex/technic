@@ -6,6 +6,8 @@ import { useIsMobile } from '@shared/lib';
 import { PageTabs } from '../components/PageTabs';
 import { GarageVehiclesTab } from './garage/GarageVehiclesTab';
 import { GarageDriversTab } from './garage/GarageDriversTab';
+import { ReadingsStatsTab } from './garage/ReadingsStatsTab';
+import { useAuth } from '../auth/AuthContext';
 
 /**
  * Гараж (ADR 0076): чем заняты собственная техника и водители в конкретный день.
@@ -18,14 +20,21 @@ import { GarageDriversTab } from './garage/GarageDriversTab';
 
 const DATE = 'YYYY-MM-DD';
 
-const TABS = ['vehicles', 'drivers'] as const;
+const TABS = ['vehicles', 'drivers', 'readings'] as const;
 
 export function GaragePage() {
   const isMobile = useIsMobile();
+  const { can } = useAuth();
   const [sp, setSp] = useSearchParams();
 
+  // Сводка по показаниям — данные модуля показаний, и открывает их его собственное право: срез дня
+  // видят все, кому положен гараж, а цифры машин — только те, кому положены показания (Р34).
+  const canReadReadings = can('vehicleReadings.read');
+
   const raw = sp.get('tab') ?? '';
-  const tab = (TABS as readonly string[]).includes(raw) ? raw : 'vehicles';
+  const known =
+    (TABS as readonly string[]).includes(raw) && (raw !== 'readings' || canReadReadings);
+  const tab = known ? raw : 'vehicles';
 
   // Умолчание — сегодня, и считается оно по часам браузера только для первого показа: отобранные
   // строки всё равно относятся к дню, который вернул сервер (`onDate`).
@@ -89,6 +98,17 @@ export function GaragePage() {
       label: 'Водители',
       children: <GarageDriversTab date={day.format(DATE)} dayControls={dayControls} />,
     },
+    // Своего дня у сводки нет — у неё период (ADR 0103, Р27), поэтому органы управления днём сюда
+    // не едут: он остаётся у двух вкладок, которые отвечают именно про день.
+    ...(canReadReadings
+      ? [
+          {
+            key: 'readings',
+            label: 'Показания',
+            children: <ReadingsStatsTab date={day.format(DATE)} />,
+          },
+        ]
+      : []),
   ];
 
   return (

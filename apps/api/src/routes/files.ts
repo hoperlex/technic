@@ -12,11 +12,14 @@ import {
 import { config } from '../config';
 import { db } from '../db/client';
 import {
+  driverDailyReports,
   files,
   type FileRow,
   requestFiles,
   serviceRequestFiles,
   serviceRequests,
+  vehicleReadingFiles,
+  vehicleReadings,
   vehicleRequestAssignments,
   vehicleRequestFiles,
   vehicleRequests,
@@ -87,6 +90,22 @@ export interface FileLinkage {
    * подшивают к журналу вместе с тем, что к нему пришло.
    */
   visibleWaybill: boolean;
+  /**
+   * Файл привязан к показанию — и у принципала есть право читать показания парка (Р34). Своей
+   * области у показаний нет по той же причине, что у журнала листов: список показаний не сужается
+   * ни объектом, ни контрагентом, и придумывать фотографии область, которой нет у самих чисел,
+   * значило бы прятать файл, который портал в строке показывает.
+   */
+  visibleReading: boolean;
+  /**
+   * Файл привязан к показанию, отчёт которого принадлежит самому принципалу (Р34).
+   *
+   * Отдельный признак, а не частный случай предыдущего: у водителя нет права `vehicleReadings.read`
+   * — оно про весь парк, — поэтому без этой ветки он не открыл бы собственную фотографию. Считается
+   * сравнением `person_id` отчёта с `personId` принципала (четвёртая ось области, Р5): доступ по
+   * одному лишь `driverCabinet.read` отдавал бы водителю чужие снимки по угаданному UUID.
+   */
+  ownDriverReading: boolean;
   /** Файл вообще привязан хоть к чему-нибудь — неважно, видно это пользователю или нет. */
   linkedAnywhere: boolean;
 }
@@ -100,7 +119,8 @@ export interface FileLinkage {
  * роли, объекта или контрагента, а сама заявка ему уже не видна.
  *
  * Отсюда же требование к `linkedAnywhere`: последняя строка держится на полноте перечисления
- * таблиц привязки в `isFileLinked`. Модуль, о котором та функция не знает, попадает сюда как
+ * таблиц привязки, которое теперь живёт в функции БД `file_is_linked(uuid)` (миграция 0133) и
+ * спрашивается через `isFileLinked`. Модуль, о котором та функция не знает, попадает сюда как
  * «файл ничей» — и ветка авторства отдаёт документ бессрочно.
  */
 export function decideFileAccess(
@@ -112,6 +132,8 @@ export function decideFileAccess(
   if (linkage.visibleVehicle && can(p, 'vehicleRequests.read')) return true;
   if (linkage.visibleService && can(p, 'serviceRequests.read')) return true;
   if (linkage.visibleWaybill && can(p, 'waybills.read')) return true;
+  if (linkage.visibleReading && can(p, 'vehicleReadings.read')) return true;
+  if (linkage.ownDriverReading && can(p, 'driverCabinet.read')) return true;
   return !linkage.linkedAnywhere && !!uploadedBy && uploadedBy === p.id;
 }
 
@@ -215,9 +237,42 @@ async function canAccessFile(
     visibleWaybill = waybill.length > 0;
   }
 
+  // Дальше — фотографии показаний, две ветки сразу (Р34). Одна проверка «связь уже нашлась» вместо
+  // растущей цепочки отрицаний: каждый следующий модуль иначе добавлял бы по слагаемому в четыре
+  // условия.
+  const foundBefore = visibleWaste || visibleVehicle || visibleService || visibleWaybill;
+
+  let visibleReading = false;
+  if (!foundBefore && can(p, 'vehicleReadings.read')) {
+    // Фотография приборной панели или чека, подшитая к показанию. Условие одно — связь: право
+    // `vehicleReadings.read` даётся на весь парк, области у показаний нет (см. `FileLinkage`).
+    const reading = await db
+      .select({ id: vehicleReadingFiles.readingId })
+      .from(vehicleReadingFiles)
+      .where(eq(vehicleReadingFiles.fileId, fileId))
+      .limit(1);
+    visibleReading = reading.length > 0;
+  }
+
+  let ownDriverReading = false;
+  // Своя фотография водителя: у него нет права на показания парка, и без этой ветки он не открыл
+  // бы даже собственный снимок. Область — четвёртая ось (Р5): человек принципала против человека
+  // отчёта, а не «любой файл, привязанный к любому показанию».
+  const personId = p.personId;
+  if (!foundBefore && !visibleReading && personId && can(p, 'driverCabinet.read')) {
+    const own = await db
+      .select({ id: vehicleReadingFiles.readingId })
+      .from(vehicleReadingFiles)
+      .innerJoin(vehicleReadings, eq(vehicleReadingFiles.readingId, vehicleReadings.id))
+      .innerJoin(driverDailyReports, eq(vehicleReadings.reportId, driverDailyReports.id))
+      .where(and(eq(vehicleReadingFiles.fileId, fileId), eq(driverDailyReports.personId, personId)))
+      .limit(1);
+    ownDriverReading = own.length > 0;
+  }
+
   // Привязку целиком спрашиваем только у того, кому иначе отказали бы: это ещё несколько запросов.
   const linkedAnywhere =
-    visibleWaste || visibleVehicle || visibleService || visibleWaybill
+    foundBefore || visibleReading || ownDriverReading
       ? true
       : uploadedBy === p.id
         ? await isFileLinked(fileId)
@@ -228,6 +283,8 @@ async function canAccessFile(
     visibleVehicle,
     visibleService,
     visibleWaybill,
+    visibleReading,
+    ownDriverReading,
     linkedAnywhere,
   });
 }
@@ -287,12 +344,23 @@ export default async function filesRoutes(app: FastifyInstance): Promise<void> {
         .where(eq(files.id, file.id));
       throw err.badRequest('Файл превышает допустимый размер');
     }
+    // Условное обновление, а не безусловное: между чтением строки выше и этим запросом уборка
+    // воркера успевает забрать незавершённую загрузку старше суток — пометить `deleted` и поставить
+    // задачу на удаление объекта из S3. Безусловный `SET status='active'` перекрыл бы её метку и
+    // оставил живую с виду запись поверх объекта, который вот-вот исчезнет: файл ушёл бы в заявку и
+    // перестал открываться позже, без единого следа. Строка меняется только пока она `pending`.
     const [updated] = await db
       .update(files)
       .set({ status: 'active', size: head.size })
-      .where(eq(files.id, file.id))
+      .where(and(eq(files.id, file.id), eq(files.status, 'pending')))
       .returning();
-    return toFileDto(updated!);
+    if (updated) return toFileDto(updated);
+
+    // Ноль строк — значит статус сменился рядом. Перечитываем: `active` мог поставить параллельный
+    // повтор того же `complete` (тогда всё в порядке и ответ прежний), а `deleted` — уборка.
+    const [after] = await db.select().from(files).where(eq(files.id, file.id));
+    if (after && after.status === 'active' && !after.deletedAt) return toFileDto(after);
+    throw err.conflict('Загрузка устарела — загрузите файл заново');
   });
 
   /**

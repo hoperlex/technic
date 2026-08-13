@@ -320,6 +320,22 @@ export interface UserDepartmentRefDto {
   name: string;
 }
 
+/**
+ * Карточка работника, к которой привязана учётная запись (ADR 0102).
+ *
+ * Ссылка, а не копия справочника: списку учёток нужно показать, кем именно закрыт водитель, и
+ * предупредить, что карточка ушла в архив, — восстановить учётку с такой уже нельзя, нужен другой
+ * работник. Всё остальное о человеке спрашивают у справочника, где оно и живёт.
+ */
+export interface UserPersonRefDto extends PersonNameParts {
+  id: string;
+  fullName: string;
+  phone: string;
+  email: string;
+  /** Карточка в архиве: учётка водителя с такой не восстанавливается. */
+  deletedAt: string | null;
+}
+
 export interface UserDto extends PersonNameParts {
   id: string;
   email: string;
@@ -367,4 +383,13 @@ export interface UserDto extends PersonNameParts {
   deletedAt: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+/**
+ * Учётка вместе с привязанным работником. Отдельный тип, а не поле в `UserDto`: связь с карточкой
+ * есть только у части учёток (у водителя она обязательна, у остальных — по желанию), и списки, где
+ * человек не нужен, не должны платить за него запросом.
+ */
+export interface UserAccountDto extends UserDto {
+  person: UserPersonRefDto | null;
 }

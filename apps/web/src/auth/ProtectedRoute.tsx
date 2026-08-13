@@ -37,6 +37,10 @@ export function ProtectedRoute() {
  * им не над чем (ADR 0062), и стартовой страницей ей досталось бы пустое место.
  */
 function homePath(canUse: (permission: Permission) => boolean): string {
+  // Кабинет водителя (ADR 0102) — первой строкой, и порядок здесь важнее обычного: у роли
+  // `driver` нет ни одного права основного портала, и без этой строки водитель попадал бы на
+  // смену пароля — единственное, что осталось бы ему доступным.
+  if (canUse('driverCabinet.read')) return '/driver';
   if (canUse('wasteRequests.read')) return '/waste';
   if (canUse('vehicleRequests.read')) return '/vehicle-requests';
   if (canUse('directories.write')) return '/directories';

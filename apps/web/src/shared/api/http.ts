@@ -32,6 +32,13 @@ export interface RequestOptions {
   query?: Record<string, unknown>;
   /** не пытаться обновлять токен при 401 (для auth-эндпоинтов) */
   noRefresh?: boolean;
+  /**
+   * Дополнительные заголовки запроса. Заведены ради `Idempotency-Key` кабинета водителя (ADR 0103):
+   * ключ идемпотентности — свойство самой попытки отправки, а не её тела, и повторить его в теле
+   * значило бы дать серверу два ответа на вопрос «та же это отправка или новая». `Authorization` и
+   * `Content-Type` ставит транспорт и здесь их не ждёт — они перекрываются намеренно последними.
+   */
+  headers?: Record<string, string>;
 }
 
 function buildUrl(path: string, query?: Record<string, unknown>): string {
@@ -45,7 +52,9 @@ function buildUrl(path: string, query?: Record<string, unknown>): string {
 }
 
 async function doFetch(url: string, options: RequestOptions): Promise<Response> {
-  const headers: Record<string, string> = {};
+  // Свои заголовки идут первыми: тип тела и токен транспорт ставит сам, и подменять их вызывающему
+  // нечем — иначе один экран смог бы отправить запрос от чужого имени или в чужой кодировке.
+  const headers: Record<string, string> = { ...options.headers };
   if (options.body !== undefined) headers['Content-Type'] = 'application/json';
   const token = getToken();
   if (token) headers['Authorization'] = `Bearer ${token}`;

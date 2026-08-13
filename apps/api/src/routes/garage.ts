@@ -1,12 +1,14 @@
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { and, count, eq, ilike, isNull, or, sql, type SQL } from 'drizzle-orm';
+import { z } from 'zod';
 import {
   driverDocumentGaps,
   type GarageDriverListDto,
   garageDriverQuerySchema,
   type GarageDriversSummaryDto,
   type GarageDriverState,
+  type GarageVehicleDto,
   type GarageVehicleListDto,
   garageVehicleQuerySchema,
   type GarageVehiclesSummaryDto,
@@ -15,6 +17,7 @@ import {
   moscowDateKeyOf,
   requiredCredentialType,
   vehicleLabel,
+  type VehicleReadingDayState,
   waybillDocumentOf,
 } from '@technic/contracts';
 import { db } from '../db/client';
@@ -40,6 +43,7 @@ import {
   loadVehicleBusy,
   vehicleStateSql,
 } from '../services/garage';
+import { loadVehicleReadingStates, pendingReadingsSql } from '../services/readings-stats';
 
 /**
  * Гараж: чем занят день собственной техники и водителей (ADR 0076).
@@ -66,6 +70,27 @@ const driverStateOrderSql = (on: string): SQL => sql`CASE ${driverStateSql(on)}
  */
 function dayOf(on: string | undefined): string {
   return on ?? moscowDateKeyOf(new Date());
+}
+
+/**
+ * Фильтр «не сданы» и колонка «Показания» (ADR 0103, Р27) — расширение вкладки техники, которого
+ * контракт гаража пока не описывает: этап показаний `packages/contracts` не трогает, а колонке уже
+ * есть что показывать. Схема и тип живут здесь ровно до того, как контракт их узнает.
+ *
+ * Значение у фильтра одно: «не сданы» — вопрос следующего утра, и обратного к нему («сданы») никто
+ * не задаёт.
+ */
+const vehicleListQuerySchema = garageVehicleQuerySchema.extend({
+  readings: z.enum(['pending']).optional(),
+});
+
+interface GarageVehicleWithReadings extends GarageVehicleDto {
+  /** Что с показаниями машины за этот день — одно значение из пяти, по старшинству (Р27). */
+  readingState: VehicleReadingDayState;
+}
+
+interface GarageVehicleListWithReadingsDto extends GarageVehicleListDto {
+  items: GarageVehicleWithReadings[];
 }
 
 /**
@@ -219,12 +244,18 @@ export default async function garageRoutes(app: FastifyInstance): Promise<void> 
 
   r.get(
     '/vehicles',
-    { preHandler: guards, schema: { querystring: garageVehicleQuerySchema } },
-    async (req): Promise<GarageVehicleListDto> => {
+    { preHandler: guards, schema: { querystring: vehicleListQuerySchema } },
+    async (req): Promise<GarageVehicleListWithReadingsDto> => {
       const q = req.query;
       const on = dayOf(q.on);
       const state = vehicleStateSql(on);
-      const where = and(vehicleWhere(q), q.state ? sql`${state} = ${q.state}` : undefined)!;
+      const where = and(
+        vehicleWhere(q),
+        q.state ? sql`${state} = ${q.state}` : undefined,
+        // Отбор идёт до страницы, а не после: «не сданы» — это фильтр списка, и посчитанный по
+        // загруженной странице он врал бы и в счётчике, и в листании.
+        q.readings === 'pending' ? pendingReadingsSql(on) : undefined,
+      )!;
 
       const sortCols = {
         state: vehicleStateOrderSql(on),
@@ -247,16 +278,22 @@ export default async function garageRoutes(app: FastifyInstance): Promise<void> 
         vehicleTotalsQuery(state).where(where),
       ]);
 
-      const busy = await loadVehicleBusy(
-        on,
-        rows.map((row) => row.id),
-      );
+      // Занятости и состояние показаний добираются по найденной странице — одним приёмом и одним
+      // заходом: оба ответа относятся к тем же машинам, и второй круг ожидания здесь ни к чему.
+      const vehicleIds = rows.map((row) => row.id);
+      const [busy, readings] = await Promise.all([
+        loadVehicleBusy(on, vehicleIds),
+        loadVehicleReadingStates(on, vehicleIds),
+      ]);
 
       return {
         items: rows.map((row) => {
           const entries = busy.get(row.id) ?? [];
           return {
             id: row.id,
+            // Строк ожидания у машины в этот день не нашлось вовсе — «нет» (Р27): задания не было
+            // либо кабинет его ещё не открывал.
+            readingState: readings.get(row.id) ?? 'none',
             state: row.state,
             status: row.status,
             label: vehicleLabel(row),

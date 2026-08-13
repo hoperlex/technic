@@ -1,25 +1,22 @@
-import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { config } from '../config';
 import { db } from '../db/client';
-import {
-  files,
-  jobs,
-  requestFiles,
-  serviceRequestFiles,
-  vehicleRequestFiles,
-  waybillFiles,
-} from '../db/schema';
+import { files, jobs } from '../db/schema';
 import { err } from '../lib/errors';
 import { JOB_DELETE_S3_OBJECT } from '../lib/jobs';
 
 // Общий файловый сервис для всех модулей заявок («Вывоз мусора», «Заказ ТС», «Обслуживание
-// оргтехники»). Гарантирует кросс-модульную уникальность привязки (файл — максимум в одной заявке)
-// и единые правила удаления из S3 через outbox-задачи.
+// оргтехники», фотографии показаний техники). Гарантирует кросс-модульную уникальность привязки
+// (файл — максимум в одном месте) и единые правила удаления из S3 через outbox-задачи.
 //
-// Перечисления таблиц привязки ниже (`linkedFileIds` и `isFileLinked`) обязаны пополняться вместе:
-// каждый новый модуль с вложениями добавляет свою таблицу в обе. Они отвечают на разные вопросы —
-// «можно ли привязать» и «привязан ли уже», — но обе исходят из одного правила портала: файл живёт
-// максимум в одной заявке и доступен по её правилам.
+// Перечня таблиц привязки здесь больше нет: он живёт в функции БД `file_is_linked(uuid)`
+// (миграция 0133). Обе функции ниже — `linkedFileIds` (пакетно, «можно ли привязать») и
+// `isFileLinked` (поштучно, «привязан ли уже») — зовут её, а не перечисляют таблицы сами.
+//
+// Причина переезда — третий читатель того же перечня: уборка файлов в воркере, которая ставит
+// задачу на физическое удаление объекта из S3. Пока копий было две, забытая таблица стоила лишнего
+// доступа (так и случилось с `waybill_files`); с появлением уборки та же забытая строка означает
+// удалённый документ. Новая связь заводится в одном месте — в миграции, рядом с самой таблицей.
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -27,54 +24,54 @@ export const S3_DELETE_DELAY_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
  * fileId, уже куда-то привязанные: вложение или талон заявки вывоза (request_files, ADR 0024),
- * вложение заявки на технику, скан, подшитый к путевому листу (миграция 0087), либо документ
- * заявки на обслуживание оргтехники (service_request_files, миграция 0105).
+ * вложение заявки на технику, скан, подшитый к путевому листу (миграция 0087), документ заявки на
+ * обслуживание оргтехники (service_request_files, миграция 0105) либо фотография показаний
+ * (vehicle_reading_files). Перечень — в `file_is_linked(uuid)` (миграция 0133).
  *
  * Список таблиц обязан быть полным. Файл, прошедший мимо этой проверки, оказался бы привязан
  * дважды — и удаление одной из записей унесло бы его у второй: скан заполненного бланка исчез бы
  * из журнала строгой отчётности вместе с чужой заявкой, а акт выполненных работ — вместе с
  * удалённой заявкой вывоза.
+ *
+ * Запрос идёт от `files`, а не от таблиц связи: так функция БД зовётся один раз на файл, а не по
+ * разу на модуль, и добавление следующего модуля не меняет здесь ни строки.
  */
 async function linkedFileIds(tx: Tx, fileIds: string[]): Promise<Set<string>> {
   if (fileIds.length === 0) return new Set();
-  const [waste, vehicle, waybill, service] = await Promise.all([
-    tx
-      .select({ fileId: requestFiles.fileId })
-      .from(requestFiles)
-      .where(inArray(requestFiles.fileId, fileIds)),
-    tx
-      .select({ fileId: vehicleRequestFiles.fileId })
-      .from(vehicleRequestFiles)
-      .where(inArray(vehicleRequestFiles.fileId, fileIds)),
-    tx
-      .select({ fileId: waybillFiles.fileId })
-      .from(waybillFiles)
-      .where(inArray(waybillFiles.fileId, fileIds)),
-    tx
-      .select({ fileId: serviceRequestFiles.fileId })
-      .from(serviceRequestFiles)
-      .where(inArray(serviceRequestFiles.fileId, fileIds)),
-  ]);
-  return new Set([...waste, ...vehicle, ...waybill, ...service].map((r) => r.fileId));
+  const rows = await tx
+    .select({ fileId: files.id })
+    .from(files)
+    .where(and(inArray(files.id, fileIds), sql`file_is_linked(${files.id})`));
+  return new Set(rows.map((r) => r.fileId));
 }
 
 /**
  * Валидирует пригодность файлов к привязке: принадлежат загрузившему, не удалены,
- * не превышен лимит батча и файлы ещё не прикреплены ни к одной заявке (мусор/ТС/оргтехника)
- * и ни к одному путевому листу.
- * `FOR UPDATE` сериализует конкурентные попытки привязать один и тот же файл.
+ * не превышен лимит батча и файлы ещё не прикреплены ни к одной заявке (мусор/ТС/оргтехника),
+ * ни к одному путевому листу и ни к одному показанию.
+ * `FOR UPDATE` сериализует конкурентные попытки привязать один и тот же файл — и он же
+ * сериализует привязку с уборкой в воркере, которая берёт кандидатов той же блокировкой.
+ *
+ * `requireActive` — про статус загрузки, а не про права. По умолчанию (заявки) проверки статуса
+ * нет исторически: форма заявки грузит файл и сохраняет заявку одним движением, и `pending`
+ * означал «загрузка вот-вот завершится». Показаниям этого мало: фотографии приезжают вместе с
+ * числами при отправке отчёта, а `pending` — это файл, объекта которого в хранилище может не быть
+ * вовсе (загрузку оборвали) и который через сутки заберёт уборка. Отчёт со ссылкой на
+ * несуществующий объект внешне неотличим от отчёта с фотографией — до дня, когда её попробуют
+ * открыть.
  */
 export async function assertFilesAttachable(
   tx: Tx,
   fileIds: string[],
   uploaderId: string,
+  options: { requireActive?: boolean } = {},
 ): Promise<void> {
   if (fileIds.length === 0) return;
   if (fileIds.length > config.files.maxPerRequest) {
     throw err.badRequest(`Не более ${config.files.maxPerRequest} файлов`);
   }
   const rows = await tx
-    .select({ id: files.id })
+    .select({ id: files.id, status: files.status })
     .from(files)
     .where(
       and(inArray(files.id, fileIds), eq(files.uploadedBy, uploaderId), isNull(files.deletedAt)),
@@ -82,6 +79,9 @@ export async function assertFilesAttachable(
     .for('update');
   if (rows.length !== fileIds.length) {
     throw err.badRequest('Некоторые файлы недоступны или не принадлежат вам');
+  }
+  if (options.requireActive && rows.some((r) => r.status !== 'active')) {
+    throw err.badRequest('Загрузка файла не завершена — дождитесь окончания и повторите');
   }
   const linked = await linkedFileIds(tx, fileIds);
   if (linked.size > 0) throw err.badRequest('Файл уже прикреплён к заявке');
@@ -101,11 +101,12 @@ export async function markFilesActive(tx: Tx, fileIds: string[]): Promise<void> 
 }
 
 /**
- * Признак существования файла в связях. Возвращает true, если прикреплён к любой заявке.
+ * Признак существования файла в связях. Возвращает true, если файл прикреплён хоть к чему-нибудь:
+ * заявке любого модуля, путевому листу или показанию.
  *
- * Отдельная от `linkedFileIds` функция с отдельным перечислением таблиц — и потому её легко
- * пропустить, добавляя модуль. Пропуск не выглядит поломкой: привязка работает, вложение видно, —
- * но два правила портала перестают действовать разом.
+ * Поштучный вариант того же вопроса, на который отвечает `linkedFileIds`, — и раньше это были два
+ * независимых перечня таблиц, из-за чего пропуск модуля в одном из них не выглядел поломкой:
+ * привязка работает, вложение видно, — но два правила портала переставали действовать разом.
  *
  * Первое: ветка авторства в `decideFileAccess` (routes/files.ts) открывает файл загрузившему,
  * пока он «ещё никуда не привязан», и это самое «не привязан» узнаётся отсюда. Забытая таблица
@@ -114,34 +115,16 @@ export async function markFilesActive(tx: Tx, fileIds: string[]): Promise<void> 
  *
  * Второе: `DELETE /files/:id` отказывает в удалении прикреплённого файла. Забытая таблица
  * означает, что автор загрузки в обход заявки уносит из неё документ.
+ *
+ * Теперь оба варианта спрашивают одну функцию БД, и разъехаться им негде.
  */
 export async function isFileLinked(fileId: string): Promise<boolean> {
-  const [waste, vehicle, waybill, service] = await Promise.all([
-    db
-      .select({ f: requestFiles.fileId })
-      .from(requestFiles)
-      .where(eq(requestFiles.fileId, fileId))
-      .limit(1),
-    db
-      .select({ f: vehicleRequestFiles.fileId })
-      .from(vehicleRequestFiles)
-      .where(eq(vehicleRequestFiles.fileId, fileId))
-      .limit(1),
-    // Путевые листы (миграция 0087). Ровно тот пропуск, о котором предупреждает комментарий выше:
-    // таблица была заведена в `linkedFileIds`, здесь — забыта, и оба правила портала для сканов
-    // журнала не действовали.
-    db
-      .select({ f: waybillFiles.fileId })
-      .from(waybillFiles)
-      .where(eq(waybillFiles.fileId, fileId))
-      .limit(1),
-    db
-      .select({ f: serviceRequestFiles.fileId })
-      .from(serviceRequestFiles)
-      .where(eq(serviceRequestFiles.fileId, fileId))
-      .limit(1),
-  ]);
-  return waste.length > 0 || vehicle.length > 0 || waybill.length > 0 || service.length > 0;
+  const rows = await db
+    .select({ id: files.id })
+    .from(files)
+    .where(and(eq(files.id, fileId), sql`file_is_linked(${files.id})`))
+    .limit(1);
+  return rows.length > 0;
 }
 
 /**

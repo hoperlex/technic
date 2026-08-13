@@ -311,23 +311,199 @@ async function processJobs(): Promise<number> {
   return claimed.rows.length;
 }
 
-/** Очистка незавершённых загрузок старше 24ч. */
-async function cleanupOrphanUploads(): Promise<void> {
-  const res = await pool.query<{ id: string; object_key: string }>(
-    `SELECT id, object_key FROM files
-     WHERE status='pending' AND created_at < now() - interval '24 hours'
-     LIMIT 200`,
-  );
-  for (const row of res.rows) {
+// ── Уборка брошенных файлов (Р18) ──
+//
+// Проходов два, протокол один. Первый убирает незавершённые загрузки (`pending` старше суток):
+// сессию открыли, файл в хранилище не доложили или доложили, но `complete` не позвали. Второй —
+// завершённые загрузки, так и не попавшие никуда (`active` старше недели): форму заполнили,
+// фотографию приложили, заявку не сохранили. До появления второго прохода такой файл оставался в
+// S3 навсегда — платным и никому не видимым.
+//
+// Почему протокол общий и почему он именно такой. Прежний проход по `pending` выбирал строки БЕЗ
+// блокировки и СНАЧАЛА сносил объект из S3, а метку `deleted` ставил потом. Между этими двумя
+// шагами `/files/:id/complete` успевал перевести файл в `active`, а сохранение заявки — привязать
+// его: воркер удалял из хранилища уже подшитый документ, оставляя в базе живую ссылку. Чинить один
+// новый проход, оставив старый конкурентным, бессмысленно — гонка та же.
+//
+// Отсюда четыре правила, общие для обоих проходов:
+//   1. кандидаты отбираются сразу без связанных (`NOT file_is_linked`), а не фильтруются после
+//      выборки: иначе две сотни старых связанных файлов заняли бы `LIMIT` целиком и до настоящих
+//      сирот очередь не дошла бы никогда;
+//   2. строки берутся `FOR UPDATE SKIP LOCKED` — той же блокировкой, которой сериализует себя
+//      привязка (`assertFilesAttachable` берёт `files` `FOR UPDATE`). Порядок по `id` одинаков у
+//      всех воркеров, так что взаимной блокировки двух проходов не возникает;
+//   3. под блокировкой статус и связанность проверяются ЗАНОВО: между снимком первого запроса и
+//      захватом блокировки файл могли и завершить, и привязать;
+//   4. метка `deleted` и задача на удаление объекта ставятся ОДНОЙ транзакцией БД, а физически
+//      удаляет объект только задача. Так не остаётся окна, в котором файл жив в базе и мёртв в
+//      хранилище (или наоборот): либо откатится всё, либо задача уже стоит в очереди.
+interface FileCleanupPass {
+  /** Статус, в котором файл считается брошенным. */
+  status: 'pending' | 'active';
+  /** Возраст, после которого файл убирается: интервал PostgreSQL. */
+  age: string;
+  /** Задержка перед физическим удалением объекта из S3. */
+  s3DelayMs: number;
+  /** Строка в журнале: проходы разбираются по-разному, и различать их надо без чтения кода. */
+  label: string;
+}
+
+/** Столько же, сколько было у старого прохода: уборка не должна занимать соединение надолго. */
+const FILE_CLEANUP_BATCH = 200;
+
+/** Отсрочка удаления документа в API (`softDeleteFile`): 30 дней на «удалили по ошибке». */
+const S3_DELETE_DELAY_MS = 30 * 24 * 60 * 60 * 1000;
+
+const FILE_CLEANUP_PASSES: FileCleanupPass[] = [
+  {
+    status: 'pending',
+    age: '24 hours',
+    // Немедленно: `pending` — это незавершённая загрузка, документом она не была ни секунды, и
+    // восстанавливать из неё нечего. Так же вёл себя и прежний проход.
+    s3DelayMs: 0,
+    label: 'незавершённые загрузки',
+  },
+  {
+    status: 'active',
+    age: '7 days',
+    // С отсрочкой, как у удаления файла из портала. Файл был загружен целиком, и единственное, что
+    // отличает брошенный от подшитого, — полнота перечня в `file_is_linked`. Забытая в нём таблица
+    // означала бы удаление настоящего документа; тридцать дней в хранилище — цена возможности это
+    // заметить и вернуть объект.
+    s3DelayMs: S3_DELETE_DELAY_MS,
+    label: 'завершённые загрузки без единой связи',
+  },
+];
+
+/** Один проход уборки. Возвращает число убранных файлов. */
+async function cleanupUnlinkedFiles(pass: FileCleanupPass): Promise<number> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const candidates = await client.query<{ id: string }>(
+      `SELECT id FROM files
+        WHERE status = $1
+          AND created_at < now() - $2::interval
+          AND NOT file_is_linked(id)
+        ORDER BY id
+        LIMIT ${FILE_CLEANUP_BATCH}
+        FOR UPDATE SKIP LOCKED`,
+      [pass.status, pass.age],
+    );
+    if (candidates.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return 0;
+    }
+
+    // Повторная проверка под блокировкой — отдельным запросом, а не по данным первого: в
+    // READ COMMITTED каждый оператор берёт свой снимок, поэтому здесь видно всё, что успело
+    // зафиксироваться, пока мы ждали блокировку. Строки уже наши, и новая привязка встанет в
+    // очередь за нашей транзакцией.
+    const ids = candidates.rows.map((r) => r.id);
+    const confirmed = await client.query<{ id: string; object_key: string }>(
+      `SELECT id, object_key FROM files
+        WHERE id = ANY($1::uuid[]) AND status = $2 AND NOT file_is_linked(id)`,
+      [ids, pass.status],
+    );
+    if (confirmed.rows.length > 0) {
+      await client.query(
+        `UPDATE files SET status='deleted', deleted_at=now() WHERE id = ANY($1::uuid[])`,
+        [confirmed.rows.map((r) => r.id)],
+      );
+      await client.query(
+        `INSERT INTO jobs (type, payload, next_run_at)
+         SELECT $1, jsonb_build_object('objectKey', k), $3::timestamptz
+           FROM unnest($2::text[]) AS k`,
+        [
+          JOB_DELETE_S3_OBJECT,
+          confirmed.rows.map((r) => r.object_key),
+          new Date(Date.now() + pass.s3DelayMs),
+        ],
+      );
+    }
+    await client.query('COMMIT');
+    return confirmed.rows.length;
+  } catch (e) {
+    // Откат отдельно от ошибки прохода: соединение возвращается в пул чистым, а причину покажет
+    // тот, кто звал.
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+/** Оба прохода подряд. Падение одного не отменяет второй: они независимы. */
+async function cleanupFiles(): Promise<void> {
+  for (const pass of FILE_CLEANUP_PASSES) {
     try {
-      await deleteObject(row.object_key);
-      await pool.query(`UPDATE files SET status='deleted', deleted_at=now() WHERE id=$1`, [row.id]);
+      const cleaned = await cleanupUnlinkedFiles(pass);
+      if (cleaned > 0) {
+        logger.info({ count: cleaned, status: pass.status }, `Убраны ${pass.label}`);
+      }
     } catch (e) {
-      logger.warn({ fileId: row.id, err: e }, 'Не удалось очистить orphan-загрузку');
+      logger.warn({ status: pass.status, err: e }, `Не удалось убрать ${pass.label}`);
     }
   }
-  if (res.rows.length > 0) {
-    logger.info({ count: res.rows.length }, 'Очищены orphan-загрузки');
+}
+
+/**
+ * Брошенные черновики отчётов водителей (ADR 0103). Открытие кабинета заводит шапку и строки
+ * ожидания, а строка ожидания ЗАНИМАЕТ источник глобально: рейс стоит ровно в одном отчёте на
+ * портал. Черновик, который никто не заполнил, держал бы этот рейс вечно — второй отчёт его уже не
+ * получит, а окончательное удаление рейса упрётся в ссылку.
+ *
+ * Условия сноса два, и оба обязательны: отчёт всё ещё `draft` и по нему нет НИ ОДНОГО показания.
+ * Отправленный отчёт не трогается никогда, даже пустой: его состав заморожен, и убирать оттуда
+ * нечего — изменения задания живут расхождениями.
+ *
+ * Уборка берёт только суффикс общего протокола блокировок (отчёт → строки) и машину после этого не
+ * блокирует ВОВСЕ: цепочку она не трогает, потому что удаляет черновик без единого показания.
+ * Кандидаты отбираются без блокировок, затем каждый берётся `FOR UPDATE SKIP LOCKED` и под
+ * блокировкой перепроверяется — иначе снос столкнётся с открытием или отправкой того же отчёта.
+ */
+const DRAFT_REPORT_TTL_DAYS = 7;
+
+async function cleanupAbandonedReports(): Promise<number> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    // Строки ожидания уходят каскадом вместе с шапкой (`ON DELETE CASCADE`), поэтому условие
+    // «показаний нет» проверяется по ним, а не по самой шапке: показание ссылается на строку.
+    const removed = await client.query<{ id: string }>(
+      `DELETE FROM driver_daily_reports r
+        WHERE r.id IN (
+          SELECT c.id FROM driver_daily_reports c
+           WHERE c.state = 'draft'
+             AND c.created_at < now() - ($1 || ' days')::interval
+             AND NOT EXISTS (
+               SELECT 1 FROM vehicle_readings vr WHERE vr.report_id = c.id
+             )
+           ORDER BY c.id
+           LIMIT 200
+           FOR UPDATE SKIP LOCKED
+        )
+          AND r.state = 'draft'
+          AND NOT EXISTS (SELECT 1 FROM vehicle_readings vr WHERE vr.report_id = r.id)
+        RETURNING r.id`,
+      [DRAFT_REPORT_TTL_DAYS],
+    );
+    await client.query('COMMIT');
+    return removed.rows.length;
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+async function cleanupDraftReportsSafely(): Promise<void> {
+  try {
+    const removed = await cleanupAbandonedReports();
+    if (removed > 0) logger.info({ count: removed }, 'Убраны брошенные черновики отчётов');
+  } catch (e) {
+    logger.warn({ err: e }, 'Не удалось убрать брошенные черновики отчётов');
   }
 }
 
@@ -404,7 +580,11 @@ async function loop(): Promise<void> {
       }
       if (Date.now() - lastCleanup > CLEANUP_INTERVAL_MS) {
         lastCleanup = Date.now();
-        await cleanupOrphanUploads();
+        await cleanupFiles();
+        // Черновики — до файлов? Нет: наоборот. Снос черновика освобождает источник, но файлов у
+        // него нет по построению (показаний-то нет), а вот файлы, брошенные незавершённой
+        // отправкой, к моменту этой уборки уже разобраны предыдущим проходом.
+        await cleanupDraftReportsSafely();
         // Порядок важен: сначала закрываем незавершённые регистрации, потом сносим отклонённые.
         // Так заявка проходит путь «не подтвердил → архив → снос» в один проход уборки, а не
         // ждёт следующего часа между шагами.

@@ -7,6 +7,7 @@ import {
   changePasswordSchema,
   type CounterpartyType,
   EMAIL_VERIFICATION_ENABLED,
+  isPersonScopedRole,
   loginSchema,
   NEUTRAL_MAIL_RESPONSE,
   passwordResetConfirmSchema,
@@ -19,7 +20,7 @@ import {
 } from '@technic/contracts';
 import { config } from '../config';
 import { db } from '../db/client';
-import { counterparties, users } from '../db/schema';
+import { counterparties, persons, users } from '../db/schema';
 import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import { clearRefreshCookie, readRefreshCookie, setRefreshCookie } from '../lib/cookies';
@@ -104,19 +105,25 @@ function makeAuthUser(u: AuthUserSource): AuthUser {
 /**
  * Учётка вместе с типом её контрагента: права портал считает по паре «роль + тип» (ADR 0038),
  * поэтому вход и смена пароля отдают тип так же, как его отдаёт `loadPrincipal`.
+ *
+ * Карточка человека здесь по той же причине: у роли `driver` от её живости зависит, пускать ли
+ * учётку вовсе (ADR 0102, Р2), и вход обязан отвечать то же, что ответит `loadPrincipal`
+ * следующему запросу.
  */
 function userWithCounterpartyType() {
   return db
     .select({
       u: users,
       counterpartyType: counterparties.type,
+      personDeletedAt: persons.deletedAt,
       constructionObjectIds: constructionObjectIdsExpr,
       departmentIds: departmentIdsExpr,
       departmentObjectIds: departmentObjectIdsExpr,
       addons: roleAddonsExpr,
     })
     .from(users)
-    .leftJoin(counterparties, eq(users.counterpartyId, counterparties.id));
+    .leftJoin(counterparties, eq(users.counterpartyId, counterparties.id))
+    .leftJoin(persons, eq(users.personId, persons.id));
 }
 
 /** Защита cookie-эндпоинтов от CSRF: проверка Origin (при single-origin + SameSite=Strict). */
@@ -512,6 +519,7 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
       ? {
           ...row.u,
           counterpartyType: row.counterpartyType,
+          personDeletedAt: row.personDeletedAt,
           constructionObjectIds: row.constructionObjectIds,
           departmentIds: row.departmentIds,
           departmentObjectIds: row.departmentObjectIds,
@@ -523,6 +531,14 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
     if (!ok) throw err.invalidCredentials();
     if (!u.isActive) {
       throw err.inactive('Аккаунт не активирован — обратитесь к администратору');
+    }
+    // Уволенный водитель не входит (ADR 0102, Р2): карточку закрыли, а учётку не трогали. Отказ
+    // стоит здесь, а не только в `loadPrincipal`: иначе вход отвечал бы успехом и токеном, после
+    // которого любой запрос кабинета получает 401, — а человек читал бы это как поломку портала.
+    if (isPersonScopedRole(u.role) && (!u.personId || u.personDeletedAt)) {
+      throw err.inactive(
+        'Учётная запись водителя закрыта вместе с карточкой работника — обратитесь к администратору',
+      );
     }
 
     const accessToken = await signAccessToken({ sub: u.id, role: u.role, av: u.authVersion });

@@ -1,20 +1,12 @@
-import { and, asc, eq, gte, inArray, isNull, lte } from 'drizzle-orm';
+import { and, asc, eq, gte, isNull, lte } from 'drizzle-orm';
 import {
-  formatMoscowDateTime,
+  type DriverAssignmentContact,
+  type DriverAssignmentRequest,
   formatPhone,
-  isRelocationPurpose,
-  type VehicleRouteDto,
-  type VehicleRouteRequestDto,
 } from '@technic/contracts';
 import { db } from '../../db/client';
-import {
-  freightTransportRequestDetails,
-  persons,
-  specialEquipmentRequestDetails,
-  vehicleRequests,
-  vehicleRoutes,
-} from '../../db/schema';
-import { loadRouteDtos, routeQuery } from '../vehicle-routes';
+import { persons, vehicleRoutes } from '../../db/schema';
+import { type DriverRouteEntry, loadRouteEntries } from '../driver-assignment';
 import type { MailBlock, MailContent } from '../mail-templates';
 
 /**
@@ -26,123 +18,58 @@ import type { MailBlock, MailContent } from '../mail-templates';
  * Ссылок на портал в письме нет намеренно: у водителя может не быть учётной записи вовсе
  * (`persons`, а не `users`), и письмо обязано читаться целиком в почте, в том числе с телефона.
  * По той же причине здесь нет ни цен, ни данных чужих рейсов.
+ *
+ * Сами рейсы собирает общий слой задания (`services/driver-assignment.ts`, план Р12) — тот же, из
+ * которого читает кабинет водителя: увидеть в письме и в кабинете разные задания на один день
+ * человек не должен. Здесь остаётся только представление: блоки, порядок и слова письма. Недельные
+ * листы ЭСМ-2 в него не идут — рассылка ходит к водителям рейсов, а не к машинистам.
  */
-
-/** Контакты и комментарий заявки: в DTO состава рейса их нет, а водителю звонить именно им. */
-interface RequestExtra {
-  comment: string;
-  /** Кого набирать: у грузоперевозки — на погрузке и на выгрузке, у объекта — встречающий. */
-  contacts: { label: string; name: string; phone: string }[];
-}
-
-async function requestExtras(requestIds: string[]): Promise<Map<string, RequestExtra>> {
-  const map = new Map<string, RequestExtra>();
-  if (requestIds.length === 0) return map;
-
-  // Обе detail-таблицы разом: тип заявки заранее неизвестен, а join'ы левые — у заявки заполнена
-  // ровно одна из них.
-  const rows = await db
-    .select({
-      id: vehicleRequests.id,
-      comment: vehicleRequests.comment,
-      loadingName: freightTransportRequestDetails.loadingResponsibleName,
-      loadingPhone: freightTransportRequestDetails.loadingResponsiblePhone,
-      unloadingName: freightTransportRequestDetails.unloadingResponsibleName,
-      unloadingPhone: freightTransportRequestDetails.unloadingResponsiblePhone,
-      siteName: specialEquipmentRequestDetails.responsibleName,
-      sitePhone: specialEquipmentRequestDetails.responsiblePhone,
-    })
-    .from(vehicleRequests)
-    .leftJoin(
-      freightTransportRequestDetails,
-      eq(freightTransportRequestDetails.requestId, vehicleRequests.id),
-    )
-    .leftJoin(
-      specialEquipmentRequestDetails,
-      eq(specialEquipmentRequestDetails.requestId, vehicleRequests.id),
-    )
-    .where(inArray(vehicleRequests.id, requestIds));
-
-  for (const row of rows) {
-    const contacts = [
-      { label: 'Погрузка', name: row.loadingName ?? '', phone: row.loadingPhone ?? '' },
-      { label: 'Выгрузка', name: row.unloadingName ?? '', phone: row.unloadingPhone ?? '' },
-      { label: 'На месте', name: row.siteName ?? '', phone: row.sitePhone ?? '' },
-      // Контакт без имени и без телефона печатать нечем: у заявок, заведённых до появления этих
-      // полей, они пустые.
-    ].filter((c) => c.name !== '' || c.phone !== '');
-    map.set(row.id, { comment: row.comment, contacts });
-  }
-  return map;
-}
-
-/** «08:30» или пусто, если у заявки время не задано: тогда значима только дата. */
-function timeOf(request: VehicleRouteRequestDto): string {
-  if (request.scheduledTimeUnspecified) return '';
-  return formatMoscowDateTime(new Date(request.scheduledAt)).slice(-5);
-}
 
 /**
  * Контакт с указанием, где этого человека ждать. Без метки строки «Иванов И., +7…» и
  * «Петров П., +7…» выглядят одинаково, и кому из них звонить с погрузки, водитель угадывает по
  * порядку строк.
  */
-function contactLines(extra: RequestExtra | undefined): string[] {
-  if (!extra) return [];
-  return extra.contacts.map((c) => {
+function contactLines(contacts: DriverAssignmentContact[]): string[] {
+  return contacts.map((c) => {
     const who = [c.name, c.phone ? formatPhone(c.phone) : ''].filter(Boolean).join(', ');
     return `${c.label}: ${who}`;
   });
 }
 
-function freightBlocks(route: VehicleRouteDto, extras: Map<string, RequestExtra>): MailBlock[] {
-  const blocks: MailBlock[] = [];
-  for (const request of route.requests) {
-    const extra = extras.get(request.requestId);
-    const time = timeOf(request);
-    const lines = [
-      `${request.displayNumber} · ${request.customerName}`,
-      `Погрузка: ${request.loadingLocation}${time ? `, ${time}` : ''}`,
-      `Выгрузка: ${request.unloadingLocation}`,
-    ];
-    if (request.cargoLabel) lines.push(`Груз: ${request.cargoLabel}`);
-    lines.push(...contactLines(extra));
-    // Комментарий заявки печатается целиком: в бланке он режется по ширине графы, а в письме
-    // резать его нечем и незачем — «звонить за час до выезда» важнее аккуратной колонки.
-    if (extra?.comment) lines.push(`Примечание: ${extra.comment}`);
-    blocks.push({ kind: 'lines', lines });
-  }
-  return blocks;
+function requestBlock(request: DriverAssignmentRequest): MailBlock {
+  const lines = [
+    `${request.displayNumber} · ${request.customerName}`,
+    `Погрузка: ${request.loadingLocation}${request.time ? `, ${request.time}` : ''}`,
+    `Выгрузка: ${request.unloadingLocation}`,
+  ];
+  if (request.cargoLabel) lines.push(`Груз: ${request.cargoLabel}`);
+  lines.push(...contactLines(request.contacts));
+  // Комментарий заявки печатается целиком: в бланке он режется по ширине графы, а в письме
+  // резать его нечем и незачем — «звонить за час до выезда» важнее аккуратной колонки.
+  if (request.comment) lines.push(`Примечание: ${request.comment}`);
+  return { kind: 'lines', lines };
 }
 
-function relocationBlocks(route: VehicleRouteDto): MailBlock[] {
-  const lines = [`Откуда: ${route.moveFrom}`, `Куда: ${route.moveTo}`];
-  if (route.sourceRequest) {
-    lines.push(
-      `Основание: ${route.sourceRequest.displayNumber} · ${route.sourceRequest.customerName}`,
-    );
-  }
+function relocationBlocks(entry: DriverRouteEntry): MailBlock[] {
+  const lines = [`Откуда: ${entry.moveFrom}`, `Куда: ${entry.moveTo}`];
+  if (entry.basisLabel) lines.push(`Основание: ${entry.basisLabel}`);
   return [{ kind: 'lines', lines }];
 }
 
-function routeBlocks(route: VehicleRouteDto, extras: Map<string, RequestExtra>): MailBlock[] {
-  const purpose = isRelocationPurpose(route.purpose) ? 'Перегон техники' : 'Грузоперевозка';
-  const head = [`Машина: ${route.vehicleLabel}`];
-  if (route.garageNumber) head.push(`Гаражный номер: ${route.garageNumber}`);
-  if (route.withTrailer && route.trailerLabel) head.push(`Прицеп: ${route.trailerLabel}`);
+function routeBlocks(entry: DriverRouteEntry): MailBlock[] {
+  const head = [`Машина: ${entry.vehicleLabel}`];
+  if (entry.garageNumber) head.push(`Гаражный номер: ${entry.garageNumber}`);
+  if (entry.trailerLabel) head.push(`Прицеп: ${entry.trailerLabel}`);
 
   const blocks: MailBlock[] = [
-    { kind: 'heading', text: `Рейс ${route.displayNumber} · ${purpose}` },
+    { kind: 'heading', text: `Рейс ${entry.sourceLabel} · ${entry.purposeLabel}` },
     { kind: 'lines', lines: head },
   ];
-  blocks.push(
-    ...(isRelocationPurpose(route.purpose)
-      ? relocationBlocks(route)
-      : freightBlocks(route, extras)),
-  );
+  blocks.push(...(entry.relocation ? relocationBlocks(entry) : entry.requests.map(requestBlock)));
   // Комментарий рейса — это то, что диспетчер написал водителю, а не заказчику: он идёт последним,
   // после состава, потому что относится ко всему рейсу.
-  if (route.comment) blocks.push({ kind: 'paragraph', text: `Комментарий: ${route.comment}` });
+  if (entry.comment) blocks.push({ kind: 'paragraph', text: `Комментарий: ${entry.comment}` });
   return blocks;
 }
 
@@ -189,8 +116,8 @@ export interface DriverRoutesMail {
  * Собирает письмо с заданием. `null` — рейсов в окне нет: пустое письмо не отправляется, потому
  * что «сегодня заданий нет» водителю сообщает диспетчер, а не рассылка.
  *
- * Отменённые и удалённые заявки в письмо не попадают: они остаются в маршруте историей рейса
- * (лист уже выписан), но ехать по ним не надо, и печатать их — вводить водителя в заблуждение.
+ * Какие рейсы и какие заявки в задание входят, решает общий слой: отменённые и удалённые заявки
+ * туда не попадают, а грузовой рейс без единой живой заявки не показывается вовсе.
  */
 export async function buildDriverRoutesMail(input: {
   personId: string;
@@ -201,57 +128,24 @@ export async function buildDriverRoutesMail(input: {
   /** Даты рейсов, которые в письмо не включаются: выходные объекта, остановка работ. */
   excludedRouteDates?: string[];
 }): Promise<DriverRoutesMail | null> {
-  const rows = await routeQuery(db)
-    .where(
-      and(
-        eq(vehicleRoutes.driverPersonId, input.personId),
-        gte(vehicleRoutes.routeDate, input.dateFrom),
-        lte(vehicleRoutes.routeDate, input.dateTo),
-      ),
-    )
-    .orderBy(asc(vehicleRoutes.routeDate), asc(vehicleRoutes.num));
-  if (rows.length === 0) return null;
-
-  const routes = await loadRouteDtos(db, rows);
-  // Живые заявки состава: `requestsByRoute` их не фильтрует — там состав как история рейса.
-  const requestIds = routes.flatMap((r) => r.requests.map((q) => q.requestId));
-  const alive = new Set(
-    requestIds.length === 0
-      ? []
-      : (
-          await db
-            .select({ id: vehicleRequests.id })
-            .from(vehicleRequests)
-            .where(and(inArray(vehicleRequests.id, requestIds), isNull(vehicleRequests.deletedAt)))
-        ).map((r) => r.id),
-  );
-  const visible = routes
-    .map((route) => ({
-      ...route,
-      requests: route.requests.filter((q) => alive.has(q.requestId) && q.status !== 'cancelled'),
-    }))
-    // Грузовой рейс, у которого не осталось ни одной живой заявки, в письмо не идёт: ехать по нему
-    // некуда, а строка «Машина: …» без задания сообщает водителю ровно ничего. Перегон остаётся
-    // всегда — у него задание не в составе, а в «откуда/куда».
-    .filter((route) => isRelocationPurpose(route.purpose) || route.requests.length > 0)
-    // Исключённая дата рейса — не то же самое, что исключённая дата запуска: рассылка уходит, но
-    // рейсы этого дня в неё не входят (объект закрыт, работы остановлены).
-    .filter((route) => !input.excludedRouteDates?.includes(route.routeDate));
-  if (visible.length === 0) return null;
-
-  const extras = await requestExtras([...alive]);
+  const byDate = await loadRouteEntries(input.personId, input.dateFrom, input.dateTo);
+  // Исключённая дата рейса — не то же самое, что исключённая дата запуска: рассылка уходит, но
+  // рейсы этого дня в неё не входят (объект закрыт, работы остановлены).
+  const dates = [...byDate.keys()].filter((date) => !input.excludedRouteDates?.includes(date));
+  if (dates.length === 0) return null;
 
   const blocks: MailBlock[] = [];
-  const dates = [...new Set(visible.map((r) => r.routeDate))];
+  let routeCount = 0;
   for (const date of dates) {
-    const ofDate = visible.filter((r) => r.routeDate === date);
+    const ofDate = byDate.get(date) ?? [];
+    routeCount += ofDate.length;
     // Заголовок даты нужен, только когда окно шире суток: у письма «на завтра» дата уже в теме.
     if (dates.length > 1) blocks.push({ kind: 'heading', text: humanDate(date) });
-    for (const route of ofDate) blocks.push(...routeBlocks(route, extras));
+    for (const entry of ofDate) blocks.push(...routeBlocks(entry));
   }
 
   const first = dates[0]!;
-  const count = `${visible.length} ${plural(visible.length)}`;
+  const count = `${routeCount} ${plural(routeCount)}`;
   const subject =
     dates.length > 1
       ? `Задание на ${humanDate(first, false)} — ${humanDate(dates[dates.length - 1]!, false)}: ${count}`
@@ -264,7 +158,7 @@ export async function buildDriverRoutesMail(input: {
       blocks,
       footer: 'Письмо отправлено порталом «Техник». Вопросы по заданию — диспетчеру.',
     },
-    routeCount: visible.length,
+    routeCount,
   };
 }
 

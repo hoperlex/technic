@@ -1,7 +1,22 @@
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
-import { and, count, eq, exists, gte, isNotNull, isNull, lte, or, sql } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  count,
+  desc,
+  eq,
+  exists,
+  gte,
+  isNotNull,
+  isNull,
+  lte,
+  ne,
+  notExists,
+  or,
+  sql,
+} from 'drizzle-orm';
 import {
   can,
   type ChangeEmailResult,
@@ -15,6 +30,7 @@ import {
   isCounterpartyScopedRole,
   isDepartmentScopedRole,
   isObjectScopedRole,
+  isPersonScopedRole,
   rejectUserSchema,
   roleAddonIssue,
   roleLabels,
@@ -24,9 +40,17 @@ import {
   type MailOutcome,
   type RoleAddon,
   type UserDto,
+  type UserAccountDto,
+  type UserPersonRefDto,
 } from '@technic/contracts';
 import { db } from '../db/client';
-import { counterparties, userConstructionObjects, users } from '../db/schema';
+import {
+  counterparties,
+  personEmployments,
+  persons,
+  userConstructionObjects,
+  users,
+} from '../db/schema';
 import { config } from '../config';
 import { queueMail, type MailKind } from '../services/mail';
 import { maskEmail, type MailContent } from '../services/mail-templates';
@@ -43,6 +67,7 @@ import {
 } from '../services/mail-auth';
 import { revokeEmailTokens } from '../services/email-tokens';
 import { err } from '../lib/errors';
+import { pgErrorOf } from '../lib/pg-error';
 import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
 import { hashPassword, verifyPassword } from '../auth/password';
@@ -63,6 +88,56 @@ import { assertEmailFree, asEmailConflict } from '../services/user-email';
 import { registerPurgeRoute } from '../services/directory-purge';
 
 const idParams = z.object({ id: z.string().uuid() });
+
+/**
+ * Работник учётки в теле запроса (ADR 0102). Общая часть заведения и правки: у роли «Водитель»
+ * человек обязателен (Р2), у остальных ролей связь справочная и ни на что не влияет.
+ *
+ * `null` и отсутствие поля — разные просьбы: первое снимает связь, второе её не трогает.
+ * Различать их обязательно — отвязка живой водительской учётки запрещена (Р6), и «не прислали
+ * поле» не должно читаться как «отвяжите».
+ */
+const driverPersonFields = {
+  personId: z.string().uuid().nullish(),
+  /**
+   * «Это один человек» — подтверждение расхождения ФИО (Р30). Смена фамилии дело обычное,
+   * случайный однофамилец — редкое, и различить их может только человек: молчаливая привязка
+   * отдала бы заявителю чужие задания вместе с телефонами заказчиков.
+   */
+  confirmNameMismatch: z.boolean().optional().default(false),
+};
+
+const createUserBodySchema = createUserSchema.extend(driverPersonFields);
+const updateUserBodySchema = updateUserSchema.extend(driverPersonFields);
+
+/**
+ * Тело восстановления из архива (Р8). Необязательно: у всех учёток, кроме водительских без
+ * человека, восстановление ничего не спрашивает — и заставлять портал слать пустой объект ради
+ * одного случая незачем.
+ */
+const restoreUserSchema = z
+  .object({
+    personId: z.string().uuid().optional(),
+    confirmNameMismatch: z.boolean().optional().default(false),
+  })
+  .strict()
+  .optional();
+
+const personCandidatesQuerySchema = z
+  .object({
+    /** Что набрал администратор: часть ФИО, адрес или цифры телефона. */
+    query: z.string().trim().max(100).optional(),
+    /** Учётка, которой ищут работника: по её приметам собирается подсказка (Р30). */
+    userId: z.string().uuid().optional(),
+  })
+  .strict();
+
+/**
+ * Сколько кандидатов показывать. Десять — это ровно тот список, который человек прочитает
+ * глазами: подсказка помогает узнать своего работника, а не заменяет справочник, и длинная
+ * выдача превратила бы выбор в пролистывание с той же вероятностью ошибки.
+ */
+const PERSON_CANDIDATE_LIMIT = 10;
 
 /** Транзакция drizzle: письмо о доступе ставится вместе с решением, ради которого отправляется. */
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -125,6 +200,15 @@ const unreviewedRegistration = and(eq(users.isActive, false), isNull(users.role)
  */
 const pendingRegistration = and(isNull(users.deletedAt), unreviewedRegistration);
 
+/**
+ * Работник, которому принадлежит учётка (ADR 0008). У роли «Водитель» связь обязательна и держится
+ * CHECK `users_driver_person_check` (ADR 0102, Р2): кабинет отвечает на вопросы про человека —
+ * какое у него задание, на какой машине он работал, — и без карточки не ответит ни на один.
+ *
+ * ФИО и телефон здесь не дублируют поля учётки, а показывают вторую сторону пары: после привязки
+ * владелец этих полей — справочник (Р31), и форма учётки обязана показать расхождение, а не
+ * молча выбрать, чьё значение правдивее.
+ */
 interface UserRowJoined {
   id: string;
   email: string;
@@ -143,9 +227,36 @@ interface UserRowJoined {
   counterpartyId: string | null;
   counterpartyName: string | null;
   counterpartyType: CounterpartyType | null;
+  personId: string | null;
+  personLastName: string | null;
+  personFirstName: string | null;
+  personMiddleName: string | null;
+  personFullName: string | null;
+  personPhone: string | null;
+  personEmail: string | null;
+  personDeletedAt: Date | null;
   deletedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
+}
+
+/**
+ * Работник строки. Проверяется `personFullName`, а не `personId`: связь объявлена
+ * `ON DELETE SET NULL` без типизированного FK (цикл `users` ↔ `persons`), и одного
+ * идентификатора мало, чтобы утверждать, что карточка нашлась.
+ */
+function personRefOf(r: UserRowJoined): UserPersonRefDto | null {
+  if (!r.personId || r.personFullName === null) return null;
+  return {
+    id: r.personId,
+    lastName: r.personLastName ?? '',
+    firstName: r.personFirstName ?? '',
+    middleName: r.personMiddleName ?? '',
+    fullName: r.personFullName,
+    phone: r.personPhone ?? '',
+    email: r.personEmail ?? '',
+    deletedAt: r.personDeletedAt?.toISOString() ?? null,
+  };
 }
 
 function toDto(
@@ -153,7 +264,7 @@ function toDto(
   objects: UserDto['constructionObjects'],
   departments: UserDto['departments'],
   addons: UserDto['addons'],
-): UserDto {
+): UserAccountDto {
   return {
     id: r.id,
     email: r.email,
@@ -175,6 +286,7 @@ function toDto(
     counterpartyId: r.counterpartyId,
     counterpartyName: r.counterpartyName,
     counterpartyType: r.counterpartyType,
+    person: personRefOf(r),
     deletedAt: r.deletedAt?.toISOString() ?? null,
     createdAt: r.createdAt.toISOString(),
     updatedAt: r.updatedAt.toISOString(),
@@ -199,20 +311,33 @@ const selectCols = {
   counterpartyId: users.counterpartyId,
   counterpartyName: counterparties.name,
   counterpartyType: counterparties.type,
+  personId: users.personId,
+  personLastName: persons.lastName,
+  personFirstName: persons.firstName,
+  personMiddleName: persons.middleName,
+  personFullName: persons.fullName,
+  personPhone: persons.phone,
+  personEmail: persons.email,
+  personDeletedAt: persons.deletedAt,
   deletedAt: users.deletedAt,
   createdAt: users.createdAt,
   updatedAt: users.updatedAt,
 };
 
 function usersQuery() {
-  return db
-    .select(selectCols)
-    .from(users)
-    .leftJoin(counterparties, eq(users.counterpartyId, counterparties.id));
+  return (
+    db
+      .select(selectCols)
+      .from(users)
+      .leftJoin(counterparties, eq(users.counterpartyId, counterparties.id))
+      // Карточка работника — тем же запросом, что и контрагент, и по той же причине: список учёток
+      // должен различать водителя с привязкой и водителя без неё, не спрашивая справочник построчно.
+      .leftJoin(persons, eq(users.personId, persons.id))
+  );
 }
 
 /** Карточка учётки всегда идёт с областью: клиент правит набор, а не отдельные привязки. */
-async function fetchUserDto(id: string): Promise<UserDto | null> {
+async function fetchUserDto(id: string): Promise<UserAccountDto | null> {
   const [row] = await usersQuery().where(eq(users.id, id));
   if (!row) return null;
   const [objects, departments, addons] = await Promise.all([
@@ -320,6 +445,211 @@ function resolveAddons(role: UserDto['role'], addons: RoleAddon[]): RoleAddon[] 
   return next;
 }
 
+/**
+ * Пусто — это пустая строка, а не NULL: и `users`, и `persons` хранят отчество, телефон и адрес
+ * именно так. От этого зависит правило дозаполнения (Р31), поэтому проверка одна на все поля.
+ */
+const isBlank = (v: string): boolean => v.trim() === '';
+
+/**
+ * Одно ли это имя. Сравнение без регистра и лишних пробелов: «иванов » и «Иванов» — один человек,
+ * и требовать за такое различие подтверждения администратора значило бы приучить его ставить
+ * галочку не глядя — ровно там, где она единственная защита от однофамильца.
+ */
+const sameName = (a: string, b: string): boolean =>
+  a.trim().toLocaleLowerCase('ru') === b.trim().toLocaleLowerCase('ru');
+
+/** Учётка глазами привязки: то, с чем сверяется карточка работника (Р30, Р31). */
+interface AccountFacts {
+  /** `null` — учётку только заводят: занятость работника считается без исключения по себе. */
+  id: string | null;
+  lastName: string;
+  firstName: string;
+  middleName: string;
+  phone: string;
+  email: string;
+}
+
+/** Что дала привязка: кого поставить, что дозаполнить в учётке и что записать в журнал. */
+interface PersonBinding {
+  personId: string | null;
+  /** Поля учётки, взятые из карточки: применяются тем же UPDATE, что и сама привязка. */
+  userFields: { middleName?: string; phone?: string };
+  /** Что и куда перенесено — единственный след молчаливого дозаполнения (Р31). */
+  filled: Record<string, 'user' | 'person'>;
+  /** Расхождение ФИО подтверждено администратором (Р30): факт подтверждения идёт в журнал. */
+  nameMismatchConfirmed: boolean;
+}
+
+/**
+ * Работник учётки (ADR 0102): проверка выбора и перенос недостающих полей — одним местом на
+ * заведение, правку и восстановление из архива.
+ *
+ * Обязательность здесь ровно та же, что в CHECK `users_driver_person_check` (Р2), а не мягче:
+ * живая учётка водителя без карточки не ответит ни на один вопрос кабинета, а обнаружится это в
+ * шесть утра, когда человек полез смотреть задание.
+ *
+ * Отвязки живой водительской учётки не бывает (Р6): ошибочно привязанного **заменяют** одним
+ * действием, потому что между шагами «отвязать» и «привязать» строка нарушала бы CHECK, а
+ * транзакция из двух запросов портала не гарантируется ничем. Отвязка допустима только вместе со
+ * сменой роли — тогда условие снимается само.
+ */
+async function resolvePersonBinding(
+  tx: Tx,
+  input: {
+    /** Роль после правки: обязательность работника считается по ней, а не по прежней. */
+    role: UserDto['role'];
+    /** Работник до правки; `null` у новой учётки. */
+    currentPersonId: string | null;
+    /** Присланный работник: `undefined` — поле не трогали, `null` — просят отвязать. */
+    personId: string | null | undefined;
+    account: AccountFacts;
+    confirmNameMismatch: boolean;
+    actorId: string;
+  },
+): Promise<PersonBinding> {
+  const { account } = input;
+  const nextPersonId = input.personId !== undefined ? input.personId : input.currentPersonId;
+  const unchanged: PersonBinding = {
+    personId: nextPersonId,
+    userFields: {},
+    filled: {},
+    nameMismatchConfirmed: false,
+  };
+  if (!nextPersonId) {
+    if (isPersonScopedRole(input.role)) {
+      throw err.badRequest(`Для роли «${roleLabels.driver}» обязателен работник справочника`, {
+        personId: 'Выберите работника',
+      });
+    }
+    return unchanged;
+  }
+  // Тот же работник — сверять нечего. Повторная сверка при каждом сохранении карточки затирала бы
+  // правки кадров: после привязки владелец ФИО и телефона — справочник (Р31), и учётка их не
+  // переписывает, даже когда администратор набрал в форме что-то своё.
+  if (nextPersonId === input.currentPersonId) return unchanged;
+
+  // Карточка читается под блокировкой: между проверкой «учётки на него нет» и записью связи
+  // второй администратор успел бы завести свою, и от двух живых учёток на одного человека остался
+  // бы только отказ частичного индекса пятисоткой.
+  const [person] = await tx
+    .select()
+    .from(persons)
+    .where(eq(persons.id, nextPersonId))
+    .for('update');
+  if (!person) {
+    throw err.badRequest('Работник не найден в справочнике', {
+      personId: 'Выберите работника из справочника',
+    });
+  }
+  if (person.deletedAt) {
+    throw err.badRequest('Карточка работника в архиве — восстановите её или выберите другого', {
+      personId: 'Карточка работника в архиве',
+    });
+  }
+  const [taken] = await tx
+    .select({ email: users.email })
+    .from(users)
+    .where(
+      and(
+        eq(users.personId, nextPersonId),
+        // Архивная учётка человека не занимает (ADR 0063): вернувшийся сотрудник иначе не получил
+        // бы новой, а старую всё равно восстанавливают с человеком (Р8).
+        isNull(users.deletedAt),
+        account.id ? ne(users.id, account.id) : undefined,
+      ),
+    );
+  if (taken) {
+    throw err.badRequest(
+      `На этого работника уже заведена учётная запись ${taken.email} — сначала заархивируйте её`,
+      { personId: 'У работника уже есть учётная запись' },
+    );
+  }
+
+  // Расхождение фамилии или имени — отдельный разговор (Р30), а не одно из полей сверки. Отчества
+  // здесь нет намеренно: его пишут по-разному и часто не пишут вовсе, и подтверждение по нему
+  // спрашивалось бы у половины привязок — то есть перестало бы что-либо значить.
+  const nameMismatch =
+    !sameName(person.lastName, account.lastName) || !sameName(person.firstName, account.firstName);
+  if (nameMismatch && !input.confirmNameMismatch) {
+    throw err.badRequest(
+      `ФИО учётки (${account.lastName} ${account.firstName}) и карточки (${person.fullName}) различаются — подтвердите, что это один человек`,
+      { confirmNameMismatch: 'Подтвердите, что это один человек' },
+    );
+  }
+
+  // Дозаполнение (Р31): пусто с одной стороны — переносим молча, отметив в журнале; заполнено с
+  // обеих и различается — не трогаем ничего, различие показывает форма. Фамилии и имени в переносе
+  // нет: они обязательны с обеих сторон (CHECK `*_not_blank`), переносить там нечего, а различие
+  // разбирается подтверждением выше.
+  const userFields: PersonBinding['userFields'] = {};
+  const personFields: { middleName?: string; phone?: string; email?: string } = {};
+  const filled: PersonBinding['filled'] = {};
+  if (isBlank(account.middleName) && !isBlank(person.middleName)) {
+    userFields.middleName = person.middleName;
+    filled.middleName = 'user';
+  } else if (!isBlank(account.middleName) && isBlank(person.middleName)) {
+    personFields.middleName = account.middleName;
+    filled.middleName = 'person';
+  }
+  if (isBlank(account.phone) && !isBlank(person.phone)) {
+    userFields.phone = person.phone;
+    filled.phone = 'user';
+  } else if (!isBlank(account.phone) && isBlank(person.phone)) {
+    personFields.phone = account.phone;
+    filled.phone = 'person';
+  }
+  // Адрес переносится только в карточку: владелец адреса — учётка (Р31), а на `persons.email`
+  // шлёт письма рассылка «Задание водителю» — пустой адрес там означает, что задание не уйдёт
+  // вовсе. Обратного переноса нет: адрес учётки это логин, и менять его привязкой нельзя.
+  if (isBlank(person.email)) {
+    personFields.email = account.email;
+    filled.email = 'person';
+  }
+
+  if (Object.keys(personFields).length > 0) {
+    await tx
+      .update(persons)
+      .set({
+        ...personFields,
+        updatedBy: input.actorId,
+        // Версия карточки растёт: правку сделали мы, и открытая рядом карточка водителя должна
+        // упереться в конфликт, а не сохраниться поверх перенесённого.
+        version: person.version + 1,
+        updatedAt: new Date(),
+      })
+      .where(eq(persons.id, person.id));
+  }
+
+  return { personId: nextPersonId, userFields, filled, nameMismatchConfirmed: nameMismatch };
+}
+
+/**
+ * Гонка двух привязок доходит до частичного UNIQUE `users_person_unique` — проверка выше её не
+ * ловит: между `SELECT` и записью связь мог занять параллельный запрос. Без разбора `23505`
+ * администратор получил бы 500 там, где ему нужно то же сообщение, что и при обычной занятости.
+ */
+function asPersonConflict(e: unknown): unknown {
+  const pg = pgErrorOf(e);
+  if (pg?.code === '23505' && pg.constraint === 'users_person_unique') {
+    return err.conflict('На этого работника только что завели учётную запись — обновите список');
+  }
+  return e;
+}
+
+/**
+ * Что рассказать журналу о привязке. Дозаполнение идёт молча (Р31), и запись здесь — единственный
+ * его след: без неё «откуда у учётки взялся телефон» осталось бы вопросом без ответа. Подтверждение
+ * расхождения ФИО (Р30) — по той же причине: решение принял человек, и оно должно быть названо.
+ */
+function bindingMetadata(binding: PersonBinding): Record<string, unknown> {
+  return {
+    ...(binding.personId ? { personId: binding.personId } : {}),
+    ...(Object.keys(binding.filled).length > 0 ? { filledFields: binding.filled } : {}),
+    ...(binding.nameMismatchConfirmed ? { nameMismatchConfirmed: true } : {}),
+  };
+}
+
 export default async function usersRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
   const guards = { preHandler: [app.authenticate, app.requirePermission('users.manage')] };
@@ -413,7 +743,108 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
     return { count: Number(row!.c) };
   });
 
-  r.post('/', { ...guards, schema: { body: createUserSchema } }, async (req, reply) => {
+  /**
+   * Кандидаты на привязку к учётке водителя (ADR 0102, Р30).
+   *
+   * Ручка живёт здесь, под `users.manage`, а не в справочнике водителей: справочник наружу не
+   * отдаётся (§8 плана), а подсказка нужна ровно в форме учётки и отвечает десятком строк.
+   *
+   * Ищется двумя способами, и это не удобство. Пока администратор ничего не набрал, приметы
+   * берутся из самой заявки: точный телефон и точный адрес стоят выше похожего ФИО, потому что
+   * фамилия совпадает у однофамильцев, а номер и ящик — почти никогда. Набранный запрос подсказку
+   * отменяет: его набрали как раз потому, что предложенное не подошло.
+   *
+   * Занятый человек в предложения не попадает: живая учётка на него уже есть
+   * (`users_person_unique`), и выбрать его всё равно нельзя. Своя учётка не в счёт — она и есть
+   * та, которую сейчас правят, и без исключения по себе поле показывало бы пустой список там, где
+   * работник уже выбран.
+   */
+  r.get(
+    '/person-candidates',
+    { ...guards, schema: { querystring: personCandidatesQuerySchema } },
+    async (req) => {
+      const { query, userId } = req.query;
+      const term = query?.trim() ?? '';
+      const [account] = userId
+        ? await db
+            .select({ fullName: users.fullName, phone: users.phone, email: users.email })
+            .from(users)
+            .where(eq(users.id, userId))
+        : [];
+      // Ни запроса, ни учётки — искать не по чему: выдать «первых десятерых из справочника»
+      // значило бы предложить привязать случайного человека.
+      if (!term && !account) return { items: [] };
+
+      // Совпадение примет: точный номер и точный адрес читаются как «это он», похожее ФИО — как
+      // «посмотрите». Признаки считаются в запросе, а не в памяти: по ним же идёт порядок строк.
+      const phoneMatch = sql<boolean>`${persons.phone} <> '' AND ${persons.phone} = ${account?.phone ?? ''}`;
+      const emailMatch = sql<boolean>`${persons.email} <> '' AND ${persons.email} = ${account?.email ?? ''}`;
+      // Похожесть ФИО — оператором `%` из pg_trgm: он идёт по индексу `persons_full_name_trgm` и
+      // находит смену фамилии и опечатку, которых подстрока не найдёт. Пустое сравнение (учётку не
+      // назвали) даёт «не похоже» у всех — и остаётся выражением по колонке: константу в ORDER BY
+      // Postgres не принимает вовсе («non-integer constant in ORDER BY»).
+      const nameMatch = sql<boolean>`${persons.fullName} % ${account?.fullName ?? ''}`;
+
+      const rows = await db
+        .select({
+          id: persons.id,
+          lastName: persons.lastName,
+          firstName: persons.firstName,
+          middleName: persons.middleName,
+          fullName: persons.fullName,
+          phone: persons.phone,
+          email: persons.email,
+          // Должность действующего трудового отношения: однофамильцев различают по ней и по
+          // номеру телефона, а не по идентификатору, которого администратор не знает.
+          jobTitle: sql<string>`COALESCE((SELECT e.job_title FROM ${personEmployments} e WHERE e.person_id = ${persons.id} AND e.ended_on IS NULL AND e.job_title <> '' LIMIT 1), '')`,
+          phoneMatch,
+          emailMatch,
+          nameMatch,
+        })
+        .from(persons)
+        .where(
+          and(
+            isNull(persons.deletedAt),
+            notExists(
+              db
+                .select({ one: sql`1` })
+                .from(users)
+                .where(
+                  and(
+                    eq(users.personId, persons.id),
+                    isNull(users.deletedAt),
+                    userId ? ne(users.id, userId) : undefined,
+                  ),
+                ),
+            ),
+            term
+              ? or(
+                  searchCondition(term, [persons.fullName, persons.email]),
+                  phoneSearchCondition(term, persons.phone),
+                )
+              : or(phoneMatch, emailMatch, nameMatch),
+          ),
+        )
+        .orderBy(desc(phoneMatch), desc(emailMatch), desc(nameMatch), asc(persons.fullName))
+        .limit(PERSON_CANDIDATE_LIMIT);
+
+      return {
+        items: rows.map(
+          ({ phoneMatch: byPhone, emailMatch: byEmail, nameMatch: byName, ...p }) => ({
+            ...p,
+            // Порядок пометок тот же, что порядок строк: сначала то, что решает дело.
+            matchedBy: [
+              ...(byPhone ? (['phone'] as const) : []),
+              ...(byEmail ? (['email'] as const) : []),
+              ...(byName ? (['name'] as const) : []),
+            ],
+          }),
+        ),
+      };
+    },
+  );
+
+  r.post('/', { ...guards, schema: { body: createUserBodySchema } }, async (req, reply) => {
     const actor = requirePrincipal(req);
     const body = req.body;
     const passwordHash = await hashPassword(body.password);
@@ -422,23 +853,49 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
     const departmentIds = resolveDepartmentIds(body.role, body.departmentIds);
     const addons = resolveAddons(body.role, body.addons);
     let created;
+    let binding: PersonBinding = {
+      personId: null,
+      userFields: {},
+      filled: {},
+      nameMismatchConfirmed: false,
+    };
     let notified: MailOutcome = 'not_requested';
     try {
       created = await db.transaction(async (tx) => {
         // Архив адрес не занимает (ADR 0063) — та же проверка, что у саморегистрации.
         await assertEmailFree(tx, body.email);
+        // Работник — до вставки и той же транзакцией: живая учётка водителя без него нарушает
+        // CHECK, и порядок «сначала завести, потом привязать» оставлял бы её невозможной.
+        binding = await resolvePersonBinding(tx, {
+          role: body.role,
+          currentPersonId: null,
+          personId: body.personId,
+          account: {
+            id: null,
+            lastName: body.lastName,
+            firstName: body.firstName,
+            middleName: body.middleName,
+            phone: body.phone,
+            email: body.email,
+          },
+          confirmNameMismatch: body.confirmNameMismatch,
+          actorId: actor.id,
+        });
         const [row] = await tx
           .insert(users)
           .values({
             email: body.email,
             lastName: body.lastName,
             firstName: body.firstName,
-            middleName: body.middleName,
-            phone: body.phone,
+            // Отчество и телефон — с оглядкой на карточку: пустое поле формы заполняется из неё
+            // молча (Р31), заполненное остаётся как ввели.
+            middleName: binding.userFields.middleName ?? body.middleName,
+            phone: binding.userFields.phone ?? body.phone,
             role: body.role,
             passwordHash,
             isActive: body.isActive,
             counterpartyId,
+            personId: binding.personId,
             // Учётку завёл администратор — адрес он ввёл и проверил сам (ADR 0072). Требовать
             // подтверждения здесь значило бы блокировать активацию до того, как человек прочтёт
             // письмо, — а такие учётки и заводят затем, чтобы выдать доступ немедленно.
@@ -462,7 +919,7 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
         return row!;
       });
     } catch (e) {
-      throw asEmailConflict(e);
+      throw asPersonConflict(asEmailConflict(e));
     }
     await writeAudit({
       actorUserId: actor.id,
@@ -473,7 +930,13 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
       // сделал человека оператором оргтехники» задают так же, как «кто выдал ему роль».
       // Активность записывается тут же: заведённая сразу активной учётка и заготовка «на потом» —
       // разные события, а по одной лишь роли они неразличимы.
-      metadata: { role: body.role, addons, isActive: body.isActive, notified },
+      metadata: {
+        role: body.role,
+        addons,
+        isActive: body.isActive,
+        notified,
+        ...bindingMetadata(binding),
+      },
     });
     reply.code(201);
     return { user: (await fetchUserDto(created.id))!, notified };
@@ -481,7 +944,7 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
 
   r.patch(
     '/:id',
-    { ...guards, schema: { params: idParams, body: updateUserSchema } },
+    { ...guards, schema: { params: idParams, body: updateUserBodySchema } },
     async (req) => {
       const actor = requirePrincipal(req);
       const { id } = req.params;
@@ -493,6 +956,9 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
         addons,
         roleChanged,
         counterpartyChanged,
+        personChanged,
+        personBefore,
+        binding,
         deactivated,
         approving,
         notified,
@@ -600,6 +1066,26 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
         // а запрещает саму смену — 400 из `resolveAddons`. Транзакция при этом откатывается, и
         // учётка остаётся ровно такой, какой была.
         const nextAddons = resolveAddons(nextRole, body.addons ?? currentAddons);
+        // Работник — четвёртая ось области (ADR 0102), и живёт она по своим правилам: набор
+        // чужой оси `resolve*` обнуляют молча, а человека у водителя обнулить нельзя вовсе (Р6).
+        // Сверяется он с учёткой **после** правки — иначе исправленная в том же запросе опечатка
+        // в фамилии выглядела бы расхождением с карточкой.
+        const nextBinding = await resolvePersonBinding(tx, {
+          role: nextRole,
+          currentPersonId: existing.personId,
+          personId: body.personId,
+          account: {
+            id,
+            lastName: body.lastName ?? existing.lastName,
+            firstName: body.firstName ?? existing.firstName,
+            middleName: body.middleName ?? existing.middleName,
+            phone: body.phone ?? existing.phone,
+            email: existing.email,
+          },
+          confirmNameMismatch: body.confirmNameMismatch,
+          actorId: actor.id,
+        });
+        const personWasChanged = nextBinding.personId !== existing.personId;
         const objectsChanged = await replaceUserObjects(tx, id, nextObjectIds, actor.id);
         const departmentsChanged = await replaceUserDepartments(
           tx,
@@ -609,28 +1095,41 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
         );
         const changed = objectsChanged || departmentsChanged;
         const addonsSetChanged = await replaceUserAddons(tx, id, nextAddons, actor.id);
-        await tx
-          .update(users)
-          .set({
-            lastName: body.lastName ?? existing.lastName,
-            firstName: body.firstName ?? existing.firstName,
-            middleName: body.middleName ?? existing.middleName,
-            // Телефон правится как ФИО: поле не прислали — не трогаем, прислали пустым — стёрли.
-            phone: body.phone ?? existing.phone,
-            role: nextRole,
-            isActive: nextIsActive,
-            counterpartyId: nextCounterpartyId,
-            authVersion:
-              roleWasChanged ||
-              counterpartyWasChanged ||
-              wasDeactivated ||
-              changed ||
-              addonsSetChanged
-                ? existing.authVersion + 1
-                : existing.authVersion,
-            updatedAt: new Date(),
-          })
-          .where(eq(users.id, id));
+        try {
+          await tx
+            .update(users)
+            .set({
+              lastName: body.lastName ?? existing.lastName,
+              firstName: body.firstName ?? existing.firstName,
+              // Отчество и телефон — с оглядкой на карточку: пустое поле заполняется из неё
+              // молча (Р31), заполненное остаётся тем, что прислали.
+              middleName:
+                nextBinding.userFields.middleName ?? body.middleName ?? existing.middleName,
+              // Телефон правится как ФИО: поле не прислали — не трогаем, прислали пустым — стёрли.
+              phone: nextBinding.userFields.phone ?? body.phone ?? existing.phone,
+              role: nextRole,
+              isActive: nextIsActive,
+              counterpartyId: nextCounterpartyId,
+              personId: nextBinding.personId,
+              authVersion:
+                roleWasChanged ||
+                counterpartyWasChanged ||
+                wasDeactivated ||
+                changed ||
+                addonsSetChanged ||
+                // Смена работника меняет всё, что учётка видит в кабинете: это другой человек с
+                // другими рейсами. Токены гасятся так же, как при смене роли и контрагента.
+                personWasChanged
+                  ? existing.authVersion + 1
+                  : existing.authVersion,
+              updatedAt: new Date(),
+            })
+            .where(eq(users.id, id));
+        } catch (e) {
+          // Гонка двух привязок доходит до индекса: между выбором работника и этой записью его
+          // мог занять параллельный запрос, и разобрать `23505` больше негде.
+          throw asPersonConflict(e);
+        }
 
         // Письмо об открытом доступе — той же транзакцией, что и само одобрение: заявка,
         // рассмотренная без письма, и письмо по нерассмотренной заявке одинаково недопустимы.
@@ -652,6 +1151,9 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
           addons: nextAddons,
           roleChanged: roleWasChanged,
           counterpartyChanged: counterpartyWasChanged,
+          personChanged: personWasChanged,
+          personBefore: existing.personId,
+          binding: nextBinding,
           deactivated: wasDeactivated,
           approving: approvingNow,
           notified: mailed,
@@ -665,10 +1167,31 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
 
       // Сменившаяся область гасит токены наравне со сменой роли и контрагента: учётке стали
       // видны другие заявки. Сменившийся набор надстроек (ADR 0086) — то же самое с другой
-      // стороны: заявки те же, но действий над ними стало больше или меньше.
+      // стороны: заявки те же, но действий над ними стало больше или меньше. Сменившийся работник
+      // (Р6) — самое сильное из этого: кабинет начинает показывать чужие рейсы.
       const bumpAuth =
-        roleChanged || counterpartyChanged || deactivated || scopeChanged || addonsChanged;
+        roleChanged ||
+        counterpartyChanged ||
+        deactivated ||
+        scopeChanged ||
+        addonsChanged ||
+        personChanged;
       if (bumpAuth) await revokeAllForUser(id);
+      // Перепривязка — своё событие журнала со старым и новым человеком (Р6). Внутри общей правки
+      // от неё остался бы один флаг «что-то поменяли»: разбор «кому ушли задания Иванова» задают
+      // именно парой «был — стал», а искать её потом по соседним записям нечем.
+      if (personChanged && personBefore && binding.personId) {
+        await writeAudit({
+          actorUserId: actor.id,
+          action: 'user.driver_person_relinked',
+          entityType: 'user',
+          entityId: id,
+          metadata: {
+            person: { from: personBefore, to: binding.personId },
+            ...bindingMetadata(binding),
+          },
+        });
+      }
       // У рассмотрения заявки своё действие журнала, а не признак внутри общей правки: одобрение и
       // отказ — два исхода одного решения, и в журнале они обязаны стоять рядом и одинаково
       // фильтроваться. Заодно «одобрение было ровно одно» становится проверяемым в один запрос.
@@ -678,13 +1201,17 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
         entityType: 'user',
         entityId: id,
         metadata: approving
-          ? { role: roleAfter, addons, notified }
+          ? { role: roleAfter, addons, notified, ...bindingMetadata(binding) }
           : {
               roleChanged,
               counterpartyChanged,
               deactivated,
               scopeChanged,
               addonsChanged,
+              // Привязка водителя (Р30) стоит рядом с остальными признаками правки, а
+              // перепривязка вдобавок пишется своим событием: первая учётку открывает, вторая
+              // переносит её к другому человеку, и в разборе это разные вопросы.
+              ...(personChanged ? bindingMetadata(binding) : {}),
               // Не только «роль менялась», но и чем она была и стала: подвкладка аудита обязана
               // отвечать «кто сделал человека диспетчером», а по одному булеву флагу это вопрос
               // без ответа. Тем же правилом — активность: раньше в журнале была видна только
@@ -831,6 +1358,32 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
               updatedAt: changedAt,
             })
             .where(eq(users.id, id));
+
+          // Адрес карточки идёт следом (ADR 0102, Р31): владелец адреса — учётка, а на
+          // `persons.email` шлёт письма рассылка «Задание водителю». Без переноса смена логина
+          // оставила бы её писать на прежний ящик — то есть в пустоту, и обнаружилось бы это
+          // тем, что человек просто перестал получать задания.
+          //
+          // Переносится только совпадавший или пустой: свой адрес карточки, заведённый кадрами,
+          // смена логина не касается — он принадлежит справочнику, а не учётке. Версия растёт
+          // выражением, а не чтением строки: карточка здесь только дописывается, и ради одного
+          // поля брать её под блокировку незачем.
+          if (existing.personId) {
+            await tx
+              .update(persons)
+              .set({
+                email: newEmail,
+                updatedBy: actor.id,
+                version: sql`${persons.version} + 1`,
+                updatedAt: changedAt,
+              })
+              .where(
+                and(
+                  eq(persons.id, existing.personId),
+                  or(eq(persons.email, existing.email), eq(persons.email, '')),
+                ),
+              );
+          }
 
           // Живые ссылки из уже отправленных писем гасятся обе. Иначе ссылка сброса, ушедшая на
           // прежний ящик, остаётся действующим ключом от учётки — теперь уже с новым адресом.
@@ -1004,41 +1557,93 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
    * возвращается в очередь администратора — то есть проходит рассмотрение заново, а не получает
    * доступ обходным путём; у восстановленного сотрудника учётка деактивирована, и включает её
    * обычная правка карточки.
+   *
+   * У водителя (ADR 0102, Р8) восстановление спрашивает работника. Архивная учётка `person_id`
+   * иметь не обязана — при удалении человека связь обнуляется (`ON DELETE SET NULL`), — поэтому
+   * вернуть её вслепую нельзя: CHECK `users_driver_person_check` ответил бы пятисоткой ровно так
+   * же, как раньше отвечал бы занятый адрес. Человек ставится той же транзакцией, что и снятие
+   * `deleted_at`, и проходит те же проверки, что при обычной привязке: пока учётка лежала в
+   * архиве, работника могли уволить или завести ему другую.
    */
   r.post(
     '/:id/restore',
     {
       preHandler: [app.authenticate, app.requirePermission('archive.restore')],
+      // Тело схемой маршрута НЕ объявлено намеренно: у Fastify валидация идёт раньше стража, и
+      // объявленное тело отвечало бы 400 на пустой запрос — в том числе неаутентифицированному,
+      // который должен получить 401, и чужому, который должен получить 403. Восстановление же
+      // тела не требует вовсе (Р8): его шлёт только водительская учётка без человека. Поэтому
+      // разбор перенесён в обработчик — после проверки входа и права.
       schema: { params: idParams },
     },
     async (req) => {
       const actor = requirePrincipal(req);
       const { id } = req.params;
-      await db.transaction(async (tx) => {
-        const [existing] = await tx.select().from(users).where(eq(users.id, id));
-        if (!existing) throw err.notFound('Пользователь не найден');
-        if (!existing.deletedAt) return;
-        // Пока учётка лежала в архиве, её адрес мог занять другой человек (ADR 0063 решение 1):
-        // восстанавливать вслепую нельзя — упрёмся в тот же индекс, но уже пятисоткой.
-        await assertEmailFree(tx, existing.email, {
-          exceptId: id,
-          message: `Email ${existing.email} занят другой учётной записью — восстановить нельзя`,
+      const parsed = restoreUserSchema.safeParse(req.body ?? undefined);
+      if (!parsed.success) {
+        const fields: Record<string, string> = {};
+        for (const issue of parsed.error.issues) {
+          fields[issue.path.join('.') || 'body'] = issue.message;
+        }
+        throw err.validation(fields);
+      }
+      const body = parsed.data;
+      const binding = await db
+        .transaction(async (tx) => {
+          const [existing] = await tx.select().from(users).where(eq(users.id, id)).for('update');
+          if (!existing) throw err.notFound('Пользователь не найден');
+          if (!existing.deletedAt) return null;
+          // Пока учётка лежала в архиве, её адрес мог занять другой человек (ADR 0063 решение 1):
+          // восстанавливать вслепую нельзя — упрёмся в тот же индекс, но уже пятисоткой.
+          await assertEmailFree(tx, existing.email, {
+            exceptId: id,
+            message: `Email ${existing.email} занят другой учётной записью — восстановить нельзя`,
+          });
+          // Связь водителя проверяется заново, как при первой привязке (`currentPersonId: null`):
+          // для архивной строки прежний работник не «уже привязан», а такой же кандидат, как
+          // любой другой — за время в архиве его могли уволить или завести ему свою учётку.
+          // У прочих ролей связь справочная (ADR 0008), восстановления не касается и остаётся как
+          // была — пока работника не прислали явно.
+          const revalidatePerson =
+            isPersonScopedRole(existing.role) || body?.personId !== undefined;
+          const restored = await resolvePersonBinding(tx, {
+            role: existing.role,
+            currentPersonId: revalidatePerson ? null : existing.personId,
+            personId: revalidatePerson ? (body?.personId ?? existing.personId) : undefined,
+            account: {
+              id,
+              lastName: existing.lastName,
+              firstName: existing.firstName,
+              middleName: existing.middleName,
+              phone: existing.phone,
+              email: existing.email,
+            },
+            confirmNameMismatch: body?.confirmNameMismatch ?? false,
+            actorId: actor.id,
+          });
+          await tx
+            .update(users)
+            .set({
+              deletedAt: null,
+              personId: restored.personId,
+              middleName: restored.userFields.middleName ?? existing.middleName,
+              phone: restored.userFields.phone ?? existing.phone,
+              // Строка побывала в архиве: выданных до неё токенов у неё быть не должно.
+              authVersion: existing.authVersion + 1,
+              updatedAt: new Date(),
+            })
+            .where(eq(users.id, id));
+          return restored;
+        })
+        .catch((e: unknown) => {
+          throw asPersonConflict(e);
         });
-        await tx
-          .update(users)
-          .set({
-            deletedAt: null,
-            // Строка побывала в архиве: выданных до неё токенов у неё быть не должно.
-            authVersion: existing.authVersion + 1,
-            updatedAt: new Date(),
-          })
-          .where(eq(users.id, id));
-      });
       await writeAudit({
         actorUserId: actor.id,
         action: 'user.restore',
         entityType: 'user',
         entityId: id,
+        metadata: binding ? bindingMetadata(binding) : {},
       });
       return (await fetchUserDto(id))!;
     },

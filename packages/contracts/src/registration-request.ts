@@ -15,6 +15,9 @@ export const REGISTRATION_ROLE_REQUESTS = [
   'commandant',
   'waste_operator',
   'vehicle_lessor',
+  // Водитель (ADR 0102): единственное пожелание, чья роль совпадает с ним буквально. Отдельной
+  // кнопки «Я водитель» на экране входа нет — человек выбирает себя в общем списке.
+  'driver',
   'other',
 ] as const;
 export const registrationRoleRequestSchema = z.enum(REGISTRATION_ROLE_REQUESTS);
@@ -31,6 +34,9 @@ export const registrationRoleRequestLabels: Record<RegistrationRoleRequest, stri
   commandant: 'Комендант',
   waste_operator: 'Оператор по вывозу мусора',
   vehicle_lessor: 'Оператор по аренде техники',
+  // Как человек себя называет; машинист и тракторист выберут её же — кабинет открыт любой
+  // должности справочника (ADR 0102).
+  driver: 'Водитель',
   other: 'Другое',
 };
 
@@ -51,6 +57,7 @@ export const registrationRoleRequestRole: Record<RegistrationRoleRequest, Role |
   commandant: 'commandant',
   waste_operator: 'operator',
   vehicle_lessor: 'operator',
+  driver: 'driver',
   other: null,
 };
 
@@ -67,6 +74,9 @@ export const registrationRequestDetail: Record<RegistrationRoleRequest, Registra
     // Оператор работает от лица контрагента (ADR 0010).
     waste_operator: 'company',
     vehicle_lessor: 'company',
+    // Ни объекта, ни компании у водителя не спрашивают: он работает от парка, а привязку к
+    // карточке справочника делает администратор при активации (ADR 0102).
+    driver: 'none',
     other: 'none',
   };
 
@@ -88,6 +98,9 @@ const requestExpectsCorporateEmail: Record<RegistrationRoleRequest, boolean> = {
   commandant: true,
   waste_operator: false,
   vehicle_lessor: false,
+  // Почта у водителя личная по определению: предупреждение о «внешнем» адресе требовало бы от
+  // него невозможного.
+  driver: false,
   other: true,
 };
 

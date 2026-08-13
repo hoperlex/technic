@@ -1,3 +1,5 @@
+import { lazy, Suspense } from 'react';
+import { Spin } from 'antd';
 import { Route, Routes } from 'react-router';
 import { EMAIL_VERIFICATION_ENABLED } from '@technic/contracts';
 import { AppLayout } from './components/AppLayout';
@@ -18,6 +20,19 @@ import { ServiceRequestsPage } from './pages/service/ServiceRequestsPage';
 import { DirectoriesPage } from './pages/DirectoriesPage';
 import { AdministrationPage } from './pages/AdministrationPage';
 
+/**
+ * Кабинет водителя (ADR 0102) грузится отдельным чанком: у него свой каркас, свои экраны и своя
+ * форма, а открывает его роль, которой основной портал недоступен вовсе. Тянуть этот код в первый
+ * бандл диспетчера — платить весом за экран, который он никогда не увидит; и наоборот, водитель с
+ * телефона не должен скачивать заявки, справочники и журнал листов ради четырёх полей.
+ */
+const DriverLayout = lazy(() =>
+  import('./pages/driver/DriverLayout').then((m) => ({ default: m.DriverLayout })),
+);
+const DriverPage = lazy(() =>
+  import('./pages/driver/DriverPage').then((m) => ({ default: m.DriverPage })),
+);
+
 export default function App() {
   return (
     <>
@@ -35,6 +50,20 @@ export default function App() {
         <Route path="/reset-password" element={<ResetPasswordPage />} />
         <Route element={<ProtectedRoute />}>
           <Route path="/change-password" element={<ChangePasswordPage />} />
+          {/* Кабинет водителя — ВНЕ `AppLayout`: у него нет ни боковой панели, ни разделов, ни
+              нижней навигации. Это второй контур портала, а не ещё одна его страница. */}
+          <Route element={<RequirePermission permission="driverCabinet.read" />}>
+            <Route
+              path="/driver"
+              element={
+                <Suspense fallback={<Spin style={{ margin: '40vh auto', display: 'block' }} />}>
+                  <DriverLayout />
+                </Suspense>
+              }
+            >
+              <Route index element={<DriverPage />} />
+            </Route>
+          </Route>
           <Route element={<AppLayout />}>
             <Route index element={<HomeRedirect />} />
             {/* Руководителю строительства «Вывоз мусора» недоступен (ADR 0025), оператору

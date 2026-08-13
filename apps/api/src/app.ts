@@ -36,6 +36,9 @@ import vehicleRequestsRoutes from './routes/vehicle-requests';
 import weeklyVehicleRequestsRoutes from './routes/weekly-vehicle-requests';
 import vehicleRoutesRoutes from './routes/vehicle-routes';
 import garageRoutes from './routes/garage';
+import driverRoutes from './routes/driver';
+import vehicleReadingsRoutes from './routes/vehicle-readings';
+import vehicleReadingsStatsRoutes from './routes/vehicle-readings-stats';
 import wasteRequestsRoutes from './routes/waste-requests';
 import wasteTypesRoutes from './routes/waste-types';
 import wasteTariffsRoutes from './routes/waste-tariffs';
@@ -116,6 +119,18 @@ export async function buildApp(options: BuildAppOptions = {}) {
   // Гараж (ADR 0076) — срез дня поверх рейсов, заявок и листов: своих таблиц у него нет, поэтому
   // и префикс свой, а не ветка одного из этих модулей.
   await app.register(garageRoutes, { prefix: '/api/v1/garage' });
+  // Кабинет водителя (ADR 0102) — второй контур портала: свой префикс, свои два права и своя, самая
+  // узкая область («свой человек»). Ветка `/driver` намеренно не ветвь `/drivers`: справочник
+  // работников ведут с правами `drivers.*`, а здесь работник смотрит собственное задание.
+  await app.register(driverRoutes, { prefix: '/api/v1/driver' });
+  // Показания техники (ADR 0103) со стороны портала: приёмка дня, правка за водителя, разбор
+  // расхождений и порядок смен. Своя ветка, а не `/garage`: гараж эти строки только показывает,
+  // а ведёт их этот модуль — и права у него свои, `vehicleReadings.*`.
+  await app.register(vehicleReadingsRoutes, { prefix: '/api/v1/vehicle-readings' });
+  // Журнал машины и сводка по парку — второй плагин на том же префиксе: у них общий предмет и
+  // общее право `vehicleReadings.read`, но разные пути и разная цена запроса (сводка считает
+  // разности по всему парку за период). Тот же приём, что у двух плагинов `admin/mail`.
+  await app.register(vehicleReadingsStatsRoutes, { prefix: '/api/v1/vehicle-readings' });
   await app.register(waybillsRoutes, { prefix: '/api/v1/waybills' });
   await app.register(wasteRequestsRoutes, { prefix: '/api/v1/waste-requests' });
   await app.register(wasteTypesRoutes, { prefix: '/api/v1/waste-types' });
