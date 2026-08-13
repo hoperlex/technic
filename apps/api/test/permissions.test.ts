@@ -127,13 +127,40 @@ describe('матрица прав', () => {
 });
 
 describe('права ролей', () => {
-  it('диспетчер ведёт справочники наравне с менеджером', () => {
+  /**
+   * Менеджер и диспетчер совпадали по правам буквально: роли различаются организационно, а работу
+   * с заявками и справочниками ведут одинаково. ADR 0101 развёл их первым же правом — коррекцией
+   * задним числом (Р4): её видит и чинит диспетчер.
+   *
+   * Проверка поэтому не «наборы равны», а «равны с точностью до названного расхождения». Смысл
+   * прежний: право, тихо просочившееся в одну из ролей, обязано уронить тест — но теперь ещё и
+   * расхождение обязано быть перечисленным, а не подразумеваться.
+   */
+  it('диспетчер ведёт справочники наравне с менеджером и расходится с ним одним правом', () => {
     expect(can(of('dispatcher'), 'directories.write')).toBe(true);
-    expect([...ROLE_PERMISSIONS.dispatcher].sort()).toEqual([...ROLE_PERMISSIONS.manager].sort());
+    const DISPATCHER_ONLY: Permission[] = ['waybills.correct'];
+    expect(
+      [...ROLE_PERMISSIONS.dispatcher].filter((p) => !DISPATCHER_ONLY.includes(p)).sort(),
+    ).toEqual([...ROLE_PERMISSIONS.manager].sort());
+    for (const permission of DISPATCHER_ONLY) {
+      expect(can(of('dispatcher'), permission), permission).toBe(true);
+      expect(can(of('manager'), permission), permission).toBe(false);
+    }
   });
 
-  it('справочники читают все роли — без них не заполнить форму заявки', () => {
-    for (const role of ROLES) expect(can(of(role), 'directories.read'), role).toBe(true);
+  /**
+   * Правило перестало быть всеобщим с появлением кабинета водителя (ADR 0102): у роли `driver`
+   * права на справочники нет, и это не упущение, а условие, на котором держится второй контур —
+   * кабинету не отдают ни типы ТС, ни контрагентов, ни объекты, и все подписи ему приходят
+   * готовыми с сервера. Роль перечислена исключением поимённо: молчаливое «кроме тех, у кого
+   * нет» пропустило бы следующую роль, забывшую про справочники по недосмотру.
+   */
+  it('справочники читают все роли, работающие с заявками', () => {
+    for (const role of ROLES) {
+      if (role === 'driver') continue;
+      expect(can(of(role), 'directories.read'), role).toBe(true);
+    }
+    expect(can(of('driver'), 'directories.read')).toBe(false);
   });
 
   it('справочники правят только те, кто их ведёт', () => {
@@ -422,6 +449,10 @@ describe('права ролей', () => {
       // Пустой бланк (ADR 0071): на начальном этапе — только администратору. Номер строгой
       // отчётности уходит на лист, задание в котором портал не печатает вовсе.
       'waybills.issueBlank',
+      // Глубина коррекции (ADR 0101, Р37): за тридцатью днями начинается разрыв хронологии
+      // журнала БСО, и объясняет его тот, кто за журнал отвечает. Само задним числом (Р4) — не
+      // административное право: оно у диспетчера, и проверяется ниже.
+      'waybills.correctBeyondLimit',
     ];
     for (const permission of adminOnly) {
       expect(
@@ -441,6 +472,55 @@ describe('права ролей', () => {
       expect(can(of(role), 'waybills.read'), role).toBe(true);
       expect(can(of(role), 'waybills.cancel'), role).toBe(true);
       expect(can(of(role), 'waybills.issueBlank'), role).toBe(false);
+    }
+  });
+
+  /**
+   * Коррекция задним числом (ADR 0101, Р4) — первое право, которым диспетчер разошёлся с
+   * менеджером. Разошёлся осознанно: расхождение «в портале одно, в жизни другое» видит диспетчер
+   * — ему звонят с объекта про не ту машину, — и чинить это должен он, а не тот, к кому за этим
+   * надо идти. Проверка перечислением, а не сравнением наборов: право, разъехавшееся обратно по
+   * недосмотру, обязано уронить тест.
+   */
+  it('задним числом правит диспетчер, глубже тридцати дней — только администратор', () => {
+    expect(can(of('dispatcher'), 'waybills.correct')).toBe(true);
+    expect(can(of('manager'), 'waybills.correct')).toBe(false);
+    expect(can(of('admin'), 'waybills.correct')).toBe(true);
+
+    expect(can(of('dispatcher'), 'waybills.correctBeyondLimit')).toBe(false);
+    expect(can(of('admin'), 'waybills.correctBeyondLimit')).toBe(true);
+  });
+
+  /**
+   * Второе право без первого силы не имеет (`backdateGuard` спрашивает право раньше глубины),
+   * поэтому в наборах ролей они идут вместе: субъект с одним лишь `correctBeyondLimit` получил бы
+   * дейтпикер без нижней границы и 403 на первой же попытке.
+   */
+  it('право глубины не выдаётся в одиночку ни одной роли', () => {
+    for (const role of ROLES) {
+      const perms = permissionsFor(of(role));
+      if (perms.includes('waybills.correctBeyondLimit')) {
+        expect(perms, role).toContain('waybills.correct');
+      }
+    }
+  });
+
+  /**
+   * Коррекция аннулирует бланк, поэтому `waybills.correct` без `waybills.cancel` — право, которым
+   * нечего сделать: маршрут `POST /waybills/:id/cancel` закрыт `requirePermission('waybills.cancel')`
+   * ещё до `backdateGuard`, и обладатель одной лишь коррекции упрётся в 403 раньше, чем сервер
+   * вообще посмотрит на дату.
+   *
+   * Сегодня наборы совпадают, и проверка выглядит тавтологией — она и заведена ради того дня,
+   * когда наборы разойдутся: расхождение обязано уронить тест здесь, а не обнаружиться отказом у
+   * диспетчера в день, когда он чинит вчерашний рейс.
+   */
+  it('коррекция не выдаётся без права аннулировать: ею нечего было бы сделать', () => {
+    for (const role of ROLES) {
+      const perms = permissionsFor(of(role));
+      if (perms.includes('waybills.correct')) {
+        expect(perms, role).toContain('waybills.cancel');
+      }
     }
   });
 });

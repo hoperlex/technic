@@ -41,6 +41,10 @@ import {
   vehicleSubstitutionHint,
   vehicleSubstitutionOf,
   esm2Periods,
+  canCorrectWaybill,
+  weekStartKey,
+  moscowDateKeyOf,
+  WAYBILL_CORRECTION_CONFIRM,
   vehicleSubstitutionRank,
   vehicleSubstitutionWarning,
   driverDocumentGapsHint,
@@ -49,7 +53,9 @@ import {
   waybillFormShortLabels,
   waybillRequirement,
 } from '@technic/contracts';
+import type { CorrectAssignmentBody } from '@technic/contracts';
 import { driversApi, vehicleRequestsApi, vehicleRoutesApi, vehiclesApi } from '../../api/resources';
+import { useAuth } from '../../auth/AuthContext';
 import { AutoSelect } from '@shared/ui';
 import { FormGrid } from '@shared/ui';
 import { FormModal, useFormBlockers } from '@shared/ui';
@@ -108,8 +114,15 @@ interface Props {
   mode?: 'confirm' | 'reassign';
   confirmLoading: boolean;
   onCancel: () => void;
-  /** `schedule: null` — срок не спрашивали (режим `reassign`). */
-  onSubmit: (v: { assignment: AssignVehicleBody; schedule: ConfirmScheduleBody | null }) => void;
+  /**
+   * `schedule: null` — срок не спрашивали (режим `reassign`); `correction` заполнен там, где
+   * машину меняют задним числом (ADR 0101, Р8) — с причиной и перечнем листов к перевыписке.
+   */
+  onSubmit: (v: {
+    assignment: AssignVehicleBody;
+    schedule: ConfirmScheduleBody | null;
+    correction?: CorrectAssignmentBody;
+  }) => void;
 }
 
 /** Значение селекта «завести новый рейс»: пустая строка неотличима от «ещё не выбрали». */
@@ -144,6 +157,12 @@ interface FormValues {
    */
   machinistId?: string;
   // ── Доставка техники на объект: перегон по желанию (миграция 0082) ──
+  // ── Коррекция задним числом (ADR 0101, Р8): только при смене машины у работающей заявки ──
+  /** Машину меняют не «с сегодня», а потому, что записана не та: работал другой номер. */
+  correctionEnabled?: boolean;
+  correctionReason?: string;
+  /** Листы ЭСМ-2 отработанных недель, которые переоформить: адресно, а не «все прошлые». */
+  unlockWaybillIds?: string[];
   /** Спецтехника едет на площадку своим ходом — на эту поездку выписывается 4-П. */
   deliveryEnabled?: boolean;
   deliveryDate?: Dayjs | null;
@@ -293,6 +312,87 @@ export function VehicleAssignModal({
     // Зависимость — идентификатор заявки: перерисовка той же заявки (инвалидация списка после
     // соседнего действия) приходит новым объектом и стёрла бы уже выбранное.
   }, [targetId]);
+
+  // ── Коррекция задним числом: смена машины у прошедших дней (ADR 0101, Р8) ──
+
+  const { can } = useAuth();
+  /**
+   * Право на всё задним числом (ADR 0101 п. 7). Нет его — блока коррекции нет вовсе: предлагать
+   * действие, которым ручка ответит 403, значит обещать то, чего портал не сделает.
+   */
+  const canCorrect = reassign && can('waybills.correct');
+  /** Глубже 30 дней правит администратор (Р37) — тем же предикатом, что и сервер. */
+  const unlimited = can('waybills.correctBeyondLimit');
+  const today = moscowDateKeyOf(new Date());
+
+  /**
+   * Ключ идемпотентности (Р31): придумывается до отправки и живёт, пока открыто окно на этой
+   * заявке. Повтор после сетевого таймаута обязан вернуть результат прежней операции, а не сжечь
+   * второй номер бланка.
+   */
+  const [operationId, setOperationId] = useState(() => crypto.randomUUID());
+  useEffect(() => {
+    setOperationId(crypto.randomUUID());
+    form.setFieldsValue({
+      correctionEnabled: false,
+      correctionReason: '',
+      unlockWaybillIds: [],
+    });
+  }, [targetId]);
+
+  const correctionEnabled = (Form.useWatch('correctionEnabled', form) ?? false) && canCorrect;
+
+  /**
+   * Листы ЭСМ-2 этой заявки — тем же запросом и ключом, каким их показывает карточка заявки:
+   * открытая перед этим карточка отдаёт ответ из кэша.
+   *
+   * Спрашиваются только под коррекцией: обычной смене техники они не нужны, а лишний запрос на
+   * каждое открытие окна подбора — плата ни за что.
+   */
+  const { data: requestWaybills } = useQuery({
+    queryKey: ['vehicle-requests', targetId, 'waybills'],
+    queryFn: () => vehicleRequestsApi.waybills(targetId!),
+    enabled: !!targetId && correctionEnabled,
+  });
+
+  /**
+   * Что предлагается к перевыписке: действующие недельные листы **отработанных** недель.
+   *
+   * Текущая и будущая недели в список не идут — их сверка переоформит сама, без всякой
+   * разблокировки: неприкосновенна ровно та неделя, которая уже кончилась (`canCancelWaybill`).
+   * Годность самого номера считает `canCorrectWaybill` — тот же предикат, которым сервер ответит
+   * отказом: аннулированный не правится, а бланк старше 30 дней открыт только администратору.
+   */
+  const correctableSheets = useMemo(
+    () =>
+      (requestWaybills ?? []).filter(
+        (w) =>
+          w.formCode === 'esm2' &&
+          !!w.periodTo &&
+          w.periodTo < today &&
+          canCorrectWaybill(
+            { issuedForDate: w.issuedForDate, periodTo: w.periodTo, status: w.status },
+            today,
+            { unlimited },
+          ),
+      ),
+    [requestWaybills, today, unlimited],
+  );
+
+  /**
+   * Неделя, в которой у заявки два действующих листа (ADR 0100 п. 7), переоформлению сверкой не
+   * поддаётся: на неделю выписался бы один бланк, и отчёт второй машины пропал бы. Сервер такую
+   * пару отклоняет — портал не предлагает её вовсе и говорит, почему.
+   */
+  const sharedWeeks = useMemo(() => {
+    const byWeek = new Map<string, number>();
+    for (const w of requestWaybills ?? []) {
+      if (w.formCode !== 'esm2' || w.status !== 'issued' || !w.periodFrom) continue;
+      const week = weekStartKey(w.periodFrom);
+      byWeek.set(week, (byWeek.get(week) ?? 0) + 1);
+    }
+    return byWeek;
+  }, [requestWaybills]);
 
   const lessorId = Form.useWatch('lessorId', form);
   const vehicleId = Form.useWatch('vehicleId', form);
@@ -844,6 +944,10 @@ export function VehicleAssignModal({
       deliveryDriverId: wantsDelivery && !v.deliveryDriverId && 'Выберите водителя перегона',
       deliveryFrom: wantsDelivery && !v.deliveryFrom?.trim() && 'Укажите, откуда идёт техника',
       deliveryTo: wantsDelivery && !v.deliveryTo?.trim() && 'Укажите, куда идёт техника',
+      // Задним числом операция проходит только с объяснением: оно остаётся в журнале коррекций и
+      // печатается в обоих листах (ADR 0101, Р35). Тем же правилом отвечает сервер — 422.
+      correctionReason:
+        correctionEnabled && !v.correctionReason?.trim() && 'Укажите причину коррекции',
       // Водитель обязателен ровно там, где выписывается лист: у аренды он чужой, и портал его
       // не ведёт.
       driverPersonId:
@@ -900,6 +1004,17 @@ export function VehicleAssignModal({
           : {}),
       },
       schedule,
+      // Признак коррекции уходит отдельным блоком, а не полем назначения: он не о том, чем заявку
+      // выполняют, а о том, что запрос утверждает про прошедшие дни (ADR 0101, Р8).
+      ...(correctionEnabled
+        ? {
+            correction: {
+              operationId,
+              reason: v.correctionReason!.trim(),
+              unlockWaybillIds: v.unlockWaybillIds ?? [],
+            },
+          }
+        : {}),
     });
   };
 
@@ -952,6 +1067,75 @@ export function VehicleAssignModal({
                     : ''}
                 </Typography.Paragraph>
               </FormGrid.Full>
+            )}
+
+            {/* Коррекция задним числом (ADR 0101, Р8). Стоит первой в окне смены техники, потому
+              что меняет смысл всего остального: обычная смена говорит «дальше поедет эта машина»,
+              коррекция — «этой машины здесь и не было». Без права `waybills.correct` блока нет
+              вовсе: предлагать действие, которым ручка ответит 403, нельзя. */}
+            {canCorrect && (
+              <FormGrid.Full>
+                <Form.Item name="correctionEnabled" valuePropName="checked" noStyle>
+                  <Checkbox>Исправить задним числом: работала другая машина</Checkbox>
+                </Form.Item>
+              </FormGrid.Full>
+            )}
+            {correctionEnabled && (
+              <>
+                <FormGrid.Full>
+                  <Alert
+                    type="warning"
+                    showIcon
+                    style={{ marginBottom: 16 }}
+                    message="Правка прошедших дней"
+                    description={
+                      <>
+                        Подписи объекта под днями работы будут сняты — часы останутся, подтвердить
+                        их придётся заново. {WAYBILL_CORRECTION_CONFIRM}
+                      </>
+                    }
+                  />
+                </FormGrid.Full>
+                <FormGrid.Full>
+                  <Form.Item
+                    name="correctionReason"
+                    label="Причина коррекции"
+                    extra="Останется в журнале коррекций и в самих листах — и в списанном, и в выписанном взамен"
+                  >
+                    <Input.TextArea
+                      rows={2}
+                      maxLength={2000}
+                      placeholder="Что произошло на самом деле"
+                    />
+                  </Form.Item>
+                </FormGrid.Full>
+                {/* Листы отработанных недель — поимённо (Р11): у заявки в одной неделе бывают
+                  бланки двух машин, и «все прошлые» сожгли бы не тот номер. Текущую неделю сверка
+                  переоформит сама — её здесь нет. */}
+                <FormGrid.Full>
+                  <Form.Item
+                    name="unlockWaybillIds"
+                    label="Листы ЭСМ-2 к перевыписке"
+                    extra={
+                      correctableSheets.length > 0
+                        ? 'Отмеченные номера будут аннулированы, взамен выпишутся новые — следующими по серии'
+                        : 'Отработанных недель с действующим листом у заявки нет: переписывать нечего'
+                    }
+                  >
+                    <Checkbox.Group
+                      style={{ display: 'flex', flexDirection: 'column', gap: 4 }}
+                      options={correctableSheets.map((w) => ({
+                        value: w.id,
+                        label: `№ ${w.number} · ${formatDateOnly(w.periodFrom!)} – ${formatDateOnly(w.periodTo!)}`,
+                        // Неделя, где у заявки два действующих листа, сверкой не переоформляется
+                        // (ADR 0100 решение 7): такой бланк списывают номером и выписывают заново
+                        // по требованию, где машина называется явно.
+                        disabled: (sharedWeeks.get(weekStartKey(w.periodFrom!)) ?? 0) > 1,
+                      }))}
+                    />
+                  </Form.Item>
+                </FormGrid.Full>
+              </>
             )}
 
             {/* Фактический срок: подставлен заказанным, под полями — что просили изначально.

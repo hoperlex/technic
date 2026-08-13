@@ -61,6 +61,10 @@ vi.mock('../src/auth/principal', () => ({
     isActive: true,
     mustChangePassword: false,
     constructionObjectIds: [OBJECT_ID],
+    // Карточка работника (ADR 0102) — четвёртая ось области. В принципале она есть у всех:
+    // матрица проверяет права, а не то, кому её выдали, — иначе кабинет отвечал бы «учётка не
+    // связана с работником» и запрет по праву остался бы непроверенным.
+    personId: PERSON_ID,
     counterpartyId: COUNTERPARTY_ID,
     counterpartyType: currentSubject.counterpartyType ?? null,
     // Надстройки (ADR 0086) приходят на сервер тем же принципалом, что роль и тип контрагента:
@@ -75,8 +79,16 @@ vi.mock('../src/auth/principal', () => ({
 const OBJECT_ID = '11111111-1111-4111-8111-111111111111';
 const COUNTERPARTY_ID = '22222222-2222-4222-8222-222222222222';
 const RECORD_ID = '33333333-3333-4333-8333-333333333333';
+const PERSON_ID = '44444444-4444-4444-8444-444444444444';
 /** Заявку заводят не раньше чем на завтра по МСК — берём заведомо будущую дату. */
 const FUTURE_DELIVERY_AT = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString();
+/**
+ * День рейса — тоже заведомо будущий, и по своей причине: рейс на прошедшую дату требует
+ * `waybills.correct` (ADR 0101 п. 4), а этого права у менеджера нет. Прибитая календарём дата
+ * однажды стала бы прошлым — и матрица прав начала бы падать на заднем числе, к которому она
+ * отношения не имеет.
+ */
+const FUTURE_ROUTE_DATE = FUTURE_DELIVERY_AT.slice(0, 10);
 
 /** Субъект текущего запроса: подменённый `loadPrincipal` возвращает его принципалу. */
 let currentSubject: AccessSubject = { role: null };
@@ -375,7 +387,7 @@ const CASES: Case[] = [
     title: 'заведение рейса — теми же двумя правами',
     method: 'POST',
     url: '/api/v1/vehicle-routes',
-    payload: { vehicleId: RECORD_ID, routeDate: '2026-08-03' },
+    payload: { vehicleId: RECORD_ID, routeDate: FUTURE_ROUTE_DATE },
     allowed: ['admin', 'manager', 'dispatcher'],
   },
   {
@@ -1323,8 +1335,30 @@ const CASES: Case[] = [
       'operator/vehicle_lessor',
       'operator/service',
       'observer',
+      // Водитель (ADR 0102) ходит теми же ручками: он грузит фотографии показаний и открывает
+      // свои. Права роли тут ни при чём — доступ решает связь файла (Р34), и для чужого снимка
+      // ответом будет 403 из обработчика, а не отказ стража.
+      'driver',
     ],
     checkedInHandler: true,
+  },
+
+  // ── Кабинет водителя (ADR 0102) ──
+  // Второй контур портала: своя пара прав и своя, самая узкая область — «свой человек». Человек
+  // берётся из принципала, поэтому в адресе его нет и подменить его нечем.
+  {
+    title: 'кабинет — задание на дату',
+    method: 'GET',
+    url: '/api/v1/driver/assignment?date=2026-08-12',
+    // Администратор здесь не «тоже водитель»: у него по построению все права портала, и кабинет
+    // не исключение — своей карточки у него может не быть, но право открыть ручку есть.
+    allowed: ['admin', 'driver'],
+  },
+  {
+    title: 'показания парка — журнал машины',
+    method: 'GET',
+    url: `/api/v1/vehicle-readings/journal/${RECORD_ID}?from=2026-08-01&to=2026-08-12`,
+    allowed: ['admin', 'manager', 'dispatcher'],
   },
 
   // ── Администрирование ──

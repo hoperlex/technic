@@ -702,6 +702,30 @@ export async function attachRequest(
   return position;
 }
 
+/**
+ * Тип и вид машины — ими сверяется заказанное в заявке, когда её назначение переписывается на
+ * машину рейса: при переносе в чужой рейс и при коррекции задним числом (ADR 0101, Р2).
+ *
+ * Вид, а не тип: заявку закрывают и машиной соседнего типа (ADR 0059), и рейс — то место, где это
+ * происходит чаще всего: день машины собирают по объектам, а объекты заказывают разное. Тип из
+ * ответа идёт в назначение — рейс остаётся источником истины о том, чем едут.
+ */
+export async function vehicleClassOf(
+  reader: Reader,
+  vehicleId: string,
+): Promise<{ vehicleTypeId: string; kindId: string; typeName: string } | null> {
+  const [row] = await reader
+    .select({
+      vehicleTypeId: vehicles.vehicleTypeId,
+      kindId: vehicleTypes.kindId,
+      typeName: vehicleTypes.name,
+    })
+    .from(vehicles)
+    .innerJoin(vehicleTypes, eq(vehicleTypes.id, vehicles.vehicleTypeId))
+    .where(eq(vehicles.id, vehicleId));
+  return row ?? null;
+}
+
 // ── Перегон техники ──
 
 /**

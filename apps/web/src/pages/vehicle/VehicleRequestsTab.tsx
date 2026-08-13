@@ -28,6 +28,7 @@ import dayjs, { type Dayjs } from 'dayjs';
 import {
   type AddressMeta,
   type AssignVehicleBody,
+  type CorrectAssignmentBody,
   type ConfirmScheduleBody,
   assignmentRateLabel,
   assignmentTitle,
@@ -43,6 +44,10 @@ import {
   CARGO_AMOUNT_MESSAGE,
   isVehicleKindAllowedForRequest,
   moscowDateKeyOf,
+  // Какую дату двигает правка и уходит ли она в прошлое (ADR 0101, §4) — тем же контрактом, каким
+  // это решает сервер: форма спрашивает причину ровно там, где её спросит ручка.
+  movedRequestDateKey,
+  type RequestCalendar,
   normalizeTimeInput,
   parseFeedNumberSearch,
   parseVehicleClassificationKey,
@@ -99,12 +104,7 @@ import { useAuth } from '../../auth/AuthContext';
 import { errorMessage, formatDateTime } from '../../utils/format';
 import { vehicleRouteLink } from '../../utils/links';
 import { withSavedOption } from '@shared/lib';
-import {
-  calendarDaysLabel,
-  isBeforeMinRequestDate,
-  isPastDate,
-  minRequestDate,
-} from '../../utils/date';
+import { calendarDaysLabel, vehicleRequestDateRules } from '../../utils/date';
 
 import { FilesCell } from '../../components/FileLinks';
 import { VehicleAssignModal } from './VehicleAssignModal';
@@ -114,6 +114,7 @@ import { VehicleEsm2Modal } from './VehicleEsm2Modal';
 import { VehicleRequestViewModal } from './VehicleRequestViewModal';
 import { VehicleRelocationModal } from './VehicleRelocationModal';
 import { RequestRelocationsField } from './RequestRelocationsField';
+import { VehicleBackdateFields } from './VehicleBackdateFields';
 import { VehicleRouteTransferModal } from './VehicleRouteTransferModal';
 import { useObjectScope } from '../../hooks/useObjectScope';
 import { useDepartmentScope } from '../../hooks/useDepartmentScope';
@@ -186,6 +187,12 @@ interface FormValues {
   unloadingResponsibleName?: string;
   unloadingResponsiblePhone?: string;
   comment?: string;
+  /**
+   * Причина заднего числа (ADR 0101). Полем формы, а не состоянием экрана: показывается оно по
+   * выбранной дате, и `resetFields` обязан уносить его вместе с ней — иначе объяснение вчерашней
+   * заявки уехало бы в следующую, заведённую в том же окне.
+   */
+  backdateReason?: string;
 }
 
 /**
@@ -526,9 +533,44 @@ export function VehicleRequestsTab() {
     ? calendarDaysLabel(watchDateFrom.format('YYYY-MM-DD'), watchDateTo?.format('YYYY-MM-DD'))
     : null;
 
-  // Ограничение дат: новая заявка — не раньше сегодня по МСК (правило сервера), правка
-  // заведённой — не в прошлое (её дата могла быть назначена и вчера).
-  const minDateRule = record ? isPastDate : isBeforeMinRequestDate;
+  // Ограничение дат заявки на технику (ADR 0104): ближайший доступный день зависит от того, кто
+  // её заводит, и в форме он тот же, что на сервере, — подробности при самом правиле.
+  const { minDate, disabledDate: minDateRule, leadTimeHint } = vehicleRequestDateRules(user);
+
+  /*
+   * Задним числом (ADR 0101, Р6 и Р15): уходит ли выбранная дата в прошлое и по какой именно
+   * границе. Считает контракт (`movedRequestDateKey`) — тот же, которым сервер решает, спрашивать
+   * ли право: разойдись они, форма либо требовала бы причину там, где ручка её не ждёт, либо
+   * молча отправляла бы правку, на которую придёт 403.
+   *
+   * У правки эффективная дата — самая ранняя из **сдвинутых** границ, а не просто «дата заявки»:
+   * у вчерашней заявки правят и телефон, и комментарий, и это не коррекция.
+   */
+  const watchScheduledDate = Form.useWatch('scheduledDate', form);
+  const formCalendar: RequestCalendar = isSpecial
+    ? {
+        dateFrom: watchDateFrom?.format('YYYY-MM-DD'),
+        dateTo: watchDateTo ? watchDateTo.format('YYYY-MM-DD') : null,
+      }
+    : { scheduledDay: watchScheduledDate?.format('YYYY-MM-DD') };
+  // Переоформление в другой тип (ADR 0091) идёт своей ручкой, и границы дат у неё нет вовсе:
+  // заявку, заведённую вчера, переоформляют сегодня, и требовать за это право на коррекцию
+  // значило бы менять заказ ради смены его вида. Сравнивать календари разных типов тем более не о
+  // чем — у них разные поля.
+  const retyping = !!record && record.requestType !== watchRequestType;
+  const recordCalendar: RequestCalendar | null =
+    !record || retyping
+      ? null
+      : record.requestType === 'freight_transport'
+        ? { scheduledDay: moscowDateKeyOf(new Date(record.scheduledAt)) }
+        : { dateFrom: record.dateFrom, dateTo: record.dateTo };
+  const effectiveDateKey = recordCalendar
+    ? movedRequestDateKey(recordCalendar, formCalendar)
+    : (formCalendar.dateFrom ?? formCalendar.scheduledDay ?? null);
+  // Прошлое считается по МСК — тем же поясом, что на сервере: у диспетчера восточнее Москвы своё
+  // «сегодня», и по нему граница разошлась бы с ответом ручки.
+  const backdated =
+    !retyping && !!effectiveDateKey && effectiveDateKey < moscowDateKeyOf(new Date());
 
   // Срок работающей заявки правкой только продлевают: сокращение идёт досрочным завершением с
   // визой (ADR 0044), и сервер прямую правку отклоняет.
@@ -594,7 +636,7 @@ export function VehicleRequestsTab() {
       // Метаданные адресов лежат в тех же `FREIGHT_FIELDS` и сбрасываются вместе со строками.
       form.resetFields([...FREIGHT_FIELDS]);
       form.setFieldsValue({
-        dateFrom: form.getFieldValue('dateFrom') ?? scheduledDate ?? minRequestDate(),
+        dateFrom: form.getFieldValue('dateFrom') ?? scheduledDate ?? minDate,
         responsibleName: form.getFieldValue('responsibleName') || name,
         responsiblePhone: form.getFieldValue('responsiblePhone') || phone,
       });
@@ -604,16 +646,31 @@ export function VehicleRequestsTab() {
       const phone: string | undefined = form.getFieldValue('responsiblePhone');
       form.resetFields([...SPECIAL_FIELDS]);
       form.setFieldsValue({
-        scheduledDate: form.getFieldValue('scheduledDate') ?? dateFrom ?? minRequestDate(),
+        scheduledDate: form.getFieldValue('scheduledDate') ?? dateFrom ?? minDate,
         unloadingResponsibleName: form.getFieldValue('unloadingResponsibleName') || name,
         unloadingResponsiblePhone: form.getFieldValue('unloadingResponsiblePhone') || phone,
       });
     }
   };
 
+  /*
+   * Ключ операции задним числом (ADR 0101, Р31) — один на открытое окно, а не на нажатие.
+   *
+   * Именно так он и работает: связь оборвалась, ответа нет, человек жмёт «Сохранить» ещё раз — и
+   * сервер по тому же ключу возвращает прежний результат вместо второй заявки и второго сгоревшего
+   * номера. Новый uuid на каждое нажатие сделал бы ключ бесполезным ровно в том случае, ради
+   * которого он заведён.
+   *
+   * Неудачная попытка ключ не жжёт: строка операции пишется той же транзакцией, что и сама правка,
+   * и откатывается вместе с ней, — поэтому «поправил причину и сохранил снова» проходит обычным
+   * порядком, а не упирается в «ключ занят другой командой».
+   */
+  const [operationId, setOperationId] = useState(() => crypto.randomUUID());
+
   const openCreate = () => {
     setRecord(null);
     form.resetFields();
+    setOperationId(crypto.randomUUID());
     // Штаб заводит заявку только на свой объект — подставляем его сразу, поле заперто.
     // Объект подставляется, только когда он у роли один: с несколькими выбирает человек.
     // Заказчик подставляется, только когда он у роли один: с несколькими выбирает человек.
@@ -633,6 +690,7 @@ export function VehicleRequestsTab() {
   const openEdit = (r: VehicleRequestDto) => {
     setRecord(r);
     form.resetFields();
+    setOperationId(crypto.randomUUID());
     if (r.requestType === 'special_equipment') {
       form.setFieldsValue({
         requestType: r.requestType,
@@ -689,10 +747,17 @@ export function VehicleRequestsTab() {
       // Выбрана одна позиция классификатора (ADR 0028) — в API она уходит парой «тип +
       // категория»: категория пуста у типа, у которого её и не бывает.
       const picked = parseVehicleClassificationKey(v.classificationKey)!;
+      /*
+       * Задним числом (ADR 0101): причина и ключ операции едут только тогда, когда операция
+       * действительно уходит в прошлое. Слать их всегда нельзя — сервер завёл бы запись коррекции
+       * на обычную дневную работу, и журнал правок бланков наполнился бы заявками на завтра.
+       */
+      const backdate = backdated ? { backdateReason: v.backdateReason?.trim(), operationId } : {};
       const common = {
         vehicleTypeId: picked.vehicleTypeId,
         vehicleCategoryId: picked.vehicleCategoryId,
         comment: v.comment ?? '',
+        ...backdate,
       };
       // Смена типа у заведённой заявки — не правка, а переоформление (ADR 0091): у него своя
       // ручка, потому что деталь прежнего типа снимается целиком, а новая приходит полным составом.
@@ -895,10 +960,20 @@ export function VehicleRequestsTab() {
   const [esm2Target, setEsm2Target] = useState<VehicleRequestDto | null>(null);
 
   const reassignMut = useMutation({
-    mutationFn: (v: { id: string; version: number; assignment: AssignVehicleBody }) =>
-      vehicleRequestsApi.changeAssignment(v.id, { ...v.assignment, version: v.version }),
-    onSuccess: () => {
-      message.success('Техника изменена');
+    mutationFn: (v: {
+      id: string;
+      version: number;
+      assignment: AssignVehicleBody;
+      /** Смена машины задним числом (ADR 0101, Р8): причина, ключ операции и листы к перевыписке. */
+      correction?: CorrectAssignmentBody;
+    }) =>
+      vehicleRequestsApi.changeAssignment(v.id, {
+        ...v.assignment,
+        version: v.version,
+        ...(v.correction ? { correction: v.correction } : {}),
+      }),
+    onSuccess: (_updated, v) => {
+      message.success(v.correction ? 'Назначение исправлено задним числом' : 'Техника изменена');
       setReassignTarget(null);
       void qc.invalidateQueries({ queryKey: ['vehicle-requests'] });
       // Заявка переезжает в рейс новой машины — списки маршрутов после этого не те же.
@@ -1978,14 +2053,16 @@ export function VehicleRequestsTab() {
               />
             </FormGrid.Full>
 
-            {/* Техника на объект: период работы. Новую заявку назначают не раньше чем на сегодня
-              (по МСК); у заведённой дата правится свободно, лишь бы не в прошлое. */}
+            {/* Техника на объект: период работы. Ближайший доступный день зависит от того, кто
+              заводит заявку (ADR 0104): заявителю — завтра, а после 15:00 послезавтра; тому, кто
+              ведёт заказы, — сегодня по МСК. */}
             {isSpecial && (
               // Даты — соседними ячейками сетки: пара «начало — окончание» читается вместе.
               <>
                 <Form.Item
                   name="dateFrom"
                   label="Дата начала"
+                  tooltip={leadTimeHint}
                   rules={[{ required: true, message: 'Укажите дату начала' }]}
                 >
                   <DatePicker
@@ -2016,6 +2093,17 @@ export function VehicleRequestsTab() {
                     disabledDate={dateToLocked ? isBeforeCurrentDateTo : minDateRule}
                   />
                 </Form.Item>
+                {/* Задним числом (ADR 0101): причина и цена правки — сразу под датами, которые её
+                  вызвали, а не в конце формы. Блока нет вовсе, пока срок не уходит в прошлое. */}
+                {backdated && effectiveDateKey && (
+                  <FormGrid.Full>
+                    <VehicleBackdateFields
+                      record={record}
+                      next={formCalendar}
+                      effectiveDate={effectiveDateKey}
+                    />
+                  </FormGrid.Full>
+                )}
                 {/* Кто встречает технику на объекте: без контакта заезд и место работ выясняются
                   звонками через диспетчера уже на воротах. */}
                 <FormGrid.Full>
@@ -2047,6 +2135,7 @@ export function VehicleRequestsTab() {
                 <Form.Item
                   name="scheduledDate"
                   label="Дата подачи"
+                  tooltip={leadTimeHint}
                   rules={[{ required: true, message: 'Укажите дату' }]}
                 >
                   <DatePicker
@@ -2064,6 +2153,17 @@ export function VehicleRequestsTab() {
                 >
                   <TimeInput />
                 </Form.Item>
+                {/* Задним числом (ADR 0101) — тем же блоком, что и у заказа на объект: правило на
+                  оба типа заявки одно, разная у них только дата, по которой оно считается. */}
+                {backdated && effectiveDateKey && (
+                  <FormGrid.Full>
+                    <VehicleBackdateFields
+                      record={record}
+                      next={formCalendar}
+                      effectiveDate={effectiveDateKey}
+                    />
+                  </FormGrid.Full>
+                )}
                 {/* Груз: одного из двух достаточно. У легковой машины его не спрашивают вовсе —
                   в её бланке (форма № 3) графа «Груз» заполняется от руки в те редкие рейсы,
                   когда что-то везут. */}
@@ -2286,12 +2386,13 @@ export function VehicleRequestsTab() {
         mode="reassign"
         confirmLoading={reassignMut.isPending}
         onCancel={() => setReassignTarget(null)}
-        onSubmit={({ assignment }) =>
+        onSubmit={({ assignment, correction }) =>
           reassignTarget &&
           reassignMut.mutate({
             id: reassignTarget.id,
             version: reassignTarget.version,
             assignment,
+            correction,
           })
         }
       />

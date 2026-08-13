@@ -6,10 +6,12 @@ import {
   DeleteOutlined,
   EditOutlined,
   PlusOutlined,
+  SwapOutlined,
 } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   BLANK_WAYBILL_CONFIRM,
+  canCorrectRoute,
   canIssueWaybill,
   driverDocumentGapsWarning,
   isRouteEditable,
@@ -40,6 +42,8 @@ import { PrintWaybillButton } from '../../components/WaybillPrint';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
 import { formatDateOnly } from './shared';
+import { VehicleRouteCorrectionModal } from './VehicleRouteCorrectionModal';
+import { VehicleRouteTransferCorrectionModal } from './VehicleRouteTransferCorrectionModal';
 
 /**
  * Карточка рейса: кто едет, с кем и в каком порядке.
@@ -74,6 +78,10 @@ export function VehicleRouteModal({ routeId, onClose, onChanged, onEdit }: Props
   const { can } = useAuth();
   const qc = useQueryClient();
   const [adding, setAdding] = useState<string | undefined>();
+  /** Окно коррекции живёт здесь, а не во вкладке: открывают его из карточки и только из неё. */
+  const [correcting, setCorrecting] = useState(false);
+  /** Талон, который переносят в рейс другого дня задним числом (Р30); `null` — окно закрыто. */
+  const [transferring, setTransferring] = useState<VehicleRouteRequestDto | null>(null);
 
   const { data: route, isFetching } = useQuery({
     queryKey: ['vehicle-routes', routeId],
@@ -160,7 +168,11 @@ export function VehicleRouteModal({ routeId, onClose, onChanged, onEdit }: Props
   });
 
   const issue = useMutation({
-    mutationFn: () => vehicleRoutesApi.issueWaybill(route!.id, route!.version),
+    mutationFn: (backdate?: { reason: string; operationId: string }) =>
+      vehicleRoutesApi.issueWaybill(route!.id, {
+        version: route!.version,
+        ...(backdate ?? {}),
+      }),
     onSuccess: (updated) => {
       message.success(`Путевой лист ${updated.waybill?.number ?? ''} выписан`);
       afterChange(updated);
@@ -191,8 +203,14 @@ export function VehicleRouteModal({ routeId, onClose, onChanged, onEdit }: Props
    * положить заявки» от «выписываю пустой намеренно» отличает только человек.
    */
   const confirmIssue = () => {
+    // Прошедший день — своё окно и своя цена (ADR 0101, дыра 1): лист рождается операцией
+    // коррекции, и без причины сервер его не выпишет.
+    if (past) {
+      confirmBackdatedIssue();
+      return;
+    }
     if (!driverGaps && !blank) {
-      issue.mutate();
+      issue.mutate(undefined);
       return;
     }
     modal.confirm({
@@ -205,7 +223,54 @@ export function VehicleRouteModal({ routeId, onClose, onChanged, onEdit }: Props
       ),
       okText: 'Всё равно выписать',
       cancelText: 'Отмена',
-      onOk: () => issue.mutateAsync(),
+      onOk: () => issue.mutateAsync(undefined),
+    });
+  };
+
+  /**
+   * Выписка на прошедший день (ADR 0101 п. 4, дыра 1 плана).
+   *
+   * Раньше портал выписывал такой лист молча — та же кнопка, тот же запрос. Теперь это операция:
+   * причина обязательна (её спросит сервер и запишет в журнал коррекций и в сам лист, Р35), а ключ
+   * идемпотентности придумывается **до** отправки и не меняется, пока открыто окно, — повтор после
+   * обрыва связи обязан вернуть тот же номер, а не сжечь следующий (Р31).
+   *
+   * Отдельным окном, а не полем в карточке: спрашивают его редко, и постоянное поле «причина» у
+   * обычной дневной выписки читалось бы как обязательное.
+   */
+  const confirmBackdatedIssue = () => {
+    let reason = '';
+    const operationId = crypto.randomUUID();
+    modal.confirm({
+      title: `Выписать лист за ${route ? formatDateOnly(route.routeDate) : 'прошедший день'}?`,
+      content: (
+        <Space direction="vertical" style={{ width: '100%' }}>
+          <Typography.Text type="secondary">
+            День уже прошёл: лист уйдёт в журнал с меткой коррекции, вашим именем и этой причиной.
+            {blank ? ` ${BLANK_WAYBILL_CONFIRM}` : ''}
+            {driverGaps ? ` ${driverGaps}` : ''}
+          </Typography.Text>
+          <textarea
+            className="ant-input"
+            rows={2}
+            aria-label="Причина выписки задним числом"
+            placeholder="Например: бумагу выписали в тот день на месте, в портал вносим сегодня"
+            onChange={(e) => {
+              reason = e.target.value;
+            }}
+          />
+        </Space>
+      ),
+      okText: 'Выписать задним числом',
+      okButtonProps: { danger: true },
+      cancelText: 'Отмена',
+      onOk: async () => {
+        if (!reason.trim()) {
+          message.error('Укажите причину');
+          throw new Error('reason required');
+        }
+        await issue.mutateAsync({ reason, operationId });
+      },
     });
   };
 
@@ -299,6 +364,25 @@ export function VehicleRouteModal({ routeId, onClose, onChanged, onEdit }: Props
     // недели работы машины на площадке рейса нет вовсе).
     canCancelWaybill(route.waybill, moscowDateKeyOf(new Date()));
 
+  /**
+   * Коррекция задним числом (ADR 0101, Р2) — кнопка прошедшего дня.
+   *
+   * Сегодняшнему рейсу она не нужна: пока день не кончился, лист аннулируют обычным порядком, рейс
+   * размораживается и правится соседней кнопкой. Прошедший день так не чинится ничем — там и
+   * начинается коррекция: своё право, обязательная причина, сгоревший номер.
+   *
+   * Готовность считается тем же правилом, что и на сервере (`canCorrectRoute`): иначе кнопка
+   * обещала бы то, чего ручка не сделает. Выключенная объясняет себя подсказкой — с закрытой
+   * заявкой в составе коррекция становится совместной (Р38), и человеку нужно знать, к кому идти.
+   */
+  const past = !!route && route.routeDate < moscowDateKeyOf(new Date());
+  const correction =
+    route && past && can('waybills.correct')
+      ? canCorrectRoute(route, moscowDateKeyOf(new Date()), {
+          unlimited: can('waybills.correctBeyondLimit'),
+        })
+      : null;
+
   return (
     <ViewModal
       title={
@@ -332,6 +416,20 @@ export function VehicleRouteModal({ routeId, onClose, onChanged, onEdit }: Props
                 number={route.waybill.number}
                 status={route.waybill.status}
               />
+            )}
+            {correction && (
+              <Button
+                danger
+                disabled={!correction.ok}
+                title={
+                  correction.ok
+                    ? 'Привести рейс к тому, что было на самом деле: машина, водитель, реквизиты'
+                    : `${correction.reason}${correction.blocking.length > 0 ? ` (${correction.blocking.join(', ')})` : ''}`
+                }
+                onClick={() => setCorrecting(true)}
+              >
+                Исправить исполнение
+              </Button>
             )}
             {route.waybill && can('waybills.cancel') && (
               <Button
@@ -447,6 +545,20 @@ export function VehicleRouteModal({ routeId, onClose, onChanged, onEdit }: Props
                     busy={reorder.isPending || detach.isPending}
                     onMove={move}
                     onDetach={() => detach.mutate(item.requestId)}
+                    // Готовность считается тем же правилом, что и у коррекции рейса: сервер
+                    // спросит его для обоих рейсов, и кнопка не должна обещать того, чем ручка
+                    // ответит отказом. Выключенная объясняет себя — с закрытой заявкой в составе
+                    // перенос становится совместной работой (Р38).
+                    onTransfer={
+                      correction
+                        ? {
+                            disabledReason: correction.ok
+                              ? null
+                              : `${correction.reason}${correction.blocking.length > 0 ? ` (${correction.blocking.join(', ')})` : ''}`,
+                            onClick: () => setTransferring(item),
+                          }
+                        : null
+                    }
                   />
                 ))}
               </Space>
@@ -516,6 +628,29 @@ export function VehicleRouteModal({ routeId, onClose, onChanged, onEdit }: Props
         </Space>
       )}
       {!route && isFetching && <Typography.Text type="secondary">Загружаем рейс…</Typography.Text>}
+
+      {/* Окно коррекции поверх карточки: за ним остаётся видно рейс, который правят, — состав,
+        номер листа и день. Своим окном, а не полями в карточке: цена действия у него другая. */}
+      <VehicleRouteCorrectionModal
+        route={correcting ? (route ?? null) : null}
+        onClose={() => setCorrecting(false)}
+        onSaved={(updated) => {
+          setCorrecting(false);
+          afterChange(updated);
+        }}
+      />
+      {/* Перенос задним числом (Р30): своё окно, потому что сжигает два номера сразу — и оба
+        обязано назвать до нажатия. Открывается со стороны источника: талон видно там, где он
+        стоит. */}
+      <VehicleRouteTransferCorrectionModal
+        route={transferring ? (route ?? null) : null}
+        request={transferring}
+        onClose={() => setTransferring(null)}
+        onDone={(result) => {
+          setTransferring(null);
+          afterChange(result.source);
+        }}
+      />
     </ViewModal>
   );
 }
@@ -534,6 +669,7 @@ function RouteRequestRow({
   busy,
   onMove,
   onDetach,
+  onTransfer,
 }: {
   item: VehicleRouteRequestDto;
   index: number;
@@ -544,6 +680,12 @@ function RouteRequestRow({
   busy: boolean;
   onMove: (index: number, delta: number) => void;
   onDetach: () => void;
+  /**
+   * Перенос талона в рейс другого дня задним числом (ADR 0101, Р30); `null` — рейс сегодняшний
+   * либо права коррекции нет. Кнопка стоит у строки, а не в подвале карточки, потому что переносят
+   * **талон**, а не рейс: в замороженном рейсе это единственный способ что-то с ним сделать.
+   */
+  onTransfer: { disabledReason: string | null; onClick: () => void } | null;
 }) {
   return (
     <div
@@ -589,6 +731,19 @@ function RouteRequestRow({
           </Typography.Text>
         </div>
       </div>
+      {/* Перенос задним числом виден и в замороженном рейсе — там он и нужен: бумага выписана, а
+        заявка ехала не этим днём. Линейный день этой дверью не ходит (ADR 0100 п. 8): день равен
+        дню своего рейса, и «перенести» его значит распланировать другой — из карточки заявки. */}
+      {onTransfer && !item.workDate && (
+        <Button
+          size="small"
+          icon={<SwapOutlined />}
+          title={onTransfer.disabledReason ?? 'Заявка ехала другим рейсом: перенести задним числом'}
+          aria-label={`Перенести ${item.displayNumber} задним числом`}
+          disabled={busy || !!onTransfer.disabledReason}
+          onClick={onTransfer.onClick}
+        />
+      )}
       {!frozen && (
         <Space>
           <Button

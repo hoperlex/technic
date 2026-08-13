@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, screen, waitFor } from '@testing-library/react';
-import type { DriverOptionDto, FreightTransportRequestDto, VehicleDto } from '@technic/contracts';
+import {
+  moscowDateKeyOf,
+  type DriverOptionDto,
+  type FreightTransportRequestDto,
+  type VehicleDto,
+} from '@technic/contracts';
 import { VehicleAssignModal } from '../src/pages/vehicle/VehicleAssignModal';
 import { VehicleRouteModal } from '../src/pages/vehicle/VehicleRouteModal';
 import { openSelectOptions } from './antd';
@@ -190,7 +195,13 @@ function route(driverGaps: string[]) {
     displayNumber: 'Р-12',
     purpose: 'freight' as const,
     formCode: '4p' as const,
-    routeDate: '2026-08-10',
+    /**
+     * Живой сегодняшний день, а не константа (ADR 0101, дыра 1): выписка на прошедший день с тех
+     * пор уходит в окно коррекции — со своим правом, причиной и ключом операции, — и предупреждения
+     * о пробелах документов там уже не спрашивают. Здесь проверяется именно оно, поэтому рейс
+     * обязан быть сегодняшним; зафиксированная дата однажды станет прошлым и уронит тест.
+     */
+    routeDate: moscowDateKeyOf(new Date()),
     vehicleId: 'v-own',
     vehicleLabel: 'КамАЗ 65201 · Е646СК799',
     vehicleKindId: 'kind-freight',

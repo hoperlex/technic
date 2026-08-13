@@ -407,6 +407,56 @@ describe('день в рейс', () => {
     });
   });
 
+  /**
+   * Прошедший день (ADR 0101 п. 4, дыра 1 плана). Правило дней прошлое разрешает — выезд оформляют
+   * и задним числом, — но сервер спрашивает за него право и причину, и форма обязана спросить её
+   * первой: иначе человек соберёт рейс и получит 422 на нажатии.
+   *
+   * Прошедшим день считается по **дню среза от сервера** (`onDate`), а не по часам браузера: тем
+   * же поясом границу считает `backdateGuard`, и разъехаться им нельзя.
+   */
+  it('у прошедшего дня спрашивает причину и уносит её на сервер', async () => {
+    const http = renderDays({
+      ...DAYS,
+      items: DAYS.items.map((day) => (day.date === '2026-08-11' ? free('2026-08-11') : day)),
+    });
+    await screen.findByText('11.08.2026');
+    fireEvent.click(within(dayRow('11.08.2026')).getByText('В рейс'));
+    await screen.findByText('День 11.08.2026 в рейс');
+
+    // Без причины форма запрос не отправляет вовсе: тело заведомо отклоняемое.
+    fireEvent.click(screen.getByText('Поставить в рейс'));
+    await screen.findByText('Укажите причину');
+    expect(http.countOf('POST /vehicle-requests/:id/days/:date/route')).toBe(0);
+
+    fireEvent.change(screen.getByLabelText('Причина заднего числа'), {
+      target: { value: 'машина отработала день, вносим по факту' },
+    });
+    fireEvent.click(screen.getByText('Поставить в рейс'));
+
+    await waitFor(() =>
+      expect(http.countOf('POST /vehicle-requests/:id/days/:date/route')).toBe(1),
+    );
+    expect(http.lastCall('POST /vehicle-requests/:id/days/:date/route')!.body).toEqual({
+      newRoute: { vehicleId: 'v-lift', driverPersonId: null },
+      reason: 'машина отработала день, вносим по факту',
+    });
+  });
+
+  it('день среза причины не требует: сегодняшний выезд не задним числом', async () => {
+    const http = renderDays();
+    await openPlanning();
+
+    expect(screen.queryByLabelText('Причина заднего числа')).toBeNull();
+    fireEvent.click(screen.getByText('Поставить в рейс'));
+    await waitFor(() =>
+      expect(http.countOf('POST /vehicle-requests/:id/days/:date/route')).toBe(1),
+    );
+    expect(http.lastCall('POST /vehicle-requests/:id/days/:date/route')!.body).toEqual({
+      newRoute: { vehicleId: 'v-lift', driverPersonId: null },
+    });
+  });
+
   it('готовый рейс машины на этот день предлагается первым', async () => {
     const http = renderDays(DAYS, [ROUTE_16]);
     await openPlanning();

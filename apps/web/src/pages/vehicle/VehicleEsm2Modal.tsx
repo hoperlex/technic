@@ -1,10 +1,11 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { App, DatePicker, Form, Typography } from 'antd';
 import type { Dayjs } from 'dayjs';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   assignmentTitle,
   esm2Periods,
+  moscowDateKeyOf,
   type VehicleDto,
   vehicleLabel,
   type VehicleRequestDto,
@@ -16,6 +17,7 @@ import { FormModal, useFormBlockers } from '@shared/ui';
 import { useIsMobile } from '@shared/lib';
 import { errorMessage } from '../../utils/format';
 import { formatDateOnly } from './shared';
+import { BackdateReasonField } from './VehicleBackdateFields';
 
 /**
  * Выписка недельного ЭСМ-2 по требованию (ADR 0100 решение 6).
@@ -52,6 +54,8 @@ interface FormValues {
   weekOf?: Dayjs | null;
   vehicleId?: string;
   driverPersonId?: string;
+  /** Причина выписки задним числом — спрашивается только у прошедшей недели (ADR 0101 п. 4). */
+  reason?: string;
 }
 
 export function VehicleEsm2Modal({ request, onClose, onDone }: Props) {
@@ -68,12 +72,21 @@ export function VehicleEsm2Modal({ request, onClose, onDone }: Props) {
    * Подставляется одна машина. Неделя пустая — её и выбирают этим окном; машинист пустой всегда,
    * и это то самое осознанное решение, ради которого окно и заведено.
    */
+  /**
+   * Ключ идемпотентности операции (Р31) — придумывается на **открытие окна**, а не на попытку
+   * отправки: повтор после обрыва связи обязан вернуть тот же номер, а не сжечь следующий. Отказ
+   * ключа не жжёт — операция заводится одной транзакцией с листом и откатывается вместе с ним.
+   */
+  const operationId = useRef(crypto.randomUUID());
+
   useEffect(() => {
     if (!request) return;
+    operationId.current = crypto.randomUUID();
     form.setFieldsValue({
       weekOf: null,
       vehicleId: request.assignment?.vehicleId,
       driverPersonId: undefined,
+      reason: undefined,
     });
     // Зависимость — идентификатор заявки, а не она сама: инвалидация списка приносит ту же заявку
     // новым объектом, и подстановка стёрла бы уже выбранную неделю (тот же приём в окне
@@ -98,6 +111,17 @@ export function VehicleEsm2Modal({ request, onClose, onDone }: Props) {
     );
     return found ?? null;
   }, [request, weekOf]);
+
+  /**
+   * Неделя уже отработана (ADR 0101 п. 4, дыра 3 плана). Для линейного заказа это частый, а не
+   * исключительный случай: бланк просят, когда неделя кончилась и известно, что машина работала.
+   * Поэтому причина спрашивается прямо в форме, а не отдельным подтверждением, как у выписки листа
+   * по рейсу, — там прошедший день редкость, здесь правило.
+   *
+   * Граница считается по `periodTo` — тем же концом недели, каким её считает сервер (таблица §4
+   * плана): понедельник дал бы «уже прошло» ещё в четверг той же недели.
+   */
+  const past = !!period && period.to < moscowDateKeyOf(new Date());
 
   /**
    * Собственная техника парка: лист на арендную выписывает арендодатель, и предлагать её здесь
@@ -162,6 +186,9 @@ export function VehicleEsm2Modal({ request, onClose, onDone }: Props) {
         vehicleId: v.vehicleId!,
         driverPersonId: v.driverPersonId!,
         version: request!.version,
+        // Причина и ключ уходят только у прошедшей недели: у текущей сервер не спросит ни того, ни
+        // другого, а лишний ключ объявил бы обычную выдачу операцией коррекции.
+        ...(past ? { reason: v.reason, operationId: operationId.current } : {}),
       }),
     onSuccess: async (updated) => {
       message.success('Лист ЭСМ-2 выписан');
@@ -261,6 +288,18 @@ export function VehicleEsm2Modal({ request, onClose, onDone }: Props) {
               />
             </Form.Item>
           </FormGrid.Full>
+
+          {/* Прошедшая неделя — операция коррекции: своё право, обязательная причина и метка в
+            журнале (ADR 0101 п. 4). Поле появляется ровно тогда, когда его спросит сервер. */}
+          {past && (
+            <FormGrid.Full>
+              <BackdateReasonField
+                effectiveDate={period!.to}
+                consequence="лист уйдёт в журнал с меткой коррекции, вашим именем и этой причиной"
+                placeholder="Например: машина отработала неделю, бланк выписываем по факту"
+              />
+            </FormGrid.Full>
+          )}
         </FormGrid>
       </Form>
     </FormModal>

@@ -9,9 +9,12 @@ import {
   canIssueWaybill,
   canJoinRoute,
   correctRouteSchema,
+  createVehicleRouteSchema,
   transferCorrectionSchema,
   formatVehicleRouteNumber,
+  issueRouteWaybillSchema,
   isRouteEditable,
+  movedRouteDateKey,
   ROUTE_REQUEST_CAPACITY,
   parseVehicleRouteNumberSearch,
   updateVehicleRouteSchema,
@@ -636,6 +639,38 @@ describe('схемы коррекции рейса', () => {
     expect(parsed.success).toBe(false);
   });
 
+  /**
+   * Дыра 1 (Р29): заведение рейса и выписка листа принимают причину, но не требуют её схемой —
+   * нужна она ровно тогда, когда дата уже прошла, а это знает только сервер, у которого есть
+   * субъект с его правами. Схема, потребовавшая причину у всякого рейса, спрашивала бы объяснение
+   * за обычный завтрашний день.
+   */
+  it('заведение рейса принимает причину заднего числа и обходится без неё', () => {
+    const route = { vehicleId: UUID_A, routeDate: '2026-08-12' };
+    expect(createVehicleRouteSchema.safeParse(route).success).toBe(true);
+    const backdated = createVehicleRouteSchema.safeParse({
+      ...route,
+      reason: 'рейс состоялся во вторник, заводим сегодня',
+    });
+    expect(backdated.success && backdated.data.reason).toBe(
+      'рейс состоялся во вторник, заводим сегодня',
+    );
+  });
+
+  it('выписка листа принимает причину и ключ операции — оба необязательны', () => {
+    expect(issueRouteWaybillSchema.safeParse({ version: 2 }).success).toBe(true);
+    const backdated = issueRouteWaybillSchema.safeParse({
+      version: 2,
+      reason: 'бумагу выписали на месте',
+      operationId: UUID_A,
+    });
+    expect(backdated.success).toBe(true);
+    // Ключ — uuid: им сервер отличает повтор от новой команды, и «строка» тут не годится.
+    expect(
+      issueRouteWaybillSchema.safeParse({ version: 2, reason: 'x', operationId: 'нет' }).success,
+    ).toBe(false);
+  });
+
   it('талон в приёмнике — позиция в пределах бланка либо ничего', () => {
     const body = {
       operationId: UUID_A,
@@ -1001,5 +1036,45 @@ describe('правка рейса: дата в теле запроса', () => {
     expect(
       updateVehicleRouteSchema.safeParse({ routeDate: '12.08.2026', version: 1 }).success,
     ).toBe(false);
+  });
+
+  /*
+   * Причина заднего числа (ADR 0101 п. 4 и 6): в схеме необязательна, потому что обязательной её
+   * делает не форма тела, а субъект и дата — их знает только `backdateGuard` в обработчике.
+   * Требовать причину схемой значило бы спрашивать объяснение за перенос завтрашнего выезда.
+   */
+  it('причина принимается и не требуется: обязательной её делает дата, а не схема', () => {
+    expect(
+      updateVehicleRouteSchema.safeParse({
+        routeDate: '2026-08-12',
+        version: 3,
+        reason: 'Рейс состоялся днём раньше',
+      }).success,
+    ).toBe(true);
+    expect(updateVehicleRouteSchema.safeParse({ driverPersonId: null, version: 3 }).success).toBe(
+      true,
+    );
+  });
+});
+
+/**
+ * Эффективная дата переноса рейса (§4 плана ADR 0101, Р29) — то место, где легче всего ошибиться на
+ * день и сдвинуть этим всю границу. Правило считается одной функцией на портал и сервер: разойдись
+ * они, форма спрашивала бы причину там, где ручка её не ждёт.
+ */
+describe('эффективная дата переноса рейса', () => {
+  it('день не двигают — заднего числа нет вовсе', () => {
+    // Ни поля в теле, ни изменения: правка водителя и реквизитов прошлого рейса свободна
+    // (ADR 0101 п. 6) — пока листа нет, рейс планировочная запись.
+    expect(movedRouteDateKey('2026-08-10', undefined)).toBeNull();
+    expect(movedRouteDateKey('2026-08-10', '2026-08-10')).toBeNull();
+  });
+
+  it('берётся более ранняя из двух дат — и вперёд, и назад', () => {
+    // Назад: новая дата и есть более ранняя.
+    expect(movedRouteDateKey('2026-08-10', '2026-08-05')).toBe('2026-08-05');
+    // Вперёд: решает прежний день рейса. Иначе прошлое открывалось бы в два шага — сдвинуть рейс
+    // на завтра без права, а оттуда куда угодно, — и подача заявок состава переписалась бы молча.
+    expect(movedRouteDateKey('2026-08-05', '2026-08-10')).toBe('2026-08-05');
   });
 });

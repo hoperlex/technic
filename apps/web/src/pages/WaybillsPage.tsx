@@ -1,14 +1,16 @@
 import { useEffect, useState } from 'react';
-import { App, Button, Input, Space, Typography } from 'antd';
+import { App, Button, Input, Space, Tag, Tooltip, Typography } from 'antd';
 import { PrinterOutlined, StopOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router';
 import {
   canCancelWaybill,
+  canCorrectWaybill,
   canPrintWaybill,
   selectedWaybillsLabel,
   WAYBILL_CANCELLED_PRINT_MESSAGE,
+  WAYBILL_CORRECTION_LOCKED_MESSAGE,
   WAYBILL_LOCKED_MESSAGE,
   type WaybillDto,
   waybillFormLabels,
@@ -53,6 +55,14 @@ export function WaybillsPage() {
   const { can } = useAuth();
   const canCancel = can('waybills.cancel');
   const canAttach = can('waybills.files');
+  /**
+   * Списание бланка прошедшего дня (ADR 0101, Р20): та же кнопка, но за календарной границей и под
+   * своим правом. Отдельной кнопки не заводится — действие одно и то же, «списать номер», а
+   * различает их дата листа; вторая кнопка рядом означала бы, что человеку надо выбирать между
+   * ними, хотя выбора у него нет.
+   */
+  const canCorrect = can('waybills.correct');
+  const canCorrectDeep = can('waybills.correctBeyondLimit');
   const qc = useQueryClient();
 
   /**
@@ -67,6 +77,8 @@ export function WaybillsPage() {
     formCode?: string;
     vehicleId?: string;
     driverPersonId?: string;
+    /** «Только коррекции» (ADR 0101 п. 20) — им журнал читает бухгалтерия. */
+    correction?: string;
   }>({}, { searchKeys: [] });
 
   /** Смена любого фильтра возвращает журнал на первую страницу. */
@@ -123,8 +135,15 @@ export function WaybillsPage() {
   useEffect(() => setSelected([]), [data]);
 
   const cancelMut = useMutation({
-    mutationFn: ({ id, reason }: { id: string; reason: string }) =>
-      waybillsApi.cancel(id, { reason }),
+    mutationFn: ({
+      id,
+      reason,
+      operationId,
+    }: {
+      id: string;
+      reason: string;
+      operationId: string;
+    }) => waybillsApi.cancel(id, { reason, operationId }),
     onSuccess: () => {
       message.success('Лист аннулирован');
       void qc.invalidateQueries({ queryKey: ['waybills'] });
@@ -137,6 +156,13 @@ export function WaybillsPage() {
 
   const confirmCancel = (w: WaybillDto) => {
     let reason = '';
+    const backdated = !canCancelWaybill(w, today());
+    /**
+     * Ключ операции (Р31) придумывается один раз на открытое окно, а не на каждую попытку отправки:
+     * повторное нажатие после обрыва связи — это тот же самый ретрай, и сервер обязан вернуть по
+     * нему прежний результат, а не списать номер во второй раз.
+     */
+    const operationId = crypto.randomUUID();
     modal.confirm({
       title: `Аннулировать лист ${w.number}?`,
       // Номер сгорает — для бланка строгой отчётности это норма, но человек должен знать заранее.
@@ -146,9 +172,22 @@ export function WaybillsPage() {
             Номер бланка сгорит, а маршрут разморозится: новый лист выписывают с него, когда состав
             рейса пересобран.
           </Typography.Text>
+          {/* Прошедший день — это уже коррекция (ADR 0101): работа состоялась, бумага побывала на
+              объекте, и списание такого номера остаётся в журнале с причиной и автором. Сказать об
+              этом надо до нажатия, а не после: у сегодняшнего и вчерашнего листа кнопка одна. */}
+          {backdated && (
+            <Typography.Text type="warning">
+              День листа прошёл: это коррекция задним числом. Она попадёт в журнал коррекций с вашим
+              именем и причиной, а взамен ничего не выписывается — новый лист выписывают с рейса.
+            </Typography.Text>
+          )}
           <Input.TextArea
             rows={2}
-            placeholder="Причина: испорчен при печати, ошибка в реквизитах…"
+            placeholder={
+              backdated
+                ? 'Причина: рейс не состоялся, лист выписан на другую машину…'
+                : 'Причина: испорчен при печати, ошибка в реквизитах…'
+            }
             onChange={(e) => {
               reason = e.target.value;
             }}
@@ -163,19 +202,50 @@ export function WaybillsPage() {
           message.error('Укажите причину');
           throw new Error('reason required');
         }
-        await cancelMut.mutateAsync({ id: w.id, reason });
+        await cancelMut.mutateAsync({ id: w.id, reason, operationId });
       },
     });
   };
+
+  /**
+   * Ссылка «заменил №… / заменён №…» (ADR 0101 п. 20) — сужением журнала до этого номера.
+   *
+   * Карточки у листа нет, журнал и есть карточка (`?number=…`), поэтому переход выглядит как
+   * поиск: тот же путь, каким сюда приходят из маршрута и из заявки. Ссылка обязательна, а не
+   * украшение — за один день в журнале стоят два номера, и без неё разрыв нумерации не объяснить
+   * ничем: номер перевыписанного листа берётся из хвоста серии (Р10), вставить его рядом нельзя.
+   */
+  const numberLink = (label: string, number: string) => (
+    <Typography.Link onClick={() => applyFilter({ search: number })}>
+      {label} № {number}
+    </Typography.Link>
+  );
 
   const columns = [
     textColumn<WaybillDto>({
       key: 'number',
       title: 'Номер',
       dataIndex: 'number',
-      width: 200,
+      width: 240,
       // Поиск переехал в панель над таблицей: там его видно вместе с остальными сужениями.
       searchable: false,
+      render: (_v, r) => (
+        <Space direction="vertical" size={0}>
+          <span>{r.number}</span>
+          {/* Метка стоит у номера, а не в столбце статуса: статус отвечает, действует ли бланк, а
+              это — откуда он такой взялся. Признак считает сервер по ссылке на операцию, поэтому
+              метку получает и списанный задним числом лист, у которого замены нет вовсе. */}
+          {r.isCorrection && (
+            <Tooltip title={r.correctionReason || r.cancelReason || 'Правка задним числом'}>
+              <Tag color="gold" style={{ marginInlineEnd: 0 }}>
+                коррекция
+              </Tag>
+            </Tooltip>
+          )}
+          {r.correctsNumber && numberLink('заменил', r.correctsNumber)}
+          {r.correctedByNumber && numberLink('заменён', r.correctedByNumber)}
+        </Space>
+      ),
     }),
     // Полная подпись бланка в колонку не влезает, а на вопрос «какой это лист» отвечает и
     // короткая. Отбор по бланку — в панели фильтров, там для полной подписи место есть.
@@ -277,17 +347,37 @@ export function WaybillsPage() {
     }),
     // Причина отдельной колонкой, а не подписью к статусу: аннулированный лист объясняют, и
     // читают это объяснение вместе с номером, а не вместо него.
+    //
+    // Колонка одна на два вопроса, потому что вопрос один — «почему этот номер такой»: у
+    // списанного бланка отвечает `cancelReason` (туда же уходит причина коррекции, Р35), у
+    // выписанного взамен — `correctionReason`. Второй столбец, пустой у всего журнала, кроме
+    // коррекций, отнял бы место у талонов заказчиков ради той же фразы.
     textColumn<WaybillDto>({
       key: 'cancelReason',
-      title: 'Причина аннулирования',
+      title: 'Причина',
       dataIndex: 'cancelReason',
       sortable: false,
       searchable: false,
       width: 200,
       ellipsis: true,
+      render: (_v, r) => r.cancelReason || r.correctionReason || '',
     }),
     actionsColumn<WaybillDto>((r) => {
-      const editable = r.status === 'issued' && canCancelWaybill(r, today());
+      /*
+       * Две границы, а не одна (ADR 0101, Р20). До конца дня листа бланк списывает всякий, у кого
+       * есть `waybills.cancel`, — это дневная работа. Дальше начинается коррекция: право
+       * `waybills.correct`, глубина `waybills.correctBeyondLimit` и обязательная причина.
+       *
+       * Правила те же, что у сервера, и функции те же (`canCancelWaybill`, `canCorrectWaybill`):
+       * кнопка не должна предлагать того, чем ручка ответит отказом, и не должна запирать того,
+       * что ручка примет.
+       */
+      const today0 = today();
+      const editable =
+        r.status === 'issued' &&
+        (canCancelWaybill(r, today0) ||
+          (canCorrect && canCorrectWaybill(r, today0, { unlimited: canCorrectDeep })));
+      const lockedTitle = canCorrect ? WAYBILL_CORRECTION_LOCKED_MESSAGE : WAYBILL_LOCKED_MESSAGE;
       return (
         <Space>
           {/* Печать первой — ради неё лист и открывают (ADR 0041), а файл забирают тогда, когда
@@ -319,9 +409,11 @@ export function WaybillsPage() {
               title={
                 r.status === 'cancelled'
                   ? 'Лист уже аннулирован'
-                  : editable
-                    ? 'Аннулировать'
-                    : WAYBILL_LOCKED_MESSAGE
+                  : !editable
+                    ? lockedTitle
+                    : canCancelWaybill(r, today0)
+                      ? 'Аннулировать'
+                      : 'Аннулировать задним числом: понадобится причина'
               }
               onClick={() => confirmCancel(r)}
             />

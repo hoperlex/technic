@@ -386,7 +386,11 @@ export function VehicleRequestDays({ request }: Props) {
 
       {/* Форма планирования: день и объект известны, спрашиваются машина и водитель. */}
       <VehicleDayRouteModal
-        target={planning ? { request, date: planning } : null}
+        // День среза отдаётся окну: им оно решает, прошедший ли это день, а значит — спрашивать ли
+        // причину заднего числа (ADR 0101 п. 4). Считает его сервер (`onDate`) — тем же поясом,
+        // которым считает границу `backdateGuard`; часы браузера бывают сбиты, и разойтись форме с
+        // ручкой здесь нельзя.
+        target={planning ? { request, date: planning, onDate: data?.onDate ?? planning } : null}
         onClose={() => setPlanning(null)}
         onDone={(days) => {
           setPlanning(null);

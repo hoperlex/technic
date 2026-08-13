@@ -48,6 +48,9 @@ export const roleEnum = pgEnum('role', [
   'department_head',
   'operator',
   'observer',
+  // Водитель (ADR 0102, миграция 0130): работник справочника, получивший вход в свой кабинет.
+  // Прав основного портала у роли нет вовсе — она открывает `/driver` и ничего больше.
+  'driver',
 ]);
 export const requestStatusEnum = pgEnum('request_status', [
   'new',
@@ -154,6 +157,9 @@ export const registrationRoleRequestEnum = pgEnum('registration_role_request', [
   'commandant',
   'waste_operator',
   'vehicle_lessor',
+  // Водитель (ADR 0102, миграция 0130): единственное пожелание, чья роль совпадает с ним
+  // буквально. Отдельной кнопки на экране входа нет — человек выбирает себя в общем списке.
+  'driver',
   'other',
 ]);
 
@@ -840,6 +846,19 @@ export const users = pgTable(
     requestedCompanyPresent: check(
       'users_requested_company_check',
       sql`${t.requestedRole} IS NULL OR ${t.requestedRole} NOT IN ('waste_operator', 'vehicle_lessor') OR btrim(${t.requestedCompany}) <> ''`,
+    ),
+    /**
+     * Живая учётка водителя без карточки человека невозможна (ADR 0102, миграция 0131): кабинет
+     * без неё не ответит ни на один вопрос — ни какое у человека задание, ни на какой машине он
+     * работал, — а выяснится это в шесть утра, когда он полез смотреть рейс.
+     *
+     * Условие про архив — не украшение: учётки уходят в архив мягко (ADR 0063), а `person_id`
+     * архивной может обнулиться при удалении человека (`ON DELETE SET NULL`), и без этой ветки
+     * архив стал бы неудаляемым и непочинимым.
+     */
+    driverPersonRequired: check(
+      'users_driver_person_check',
+      sql`${t.role} <> 'driver' OR ${t.personId} IS NOT NULL OR ${t.deletedAt} IS NOT NULL`,
     ),
     pendingRegistration: index('users_pending_registration_idx')
       .on(sql`${t.createdAt} DESC`)
@@ -4135,3 +4154,460 @@ export type AppReleaseRow = typeof appReleases.$inferSelect;
 export type WeeklyVehicleRequestRow = typeof weeklyVehicleRequests.$inferSelect;
 export type WeeklyVehicleRequestItemRow = typeof weeklyVehicleRequestItems.$inferSelect;
 export type WeeklyVehicleRequestHistoryRow = typeof weeklyVehicleRequestHistory.$inferSelect;
+
+// ── Показания техники (ADR 0103, миграция 0132) ──
+//
+// Модуль второго контура: кабинет водителя передаёт сюда одометр, моточасы и заправленное за
+// смену, а гараж эти строки только показывает — своих таблиц у него по-прежнему нет (ADR 0076).
+//
+// Три утверждения держат всю модель, и каждое выражено ключом, а не соглашением:
+//
+//  1. Показание принадлежит ВЫЕЗДУ, а не дню: строка ожидания ссылается на рейс или недельный
+//     ЭСМ-2, и только источник отвечает, в каком порядке шли смены и кому относится разница.
+//  2. Состав дня ФИКСИРУЕТСЯ отправкой: строки ожидания — снимок задания, и появившийся позже
+//     рейс не меняет полноту принятого отчёта, а становится расхождением.
+//  3. Снимок НЕ РАСХОДИТСЯ с показанием: копии машины, дня и позиции скреплены составным внешним
+//     ключом, и подменить их в обход строки ожидания нельзя.
+
+/**
+ * Состояние отчёта дня. `needs_reacceptance` — принятый отчёт, который после этого правили;
+ * `voided` — отчёт, из которого перенос (`rebase`) унёс последнюю строку: приёмке не подлежит,
+ * историю хранит.
+ */
+export const driverReportStateEnum = pgEnum('driver_report_state', [
+  'draft',
+  'submitted',
+  'accepted',
+  'needs_reacceptance',
+  'voided',
+]);
+/** Чем задан выезд. Третьего не бывает: у 4-П и формы № 3 источник — сам рейс. */
+export const readingSourceKindEnum = pgEnum('reading_source_kind', ['route', 'esm2']);
+/** `no_data` — «работали, но снять нечего»: это закрытие строки с причиной, а не пропуск. */
+export const readingKindEnum = pgEnum('reading_kind', ['values', 'no_data']);
+export const readingSourceEnum = pgEnum('reading_source', ['driver', 'staff']);
+/** Начала ряда здесь нет: «предшественника не было» — состояние, а не отклонение. */
+export const readingAnomalyEnum = pgEnum('reading_anomaly', ['counter_reset', 'implausible_jump']);
+export const readingEventEnum = pgEnum('reading_event', [
+  'created',
+  'updated',
+  'anomaly_confirmed',
+  'chain_relinked',
+]);
+export const reportEventEnum = pgEnum('report_event', [
+  'created',
+  'submitted',
+  'accepted',
+  'reopened',
+  'voided',
+  'item_added',
+  'item_removed',
+  'shift_order_changed',
+  'discrepancy_resolved',
+]);
+export const discrepancyKindEnum = pgEnum('discrepancy_kind', [
+  'driver',
+  'vehicle',
+  'date',
+  'source_state',
+  'missing_source',
+]);
+/** `revoked` отменяет прежнее решение при неизменном отпечатке — иначе отменить его нечем. */
+export const discrepancyResolutionEnum = pgEnum('discrepancy_resolution', [
+  'accepted_as_is',
+  'source_added',
+  'revoked',
+]);
+
+/**
+ * Отчёт дня: шапка, без которой отсутствие строки не является фактом. Только с ней различимы
+ * «машину пропустили намеренно», «не дозаполнили» и «строка не сохранилась», и только к ней
+ * относится приёмка.
+ */
+export const driverDailyReports = pgTable(
+  'driver_daily_reports',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    personId: uuid('person_id')
+      .notNull()
+      .references(() => persons.id, { onDelete: 'restrict' }),
+    reportDate: date('report_date', { mode: 'string' }).notNull(),
+    state: driverReportStateEnum('state').notNull().default('draft'),
+    submittedAt: timestamp('submitted_at', { withTimezone: true }),
+    acceptedBy: uuid('accepted_by').references(() => users.id, { onDelete: 'restrict' }),
+    acceptedAt: timestamp('accepted_at', { withTimezone: true }),
+    /** Редакция содержимого, которую подтвердил принимающий: приём фиксирует данные, а не нажатие. */
+    acceptedContentVersion: integer('accepted_content_version'),
+    /** Числа, вид строки, причины, комментарии, состав строк ожидания и порядок смен. */
+    contentVersion: integer('content_version').notNull().default(0),
+    /** Оптимистическая блокировка: растёт при любом изменении шапки, включая смену состояния. */
+    version: integer('version').notNull().default(0),
+    /** Идемпотентность отправки: ключ клиента и отпечаток принятого тела. */
+    submitIdempotencyKey: uuid('submit_idempotency_key'),
+    submitFingerprint: text('submit_fingerprint').notNull().default(''),
+    createdBy: uuid('created_by')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    updatedBy: uuid('updated_by').references(() => users.id, { onDelete: 'restrict' }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    personDateUnique: uniqueIndex('driver_daily_reports_key').on(t.personId, t.reportDate),
+    // Цель составного внешнего ключа из строк ожидания: день строки равен дню своего отчёта.
+    idDateUnique: unique('driver_daily_reports_date_unique').on(t.id, t.reportDate),
+    openIdx: index('driver_daily_reports_open_idx')
+      .on(t.reportDate.desc())
+      .where(sql`${t.state} IN ('submitted', 'needs_reacceptance')`),
+    versionsNonNegative: check(
+      'driver_daily_reports_versions_check',
+      sql`${t.contentVersion} >= 0 AND ${t.version} >= 0
+        AND (${t.acceptedContentVersion} IS NULL
+          OR (${t.acceptedContentVersion} >= 0 AND ${t.acceptedContentVersion} <= ${t.contentVersion}))`,
+    ),
+    /**
+     * Полная матрица состояний одним условием, а не поля по одному: иначе `draft` с заполненной
+     * приёмкой и `accepted` с разошедшимися версиями остаются формально законными. Две последние
+     * ветки и есть определение принятых состояний: `accepted` — «подтверждённая редакция равна
+     * текущей», `needs_reacceptance` — «подтверждали редакцию младше».
+     */
+    stateShape: check(
+      'driver_daily_reports_state_check',
+      sql`(${t.state} = 'draft' AND ${t.submittedAt} IS NULL AND ${t.acceptedAt} IS NULL
+            AND ${t.acceptedBy} IS NULL AND ${t.acceptedContentVersion} IS NULL)
+        OR (${t.state} = 'submitted' AND ${t.submittedAt} IS NOT NULL AND ${t.acceptedAt} IS NULL
+            AND ${t.acceptedBy} IS NULL AND ${t.acceptedContentVersion} IS NULL)
+        OR (${t.state} = 'accepted' AND ${t.submittedAt} IS NOT NULL AND ${t.acceptedAt} IS NOT NULL
+            AND ${t.acceptedBy} IS NOT NULL AND ${t.acceptedContentVersion} = ${t.contentVersion})
+        OR (${t.state} = 'needs_reacceptance' AND ${t.submittedAt} IS NOT NULL
+            AND ${t.acceptedAt} IS NOT NULL AND ${t.acceptedBy} IS NOT NULL
+            AND ${t.acceptedContentVersion} < ${t.contentVersion})
+        OR (${t.state} = 'voided' AND ${t.submittedAt} IS NOT NULL
+            AND ((${t.acceptedAt} IS NULL AND ${t.acceptedBy} IS NULL
+                  AND ${t.acceptedContentVersion} IS NULL)
+              OR (${t.acceptedAt} IS NOT NULL AND ${t.acceptedBy} IS NOT NULL
+                  AND ${t.acceptedContentVersion} < ${t.contentVersion})))`,
+    ),
+    idempotencyShape: check(
+      'driver_daily_reports_idempotency_check',
+      sql`(${t.submitIdempotencyKey} IS NULL) = (${t.submitFingerprint} = '')`,
+    ),
+  }),
+);
+
+/**
+ * Строка ожидания — снимок источника на момент заведения. Состояния у неё нет намеренно: оно
+ * выводится из наличия и вида показания, и хранимое «сдано» дублировало бы факт, допуская
+ * расхождение с ним.
+ */
+export const driverDailyReportItems = pgTable(
+  'driver_daily_report_items',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    reportId: uuid('report_id')
+      .notNull()
+      .references(() => driverDailyReports.id, { onDelete: 'cascade' }),
+    sourceKind: readingSourceKindEnum('source_kind').notNull(),
+    routeId: uuid('route_id').references(() => vehicleRoutes.id, { onDelete: 'restrict' }),
+    waybillId: uuid('waybill_id').references(() => waybills.id, { onDelete: 'restrict' }),
+    /** Снимок машины: по нему считаются расхождение и цепочка, а не по живому источнику. */
+    vehicleId: uuid('vehicle_id')
+      .notNull()
+      .references(() => vehicles.id, { onDelete: 'restrict' }),
+    /** Копия дня отчёта: входит в ключ снимка и скреплена с шапкой внешним ключом. */
+    reportDate: date('report_date', { mode: 'string' }).notNull(),
+    /**
+     * Позиция смены машины в дне. Начальное значение назначает сервер (листы, затем рейсы), но
+     * оно приближение: `vehicle_routes.num` говорит, когда рейс завели, а не когда машина выехала.
+     * Поэтому позиция исправляется человеком — с причиной, историей и перестройкой цепочки.
+     */
+    shiftOrder: smallint('shift_order').notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    // Источник занят ГЛОБАЛЬНО, а не внутри отчёта: рейс — один на портал, недельный лист — один
+    // на день. Ограничение внутри отчёта пропускало бы тот же рейс во второй отчёт после
+    // переназначения водителя, и один выезд закрывали бы двое.
+    routeUnique: uniqueIndex('report_items_route_key')
+      .on(t.routeId)
+      .where(sql`${t.routeId} IS NOT NULL`),
+    waybillUnique: uniqueIndex('report_items_waybill_key')
+      .on(t.waybillId, t.reportDate)
+      .where(sql`${t.waybillId} IS NOT NULL`),
+    // Точка цепочки одна на машину, день и позицию смены. Ограничением, а не индексом: на время
+    // перестановки позиций проверка откладывается до конца транзакции.
+    chainUnique: unique('report_items_chain_key').on(t.vehicleId, t.reportDate, t.shiftOrder),
+    // Цель составного внешнего ключа из показаний: копии снимка не должны расходиться.
+    snapshotUnique: unique('report_items_snapshot_unique').on(
+      t.id,
+      t.reportId,
+      t.vehicleId,
+      t.reportDate,
+      t.shiftOrder,
+    ),
+    // Цель ключа из журнала решений: решение отчёта A не ссылается на строку отчёта B.
+    reportUnique: unique('report_items_report_unique').on(t.id, t.reportId),
+    /**
+     * День строки равен дню своего отчёта. Копия дня живёт здесь не ради чтения, а ради ключа
+     * цепочки («машина + день + позиция») и составного ключа снимка: без неё строка ожидания
+     * могла бы уехать в чужой день, а показание — сослаться на несуществующую пару.
+     *
+     * Зеркало, а не замок: копия обязана следовать за оригиналом, если день шапки когда-нибудь
+     * изменится. Сегодня такой операции нет вовсе — отчёт заводится на дату и живёт с ней, а
+     * перенос строки в другой день это `rebase`, то есть смена строки, а не даты, — но запрещать
+     * правку ключом значило бы поручить ключу то, что уже обеспечено отсутствием операции.
+     */
+    reportDateFk: foreignKey({
+      columns: [t.reportId, t.reportDate],
+      foreignColumns: [driverDailyReports.id, driverDailyReports.reportDate],
+      name: 'report_items_report_date_fk',
+    }).onUpdate('cascade'),
+    reportIdx: index('report_items_report_idx').on(t.reportId),
+    sourceShape: check(
+      'report_items_source_check',
+      sql`(${t.sourceKind} = 'route') = (${t.routeId} IS NOT NULL)
+        AND (${t.sourceKind} = 'esm2') = (${t.waybillId} IS NOT NULL)`,
+    ),
+    shiftOrderPositive: check('report_items_shift_order_check', sql`${t.shiftOrder} > 0`),
+  }),
+);
+
+/**
+ * Показание — одна строка на строку ожидания. Хранится снимок счётчика, а не работа за смену:
+ * водитель списывает цифру с прибора, а не вычитает, и вычитание на его стороне — это ошибки,
+ * которых потом не восстановить.
+ */
+export const vehicleReadings = pgTable(
+  'vehicle_readings',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    itemId: uuid('item_id')
+      .notNull()
+      .references(() => driverDailyReportItems.id, { onDelete: 'cascade' }),
+    // Копии снимка: по ним идут цепочка и индексы. Составной ключ ниже не даёт им разойтись.
+    reportId: uuid('report_id').notNull(),
+    vehicleId: uuid('vehicle_id').notNull(),
+    reportDate: date('report_date', { mode: 'string' }).notNull(),
+    shiftOrder: smallint('shift_order').notNull(),
+    kind: readingKindEnum('kind').notNull(),
+    odometerKm: integer('odometer_km'),
+    engineHours: numeric('engine_hours', { precision: 9, scale: 1 }),
+    /** ЗАПРАВЛЕНО за смену, не остаток в баке: расхода портал по этому полю не считает. */
+    fuelFilledLiters: numeric('fuel_filled_liters', { precision: 7, scale: 1 }),
+    noDataReason: text('no_data_reason').notNull().default(''),
+    comment: text('comment').notNull().default(''),
+    // Две независимые цепочки: строка с одними моточасами не разрывает ряд одометра.
+    previousOdometerId: uuid('previous_odometer_id'),
+    previousEngineHoursId: uuid('previous_engine_hours_id'),
+    odometerAnomaly: readingAnomalyEnum('odometer_anomaly'),
+    odometerAnomalyConfirmedBy: uuid('odometer_anomaly_confirmed_by').references(() => users.id, {
+      onDelete: 'restrict',
+    }),
+    odometerAnomalyConfirmedAt: timestamp('odometer_anomaly_confirmed_at', { withTimezone: true }),
+    engineHoursAnomaly: readingAnomalyEnum('engine_hours_anomaly'),
+    engineHoursAnomalyConfirmedBy: uuid('engine_hours_anomaly_confirmed_by').references(
+      () => users.id,
+      { onDelete: 'restrict' },
+    ),
+    engineHoursAnomalyConfirmedAt: timestamp('engine_hours_anomaly_confirmed_at', {
+      withTimezone: true,
+    }),
+    source: readingSourceEnum('source').notNull(),
+    /** Когда нажали кнопку. Служебное: порядок задаёт `shift_order`, а не этот момент. */
+    recordedAt: timestamp('recorded_at', { withTimezone: true }).notNull().defaultNow(),
+    createdBy: uuid('created_by')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    updatedBy: uuid('updated_by').references(() => users.id, { onDelete: 'restrict' }),
+    version: integer('version').notNull().default(0),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    itemUnique: uniqueIndex('vehicle_readings_item_key').on(t.itemId),
+    chainIdx: index('vehicle_readings_chain_idx').on(
+      t.vehicleId,
+      t.reportDate.desc(),
+      t.shiftOrder.desc(),
+    ),
+    reportIdx: index('vehicle_readings_report_idx').on(t.reportId),
+    // Снимок один на двоих: подменить машину, отчёт, день или позицию в обход строки ожидания
+    // нельзя, а исправленный порядок смены уезжает в показание сам (ON UPDATE CASCADE).
+    snapshotFk: foreignKey({
+      columns: [t.itemId, t.reportId, t.vehicleId, t.reportDate, t.shiftOrder],
+      foreignColumns: [
+        driverDailyReportItems.id,
+        driverDailyReportItems.reportId,
+        driverDailyReportItems.vehicleId,
+        driverDailyReportItems.reportDate,
+        driverDailyReportItems.shiftOrder,
+      ],
+      name: 'vehicle_readings_snapshot_fk',
+    }).onUpdate('cascade'),
+    valuesShape: check(
+      'vehicle_readings_values_check',
+      sql`(${t.kind} = 'values' AND ${t.noDataReason} = ''
+            AND (${t.odometerKm} IS NOT NULL OR ${t.engineHours} IS NOT NULL
+                 OR ${t.fuelFilledLiters} IS NOT NULL))
+        OR (${t.kind} = 'no_data' AND ${t.odometerKm} IS NULL AND ${t.engineHours} IS NULL
+            AND ${t.fuelFilledLiters} IS NULL AND btrim(${t.noDataReason}) <> '')`,
+    ),
+    nonNegative: check(
+      'vehicle_readings_non_negative_check',
+      sql`(${t.odometerKm} IS NULL OR ${t.odometerKm} >= 0)
+        AND (${t.engineHours} IS NULL OR ${t.engineHours} >= 0)
+        AND (${t.fuelFilledLiters} IS NULL OR ${t.fuelFilledLiters} >= 0)`,
+    ),
+    // Подтверждение бывает только у проставленной аномалии, и «кто» без «когда» подписью не
+    // является — тот же приём, что у визы заявки и подписи смены.
+    odometerAnomalyShape: check(
+      'vehicle_readings_odometer_anomaly_check',
+      sql`(${t.odometerAnomalyConfirmedBy} IS NULL) = (${t.odometerAnomalyConfirmedAt} IS NULL)
+        AND (${t.odometerAnomaly} IS NOT NULL OR ${t.odometerAnomalyConfirmedAt} IS NULL)`,
+    ),
+    engineHoursAnomalyShape: check(
+      'vehicle_readings_engine_hours_anomaly_check',
+      sql`(${t.engineHoursAnomalyConfirmedBy} IS NULL) = (${t.engineHoursAnomalyConfirmedAt} IS NULL)
+        AND (${t.engineHoursAnomaly} IS NOT NULL OR ${t.engineHoursAnomalyConfirmedAt} IS NULL)`,
+    ),
+  }),
+);
+
+/** Файлы показания: фото приборной панели и чеки. Как во всех модулях — файл не в двух местах. */
+export const vehicleReadingFiles = pgTable(
+  'vehicle_reading_files',
+  {
+    readingId: uuid('reading_id')
+      .notNull()
+      .references(() => vehicleReadings.id, { onDelete: 'cascade' }),
+    fileId: uuid('file_id')
+      .notNull()
+      .references(() => files.id, { onDelete: 'cascade' }),
+    addedAt: timestamp('added_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.readingId, t.fileId] }),
+    fileUnique: uniqueIndex('vehicle_reading_files_file_unique').on(t.fileId),
+  }),
+);
+
+/**
+ * Журнал решений по расхождениям — append-only. Уникальности здесь нет вовсе: диспетчер вправе
+ * передумать и на неизменном расхождении, а действует последнее событие по предмету.
+ *
+ * Последнее — по `reportVersionAfter`, а не по времени: всякая запись берёт отчёт `FOR UPDATE` и
+ * двигает его версию, поэтому порядок причинный. `now()` для этого не годится — это время начала
+ * транзакции.
+ */
+export const driverReportDiscrepancyResolutions = pgTable(
+  'driver_report_discrepancy_resolutions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    reportId: uuid('report_id')
+      .notNull()
+      .references(() => driverDailyReports.id, { onDelete: 'cascade' }),
+    kind: discrepancyKindEnum('kind').notNull(),
+    /**
+     * Предмет: строка ожидания либо (у `missing_source`) сам источник, строки у которого нет.
+     * Ссылка историческая: после переноса строки (`rebase`) она законно расходится с текущей
+     * принадлежностью — решение остаётся там, где его приняли.
+     */
+    itemId: uuid('item_id').references(() => driverDailyReportItems.id, { onDelete: 'cascade' }),
+    routeId: uuid('route_id').references(() => vehicleRoutes.id, { onDelete: 'restrict' }),
+    waybillId: uuid('waybill_id').references(() => waybills.id, { onDelete: 'restrict' }),
+    /** `v1:<hash>` — с версией алгоритма: смена канонизации обесценивает решения заметно. */
+    fingerprint: text('fingerprint').notNull(),
+    resolution: discrepancyResolutionEnum('resolution').notNull(),
+    reason: text('reason').notNull(),
+    reportVersionAfter: integer('report_version_after').notNull(),
+    resolvedBy: uuid('resolved_by')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    resolvedAt: timestamp('resolved_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    itemIdx: index('discrepancy_resolutions_item_idx')
+      .on(t.reportId, t.kind, t.itemId, t.reportVersionAfter.desc())
+      .where(sql`${t.itemId} IS NOT NULL`),
+    routeIdx: index('discrepancy_resolutions_route_idx')
+      .on(t.reportId, t.routeId, t.reportVersionAfter.desc())
+      .where(sql`${t.itemId} IS NULL AND ${t.routeId} IS NOT NULL`),
+    waybillIdx: index('discrepancy_resolutions_waybill_idx')
+      .on(t.reportId, t.waybillId, t.reportVersionAfter.desc())
+      .where(sql`${t.itemId} IS NULL AND ${t.waybillId} IS NOT NULL`),
+    subjectShape: check(
+      'discrepancy_resolutions_subject_check',
+      sql`(${t.kind} = 'missing_source') = (${t.itemId} IS NULL)
+        AND (${t.kind} = 'missing_source'
+             OR (${t.routeId} IS NULL AND ${t.waybillId} IS NULL))
+        AND (${t.kind} <> 'missing_source'
+             OR ((${t.routeId} IS NULL) <> (${t.waybillId} IS NULL)))`,
+    ),
+    // Добавить источник можно только там, где его не хватает.
+    resolutionShape: check(
+      'discrepancy_resolutions_resolution_check',
+      sql`(${t.resolution} <> 'source_added' OR ${t.kind} = 'missing_source')
+        AND btrim(${t.reason}) <> '' AND ${t.reportVersionAfter} > 0`,
+    ),
+  }),
+);
+
+/**
+ * История отчёта. Пишется той же транзакцией, что и правка: `writeAudit` намеренно проглатывает
+ * сбой записи, и учётное число изменилось бы без следа.
+ */
+export const driverDailyReportHistory = pgTable(
+  'driver_daily_report_history',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    reportId: uuid('report_id')
+      .notNull()
+      .references(() => driverDailyReports.id, { onDelete: 'cascade' }),
+    event: reportEventEnum('event').notNull(),
+    payload: jsonb('payload').notNull().default({}),
+    reason: text('reason').notNull().default(''),
+    /** Обе версии: содержательная — «что изменилось», версия отчёта — «в каком порядке». */
+    contentVersion: integer('content_version').notNull(),
+    reportVersion: integer('report_version').notNull(),
+    changedBy: uuid('changed_by')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    changedAt: timestamp('changed_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    reportIdx: index('driver_daily_report_history_idx').on(t.reportId, t.changedAt),
+  }),
+);
+
+/** История показания: before/after, причина и версия после события. */
+export const vehicleReadingHistory = pgTable(
+  'vehicle_reading_history',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    readingId: uuid('reading_id')
+      .notNull()
+      .references(() => vehicleReadings.id, { onDelete: 'cascade' }),
+    event: readingEventEnum('event').notNull(),
+    before: jsonb('before').notNull().default({}),
+    after: jsonb('after').notNull().default({}),
+    /** Обязательна при правке персоналом: чужое число меняют с объяснением. */
+    reason: text('reason').notNull().default(''),
+    version: integer('version').notNull(),
+    changedBy: uuid('changed_by')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    changedAt: timestamp('changed_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    readingIdx: index('vehicle_reading_history_idx').on(t.readingId, t.changedAt),
+  }),
+);
+
+export type DriverDailyReportRow = typeof driverDailyReports.$inferSelect;
+export type DriverDailyReportItemRow = typeof driverDailyReportItems.$inferSelect;
+export type VehicleReadingRow = typeof vehicleReadings.$inferSelect;
+export type DriverReportDiscrepancyResolutionRow =
+  typeof driverReportDiscrepancyResolutions.$inferSelect;
+export type DriverDailyReportHistoryRow = typeof driverDailyReportHistory.$inferSelect;
+export type VehicleReadingHistoryRow = typeof vehicleReadingHistory.$inferSelect;

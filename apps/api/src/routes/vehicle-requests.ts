@@ -13,6 +13,7 @@ import {
   isNotNull,
   isNull,
   lte,
+  ne,
   or,
   sql,
   type SQL,
@@ -23,7 +24,13 @@ import {
   type AssignVehicleInput,
   calcVehicleRequestCost,
   can,
+  // Коррекция назначения задним числом (ADR 0101, Р8): предикат состояния, который она не
+  // снимает, признак операции в теле и текст отказа закрытой заявке.
+  ASSIGNMENT_CORRECTION_CLOSED_MESSAGE,
+  BACKDATE_PERMISSION_MESSAGE,
+  canCorrectAssignment,
   canReassignVehicle,
+  type CorrectAssignmentInput,
   canShortenWorkPeriodByEdit,
   changeVehicleAssignmentSchema,
   changeVehicleRequestStatusSchema,
@@ -38,6 +45,12 @@ import {
   decideVehicleEarlyEndSchema,
   earlyEndBlocker,
   earlyEndDateBounds,
+  // Недели ЭСМ-2 считаются теми же функциями, что и в самой сверке: правка срока обязана знать,
+  // какую бумагу она задевает, до того как её тронет (ADR 0101, Р36).
+  esm2Mode,
+  type Esm2Period,
+  esm2Periods,
+  esm2RequestedPeriods,
   type FeedKind,
   type FileDto,
   type AssignRouteInput,
@@ -62,11 +75,22 @@ import {
   isApprovalChangeable,
   isClosedRequestStatus,
   type CreateRelocationRouteInput,
-  createRelocationRouteSchema,
+  // Перегон из карточки заявки: та же схема плюс причина заднего числа (ADR 0101 п. 4). Общая
+  // схема перегона остаётся без неё — блоком доставки в переводе в работу дату задаёт не она.
+  createRequestRelocationSchema,
   isCargoAmountRequired,
   isDirectoryAddressSource,
   CARGO_AMOUNT_MESSAGE,
   moscowDateKeyOf,
+  // Какую дату двигает правка и какая из них решает глубину (ADR 0101, §4) — одной функцией на
+  // портал и сервер: форма спрашивает причину ровно там, где её спросит ручка.
+  movedRequestDateKey,
+  type RequestCalendar,
+  // Ближний край даты заявки (ADR 0104): заявитель заказывает технику на завтра до 15:00, позже —
+  // с послезавтра. Тем же предикатом форма запирает дни в календаре; день заказа (а не всякую
+  // сдвинутую границу срока) называет `movedRequestStartKey`.
+  movedRequestStartKey,
+  vehicleRequestLeadTimeBlocker,
   onlyWeeklyRows,
   rateForWorkUnit,
   REQUEST_STATUSES,
@@ -117,6 +141,9 @@ import {
   vehicleStatusLabels,
   vehicleWorkUnitRateLabels,
   waybillDisplayNumber,
+  // Понедельник недели ЭСМ-2: им коррекция проверяет, не стоит ли в неделе названного листа
+  // второй действующий бланк (Р11) — недельный замок сверки считается тем же ключом.
+  weekStartKey,
   weeklyRowsExcludedBy,
 } from '@technic/contracts';
 import { db } from '../db/client';
@@ -133,6 +160,10 @@ import {
   vehicleModels,
   vehicleRequestAssignments,
   vehicleRequestCompletions,
+  vehicleRequestShifts,
+  // Связь операции коррекции с заявками (ADR 0101, миграция 0129): ею повтор находит заявку,
+  // заведённую прежней попыткой той же операции.
+  vehicleRequestCorrections,
   vehicleRequestEarlyEndings,
   vehicleRequestFiles,
   vehicleKinds,
@@ -250,10 +281,35 @@ import {
 } from '../services/waybill-issue';
 import {
   auditEsm2Sync,
+  // Что коррекция назначения задела бы в прошлом (Р8, Р36): действующие листы заявки и прошедшие
+  // недели, у которых бумаги нет вовсе. Считается до первой правки — эффективной датой отсюда
+  // спрашивается право и глубина.
+  esm2CorrectionScope,
+  // Неделя ручной выдачи, посчитанная до транзакции: её `periodTo` и есть эффективная дата
+  // операции (таблица §4 плана), по которой спрашивается право и глубина.
+  esm2OnDemandPeriod,
+  type Esm2SheetRef,
   type Esm2SyncResult,
+  type IssuedEsm2,
   issueEsm2OnDemand,
   syncEsm2Waybills,
 } from '../services/waybill-esm2';
+// Снятие подписей объекта под днями работы (Р5) — общим кодом с коррекцией рейса: подпись снимают
+// обе операции, и второе написание того же `UPDATE` разошлось бы с первым.
+import { clearShiftApprovals, type ShiftApproval } from '../services/vehicle-route-correction';
+// Задний ход даты заявки (ADR 0101, Р6 и Р15): право и глубину спрашивает общий предикат, а
+// причину, автора и след кладёт общая транзакционная операция — та же, что у бланков.
+import {
+  backdateOrThrow,
+  checkBackdate,
+  correctionFingerprint,
+  type CorrectionKind,
+  type CorrectionRecord,
+  CORRECTION_OPERATION_ID_REQUIRED,
+  findCorrection,
+  linkCorrectionRequests,
+  runCorrection,
+} from '../services/waybill-correction';
 // Последствия изменившегося срока работ — общим сервисом: их же зовёт применение недельной заявки,
 // и два описания одного правила разошлись бы при первой правке.
 import { afterWorkPeriodChanged, clearPendingEarlyEnd } from '../services/vehicle-request-period';
@@ -1016,6 +1072,55 @@ async function getDto(id: string): Promise<VehicleRequestDto | null> {
   return dto ?? null;
 }
 
+/**
+ * Заявка, заведённая прежней попыткой той же операции (ADR 0101, Р31): на повторе `runCorrection`
+ * не зовёт `perform` вовсе, а ответить обязан тем же самым — и найти заявку больше нечем. Номера у
+ * клиента нет (он его и не знал, когда посылал запрос), есть только ключ операции, а связь
+ * «операция → заявка» пишет сама операция (`linkCorrectionRequests`).
+ *
+ * Пустой ответ означает, что ключом воспользовалась операция другого вида — до этой строки такой
+ * запрос не доходит (`runCorrection` сверяет отпечаток и автора и отвечает 409), поэтому здесь тот
+ * же 409: продолжать, не понимая, что произошло, дороже, чем попросить обновить страницу.
+ */
+/**
+ * Это повтор уже выполненной правки задним числом (ADR 0101, Р31)?
+ *
+ * Своей веткой, потому что у правки повтор выглядит иначе, чем у всех прочих команд коррекции:
+ * второй раз календарь никуда не двигается — он **уже** там, куда его двинули, — и
+ * `movedRequestDateKey` честно отвечает «сдвига нет». Обычной дорогой такой запрос идти не должен:
+ * он разобьётся о версию заявки, и человек, у которого оборвалась связь, прочтёт «конфликт версий»
+ * о правке, которая на самом деле сохранена, — то есть ровно то, ради чего ключ и заводили.
+ *
+ * Сверяются оба признака, как и в самой операции: автор и отпечаток тела. Одного ключа мало —
+ * клиент, переиспользовавший uuid для другой правки, молча не сохранил бы её: мы вернули бы ему
+ * карточку, ничего не записав. Отпечаток считается тем же способом, что и внутри `runCorrection`,
+ * иначе повтор перестал бы опознаваться при первой же правке нормализации.
+ */
+async function repeatedRequestEdit(input: {
+  operationId: string;
+  actorUserId: string;
+  requestId: string;
+  body: unknown;
+}): Promise<boolean> {
+  const prior = await findCorrection(db, input.operationId);
+  if (!prior || prior.actorUserId !== input.actorUserId) return false;
+  const fingerprint = correctionFingerprint({
+    kind: 'request_date' satisfies CorrectionKind,
+    target: input.requestId,
+    body: input.body,
+  });
+  return prior.fingerprint === fingerprint;
+}
+
+async function correctionRequestId(correctionId: string): Promise<string> {
+  const [row] = await db
+    .select({ requestId: vehicleRequestCorrections.requestId })
+    .from(vehicleRequestCorrections)
+    .where(eq(vehicleRequestCorrections.correctionId, correctionId));
+  if (!row) throw err.conflict('Операция с этим ключом заявки не заводила — обновите страницу');
+  return row.requestId;
+}
+
 /** Адрес смены: заявка и день. Дата в теле не дублируется — второй ответ разошёлся бы с первым. */
 const shiftParams = z.object({ id: z.string().uuid(), date: dateOnlySchema });
 
@@ -1239,6 +1344,19 @@ async function resolveAssignment(
   tx: Tx,
   input: AssignVehicleInput,
   actor: { id: string; name: string },
+  options: {
+    /**
+     * Назначение переписывает прошедшие дни (ADR 0101 п. 15, Р17). Тогда состояние машины не
+     * спрашивается: типичная коррекция за прошлую неделю касается как раз той единицы, которую с
+     * тех пор списали или отправили в ремонт, а истории статусов у техники нет — проверить «была
+     * ли она активна тогда» нечем. Отказать по нынешнему статусу значило бы запретить исправлять
+     * ровно то, ради чего коррекцию и завели.
+     *
+     * Удалённая запись остаётся отказом и здесь: это не «машина в ремонте», а «такой машины в
+     * портале нет».
+     */
+    correction?: boolean;
+  } = {},
 ): Promise<VehicleRequestAssignmentDto> {
   const [row] = await tx
     .select({
@@ -1267,7 +1385,7 @@ async function resolveAssignment(
   if (!row || row.deletedAt) throw err.badRequest('Техника не найдена');
   // «Обслуживание», «Списана» и выключенное предложение аренды к работе не годятся: заявка
   // взята в работу означает, что машина выйдет.
-  if (row.status !== 'active') {
+  if (row.status !== 'active' && !options.correction) {
     throw err.unprocessable(
       `Техника недоступна: ${vehicleStatusLabels[row.status].toLowerCase()}`,
       { vehicleId: 'Техника недоступна' },
@@ -1865,6 +1983,289 @@ function shortensWorkPeriod(before: VehicleRequestDto, body: UpdateVehicleReques
   }
   const next = workPeriodAfterEdit(before, body);
   return (next.dateTo || next.dateFrom) < (before.dateTo || before.dateFrom);
+}
+
+// ── Календарь заявки для правила заднего числа (ADR 0101, Р29) ──
+
+/**
+ * Календарь заведённой заявки: у грузоперевозки день подачи по МСК, у заказа на объект границы
+ * срока. Момент подачи сводится к дню намеренно — граница заднего числа считается днями, и час
+ * в ней не значит ничего (§4 плана, «Часовой пояс»).
+ */
+function requestCalendarOf(r: VehicleRequestDto): RequestCalendar {
+  return r.requestType === 'freight_transport'
+    ? { scheduledDay: moscowDateKeyOf(new Date(r.scheduledAt)) }
+    : { dateFrom: r.dateFrom, dateTo: r.dateTo };
+}
+
+/**
+ * Тот же календарь из тела правки. Не переданное поле остаётся `undefined` — «не трогали», и
+ * различать это с `null` обязательно: снятая дата окончания календарь двигает, непереданная нет.
+ */
+/**
+ * Тот же календарь из тела переоформления (ADR 0091). Отдельно от `editedRequestCalendar`, потому
+ * что тело здесь полное, а не частичное: `undefined` в нём не бывает, и «не трогали» тоже — у
+ * нового типа своя деталь, и дата в ней стоит всегда.
+ */
+function retypedRequestCalendar(body: ChangeVehicleRequestTypeInput): RequestCalendar {
+  return body.requestType === 'freight_transport'
+    ? { scheduledDay: moscowDateKeyOf(new Date(body.scheduledAt)) }
+    : { dateFrom: body.dateFrom, dateTo: body.dateTo ?? null };
+}
+
+function editedRequestCalendar(body: UpdateVehicleRequestInput): RequestCalendar {
+  if (body.requestType === 'freight_transport') {
+    return {
+      scheduledDay:
+        body.scheduledAt === undefined ? undefined : moscowDateKeyOf(new Date(body.scheduledAt)),
+    };
+  }
+  return { dateFrom: body.dateFrom, dateTo: body.dateTo };
+}
+
+/**
+ * Недели ЭСМ-2, которые правка срока задела бы в уже прошедшем (Р8, Р21).
+ *
+ * Считается симметрической разностью «нужных недель» до и после правки, суженной до недель,
+ * кончившихся раньше сегодня. Обе половины разности — беда, и разная:
+ *
+ * - неделя **появилась** — листа за неё нет и не будет: сверка прошедшую неделю не выписывает,
+ *   пока не придёт проверенный контекст коррекции (`esm2SyncPlan`, этап 6);
+ * - неделя **исчезла или сдвинула границы** — выписанный лист остался бы с периодом, которого у
+ *   заявки больше нет: аннулировать его сверка тоже не станет — отработанная неделя ей закрыта.
+ *
+ * Набор недель считается тем же способом, каким его считает сама сверка: в `auto` его задаёт срок
+ * заявки, в `on_demand` (линейный заказ, ADR 0100) — уже выписанные листы, подрезанные сроком.
+ * Второй расчёт «каких недель заявке не хватает» разошёлся бы с первым при первой же правке.
+ */
+async function pastEsm2WeeksTouched(
+  before: VehicleRequestDto,
+  body: UpdateVehicleRequestInput,
+  today: string,
+): Promise<Esm2Period[]> {
+  if (before.requestType !== 'special_equipment' || body.requestType !== 'special_equipment') {
+    return [];
+  }
+  const mode = esm2Mode({
+    requestType: before.requestType,
+    status: before.status,
+    ownership: before.assignment?.ownership ?? null,
+    deletedAt: before.deletedAt,
+    isLinear: before.isLinear,
+  });
+  // Бумаги у заявки нет вовсе — ни арендной, ни «Новой», ни закрытой: задевать нечего.
+  if (mode === 'none') return [];
+  // Листы нужны только линейному заказу: там набор недель задают они, а не срок.
+  const sheets =
+    mode === 'on_demand'
+      ? await db
+          .select({
+            id: waybills.id,
+            periodFrom: waybills.periodFrom,
+            periodTo: waybills.periodTo,
+            vehicleId: waybills.vehicleId,
+            driverPersonId: waybills.driverPersonId,
+          })
+          .from(waybills)
+          .where(and(eq(waybills.sourceRequestId, before.id), ne(waybills.status, 'cancelled')))
+      : [];
+  const wanted = (dateFrom: string, dateTo: string | null): Esm2Period[] =>
+    mode === 'auto'
+      ? esm2Periods(dateFrom, dateTo)
+      : esm2RequestedPeriods(
+          sheets.map((s) => ({ ...s, periodFrom: s.periodFrom!, periodTo: s.periodTo! })),
+          dateFrom,
+          dateTo,
+        );
+
+  const next = workPeriodAfterEdit(before, body);
+  const key = (p: Esm2Period): string => `${p.from}|${p.to}`;
+  const was = wanted(before.dateFrom, before.dateTo);
+  const now = wanted(next.dateFrom, next.dateTo);
+  const wasKeys = new Set(was.map(key));
+  const nowKeys = new Set(now.map(key));
+  return [...was.filter((p) => !nowKeys.has(key(p))), ...now.filter((p) => !wasKeys.has(key(p)))]
+    .filter((p) => p.to < today)
+    .sort((a, b) => (a.from < b.from ? -1 : a.from > b.from ? 1 : 0));
+}
+
+// ── Коррекция назначения задним числом (ADR 0101, Р8) ──
+
+/**
+ * Подписи объекта под днями работы заявки — те, которые коррекция снимет (Р5, ADR 0101 п. 16).
+ *
+ * Все подтверждённые дни, а не выборка: назначение у заявки одно на весь срок, и, переписав в нём
+ * машину, операция меняет то, чем работали **во все** подписанные дни разом. Дня, которого правка
+ * не коснулась, здесь просто не бывает.
+ *
+ * Прежние `approvedBy`/`approvedAt` читаются вместе со строками: в таблице после снятия их не
+ * останется, а в снимке операции они и есть ответ на «кто принял эти часы» через два месяца.
+ */
+async function approvedShiftsOfRequest(
+  requestId: string,
+  displayNumber: string,
+): Promise<ShiftApproval[]> {
+  const rows = await db
+    .select({
+      shiftDate: vehicleRequestShifts.shiftDate,
+      approvedBy: vehicleRequestShifts.approvedBy,
+      approvedByName: users.fullName,
+      approvedAt: vehicleRequestShifts.approvedAt,
+    })
+    .from(vehicleRequestShifts)
+    .innerJoin(users, eq(users.id, vehicleRequestShifts.approvedBy))
+    .where(
+      and(
+        eq(vehicleRequestShifts.requestId, requestId),
+        isNotNull(vehicleRequestShifts.approvedAt),
+      ),
+    )
+    .orderBy(vehicleRequestShifts.shiftDate);
+  return rows.flatMap((row) =>
+    row.approvedBy && row.approvedAt
+      ? [
+          {
+            requestId,
+            displayNumber,
+            date: row.shiftDate,
+            approvedBy: row.approvedBy,
+            approvedByName: row.approvedByName,
+            approvedAt: row.approvedAt.toISOString(),
+          },
+        ]
+      : [],
+  );
+}
+
+/** Что коррекция назначения задевает в прошлом — и, значит, за что она отвечает правом. */
+interface AssignmentCorrectionPlan {
+  /**
+   * Эффективная дата операции (§4 плана). Самая **ранняя** из задетых: глубину решает она, как у
+   * переноса между рейсами её решает более ранний из двух рейсов.
+   */
+  effectiveDate: string;
+  /** Названные листы отработанных недель: их переоформит сверка. */
+  unlocked: Esm2SheetRef[];
+  /** Прошедшие недели, у которых листа нет вовсе: их операция выпишет (дыра 3). */
+  pastWeeks: Esm2Period[];
+  /** Подписи объекта, которые операция снимет. */
+  approvals: ShiftApproval[];
+}
+
+export const ASSIGNMENT_CORRECTION_EMPTY_MESSAGE =
+  'Коррекция ничего не правит задним числом: ни одного листа ЭСМ-2 к перевыписке не названо, прошедших недель без листа у заявки нет, снимать нечего. Обычная смена техники идёт без блока коррекции';
+
+/**
+ * Собрать коррекцию назначения до первой правки (Р36) и объяснить отказ, если собрать её нельзя.
+ *
+ * Отвечает на три вопроса, и все три — до того, как сгорел первый номер:
+ *
+ * 1. **что названо** — принадлежат ли перечисленные листы этой заявке и действуют ли они. Список
+ *    от клиента это перечень намерения, а не разрешение (Р11): чужой или уже аннулированный номер
+ *    в нём — ошибка, а не молчаливо пропущенная строка;
+ * 2. **что из этого выйдет** — недельный замок сверки считается по понедельнику, и лист, названный
+ *    в неделе, где живёт второй действующий бланк, был бы аннулирован **без перевыписки**: неделю
+ *    запер бы неназванный сосед (`esm2SyncPlan`, `locked`). Об этом ниже отдельно;
+ * 3. **какая у операции глубина** — эффективная дата, по которой `backdateGuard` спросит право,
+ *    предел дней и причину.
+ */
+async function planAssignmentCorrection(
+  before: VehicleRequestDto,
+  correction: CorrectAssignmentInput,
+  /** Машина, которую назначает эта же операция: режим ЭСМ-2 считается по будущему состоянию. */
+  nextVehicleId: string,
+  today: string,
+): Promise<AssignmentCorrectionPlan> {
+  // Принадлежность будущей машины — одним чтением: смена арендной единицы на собственную заводит
+  // бумагу там, где её не было вовсе, и глубина этих недель обязана быть спрошена (см.
+  // `esm2CorrectionScope`). Машины нет — пусть об этом скажет `resolveAssignment` своим отказом;
+  // здесь берётся «своя» как состояние, при котором проверок больше, а не меньше.
+  const [next] = await db
+    .select({ ownership: vehicles.ownership })
+    .from(vehicles)
+    .where(eq(vehicles.id, nextVehicleId));
+  const scope = await esm2CorrectionScope(db, {
+    requestId: before.id,
+    ownership: next?.ownership ?? 'own',
+    today,
+  });
+
+  const byId = new Map(scope.sheets.map((s) => [s.id, s]));
+  const unknown = correction.unlockWaybillIds.filter((id) => !byId.has(id));
+  if (unknown.length > 0) {
+    throw err.unprocessable(
+      unknown.length === 1
+        ? 'Названный лист не найден среди действующих ЭСМ-2 этой заявки — обновите карточку: его успели аннулировать либо он принадлежит другой заявке'
+        : `Названные листы (${unknown.length}) не найдены среди действующих ЭСМ-2 этой заявки — обновите карточку: их успели аннулировать либо они принадлежат другой заявке`,
+      { unlockWaybillIds: 'Лист не найден' },
+    );
+  }
+  const unlocked = correction.unlockWaybillIds.map((id) => byId.get(id)!);
+
+  /*
+   * Неделя переоформляется целиком или не переоформляется вовсе.
+   *
+   * Замок сверки считается по понедельнику (`esm2SyncPlan`), а лист после линейной техники
+   * уникален по паре «неделя + машина» (ADR 0100 п. 7). Поэтому в неделе, где стоят листы двух
+   * единиц, любой исход плох: назвав один, получишь аннулирование без перевыписки — неделю запрёт
+   * второй; назвав оба, получишь один новый лист вместо двух — набор недель их не различает, и
+   * недельный отчёт второй машины (свои моточасы, свой оборот с подписью заказчика) пропал бы.
+   *
+   * Поэтому отказ, а не молчаливое расширение списка. Дверь для такой недели своя и она есть:
+   * лист списывают номером и выписывают заново по требованию (ADR 0100 §6), где машина называется
+   * явно, — там неделя двух единиц выражается, а здесь нет.
+   */
+  for (const sheet of unlocked) {
+    const week = weekStartKey(sheet.periodFrom);
+    const neighbours = scope.sheets.filter(
+      (s) => s.id !== sheet.id && weekStartKey(s.periodFrom) === week,
+    );
+    if (neighbours.length > 0) {
+      throw err.unprocessable(
+        `В неделе листа № ${sheet.number} (${dateKeyRu(sheet.periodFrom)} — ${dateKeyRu(sheet.periodTo)}) у заявки есть ещё ${neighbours.length === 1 ? 'один действующий лист' : 'действующие листы'} — № ${neighbours
+          .map((s) => s.number)
+          .join(
+            ', № ',
+          )}: на неделю выписался бы один бланк, и недельный отчёт второй машины пропал бы. Такую неделю переоформляют по одному листу — аннулированием номера и выпиской ЭСМ-2 по требованию, где машина называется явно`,
+        { unlockWaybillIds: 'В неделе несколько листов' },
+      );
+    }
+  }
+
+  /*
+   * Подписи смен снимает не всякая коррекция назначения, и линейный заказ — тот случай, где не
+   * снимает (ADR 0100 §4, backlog «Машина в таблице смен»). Там машина дня — машина **рейса**
+   * дня, а назначение остаётся машиной по умолчанию: подпись объекта под часами относится к
+   * единице, которая в этот день вышла, и правка умолчания её не опровергает. У обычного заказа
+   * наоборот — машина одна на весь срок, и подпись стоит ровно под её работой.
+   */
+  const approvals = isLinearRequest(before)
+    ? []
+    : await approvedShiftsOfRequest(before.id, before.displayNumber);
+
+  /*
+   * Эффективная дата — по таблице §4 плана: у листа ЭСМ-2 (и существующего, и новой прошедшей
+   * недели) это `periodTo`, тем же концом недели, каким её считает `canCancelWaybill`. Снятая
+   * подпись стоит в этом ряду наравне: день, за который объект расписался, — такой же прошедший
+   * день, и операция утверждает о нём, что работала другая машина.
+   *
+   * Пусто — операции нечего утверждать о прошлом: ни листа к перевыписке, ни недели без бумаги, ни
+   * подписи. Такой запрос отклоняется, а не проходит молча (Р31, «пустая коррекция»): иначе блок
+   * `correction` стал бы способом обойти замок подтверждённых дней, ничего не корректируя.
+   */
+  const touched = [
+    ...unlocked.map((s) => s.periodTo),
+    ...scope.pastWeeks.map((w) => w.to),
+    ...approvals.map((a) => a.date),
+  ];
+  if (touched.length === 0) throw err.unprocessable(ASSIGNMENT_CORRECTION_EMPTY_MESSAGE);
+
+  return {
+    effectiveDate: touched.reduce((a, b) => (a < b ? a : b)),
+    unlocked,
+    pastWeeks: scope.pastWeeks,
+    approvals,
+  };
 }
 
 /**
@@ -2789,7 +3190,49 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       const selfApproved = approvesOwnRequestOnCreate(p, customer);
       const approvedAt = new Date();
 
-      const createdId = await db.transaction(async (tx) => {
+      /*
+       * Заведение задним числом (ADR 0101, Р15). Эффективная дата — по таблице §4 плана: у заказа
+       * техники на объект первый день срока, у грузоперевозки день подачи по МСК. Конец срока не
+       * спрашивается: он не раньше начала, и глубину решает именно начало.
+       *
+       * Ритуал «завести сегодняшним днём, чтобы тут же исправить на вчера» не защищал ничего —
+       * поэтому вход тот же самый, что у правки, и правило на нём одно.
+       */
+      const effectiveDate =
+        body.requestType === 'special_equipment'
+          ? body.dateFrom
+          : moscowDateKeyOf(new Date(body.scheduledAt));
+      const reason = body.backdateReason?.trim() ?? '';
+      // Функцией, а не разово: `runCorrection` зовёт её сам на каждой попытке, включая повтор, —
+      // на нём это единственная проверка доступа, которая вообще случится (Р31).
+      const authorize = () =>
+        backdateOrThrow(
+          checkBackdate({
+            effectiveDate,
+            today: moscowDateKeyOf(new Date()),
+            subject: p,
+            hasReason: reason !== '',
+          }),
+        );
+      const backdated = authorize();
+
+      /*
+       * Заблаговременность (ADR 0104): заявитель заказывает технику не раньше чем на завтра, а
+       * после 15:00 МСК — начиная с послезавтра. Спрашивается после заднего числа: прошлое —
+       * вопрос права и глубины, и отвечать на него «закажите на послезавтра» было бы неверно.
+       * Заведение задним числом (право есть, причина названа) правило пропускает как есть.
+       */
+      const tooSoon = backdated ? null : vehicleRequestLeadTimeBlocker(p, effectiveDate);
+      if (tooSoon) {
+        throw err.unprocessable(tooSoon, {
+          [body.requestType === 'special_equipment' ? 'dateFrom' : 'scheduledAt']: 'Слишком рано',
+        });
+      }
+
+      // Сама запись заявки — одна на обе ветки: обычное заведение открывает транзакцию само,
+      // заведение задним числом отдаёт эту же работу транзакции операции (Р16), где рядом с
+      // заявкой ложатся причина, автор и связь `vehicle_request_corrections`.
+      const insertRequest = async (tx: Tx): Promise<string> => {
         // Заказ спецтехники заводится общим сервисом: тем же кодом его порождает применение
         // недельной заявки (ADR 0085), и проверки площадки с классификатором обязаны быть одни.
         let id: string;
@@ -2871,30 +3314,83 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         }
         await attachFiles(tx, id, body.fileIds, p.id);
         return id;
-      });
+      };
 
-      await writeAudit({
-        actorUserId: p.id,
-        action: 'vehicle_request.create',
-        entityType: 'vehicle_request',
-        entityId: createdId,
-        metadata: {
-          requestType: body.requestType,
-          objectId: body.objectId,
-          vehicleTypeId: body.vehicleTypeId,
-          vehicleCategoryId: body.vehicleCategoryId ?? null,
-        },
-      });
-      // Автоматическая виза — тоже виза: в истории заявки она должна быть видна событием, иначе
-      // «кто согласовал» отвечается только текущим значением поля.
-      if (selfApproved) {
+      let createdId: string;
+      /** Повтор той же операции (Р31): заявка уже заведена, второй записи в аудит быть не должно. */
+      let repeated = false;
+      if (!backdated) {
+        createdId = await db.transaction(insertRequest);
+      } else {
+        // Ключ идемпотентности обязателен ровно здесь: обычное заведение повтора не боится (человек
+        // увидит вторую заявку в списке и снесёт её), а заведение задним числом заводит строку в
+        // журнале коррекций — и без ключа обрыв связи оставил бы две заявки и две операции.
+        if (!body.operationId) {
+          throw err.unprocessable(CORRECTION_OPERATION_ID_REQUIRED, {
+            operationId: 'Не передан ключ операции',
+          });
+        }
+        let inserted: string | undefined;
+        const outcome = await runCorrection(
+          {
+            operationId: body.operationId,
+            kind: 'request_date',
+            // Цели у заведения ещё нет — заявка рождается самой операцией. Отпечаток при этом
+            // считается по телу целиком, и повтор с другим составом полей под тем же ключом
+            // остаётся тем, что он есть: другой командой (409), а не второй заявкой.
+            target: 'vehicle-requests',
+            body,
+            reason,
+            actorUserId: p.id,
+          },
+          {
+            authorize,
+            perform: async (tx, correction) => {
+              inserted = await insertRequest(tx);
+              await linkCorrectionRequests(tx, correction.id, [inserted]);
+              // Снимок «было → стало»: «было» здесь пусто по построению — заявки до операции не
+              // существовало. Остаётся то, ради чего операцию и открывают через месяцы: каким днём
+              // заявку завели и каким числом это сделали.
+              return {
+                request: { id: inserted, requestType: body.requestType, effectiveDate },
+              };
+            },
+          },
+        );
+        repeated = outcome.repeated;
+        // Ответ пересобирается из текущего состояния, а не из снимка в `payload` (Р31): заявку
+        // после операции успели поправить, и повтор обязан ответить то же, что ответил бы обычный
+        // запрос. Связь операции с заявкой — единственное, чем повтор её вообще находит.
+        createdId = inserted ?? (await correctionRequestId(outcome.correction.id));
+      }
+
+      if (!repeated) {
         await writeAudit({
           actorUserId: p.id,
-          action: 'vehicle_request.approve',
+          action: 'vehicle_request.create',
           entityType: 'vehicle_request',
           entityId: createdId,
-          metadata: { auto: true },
+          metadata: {
+            requestType: body.requestType,
+            objectId: body.objectId,
+            vehicleTypeId: body.vehicleTypeId,
+            vehicleCategoryId: body.vehicleCategoryId ?? null,
+            // Признак заднего числа — и в аудите: журнал коррекций отвечает «почему», а лента
+            // аудита остаётся местом, где события заявки видны подряд и в одном порядке.
+            ...(backdated ? { backdated, backdateReason: reason } : {}),
+          },
         });
+        // Автоматическая виза — тоже виза: в истории заявки она должна быть видна событием, иначе
+        // «кто согласовал» отвечается только текущим значением поля.
+        if (selfApproved) {
+          await writeAudit({
+            actorUserId: p.id,
+            action: 'vehicle_request.approve',
+            entityType: 'vehicle_request',
+            entityId: createdId,
+            metadata: { auto: true },
+          });
+        }
       }
       reply.code(201);
       return (await getDto(createdId))!;
@@ -2964,7 +3460,106 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       let esm2: Esm2SyncResult = { cancelled: [], issued: [] };
       let days: LinearDaysSyncResult = { detached: [], frozen: [] };
 
-      await db.transaction(async (tx) => {
+      /*
+       * Задний ход правки (ADR 0101, Р6, Р29).
+       *
+       * Guard спрашивается не на всякой правке вчерашней заявки, а только там, где правка
+       * **что-то утверждает о прошедшем дне**, — то есть двигает календарь. Уточнение телефона или
+       * комментария правом на коррекцию не запирается: иначе `waybills.correct` понадобилось бы
+       * для обычной дневной работы с любой заявкой старше суток.
+       *
+       * Какую именно дату двигают и какая из них решает глубину, считает `movedRequestDateKey` —
+       * одна функция на портал и сервер: форма по ней спрашивает причину ровно тогда, когда её
+       * спросит ручка. `null` оттуда — календарь не тронут, и заднего числа здесь нет вовсе.
+       */
+      const beforeCalendar = requestCalendarOf(before);
+      const afterCalendar = editedRequestCalendar(body);
+      const effectiveDate = movedRequestDateKey(beforeCalendar, afterCalendar);
+      const reason = body.backdateReason?.trim() ?? '';
+      const today = moscowDateKeyOf(new Date());
+      const authorize = (): boolean =>
+        effectiveDate === null
+          ? false
+          : backdateOrThrow(
+              checkBackdate({ effectiveDate, today, subject: p, hasReason: reason !== '' }),
+            );
+      const backdated = authorize();
+
+      /*
+       * Повтор уже выполненной правки (Р31) — прежде всех прочих проверок: у него нет ни сдвига
+       * календаря (он уже состоялся), ни свежей версии заявки (её подняла первая попытка), и любая
+       * следующая проверка ответила бы ему отказом на работу, которая на самом деле сделана.
+       */
+      if (body.operationId && !backdated) {
+        const repeat = await repeatedRequestEdit({
+          operationId: body.operationId,
+          actorUserId: p.id,
+          requestId: id,
+          body,
+        });
+        if (repeat) {
+          /*
+           * Доступ перепроверяется и на повторе (Р31, ADR 0101 п. 9) — здесь руками, а не общим
+           * `authorize`: у правки повтор тем и отличается, что сдвига календаря на нём уже нет
+           * (`movedRequestDateKey` отвечает `null`, а `backdateGuard` без эффективной даты не
+           * спрашивается вовсе), и единственная проверка доступа, какая вообще случилась бы,
+           * молча пропала бы. Молча отдать прежний результат тому, у кого `waybills.correct`
+           * успели отобрать между попытками, — та же утечка, что выполнить правку без права; тем
+           * же порядком и теми же словами отвечает повтор коррекции назначения.
+           *
+           * Предел глубины при этом остаётся проверенным первой попыткой: второй раз он ничего
+           * нового не разрешает, потому что и работы второй раз не происходит.
+           */
+          if (!can(p, 'waybills.correct')) throw err.forbidden(BACKDATE_PERMISSION_MESSAGE);
+          return before;
+        }
+      }
+
+      /*
+       * Заблаговременность (ADR 0104) — та же, что при заведении: правка, переносящая заказ на
+       * другой день, назначает его заново, и заявитель не вправе назначить его ближе, чем завёл бы
+       * новую заявку. Иначе правило обходилось бы в два шага — завести на послезавтра, тут же
+       * перенести на завтра.
+       *
+       * Спрашивается **день заказа** (`movedRequestStartKey`), а не эффективная дата заднего хода:
+       * та берёт в расчёт и конец срока, а сокращение периода технику ближе не придвигает.
+       * `null` — день заказа не тронут: уточнение телефона у заявки на завтра сохраняется и в 15:01.
+       */
+      const movedStart = movedRequestStartKey(beforeCalendar, afterCalendar);
+      const tooSoon =
+        backdated || movedStart === null ? null : vehicleRequestLeadTimeBlocker(p, movedStart);
+      if (tooSoon) {
+        throw err.unprocessable(tooSoon, {
+          [before.requestType === 'special_equipment' ? 'dateFrom' : 'scheduledAt']: 'Слишком рано',
+        });
+      }
+
+      /*
+       * Что правка срока сделала бы с уже отработанной бумагой (Р8, Р21) — до самой правки, а не
+       * после (Р36).
+       *
+       * Сверка ЭСМ-2 отработанную неделю не трогает намеренно: лист за неё уже побывал на объекте,
+       * а прошедшую неделю без листа она не выписывает вовсе, пока не придёт проверенный контекст
+       * коррекции (этап 6 плана). Оба правила верны — и оба **молчаливы**: сдвинув начало срока в
+       * позапрошлую среду, человек получил бы заявку, у которой на эту неделю нет и не появится
+       * никакой бумаги, и узнал бы об этом только из журнала. Поэтому здесь отказ с перечнем
+       * недель: он называет цену до нажатия и не делает вида, что бумага сошлась.
+       */
+      if (backdated && periodEdited) {
+        const weeks = await pastEsm2WeeksTouched(before, body, today);
+        if (weeks.length > 0) {
+          throw err.unprocessable(
+            `Правка срока задевает недельные листы ЭСМ-2 за уже прошедшие недели (${weeks
+              .map((w) => `${dateKeyRu(w.from)} — ${dateKeyRu(w.to)}`)
+              .join(
+                '; ',
+              )}): бумагу отработанной недели правка срока не переписывает — такой лист переоформляют коррекцией недельного бланка`,
+            { dateFrom: 'Задевает отработанную неделю ЭСМ-2' },
+          );
+        }
+      }
+
+      const applyEdit = async (tx: Tx): Promise<void> => {
         const customerChanged =
           customer.objectId !== before.objectId || customer.departmentId !== before.departmentId;
         if (customerChanged) {
@@ -3126,17 +3721,88 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
             reason: 'Срок работ изменён правкой заявки — путевые листы переоформлены',
             dropPendingEarlyEnd: true,
           }));
+          /*
+           * Дни линейного заказа, которых рейс не отдал (ADR 0100 п. 11, Р11). У обычной правки
+           * это предупреждение: срок продлевают вперёд, замороженный день остаётся в выданном
+           * листе, и человек читает о нём событием аудита. У коррекции — отказ: она утверждает,
+           * что прошедший день был другим, а бумага на этот день уже у водителя. Молча оставить
+           * их значило бы развести заявку с выданным бланком и никому об этом не сказать.
+           */
+          if (backdated && days.frozen.length > 0) {
+            throw err.unprocessable(
+              `Дни заказа стоят в рейсах с выписанными листами (${days.frozen
+                .map((d) => `${dateKeyRu(d.date)} — ${d.routeNumber}`)
+                .join(
+                  '; ',
+                )}): сначала аннулируйте лист рейса, иначе правка срока разойдётся с выданной бумагой`,
+              { dateFrom: 'День в замороженном рейсе' },
+            );
+          }
         }
-      });
+      };
+
+      let repeated = false;
+      if (!backdated) {
+        await db.transaction(applyEdit);
+      } else {
+        // Ключ идемпотентности обязателен ровно здесь: обычная правка операцией не является, а
+        // правка задним числом заводит строку в журнале коррекций и сжигает номера ЭСМ-2. Версия
+        // заявки повтор не спасает — она ответит 409 там, где всё уже сохранено.
+        if (!body.operationId) {
+          throw err.unprocessable(CORRECTION_OPERATION_ID_REQUIRED, {
+            operationId: 'Не передан ключ операции',
+          });
+        }
+        const outcome = await runCorrection(
+          {
+            operationId: body.operationId,
+            kind: 'request_date',
+            target: id,
+            body,
+            reason,
+            actorUserId: p.id,
+          },
+          {
+            authorize,
+            perform: async (tx, correction) => {
+              await applyEdit(tx);
+              await linkCorrectionRequests(tx, correction.id, [id]);
+              // Снимок «было → стало» (Р16): календарь заявки и то, что за ним поехало. Через два
+              // месяца по журналу спросят не «какая дата стоит сейчас», а «какой день эта правка
+              // объявила рабочим и какая бумага из-за неё сменилась» — восстановить это по
+              // текущему состоянию будет уже нечем.
+              return {
+                request: {
+                  id,
+                  num: before.num,
+                  requestType: before.requestType,
+                  effectiveDate,
+                  calendar: { before: beforeCalendar, after: afterCalendar },
+                },
+                esm2,
+                linearDays: days,
+              };
+            },
+          },
+        );
+        repeated = outcome.repeated;
+      }
 
       const after = (await getDto(id))!;
+      if (repeated) return after;
+
       await writeAudit({
         actorUserId: p.id,
         action: 'vehicle_request.update',
         entityType: 'vehicle_request',
         entityId: id,
         // Перечень изменённых полей — то, ради чего история отличает правку от «заявку трогали».
-        metadata: { changes: diffVehicleRequests(before, after) },
+        metadata: {
+          changes: diffVehicleRequests(before, after),
+          // Задний ход — и в ленте аудита: журнал коррекций отвечает «почему», а лента остаётся
+          // местом, где события заявки видны подряд и в одном порядке.
+          ...(backdated ? { backdated, backdateReason: reason } : {}),
+        },
       });
       // Снятую правкой визу показываем отдельным событием: иначе заявка молча перестаёт
       // годиться в работу, и по истории непонятно, почему.
@@ -3203,6 +3869,41 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       // Тип, в который переоформляют, должен быть доступен роли (ADR 0040): отделу спецтехника
       // закрыта, и обойти это переоформлением своей же грузоперевозки нельзя.
       assertVehicleRequestTypeAllowed(p, body.requestType);
+
+      /*
+       * Задний ход переоформления (ADR 0101, Р29) — четвёртая дверь к прошлому, и последняя.
+       *
+       * Тело переоформления это полный состав целевого типа, то есть дата в нём стоит всегда, а
+       * правила «не раньше сегодня» у схемы нет намеренно (см. её докблок): заявку, заведённую
+       * вчера, переоформляют сегодня, и требовать сдвинуть срок вперёд ради смены вида было бы
+       * правкой заказа вместо правки его формы. Ровно поэтому проверять здесь надо не «дата в
+       * прошлом», а «дату двигают в прошлое» — и это тот же вопрос, на который отвечает
+       * `movedRequestDateKey` у обычной правки.
+       *
+       * Календари у типов разной формы (срок работ против дня подачи), и смена вида читается как
+       * сдвиг: у нового типа своя дата, и утверждает она о своём дне. Оставшееся неизменным —
+       * прежний срок, перенесённый один в один, — сдвигом не считается и права не требует.
+       *
+       * Строки операции (`waybill_corrections`) эта дверь не заводит — по тому же правилу, что и
+       * заведение рейса задним числом (§1 плана): переоформление номеров строгой отчётности не
+       * расходует, тип меняют только у «Новой», листа у неё быть не может. Право и причина
+       * спрашиваются, объяснение уходит в аудит события.
+       */
+      const retypeEffectiveDate = movedRequestDateKey(
+        requestCalendarOf(before),
+        retypedRequestCalendar(body),
+      );
+      const retypeReason = body.backdateReason?.trim() ?? '';
+      const retypeBackdated =
+        retypeEffectiveDate !== null &&
+        backdateOrThrow(
+          checkBackdate({
+            effectiveDate: retypeEffectiveDate,
+            today: moscowDateKeyOf(new Date()),
+            subject: p,
+            hasReason: retypeReason !== '',
+          }),
+        );
 
       // Заказчик приходит целиком, как при заведении: у заказа на объект это площадка, у
       // грузоперевозки — площадка либо отдел. Переехать он может только внутрь своей области.
@@ -3335,7 +4036,14 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         // Дифф здесь шире, чем у правки: в нём стоят поля обеих деталей — одни ушли в прочерк,
         // другие из прочерка появились. Иначе история сообщала бы, что заявка сменила тип, но
         // молчала бы о том, что стало с заказанным сроком.
-        metadata: { changes: diffVehicleRequests(before, after) },
+        //
+        // Задний ход (ADR 0101) помечается здесь же: своей строки в журнале коррекций у этой двери
+        // нет — номеров она не жжёт, — и объяснение живёт единственным местом, где его будут
+        // искать, рядом с самим переоформлением.
+        metadata: {
+          changes: diffVehicleRequests(before, after),
+          ...(retypeBackdated ? { backdated: true, backdateReason: retypeReason } : {}),
+        },
       });
       if (dropApproval) {
         await writeAudit({
@@ -3484,6 +4192,19 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
    * Доставку предлагает и форма перевода в работу, но обязательной она не будет никогда: технику
    * везут и тралом. Вывоз заводится только здесь — в момент перевода в работу его дату ещё не
    * знают, а к концу работ она известна (в том числе после досрочного завершения, ADR 0044).
+   *
+   * **Прошедшая дата** (ADR 0101 п. 4, дыра 1 плана). Перегон — такой же рейс, как заводимый со
+   * стороны маршрутов, и заводился он вчерашним днём молча, пока `POST /vehicle-routes/` уже
+   * спрашивал право и причину: дверей к прошлому две, и правило у них обязано быть одно (Р29).
+   * Эффективная дата — `routeDate` по таблице §4 плана.
+   *
+   * Строки операции (`waybill_corrections`) эта дверь не заводит — по тому же правилу, что и
+   * заведение обычного рейса (§1 плана, уточнение этапа 7): журнал коррекций объясняет разрыв
+   * нумерации **бланков** и ссылается на листы своими колонками, а рейс-перегон — планировочная
+   * запись, номера строгой отчётности он не расходует. Операция без единого листа засоряла бы
+   * журнал тем, чего в нём не ищут, поэтому право и причина спрашиваются, а объяснение уходит в
+   * аудит события `vehicle_route.create`. Причина у бумаги появится своя — её спросит выписка
+   * листа по этому рейсу, которая операцию и заведёт.
    */
   r.post(
     '/:id/relocations',
@@ -3493,7 +4214,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         app.requirePermission('waybills.read'),
         app.requirePermission('vehicleRequests.status'),
       ],
-      schema: { params: idParams, body: createRelocationRouteSchema },
+      schema: { params: idParams, body: createRequestRelocationSchema },
     },
     async (req, reply): Promise<VehicleRouteDto> => {
       const p = requirePrincipal(req);
@@ -3502,6 +4223,16 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       const before = await getDto(req.params.id);
       if (!before) throw err.notFound('Заявка не найдена');
       assertRequestScope(p, before);
+
+      const reason = body.reason?.trim() ?? '';
+      const backdated = backdateOrThrow(
+        checkBackdate({
+          effectiveDate: body.routeDate,
+          today: moscowDateKeyOf(new Date()),
+          subject: p,
+          hasReason: reason !== '',
+        }),
+      );
 
       const created = await db.transaction(async (tx) => {
         if (!before.assignment) {
@@ -3529,11 +4260,16 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         action: 'vehicle_route.create',
         entityType: 'vehicle_route',
         entityId: created.id,
+        // Признак заднего числа и причина — здесь же: своей строки в журнале коррекций у рейса нет
+        // (см. заголовок ручки), и объяснение «почему перегон заведён прошедшим днём» живёт в
+        // ленте аудита рядом с самим заведением — тем же полем, что у заведения обычного рейса.
         metadata: {
           number: formatVehicleRouteNumber(created.num),
           purpose: body.purpose,
           requestId: req.params.id,
           routeDate: body.routeDate,
+          backdated,
+          reason,
         },
       });
       reply.code(201);
@@ -3675,6 +4411,18 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
    * Событие аудита своё — `waybill.esm2_issue`: сверка пишет `waybill.esm2_sync`, и смешивать
    * «портал переоформил бумагу» с «человек попросил бланк» нельзя, иначе на вопрос «кто сжёг
    * номер» журнал ответит «система».
+   *
+   * **Прошедшая неделя** (ADR 0101 п. 4, дыра 3 плана). Дыру закрывала только половина: сверка
+   * прошедшую неделю не выписывает без проверенного контекста (`esm2SyncPlan`), а ручная выдача шла
+   * мимо неё вовсе — и лист за неделю месячной давности рождался без права, причины и следа. Теперь
+   * дату спрашивает тот же `backdateGuard`, что и все прочие входы, эффективная дата берётся по
+   * таблице §4 плана (`periodTo` недели, а не её понедельник и не день нажатия кнопки), а сама
+   * выписка становится операцией `esm2`: причина уходит в `correction_reason` при пустом
+   * `corrects_waybill_id` (Р35), ключ идемпотентности спасает от второго сгоревшего номера.
+   *
+   * Вид операции здесь `esm2`, а не `issue`, хотя лист рождается точно так же: журнал коррекций
+   * читают по предмету, а не по действию, и «что делали с недельным бланком» — вопрос, который
+   * задают вместе с коррекцией назначения (Р8), а не вместе с выпиской по рейсу.
    */
   r.post(
     '/:id/esm2',
@@ -3696,13 +4444,45 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       // ведёт, но выписка бланка нашего парка не его дело, а по прямому id он бы сюда дошёл.
       assertLessorScope(p, before.assignment?.lessorId ?? null);
 
-      const issued = await db.transaction(async (tx) => {
+      /*
+       * Задний ход выдачи (Р29, Р35). Неделя считается до транзакции — её `periodTo` и есть
+       * эффективная дата, — а `null` оттуда означает «выписывать по этой заявке нечего»: право за
+       * прошлое тогда не спрашивается вовсе, и отказ называет настоящую причину словами
+       * (`issueEsm2OnDemand`), а не «нет права на прошлое» там, где листа не будет ни при каком
+       * праве.
+       */
+      const period = await esm2OnDemandPeriod(db, { requestId: before.id, weekOf });
+      const reason = req.body.reason?.trim() ?? '';
+      // Функцией, а не разово: `runCorrection` зовёт её сам на каждой попытке, включая повтор, —
+      // на нём это единственная проверка доступа, которая вообще случится (Р31).
+      const authorize = (): boolean =>
+        period === null
+          ? false
+          : backdateOrThrow(
+              checkBackdate({
+                effectiveDate: period.to,
+                today: moscowDateKeyOf(new Date()),
+                subject: p,
+                hasReason: reason !== '',
+              }),
+            );
+      const backdated = authorize();
+
+      /** Сама выдача. Одна на обе ветки: коррекционная отличается ровно меткой листа (Р35). */
+      const issueInTransaction = async (
+        tx: Tx,
+        correction: CorrectionRecord | null,
+      ): Promise<IssuedEsm2> => {
         const created = await issueEsm2OnDemand(tx, {
           requestId: before.id,
           weekOf,
           vehicleId,
           driverPersonId,
           actor: { id: p.id },
+          // Неделя, по которой спрошено право: разъехавшись со сроком заявки между чтением и
+          // транзакцией, она получит конфликт, а не бланк прошедшей недели без операции.
+          guardedPeriodTo: period?.to ?? null,
+          ...(correction ? { correction: { id: correction.id, reason } } : {}),
         });
         // Версия двигается той же транзакцией: у заявки прибавился документ строгой отчётности,
         // и второй человек, приславший ту же неделю с прежней версией, должен получить конфликт,
@@ -3714,24 +4494,87 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           .returning({ id: vehicleRequests.id });
         if (!updated) throw err.conflict();
         return created;
-      });
+      };
+
+      /** Что выписано; на повторе операции (Р31) остаётся `null` — выписывать было нечего. */
+      let issued: IssuedEsm2 | null = null;
+      let correctionId: string | null = null;
+
+      if (!backdated) {
+        issued = await db.transaction((tx) => issueInTransaction(tx, null));
+      } else {
+        // Ключ идемпотентности обязателен ровно здесь: лист текущей недели повтора не боится
+        // (второй бланк на ту же машину не пустит частичный UNIQUE), а выписка задним числом
+        // заводит строку в журнале коррекций и жжёт номер серии — повтор после обрыва связи обязан
+        // вернуть прежний лист, а не следующий номер.
+        if (!req.body.operationId) {
+          throw err.unprocessable(CORRECTION_OPERATION_ID_REQUIRED, {
+            operationId: 'Не передан ключ операции',
+          });
+        }
+        const outcome = await runCorrection(
+          {
+            operationId: req.body.operationId,
+            kind: 'esm2',
+            target: before.id,
+            body: req.body,
+            reason,
+            actorUserId: p.id,
+          },
+          {
+            authorize,
+            perform: async (tx, correction) => {
+              const created = await issueInTransaction(tx, correction);
+              issued = created;
+              // «Что делали с этой заявкой задним числом» спрашивают со стороны заявки, и связь
+              // операции с ней — единственный ответ (Р16).
+              await linkCorrectionRequests(tx, correction.id, [before.id]);
+              /*
+               * Снимок «было → стало» (Р16). «Было» здесь пусто по построению — бланка за эту
+               * неделю не существовало, — и остаётся то, ради чего операцию откроют через месяцы:
+               * какая неделя закрыта задним числом, какой машиной и каким номером это кончилось.
+               */
+              return {
+                request: { id: before.id, num: before.num },
+                waybill: {
+                  id: created.id,
+                  number: created.number,
+                  periodFrom: created.period.from,
+                  periodTo: created.period.to,
+                },
+                vehicleId,
+                driverPersonId,
+              };
+            },
+          },
+        );
+        correctionId = outcome.correction.id;
+      }
 
       // Событие о самом бланке, как и у выписки с рейса (`waybill.issue`): номер строгой
       // отчётности ушёл на документ, и журнал обязан отвечать, кто и на какую неделю его взял.
-      await writeAudit({
-        actorUserId: p.id,
-        action: 'waybill.esm2_issue',
-        entityType: 'waybill',
-        entityId: issued.id,
-        metadata: {
-          number: issued.number,
-          requestId: before.id,
-          periodFrom: issued.period.from,
-          periodTo: issued.period.to,
-          vehicleId,
-          driverPersonId,
-        },
-      });
+      //
+      // На повторе операции записи нет: второй строки об одной и той же выдаче в ленте быть не
+      // должно — номер выдан один раз.
+      if (issued) {
+        await writeAudit({
+          actorUserId: p.id,
+          action: 'waybill.esm2_issue',
+          entityType: 'waybill',
+          entityId: issued.id,
+          metadata: {
+            number: issued.number,
+            requestId: before.id,
+            periodFrom: issued.period.from,
+            periodTo: issued.period.to,
+            vehicleId,
+            driverPersonId,
+            // Задний ход — и в ленте аудита: журнал коррекций отвечает «почему», а лента остаётся
+            // местом, где события заявки видны подряд и в одном порядке.
+            ...(backdated ? { backdated, reason, correctionId } : {}),
+          },
+        });
+      }
       return (await getDto(before.id))!;
     },
   );
@@ -3769,6 +4612,32 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           assignment: 'Выберите технику',
         });
       }
+
+      /*
+       * Доставка задним числом (ADR 0101, Р29) — та же дверь к прошлому, что и отдельная ручка
+       * перегона, только приехавшая сюда полем перевода в работу. Без этой проверки правило
+       * обходилось бы одним движением: завести перегон прошедшим днём не отдельным запросом, а
+       * вместе со статусом.
+       *
+       * Спрашивается ровно про дату перегона, а не про сам переход: в работу заявку берут сегодня,
+       * и требовать причину за это значило бы объяснять то, чего никто не двигал. Причина поэтому
+       * лежит внутри `delivery`, у своей границы.
+       *
+       * Строки операции здесь нет — по тому же правилу, что у прочих рейсовых дверей (§1 плана,
+       * уточнение этапа 7): рейс номеров строгой отчётности не расходует, объяснение уходит в
+       * аудит `vehicle_route.create`, а причина у бумаги появится своя — её спросит выписка.
+       */
+      const deliveryReason = assignment?.delivery?.reason?.trim() ?? '';
+      const deliveryBackdated =
+        !!assignment?.delivery &&
+        backdateOrThrow(
+          checkBackdate({
+            effectiveDate: assignment.delivery.routeDate,
+            today: moscowDateKeyOf(new Date()),
+            subject: p,
+            hasReason: deliveryReason !== '',
+          }),
+        );
       // Заявку закрывают фактом (ADR 0029): сколько отработали и во сколько это обошлось.
       // Спрашивать факт есть смысл только там, где есть назначенная машина со ставкой: у заявок,
       // взятых в работу до ADR 0027, считать нечем — их закрывают как раньше, с прочерком.
@@ -3986,6 +4855,11 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           // Убранные перегоны — часть того же события: рейс исчез не сам по себе, а вместе со
           // сменой статуса, и в журнале это должно читаться одной записью.
           ...(droppedRelocations.length > 0 ? { droppedRelocations } : {}),
+          // Доставка, заведённая прошедшим днём (ADR 0101, Р29): своего события у неё нет — рейс
+          // родился внутри перевода в работу, — поэтому объяснение живёт здесь, рядом с ним.
+          ...(deliveryBackdated
+            ? { deliveryBackdated: true, deliveryBackdateReason: deliveryReason }
+            : {}),
           // Снятые дни линейного заказа — тем же порядком: их сняла не сверка сама по себе, а
           // смена статуса, и в истории это одно событие (ADR 0100 §11).
           ...(detachedDays.length > 0 ? { detachedDays } : {}),
@@ -4103,46 +4977,119 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
    * Право — `vehicleRequests.status`, то же, которым машину назначают при переводе в работу: это
    * решение диспетчера о том, чем выполнять заявку, а не правка заказа. Общее право правки
    * (`vehicleRequests.update`) сюда не годится — оно есть у площадки, а подбор техники не её дело.
+   *
+   * Этим же маршрутом идёт коррекция назначения задним числом (ADR 0101, Р8): у заказа техники на
+   * объект рейса нет — машина и машинист стоят на самой заявке, — и «ехала другая машина»
+   * исправляется здесь, а не коррекцией рейса. Признак приходит блоком `correction`; всё, что он
+   * добавляет, собрано ниже в одном месте и в обычной смене техники не участвует.
    */
   r.patch(
     '/:id/assignment',
     { ...canChangeStatus, schema: { params: idParams, body: changeVehicleAssignmentSchema } },
     async (req) => {
       const p = requirePrincipal(req);
-      const { version, route, ...rates } = req.body;
+      const { version, route, correction, ...rates } = req.body;
       const before = await getDto(req.params.id);
       if (!before || before.deletedAt) throw err.notFound('Заявка не найдена');
       assertRequestScope(p, before);
       // Арендодатель видит свои заявки и закрывает их (ADR 0038), но подбор техники — не его
       // решение: сменить машину он мог бы только на свою, а вместе с ней и исполнителя заявки.
       assertLessorScope(p, before.assignment?.lessorId ?? null);
-      // Предикат общий с порталом (`canReassignVehicle`): у «Новой» машину назначает сам перевод
-      // в работу, у закрытой и отменённой менять нечего — там это уже история, а у заявки с
-      // принятыми днями работы подмена машины переписала бы задним числом то, под чем стоит
-      // подпись объекта.
-      if (!canReassignVehicle(before)) {
-        const approvedShifts = approvedShiftsBlocker(before);
-        if (approvedShifts) {
+      if (!correction) {
+        // Предикат общий с порталом (`canReassignVehicle`): у «Новой» машину назначает сам перевод
+        // в работу, у закрытой и отменённой менять нечего — там это уже история, а у заявки с
+        // принятыми днями работы подмена машины переписала бы задним числом то, под чем стоит
+        // подпись объекта.
+        if (!canReassignVehicle(before)) {
+          const approvedShifts = approvedShiftsBlocker(before);
+          if (approvedShifts) {
+            throw err.unprocessable(
+              `${approvedShifts}: подтверждённые дни — это работа нынешней машины`,
+              { vehicleId: 'Есть согласованные смены' },
+            );
+          }
           throw err.unprocessable(
-            `${approvedShifts}: подтверждённые дни — это работа нынешней машины`,
-            { vehicleId: 'Есть согласованные смены' },
+            before.status === 'confirmed'
+              ? 'У заявки нет назначенной техники — её назначает перевод в работу'
+              : 'Сменить технику можно только у заявки в работе',
+            { vehicleId: 'Заявка не в работе' },
           );
         }
+      } else if (!canCorrectAssignment(before)) {
+        // Коррекция снимает у того же предиката ровно одну половину — замок подтверждённых дней
+        // (Р5): их подпись и есть то, что операция сознательно снимает. Состояние заявки остаётся
+        // запретом и под правом, а закрытой он объясняется порядком совместной работы (Р38).
         throw err.unprocessable(
           before.status === 'confirmed'
             ? 'У заявки нет назначенной техники — её назначает перевод в работу'
-            : 'Сменить технику можно только у заявки в работе',
+            : before.status === 'done'
+              ? ASSIGNMENT_CORRECTION_CLOSED_MESSAGE
+              : 'Сменить технику можно только у заявки в работе',
           { vehicleId: 'Заявка не в работе' },
         );
       }
 
+      const today = moscowDateKeyOf(new Date());
+      /*
+       * Повтор уже выполненной операции узнаётся **до** всех расчётов, и это не оптимизация (Р31).
+       * Первая попытка сожгла названные листы: пересчитанный по нынешнему состоянию план не нашёл
+       * бы их среди действующих и ответил бы отказом на работу, которая на самом деле сделана.
+       * Поэтому при найденном ключе план не считается вовсе — `runCorrection` сверит автора с
+       * отпечатком (чужой ключ и другая команда — 409) и вернёт прежний результат, не зовя
+       * `perform`.
+       */
+      const prior = correction ? await findCorrection(db, correction.operationId) : undefined;
+      /**
+       * Всё, что коррекция считает **до** первой правки (Р36): какие листы она назовёт, какие
+       * недели выпишет, какие подписи снимет и какая у неё эффективная дата. Обычная смена техники
+       * сюда не заходит вовсе — ни одного лишнего запроса ей не достаётся.
+       */
+      const plan =
+        correction && !prior
+          ? await planAssignmentCorrection(before, correction, rates.vehicleId, today)
+          : null;
+      // Функцией, а не разово: `runCorrection` зовёт её сам на каждой попытке, включая повтор, —
+      // на нём это единственная проверка доступа, которая вообще случится (Р31).
+      const authorize = (): boolean => {
+        if (plan) {
+          return backdateOrThrow(
+            checkBackdate({
+              effectiveDate: plan.effectiveDate,
+              today,
+              subject: p,
+              hasReason: correction!.reason.trim() !== '',
+            }),
+          );
+        }
+        /*
+         * Повтор: глубину пересчитать нечем — предмет операции уже переписан ею самой, — но право
+         * спрашивается всё равно. Молча отдать прежний результат тому, у кого `waybills.correct`
+         * успели отобрать между попытками, — та же утечка, что выполнить операцию без права.
+         * Предел дней при этом остаётся проверенным первой попыткой: второй раз он ничего нового
+         * не разрешает, потому что и работы второй раз не происходит.
+         */
+        if (correction && !can(p, 'waybills.correct')) {
+          throw err.forbidden(BACKDATE_PERMISSION_MESSAGE);
+        }
+        return false;
+      };
+      authorize();
+
       let esm2: Esm2SyncResult = { cancelled: [], issued: [] };
       let days: LinearDaysSyncResult = { detached: [], frozen: [] };
-      const assigned = await db.transaction(async (tx) => {
+      /** Назначение, каким оно записано; `null` на повторе операции — `perform` там не звался. */
+      let assigned: Awaited<ReturnType<typeof resolveAssignment>> | null = null;
+
+      type SavedAssignment = Awaited<ReturnType<typeof resolveAssignment>>;
+      const applyAssignment = async (
+        tx: Tx,
+        correctionId: string | null,
+      ): Promise<SavedAssignment> => {
         const saved = await resolveAssignment(
           tx,
           { ...rates, route },
           { id: p.id, name: p.fullName },
+          { correction: correctionId !== null },
         );
         // Область проверяется и по новой машине, а не только по прежней: иначе арендодатель одним
         // запросом увёл бы заявку на чужую технику — и заодно из собственной видимости.
@@ -4165,32 +5112,128 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         // В бланке ЭСМ-2 напечатана машина — сменив её, лист исправить нельзя, можно только
         // выписать заново (миграция 0087). Машинист при этом наследуется с прежнего листа: меняли
         // технику, а не человека, — если только его не назвали прямо в этом же запросе.
+        //
+        // Причина коррекции идёт сюда же и уходит в оба листа (Р35): в сгоревший — как причина
+        // списания, в новый — как `correction_reason`. Обычной смене техники объяснение пишет
+        // портал, и оно у неё одно на всё.
         esm2 = await syncEsm2Waybills(tx, {
           requestId: before.id,
           actor: { id: p.id },
-          reason: 'Заявке назначена другая техника — путевые листы переоформлены',
+          reason:
+            correctionId && correction
+              ? correction.reason
+              : 'Заявке назначена другая техника — путевые листы переоформлены',
           driverPersonId: rates.driverPersonId ?? null,
+          ...(correctionId && correction
+            ? {
+                correction: { id: correctionId, unlockWaybillIds: correction.unlockWaybillIds },
+              }
+            : {}),
         });
         // План по дням смена машины не двигает (ADR 0100 §4) — сверка зовётся ради другого: новая
         // машина бывает арендной, а арендную технику ведёт арендодатель, и в рейсах ей не место.
         days = await syncLinearRouteDays(tx, {
           requestId: before.id,
           actor: { id: p.id },
-          reason: 'Заявке назначена другая техника',
+          reason: correctionId
+            ? 'Коррекция назначения задним числом'
+            : 'Заявке назначена другая техника',
         });
+        /*
+         * Дни, которых замороженный рейс не отдал (ADR 0100 §11, Р11). У обычной смены техники это
+         * событие аудита: бумага дня выписана, день остаётся в ней, и портал об этом рассказывает.
+         * У коррекции — отказ: она утверждает, что прошедший день был другим, а лист этого дня уже
+         * у водителя, и молча разойтись с ним операция не вправе.
+         */
+        if (correctionId && days.frozen.length > 0) {
+          throw err.unprocessable(
+            `Дни заказа стоят в рейсах с выписанными листами (${days.frozen
+              .map((d) => `${dateKeyRu(d.date)} — ${d.routeNumber}`)
+              .join(
+                '; ',
+              )}): сначала аннулируйте лист рейса, иначе коррекция разойдётся с выданной бумагой`,
+            { vehicleId: 'День в замороженном рейсе' },
+          );
+        }
         return saved;
-      });
+      };
+
+      let repeated = false;
+      if (!correction) {
+        assigned = await db.transaction((tx) => applyAssignment(tx, null));
+      } else {
+        const outcome = await runCorrection(
+          {
+            operationId: correction.operationId,
+            kind: 'esm2',
+            target: before.id,
+            body: req.body,
+            reason: correction.reason,
+            actorUserId: p.id,
+          },
+          {
+            authorize,
+            perform: async (tx, record) => {
+              const saved = await applyAssignment(tx, record.id);
+              assigned = saved;
+              // «Что делали с этой заявкой задним числом» спрашивают со стороны заявки, и связь
+              // операции с ней — единственный ответ (Р16).
+              await linkCorrectionRequests(tx, record.id, [before.id]);
+              // Подписи объекта под днями работы снимаются здесь, а не в сверке: бумага и часы —
+              // разные предметы, и второй из них к листам ЭСМ-2 отношения не имеет (Р5).
+              //
+              // План здесь всегда посчитан: `perform` не зовётся там, где прежняя операция нашлась
+              // по ключу, а только там план и оставляют пустым.
+              await clearShiftApprovals(tx, plan?.approvals ?? []);
+              /*
+               * Снимок «было → стало» (Р16). Прежние `approvedBy`/`approvedAt` попадают сюда
+               * целиком: в самой таблице смен их после снятия уже нет, а «кто принял 11,5
+               * машиночаса за 12 августа» спрашивают через два месяца — и ответить на это будет
+               * больше нечем.
+               */
+              return {
+                request: { id: before.id, num: before.num },
+                assignment: {
+                  before: before.assignment
+                    ? {
+                        vehicleId: before.assignment.vehicleId,
+                        typeName: before.assignment.typeName,
+                      }
+                    : null,
+                  after: { vehicleId: saved.vehicleId, ownership: saved.ownership },
+                },
+                esm2,
+                linearDays: days,
+                unlockedWaybills: (plan?.unlocked ?? []).map((s) => ({
+                  id: s.id,
+                  number: s.number,
+                  periodFrom: s.periodFrom,
+                  periodTo: s.periodTo,
+                })),
+                pastWeeks: plan?.pastWeeks ?? [],
+                shiftApprovals: plan?.approvals ?? [],
+              };
+            },
+          },
+        );
+        repeated = outcome.repeated;
+      }
+
+      // Ответ пересобирается из текущего состояния (Р31): повтор обязан ответить то же, что
+      // ответил бы обычный запрос, а второго события в ленте аудита он не порождает — работа
+      // сделана первой попыткой.
+      if (repeated || !assigned) return (await getDto(before.id))!;
 
       await auditEsm2Sync({
         actorUserId: p.id,
         requestId: before.id,
-        reason: 'vehicle_changed',
+        reason: correction ? 'correction' : 'vehicle_changed',
         result: esm2,
       });
       await auditLinearDaysSync({
         actorUserId: p.id,
         requestId: before.id,
-        reason: 'vehicle_changed',
+        reason: correction ? 'correction' : 'vehicle_changed',
         result: days,
       });
       // То же событие истории, что и у назначения при переводе в работу (ADR 0027 п. 9): вопрос
@@ -4204,6 +5247,17 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         metadata: {
           vehicleId: assigned.vehicleId,
           changes: diffVehicleAssignment(before.assignment, assigned),
+          // Задний ход — и в ленте аудита: журнал коррекций отвечает «почему», а лента остаётся
+          // местом, где события заявки видны подряд и в одном порядке.
+          ...(correction && plan
+            ? {
+                backdated: true,
+                backdateReason: correction.reason,
+                effectiveDate: plan.effectiveDate,
+                unlockedWaybills: plan.unlocked.map((s) => s.number),
+                clearedShiftApprovals: plan.approvals.map((a) => a.date),
+              }
+            : {}),
         },
       });
       return (await getDto(before.id))!;
@@ -4530,6 +5584,18 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
    *
    * Права — те же две, что у выписки листа с рейса и у перегона: `waybills.read` (в рейсе виден
    * водитель) и `vehicleRequests.status` (планирование — это ход работы по заявке).
+   *
+   * **Прошедший день** (ADR 0101 п. 4, дыра 1 плана). Правило дней прошлое разрешает и разрешать
+   * будет — выезд оформляют и задним числом, а запрет отправил бы его мимо портала
+   * (`planDayBlocker`), — но «можно» перестало значить «молча»: день в прошлом ставится в рейс
+   * только с правом `waybills.correct` и названной причиной. Эффективная дата — сам день: он же
+   * `routeDate` рейса (составной FK, миграция 0127), и второго ответа на «за какое число это
+   * работа» здесь быть не может.
+   *
+   * Строки операции дверь не заводит — по тому же правилу, что заведение рейса и перегон (§1
+   * плана, уточнение этапа 7): постановка дня в рейс номера строгой отчётности не расходует, а
+   * операция без единого листа засоряла бы журнал коррекций. Объяснение уходит в аудит события
+   * `vehicle_route.attach`; причина у бумаги появится своя — её спросит выписка листа по рейсу.
    */
   r.post(
     '/:id/days/:date/route',
@@ -4546,6 +5612,16 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       const { date } = req.params;
       const body = req.body;
       const request = await requireDaysRequest(p, req.params.id);
+
+      const reason = body.reason?.trim() ?? '';
+      const backdated = backdateOrThrow(
+        checkBackdate({
+          effectiveDate: date,
+          today: moscowDateKeyOf(new Date()),
+          subject: p,
+          hasReason: reason !== '',
+        }),
+      );
 
       const planned = await db.transaction(async (tx) => {
         // Проверка до рейса: у нового маршрута номер берётся из последовательности, и отказ по
@@ -4612,12 +5688,15 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
 
       // Событие то же, что и у укладки заявки в рейс со стороны маршрута: состав рейса изменился,
       // и в журнале это должно читаться одинаково, откуда бы ни пришли. День — в метаданных.
+      //
+      // Задний ход — тем же событием: строки в журнале коррекций у планирования нет (см. заголовок
+      // ручки), и «почему день поставлен прошедшим числом» объясняется здесь.
       await writeAudit({
         actorUserId: p.id,
         action: 'vehicle_route.attach',
         entityType: 'vehicle_route',
         entityId: planned.id,
-        metadata: { requestId: request.id, workDate: date },
+        metadata: { requestId: request.id, workDate: date, backdated, reason },
       });
       return daysResponse(request);
     },

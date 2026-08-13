@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { fireEvent, screen, waitFor } from '@testing-library/react';
-import type { VehicleRouteDto } from '@technic/contracts';
+import { moscowDateKeyOf, type VehicleRouteDto } from '@technic/contracts';
 import { json, mockHttp } from './http';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
@@ -29,7 +29,16 @@ const ROUTE: VehicleRouteDto = {
   displayNumber: 'Р-12',
   purpose: 'delivery',
   formCode: '4p',
-  routeDate: '2026-08-07',
+  /**
+   * День рейса — сегодняшний, и это существенно (ADR 0101, дыра 1). Выписка на **прошедший** день
+   * с тех пор идёт через окно коррекции: она спрашивает право, причину и ключ операции, и кнопка
+   * «Выписать лист» мутацию сама не запускает. Здесь проверяется не коррекция, а инвалидация
+   * журнала после обычной выдачи, поэтому дата берётся живой.
+   *
+   * Константой её вернуть нельзя: зафиксированный день рано или поздно окажется в прошлом, и тест
+   * начнёт падать на пустом месте — ровно так он и упал, когда коррекция появилась.
+   */
+  routeDate: moscowDateKeyOf(new Date()),
   vehicleId: 'v-own',
   vehicleLabel: 'КамАЗ 65201 · Е646СК799',
   vehicleKindId: 'kind-freight',

@@ -42,5 +42,7 @@ export * from './vehicle-request-feed';
 export * from './weekly-vehicle-requests';
 export * from './waybills';
 export * from './garage';
+export * from './driver-cabinet';
+export * from './vehicle-readings';
 export * from './releases';
 export * from './audit';

@@ -10,6 +10,8 @@ import {
   driverWorkedOnVehicle,
   isRelocationPurpose,
   isRouteEditable,
+  minRequestDateKey,
+  moscowDateKeyOf,
   ROUTE_FROZEN_MESSAGE,
   routeRequestCapacity,
   routePurposeShortLabels,
@@ -64,6 +66,8 @@ interface CreateValues {
   vehicleId?: string;
   routeDate?: dayjs.Dayjs;
   driverPersonId?: string;
+  /** Причина заведения задним числом (ADR 0101, дыра 1): спрашивается только на прошедшем дне. */
+  reason?: string;
 }
 
 export function VehicleRoutesTab() {
@@ -515,6 +519,12 @@ export function VehicleRoutesTab() {
 /**
  * Новый рейс: машина, дата и — если уже известно — водитель. Реквизиты выезда сюда не вынесены:
  * их наследует сам сервер от прошлого рейса этой машины, а правят их в карточке.
+ *
+ * Прошедший день (ADR 0101 п. 4, дыра 1 плана) до сих пор заводился здесь молча — ни права, ни
+ * причины, ни следа. Теперь календарь заперт тем же правилом, что и у форм заявок, — три режима
+ * (`minRequestDateKey`, Р37): без права коррекции прошлого нет вовсе, с `waybills.correct` открыты
+ * тридцать дней, с `waybills.correctBeyondLimit` границы нет. Причина спрашивается ровно тогда,
+ * когда выбранный день уже прошёл: сервер потребует её тем же условием.
  */
 function CreateRouteModal({
   open,
@@ -527,9 +537,19 @@ function CreateRouteModal({
 }) {
   const { message } = App.useApp();
   const isMobile = useIsMobile();
+  const { can } = useAuth();
   const [form] = Form.useForm<CreateValues>();
   const vehicleId = Form.useWatch('vehicleId', form);
   const routeDate = Form.useWatch('routeDate', form);
+
+  const today = moscowDateKeyOf(new Date());
+  /** Нижняя граница календаря; `null` — границы нет вовсе (`waybills.correctBeyondLimit`). */
+  const backdateFloor = minRequestDateKey(undefined, {
+    correct: can('waybills.correct'),
+    beyondLimit: can('waybills.correctBeyondLimit'),
+  });
+  /** Выбран прошедший день: причина обязательна и здесь, и на сервере. */
+  const backdated = !!routeDate && routeDate.format(DATE) < today;
 
   // Рейс ведётся только на собственной технике: у арендной лист выписывает арендодатель.
   const { data: vehicles, isFetching } = useQuery({
@@ -557,6 +577,9 @@ function CreateRouteModal({
         vehicleId: v.vehicleId!,
         routeDate: v.routeDate!.format(DATE),
         driverPersonId: v.driverPersonId ?? null,
+        // Причина уходит только с прошедшим днём: на сегодняшнем рейсе сервер её не спрашивает, и
+        // отправленная «на всякий случай» она означала бы коррекцию там, где её нет.
+        ...(v.routeDate!.format(DATE) < today ? { reason: v.reason } : {}),
       }),
     onSuccess: (route) => {
       form.resetFields();
@@ -600,9 +623,39 @@ function CreateRouteModal({
             name="routeDate"
             label="Дата рейса"
             rules={[{ required: true, message: 'Укажите дату' }]}
+            extra={
+              backdateFloor === null || backdateFloor < today
+                ? 'Прошедший день заводится с причиной: рейс уйдёт в журнал коррекций'
+                : undefined
+            }
           >
-            <DatePicker format="DD.MM.YYYY" style={{ width: '100%' }} inputReadOnly={isMobile} />
+            <DatePicker
+              format="DD.MM.YYYY"
+              style={{ width: '100%' }}
+              inputReadOnly={isMobile}
+              // Правило одно с сервером (`backdateGuard`): портал не предлагает того, что ручка
+              // отклонит, и не запирает того, что она примет.
+              disabledDate={(d) => backdateFloor !== null && d.format(DATE) < backdateFloor}
+            />
           </Form.Item>
+          {/* Причина появляется вместе с прошедшим днём — там же, где выбрали дату: она уходит в
+            запись аудита и объясняет через месяцы, почему рейс заведён вчерашним числом. */}
+          {backdated && (
+            <FormGrid.Full>
+              <Form.Item
+                name="reason"
+                label="Причина заднего числа"
+                rules={[{ required: true, message: 'Укажите причину' }]}
+              >
+                <Input.TextArea
+                  rows={2}
+                  maxLength={2000}
+                  showCount
+                  placeholder="Например: рейс состоялся во вторник, в портал вносим сегодня"
+                />
+              </Form.Item>
+            </FormGrid.Full>
+          )}
           <FormGrid.Full>
             <Form.Item
               name="driverPersonId"

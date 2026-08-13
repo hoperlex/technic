@@ -2,7 +2,7 @@ import { generateKeyPairSync } from 'node:crypto';
 import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { moscowDateKeyOf } from '@technic/contracts';
+import { moscowDateKeyOf, shiftDateKey } from '@technic/contracts';
 import { applyMigrations } from '../src/db/migration-journal';
 // Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
 // окружение, — конфиг проверяет его при импорте и без него падает.
@@ -294,6 +294,57 @@ describe.skipIf(!DB_URL)('переоформление заявки в друг�
     expect(after.objectId).toBe(ctx.objectId);
     expect(after.departmentId).toBeNull();
     expect(after.dateFrom).toBe(ctx.today);
+  });
+
+  /**
+   * Задний ход переоформления (ADR 0101, Р29). До этой правки дверь пускала дату в прошлое молча:
+   * правила «не раньше сегодня» у схемы нет намеренно, а ручка её не спрашивала — четвёртая дыра
+   * того же рода, что заведение рейса и выписка листа.
+   *
+   * Проверяется именно **сдвиг**, а не «дата в прошлом»: переоформление, переносящее прежний срок
+   * один в один, права не требует — иначе смена вида заказа заставляла бы двигать сам заказ.
+   */
+  it('переоформление в прошлое требует права и причины, а без сдвига проходит как прежде', async () => {
+    const yesterday = shiftDateKey(ctx.today, -1);
+
+    // Диспетчер (у него есть `waybills.correct`) без причины — отказ с кодом `reason`.
+    const request = await createRequest(specialPayload());
+    const noReason = await retype(
+      request.id,
+      { ...freightPayload({ scheduledAt: `${yesterday}T09:00:00+03:00` }), version: request.version },
+      ctx.dispatcherAuth,
+    );
+    expect(noReason.statusCode, noReason.body).toBe(422);
+
+    // С причиной — проходит, и объяснение уходит в событие переоформления.
+    const ok = await retype(
+      request.id,
+      {
+        ...freightPayload({ scheduledAt: `${yesterday}T09:00:00+03:00` }),
+        version: request.version,
+        backdateReason: 'техника вышла вчера, вид заказа перепутали при заведении',
+      },
+      ctx.dispatcherAuth,
+    );
+    expect(ok.statusCode, ok.body).toBe(200);
+    expect(moscowDateKeyOf(new Date(ok.json().scheduledAt))).toBe(yesterday);
+    const events = await ctx.db.execute<{ metadata: Record<string, unknown> }>(
+      sql`SELECT metadata FROM audit_log
+          WHERE entity_id = ${request.id} AND action = 'vehicle_request.change_type'
+          ORDER BY created_at DESC LIMIT 1`,
+    );
+    expect(events.rows[0]!.metadata).toMatchObject({ backdated: true });
+  });
+
+  it('переоформление без сдвига календаря права задним числом не спрашивает', async () => {
+    // Заявка сегодняшняя, срок переезжает один в один — сдвига нет, и штаб переоформляет её сам.
+    const request = await createRequest(specialPayload());
+    const res = await retype(
+      request.id,
+      { ...freightPayload(), version: request.version },
+      ctx.dispatcherAuth,
+    );
+    expect(res.statusCode, res.body).toBe(200);
   });
 
   it('переоформление пишется своим событием истории — с типом и полями обеих деталей', async () => {

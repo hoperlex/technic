@@ -262,6 +262,49 @@ describe('выписка ЭСМ-2 по требованию', () => {
     );
   });
 
+  /**
+   * Прошедшая неделя (ADR 0101 п. 4, дыра 3 плана). Для линейного заказа это частый случай: бланк
+   * просят, когда неделя кончилась и известно, что машина работала. Сервер выписывает такой лист
+   * только с правом, причиной и ключом операции, и форма обязана спросить причину до нажатия —
+   * иначе человек соберёт неделю и получит 422.
+   *
+   * Неделя 3–9 августа выбрана нарочно: она лежит в начале срока заявки и остаётся прошедшей при
+   * любом дне прогона — в отличие от недели дня среза, которая когда-нибудь тоже станет прошлым.
+   */
+  it('у прошедшей недели спрашивает причину и уносит её с ключом операции', async () => {
+    const http = renderEsm2();
+    await screen.findByText('Неделя');
+
+    typeDate('Неделя', '05.08.2026');
+    await waitFor(() =>
+      expect(screen.getByText('Лист покроет 03.08.2026 – 09.08.2026')).toBeDefined(),
+    );
+    await selectOption('Машинист', /Семёнов/);
+
+    // Без причины форма запрос не отправляет вовсе: тело заведомо отклоняемое.
+    fireEvent.click(screen.getByText('Выписать лист'));
+    await waitFor(() => expect(fieldError('Причина заднего числа')).toContain('Укажите причину'));
+    expect(http.countOf('POST /vehicle-requests/:id/esm2')).toBe(0);
+
+    fireEvent.change(screen.getByLabelText('Причина заднего числа'), {
+      target: { value: 'машина отработала неделю, бланк по факту' },
+    });
+    fireEvent.click(screen.getByText('Выписать лист'));
+
+    await waitFor(() => expect(http.countOf('POST /vehicle-requests/:id/esm2')).toBe(1));
+    const body = http.lastCall('POST /vehicle-requests/:id/esm2')!.body as Record<string, unknown>;
+    expect(body).toMatchObject({
+      weekOf: '2026-08-05',
+      vehicleId: 'v-lift',
+      driverPersonId: 'p-machinist',
+      version: 4,
+      reason: 'машина отработала неделю, бланк по факту',
+    });
+    // Ключ идемпотентности придумывает клиент — повтор после обрыва связи обязан вернуть тот же
+    // номер, а не сжечь следующий (Р31). Его значение случайно, проверяется само его наличие.
+    expect(typeof body.operationId).toBe('string');
+  });
+
   it('без машиниста лист не выписывается', async () => {
     const http = renderEsm2();
     await screen.findByText('Неделя');

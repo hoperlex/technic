@@ -42,6 +42,10 @@ const ISSUED: WaybillDto = {
   cancelReason: '',
   printedAt: null,
   exportedAt: null,
+  isCorrection: false,
+  correctionReason: '',
+  correctsNumber: null,
+  correctedByNumber: null,
   requests: [],
   files: [],
 };

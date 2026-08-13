@@ -7,7 +7,7 @@ import type {
   MailingScheduleDto,
   MailTestBody,
   UpdateMailingScheduleBody,
-  CreateRelocationRouteBody,
+  CreateRequestRelocationBody,
   CredentialTypeCode,
   DriverDto,
   DriverJobTitleDto,
@@ -67,7 +67,8 @@ import type {
   UpdateVehicleTypeInput,
   UpdateVehicleTypeSpecInput,
   UploadSessionDto,
-  UserDto,
+  UserAccountDto,
+  UserPersonRefDto,
   UserMutationResult,
   VehicleCategoryDto,
   VehicleClassificationDto,
@@ -102,16 +103,57 @@ import { apiDownload, apiFetch, apiFetchBlob } from '@shared/api';
 
 type Query = Record<string, unknown>;
 
+/**
+ * Карточка учётки и ссылка на её работника живут в контрактах (ADR 0102): их отдаёт сервер, и
+ * второе описание тех же полей на портале разошлось бы с ним при первой же правке. Реэкспорт —
+ * чтобы страницы брали тип оттуда же, откуда берут сам запрос.
+ */
+export type { UserAccountDto, UserPersonRefDto };
+
+/** Чем кандидат совпал с заявкой (Р30): точный номер и адрес надёжнее похожего ФИО. */
+export type PersonCandidateMatch = 'phone' | 'email' | 'name';
+
+/**
+ * Кандидат на привязку. Должность — не украшение: однофамильцев в справочнике различают по ней и
+ * по телефону, а идентификатора администратор не знает.
+ */
+export interface PersonCandidateDto extends Omit<UserPersonRefDto, 'deletedAt'> {
+  jobTitle: string;
+  matchedBy: PersonCandidateMatch[];
+}
+
+/**
+ * Работник в теле запроса. `null` снимает связь, отсутствие поля её не трогает — различать
+ * обязательно: отвязки живой учётки водителя не бывает (Р6), и «поле не прислали» не должно
+ * читаться как «отвяжите».
+ */
+export interface DriverPersonBody {
+  personId?: string | null;
+  /** Подтверждение расхождения ФИО (Р30): «это один человек», факт уходит в аудит. */
+  confirmNameMismatch?: boolean;
+}
+
+/** Восстановление из архива (Р8): у водителя без работника оно требует выбрать человека. */
+export interface RestoreUserBody {
+  personId?: string;
+  confirmNameMismatch?: boolean;
+}
+
+/** Исход мутации учётки вместе с карточкой: письмо о доступе уходит не всякий раз. */
+export interface UserAccountMutationResult extends Omit<UserMutationResult, 'user'> {
+  user: UserAccountDto;
+}
+
 export const usersApi = {
-  list: (q: Query) => apiFetch<ListResult<UserDto>>('/users', { query: q }),
+  list: (q: Query) => apiFetch<ListResult<UserAccountDto>>('/users', { query: q }),
   /**
    * Заведение и правка учётки отвечают не голой карточкой, а карточкой с исходом письма о выданном
    * доступе: письмо уходит не всякий раз, и портал обязан сказать, ушло ли оно.
    */
-  create: (body: CreateUserBody) =>
-    apiFetch<UserMutationResult>('/users', { method: 'POST', body }),
-  update: (id: string, body: UpdateUserBody) =>
-    apiFetch<UserMutationResult>(`/users/${id}`, { method: 'PATCH', body }),
+  create: (body: CreateUserBody & DriverPersonBody) =>
+    apiFetch<UserAccountMutationResult>('/users', { method: 'POST', body }),
+  update: (id: string, body: UpdateUserBody & DriverPersonBody) =>
+    apiFetch<UserAccountMutationResult>(`/users/${id}`, { method: 'PATCH', body }),
   setPassword: (id: string, newPassword: string) =>
     apiFetch<{ ok: boolean }>(`/users/${id}/password`, { method: 'POST', body: { newPassword } }),
   /**
@@ -131,8 +173,20 @@ export const usersApi = {
    */
   reject: (id: string, body: RejectUserBody) =>
     apiFetch<RejectUserResult>(`/users/${id}/reject`, { method: 'POST', body }),
-  /** Возврат из архива (ADR 0063): учётка остаётся неактивной, отказ снова становится заявкой. */
-  restore: (id: string) => apiFetch<UserDto>(`/users/${id}/restore`, { method: 'POST' }),
+  /**
+   * Возврат из архива (ADR 0063): учётка остаётся неактивной, отказ снова становится заявкой.
+   *
+   * Тело — только у водителя без работника (Р8): архивная учётка `person_id` иметь не обязана, а
+   * живая обязана, и человек ставится той же транзакцией, что и снятие признака архива.
+   */
+  restore: (id: string, body?: RestoreUserBody) =>
+    apiFetch<UserAccountDto>(`/users/${id}/restore`, { method: 'POST', body: body ?? {} }),
+  /**
+   * Кандидаты на привязку к учётке водителя (Р30). Без `query` подсказка идёт по приметам самой
+   * заявки — телефону, адресу и ФИО; занятые работники в неё не попадают.
+   */
+  personCandidates: (q: { query?: string; userId?: string }) =>
+    apiFetch<{ items: PersonCandidateDto[] }>('/users/person-candidates', { query: q }),
   /** Удаление насовсем (ADR 0063) — только из архива и только администратором. */
   purge: (id: string) => apiFetch<{ ok: boolean }>(`/users/${id}/purge`, { method: 'DELETE' }),
   pendingCount: () => apiFetch<{ count: number }>('/users/pending-count'),
@@ -360,6 +414,11 @@ export const vehicleRoutesApi = {
     driverPersonId?: string | null;
     trip?: RouteTripFields;
     comment?: string;
+    /**
+     * Причина заведения задним числом (ADR 0101, дыра 1): обязательна на сервере ровно тогда,
+     * когда `routeDate` уже прошла, — решает это `backdateGuard`, который знает права субъекта.
+     */
+    reason?: string;
   }) => apiFetch<VehicleRouteDto>('/vehicle-routes', { method: 'POST', body }),
   update: (
     id: string,
@@ -389,11 +448,88 @@ export const vehicleRoutesApi = {
   /** Новый порядок строк задания — полным составом рейса. */
   order: (id: string, body: { requestIds: string[]; version: number }) =>
     apiFetch<VehicleRouteDto>(`/vehicle-routes/${id}/order`, { method: 'PUT', body }),
-  issueWaybill: (id: string, version: number) =>
-    apiFetch<VehicleRouteDto>(`/vehicle-routes/${id}/waybill`, {
-      method: 'POST',
-      body: { version },
-    }),
+  /**
+   * Выписать лист по рейсу. `reason` и `operationId` нужны выписке на **прошедший** день (ADR 0101,
+   * дыра 1): такой лист рождается операцией коррекции, а ключ спасает от второго сгоревшего номера
+   * после обрыва связи (Р31). Обычная дневная выписка ни того, ни другого не передаёт — сервер их и
+   * не спрашивает.
+   */
+  issueWaybill: (id: string, body: { version: number; reason?: string; operationId?: string }) =>
+    apiFetch<VehicleRouteDto>(`/vehicle-routes/${id}/waybill`, { method: 'POST', body }),
+  /**
+   * Что будет, если рейс исправить (ADR 0101, Р36): цена операции и её блокировки — до нажатия.
+   *
+   * Считает их сервер тем же кодом, которым будет исполнять: второй расчёт в портале разошёлся бы
+   * с первым, и окно обещало бы не то, что произойдёт. Отметки печати и подшитые файлы сюда не
+   * входят — они у карточки листа (`waybillsApi.get`), и спрашивать их дважды незачем.
+   */
+  correctionPreview: (id: string) =>
+    apiFetch<{
+      routeDate: string;
+      today: string;
+      /** Что мешает коррекции здесь и сейчас; `null` — ничего (Р3, Р13, Р37). */
+      blocking: { reason: string; requests: string[] } | null;
+      /** Номер, который сгорит; `null` — действующего листа у рейса нет. */
+      waybill: { id: string; number: string; status: string; issuedForDate: string } | null;
+      requests: {
+        requestId: string;
+        displayNumber: string;
+        position: number;
+        /** День линейного заказа: его назначение коррекция не трогает (ADR 0100 п. 4). */
+        workDate: string | null;
+        status: RequestStatus;
+        assignedVehicleId: string | null;
+      }[];
+      /** Подписи объекта, которые снимет коррекция (Р5). */
+      shifts: {
+        requestId: string;
+        displayNumber: string;
+        date: string;
+        approvedByName: string;
+        approvedAt: string;
+      }[];
+    }>(`/vehicle-routes/${id}/correction`),
+  /**
+   * Исправить исполнение прошедшего рейса (ADR 0101, Р2). `operationId` придумывает клиент до
+   * отправки: повтор после обрыва связи обязан вернуть прежний результат, а не сжечь второй номер
+   * бланка, — и повторяться должно **всё тело целиком**, вместе с версией рейса (Р31).
+   */
+  correct: (
+    id: string,
+    body: {
+      operationId: string;
+      version: number;
+      vehicleId?: string;
+      driverPersonId?: string;
+      trip?: RouteTripFields;
+      requestOrder?: string[];
+      reason: string;
+    },
+  ) => apiFetch<VehicleRouteDto>(`/vehicle-routes/${id}/correction`, { method: 'POST', body }),
+  /**
+   * Перенести заявку между рейсами прошедших дней (ADR 0101, Р30): `id` — рейс-**приёмник**,
+   * `source` — источник со своей версией.
+   *
+   * Обе версии обязательны, потому что операция трогает оба рейса и жжёт **два** номера: одной
+   * версии хватило бы ровно до первой встречной правки чужого рейса. Ответ несёт обе стороны —
+   * у источника после переноса другой номер листа (или ни одного, если он опустел, Р22), и
+   * показать один значило бы оставить второй устаревшим на экране.
+   */
+  transferCorrection: (
+    id: string,
+    body: {
+      operationId: string;
+      version: number;
+      source: { routeId: string; version: number };
+      requestId: string;
+      position?: number;
+      reason: string;
+    },
+  ) =>
+    apiFetch<{ target: VehicleRouteDto; source: VehicleRouteDto }>(
+      `/vehicle-routes/${id}/correction/transfer`,
+      { method: 'POST', body },
+    ),
 };
 
 export const counterpartiesApi = {
@@ -558,7 +694,7 @@ export const vehicleRequestsApi = {
    * могли привезти тралом, и тогда листа на перегон не бывает вовсе.
    */
   relocations: (id: string) => apiFetch<VehicleRouteDto[]>(`/vehicle-requests/${id}/relocations`),
-  createRelocation: (id: string, body: CreateRelocationRouteBody) =>
+  createRelocation: (id: string, body: CreateRequestRelocationBody) =>
     apiFetch<VehicleRouteDto>(`/vehicle-requests/${id}/relocations`, { method: 'POST', body }),
   /** Счётчики заявок по статусам — сводка над списком; сужается объектом и типом заявки. */
   summary: (q: Query) =>

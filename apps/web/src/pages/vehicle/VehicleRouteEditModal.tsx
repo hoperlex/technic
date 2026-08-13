@@ -9,16 +9,22 @@ import {
   driverWorkedOnVehicle,
   isRelocationPurpose,
   isRouteEditable,
+  minRequestDateKey,
+  moscowDateKeyOf,
+  movedRouteDateKey,
   ROUTE_FROZEN_MESSAGE,
   routePurposeLabels,
   type VehicleRouteDto,
+  WAYBILL_CORRECTION_DAYS,
 } from '@technic/contracts';
 import { driversApi, vehicleRoutesApi } from '../../api/resources';
 import { AutoSelect } from '@shared/ui';
 import { FormGrid } from '@shared/ui';
 import { FormModal } from '@shared/ui';
 import { useIsMobile } from '@shared/lib';
+import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
+import { BackdateReasonField } from './VehicleBackdateFields';
 
 /**
  * Правка рейса: день, водитель, реквизиты выезда, комментарий, а у перегона — «откуда — куда».
@@ -33,6 +39,13 @@ import { errorMessage } from '../../utils/format';
  *
  * Выписанный лист правку запрещает целиком (`isRouteEditable`): бумага уже у водителя, и запись,
  * разошедшаяся с ней, хуже отсутствия записи (ADR 0037 п. 9).
+ *
+ * Задним числом (ADR 0101 п. 4 и 6, Р29) окно спрашивает причину **только за дату**. Водитель,
+ * реквизиты и комментарий прошлого рейса правятся как правились: пока листа нет, рейс —
+ * планировочная запись, и права за её правку не спрашивает и сервер. Перенос дня — другое: вместе
+ * с рейсом переезжает подача его заявок, то есть двигается календарь заказчика. Правило одно с
+ * сервером (`movedRouteDateKey` плюс `minRequestDateKey`), потому что расходиться им нельзя: форма
+ * не должна ни просить причину там, где ручка её не ждёт, ни отправлять то, чему ответят 403.
  */
 
 const DATE = 'YYYY-MM-DD';
@@ -49,6 +62,8 @@ interface FormValues {
   comment: string;
   moveFrom?: string;
   moveTo?: string;
+  /** Причина переноса дня в прошлое: спрашивается ровно тогда, когда её спросит сервер. */
+  reason?: string;
 }
 
 interface Props {
@@ -63,12 +78,14 @@ export function VehicleRouteEditModal({ route, onClose, onSaved }: Props) {
   const { message, modal } = App.useApp();
   const isMobile = useIsMobile();
   const qc = useQueryClient();
+  const { can } = useAuth();
   const [form] = Form.useForm<FormValues>();
   const relocation = !!route && isRelocationPurpose(route.purpose);
 
   useEffect(() => {
     if (!route) return;
     form.setFieldsValue({
+      reason: '',
       routeDate: dayjs(route.routeDate),
       driverPersonId: route.driverPersonId ?? undefined,
       withTrailer: route.withTrailer,
@@ -88,6 +105,26 @@ export function VehicleRouteEditModal({ route, onClose, onSaved }: Props) {
   const routeDate = Form.useWatch('routeDate', form);
   const withTrailer = Form.useWatch('withTrailer', form) ?? false;
   const on = (routeDate ?? (route ? dayjs(route.routeDate) : null))?.format(DATE);
+
+  const today = moscowDateKeyOf(new Date());
+  /** Нижняя граница календаря в трёх режимах (Р37); `null` — границы нет (`correctBeyondLimit`). */
+  const backdateFloor = minRequestDateKey(undefined, {
+    correct: can('waybills.correct'),
+    beyondLimit: can('waybills.correctBeyondLimit'),
+  });
+  /**
+   * Эффективная дата переноса — та же более ранняя из двух, по которой спросит право сервер.
+   * `null` — день не двигают вовсе, и заднего числа в правке нет.
+   */
+  const movedKey = route ? movedRouteDateKey(route.routeDate, routeDate?.format(DATE)) : null;
+  /** Перенос задевает прошедший день: причина обязательна и здесь, и на сервере. */
+  const backdated = movedKey !== null && movedKey < today;
+  /**
+   * Дата заперта целиком: собственный день рейса уже за границей глубины, а более ранней из двух
+   * дат он и останется — значит любой перенос сервер отклонит (403 без права, 422 за пределом).
+   * Прочие поля при этом правятся: рейс без листа — планировочная запись (ADR 0101 п. 6).
+   */
+  const moveLocked = !!route && backdateFloor !== null && route.routeDate < backdateFloor;
 
   /**
    * Кто может сесть за эту машину в этот день. Список подсказывает — пригодные первыми, с
@@ -139,6 +176,9 @@ export function VehicleRouteEditModal({ route, onClose, onSaved }: Props) {
         },
         comment: v.comment ?? '',
         ...(relocation ? { moveFrom: v.moveFrom, moveTo: v.moveTo } : {}),
+        // Причина уходит только с переносом в прошлое: на обычной правке сервер её не спрашивает, и
+        // отправленная «на всякий случай» она означала бы задний ход там, где его нет.
+        ...(backdated ? { reason: v.reason } : {}),
       }),
     onSuccess: (updated) => {
       message.success('Маршрут изменён');
@@ -204,13 +244,42 @@ export function VehicleRouteEditModal({ route, onClose, onSaved }: Props) {
             label="Дата рейса"
             rules={[{ required: true, message: 'Укажите дату' }]}
             extra={
-              route && route.requests.length > 0
-                ? `Вместе с рейсом переедет подача ${route.requests.length} заявок`
-                : undefined
+              // Запертую дату объясняем той же причиной, по какой откажет сервер: без права — «нет
+              // права», с правом, но глубже предела — «это к администратору» (Р37).
+              moveLocked
+                ? can('waybills.correct')
+                  ? `Рейс старше ${WAYBILL_CORRECTION_DAYS} дней — его дату переносит администратор`
+                  : 'Дату прошедшего рейса двигает тот, у кого есть право коррекции задним числом'
+                : route && route.requests.length > 0
+                  ? `Вместе с рейсом переедет подача ${route.requests.length} заявок`
+                  : undefined
             }
           >
-            <DatePicker format="DD.MM.YYYY" style={{ width: '100%' }} inputReadOnly={isMobile} />
+            <DatePicker
+              format="DD.MM.YYYY"
+              style={{ width: '100%' }}
+              inputReadOnly={isMobile}
+              disabled={moveLocked}
+              // Правило одно с сервером (`backdateGuard`): портал не предлагает того, что ручка
+              // отклонит, и не запирает того, что она примет.
+              disabledDate={(d) => backdateFloor !== null && d.format(DATE) < backdateFloor}
+            />
           </Form.Item>
+
+          {/* Причина появляется вместе с прошедшим днём — там же, где выбрали дату. Поле общее с
+            прочими дверями заднего числа, у которых цену перечислять нечего: номера бланков перенос
+            не жжёт (действующий лист его и не пустит), последствие у него одно — переехавшая подача
+            заявок, и о ней говорит подтверждение переноса. Объяснение уходит в аудит правки: своей
+            строки в журнале коррекций у переноса нет. */}
+          {backdated && (
+            <FormGrid.Full>
+              <BackdateReasonField
+                effectiveDate={movedKey}
+                consequence="перенос уйдёт в аудит с вашим именем и этой причиной"
+                placeholder="Например: рейс состоялся во вторник, в портал внесли средой"
+              />
+            </FormGrid.Full>
+          )}
 
           <Form.Item
             name="driverPersonId"

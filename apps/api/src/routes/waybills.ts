@@ -1,12 +1,26 @@
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
-import { and, asc, count, desc, eq, gte, inArray, isNull, lte, ne, or, sql } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  count,
+  desc,
+  eq,
+  gte,
+  inArray,
+  isNotNull,
+  isNull,
+  lte,
+  ne,
+  or,
+  sql,
+} from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm';
+import { alias, type PgColumn } from 'drizzle-orm/pg-core';
 import { z } from 'zod';
 import {
   attachWaybillFilesSchema,
   cancelWaybillSchema,
-  canCancelWaybill,
   canPrintWaybill,
   type FileDto,
   printWaybillsBatchSchema,
@@ -18,7 +32,6 @@ import {
   waybillDisplayNumber,
   type WaybillDto,
   waybillListQuerySchema,
-  WAYBILL_LOCKED_MESSAGE,
   type WaybillRequestLinkDto,
 } from '@technic/contracts';
 import { readFileSync } from 'node:fs';
@@ -54,6 +67,14 @@ import {
   markFilesActive,
   scheduleFilesDeletion,
 } from '../services/request-files';
+import {
+  backdateOrThrow,
+  cancelWaybillForCorrection,
+  checkBackdate,
+  CORRECTION_OPERATION_ID_REQUIRED,
+  runCorrection,
+  waybillEffectiveDate,
+} from '../services/waybill-correction';
 
 /**
  * Журнал учёта путевых листов (ADR 0037).
@@ -116,8 +137,35 @@ const paddedNumberSql = sql<string>`lpad(${waybills.number}::text, ${waybillSeri
 /**
  * Номер бланка так, как его читает человек: «260604-646-00000004897». Собирается в SQL из серии и
  * числа — искать по нему нужно там же, где отбирают строки, а не после выборки.
+ *
+ * Колонками, а не таблицами, потому что номеров в строке журнала теперь три: свой, заменённый и
+ * заменивший (ADR 0101 п. 20). Каждый приходит своим join'ом на те же две таблицы, и склейка
+ * «префикс + номер» у них одна — переписанная трижды, она разошлась бы при первой правке ширины.
+ * Псевдоним `alias()` носит собственное имя таблицы, и по типу самой таблицы он бы не подошёл.
  */
+function displayNumberOf(
+  number: PgColumn,
+  prefix: PgColumn,
+  numberWidth: PgColumn,
+): SQL<string | null> {
+  return sql`${prefix} || lpad(${number}::text, ${numberWidth}, '0')`;
+}
+
 const displayNumberSql = sql<string>`${waybillSeries.prefix} || ${paddedNumberSql}`;
+
+/**
+ * Две стороны одной связи коррекции: `corrected` — лист, который этот заменил, `replacement` — лист,
+ * выписанный взамен этого.
+ *
+ * Второй join безопасен только благодаря `waybills_corrects_unique`: каждый номер заменён не более
+ * одного раза, и строка журнала от него не размножается. Разветвление запрещено в схеме именно
+ * поэтому — два листа, объявивших себя заменой одному номеру, сделали бы вопрос «чем в итоге
+ * закрыт день» неразрешимым не только для человека, но и для этого запроса.
+ */
+const corrected = alias(waybills, 'corrected');
+const correctedSeries = alias(waybillSeries, 'corrected_series');
+const replacement = alias(waybills, 'replacement');
+const replacementSeries = alias(waybillSeries, 'replacement_series');
 
 /**
  * Наибольшее число, которое `Number` держит без потери точности. Колонка номера — bigint, и
@@ -175,6 +223,21 @@ const waybillSelect = {
   cancelledAt: waybills.cancelledAt,
   cancelReason: waybills.cancelReason,
   cancelledBy: waybills.cancelledBy,
+  // След коррекции (ADR 0101): признак — ссылка на операцию, а не наличие заменённого номера.
+  // Колонок две, потому что операции у листа бывают две: породившая и списавшая.
+  correctionId: waybills.correctionId,
+  cancelCorrectionId: waybills.cancelCorrectionId,
+  correctionReason: waybills.correctionReason,
+  correctsNumber: displayNumberOf(
+    corrected.number,
+    correctedSeries.prefix,
+    correctedSeries.numberWidth,
+  ),
+  correctedByNumber: displayNumberOf(
+    replacement.number,
+    replacementSeries.prefix,
+    replacementSeries.numberWidth,
+  ),
 };
 
 type WaybillRow = Awaited<ReturnType<typeof loadRows>>[number];
@@ -204,6 +267,12 @@ async function loadRows(
     .leftJoin(vehicleModels, eq(vehicleModels.id, vehicles.vehicleModelId))
     .innerJoin(persons, eq(persons.id, waybills.driverPersonId))
     .innerJoin(issuers, eq(issuers.id, waybills.issuedBy))
+    // Обе стороны связи коррекции — левыми join'ами: у подавляющего большинства строк их нет
+    // вовсе, а у цепочки A → B → C средний лист держит сразу обе.
+    .leftJoin(corrected, eq(corrected.id, waybills.correctsWaybillId))
+    .leftJoin(correctedSeries, eq(correctedSeries.id, corrected.seriesId))
+    .leftJoin(replacement, eq(replacement.correctsWaybillId, waybills.id))
+    .leftJoin(replacementSeries, eq(replacementSeries.id, replacement.seriesId))
     .where(where)
     // Вторым ключом номер: листов одного дня десятки, и без него страницы разъезжались бы между
     // запросами. Когда сортируют по самому номеру, второго ключа нет — он повторял бы первый и
@@ -349,6 +418,10 @@ function toDto(
     cancelReason: row.cancelReason,
     printedAt: marks.printedAt,
     exportedAt: marks.exportedAt,
+    isCorrection: row.correctionId !== null || row.cancelCorrectionId !== null,
+    correctionReason: row.correctionReason,
+    correctsNumber: row.correctsNumber,
+    correctedByNumber: row.correctedByNumber,
     requests: links,
     files,
   };
@@ -391,6 +464,94 @@ async function filesByWaybill(ids: string[]): Promise<Map<string, FileDto[]>> {
   return map;
 }
 
+/**
+ * Строка журнала целиком — та же, какой её видно в списке.
+ *
+ * Ею отвечают и одиночное чтение, и аннулирование: ответ на команду собирается из текущего
+ * состояния листа, а не из того, что команда собиралась записать (Р31, ADR 0101 п. 9). На повторе
+ * операции выполнять нечего, и другого способа ответить то же самое, что и с первой попытки, нет.
+ */
+async function waybillDtoOr404(id: string): Promise<WaybillDto> {
+  const [row] = await loadRows(and(eq(waybills.id, id)));
+  if (!row) throw err.notFound('Путевой лист не найден');
+  const [links, cancelled, attachments, marks] = await Promise.all([
+    linksByWaybill([row.id]),
+    cancelledByNames([row]),
+    filesByWaybill([row.id]),
+    printMarksByWaybill([row.id]),
+  ]);
+  return toDto(
+    row,
+    links.get(row.id) ?? [],
+    cancelled.get(row.cancelledBy ?? '') ?? null,
+    attachments.get(row.id) ?? [],
+    marks.get(row.id),
+  );
+}
+
+/** Статус листа и его напечатанный номер — то, чем сторожится бумага. */
+interface PrintGuardRow {
+  id: string;
+  status: WaybillDto['status'];
+  number: number;
+  prefix: string;
+  numberWidth: number;
+}
+
+async function printGuardRows(ids: string[]): Promise<PrintGuardRow[]> {
+  return db
+    .select({
+      id: waybills.id,
+      status: waybills.status,
+      number: waybills.number,
+      prefix: waybillSeries.prefix,
+      numberWidth: waybillSeries.numberWidth,
+    })
+    .from(waybills)
+    .innerJoin(waybillSeries, eq(waybillSeries.id, waybills.seriesId))
+    .where(inArray(waybills.id, ids));
+}
+
+/**
+ * Отказ в бумаге со списком аннулированных номеров; `null` — отдавать можно.
+ *
+ * Номера перечисляются в том же порядке, в каком листы стоят в пачке: выборка их порядка не
+ * гарантирует, а человек сверяет перечень со своим выбором на экране. У одиночного листа перечень
+ * не собирается вовсе — убирать из выбора нечего.
+ */
+function cancelledNotice(orderedIds: string[], rows: PrintGuardRow[]): string | null {
+  const cancelled = rows.filter((row) => !canPrintWaybill(row.status));
+  if (cancelled.length === 0) return null;
+  if (orderedIds.length === 1) return WAYBILL_CANCELLED_PRINT_MESSAGE;
+  const numbers = orderedIds
+    .map((id) => cancelled.find((row) => row.id === id))
+    .filter((row) => row !== undefined)
+    .map((row) => waybillDisplayNumber(row.prefix, row.number, row.numberWidth))
+    .join(', ');
+  return `${WAYBILL_CANCELLED_PRINT_MESSAGE}. Уберите из выбора: ${numbers}`;
+}
+
+/**
+ * Перечитать статус после рендера и **до** отдачи файла (Р39, ADR 0101 п. 18).
+ *
+ * До ADR 0101 статус спрашивался один раз — перед сборкой бланка. Между этой проверкой и ответом
+ * лежит вся работа LibreOffice, секунды на пачке из полусотни листов, и коррекция успевает
+ * аннулировать лист внутри этого окна: старый документ всё равно уезжал, неотличимый от
+ * действующего (ADR 0081). Отметка `printedAt` от этого не спасает — она о прошлом, а не о текущем
+ * запросе.
+ *
+ * Честно: окно этим сужается, а не закрывается. Между перечитыванием и `reply.send` остаётся
+ * промежуток, в который укладывается коррекция, начатая в ту же миллисекунду; убирается **длинная**
+ * его часть — сборка PDF, — и ровно ради неё проверка и заводится. Блокировка листа на время
+ * рендера отвергнута: рендер долгий (до полусотни бланков), и коррекция ждала бы чужой печати —
+ * то есть цена была бы выше выигрыша. Остаточный риск принят: в оставшееся окно бумага ещё не у
+ * водителя, а в журнале отметка печати встанет рядом с аннулированием, и по паре видно, что было.
+ */
+async function assertStillPrintable(orderedIds: string[]): Promise<void> {
+  const notice = cancelledNotice(orderedIds, await printGuardRows(orderedIds));
+  if (notice) throw err.conflict(notice);
+}
+
 export default async function waybillsRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
   const canRead = app.requirePermission('waybills.read');
@@ -410,6 +571,14 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
         // Бланк: журнал у трёх форм один, а читают их разные люди по разным поводам — без этого
         // сужения недельные листы спецтехники тонут в ежедневных рейсовых.
         q.formCode ? eq(waybills.formCode, q.formCode) : undefined,
+        // Коррекции (ADR 0101 п. 20): по ссылке на операцию, а не по заменённому номеру — списание
+        // без перевыписки и выписка задним числом заменяемого листа не имеют, но правкой
+        // прошедшего дня являются ровно так же.
+        q.correction === undefined
+          ? undefined
+          : q.correction
+            ? or(isNotNull(waybills.correctionId), isNotNull(waybills.cancelCorrectionId))
+            : and(isNull(waybills.correctionId), isNull(waybills.cancelCorrectionId)),
         numberSearchCondition(q.search),
       );
       const pg = pageParams(q);
@@ -450,23 +619,7 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
   r.get(
     '/:id',
     { preHandler: [app.authenticate, canRead], schema: { params: idParams } },
-    async (req) => {
-      const [row] = await loadRows(and(eq(waybills.id, req.params.id)));
-      if (!row) throw err.notFound('Путевой лист не найден');
-      const [links, cancelled, attachments, marks] = await Promise.all([
-        linksByWaybill([row.id]),
-        cancelledByNames([row]),
-        filesByWaybill([row.id]),
-        printMarksByWaybill([row.id]),
-      ]);
-      return toDto(
-        row,
-        links.get(row.id) ?? [],
-        cancelled.get(row.cancelledBy ?? '') ?? null,
-        attachments.get(row.id) ?? [],
-        marks.get(row.id),
-      );
-    },
+    async (req) => waybillDtoOr404(req.params.id),
   );
 
   /**
@@ -516,6 +669,10 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
     async (req, reply) => {
       const p = requirePrincipal(req);
       const { rendered, id, displayNumber } = await renderWaybill(req.params.id);
+      // Лист мог быть аннулирован коррекцией, пока бланк собирался (Р39). Сборка xlsx короче
+      // печати, но проверка стоит и здесь: файл правят в редакторе и печатают уже из него — то
+      // есть аннулированный бланк уезжает на бумагу тем же путём, только длиннее.
+      await assertStillPrintable([id]);
 
       // Выгрузка уносит персональные данные водителя из портала — это учётное событие.
       await writeAudit({
@@ -552,6 +709,10 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
       const p = requirePrincipal(req);
       const { rendered, id, displayNumber } = await renderWaybill(req.params.id);
       const pdf = await renderPdf(rendered.bytes);
+      // Самое длинное окно гонки во всём портале: между проверкой статуса в `renderWaybill` и этой
+      // строкой лежит вся работа LibreOffice (Р39). Аудит печати ниже — только после проверки:
+      // отметка «печатали» не должна появляться у бумаги, которая никуда не ушла.
+      await assertStillPrintable([id]);
 
       await writeAudit({
         actorUserId: p.id,
@@ -599,32 +760,15 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
       // лишнюю страницу в пачке, вторую запись в аудит и съел бы место в пределе.
       const ids = [...new Set(req.body.ids)];
 
-      const rows = await db
-        .select({
-          id: waybills.id,
-          status: waybills.status,
-          number: waybills.number,
-          prefix: waybillSeries.prefix,
-          numberWidth: waybillSeries.numberWidth,
-        })
-        .from(waybills)
-        .innerJoin(waybillSeries, eq(waybillSeries.id, waybills.seriesId))
-        .where(inArray(waybills.id, ids));
+      const rows = await printGuardRows(ids);
 
       const byId = new Map(rows.map((row) => [row.id, row]));
       const missing = ids.filter((id) => !byId.has(id));
       if (missing.length > 0) throw err.notFound('Часть листов не найдена — обновите журнал');
-      const cancelled = rows.filter((row) => !canPrintWaybill(row.status));
-      if (cancelled.length > 0) {
-        // Номера перечисляются в том же порядке, в каком листы стоят в пачке: выборка их порядка
-        // не гарантирует, а человек сверяет перечень со своим выбором на экране.
-        const numbers = ids
-          .map((id) => cancelled.find((row) => row.id === id))
-          .filter((row) => row !== undefined)
-          .map((row) => waybillDisplayNumber(row.prefix, row.number, row.numberWidth))
-          .join(', ');
-        throw err.conflict(`${WAYBILL_CANCELLED_PRINT_MESSAGE}. Уберите из выбора: ${numbers}`);
-      }
+      // Отбор до рендера: собирать полсотни бланков ради отказа незачем. Он же повторится после
+      // сборки — там уже против гонки с коррекцией (Р39), а не против выбора человека.
+      const notice = cancelledNotice(ids, rows);
+      if (notice) throw err.conflict(notice);
 
       // Бланки собираются по одному (снимок у каждого свой), а в PDF переводятся разом: запуск
       // конвертера дороже самой конвертации. Сам файл бланка на всю пачку читается по разу на
@@ -634,6 +778,9 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
       for (const id of ids) rendered.push(await renderWaybill(id, templates));
       const pdfs = await renderPdfBatch(rendered.map((item) => item.rendered.bytes));
       const pdf = await mergePdfs(pdfs);
+      // По всем листам пачки, а не по первому: коррекция аннулирует один номер, а на бумагу уходит
+      // весь документ — и неполный комплект со стола заберут, не зная об этом (Р39).
+      await assertStillPrintable(ids);
 
       await Promise.all(
         rendered.map((item) =>
@@ -659,11 +806,26 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
   );
 
   /**
-   * Аннулирование испорченного бланка (ADR 0037 п. 9 в редакции ADR 0052). По последний день
-   * листа включительно: лист на рейс выписывают утром того же дня, и запрет в этот день оставлял
-   * бы испорченный бланк несписанным, а рейс — навсегда замороженным. У ЭСМ-2 последний день —
-   * конец недели работ: она ещё идёт, бланк ещё у машиниста. Со следующего дня нельзя: работа
-   * состоялась, и лист стал историей.
+   * Аннулирование бланка (ADR 0037 п. 9 в редакции ADR 0052, прошедший день — ADR 0101 Р20).
+   *
+   * Границ здесь две, и они не спорят, а продолжают друг друга.
+   *
+   * **По последний день листа включительно** — обычное списание испорченного бланка, без права,
+   * причины и записи операции. Лист на рейс выписывают утром того же дня, и запрет в этот день
+   * оставлял бы испорченный бланк несписанным, а рейс — навсегда замороженным; у ЭСМ-2 последний
+   * день это конец недели работ: она ещё идёт, бланк ещё у машиниста.
+   *
+   * **Дальше** — коррекция задним числом: до ADR 0101 прошедший день был закрыт наглухо всем
+   * ролям, и бэклог ADR 0052 объяснял это словами «переписывать историю бланком строгой отчётности
+   * нельзя». Постановка изменилась не в этом — лист по-прежнему не правится, — а в том, что
+   * документ обязан сойтись с тем, что было: лист, выписанный на машину, которая не ехала,
+   * списывают и без перевыписки. Такое списание требует права `waybills.correct`, причины и
+   * заводит запись операции (Р16), а причина уходит в `cancel_reason` (Р35).
+   *
+   * Отдельной ручки под это нет намеренно: действие одно и то же — «списать номер», — и второй
+   * маршрут с той же семантикой разошёлся бы с первым в мелочах (аудит, ответ, проверка статуса).
+   * Различает их календарь, и различает его `backdateGuard` — тот же предикат, что на всех прочих
+   * входах заднего числа (Р29).
    *
    * Номер при этом сгорает — для бланка строгой отчётности это норма, а дыра в журнале честнее
    * переиспользованного номера.
@@ -678,40 +840,112 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
       const p = requirePrincipal(req);
       const [row] = await loadRows(and(eq(waybills.id, req.params.id)));
       if (!row) throw err.notFound('Путевой лист не найден');
-      if (row.status === 'cancelled') throw err.conflict('Лист уже аннулирован');
-      if (!canCancelWaybill(row, today())) throw err.conflict(WAYBILL_LOCKED_MESSAGE);
+      const { reason, operationId } = req.body;
 
-      await db
-        .update(waybills)
-        .set({
-          status: 'cancelled',
-          cancelledAt: new Date(),
-          cancelledBy: p.id,
-          cancelReason: req.body.reason,
-          updatedAt: new Date(),
-        })
-        .where(and(eq(waybills.id, row.id), ne(waybills.status, 'cancelled')));
+      /*
+       * Доступ считается функцией, а не разово: на повторе операции (Р31) это единственная
+       * проверка, которая вообще случится, и `runCorrection` зовёт её сам. Здесь же она нужна
+       * первый раз — вердикт решает, обычное это списание или коррекция.
+       *
+       * Прежняя граница `canCancelWaybill` при этом никуда не делась: «сегодня и позже» и
+       * `backdated: false` — одно и то же условие, записанное один раз (`today <= periodTo ||
+       * issuedForDate`). Считать его дважды разными выражениями значило бы завести две границы,
+       * которые однажды разойдутся на день.
+       */
+      const authorize = () =>
+        backdateOrThrow(
+          checkBackdate({
+            // Эффективная дата — по таблице §4 плана: у ЭСМ-2 конец недели, у листа на рейс день
+            // выезда. Ошибка здесь сдвинула бы границу всей коррекции.
+            effectiveDate: waybillEffectiveDate(row),
+            today: today(),
+            subject: p,
+            hasReason: reason.trim() !== '',
+          }),
+        );
+      const backdated = authorize();
+      /** Повтор той же операции (Р31): выполнять нечего, и второй записи в аудит быть не должно. */
+      let repeated = false;
 
-      await writeAudit({
-        actorUserId: p.id,
-        action: 'waybill.cancel',
-        entityType: 'waybill',
-        entityId: row.id,
-        metadata: { number: row.number, reason: req.body.reason },
-      });
+      if (!backdated) {
+        if (row.status === 'cancelled') throw err.conflict('Лист уже аннулирован');
+        await db
+          .update(waybills)
+          .set({
+            status: 'cancelled',
+            cancelledAt: new Date(),
+            cancelledBy: p.id,
+            cancelReason: reason,
+            updatedAt: new Date(),
+          })
+          .where(and(eq(waybills.id, row.id), ne(waybills.status, 'cancelled')));
+      } else {
+        // Ключ идемпотентности обязателен ровно здесь: сегодняшнее списание операцией не является
+        // и повтора не боится, а списание задним числом заводит строку в журнале коррекций.
+        if (!operationId) {
+          throw err.unprocessable(CORRECTION_OPERATION_ID_REQUIRED, {
+            operationId: 'Не передан ключ операции',
+          });
+        }
+        const outcome = await runCorrection(
+          {
+            operationId,
+            kind: 'cancel',
+            target: row.id,
+            body: req.body,
+            reason,
+            actorUserId: p.id,
+          },
+          {
+            authorize,
+            perform: async (tx, correction) => {
+              const cancelled = await cancelWaybillForCorrection(tx, {
+                waybillId: row.id,
+                correctionId: correction.id,
+                reason,
+                actorUserId: p.id,
+              });
+              // Не первый, кто списал этот номер: соседняя вкладка успела раньше, и вторая запись
+              // об одном и том же списании только запутала бы журнал.
+              if (!cancelled) throw err.conflict('Лист уже аннулирован');
+              /*
+               * Снимок «было → стало». Состояние листа целиком сюда не кладётся: он никуда не
+               * делся и читается из журнала. Здесь то, чего в нём через месяц уже не восстановить,
+               * — чем номер был на момент списания: перевыписка (Р2, Р30) допишет в этот же
+               * снимок прежние назначения и снятые подписи смен.
+               */
+              return {
+                waybill: {
+                  id: row.id,
+                  number: waybillDisplayNumber(row.prefix, row.number, row.numberWidth),
+                  formCode: row.formCode,
+                  issuedForDate: row.issuedForDate,
+                  periodFrom: row.periodFrom,
+                  periodTo: row.periodTo,
+                  vehicleId: row.vehicleId,
+                  driverPersonId: row.driverPersonId,
+                  status: { before: row.status, after: 'cancelled' },
+                },
+              };
+            },
+          },
+        );
+        repeated = outcome.repeated;
+      }
 
-      const [updated] = await loadRows(and(eq(waybills.id, row.id)));
-      const [links, cancelled, attachments] = await Promise.all([
-        linksByWaybill([row.id]),
-        cancelledByNames([updated!]),
-        filesByWaybill([row.id]),
-      ]);
-      return toDto(
-        updated!,
-        links.get(row.id) ?? [],
-        cancelled.get(p.id) ?? null,
-        attachments.get(row.id) ?? [],
-      );
+      if (!repeated) {
+        await writeAudit({
+          actorUserId: p.id,
+          action: 'waybill.cancel',
+          entityType: 'waybill',
+          entityId: row.id,
+          // Признак заднего числа — в аудите тоже: журнал коррекций отвечает «почему», а лента
+          // аудита остаётся местом, где видно всё подряд в одном порядке.
+          metadata: { number: row.number, reason, backdated, operationId },
+        });
+      }
+
+      return waybillDtoOr404(row.id);
     },
   );
 

@@ -7,7 +7,7 @@ import {
   type VehicleRequestType,
 } from './enums';
 import type { RequestStatus } from './enums';
-import { allowedStatusTransitions, type AccessSubject } from './permissions';
+import { allowedStatusTransitions, can, type AccessSubject } from './permissions';
 import {
   archiveFilterSchema,
   baseListQuery,
@@ -32,11 +32,12 @@ import {
 } from './vehicle-routes';
 import type { WaybillFormCode } from './waybills';
 import {
-  MIN_REQUEST_DATE_MESSAGE,
   WORK_TIME_MESSAGE,
   isAllowedRequestDate,
   isAllowedRequestDateAt,
   isWithinWorkTimeAt,
+  moscowDateKeyOf,
+  moscowMinutesOf,
   shiftDateKey,
 } from './time';
 import type { VehicleRequestShiftsSummaryDto } from './vehicle-request-shifts';
@@ -87,6 +88,77 @@ export function parseVehicleRequestNumberSearch(input: string): number | undefin
   return Number.isSafeInteger(n) && n > 0 ? n : undefined;
 }
 
+// ── Заблаговременность заявки на технику (ADR 0104) ──
+// Технику заказывают заранее: наряд на завтра диспетчер собирает днём — распределяет машины,
+// назначает водителей, выписывает бланки, — и заявка, поданная вечером «на завтра», в этот наряд
+// уже не попадает. Поэтому у заявителя ближайший доступный день зависит от часа подачи: до 15:00
+// по МСК он заказывает на завтра, с 15:00 — на послезавтра.
+//
+// Тех, кто заказы **ведёт** (диспетчер, менеджер, администратор), правило не касается вовсе:
+// срочная подача день в день — их работа, а запрет отправил бы такую заявку в обход портала
+// звонком. Прошлое им открывает отдельное право на коррекцию (ADR 0101) — заблаговременность его
+// не двигает и с ним не спорит: она поднимает нижнюю границу только там, где прошлого нет.
+
+/** Отсечка приёма заявок на завтра — 15:00 МСК. Ровно в 15:00 она уже прошла. */
+export const VEHICLE_REQUEST_CUTOFF_MINUTES = 15 * 60;
+
+/**
+ * Заявитель — тот, кто технику заказывает, но заказ по статусам не ведёт: штаб, руководитель
+ * строительства, обе роли отдела.
+ *
+ * Спрашивается право, а не имя роли: `vehicleRequests.status` — это ровно «ведёт заказ», и
+ * следующая роль по любую сторону границы попадёт под правило сама, без правки списка. У
+ * арендодателя право есть (он закрывает выполненное), но проверка его не касается: завести заявку
+ * он не может вовсе.
+ */
+export function isVehicleRequestRequester(subject: AccessSubject | null | undefined): boolean {
+  return !can(subject, 'vehicleRequests.status');
+}
+
+/**
+ * Ближайший день, на который субъект вправе назначить заявку (`YYYY-MM-DD`, МСК):
+ *
+ * - заявитель до 15:00 — завтра, с 15:00 — послезавтра;
+ * - тот, кто ведёт заказы, — сегодня, как и прежде.
+ *
+ * Одна функция на форму и сервер: по ней портал запирает дни в календаре, ею же ручка отвечает
+ * отказом — иначе дейтпикер предлагал бы дату, которую сервер не примет.
+ */
+export function minVehicleRequestDateKey(
+  subject: AccessSubject | null | undefined,
+  now: Date = new Date(),
+): string {
+  const today = moscowDateKeyOf(now);
+  if (!isVehicleRequestRequester(subject)) return today;
+  return shiftDateKey(today, moscowMinutesOf(now) < VEHICLE_REQUEST_CUTOFF_MINUTES ? 1 : 2);
+}
+
+/** Сообщение о слишком близкой дате — одинаковое в форме и в ответе API. */
+export const VEHICLE_REQUEST_LEAD_TIME_MESSAGE =
+  'Технику заказывают заранее: на завтра — до 15:00, после 15:00 — начиная с послезавтра';
+
+/**
+ * Почему эта дата заявке недоступна — текстом, либо `null`, если доступна (тот же приём, что у
+ * `earlyEndBlocker` и `retypeBlocker`).
+ *
+ * `effectiveDate` — день, на который заказывают технику: у заказа на объект начало срока, у
+ * грузоперевозки день подачи, у правки — он же, если она его двигает (`movedRequestStartKey`).
+ * Правку, которая этого дня не трогает, спрашивать не о чем: заявка на завтра, заведённая утром,
+ * не должна переставать сохраняться в 15:01 из-за уточнённого телефона.
+ *
+ * Прошлое сюда не приходит: без объявленной причины его отклоняет схема, с причиной — вердикт
+ * `backdateGuard` (право, глубина). Заблаговременность отвечает только за ближний край.
+ */
+export function vehicleRequestLeadTimeBlocker(
+  subject: AccessSubject | null | undefined,
+  effectiveDate: string,
+  now: Date = new Date(),
+): string | null {
+  return effectiveDate < minVehicleRequestDateKey(subject, now)
+    ? VEHICLE_REQUEST_LEAD_TIME_MESSAGE
+    : null;
+}
+
 // ── Общие подсхемы ──
 const commentSchema = z.string().trim().max(2000);
 const locationSchema = z.string().trim().min(1).max(1000);
@@ -105,6 +177,31 @@ const scheduledAtSchema = z.string().datetime({ offset: true });
  * останется единственным объяснением того, почему заявка заведена вчерашним днём.
  */
 const backdateReasonSchema = z.string().trim().min(1, 'Укажите причину').max(2000);
+
+/**
+ * Отказ схемы на прошлом, о котором не сказали ни слова (ADR 0101, Р15).
+ *
+ * Называет оба условия сразу, потому что схема не знает, какого из них не хватает: право живёт у
+ * субъекта, а из тела видно только причину. Человеку это и нужно — «допишите объяснение» плюс «а
+ * если права нет, объяснение не поможет»; сервер, получив причину, ответит уже точным кодом
+ * (`backdateGuard`: 403 на право, 422 на глубину).
+ */
+export const BACKDATE_UNDECLARED_MESSAGE =
+  'Дата в прошлом: задним числом заявку заводят с причиной и правом на коррекцию — без объяснения принимается сегодня и позже';
+
+/**
+ * Ключ идемпотентности операции задним числом (Р31) — тот же по смыслу, что у списания бланка
+ * (`cancelWaybillSchema.operationId`).
+ *
+ * Необязателен, потому что обычное заведение и обычная правка операцией не являются: требовать
+ * ключ под каждую заявку значило бы объявить коррекцией всю дневную работу. Сервер спрашивает его
+ * ровно тогда, когда дата операции уже прошла, — и отвечает `CORRECTION_OPERATION_ID_REQUIRED`.
+ *
+ * Зачем он здесь вообще: правка срока сжигает номера ЭСМ-2 (сверка переоформляет недели), а сеть
+ * рвётся. Версия заявки от повтора не спасает — она ответит 409 там, где человек ждёт «уже
+ * сохранено», и заставит его открыть карточку и сверять глазами, что именно доехало.
+ */
+const operationIdSchema = uuidSchema;
 
 /** Положительное значение с не более чем 3 знаками после запятой (numeric(12,3)). */
 const amountSchema = z
@@ -140,6 +237,8 @@ export const createSpecialEquipmentRequestSchema = z
     fileIds: fileIdsSchema.optional().default([]),
     /** Заявка заводится задним числом — объяснение (ADR 0101); проверяет его `backdateGuard`. */
     backdateReason: backdateReasonSchema.optional(),
+    /** Ключ повтора заведения задним числом (Р31); у сегодняшней заявки не спрашивается. */
+    operationId: operationIdSchema.optional(),
   })
   .strict();
 
@@ -183,6 +282,8 @@ export const createFreightTransportRequestSchema = z
     fileIds: fileIdsSchema.optional().default([]),
     /** Заявка заводится задним числом — объяснение (ADR 0101); проверяет его `backdateGuard`. */
     backdateReason: backdateReasonSchema.optional(),
+    /** Ключ повтора заведения задним числом (Р31); у сегодняшней заявки не спрашивается. */
+    operationId: operationIdSchema.optional(),
   })
   .strict();
 
@@ -215,16 +316,15 @@ export const createVehicleRequestSchema = z
           message: 'Дата окончания раньше даты начала',
         });
       }
-      // Новую заявку заводят не раньше чем на сегодня (по МСК). Конец периода проверять
-      // отдельно не нужно: он не раньше начала.
+      // Начало срока не раньше сегодня — пока прошлое не объявлено причиной. Конец периода
+      // проверять отдельно не нужно: он не раньше начала, а `backdateGuard` на сервере считает
+      // глубину по той границе, которую двигают (§4 плана).
       //
-      // Причина заднего числа (`backdateReason`) эту проверку пока НЕ снимает, хотя поле уже
-      // принимается. Снять её здесь значит открыть заведение задним числом всем: право и глубину
-      // спрашивает `backdateGuard` на сервере, а он приходит этапом 3 (ADR 0101). Схема, которая
-      // пускает раньше, чем сервер начинает проверять, — это не подготовка, а дыра; строка
-      // условия меняется тем же коммитом, что заводит серверную проверку.
-      if (!isAllowedRequestDate(v.dateFrom)) {
-        ctx.addIssue({ code: 'custom', path: ['dateFrom'], message: MIN_REQUEST_DATE_MESSAGE });
+      // Заявленное прошлое схема пропускает молча и не решает о нём ничего: `backdateReason` —
+      // намерение, а не авторизация. Право (`waybills.correct`), глубину и непустоту причины
+      // сервер спрашивает всегда и отвечает точным кодом — 403 на право, 422 на глубину.
+      if (!v.backdateReason && !isAllowedRequestDate(v.dateFrom)) {
+        ctx.addIssue({ code: 'custom', path: ['dateFrom'], message: BACKDATE_UNDECLARED_MESSAGE });
       }
     } else {
       // Заказчик ровно один (ADR 0040): двое дали бы два ответа на «кто визирует», ноль —
@@ -242,9 +342,14 @@ export const createVehicleRequestSchema = z
       if (!v.scheduledTimeUnspecified && !isWithinWorkTimeAt(new Date(v.scheduledAt))) {
         ctx.addIssue({ code: 'custom', path: ['scheduledAt'], message: WORK_TIME_MESSAGE });
       }
-      // Причина заднего числа проверку пока не снимает — по той же причине, что и у срока выше.
-      if (!isAllowedRequestDateAt(new Date(v.scheduledAt))) {
-        ctx.addIssue({ code: 'custom', path: ['scheduledAt'], message: MIN_REQUEST_DATE_MESSAGE });
+      // День подачи по МСК — тем же правилом, что и срок выше: необъявленное прошлое отклоняется,
+      // объявленное уходит серверу, который один знает право и глубину.
+      if (!v.backdateReason && !isAllowedRequestDateAt(new Date(v.scheduledAt))) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['scheduledAt'],
+          message: BACKDATE_UNDECLARED_MESSAGE,
+        });
       }
     }
   });
@@ -283,6 +388,8 @@ export const updateSpecialEquipmentRequestSchema = z
      * не попадает (Р29).
      */
     backdateReason: backdateReasonSchema.optional(),
+    /** Ключ повтора правки задним числом (Р31); обычная правка ключа не спрашивает. */
+    operationId: operationIdSchema.optional(),
   })
   .strict();
 
@@ -313,6 +420,8 @@ export const updateFreightTransportRequestSchema = z
     removeFileIds: z.array(uuidSchema).optional(),
     /** Причина сдвига подачи в прошлое (ADR 0101, Р6) — тем же правилом, что у спецтехники. */
     backdateReason: backdateReasonSchema.optional(),
+    /** Ключ повтора правки задним числом (Р31); обычная правка ключа не спрашивает. */
+    operationId: operationIdSchema.optional(),
   })
   .strict();
 
@@ -358,6 +467,88 @@ export const updateVehicleRequestSchema = z
     }
   });
 export type UpdateVehicleRequestInput = z.infer<typeof updateVehicleRequestSchema>;
+
+// ── Календарь заявки и задний ход правки (ADR 0101, Р29) ──
+
+/**
+ * Календарные поля заявки одним видом: у заказа техники на объект это две границы срока, у
+ * грузоперевозки — день подачи. Днями, а не моментами: границу заднего числа портал и сервер
+ * считают по МСК (`moscowDateKeyOf`), и час подачи в ней не значит ничего.
+ *
+ * `undefined` в «после» означает «поле не передали, то есть не трогали», `null` у `dateTo` —
+ * «дату окончания сняли», то есть срок стал однодневным. Разница существенная: первое календарь не
+ * двигает вовсе, второе двигает его последний день на начало срока.
+ */
+export interface RequestCalendar {
+  /** День подачи грузоперевозки (`YYYY-MM-DD`, МСК); у заказа на объект пусто. */
+  scheduledDay?: string | null;
+  dateFrom?: string | null;
+  dateTo?: string | null;
+}
+
+/**
+ * Эффективная дата правки заявки — та, по которой спрашивается право задним числом (§4 плана
+ * ADR 0101). `null` — календарь правка не двигает вовсе, и `backdateGuard` тут не при чём:
+ * уточнение телефона у вчерашней заявки под `waybills.correct` не попадает (Р29).
+ *
+ * Одна функция на портал и сервер, потому что расходиться им здесь нельзя вдвойне: разойдись они в
+ * «что считается сдвигом», форма спрашивала бы причину там, где сервер её не ждёт (или наоборот —
+ * молча отправляла бы правку, которой ответят 403).
+ *
+ * Правила ровно два, и оба из таблицы §4:
+ *
+ * - двигают **новые** значения, а не старые: глубину решает то, куда дату переносят;
+ * - двинулись обе границы срока — берётся более ранняя. Она строже по всем трём исходам
+ *   `backdateGuard` (право, глубина, причина), поэтому одного вердикта по ней достаточно, а
+ *   отказ называет именно её — как и требует §4.
+ *
+ * Последний день срока читается тем же `coalesce(date_to, date_from)`, каким его читает весь
+ * портал: снятая дата окончания — однодневный срок, а не «конца нет».
+ */
+export function movedRequestDateKey(
+  before: RequestCalendar,
+  after: RequestCalendar,
+): string | null {
+  const keep = <T>(next: T | undefined, prev: T | undefined): T | undefined =>
+    next === undefined ? prev : next;
+  const moved: string[] = [];
+
+  const nextDay = keep(after.scheduledDay, before.scheduledDay);
+  if (nextDay && nextDay !== before.scheduledDay) moved.push(nextDay);
+
+  const nextFrom = keep(after.dateFrom, before.dateFrom);
+  if (nextFrom && nextFrom !== before.dateFrom) moved.push(nextFrom);
+  // Последний день, а не сама колонка `dateTo`: снятая дата окончания переносит конец срока на
+  // начало, и правка, которая это делает, двигает календарь ничуть не меньше проставленной даты.
+  const nextLast = keep(after.dateTo, before.dateTo) || nextFrom;
+  const prevLast = before.dateTo || before.dateFrom;
+  if (nextLast && nextLast !== prevLast) moved.push(nextLast);
+
+  return moved.length === 0 ? null : moved.reduce((a, b) => (a < b ? a : b));
+}
+
+/**
+ * День, **на который заказана техника**, если правка его двигает: у заказа на объект первый день
+ * срока, у грузоперевозки день подачи. `null` — этот день правка не трогает.
+ *
+ * Отдельно от `movedRequestDateKey`, потому что вопросы разные. Тот отвечает «о каком дне правка
+ * что-то утверждает» и берёт в расчёт конец срока: сдвинув его, правка переписывает прошедшую
+ * неделю ничуть не меньше. Заблаговременность (ADR 0104) спрашивает другое — «на когда заказ», а
+ * заказ начинается с первого дня: конец периода не бывает раньше начала, и сокращение срока
+ * технику ближе не придвигает. Сложи эти два вопроса в одну функцию — и заявитель, укоротивший
+ * срок до однодневного, получил бы отказ «заказывайте заранее» на правке, которая ничего не
+ * заказывает.
+ */
+export function movedRequestStartKey(
+  before: RequestCalendar,
+  after: RequestCalendar,
+): string | null {
+  const nextDay = after.scheduledDay === undefined ? before.scheduledDay : after.scheduledDay;
+  if (nextDay && nextDay !== before.scheduledDay) return nextDay;
+  const nextFrom = after.dateFrom === undefined ? before.dateFrom : after.dateFrom;
+  if (nextFrom && nextFrom !== before.dateFrom) return nextFrom;
+  return null;
+}
 
 // ── Смена типа заявки: переоформление (ADR 0091) ──
 
@@ -770,8 +961,19 @@ export const assignVehicleSchema = z
      *
      * Только доставка: вывоз заводят из карточки заявки, когда работы подходят к концу, — в
      * момент перевода в работу его дату ещё не знают.
+     *
+     * Причина заднего числа (ADR 0101, Р29) лежит **внутри** перегона, а не рядом со статусом:
+     * задним числом здесь бывает только его дата — сам перевод в работу происходит сегодня, — и
+     * поле у границы отвечает ровно за ту границу, которую двигают. Общая причина у смены статуса
+     * означала бы «объясните переход», которого никто не просил.
      */
-    delivery: createRelocationRouteSchema.omit({ purpose: true }).optional(),
+    delivery: createRelocationRouteSchema
+      .omit({ purpose: true })
+      // Пустая строка схемой не отбивается — тем же приёмом, что у `createRequestRelocationSchema`:
+      // нужна ли причина вообще, знает сервер (дата в прошлом или нет), и его отказ отличает «нет
+      // права» от «нет причины». Схема, решившая это за него, дала бы один текст на оба случая.
+      .extend({ reason: z.string().trim().max(2000).optional() })
+      .optional(),
   })
   .strict();
 export type AssignVehicleInput = z.infer<typeof assignVehicleSchema>;
@@ -793,11 +995,86 @@ export function canReassignVehicle(request: {
   /** Сводка смен; у грузоперевозки её не бывает — подтверждать там нечего. */
   shifts?: VehicleRequestShiftsSummaryDto | null;
 }): boolean {
-  if (request.status !== 'confirmed' || !request.assignment || request.deletedAt) return false;
+  if (!canCorrectAssignment(request)) return false;
   // Подтверждённая смена запирает машину: за подписью объекта стоит работа конкретной техники,
   // и подмена задним числом превратила бы её в подпись под чужими часами (`approvedShiftsBlocker`).
   return (request.shifts?.approvedDays ?? 0) === 0;
 }
+
+// ── Коррекция назначения задним числом (ADR 0101, Р8) ──
+
+/**
+ * Половина запрета `canReassignVehicle`, которую коррекция **не** снимает.
+ *
+ * Запретов там два, и они разной природы. Подтверждённые дни коррекция снимает сознательно (Р5,
+ * ADR 0101 п. 16): подпись объекта стоит под работой конкретной техники, а после правки — под
+ * машиной, которой в этот день не было, и снятие подписи — это цель операции, а не помеха ей.
+ *
+ * Состояние самой заявки остаётся запретом и под правом:
+ *
+ * - «Новая» — менять нечего, машину назначает сам перевод в работу;
+ * - «Выполнена» — заявка ушла в выгрузку бухгалтерии, и правка назначения была бы правкой
+ *   предъявленного счёта (ADR 0101 п. 3). Порядок для неё описан прямо (Р38): администратор
+ *   возвращает заявку в работу, диспетчер корректирует, закрывают её заново — и «кто снял
+ *   закрытие» остаётся вопросом с ответом, а не действием, которого формально никто не делал;
+ * - «Отменена» и архивная — предмета правки нет вовсе.
+ *
+ * Предикат общий с сервером: кнопка коррекции не должна предлагать того, чем ручка ответит отказом.
+ */
+export function canCorrectAssignment(request: {
+  status: RequestStatus;
+  assignment: VehicleRequestAssignmentDto | null;
+  deletedAt: string | null;
+}): boolean {
+  return request.status === 'confirmed' && !!request.assignment && !request.deletedAt;
+}
+
+/**
+ * Отказ закрытой заявке — не «нельзя», а «сделайте вот это» (Р13, Р38): коррекция здесь становится
+ * совместной, и человек должен прочесть, чьей помощи просить.
+ */
+export const ASSIGNMENT_CORRECTION_CLOSED_MESSAGE =
+  'Заявка закрыта: смена машины задним числом переписала бы уже предъявленный счёт. Пусть администратор вернёт её в работу — факт выполнения при откате сохраняется, — после коррекции заявку закрывают теми же цифрами';
+
+/**
+ * Сколько листов ЭСМ-2 разом называет разблокировка. 53 недели — календарный год: заказ техники на
+ * объект длиннее года не встречается, а предел нужен не ради базы, а чтобы ошибка портала не
+ * пришла запросом на десять тысяч идентификаторов.
+ */
+export const ESM2_UNLOCK_LIMIT = 53;
+
+/**
+ * Признак коррекции у смены назначения (ADR 0101, Р8) — явным блоком, а не догадкой сервера.
+ *
+ * Догадаться нельзя ни по одному признаку тела: та же смена машины у той же заявки бывает и
+ * обычной дневной работой («заказанная сломалась, поедет другая»), и правкой прошедшего дня
+ * («ехала другая, а записана эта»). Первая ничего о прошлом не утверждает и ни права, ни причины
+ * не требует; вторая жжёт номера отработанных недель и снимает подписи объекта. Признак поэтому
+ * приходит от человека, а не выводится из состояния заявки.
+ *
+ * Авторизацией этот блок при этом **не является** (Р11). Право `waybills.correct`, глубину
+ * (`WAYBILL_CORRECTION_DAYS`) и принадлежность названных листов этой заявке сервер спрашивает сам
+ * и всегда: тело запроса перечисляет намерение, а не разрешение.
+ */
+export const correctAssignmentSchema = z
+  .object({
+    /** Ключ идемпотентности (Р31): повтор после обрыва связи не жжёт второй номер бланка. */
+    operationId: uuidSchema,
+    /** Причина операции: она же уходит в оба листа — в старый как причина списания (Р35). */
+    reason: backdateReasonSchema,
+    /**
+     * Листы ЭСМ-2 отработанных недель, которые правят, — идентификаторами, а не понедельниками
+     * (Р11): после линейной техники в одной неделе законно живут листы двух машин (ADR 0100 п. 7),
+     * и понедельник как ключ разблокировал бы не тот лист или сразу оба.
+     *
+     * Пусто — прошедшие недели не трогаются вовсе: коррекция тогда лишь переписывает назначение
+     * (и, если их не было, выписывает листы за недели, у которых бумаги нет вовсе).
+     */
+    unlockWaybillIds: z.array(uuidSchema).max(ESM2_UNLOCK_LIMIT).optional().default([]),
+  })
+  .strict();
+export type CorrectAssignmentInput = z.infer<typeof correctAssignmentSchema>;
+export type CorrectAssignmentBody = z.input<typeof correctAssignmentSchema>;
 
 /**
  * Смена машины и ставок у заявки, которая уже в работе (ADR 0048).
@@ -827,6 +1104,12 @@ export const changeVehicleAssignmentSchema = z
      */
     driverPersonId: uuidSchema.optional(),
     version: z.number().int().nonnegative(),
+    /**
+     * Смена машины задним числом (ADR 0101, Р8): под правом снимает замок подтверждённых дней,
+     * переписывает листы ЭСМ-2 названных отработанных недель и заводит запись операции. Блока нет
+     * — обычная смена техники, как была: ни права, ни причины, ни следа в журнале коррекций.
+     */
+    correction: correctAssignmentSchema.optional(),
   })
   .strict();
 export type ChangeVehicleAssignmentInput = z.infer<typeof changeVehicleAssignmentSchema>;
@@ -857,10 +1140,52 @@ export const issueRequestEsm2Schema = z
     vehicleId: uuidSchema,
     driverPersonId: uuidSchema,
     version: z.number().int().nonnegative(),
+    /**
+     * Причина выписки задним числом (ADR 0101 п. 4, дыра 3 плана). Ручная выдача — вторая дверь к
+     * бланку ЭСМ-2, и до ADR 0101 она про дату не спрашивала вовсе: неделя месячной давности
+     * закрывалась номером строгой отчётности молча. Эффективная дата у листа одна на все входы —
+     * `periodTo` недели (таблица §4 плана), — и её же спрашивает `backdateGuard`.
+     *
+     * Необязательна в схеме и обязательна на сервере ровно тогда, когда неделя уже кончилась:
+     * решает это guard, который один знает субъекта, его права и глубину. Схема субъекта не знает,
+     * и требовать объяснение за лист текущей недели значило бы спрашивать причину у обычной работы.
+     *
+     * Имя `reason`, а не `backdateReason`, как у правки заявки: ближайший родственник этой ручки —
+     * не правка заказа, а выписка листа по рейсу (`issueRouteWaybillSchema`), и у одинакового
+     * действия поле обязано называться одинаково.
+     */
+    reason: z.string().trim().max(2000).optional(),
+    /**
+     * Ключ идемпотентности операции (Р31). Нужен там же, где причина: выписка задним числом жжёт
+     * номер серии и заводит строку в журнале коррекций, и повтор после обрыва связи обязан вернуть
+     * прежний лист, а не следующий номер. У листа текущей недели ключа нет — это обычная работа.
+     */
+    operationId: uuidSchema.optional(),
   })
   .strict();
 export type IssueRequestEsm2Input = z.infer<typeof issueRequestEsm2Schema>;
 export type IssueRequestEsm2Body = z.input<typeof issueRequestEsm2Schema>;
+
+// ── Перегон по заявке задним числом (ADR 0101 п. 4) ──
+
+/**
+ * Перегон, заводимый из карточки заявки (`POST /vehicle-requests/:id/relocations`).
+ *
+ * От общей схемы перегона отличается одним полем — причиной заднего числа, — и заведено это
+ * расширением, а не правкой самой `createRelocationRouteSchema`: та же схема без `purpose` стоит
+ * блоком доставки в переводе заявки в работу, где дату перегона задаёт не она, а форма назначения.
+ *
+ * Почему у перегона нет ключа операции, хотя дата у него в прошлом бывает ровно так же, как у
+ * листа: рейс-перегон — планировочная запись, номера строгой отчётности он не расходует, и строки
+ * `waybill_corrections` такая дверь не заводит (§1 плана, уточнение этапа 7). Право и причина
+ * спрашиваются, объяснение уходит в аудит события `vehicle_route.create` — тем же правилом, что у
+ * заведения обычного рейса. Причина у бумаги появится своя: её спросит выписка листа по этому рейсу.
+ */
+export const createRequestRelocationSchema = createRelocationRouteSchema.extend({
+  reason: z.string().trim().max(2000).optional(),
+});
+export type CreateRequestRelocationInput = z.infer<typeof createRequestRelocationSchema>;
+export type CreateRequestRelocationBody = z.input<typeof createRequestRelocationSchema>;
 
 // ── Факт выполнения заявки (ADR 0029) ──
 

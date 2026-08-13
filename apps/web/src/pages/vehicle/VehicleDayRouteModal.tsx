@@ -20,6 +20,7 @@ import { driversApi, vehicleRequestsApi, vehicleRoutesApi, vehiclesApi } from '.
 import { AutoSelect, FormGrid, FormModal, useFormBlockers } from '@shared/ui';
 import { errorMessage } from '../../utils/format';
 import { formatDateOnly } from './shared';
+import { BackdateReasonField } from './VehicleBackdateFields';
 
 /**
  * Поставить день линейного заказа в рейс (ADR 0100 решение 8).
@@ -67,8 +68,13 @@ interface Props {
   /**
    * Заявка и день, который ставят в рейс; `null` — окно закрыто. Заявка должна быть линейной, в
    * работе и на собственной машине — это проверила таблица дней правилом `canPlanDay`.
+   *
+   * `onDate` — день среза, посчитанный сервером (`VehicleRequestDaysDto.onDate`): им и только им
+   * решается, прошедший ли это день. Часы браузера бывают сбиты, а разойтись с `backdateGuard`
+   * форме нельзя — она либо не спросит причину там, где ручка её потребует, либо потребует там,
+   * где сервер не спрашивает.
    */
-  target: { request: SpecialEquipmentRequestDto; date: string } | null;
+  target: { request: SpecialEquipmentRequestDto; date: string; onDate: string } | null;
   onClose: () => void;
   /** План после планирования: таблицу дней ведёт вызывающий — он же владеет её кэшем. */
   onDone: (days: VehicleRequestDaysDto) => void;
@@ -79,6 +85,8 @@ interface FormValues {
   /** Идентификатор готового рейса либо `NEW_ROUTE`. */
   routeId?: string;
   driverPersonId?: string;
+  /** Причина заднего числа — спрашивается только у прошедшего дня (ADR 0101 п. 4). */
+  reason?: string;
 }
 
 export function VehicleDayRouteModal({ target, onClose, onDone }: Props) {
@@ -111,8 +119,19 @@ export function VehicleDayRouteModal({ target, onClose, onDone }: Props) {
       vehicleId: target.request.assignment?.vehicleId,
       routeId: NEW_ROUTE,
       driverPersonId: undefined,
+      reason: undefined,
     });
   }, [target?.request.id, target?.date]);
+
+  /*
+   * Прошедший день (ADR 0101 п. 4, дыра 1 плана). Правило дней прошлое разрешает — выезд оформляют
+   * и задним числом (`planDayBlocker`), — но сервер спрашивает за него право и причину: рейс,
+   * заведённый этим окном, ничем не отличается от заведённого со стороны маршрутов, а там причину
+   * спрашивают уже давно.
+   *
+   * Граница — день среза от сервера, а не `new Date()` браузера: тем же поясом её считает ручка.
+   */
+  const past = !!target && date < target.onDate;
 
   /**
    * Собственная техника парка: в рейс ходит только она — лист на арендную выписывает арендодатель.
@@ -209,9 +228,11 @@ export function VehicleDayRouteModal({ target, onClose, onDone }: Props) {
 
   const plan = useMutation({
     mutationFn: (v: FormValues) => {
+      // Причина уходит только у прошедшего дня: у сегодняшнего и завтрашнего сервер её не спросит.
+      const backdate = past ? { reason: v.reason } : {};
       const body: PlanVehicleRequestDayBody =
         v.routeId && v.routeId !== NEW_ROUTE
-          ? { routeId: v.routeId }
+          ? { routeId: v.routeId, ...backdate }
           : {
               newRoute: {
                 vehicleId: v.vehicleId!,
@@ -221,6 +242,7 @@ export function VehicleDayRouteModal({ target, onClose, onDone }: Props) {
                 // Спрашивать их у дня значило бы задавать один и тот же вопрос по разу в сутки.
                 ...(suggestion?.trip ? { trip: suggestion.trip } : {}),
               },
+              ...backdate,
             };
       return vehicleRequestsApi.planDay(request!.id, date, body);
     },
@@ -350,6 +372,19 @@ export function VehicleDayRouteModal({ target, onClose, onDone }: Props) {
               </Form.Item>
             )}
           </FormGrid.Full>
+
+          {/* Прошедший день — под правом и с причиной (ADR 0101 п. 4). Строки в журнале коррекций
+            постановка дня не заводит: номер строгой отчётности она не расходует, и объяснение
+            уходит в аудит события. Причину у бумаги спросит выписка листа по рейсу. */}
+          {past && (
+            <FormGrid.Full>
+              <BackdateReasonField
+                effectiveDate={date}
+                consequence="день встанет в рейс задним числом — с вашим именем и этой причиной в журнале событий"
+                placeholder="Например: машина отработала день, в портал вносим по факту"
+              />
+            </FormGrid.Full>
+          )}
         </FormGrid>
       </Form>
     </FormModal>

@@ -35,6 +35,8 @@ export const PERMISSION_MODULES = [
   'service',
   'officeEquipment',
   'garage',
+  'driverCabinet',
+  'vehicleReadings',
   'records',
   'files',
   'admin',
@@ -51,6 +53,8 @@ export const permissionModuleLabels: Record<PermissionModule, string> = {
   service: 'Орг.техника: заявки',
   officeEquipment: 'Орг.техника: справочник',
   garage: 'Гараж',
+  driverCabinet: 'Кабинет водителя',
+  vehicleReadings: 'Показания техники',
   records: 'Архив и откаты',
   files: 'Файлы',
   admin: 'Администрирование',
@@ -170,6 +174,16 @@ export const PERMISSION_CATALOG: Record<Permission, PermissionCatalogEntry> = {
     action: 'manage',
     label: 'Выписывает лист без заявок',
   },
+  'waybills.correct': {
+    module: 'waybills',
+    action: 'manage',
+    label: 'Исправляет документы задним числом',
+  },
+  'waybills.correctBeyondLimit': {
+    module: 'waybills',
+    action: 'manage',
+    label: 'Исправляет задним числом старше 30 дней',
+  },
 
   'serviceRequests.read': {
     module: 'service',
@@ -230,6 +244,26 @@ export const PERMISSION_CATALOG: Record<Permission, PermissionCatalogEntry> = {
   },
 
   'garage.read': { module: 'garage', action: 'read', label: 'Смотрит день гаража' },
+  'driverCabinet.read': {
+    module: 'driverCabinet',
+    action: 'read',
+    label: 'Открывает своё задание на дату',
+  },
+  'driverCabinet.submit': {
+    module: 'driverCabinet',
+    action: 'create',
+    label: 'Передаёт свои показания',
+  },
+  'vehicleReadings.read': {
+    module: 'vehicleReadings',
+    action: 'read',
+    label: 'Смотрит показания парка',
+  },
+  'vehicleReadings.write': {
+    module: 'vehicleReadings',
+    action: 'manage',
+    label: 'Правит показания и принимает день',
+  },
 
   'archive.read': { module: 'records', action: 'read', label: 'Видит удалённые записи' },
   'archive.restore': { module: 'records', action: 'manage', label: 'Возвращает запись из архива' },
@@ -273,6 +307,8 @@ export const MODULE_ENTRY_PERMISSION: Record<PermissionModule, Permission> = {
   service: 'serviceRequests.read',
   officeEquipment: 'officeEquipment.read',
   garage: 'garage.read',
+  driverCabinet: 'driverCabinet.read',
+  vehicleReadings: 'vehicleReadings.read',
   records: 'archive.read',
   files: 'files.manageAny',
   admin: 'users.manage',

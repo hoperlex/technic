@@ -1,12 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  BACKDATE_UNDECLARED_MESSAGE,
   createWasteRequestSchema,
   createVehicleRequestSchema,
+  movedRequestDateKey,
+  movedRequestStartKey,
   isAllowedRequestDate,
   isAllowedRequestDateAt,
+  isVehicleRequestRequester,
   isWithinWorkTime,
   isWithinWorkTimeAt,
   minRequestDateKey,
+  minVehicleRequestDateKey,
+  VEHICLE_REQUEST_LEAD_TIME_MESSAGE,
+  vehicleRequestLeadTimeBlocker,
   minutesToTime,
   moscowDateKeyOf,
   moscowTimeOf,
@@ -99,6 +106,12 @@ describe('рабочее окно 07:00–21:00', () => {
   });
 });
 
+/**
+ * Нижняя граница даты — без права на коррекцию (ADR 0101). Это первый из трёх режимов
+ * `minRequestDateKey` и то самое правило, которым портал жил до ADR 0101: заявку заводят на
+ * сегодня или позже. Прошлое открывается правом и проверяется `backdateGuard` — режимы с правом
+ * проверяются ниже, своим блоком.
+ */
 describe('минимальная дата новой заявки — сегодня по МСК', () => {
   /** Переводит «сейчас» на указанный момент UTC (таймеры уже фиктивные — см. хуки файла). */
   const at = (utc: string) => vi.setSystemTime(new Date(utc));
@@ -121,6 +134,8 @@ describe('минимальная дата новой заявки — сегод
 
   it('прошлое не проходит, сегодня и позже — проходят', () => {
     at('2026-07-28T09:00:00.000Z');
+    // Без права прошлое закрыто целиком — сколько бы дней назад оно ни было. Тридцать дней
+    // (`WAYBILL_CORRECTION_DAYS`) это граница **внутри** права, а не поблажка всем.
     expect(isAllowedRequestDate('2026-07-26')).toBe(false);
     expect(isAllowedRequestDate('2026-07-27')).toBe(false);
     expect(isAllowedRequestDate('2026-07-28')).toBe(true);
@@ -133,6 +148,159 @@ describe('минимальная дата новой заявки — сегод
     expect(isAllowedRequestDateAt(new Date('2026-07-27T20:30:00.000Z'))).toBe(false);
     // 21:30 UTC 27-го = 00:30 МСК 28-го — это уже сегодня по Москве, значит допустимо.
     expect(isAllowedRequestDateAt(new Date('2026-07-27T21:30:00.000Z'))).toBe(true);
+  });
+});
+
+/**
+ * Три режима дейтпикера (ADR 0101, Р37). Правило у формы и у сервера одно: портал не предлагает
+ * того, что сервер отклонит, и не запрещает того, что примет, — поэтому границ ровно столько же,
+ * сколько исходов у `backdateGuard`, и `null` означает «границы нет», а не «очень давно».
+ */
+describe('минимальная дата под правом на коррекцию', () => {
+  const at = (utc: string) => vi.setSystemTime(new Date(utc));
+
+  it('без права — сегодня, с правом — тридцать дней назад, с правом глубины — границы нет', () => {
+    at('2026-08-12T09:00:00.000Z');
+    expect(minRequestDateKey()).toBe('2026-08-12');
+    expect(minRequestDateKey(undefined, { correct: false, beyondLimit: false })).toBe('2026-08-12');
+    expect(minRequestDateKey(undefined, { correct: true, beyondLimit: false })).toBe('2026-07-13');
+    expect(minRequestDateKey(undefined, { correct: true, beyondLimit: true })).toBeNull();
+  });
+
+  /**
+   * Второе право без первого не значит ничего — тем же порядком, каким `backdateGuard` сначала
+   * спрашивает право и только потом глубину. Иначе дейтпикер открыл бы прошлое тому, кому сервер
+   * ответит 403.
+   */
+  it('право глубины в одиночку прошлого не открывает', () => {
+    at('2026-08-12T09:00:00.000Z');
+    expect(minRequestDateKey(undefined, { correct: false, beyondLimit: true })).toBe('2026-08-12');
+  });
+
+  it('граница считается по МСК, как и всё прочее в заявках', () => {
+    // 00:30 МСК 13-го (21:30 UTC 12-го): московские сутки сменились, съехала и нижняя граница.
+    at('2026-08-12T21:30:00.000Z');
+    expect(minRequestDateKey(undefined, { correct: true, beyondLimit: false })).toBe('2026-07-14');
+  });
+});
+
+/**
+ * Заблаговременность заявки на технику (ADR 0104). Правило висит на субъекте, а не на теле
+ * запроса: одну и ту же дату у заявителя портал не примет, а у диспетчера примет — поэтому и
+ * граница считается от субъекта, и проверяется она здесь обоими.
+ */
+describe('ближайший доступный день заявки на технику', () => {
+  const at = (utc: string) => vi.setSystemTime(new Date(utc));
+  const shtab = { role: 'shtab' } as const;
+  const rukstroy = { role: 'rukstroy' } as const;
+  const department = { role: 'department' } as const;
+  const dispatcher = { role: 'dispatcher' } as const;
+
+  it('заявитель до 15:00 МСК заказывает на завтра', () => {
+    at('2026-08-12T11:59:00.000Z'); // 14:59 МСК 12-го
+    expect(minVehicleRequestDateKey(shtab)).toBe('2026-08-13');
+    expect(minVehicleRequestDateKey(rukstroy)).toBe('2026-08-13');
+    expect(minVehicleRequestDateKey(department)).toBe('2026-08-13');
+  });
+
+  it('с 15:00 МСК — уже на послезавтра; ровно 15:00 отсечку прошло', () => {
+    at('2026-08-12T12:00:00.000Z'); // 15:00 МСК 12-го — граница включена в «после»
+    expect(minVehicleRequestDateKey(shtab)).toBe('2026-08-14');
+    at('2026-08-12T20:30:00.000Z'); // 23:30 МСК того же дня
+    expect(minVehicleRequestDateKey(shtab)).toBe('2026-08-14');
+  });
+
+  it('отсечка и сутки считаются по МСК, а не по UTC', () => {
+    // 00:30 МСК 13-го (21:30 UTC 12-го): в Москве уже новый день и раннее утро — значит снова
+    // «завтра», то есть 14-е. По UTC здесь всё ещё вечер 12-го, и граница разошлась бы на день.
+    at('2026-08-12T21:30:00.000Z');
+    expect(minVehicleRequestDateKey(shtab)).toBe('2026-08-14');
+  });
+
+  it('тот, кто ведёт заказы, заводит заявку и день в день', () => {
+    at('2026-08-12T20:30:00.000Z'); // 23:30 МСК — отсечка давно прошла
+    expect(minVehicleRequestDateKey(dispatcher)).toBe('2026-08-12');
+    expect(minVehicleRequestDateKey({ role: 'manager' })).toBe('2026-08-12');
+    expect(minVehicleRequestDateKey({ role: 'admin' })).toBe('2026-08-12');
+    // Тем же днём границу считает и общее правило заявок — правило заблаговременности его не
+    // двигает: у ведущего заказы нижний край остался прежним.
+    expect(minVehicleRequestDateKey(dispatcher)).toBe(minRequestDateKey());
+  });
+
+  it('субъект без роли под правило подпадает: прав у него нет никаких', () => {
+    at('2026-08-12T09:00:00.000Z');
+    expect(isVehicleRequestRequester(null)).toBe(true);
+    expect(minVehicleRequestDateKey(null)).toBe('2026-08-13');
+  });
+
+  it('блокировка называет причину слишком близкой дате и молчит о доступной', () => {
+    at('2026-08-12T09:00:00.000Z'); // 12:00 МСК — до отсечки
+    expect(vehicleRequestLeadTimeBlocker(shtab, '2026-08-12')).toBe(
+      VEHICLE_REQUEST_LEAD_TIME_MESSAGE,
+    );
+    expect(vehicleRequestLeadTimeBlocker(shtab, '2026-08-13')).toBeNull();
+    // Диспетчеру та же сегодняшняя дата доступна — правило считает границу от субъекта.
+    expect(vehicleRequestLeadTimeBlocker(dispatcher, '2026-08-12')).toBeNull();
+  });
+});
+
+/**
+ * Какую дату двигает правка (ADR 0101, §4 плана). Это самое лёгкое место ошибиться во всей фиче:
+ * ошибка здесь не роняет запрос, а тихо переносит границу — то спрашивает право там, где правят
+ * телефон, то не спрашивает там, где переписывают прошедший день.
+ */
+describe('эффективная дата правки заявки', () => {
+  const TERM = { dateFrom: '2026-08-10', dateTo: '2026-08-20' };
+
+  it('правка без календарных полей заднего числа не заводит', () => {
+    // Тело правки несёт только комментарий и контакт: календарь не тронут — `null`, и guard
+    // молчит. Ради этого случая функция и существует (Р29, «когда guard срабатывает»).
+    expect(movedRequestDateKey(TERM, {})).toBeNull();
+    // Переданное, но то же самое значение — тоже не сдвиг: форма шлёт срок целиком всегда.
+    expect(movedRequestDateKey(TERM, { dateFrom: '2026-08-10', dateTo: '2026-08-20' })).toBeNull();
+  });
+
+  it('двигают новые значения, а из двух границ — более ранняя', () => {
+    expect(movedRequestDateKey(TERM, { dateFrom: '2026-08-05' })).toBe('2026-08-05');
+    expect(movedRequestDateKey(TERM, { dateTo: '2026-08-25' })).toBe('2026-08-25');
+    // Обе границы разом: глубину решает более ранняя — она строже по всем исходам guard.
+    expect(movedRequestDateKey(TERM, { dateFrom: '2026-08-04', dateTo: '2026-08-25' })).toBe(
+      '2026-08-04',
+    );
+  });
+
+  it('снятая дата окончания — тоже сдвиг: срок стал однодневным', () => {
+    // `null` означает «конец срока переехал на его начало» (coalesce(date_to, date_from)), и это
+    // сокращение срока, а не «поле не трогали».
+    expect(movedRequestDateKey(TERM, { dateTo: null })).toBe('2026-08-10');
+    // А не переданное поле — именно «не трогали»: у однодневной заявки от этого ничего не едет.
+    expect(movedRequestDateKey({ dateFrom: '2026-08-10', dateTo: null }, {})).toBeNull();
+  });
+
+  it('у грузоперевозки двигается день подачи, а время суток в границе не участвует', () => {
+    expect(
+      movedRequestDateKey({ scheduledDay: '2026-08-10' }, { scheduledDay: '2026-08-09' }),
+    ).toBe('2026-08-09');
+    expect(
+      movedRequestDateKey({ scheduledDay: '2026-08-10' }, { scheduledDay: '2026-08-10' }),
+    ).toBeNull();
+  });
+
+  /**
+   * День заказа (ADR 0104) — второй вопрос к тому же телу правки, и ответы у них расходятся ровно
+   * там, где двигают конец срока: заднему ходу это сдвиг, заблаговременности — нет.
+   */
+  it('день заказа двигают только начало срока и день подачи', () => {
+    expect(movedRequestStartKey(TERM, { dateFrom: '2026-08-12' })).toBe('2026-08-12');
+    expect(
+      movedRequestStartKey({ scheduledDay: '2026-08-10' }, { scheduledDay: '2026-08-12' }),
+    ).toBe('2026-08-12');
+    // Сокращение срока — не заказ на другой день: техника ближе не придвинулась.
+    expect(movedRequestStartKey(TERM, { dateTo: '2026-08-11' })).toBeNull();
+    expect(movedRequestStartKey(TERM, { dateTo: null })).toBeNull();
+    // Правка без календаря и переданное прежнее значение — тем же `null`, что у заднего хода.
+    expect(movedRequestStartKey(TERM, {})).toBeNull();
+    expect(movedRequestStartKey(TERM, { dateFrom: '2026-08-10' })).toBeNull();
   });
 });
 
@@ -299,7 +467,7 @@ describe('createVehicleRequestSchema: минимальная дата', () => {
     responsiblePhone: '+7 926 000-00-01',
   };
 
-  it('грузоперевозка: подача вчера отклоняется, сегодня — принимается', () => {
+  it('грузоперевозка: подача вчера без объяснения отклоняется, сегодня — принимается', () => {
     const yesterday = createVehicleRequestSchema.safeParse({
       ...freightBase,
       scheduledAt: '2026-07-26T10:00:00+03:00',
@@ -314,7 +482,7 @@ describe('createVehicleRequestSchema: минимальная дата', () => {
     ).toBe(true);
   });
 
-  it('спецтехника: начало периода не раньше сегодня', () => {
+  it('спецтехника: начало периода не раньше сегодня, пока прошлое не объявлено', () => {
     const yesterday = createVehicleRequestSchema.safeParse({
       ...specialBase,
       dateFrom: '2026-07-26',
@@ -332,6 +500,115 @@ describe('createVehicleRequestSchema: минимальная дата', () => {
       requestType: 'special_equipment',
       version: 1,
       dateFrom: '2026-07-20',
+    });
+    expect(r.success).toBe(true);
+  });
+
+  /**
+   * Задним числом (ADR 0101, Р15). Здесь проходит граница между схемой и сервером, и до этапа 3
+   * она стояла в другом месте: схема отклоняла прошлое **всегда**, даже с объяснением, потому что
+   * серверной проверки не существовало и одна строка в теле открывала бы задний день кому угодно.
+   *
+   * Теперь проверку заводит сервер (`backdateGuard` в `POST /vehicle-requests`), и граница
+   * переехала туда, где ей место: схема отвечает только за **необъявленное** прошлое — опечатку в
+   * дейтпикере и заведение вчерашним днём по привычке. Объявленное она пропускает молча и не
+   * разрешает им ничего: право и глубину спрашивает ручка, и без права ответит 403, сколько бы
+   * объяснений ни было в теле.
+   */
+  it('необъявленное прошлое отклоняется, объявленное причиной — уходит серверу', () => {
+    const yesterday = { ...specialBase, dateFrom: '2026-07-26', dateTo: '2026-07-30' };
+    expect(createVehicleRequestSchema.safeParse(yesterday).success).toBe(false);
+    expect(
+      createVehicleRequestSchema.safeParse({
+        ...yesterday,
+        backdateReason: 'техника вышла 26-го, заявку оформили 27-го',
+      }).success,
+    ).toBe(true);
+  });
+
+  it('то же у грузоперевозки — правило одно на оба вида заявки', () => {
+    const yesterday = { ...freightBase, scheduledAt: '2026-07-26T10:00:00+03:00' };
+    expect(createVehicleRequestSchema.safeParse(yesterday).success).toBe(false);
+    expect(
+      createVehicleRequestSchema.safeParse({ ...yesterday, backdateReason: 'рейс был вчера' })
+        .success,
+    ).toBe(true);
+  });
+
+  /**
+   * Отказ схемы называет оба недостающих условия сразу, а не одну «слишком раннюю дату»: из тела
+   * запроса видно только причину, и человек, прочитавший «дата не может быть раньше сегодняшней»,
+   * не узнал бы, что вчерашний день вообще-то открывается — объяснением и правом.
+   */
+  it('отказ объясняет, чего не хватает, и стоит на самом поле даты', () => {
+    const r = createVehicleRequestSchema.safeParse({
+      ...specialBase,
+      dateFrom: '2026-07-26',
+    });
+    expect(r.success).toBe(false);
+    const issue = r.error?.issues.find((i) => i.path.join('.') === 'dateFrom');
+    expect(issue?.message).toBe(BACKDATE_UNDECLARED_MESSAGE);
+  });
+
+  /**
+   * Ключ идемпотентности (Р31) схема принимает, но не требует: нужен он или нет, решает дата, а
+   * дату со «сегодня» по-настоящему сравнивает сервер. Обычное заведение ключа не спрашивает —
+   * иначе коррекцией пришлось бы объявить всю дневную работу.
+   */
+  it('ключ операции — необязательное поле обеих схем', () => {
+    const key = '9f1c0f7e-1a3d-4c2b-9f2a-2b7d6e5c4a31';
+    expect(
+      createVehicleRequestSchema.safeParse({
+        ...specialBase,
+        dateFrom: '2026-07-26',
+        backdateReason: 'вышли 26-го',
+        operationId: key,
+      }).success,
+    ).toBe(true);
+    expect(
+      updateVehicleRequestSchema.safeParse({
+        requestType: 'special_equipment',
+        version: 1,
+        dateFrom: '2026-07-26',
+        backdateReason: 'вышли 26-го',
+        operationId: key,
+      }).success,
+    ).toBe(true);
+    // Не uuid — не ключ: `runCorrection` пишет его в колонку uuid, и «retry-1» дошёл бы до базы.
+    expect(
+      createVehicleRequestSchema.safeParse({
+        ...specialBase,
+        dateFrom: '2026-07-27',
+        operationId: 'retry-1',
+      }).success,
+    ).toBe(false);
+  });
+
+  /** Поле при этом живое: сегодняшнюю заявку с причиной схема принимает — её положит сервер. */
+  it('причина принимается как поле и не мешает обычному заведению', () => {
+    const r = createVehicleRequestSchema.safeParse({
+      ...specialBase,
+      dateFrom: '2026-07-27',
+      backdateReason: 'оформили с опозданием на час',
+    });
+    expect(r.success).toBe(true);
+  });
+
+  it('пустая отговорка объяснением не считается', () => {
+    const r = createVehicleRequestSchema.safeParse({
+      ...specialBase,
+      dateFrom: '2026-07-27',
+      backdateReason: '   ',
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it('правка принимает причину сдвига срока — её сервер положит в запись операции', () => {
+    const r = updateVehicleRequestSchema.safeParse({
+      requestType: 'special_equipment',
+      version: 1,
+      dateFrom: '2026-07-20',
+      backdateReason: 'техника вышла на неделю раньше оформления',
     });
     expect(r.success).toBe(true);
   });

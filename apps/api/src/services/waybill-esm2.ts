@@ -32,6 +32,11 @@ import {
 import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import { findMachinist } from './drivers';
+// Что операция коррекции делает с листом (ADR 0101): списание ссылкой на операцию и пометка
+// рождённого ею номера. Своего кода на это у сверки нет намеренно — правило «лист помнит, какой
+// операцией он рождён и какой списан» одно на все входы, и второе его написание разошлось бы.
+import { cancelWaybillForCorrection } from './waybill-correction';
+import { markCorrectionWaybill } from './vehicle-route-correction';
 import { findSeriesByCode, seriesCodeOfForm, takeNextNumber } from './waybill-numbers';
 
 /**
@@ -54,6 +59,11 @@ import { findSeriesByCode, seriesCodeOfForm, takeNextNumber } from './waybill-nu
  */
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+/**
+ * Читающим функциям транзакция не нужна: окно коррекции спрашивает «что операция сделает с
+ * бумагой» до того, как открыта хоть одна транзакция (Р36).
+ */
+type Reader = Tx | typeof db;
 
 const FORM_CODE = 'esm2' as const;
 
@@ -78,8 +88,8 @@ interface RequestState {
   vehicleTypeName: string;
 }
 
-async function loadRequest(tx: Tx, requestId: string): Promise<RequestState | null> {
-  const [row] = await tx
+async function loadRequest(reader: Reader, requestId: string): Promise<RequestState | null> {
+  const [row] = await reader
     .select({
       id: vehicleRequests.id,
       requestType: vehicleRequests.requestType,
@@ -119,8 +129,8 @@ async function loadRequest(tx: Tx, requestId: string): Promise<RequestState | nu
 }
 
 /** Действующие листы заявки — то, с чем сверяется нужный набор недель. */
-async function activeSheets(tx: Tx, requestId: string) {
-  return tx
+async function activeSheets(reader: Reader, requestId: string) {
+  return reader
     .select({
       id: waybills.id,
       periodFrom: waybills.periodFrom,
@@ -466,6 +476,27 @@ export async function syncEsm2Waybills(
      * меняли срок или машину, а не человека.
      */
     driverPersonId?: string | null;
+    /**
+     * Контекст проверенной операции коррекции (ADR 0101, Р8, Р11, Р21). Приходит только оттуда,
+     * где право `waybills.correct`, причина и глубина уже спрошены — из тела запроса он не
+     * собирается никогда: тело перечисляет намерение, а не разрешение.
+     *
+     * Меняет у сверки ровно три вещи, и каждая — снятие неприкосновенности прошлого:
+     *
+     * - названные листы отработанных недель перестают быть неприкасаемыми (`unlockWaybillIds`);
+     * - прошедшая неделя, листа не имевшая, становится выписываемой (дыра 3 из §1 плана);
+     * - и списанный, и выписанный номер получают ссылку на операцию, а причина операции ложится
+     *   в оба листа (Р35) — иначе разрыв нумерации за прошедший день не объясняется ничем.
+     *
+     * Без контекста сверка ведёт себя ровно как прежде: отработанная неделя не трогается, а
+     * прошедшая без листа не выписывается вовсе.
+     */
+    correction?: {
+      /** Строка `waybill_corrections` этой операции: на неё ссылаются оба листа. */
+      id: string;
+      /** Листы, которые операция назвала поимённо; принадлежность их заявке проверил вызывающий. */
+      unlockWaybillIds: readonly string[];
+    };
   },
 ): Promise<Esm2SyncResult> {
   const request = await loadRequest(tx, params.requestId);
@@ -522,6 +553,10 @@ export async function syncEsm2Waybills(
     vehicleId: request.vehicleId,
     driverPersonId,
     today: today(),
+    // Оба ключа коррекции идут вместе и порознь не работают (Р11): разблокировав лист, но не
+    // разрешив прошедшую неделю, сверка аннулировала бы номер и не выписала замены.
+    unlockWaybillIds: params.correction?.unlockWaybillIds,
+    correction: params.correction ? { allowed: true } : undefined,
   });
   if (plan.cancel.length === 0 && plan.issue.length === 0) return EMPTY;
 
@@ -534,10 +569,14 @@ export async function syncEsm2Waybills(
    * какой у портала есть (ADR 0083 — своей волей людей он не подставляет).
    */
   const burning = new Set(plan.cancel);
-  const burnedOfWeek = new Map<string, { driverPersonId: string; vehicleId: string }>();
+  const burnedOfWeek = new Map<string, { id: string; driverPersonId: string; vehicleId: string }>();
   for (const sheet of sheets) {
     if (burning.has(sheet.id)) {
       burnedOfWeek.set(weekStartKey(sheet.periodFrom), {
+        // Идентификатор сгоревшего листа нужен коррекции: новый номер объявляет себя заменой
+        // именно ему (`corrects_waybill_id`, Р32), и без этой ссылки разрыв нумерации за
+        // прошедшую неделю в журнале не читается.
+        id: sheet.id,
         driverPersonId: sheet.driverPersonId,
         vehicleId: sheet.vehicleId,
       });
@@ -585,20 +624,34 @@ export async function syncEsm2Waybills(
   );
   const cancelled: string[] = [];
   for (const id of plan.cancel) {
-    await tx
-      .update(waybills)
-      .set({
-        status: 'cancelled',
-        cancelledAt: new Date(),
-        cancelledBy: params.actor.id,
-        cancelReason: params.reason,
-        updatedAt: new Date(),
-      })
-      .where(and(eq(waybills.id, id), ne(waybills.status, 'cancelled')));
+    if (params.correction) {
+      // Списание в рамках операции: причина ложится в `cancel_reason`, а ссылка на операцию — в
+      // свою колонку (`cancel_correction_id`), рядом с «кем и когда». В `correction_id` её писать
+      // нельзя: там стоит операция, **породившая** номер, и у листа бывают обе сразу (Р12).
+      await cancelWaybillForCorrection(tx, {
+        waybillId: id,
+        correctionId: params.correction.id,
+        reason: params.reason,
+        actorUserId: params.actor.id,
+      });
+    } else {
+      await tx
+        .update(waybills)
+        .set({
+          status: 'cancelled',
+          cancelledAt: new Date(),
+          cancelledBy: params.actor.id,
+          cancelReason: params.reason,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(waybills.id, id), ne(waybills.status, 'cancelled')));
+    }
     cancelled.push(numbersById.get(id) ?? id);
   }
 
   const issued: string[] = [];
+  /** Сгоревшие номера, у которых замена уже нашлась: связь «заменил» одна на номер (Р32). */
+  const replacedBy = new Set<string>();
   for (const period of plan.issue) {
     const created = await issueEsm2Waybill(tx, {
       requestId: params.requestId,
@@ -607,6 +660,29 @@ export async function syncEsm2Waybills(
       period,
       actorId: params.actor.id,
     });
+    if (params.correction) {
+      /*
+       * Номер, рождённый операцией, объяснён и связан (Р35): причина операции — в
+       * `correction_reason`, ссылка на операцию — в `correction_id`, заменённый номер — в
+       * `corrects_waybill_id`. Последнего может и не быть: неделя, у которой листа не было вовсе
+       * (дыра 3), заменяет пустоту, и `waybills_correction_issue_reason_check` этого не требует.
+       *
+       * Предшественник достаётся ровно одному наследнику: `waybills_corrects_unique` держит
+       * «каждый номер заменён не более одного раза», а в одну календарную неделю попадают и два
+       * выписываемых отрезка сразу (лист «пн–ср» и лист «чт–вс» после подрезки срока). Второй из
+       * них объявил бы себя заменой тому же листу — и операция упала бы уже после сгоревших
+       * номеров. Карта при этом не трогается: из неё же берутся машина и машинист замены.
+       */
+      const replaced = burnedOfWeek.get(weekStartKey(period.from));
+      const correctsWaybillId = replaced && !replacedBy.has(replaced.id) ? replaced.id : null;
+      if (correctsWaybillId) replacedBy.add(correctsWaybillId);
+      await markCorrectionWaybill(tx, {
+        waybillId: created.id,
+        correctionId: params.correction.id,
+        reason: params.reason,
+        correctsWaybillId,
+      });
+    }
     issued.push(created.number);
   }
 
@@ -637,13 +713,98 @@ export async function auditEsm2Sync(params: {
   });
 }
 
-// ── Выписка по требованию: линейный заказ (ADR 0100 §6) ──
-
 /** Календарный ключ `YYYY-MM-DD` человеку: «24.07.2026». Через JS Date он бы поехал на день. */
 function dateRu(key: string): string {
   const [y, m, d] = key.split('-');
   return y && m && d ? `${d}.${m}.${y}` : key;
 }
+
+// ── Что коррекция назначения сделает с бумагой (ADR 0101, Р8, Р36) ──
+
+/** Действующий лист заявки глазами коррекции: номером его называет и окно, и отказ. */
+export interface Esm2SheetRef {
+  id: string;
+  /** «260604-646-00000004897» — как номер напечатан на бланке. */
+  number: string;
+  periodFrom: string;
+  periodTo: string;
+  vehicleId: string;
+}
+
+export interface Esm2CorrectionScope {
+  /** Все действующие листы ЭСМ-2 заявки: из них выбирают разблокируемые и ими объясняют отказ. */
+  sheets: Esm2SheetRef[];
+  /**
+   * Прошедшие недели срока, у которых действующего листа нет вовсе, — те, что операция выпишет
+   * сама, получив контекст (дыра 3 из §1 плана). Считаются по **будущему** состоянию заявки:
+   * заказ, который вели арендной техникой, а закрывают своей, обязан получить бумагу за уже
+   * отработанные недели, и её глубину нужно знать до операции, а не после.
+   */
+  pastWeeks: Esm2Period[];
+}
+
+/**
+ * Что коррекция назначения задним числом задела бы в прошлом — посчитанное **до** первой правки
+ * (Р36) и без единой транзакции.
+ *
+ * Нужна она ради одного вопроса: какая у операции эффективная дата. По таблице §4 плана у листа
+ * ЭСМ-2 это `periodTo` — и у существующего, который переписывают, и у прошедшей недели, которой
+ * листа не было. Ошибиться в ней значит сдвинуть границу глубины (Р9) целиком, поэтому обе
+ * половины ответа собираются здесь, а не считаются заново на каждом входе.
+ *
+ * Режим (`esm2Mode`) считается с **будущей** принадлежностью машины, а не с нынешней: смена
+ * арендной единицы на собственную переводит заявку из `none` в `auto`, то есть заводит бумагу
+ * там, где её не было вовсе, — и не спросить о глубине этих недель значило бы выписать бланк
+ * трёхмесячной давности без единой проверки.
+ *
+ * Прошедшая неделя, у которой лист есть (хоть названный, хоть нет), в `pastWeeks` не попадает
+ * намеренно: названный приходит в счёт своим `periodTo`, а неназванный неделю запирает — сверка её
+ * не тронет вовсе (`esm2SyncPlan`, `locked`).
+ */
+export async function esm2CorrectionScope(
+  reader: Reader,
+  params: {
+    requestId: string;
+    /** Принадлежность машины, которую назначают этой же операцией. */
+    ownership: VehicleOwnership;
+    /** Сегодня по МСК: им отделяются отработанные недели от предстоящих. */
+    today: string;
+  },
+): Promise<Esm2CorrectionScope> {
+  const request = await loadRequest(reader, params.requestId);
+  if (!request) return { sheets: [], pastWeeks: [] };
+
+  const rows = await activeSheets(reader, params.requestId);
+  const sheets = rows
+    .filter((s) => s.periodFrom && s.periodTo)
+    .map((s) => ({
+      id: s.id,
+      number: waybillDisplayNumber(s.prefix, s.number, s.numberWidth),
+      periodFrom: s.periodFrom!,
+      periodTo: s.periodTo!,
+      vehicleId: s.vehicleId,
+    }));
+
+  const mode = esm2Mode({
+    requestType: request.requestType,
+    status: request.status,
+    ownership: params.ownership,
+    deletedAt: request.deletedAt ? request.deletedAt.toISOString() : null,
+    isLinear: request.isLinear,
+  });
+  // Своих недель `on_demand` не заводит (ADR 0100 §5): у линейного заказа бумагу называет человек,
+  // и «недели без листа» у него не бывает по определению — есть недели, о которых не просили.
+  const covered = new Set(sheets.map((s) => weekStartKey(s.periodFrom)));
+  const pastWeeks =
+    mode === 'auto' && request.dateFrom
+      ? esm2Periods(request.dateFrom, request.dateTo).filter(
+          (p) => p.to < params.today && !covered.has(weekStartKey(p.from)),
+        )
+      : [];
+  return { sheets, pastWeeks };
+}
+
+// ── Выписка по требованию: линейный заказ (ADR 0100 §6) ──
 
 /**
  * Почему по этой заявке нельзя выписать ЭСМ-2 руками; `null` — можно.
@@ -681,6 +842,38 @@ function onDemandRefusal(request: RequestState): string | null {
 }
 
 /**
+ * Неделя, которую выписала бы ручная выдача, — посчитанная **до** транзакции и без единой правки.
+ *
+ * Нужна ради одного вопроса, и вопрос этот тот же, что у коррекции назначения: какая у операции
+ * эффективная дата. По таблице §4 плана у листа ЭСМ-2 это `periodTo` — и у существующего, который
+ * переписывают, и у прошедшей недели, которой листа не было. Понедельник как ключ отвергнут там же
+ * и по той же причине: `canCancelWaybill` считает конец недели по `periodTo`, и второй расчёт
+ * разошёлся бы с первым на шесть дней.
+ *
+ * `null` означает «выписывать по этой заявке нечего» — не та заявка, не в работе, арендная, без
+ * срока или названный день лежит вне срока. Заднего числа у такой просьбы нет: бланк не родится
+ * вовсе, а причину отказа назовёт словами сама выписка (`onDemandRefusal`). Спрашивать право
+ * раньше этих слов значило бы отвечать «нет права на прошлое» там, где верный ответ — «по этой
+ * заявке листы выписывает портал сам».
+ */
+export async function esm2OnDemandPeriod(
+  reader: Reader,
+  params: { requestId: string; weekOf: string },
+): Promise<Esm2Period | null> {
+  const request = await loadRequest(reader, params.requestId);
+  return request ? onDemandPeriodOf(request, params.weekOf) : null;
+}
+
+/** Неделя просьбы: календарная неделя названного дня, обрезанная сроком заявки (ADR 0100 §5). */
+function onDemandPeriodOf(request: RequestState, weekOf: string): Esm2Period | null {
+  if (onDemandRefusal(request)) return null;
+  return (
+    esm2Periods(request.dateFrom!, request.dateTo).find((p) => p.from <= weekOf && weekOf <= p.to) ??
+    null
+  );
+}
+
+/**
  * Выписать недельный лист ЭСМ-2 по требованию — одна неделя линейного заказа (ADR 0100 §6).
  *
  * Второй и единственный, кроме сверки, вход к этому бланку. Появился он потому, что у линейной
@@ -696,6 +889,12 @@ function onDemandRefusal(request: RequestState): string | null {
  * Дальше лист живёт наравне с выписанным автоматом: сменят машину — сверка его переоформит,
  * сократят срок — подрежет, отменят заявку — аннулирует (`syncEsm2Waybills`). Ручная выдача
  * добавила бланку одну дверь, а не вывела его из документооборота.
+ *
+ * Прошедшая неделя (ADR 0101 п. 4, дыра 3 плана) выписывается здесь же и той же работой — но уже
+ * операцией: право, глубину и причину спрашивает ручка (`backdateGuard`), а сюда приходит готовый
+ * контекст. Своей проверки заднего числа у сервиса нет намеренно — субъекта он не знает, а второе
+ * правило границы разошлось бы с первым; из тела запроса контекст не собирается никогда: тело
+ * перечисляет намерение, а не разрешение (тем же порядком устроена сверка).
  */
 export async function issueEsm2OnDemand(
   tx: Tx,
@@ -706,6 +905,26 @@ export async function issueEsm2OnDemand(
     vehicleId: string;
     driverPersonId: string;
     actor: { id: string };
+    /**
+     * Конец недели, по которому вызывающий спросил право (`esm2OnDemandPeriod`); `null` — он
+     * насчитал, что выписывать нечего.
+     *
+     * Сверяется с неделей, посчитанной здесь: между чтением и транзакцией срок заявки успевают
+     * подрезать или продлить, а от конца недели зависит, обычная это выдача или операция. Вердикт
+     * по устаревшей неделе выписал бы прошедший бланк без права и без причины — то есть ровно ту
+     * дыру, которую закрывает ADR 0101. Тем же приёмом перечитывает дату рейса выписка листа по
+     * рейсу, только там граница берётся под блокировкой, а здесь расхождение ловится сверкой:
+     * заявку под блокировку эта ручка не берёт, а версию заявки двигает сама.
+     */
+    guardedPeriodTo: string | null;
+    /**
+     * Контекст проверенной операции коррекции (ADR 0101, Р35): строка `waybill_corrections` и её
+     * причина. Приходит только оттуда, где право, причина и глубина уже спрошены. Лист получает
+     * `correction_reason` при **пустом** `corrects_waybill_id` — заменять было нечего, номер рождён
+     * не взамен другого, — а признак коррекции для фильтра журнала (Р28) считается по ссылке на
+     * операцию, иначе такой лист в фильтр не попал бы вовсе.
+     */
+    correction?: { id: string; reason: string };
   },
 ): Promise<IssuedEsm2> {
   const request = await loadRequest(tx, params.requestId);
@@ -714,14 +933,17 @@ export async function issueEsm2OnDemand(
   if (refusal) throw err.unprocessable(refusal);
 
   // Неделя — ровно та, какую выписал бы автомат: календарная неделя дня, обрезанная сроком.
-  const period = esm2Periods(request.dateFrom!, request.dateTo).find(
-    (p) => p.from <= params.weekOf && params.weekOf <= p.to,
-  );
+  const period = onDemandPeriodOf(request, params.weekOf);
   if (!period) {
     const last = request.dateTo || request.dateFrom!;
     throw err.unprocessable(
       `День ${dateRu(params.weekOf)} вне срока заявки (${dateRu(request.dateFrom!)} — ${dateRu(last)}) — выберите день внутри срока`,
       { weekOf: 'День вне срока заявки' },
+    );
+  }
+  if (params.guardedPeriodTo !== period.to) {
+    throw err.conflict(
+      'Срок заявки изменился, пока выписывался лист, — неделя стала другой: откройте карточку заново',
     );
   }
 
@@ -770,13 +992,28 @@ export async function issueEsm2OnDemand(
     );
   }
 
-  return issueEsm2Waybill(tx, {
+  const issued = await issueEsm2Waybill(tx, {
     requestId: params.requestId,
     vehicleId: params.vehicleId,
     driverPersonId: params.driverPersonId,
     period,
     actorId: params.actor.id,
   });
+  /*
+   * Метка коррекции (Р35) — тем же кодом, что и у листа, рождённого сверкой: правило «лист помнит,
+   * какой операцией он рождён» одно на все входы, и второе его написание разошлось бы. Заменяемого
+   * номера у прошедшей недели нет: листа за неё не было вовсе, и `waybills_correction_issue_reason_check`
+   * этого не требует — причина при пустом `corrects_waybill_id` и есть предусмотренная форма.
+   */
+  if (params.correction) {
+    await markCorrectionWaybill(tx, {
+      waybillId: issued.id,
+      correctionId: params.correction.id,
+      reason: params.correction.reason,
+      correctsWaybillId: null,
+    });
+  }
+  return issued;
 }
 
 /**

@@ -3,6 +3,7 @@ import { App, DatePicker, Form, Typography } from 'antd';
 import type { Dayjs } from 'dayjs';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
+  moscowDateKeyOf,
   routePurposeLabels,
   type VehicleRequestDto,
   type VehicleRouteDto,
@@ -16,6 +17,7 @@ import { useIsMobile } from '@shared/lib';
 import { useObjectScope } from '../../hooks/useObjectScope';
 import { AddressField } from '@features/address-input';
 import { errorMessage } from '../../utils/format';
+import { BackdateReasonField } from './VehicleBackdateFields';
 
 /**
  * Перегон техники по заявке: доставка на объект или вывоз с него (миграция 0082).
@@ -44,6 +46,8 @@ interface FormValues {
   driverPersonId?: string;
   moveFrom?: string;
   moveTo?: string;
+  /** Причина заднего числа — спрашивается только у прошедшей даты перегона (ADR 0101 п. 4). */
+  reason?: string;
 }
 
 export function VehicleRelocationModal({ request, purpose, onClose, onDone }: Props) {
@@ -76,12 +80,21 @@ export function VehicleRelocationModal({ request, purpose, onClose, onDone }: Pr
       driverPersonId: undefined,
       moveFrom: purpose === 'pickup' ? objectPlace : '',
       moveTo: purpose === 'delivery' ? objectPlace : '',
+      reason: undefined,
     });
   }, [request, purpose, objectPlace, form]);
 
   const routeDate = Form.useWatch('routeDate', form);
   const vehicleId = request?.assignment?.vehicleId;
   const on = routeDate?.format('YYYY-MM-DD');
+
+  /*
+   * Перегон прошедшим днём (ADR 0101 п. 4, дыра 1 плана). Дата у перегона задним числом бывает
+   * штатно — технику увезли в пятницу, а в портал это вносят в понедельник, — но с ADR 0101 такой
+   * рейс заводится только с правом и объяснением: правило у обеих дверей к прошлому одно, и та,
+   * что со стороны маршрутов, спрашивает причину уже давно.
+   */
+  const past = !!on && on < moscowDateKeyOf(new Date());
 
   // Тот же отбор, что проверит сервер при выписке листа: у кого полный комплект документов на
   // день перегона. Дата именно перегона, а не начала работ: удостоверение может истечь между ними.
@@ -107,6 +120,9 @@ export function VehicleRelocationModal({ request, purpose, onClose, onDone }: Pr
         moveTo: v.moveTo!.trim(),
         // Перегон по городу: вид сообщения печатается в шапке бланка, и от рейса к рейсу он тот же.
         trip: { communicationKind: 'городское' },
+        // Причина уходит только у прошедшей даты: у сегодняшней и завтрашней сервер её не спросит,
+        // а поле «причина» у обычного перегона читалось бы как обязательное.
+        ...(past ? { reason: v.reason } : {}),
       }),
     onSuccess: async (route) => {
       message.success(`${routePurposeLabels[purpose]}: маршрут ${route.displayNumber}`);
@@ -194,6 +210,19 @@ export function VehicleRelocationModal({ request, purpose, onClose, onDone }: Pr
             suggestObjectIds={suggestObjectIds}
             placeholder="Объект, адрес площадки"
           />
+
+          {/* Прошедшая дата — под правом и с причиной (ADR 0101 п. 4). Строки в журнале коррекций
+            у перегона нет: рейс номера строгой отчётности не расходует, и объяснение уходит в
+            аудит заведения. Причину у бумаги спросит выписка листа по этому рейсу. */}
+          {past && (
+            <FormGrid.Full>
+              <BackdateReasonField
+                effectiveDate={on!}
+                consequence="перегон заведётся задним числом — с вашим именем и этой причиной в журнале событий"
+                placeholder="Например: технику увезли в пятницу, в портал вносим в понедельник"
+              />
+            </FormGrid.Full>
+          )}
         </FormGrid>
       </Form>
     </FormModal>

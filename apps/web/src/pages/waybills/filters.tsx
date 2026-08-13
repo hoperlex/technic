@@ -13,7 +13,7 @@ import type { FilterDefinition, FilterOption } from '@shared/ui';
  * Отбор журнала путевых листов: полоса полей для десктопа и те же значения описаниями для шита
  * телефона (ADR 0079, ADR 0030).
  *
- * Отдельным файлом, потому что фильтров шесть и собираются они дважды — панелью и шитом. Держать
+ * Отдельным файлом, потому что фильтров семь и собираются они дважды — панелью и шитом. Держать
  * два этих набора в самой странице значило бы утопить в них журнал: печать, аннулирование и выбор
  * пачки читаются рядом, а фильтры от них ничего не требуют, кроме значений.
  */
@@ -30,6 +30,12 @@ export interface WaybillFilterValues {
   status?: string;
   vehicleId?: string;
   driverPersonId?: string;
+  /**
+   * Только коррекции (ADR 0101 п. 20) — строкой `'true'`, как и прочие флаги списков портала:
+   * значения фильтров уходят в адрес запроса как есть, и булев тип пришлось бы переводить туда и
+   * обратно в двух местах.
+   */
+  correction?: string;
   [key: string]: unknown;
 }
 
@@ -59,7 +65,16 @@ const statusOptions = WAYBILL_STATUSES.map((status) => ({
   label: waybillStatusLabels[status],
 }));
 
-/** Полоса фильтров над таблицей: номер, бланк, статус, машина, водитель и период выдачи. */
+/**
+ * Коррекции — отбор двусторонний (ADR 0101 п. 20). Значения строковые, потому что фильтры живут в
+ * адресной строке: `correction=true|false` уходит в запрос как есть, а снятый отбор не уходит вовсе.
+ */
+const correctionOptions = [
+  { value: 'true', label: 'Только коррекции' },
+  { value: 'false', label: 'Без коррекций' },
+];
+
+/** Полоса фильтров: номер, бланк, статус, машина, водитель, период выдачи и коррекции. */
 export function waybillFiltersBar(o: Options): ReactNode {
   return (
     <Space size={[12, 8]} wrap>
@@ -120,6 +135,20 @@ export function waybillFiltersBar(o: Options): ReactNode {
         value={o.range}
         onChange={(v) => o.onRangeChange(v as WaybillDateRange)}
       />
+      {/* Коррекции (ADR 0101 п. 20): этим журнал читает бухгалтерия — «что правилось задним
+        числом» — и им же объясняется день, в котором стоят два номера.
+
+        Select, а не флажок: отбор двусторонний и на сервере, и в контракте. Вопрос «что шло
+        обычным порядком» задают не реже обратного — им сверяют месяц, из которого коррекции
+        вынуты, — а флажок отвечает только на один из двух и второй делает недостижимым. */}
+      <Select
+        allowClear
+        placeholder="Все листы"
+        style={{ width: 190 }}
+        options={correctionOptions}
+        value={o.values.correction}
+        onChange={(v: string | undefined) => o.onChange({ correction: v })}
+      />
     </Space>
   );
 }
@@ -164,6 +193,17 @@ export function waybillMobileFilters(o: Options): FilterDefinition[] {
       placeholder: 'Все водители',
       loading: o.drivers.loading,
       onChange: (v) => o.onChange({ driverPersonId: v }),
+    },
+    {
+      // Выбором из двух значений, а не переключателем: отбор двусторонний (см. полосу десктопа), а
+      // переключатель второе значение выразить не может — «выключен» у него значит «не задан».
+      kind: 'select',
+      key: 'correction',
+      label: 'Коррекции',
+      value: o.values.correction,
+      options: correctionOptions,
+      placeholder: 'Все листы',
+      onChange: (v) => o.onChange({ correction: v }),
     },
     {
       kind: 'dateRange',
