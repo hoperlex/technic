@@ -134,7 +134,7 @@ interface RequestFixture {
   unloadingPhone?: string;
 }
 
-/** Заявка на грузоперевозку с деталями: письму нужны обе таблицы — адреса в одной, контакты в ней же. */
+/** Заявка на грузоперевозку с ездкой: письмо берёт время у заявки, а адреса и контакты — у ездки. */
 async function makeRequest(
   fixture: RequestFixture,
 ): Promise<{ id: string; displayNumber: string }> {
@@ -156,13 +156,21 @@ async function makeRequest(
   await ctx.db.insert(schema.freightTransportRequestDetails).values({
     requestId: request!.id,
     scheduledAt: fixture.scheduledAt,
+  });
+
+  // Адреса, количество и контакты — у ездки, а не у заявки (план `docs/route-trips-plan.md`, Р2):
+  // у заявки с ездками `A→B` и `A→C` «адрес разгрузки заявки» не существует. Одна ездка — то же,
+  // чем была пара полей детали; комментарий остаётся у заявки, он её.
+  await ctx.db.insert(schema.vehicleRequestTrips).values({
+    requestId: request!.id,
+    num: 1,
+    fromLocation: fixture.loading,
+    toLocation: fixture.unloading,
     volumeM3: '10.000',
-    loadingLocation: fixture.loading,
-    unloadingLocation: fixture.unloading,
-    loadingResponsibleName: fixture.loadingName ?? '',
-    loadingResponsiblePhone: fixture.loadingPhone ?? '',
-    unloadingResponsibleName: fixture.unloadingName ?? '',
-    unloadingResponsiblePhone: fixture.unloadingPhone ?? '',
+    fromResponsibleName: fixture.loadingName ?? '',
+    fromResponsiblePhone: fixture.loadingPhone ?? '',
+    toResponsibleName: fixture.unloadingName ?? '',
+    toResponsiblePhone: fixture.unloadingPhone ?? '',
   });
 
   return { id: request!.id, displayNumber: formatVehicleRequestNumber(request!.num) };

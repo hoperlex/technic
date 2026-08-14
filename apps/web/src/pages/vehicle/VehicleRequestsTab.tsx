@@ -1,6 +1,7 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import { useNavigate, useSearchParams } from 'react-router';
 import {
+  Alert,
   App,
   Button,
   DatePicker,
@@ -39,6 +40,7 @@ import {
   type CompleteVehicleRequestInput,
   type FeedKind,
   feedKindLabels,
+  isAddressVerified,
   minRequestDateKey,
   isCargoAmountRequired,
   CARGO_AMOUNT_MESSAGE,
@@ -101,7 +103,7 @@ import {
   withSavedClassification,
 } from '../../hooks/useVehicleClassifications';
 import { useAuth } from '../../auth/AuthContext';
-import { errorMessage, formatDateTime } from '../../utils/format';
+import { errorMessage, formatDate, formatDateTime } from '../../utils/format';
 import { vehicleRouteLink } from '../../utils/links';
 import { withSavedOption } from '@shared/lib';
 import { calendarDaysLabel, vehicleRequestDateRules } from '../../utils/date';
@@ -131,6 +133,7 @@ import {
   useDepartmentOptions,
   useFileEditor,
   useObjectOptions,
+  tripsCountLabel,
   useVehicleClassificationFilter,
   useVehicleFilter,
   type EditorFile,
@@ -509,6 +512,48 @@ export function VehicleRequestsTab() {
     !!otherRequestType &&
     canOrderVehicleRequestType(user, otherRequestType);
 
+  /**
+   * Ездки правимой заявки (Р1, Р2 плана `docs/route-trips-plan.md`); `null` — правится заказ
+   * техники на объект либо заводится новая заявка.
+   *
+   * Форма знает **одну** ездку, поэтому `editedTrip` заполнен только у заявки, у которой она одна:
+   * список правки полный (§7), и ездка, не попавшая в него, мягко удаляется (Р13а) — отправив одну
+   * строку за заявку с шестью, форма снесла бы пять. Редактор списка приходит этапом 6 (§12); до
+   * него у такой заявки правится всё, кроме ездок, и об этом говорит сама форма.
+   */
+  const recordTrips = record?.requestType === 'freight_transport' ? record.trips : null;
+  const editedTrip = recordTrips?.length === 1 ? recordTrips[0] : undefined;
+
+  /*
+   * Жёсткая модель адреса (ADR 0006) действует на **новое** значение, а не на перезапись прежнего
+   * (Р2а). У ездки, доехавшей бэкфилом от заявки старше ADR 0006, метаданных нет вовсе, и правило
+   * поля не пустило бы правку такой заявки, пока кто-нибудь не выберет ей адрес заново — то есть
+   * не выдумает данные за прошлое. Тем же послаблением её принимает сервер
+   * (`updateRequestTripSchema`), и разойтись им нельзя: форма, не отправляющая того, что ручка
+   * принимает, — это запрет, о котором никто не решал.
+   *
+   * Держится послабление ровно до правки: строка сравнивается с сохранённой, и как только адрес
+   * изменили, требование возвращается — новое значение обязано быть выбранным из подсказок.
+   *
+   * Сравнивается здесь печатаемая строка, а сервер сверяет пару целиком — строку и метаданные
+   * (`assertAddressWritable`). Условие поля поэтому чуть шире серверного, и в зазор попадает один
+   * случай: строку правили и вернули к прежнему виду руками — метаданные при этом стали `manual`,
+   * форма отправку пропустит, а ручка ответит 422 с ошибкой на самом поле. Сузить его нечем, пока
+   * сравнение метаданных живёт приватной функцией ручки: копия правила на фронте разошлась бы с
+   * ней при первой же правке, а второму ответу на «тот же это адрес или новый» существовать
+   * нельзя. Место такому сравнению — в контрактах, рядом с `verifiedAddressMetaSchema`.
+   */
+  const watchLoadingLocation = Form.useWatch('loadingLocation', form);
+  const watchUnloadingLocation = Form.useWatch('unloadingLocation', form);
+  const keepsLoadingAddress =
+    !!editedTrip &&
+    !isAddressVerified(editedTrip.fromAddress) &&
+    watchLoadingLocation === editedTrip.fromLocation;
+  const keepsUnloadingAddress =
+    !!editedTrip &&
+    !isAddressVerified(editedTrip.toAddress) &&
+    watchUnloadingLocation === editedTrip.toLocation;
+
   const isSpecial = watchRequestType === 'special_equipment';
   const isFreight = watchRequestType === 'freight_transport';
   const commentHint = watchRequestType ? COMMENT_HINTS[watchRequestType] : null;
@@ -707,6 +752,11 @@ export function VehicleRequestsTab() {
       // tz)` теряет пришедшее смещение и показывал бы подачу на три часа раньше — а правка
       // сохраняла бы этот сдвиг обратно в заявку. Так же читает подачу заявка на вывоз мусора.
       const at = dayjs(r.scheduledAt).tz(MOSCOW_TZ);
+      // Адреса, груз и контакты лежат у ездки (Р2 плана `docs/route-trips-plan.md`) — у заявки их
+      // больше нет. Форма показывает **первую**: список ездок с «+ ездка» и «повторить N раз» —
+      // этап 6 (§12), а сегодня у всякой заявки ездка одна (Р24). Читается она мягко: ездок не
+      // бывает ноль, но окно правки не то место, где это стоит утверждать падением.
+      const trip = r.trips[0];
       form.setFieldsValue({
         requestType: r.requestType,
         objectId: r.objectId ?? undefined,
@@ -715,18 +765,20 @@ export function VehicleRequestsTab() {
         scheduledDate: at,
         // Время не задано — поле остаётся пустым (в scheduledAt лежит полночь МСК).
         scheduledTime: r.scheduledTimeUnspecified ? undefined : at.format('HH:mm'),
-        volumeM3: r.volumeM3,
-        weightTons: r.weightTons,
-        loadingLocation: r.loadingLocation,
-        unloadingLocation: r.unloadingLocation,
+        volumeM3: trip?.volumeM3 ?? null,
+        weightTons: trip?.weightTons ?? null,
+        loadingLocation: trip?.fromLocation,
+        unloadingLocation: trip?.toLocation,
         // Метаданные едут вместе со строкой: по ним поле само откроется в том режиме, каким адрес
-        // и заводили, — набором с подсказками или выбором из справочника.
-        loadingAddress: r.loadingAddress,
-        unloadingAddress: r.unloadingAddress,
-        loadingResponsibleName: r.loadingResponsibleName,
-        loadingResponsiblePhone: r.loadingResponsiblePhone,
-        unloadingResponsibleName: r.unloadingResponsibleName,
-        unloadingResponsiblePhone: r.unloadingResponsiblePhone,
+        // и заводили, — набором с подсказками или выбором из справочника. У ездки, доехавшей
+        // бэкфилом от заявки старше ADR 0006, их нет вовсе — тогда в поле ложится `null`, и
+        // выдумывать за него источник форма не станет (Р2а).
+        loadingAddress: trip?.fromAddress ?? null,
+        unloadingAddress: trip?.toAddress ?? null,
+        loadingResponsibleName: trip?.fromResponsibleName,
+        loadingResponsiblePhone: trip?.fromResponsiblePhone,
+        unloadingResponsibleName: trip?.toResponsibleName,
+        unloadingResponsiblePhone: trip?.toResponsiblePhone,
         comment: r.comment,
       });
     }
@@ -807,24 +859,84 @@ export function VehicleRequestsTab() {
         ...common,
         scheduledAt,
         scheduledTimeUnspecified: time === undefined,
+      };
+
+      /*
+       * Ездка из полей формы (Р1, Р2): адреса, груз и контакты уехали с заявки на неё, и форма
+       * отправляет их списком, а не полями заявки.
+       *
+       * Ездка одна — форма визуально прежняя, и это её этап: список со «+ ездка» и «повторить N
+       * раз» приходит шестым (§12). Но собрана она уже той структурой, которой станут все, —
+       * этапу 6 остаётся размножить сборку по строкам, а не переписывать её заново.
+       *
+       * Примечание ездки и её собственное время (Р3) форма не спрашивает и потому не сочиняет: при
+       * заведении они пусты, при правке переносятся из сохранённой ездки. Иначе полный список
+       * стирал бы «песок, звонить за час» и час подачи шестой ездки при любой правке комментария.
+       */
+      const tripFields = {
+        fromLocation: v.loadingLocation!,
+        toLocation: v.unloadingLocation!,
         volumeM3: v.volumeM3 ?? null,
         weightTons: v.weightTons ?? null,
-        loadingLocation: v.loadingLocation!,
-        unloadingLocation: v.unloadingLocation!,
-        // Верификацию обоих адресов держит правило самого поля (жёсткая модель, ADR 0006):
-        // невалидная форма до отправки не доходит.
-        loadingAddress: v.loadingAddress!,
-        unloadingAddress: v.unloadingAddress!,
-        loadingResponsibleName: v.loadingResponsibleName!,
-        loadingResponsiblePhone: v.loadingResponsiblePhone!,
-        unloadingResponsibleName: v.unloadingResponsibleName!,
-        unloadingResponsiblePhone: v.unloadingResponsiblePhone!,
+        fromResponsibleName: v.loadingResponsibleName!,
+        fromResponsiblePhone: v.loadingResponsiblePhone!,
+        toResponsibleName: v.unloadingResponsibleName!,
+        toResponsiblePhone: v.unloadingResponsiblePhone!,
+        comment: editedTrip?.comment ?? '',
       };
+      /*
+       * Новая ездка — жёсткая модель целиком (ADR 0006): адрес приходит парой со своими
+       * метаданными и обязан быть верифицирован. Держит это правило самого поля — невалидная форма
+       * до отправки не доходит, — поэтому здесь `!`, а не подстановка на случай пустоты.
+       *
+       * Тем же составом ездка уходит и при переоформлении: у нового типа деталь заводится с нуля
+       * (ADR 0091), и `id` прежней ездки к ней не относится — её у заказа на объект не было вовсе.
+       */
+      const newTrip = {
+        ...tripFields,
+        fromAddress: v.loadingAddress!,
+        toAddress: v.unloadingAddress!,
+      };
+
       if (!record || !edit)
-        return vehicleRequestsApi.create({ ...base, fileIds: editor.newFileIds() });
-      return retyping
-        ? vehicleRequestsApi.changeRequestType(record.id, { ...base, ...edit })
-        : vehicleRequestsApi.update(record.id, { ...base, ...edit });
+        return vehicleRequestsApi.create({
+          ...base,
+          trips: [newTrip],
+          fileIds: editor.newFileIds(),
+        });
+      if (retyping)
+        return vehicleRequestsApi.changeRequestType(record.id, {
+          ...base,
+          trips: [newTrip],
+          ...edit,
+        });
+      /*
+       * Правка существующей ездки (Р2а): в теле идёт её `id` — по нему сервер отличает перезапись
+       * от заведения и не требует верифицированный адрес за поле, которого не трогали. Поэтому
+       * метаданные уходят **как есть**: у ездки от заявки старше ADR 0006 их нет, и `null` здесь
+       * — это «адрес прежний», а не «адрес не выбрали». Подставь тут что-нибудь правдоподобное —
+       * и правка комментария переписала бы заявке адрес источником, которого у неё не было.
+       *
+       * Ездок в теле нет вовсе, когда их у заявки несколько: список правки полный (§7), и ездка,
+       * не попавшая в него, мягко удаляется (Р13а) — форма, знающая одну ездку, снесла бы пять
+       * остальных. Поле необязательное, «не прислали» значит «ездок не касались»: правка подачи,
+       * заказчика, комментария и файлов у такой заявки проходит как обычно, а сами ездки ждут
+       * своего редактора (этап 6, §12).
+       */
+      const trips = editedTrip
+        ? {
+            trips: [
+              {
+                ...tripFields,
+                id: editedTrip.id,
+                fromAddress: v.loadingAddress ?? null,
+                toAddress: v.unloadingAddress ?? null,
+                scheduledAt: editedTrip.scheduledAt,
+              },
+            ],
+          }
+        : {};
+      return vehicleRequestsApi.update(record.id, { ...base, ...trips, ...edit });
     },
     onSuccess: (saved) => {
       message.success('Сохранено');
@@ -995,12 +1107,19 @@ export function VehicleRequestsTab() {
       /** Фактический срок, уточнённый при переводе в работу: заказывали на одно время, вышли на другое. */
       schedule?: ConfirmScheduleBody;
       completion?: CompleteVehicleRequestInput;
+      /**
+       * Отпечаток последствий, показанных вторым шагом окна назначения (§5.4 плана). Приходит
+       * только с отката «Выполнена» → «В работе»: на нём портал обещал точный результат сверки
+       * ЭСМ-2, и сервер сверяет, что обещанное ещё верно.
+       */
+      previewFingerprint?: string;
     }) =>
       vehicleRequestsApi.changeStatus(v.id, v.status, v.version, {
         comment: v.comment,
         assignment: v.assignment,
         schedule: v.schedule,
         completion: v.completion,
+        previewFingerprint: v.previewFingerprint,
       }),
     onSuccess: () => {
       message.success('Статус изменён');
@@ -1233,6 +1352,20 @@ export function VehicleRequestsTab() {
             >
               {vehicleRequestTypeLabels[r.requestType]}
             </Tag>
+            {/* Заявку застигло переключение признака у типа (миграция 0137): тип уже ведёт заказы
+                иначе, а она дорабатывает как заведена. Без метки диспетчер видит две заявки
+                одного типа, ведущие себя по-разному, и ни одного объяснения на экране.
+                Развёрнуто то же сказано в карточке — здесь только режим и с какого числа. */}
+            {r.requestType === 'special_equipment' && r.linearFrozen ? (
+              <Tooltip
+                title={`Тип «${r.vehicleTypeName}» переключили после того, как заявку взяли в работу: до закрытия она ведётся так, как заведена`}
+              >
+                <Tag color="gold" style={{ marginInlineEnd: 0, marginTop: 2 }}>
+                  прежний режим: {r.linearFrozen.isLinear ? 'по дням' : 'по неделям'}, с{' '}
+                  {formatDate(r.linearFrozen.at)}
+                </Tag>
+              </Tooltip>
+            ) : null}
           </div>
         );
       },
@@ -2181,6 +2314,21 @@ export function VehicleRequestsTab() {
                 >
                   <InputNumber style={{ width: '100%' }} min={0} step={0.1} />
                 </Form.Item>
+                {/* Заявка с несколькими ездками правится этой формой не полностью: поля ниже
+                  показывают первую ездку, а сохранение их не отправляет (Р13а — список правки
+                  полный, и одной строкой форма снесла бы остальные). Молчать об этом нельзя:
+                  человек видит адреса в полях и вправе считать, что правит их. Редактор списка —
+                  этап 6 (§12), и тогда этот блок уходит вместе с оговоркой. */}
+                {recordTrips && recordTrips.length > 1 && (
+                  <FormGrid.Full>
+                    <Alert
+                      type="warning"
+                      showIcon
+                      message={`У заявки ${tripsCountLabel(recordTrips.length)} — правятся они пока не здесь`}
+                      description="Поля погрузки, разгрузки и груза показывают первую ездку, но сохранение их не изменит: ездки останутся прежними. Подача, заказчик, комментарий и файлы сохранятся как обычно."
+                    />
+                  </FormGrid.Full>
+                )}
                 {/* Адреса и контакты — во всю ширину: подсказка DaData приходит одной длинной
                   строкой, и в половине окна выбирать пришлось бы из обрезанных вариантов. */}
                 <FormGrid.Full>
@@ -2189,7 +2337,9 @@ export function VehicleRequestsTab() {
                     label="Место погрузки"
                     required
                     requiredMessage="Укажите место погрузки"
-                    verified
+                    // Прежний непроверенный адрес правку не блокирует (Р2а, `keepsLoadingAddress`):
+                    // требование выбрать из подсказок встаёт на новое значение.
+                    verified={!keepsLoadingAddress}
                     metaField="loadingAddress"
                     directory
                     suggestObjectIds={suggestObjectIds}
@@ -2208,7 +2358,8 @@ export function VehicleRequestsTab() {
                     label="Место разгрузки"
                     required
                     requiredMessage="Укажите место разгрузки"
-                    verified
+                    // Прежний непроверенный адрес правку не блокирует (Р2а) — как и на погрузке.
+                    verified={!keepsUnloadingAddress}
                     metaField="unloadingAddress"
                     directory
                     suggestObjectIds={suggestObjectIds}
@@ -2366,7 +2517,7 @@ export function VehicleRequestsTab() {
         request={assignTarget}
         confirmLoading={statusMut.isPending}
         onCancel={() => setAssignTarget(null)}
-        onSubmit={({ assignment, schedule }) =>
+        onSubmit={({ assignment, schedule, previewFingerprint }) =>
           assignTarget &&
           statusMut.mutate({
             id: assignTarget.id,
@@ -2375,6 +2526,9 @@ export function VehicleRequestsTab() {
             assignment,
             // Срок при переводе в работу окно спрашивает всегда — `null` сюда не приходит.
             schedule: schedule ?? undefined,
+            // Приходит только с отката «Выполнена» → «В работе»: на прочих переходах окно
+            // предпросмотра не зовёт и обещать серверу нечего.
+            previewFingerprint,
           })
         }
       />

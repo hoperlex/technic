@@ -5,12 +5,14 @@ import {
   type FreightTransportRequestDto,
   type RequestChangeDto,
   type SpecialEquipmentRequestDto,
+  tripCargoLabel,
   vehicleClassificationLabel,
   type VehicleRequestAssignmentDto,
   type VehicleRequestCompletionDto,
   type VehicleRequestDto,
   type VehicleRequestEarlyEndDto,
   type VehicleRequestShiftDto,
+  type VehicleRequestTripDto,
   vehicleRequestTypeLabels,
   workedAmountLabel,
 } from '@technic/contracts';
@@ -49,6 +51,118 @@ function asSpecial(r: VehicleRequestDto): SpecialEquipmentRequestDto | null {
 
 function asFreight(r: VehicleRequestDto): FreightTransportRequestDto | null {
   return r.requestType === 'freight_transport' ? r : null;
+}
+
+/**
+ * Значение поля ездки в истории: номер ездки и само значение — «2 · Карьер Сычёво».
+ *
+ * Номер живёт **в значении, а не в ключе** (§5.7): словарь подписей
+ * (`vehicleRequestChangeLabels`) фиксирован, и ключ вида `trip.2.from` подписи бы не нашёл —
+ * история напечатала бы сырую строку. Двум строкам с одним ключом ничто не мешает: изменения
+ * складываются массивом, и правка двух ездок читается двумя строками подряд.
+ *
+ * Прочерк вместо пустого значения — как и везде в истории: пустой контакт у ездки, доехавшей
+ * бэкфилом, это законное состояние (§5.7), а не пропуск в событии.
+ */
+function tripValue(num: number, text: string): string {
+  return `${num} · ${text || EMPTY}`;
+}
+
+/**
+ * Ездка целиком — одной строкой для событий состава (`tripAdded` / `tripRemoved`): номер, пара
+ * адресов и количество. По форме это те же события-списки, что `filesAdded`/`filesRemoved`, и
+ * значима у них только правая часть — «было» у появившейся ездки не бывает.
+ *
+ * Количество печатается тем же правилом, что и в бланке (`tripCargoLabel`): у легкового его нет
+ * вовсе, и пустая часть в строку не попадает.
+ */
+function tripSummary(t: VehicleRequestTripDto): string {
+  const cargo = tripCargoLabel(t);
+  return [`${t.num} · ${t.fromLocation} → ${t.toLocation}`, cargo].filter(Boolean).join(' · ');
+}
+
+/**
+ * Что стало с ездками заявки (Р1, Р13а, §5.7).
+ *
+ * Ездки сопоставляются по `id`, а не по номеру и не по порядку в списке: номер не
+ * переиспользуется (Р13а), а порядок в DTO задан им же — сравнивать позиции значило бы прочесть
+ * удаление второй из трёх как «вторая переехала в третью».
+ *
+ * Пропавшая ездка — это мягкое удаление: удалённые в DTO не приходят вовсе, и «её нет в „стало“»
+ * означает ровно то, что она больше не едет. Появившаяся — заведённая правкой.
+ *
+ * Стороны бывают пустыми: у переоформления (ADR 0091) заявка приезжает сюда заказом на объект, у
+ * которого ездок не бывает, — и тогда все ездки читаются как добавленные либо как удалённые.
+ */
+function diffTrips(
+  diff: ReturnType<typeof changeSet>,
+  before: readonly VehicleRequestTripDto[],
+  after: readonly VehicleRequestTripDto[],
+): void {
+  const afterById = new Map(after.map((t) => [t.id, t]));
+  const beforeIds = new Set(before.map((t) => t.id));
+  for (const b of before) {
+    const a = afterById.get(b.id);
+    if (!a) continue;
+    // Адрес сравнивается по строке, а не по метаданным: в истории читают, откуда и куда везли.
+    diff.changed(
+      'trip.from',
+      tripValue(b.num, short(b.fromLocation)),
+      tripValue(a.num, short(a.fromLocation)),
+    );
+    diff.changed(
+      'trip.to',
+      tripValue(b.num, short(b.toLocation)),
+      tripValue(a.num, short(a.toLocation)),
+    );
+    // Объём и масса разными ключами: это разные единицы, а не разные значения одной.
+    diff.changed(
+      'trip.volume',
+      tripValue(b.num, measure(b.volumeM3, 'м³')),
+      tripValue(a.num, measure(a.volumeM3, 'м³')),
+    );
+    diff.changed(
+      'trip.weight',
+      tripValue(b.num, measure(b.weightTons, 'т')),
+      tripValue(a.num, measure(a.weightTons, 'т')),
+    );
+    // Контакты на концах — четырьмя ключами: сменился ответственный за погрузку или за разгрузку,
+    // читателю истории это разные события. Номер печатается тем же видом, что в карточке
+    // (ADR 0066), иначе смена формата хранения читалась бы как смена телефона.
+    diff.changed(
+      'trip.fromResponsibleName',
+      tripValue(b.num, b.fromResponsibleName),
+      tripValue(a.num, a.fromResponsibleName),
+    );
+    diff.changed(
+      'trip.fromResponsiblePhone',
+      tripValue(b.num, formatPhone(b.fromResponsiblePhone)),
+      tripValue(a.num, formatPhone(a.fromResponsiblePhone)),
+    );
+    diff.changed(
+      'trip.toResponsibleName',
+      tripValue(b.num, b.toResponsibleName),
+      tripValue(a.num, a.toResponsibleName),
+    );
+    diff.changed(
+      'trip.toResponsiblePhone',
+      tripValue(b.num, formatPhone(b.toResponsiblePhone)),
+      tripValue(a.num, formatPhone(a.toResponsiblePhone)),
+    );
+    // Своё время подачи (Р3): пусто — «как у заявки», и в истории это прочерк, а не «время сняли».
+    diff.changed(
+      'trip.scheduledAt',
+      tripValue(b.num, b.scheduledAt ? formatMoscowDateTime(new Date(b.scheduledAt)) : ''),
+      tripValue(a.num, a.scheduledAt ? formatMoscowDateTime(new Date(a.scheduledAt)) : ''),
+    );
+    diff.changed(
+      'trip.comment',
+      tripValue(b.num, short(b.comment)),
+      tripValue(a.num, short(a.comment)),
+    );
+  }
+  diff.listed('tripAdded', after.filter((t) => !beforeIds.has(t.id)).map(tripSummary));
+  diff.listed('tripRemoved', before.filter((t) => !afterById.has(t.id)).map(tripSummary));
 }
 
 /**
@@ -137,49 +251,13 @@ export function diffVehicleRequests(
           )
         : EMPTY,
     );
-    diff.changed(
-      'volumeM3',
-      measure(freightBefore?.volumeM3 ?? null, 'м³'),
-      measure(freightAfter?.volumeM3 ?? null, 'м³'),
-    );
-    diff.changed(
-      'weightTons',
-      measure(freightBefore?.weightTons ?? null, 'т'),
-      measure(freightAfter?.weightTons ?? null, 'т'),
-    );
-    // Адрес сравнивается по строке, а не по ФИАС: в истории читают, откуда и куда везли.
-    diff.changed(
-      'loadingLocation',
-      short(freightBefore?.loadingLocation ?? '') || EMPTY,
-      short(freightAfter?.loadingLocation ?? '') || EMPTY,
-    );
-    diff.changed(
-      'unloadingLocation',
-      short(freightBefore?.unloadingLocation ?? '') || EMPTY,
-      short(freightAfter?.unloadingLocation ?? '') || EMPTY,
-    );
-    // Контакты на концах маршрута (миграция 0062) — четырьмя строками: сменился ответственный
-    // за погрузку или за разгрузку, читателю истории это разные события.
-    diff.changed(
-      'loadingResponsibleName',
-      freightBefore?.loadingResponsibleName || EMPTY,
-      freightAfter?.loadingResponsibleName || EMPTY,
-    );
-    diff.changed(
-      'loadingResponsiblePhone',
-      formatPhone(freightBefore?.loadingResponsiblePhone ?? '') || EMPTY,
-      formatPhone(freightAfter?.loadingResponsiblePhone ?? '') || EMPTY,
-    );
-    diff.changed(
-      'unloadingResponsibleName',
-      freightBefore?.unloadingResponsibleName || EMPTY,
-      freightAfter?.unloadingResponsibleName || EMPTY,
-    );
-    diff.changed(
-      'unloadingResponsiblePhone',
-      formatPhone(freightBefore?.unloadingResponsiblePhone ?? '') || EMPTY,
-      formatPhone(freightAfter?.unloadingResponsiblePhone ?? '') || EMPTY,
-    );
+    /*
+     * Адреса, количество и контакты уехали с заявки на ездку (Р2), и событий у них теперь свои
+     * ключи — `trip.*` вместо `loadingLocation` и прочих. Старые ключи при этом остаются в
+     * словаре подписей (§5.7): их читают события, записанные до миграции `0136`, и пересчитать
+     * такую историю нечем — она говорит, что было.
+     */
+    diffTrips(diff, freightBefore?.trips ?? [], freightAfter?.trips ?? []);
   }
 
   diff.changed('comment', short(before.comment) || EMPTY, short(after.comment) || EMPTY);

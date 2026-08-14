@@ -10,6 +10,7 @@ import {
   type VehicleRequestAssignmentDto,
   type VehicleRequestDto,
   type VehicleRequestEarlyEndDto,
+  type VehicleRequestTripDto,
   vehicleOptionLabel,
 } from '@technic/contracts';
 import {
@@ -302,6 +303,61 @@ interface RequestContact {
 }
 
 /**
+ * «6 ездок» — число ездок заявки с русским склонением.
+ *
+ * Отдельной функцией, а не строкой по месту: счёт стоит и в карточке рядом с итогом груза («60 м³
+ * · 6 ездок», §9 плана `docs/route-trips-plan.md`), и в подсказке состава рейса, где он объясняет
+ * съеденную ёмкость бланка (Р11). Разъедься они — «6 ездки» в одном месте и «6 ездок» в другом
+ * читались бы как две разные величины.
+ */
+export function tripsCountLabel(count: number): string {
+  // Склонение то же, что у календарных дней (`calendarDaysLabel`): 1 ездка, 2–4 ездки, 5–20
+  // ездок; 11–14 — всегда «ездок».
+  const tail = count % 100;
+  const last = count % 10;
+  const form =
+    tail >= 11 && tail <= 14
+      ? 'ездок'
+      : last === 1
+        ? 'ездка'
+        : last >= 2 && last <= 4
+          ? 'ездки'
+          : 'ездок';
+  return `${count} ${form}`;
+}
+
+/**
+ * Контакты грузоперевозки: их держит **ездка** (Р2), а не заявка — у заявки с ездками `A→B` и
+ * `A→C` «ответственного за разгрузку заявки» не существует.
+ *
+ * Показывается первая ездка — тем же выбором, каким строка списка показывает её адреса (§9).
+ * Остальные читаются в карточке: в ячейку списка не помещается и одна пара контактов с адресами,
+ * ради чего она и сворачивается. Счёт ездок при этом стоит в самой роли: без него список молча
+ * выдавал бы контакт одной ездки за контакт всей заявки, и звонок ушёл бы не туда.
+ */
+function tripContacts(trips: readonly VehicleRequestTripDto[]): RequestContact[] {
+  const trip = trips[0];
+  // Ездок не бывает ноль (`FreightTransportRequestDto.trips`), но строка списка не то место, где
+  // это стоит утверждать исключением: пустой перечень покажет «—», а не уронит таблицу целиком.
+  if (!trip) return [];
+  const suffix = trips.length > 1 ? ` · ездка 1 из ${trips.length}` : '';
+  return [
+    {
+      role: `Отв. за погрузку${suffix}`,
+      name: trip.fromResponsibleName,
+      phone: trip.fromResponsiblePhone,
+      address: trip.fromLocation,
+    },
+    {
+      role: `Отв. за разгрузку${suffix}`,
+      name: trip.toResponsibleName,
+      phone: trip.toResponsiblePhone,
+      address: trip.toLocation,
+    },
+  ];
+}
+
+/**
  * Контакты заявки по местам работы. У заказа техники на объект контакт один — тот, кто встречает
  * технику на площадке, и адрес у него объектный; у грузоперевозки их два, по одному на конец
  * маршрута, и у каждого свой адрес: грузят и принимают разные люди в разных местах.
@@ -320,20 +376,7 @@ export function requestContacts(r: VehicleRequestDto): RequestContact[] {
             address: r.objectAddress,
           },
         ]
-      : [
-          {
-            role: 'Отв. за погрузку',
-            name: r.loadingResponsibleName,
-            phone: r.loadingResponsiblePhone,
-            address: r.loadingLocation,
-          },
-          {
-            role: 'Отв. за разгрузку',
-            name: r.unloadingResponsibleName,
-            phone: r.unloadingResponsiblePhone,
-            address: r.unloadingLocation,
-          },
-        ];
+      : tripContacts(r.trips);
   // Пустой контакт не занимает строку: у заявок до миграции 0062 его нет вовсе, и «Отв. за
   // погрузку —» сообщал бы о заявке ровно ничего, отнимая у соседнего контакта видимую строку.
   return contacts.filter((c) => c.name || c.phone || c.address);

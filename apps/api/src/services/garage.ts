@@ -1,6 +1,7 @@
 import { and, eq, inArray, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import {
+  type CostTargetSource,
   formatVehicleRequestNumber,
   formatVehicleRouteNumber,
   type GarageBusyEntry,
@@ -34,6 +35,7 @@ import {
   waybills,
   waybillSeries,
 } from '../db/schema';
+import { requestIsLinearRawSql, requestIsLinearSql } from '../db/linear-mode';
 
 /**
  * Занятость дня: чем заняты машина и человек на выбранную дату (ADR 0076).
@@ -70,6 +72,10 @@ const orderedTypes = alias(vehicleTypes, 'ordered_types');
  * поехала во вторник и занятости не получала. Занятость дня линейного заказа говорит его рейс
  * (`routeBusyExists`), и говорит он правду про обе машины сразу. Признак читается у **заказанного**
  * типа (ADR 0100 §1): режим заявки решает заказ, а не то, какую единицу под него нашли.
+ *
+ * Спрашивается при этом режим самой заявки, а не признак справочника: заявку могло застать
+ * переключение (миграция 0137), и живой признак вернул бы её на новый режим — то есть снял бы с
+ * машины занятость, которой заказ держит площадку, и пустил бы на те же дни второй заказ.
  */
 function specialBusyExists(on: string): SQL {
   return sql`EXISTS (
@@ -80,7 +86,7 @@ function specialBusyExists(on: string): SQL {
     WHERE ga_a.vehicle_id = ${vehicles.id}
       AND ga_r.status = 'confirmed'
       AND ga_r.deleted_at IS NULL
-      AND NOT ga_vt.is_linear
+      AND NOT ${requestIsLinearRawSql('ga_r', 'ga_vt')}
       AND ga_d.date_from <= ${on}::date
       AND coalesce(ga_d.date_to, ga_d.date_from) >= ${on}::date
   )`;
@@ -183,20 +189,26 @@ const vehicleLabelColumns = {
   modelName: vehicleModels.name,
 };
 
-/** Заявка глазами гаража: номер, состояние и заказчик — по ним отсюда и переходят в заявку. */
-function busyRequest(row: {
-  requestId: string;
-  num: number;
-  status: RequestStatus;
-  objectName: string | null;
-  departmentName: string | null;
-  /**
-   * День линейного заказа, ради которого строка стоит в рейсе (ADR 0100 §2). Заполнен он только у
-   * состава — заявка-основание перегона и недельного листа дня не несёт, и `null` там честный
-   * ответ, а не пробел.
-   */
-  workDate?: string | null;
-}): GarageBusyRequest {
+/**
+ * Заявка глазами гаража: номер, состояние и заказчик — по ним отсюда и переходят в заявку.
+ *
+ * Заказчик приходит объектом затрат целиком (`CostTargetSource`, Р25): решает его идентификатор, а
+ * не то, чьё наименование оказалось заполнено, — поэтому каждый запрос занятости обязан выбрать
+ * обе пары справочников, а не одни подписи.
+ */
+function busyRequest(
+  row: CostTargetSource & {
+    requestId: string;
+    num: number;
+    status: RequestStatus;
+    /**
+     * День линейного заказа, ради которого строка стоит в рейсе (ADR 0100 §2). Заполнен он только
+     * у состава — заявка-основание перегона и недельного листа дня не несёт, и `null` там честный
+     * ответ, а не пробел.
+     */
+    workDate?: string | null;
+  },
+): GarageBusyRequest {
   return {
     requestId: row.requestId,
     displayNumber: formatVehicleRequestNumber(row.num),
@@ -211,7 +223,11 @@ function sourceRequestOf(row: {
   sourceRequestId: string | null;
   sourceNum: number | null;
   sourceStatus: RequestStatus | null;
+  sourceObjectId: string | null;
+  sourceObjectCode: string | null;
   sourceObjectName: string | null;
+  sourceDepartmentId: string | null;
+  sourceDepartmentCode: string | null;
   sourceDepartmentName: string | null;
 }): GarageBusyRequest | null {
   if (!row.sourceRequestId || row.sourceNum == null || !row.sourceStatus) return null;
@@ -219,7 +235,11 @@ function sourceRequestOf(row: {
     requestId: row.sourceRequestId,
     num: row.sourceNum,
     status: row.sourceStatus,
+    objectId: row.sourceObjectId,
+    objectCode: row.sourceObjectCode,
     objectName: row.sourceObjectName,
+    departmentId: row.sourceDepartmentId,
+    departmentCode: row.sourceDepartmentCode,
     departmentName: row.sourceDepartmentName,
   });
 }
@@ -253,7 +273,12 @@ async function loadRoutes(on: string, scope: BusyScope): Promise<GarageRouteBusy
       sourceRequestId: vehicleRoutes.sourceRequestId,
       sourceNum: vehicleRequests.num,
       sourceStatus: vehicleRequests.status,
+      // Заказчик — объектом затрат (Р25): ветвление по идентификатору, поэтому обе пары целиком.
+      sourceObjectId: vehicleRequests.objectId,
+      sourceObjectCode: constructionObjects.code,
       sourceObjectName: constructionObjects.name,
+      sourceDepartmentId: vehicleRequests.departmentId,
+      sourceDepartmentCode: departments.code,
       sourceDepartmentName: departments.name,
       ...vehicleLabelColumns,
     })
@@ -311,7 +336,12 @@ async function loadRouteRequests(routeIds: string[]): Promise<Map<string, Garage
       workDate: vehicleRouteRequests.workDate,
       num: vehicleRequests.num,
       status: vehicleRequests.status,
+      // Заказчик — объектом затрат (Р25): ветвление по идентификатору, поэтому обе пары целиком.
+      objectId: vehicleRequests.objectId,
+      objectCode: constructionObjects.code,
       objectName: constructionObjects.name,
+      departmentId: vehicleRequests.departmentId,
+      departmentCode: departments.code,
       departmentName: departments.name,
     })
     .from(vehicleRouteRequests)
@@ -380,7 +410,14 @@ async function loadSpecials(on: string, vehicleIds: string[]): Promise<GarageSpe
       requestId: vehicleRequests.id,
       num: vehicleRequests.num,
       status: vehicleRequests.status,
+      // Заказчик — объектом затрат (Р25). Отдела у заказа техники на объект не бывает вовсе
+      // (CHECK `vehicle_requests_department_freight_check`), но пара выбирается целиком: это одно
+      // правило на все запросы гаража, и запоминать, где половина из них лишняя, незачем.
+      objectId: vehicleRequests.objectId,
+      objectCode: constructionObjects.code,
       objectName: constructionObjects.name,
+      departmentId: vehicleRequests.departmentId,
+      departmentCode: departments.code,
       departmentName: departments.name,
       dateFrom: specialEquipmentRequestDetails.dateFrom,
       dateTo: specialEquipmentRequestDetails.dateTo,
@@ -423,7 +460,9 @@ async function loadSpecials(on: string, vehicleIds: string[]): Promise<GarageSpe
         inArray(vehicleRequestAssignments.vehicleId, vehicleIds),
         eq(vehicleRequests.status, 'confirmed'),
         isNull(vehicleRequests.deletedAt),
-        eq(orderedTypes.isLinear, false),
+        // Тем же выражением, что и в состоянии дня: режим заявки, а не признак справочника —
+        // заявку могло застать переключение (миграция 0137).
+        eq(requestIsLinearSql(vehicleRequests.isLinearFrozen, orderedTypes.isLinear), false),
         sql`${specialEquipmentRequestDetails.dateFrom} <= ${on}::date`,
         sql`coalesce(${specialEquipmentRequestDetails.dateTo}, ${specialEquipmentRequestDetails.dateFrom}) >= ${on}::date`,
       ),
@@ -468,7 +507,12 @@ async function loadEsm2(on: string, scope: BusyScope): Promise<GarageEsm2Busy[]>
       sourceRequestId: waybills.sourceRequestId,
       sourceNum: vehicleRequests.num,
       sourceStatus: vehicleRequests.status,
+      // Заказчик — объектом затрат (Р25): ветвление по идентификатору, поэтому обе пары целиком.
+      sourceObjectId: vehicleRequests.objectId,
+      sourceObjectCode: constructionObjects.code,
       sourceObjectName: constructionObjects.name,
+      sourceDepartmentId: vehicleRequests.departmentId,
+      sourceDepartmentCode: departments.code,
       sourceDepartmentName: departments.name,
       ...vehicleLabelColumns,
     })

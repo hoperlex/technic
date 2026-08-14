@@ -11,12 +11,20 @@ import { allowedStatusTransitions, can, type AccessSubject } from './permissions
 import {
   archiveFilterSchema,
   baseListQuery,
+  contactIssue,
   contactNameSchema,
   contactPhoneSchema,
   dateOnlySchema,
+  normalizePhone,
   uuidSchema,
 } from './common';
-import { type AddressMeta, verifiedAddressMetaSchema } from './address';
+import {
+  ADDRESS_NOT_VERIFIED_MESSAGE,
+  type AddressMeta,
+  addressMetaSchema,
+  verifiedAddressMetaSchema,
+} from './address';
+import { type CostTarget, costTargetOf, type CostTargetSource } from './cost-target';
 import type { FileDto } from './files';
 import {
   shiftHoursSchema,
@@ -28,9 +36,15 @@ import {
 import {
   assignRouteSchema,
   createRelocationRouteSchema,
+  MAX_ROUTE_REQUESTS,
   type VehicleRequestRouteDto,
 } from './vehicle-routes';
-import type { WaybillFormCode } from './waybills';
+import {
+  requestTripSchema,
+  requestTripsSchema,
+  type VehicleRequestTripDto,
+} from './vehicle-request-trips';
+import type { Esm2Period, WaybillFormCode } from './waybills';
 import {
   WORK_TIME_MESSAGE,
   isAllowedRequestDate,
@@ -160,8 +174,11 @@ export function vehicleRequestLeadTimeBlocker(
 }
 
 // ── Общие подсхемы ──
+// Адреса и количество своих подсхем здесь больше не имеют: их предмет переехал на ездку (Р2), и
+// границы полей живут там же, одной записью (`tripLocationSchema`, `tripAmountSchema` в
+// `vehicle-request-trips.ts`). Этап 1 держал их в двух местах намеренно и обещал, что копии
+// переживут ровно один релиз, — вот он и кончился.
 const commentSchema = z.string().trim().max(2000);
-const locationSchema = z.string().trim().min(1).max(1000);
 const fileIdsSchema = z.array(uuidSchema).max(20);
 
 /** ISO 8601 с обязательным offset (напр. 2026-07-25T14:30:00+03:00). */
@@ -203,15 +220,40 @@ export const BACKDATE_UNDECLARED_MESSAGE =
  */
 const operationIdSchema = uuidSchema;
 
-/** Положительное значение с не более чем 3 знаками после запятой (numeric(12,3)). */
-const amountSchema = z
-  .number()
-  .positive('Значение должно быть больше 0')
-  .max(999_999_999.999, 'Слишком большое значение')
-  .refine(
-    (v) => Math.abs(v * 1000 - Math.round(v * 1000)) < 1e-6,
-    'Не более 3 знаков после запятой',
+/**
+ * Своё время ездки лежит в календарном дне заявки (Р18).
+ *
+ * Не придирка к оформлению: датой рейса, фильтрами списка и рабочим окном заведует `scheduledAt`
+ * **заявки** (Р3), а «заявка едет одним маршрутом целиком» (Р7) — инвариант состава. Ездка «на
+ * завтра» внутри сегодняшней заявки развалила бы оба: рейс собрался бы на один день, а задание
+ * водителю показало бы другой.
+ *
+ * Сообщение общее у схемы и сервера: схема ловит случай, когда день заявки виден из тела (заведение
+ * и правка, двигающая подачу), сервер — все остальные, ему сохранённый день известен всегда.
+ */
+export const TRIP_DAY_MESSAGE = 'Время ездки должно быть в дне подачи заявки';
+
+/**
+ * Ездки, выпавшие из календарного дня заявки, — **номерами строк списка**, а не признаком «что-то
+ * не так»: отказ обязан называть ездку, иначе в форме с шестью строками человек ищет ошибку сам.
+ *
+ * Одна функция на схему и сервер (Р18): схема зовёт её там, где день заявки виден из тела, сервер —
+ * там, где день лежит в базе (правка, не двигающая подачу; перенос рейса на другую дату, ADR 0082).
+ * Разойдись они — форма приняла бы то, чем ручка ответит 422.
+ *
+ * Ездка без своего времени не проверяется вовсе: у неё время заявки (Р3), и выпасть из её дня она
+ * не может по устройству.
+ */
+export function tripsOutOfRequestDay(
+  /** Момент подачи заявки (ISO с offset) — тот, который сохранится. */
+  scheduledAt: string,
+  trips: readonly { scheduledAt?: string | null }[],
+): number[] {
+  const day = moscowDateKeyOf(new Date(scheduledAt));
+  return trips.flatMap((t, i) =>
+    t.scheduledAt && moscowDateKeyOf(new Date(t.scheduledAt)) !== day ? [i] : [],
   );
+}
 
 // ── Создание (discriminatedUnion по requestType, strict) ──
 // Заказывается конечная позиция классификатора (ADR 0028): тип ТС (ADR 0005) и — если у типа
@@ -263,21 +305,21 @@ export const createFreightTransportRequestSchema = z
      * не проверяется. Дата и время в БД остаются одним timestamptz.
      */
     scheduledTimeUnspecified: z.boolean().optional().default(false),
-    volumeM3: amountSchema.nullable().optional(),
-    weightTons: amountSchema.nullable().optional(),
-    loadingLocation: locationSchema,
-    unloadingLocation: locationSchema,
-    loadingAddress: verifiedAddressMetaSchema,
-    unloadingAddress: verifiedAddressMetaSchema,
     /**
-     * Контакт на каждом конце маршрута, а не один на заявку: грузят и принимают разные люди в
-     * разных местах, и водителю нужен тот, кто откроет ворота именно здесь. Оба обязательны —
-     * рейс без контакта на разгрузке заканчивается простоем у закрытой площадки.
+     * Ездки заявки (Р1, Р2): откуда, куда, сколько, кому звонить на каждом конце. Пары адресов,
+     * количества и контактов у самой заявки больше нет — у заявки с ездками `A→B` и `A→C` «адрес
+     * разгрузки заявки» не существует, и поле, отвечающее на этот вопрос, отвечало бы наугад.
+     *
+     * Минимум одна (`requestTripsSchema`): заявка без ездки — заказ, в котором не сказано, что
+     * везти и куда. Заявка с одной ездкой — обычный сегодняшний случай, и заполняется она так же;
+     * список разворачивается только там, где ездок несколько (§4.1).
+     *
+     * Схема заведения строгая целиком: адрес приходит парой со своими метаданными и обязан быть
+     * верифицирован (ADR 0006), контакты непусты. Послабление есть только у **правки** существующей
+     * ездки (Р2а, `updateRequestTripSchema`) — и ровно потому, что новое значение здесь всегда
+     * новое, а там бывает и прежним.
      */
-    loadingResponsibleName: contactNameSchema,
-    loadingResponsiblePhone: contactPhoneSchema,
-    unloadingResponsibleName: contactNameSchema,
-    unloadingResponsiblePhone: contactPhoneSchema,
+    trips: requestTripsSchema,
     comment: commentSchema.optional().default(''),
     fileIds: fileIdsSchema.optional().default([]),
     /** Заявка заводится задним числом — объяснение (ADR 0101); проверяет его `backdateGuard`. */
@@ -351,6 +393,15 @@ export const createVehicleRequestSchema = z
           message: BACKDATE_UNDECLARED_MESSAGE,
         });
       }
+      // Своё время ездки — внутри дня заявки (Р18). Здесь схема отвечает целиком: при заведении
+      // видны обе стороны сравнения, и день заявки взяться больше неоткуда.
+      for (const i of tripsOutOfRequestDay(v.scheduledAt, v.trips)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['trips', i, 'scheduledAt'],
+          message: TRIP_DAY_MESSAGE,
+        });
+      }
     }
   });
 export type CreateSpecialEquipmentRequestInput = z.infer<
@@ -393,6 +444,147 @@ export const updateSpecialEquipmentRequestSchema = z
   })
   .strict();
 
+// ── Правка ездок: жёсткая модель встаёт на новое значение (Р2а) ──
+//
+// Заявку старше ADR 0006 и миграции `0062` править можно и сегодня: адрес и контакты объявлены
+// `.optional()`, и нетронутое поле просто **не отправляется**. С переездом на ездки этот приём
+// кончается — ездки правятся полным списком (§7), а у списка нет понятия «поле не прислали»:
+// строка приезжает целиком, со всеми своими значениями, в том числе с непроверенным адресом и
+// пустым контактом, доехавшими бэкфилом (§5.7 — на тестовой базе таких 4 строки деталей из 489).
+//
+// Потребуй схема жёсткую модель за сам факт отправки списка — и заявка, которую сегодня спокойно
+// редактируют, завтра перестала бы сохраняться, пока кто-нибудь не выберет ей адрес из справочника
+// и не впишет ответственного, то есть не выдумает данные за прошлое. Ровно от этого бережёт Р24:
+// старая заявка — это заявка с одной ездкой, а не заявка второго сорта.
+//
+// Поэтому решение разделено надвое, и граница проходит по `id` строки:
+//
+//   - **строка без `id`** — заведение. Её схема проверяет целиком и здесь же: адрес парой с
+//     метаданными и верифицирован, контакты непусты. Новое значение тут новое по определению —
+//     сравнивать не с чем, откладывать нечего;
+//   - **строка с `id`** — перезапись существующей ездки. Схема принимает её как есть. Не потому,
+//     что правило ослабло, а потому, что применить его нечем: отличить «оставили как было» от
+//     «вписали руками непроверенный адрес» можно только сравнением с прежним значением, а его в
+//     теле запроса нет. Оно есть у **сервера**, под блокировкой строки, — там правило и стоит.
+//
+// Что обязан сделать сервер с каждой строкой, несущей `id`, — без этого Р2а не выполнен:
+//
+//   1. взять сохранённую ездку **этой** заявки под блокировкой (Р16, Р17); `id` чужой заявки или
+//      мягко удалённой ездки (Р13а) — отказ, а не тихое заведение новой;
+//   2. сравнить присланное с сохранённым по каждому полю;
+//   3. на изменившемся адресе (строка или метаданные) потребовать `verifiedAddressMetaSchema`, на
+//      изменившемся контакте — `contactNameSchema` и `contactPhoneSchema`. Не изменившееся принять
+//      как есть, каким бы оно ни было;
+//   4. ездки, которых в присланном списке не оказалось, мягко удалить (Р13а), а не снести: на них
+//      может ссылаться выданный лист.
+//
+// Отсюда же и то, чего в схеме нет вовсе: `num` не принимается (номер назначает сервер и не
+// переиспользует, Р13а), `deletedAt` — тоже: удаление выражено отсутствием строки в списке, а не
+// признаком внутри неё.
+
+/**
+ * Имя ответственного в том виде, в каком оно уже лежит в базе: пустая строка законна (колонка
+ * `NOT NULL DEFAULT ''`, §5.1) — это состояние бэкфила, а не то, что принимается на запись.
+ * Верхняя граница та же, что у `contactNameSchema`: от того, кто прислал значение, длина поля не
+ * меняется.
+ */
+const storedContactNameSchema = z.string().trim().max(200);
+
+/**
+ * Телефон в том виде, в каком он уже лежит в базе. Нормализация (ADR 0066) стоит здесь же и
+ * работает как обычно — присланный «+7 (916) 123-45-67» уйдёт в базу десятью цифрами, — но то, что
+ * к десяти цифрам не сводится, проходит **как есть**: миграция `0095` такие значения не трогала
+ * (ADR 0066 п. 7), и отклонить их значило бы не дать сохранить заявку, в которой этот номер никто
+ * не менял. Годится ли значение как **новое**, решает сервер сравнением с прежним.
+ */
+const storedContactPhoneSchema = z
+  .string()
+  .trim()
+  .max(50)
+  .transform((v) => (v === '' ? '' : (normalizePhone(v) ?? v)));
+
+/**
+ * Что не так с адресом для записи (ADR 0006), либо `null`, если он годится.
+ *
+ * Тем же приёмом, что `contactIssue`: правило одно и лежит в своей схеме, а звать его приходится
+ * изнутри `superRefine`, куда чужие issue не пробросить — берётся первое сообщение, как и там.
+ */
+function verifiedAddressIssue(meta: AddressMeta | null): string | null {
+  // `null` разбирается отдельно: схема ответила бы на него служебным «expected object, received
+  // null», а человеку нужно ровно то же, что и при свободном вводе, — «выберите из подсказок».
+  if (!meta) return ADDRESS_NOT_VERIFIED_MESSAGE;
+  const parsed = verifiedAddressMetaSchema.safeParse(meta);
+  return parsed.success ? null : (parsed.error.issues[0]?.message ?? ADDRESS_NOT_VERIFIED_MESSAGE);
+}
+
+/**
+ * Ездка в теле правки заявки: та же строка, что при заведении, плюс `id` и послабления Р2а.
+ *
+ * Расширением `requestTripSchema`, а не своей записью полей: границы длин, точность количества и
+ * рабочее окно своего времени обязаны совпадать с заведением значение в значение — разъедься они,
+ * и одна и та же ездка проходила бы форму заведения и не проходила форму правки.
+ *
+ * Послабления ровно три, и все — про то, чего бэкфил принести не мог (§5.7):
+ *
+ *   - метаданные адреса допускают `manual` и `null` (у заявок старше ADR 0006 их нет вовсе);
+ *   - имя ответственного допускает пустоту (у заявок старше миграции `0062` контакта нет);
+ *   - телефон допускает несводимое легаси-значение (ADR 0066 п. 7).
+ *
+ * Строки адресов (`fromLocation`, `toLocation`) остаются непустыми, как и были: пустых в базе нет —
+ * их не пускали CHECK `freight_loading_not_blank_check` и его пара, — и послаблять тут нечего.
+ *
+ * Пара «строка + метаданные» держится самой формой схемы: оба поля обязательны в строке, и
+ * отдельная сверка «переданы вместе» (та, что стояла у `updateVehicleRequestSchema`) больше не
+ * нужна — она сторожила необязательные поля, которых здесь не осталось.
+ */
+export const updateRequestTripSchema = requestTripSchema
+  .extend({
+    /**
+     * Идентификатор существующей ездки; нет — заводится новая (Р2а). Это единственное, чем
+     * перезапись отличается от заведения: номера в теле не бывает, а порядок строк в списке не
+     * значит ничего — ездки упорядочены своим `num`.
+     */
+    id: uuidSchema.optional(),
+    fromAddress: addressMetaSchema.nullable(),
+    toAddress: addressMetaSchema.nullable(),
+    fromResponsibleName: storedContactNameSchema,
+    fromResponsiblePhone: storedContactPhoneSchema,
+    toResponsibleName: storedContactNameSchema,
+    toResponsiblePhone: storedContactPhoneSchema,
+  })
+  .superRefine((trip, ctx) => {
+    // Существующая ездка: сравнить её с прежним состоянием схеме нечем — этим занят сервер.
+    if (trip.id !== undefined) return;
+    // Новая ездка — жёсткая модель целиком, теми же схемами, что при заведении заявки. Иначе
+    // «добавили ездку в старую заявку» стало бы дырой, через которую непроверенный адрес и пустой
+    // контакт возвращаются в базу спустя релиз после того, как их оттуда убрали.
+    const issues: [string, string | null][] = [
+      ['fromAddress', verifiedAddressIssue(trip.fromAddress)],
+      ['toAddress', verifiedAddressIssue(trip.toAddress)],
+      ['fromResponsibleName', contactIssue(trip.fromResponsibleName, 'name')],
+      ['fromResponsiblePhone', contactIssue(trip.fromResponsiblePhone, 'phone')],
+      ['toResponsibleName', contactIssue(trip.toResponsibleName, 'name')],
+      ['toResponsiblePhone', contactIssue(trip.toResponsiblePhone, 'phone')],
+    ];
+    for (const [path, message] of issues) {
+      if (message) ctx.addIssue({ code: 'custom', path: [path], message });
+    }
+  });
+export type UpdateRequestTripInput = z.infer<typeof updateRequestTripSchema>;
+
+/**
+ * Список ездок в теле правки — полный состав заявки после правки (§7).
+ *
+ * Границы повторены за `requestTripsSchema` значение в значение, и это не копипаста по недосмотру:
+ * элемент здесь другой (строка несёт `id` и послабления Р2а), а подменить элемент у готовой
+ * `z.array` zod не умеет. Разъехаться им нельзя — заявка, которую приняло заведение, обязана
+ * сохраняться и правкой.
+ */
+const updateRequestTripsSchema = z
+  .array(updateRequestTripSchema)
+  .min(1, 'Добавьте хотя бы одну ездку')
+  .max(MAX_ROUTE_REQUESTS, `Ездок в заявке не больше ${MAX_ROUTE_REQUESTS}`);
+
 export const updateFreightTransportRequestSchema = z
   .object({
     requestType: z.literal('freight_transport'),
@@ -405,16 +597,18 @@ export const updateFreightTransportRequestSchema = z
     scheduledAt: scheduledAtSchema.optional(),
     // Передаётся вместе со `scheduledAt` — рабочее окно проверяется только при заданном времени.
     scheduledTimeUnspecified: z.boolean().optional(),
-    volumeM3: amountSchema.nullable().optional(),
-    weightTons: amountSchema.nullable().optional(),
-    loadingLocation: locationSchema.optional(),
-    unloadingLocation: locationSchema.optional(),
-    loadingAddress: verifiedAddressMetaSchema.optional(),
-    unloadingAddress: verifiedAddressMetaSchema.optional(),
-    loadingResponsibleName: contactNameSchema.optional(),
-    loadingResponsiblePhone: contactPhoneSchema.optional(),
-    unloadingResponsibleName: contactNameSchema.optional(),
-    unloadingResponsiblePhone: contactPhoneSchema.optional(),
+    /**
+     * Ездки заявки после правки — **полным списком** (§7): строка с `id` перезаписывает
+     * существующую, строка без него заводит новую, а ездка, которой в списке не оказалось, мягко
+     * удаляется (Р13а).
+     *
+     * Поле необязательное, и это не противоречие с «полным списком»: не прислали вовсе — ездок не
+     * трогали. Приём «нетронутое не отправляется» исчезает **внутри** списка (у строки нет
+     * состояния «поле не прислали»), но сам список остаётся полем, и уточнение телефона у заявки со
+     * старыми ездками не обязано тащить их за собой — иначе Р2а пришлось бы выполнять на каждой
+     * правке комментария.
+     */
+    trips: updateRequestTripsSchema.optional(),
     comment: commentSchema.optional(),
     addFileIds: fileIdsSchema.optional(),
     removeFileIds: z.array(uuidSchema).optional(),
@@ -433,7 +627,6 @@ export const updateVehicleRequestSchema = z
   // Тип заявки правкой не меняется: у неё поля одного типа, и присланный чужой означал бы, что
   // заявку подменили по дороге. Меняют тип отдельным действием — переоформлением (ADR 0091).
   .superRefine((v, ctx) => {
-    // Жёсткая модель (ADR 0006): строка адреса и его метаданные передаются вместе.
     if (v.requestType === 'freight_transport') {
       // Переданный заказчик заменяет прежнего целиком; двое сразу невозможны (ADR 0040).
       if (v.objectId != null && v.departmentId != null) {
@@ -443,26 +636,27 @@ export const updateVehicleRequestSchema = z
           message: 'Заказчик один: объект либо отдел',
         });
       }
-      if ((v.loadingLocation === undefined) !== (v.loadingAddress === undefined)) {
-        ctx.addIssue({
-          code: 'custom',
-          path: ['loadingAddress'],
-          message: 'Адрес и строка погрузки передаются вместе',
-        });
-      }
-      if ((v.unloadingLocation === undefined) !== (v.unloadingAddress === undefined)) {
-        ctx.addIssue({
-          code: 'custom',
-          path: ['unloadingAddress'],
-          message: 'Адрес и строка разгрузки передаются вместе',
-        });
-      }
+      // Сверок «строка адреса и метаданные передаются вместе» здесь больше нет: они сторожили
+      // необязательные поля заявки, а у ездки адрес приходит парой в самой строке списка (Р2).
       if (
         v.scheduledAt !== undefined &&
         v.scheduledTimeUnspecified !== true &&
         !isWithinWorkTimeAt(new Date(v.scheduledAt))
       ) {
         ctx.addIssue({ code: 'custom', path: ['scheduledAt'], message: WORK_TIME_MESSAGE });
+      }
+      // Своё время ездки — внутри дня заявки (Р18). Схема отвечает только за случай, когда обе
+      // стороны сравнения видны из тела: правка двигает подачу и присылает ездки. Всё остальное —
+      // за сервером, у которого сохранённый день есть всегда: правка одних ездок при прежней
+      // подаче, правка одной подачи при прежних ездках и перенос рейса на другую дату (ADR 0082).
+      if (v.scheduledAt !== undefined && v.trips) {
+        for (const i of tripsOutOfRequestDay(v.scheduledAt, v.trips)) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['trips', i, 'scheduledAt'],
+            message: TRIP_DAY_MESSAGE,
+          });
+        }
       }
     }
   });
@@ -1296,6 +1490,18 @@ export const changeVehicleRequestStatusSchema = z
      * машина выходит на заказанное время, править нечего.
      */
     schedule: confirmScheduleSchema.optional(),
+    /**
+     * Отпечаток последствий, снятый предпросмотром (`POST /vehicle-requests/:id/status/preview`).
+     *
+     * Необязателен **в схеме** и спрашивается сервером: обязателен он ровно на одном переходе —
+     * откате «Выполнена» → «В работе» у заказа техники на объект, где диалог обещает точный
+     * результат сверки ЭСМ-2. Требуй его схема — прочие переходы получали бы `400` на пустом
+     * месте; решает по-прежнему сервер, у которого есть и заявка, и её режим.
+     *
+     * Живёт вместе с предпросмотром: он остаётся и после уборки снимков — обещание «выпишется
+     * столько-то листов» обязано быть верным независимо от того, жив ли костыль.
+     */
+    previewFingerprint: z.string().min(1).optional(),
     version: z.number().int().nonnegative(),
   })
   .strict()
@@ -1329,6 +1535,51 @@ export const changeVehicleRequestStatusSchema = z
   });
 export type ChangeVehicleRequestStatusInput = z.infer<typeof changeVehicleRequestStatusSchema>;
 
+/**
+ * Тело предпросмотра последствий перехода — то же самое, что у самой смены статуса.
+ *
+ * Схема одна намеренно: предпросмотр обязан считать план по тем же входам, по которым его потом
+ * исполнит боевая ручка, — машина, машинист, срок и факт приходят из того же окна назначения.
+ * Своя схема разошлась бы с боевой на первом же новом поле, и диалог начал бы обещать не то.
+ */
+export const previewVehicleRequestStatusSchema = changeVehicleRequestStatusSchema;
+export type PreviewVehicleRequestStatusInput = ChangeVehicleRequestStatusInput;
+
+/** Аннулируемый лист в предпросмотре: номер человеку, период — чтобы он узнал свою неделю. */
+export interface Esm2CancelPreviewDto {
+  id: string;
+  number: string;
+  from: string;
+  to: string;
+}
+
+/**
+ * Что случится с заявкой после перехода — считает сервер, до единой записи.
+ *
+ * Заведён под откат «Выполнена» → «В работе»: заморозка снимается закрытием, и вернувшаяся в
+ * работу заявка пойдёт по актуальному режиму справочника, каким бы он ни стал. Портал при этом
+ * ничего не утверждает о прошлом («заявка велась иначе») — угадывать нечем, — а говорит то, что
+ * знает точно: каким режимом заказ пойдёт дальше и что сделает сверка ЭСМ-2.
+ *
+ * Числа берутся из настоящего `esm2SyncPlan` с `correcting = false`, а не из «недель срока минус
+ * выписанные»: прошедшая неделя, листа не имевшая, сверкой не выписывается вовсе, и такой расчёт
+ * обещал бы лишние листы.
+ */
+export interface VehicleRequestStatusPreviewDto {
+  /** Режим, которым заявка пойдёт после перехода. */
+  mode: 'daily' | 'weekly';
+  esm2: { issue: Esm2Period[]; cancel: Esm2CancelPreviewDto[] };
+  /** Занятость машины после перехода: весь срок заявки или отдельные распланированные дни. */
+  busy: 'term' | 'days';
+  /**
+   * Отпечаток входов плана. Возвращается сюда и предъявляется боевой ручке в
+   * `previewFingerprint`: между просмотром и нажатием план меняется, не тронув заявку, — признак
+   * типа переключили, лист аннулировали своей ручкой, наступила полночь. `version` заявки ни
+   * одного из этих трёх случаев не ловит.
+   */
+  fingerprint: string;
+}
+
 // ── Список ──
 /**
  * Поля сортировки списка; ключ столбца таблицы совпадает с именем поля. Полей здесь больше,
@@ -1337,6 +1588,25 @@ export type ChangeVehicleRequestStatusInput = z.infer<typeof changeVehicleReques
  * карточке), но сортировка по ним остаётся частью API.
  * `term` и `amount` — общие для обоих типов заявки: срок и «объём/масса» лежат в разных
  * detail-таблицах, поэтому сервер сводит их одним выражением.
+ *
+ * **Адреса и количество считаются по ездкам (§9), а не по колонкам заявки — их там больше нет.**
+ * Поля остались прежними намеренно: сортировка — договор с порталом, и сменить `loadingLocation`
+ * на что-то другое значило бы переписать ключи столбцов ради того, что для читателя списка не
+ * изменилось. Изменился источник:
+ *
+ * - `loadingLocation` / `unloadingLocation` — по **первой живой** ездке заявки (наименьший `num`
+ *   среди `deleted_at IS NULL`). Не «по любой» и не «по всем»: у заявки с ездками `A→B` и `A→C`
+ *   единственного адреса разгрузки не существует (Р2), а список обязан упорядочиваться
+ *   однозначно — первая ездка это и есть то, что показано в строке;
+ * - `amount` — **сумма** живых ездок тем же правилом, что и подпись количества: объём, а если его
+ *   нет ни у одной — масса (`requestCargoTotal`, `tripCargoLabel`).
+ *
+ * Выражается это SQL, и потому не здесь: сортировочные колонки собраны в `sortColumns`
+ * (`apps/api/src/routes/vehicle-requests.ts`) — там, где сегодня стоят
+ * `freightTransportRequestDetails.loadingLocation` и `coalesce(volume_m3, weight_tons)`, после
+ * миграции `0136` встают подзапросы к `vehicle_request_trips` с отбором живых строк. Мягко
+ * удалённую ездку (Р13а) в сортировку пускать нельзя: она никуда не едет, и её адрес в списке
+ * означал бы рейс, которого нет.
  */
 export const VEHICLE_REQUEST_SORT_FIELDS = [
   'num',
@@ -1735,12 +2005,29 @@ export function completionLabel(c: VehicleRequestCompletionDto): string {
 /**
  * Подпись заказчика заявки для списка и карточки: объект или отдел (ADR 0040). Одно место на
  * портал и сервер — иначе половина экранов показывала бы «—» там, где заявку завёл отдел.
+ *
+ * Тонкая обёртка над объектом затрат (Р25): «кто заказчик» и «на кого расходы» — один и тот же
+ * вопрос, и двух ответов на него быть не должно. Прежняя реализация (`objectName ?? departmentName
+ * ?? '—'`) отвечала на него **именами**, и это оказалось важнее, чем выглядит:
+ *
+ * - решает теперь **идентификатор**, а не заполненность имени, — как и в CHECK
+ *   `vehicle_requests_customer_check`. На заявке, где заказчик один, ответ прежний: у объекта
+ *   заполнена пара `objectId`/`objectName`, у отдела — своя, а `null` в чужой стороне пары стоит по
+ *   устройству, а не по недосмотру;
+ * - строка **обязана** приносить идентификаторы (`CostTargetSource`). Запрос, выбравший одни
+ *   наименования, эту подпись больше не соберёт — и правильно: по имени «ПТО» нельзя ни отнести
+ *   расходы, ни отличить два справочника. Типом это и ловится, а не молчанием: место, где ids не
+ *   выбраны, перестаёт компилироваться, а не начинает показывать «—»;
+ * - «—» остаётся ровно там, где был: заказчика нет ни одного (`costTargetOf` вернул `null`).
+ *
+ * Разойтись с прежним ответом эта пара может в одном-единственном случае: заказчик назван
+ * идентификатором, а наименование не выбрано запросом. Раньше выходило «—», теперь — пустая
+ * подпись (`costTargetOf` не выдумывает значения за невыбранную колонку). Состояние это
+ * ненастоящее — колонки наименований в обоих справочниках `NOT NULL`, — и лечится оно там же, где
+ * заводится: в запросе, который взял `id` и забыл про `name`.
  */
-export function requestCustomerName(r: {
-  objectName: string | null;
-  departmentName: string | null;
-}): string {
-  return r.objectName ?? r.departmentName ?? '—';
+export function requestCustomerName(r: CostTargetSource): string {
+  return costTargetOf(r)?.name ?? '—';
 }
 
 /**
@@ -1788,6 +2075,24 @@ export interface VehicleRequestBaseDto {
   departmentId: string | null;
   departmentCode: string | null;
   departmentName: string | null;
+  /**
+   * Объект затрат: на кого относятся расходы по заявке (Р25) — разобранная пара выше, а не ещё
+   * одно поле про заказчика. Едет в DTO готовым, потому что разбирают эту пару два десятка мест, и
+   * каждое вольно решить иначе — где-то по имени, где-то по идентификатору, где-то с кодом; ветвь
+   * же читается явно (`costTarget.kind === 'object'`), и ни одно место не забудет, что заказчиков
+   * два рода.
+   *
+   * Колонкой он не хранится и здесь не снимок: сервер выводит его тем же `costTargetOf` из тех же
+   * шести полей, которые лежат рядом. Пара остаётся на месте — по ней работают фильтры и ссылки на
+   * справочники, — а `costTarget` отвечает на единственный вопрос учёта.
+   *
+   * `null` — заказчика нет ни одного. По базе такого не бывает (CHECK
+   * `vehicle_requests_customer_check`), но DTO собирается запросом, и «строку прочитали до join» от
+   * «заявки без заказчика» здесь не отличить; показывают это тем же «—» (`requestCustomerName`).
+   *
+   * Площадка отдела (ADR 0062) на него не влияет: заявку завёл отдел — затраты на отдел.
+   */
+  costTarget: CostTarget | null;
 
   /** Тип ТС (физически vehicle_requests.vehicle_type_id). Плоская модель (ADR 0005). */
   vehicleTypeId: string;
@@ -1905,6 +2210,20 @@ export interface SpecialEquipmentRequestDto extends VehicleRequestBaseDto {
    * там же, где и раньше, — `GET /vehicle-requests/:id/waybills` (ADR 0041 п. 8).
    */
   isLinear: boolean;
+  /**
+   * Заявка застигнута переключением признака у типа и дорабатывает по прежнему режиму
+   * (миграция 0137) — `null` у всех остальных, то есть почти всегда.
+   *
+   * Поле временное и уходит вместе с колонками снимка, но пока оно есть, его показывают: без
+   * метки диспетчер видит две заявки одного типа, ведущие себя по-разному, и ни одного
+   * объяснения на экране. Полем `isLinear` тут не обойтись — оно отвечает «как ведётся», а метке
+   * нужно ещё «почему» и «с какого числа»:
+   *
+   * - `isLinear` внутри — режим, записанный переключением: `false` — по неделям, `true` — по дням;
+   *   ровно он и лежит в `isLinear` заявки, пока снимок жив;
+   * - `at` — когда переключение случилось.
+   */
+  linearFrozen: { isLinear: boolean; at: string } | null;
   /** Кто встречает технику на объекте; пусто — заявка заведена до миграции 0062. */
   responsibleName: string;
   responsiblePhone: string;
@@ -1957,22 +2276,27 @@ export interface SpecialEquipmentRequestDto extends VehicleRequestBaseDto {
 
 export interface FreightTransportRequestDto extends VehicleRequestBaseDto {
   requestType: 'freight_transport';
+  /**
+   * Момент **первой** подачи (Р3): им считается дата маршрута, по нему работают фильтры и рабочее
+   * окно. У ездки бывает своё время — уточняющее, внутри этого же дня (Р18).
+   */
   scheduledAt: string;
   /** Время подачи не задано — в `scheduledAt` значима только дата (00:00 МСК). */
   scheduledTimeUnspecified: boolean;
-  volumeM3: number | null;
-  weightTons: number | null;
-  loadingLocation: string;
-  unloadingLocation: string;
-  /** Метаданные верификации адреса погрузки (null = не верифицирован / введён вручную). */
-  loadingAddress: AddressMeta | null;
-  /** Метаданные верификации адреса разгрузки. */
-  unloadingAddress: AddressMeta | null;
-  /** Контакты на концах маршрута; пусто — заявка заведена до миграции 0062. */
-  loadingResponsibleName: string;
-  loadingResponsiblePhone: string;
-  unloadingResponsibleName: string;
-  unloadingResponsiblePhone: string;
+  /**
+   * Ездки заявки (Р1, Р2) — то, что прежде лежало парой адресов, количеством и контактами самой
+   * заявки. Их не бывает ноль: заявка заводится хотя бы с одной, а последнюю снять нечем.
+   *
+   * Мягко удалённые (Р13а) сюда **не приходят вовсе**: карточка показывает то, что едет сейчас, а
+   * помнить, что именно напечатано, — дело журнала листов и истории. Поэтому суммировать их можно
+   * без оглядки: `requestCargoTotal(r.trips)` даёт «60 м³ · 6 ездок», `tripCargoLabel` подписывает
+   * строку тем же правилом, каким её печатает бланк.
+   *
+   * Порядок — по `num`, то есть по тому, как ездки заводили; первая из них и стоит в колонках
+   * списка (§9). Порядок объезда здесь не выражен и выражен быть не может: он принадлежит рейсу, а
+   * не заказу, и приходит в ездке раскладкой (`placement`).
+   */
+  trips: VehicleRequestTripDto[];
 }
 
 export type VehicleRequestDto = SpecialEquipmentRequestDto | FreightTransportRequestDto;
@@ -1998,6 +2322,11 @@ export const vehicleRequestChangeLabels: Record<string, string> = {
   dateFrom: 'Дата начала',
   dateTo: 'Дата окончания',
   scheduledAt: 'Подача',
+  // ── Поля, уехавшие с заявки на ездку (Р2, §5.7) ──
+  // В новых событиях эти ключи не появляются: адресов, количества и контактов у заявки больше нет.
+  // Читаются они у старых — история говорит, что было, и пересчитать её нельзя. Убери их отсюда —
+  // и правка заявки, сделанная до миграции `0136`, покажется списком изменений без подписей
+  // (`labels[c.field] ?? c.field` в `RequestHistory.tsx` напечатает сырой ключ).
   volumeM3: 'Объём',
   weightTons: 'Масса',
   loadingLocation: 'Место погрузки',
@@ -2010,6 +2339,31 @@ export const vehicleRequestChangeLabels: Record<string, string> = {
   loadingResponsiblePhone: 'Телефон ответственного за погрузку',
   unloadingResponsibleName: 'Ответственный за разгрузку',
   unloadingResponsiblePhone: 'Телефон ответственного за разгрузку',
+  // ── Правка ездок (Р1, §5.7) ──
+  // Ключ один на все ездки заявки, а **номер ездки живёт в значении** («2 · Карьер Сычёво» →
+  // «2 · Полигон»). Иначе никак: словарь подписей фиксирован, а ключ вида `trip.2.from` подписи не
+  // нашёл бы и встал в историю сырой строкой. Двум строкам с одним ключом это не мешает — события
+  // складываются списком, и правка двух ездок читается двумя строками подряд.
+  //
+  // Точка в имени — «поле ездки»; события самого списка (`tripAdded`, `tripRemoved`) её не несут:
+  // они про состав заявки, и по форме это те же события-списки, что `filesAdded`/`filesRemoved`.
+  'trip.from': 'Место погрузки ездки',
+  'trip.to': 'Место разгрузки ездки',
+  // Объём и масса разными ключами, как и у заявки: это разные единицы, а не разные значения одной.
+  'trip.volume': 'Объём ездки',
+  'trip.weight': 'Масса ездки',
+  'trip.fromResponsibleName': 'Ответственный за погрузку ездки',
+  'trip.fromResponsiblePhone': 'Телефон ответственного за погрузку ездки',
+  'trip.toResponsibleName': 'Ответственный за разгрузку ездки',
+  'trip.toResponsiblePhone': 'Телефон ответственного за разгрузку ездки',
+  // Своё время подачи ездки (Р3): пустое значение — «как у заявки», и в истории это читается
+  // прочерком, а не «время сняли».
+  'trip.scheduledAt': 'Подача ездки',
+  // Примечание к ездке («песок, звонить за час»): в бланке оно отбрасывается первым (Р11а), но в
+  // задании водителю печатается целиком — значит и правка его событие, а не оформление.
+  'trip.comment': 'Примечание к ездке',
+  tripAdded: 'Добавлены ездки',
+  tripRemoved: 'Удалены ездки',
   comment: 'Комментарий',
   filesAdded: 'Прикреплены файлы',
   filesRemoved: 'Откреплены файлы',

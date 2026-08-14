@@ -15,19 +15,24 @@ import {
   isRelocationPurpose,
   isRouteEditable,
   issueRouteWaybillSchema,
+  mergePointsSchema,
   moscowDateKeyOf,
   movedRouteDateKey,
   ROUTE_REQUEST_CAPACITY,
   parseVehicleRouteNumberSearch,
+  pointOrderSchema,
   ROUTE_FROZEN_MESSAGE,
   ROUTE_LEGACY_WAYBILL_MESSAGE,
   routeOrderSchema,
+  routePointSchema,
   type RequestStatus,
   routeVersionQuerySchema,
   type RouteTripFields,
+  splitPointSchema,
   transferCorrectionSchema,
   updateVehicleRouteSchema,
   type VehicleRouteDto,
+  type VehicleRoutePointDto,
   vehicleRouteListQuerySchema,
   vehicleStatusLabels,
 } from '@technic/contracts';
@@ -42,12 +47,24 @@ import {
   vehicleTypes,
   waybills,
 } from '../db/schema';
+import { requestIsLinearSql } from '../db/linear-mode';
 import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
 import { assertRequestScope } from '../lib/access';
 import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
 import { issueWaybillForRoute, routeWaybillFormFor, tripDate } from '../services/waybill-issue';
+import {
+  assertRoutePlacement,
+  createRoutePoint,
+  deleteRoutePoint,
+  loadRoutePoints,
+  mergeRoutePoints,
+  placeRequestTrips,
+  setRoutePointOrder,
+  splitRoutePoint,
+  updateRoutePoint,
+} from '../services/route-points';
 import {
   assertRouteVersion,
   attachRequest,
@@ -57,6 +74,7 @@ import {
   legacyWaybillOf,
   loadRouteDto,
   loadRouteDtos,
+  lockRequestRow,
   lockRoute,
   lockRoutePair,
   moveRouteToDate,
@@ -114,6 +132,23 @@ import {
 
 const idParams = z.object({ id: z.string().uuid() });
 const requestParams = z.object({ id: z.string().uuid(), requestId: z.string().uuid() });
+const pointParams = z.object({ id: z.string().uuid(), pointId: z.string().uuid() });
+
+/**
+ * Рейс с порядком объезда — ответ всех дверей, которые его правят.
+ *
+ * Точки добираются отдельным запросом, а не внутри `loadRouteDto`: их спрашивает карточка рейса, а
+ * список рейсов и карточка заявки — нет, и платить за них страницей из двадцати строк незачем.
+ * Тип собирается пересечением, потому что `VehicleRouteDto` точек ещё не несёт (этап 5 добавит их
+ * в контракт вместе с переключением выписки на строки задания).
+ */
+type VehicleRouteWithPoints = VehicleRouteDto & { points: VehicleRoutePointDto[] };
+
+async function routeWithPoints(id: string): Promise<VehicleRouteWithPoints> {
+  const [dto, points] = await Promise.all([loadRouteDto(db, id), loadRoutePoints(db, id)]);
+  if (!dto) throw err.notFound('Маршрут не найден');
+  return { ...dto, points };
+}
 
 /** Реквизиты рейса из тела запроса: незаполненные графы — пустые строки, а не «не трогать». */
 function tripValues(trip: RouteTripFields | undefined) {
@@ -236,6 +271,30 @@ async function assertRouteEditable(tx: Parameters<typeof lockRoute>[0], routeId:
   return waybill;
 }
 
+/**
+ * Общее начало всякой правки точек: рейс под `FOR UPDATE`, сверка версии и заморозки.
+ *
+ * Тремя шагами и в этом порядке (Р15, Р16, Р17). Блокировка первой — иначе версия читалась бы у
+ * строки, которую сосед правит прямо сейчас; заморозка последней — она спрашивает лист рейса, а
+ * тот меняется только под этой же блокировкой.
+ */
+async function lockEditableRoute(
+  tx: Parameters<typeof lockRoute>[0],
+  routeId: string,
+  version: number,
+): Promise<RouteRow> {
+  const route = await lockRoute(tx, routeId);
+  assertRouteVersion(route, version);
+  await assertRouteEditable(tx, route.id);
+  return route;
+}
+
+/** Бланк рейса: им считается ёмкость задания строками (Р11) и раскладка каждой строки. */
+async function routeFormCode(tx: Parameters<typeof lockRoute>[0], route: RouteRow) {
+  return (await routeWaybillFormFor(tx, { purpose: route.purpose, vehicleId: route.vehicleId }))
+    .formCode;
+}
+
 /** Заявка глазами правил рейса: вид, состояние, дата подачи и чем её взяли в работу. */
 async function loadRequestForRoute(tx: Parameters<typeof lockRoute>[0], requestId: string) {
   const [row] = await tx
@@ -252,8 +311,9 @@ async function loadRequestForRoute(tx: Parameters<typeof lockRoute>[0], requestI
       // Вид заказанного типа — граница замены (ADR 0059): её и сверяет укладка в чужой рейс.
       kindId: vehicleTypes.kindId,
       // Линейный ли заказанный тип (ADR 0100 §1): такой заказ в рейс тоже ходит, но днём и только
-      // из карточки заявки — отсюда правило и берёт слова для отказа этой двери.
-      isLinear: vehicleTypes.isLinear,
+      // из карточки заявки — отсюда правило и берёт слова для отказа этой двери. Режим заявки, а
+      // не признак справочника: заявку могло застать переключение (миграция 0137).
+      isLinear: requestIsLinearSql(vehicleRequests.isLinearFrozen, vehicleTypes.isLinear),
       assignedVehicleId: vehicleRequestAssignments.vehicleId,
       ownership: vehicles.ownership,
     })
@@ -407,11 +467,10 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
     },
   );
 
-  r.get('/:id', { preHandler: guards, schema: { params: idParams } }, async (req) => {
-    const dto = await loadRouteDto(db, req.params.id);
-    if (!dto) throw err.notFound('Маршрут не найден');
-    return dto;
-  });
+  /** Карточка рейса: состав, лист и **порядок объезда** — точки с их ролями (§7 плана точек). */
+  r.get('/:id', { preHandler: guards, schema: { params: idParams } }, async (req) =>
+    routeWithPoints(req.params.id),
+  );
 
   /**
    * Завести рейс. Дата в прошлом — под правом и с причиной (ADR 0101 п. 4, дыра 1 плана).
@@ -434,7 +493,7 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
   r.post(
     '/',
     { preHandler: guards, schema: { body: createVehicleRouteSchema } },
-    async (req, reply): Promise<VehicleRouteDto> => {
+    async (req, reply): Promise<VehicleRouteWithPoints> => {
       const p = requirePrincipal(req);
       const body = req.body;
       const reason = body.reason ?? '';
@@ -478,7 +537,7 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
         },
       });
       reply.code(201);
-      return (await loadRouteDto(db, created!.id))!;
+      return routeWithPoints(created!.id);
     },
   );
 
@@ -508,7 +567,7 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
   r.patch(
     '/:id',
     { preHandler: guards, schema: { params: idParams, body: updateVehicleRouteSchema } },
-    async (req): Promise<VehicleRouteDto> => {
+    async (req): Promise<VehicleRouteWithPoints> => {
       const p = requirePrincipal(req);
       const body = req.body;
       const reason = body.reason?.trim() ?? '';
@@ -591,7 +650,7 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
           ...(backdated ? { backdated, reason } : {}),
         },
       });
-      return (await loadRouteDto(db, req.params.id))!;
+      return routeWithPoints(req.params.id);
     },
   );
 
@@ -636,7 +695,7 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
   r.post(
     '/:id/requests',
     { preHandler: guards, schema: { params: idParams, body: attachRouteRequestSchema } },
-    async (req): Promise<VehicleRouteDto> => {
+    async (req): Promise<VehicleRouteWithPoints> => {
       const p = requirePrincipal(req);
       const body = req.body;
 
@@ -667,6 +726,11 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
         }
         if (current?.routeId === target.id) return; // уже здесь: перевод в работу идемпотентен
 
+        // Бланк рейса: им заданы и потолок состава, и ёмкость задания строками (Р11).
+        const { formCode } = await routeWaybillFormFor(tx, {
+          purpose: target.purpose,
+          vehicleId: target.vehicleId,
+        });
         const check = canJoinRoute(
           {
             requestType: request.requestType,
@@ -685,12 +749,7 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
             purpose: target.purpose,
             // Ёмкость рейса задаёт его бланк: у 4-П семь строк задания, у формы № 3 десять
             // (ADR 0068).
-            formCode: (
-              await routeWaybillFormFor(tx, {
-                purpose: target.purpose,
-                vehicleId: target.vehicleId,
-              })
-            ).formCode,
+            formCode,
           },
         );
         if (!check.ok) throw err.unprocessable(check.reason, { requestId: check.reason });
@@ -703,6 +762,19 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
           await bumpRouteVersion(tx, current.routeId, p.id);
         }
         await attachRequest(tx, target.id, request.id);
+        /*
+         * Ездки раскладываются точками сразу (Р8): «взял в работу» обязано быть законченным
+         * действием, иначе диспетчер получал бы рейс, в котором заявка есть, а ехать по нему
+         * некуда. Автосборка садится на уже стоящие точки того же тождества — в том числе
+         * собранные прежними заявками, — и заводит новые только в конец.
+         *
+         * Дальше — то, чего база не держит: ёмкость бланка **строками задания** (Р11: ездки плюс
+         * линейные дни, а не строки состава) и порядок «погрузка раньше разгрузки» (Р6). Заявка с
+         * тремя ездками занимает три строки бланка, и `canJoinRoute` выше, считающий строки
+         * состава, этого не заметил бы.
+         */
+        await placeRequestTrips(tx, target.id, request.id);
+        await assertRoutePlacement(tx, { routeId: target.id, formCode });
 
         // Рейс — источник истины о том, чем едут: заявка, переехавшая на другую машину, меняет
         // назначение вместе с рейсом. Ставки не трогаются — о них договариваются по заявке.
@@ -738,7 +810,7 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
         entityId: req.params.id,
         metadata: { requestId: body.requestId, from: body.source?.routeId ?? null },
       });
-      return (await loadRouteDto(db, req.params.id))!;
+      return routeWithPoints(req.params.id);
     },
   );
 
@@ -749,12 +821,16 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
       preHandler: guards,
       schema: { params: requestParams, querystring: routeVersionQuerySchema },
     },
-    async (req): Promise<VehicleRouteDto> => {
+    async (req): Promise<VehicleRouteWithPoints> => {
       const p = requirePrincipal(req);
       const removed = await db.transaction(async (tx) => {
         const route = await lockRoute(tx, req.params.id);
         assertRouteVersion(route, req.query.version);
         await assertRouteEditable(tx, route.id);
+        // Заявка — под `FOR UPDATE` и после рейса (Р17): её строкой заперт состав, и укладка той же
+        // заявки в соседний рейс не должна вклиниться между проверкой и снятием. Тем же порядком и
+        // той же строкой её берёт укладка (`loadRequestForRoute`).
+        await lockRequestRow(tx, req.params.requestId);
         const row = await detachRequest(tx, route.id, req.params.requestId);
         if (!row) throw err.notFound('Заявки нет в этом маршруте');
         await bumpRouteVersion(tx, route.id, p.id);
@@ -770,7 +846,7 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
         // одинаково, а означают разное (ADR 0100 §2).
         metadata: { requestId: req.params.requestId, workDate: removed.workDate },
       });
-      return (await loadRouteDto(db, req.params.id))!;
+      return routeWithPoints(req.params.id);
     },
   );
 
@@ -778,7 +854,7 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
   r.put(
     '/:id/order',
     { preHandler: guards, schema: { params: idParams, body: routeOrderSchema } },
-    async (req): Promise<VehicleRouteDto> => {
+    async (req): Promise<VehicleRouteWithPoints> => {
       const p = requirePrincipal(req);
       const body = req.body;
 
@@ -809,7 +885,218 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
         entityId: req.params.id,
         metadata: { order: body.requestIds },
       });
-      return (await loadRouteDto(db, req.params.id))!;
+      return routeWithPoints(req.params.id);
+    },
+  );
+
+  // ── Точки: порядок объезда (план `docs/route-trips-plan.md` §7) ──
+  //
+  // Права те же, что у всего модуля (Р19): своих у точек нет — это тот же рейс, только собранный
+  // остановками, а не заявками. Каждая дверь идёт одним порядком: блокировка рейса, версия,
+  // заморозка (`lockEditableRoute`) → правка → проверки, которых не держит база (Р6 и ёмкость
+  // бланка строками задания, `assertRoutePlacement`) → версия рейса вверх.
+  //
+  // Проверки **после** правки, а не до: порядок объезда собирают перестановками, и состояние
+  // «разгрузка выше погрузки» законно ровно до конца транзакции — отказ до правки запретил бы
+  // половину законных сборок.
+
+  /**
+   * Завести точку: адрес, время прибытия, комментарий и роли (минимум одна, Р13).
+   *
+   * Роль, названная здесь, но лежащая на другой точке, переезжает сюда: «завести остановку и
+   * положить на неё погрузку» — обычный способ развести две ездки по разным заездам, и требовать
+   * ради этого разнесения значило бы заставлять человека делать два действия вместо одного.
+   */
+  r.post(
+    '/:id/points',
+    { preHandler: guards, schema: { params: idParams, body: routePointSchema } },
+    async (req): Promise<VehicleRouteWithPoints> => {
+      const p = requirePrincipal(req);
+      const body = req.body;
+
+      const pointId = await db.transaction(async (tx) => {
+        const route = await lockEditableRoute(tx, req.params.id, body.version);
+        const created = await createRoutePoint(tx, route.id, body);
+        await assertRoutePlacement(tx, {
+          routeId: route.id,
+          formCode: await routeFormCode(tx, route),
+        });
+        await bumpRouteVersion(tx, route.id, p.id);
+        return created;
+      });
+
+      await writeAudit({
+        actorUserId: p.id,
+        action: 'vehicle_route.point_create',
+        entityType: 'vehicle_route',
+        entityId: req.params.id,
+        metadata: { pointId, location: body.location, roles: body.roles },
+      });
+      return routeWithPoints(req.params.id);
+    },
+  );
+
+  /** Править точку: адрес, время, комментарий и состав ролей **целиком** (§7). */
+  r.patch(
+    '/:id/points/:pointId',
+    { preHandler: guards, schema: { params: pointParams, body: routePointSchema } },
+    async (req): Promise<VehicleRouteWithPoints> => {
+      const p = requirePrincipal(req);
+      const body = req.body;
+
+      await db.transaction(async (tx) => {
+        const route = await lockEditableRoute(tx, req.params.id, body.version);
+        await updateRoutePoint(tx, route.id, req.params.pointId, body);
+        await assertRoutePlacement(tx, {
+          routeId: route.id,
+          formCode: await routeFormCode(tx, route),
+        });
+        await bumpRouteVersion(tx, route.id, p.id);
+      });
+
+      await writeAudit({
+        actorUserId: p.id,
+        action: 'vehicle_route.point_update',
+        entityType: 'vehicle_route',
+        entityId: req.params.id,
+        metadata: { pointId: req.params.pointId, location: body.location, roles: body.roles },
+      });
+      return routeWithPoints(req.params.id);
+    },
+  );
+
+  /**
+   * Убрать точку вместе с её ролями; позиции уплотняются (Р13).
+   *
+   * Отказ ровно один: роль, которая у своей строки задания последняя, — тогда строка исчезла бы из
+   * маршрута молча, а исчезнуть она вправе только вместе с заявкой или днём, у которых свои двери
+   * и свои проверки.
+   */
+  r.delete(
+    '/:id/points/:pointId',
+    { preHandler: guards, schema: { params: pointParams, querystring: routeVersionQuerySchema } },
+    async (req): Promise<VehicleRouteWithPoints> => {
+      const p = requirePrincipal(req);
+
+      await db.transaction(async (tx) => {
+        const route = await lockEditableRoute(tx, req.params.id, req.query.version);
+        await deleteRoutePoint(tx, route.id, req.params.pointId);
+        await assertRoutePlacement(tx, {
+          routeId: route.id,
+          formCode: await routeFormCode(tx, route),
+        });
+        await bumpRouteVersion(tx, route.id, p.id);
+      });
+
+      await writeAudit({
+        actorUserId: p.id,
+        action: 'vehicle_route.point_delete',
+        entityType: 'vehicle_route',
+        entityId: req.params.id,
+        metadata: { pointId: req.params.pointId },
+      });
+      return routeWithPoints(req.params.id);
+    },
+  );
+
+  /**
+   * Новый порядок объезда — полным списком точек (Р14): сервер переписывает позиции целиком, и две
+   * одновременные перестановки не соберут дыр в нумерации.
+   *
+   * Нарушенный порядок ездки — 422 с её номером (Р6): между погрузкой и разгрузкой груз в кузове, и
+   * бумага, обещающая обратное, отправила бы машину за грузом, который она уже везёт.
+   */
+  r.put(
+    '/:id/points/order',
+    { preHandler: guards, schema: { params: idParams, body: pointOrderSchema } },
+    async (req): Promise<VehicleRouteWithPoints> => {
+      const p = requirePrincipal(req);
+      const body = req.body;
+
+      await db.transaction(async (tx) => {
+        const route = await lockEditableRoute(tx, req.params.id, body.version);
+        await setRoutePointOrder(tx, route.id, body.pointIds);
+        await assertRoutePlacement(tx, {
+          routeId: route.id,
+          formCode: await routeFormCode(tx, route),
+        });
+        await bumpRouteVersion(tx, route.id, p.id);
+      });
+
+      await writeAudit({
+        actorUserId: p.id,
+        action: 'vehicle_route.point_reorder',
+        entityType: 'vehicle_route',
+        entityId: req.params.id,
+        metadata: { order: body.pointIds },
+      });
+      return routeWithPoints(req.params.id);
+    },
+  );
+
+  /**
+   * Совместить точки одного адреса в одну остановку (Р9а): роли переезжают в первую по позиции.
+   *
+   * Разные ответственные совмещению не помеха — точка выйдет с обоими, и бланк напечатает обоих
+   * (Р11а): машина действительно приезжает в одно место, а встречают её двое. Разный адрес —
+   * помеха: в два места сразу машина приехать не может.
+   */
+  r.post(
+    '/:id/points/merge',
+    { preHandler: guards, schema: { params: idParams, body: mergePointsSchema } },
+    async (req): Promise<VehicleRouteWithPoints> => {
+      const p = requirePrincipal(req);
+      const body = req.body;
+
+      const targetId = await db.transaction(async (tx) => {
+        const route = await lockEditableRoute(tx, req.params.id, body.version);
+        const merged = await mergeRoutePoints(tx, route.id, body.pointIds);
+        await assertRoutePlacement(tx, {
+          routeId: route.id,
+          formCode: await routeFormCode(tx, route),
+        });
+        await bumpRouteVersion(tx, route.id, p.id);
+        return merged;
+      });
+
+      await writeAudit({
+        actorUserId: p.id,
+        action: 'vehicle_route.point_merge',
+        entityType: 'vehicle_route',
+        entityId: req.params.id,
+        metadata: { pointIds: body.pointIds, targetId },
+      });
+      return routeWithPoints(req.params.id);
+    },
+  );
+
+  /** Разнести точку надвое (Р9а): названные роли уходят в новую точку сразу за исходной. */
+  r.post(
+    '/:id/points/:pointId/split',
+    { preHandler: guards, schema: { params: pointParams, body: splitPointSchema } },
+    async (req): Promise<VehicleRouteWithPoints> => {
+      const p = requirePrincipal(req);
+      const body = req.body;
+
+      const created = await db.transaction(async (tx) => {
+        const route = await lockEditableRoute(tx, req.params.id, body.version);
+        const pointId = await splitRoutePoint(tx, route.id, req.params.pointId, body.roles);
+        await assertRoutePlacement(tx, {
+          routeId: route.id,
+          formCode: await routeFormCode(tx, route),
+        });
+        await bumpRouteVersion(tx, route.id, p.id);
+        return pointId;
+      });
+
+      await writeAudit({
+        actorUserId: p.id,
+        action: 'vehicle_route.point_split',
+        entityType: 'vehicle_route',
+        entityId: req.params.id,
+        metadata: { pointId: req.params.pointId, createdPointId: created, roles: body.roles },
+      });
+      return routeWithPoints(req.params.id);
     },
   );
 
@@ -839,7 +1126,7 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
   r.post(
     '/:id/waybill',
     { preHandler: guards, schema: { params: idParams, body: issueRouteWaybillSchema } },
-    async (req): Promise<VehicleRouteDto> => {
+    async (req): Promise<VehicleRouteWithPoints> => {
       const p = requirePrincipal(req);
       const blankAllowed = can(p, 'waybills.issueBlank');
       const reason = req.body.reason ?? '';
@@ -899,7 +1186,17 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
         }
         const waybill = await routeWaybill(tx, route.id);
 
-        const rows = await tx
+        /*
+         * Порядок захвата — по `id` заявки, а не по позиции талона, и сортируется состав уже в
+         * памяти. Позиция важна для бумаги, но для блокировок она чужая: тем же строкам
+         * `vehicle_requests` берёт `FOR UPDATE` аннулирование листа, и берёт их по возрастанию
+         * `id` (`waybill-locks.ts`). Два порядка на одних строках — это клинч на первом же рейсе,
+         * где номера талонов идут не в порядке идентификаторов.
+         *
+         * `LockRows` в плане Postgres стоит над `Sort`, поэтому строки блокируются именно в
+         * порядке `ORDER BY`, а не в порядке чтения таблицы.
+         */
+        const lockedComposition = await tx
           .select({
             requestId: vehicleRouteRequests.requestId,
             position: vehicleRouteRequests.position,
@@ -909,8 +1206,9 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
           .from(vehicleRouteRequests)
           .innerJoin(vehicleRequests, eq(vehicleRequests.id, vehicleRouteRequests.requestId))
           .where(eq(vehicleRouteRequests.routeId, route.id))
-          .orderBy(asc(vehicleRouteRequests.position))
+          .orderBy(asc(vehicleRequests.id))
           .for('update', { of: vehicleRequests });
+        const rows = [...lockedComposition].sort((a, b) => a.position - b.position);
 
         // Заявка-основание перегона: у него состава нет, и её состояние решает вместо талонов.
         // Строка блокируется тем же `FOR UPDATE`, что и состав грузового рейса, — иначе соседний
@@ -1048,7 +1346,7 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
           },
         });
       }
-      return (await loadRouteDto(db, req.params.id))!;
+      return routeWithPoints(req.params.id);
     },
   );
 
@@ -1125,7 +1423,7 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
   r.post(
     '/:id/correction',
     { preHandler: correctionGuards, schema: { params: idParams, body: correctRouteSchema } },
-    async (req): Promise<VehicleRouteDto> => {
+    async (req): Promise<VehicleRouteWithPoints> => {
       const p = requirePrincipal(req);
       const body = req.body;
       const access = backdateAccessOf(p);
@@ -1384,7 +1682,7 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
           },
         });
       }
-      return (await loadRouteDto(db, req.params.id))!;
+      return routeWithPoints(req.params.id);
     },
   );
 
@@ -1701,8 +1999,8 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
        * состояния — тем же кодом на первой попытке и на повторе (Р31).
        */
       return {
-        target: (await loadRouteDto(db, req.params.id))!,
-        source: (await loadRouteDto(db, body.source.routeId))!,
+        target: await routeWithPoints(req.params.id),
+        source: await routeWithPoints(body.source.routeId),
       };
     },
   );

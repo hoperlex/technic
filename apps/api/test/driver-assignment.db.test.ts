@@ -194,7 +194,7 @@ async function newVehicle(): Promise<string> {
   return vehicle!.id;
 }
 
-/** Заявка на грузоперевозку с деталями: состав рейса читает обе таблицы — адреса и контакты в них. */
+/** Заявка на грузоперевозку с ездкой: состав рейса берёт время у заявки, адреса и контакты — у ездки. */
 async function newFreightRequest(fixture: {
   loading: string;
   unloading: string;
@@ -220,11 +220,19 @@ async function newFreightRequest(fixture: {
   await ctx.db.insert(ctx.schema.freightTransportRequestDetails).values({
     requestId: request!.id,
     scheduledAt: fixture.scheduledAt,
+  });
+
+  // Адреса, количество и контакты — у ездки, а не у заявки (план `docs/route-trips-plan.md`, Р2):
+  // у заявки с ездками `A→B` и `A→C` «адрес разгрузки заявки» не существует. Одна ездка — то же,
+  // чем была пара полей детали.
+  await ctx.db.insert(ctx.schema.vehicleRequestTrips).values({
+    requestId: request!.id,
+    num: 1,
+    fromLocation: fixture.loading,
+    toLocation: fixture.unloading,
     volumeM3: '10.000',
-    loadingLocation: fixture.loading,
-    unloadingLocation: fixture.unloading,
-    loadingResponsibleName: fixture.loadingName ?? '',
-    loadingResponsiblePhone: fixture.loadingPhone ?? '',
+    fromResponsibleName: fixture.loadingName ?? '',
+    fromResponsiblePhone: fixture.loadingPhone ?? '',
   });
   return { id: request!.id, displayNumber: formatVehicleRequestNumber(request!.num) };
 }

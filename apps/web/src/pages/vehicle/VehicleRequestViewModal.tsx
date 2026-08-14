@@ -1,4 +1,4 @@
-import { Button, Space, Spin, Tabs, Tag, Typography } from 'antd';
+import { Button, Space, Spin, Table, Tabs, Tag, Typography } from 'antd';
 import { CheckCircleOutlined, ClockCircleOutlined } from '@ant-design/icons';
 import { type ReactNode, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
@@ -10,9 +10,12 @@ import {
   formatWeeklyRequestNumber,
   isVehicleSubstitution,
   type RequestHistoryEntryDto,
+  requestCargoTotal,
   requestStatusColors,
   requestStatusLabels,
+  tripCargoLabel,
   type VehicleRequestDto,
+  type VehicleRequestTripDto,
   type VehicleRequestEarlyEndDto,
   vehicleClassificationLabel,
   vehicleEarlyEndStatusColors,
@@ -43,8 +46,8 @@ import { vehicleRouteLink, waybillLink } from '../../utils/links';
 import { PrintWaybillButton } from '../../components/WaybillPrint';
 import { PhoneLink } from '../../components/PhoneField';
 import { calendarDaysLabel } from '../../utils/date';
-import { formatDateTime, formatDateTimeMaybe, formatMoney } from '../../utils/format';
-import { formatDateOnly } from './shared';
+import { formatDate, formatDateTime, formatDateTimeMaybe, formatMoney } from '../../utils/format';
+import { formatDateOnly, tripsCountLabel } from './shared';
 import { VehicleRequestDays } from './VehicleRequestDays';
 import { VehicleShiftsView } from './VehicleShiftsView';
 import { weeklyRequestPath } from './weeklyShared';
@@ -167,6 +170,122 @@ function termOf(r: VehicleRequestDto): ReactNode {
   );
 }
 
+/** Конец ездки в таблице: адрес с отметкой верификации и тот, кто встречает на этом конце. */
+function TripEnd({
+  location,
+  meta,
+  name,
+  phone,
+}: {
+  location: string;
+  meta: VehicleRequestTripDto['fromAddress'];
+  name: string;
+  phone: string;
+}) {
+  return (
+    <div style={{ lineHeight: 1.35 }}>
+      <AddressCell text={location} meta={meta} />
+      <div style={{ fontSize: 12 }}>
+        <ResponsibleValue name={name} phone={phone} />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Ездки заявки таблицей (Р1, §9 плана `docs/route-trips-plan.md`) — строкой на ездку, в порядке
+ * их номеров.
+ *
+ * Показывается только там, где ездок больше одной: заявка с единственной (а до плана такими были
+ * все — Р24) называет её парой полей «Погрузка/Разгрузка», как называла всегда. Таблица на одну
+ * строку — это шапка, рамка и полоса прокрутки ради того, что помещается в два поля карточки.
+ *
+ * Порядка объезда здесь нет и быть не может: он принадлежит рейсу, а не заказу (Р1), и спрашивают
+ * его у карточки маршрута. Эта таблица отвечает на «что заказчик просил везти», а не «в каком
+ * порядке машина это объедет».
+ *
+ * Правки в ней нет — она этапа 6 вместе с «+ ездка» и «повторить N раз» (§12): сегодня ездки
+ * заводятся и правятся формой заявки по одной.
+ */
+function RequestTripsTable({ trips }: { trips: VehicleRequestTripDto[] }) {
+  return (
+    <Table<VehicleRequestTripDto>
+      dataSource={trips}
+      rowKey="id"
+      size="small"
+      pagination={false}
+      // Адреса длинные, а окно карточки шире не становится: таблица прокручивается вбок сама,
+      // не растягивая окно и не ломая раскладку на телефоне (ADR 0030).
+      scroll={{ x: 'max-content' }}
+      columns={[
+        {
+          key: 'num',
+          title: '№',
+          width: 64,
+          // Номер ездки внутри заявки, а не позиция в списке: он неизменяем и не переиспользуется
+          // (Р13а), и ровно им ездка названа в выданном листе — «ТС-40/2».
+          render: (_v, t) => t.num,
+        },
+        {
+          key: 'from',
+          title: 'Погрузка',
+          render: (_v, t) => (
+            <TripEnd
+              location={t.fromLocation}
+              meta={t.fromAddress}
+              name={t.fromResponsibleName}
+              phone={t.fromResponsiblePhone}
+            />
+          ),
+        },
+        {
+          key: 'to',
+          title: 'Разгрузка',
+          render: (_v, t) => (
+            <TripEnd
+              location={t.toLocation}
+              meta={t.toAddress}
+              name={t.toResponsibleName}
+              phone={t.toResponsiblePhone}
+            />
+          ),
+        },
+        {
+          key: 'cargo',
+          title: 'Груз',
+          width: 160,
+          // Подпись груза — та же, что печатает бланк (`tripCargoLabel`): расхождение единиц между
+          // карточкой и листом означало бы спор о том, что везли. Примечание ездки идёт второй
+          // строкой — это оно объясняет «песок, звонить за час».
+          render: (_v, t) => (
+            <div style={{ lineHeight: 1.35 }}>
+              <div>{tripCargoLabel(t) || '—'}</div>
+              {!!t.comment && (
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  {t.comment}
+                </Typography.Text>
+              )}
+            </div>
+          ),
+        },
+        {
+          key: 'scheduledAt',
+          title: 'Подача',
+          width: 150,
+          // Своё время ездки (Р3) — уточняющее: пусто значит «как у заявки», и подписано это
+          // словами. Прочерк читался бы как «времени нет вовсе», а оно есть — заявкино.
+          render: (_v, t) =>
+            t.scheduledAt ? (
+              formatDateTime(t.scheduledAt)
+            ) : (
+              <Typography.Text type="secondary">как у заявки</Typography.Text>
+            ),
+        },
+      ]}
+    />
+  );
+}
+
 export function VehicleRequestViewModal({
   request,
   onClose,
@@ -286,6 +405,47 @@ export function VehicleRequestViewModal({
     };
   }, [request]);
 
+  /**
+   * Ездки заявки (Р1, Р2): `null` — заказ техники на объект, у которого их не бывает вовсе.
+   *
+   * Рядом — итог по ним (`requestCargoTotal`, §9) и единственная ездка, если она единственная: от
+   * неё зависит, показывает карточка привычную пару адресов или таблицу.
+   */
+  const trips = request?.requestType === 'freight_transport' ? request.trips : null;
+  const total = trips ? requestCargoTotal(trips) : null;
+  /**
+   * Ездка, которую карточка вправе показать привычной парой полей вместо таблицы: единственная и
+   * не несущая ничего, чему в этой паре места нет.
+   *
+   * Своё время подачи (Р3) и примечание — как раз то, чего пара полей сказать не может, а прятать
+   * их нельзя: «во сколько именно эта» и «песок, звонить за час» и есть то, ради чего они
+   * заполнены. У всех доехавших бэкфилом ездок оба поля пусты (миграция `0136` их не заполняет), и
+   * заявка, заведённая до плана, показывается ровно как показывалась.
+   */
+  const singleTrip =
+    trips && trips.length === 1 && !trips[0]?.scheduledAt && !trips[0]?.comment ? trips[0] : null;
+  /**
+   * «60 м³ / 5 т · 6 ездок» — количество по всей заявке.
+   *
+   * Обе единицы печатаются рядом, а не через `tripCargoLabel`: тот отдаёт то, что влезает в графу
+   * бланка (объём, а без него массу), и смешанная заявка — часть в кубах, часть в тоннах —
+   * потеряла бы в карточке половину заказа. Счёт ездок приписан к итогу, потому что «60 м³» без
+   * него не отличить от одной ездки на шестьдесят кубов.
+   */
+  const amountText = total
+    ? [
+        [
+          total.volumeM3 != null ? `${total.volumeM3} м³` : null,
+          total.weightTons != null ? `${total.weightTons} т` : null,
+        ]
+          .filter(Boolean)
+          .join(' / ') || '—',
+        total.trips > 1 ? tripsCountLabel(total.trips) : null,
+      ]
+        .filter(Boolean)
+        .join(' · ')
+    : null;
+
   const fields = request
     ? [
         {
@@ -351,6 +511,34 @@ export function VehicleRequestViewModal({
             categoryName: request.vehicleCategoryName,
           }),
         },
+        // Заявку застигло переключение признака у типа (миграция 0137): справочник ведёт заказы
+        // этого типа уже иначе, а она дорабатывает так, как была заведена. Строка стоит сразу под
+        // типом — она о нём и говорит. Без неё диспетчер видит две заявки одного типа, ведущие
+        // себя по-разному, и ни одного объяснения на экране.
+        ...(request.requestType === 'special_equipment' && request.linearFrozen
+          ? [
+              {
+                key: 'linearFrozen',
+                label: 'Режим заказа',
+                full: true,
+                children: (
+                  <Space direction="vertical" size={4}>
+                    <Tag color="gold" style={{ marginInlineEnd: 0 }}>
+                      прежний режим: {request.linearFrozen.isLinear ? 'по дням' : 'по неделям'}, с{' '}
+                      {formatDate(request.linearFrozen.at)}
+                    </Tag>
+                    <Typography.Text type="secondary">
+                      С этого числа тип «{request.vehicleTypeName}» ведёт заказы иначе, а эта заявка
+                      дорабатывает так, как заведена:{' '}
+                      {request.linearFrozen.isLinear
+                        ? 'дни планируются в рейсах, недельные листы ЭСМ-2 портал по ней не выписывает.'
+                        : 'ЭСМ-2 портал выписывает по ней сам за каждую неделю срока, дни ей не планируются.'}
+                    </Typography.Text>
+                  </Space>
+                ),
+              },
+            ]
+          : []),
         {
           key: 'term',
           label: request.requestType === 'special_equipment' ? 'Период работы' : 'Подача',
@@ -438,27 +626,21 @@ export function VehicleRequestViewModal({
               },
             ]
           : []),
-        // Объём/масса и адреса есть только у грузоперевозки: спецтехника заказывается на срок.
-        ...(request.requestType === 'freight_transport'
+        // Груз и адреса есть только у грузоперевозки: спецтехника заказывается на срок.
+        ...(trips ? [{ key: 'amount', label: 'Объём / масса', children: amountText }] : []),
+        // Единственная ездка показывается парой адресов с контактами — ровно тем видом, что был у
+        // заявки до плана: заявка с одной ездкой и есть вчерашняя заявка (Р24), и заводить ради
+        // неё таблицу в одну строку значило бы менять карточку всем существующим заявкам, ничего
+        // им не добавив. Ездки заявки, у которой их несколько, идут таблицей ниже полей.
+        ...(singleTrip
           ? [
-              {
-                key: 'amount',
-                label: 'Объём / масса',
-                children:
-                  [
-                    request.volumeM3 != null ? `${request.volumeM3} м³` : null,
-                    request.weightTons != null ? `${request.weightTons} т` : null,
-                  ]
-                    .filter(Boolean)
-                    .join(' / ') || '—',
-              },
               {
                 key: 'loading',
                 label: 'Погрузка',
                 full: true,
                 // Отметка о верификации адреса (ADR 0006) — та же, что в таблице.
                 children: (
-                  <AddressCell text={request.loadingLocation} meta={request.loadingAddress} />
+                  <AddressCell text={singleTrip.fromLocation} meta={singleTrip.fromAddress} />
                 ),
               },
               {
@@ -466,8 +648,8 @@ export function VehicleRequestViewModal({
                 label: 'Ответственный за погрузку',
                 children: (
                   <ResponsibleValue
-                    name={request.loadingResponsibleName}
-                    phone={request.loadingResponsiblePhone}
+                    name={singleTrip.fromResponsibleName}
+                    phone={singleTrip.fromResponsiblePhone}
                   />
                 ),
               },
@@ -475,17 +657,15 @@ export function VehicleRequestViewModal({
                 key: 'unloading',
                 label: 'Разгрузка',
                 full: true,
-                children: (
-                  <AddressCell text={request.unloadingLocation} meta={request.unloadingAddress} />
-                ),
+                children: <AddressCell text={singleTrip.toLocation} meta={singleTrip.toAddress} />,
               },
               {
                 key: 'unloadingResponsible',
                 label: 'Ответственный за разгрузку',
                 children: (
                   <ResponsibleValue
-                    name={request.unloadingResponsibleName}
-                    phone={request.unloadingResponsiblePhone}
+                    name={singleTrip.toResponsibleName}
+                    phone={singleTrip.toResponsiblePhone}
                   />
                 ),
               },
@@ -790,6 +970,18 @@ export function VehicleRequestViewModal({
       {/* Раскладка — забота карточки: поля говорят только, годится ли им доля строки
           (`full`). Число колонок и их ширины считает ViewFields, на телефоне колонка одна. */}
       <ViewFields items={fields} />
+
+      {/* Ездки — своим разделом, а не полем карточки: таблица шире доли строки даже с `full`, а
+          рядом с «Файлами» и «Историей» она встаёт тем же, чем является, — списком строк заказа.
+          Заявка с одной ездкой сюда не доходит: её показала пара полей выше (Р24). */}
+      {trips && !singleTrip && (
+        <div>
+          <Typography.Text strong>Ездки</Typography.Text>
+          <div style={{ marginTop: 12 }}>
+            <RequestTripsTable trips={trips} />
+          </div>
+        </div>
+      )}
 
       {request.files.length > 0 && (
         <div>

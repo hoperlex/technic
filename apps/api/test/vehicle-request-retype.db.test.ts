@@ -157,15 +157,21 @@ function freightPayload(over: Record<string, unknown> = {}): Record<string, unkn
     vehicleTypeId: ctx.freight.typeId,
     vehicleCategoryId: ctx.freight.categoryId,
     scheduledAt: `${ctx.today}T09:00:00+03:00`,
-    volumeM3: 12,
-    loadingLocation: 'г Москва, ул Тверская, д 1',
-    unloadingLocation: 'г Москва, ул Арбат, д 2',
-    loadingAddress: RESOLVED_ADDRESS,
-    unloadingAddress: RESOLVED_ADDRESS,
-    loadingResponsibleName: 'Сидоров Сидор Сидорович',
-    loadingResponsiblePhone: '+79990000002',
-    unloadingResponsibleName: 'Кузнецов Кузьма Кузьмич',
-    unloadingResponsiblePhone: '+79990000003',
+    // Адреса, количество и контакты — у ездки, а не у заявки (Р2): у заявки с ездками `A→B` и
+    // `A→C` «адрес разгрузки заявки» не существует. Одна ездка — то же, чем была пара полей.
+    trips: [
+      {
+        fromLocation: 'г Москва, ул Тверская, д 1',
+        toLocation: 'г Москва, ул Арбат, д 2',
+        fromAddress: RESOLVED_ADDRESS,
+        toAddress: RESOLVED_ADDRESS,
+        volumeM3: 12,
+        fromResponsibleName: 'Сидоров Сидор Сидорович',
+        fromResponsiblePhone: '+79990000002',
+        toResponsibleName: 'Кузнецов Кузьма Кузьмич',
+        toResponsiblePhone: '+79990000003',
+      },
+    ],
     comment: 'Плиты перекрытия',
     ...over,
   };
@@ -272,7 +278,7 @@ describe.skipIf(!DB_URL)('переоформление заявки в друг�
     expect(after.num).toBe(request.num);
     expect(after.status).toBe('new');
     expect(after.scheduledAt).toBeTruthy();
-    expect(after.loadingLocation).toBe('г Москва, ул Тверская, д 1');
+    expect(after.trips[0].fromLocation).toBe('г Москва, ул Тверская, д 1');
     expect(after.version).toBe(request.version + 1);
     // Деталь прежнего типа снята физически, а не оставлена «про запас».
     const details = await ctx.db.execute<{ n: string }>(
@@ -311,7 +317,10 @@ describe.skipIf(!DB_URL)('переоформление заявки в друг�
     const request = await createRequest(specialPayload());
     const noReason = await retype(
       request.id,
-      { ...freightPayload({ scheduledAt: `${yesterday}T09:00:00+03:00` }), version: request.version },
+      {
+        ...freightPayload({ scheduledAt: `${yesterday}T09:00:00+03:00` }),
+        version: request.version,
+      },
       ctx.dispatcherAuth,
     );
     expect(noReason.statusCode, noReason.body).toBe(422);

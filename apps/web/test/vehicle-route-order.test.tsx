@@ -90,8 +90,29 @@ const FREE_REQUEST = {
   id: 'r-free',
   displayNumber: 'ТС-701',
   requestType: 'freight_transport' as const,
-  loadingLocation: 'Карьер',
-  unloadingLocation: 'Площадка 3',
+  // Адреса лежат в ездке, а не у заявки (план `docs/route-trips-plan.md`, Р2). Подсказка читает
+  // первую и приписывает счёт, когда их больше одной, — здесь она одна, как у всех заявок,
+  // доехавших бэкфилом.
+  trips: [
+    {
+      id: 'vrt-free',
+      num: 1,
+      displayNumber: 'ТС-701/1',
+      fromLocation: 'Карьер',
+      toLocation: 'Площадка 3',
+      fromAddress: null,
+      toAddress: null,
+      volumeM3: 10,
+      weightTons: null,
+      fromResponsibleName: 'Иванов И. И.',
+      fromResponsiblePhone: '+7 900 000-00-01',
+      toResponsibleName: 'Петров П. П.',
+      toResponsiblePhone: '+7 900 000-00-02',
+      scheduledAt: null,
+      comment: '',
+      placement: null,
+    },
+  ],
   assignment: { ownership: 'own' as const, vehicleId: 'v-own' },
   // Тип назван явно: без него у свободной заявки выводится `null`, и соседние записи с рейсом
   // перестают быть тем же видом данных.

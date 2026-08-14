@@ -7,6 +7,7 @@ import type {
   VehicleFeedRow,
   VehicleRequestDto,
   VehicleRequestSummaryDto,
+  VehicleRequestTripDto,
   WeeklyRequestItemDto,
   WeeklyVehicleRequestDto,
 } from '@technic/contracts';
@@ -69,14 +70,48 @@ export function vehicleRequest(
     updatedAt: '2026-08-01T06:00:00.000Z',
     deletedAt: null,
     deletedByName: null,
+    costTarget: { kind: 'object', id: 'obj-1', code: 'ОБ-1', name: 'ЖК Северный' },
     ...overrides,
   } as SpecialEquipmentRequestDto;
 }
 
 /**
- * Грузоперевозка: у неё не период работы, а момент подачи, и два конца маршрута — со своим
- * адресом и своим ответственным на каждом. Нужна там, где проверяют именно вторую ветку типа
- * заявки: контакты в строке списка, объём/масса, рейс.
+ * Ездка заявки: два конца маршрута со своим адресом и своим ответственным на каждом, своё
+ * количество (план `docs/route-trips-plan.md`, Р1).
+ *
+ * Метаданные верификации адреса (ADR 0006) здесь `null` — сценариям списка и карточки они не нужны,
+ * в строке стоит текст. Это ещё и **самый частый вид данных в базе**: так выглядит ездка, доехавшая
+ * бэкфилом от заявки старше жёсткой модели, и правило Р2а написано ровно про неё.
+ */
+export function freightTrip(overrides: Partial<VehicleRequestTripDto> = {}): VehicleRequestTripDto {
+  return {
+    id: 'vrt-1',
+    num: 1,
+    displayNumber: 'Т-43/1',
+    fromLocation: 'г. Москва, ул. Складская, 4',
+    toLocation: 'г. Москва, ул. Северная, 1',
+    fromAddress: null,
+    toAddress: null,
+    volumeM3: 12,
+    weightTons: null,
+    fromResponsibleName: 'Сидоров С. С.',
+    fromResponsiblePhone: '+7 900 000-00-03',
+    toResponsibleName: 'Кузнецов К. К.',
+    toResponsiblePhone: '+7 900 000-00-04',
+    scheduledAt: null,
+    comment: '',
+    placement: null,
+    ...overrides,
+  };
+}
+
+/**
+ * Грузоперевозка: у неё не период работы, а момент подачи, и **список ездок** — по паре адресов и
+ * контактов на каждую (Р1, Р2). Нужна там, где проверяют именно вторую ветку типа заявки: контакты
+ * в строке списка, объём/масса, рейс.
+ *
+ * Приведения типа здесь **нет** намеренно: именно оно глушило расхождение фабрики с DTO, пока поля
+ * заявки переезжали на ездку, — тесты компилировались и падали на прогоне. Пусть лучше не собирается.
  */
 export function freightRequest(
   overrides: Partial<FreightTransportRequestDto> = {},
@@ -99,7 +134,6 @@ export function freightRequest(
     vehicleCategoryId: 'vc-2',
     vehicleCategoryName: '20 м³',
     vehicleCategorySpecs: { body_volume: 20 },
-    isLinear: false,
     status: 'new',
     comment: 'плиты перекрытия ПК 60-15, 12 шт',
     cancelReason: null,
@@ -112,17 +146,7 @@ export function freightRequest(
     files: [],
     scheduledAt: '2026-08-06T05:00:00.000Z',
     scheduledTimeUnspecified: false,
-    volumeM3: 12,
-    weightTons: null,
-    loadingLocation: 'г. Москва, ул. Складская, 4',
-    unloadingLocation: 'г. Москва, ул. Северная, 1',
-    // Метаданные верификации адреса (ADR 0006) сценариям списка не нужны: в строке стоит текст.
-    loadingAddress: null,
-    unloadingAddress: null,
-    loadingResponsibleName: 'Сидоров С. С.',
-    loadingResponsiblePhone: '+7 900 000-00-03',
-    unloadingResponsibleName: 'Кузнецов К. К.',
-    unloadingResponsiblePhone: '+7 900 000-00-04',
+    trips: [freightTrip()],
     version: 1,
     createdBy: 'user-1',
     createdByName: 'Диспетчеров Д. П.',
@@ -130,8 +154,10 @@ export function freightRequest(
     updatedAt: '2026-08-01T06:00:00.000Z',
     deletedAt: null,
     deletedByName: null,
+    // Объект затрат выводится из пары под CHECK (Р25) — и у заявки объекта это сам объект.
+    costTarget: { kind: 'object', id: 'obj-1', code: 'ОБ-1', name: 'ЖК Северный' },
     ...overrides,
-  } as FreightTransportRequestDto;
+  };
 }
 
 /**

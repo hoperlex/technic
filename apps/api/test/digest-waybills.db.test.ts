@@ -223,9 +223,16 @@ async function makeFreightRequest(input: {
   await db.insert(schema.freightTransportRequestDetails).values({
     requestId: request!.id,
     scheduledAt: new Date(`${DAYS.trips}T05:30:00Z`),
+  });
+  // Адреса и количество — у ездки, а не у заявки (план `docs/route-trips-plan.md`, Р2): у заявки
+  // с ездками `A→B` и `A→C` «адрес разгрузки заявки» не существует. Одна ездка — то же, чем была
+  // пара полей детали.
+  await db.insert(schema.vehicleRequestTrips).values({
+    requestId: request!.id,
+    num: 1,
+    fromLocation: `г Москва, ул Погрузочная, д 1 (${input.tag})`,
+    toLocation: `г Москва, ул Разгрузочная, д 2 (${input.tag})`,
     volumeM3: '10.000',
-    loadingLocation: `г Москва, ул Погрузочная, д 1 (${input.tag})`,
-    unloadingLocation: `г Москва, ул Разгрузочная, д 2 (${input.tag})`,
   });
   return { id: request!.id, number: formatVehicleRequestNumber(request!.num) };
 }

@@ -419,15 +419,22 @@ const freightBase = {
   requestType: 'freight_transport' as const,
   objectId: OBJ,
   vehicleTypeId: TYPE,
-  volumeM3: 10,
-  loadingLocation: 'г Москва, ул Тверская, д 1',
-  unloadingLocation: 'г Москва, ул Арбат, д 2',
-  loadingAddress: resolvedMeta,
-  unloadingAddress: resolvedMeta,
-  loadingResponsibleName: 'Сидоров С. С.',
-  loadingResponsiblePhone: '+7 926 000-00-02',
-  unloadingResponsibleName: 'Кузнецов К. К.',
-  unloadingResponsiblePhone: '+7 926 000-00-03',
+  // Адреса, количество и контакты — у ездки, а не у заявки (план `docs/route-trips-plan.md`, Р2):
+  // у заявки с ездками `A→B` и `A→C` «адрес разгрузки заявки» не существует. Одна ездка в фикстуре
+  // — то же, что было парой полей раньше.
+  trips: [
+    {
+      fromLocation: 'г Москва, ул Тверская, д 1',
+      toLocation: 'г Москва, ул Арбат, д 2',
+      fromAddress: resolvedMeta,
+      toAddress: resolvedMeta,
+      volumeM3: 10,
+      fromResponsibleName: 'Сидоров С. С.',
+      fromResponsiblePhone: '+7 926 000-00-02',
+      toResponsibleName: 'Кузнецов К. К.',
+      toResponsiblePhone: '+7 926 000-00-03',
+    },
+  ],
 };
 
 describe('createVehicleRequestSchema: рабочее окно подачи', () => {

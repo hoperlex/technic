@@ -9,7 +9,7 @@ import { applyMigrations } from '../src/db/migration-journal';
 import type { buildApp } from '../src/app';
 
 /**
- * Адрес заявки, выбранный из справочника (ADR 0069), — на живой схеме, через настоящий HTTP-путь.
+ * Адрес ездки, выбранный из справочника (ADR 0069), — на живой схеме, через настоящий HTTP-путь.
  *
  * Контракты проверяют форму метаданных: у справочного источника обязана быть ссылка на запись.
  * Но само утверждение «этот адрес взят из справочника» формой не проверяется — за ним должна
@@ -18,7 +18,9 @@ import type { buildApp } from '../src/app';
  * как выбранная: ФИАС у справочного адреса нет, и больше подтверждать нечем.
  *
  * Поэтому проверяются обе стороны: адрес из справочника принимается, а расхождение с записью —
- * отклоняется, и отказ садится на то поле формы, где человек его увидит.
+ * отклоняется, и отказ садится на то поле формы, где человек его увидит. Поле теперь адресуется
+ * внутрь ездки (`trips.0.fromLocation`): пары адресов у самой заявки нет вовсе (план
+ * `docs/route-trips-plan.md`, Р2), а с нею исчезло и место, куда такой отказ садился прежде.
  *
  * Запуск — как у остальных db-тестов; без `TEST_DATABASE_URL` файл пропускается:
  *
@@ -97,12 +99,18 @@ async function seedAdmin(): Promise<void> {
   });
 }
 
-/** Заявка на грузоперевозку с заданными адресами; возвращает ответ как есть — его и проверяем. */
-function createFreight(payload: {
-  loadingLocation: string;
-  loadingAddress: Record<string, unknown>;
-  unloadingLocation?: string;
-  unloadingAddress?: Record<string, unknown>;
+/**
+ * Заявка на грузоперевозку с заданными адресами; возвращает ответ как есть — его и проверяем.
+ *
+ * Адреса, количество и контакты — у ездки, а не у заявки (Р2): у заявки с ездками `A→B` и `A→C`
+ * «адрес разгрузки заявки» не существует. Одна ездка — то же, чем была пара полей, и проверяет
+ * сервер именно её.
+ */
+function createFreight(trip: {
+  fromLocation: string;
+  fromAddress: Record<string, unknown>;
+  toLocation?: string;
+  toAddress?: Record<string, unknown>;
 }) {
   return ctx.app.inject({
     method: 'POST',
@@ -114,16 +122,28 @@ function createFreight(payload: {
       vehicleTypeId: ctx.vehicleTypeId,
       vehicleCategoryId: ctx.vehicleCategoryId,
       scheduledAt: ctx.scheduledAt,
-      volumeM3: 10,
-      loadingResponsibleName: 'Иванов Иван',
-      loadingResponsiblePhone: '+79990000001',
-      unloadingResponsibleName: 'Петров Пётр',
-      unloadingResponsiblePhone: '+79990000002',
-      unloadingLocation: OBJECT_ADDRESS,
-      unloadingAddress: { source: 'object', refId: ctx.objectId },
-      ...payload,
+      trips: [{ ...freightTrip(), ...trip }],
     },
   });
+}
+
+/**
+ * Ездка по умолчанию: разгрузка на своей площадке, груз и контакты на обоих концах. Проверяется
+ * здесь погрузка, и всё остальное обязано быть заведомо годным — иначе 422 приходил бы не оттуда,
+ * откуда его ждут.
+ */
+function freightTrip(): Record<string, unknown> {
+  return {
+    fromLocation: OBJECT_ADDRESS,
+    fromAddress: { source: 'object', refId: ctx.objectId },
+    toLocation: OBJECT_ADDRESS,
+    toAddress: { source: 'object', refId: ctx.objectId },
+    volumeM3: 10,
+    fromResponsibleName: 'Иванов Иван',
+    fromResponsiblePhone: '+79990000001',
+    toResponsibleName: 'Петров Пётр',
+    toResponsiblePhone: '+79990000002',
+  };
 }
 
 describe.skipIf(!DB_URL)('адрес заявки из справочника (живая схема)', () => {
@@ -183,39 +203,44 @@ describe.skipIf(!DB_URL)('адрес заявки из справочника (�
 
   it('принимает адрес объекта из справочника — без ФИАС, по ссылке на запись', async () => {
     const res = await createFreight({
-      loadingLocation: OBJECT_ADDRESS,
-      loadingAddress: { source: 'object', refId: ctx.objectId },
+      fromLocation: OBJECT_ADDRESS,
+      fromAddress: { source: 'object', refId: ctx.objectId },
     });
     expect(res.statusCode, res.body).toBe(201);
-    expect(res.json().loadingAddress).toEqual({ source: 'object', refId: ctx.objectId });
+    expect(res.json().trips[0].fromAddress).toEqual({ source: 'object', refId: ctx.objectId });
   });
 
   it('принимает адрес склада поставщика', async () => {
     const res = await createFreight({
-      loadingLocation: WAREHOUSE_ADDRESS,
-      loadingAddress: { source: 'warehouse', refId: ctx.warehouseId },
+      fromLocation: WAREHOUSE_ADDRESS,
+      fromAddress: { source: 'warehouse', refId: ctx.warehouseId },
     });
     expect(res.statusCode, res.body).toBe(201);
-    expect(res.json().loadingAddress).toEqual({ source: 'warehouse', refId: ctx.warehouseId });
+    expect(res.json().trips[0].fromAddress).toEqual({
+      source: 'warehouse',
+      refId: ctx.warehouseId,
+    });
   });
 
   it('отклоняет строку, не совпадающую с адресом записи справочника', async () => {
     const res = await createFreight({
-      loadingLocation: 'г Москва, ул Придуманная, д 2',
-      loadingAddress: { source: 'object', refId: ctx.objectId },
+      fromLocation: 'г Москва, ул Придуманная, д 2',
+      fromAddress: { source: 'object', refId: ctx.objectId },
     });
     expect(res.statusCode, res.body).toBe(422);
-    // Отказ садится на поле формы: общее сообщение поверх окна человек соотнести не может.
-    expect(res.json().fields?.loadingLocation).toBeTruthy();
+    // Отказ садится на поле формы: общее сообщение поверх окна человек соотнести не может. Ездок в
+    // форме несколько, поэтому и путь полный — `trips.0.fromLocation`: без номера строки портал не
+    // знает, какую из шести подсветить.
+    expect(res.json().fields?.['trips.0.fromLocation']).toBeTruthy();
   });
 
   it('отклоняет ссылку на несуществующую запись справочника', async () => {
     const res = await createFreight({
-      loadingLocation: OBJECT_ADDRESS,
-      loadingAddress: { source: 'object', refId: '11111111-2222-4333-8444-555555555555' },
+      fromLocation: OBJECT_ADDRESS,
+      fromAddress: { source: 'object', refId: '11111111-2222-4333-8444-555555555555' },
     });
     expect(res.statusCode, res.body).toBe(422);
-    expect(res.json().fields?.loadingLocation).toBeTruthy();
+    expect(res.json().fields?.['trips.0.fromLocation']).toBeTruthy();
   });
 
   it('отклоняет выключенную запись справочника', async () => {
@@ -228,11 +253,11 @@ describe.skipIf(!DB_URL)('адрес заявки из справочника (�
     expect(off.statusCode, off.body).toBe(200);
     try {
       const res = await createFreight({
-        loadingLocation: WAREHOUSE_ADDRESS,
-        loadingAddress: { source: 'warehouse', refId: ctx.warehouseId },
+        fromLocation: WAREHOUSE_ADDRESS,
+        fromAddress: { source: 'warehouse', refId: ctx.warehouseId },
       });
       expect(res.statusCode, res.body).toBe(422);
-      expect(res.json().fields?.loadingLocation).toBeTruthy();
+      expect(res.json().fields?.['trips.0.fromLocation']).toBeTruthy();
     } finally {
       await ctx.app.inject({
         method: 'PATCH',
@@ -243,13 +268,27 @@ describe.skipIf(!DB_URL)('адрес заявки из справочника (�
     }
   });
 
-  it('правка заявки проверяет адрес так же, как создание', async () => {
+  /**
+   * Правка ездки — и договор Р2а вместе с ней.
+   *
+   * Ездки правятся **полным списком** (§7), и приёма «не отправлять нетронутое» у списка нет:
+   * строка приезжает целиком. Поэтому существующая ездка обязана нести свой `id` — им сервер и
+   * отличает перезапись от заведения. Под `id` непроверенный адрес и пустой контакт, доехавшие
+   * бэкфилом, принимаются как есть, пока их не меняют; **изменённое** значение проходит жёсткую
+   * модель целиком — ровно то, что здесь и проверяется: адрес меняют, значит спрашивают с него
+   * так же, как при заведении.
+   *
+   * Обратная половина Р2а — ездка **без** `id` — отдельного случая не требует: это заведение, и
+   * его проверяют случаи выше, теми же телами и теми же отказами.
+   */
+  it('правка ездки проверяет изменённый адрес так же, как создание (Р2а)', async () => {
     const created = await createFreight({
-      loadingLocation: OBJECT_ADDRESS,
-      loadingAddress: { source: 'object', refId: ctx.objectId },
+      fromLocation: OBJECT_ADDRESS,
+      fromAddress: { source: 'object', refId: ctx.objectId },
     });
     expect(created.statusCode, created.body).toBe(201);
     const request = created.json();
+    const tripId = request.trips[0].id as string;
 
     const bad = await ctx.app.inject({
       method: 'PATCH',
@@ -258,11 +297,18 @@ describe.skipIf(!DB_URL)('адрес заявки из справочника (�
       payload: {
         requestType: 'freight_transport',
         version: request.version,
-        loadingLocation: 'г Москва, ул Придуманная, д 2',
-        loadingAddress: { source: 'object', refId: ctx.objectId },
+        trips: [
+          {
+            ...freightTrip(),
+            id: tripId,
+            fromLocation: 'г Москва, ул Придуманная, д 2',
+            fromAddress: { source: 'object', refId: ctx.objectId },
+          },
+        ],
       },
     });
     expect(bad.statusCode, bad.body).toBe(422);
+    expect(bad.json().fields?.['trips.0.fromLocation']).toBeTruthy();
 
     const ok = await ctx.app.inject({
       method: 'PATCH',
@@ -271,13 +317,23 @@ describe.skipIf(!DB_URL)('адрес заявки из справочника (�
       payload: {
         requestType: 'freight_transport',
         version: request.version,
-        loadingLocation: WAREHOUSE_ADDRESS,
-        loadingAddress: { source: 'warehouse', refId: ctx.warehouseId },
+        trips: [
+          {
+            ...freightTrip(),
+            id: tripId,
+            fromLocation: WAREHOUSE_ADDRESS,
+            fromAddress: { source: 'warehouse', refId: ctx.warehouseId },
+          },
+        ],
       },
     });
     expect(ok.statusCode, ok.body).toBe(200);
-    expect(ok.json().loadingLocation).toBe(WAREHOUSE_ADDRESS);
-    expect(ok.json().loadingAddress?.refId).toBe(ctx.warehouseId);
+    // Ездка та же, а не заведённая заново: правка с `id` перезаписывает строку, и номер у неё
+    // остаётся прежним — «ТС-40/1» в выданном листе обязан означать ту же ездку (Р13а).
+    expect(ok.json().trips).toHaveLength(1);
+    expect(ok.json().trips[0].id).toBe(tripId);
+    expect(ok.json().trips[0].fromLocation).toBe(WAREHOUSE_ADDRESS);
+    expect(ok.json().trips[0].fromAddress?.refId).toBe(ctx.warehouseId);
   });
 });
 

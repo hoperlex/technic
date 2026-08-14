@@ -10,6 +10,7 @@ import { typeDate } from './antd';
 import {
   classification,
   freightRequest,
+  freightTrip,
   vehicleFeed,
   vehicleRequest,
   vehicleSummary,
@@ -250,20 +251,27 @@ describe('адресное поле: выбор из справочника (ADR
     fireEvent.click(screen.getByText('Сохранить'));
     await waitFor(() => expect(http.countOf('POST /vehicle-requests')).toBe(1));
     const body = http.lastCall('POST /vehicle-requests')!.body as Record<string, unknown>;
-    expect(body.loadingLocation).toBe('г Москва, ул Складская, д 7');
-    expect(body.loadingAddress).toEqual({ source: 'warehouse', refId: 'wh-1' });
-    expect(body.unloadingLocation).toBe('г Москва, ул Южная, д 2');
-    expect(body.unloadingAddress).toEqual({ source: 'object', refId: 'obj-2' });
+    // Адреса уехали с заявки на ездку (Р2): у заведённой их ровно одна, и пара с метаданными
+    // приходит в ней. Верификация проверяется тем же: строка и метаданные ходят вместе.
+    const [trip] = body.trips as Record<string, unknown>[];
+    expect(trip!.fromLocation).toBe('г Москва, ул Складская, д 7');
+    expect(trip!.fromAddress).toEqual({ source: 'warehouse', refId: 'wh-1' });
+    expect(trip!.toLocation).toBe('г Москва, ул Южная, д 2');
+    expect(trip!.toAddress).toEqual({ source: 'object', refId: 'obj-2' });
   });
 
   it('правка заявки открывает поле в том режиме, каким адрес и заводили', async () => {
     const saved = freightRequest({
       id: 'vr-9',
       displayNumber: 'Т-9',
-      loadingLocation: OWN_OBJECT.address,
-      loadingAddress: { source: 'object', refId: OWN_OBJECT.id },
-      unloadingLocation: 'г Москва, ул Тверская, д 5',
-      unloadingAddress: { source: 'resolved', fiasId: 'fias-1' },
+      trips: [
+        freightTrip({
+          fromLocation: OWN_OBJECT.address,
+          fromAddress: { source: 'object', refId: OWN_OBJECT.id },
+          toLocation: 'г Москва, ул Тверская, д 5',
+          toAddress: { source: 'resolved', fiasId: 'fias-1' },
+        }),
+      ],
     });
     renderTab({}, [saved]);
     fireEvent.click(

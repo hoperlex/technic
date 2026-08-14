@@ -19,6 +19,7 @@ import {
 } from '@technic/contracts';
 import { db } from '../db/client';
 import { driverGapsKey, loadDriverGaps } from './drivers';
+import { cleanupRoutePoints } from './route-points';
 import { categorySpecsSql } from './vehicle-categories';
 import {
   constructionObjects,
@@ -29,6 +30,7 @@ import {
   users,
   vehicleModels,
   vehicleRequests,
+  vehicleRequestTrips,
   vehicleRouteRequests,
   vehicleRoutes,
   vehicles,
@@ -115,6 +117,20 @@ export async function lockRoute(tx: Tx, id: string): Promise<RouteRow> {
 }
 
 /**
+ * Названные рейсы под `FOR UPDATE` — по возрастанию `id` и по одному разу.
+ *
+ * Порядок один на весь модуль (Р17): любые два рейса берутся в порядке идентификаторов, каким бы
+ * ни было их значение для операции — приёмник и источник переноса, рейсы дней линейного заказа,
+ * перегон и грузовой рейс одной заявки. Всякий второй порядок на тех же строках — это клинч на
+ * первой же встречной команде.
+ */
+async function lockRouteIds(tx: Tx, ids: readonly string[]): Promise<Map<string, RouteRow>> {
+  const locked = new Map<string, RouteRow>();
+  for (const id of [...new Set(ids)].sort()) locked.set(id, await lockRoute(tx, id));
+  return locked;
+}
+
+/**
  * Оба рейса переноса — в порядке возрастания `id`. Порядок стабильный и одинаковый у всех
  * операций: две встречные перестановки иначе встали бы во взаимную блокировку.
  */
@@ -127,11 +143,78 @@ export async function lockRoutePair(
     const target = await lockRoute(tx, targetId);
     return { target, source: sourceId ? target : null };
   }
-  const [first, second] = [targetId, sourceId].sort();
-  const locked = new Map<string, RouteRow>();
-  locked.set(first!, await lockRoute(tx, first!));
-  locked.set(second!, await lockRoute(tx, second!));
+  const locked = await lockRouteIds(tx, [targetId, sourceId]);
   return { target: locked.get(targetId)!, source: locked.get(sourceId)! };
+}
+
+/** Сколько раз связь перечитывается, прежде чем портал признаёт: её переписывают прямо сейчас. */
+const LINK_LOCK_ATTEMPTS = 3;
+
+/**
+ * Приём Р17 целиком — «прочитать → взять → перечитать» — для всех, кто выясняет рейсы **из связи**.
+ *
+ * Порядок «маршруты → заявки» объявлен [ADR 0050](../../../../docs/adr/0050-vehicle-routes.md) п. 12,
+ * но одного порядка мало: какие именно рейсы брать, известно из `vehicle_route_requests` (или из
+ * `source_request_id` перегона), а связь читается **до** блокировки. Между чтением и `FOR UPDATE`
+ * заявку успевают вынуть из рейса и положить в соседний — и операция, взявшая рейс по устаревшей
+ * связи, правила бы чужой день, а тот, где заявка лежит на самом деле, не тронула бы вовсе.
+ *
+ * Поэтому: прочитать связь → взять рейсы по возрастанию `id` → **перечитать** связь уже под
+ * блокировкой → разошлась, начать заново. Попыток ограниченное число: набор, изменившийся дважды
+ * подряд, означает, что план пересобирают прямо сейчас, и третий заход услышал бы то же самое —
+ * честнее 409 словами, чем цикл, который под непрерывным перекладыванием не кончится.
+ *
+ * Отпущенных блокировок между попытками не бывает — они живут до конца транзакции, — поэтому
+ * повторный заход добирает только новые рейсы. Это и есть цена приёма: заявку, которую
+ * перекладывают в третий раз, портал не догоняет, а останавливает.
+ */
+async function lockLinkedRoutes<T>(
+  tx: Tx,
+  link: () => Promise<{ routeIds: readonly string[]; value: T }>,
+): Promise<{ locked: Map<string, RouteRow>; value: T }> {
+  const sameIds = (a: readonly string[], b: readonly string[]): boolean =>
+    a.length === b.length && a.every((id, index) => id === b[index]);
+  const idsOf = (ids: readonly string[]): string[] => [...new Set(ids)].sort();
+
+  for (let attempt = 0; attempt < LINK_LOCK_ATTEMPTS; attempt += 1) {
+    const before = await link();
+    const locked = await lockRouteIds(tx, before.routeIds);
+    const after = await link();
+    if (sameIds(idsOf(before.routeIds), idsOf(after.routeIds))) {
+      // Значение возвращается перечитанное: связь под блокировкой и есть настоящая, а первое
+      // чтение было только догадкой о том, какие строки брать.
+      return { locked, value: after.value };
+    }
+  }
+  throw err.conflict('Маршруты заявки менялись, пока мы их брали, — повторите попытку');
+}
+
+/**
+ * Строка заявки под `FOR UPDATE` — и только **после** её рейсов (Р17).
+ *
+ * Живёт рядом с блокировками рейсов, а не в каждой ручке: канонический порядок держится не тем,
+ * что где-то написан, а тем, что обе его половины берут из одного места. Разложенные по дверям
+ * `SELECT … FOR UPDATE` расходятся с ним при первой же правке — так и вышло у возврата заявки в
+ * «Новую», бравшего заявку раньше рейса ([ADR 0050](../../../../docs/adr/0050-vehicle-routes.md)
+ * п. 12).
+ *
+ * Взятая строка запирает и состав: положить заявку в рейс и вынуть её оттуда нельзя, не взяв эту
+ * строку, — значит набор рейсов, добытый шагом раньше, до конца транзакции остаётся тем же.
+ *
+ * Снимок режима отдаётся вызывающему: он читается той же строкой, и второй запрос за ним прочитал
+ * бы уже другое значение (Р5).
+ */
+export async function lockRequestRow(
+  tx: Tx,
+  requestId: string,
+): Promise<{ isLinearFrozen: boolean | null }> {
+  const [row] = await tx
+    .select({ isLinearFrozen: vehicleRequests.isLinearFrozen })
+    .from(vehicleRequests)
+    .where(eq(vehicleRequests.id, requestId))
+    .for('update', { of: vehicleRequests });
+  if (!row) throw err.notFound('Заявка не найдена');
+  return row;
 }
 
 /** Версия рейса — оптимистическая блокировка: разошлась, значит рейс уже пересобрали. */
@@ -313,6 +396,37 @@ export async function legacyWaybillOf(reader: Reader, requestId: string): Promis
 
 // ── Состав рейса ──
 
+/**
+ * Условие join'а «первая живая ездка заявки» (план `docs/route-trips-plan.md`, Р13а; этап 2).
+ *
+ * Адреса, количество и контакты уехали с заявки на ездку (Р2), а места, которые показывают заявку
+ * ОДНОЙ парой адресов, никуда не делись: строка состава рейса, строка сводки, задание водителю в
+ * письме и в кабинете. Пока таких мест больше одного, ответ у них обязан быть один и тот же —
+ * иначе карточка маршрута назовёт один адрес, а письмо второй.
+ *
+ * Бланка среди них больше нет: с этапом 5 задание печатается строками — ездками и линейными днями
+ * в порядке объезда (`waybillTaskRows`, Р11), — и первая ездка перестала быть ответом на «что
+ * напечатать». Мост держится ради оставшихся мест и уйдёт вместе с ними: карточка заявки получит
+ * список ездок (этап 6), задание водителю — точки (этап 7). Поэтому правило и живёт здесь, рядом с
+ * составом рейса, а не заводит собственный сервис.
+ *
+ * Первая живая — наименьший `num` среди неудалённых (Р13а: мягко удалённая ездка не печатается и
+ * не показывается, но номер её не переиспользуется, поэтому «первая» это минимум, а не единица).
+ * Пока заявка ровно одноездочная (бэкфил 1:1, Р24), это в точности прежнее поле заявки.
+ *
+ * Коррелированный подзапрос, а не `DISTINCT ON`: условие подставляется в уже существующие запросы
+ * (состав, сводка, задание водителю) обычным `leftJoin`, ничего в них не переписывая. Минимум
+ * берётся по уникальному `(request_id, num)` — своего индекса ему не нужно.
+ */
+export const firstLiveTripJoin = and(
+  eq(vehicleRequestTrips.requestId, vehicleRequests.id),
+  isNull(vehicleRequestTrips.deletedAt),
+  sql`${vehicleRequestTrips.num} = (
+    SELECT min(first_trip.num) FROM ${vehicleRequestTrips} first_trip
+    WHERE first_trip.request_id = ${vehicleRequests.id} AND first_trip.deleted_at IS NULL
+  )`,
+);
+
 /** Заявки рейсов пачкой, в порядке строк задания. */
 export async function requestsByRoute(
   reader: Reader,
@@ -330,14 +444,24 @@ export async function requestsByRoute(
       workDate: vehicleRouteRequests.workDate,
       num: vehicleRequests.num,
       status: vehicleRequests.status,
+      // Заказчик — объектом затрат (Р25): решает идентификатор, а не заполненность имени, поэтому
+      // из обеих пар выбираются и id, и код, и наименование.
+      objectId: vehicleRequests.objectId,
+      objectCode: constructionObjects.code,
       objectName: constructionObjects.name,
+      departmentId: vehicleRequests.departmentId,
+      departmentCode: departments.code,
       departmentName: departments.name,
-      loadingLocation: freightTransportRequestDetails.loadingLocation,
-      unloadingLocation: freightTransportRequestDetails.unloadingLocation,
+      // Адреса и количество — первой живой ездки (`firstLiveTripJoin`): у строки состава графы под
+      // заявку одни, и заявку с двумя ездками она покажет первой из них, пока карточка не научится
+      // списку (этап 7).
+      tripFrom: vehicleRequestTrips.fromLocation,
+      tripTo: vehicleRequestTrips.toLocation,
+      // Время подачи осталось у заявки (Р3): им считается день рейса и по нему идут фильтры.
       scheduledAt: freightTransportRequestDetails.scheduledAt,
       timeUnspecified: freightTransportRequestDetails.scheduledTimeUnspecified,
-      volumeM3: freightTransportRequestDetails.volumeM3,
-      weightTons: freightTransportRequestDetails.weightTons,
+      volumeM3: vehicleRequestTrips.volumeM3,
+      weightTons: vehicleRequestTrips.weightTons,
     })
     .from(vehicleRouteRequests)
     .innerJoin(vehicleRequests, eq(vehicleRequests.id, vehicleRouteRequests.requestId))
@@ -348,6 +472,7 @@ export async function requestsByRoute(
       freightTransportRequestDetails,
       eq(freightTransportRequestDetails.requestId, vehicleRequests.id),
     )
+    .leftJoin(vehicleRequestTrips, firstLiveTripJoin)
     .where(inArray(vehicleRouteRequests.routeId, routeIds))
     .orderBy(asc(vehicleRouteRequests.position));
 
@@ -361,11 +486,23 @@ export async function requestsByRoute(
       status: row.status,
       customerName: requestCustomerName(row),
       // Погрузка, разгрузка и груз есть только у грузоперевозки: у линейного дня вместо них
-      // заказчик и сам день — деталей грузового рейса у заказа на объект не существует.
-      loadingLocation: row.loadingLocation ?? '',
-      unloadingLocation: row.unloadingLocation ?? '',
+      // заказчик и сам день — ездок у заказа на объект не существует, и join отдаёт NULL.
+      loadingLocation: row.tripFrom ?? '',
+      unloadingLocation: row.tripTo ?? '',
       scheduledAt: (row.scheduledAt ?? new Date()).toISOString(),
       scheduledTimeUnspecified: row.timeUnspecified ?? false,
+      /*
+       * Подпись груза — тем же правилом, которым он печатается в бланке (`routeCargoLabel`), и
+       * количество идёт в неё **строкой из базы**, как шло до ездок. Обёртка `tripCargoLabel`
+       * здесь не годится: её аргумент — количество ездки в DTO (`number`), а `numeric(12,3)`
+       * приходит из базы как «12.000», и приведение к числу молча превратило бы «12.000 м³»
+       * карточки в «12 м³». Правило от этого не раздваивается — обёртка и есть вызов
+       * `routeCargoLabel`, разница только в форме аргумента.
+       *
+       * Итог по заявке (`requestCargoTotal`) здесь тоже не считается, и это не экономия: адреса в
+       * строке — первой ездки, и «60 м³» рядом с парой адресов, по которой едет 12, было бы
+       * враньём. Заявка целиком показывается в своей карточке (этап 6), где есть и список ездок.
+       */
       cargoLabel: routeCargoLabel(row.volumeM3, row.weightTons),
     });
     map.set(row.routeId, list);
@@ -388,7 +525,13 @@ export async function sourceRequestsByRoute(
       requestId: vehicleRequests.id,
       num: vehicleRequests.num,
       status: vehicleRequests.status,
+      // Заказчик — объектом затрат (Р25): ветвление идёт по идентификатору, поэтому в выборке обе
+      // пары целиком.
+      objectId: vehicleRequests.objectId,
+      objectCode: constructionObjects.code,
       objectName: constructionObjects.name,
+      departmentId: vehicleRequests.departmentId,
+      departmentCode: departments.code,
       departmentName: departments.name,
     })
     .from(vehicleRequests)
@@ -538,12 +681,18 @@ export async function compactRoutePositions(tx: Tx, routeId: string): Promise<vo
 }
 
 /**
- * Вынимает заявку из рейса и уплотняет талоны; `null` — её там и не было.
+ * Вынимает заявку из рейса, уплотняет талоны и убирает опустевшие точки; `null` — её там и не
+ * было.
  *
  * Строка ищется парой «рейс + заявка», и второго ответа здесь не бывает даже у линейного заказа:
  * первичный ключ состава — та же пара, а значит в одном рейсе заявка стоит ровно одной строкой.
  * День возвращается ради вызывающего: снятая строка это либо грузовая заявка, либо день линейного
  * заказа, и в журнале эти два события читаются по-разному.
+ *
+ * Роли снимаются каскадом (`route_point_trips_composition_fk`), а опустевшие точки доудаляет
+ * сервис точек (Р13) — здесь, а не в каждой из дверей: заявка выбывает из состава пятью разными
+ * путями (изъятие руками, отмена, откат в «Новую», переезд на другую машину, перенос коррекцией), и
+ * забытая чистка в любой из них оставила бы в порядке объезда остановку без задания.
  */
 export async function detachRequest(
   tx: Tx,
@@ -558,7 +707,71 @@ export async function detachRequest(
     .returning({ workDate: vehicleRouteRequests.workDate });
   if (!removed) return null;
   await compactRoutePositions(tx, routeId);
+  await cleanupRoutePoints(tx, routeId);
   return { workDate: removed.workDate };
+}
+
+/**
+ * Перегоны заявки — те же её рейсы, только привязанные колонкой, а не составом.
+ *
+ * Отдельным запросом, потому что связь у них другая (`source_request_id`, миграция 0082), а
+ * блокировать их приходится в одном порядке с рейсами состава: смена статуса берёт и те, и другие
+ * (`detachOnStatus`), и два прохода по двум подмножествам одной таблицы — это два порядка на одних
+ * строках, ровно то, что Р17 запрещает.
+ */
+async function relocationRouteIds(tx: Tx, requestId: string): Promise<string[]> {
+  const rows = await tx
+    .select({ id: vehicleRoutes.id })
+    .from(vehicleRoutes)
+    .where(eq(vehicleRoutes.sourceRequestId, requestId));
+  return rows.map((row) => row.id);
+}
+
+/**
+ * Все рейсы заявки под блокировкой — читая связь заново уже под ней (Р17, `lockLinkedRoutes`).
+ *
+ * Берутся **все**: строки состава (у грузоперевозки одна, у линейного заказа по одной на день) и
+ * перегоны, а сверх них — рейс, названный в теле запроса (`extraRouteIds`): перевод в работу и
+ * смена машины кладут заявку в готовый маршрут, и он обязан быть взят тем же проходом, иначе две
+ * встречные перестановки «A→B» и «B→A» возьмут одну пару в разных порядках.
+ *
+ * Возвращаются только рейсы **состава** и в порядке возрастания `id`: правки, которые их зовут,
+ * работают со строками задания, а перегону задание собирает своя заявка-основание. Порядок талонов
+ * здесь чужой — два порядка на одних строках это клинч на первой же встречной правке.
+ */
+export async function lockRoutesOfRequest(
+  tx: Tx,
+  requestId: string,
+  extraRouteIds: readonly string[] = [],
+): Promise<RouteRow[]> {
+  const { locked, value } = await lockLinkedRoutes(tx, async () => {
+    const composition = (await routesOfRequest(tx, requestId)).map((row) => row.routeId);
+    const relocations = await relocationRouteIds(tx, requestId);
+    return {
+      routeIds: [...composition, ...relocations, ...extraRouteIds],
+      value: [...composition].sort(),
+    };
+  });
+  return value.map((routeId) => locked.get(routeId)!);
+}
+
+/**
+ * Рейс одного дня заявки под блокировкой — со сверкой связи под ней (Р17, `lockLinkedRoutes`).
+ *
+ * Тем же приёмом, но по одной строке: снятие дня с рейса знает свой день, а не заявку целиком, и
+ * запирать ради него все тридцать дней месячного заказа незачем. `null` — этот день не стоит ни в
+ * одном рейсе, и это законный ответ: строка могла исчезнуть, пока её читали.
+ */
+export async function lockRouteOfRequestDay(
+  tx: Tx,
+  requestId: string,
+  workDate: string,
+): Promise<RouteRow | null> {
+  const { locked, value } = await lockLinkedRoutes(tx, async () => {
+    const row = await routeOfRequestDay(tx, requestId, workDate);
+    return { routeIds: row ? [row.routeId] : [], value: row };
+  });
+  return value ? (locked.get(value.routeId) ?? null) : null;
 }
 
 /**
@@ -820,6 +1033,10 @@ export async function dropPlannedRelocations(tx: Tx, requestId: string): Promise
     .select({ id: vehicleRoutes.id, num: vehicleRoutes.num })
     .from(vehicleRoutes)
     .where(eq(vehicleRoutes.sourceRequestId, requestId))
+    // Порядок захвата — по возрастанию `id`, как и у всех рейсов модуля (Р17): перегонов у заявки
+    // два (доставка и вывоз), и оставленный планировщику порядок был бы вторым порядком на тех же
+    // строках. `LockRows` в плане стоит над `Sort`, поэтому строки берутся именно в этом порядке.
+    .orderBy(asc(vehicleRoutes.id))
     .for('update');
 
   const dropped: string[] = [];

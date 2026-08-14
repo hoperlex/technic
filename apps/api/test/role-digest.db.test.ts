@@ -310,7 +310,7 @@ describe.skipIf(!DB_URL)('ролевая сводка: получатели и �
       })
       .returning({ id: schema.persons.id });
 
-    /** Заявка на грузоперевозку: письму нужны и она сама, и её detail-строка с адресами. */
+    /** Заявка на грузоперевозку: письму нужны и она сама, и её ездка с адресами. */
     async function makeRequest(input: {
       objectId?: string;
       departmentId?: string;
@@ -331,9 +331,16 @@ describe.skipIf(!DB_URL)('ролевая сводка: получатели и �
       await db.insert(schema.freightTransportRequestDetails).values({
         requestId: request!.id,
         scheduledAt: new Date(`${DAY}T05:30:00Z`),
+      });
+      // Адреса и количество — у ездки, а не у заявки (план `docs/route-trips-plan.md`, Р2): у
+      // заявки с ездками `A→B` и `A→C` «адрес разгрузки заявки» не существует. Одна ездка — то
+      // же, чем была пара полей детали.
+      await db.insert(schema.vehicleRequestTrips).values({
+        requestId: request!.id,
+        num: 1,
+        fromLocation: input.loading,
+        toLocation: 'г Москва, ул Разгрузочная, д 9',
         volumeM3: '10.000',
-        loadingLocation: input.loading,
-        unloadingLocation: 'г Москва, ул Разгрузочная, д 9',
       });
       return { id: request!.id, number: formatVehicleRequestNumber(request!.num) };
     }

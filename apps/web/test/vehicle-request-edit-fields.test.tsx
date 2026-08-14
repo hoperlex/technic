@@ -91,16 +91,28 @@ const FREIGHT = {
   requestType: 'freight_transport',
   scheduledAt: '2026-08-10T09:00:00.000Z',
   scheduledTimeUnspecified: false,
-  volumeM3: null,
-  weightTons: 14,
-  loadingLocation: 'Москва, ул. Ленина, 1',
-  unloadingLocation: 'Химки, ул. Победы, 10',
-  loadingAddress: { source: 'dadata', fiasId: 'a', fiasLevel: '8', qc: 0, lat: 55, lon: 37 },
-  unloadingAddress: { source: 'dadata', fiasId: 'b', fiasLevel: '8', qc: 0, lat: 55, lon: 37 },
-  loadingResponsibleName: 'Сидоров С. С.',
-  loadingResponsiblePhone: '+7 926 000-00-02',
-  unloadingResponsibleName: 'Петров П. П.',
-  unloadingResponsiblePhone: '+7 926 000-00-03',
+  // Пара адресов, количество и контакты уехали с заявки на ездку (Р2). У правимой заявки она
+  // одна — форма показывает её поля ровно там же, где показывала поля заявки.
+  trips: [
+    {
+      id: 'vrt-602',
+      num: 1,
+      displayNumber: 'ТС-602/1',
+      fromLocation: 'Москва, ул. Ленина, 1',
+      toLocation: 'Химки, ул. Победы, 10',
+      fromAddress: { source: 'resolved', fiasId: 'a', fiasLevel: 8, geoLat: 55, geoLon: 37 },
+      toAddress: { source: 'resolved', fiasId: 'b', fiasLevel: 8, geoLat: 55, geoLon: 37 },
+      volumeM3: null,
+      weightTons: 14,
+      fromResponsibleName: 'Сидоров С. С.',
+      fromResponsiblePhone: '+7 926 000-00-02',
+      toResponsibleName: 'Петров П. П.',
+      toResponsiblePhone: '+7 926 000-00-03',
+      scheduledAt: null,
+      comment: '',
+      placement: null,
+    },
+  ],
 } as unknown as VehicleRequestDto;
 
 function renderTab() {

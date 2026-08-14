@@ -24,9 +24,18 @@ import type { db as AppDb } from '../src/db/client';
  * ответственный. Ни на моках, ни на чистых функциях такая ошибка не воспроизводится: разъезжаются
  * код и база.
  *
- * Дни кладутся в состав рейса прямым `INSERT`: дверь со стороны карточки заявки (ADR 0100 §8)
- * заводится соседней частью работы, а печать дня от того, чьими руками день туда попал, не
- * зависит — снимок читает состав, а не действие.
+ * **Снимок читает точки, а не состав** (план `docs/route-trips-plan.md`, Р11б). Прежняя редакция
+ * этого файла утверждала обратное и клала строки в рейс одним `INSERT` в `vehicle_route_requests` —
+ * с переездом на ездки и точки это стало неправдой ровно того же рода, какую тест и заводился
+ * ловить: строка состава без своей точки не печатается никак, а выписка отвечает блокирующим
+ * `rows_unplaced`. Поэтому каждая строка получает здесь свою точку теми же функциями, какими её
+ * ставят рабочие ручки: линейный день — `placeLinearDay` (одна точка `work`, Р5а), грузоперевозка
+ * — `placeRequestTrips` (погрузка и разгрузка на ездку, Р8).
+ *
+ * Состав по-прежнему заводится прямым `INSERT`: дверь со стороны карточки заявки (ADR 0100 §8)
+ * заводится соседней частью работы, а печать от того, чьими руками строка туда попала, не зависит.
+ * Раскладка же — не «действие пользователя», а часть самого состояния маршрута, и подменять её
+ * выдумкой значило бы печатать бумагу по данным, которых сервер не собрал бы.
  *
  * Запуск (база пустая либо уже промигрированная — миграции тест накатывает сам):
  *
@@ -81,6 +90,9 @@ interface Ctx {
   app: Awaited<ReturnType<typeof buildApp>>;
   db: typeof AppDb;
   closeDb: () => Promise<void>;
+  /** Раскладка строк состава точками: ею живёт бумага (Р11б), и подменять её тесту нечем. */
+  placeLinearDay: (typeof import('../src/services/route-points'))['placeLinearDay'];
+  placeRequestTrips: (typeof import('../src/services/route-points'))['placeRequestTrips'];
   auth: { authorization: string };
   /** Своя грузовая машина с бланком 4-П: рейс заводится только на собственную технику. */
   vehicleId: string;
@@ -304,17 +316,24 @@ async function freightRequest(): Promise<string> {
       vehicleTypeId: ctx.freightTypeId,
       // Подача — сегодня в рабочем окне: рейс собран на сегодня, а задним числом заявку не завести.
       scheduledAt: `${ctx.routeDate}T10:00:00+03:00`,
-      volumeM3: 12,
-      // Оба конца маршрута — свои площадки из справочника: сервер сверяет адрес заявки с записью,
+      // Адреса, количество и контакты — у ездки, а не у заявки (Р2): у заявки с ездками `A→B` и
+      // `A→C` «адрес разгрузки заявки» не существует. Одна ездка — то же, чем была пара полей.
+      //
+      // Оба конца маршрута — свои площадки из справочника: сервер сверяет адрес ездки с записью,
       // на которую та ссылается, и выдуманной строки при `source: 'object'` не примет.
-      loadingLocation: ctx.objectB.address,
-      loadingAddress: { source: 'object', refId: ctx.objectB.id },
-      unloadingLocation: ctx.objectA.address,
-      unloadingAddress: { source: 'object', refId: ctx.objectA.id },
-      loadingResponsibleName: LOADING.name,
-      loadingResponsiblePhone: LOADING.phone,
-      unloadingResponsibleName: UNLOADING.name,
-      unloadingResponsiblePhone: UNLOADING.phone,
+      trips: [
+        {
+          fromLocation: ctx.objectB.address,
+          toLocation: ctx.objectA.address,
+          fromAddress: { source: 'object', refId: ctx.objectB.id },
+          toAddress: { source: 'object', refId: ctx.objectA.id },
+          volumeM3: 12,
+          fromResponsibleName: LOADING.name,
+          fromResponsiblePhone: LOADING.phone,
+          toResponsibleName: UNLOADING.name,
+          toResponsiblePhone: UNLOADING.phone,
+        },
+      ],
       comment: 'Песок сеяный',
     },
   });
@@ -350,9 +369,14 @@ async function createRoute(): Promise<string> {
 }
 
 /**
- * Строка состава рейса. `work_date` заполнен — день линейного заказа, NULL — грузоперевозка, как
- * было (миграция 0127). День равен дню рейса физически: составной внешний ключ
- * `(route_id, work_date) → vehicle_routes (id, route_date)` другой пары не пропустит.
+ * Строка состава рейса **вместе с её раскладкой**. `work_date` заполнен — день линейного заказа,
+ * NULL — грузоперевозка, как было (миграция 0127). День равен дню рейса физически: составной
+ * внешний ключ `(route_id, work_date) → vehicle_routes (id, route_date)` другой пары не пропустит.
+ *
+ * Точки ставятся тут же и теми же функциями, что и у рабочих ручек: задание печатается из точек
+ * (Р11б), и строка состава без точки не печатается вовсе — выписка отвечает `rows_unplaced`.
+ * Одной транзакцией, потому что `placeLinearDay` и `placeRequestTrips` её и требуют: раскладка
+ * читает уже вставленную строку состава (роль заводится только там, где заявка в составе, §5.3).
  */
 async function putRow(
   routeId: string,
@@ -360,9 +384,13 @@ async function putRow(
   position: number,
   workDate: string | null,
 ): Promise<void> {
-  await ctx.db.execute(sql`
-    INSERT INTO vehicle_route_requests (route_id, request_id, position, work_date)
-    VALUES (${routeId}, ${requestId}, ${position}, ${workDate})`);
+  await ctx.db.transaction(async (tx) => {
+    await tx.execute(sql`
+      INSERT INTO vehicle_route_requests (route_id, request_id, position, work_date)
+      VALUES (${routeId}, ${requestId}, ${position}, ${workDate})`);
+    if (workDate === null) await ctx.placeRequestTrips(tx, routeId, requestId);
+    else await ctx.placeLinearDay(tx, routeId, requestId, workDate);
+  });
 }
 
 /** День линейного заказа: он ходит в рейс только своей датой — датой самого рейса. */
@@ -420,6 +448,7 @@ describe.skipIf(!DB_URL)('задание 4-П для дня линейного �
 
     const { buildApp } = await import('../src/app');
     const { db, closeDb } = await import('../src/db/client');
+    const { placeLinearDay, placeRequestTrips } = await import('../src/services/route-points');
     const app = await buildApp();
 
     const login = await app.inject({
@@ -450,6 +479,8 @@ describe.skipIf(!DB_URL)('задание 4-П для дня линейного �
       app,
       db,
       closeDb,
+      placeLinearDay,
+      placeRequestTrips,
       auth: { authorization: `Bearer ${login.json().accessToken}` },
       vehicleId: vehicle.id,
       personId: await seedDriver(),

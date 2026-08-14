@@ -52,17 +52,35 @@ const FREIGHT: FreightTransportRequestDto = {
   vehicleTypeName: 'Тентованный',
   scheduledAt: '2026-08-01T07:00:00.000Z',
   scheduledTimeUnspecified: false,
-  volumeM3: 20,
-  weightTons: null,
-  loadingLocation: 'г Москва, ул Тверская, д 1',
-  unloadingLocation: 'г Москва, ул Арбат, д 2',
-  loadingAddress: { source: 'resolved', fiasId: 'a1' },
-  unloadingAddress: { source: 'resolved', fiasId: 'a2' },
-  loadingResponsibleName: 'Сидоров С. С.',
-  loadingResponsiblePhone: '+7 926 000-00-02',
-  unloadingResponsibleName: 'Кузнецов К. К.',
-  unloadingResponsiblePhone: '+7 926 000-00-03',
+  // Адреса, количество и контакты — у ездки (Р2). Ездки сопоставляются по `id`, а не по позиции,
+  // поэтому он у фикстуры настоящий.
+  trips: [
+    {
+      id: 'vrt-1',
+      num: 1,
+      displayNumber: 'ТС-43/1',
+      fromLocation: 'г Москва, ул Тверская, д 1',
+      toLocation: 'г Москва, ул Арбат, д 2',
+      fromAddress: { source: 'resolved', fiasId: 'a1' },
+      toAddress: { source: 'resolved', fiasId: 'a2' },
+      volumeM3: 20,
+      weightTons: null,
+      fromResponsibleName: 'Сидоров С. С.',
+      fromResponsiblePhone: '+7 926 000-00-02',
+      toResponsibleName: 'Кузнецов К. К.',
+      toResponsiblePhone: '+7 926 000-00-03',
+      scheduledAt: null,
+      comment: '',
+      placement: null,
+    },
+  ],
 };
+
+/** Заявка с изменённой единственной ездкой: правки теперь ложатся на строку, а не на заявку. */
+const freightWithTrip = (over: Partial<FreightTransportRequestDto['trips'][number]>) => ({
+  ...FREIGHT,
+  trips: [{ ...FREIGHT.trips[0]!, ...over }],
+});
 
 const file = (id: string, filename: string) => ({
   id,
@@ -162,22 +180,33 @@ describe('дифф правки заявки на технику', () => {
     ).toContainEqual({ field: 'scheduledAt', from: '01.08.2026 10:00', to: '01.08.2026' });
   });
 
-  it('объём, масса и адреса грузоперевозки', () => {
-    const changes = diffVehicleRequests(FREIGHT, {
-      ...FREIGHT,
-      volumeM3: null,
-      weightTons: 12,
-      unloadingLocation: 'г Москва, ул Полянка, д 3',
-    });
-    expect(changes).toContainEqual({ field: 'volumeM3', from: '20 м³', to: '—' });
-    expect(changes).toContainEqual({ field: 'weightTons', from: '—', to: '12 т' });
-    expect(changes).toContainEqual({
-      field: 'unloadingLocation',
-      from: 'г Москва, ул Арбат, д 2',
-      to: 'г Москва, ул Полянка, д 3',
-    });
+  /**
+   * Правка ездки пишется своими ключами (§5.7), а номер ездки живёт **в значении**, а не в ключе:
+   * словарь подписей фиксирован, и ключ вида `trip.2.volume` подписи бы не нашёл. Старые ключи
+   * (`volumeM3`, `unloadingLocation`) в новых событиях не появляются — они остаются в словаре
+   * ради событий, записанных до этого релиза.
+   */
+  it('объём, масса и адреса ездки', () => {
+    const changes = diffVehicleRequests(
+      FREIGHT,
+      freightWithTrip({
+        volumeM3: null,
+        weightTons: 12,
+        toLocation: 'г Москва, ул Полянка, д 3',
+      }),
+    );
+    const fields = changes.map((c) => c.field);
+    expect(fields).toContain('trip.volume');
+    expect(fields).toContain('trip.weight');
+    expect(fields).toContain('trip.to');
+    // Номер ездки — в значении обеих сторон.
+    expect(changes.find((c) => c.field === 'trip.to')?.to).toContain('1 · ');
+    expect(changes.find((c) => c.field === 'trip.to')?.to).toContain('Полянка');
     // Адрес погрузки не трогали — события о нём быть не должно.
-    expect(changes.some((c) => c.field === 'loadingLocation')).toBe(false);
+    expect(fields).not.toContain('trip.from');
+    // Старых ключей в новых событиях нет.
+    expect(fields).not.toContain('volumeM3');
+    expect(fields).not.toContain('unloadingLocation');
   });
 
   it('длинный комментарий обрезается', () => {
@@ -214,18 +243,13 @@ describe('дифф переоформления заявки', () => {
     // Срок работ ушёл в прочерк — иначе по истории не понять, куда он делся.
     expect(changes).toContainEqual({ field: 'dateFrom', from: '01.08.2026', to: '—' });
     expect(changes).toContainEqual({ field: 'responsibleName', from: 'Петров П. П.', to: '—' });
-    // Поля грузоперевозки появились из прочерка.
-    expect(changes).toContainEqual({ field: 'volumeM3', from: '—', to: '20 м³' });
-    expect(changes).toContainEqual({
-      field: 'loadingLocation',
-      from: '—',
-      to: 'г Москва, ул Тверская, д 1',
-    });
-    expect(changes).toContainEqual({
-      field: 'unloadingResponsibleName',
-      from: '—',
-      to: 'Кузнецов К. К.',
-    });
+    // Ездка грузоперевозки появилась там, где её не было: переоформление в спецтехнику мягко
+    // удаляет ездки, обратное — заводит их заново, и история обязана назвать обе стороны.
+    const added = changes.find((c) => c.field === 'tripAdded');
+    expect(added?.from).toBe(null);
+    expect(added?.to).toContain('1 · ');
+    expect(added?.to).toContain('г Москва, ул Тверская, д 1');
+    expect(added?.to).toContain('20 м³');
     expect(changes.some((c) => c.field === 'vehicleType')).toBe(false);
   });
 

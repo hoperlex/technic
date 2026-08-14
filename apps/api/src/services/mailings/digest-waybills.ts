@@ -23,12 +23,12 @@ import { config } from '../../config';
 import { db } from '../../db/client';
 import {
   constructionObjects,
-  freightTransportRequestDetails,
   persons,
   specialEquipmentRequestDetails,
   vehicleCategories,
   vehicleModels,
   vehicleRequests,
+  vehicleRequestTrips,
   vehicleRouteRequests,
   vehicleRoutes,
   vehicles,
@@ -36,8 +36,9 @@ import {
   waybills,
   waybillSeries,
 } from '../../db/schema';
+import { requestIsLinearSql } from '../../db/linear-mode';
 import { assertOwnOrigin, type MailTableCell } from '../mail-templates';
-import { loadRouteDtos, routeQuery } from '../vehicle-routes';
+import { firstLiveTripJoin, loadRouteDtos, routeQuery } from '../vehicle-routes';
 import { type DigestContext, limitRows, vehicleRequestScope } from './digest-context';
 
 /**
@@ -136,7 +137,13 @@ function timeOf(request: VehicleRouteRequestDto): string {
   return formatMoscowDateTime(new Date(request.scheduledAt)).slice(-5);
 }
 
-/** Живые заявки окна вместе с тем, чего нет в составе рейса: комментарий и контакты на концах. */
+/**
+ * Живые заявки окна вместе с тем, чего нет в составе рейса: комментарий и контакты на концах.
+ *
+ * Контакты пришли с **ездки** (Р2, миграция 0136) — у заявки их больше нет. Берётся первая живая,
+ * той же парой граф, что и адреса в составе рейса (`requestsByRoute`): строка письма показывает
+ * одну перевозку, и контакт в ней обязан относиться к тому адресу, который в ней же напечатан.
+ */
 interface RequestExtra {
   comment: string;
   loadingName: string;
@@ -164,16 +171,13 @@ async function visibleRequests(
     .select({
       id: vehicleRequests.id,
       comment: vehicleRequests.comment,
-      loadingName: freightTransportRequestDetails.loadingResponsibleName,
-      loadingPhone: freightTransportRequestDetails.loadingResponsiblePhone,
-      unloadingName: freightTransportRequestDetails.unloadingResponsibleName,
-      unloadingPhone: freightTransportRequestDetails.unloadingResponsiblePhone,
+      loadingName: vehicleRequestTrips.fromResponsibleName,
+      loadingPhone: vehicleRequestTrips.fromResponsiblePhone,
+      unloadingName: vehicleRequestTrips.toResponsibleName,
+      unloadingPhone: vehicleRequestTrips.toResponsiblePhone,
     })
     .from(vehicleRequests)
-    .leftJoin(
-      freightTransportRequestDetails,
-      eq(freightTransportRequestDetails.requestId, vehicleRequests.id),
-    )
+    .leftJoin(vehicleRequestTrips, firstLiveTripJoin)
     .where(
       and(
         inArray(vehicleRequests.id, requestIds),
@@ -378,6 +382,32 @@ function machineCell(v: {
 }
 
 /**
+ * Заказчик строки «Техники на объектах» — объектом затрат (Р25), то есть по идентификатору.
+ *
+ * Пара отдела здесь пуста не по недосмотру и не ради компиляции: отдела у этих строк не бывает
+ * вовсе. CHECK `vehicle_requests_department_freight_check` разрешает заказчика-отдел только
+ * грузоперевозке, а в обе половины таблицы приходит заказ техники на объект — недельный лист ЭСМ-2
+ * выписывается только по нему (`waybill-esm2.ts`), а день строки состава (`work_date`) заводится
+ * только у линейного заказа (ADR 0100 §2). Второй CHECK, `vehicle_requests_customer_check`, при
+ * этом гарантирует, что объект у такой заявки заполнен всегда, — поэтому и `leftJoin` на
+ * справочник объектов промахнуться не может.
+ *
+ * Отсюда и отсутствие join'а на отделы: он был бы запросом за строкой, которой не существует.
+ */
+function onsiteCustomerName(r: {
+  objectId: string | null;
+  objectCode: string | null;
+  objectName: string | null;
+}): string {
+  return requestCustomerName({
+    ...r,
+    departmentId: null,
+    departmentCode: null,
+    departmentName: null,
+  });
+}
+
+/**
  * Техника на объектах: недельные листы ЭСМ-2 и дни линейных заказов, попавшие в окно.
  *
  * Два источника, а не один, потому что в портале два способа вести заказ на объект: машина стоит
@@ -424,6 +454,10 @@ async function esm2Rows(ctx: DigestContext): Promise<OnsiteRow[]> {
       requestNum: vehicleRequests.num,
       requestStatus: vehicleRequests.status,
       comment: vehicleRequests.comment,
+      // Объект — идентификатором и кодом наравне с наименованием: заказчика выводит объект затрат
+      // (Р25), а он спрашивает `object_id`, а не заполненность подписи.
+      objectId: vehicleRequests.objectId,
+      objectCode: constructionObjects.code,
       objectName: constructionObjects.name,
       objectAddress: constructionObjects.address,
       responsibleName: specialEquipmentRequestDetails.responsibleName,
@@ -471,7 +505,10 @@ async function esm2Rows(ctx: DigestContext): Promise<OnsiteRow[]> {
         // Он про моточасы недели, а сводка отвечает на вопрос «кто и чем работает в эти дни», и
         // ответ на него уже дали дни; за номером идут в журнал листов или в карточку заявки —
         // ссылка на неё стоит в той же строке.
-        eq(orderedType.isLinear, false),
+        //
+        // Режим спрашивается у заявки, а не у справочника: заявку могло застать переключение
+        // (миграция 0137), и вести её до конца работы полагается прежним режимом.
+        eq(requestIsLinearSql(vehicleRequests.isLinearFrozen, orderedType.isLinear), false),
         vehicleRequestScope(ctx),
       ),
     )
@@ -490,14 +527,11 @@ async function esm2Rows(ctx: DigestContext): Promise<OnsiteRow[]> {
           href: portalLink(waybillPath(waybillDisplayNumber(r.prefix, r.number, r.numberWidth))),
           sub: humanRange(from, to),
         }),
-        cell(
-          `${formatVehicleRequestNumber(r.requestNum)} · ${requestCustomerName({ objectName: r.objectName, departmentName: null })}`,
-          {
-            href: portalLink(
-              vehicleRequestPath({ id: r.requestId, status: r.requestStatus, deleted: false }),
-            ),
-          },
-        ),
+        cell(`${formatVehicleRequestNumber(r.requestNum)} · ${onsiteCustomerName(r)}`, {
+          href: portalLink(
+            vehicleRequestPath({ id: r.requestId, status: r.requestStatus, deleted: false }),
+          ),
+        }),
         machineCell(r),
         personCell(r.driverName, r.driverPhone, 'машинист не назначен'),
         cell(r.objectAddress ?? ''),
@@ -536,6 +570,9 @@ async function linearDayRows(ctx: DigestContext): Promise<OnsiteRow[]> {
       requestNum: vehicleRequests.num,
       requestStatus: vehicleRequests.status,
       comment: vehicleRequests.comment,
+      // Объект — идентификатором и кодом наравне с наименованием (Р25), как и у недельных листов.
+      objectId: vehicleRequests.objectId,
+      objectCode: constructionObjects.code,
       objectName: constructionObjects.name,
       objectAddress: constructionObjects.address,
       responsibleName: specialEquipmentRequestDetails.responsibleName,
@@ -630,18 +667,15 @@ async function linearDayRows(ctx: DigestContext): Promise<OnsiteRow[]> {
       from: first.workDate!,
       cells: [
         cell(documents.join(', '), { href, sub: humanDays(days.map((day) => day.workDate!)) }),
-        cell(
-          `${formatVehicleRequestNumber(first.requestNum)} · ${requestCustomerName({ objectName: first.objectName, departmentName: null })}`,
-          {
-            href: portalLink(
-              vehicleRequestPath({
-                id: first.requestId,
-                status: first.requestStatus,
-                deleted: false,
-              }),
-            ),
-          },
-        ),
+        cell(`${formatVehicleRequestNumber(first.requestNum)} · ${onsiteCustomerName(first)}`, {
+          href: portalLink(
+            vehicleRequestPath({
+              id: first.requestId,
+              status: first.requestStatus,
+              deleted: false,
+            }),
+          ),
+        }),
         machineCell(first),
         driversCell(days),
         cell(first.objectAddress ?? ''),

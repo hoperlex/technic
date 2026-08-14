@@ -217,15 +217,21 @@ async function freightInProgress(): Promise<{ id: string; routeId: string; versi
       objectId: ctx.objectId,
       vehicleTypeId: ctx.plainTypeId,
       scheduledAt: `${ctx.today}T10:00:00+03:00`,
-      volumeM3: 12,
-      loadingLocation: ctx.objectAddress,
-      loadingAddress: { source: 'object', refId: ctx.objectId },
-      unloadingLocation: ctx.objectAddress,
-      unloadingAddress: { source: 'object', refId: ctx.objectId },
-      loadingResponsibleName: LOADING.name,
-      loadingResponsiblePhone: LOADING.phone,
-      unloadingResponsibleName: UNLOADING.name,
-      unloadingResponsiblePhone: UNLOADING.phone,
+      // Адреса, количество и контакты — у ездки, а не у заявки (Р2): у заявки с ездками `A→B` и
+      // `A→C` «адрес разгрузки заявки» не существует. Одна ездка — то же, чем была пара полей.
+      trips: [
+        {
+          fromLocation: ctx.objectAddress,
+          toLocation: ctx.objectAddress,
+          fromAddress: { source: 'object', refId: ctx.objectId },
+          toAddress: { source: 'object', refId: ctx.objectId },
+          volumeM3: 12,
+          fromResponsibleName: LOADING.name,
+          fromResponsiblePhone: LOADING.phone,
+          toResponsibleName: UNLOADING.name,
+          toResponsiblePhone: UNLOADING.phone,
+        },
+      ],
       comment: 'Песок сеяный',
     },
   });

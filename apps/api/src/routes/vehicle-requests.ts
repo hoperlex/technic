@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
@@ -21,9 +22,18 @@ import {
 import { alias, unionAll } from 'drizzle-orm/pg-core';
 import {
   type AddressMeta,
+  ADDRESS_NOT_VERIFIED_MESSAGE,
   type AssignVehicleInput,
   calcVehicleRequestCost,
   can,
+  // Контакт ездки: жёсткая модель спрашивается за **изменившееся** значение (Р2а), и спрашивается
+  // теми же схемами, что при заведении, — иначе форма и правка разошлись бы в границах полей.
+  contactNameSchema,
+  contactPhoneSchema,
+  // Объект затрат (Р25): одна функция на портал и сервер вместо двух десятков мест, разбирающих
+  // пару «объект или отдел» самостоятельно.
+  costTargetOf,
+  verifiedAddressMetaSchema,
   // Коррекция назначения задним числом (ADR 0101, Р8): предикат состояния, который она не
   // снимает, признак операции в теле и текст отказа закрытой заявке.
   ASSIGNMENT_CORRECTION_CLOSED_MESSAGE,
@@ -34,6 +44,7 @@ import {
   canShortenWorkPeriodByEdit,
   changeVehicleAssignmentSchema,
   changeVehicleRequestStatusSchema,
+  type ChangeVehicleRequestStatusInput,
   changeVehicleRequestTypeSchema,
   type ChangeVehicleRequestTypeInput,
   CLOSED_REQUEST_STATUSES,
@@ -48,11 +59,15 @@ import {
   // Недели ЭСМ-2 считаются теми же функциями, что и в самой сверке: правка срока обязана знать,
   // какую бумагу она задевает, до того как её тронет (ADR 0101, Р36).
   esm2Mode,
+  // Аннулируемый лист в предпросмотре отката (§5.4): номер человеку, период — чтобы он узнал
+  // свою неделю.
+  type Esm2CancelPreviewDto,
   type Esm2Period,
   esm2Periods,
   esm2RequestedPeriods,
   type FeedKind,
   type FileDto,
+  type FreightTransportRequestDto,
   type AssignRouteInput,
   canJoinRoute,
   formatVehicleRequestNumber,
@@ -64,6 +79,10 @@ import {
   linearRouteJoinDay,
   planDayBlocker,
   planVehicleRequestDaySchema,
+  // Предпросмотр последствий перехода (§5.4): тело у него то же самое, что у самой смены статуса —
+  // план обязан считаться по тем входам, по которым его потом исполнит боевая ручка.
+  previewVehicleRequestStatusSchema,
+  type VehicleRequestStatusPreviewDto,
   type VehicleRequestDaysDto,
   ROLLBACK_WAYBILL_MESSAGE,
   ROUTE_FROZEN_MESSAGE,
@@ -112,8 +131,14 @@ import {
   transitionRequiresAssignment,
   transitionRequiresCompletion,
   transitionResetsWork,
+  // Ездка в теле правки (Р2а): жёсткая модель остаётся у **новой** строки, а существующая
+  // приходит с послаблениями бэкфила — сверяет её с прежним состоянием сервер.
+  type UpdateRequestTripInput,
   updateVehicleRequestSchema,
   type UpdateVehicleRequestInput,
+  // Своё время ездки — внутри календарного дня заявки (Р18): одна функция на схему и сервер.
+  TRIP_DAY_MESSAGE,
+  tripsOutOfRequestDay,
   type VehicleFeedListDto,
   type VehicleFeedQuery,
   type VehicleFeedRow,
@@ -130,6 +155,7 @@ import {
   type VehicleRequestHistorySummaryDto,
   type VehicleRequestOnSiteQuery,
   type VehicleRequestSummaryDto,
+  type VehicleRequestTripDto,
   type VehicleRequestType,
   type VehicleRequestWeeklyExtensionDto,
   type VehicleRequestWeeklyOriginDto,
@@ -145,8 +171,12 @@ import {
   // второй действующий бланк (Р11) — недельный замок сверки считается тем же ключом.
   weekStartKey,
   weeklyRowsExcludedBy,
+  type RoutePurpose,
 } from '@technic/contracts';
 import { db } from '../db/client';
+// Режим заявки — днями или неделями — читается ровно одним выражением на весь портал: у заявки,
+// застигнутой переключением признака у типа, лежит снимок, и живой справочник ей больше не указ.
+import { requestIsLinear, requestIsLinearSql } from '../db/linear-mode';
 import {
   constructionObjects,
   counterparties,
@@ -161,6 +191,11 @@ import {
   vehicleRequestAssignments,
   vehicleRequestCompletions,
   vehicleRequestShifts,
+  // Ездки заявки (миграция 0136, Р1) и раскладка их по точкам маршрута (Р4, Р5): адреса,
+  // количество и контакты живут здесь, а не в строке деталей грузоперевозки.
+  vehicleRequestTrips,
+  vehicleRoutePoints,
+  vehicleRoutePointTrips,
   // Связь операции коррекции с заявками (ADR 0101, миграция 0129): ею повтор находит заявку,
   // заведённую прежней попыткой той же операции.
   vehicleRequestCorrections,
@@ -251,15 +286,27 @@ import {
   legacyWaybillOf,
   loadRouteDto,
   loadRouteDtos,
+  lockRequestRow,
   lockRoute,
+  lockRouteOfRequestDay,
+  lockRoutePair,
+  lockRoutesOfRequest,
   plannedDaysOfRequest,
   relocationRoutesOfRequest,
   routeOfRequestDay,
   routeQuery,
   routeRequestCount,
-  routesOfRequest,
   routeWaybill,
 } from '../services/vehicle-routes';
+// Точки маршрута (план `docs/route-trips-plan.md`, этап 3): раскладка ездок и дня по остановкам.
+// Заявка зовёт её там, где меняет работу рейса, — при укладке в рейс, правке ездок и постановке
+// дня, — потому что задание листа собирается из точек, а не из строк состава.
+import {
+  assertRoutePlacement,
+  placeLinearDay,
+  placeRequestTrips,
+  syncRequestTripPlacement,
+} from '../services/route-points';
 // Дни линейного заказа (ADR 0100): чтение плана и сверка его с заявкой. Сверка стоит рядом со
 // сверкой листов ЭСМ-2 и зовётся теми же местами — см. `syncLinearRouteDays`.
 import {
@@ -281,6 +328,9 @@ import {
 } from '../services/waybill-issue';
 import {
   auditEsm2Sync,
+  // Тот же вход и тот же план, что у боевой сверки, но без единой записи (§5.4): им предпросмотр
+  // отвечает «что случится», а боевая ручка сверяет, что обещанное ещё верно.
+  buildEsm2SyncPlan,
   // Что коррекция назначения задела бы в прошлом (Р8, Р36): действующие листы заявки и прошедшие
   // недели, у которых бумаги нет вовсе. Считается до первой правки — эффективной датой отсюда
   // спрашивается право и глубина.
@@ -371,8 +421,17 @@ const requestSelect = {
   vehicleKindId: vehicleTypes.kindId,
   // Линейная ли это техника (ADR 0100, миграция 0127) — признак **заказанного** типа, не машины:
   // им заявка отвечает, ведут её днями или неделями стояния на площадке и рождаются ли листы
-  // ЭСМ-2 сами. Читается живым join'ом: снимка признака в заявке нет намеренно (ADR 0100 §1).
-  isLinear: vehicleTypes.isLinear,
+  // ЭСМ-2 сами. Читается **эффективным** выражением (`requestIsLinearSql`): норма ADR 0100 §1 —
+  // живой join, но заявку, застигнутую переключением признака, ведёт её снимок (миграция 0137).
+  // Отсюда всё и расходится: перегон, дни, отбор по машине, срез «На объекте», визы и
+  // `isLinearRequest` берут признак из этой строки, и прямому `vehicleTypes.isLinear` тут не место.
+  isLinear: requestIsLinearSql(vehicleRequests.isLinearFrozen, vehicleTypes.isLinear).as(
+    'request_is_linear',
+  ),
+  // Сам снимок — для метки в интерфейсе (Р7): `isLinear` отвечает «как ведётся», а диспетчеру
+  // нужно ещё «почему» и «с какого числа».
+  isLinearFrozen: vehicleRequests.isLinearFrozen,
+  linearFrozenAt: vehicleRequests.linearFrozenAt,
   // Категория заказанного типа (ADR 0028); пусто — у типа категорий нет.
   vehicleCategoryId: vehicleRequests.vehicleCategoryId,
   vehicleCategoryName: requestCategories.name,
@@ -464,22 +523,18 @@ const requestSelect = {
   deletedByName: deleters.fullName,
   dateFrom: specialEquipmentRequestDetails.dateFrom,
   dateTo: specialEquipmentRequestDetails.dateTo,
-  // Контакт ответственного (миграция 0062): у заявки на объект один, у грузоперевозки — по одному
-  // на концах маршрута. Имена колонок разные, поэтому в выборку идут обе пары.
+  // Контакт ответственного (миграция 0062) — только у заказа техники на объект: у грузоперевозки
+  // контакты уехали на ездку, по одному на каждый конец (Р2), и в строке заявки их больше нет.
   responsibleName: specialEquipmentRequestDetails.responsibleName,
   responsiblePhone: specialEquipmentRequestDetails.responsiblePhone,
+  /*
+   * Момент **первой** подачи (Р3) — всё, что осталось у деталей грузоперевозки после миграции
+   * `0136`. Адреса, количество и контакты стали колонками ездки и добираются к странице отдельным
+   * запросом (`tripsByRequests`): у заявки с ездками A→B и A→C «адреса разгрузки заявки» не
+   * существует, и колонка, отвечавшая на этот вопрос, отвечала бы наугад.
+   */
   scheduledAt: freightTransportRequestDetails.scheduledAt,
   scheduledTimeUnspecified: freightTransportRequestDetails.scheduledTimeUnspecified,
-  volumeM3: freightTransportRequestDetails.volumeM3,
-  weightTons: freightTransportRequestDetails.weightTons,
-  loadingLocation: freightTransportRequestDetails.loadingLocation,
-  unloadingLocation: freightTransportRequestDetails.unloadingLocation,
-  loadingAddress: freightTransportRequestDetails.loadingAddress,
-  unloadingAddress: freightTransportRequestDetails.unloadingAddress,
-  loadingResponsibleName: freightTransportRequestDetails.loadingResponsibleName,
-  loadingResponsiblePhone: freightTransportRequestDetails.loadingResponsiblePhone,
-  unloadingResponsibleName: freightTransportRequestDetails.unloadingResponsibleName,
-  unloadingResponsiblePhone: freightTransportRequestDetails.unloadingResponsiblePhone,
 };
 
 function baseQuery() {
@@ -719,6 +774,15 @@ function numToDb(v: number | null | undefined): string | null {
   return v == null ? null : String(v);
 }
 
+/**
+ * «ТС-40/2» — номер заявки и номер ездки в ней. Собирает сервер, а не портал: подпись заявки
+ * задана одной функцией на весь портал (`formatVehicleRequestNumber`), и вторая её склейка на
+ * клиенте разошлась бы с бланком при первой же смене формата.
+ */
+function tripDisplayNumber(requestNum: number, tripNum: number): string {
+  return `${formatVehicleRequestNumber(requestNum)}/${tripNum}`;
+}
+
 async function filesByRequestIds(ids: string[]): Promise<Map<string, FileDto[]>> {
   const map = new Map<string, FileDto[]>();
   if (ids.length === 0) return map;
@@ -744,6 +808,108 @@ async function filesByRequestIds(ids: string[]): Promise<Map<string, FileDto[]>>
       size: row.size,
       status: row.status,
       createdAt: row.createdAt.toISOString(),
+    });
+    map.set(row.requestId, list);
+  }
+  return map;
+}
+
+// Точки раскладки — своими алиасами: у ездки их две (погрузка и разгрузка), и обе таблицы входят
+// в запрос дважды. Одноимённые внутри одного `select` читались бы как одна.
+const loadPointTrips = alias(vehicleRoutePointTrips, 'load_point_trips');
+const unloadPointTrips = alias(vehicleRoutePointTrips, 'unload_point_trips');
+const loadPoints = alias(vehicleRoutePoints, 'load_points');
+const unloadPoints = alias(vehicleRoutePoints, 'unload_points');
+
+/**
+ * Ездки страницы заявок (Р1) — одним запросом на страницу, а не на строку: тем же приёмом, что
+ * файлы, сводка смен и недельные ссылки.
+ *
+ * Мягко удалённые (Р13а) не приходят вовсе: карточка показывает то, что едет сейчас, а помнить,
+ * что именно напечатано, — дело журнала листов и истории. Порядок — по `num`, то есть по тому, как
+ * ездки заводили; первая из них и стоит в колонках списка.
+ *
+ * `displayNumber` («ТС-40/2») собирает сервер, а не портал: номер заявки и номер ездки лежат в
+ * разных таблицах, и склеенный на клиенте он разошёлся бы с бланком при первой же смене формата
+ * (`formatVehicleRequestNumber` — одна функция на весь портал).
+ *
+ * Раскладка (`placement`) добирается двумя парами `leftJoin` — по одной на роль. Строк это не
+ * множит: `route_point_trips_trip_role_unique` держит у ездки ровно одну погрузку и одну
+ * разгрузку, поэтому каждая пара даёт не больше строки. Пусто — заявка не в рейсе либо её вынули.
+ */
+async function tripsByRequests(
+  reader: { select: (typeof db)['select'] },
+  requests: readonly { id: string; num: number }[],
+): Promise<Map<string, VehicleRequestTripDto[]>> {
+  const map = new Map<string, VehicleRequestTripDto[]>();
+  if (requests.length === 0) return map;
+  const nums = new Map(requests.map((r) => [r.id, r.num]));
+  const rows = await reader
+    .select({
+      id: vehicleRequestTrips.id,
+      requestId: vehicleRequestTrips.requestId,
+      num: vehicleRequestTrips.num,
+      fromLocation: vehicleRequestTrips.fromLocation,
+      toLocation: vehicleRequestTrips.toLocation,
+      fromAddress: vehicleRequestTrips.fromAddress,
+      toAddress: vehicleRequestTrips.toAddress,
+      volumeM3: vehicleRequestTrips.volumeM3,
+      weightTons: vehicleRequestTrips.weightTons,
+      fromResponsibleName: vehicleRequestTrips.fromResponsibleName,
+      fromResponsiblePhone: vehicleRequestTrips.fromResponsiblePhone,
+      toResponsibleName: vehicleRequestTrips.toResponsibleName,
+      toResponsiblePhone: vehicleRequestTrips.toResponsiblePhone,
+      scheduledAt: vehicleRequestTrips.scheduledAt,
+      comment: vehicleRequestTrips.comment,
+      loadPosition: loadPoints.position,
+      unloadPosition: unloadPoints.position,
+    })
+    .from(vehicleRequestTrips)
+    .leftJoin(
+      loadPointTrips,
+      and(eq(loadPointTrips.tripId, vehicleRequestTrips.id), eq(loadPointTrips.role, 'load')),
+    )
+    .leftJoin(loadPoints, eq(loadPoints.id, loadPointTrips.pointId))
+    .leftJoin(
+      unloadPointTrips,
+      and(eq(unloadPointTrips.tripId, vehicleRequestTrips.id), eq(unloadPointTrips.role, 'unload')),
+    )
+    .leftJoin(unloadPoints, eq(unloadPoints.id, unloadPointTrips.pointId))
+    .where(
+      and(
+        inArray(
+          vehicleRequestTrips.requestId,
+          requests.map((r) => r.id),
+        ),
+        isNull(vehicleRequestTrips.deletedAt),
+      ),
+    )
+    .orderBy(asc(vehicleRequestTrips.requestId), asc(vehicleRequestTrips.num));
+  for (const row of rows) {
+    const list = map.get(row.requestId) ?? [];
+    list.push({
+      id: row.id,
+      num: row.num,
+      displayNumber: tripDisplayNumber(nums.get(row.requestId) ?? 0, row.num),
+      fromLocation: row.fromLocation,
+      toLocation: row.toLocation,
+      fromAddress: row.fromAddress,
+      toAddress: row.toAddress,
+      volumeM3: toNum(row.volumeM3),
+      weightTons: toNum(row.weightTons),
+      fromResponsibleName: row.fromResponsibleName,
+      fromResponsiblePhone: row.fromResponsiblePhone,
+      toResponsibleName: row.toResponsibleName,
+      toResponsiblePhone: row.toResponsiblePhone,
+      scheduledAt: row.scheduledAt ? row.scheduledAt.toISOString() : null,
+      comment: row.comment,
+      // Разложена ездка только тогда, когда стоят **обе** точки: одна половина пары — состояние,
+      // которого не бывает (Р5), и показывать её как раскладку значило бы обещать рейс, в котором
+      // груз некуда везти.
+      placement:
+        row.loadPosition !== null && row.unloadPosition !== null
+          ? { loadPosition: row.loadPosition, unloadPosition: row.unloadPosition }
+          : null,
     });
     map.set(row.requestId, list);
   }
@@ -922,6 +1088,7 @@ interface RequestDtoAnswers {
 function toDto(
   r: RequestRow,
   fileList: FileDto[],
+  trips: VehicleRequestTripDto[],
   shifts?: VehicleRequestShiftsSummaryDto,
   weekly?: {
     origin: VehicleRequestWeeklyOriginDto | null;
@@ -940,6 +1107,10 @@ function toDto(
     departmentId: r.departmentId,
     departmentCode: r.departmentCode,
     departmentName: r.departmentName,
+    // Объект затрат (Р25) — разобранная пара выше, а не ещё одно поле про заказчика: разбирают её
+    // два десятка мест, и каждое вольно решить иначе. Колонкой он не хранится и снимком здесь не
+    // становится: выводится тем же `costTargetOf` из тех же шести полей, что лежат рядом.
+    costTarget: costTargetOf(r),
     vehicleTypeId: r.vehicleTypeId,
     vehicleTypeName: r.vehicleTypeName,
     vehicleKindId: r.vehicleKindId,
@@ -981,8 +1152,14 @@ function toDto(
       dateFrom: r.dateFrom ?? '',
       dateTo: r.dateTo ?? null,
       // Линейность заказанного типа (ADR 0100): ею карточка решает, показывать ли блок недельных
-      // листов или ждать, что их попросят по одному.
+      // листов или ждать, что их попросят по одному. Значение эффективное — см. `requestSelect`.
       isLinear: r.isLinear,
+      // Метка «прежний режим: по неделям, с 14.08» (Р7): пары `isLinearFrozen`/`linearFrozenAt`
+      // база держит целой (CHECK миграции 0137), но TS о ней не знает — отсюда проверка обеих.
+      linearFrozen:
+        r.isLinearFrozen !== null && r.linearFrozenAt
+          ? { isLinear: r.isLinearFrozen, at: r.linearFrozenAt.toISOString() }
+          : null,
       responsibleName: r.responsibleName ?? '',
       responsiblePhone: r.responsiblePhone ?? '',
       earlyEnd: toEarlyEndDto(r),
@@ -1004,16 +1181,10 @@ function toDto(
     requestType: 'freight_transport',
     scheduledAt: r.scheduledAt ? r.scheduledAt.toISOString() : '',
     scheduledTimeUnspecified: r.scheduledTimeUnspecified ?? false,
-    volumeM3: toNum(r.volumeM3),
-    weightTons: toNum(r.weightTons),
-    loadingLocation: r.loadingLocation ?? '',
-    unloadingLocation: r.unloadingLocation ?? '',
-    loadingAddress: r.loadingAddress ?? null,
-    unloadingAddress: r.unloadingAddress ?? null,
-    loadingResponsibleName: r.loadingResponsibleName ?? '',
-    loadingResponsiblePhone: r.loadingResponsiblePhone ?? '',
-    unloadingResponsibleName: r.unloadingResponsibleName ?? '',
-    unloadingResponsiblePhone: r.unloadingResponsiblePhone ?? '',
+    // Ездки (Р1, Р2): то, что прежде лежало парой адресов, количеством и контактами самой заявки.
+    // Их не бывает ноль — заявка заводится хотя бы с одной, а последнюю снять нечем; итог по
+    // заявке портал и печать считают сами (`requestCargoTotal`), суммы в DTO нет намеренно.
+    trips,
   };
 }
 
@@ -1037,8 +1208,11 @@ async function toDtos(
   q: { onDate?: string; vehicleId?: string } = {},
 ): Promise<VehicleRequestDto[]> {
   const ids = rows.map((r) => r.id);
-  const [filesMap, shiftsMap, weekly, matchedDays, dayVehicles] = await Promise.all([
+  const [filesMap, tripsMap, shiftsMap, weekly, matchedDays, dayVehicles] = await Promise.all([
     filesByRequestIds(ids),
+    // Ездки — тем же добором на страницу, что и файлы: строка списка показывает первую из них, а
+    // карточка все, и запрос на строку превратил бы список из двадцати заявок в двадцать запросов.
+    tripsByRequests(db, rows),
     shiftSummaries(rows, q.onDate ?? moscowDateKeyOf(new Date())),
     weeklyLinksByRequestIds(ids),
     matchedDaysByRequestIds(ids, q.vehicleId),
@@ -1050,6 +1224,7 @@ async function toDtos(
     toDto(
       row,
       filesMap.get(row.id) ?? [],
+      tripsMap.get(row.id) ?? [],
       shiftsMap.get(row.id),
       {
         origin: weekly.origins.get(row.id) ?? null,
@@ -1242,27 +1417,65 @@ async function assertCustomerActive(tx: Tx, customer: RequestCustomer): Promise<
 }
 
 /**
- * Объём или масса груза — там, где груз бывает.
+ * Как ездка названа в отказе.
+ *
+ * Сохранённая — своим номером («ездка ТС-40/2»), новая — строкой присланного списка: номера у неё
+ * ещё нет, его назначит сервер (Р13а), и выдумывать «будущий второй» значило бы назвать в отказе
+ * то, чего не существует. Путь поля рядом с сообщением указывает на ту же строку машинно
+ * (`trips.1.fromAddress`), поэтому форма подсветит её независимо от слов.
+ */
+function tripLabel(requestNum: number, index: number, num: number | null): string {
+  return num === null
+    ? `новая ездка (строка ${index + 1})`
+    : `ездка ${tripDisplayNumber(requestNum, num)}`;
+}
+
+/** Путь поля ездки в теле запроса — тем же видом, каким его составляет zod (`trips.1.volumeM3`). */
+function tripField(index: number, field: string): string {
+  return `trips.${index}.${field}`;
+}
+
+/**
+ * Ездка глазами серверной проверки: значения из тела плюс номер, если он у ездки уже есть.
+ *
+ * Номер здесь необязателен намеренно — им отличается перезапись от заведения (Р2а): у строки без
+ * `id` номера ещё нет, его назначит запись, и в отказе такая ездка называется строкой формы.
+ */
+interface TripCheckRow {
+  num: number | null;
+  volumeM3?: number | null;
+  weightTons?: number | null;
+}
+
+/**
+ * Объём или масса груза — там, где груз бывает, и **у каждой ездки** (Р2).
  *
  * Условие спрашивает бланк заказанного типа ТС: у формы № 3 (легковой автомобиль) груза нет, и
  * требовать число значило бы заставлять заявителя его выдумывать. Схема этого не проверяет —
  * бланк живёт в справочнике, и взять его ей неоткуда (ADR 0037 п. 4, тот же приём, что у
  * категории ТС и ставок).
+ *
+ * Бланк читается один раз на весь список, а не на ездку: тип у заявки один, и шесть одинаковых
+ * запросов к справочнику ради шести строк ничего бы не уточнили.
  */
 async function assertCargoAmount(
   tx: Tx,
   vehicleTypeId: string,
-  cargo: { volumeM3: string | null; weightTons: string | null },
+  requestNum: number,
+  trips: readonly TripCheckRow[],
 ): Promise<void> {
-  if (cargo.volumeM3 != null || cargo.weightTons != null) return;
+  const empty = trips.findIndex((t) => t.volumeM3 == null && t.weightTons == null);
+  if (empty < 0) return;
 
   const [row] = await tx
     .select({ formCode: vehicleTypes.waybillFormCode })
     .from(vehicleTypes)
     .where(eq(vehicleTypes.id, vehicleTypeId));
-  if (isCargoAmountRequired(row?.formCode ?? null)) {
-    throw err.unprocessable(CARGO_AMOUNT_MESSAGE, { volumeM3: CARGO_AMOUNT_MESSAGE });
-  }
+  if (!isCargoAmountRequired(row?.formCode ?? null)) return;
+  throw err.unprocessable(
+    `${tripLabel(requestNum, empty, trips[empty]!.num)}: ${CARGO_AMOUNT_MESSAGE}`,
+    { [tripField(empty, 'volumeM3')]: CARGO_AMOUNT_MESSAGE },
+  );
 }
 
 /**
@@ -1276,17 +1489,21 @@ async function assertCargoAmount(
  * Строки сравниваются как есть, с точностью до пробелов по краям: адрес попал в заявку копией из
  * справочника, и любое расхождение означает, что выбор устарел — запись отредактировали, пока
  * форма была открыта.
+ *
+ * Спрашивается у **ездки** (Р2): адресов у заявки больше нет, и отказ обязан называть ту строку
+ * списка, в которой выбор устарел, — иначе в форме с шестью ездками человек ищет её сам.
  */
 async function assertDirectoryAddress(
   tx: Tx,
-  field: 'loadingLocation' | 'unloadingLocation',
+  at: { field: string; trip: string },
   location: string,
   meta: AddressMeta | null | undefined,
 ): Promise<void> {
   if (!meta || !isDirectoryAddressSource(meta.source)) return;
   // Ссылку требует контракт (`verifiedAddressMetaSchema`); здесь она уже есть.
   const refId = meta.refId!;
-  const fail = (message: string) => err.unprocessable(message, { [field]: message });
+  const fail = (message: string) =>
+    err.unprocessable(`${at.trip}: ${message}`, { [at.field]: message });
 
   if (meta.source === 'object') {
     const [row] = await tx
@@ -1321,6 +1538,360 @@ async function assertDirectoryAddress(
   if (row.address.trim() !== location.trim()) {
     throw fail('Адрес склада в справочнике изменился — выберите адрес заново');
   }
+}
+
+// ── Ездки заявки: запись (Р1, Р2а, Р13а) ──
+
+/**
+ * Тот же адрес: и печатаемая строка, и метаданные.
+ *
+ * Поле за полем, а не сравнением JSON: в базе лежит `jsonb`, и порядок ключей в нём не задан —
+ * `{"source":…,"fiasId":…}` и `{"fiasId":…,"source":…}` описывают один адрес, а строками
+ * различаются. Необязательные поля сводятся к `null`: отсутствующий ключ и `null` в нём означают
+ * одно и то же — «этого у адреса нет».
+ */
+function sameAddressMeta(a: AddressMeta | null, b: AddressMeta | null): boolean {
+  if (!a || !b) return !a && !b;
+  return (
+    a.source === b.source &&
+    (a.fiasId ?? null) === (b.fiasId ?? null) &&
+    (a.fiasLevel ?? null) === (b.fiasLevel ?? null) &&
+    (a.geoLat ?? null) === (b.geoLat ?? null) &&
+    (a.geoLon ?? null) === (b.geoLon ?? null) &&
+    (a.refId ?? null) === (b.refId ?? null)
+  );
+}
+
+/**
+ * Что не так с адресом для записи (ADR 0006), либо `null`, если он годится. Тем же разбором, что
+ * и в схеме заведения: `null` отдельной веткой — иначе человек прочёл бы служебное «expected
+ * object, received null» вместо «выберите из подсказок».
+ */
+function verifiedAddressIssue(meta: AddressMeta | null): string | null {
+  if (!meta) return ADDRESS_NOT_VERIFIED_MESSAGE;
+  const parsed = verifiedAddressMetaSchema.safeParse(meta);
+  return parsed.success ? null : (parsed.error.issues[0]?.message ?? ADDRESS_NOT_VERIFIED_MESSAGE);
+}
+
+/**
+ * Жёсткая модель адреса — за **новое** значение, а не за перезапись прежнего (Р2а).
+ *
+ * Нетронутый адрес принимается как есть, и это не послабление, а условие того, что старые заявки
+ * останутся правимыми: бэкфил принёс строки без метаданных (заявки старше ADR 0006 и миграции
+ * `0062`), а ездки правятся полным списком — приёма «не отправлять нетронутое» у списка нет. Не
+ * будь этой ветки, уточнение телефона в такой заявке требовало бы сначала выдумать за прошлое
+ * адрес из справочника.
+ *
+ * Сравнивается пара целиком: сменилась печатаемая строка или сменились метаданные — значение
+ * новое, и жёсткая модель спрашивается с него полностью.
+ */
+function assertAddressWritable(
+  next: { location: string; meta: AddressMeta | null },
+  prev: { location: string; meta: AddressMeta | null } | null,
+  at: { field: string; trip: string },
+): void {
+  if (
+    prev &&
+    prev.location.trim() === next.location.trim() &&
+    sameAddressMeta(prev.meta, next.meta)
+  ) {
+    return;
+  }
+  const issue = verifiedAddressIssue(next.meta);
+  if (issue) throw err.unprocessable(`${at.trip}: ${issue}`, { [at.field]: issue });
+}
+
+/**
+ * То же для контакта (Р2а): пустое имя и несводимый телефон принимаются, пока их не трогают, —
+ * у заявок старше миграции `0062` контакта нет вовсе, а телефон бывает легаси-строкой (ADR 0066).
+ * Изменённое значение проверяется той же схемой, что при заведении.
+ */
+function assertContactWritable(
+  next: string,
+  prev: string | null,
+  schema: typeof contactNameSchema | typeof contactPhoneSchema,
+  at: { field: string; trip: string },
+): void {
+  if (prev !== null && prev === next) return;
+  const parsed = schema.safeParse(next);
+  if (parsed.success) return;
+  const message = parsed.error.issues[0]?.message ?? 'Некорректное значение';
+  throw err.unprocessable(`${at.trip}: ${message}`, { [at.field]: message });
+}
+
+/** Сохранённая ездка под блокировкой — ровно те колонки, с которыми сравнивается присланная. */
+const storedTripColumns = {
+  id: vehicleRequestTrips.id,
+  num: vehicleRequestTrips.num,
+  fromLocation: vehicleRequestTrips.fromLocation,
+  toLocation: vehicleRequestTrips.toLocation,
+  fromAddress: vehicleRequestTrips.fromAddress,
+  toAddress: vehicleRequestTrips.toAddress,
+  volumeM3: vehicleRequestTrips.volumeM3,
+  weightTons: vehicleRequestTrips.weightTons,
+  fromResponsibleName: vehicleRequestTrips.fromResponsibleName,
+  fromResponsiblePhone: vehicleRequestTrips.fromResponsiblePhone,
+  toResponsibleName: vehicleRequestTrips.toResponsibleName,
+  toResponsiblePhone: vehicleRequestTrips.toResponsiblePhone,
+  scheduledAt: vehicleRequestTrips.scheduledAt,
+  comment: vehicleRequestTrips.comment,
+  deletedAt: vehicleRequestTrips.deletedAt,
+};
+
+/**
+ * Ездки заявки под блокировкой — **все**, вместе с мягко удалёнными (Р13а).
+ *
+ * Удалённые нужны обеим сторонам договора: без них `id` снесённой ездки прошёл бы как «строка не
+ * найдена, заведём новую» (а это тихая подмена: в выданном листе стоит та, снесённая), и номер
+ * новой ездки сел бы на освободившееся место — то самое переиспользование, которого Р13а не
+ * допускает.
+ */
+async function lockRequestTrips(tx: Tx, requestId: string) {
+  return tx
+    .select(storedTripColumns)
+    .from(vehicleRequestTrips)
+    .where(eq(vehicleRequestTrips.requestId, requestId))
+    .orderBy(asc(vehicleRequestTrips.num))
+    .for('update');
+}
+
+type StoredTrip = Awaited<ReturnType<typeof lockRequestTrips>>[number];
+
+/** Присланная ездка так, как она ляжет в базу; `num` у новой назначает запись. */
+function tripValues(t: UpdateRequestTripInput): Omit<StoredTrip, 'id' | 'num' | 'deletedAt'> {
+  return {
+    fromLocation: t.fromLocation,
+    toLocation: t.toLocation,
+    fromAddress: t.fromAddress ?? null,
+    toAddress: t.toAddress ?? null,
+    volumeM3: numToDb(t.volumeM3),
+    weightTons: numToDb(t.weightTons),
+    fromResponsibleName: t.fromResponsibleName,
+    fromResponsiblePhone: t.fromResponsiblePhone,
+    toResponsibleName: t.toResponsibleName,
+    toResponsiblePhone: t.toResponsiblePhone,
+    scheduledAt: t.scheduledAt ? new Date(t.scheduledAt) : null,
+    comment: t.comment,
+  };
+}
+
+/** Ездка изменилась: значение к значению, теми же полями, которыми она и пишется. */
+function tripChanged(next: ReturnType<typeof tripValues>, prev: StoredTrip): boolean {
+  return (
+    next.fromLocation !== prev.fromLocation ||
+    next.toLocation !== prev.toLocation ||
+    !sameAddressMeta(next.fromAddress, prev.fromAddress) ||
+    !sameAddressMeta(next.toAddress, prev.toAddress) ||
+    // Количество сравнивается числами, а не строками numeric: «12» и «12.000» — одно и то же
+    // значение, и записанное обратно оно не должно читаться как правка.
+    toNum(next.volumeM3) !== toNum(prev.volumeM3) ||
+    toNum(next.weightTons) !== toNum(prev.weightTons) ||
+    next.fromResponsibleName !== prev.fromResponsibleName ||
+    next.fromResponsiblePhone !== prev.fromResponsiblePhone ||
+    next.toResponsibleName !== prev.toResponsibleName ||
+    next.toResponsiblePhone !== prev.toResponsiblePhone ||
+    (next.scheduledAt?.getTime() ?? null) !== (prev.scheduledAt?.getTime() ?? null) ||
+    next.comment !== prev.comment
+  );
+}
+
+/**
+ * Ездки заявки после правки — полным списком (§7, Р2а, Р13а).
+ *
+ * Одна функция на заведение, правку и переоформление: у заведения сохранённых ездок просто нет, и
+ * каждая присланная строка проходит жёсткую модель целиком — ровно то же, что делает схема. Второй
+ * записи того же порядка быть не должно: разойдись они, заявка, которую приняло заведение,
+ * перестала бы сохраняться правкой.
+ *
+ * По шагам:
+ *
+ * 1. сохранённые ездки берутся под блокировкой — вместе с мягко удалёнными;
+ * 2. `id` чужой заявки или удалённой ездки — отказ, а не тихое заведение новой;
+ * 3. поле за полем: на **изменившемся** адресе спрашивается верификация (ADR 0006), на
+ *    изменившемся контакте — непустое имя и сводимый телефон; нетронутое принимается как есть;
+ * 4. своё время ездки обязано лежать в календарном дне заявки (Р18), количество — там, где его
+ *    требует бланк типа ТС (`assertCargoAmount`);
+ * 5. записывается изменившееся: новые строки получают следующие свободные номера, пропавшие из
+ *    списка — `deleted_at`.
+ *
+ * Возвращает признак «состав или значения ездок изменились»: им правка решает, поднимать ли
+ * версию маршрута (Р18) — задание листа собрано ровно из этих полей.
+ */
+async function applyRequestTrips(
+  tx: Tx,
+  params: {
+    requestId: string;
+    /** Номер заявки — им ездка называется в отказах («ездка ТС-40/2»). */
+    requestNum: number;
+    /** Заказанный тип ТС **после** правки: его бланк решает, обязательно ли количество. */
+    vehicleTypeId: string;
+    /** Момент подачи заявки после правки: в его календарном дне обязаны лежать времена ездок. */
+    scheduledAt: Date;
+    /** Полный состав заявки после правки; пустой список — ездок не остаётся (переоформление). */
+    trips: readonly UpdateRequestTripInput[];
+  },
+): Promise<{ changed: boolean }> {
+  const stored = await lockRequestTrips(tx, params.requestId);
+  const byId = new Map(stored.map((t) => [t.id, t]));
+  const seen = new Set<string>();
+
+  // Присланная строка и её прежнее состояние — парами, один раз на весь дальнейший разбор.
+  const pairs = params.trips.map((input, index) => {
+    const label = tripLabel(
+      params.requestNum,
+      index,
+      input.id ? (byId.get(input.id)?.num ?? null) : null,
+    );
+    if (!input.id) return { input, index, label, prev: null };
+    const prev = byId.get(input.id);
+    // Чужая ездка — это не «заведём новую»: под тем же `id` в другой заявке едет свой груз, и
+    // молчаливое заведение подменило бы правку заведением, ничего не сказав.
+    if (!prev) {
+      // Не `tripLabel`: тот назвал бы строку с неизвестным `id` новой ездкой, а она как раз
+      // объявлена существующей — и именно это в ней и не сходится.
+      throw err.unprocessable(`строка ${index + 1}: ездка не из этой заявки — обновите страницу`, {
+        [tripField(index, 'id')]: 'Ездка не найдена',
+      });
+    }
+    if (prev.deletedAt) {
+      throw err.unprocessable(
+        `ездка ${tripDisplayNumber(params.requestNum, prev.num)} удалена — заведите новую вместо неё`,
+        { [tripField(index, 'id')]: 'Ездка удалена' },
+      );
+    }
+    if (seen.has(input.id)) {
+      throw err.unprocessable(
+        `ездка ${tripDisplayNumber(params.requestNum, prev.num)} встречается в списке дважды`,
+        { [tripField(index, 'id')]: 'Ездка повторяется' },
+      );
+    }
+    seen.add(input.id);
+    return { input, index, label, prev };
+  });
+
+  for (const { input, index, label, prev } of pairs) {
+    const at = (field: string) => ({ field: tripField(index, field), trip: label });
+    assertAddressWritable(
+      { location: input.fromLocation, meta: input.fromAddress ?? null },
+      prev ? { location: prev.fromLocation, meta: prev.fromAddress } : null,
+      at('fromAddress'),
+    );
+    assertAddressWritable(
+      { location: input.toLocation, meta: input.toAddress ?? null },
+      prev ? { location: prev.toLocation, meta: prev.toAddress } : null,
+      at('toAddress'),
+    );
+    assertContactWritable(
+      input.fromResponsibleName,
+      prev?.fromResponsibleName ?? null,
+      contactNameSchema,
+      at('fromResponsibleName'),
+    );
+    assertContactWritable(
+      input.fromResponsiblePhone,
+      prev?.fromResponsiblePhone ?? null,
+      contactPhoneSchema,
+      at('fromResponsiblePhone'),
+    );
+    assertContactWritable(
+      input.toResponsibleName,
+      prev?.toResponsibleName ?? null,
+      contactNameSchema,
+      at('toResponsibleName'),
+    );
+    assertContactWritable(
+      input.toResponsiblePhone,
+      prev?.toResponsiblePhone ?? null,
+      contactPhoneSchema,
+      at('toResponsiblePhone'),
+    );
+  }
+
+  /*
+   * Своё время ездки — внутри календарного дня заявки (Р18), и здесь спрашивается сохранённый
+   * день: схема отвечает только за случай, когда обе стороны сравнения видны из тела. Одна
+   * функция на схему и сервер — разойдись они, форма приняла бы то, чем ручка ответит 422.
+   */
+  const [outOfDay] = tripsOutOfRequestDay(params.scheduledAt.toISOString(), params.trips);
+  if (outOfDay !== undefined) {
+    throw err.unprocessable(`${pairs[outOfDay]!.label}: ${TRIP_DAY_MESSAGE}`, {
+      [tripField(outOfDay, 'scheduledAt')]: TRIP_DAY_MESSAGE,
+    });
+  }
+
+  await assertCargoAmount(
+    tx,
+    params.vehicleTypeId,
+    params.requestNum,
+    pairs.map(({ input, prev }) => ({
+      num: prev?.num ?? null,
+      volumeM3: input.volumeM3,
+      weightTons: input.weightTons,
+    })),
+  );
+
+  // Запись справочника сверяется только у изменившегося адреса — по тому же правилу Р2а: у
+  // нетронутого выбор состоялся тогда, когда заявку заводили, и отклонять его сегодня из-за
+  // переименованного склада значило бы запереть правку телефона за правкой справочника.
+  let changed = false;
+  // Следующий свободный номер считается по **всем** строкам заявки, включая мягко удалённые
+  // (Р13а): переиспользуй его — и «ТС-40/2» в старом листе и «ТС-40/2» в новом означали бы
+  // разное. Счётчик растёт и внутри одной правки: две новые ездки получают два разных номера.
+  let maxNum = stored.reduce((max, t) => Math.max(max, t.num), 0);
+  for (const { input, index, label, prev } of pairs) {
+    const next = tripValues(input);
+    if (prev && !tripChanged(next, prev)) continue;
+    changed = true;
+    if (
+      !prev ||
+      next.fromLocation !== prev.fromLocation ||
+      !sameAddressMeta(next.fromAddress, prev.fromAddress)
+    ) {
+      await assertDirectoryAddress(
+        tx,
+        { field: tripField(index, 'fromLocation'), trip: label },
+        next.fromLocation,
+        next.fromAddress,
+      );
+    }
+    if (
+      !prev ||
+      next.toLocation !== prev.toLocation ||
+      !sameAddressMeta(next.toAddress, prev.toAddress)
+    ) {
+      await assertDirectoryAddress(
+        tx,
+        { field: tripField(index, 'toLocation'), trip: label },
+        next.toLocation,
+        next.toAddress,
+      );
+    }
+    if (prev) {
+      await tx.update(vehicleRequestTrips).set(next).where(eq(vehicleRequestTrips.id, prev.id));
+    } else {
+      maxNum += 1;
+      await tx
+        .insert(vehicleRequestTrips)
+        .values({ requestId: params.requestId, num: maxNum, ...next });
+    }
+  }
+
+  // Ездка, которой в присланном списке не оказалось, удаляется мягко (Р13а): на неё может
+  // ссылаться выданный лист, а журнал бланков строгой отчётности обязан помнить, что печаталось.
+  const dropped = stored.filter((t) => !t.deletedAt && !seen.has(t.id));
+  if (dropped.length > 0) {
+    changed = true;
+    await tx
+      .update(vehicleRequestTrips)
+      .set({ deletedAt: new Date() })
+      .where(
+        inArray(
+          vehicleRequestTrips.id,
+          dropped.map((t) => t.id),
+        ),
+      );
+  }
+  return { changed };
 }
 
 /**
@@ -1434,6 +2005,57 @@ function isLinearRequest(r: VehicleRequestDto): boolean {
 }
 
 /**
+ * Рейсы, которых правка заявки касается, — под блокировкой и в каноническом порядке (Р17).
+ *
+ * Порядок «маршруты → заявки» объявлен ADR 0050 п. 12, а внутри — по возрастанию `id`, тем же
+ * правилом, каким `lockRoutePair` берёт пару переноса: две встречные правки иначе встали бы во
+ * взаимную блокировку. Описывать «маршрут заявки» в единственном числе здесь нельзя: у
+ * грузоперевозки он один (Р7), а у линейного заказа их столько, сколько дней распланировано, и
+ * правка контакта или комментария задевает их все.
+ *
+ * Какие именно это рейсы, известно из связи, а связь читается до блокировки — поэтому её
+ * перечитывает `lockRoutesOfRequest` уже под ней (Р17): между чтением и `FOR UPDATE` заявку
+ * успевают переложить в соседний рейс, и правка разложила бы её ездки в чужой день.
+ *
+ * `extraRouteIds` — рейс, названный телом запроса: перевод в работу и смена машины кладут заявку в
+ * готовый маршрут, и он берётся тем же проходом, а не отдельным `lockRoute` после. Иначе две
+ * встречные команды «переставить заявку из A в B» и «из B в A» взяли бы одну пару в двух порядках.
+ *
+ * Заморозка спрашивается сразу: она нужна и тому, кто версию поднимает, и тому, кто отказывает
+ * (Р15), а второй запрос за листом того же рейса ответил бы то же самое.
+ */
+async function lockRequestRoutes(
+  tx: Tx,
+  requestId: string,
+  extraRouteIds: readonly string[] = [],
+): Promise<{ id: string; frozen: boolean; purpose: RoutePurpose; vehicleId: string }[]> {
+  const routes = await lockRoutesOfRequest(tx, requestId, extraRouteIds);
+  // Назначение и машина едут вместе с рейсом не для показа: по ним выводится его бланк
+  // (`routeWaybillFormFor`, ADR 0065), а бланк задаёт ёмкость задания — сколько строк влезет
+  // после раскладки правленых ездок по точкам.
+  const locked: { id: string; frozen: boolean; purpose: RoutePurpose; vehicleId: string }[] = [];
+  for (const route of routes) {
+    const waybill = await routeWaybill(tx, route.id);
+    locked.push({
+      id: route.id,
+      frozen: !isRouteEditable(waybill?.status ?? null),
+      purpose: route.purpose,
+      vehicleId: route.vehicleId,
+    });
+  }
+  return locked;
+}
+
+/**
+ * Рейс, названный телом запроса: он берётся вместе с рейсами заявки, а не отдельным захватом после
+ * них (Р17). Новый рейс сюда не попадает — его строка рождается в этой же транзакции, и спорить за
+ * неё некому.
+ */
+function namedRouteIds(route: AssignRouteInput | undefined): string[] {
+  return route && 'routeId' in route ? [route.routeId] : [];
+}
+
+/**
  * Рейс, в который заявка едет (маршруты). Перевод в работу больше не выписывает документ — он
  * кладёт заявку в маршрут: в существующий рейс этой машины на эту дату либо в новый, заведённый
  * тут же. Лист выписывается с рейса отдельным действием, когда состав собран.
@@ -1491,6 +2113,20 @@ async function attachToRoute(
   // ровно так же прежняя выдача не поднимала второй талон для той же заявки.
   const requestedId = params.route && 'routeId' in params.route ? params.route.routeId : null;
   if (current && (!requestedId || requestedId === current.routeId)) return;
+
+  if (current) {
+    /*
+     * Прежний рейс заявки взят из связи, а связь прочитана без блокировки (Р17): между чтением и
+     * захватом её успевают переложить в третий рейс, и заявка ушла бы из того маршрута, где её уже
+     * нет, — вместе со своими точками. Поэтому оба рейса берутся сразу и по возрастанию `id`
+     * (`lockRoutePair`), а связь перечитывается под блокировкой.
+     */
+    await lockRoutePair(tx, requestedId ?? current.routeId, current.routeId);
+    const again = await routeOfRequestDay(tx, params.request.id, null);
+    if (again?.routeId !== current.routeId) {
+      throw err.conflict('Заявку переложили в другой маршрут, пока вы её вели — обновите карточку');
+    }
+  }
 
   let targetId = requestedId;
   if (targetId) {
@@ -1559,6 +2195,19 @@ async function attachToRoute(
     await bumpRouteVersion(tx, current.routeId, params.actor.id);
   }
   await attachRequest(tx, targetId!, params.request.id);
+  /*
+   * Ездки раскладываются точками тут же (Р8, §4.2): «взял в работу» обязано быть законченным
+   * действием — иначе диспетчер получал бы рейс, в котором заявка есть, а порядка объезда нет.
+   * Погрузка и разгрузка садятся на уже стоящие точки того же тождества (в том числе собранные
+   * прежними заявками), иначе заводятся новые в конец.
+   *
+   * Следом — ёмкость бланка **строками задания** (Р11): заявка с тремя ездками занимает три
+   * строки, а `canJoinRoute` выше считает строки состава и такой заявки не заметил бы. Бланк здесь
+   * тот же, которым решался сам вопрос «нужен ли рейс»: рейс заведён на машину назначения, а чужую
+   * машину существующий рейс не принимает (проверка выше).
+   */
+  await placeRequestTrips(tx, targetId!, params.request.id);
+  await assertRoutePlacement(tx, { routeId: targetId!, formCode: requirement.formCode });
   await bumpRouteVersion(tx, targetId!, params.actor.id);
 }
 
@@ -1641,12 +2290,12 @@ async function detachOnStatus(
   const droppedRelocations =
     next === 'cancelled' || next === 'new' ? await dropPlannedRelocations(tx, requestId) : [];
 
-  const rows = await routesOfRequest(tx, requestId);
   const detachedDays: string[] = [];
   // Порядок блокировок один на модуль: рейсы берутся по возрастанию `id`, иначе две встречные
-  // смены статуса встанут во взаимную блокировку (тем же порядком работает `lockRoutePair`).
-  for (const row of [...rows].sort((a, b) => a.routeId.localeCompare(b.routeId))) {
-    const route = await lockRoute(tx, row.routeId);
+  // смены статуса встанут во взаимную блокировку (тем же порядком работает `lockRoutePair`), а
+  // связь перечитывается уже под блокировкой (Р17) — иначе отмена сняла бы заявку с того рейса, в
+  // котором её на самом деле уже нет.
+  for (const route of await lockRoutesOfRequest(tx, requestId)) {
     const waybill = await routeWaybill(tx, route.id);
     const frozen = !isRouteEditable(waybill?.status ?? null);
     if (!shouldDetachOnStatus(next, frozen)) continue;
@@ -1686,9 +2335,28 @@ async function moveToRouteOfVehicle(
   }
   const current = await routeOfRequestDay(tx, params.request.id, null);
   if (current) {
-    const route = await lockRoute(tx, current.routeId);
+    /*
+     * Оба конца переезда — одним захватом и по возрастанию `id` (Р17, `lockRoutePair`). Прежде
+     * здесь стоял одиночный `lockRoute` прежнего рейса, а рейс новой машины брался позже, уже из
+     * `attachToRoute`: две встречные смены техники — «ТС-1 из A в B» и «ТС-2 из B в A» — брали
+     * тогда одну пару в противоположных порядках и вставали во взаимную блокировку. Проверено
+     * встречными транзакциями: до правки Postgres разрывал одну из них.
+     *
+     * Целевой рейс называет тело запроса; новый (`newRoute`) сюда не попадает — его строка
+     * рождается в этой же транзакции.
+     */
+    const [targetId] = namedRouteIds(params.route);
+    const { source } = await lockRoutePair(tx, targetId ?? current.routeId, current.routeId);
+    const route = source!;
+    // Связь перечитывается под блокировкой (Р17): рейс выяснен из неё, а прочитана она была без
+    // блокировки — за это время заявку успевают переложить, и мы сняли бы её точки в чужом дне.
+    const again = await routeOfRequestDay(tx, params.request.id, null);
+    if (again?.routeId !== route.id) {
+      throw err.conflict('Заявку переложили в другой маршрут, пока вы её вели — обновите карточку');
+    }
     const waybill = await routeWaybill(tx, route.id);
     if (!isRouteEditable(waybill?.status ?? null)) throw err.conflict(ROUTE_FROZEN_MESSAGE);
+    // Роли ездок уходят каскадом состава, опустевшие точки — вместе с ними (Р13, `detachRequest`).
     await detachRequest(tx, route.id, params.request.id);
     await bumpRouteVersion(tx, route.id, params.actor.id);
   }
@@ -1798,6 +2466,89 @@ async function saveCompletion(
  */
 function esm2StatusReason(status: RequestStatus): string {
   return `Заявка переведена в «${requestStatusLabels[status]}» — путевые листы переоформлены`;
+}
+
+/**
+ * Детерминированная сериализация значения: ключи объектов по алфавиту, `undefined` выброшено,
+ * порядок элементов массива сохранён (в плане ЭСМ-2 им задан порядок недель).
+ *
+ * Нужна ровно затем, чтобы два независимых расчёта одного и того же входа дали одну строку:
+ * порядок ключей в JSON не гарантирован ни клиентом, ни драйвером, а отпечаток предпросмотра
+ * сравнивается побайтово.
+ */
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(canonicalize(value)) ?? 'null';
+}
+
+function canonicalize(value: unknown): unknown {
+  // Дата во входе плана не ждётся, но `JSON.stringify` превратил бы её в строку, а обход по
+  // ключам — в пустой объект: два разных дня дали бы один отпечаток.
+  if (value instanceof Date) return value.toISOString();
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (value === null || typeof value !== 'object') return value;
+  const source = value as Record<string, unknown>;
+  const normalized: Record<string, unknown> = {};
+  for (const key of Object.keys(source).sort()) {
+    if (source[key] === undefined) continue;
+    normalized[key] = canonicalize(source[key]);
+  }
+  return normalized;
+}
+
+/**
+ * Отпечаток обещания предпросмотра (§5.4): вход плана ЭСМ-2 целиком плюс само действие.
+ *
+ * Хешируется **весь нормализованный вход**, а не выбранные из него поля. Ручной перечень
+ * `id:период` не заметил бы перевешивания листа на другую машину, а решение «оставить или сжечь»
+ * принимается именно по машине и машинисту (`sameVehicle`, `sameDriver`): диалог пообещал бы одно,
+ * а сверка сделала бы другое. Новый вход `esm2SyncPlan` попадает сюда сам, не требуя правки.
+ *
+ * Второй сомножитель — тело перехода: подтверждали конкретное действие, а не «какой-нибудь откат».
+ * `version` в него не входит — у неё своя проверка и свой текст ошибки, — а `comment` и сам
+ * `previewFingerprint` плана не касаются вовсе.
+ */
+function statusPreviewFingerprint(
+  planInput: unknown,
+  body: Pick<ChangeVehicleRequestStatusInput, 'status' | 'assignment' | 'schedule' | 'completion'>,
+): string {
+  const action = canonicalJson({
+    status: body.status,
+    assignment: body.assignment,
+    schedule: body.schedule,
+    completion: body.completion,
+  });
+  return createHash('md5')
+    .update(`${canonicalJson(planInput)}|${action}`)
+    .digest('hex');
+}
+
+/**
+ * Аннулируемые листы — человеку, а не идентификаторами: в диалоге он ищет свой бланк и свою
+ * неделю, и «сгорит 2 листа» без номеров не даёт проверить обещание ничем.
+ */
+async function esm2CancelPreview(tx: Tx, ids: readonly string[]): Promise<Esm2CancelPreviewDto[]> {
+  if (ids.length === 0) return [];
+  const rows = await tx
+    .select({
+      id: waybills.id,
+      number: waybills.number,
+      prefix: waybillSeries.prefix,
+      numberWidth: waybillSeries.numberWidth,
+      periodFrom: waybills.periodFrom,
+      periodTo: waybills.periodTo,
+    })
+    .from(waybills)
+    .innerJoin(waybillSeries, eq(waybillSeries.id, waybills.seriesId))
+    .where(inArray(waybills.id, [...ids]))
+    // Неделя за неделей: порядок в диалоге читается календарём, а не порядком, в каком сверка
+    // сложила свой список.
+    .orderBy(waybills.periodFrom);
+  return rows.map((row) => ({
+    id: row.id,
+    number: waybillDisplayNumber(row.prefix, row.number, row.numberWidth),
+    from: row.periodFrom ?? '',
+    to: row.periodTo ?? '',
+  }));
 }
 
 /** Календарный ключ `YYYY-MM-DD` человеку: `24.07.2026`. Через JS Date он бы поехал на день. */
@@ -1941,13 +2692,42 @@ function editChangesSubstance(
     return (
       scheduledChanged ||
       changed(body.scheduledTimeUnspecified, before.scheduledTimeUnspecified) ||
-      changed(body.volumeM3, before.volumeM3) ||
-      changed(body.weightTons, before.weightTons) ||
-      changed(body.loadingLocation, before.loadingLocation) ||
-      changed(body.unloadingLocation, before.unloadingLocation)
+      tripsChangeSubstance(before.trips, body.trips)
     );
   }
   return false;
+}
+
+/**
+ * Меняют ли ездки суть заявки (ADR 0025): состав, адреса и количество — да, контакты и примечание
+ * — нет.
+ *
+ * Граница та же, что и была у заявки с одной парой адресов, и проведена она по тому же признаку:
+ * руководитель строительства визирует, **что и куда везут**, а не то, кто встретит машину на
+ * воротах. Уточнённый телефон визу не снимает — иначе исправление опечатки в номере останавливало
+ * бы рейс до повторного согласования.
+ *
+ * Список не прислан вовсе — ездок не трогали (§7), и суть не менялась.
+ */
+function tripsChangeSubstance(
+  before: readonly VehicleRequestTripDto[],
+  trips: readonly UpdateRequestTripInput[] | undefined,
+): boolean {
+  if (!trips) return false;
+  if (trips.length !== before.length) return true;
+  const byId = new Map(before.map((t) => [t.id, t]));
+  return trips.some((t) => {
+    const prev = t.id ? byId.get(t.id) : undefined;
+    if (!prev) return true;
+    return (
+      t.fromLocation !== prev.fromLocation ||
+      t.toLocation !== prev.toLocation ||
+      (t.volumeM3 ?? null) !== prev.volumeM3 ||
+      (t.weightTons ?? null) !== prev.weightTons ||
+      (t.scheduledAt ? new Date(t.scheduledAt).getTime() : null) !==
+        (prev.scheduledAt ? new Date(prev.scheduledAt).getTime() : null)
+    );
+  });
 }
 
 /** Срок работ после правки: не переданное поле означает «не трогали». */
@@ -2269,9 +3049,39 @@ async function planAssignmentCorrection(
 }
 
 /**
- * Столбцы сортировки списка и журнала. «Срок» и «объём/масса» у типов заявки лежат в разных
- * detail-таблицах, поэтому сводятся coalesce: у строки заполнена ровно одна из колонок. Объём и
- * масса — разные единицы, но в одном столбце: сортируем по тому, что указано.
+ * Адрес **первой живой** ездки заявки (§9): у заявки с ездками A→B и A→C единственного адреса
+ * разгрузки не существует (Р2), а список обязан упорядочиваться однозначно — первая ездка это и
+ * есть то, что показано в строке.
+ *
+ * Скалярным подзапросом, а не join'ом с ездками: сортировочные столбцы общие у четырёх выборок
+ * (список, журнал, архив, срез «На объекте»), и join пришлось бы добавлять в каждую — и не забыть
+ * в следующей. Добавлять его в саму выборку нельзя и по существу: у заявки ездок несколько, и join
+ * размножил бы строку списка по их числу, а счётчик «всего» разошёлся бы с числом строк под ним.
+ *
+ * Запросом на строку это не становится: SQL остаётся один, а ключ сортировки Postgres считает
+ * индексным поиском по `(request_id, num)` — тем самым уникальным ограничением, которым номер
+ * ездки в заявке и единственен.
+ *
+ * Мягко удалённую ездку (Р13а) в сортировку пускать нельзя: она никуда не едет, и её адрес в
+ * списке означал бы рейс, которого нет.
+ */
+function firstTripColumn(column: 'from_location' | 'to_location'): SQL {
+  return sql`(
+    SELECT t.${sql.raw(column)}
+    FROM ${vehicleRequestTrips} t
+    WHERE t.request_id = ${vehicleRequests.id} AND t.deleted_at IS NULL
+    ORDER BY t.num
+    LIMIT 1
+  )`;
+}
+
+/**
+ * Столбцы сортировки списка и журнала. «Срок» у типов заявки лежит в разных detail-таблицах,
+ * поэтому сводится coalesce: у строки заполнена ровно одна из колонок.
+ *
+ * Адреса и количество считаются по ездкам — колонок с ними у заявки больше нет (Р2). Ключи
+ * столбцов при этом прежние, и это договор с порталом: для читателя списка ничего не изменилось,
+ * изменился источник.
  */
 const sortColumns = {
   num: vehicleRequests.num,
@@ -2282,9 +3092,17 @@ const sortColumns = {
   // (ADR 0028) — оно уже начинается с типа, поэтому порядок остаётся типовым.
   vehicleTypeName: sql`coalesce(${requestCategories.name}, ${vehicleTypes.name})`,
   term: sql`coalesce(${freightTransportRequestDetails.scheduledAt}, ${specialEquipmentRequestDetails.dateFrom}::timestamptz)`,
-  amount: sql`coalesce(${freightTransportRequestDetails.volumeM3}, ${freightTransportRequestDetails.weightTons})`,
-  loadingLocation: freightTransportRequestDetails.loadingLocation,
-  unloadingLocation: freightTransportRequestDetails.unloadingLocation,
+  // Количество — **сумма** живых ездок тем же правилом, каким подписывается груз: объём, а если
+  // его нет ни у одной — масса (`requestCargoTotal`, `tripCargoLabel`). Ездок у заявки нет вовсе
+  // (заказ техники на объект) — сумма пуста, и строка уходит в конец, как уходила с пустой
+  // колонкой.
+  amount: sql`(
+    SELECT coalesce(sum(t.volume_m3), sum(t.weight_tons))
+    FROM ${vehicleRequestTrips} t
+    WHERE t.request_id = ${vehicleRequests.id} AND t.deleted_at IS NULL
+  )`,
+  loadingLocation: firstTripColumn('from_location'),
+  unloadingLocation: firstTripColumn('to_location'),
   status: vehicleRequests.status,
   approval: vehicleRequests.approvedAt,
   comment: vehicleRequests.comment,
@@ -3272,38 +4090,25 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
               approvedBy: selfApproved ? p.id : null,
               approvedAt: selfApproved ? approvedAt : null,
             })
-            .returning({ id: vehicleRequests.id });
+            // Номер нужен здесь же: им ездка называется в отказах («ездка ТС-40/2»), а выдаёт его
+            // последовательность — заранее он неизвестен.
+            .returning({ id: vehicleRequests.id, num: vehicleRequests.num });
           id = row!.id;
-          await assertCargoAmount(tx, body.vehicleTypeId, {
-            volumeM3: numToDb(body.volumeM3),
-            weightTons: numToDb(body.weightTons),
-          });
-          await assertDirectoryAddress(
-            tx,
-            'loadingLocation',
-            body.loadingLocation,
-            body.loadingAddress,
-          );
-          await assertDirectoryAddress(
-            tx,
-            'unloadingLocation',
-            body.unloadingLocation,
-            body.unloadingAddress,
-          );
+          const scheduledAt = new Date(body.scheduledAt);
           await tx.insert(freightTransportRequestDetails).values({
             requestId: id,
-            scheduledAt: new Date(body.scheduledAt),
+            scheduledAt,
             scheduledTimeUnspecified: body.scheduledTimeUnspecified,
-            volumeM3: numToDb(body.volumeM3),
-            weightTons: numToDb(body.weightTons),
-            loadingLocation: body.loadingLocation,
-            unloadingLocation: body.unloadingLocation,
-            loadingAddress: body.loadingAddress ?? null,
-            unloadingAddress: body.unloadingAddress ?? null,
-            loadingResponsibleName: body.loadingResponsibleName,
-            loadingResponsiblePhone: body.loadingResponsiblePhone,
-            unloadingResponsibleName: body.unloadingResponsibleName,
-            unloadingResponsiblePhone: body.unloadingResponsiblePhone,
+          });
+          // Ездки — тем же кодом, каким их правят (Р2а): у заведения сохранённых строк просто
+          // нет, и каждая присланная проходит жёсткую модель целиком. Номера назначает запись,
+          // начиная с первого.
+          await applyRequestTrips(tx, {
+            requestId: id,
+            requestNum: row!.num,
+            vehicleTypeId: body.vehicleTypeId,
+            scheduledAt,
+            trips: body.trips,
           });
           await tx.insert(vehicleRequestStatusHistory).values({
             vehicleRequestId: id,
@@ -3560,6 +4365,24 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       }
 
       const applyEdit = async (tx: Tx): Promise<void> => {
+        /*
+         * Рейсы заявки — под блокировкой и первым делом (Р17): порядок «маршруты → заявки» один на
+         * модуль, и правка, взявшая заявку раньше рейса, встала бы во встречную блокировку со
+         * сборкой дня. Их бывает несколько: у грузоперевозки рейс один, а у линейного заказа
+         * столько, сколько дней распланировано (Р7), и правка задевает их все — поэтому берутся по
+         * возрастанию `id`, тем же порядком, каким `lockRoutePair` берёт пару переноса.
+         *
+         * Строка заявки — сразу следом, а не первым `UPDATE` ниже: под ней заперт состав, и без
+         * неё заявку успели бы положить ещё в один рейс между этим списком и раскладкой ездок по
+         * его точкам.
+         */
+        const routes = await lockRequestRoutes(tx, id);
+        await lockRequestRow(tx, id);
+        /** Правка попала в документ (Р18) — из этих полей собрано задание листа. */
+        let documentEdited = false;
+        /** Ездки переписаны: состав или значения. Считает `applyRequestTrips`. */
+        let tripsEdited = false;
+
         const customerChanged =
           customer.objectId !== before.objectId || customer.departmentId !== before.departmentId;
         if (customerChanged) {
@@ -3590,6 +4413,9 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
             vehicleTypeId: nextTypeId,
             vehicleCategoryId: nextCategoryId,
             comment: body.comment ?? before.comment,
+            // Снимок режима относится к прежнему типу (Р4): носить его на новом заявка не вправе —
+            // иначе она пошла бы по режиму справочника, из которого её уже увели.
+            ...(typeChanged ? { isLinearFrozen: null, linearFrozenAt: null } : {}),
             ...(dropApproval ? { approvedBy: null, approvedAt: null } : {}),
             updatedBy: p.id,
             version: before.version + 1,
@@ -3609,52 +4435,52 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           if (dateTo && dateTo < dateFrom) {
             throw err.badRequest('Дата окончания раньше даты начала');
           }
+          const responsibleName = nextRequestContact(
+            body.responsibleName,
+            ex!.responsibleName,
+            'responsibleName',
+            'Укажите ответственного',
+          );
+          const responsiblePhone = nextRequestContact(
+            body.responsiblePhone,
+            ex!.responsiblePhone,
+            'responsiblePhone',
+            'Укажите контактный телефон',
+          );
+          // Задание линейного дня печатается контактом заявки и её комментарием (Р9б, Р11): у
+          // такого заказа в графе груза стоит характер работ. Значит правка этой пары попадает в
+          // документ так же, как у грузоперевозки — правка ездки.
+          documentEdited =
+            responsibleName !== ex!.responsibleName ||
+            responsiblePhone !== ex!.responsiblePhone ||
+            (body.comment !== undefined && body.comment !== before.comment);
           await tx
             .update(specialEquipmentRequestDetails)
-            .set({
-              dateFrom,
-              dateTo,
-              responsibleName: nextRequestContact(
-                body.responsibleName,
-                ex!.responsibleName,
-                'responsibleName',
-                'Укажите ответственного',
-              ),
-              responsiblePhone: nextRequestContact(
-                body.responsiblePhone,
-                ex!.responsiblePhone,
-                'responsiblePhone',
-                'Укажите контактный телефон',
-              ),
-            })
+            .set({ dateFrom, dateTo, responsibleName, responsiblePhone })
             .where(eq(specialEquipmentRequestDetails.requestId, id));
         } else {
+          // Тип сторон совпадает — правка чужого типа отклонена до транзакции («Тип заявки меняют
+          // переоформлением»), но сузить `before` этой проверкой TS не умеет: сравниваются два
+          // разных значения. Тем же приёмом сужается заявка в ручках смен.
+          const prev = before as FreightTransportRequestDto;
           const [ex] = await tx
             .select()
             .from(freightTransportRequestDetails)
             .where(eq(freightTransportRequestDetails.requestId, id));
           const scheduledAt = body.scheduledAt ? new Date(body.scheduledAt) : ex!.scheduledAt;
-          const volumeM3 = body.volumeM3 !== undefined ? numToDb(body.volumeM3) : ex!.volumeM3;
-          const weightTons =
-            body.weightTons !== undefined ? numToDb(body.weightTons) : ex!.weightTons;
-          await assertCargoAmount(tx, nextTypeId, { volumeM3, weightTons });
-          // Строка и метаданные приходят парой (`updateVehicleRequestSchema`), поэтому проверять
-          // есть что ровно тогда, когда адрес правили: у нетронутого адреса запись справочника
-          // сверять незачем — заявка помнит его таким, каким он был на подаче.
-          if (body.loadingLocation !== undefined) {
-            await assertDirectoryAddress(
-              tx,
-              'loadingLocation',
-              body.loadingLocation,
-              body.loadingAddress,
-            );
-          }
-          if (body.unloadingLocation !== undefined) {
-            await assertDirectoryAddress(
-              tx,
-              'unloadingLocation',
-              body.unloadingLocation,
-              body.unloadingAddress,
+          /*
+           * Дата отдельно от времени (Р18). Календарный день заявки — это день её рейса
+           * (`tripDate`), и сдвинуть его правкой, пока заявка стоит в маршруте, значило бы развести
+           * заказ с рейсом молча: рейс остался бы на прежнем дне со всем своим заданием. Время
+           * внутри дня двигается свободно — им заявка отвечает на «во сколько подать», а не на
+           * «каким днём ехать».
+           */
+          const dayMoved =
+            moscowDateKeyOf(scheduledAt) !== moscowDateKeyOf(new Date(prev.scheduledAt));
+          if (dayMoved && routes.length > 0) {
+            throw err.unprocessable(
+              'Заявка стоит в маршруте: выньте её из маршрута или перенесите в маршрут нужного дня',
+              { scheduledAt: 'Заявка в маршруте' },
             );
           }
           await tx
@@ -3665,41 +4491,80 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
               scheduledTimeUnspecified: body.scheduledAt
                 ? (body.scheduledTimeUnspecified ?? false)
                 : ex!.scheduledTimeUnspecified,
-              volumeM3,
-              weightTons,
-              loadingLocation: body.loadingLocation ?? ex!.loadingLocation,
-              unloadingLocation: body.unloadingLocation ?? ex!.unloadingLocation,
-              // Метаданные адреса шлются вместе со строкой; null явно сбрасывает верификацию.
-              loadingAddress:
-                body.loadingAddress !== undefined ? body.loadingAddress : ex!.loadingAddress,
-              unloadingAddress:
-                body.unloadingAddress !== undefined ? body.unloadingAddress : ex!.unloadingAddress,
-              loadingResponsibleName: nextRequestContact(
-                body.loadingResponsibleName,
-                ex!.loadingResponsibleName,
-                'loadingResponsibleName',
-                'Укажите ответственного за погрузку',
-              ),
-              loadingResponsiblePhone: nextRequestContact(
-                body.loadingResponsiblePhone,
-                ex!.loadingResponsiblePhone,
-                'loadingResponsiblePhone',
-                'Укажите телефон ответственного за погрузку',
-              ),
-              unloadingResponsibleName: nextRequestContact(
-                body.unloadingResponsibleName,
-                ex!.unloadingResponsibleName,
-                'unloadingResponsibleName',
-                'Укажите ответственного за разгрузку',
-              ),
-              unloadingResponsiblePhone: nextRequestContact(
-                body.unloadingResponsiblePhone,
-                ex!.unloadingResponsiblePhone,
-                'unloadingResponsiblePhone',
-                'Укажите телефон ответственного за разгрузку',
-              ),
             })
             .where(eq(freightTransportRequestDetails.requestId, id));
+
+          /*
+           * Ездки — полным списком (§7, Р2а): строка с `id` перезаписывает существующую, строка
+           * без него заводит новую, а ездка, которой в списке не оказалось, мягко удаляется (Р13а).
+           * Список не прислан вовсе — ездок не трогали, и тогда сверяется только количество: бланк
+           * мог смениться вместе с типом ТС, и у прежних ездок оно стало обязательным.
+           */
+          if (body.trips) {
+            tripsEdited = (
+              await applyRequestTrips(tx, {
+                requestId: id,
+                requestNum: before.num,
+                vehicleTypeId: nextTypeId,
+                scheduledAt,
+                trips: body.trips,
+              })
+            ).changed;
+            /*
+             * Раскладка сводится с правленым составом ездок (Р18): добавленная ездка
+             * раскладывается точками, мягко удалённая (Р13а) снимает свои роли — каскада у
+             * `deleted_at` нет и быть не может.
+             *
+             * Незамороженные рейсы, потому что замороженному правка ездок и так отказывает ниже
+             * (`ROUTE_FROZEN_MESSAGE`): менять точки под выданной бумагой нельзя. Рейс здесь один
+             * — грузоперевозка едет одним маршрутом целиком (Р7), — но цикл честнее выбора
+             * «первого попавшегося»: список даёт `lockRequestRoutes`, и он же держит блокировки.
+             */
+            if (tripsEdited) {
+              for (const route of routes.filter((r) => !r.frozen)) {
+                await syncRequestTripPlacement(tx, route.id, id);
+                // Ёмкость считается по бланку рейса, а он выводится из назначения и машины
+                // (ADR 0065): у типа машины бланк правится справочником уже после сборки.
+                await assertRoutePlacement(tx, {
+                  routeId: route.id,
+                  formCode: (
+                    await routeWaybillFormFor(tx, {
+                      purpose: route.purpose,
+                      vehicleId: route.vehicleId,
+                    })
+                  ).formCode,
+                });
+              }
+            }
+          } else {
+            await assertCargoAmount(
+              tx,
+              nextTypeId,
+              before.num,
+              prev.trips.map((t) => ({
+                num: t.num,
+                volumeM3: t.volumeM3,
+                weightTons: t.weightTons,
+              })),
+            );
+            // Своё время ездки лежит в дне заявки (Р18) — и когда двигают одну подачу: сохранённые
+            // времена обязаны переехать вместе с ней, а не остаться во вчера.
+            const [outOfDay] = tripsOutOfRequestDay(scheduledAt.toISOString(), prev.trips);
+            if (outOfDay !== undefined) {
+              const trip = prev.trips[outOfDay]!;
+              throw err.unprocessable(`ездка ${trip.displayNumber}: ${TRIP_DAY_MESSAGE}`, {
+                scheduledAt: TRIP_DAY_MESSAGE,
+              });
+            }
+          }
+          // В документ попадает и время подачи: рейс печатает задание на день, а водителю время
+          // приезжает заданием (ADR 0102). Календарный день сюда не входит — его правка у заявки
+          // в маршруте уже отклонена выше.
+          documentEdited =
+            tripsEdited ||
+            scheduledAt.getTime() !== new Date(prev.scheduledAt).getTime() ||
+            (body.scheduledAt !== undefined &&
+              (body.scheduledTimeUnspecified ?? false) !== prev.scheduledTimeUnspecified);
         }
 
         if (body.removeFileIds?.length) await detachFiles(tx, id, body.removeFileIds);
@@ -3737,6 +4602,24 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
                 )}): сначала аннулируйте лист рейса, иначе правка срока разойдётся с выданной бумагой`,
               { dateFrom: 'День в замороженном рейсе' },
             );
+          }
+        }
+
+        /*
+         * Версия рейса поднимается при всякой правке, попадающей в документ (Р18): адреса,
+         * контакты, количество, время, состав ездок. Не «на всякой правке» — уточнение
+         * комментария грузоперевозки или подмена вложения задания не меняют, а лишняя версия
+         * заставила бы диспетчера, держащего маршрут открытым, пересобирать его на ровном месте.
+         *
+         * Ездки замороженного рейса правку не принимают вовсе (Р15): задание напечатано и у
+         * водителя на руках, разойтись с ним заявка не вправе — сначала лист аннулируют.
+         */
+        if (documentEdited) {
+          if (tripsEdited && routes.some((r) => r.frozen)) throw err.conflict(ROUTE_FROZEN_MESSAGE);
+          // Замороженный рейс версией не двигают: его бумага уже выпущена, и «пересоберите
+          // маршрут» сказать там некому — лист сначала аннулируют.
+          for (const route of routes.filter((r) => !r.frozen)) {
+            await bumpRouteVersion(tx, route.id, p.id);
           }
         }
       };
@@ -3970,6 +4853,20 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           await tx
             .delete(freightTransportRequestDetails)
             .where(eq(freightTransportRequestDetails.requestId, id));
+          // Ездки уходят вместе с видом заявки: у заказа техники на объект их не бывает вовсе
+          // (Р7). Мягко (Р13а), а не удалением: на ездку может ссылаться выданный лист, а
+          // `waybill_trips` объявлен `RESTRICT` — и правильно, журнал бланков строгой отчётности
+          // обязан помнить, что печаталось. Обратное переоформление заведёт новые, со своими
+          // номерами: прежние остались в бумаге, и переиспользовать их номера нельзя.
+          await applyRequestTrips(tx, {
+            requestId: id,
+            requestNum: before.num,
+            vehicleTypeId: body.vehicleTypeId,
+            // Ездок в списке нет, и сравнивать их календарные дни не с чем: момент подачи у
+            // заявки этим переоформлением как раз и исчезает.
+            scheduledAt: new Date(),
+            trips: [],
+          });
           await tx.insert(specialEquipmentRequestDetails).values({
             requestId: id,
             dateFrom: body.dateFrom,
@@ -3978,22 +4875,6 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
             responsiblePhone: body.responsiblePhone,
           });
         } else {
-          await assertCargoAmount(tx, body.vehicleTypeId, {
-            volumeM3: numToDb(body.volumeM3),
-            weightTons: numToDb(body.weightTons),
-          });
-          await assertDirectoryAddress(
-            tx,
-            'loadingLocation',
-            body.loadingLocation,
-            body.loadingAddress,
-          );
-          await assertDirectoryAddress(
-            tx,
-            'unloadingLocation',
-            body.unloadingLocation,
-            body.unloadingAddress,
-          );
           await tx
             .delete(specialEquipmentRequestDetails)
             .where(eq(specialEquipmentRequestDetails.requestId, id));
@@ -4006,20 +4887,22 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
             .delete(vehicleRequestEarlyEndings)
             .where(eq(vehicleRequestEarlyEndings.requestId, id));
           await dropRequestShifts(tx, id);
+          const scheduledAt = new Date(body.scheduledAt);
           await tx.insert(freightTransportRequestDetails).values({
             requestId: id,
-            scheduledAt: new Date(body.scheduledAt),
+            scheduledAt,
             scheduledTimeUnspecified: body.scheduledTimeUnspecified,
-            volumeM3: numToDb(body.volumeM3),
-            weightTons: numToDb(body.weightTons),
-            loadingLocation: body.loadingLocation,
-            unloadingLocation: body.unloadingLocation,
-            loadingAddress: body.loadingAddress ?? null,
-            unloadingAddress: body.unloadingAddress ?? null,
-            loadingResponsibleName: body.loadingResponsibleName,
-            loadingResponsiblePhone: body.loadingResponsiblePhone,
-            unloadingResponsibleName: body.unloadingResponsibleName,
-            unloadingResponsiblePhone: body.unloadingResponsiblePhone,
+          });
+          // Ездки приходят полным составом — тем самым, каким их завели бы этим типом сразу
+          // (жёсткая модель целиком: тело переоформления это тело заведения). Номера продолжают
+          // прежний ряд заявки, если она уже была грузоперевозкой: `num` не переиспользуется даже
+          // после переоформления туда и обратно (Р13а).
+          await applyRequestTrips(tx, {
+            requestId: id,
+            requestNum: before.num,
+            vehicleTypeId: body.vehicleTypeId,
+            scheduledAt,
+            trips: body.trips,
           });
         }
 
@@ -4235,6 +5118,11 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       );
 
       const created = await db.transaction(async (tx) => {
+        // Строка заявки — прежде нового рейса (Р17): её блокировкой закреплён набор рейсов заявки,
+        // и без неё перегон родился бы посреди смены статуса — та уже сосчитала, какие рейсы у
+        // заявки есть, и убрала бы запланированные, не увидев этого. Рейсов эта дверь не берёт
+        // вовсе: она их заводит, а спорить за ещё не рождённую строку некому.
+        await lockRequestRow(tx, req.params.id);
         if (!before.assignment) {
           throw err.unprocessable('На заявку не назначена техника — перегонять нечего', {
             purpose: 'Нет техники',
@@ -4579,12 +5467,100 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
     },
   );
 
+  /**
+   * Что случится с заявкой после перехода — до самого перехода (§5.4).
+   *
+   * Заведена под один сценарий: откат «Выполнена» → «В работе» у заказа техники на объект.
+   * Заморозка режима снята закрытием, и вернувшаяся в работу заявка пойдёт по актуальному
+   * справочнику, каким бы он ни стал, — а окно назначения отправляет статус в тот же миг, в
+   * который человек называет машину. Момента, чтобы что-то посоветовать, между ними нет вовсе,
+   * поэтому совет спрашивают отдельным запросом и тем же телом.
+   *
+   * Последствия считает **та же сверка**, а не «недели срока минус выписанное»: прошедшая неделя,
+   * листа не имевшая, сверкой не выписывается без проверенного контекста коррекции, а статусная
+   * ручка зовёт её без него — самодельный расчёт разошёлся бы с реальностью на все прошедшие
+   * недели срока.
+   *
+   * Права двойные. Тело у предпросмотра то же, что у смены статуса, и на этом одинаковость
+   * кончается: в ответе номера ЭСМ-2 — документов строгой отчётности. `waybills.read` есть не у
+   * всех, у кого есть `vehicleRequests.status` (у внешнего арендодателя его нет, а свой коридор
+   * `confirmed → done` открыт), да и «откат без журнала листов» с ADR 0106 стал собираемым
+   * набором полномочий.
+   */
+  r.post(
+    '/:id/status/preview',
+    {
+      preHandler: [
+        app.authenticate,
+        app.requirePermission('waybills.read'),
+        app.requirePermission('vehicleRequests.status', 'Недостаточно прав для смены статуса'),
+      ],
+      schema: { params: idParams, body: previewVehicleRequestStatusSchema },
+    },
+    async (req): Promise<VehicleRequestStatusPreviewDto> => {
+      const p = requirePrincipal(req);
+      const body = req.body;
+      const before = await getDto(req.params.id);
+      if (!before || before.deletedAt) throw err.notFound('Заявка не найдена');
+      // Границы — те же и в том же порядке, что у боевой ручки: чужую заявку и недопустимый
+      // переход предпросмотр обязан отвергать ровно так же, иначе он стал бы дорогой в обход.
+      assertRequestScope(p, before);
+      assertLessorScope(p, before.assignment?.lessorId ?? null);
+      assertTransitionAllowed(p, before.status, body.status);
+      // И только тот сценарий, ради которого ручка заведена: по прочим переходам советовать
+      // нечего, а отвечать номерами бланков тем более.
+      if (
+        before.requestType !== 'special_equipment' ||
+        before.status !== 'done' ||
+        body.status !== 'confirmed'
+      ) {
+        throw err.unprocessable(
+          `Последствия портал считает только для возврата заказа техники на объект из «${requestStatusLabels.done}» в «${requestStatusLabels.confirmed}» — по остальным переходам советовать нечего`,
+        );
+      }
+      // Версия спрашивается наравне с боевой ручкой: совет, данный по устаревшей заявке, хуже,
+      // чем никакого.
+      if (before.version !== body.version) throw err.conflict();
+
+      /*
+       * Дата расчёта — одна на весь ответ (Р12): недели отбираются условием `p.to >= today`, и
+       * полночь, наступившая между двумя чтениями, обещала бы лишний лист. В отпечаток она уходит
+       * не отдельным полем, а внутри самого входа плана.
+       */
+      const asOf = moscowDateKeyOf(new Date());
+      // Одним снимком: план и номера листов, которые он собрался жечь, обязаны рассказывать об
+      // одном и том же состоянии бумаги. Записи здесь нет ни одной — это чтение.
+      return db.transaction(async (tx) => {
+        const planned = await buildEsm2SyncPlan(tx, {
+          requestId: before.id,
+          driverPersonId: body.assignment?.driverPersonId ?? null,
+          asOf,
+        });
+        // Режим — эффективный признак (Р2), каким заявка пойдёт после возврата: снимка у закрытой
+        // заявки нет, и отвечает справочник — тот, который могли переключить, пока она стояла.
+        const isLinear = isLinearRequest(before);
+        return {
+          mode: isLinear ? 'daily' : 'weekly',
+          esm2: {
+            issue: planned?.plan.issue ?? [],
+            cancel: await esm2CancelPreview(tx, planned?.plan.cancel ?? []),
+          },
+          // Вторая половина последствий: недельный заказ занимает машину на весь срок, линейный —
+          // только распланированными днями.
+          busy: isLinear ? 'days' : 'term',
+          fingerprint: statusPreviewFingerprint(planned?.input ?? null, body),
+        };
+      });
+    },
+  );
+
   r.patch(
     '/:id/status',
     { ...canChangeStatus, schema: { params: idParams, body: changeVehicleRequestStatusSchema } },
     async (req) => {
       const p = requirePrincipal(req);
-      const { status, comment, assignment, completion, schedule, version } = req.body;
+      const { status, comment, assignment, completion, schedule, version, previewFingerprint } =
+        req.body;
       // Состояние «до» берётся DTO: при переводе в работу нужна не только сама заявка, но и
       // назначенная прежде техника — по ней считается, что изменилось (повторный перевод после
       // отката может сменить и машину, и ставки).
@@ -4614,6 +5590,14 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       }
 
       /*
+       * Дата расчёта — одна на весь переход (Р12). Сверка ЭСМ-2 спрашивала бы «сегодня» сама, и
+       * полночь, наступившая между сверкой отпечатка и её вызовом, дала бы другой план при уже
+       * принятом обещании: неделя, показанная диалогом как предстоящая, к моменту записи стала бы
+       * прошедшей и не выписалась бы вовсе. Тем же днём меряется задний ход доставки и долг
+       * подписей — двух «сегодня» в одном запросе быть не должно.
+       */
+      const today = moscowDateKeyOf(new Date());
+      /*
        * Доставка задним числом (ADR 0101, Р29) — та же дверь к прошлому, что и отдельная ручка
        * перегона, только приехавшая сюда полем перевода в работу. Без этой проверки правило
        * обходилось бы одним движением: завести перегон прошедшим днём не отдельным запросом, а
@@ -4633,7 +5617,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         backdateOrThrow(
           checkBackdate({
             effectiveDate: assignment.delivery.routeDate,
-            today: moscowDateKeyOf(new Date()),
+            today,
             subject: p,
             hasReason: deliveryReason !== '',
           }),
@@ -4658,11 +5642,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       // обнуляется, и без пометки у события закрытия неподтверждённая работа выглядела бы принятой.
       const pendingShiftDates =
         transitionRequiresCompletion(status) && shiftsCompletionWarning(before)
-          ? await unapprovedPastShiftDates(
-              before.id,
-              before as SpecialEquipmentRequestDto,
-              moscowDateKeyOf(new Date()),
-            )
+          ? await unapprovedPastShiftDates(before.id, before as SpecialEquipmentRequestDto, today)
           : [];
       // Срок уточняют полями своего типа заявки: тип неизменяем, и «дата начала» у грузоперевозки
       // означала бы, что заявку подменили по дороге.
@@ -4692,22 +5672,97 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         }
       }
 
+      // Откат «Выполнена» → «В работе» у заказа техники на объект — единственный переход, которому
+      // портал обещает точный результат сверки (§5.4), и единственный, у которого он спрашивает
+      // подтверждение обещанного.
+      const rollbackToWork =
+        before.requestType === 'special_equipment' &&
+        before.status === 'done' &&
+        status === 'confirmed';
+
       // Назначение, факт и уточнённый срок проверяются и пишутся в той же транзакции, что и статус:
       // заявка не должна побыть «в работе» ни на чём, «выполненной» без факта или взятой на одно
       // время с листом на другое — даже мгновение.
       const { assigned, completed, earlyEndDropped, droppedRelocations, detachedDays, esm2, days } =
         await db.transaction(async (tx) => {
+          /*
+           * Блокировки — первым делом и в этом порядке: тип, рейсы, заявка (Р5, Р11, Р17).
+           *
+           * Тип берётся `FOR SHARE` раньше заявки намеренно: переключение признака идёт той же
+           * дорогой — сначала `FOR UPDATE` на строке типа, потом `UPDATE` его заявок, — и возьми
+           * мы заявку первой, две встречные транзакции встали бы во взаимную блокировку. Рейсов
+           * переключение не касается вовсе, поэтому между типом и заявкой они и встают.
+           *
+           * Рейсы — **до** заявки, и это та самая перестановка, ради которой писался Р17: прежде
+           * смена статуса брала строку заявки первой, а рейсы добирала уже из `detachOnStatus`,
+           * `attachToRoute` и сверки дней, — то есть встречно выписке листа, которая берёт рейс,
+           * а потом состав (ADR 0050 п. 12). Две такие транзакции Postgres разрывал как взаимную
+           * блокировку; проверено встречными транзакциями до и после правки.
+           *
+           * Берутся все рейсы заявки разом (`lockRequestRoutes`): нынешние её дни, перегоны и
+           * названный телом целевой рейс перевода в работу. Дальше по ходу транзакции те же строки
+           * берутся повторно — это уже ничего не стоит и ничего не ждёт.
+           *
+           * Строка заявки блокируется всегда, а не только на возврате в «Новую»: под тем же
+           * `FOR UPDATE` её берут выписка листа и аннулирование (Р11), и без него параллельная
+           * правка бумаги успела бы вклиниться между принятым отпечатком и сверкой.
+           *
+           * Признак справочника читается здесь напрямую намеренно (Р10): это не режим заявки, а
+           * **вход** `requestIsLinear` — режим собирается строкой ниже, из него и снимка.
+           */
+          const [orderedType] = await tx
+            // linear-mode-ok: вход `requestIsLinear`, а не режим заявки — режим собирается ниже
+            .select({ isLinear: vehicleTypes.isLinear })
+            .from(vehicleTypes)
+            .where(eq(vehicleTypes.id, before.vehicleTypeId))
+            .for('share');
+          if (!orderedType) throw err.notFound('Заявка не найдена');
+          await lockRequestRoutes(tx, before.id, namedRouteIds(assignment?.route));
+          const locked = await lockRequestRow(tx, before.id);
+          /*
+           * Режим этой транзакции — перечитанный **под блокировкой** (Р5), а не тот, что приехал
+           * в `before`: DTO читалось до транзакции, и признак типа к этому моменту мог уже
+           * переключиться. Дальше он идёт во все правила явным параметром — иначе укладка в рейс
+           * и перегон решали бы по значению, которого в базе больше нет.
+           */
+          const isLinear =
+            before.requestType === 'special_equipment' &&
+            requestIsLinear({
+              isLinearFrozen: locked.isLinearFrozen,
+              typeIsLinear: orderedType.isLinear,
+            });
+
+          /*
+           * Сверка отпечатка (§5.4) — под блокировками и **до первой записи**: диалог обещал
+           * человеку точный результат, а между просмотром и нажатием план меняется, не тронув
+           * заявку вовсе — признак типа переключили, лист аннулировали своей ручкой, наступила
+           * полночь. `version` ни одного из этих трёх случаев не ловит, поэтому у неё своя
+           * проверка, а здесь своя.
+           */
+          if (rollbackToWork) {
+            if (!previewFingerprint) {
+              throw err.unprocessable(
+                'Возврат заказа в работу переписывает недельные листы ЭСМ-2: посмотрите последствия и подтвердите их',
+                { previewFingerprint: 'Нужен просмотр последствий' },
+              );
+            }
+            const planned = await buildEsm2SyncPlan(tx, {
+              requestId: before.id,
+              driverPersonId: assignment?.driverPersonId ?? null,
+              asOf: today,
+            });
+            if (statusPreviewFingerprint(planned?.input ?? null, req.body) !== previewFingerprint) {
+              throw err.conflict(
+                'Данные изменились с момента просмотра: посмотрите последствия возврата заново',
+              );
+            }
+          }
+
           // Возврат в «Новую» не спорит с выданной бумагой: заявку, стоящую в действующем листе,
           // стереть с работы нельзя — она пошла бы в чей-то следующий рейс, и одна работа
-          // оказалась бы сразу в двух документах (ADR 0050). Строка заявки при этом блокируется
-          // тем же `FOR UPDATE`, которым её берёт выписка листа: без блокировки лист успел бы
-          // родиться между проверкой и сбросом.
+          // оказалась бы сразу в двух документах (ADR 0050). Заявка к этому моменту уже под
+          // `FOR UPDATE`: без блокировки лист успел бы родиться между проверкой и сбросом.
           if (resetsWork) {
-            await tx
-              .select({ id: vehicleRequests.id })
-              .from(vehicleRequests)
-              .where(eq(vehicleRequests.id, before.id))
-              .for('update', { of: vehicleRequests });
             const issued = await activeWaybillOfRequest(tx, before.id);
             if (issued) throw err.conflict(`${ROLLBACK_WAYBILL_MESSAGE} (${issued})`);
           }
@@ -4725,7 +5780,10 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
             // бланка рейс не ведётся вовсе, и это нормальный ход, а не ошибка.
             if (transitionRequiresAssignment(status)) {
               await attachToRoute(tx, {
-                request: { ...before, isLinear: isLinearRequest(before) },
+                // Режим — перечитанный под блокировкой (Р5), а не `before.isLinear`: у линейного
+                // заказа рейс не один, а по одному на день, и решать это по устаревшему значению
+                // значило бы положить заявку не в тот план.
+                request: { ...before, isLinear },
                 assignment: saved,
                 route: assignment.route,
                 actor: { id: p.id },
@@ -4736,7 +5794,9 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
               // заводят позже, из карточки заявки: в этот момент его дату ещё не знают.
               if (assignment.delivery) {
                 await addRelocation(tx, {
-                  request: { ...before, isLinear: isLinearRequest(before) },
+                  // Тот же перечитанный признак: линейной технике перегон не заводят вовсе, и
+                  // отказ обязан считаться по режиму, действующему в этой транзакции.
+                  request: { ...before, isLinear },
                   assignment: saved,
                   purpose: 'delivery',
                   input: assignment.delivery,
@@ -4821,6 +5881,9 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
             actor: { id: p.id },
             reason: esm2StatusReason(status),
             driverPersonId: assignment?.driverPersonId ?? null,
+            // Тот самый день, которым посчитан отпечаток (Р12): спроси сверка «сегодня» сама,
+            // полночь дала бы ей другой набор недель, чем тот, что подтвердил человек.
+            asOf: today,
           });
           /*
            * План по дням (ADR 0100 §11) — тем же порядком и по той же причине, что и бумага:
@@ -4833,6 +5896,23 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
             actor: { id: p.id },
             reason: `Заявка переведена в «${requestStatusLabels[status]}»`,
           });
+          /*
+           * Снятие заморозки режима (Р4) — **последним шагом** транзакции, строго после обеих
+           * сверок. Заявка дорабатывала по снимку, и уход из «В работе» возвращает её справочнику:
+           * снимок относится к работе, а не к закрытому заказу. Сними его раньше — и обе сверки
+           * посчитали бы уже по новому режиму: крайняя неделя ЭСМ-2 не выписалась бы вовсе, и
+           * заявка ушла бы в закрытие без бумаги за отработанное.
+           *
+           * Условие только про уход из работы: мягкое удаление статуса не меняет и заморозку не
+           * снимает — архивная заявка остаётся «В работе», и восстановление обязано вернуть её
+           * ровно такой, какой её спрятали (§5.5).
+           */
+          if (before.status === 'confirmed' && locked.isLinearFrozen !== null) {
+            await tx
+              .update(vehicleRequests)
+              .set({ isLinearFrozen: null, linearFrozenAt: null })
+              .where(eq(vehicleRequests.id, before.id));
+          }
           return {
             assigned: saved,
             completed: closed,
@@ -5085,6 +6165,17 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         tx: Tx,
         correctionId: string | null,
       ): Promise<SavedAssignment> => {
+        /*
+         * Канонический порядок Р17 — первым делом и до всякой правки: сначала все рейсы заявки
+         * (нынешний, названный телом целевой и перегоны) по возрастанию `id`, затем её строка.
+         *
+         * Порядок здесь был встречный дважды. Смена машины брала прежний рейс и целевой двумя
+         * захватами без общего порядка (`moveToRouteOfVehicle`), а у линейного заказа переезжать
+         * нечему вовсе — там рейсы брались **после** записи заявки, из сверки дней
+         * (`syncLinearRouteDays`), то есть ровно наоборот канону.
+         */
+        await lockRequestRoutes(tx, before.id, namedRouteIds(route));
+        await lockRequestRow(tx, before.id);
         const saved = await resolveAssignment(
           tx,
           { ...rates, route },
@@ -5307,6 +6398,15 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       let esm2: Esm2SyncResult = { cancelled: [], issued: [] };
       let days: LinearDaysSyncResult = { detached: [], frozen: [] };
       await db.transaction(async (tx) => {
+        /*
+         * Канонический порядок Р17 — до первой записи: сокращённый срок снимает дни с рейсов
+         * (`syncLinearRouteDays`), то есть эта транзакция берёт и рейсы, и заявку. Прежде она шла
+         * к ним с конца — запись запроса, срок заказа, и только потом рейсы, — а встречная правка
+         * заявки (`PATCH /:id`) идёт каноном: сначала рейсы, потом строка заказа. Две такие
+         * транзакции Postgres разрывал как взаимную блокировку; проверено встречными транзакциями.
+         */
+        await lockRequestRoutes(tx, before.id);
+        await lockRequestRow(tx, before.id);
         const values = {
           // Своя виза не нужна тому, кто её и ставит: запрос сразу записывается согласованным.
           status: auto ? ('approved' as const) : ('pending' as const),
@@ -5438,6 +6538,10 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       }
 
       await db.transaction(async (tx) => {
+        // Тот же канонический порядок, что и у самого запроса сокращения (Р17): виза правит срок и
+        // снимает дни с рейсов, значит рейсы и заявка берутся до первой записи и в этом порядке.
+        await lockRequestRoutes(tx, before.id);
+        await lockRequestRow(tx, before.id);
         await tx
           .update(vehicleRequestEarlyEndings)
           .set({
@@ -5514,6 +6618,10 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
     assertRequestScope(p, before);
 
     const dropped = await db.transaction(async (tx) => {
+      // Заявка — раньше своего запроса на сокращение (Р17): рейсов отзыв не трогает вовсе, но
+      // строку заказа он правит, а смена статуса снимает тот же запрос уже под её блокировкой
+      // (`clearPendingEarlyEnd`). Обратный порядок здесь и был бы встречной блокировкой.
+      await lockRequestRow(tx, before.id);
       const removed = await clearPendingEarlyEnd(tx, before.id);
       if (!removed) return false;
       // Версия считается от текущей строки, а не от прочитанной: отзыв запроса ничего не
@@ -5682,6 +6790,24 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           // Гонка двух диспетчеров: ловит её уникальный индекс, а не проверка выше (план У12).
           throw asDayRaceConflict(e, date);
         }
+        /*
+         * День линейного заказа — такая же строка задания, как ездка, и место в порядке объезда у
+         * неё своё (план `docs/route-trips-plan.md`, Р5а). Точка заводится той же транзакцией, что
+         * и строка состава: без неё день стоял бы в рейсе, но не печатался — задание листа
+         * собирается из точек, а не из состава.
+         *
+         * Правило переиспользования общее с ездками (Р8): нашлась точка того же объекта с тем же
+         * ответственным — день садится на неё, машина заезжает один раз; нет — новая в конец.
+         */
+        await placeLinearDay(tx, route.id, request.id, date);
+        // Ёмкость проверяется после раскладки, а не до: считать надо строки задания — ездки плюс
+        // линейные дни (Р11), — а до постановки дня их на одну меньше.
+        await assertRoutePlacement(tx, {
+          routeId: route.id,
+          formCode: (
+            await routeWaybillFormFor(tx, { purpose: route.purpose, vehicleId: route.vehicleId })
+          ).formCode,
+        });
         await bumpRouteVersion(tx, route.id, p.id);
         return route;
       });
@@ -5726,14 +6852,30 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       const request = await requireDaysRequest(p, req.params.id);
 
       const routeId = await db.transaction(async (tx) => {
-        const current = await routeOfRequestDay(tx, request.id, date);
-        if (!current) throw err.notFound('Этот день не стоит ни в одном рейсе');
-        const route = await lockRoute(tx, current.routeId);
+        /*
+         * Рейс дня выясняется из связи, поэтому берётся приёмом Р17: прочитать → взять `FOR UPDATE`
+         * → **перечитать** связь под блокировкой (`lockRouteOfRequestDay`). Прежде здесь стоял
+         * одиночный `lockRoute` по первому чтению, и день, успевший переехать в соседний рейс,
+         * снимался «с того рейса, где его уже нет»: `detachRequest` не находил строки, ответ всё
+         * равно приходил успешный, а день оставался стоять в новом рейсе. Проверено параллельными
+         * транзакциями: до правки ручка отвечала 200 при живом дне.
+         *
+         * Заявка — следом за рейсом (Р17): под её строкой стоит и укладка дня в рейс
+         * (`lockLinearRequest`), и без неё день успели бы поставить обратно между снятием и концом
+         * транзакции.
+         */
+        const route = await lockRouteOfRequestDay(tx, request.id, date);
+        if (!route) throw err.notFound('Этот день не стоит ни в одном рейсе');
+        await lockRequestRow(tx, request.id);
         const waybill = await routeWaybill(tx, route.id);
         if (!isRouteEditable(waybill?.status ?? null)) {
           throw err.conflict(LINEAR_DAY_FROZEN_MESSAGE);
         }
-        await detachRequest(tx, route.id, request.id);
+        const removed = await detachRequest(tx, route.id, request.id);
+        // Недостижимо: связь перечитана под блокировкой рейса, а снять её без него нельзя. Ответ
+        // «сняли» при неснятом дне хуже отказа, поэтому проверка стоит, а не подразумевается.
+        if (!removed)
+          throw err.conflict('День только что сняли с рейса — обновите карточку заявки');
         await bumpRouteVersion(tx, route.id, p.id);
         return route.id;
       });

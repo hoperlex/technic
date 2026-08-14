@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { unzipSync } from 'fflate';
-import { WAYBILL_SNAPSHOT_KEYS } from '@technic/contracts';
+import { TASK_ROW_GEOMETRY, TASK_ROW_LINES, WAYBILL_SNAPSHOT_KEYS } from '@technic/contracts';
 import { inspectTemplate, renderOfficeTemplate } from '../src/services/office-template';
 
 /**
@@ -619,5 +619,100 @@ describe('разметка бланков', () => {
     for (const part of layout) {
       expect(Array.from(after[part]!), part).toEqual(Array.from(before[part]!));
     }
+  });
+});
+
+/**
+ * Геометрия граф задания против чисел, которыми считает бюджет строки
+ * (`TASK_ROW_GEOMETRY`, план `docs/route-trips-plan.md`, Р11а).
+ *
+ * Бюджет решает, что напечатается, а что свернётся в «+N» или упрётся в отказ «строка не влезает».
+ * Числа для него сняты с этого самого файла — и разъехаться с ним обязаны громко. Одной ширины
+ * ячейки тут мало: на вместимость влияют и шрифт, и кегль, и высота строки, и перенос, — поэтому
+ * сверяются **все пять**. Разойдутся — упадёт тест, а не бланк у водителя; иначе бюджет тихо
+ * разминётся с бумагой и даст либо ложные 422, либо то самое молчаливое обрезание, от которого он
+ * и заводился (ADR 0060).
+ */
+describe('геометрия граф задания 4-П', () => {
+  const files = (): Record<string, Uint8Array> => unzipSync(template('4p'));
+
+  /** Ширины колонок листа: `<col min max width>` описывает диапазон, а не одну колонку. */
+  function columnWidths(sheet: string): { min: number; max: number; width: number }[] {
+    return [...sheet.matchAll(/<col min="(\d+)" max="(\d+)"[^>]*width="([\d.]+)"[^>]*\/>/g)].map(
+      ([, min, max, width]) => ({ min: Number(min), max: Number(max), width: Number(width) }),
+    );
+  }
+
+  /** Ширина объединения в единицах Excel: сумма ширин всех колонок, которые оно накрывает. */
+  function mergeWidthUnits(sheet: string, merge: string): number {
+    const [from, to] = merge.split(':') as [string, string];
+    const widths = columnWidths(sheet);
+    const widthOf = (column: number): number =>
+      widths.find((c) => c.min <= column && column <= c.max)?.width ?? 0;
+    let total = 0;
+    for (let column = colNumber(from); column <= colNumber(to); column += 1)
+      total += widthOf(column);
+    return total;
+  }
+
+  it('шрифт книги и его высота строки — те, из которых выведена единица ширины', () => {
+    const styles = decoder.decode(files()['xl/styles.xml']!);
+    const sheet = decoder.decode(files()['xl/worksheets/sheet1.xml']!);
+    const bookFont =
+      /<fonts count="\d+"[^>]*>\s*(<font\b[^>]*\/>|<font\b[^>]*>[\s\S]*?<\/font>)/.exec(
+        styles,
+      )![1]!;
+
+    // Единица ширины колонки Excel — ширина цифры «0» шрифта книги. Сменится шрифт или кегль —
+    // сменится и она, а с ней все пять ширин граф в пунктах.
+    expect(bookFont).toContain('<name val="Arial"');
+    expect(bookFont).toContain(`<sz val="${TASK_ROW_GEOMETRY.bookFontPt}"`);
+    expect(/<sheetFormatPr[^>]*defaultRowHeight="([\d.]+)"/.exec(sheet)![1]).toBe(
+      String(TASK_ROW_GEOMETRY.bookRowHeightPt),
+    );
+  });
+
+  it('все пять граф стоят своими объединениями и своей ширины', () => {
+    const parts = files();
+    const sheet = decoder.decode(parts['xl/worksheets/sheet1.xml']!);
+    const merges = mergesOf(sheet);
+
+    for (const [cell, geometry] of Object.entries(TASK_ROW_GEOMETRY.cells)) {
+      const anchor = geometry.merge.split(':')[0]!;
+      const merge = merges.find((m) => covers(m, anchor));
+
+      expect(merge, `графа ${cell}: объединения у ${anchor} нет`).toBeDefined();
+      expect(`${merge!.from}:${merge!.to}`, `графа ${cell}`).toBe(geometry.merge);
+      // Ширина сверяется с допуском в сотую единицы: Excel хранит её с плавающей точкой.
+      expect(mergeWidthUnits(sheet, geometry.merge), `графа ${cell}`).toBeCloseTo(
+        geometry.widthUnits,
+        2,
+      );
+    }
+  });
+
+  it('кегль граф — тот, при котором считается ширина, и перенос у них включён', () => {
+    const parts = files();
+
+    for (const [cell, geometry] of Object.entries(TASK_ROW_GEOMETRY.cells)) {
+      const anchor = geometry.merge.split(':')[0]!;
+
+      expect(fontOf(parts, anchor), `графа ${cell}`).toContain(
+        `<sz val="${TASK_ROW_GEOMETRY.fontPt}"`,
+      );
+      // Без переноса вторая строка легла бы на первую, и «две строки» бюджета были бы выдумкой.
+      expect(xfOf(parts, anchor), `графа ${cell}`).toMatch(/wrapText="(1|true)"/);
+    }
+  });
+
+  it('высота строк держит ровно две строки текста — столько бюджет и считает', () => {
+    const parts = files();
+
+    for (const geometry of Object.values(TASK_ROW_GEOMETRY.cells)) {
+      const row = Number(/(\d+)$/.exec(geometry.merge.split(':')[0]!)![1]);
+      expect(rowHeightOf(parts, row)).toBe(TASK_ROW_GEOMETRY.rowHeightPt);
+    }
+    // Не «две по определению», а две по расчёту: высота строки при кегле 6 pt — 11.45/8 × 6.
+    expect(TASK_ROW_LINES).toBe(2);
   });
 });

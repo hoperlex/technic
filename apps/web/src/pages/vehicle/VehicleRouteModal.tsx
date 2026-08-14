@@ -41,7 +41,7 @@ import { ViewModal } from '@shared/ui';
 import { PrintWaybillButton } from '../../components/WaybillPrint';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
-import { formatDateOnly } from './shared';
+import { formatDateOnly, tripsCountLabel } from './shared';
 import { VehicleRouteCorrectionModal } from './VehicleRouteCorrectionModal';
 import { VehicleRouteTransferCorrectionModal } from './VehicleRouteTransferCorrectionModal';
 
@@ -577,8 +577,19 @@ export function VehicleRouteModal({ routeId, onClose, onChanged, onEdit }: Props
                   options={free.map((r) => ({
                     value: r.id,
                     label: [
+                      // Адреса — из **первой** ездки (Р2, §9 плана `docs/route-trips-plan.md`): у
+                      // заявки своей пары адресов больше нет, а подсказке нужен ориентир «куда
+                      // поедем», а не весь заказ. Число ездок стоит рядом, потому что каждая
+                      // занимает свою строку задания в бланке (Р11): «6 ездок» объясняет, почему
+                      // после этой заявки в семистрочном 4-П остаётся одна строка.
                       r.requestType === 'freight_transport'
-                        ? `${r.displayNumber} · ${r.loadingLocation} → ${r.unloadingLocation}`
+                        ? [
+                            r.displayNumber,
+                            r.trips[0] && `${r.trips[0].fromLocation} → ${r.trips[0].toLocation}`,
+                            r.trips.length > 1 && tripsCountLabel(r.trips.length),
+                          ]
+                            .filter(Boolean)
+                            .join(' · ')
                         : r.displayNumber,
                       // Заказанный тип заявки — когда он не совпадает с машиной рейса (ADR 0059).
                       // День машины собирают по объектам, а объекты заказывают разное: «заказан

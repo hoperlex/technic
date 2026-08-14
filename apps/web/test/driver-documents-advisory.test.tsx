@@ -111,17 +111,31 @@ const REQUEST: FreightTransportRequestDto = {
   deletedAt: null,
   deletedByName: null,
   scheduledAt: '2026-08-10T09:00:00+03:00',
+  // Объект затрат выводится из пары «объект или отдел» под CHECK (Р25).
+  costTarget: { kind: 'object', id: 'obj-1', code: 'ОБ-1', name: 'ЖК Северный' },
   scheduledTimeUnspecified: false,
-  volumeM3: 20,
-  weightTons: null,
-  loadingLocation: 'Карьер Мытищи',
-  unloadingLocation: 'Объект Химки',
-  loadingAddress: null,
-  unloadingAddress: null,
-  loadingResponsibleName: 'Петров П. П.',
-  loadingResponsiblePhone: '+7 926 000-00-01',
-  unloadingResponsibleName: 'Сидоров С. С.',
-  unloadingResponsiblePhone: '+7 926 000-00-02',
+  // Ездка вместо пары адресов у заявки (план `docs/route-trips-plan.md`, Р1–Р2): у существующих
+  // заявок она ровно одна, и сценарий от этого не меняется.
+  trips: [
+    {
+      id: 'vrt-1',
+      num: 1,
+      displayNumber: 'Т-43/1',
+      fromLocation: 'Карьер Мытищи',
+      toLocation: 'Объект Химки',
+      fromAddress: null,
+      toAddress: null,
+      volumeM3: 20,
+      weightTons: null,
+      fromResponsibleName: 'Петров П. П.',
+      fromResponsiblePhone: '+7 926 000-00-01',
+      toResponsibleName: 'Сидоров С. С.',
+      toResponsiblePhone: '+7 926 000-00-02',
+      scheduledAt: null,
+      comment: '',
+      placement: null,
+    },
+  ],
 };
 
 function driver(over: Partial<DriverOptionDto> & Pick<DriverOptionDto, 'personId' | 'fullName'>) {

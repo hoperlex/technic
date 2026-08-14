@@ -15,12 +15,12 @@ import {
 } from '@technic/contracts';
 import { db } from '../db/client';
 import {
-  freightTransportRequestDetails,
   specialEquipmentRequestDetails,
   vehicleCategories,
   vehicleModels,
   vehicleReadings,
   vehicleRequests,
+  vehicleRequestTrips,
   vehicleRoutes,
   vehicles,
   vehicleTypes,
@@ -28,7 +28,7 @@ import {
   waybillSeries,
 } from '../db/schema';
 import { daysBetween } from './readings-chain';
-import { loadRouteDtos, routeQuery } from './vehicle-routes';
+import { firstLiveTripJoin, loadRouteDtos, routeQuery } from './vehicle-routes';
 
 /**
  * Задание работника: чем он занят в этот день — своими рейсами и своими недельными листами
@@ -126,24 +126,25 @@ async function requestExtras(requestIds: string[]): Promise<Map<string, RequestE
   const map = new Map<string, RequestExtra>();
   if (requestIds.length === 0) return map;
 
-  // Обе detail-таблицы разом: тип заявки заранее неизвестен, а join'ы левые — у заявки заполнена
-  // ровно одна из них.
+  // Ездка грузоперевозки и деталь спецтехники разом: тип заявки заранее неизвестен, а join'ы левые
+  // — заполнено ровно одно из двух.
   const rows = await db
     .select({
       id: vehicleRequests.id,
       comment: vehicleRequests.comment,
-      loadingName: freightTransportRequestDetails.loadingResponsibleName,
-      loadingPhone: freightTransportRequestDetails.loadingResponsiblePhone,
-      unloadingName: freightTransportRequestDetails.unloadingResponsibleName,
-      unloadingPhone: freightTransportRequestDetails.unloadingResponsiblePhone,
+      // Контакты грузоперевозки уехали с заявки на ездку (план `docs/route-trips-plan.md`, Р2), и
+      // здесь читается **первая живая** — та же, что печатает бланк на этом этапе. Полный порядок
+      // объезда с контактами всех точек кабинет и письмо получат этапом 8: у водителя тогда
+      // появится не «контакт заявки», а «кто встречает на каждой остановке» (Р11а, §8 плана).
+      loadingName: vehicleRequestTrips.fromResponsibleName,
+      loadingPhone: vehicleRequestTrips.fromResponsiblePhone,
+      unloadingName: vehicleRequestTrips.toResponsibleName,
+      unloadingPhone: vehicleRequestTrips.toResponsiblePhone,
       siteName: specialEquipmentRequestDetails.responsibleName,
       sitePhone: specialEquipmentRequestDetails.responsiblePhone,
     })
     .from(vehicleRequests)
-    .leftJoin(
-      freightTransportRequestDetails,
-      eq(freightTransportRequestDetails.requestId, vehicleRequests.id),
-    )
+    .leftJoin(vehicleRequestTrips, firstLiveTripJoin)
     .leftJoin(
       specialEquipmentRequestDetails,
       eq(specialEquipmentRequestDetails.requestId, vehicleRequests.id),

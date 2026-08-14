@@ -87,15 +87,37 @@ const freight = {
   objectId: OBJ,
   vehicleTypeId: TYPE,
   scheduledAt: '2026-07-25T14:30:00+03:00',
-  volumeM3: 12.5,
-  loadingLocation: 'Склад А',
-  unloadingLocation: 'Объект Б',
-  loadingAddress: resolvedMeta,
-  unloadingAddress: resolvedMeta,
-  loadingResponsibleName: 'Сидоров С. С.',
-  loadingResponsiblePhone: '+7 926 000-00-02',
-  unloadingResponsibleName: 'Кузнецов К. К.',
-  unloadingResponsiblePhone: '+7 926 000-00-03',
+  // Адреса, количество и контакты — у ездки, а не у заявки (план `docs/route-trips-plan.md`, Р2):
+  // у заявки с ездками `A→B` и `A→C` «адрес разгрузки заявки» не существует. Одна ездка в фикстуре
+  // — то же, что было парой полей раньше.
+  trips: [
+    {
+      fromLocation: 'Склад А',
+      toLocation: 'Объект Б',
+      fromAddress: resolvedMeta,
+      toAddress: resolvedMeta,
+      volumeM3: 12.5,
+      fromResponsibleName: 'Сидоров С. С.',
+      fromResponsiblePhone: '+7 926 000-00-02',
+      toResponsibleName: 'Кузнецов К. К.',
+      toResponsiblePhone: '+7 926 000-00-03',
+    },
+  ],
+};
+
+/**
+ * Заявка с изменённой единственной ездкой. Правки, которые раньше ложились прямо на заявку, теперь
+ * ложатся на её строку (Р2), и помощник избавляет каждый случай от повторной сборки списка.
+ */
+const withTrip = (over: Record<string, unknown>) => ({
+  ...freight,
+  trips: [{ ...freight.trips[0], ...over }],
+});
+
+/** Заявка без названного поля ездки: им проверяется обязательность. */
+const withoutTripField = (field: string) => {
+  const { [field]: _omitted, ...rest } = freight.trips[0] as Record<string, unknown>;
+  return { ...freight, trips: [rest] };
 };
 
 /**
@@ -174,8 +196,8 @@ describe('vehicle-requests: создание — discriminator', () => {
   it('грузоперевозка: базовый парсинг', () => {
     const v = createVehicleRequestSchema.parse(freight);
     if (v.requestType !== 'freight_transport') throw new Error('unreachable');
-    expect(v.volumeM3).toBe(12.5);
-    expect(v.loadingLocation).toBe('Склад А');
+    expect(v.trips[0]!.volumeM3).toBe(12.5);
+    expect(v.trips[0]!.fromLocation).toBe('Склад А');
   });
 });
 
@@ -265,7 +287,7 @@ describe('vehicle-requests: строгость схем (.strict)', () => {
       createVehicleRequestSchema.parse({ ...special, scheduledAt: '2026-07-25T14:30:00+03:00' }),
     ).toThrow();
     expect(() => createVehicleRequestSchema.parse({ ...special, volumeM3: 5 })).toThrow();
-    expect(() => createVehicleRequestSchema.parse({ ...special, loadingLocation: 'x' })).toThrow();
+    expect(() => createVehicleRequestSchema.parse({ ...special, trips: freight.trips })).toThrow();
   });
 
   it('грузоперевозка отклоняет special-поля', () => {
@@ -308,9 +330,12 @@ describe('vehicle-requests: кросс-поля и валидация значе
    * сервером (`assertCargoAmount`), правило — `isCargoAmountRequired`.
    */
   it('грузоперевозка проходит схему без объёма и массы: их требует бланк, а не схема', () => {
-    const { volumeM3: _v, ...noAmount } = freight;
+    const noAmount = withoutTripField('volumeM3');
     expect(createVehicleRequestSchema.parse(noAmount).requestType).toBe('freight_transport');
-    const byWeight = createVehicleRequestSchema.parse({ ...noAmount, weightTons: 3.2 });
+    const byWeight = createVehicleRequestSchema.parse({
+      ...noAmount,
+      trips: [{ ...noAmount.trips[0], weightTons: 3.2 }],
+    });
     expect(byWeight.requestType).toBe('freight_transport');
   });
 
@@ -323,10 +348,10 @@ describe('vehicle-requests: кросс-поля и валидация значе
   });
 
   it('объём/масса: >0 и не более 3 знаков', () => {
-    expect(() => createVehicleRequestSchema.parse({ ...freight, volumeM3: 0 })).toThrow();
-    expect(() => createVehicleRequestSchema.parse({ ...freight, volumeM3: -1 })).toThrow();
-    expect(() => createVehicleRequestSchema.parse({ ...freight, volumeM3: 1.2345 })).toThrow();
-    expect(createVehicleRequestSchema.parse({ ...freight, volumeM3: 1.234 }).requestType).toBe(
+    expect(() => createVehicleRequestSchema.parse(withTrip({ volumeM3: 0 }))).toThrow();
+    expect(() => createVehicleRequestSchema.parse(withTrip({ volumeM3: -1 }))).toThrow();
+    expect(() => createVehicleRequestSchema.parse(withTrip({ volumeM3: 1.2345 }))).toThrow();
+    expect(createVehicleRequestSchema.parse(withTrip({ volumeM3: 1.234 })).requestType).toBe(
       'freight_transport',
     );
   });
@@ -353,13 +378,12 @@ describe('vehicle-requests: ответственный и контактный �
 
   it('грузоперевозка требует контакт на обоих концах маршрута', () => {
     for (const field of [
-      'loadingResponsibleName',
-      'loadingResponsiblePhone',
-      'unloadingResponsibleName',
-      'unloadingResponsiblePhone',
+      'fromResponsibleName',
+      'fromResponsiblePhone',
+      'toResponsibleName',
+      'toResponsiblePhone',
     ] as const) {
-      const { [field]: _omitted, ...without } = freight;
-      expect(() => createVehicleRequestSchema.parse(without)).toThrow();
+      expect(() => createVehicleRequestSchema.parse(withoutTripField(field))).toThrow();
     }
   });
 
@@ -528,9 +552,7 @@ describe('vehicle-requests: смена типа заявки (ADR 0091)', () => 
   });
 
   it('тело — полный состав нового типа плюс версия: частичным переоформление не бывает', () => {
-    expect(
-      changeVehicleRequestTypeSchema.safeParse({ ...freight, version: 3 }).success,
-    ).toBe(true);
+    expect(changeVehicleRequestTypeSchema.safeParse({ ...freight, version: 3 }).success).toBe(true);
     expect(changeVehicleRequestTypeSchema.safeParse({ ...special, version: 3 }).success).toBe(true);
     // Ни версии, ни половины состава: у нового типа заполнять деталь нечем.
     expect(changeVehicleRequestTypeSchema.safeParse(freight).success).toBe(false);
@@ -1073,44 +1095,62 @@ describe('vehicle-requests: техника на объекте (ADR 0036)', () =
 
 describe('vehicle-requests: адрес (DaData, ADR 0006 — жёсткая модель)', () => {
   it('freight требует верифицированный адрес: без адреса — отклоняется', () => {
-    const { loadingAddress: _l, unloadingAddress: _u, ...noAddr } = freight;
-    expect(() => createVehicleRequestSchema.parse(noAddr)).toThrow();
+    const { fromAddress: _f, toAddress: _t, ...noAddr } = freight.trips[0];
+    expect(() => createVehicleRequestSchema.parse({ ...freight, trips: [noAddr] })).toThrow();
     // задана только погрузка — разгрузка тоже обязательна
     expect(() =>
-      createVehicleRequestSchema.parse({ ...noAddr, loadingAddress: resolvedMeta }),
+      createVehicleRequestSchema.parse({
+        ...freight,
+        trips: [{ ...noAddr, fromAddress: resolvedMeta }],
+      }),
     ).toThrow();
   });
 
   it('freight отклоняет неверифицированный адрес (manual / resolved без ФИАС)', () => {
     expect(() =>
-      createVehicleRequestSchema.parse({ ...freight, loadingAddress: { source: 'manual' } }),
+      createVehicleRequestSchema.parse(withTrip({ fromAddress: { source: 'manual' } })),
     ).toThrow();
     expect(() =>
-      createVehicleRequestSchema.parse({
-        ...freight,
-        loadingAddress: { source: 'resolved', fiasId: null },
-      }),
+      createVehicleRequestSchema.parse(
+        withTrip({ fromAddress: { source: 'resolved', fiasId: null } }),
+      ),
     ).toThrow();
   });
 
   it('freight принимает верифицированный адрес (resolved + ФИАС)', () => {
     const v = createVehicleRequestSchema.parse(freight);
     if (v.requestType !== 'freight_transport') throw new Error('unreachable');
-    expect(v.loadingAddress?.fiasId).toBe(resolvedMeta.fiasId);
-    expect(v.unloadingAddress?.fiasId).toBe(resolvedMeta.fiasId);
+    expect(v.trips[0]!.fromAddress?.fiasId).toBe(resolvedMeta.fiasId);
+    expect(v.trips[0]!.toAddress?.fiasId).toBe(resolvedMeta.fiasId);
   });
 
-  it('update: строка адреса и метаданные передаются вместе', () => {
+  /**
+   * Пара «строка + метаданные» держится теперь формой самой ездки, а не сверкой на заявке: оба
+   * поля обязательны у **новой** строки (без `id`). У существующей (с `id`) послабление Р2а —
+   * жёсткая модель спрашивается за новое значение, а не за перезапись прежней, — и сверяет её
+   * сервер, у которого под блокировкой лежит сохранённое состояние.
+   */
+  it('update: у новой ездки адрес и метаданные передаются вместе, у существующей — послабление', () => {
     const base = { requestType: 'freight_transport' as const, version: 1 };
-    expect(() =>
-      updateVehicleRequestSchema.parse({ ...base, loadingLocation: 'Новый склад' }),
-    ).toThrow();
-    const ok = updateVehicleRequestSchema.parse({
-      ...base,
-      loadingLocation: 'Новый склад',
-      loadingAddress: resolvedMeta,
-    });
+    const { fromAddress: _f, ...newTripNoMeta } = freight.trips[0];
+    expect(() => updateVehicleRequestSchema.parse({ ...base, trips: [newTripNoMeta] })).toThrow();
+    const ok = updateVehicleRequestSchema.parse({ ...base, trips: freight.trips });
     expect(ok.requestType).toBe('freight_transport');
+    // Существующая строка (с `id`) проходит и без метаданных, и с пустым контактом: именно такие
+    // приехали бэкфилом от заявок старше ADR 0006.
+    const legacy = updateVehicleRequestSchema.parse({
+      ...base,
+      trips: [
+        {
+          ...freight.trips[0],
+          id: '11111111-2222-4333-8444-555555555555',
+          fromAddress: null,
+          fromResponsibleName: '',
+          fromResponsiblePhone: '',
+        },
+      ],
+    });
+    expect(legacy.requestType).toBe('freight_transport');
   });
 
   it('addressMeta strict: лишние поля отклоняются', () => {
@@ -1132,52 +1172,51 @@ describe('vehicle-requests: адрес (DaData, ADR 0006 — жёсткая мо
   it('freight принимает адрес из справочника объектов и складов — со ссылкой на запись', () => {
     const refId = '11111111-2222-4333-8444-555555555555';
     for (const source of ['object', 'warehouse'] as const) {
-      const v = createVehicleRequestSchema.parse({
-        ...freight,
-        loadingAddress: { source, refId },
-        unloadingAddress: { source, refId },
-      });
+      const v = createVehicleRequestSchema.parse(
+        withTrip({ fromAddress: { source, refId }, toAddress: { source, refId } }),
+      );
       if (v.requestType !== 'freight_transport') throw new Error('unreachable');
-      expect(v.loadingAddress?.source).toBe(source);
-      expect(v.loadingAddress?.refId).toBe(refId);
+      expect(v.trips[0]!.fromAddress?.source).toBe(source);
+      expect(v.trips[0]!.fromAddress?.refId).toBe(refId);
     }
   });
 
   it('freight отклоняет справочный адрес без ссылки на запись', () => {
     expect(() =>
-      createVehicleRequestSchema.parse({ ...freight, loadingAddress: { source: 'object' } }),
+      createVehicleRequestSchema.parse(withTrip({ fromAddress: { source: 'object' } })),
     ).toThrow();
     expect(() =>
-      createVehicleRequestSchema.parse({
-        ...freight,
-        loadingAddress: { source: 'warehouse', refId: null },
-      }),
+      createVehicleRequestSchema.parse(
+        withTrip({ fromAddress: { source: 'warehouse', refId: null } }),
+      ),
     ).toThrow();
   });
 
   it('freight отклоняет ссылку на запись у адреса из подсказок', () => {
     expect(() =>
-      createVehicleRequestSchema.parse({
-        ...freight,
-        loadingAddress: { ...resolvedMeta, refId: '11111111-2222-4333-8444-555555555555' },
-      }),
+      createVehicleRequestSchema.parse(
+        withTrip({
+          fromAddress: { ...resolvedMeta, refId: '11111111-2222-4333-8444-555555555555' },
+        }),
+      ),
     ).toThrow();
   });
 
   // ФИАС у справочного источника разрешён впрок: когда записи справочника получат свои
   // метаданные, он будет наследоваться от выбранной записи (целевая модель адреса).
   it('freight принимает справочный адрес с ФИАС — на будущее наследование от записи', () => {
-    const v = createVehicleRequestSchema.parse({
-      ...freight,
-      loadingAddress: {
-        source: 'object',
-        refId: '11111111-2222-4333-8444-555555555555',
-        fiasId: 'fias-1',
-        fiasLevel: 8,
-      },
-    });
+    const v = createVehicleRequestSchema.parse(
+      withTrip({
+        fromAddress: {
+          source: 'object',
+          refId: '11111111-2222-4333-8444-555555555555',
+          fiasId: 'fias-1',
+          fiasLevel: 8,
+        },
+      }),
+    );
     if (v.requestType !== 'freight_transport') throw new Error('unreachable');
-    expect(v.loadingAddress?.fiasId).toBe('fias-1');
+    expect(v.trips[0]!.fromAddress?.fiasId).toBe('fias-1');
   });
 });
 
