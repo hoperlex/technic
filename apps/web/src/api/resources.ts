@@ -151,6 +151,12 @@ export interface UserAccountMutationResult extends Omit<UserMutationResult, 'use
 export const usersApi = {
   list: (q: Query) => apiFetch<ListResult<UserAccountDto>>('/users', { query: q }),
   /**
+   * Карточка одной учётки — для панели пути в журнале изменений (ADR 0109): она показывает, чем
+   * учётка стала к сегодняшнему дню. Списком её не заменить: путь спрашивают и у архивной учётки,
+   * которой в списке по умолчанию нет.
+   */
+  get: (id: string) => apiFetch<{ user: UserAccountDto }>(`/users/${id}`),
+  /**
    * Заведение и правка учётки отвечают не голой карточкой, а карточкой с исходом письма о выданном
    * доступе: письмо уходит не всякий раз, и портал обязан сказать, ушло ли оно.
    */

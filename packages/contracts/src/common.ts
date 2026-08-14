@@ -39,6 +39,16 @@ export type ArchiveFilter = (typeof ARCHIVE_FILTERS)[number];
 export const archiveFilterSchema = z.enum(ARCHIVE_FILTERS).default('exclude');
 
 /**
+ * Булев фильтр в query-строке: `'true'` / `'false'` и «параметра нет» — три разных состояния.
+ * Отсутствие значит «не фильтровать», а не `false`: снятый переключатель и выбранное «нет» —
+ * разные вопросы к списку.
+ */
+export const booleanFlagSchema = z
+  .enum(['true', 'false'])
+  .optional()
+  .transform((v) => (v === undefined ? undefined : v === 'true'));
+
+/**
  * Базовая схема списочного запроса. `sortFields` — allowlist сортируемых полей
  * (клиент не передаёт произвольные SQL-идентификаторы).
  */

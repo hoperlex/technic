@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   USER_AUDIT_ACTIONS,
+  USER_AUDIT_FIELDS,
+  auditChangesOf,
   auditQuerySchema,
   describeAuditEntry,
   userAuditActionLabels,
+  userAuditFieldLabels,
   type AuditEntryDto,
 } from '@technic/contracts';
 
@@ -24,6 +27,9 @@ function entry(action: string, metadata: Record<string, unknown> = {}): AuditEnt
     entityId: TARGET_ID,
     targetName: 'Петров Пётр Петрович',
     targetEmail: 'petrov@example.com',
+    targetRole: 'dispatcher',
+    targetIsActive: true,
+    targetDeletedAt: null,
     metadata,
   };
 }
@@ -73,6 +79,28 @@ describe('фильтры журнала аудита', () => {
     expect(() => auditQuerySchema.parse({ sortBy: 'actorName' })).toThrow();
     expect(auditQuerySchema.parse({ sortBy: 'createdAt' }).sortBy).toBe('createdAt');
   });
+
+  it('разбирает отбор по данным учётной записи (ADR 0109)', () => {
+    const q = auditQuerySchema.parse({
+      targetRole: 'mechanic',
+      targetIsActive: 'false',
+      targetObjectId: TARGET_ID,
+      targetCounterpartyId: ACTOR_ID,
+    });
+    expect(q.targetRole).toBe('mechanic');
+    expect(q.targetIsActive).toBe(false);
+    expect(q.targetObjectId).toBe(TARGET_ID);
+    expect(q.targetCounterpartyId).toBe(ACTOR_ID);
+    expect(() => auditQuerySchema.parse({ targetRole: 'кладовщик' })).toThrow();
+  });
+
+  it('по умолчанию показывает и архивные учётки: журнал рассказывает о прошлом', () => {
+    // Умолчание расходится с остальными списками портала (`exclude`, ADR 0070) намеренно: самый
+    // частый вопрос к журналу — что стало с учёткой, которой больше нет.
+    expect(auditQuerySchema.parse({}).targetArchive).toBe('include');
+    expect(auditQuerySchema.parse({ targetArchive: 'only' }).targetArchive).toBe('only');
+    expect(() => auditQuerySchema.parse({ targetArchive: 'archived' })).toThrow();
+  });
 });
 
 describe('описатель строки журнала', () => {
@@ -86,59 +114,83 @@ describe('описатель строки журнала', () => {
     }
   });
 
-  it('собирает смену роли по значениям из metadata', () => {
+  it('перечисляет в заголовке правки то, что менялось, — по группам полей', () => {
+    // Правок в один приём бывает по пять-шесть: «изменена» обо всём подряд не отвечает ни на что,
+    // а все значения в заголовке не помещаются в строку таблицы. Объекты, добавленные и снятые
+    // одной правкой, названы один раз — это одно решение администратора, а не два.
     const text = describeAuditEntry(
-      entry('user.update', { role: { from: 'dispatcher', to: 'manager' } }),
+      entry('user.update', {
+        changes: [
+          { field: 'role', from: 'Диспетчер', to: 'Менеджер' },
+          { field: 'objectsAdded', from: null, to: 'СУ-10' },
+          { field: 'objectsRemoved', from: null, to: 'Склад №2' },
+        ],
+      }),
     );
-    expect(text).toBe('Смена роли: Диспетчер → Менеджер');
-  });
-
-  it('различает активацию и деактивацию — своего действия у них нет', () => {
-    expect(describeAuditEntry(entry('user.update', { isActive: { from: true, to: false } }))).toBe(
-      'Учётная запись деактивирована',
-    );
-    expect(describeAuditEntry(entry('user.update', { isActive: { from: false, to: true } }))).toBe(
-      'Учётная запись активирована',
-    );
-  });
-
-  it('называет роль у одобренной заявки и у заведённой учётки', () => {
-    expect(describeAuditEntry(entry('user.approve_registration', { role: 'dispatcher' }))).toBe(
-      'Заявка одобрена: назначена роль Диспетчер',
-    );
-    expect(
-      describeAuditEntry(
-        entry('user.create', { role: 'shtab', addons: ['office_equipment_operator'] }),
-      ),
-    ).toBe('Учётная запись создана: назначена роль Штаб, надстройки: Оператор (оргтехника)');
-  });
-
-  it('называет оба адреса у смены почты (ADR 0092)', () => {
-    // Прежнего адреса после смены нет больше нигде — в учётке лежит уже новый, — а вопрос разбора
-    // звучит «с какого адреса и на какой увели вход».
-    expect(
-      describeAuditEntry(
-        entry('user.change_email', {
-          oldEmail: 'ivanov@su10.ru',
-          newEmail: 'i.ivanov@su10.ru',
-        }),
-      ),
-    ).toBe('Адрес электронной почты изменён: ivanov@su10.ru → i.ivanov@su10.ru');
-    // Половины пары не бывает: «изменён на новый» без прежнего не отвечает ни на один вопрос.
-    expect(describeAuditEntry(entry('user.change_email', { newEmail: 'i.ivanov@su10.ru' }))).toBe(
-      'Адрес электронной почты изменён',
-    );
-  });
-
-  it('старая запись без значений остаётся общей строкой — задним числом журнал не дополняется (Р12)', () => {
-    expect(describeAuditEntry(entry('user.update'))).toBe('Учётная запись изменена');
-    // Тем же остаются записи с одними булевыми флагами, какими правка писалась до дополнения.
-    expect(
-      describeAuditEntry(entry('user.update', { roleChanged: true, deactivated: false })),
-    ).toBe('Учётная запись изменена');
+    expect(text).toBe('Учётная запись изменена: роль, объекты');
   });
 
   it('действие вне реестра возвращается своим кодом: описатель не должен молчать', () => {
     expect(describeAuditEntry(entry('waste_request.create'))).toBe('waste_request.create');
+  });
+});
+
+describe('изменения события журнала', () => {
+  it('у каждого поля есть подпись — иначе в строке окажется код колонки', () => {
+    for (const field of USER_AUDIT_FIELDS) {
+      expect(userAuditFieldLabels[field]?.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('отдаёт записанный перечень как есть', () => {
+    const changes = auditChangesOf(
+      entry('user.update', {
+        changes: [
+          { field: 'phone', from: '+7 (900) 000-00-00', to: '+7 (901) 111-11-11' },
+          { field: 'addonsRevoked', from: null, to: 'Оператор (оргтехника)' },
+        ],
+      }),
+    );
+    expect(changes).toEqual([
+      { field: 'phone', from: '+7 (900) 000-00-00', to: '+7 (901) 111-11-11' },
+      { field: 'addonsRevoked', from: null, to: 'Оператор (оргтехника)' },
+    ]);
+  });
+
+  it('восстанавливает пары из записей, сделанных до перечня', () => {
+    // Смена роли и активность писались готовыми парами (ADR 0088) — читателю разница в том, каким
+    // годом сделана запись, видна быть не должна.
+    expect(auditChangesOf(entry('user.update', { role: { from: 'dispatcher', to: 'manager' } })))
+      .toEqual([{ field: 'role', from: 'Диспетчер', to: 'Менеджер' }]);
+    expect(auditChangesOf(entry('user.update', { isActive: { from: true, to: false } }))).toEqual([
+      { field: 'isActive', from: 'открыт', to: 'закрыт' },
+    ]);
+    // Заведение учётки и одобрение заявки писали роль одним значением: это «стало».
+    expect(auditChangesOf(entry('user.approve_registration', { role: 'dispatcher' }))).toEqual([
+      { field: 'role', from: null, to: 'Диспетчер' },
+    ]);
+    // Оба адреса у смены почты (ADR 0092): прежнего после смены нет больше нигде.
+    expect(
+      auditChangesOf(
+        entry('user.change_email', { oldEmail: 'ivanov@su10.ru', newEmail: 'i.ivanov@su10.ru' }),
+      ),
+    ).toEqual([{ field: 'email', from: 'ivanov@su10.ru', to: 'i.ivanov@su10.ru' }]);
+  });
+
+  it('о правке без значений говорит прямо, а не додумывает её', () => {
+    // Область видимости писалась одним признаком «менялось». Придумать за него состав объектов
+    // нельзя, а промолчать — значит потерять правку из истории вовсе.
+    expect(auditChangesOf(entry('user.update', { scopeChanged: true, roleChanged: false }))).toEqual(
+      [{ field: 'scope', from: null, to: null }],
+    );
+    expect(auditChangesOf(entry('user.update'))).toEqual([]);
+    expect(describeAuditEntry(entry('user.update'))).toBe('Учётная запись изменена');
+  });
+
+  it('не пропускает в перечень мусор из metadata', () => {
+    const changes = auditChangesOf(
+      entry('user.update', { changes: [{ field: 'role', from: 'Диспетчер', to: 'Механик' }, 42] }),
+    );
+    expect(changes).toEqual([{ field: 'role', from: 'Диспетчер', to: 'Механик' }]);
   });
 });

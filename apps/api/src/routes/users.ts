@@ -85,6 +85,7 @@ import {
   replaceUserObjects,
 } from '../services/user-scopes';
 import { assertEmailFree, asEmailConflict } from '../services/user-email';
+import { userAuditChanges } from '../services/user-audit-diff';
 import { registerPurgeRoute } from '../services/directory-purge';
 
 const idParams = z.object({ id: z.string().uuid() });
@@ -847,6 +848,20 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  /**
+   * Карточка одной учётки. Заведена ради панели пути в журнале изменений (ADR 0109): она
+   * показывает, чем учётка стала к сегодняшнему дню — роль, доступ, объекты, отделы, надстройки,
+   * работник, — и без этого путь обрывался бы на последнем событии, не отвечая «а что сейчас».
+   *
+   * Архив здесь не спрятан, в отличие от списка: путь чаще всего спрашивают как раз у отправленной
+   * в архив учётки, и 404 на неё означал бы пустую панель там, где разбор и начинается.
+   */
+  r.get('/:id', { ...guards, schema: { params: idParams } }, async (req) => {
+    const user = await fetchUserDto(req.params.id);
+    if (!user) throw err.notFound('Пользователь не найден');
+    return { user };
+  });
+
   r.post('/', { ...guards, schema: { body: createUserBodySchema } }, async (req, reply) => {
     const actor = requirePrincipal(req);
     const body = req.body;
@@ -924,6 +939,7 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
     } catch (e) {
       throw asPersonConflict(asEmailConflict(e));
     }
+    const createdDto = (await fetchUserDto(created.id))!;
     await writeAudit({
       actorUserId: actor.id,
       action: 'user.create',
@@ -939,10 +955,13 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
         isActive: body.isActive,
         notified,
         ...bindingMetadata(binding),
+        // Состав заведённой учётки словами (ADR 0109): роль, доступ, объекты, отделы, надстройки,
+        // работник. Признаки выше остаются рядом — их читают записи, сделанные до этого перечня.
+        changes: userAuditChanges(null, createdDto),
       },
     });
     reply.code(201);
-    return { user: (await fetchUserDto(created.id))!, notified };
+    return { user: createdDto, notified };
   });
 
   r.patch(
@@ -952,6 +971,19 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
       const actor = requirePrincipal(req);
       const { id } = req.params;
       const body = req.body;
+
+      /**
+       * Карточка «до» — для журнала изменений (ADR 0109): пары «было → стало» собираются по
+       * названиям объектов, отделов и работника, а не по идентификаторам, и взять их можно только
+       * из собранного DTO.
+       *
+       * Снимок берётся до транзакции, а не внутри неё: выборка карточки идёт своими запросами, и
+       * тащить в неё `tx` пришлось бы через половину модуля. Плата за это — гонка двух
+       * администраторов: если чужая правка легла между снимком и блокировкой строки, в нашей
+       * записи журнала она попадёт в левую часть пары. Обе правки при этом остаются в журнале
+       * своими событиями, и порядок их виден по времени.
+       */
+      const before = await fetchUserDto(id);
 
       const {
         scopeChanged,
@@ -1180,6 +1212,7 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
         addonsChanged ||
         personChanged;
       if (bumpAuth) await revokeAllForUser(id);
+      const after = (await fetchUserDto(id))!;
       // Перепривязка — своё событие журнала со старым и новым человеком (Р6). Внутри общей правки
       // от неё остался бы один флаг «что-то поменяли»: разбор «кому ушли задания Иванова» задают
       // именно парой «был — стал», а искать её потом по соседним записям нечем.
@@ -1192,6 +1225,15 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
           metadata: {
             person: { from: personBefore, to: binding.personId },
             ...bindingMetadata(binding),
+            // Идентификаторы рядом с именами, а не вместо них (ADR 0109): «кому ушли задания
+            // Иванова» спрашивают про человека, а `8f0c…` на этот вопрос не отвечает.
+            changes: [
+              {
+                field: 'person',
+                from: before?.person?.fullName ?? null,
+                to: after.person?.fullName ?? null,
+              },
+            ],
           },
         });
       }
@@ -1204,7 +1246,15 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
         entityType: 'user',
         entityId: id,
         metadata: approving
-          ? { role: roleAfter, addons, notified, ...bindingMetadata(binding) }
+          ? {
+              role: roleAfter,
+              addons,
+              notified,
+              ...bindingMetadata(binding),
+              // Одобрение — та же правка учётки, только с назначением роли: заявка была без роли и
+              // без доступа, и пары «было → стало» показывают ровно это.
+              changes: userAuditChanges(before, after),
+            }
           : {
               roleChanged,
               counterpartyChanged,
@@ -1225,9 +1275,12 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
               // из `user_role_addons` и строку с `granted_by`, и без этой записи в журнале не
               // осталось бы следа, чем доступ был до правки.
               ...(addonsChanged ? { addons } : {}),
+              // Полный перечень изменённого (ADR 0109). Признаки выше остаются рядом: по ним
+              // читаются записи, сделанные до перечня, и ломать их разбор незачем.
+              changes: userAuditChanges(before, after),
             },
       });
-      return { user: (await fetchUserDto(id))!, notified };
+      return { user: after, notified };
     },
   );
 
@@ -1449,6 +1502,9 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
           notifiedOld: result.notifiedOld,
           shadowsArchived: result.shadowsArchived,
           self,
+          // Та же пара перечнем изменений (ADR 0109): журнал показывает смену адреса такой же
+          // строкой, что и смену роли, — читателю незачем знать, какой ручкой её сделали.
+          changes: [{ field: 'email', from: result.oldEmail, to: newEmail }],
         },
       });
 

@@ -1,48 +1,43 @@
-import { useEffect } from 'react';
-import { DatePicker, Select, Space, Typography } from 'antd';
+import { useEffect, useState } from 'react';
+import { Space, Tag, Typography } from 'antd';
 import dayjs from 'dayjs';
 import { useQuery } from '@tanstack/react-query';
-import {
-  describeAuditEntry,
-  USER_AUDIT_ACTIONS,
-  userAuditActionLabels,
-  type AuditEntryDto,
-} from '@technic/contracts';
-import { DICTIONARY_PAGE_SIZE, MOSCOW_TZ } from '@shared/config';
+import { roleColors, roleLabels, type AuditEntryDto } from '@technic/contracts';
+import { MOSCOW_TZ } from '@shared/config';
 import { DataTable, PageTableLayout, textColumn, type CardConfig } from '@shared/ui';
-import { useListParams, withSavedOption } from '@shared/lib';
-import { auditApi, usersApi } from '../../api/resources';
+import { sortOptionsFrom } from '@shared/ui';
+import { useListParams } from '@shared/lib';
+import { userAuditKeys } from '@entities/user-audit';
+import { auditApi } from '../../api/resources';
 import { formatDateTime } from '../../utils/format';
+import { AuditEventCell } from './UserAuditChanges';
+import { useUserAuditFilters, type AuditFilterParams } from './UserAuditFilters';
+import { UserAuditPathDrawer } from './UserAuditPathDrawer';
 
 /**
- * Журнал действий с учётными записями (ADR 0088): когда · кто · что сделал · над кем.
+ * Журнал изменений учётных записей (ADR 0088, ADR 0109): что стало с учёткой, кто это сделал и
+ * когда.
  *
- * Экран отвечает на вопросы разбора — «кто выдал этому человеку роль диспетчера и когда», «что
- * стало с учёткой, которой больше нет». Раньше их задавали базе руками: ручка журнала была, а
- * интерфейса у неё не было ни одного.
+ * Экран отвечает на вопросы разбора — «кто выдал этому человеку роль диспетчера», «кому открыли
+ * СУ-10 в прошлый вторник», «что стало с учёткой, которой больше нет». Раньше он показывал список
+ * действий администраторов без расшифровки: правка объектов, отделов и контактов приезжала одной
+ * строкой «Учётная запись изменена», а отобрать журнал по данным самих учёток было нечем.
  *
  * Двух вещей здесь нет намеренно. Кода действия не видно нигде: строку собирает описатель из
- * контрактов (`describeAuditEntry`), и он же соберёт её будущему экспорту — раздвоившись в
- * вёрстке, формулировки разъехались бы при первом же новом действии. И карточки события нет:
- * строка журнала сама себе карточка, показывать в ней больше нечего.
+ * контрактов (`describeAuditEntry`, `auditChangesOf`) — раздвоившись в вёрстке, формулировки
+ * разъехались бы при первом же новом поле учётки. И карточки события нет: строка сама себе
+ * карточка, а связный рассказ показывает путь учётки — панель, которая открывается по строке.
  */
 
-/** Учётка, историю которой открыли из списка: идентификатор для фильтра, имя — для подписи. */
+/**
+ * Учётка, чей путь показывают: идентификатор для запроса, имя — для заголовка панели, пока
+ * карточка не загрузилась. Тип общий с вкладкой учёток — путь открывают и оттуда, из строки
+ * списка.
+ */
 export interface AuditTarget {
   id: string;
   name: string;
 }
-
-interface Props {
-  /**
-   * Чья история показана. Значение приходит снаружи, потому что задаётся оно не здесь, а пунктом
-   * «История» в списке учёток: подвкладка открывается уже суженной до нужного человека.
-   */
-  target: AuditTarget | null;
-  onTargetChange: (target: AuditTarget | null) => void;
-}
-
-const DATE = 'YYYY-MM-DD';
 
 /**
  * Границы периода — моментами, а не сутками: записи ложатся с точностью до секунды, и «за 10
@@ -54,41 +49,55 @@ const dayStart = (date: string | undefined): string | undefined =>
 const dayEnd = (date: string | undefined): string | undefined =>
   date ? dayjs.tz(date, MOSCOW_TZ).endOf('day').toISOString() : undefined;
 
-const actionOptions = USER_AUDIT_ACTIONS.map((action) => ({
-  value: action,
-  label: userAuditActionLabels[action],
-}));
-
-/** Над кем действовали: ФИО и адрес. Пусто — цель не учётка либо её удалили насовсем. */
+/** Над кем действовали: ФИО, адрес и чем учётка стала сейчас. Пусто — её удалили насовсем. */
 function targetCell(entry: AuditEntryDto) {
   if (!entry.targetName && !entry.targetEmail) return '—';
   return (
     <Space direction="vertical" size={0}>
       <span>{entry.targetName ?? '—'}</span>
       {entry.targetEmail ? (
-        <Typography.Text type="secondary">{entry.targetEmail}</Typography.Text>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {entry.targetEmail}
+        </Typography.Text>
       ) : null}
+      <Space size={4} wrap>
+        {entry.targetRole ? (
+          <Tag color={roleColors[entry.targetRole]} style={{ marginInlineEnd: 0 }}>
+            {roleLabels[entry.targetRole]}
+          </Tag>
+        ) : null}
+        {entry.targetDeletedAt ? (
+          <Tag color="red" style={{ marginInlineEnd: 0 }}>
+            в архиве
+          </Tag>
+        ) : null}
+      </Space>
     </Space>
   );
 }
 
-export function UsersAuditTab({ target, onTargetChange }: Props) {
-  const { params, setParams, onTableChange } = useListParams<{
-    /** Отмеченные действия одной строкой через запятую — в этом виде их и ждёт сервер. */
-    actions?: string;
-    actorUserId?: string;
-    from?: string;
-    to?: string;
-  }>({}, { searchKeys: [] });
+export function UsersAuditTab() {
+  // Поиск идёт по людям — ФИО и адресу учётки, ФИО администратора, — а не по столбцам таблицы:
+  // сортируемых и ищущихся колонок у журнала нет вовсе.
+  const { params, setParams, setSort, onTableChange } = useListParams<AuditFilterParams>(
+    {},
+    { searchKeys: [] },
+  );
+
+  /** Чей путь открыт панелью; `null` — панель закрыта. */
+  const [path, setPath] = useState<AuditTarget | null>(null);
+  /**
+   * Чьей учёткой сужен журнал. Живёт здесь, а не приходит снаружи: разбор конкретного человека
+   * теперь показывает панель пути — и из списка учёток, и из строки журнала, — а этот фильтр
+   * остался тем, чем и был, обычным сужением ленты.
+   */
+  const [target, setTarget] = useState<AuditTarget | null>(null);
 
   /** Правка любого фильтра возвращает на первую страницу: та же страница при другом наборе — уже другие записи. */
   const applyFilter = (patch: Partial<typeof params>) =>
     setParams((p) => ({ ...p, ...patch, page: 1 }));
 
-  /**
-   * Смена человека — такая же смена отбора, как и любая другая, только приходит она снаружи:
-   * пунктом «История» в списке учёток. Страница поэтому тоже возвращается на первую.
-   */
+  /** Смена человека — такая же смена отбора, как и любая другая: страница возвращается на первую. */
   useEffect(() => {
     setParams((p) => ({ ...p, page: 1 }));
   }, [target?.id, setParams]);
@@ -103,34 +112,21 @@ export function UsersAuditTab({ target, onTargetChange }: Props) {
     entityId: target?.id,
   };
   const { data, isFetching } = useQuery({
-    queryKey: ['audit', query],
+    queryKey: userAuditKeys.list(query),
     queryFn: () => auditApi.list(query),
   });
 
-  /**
-   * Люди для обоих списков выбора — один запрос: и действующим лицом, и целью бывает одна и та же
-   * учётка. Неактивные из списка не убраны: журнал читают как раз про тех, кого выключили, и
-   * фильтр без них отвечал бы «записей нет» на самый частый вопрос.
-   */
-  const { data: people, isFetching: peopleLoading } = useQuery({
-    queryKey: ['users', 'audit-filter-options'],
-    queryFn: () =>
-      usersApi.list({
-        page: 1,
-        pageSize: DICTIONARY_PAGE_SIZE,
-        sortBy: 'fullName',
-        sortOrder: 'asc',
-      }),
-  });
-  const personOptions = (people?.items ?? []).map((u) => ({ value: u.id, label: u.fullName }));
-  // Учётка из архива в списке действующих не значится, а историю у неё спрашивают чаще прочих —
-  // имя её приезжает вместе с выбором, поэтому поле показывает человека, а не голый идентификатор.
-  const targetOptions = withSavedOption(personOptions, {
-    id: target?.id,
-    name: target?.name,
+  const { filters, mobileFilters } = useUserAuditFilters({
+    params,
+    apply: applyFilter,
+    target,
+    onTargetChange: setTarget,
   });
 
-  const selectedActions = params.actions ? params.actions.split(',') : [];
+  const openPath = (entry: AuditEntryDto) => {
+    if (!entry.entityId) return;
+    setPath({ id: entry.entityId, name: entry.targetName ?? entry.targetEmail ?? '' });
+  };
 
   const columns = [
     textColumn<AuditEntryDto>({
@@ -141,9 +137,30 @@ export function UsersAuditTab({ target, onTargetChange }: Props) {
       width: 150,
       render: (_v, r) => formatDateTime(r.createdAt),
     }),
+    // Учётка вторым столбцом, а не последним: экран про то, что стало с людьми, и читают его по
+    // ним же — «кто» отвечает уже на вопрос, кем это сделано.
+    textColumn<AuditEntryDto>({
+      key: 'target',
+      title: 'Учётная запись',
+      dataIndex: 'targetName',
+      sortable: false,
+      searchable: false,
+      width: 260,
+      render: (_v, r) => targetCell(r),
+    }),
+    // Сортировка идёт по коду действия, а показывается человекочитаемая строка: одинаковые
+    // события собираются рядом, и читать их подряд («все отказы за месяц») удобнее, чем выбирать
+    // их фильтром по одному.
+    textColumn<AuditEntryDto>({
+      key: 'action',
+      title: 'Что изменилось',
+      dataIndex: 'action',
+      searchable: false,
+      render: (_v, r) => <AuditEventCell entry={r} />,
+    }),
     textColumn<AuditEntryDto>({
       key: 'actorName',
-      title: 'Администратор',
+      title: 'Кто изменил',
       dataIndex: 'actorName',
       // Сортировки нет: сервер упорядочивает журнал по времени и коду действия, а ФИО автора
       // приходит join'ом — `AUDIT_SORT_FIELDS` его не принимает.
@@ -154,101 +171,41 @@ export function UsersAuditTab({ target, onTargetChange }: Props) {
       // (подтверждение адреса, восстановление пароля по ссылке из письма).
       render: (_v, r) => r.actorName ?? '—',
     }),
-    // Сортировка идёт по коду действия, а показывается человекочитаемая строка: одинаковые
-    // события собираются рядом, и читать их подряд («все отказы за месяц») удобнее, чем выбирать
-    // их фильтром по одному.
-    textColumn<AuditEntryDto>({
-      key: 'action',
-      title: 'Что сделал',
-      dataIndex: 'action',
-      searchable: false,
-      render: (_v, r) => describeAuditEntry(r),
-    }),
-    textColumn<AuditEntryDto>({
-      key: 'target',
-      title: 'Над кем',
-      dataIndex: 'targetName',
-      sortable: false,
-      searchable: false,
-      width: 260,
-      render: (_v, r) => targetCell(r),
-    }),
   ];
 
   /**
-   * Фильтры полосой над таблицей, как на остальных списках портала. В шит фильтров (ADR 0030) она
-   * не переложена намеренно: главный фильтр журнала — набор действий, а шит множественного выбора
-   * не умеет, и на телефоне отбор шёл бы по одному действию за раз. Полоса переносится по строкам
-   * и остаётся одинаковой в обоих режимах.
-   */
-  const filters = (
-    <Space wrap size={8}>
-      <DatePicker.RangePicker
-        format="DD.MM.YYYY"
-        style={{ width: 250 }}
-        allowEmpty={[true, true]}
-        placeholder={['Действия с', 'по']}
-        value={[params.from ? dayjs(params.from) : null, params.to ? dayjs(params.to) : null]}
-        onChange={(range) =>
-          applyFilter({ from: range?.[0]?.format(DATE), to: range?.[1]?.format(DATE) })
-        }
-      />
-      <Select
-        allowClear
-        mode="multiple"
-        // Отмеченное сворачивается в «+N», когда не помещается: набор бывает и в десяток
-        // действий, и растянутое поле выдавило бы остальные фильтры на другую строку.
-        maxTagCount="responsive"
-        placeholder="Все действия"
-        style={{ width: 320 }}
-        options={actionOptions}
-        value={selectedActions}
-        onChange={(v: string[]) => applyFilter({ actions: v.length > 0 ? v.join(',') : undefined })}
-      />
-      <Select
-        allowClear
-        showSearch
-        optionFilterProp="label"
-        placeholder="Любой администратор"
-        style={{ width: 240 }}
-        options={personOptions}
-        loading={peopleLoading}
-        value={params.actorUserId}
-        onChange={(v: string | undefined) => applyFilter({ actorUserId: v })}
-      />
-      <Select
-        allowClear
-        showSearch
-        optionFilterProp="label"
-        placeholder="Любая учётная запись"
-        style={{ width: 260 }}
-        options={targetOptions}
-        loading={peopleLoading}
-        value={target?.id}
-        onChange={(id: string | undefined) =>
-          onTargetChange(
-            id ? { id, name: targetOptions.find((o) => o.value === id)?.label ?? id } : null,
-          )
-        }
-      />
-    </Space>
-  );
-
-  /**
-   * Строка журнала карточкой на телефоне (ADR 0042). Заголовок — момент события: журнал читают
-   * сверху вниз по времени, а «что сделал» и «над кем» отвечают уже внутри карточки.
+   * Строка журнала карточкой на телефоне (ADR 0042). Заголовок — учётка: список читают по людям,
+   * а момент события уходит подстрокой, как и автор правки.
    */
   const card: CardConfig<AuditEntryDto> = {
-    title: (r) => formatDateTime(r.createdAt),
-    primary: (r) => describeAuditEntry(r),
+    title: (r) => r.targetName ?? r.targetEmail ?? '—',
+    badge: (r) => (r.targetDeletedAt ? <Tag color="red">в архиве</Tag> : null),
+    primary: (r) => <AuditEventCell entry={r} />,
     lines: [
-      (r) => (r.targetName ? `Над кем: ${r.targetName}` : null),
+      (r) => formatDateTime(r.createdAt),
       (r) => (r.actorName ? `Кто: ${r.actorName}` : null),
     ],
+    onOpen: openPath,
   };
 
   return (
-    <PageTableLayout filters={filters}>
+    <PageTableLayout
+      filters={filters}
+      mobile={{
+        search: {
+          value: params.search,
+          placeholder: 'ФИО или адрес',
+          onChange: (v) => applyFilter({ search: v }),
+        },
+        filters: mobileFilters,
+        sort: {
+          options: sortOptionsFrom(columns, { createdAt: 'Когда' }),
+          sortBy: params.sortBy,
+          sortOrder: params.sortOrder,
+          onChange: setSort,
+        },
+      }}
+    >
       <DataTable<AuditEntryDto>
         columns={columns}
         card={card}
@@ -259,7 +216,13 @@ export function UsersAuditTab({ target, onTargetChange }: Props) {
         pageSize={params.pageSize}
         sortBy={params.sortBy}
         sortOrder={params.sortOrder}
+        onRowClick={openPath}
         onChange={onTableChange}
+      />
+      <UserAuditPathDrawer
+        userId={path?.id ?? null}
+        fallbackName={path?.name}
+        onClose={() => setPath(null)}
       />
     </PageTableLayout>
   );

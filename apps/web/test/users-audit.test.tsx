@@ -60,25 +60,38 @@ function entry(over: Partial<AuditEntryDto> = {}): AuditEntryDto {
     entityId: EMPLOYEE.id,
     targetName: EMPLOYEE.fullName,
     targetEmail: EMPLOYEE.email,
+    targetRole: EMPLOYEE.role,
+    targetIsActive: EMPLOYEE.isActive,
+    targetDeletedAt: null,
     metadata: {},
     ...over,
   };
 }
 
-/** Смена роли: значения в metadata пишутся с ADR 0088 — по ним и собирается строка. */
+/**
+ * Правка учётки: значения пишутся перечнем изменений (ADR 0109) — по нему и собираются строки
+ * «поле: было → стало».
+ */
 const ROLE_CHANGE = entry({
-  metadata: { role: { from: 'dispatcher', to: 'manager' } },
+  metadata: {
+    changes: [
+      { field: 'role', from: 'Диспетчер', to: 'Менеджер' },
+      { field: 'objectsAdded', from: null, to: 'СУ-10' },
+    ],
+  },
 });
 /** Отправка в архив (ADR 0063): своё действие, и путать его с удалением насовсем нельзя. */
 const ARCHIVED = entry({ id: 'a-2', action: 'user.delete', createdAt: '2026-08-04T12:00:00.000Z' });
 
 const AUDIT = 'GET /audit';
+const USER_CARD = 'GET /users/:id';
 
 function renderTab(role: 'admin' | 'manager' = 'admin', over: RouteMap = {}): HttpMock {
   const http = mockHttp({
     'GET /users': () => json(list([EMPLOYEE])),
     'GET /users/pending-count': () => json({ count: 0 }),
-    // Справочники области: журналу не нужны, но список учёток спрашивает их при отрисовке.
+    [USER_CARD]: () => json({ user: EMPLOYEE }),
+    // Справочники области: журналу они нужны для фильтров по данным учёток.
     'GET /objects': () => json(emptyList()),
     'GET /departments': () => json(emptyList()),
     'GET /counterparties': () => json(emptyList()),
@@ -113,6 +126,22 @@ async function rowAction(email: string, label: string): Promise<void> {
   fireEvent.click(row.querySelector('button')!);
   fireEvent.click(await screen.findByText(label));
 }
+
+/**
+ * Поля выбора в полосе фильтров по порядку. Искать их по подсказке нельзя: у поля с выбранным
+ * значением подсказки уже нет, а отмечать второе действие приходится в том же поле.
+ */
+const FILTER = {
+  actions: 0,
+  actor: 1,
+  target: 2,
+  role: 3,
+  access: 4,
+  object: 5,
+  department: 6,
+  counterparty: 7,
+  archive: 8,
+};
 
 /**
  * Поле фильтра в журнале по его месту в полосе. Соседняя подвкладка остаётся смонтированной
@@ -150,20 +179,48 @@ function typeRange(from: string, to: string): void {
   }
 }
 
-describe('журнал действий с учётными записями', () => {
-  it('строки читаются словами, а кода действия в них нет', async () => {
-    // Ради этого описатель и живёт в контрактах: «Смена роли: Диспетчер → Менеджер» собирается из
-    // action и metadata одним правилом, а «user.update» человеку не говорит ничего.
+describe('журнал изменений учётных записей', () => {
+  it('изменения читаются значениями, а кода действия в строке нет', async () => {
+    // Ради этого описатель и живёт в контрактах: заголовок называет затронутое, а под ним стоят
+    // пары «было → стало». «user.update» человеку не говорит ничего, а «изменена» — почти ничего.
     renderTab();
     openTab('Аудит');
 
-    expect(await screen.findByText('Смена роли: Диспетчер → Менеджер')).toBeDefined();
+    expect(await screen.findByText('Учётная запись изменена: роль, объекты')).toBeDefined();
+    expect(screen.getByText('Роль: Диспетчер → Менеджер')).toBeDefined();
+    // У появившегося значения левой части нет — стрелка из пустоты только мешает.
+    expect(screen.getByText('Объекты добавлены: СУ-10')).toBeDefined();
     expect(screen.getByText('Учётная запись отправлена в архив')).toBeDefined();
     expect(screen.queryByText('user.update')).toBeNull();
     expect(screen.queryByText('user.delete')).toBeNull();
     // Над кем действовали — с адресом: без него строка про однофамильцев не отвечает ни на что.
     expect(screen.getAllByText(EMPLOYEE.fullName).length).toBeGreaterThan(0);
     expect(screen.getAllByText(EMPLOYEE.email).length).toBeGreaterThan(0);
+  });
+
+  it('правка, записанная до перечня изменений, честно говорит, что значений нет', async () => {
+    // Записи старше ADR 0109 хранят один признак «менялось». Придумывать за них значения нельзя, а
+    // молчать — значит потерять правку из истории вовсе.
+    renderTab('admin', {
+      [AUDIT]: () => json(list([entry({ metadata: { scopeChanged: true } })])),
+    });
+    openTab('Аудит');
+
+    expect(await screen.findByText('Объекты и отделы: значения не сохранены')).toBeDefined();
+  });
+
+  it('отбор по данным учётки уходит в запрос', async () => {
+    // То, ради чего фильтры и заведены: «что меняли у механиков» — вопрос про роль учётки, а не
+    // про действие администратора.
+    const http = renderTab();
+    openTab('Аудит');
+    await waitFor(() => expect(http.countOf(AUDIT)).toBe(1));
+
+    // Роль из начала перечня: список ролей в jsdom виртуализируется, и до конца его не докрутить.
+    await pickFilterOption(FILTER.role, 'Диспетчер');
+
+    await waitFor(() => expect(http.lastCall(AUDIT)!.query.get('targetRole')).toBe('dispatcher'));
+    expect(http.lastCall(AUDIT)!.query.get('page')).toBe('1');
   });
 
   it('без права на журнал нет ни подвкладки, ни пункта «История»', async () => {
@@ -179,21 +236,30 @@ describe('журнал действий с учётными записями', (
     expect(http.countOf(AUDIT)).toBe(0);
   });
 
-  it('пункт «История» открывает журнал, суженный до этой учётки', async () => {
+  it('пункт «История» показывает путь учётки, не уводя со списка', async () => {
+    // Путь панелью, а не переходом на соседнюю подвкладку: разбирающий учётку человек иначе терял
+    // и её строку, и отбор, которым он до неё добрался.
     const http = renderTab();
     await rowAction(EMPLOYEE.email, 'История');
 
-    expect(await screen.findByText('Смена роли: Диспетчер → Менеджер')).toBeDefined();
+    expect(await screen.findByText('Роль: Диспетчер → Менеджер')).toBeDefined();
     await waitFor(() => expect(http.countOf(AUDIT)).toBe(1));
     const query = http.lastCall(AUDIT)!.query;
     // Пара «тип и идентификатор»: журнал общий на весь портал, и без типа фильтр отобрал бы
     // заодно однажды совпавший идентификатор чужой записи.
     expect(query.get('entityType')).toBe('user');
     expect(query.get('entityId')).toBe(EMPLOYEE.id);
-    // Кем сужен журнал, видно в самом фильтре: иначе строки выглядят отобранными неизвестно по чему.
-    expect(document.querySelector('[id$="-panel-audit"]')!.textContent).toContain(
-      EMPLOYEE.fullName,
+    // Путь читается от начала: заявка, одобрение, правки — в том порядке, в каком это было.
+    expect(query.get('sortOrder')).toBe('asc');
+    // Чем учётка стала сейчас — последний вопрос пути, и на него отвечает её карточка. Считается
+    // точный адрес: шаблон `/users/:id` совпал бы и со счётчиком заявок на регистрацию.
+    await waitFor(() =>
+      expect(http.calls.filter((c) => c.path === `/users/${EMPLOYEE.id}`)).toHaveLength(1),
     );
+    const drawer = document.querySelector('.ant-drawer')!;
+    expect(drawer.textContent).toContain('Менеджер');
+    // Список учёток остался на месте: подвкладка не переключилась.
+    expect(document.querySelector('.ant-tabs-tab-active')!.textContent).toContain('Учётные записи');
   });
 
   it('выбранные сутки уходят границами дня, а не датами', async () => {
@@ -217,8 +283,8 @@ describe('журнал действий с учётными записями', (
     openTab('Аудит');
     await waitFor(() => expect(http.countOf(AUDIT)).toBe(1));
 
-    await pickFilterOption(0, 'Учётная запись отправлена в архив');
-    await pickFilterOption(0, 'Учётная запись восстановлена из архива');
+    await pickFilterOption(FILTER.actions, 'Учётная запись отправлена в архив');
+    await pickFilterOption(FILTER.actions, 'Учётная запись восстановлена из архива');
 
     await waitFor(() => expect(http.countOf(AUDIT)).toBe(3));
     expect(http.lastCall(AUDIT)!.query.get('actions')).toBe('user.delete,user.restore');

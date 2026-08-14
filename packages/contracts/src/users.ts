@@ -15,7 +15,13 @@ import {
   type RoleAddon,
 } from './role-addons';
 import type { CounterpartyType } from './counterparties';
-import { baseListQuery, dateOnlySchema, optionalPhoneSchema, uuidSchema } from './common';
+import {
+  baseListQuery,
+  booleanFlagSchema,
+  dateOnlySchema,
+  optionalPhoneSchema,
+  uuidSchema,
+} from './common';
 import { emailSchema } from './email';
 import { passwordIdentityIssue, passwordSchema, PASSWORD_MAX } from './password';
 import { personNameFields, personNamePartialFields, type PersonNameParts } from './person-name';
@@ -37,10 +43,7 @@ export const USER_SORT_FIELDS = [
   'createdAt',
 ] as const;
 
-const booleanFlag = z
-  .enum(['true', 'false'])
-  .optional()
-  .transform((v) => (v === undefined ? undefined : v === 'true'));
+const booleanFlag = booleanFlagSchema;
 
 export const userListQuerySchema = baseListQuery(USER_SORT_FIELDS).extend({
   role: roleSchema.optional(),

@@ -71,6 +71,8 @@ import {
 } from './DriverPersonField';
 import { RejectRegistrationModal } from './RejectRegistrationModal';
 import { UsersAuditTab, type AuditTarget } from './UsersAuditTab';
+import { UserAuditPathDrawer } from './UserAuditPathDrawer';
+import { userAuditKeys } from '@entities/user-audit';
 import { isApiError } from '@shared/api';
 import { actionsColumn, boolBadgeColumn, textColumn } from '@shared/ui';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
@@ -1393,12 +1395,11 @@ export function UsersTab() {
 
   const [tab, setTab] = useState('accounts');
   /**
-   * Чья история показана в журнале. Состояние общее у двух подвкладок, потому что задаёт его одна
-   * (пункт «История» в списке учёток), а показывает другая; в адрес страницы оно не уходит —
-   * `AdministrationPage` своей вкладки там тоже не хранит, и половина адреса не восстановила бы,
-   * где человек находился.
+   * Чей путь открыт панелью. Историю спрашивают прямо из строки списка, не уходя с него (ADR
+   * 0109): раньше пункт «История» переключал на соседнюю подвкладку, и человек, разбиравший
+   * учётку, терял и её строку, и отбор, которым он до неё добрался.
    */
-  const [auditTarget, setAuditTarget] = useState<AuditTarget | null>(null);
+  const [pathUser, setPathUser] = useState<AuditTarget | null>(null);
 
   const qc = useQueryClient();
   /**
@@ -1408,13 +1409,12 @@ export function UsersTab() {
    * тем же приёмом устроены вкладки разделов (`PageTabs`).
    */
   const openTab = (key: string) => {
-    if (key === 'audit') void qc.invalidateQueries({ queryKey: ['audit'] });
+    if (key === 'audit') void qc.invalidateQueries({ queryKey: userAuditKeys.root });
     setTab(key);
   };
 
   const showHistory = (user: UserAccountDto) => {
-    setAuditTarget({ id: user.id, name: user.fullName });
-    openTab('audit');
+    setPathUser({ id: user.id, name: user.fullName });
   };
 
   const items = [
@@ -1428,7 +1428,7 @@ export function UsersTab() {
           {
             key: 'audit',
             label: 'Аудит',
-            children: <UsersAuditTab target={auditTarget} onTargetChange={setAuditTarget} />,
+            children: <UsersAuditTab />,
           },
         ]
       : []),
@@ -1436,6 +1436,11 @@ export function UsersTab() {
 
   return (
     <div style={{ height: '100%' }}>
+      <UserAuditPathDrawer
+        userId={pathUser?.id ?? null}
+        fallbackName={pathUser?.name}
+        onClose={() => setPathUser(null)}
+      />
       <Tabs
         className="full-height-tabs"
         size="small"

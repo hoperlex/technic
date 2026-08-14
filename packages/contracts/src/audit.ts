@@ -1,19 +1,23 @@
 import { z } from 'zod';
-import { baseListQuery, uuidSchema } from './common';
-import { roleLabels, type Role } from './enums';
+import { ARCHIVE_FILTERS, baseListQuery, booleanFlagSchema, uuidSchema } from './common';
+import { roleLabels, roleSchema, type Role } from './enums';
 import {
   registrationRoleRequestLabels,
   type RegistrationRoleRequest,
 } from './registration-request';
 import { roleAddonLabels, type RoleAddon } from './role-addons';
 
-// ── Аудит действий с учётными записями (ADR 0088) ──
+// ── Журнал изменений учётных записей (ADR 0088, ADR 0109) ──
 // Журнал `audit_log` пишется всем порталом, но читают его по-разному: история одной заявки едет в
-// её карточку (`request-history.ts`), а здесь — административные действия над учётками. Реестр
+// её карточку (`request-history.ts`), а здесь — что происходило с учётными записями. Реестр
 // действий закрытый и лежит в контрактах: подвкладка показывает не «весь журнал с фильтром», а
 // перечисленный список событий, и перечень обязан быть один на сервер, таблицу и будущий экспорт.
+//
+// Событие журнала отвечает на три вопроса сразу: что за учётка, что в ней стало другим и кто это
+// сделал. Второй вопрос — тот, ради которого экран переделан (ADR 0109): раньше правка ложилась в
+// журнал булевыми признаками («что-то в области видимости меняли»), и разбор упирался в них.
 
-/** Строка журнала. `targetName`/`targetEmail` — учётка, над которой действовали (join по `entityId`). */
+/** Строка журнала. `target*` — учётка, над которой действовали (join по `entityId`). */
 export interface AuditEntryDto {
   id: string;
   /** Момент события (ISO). */
@@ -30,6 +34,15 @@ export interface AuditEntryDto {
    */
   targetName: string | null;
   targetEmail: string | null;
+  /**
+   * Чем учётка стала **сейчас** — роль, доступ, архив. Это не состояние на момент события: журнал
+   * значений не хранит снимками, и подмешивать сюда прошлое было бы обманом. Нужно оно затем,
+   * чтобы строка называла человека так же, как список учёток, — «Механик, в архиве», — иначе одно
+   * ФИО не отличает действующего сотрудника от давно уволенного.
+   */
+  targetRole: Role | null;
+  targetIsActive: boolean | null;
+  targetDeletedAt: string | null;
   metadata: Record<string, unknown>;
 }
 
@@ -91,6 +104,109 @@ export const userAuditActionLabels: Record<UserAuditAction, string> = {
   'auth.password_change': 'Пароль изменён владельцем учётной записи',
 };
 
+// ── Изменённые поля учётки ──
+
+/**
+ * Изменение одного поля учётной записи: «было → стало» готовым текстом на момент правки.
+ *
+ * Текстом, а не ссылками на справочники, по той же причине, что и в истории заявки: объект могут
+ * переименовать, работника — уволить, а журнал обязан показывать то, что администратор видел в
+ * форме, когда нажимал «Сохранить».
+ *
+ * Три состояния краёв, и путать их нельзя:
+ *  - `from` и `to` заполнены — обычная правка;
+ *  - `from === null` — значение появилось (учётку завели, доступ выдали): слева показывать нечего;
+ *  - `to === null` — значение не сохранено. Так читаются записи, сделанные до ADR 0109: портал
+ *    писал тогда один признак «менялось», и придумать пропущенное значение задним числом нельзя.
+ */
+export interface AuditChangeDto {
+  field: string;
+  from: string | null;
+  to: string | null;
+}
+
+/**
+ * Поля учётки, попадающие в журнал. Порядок — как в форме учётной записи, он же порядок строк в
+ * событии: читатель сверяет журнал с карточкой глазами, и переставленные местами поля заставляли
+ * бы искать каждое заново.
+ *
+ * Наборы (объекты, отделы, надстройки) занимают по два поля — «добавлены» и «сняты», а не одну
+ * пару «было → стало»: составы по десять площадок в двух колонках сравнивать глазами невозможно, а
+ * вопрос у читателя всегда про разницу — что человеку открыли и что закрыли.
+ *
+ * `scope` и `addons` — только для старых записей (ADR 0109): портал так больше не пишет, но
+ * прочитанное из архива журнала обязано чем-то называться.
+ */
+export const USER_AUDIT_FIELDS = [
+  'lastName',
+  'firstName',
+  'middleName',
+  'email',
+  'phone',
+  'role',
+  'isActive',
+  'counterparty',
+  'objectsAdded',
+  'objectsRemoved',
+  'departmentsAdded',
+  'departmentsRemoved',
+  'addonsGranted',
+  'addonsRevoked',
+  'person',
+  'scope',
+  'addons',
+] as const;
+export type UserAuditField = (typeof USER_AUDIT_FIELDS)[number];
+
+/** Подпись строки изменения. */
+export const userAuditFieldLabels: Record<UserAuditField, string> = {
+  lastName: 'Фамилия',
+  firstName: 'Имя',
+  middleName: 'Отчество',
+  email: 'Адрес (логин)',
+  phone: 'Телефон',
+  role: 'Роль',
+  isActive: 'Доступ в портал',
+  counterparty: 'Контрагент',
+  objectsAdded: 'Объекты добавлены',
+  objectsRemoved: 'Объекты сняты',
+  departmentsAdded: 'Отделы добавлены',
+  departmentsRemoved: 'Отделы сняты',
+  addonsGranted: 'Надстройки выданы',
+  addonsRevoked: 'Надстройки сняты',
+  person: 'Работник',
+  scope: 'Объекты и отделы',
+  addons: 'Надстройки доступа',
+};
+
+/**
+ * Как поле называется в заголовке события («изменены роль и объекты»). Отдельно от подписи строки,
+ * потому что перечисление собирает группы: «объекты добавлены» и «объекты сняты» — одна правка
+ * состава, и в заголовке она обязана называться один раз, а три части ФИО — просто «ФИО».
+ */
+const fieldSummaries: Record<UserAuditField, string> = {
+  lastName: 'ФИО',
+  firstName: 'ФИО',
+  middleName: 'ФИО',
+  email: 'адрес',
+  phone: 'телефон',
+  role: 'роль',
+  isActive: 'доступ',
+  counterparty: 'контрагент',
+  objectsAdded: 'объекты',
+  objectsRemoved: 'объекты',
+  departmentsAdded: 'отделы',
+  departmentsRemoved: 'отделы',
+  addonsGranted: 'надстройки доступа',
+  addonsRevoked: 'надстройки доступа',
+  person: 'работник',
+  scope: 'объекты и отделы',
+  addons: 'надстройки доступа',
+};
+
+/** Доступ словами: `is_active` в журнале читают как «пустят ли человека в портал». */
+export const userAuditActiveTitles = { on: 'открыт', off: 'закрыт' } as const;
+
 /**
  * Набор действий в query-строке — через запятую.
  *
@@ -133,6 +249,22 @@ export const auditQuerySchema = baseListQuery(AUDIT_SORT_FIELDS).extend({
   actorUserId: uuidSchema.optional(),
   from: z.coerce.date().optional(),
   to: z.coerce.date().optional(),
+  // ── Отбор по данным учётной записи, над которой действовали (ADR 0109) ──
+  // Отбирают по состоянию учётки **сейчас**, а не на момент события: снимка учётки в записи
+  // журнала нет, и «кто тогда был механиком» портал не помнит. Читателю это и нужно — вопросы
+  // задают про нынешних людей («что меняли у механиков», «что меняли у людей СУ-10»), — но в
+  // подвкладке оговорено подписью, чтобы отбор не читался как машина времени.
+  targetRole: roleSchema.optional(),
+  targetIsActive: booleanFlagSchema,
+  targetObjectId: uuidSchema.optional(),
+  targetDepartmentId: uuidSchema.optional(),
+  targetCounterpartyId: uuidSchema.optional(),
+  /**
+   * Архивные учётки. Умолчание — `include`, а не общий для списков `exclude` (ADR 0070): журнал
+   * по построению рассказывает о прошлом, и самый частый вопрос к нему — «что стало с учёткой,
+   * которой больше нет». Список, скрывающий её по умолчанию, отвечал бы «записей нет».
+   */
+  targetArchive: z.enum(ARCHIVE_FILTERS).default('include'),
 });
 export type AuditQuery = z.infer<typeof auditQuerySchema>;
 
@@ -164,31 +296,117 @@ function addonsTitle(value: unknown): string | null {
   return names.length > 0 ? `надстройки: ${names.join(', ')}` : 'надстройки сняты';
 }
 
-/** Что именно изменила правка учётки — по значениям, а не по булевым флагам. */
-function describeUpdate(metadata: Record<string, unknown>): string[] {
-  const parts: string[] = [];
-  const role = changePair(metadata.role);
-  if (role) {
-    const from = roleTitle(role.from);
-    const to = roleTitle(role.to);
-    if (from !== null && to !== null) parts.push(`Смена роли: ${from} → ${to}`);
-  }
-  const active = changePair(metadata.isActive);
-  if (active && typeof active.to === 'boolean') {
-    parts.push(active.to ? 'Учётная запись активирована' : 'Учётная запись деактивирована');
-  }
-  const addons = addonsTitle(metadata.addons);
-  if (addons !== null) parts.push(`Изменён доступ: ${addons}`);
-  return parts;
+/** Доступ словами: «открыт»/«закрыт». `null` — в metadata лежит не булево значение. */
+function activeTitle(value: unknown): string | null {
+  if (typeof value !== 'boolean') return null;
+  return value ? userAuditActiveTitles.on : userAuditActiveTitles.off;
+}
+
+/** Изменение с известными краями; несобравшаяся пара событием не считается. */
+function pairChange(
+  field: UserAuditField,
+  pair: { from: unknown; to: unknown },
+  title: (v: unknown) => string | null,
+): AuditChangeDto | null {
+  const from = title(pair.from);
+  const to = title(pair.to);
+  return from === null || to === null ? null : { field, from, to };
+}
+
+/** «Менялось, а что именно — не записано»: правая часть пустая (ADR 0109). */
+function unrecorded(field: UserAuditField): AuditChangeDto {
+  return { field, from: null, to: null };
 }
 
 /**
- * Строка журнала для человека: подпись действия плюс то, что удалось прочитать из metadata.
+ * Изменения, восстановленные из записей, сделанных до ADR 0109.
  *
- * Записи, сделанные до дополнения журнала (Р12), значений не хранят — у них остаётся общая подпись
- * действия («Учётная запись изменена»). Задним числом их не дополняют и здесь не додумывают:
- * честное «изменена» лучше выдуманной роли. Действие вне реестра (заявки, техника, справочники)
- * возвращается своим кодом — подвкладка их не показывает, но описатель не должен молчать.
+ * Тогда портал писал в journal либо готовую пару (роль, активность, адрес), либо один признак
+ * «менялось» — по нему видно, что трогали, но не видно чего. Признак и превращается в строку с
+ * пустой правой частью: экран покажет «Объекты и отделы — значения не сохранены». Придумывать
+ * пропущенное нельзя, а молчать о том, что правка была, — значит потерять её из истории вовсе.
+ */
+function legacyChanges(action: string, metadata: Record<string, unknown>): AuditChangeDto[] {
+  const out: AuditChangeDto[] = [];
+  const role = changePair(metadata.role);
+  if (role) {
+    const change = pairChange('role', role, roleTitle);
+    out.push(change ?? unrecorded('role'));
+  } else if (typeof metadata.role === 'string' || metadata.role === null) {
+    // Заведение учётки и одобрение заявки: роль записана одним значением — это «стало».
+    const title = roleTitle(metadata.role);
+    if (title !== null) out.push({ field: 'role', from: null, to: title });
+  } else if (metadata.roleChanged === true) {
+    out.push(unrecorded('role'));
+  }
+
+  const active = changePair(metadata.isActive);
+  if (active) {
+    const change = pairChange('isActive', active, activeTitle);
+    out.push(change ?? unrecorded('isActive'));
+  } else if (typeof metadata.isActive === 'boolean') {
+    out.push({ field: 'isActive', from: null, to: activeTitle(metadata.isActive) });
+  } else if (metadata.deactivated === true) {
+    // Деактивация писалась одним признаком, но значение из него известно: «стало закрыто».
+    out.push({ field: 'isActive', from: null, to: userAuditActiveTitles.off });
+  }
+
+  // Прежний адрес больше нигде не лежит — в учётке уже новый, и пара из metadata единственная.
+  if (typeof metadata.oldEmail === 'string' && typeof metadata.newEmail === 'string') {
+    out.push({ field: 'email', from: metadata.oldEmail, to: metadata.newEmail });
+  }
+
+  if (metadata.scopeChanged === true) out.push(unrecorded('scope'));
+  if (metadata.counterpartyChanged === true) out.push(unrecorded('counterparty'));
+
+  const addons = addonsTitle(metadata.addons);
+  if (addons !== null) {
+    // Записывался остаток, а не разница: «что у учётки есть теперь». Так и показываем.
+    out.push({ field: 'addons', from: null, to: addons });
+  } else if (metadata.addonsChanged === true) {
+    out.push(unrecorded('addons'));
+  }
+
+  // Работник писался идентификаторами: показывать их человеку бессмысленно, но факт замены важен.
+  if (action === 'user.driver_person_relinked' && changePair(metadata.person)) {
+    out.push(unrecorded('person'));
+  }
+  return out;
+}
+
+/** Строка изменения из `metadata.changes`: поле обязательно, края — строки либо пусто. */
+function isChange(value: unknown): value is AuditChangeDto {
+  if (!value || typeof value !== 'object') return false;
+  const c = value as AuditChangeDto;
+  const side = (v: unknown) => v === null || typeof v === 'string';
+  return typeof c.field === 'string' && side(c.from) && side(c.to);
+}
+
+/**
+ * Что событие изменило в учётке — единственный источник расшифровки для таблицы, панели пути и
+ * будущего экспорта (ADR 0109).
+ *
+ * С момента внедрения портал кладёт готовый перечень в `metadata.changes`; всё, что записано
+ * раньше, восстанавливается из прежних форм записи. Читателю разница не видна — а именно она и
+ * была целью: журнал не должен объяснять, в каком году его писали.
+ */
+export function auditChangesOf(entry: AuditEntryDto): AuditChangeDto[] {
+  const metadata = entry.metadata ?? {};
+  const written = metadata.changes;
+  if (Array.isArray(written)) return written.filter(isChange);
+  return legacyChanges(entry.action, metadata);
+}
+
+/**
+ * Заголовок события: что произошло с учёткой, без значений — их показывает `auditChangesOf`.
+ *
+ * У правки заголовок перечисляет затронутое («изменена: роль, объекты»), потому что правок в один
+ * приём бывает по пять-шесть: без перечня строка журнала говорила бы «изменена» обо всём подряд, а
+ * со всеми значениями — не помещалась бы в строку таблицы. Перечисляются группы полей, а не сами
+ * поля: «объекты добавлены» и «объекты сняты» — одно и то же решение администратора.
+ *
+ * Действие вне реестра (заявки, техника, справочники) возвращается своим кодом — подвкладка их не
+ * показывает, но описатель не должен молчать.
  */
 export function describeAuditEntry(entry: AuditEntryDto): string {
   const action = entry.action as UserAuditAction;
@@ -196,42 +414,20 @@ export function describeAuditEntry(entry: AuditEntryDto): string {
   if (label === undefined) return entry.action;
   const metadata = entry.metadata ?? {};
 
-  switch (action) {
-    case 'user.register': {
-      const requested = metadata.requestedRole;
-      const wish =
-        typeof requested === 'string' && requested in registrationRoleRequestLabels
-          ? registrationRoleRequestLabels[requested as RegistrationRoleRequest]
-          : null;
-      return wish === null ? label : `${label}: пожелание «${wish}»`;
-    }
-    case 'user.create':
-    case 'user.approve_registration': {
-      const role = roleTitle(metadata.role);
-      // «Назначена роль» — общая формулировка обоих событий: и заведённая администратором учётка,
-      // и одобренная заявка отвечают читателю на один вопрос — какой доступ человек получил.
-      const parts = role === null ? [] : [`назначена роль ${role}`];
-      const addons = addonsTitle(metadata.addons);
-      // Пустой набор надстроек при заведении учётки — не событие: снимать было нечего.
-      if (addons !== null && Array.isArray(metadata.addons) && metadata.addons.length > 0) {
-        parts.push(addons);
-      }
-      return parts.length > 0 ? `${label}: ${parts.join(', ')}` : label;
-    }
-    case 'user.update': {
-      const parts = describeUpdate(metadata);
-      return parts.length > 0 ? parts.join('; ') : label;
-    }
-    case 'user.change_email': {
-      // Оба адреса или ни одного: «изменён на новый» без прежнего не отвечает на вопрос, ради
-      // которого эту строку и открывают, — с какого ящика ушёл вход. Строкой они и хранятся,
-      // потому что прежнего адреса больше нет нигде: в учётке лежит уже новый.
-      const from = metadata.oldEmail;
-      const to = metadata.newEmail;
-      if (typeof from !== 'string' || typeof to !== 'string') return label;
-      return `${label}: ${from} → ${to}`;
-    }
-    default:
-      return label;
+  if (action === 'user.register') {
+    const requested = metadata.requestedRole;
+    const wish =
+      typeof requested === 'string' && requested in registrationRoleRequestLabels
+        ? registrationRoleRequestLabels[requested as RegistrationRoleRequest]
+        : null;
+    return wish === null ? label : `${label}: пожелание «${wish}»`;
   }
+  if (action !== 'user.update') return label;
+
+  const groups: string[] = [];
+  for (const change of auditChangesOf(entry)) {
+    const summary = fieldSummaries[change.field as UserAuditField];
+    if (summary !== undefined && !groups.includes(summary)) groups.push(summary);
+  }
+  return groups.length > 0 ? `${label}: ${groups.join(', ')}` : label;
 }
