@@ -353,6 +353,12 @@ export interface UserDto extends PersonNameParts {
   requestedRole: RegistrationRoleRequest | null;
   requestedObject: string;
   requestedCompany: string;
+  /**
+   * Объяснение своими словами — у пожелания «Другое» (`detail === 'comment'`). У заявок, поданных
+   * до этого требования, пусто: колонка появилась вместе с полем формы, дозаполнить её задним
+   * числом неоткуда.
+   */
+  requestedComment: string;
   role: Role | null;
   isActive: boolean;
   mustChangePassword: boolean;

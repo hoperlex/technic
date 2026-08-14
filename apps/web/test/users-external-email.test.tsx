@@ -25,6 +25,7 @@ function user(over: Partial<UserDto> = {}): UserDto {
     requestedRole: 'dispatcher',
     requestedObject: '',
     requestedCompany: '',
+    requestedComment: '',
     role: null,
     isActive: false,
     mustChangePassword: false,

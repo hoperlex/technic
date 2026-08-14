@@ -62,7 +62,7 @@ export const registrationRoleRequestRole: Record<RegistrationRoleRequest, Role |
 };
 
 /** Что спросить дополнительно, чтобы пожелание было осмысленным. */
-export type RegistrationRequestDetail = 'none' | 'object' | 'company';
+export type RegistrationRequestDetail = 'none' | 'object' | 'company' | 'comment';
 
 export const registrationRequestDetail: Record<RegistrationRoleRequest, RegistrationRequestDetail> =
   {
@@ -77,7 +77,11 @@ export const registrationRequestDetail: Record<RegistrationRoleRequest, Registra
     // Ни объекта, ни компании у водителя не спрашивают: он работает от парка, а привязку к
     // карточке справочника делает администратор при активации (ADR 0102).
     driver: 'none',
-    other: 'none',
+    // «Другое» — единственное пожелание, которому в портале не соответствует никакая роль
+    // (`registrationRoleRequestRole.other = null`). Без объяснения своими словами такая заявка не
+    // содержит ничего, кроме ФИО и адреса: администратору не из чего выбирать роль, и решается
+    // она звонком — ровно тем, ради отмены которого пожелание и заводили (ADR 0034).
+    other: 'comment',
   };
 
 /**
@@ -127,24 +131,29 @@ export const registrationRequestFields = {
   requestedRole: registrationRoleRequestSchema,
   requestedObject: detailField.default(''),
   requestedCompany: detailField.default(''),
+  requestedComment: detailField.default(''),
 };
 
 export interface RegistrationRequestInput {
   requestedRole: RegistrationRoleRequest;
   requestedObject: string;
   requestedCompany: string;
+  requestedComment: string;
 }
 
 /** Пропущенное обязательное уточнение; `null` — заявка полна. */
 export function registrationRequestIssue(
   value: RegistrationRequestInput,
-): { field: 'requestedObject' | 'requestedCompany'; message: string } | null {
+): { field: 'requestedObject' | 'requestedCompany' | 'requestedComment'; message: string } | null {
   const detail = registrationRequestDetail[value.requestedRole];
   if (detail === 'object' && !value.requestedObject.trim()) {
     return { field: 'requestedObject', message: 'Укажите объект' };
   }
   if (detail === 'company' && !value.requestedCompany.trim()) {
     return { field: 'requestedCompany', message: 'Укажите название компании' };
+  }
+  if (detail === 'comment' && !value.requestedComment.trim()) {
+    return { field: 'requestedComment', message: 'Напишите, кем вы работаете' };
   }
   return null;
 }
@@ -156,5 +165,6 @@ export function normalizeRegistrationRequest<T extends RegistrationRequestInput>
     ...value,
     requestedObject: detail === 'object' ? value.requestedObject : '',
     requestedCompany: detail === 'company' ? value.requestedCompany : '',
+    requestedComment: detail === 'comment' ? value.requestedComment : '',
   };
 }

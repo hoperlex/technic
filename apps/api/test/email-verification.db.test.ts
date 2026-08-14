@@ -105,6 +105,8 @@ async function register(email: string): Promise<number> {
       requestedRole: 'other',
       requestedObject: '',
       requestedCompany: '',
+      // «Другое» без объяснения словами схема не пропускает: рассматривать такую заявку не по чему.
+      requestedComment: 'Сметчик, нужен просмотр заявок',
       captchaToken: captcha.token,
       captchaAnswer: captcha.code,
     },
@@ -152,13 +154,17 @@ async function confirmAddress(email: string): Promise<void> {
   });
 }
 
-/** Выдача доступа администратором: то, во что упирается заявка после подачи. */
+/**
+ * Выдача доступа администратором: то, во что упирается заявка после подачи. Намерение объявлено
+ * (ADR 0087) — без `approveRegistration` роль и активность у нерассмотренной заявки не меняются
+ * вовсе, и запрос отвечает 400.
+ */
 async function activate(userId: string): Promise<number> {
   const res = await ctx.app.inject({
     method: 'PATCH',
     url: `/api/v1/users/${userId}`,
     headers: ctx.auth,
-    payload: { isActive: true, role: 'dispatcher' },
+    payload: { isActive: true, role: 'dispatcher', approveRegistration: true },
   });
   return res.statusCode;
 }

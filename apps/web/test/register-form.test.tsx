@@ -314,17 +314,43 @@ describe('пожелание по роли', () => {
     });
   });
 
-  it('«Другое» ничего дополнительно не спрашивает', async () => {
+  it('«Другое» требует комментария: без него заявку не рассмотреть', async () => {
     const http = renderPage();
     await captchaShown();
 
     fillCommonFields();
     await selectRoleRequest('Другое');
+    expect(await screen.findByLabelText('Комментарий')).toBeDefined();
     expect(screen.queryByLabelText('Объект')).toBeNull();
     expect(screen.queryByLabelText('Компания')).toBeNull();
+
+    // Роли «Другое» в портале не соответствует никакая: пустая заявка оставляла бы
+    // администратора с одним ФИО и адресом.
+    await act(async () => submit());
+    expect(registrations(http)).toBe(0);
+    expect(await screen.findByText('Напишите, кем вы работаете')).toBeDefined();
+
+    fill('Комментарий', 'Сметчик, нужен просмотр заявок');
+    await act(async () => submit());
+    await waitFor(() => expect(registrations(http)).toBe(1));
+    expect(sent(http)).toMatchObject({
+      requestedRole: 'other',
+      requestedComment: 'Сметчик, нужен просмотр заявок',
+      requestedObject: '',
+      requestedCompany: '',
+    });
+  });
+
+  it('комментарий спрашивают только у «Другого»', async () => {
+    const http = renderPage();
+    await captchaShown();
+
+    fillCommonFields();
+    await selectRoleRequest('Диспетчер');
+    expect(screen.queryByLabelText('Комментарий')).toBeNull();
     await act(async () => submit());
 
     await waitFor(() => expect(registrations(http)).toBe(1));
-    expect(sent(http)).toMatchObject({ requestedRole: 'other' });
+    expect(sent(http)).toMatchObject({ requestedRole: 'dispatcher', requestedComment: '' });
   });
 });

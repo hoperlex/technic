@@ -117,6 +117,8 @@ async function register(email: string): Promise<void> {
       requestedRole: 'other',
       requestedObject: '',
       requestedCompany: '',
+      // «Другое» без объяснения словами схема не пропускает: рассматривать такую заявку не по чему.
+      requestedComment: 'Сметчик, нужен просмотр заявок',
       captchaToken: captcha.token,
       captchaAnswer: captcha.code,
     },

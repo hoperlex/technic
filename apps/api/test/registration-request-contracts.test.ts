@@ -82,9 +82,23 @@ describe('уточнение к пожеланию', () => {
     }
   });
 
-  it('диспетчеру и «другому» уточнение не нужно', () => {
+  it('«другое» требует объяснения словами', () => {
+    // Единственное пожелание без роли-соответствия: без комментария в заявке нет ничего, кроме
+    // ФИО и адреса, — и рассматривать её пришлось бы звонком, ради отмены которого пожелания и
+    // заводили.
+    expect(() => registerSchema.parse({ ...BASE, requestedRole: 'other' })).toThrow();
+    expect(
+      registerSchema.parse({
+        ...BASE,
+        requestedRole: 'other',
+        requestedComment: 'Сметчик, нужен просмотр заявок',
+      }).requestedComment,
+    ).toBe('Сметчик, нужен просмотр заявок');
+  });
+
+  it('диспетчеру и водителю уточнение не нужно', () => {
     expect(registerSchema.parse({ ...BASE, requestedRole: 'dispatcher' })).toBeTruthy();
-    expect(registerSchema.parse({ ...BASE, requestedRole: 'other' })).toBeTruthy();
+    expect(registerSchema.parse({ ...BASE, requestedRole: 'driver' })).toBeTruthy();
   });
 
   it('лишнее уточнение стирается, а не оседает в базе', () => {
@@ -93,9 +107,11 @@ describe('уточнение к пожеланию', () => {
       requestedRole: 'dispatcher',
       requestedObject: 'ЖК Северный',
       requestedCompany: 'ООО «Ромашка»',
+      requestedComment: 'Сметчик',
     });
     expect(parsed.requestedObject).toBe('');
     expect(parsed.requestedCompany).toBe('');
+    expect(parsed.requestedComment).toBe('');
   });
 
   it('уточнение не той разновидности тоже стирается', () => {
@@ -104,14 +120,19 @@ describe('уточнение к пожеланию', () => {
       requestedRole: 'site_staff',
       requestedObject: 'ЖК Северный',
       requestedCompany: 'ООО «Ромашка»',
+      requestedComment: 'Сметчик',
     });
     expect(parsed.requestedObject).toBe('ЖК Северный');
     expect(parsed.requestedCompany).toBe('');
+    expect(parsed.requestedComment).toBe('');
   });
 
   it('пробелы уточнением не считаются', () => {
     expect(() =>
       registerSchema.parse({ ...BASE, requestedRole: 'site_staff', requestedObject: '   ' }),
+    ).toThrow();
+    expect(() =>
+      registerSchema.parse({ ...BASE, requestedRole: 'other', requestedComment: '   ' }),
     ).toThrow();
   });
 });

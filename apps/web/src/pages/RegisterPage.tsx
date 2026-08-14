@@ -30,6 +30,7 @@ interface RegisterFormValues {
   requestedRole?: RegistrationRoleRequest;
   requestedObject?: string;
   requestedCompany?: string;
+  requestedComment?: string;
   captcha?: CaptchaValue;
   /** Приманка для ботов: поле скрыто от человека и должно уехать пустым. */
   website?: string;
@@ -78,6 +79,7 @@ export function RegisterPage() {
         requestedRole: values.requestedRole!,
         requestedObject: values.requestedObject ?? '',
         requestedCompany: values.requestedCompany ?? '',
+        requestedComment: values.requestedComment ?? '',
         captchaToken: values.captcha?.token ?? '',
         captchaAnswer: values.captcha?.answer ?? '',
         website: values.website,
@@ -203,6 +205,22 @@ export function RegisterPage() {
                 { whitespace: true, message: 'Укажите название компании' },
               ]}
               extra="Организация, от лица которой вы работаете"
+            >
+              <Input size="large" maxLength={200} />
+            </Form.Item>
+          ) : null}
+          {/* «Другое» роли портала не соответствует (`registrationRoleRequestRole.other = null`):
+              без объяснения своими словами администратору не из чего выбирать роль, и заявка
+              решалась бы звонком — тем самым, ради отмены которого пожелание и заводили. */}
+          {detail === 'comment' ? (
+            <Form.Item
+              name="requestedComment"
+              label="Комментарий"
+              rules={[
+                { required: true, message: 'Напишите, кем вы работаете' },
+                { whitespace: true, message: 'Напишите, кем вы работаете' },
+              ]}
+              extra="Кем вы работаете и зачем нужен доступ — по этому администратор подберёт роль"
             >
               <Input size="large" maxLength={200} />
             </Form.Item>

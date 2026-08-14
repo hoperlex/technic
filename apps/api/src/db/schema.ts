@@ -51,6 +51,10 @@ export const roleEnum = pgEnum('role', [
   // Водитель (ADR 0102, миграция 0130): работник справочника, получивший вход в свой кабинет.
   // Прав основного портала у роли нет вовсе — она открывает `/driver` и ничего больше.
   'driver',
+  // Служба главного механика (миграция 0138): парк целиком, без своей оси области. Механик
+  // смотрит, главный механик ведёт водителей и списывает бланки.
+  'mechanic',
+  'chief_mechanic',
 ]);
 export const requestStatusEnum = pgEnum('request_status', [
   'new',
@@ -818,6 +822,17 @@ export const users = pgTable(
     requestedRole: registrationRoleRequestEnum('requested_role'),
     requestedObject: text('requested_object').notNull().default(''),
     requestedCompany: text('requested_company').notNull().default(''),
+    /**
+     * Объяснение своими словами — у пожелания «Другое» (миграция 0139). Ему единственному не
+     * соответствует роль портала, и без объяснения заявка не содержит ничего, по чему её можно
+     * рассмотреть.
+     *
+     * CHECK на непустоту нет — в отличие от объекта и компании: заявки «Другое» в базе уже есть, и
+     * заполнить их задним числом нечем, а условие сделало бы такую учётку неправимой — сорвалась
+     * бы и активация, и привязка человека, и смена адреса. Требование живёт в `registerSchema`
+     * (тот же приём, что с телефоном по ADR 0066 и контактом заявки в миграции 0118).
+     */
+    requestedComment: text('requested_comment').notNull().default(''),
     /**
      * Когда человек подтвердил, что этот ящик его (ADR 0072, миграция 0098). `null` — не
      * подтверждён: такую заявку нельзя активировать, потому что за адресом может не быть никого.
@@ -2111,12 +2126,33 @@ export const vehicleRequests = pgTable(
     updatedBy: uuid('updated_by').references(() => users.id, { onDelete: 'set null' }),
     deletedBy: uuid('deleted_by').references(() => users.id, { onDelete: 'set null' }),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
+    /*
+     * Снимок режима, застигнутого переключением признака «Линейная техника» у заказанного типа
+     * (миграция 0137). NULL — норма ADR 0100 §1: признак читается живым из справочника.
+     * Заполнено — заявка была в работе, когда признак типа переключили, и дорабатывает по
+     * записанному значению; снимается уходом из «В работе».
+     *
+     * Читать напрямую нельзя: режим заявки — это `requestIsLinearSql` / `requestIsLinear`
+     * (`src/db/linear-mode.ts`), и второе место, решающее «днями или неделями», разойдётся с
+     * первым на первой же правке. Колонки временные — условие их смерти в комментарии миграции.
+     */
+    isLinearFrozen: boolean('is_linear_frozen'),
+    linearFrozenAt: timestamp('linear_frozen_at', { withTimezone: true }),
     version: integer('version').notNull().default(0),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
   (t) => ({
     numUnique: uniqueIndex('vehicle_requests_num_unique').on(t.num),
+    // Пара честна или пуста целиком (миграция 0137): половина снимка не отвечает ни на «как
+    // ведётся», ни на «с какого числа».
+    linearFrozenPresence: check(
+      'vehicle_requests_linear_frozen_check',
+      sql`(${t.isLinearFrozen} is null) = (${t.linearFrozenAt} is null)`,
+    ),
+    linearFrozenIdx: index('vehicle_requests_linear_frozen_idx')
+      .on(t.vehicleTypeId)
+      .where(sql`${t.isLinearFrozen} is not null`),
     // Цель составного FK из vehicle_request_assignments (ADR 0027): пока на заявке стоит машина,
     // тип ТС у неё не уедет в сторону от назначенного.
     idTypeUnique: unique('vehicle_requests_id_type_unique').on(t.id, t.vehicleTypeId),
@@ -2193,7 +2229,14 @@ export const specialEquipmentRequestDetails = pgTable(
   }),
 );
 
-// Детали грузоперевозки: дата-время (timestamptz) + объём/масса (numeric) + места.
+/**
+ * Детали грузоперевозки: то, что описывает ЗАКАЗ ЦЕЛИКОМ, — и только оно.
+ *
+ * Адреса, количество и контакты уехали отсюда на ездку (миграция 0136): держать их здесь стало
+ * нечем — у заявки с ездками A→B и A→C «адрес разгрузки заявки» не существует. Осталось время
+ * подачи: им считается дата маршрута, им отбираются списки, по нему проверяются рабочее окно и
+ * минимальная дата.
+ */
 export const freightTransportRequestDetails = pgTable(
   'freight_transport_request_details',
   {
@@ -2203,43 +2246,101 @@ export const freightTransportRequestDetails = pgTable(
     scheduledAt: timestamp('scheduled_at', { withTimezone: true }).notNull(),
     // Время не задано — в scheduledAt значима только дата (00:00 МСК). См. 0020.
     scheduledTimeUnspecified: boolean('scheduled_time_unspecified').notNull().default(false),
-    volumeM3: numeric('volume_m3', { precision: 12, scale: 3 }),
-    weightTons: numeric('weight_tons', { precision: 12, scale: 3 }),
-    loadingLocation: text('loading_location').notNull(),
-    unloadingLocation: text('unloading_location').notNull(),
-    // Метаданные верификации адреса (DaData «Подсказки», ADR 0006); NULL = введён вручную.
-    loadingAddress: jsonb('loading_address').$type<AddressMeta>(),
-    unloadingAddress: jsonb('unloading_address').$type<AddressMeta>(),
-    // Контакт на каждом конце маршрута (миграция 0062): грузят и принимают разные люди в разных
-    // местах. Пусто — заявка заведена до появления колонок. Телефоны — десять цифр без кода
-    // страны (ADR 0066, миграция 0095).
-    loadingResponsibleName: text('loading_responsible_name').notNull().default(''),
-    loadingResponsiblePhone: text('loading_responsible_phone').notNull().default(''),
-    unloadingResponsibleName: text('unloading_responsible_name').notNull().default(''),
-    unloadingResponsiblePhone: text('unloading_responsible_phone').notNull().default(''),
   },
   (t) => ({
+    scheduledIdx: index('freight_scheduled_at_idx').on(t.scheduledAt),
+  }),
+);
+
+/**
+ * Ездка заявки на грузоперевозку (миграция 0136, план `docs/route-trips-plan.md` Р1): пара
+ * адресов, количество и контакты ОДНОЙ поездки.
+ *
+ * Строка заявки, а не маршрута: «ТС-40/2» существует и до того, как заявку положили в рейс, и
+ * после того, как рейс пересобрали. `requestId` колонкой, а не связкой — у ездки ровно одна
+ * заявка, и второй у неё не бывает.
+ */
+export const vehicleRequestTrips = pgTable(
+  'vehicle_request_trips',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    requestId: uuid('request_id')
+      .notNull()
+      .references(() => vehicleRequests.id, { onDelete: 'cascade' }),
+    /**
+     * Номер внутри заявки: «ТС-40/2». Неизменяем и НЕ переиспользуется после мягкого удаления
+     * (Р13а) — иначе «ТС-40/2» в старом листе и «ТС-40/2» в новом означали бы разное.
+     */
+    num: smallint('num').notNull(),
+    fromLocation: text('from_location').notNull(),
+    toLocation: text('to_location').notNull(),
+    /** Метаданные верификации адреса (ADR 0006, ADR 0069); NULL = введён вручную. */
+    fromAddress: jsonb('from_address').$type<AddressMeta>(),
+    toAddress: jsonb('to_address').$type<AddressMeta>(),
+    /**
+     * Количество ЭТОЙ ездки, а не всей заявки: у заявки с ездками A→B и A→C общего количества не
+     * существует, итог по ней считается суммой. CHECK «объём или масса заполнены» здесь не стоит:
+     * у легкового количества может не быть вовсе, и обязательность остаётся условной, серверной.
+     */
+    volumeM3: numeric('volume_m3', { precision: 12, scale: 3 }),
+    weightTons: numeric('weight_tons', { precision: 12, scale: 3 }),
+    /**
+     * Контакт на каждом конце: грузят и принимают разные люди в разных местах (приём миграции
+     * 0062). Пусто — законное состояние: у заявок старше 0062 контакта нет вовсе. Телефон —
+     * десять цифр без кода страны (ADR 0066).
+     */
+    fromResponsibleName: text('from_responsible_name').notNull().default(''),
+    fromResponsiblePhone: text('from_responsible_phone').notNull().default(''),
+    toResponsibleName: text('to_responsible_name').notNull().default(''),
+    toResponsiblePhone: text('to_responsible_phone').notNull().default(''),
+    /**
+     * Своё время подачи; NULL — «как у заявки» (Р3): шесть ездок за смену едут по графику, а не
+     * одновременно. Отвечать на «когда» списком и фильтрами продолжает заявка.
+     */
+    scheduledAt: timestamp('scheduled_at', { withTimezone: true }),
+    comment: text('comment').notNull().default(''),
+    /**
+     * Мягкое удаление (Р13а). Ездку, побывавшую в выданном листе, снести нельзя — на неё
+     * ссылается `waybillTrips` с RESTRICT, — но аннулирование листа размораживает маршрут, и
+     * диспетчер вправе пересобрать день, в том числе убрав ездку. Удалённая не участвует в
+     * раскладке, не печатается и не считается в ёмкость, но видна из журнала листов и истории.
+     */
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
+  },
+  (t) => ({
+    // Номер в заявке единственный. Он же и есть индекс «ездки этой заявки по порядку»: отдельного
+    // индекса `(request_id, num)` не нужно — уникальное ограничение создаёт ровно его.
+    numUnique: unique('vehicle_request_trips_num_unique').on(t.requestId, t.num),
+    // Цель составного FK из связки точки (`vehicleRoutePointTrips`): «ездка из своей заявки» —
+    // физический факт. Индекс под ним дублирует первичный ключ, и иначе нельзя: PostgreSQL
+    // требует, чтобы цель составного FK была уникальна именно этим набором колонок.
+    idRequestUnique: unique('vehicle_request_trips_id_request_unique').on(t.id, t.requestId),
+    fromNotBlank: check(
+      'vehicle_request_trips_from_not_blank_check',
+      sql`btrim(${t.fromLocation}) <> ''`,
+    ),
+    toNotBlank: check(
+      'vehicle_request_trips_to_not_blank_check',
+      sql`btrim(${t.toLocation}) <> ''`,
+    ),
     volumePositive: check(
-      'freight_volume_positive_check',
+      'vehicle_request_trips_volume_positive_check',
       sql`${t.volumeM3} is null or ${t.volumeM3} > 0`,
     ),
     weightPositive: check(
-      'freight_weight_positive_check',
+      'vehicle_request_trips_weight_positive_check',
       sql`${t.weightTons} is null or ${t.weightTons} > 0`,
     ),
-    volumeOrWeight: check(
-      'freight_volume_or_weight_check',
-      sql`${t.volumeM3} is not null or ${t.weightTons} is not null`,
+    // Форма метаданных адреса — та же, что держали снятые миграцией 0136 `freight_*_address_shape_check`
+    // (0013): объект с обязательным ключом `source`, структуру внутри проверяет Zod.
+    fromAddressShape: check(
+      'vehicle_request_trips_from_address_shape_check',
+      sql`${t.fromAddress} is null or (jsonb_typeof(${t.fromAddress}) = 'object' and ${t.fromAddress} ? 'source')`,
     ),
-    loadingNotBlank: check(
-      'freight_loading_not_blank_check',
-      sql`btrim(${t.loadingLocation}) <> ''`,
+    toAddressShape: check(
+      'vehicle_request_trips_to_address_shape_check',
+      sql`${t.toAddress} is null or (jsonb_typeof(${t.toAddress}) = 'object' and ${t.toAddress} ? 'source')`,
     ),
-    unloadingNotBlank: check(
-      'freight_unloading_not_blank_check',
-      sql`btrim(${t.unloadingLocation}) <> ''`,
-    ),
-    scheduledIdx: index('freight_scheduled_at_idx').on(t.scheduledAt),
   }),
 );
 
@@ -2953,6 +3054,16 @@ export const waybills = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
     issuedAt: timestamp('issued_at', { withTimezone: true }).notNull().defaultNow(),
+    /**
+     * Под какими предупреждениями выдан лист (миграция 0136, Р21). Конверт, а не голый массив:
+     * различать нужно ТРИ состояния — `not_checked` (лист выдан до колонки либо мимо рукопожатия:
+     * повтором запроса из истории, старой вкладкой, `curl`), `clean` (проверено, предупреждений не
+     * было) и `acknowledged` (были и подтверждены, с отпечатком и списком). Пустой массив первых
+     * двух не различал бы, а через полгода «не проверяли» не должно читаться как «всё чисто».
+     */
+    issueWarnings: jsonb('issue_warnings')
+      .notNull()
+      .default(sql`'{"schemaVersion":1,"status":"not_checked"}'::jsonb`),
     cancelledBy: uuid('cancelled_by').references(() => users.id, { onDelete: 'restrict' }),
     cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
     cancelReason: text('cancel_reason').notNull().default(''),
@@ -3145,6 +3256,43 @@ export const waybillRequests = pgTable(
     // заявку после него выписывают заново. Условие «лист не аннулирован» — в соседней таблице,
     // и держит его сервис.
     requestIdx: index('waybill_requests_request_idx').on(t.requestId),
+  }),
+);
+
+/**
+ * Лист ↔ ездка (миграция 0136, Р20): какая ездка какой строкой задания напечатана.
+ *
+ * Вторая связь рядом с `waybillRequests`, а не вместо неё: та отвечает на «в каких листах эта
+ * заявка» — на неё смотрят `activeWaybillOfRequest`, откат статуса и легаси-проверки, — а эта на
+ * «в каком листе уехала эта ездка». Покрывает только грузовые строки: у линейного дня ездки нет, и
+ * его строка задания опознаётся парой «заявка + `workDate`», которая уже лежит в `waybillRequests`
+ * и в составе рейса.
+ */
+export const waybillTrips = pgTable(
+  'waybill_trips',
+  {
+    waybillId: uuid('waybill_id')
+      .notNull()
+      .references(() => waybills.id, { onDelete: 'cascade' }),
+    /**
+     * RESTRICT: журнал бланков строгой отчётности обязан помнить, что именно печаталось. Ровно так
+     * же сегодня держит заявку `waybillRequests.requestId`, и поведение «удалить насовсем» от
+     * новой таблицы не меняется — без листа заявка удаляется вместе с ездками, с листом не
+     * удаляется и сейчас. Как ездка при этом снимается с задания — мягко, `deletedAt` (Р13а).
+     */
+    tripId: uuid('trip_id')
+      .notNull()
+      .references(() => vehicleRequestTrips.id, { onDelete: 'restrict' }),
+    slot: smallint('slot').notNull(),
+    addedAt: timestamp('added_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.waybillId, t.tripId] }),
+    slotCheck: check('waybill_trips_slot_check', sql`${t.slot} BETWEEN 1 AND 10`),
+    slotUnique: unique('waybill_trips_slot_unique').on(t.waybillId, t.slot),
+    // «В каком листе уехала эта ездка» — вопрос карточки ездки; он же покрывает проверку RESTRICT
+    // при удалении ездки. Приём `waybill_requests_request_idx`.
+    tripIdx: index('waybill_trips_trip_idx').on(t.tripId),
   }),
 );
 
@@ -3451,6 +3599,156 @@ export const vehicleRouteRequests = pgTable(
      */
     positionUnique: unique('vehicle_route_requests_position_unique').on(t.routeId, t.position),
     requestIdx: index('vehicle_route_requests_request_idx').on(t.requestId),
+  }),
+);
+
+/**
+ * Точка маршрута (миграция 0136, Р4): адрес остановки и её место в порядке объезда.
+ *
+ * Один и тот же адрес может стоять в маршруте НЕСКОЛЬКИМИ точками — это два заезда, и модель
+ * обязана уметь их различать (`A B D A C`).
+ *
+ * Колонок ответственного у точки нет, хотя её тождество его включает (Р9), — и это осознанно.
+ * Ответственный приходит от строки задания: у роли `load` это контакт погрузки ездки, у `unload` —
+ * контакт разгрузки, у `work` — ответственный заявки спецтехники. Значит ответственные точки это
+ * множество контактов её ролей, и вычислять его дешевле, чем поддерживать копию, которая
+ * разойдётся с заявкой при первой же правке контакта (Р9в). Адрес при этом ХРАНИТСЯ снимком
+ * (Р10): у точки с двумя ездками разных адресов «адрес» не определён без выбора, а «ответственные»
+ * определены всегда — их просто двое.
+ */
+export const vehicleRoutePoints = pgTable(
+  'vehicle_route_points',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    routeId: uuid('route_id')
+      .notNull()
+      .references(() => vehicleRoutes.id, { onDelete: 'cascade' }),
+    /**
+     * Порядок объезда. До двадцати: две точки на ездку, а строк задания в бланке максимум десять
+     * (ADR 0068). Верхняя граница здесь — защита от переполнения, а сколько строк влезет в
+     * конкретный маршрут, решает его бланк, и держит это сервер (`ROUTE_REQUEST_CAPACITY`).
+     */
+    position: smallint('position').notNull(),
+    location: text('location').notNull(),
+    address: jsonb('address').$type<AddressMeta>(),
+    /**
+     * План прибытия; NULL — не задан. `time`, а не `timestamptz`: день у точки тот же, что у
+     * рейса, и второй копией даты она разошлась бы с ним при переносе (ADR 0082).
+     */
+    arrivalTime: time('arrival_time'),
+    comment: text('comment').notNull().default(''),
+    createdAt: createdAt(),
+  },
+  (t) => ({
+    positionCheck: check(
+      'vehicle_route_points_position_check',
+      sql`${t.position} BETWEEN 1 AND 20`,
+    ),
+    locationNotBlank: check(
+      'vehicle_route_points_location_not_blank_check',
+      sql`btrim(${t.location}) <> ''`,
+    ),
+    addressShape: check(
+      'vehicle_route_points_address_shape_check',
+      sql`${t.address} is null or (jsonb_typeof(${t.address}) = 'object' and ${t.address} ? 'source')`,
+    ),
+    /**
+     * Порядок объезда. В базе ограничение объявлено `DEFERRABLE INITIALLY IMMEDIATE` (миграция
+     * 0136) — тем же приёмом, что порядок строк состава (0072): перестановка переписывает позиции
+     * одним запросом, и построчная проверка упала бы на первой же строке; транзакция перестановки
+     * откладывает её через `SET CONSTRAINTS`. Drizzle отложенность не выражает, поэтому здесь
+     * ограничение объявлено обычным; источник истины — миграция.
+     */
+    positionUnique: unique('vehicle_route_points_position_unique').on(t.routeId, t.position),
+    // Цель составного FK из связки: «точка из своего маршрута» — физический факт, а не проверка.
+    idRouteUnique: unique('vehicle_route_points_id_route_unique').on(t.id, t.routeId),
+  }),
+);
+
+/**
+ * Что делают на точке (миграция 0136, Р5, Р5а): погрузка или разгрузка ездки — либо работа
+ * линейного дня.
+ *
+ * Связка, а не колонка в точке, потому что на одной остановке законно сходятся две ездки разных
+ * заявок: «в двух заявках одно и то же место погрузки, ехать дважды незачем» — это две строки
+ * `load` у одной точки.
+ *
+ * КЛЮЧ СУРРОГАТНЫЙ, И ИНАЧЕ НЕЛЬЗЯ. Колонки первичного ключа PostgreSQL делает `NOT NULL`, а
+ * `tripId` у линейной строки обязан быть пустым — «`role = 'work'` и `tripId IS NULL`» с `tripId` в
+ * PK невыполнимо в принципе. Пара `(pointId, requestId, role)` тоже не годится: две ездки одной
+ * заявки законно грузятся на одной точке. Отсюда `id` и уникальности ЧАСТИЧНЫМИ ИНДЕКСАМИ —
+ * табличными ограничениями `UNIQUE … WHERE` в PostgreSQL не объявляются вовсе, и Drizzle их здесь
+ * выражает ровно так же (`uniqueIndex().where()`).
+ *
+ * Чего база НЕ держит: соответствия роли виду строки состава. `role = 'work'` у грузовой строки и
+ * `load` у линейного дня схема примет — третий ключ смотрит только на пару «маршрут + заявка».
+ * Выразить это можно было бы копией `workDate` в связке и тройным ключом, но копию дня мы
+ * отвергли: она разошлась бы с составом при переносе рейса (ADR 0082). Правило серверное и стоит в
+ * верификаторе `backfill:trips --check`. Там же и «погрузка раньше разгрузки» (Р6): он про две
+ * строки сразу, и CHECK его не выражает.
+ */
+export const vehicleRoutePointTrips = pgTable(
+  'vehicle_route_point_trips',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    pointId: uuid('point_id').notNull(),
+    routeId: uuid('route_id').notNull(),
+    requestId: uuid('request_id').notNull(),
+    /**
+     * Ездка грузоперевозки; NULL — строка линейного дня, у него ездок нет (Р5а): машина приезжает
+     * на объект и работает там. Какой именно это день, отдельно не хранится — он лежит в
+     * `workDate` той строки состава, на которую смотрит `compositionFk`.
+     */
+    tripId: uuid('trip_id'),
+    role: text('role').$type<'load' | 'unload' | 'work'>().notNull(),
+  },
+  (t) => ({
+    roleCheck: check('route_point_trips_role_check', sql`${t.role} IN ('load', 'unload', 'work')`),
+    // Роль и наличие ездки согласованы: `work` без ездки, `load`/`unload` — только с ней.
+    roleTripCheck: check(
+      'route_point_trips_role_trip_check',
+      sql`(${t.role} = 'work' AND ${t.tripId} IS NULL)
+        OR (${t.role} <> 'work' AND ${t.tripId} IS NOT NULL)`,
+    ),
+    pointFk: foreignKey({
+      columns: [t.pointId, t.routeId],
+      foreignColumns: [vehicleRoutePoints.id, vehicleRoutePoints.routeId],
+      name: 'route_point_trips_point_fk',
+    }).onDelete('cascade'),
+    /**
+     * MATCH SIMPLE (умолчание): при NULL в `tripId` ключ не проверяется вовсе — ровно то, что
+     * нужно линейной строке; тем же приёмом устроен `routeDateFk` состава (0127). RESTRICT, а не
+     * CASCADE: ездку, побывавшую в маршруте, нельзя снести из-под задания.
+     */
+    tripFk: foreignKey({
+      columns: [t.tripId, t.requestId],
+      foreignColumns: [vehicleRequestTrips.id, vehicleRequestTrips.requestId],
+      name: 'route_point_trips_trip_fk',
+    }).onDelete('restrict'),
+    /**
+     * Строка обслуживается только там, где её заявка стоит в составе маршрута, — физически, а не
+     * проверкой. Изъятие заявки из состава каскадом снимает все её роли, а опустевшие точки
+     * доудаляет сервис (Р13).
+     */
+    compositionFk: foreignKey({
+      columns: [t.routeId, t.requestId],
+      foreignColumns: [vehicleRouteRequests.routeId, vehicleRouteRequests.requestId],
+      name: 'route_point_trips_composition_fk',
+    }).onDelete('cascade'),
+    // Ездка обслуживается ровно одной погрузкой и одной разгрузкой (Р5). Совмещение двух ездок на
+    // одном заезде — это две строки `load` у одной точки, и оно этим индексом не задевается.
+    tripRoleUnique: uniqueIndex('route_point_trips_trip_role_unique')
+      .on(t.tripId, t.role)
+      .where(sql`${t.tripId} IS NOT NULL`),
+    // Линейный день занимает ровно одну точку своего маршрута (Р5а).
+    linearUnique: uniqueIndex('route_point_trips_linear_unique')
+      .on(t.routeId, t.requestId)
+      .where(sql`${t.role} = 'work'`),
+    // «Что делают на этой точке» — главный вопрос к таблице; он же покрывает каскад от точки.
+    pointIdx: index('route_point_trips_point_idx').on(t.pointId),
+    // Под каскад от состава маршрута: частичный индекс линейных строк его не закрывает — у
+    // грузовых ролей `role <> 'work'`, и изъятие заявки сканировало бы таблицу целиком.
+    compositionIdx: index('route_point_trips_composition_idx').on(t.routeId, t.requestId),
   }),
 );
 

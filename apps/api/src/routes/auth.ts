@@ -191,6 +191,7 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
         requestedRole,
         requestedObject,
         requestedCompany,
+        requestedComment,
         captchaToken,
         captchaAnswer,
       } = req.body;
@@ -226,6 +227,7 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
               requestedRole,
               requestedObject,
               requestedCompany,
+              requestedComment,
               // Подтверждение выключено (EMAIL_VERIFICATION_ENABLED): заявка сразу считается
               // подтверждённой. Иначе её нечем было бы активировать — и через неделю её закрыл бы
               // срок хранения неподтверждённых.

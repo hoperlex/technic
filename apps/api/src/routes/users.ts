@@ -220,6 +220,7 @@ interface UserRowJoined {
   requestedRole: UserDto['requestedRole'];
   requestedObject: string;
   requestedCompany: string;
+  requestedComment: string;
   role: UserDto['role'];
   isActive: boolean;
   mustChangePassword: boolean;
@@ -276,6 +277,7 @@ function toDto(
     requestedRole: r.requestedRole,
     requestedObject: r.requestedObject,
     requestedCompany: r.requestedCompany,
+    requestedComment: r.requestedComment,
     role: r.role,
     isActive: r.isActive,
     mustChangePassword: r.mustChangePassword,
@@ -304,6 +306,7 @@ const selectCols = {
   requestedRole: users.requestedRole,
   requestedObject: users.requestedObject,
   requestedCompany: users.requestedCompany,
+  requestedComment: users.requestedComment,
   role: users.role,
   isActive: users.isActive,
   mustChangePassword: users.mustChangePassword,

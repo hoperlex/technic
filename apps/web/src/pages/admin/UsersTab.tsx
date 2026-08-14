@@ -194,6 +194,9 @@ function requestedDetailText(u: UserAccountDto): string | undefined {
   const detail = registrationRequestDetail[u.requestedRole];
   if (detail === 'object' && u.requestedObject) return `Объект: ${u.requestedObject}`;
   if (detail === 'company' && u.requestedCompany) return `Компания: ${u.requestedCompany}`;
+  // У «Другого» это единственное, по чему заявку вообще можно рассмотреть. Пусто — заявка подана
+  // до того, как комментарий стал обязательным (миграция 0139): дозаполнить её нечем.
+  if (detail === 'comment' && u.requestedComment) return `Комментарий: ${u.requestedComment}`;
   return undefined;
 }
 
