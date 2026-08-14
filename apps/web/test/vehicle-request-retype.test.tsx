@@ -7,7 +7,13 @@ import { json, mockHttp } from './http';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { emptyList, list } from './factories/common';
-import { freightRequest, vehicleFeed, vehicleRequest, vehicleSummary } from './factories/vehicle';
+import {
+  freightRequest,
+  freightTrip,
+  vehicleFeed,
+  vehicleRequest,
+  vehicleSummary,
+} from './factories/vehicle';
 import { VehicleRequestsTab } from '../src/pages/vehicle/VehicleRequestsTab';
 
 /**
@@ -99,8 +105,9 @@ const FREIGHT_REQUEST = freightRequest({
   vehicleCategoryName: null,
   vehicleCategorySpecs: null,
   scheduledAt: '2026-08-12T06:00:00.000Z',
-  unloadingResponsibleName: 'Кузнецов К. К.',
-  unloadingResponsiblePhone: '+7 900 000-00-04',
+  trips: [
+    freightTrip({ toResponsibleName: 'Кузнецов К. К.', toResponsiblePhone: '+7 900 000-00-04' }),
+  ],
 });
 
 function renderTab(): ReturnType<typeof mockHttp> {
