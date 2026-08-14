@@ -33,13 +33,17 @@ describe('статусы заявок', () => {
     expect(requestStatusTransitions.cancelled).toEqual([]);
   });
 
-  it('откат — только администратору, и снятие заявки с работы тоже', () => {
+  it('откат — администратору и диспетчеру, и снятие заявки с работы тоже', () => {
     expect(canTransitionStatus('done', 'confirmed', { role: 'admin' })).toBe(true);
     expect(canTransitionStatus('cancelled', 'new', { role: 'admin' })).toBe(true);
     expect(canTransitionStatus('confirmed', 'new', { role: 'admin' })).toBe(true);
+    // Диспетчеру откат отдан вместе с коррекцией: чинит тот, кому звонят. Менеджер, у которого
+    // прав на заявку не меньше, назад её не двигает — откат приходит правом, а не должностью.
+    expect(canTransitionStatus('done', 'confirmed', { role: 'dispatcher' })).toBe(true);
+    expect(canTransitionStatus('cancelled', 'new', { role: 'dispatcher' })).toBe(true);
+    expect(canTransitionStatus('confirmed', 'new', { role: 'dispatcher' })).toBe(true);
     expect(canTransitionStatus('done', 'confirmed', { role: 'manager' })).toBe(false);
-    expect(canTransitionStatus('cancelled', 'new', { role: 'dispatcher' })).toBe(false);
-    expect(canTransitionStatus('confirmed', 'new', { role: 'dispatcher' })).toBe(false);
+    expect(canTransitionStatus('cancelled', 'new', { role: 'manager' })).toBe(false);
   });
 
   /**

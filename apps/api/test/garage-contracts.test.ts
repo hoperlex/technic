@@ -86,10 +86,14 @@ describe('словарь состояний', () => {
 
 describe('право на раздел', () => {
   it('гараж открыт тем же, кто ведёт водителей и листы', () => {
+    // Служба главного механика читает парк по должности (docs/access-model.md): техника компании
+    // — её предмет, и без гаража ей нечем увидеть, где машина стоит сегодня.
     expect(profilesWith('garage.read').map((s) => s.role)).toEqual([
       'admin',
       'manager',
       'dispatcher',
+      'mechanic',
+      'chief_mechanic',
     ]);
   });
 
