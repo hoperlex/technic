@@ -10,6 +10,18 @@ export { officeEquipmentApi, officeEquipmentTypesApi } from './api/officeEquipme
 export { officeEquipmentKeys, officeEquipmentTypeKeys } from './api/keys';
 export { officeEquipmentOptionsQuery, officeEquipmentTypeOptionsQuery } from './api/queries';
 export { EquipmentStateTag } from './ui/EquipmentStateTag';
+/**
+ * Список единиц: колонки таблицы и карточка строки на телефоне. В слое сущности, а не у вкладки
+ * справочника, потому что потребителей стало два — справочник, где карточку ведут, и вкладка
+ * «Техника» раздела «Орг.техника», где её эксплуатируют (Р73). Два описания одной строки разъехались
+ * бы при первой правке.
+ */
+export {
+  officeEquipmentCard,
+  officeEquipmentColumns,
+  numbersLine,
+  type OfficeEquipmentGridActions,
+} from './ui/officeEquipmentGrid';
 export { WarrantyTag } from './ui/WarrantyTag';
 /**
  * Поля карточки единицы. Живут в слое сущности, а не у вкладки справочника: заводят единицу из

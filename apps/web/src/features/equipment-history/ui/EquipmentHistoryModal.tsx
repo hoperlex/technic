@@ -13,7 +13,7 @@ import {
 } from '@technic/contracts';
 import { officeEquipmentApi, officeEquipmentKeys } from '@entities/office-equipment';
 import { ViewModal } from '@shared/ui';
-import { formatDate, formatMoney } from '../../utils/format';
+import { formatDate, formatMoney } from '../../../utils/format';
 
 /**
  * История единицы одной лентой (план модернизации, Р62): перемещения и ремонты вперемешку по

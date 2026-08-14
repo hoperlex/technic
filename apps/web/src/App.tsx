@@ -83,9 +83,15 @@ export default function App() {
             </Route>
             {/* Орг.техника (ADR 0085) — третий модуль заявок: обслуживание оргтехники ведут
                 три стороны (заказчик, оператор оргтехники, сервисная компания). Раздел
-                закрывает одно право `serviceRequests.read`; что внутри него доступно,
-                решает коридор переходов, а не список ролей. */}
-            <Route element={<RequirePermission permission="serviceRequests.read" />}>
+                открывают два права: заявки — `serviceRequests.read`, парк техники —
+                `officeEquipment.read` (Р72). Второе есть у менеджера и диспетчера, у которых
+                модуля заявок нет вовсе, и до вкладки «Техника» они иначе не дошли бы. Что
+                доступно внутри, решают коридор переходов и право самой вкладки. */}
+            <Route
+              element={
+                <RequirePermission permission={['serviceRequests.read', 'officeEquipment.read']} />
+              }
+            >
               <Route path="/office-equipment" element={<ServiceRequestsPage />} />
             </Route>
             {/* Справочники открыты тем, кто их ведёт: смотреть их отдельной страницей

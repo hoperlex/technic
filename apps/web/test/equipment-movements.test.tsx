@@ -6,7 +6,7 @@ import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { emptyList, list } from './factories/common';
 import { objectDto } from './factories/waste';
-import { EquipmentHistoryModal } from '../src/pages/directories/EquipmentHistoryModal';
+import { EquipmentHistoryModal } from '../src/features/equipment-history';
 import { EquipmentMoveModal } from '../src/features/equipment-move';
 
 /**

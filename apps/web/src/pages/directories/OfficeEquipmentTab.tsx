@@ -23,6 +23,8 @@ import {
   officeEquipmentUpdatePayload,
   officeEquipmentKeys,
   officeEquipmentTypeOptionsQuery,
+  officeEquipmentCard,
+  officeEquipmentColumns,
 } from '@entities/office-equipment';
 import { objectOptionsQuery } from '@entities/object';
 import { departmentOptionsQuery } from '@entities/department';
@@ -31,8 +33,7 @@ import { errorMessage } from '../../utils/format';
 import { OfficeEquipmentTypesModal } from './OfficeEquipmentTypesModal';
 import { OfficeEquipmentServiceHistory } from './OfficeEquipmentServiceHistory';
 import { EquipmentMoveModal } from '@features/equipment-move';
-import { officeEquipmentCard, officeEquipmentColumns } from './officeEquipmentGrid';
-import { EquipmentHistoryModal } from './EquipmentHistoryModal';
+import { EquipmentHistoryModal } from '@features/equipment-history';
 
 /**
  * Справочник оргтехники (ADR 0085): что стоит по кабинетам и площадкам, за каким отделом

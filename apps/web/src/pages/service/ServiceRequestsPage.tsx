@@ -6,40 +6,57 @@ import { canSeeArchiveTab } from '../../utils/links';
 import { RequestsTab } from './RequestsTab';
 import { WarrantiesTab } from './WarrantiesTab';
 import { ServiceArchiveTab } from './ArchiveTab';
+import { EquipmentTab } from './EquipmentTab';
 
 /**
- * Раздел «Орг.техника» (ADR 0085): заявки на обслуживание оргтехники.
+ * Раздел «Орг.техника» (ADR 0085): заявки на обслуживание и сам парк.
  *
- * Раздел закрывает одно право — `serviceRequests.read` (маршрут в `App.tsx`). Вкладки отвечают на
- * разные вопросы: «что чинится сейчас» (заявки), «что ещё покрыто гарантией» (реестр) и «что было»
- * (архив). Реестр — не срез списка заявок: гарантия поставщика существует и без единого ремонта, а
- * строкой в нём стоит носитель гарантии, а не заявка.
+ * Раздел открывают **два** права, а не одно (план `office-equipment-mail-and-history-plan.md`,
+ * Р72): `serviceRequests.read` — тем, кто ведёт заявки, `officeEquipment.read` — тем, кто отвечает
+ * за технику. У менеджера и диспетчера есть второе и нет первого, и до этой правки вкладка
+ * «Техника» осталась бы за закрытой дверью — маршрут пускал только по праву заявок.
  *
- * Справочник оргтехники живёт не здесь, а в «Справочниках» (Р7): его ведёт тот же человек, что
- * объекты и контрагентов, а исполнителю справочник закрыт вовсе.
+ * Вкладки отвечают на разные вопросы: «что чинится сейчас» (заявки), «что ещё покрыто гарантией»
+ * (реестр), «что было» (архив) и «где что стоит» (техника). Каждая проверяет своё право сама:
+ * сервисной компании открыты заявки, но не парк — реквизиты нужной ей единицы приходят снимком в
+ * самой заявке (Р7).
+ *
+ * Справочник оргтехники при этом остаётся в «Справочниках»: там карточку **ведут** — заводят,
+ * правят, архивируют. Здесь её эксплуатируют.
  */
-const TABS = ['requests', 'warranties', 'archive'] as const;
+const TABS = ['requests', 'warranties', 'archive', 'equipment'] as const;
 
 export function ServiceRequestsPage() {
   const { can } = useAuth();
   const [sp, setSp] = useSearchParams();
 
+  const canRequests = can('serviceRequests.read');
+  const canEquipment = can('officeEquipment.read');
   // Условие показа архива спрашивается там же, где его спрашивает ссылка (`utils/links`):
   // разойдись эти два места, ссылка вела бы на вкладку, которой у роли нет.
-  const showArchive = canSeeArchiveTab(can);
+  const showArchive = canRequests && canSeeArchiveTab(can);
 
   const items = [
-    { key: 'requests', label: 'Заявки', children: <RequestsTab /> },
-    { key: 'warranties', label: 'Гарантии', children: <WarrantiesTab /> },
+    ...(canRequests
+      ? [
+          { key: 'requests', label: 'Заявки', children: <RequestsTab /> },
+          { key: 'warranties', label: 'Гарантии', children: <WarrantiesTab /> },
+        ]
+      : []),
     ...(showArchive ? [{ key: 'archive', label: 'Архив', children: <ServiceArchiveTab /> }] : []),
+    ...(canEquipment ? [{ key: 'equipment', label: 'Техника', children: <EquipmentTab /> }] : []),
   ];
 
   const raw = sp.get('tab') ?? '';
-  // Ссылка на скрытую вкладку ведёт в список, а не в пустоту: адрес переживает смену роли.
+  /**
+   * Ссылка на недоступную вкладку ведёт на первую доступную, а не на жёсткое «Заявки»: адрес
+   * переживает смену роли, а у того, кому заявки закрыты, вкладка «Заявки» — это пустой экран с
+   * отказами в запросах.
+   */
   const tab =
     (TABS as readonly string[]).includes(raw) && items.some((i) => i.key === raw)
       ? raw
-      : 'requests';
+      : (items[0]?.key ?? 'requests');
 
   return (
     <div style={{ height: '100%' }}>

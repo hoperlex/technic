@@ -17,8 +17,13 @@ import { EquipmentStateTag, WarrantyTag } from '@entities/office-equipment';
 export interface OfficeEquipmentGridActions {
   /** Ведение справочника: без него в строке остаётся только чтение (ADR 0033 §6). */
   canWrite: boolean;
-  onEdit: (record: OfficeEquipmentDto) => void;
-  onDelete: (record: OfficeEquipmentDto) => void;
+  /**
+   * Правка и удаление карточки — работа справочника, и во вкладке модуля их нет вовсе (Р72):
+   * там технику эксплуатируют, а не ведут. Поэтому необязательные: отсутствие обработчика значит
+   * «этого действия здесь не бывает», а не «оно недоступно этой роли».
+   */
+  onEdit?: (record: OfficeEquipmentDto) => void;
+  onDelete?: (record: OfficeEquipmentDto) => void;
   /** Перемещение (Р59): объект правкой карточки больше не меняется — у переезда своя ручка. */
   onMove: (record: OfficeEquipmentDto) => void;
   /** История единицы (Р62): перемещения и ремонты одной лентой. */
@@ -164,8 +169,11 @@ export function officeEquipmentColumns({
             <Tooltip title="Переместить">
               <Button size="small" icon={<SwapOutlined />} onClick={() => onMove(r)} />
             </Tooltip>
-            <Button size="small" icon={<EditOutlined />} onClick={() => onEdit(r)} />
-            <Button size="small" danger icon={<DeleteOutlined />} onClick={() => onDelete(r)} />
+            {/* Правки и удаления во вкладке модуля нет вовсе: карточку ведут в справочнике. */}
+            {onEdit && <Button size="small" icon={<EditOutlined />} onClick={() => onEdit(r)} />}
+            {onDelete && (
+              <Button size="small" danger icon={<DeleteOutlined />} onClick={() => onDelete(r)} />
+            )}
           </>
         )}
       </Space>
@@ -207,14 +215,18 @@ export function officeEquipmentCard({
           </Space>
         ) : null,
     ],
-    onOpen: canWrite ? onEdit : onHistory,
+    // Нажатие по карточке ведёт туда, где человек и так работает: в справочнике это правка, во
+    // вкладке модуля правки нет — открывается история.
+    onOpen: canWrite && onEdit ? onEdit : onHistory,
     actions: (r) => [
       { key: 'history', label: 'История', onClick: () => onHistory(r) },
       ...(canWrite
         ? [
             { key: 'move', label: 'Переместить', onClick: () => onMove(r) },
-            { key: 'edit', label: 'Редактировать', onClick: () => onEdit(r) },
-            { key: 'delete', label: 'Удалить', danger: true, onClick: () => onDelete(r) },
+            ...(onEdit ? [{ key: 'edit', label: 'Редактировать', onClick: () => onEdit(r) }] : []),
+            ...(onDelete
+              ? [{ key: 'delete', label: 'Удалить', danger: true, onClick: () => onDelete(r) }]
+              : []),
           ]
         : []),
     ],
