@@ -14,13 +14,17 @@ import {
 import { useMutation, useQuery } from '@tanstack/react-query';
 import type dayjs from 'dayjs';
 import {
+  DEFAULT_MAIL_ACCOUNT,
   EMAIL_VERIFICATION_ENABLED,
   MAILING_WINDOW_MAX_DAYS,
+  mailAccountHints,
+  mailAccountLabels,
   MAIL_TEST_KINDS,
   mailTestKindLabels,
   mailTestKindNeedsDate,
   mailTestKindNeedsDriver,
   mailTestKindNeedsSampleUser,
+  type MailAccount,
   type MailTestKind,
   roleLabels,
 } from '@technic/contracts';
@@ -31,6 +35,8 @@ import { errorMessage } from '../../utils/format';
 
 interface FormValues {
   kind: MailTestKind;
+  /** Каким каналом отправить: у каждого свой сервер и свой отправитель. */
+  account: MailAccount;
   toUserId: string;
   date?: dayjs.Dayjs;
   windowFromDays?: number;
@@ -72,9 +78,18 @@ export function MailDebugBlock() {
     queryFn: () => mailingsApi.testRecipients(),
   });
 
+  // Каналы: список известен контрактами, а настроенность — только серверу, у которого лежит `env`.
+  // Ненастроенный канал остаётся в списке, но выбрать его нельзя: письмо легло бы в очередь и ждало
+  // настройки, а человек считал бы, что проверил отправку.
+  const { data: accounts } = useQuery({
+    queryKey: ['mail-accounts'],
+    queryFn: () => mailingsApi.accounts(),
+  });
+
   const needsDate = mailTestKindNeedsDate[kind];
   const needsDriver = mailTestKindNeedsDriver[kind];
   const needsSampleUser = mailTestKindNeedsSampleUser[kind];
+  const account = Form.useWatch<MailAccount>('account', form) ?? DEFAULT_MAIL_ACCOUNT;
   const watchDate = Form.useWatch<dayjs.Dayjs | undefined>('date', form);
   const driversDate = watchDate ? watchDate.format(DATE) : undefined;
 
@@ -101,6 +116,7 @@ export function MailDebugBlock() {
     mutationFn: (values: FormValues) =>
       mailingsApi.sendTest({
         kind: values.kind,
+        account: values.account,
         toUserId: values.toUserId,
         ...(values.date ? { date: values.date.format(DATE) } : {}),
         // Окно уходит вместе с датой и только с ней: у писем про доступ периода нет вовсе, и
@@ -140,7 +156,12 @@ export function MailDebugBlock() {
             requiredMark={false}
             // Окно по умолчанию — «сегодняшний день, на день»: оно отвечает на вопрос «как вообще
             // выглядит письмо», а конкретную настройку расписания повторяют здесь руками.
-            initialValues={{ kind: TEST_KINDS[0], windowFromDays: 0, windowDays: 1 }}
+            initialValues={{
+              kind: TEST_KINDS[0],
+              account: DEFAULT_MAIL_ACCOUNT,
+              windowFromDays: 0,
+              windowDays: 1,
+            }}
             onFinish={(v) => sendMut.mutate(v)}
             onValuesChange={(changed: Partial<FormValues>) => {
               // Водитель осмыслен только вместе с видом письма и датой: на другой день у выбранного
@@ -246,6 +267,25 @@ export function MailDebugBlock() {
                 />
               </Form.Item>
             )}
+
+            {/* Канал стоит перед получателем: он решает, от кого и через какой сервер уйдёт письмо,
+              и проверяют новым каналом именно это. */}
+            <Form.Item
+              name="account"
+              label="Канал отправки"
+              rules={[{ required: true }]}
+              extra={mailAccountHints[account]}
+            >
+              <Select
+                options={(accounts ?? []).map((a) => ({
+                  value: a.account,
+                  label: a.configured
+                    ? `${mailAccountLabels[a.account]} — ${a.from}`
+                    : `${mailAccountLabels[a.account]} — не настроен на сервере`,
+                  disabled: !a.configured,
+                }))}
+              />
+            </Form.Item>
 
             <Form.Item
               name="toUserId"

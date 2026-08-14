@@ -54,6 +54,12 @@ function prepareEnv(databaseUrl: string): void {
   process.env.LOG_LEVEL ??= 'error';
   process.env.MAIL_ENABLED = 'true';
   process.env.MAIL_TRANSPORT = 'log';
+  // Основной канал настроен, канал службы — нет: ровно та пара состояний, которую отладка обязана
+  // различать (план `docs/office-equipment-mail-and-history-plan.md`, Р89).
+  process.env.SMTP_HOST = 'smtp.example.invalid';
+  process.env.MAIL_FROM = 'Портал <no-reply@example.invalid>';
+  delete process.env.MAIL_ACCOUNT_REPAIR_HOST;
+  delete process.env.MAIL_ACCOUNT_REPAIR_FROM;
 }
 
 async function migrate(databaseUrl: string): Promise<void> {
@@ -175,6 +181,30 @@ describe.skipIf(!DB_URL)('отладочная отправка письма (ж
     // не выпускают.
     expect(mail?.body_text).toContain('test-link-not-valid');
     expect(mail?.body_text).toMatch(/недействительны/u);
+  });
+
+  /**
+   * Канал письма — не украшение формы: у него свой сервер и свой отправитель, и письмо, ушедшее не
+   * тем каналом, либо не уйдёт вовсе (чужой `From` отвергают), либо придёт не от того.
+   */
+  it('письмо запоминает канал, а ненастроенный канал отклоняется', async () => {
+    const def = await sendTest({ kind: 'verify_email', toUserId: ctx.adminId });
+    expect(def.statusCode).toBe(200);
+    const row = await ctx.db.execute<{ account: string }>(
+      sql`SELECT account FROM mail_messages WHERE to_email = ${ADMIN_EMAIL}
+           ORDER BY created_at DESC LIMIT 1`,
+    );
+    expect(row.rows[0]?.account).toBe('default');
+
+    // Канал, которого нет в `env` этого сервера, отклоняется до постановки в очередь: иначе письмо
+    // легло бы ждать настройки, а форма ответила бы «отправлено».
+    const missing = await sendTest({
+      kind: 'verify_email',
+      toUserId: ctx.adminId,
+      account: 'repair',
+    });
+    expect(missing.statusCode).toBe(400);
+    expect(missing.json().message).toContain('не настроен');
   });
 
   it('получателю без роли администратора письмо не отправляется', async () => {

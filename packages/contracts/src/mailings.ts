@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { baseListQuery, dateOnlySchema, uuidSchema } from './common';
+import { DEFAULT_MAIL_ACCOUNT, MAIL_ACCOUNTS } from './mail-accounts';
 import { type Role, roleSchema } from './enums';
 import { TIME_FORMAT_MESSAGE, TIME_PATTERN } from './time';
 
@@ -123,6 +124,14 @@ export const mailTestKindNeedsSampleUser: Record<MailTestKind, boolean> = {
 export const mailTestSchema = z
   .object({
     kind: z.enum(MAIL_TEST_KINDS),
+    /**
+     * Каким каналом отправить (план `office-equipment-mail-and-history-plan.md`, Р89). Умолчание —
+     * основной: им уходит всё, что портал рассылал до появления второго канала.
+     *
+     * Спрашивается именно здесь, потому что отладка — единственный способ проверить новый SMTP до
+     * первого настоящего события: письмо уйдёт с его отправителя и через его сервер.
+     */
+    account: z.enum(MAIL_ACCOUNTS).optional().default(DEFAULT_MAIL_ACCOUNT),
     /**
      * Кому отправить. Только учётная запись с ролью администратора: тестовое письмо содержит
      * настоящие рабочие данные, и уходить оно может лишь тому, кто и так видит их все в портале.

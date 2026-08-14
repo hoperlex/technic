@@ -5,6 +5,8 @@ import { and, asc, eq, isNotNull, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import {
   dateOnlySchema,
+  MAIL_ACCOUNTS,
+  type MailAccountStatusDto,
   MAIL_TEST_NOTE,
   MAIL_TEST_SUBJECT_PREFIX,
   type MailTestKind,
@@ -233,9 +235,33 @@ export default async function adminMailRoutes(app: FastifyInstance): Promise<voi
     async (req) => driversWithRoutes(req.query.date, req.query.date),
   );
 
+  /**
+   * Какие каналы настроены на этом сервере (Р89). Нужна отладке: канал, которого в `env` нет,
+   * предлагать нельзя — письмо тихо легло бы в очередь и ждало настройки, а человек считал бы, что
+   * проверил отправку.
+   *
+   * Секретов не отдаёт: только признак и адрес отправителя, по которому видно, от кого придёт
+   * письмо.
+   */
+  r.get('/accounts', readGuards, async (): Promise<MailAccountStatusDto[]> => {
+    return MAIL_ACCOUNTS.map((account) => ({
+      account,
+      configured: config.mail.accounts[account].configured,
+      from: config.mail.accounts[account].from,
+    }));
+  });
+
   r.post('/test', { ...manageGuards, schema: { body: mailTestSchema } }, async (req) => {
     const actor = requirePrincipal(req);
-    const { kind, toUserId } = req.body;
+    const { kind, toUserId, account } = req.body;
+
+    // Канал должен быть настроен именно на сервере: иначе письмо ляжет в очередь и будет ждать
+    // `env`, а отладка тем временем ответит «отправлено».
+    if (!config.mail.accounts[account].configured) {
+      throw err.badRequest('Этот почтовый канал не настроен на сервере', {
+        account: 'Канал не настроен',
+      });
+    }
 
     const [recipient] = await db
       .select({ id: users.id, email: users.email, role: users.role, isActive: users.isActive })
@@ -265,6 +291,8 @@ export default async function adminMailRoutes(app: FastifyInstance): Promise<voi
 
     const id = await queueMail({
       kind,
+      // Канал уходит в письмо: воркер по нему выберет транспорт и отправителя.
+      account,
       // Свой ключ на каждую отправку: один и тот же тест шлют сколько угодно раз, и настоящему
       // письму с тем же смыслом он мешать не должен.
       dedupeKey: `test:${kind}:${randomUUID()}`,

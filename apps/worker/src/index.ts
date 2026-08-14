@@ -5,9 +5,9 @@ import pg from 'pg';
 import { DeleteObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { pino } from 'pino';
 import { archiveUnverifiedRegistrations, purgeExpiredRegistrations } from './retention';
-import { createMailTransport, PermanentMailError } from './mail-transport';
+import { PermanentMailError } from './mail-transport';
+import { createMailAccounts } from './mail-accounts';
 import { tickMailings } from './mail-scheduler';
-import { MailRateLimiter } from './mail-rate';
 
 const logger = pino({
   level: process.env.LOG_LEVEL ?? 'info',
@@ -57,57 +57,23 @@ const INTERNAL_API_URL = process.env.INTERNAL_API_URL ?? 'http://technic-api:300
 const INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN ?? '';
 
 /**
- * Настройка проверяется на старте, а не при первом письме: письмо ждёт очереди часами, и отказ
- * «не задан SMTP_HOST» обнаружился бы вечером на рассылке заданий, а не при выкатке.
+ * Каналы поднимаются на старте, а не при первом письме: письмо ждёт очереди часами, и отказ «не
+ * задан SMTP_HOST» обнаружился бы вечером на рассылке заданий, а не при выкатке.
+ *
+ * Каналов может быть несколько (план `docs/office-equipment-mail-and-history-plan.md`, Р83–Р87): у
+ * службы ремонта свой ящик на своём сервере, и письмо от её имени через провайдерский транспорт не
+ * уйдёт — чужой `From` отвергают. Какой канал у письма, написано в самом письме.
  */
-function mailConfig() {
-  if (!MAIL_ENABLED) return null;
-  const cfg = {
+const mailAccounts = createMailAccounts(
+  {
+    enabled: MAIL_ENABLED,
     transport: MAIL_TRANSPORT as 'log' | 'smtp',
-    host: process.env.SMTP_HOST ?? '',
-    port: Number(process.env.SMTP_PORT ?? 587),
-    secure: (process.env.SMTP_SECURE ?? 'false') === 'true',
-    user: process.env.SMTP_USER ?? '',
-    password: process.env.SMTP_PASSWORD ?? '',
-    from: process.env.MAIL_FROM ?? '',
-    replyTo: process.env.MAIL_REPLY_TO ?? '',
-  };
-  if (cfg.transport === 'smtp') {
-    const missing = (['host', 'user', 'password', 'from'] as const).filter((k) => !cfg[k]);
-    if (missing.length > 0) {
-      throw new Error(
-        `MAIL_ENABLED=true с MAIL_TRANSPORT=smtp требует SMTP_HOST, SMTP_USER, SMTP_PASSWORD и MAIL_FROM (не заданы: ${missing.join(', ')})`,
-      );
-    }
-  }
-  return cfg;
-}
+    defaultMaxPerMinute: MAIL_MAX_PER_MINUTE,
+  },
+  (msg, meta) => logger.info(meta, msg),
+);
 
-const mailCfg = mailConfig();
-const mailTransport = mailCfg
-  ? createMailTransport(mailCfg, (msg, meta) => logger.info(meta, msg))
-  : null;
-const mailRate = new MailRateLimiter(MAIL_MAX_PER_MINUTE);
-
-if (mailCfg) {
-  // Без секретов: видно, куда и чем отправляем, — этого хватает, чтобы заметить чужой SMTP в проде.
-  logger.info(
-    { transport: mailCfg.transport, host: mailCfg.host, port: mailCfg.port, from: mailCfg.from },
-    'Почтовый транспорт worker',
-  );
-  /**
-   * Почтовые службы общего назначения (Яндекс, Mail.ru) отправляют письмо только от адреса самого
-   * ящика: чужой `From` они отвергают ответом 550, и произойдёт это на первом же письме, ночью, а
-   * выглядеть будет как «рассылка не работает». Предупреждение, а не отказ старта: у транзакционных
-   * провайдеров отправка от произвольного адреса подтверждённого домена — норма.
-   */
-  if (mailCfg.transport === 'smtp' && mailCfg.user && !mailCfg.from.includes(mailCfg.user)) {
-    logger.warn(
-      { from: mailCfg.from, user: mailCfg.user },
-      'MAIL_FROM не содержит адрес SMTP-ящика: почтовые службы общего назначения такие письма отвергают',
-    );
-  }
-} else {
+if (mailAccounts.size === 0) {
   logger.info('Почта выключена (MAIL_ENABLED=false): задачи send_email не обрабатываются');
 }
 
@@ -170,6 +136,8 @@ interface MailRow {
   to_email: string;
   /** Свой обратный адрес письма; пусто — общий `MAIL_REPLY_TO` (миграция 0141). */
   reply_to: string;
+  /** Каким каналом отправлять (миграция 0144); у писем прошлых выпусков — основной. */
+  account: string;
   subject: string;
   body_text: string;
   body_html: string;
@@ -184,14 +152,14 @@ interface MailRow {
 async function sendEmail(job: JobRow): Promise<void | { deferUntil: Date }> {
   const mailId = String(job.payload.mailMessageId ?? '');
   if (!mailId) throw new Error('В задаче send_email нет mailMessageId');
-  if (!mailTransport) {
+  if (mailAccounts.size === 0) {
     // Почту выключили уже после того, как письмо встало в очередь. Это не ошибка задачи: письмо
     // подождёт включения, а не потратит попытки и не уйдёт в dead.
     return { deferUntil: new Date(Date.now() + 15 * 60_000) };
   }
 
   const res = await pool.query<MailRow>(
-    `SELECT id, to_email, reply_to, subject, body_text, body_html, status
+    `SELECT id, to_email, reply_to, account, subject, body_text, body_html, status
        FROM mail_messages WHERE id = $1`,
     [mailId],
   );
@@ -200,9 +168,25 @@ async function sendEmail(job: JobRow): Promise<void | { deferUntil: Date }> {
   // отправкой и фиксацией не шлёт письмо второй раз.
   if (!mail || mail.status === 'sent') return;
 
-  if (!mailRate.take()) return { deferUntil: mailRate.freeAt() };
+  /**
+   * Канал письма не настроен на этом сервере — письмо ждёт настройки, а не тратит попытки: чаще
+   * всего это выкат, где ящик службы ещё не прописан в `prod.env`. Откладывается **только это**
+   * письмо: у остальных каналов свои транспорты, и они идут своим ходом.
+   */
+  const runtime = mailAccounts.get(mail.account);
+  if (!runtime) {
+    logger.warn(
+      { mailId: mail.id, account: mail.account },
+      'Канал письма не настроен на этом сервере — письмо ждёт настройки',
+    );
+    return { deferUntil: new Date(Date.now() + 15 * 60_000) };
+  }
 
-  const { providerId } = await mailTransport.send({
+  // Потолок писем в минуту — свой у каждого канала: у корпоративного сервера пределы не те, что у
+  // транзакционного провайдера, и общий счётчик душил бы один канал ради другого.
+  if (!runtime.rate.take()) return { deferUntil: runtime.rate.freeAt() };
+
+  const { providerId } = await runtime.transport.send({
     to: mail.to_email,
     // Пустой адрес передаётся как есть: правило «своё побеждает общее» живёт в транспорте, и
     // повторять его здесь вторым условием значило бы завести две копии одного решения.
@@ -603,7 +587,7 @@ async function loop(): Promise<void> {
       await sleep(POLL_INTERVAL_MS);
     }
   }
-  await mailTransport?.close();
+  await Promise.all([...mailAccounts.values()].map((a) => a.transport.close()));
   await pool.end();
   logger.info('Worker остановлен');
   process.exit(0);

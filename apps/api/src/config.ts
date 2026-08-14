@@ -1,5 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { z } from 'zod';
+import {
+  DEFAULT_MAIL_ACCOUNT,
+  MAIL_ACCOUNTS,
+  mailAccountEnvPrefix,
+  type MailAccount,
+} from '@technic/contracts';
 
 const boolFromEnv = (def: boolean) =>
   z
@@ -204,9 +210,40 @@ function loadConfig() {
       resetTtl: env.MAIL_RESET_TTL_SECONDS,
       registrationExpiryDays: env.MAIL_REGISTRATION_EXPIRY_DAYS,
       internalToken: env.INTERNAL_API_TOKEN ?? '',
+      accounts: mailAccountsFromEnv(),
     },
     sentryDsn: env.SENTRY_DSN,
   };
+}
+
+/**
+ * Состояние почтовых каналов (план `docs/office-equipment-mail-and-history-plan.md`, Р83–Р89).
+ *
+ * Отправляет письма worker, и настройки каналов — его: `MAIL_ACCOUNT_<КЛЮЧ>_*` в общем `prod.env`.
+ * API сюда лезет ровно за двумя вещами: настроен ли канал на этом сервере и от кого придёт письмо.
+ * Первое нужно, чтобы отладочная отправка не предлагала канал, которого нет, — иначе письмо тихо
+ * ляжет в очередь и будет ждать настройки; второе — чтобы в форме было видно отправителя.
+ *
+ * Читается напрямую из `process.env`, а не через схему конфигурации: эти переменные принадлежат
+ * воркеру, и объявлять их обязательными для API значило бы требовать почтовые настройки от
+ * процесса, который писем не отправляет. **Пароля здесь нет и быть не должно** — только признак и
+ * адрес отправителя.
+ */
+function mailAccountsFromEnv(): Record<MailAccount, { configured: boolean; from: string }> {
+  const read = (account: MailAccount): { configured: boolean; from: string } => {
+    if (account === DEFAULT_MAIL_ACCOUNT) {
+      const from = process.env.MAIL_FROM ?? '';
+      return { configured: !!process.env.SMTP_HOST && !!from, from };
+    }
+    const prefix = mailAccountEnvPrefix(account);
+    const from = (prefix ? process.env[`${prefix}_FROM`] : undefined) ?? '';
+    const host = (prefix ? process.env[`${prefix}_HOST`] : undefined) ?? '';
+    return { configured: !!host && !!from, from };
+  };
+  return Object.fromEntries(MAIL_ACCOUNTS.map((a) => [a, read(a)])) as Record<
+    MailAccount,
+    { configured: boolean; from: string }
+  >;
 }
 
 export type AppConfig = ReturnType<typeof loadConfig>;

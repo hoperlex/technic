@@ -37,6 +37,12 @@ export interface MailTransportConfig {
   password: string;
   from: string;
   replyTo: string;
+  /**
+   * Как представляться серверу: `CRAM-MD5` — «зашифрованный пароль» почтовых клиентов, `LOGIN` —
+   * обычный пароль поверх TLS. Умолчание разбирает вызывающий: транспорту здесь выбирать нечего,
+   * он передаёт метод библиотеке как есть.
+   */
+  authMethod?: string;
 }
 
 /**
@@ -79,7 +85,13 @@ export function createMailTransport(
     port: cfg.port,
     // true только для implicit TLS (465); на 587 соединение поднимается STARTTLS.
     secure: cfg.secure,
-    auth: { user: cfg.user, pass: cfg.password },
+    // Метод аутентификации задаёт канал: корпоративные серверы нередко требуют CRAM-MD5 — это то,
+    // что почтовые клиенты называют «зашифрованным паролем». Пусто — библиотека выбирает сама.
+    auth: {
+      user: cfg.user,
+      pass: cfg.password,
+      ...(cfg.authMethod ? { method: cfg.authMethod } : {}),
+    },
     // Одно соединение на несколько писем: провайдеры считают частые переподключения подозрительной
     // активностью, а рассылка идёт пачкой.
     pool: true,

@@ -9,6 +9,7 @@ import {
   mailTestKindNeedsDriver,
   mailTestKindNeedsSampleUser,
   type AuthUser,
+  type MailAccountStatusDto,
   type MailTestBody,
 } from '@technic/contracts';
 import { json, mockHttp, type HttpMock } from './http';
@@ -56,6 +57,15 @@ const KINDS = MAIL_TEST_KINDS.filter((k) => EMAIL_VERIFICATION_ENABLED || k !== 
 const SEND = 'POST /admin/mail/test';
 
 /**
+ * Каналы отправки (Р83, Р89). Второй намеренно ненастроен: письмо через него легло бы в очередь и
+ * ждало `env`, а форма ответила бы «отправлено» — поэтому выбрать его нельзя.
+ */
+const ACCOUNTS: MailAccountStatusDto[] = [
+  { account: 'default', configured: true, from: 'Портал <no-reply@example.test>' },
+  { account: 'repair', configured: false, from: '' },
+];
+
+/**
  * Вкладка целиком, а не блок отладки в отрыве: экран у трёх подвкладок общий, и открывает его
  * администратор именно так. Расписаний и служебных адресов в ответах нет — они предмет своих
  * проверок, здесь важно лишь, что их запросы не уходят в настоящую сеть.
@@ -71,6 +81,7 @@ async function renderTab(user: AuthUser = authUser({ role: 'admin' })): Promise<
     'GET /admin/mail/test-recipients': () => json(RECIPIENTS),
     'GET /admin/mail/drivers-with-routes': () => json(DRIVERS),
     'GET /admin/mail/digest-sample-users': () => json(SAMPLE_USERS),
+    'GET /admin/mail/accounts': () => json(ACCOUNTS),
     [SEND]: () => json({ ok: true, message: 'Письмо отправлено' }),
   });
   renderWithUser(<MailingsTab />, { user });
@@ -154,6 +165,7 @@ describe('отправка отладочного письма', () => {
     await waitFor(() => expect(http.countOf(SEND)).toBe(1));
     expect(http.lastCall(SEND)?.body as MailTestBody).toEqual({
       kind: 'driver_routes',
+      account: 'default',
       toUserId: ADMIN_ID,
       // Дата уходит ключом, а не в том виде, в каком её показывает поле: разбирает её сервер.
       date: '2026-08-10',
@@ -179,6 +191,7 @@ describe('отправка отладочного письма', () => {
     await waitFor(() => expect(http.countOf(SEND)).toBe(1));
     expect(http.lastCall(SEND)?.body as MailTestBody).toEqual({
       kind: 'driver_routes',
+      account: 'default',
       toUserId: ADMIN_ID,
       date: '2026-08-10',
       windowFromDays: 1,
@@ -202,6 +215,7 @@ describe('отправка отладочного письма', () => {
     await waitFor(() => expect(http.countOf(SEND)).toBe(1));
     expect(http.lastCall(SEND)?.body as MailTestBody).toEqual({
       kind: 'role_digest',
+      account: 'default',
       toUserId: ADMIN_ID,
       date: '2026-08-10',
       ...DEFAULT_WINDOW,
@@ -226,10 +240,29 @@ describe('отправка отладочного письма', () => {
     await waitFor(() => expect(http.countOf(SEND)).toBe(1));
     expect(http.lastCall(SEND)?.body as MailTestBody).toEqual({
       kind: 'driver_routes',
+      account: 'default',
       toUserId: ADMIN_ID,
       date: '2026-08-11',
       ...DEFAULT_WINDOW,
     });
+  });
+
+  /**
+   * Канал решает, от кого и через какой сервер уйдёт письмо, — и отладка это единственный способ
+   * проверить новый SMTP до первого настоящего события (Р89). Ненастроенный канал остаётся в
+   * списке видимым, но выбрать его нельзя: письмо легло бы в очередь и ждало `env`, а человек
+   * считал бы, что проверил отправку.
+   */
+  it('канал выбирается из настроенных, ненастроенный виден и заблокирован', async () => {
+    await renderTab();
+    await screen.findByLabelText('Канал отправки');
+
+    fireEvent.mouseDown(screen.getByLabelText('Канал отправки'));
+    const repair = await screen.findByTitle(/Ящик службы ремонта — не настроен на сервере/);
+    expect(repair.getAttribute('aria-disabled')).toBe('true');
+    // Настроенный канал показан отправителем: по нему видно, от кого придёт письмо. Ищется
+    // списком — выбранное значение и строка списка совпадают подписью.
+    expect(screen.getAllByTitle(/Основной канал портала — Портал/).length).toBeGreaterThan(0);
   });
 
   it('без права на управление рассылками кнопка отправки недоступна', async () => {
