@@ -22,7 +22,7 @@ import {
   uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
-import type { AddressMeta, ModuleMailEvent, ReplyToMode } from '@technic/contracts';
+import type { AddressMeta, MailAccount, ModuleMailEvent, ReplyToMode } from '@technic/contracts';
 
 /** case-insensitive text (расширение citext включается ops-ом до миграций). */
 const citext = customType<{ data: string }>({
@@ -978,6 +978,137 @@ export const userRoleAddons = pgTable(
   },
   (t) => ({
     pk: primaryKey({ columns: [t.userId, t.addon] }),
+  }),
+);
+
+/**
+ * Назначаемые полномочия (ADR 0106, миграция 0145) — надстройка роли, переставшая быть значением
+ * enum. Свободная сборка означает, что набор заводится в проде, а значение `role_addon` нельзя ни
+ * создать из интерфейса, ни удалить вовсе.
+ *
+ * Шаг 1a перехода expand/contract: таблицы стоят рядом с `user_role_addons`, чтение идёт из старой,
+ * запись — в обе. Пустой на этом шаге остаётся только `user_grants`: сами наборы заводит миграция,
+ * потому что назначению нужно на что ссылаться.
+ *
+ * Совместимость набора с ролью и состав прав держит сервер, а не CHECK: оба условия кросс-табличные
+ * — тот же случай, из-за которого миграция 0063 сняла `users_rukstroy_object_check`.
+ */
+export const grants = pgTable(
+  'grants',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    // Стабильный код: по нему набор находят код приложения (`GRANT_MODULE_WIDE_SCOPE` — сквозная
+    // область системного набора объявляется в контрактах), миграции каталога и журнал действий.
+    code: text('code').notNull(),
+    name: text('name').notNull(),
+    description: text('description').notNull().default(''),
+    // Системный набор заводится миграцией, не правится и не удаляется из интерфейса; только он
+    // может нести scope-эффект (ADR 0106, решение 2). Пользовательская копия его не наследует.
+    isSystem: boolean('is_system').notNull().default(false),
+    // Версия состава — слагаемое отпечатка последствий, которым проверяется подтверждение правки
+    // (решение 7). Счёт с единицы: набор без единой правки — это состояние, а не его отсутствие.
+    version: integer('version').notNull().default(1),
+    createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+    // Мягкое удаление: удалить набор можно только после отзыва у всех держателей, но строка
+    // остаётся — реестр выдач и журнал обязаны объяснять прошлые назначения.
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
+  },
+  (t) => ({
+    // Код держится за набором навсегда, а не освобождается после удаления, — в отличие от номеров
+    // в справочниках с мягким удалением (`office_equipment_serial_unique`): на код ссылаются код,
+    // журнал и реестр, и новый набор под кодом удалённого рассказывал бы историю за него. Поэтому
+    // и частичного индекса `WHERE deleted_at IS NULL` рядом нет: он не добавил бы уникальности к
+    // более сильной общей, а как путь доступа повторил бы тот же индекс по тому же столбцу.
+    codeUnique: uniqueIndex('grants_code_unique').on(t.code),
+    codeNotBlank: check('grants_code_not_blank_check', sql`btrim(${t.code}) <> ''`),
+    nameNotBlank: check('grants_name_not_blank_check', sql`btrim(${t.name}) <> ''`),
+  }),
+);
+
+export const grantPermissions = pgTable(
+  'grant_permissions',
+  {
+    grantId: uuid('grant_id')
+      .notNull()
+      .references(() => grants.id, { onDelete: 'cascade' }),
+    // Право хранится текстом и сверяется со словарём `PERMISSIONS` при чтении; справочника прав в
+    // базе нет намеренно — он был бы второй копией закрытого словаря контрактов и разъехался бы с
+    // ним в первый же выкат, переименовавший право.
+    //
+    // Тип здесь не сужается до `Permission` тем же приёмом, что `ModuleMailEvent` у адресатов: у
+    // тех строк реестр открыт, а у этих он закрыт, но строка может его пережить. После выката,
+    // снявшего право, здесь остаются сироты; читатель обязан их отфильтровать (доступа они не
+    // дают), а `$type<Permission>` пообещал бы, что фильтровать нечего.
+    permission: text('permission').notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.grantId, t.permission] }),
+    // «В каких наборах есть это право» — обратный проход: предпросмотр последствий и пересмотр
+    // словаря. PK покрывает только проход от набора.
+    permissionIdx: index('grant_permissions_permission_idx').on(t.permission),
+  }),
+);
+
+/**
+ * Кому набор разрешено назначать. Своей таблицей, а не массивом внутри `grants`: роль убирают из
+ * списка чаще, чем правят состав, и жизненный цикл различает «нельзя назначать впредь» и «уже
+ * выданное сохраняется». Инвариант «ось роли × модуль» к тому же проверяется на декартовом
+ * произведении `grant_roles × grant_permissions` — соединением, а не разбором массива.
+ */
+export const grantRoles = pgTable(
+  'grant_roles',
+  {
+    grantId: uuid('grant_id')
+      .notNull()
+      .references(() => grants.id, { onDelete: 'cascade' }),
+    // Роль — enum: её перечень закрыт и меняется только выкатом, в отличие от набора прав.
+    role: roleEnum('role').notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.grantId, t.role] }),
+  }),
+);
+
+export const userGrants = pgTable(
+  'user_grants',
+  {
+    // Собственная идентичность назначения, а не PK «учётка + набор»: на неизменяемый `id` опирается
+    // откат будущего перевода ролей — он снимает свои строки и не трогает выданное позже вручную.
+    // Отзыв удаляет строку, повторная выдача создаёт новую; переиспользование прежней запрещено.
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    // RESTRICT, а не CASCADE: каскад снимал бы доступ у живых учёток мимо пересчёта эффективных
+    // прав, `authVersion` и журнала. Удаление выданного набора — это 409 со списком держателей.
+    grantId: uuid('grant_id')
+      .notNull()
+      .references(() => grants.id, { onDelete: 'restrict' }),
+    // Кто и когда выдал — как у надстройки роли. Перенос старых надстроек сохранит эти значения, а
+    // не проставит момент переноса: меняется способ хранения, а не причина выдачи.
+    grantedBy: uuid('granted_by').references(() => users.id, { onDelete: 'set null' }),
+    grantedAt: timestamp('granted_at', { withTimezone: true }).notNull().defaultNow(),
+    // Происхождение назначения: выдал администратор или создал перевод роли. Неизменяемо — на нём
+    // держится откат перевода, который выданное вручную не трогает никогда.
+    origin: text('origin').notNull().default('manual').$type<'manual' | 'migration'>(),
+    // Каким переводом ролей выдано — без внешнего ключа и это решение, а не упущение (ADR 0106,
+    // решение 3): таблицы `user_role_migration` ещё нет, она придёт миграцией этапа перевода ролей
+    // вместе с FK и CHECK согласованности (`origin = 'migration'` ⇔ `migration_id IS NOT NULL`).
+    // Пустая таблица, заведённая сейчас, пережила бы три релиза без единого писателя.
+    migrationId: uuid('migration_id'),
+  },
+  (t) => ({
+    // Одно живое назначение на пару. Без него переносу назначений не на что опереть свой
+    // `ON CONFLICT DO NOTHING`, а у учётки заводятся две строки одного набора.
+    userGrantUnique: unique('user_grants_user_grant_unique').on(t.userId, t.grantId),
+    // Держатели набора: правка блокирует и пересчитывает их всех одной транзакцией, удаление
+    // отвечает их списком, и этот же индекс обслуживает проверку RESTRICT. Обратный проход —
+    // «полномочия учётки» — закрывает префикс `user_id` уникального ограничения.
+    grantIdx: index('user_grants_grant_idx').on(t.grantId),
+    // Перечень закрыт поведением, а не реестром, — здесь CHECK уместен, в отличие от списка прав.
+    originCheck: check('user_grants_origin_check', sql`${t.origin} in ('manual', 'migration')`),
   }),
 );
 
@@ -3807,6 +3938,14 @@ export const mailMessages = pgTable(
      * заявку, ждущую визы, отвечают заявителю, на отмену — тому, кто отменил.
      */
     replyTo: citext('reply_to').notNull().default(''),
+    /**
+     * Каким каналом уходит письмо (миграция 0144): у службы ремонта свой ящик на своём сервере, и
+     * отправить от него через провайдерский транспорт нельзя — чужой `From` отвергают.
+     *
+     * Выбирает канал API, который письмо и составляет; воркер по колонке берёт транспорт. Реестр
+     * ключей — в контрактах, здесь только тип: третий канал не должен стоить миграции.
+     */
+    account: text('account').notNull().default('default').$type<MailAccount>(),
     userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
     /** Водитель: задание на рейс получает физлицо, учётной записи у него может не быть вовсе. */
     personId: uuid('person_id').references(() => persons.id, { onDelete: 'set null' }),
@@ -4108,9 +4247,14 @@ export const moduleMailRecipients = pgTable(
   },
   (t) => ({
     // Один адрес на событие: вторая строка с тем же ящиком означала бы два одинаковых письма.
-    eventEmailUnique: uniqueIndex('module_mail_recipients_event_email_unique').on(t.event, t.toEmail),
+    eventEmailUnique: uniqueIndex('module_mail_recipients_event_email_unique').on(
+      t.event,
+      t.toEmail,
+    ),
     // Отбор при постановке письма идёт ровно этой парой.
-    liveIdx: index('module_mail_recipients_live_idx').on(t.event).where(sql`${t.isEnabled}`),
+    liveIdx: index('module_mail_recipients_live_idx')
+      .on(t.event)
+      .where(sql`${t.isEnabled}`),
     // CHECK по перечню событий не ставится: реестр открытый (см. комментарий у колонки). У режима
     // обратного адреса — ставится: это закрытое поведение, от которого зависит соседняя колонка.
     replyToModeCheck: check(
@@ -4483,6 +4627,10 @@ export type UserConstructionObjectRow = typeof userConstructionObjects.$inferSel
 export type DepartmentRow = typeof departments.$inferSelect;
 export type UserDepartmentRow = typeof userDepartments.$inferSelect;
 export type UserRoleAddonRow = typeof userRoleAddons.$inferSelect;
+export type GrantRow = typeof grants.$inferSelect;
+export type GrantPermissionRow = typeof grantPermissions.$inferSelect;
+export type GrantRoleRow = typeof grantRoles.$inferSelect;
+export type UserGrantRow = typeof userGrants.$inferSelect;
 export type WasteRequestRow = typeof wasteRequests.$inferSelect;
 export type FileRow = typeof files.$inferSelect;
 export type ObjectRow = typeof constructionObjects.$inferSelect;

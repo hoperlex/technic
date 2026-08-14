@@ -1,3 +1,4 @@
+import { DEFAULT_MAIL_ACCOUNT, type MailAccount } from '@technic/contracts';
 import { db } from '../db/client';
 import { mailMessages } from '../db/schema';
 import { config } from '../config';
@@ -30,6 +31,11 @@ interface MailFields {
    */
   dedupeKey: string;
   to: string;
+  /**
+   * Каким каналом отправлять. Пусто — основной канал портала: им уходит всё, что писалось до
+   * появления второго, и им же — письма, которым отправитель безразличен (план, Р85).
+   */
+  account?: MailAccount;
   /**
    * Куда отвечать. Пусто — общий `MAIL_REPLY_TO`: у писем про доступ отвечать по существу некому,
    * а у письма по заявке адресат ответа зависит от события (план модуля, Р68).
@@ -89,6 +95,7 @@ export async function queuePreparedMail(
         kind: input.kind,
         dedupeKey: input.dedupeKey,
         toEmail: input.to,
+        account: input.account ?? DEFAULT_MAIL_ACCOUNT,
         replyTo: input.replyTo ?? '',
         subject: input.subject,
         bodyText: input.text,
