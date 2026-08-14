@@ -15,19 +15,16 @@ import { authUser } from './factories/auth';
 import { MOBILE_VIEWPORT, type Viewport } from './viewport';
 import { DriverLayout } from '../src/pages/driver/DriverLayout';
 import { DriverPage } from '../src/pages/driver/DriverPage';
-// Таблица стилей — текстом: раскладки jsdom не считает, и правило о прокрутке проверяется по
-// самому правилу (см. тест про узкий экран). `?raw` разрешает путь так же, как импорт кода, —
-// прогон из другого каталога его не сломает.
 import { readFileSync } from 'node:fs';
-import path from 'node:path';
 
 /*
- * Таблица стилей читается с диска от корня пакета, а не импортом `?raw`: в jsdom стили не
- * подключаются вовсе, `?raw` здесь отдаёт пустую строку, и проверка правил молча проходила бы на
- * любом содержимом. `import.meta.url` в этом окружении не файловый, поэтому путь — от `cwd`,
- * который у прогона всегда `apps/web`.
+ * Таблица стилей читается с диска, а не импортом `?raw`: стили в тестах не подключаются вовсе
+ * (`css` у vitest выключен), `?raw` отдаёт пустую строку — и проверка правил молча проходила бы на
+ * любом содержимом. Путь считается от файла теста, а не от рабочего каталога: прогон из корня
+ * репозитория его не сломает. Берётся `pathname`, а не сам объект адреса, — в среде jsdom `URL` не
+ * тот, что у Node, и `readFileSync` его не принимает.
  */
-const stylesCss = readFileSync(path.resolve(process.cwd(), 'src/styles.css'), 'utf8');
+const stylesCss = readFileSync(new URL('../src/styles.css', import.meta.url).pathname, 'utf8');
 
 /**
  * Кабинет водителя (ADR 0102): каркас и задание на дату — этап 3 плана, решения Р9–Р13.
@@ -167,14 +164,18 @@ describe('кабинет водителя: задание на дату', () => 
     expect(screen.getByText('КамАЗ 65115 · А123ВС799 · гар. № 12')).toBeDefined();
     expect(screen.getByText('НЕФАЗ 8332 · АВ123477')).toBeDefined();
 
-    // Состав рейса: заявка со временем, заказчиком, адресами, грузом и комментарием диспетчера.
+    // Состав рейса: заявка со временем, заказчиком, адресами и комментарием заявителя.
     expect(screen.getByText('ТС-101')).toBeDefined();
     expect(screen.getByText('08:30')).toBeDefined();
     expect(screen.getByText('Альфа-объект')).toBeDefined();
     expect(screen.getByText('Карьер «Северный»')).toBeDefined();
     expect(screen.getByText('ЖК «Восход», корпус 3')).toBeDefined();
-    expect(screen.getByText('Песок, 20 т')).toBeDefined();
     expect(screen.getByText('Заезд через южные ворота')).toBeDefined();
+
+    // Количества груза в кабинете нет ни строкой, ни подписью: груз водителю описывает
+    // комментарий заявки, а «20 т» он сверяет на весах. В письме-задании количество осталось.
+    expect(screen.queryByText('Груз')).toBeNull();
+    expect(screen.queryByText('Песок, 20 т')).toBeNull();
 
     // Контакт — ссылкой набора: кабинет открывают с того же телефона, с которого звонят.
     expect(screen.getByText('Приёмка')).toBeDefined();
