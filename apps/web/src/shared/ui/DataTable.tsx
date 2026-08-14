@@ -349,6 +349,8 @@ export function DataTable<T extends object>(props: DataTableProps<T>) {
           scroll={{ x: 'max-content' }}
           onChange={handleChange}
           pagination={false}
+          // Подсказка сортировки выключена, как и в таблице ниже.
+          showSorterTooltip={false}
           {...rowProps}
         />
         {props.total > 0 && pager}
@@ -381,6 +383,11 @@ export function DataTable<T extends object>(props: DataTableProps<T>) {
         sticky
         scroll={{ y: scrollY, x: 'max-content' }}
         onChange={handleChange}
+        /* Подсказка «Нажмите для сортировки по возрастанию» убрана совсем, а не спрятана стилями:
+           с `false` antd не оборачивает заголовок в `Tooltip` вовсе, и всплывать нечему. Она
+           пересказывала словами то, что уже сказано стрелкой у названия графы, а раскрывалась
+           вверх — накрывая строку фильтров над шапкой ровно тогда, когда до неё тянутся мышью. */
+        showSorterTooltip={false}
         {...rowProps}
         pagination={props.selection ? false : pagination}
       />
