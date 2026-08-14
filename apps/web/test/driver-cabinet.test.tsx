@@ -16,15 +16,19 @@ import { MOBILE_VIEWPORT, type Viewport } from './viewport';
 import { DriverLayout } from '../src/pages/driver/DriverLayout';
 import { DriverPage } from '../src/pages/driver/DriverPage';
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 /*
  * Таблица стилей читается с диска, а не импортом `?raw`: стили в тестах не подключаются вовсе
  * (`css` у vitest выключен), `?raw` отдаёт пустую строку — и проверка правил молча проходила бы на
  * любом содержимом. Путь считается от файла теста, а не от рабочего каталога: прогон из корня
- * репозитория его не сломает. Берётся `pathname`, а не сам объект адреса, — в среде jsdom `URL` не
- * тот, что у Node, и `readFileSync` его не принимает.
+ * репозитория его не сломает.
+ *
+ * Адрес не собирается через `new URL('…', import.meta.url)`, хотя так было бы привычнее: Vite
+ * распознаёт эту запись с литералом как ссылку на ассет и переписывает её на путь в сборке —
+ * `readFileSync` получал `/src/styles.css` и падал ещё до первого теста файла.
  */
-const stylesCss = readFileSync(new URL('../src/styles.css', import.meta.url).pathname, 'utf8');
+const stylesCss = readFileSync(join(import.meta.dirname, '../src/styles.css'), 'utf8');
 
 /**
  * Кабинет водителя (ADR 0102): каркас и задание на дату — этап 3 плана, решения Р9–Р13.
