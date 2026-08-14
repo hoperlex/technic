@@ -150,6 +150,8 @@ interface BuildResult {
 function buildState(
   request: WeeklyVehicleRequestDto,
   suggestion: WeeklySuggestionDto | undefined,
+  /** Применять ли умолчания: экран собирается с ними, снимок сохранённого состава — без. */
+  withDefaults: boolean,
 ): BuildResult {
   const items = request.items;
   const byOrder = new Map(
@@ -173,8 +175,9 @@ function buildState(
       staleReason: null,
       itemId: item?.id ?? null,
     });
+    const saved = item && item.kind !== 'new' ? item.kind : null;
     decisions[order.requestId] = {
-      kind: item ? (item.kind === 'new' ? null : item.kind) : order.included ? 'extend' : null,
+      kind: saved ?? (withDefaults && !item && order.included ? 'extend' : null),
       // Даты, которой сервер не предложил, здесь не выдумывается: у единицы, чей срок и так идёт
       // до воскресенья, поле остаётся пустым, а вариант «Остаётся» ей и не показывается.
       dateTo: item?.dateTo ?? order.suggestedDateTo ?? '',
@@ -335,11 +338,7 @@ export function useWeeklyComposition(
   const empty: BuildResult = { rows: [], decisions: {}, newRows: [] };
   const [state, setState] = useState<BuildResult>(empty);
   const [comment, setComment] = useState('');
-  /**
-   * То же состояние, каким его собрали с сервера. Хранится состоянием, а не готовой строкой:
-   * сравнивать надо два одинаково собранных состава — классификатор доезжает позже заявки, и
-   * снимок, снятый до него, потерял бы строки `new` и объявил бы правкой то, чего не правили.
-   */
+  /** Состав на сервере — без умолчаний; состоянием: снимок до классификатора терял бы `new`. */
   const [initial, setInitial] = useState<BuildResult>(empty);
 
   const sourceKey = request
@@ -352,9 +351,8 @@ export function useWeeklyComposition(
   useEffect(() => {
     if (!request || !ready || builtKey.current === sourceKey) return;
     builtKey.current = sourceKey;
-    const next = buildState(request, suggestion);
-    setState(next);
-    setInitial(next);
+    setState(buildState(request, suggestion, true));
+    setInitial(buildState(request, suggestion, false));
     setComment(request.comment);
   }, [request, suggestion, sourceKey, ready]);
 
