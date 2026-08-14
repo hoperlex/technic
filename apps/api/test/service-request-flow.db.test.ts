@@ -2197,13 +2197,18 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
         ctx.admin.auth,
       );
       expect(history.statusCode, history.body).toBe(200);
-      const movements = history.json().movements as {
-        fromObject: { id: string };
-        toObject: { id: string };
-        toState: string;
-        serviceRequestNum: number | null;
-        reason: string;
-      }[];
+      // Лента — один поток событий с курсором (Р75–Р79): перемещения приходят в нём наравне с
+      // ремонтами, правками карточки и гарантиями, а не отдельным массивом.
+      const page = history.json() as {
+        items: {
+          kind: string;
+          toObject?: { id: string };
+          toState?: string;
+          serviceRequestNum?: number | null;
+        }[];
+        serviceVisible: boolean;
+      };
+      const movements = page.items.filter((event) => event.kind === 'movement');
       expect(movements).toHaveLength(2);
       // Свежее сверху: карточку открывают вопросом «где оно сейчас и откуда приехало».
       expect(movements[0]).toMatchObject({
@@ -2214,8 +2219,9 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
         toState: 'at_service',
         serviceRequestNum: state.urgent.num,
       });
-      // Ремонты — во второй половине ленты, и только тому, кому открыт модуль.
-      expect(history.json().serviceHistory).toBeDefined();
+      // Ремонтная часть открыта тому, кому открыт модуль.
+      expect(page.serviceVisible).toBe(true);
+      expect(page.items.some((event) => event.kind === 'service_request')).toBe(true);
     });
 
     it('перемещение без изменений и без причины не записывается', async () => {
@@ -2287,10 +2293,18 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
         ctx.keeper.auth,
       );
       expect(res.statusCode, res.body).toBe(200);
-      // Перемещения он видит: это справочник, который он и ведёт.
-      expect(res.json().movements).toBeDefined();
-      // А ремонтов нет вовсе — то же правило, что у секции карточки.
-      expect(res.json().serviceHistory).toBeUndefined();
+      const page = res.json() as { items: { kind: string }[]; serviceVisible: boolean };
+      // События самой карточки он видит: это справочник, который он и ведёт (заведение,
+      // перемещения, правки).
+      expect(
+        page.items.some((event) =>
+          ['card_lifecycle', 'movement', 'card_change'].includes(event.kind),
+        ),
+      ).toBe(true);
+      // А ремонтной части нет вовсе, и признак говорит именно «не положено видеть», а не «пусто»:
+      // то же правило, что у секции карточки.
+      expect(page.serviceVisible).toBe(false);
+      expect(page.items.some((event) => event.kind === 'service_request')).toBe(false);
     });
   });
 });

@@ -21,6 +21,7 @@ export * from './grants';
 export * from './warehouses';
 export * from './warranty';
 export * from './office-equipment';
+export * from './office-equipment-history';
 export * from './service-requests';
 export * from './container-types';
 export * from './vehicle-kinds';

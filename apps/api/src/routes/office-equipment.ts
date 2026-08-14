@@ -14,18 +14,20 @@ import {
   sql,
   type SQL,
 } from 'drizzle-orm';
-import { alias } from 'drizzle-orm/pg-core';
 import { z } from 'zod';
 import {
   can,
   createOfficeEquipmentSchema,
+  decodeEquipmentHistoryCursor,
+  EQUIPMENT_HISTORY_EXPORT_LIMIT,
+  type EquipmentHistoryPageDto,
+  equipmentHistoryQuerySchema,
   formatServiceRequestNumber,
   moveOfficeEquipmentSchema,
   officeEquipmentListQuerySchema,
   officeEquipmentTitle,
   type OfficeEquipmentDto,
   type OfficeEquipmentItemWarrantyDto,
-  type OfficeEquipmentMovementDto,
   type OfficeEquipmentServiceEntryDto,
   type OfficeEquipmentWarrantyFilter,
   updateOfficeEquipmentSchema,
@@ -41,10 +43,15 @@ import {
   officeEquipmentTypes,
   serviceRequestItems,
   serviceRequests,
-  users,
 } from '../db/schema';
 import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
+import { officeEquipmentDiff } from '../services/office-equipment-diff';
+import {
+  loadEquipmentHistoryAll,
+  loadEquipmentHistoryPage,
+} from '../services/office-equipment-history';
+import { equipmentHistoryWorkbook } from '../services/office-equipment-history-export';
 import { requirePrincipal } from '../auth/plugin';
 import type { Principal } from '../auth/principal';
 import {
@@ -99,18 +106,12 @@ const departmentRef = {
  * Обе стороны перемещения join'ятся дважды — «откуда» и «куда», — поэтому каждой нужна своя копия
  * таблицы: без алиасов SQL сложил бы их в одно условие и вернул бы пустой журнал.
  */
-const fromObjects = alias(constructionObjects, 'movement_from_objects');
-const toObjects = alias(constructionObjects, 'movement_to_objects');
-const fromDepartments = alias(departments, 'movement_from_departments');
-const toDepartments = alias(departments, 'movement_to_departments');
-const movers = alias(users, 'movement_movers');
 
 /**
  * Сколько перемещений отдаётся в ленту карточки. Столько же, сколько событий у истории заявки
  * (`HISTORY_LIMIT`): карточку открывают вопросом «что было недавно», а полный журнал за пять лет —
  * это выгрузка, и заводится она отдельно, если понадобится.
  */
-const MOVEMENT_LIMIT = 50;
 
 /**
  * Тип и объект у единицы есть всегда (`NOT NULL`), поэтому они `innerJoin`; отдел — необязателен,
@@ -297,6 +298,31 @@ async function assertNoOpenServiceRequest(equipmentId: string): Promise<void> {
       `По этой технике есть незакрытая заявка ${formatServiceRequestNumber(open.num)} — сначала закройте её`,
     );
   }
+}
+
+/**
+ * Единица для ленты: та же проверка архива и области, что у карточки. Отдельной функцией, потому
+ * что её задают обе ручки истории — страница и выгрузка, — и разойдись они, файл отдавал бы то,
+ * чего человек не видит на экране.
+ */
+async function requireHistoryEquipment(p: Principal, id: string) {
+  const [ex] = await db
+    .select({
+      id: officeEquipment.id,
+      name: officeEquipment.name,
+      serialNumber: officeEquipment.serialNumber,
+      inventoryNumber: officeEquipment.inventoryNumber,
+      warrantyUntil: officeEquipment.warrantyUntil,
+      objectId: officeEquipment.objectId,
+      ownerDepartmentId: officeEquipment.ownerDepartmentId,
+      deletedAt: officeEquipment.deletedAt,
+    })
+    .from(officeEquipment)
+    .where(eq(officeEquipment.id, id));
+  if (!ex) throw err.notFound('Единица оргтехники не найдена');
+  assertArchiveVisible(p, ex.deletedAt, 'Единица оргтехники не найдена');
+  assertOfficeEquipmentScope(p, { objectId: ex.objectId, ownerDepartmentId: ex.ownerDepartmentId });
+  return ex;
 }
 
 /** Сколько ремонтов показывает карточка: срез, а не журнал — за полным списком идут в раздел. */
@@ -568,6 +594,9 @@ export default async function officeEquipmentRoutes(app: FastifyInstance): Promi
       const p = requirePrincipal(req);
       const { id } = req.params;
       const b = req.body;
+      // Карточка «до» — снимком DTO, а не сырыми колонками: в историю идут названия справочников и
+      // человеческие значения, а не идентификаторы (тот же приём, что у диффа заявок).
+      const before = await getDto(id);
       await db.transaction(async (tx) => {
         const [ex] = await tx
           .select()
@@ -638,13 +667,24 @@ export default async function officeEquipmentRoutes(app: FastifyInstance): Promi
         if (b.isActive !== undefined) set.isActive = b.isActive;
         await tx.update(officeEquipment).set(set).where(eq(officeEquipment.id, id));
       });
+      const after = (await getDto(id))!;
+      /**
+       * Что именно изменила правка — снимком в метаданных (Р76). Без него лента показывала бы
+       * «карточку правили» без ответа, что стало с моделью, номерами и владельцем, а «письма
+       * перестали приходить»-подобные разборы упирались бы в память людей.
+       *
+       * Срок гарантии идёт отдельным полем: его изменение рисуется событием гарантии, и в общем
+       * списке правок дало бы вторую строку про то же самое.
+       */
+      const diff = before ? officeEquipmentDiff(before, after) : { changes: [] };
       await writeAudit({
         actorUserId: p.id,
         action: 'officeEquipment.update',
         entityType: 'officeEquipment',
         entityId: id,
+        metadata: { ...diff },
       });
-      return (await getDto(id))!;
+      return after;
     },
   );
 
@@ -827,99 +867,72 @@ export default async function officeEquipmentRoutes(app: FastifyInstance): Promi
   );
 
   /**
-   * История единицы одной лентой (Р62): перемещения и обслуживание вперемешку по датам.
+   * История единицы одной лентой (Р62, Р75–Р79): шесть источников одним потоком с курсором.
    *
-   * Ремонтная часть отдаётся только при `serviceRequests.read` — то же правило, что у секции
-   * `serviceHistory` в карточке: право справочника карточку открывает, а обслуживание — нет.
+   * Раньше ответ был двумя массивами — перемещения и заявки, — и портал сшивал их сам. Событий с
+   * тех пор стало шесть, у половины нет времени (перемещение датировано днём, истечение гарантии
+   * тоже), и порядок, посчитанный на клиенте, разошёлся бы с порядком страницы. Теперь порядок,
+   * курсор и область живут на сервере, а контракты дают обеим сторонам одно правило сравнения.
    */
   r.get(
     '/:id/history',
-    { preHandler: [app.authenticate, canRead], schema: { params: idParams } },
-    async (req) => {
+    {
+      preHandler: [app.authenticate, canRead],
+      schema: { params: idParams, querystring: equipmentHistoryQuerySchema },
+    },
+    async (req): Promise<EquipmentHistoryPageDto> => {
       const p = requirePrincipal(req);
       const { id } = req.params;
-      const [ex] = await db
-        .select({
-          id: officeEquipment.id,
-          objectId: officeEquipment.objectId,
-          ownerDepartmentId: officeEquipment.ownerDepartmentId,
-          deletedAt: officeEquipment.deletedAt,
-        })
-        .from(officeEquipment)
-        .where(eq(officeEquipment.id, id));
-      if (!ex) throw err.notFound('Единица оргтехники не найдена');
-      assertArchiveVisible(p, ex.deletedAt, 'Единица оргтехники не найдена');
-      assertOfficeEquipmentScope(p, {
-        objectId: ex.objectId,
-        ownerDepartmentId: ex.ownerDepartmentId,
+      const equipment = await requireHistoryEquipment(p, id);
+
+      // Кривой или чужой курсор — отказ словами, а не 500 и не молчаливая первая страница: человек
+      // должен понять, что ссылка устарела, а не решить, что история опустела.
+      const cursor = req.query.cursor ? decodeEquipmentHistoryCursor(req.query.cursor) : null;
+      if (req.query.cursor && !cursor) {
+        throw err.unprocessable('Ссылка на продолжение истории не читается — откройте её заново', {
+          cursor: 'Некорректный курсор',
+        });
+      }
+
+      return loadEquipmentHistoryPage(p, equipment, { cursor, pageSize: req.query.pageSize });
+    },
+  );
+
+  /**
+   * Выгрузка истории единицы (Р80): та же лента и та же область, но целиком и файлом.
+   *
+   * Страницами отчёт не собирают: инвентаризация и спор с подрядчиком требуют всей истории разом.
+   * Потолок при этом есть, и упёршись в него, файл говорит об этом последней строкой — молча
+   * обрезанный отчёт выглядит полным.
+   */
+  r.get(
+    '/:id/history.xlsx',
+    { preHandler: [app.authenticate, canRead], schema: { params: idParams } },
+    async (req, reply) => {
+      const p = requirePrincipal(req);
+      const { id } = req.params;
+      const equipment = await requireHistoryEquipment(p, id);
+
+      const { items, truncated } = await loadEquipmentHistoryAll(
+        p,
+        equipment,
+        EQUIPMENT_HISTORY_EXPORT_LIMIT,
+      );
+      const workbook = equipmentHistoryWorkbook(equipment, items, truncated);
+
+      await writeAudit({
+        actorUserId: p.id,
+        action: 'officeEquipment.historyExport',
+        entityType: 'officeEquipment',
+        entityId: id,
+        metadata: { rows: items.length, truncated },
       });
 
-      const rows = await db
-        .select({
-          m: officeEquipmentMovements,
-          fromObject: {
-            id: fromObjects.id,
-            code: fromObjects.code,
-            name: fromObjects.name,
-          },
-          toObject: { id: toObjects.id, code: toObjects.code, name: toObjects.name },
-          fromDepartment: {
-            id: fromDepartments.id,
-            code: fromDepartments.code,
-            name: fromDepartments.name,
-          },
-          toDepartment: {
-            id: toDepartments.id,
-            code: toDepartments.code,
-            name: toDepartments.name,
-          },
-          movedByName: movers.fullName,
-          requestNum: serviceRequests.num,
-        })
-        .from(officeEquipmentMovements)
-        .innerJoin(fromObjects, eq(officeEquipmentMovements.fromObjectId, fromObjects.id))
-        .innerJoin(toObjects, eq(officeEquipmentMovements.toObjectId, toObjects.id))
-        .leftJoin(
-          fromDepartments,
-          eq(officeEquipmentMovements.fromDepartmentId, fromDepartments.id),
-        )
-        .leftJoin(toDepartments, eq(officeEquipmentMovements.toDepartmentId, toDepartments.id))
-        .innerJoin(movers, eq(officeEquipmentMovements.movedBy, movers.id))
-        .leftJoin(
-          serviceRequests,
-          eq(officeEquipmentMovements.serviceRequestId, serviceRequests.id),
-        )
-        .where(eq(officeEquipmentMovements.equipmentId, id))
-        .orderBy(desc(officeEquipmentMovements.movedOn), desc(officeEquipmentMovements.createdAt))
-        .limit(MOVEMENT_LIMIT);
-
-      const movements: OfficeEquipmentMovementDto[] = rows.map((row) => ({
-        id: row.m.id,
-        movedOn: row.m.movedOn,
-        fromObject: row.fromObject,
-        toObject: row.toObject,
-        // `leftJoin` отдаёт `null` целиком, когда отдела не было: «не закреплена» — рабочее
-        // состояние единицы, а не потерянная ссылка.
-        fromDepartment: row.fromDepartment?.id ? row.fromDepartment : null,
-        toDepartment: row.toDepartment?.id ? row.toDepartment : null,
-        fromLocation: row.m.fromLocation,
-        toLocation: row.m.toLocation,
-        fromState: row.m.fromState,
-        toState: row.m.toState,
-        reason: row.m.reason,
-        comment: row.m.comment,
-        serviceRequestId: row.m.serviceRequestId,
-        serviceRequestNum: row.requestNum,
-        movedByName: row.movedByName,
-        createdAt: row.m.createdAt.toISOString(),
-      }));
-
-      // Обслуживание — тем же запросом, что и в карточке: два разных ответа на «что с этим
-      // аппаратом делали» разъехались бы на первой же правке.
-      const serviceHistory = can(p, 'serviceRequests.read')
-        ? await loadServiceHistory(p, id)
-        : undefined;
-      return { movements, serviceHistory };
+      const filename = `history-${equipment.inventoryNumber || equipment.serialNumber || id}.xlsx`;
+      return reply
+        .header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        .header('Content-Disposition', `attachment; filename="${encodeURIComponent(filename)}"`)
+        .send(Buffer.from(workbook));
     },
   );
 

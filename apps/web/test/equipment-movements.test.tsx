@@ -85,34 +85,40 @@ describe('перемещение единицы', () => {
 });
 
 describe('лента истории единицы', () => {
-  const movement = {
+  /** Событие ленты приходит уже размеченным: порядок и вид считает сервер (Р75–Р79). */
+  const movementEvent = {
+    kind: 'movement' as const,
     id: 'mv-1',
-    movedOn: '2026-08-10',
+    sortId: 'movement:mv-1',
+    occurredOn: '2026-08-09',
+    recordedAt: '2026-08-10T09:00:00.000Z',
+    actorName: 'Оператор О. О.',
     fromObject: { id: 'obj-1', code: 'ОБ-1', name: 'ЖК Северный' },
     toObject: { id: 'obj-2', code: 'ОБ-2', name: 'ЖК Южный' },
-    fromDepartment: null,
-    toDepartment: null,
     fromLocation: 'каб. 214',
     toLocation: 'каб. 12',
     fromState: 'on_site' as const,
     toState: 'on_site' as const,
+    toDepartmentName: null,
     reason: 'Перевод бухгалтерии',
     comment: '',
     serviceRequestId: null,
     serviceRequestNum: null,
-    movedByName: 'Оператор О. О.',
-    createdAt: '2026-08-10T09:00:00.000Z',
   };
 
-  const repair = {
+  const repairEvent = {
+    kind: 'service_request' as const,
     id: 'sr-1',
+    sortId: 'service-request:sr-1',
+    occurredOn: '2026-07-02',
+    recordedAt: '2026-07-02T09:00:00.000Z',
+    actorName: 'Штабов С. С.',
+    requestId: 'sr-1',
     displayNumber: 'СО-14',
     status: 'accepted' as const,
-    createdAt: '2026-07-02T09:00:00.000Z',
-    completedAt: '2026-07-02T15:00:00.000Z',
     serviceName: 'ООО «Сервис-Про»',
     totalAmount: 6200,
-    warranties: [],
+    description: 'Не печатает',
   };
 
   function renderHistory(payload: unknown): void {
@@ -122,11 +128,18 @@ describe('лента истории единицы', () => {
     });
   }
 
+  const page = (items: unknown[], serviceVisible = true) => ({
+    items,
+    nextCursor: null,
+    hasMore: false,
+    serviceVisible,
+  });
+
   it('перемещения и ремонты идут одной лентой, свежее сверху', async () => {
-    renderHistory({ movements: [movement], serviceHistory: [repair] });
+    renderHistory(page([movementEvent, repairEvent]));
     expect(await screen.findByText('Перемещение')).toBeDefined();
     expect(screen.getByText('Обслуживание')).toBeDefined();
-    // Порядок: переезд августа стоит выше июльского ремонта.
+    // Порядок приходит с сервера: переезд августа стоит выше июльского ремонта.
     const rows = screen.getAllByRole('row').map((row) => row.textContent ?? '');
     const move = rows.findIndex((text) => text.includes('Перемещение'));
     const service = rows.findIndex((text) => text.includes('Обслуживание'));
@@ -134,14 +147,15 @@ describe('лента истории единицы', () => {
   });
 
   it('без права модуля лента состоит из одних перемещений', async () => {
-    // Поля `serviceHistory` в ответе нет вовсе — это «не положено видеть», а не «ремонтов не было».
-    renderHistory({ movements: [movement] });
+    // `serviceVisible: false` — это «не положено видеть», а не «ремонтов не было»: подпись пустой
+    // ленты у такого человека другая, и обслуживание в ней не упоминается.
+    renderHistory(page([movementEvent], false));
     expect(await screen.findByText('Перемещение')).toBeDefined();
     expect(screen.queryByText('Обслуживание')).toBeNull();
   });
 
   it('пустая лента объясняет пустоту, а не показывает пустую таблицу', async () => {
-    renderHistory({ movements: [], serviceHistory: [] });
+    renderHistory(page([]));
     expect(await screen.findByText(/Ни перемещений, ни ремонтов/)).toBeDefined();
   });
 });

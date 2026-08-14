@@ -654,6 +654,16 @@ async function assertNoOpenRequest(tx: Tx, equipmentId: string, exceptId?: strin
  * (`touchStatusAt`): правка сметы, примечание исполнителя и подшивка документа возраст ожидания не
  * сбрасывают — иначе очередь «дольше всех ждут» обнулялась бы каждой мелкой правкой.
  */
+/**
+ * Гарантия, снятая вместе с фактом закрытия. Уходит в metadata аудита того действия, которое факт и
+ * сняло: сама строка сметы своё прошлое не помнит (Р77).
+ */
+interface ClearedWarranty {
+  itemId: string;
+  name: string;
+  warrantyUntil: string | null;
+}
+
 async function applyTransition(
   tx: Tx,
   params: {
@@ -672,11 +682,13 @@ async function applyTransition(
      */
     mail?: ServiceMailPlan | null;
   },
-): Promise<{ mailFailed: boolean }> {
+): Promise<{ mailFailed: boolean; clearedWarranties: ClearedWarranty[] }> {
   const { row, to, actor } = params;
   const reset = serviceResetOnTransition(row.status, to);
   const now = new Date();
   const set: RequestPatch = {};
+  /** Гарантии, снятые вместе с фактом: уходят в metadata аудита вызывающей ручки (Р77). */
+  let warrantySnapshot: ClearedWarranty[] = [];
 
   if (reset.itApproval) {
     set.itApprovedBy = null;
@@ -697,6 +709,30 @@ async function applyTransition(
     set.estimateApprovedAt = null;
   }
   if (reset.completion) {
+    /**
+     * Что за гарантии снимаются — снимком **до** очистки (план
+     * `office-equipment-mail-and-history-plan.md`, Р77). `service_request_items.warranty_until`
+     * хранит одно последнее значение: закрытие его перезаписывает, возврат обнуляет, и «что нам
+     * обещали в марте» после этого не восстановить ни лентой, ни отчётом.
+     *
+     * Снимок снимается здесь, где происходит очистка, а не в ручках: путей к ней два — возврат на
+     * доработку и административный `done → in_work`, — и третий, заведённый однажды, оказался бы
+     * без снимка молча.
+     */
+    warrantySnapshot = await tx
+      .select({
+        itemId: serviceRequestItems.id,
+        name: serviceRequestItems.name,
+        warrantyUntil: serviceRequestItems.warrantyUntil,
+      })
+      .from(serviceRequestItems)
+      .where(
+        and(
+          eq(serviceRequestItems.requestId, row.id),
+          isNotNull(serviceRequestItems.warrantyUntil),
+        ),
+      );
+
     // Факт снимается целиком, вместе с гарантиями. Дату из талона сохранить нельзя, хотя она и
     // введена руками: CHECK не допускает гарантию у строки без выполнения, а выполнение возврат как
     // раз снимает. При повторном закрытии дату присылают снова — она приходит той же ручкой.
@@ -747,7 +783,7 @@ async function applyTransition(
     comment: params.comment ?? '',
     mail: params.mail,
   });
-  return { mailFailed };
+  return { mailFailed, clearedWarranties: warrantySnapshot };
 }
 
 /**
@@ -2244,6 +2280,18 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           // Что именно предъявил исполнитель: «тормозную площадку не ставили» иначе осталось бы
           // незамеченным, а гарантию на неё искали бы годом позже.
           changes: diffServiceCompletion(after.items),
+          /**
+           * Выданные гарантии — снимком (Р77). В самой смете живёт только последнее значение:
+           * возврат на доработку его обнуляет, повторное закрытие перезаписывает, и лента истории
+           * техники не смогла бы ответить, до какого числа обещали в первый раз.
+           */
+          grantedWarranties: after.items
+            .filter((item) => item.warrantyUntil)
+            .map((item) => ({
+              itemId: item.id,
+              name: item.name,
+              warrantyUntil: item.warrantyUntil,
+            })),
         },
       });
       return after;
@@ -2293,21 +2341,23 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       assertSideAllowed(p, 'in_work', ['done']);
       const row = await requireEditable(p, req.params.id);
       assertTransition(p, row.status, 'in_work');
-      await db.transaction(async (tx) => {
-        await applyTransition(tx, {
+      const reworked = await db.transaction(async (tx) =>
+        applyTransition(tx, {
           row,
           to: 'in_work',
           version: body.version,
           actor: p,
           comment: body.reason,
-        });
-      });
+        }),
+      );
       await writeAudit({
         actorUserId: p.id,
         action: 'serviceRequest.rework',
         entityType: 'serviceRequest',
         entityId: row.id,
-        metadata: { reason: body.reason },
+        // Снятые гарантии — снимком: строка сметы своё прошлое не помнит, и лента истории техники
+        // иначе показала бы «гарантия была» без даты, до которой её обещали (Р77).
+        metadata: { reason: body.reason, clearedWarranties: reworked.clearedWarranties },
       });
       return (await getDto(row.id))!;
     },
@@ -2364,7 +2414,15 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         action: 'serviceRequest.status',
         entityType: 'serviceRequest',
         entityId: row.id,
-        metadata: { from: row.status, to, reason: body.reason },
+        metadata: {
+          from: row.status,
+          to,
+          reason: body.reason,
+          // Второй путь к очистке факта — административный `done → in_work` (Р77).
+          ...(transition.clearedWarranties.length > 0
+            ? { clearedWarranties: transition.clearedWarranties }
+            : {}),
+        },
       });
       if (transition.mailFailed) {
         await writeAudit({

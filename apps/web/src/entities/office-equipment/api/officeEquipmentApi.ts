@@ -1,15 +1,15 @@
 import type {
   CreateOfficeEquipmentInput,
+  EquipmentHistoryPageDto,
   CreateOfficeEquipmentTypeInput,
   MoveOfficeEquipmentInput,
   OfficeEquipmentDto,
-  OfficeEquipmentMovementDto,
-  OfficeEquipmentServiceEntryDto,
   OfficeEquipmentTypeDto,
   UpdateOfficeEquipmentInput,
   UpdateOfficeEquipmentTypeInput,
 } from '@technic/contracts';
 import {
+  apiDownload,
   apiFetch,
   createGetApi,
   createListApi,
@@ -44,12 +44,18 @@ export const officeEquipmentApi = {
    */
   move: (id: string, body: MoveOfficeEquipmentInput) =>
     apiFetch<OfficeEquipmentDto>(`${PATH}/${id}/move`, { method: 'POST', body }),
-  /** Лента карточки (Р62): перемещения и обслуживание одним ответом — их читают вместе. */
-  history: (id: string) =>
-    apiFetch<{
-      movements: OfficeEquipmentMovementDto[];
-      serviceHistory?: OfficeEquipmentServiceEntryDto[];
-    }>(`${PATH}/${id}/history`),
+  /**
+   * Лента карточки (Р75–Р79): шесть источников одним потоком с курсором. Порядок считает сервер —
+   * у половины событий нет времени, и клиентская сортировка разошлась бы с порядком страницы.
+   */
+  history: (id: string, query: { cursor?: string; pageSize?: number } = {}) =>
+    apiFetch<EquipmentHistoryPageDto>(`${PATH}/${id}/history`, { query }),
+  /**
+   * Выгрузка истории (Р80). Через `apiDownload`, а не ссылкой: файл отдаётся под тем же токеном,
+   * что и остальные запросы, — обычная ссылка открыла бы вкладку с «Требуется авторизация».
+   */
+  historyExport: (id: string, name: string) =>
+    apiDownload(`${PATH}/${id}/history.xlsx`, `История ${name}.xlsx`),
   restore: (id: string) =>
     apiFetch<OfficeEquipmentDto>(`${PATH}/${id}/restore`, { method: 'POST' }),
   /** Удаление насовсем — только из архива и только без ссылок (ADR 0060). */
