@@ -22,7 +22,7 @@ import {
   uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
-import type { AddressMeta } from '@technic/contracts';
+import type { AddressMeta, ModuleMailEvent, ReplyToMode } from '@technic/contracts';
 
 /** case-insensitive text (расширение citext включается ops-ом до миграций). */
 const citext = customType<{ data: string }>({
@@ -4085,16 +4085,17 @@ export const moduleMailRecipients = pgTable(
   'module_mail_recipients',
   {
     id: uuid('id').primaryKey().defaultRandom(),
-    /** Реестр в контрактах (`MODULE_MAIL_EVENTS`); текстом, как `mailing_schedule_sections.section`. */
-    event: text('event').notNull().$type<'service_request_waiting_it' | 'service_request_cancelled'>(),
+    /**
+     * Реестр открытый и живёт в контрактах (`MODULE_MAIL_EVENTS`) — текстом, как
+     * `mailing_schedule_sections.section`, и без CHECK по перечню: новое событие не должно стоить
+     * миграции. Тип берётся оттуда же, чтобы перечень не переписывался вторым списком здесь.
+     */
+    event: text('event').notNull().$type<ModuleMailEvent>(),
     toEmail: citext('to_email').notNull(),
     /** Выключенный адресат сохраняет настройку: «до понедельника не шлём» — не «завести заново». */
     isEnabled: boolean('is_enabled').notNull().default(true),
     /** Куда отвечать: фиксированный адрес, автор заявки, вызвавший событие или общий адрес портала. */
-    replyToMode: text('reply_to_mode')
-      .notNull()
-      .default('fixed')
-      .$type<'fixed' | 'author' | 'actor' | 'portal'>(),
+    replyToMode: text('reply_to_mode').notNull().default('fixed').$type<ReplyToMode>(),
     /** Обязателен при `fixed`, запасной при `author`/`actor`, пуст при `portal` — см. CHECK ниже. */
     replyToEmail: citext('reply_to_email').notNull().default(''),
     /** «Кому и зачем»: ящик без объяснения через год никто не решится выключить. */
@@ -4110,10 +4111,8 @@ export const moduleMailRecipients = pgTable(
     eventEmailUnique: uniqueIndex('module_mail_recipients_event_email_unique').on(t.event, t.toEmail),
     // Отбор при постановке письма идёт ровно этой парой.
     liveIdx: index('module_mail_recipients_live_idx').on(t.event).where(sql`${t.isEnabled}`),
-    eventCheck: check(
-      'module_mail_recipients_event_check',
-      sql`${t.event} IN ('service_request_waiting_it', 'service_request_cancelled')`,
-    ),
+    // CHECK по перечню событий не ставится: реестр открытый (см. комментарий у колонки). У режима
+    // обратного адреса — ставится: это закрытое поведение, от которого зависит соседняя колонка.
     replyToModeCheck: check(
       'module_mail_recipients_reply_to_mode_check',
       sql`${t.replyToMode} IN ('fixed', 'author', 'actor', 'portal')`,

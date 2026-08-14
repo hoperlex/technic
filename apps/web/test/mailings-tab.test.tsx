@@ -56,19 +56,26 @@ const KINDS = MAIL_TEST_KINDS.filter((k) => EMAIL_VERIFICATION_ENABLED || k !== 
 const SEND = 'POST /admin/mail/test';
 
 /**
- * Вкладка целиком, вместе с блоком расписаний над ней: экран у них общий, и рендерить отладку в
- * отрыве значило бы проверять не тот экран, который открывает администратор. Расписаний в ответе
- * нет — они предмет своей проверки, а здесь важно лишь, что их запрос не уходит в настоящую сеть.
+ * Вкладка целиком, а не блок отладки в отрыве: экран у трёх подвкладок общий, и открывает его
+ * администратор именно так. Расписаний и служебных адресов в ответах нет — они предмет своих
+ * проверок, здесь важно лишь, что их запросы не уходят в настоящую сеть.
+ *
+ * Отладка живёт на своей подвкладке (план `docs/office-equipment-mail-and-history-plan.md`, Р71),
+ * поэтому тест сначала переключается на неё: до подвкладок форма стояла третьим блоком одного
+ * свитка, и вместе они в экран не помещались.
  */
-function renderTab(user: AuthUser = authUser({ role: 'admin' })): HttpMock {
+async function renderTab(user: AuthUser = authUser({ role: 'admin' })): Promise<HttpMock> {
   const http = mockHttp({
     'GET /admin/mail/schedules': () => json([]),
+    'GET /admin/mail/recipients': () => json([]),
     'GET /admin/mail/test-recipients': () => json(RECIPIENTS),
     'GET /admin/mail/drivers-with-routes': () => json(DRIVERS),
     'GET /admin/mail/digest-sample-users': () => json(SAMPLE_USERS),
     [SEND]: () => json({ ok: true, message: 'Письмо отправлено' }),
   });
   renderWithUser(<MailingsTab />, { user });
+  fireEvent.click(screen.getByRole('tab', { name: 'Отладка' }));
+  await screen.findByText('Отладочная отправка');
   return http;
 }
 
@@ -94,7 +101,7 @@ describe('состав полей следует из вида письма', ()
       // Лишнее поле здесь — вопрос, на который человеку нечего ответить (у писем про доступ нет
       // ни периода, ни образца: они относятся к событию). Недостающее — отказ сервера на кнопке:
       // те же таблицы проверяет `mailTestSchema`.
-      renderTab();
+      await renderTab();
       await screen.findByLabelText('Тип письма');
       await selectOption('Тип письма', mailTestKindLabels[kind]);
 
@@ -120,7 +127,7 @@ describe('состав полей следует из вида письма', ()
   it('вид письма выбирается из реестра, а подтверждение адреса из него убрано', async () => {
     // Подтверждение выключено (EMAIL_VERIFICATION_ENABLED): портал такого письма не отправляет, и
     // проверять вёрстку письма, которого не бывает, незачем — кнопка отправила бы его в пустоту.
-    renderTab();
+    await renderTab();
     await screen.findByLabelText('Тип письма');
     await selectOption('Тип письма', mailTestKindLabels[KINDS[0]!]);
 
@@ -135,7 +142,7 @@ describe('отправка отладочного письма', () => {
     // Тело собирается из полей экрана целиком: потерянный образец означал бы письмо про другого
     // человека, а потерянная дата — про другой день, и оба случая читаются как ошибка сервера, а
     // не как промах формы.
-    const http = renderTab();
+    const http = await renderTab();
     await screen.findByLabelText('Тип письма');
 
     // Задание водителю стоит в списке первым и выбрано изначально — отдельно его не выбираем.
@@ -158,7 +165,7 @@ describe('отправка отладочного письма', () => {
   it('окно данных уходит тем, каким его настроили', async () => {
     // Отладкой проверяют то самое письмо, которое уйдёт по расписанию: спроси она только дату, на
     // экране оказалось бы письмо за один день там, где рассылка собирает неделю.
-    const http = renderTab();
+    const http = await renderTab();
     await screen.findByLabelText('Тип письма');
 
     typeDate(DATE_FIELD, '10.08.2026');
@@ -183,7 +190,7 @@ describe('отправка отладочного письма', () => {
     // У сводки два разных человека в одном письме: чьей областью видимости её собрать и кому
     // отправить. Слить их в одно поле нельзя — письмо ушло бы образцу, то есть постороннему
     // человеку с чужими данными.
-    const http = renderTab();
+    const http = await renderTab();
     await screen.findByLabelText('Тип письма');
     await selectOption('Тип письма', mailTestKindLabels.role_digest);
 
@@ -206,7 +213,7 @@ describe('отправка отладочного письма', () => {
     // На другой день у выбранного человека рейсов может не быть вовсе: уехавший в запрос чужой
     // образец вернулся бы отказом сервера, который читается как поломка, а не как несделанный
     // выбор.
-    const http = renderTab();
+    const http = await renderTab();
     await screen.findByLabelText('Тип письма');
 
     typeDate(DATE_FIELD, '10.08.2026');
@@ -231,7 +238,7 @@ describe('отправка отладочного письма', () => {
     // «открыл вкладку — значит, может отправлять»: письмо уходит настоящим адресатам.
     const viewer = authUser({ role: 'manager' });
     expect(can(viewer, 'mailings.manage')).toBe(false);
-    const http = renderTab(viewer);
+    const http = await renderTab(viewer);
 
     const button = await screen.findByRole('button', { name: 'Отправить тест' });
     expect(button.hasAttribute('disabled')).toBe(true);

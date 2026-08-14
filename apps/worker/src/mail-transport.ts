@@ -10,6 +10,12 @@ import nodemailer from 'nodemailer';
 
 export interface OutgoingMail {
   to: string;
+  /**
+   * Обратный адрес именно этого письма; пусто (или поле отсутствует) — общий `MAIL_REPLY_TO` из
+   * конфигурации. Своим он бывает у писем по событию: ответ на заявку, ждущую визы, должен уходить
+   * заявителю, а не в ящик портала, где на него никто не ответит.
+   */
+  replyTo?: string;
   subject: string;
   text: string;
   html: string;
@@ -84,9 +90,12 @@ export function createMailTransport(
     name: 'smtp',
     async send(mail) {
       try {
+        // Обратный адрес письма побеждает общий: он выбран событием, а `cfg.replyTo` — умолчание
+        // портала для писем, у которых своего адресата ответа нет.
+        const replyTo = mail.replyTo || cfg.replyTo;
         const info = await transporter.sendMail({
           from: cfg.from,
-          ...(cfg.replyTo ? { replyTo: cfg.replyTo } : {}),
+          ...(replyTo ? { replyTo } : {}),
           to: mail.to,
           subject: mail.subject,
           text: mail.text,

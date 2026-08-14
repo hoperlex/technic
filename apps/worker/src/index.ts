@@ -168,6 +168,8 @@ interface JobRow {
 interface MailRow {
   id: string;
   to_email: string;
+  /** Свой обратный адрес письма; пусто — общий `MAIL_REPLY_TO` (миграция 0141). */
+  reply_to: string;
   subject: string;
   body_text: string;
   body_html: string;
@@ -189,7 +191,8 @@ async function sendEmail(job: JobRow): Promise<void | { deferUntil: Date }> {
   }
 
   const res = await pool.query<MailRow>(
-    `SELECT id, to_email, subject, body_text, body_html, status FROM mail_messages WHERE id = $1`,
+    `SELECT id, to_email, reply_to, subject, body_text, body_html, status
+       FROM mail_messages WHERE id = $1`,
     [mailId],
   );
   const mail = res.rows[0];
@@ -201,6 +204,9 @@ async function sendEmail(job: JobRow): Promise<void | { deferUntil: Date }> {
 
   const { providerId } = await mailTransport.send({
     to: mail.to_email,
+    // Пустой адрес передаётся как есть: правило «своё побеждает общее» живёт в транспорте, и
+    // повторять его здесь вторым условием значило бы завести две копии одного решения.
+    replyTo: mail.reply_to,
     subject: mail.subject,
     text: mail.body_text,
     html: mail.body_html,

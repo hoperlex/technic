@@ -46,6 +46,7 @@ import filesRoutes from './routes/files';
 import directoryTransferRoutes from './routes/directory-transfer';
 import adminMailRoutes from './routes/admin-mail';
 import adminMailingsRoutes from './routes/admin-mailings';
+import moduleMailRoutes from './routes/module-mail';
 import internalMailRoutes from './routes/internal-mail';
 import auditRoutes from './routes/audit';
 import releasesRoutes from './routes/releases';
@@ -141,6 +142,9 @@ export async function buildApp(options: BuildAppOptions = {}) {
   await app.register(directoryTransferRoutes, { prefix: '/api/v1/directories' });
   await app.register(adminMailRoutes, { prefix: '/api/v1/admin/mail' });
   await app.register(adminMailingsRoutes, { prefix: '/api/v1/admin/mail' });
+  // Служебные адресаты писем модулей: тот же раздел администрирования, но настраивают в нём не
+  // расписание для учёток, а ящик службы, которая портал не открывает.
+  await app.register(moduleMailRoutes, { prefix: '/api/v1/admin/mail' });
   // Наружу не проксируется: этим маршрутом ходит только планировщик из worker (ADR 0075).
   await app.register(internalMailRoutes, { prefix: '/internal/mail' });
   await app.register(auditRoutes, { prefix: '/api/v1/audit' });
