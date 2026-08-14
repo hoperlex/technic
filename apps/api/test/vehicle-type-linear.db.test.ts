@@ -12,12 +12,16 @@ import type { db as AppDb } from '../src/db/client';
  * Признак «линейная техника» у типа ТС (ADR 0100, миграция 0127) — на живой схеме, через
  * настоящие HTTP-пути.
  *
- * Зачем база. Половину поведения здесь решает не схема запроса, а состояние соседней таблицы:
- * менять признак у типа, по которому уже работают заявки, нельзя (ADR 0100 §1 — признак читается
- * живым, снимка в заявке нет). Проверить это на правилах невозможно: отказ считается запросом к
- * `vehicle_requests`, и разойтись могут ровно код и база — условие «в работе и не удалена».
- * Вторая половина — журнал: смена признака обязана попасть в него своим действием, иначе вопрос
- * «кто перевёл тип на дневной режим» останется без ответа.
+ * Здесь живёт договор **правки типа**: признак ездит через заведение, соседние поля правятся
+ * свободно, а журнал различает деактивацию, смену бланка и обычное обновление.
+ *
+ * Самого переключения признака в этой ручке больше нет: у него свой протокол — предпросмотр,
+ * отпечаток подтверждения и ответ с номерами замороженных заявок (ADR 0107), и проверяется он
+ * соседним файлом `vehicle-type-linear-switch.db.test.ts`. Здесь от этого остался ровно один
+ * кейс — что `PATCH` отвечает `422` и объясняет, куда идти.
+ *
+ * Зачем база. Поведение решает не схема запроса, а состояние соседних таблиц и журнал: разойтись
+ * могут ровно код и база.
  *
  * Запуск (база должна быть пустой или уже промигрированной — тест накатывает миграции сам):
  *
@@ -213,7 +217,7 @@ describe.skipIf(!DB_URL)('линейная техника: признак тип
     await ctx?.closeDb();
   });
 
-  it('признак ездит через создание и правку, а не спрошенный остаётся прежним', async () => {
+  it('признак ездит через создание, а правкой типа больше не меняется', async () => {
     const created = await createType({ isLinear: true });
     expect(created.isLinear).toBe(true);
 
@@ -222,36 +226,31 @@ describe.skipIf(!DB_URL)('линейная техника: признак тип
     expect(renamed.statusCode, renamed.body).toBe(200);
     expect(renamed.json().isLinear).toBe(true);
 
+    // А вот сам признак этой ручкой не переключается: у переключения свой протокол —
+    // предпросмотр и подтверждение (ADR 0107, решение 5). Отказ именно 422 и с объяснением, куда
+    // идти: `400` схемы старый клиент прочитал бы как поломку портала.
     const off = await patchType(created.id as string, { isLinear: false });
-    expect(off.statusCode, off.body).toBe(200);
-    expect(off.json().isLinear).toBe(false);
+    expect(off.statusCode, off.body).toBe(422);
+    expect(off.json().code).not.toBe('validation_error');
+    expect(off.json().message).toMatch(/Линейная техника/);
 
     // Умолчание создания — «нет»: тип, заведённый без вопроса, ведёт себя как все прежние.
     const plain = await createType();
     expect(plain.isLinear).toBe(false);
   });
 
-  it('смена признака — своё действие журнала, и оно перевешивает смену бланка', async () => {
+  it('деактивация правится и у линейного типа: запрет держит признак, а не запись', async () => {
+    const created = await createType({ isLinear: true });
+    const res = await patchType(created.id as string, { isActive: false });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json().isLinear).toBe(true);
+    expect((await lastAudit(created.id as string)).action).toBe('vehicle_type.deactivate');
+  });
+
+  it('смена бланка остаётся своим действием журнала', async () => {
     const created = await createType();
 
-    const res = await patchType(created.id as string, { isLinear: true });
-    expect(res.statusCode, res.body).toBe(200);
-    const entry = await lastAudit(created.id as string);
-    expect(entry.action).toBe('vehicle_type.linear');
-    expect(entry.metadata.oldIsLinear).toBe(false);
-    expect(entry.metadata.newIsLinear).toBe(true);
-
-    // Оба поля в одной правке: журналу нужнее то изменение, после которого заявки начинают
-    // вести себя иначе, — бланк решает, чем печатать рейс, линейность — рождаются ли листы.
-    const both = await patchType(created.id as string, {
-      isLinear: false,
-      waybillFormCode: 'leg3',
-    });
-    expect(both.statusCode, both.body).toBe(200);
-    expect((await lastAudit(created.id as string)).action).toBe('vehicle_type.linear');
-
-    // Признак не тронут — запись прежняя: «обновлён» и «смена бланка» остались на своих местах.
-    const formOnly = await patchType(created.id as string, { waybillFormCode: '4p' });
+    const formOnly = await patchType(created.id as string, { waybillFormCode: 'leg3' });
     expect(formOnly.statusCode, formOnly.body).toBe(200);
     expect((await lastAudit(created.id as string)).action).toBe('vehicle_type.waybill_form');
 
@@ -260,55 +259,24 @@ describe.skipIf(!DB_URL)('линейная техника: признак тип
     expect((await lastAudit(created.id as string)).action).toBe('vehicle_type.update');
   });
 
-  it('деактивация перевешивает линейность: выключенным типом больше ничего не заводят', async () => {
-    const created = await createType();
-    const res = await patchType(created.id as string, { isActive: false, isLinear: true });
-    expect(res.statusCode, res.body).toBe(200);
-    expect(res.json().isLinear).toBe(true);
-    expect((await lastAudit(created.id as string)).action).toBe('vehicle_type.deactivate');
-  });
-
-  it('пока у типа есть заявки в работе, признак не меняется — 422 с числом заявок', async () => {
+  it('заявки в работе правке прочих полей не мешают', async () => {
     const created = await createType();
     await request(created.id as string, 'confirmed');
     await request(created.id as string, 'confirmed');
 
-    const res = await patchType(created.id as string, { isLinear: true });
-    expect(res.statusCode, res.body).toBe(422);
-    expect(res.json().message).toBe(
-      'У типа есть заявки в работе (2): сначала закройте их — иначе заявка сменит режим документооборота на ходу',
-    );
-
-    // Отказ обязан быть до записи: иначе признак уехал бы в базу, а человек увидел бы ошибку.
-    const after = await ctx.app.inject({
-      method: 'GET',
-      url: `/api/v1/vehicle-types/${created.id}`,
-      headers: ctx.auth,
-    });
-    expect(after.json().isLinear).toBe(false);
-
-    // Остальные поля того же типа правятся: запрет держит признак, а не всю запись.
+    // Прежний запрет «у типа есть заявки в работе» снят вместе с самим переключением через PATCH
+    // (ADR 0107): теперь такой тип правится как любой другой, а признак переключают своей ручкой —
+    // её договор проверяет `vehicle-type-linear-switch.db.test.ts`.
     const renamed = await patchType(created.id as string, { name: 'Занятый тип' });
     expect(renamed.statusCode, renamed.body).toBe(200);
   });
 
-  it('новые, закрытые, отменённые и архивные заявки смене не мешают', async () => {
-    const created = await createType();
-    await request(created.id as string, 'new');
-    await request(created.id as string, 'done');
-    await request(created.id as string, 'cancelled');
-    // Архивная — та же «в работе», но удалённая: работой она уже не является (ADR 0070).
-    await request(created.id as string, 'confirmed', { deleted: true });
-
-    const res = await patchType(created.id as string, { isLinear: true });
-    expect(res.statusCode, res.body).toBe(200);
-    expect(res.json().isLinear).toBe(true);
-  });
-
-  it('признак того же значения запрет не поднимает: менять нечего', async () => {
+  it('признак того же значения правкой не является: менять нечего', async () => {
     const created = await createType({ isLinear: true });
     await request(created.id as string, 'confirmed');
 
+    // Форма справочника собирает полный объект правки, а не изменённые поля, — и присланное
+    // совпадающее значение обязано проходить: иначе переименовать линейный тип стало бы нельзя.
     const res = await patchType(created.id as string, { isLinear: true, name: 'Тот же признак' });
     expect(res.statusCode, res.body).toBe(200);
     expect(res.json().isLinear).toBe(true);

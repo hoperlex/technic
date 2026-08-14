@@ -29,6 +29,7 @@ import {
   waybills,
   waybillSeries,
 } from '../db/schema';
+import { requestIsLinearSql } from '../db/linear-mode';
 import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import { findMachinist } from './drivers';
@@ -100,7 +101,7 @@ async function loadRequest(reader: Reader, requestId: string): Promise<RequestSt
       dateTo: specialEquipmentRequestDetails.dateTo,
       vehicleId: vehicleRequestAssignments.vehicleId,
       ownership: vehicles.ownership,
-      isLinear: vehicleTypes.isLinear,
+      isLinear: requestIsLinearSql(vehicleRequests.isLinearFrozen, vehicleTypes.isLinear),
       vehicleTypeName: vehicleTypes.name,
     })
     .from(vehicleRequests)
@@ -111,8 +112,11 @@ async function loadRequest(reader: Reader, requestId: string): Promise<RequestSt
      * машины на ходу превратила бы недельную заявку в дневную.
      *
      * Join обычный, а не левый: `vehicle_type_id` у заявки NOT NULL, и заявки без типа не бывает.
-     * Снимка признака в заявке нет намеренно — справочник и есть то место, где на этот вопрос
-     * отвечают, а сменить признак под работающими заказами портал не даёт (`vehicle-types.ts`).
+     *
+     * Читается при этом режим **заявки**, а не признак справочника: заявку могло застать
+     * переключение (миграция 0137), и до конца работы она ведётся снимком. Живой признак сменил бы
+     * недельной заявке режим на ходу — портал перестал бы выписывать ей листы и аннулировал бы уже
+     * выданные.
      */
     .innerJoin(vehicleTypes, eq(vehicleTypes.id, vehicleRequests.vehicleTypeId))
     .leftJoin(
@@ -130,21 +134,27 @@ async function loadRequest(reader: Reader, requestId: string): Promise<RequestSt
 
 /** Действующие листы заявки — то, с чем сверяется нужный набор недель. */
 async function activeSheets(reader: Reader, requestId: string) {
-  return reader
-    .select({
-      id: waybills.id,
-      periodFrom: waybills.periodFrom,
-      periodTo: waybills.periodTo,
-      vehicleId: waybills.vehicleId,
-      driverPersonId: waybills.driverPersonId,
-      number: waybills.number,
-      prefix: waybillSeries.prefix,
-      numberWidth: waybillSeries.numberWidth,
-    })
-    .from(waybills)
-    .innerJoin(waybillSeries, eq(waybillSeries.id, waybills.seriesId))
-    .where(and(eq(waybills.sourceRequestId, requestId), ne(waybills.status, 'cancelled')))
-    .orderBy(waybills.periodFrom);
+  return (
+    reader
+      .select({
+        id: waybills.id,
+        periodFrom: waybills.periodFrom,
+        periodTo: waybills.periodTo,
+        vehicleId: waybills.vehicleId,
+        driverPersonId: waybills.driverPersonId,
+        number: waybills.number,
+        prefix: waybillSeries.prefix,
+        numberWidth: waybillSeries.numberWidth,
+      })
+      .from(waybills)
+      .innerJoin(waybillSeries, eq(waybillSeries.id, waybills.seriesId))
+      .where(and(eq(waybills.sourceRequestId, requestId), ne(waybills.status, 'cancelled')))
+      // Второй ключ порядка обязателен, хотя недели и так не повторяются у обычного заказа. У
+      // линейного повторяются: неделю закрывают две машины, и каждой нужен свой лист (ADR 0100 §7).
+      // Порядок между ними без `id` не определён, а этот набор целиком уходит в отпечаток
+      // предпросмотра последствий — два расчёта одного состояния дали бы разные строки и ложный 409.
+      .orderBy(waybills.periodFrom, waybills.id)
+  );
 }
 
 /**
@@ -155,8 +165,8 @@ async function activeSheets(reader: Reader, requestId: string) {
  * потом выписывает новый, и на второй половине этой работы «последний лист» уже аннулирован.
  * Человек при этом не менялся — менялся срок или машина.
  */
-async function lastMachinistOf(tx: Tx, requestId: string): Promise<string | null> {
-  const [row] = await tx
+async function lastMachinistOf(reader: Reader, requestId: string): Promise<string | null> {
+  const [row] = await reader
     .select({ driverPersonId: waybills.driverPersonId })
     .from(waybills)
     .where(eq(waybills.sourceRequestId, requestId))
@@ -450,6 +460,111 @@ export interface Esm2SyncResult {
 const EMPTY: Esm2SyncResult = { cancelled: [], issued: [] };
 
 /**
+ * Вход сверки — ровно тот, что принимает `esm2SyncPlan`.
+ *
+ * Выводится из самой функции, а не переписывается рядом: по нему предпросмотр отката считает
+ * отпечаток входов плана (§5.4 плана переключения режима), и новый вход сверки обязан попадать в
+ * отпечаток сам, не требуя правки второго места.
+ */
+export type Esm2SyncPlanInput = Parameters<typeof esm2SyncPlan>[0];
+
+/**
+ * Что сверка сделала бы с бумагой заявки: её вход и посчитанный по нему план — без единой правки.
+ *
+ * Заведено ради предпросмотра отката «Выполнена» → «В работе» (§5.4): диалог обещает человеку
+ * точный результат — сколько листов выпишется и какие сгорят, — а обещание это верно ровно до тех
+ * пор, пока считает его та же работа, что и исполняет. Поэтому сборка входа живёт здесь, а
+ * `syncEsm2Waybills` зовёт эту же функцию, а не свою копию: два места, считающих план, разошлись бы
+ * на первой же правке, и предпросмотр начал бы обещать не то.
+ *
+ * Ничего не пишет и транзакции не требует: `esm2SyncPlan` — чистая функция контрактов, а всё
+ * остальное здесь чтение. `null` — заявки нет.
+ */
+export async function buildEsm2SyncPlan(
+  reader: Reader,
+  params: {
+    requestId: string;
+    /** Машинист, названный этим же действием; условия — в `syncEsm2Waybills`. */
+    driverPersonId?: string | null;
+    /**
+     * Принадлежность машины, которую назначают этим же действием: ею считается режим, и заказ,
+     * который вели арендной единицей, а продолжат своей, бумагу заводит. Не передана — нынешняя.
+     */
+    ownership?: VehicleOwnership;
+    /**
+     * Дата расчёта — ключ дня по МСК; не передана, значит сегодня.
+     *
+     * Захватывается вызывающим один раз на транзакцию (Р12): полночь между принятым отпечатком и
+     * сверкой отдала бы другой план по уже подтверждённому обещанию — `esm2SyncPlan` отбирает
+     * недели условием `p.to >= today`.
+     */
+    asOf?: string;
+    /** Контекст проверенной операции коррекции; условия — в `syncEsm2Waybills`. */
+    correction?: { id: string; unlockWaybillIds: readonly string[] };
+  },
+): Promise<{ input: Esm2SyncPlanInput; plan: ReturnType<typeof esm2SyncPlan> } | null> {
+  const request = await loadRequest(reader, params.requestId);
+  if (!request) return null;
+
+  const mode = esm2Mode({
+    requestType: request.requestType,
+    status: request.status,
+    ownership: params.ownership ?? request.ownership,
+    deletedAt: request.deletedAt ? request.deletedAt.toISOString() : null,
+    isLinear: request.isLinear,
+  });
+  const existing = await activeSheets(reader, params.requestId);
+  const sheets = existing.map((s) => ({
+    id: s.id,
+    periodFrom: s.periodFrom!,
+    periodTo: s.periodTo!,
+    vehicleId: s.vehicleId,
+    driverPersonId: s.driverPersonId,
+  }));
+  /*
+   * Набор нужных недель. В `auto` его задаёт срок заявки — портал сам решает, сколько бумаги ей
+   * нужно. В `on_demand` решения у портала нет вовсе: недели называет человек, и единственный
+   * след его просьбы — сами выписанные листы, подрезанные сроком (ADR 0100 §5).
+   */
+  const wanted =
+    mode === 'none' || !request.dateFrom
+      ? []
+      : mode === 'auto'
+        ? esm2Periods(request.dateFrom, request.dateTo)
+        : esm2RequestedPeriods(sheets, request.dateFrom, request.dateTo);
+  /*
+   * Машинист заявки. В `auto` он один на все её недели: не назван этим действием — берётся с
+   * прежнего листа (меняли срок или машину, а не человека).
+   *
+   * В `on_demand` «машиниста заявки» не существует: его называют на каждую неделю отдельно
+   * (ADR 0100 §6), и наследование с последнего листа пересадило бы на все недели того, кто
+   * отработал одну. Поэтому там человек берётся только из самого действия, а сверка, получив
+   * `null`, оставляет каждой неделе своего (`esm2SyncPlan`).
+   *
+   * Заявке, которой листов не положено и у которой их нет (самый частый случай — грузоперевозка),
+   * человека не ищем вовсе: плану он не пригодится, а чтение стоит запроса на каждую правку.
+   */
+  const driverPersonId =
+    mode === 'on_demand' || (mode === 'none' && sheets.length === 0)
+      ? (params.driverPersonId ?? null)
+      : (params.driverPersonId ?? (await lastMachinistOf(reader, params.requestId)));
+
+  const input: Esm2SyncPlanInput = {
+    mode,
+    wanted,
+    existing: sheets,
+    vehicleId: request.vehicleId,
+    driverPersonId,
+    today: params.asOf ?? today(),
+    // Оба ключа коррекции идут вместе и порознь не работают (Р11): разблокировав лист, но не
+    // разрешив прошедшую неделю, сверка аннулировала бы номер и не выписала замены.
+    unlockWaybillIds: params.correction?.unlockWaybillIds,
+    correction: params.correction ? { allowed: true } : undefined,
+  };
+  return { input, plan: esm2SyncPlan(input) };
+}
+
+/**
  * Привести листы ЭСМ-2 заявки в соответствие с самой заявкой.
  *
  * Идемпотентна: сошлось — не делает ничего, не жжёт номеров и не пишет событий. Это не украшение,
@@ -477,6 +592,12 @@ export async function syncEsm2Waybills(
      */
     driverPersonId?: string | null;
     /**
+     * Дата расчёта — ключ дня по МСК; не передана, значит сегодня (Р12). Передаёт её только
+     * статусная ручка: она захватывает дату один раз на транзакцию, кладёт в отпечаток входов
+     * плана и отдаёт сюда, чтобы наступившая полночь не переписала уже подтверждённое обещание.
+     */
+    asOf?: string;
+    /**
      * Контекст проверенной операции коррекции (ADR 0101, Р8, Р11, Р21). Приходит только оттуда,
      * где право `waybills.correct`, причина и глубина уже спрошены — из тела запроса он не
      * собирается никогда: тело перечисляет намерение, а не разрешение.
@@ -499,66 +620,20 @@ export async function syncEsm2Waybills(
     };
   },
 ): Promise<Esm2SyncResult> {
-  const request = await loadRequest(tx, params.requestId);
-  if (!request) return EMPTY;
-
-  const mode = esm2Mode({
-    requestType: request.requestType,
-    status: request.status,
-    ownership: request.ownership,
-    deletedAt: request.deletedAt ? request.deletedAt.toISOString() : null,
-    isLinear: request.isLinear,
+  // Вход и план считает та же работа, что показала их человеку в предпросмотре (§5.4): своей копии
+  // сборки здесь нет намеренно — разойдись эти два места, диалог обещал бы одно, а сверка делала
+  // бы другое.
+  const built = await buildEsm2SyncPlan(tx, {
+    requestId: params.requestId,
+    driverPersonId: params.driverPersonId,
+    asOf: params.asOf,
+    correction: params.correction,
   });
-  const existing = await activeSheets(tx, params.requestId);
-  // Заявке листов не положено, а их и нет: самый частый случай — грузоперевозка. Выходим до
-  // единственного оставшегося чтения.
-  if (mode === 'none' && existing.length === 0) return EMPTY;
-
-  const sheets = existing.map((s) => ({
-    id: s.id,
-    periodFrom: s.periodFrom!,
-    periodTo: s.periodTo!,
-    vehicleId: s.vehicleId,
-    driverPersonId: s.driverPersonId,
-  }));
-  /*
-   * Набор нужных недель. В `auto` его задаёт срок заявки — портал сам решает, сколько бумаги ей
-   * нужно. В `on_demand` решения у портала нет вовсе: недели называет человек, и единственный
-   * след его просьбы — сами выписанные листы, подрезанные сроком (ADR 0100 §5).
-   */
-  const wanted =
-    mode === 'none' || !request.dateFrom
-      ? []
-      : mode === 'auto'
-        ? esm2Periods(request.dateFrom, request.dateTo)
-        : esm2RequestedPeriods(sheets, request.dateFrom, request.dateTo);
-  /*
-   * Машинист заявки. В `auto` он один на все её недели: не назван этим действием — берётся с
-   * прежнего листа (меняли срок или машину, а не человека).
-   *
-   * В `on_demand` «машиниста заявки» не существует: его называют на каждую неделю отдельно
-   * (ADR 0100 §6), и наследование с последнего листа пересадило бы на все недели того, кто
-   * отработал одну. Поэтому там человек берётся только из самого действия, а сверка, получив
-   * `null`, оставляет каждой неделе своего (`esm2SyncPlan`).
-   */
-  const driverPersonId =
-    mode === 'on_demand'
-      ? (params.driverPersonId ?? null)
-      : (params.driverPersonId ?? (await lastMachinistOf(tx, params.requestId)));
-
-  const plan = esm2SyncPlan({
-    mode,
-    wanted,
-    existing: sheets,
-    vehicleId: request.vehicleId,
-    driverPersonId,
-    today: today(),
-    // Оба ключа коррекции идут вместе и порознь не работают (Р11): разблокировав лист, но не
-    // разрешив прошедшую неделю, сверка аннулировала бы номер и не выписала замены.
-    unlockWaybillIds: params.correction?.unlockWaybillIds,
-    correction: params.correction ? { allowed: true } : undefined,
-  });
+  if (!built) return EMPTY;
+  const { input, plan } = built;
   if (plan.cancel.length === 0 && plan.issue.length === 0) return EMPTY;
+
+  const { mode, existing: sheets, driverPersonId } = input;
 
   /*
    * Кем выписывать замену сгоревшему номеру.
@@ -599,7 +674,7 @@ export async function syncEsm2Waybills(
    */
   const vehicleFor = (period: Esm2Period): string | null =>
     (mode === 'on_demand' ? burnedOfWeek.get(weekStartKey(period.from))?.vehicleId : null) ??
-    request.vehicleId;
+    input.vehicleId;
 
   // Машинист нужен до первой же выписки: лист без него бухгалтерия не примет, а графа в бланке
   // одна на всю неделю. Проверка здесь, а не только в форме, — сверку зовут пять мест.
@@ -619,9 +694,18 @@ export async function syncEsm2Waybills(
     throw err.unprocessable('На заявке нет техники — путевой лист выписывать не на что');
   }
 
-  const numbersById = new Map(
-    existing.map((s) => [s.id, waybillDisplayNumber(s.prefix, s.number, s.numberWidth)]),
-  );
+  /*
+   * Напечатанные номера сгорающих листов — вторым чтением: в плане их нет и быть не должно.
+   * Считает план чистая читающая работа (`buildEsm2SyncPlan`), которой заодно живёт предпросмотр, а
+   * номер бланка строгой отчётности нужен здесь одному — журналу аудита: исчезнувшая бумага, не
+   * названная номером, не объясняется ничем. Читается он только когда что-то и правда горит.
+   */
+  const numbersById = new Map<string, string>();
+  if (plan.cancel.length > 0) {
+    for (const s of await activeSheets(tx, params.requestId)) {
+      numbersById.set(s.id, waybillDisplayNumber(s.prefix, s.number, s.numberWidth));
+    }
+  }
   const cancelled: string[] = [];
   for (const id of plan.cancel) {
     if (params.correction) {
@@ -868,8 +952,9 @@ export async function esm2OnDemandPeriod(
 function onDemandPeriodOf(request: RequestState, weekOf: string): Esm2Period | null {
   if (onDemandRefusal(request)) return null;
   return (
-    esm2Periods(request.dateFrom!, request.dateTo).find((p) => p.from <= weekOf && weekOf <= p.to) ??
-    null
+    esm2Periods(request.dateFrom!, request.dateTo).find(
+      (p) => p.from <= weekOf && weekOf <= p.to,
+    ) ?? null
   );
 }
 

@@ -88,6 +88,13 @@ export const mailKindEnum = pgEnum('mail_kind', [
   'account_created',
   /** Смена адреса учётки администратором (ADR 0092, миграция 0122) — письма на оба адреса. */
   'email_changed',
+  /**
+   * Письма модуля «Орг.техника» служебным адресатам (миграция 0142): заявка встала в очередь на
+   * визу ИТ и заявка отменена. Событие, а не ручка: в «Новую» заявка входит и при заведении, и
+   * откатом, и служба ждёт её в обоих случаях.
+   */
+  'service_request_waiting_it',
+  'service_request_cancelled',
 ]);
 export const mailStatusEnum = pgEnum('mail_status', ['pending', 'sent', 'failed']);
 /** Расписания рассылок (ADR 0075, миграция 0099). */
@@ -3792,6 +3799,14 @@ export const mailMessages = pgTable(
     dedupeKey: text('dedupe_key').notNull(),
     /** Снимок адреса: смена email после отправки не переписывает журнал. */
     toEmail: citext('to_email').notNull(),
+    /**
+     * Куда отвечать на это письмо (миграция 0141). Пусто — общий `MAIL_REPLY_TO`, как было до
+     * появления колонки: письма, лежащие в очереди с прошлых выпусков, своего поведения не меняют.
+     *
+     * Адрес принадлежит письму, а не порталу, потому что «кому отвечать» зависит от события: на
+     * заявку, ждущую визы, отвечают заявителю, на отмену — тому, кто отменил.
+     */
+    replyTo: citext('reply_to').notNull().default(''),
     userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
     /** Водитель: задание на рейс получает физлицо, учётной записи у него может не быть вовсе. */
     personId: uuid('person_id').references(() => persons.id, { onDelete: 'set null' }),
@@ -4052,6 +4067,64 @@ export const mailingRuns = pgTable(
       sql`(${t.periodStart} IS NULL AND ${t.periodEnd} IS NULL)
           OR (${t.periodStart} IS NOT NULL AND ${t.periodEnd} IS NOT NULL
               AND ${t.periodEnd} >= ${t.periodStart})`,
+    ),
+  }),
+);
+
+// ── Служебные адресаты писем модулей (план office-equipment-mail-and-history-plan.md, миграция 0141) ──
+//
+// Расписания выше отвечают на вопрос «кому из учётных записей и когда уходит сводка». Здесь другое:
+// письмо по событию на служебный ящик, за которым нет ни учётки, ни области видимости, — отдел ИТ
+// читает почту, а не портал.
+//
+// Строка — это пара «событие + адрес», а не словарь настроек: у неё есть форма, которую проверяют
+// и схема, и CHECK, и есть ответ на вопрос «кто это включил и когда». Несколько адресов на событие
+// разрешены (копия завхозу), и каждому уходит своё письмо со своим ключом дедупликации — иначе
+// уникальность `mail_messages (kind, dedupe_key)` подавила бы всё, кроме первого.
+export const moduleMailRecipients = pgTable(
+  'module_mail_recipients',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    /** Реестр в контрактах (`MODULE_MAIL_EVENTS`); текстом, как `mailing_schedule_sections.section`. */
+    event: text('event').notNull().$type<'service_request_waiting_it' | 'service_request_cancelled'>(),
+    toEmail: citext('to_email').notNull(),
+    /** Выключенный адресат сохраняет настройку: «до понедельника не шлём» — не «завести заново». */
+    isEnabled: boolean('is_enabled').notNull().default(true),
+    /** Куда отвечать: фиксированный адрес, автор заявки, вызвавший событие или общий адрес портала. */
+    replyToMode: text('reply_to_mode')
+      .notNull()
+      .default('fixed')
+      .$type<'fixed' | 'author' | 'actor' | 'portal'>(),
+    /** Обязателен при `fixed`, запасной при `author`/`actor`, пуст при `portal` — см. CHECK ниже. */
+    replyToEmail: citext('reply_to_email').notNull().default(''),
+    /** «Кому и зачем»: ящик без объяснения через год никто не решится выключить. */
+    comment: text('comment').notNull().default(''),
+    version: integer('version').notNull().default(0),
+    createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+    updatedBy: uuid('updated_by').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    // Один адрес на событие: вторая строка с тем же ящиком означала бы два одинаковых письма.
+    eventEmailUnique: uniqueIndex('module_mail_recipients_event_email_unique').on(t.event, t.toEmail),
+    // Отбор при постановке письма идёт ровно этой парой.
+    liveIdx: index('module_mail_recipients_live_idx').on(t.event).where(sql`${t.isEnabled}`),
+    eventCheck: check(
+      'module_mail_recipients_event_check',
+      sql`${t.event} IN ('service_request_waiting_it', 'service_request_cancelled')`,
+    ),
+    replyToModeCheck: check(
+      'module_mail_recipients_reply_to_mode_check',
+      sql`${t.replyToMode} IN ('fixed', 'author', 'actor', 'portal')`,
+    ),
+    // Режим и адрес — пара: у `fixed` без адреса отвечать некуда, у `portal` свой адрес означал бы
+    // настройку, которой никто не пользуется. У `author`/`actor` адрес необязателен: он запасной.
+    replyToEmailCheck: check(
+      'module_mail_recipients_reply_to_email_check',
+      sql`(${t.replyToMode} = 'fixed' AND ${t.replyToEmail} <> '')
+          OR (${t.replyToMode} = 'portal' AND ${t.replyToEmail} = '')
+          OR ${t.replyToMode} IN ('author', 'actor')`,
     ),
   }),
 );

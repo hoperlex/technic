@@ -1,18 +1,27 @@
+import { createHash } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
-import { and, count, eq, isNull, sql } from 'drizzle-orm';
+import { and, count, eq, isNull, sql, type SQL } from 'drizzle-orm';
 import {
   attachVehicleTypeSpecSchema,
   createVehicleTypeSchema,
+  requestCustomerName,
+  switchVehicleTypeLinearSchema,
   updateVehicleTypeSchema,
   updateVehicleTypeSpecSchema,
   vehicleTypeListQuerySchema,
   type VehicleTypeDto,
+  type VehicleTypeLinearSwitchPreviewDto,
+  type VehicleTypeLinearSwitchRequestDto,
+  type VehicleTypeLinearSwitchResultDto,
   type WaybillFormCode,
 } from '@technic/contracts';
 import { db } from '../db/client';
 import {
+  constructionObjects,
+  departments,
+  specialEquipmentRequestDetails,
   vehicleCategories,
   vehicleCategorySpecValues,
   vehicleKinds,
@@ -24,6 +33,7 @@ import {
 import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
+import { vehicleRequestVisibilityWhere } from '../lib/access';
 import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
 import { registerPurgeRoute } from '../services/directory-purge';
 import { dropWeeklyItemsOfVehicleType } from '../services/weekly-request-cleanup';
@@ -49,6 +59,15 @@ const categoryCount = sql<number>`(
   SELECT count(*) FROM ${vehicleCategories}
   WHERE ${vehicleCategories.vehicleTypeId} = ${vehicleTypes.id}
 )`;
+// Сколько заявок типа дорабатывает по прежнему режиму — их застигло переключение признака
+// (миграция 0137). Тем же коррелированным подзапросом, что и счётчики выше, и по частичному
+// индексу `vehicle_requests_linear_frozen_idx`. Число отвечает на вопрос «можно ли убирать
+// костыль»: колонки снимка уходят, когда оно обнулится по всем типам, — и уходит вместе с ними.
+const frozenRequests = sql<number>`(
+  SELECT count(*) FROM ${vehicleRequests}
+  WHERE ${vehicleRequests.vehicleTypeId} = ${vehicleTypes.id}
+    AND ${vehicleRequests.isLinearFrozen} IS NOT NULL
+)`;
 
 const dtoColumns = {
   id: vehicleTypes.id,
@@ -62,6 +81,7 @@ const dtoColumns = {
   sortOrder: vehicleTypes.sortOrder,
   waybillFormCode: vehicleTypes.waybillFormCode,
   isLinear: vehicleTypes.isLinear,
+  frozenRequests,
   specCount,
   categoryCount,
   createdAt: vehicleTypes.createdAt,
@@ -80,6 +100,7 @@ type DtoRow = {
   sortOrder: number;
   waybillFormCode: WaybillFormCode;
   isLinear: boolean;
+  frozenRequests: number;
   specCount: number;
   categoryCount: number;
   createdAt: Date;
@@ -99,6 +120,7 @@ function toDto(r: DtoRow): VehicleTypeDto {
     sortOrder: r.sortOrder,
     waybillFormCode: r.waybillFormCode,
     isLinear: r.isLinear,
+    frozenRequests: Number(r.frozenRequests),
     specCount: Number(r.specCount),
     categoryCount: Number(r.categoryCount),
     createdAt: r.createdAt.toISOString(),
@@ -113,6 +135,106 @@ async function getDtoById(id: string): Promise<VehicleTypeDto | undefined> {
     .innerJoin(vehicleKinds, eq(vehicleTypes.kindId, vehicleKinds.id))
     .where(eq(vehicleTypes.id, id));
   return row ? toDto(row) : undefined;
+}
+
+// ── Переключение признака «Линейная техника» под работающими заказами (ADR 0100, миграция 0137) ──
+//
+// Признак читается живым (`src/db/linear-mode.ts`), поэтому галочка в справочнике меняла бы режим
+// документооборота каждой заявке в работе на ходу. Вместо запрета переключение оставляет
+// застигнутым заявкам снимок прежнего значения, а человеку — предпросмотр: кто именно останется на
+// прежнем режиме. Отсюда две ручки со своим протоколом и отказ общей правки (`PATCH`) трогать
+// признак.
+
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+/** Читающее соединение: предпросмотр спрашивает пул, подтверждение — свою транзакцию. */
+type Reader = Pick<Tx, 'select'>;
+
+/**
+ * Куда переключают — спрашивается явно, а не выводится «наоборот от текущего»: вкладка, открытая
+ * со вчера, иначе показала бы последствия не того переключения, которое человек собирается сделать.
+ */
+const linearSwitchQuery = z.object({
+  isLinear: z.enum(['true', 'false']).transform((v) => v === 'true'),
+});
+
+/**
+ * Отпечаток пустого множества — тот самый `md5('')`, что вернёт и SQL. Предпросмотру, которому
+ * нечего показывать, всё равно нужно назвать значение: клиент отправляет его обратно, и пустая
+ * строка получила бы отказ там, где отказывать не за что.
+ */
+const EMPTY_SCOPE_FINGERPRINT = createHash('md5').update('').digest('hex');
+
+/**
+ * Множество, которое застигнет переключение: заявки, дорабатывающие по прежнему режиму. Отбор
+ * живёт в одном месте на все три обращения — предпросмотр, сверку отпечатка и сам `UPDATE`:
+ * разойдись они хоть одним условием, и подтверждение защищало бы не то, что записывается.
+ *
+ * Условия названы поимённо, потому что каждое отвечает на свой вопрос:
+ *
+ * - `request_type = 'special_equipment'` — режим есть только у заказа техники на объект. У
+ *   грузоперевозки того же типа его нет вовсе, и снимок ей ничего не объясняет, зато держит
+ *   уборку колонок;
+ * - `status = 'confirmed'` — морозится работа, а не заказ: у новой заявки ничего не начиналось,
+ *   у закрытой всё уже случилось;
+ * - `deleted_at` здесь **не проверяется намеренно**: мягкое удаление статуса не меняет, и
+ *   незамороженная архивная заявка вернулась бы из архива уже в другом режиме — мина, а не отказ;
+ * - `is_linear_frozen IS NULL` — заявку, застигнутую прежним переключением, второе не переписывает.
+ */
+function linearSwitchScopeWhere(typeId: string): SQL | undefined {
+  return and(
+    eq(vehicleRequests.vehicleTypeId, typeId),
+    eq(vehicleRequests.requestType, 'special_equipment'),
+    eq(vehicleRequests.status, 'confirmed'),
+    isNull(vehicleRequests.isLinearFrozen),
+  );
+}
+
+interface LinearSwitchScope {
+  count: number;
+  archivedCount: number;
+  fingerprint: string;
+}
+
+/**
+ * Счётчики и отпечаток множества. Отпечаток считается из самих данных — серверного состояния и
+ * токенов подтверждения не заводится, — и `coalesce` в нём обязателен: у пустого множества
+ * `string_agg` возвращает `NULL`, `md5(NULL)` — тоже `NULL`, и сверка была бы ложной всегда.
+ */
+async function readLinearSwitchScope(conn: Reader, typeId: string): Promise<LinearSwitchScope> {
+  const [row] = await conn
+    .select({
+      total: count(),
+      archived: sql<number>`count(*) FILTER (WHERE ${vehicleRequests.deletedAt} IS NOT NULL)`,
+      fingerprint: sql<string>`md5(coalesce(
+        string_agg(${vehicleRequests.id}::text, ',' ORDER BY ${vehicleRequests.id}), ''))`,
+    })
+    .from(vehicleRequests)
+    .where(linearSwitchScopeWhere(typeId));
+  return {
+    count: Number(row!.total),
+    archivedCount: Number(row!.archived),
+    fingerprint: row!.fingerprint,
+  };
+}
+
+/**
+ * Чем переключение обернётся для застигнутых заявок. Направление называется следствием, а не
+ * признаком: «по неделям» и «по дням» человек сверяет с тем, что видит в заявке, а `isLinear: true`
+ * не говорит ему ничего.
+ */
+function linearSwitchConsequence(count: number, next: boolean): string {
+  const mod10 = count % 10;
+  const mod100 = count % 100;
+  const one = mod10 === 1 && mod100 !== 11;
+  const few = mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14);
+  const word = one ? 'заявка' : few ? 'заявки' : 'заявок';
+  const head = `${count} ${word} в работе ${one ? 'продолжит' : 'продолжат'} вестись`;
+  const about = one ? 'ней' : 'ним';
+  const to = one ? 'ей' : 'им';
+  return next
+    ? `${head} по неделям: ЭСМ-2 портал выписывает по ${about} сам, дни ${to} не планируются`
+    : `${head} по дням: распланированные дни остаются в рейсах, ` +
+        `недельные листы ${to} не выписываются`;
 }
 
 // Плоский справочник типов ТС (ADR 0005): один уровень, без подтипов/иерархии. Удаления нет —
@@ -242,34 +364,23 @@ export default async function vehicleTypesRoutes(app: FastifyInstance): Promise<
       const [row] = await db.select().from(vehicleTypes).where(eq(vehicleTypes.id, id));
       if (!row) throw err.notFound('Тип не найден');
 
-      const linearChanged = body.isLinear !== undefined && body.isLinear !== row.isLinear;
       /*
-       * Линейность переключать под работающими заказами нельзя (ADR 0100 §1).
-       * Признак читается живым — join `vehicle_requests → vehicle_types.is_linear`, копии в
-       * заявке нет, — поэтому галочка в справочнике мгновенно сменила бы режим документооборота
-       * каждой заявке в работе: ЭСМ-2 перестал бы выписываться сам, а распланированные дни
-       * повисли бы без смысла. Заявки новые, закрытые и отменённые смене не мешают: у первых
-       * ничего не начиналось, у вторых всё уже случилось. Удалённые — тоже: заявка в архиве
-       * работой не является.
+       * Признак линейности этой ручкой не переключается: у переключения свой протокол —
+       * предпросмотр, отпечаток подтверждения и ответ с номерами заявок, оставленных на прежнем
+       * режиме (`POST /:id/linear`). Полем общей правки подтверждение обходилось бы молча —
+       * старым клиентом, скриптом, вкладкой, открытой со вчера.
+       *
+       * Совпадающее значение отказом не считается: форма справочника шлёт полный объект правки, а
+       * не изменённые поля, и запрет на «то же самое» запер бы правку наименования у каждого
+       * линейного типа. Отвечает handler, а не Zod: поле осталось в схеме нарочно — `strict()`
+       * отдал бы `400` «Ошибка валидации данных» вместо инструкции, куда идти.
        */
-      if (linearChanged) {
-        const [busy] = await db
-          .select({ c: count() })
-          .from(vehicleRequests)
-          .where(
-            and(
-              eq(vehicleRequests.vehicleTypeId, id),
-              eq(vehicleRequests.status, 'confirmed'),
-              isNull(vehicleRequests.deletedAt),
-            ),
-          );
-        const busyCount = Number(busy!.c);
-        if (busyCount > 0) {
-          throw err.unprocessable(
-            `У типа есть заявки в работе (${busyCount}): сначала закройте их — иначе заявка сменит режим документооборота на ходу`,
-            { isLinear: 'У типа есть заявки в работе' },
-          );
-        }
+      if (body.isLinear !== undefined && body.isLinear !== row.isLinear) {
+        throw err.unprocessable(
+          'Признак «Линейная техника» переключают своей ручкой: портал сначала покажет ' +
+            'заявки, которые останутся на прежнем режиме',
+          { isLinear: 'Переключается своей ручкой' },
+        );
       }
 
       await db
@@ -284,10 +395,9 @@ export default async function vehicleTypesRoutes(app: FastifyInstance): Promise<
        * должен иметь ответ. Активность приоритетнее лишь потому, что она грубее: выключенным
        * типом не заводят ни заявок, ни рейсов, и бланк у него уже ни на что не влияет.
        *
-       * Линейность — по той же причине своё действие (ADR 0100), и стоит она выше бланка: бланк
-       * решает, каким листом печатать рейс, а линейность — рождаются ли листы вообще и чем
-       * ведётся заказ, днями или неделями. Когда в одной правке сошлись оба поля, журналу нужнее
-       * то изменение, после которого заявки начинают вести себя иначе.
+       * Линейности в этой развилке больше нет: её действие (`vehicle_type.linear`) пишет своя
+       * ручка — вместе с номерами заявок, оставленных на прежнем режиме, которых общая правка не
+       * знает и знать не может.
        */
       const formChanged =
         body.waybillFormCode !== undefined && body.waybillFormCode !== row.waybillFormCode;
@@ -295,11 +405,9 @@ export default async function vehicleTypesRoutes(app: FastifyInstance): Promise<
         ? body.isActive
           ? 'vehicle_type.activate'
           : 'vehicle_type.deactivate'
-        : linearChanged
-          ? 'vehicle_type.linear'
-          : formChanged
-            ? 'vehicle_type.waybill_form'
-            : 'vehicle_type.update';
+        : formChanged
+          ? 'vehicle_type.waybill_form'
+          : 'vehicle_type.update';
       await writeAudit({
         actorUserId: actor,
         action,
@@ -314,11 +422,214 @@ export default async function vehicleTypesRoutes(app: FastifyInstance): Promise<
           newActive: body.isActive ?? row.isActive,
           oldWaybillFormCode: row.waybillFormCode,
           newWaybillFormCode: body.waybillFormCode ?? row.waybillFormCode,
-          oldIsLinear: row.isLinear,
-          newIsLinear: body.isLinear ?? row.isLinear,
+          // Пары «было → стало» по линейности здесь нет: этой ручкой признак не меняется, и
+          // запись «было false, стало false» отвечала бы на вопрос, которого никто не задавал.
+          isLinear: row.isLinear,
         },
       });
       return (await getDtoById(id))!;
+    },
+  );
+
+  // ── Предпросмотр переключения признака «Линейная техника» ──
+  // Право то же, что у правки справочника: переключает признак тот, кто ведёт типы. Блокировки
+  // здесь нет — это чтение для диалога, а не решение; решает подтверждение ниже.
+  r.get(
+    '/:id/linear-switch-preview',
+    {
+      preHandler: [app.authenticate, canWrite],
+      schema: { params: idParams, querystring: linearSwitchQuery },
+    },
+    async (req): Promise<VehicleTypeLinearSwitchPreviewDto> => {
+      const p = requirePrincipal(req);
+      const id = req.params.id;
+      const next = req.query.isLinear;
+
+      const [type] = await db
+        .select({ isLinear: vehicleTypes.isLinear })
+        .from(vehicleTypes)
+        .where(eq(vehicleTypes.id, id));
+      if (!type) throw err.notFound('Тип не найден');
+
+      // Признак уже стоит в запрошенном значении: переключать нечего и морозить некого — ровно то
+      // же ответит и сама ручка. Показать здесь работающие заявки значило бы пообещать заморозку,
+      // которой не будет.
+      if (type.isLinear === next) {
+        return {
+          next,
+          count: 0,
+          archivedCount: 0,
+          requests: [],
+          fingerprint: EMPTY_SCOPE_FINGERPRINT,
+        };
+      }
+
+      const scope = await readLinearSwitchScope(db, id);
+
+      /*
+       * Перечень считается не по тому множеству, что счётчики, и это нарочно: отпечаток и `count`
+       * берутся по полному набору — включая архивные и невидимые этой учётке по области, — иначе
+       * подтверждение защищало бы не то, что записывается. А номера показываются только те,
+       * которые человек и так видит в списке заявок: архив в портале — администраторская область,
+       * тогда как признак переключают менеджер и диспетчер. Сколько заявок осталось за кадром,
+       * говорит `archivedCount` — числом, а не строками.
+       */
+      const rows = await db
+        .select({
+          num: vehicleRequests.num,
+          objectId: vehicleRequests.objectId,
+          objectCode: constructionObjects.code,
+          objectName: constructionObjects.name,
+          departmentId: vehicleRequests.departmentId,
+          departmentCode: departments.code,
+          departmentName: departments.name,
+          dateFrom: specialEquipmentRequestDetails.dateFrom,
+          dateTo: specialEquipmentRequestDetails.dateTo,
+        })
+        .from(vehicleRequests)
+        .innerJoin(
+          specialEquipmentRequestDetails,
+          eq(specialEquipmentRequestDetails.requestId, vehicleRequests.id),
+        )
+        .leftJoin(constructionObjects, eq(vehicleRequests.objectId, constructionObjects.id))
+        .leftJoin(departments, eq(vehicleRequests.departmentId, departments.id))
+        .where(
+          and(
+            linearSwitchScopeWhere(id),
+            isNull(vehicleRequests.deletedAt),
+            vehicleRequestVisibilityWhere(
+              p,
+              vehicleRequests.objectId,
+              vehicleRequests.departmentId,
+            ),
+          ),
+        )
+        .orderBy(vehicleRequests.num);
+
+      return {
+        next,
+        count: scope.count,
+        archivedCount: scope.archivedCount,
+        fingerprint: scope.fingerprint,
+        requests: rows.map((row): VehicleTypeLinearSwitchRequestDto => ({
+          num: row.num,
+          objectName: requestCustomerName(row),
+          dateFrom: row.dateFrom,
+          dateTo: row.dateTo,
+        })),
+      };
+    },
+  );
+
+  // ── Переключение признака: снимок прежнего режима застигнутым заявкам и новое значение типу ──
+  // Всё одной транзакцией и в жёстком порядке: блокировка, идемпотентный выход, сверка набора,
+  // снимки, признак. Порядок здесь не стилистика — каждый шаг закрывает свою щель.
+  r.post(
+    '/:id/linear',
+    {
+      preHandler: [app.authenticate, canWrite],
+      schema: { params: idParams, body: switchVehicleTypeLinearSchema },
+    },
+    async (req): Promise<VehicleTypeLinearSwitchResultDto> => {
+      const actor = requirePrincipal(req).id;
+      const id = req.params.id;
+      const { isLinear: next, fingerprint } = req.body;
+
+      const switched = await db.transaction(async (tx) => {
+        /*
+         * Блокировка строки типа сериализует переключение со входом заявок в работу: тот читает
+         * свой тип внутри своей транзакции и потому либо ждёт здесь, либо уже виден пересчёту
+         * ниже. Успел вход — заявка морозится прежним значением; успело переключение — вход
+         * прочитает уже новое и пойдёт по новому режиму. Третьего порядка нет.
+         */
+        const [row] = await tx
+          .select({ code: vehicleTypes.code, isLinear: vehicleTypes.isLinear })
+          .from(vehicleTypes)
+          .where(eq(vehicleTypes.id, id))
+          .for('update');
+        if (!row) throw err.notFound('Тип не найден');
+
+        // Значение уже стоит — выход до всякой сверки отпечатка. Это и есть идемпотентность
+        // повтора: клиент, потерявший ответ на сети, шлёт тот же запрос со своим прежним
+        // отпечатком, а множество к этому времени пусто — сверка ответила бы `409` на успешно
+        // выполненной операции.
+        if (row.isLinear === next) return null;
+
+        const scope = await readLinearSwitchScope(tx, id);
+
+        /*
+         * Нужно ли подтверждение — решают данные под блокировкой, а не тело запроса: у типа без
+         * работающих заказов подтверждать нечего вовсе, и обязательное поле схемы отдавало бы
+         * `400` там, где ответом должно быть число заявок и что с ними станет. Отказ называет
+         * следствие, а не поле: клиент, переключающий признак мимо портала, должен прочитать, что
+         * именно случится с заявками, а не «требуется fingerprint».
+         */
+        if (fingerprint === undefined && scope.count > 0) {
+          const consequence = linearSwitchConsequence(scope.count, next);
+          throw err.unprocessable(
+            `${consequence}. Подтвердите переключение отпечатком предпросмотра`,
+            { fingerprint: 'Нужно подтверждение' },
+          );
+        }
+        // Присланный отпечаток сверяется всегда, включая опустевшее множество: он говорит «я видел
+        // вот этот состав», и молча переключить по устаревшему предпросмотру нельзя. Прежнего
+        // числа сервер не знает и не выдумывает — оно лежит у клиента, и фразу «было M, стало N»
+        // собирает он.
+        if (fingerprint !== undefined && fingerprint !== scope.fingerprint) {
+          throw err.conflict(
+            `Состав заявок изменился, сейчас их ${scope.count} — посмотрите предпросмотр заново`,
+          );
+        }
+
+        /*
+         * Снимок — ПРЕЖНЕЕ значение признака: застигнутая заявка дорабатывает так, как её вели, а
+         * не так, как с этой минуты ведутся новые. Ответ и журнал собираются из `RETURNING`:
+         * второй запрос «а сколько же их вышло» посчитал бы уже другое множество и рассказал бы
+         * про соседнюю операцию.
+         */
+        const frozen = await tx
+          .update(vehicleRequests)
+          .set({ isLinearFrozen: row.isLinear, linearFrozenAt: new Date() })
+          .where(linearSwitchScopeWhere(id))
+          .returning({ num: vehicleRequests.num });
+        await tx
+          .update(vehicleTypes)
+          .set({ isLinear: next, updatedAt: new Date() })
+          .where(eq(vehicleTypes.id, id));
+
+        // Порядок строк `RETURNING` не определён, а номера идут и в ответ, и в журнал: одна
+        // операция не должна выглядеть в двух местах по-разному.
+        const nums = frozen.map((f) => f.num).sort((a, b) => a - b);
+        return { code: row.code, oldIsLinear: row.isLinear, nums };
+      });
+
+      // Повтор уже сделанного переключения событием не является: не записано ничего — писать в
+      // журнал нечего, иначе история типа обрастала бы переключениями, которых не было.
+      if (switched) {
+        await writeAudit({
+          actorUserId: actor,
+          action: 'vehicle_type.linear',
+          entityType: 'vehicle_type',
+          entityId: id,
+          metadata: {
+            code: switched.code,
+            oldIsLinear: switched.oldIsLinear,
+            newIsLinear: next,
+            frozenNow: switched.nums.length,
+            frozenNums: switched.nums,
+          },
+        });
+      }
+
+      const type = (await getDtoById(id))!;
+      return {
+        type,
+        frozenNow: switched?.nums.length ?? 0,
+        frozenNums: switched?.nums ?? [],
+        // Снимков у типа всего, включая поставленные прежними переключениями: с `frozenNow` их
+        // путать нельзя — то считает только новых, это всех, кто ещё дорабатывает по своему.
+        frozenTotal: type.frozenRequests,
+      };
     },
   );
 

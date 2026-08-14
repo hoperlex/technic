@@ -18,6 +18,7 @@ import { EditOutlined, PlusOutlined, SettingOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   DEFAULT_PAGE_SIZE,
+  formatVehicleRequestNumber,
   FREIGHT_VEHICLE_KIND_CODE,
   isPassengerTypeForm,
   LINEAR_VEHICLE_TYPE_HINT,
@@ -27,6 +28,8 @@ import {
   type UpdateVehicleTypeInput,
   type VehicleClassificationDto,
   type VehicleTypeDto,
+  type VehicleTypeLinearSwitchPreviewDto,
+  type VehicleTypeLinearSwitchResultDto,
 } from '@technic/contracts';
 import {
   vehicleCategoriesApi,
@@ -34,12 +37,14 @@ import {
   vehicleKindsApi,
   vehicleTypesApi,
 } from '../../api/resources';
+import { isApiError } from '@shared/api';
 import { AutoSelect } from '@shared/ui';
 import { DataTable, type CardConfig, type TableChange } from '@shared/ui';
 import { FormModal } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
 import { actionsColumn, textColumn } from '@shared/ui';
+import { formatDateOnly } from '../../utils/date';
 import { errorMessage } from '../../utils/format';
 import { VehicleTypeCardDrawer } from './VehicleTypeCardDrawer';
 
@@ -69,6 +74,31 @@ interface VtFormValues {
 }
 
 const CODE_PATTERN = /^[a-z][a-z0-9_]*$/;
+
+/** Русское склонение счётного слова: 1 заявка, 2 заявки, 5 заявок. */
+function plural(n: number, one: string, few: string, many: string): string {
+  const tail = n % 100;
+  const last = n % 10;
+  if (tail >= 11 && tail <= 14) return many;
+  if (last === 1) return one;
+  if (last >= 2 && last <= 4) return few;
+  return many;
+}
+
+/** «12 заявок» — счётное слово к заявкам собирается в одном месте, а читается в четырёх. */
+const requestsCount = (n: number) => `${n} ${plural(n, 'заявка', 'заявки', 'заявок')}`;
+
+/**
+ * Следствие переключения словами — и обязательно с направлением. Переключают признак **типа**, а
+ * заявки, застигнутые в работе, продолжают идти прежним режимом: не сказать, каким именно, значит
+ * оставить человека гадать, что случится с бумагой по уже работающим заказам.
+ */
+function switchConsequence(next: boolean, count: number): string {
+  const subject = `${requestsCount(count)} ${plural(count, 'продолжит', 'продолжат', 'продолжат')}`;
+  return next
+    ? `${subject} вестись по неделям: ЭСМ-2 портал выписывает по ним сам, дни им не планируются.`
+    : `${subject} вестись по дням: распланированные дни остаются в рейсах, недельные листы им не выписываются.`;
+}
 
 // Справочник классификации ТС. Уровней два — тип (ADR 0005) и категория (ADR 0016), — но
 // показываются они одним списком (ADR 0028): у типа с категориями строками идут категории, сам
@@ -149,34 +179,166 @@ export function VehicleTypesTab() {
     setOpen(true);
   };
 
-  const saveMut = useMutation({
-    mutationFn: (
-      arg: { create: CreateVehicleTypeInput } | { id: string; body: UpdateVehicleTypeInput },
-    ) =>
-      'create' in arg
-        ? vehicleTypesApi.create(arg.create)
-        : vehicleTypesApi.update(arg.id, arg.body),
+  const invalidateTypes = () => {
+    void qc.invalidateQueries({ queryKey: ['vehicle-types'] });
+    // Наименование типа — это и подпись его строк в классификаторе (ADR 0028).
+    void qc.invalidateQueries({ queryKey: ['vehicle-classifications'] });
+  };
+
+  // Заведение типа: признак линейности у нового типа уходит обычным полем — заявок, которых
+  // переключение могло бы застать, у него нет и быть не может.
+  const createMut = useMutation({
+    mutationFn: (body: CreateVehicleTypeInput) => vehicleTypesApi.create(body),
     onSuccess: () => {
       message.success('Сохранено');
-      void qc.invalidateQueries({ queryKey: ['vehicle-types'] });
-      // Наименование типа — это и подпись его строк в классификаторе (ADR 0028).
-      void qc.invalidateQueries({ queryKey: ['vehicle-classifications'] });
+      invalidateTypes();
       setOpen(false);
     },
     onError: (e) => message.error(errorMessage(e)),
   });
 
+  /**
+   * Диалог подтверждения: что именно случится и с какими заявками. Обещание Promise, а не колбэк,
+   * потому что переключение — шаг последовательности «предпросмотр → вопрос → запись», и читать
+   * её надо сверху вниз.
+   */
+  const confirmLinearSwitch = (preview: VehicleTypeLinearSwitchPreviewDto, typeName: string) =>
+    new Promise<boolean>((resolve) => {
+      // Перечень короче счётчика ровно на то, чего этот человек и так не видит в списке заявок:
+      // архив — администраторская область, а чужие площадки закрыты областью видимости. Молчать
+      // об этой разнице нельзя — числа на экране перестали бы сходиться.
+      const hidden = preview.count - preview.archivedCount - preview.requests.length;
+      modal.confirm({
+        title: `Переключить режим заказов типа «${typeName}»?`,
+        width: 560,
+        content: (
+          <Space direction="vertical" size={8} style={{ display: 'flex' }}>
+            <span>{switchConsequence(preview.next, preview.count)}</span>
+            {preview.requests.length > 0 && (
+              <ul style={{ margin: 0, paddingInlineStart: 20 }}>
+                {preview.requests.map((r) => (
+                  <li key={r.num}>
+                    {formatVehicleRequestNumber(r.num)} — {r.objectName},{' '}
+                    {formatDateOnly(r.dateFrom)}
+                    {r.dateTo ? ` — ${formatDateOnly(r.dateTo)}` : ''}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {preview.archivedCount > 0 && (
+              <Typography.Text type="secondary">
+                Ещё {requestsCount(preview.archivedCount)} в архиве.
+              </Typography.Text>
+            )}
+            {hidden > 0 && (
+              <Typography.Text type="secondary">
+                Ещё {requestsCount(hidden)} на площадках, которых вы не ведёте.
+              </Typography.Text>
+            )}
+          </Space>
+        ),
+        okText: 'Переключить',
+        cancelText: 'Отмена',
+        onOk: () => resolve(true),
+        onCancel: () => resolve(false),
+      });
+    });
+
+  /**
+   * Переключение признака своей ручкой: предпросмотр → подтверждение → запись. `null` — человек
+   * отказался, и не записано ничего.
+   */
+  const runLinearSwitch = async (
+    type: VehicleTypeDto,
+    next: boolean,
+  ): Promise<VehicleTypeLinearSwitchResultDto | null> => {
+    for (let attempt = 0; ; attempt++) {
+      const preview = await vehicleTypesApi.linearSwitchPreview(type.id, next);
+      // Пустое множество подтверждать нечего: заявок, которых переключение застигнет, нет.
+      if (preview.count > 0 && !(await confirmLinearSwitch(preview, type.name))) return null;
+      try {
+        return await vehicleTypesApi.switchLinear(type.id, {
+          isLinear: next,
+          ...(preview.count > 0 ? { fingerprint: preview.fingerprint } : {}),
+        });
+      } catch (e) {
+        // Ни 409 («состав заявок изменился»), ни 422 («нужно подтверждение») ничего не записали:
+        // портал перечитывает предпросмотр и спрашивает заново — с новым перечнем перед глазами.
+        // Второй такой отказ уходит человеку: справочник правят наперегонки, и решать это циклу
+        // не по чину.
+        const again = isApiError(e) && (e.status === 409 || e.status === 422);
+        if (!again || attempt > 0) throw e;
+        // Отказ сервера, а не пустое поле формы (ADR 0094): тост отвечает на ответ ручки, а
+        // следом человек увидит перечитанный перечень.
+        message.error(e.message);
+      }
+    }
+  };
+
+  /** Идёт ли сохранение правки: предпросмотр, переключение и PATCH — один шаг для человека. */
+  const [saving, setSaving] = useState(false);
+
+  /**
+   * Правка типа — до двух запросов, и порядок между ними не вкусовой: сначала переключение
+   * признака своей ручкой, потом `PATCH` остальных полей. Обратный порядок сохранил бы
+   * описательные правки и потерял бы главное на отказе подтверждения.
+   */
+  const submitEdit = async (v: VtFormValues, type: VehicleTypeDto) => {
+    // Признак линейности в теле `PATCH` не едет вовсе — этой ручкой он больше не правится.
+    const body: UpdateVehicleTypeInput = {
+      name: v.name,
+      description: v.description ?? '',
+      sortOrder: v.sortOrder,
+      isActive: v.isActive,
+      waybillFormCode: typeWaybillFormOf(v.isPassenger ?? false),
+    };
+    const nextLinear = v.isLinear ?? false;
+    setSaving(true);
+    let switched = false;
+    try {
+      if (nextLinear !== type.isLinear) {
+        const result = await runLinearSwitch(type, nextLinear);
+        if (!result) return;
+        switched = true;
+        // Тип в форме приводится к справочнику сразу: повтор сохранения после неудачного `PATCH`
+        // не должен звать переключение по второму разу.
+        setRecord(result.type);
+        if (result.frozenNow > 0) {
+          // Номера — из ответа ручки, а не из показанного предпросмотра: между ними множество
+          // могло измениться, и заморожены ровно те, кого назвала запись. Длинный список режется:
+          // счётчик полон, а сорок номеров в тосте не читает никто — они лежат в журнале.
+          const nums = result.frozenNums.slice(0, 10).map(formatVehicleRequestNumber).join(', ');
+          const rest = result.frozenNums.length - 10;
+          message.info(
+            `Режим переключён. На прежнем режиме ${requestsCount(result.frozenNow)}: ` +
+              `${nums}${rest > 0 ? ` и ещё ${rest}` : ''}`,
+          );
+        }
+      }
+      await vehicleTypesApi.update(type.id, body);
+      message.success('Сохранено');
+      setOpen(false);
+    } catch (e) {
+      // Переключение прошло, а правка остальных полей — нет: «не сохранено» здесь было бы
+      // неправдой. Форма остаётся открытой с несохранёнными полями, а чекбокс уже совпадает со
+      // справочником — повторное нажатие допишет то, что не доехало, и второго переключения не
+      // случится.
+      message.error(
+        switched
+          ? `Режим переключён, остальные поля не сохранены: ${errorMessage(e)}. Повторите сохранение.`
+          : errorMessage(e),
+      );
+    } finally {
+      // Тип перечитывается в любом исходе: после переключения он другой, а лишний запрос дешевле
+      // формы, спорящей со справочником.
+      invalidateTypes();
+      setSaving(false);
+    }
+  };
+
   const submit = (v: VtFormValues) => {
     if (isEdit) {
-      const body: UpdateVehicleTypeInput = {
-        name: v.name,
-        description: v.description ?? '',
-        sortOrder: v.sortOrder,
-        isActive: v.isActive,
-        waybillFormCode: typeWaybillFormOf(v.isPassenger ?? false),
-        isLinear: v.isLinear ?? false,
-      };
-      saveMut.mutate({ id: record!.id, body });
+      void submitEdit(v, record!);
       return;
     }
     const create: CreateVehicleTypeInput = {
@@ -189,7 +351,7 @@ export function VehicleTypesTab() {
       waybillFormCode: typeWaybillFormOf(v.isPassenger ?? false),
       isLinear: v.isLinear ?? false,
     };
-    saveMut.mutate({ create });
+    createMut.mutate(create);
   };
 
   // Активация/деактивация — инлайн; деактивация с подтверждением. Строка классификатора может
@@ -277,14 +439,30 @@ export function VehicleTypesTab() {
     {
       key: 'isLinear',
       title: 'Линейная',
-      width: 120,
+      width: 160,
       sorter: false,
       // Признак живёт у типа, а строкой списка бывает и категория (ADR 0028) — берём его из
       // самого типа и показываем у всех его строк: режим заказа у категории тот же, что у типа.
-      // Пометкой, а не переключателем: правится он в форме, где рядом стоит объяснение, а
-      // переключить его молча из списка нельзя — у типа с заявками в работе сервер откажет.
-      render: (_v, r) =>
-        typeById.get(r.vehicleTypeId)?.isLinear ? <Tag color="blue">по дням</Tag> : '—',
+      // Пометкой, а не переключателем: правится он в форме, где рядом стоит объяснение и где
+      // портал называет заявки, которые останутся на прежнем режиме.
+      render: (_v, r) => {
+        const type = typeById.get(r.vehicleTypeId);
+        return (
+          <Space direction="vertical" size={2}>
+            {type?.isLinear ? <Tag color="blue">по дням</Tag> : <span>—</span>}
+            {/* Заявки, застигнутые переключением: они дорабатывают тем режимом, которым их
+                завели, и колонка отвечает на вопрос «почему две заявки одного типа ведут себя
+                по-разному». Ноль не показывается — так у подавляющего большинства типов. */}
+            {type && type.frozenRequests > 0 ? (
+              <Tooltip title="Эти заявки застало переключение признака: до закрытия они идут прежним режимом">
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  {type.frozenRequests} на прежнем режиме
+                </Typography.Text>
+              </Tooltip>
+            ) : null}
+          </Space>
+        );
+      },
     },
     {
       key: 'isActive',
@@ -424,7 +602,15 @@ export function VehicleTypesTab() {
         {typeById.get(r.vehicleTypeId)?.isLinear ? <Tag color="blue">линейная</Tag> : null}
       </Space>
     ),
-    lines: [(r) => (r.specCount > 0 ? `ТТХ: ${r.specCount}` : 'ТТХ не заведены')],
+    lines: [
+      (r) => (r.specCount > 0 ? `ТТХ: ${r.specCount}` : 'ТТХ не заведены'),
+      // Заявки, застигнутые переключением признака: строкой, а не тегом — на карточке телефона
+      // это объяснение, а не пометка. Ноль строки не занимает.
+      (r) => {
+        const frozen = typeById.get(r.vehicleTypeId)?.frozenRequests ?? 0;
+        return frozen > 0 ? `${frozen} на прежнем режиме` : '';
+      },
+    ],
     // Касание открывает карточку типа — там ТТХ, категории и правка наименования.
     onOpen: (r) => {
       const type = typeById.get(r.vehicleTypeId);
@@ -506,7 +692,7 @@ export function VehicleTypesTab() {
         open={open}
         onCancel={() => setOpen(false)}
         onSubmit={() => form.submit()}
-        confirmLoading={saveMut.isPending}
+        confirmLoading={createMut.isPending || saving}
         width={520}
       >
         <Form form={form} layout="vertical" onFinish={submit}>

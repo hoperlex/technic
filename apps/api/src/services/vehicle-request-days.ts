@@ -27,6 +27,7 @@ import {
   vehicles,
   vehicleTypes,
 } from '../db/schema';
+import { requestIsLinearSql } from '../db/linear-mode';
 import { writeAudit } from '../lib/audit';
 import { err } from '../lib/errors';
 import { pgErrorOf } from '../lib/pg-error';
@@ -77,9 +78,9 @@ export interface LinearRequestState extends LinearDaySubject {
 /**
  * Состояние заявки, по которому считаются дни.
  *
- * Признак линейности читается живым join'ом **заказанного** типа (ADR 0100 §1): снимка в заявке
- * нет намеренно — заказ решает, как заявка ведётся, ещё до того, как под неё нашли единицу, и
- * менять этот ответ подбором машины нельзя. Тем же join'ом его читает сверка листов ЭСМ-2.
+ * Признак линейности читается у **заказанного** типа (ADR 0100 §1): заказ решает, как заявка
+ * ведётся, ещё до того, как под неё нашли единицу, и менять этот ответ подбором машины нельзя.
+ * Тем же выражением его читает сверка листов ЭСМ-2.
  */
 export async function loadLinearRequest(
   reader: Reader,
@@ -92,7 +93,8 @@ export async function loadLinearRequest(
       requestType: vehicleRequests.requestType,
       status: vehicleRequests.status,
       deletedAt: vehicleRequests.deletedAt,
-      isLinear: vehicleTypes.isLinear,
+      // Режим заявки, а не признак справочника: заявку могло застать переключение (миграция 0137).
+      isLinear: requestIsLinearSql(vehicleRequests.isLinearFrozen, vehicleTypes.isLinear),
       dateFrom: specialEquipmentRequestDetails.dateFrom,
       dateTo: specialEquipmentRequestDetails.dateTo,
       vehicleId: vehicleRequestAssignments.vehicleId,

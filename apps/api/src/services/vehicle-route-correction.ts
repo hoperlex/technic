@@ -25,6 +25,7 @@ import { selectDrivers } from './drivers';
 import { issueWaybillForRoute, routeWaybillFormFor } from './waybill-issue';
 import { type RouteRow, routeWaybill, vehicleClassOf } from './vehicle-routes';
 import { cancelWaybillForCorrection } from './waybill-correction';
+import { requestIdsOfRouteWaybills } from './waybill-locks';
 
 /**
  * Коррекция рейса задним числом (ADR 0101 п. 2, Р2) — то, что она делает с данными.
@@ -132,10 +133,17 @@ export async function loadRouteComposition(
  * заявки — состав лежит в одной таблице, а статусы и назначения в других, и без `FOR UPDATE`
  * соседний запрос успевает закрыть заявку между проверкой состава и выпиской нового листа.
  *
+ * Тем же проходом берутся заявки листов рейса (Р11): коррекция кончается аннулированием
+ * действующего номера и выпиской нового, а сверка ЭСМ-2 соседней транзакции уже могла пообещать
+ * человеку набор листов по этим заявкам. Состава для этого мало — заявку, ушедшую из рейса
+ * переносом, действующий лист всё ещё называет в задании, и перечитает сверка именно его.
+ *
  * Порядок блокировок фиксирован и одинаков у всех операций модуля: сначала рейсы (`lockRoute`,
- * `lockRoutePair`), затем заявки по возрастанию `id`. Позиция талона порядком блокировок быть не
- * может: у переноса (Р30) заявки приходят из двух рейсов, и две встречные коррекции, взявшие их
- * «каждая в своём порядке талонов», встали бы в клинч.
+ * `lockRoutePair`), затем заявки по возрастанию `id` — **все разом**. Вторым вызовом
+ * (`lockRequestsOfWaybill` вслед за составом) заявки листов брать нельзя: два отсортированных
+ * запроса подряд дают не общий порядок, а два своих. Позиция талона порядком блокировок быть не
+ * может по той же причине: у переноса (Р30) заявки приходят из двух рейсов, и две встречные
+ * коррекции, взявшие их «каждая в своём порядке талонов», встали бы в клинч.
  *
  * Возвращается состав в порядке талонов — читать его в порядке блокировок незачем, а собирать
  * задание листа приходится строками бланка.
@@ -145,11 +153,11 @@ export async function lockRouteComposition(
   routeId: string,
 ): Promise<RouteCompositionRow[]> {
   const planned = await loadRouteComposition(tx, routeId);
-  if (planned.length === 0) return planned;
-  const locked = await lockRequestRows(
-    tx,
-    planned.map((row) => row.requestId),
-  );
+  const sheets = await requestIdsOfRouteWaybills(tx, [routeId]);
+  // Состав пуст, а лист у рейса есть: коррекция опустевшего рейса списывает его номер, и заявки
+  // того листа блокировать всё равно надо.
+  if (planned.length === 0 && sheets.length === 0) return planned;
+  const locked = await lockRequestRows(tx, [...planned.map((row) => row.requestId), ...sheets]);
   /*
    * Статус перечитывается уже под блокировкой: между первым чтением состава и `FOR UPDATE` заявку
    * успевают закрыть, и решать «весь ли состав в работе» (Р3) по добытому до блокировки значению
@@ -190,6 +198,9 @@ export async function lockRequestRows(
  * строки в противоположных порядках и встали в клинч. Общий проход по объединённому списку
  * возвращает единственный порядок, одинаковый для обеих сторон.
  *
+ * Заявки листов обоих рейсов (Р11) идут этим же списком и по той же причине: перенос списывает оба
+ * действующих номера, а отдельным проходом они снова легли бы в свой порядок.
+ *
  * Рейсы к этому моменту уже заблокированы (`lockRoutePair`): порядок «сначала рейсы, потом заявки»
  * один на весь модуль.
  */
@@ -200,10 +211,11 @@ export async function lockCompositionPair(
 ): Promise<{ target: RouteCompositionRow[]; source: RouteCompositionRow[] }> {
   const target = await loadRouteComposition(tx, targetId);
   const source = await loadRouteComposition(tx, sourceId);
-  const locked = await lockRequestRows(
-    tx,
-    [...target, ...source].map((row) => row.requestId),
-  );
+  const sheets = await requestIdsOfRouteWaybills(tx, [targetId, sourceId]);
+  const locked = await lockRequestRows(tx, [
+    ...[...target, ...source].map((row) => row.requestId),
+    ...sheets,
+  ]);
   // Статусы перечитываются уже под блокировкой: между чтением состава и `FOR UPDATE` заявку
   // успевают закрыть, и решать «весь ли состав в работе» (Р3) по добытому раньше значению означало
   // бы проверять прошлое.

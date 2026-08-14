@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
+  App,
+  Button,
   Checkbox,
   DatePicker,
   Form,
@@ -12,7 +14,7 @@ import {
   Typography,
 } from 'antd';
 import dayjs, { type Dayjs } from 'dayjs';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import {
   type AssignVehicleBody,
   assignmentRateLabel,
@@ -35,6 +37,7 @@ import {
   vehicleLabel,
   vehicleOwnershipLabels,
   type VehicleRequestDto,
+  type VehicleRequestStatusPreviewDto,
   type VehicleSubstitution,
   vehicleSubstitutionGroup,
   vehicleSubstitutionGroupLabels,
@@ -64,7 +67,7 @@ import { useIsMobile } from '@shared/lib';
 import { useObjectScope } from '../../hooks/useObjectScope';
 import { AddressField } from '@features/address-input';
 
-import { formatMoney } from '../../utils/format';
+import { errorMessage, formatMoney } from '../../utils/format';
 import { formatDateOnly } from './shared';
 import { MOSCOW_TZ } from '@shared/config';
 
@@ -116,14 +119,20 @@ interface Props {
   onCancel: () => void;
   /**
    * `schedule: null` — срок не спрашивали (режим `reassign`); `correction` заполнен там, где
-   * машину меняют задним числом (ADR 0101, Р8) — с причиной и перечнем листов к перевыписке.
+   * машину меняют задним числом (ADR 0101, Р8) — с причиной и перечнем листов к перевыписке;
+   * `previewFingerprint` приезжает только с отката «Выполнена» → «В работе» — им боевая ручка
+   * сверяет, что показанные вторым шагом последствия ещё верны (§5.4 плана).
    */
   onSubmit: (v: {
     assignment: AssignVehicleBody;
     schedule: ConfirmScheduleBody | null;
     correction?: CorrectAssignmentBody;
+    previewFingerprint?: string;
   }) => void;
 }
+
+/** Что окно отправляет наружу: собирается один раз и уходит сразу либо после подтверждения. */
+type SubmitPayload = Parameters<Props['onSubmit']>[0];
 
 /** Значение селекта «завести новый рейс»: пустая строка неотличима от «ещё не выбрали». */
 const NEW_ROUTE = 'new';
@@ -190,6 +199,67 @@ function vehicleOptionLabel(v: VehicleDto, substitution: VehicleSubstitution): s
   return extra.length > 0 ? `${title} — ${extra.join(' · ')}` : title;
 }
 
+/**
+ * Второй шаг окна на откате «Выполнена» → «В работе»: что случится после возврата. Всё посчитано
+ * сервером той же сверкой, которая потом отработает (§5.4 плана), — «недель срока минус
+ * выписанные» обещало бы листы за прошедшие недели, которых сверка не выпишет.
+ *
+ * О прошлом здесь не сказано ни слова, и это не забывчивость: снимок режима снимается закрытием, а
+ * линейный заказ могли закрыть, не распланировав ни одного дня, — тогда угадать, как он вёлся,
+ * нечем. Портал говорит только то, что знает точно: чем заказ пойдёт дальше, что сделает сверка
+ * ЭСМ-2 и как будет считаться занятость машины.
+ */
+function RollbackPreview({ preview }: { preview: VehicleRequestStatusPreviewDto }) {
+  const { issue, cancel } = preview.esm2;
+  return (
+    <Space direction="vertical" size={12} style={{ display: 'flex' }}>
+      <Alert
+        type="info"
+        showIcon
+        message={preview.mode === 'daily' ? 'Заказ пойдёт по дням' : 'Заказ пойдёт по неделям'}
+        description={
+          preview.mode === 'daily'
+            ? 'Работа планируется днями: на каждый день заводится рейс и печатается 4-П, а недельные листы ЭСМ-2 портал сам не выписывает — их просят по требованию.'
+            : 'Работа ведётся неделями: на каждую неделю срока портал выписывает свой ЭСМ-2, дни заявке не планируются.'
+        }
+      />
+      <div>
+        <Typography.Text strong>Путевые листы ЭСМ-2</Typography.Text>
+        {issue.length === 0 && cancel.length === 0 ? (
+          <div>
+            <Typography.Text type="secondary">
+              Останутся как есть: выписывать и аннулировать нечего.
+            </Typography.Text>
+          </div>
+        ) : (
+          <ul style={{ margin: '4px 0 0', paddingInlineStart: 20 }}>
+            {issue.map((p) => (
+              <li key={`issue-${p.from}`}>
+                Выпишется лист за {formatDateOnly(p.from)} — {formatDateOnly(p.to)}
+              </li>
+            ))}
+            {cancel.map((w) => (
+              <li key={w.id}>
+                Аннулируется {w.number} ({formatDateOnly(w.from)} — {formatDateOnly(w.to)})
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+      <div>
+        <Typography.Text strong>Занятость машины</Typography.Text>
+        <div>
+          <Typography.Text type="secondary">
+            {preview.busy === 'term'
+              ? 'Машина будет занята весь срок заявки — в гараже она встанет занятой с первого дня по последний.'
+              : 'Машина будет занята только в распланированные дни — в остальные её можно поставить на другой заказ.'}
+          </Typography.Text>
+        </div>
+      </div>
+    </Space>
+  );
+}
+
 export function VehicleAssignModal({
   request,
   mode = 'confirm',
@@ -197,6 +267,7 @@ export function VehicleAssignModal({
   onCancel,
   onSubmit,
 }: Props) {
+  const { message } = App.useApp();
   const isMobile = useIsMobile();
   const [form] = Form.useForm<FormValues>();
   const blockers = useFormBlockers(form);
@@ -312,6 +383,45 @@ export function VehicleAssignModal({
     // Зависимость — идентификатор заявки: перерисовка той же заявки (инвалидация списка после
     // соседнего действия) приходит новым объектом и стёрла бы уже выбранное.
   }, [targetId]);
+
+  // ── Откат «Выполнена» → «В работе»: второй шаг с последствиями (§5.4 плана) ──
+
+  /**
+   * Единственный переход, на котором окно спрашивает сервер, прежде чем отправить статус.
+   * Заморозка режима снимается закрытием, и вернувшаяся в работу заявка пойдёт по актуальному
+   * режиму справочника, каким бы он ни стал: что случится с бумагой и занятостью, знает только
+   * сервер — и считает он это той же сверкой, которая потом отработает.
+   *
+   * Машину и машиниста портал узнаёт не раньше этого окна, а окно до сих пор било статусной
+   * мутацией в тот же миг: момента, в который сервер мог бы что-то посоветовать, между ними не
+   * было вовсе. Прочие переходы идут как шли.
+   */
+  const rollbackToWork =
+    !reassign && request?.requestType === 'special_equipment' && request.status === 'done';
+
+  /** Показанные последствия и тело, которое их получило: подтверждение отправляет именно его. */
+  const [step, setStep] = useState<{
+    preview: VehicleRequestStatusPreviewDto;
+    payload: SubmitPayload;
+  } | null>(null);
+  useEffect(() => setStep(null), [targetId]);
+
+  const previewMut = useMutation({
+    // Предпросмотр зовётся тем же телом, каким потом уедет статус: план считается по машине,
+    // машинисту и сроку из этой формы, и вторая сборка тела разошлась бы с первой — а вместе с
+    // ней разошёлся бы и отпечаток, которым сервер сверяет обещанное.
+    mutationFn: async (payload: SubmitPayload) => ({
+      payload,
+      preview: await vehicleRequestsApi.statusPreview(request!.id, {
+        status: 'confirmed',
+        version: request!.version,
+        assignment: payload.assignment,
+        schedule: payload.schedule ?? undefined,
+      }),
+    }),
+    onSuccess: (data) => setStep(data),
+    onError: (e) => message.error(errorMessage(e)),
+  });
 
   // ── Коррекция задним числом: смена машины у прошедших дней (ADR 0101, Р8) ──
 
@@ -957,7 +1067,7 @@ export function VehicleAssignModal({
         'Выберите водителя — на рейс выписывается путевой лист',
     });
     if (blocked || !v.vehicleId) return;
-    onSubmit({
+    const payload: SubmitPayload = {
       assignment: {
         vehicleId: v.vehicleId,
         pricePerHour: v.pricePerHour ?? null,
@@ -1015,7 +1125,14 @@ export function VehicleAssignModal({
             },
           }
         : {}),
-    });
+    };
+    // На откате «Выполнена» → «В работе» между «нажали» и «отправили» встаёт вопрос сервера: что
+    // именно случится с бумагой и занятостью. Прочие переходы уходят сразу, как уходили.
+    if (rollbackToWork) {
+      previewMut.mutate(payload);
+      return;
+    }
+    onSubmit(payload);
   };
 
   // Пусто — значит пусто в парке целиком: список не сужен ни типом, ни видом (ADR 0064), и
@@ -1028,653 +1145,672 @@ export function VehicleAssignModal({
         ? 'У этого арендодателя нет активных предложений'
         : 'Активных предложений аренды нет';
 
+  /** Заголовок шага: на втором окно говорит уже не про подбор, а про последствия возврата. */
+  const stepTitle = step ? 'Последствия возврата' : reassign ? 'Смена техники' : 'В работу';
+
   return (
     <FormModal
-      title={
-        request
-          ? `${reassign ? 'Смена техники' : 'В работу'}: заявка ${request.displayNumber}`
-          : reassign
-            ? 'Смена техники'
-            : 'В работу'
-      }
+      title={request ? `${stepTitle}: заявка ${request.displayNumber}` : stepTitle}
       open={!!request}
       onCancel={onCancel}
-      onSubmit={() => form.submit()}
-      confirmLoading={confirmLoading}
-      okText={reassign ? 'Сменить технику' : 'Взять в работу'}
+      onSubmit={() =>
+        step
+          ? // Подтверждение отправляет то самое тело, которому сервер и посчитал последствия, —
+            // вместе с отпечатком, которым он сверит, что обещанное ещё верно.
+            onSubmit({ ...step.payload, previewFingerprint: step.preview.fingerprint })
+          : form.submit()
+      }
+      confirmLoading={confirmLoading || previewMut.isPending}
+      okText={step ? 'Вернуть в работу' : reassign ? 'Сменить технику' : 'Взять в работу'}
+      // «Назад» уводит от отправки — потому и стоит по другую сторону от основного действия.
+      footerExtra={step ? <Button onClick={() => setStep(null)}>Назад</Button> : undefined}
       width={880}
     >
+      {request && step && <RollbackPreview preview={step.preview} />}
       {request && (
-        // Поля парами (FormGrid): окно спрашивает срок, технику, ставки и графы путевого листа —
-        // в одну колонку половина из них уходила под прокрутку. На телефоне колонка одна.
-        <Form form={form} layout="vertical" onFinish={submit} {...blockers.formProps}>
-          <FormGrid>
-            <FormGrid.Full>
-              <Typography.Paragraph type="secondary" style={{ marginBottom: 16 }}>
-                {requestCustomerName(request)} · заказано «{orderedLabel}»
-              </Typography.Paragraph>
-            </FormGrid.Full>
-
-            {/* Чем заявку выполняют сейчас — строкой над выбором: смена техники начинается с
-              вопроса «на что меняем», и ответ на «с чего» должен стоять перед глазами. При
-              переводе в работу этой строки нет: менять там нечего. */}
-            {reassign && request.assignment && (
+        // Форма на втором шаге не размонтируется, а прячется: «Назад» обязан вернуть окно
+        // заполненным, а половина его полей собрана из ответов сервера — повторный их сбор стоил
+        // бы человеку уже сделанного выбора.
+        <div style={{ display: step ? 'none' : undefined }}>
+          {/* Поля парами (FormGrid): окно спрашивает срок, технику, ставки и графы путевого
+            листа — в одну колонку половина из них уходила под прокрутку. На телефоне колонка
+            одна. */}
+          <Form form={form} layout="vertical" onFinish={submit} {...blockers.formProps}>
+            <FormGrid>
               <FormGrid.Full>
-                <Typography.Paragraph style={{ marginBottom: 16 }}>
-                  Сейчас назначена: {assignmentTitle(request.assignment)}
-                  {assignmentRateLabel(request.assignment)
-                    ? ` · ${assignmentRateLabel(request.assignment)}`
-                    : ''}
+                <Typography.Paragraph type="secondary" style={{ marginBottom: 16 }}>
+                  {requestCustomerName(request)} · заказано «{orderedLabel}»
                 </Typography.Paragraph>
               </FormGrid.Full>
-            )}
 
-            {/* Коррекция задним числом (ADR 0101, Р8). Стоит первой в окне смены техники, потому
+              {/* Чем заявку выполняют сейчас — строкой над выбором: смена техники начинается с
+              вопроса «на что меняем», и ответ на «с чего» должен стоять перед глазами. При
+              переводе в работу этой строки нет: менять там нечего. */}
+              {reassign && request.assignment && (
+                <FormGrid.Full>
+                  <Typography.Paragraph style={{ marginBottom: 16 }}>
+                    Сейчас назначена: {assignmentTitle(request.assignment)}
+                    {assignmentRateLabel(request.assignment)
+                      ? ` · ${assignmentRateLabel(request.assignment)}`
+                      : ''}
+                  </Typography.Paragraph>
+                </FormGrid.Full>
+              )}
+
+              {/* Коррекция задним числом (ADR 0101, Р8). Стоит первой в окне смены техники, потому
               что меняет смысл всего остального: обычная смена говорит «дальше поедет эта машина»,
               коррекция — «этой машины здесь и не было». Без права `waybills.correct` блока нет
               вовсе: предлагать действие, которым ручка ответит 403, нельзя. */}
-            {canCorrect && (
-              <FormGrid.Full>
-                <Form.Item name="correctionEnabled" valuePropName="checked" noStyle>
-                  <Checkbox>Исправить задним числом: работала другая машина</Checkbox>
-                </Form.Item>
-              </FormGrid.Full>
-            )}
-            {correctionEnabled && (
-              <>
+              {canCorrect && (
                 <FormGrid.Full>
-                  <Alert
-                    type="warning"
-                    showIcon
-                    style={{ marginBottom: 16 }}
-                    message="Правка прошедших дней"
-                    description={
-                      <>
-                        Подписи объекта под днями работы будут сняты — часы останутся, подтвердить
-                        их придётся заново. {WAYBILL_CORRECTION_CONFIRM}
-                      </>
-                    }
-                  />
-                </FormGrid.Full>
-                <FormGrid.Full>
-                  <Form.Item
-                    name="correctionReason"
-                    label="Причина коррекции"
-                    extra="Останется в журнале коррекций и в самих листах — и в списанном, и в выписанном взамен"
-                  >
-                    <Input.TextArea
-                      rows={2}
-                      maxLength={2000}
-                      placeholder="Что произошло на самом деле"
-                    />
+                  <Form.Item name="correctionEnabled" valuePropName="checked" noStyle>
+                    <Checkbox>Исправить задним числом: работала другая машина</Checkbox>
                   </Form.Item>
                 </FormGrid.Full>
-                {/* Листы отработанных недель — поимённо (Р11): у заявки в одной неделе бывают
+              )}
+              {correctionEnabled && (
+                <>
+                  <FormGrid.Full>
+                    <Alert
+                      type="warning"
+                      showIcon
+                      style={{ marginBottom: 16 }}
+                      message="Правка прошедших дней"
+                      description={
+                        <>
+                          Подписи объекта под днями работы будут сняты — часы останутся, подтвердить
+                          их придётся заново. {WAYBILL_CORRECTION_CONFIRM}
+                        </>
+                      }
+                    />
+                  </FormGrid.Full>
+                  <FormGrid.Full>
+                    <Form.Item
+                      name="correctionReason"
+                      label="Причина коррекции"
+                      extra="Останется в журнале коррекций и в самих листах — и в списанном, и в выписанном взамен"
+                    >
+                      <Input.TextArea
+                        rows={2}
+                        maxLength={2000}
+                        placeholder="Что произошло на самом деле"
+                      />
+                    </Form.Item>
+                  </FormGrid.Full>
+                  {/* Листы отработанных недель — поимённо (Р11): у заявки в одной неделе бывают
                   бланки двух машин, и «все прошлые» сожгли бы не тот номер. Текущую неделю сверка
                   переоформит сама — её здесь нет. */}
-                <FormGrid.Full>
-                  <Form.Item
-                    name="unlockWaybillIds"
-                    label="Листы ЭСМ-2 к перевыписке"
-                    extra={
-                      correctableSheets.length > 0
-                        ? 'Отмеченные номера будут аннулированы, взамен выпишутся новые — следующими по серии'
-                        : 'Отработанных недель с действующим листом у заявки нет: переписывать нечего'
-                    }
-                  >
-                    <Checkbox.Group
-                      style={{ display: 'flex', flexDirection: 'column', gap: 4 }}
-                      options={correctableSheets.map((w) => ({
-                        value: w.id,
-                        label: `№ ${w.number} · ${formatDateOnly(w.periodFrom!)} – ${formatDateOnly(w.periodTo!)}`,
-                        // Неделя, где у заявки два действующих листа, сверкой не переоформляется
-                        // (ADR 0100 решение 7): такой бланк списывают номером и выписывают заново
-                        // по требованию, где машина называется явно.
-                        disabled: (sharedWeeks.get(weekStartKey(w.periodFrom!)) ?? 0) > 1,
-                      }))}
-                    />
-                  </Form.Item>
-                </FormGrid.Full>
-              </>
-            )}
+                  <FormGrid.Full>
+                    <Form.Item
+                      name="unlockWaybillIds"
+                      label="Листы ЭСМ-2 к перевыписке"
+                      extra={
+                        correctableSheets.length > 0
+                          ? 'Отмеченные номера будут аннулированы, взамен выпишутся новые — следующими по серии'
+                          : 'Отработанных недель с действующим листом у заявки нет: переписывать нечего'
+                      }
+                    >
+                      <Checkbox.Group
+                        style={{ display: 'flex', flexDirection: 'column', gap: 4 }}
+                        options={correctableSheets.map((w) => ({
+                          value: w.id,
+                          label: `№ ${w.number} · ${formatDateOnly(w.periodFrom!)} – ${formatDateOnly(w.periodTo!)}`,
+                          // Неделя, где у заявки два действующих листа, сверкой не переоформляется
+                          // (ADR 0100 решение 7): такой бланк списывают номером и выписывают заново
+                          // по требованию, где машина называется явно.
+                          disabled: (sharedWeeks.get(weekStartKey(w.periodFrom!)) ?? 0) > 1,
+                        }))}
+                      />
+                    </Form.Item>
+                  </FormGrid.Full>
+                </>
+              )}
 
-            {/* Фактический срок: подставлен заказанным, под полями — что просили изначально.
+              {/* Фактический срок: подставлен заказанным, под полями — что просили изначально.
               Спрашивается первым, потому что от даты рейса зависит отбор водителей ниже. При смене
               техники срок не спрашивают — он согласован при переводе в работу (ADR 0048). */}
-            {reassign ? null : request.requestType === 'special_equipment' ? (
-              <>
-                <Form.Item
-                  name="dateFrom"
-                  label="Фактическая дата начала"
-                  rules={[{ required: true, message: 'Укажите дату начала' }]}
-                  extra={`Заказано: ${formatDateOnly(request.dateFrom)}`}
-                >
-                  <DatePicker
-                    format="DD.MM.YYYY"
-                    style={{ width: '100%' }}
-                    inputReadOnly={isMobile}
-                  />
-                </Form.Item>
-                <Form.Item
-                  name="dateTo"
-                  label="Фактическая дата окончания"
-                  extra={
-                    request.dateTo
-                      ? `Заказано: ${formatDateOnly(request.dateTo)}`
-                      : 'Заказан один день'
-                  }
-                >
-                  <DatePicker
-                    format="DD.MM.YYYY"
-                    style={{ width: '100%' }}
-                    inputReadOnly={isMobile}
-                  />
-                </Form.Item>
-                {/* Машинист: на него выписываются недельные листы ЭСМ-2, и без него бланк
-                  недействителен. Список — весь справочник водителей: граф СНИЛС и удостоверения
-                  в этом бланке нет, и отбирать по ним некого (ADR 0055). */}
-                {needsMachinist && (
+              {reassign ? null : request.requestType === 'special_equipment' ? (
+                <>
                   <Form.Item
-                    name="machinistId"
-                    label="Машинист"
-                    rules={
-                      machinistRequired ? [{ required: true, message: 'Выберите машиниста' }] : []
-                    }
-                    extra={
-                      isLinear
-                        ? 'Необязательно: листов ЭСМ-2 перевод в работу не выписывает'
-                        : esm2Weeks.length > 0
-                          ? `Будет выписано листов ЭСМ-2: ${esm2Weeks.length} — ${esm2Weeks
-                              .map(
-                                (w) =>
-                                  `${formatDateOnly(w.from).slice(0, 5)}–${formatDateOnly(w.to).slice(0, 5)}`,
-                              )
-                              .join(', ')}`
-                          : 'На каждую неделю срока работ выписывается свой путевой лист'
-                    }
+                    name="dateFrom"
+                    label="Фактическая дата начала"
+                    rules={[{ required: true, message: 'Укажите дату начала' }]}
+                    extra={`Заказано: ${formatDateOnly(request.dateFrom)}`}
                   >
-                    {/* Человека за технику портал не назначает сам: даже когда в справочнике один
-                      водитель, за руль его сажает диспетчер. Подсказки в строках списка остаются —
-                      они помогают выбрать, а не выбирают. */}
-                    <AutoSelect
-                      autoSelectSole={false}
-                      options={machinistOptions}
-                      loading={machinistsLoading}
-                      placeholder="Кто сядет за технику"
-                      notFoundContent="В справочнике нет действующих водителей"
+                    <DatePicker
+                      format="DD.MM.YYYY"
+                      style={{ width: '100%' }}
+                      inputReadOnly={isMobile}
                     />
                   </Form.Item>
-                )}
+                  <Form.Item
+                    name="dateTo"
+                    label="Фактическая дата окончания"
+                    extra={
+                      request.dateTo
+                        ? `Заказано: ${formatDateOnly(request.dateTo)}`
+                        : 'Заказан один день'
+                    }
+                  >
+                    <DatePicker
+                      format="DD.MM.YYYY"
+                      style={{ width: '100%' }}
+                      inputReadOnly={isMobile}
+                    />
+                  </Form.Item>
+                  {/* Машинист: на него выписываются недельные листы ЭСМ-2, и без него бланк
+                  недействителен. Список — весь справочник водителей: граф СНИЛС и удостоверения
+                  в этом бланке нет, и отбирать по ним некого (ADR 0055). */}
+                  {needsMachinist && (
+                    <Form.Item
+                      name="machinistId"
+                      label="Машинист"
+                      rules={
+                        machinistRequired ? [{ required: true, message: 'Выберите машиниста' }] : []
+                      }
+                      extra={
+                        isLinear
+                          ? 'Необязательно: листов ЭСМ-2 перевод в работу не выписывает'
+                          : esm2Weeks.length > 0
+                            ? `Будет выписано листов ЭСМ-2: ${esm2Weeks.length} — ${esm2Weeks
+                                .map(
+                                  (w) =>
+                                    `${formatDateOnly(w.from).slice(0, 5)}–${formatDateOnly(w.to).slice(0, 5)}`,
+                                )
+                                .join(', ')}`
+                            : 'На каждую неделю срока работ выписывается свой путевой лист'
+                      }
+                    >
+                      {/* Человека за технику портал не назначает сам: даже когда в справочнике один
+                      водитель, за руль его сажает диспетчер. Подсказки в строках списка остаются —
+                      они помогают выбрать, а не выбирают. */}
+                      <AutoSelect
+                        autoSelectSole={false}
+                        options={machinistOptions}
+                        loading={machinistsLoading}
+                        placeholder="Кто сядет за технику"
+                        notFoundContent="В справочнике нет действующих водителей"
+                      />
+                    </Form.Item>
+                  )}
 
-                {/* Линейная техника (ADR 0100): вместо перечня недель и блока доставки — прямая
+                  {/* Линейная техника (ADR 0100): вместо перечня недель и блока доставки — прямая
                   речь о том, чего в этой заявке не будет. Молчание было бы хуже: диспетчер,
                   привыкший видеть здесь список недель и галочку перегона, прочитал бы их
                   исчезновение как поломку портала, а не как другой документооборот. */}
-                {needsMachinist && isLinear && (
-                  <FormGrid.Full>
-                    <Alert
-                      type="info"
-                      showIcon
-                      message="Линейная техника: ЭСМ-2 выписывается по требованию"
-                      description="Недельные листы портал сам не выписывает — их выписывают из карточки заявки, по неделе за раз. Работа каждого дня печатается своим 4-П. Перегона у такой техники нет: вечером она возвращается на базу."
+                  {needsMachinist && isLinear && (
+                    <FormGrid.Full>
+                      <Alert
+                        type="info"
+                        showIcon
+                        message="Линейная техника: ЭСМ-2 выписывается по требованию"
+                        description="Недельные листы портал сам не выписывает — их выписывают из карточки заявки, по неделе за раз. Работа каждого дня печатается своим 4-П. Перегона у такой техники нет: вечером она возвращается на базу."
+                      />
+                    </FormGrid.Full>
+                  )}
+                </>
+              ) : (
+                <>
+                  <Form.Item
+                    name="scheduledDate"
+                    label="Фактическая дата подачи"
+                    rules={[{ required: true, message: 'Укажите дату подачи' }]}
+                    extra={`Заказано: ${formatMoscowDateTime(
+                      new Date(request.scheduledAt),
+                      request.scheduledTimeUnspecified,
+                    )}`}
+                  >
+                    <DatePicker
+                      format="DD.MM.YYYY"
+                      style={{ width: '100%' }}
+                      inputReadOnly={isMobile}
                     />
-                  </FormGrid.Full>
-                )}
-              </>
-            ) : (
-              <>
-                <Form.Item
-                  name="scheduledDate"
-                  label="Фактическая дата подачи"
-                  rules={[{ required: true, message: 'Укажите дату подачи' }]}
-                  extra={`Заказано: ${formatMoscowDateTime(
-                    new Date(request.scheduledAt),
-                    request.scheduledTimeUnspecified,
-                  )}`}
-                >
-                  <DatePicker
-                    format="DD.MM.YYYY"
-                    style={{ width: '100%' }}
-                    inputReadOnly={isMobile}
-                  />
-                </Form.Item>
-                <Form.Item
-                  name="scheduledTime"
-                  label="Фактическое время (МСК)"
-                  tooltip="Необязательно. Рабочее окно — с 07:00 до 21:00"
-                  rules={[optionalWorkTimeRule]}
-                >
-                  <TimeInput />
-                </Form.Item>
-              </>
-            )}
+                  </Form.Item>
+                  <Form.Item
+                    name="scheduledTime"
+                    label="Фактическое время (МСК)"
+                    tooltip="Необязательно. Рабочее окно — с 07:00 до 21:00"
+                    rules={[optionalWorkTimeRule]}
+                  >
+                    <TimeInput />
+                  </Form.Item>
+                </>
+              )}
 
-            {/* Шаг 1: каким рейсом заявка поедет. Вопрос стоит до техники, потому что так и
+              {/* Шаг 1: каким рейсом заявка поедет. Вопрос стоит до техники, потому что так и
               планируют день: у машины этого типа уже собран рейс, и заявка дописывается в него
               строкой задания — а машину задаёт сам рейс (ADR 0052). «Новый маршрут» возвращает прежний
               порядок: выбирают машину, а рейс заводится под неё.
 
               Рейсы показываются на дату из формы: подачу правят здесь же, а рейс печатает задание
               на день — подсказка соседнего дня предлагала бы рейсы, в которые заявка не встанет. */}
-            {needsRoute && (
+              {needsRoute && (
+                <FormGrid.Full>
+                  <Typography.Title level={5} style={{ marginTop: 8 }}>
+                    Маршрут
+                  </Typography.Title>
+                  <Typography.Paragraph type="secondary" style={{ marginTop: -8 }}>
+                    Рейс на {tripDate}. Путевой лист выписывается с маршрута, когда состав собран —
+                    {prefill?.formLabel
+                      ? ` ${prefill.formLabel.toLowerCase()}`
+                      : ' по бланку рейса'}
+                    .
+                  </Typography.Paragraph>
+                  <Form.Item name="routeId" label="Рейс">
+                    <AutoSelect
+                      options={[
+                        ...routeOptions.map((r) => ({
+                          value: r.id,
+                          label: [
+                            r.displayNumber,
+                            r.vehicleLabel,
+                            r.driverName || 'водитель не назначен',
+                            `${r.requests.length} из ${routeRequestCapacity(r.formCode)} заявок`,
+                          ].join(' · '),
+                        })),
+                        { value: NEW_ROUTE, label: 'Новый маршрут' },
+                      ]}
+                      showSearch
+                      optionFilterProp="label"
+                      placeholder="Выберите рейс"
+                      onChange={changeRoute}
+                    />
+                  </Form.Item>
+                </FormGrid.Full>
+              )}
+
+              {/* Шаг 2: чья машина. Количество единиц этого типа — в самой подписи: пустая ветка
+              видна до того, как в неё зайдут. */}
+              {/* Не поле формы: принадлежность в назначение не уходит — она у самой машины, а
+              здесь только сужает список. */}
               <FormGrid.Full>
-                <Typography.Title level={5} style={{ marginTop: 8 }}>
-                  Маршрут
-                </Typography.Title>
-                <Typography.Paragraph type="secondary" style={{ marginTop: -8 }}>
-                  Рейс на {tripDate}. Путевой лист выписывается с маршрута, когда состав собран —
-                  {prefill?.formLabel ? ` ${prefill.formLabel.toLowerCase()}` : ' по бланку рейса'}.
-                </Typography.Paragraph>
-                <Form.Item name="routeId" label="Рейс">
-                  <AutoSelect
-                    options={[
-                      ...routeOptions.map((r) => ({
-                        value: r.id,
-                        label: [
-                          r.displayNumber,
-                          r.vehicleLabel,
-                          r.driverName || 'водитель не назначен',
-                          `${r.requests.length} из ${routeRequestCapacity(r.formCode)} заявок`,
-                        ].join(' · '),
-                      })),
-                      { value: NEW_ROUTE, label: 'Новый маршрут' },
-                    ]}
-                    showSearch
-                    optionFilterProp="label"
-                    placeholder="Выберите рейс"
-                    onChange={changeRoute}
+                <Form.Item label="Техника">
+                  <Segmented<VehicleOwnership>
+                    block
+                    value={ownership}
+                    onChange={changeOwnership}
+                    options={VEHICLE_OWNERSHIPS.map((o) => ({
+                      value: o,
+                      label: `${vehicleOwnershipLabels[o]} · ${byOwnership[o].length}`,
+                      disabled: byOwnership[o].length === 0,
+                    }))}
                   />
                 </Form.Item>
               </FormGrid.Full>
-            )}
 
-            {/* Шаг 2: чья машина. Количество единиц этого типа — в самой подписи: пустая ветка
-              видна до того, как в неё зайдут. */}
-            {/* Не поле формы: принадлежность в назначение не уходит — она у самой машины, а
-              здесь только сужает список. */}
-            <FormGrid.Full>
-              <Form.Item label="Техника">
-                <Segmented<VehicleOwnership>
-                  block
-                  value={ownership}
-                  onChange={changeOwnership}
-                  options={VEHICLE_OWNERSHIPS.map((o) => ({
-                    value: o,
-                    label: `${vehicleOwnershipLabels[o]} · ${byOwnership[o].length}`,
-                    disabled: byOwnership[o].length === 0,
-                  }))}
-                />
-              </Form.Item>
-            </FormGrid.Full>
+              {/* Шаг 3 (только аренда): у кого берём. */}
+              {isRental && (
+                <Form.Item
+                  name="lessorId"
+                  label="Арендодатель"
+                  rules={[{ required: true, message: 'Выберите арендодателя' }]}
+                >
+                  <AutoSelect
+                    options={lessorOptions}
+                    showSearch
+                    optionFilterProp="label"
+                    loading={isFetching}
+                    placeholder="Выберите арендодателя"
+                    onChange={() =>
+                      form.setFieldsValue({
+                        vehicleId: undefined,
+                        pricePerHour: null,
+                        pricePerShift: null,
+                        shiftHours: null,
+                      })
+                    }
+                  />
+                </Form.Item>
+              )}
 
-            {/* Шаг 3 (только аренда): у кого берём. */}
-            {isRental && (
-              <Form.Item
-                name="lessorId"
-                label="Арендодатель"
-                rules={[{ required: true, message: 'Выберите арендодателя' }]}
-              >
-                <AutoSelect
-                  options={lessorOptions}
-                  showSearch
-                  optionFilterProp="label"
-                  loading={isFetching}
-                  placeholder="Выберите арендодателя"
-                  onChange={() =>
-                    form.setFieldsValue({
-                      vehicleId: undefined,
-                      pricePerHour: null,
-                      pricePerShift: null,
-                      shiftHours: null,
-                    })
-                  }
-                />
-              </Form.Item>
-            )}
-
-            {/* Шаг 4: конкретная единица. Расхождение с заказанной позицией — подстрочным
+              {/* Шаг 4: конкретная единица. Расхождение с заказанной позицией — подстрочным
               предупреждением (ADR 0045, ADR 0059, ADR 0064): назначение оно не отменяет, но и
               незамеченным не проходит. Выбранный рейс поле запирает: машину задаёт он (ADR 0052).
 
               Обрезанный парк назван там же: поиск в поле ищет по загруженным строкам, и машина,
               не поместившаяся в страницу, выглядела бы отсутствующей. */}
-            <Form.Item
-              name="vehicleId"
-              label="Конкретная техника"
-              rules={[{ required: true, message: 'Выберите технику' }]}
-              extra={
-                joinedRoute ? (
-                  <Typography.Text type="secondary">
-                    Машину задал рейс {joinedRoute.displayNumber} — выберите «Новый маршрут», чтобы
-                    сменить её
-                  </Typography.Text>
-                ) : substitution ? (
-                  <Typography.Text
-                    type={substitution.level === 'warning' ? 'warning' : 'secondary'}
-                  >
-                    {substitution.text}
-                    {formChange ? ` ${formChange}.` : ''}
-                  </Typography.Text>
-                ) : vehicleOptions.length === 0 ? (
-                  emptyText
-                ) : hiddenVehicles > 0 ? (
-                  <Typography.Text type="secondary">
-                    Заказанный вид техники показан целиком; машин других видов в списке не все — ещё{' '}
-                    {hiddenVehicles} в парке
-                  </Typography.Text>
-                ) : undefined
-              }
-            >
-              <AutoSelect
-                options={vehicleOptions}
-                showSearch
-                optionFilterProp="label"
-                loading={isFetching}
-                disabled={joiningRoute || (isRental && !lessorId)}
-                placeholder={
-                  isRental && !lessorId ? 'Сначала выберите арендодателя' : 'Выберите ТС'
+              <Form.Item
+                name="vehicleId"
+                label="Конкретная техника"
+                rules={[{ required: true, message: 'Выберите технику' }]}
+                extra={
+                  joinedRoute ? (
+                    <Typography.Text type="secondary">
+                      Машину задал рейс {joinedRoute.displayNumber} — выберите «Новый маршрут»,
+                      чтобы сменить её
+                    </Typography.Text>
+                  ) : substitution ? (
+                    <Typography.Text
+                      type={substitution.level === 'warning' ? 'warning' : 'secondary'}
+                    >
+                      {substitution.text}
+                      {formChange ? ` ${formChange}.` : ''}
+                    </Typography.Text>
+                  ) : vehicleOptions.length === 0 ? (
+                    emptyText
+                  ) : hiddenVehicles > 0 ? (
+                    <Typography.Text type="secondary">
+                      Заказанный вид техники показан целиком; машин других видов в списке не все —
+                      ещё {hiddenVehicles} в парке
+                    </Typography.Text>
+                  ) : undefined
                 }
-                onChange={changeVehicle}
-              />
-            </Form.Item>
+              >
+                <AutoSelect
+                  options={vehicleOptions}
+                  showSearch
+                  optionFilterProp="label"
+                  loading={isFetching}
+                  disabled={joiningRoute || (isRental && !lessorId)}
+                  placeholder={
+                    isRental && !lessorId ? 'Сначала выберите арендодателя' : 'Выберите ТС'
+                  }
+                  onChange={changeVehicle}
+                />
+              </Form.Item>
 
-            {selected && (
-              <FormGrid.Full>
-                <Space size={8} wrap style={{ marginBottom: 16 }}>
-                  {/* Позиция классификатора выбранной машины: цвет меняется, когда она разошлась с
+              {selected && (
+                <FormGrid.Full>
+                  <Space size={8} wrap style={{ marginBottom: 16 }}>
+                    {/* Позиция классификатора выбранной машины: цвет меняется, когда она разошлась с
                     заказом, — тег и предупреждение говорят об одном и том же разными способами. */}
-                  <Tag
-                    color={
-                      substitution ? (substitution.level === 'warning' ? 'orange' : 'gold') : 'blue'
-                    }
-                  >
-                    {selected.categoryName ?? selected.typeName}
-                  </Tag>
-                  {selected.registrationNumber && <Tag>{selected.registrationNumber}</Tag>}
-                  {selected.lessorName && <Tag color="purple">{selected.lessorName}</Tag>}
-                </Space>
-              </FormGrid.Full>
-            )}
+                    <Tag
+                      color={
+                        substitution
+                          ? substitution.level === 'warning'
+                            ? 'orange'
+                            : 'gold'
+                          : 'blue'
+                      }
+                    >
+                      {selected.categoryName ?? selected.typeName}
+                    </Tag>
+                    {selected.registrationNumber && <Tag>{selected.registrationNumber}</Tag>}
+                    {selected.lessorName && <Tag color="purple">{selected.lessorName}</Tag>}
+                  </Space>
+                </FormGrid.Full>
+              )}
 
-            {/* Ставки: подставлены из справочника, но это поля ввода — цену по заявке
+              {/* Ставки: подставлены из справочника, но это поля ввода — цену по заявке
               согласовывают отдельно от прайса. */}
-            <>
-              <Form.Item
-                name="pricePerHour"
-                label="Стоимость за час, ₽"
-                extra={
-                  listedRate?.pricePerHour != null
-                    ? `В справочнике: ${formatMoney(listedRate.pricePerHour)}`
-                    : undefined
-                }
-              >
-                <InputNumber style={{ width: '100%' }} min={0} step={100} precision={2} />
-              </Form.Item>
-              <Form.Item
-                name="pricePerShift"
-                label="Стоимость за смену, ₽"
-                extra={
-                  listedRate?.pricePerShift != null
-                    ? `В справочнике: ${formatMoney(listedRate.pricePerShift)}`
-                    : undefined
-                }
-              >
-                <InputNumber style={{ width: '100%' }} min={0} step={1000} precision={2} />
-              </Form.Item>
-              <Form.Item name="shiftHours" label="Часов в смене">
-                <InputNumber style={{ width: '100%' }} min={1} max={24} precision={0} />
-              </Form.Item>
-            </>
+              <>
+                <Form.Item
+                  name="pricePerHour"
+                  label="Стоимость за час, ₽"
+                  extra={
+                    listedRate?.pricePerHour != null
+                      ? `В справочнике: ${formatMoney(listedRate.pricePerHour)}`
+                      : undefined
+                  }
+                >
+                  <InputNumber style={{ width: '100%' }} min={0} step={100} precision={2} />
+                </Form.Item>
+                <Form.Item
+                  name="pricePerShift"
+                  label="Стоимость за смену, ₽"
+                  extra={
+                    listedRate?.pricePerShift != null
+                      ? `В справочнике: ${formatMoney(listedRate.pricePerShift)}`
+                      : undefined
+                  }
+                >
+                  <InputNumber style={{ width: '100%' }} min={0} step={1000} precision={2} />
+                </Form.Item>
+                <Form.Item name="shiftHours" label="Часов в смене">
+                  <InputNumber style={{ width: '100%' }} min={1} max={24} precision={0} />
+                </Form.Item>
+              </>
 
-            <FormGrid.Full>
-              {priceChanged && (
-                <Typography.Text type="warning">
-                  Ставка отличается от справочника — в заявке сохранится договорная
-                </Typography.Text>
-              )}
-              {!isRental && (
-                <Typography.Text type="secondary">
-                  У собственной техники ставка необязательна: её указывают, если работу считают в
-                  деньгах
-                </Typography.Text>
-              )}
-            </FormGrid.Full>
+              <FormGrid.Full>
+                {priceChanged && (
+                  <Typography.Text type="warning">
+                    Ставка отличается от справочника — в заявке сохранится договорная
+                  </Typography.Text>
+                )}
+                {!isRental && (
+                  <Typography.Text type="secondary">
+                    У собственной техники ставка необязательна: её указывают, если работу считают в
+                    деньгах
+                  </Typography.Text>
+                )}
+              </FormGrid.Full>
 
-            {/* Доставка техники на объект: перегон по городу своим ходом — это рейс, и на него
+              {/* Доставка техники на объект: перегон по городу своим ходом — это рейс, и на него
               выписывается 4-П. Предлагается, а не требуется: ту же машину могут привезти тралом,
               и тогда листа не бывает вовсе. Вывоз заводят позже, из карточки заявки: в этот
               момент его дату ещё не знают. */}
-            {canOfferDelivery && selected && (
-              <>
-                <FormGrid.Full>
-                  <Typography.Title level={5} style={{ marginTop: 16, marginBottom: 0 }}>
-                    Доставка на объект
-                  </Typography.Title>
-                  <Form.Item name="deliveryEnabled" valuePropName="checked" noStyle>
-                    <Checkbox onChange={(e) => toggleDelivery(e.target.checked)}>
-                      Техника едет своим ходом — выписать путевой лист 4-П
-                    </Checkbox>
-                  </Form.Item>
-                  {/* Откуда взялась включённая галочка: подстановка обязана назвать себя, иначе
-                    её читают как чужую забытую правку (ADR 0085 Р11). */}
-                  {weeklyDelivery && (
-                    <Typography.Paragraph
-                      type="secondary"
-                      style={{ marginTop: 8, marginBottom: 0 }}
-                    >
-                      Доставку запросила недельная заявка{' '}
-                      {formatWeeklyRequestNumber(weeklyDelivery.weeklyRequestNum)} — поля
-                      подставлены ею и правятся здесь же.
-                    </Typography.Paragraph>
-                  )}
-                  <Typography.Paragraph type="secondary" style={{ marginTop: 8 }}>
-                    Перегон станет отдельным рейсом; лист по нему выписывают в карточке маршрута.
-                    Если технику везут тралом, оставьте выключенным.
-                  </Typography.Paragraph>
-                </FormGrid.Full>
-
-                {wantsDelivery && (
-                  <>
-                    <Form.Item
-                      name="deliveryDate"
-                      label="Дата перегона"
-                      rules={[{ required: true, message: 'Укажите дату перегона' }]}
-                    >
-                      <DatePicker
-                        format="DD.MM.YYYY"
-                        style={{ width: '100%' }}
-                        inputReadOnly={isMobile}
-                      />
+              {canOfferDelivery && selected && (
+                <>
+                  <FormGrid.Full>
+                    <Typography.Title level={5} style={{ marginTop: 16, marginBottom: 0 }}>
+                      Доставка на объект
+                    </Typography.Title>
+                    <Form.Item name="deliveryEnabled" valuePropName="checked" noStyle>
+                      <Checkbox onChange={(e) => toggleDelivery(e.target.checked)}>
+                        Техника едет своим ходом — выписать путевой лист 4-П
+                      </Checkbox>
                     </Form.Item>
+                    {/* Откуда взялась включённая галочка: подстановка обязана назвать себя, иначе
+                    её читают как чужую забытую правку (ADR 0085 Р11). */}
+                    {weeklyDelivery && (
+                      <Typography.Paragraph
+                        type="secondary"
+                        style={{ marginTop: 8, marginBottom: 0 }}
+                      >
+                        Доставку запросила недельная заявка{' '}
+                        {formatWeeklyRequestNumber(weeklyDelivery.weeklyRequestNum)} — поля
+                        подставлены ею и правятся здесь же.
+                      </Typography.Paragraph>
+                    )}
+                    <Typography.Paragraph type="secondary" style={{ marginTop: 8 }}>
+                      Перегон станет отдельным рейсом; лист по нему выписывают в карточке маршрута.
+                      Если технику везут тралом, оставьте выключенным.
+                    </Typography.Paragraph>
+                  </FormGrid.Full>
+
+                  {wantsDelivery && (
+                    <>
+                      <Form.Item
+                        name="deliveryDate"
+                        label="Дата перегона"
+                        rules={[{ required: true, message: 'Укажите дату перегона' }]}
+                      >
+                        <DatePicker
+                          format="DD.MM.YYYY"
+                          style={{ width: '100%' }}
+                          inputReadOnly={isMobile}
+                        />
+                      </Form.Item>
+                      <Form.Item
+                        name="deliveryDriverId"
+                        label="Водитель перегона"
+                        rules={[{ required: true, message: 'Выберите водителя' }]}
+                        extra={
+                          !deliveryDate
+                            ? 'Сначала укажите дату: годность удостоверения считается на день перегона'
+                            : driverOptions.length === 0 && !driversLoading
+                              ? 'В справочнике нет действующих водителей'
+                              : undefined
+                        }
+                      >
+                        {/* Единственный водитель справочника сам в поле не встаёт: кто поедет,
+                        решает диспетчер (см. поле водителя нового рейса ниже). */}
+                        <AutoSelect
+                          autoSelectSole={false}
+                          options={driverOptions}
+                          showSearch
+                          optionFilterProp="label"
+                          loading={driversLoading}
+                          disabled={!deliveryDate}
+                          placeholder={
+                            deliveryDate ? 'Выберите водителя' : 'Сначала укажите дату перегона'
+                          }
+                        />
+                      </Form.Item>
+                      {/* Перегон печатает тот же 4-П, и пустая графа в нём такая же пустая: о ней
+                      говорят здесь, у своего поля, а не одним предупреждением на всё окно. */}
+                      {deliveryDriverGaps && (
+                        <FormGrid.Full>
+                          <Alert
+                            type="warning"
+                            showIcon
+                            message="Документы водителя перегона неполные"
+                            description={deliveryDriverGaps}
+                          />
+                        </FormGrid.Full>
+                      )}
+                      {/* Адрес перегона (ADR 0069): подсказки DaData либо выбор площадки из
+                      справочника; свободная строка остаётся допустимой — база и стоянка адресами
+                      не описываются. */}
+                      <AddressField
+                        name="deliveryFrom"
+                        label="Откуда"
+                        required
+                        requiredMessage="Укажите, откуда идёт техника"
+                        directory
+                        suggestObjectIds={suggestObjectIds}
+                        placeholder="База, ул. Автомобильная, 3"
+                      />
+                      <AddressField
+                        name="deliveryTo"
+                        label="Куда"
+                        required
+                        requiredMessage="Укажите, куда идёт техника"
+                        directory
+                        suggestObjectIds={suggestObjectIds}
+                        placeholder="Объект, адрес площадки"
+                      />
+                    </>
+                  )}
+                </>
+              )}
+
+              {/* Причина, по которой рейс не ведётся: аренду ведёт арендодатель, у типа может не
+              быть бланка. Показывается текстом — исчезнувший блок «Маршрут» читался бы как
+              поломка. У заказа техники на объект ни блока, ни текста: рейса в этом процессе не
+              существует, и объяснять нечего (ADR 0041). */}
+              {selected && !needsRoute && requirement.reason && (
+                <FormGrid.Full>
+                  <Alert
+                    type="info"
+                    showIcon
+                    style={{ marginTop: 16 }}
+                    message="Маршрут не ведётся"
+                    description={requirement.reason}
+                  />
+                </FormGrid.Full>
+              )}
+
+              {needsRoute && (
+                <>
+                  {joiningRoute && (
+                    <FormGrid.Full>
+                      <Typography.Text type="secondary">
+                        Заявка встанет строкой задания в рейс {joinedRoute?.displayNumber}: водитель
+                        и реквизиты выезда там уже свои, и правят их в карточке маршрута.
+                      </Typography.Text>
+                    </FormGrid.Full>
+                  )}
+
+                  {/* Новый рейс спрашивает то, чего у готового уже спрашивать не надо: кто за рулём
+                  и чем заполнены графы шапки бланка. Заголовок здесь, а не наверху у выбора
+                  рейса: наверху решают, куда заявка едет, а тут заводят сам рейс. */}
+                  {!joiningRoute && (
+                    <FormGrid.Full>
+                      <Typography.Title level={5} style={{ marginTop: 16, marginBottom: 0 }}>
+                        Новый рейс
+                      </Typography.Title>
+                    </FormGrid.Full>
+                  )}
+
+                  {!joiningRoute && (
                     <Form.Item
-                      name="deliveryDriverId"
-                      label="Водитель перегона"
+                      name="driverPersonId"
+                      label="Водитель"
                       rules={[{ required: true, message: 'Выберите водителя' }]}
                       extra={
-                        !deliveryDate
-                          ? 'Сначала укажите дату: годность удостоверения считается на день перегона'
-                          : driverOptions.length === 0 && !driversLoading
-                            ? 'В справочнике нет действующих водителей'
-                            : undefined
+                        driverOptions.length === 0 && !driversLoading
+                          ? 'В справочнике нет действующих водителей: заведите карточку или ' +
+                            'откройте специализацию «водитель» у существующей.'
+                          : undefined
                       }
                     >
-                      {/* Единственный водитель справочника сам в поле не встаёт: кто поедет,
-                        решает диспетчер (см. поле водителя нового рейса ниже). */}
+                      {/* Водитель не подставляется никогда — ни единственным в справочнике, ни
+                      вчерашним на этой машине. За руль человека сажает диспетчер, и подставленная
+                      фамилия читается как уже принятое решение: её пролистывают, а в бланк она
+                      попадает настоящей. Список остаётся подсказывающим — пригодные первыми, с
+                      пометками о категории и документах (ADR 0055, ADR 0064). */}
                       <AutoSelect
                         autoSelectSole={false}
                         options={driverOptions}
                         showSearch
                         optionFilterProp="label"
                         loading={driversLoading}
-                        disabled={!deliveryDate}
-                        placeholder={
-                          deliveryDate ? 'Выберите водителя' : 'Сначала укажите дату перегона'
-                        }
+                        placeholder="Выберите водителя"
                       />
                     </Form.Item>
-                    {/* Перегон печатает тот же 4-П, и пустая графа в нём такая же пустая: о ней
-                      говорят здесь, у своего поля, а не одним предупреждением на всё окно. */}
-                    {deliveryDriverGaps && (
-                      <FormGrid.Full>
-                        <Alert
-                          type="warning"
-                          showIcon
-                          message="Документы водителя перегона неполные"
-                          description={deliveryDriverGaps}
-                        />
-                      </FormGrid.Full>
-                    )}
-                    {/* Адрес перегона (ADR 0069): подсказки DaData либо выбор площадки из
-                      справочника; свободная строка остаётся допустимой — база и стоянка адресами
-                      не описываются. */}
-                    <AddressField
-                      name="deliveryFrom"
-                      label="Откуда"
-                      required
-                      requiredMessage="Укажите, откуда идёт техника"
-                      directory
-                      suggestObjectIds={suggestObjectIds}
-                      placeholder="База, ул. Автомобильная, 3"
-                    />
-                    <AddressField
-                      name="deliveryTo"
-                      label="Куда"
-                      required
-                      requiredMessage="Укажите, куда идёт техника"
-                      directory
-                      suggestObjectIds={suggestObjectIds}
-                      placeholder="Объект, адрес площадки"
-                    />
-                  </>
-                )}
-              </>
-            )}
+                  )}
 
-            {/* Причина, по которой рейс не ведётся: аренду ведёт арендодатель, у типа может не
-              быть бланка. Показывается текстом — исчезнувший блок «Маршрут» читался бы как
-              поломка. У заказа техники на объект ни блока, ни текста: рейса в этом процессе не
-              существует, и объяснять нечего (ADR 0041). */}
-            {selected && !needsRoute && requirement.reason && (
-              <FormGrid.Full>
-                <Alert
-                  type="info"
-                  showIcon
-                  style={{ marginTop: 16 }}
-                  message="Маршрут не ведётся"
-                  description={requirement.reason}
-                />
-              </FormGrid.Full>
-            )}
-
-            {needsRoute && (
-              <>
-                {joiningRoute && (
-                  <FormGrid.Full>
-                    <Typography.Text type="secondary">
-                      Заявка встанет строкой задания в рейс {joinedRoute?.displayNumber}: водитель и
-                      реквизиты выезда там уже свои, и правят их в карточке маршрута.
-                    </Typography.Text>
-                  </FormGrid.Full>
-                )}
-
-                {/* Новый рейс спрашивает то, чего у готового уже спрашивать не надо: кто за рулём
-                  и чем заполнены графы шапки бланка. Заголовок здесь, а не наверху у выбора
-                  рейса: наверху решают, куда заявка едет, а тут заводят сам рейс. */}
-                {!joiningRoute && (
-                  <FormGrid.Full>
-                    <Typography.Title level={5} style={{ marginTop: 16, marginBottom: 0 }}>
-                      Новый рейс
-                    </Typography.Title>
-                  </FormGrid.Full>
-                )}
-
-                {!joiningRoute && (
-                  <Form.Item
-                    name="driverPersonId"
-                    label="Водитель"
-                    rules={[{ required: true, message: 'Выберите водителя' }]}
-                    extra={
-                      driverOptions.length === 0 && !driversLoading
-                        ? 'В справочнике нет действующих водителей: заведите карточку или ' +
-                          'откройте специализацию «водитель» у существующей.'
-                        : undefined
-                    }
-                  >
-                    {/* Водитель не подставляется никогда — ни единственным в справочнике, ни
-                      вчерашним на этой машине. За руль человека сажает диспетчер, и подставленная
-                      фамилия читается как уже принятое решение: её пролистывают, а в бланк она
-                      попадает настоящей. Список остаётся подсказывающим — пригодные первыми, с
-                      пометками о категории и документах (ADR 0055, ADR 0064). */}
-                    <AutoSelect
-                      autoSelectSole={false}
-                      options={driverOptions}
-                      showSearch
-                      optionFilterProp="label"
-                      loading={driversLoading}
-                      placeholder="Выберите водителя"
-                    />
-                  </Form.Item>
-                )}
-
-                {/* Два предупреждения, а не одно: пустая графа бланка и чужая категория — разные
+                  {/* Два предупреждения, а не одно: пустая графа бланка и чужая категория — разные
                   вещи, и первое проверяют по справочнику водителей, а второе по документу в
                   руках. Оба ничего не запрещают (ADR 0055, ADR 0064). */}
-                {!joiningRoute && driverGaps && (
-                  <FormGrid.Full>
-                    <Alert
-                      type="warning"
-                      showIcon
-                      message="Документы водителя внесены не полностью"
-                      description={driverGaps}
-                    />
-                  </FormGrid.Full>
-                )}
+                  {!joiningRoute && driverGaps && (
+                    <FormGrid.Full>
+                      <Alert
+                        type="warning"
+                        showIcon
+                        message="Документы водителя внесены не полностью"
+                        description={driverGaps}
+                      />
+                    </FormGrid.Full>
+                  )}
 
-                {!joiningRoute && driverCategoryMismatch && (
-                  <FormGrid.Full>
-                    <Alert
-                      type="warning"
-                      showIcon
-                      message="Категория прав не совпадает с требованием машины"
-                      description={driverCategoryMismatch}
-                    />
-                  </FormGrid.Full>
-                )}
+                  {!joiningRoute && driverCategoryMismatch && (
+                    <FormGrid.Full>
+                      <Alert
+                        type="warning"
+                        showIcon
+                        message="Категория прав не совпадает с требованием машины"
+                        description={driverCategoryMismatch}
+                      />
+                    </FormGrid.Full>
+                  )}
 
-                {/* Реквизиты выезда — свойства рейса: у готового они уже свои, и переспрашивать их
+                  {/* Реквизиты выезда — свойства рейса: у готового они уже свои, и переспрашивать их
                   здесь значило бы молча переписать чужой рейс. Прицеп поднимает требуемую
                   категорию водителя, поэтому список выше пересобирается при его включении. */}
-                {!joiningRoute && (
-                  <>
-                    <Form.Item name="withTrailer" valuePropName="checked">
-                      <Checkbox>Рейс с прицепом</Checkbox>
-                    </Form.Item>
-                    {withTrailer && (
-                      <>
-                        <Form.Item name="trailer1Model" label="Марка прицепа">
-                          <Input placeholder="МАЗ-8926" />
-                        </Form.Item>
-                        <Form.Item name="trailer1RegNumber" label="Госномер прицепа">
-                          <Input placeholder="8062 ЕН 77" />
-                        </Form.Item>
-                      </>
-                    )}
+                  {!joiningRoute && (
+                    <>
+                      <Form.Item name="withTrailer" valuePropName="checked">
+                        <Checkbox>Рейс с прицепом</Checkbox>
+                      </Form.Item>
+                      {withTrailer && (
+                        <>
+                          <Form.Item name="trailer1Model" label="Марка прицепа">
+                            <Input placeholder="МАЗ-8926" />
+                          </Form.Item>
+                          <Form.Item name="trailer1RegNumber" label="Госномер прицепа">
+                            <Input placeholder="8062 ЕН 77" />
+                          </Form.Item>
+                        </>
+                      )}
 
-                    <Form.Item name="garageNumber" label="Гаражный номер">
-                      <Input placeholder="00000389" />
-                    </Form.Item>
-                    <Form.Item name="communicationKind" label="Вид сообщения">
-                      <Input placeholder="пригородное" />
-                    </Form.Item>
-                    <Form.Item name="transportationKind" label="Вид перевозки">
-                      <Input placeholder="коммерческая" />
-                    </Form.Item>
-                  </>
-                )}
-              </>
-            )}
-          </FormGrid>
-        </Form>
+                      <Form.Item name="garageNumber" label="Гаражный номер">
+                        <Input placeholder="00000389" />
+                      </Form.Item>
+                      <Form.Item name="communicationKind" label="Вид сообщения">
+                        <Input placeholder="пригородное" />
+                      </Form.Item>
+                      <Form.Item name="transportationKind" label="Вид перевозки">
+                        <Input placeholder="коммерческая" />
+                      </Form.Item>
+                    </>
+                  )}
+                </>
+              )}
+            </FormGrid>
+          </Form>
+        </div>
       )}
     </FormModal>
   );

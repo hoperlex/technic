@@ -75,6 +75,7 @@ import {
   runCorrection,
   waybillEffectiveDate,
 } from '../services/waybill-correction';
+import { lockRequestsOfWaybill } from '../services/waybill-locks';
 
 /**
  * Журнал учёта путевых листов (ADR 0037).
@@ -303,8 +304,14 @@ async function linksByWaybill(ids: string[]): Promise<Map<string, WaybillRequest
       // номер талона — в рабочем или в журнале закрытых.
       status: vehicleRequests.status,
       // Талон заказчика: объект или отдел (ADR 0040) — innerJoin по объекту терял бы заявки
-      // отдела вместе с их листами.
+      // отдела вместе с их листами. Пара идёт целиком, с идентификаторами и кодами: подпись
+      // талона выводит объект затрат (Р25), а он ветвится по `object_id`/`department_id`, а не по
+      // тому, чьё наименование заполнено.
+      objectId: vehicleRequests.objectId,
+      objectCode: constructionObjects.code,
       objectName: constructionObjects.name,
+      departmentId: vehicleRequests.departmentId,
+      departmentCode: departments.code,
       departmentName: departments.name,
     })
     .from(waybillRequests)
@@ -869,16 +876,25 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
 
       if (!backdated) {
         if (row.status === 'cancelled') throw err.conflict('Лист уже аннулирован');
-        await db
-          .update(waybills)
-          .set({
-            status: 'cancelled',
-            cancelledAt: new Date(),
-            cancelledBy: p.id,
-            cancelReason: reason,
-            updatedAt: new Date(),
-          })
-          .where(and(eq(waybills.id, row.id), ne(waybills.status, 'cancelled')));
+        /*
+         * Правка одна, а транзакция всё же нужна: списание обязано идти под блокировкой заявок
+         * листа (Р11), а блокировка живёт до конца транзакции — вне её она снялась бы раньше, чем
+         * сверка ЭСМ-2 у соседа дочитает набор действующих листов, о котором ему обещал
+         * предпросмотр.
+         */
+        await db.transaction(async (tx) => {
+          await lockRequestsOfWaybill(tx, row.id);
+          await tx
+            .update(waybills)
+            .set({
+              status: 'cancelled',
+              cancelledAt: new Date(),
+              cancelledBy: p.id,
+              cancelReason: reason,
+              updatedAt: new Date(),
+            })
+            .where(and(eq(waybills.id, row.id), ne(waybills.status, 'cancelled')));
+        });
       } else {
         // Ключ идемпотентности обязателен ровно здесь: сегодняшнее списание операцией не является
         // и повтора не боится, а списание задним числом заводит строку в журнале коррекций.
@@ -899,6 +915,10 @@ export default async function waybillsRoutes(app: FastifyInstance): Promise<void
           {
             authorize,
             perform: async (tx, correction) => {
+              // Первым шагом транзакции и до всякого чтения листов (Р11): дальше идёт правка
+              // `waybills`, а её обещал не менять чужой предпросмотр отката, уже принявший
+              // отпечаток по этой заявке.
+              await lockRequestsOfWaybill(tx, row.id);
               const cancelled = await cancelWaybillForCorrection(tx, {
                 waybillId: row.id,
                 correctionId: correction.id,

@@ -83,9 +83,13 @@ import type {
   VehicleRequestShiftsDto,
   VehicleRequestHistorySummaryDto,
   VehicleRequestSummaryDto,
+  VehicleRequestStatusPreviewDto,
   VehicleSpecDto,
   VehicleTypeDto,
+  VehicleTypeLinearSwitchPreviewDto,
+  VehicleTypeLinearSwitchResultDto,
   VehicleTypeSpecDto,
+  SwitchVehicleTypeLinearInput,
   PresentContainerGroupDto,
   WasteRequestDto,
   WasteRequestSummaryDto,
@@ -567,8 +571,33 @@ export const vehicleTypesApi = {
   create: (body: CreateVehicleTypeInput) =>
     apiFetch<VehicleTypeDto>('/vehicle-types', { method: 'POST', body }),
   // Только описательные поля (типа) + isActive (подтипа). Структурные поля неизменяемы.
+  // Признака линейности здесь нет: у переключения свой протокол (см. ниже), а этой ручке сервер
+  // отвечает на него 422 — иначе подтверждение обходилось бы вкладкой, открытой со вчера.
   update: (id: string, body: UpdateVehicleTypeInput) =>
     apiFetch<VehicleTypeDto>(`/vehicle-types/${id}`, { method: 'PATCH', body }),
+  /**
+   * Что случится, если признак линейности переключить: сколько заявок останется на прежнем режиме,
+   * какие именно и сколько из них лежит в архиве. Ничего не пишет — это чтение для диалога.
+   *
+   * `fingerprint` из ответа предъявляется переключению: между «показали номера» и «нажали» состав
+   * заявок меняется, и подтверждали тогда не то, что записывается.
+   */
+  linearSwitchPreview: (id: string, isLinear: boolean) =>
+    apiFetch<VehicleTypeLinearSwitchPreviewDto>(`/vehicle-types/${id}/linear-switch-preview`, {
+      query: { isLinear },
+    }),
+  /**
+   * Переключить признак линейности. Заявки в работе не отменяются и не переводятся: каждая
+   * запоминает режим, которым её завели, и дорабатывает по нему — их номера приходят в ответе.
+   *
+   * Без `fingerprint` при непустом множестве сервер отвечает 422 «нужно подтверждение», при
+   * разошедшемся — 409: ни то, ни другое ничего не записывает.
+   */
+  switchLinear: (id: string, body: SwitchVehicleTypeLinearInput) =>
+    apiFetch<VehicleTypeLinearSwitchResultDto>(`/vehicle-types/${id}/linear`, {
+      method: 'POST',
+      body,
+    }),
   // ТТХ типа (ADR 0016): привязка означает обязательность значения у каждой категории типа,
   // поэтому все четыре ручки возвращают актуальный набор ТТХ целиком.
   specs: (id: string) => apiFetch<VehicleTypeSpecDto[]>(`/vehicle-types/${id}/specs`),
@@ -632,6 +661,27 @@ export const vehiclesApi = {
   /** Удаление насовсем — только из архива (ADR 0060). */
   purge: (id: string) => apiFetch<{ ok: boolean }>(`/vehicles/${id}/purge`, { method: 'DELETE' }),
 };
+
+/**
+ * Что предъявляется вместе со статусом заявки. Тип один на смену статуса и её предпросмотр
+ * намеренно: предпросмотр обязан считать последствия по тем же входам, по которым их потом
+ * исполнит боевая ручка, — разойдись эти тела, диалог начал бы обещать не то.
+ */
+interface VehicleRequestStatusExtra {
+  comment?: string;
+  /** Техника и ставки при переводе в работу (ADR 0027). */
+  assignment?: AssignVehicleBody;
+  /** Фактический срок, о котором договорились при том же переводе. */
+  schedule?: ConfirmScheduleBody;
+  /** Отработанное время и стоимость при выполнении (ADR 0029). */
+  completion?: CompleteVehicleRequestInput;
+  /**
+   * Отпечаток последствий, показанных предпросмотром. Обязателен на одном переходе — откате
+   * «Выполнена» → «В работе» у заказа техники на объект, — и спрашивает его сервер: только он
+   * знает, чем эта заявка пойдёт дальше.
+   */
+  previewFingerprint?: string;
+}
 
 export const vehicleRequestsApi = {
   list: (q: Query) => apiFetch<ListResult<VehicleRequestDto>>('/vehicle-requests', { query: q }),
@@ -742,12 +792,7 @@ export const vehicleRequestsApi = {
     id: string,
     status: RequestStatus,
     version: number,
-    extra: {
-      comment?: string;
-      assignment?: AssignVehicleBody;
-      schedule?: ConfirmScheduleBody;
-      completion?: CompleteVehicleRequestInput;
-    } = {},
+    extra: VehicleRequestStatusExtra = {},
   ) =>
     apiFetch<VehicleRequestDto>(`/vehicle-requests/${id}/status`, {
       method: 'PATCH',
@@ -758,7 +803,24 @@ export const vehicleRequestsApi = {
         ...(extra.assignment ? { assignment: extra.assignment } : {}),
         ...(extra.schedule ? { schedule: extra.schedule } : {}),
         ...(extra.completion ? { completion: extra.completion } : {}),
+        ...(extra.previewFingerprint ? { previewFingerprint: extra.previewFingerprint } : {}),
       },
+    }),
+  /**
+   * Последствия перехода до его совершения: каким режимом заявка пойдёт дальше, что сделает сверка
+   * ЭСМ-2 и как будет считаться занятость машины. Ничего не пишет.
+   *
+   * Тело — то же самое, что у смены статуса: план считается по машине, машинисту и сроку, которые
+   * приходят из окна назначения, и своя схема разошлась бы с боевой на первом же новом поле.
+   * Заведён под откат «Выполнена» → «В работе» — на прочих переходах сервер отвечает 422.
+   */
+  statusPreview: (
+    id: string,
+    body: VehicleRequestStatusExtra & { status: RequestStatus; version: number },
+  ) =>
+    apiFetch<VehicleRequestStatusPreviewDto>(`/vehicle-requests/${id}/status/preview`, {
+      method: 'POST',
+      body: { ...body, comment: body.comment ?? '' },
     }),
   /**
    * Сменить машину и ставки у заявки, которая уже в работе (ADR 0048): техника сломалась, ушла на

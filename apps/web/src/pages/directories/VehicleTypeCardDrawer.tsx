@@ -11,6 +11,7 @@ import {
   Switch,
   Table,
   Tag,
+  Tooltip,
   Typography,
   type TableColumnType,
 } from 'antd';
@@ -447,6 +448,17 @@ export function VehicleTypeCardDrawer({ type, onClose }: Props) {
                 {type.isLinear ? 'да, заказы ведутся по дням' : 'нет'}
               </Typography.Text>
             </Typography.Text>
+            {/* Заявки, застигнутые переключением признака (миграция 0137): они дорабатывают тем
+                режимом, которым их завели, — и без этой строки карточка обещала бы, что весь
+                тип ходит одинаково. Ноль не показывается: так у всех типов, которых не
+                переключали под работающими заказами. */}
+            {type.frozenRequests > 0 ? (
+              <Tooltip title="Признак переключили, когда эти заказы уже шли: до закрытия они ведутся так, как были заведены">
+                <Typography.Text type="secondary">
+                  Заявок на прежнем режиме: <Typography.Text>{type.frozenRequests}</Typography.Text>
+                </Typography.Text>
+              </Tooltip>
+            ) : null}
           </Space>
         ) : null}
 

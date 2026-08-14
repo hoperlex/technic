@@ -51,6 +51,7 @@ function vehicleType(over: Partial<VehicleTypeDto> = {}): VehicleTypeDto {
     sortOrder: 20,
     waybillFormCode: '4p',
     isLinear: false,
+    frozenRequests: 0,
     specCount: 0,
     categoryCount: 0,
     createdAt: '2026-01-01T00:00:00.000Z',
@@ -288,7 +289,14 @@ describe('линейная техника в справочнике типов',
 
     fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
     await waitFor(() => expect(http.countOf('PATCH /vehicle-types/:id')).toBe(1));
-    // Правка описательных полей не должна молча снимать признак с работающего типа.
-    expect(http.lastCall('PATCH /vehicle-types/:id')!.body).toMatchObject({ isLinear: true });
+    /*
+     * Признак в теле правки не едет вовсе — и это не потеря, а условие: у переключения свой
+     * протокол с предпросмотром и подтверждением (ADR 0107), а `PATCH` на такое поле отвечает
+     * `422`. Раньше форма слала его всегда, и правка описания молча несла с собой признак;
+     * теперь она несёт только описательные поля, а признак остаётся тем, что стоит в справочнике.
+     */
+    const body = http.lastCall('PATCH /vehicle-types/:id')!.body as Record<string, unknown>;
+    expect(body).not.toHaveProperty('isLinear');
+    expect(body).toMatchObject({ name: 'Экскаваторы' });
   });
 });
