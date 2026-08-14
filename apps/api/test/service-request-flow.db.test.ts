@@ -330,7 +330,9 @@ async function createRequest(
     ...extra,
   });
   expect(res.statusCode, res.body).toBe(201);
-  return res.json() as ServiceRequestDto;
+  // Заведение отвечает заявкой и исходом письма службе (план `office-equipment-mail-and-history-plan.md`,
+  // Р67): сама заявка лежит в `request`.
+  return (res.json() as { request: ServiceRequestDto }).request;
 }
 
 /**
@@ -1405,7 +1407,8 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       { status: 'cancelled', reason: 'Аппарат решили менять целиком', version: put.json().version },
     );
     expect(cancelled.statusCode, cancelled.body).toBe(200);
-    const after = cancelled.json() as ServiceRequestDto;
+    // Отмена шлёт письмо службе, поэтому ответ у неё такой же, как у заведения: заявка и исход.
+    const after = (cancelled.json() as { request: ServiceRequestDto }).request;
     expect(after.status).toBe('cancelled');
     // Отмена возвращает заявку в состояние «ничего не делали»: исполнителя и согласования у неё
     // больше нет, но состав сметы остаётся историей того, что собирались чинить.
@@ -1772,7 +1775,7 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       customerDepartmentId: ctx.secondDepartmentId,
     });
     expect(chosen.statusCode, chosen.body).toBe(201);
-    const dto = chosen.json() as ServiceRequestDto;
+    const dto = (chosen.json() as { request: ServiceRequestDto }).request;
     expect(dto.customerDepartment?.id).toBe(ctx.secondDepartmentId);
     // Техника не размечена — второй отдельской оси у заявки нет вовсе.
     expect(dto.equipmentDepartment).toBeNull();

@@ -1,9 +1,11 @@
+import { moduleMailOutcomeLabels } from '@technic/contracts';
 import { useEffect, useState } from 'react';
 import { App, Checkbox, DatePicker, Form, Input, Select, Space } from 'antd';
 import dayjs, { type Dayjs } from 'dayjs';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   isWarrantyActive,
+  type ModuleMailOutcome,
   type ServiceRequestDto,
   type WarrantyClaimSource,
 } from '@technic/contracts';
@@ -178,7 +180,9 @@ export function ServiceRequestForm({
   };
 
   const mutation = useMutation({
-    mutationFn: (values: Values) => {
+    mutationFn: async (
+      values: Values,
+    ): Promise<{ request: ServiceRequestDto; mail: ModuleMailOutcome | null }> => {
       // Позиция прошлого ремонта уходит только вместе с источником `item` и только той, что
       // назвал реестр: сервер сверяет её с техникой заявки и отвечает 422, если она чужая (Р26).
       const warrantyClaim = values.warrantySource
@@ -201,16 +205,26 @@ export function ServiceRequestForm({
         isUrgent,
         urgencyReason: isUrgent ? (values.urgencyReason?.trim() ?? '') : '',
       };
-      return request
-        ? serviceRequestsApi.update(request.id, { ...common, version: request.version })
-        : serviceRequestsApi.create({
-            ...common,
-            officeEquipmentId: values.officeEquipmentId,
-            fileIds: files.map((file) => file.id),
-          });
+      if (request) {
+        const saved = await serviceRequestsApi.update(request.id, {
+          ...common,
+          version: request.version,
+        });
+        // Правка письма службе не шлёт: заявка никуда не переходила, а «исправили формулировку» —
+        // не событие. Исход у неё поэтому всегда «письмо не требовалось».
+        return { request: saved, mail: null };
+      }
+      return serviceRequestsApi.create({
+        ...common,
+        officeEquipmentId: values.officeEquipmentId,
+        fileIds: files.map((file) => file.id),
+      });
     },
-    onSuccess: () => {
+    onSuccess: (res) => {
       message.success(request ? 'Заявка сохранена' : 'Заявка заведена');
+      // Заявка заведена, но письмо службе не ушло — про это надо сказать сразу: служба читает
+      // почту, а не портал, и молча оставить её неоповещённой значит потерять день.
+      if (res.mail && res.mail !== 'queued') message.warning(moduleMailOutcomeLabels[res.mail]);
       void qc.invalidateQueries({ queryKey: serviceRequestKeys.root });
       void qc.invalidateQueries({ queryKey: officeEquipmentKeys.root });
       onClose();

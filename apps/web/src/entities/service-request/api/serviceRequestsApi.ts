@@ -1,4 +1,7 @@
 import type {
+  NotifyServiceRequestInput,
+  ServiceRequestNotifyResultDto,
+  ServiceRequestWithMailDto,
   ApproveServiceEstimateInput,
   AssignServiceInput,
   CompleteServiceRequestInput,
@@ -64,6 +67,16 @@ export const serviceRequestsApi = {
   ...createListApi<ServiceRequestDto>(PATH),
   ...createGetApi<ServiceRequestDto>(PATH),
   ...createWriteApi<ServiceRequestDto, CreateServiceRequestInput, UpdateServiceRequestInput>(PATH),
+  /**
+   * Заведение отвечает заявкой **и исходом письма службе**: у службы нет учётки в портале, и
+   * «заявка заведена, но служба не оповещена» человек обязан узнать сразу, а не когда за ней не
+   * приехали. Переопределяет `create` фабрики — форма ответа у него своя.
+   */
+  create: (body: CreateServiceRequestInput) =>
+    apiFetch<ServiceRequestWithMailDto>(PATH, { method: 'POST', body }),
+  /** Повторная отправка письма службе: ключ идемпотентности — один на открытие диалога (Р70). */
+  notify: (id: string, body: NotifyServiceRequestInput) =>
+    apiFetch<ServiceRequestNotifyResultDto>(`${PATH}/${id}/notify`, { method: 'POST', body }),
   ...createRemoveApi<{ ok: boolean }>(PATH),
 
   history: (id: string) => apiFetch<RequestHistoryEntryDto[]>(`${PATH}/${id}/history`),
@@ -120,8 +133,9 @@ export const serviceRequestsApi = {
   itApproval: (id: string, body: ApproveServiceItInput) =>
     patch<ServiceRequestDto>(id, '/it-approval', body),
   /** Только отмена и административные откаты (Р18) — остальное ходит своими ручками. */
+  /** Отмена и откаты: ответ несёт исход письма — отменённую заявку служба тоже должна узнать. */
   changeStatus: (id: string, body: ServiceStatusChangeInput) =>
-    patch<ServiceRequestDto>(id, '/status', body),
+    patch<ServiceRequestWithMailDto>(id, '/status', body),
   /** Примечание исполнителя: заявку не редактирует, границу сторон не двигает (приём ADR 0053). */
   saveServiceComment: (id: string, body: { serviceComment: string; version: number }) =>
     patch<ServiceRequestDto>(id, '/service-comment', body),

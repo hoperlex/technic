@@ -5,6 +5,7 @@ import {
   and,
   asc,
   count,
+  desc,
   eq,
   exists,
   gte,
@@ -54,6 +55,8 @@ import {
   serviceRequestStatusLabels,
   serviceResetOnTransition,
   serviceStatusChangeRequiresReason,
+  notifyServiceRequestSchema,
+  type ServiceRequestNotifyResultDto,
   serviceStatusChangeSchema,
   serviceWaitingOn,
   setServiceUrgencySchema,
@@ -90,6 +93,15 @@ import {
 } from '../db/schema';
 import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
+import {
+  loadServiceLetterData,
+  logServiceMailFailure,
+  planServiceMail,
+  queueServiceMails,
+  renderServiceLetter,
+  serviceMailEventOf,
+  type ServiceMailPlan,
+} from '../services/service-request-mail';
 import { requirePrincipal } from '../auth/plugin';
 import type { Principal } from '../auth/principal';
 import {
@@ -653,8 +665,14 @@ async function applyTransition(
     /** Поля, которые пишет сама ручка: исполнитель, снимок решения, суммы. */
     patch?: RequestPatch;
     touchStatusAt?: boolean;
+    /**
+     * План письма службе, посчитанный **до** транзакции (Р67): адресаты и обратные адреса ходят в
+     * базу и в конфигурацию, и упавшие внутри они откатили бы саму заявку. `null` — переход письма
+     * не шлёт.
+     */
+    mail?: ServiceMailPlan | null;
   },
-): Promise<void> {
+): Promise<{ mailFailed: boolean }> {
   const { row, to, actor } = params;
   const reset = serviceResetOnTransition(row.status, to);
   const now = new Date();
@@ -718,16 +736,83 @@ async function applyTransition(
     .returning({ id: serviceRequests.id });
   if (!updated) throw err.conflict();
 
-  await tx.insert(serviceRequestStatusHistory).values({
+  const { mailFailed } = await recordServiceStatusTransition(tx, {
     requestId: row.id,
     // Переназначение — тот же статус: в истории оно и должно читаться как «Назначен сервис» →
     // «Назначен сервис», иначе строка «сменили исполнителя» пропадёт вовсе.
     fromStatus: row.status,
     toStatus: to,
     estimateRevision: (patch.estimateRevision as number | undefined) ?? row.estimateRevision,
-    changedBy: actor.id,
+    actorId: actor.id,
     comment: params.comment ?? '',
+    mail: params.mail,
   });
+  return { mailFailed };
+}
+
+/**
+ * Единственная точка, где заявка записывает вход в статус (план
+ * `docs/office-equipment-mail-and-history-plan.md`, Р65, Р67).
+ *
+ * Точек было две — заведение и `applyTransition`, — и письмо, повешенное на любую из них, пропускало
+ * бы половину случаев: «Новой» заявка бывает и при заведении, и вернувшись откатом. Теперь строку
+ * истории пишет один помощник, он же ставит письма события: новая дуга перехода не должна требовать
+ * помнить про почту.
+ *
+ * Возвращает id строки истории — из него собирается ключ дедупликации письма. Ключ по заявке был бы
+ * неверен: повторный цикл «отменили → вернули» не дал бы второго письма.
+ */
+async function recordServiceStatusTransition(
+  tx: Tx,
+  params: {
+    requestId: string;
+    fromStatus: ServiceRequestStatus | null;
+    toStatus: ServiceRequestStatus;
+    estimateRevision: number;
+    actorId: string;
+    comment: string;
+    /** План письма, посчитанный до транзакции; `null` — письма у этого перехода нет. */
+    mail?: ServiceMailPlan | null;
+  },
+): Promise<{ statusHistoryId: string; mailFailed: boolean }> {
+  const [entry] = await tx
+    .insert(serviceRequestStatusHistory)
+    .values({
+      requestId: params.requestId,
+      fromStatus: params.fromStatus,
+      toStatus: params.toStatus,
+      estimateRevision: params.estimateRevision,
+      changedBy: params.actorId,
+      comment: params.comment,
+    })
+    .returning({ id: serviceRequestStatusHistory.id });
+
+  if (!params.mail) return { statusHistoryId: entry!.id, mailFailed: false };
+
+  // Данные письма — своей же строкой в той же транзакции: отказать по данным это чтение не может,
+  // а собирать те же поля отдельно в каждой ручке значило бы завести два расходящихся письма.
+  const data = await loadServiceLetterData(tx, params.requestId);
+
+  /**
+   * Ошибка **сборки тела** заявку не роняет: письма нет, заявка есть, исход `mail_failed` уходит
+   * ответом и в аудит после commit. Ошибка вставки письма — отказ хранилища, и она летит наружу,
+   * откатывая всё: прятать потерю письма мягким исходом нельзя.
+   */
+  let letter: ReturnType<typeof renderServiceLetter>;
+  try {
+    letter = renderServiceLetter(params.mail.event, data);
+  } catch (e) {
+    logServiceMailFailure(params.requestId, e);
+    return { statusHistoryId: entry!.id, mailFailed: true };
+  }
+
+  await queueServiceMails(tx, {
+    plan: params.mail,
+    statusHistoryId: entry!.id,
+    requestId: params.requestId,
+    letter,
+  });
+  return { statusHistoryId: entry!.id, mailFailed: false };
 }
 
 // ── Смета ──
@@ -756,7 +841,15 @@ async function estimateItems(tx: Tx, requestId: string) {
  * нечего.
  */
 const FILE_KIND_STATUSES: Record<ServiceFileKind, ServiceRequestStatus[]> = {
-  attachment: ['new', 'it_approved', 'assigned', 'diagnostics', 'estimate_review', 'in_work', 'done'],
+  attachment: [
+    'new',
+    'it_approved',
+    'assigned',
+    'diagnostics',
+    'estimate_review',
+    'in_work',
+    'done',
+  ],
   estimate: ['diagnostics', 'estimate_review'],
   act: ['in_work', 'done', 'accepted', 'cancelled'],
   invoice: ['in_work', 'done', 'accepted', 'cancelled'],
@@ -1270,6 +1363,18 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       const autoApproved = p.role !== 'admin' && can(p, 'serviceRequests.approveIt');
       const now = new Date();
 
+      /**
+       * Адресаты и обратные адреса считаются **до** транзакции (Р67): здесь ходят в базу и в
+       * конфигурацию, и отказ по данным внутри транзакции откатил бы саму заявку. Мягкий исход
+       * («почта выключена», «канал не настроен») возвращается ответом — заявка заводится в любом
+       * случае.
+       *
+       * Автор будущей заявки — сам заводящий: ответ службы на письмо уйдёт ему.
+       */
+      const mailPlan = autoApproved
+        ? ({ plan: null, outcome: 'queued' } as const)
+        : await planServiceMail('new', { actor: p, authorId: p.id });
+
       const created = await db.transaction(async (tx) => {
         await assertNoOpenRequest(tx, equipment.id);
         const claim = await resolveWarrantyClaim(tx, body.warrantyClaim, equipment, null);
@@ -1308,15 +1413,19 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           })
           .returning({ id: serviceRequests.id, num: serviceRequests.num });
         const request = row!;
-        await tx.insert(serviceRequestStatusHistory).values({
+        const transition = await recordServiceStatusTransition(tx, {
           requestId: request.id,
           fromStatus: null,
           // Автовиза видна в истории тем же переходом, что и заведение: заявка не была «Новой»
           // ни секунды, и рисовать событие, которого не происходило, незачем.
           toStatus: autoApproved ? 'it_approved' : 'new',
           estimateRevision: 0,
-          changedBy: p.id,
+          actorId: p.id,
           comment: autoApproved ? 'Заявку завёл согласующий от ИТ — виза проставлена сразу' : '',
+          // Письма у автовизы нет и не должно быть: адресат письма — тот же отдел, который заявку
+          // и завёл, а «вам заявка, которую вы только что подписали» — шум (Р66). Механика это
+          // делает сама: в «Новой» такая заявка не бывает.
+          mail: mailPlan.plan,
         });
         if (body.fileIds.length > 0) {
           await assertFilesAttachable(tx, body.fileIds, p.id);
@@ -1327,7 +1436,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
             );
           await markFilesActive(tx, body.fileIds);
         }
-        return request;
+        return { ...request, mailFailed: transition.mailFailed };
       });
 
       const dto = (await getDto(created.id))!;
@@ -1346,8 +1455,19 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           itAutoApproved: autoApproved,
         },
       });
+      // Неудача сборки письма пишется в аудит только теперь: `writeAudit` ходит мимо транзакции, и
+      // запись, сделанная внутри, пережила бы её откат (Р67).
+      if (created.mailFailed) {
+        await writeAudit({
+          actorUserId: p.id,
+          action: 'serviceRequest.mailFailed',
+          entityType: 'serviceRequest',
+          entityId: created.id,
+          metadata: { event: 'service_request_waiting_it' },
+        });
+      }
       reply.code(201);
-      return dto;
+      return { request: dto, mail: created.mailFailed ? 'mail_failed' : mailPlan.outcome };
     },
   );
 
@@ -2222,15 +2342,23 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         throw err.unprocessable('Укажите причину', { reason: 'Укажите причину' });
       }
 
-      await db.transaction(async (tx) => {
-        await applyTransition(tx, {
+      /**
+       * Письмо у этой ручки бывает дважды: отмена («не выезжайте») и откат в «Новую» — заявка
+       * снова ждёт визы, и ждут её так же, как при заведении (Р65). Адресаты считаются до
+       * транзакции, автор письма для обратного адреса — автор самой заявки.
+       */
+      const mailPlan = await planServiceMail(to, { actor: p, authorId: row.createdBy });
+
+      const transition = await db.transaction(async (tx) =>
+        applyTransition(tx, {
           row,
           to,
           version: body.version,
           actor: p,
           comment: body.reason,
-        });
-      });
+          mail: mailPlan.plan,
+        }),
+      );
       await writeAudit({
         actorUserId: p.id,
         action: 'serviceRequest.status',
@@ -2238,7 +2366,101 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         entityId: row.id,
         metadata: { from: row.status, to, reason: body.reason },
       });
-      return (await getDto(row.id))!;
+      if (transition.mailFailed) {
+        await writeAudit({
+          actorUserId: p.id,
+          action: 'serviceRequest.mailFailed',
+          entityType: 'serviceRequest',
+          entityId: row.id,
+          metadata: { event: mailPlan.plan?.event ?? null },
+        });
+      }
+      return {
+        request: (await getDto(row.id))!,
+        mail: transition.mailFailed ? 'mail_failed' : mailPlan.outcome,
+      };
+    },
+  );
+
+  /**
+   * Повторная отправка письма службе (Р70).
+   *
+   * Что именно повторяется, решает сервер: берётся последняя строка истории **текущего** статуса, и
+   * работает это лишь там, где у статуса есть событие — «Новая» и «Отменена». В остальных статусах
+   * повторять нечего: письма по ним не уходили, и сервер выбирал бы наугад.
+   *
+   * Ключ идемпотентности приходит от портала: два одновременных нажатия и повтор HTTP дают одно
+   * письмо, а осознанный второй заход — новое. Право — у того, кто ведёт заявки (и у администратора,
+   * который разбирает застрявшее).
+   */
+  r.post(
+    '/:id/notify',
+    { ...canChangeStatus, schema: { params: idParams, body: notifyServiceRequestSchema } },
+    async (req): Promise<ServiceRequestNotifyResultDto> => {
+      const p = requirePrincipal(req);
+      const row = await requireEditable(p, req.params.id);
+
+      const event = serviceMailEventOf(row.status);
+      if (!event) {
+        throw err.unprocessable('По этой заявке письма службе не отправлялись', {
+          status: 'Нечего повторять',
+        });
+      }
+
+      const [entry] = await db
+        .select({ id: serviceRequestStatusHistory.id })
+        .from(serviceRequestStatusHistory)
+        .where(
+          and(
+            eq(serviceRequestStatusHistory.requestId, row.id),
+            eq(serviceRequestStatusHistory.toStatus, row.status),
+          ),
+        )
+        .orderBy(desc(serviceRequestStatusHistory.changedAt))
+        .limit(1);
+      if (!entry) {
+        throw err.unprocessable('В истории заявки нет записи о переходе в текущий статус', {
+          status: 'Нечего повторять',
+        });
+      }
+
+      const mailPlan = await planServiceMail(row.status, { actor: p, authorId: row.createdBy });
+      if (!mailPlan.plan) return { mail: mailPlan.outcome, recipients: [] };
+      const plan = mailPlan.plan;
+
+      const failed = await db.transaction(async (tx) => {
+        const data = await loadServiceLetterData(tx, row.id);
+        let letter: ReturnType<typeof renderServiceLetter>;
+        try {
+          letter = renderServiceLetter(plan.event, data);
+        } catch (e) {
+          logServiceMailFailure(row.id, e);
+          return true;
+        }
+        await queueServiceMails(tx, {
+          plan,
+          statusHistoryId: entry.id,
+          requestId: row.id,
+          letter,
+          idempotencyKey: req.body.idempotencyKey,
+        });
+        return false;
+      });
+
+      await writeAudit({
+        actorUserId: p.id,
+        // Именно «поставлено в очередь»: отправляет письмо worker, и «отправлено» здесь было бы
+        // обещанием, которого этот момент не даёт.
+        action: failed ? 'serviceRequest.mailFailed' : 'serviceRequest.mailQueued',
+        entityType: 'serviceRequest',
+        entityId: row.id,
+        metadata: { event, recipients: plan.recipients.map((r) => r.email) },
+      });
+
+      return {
+        mail: failed ? 'mail_failed' : 'queued',
+        recipients: failed ? [] : plan.recipients.map((r) => r.email),
+      };
     },
   );
 

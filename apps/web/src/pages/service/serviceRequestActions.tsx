@@ -5,6 +5,7 @@ import {
   CheckCircleOutlined,
   CloseCircleOutlined,
   FileTextOutlined,
+  MailOutlined,
   PlayCircleOutlined,
   RollbackOutlined,
   SafetyCertificateOutlined,
@@ -20,6 +21,9 @@ import {
   allowedServiceStatusTransitions,
   can as hasPermission,
   isServiceRequestEditable,
+  moduleMailOutcomeLabels,
+  serviceMailRepeatable,
+  type ModuleMailOutcome,
   type ServiceRequestDto,
 } from '@technic/contracts';
 import { serviceRequestKeys, serviceRequestsApi } from '@entities/service-request';
@@ -79,11 +83,34 @@ export function useServiceRequestActions(): {
    */
   const reasonMutation = useMutation({
     mutationFn: (task: { run: () => Promise<unknown>; success: string }) => task.run(),
-    onSuccess: (_result, task) => {
+    onSuccess: (result, task) => {
       message.success(task.success);
+      // Отмена шлёт письмо службе: «не выезжайте». Если письма не будет, человек узнаёт об этом
+      // здесь же — служба читает почту, а не портал.
+      const outcome = (result as { mail?: ModuleMailOutcome } | null)?.mail;
+      if (outcome && outcome !== 'queued') message.warning(moduleMailOutcomeLabels[outcome]);
       void qc.invalidateQueries({ queryKey: serviceRequestKeys.root });
       void qc.invalidateQueries({ queryKey: officeEquipmentKeys.root });
       setPrompt(null);
+    },
+    onError: (e) => message.error(errorMessage(e)),
+  });
+
+  /**
+   * Повторная отправка письма службе (Р70). Ключ идемпотентности живёт до успеха: два нажатия
+   * подряд дают одно письмо, а осознанный повтор после ответа — новое.
+   */
+  const [notifyKey, setNotifyKey] = useState(() => crypto.randomUUID());
+  const notifyMutation = useMutation({
+    mutationFn: (request: ServiceRequestDto) =>
+      serviceRequestsApi.notify(request.id, { idempotencyKey: notifyKey }),
+    onSuccess: (res) => {
+      setNotifyKey(crypto.randomUUID());
+      if (res.mail === 'queued') {
+        message.success(`Письмо службе поставлено в очередь: ${res.recipients.join(', ')}`);
+      } else {
+        message.warning(moduleMailOutcomeLabels[res.mail]);
+      }
     },
     onError: (e) => message.error(errorMessage(e)),
   });
@@ -273,6 +300,24 @@ export function useServiceRequestActions(): {
         label: 'Записать перемещение техники',
         icon: <SwapOutlined />,
         onClick: () => setMoveTarget(request),
+      });
+    }
+
+    /**
+     * Письмо службе уходит на входе в статус, и повторить его можно только там, где событие есть:
+     * «Новая» и «Отменена». В остальных статусах сервер отвечает 422, и предлагать кнопку было бы
+     * обещанием, которого он не даёт.
+     */
+    if (
+      !executor &&
+      serviceMailRepeatable(request.status) &&
+      hasPermission(user, 'serviceRequests.status')
+    ) {
+      items.push({
+        key: 'notify',
+        label: 'Отправить письмо службе ещё раз',
+        icon: <MailOutlined />,
+        onClick: () => notifyMutation.mutate(request),
       });
     }
 

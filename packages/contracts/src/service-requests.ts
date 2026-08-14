@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { archiveFilterSchema, baseListQuery, dateOnlySchema, uuidSchema } from './common';
 import { contactNameSchema, contactPhoneSchema } from './common';
 import { actsForCounterparty, can, type AccessSubject, type Permission } from './permissions';
+import type { ModuleMailOutcome } from './module-mail';
 
 // ── Заявки на обслуживание оргтехники (ADR 0085) ──
 // Цикл длиннее, чем у вывоза мусора и заказа техники: между «приняли» и «сделали» стоит смета,
@@ -833,6 +834,46 @@ export interface ServiceRequestDto {
   updatedAt: string;
   deletedAt: string | null;
   version: number;
+}
+
+/**
+ * Ответ действия, которое сопровождается письмом службе (план
+ * `office-equipment-mail-and-history-plan.md`, Р67): заявка плюс исход почтовой части.
+ *
+ * Отдельный тип, а не поле карточки: исход относится к **действию**, а не к заявке — в списке и
+ * при повторном открытии его нет и быть не может. И он обязан дойти до человека сразу: «заявка
+ * заведена, но служба не оповещена» узнаётся в момент заведения, а не когда за ней не приехали.
+ */
+export interface ServiceRequestWithMailDto {
+  request: ServiceRequestDto;
+  mail: ModuleMailOutcome;
+}
+
+/**
+ * Повторная отправка письма службе (Р70). Ключ идемпотентности генерирует портал — один на открытие
+ * диалога, а не на нажатие: два одновременных клика и повтор HTTP обязаны дать одно письмо.
+ *
+ * Порядкового номера попытки здесь нет намеренно: его пришлось бы считать чтением, а между чтением
+ * и вставкой помещается второе нажатие.
+ */
+export const notifyServiceRequestSchema = z.object({ idempotencyKey: uuidSchema }).strict();
+export type NotifyServiceRequestInput = z.infer<typeof notifyServiceRequestSchema>;
+
+export interface ServiceRequestNotifyResultDto {
+  mail: ModuleMailOutcome;
+  /** Куда ушло письмо — адреса без секретов: по ним видно, что настройка та самая. */
+  recipients: string[];
+}
+
+/**
+ * Есть ли у статуса письмо, которое можно повторить. Одна функция на сервер и портал: разойдись
+ * они — кнопка вела бы в 422 либо повтор оставался бы недоступным там, где сервер его позволяет.
+ *
+ * Событие письма привязано к **входу в статус**, поэтому повторяются ровно два: «Новая» (заявка
+ * ждёт визы ИТ) и «Отменена» (чтобы не выезжали зря).
+ */
+export function serviceMailRepeatable(status: ServiceRequestStatus): boolean {
+  return status === 'new' || status === 'cancelled';
 }
 
 /**
