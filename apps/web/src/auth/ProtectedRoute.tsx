@@ -43,6 +43,10 @@ function homePath(canUse: (permission: Permission) => boolean): string {
   if (canUse('driverCabinet.read')) return '/driver';
   if (canUse('wasteRequests.read')) return '/waste';
   if (canUse('vehicleRequests.read')) return '/vehicle-requests';
+  // Служба главного механика: заявок у неё нет вовсе, и первый её раздел — парк на дату. Без этих
+  // двух строк механик попадал бы на смену пароля — как водитель до ADR 0102.
+  if (canUse('garage.read')) return '/garage';
+  if (canUse('waybills.read')) return '/waybills';
   if (canUse('directories.write')) return '/directories';
   if (canUse('users.manage')) return '/admin';
   // Роли без единого раздела быть не должно; смена пароля доступна любому вошедшему.

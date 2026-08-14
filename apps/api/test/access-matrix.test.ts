@@ -99,22 +99,38 @@ let app: FastifyInstance;
  * — «роль+надстройка», у остальных ролей просто роль. Пара пишется одной строкой, потому что и
  * разрешение у неё одно на пару: роль исполнителя без типа контрагента не отвечает ни на один
  * вопрос про доступ, а «штаб» и «штаб с надстройкой» отвечают на них по-разному.
+ *
+ * Перечень объявлен списком, а тип выведен из него: писавшийся руками union отставал от
+ * контрактов — в нём не было ни водителя (ADR 0102), ни визы отдела ИТ, хотя их ключи в кейсах уже
+ * стояли. Расхождение молчит с обеих сторон: забытый ключ `allowed` не принимает (и кейс новой
+ * роли писать нечем), а лишний не ловит никто. Список сверяется с `ACCESS_PROFILES` отдельной
+ * проверкой ниже — порядок в нём тот же, что в контрактах, и новая роль обязана уронить её здесь,
+ * а не проявиться отказом в бою.
  */
-type ProfileKey =
-  | 'admin'
-  | 'manager'
-  | 'dispatcher'
-  | 'shtab'
-  | 'rukstroy'
-  | 'commandant'
-  | 'department'
-  | 'department_head'
-  | 'observer'
-  | 'operator/operator'
-  | 'operator/vehicle_lessor'
-  | 'operator/service'
-  | 'shtab+office_equipment_operator'
-  | 'department+office_equipment_operator';
+const DECLARED_PROFILE_KEYS = [
+  'admin',
+  'manager',
+  'dispatcher',
+  'shtab',
+  'rukstroy',
+  'commandant',
+  'department',
+  'department_head',
+  'operator/operator',
+  'operator/vehicle_lessor',
+  'operator/service',
+  'observer',
+  'driver',
+  // Служба главного механика: своей оси области у обеих ролей нет — парк они смотрят целиком.
+  'mechanic',
+  'chief_mechanic',
+  'shtab+office_equipment_operator',
+  'department+office_equipment_operator',
+  'shtab+office_equipment_it_approver',
+  'department+office_equipment_it_approver',
+] as const;
+
+type ProfileKey = (typeof DECLARED_PROFILE_KEYS)[number];
 
 /** Ключ базовой роли субъекта: тот же ключ, но без надстроек. */
 const baseKeyOf = (s: AccessSubject): ProfileKey =>
@@ -155,6 +171,18 @@ interface Case {
  */
 const isAllowed = (c: Case, s: AccessSubject): boolean =>
   c.allowed.includes(keyOf(s)) || c.allowed.includes(baseKeyOf(s));
+
+/**
+ * Служба главного механика: обе роли смотрят парк целиком, своей оси области у них нет. В перечнях
+ * они стоят парой везде, где решает чтение, — справочники, гараж, журнал листов, карточки
+ * водителей, — и одним именем, а не двумя строками в каждом втором кейсе: это одно решение, и
+ * разъехаться чтение у них не должно.
+ *
+ * Расходятся роли ровно на двух правах — ведение водителей и аннулирование бланка, — и там в
+ * перечне стоит один `chief_mechanic`: механик в тех кейсах остаётся среди запрещённых, и отказ
+ * ему проверяется тем же перебором.
+ */
+const MECHANICS: ProfileKey[] = ['mechanic', 'chief_mechanic'];
 
 /**
  * Ведение справочника оргтехники (ADR 0085, 0086): три роли, ведущие справочники, плюс надстройка
@@ -227,11 +255,15 @@ const SERVICE_REQUEST_FILE_KEEPERS: ProfileKey[] = [
 
 const CASES: Case[] = [
   // ── Водители (ADR 0037): своё право, а не `directories.*` — в карточке персональные данные ──
+  // Круг шире тех, кто ведёт заявки: карточки водителей читает и служба главного механика — за
+  // руль его техники садятся эти люди, — а ведёт их из неё только главный механик. Пара кейсов
+  // «чтение — ведение» ниже и держит эту границу: механик, попавший в ведение, обязан уронить
+  // перебор запретов.
   {
-    title: 'справочник водителей — чтение закрыто от всех, кроме ведущих заявки',
+    title: 'справочник водителей — чтение: ведущим заявки и службе главного механика',
     method: 'GET',
     url: '/api/v1/drivers',
-    allowed: ['admin', 'manager', 'dispatcher'],
+    allowed: ['admin', 'manager', 'dispatcher', ...MECHANICS],
   },
   {
     // Список должностей — тот же справочник, вид в него другой: должности живых сотрудников с
@@ -240,10 +272,13 @@ const CASES: Case[] = [
     title: 'должности справочника водителей — тем же, кто читает справочник',
     method: 'GET',
     url: '/api/v1/drivers/job-titles',
-    allowed: ['admin', 'manager', 'dispatcher'],
+    allowed: ['admin', 'manager', 'dispatcher', ...MECHANICS],
   },
   {
-    title: 'заведение водителя — тем же, кто выписывает путевой лист',
+    // Главный механик заводит водителя наравне с диспетчером: людей в парк принимает ОГМ. Механика
+    // здесь нет — он справочник читает, и это единственное, чем две роли службы различаются в
+    // водителях.
+    title: 'заведение водителя — тем же, кто выписывает путевой лист, и главному механику',
     method: 'POST',
     url: '/api/v1/drivers',
     payload: {
@@ -251,7 +286,7 @@ const CASES: Case[] = [
       firstName: 'Водитель',
       snils: '112-233-445 95',
     },
-    allowed: ['admin', 'manager', 'dispatcher'],
+    allowed: ['admin', 'manager', 'dispatcher', 'chief_mechanic'],
   },
   // Загрузки кадровой выгрузки у водителей больше нет: справочник грузится файлом .xlsx через
   // обмен справочниками (ADR 0073), и его маршруты проверяются ниже, в разделе администрирования.
@@ -261,10 +296,10 @@ const CASES: Case[] = [
     // Отбор водителя под машину — часть формы перевода заявки в работу. Право на статусы
     // заявок ТС сюда не годится: с ADR 0038 оно есть и у арендодателя, а водителей нашего
     // парка он не назначает — путевой лист выписывается только на собственные машины.
-    title: 'отбор водителей под машину — тем же, кто ведёт водителей',
+    title: 'отбор водителей под машину — тем же, кто читает справочник водителей',
     method: 'GET',
     url: '/api/v1/drivers/available?vehicleId=00000000-0000-4000-8000-000000000000&on=2026-08-03',
-    allowed: ['admin', 'manager', 'dispatcher'],
+    allowed: ['admin', 'manager', 'dispatcher', ...MECHANICS],
   },
   {
     title: 'замена удостоверения — тем же, кто ведёт водителей',
@@ -274,35 +309,38 @@ const CASES: Case[] = [
       number: '482645',
       categories: [{ categoryId: '55555555-5555-4555-8555-555555555555' }],
     },
-    allowed: ['admin', 'manager', 'dispatcher'],
+    allowed: ['admin', 'manager', 'dispatcher', 'chief_mechanic'],
   },
   {
     title: 'отметка проверки документа — тем же, кто ведёт водителей',
     method: 'POST',
     url: `/api/v1/drivers/${RECORD_ID}/licenses/${RECORD_ID}/verify`,
     payload: { verificationStatus: 'verified' },
-    allowed: ['admin', 'manager', 'dispatcher'],
+    allowed: ['admin', 'manager', 'dispatcher', 'chief_mechanic'],
   },
   {
     title: 'аннулирование удостоверения — тем же, кто ведёт водителей',
     method: 'POST',
     url: `/api/v1/drivers/${RECORD_ID}/licenses/${RECORD_ID}/revoke`,
     payload: { revokeReason: 'лишение права управления' },
-    allowed: ['admin', 'manager', 'dispatcher'],
+    allowed: ['admin', 'manager', 'dispatcher', 'chief_mechanic'],
   },
   // ── Путевые листы (ADR 0037): журнал и аннулирование — своими правами ──
+  // Журнал читает и служба главного механика: лист выписывают на её технику и её водителя. А вот
+  // списывает испорченный бланк из неё только главный механик — аннулирование расходует номер
+  // строгой отчётности, и у механика его нет.
   {
-    title: 'журнал путевых листов — закрыт от всех, кроме ведущих заявки',
+    title: 'журнал путевых листов — ведущим заявки и службе главного механика',
     method: 'GET',
     url: '/api/v1/waybills',
-    allowed: ['admin', 'manager', 'dispatcher'],
+    allowed: ['admin', 'manager', 'dispatcher', ...MECHANICS],
   },
   {
-    title: 'аннулирование листа — своим правом',
+    title: 'аннулирование листа — своим правом, и у службы оно только у главного механика',
     method: 'POST',
     url: `/api/v1/waybills/${RECORD_ID}/cancel`,
     payload: { reason: 'испорчен при печати' },
-    allowed: ['admin', 'manager', 'dispatcher'],
+    allowed: ['admin', 'manager', 'dispatcher', 'chief_mechanic'],
   },
   {
     // Печать уносит из портала СНИЛС и номер удостоверения ровно так же, как выгрузка файлом
@@ -310,19 +348,19 @@ const CASES: Case[] = [
     title: 'печать бланка — тем же правом, что чтение журнала',
     method: 'GET',
     url: `/api/v1/waybills/${RECORD_ID}/print`,
-    allowed: ['admin', 'manager', 'dispatcher'],
+    allowed: ['admin', 'manager', 'dispatcher', ...MECHANICS],
   },
   {
     title: 'листы заявки в карточке — правом на листы, а не на заявки',
     method: 'GET',
     url: `/api/v1/vehicle-requests/${RECORD_ID}/waybills`,
-    allowed: ['admin', 'manager', 'dispatcher'],
+    allowed: ['admin', 'manager', 'dispatcher', ...MECHANICS],
   },
   {
     title: 'контакт водителя в карточке — тем же правом на персональные данные листа',
     method: 'GET',
     url: `/api/v1/vehicle-requests/${RECORD_ID}/driver`,
-    allowed: ['admin', 'manager', 'dispatcher'],
+    allowed: ['admin', 'manager', 'dispatcher', ...MECHANICS],
   },
   {
     // Выписка ЭСМ-2 по требованию у линейного заказа (ADR 0100 §6). Права те же две, что у
@@ -348,7 +386,10 @@ const CASES: Case[] = [
     title: 'план по дням — правом на листы: в нём водители и номера бланков',
     method: 'GET',
     url: `/api/v1/vehicle-requests/${RECORD_ID}/days`,
-    allowed: ['admin', 'manager', 'dispatcher'],
+    // Служба главного механика читает план по тому же одному праву. Планировать она им не может:
+    // постановка дня в рейс и снятие с него спрашивают вторым правом ход заявки, и обе роли
+    // остаются в перечне запрещённых у следующих двух кейсов.
+    allowed: ['admin', 'manager', 'dispatcher', ...MECHANICS],
   },
   {
     title: 'постановка дня в рейс — правом на листы и на ход заявки',
@@ -423,35 +464,41 @@ const CASES: Case[] = [
   // Право своё, а не сумма прав источников среза: в строке видно, кто за рулём, — те же
   // персональные данные, что в карточке водителя. Наблюдателю раздел закрыт вместе с ними, хотя
   // заявки он читает; арендодателю — тем более: парк и водители тут наши.
+  // Служба главного механика получает раздел целиком, и это её главный экран: где сегодня каждая
+  // машина и кто на ней. Обе роли читают одинаково — гараж только показывает, действий в нём нет.
   {
-    title: 'срез техники — закрыт от всех, кроме ведущих водителей и листы',
+    title: 'срез техники — ведущим водителей и листы плюс служба главного механика',
     method: 'GET',
     url: '/api/v1/garage/vehicles',
-    allowed: ['admin', 'manager', 'dispatcher'],
+    allowed: ['admin', 'manager', 'dispatcher', ...MECHANICS],
   },
   {
     title: 'сводка по парку — тем же правом',
     method: 'GET',
     url: '/api/v1/garage/vehicles/summary',
-    allowed: ['admin', 'manager', 'dispatcher'],
+    allowed: ['admin', 'manager', 'dispatcher', ...MECHANICS],
   },
   {
     title: 'срез водителей — тем же правом',
     method: 'GET',
     url: '/api/v1/garage/drivers',
-    allowed: ['admin', 'manager', 'dispatcher'],
+    allowed: ['admin', 'manager', 'dispatcher', ...MECHANICS],
   },
   {
     title: 'сводка по водителям — тем же правом',
     method: 'GET',
     url: '/api/v1/garage/drivers/summary',
-    allowed: ['admin', 'manager', 'dispatcher'],
+    allowed: ['admin', 'manager', 'dispatcher', ...MECHANICS],
   },
   // ── Справочники: чтение нужно всем (форма заявки), ведение — трём ролям ──
   // «Всем» — это и сервисная компания (ADR 0085): `directories.read` она получает ролью внешнего
   // исполнителя, как оператор вывоза и арендодатель ТС, и без справочников у неё не отрисуется ни
   // фильтр, ни название в списке. Свой справочник — оргтехники — ей при этом закрыт (Р7), и
   // проверяется это ниже, в разделе оргтехники.
+  //
+  // Служба главного механика читает справочники, но не ведёт их — ни одна из двух ролей: ведение
+  // одним правом открывает весь раздел, вместе с объектами, контрагентами и прайсом вывоза. Поэтому
+  // в кейсах ведения ниже её ключей нет, и оба механика попадают там в перебор запретов.
   {
     title: 'справочник техники — чтение',
     method: 'GET',
@@ -469,6 +516,7 @@ const CASES: Case[] = [
       'operator/vehicle_lessor',
       'operator/service',
       'observer',
+      ...MECHANICS,
     ],
   },
   {
@@ -488,6 +536,7 @@ const CASES: Case[] = [
       'operator/vehicle_lessor',
       'operator/service',
       'observer',
+      ...MECHANICS,
     ],
   },
   {
@@ -509,6 +558,7 @@ const CASES: Case[] = [
       'operator/vehicle_lessor',
       'operator/service',
       'observer',
+      ...MECHANICS,
     ],
   },
   {
@@ -594,6 +644,7 @@ const CASES: Case[] = [
       'operator/vehicle_lessor',
       'operator/service',
       'observer',
+      ...MECHANICS,
     ],
   },
   {
@@ -1339,6 +1390,9 @@ const CASES: Case[] = [
       // свои. Права роли тут ни при чём — доступ решает связь файла (Р34), и для чужого снимка
       // ответом будет 403 из обработчика, а не отказ стража.
       'driver',
+      // По той же причине здесь и служба главного механика: маршрут пускает всех, кого пускает
+      // связанная запись, и роль на входе не спрашивают вовсе.
+      ...MECHANICS,
     ],
     checkedInHandler: true,
   },
@@ -1493,6 +1547,18 @@ describe('перечни кейсов покрывают всех, кто быв
     const known = new Set<string>(PROFILE_KEYS);
     const unknown = CASES.flatMap((c) => c.allowed).filter((key) => !known.has(key));
     expect([...new Set(unknown)]).toEqual([]);
+  });
+
+  /**
+   * Обратная сторона: перечень ключей, из которого выведен тип `ProfileKey`, — второй список рядом
+   * с `ACCESS_PROFILES`, и отстать он может молча. Отставший тип не даёт написать кейс новой роли
+   * (ключа он не примет), и роль тихо остаётся вообще без собственных разрешений — ровно так
+   * `driver` и обе роли службы главного механика однажды и оказались в перечне только по факту
+   * запретов. Сравнением целиком, вместе с порядком: перечни выводятся из одного и того же списка
+   * ролей, и разойтись им нечем, кроме недосмотра.
+   */
+  it('перечень ключей совпадает с субъектами доступа из контрактов', () => {
+    expect(PROFILE_KEYS).toEqual([...DECLARED_PROFILE_KEYS]);
   });
 
   /**
