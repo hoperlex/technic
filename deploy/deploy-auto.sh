@@ -94,8 +94,9 @@ deploy-auto — деплой/обновление портала technic (auto.s
                                     граница совместимости → up -d → health. Возобновляем: повтор
                                     после любого обрыва продолжает с того же места
   deploy-auto --cutover-revert      откат незавершённого cutover: teardown релиза и возврат
-                                    сервисов на прежний тег. Разрешён только на фазе migrated и
-                                    только пока граница не записана
+                                    сервисов на прежний тег. Разрешён только на фазе migrated,
+                                    только пока граница не записана и только если окно было
+                                    узким — широкое откатывается --restore-db (протокол §6)
   deploy-auto --help                эта справка
 
 Переменные окружения:
@@ -262,18 +263,23 @@ write_state_atomic() {
 }
 
 CUTOVER_PHASE="" CUTOVER_CANDIDATE="" CUTOVER_MIGRATION="" CUTOVER_DUMP="" CUTOVER_STARTED=""
+# Обычные миграции, уехавшие в одном окне с необратимой (§6). Пусто — окно узкое, откат teardown'ом
+# возможен; непусто — единственный откат окна это дамп, и `--cutover-revert` обязан отказать.
+CUTOVER_EXTRAS=""
 
 # Читает активное состояние выката. Коды: 0 — прочитано, 1 — активного состояния нет (штатная
 # жизнь площадки: файл существует только между началом cutover и его архивированием), 2 — файл
 # есть, но в нём нет фазы или SHA кандидата.
 cutover_state_read() {
   CUTOVER_PHASE="" CUTOVER_CANDIDATE="" CUTOVER_MIGRATION="" CUTOVER_DUMP="" CUTOVER_STARTED=""
+  CUTOVER_EXTRAS=""
   [ -f "$CUTOVER_STATE" ] || return 1
   CUTOVER_PHASE="$(grep -E '^phase=' "$CUTOVER_STATE" | cut -d= -f2- || true)"
   CUTOVER_CANDIDATE="$(grep -E '^candidate=' "$CUTOVER_STATE" | cut -d= -f2- || true)"
   CUTOVER_MIGRATION="$(grep -E '^migration=' "$CUTOVER_STATE" | cut -d= -f2- || true)"
   CUTOVER_DUMP="$(grep -E '^dump=' "$CUTOVER_STATE" | cut -d= -f2- || true)"
   CUTOVER_STARTED="$(grep -E '^started_at=' "$CUTOVER_STATE" | cut -d= -f2- || true)"
+  CUTOVER_EXTRAS="$(grep -E '^extras=' "$CUTOVER_STATE" | cut -d= -f2- || true)"
   { [ -n "$CUTOVER_PHASE" ] && [ -n "$CUTOVER_CANDIDATE" ]; } || return 2
   return 0
 }
@@ -298,6 +304,7 @@ cutover_state_write() {
 phase=$CUTOVER_PHASE
 candidate=$CUTOVER_CANDIDATE
 migration=$CUTOVER_MIGRATION
+extras=$CUTOVER_EXTRAS
 dump=$CUTOVER_DUMP
 started_at=$CUTOVER_STARTED
 updated_at=$(date -u +%Y%m%dT%H%M%SZ)
@@ -416,7 +423,11 @@ cutover_status_line() {
   cutover_state_read || st=$?
   case "$st" in
     0) printf 'фаза %s, кандидат %s, миграция %s' \
-         "$CUTOVER_PHASE" "$CUTOVER_CANDIDATE" "${CUTOVER_MIGRATION:-?}" ;;
+         "$CUTOVER_PHASE" "$CUTOVER_CANDIDATE" "${CUTOVER_MIGRATION:-?}"
+       # Широкое окно меняет способ отката, и узнать об этом надо из статуса, а не из отказа
+       # `--cutover-revert` в ту минуту, когда откатывать уже понадобилось.
+       [ -z "$CUTOVER_EXTRAS" ] || printf '; ОКНО ШИРОКОЕ (+%s) — откат только --restore-db дампом %s' \
+         "$CUTOVER_EXTRAS" "${CUTOVER_DUMP:-?}" ;;
     1) printf 'нет активного выката' ;;
     *) printf 'ПОВРЕЖДЁН %s' "$CUTOVER_STATE" ;;
   esac
@@ -1121,16 +1132,39 @@ cutover_run() {
       REASON="журнал ссылается на отсутствующие в образе файлы: $(list_brief "$JOURNAL_MISSING")— база новее кода, cutover не начинается"
       fail "$REASON"; }
     pending_count="$(list_count "$JOURNAL_PENDING")"
-    case "$pending_count" in
-      0) REASON="неприменённых миграций нет — выкатывать нечего. Если миграцию накатили мимо cutover, разбирать это скрипту нечем"
-         fail "$REASON" ;;
-      1) CUTOVER_MIGRATION="$(list_clean "$JOURNAL_PENDING")" ;;
-      *) REASON="неприменённых миграций $pending_count ($(list_brief "$JOURNAL_PENDING")): бандл необратимого выката — ровно одна миграция (протокол §6). Сначала выкатите остальные обычным деплоем"
-         fail "$REASON" ;;
-    esac
+    [ "$pending_count" -gt 0 ] || {
+      REASON="неприменённых миграций нет — выкатывать нечего. Если миграцию накатили мимо cutover, разбирать это скрипту нечем"
+      fail "$REASON"; }
+    # Бандл определяется не числом миграций, а числом НЕОБРАТИМЫХ среди них (§6): необратимость
+    # видна по teardown в образе. Обычные соседи едут в том же окне — иначе площадка, где
+    # необратимая уехала в ветку не одна, не выкатывается вовсе: обычный путь отказывается из-за
+    # неё, cutover отказывался из-за них.
+    CUTOVER_MIGRATION="" CUTOVER_EXTRAS=""
+    while IFS= read -r m; do
+      [ -n "$m" ] || continue
+      if [ -f "$TEARDOWN_DIR/$m" ]; then
+        [ -z "$CUTOVER_MIGRATION" ] || {
+          REASON="в одном окне две необратимые миграции ($CUTOVER_MIGRATION и $m): teardown снимет одну, вторая останется в базе без пути назад (протокол §6). Разведите их по разным выкатам"
+          fail "$REASON"; }
+        CUTOVER_MIGRATION="$m"
+      else
+        CUTOVER_EXTRAS="${CUTOVER_EXTRAS:+$CUTOVER_EXTRAS }$m"
+      fi
+    done <<EOF
+$(list_clean "$JOURNAL_PENDING")
+EOF
+    [ -n "$CUTOVER_MIGRATION" ] || {
+      REASON="среди неприменённых ($(list_brief "$JOURNAL_PENDING")) необратимых нет — этому релизу cutover не нужен, выкатывайте обычным deploy-auto"
+      fail "$REASON"; }
     CUTOVER_CANDIDATE="$COMMIT_SHA"
     CUTOVER_STARTED="$(date -u +%Y%m%dT%H%M%SZ)"
     log "бандл: $CUTOVER_MIGRATION (кандидат $COMMIT_SHA)"
+    if [ -n "$CUTOVER_EXTRAS" ]; then
+      warn "в том же окне едут обычные миграции: $CUTOVER_EXTRAS"
+      warn "откат этого окна — ТОЛЬКО восстановлением дампа (--restore-db): teardown снимет"
+      warn "$CUTOVER_MIGRATION, а перечисленные останутся в журнале без файлов, и старый образ не стартует."
+      warn "--cutover-revert для такого окна откажет намеренно (протокол §6)."
+    fi
     # Верификатор и teardown спрашиваются ЗДЕСЬ, пока сервисы работают: узнать, что релиз их не
     # привёз, посреди окна обслуживания — значит остаться и без проверки, и без отката.
     cutover_verifier
@@ -1300,6 +1334,14 @@ if [ "$DO_CUTOVER_REVERT" -eq 1 ]; then
   read_journal "$CUTOVER_CANDIDATE"
   [ "$(list_count "$JOURNAL_MISSING")" -eq 0 ] || {
     REASON="журнал ссылается на отсутствующие в образе кандидата файлы: $(list_brief "$JOURNAL_MISSING")— это не тот образ или не тот журнал"
+    fail "$REASON"; }
+
+  # Широкое окно (§6): рядом с необратимой уехали обычные, и teardown их не снимает. Снять одну
+  # значит оставить остальные в журнале при живых файлах — но уже на СТАРОМ образе, где этих
+  # файлов нет, и он не стартует (`missing`). Единственный откат такого окна — дамп, снятый в его
+  # начале и закреплённый от ротации. Отказ здесь дороже отказа: он до остановки чего-либо.
+  [ -z "$CUTOVER_EXTRAS" ] || {
+    REASON="окно было широким — вместе с $CUTOVER_MIGRATION уехали обычные миграции ($CUTOVER_EXTRAS). Teardown снимет только необратимую, остальные останутся в журнале без файлов старого образа. Откат этого окна — deploy-auto --restore-db закреплённым дампом ${CUTOVER_DUMP:-<не записан>} (протокол §5)"
     fail "$REASON"; }
 
   if list_has "$CUTOVER_MIGRATION" "$JOURNAL_APPLIED"; then
