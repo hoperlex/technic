@@ -1,13 +1,6 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Alert, App, Button, Descriptions, Space, Tag, Typography } from 'antd';
-import {
-  ArrowDownOutlined,
-  ArrowUpOutlined,
-  DeleteOutlined,
-  EditOutlined,
-  PlusOutlined,
-  SwapOutlined,
-} from '@ant-design/icons';
+import { EditOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   BLANK_WAYBILL_CONFIRM,
@@ -21,14 +14,10 @@ import {
   routeRequestCapacity,
   routePurposeLabels,
   moscowDateKeyOf,
-  requestStatusColors,
-  requestStatusLabels,
   ROUTE_FROZEN_MESSAGE,
   type VehicleRequestDto,
   type VehicleRouteDto,
   type VehicleRouteRequestDto,
-  type WaybillFormCode,
-  WAYBILL_COUPONS,
   WAYBILL_LOCKED_MESSAGE,
   waybillFormShortLabels,
   waybillStatusColors,
@@ -36,27 +25,34 @@ import {
 } from '@technic/contracts';
 import { vehicleRequestsApi, vehicleRoutesApi, waybillsApi } from '../../api/resources';
 import { garageKeys } from '@entities/garage';
+import { isApiError } from '@shared/api';
 import { AutoSelect } from '@shared/ui';
 import { ViewModal } from '@shared/ui';
 import { PrintWaybillButton } from '../../components/WaybillPrint';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
+import { assembleRoute, blockerMessage } from './routeAssembly';
+import { RoutePointsBlock } from './RoutePointsBlock';
+import { RouteRequestRow } from './RouteRequestRow';
+import { RouteTaskRowsBlock } from './RouteTaskRowsBlock';
 import { formatDateOnly, tripsCountLabel } from './shared';
 import { VehicleRouteCorrectionModal } from './VehicleRouteCorrectionModal';
 import { VehicleRouteTransferCorrectionModal } from './VehicleRouteTransferCorrectionModal';
+import { ackRequiredDetails, confirmWaybillWarnings } from './waybillAckConfirm';
 
 /**
  * Карточка рейса: кто едет, с кем и в каком порядке.
  *
- * Порядок заявок — это строки задания бланка, поэтому переставляются они стрелками, а не
- * перетаскиванием: позиций от семи до десяти по бланку рейса, а стрелки одинаково работают и на
- * телефоне. В 4-П порядок ещё и значим: первые четыре строки несут отрывной талон заказчика,
- * остальные три — доп. задание.
+ * Главное в ней — **порядок объезда** (`RoutePointsBlock`, §4.3 плана `docs/route-trips-plan.md`):
+ * остановки со стрелками, ролями и ответственными. Состав заявок остался рядом, но роль у него
+ * теперь другая — им кладут и вынимают работу, а не задают порядок: порядок печати задают точки
+ * (Р11), и стрелки состава, продолжая переставлять талоны, документ бы уже не двигали. Что
+ * напечатается в бланке, показывает свёрнутый блок «Задание листа».
  *
- * Выписанный лист карточку замораживает: состав, порядок и водитель правятся только до него —
- * бланк уже у водителя, и запись, разошедшаяся с бумагой на руках, хуже отсутствия записи
- * (ADR 0037 п. 9). Чтобы пересобрать рейс, лист аннулируют — тем же правом и с той же причиной,
- * что в журнале.
+ * Выписанный лист карточку замораживает: состав, точки и водитель правятся только до него — бланк
+ * уже у водителя, и запись, разошедшаяся с бумагой на руках, хуже отсутствия записи (ADR 0037
+ * п. 9). Чтобы пересобрать рейс, лист аннулируют — тем же правом и с той же причиной, что в
+ * журнале.
  */
 
 interface Props {
@@ -83,10 +79,23 @@ export function VehicleRouteModal({ routeId, onClose, onChanged, onEdit }: Props
   /** Талон, который переносят в рейс другого дня задним числом (Р30); `null` — окно закрыто. */
   const [transferring, setTransferring] = useState<VehicleRouteRequestDto | null>(null);
 
+  /*
+   * Рейс всегда перечитывается при открытии карточки, а не берётся из кэша (Р18).
+   *
+   * Версия рейса поднимается не только его собственными дверьми: правка заявки перекладывает её
+   * ездки по точкам и поднимает версию **маршрута** — то есть карточка, оставшаяся в кэше со
+   * вчерашним номером версии, отдала бы 409 на первое же действие, и человек увидел бы «маршрут
+   * изменён» там, где он ничего не менял. Десяти секунд общей свежести (`staleTime` в `main.tsx`)
+   * тут мало: между правкой заявки и возвратом в карточку проходит секунда.
+   */
   const { data: route, isFetching } = useQuery({
     queryKey: ['vehicle-routes', routeId],
     queryFn: () => vehicleRoutesApi.get(routeId!),
     enabled: !!routeId,
+    staleTime: 0,
+    refetchOnMount: 'always',
+    // Соседняя вкладка портала — тот же случай: заявку правят там, а действие делают здесь.
+    refetchOnWindowFocus: true,
   });
 
   const frozen = !!route && !isRouteEditable(route.waybill?.status ?? null);
@@ -130,7 +139,21 @@ export function VehicleRouteModal({ routeId, onClose, onChanged, onEdit }: Props
     onChanged();
   };
 
-  const fail = (e: unknown) => message.error(errorMessage(e));
+  /**
+   * Отказ словами — и перечитка карточки, когда отказ про версию.
+   *
+   * 409 у рейса значит одно из двух: версия уехала (кто-то правил рейс или заявку, Р18) либо лист
+   * успели выписать (`ROUTE_FROZEN_MESSAGE`). В обоих случаях на экране устаревшее состояние, и
+   * оставить его значило бы обречь человека на второй такой же отказ: он нажмёт ту же кнопку с той
+   * же версией. Гасится весь ключ целиком — карточка, список рейсов и подсказки маршрутов читают
+   * одно и то же.
+   */
+  const fail = (e: unknown) => {
+    message.error(errorMessage(e));
+    if (isApiError(e) && e.status === 409) {
+      void qc.invalidateQueries({ queryKey: ['vehicle-routes'] });
+    }
+  };
 
   /** Заявка, выбранная в списке добавления: по её рейсу и различаются «положить» и «перенести». */
   const candidate = free.find((r) => r.id === adding) ?? null;
@@ -160,24 +183,47 @@ export function VehicleRouteModal({ routeId, onClose, onChanged, onEdit }: Props
     onError: fail,
   });
 
-  const reorder = useMutation({
-    mutationFn: (requestIds: string[]) =>
-      vehicleRoutesApi.order(route!.id, { requestIds, version: route!.version }),
-    onSuccess: afterChange,
-    onError: fail,
-  });
+  /**
+   * Одна попытка выписки: задняя дата и подтверждение предупреждений живут в ней вместе (Р21).
+   *
+   * Вместе, потому что повторяется попытка **целиком**: после 409 портал шлёт тот же запрос с тем
+   * же ключом операции и добавленным отпечатком. Разведи их по двум мутациям — и подтверждение
+   * задней выписки потеряло бы либо причину, либо ключ, а второй ключ сжёг бы второй номер.
+   */
+  type IssueAttempt = {
+    backdate?: { reason: string; operationId: string };
+    acknowledge?: { fingerprint: string };
+  };
 
   const issue = useMutation({
-    mutationFn: (backdate?: { reason: string; operationId: string }) =>
+    mutationFn: (attempt: IssueAttempt) =>
       vehicleRoutesApi.issueWaybill(route!.id, {
         version: route!.version,
-        ...(backdate ?? {}),
+        ...(attempt.backdate ?? {}),
+        ...(attempt.acknowledge ? { acknowledge: attempt.acknowledge } : {}),
       }),
     onSuccess: (updated) => {
       message.success(`Путевой лист ${updated.waybill?.number ?? ''} выписан`);
       afterChange(updated);
     },
-    onError: fail,
+    /*
+     * 409 `waybill_ack_required` — не ошибка, а вопрос: сервер посчитал предупреждения под
+     * блокировкой и ждёт, что человек их прочитает. Показываем список и повторяем ту же попытку с
+     * полученным отпечатком. Ответ на повтор снова может оказаться этим же 409 — значит набор
+     * успел измениться между показом и нажатием, и человек читает новый список; петли тут нет —
+     * каждый круг требует нажатия.
+     */
+    onError: (e, attempt) => {
+      const details = ackRequiredDetails(e);
+      // Повторяется **та же** попытка с добавленным подтверждением, а не собранная заново: ключ
+      // операции у задней выписки считается по всему телу, и второе тело сервер встретил бы
+      // отказом «это не повтор» вместо листа.
+      if (details) {
+        confirmWaybillWarnings(modal, details, (acknowledge) =>
+          issue.mutateAsync({ ...attempt, acknowledge }),
+        );
+      } else fail(e);
+    },
   });
 
   /**
@@ -210,7 +256,7 @@ export function VehicleRouteModal({ routeId, onClose, onChanged, onEdit }: Props
       return;
     }
     if (!driverGaps && !blank) {
-      issue.mutate(undefined);
+      issue.mutate({});
       return;
     }
     modal.confirm({
@@ -223,7 +269,7 @@ export function VehicleRouteModal({ routeId, onClose, onChanged, onEdit }: Props
       ),
       okText: 'Всё равно выписать',
       cancelText: 'Отмена',
-      onOk: () => issue.mutateAsync(undefined),
+      onOk: () => issue.mutateAsync({}),
     });
   };
 
@@ -269,7 +315,7 @@ export function VehicleRouteModal({ routeId, onClose, onChanged, onEdit }: Props
           message.error('Укажите причину');
           throw new Error('reason required');
         }
-        await issue.mutateAsync({ reason, operationId });
+        await issue.mutateAsync({ backdate: { reason, operationId } });
       },
     });
   };
@@ -287,16 +333,6 @@ export function VehicleRouteModal({ routeId, onClose, onChanged, onEdit }: Props
     },
     onError: fail,
   });
-
-  /** Сдвиг строки: порядок уходит на сервер целиком — он переписывает его одним заходом. */
-  const move = (index: number, delta: number) => {
-    if (!route) return;
-    const ids = route.requests.map((r) => r.requestId);
-    const target = index + delta;
-    if (target < 0 || target >= ids.length) return;
-    [ids[index], ids[target]] = [ids[target]!, ids[index]!];
-    reorder.mutate(ids);
-  };
 
   const confirmCancelWaybill = () => {
     let reason = '';
@@ -346,6 +382,27 @@ export function VehicleRouteModal({ routeId, onClose, onChanged, onEdit }: Props
 
   /** Перегон техники: состава у него нет, а задание печатается из самого рейса. */
   const relocation = !!route && isRelocationPurpose(route.purpose);
+
+  /**
+   * Собранный день: строки задания, блокеры выписки и подсказки совмещения — из одного чтения точек
+   * (§4.3, Р11а). Считается тем же кодом контрактов, каким ответит сервер: два расчёта одного
+   * правила разошлись бы на первой правке, и карточка обещала бы не то, что уйдёт в бумагу.
+   *
+   * `useMemo` не ради скорости: список объезда, блок «Задание листа» и подписи точек читают один и
+   * тот же результат, и пересчитывать его трижды на каждый рендер значило бы трижды раскладывать
+   * строки по бланку.
+   */
+  const assembly = useMemo(() => (route ? assembleRoute(route) : null), [route]);
+
+  /**
+   * Первый отказ сборки, который выписке не пережить: нарушенный порядок, неразложенная строка,
+   * переполненный бланк, непоместившаяся строка (Р11а). Ими выключается кнопка выписки — сервер
+   * ответит на них 422, и кнопка, обещающая лист, обещала бы отказ.
+   *
+   * Водитель отсюда исключён: о нём отвечает `canIssueWaybill` — первым же своим отказом и теми же
+   * словами, что покажет подсказка кнопки. Двух формулировок одного пробела быть не должно.
+   */
+  const blocking = assembly?.blockers.find((item) => item.code !== 'no_driver') ?? null;
 
   /**
    * Есть ли куда положить ещё одну заявку. Сколько строк задания у рейса, решает его бланк
@@ -451,8 +508,14 @@ export function VehicleRouteModal({ routeId, onClose, onChanged, onEdit }: Props
             <Button
               type="primary"
               loading={issue.isPending}
-              disabled={!readiness?.ok}
-              title={readiness?.ok ? 'Выписать путевой лист' : readiness?.reason}
+              disabled={!readiness?.ok || !!blocking}
+              title={
+                !readiness?.ok
+                  ? readiness?.reason
+                  : blocking && assembly
+                    ? blockerMessage(blocking, assembly)
+                    : 'Выписать путевой лист'
+              }
               onClick={confirmIssue}
             >
               Выписать лист
@@ -508,24 +571,39 @@ export function VehicleRouteModal({ routeId, onClose, onChanged, onEdit }: Props
             />
           )}
 
-          {/* Состав — только у грузового рейса: задание из нескольких строк это про машину,
-            которая за смену объезжает несколько площадок. Перегон везёт одну единицу техники по
-            одной заявке. */}
+          {/* Порядок объезда и задание бланка — только у грузового рейса: перегон везёт одну
+            единицу техники по одной заявке, точек у него нет вовсе, а задание печатается из самого
+            рейса («откуда — куда» в шапке, миграция 0082). */}
+          {!relocation && assembly && (
+            <>
+              <RoutePointsBlock
+                route={route}
+                assembly={assembly}
+                frozen={frozen}
+                onChanged={afterChange}
+                onFail={fail}
+              />
+              <RouteTaskRowsBlock
+                route={route}
+                formCode={route.formCode}
+                assembly={assembly}
+                frozen={frozen}
+                onChanged={afterChange}
+                onFail={fail}
+              />
+            </>
+          )}
+
+          {/* Состав — то, чем в рейс кладут и вынимают работу. Порядка он больше не задаёт:
+            строки задания печатаются в порядке точек (Р11), и стрелки переехали туда. Здесь
+            остаётся то, что у заявки своё: её состояние, талон и дверь переноса задним числом. */}
           {!relocation && (
             <div>
-              <Typography.Title level={5}>
-                Заявки рейса ({route.requests.length} из {routeRequestCapacity(route.formCode)})
-              </Typography.Title>
-              {/* Форма № 3 задание не печатает (ADR 0071): порядок выполнения у легкового не
-                гарантирован, и бланк выходит с реквизитами и пустым оборотом. Сказать об этом
-                нужно там, где состав собирают, — иначе расхождение бумаги с рейсом обнаружат
-                после печати. */}
-              {route.formCode === 'leg3' && (
-                <Typography.Paragraph type="secondary">
-                  В бланке легкового задание не печатается: заявки остаются планом рейса, а в лист
-                  не идут.
-                </Typography.Paragraph>
-              )}
+              {/* Счётчик — просто число заявок, без «из семи»: бумагу меряют строки задания, а не
+                заявки (Р11), и заявка с шестью ездками занимает шесть строк из семи, оставаясь в
+                этом списке одной. Ёмкость называет блок «Задание листа» — там, где считают то, что
+                печатается. */}
+              <Typography.Title level={5}>Заявки рейса ({route.requests.length})</Typography.Title>
               {route.requests.length === 0 && (
                 <Typography.Paragraph type="secondary">
                   Рейс пуст: положите в него заявку, взятую в работу на эту машину и дату.
@@ -534,16 +612,12 @@ export function VehicleRouteModal({ routeId, onClose, onChanged, onEdit }: Props
                 </Typography.Paragraph>
               )}
               <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                {route.requests.map((item, index) => (
+                {route.requests.map((item) => (
                   <RouteRequestRow
                     key={item.requestId}
                     item={item}
-                    index={index}
-                    total={route.requests.length}
-                    formCode={route.formCode}
                     frozen={frozen}
-                    busy={reorder.isPending || detach.isPending}
-                    onMove={move}
+                    busy={detach.isPending}
                     onDetach={() => detach.mutate(item.requestId)}
                     // Готовность считается тем же правилом, что и у коррекции рейса: сервер
                     // спросит его для обоих рейсов, и кнопка не должна обещать того, чем ручка
@@ -663,129 +737,5 @@ export function VehicleRouteModal({ routeId, onClose, onChanged, onEdit }: Props
         }}
       />
     </ViewModal>
-  );
-}
-
-/**
- * Строка задания: номер по порядку, заказчик и маршрут груза. Отменённая или закрытая заявка
- * остаётся в рейсе историей (лист по ней уже выписан) — её помечает тег, и она же не даёт
- * выписать новый лист, пока её не убрали.
- */
-function RouteRequestRow({
-  item,
-  index,
-  total,
-  formCode,
-  frozen,
-  busy,
-  onMove,
-  onDetach,
-  onTransfer,
-}: {
-  item: VehicleRouteRequestDto;
-  index: number;
-  total: number;
-  /** Бланк рейса: талоны заказчиков есть только у 4-П, и пометка строки — про него. */
-  formCode: WaybillFormCode | null;
-  frozen: boolean;
-  busy: boolean;
-  onMove: (index: number, delta: number) => void;
-  onDetach: () => void;
-  /**
-   * Перенос талона в рейс другого дня задним числом (ADR 0101, Р30); `null` — рейс сегодняшний
-   * либо права коррекции нет. Кнопка стоит у строки, а не в подвале карточки, потому что переносят
-   * **талон**, а не рейс: в замороженном рейсе это единственный способ что-то с ним сделать.
-   */
-  onTransfer: { disabledReason: string | null; onClick: () => void } | null;
-}) {
-  return (
-    <div
-      style={{
-        display: 'flex',
-        gap: 8,
-        alignItems: 'flex-start',
-        border: '1px solid var(--ant-color-border)',
-        borderRadius: 8,
-        padding: 8,
-      }}
-    >
-      <Tag style={{ marginTop: 2 }}>{item.position}</Tag>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <Space size={8} wrap>
-          <strong>{item.displayNumber}</strong>
-          <span>{item.customerName}</span>
-          {/* День линейного заказа (ADR 0100 §2): строка стоит в рейсе ради одного дня срока, и
-            читаться она обязана днём заказа, а не безымянной строкой задания. Дата совпадает с
-            днём рейса по построению — она здесь затем, чтобы состав отвечал «что это за работа»
-            без похода в заявку. */}
-          {item.workDate && <Tag color="blue">день заказа {formatDateOnly(item.workDate)}</Tag>}
-          {/* Талонов в бланке 4-П четыре, а строк задания семь (ADR 0068): заявка с пятой
-            позиции печатается доп. заданием, и отрывного талона заказчик по ней не подпишет.
-            Диспетчер видит это, пока рейс ещё собирается, — переставить заявку выше можно только
-            здесь. Формы № 3 пометка не касается: талонов в ней нет вовсе, а задание она с
-            появления ADR 0071 не печатает и целиком. */}
-          {formCode === '4p' && item.position > WAYBILL_COUPONS && (
-            <Tag>доп. задание, без талона</Tag>
-          )}
-          {item.status !== 'confirmed' && (
-            <Tag color={requestStatusColors[item.status]}>{requestStatusLabels[item.status]}</Tag>
-          )}
-        </Space>
-        <div>
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            {/* У заказа техники на объект нет ни погрузки с разгрузкой, ни тонн: в задание дня
-              печатаются объект и характер работ из самой заявки (ADR 0100 решение 10). Общая
-              строка показала бы голую стрелку между двумя пустыми адресами. */}
-            {item.workDate
-              ? 'День работ на объекте: в задание печатаются адрес площадки и характер работ'
-              : `${item.loadingLocation} → ${item.unloadingLocation}${item.cargoLabel ? ` · ${item.cargoLabel}` : ''}`}
-          </Typography.Text>
-        </div>
-      </div>
-      {/* Перенос задним числом виден и в замороженном рейсе — там он и нужен: бумага выписана, а
-        заявка ехала не этим днём. Линейный день этой дверью не ходит (ADR 0100 п. 8): день равен
-        дню своего рейса, и «перенести» его значит распланировать другой — из карточки заявки. */}
-      {onTransfer && !item.workDate && (
-        <Button
-          size="small"
-          icon={<SwapOutlined />}
-          title={onTransfer.disabledReason ?? 'Заявка ехала другим рейсом: перенести задним числом'}
-          aria-label={`Перенести ${item.displayNumber} задним числом`}
-          disabled={busy || !!onTransfer.disabledReason}
-          onClick={onTransfer.onClick}
-        />
-      )}
-      {!frozen && (
-        <Space>
-          <Button
-            size="small"
-            icon={<ArrowUpOutlined />}
-            title="Выше"
-            aria-label={`Поднять ${item.displayNumber}`}
-            disabled={index === 0 || busy}
-            onClick={() => onMove(index, -1)}
-          />
-          <Button
-            size="small"
-            icon={<ArrowDownOutlined />}
-            title="Ниже"
-            aria-label={`Опустить ${item.displayNumber}`}
-            disabled={index === total - 1 || busy}
-            onClick={() => onMove(index, 1)}
-          />
-          <Button
-            size="small"
-            danger
-            icon={<DeleteOutlined />}
-            // Линейный день со стороны рейса снимается, но не добавляется (ADR 0100 решение 8):
-            // «убрать заявку» о нём неправда — заявка остаётся, уходит один её день.
-            title={item.workDate ? 'Снять день с рейса' : 'Убрать из маршрута'}
-            aria-label={`Убрать ${item.displayNumber}`}
-            disabled={busy}
-            onClick={onDetach}
-          />
-        </Space>
-      )}
-    </div>
   );
 }

@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   assignmentTitle,
   esm2Periods,
+  type IssueRequestEsm2Body,
   moscowDateKeyOf,
   type VehicleDto,
   vehicleLabel,
@@ -18,6 +19,7 @@ import { useIsMobile } from '@shared/lib';
 import { errorMessage } from '../../utils/format';
 import { formatDateOnly } from './shared';
 import { BackdateReasonField } from './VehicleBackdateFields';
+import { ackRequiredDetails, confirmWaybillWarnings } from './waybillAckConfirm';
 
 /**
  * Выписка недельного ЭСМ-2 по требованию (ADR 0100 решение 6).
@@ -59,7 +61,7 @@ interface FormValues {
 }
 
 export function VehicleEsm2Modal({ request, onClose, onDone }: Props) {
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const qc = useQueryClient();
   const isMobile = useIsMobile();
   const [form] = Form.useForm<FormValues>();
@@ -179,17 +181,28 @@ export function VehicleEsm2Modal({ request, onClose, onDone }: Props) {
     label: [d.fullName, d.personnelNo && `таб. ${d.personnelNo}`].filter(Boolean).join(' · '),
   }));
 
+  /**
+   * Тело выписки, собранное из формы один раз — на нажатие кнопки.
+   *
+   * Один раз, а не заново на каждой отправке, потому что повтор после подтверждения предупреждений
+   * (Р21а) обязан уйти **тем же** телом с одним добавленным `acknowledge`: у выписки задним числом
+   * ключ идемпотентности считается по всему телу (`correctionFingerprint`), и пересобранное тело
+   * сервер встретил бы отказом «это не повтор» вместо листа. Разойтись оно может и без правки
+   * полей: `past` считается по дню среза, а окно подтверждения живёт на экране сколько угодно.
+   */
+  const esm2Body = (v: FormValues): IssueRequestEsm2Body => ({
+    weekOf: v.weekOf!.format('YYYY-MM-DD'),
+    vehicleId: v.vehicleId!,
+    driverPersonId: v.driverPersonId!,
+    version: request!.version,
+    // Причина и ключ уходят только у прошедшей недели: у текущей сервер не спросит ни того, ни
+    // другого, а лишний ключ объявил бы обычную выдачу операцией коррекции.
+    ...(past ? { reason: v.reason, operationId: operationId.current } : {}),
+  });
+
   const issue = useMutation({
-    mutationFn: (v: FormValues) =>
-      vehicleRequestsApi.issueEsm2(request!.id, {
-        weekOf: v.weekOf!.format('YYYY-MM-DD'),
-        vehicleId: v.vehicleId!,
-        driverPersonId: v.driverPersonId!,
-        version: request!.version,
-        // Причина и ключ уходят только у прошедшей недели: у текущей сервер не спросит ни того, ни
-        // другого, а лишний ключ объявил бы обычную выдачу операцией коррекции.
-        ...(past ? { reason: v.reason, operationId: operationId.current } : {}),
-      }),
+    // Принимается готовое тело, а не значения формы: повтор с подтверждением отправляет ровно его.
+    mutationFn: (body: IssueRequestEsm2Body) => vehicleRequestsApi.issueEsm2(request!.id, body),
     onSuccess: async (updated) => {
       message.success('Лист ЭСМ-2 выписан');
       await Promise.all([
@@ -200,10 +213,28 @@ export function VehicleEsm2Modal({ request, onClose, onDone }: Props) {
       ]);
       onDone(updated);
     },
-    // Отказы сервера здесь именные — «день вне срока», «машина арендная», «человек не водитель», —
-    // и ложатся они на своё поле (ADR 0094). Тост остаётся для того, у чего поля нет: занятой
-    // недели с уже выписанным листом и конфликта версий.
-    onError: (e) => {
+    /*
+     * 409 `waybill_ack_required` — не отказ, а вопрос (Р21а): у машиниста пробелы в документах
+     * (ADR 0064), сервер посчитал их сам и ждёт, что человек прочитает список до расхода номера.
+     * Ручная выдача ЭСМ-2 и есть пятый путь выпуска номера, который сервер закрыл последним, — до
+     * этого места портал показывал на него сырую ошибку.
+     *
+     * Ответом на повтор снова может прийти этот же 409 — значит набор успел измениться между
+     * показом и нажатием, и человек читает новый список; петли тут нет, каждый круг требует
+     * нажатия.
+     *
+     * Прочие отказы сервера здесь именные — «день вне срока», «машина арендная», «человек не
+     * водитель», — и ложатся они на своё поле (ADR 0094). Тост остаётся для того, у чего поля нет:
+     * занятой недели с уже выписанным листом и конфликта версий.
+     */
+    onError: (e, body) => {
+      const details = ackRequiredDetails(e);
+      if (details) {
+        confirmWaybillWarnings(modal, details, (acknowledge) =>
+          issue.mutateAsync({ ...body, acknowledge }),
+        );
+        return;
+      }
       if (!blockers.fromApi(e)) message.error(errorMessage(e));
     },
   });
@@ -221,7 +252,7 @@ export function VehicleEsm2Modal({ request, onClose, onDone }: Props) {
       <Form<FormValues>
         form={form}
         layout="vertical"
-        onFinish={(v) => issue.mutate(v)}
+        onFinish={(v) => issue.mutate(esm2Body(v))}
         {...blockers.formProps}
       >
         <FormGrid>

@@ -238,12 +238,14 @@ describe('адресное поле: выбор из справочника (ADR
     // у такого варианта нет — ищем по тексту.
     await waitFor(() => expect(optionTexts().join()).toContain('Самосвалы'));
     fireEvent.click(within(openDropdown()).getByText(/Самосвалы/));
-    fireEvent.change(document.querySelector('#volumeM3')!, { target: { value: '12' } });
+    // Поля ездки живут путями `trips.<i>.<поле>` (Р2): antd рисует их идентификатором через
+    // подчёркивания. У заявки с одной ездкой форма выглядит как прежде, но имена полей уже её.
+    fireEvent.change(document.querySelector('#trips_0_volumeM3')!, { target: { value: '12' } });
     for (const [id, value] of [
-      ['loadingResponsibleName', 'Сидоров Сергей'],
-      ['loadingResponsiblePhone', '9260000002'],
-      ['unloadingResponsibleName', 'Кузнецов Кирилл'],
-      ['unloadingResponsiblePhone', '9260000003'],
+      ['trips_0_fromResponsibleName', 'Сидоров Сергей'],
+      ['trips_0_fromResponsiblePhone', '9260000002'],
+      ['trips_0_toResponsibleName', 'Кузнецов Кирилл'],
+      ['trips_0_toResponsiblePhone', '9260000003'],
     ] as const) {
       fireEvent.change(document.querySelector(`#${id}`)!, { target: { value } });
     }

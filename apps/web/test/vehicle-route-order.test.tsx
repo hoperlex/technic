@@ -35,6 +35,56 @@ const REQUEST_A = {
 
 const REQUEST_B = { ...REQUEST_A, requestId: 'r-b', displayNumber: 'ТС-502', position: 2 };
 
+/**
+ * Порядок объезда рейса: у каждой заявки своя пара точек, точки не общие. Так карточка и работает
+ * после этапа 7 — стрелки переставляют **точки**, а не строки состава: печать задания идёт по их
+ * позициям (Р11), и состав на неё больше не влияет.
+ */
+const action = (
+  position: number,
+  role: 'load' | 'unload',
+  requestId: string,
+  requestNum: number,
+  pairPosition: number,
+) => ({
+  position,
+  kind: 'freight' as const,
+  ref: { kind: 'freight' as const, requestId, tripId: `t-${requestId}` },
+  role,
+  cargoLabel: '12 м³',
+  pairPosition,
+  displayNumber: `ТС-${requestNum}/1`,
+  requestNum,
+  tripNum: 1,
+  customerName: 'Объект А',
+  contactName: 'Иванов И.И.',
+  contactPhone: '9160000001',
+  addressMismatch: false,
+});
+
+const point = (
+  id: string,
+  position: number,
+  location: string,
+  actions: ReturnType<typeof action>[],
+) => ({
+  id,
+  position,
+  location,
+  address: null,
+  arrivalTime: '',
+  comment: '',
+  actions,
+  contacts: [{ name: 'Иванов И.И.', phone: '9160000001' }],
+});
+
+const POINTS = [
+  point('pt-1', 1, 'Карьер', [action(1, 'load', 'r-a', 501, 2)]),
+  point('pt-2', 2, 'Площадка 1', [action(1, 'unload', 'r-a', 501, 1)]),
+  point('pt-3', 3, 'Карьер-2', [action(1, 'load', 'r-b', 502, 4)]),
+  point('pt-4', 4, 'Площадка 2', [action(1, 'unload', 'r-b', 502, 3)]),
+];
+
 const ROUTE: VehicleRouteDto = {
   id: 'route-1',
   displayNumber: 'Р-12',
@@ -66,6 +116,7 @@ const ROUTE: VehicleRouteDto = {
   transportationKind: '',
   comment: '',
   requests: [REQUEST_A, REQUEST_B],
+  points: POINTS,
   waybill: null,
   createdByName: 'Диспетчер',
   createdAt: '2026-08-01T09:00:00.000Z',
@@ -144,39 +195,56 @@ function renderModal(route: VehicleRouteDto, candidates: unknown[] = []): HttpMo
     'GET /vehicle-routes/:id': () => json(route),
     // Что можно положить в рейс, отбирает сервер: карточка сужает список только по рейсу заявки.
     'GET /vehicle-requests': () => json(list(candidates)),
-    'PUT /vehicle-routes/:id/order': () => json(route),
+    'PUT /vehicle-routes/:id/points/order': () => json(route),
     'POST /vehicle-routes/:id/requests': () => json(route),
   });
   renderWithUser(<VehicleRouteModal routeId="route-1" onClose={() => {}} onChanged={() => {}} />);
   return http;
 }
 
-describe('порядок заявок в рейсе', () => {
-  it('стрелка вверх отправляет весь состав в новом порядке', async () => {
+describe('порядок объезда в рейсе', () => {
+  /**
+   * Стрелки переставляют **точки**, а не строки состава, и это не оформление: задание печатается по
+   * позициям точек (Р11). Пока карточка двигала состав, экран показывал один порядок, а бумага
+   * печатала другой — регресс, который нашло ревью уже после выката.
+   */
+  it('стрелка вверх отправляет весь порядок объезда', async () => {
     const http = renderModal(ROUTE);
 
-    const up = await screen.findByLabelText('Поднять ТС-502');
-    fireEvent.click(up);
+    fireEvent.click(await screen.findByLabelText('Поднять точку 2'));
 
-    await waitFor(() => expect(http.countOf('PUT /vehicle-routes/:id/order')).toBe(1));
-    const call = http.lastCall('PUT /vehicle-routes/:id/order')!;
-    expect(call.path).toBe('/vehicle-routes/route-1/order');
-    expect(call.body).toEqual({ requestIds: ['r-b', 'r-a'], version: 3 });
+    await waitFor(() => expect(http.countOf('PUT /vehicle-routes/:id/points/order')).toBe(1));
+    const call = http.lastCall('PUT /vehicle-routes/:id/points/order')!;
+    expect(call.path).toBe('/vehicle-routes/route-1/points/order');
+    expect(call.body).toEqual({ pointIds: ['pt-2', 'pt-1', 'pt-3', 'pt-4'], version: 3 });
   });
 
-  it('первую заявку выше не поднять, последнюю ниже не опустить', async () => {
+  it('первую точку выше не поднять, последнюю ниже не опустить', async () => {
     renderModal(ROUTE);
 
     // jest-dom в проекте не подключён: смотрим на сам атрибут, как в auto-select.test.tsx.
-    expect((await screen.findByLabelText('Поднять ТС-501')).hasAttribute('disabled')).toBe(true);
-    expect((await screen.findByLabelText('Опустить ТС-502')).hasAttribute('disabled')).toBe(true);
+    expect((await screen.findByLabelText('Поднять точку 1')).hasAttribute('disabled')).toBe(true);
+    expect((await screen.findByLabelText('Опустить точку 4')).hasAttribute('disabled')).toBe(true);
+  });
+
+  /**
+   * У строк, различённых объездом, стрелок в «Задании листа» нет вовсе — не «выключены», а нет:
+   * переставлять их надо точками, и предлагать два способа сделать одно значит запутать. Стрелки
+   * там появляются только у строк, стоящих на **одной и той же паре** точек (миграция `0146`), —
+   * этих в фикстуре нет.
+   */
+  it('у строк, разведённых объездом, стрелок задания нет', async () => {
+    renderModal(ROUTE);
+
+    await screen.findByLabelText('Поднять точку 2');
+    expect(screen.queryByLabelText(/Поднять строку задания/)).toBeNull();
   });
 
   it('выписанный лист замораживает рейс: правок в карточке нет, и сказано почему', async () => {
     renderModal(ISSUED_ROUTE);
 
     expect(await screen.findByText(/аннулируйте его, чтобы править рейс/i)).toBeTruthy();
-    expect(screen.queryByLabelText('Поднять ТС-502')).toBeNull();
+    expect(screen.queryByLabelText('Поднять точку 2')).toBeNull();
     expect(screen.queryByLabelText('Убрать ТС-501')).toBeNull();
     // Второй лист по рейсу не выписывается — кнопка остаётся, но нажать её нельзя.
     expect(screen.getByRole('button', { name: 'Выписать лист' }).hasAttribute('disabled')).toBe(

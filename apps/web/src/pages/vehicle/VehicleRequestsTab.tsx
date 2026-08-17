@@ -1,13 +1,11 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import { useNavigate, useSearchParams } from 'react-router';
 import {
-  Alert,
   App,
   Button,
   DatePicker,
   Form,
   Input,
-  InputNumber,
   Select,
   Space,
   Tag,
@@ -27,7 +25,6 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import dayjs, { type Dayjs } from 'dayjs';
 import {
-  type AddressMeta,
   type AssignVehicleBody,
   type CorrectAssignmentBody,
   type ConfirmScheduleBody,
@@ -40,7 +37,6 @@ import {
   type CompleteVehicleRequestInput,
   type FeedKind,
   feedKindLabels,
-  isAddressVerified,
   minRequestDateKey,
   isCargoAmountRequired,
   CARGO_AMOUNT_MESSAGE,
@@ -93,7 +89,6 @@ import { UserAvatar } from '../../components/UserAvatar';
 import { ObjectCell, OBJECT_COLUMN_WIDTH } from '../../components/ObjectCell';
 import { departmentPlatformQuery } from '@entities/department';
 import { garageKeys } from '@entities/garage';
-import { AddressField } from '@features/address-input';
 import { useIsMobile } from '@shared/lib';
 import { useListParams } from '@shared/lib';
 import { useOpenedRecord } from '@shared/lib';
@@ -122,6 +117,15 @@ import { useObjectScope } from '../../hooks/useObjectScope';
 import { useDepartmentScope } from '../../hooks/useDepartmentScope';
 import { MOSCOW_TZ } from '@shared/config';
 import { ApprovalCell, StatusCell } from './requestRowCells';
+import { RequestTripsBlock } from './RequestTripsBlock';
+import {
+  blankTrip,
+  editTripBody,
+  newTripBody,
+  tripNeedsList,
+  tripToForm,
+  type TripFormValue,
+} from './requestTripsForm';
 import { rollbackErases, retypeErases, termLabel } from './requestRowText';
 import {
   EarlyEndTag,
@@ -133,7 +137,6 @@ import {
   useDepartmentOptions,
   useFileEditor,
   useObjectOptions,
-  tripsCountLabel,
   useVehicleClassificationFilter,
   useVehicleFilter,
   type EditorFile,
@@ -170,25 +173,19 @@ interface FormValues {
   dateTo?: Dayjs | null;
   responsibleName?: string;
   responsiblePhone?: string;
-  // Грузоперевозка: дата + необязательное время `HH:mm`, объём/масса, адреса и контакт на
-  // каждом конце маршрута — грузят и принимают разные люди в разных местах.
+  // Грузоперевозка: дата + необязательное время `HH:mm` первой подачи (Р3) и список ездок.
   scheduledDate?: Dayjs | null;
   scheduledTime?: string;
-  volumeM3?: number | null;
-  weightTons?: number | null;
-  loadingLocation?: string;
-  unloadingLocation?: string;
   /**
-   * Метаданные адреса (ADR 0006, ADR 0069) — скрытыми полями той же формы, а не состоянием
-   * экрана: так `resetFields` и `setFieldsValue` работают над ними наравне со строкой адреса, и
-   * забыть сбросить их отдельно нечем.
+   * Ездки заявки (Р1, Р2 плана `docs/route-trips-plan.md`): адреса, количество и контакты обоих
+   * концов лежат у них, а не у заявки — у заявки с ездками `A→B` и `A→C` «адреса разгрузки
+   * заявки» не существует.
+   *
+   * Списком в значениях формы, а не антовским `Form.List`: адресное поле и контакт зовут форму
+   * напрямую и путь к полю знают целиком (`trips.3.fromLocation`), а `Form.List` подставляет свой
+   * префикс только элементам `Form.Item`. Ведёт список `RequestTripsBlock`.
    */
-  loadingAddress?: AddressMeta | null;
-  unloadingAddress?: AddressMeta | null;
-  loadingResponsibleName?: string;
-  loadingResponsiblePhone?: string;
-  unloadingResponsibleName?: string;
-  unloadingResponsiblePhone?: string;
+  trips?: TripFormValue[];
   comment?: string;
   /**
    * Причина заднего числа (ADR 0101). Полем формы, а не состоянием экрана: показывается оно по
@@ -219,20 +216,10 @@ const COMMENT_HINTS: Record<VehicleRequestType, { label: string; placeholder: st
 };
 
 const SPECIAL_FIELDS = ['dateFrom', 'dateTo', 'responsibleName', 'responsiblePhone'] as const;
-const FREIGHT_FIELDS = [
-  'scheduledDate',
-  'scheduledTime',
-  'volumeM3',
-  'weightTons',
-  'loadingLocation',
-  'unloadingLocation',
-  'loadingAddress',
-  'unloadingAddress',
-  'loadingResponsibleName',
-  'loadingResponsiblePhone',
-  'unloadingResponsibleName',
-  'unloadingResponsiblePhone',
-] as const;
+// Адреса, груз и контакты лежат внутри `trips` (Р2), поэтому сбрасываются вместе со списком одним
+// именем: перечислять поля ездок здесь пришлось бы с номерами строк, которых форма заранее не
+// знает.
+const FREIGHT_FIELDS = ['scheduledDate', 'scheduledTime', 'trips'] as const;
 
 /**
  * Строка ленты с ключом таблицы. `id` дописывается на клиенте: у размеченного объединения общего
@@ -516,43 +503,21 @@ export function VehicleRequestsTab() {
    * Ездки правимой заявки (Р1, Р2 плана `docs/route-trips-plan.md`); `null` — правится заказ
    * техники на объект либо заводится новая заявка.
    *
-   * Форма знает **одну** ездку, поэтому `editedTrip` заполнен только у заявки, у которой она одна:
-   * список правки полный (§7), и ездка, не попавшая в него, мягко удаляется (Р13а) — отправив одну
-   * строку за заявку с шестью, форма снесла бы пять. Редактор списка приходит этапом 6 (§12); до
-   * него у такой заявки правится всё, кроме ездок, и об этом говорит сама форма.
+   * Отсюда список ездок узнаёт прежнее состояние каждой своей строки: номер («ТС-40/2», Р13а) и
+   * послабления Р2а — непроверенный адрес и пустой контакт правку не блокируют, пока их не меняют.
+   * Строка без пары среди сохранённых — новая, и жёсткая модель действует на неё целиком.
    */
   const recordTrips = record?.requestType === 'freight_transport' ? record.trips : null;
-  const editedTrip = recordTrips?.length === 1 ? recordTrips[0] : undefined;
 
-  /*
-   * Жёсткая модель адреса (ADR 0006) действует на **новое** значение, а не на перезапись прежнего
-   * (Р2а). У ездки, доехавшей бэкфилом от заявки старше ADR 0006, метаданных нет вовсе, и правило
-   * поля не пустило бы правку такой заявки, пока кто-нибудь не выберет ей адрес заново — то есть
-   * не выдумает данные за прошлое. Тем же послаблением её принимает сервер
-   * (`updateRequestTripSchema`), и разойтись им нельзя: форма, не отправляющая того, что ручка
-   * принимает, — это запрет, о котором никто не решал.
+  /**
+   * Разворачивать ли ездки списком (§4.1). Заявка с одной ездкой выглядит и заполняется ровно как
+   * сегодня, поэтому по умолчанию флаг снят; поднимает его либо сама форма при открытии окна, либо
+   * кнопка «+ ездка».
    *
-   * Держится послабление ровно до правки: строка сравнивается с сохранённой, и как только адрес
-   * изменили, требование возвращается — новое значение обязано быть выбранным из подсказок.
-   *
-   * Сравнивается здесь печатаемая строка, а сервер сверяет пару целиком — строку и метаданные
-   * (`assertAddressWritable`). Условие поля поэтому чуть шире серверного, и в зазор попадает один
-   * случай: строку правили и вернули к прежнему виду руками — метаданные при этом стали `manual`,
-   * форма отправку пропустит, а ручка ответит 422 с ошибкой на самом поле. Сузить его нечем, пока
-   * сравнение метаданных живёт приватной функцией ручки: копия правила на фронте разошлась бы с
-   * ней при первой же правке, а второму ответу на «тот же это адрес или новый» существовать
-   * нельзя. Место такому сравнению — в контрактах, рядом с `verifiedAddressMetaSchema`.
+   * Состоянием вкладки, а не списка: открытие другой заявки обязано его пересчитать, а вложенный
+   * компонент о смене правимой записи не знает.
    */
-  const watchLoadingLocation = Form.useWatch('loadingLocation', form);
-  const watchUnloadingLocation = Form.useWatch('unloadingLocation', form);
-  const keepsLoadingAddress =
-    !!editedTrip &&
-    !isAddressVerified(editedTrip.fromAddress) &&
-    watchLoadingLocation === editedTrip.fromLocation;
-  const keepsUnloadingAddress =
-    !!editedTrip &&
-    !isAddressVerified(editedTrip.toAddress) &&
-    watchUnloadingLocation === editedTrip.toLocation;
+  const [tripsExpanded, setTripsExpanded] = useState(false);
 
   const isSpecial = watchRequestType === 'special_equipment';
   const isFreight = watchRequestType === 'freight_transport';
@@ -674,11 +639,15 @@ export function VehicleRequestsTab() {
     if (kindCode && !isVehicleKindAllowedForRequest(next, kindCode)) {
       form.resetFields(['classificationKey']);
     }
+    // Контакт на разгрузке живёт у **первой** ездки (Р2): она же станет одна на весь заказ, если
+    // заявку переоформят в технику на объект, — у остальных ездок свои концы и свои люди.
+    const trips: TripFormValue[] | undefined = form.getFieldValue('trips');
     if (next === 'special_equipment') {
       const scheduledDate: Dayjs | undefined = form.getFieldValue('scheduledDate');
-      const name: string | undefined = form.getFieldValue('unloadingResponsibleName');
-      const phone: string | undefined = form.getFieldValue('unloadingResponsiblePhone');
-      // Метаданные адресов лежат в тех же `FREIGHT_FIELDS` и сбрасываются вместе со строками.
+      const name = trips?.[0]?.toResponsibleName;
+      const phone = trips?.[0]?.toResponsiblePhone;
+      // Ездки целиком лежат в тех же `FREIGHT_FIELDS` и сбрасываются вместе с подачей: у заказа
+      // техники на объект их не бывает вовсе.
       form.resetFields([...FREIGHT_FIELDS]);
       form.setFieldsValue({
         dateFrom: form.getFieldValue('dateFrom') ?? scheduledDate ?? minDate,
@@ -690,10 +659,20 @@ export function VehicleRequestsTab() {
       const name: string | undefined = form.getFieldValue('responsibleName');
       const phone: string | undefined = form.getFieldValue('responsiblePhone');
       form.resetFields([...SPECIAL_FIELDS]);
+      // Ездок не бывает ноль: у грузоперевозки без ездки не сказано, что везти и куда. Пустой
+      // список случается, когда заказ на объект переоформляют в грузоперевозку, — тогда заводится
+      // первая строка, и контакт встречающего становится контактом на разгрузке.
+      const [first = blankTrip(), ...rest] = trips ?? [];
       form.setFieldsValue({
         scheduledDate: form.getFieldValue('scheduledDate') ?? dateFrom ?? minDate,
-        unloadingResponsibleName: form.getFieldValue('unloadingResponsibleName') || name,
-        unloadingResponsiblePhone: form.getFieldValue('unloadingResponsiblePhone') || phone,
+        trips: [
+          {
+            ...first,
+            toResponsibleName: first.toResponsibleName || name,
+            toResponsiblePhone: first.toResponsiblePhone || phone,
+          },
+          ...rest,
+        ],
       });
     }
   };
@@ -728,6 +707,10 @@ export function VehicleRequestsTab() {
     if (requestTypeOptions.length === 1) {
       form.setFieldsValue({ requestType: requestTypeOptions[0]!.value } as Partial<FormValues>);
     }
+    // Новая заявка начинается с одной ездки и выглядит ровно как заявка до плана (Р24, §4.1):
+    // список разворачивается только по «+ ездка».
+    form.setFieldsValue({ trips: [blankTrip()] } as Partial<FormValues>);
+    setTripsExpanded(false);
     editor.reset([]);
     setOpen(true);
   };
@@ -736,6 +719,14 @@ export function VehicleRequestsTab() {
     setRecord(r);
     form.resetFields();
     setOperationId(crypto.randomUUID());
+    /*
+     * Свёрнутый вид годится не всякой заявке (§4.1): списком открываются те, у кого ездок
+     * несколько, и та, у кого ездка одна, но со своим временем подачи или примечанием — их
+     * свёрнутый вид не показывает вовсе, и человек правил бы заявку, не видя половины заказа.
+     * Тем же правилом решает карточка (`tripNeedsList`), показывать ли ездку парой полей.
+     */
+    const trips = r.requestType === 'freight_transport' ? r.trips : [];
+    setTripsExpanded(trips.length > 1 || trips.some(tripNeedsList));
     if (r.requestType === 'special_equipment') {
       form.setFieldsValue({
         requestType: r.requestType,
@@ -752,11 +743,18 @@ export function VehicleRequestsTab() {
       // tz)` теряет пришедшее смещение и показывал бы подачу на три часа раньше — а правка
       // сохраняла бы этот сдвиг обратно в заявку. Так же читает подачу заявка на вывоз мусора.
       const at = dayjs(r.scheduledAt).tz(MOSCOW_TZ);
-      // Адреса, груз и контакты лежат у ездки (Р2 плана `docs/route-trips-plan.md`) — у заявки их
-      // больше нет. Форма показывает **первую**: список ездок с «+ ездка» и «повторить N раз» —
-      // этап 6 (§12), а сегодня у всякой заявки ездка одна (Р24). Читается она мягко: ездок не
-      // бывает ноль, но окно правки не то место, где это стоит утверждать падением.
-      const trip = r.trips[0];
+      /*
+       * Адреса, груз и контакты лежат у ездок (Р2 плана `docs/route-trips-plan.md`) — у заявки их
+       * больше нет, и форма правит их полным списком (§7).
+       *
+       * Переносится каждая ездка как есть, включая непроверенный адрес и пустой контакт: у строк,
+       * доехавших бэкфилом от заявок старше ADR 0006 и миграции `0062`, их не бывает, и выдумывать
+       * за прошлое форма не станет (Р2а). Метаданные едут вместе со строкой — по ним адресное поле
+       * само откроется в том режиме, каким адрес и заводили.
+       *
+       * Пустой список тут теоретически невозможен (ездок не бывает ноль), но окно правки не то
+       * место, где это стоит утверждать падением: список просто окажется без строк.
+       */
       form.setFieldsValue({
         requestType: r.requestType,
         objectId: r.objectId ?? undefined,
@@ -765,20 +763,7 @@ export function VehicleRequestsTab() {
         scheduledDate: at,
         // Время не задано — поле остаётся пустым (в scheduledAt лежит полночь МСК).
         scheduledTime: r.scheduledTimeUnspecified ? undefined : at.format('HH:mm'),
-        volumeM3: trip?.volumeM3 ?? null,
-        weightTons: trip?.weightTons ?? null,
-        loadingLocation: trip?.fromLocation,
-        unloadingLocation: trip?.toLocation,
-        // Метаданные едут вместе со строкой: по ним поле само откроется в том режиме, каким адрес
-        // и заводили, — набором с подсказками или выбором из справочника. У ездки, доехавшей
-        // бэкфилом от заявки старше ADR 0006, их нет вовсе — тогда в поле ложится `null`, и
-        // выдумывать за него источник форма не станет (Р2а).
-        loadingAddress: trip?.fromAddress ?? null,
-        unloadingAddress: trip?.toAddress ?? null,
-        loadingResponsibleName: trip?.fromResponsibleName,
-        loadingResponsiblePhone: trip?.fromResponsiblePhone,
-        unloadingResponsibleName: trip?.toResponsibleName,
-        unloadingResponsiblePhone: trip?.toResponsiblePhone,
+        trips: trips.map(tripToForm),
         comment: r.comment,
       });
     }
@@ -862,81 +847,45 @@ export function VehicleRequestsTab() {
       };
 
       /*
-       * Ездка из полей формы (Р1, Р2): адреса, груз и контакты уехали с заявки на неё, и форма
-       * отправляет их списком, а не полями заявки.
+       * Ездки из списка формы (Р1, Р2): адреса, груз и контакты уехали с заявки на них, и форма
+       * отправляет их полным составом.
        *
-       * Ездка одна — форма визуально прежняя, и это её этап: список со «+ ездка» и «повторить N
-       * раз» приходит шестым (§12). Но собрана она уже той структурой, которой станут все, —
-       * этапу 6 остаётся размножить сборку по строкам, а не переписывать её заново.
-       *
-       * Примечание ездки и её собственное время (Р3) форма не спрашивает и потому не сочиняет: при
-       * заведении они пусты, при правке переносятся из сохранённой ездки. Иначе полный список
-       * стирал бы «песок, звонить за час» и час подачи шестой ездки при любой правке комментария.
+       * День заявки передаётся сборке отдельно: своё время ездки (Р3) форма спрашивает часами, а
+       * момент собирается из них и дня подачи — иначе первая же правка подачи оставила бы ездки во
+       * вчерашнем дне, и сервер ответил бы 422 на поле, которого никто не трогал (Р18).
        */
-      const tripFields = {
-        fromLocation: v.loadingLocation!,
-        toLocation: v.unloadingLocation!,
-        volumeM3: v.volumeM3 ?? null,
-        weightTons: v.weightTons ?? null,
-        fromResponsibleName: v.loadingResponsibleName!,
-        fromResponsiblePhone: v.loadingResponsiblePhone!,
-        toResponsibleName: v.unloadingResponsibleName!,
-        toResponsiblePhone: v.unloadingResponsiblePhone!,
-        comment: editedTrip?.comment ?? '',
-      };
-      /*
-       * Новая ездка — жёсткая модель целиком (ADR 0006): адрес приходит парой со своими
-       * метаданными и обязан быть верифицирован. Держит это правило самого поля — невалидная форма
-       * до отправки не доходит, — поэтому здесь `!`, а не подстановка на случай пустоты.
-       *
-       * Тем же составом ездка уходит и при переоформлении: у нового типа деталь заводится с нуля
-       * (ADR 0091), и `id` прежней ездки к ней не относится — её у заказа на объект не было вовсе.
-       */
-      const newTrip = {
-        ...tripFields,
-        fromAddress: v.loadingAddress!,
-        toAddress: v.unloadingAddress!,
-      };
+      const requestDay = v.scheduledDate!.format('YYYY-MM-DD');
+      const formTrips = v.trips ?? [];
 
+      /*
+       * Заведение и переоформление — жёсткая модель целиком (ADR 0006): каждая ездка новая, её
+       * адрес приходит парой со своими метаданными и обязан быть верифицирован. У переоформления
+       * деталь нового типа заводится с нуля (ADR 0091), и `id` там не бывает по существу — ездок у
+       * заказа техники на объект не было вовсе.
+       */
+      const created = formTrips.map((t) => newTripBody(t, requestDay));
       if (!record || !edit)
-        return vehicleRequestsApi.create({
-          ...base,
-          trips: [newTrip],
-          fileIds: editor.newFileIds(),
-        });
+        return vehicleRequestsApi.create({ ...base, trips: created, fileIds: editor.newFileIds() });
       if (retyping)
         return vehicleRequestsApi.changeRequestType(record.id, {
           ...base,
-          trips: [newTrip],
+          trips: created,
           ...edit,
         });
       /*
-       * Правка существующей ездки (Р2а): в теле идёт её `id` — по нему сервер отличает перезапись
-       * от заведения и не требует верифицированный адрес за поле, которого не трогали. Поэтому
-       * метаданные уходят **как есть**: у ездки от заявки старше ADR 0006 их нет, и `null` здесь
-       * — это «адрес прежний», а не «адрес не выбрали». Подставь тут что-нибудь правдоподобное —
-       * и правка комментария переписала бы заявке адрес источником, которого у неё не было.
+       * Правка — полным списком (§7): строка с `id` перезаписывает существующую ездку, строка без
+       * него заводит новую, а ездка, которой в списке не оказалось, мягко удаляется (Р13а). Номер
+       * при этом не переиспользуется: следующая получит следующий свободный, и «ТС-40/2» из
+       * выданного листа навсегда останется той ездкой, что напечатана.
        *
-       * Ездок в теле нет вовсе, когда их у заявки несколько: список правки полный (§7), и ездка,
-       * не попавшая в него, мягко удаляется (Р13а) — форма, знающая одну ездку, снесла бы пять
-       * остальных. Поле необязательное, «не прислали» значит «ездок не касались»: правка подачи,
-       * заказчика, комментария и файлов у такой заявки проходит как обычно, а сами ездки ждут
-       * своего редактора (этап 6, §12).
+       * Послабления Р2а держит сама сборка (`editTripBody`): метаданные адреса уходят как есть,
+       * вплоть до `null`, а верификацию сервер потребует ровно за изменившееся поле.
        */
-      const trips = editedTrip
-        ? {
-            trips: [
-              {
-                ...tripFields,
-                id: editedTrip.id,
-                fromAddress: v.loadingAddress ?? null,
-                toAddress: v.unloadingAddress ?? null,
-                scheduledAt: editedTrip.scheduledAt,
-              },
-            ],
-          }
-        : {};
-      return vehicleRequestsApi.update(record.id, { ...base, ...trips, ...edit });
+      return vehicleRequestsApi.update(record.id, {
+        ...base,
+        trips: formTrips.map((t) => editTripBody(t, requestDay)),
+        ...edit,
+      });
     },
     onSuccess: (saved) => {
       message.success('Сохранено');
@@ -944,6 +893,11 @@ export function VehicleRequestsTab() {
       // Изменившийся срок работ сводит ЭСМ-2 заново (`afterWorkPeriodChanged`), как и досрочное
       // завершение: правка заявки переписывает уже выписанные листы.
       void qc.invalidateQueries({ queryKey: ['waybills'] });
+      // Правка заявки поднимает версию её рейса (Р18): адреса, контакты, количество и состав ездок
+      // попадают в документ, и карточка маршрута обязана перечитаться. Иначе открытый рейс
+      // остаётся с прежней версией, и следующее действие из него получает 409 — данные сервер
+      // защитит, но экран до обновления недостоверен.
+      void qc.invalidateQueries({ queryKey: ['vehicle-routes'] });
       void qc.invalidateQueries({ queryKey: garageKeys.root });
       setOpen(false);
       warnRouteDateMismatch(saved);
@@ -1026,8 +980,22 @@ export function VehicleRequestsTab() {
       submit(v);
       return;
     }
-    if (cargoRequired && v.volumeM3 == null && v.weightTons == null) {
-      message.error(CARGO_AMOUNT_MESSAGE);
+    /*
+     * Количество спрашивается у **каждой** ездки, а не у заявки: везут они разное, и «6 ездок, у
+     * одной не указан объём» — законное состояние формы, которое сервер отклонит с указанием
+     * строки (`assertCargoAmount`). Отказ называет строку теми же словами, что и карточка списка:
+     * номера у новой ездки ещё нет, обещать его нельзя (Р13а).
+     */
+    const emptyCargo = cargoRequired
+      ? (v.trips ?? []).findIndex((t) => t.volumeM3 == null && t.weightTons == null)
+      : -1;
+    if (emptyCargo >= 0) {
+      const trips = v.trips ?? [];
+      message.error(
+        trips.length > 1
+          ? `Строка ${emptyCargo + 1}: ${CARGO_AMOUNT_MESSAGE}`
+          : CARGO_AMOUNT_MESSAGE,
+      );
       return;
     }
     // Жёсткая модель адресов (ADR 0006) сюда не доходит: её проверяет правило самого поля, и
@@ -2297,81 +2265,16 @@ export function VehicleRequestsTab() {
                     />
                   </FormGrid.Full>
                 )}
-                {/* Груз: одного из двух достаточно. У легковой машины его не спрашивают вовсе —
-                  в её бланке (форма № 3) графа «Груз» заполняется от руки в те редкие рейсы,
-                  когда что-то везут. */}
-                <Form.Item
-                  name="volumeM3"
-                  label="Объём, м³"
-                  tooltip={cargoRequired ? 'Укажите объём или массу' : 'Необязательно'}
-                >
-                  <InputNumber style={{ width: '100%' }} min={0} step={0.1} />
-                </Form.Item>
-                <Form.Item
-                  name="weightTons"
-                  label="Масса, т"
-                  tooltip={cargoRequired ? 'Укажите объём или массу' : 'Необязательно'}
-                >
-                  <InputNumber style={{ width: '100%' }} min={0} step={0.1} />
-                </Form.Item>
-                {/* Заявка с несколькими ездками правится этой формой не полностью: поля ниже
-                  показывают первую ездку, а сохранение их не отправляет (Р13а — список правки
-                  полный, и одной строкой форма снесла бы остальные). Молчать об этом нельзя:
-                  человек видит адреса в полях и вправе считать, что правит их. Редактор списка —
-                  этап 6 (§12), и тогда этот блок уходит вместе с оговоркой. */}
-                {recordTrips && recordTrips.length > 1 && (
-                  <FormGrid.Full>
-                    <Alert
-                      type="warning"
-                      showIcon
-                      message={`У заявки ${tripsCountLabel(recordTrips.length)} — правятся они пока не здесь`}
-                      description="Поля погрузки, разгрузки и груза показывают первую ездку, но сохранение их не изменит: ездки останутся прежними. Подача, заказчик, комментарий и файлы сохранятся как обычно."
-                    />
-                  </FormGrid.Full>
-                )}
-                {/* Адреса и контакты — во всю ширину: подсказка DaData приходит одной длинной
-                  строкой, и в половине окна выбирать пришлось бы из обрезанных вариантов. */}
-                <FormGrid.Full>
-                  <AddressField
-                    name="loadingLocation"
-                    label="Место погрузки"
-                    required
-                    requiredMessage="Укажите место погрузки"
-                    // Прежний непроверенный адрес правку не блокирует (Р2а, `keepsLoadingAddress`):
-                    // требование выбрать из подсказок встаёт на новое значение.
-                    verified={!keepsLoadingAddress}
-                    metaField="loadingAddress"
-                    directory
-                    suggestObjectIds={suggestObjectIds}
-                    placeholder="Начните вводить адрес"
-                  />
-                  {/* Контакт стоит под своим адресом, а не общим блоком в конце формы: погрузка и
-                    разгрузка — два разных места, и водитель ищет того, кто откроет ворота здесь. */}
-                  <ResponsibleFields
-                    nameField="loadingResponsibleName"
-                    phoneField="loadingResponsiblePhone"
-                    nameLabel="Ответственный за погрузку"
-                    phoneLabel="Телефон"
-                  />
-                  <AddressField
-                    name="unloadingLocation"
-                    label="Место разгрузки"
-                    required
-                    requiredMessage="Укажите место разгрузки"
-                    // Прежний непроверенный адрес правку не блокирует (Р2а) — как и на погрузке.
-                    verified={!keepsUnloadingAddress}
-                    metaField="unloadingAddress"
-                    directory
-                    suggestObjectIds={suggestObjectIds}
-                    placeholder="Начните вводить адрес"
-                  />
-                  <ResponsibleFields
-                    nameField="unloadingResponsibleName"
-                    phoneField="unloadingResponsiblePhone"
-                    nameLabel="Ответственный за разгрузку"
-                    phoneLabel="Телефон"
-                  />
-                </FormGrid.Full>
+                {/* Ездки заявки (§4.1): груз, адреса и контакты обоих концов. С одной ездкой блок
+                  выглядит и заполняется ровно как форма до плана — те же поля в тех же ячейках
+                  сетки; списком с «+ ездка» и «повторить N раз» он разворачивается по нажатию. */}
+                <RequestTripsBlock
+                  savedTrips={recordTrips}
+                  expanded={tripsExpanded}
+                  onExpand={() => setTripsExpanded(true)}
+                  suggestObjectIds={suggestObjectIds}
+                  cargoRequired={cargoRequired}
+                />
               </>
             )}
 
