@@ -11,9 +11,16 @@ export function errorHandler(
   const requestId = String(req.id);
 
   if (error instanceof AppError) {
-    return reply
-      .code(error.statusCode)
-      .send({ code: error.code, message: error.message, fields: error.fields, requestId });
+    // `details` уходит рядом с `fields`, а не вместо них: первое разбирает машина (список
+    // предупреждений выписки с отпечатком, коды блокеров), второе помечает поля формы. Пустое
+    // значение в тело не попадает — `undefined` сериализатор выбрасывает сам.
+    return reply.code(error.statusCode).send({
+      code: error.code,
+      message: error.message,
+      fields: error.fields,
+      details: error.details,
+      requestId,
+    });
   }
 
   if (hasZodFastifySchemaValidationErrors(error)) {

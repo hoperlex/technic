@@ -4,6 +4,7 @@ import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { moscowDateKeyOf, shiftDateKey } from '@technic/contracts';
 import { applyMigrations } from '../src/db/migration-journal';
+import { issueRouteWaybill } from './waybill-issue-helper';
 // Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
 // окружение, — конфиг проверяет его при импорте и без него падает.
 import type { buildApp } from '../src/app';
@@ -414,15 +415,20 @@ interface IssuedSheet {
   talons: { slot: number; requestId: string }[];
 }
 
-/** Выписать лист по рейсу и прочитать его снимок из журнала — им и проверяется бумага. */
+/**
+ * Выписать лист по рейсу и прочитать его снимок из журнала — им и проверяется бумага.
+ *
+ * Выписка идёт через помощника: предмет теста — напечатанное задание, а не рукопожатие (Р21),
+ * которое здесь срабатывает дважды — у водителя нет документов, а в смешанном рейсе ещё и объекты
+ * затрат разные.
+ */
 async function issue(routeId: string): Promise<IssuedSheet> {
-  const res = await ctx.app.inject({
-    method: 'POST',
-    url: `/api/v1/vehicle-routes/${routeId}/waybill`,
+  const { res } = await issueRouteWaybill({
+    app: ctx.app,
     headers: ctx.auth,
+    routeId,
     payload: { version: await routeVersion(routeId) },
   });
-  expect(res.statusCode, res.body).toBe(200);
   const waybillId = res.json().waybill.id as string;
 
   const sheets = await ctx.db.execute<{ data: Record<string, string> }>(
@@ -439,6 +445,22 @@ async function issue(routeId: string): Promise<IssuedSheet> {
 
 /** Площадка так, как её печатает графа «Куда»: наименование и адрес. */
 const siteLine = (object: TestObject): string => `${object.name}, ${object.address}`;
+
+/**
+ * Графа «куда» напечатала адрес площадки — целиком либо сокращённым с многоточием.
+ *
+ * Оба исхода законны (Р11а, редакция 31): адрес, переполнивший две строки ячейки, режется **видимо**
+ * и поднимает `task_row_overflow`, а помещающийся печатается целиком. Где именно ляжет граница,
+ * решают ширины глифов и отступ ячейки — привязывать тест к текущему знаку значило бы ронять его от
+ * правки метрик, а требовать целой строки — от длины наименования площадки, которое у каждого
+ * прогона своё.
+ */
+const expectSiteLine = (printed: string, object: TestObject): void => {
+  const full = siteLine(object);
+  if (printed === full) return;
+  expect(printed.endsWith('…'), `«${printed}» — ни целиком, ни с многоточием`).toBe(true);
+  expect(full.startsWith(printed.slice(0, -1))).toBe(true);
+};
 
 describe.skipIf(!DB_URL)('задание 4-П для дня линейного заказа (живая схема)', () => {
   beforeAll(async () => {
@@ -554,7 +576,17 @@ describe.skipIf(!DB_URL)('задание 4-П для дня линейного �
     const sheet = await issue(route);
 
     // Строка задания шапки — день, стоящий в рейсе первым.
-    expect(sheet.data.task_to).toBe(siteLine(ctx.objectA));
+    /*
+     * Адрес площадки не помещается в графу «куда» и печатается сокращённым, с многоточием (Р11а,
+     * редакция 31 плана). Это не потеря по недосмотру: строка переполняет две строки ячейки —
+     * последнее слово не влезает меньше чем на процент ширины, — и выписка поднимает
+     * `task_row_overflow`, то есть человек узнаёт до того, как бумага окажется у водителя. Полный
+     * адрес при этом уходит в задание водителю целиком (§8): у письма и кабинета ширины графы нет.
+     *
+     * Сверяется начало, а не строка целиком: где именно ляжет граница, решает таблица ширин
+     * глифов, и привязывать тест к её текущему знаку значило бы ронять его от правки метрик.
+     */
+    expectSiteLine(sheet.data.task_to, ctx.objectA);
     // Ответственный за встречу машины — фамилией с инициалами и номером единого вида: тем же
     // правилом, каким печатаются контакты грузового рейса.
     expect(sheet.data.task_contacts).toBe('Линейный П.С., +7 (900) 777 07 41');
@@ -571,7 +603,7 @@ describe.skipIf(!DB_URL)('задание 4-П для дня линейного �
 
     // Тот же день, стоящий в рейсе вторым: строки 2–7 собираются отдельным запросом, и
     // разъехаться с первой им негде — линейный день бывает в рейсе и первым, и пятым.
-    expect(sheet.data.task2_to).toBe(siteLine(ctx.objectB));
+    expectSiteLine(sheet.data.task2_to, ctx.objectB);
     expect(sheet.data.task2_contacts).toBe('Дневной И.Л., +7 (900) 777 07 42');
     expect(sheet.data.task2_from).toBe('');
     expect(sheet.data.task2_cargo).toBe(WORK_B);
@@ -607,7 +639,7 @@ describe.skipIf(!DB_URL)('задание 4-П для дня линейного �
 
     // Строка линейного дня в том же листе: собрана из заказа на объект, а не из деталей, которых
     // у него нет.
-    expect(sheet.data.task2_to).toBe(siteLine(ctx.objectA));
+    expectSiteLine(sheet.data.task2_to, ctx.objectA);
     expect(sheet.data.task2_from).toBe('');
     expect(sheet.data.task2_cargo).toBe(WORK_C);
     expect(sheet.data.task2_contacts).toBe('Вечерний С.И., +7 (900) 777 07 43');

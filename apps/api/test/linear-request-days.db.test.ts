@@ -4,6 +4,7 @@ import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { moscowDateKeyOf, shiftDateKey } from '@technic/contracts';
 import { applyMigrations } from '../src/db/migration-journal';
+import { issueRouteWaybill } from './waybill-issue-helper';
 // Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
 // окружение, — конфиг проверяет его при импорте и без него падает.
 import type { buildApp } from '../src/app';
@@ -412,12 +413,17 @@ async function moveRoute(routeId: string, routeDate: string): ReturnType<typeof 
   });
 }
 
-/** Выписать лист по рейсу: им рейс замораживается — день из выданного бланка не исчезает. */
-async function issueWaybill(routeId: string): ReturnType<typeof ctx.app.inject> {
-  return ctx.app.inject({
-    method: 'POST',
-    url: `/api/v1/vehicle-routes/${routeId}/waybill`,
+/**
+ * Выписать лист по рейсу: им рейс замораживается — день из выданного бланка не исчезает.
+ *
+ * Через помощника: предмет теста — судьба дня под выданной бумагой, а не сама выписка, и
+ * рукопожатие (Р21) здесь срабатывает всегда — документов тестовому водителю не заводят.
+ */
+async function issueWaybill(routeId: string): Promise<void> {
+  await issueRouteWaybill({
+    app: ctx.app,
     headers: ctx.auth,
+    routeId,
     payload: { version: await routeVersion(routeId) },
   });
 }
@@ -671,8 +677,7 @@ describe.skipIf(!DB_URL)('дни линейного заказа в рейсах
     expect((await planDay(request.id, ctx.dayA, {})).statusCode).toBe(200);
     const routeId = (await dayOf(request.id, ctx.dayA))!.route!.id;
 
-    const issued = await issueWaybill(routeId);
-    expect(issued.statusCode, issued.body).toBe(200);
+    await issueWaybill(routeId);
 
     const removed = await ctx.app.inject({
       method: 'DELETE',

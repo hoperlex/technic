@@ -3,6 +3,7 @@ import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { moscowDateKeyOf, shiftDateKey, weekStartKey } from '@technic/contracts';
+import { issueRequestEsm2 } from './waybill-issue-helper';
 import { applyMigrations } from '../src/db/migration-journal';
 // Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
 // окружение, — конфиг проверяет его при импорте и без него падает.
@@ -250,21 +251,34 @@ async function linearRequestInProgress(): Promise<{ id: string; version: number 
   return { id: request.id, version: res.json().version };
 }
 
-function issueEsm2(
+/**
+ * Выписка ЭСМ-2 по требованию — через общее рукопожатие (Р21, Р21а).
+ *
+ * ЭСМ-2 оказался **пятым** путём выпуска номера: у машиниста бывают пробелы в документах
+ * (ADR 0064), и сервер спрашивает подтверждение, как и на прочих путях. Здесь выписка — шаг
+ * подготовки, а не предмет проверки, поэтому подтверждение ставит помощник; отказы других родов
+ * (право, срок, версия) он не трогает и отдаёт как есть.
+ */
+async function issueEsm2(
   requestId: string,
   body: { weekOf: string; vehicleId?: string; driverPersonId?: string; version: number },
-): ReturnType<typeof ctx.app.inject> {
-  return ctx.app.inject({
-    method: 'POST',
-    url: `/api/v1/vehicle-requests/${requestId}/esm2`,
+): Promise<Awaited<ReturnType<typeof ctx.app.inject>>> {
+  const { res } = await issueRequestEsm2({
+    app: ctx.app,
     headers: ctx.auth,
+    requestId,
     payload: {
       weekOf: body.weekOf,
       vehicleId: body.vehicleId ?? ctx.vehicleId,
       driverPersonId: body.driverPersonId ?? ctx.driverA,
       version: body.version,
     },
+    // Ответ отдаётся как есть: половина случаев этой двери проверяет настоящие отказы — день вне
+    // срока, чужой статус, арендная машина, — и помощник нужен им лишь затем, чтобы снять с дороги
+    // рукопожатие.
+    expectIssued: false,
   });
+  return res;
 }
 
 interface SheetRow {

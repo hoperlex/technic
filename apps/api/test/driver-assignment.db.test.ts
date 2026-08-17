@@ -76,6 +76,8 @@ const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi
 interface Ctx {
   db: typeof AppDb;
   schema: typeof SchemaNs;
+  /** Раскладка ездок точками: фикстура зовёт её там же, где рабочие двери (§8 плана). */
+  placeRequestTrips: (typeof import('../src/services/route-points'))['placeRequestTrips'];
   service: typeof AssignmentNs;
   closeDb: () => Promise<void>;
   adminId: string;
@@ -289,6 +291,16 @@ async function newFreightRoute(opts: {
         position: index + 1,
       })),
     );
+    /*
+     * Раскладка точками — часть состояния рейса, а не отдельное действие пользователя. Задание
+     * водителю собирается **из точек** (§8 плана), и строка состава без них дала бы пустой день:
+     * заявка в рейсе есть, а ехать некуда. Рабочие двери (`attachRequest`, перевод в работу,
+     * правка ездок) зовут её всегда — фикстура обязана делать то же, иначе она проверяла бы
+     * состояние, которого в проде не бывает.
+     */
+    for (const requestId of opts.requestIds) {
+      await ctx.placeRequestTrips(ctx.db, route!.id, requestId);
+    }
   }
   if (opts.waybill ?? true) await new4p(route!.id, opts.personId, opts.date);
   return { id: route!.id, displayNumber: formatVehicleRouteNumber(route!.num) };
@@ -504,6 +516,7 @@ describe.skipIf(!DB_URL)('задание работника на день (жи�
     ctx = {
       db,
       schema,
+      placeRequestTrips: (await import('../src/services/route-points')).placeRequestTrips,
       service,
       closeDb,
       adminId,
@@ -563,18 +576,31 @@ describe.skipIf(!DB_URL)('задание работника на день (жи�
       itemId: null,
       shiftOrder: null,
     });
-    // Состав рейса — то, ради чего он едет: без него строка «Машина: …» не сообщает ничего.
-    expect(freightEntry.requests).toHaveLength(1);
-    expect(freightEntry.requests[0]).toMatchObject({
-      displayNumber: request.displayNumber,
-      loadingLocation: 'г Москва, ул Погрузочная, д 1',
-      unloadingLocation: 'г Москва, ул Разгрузочная, д 2',
-      time: '08:30',
+    /*
+     * Задание — **порядок объезда**, а не состав рейса (§8 плана): ездка занимает две остановки,
+     * и водитель читает их подряд, в том порядке, в котором поедет. Без этого строка «Машина: …»
+     * не сообщает ничего.
+     */
+    expect(freightEntry.points).toHaveLength(2);
+    expect(freightEntry.points[0]).toMatchObject({
+      position: 1,
+      location: 'г Москва, ул Погрузочная, д 1',
+      arrivalTime: '08:30',
     });
+    expect(freightEntry.points[0]!.actions[0]).toMatchObject({
+      role: 'load',
+      displayNumber: `${request.displayNumber}/1`,
+    });
+    expect(freightEntry.points[1]).toMatchObject({
+      position: 2,
+      location: 'г Москва, ул Разгрузочная, д 2',
+    });
+    expect(freightEntry.points[1]!.actions[0]).toMatchObject({ role: 'unload' });
     // Телефон едет цифрами, как лежит в базе (ADR 0066): набираемый вид — правило контрактов, одно
-    // на письмо и на кабинет.
-    expect(freightEntry.requests[0]!.contacts).toEqual([
-      { label: 'Погрузка', name: 'Иванов Иван', phone: '9001234567' },
+    // на письмо и на кабинет. Контакты теперь у **точки**: на остановке встречает тот, кто там, а
+    // не «ответственный заявки» вообще (Р9, Р11а).
+    expect(freightEntry.points[0]!.contacts).toEqual([
+      { name: 'Иванов Иван', phone: '9001234567' },
     ]);
 
     const relocationEntry = entryOf(dto.entries, relocation.id)!;
@@ -585,8 +611,9 @@ describe.skipIf(!DB_URL)('задание работника на день (жи�
       moveFrom: 'Стоянка на Кольцевой',
       moveTo: 'Площадка № 4',
     });
-    // У перегона задание не в составе, а в «откуда/куда»: талонов заказчиков у него нет.
-    expect(relocationEntry.requests).toEqual([]);
+    // У перегона задание не в объезде, а в «откуда/куда»: точек ему не заводится вовсе — он везёт
+    // сам себя, и остановок с работой у него нет.
+    expect(relocationEntry.points).toEqual([]);
   });
 
   it('грузовой рейс без живых заявок выпадает, перегон остаётся всегда', async () => {
@@ -642,7 +669,9 @@ describe.skipIf(!DB_URL)('задание работника на день (жи�
       purposeLabel: 'Работа на объекте',
       // Состава и «откуда/куда» у листа нет: неделю работы задаёт заявка-основание, а машина всю
       // неделю там же, куда её привезли.
-      requests: [],
+      // Точек у недельного листа нет: он накрывает неделю работы на одной площадке, а не день
+      // объезда, и состава ему не заводится (ADR 0060).
+      points: [],
       moveFrom: '',
       moveTo: '',
       comment: '',
@@ -790,9 +819,10 @@ describe.skipIf(!DB_URL)('задание работника на день (жи�
     const issued = await new4p(bare.id, person, ctx.today);
     const after = await assignment(person, ctx.today);
     expect(after.entries.map((entry) => entry.sourceId)).toEqual([bare.id, esm2]);
-    expect(entryOf(after.entries, bare.id)!.requests).toHaveLength(1);
-    expect(entryOf(after.entries, bare.id)!.requests[0]).toMatchObject({
-      loadingLocation: 'г Москва, ул Погрузочная, д 11',
+    // Ездка занимает две остановки — погрузку и разгрузку (Р5).
+    expect(entryOf(after.entries, bare.id)!.points).toHaveLength(2);
+    expect(entryOf(after.entries, bare.id)!.points[0]).toMatchObject({
+      location: 'г Москва, ул Погрузочная, д 11',
     });
     // Строкой сам лист при этом не становится (Р16): выезд представлен рейсом, и он один.
     expect(after.entries.map((entry) => entry.sourceId)).not.toContain(issued);

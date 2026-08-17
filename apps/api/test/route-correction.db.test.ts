@@ -4,6 +4,11 @@ import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { moscowDateKeyOf, shiftDateKey, WAYBILL_CORRECTION_DAYS } from '@technic/contracts';
 import { applyMigrations } from '../src/db/migration-journal';
+import {
+  correctRouteWithAck,
+  issueRouteWaybill,
+  type AcknowledgedCall,
+} from './waybill-issue-helper';
 // Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
 // окружение, — конфиг проверяет его при импорте и без него падает.
 import type { buildApp } from '../src/app';
@@ -335,14 +340,20 @@ async function routeVersion(routeId: string): Promise<number> {
   return res.json().version as number;
 }
 
+/**
+ * Действующий лист по рейсу — то состояние, в котором коррекция застаёт прошедший день.
+ *
+ * Через помощника, потому что рукопожатие (Р21) здесь обвязка: у тестового водителя документов
+ * нет, и предупреждение `driver_documents` поднимается на каждой выписке этого файла. Предмет
+ * проверки — сама коррекция, а не подтверждение.
+ */
 async function issueWaybill(routeId: string): Promise<void> {
-  const res = await ctx.app.inject({
-    method: 'POST',
-    url: `/api/v1/vehicle-routes/${routeId}/waybill`,
+  await issueRouteWaybill({
+    app: ctx.app,
     headers: ctx.admin,
+    routeId,
     payload: { version: await routeVersion(routeId) },
   });
-  expect(res.statusCode, res.body).toBe(200);
 }
 
 /**
@@ -371,6 +382,26 @@ async function correct(
     method: 'POST',
     url: `/api/v1/vehicle-routes/${routeId}/correction`,
     headers: auth,
+    payload: { version: await routeVersion(routeId), ...payload },
+  });
+}
+
+/**
+ * Коррекция, которая обязана пройти, — с рукопожатием нового листа внутри (Р21а).
+ *
+ * Отдельно от `correct`, а не вместо него: половина сценариев ниже ждёт отказа — 403 без права,
+ * 422 на пустом теле и на чужой машине, — а помощник настаивает на 200 намеренно. Он и заведён
+ * ради того, чтобы подготовка не проглатывала чужой ответ.
+ */
+async function correctOk(
+  auth: { authorization: string },
+  routeId: string,
+  payload: Record<string, unknown>,
+): Promise<AcknowledgedCall> {
+  return correctRouteWithAck({
+    app: ctx.app,
+    headers: auth,
+    routeId,
     payload: { version: await routeVersion(routeId), ...payload },
   });
 }
@@ -558,13 +589,12 @@ describe.skipIf(!DB_URL)('коррекция рейса задним число�
 
     const operationId = uuid();
     const reason = 'На рейс выехала другая машина с другим водителем';
-    const res = await correct(ctx.dispatcher, request.routeId, {
+    const { res } = await correctOk(ctx.dispatcher, request.routeId, {
       operationId,
       vehicleId: ctx.otherVehicleId,
       driverPersonId: ctx.otherDriverId,
       reason,
     });
-    expect(res.statusCode, res.body).toBe(200);
 
     // Рейс приведён к тому, что было на самом деле.
     const route = res.json();
@@ -638,20 +668,32 @@ describe.skipIf(!DB_URL)('коррекция рейса задним число�
         payload,
       });
 
-    const first = await send(ctx.admin, body);
-    expect(first.statusCode, first.body).toBe(200);
+    /*
+     * Первая команда идёт через помощника, а повторы — тем телом, каким она **прошла**
+     * (`accepted`): подтверждение предупреждений лежит в том же теле, а отпечаток идемпотентности
+     * считается со всего тела целиком. Повторив исходное `body` без `acknowledge`, тест послал бы
+     * серверу другую команду под занятым ключом — и получил бы 409 «ключ уже занят» там, где ждёт
+     * «ничего не выполнено».
+     */
+    const first = await correctRouteWithAck({
+      app: ctx.app,
+      headers: ctx.admin,
+      routeId: request.routeId,
+      payload: body,
+    });
+    const accepted = first.payload;
     const issued = (await waybillsOf(request.routeId)).map((row) => row.id);
 
-    const repeat = await send(ctx.admin, body);
+    const repeat = await send(ctx.admin, accepted);
     expect(repeat.statusCode, repeat.body).toBe(200);
     expect((await waybillsOf(request.routeId)).map((row) => row.id)).toEqual(issued);
     expect((await correctionsOf(operationId)).length).toBe(1);
 
     // Тот же ключ с другой причиной — не повтор, а другая команда под чужим ключом.
-    const other = await send(ctx.admin, { ...body, reason: 'Другая причина' });
+    const other = await send(ctx.admin, { ...accepted, reason: 'Другая причина' });
     expect(other.statusCode, other.body).toBe(409);
     // Чужим пользователем — тоже 409, даже с тем же телом: ключ принадлежит автору.
-    const foreign = await send(ctx.dispatcher, body);
+    const foreign = await send(ctx.dispatcher, accepted);
     expect(foreign.statusCode, foreign.body).toBe(409);
   }, 180_000);
 
@@ -751,12 +793,11 @@ describe.skipIf(!DB_URL)('коррекция рейса задним число�
     expect(preview.json().requests[0].workDate).toBe(ctx.today);
 
     const operationId = uuid();
-    const res = await correct(ctx.admin, routeId, {
+    const { res } = await correctOk(ctx.admin, routeId, {
       operationId,
       vehicleId: ctx.otherVehicleId,
       reason: 'В этот день на площадку вышла вторая машина',
     });
-    expect(res.statusCode, res.body).toBe(200);
 
     // Машина дня сменилась вместе с рейсом, а назначение заказа осталось прежним (ADR 0100 п. 4):
     // оно отвечает за весь срок, и переписав его, коррекция одного дня переставила бы машину у
@@ -804,12 +845,11 @@ describe.skipIf(!DB_URL)('коррекция рейса задним число�
     expect(tooDeep.statusCode, tooDeep.body).toBe(422);
     expect(tooDeep.json().message).toContain(String(WAYBILL_CORRECTION_DAYS));
 
-    const byAdmin = await correct(ctx.admin, request.routeId, {
+    await correctOk(ctx.admin, request.routeId, {
       operationId: uuid(),
       vehicleId: ctx.otherVehicleId,
       reason: 'Ехала другая машина',
     });
-    expect(byAdmin.statusCode, byAdmin.body).toBe(200);
   }, 180_000);
 
   /*

@@ -3,6 +3,7 @@ import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { moscowDateKeyOf, shiftDateKey, weekStartKey } from '@technic/contracts';
+import { issueRequestEsm2 } from './waybill-issue-helper';
 import { applyMigrations } from '../src/db/migration-journal';
 // Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
 // окружение, — конфиг проверяет его при импорте и без него падает.
@@ -270,15 +271,21 @@ interface Esm2Body {
   operationId?: string;
 }
 
-function issueEsm2(
+/**
+ * Выписка ЭСМ-2 — через общее рукопожатие (Р21а): у машиниста бывают пробелы в документах, и
+ * сервер спрашивает подтверждение. Ответ отдаётся как есть — эта дверь проверяется отказами
+ * (право, глубина, ключ операции), и помощник нужен ей лишь затем, чтобы снять рукопожатие.
+ */
+async function issueEsm2(
   auth: { authorization: string },
   requestId: string,
   body: Esm2Body,
-): ReturnType<typeof ctx.app.inject> {
-  return ctx.app.inject({
-    method: 'POST',
-    url: `/api/v1/vehicle-requests/${requestId}/esm2`,
+): Promise<Awaited<ReturnType<typeof ctx.app.inject>>> {
+  const { res } = await issueRequestEsm2({
+    app: ctx.app,
     headers: auth,
+    requestId,
+    expectIssued: false,
     payload: {
       weekOf: body.weekOf,
       vehicleId: ctx.vehicleId,
@@ -288,6 +295,7 @@ function issueEsm2(
       ...(body.operationId ? { operationId: body.operationId } : {}),
     },
   });
+  return res;
 }
 
 interface SheetRow {
@@ -588,14 +596,34 @@ describe.skipIf(!DB_URL)('двери заднего числа со сторон
         operationId: uuid(),
       };
 
-      const first = await issueEsm2(ctx.dispatcher, request.id, body);
+      // Ключ идемпотентности считается по **всему** телу, а рукопожатие его меняет (Р21а). Поэтому
+      // повторять надо ровно то тело, которое сервер принял, — помощник его для этого и отдаёт.
+      const { res: first, payload: accepted } = await issueRequestEsm2({
+        app: ctx.app,
+        headers: ctx.dispatcher,
+        requestId: request.id,
+        expectIssued: false,
+        payload: {
+          weekOf: body.weekOf,
+          vehicleId: ctx.vehicleId,
+          driverPersonId: ctx.driverId,
+          version: body.version,
+          reason: body.reason,
+          operationId: body.operationId,
+        },
+      });
       expect(first.statusCode, first.body).toBe(200);
       const sheets = await sheetsOf(request.id);
       expect(sheets).toHaveLength(1);
 
       // Тело то же целиком, включая устаревшую версию: до проверки версии повтор не доходит —
       // ради этого ключ и заводили (Р31).
-      const repeat = await issueEsm2(ctx.dispatcher, request.id, body);
+      const repeat = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/v1/vehicle-requests/${request.id}/esm2`,
+        headers: ctx.dispatcher,
+        payload: accepted,
+      });
       expect(repeat.statusCode, repeat.body).toBe(200);
       expect(await sheetsOf(request.id)).toHaveLength(1);
       expect(await correctionsOfRequest(request.id)).toHaveLength(1);

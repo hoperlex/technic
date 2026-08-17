@@ -1,26 +1,38 @@
+import { createHash } from 'node:crypto';
 import { and, eq, inArray } from 'drizzle-orm';
 import {
+  canonicalWarningPayload,
+  type CostTarget,
+  costTargetOf,
   type DriverDocumentGap,
   formatPhone,
+  type IssueBlocker,
   licenseNumberLabel,
   routeCargoWithNote,
   routeContactsLabel,
   routeExtraTaskLine,
+  routeIssueBlockers,
   type RoutePurpose,
   routeRequestCapacity,
   routeWaybillForm,
+  taskAddressKey,
+  type TaskRef,
   taskRefKey,
   taskRowLayout,
   taskRowLayoutKind,
   type TaskRowNotes,
   type VehicleRequestType,
   type VehicleRoutePointDto,
+  WAYBILL_ACK_REQUIRED_CODE,
+  type WaybillAckRequiredDetails,
   type WaybillFormCode,
+  waybillIssueWarnings,
   waybillRequirement,
   type WaybillRequirement,
   type WaybillSnapshotKey,
   type WaybillTaskRow,
   waybillTaskRows,
+  type WaybillWarning,
   type RouteTripFields,
 } from '@technic/contracts';
 import type { db } from '../db/client';
@@ -41,7 +53,7 @@ import {
 } from '../db/schema';
 import { err } from '../lib/errors';
 import { selectDrivers } from './drivers';
-import { loadRoutePoints } from './route-points';
+import { loadRoutePoints, routeTaskRefs } from './route-points';
 import { findSeriesByCode, takeNextNumber } from './waybill-numbers';
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -296,6 +308,14 @@ export interface IssuedWaybill {
 
 export interface RouteWaybillContext {
   routeId: string;
+  /**
+   * «Р-12» — им предупреждения выписки называют рейс человеку (Р21).
+   *
+   * Аргументом, а не чтением внутри: номер рейса уже есть у каждого из четырёх путей выпуска —
+   * все они держат строку рейса под `FOR UPDATE`, — и второй `SELECT` за тем же числом означал бы
+   * лишний запрос ради подписи в сообщении.
+   */
+  routeNumber: string;
   /** Зачем рейс: им выбирается бланк — перегон печатается 4-П независимо от типа машины. */
   purpose: RoutePurpose;
   vehicleId: string;
@@ -310,6 +330,18 @@ export interface RouteWaybillContext {
    * (миграция 0082). `null` — обычный маршрут грузоперевозки.
    */
   relocation: { requestId: string; from: string; to: string } | null;
+  /**
+   * Рукопожатие выписки (Р21): отпечаток набора предупреждений, который человек прочитал в окне.
+   * `null` — подтверждения не присылали; набор при этом обязан быть пуст, иначе выписка отвечает
+   * 409 `waybill_ack_required`.
+   *
+   * Полем контекста, а не аргументом ручки, ровно по Р21а: путей выпуска номера у листа по рейсу
+   * четыре, и рукопожатие живёт в общей точке — пропущенный путь записал бы в свежий лист
+   * `issue_warnings = not_checked`, то есть обошёл бы проверку, ради которой она заводилась.
+   * Пятый путь — недельный ЭСМ-2 (`issueEsm2Waybill`), и у него своя общая точка и своё поле:
+   * рейса, точек и строк задания у того бланка нет вовсе.
+   */
+  acknowledge: { fingerprint: string } | null;
   /** Кто выписывает: попадёт в `issued_by` и в журнал аудита. На бланке его нет — подписи там свои. */
   actor: { id: string };
 }
@@ -339,6 +371,20 @@ interface IssueRequest {
   /** Заказчик — объект или отдел (ADR 0040): у заявки отдела площадки нет вовсе. */
   customerName: string;
   customerAddress: string;
+  /**
+   * «Наименование, адрес» объекта — тот самый адрес, который линейный день несёт **в самой строке
+   * задания** (ADR 0100 §10). С ним и сверяется адрес точки дня (Р11б): расхождение поднимает
+   * `address_mismatch`.
+   *
+   * Отдельно от `customerName`/`customerAddress`, хотя у линейного заказа это те же две колонки:
+   * шапка «в чьё распоряжение» печатает заказчика и у заявки отдела, а объект затрат-отдел адреса
+   * не имеет вовсе — сложив их в одно поле, мы получили бы «расхождение» с пустой строкой у
+   * каждого заказа отдела. Собирается тем же правилом, что и в `route-points.ts` (`objectLocation`),
+   * иначе сверка сравнивала бы две по-разному склеенные строки.
+   */
+  objectLocation: string;
+  /** Объект затрат заявки (Р25): по ним считается `multiple_cost_targets` шапки (Р26). */
+  costTarget: CostTarget | null;
   scheduledAt: Date | null;
   timeUnspecified: boolean;
   siteResponsibleName: string;
@@ -360,8 +406,11 @@ interface IssueRequest {
  *     что напечатаны, а не по составу рейса (Р20);
  *   - **предупреждения выписки и их отпечаток** (`waybillIssueWarnings`, Р21) — им нужны те же
  *     точки, строки и пробелы документов водителя. Своего они добирают немного: номер рейса для
- *     сообщения, адреса самих строк задания (`sourceAddresses`) и объекты затрат заявок
- *     (`costTargets`) — их место здесь же, рядом с `requests`, и второго чтения точек им не нужно.
+ *     сообщения (приходит с вызывающим), адреса самих строк задания (`sourceAddresses`, из того же
+ *     чтения ездок, что и комментарии) и объекты затрат заявок (`costTargets`, из того же чтения
+ *     заявок, что и шапка) — второго чтения точек им не нужно;
+ *   - **блокеры выписки** (`routeIssueBlockers`, Р11а) — те же точки плюс строки задания состава
+ *     (`composition`): ёмкость бланка считается по ним, а не по разложенному.
  *
  * Контекст неизменяем по договорённости, а не по типу: `readonly` на всех полях сделал бы его
  * неудобным для сборки, а смысл у него один — собран один раз, дальше только читается.
@@ -391,6 +440,14 @@ export interface WaybillIssueContext {
   points: VehicleRoutePointDto[];
   /** Комментарии строк задания по `taskRefKey` — вторая строка графы «Груз». */
   notes: TaskRowNotes;
+  /** Адреса самих строк задания по `taskAddressKey`: с ними сверяются адреса точек (Р11б). */
+  sourceAddresses: Map<string, string>;
+  /**
+   * Строки задания **состава** — все ездки живых заявок рейса и все дни линейных заказов, включая
+   * те, что в маршруте ещё не разложены (Р11). Ими считается ёмкость бланка: считать разложенные
+   * значило бы не заметить забытую ездку — ту самую, из-за которой лист и не выписать.
+   */
+  composition: TaskRef[];
   /** Строки задания в порядке печати: ездки и линейные дни вперемешку, по порядку объезда (Р11). */
   rows: WaybillTaskRow[];
   /** Заявки листа по их идентификаторам: состав рейса плюс заявка-основание перегона. */
@@ -418,8 +475,15 @@ async function loadIssueRequests(tx: Tx, ids: string[]): Promise<Map<string, Iss
       comment: vehicleRequests.comment,
       // Заказчик в бланке — объект или отдел (ADR 0040): innerJoin по объекту оставил бы строку
       // «Заказчик» пустой у заявки отдела — вместе со всем листом.
+      //
+      // Идентификаторы и коды рядом с наименованиями — ради объекта затрат (Р25): решает его
+      // `costTargetOf` по идентификатору, а код это то, чем цель называет бухгалтерия.
+      objectId: vehicleRequests.objectId,
+      objectCode: constructionObjects.code,
       objectName: constructionObjects.name,
       objectAddress: constructionObjects.address,
+      departmentId: vehicleRequests.departmentId,
+      departmentCode: departments.code,
       departmentName: departments.name,
       scheduledAt: freightTransportRequestDetails.scheduledAt,
       timeUnspecified: freightTransportRequestDetails.scheduledTimeUnspecified,
@@ -448,6 +512,9 @@ async function loadIssueRequests(tx: Tx, ids: string[]): Promise<Map<string, Iss
         // У отдела адреса нет: он не площадка, и маршрут задан адресами точек.
         customerName: row.objectName ?? row.departmentName ?? '',
         customerAddress: row.objectAddress ?? '',
+        // Тем же склеиванием, что и в `route-points.ts`: «Наименование, адрес», пустое опущено.
+        objectLocation: [row.objectName, row.objectAddress].filter(Boolean).join(', '),
+        costTarget: costTargetOf(row),
         scheduledAt: row.scheduledAt,
         timeUnspecified: row.timeUnspecified ?? false,
         siteResponsibleName: row.siteResponsibleName ?? '',
@@ -457,21 +524,36 @@ async function loadIssueRequests(tx: Tx, ids: string[]): Promise<Map<string, Iss
   );
 }
 
+/** Что строки задания несут в себе самих — в отличие от того, что им дают точки маршрута. */
+interface TaskRowFacts {
+  notes: TaskRowNotes;
+  /**
+   * Адрес, записанный в самой строке задания, по ключу `taskAddressKey` (Р11б). С ним сверяется
+   * печатаемый адрес точки: расхождение это `address_mismatch` — «печатаем не то, что в заявке».
+   */
+  sourceAddresses: Map<string, string>;
+}
+
 /**
- * Комментарии строк задания (`TaskRowNotes`): у ездки — её собственное примечание, а нет его —
- * комментарий заказа; у линейного дня — комментарий заявки, он же характер работ (ADR 0100 §10).
+ * Комментарии и собственные адреса строк задания — одним чтением ездок (Р22).
  *
- * Падать на комментарий заказа приходится потому, что примечание ездки завелось миграцией 0136 и
- * бэкфил оставил его пустым (Р24): взяв только его, печать молча уронила бы вторую строку графы
- * «Груз» у каждой заявки, где комментарий заполнен, — то есть изменила бы уже выданный
- * документооборот. Заполненное примечание ездки при этом сильнее: оно про эту поездку, а
- * комментарий — про весь заказ.
+ * Комментарий: у ездки — её собственное примечание, а нет его — комментарий заказа; у линейного дня
+ * — комментарий заявки, он же характер работ (ADR 0100 §10). Падать на комментарий заказа
+ * приходится потому, что примечание ездки завелось миграцией 0136 и бэкфил оставил его пустым
+ * (Р24): взяв только его, печать молча уронила бы вторую строку графы «Груз» у каждой заявки, где
+ * комментарий заполнен, — то есть изменила бы уже выданный документооборот. Заполненное примечание
+ * ездки при этом сильнее: оно про эту поездку, а комментарий — про весь заказ.
+ *
+ * Адрес строки берётся здесь же, а не вторым запросом: `RoutePointAction` несёт о расхождении
+ * только флаг (`addressMismatch`), а предупреждение обязано назвать **оба** текста — иначе человек
+ * подтверждает «адреса разошлись», не видя, чем именно. У линейного дня своего адреса нет: его
+ * строка задания печатает объект заявки, и сверяется точка с ним (`objectLocation`).
  */
-async function loadTaskRowNotes(
+async function loadTaskRowFacts(
   tx: Tx,
   points: readonly VehicleRoutePointDto[],
   requests: ReadonlyMap<string, IssueRequest>,
-): Promise<TaskRowNotes> {
+): Promise<TaskRowFacts> {
   const tripIds = [
     ...new Set(
       points.flatMap((point) =>
@@ -482,21 +564,34 @@ async function loadTaskRowNotes(
   const tripRows =
     tripIds.length > 0
       ? await tx
-          .select({ id: vehicleRequestTrips.id, comment: vehicleRequestTrips.comment })
+          .select({
+            id: vehicleRequestTrips.id,
+            comment: vehicleRequestTrips.comment,
+            fromLocation: vehicleRequestTrips.fromLocation,
+            toLocation: vehicleRequestTrips.toLocation,
+          })
           .from(vehicleRequestTrips)
           .where(inArray(vehicleRequestTrips.id, tripIds))
       : [];
-  const tripNotes = new Map(tripRows.map((row) => [row.id, row.comment]));
+  const trips = new Map(tripRows.map((row) => [row.id, row]));
 
   const notes = new Map<string, string>();
+  const sourceAddresses = new Map<string, string>();
   for (const point of points) {
     for (const action of point.actions) {
-      const requestNote = requests.get(action.ref.requestId)?.comment ?? '';
-      const own = action.kind === 'freight' ? (tripNotes.get(action.ref.tripId) ?? '') : '';
-      notes.set(taskRefKey(action.ref), own.trim() === '' ? requestNote : own);
+      const request = requests.get(action.ref.requestId);
+      const trip = action.kind === 'freight' ? trips.get(action.ref.tripId) : undefined;
+      const own = trip?.comment ?? '';
+      notes.set(taskRefKey(action.ref), own.trim() === '' ? (request?.comment ?? '') : own);
+      sourceAddresses.set(
+        taskAddressKey(action.ref, action.role),
+        trip
+          ? ((action.role === 'load' ? trip.fromLocation : trip.toLocation) ?? '')
+          : (request?.objectLocation ?? ''),
+      );
     }
   }
-  return notes;
+  return { notes, sourceAddresses };
 }
 
 /**
@@ -586,8 +681,17 @@ export async function loadWaybillIssueContext(
     ...route.requests.map((row) => row.requestId),
     ...(route.relocation ? [route.relocation.requestId] : []),
   ]);
-  const notes = await loadTaskRowNotes(tx, points, requests);
+  const { notes, sourceAddresses } = await loadTaskRowFacts(tx, points, requests);
   const rows = waybillTaskRows(points, notes);
+  /*
+   * Строки задания состава — то, что заказано, в отличие от того, что разложено по точкам. Ими
+   * считаются ёмкость бланка и неразложенные строки (`rows_unplaced`), и взять их из точек нельзя
+   * по определению: забытой ездки в точках нет вовсе.
+   *
+   * У перегона состава не бывает (миграция 0082), и запрос вернёт пустой список: задание ему даёт
+   * сам рейс, а не строки.
+   */
+  const composition = await routeTaskRefs(tx, route.routeId);
 
   /*
    * Шапка «в чьё распоряжение» называет заказчика первой строки задания (Р26), а не первой строки
@@ -620,10 +724,193 @@ export async function loadWaybillIssueContext(
     },
     points,
     notes,
+    sourceAddresses,
+    composition,
     rows,
     requests,
     header: headerRequestId ? (requests.get(headerRequestId) ?? null) : null,
   };
+}
+
+// ── Блокеры, предупреждения и рукопожатие (Р21, Р21а) ──
+
+/**
+ * Что мешает выписать лист по этому рейсу; пусто — не мешает ничего (Р11а).
+ *
+ * Считается тем же правилом, что показывает портал при сборке маршрута (`routeIssueBlockers`), и
+ * из того же контекста, из которого печатается бумага (Р22): показать одно, а напечатать другое
+ * здесь хуже, чем не показать вовсе.
+ *
+ * Пересечение с `canIssueWaybill` (контракты) — ровно два места, и оба разрешены в пользу
+ * существующей проверки:
+ *
+ *   - **водитель**: та спрашивает его первой и без всякого чтения, а сюда он приходит уже
+ *     непустым (`RouteWaybillContext.driverPersonId` — `string`), поэтому `no_driver` тут
+ *     недостижим. Убирать его из общего правила незачем — им пользуется портал, где водителя может
+ *     не быть;
+ *   - **ёмкость бланка**: та считает **заявки**, здесь считаются **строки задания** — ездки плюс
+ *     линейные дни (Р11). Второй счёт строго сильнее первого (заявка занимает не меньше одной
+ *     строки), и это единственный правильный счёт для смешанного дня: заявка с тремя ездками
+ *     занимает в бланке три строки, а в составе одну.
+ *
+ * Всё остальное — статусы состава, коррекция, право на пустой бланк, действующий лист рейса — так и
+ * остаётся за `canIssueWaybill`: точки об этом не знают.
+ */
+export function issueBlockersOf(context: WaybillIssueContext): IssueBlocker[] {
+  return routeIssueBlockers({
+    driverPersonId: context.route.driverPersonId,
+    formCode: context.formCode,
+    points: context.points,
+    composition: context.composition,
+    notes: context.notes,
+  });
+}
+
+/** Отказ по блокерам — кодом, а не текстом: по коду портал ведёт человека туда, где чинят. */
+function blockerMessage(blocker: IssueBlocker): string {
+  switch (blocker.code) {
+    case 'no_driver':
+      return 'назначьте водителя — он обязательный реквизит листа';
+    case 'trip_order_broken':
+      return `разгрузка раньше погрузки: ${blocker.refs.length} ездк(и) — переставьте точки маршрута`;
+    case 'rows_unplaced':
+      return `не разложено строк задания: ${blocker.refs.length} — положите их точками маршрута`;
+    case 'capacity_exceeded':
+      return `строк задания ${blocker.rows}, а бланк держит ${blocker.capacity} — уберите лишнее или заведите второй рейс`;
+    case 'required_fields_overflow':
+      return `строка задания ${blocker.slot} не помещается в бланк: ${blocker.fields.join(', ')} — сократите адрес точки`;
+  }
+}
+
+/**
+ * Предупреждения выписки — то, о чём человек должен знать до расхода номера (Р21).
+ *
+ * `blank_task` у перегона снимается: задание ему даёт сам рейс двумя строками «откуда — куда»
+ * (миграция 0082), строк задания у него нет ни одной **по устройству**, и «в маршруте нет заявок»
+ * было бы неправдой о единственном документе, который у перегона и печатается.
+ */
+export function issueWarningsOf(context: WaybillIssueContext): WaybillWarning[] {
+  const warnings = waybillIssueWarnings({
+    routeId: context.route.routeId,
+    routeNumber: context.route.routeNumber,
+    formCode: context.formCode,
+    driver: {
+      personId: context.driver.personId,
+      name: context.driver.fio,
+      gaps: context.driver.gaps,
+    },
+    points: context.points,
+    notes: context.notes,
+    sourceAddresses: context.sourceAddresses,
+    costTargets: new Map(
+      [...context.requests].flatMap(([id, request]) =>
+        request.costTarget ? [[id, request.costTarget] as const] : [],
+      ),
+    ),
+  });
+  if (!context.route.relocation) return warnings;
+  return warnings.filter((warning) => warning.facts.code !== 'blank_task');
+}
+
+/**
+ * Отпечаток набора предупреждений (Р21).
+ *
+ * `sha256` от каноникализованных **фактов**, а не от текста: подтверждает человек положение дел, а
+ * не формулировку. Переписали сообщение — подтверждение остаётся в силе; сменился факт у того же
+ * объекта или переставили порядок талонов так, что расхождение переехало на другую точку, —
+ * рукопожатие расходится, и лист молча не выпишется.
+ *
+ * Хеш берёт сервер: в браузере он не нужен вовсе — там отпечаток только возвращается обратно.
+ */
+export function warningsFingerprint(warnings: readonly WaybillWarning[]): string {
+  return createHash('sha256').update(canonicalWarningPayload(warnings)).digest('hex');
+}
+
+/** Под какими предупреждениями выдан лист — конверт колонки `waybills.issue_warnings` (Р21). */
+export type IssueWarningsRecord =
+  | { schemaVersion: 1; status: 'clean' }
+  | {
+      schemaVersion: 1;
+      status: 'acknowledged';
+      fingerprint: string;
+      /** Список целиком, с сообщениями: через полгода разбираться будут по нему, а не по кодам. */
+      warnings: WaybillWarning[];
+    };
+
+/**
+ * Рукопожатие над готовым набором предупреждений (Р21): пусто — `clean`, подтверждено —
+ * `acknowledged`, иначе 409 `waybill_ack_required` со свежим отпечатком и полным списком.
+ *
+ * Отдельной функцией — потому что путей выпуска номера оказалось не четыре, а пять. Пятый это
+ * недельный лист ЭСМ-2 по требованию (`issueEsm2Waybill`): рейса у него нет вовсе, номер он берёт
+ * своей серией, а предупреждение у него ровно одно — пробелы в документах машиниста (ADR 0064),
+ * общие с прочими бланками. Считаются наборы в разных местах, потому что считаются из разного, но
+ * решение «пускать, спрашивать или записать подтверждённое» обязано быть одним: разойдись эти два
+ * места, один и тот же набор в одном отвечал бы 409, а в другом молча писал бы `clean`.
+ *
+ * Чем отказ называет бумагу человеку (`label`) и что уходит в `details` сверх отпечатка и списка,
+ * знает только вызывающий: у рейса это `routeId` и его номер (`WaybillAckRequiredDetails`), у
+ * ЭСМ-2 — заявка и неделя (`Esm2AckRequiredDetails`).
+ */
+export function acknowledgeOrThrow<D extends object>(params: {
+  warnings: WaybillWarning[];
+  /** Отпечаток, который человек прислал обратно; `null` — подтверждения не присылали. */
+  acknowledge: { fingerprint: string } | null;
+  label: string;
+  details: D;
+}): IssueWarningsRecord {
+  const { warnings } = params;
+  if (warnings.length === 0) return { schemaVersion: 1, status: 'clean' };
+
+  const fingerprint = warningsFingerprint(warnings);
+  if (params.acknowledge?.fingerprint !== fingerprint) {
+    /*
+     * 409, а не 422: отказано не запросу, а его устареванию — набор предупреждений с момента
+     * показа окна изменился либо не показывался вовсе (повтор из истории, старая вкладка, `curl`).
+     * Новый отпечаток уходит в том же ответе, и вторая попытка с ним проходит.
+     */
+    throw err.conflict(
+      `Выписка требует подтверждения: ${warnings.length} предупрежд(ение/ения) ${params.label}`,
+      {
+        code: WAYBILL_ACK_REQUIRED_CODE,
+        details: { ...params.details, fingerprint, warnings },
+      },
+    );
+  }
+  return { schemaVersion: 1, status: 'acknowledged', fingerprint, warnings };
+}
+
+/**
+ * Проверка перед расходом номера: блокеры — 422, неподтверждённые предупреждения — 409 (Р21).
+ *
+ * Порядок именно такой. Блокер это документ, по которому нельзя ехать, и подтверждать его человеку
+ * не предлагают; предупреждение — положение дел, о котором он должен знать, и решение остаётся за
+ * ним. Спросив рукопожатие первым, мы просили бы подтвердить бумагу, которая всё равно не выпишется.
+ *
+ * Пустой набор рукопожатия не требует вовсе: лист без единого предупреждения выписывается одним
+ * нажатием, как и до Р21, и в колонку уходит `clean` — «проверено, предупреждений не было».
+ */
+function checkIssueOrThrow(context: WaybillIssueContext): IssueWarningsRecord {
+  const blockers = issueBlockersOf(context);
+  if (blockers.length > 0) {
+    throw err.unprocessable(
+      `Лист по этому рейсу не выписать: ${blockers.map(blockerMessage).join('; ')}`,
+      undefined,
+      { blockers },
+    );
+  }
+
+  return acknowledgeOrThrow({
+    warnings: issueWarningsOf(context),
+    acknowledge: context.route.acknowledge,
+    label: `по рейсу ${context.route.routeNumber}`,
+    // `satisfies`, а не приведение: тело отказа описано контрактом ручки, и поле, забытое здесь,
+    // должно ловиться сборкой, а не пустым местом в окне подтверждения.
+    details: {
+      routeId: context.route.routeId,
+      routeNumber: context.route.routeNumber,
+    } satisfies Omit<WaybillAckRequiredDetails, 'fingerprint' | 'warnings'>,
+  });
 }
 
 /**
@@ -830,6 +1117,19 @@ export async function issueWaybillForRoute(
   const context = await loadWaybillIssueContext(tx, ctx);
 
   /*
+   * Рукопожатие и блокеры — **до** номера (Р21, Р21а): всё, что способно отказать, спрашивается,
+   * пока бланк ещё не израсходован. Счётчик серии живёт строкой и откатился бы с транзакцией, но
+   * ответ «строка задания не влезла» после сожжённого номера человек прочитал бы как поломку.
+   *
+   * Стоит это здесь, в общей точке выпуска, а не в ручке, ровно по Р21а: путей к листу по рейсу
+   * четыре — обычная выписка, задняя, коррекция рейса и перенос заявки между рейсами, — и
+   * пропущенный записал бы в свежий лист `issue_warnings = not_checked`, то есть обошёл бы
+   * проверку, ради которой она заводилась. Пятый путь ведёт к другому бланку и потому к другой
+   * общей точке — недельному ЭСМ-2 (`issueEsm2Waybill`), где рукопожатие устроено так же.
+   */
+  const issueWarnings = checkIssueOrThrow(context);
+
+  /*
    * Проверки «на эту машину и дату лист уже есть» здесь нет намеренно (ADR 0052). Прежнее
    * ограничение снято миграцией `0074` вместе с UNIQUE (vehicle_id, issued_for_date): один
    * действующий лист приходится на рейс, а не на день машины, — день и ночь на одной машине это
@@ -866,6 +1166,13 @@ export async function issueWaybillForRoute(
       communicationKind: ctx.trip.communicationKind,
       transportationKind: ctx.trip.transportationKind,
       data,
+      /*
+       * Под какими предупреждениями выдан лист — **той же вставкой**, что и сам документ (Р21).
+       * Не аудитом: `writeAudit` намеренно best-effort — пишет отдельным соединением и глотает
+       * ошибку, — и хранилищем решения человека быть не может. Здесь же оно неотделимо от бумаги:
+       * есть лист — есть и то, под чем его подписали.
+       */
+      issueWarnings,
       issuedBy: ctx.actor.id,
     })
     .returning({ id: waybills.id });

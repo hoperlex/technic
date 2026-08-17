@@ -21,6 +21,7 @@ import {
   ROUTE_REQUEST_CAPACITY,
   parseVehicleRouteNumberSearch,
   pointOrderSchema,
+  pointRoleOrderSchema,
   ROUTE_FROZEN_MESSAGE,
   ROUTE_LEGACY_WAYBILL_MESSAGE,
   routeOrderSchema,
@@ -32,7 +33,6 @@ import {
   transferCorrectionSchema,
   updateVehicleRouteSchema,
   type VehicleRouteDto,
-  type VehicleRoutePointDto,
   vehicleRouteListQuerySchema,
   vehicleStatusLabels,
 } from '@technic/contracts';
@@ -61,6 +61,8 @@ import {
   loadRoutePoints,
   mergeRoutePoints,
   placeRequestTrips,
+  pointOrderByComposition,
+  setPointRoleOrder,
   setRoutePointOrder,
   splitRoutePoint,
   updateRoutePoint,
@@ -135,16 +137,14 @@ const requestParams = z.object({ id: z.string().uuid(), requestId: z.string().uu
 const pointParams = z.object({ id: z.string().uuid(), pointId: z.string().uuid() });
 
 /**
- * Рейс с порядком объезда — ответ всех дверей, которые его правят.
+ * Рейс вместе с его порядком объезда.
  *
- * Точки добираются отдельным запросом, а не внутри `loadRouteDto`: их спрашивает карточка рейса, а
- * список рейсов и карточка заявки — нет, и платить за них страницей из двадцати строк незачем.
- * Тип собирается пересечением, потому что `VehicleRouteDto` точек ещё не несёт (этап 5 добавит их
- * в контракт вместе с переключением выписки на строки задания).
+ * Точки теперь поле самого `VehicleRouteDto` (§6 плана), поэтому пересечения типов здесь больше
+ * нет — оно заводилось, пока контракт о них не знал, и стоило дорого: сервер и портал склеивали
+ * точки каждый у себя, а тест, собравший рейс честным DTO, точек не имел вовсе и потому не мог
+ * проверить ни одну сборку дня.
  */
-type VehicleRouteWithPoints = VehicleRouteDto & { points: VehicleRoutePointDto[] };
-
-async function routeWithPoints(id: string): Promise<VehicleRouteWithPoints> {
+async function routeWithPoints(id: string): Promise<VehicleRouteDto> {
   const [dto, points] = await Promise.all([loadRouteDto(db, id), loadRoutePoints(db, id)]);
   if (!dto) throw err.notFound('Маршрут не найден');
   return { ...dto, points };
@@ -493,7 +493,7 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
   r.post(
     '/',
     { preHandler: guards, schema: { body: createVehicleRouteSchema } },
-    async (req, reply): Promise<VehicleRouteWithPoints> => {
+    async (req, reply): Promise<VehicleRouteDto> => {
       const p = requirePrincipal(req);
       const body = req.body;
       const reason = body.reason ?? '';
@@ -567,7 +567,7 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
   r.patch(
     '/:id',
     { preHandler: guards, schema: { params: idParams, body: updateVehicleRouteSchema } },
-    async (req): Promise<VehicleRouteWithPoints> => {
+    async (req): Promise<VehicleRouteDto> => {
       const p = requirePrincipal(req);
       const body = req.body;
       const reason = body.reason?.trim() ?? '';
@@ -695,7 +695,7 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
   r.post(
     '/:id/requests',
     { preHandler: guards, schema: { params: idParams, body: attachRouteRequestSchema } },
-    async (req): Promise<VehicleRouteWithPoints> => {
+    async (req): Promise<VehicleRouteDto> => {
       const p = requirePrincipal(req);
       const body = req.body;
 
@@ -821,7 +821,7 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
       preHandler: guards,
       schema: { params: requestParams, querystring: routeVersionQuerySchema },
     },
-    async (req): Promise<VehicleRouteWithPoints> => {
+    async (req): Promise<VehicleRouteDto> => {
       const p = requirePrincipal(req);
       const removed = await db.transaction(async (tx) => {
         const route = await lockRoute(tx, req.params.id);
@@ -854,7 +854,7 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
   r.put(
     '/:id/order',
     { preHandler: guards, schema: { params: idParams, body: routeOrderSchema } },
-    async (req): Promise<VehicleRouteWithPoints> => {
+    async (req): Promise<VehicleRouteDto> => {
       const p = requirePrincipal(req);
       const body = req.body;
 
@@ -874,7 +874,31 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
             'Порядок присылается полным составом маршрута — обновите его и попробуйте снова',
           );
         }
+        /*
+         * Порядок переписывается в двух местах, и это не дублирование. Состав задаёт талоны
+         * заказчиков (`slot`, Р20), а печать задания идёт по позициям **точек** (Р11): переставив
+         * только состав, дверь показала бы человеку новый порядок и напечатала бы старый.
+         *
+         * Точки выводятся из состава, пока каждая принадлежит одной заявке. Общая остановка двух
+         * заявок (Р8) такого ответа не имеет — тогда отказ словами и указание на дверь порядка
+         * объезда, где вопрос задаётся точками. Догадка здесь означала бы, что машина поедет не
+         * тем порядком, о котором просили, и никто этого не заметит.
+         */
+        const pointOrder = await pointOrderByComposition(tx, route.id, body.requestIds);
+        if (!pointOrder) {
+          throw err.unprocessable(
+            'В маршруте есть остановка, общая для нескольких заявок, — порядок объезда у неё один на всех. Переставьте точки в порядке объезда.',
+            { requestIds: 'Порядок задаётся точками' },
+          );
+        }
         await setRouteOrder(tx, route.id, body.requestIds);
+        await setRoutePointOrder(tx, route.id, pointOrder);
+        await assertRoutePlacement(tx, {
+          routeId: route.id,
+          formCode: (
+            await routeWaybillFormFor(tx, { purpose: route.purpose, vehicleId: route.vehicleId })
+          ).formCode,
+        });
         await bumpRouteVersion(tx, route.id, p.id);
       });
 
@@ -910,7 +934,7 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
   r.post(
     '/:id/points',
     { preHandler: guards, schema: { params: idParams, body: routePointSchema } },
-    async (req): Promise<VehicleRouteWithPoints> => {
+    async (req): Promise<VehicleRouteDto> => {
       const p = requirePrincipal(req);
       const body = req.body;
 
@@ -940,7 +964,7 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
   r.patch(
     '/:id/points/:pointId',
     { preHandler: guards, schema: { params: pointParams, body: routePointSchema } },
-    async (req): Promise<VehicleRouteWithPoints> => {
+    async (req): Promise<VehicleRouteDto> => {
       const p = requirePrincipal(req);
       const body = req.body;
 
@@ -975,7 +999,7 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
   r.delete(
     '/:id/points/:pointId',
     { preHandler: guards, schema: { params: pointParams, querystring: routeVersionQuerySchema } },
-    async (req): Promise<VehicleRouteWithPoints> => {
+    async (req): Promise<VehicleRouteDto> => {
       const p = requirePrincipal(req);
 
       await db.transaction(async (tx) => {
@@ -1009,7 +1033,7 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
   r.put(
     '/:id/points/order',
     { preHandler: guards, schema: { params: idParams, body: pointOrderSchema } },
-    async (req): Promise<VehicleRouteWithPoints> => {
+    async (req): Promise<VehicleRouteDto> => {
       const p = requirePrincipal(req);
       const body = req.body;
 
@@ -1035,6 +1059,49 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
   );
 
   /**
+   * Новый порядок работ **внутри одной точки** — полным списком её ролей.
+   *
+   * Дверь заведена сверх §7 плана, и вот зачем. Порядок строк задания — это порядок отрывных
+   * талонов заказчиков (Р12, Р20, ADR 0068 п. 2), и задаёт его порядок объезда. Но две строки,
+   * стоящие на **одной и той же** паре точек, объезд не различает — автосборка переиспользует точку
+   * (Р8), — и до сих пор их разводил номер заявки, то есть порядок заведения записей. Здесь тот же
+   * вопрос возвращается человеку в виде, который имеет физический смысл: какую из ездок на этой
+   * остановке грузят первой.
+   *
+   * Проверок Р6 и ёмкости после неё не нужно — но они и здесь: перестановка ролей внутри точки не
+   * трогает ни порядка объезда, ни состава, а `assertRoutePlacement` заодно возвращает свежие точки
+   * тем же путём, каким их проверяют остальные двери. Дешевле одного лишнего чтения то, что у всех
+   * дверей точек порядок действий один.
+   */
+  r.put(
+    '/:id/points/:pointId/roles/order',
+    { preHandler: guards, schema: { params: pointParams, body: pointRoleOrderSchema } },
+    async (req): Promise<VehicleRouteDto> => {
+      const p = requirePrincipal(req);
+      const body = req.body;
+
+      await db.transaction(async (tx) => {
+        const route = await lockEditableRoute(tx, req.params.id, body.version);
+        await setPointRoleOrder(tx, route.id, req.params.pointId, body.roles);
+        await assertRoutePlacement(tx, {
+          routeId: route.id,
+          formCode: await routeFormCode(tx, route),
+        });
+        await bumpRouteVersion(tx, route.id, p.id);
+      });
+
+      await writeAudit({
+        actorUserId: p.id,
+        action: 'vehicle_route.point_roles_reorder',
+        entityType: 'vehicle_route',
+        entityId: req.params.id,
+        metadata: { pointId: req.params.pointId, roles: body.roles },
+      });
+      return routeWithPoints(req.params.id);
+    },
+  );
+
+  /**
    * Совместить точки одного адреса в одну остановку (Р9а): роли переезжают в первую по позиции.
    *
    * Разные ответственные совмещению не помеха — точка выйдет с обоими, и бланк напечатает обоих
@@ -1044,7 +1111,7 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
   r.post(
     '/:id/points/merge',
     { preHandler: guards, schema: { params: idParams, body: mergePointsSchema } },
-    async (req): Promise<VehicleRouteWithPoints> => {
+    async (req): Promise<VehicleRouteDto> => {
       const p = requirePrincipal(req);
       const body = req.body;
 
@@ -1074,7 +1141,7 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
   r.post(
     '/:id/points/:pointId/split',
     { preHandler: guards, schema: { params: pointParams, body: splitPointSchema } },
-    async (req): Promise<VehicleRouteWithPoints> => {
+    async (req): Promise<VehicleRouteDto> => {
       const p = requirePrincipal(req);
       const body = req.body;
 
@@ -1126,7 +1193,7 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
   r.post(
     '/:id/waybill',
     { preHandler: guards, schema: { params: idParams, body: issueRouteWaybillSchema } },
-    async (req): Promise<VehicleRouteWithPoints> => {
+    async (req): Promise<VehicleRouteDto> => {
       const p = requirePrincipal(req);
       const blankAllowed = can(p, 'waybills.issueBlank');
       const reason = req.body.reason ?? '';
@@ -1243,6 +1310,7 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
 
         const result = await issueWaybillForRoute(tx, {
           routeId: route.id,
+          routeNumber: formatVehicleRouteNumber(route.num),
           purpose: route.purpose,
           vehicleId: route.vehicleId,
           routeDate: route.routeDate,
@@ -1261,6 +1329,9 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
           relocation: route.sourceRequestId
             ? { requestId: route.sourceRequestId, from: route.moveFrom, to: route.moveTo }
             : null,
+          // Рукопожатие (Р21) — насквозь, обеими ветками: дневная выписка и задняя подтверждают
+          // одну и ту же бумагу, и своего поля у второй нет.
+          acknowledge: req.body.acknowledge ?? null,
           actor: { id: p.id },
         });
         /*
@@ -1423,7 +1494,7 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
   r.post(
     '/:id/correction',
     { preHandler: correctionGuards, schema: { params: idParams, body: correctRouteSchema } },
-    async (req): Promise<VehicleRouteWithPoints> => {
+    async (req): Promise<VehicleRouteDto> => {
       const p = requirePrincipal(req);
       const body = req.body;
       const access = backdateAccessOf(p);
@@ -1595,6 +1666,7 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
 
             const issued = await issueWaybillForRoute(tx, {
               routeId: route.id,
+              routeNumber: formatVehicleRouteNumber(route.num),
               purpose: route.purpose,
               vehicleId,
               routeDate: route.routeDate,
@@ -1607,6 +1679,13 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
               relocation: route.sourceRequestId
                 ? { requestId: route.sourceRequestId, from: route.moveFrom, to: route.moveTo }
                 : null,
+              /*
+               * Рукопожатие коррекции (Р21а): подтверждается **будущий** лист — тот, что родится
+               * после смены машины, водителя и порядка талонов. Отпечаток поэтому считается уже
+               * здесь, из контекста выписки, а не по состоянию рейса до операции: у нового бланка
+               * бывает и другая ёмкость, и другие пробелы документов другого водителя.
+               */
+              acknowledge: body.acknowledge ?? null,
               actor: { id: p.id },
             });
             await markCorrectionWaybill(tx, {
@@ -1880,6 +1959,14 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
             // Днём строки перенос не распоряжается: `planTransfer` пускает сюда только грузовую
             // заявку, у которой день несёт сам рейс (ADR 0100 §2).
             await attachRequest(tx, target.id, body.requestId, null);
+            /*
+             * Ездки переезжают вместе с талоном (Р8). Их роли в источнике сняты каскадом, а пустые
+             * точки убрал `detachRequest`, — и без этой раскладки заявка встала бы в приёмник
+             * строкой состава без единой точки: печатать её нечем, «откуда» и «куда» неизвестны.
+             * Прежде этого не было видно — задание собиралось из состава; со строками задания это
+             * ровно `rows_unplaced`, и перевыписанный лист умолчал бы о переехавшей работе.
+             */
+            await placeRequestTrips(tx, target.id, body.requestId);
             await setRouteOrder(
               tx,
               target.id,
@@ -1887,6 +1974,11 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
             );
             const reassigned = await applyReassignment(tx, reassignment);
 
+            /*
+             * Оба листа — с рукопожатием своей стороны (Р21а): наборы предупреждений у приёмника и
+             * источника разные, потому что задание у них разное, и общий отпечаток означал бы, что
+             * подтверждение одной бумаги закрывает вторую, которой человек не видел.
+             */
             const issued = {
               target: await issueCorrectionWaybill(tx, {
                 route: target,
@@ -1894,6 +1986,7 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
                 correctionId: correction.id,
                 reason: body.reason,
                 correctsWaybillId: cancelled.target?.id ?? null,
+                acknowledge: body.acknowledge?.target ?? null,
                 actorUserId: p.id,
               }),
               source: await issueCorrectionWaybill(tx, {
@@ -1902,6 +1995,7 @@ export default async function vehicleRoutesRoutes(app: FastifyInstance): Promise
                 correctionId: correction.id,
                 reason: body.reason,
                 correctsWaybillId: cancelled.source?.id ?? null,
+                acknowledge: body.acknowledge?.source ?? null,
                 actorUserId: p.id,
               }),
             };

@@ -3,6 +3,7 @@ import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { moscowDateKeyOf } from '@technic/contracts';
+import { runSeed, snilsOf } from './db-identity';
 import { applyMigrations } from '../src/db/migration-journal';
 // Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
 // окружение, — конфиг проверяет его при импорте и без него падает.
@@ -32,7 +33,12 @@ import type { db as AppDb } from '../src/db/client';
 const DB_URL = process.env.TEST_DATABASE_URL;
 
 /** Тестовый машинист: СНИЛС из одинаковых цифр с верной контрольной суммой, серия «00 00». */
-const DRIVER_SNILS = '11111111145';
+// Свой на прогон, а не общая константа: пять файлов заводили водителя по одному номеру, и
+// первый добежавший решал, с какими документами тот живёт до конца прогона (см. `db-identity`).
+// Табельный номер уникален в паре с работодателем (`person_employments_personnel_no_unique`),
+// и файлы делили его так же, как делили СНИЛС. Тот же хвост прогона разводит и его.
+const PERSONNEL_RUN = Date.now().toString(36).slice(-5);
+const DRIVER_SNILS = snilsOf(runSeed('waybill-request-links'));
 /*
  * Номер намеренно не содержит «1234567»: база у db-тестов общая, а справочник водителей ищет по
  * подстроке цифр и проверяет, что номер находит ровно одного человека (`drivers-search`). Прежний
@@ -157,7 +163,7 @@ async function seed(): Promise<{ personId: string }> {
     await tx.insert(schema.personEmployments).values({
       personId,
       employmentType: 'staff',
-      personnelNo: 'Т-102',
+      personnelNo: `Т-102-${PERSONNEL_RUN}`,
       jobTitle: 'Машинист',
       startedOn: '2024-01-15',
     });
@@ -167,7 +173,9 @@ async function seed(): Promise<{ personId: string }> {
         personId,
         credentialTypeId: licenseType!.id,
         series: '00 00',
-        number: '000102',
+        // Номер удостоверения уникален в паре с видом и серией
+        // (`person_credentials_number_unique`) — тот же хвост прогона, что у табельного.
+        number: `00${PERSONNEL_RUN.slice(-4).padStart(4, '0')}`,
         issuedOn: '2021-03-12',
         // Срок заведомо длинный: тест идёт «на сегодня», и истечение сломало бы отбор водителя
         // через несколько лет молча — пустым списком вместо понятного отказа.

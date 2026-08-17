@@ -3,6 +3,7 @@ import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { moscowDateKeyOf, WAYBILL_CANCELLED_PRINT_MESSAGE } from '@technic/contracts';
+import { runSeed, snilsOf } from './db-identity';
 import { applyMigrations } from '../src/db/migration-journal';
 // Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
 // окружение, — конфиг проверяет его при импорте и без него падает.
@@ -45,7 +46,12 @@ import type { db as AppDb } from '../src/db/client';
 const DB_URL = process.env.TEST_DATABASE_URL;
 
 /** Тестовый машинист: СНИЛС из одинаковых цифр с верной контрольной суммой, серия «00 00». */
-const DRIVER_SNILS = '11111111145';
+// Свой на прогон, а не общая константа: пять файлов заводили водителя по одному номеру, и
+// первый добежавший решал, с какими документами тот живёт до конца прогона (см. `db-identity`).
+// Табельный номер уникален в паре с работодателем (`person_employments_personnel_no_unique`),
+// и файлы делили его так же, как делили СНИЛС. Тот же хвост прогона разводит и его.
+const PERSONNEL_RUN = Date.now().toString(36).slice(-5);
+const DRIVER_SNILS = snilsOf(runSeed('waybill-journal'));
 const DRIVER_LICENSE_SERIES = '00 00';
 const DRIVER_LICENSE_NUMBER = '000103';
 const DRIVER_LICENSE_ISSUED_ON = '2021-03-12';
@@ -246,7 +252,7 @@ async function seed(): Promise<{ personId: string; machinistPersonId: string }> 
   const personId = await seedPerson({
     snils: DRIVER_SNILS,
     firstName: 'Машинист',
-    personnelNo: 'Т-103',
+    personnelNo: `Т-103-${PERSONNEL_RUN}`,
     jobTitle: 'Машинист',
     credentialTypeCode: 'driver_license',
     series: DRIVER_LICENSE_SERIES,
@@ -257,7 +263,7 @@ async function seed(): Promise<{ personId: string; machinistPersonId: string }> 
   const machinistPersonId = await seedPerson({
     snils: MACHINIST_SNILS,
     firstName: 'Экскаваторщик',
-    personnelNo: 'Т-104',
+    personnelNo: `Т-104-${PERSONNEL_RUN}`,
     jobTitle: MACHINIST_JOB_TITLE,
     credentialTypeCode: 'tractor_license',
     series: TRACTOR_LICENSE_SERIES,
@@ -378,7 +384,14 @@ async function numbersOf(ids: string[]): Promise<Map<string, number>> {
  */
 async function issueWaybill(driverPersonId?: string): Promise<Sheet> {
   const request = await requestInWork(driverPersonId);
-  const sheets = (await journal()).filter((w) =>
+  /*
+   * Отбор по машине теста, а не вся первая страница. База живёт между прогонами, и соседние файлы
+   * засевают листы **будущими** датами; журнал сортирует `issued_for_date DESC, number DESC`, так
+   * что сотня таких листов занимает всю первую страницу и только что выписанный на неё не попадает
+   * вовсе. Тест падал бы с «выписывает ровно один недельный лист: 0» — то есть врал бы о выписке,
+   * хотя лист выписан.
+   */
+  const sheets = (await journal({ vehicleId: ctx.vehicle.id })).filter((w) =>
     w.requests.some((link) => link.requestId === request.id),
   );
   expect(sheets.length, 'заявка в работе выписывает ровно один недельный лист').toBe(1);
@@ -481,8 +494,11 @@ describe.skipIf(!DB_URL)('журнал путевых листов: поиск, 
     expect(tail.map((w) => w.id)).toContain(sheet.id);
     expect(tail.map((w) => w.id)).not.toContain(other.id);
 
-    // Пустой поиск журнал не сужает: ссылка `?number=` без значения ведёт в обычный список.
-    const all = await journal({ search: '  ' });
+    // Пустой поиск журнал не сужает: ссылка `?number=` без значения ведёт в обычный список. Отбор
+    // по машине здесь остаётся — проверяется, что **поиск** ничего не сузил, а не то, что оба
+    // листа попали на первую страницу накопленной базы: соседние файлы засевают её сотнями строк
+    // будущей датой, и первая страница им и принадлежит.
+    const all = await journal({ search: '  ', vehicleId: ctx.vehicle.id });
     expect(all.map((w) => w.id)).toEqual(expect.arrayContaining([sheet.id, other.id]));
   }, 60_000);
 
@@ -696,7 +712,9 @@ describe.skipIf(!DB_URL)('журнал путевых листов: поиск, 
     });
     expect(exported.statusCode, exported.body).toBe(200);
 
-    const rows = await journal();
+    // Та же причина, что и в `issueWaybill`: без отбора по машине свежие листы не попадают на
+    // первую страницу накопленной базы.
+    const rows = await journal({ vehicleId: ctx.vehicle.id });
     const mine = rows.find((w) => w.id === sheet.id)!;
     const other = rows.find((w) => w.id === neighbour.id)!;
     expect(mine.exportedAt).not.toBeNull();

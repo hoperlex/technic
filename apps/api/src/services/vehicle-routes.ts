@@ -16,6 +16,7 @@ import {
   type VehicleRouteSourceRequestDto,
   type VehicleRouteWaybillDto,
   waybillDisplayNumber,
+  type VehicleRoutePointDto,
 } from '@technic/contracts';
 import { db } from '../db/client';
 import { driverGapsKey, loadDriverGaps } from './drivers';
@@ -400,15 +401,18 @@ export async function legacyWaybillOf(reader: Reader, requestId: string): Promis
  * Условие join'а «первая живая ездка заявки» (план `docs/route-trips-plan.md`, Р13а; этап 2).
  *
  * Адреса, количество и контакты уехали с заявки на ездку (Р2), а места, которые показывают заявку
- * ОДНОЙ парой адресов, никуда не делись: строка состава рейса, строка сводки, задание водителю в
- * письме и в кабинете. Пока таких мест больше одного, ответ у них обязан быть один и тот же —
- * иначе карточка маршрута назовёт один адрес, а письмо второй.
+ * ОДНОЙ парой адресов, никуда не делись: строка состава рейса и строка ролевой сводки по путевым
+ * листам (`mailings/digest-waybills.ts`). Пока таких мест больше одного, ответ у них обязан быть
+ * один и тот же — иначе карточка маршрута назовёт один адрес, а сводка второй.
  *
- * Бланка среди них больше нет: с этапом 5 задание печатается строками — ездками и линейными днями
- * в порядке объезда (`waybillTaskRows`, Р11), — и первая ездка перестала быть ответом на «что
- * напечатать». Мост держится ради оставшихся мест и уйдёт вместе с ними: карточка заявки получит
- * список ездок (этап 6), задание водителю — точки (этап 7). Поэтому правило и живёт здесь, рядом с
- * составом рейса, а не заводит собственный сервис.
+ * Кого среди них больше нет. **Бланк** ушёл с этапом 5: задание печатается строками — ездками и
+ * линейными днями в порядке объезда (`waybillTaskRows`, Р11), и первая ездка перестала быть ответом
+ * на «что напечатать». **Задание водителю** ушло с этапом 8: письмо и кабинет собираются по точкам
+ * маршрута (`services/driver-assignment.ts`, §8 плана), и «контакт заявки» сменился на «кто
+ * встречает на каждой остановке» — со всеми ответственными точки, а не с одним.
+ *
+ * Мост держится ради оставшихся двух мест и уйдёт вместе с ними. Поэтому правило и живёт здесь,
+ * рядом с составом рейса, а не заводит собственный сервис.
  *
  * Первая живая — наименьший `num` среди неудалённых (Р13а: мягко удалённая ездка не печатается и
  * не показывается, но номер её не переиспользуется, поэтому «первая» это минимум, а не единица).
@@ -827,6 +831,23 @@ export async function moveRouteToDate(
       .update(freightTransportRequestDetails)
       .set({ scheduledAt: moscowInstantOf(routeDate, moscowTimeOf(row.scheduledAt)) })
       .where(eq(freightTransportRequestDetails.requestId, row.requestId));
+    /*
+     * Своё время ездки едет тем же сдвигом (Р18): день ездки обязан совпадать с днём заявки, и
+     * оставшись во вчерашнем, она сделала бы заявку **несохраняемой** — следующая правка получила
+     * бы 422 на поле, которого никто не трогал, — а кабинет водителя показал бы работу не того
+     * дня. Сохраняется час: ездка «на 08:30» и после переноса едет в 08:30, просто другого числа.
+     *
+     * Ездка без своего времени (`NULL` — «как у заявки», Р3) не трогается вовсе: у неё времени нет,
+     * и выдумывать его переносом значило бы утверждать график, которого никто не задавал.
+     */
+    await tx.execute(sql`
+      UPDATE vehicle_request_trips
+         SET scheduled_at = ((${routeDate}::date
+                              + (scheduled_at AT TIME ZONE 'Europe/Moscow')::time)
+                             AT TIME ZONE 'Europe/Moscow')
+       WHERE request_id = ${row.requestId}
+         AND deleted_at IS NULL
+         AND scheduled_at IS NOT NULL`);
     moved.push(formatVehicleRequestNumber(row.num));
   }
   return moved;
@@ -1125,6 +1146,15 @@ export function toRouteDto(
   sourceRequest: VehicleRouteSourceRequestDto | null = null,
   /** Пробелы документов водителя на дату рейса (ADR 0064); считает их вызывающий — пачкой. */
   driverGaps: DriverDocumentGap[] = [],
+  /**
+   * Порядок объезда. Как и пробелы документов, читается вызывающим — пачкой на все рейсы разом:
+   * запрос на строку списка превратил бы вкладку «Маршруты» в N+1.
+   *
+   * Умолчание — пустой список, и это не «точек нет», а «этот вызывающий их не спрашивал». Разница
+   * важна там, где по точкам считают: карточка рейса и выписка обязаны получить их настоящими,
+   * поэтому обе идут через `routeWithPoints`, а не собирают DTO сами.
+   */
+  points: VehicleRoutePointDto[] = [],
 ): VehicleRouteDto {
   return {
     id: row.id,
@@ -1146,6 +1176,7 @@ export function toRouteDto(
     driverPersonId: row.driverPersonId,
     driverName: row.driverName ?? '',
     driverGaps,
+    points,
     withTrailer: row.withTrailer,
     trailerLabel: [row.trailer1Model, row.trailer1RegNumber].filter(Boolean).join(' '),
     trailer1Model: row.trailer1Model,

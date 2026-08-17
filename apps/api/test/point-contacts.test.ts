@@ -20,7 +20,15 @@ const freight = (
   tripNum: number,
   name: string,
   phone: string,
+  /**
+   * Позиция роли внутри точки (миграция `0146`): ею человек решает, что грузим первым, и она же
+   * задаёт порядок контактов **внутри** вида роли. В базе она различна у ролей одной точки
+   * (`UNIQUE (point_id, position)`), поэтому и в фикстурах повторяться не должна — иначе тест
+   * проверял бы состояние, которого не бывает.
+   */
+  position: number,
 ): FreightAction => ({
+  position,
   kind: 'freight',
   ref: { kind: 'freight', requestId: `req-${requestNum}`, tripId: `trip-${requestNum}-${tripNum}` },
   role,
@@ -35,13 +43,24 @@ const freight = (
   addressMismatch: false,
 });
 
-const load = (requestNum: number, tripNum: number, name: string, phone: string): FreightAction =>
-  freight('load', requestNum, tripNum, name, phone);
+const load = (
+  requestNum: number,
+  tripNum: number,
+  name: string,
+  phone: string,
+  position: number,
+): FreightAction => freight('load', requestNum, tripNum, name, phone, position);
 
-const unload = (requestNum: number, tripNum: number, name: string, phone: string): FreightAction =>
-  freight('unload', requestNum, tripNum, name, phone);
+const unload = (
+  requestNum: number,
+  tripNum: number,
+  name: string,
+  phone: string,
+  position: number,
+): FreightAction => freight('unload', requestNum, tripNum, name, phone, position);
 
 const work = (requestNum: number, name: string, phone: string): RoutePointAction => ({
+  position: 1,
   kind: 'linear',
   ref: { kind: 'linear', requestId: `req-${requestNum}`, workDate: '2026-08-12' },
   role: 'work',
@@ -62,9 +81,9 @@ describe('порядок ответственных точки', () => {
    */
   it('погрузки идут раньше работы, работа — раньше разгрузок', () => {
     const actions = [
-      unload(40, 1, 'Петров П.П.', '+7 903 765-43-21'),
+      unload(40, 1, 'Петров П.П.', '+7 903 765-43-21', 3),
       work(77, 'Кузнецов К.К.', '+7 900 555-11-22'),
-      load(41, 1, 'Иванов И.И.', '+7 916 123-45-67'),
+      load(41, 1, 'Иванов И.И.', '+7 916 123-45-67', 1),
     ];
 
     expect(pointContacts(actions).map((c) => c.name)).toEqual([
@@ -74,11 +93,17 @@ describe('порядок ответственных точки', () => {
     ]);
   });
 
-  it('внутри роли порядок задают номера заявки и ездки, а не порядок входа', () => {
+  /**
+   * Внутри одного вида роли порядок задаёт **позиция роли на точке** (миграция `0146`), а не номер
+   * заявки: вопрос «чей ответственный встретит машину первым» — это тот же вопрос «какую ездку
+   * грузим первой», и на него отвечает диспетчер, а не порядок заведения заявок. Номер держался
+   * здесь только ради детерминизма и осмысленным ответом не был.
+   */
+  it('внутри роли порядок задаёт позиция на точке, а не номер заявки', () => {
     const actions = [
-      load(41, 1, 'Третий', '+7 903 111-11-11'),
-      load(40, 2, 'Второй', '+7 903 222-22-22'),
-      load(40, 1, 'Первый', '+7 903 333-33-33'),
+      load(41, 1, 'Третий', '+7 903 111-11-11', 3),
+      load(40, 2, 'Второй', '+7 903 222-22-22', 2),
+      load(40, 1, 'Первый', '+7 903 333-33-33', 1),
     ];
 
     expect(pointContacts(actions).map((c) => c.name)).toEqual(['Первый', 'Второй', 'Третий']);
@@ -91,10 +116,10 @@ describe('порядок ответственных точки', () => {
    */
   it('обратный порядок входа даёт тот же список', () => {
     const actions = [
-      load(40, 1, 'Иванов И.И.', '+7 916 123-45-67'),
+      load(40, 1, 'Иванов И.И.', '+7 916 123-45-67', 1),
       work(77, 'Кузнецов К.К.', '+7 900 555-11-22'),
-      unload(41, 2, 'Петров П.П.', '+7 903 765-43-21'),
-      load(41, 1, 'Сидоров С.С.', '+7 905 111-22-33'),
+      unload(41, 2, 'Петров П.П.', '+7 903 765-43-21', 4),
+      load(41, 1, 'Сидоров С.С.', '+7 905 111-22-33', 2),
     ];
 
     expect(pointContacts([...actions].reverse())).toEqual(pointContacts(actions));
@@ -104,8 +129,8 @@ describe('порядок ответственных точки', () => {
 describe('дедупликация ответственных', () => {
   it('один номер в разных написаниях — один контакт', () => {
     const actions = [
-      load(40, 1, 'Иванов И.И.', '+7 916 123-45-67'),
-      unload(41, 1, 'Иванов Иван Иванович', '89161234567'),
+      load(40, 1, 'Иванов И.И.', '+7 916 123-45-67', 1),
+      unload(41, 1, 'Иванов Иван Иванович', '89161234567', 2),
     ];
 
     expect(pointContacts(actions)).toHaveLength(1);
@@ -118,8 +143,8 @@ describe('дедупликация ответственных', () => {
    */
   it('при одном ключе и разных именах берётся имя первого по порядку печати', () => {
     const actions = [
-      unload(40, 1, 'прораб Иванов', '+7 916 123-45-67'),
-      load(41, 1, 'Иванов И.И.', '8 916 123 45 67'),
+      unload(40, 1, 'прораб Иванов', '+7 916 123-45-67', 2),
+      load(41, 1, 'Иванов И.И.', '8 916 123 45 67', 1),
     ];
 
     expect(pointContacts(actions).map((c) => c.name)).toEqual(['Иванов И.И.']);
@@ -132,8 +157,8 @@ describe('дедупликация ответственных', () => {
    */
   it('два разных легаси-номера остаются двумя контактами', () => {
     const actions = [
-      load(40, 1, 'Иванов', '8 (495) 123-45-67 доб. 12'),
-      load(41, 1, 'Петров', '8 (495) 123-45-67 доб. 14'),
+      load(40, 1, 'Иванов', '8 (495) 123-45-67 доб. 12', 1),
+      load(41, 1, 'Петров', '8 (495) 123-45-67 доб. 14', 2),
     ];
 
     expect(pointContacts(actions).map((c) => c.name)).toEqual(['Иванов', 'Петров']);
@@ -141,8 +166,8 @@ describe('дедупликация ответственных', () => {
 
   it('один легаси-номер, набранный с разным регистром и пробелами, — один контакт', () => {
     const actions = [
-      load(40, 1, 'Иванов', '8 (495) 123-45-67 Доб. 12'),
-      load(41, 1, 'Иванов И.И.', '8 (495)  123-45-67  доб. 12'),
+      load(40, 1, 'Иванов', '8 (495) 123-45-67 Доб. 12', 1),
+      load(41, 1, 'Иванов И.И.', '8 (495)  123-45-67  доб. 12', 2),
     ];
 
     expect(pointContacts(actions)).toHaveLength(1);
@@ -156,9 +181,9 @@ describe('дедупликация ответственных', () => {
    */
   it('контакт без номера печатается по имени, а совсем пустой не печатается', () => {
     const actions = [
-      load(40, 1, 'Весовщик', ''),
-      load(41, 1, '', ''),
-      unload(42, 1, 'Весовщик', ''),
+      load(40, 1, 'Весовщик', '', 1),
+      load(41, 1, '', '', 2),
+      unload(42, 1, 'Весовщик', '', 3),
     ];
 
     expect(pointContacts(actions)).toEqual([{ name: 'Весовщик', phone: '' }]);

@@ -356,6 +356,14 @@ export const vehicleKinds = pgTable(
 
 // ── Классификатор ТС: плоский справочник типов (ADR 0005) ──
 // Один уровень: тип ссылается на вид (kind_id). Иерархия/подтипы/source-mappings сняты (0014).
+
+/**
+ * По чему считается техобслуживание машин типа (миграция 0147, Р13). Объявлен здесь, а не рядом с
+ * журналом ТО в конце файла: его колонка живёт у типа техники, а Drizzle требует перечисление до
+ * первого использования.
+ */
+export const maintenanceBasisEnum = pgEnum('maintenance_basis', ['none', 'odometer']);
+
 export const vehicleTypes = pgTable(
   'vehicle_types',
   {
@@ -399,6 +407,17 @@ export const vehicleTypes = pgTable(
      * смену запрещает сервер при заявках в работе; ключом в справочнике это состояние не выразить.
      */
     isLinear: boolean('is_linear').notNull().default(false),
+    /**
+     * Ведётся ли по машинам этого типа техобслуживание и по чему считается срок (миграция 0147,
+     * Р13). `none` — не ведётся, `odometer` — по пробегу.
+     *
+     * Признак у типа и заводится явно, а не выводится из истории показаний: новая машина показаний
+     * ещё не имеет, а временно пустой одометр не означает, что прибора нет, — вывод по данным
+     * подсвечивал бы «пробег с ТО неизвестен» у каждой единицы в первый же день работы.
+     *
+     * Умолчание безопасное: пока справочник не размечен, ТО не требуется ни с кого.
+     */
+    maintenanceBasis: maintenanceBasisEnum('maintenance_basis').notNull().default('none'),
     sortOrder: integer('sort_order').notNull().default(100),
     isActive: boolean('is_active').notNull().default(true),
     createdAt: createdAt(),
@@ -3839,9 +3858,32 @@ export const vehicleRoutePointTrips = pgTable(
      */
     tripId: uuid('trip_id'),
     role: text('role').$type<'load' | 'unload' | 'work'>().notNull(),
+    /**
+     * Порядок роли ВНУТРИ своей точки, 1..N (миграция 0146): «на карьере сначала грузим эту ездку,
+     * потом ту».
+     *
+     * Заведена не ради вида списка. Две строки задания, стоящие на ОДНОЙ И ТОЙ ЖЕ паре точек
+     * (автосборка переиспользовала точку по Р8), порядком объезда неразличимы, а порядок строк
+     * задания — это порядок талонов заказчиков (Р12, Р20, ADR 0068 п. 2). Прежде их разводил номер
+     * заявки, то есть порядок заведения записей; теперь их разводит человек, отвечая на вопрос,
+     * имеющий физический смысл: чью ездку на этой остановке грузят первой.
+     */
+    position: smallint('position').notNull(),
   },
   (t) => ({
     roleCheck: check('route_point_trips_role_check', sql`${t.role} IN ('load', 'unload', 'work')`),
+    /**
+     * Ролей на точке не больше, чем их всего в маршруте: десять строк задания (ADR 0068) по две
+     * роли — предельный случай, когда весь день грузится и разгружается в одном месте.
+     */
+    positionCheck: check('route_point_trips_position_check', sql`${t.position} BETWEEN 1 AND 20`),
+    /**
+     * Порядок ролей на точке. В базе объявлено `DEFERRABLE INITIALLY IMMEDIATE` (миграция 0146) —
+     * тем же приёмом, что порядок точек (0136) и порядок строк состава (0072): перестановка
+     * переписывает позиции одним запросом, и построчная проверка упала бы на первой же строке.
+     * Drizzle отложенность не выражает — источник истины миграция.
+     */
+    positionUnique: unique('route_point_trips_position_unique').on(t.pointId, t.position),
     // Роль и наличие ездки согласованы: `work` без ездки, `load`/`unload` — только с ней.
     roleTripCheck: check(
       'route_point_trips_role_trip_check',
@@ -5129,3 +5171,87 @@ export type DriverReportDiscrepancyResolutionRow =
   typeof driverReportDiscrepancyResolutions.$inferSelect;
 export type DriverDailyReportHistoryRow = typeof driverDailyReportHistory.$inferSelect;
 export type VehicleReadingHistoryRow = typeof vehicleReadingHistory.$inferSelect;
+
+// ── Техобслуживание по пробегу (миграция 0147) ──
+
+/**
+ * Запись ТО — акт обслуживания машины (Р10). Хранится история целиком, а не «дата последнего ТО» у
+ * карточки: одно поле не отвечает ни на один вопрос, ради которого журнал заводят, — с каким
+ * пробегом обслуживали, по какому документу и что было до этого.
+ *
+ * `odometerKm` допускает NULL: акт бывает без пробега (прибор не работал), и это отсутствие якоря
+ * расчёта, а не ноль (Р11а). Ноль в учёте счётчика — ложь, и посчитанный от него «пробег с ТО»
+ * равнялся бы всему пробегу машины за её жизнь.
+ *
+ * Уникальности по `(vehicleId, performedOn)` нет намеренно: два ТО в один день — редкость, но
+ * запрет означал бы, что ошибку ввода даты исправляют только удалением записи, то есть потерей
+ * скана и истории. Порядок задаёт индекс (Р30).
+ */
+export const vehicleMaintenance = pgTable(
+  'vehicle_maintenance',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    // RESTRICT, как у всех учётных ссылок на технику: акт переживает вывод машины из парка.
+    vehicleId: uuid('vehicle_id')
+      .notNull()
+      .references(() => vehicles.id, { onDelete: 'restrict' }),
+    /** Дата без времени: у акта его нет — отсюда правило расчёта Р11б (день ТО в сумму не идёт). */
+    performedOn: date('performed_on', { mode: 'string' }).notNull(),
+    /** Реквизит акта и граничный якорь расчёта (Р11а); NULL — «пробега в акте нет». */
+    odometerKm: integer('odometer_km'),
+    documentNumber: text('document_number').notNull().default(''),
+    note: text('note').notNull().default(''),
+    /** Оптимистическая блокировка правки и удаления (Р30). */
+    version: integer('version').notNull().default(0),
+    createdBy: uuid('created_by')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    updatedBy: uuid('updated_by').references(() => users.id, { onDelete: 'restrict' }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    /**
+     * Порядок истории машины (Р30). Три колонки после машины, а не одна дата: два ТО в один день
+     * ключом `performedOn` неразличимы, и «последнее» зависело бы от порядка чтения строк. `id`
+     * замыкает порядок — `createdAt` у двух записей одной транзакции совпадает.
+     */
+    vehicleIdx: index('vehicle_maintenance_vehicle_idx').on(
+      t.vehicleId,
+      t.performedOn.desc(),
+      t.createdAt.desc(),
+      t.id.desc(),
+    ),
+    // Отрицательный пробег — единственное, что база про одометр акта знает наверняка: монотонности
+    // не требуется, замена прибора законна (Р11а).
+    odometerNonNegative: check(
+      'vehicle_maintenance_odometer_check',
+      sql`${t.odometerKm} IS NULL OR ${t.odometerKm} >= 0`,
+    ),
+    versionNonNegative: check('vehicle_maintenance_version_check', sql`${t.version} >= 0`),
+  }),
+);
+
+/**
+ * Скан акта. По образцу `vehicleReadingFiles` — файл живёт максимум в одном месте, а сама связь
+ * названа в `file_is_linked` той же миграцией (0147): не названная там таблица означает, что
+ * уборка сочтёт подшитый акт сиротой и снесёт его из хранилища.
+ */
+export const vehicleMaintenanceFiles = pgTable(
+  'vehicle_maintenance_files',
+  {
+    maintenanceId: uuid('maintenance_id')
+      .notNull()
+      .references(() => vehicleMaintenance.id, { onDelete: 'cascade' }),
+    fileId: uuid('file_id')
+      .notNull()
+      .references(() => files.id, { onDelete: 'cascade' }),
+    addedAt: timestamp('added_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.maintenanceId, t.fileId] }),
+    fileUnique: uniqueIndex('vehicle_maintenance_files_file_unique').on(t.fileId),
+  }),
+);
+
+export type VehicleMaintenanceRow = typeof vehicleMaintenance.$inferSelect;

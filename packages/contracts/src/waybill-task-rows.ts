@@ -129,6 +129,12 @@ interface RowDraft {
   action: RoutePointAction;
   from: VehicleRoutePointDto | null;
   to: VehicleRoutePointDto | null;
+  /**
+   * Позиция роли, занявшей **первую** точку строки (у ездки — погрузки, у дня — его работы): ею
+   * строки различаются, когда обе их точки совпали. До того, как первая точка нашлась, значения
+   * нет — ноль, и он же остаётся у неразложенной строки, которая строкой задания не станет вовсе.
+   */
+  fromRolePosition: number;
 }
 
 /**
@@ -166,10 +172,33 @@ function rowContacts(points: readonly VehicleRoutePointDto[]): { name: string; p
  * Строки задания с их точками — общий сбор для `waybillTaskRows` и `routeIssueBlockers`.
  *
  * Порядок печати детерминирован до конца (Р11), иначе он зависел бы от того, как строки вернул SQL,
- * а вместе с ним поехали бы `slot`, талоны, заказчик в шапке и отпечаток предупреждений. Ключ из
- * четырёх полей: позиция первой точки строки, позиция второй, номер заявки, номер ездки. Третий и
- * четвёртый закрывают случай, который иначе неразличим: две **повторные** ездки `A→B` стоят на
- * одних и тех же точках, и первых двух ключей им не хватает.
+ * а вместе с ним поехали бы `slot`, талоны, заказчик в шапке и отпечаток предупреждений. Ключ:
+ *
+ * ```text
+ * 1. позиция первой точки строки   (у ездки — погрузки, у дня — его единственной)
+ * 2. позиция второй точки          (у ездки — разгрузки; у дня — та же, что первая)
+ * 3. позиция первой РОЛИ на её точке — решение диспетчера «какую грузим первой»
+ * 4. номер заявки
+ * 5. номер ездки внутри заявки
+ * ```
+ *
+ * **Третий ключ — тот, которого в плане не было.** Первых двух не хватает ровно тогда, когда две
+ * строки стоят на одной и той же паре точек: две повторные ездки `A→B` либо две заявки, чьи адреса
+ * и ответственные совпали, — автосборка переиспользовала точку (Р8), и объезд их не различает. План
+ * (Р11) закрывал этот случай номером заявки, то есть порядком заведения записей. Но порядок строк
+ * задания — это порядок **талонов заказчиков** (Р12, Р20), а ADR 0068 п. 2 прямо называет его
+ * решением о том, кто из заказчиков что подпишет; принимать такое решение номером записи нельзя.
+ * Позиция роли на общей точке возвращает решение человеку и спрашивает у него то, что имеет
+ * физический смысл: чью ездку на этой остановке грузят первой.
+ *
+ * Стоит третий ключ **после** позиции второй точки, а не перед ней, и это существенно: строки,
+ * делящие только первую точку, объезд различает — их порядок задан тем, куда машина поедет дальше,
+ * и перестановка ролей на общей погрузке не вправе этот порядок переписать. Иначе вышло бы два
+ * способа сделать одно, причём второй — молча.
+ *
+ * Четвёртый и пятый ключи после третьего недостижимы (позиция роли уникальна внутри точки) и
+ * остаются хвостом на случай битых данных: сортировка обязана быть полной, даже когда позиции
+ * пришли одинаковыми.
  *
  * Строка, у которой в маршруте нашёлся только один конец, строкой задания **не становится**:
  * печатать её нечем — «куда» неизвестно. Это не молчание, а другой отказ — `rows_unplaced`.
@@ -182,19 +211,33 @@ function placedTaskRows(
   for (const point of [...points].sort((a, b) => a.position - b.position)) {
     for (const action of point.actions) {
       const key = taskRefKey(action.ref);
-      const draft: RowDraft = drafts.get(key) ?? { action, from: null, to: null };
+      const draft: RowDraft = drafts.get(key) ?? {
+        action,
+        from: null,
+        to: null,
+        fromRolePosition: 0,
+      };
       // Роль у ездки одна на конец (`UNIQUE (trip_id, role)`); если данные пришли битыми, значима
       // самая ранняя точка — по ней же считается инвариант порядка (`brokenTripOrder`).
+      const takeFrom = () => {
+        if (draft.from !== null) return;
+        draft.from = point;
+        draft.fromRolePosition = action.position;
+      };
       if (action.kind === 'linear') {
-        draft.from ??= point;
+        takeFrom();
         draft.to ??= point;
-      } else if (action.role === 'load') draft.from ??= point;
+      } else if (action.role === 'load') takeFrom();
       else draft.to ??= point;
       drafts.set(key, draft);
     }
   }
 
-  const placed: (PlacedTaskRow & { firstPosition: number; secondPosition: number })[] = [];
+  const placed: (PlacedTaskRow & {
+    firstPosition: number;
+    secondPosition: number;
+    fromRolePosition: number;
+  })[] = [];
   for (const draft of drafts.values()) {
     const { action, from, to } = draft;
     if (from === null || to === null) continue;
@@ -225,6 +268,7 @@ function placedTaskRows(
       toPointId: to.id,
       firstPosition: from.position,
       secondPosition: to.position,
+      fromRolePosition: draft.fromRolePosition,
     });
   }
 
@@ -233,6 +277,7 @@ function placedTaskRows(
       (a, b) =>
         a.firstPosition - b.firstPosition ||
         a.secondPosition - b.secondPosition ||
+        a.fromRolePosition - b.fromRolePosition ||
         a.row.requestNum - b.row.requestNum ||
         a.row.tripNum - b.row.tripNum,
     )
@@ -244,12 +289,44 @@ function placedTaskRows(
     }));
 }
 
-/** Строки задания в порядке печати — по ключу из четырёх полей (Р11). */
+/** Строки задания в порядке печати — по ключу из пяти полей (Р11). */
 export function waybillTaskRows(
   points: readonly VehicleRoutePointDto[],
   notes: TaskRowNotes = NO_NOTES,
 ): WaybillTaskRow[] {
   return placedTaskRows(points, notes).map((placed) => placed.row);
+}
+
+/**
+ * Строки, которые объезд между собой **не** различает: стоят на одной и той же паре точек, и порядок
+ * их талонов решает только позиция роли на общей первой точке.
+ *
+ * Заведено ради портала: стрелки «выше/ниже» в блоке «Задание листа» показываются ровно у этих строк
+ * и переставляют роли на названной точке. У строк, различённых объездом, стрелок быть не должно —
+ * переставлять их надо точками, и предложить два способа сделать одно значит запутать.
+ *
+ * Считается тем же сбором, что и сам порядок печати (`placedTaskRows`), а не своим правилом: разойдясь,
+ * портал рисовал бы стрелки не у тех строк, у которых они что-то меняют.
+ */
+export interface TaskRowOrderGroup {
+  /** Точка, на которой стоят первые роли всех строк группы: там и решается их порядок. */
+  pointId: string;
+  /** Ссылки строк группы в порядке печати — соседние по `slot`. */
+  refs: TaskRef[];
+}
+
+/** Группы строк, неразличимых порядком объезда; строка вне групп переставляется точками. */
+export function taskRowOrderGroups(points: readonly VehicleRoutePointDto[]): TaskRowOrderGroup[] {
+  const groups = new Map<string, TaskRowOrderGroup>();
+  for (const placed of placedTaskRows(points, NO_NOTES)) {
+    // Ключ — пара точек: она и есть «то, что объезд про строку знает». Совпала пара — совпали
+    // первые два ключа сортировки, и строки в списке печати стоят подряд.
+    const key = `${placed.fromPointId}:${placed.toPointId}`;
+    const group = groups.get(key);
+    if (group) group.refs.push(placed.row.ref);
+    else groups.set(key, { pointId: placed.fromPointId, refs: [placed.row.ref] });
+  }
+  return [...groups.values()].filter((group) => group.refs.length > 1);
 }
 
 // ── Геометрия бланка ──
@@ -331,9 +408,17 @@ function usableWidthPt(cell: TaskRowCell): number {
 
 /**
  * Ширины глифов Arial в долях em, классами. Значения — метрики Arial (они же Helvetica) в тысячных
- * em; там, где память о точной ширине кириллической буквы не безусловна, глиф отнесён к **более
- * широкому** классу: ошибка в сторону запаса стоит одного свёрнутого контакта, ошибка в другую
- * сторону — хвоста, срезанного границей ячейки.
+ * em.
+ *
+ * Прежде часть кириллицы была отнесена к **более широкому** классу «на всякий случай», и довод
+ * звучал так: ошибка в сторону запаса стоит одного свёрнутого контакта, ошибка в другую — хвоста,
+ * срезанного границей ячейки. Довод перестал быть верным, когда переполнение начало резать **адрес**
+ * (Р11а, редакция 31): лишний запас стал стоить не контакта, а хвоста адреса, обрезанного нами же.
+ * Поэтому запас снят там, где настоящая метрика известна: `З` 556, `Б Р Ч Ь Я` 611, `Л` 667,
+ * `Ъ ж` 722, `ь` 500 — все они стояли на класс шире.
+ *
+ * Неизвестный глиф по-прежнему считается широким (`UNKNOWN_GLYPH_EM`): там, где метрика не
+ * известна, запас остаётся единственной защитой от молчаливого среза.
  *
  * Набор — то, что реально встречается в адресах, именах и телефонах: кириллица, латиница, цифры,
  * пробел, знаки препинания, кавычки-ёлочки, «№», «³» (из «м³»), многоточие и тире.
@@ -346,13 +431,13 @@ const GLYPH_CLASSES: readonly (readonly [number, string])[] = [
   [0.355, '"'],
   [0.389, '*{}'],
   [0.469, '^'],
-  [0.5, 'Jcksvxyzгзкстухэ'],
-  [0.556, '0123456789$#?_Labdeghnopqu«»–абвдеёийлнопрцчъья'],
+  [0.5, 'Jcksvxyzгзкстухэь'],
+  [0.556, '0123456789$#?_Labdeghnopqu«»–абвдеёийлнопрцчъяЗ'],
   [0.584, '+<=>~'],
-  [0.611, 'FTZГТ'],
-  [0.667, '&ABEKPSVXYАБВЕЁЗКРУХЧЬЯ'],
-  [0.722, 'CDHNRUwДИЙЛНПСЦЭ'],
-  [0.778, 'GOQОФЪжфыю'],
+  [0.611, 'FTZГТБРЧЬЯ'],
+  [0.667, '&ABEKPSVXYАВЕЁКУХЛ'],
+  [0.722, 'CDHNRUwДИЙНПСЦЭЪж'],
+  [0.778, 'GOQОФфыю'],
   [0.833, 'MmМмшщ'],
   [0.889, '%'],
   [0.944, 'WЖШЩЫ'],
@@ -419,6 +504,53 @@ function wrappedLines(text: string, widthPt: number): number {
 /** Помещается ли текст в графу целиком. Пустой помещается всегда — печатать нечего. */
 function fitsCell(text: string, cell: TaskRowCell): boolean {
   return wrappedLines(text, usableWidthPt(cell)) <= TASK_ROW_LINES;
+}
+
+/**
+ * Во сколько раз текст обязан перерасти ячейку, чтобы отказ стал блокирующим.
+ *
+ * Прежде блокировало **любое** переполнение обязательного поля, и это оказалось неверно: обычный
+ * областной адрес «Объект «Восточный», Московская обл., г Одинцово, Приморская ул., д 4» — 68
+ * знаков — в графу «куда» не влезает, а до переработки такой лист **выписывался**: Excel уносил
+ * хвост за границу ячейки, но документ существовал. Заменив молчаливое обрезание на запрет, мы
+ * отняли у диспетчера возможность выписать лист, который он выписывал вчера, — и требовали бы
+ * сокращать адрес вручную на каждом областном объекте.
+ *
+ * Поэтому граница проведена по тому, **сколько от адреса останется**. Двойка означает «половина»:
+ * обрезанное до половины «Московская обл., г Одинцово, Приморская…» человек ещё узнаёт и по нему
+ * доедет, а от адреса в тысячу знаков (столько допускает заявка) в графе осталась бы одна область
+ * — по такому документу ехать некуда, и расходовать на него номер бланка незачем.
+ *
+ * Обрезка при этом **видимая** — с многоточием, тем же правилом, каким режется комментарий груза
+ * (`routeCargoWithNote`): у обрыва должен быть виден обрыв, иначе водитель прочтёт огрызок как
+ * полный адрес. И она не молчит: обрезанное уходит в `hidden`, а выписка поднимает
+ * `task_row_overflow` — человек узнаёт до того, как бумага окажется у водителя.
+ */
+const PATHOLOGICAL_OVERFLOW_FACTOR = 2;
+
+/** Не помещается настолько, что сокращать нечего: осталось бы меньше половины (Р11а). */
+function pathologicallyOverflows(text: string, cell: TaskRowCell): boolean {
+  return wrappedLines(text, usableWidthPt(cell)) > TASK_ROW_LINES * PATHOLOGICAL_OVERFLOW_FACTOR;
+}
+
+/**
+ * Обрезает текст по ячейке и ставит многоточие. Режется по словам, пока помещается вместе с
+ * многоточием; не помещается и первое слово — режется по знакам, как это делает и сам Excel.
+ */
+function truncateToCell(text: string, cell: TaskRowCell): string {
+  const width = usableWidthPt(cell);
+  const fits = (value: string): boolean => wrappedLines(value, width) <= TASK_ROW_LINES;
+  const words = text.split(/\s+/u).filter((word) => word !== '');
+  let kept = '';
+  for (const word of words) {
+    const next = kept === '' ? word : `${kept} ${word}`;
+    if (!fits(`${next}…`)) break;
+    kept = next;
+  }
+  if (kept !== '') return `${kept}…`;
+  let cut = text.trim();
+  while (cut.length > 1 && !fits(`${cut}…`)) cut = cut.slice(0, -1);
+  return `${cut}…`;
 }
 
 // ── Раскладка строки по бланку ──
@@ -533,14 +665,29 @@ export function taskRowLayout(row: WaybillTaskRow, kind: TaskRowLayoutKind): Tas
   const labels = contactLabels(row);
 
   if (kind === 'columns') {
+    // Блокирует только патология (см. `PATHOLOGICAL_OVERFLOW_FACTOR`): то, от чего после сокращения
+    // осталось бы меньше половины. Обычное переполнение областного адреса режется видимо и
+    // поднимает `task_row_overflow` — до переработки такой лист печатался, и отнимать это нельзя.
     const required: TaskRowField[] = [];
-    if (!fitsCell(from, 'from')) required.push('from');
-    if (!fitsCell(to, 'to')) required.push('to');
-    if (!fitsCell(amount, 'cargo')) required.push('cargo');
+    if (pathologicallyOverflows(from, 'from')) required.push('from');
+    if (pathologicallyOverflows(to, 'to')) required.push('to');
+    if (pathologicallyOverflows(amount, 'cargo')) required.push('cargo');
     if (required.length > 0)
       return { ok: false, code: 'required_fields_overflow', fields: required };
 
     const hidden: string[] = [];
+    // Адрес, переросший графу, но не патологически: печатается сокращённым, полный уходит в
+    // `hidden` — по нему выписка поднимет предупреждение, а письмо и кабинет покажут целиком.
+    let fromShown = from;
+    if (!fitsCell(fromShown, 'from')) {
+      hidden.push(from);
+      fromShown = truncateToCell(from, 'from');
+    }
+    let toShown = to;
+    if (!fitsCell(toShown, 'to')) {
+      hidden.push(to);
+      toShown = truncateToCell(to, 'to');
+    }
     let cargo = cargoWithNote;
     if (!fitsCell(cargo, 'cargo')) {
       cargo = amount;
@@ -549,7 +696,14 @@ export function taskRowLayout(row: WaybillTaskRow, kind: TaskRowLayoutKind): Tas
     let shown = labels.length;
     while (shown > 0 && !fitsCell(contactsColumn(labels, shown), 'contacts')) shown -= 1;
     hidden.push(...labels.slice(shown));
-    return { ok: true, from, to, cargo, contacts: contactsColumn(labels, shown), hidden };
+    return {
+      ok: true,
+      from: fromShown,
+      to: toShown,
+      cargo,
+      contacts: contactsColumn(labels, shown),
+      hidden,
+    };
   }
 
   // Общая ячейка: адрес, груз и контакты делят одну ширину, поэтому и мерить их надо вместе — по
@@ -586,11 +740,62 @@ export function taskRowLayout(row: WaybillTaskRow, kind: TaskRowLayoutKind): Tas
     ['cargo', amount],
   ];
   const filled = parts.filter(([, value]) => value.trim() !== '');
-  const alone = filled.filter(([, value]) => wrappedLines(value, width) > TASK_ROW_LINES);
+
+  /*
+   * Блокирует только патология — то же правило, что и у граф. Разница в том, что здесь ячейка
+   * одна на всё задание, и «не влезает» бывает двух родов: поле длиннее ячейки само по себе и
+   * задание длиннее ячейки в сумме. Первое сокращается видимо, второе — тоже, потому что резать
+   * больше нечего: комментарий уже отброшен, контакты уже свёрнуты.
+   */
+  const pathological = filled.filter(
+    ([, value]) => wrappedLines(value, width) > TASK_ROW_LINES * PATHOLOGICAL_OVERFLOW_FACTOR,
+  );
+  if (pathological.length > 0) {
+    return {
+      ok: false,
+      code: 'required_fields_overflow',
+      fields: pathological.map(([field]) => field),
+    };
+  }
+
+  // Сокращаем самое длинное из обязательных полей, пока строка не встанет в ячейку. Самое длинное,
+  // а не первое по порядку: сокращать короткое, оставив рядом длинное, значит терять адрес там,
+  // где он и так был читаем.
+  const shortened = new Map<TaskRowField, string>();
+  const valueOf = (field: TaskRowField, fallback: string): string =>
+    shortened.get(field) ?? fallback;
+  const lineNow = (): string =>
+    routeExtraTaskLine({
+      from: valueOf('from', from),
+      to: valueOf('to', to),
+      cargo: valueOf('cargo', amount),
+      contacts: '',
+    });
+  // Сюда уже отброшены комментарий груза и свёрнутые контакты — путь дошёл до конца цикла выше.
+  const overflowHidden = [...droppedNote, ...labels];
+  for (
+    let guard = 0;
+    guard < filled.length && wrappedLines(lineNow(), width) > TASK_ROW_LINES;
+    guard += 1
+  ) {
+    const longest = [...filled]
+      .filter(([field]) => !shortened.has(field))
+      .sort((a, b) => textWidthPt(b[1]) - textWidthPt(a[1]))[0];
+    if (!longest) break;
+    const [field, value] = longest;
+    overflowHidden.push(value);
+    // Ячейка одна на всё, поэтому мерить сокращение по своей графе нельзя — берётся доля общей
+    // ширины, оставшаяся после прочих обязательных полей.
+    shortened.set(field, truncateToCell(value, 'extra'));
+  }
+
   return {
-    ok: false,
-    code: 'required_fields_overflow',
-    fields: (alone.length > 0 ? alone : filled).map(([field]) => field),
+    ok: true,
+    from: valueOf('from', from),
+    to: valueOf('to', to),
+    cargo: valueOf('cargo', amount),
+    contacts: '',
+    hidden: overflowHidden,
   };
 }
 
@@ -795,6 +1000,13 @@ function printedAddress(location: string): string {
 /** Роли в порядке чтения бумаги (Р9б): сначала отдающие груз, потом работа дня, потом принимающие. */
 const ROLE_ORDER: Record<RoutePointAction['role'], number> = { load: 0, work: 1, unload: 2 };
 
+/** Роли точки в том же порядке, в каком их считает `pointContacts`: вид роли, затем её позиция. */
+function orderedActions(point: VehicleRoutePointDto): RoutePointAction[] {
+  return [...point.actions].sort(
+    (a, b) => ROLE_ORDER[a.role] - ROLE_ORDER[b.role] || a.position - b.position,
+  );
+}
+
 /**
  * Предупреждения выписки в порядке кодов (`WAYBILL_WARNING_CODES`), а внутри кода — в порядке
  * бумаги: точки по позиции, строки по номеру строки задания.
@@ -823,13 +1035,7 @@ export function waybillIssueWarnings(source: WaybillIssueSource): WaybillWarning
   }
 
   for (const point of [...source.points].sort((a, b) => a.position - b.position)) {
-    const actions = [...point.actions].sort(
-      (a, b) =>
-        ROLE_ORDER[a.role] - ROLE_ORDER[b.role] ||
-        a.requestNum - b.requestNum ||
-        a.tripNum - b.tripNum,
-    );
-    for (const action of actions) {
+    for (const action of orderedActions(point)) {
       if (!action.addressMismatch) continue;
       const sourceText = source.sourceAddresses?.get(taskAddressKey(action.ref, action.role)) ?? '';
       warnings.push({

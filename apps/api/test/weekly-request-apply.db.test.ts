@@ -8,6 +8,7 @@ import {
   shiftDateKey,
   weekStartKey,
 } from '@technic/contracts';
+import { runSeed, snilsOf } from './db-identity';
 import { applyMigrations } from '../src/db/migration-journal';
 // Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
 // окружение, — конфиг проверяет его при импорте и без него падает.
@@ -48,7 +49,9 @@ const DB_URL = process.env.TEST_DATABASE_URL;
 const RUN = randomUUID().slice(0, 8);
 const PASSWORD = 'db-test-password-123';
 /** Тестовый машинист: СНИЛС из одинаковых цифр с верной контрольной суммой, серия «00 00». */
-const DRIVER_SNILS = '11111111145';
+// Свой на прогон, а не общая константа: пять файлов заводили водителя по одному номеру, и
+// первый добежавший решал, с какими документами тот живёт до конца прогона (см. `db-identity`).
+const DRIVER_SNILS = snilsOf(runSeed('weekly-request-apply'));
 /** Контакт строки «нужна дополнительно»: десять цифр — тот же формат, что в базе (ADR 0066). */
 const CONTACT_PHONE = '9990000001';
 

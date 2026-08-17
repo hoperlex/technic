@@ -1,5 +1,8 @@
 import { and, desc, eq, isNotNull, ne } from 'drizzle-orm';
 import {
+  driverDocumentGaps,
+  driverDocumentGapsWarning,
+  type Esm2AckRequiredDetails,
   type Esm2Period,
   esm2Mode,
   esm2Periods,
@@ -9,16 +12,20 @@ import {
   formatPhone,
   licenseNumberLabel,
   moscowDateKeyOf,
+  requiredCredentialType,
   requestStatusLabels,
   type VehicleOwnership,
   waybillDisplayNumber,
+  waybillFormShortLabels,
   type WaybillSnapshotKey,
+  type WaybillWarning,
   weekStartKey,
 } from '@technic/contracts';
 import type { db } from '../db/client';
 import {
   constructionObjects,
   organizations,
+  persons,
   specialEquipmentRequestDetails,
   vehicleModels,
   vehicleRequestAssignments,
@@ -32,7 +39,11 @@ import {
 import { requestIsLinearSql } from '../db/linear-mode';
 import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
-import { findMachinist } from './drivers';
+import { findMachinist, type MachinistOption } from './drivers';
+// Рукопожатие выписки (Р21а) — общее с листом по рейсу: набор предупреждений у двух бланков разный,
+// а решение «пускать, спрашивать или записать подтверждённое» одно, и второе его написание
+// разошлось бы с первым на первой же правке.
+import { acknowledgeOrThrow, type IssueWarningsRecord } from './waybill-issue';
 // Что операция коррекции делает с листом (ADR 0101): списание ссылкой на операцию и пометка
 // рождённого ею номера. Своего кода на это у сверки нет намеренно — правило «лист помнит, какой
 // операцией он рождён и какой списан» одно на все входы, и второе его написание разошлось бы.
@@ -206,7 +217,13 @@ async function collectSnapshot(
   params: {
     requestId: string;
     vehicleId: string;
-    driverPersonId: string;
+    /**
+     * Машинист, уже прочитанный выпиской (Р22), а не идентификатор под второе чтение: из этой же
+     * записи посчитаны предупреждения о его документах (Р21а), и второй `SELECT` за тем же
+     * человеком означал бы, что подтверждают одно, а печатают другое. `null` — такого водителя в
+     * справочнике нет: графа ФИО остаётся пустой, как и было до рукопожатия.
+     */
+    machinist: MachinistOption | null;
     organizationId: string;
     period: Esm2Period;
     number: string;
@@ -253,9 +270,9 @@ async function collectSnapshot(
     .where(eq(vehicleRequests.id, params.requestId));
 
   // Машинист — снимком, как и всё остальное: человека переведут, а лист остаётся с тем, кто
-  // работал. Документ берётся по должности и на начало недели: она и есть дата листа, а годность
+  // работал. Документ выбран по должности и на начало недели: она и есть дата листа, а годность
   // проверяется на неё же — лист выписывается вперёд, и «годен сегодня» тут ничего не значит.
-  const machinist = await findMachinist(tx, params.driverPersonId, params.period.from);
+  const { machinist } = params;
 
   const objectLine = [request?.objectName, request?.objectAddress].filter(Boolean).join(', ');
   // Семь строк недели: числа месяца — все, объект — только в дни срока заявки. Пустая графа
@@ -390,10 +407,152 @@ export interface IssuedEsm2 {
   period: Esm2Period;
 }
 
+// ── Рукопожатие выписки недельного листа (Р21, Р21а) ──
+
+/**
+ * Кто просит бланк — и, значит, с кого спрашивается рукопожатие.
+ *
+ * Различать пришлось потому, что к номеру ЭСМ-2 ведут две двери, и человек стоит только в одной:
+ *
+ *   - `human` — он сам нажал «выписать неделю» (`issueEsm2OnDemand`). Это и есть пятый путь выпуска
+ *     номера, о котором Р21а говорит «пропусти любой — и он обойдёт проверку»: непустой набор
+ *     предупреждений останавливает выписку 409-м, пока человек его не подтвердит;
+ *   - `sync` — бумагу переписала сверка вслед за решением по заявке (`syncEsm2Waybills`). Здесь
+ *     409 означал бы, что заявку нельзя перевести в работу, пока кадры не дозаполнят карточку
+ *     машиниста, — а ADR 0064 говорит прямо обратное: неполный комплект документов выписку не
+ *     останавливает. Спрашивать же рукопожатие у того, кто менял срок заявки, значило бы просить
+ *     подтвердить бумагу, которую он не заказывал.
+ *
+ * Молчания это второй двери не оставляет. Лист сверки с полным комплектом получает `clean` —
+ * «проверено, предупреждений не было», — а с пробелами остаётся при умолчании колонки
+ * (`not_checked`), которое ровно это и означает: «выдан мимо рукопожатия». Записать туда `clean`
+ * было бы неправдой, а третьего значения у колонки нет (миграция 0136).
+ */
+type Esm2Requester = { by: 'human'; acknowledge: { fingerprint: string } | null } | { by: 'sync' };
+
+/**
+ * Предупреждения выписки недельного листа (Р21) — у ЭСМ-2 их ровно одно возможное.
+ *
+ * Из пяти кодов (`WAYBILL_WARNING_CODES`) четыре про рейс: расхождение адреса точки со строкой
+ * задания, непоместившаяся строка, два объекта затрат в одном листе и пустое задание. Ни точек, ни
+ * ездок, ни строк задания у недели работы машины на площадке нет вовсе, а объект затрат у неё один
+ * по устройству заявки (ADR 0060, `vehicle_requests_department_freight_check`) — считать эти четыре
+ * здесь не из чего, и `waybillIssueWarnings` вернула бы вместо них `blank_task`: «в маршруте нет
+ * заявок» о документе, у которого маршрута не бывает.
+ *
+ * Остаётся пятый — пробелы в документах машиниста (ADR 0064), и он общий со всеми бланками:
+ * считается тем же правилом (`driverDocumentGaps`), называется тем же кодом и той же формулировкой
+ * (`driverDocumentGapsWarning`), а отпечаток берётся с тех же фактов (`canonicalWarningPayload`).
+ *
+ * Вид документа спрашивается у должности (`requiredCredentialType`), а не назван водительским, как
+ * в предупреждениях рейса: 4-П и форму № 3 возит водитель, а недельный лист ведёт машинист
+ * экскаватора или погрузчика, допущенный удостоверением тракториста-машиниста (ADR 0095). Назвав
+ * его «ВУ», портал отправил бы человека искать не ту бумагу.
+ */
+async function esm2IssueWarnings(
+  tx: Tx,
+  machinist: MachinistOption,
+  /** Начало недели: на него выбран документ и на него же считается его годность. */
+  on: string,
+): Promise<WaybillWarning[]> {
+  /*
+   * СНИЛС — единственное, чего в прочитанном машинисте нет: графы под него в бланке ЭСМ-2 не
+   * существует, и `findMachinist` его намеренно не читает (реквизит 4-П, приказ Минтранса № 390).
+   * Здесь он спрашивается, потому что комплект документов у человека один на весь портал: свой,
+   * «без СНИЛСа», счёт пробелов разошёлся бы с карточкой водителя и со списком выбора — там человек
+   * числился бы неполным, а в выписке полным.
+   *
+   * Цена решения названа вслух: формулировка «эти графы останутся пустыми» для СНИЛСа в ЭСМ-2
+   * неточна — пустой останется не графа бланка, а строка справочника. Чинится это правкой одного
+   * текста в контрактах; вторая ветка правил о комплекте разъезжалась бы молча и навсегда.
+   */
+  const [person] = await tx
+    .select({ snils: persons.snils })
+    .from(persons)
+    .where(eq(persons.id, machinist.personId));
+
+  /*
+   * Удостоверения перечитывать нечем и незачем: `findMachinist` уже выбрал то единственное, которым
+   * человек допущен по должности и которое годно на начало недели (`waybillDocumentOf`), и
+   * `driverDocumentGaps` над списком из него одного вернёт ровно то же, что над всем ящиком, — тем
+   * же отбором она и начинается. Второе чтение означало бы предупреждение по одному документу и
+   * печать по другому (Р22).
+   */
+  const gaps = driverDocumentGaps(
+    {
+      snils: person?.snils ?? '',
+      jobTitle: machinist.jobTitle,
+      licenses: machinist.license ? [machinist.license] : [],
+    },
+    on,
+  );
+  const message = driverDocumentGapsWarning(
+    gaps,
+    requiredCredentialType(machinist.jobTitle),
+    waybillFormShortLabels[FORM_CODE],
+  );
+  if (!message) return [];
+  return [
+    {
+      facts: { code: 'driver_documents', personId: machinist.personId, gaps },
+      message,
+      entities: [machinist.fullName],
+    },
+  ];
+}
+
+/**
+ * Что записать в `issue_warnings` этого листа — и выписывать ли его вообще (Р21а).
+ *
+ * `null` означает «оставить умолчание колонки» и бывает ровно в одном случае: бумагу никто не
+ * просил (её переписала сверка), а предупреждения при этом есть. Подробности — у `Esm2Requester`.
+ */
+async function esm2IssueWarningsRecord(
+  tx: Tx,
+  params: {
+    requestId: string;
+    period: Esm2Period;
+    machinist: MachinistOption | null;
+    requester: Esm2Requester;
+  },
+): Promise<IssueWarningsRecord | null> {
+  /*
+   * Машиниста нет в справочнике — предупреждать нечем: `driver_documents` говорит о пробелах в
+   * комплекте человека, а здесь нет самого человека. Ручная выдача до этого места не доходит
+   * (`issueEsm2OnDemand` отвечает словами и 422-м), а сверке лист с пустой графой ФИО достаётся и
+   * сегодня — это её собственный давний дефект, и лечится он не рукопожатием.
+   */
+  const warnings = params.machinist
+    ? await esm2IssueWarnings(tx, params.machinist, params.period.from)
+    : [];
+
+  if (params.requester.by === 'sync') {
+    return warnings.length === 0 ? { schemaVersion: 1, status: 'clean' } : null;
+  }
+  return acknowledgeOrThrow({
+    warnings,
+    acknowledge: params.requester.acknowledge,
+    // Неделя, а не номер: номера у этого листа ещё нет — он и не должен появиться, пока набор не
+    // подтверждён, — и другого имени у бумаги, о которой спрашивают, не существует.
+    label: `по листу ЭСМ-2 за неделю ${dateRu(params.period.from)} — ${dateRu(params.period.to)}`,
+    // `satisfies`, а не приведение: тело отказа описано контрактом ручки, и поле, забытое здесь,
+    // должно ловиться сборкой, а не пустым местом в окне подтверждения.
+    details: {
+      requestId: params.requestId,
+      periodFrom: params.period.from,
+      periodTo: params.period.to,
+    } satisfies Omit<Esm2AckRequiredDetails, 'fingerprint' | 'warnings'>,
+  });
+}
+
 /**
  * Выдача листа на одну неделю. Номер берётся из серии `esm2` — своей у этого бланка: заявка на
  * месяц забирает пять номеров разом, и в общей серии журнал 4-П получал бы дыры от документов,
  * которых в нём нет.
+ *
+ * Это общая точка выпуска номера ЭСМ-2 — обе двери к бланку ведут сюда, — и потому рукопожатие
+ * (Р21а) стоит здесь, а не в ручке: пропущенный путь записал бы в свежий лист
+ * `issue_warnings = not_checked`, то есть обошёл бы проверку, ради которой она заводилась.
  */
 async function issueEsm2Waybill(
   tx: Tx,
@@ -403,8 +562,30 @@ async function issueEsm2Waybill(
     driverPersonId: string;
     period: Esm2Period;
     actorId: string;
+    /** Кто просит бланк: им решается, спрашивать ли рукопожатие. */
+    requester: Esm2Requester;
   },
 ): Promise<IssuedEsm2> {
+  /*
+   * Машинист читается один раз и до номера (Р22): из этой записи считаются и предупреждения о его
+   * документах, и графы бланка. Двумя чтениями одной транзакции подтверждали бы одно, а печатали
+   * другое — между ними лежит чужая правка карточки.
+   */
+  const machinist = await findMachinist(tx, params.driverPersonId, params.period.from);
+
+  /*
+   * Рукопожатие — **до** номера: всё, что способно отказать, спрашивается, пока бланк ещё не
+   * израсходован. Счётчик серии живёт строкой и откатился бы вместе с транзакцией
+   * (`takeNextNumber`), но отказ после сожжённого номера человек прочитал бы как поломку, а журнал
+   * учёта строгой отчётности — как утраченный бланк.
+   */
+  const issueWarnings = await esm2IssueWarningsRecord(tx, {
+    requestId: params.requestId,
+    period: params.period,
+    machinist,
+    requester: params.requester,
+  });
+
   const series = await findSeriesByCode(seriesCodeOfForm(FORM_CODE));
   if (!series) throw err.conflict('Не заведена серия путевых листов ЭСМ-2');
   const number = await takeNextNumber(tx, series.id);
@@ -413,7 +594,7 @@ async function issueEsm2Waybill(
   const data = await collectSnapshot(tx, {
     requestId: params.requestId,
     vehicleId: params.vehicleId,
-    driverPersonId: params.driverPersonId,
+    machinist,
     organizationId,
     period: params.period,
     number: number.display,
@@ -438,6 +619,16 @@ async function issueEsm2Waybill(
       driverPersonId: params.driverPersonId,
       garageNumber: data.vehicle_garage_number,
       data,
+      /*
+       * Под какими предупреждениями выдан лист — **той же вставкой**, что и сам документ (Р21). Не
+       * аудитом: `writeAudit` намеренно best-effort — пишет отдельным соединением и глотает
+       * ошибку, — и хранилищем решения человека быть не может. Здесь же оно неотделимо от бумаги:
+       * есть лист — есть и то, под чем его подписали.
+       *
+       * `null` — колонка остаётся при своём умолчании (`not_checked`): подтверждать было некому,
+       * и об этом лист обязан помнить сам.
+       */
+      ...(issueWarnings ? { issueWarnings } : {}),
       issuedBy: params.actorId,
     })
     .returning({ id: waybills.id });
@@ -743,6 +934,10 @@ export async function syncEsm2Waybills(
       driverPersonId: machinistFor(period)!,
       period,
       actorId: params.actor.id,
+      // Рукопожатия у сверки нет и быть не может: бумага здесь — следствие решения по заявке, а не
+      // просьба о бланке (`Esm2Requester`). Предупреждения при этом считаются наравне с ручной
+      // выдачей — ими лист и получает свой `clean` вместо умолчания «не проверяли».
+      requester: { by: 'sync' },
     });
     if (params.correction) {
       /*
@@ -1010,6 +1205,16 @@ export async function issueEsm2OnDemand(
      * операцию, иначе такой лист в фильтр не попал бы вовсе.
      */
     correction?: { id: string; reason: string };
+    /**
+     * Рукопожатие выписки (Р21, Р21а): отпечаток набора предупреждений, который человек прочитал в
+     * окне. `null` либо не передан — подтверждения не присылали; набор при этом обязан быть пуст,
+     * иначе выписка отвечает 409 `waybill_ack_required` со свежим отпечатком и полным списком.
+     *
+     * Пятый путь выпуска номера закрывается именно здесь (Р21а называла четыре). Предупреждение у
+     * недельного листа одно — пробелы в документах машиниста (ADR 0064), — и окно портала проверкой
+     * не является: старая вкладка, повтор запроса из истории или `curl` выписали бы лист молча.
+     */
+    acknowledge?: { fingerprint: string } | null;
   },
 ): Promise<IssuedEsm2> {
   const request = await loadRequest(tx, params.requestId);
@@ -1083,6 +1288,9 @@ export async function issueEsm2OnDemand(
     driverPersonId: params.driverPersonId,
     period,
     actorId: params.actor.id,
+    // Бланк просит человек — значит с него и спрашивается рукопожатие (Р21а). Отпечаток проверяет
+    // общая точка выпуска, а не эта ручка: пропущенный путь записал бы в свежий лист `not_checked`.
+    requester: { by: 'human', acknowledge: params.acknowledge ?? null },
   });
   /*
    * Метка коррекции (Р35) — тем же кодом, что и у листа, рождённого сверкой: правило «лист помнит,

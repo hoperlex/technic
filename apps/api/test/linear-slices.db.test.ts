@@ -4,6 +4,7 @@ import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { moscowDateKeyOf, shiftDateKey } from '@technic/contracts';
 import { applyMigrations } from '../src/db/migration-journal';
+import { issueRouteWaybill } from './waybill-issue-helper';
 // Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
 // окружение, — конфиг проверяет его при импорте и без него падает.
 import type { buildApp } from '../src/app';
@@ -293,7 +294,12 @@ async function planDay(requestId: string, date: string, vehicleId?: string): Pro
   return day.route.id as string;
 }
 
-/** Выписать лист по рейсу: им рейс замораживается — день из выданного бланка уже не исчезает. */
+/**
+ * Выписать лист по рейсу: им рейс замораживается — день из выданного бланка уже не исчезает.
+ *
+ * Через помощника, потому что здесь бумага — декорация: предмет проверки ниже, а рукопожатие
+ * выписки (Р21) у тестового водителя срабатывает всегда — документов ему не заводят.
+ */
 async function issueWaybill(routeId: string): Promise<void> {
   const route = await ctx.app.inject({
     method: 'GET',
@@ -301,13 +307,12 @@ async function issueWaybill(routeId: string): Promise<void> {
     headers: ctx.auth,
   });
   expect(route.statusCode, route.body).toBe(200);
-  const issued = await ctx.app.inject({
-    method: 'POST',
-    url: `/api/v1/vehicle-routes/${routeId}/waybill`,
+  await issueRouteWaybill({
+    app: ctx.app,
     headers: ctx.auth,
+    routeId,
     payload: { version: route.json().version as number },
   });
-  expect(issued.statusCode, issued.body).toBe(200);
 }
 
 /** Линейный заказ в работе, чей сегодняшний день уже стоит в рейсе машины дня. */

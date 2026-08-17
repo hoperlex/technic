@@ -43,9 +43,16 @@ import { err } from '../lib/errors';
  * строки задания, начинающиеся в `A`, — это один заезд, а не два (Р4, Р5).
  *
  * Файл держит ровно то, что знает о точках: их чтение в DTO, автосборку при укладке заявки (Р8),
- * правки порядка и состава ролей, чистку опустевших остановок (Р13) и проверки, которые нельзя
- * выразить в базе, — инвариант «погрузка раньше разгрузки» (Р6) и ёмкость бланка строками задания
- * (Р11).
+ * правки порядка и состава ролей, порядок ролей **внутри** точки, чистку опустевших остановок
+ * (Р13) и проверки, которые нельзя выразить в базе, — инвариант «погрузка раньше разгрузки» (Р6) и
+ * ёмкость бланка строками задания (Р11).
+ *
+ * Порядков здесь два, и они про разное. Позиция **точки** — порядок объезда: куда машина едет
+ * дальше. Позиция **роли** внутри точки (миграция 0146) — порядок работ на одной остановке: чью
+ * ездку грузим первой. Второй заведён потому, что первого не хватает: две строки задания законно
+ * стоят на одной и той же паре точек — автосборка переиспользовала точку (Р8), — и объезд их не
+ * различает, а порядок строк задания это порядок талонов заказчиков (Р12, Р20), и решать его
+ * номером записи в базе нельзя.
  *
  * Блокировок здесь нет намеренно: рейс берёт `FOR UPDATE` вызывающий (Р16, Р17) — он же знает,
  * один это рейс или два, — а сервис работает под уже взятой блокировкой. Обратный порядок означал
@@ -160,62 +167,70 @@ const pointColumns = {
  * позициями в базе, и человек не поймёт, откуда дыра в нумерации. Чистит такие `cleanupRoutePoints`.
  */
 function selectPointRows(reader: Reader, routeId: string) {
-  return reader
-    .select({
-      ...pointColumns,
-      role: vehicleRoutePointTrips.role,
-      tripId: vehicleRoutePointTrips.tripId,
-      requestId: vehicleRoutePointTrips.requestId,
-      requestNum: vehicleRequests.num,
-      // Заказчик — объектом затрат (Р25): решает идентификатор, а не заполненность имени, поэтому
-      // из обеих пар выбираются и id, и код, и наименование.
-      objectId: vehicleRequests.objectId,
-      objectCode: constructionObjects.code,
-      objectName: constructionObjects.name,
-      objectAddress: constructionObjects.address,
-      departmentId: vehicleRequests.departmentId,
-      departmentCode: departments.code,
-      departmentName: departments.name,
-      // День строки состава: он же ключ линейной строки задания (`work_date`, ADR 0100).
-      workDate: vehicleRouteRequests.workDate,
-      tripNum: vehicleRequestTrips.num,
-      tripDeletedAt: vehicleRequestTrips.deletedAt,
-      tripFrom: vehicleRequestTrips.fromLocation,
-      tripTo: vehicleRequestTrips.toLocation,
-      volumeM3: vehicleRequestTrips.volumeM3,
-      weightTons: vehicleRequestTrips.weightTons,
-      fromResponsibleName: vehicleRequestTrips.fromResponsibleName,
-      fromResponsiblePhone: vehicleRequestTrips.fromResponsiblePhone,
-      toResponsibleName: vehicleRequestTrips.toResponsibleName,
-      toResponsiblePhone: vehicleRequestTrips.toResponsiblePhone,
-      // Ответственный заявки спецтехники — контакт роли `work` (Р9б): тот, кто встречает машину
-      // на площадке. Живым значением, а не снимком (Р9в): печатать вчерашний телефон, потому что
-      // «так было при сборке», — ровно та беда, от которой снимок должен защищать.
-      siteResponsibleName: specialEquipmentRequestDetails.responsibleName,
-      siteResponsiblePhone: specialEquipmentRequestDetails.responsiblePhone,
-    })
-    .from(vehicleRoutePoints)
-    .leftJoin(vehicleRoutePointTrips, eq(vehicleRoutePointTrips.pointId, vehicleRoutePoints.id))
-    .leftJoin(vehicleRequests, eq(vehicleRequests.id, vehicleRoutePointTrips.requestId))
-    .leftJoin(vehicleRequestTrips, eq(vehicleRequestTrips.id, vehicleRoutePointTrips.tripId))
-    // Строка состава той же пары «рейс + заявка»: она несёт день линейного заказа. Составной FK
-    // связки (`route_point_trips_composition_fk`) гарантирует, что строка есть.
-    .leftJoin(
-      vehicleRouteRequests,
-      and(
-        eq(vehicleRouteRequests.routeId, vehicleRoutePointTrips.routeId),
-        eq(vehicleRouteRequests.requestId, vehicleRoutePointTrips.requestId),
-      ),
-    )
-    // Заказчик — объект или отдел (ADR 0040): innerJoin по объекту терял бы заявки отдела.
-    .leftJoin(constructionObjects, eq(constructionObjects.id, vehicleRequests.objectId))
-    .leftJoin(departments, eq(departments.id, vehicleRequests.departmentId))
-    .leftJoin(
-      specialEquipmentRequestDetails,
-      eq(specialEquipmentRequestDetails.requestId, vehicleRequests.id),
-    )
-    .where(eq(vehicleRoutePoints.routeId, routeId))
-    .orderBy(asc(vehicleRoutePoints.position));
+  return (
+    reader
+      .select({
+        ...pointColumns,
+        role: vehicleRoutePointTrips.role,
+        // Порядок роли на своей точке: им же различаются строки задания, стоящие на одной паре
+        // точек (Р11, третий ключ сортировки), и упорядочены ответственные внутри вида роли (Р11а).
+        rolePosition: vehicleRoutePointTrips.position,
+        tripId: vehicleRoutePointTrips.tripId,
+        requestId: vehicleRoutePointTrips.requestId,
+        requestNum: vehicleRequests.num,
+        // Заказчик — объектом затрат (Р25): решает идентификатор, а не заполненность имени, поэтому
+        // из обеих пар выбираются и id, и код, и наименование.
+        objectId: vehicleRequests.objectId,
+        objectCode: constructionObjects.code,
+        objectName: constructionObjects.name,
+        objectAddress: constructionObjects.address,
+        departmentId: vehicleRequests.departmentId,
+        departmentCode: departments.code,
+        departmentName: departments.name,
+        // День строки состава: он же ключ линейной строки задания (`work_date`, ADR 0100).
+        workDate: vehicleRouteRequests.workDate,
+        tripNum: vehicleRequestTrips.num,
+        tripDeletedAt: vehicleRequestTrips.deletedAt,
+        tripFrom: vehicleRequestTrips.fromLocation,
+        tripTo: vehicleRequestTrips.toLocation,
+        volumeM3: vehicleRequestTrips.volumeM3,
+        weightTons: vehicleRequestTrips.weightTons,
+        fromResponsibleName: vehicleRequestTrips.fromResponsibleName,
+        fromResponsiblePhone: vehicleRequestTrips.fromResponsiblePhone,
+        toResponsibleName: vehicleRequestTrips.toResponsibleName,
+        toResponsiblePhone: vehicleRequestTrips.toResponsiblePhone,
+        // Ответственный заявки спецтехники — контакт роли `work` (Р9б): тот, кто встречает машину
+        // на площадке. Живым значением, а не снимком (Р9в): печатать вчерашний телефон, потому что
+        // «так было при сборке», — ровно та беда, от которой снимок должен защищать.
+        siteResponsibleName: specialEquipmentRequestDetails.responsibleName,
+        siteResponsiblePhone: specialEquipmentRequestDetails.responsiblePhone,
+      })
+      .from(vehicleRoutePoints)
+      .leftJoin(vehicleRoutePointTrips, eq(vehicleRoutePointTrips.pointId, vehicleRoutePoints.id))
+      .leftJoin(vehicleRequests, eq(vehicleRequests.id, vehicleRoutePointTrips.requestId))
+      .leftJoin(vehicleRequestTrips, eq(vehicleRequestTrips.id, vehicleRoutePointTrips.tripId))
+      // Строка состава той же пары «рейс + заявка»: она несёт день линейного заказа. Составной FK
+      // связки (`route_point_trips_composition_fk`) гарантирует, что строка есть.
+      .leftJoin(
+        vehicleRouteRequests,
+        and(
+          eq(vehicleRouteRequests.routeId, vehicleRoutePointTrips.routeId),
+          eq(vehicleRouteRequests.requestId, vehicleRoutePointTrips.requestId),
+        ),
+      )
+      // Заказчик — объект или отдел (ADR 0040): innerJoin по объекту терял бы заявки отдела.
+      .leftJoin(constructionObjects, eq(constructionObjects.id, vehicleRequests.objectId))
+      .leftJoin(departments, eq(departments.id, vehicleRequests.departmentId))
+      .leftJoin(
+        specialEquipmentRequestDetails,
+        eq(specialEquipmentRequestDetails.requestId, vehicleRequests.id),
+      )
+      .where(eq(vehicleRoutePoints.routeId, routeId))
+      // Порядок выборки — порядок карточки и бумаги целиком: точки по объезду, роли внутри точки по
+      // своей позиции. «Как вернул SQL» здесь не годится дважды: по ролям читают, что на остановке
+      // делают первым, и по ним же различаются строки задания одной пары точек (Р11).
+      .orderBy(asc(vehicleRoutePoints.position), asc(vehicleRoutePointTrips.position))
+  );
 }
 
 type PointRow = Awaited<ReturnType<typeof selectPointRows>>[number];
@@ -253,6 +268,9 @@ function actionOf(
       ref: { kind: 'linear', requestId: row.requestId, workDate: row.workDate },
       role: 'work',
       displayNumber: linearDayDisplayNumber(row.requestNum, row.workDate),
+      // Ноль недостижим: позиция NOT NULL, а `null` приходит только от `leftJoin` точки без ролей —
+      // у неё и роли-то нет, и до сюда такая строка не доходит (`requestId` пуст).
+      position: row.rolePosition ?? 0,
       requestNum: row.requestNum,
       // У линейного дня номера ездки нет вовсе — ноль здесь не «первая», а «ездок не бывает»
       // (Р11): им же он упорядочен среди строк задания.
@@ -272,6 +290,7 @@ function actionOf(
     ref: { kind: 'freight', requestId: row.requestId, tripId: row.tripId },
     role: isLoad ? 'load' : 'unload',
     displayNumber: tripDisplayNumber(row.requestNum, row.tripNum),
+    position: row.rolePosition ?? 0,
     requestNum: row.requestNum,
     tripNum: row.tripNum,
     customerName,
@@ -375,8 +394,10 @@ export async function routeTaskRefs(reader: Reader, routeId: string): Promise<Ta
 
   const refs: TaskRef[] = [];
   for (const row of rows) {
-    if (row.workDate) refs.push({ kind: 'linear', requestId: row.requestId, workDate: row.workDate });
-    else if (row.tripId) refs.push({ kind: 'freight', requestId: row.requestId, tripId: row.tripId });
+    if (row.workDate)
+      refs.push({ kind: 'linear', requestId: row.requestId, workDate: row.workDate });
+    else if (row.tripId)
+      refs.push({ kind: 'freight', requestId: row.requestId, tripId: row.tripId });
   }
   return refs;
 }
@@ -442,6 +463,59 @@ export async function assertRoutePlacement(
  */
 async function deferPositions(tx: Tx): Promise<void> {
   await tx.execute(sql`SET CONSTRAINTS vehicle_route_points_position_unique DEFERRED`);
+}
+
+/**
+ * То же самое для порядка ролей внутри точки (миграция 0146): уплотнение и перестановка переписывают
+ * позиции одним запросом, и на середине такого запроса две роли делят номер.
+ *
+ * Отдельной функцией, а не одним `SET CONSTRAINTS` на оба ограничения: правки ролей и правки
+ * объезда ходят разными дверьми, и откладывать чужое ограничение там, где его никто не трогает,
+ * значит отложить проверку, которая как раз должна была сработать немедленно.
+ */
+async function deferRolePositions(tx: Tx): Promise<void> {
+  await tx.execute(sql`SET CONSTRAINTS route_point_trips_position_unique DEFERRED`);
+}
+
+/**
+ * Позиция новой роли на точке — следующая за последней.
+ *
+ * Подзапросом в самой вставке, а не отдельным чтением: между «спросить максимум» и «вставить» в
+ * одной транзакции ничего не происходит, но два обращения к базе на каждую роль автосборки — это
+ * лишний круг на каждую ездку, а порядок и без того задан: новая работа встаёт последней в очередь
+ * этой остановки, ровно как новая точка встаёт последней в объезд.
+ */
+function nextRolePosition(pointId: string) {
+  return sql<number>`(
+    SELECT COALESCE(MAX(rp.position), 0) + 1
+    FROM ${vehicleRoutePointTrips} rp
+    WHERE rp.point_id = ${pointId}::uuid
+  )`;
+}
+
+/**
+ * Уплотняет порядок ролей в 1…N внутри каждой точки маршрута, сохраняя их нынешний порядок.
+ *
+ * Роль уходит с точки не только перестановкой — её уносят правка состава точки, разнесение, мягкое
+ * удаление ездки и каскад изъятия заявки, — и дыра в порядке ничего бы не сломала сама по себе, но
+ * позиции обязаны оставаться связными: на них смотрит человек («грузим первой, потом второй»), и
+ * счёт с пропуском читается как потерянная работа. Тем же правилом уплотняются точки (Р13).
+ *
+ * Одним запросом на весь маршрут: ролей в нём не больше двадцати, а обходить точки по одной значило
+ * бы двадцать запросов ради перестановки двух строк.
+ */
+async function compactRolePositions(tx: Tx, routeId: string): Promise<void> {
+  await deferRolePositions(tx);
+  await tx.execute(sql`
+    UPDATE ${vehicleRoutePointTrips} AS t
+    SET position = v.position
+    FROM (
+      SELECT id, row_number() OVER (PARTITION BY point_id ORDER BY position, id) AS position
+      FROM ${vehicleRoutePointTrips}
+      WHERE route_id = ${routeId}::uuid
+    ) AS v
+    WHERE t.id = v.id AND t.position <> v.position
+  `);
 }
 
 /**
@@ -513,15 +587,16 @@ export async function cleanupRoutePoints(tx: Tx, routeId: string): Promise<void>
     ),
   );
   await compactPositions(tx, routeId);
+  // Точка, потерявшая одну роль из трёх, остаётся — а дыра в её порядке работ остаться не должна:
+  // уплотнение стоит здесь по той же причине, по какой здесь стоит уплотнение объезда.
+  await compactRolePositions(tx, routeId);
 }
 
 // ── Роли: сверка с составом ──
 
 /** Ключ роли: им сверяются присланный список и то, что лежит на точках. */
 function roleKey(role: { tripId: string | null; requestId: string; role: string }): string {
-  return role.role === 'work'
-    ? `linear:${role.requestId}`
-    : `freight:${role.tripId}:${role.role}`;
+  return role.role === 'work' ? `linear:${role.requestId}` : `freight:${role.tripId}:${role.role}`;
 }
 
 /** Ключ присланной роли — тем же правилом, что и у сохранённой. */
@@ -565,6 +640,10 @@ function assertRoleKnown(index: Set<string>, role: PointRoleInput): void {
  * (`route_point_trips_trip_role_unique`), и «назовите роль на другой точке» — это и есть способ
  * перенести её руками, без разнесения и совмещения. Оставь мы здесь вставку — человек получал бы
  * ошибку целостности вместо перестановки.
+ *
+ * В порядке работ новой точки роли встают последними и в том порядке, в каком названы: переезд —
+ * это появление работы на остановке, а появившаяся работа встаёт в очередь последней. Дыру, которая
+ * остаётся на прежней точке, закрывает уплотнение (`cleanupRoutePoints`).
  */
 async function moveRolesTo(
   tx: Tx,
@@ -589,6 +668,7 @@ async function moveRolesTo(
         requestId: role.requestId,
         tripId: role.tripId,
         role: role.role,
+        position: nextRolePosition(pointId),
       });
       continue;
     }
@@ -609,6 +689,7 @@ async function moveRolesTo(
       requestId: role.requestId,
       tripId: null,
       role: 'work',
+      position: nextRolePosition(pointId),
     });
   }
 }
@@ -689,9 +770,7 @@ async function liveTripsOf(tx: Tx, requestId: string) {
       toResponsiblePhone: vehicleRequestTrips.toResponsiblePhone,
     })
     .from(vehicleRequestTrips)
-    .where(
-      and(eq(vehicleRequestTrips.requestId, requestId), isNull(vehicleRequestTrips.deletedAt)),
-    )
+    .where(and(eq(vehicleRequestTrips.requestId, requestId), isNull(vehicleRequestTrips.deletedAt)))
     .orderBy(asc(vehicleRequestTrips.num));
 }
 
@@ -715,11 +794,7 @@ function tripEndpoint(trip: TripRow, role: 'load' | 'unload'): TaskEndpoint {
 }
 
 /** Какие роли этих ездок уже стоят в маршруте: по ним автосборка отличает новое от разложенного. */
-async function placedRolesOf(
-  tx: Tx,
-  routeId: string,
-  requestId: string,
-): Promise<Set<string>> {
+async function placedRolesOf(tx: Tx, routeId: string, requestId: string): Promise<Set<string>> {
   const rows = await tx
     .select({
       tripId: vehicleRoutePointTrips.tripId,
@@ -760,11 +835,7 @@ async function placedRolesOf(
  * последней. Тождество полное (адрес **и** набор ответственных): тот же адрес с другим прорабом —
  * другое место работы, и свести их вправе только человек (Р9а).
  */
-export async function placeRequestTrips(
-  tx: Tx,
-  routeId: string,
-  requestId: string,
-): Promise<void> {
+export async function placeRequestTrips(tx: Tx, routeId: string, requestId: string): Promise<void> {
   const trips = await liveTripsOf(tx, requestId);
   if (trips.length === 0) return;
   const placed = await placedPointsOf(tx, routeId);
@@ -791,6 +862,10 @@ export async function placeRequestTrips(
       requestId,
       tripId: trip.id,
       role: 'load',
+      // Ездки раскладываются по порядку номеров, и в очередь работ каждой точки они встают тем же
+      // порядком: «сначала грузим первую ездку, потом вторую» — умолчание, которое диспетчер
+      // переставит, если на карьере удобнее иначе.
+      position: nextRolePosition(loadPoint.id),
     });
 
     const unloadEnd = tripEndpoint(trip, 'unload');
@@ -805,6 +880,7 @@ export async function placeRequestTrips(
       requestId,
       tripId: trip.id,
       role: 'unload',
+      position: nextRolePosition(unloadPoint.id),
     });
   }
 }
@@ -889,6 +965,7 @@ export async function placeLinearDay(
     requestId,
     tripId: null,
     role: 'work',
+    position: nextRolePosition(point.id),
   });
 }
 
@@ -1090,7 +1167,11 @@ export async function deleteRoutePoint(tx: Tx, routeId: string, pointId: string)
 }
 
 /** Ключ строки задания у строки связки: тем же правилом, что `taskRefKey` у ссылки. */
-function taskRefKeyOfRow(row: { tripId: string | null; requestId: string; workDate: string | null }): string {
+function taskRefKeyOfRow(row: {
+  tripId: string | null;
+  requestId: string;
+  workDate: string | null;
+}): string {
   return row.tripId
     ? taskRefKey({ kind: 'freight', requestId: row.requestId, tripId: row.tripId })
     : taskRefKey({ kind: 'linear', requestId: row.requestId, workDate: row.workDate ?? '' });
@@ -1103,6 +1184,52 @@ function taskRefKeyOfRow(row: { tripId: string | null; requestId: string; workDa
  * Что список это ровно все точки маршрута, проверяется здесь: удалять и заводить точки
  * перестановкой нельзя, у того и другого своя дверь со своими правилами (Р13).
  */
+/**
+ * Переставляет точки вслед за порядком состава — мост между старой дверью и новой моделью.
+ *
+ * **Зачем он нужен.** До перехода на точки порядок печати задавала позиция строки состава, и
+ * стрелки в карточке рейса переставляли именно её. Теперь задание печатается по позициям **точек**
+ * (Р11, Р11б), а стрелки как переписывали состав, так и переписывают, — то есть перестали влиять
+ * на документ. Молча: экран показывает новый порядок, а лист печатается в старом, и это касается
+ * даже старых одноездочных заявок, у которых ничего не менялось. Пока карточка не переведена на
+ * точки целиком (этап 7 плана), дверь обязана делать то, что обещает.
+ *
+ * **Когда порядок точек выводится из порядка состава, а когда нет.** Однозначно — пока каждая
+ * точка принадлежит ровно одной заявке: тогда точки просто раскладываются группами в порядке
+ * заявок, а внутри группы сохраняют свой прежний порядок (погрузка раньше разгрузки, Р6, — она и
+ * так стоит раньше). Как только автосборка посадила на одну остановку ездки **разных** заявок
+ * (Р8: «в двух заявках одно и то же место погрузки, ехать дважды незачем»), ответа не существует:
+ * общая точка не может стоять одновременно и там, где велит первая заявка, и там, где вторая.
+ *
+ * Догадываться в этом случае нельзя — угадав, мы переставим машине маршрут не тем порядком, каким
+ * просил человек, и он об этом не узнает. Поэтому возвращается `null`, а ручка отвечает словами и
+ * указывает на дверь порядка объезда, где тот же вопрос задаётся точками и имеет ответ.
+ */
+export async function pointOrderByComposition(
+  tx: Tx,
+  routeId: string,
+  requestIds: readonly string[],
+): Promise<string[] | null> {
+  const points = await loadRoutePoints(tx, routeId);
+  const rank = new Map(requestIds.map((id, index) => [id, index]));
+
+  const groups: { pointId: string; position: number; requestRank: number }[] = [];
+  for (const point of points) {
+    const owners = new Set(point.actions.map((action) => action.ref.requestId));
+    // Точка без ролей не заводится и не остаётся (Р13); если такая всё же есть — данные битые, и
+    // переставлять их вслепую хуже, чем отказать.
+    if (owners.size !== 1) return null;
+    const [owner] = owners;
+    const requestRank = rank.get(owner!);
+    if (requestRank === undefined) return null;
+    groups.push({ pointId: point.id, position: point.position, requestRank });
+  }
+
+  return groups
+    .sort((a, b) => a.requestRank - b.requestRank || a.position - b.position)
+    .map((row) => row.pointId);
+}
+
 export async function setRoutePointOrder(
   tx: Tx,
   routeId: string,
@@ -1141,10 +1268,7 @@ export async function mergeRoutePoints(
     })
     .from(vehicleRoutePoints)
     .where(
-      and(
-        eq(vehicleRoutePoints.routeId, routeId),
-        inArray(vehicleRoutePoints.id, [...pointIds]),
-      ),
+      and(eq(vehicleRoutePoints.routeId, routeId), inArray(vehicleRoutePoints.id, [...pointIds])),
     )
     .orderBy(asc(vehicleRoutePoints.position));
   if (rows.length !== new Set(pointIds).size) {
@@ -1167,15 +1291,32 @@ export async function mergeRoutePoints(
     );
   }
 
-  await tx
-    .update(vehicleRoutePointTrips)
-    .set({ pointId: target.id })
-    .where(
-      inArray(
-        vehicleRoutePointTrips.pointId,
-        others.map((row) => row.id),
-      ),
-    );
+  /*
+   * Роли переезжают вместе со своим порядком работ: сначала те, что уже стояли на цели, затем —
+   * группами в порядке объезда, из которого их сняли. Иначе порядок пришлось бы выдумывать: у
+   * совмещаемых точек позиции начинаются с единицы у каждой, и «оставить как есть» означало бы две
+   * первых роли на одной остановке — состояние, которого уникальность не допускает вовсе.
+   *
+   * Одним запросом, а не переносом с последующим уплотнением: уплотнение упорядочивает по самим
+   * позициям и переплело бы роли разных точек между собой (первая с первой, вторая со второй),
+   * потеряв ровно то, что человек на этих точках выстроил.
+   */
+  const merged = [target, ...others].map((row) => row.id);
+  await deferRolePositions(tx);
+  await tx.execute(sql`
+    UPDATE ${vehicleRoutePointTrips} AS t
+    SET point_id = ${target.id}::uuid, position = v.position
+    FROM (
+      SELECT rp.id, row_number() OVER (ORDER BY p.position, rp.position, rp.id) AS position
+      FROM ${vehicleRoutePointTrips} rp
+      JOIN ${vehicleRoutePoints} p ON p.id = rp.point_id
+      WHERE rp.point_id IN (${sql.join(
+        merged.map((id) => sql`${id}::uuid`),
+        sql`, `,
+      )})
+    ) AS v
+    WHERE t.id = v.id
+  `);
   await tx.delete(vehicleRoutePoints).where(
     inArray(
       vehicleRoutePoints.id,
@@ -1231,7 +1372,12 @@ export async function splitRoutePoint(
   await tx
     .update(vehicleRoutePoints)
     .set({ position: sql`${vehicleRoutePoints.position} + 1` })
-    .where(and(eq(vehicleRoutePoints.routeId, routeId), gt(vehicleRoutePoints.position, source.position)));
+    .where(
+      and(
+        eq(vehicleRoutePoints.routeId, routeId),
+        gt(vehicleRoutePoints.position, source.position),
+      ),
+    );
   const [created] = await tx
     .insert(vehicleRoutePoints)
     .values({
@@ -1243,5 +1389,63 @@ export async function splitRoutePoint(
     .returning({ id: vehicleRoutePoints.id });
 
   await moveRolesTo(tx, routeId, created!.id, roles);
+  // Ушедшие роли оставили в порядке работ исходной точки дыры: 1, 3, 5 читалось бы как «две работы
+  // потерялись». Новая точка получает 1..N сама — роли легли на неё в присланном порядке.
+  await compactRolePositions(tx, routeId);
   return created!.id;
+}
+
+/**
+ * Новый порядок работ **внутри одной точки** — полным списком её ролей.
+ *
+ * Зачем эта дверь. Порядок строк задания — порядок талонов заказчиков (Р12, Р20), и задаёт его
+ * объезд; но две строки, стоящие на одной и той же паре точек, объезд не различает (Р8
+ * переиспользует точку), и прежде их разводил номер заявки — то есть никто. Здесь тот же вопрос
+ * задаётся человеку в осмысленном виде: какую из ездок на этой остановке грузят первой.
+ *
+ * Полным списком, а не парой «поднять роль»: тем же приёмом переставляются точки (Р14) и строки
+ * состава — сервер переписывает позиции целиком, и две одновременные перестановки не соберут дыр в
+ * нумерации. Что список — это ровно роли этой точки, проверяется здесь: заводить и снимать роли
+ * перестановкой нельзя, у того и другого свои двери со своими правилами.
+ */
+export async function setPointRoleOrder(
+  tx: Tx,
+  routeId: string,
+  pointId: string,
+  roles: readonly PointRoleInput[],
+): Promise<void> {
+  await requirePoint(tx, routeId, pointId);
+  const current = await tx
+    .select({
+      id: vehicleRoutePointTrips.id,
+      tripId: vehicleRoutePointTrips.tripId,
+      requestId: vehicleRoutePointTrips.requestId,
+      role: vehicleRoutePointTrips.role,
+    })
+    .from(vehicleRoutePointTrips)
+    .where(eq(vehicleRoutePointTrips.pointId, pointId));
+
+  const idByKey = new Map(current.map((row) => [roleKey(row), row.id]));
+  const ordered = roles.map((role) => idByKey.get(inputRoleKey(role)));
+  if (ordered.length !== current.length || ordered.some((id) => id === undefined)) {
+    throw err.unprocessable(
+      'Порядок присылается полным списком ролей точки — обновите карточку и попробуйте снова',
+      { roles: 'Не все роли точки' },
+    );
+  }
+
+  // Позиции переписываются целиком одним запросом — тем же приёмом, что и позиции точек
+  // (`writePositions`): по строке за раз это столько же шансов оставить порядок наполовину
+  // переписанным, сколько ролей на остановке.
+  await deferRolePositions(tx);
+  const values = sql.join(
+    ordered.map((id, index) => sql`(${id!}::uuid, ${index + 1}::smallint)`),
+    sql`, `,
+  );
+  await tx.execute(sql`
+    UPDATE ${vehicleRoutePointTrips} AS t
+    SET position = v.position
+    FROM (VALUES ${values}) AS v(id, position)
+    WHERE t.id = v.id
+  `);
 }

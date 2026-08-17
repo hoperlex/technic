@@ -38,7 +38,9 @@ import {
   createRelocationRouteSchema,
   MAX_ROUTE_REQUESTS,
   type VehicleRequestRouteDto,
+  waybillAcknowledgeSchema,
 } from './vehicle-routes';
+import type { WaybillWarning } from './waybill-task-rows';
 import {
   requestTripSchema,
   requestTripsSchema,
@@ -1355,10 +1357,44 @@ export const issueRequestEsm2Schema = z
      * прежний лист, а не следующий номер. У листа текущей недели ключа нет — это обычная работа.
      */
     operationId: uuidSchema.optional(),
+    /**
+     * Подтверждение предупреждений выписки (Р21, Р21а) — тем же полем и той же схемой, что у листа
+     * по рейсу (`waybillAcknowledgeSchema` в `issueRouteWaybillSchema`): подтверждают в обоих
+     * случаях одно и то же — набор **фактов**, посчитанный сервером и прочитанный человеком, — и
+     * вторая форма поля заставила бы портал помнить, какой бланк он подтверждает.
+     *
+     * Ручная выдача ЭСМ-2 и есть пятый путь выпуска номера, которого Р21а не назвала: рейса у этого
+     * листа нет вовсе, а машинист есть — и пробелы в его документах (ADR 0064) это ровно то, о чём
+     * человек обязан знать до расхода бланка строгой отчётности. Окно портала проверкой не
+     * является: старая вкладка, повтор запроса из истории и `curl` выписали бы лист молча.
+     *
+     * Необязательно по той же причине, что и там: пустой набор рукопожатия не требует вовсе, и лист
+     * машинисту с полным комплектом выписывается одним заходом.
+     */
+    acknowledge: waybillAcknowledgeSchema.optional(),
   })
   .strict();
 export type IssueRequestEsm2Input = z.infer<typeof issueRequestEsm2Schema>;
 export type IssueRequestEsm2Body = z.input<typeof issueRequestEsm2Schema>;
+
+/**
+ * Тело отказа `waybill_ack_required` у ручной выдачи ЭСМ-2 (Р21а) — то, из чего портал собирает
+ * окно подтверждения.
+ *
+ * Своё, а не `WaybillAckRequiredDetails`: там обязательные `routeId` и `routeNumber`, которых у
+ * недельного листа не существует — он выписывается на заявку и неделю, а не на рейс, — и заполнить
+ * их было бы нечем, кроме выдумки. Общим у двух тел остаётся ровно то, что читает портал и что
+ * возвращается серверу нетронутым: отпечаток и список.
+ */
+export interface Esm2AckRequiredDetails {
+  requestId: string;
+  /** Неделя, посчитанная сервером: ею окно называет человеку бумагу, о которой спрашивает. */
+  periodFrom: string;
+  periodTo: string;
+  /** `sha256` от каноникализованных фактов: его же портал возвращает в `acknowledge`. */
+  fingerprint: string;
+  warnings: WaybillWarning[];
+}
 
 // ── Перегон по заявке задним числом (ADR 0101 п. 4) ──
 

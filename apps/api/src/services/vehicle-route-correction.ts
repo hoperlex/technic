@@ -2,6 +2,7 @@ import { and, asc, eq, inArray, isNotNull, sql } from 'drizzle-orm';
 import {
   canIssueWaybill,
   formatVehicleRequestNumber,
+  formatVehicleRouteNumber,
   type RequestStatus,
   type RoutePurpose,
   type VehicleRequestType,
@@ -508,6 +509,12 @@ export async function cancelRouteWaybillForCorrection(
  *
  * Водитель к этому моменту заведомо есть — его спросил preflight (`canIssueWaybill`) до первого
  * аннулирования (Р36).
+ *
+ * Рукопожатие (Р21а) идёт своим полем на **каждую** сторону переноса: листов здесь два, наборы
+ * предупреждений у них разные — заявка уехала из одного задания в другое, — и отпечаток считается
+ * по каждому рейсу отдельно. Первый же неподтверждённый останавливает операцию целиком: транзакция
+ * откатывается, оба номера остаются непотраченными, а окно получает список и свежий отпечаток
+ * того рейса, о котором отказ.
  */
 export async function issueCorrectionWaybill(
   tx: Tx,
@@ -518,6 +525,8 @@ export async function issueCorrectionWaybill(
     reason: string;
     /** Заменяемый номер; `null` — заменять было нечего (Р35). */
     correctsWaybillId: string | null;
+    /** Подтверждение предупреждений **этого** рейса (Р21); `null` — не присылали. */
+    acknowledge: { fingerprint: string } | null;
     actorUserId: string;
   },
 ): Promise<{ id: string; number: string } | null> {
@@ -525,6 +534,7 @@ export async function issueCorrectionWaybill(
   if (input.composition.length === 0 && !route.sourceRequestId) return null;
   const issued = await issueWaybillForRoute(tx, {
     routeId: route.id,
+    routeNumber: formatVehicleRouteNumber(route.num),
     purpose: route.purpose,
     vehicleId: route.vehicleId,
     routeDate: route.routeDate,
@@ -537,6 +547,7 @@ export async function issueCorrectionWaybill(
     relocation: route.sourceRequestId
       ? { requestId: route.sourceRequestId, from: route.moveFrom, to: route.moveTo }
       : null,
+    acknowledge: input.acknowledge,
     actor: { id: input.actorUserId },
   });
   await markCorrectionWaybill(tx, {

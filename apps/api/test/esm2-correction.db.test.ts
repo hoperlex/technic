@@ -3,6 +3,7 @@ import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { moscowDateKeyOf, shiftDateKey, weekStartKey } from '@technic/contracts';
+import { issueRequestEsm2 } from './waybill-issue-helper';
 import { applyMigrations } from '../src/db/migration-journal';
 // Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
 // окружение, — конфиг проверяет его при импорте и без него падает.
@@ -263,14 +264,21 @@ function changeAssignment(
  * выпиской листа по рейсу. Здесь это подготовка к самой коррекции: чтобы переоформлять отработанную
  * неделю, её сначала надо чем-то закрыть.
  */
-function issueOnDemand(
+/**
+ * Выписка по требованию — через общее рукопожатие (Р21а): ЭСМ-2 оказался пятым путём выпуска
+ * номера, и у машиниста бывают пробелы в документах (ADR 0064). Здесь выписка — шаг подготовки к
+ * коррекции, поэтому подтверждение ставит помощник; ответ отдаётся как есть — эта дверь
+ * проверяется и настоящими отказами.
+ */
+async function issueOnDemand(
   requestId: string,
   body: { vehicleId: string; driverPersonId: string; version: number; weekOf?: string },
-): ReturnType<typeof ctx.app.inject> {
-  return ctx.app.inject({
-    method: 'POST',
-    url: `/api/v1/vehicle-requests/${requestId}/esm2`,
+): Promise<Awaited<ReturnType<typeof ctx.app.inject>>> {
+  const { res } = await issueRequestEsm2({
+    app: ctx.app,
     headers: ctx.auth,
+    requestId,
+    expectIssued: false,
     payload: {
       weekOf: body.weekOf ?? ctx.pastFrom,
       vehicleId: body.vehicleId,
@@ -280,6 +288,7 @@ function issueOnDemand(
       operationId: crypto.randomUUID(),
     },
   });
+  return res;
 }
 
 interface SheetRow {

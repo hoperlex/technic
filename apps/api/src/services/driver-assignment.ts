@@ -1,21 +1,23 @@
 import { and, asc, desc, eq, gte, inArray, isNull, lt, lte, ne } from 'drizzle-orm';
 import {
-  type DriverAssignmentContact,
+  type DriverAssignmentAction,
   type DriverAssignmentDto,
   type DriverAssignmentEntry,
-  type DriverAssignmentRequest,
+  type DriverAssignmentPoint,
   type DriverPreviousReading,
   formatMoscowDateTime,
   isRelocationPurpose,
+  pointContacts,
+  type RoutePointAction,
   vehicleLabel,
   type VehicleOwnership,
+  type VehicleRoutePointDto,
   type VehicleRouteDto,
   type VehicleRouteRequestDto,
   waybillDisplayNumber,
 } from '@technic/contracts';
 import { db } from '../db/client';
 import {
-  specialEquipmentRequestDetails,
   vehicleCategories,
   vehicleModels,
   vehicleReadings,
@@ -28,7 +30,8 @@ import {
   waybillSeries,
 } from '../db/schema';
 import { daysBetween } from './readings-chain';
-import { firstLiveTripJoin, loadRouteDtos, routeQuery } from './vehicle-routes';
+import { loadRoutePoints } from './route-points';
+import { loadRouteDtos, routeQuery } from './vehicle-routes';
 
 /**
  * Задание работника: чем он занят в этот день — своими рейсами и своими недельными листами
@@ -56,6 +59,18 @@ import { firstLiveTripJoin, loadRouteDtos, routeQuery } from './vehicle-routes';
  * нет. Письмо-рассылка этого условия не получает намеренно: оно уходит вечером накануне, когда
  * листа обычно ещё нет, и лишить водителя адресов накануне выезда хуже расхождения каналов.
  * Поэтому фильтр стоит на пути кабинета (`loadDayEntries`), а не в общей сборке рейсов.
+ *
+ * Четвёртое свойство — с этапа 8 плана `docs/route-trips-plan.md`: **задание собирается по точкам, а
+ * не по заявкам**. Блок здесь — остановка порядка объезда (адрес, время, что грузим и что
+ * выгружаем, все её ответственные, записка о ней), а не заявка одной парой адресов, как было до
+ * ездок. Иначе и нельзя: у заявки с ездками `A→B` и `A→C` «адреса разгрузки» не существует вовсе, а
+ * два заезда в один карьер — одна остановка, а не две (Р4, Р5). Порядок тот же, каким его показывает
+ * карточка маршрута, — по позициям точек, и разойтись каналам негде: сборщик один.
+ *
+ * И то, чего в бумаге нет: **свёрнутого здесь не бывает**. Всё, что бланк спрятал в «+N» или обрезал
+ * по ширине графы (Р11а), письмо и кабинет показывают целиком — ширины графы у них нет, а
+ * свёртывание в бланке ровно тем и оплачено, что полный текст доедет до водителя этим каналом
+ * (§8 плана).
  */
 
 /** Зачем выезд. Слов ровно три: рейс едет за грузом или перегоном, лист — работать на площадке. */
@@ -113,59 +128,22 @@ async function vehicleLabels(vehicleIds: string[]): Promise<Map<string, string>>
   return map;
 }
 
-// ── Состав рейса ──
+// ── Порядок объезда ──
 
-/** Контакты и комментарий заявки: в DTO состава рейса их нет, а водителю звонить именно им. */
-interface RequestExtra {
-  comment: string;
-  /** Кого набирать: у грузоперевозки — на погрузке и на выгрузке, у объекта — встречающий. */
-  contacts: DriverAssignmentContact[];
-}
-
-async function requestExtras(requestIds: string[]): Promise<Map<string, RequestExtra>> {
-  const map = new Map<string, RequestExtra>();
-  if (requestIds.length === 0) return map;
-
-  // Ездка грузоперевозки и деталь спецтехники разом: тип заявки заранее неизвестен, а join'ы левые
-  // — заполнено ровно одно из двух.
-  const rows = await db
-    .select({
-      id: vehicleRequests.id,
-      comment: vehicleRequests.comment,
-      // Контакты грузоперевозки уехали с заявки на ездку (план `docs/route-trips-plan.md`, Р2), и
-      // здесь читается **первая живая** — та же, что печатает бланк на этом этапе. Полный порядок
-      // объезда с контактами всех точек кабинет и письмо получат этапом 8: у водителя тогда
-      // появится не «контакт заявки», а «кто встречает на каждой остановке» (Р11а, §8 плана).
-      loadingName: vehicleRequestTrips.fromResponsibleName,
-      loadingPhone: vehicleRequestTrips.fromResponsiblePhone,
-      unloadingName: vehicleRequestTrips.toResponsibleName,
-      unloadingPhone: vehicleRequestTrips.toResponsiblePhone,
-      siteName: specialEquipmentRequestDetails.responsibleName,
-      sitePhone: specialEquipmentRequestDetails.responsiblePhone,
-    })
-    .from(vehicleRequests)
-    .leftJoin(vehicleRequestTrips, firstLiveTripJoin)
-    .leftJoin(
-      specialEquipmentRequestDetails,
-      eq(specialEquipmentRequestDetails.requestId, vehicleRequests.id),
-    )
-    .where(inArray(vehicleRequests.id, requestIds));
-
-  for (const row of rows) {
-    // Телефон едет цифрами, как лежит в базе (ADR 0066): набираемый вид — правило контрактов
-    // (`formatPhone`), одно на письмо и на кабинет, а ссылку «позвонить» портал собирает как раз из
-    // цифр. Правило Р13 этому не противоречит: оно закрывает справочники, а не формат числа.
-    const contacts = [
-      { label: 'Погрузка', name: row.loadingName ?? '', phone: row.loadingPhone ?? '' },
-      { label: 'Выгрузка', name: row.unloadingName ?? '', phone: row.unloadingPhone ?? '' },
-      { label: 'На месте', name: row.siteName ?? '', phone: row.sitePhone ?? '' },
-      // Контакт без имени и без телефона печатать нечем: у заявок, заведённых до появления этих
-      // полей, они пустые.
-    ].filter((c) => c.name !== '' || c.phone !== '');
-    map.set(row.id, { comment: row.comment, contacts });
-  }
-  return map;
-}
+/**
+ * Подпись роли — словами водителя, а не модели: он читает задание как последовательность действий
+ * («приехал — грузим», «приехал — выгружаем»), а не как перечень ролей. У линейного дня действие
+ * одно и то же слово, каким назван весь такой выезд (`PURPOSE_SITE`): работать на объекте — это и
+ * есть его задание, других глаголов у него нет (Р5а).
+ *
+ * Собирается здесь, а не в каждом канале: письмо и кабинет читает один человек, и разные слова на
+ * одно действие он прочтёт как разное задание.
+ */
+const ROLE_LABELS: Record<RoutePointAction['role'], string> = {
+  load: 'Грузим',
+  unload: 'Выгружаем',
+  work: PURPOSE_SITE,
+};
 
 /** «08:30» или пусто, если у заявки время не задано: тогда значима только дата. */
 function timeOf(request: VehicleRouteRequestDto): string {
@@ -173,20 +151,164 @@ function timeOf(request: VehicleRouteRequestDto): string {
   return formatMoscowDateTime(new Date(request.scheduledAt)).slice(-5);
 }
 
-function assignmentRequest(
-  request: VehicleRouteRequestDto,
-  extra: RequestExtra | undefined,
-): DriverAssignmentRequest {
+/**
+ * Час подачи по заявкам рейсов — запасной ход для точки, у которой своего времени нет.
+ *
+ * Берутся только грузовые строки состава (`workDate` пуст): у заказа техники на объект времени
+ * подачи не существует, а `scheduledAt` строки состава заполняется у него текущим моментом
+ * (`requestsByRoute`) — подставить его значило бы напечатать водителю час, который значит «когда
+ * собрали письмо».
+ */
+function requestTimes(requests: readonly VehicleRouteRequestDto[]): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const request of requests) {
+    if (request.workDate) continue;
+    const time = timeOf(request);
+    if (time !== '') map.set(request.requestId, time);
+  }
+  return map;
+}
+
+/**
+ * Время прибытия на остановку: своё, а нет его — час подачи самой ранней заявки, которую здесь
+ * **грузят**.
+ *
+ * Запасной ход нужен не для красоты. Время точки необязательно, и бэкфил маршрутов, собранных до
+ * релиза, не заполнил его ни у одной (§5.6 плана); заявка же час подачи несёт всегда. Возьми
+ * задание только время точки — водитель разом потерял бы «08:30», которое получает сегодня.
+ *
+ * Только погрузка: подача — это «во сколько быть под загрузкой», и час разгрузки из неё не следует.
+ * Минимум, а не первое вхождение: на совмещённой остановке грузят две ездки, и приехать надо к
+ * ранней из них. Сравнение строк «ЧЧ:ММ» лексикографически и есть сравнение времени.
+ */
+function pointArrivalTime(
+  point: VehicleRoutePointDto,
+  actions: readonly RoutePointAction[],
+  times: ReadonlyMap<string, string>,
+): string {
+  if (point.arrivalTime !== '') return point.arrivalTime;
+  const scheduled = actions
+    .filter((action) => action.role === 'load')
+    .flatMap((action) => {
+      const time = times.get(action.ref.requestId);
+      return time ? [time] : [];
+    });
+  return scheduled.length === 0 ? '' : scheduled.reduce((min, time) => (time < min ? time : min));
+}
+
+/**
+ * Комментарий строки задания — тем же правилом, каким его печатает бланк (`loadTaskRowFacts` в
+ * `waybill-issue.ts`): у ездки её собственное примечание, а нет его — комментарий заказа; у
+ * линейного дня — комментарий заявки, он же характер работ (ADR 0100 §10).
+ *
+ * Правило повторено, а не разделено с выпиской, потому что делить нечего: там оно считается под
+ * блокировкой рейса вместе с адресами строк, здесь — на чтении задания. Существенно другое —
+ * **значение обязано совпасть**: бланк комментарий при нехватке места выбрасывает первым (Р11а), и
+ * задание водителю есть то самое место, где он показывается целиком. Возьми оно другое значение —
+ * водитель сверял бы с бумагой не тот текст.
+ *
+ * Падение на комментарий заказа — та же плата за бэкфил, что и в бланке: примечание ездки завелось
+ * миграцией `0136` и у прежних заявок пусто (Р24), а комментарий заказа у них заполнен.
+ */
+function actionComment(
+  action: RoutePointAction,
+  tripNotes: ReadonlyMap<string, string>,
+  requestComments: ReadonlyMap<string, string>,
+): string {
+  const request = requestComments.get(action.ref.requestId) ?? '';
+  if (action.kind === 'linear') return request;
+  const own = tripNotes.get(action.ref.tripId) ?? '';
+  return own.trim() === '' ? request : own;
+}
+
+function assignmentAction(
+  action: RoutePointAction,
+  tripNotes: ReadonlyMap<string, string>,
+  requestComments: ReadonlyMap<string, string>,
+): DriverAssignmentAction {
   return {
-    displayNumber: request.displayNumber,
-    customerName: request.customerName,
-    loadingLocation: request.loadingLocation,
-    unloadingLocation: request.unloadingLocation,
-    time: timeOf(request),
-    cargoLabel: request.cargoLabel,
-    comment: extra?.comment ?? '',
-    contacts: extra?.contacts ?? [],
+    role: action.role,
+    roleLabel: ROLE_LABELS[action.role],
+    displayNumber: action.displayNumber,
+    customerName: action.customerName,
+    // Количество несёт только ездка: у линейного дня его не бывает вовсе, а работу описывает
+    // комментарий заявки — он и стоит в графе груза бланка (ADR 0100 §10).
+    cargoLabel: action.kind === 'freight' ? action.cargoLabel : '',
+    comment: actionComment(action, tripNotes, requestComments),
   };
+}
+
+/**
+ * Остановка задания. `null` — на ней не осталось ни одной строки, которую надо ехать: заявку
+ * отменили или удалили, а точка её ролей осталась в маршруте историей рейса.
+ *
+ * Ответственные пересчитываются, а не берутся у точки: `loadRoutePoints` считает их по **всем**
+ * ролям, включая роли отменённых заявок, и оставить готовый список значило бы отправить водителя
+ * звонить тому, к кому он сегодня не едет. Правило то же самое (`pointContacts`) — меняется только
+ * то, из чего оно считает.
+ */
+function assignmentPoint(
+  point: VehicleRoutePointDto,
+  visible: ReadonlySet<string>,
+  tripNotes: ReadonlyMap<string, string>,
+  requestComments: ReadonlyMap<string, string>,
+  times: ReadonlyMap<string, string>,
+): DriverAssignmentPoint | null {
+  const actions = point.actions.filter((action) => visible.has(action.ref.requestId));
+  if (actions.length === 0) return null;
+  return {
+    position: point.position,
+    location: point.location,
+    arrivalTime: pointArrivalTime(point, actions, times),
+    actions: actions.map((action) => assignmentAction(action, tripNotes, requestComments)),
+    contacts: pointContacts(actions),
+    comment: point.comment,
+  };
+}
+
+/**
+ * Комментарии живых заявок рейсов. Ключи карты — они же и ответ на «жива ли заявка»: удалённая
+ * (`deleted_at`) остаётся в маршруте историей рейса, но ехать по ней не надо, и в задание она не
+ * входит ни строкой, ни адресом.
+ *
+ * Один запрос на оба вопроса, потому что вопрос один: заявка, которой нет, комментария не имеет.
+ */
+async function liveRequestComments(requestIds: string[]): Promise<Map<string, string>> {
+  if (requestIds.length === 0) return new Map();
+  const rows = await db
+    .select({ id: vehicleRequests.id, comment: vehicleRequests.comment })
+    .from(vehicleRequests)
+    .where(and(inArray(vehicleRequests.id, requestIds), isNull(vehicleRequests.deletedAt)));
+  return new Map(rows.map((row) => [row.id, row.comment]));
+}
+
+/**
+ * Примечания ездок по их идентификаторам. Мягко удалённых среди них не бывает: точка удалённой
+ * ездки роли не отдаёт вовсе (`loadRoutePoints`), и спрашивать здесь `deleted_at` было бы вторым
+ * местом, где решается, какая ездка едет.
+ */
+async function tripComments(tripIds: string[]): Promise<Map<string, string>> {
+  if (tripIds.length === 0) return new Map();
+  const rows = await db
+    .select({ id: vehicleRequestTrips.id, comment: vehicleRequestTrips.comment })
+    .from(vehicleRequestTrips)
+    .where(inArray(vehicleRequestTrips.id, tripIds));
+  return new Map(rows.map((row) => [row.id, row.comment]));
+}
+
+/**
+ * Точки рейсов пачкой — по запросу на рейс, а не одним на все.
+ *
+ * Собственная выборка была бы вторым описанием того, что такое точка: `loadRoutePoints` знает и
+ * порядок ролей, и `pairPosition`, и расхождение адреса, и правило контактов, — а рейсов у водителя
+ * на день один-два, у письма на неделю вперёд единицы. Запросы идут разом, и цена этой честности —
+ * несколько параллельных чтений вместо одного.
+ */
+async function routePoints(routeIds: string[]): Promise<Map<string, VehicleRoutePointDto[]>> {
+  const loaded = await Promise.all(
+    routeIds.map(async (id) => [id, await loadRoutePoints(db, id)] as const),
+  );
+  return new Map(loaded);
 }
 
 // ── Рейсы ──
@@ -209,7 +331,7 @@ export interface DriverRouteEntry extends DriverAssignmentEntry {
 function routeEntry(
   route: VehicleRouteDto,
   vehicle: string,
-  extras: Map<string, RequestExtra>,
+  points: DriverAssignmentPoint[],
 ): DriverRouteEntry {
   const relocation = isRelocationPurpose(route.purpose);
   return {
@@ -227,7 +349,7 @@ function routeEntry(
     // здесь задание, и записывать в него пока нечего.
     itemId: null,
     shiftOrder: null,
-    requests: route.requests.map((q) => assignmentRequest(q, extras.get(q.requestId))),
+    points,
     moveFrom: route.moveFrom,
     moveTo: route.moveTo,
     comment: route.comment,
@@ -256,9 +378,14 @@ interface EntrySource<E extends DriverAssignmentEntry> {
  * помнит порядок вставки, а рейсы приходят отсортированными.
  *
  * Отменённые и удалённые заявки в задание не попадают: они остаются в маршруте историей рейса (лист
- * уже выписан), но ехать по ним не надо, и показать их — ввести водителя в заблуждение. Рейс,
- * оставшийся без единой живой заявки, не показывается вовсе: строка «Машина: …» без задания
- * сообщает ровно ничего. Перегон остаётся всегда — у него задание не в составе, а в «откуда/куда».
+ * уже выписан), но ехать по ним не надо, и показать их — ввести водителя в заблуждение. Отбор один
+ * на оба слоя рейса: строка состава решает, показывается ли рейс вообще, тот же список — какие роли
+ * остаются на точках. Разойдись они, водитель получил бы остановку отменённой заявки в маршруте,
+ * которого по ней нет.
+ *
+ * Рейс, оставшийся без единой живой заявки, не показывается вовсе: строка «Машина: …» без задания
+ * сообщает ровно ничего. Перегон остаётся всегда — у него задание не в составе, а в «откуда/куда»,
+ * и точек ему не заводится.
  *
  * Действительного листа этот отбор не спрашивает: условие Р5 принадлежит кабинету, а не общей
  * сборке, — см. `loadDayEntries`.
@@ -283,36 +410,56 @@ async function routeSources(
 
   const routes = await loadRouteDtos(db, rows);
   // Живые заявки состава: `requestsByRoute` их не фильтрует — там состав как история рейса.
-  const requestIds = routes.flatMap((r) => r.requests.map((q) => q.requestId));
-  const alive = new Set(
-    requestIds.length === 0
-      ? []
-      : (
-          await db
-            .select({ id: vehicleRequests.id })
-            .from(vehicleRequests)
-            .where(and(inArray(vehicleRequests.id, requestIds), isNull(vehicleRequests.deletedAt)))
-        ).map((r) => r.id),
+  const comments = await liveRequestComments(
+    routes.flatMap((r) => r.requests.map((q) => q.requestId)),
+  );
+  // Заявки, по которым сегодня едут: живые и не отменённые. Статус — свойство самой заявки, а не
+  // её строки в рейсе, поэтому список один на все рейсы окна.
+  const visibleRequests = new Set(
+    routes
+      .flatMap((route) => route.requests)
+      .filter((q) => comments.has(q.requestId) && q.status !== 'cancelled')
+      .map((q) => q.requestId),
   );
   const visible = routes
     .map((route) => ({
       ...route,
-      requests: route.requests.filter((q) => alive.has(q.requestId) && q.status !== 'cancelled'),
+      requests: route.requests.filter((q) => visibleRequests.has(q.requestId)),
     }))
     .filter((route) => isRelocationPurpose(route.purpose) || route.requests.length > 0);
   if (visible.length === 0) return byDate;
 
-  const [extras, labels] = await Promise.all([
-    requestExtras([...alive]),
+  const [points, labels] = await Promise.all([
+    // Точки нужны только там, где есть порядок объезда: у перегона его нет вовсе (миграция 0082), и
+    // спрашивать их значило бы читать пустоту на каждый перегон дня.
+    routePoints(visible.flatMap((route) => (isRelocationPurpose(route.purpose) ? [] : [route.id]))),
     vehicleLabels([...new Set(visible.map((route) => route.vehicleId))]),
+  ]);
+  const notes = await tripComments([
+    ...new Set(
+      [...points.values()].flatMap((list) =>
+        list.flatMap((point) =>
+          point.actions.flatMap((action) =>
+            action.kind === 'freight' && visibleRequests.has(action.ref.requestId)
+              ? [action.ref.tripId]
+              : [],
+          ),
+        ),
+      ),
+    ),
   ]);
 
   for (const route of visible) {
     const list = byDate.get(route.routeDate) ?? [];
+    const times = requestTimes(route.requests);
+    const ordered = (points.get(route.id) ?? []).flatMap((point) => {
+      const block = assignmentPoint(point, visibleRequests, notes, comments, times);
+      return block ? [block] : [];
+    });
     // Машина у рейса своя всегда (innerJoin в `routeQuery`), и подпись из карточки маршрута здесь
     // запасной вариант, а не второе правило.
     list.push({
-      entry: routeEntry(route, labels.get(route.vehicleId) ?? route.vehicleLabel, extras),
+      entry: routeEntry(route, labels.get(route.vehicleId) ?? route.vehicleLabel, ordered),
       vehicleId: route.vehicleId,
     });
     byDate.set(route.routeDate, list);
@@ -424,9 +571,10 @@ async function esm2Sources(
         : '',
       itemId: null,
       shiftOrder: null,
-      // Состава у листа не бывает: неделю работы задаёт заявка-основание, а талонов заказчиков на
-      // площадке нет. Нет и «откуда/куда» — машина всю неделю там же, куда её привезли.
-      requests: [],
+      // Порядка объезда у листа не бывает: неделю работы задаёт заявка-основание, точек ей не
+      // заводится, и заезд у машины один — на площадку, куда её привезли. Нет по той же причине и
+      // «откуда/куда»: всю неделю она там же.
+      points: [],
       moveFrom: '',
       moveTo: '',
       // Комментарий пишут рейсу: у листа графы для слов диспетчера нет.

@@ -3,7 +3,9 @@ import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { moscowDateKeyOf } from '@technic/contracts';
+import { runSeed, snilsOf } from './db-identity';
 import { applyMigrations } from '../src/db/migration-journal';
+import { issueRouteWaybill } from './waybill-issue-helper';
 // Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
 // окружение, — конфиг проверяет его при импорте и без него падает.
 import type { buildApp } from '../src/app';
@@ -30,7 +32,12 @@ import type { db as AppDb } from '../src/db/client';
 const DB_URL = process.env.TEST_DATABASE_URL;
 
 /** Тестовый водитель: СНИЛС из одинаковых цифр с верной контрольной суммой, серия «00 00». */
-const DRIVER_SNILS = '11111111145';
+// Свой на прогон, а не общая константа: пять файлов заводили водителя по одному номеру, и
+// первый добежавший решал, с какими документами тот живёт до конца прогона (см. `db-identity`).
+// Табельный номер уникален в паре с работодателем (`person_employments_personnel_no_unique`),
+// и файлы делили его так же, как делили СНИЛС. Тот же хвост прогона разводит и его.
+const PERSONNEL_RUN = Date.now().toString(36).slice(-5);
+const DRIVER_SNILS = snilsOf(runSeed('waybill-blank'));
 /**
  * Реквизиты его водительского удостоверения: должность «Водитель» требует именно ВУ (ADR 0095), и
  * снимок листа обязан заполнить графу из него. Значения — выдуманные, как и СНИЛС.
@@ -155,7 +162,7 @@ async function seed(): Promise<{ personId: string }> {
     await tx.insert(schema.personEmployments).values({
       personId,
       employmentType: 'staff',
-      personnelNo: 'Т-101',
+      personnelNo: `Т-101-${PERSONNEL_RUN}`,
       jobTitle: 'Водитель',
       startedOn: '2024-01-15',
     });
@@ -258,13 +265,17 @@ describe.skipIf(!DB_URL)('пустой путевой лист по рейсу �
   it('администратор выписывает лист по пустому рейсу — без единого талона', async () => {
     const route = await emptyRoute();
 
-    const issued = await ctx.app.inject({
-      method: 'POST',
-      url: `/api/v1/vehicle-routes/${route.id}/waybill`,
+    /*
+     * Выписка идёт через помощника: пустой маршрут поднимает предупреждение `blank_task` (Р21), и
+     * подтверждение здесь — обвязка, а не предмет. Что рукопожатие вообще спрашивается и что на
+     * отказе номер не расходуется, проверяет `waybill-ack.db.test.ts`; здесь смотрят на бумагу.
+     */
+    const { res: issued } = await issueRouteWaybill({
+      app: ctx.app,
       headers: ctx.admin,
+      routeId: route.id,
       payload: { version: route.version },
     });
-    expect(issued.statusCode, issued.body).toBe(200);
     const waybill = issued.json().waybill;
     expect(waybill.status).toBe('issued');
 

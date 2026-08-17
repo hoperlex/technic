@@ -1,9 +1,14 @@
 import { z } from 'zod';
+import type { VehicleRoutePointDto } from './route-points';
 import { baseListQuery, dateOnlySchema, formatPhone, uuidSchema } from './common';
 import type { RequestStatus, VehicleRequestType } from './enums';
 import { requestStatusLabels } from './enums';
 import type { DriverDocumentGap } from './persons';
 import type { VehicleOwnership, VehicleSpecValues } from './vehicles';
+// Только тип: `waybill-task-rows` импортирует отсюда значения (`BLANK_WAYBILL_CONFIRM`,
+// `routeRequestCapacity`), и обратная ссылка значением замкнула бы модули в цикл. Тип стирается
+// компиляцией, поэтому во время выполнения этого ребра не существует вовсе.
+import type { WaybillWarning } from './waybill-task-rows';
 import type { WaybillFormCode, WaybillRequirement, WaybillStatus } from './waybills';
 import { correctionFloorDateKey, RENTAL_WAYBILL_REASON } from './waybills';
 import { WAYBILL_CORRECTION_DAYS } from './time';
@@ -245,6 +250,18 @@ export interface VehicleRouteDto {
   comment: string;
   /** Состав грузового рейса; у перегона пуст — талонов заказчиков там не бывает. */
   requests: VehicleRouteRequestDto[];
+  /**
+   * Порядок объезда: точки со своими ролями (план `docs/route-trips-plan.md`, Р4, §6).
+   *
+   * Полем DTO, а не пересечением типа в ручке, как это было заведено «на время»: точки — не
+   * приложение к рейсу, а то, чем он теперь и является. Печать задания идёт по их позициям (Р11),
+   * карточка считает по ним подсказки и блокеры, а состав отвечает лишь на «чьи заявки в рейсе».
+   * Пока точек не было в контракте, сервер и портал склеивали их пересечением каждый у себя — и
+   * тест, собравший рейс честным `VehicleRouteDto`, точек не имел вовсе.
+   *
+   * У перегона список пуст: состава у него нет, задание дают колонки самого рейса (миграция 0082).
+   */
+  points: VehicleRoutePointDto[];
   /** Заявка-основание перегона; у грузового рейса `null` — его основание это состав. */
   sourceRequest: VehicleRouteSourceRequestDto | null;
   /** Задание перегона: откуда и куда едет техника. У грузового рейса пусто. */
@@ -1053,11 +1070,64 @@ export type RouteOrderBody = z.input<typeof routeOrderSchema>;
  * требовать под неё ключ и объяснение значило бы объявить коррекцией всю работу диспетчера.
  * Спрашивает их сервер ровно тогда, когда дата рейса уже прошла.
  */
+/**
+ * Код отказа «предупреждения не подтверждены» (Р21). Отдельным кодом, а не текстом: по нему портал
+ * открывает окно подтверждения со свежим списком, а `version_conflict` он показывает как «откройте
+ * заново» — два разных исхода на один код различить было бы нечем.
+ */
+export const WAYBILL_ACK_REQUIRED_CODE = 'waybill_ack_required';
+
+/**
+ * Тело отказа `waybill_ack_required` (Р21): то, из чего портал собирает окно подтверждения.
+ *
+ * Отдельным полем `details`, а не текстом сообщения: список читает человек, а отпечаток
+ * возвращается серверу нетронутым. `fields` для этого не годится — там `Record<string, string>` под
+ * пометки полей формы, и массив предупреждений в него не кладётся.
+ *
+ * `routeId` назван явно ради переноса между рейсами (Р21а): подтверждаются **два** листа, и первый
+ * же неподтверждённый останавливает операцию — без имени рейса окно не сказало бы, о чьей бумаге
+ * речь.
+ */
+export interface WaybillAckRequiredDetails {
+  routeId: string;
+  /** «Р-12» — им окно называет рейс человеку. */
+  routeNumber: string;
+  /** `sha256` от каноникализованных фактов: его же портал возвращает в `acknowledge`. */
+  fingerprint: string;
+  warnings: WaybillWarning[];
+}
+
+/**
+ * Рукопожатие выписки (Р21): отпечаток набора предупреждений, который человек видел и подтвердил.
+ *
+ * Отпечаток, а не «да, согласен»: между показом окна и нажатием кнопки набор меняется — водителю
+ * внесли СНИЛС, диспетчер поправил адрес точки, соседняя вкладка добавила заявку с другим объектом
+ * затрат, — и подтверждение обязано относиться к тому положению дел, которое человек прочитал.
+ * Считает его сервер (`sha256` от `canonicalWarningPayload`), браузер только возвращает обратно.
+ *
+ * Одна схема на все четыре пути выпуска номера (Р21а): у обычной выписки, задней выписки, коррекции
+ * рейса и переноса заявки между рейсами подтверждается одно и то же — набор предупреждений рейса, —
+ * и разные формы поля заставили бы каждый путь помнить свою.
+ */
+export const waybillAcknowledgeSchema = z
+  .object({ fingerprint: z.string().trim().min(1).max(128) })
+  .strict();
+export type WaybillAcknowledgeInput = z.infer<typeof waybillAcknowledgeSchema>;
+
 export const issueRouteWaybillSchema = z
   .object({
     version: versionSchema,
     reason: z.string().trim().max(2000).optional(),
     operationId: uuidSchema.optional(),
+    /**
+     * Подтверждение предупреждений (Р21) — **в дополнение** к полям коррекции, а не вместо них:
+     * задняя выписка объясняется причиной и опознаётся ключом операции, и подтверждает при этом ту
+     * же бумагу, что и дневная.
+     *
+     * Необязательно, потому что пустой набор рукопожатия не требует вовсе: лист без единого
+     * предупреждения выписывается одним нажатием, как и до Р21.
+     */
+    acknowledge: waybillAcknowledgeSchema.optional(),
   })
   .strict();
 export type IssueRouteWaybillInput = z.infer<typeof issueRouteWaybillSchema>;
@@ -1108,6 +1178,15 @@ export const correctRouteSchema = z
     trip: routeTripFieldsSchema.optional(),
     requestOrder: z.array(uuidSchema).min(1).max(MAX_ROUTE_REQUESTS).optional(),
     reason: correctionReasonSchema,
+    /**
+     * Подтверждение предупреждений нового листа (Р21а). Коррекция кончается настоящим бланком, и
+     * рукопожатие у неё то же самое: пропусти его здесь — и лист, рождённый коррекцией, обошёл бы
+     * проверку, которую проходит обычная выписка.
+     *
+     * Отпечаток считается по **будущему** состоянию рейса — после смены машины, водителя и порядка
+     * талонов: подтверждают то, что напечатается, а не то, что было до операции.
+     */
+    acknowledge: waybillAcknowledgeSchema.optional(),
   })
   .strict()
   .refine((v) => !v.requestOrder || new Set(v.requestOrder).size === v.requestOrder.length, {
@@ -1155,6 +1234,22 @@ export const transferCorrectionSchema = z
     /** Талон в приёмнике, 1..7; не передан — заявка встаёт последней. */
     position: z.number().int().min(1).max(MAX_ROUTE_REQUESTS).optional(),
     reason: correctionReasonSchema,
+    /**
+     * Подтверждения обоих листов (Р21а). Двумя полями, а не одним: листов здесь два, предупреждения
+     * у них разные — заявка уехала из одного задания в другое, — и отпечаток считается по каждому
+     * рейсу отдельно. Один общий отпечаток означал бы, что подтверждение приёмника закрывает и
+     * бумагу источника, которой человек не видел.
+     *
+     * Обе половины необязательны, потому что пустой набор рукопожатия не требует: у рейса без
+     * предупреждений подтверждать нечего, и чаще всего такова хотя бы одна из сторон.
+     */
+    acknowledge: z
+      .object({
+        target: waybillAcknowledgeSchema.optional(),
+        source: waybillAcknowledgeSchema.optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 export type TransferCorrectionInput = z.infer<typeof transferCorrectionSchema>;

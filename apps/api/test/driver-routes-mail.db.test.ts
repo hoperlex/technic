@@ -204,6 +204,15 @@ async function makeRoute(opts: {
         position: index + 1,
       })),
     );
+    /*
+     * Раскладка точками — часть состояния рейса, а не отдельное действие. Письмо водителю
+     * собирается из **точек** тем же слоем, что и кабинет (§8 плана), и строка состава без них
+     * дала бы письмо без единого адреса: заявка в рейсе есть, а ехать некуда.
+     */
+    const { placeRequestTrips } = await import('../src/services/route-points');
+    for (const requestId of opts.requestIds) {
+      await placeRequestTrips(ctx.db, route!.id, requestId);
+    }
   }
   return { id: route!.id, displayNumber: formatVehicleRouteNumber(route!.num) };
 }
@@ -390,7 +399,9 @@ describe.skipIf(!DB_URL)('письмо-задание водителю (жива
     expect(text).toContain('г Москва, ул Погрузочная, д 1');
     expect(text).toContain('г Москва, ул Разгрузочная, д 2');
     expect(text).toContain('08:30');
-    expect(text).toMatch(/Груз: 10(\.000)? м³/u);
+    // Груз назван рядом со своей ролью на остановке, а не отдельной строкой заявки: «Грузим:
+    // ТС-40/1 · заказчик · 12 м³». Так письмо читается в порядке движения — приехал, сделал (§8).
+    expect(text).toMatch(/Грузим:.*10(\.000)? м³/u);
     // Дата — в теме: письмо ищут в ящике по ней, а не по номеру рейса.
     expect(mail!.subject).toContain('2 марта');
     expect(mail!.content.title).toContain(ctx.driverName);

@@ -1,7 +1,8 @@
 import { and, asc, eq, gte, isNull, lte } from 'drizzle-orm';
 import {
+  type DriverAssignmentAction,
   type DriverAssignmentContact,
-  type DriverAssignmentRequest,
+  type DriverAssignmentPoint,
   formatPhone,
 } from '@technic/contracts';
 import { db } from '../../db/client';
@@ -23,31 +24,52 @@ import type { MailBlock, MailContent } from '../mail-templates';
  * которого читает кабинет водителя: увидеть в письме и в кабинете разные задания на один день
  * человек не должен. Здесь остаётся только представление: блоки, порядок и слова письма. Недельные
  * листы ЭСМ-2 в него не идут — рассылка ходит к водителям рейсов, а не к машинистам.
+ *
+ * С этапа 8 плана `docs/route-trips-plan.md` рейс печатается **порядком объезда**: блок на
+ * остановку, а не на заявку. Порядок берётся готовым — позициями точек, — и своего у письма нет:
+ * разойдись оно с кабинетом, водитель поехал бы по одному маршруту, а сдавал по другому.
  */
 
 /**
- * Контакт с указанием, где этого человека ждать. Без метки строки «Иванов И., +7…» и
- * «Петров П., +7…» выглядят одинаково, и кому из них звонить с погрузки, водитель угадывает по
- * порядку строк.
+ * Кто встречает машину на остановке. Метки роли у контакта больше нет и быть не может: точка
+ * дедуплицирует ответственных по телефону (Р9), и один человек законно отвечает и за погрузку
+ * чужой ездки, и за выгрузку своей. Что здесь делают, сказано строкой выше — ролями точки, а
+ * встречают приехавшего эти люди независимо от того, чью ездку он грузит.
  */
-function contactLines(contacts: DriverAssignmentContact[]): string[] {
-  return contacts.map((c) => {
-    const who = [c.name, c.phone ? formatPhone(c.phone) : ''].filter(Boolean).join(', ');
-    return `${c.label}: ${who}`;
-  });
+function contactLine(contacts: DriverAssignmentContact[]): string {
+  return contacts
+    .map((c) => [c.name, c.phone ? formatPhone(c.phone) : ''].filter(Boolean).join(', '))
+    .join(' · ');
 }
 
-function requestBlock(request: DriverAssignmentRequest): MailBlock {
-  const lines = [
-    `${request.displayNumber} · ${request.customerName}`,
-    `Погрузка: ${request.loadingLocation}${request.time ? `, ${request.time}` : ''}`,
-    `Выгрузка: ${request.unloadingLocation}`,
-  ];
-  if (request.cargoLabel) lines.push(`Груз: ${request.cargoLabel}`);
-  lines.push(...contactLines(request.contacts));
-  // Комментарий заявки печатается целиком: в бланке он режется по ширине графы, а в письме
-  // резать его нечем и незачем — «звонить за час до выезда» важнее аккуратной колонки.
-  if (request.comment) lines.push(`Примечание: ${request.comment}`);
+/** «Грузим: ТС-40/1 · ООО „Ромашка“ · 12 м³» — что на этой остановке делают с этой строкой. */
+function actionLine(action: DriverAssignmentAction): string {
+  const what = [action.displayNumber, action.customerName, action.cargoLabel]
+    .filter(Boolean)
+    .join(' · ');
+  return `${action.roleLabel}: ${what}`;
+}
+
+/**
+ * Остановка порядка объезда: куда приехать, во сколько, что здесь делать и кому звонить.
+ *
+ * Комментарии печатаются целиком — и строки, и точки. В бланке комментарий отбрасывается первым
+ * при нехватке места (Р11а), и письмо есть ровно то место, где он обязан быть: «звонить за час до
+ * выезда» важнее аккуратной колонки, а ширины колонки здесь и нет.
+ *
+ * Комментарий строки стоит **рядом со своей ролью**, а не общим списком под точкой: на совмещённой
+ * остановке две ездки, и «песок, звонить за час» относится к одной из них. Своей строкой под своим
+ * действием он адресован; сваленный в кучу — угадывается.
+ */
+function pointBlock(point: DriverAssignmentPoint): MailBlock {
+  const head = [`Точка ${point.position}`, point.arrivalTime, point.location].filter(Boolean);
+  const lines = [head.join(' · ')];
+  for (const action of point.actions) {
+    lines.push(actionLine(action));
+    if (action.comment) lines.push(`Примечание: ${action.comment}`);
+  }
+  if (point.contacts.length > 0) lines.push(`Встречает: ${contactLine(point.contacts)}`);
+  if (point.comment) lines.push(`На точке: ${point.comment}`);
   return { kind: 'lines', lines };
 }
 
@@ -55,6 +77,21 @@ function relocationBlocks(entry: DriverRouteEntry): MailBlock[] {
   const lines = [`Откуда: ${entry.moveFrom}`, `Куда: ${entry.moveTo}`];
   if (entry.basisLabel) lines.push(`Основание: ${entry.basisLabel}`);
   return [{ kind: 'lines', lines }];
+}
+
+/**
+ * Само задание: порядок объезда, а у перегона — «откуда/куда». Третьего исхода быть не должно, но
+ * он бывает: заявки в рейсе есть, а точек им ещё не разложили. Письмо уходит вечером накануне,
+ * когда диспетчер маршрут может и не дособрать, и промолчать здесь — худший из ходов: рейс с
+ * машиной и без единого адреса водитель прочтёт как «адреса не прислали».
+ *
+ * Кабинету этой оговорки не нужно, и это не расхождение каналов: он показывает только рейсы с
+ * выписанным листом (Р5), а лист по неразложенным строкам не выписывается вовсе (`rows_unplaced`).
+ */
+function taskBlocks(entry: DriverRouteEntry): MailBlock[] {
+  if (entry.relocation) return relocationBlocks(entry);
+  if (entry.points.length > 0) return entry.points.map(pointBlock);
+  return [{ kind: 'paragraph', text: 'Порядок объезда ещё не собран — уточните у диспетчера.' }];
 }
 
 function routeBlocks(entry: DriverRouteEntry): MailBlock[] {
@@ -66,9 +103,9 @@ function routeBlocks(entry: DriverRouteEntry): MailBlock[] {
     { kind: 'heading', text: `Рейс ${entry.sourceLabel} · ${entry.purposeLabel}` },
     { kind: 'lines', lines: head },
   ];
-  blocks.push(...(entry.relocation ? relocationBlocks(entry) : entry.requests.map(requestBlock)));
+  blocks.push(...taskBlocks(entry));
   // Комментарий рейса — это то, что диспетчер написал водителю, а не заказчику: он идёт последним,
-  // после состава, потому что относится ко всему рейсу.
+  // после задания, потому что относится ко всему рейсу.
   if (entry.comment) blocks.push({ kind: 'paragraph', text: `Комментарий: ${entry.comment}` });
   return blocks;
 }

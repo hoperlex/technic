@@ -4,6 +4,7 @@ import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { moscowDateKeyOf, shiftDateKey } from '@technic/contracts';
 import { applyMigrations } from '../src/db/migration-journal';
+import { issueRouteWaybill, transferRequestWithAck } from './waybill-issue-helper';
 // Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
 // окружение, — конфиг проверяет его при импорте и без него падает.
 import type { buildApp } from '../src/app';
@@ -349,14 +350,19 @@ async function routeOf(routeId: string) {
   };
 }
 
+/**
+ * Действующий лист по рейсу — то состояние, в котором перенос застаёт прошедший день.
+ *
+ * Через помощника: рукопожатие (Р21) здесь обвязка — у тестового водителя нет документов, и
+ * `driver_documents` поднимается на каждой выписке файла. Предмет проверки — сам перенос.
+ */
 async function issueWaybill(routeId: string): Promise<void> {
-  const res = await ctx.app.inject({
-    method: 'POST',
-    url: `/api/v1/vehicle-routes/${routeId}/waybill`,
+  await issueRouteWaybill({
+    app: ctx.app,
     headers: ctx.admin,
+    routeId,
     payload: { version: (await routeOf(routeId)).version },
   });
-  expect(res.statusCode, res.body).toBe(200);
 }
 
 /**
@@ -563,14 +569,23 @@ describe.skipIf(!DB_URL)('перенос заявки между рейсами 
 
     const operationId = uuid();
     const reason = 'Заявку оформили средой, а ехала она вторничным рейсом';
-    const res = await transfer(ctx.dispatcher, targetId, {
-      operationId,
-      version: (await routeOf(targetId)).version,
-      source: { routeId: sourceId, version: (await routeOf(sourceId)).version },
-      requestId: moving.id,
-      reason,
+    /*
+     * Через помощника: листов здесь два, подтверждений тоже два (Р21а) — и обвязка вокруг них была
+     * бы длиннее самой проверки, предмет которой ниже: два списанных номера, два выписанных и
+     * переехавшее назначение.
+     */
+    const { res } = await transferRequestWithAck({
+      app: ctx.app,
+      headers: ctx.dispatcher,
+      targetRouteId: targetId,
+      payload: {
+        operationId,
+        version: (await routeOf(targetId)).version,
+        source: { routeId: sourceId, version: (await routeOf(sourceId)).version },
+        requestId: moving.id,
+        reason,
+      },
     });
-    expect(res.statusCode, res.body).toBe(200);
 
     // Ответ несёт обе стороны: операция изменила два рейса, и показать один значило бы оставить
     // второй с прежним номером листа на экране.
@@ -661,14 +676,20 @@ describe.skipIf(!DB_URL)('перенос заявки между рейсами 
     await movePast(arrived.routeId, 1);
 
     const operationId = uuid();
-    const res = await transfer(ctx.admin, arrived.routeId, {
-      operationId,
-      version: (await routeOf(arrived.routeId)).version,
-      source: { routeId: moving.routeId, version: (await routeOf(moving.routeId)).version },
-      requestId: moving.id,
-      reason: 'Ехала не своим днём',
+    // Подтверждение здесь одно: опустевшему источнику лист не выписывается вовсе (Р22) — и
+    // помощник кладёт отпечаток в ту половину, которую назвал сам сервер.
+    const { res } = await transferRequestWithAck({
+      app: ctx.app,
+      headers: ctx.admin,
+      targetRouteId: arrived.routeId,
+      payload: {
+        operationId,
+        version: (await routeOf(arrived.routeId)).version,
+        source: { routeId: moving.routeId, version: (await routeOf(moving.routeId)).version },
+        requestId: moving.id,
+        reason: 'Ехала не своим днём',
+      },
     });
-    expect(res.statusCode, res.body).toBe(200);
 
     // У источника один лист — списанный. Перевыписка пустого бланка сожгла бы номер на бумагу с
     // пустым заданием, а сам рейс остаётся: на него ссылается аннулированный лист.
@@ -781,9 +802,18 @@ describe.skipIf(!DB_URL)('перенос заявки между рейсами 
 
     const operationId = uuid();
     const reason = 'Бумагу выписали в тот день на месте, в портал вносим сегодня';
-    const body = { reason, operationId };
-    const ok = await issue(ctx.dispatcher, body);
-    expect(ok.statusCode, ok.body).toBe(200);
+    /*
+     * Задняя выписка подтверждает ту же бумагу, что и дневная (Р21), и помощник проходит за неё
+     * обе половины разговора. Тело, каким команда **прошла**, забирается наружу: повтор ниже идёт
+     * ровно им — подтверждение лежит в том же теле, и отпечаток идемпотентности (Р31) считается со
+     * всего тела целиком.
+     */
+    const { payload: accepted } = await issueRouteWaybill({
+      app: ctx.app,
+      headers: ctx.dispatcher,
+      routeId: request.routeId,
+      payload: { version, reason, operationId },
+    });
 
     const sheets = await waybillsOf(request.routeId);
     expect(sheets).toHaveLength(1);
@@ -800,7 +830,7 @@ describe.skipIf(!DB_URL)('перенос заявки между рейсами 
      * Повтор той же командой целиком — вместе с версией рейса: отпечаток считается с
      * нормализованного тела (Р31). Номер не тратится, второй записи операции нет.
      */
-    const repeat = await issue(ctx.dispatcher, body);
+    const repeat = await issue(ctx.dispatcher, accepted);
     expect(repeat.statusCode, repeat.body).toBe(200);
     expect(await waybillsOf(request.routeId)).toHaveLength(1);
     expect(await correctionsOf(operationId)).toHaveLength(1);
