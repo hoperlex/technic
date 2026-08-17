@@ -51,6 +51,7 @@ function vehicleType(over: Partial<VehicleTypeDto> = {}): VehicleTypeDto {
     sortOrder: 20,
     waybillFormCode: '4p',
     isLinear: false,
+    maintenanceBasis: 'none',
     frozenRequests: 0,
     specCount: 0,
     categoryCount: 0,
@@ -104,6 +105,7 @@ function checkboxByLabel(text: string): HTMLInputElement | undefined {
 
 const passengerCheckbox = () => checkboxByLabel('Легковой транспорт');
 const linearCheckbox = () => checkboxByLabel('Линейная техника');
+const maintenanceCheckbox = () => checkboxByLabel('ТО по пробегу');
 
 async function openCreateForm(): Promise<void> {
   const add = await waitFor(() => {
@@ -298,5 +300,120 @@ describe('линейная техника в справочнике типов',
     const body = http.lastCall('PATCH /vehicle-types/:id')!.body as Record<string, unknown>;
     expect(body).not.toHaveProperty('isLinear');
     expect(body).toMatchObject({ name: 'Экскаваторы' });
+  });
+});
+
+/**
+ * Разметка ТО в справочнике типов (план «Показания техники», Р13; миграция 0147).
+ *
+ * Колонка `vehicle_types.maintenance_basis` появилась вместе с расчётом обслуживания, но задать её
+ * было неоткуда: ни в DTO, ни в схемах, ни в форме. У всех типов навсегда стояло `none`, а значит у
+ * каждой машины — «ТО по пробегу не ведётся»: журнал, подсветка и сводка механика считались по
+ * признаку, которого никто не мог включить.
+ *
+ * Поэтому вопрос стоит галочкой и рядом с линейностью: отвечает на него тот же человек и в тот же
+ * заход, а пояснение обязано называть последствие снятой — умолчание справочника «не ведётся», и
+ * пустая колонка ТО в гараже иначе читается как поломка портала.
+ */
+describe('разметка ТО в справочнике типов', () => {
+  it('новый тип со снятой галочкой уходит с basis = none, а не без признака', async () => {
+    const http = mockDirectory([vehicleType()]);
+    renderWithUser(<VehicleTypesTab />);
+    await openCreateForm();
+
+    await selectOption('Вид', 'Спецтехника');
+    await waitFor(() => expect(maintenanceCheckbox()).toBeTruthy());
+    expect(maintenanceCheckbox()!.checked).toBe(false);
+    // Последствие снятой галочки названо прямо в форме: иначе про неразмеченный тип узнают из
+    // пустой колонки гаража, которая молчит.
+    expect(screen.getByText(/обслуживание техники этого типа портал не считает/)).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText('Код'), { target: { value: 'trailers' } });
+    fireEvent.change(screen.getByLabelText('Наименование типа'), { target: { value: 'Прицепы' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
+
+    await waitFor(() => expect(http.countOf('POST /vehicle-types')).toBe(1));
+    expect(http.lastCall('POST /vehicle-types')!.body).toMatchObject({ maintenanceBasis: 'none' });
+  });
+
+  it('отмеченная галочка заводит тип с ТО по пробегу', async () => {
+    const http = mockDirectory([vehicleType()]);
+    renderWithUser(<VehicleTypesTab />);
+    await openCreateForm();
+
+    await selectOption('Вид', 'Спецтехника');
+    await waitFor(() => expect(maintenanceCheckbox()).toBeTruthy());
+    fireEvent.click(maintenanceCheckbox()!);
+
+    fireEvent.change(screen.getByLabelText('Код'), { target: { value: 'excavators' } });
+    fireEvent.change(screen.getByLabelText('Наименование типа'), {
+      target: { value: 'Экскаваторы' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
+
+    await waitFor(() => expect(http.countOf('POST /vehicle-types')).toBe(1));
+    expect(http.lastCall('POST /vehicle-types')!.body).toMatchObject({
+      code: 'excavators',
+      maintenanceBasis: 'odometer',
+    });
+  });
+
+  it('размеченный тип помечен в списке и открывается в правке отмеченным', async () => {
+    const tracked = vehicleType({
+      id: 'vt-excavators',
+      code: 'excavators',
+      name: 'Экскаваторы',
+      maintenanceBasis: 'odometer',
+    });
+    const http = mockDirectory([tracked]);
+    renderWithUser(<VehicleTypesTab />);
+
+    // Колонка списка: без неё «какие типы размечены» собирается открыванием карточек по одной.
+    await screen.findByText('Экскаваторы');
+    await waitFor(() => expect(screen.getAllByText('по пробегу').length).toBeGreaterThan(0));
+
+    const edit = [...document.querySelectorAll('tbody button')].find((b) =>
+      b.getAttribute('title')?.startsWith('Редактировать тип'),
+    );
+    fireEvent.click(edit!);
+
+    await waitFor(() => expect(maintenanceCheckbox()).toBeTruthy());
+    expect(maintenanceCheckbox()!.checked).toBe(true);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
+    await waitFor(() => expect(http.countOf('PATCH /vehicle-types/:id')).toBe(1));
+    // Правка соседнего поля признак не роняет: форма шлёт его тем, что стоит в справочнике.
+    expect(http.lastCall('PATCH /vehicle-types/:id')!.body).toMatchObject({
+      maintenanceBasis: 'odometer',
+    });
+  });
+
+  it('снятая в правке галочка выключает ТО: своего протокола у признака нет', async () => {
+    const tracked = vehicleType({
+      id: 'vt-excavators',
+      code: 'excavators',
+      name: 'Экскаваторы',
+      maintenanceBasis: 'odometer',
+    });
+    const http = mockDirectory([tracked]);
+    renderWithUser(<VehicleTypesTab />);
+
+    await screen.findByText('Экскаваторы');
+    const edit = [...document.querySelectorAll('tbody button')].find((b) =>
+      b.getAttribute('title')?.startsWith('Редактировать тип'),
+    );
+    fireEvent.click(edit!);
+
+    await waitFor(() => expect(maintenanceCheckbox()).toBeTruthy());
+    fireEvent.click(maintenanceCheckbox()!);
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
+
+    // В отличие от линейности, выключение идёт обычным `PATCH`: оно ничего не переписывает у
+    // заявок в работе — только перестаёт считать, и записи ТО остаются на месте.
+    await waitFor(() => expect(http.countOf('PATCH /vehicle-types/:id')).toBe(1));
+    expect(http.lastCall('PATCH /vehicle-types/:id')!.body).toMatchObject({
+      maintenanceBasis: 'none',
+    });
+    expect(http.countOf('GET /vehicle-types/:id/linear-switch-preview')).toBe(0);
   });
 });

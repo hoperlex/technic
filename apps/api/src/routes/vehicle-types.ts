@@ -15,6 +15,7 @@ import {
   type VehicleTypeLinearSwitchPreviewDto,
   type VehicleTypeLinearSwitchRequestDto,
   type VehicleTypeLinearSwitchResultDto,
+  type MaintenanceBasis,
   type WaybillFormCode,
 } from '@technic/contracts';
 import { db } from '../db/client';
@@ -81,6 +82,7 @@ const dtoColumns = {
   sortOrder: vehicleTypes.sortOrder,
   waybillFormCode: vehicleTypes.waybillFormCode,
   isLinear: vehicleTypes.isLinear,
+  maintenanceBasis: vehicleTypes.maintenanceBasis,
   frozenRequests,
   specCount,
   categoryCount,
@@ -100,6 +102,7 @@ type DtoRow = {
   sortOrder: number;
   waybillFormCode: WaybillFormCode;
   isLinear: boolean;
+  maintenanceBasis: MaintenanceBasis;
   frozenRequests: number;
   specCount: number;
   categoryCount: number;
@@ -120,6 +123,7 @@ function toDto(r: DtoRow): VehicleTypeDto {
     sortOrder: r.sortOrder,
     waybillFormCode: r.waybillFormCode,
     isLinear: r.isLinear,
+    maintenanceBasis: r.maintenanceBasis,
     frozenRequests: Number(r.frozenRequests),
     specCount: Number(r.specCount),
     categoryCount: Number(r.categoryCount),
@@ -329,6 +333,7 @@ export default async function vehicleTypesRoutes(app: FastifyInstance): Promise<
           sortOrder: body.sortOrder,
           waybillFormCode: body.waybillFormCode,
           isLinear: body.isLinear,
+          maintenanceBasis: body.maintenanceBasis,
         })
         .returning({ id: vehicleTypes.id });
       const createdId = created!.id;
@@ -343,6 +348,7 @@ export default async function vehicleTypesRoutes(app: FastifyInstance): Promise<
           isActive: body.isActive,
           waybillFormCode: body.waybillFormCode,
           isLinear: body.isLinear,
+          maintenanceBasis: body.maintenanceBasis,
         },
       });
       reply.code(201);
@@ -401,13 +407,24 @@ export default async function vehicleTypesRoutes(app: FastifyInstance): Promise<
        */
       const formChanged =
         body.waybillFormCode !== undefined && body.waybillFormCode !== row.waybillFormCode;
+      /*
+       * Разметка ТО — тоже своё действие, и по той же причине, что бланк: этим полем включается и
+       * выключается целый расчёт, а вопрос «почему у экскаваторов пропало обслуживание» обязан
+       * иметь ответ в журнале, а не в поддержке. Ниже бланка в развилке она стоит не по важности,
+       * а по редкости: обе правки в одном запросе — это форма справочника, отправленная целиком,
+       * и назвать событие можно только одним словом.
+       */
+      const basisChanged =
+        body.maintenanceBasis !== undefined && body.maintenanceBasis !== row.maintenanceBasis;
       const action = activeChanged
         ? body.isActive
           ? 'vehicle_type.activate'
           : 'vehicle_type.deactivate'
         : formChanged
           ? 'vehicle_type.waybill_form'
-          : 'vehicle_type.update';
+          : basisChanged
+            ? 'vehicle_type.maintenance_basis'
+            : 'vehicle_type.update';
       await writeAudit({
         actorUserId: actor,
         action,
@@ -422,6 +439,8 @@ export default async function vehicleTypesRoutes(app: FastifyInstance): Promise<
           newActive: body.isActive ?? row.isActive,
           oldWaybillFormCode: row.waybillFormCode,
           newWaybillFormCode: body.waybillFormCode ?? row.waybillFormCode,
+          oldMaintenanceBasis: row.maintenanceBasis,
+          newMaintenanceBasis: body.maintenanceBasis ?? row.maintenanceBasis,
           // Пары «было → стало» по линейности здесь нет: этой ручкой признак не меняется, и
           // запись «было false, стало false» отвечала бы на вопрос, которого никто не задавал.
           isLinear: row.isLinear,

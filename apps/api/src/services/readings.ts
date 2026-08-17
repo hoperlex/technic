@@ -4,11 +4,13 @@ import {
   discrepancyKindLabels,
   formatVehicleRouteNumber,
   moscowDateKeyOf,
+  REPORT_ACCEPT_BLOCKED_CODE,
   STAFF_SUBMIT_PAST_DAYS,
   vehicleLabel,
   waybillDisplayNumber,
   type DiscrepancyKind,
   type DiscrepancyResolveInput,
+  type DiscrepancyTargetDto,
   type DriverAssignmentEntry,
   type DriverReportDto,
   type ReadingInput,
@@ -198,6 +200,18 @@ function sourceCoversDate(source: LiveSource, date: string): boolean {
   if (source.date !== null) return source.date === date;
   if (source.periodFrom === null || source.periodTo === null) return false;
   return source.periodFrom <= date && date <= source.periodTo;
+}
+
+/**
+ * День, в который строка уедет вслед за источником: у рейса это его дата, а у недельного листа
+ * своего дня нет вовсе — он задан периодом, и строка остаётся в дне отчёта.
+ *
+ * Правило написано один раз и обслуживает и сам перенос (`rebaseItem`), и его предсказание в
+ * расхождении: разойдись они, и портал называл бы человеку один день, а сервер переносил бы в
+ * другой — молча и без единой красной проверки.
+ */
+function rebaseDateOf(source: LiveSource, itemDate: string): string {
+  return source.date ?? itemDate;
 }
 
 async function loadLiveSources(
@@ -985,7 +999,12 @@ export async function acceptReport(
     // водитель успевает дописать строку, а диспетчер — переназначить рейс.
     const state = await loadReportState(tx, report, entries);
     if (state.blockers.length > 0) {
-      throw err.conflict(`Отчёт принять нельзя: ${state.blockers.join('; ')}`);
+      // Свой код, а не общий `version_conflict`: у двух отказов приёма разные исходы — версию
+      // лечит перечитывание реестра, невыполненное условие требует разбора дня, — и различать их
+      // по приставке сообщения значило бы держать разбор ответа на формулировке фразы.
+      throw err.conflict(`Отчёт принять нельзя: ${state.blockers.join('; ')}`, {
+        code: REPORT_ACCEPT_BLOCKED_CODE,
+      });
     }
 
     const change = await applyReportChange(
@@ -1089,7 +1108,10 @@ async function computeDiscrepancies(
   dayRefs: readonly SourceRef[],
   live: Map<string, LiveSource>,
 ): Promise<ReportDiscrepancyDto[]> {
-  const found: Omit<ReportDiscrepancyDto, 'resolved' | 'resolvedReason'>[] = [];
+  const found: (Omit<ReportDiscrepancyDto, 'resolved' | 'resolvedReason' | 'target'> & {
+    /** Куда уедет строка при переносе; у видов, которым переносить нечего, — `null`. */
+    targetRef: TargetRef | null;
+  })[] = [];
 
   for (const item of items) {
     const ref = itemRef(item);
@@ -1105,9 +1127,17 @@ async function computeDiscrepancies(
           source ? 'cancelled' : 'deleted',
         ]),
         message: `${label}: ${discrepancyKindLabels.source_state}`,
+        // Источника нет либо он аннулирован: приводить снимок не к чему, и цели у переноса нет.
+        targetRef: null,
       });
       continue;
     }
+    // Цель у всех трёх переносимых видов одна и та же — та, которую выберет сам `rebaseItem`:
+    // работник и день берутся у живого источника. У источника без работника переносить некуда.
+    const targetRef: TargetRef | null =
+      source.personId === null
+        ? null
+        : { personId: source.personId, date: rebaseDateOf(source, item.reportDate) };
     if (source.personId !== report.personId) {
       found.push({
         kind: 'driver',
@@ -1119,6 +1149,7 @@ async function computeDiscrepancies(
           report.personId,
         ]),
         message: `${label}: ${discrepancyKindLabels.driver}`,
+        targetRef,
       });
     }
     if (source.vehicleId !== item.vehicleId) {
@@ -1132,6 +1163,7 @@ async function computeDiscrepancies(
           item.vehicleId,
         ]),
         message: `${label}: ${discrepancyKindLabels.vehicle}`,
+        targetRef,
       });
     }
     if (!sourceCoversDate(source, item.reportDate)) {
@@ -1147,6 +1179,7 @@ async function computeDiscrepancies(
           item.reportDate,
         ]),
         message: `${label}: ${discrepancyKindLabels.date}`,
+        targetRef,
       });
     }
   }
@@ -1174,19 +1207,105 @@ async function computeDiscrepancies(
         source.active ? 'active' : 'inactive',
       ]),
       message: `${source.label}: ${discrepancyKindLabels.missing_source}`,
+      // Строки у нехватки источника нет вовсе: её заводит разбор («добавить источник»), а не
+      // перенос.
+      targetRef: null,
     });
   }
 
   const decisions = await loadDecisions(tx, report.id);
-  return found.map((d) => {
+  const targets = await loadRebaseTargets(
+    tx,
+    found.map((d) => d.targetRef),
+  );
+  return found.map(({ targetRef, ...d }) => {
     const last = decisions.get(`${d.kind}|${discrepancySubject(d)}`);
     // Разобрано, если ПОСЛЕДНЕЕ событие журнала по предмету имеет совпадающий отпечаток и
     // разрешающий исход. `revoked` существует ради этого правила: отменить прежнее решение при
     // неизменном отпечатке иначе нечем.
     const resolved =
       last !== undefined && last.fingerprint === d.fingerprint && last.resolution !== 'revoked';
-    return { ...d, resolved, resolvedReason: resolved ? last.reason : '' };
+    return {
+      ...d,
+      resolved,
+      resolvedReason: resolved ? last.reason : '',
+      target: targetRef ? (targets.get(targetKey(targetRef)) ?? null) : null,
+    };
   });
+}
+
+/** Пара «работник + день», в которую уедет строка: ключ целевого отчёта, даже если его ещё нет. */
+interface TargetRef {
+  personId: string;
+  date: string;
+}
+
+function targetKey(ref: TargetRef): string {
+  return `${ref.personId}|${ref.date}`;
+}
+
+/**
+ * Цели переноса — двумя запросами на весь отчёт и только когда переносить есть что.
+ *
+ * Работника и день расхождение уже знает из живого источника, а вот **отчёта** цели у него нет:
+ * шапка живёт в своей таблице, и без неё портал не может прислать версию, которую `rebaseItem`
+ * требует под блокировками. Отдельной ручкой «что будет при переносе» это не лечится: её ответ
+ * пришёл бы вторым чтением, то есть версия уехала бы не из того снимка, который человек видел на
+ * экране, — а именно за этим версия и нужна.
+ *
+ * Отсутствие шапки — законный исход, а не ошибка: день, который никто не открывал, заводит сам
+ * перенос, и версии от портала в этом случае не бывает по построению.
+ */
+async function loadRebaseTargets(
+  tx: Tx,
+  refs: readonly (TargetRef | null)[],
+): Promise<Map<string, DiscrepancyTargetDto>> {
+  const unique = new Map<string, TargetRef>();
+  for (const ref of refs) {
+    if (ref) unique.set(targetKey(ref), ref);
+  }
+  const result = new Map<string, DiscrepancyTargetDto>();
+  if (unique.size === 0) return result;
+
+  const wanted = [...unique.values()];
+  const names = await tx
+    .select({ id: persons.id, fullName: persons.fullName })
+    .from(persons)
+    .where(inArray(persons.id, [...new Set(wanted.map((r) => r.personId))]));
+  const nameById = new Map(names.map((row) => [row.id, row.fullName]));
+  const heads = await tx
+    .select({
+      id: driverDailyReports.id,
+      version: driverDailyReports.version,
+      personId: driverDailyReports.personId,
+      reportDate: driverDailyReports.reportDate,
+    })
+    .from(driverDailyReports)
+    .where(
+      or(
+        ...wanted.map((r) =>
+          and(
+            eq(driverDailyReports.personId, r.personId),
+            eq(driverDailyReports.reportDate, r.date),
+          ),
+        ),
+      ),
+    );
+  const headByKey = new Map(
+    heads.map((row) => [targetKey({ personId: row.personId, date: row.reportDate }), row]),
+  );
+
+  for (const [key, ref] of unique) {
+    const head = headByKey.get(key);
+    result.set(key, {
+      personId: ref.personId,
+      personName: nameById.get(ref.personId) ?? '',
+      date: ref.date,
+      reportId: head?.id ?? null,
+      reportVersion: head?.version ?? null,
+    });
+  }
+  return result;
 }
 
 /**
@@ -1543,6 +1662,11 @@ function assertPermutation(input: ReportItemOrderInput, current: readonly string
  *
  * Фаза разведки предшествует блокировкам намеренно: новую машину и целевой отчёт операция узнаёт
  * только из источника, а блокировать их надо раньше, чем читать под блокировкой.
+ *
+ * Версии в теле — обе: и исходного отчёта, и целевого, если тот уже заведён. Требование не
+ * смягчается тем, что цель портал не выбирал: перенос двигает две шапки, и вторая версия — вся
+ * защита от двух диспетчеров, переносящих строки в один и тот же день. Откуда портал её берёт,
+ * сказано в самом расхождении (`ReportDiscrepancyDto.target`).
  */
 export async function rebaseItem(
   itemId: string,
@@ -1565,7 +1689,9 @@ export async function rebaseItem(
     }
     const personId = source.personId;
     if (!personId) throw err.badRequest('У источника нет работника: назначьте его и повторите');
-    const date = source.date ?? item.reportDate;
+    // День цели — тем же правилом, каким его назвало расхождение: одна функция на перенос и на его
+    // предсказание.
+    const date = rebaseDateOf(source, item.reportDate);
     const [target] = await tx
       .select({ id: driverDailyReports.id })
       .from(driverDailyReports)

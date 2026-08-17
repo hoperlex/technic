@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { baseListQuery, uuidSchema } from './common';
+import { MAINTENANCE_BASES, type MaintenanceBasis } from './vehicle-maintenance';
 import {
   DEFAULT_TYPE_WAYBILL_FORM,
   typeWaybillFormCodeSchema,
@@ -43,6 +44,35 @@ export const LINEAR_VEHICLE_TYPE_LABEL = 'Линейная техника';
 export const LINEAR_VEHICLE_TYPE_HINT =
   'Заказы такой техники на объект ведутся по дням: 4-П на каждый день, ЭСМ-2 — по требованию';
 
+/**
+ * Ведётся ли у типа техники ТО по пробегу (Р13, миграция 0147).
+ *
+ * Признак заводится явно и живёт у типа, а не у машины: способность вести обслуживание — свойство
+ * техники, а не её истории показаний. Выводить его из переданных чисел нельзя — новая машина
+ * показаний ещё не имеет, а временно пустой одометр не означает, что прибора нет.
+ *
+ * Умолчание безопасное (`none`): пока справочник не размечен, ТО не требуется ни с кого и подсветок
+ * нет. Обратная сторона — снятый признак обязан говорить о себе вслух: у машины такого типа портал
+ * не считает срок обслуживания и не подсвечивает его нигде, и человек, не нашедший ТО в карточке,
+ * должен узнать причину здесь, а не в поддержке.
+ */
+export const MAINTENANCE_BASIS_LABEL = 'ТО по пробегу';
+export const MAINTENANCE_BASIS_HINT =
+  'Портал считает пробег с последнего обслуживания и подсвечивает приближение норматива. ' +
+  'Пока признак снят, обслуживание техники этого типа портал не считает и не подсвечивает';
+
+export const maintenanceBasisSchema = z.enum(MAINTENANCE_BASES);
+
+/**
+ * Галочка формы ↔ значение признака. Пара нужна по той же причине, что `typeWaybillFormOf` у
+ * бланка: в справочнике стоит вопрос «ведём ли ТО», а в модели — основание расчёта, у которого
+ * когда-нибудь появится третье значение (моточасы). Перевод живёт в одном месте, чтобы это
+ * появление осталось правкой перевода, а не правкой каждой формы.
+ */
+export const maintenanceBasisOf = (byOdometer: boolean): MaintenanceBasis =>
+  byOdometer ? 'odometer' : 'none';
+export const isOdometerMaintenance = (basis: MaintenanceBasis): boolean => basis === 'odometer';
+
 export const vehicleTypeListQuerySchema = baseListQuery(VEHICLE_TYPE_SORT_FIELDS).extend({
   kindId: uuidSchema.optional(),
   isActive: boolFromQuery,
@@ -71,6 +101,12 @@ export const createVehicleTypeSchema = z
      * повторяет `false` колонки, чтобы тип, заведённый старым клиентом, вёл себя как прежде.
      */
     isLinear: z.boolean().optional().default(false),
+    /**
+     * Ведётся ли ТО по пробегу (Р13). Не передан — `none`: пока тип не размечен, обслуживание с
+     * его машин не спрашивается. Умолчание повторяет умолчание колонки, чтобы тип, заведённый
+     * старым клиентом или обменом справочников, не начинал молча требовать ТО.
+     */
+    maintenanceBasis: maintenanceBasisSchema.optional().default('none'),
   })
   .strict();
 export type CreateVehicleTypeInput = z.infer<typeof createVehicleTypeSchema>;
@@ -103,6 +139,13 @@ export const updateVehicleTypeSchema = z
      * единой заявки.
      */
     isLinear: z.boolean().optional(),
+    /**
+     * Признак ТО правится наравне с описательными полями, и своего протокола у него нет: в отличие
+     * от линейности, он ничего не переписывает у заявок в работе — только включает и выключает
+     * расчёт, который читается на лету. Выключение теряет не данные, а показ: записи ТО остаются на
+     * месте и оживают, как только признак вернут.
+     */
+    maintenanceBasis: maintenanceBasisSchema.optional(),
   })
   .strict();
 export type UpdateVehicleTypeInput = z.infer<typeof updateVehicleTypeSchema>;
@@ -192,6 +235,14 @@ export interface VehicleTypeDto {
    * какую единицу под него потом нашли (ADR 0100 §1).
    */
   isLinear: boolean;
+  /**
+   * Ведётся ли у машин этого типа ТО по пробегу (Р13). `none` — не ведётся: портал не считает срок
+   * обслуживания и не подсвечивает его, а сводка машины отвечает состоянием `not_tracked`.
+   *
+   * Признак у типа, а не у машины, по той же причине, что и линейность: обслуживание — свойство
+   * техники, а не конкретной единицы, которую под заказ нашли.
+   */
+  maintenanceBasis: MaintenanceBasis;
   /**
    * Сколько заявок этого типа дорабатывает по прежнему режиму — их застигло переключение
    * признака (миграция 0137). Ноль у всех типов, которых не переключали под работающими заказами.

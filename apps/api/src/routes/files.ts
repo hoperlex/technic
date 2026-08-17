@@ -18,6 +18,7 @@ import {
   requestFiles,
   serviceRequestFiles,
   serviceRequests,
+  vehicleMaintenanceFiles,
   vehicleReadingFiles,
   vehicleReadings,
   vehicleRequestAssignments,
@@ -91,6 +92,15 @@ export interface FileLinkage {
    */
   visibleWaybill: boolean;
   /**
+   * Файл — скан акта техобслуживания (миграция 0147). Условие одно — связь, по той же причине, что
+   * у путевых листов: журнал ТО не сужается ни объектом, ни контрагентом — парк у портала один, и
+   * своей оси области у службы механика не заведено (`ACCESS_PROFILES`).
+   *
+   * Ветка обязана быть отдельной, а не частью показаний: право у ТО своё (Р14), и механик, которому
+   * `vehicleReadings.read` не дают намеренно, без неё не открыл бы собственноручно подшитый акт.
+   */
+  visibleMaintenance: boolean;
+  /**
    * Файл привязан к показанию — и у принципала есть право читать показания парка (Р34). Своей
    * области у показаний нет по той же причине, что у журнала листов: список показаний не сужается
    * ни объектом, ни контрагентом, и придумывать фотографии область, которой нет у самих чисел,
@@ -132,6 +142,7 @@ export function decideFileAccess(
   if (linkage.visibleVehicle && can(p, 'vehicleRequests.read')) return true;
   if (linkage.visibleService && can(p, 'serviceRequests.read')) return true;
   if (linkage.visibleWaybill && can(p, 'waybills.read')) return true;
+  if (linkage.visibleMaintenance && can(p, 'vehicleMaintenance.read')) return true;
   if (linkage.visibleReading && can(p, 'vehicleReadings.read')) return true;
   if (linkage.ownDriverReading && can(p, 'driverCabinet.read')) return true;
   return !linkage.linkedAnywhere && !!uploadedBy && uploadedBy === p.id;
@@ -237,10 +248,26 @@ async function canAccessFile(
     visibleWaybill = waybill.length > 0;
   }
 
-  // Дальше — фотографии показаний, две ветки сразу (Р34). Одна проверка «связь уже нашлась» вместо
-  // растущей цепочки отрицаний: каждый следующий модуль иначе добавлял бы по слагаемому в четыре
-  // условия.
-  const foundBefore = visibleWaste || visibleVehicle || visibleService || visibleWaybill;
+  // Дальше — вложения парка: скан акта ТО и фотографии показаний. Одна проверка «связь уже
+  // нашлась» вместо растущей цепочки отрицаний: каждый следующий модуль иначе добавлял бы по
+  // слагаемому в четыре условия.
+  const foundInRequests = visibleWaste || visibleVehicle || visibleService || visibleWaybill;
+
+  let visibleMaintenance = false;
+  if (!foundInRequests && can(p, 'vehicleMaintenance.read')) {
+    // Скан акта выполненных работ, подшитый к записи ТО (миграция 0147). Условие одно — связь:
+    // право `vehicleMaintenance.read` даётся на весь парк, области у журнала ТО нет (см.
+    // `FileLinkage`). Своё право, а не показания: механику `vehicleReadings.read` не дают
+    // намеренно (Р14), и на этой ветке держится единственный доступ службы к собственным актам.
+    const maintenance = await db
+      .select({ id: vehicleMaintenanceFiles.maintenanceId })
+      .from(vehicleMaintenanceFiles)
+      .where(eq(vehicleMaintenanceFiles.fileId, fileId))
+      .limit(1);
+    visibleMaintenance = maintenance.length > 0;
+  }
+
+  const foundBefore = foundInRequests || visibleMaintenance;
 
   let visibleReading = false;
   if (!foundBefore && can(p, 'vehicleReadings.read')) {
@@ -283,6 +310,7 @@ async function canAccessFile(
     visibleVehicle,
     visibleService,
     visibleWaybill,
+    visibleMaintenance,
     visibleReading,
     ownDriverReading,
     linkedAnywhere,

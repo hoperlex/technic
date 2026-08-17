@@ -1,9 +1,13 @@
 import { and, asc, eq, isNull, sql } from 'drizzle-orm';
 import {
   buildVehicleCategoryName,
+  isOdometerMaintenance,
   LINEAR_VEHICLE_TYPE_HINT,
+  MAINTENANCE_BASIS_HINT,
+  maintenanceBasisOf,
   vehicleOwnershipLabels,
   vehicleStatusLabels,
+  type MaintenanceBasis,
   type VehicleCategoryValueInput,
   type VehicleOwnership,
   type VehicleStatus,
@@ -612,6 +616,13 @@ interface TypeModel {
   waybillFormCode: WaybillFormCode;
   /** Линейная ли техника (ADR 0100): заказ такого типа ведётся днями, а не неделями. */
   isLinear: boolean;
+  /**
+   * Ведётся ли у машин типа ТО по пробегу (Р13, миграция 0147). В модели — основание расчёта, а в
+   * ячейке «да»/«нет»: у признака сейчас два значения, и в файле он такой же флаг, как линейность.
+   * Перевод делают `maintenanceBasisOf`/`isOdometerMaintenance` — те же, что зовёт форма
+   * справочника, чтобы третье основание (моточасы) стало правкой перевода, а не правкой колонки.
+   */
+  maintenanceBasis: MaintenanceBasis;
   /** «вид документа: категория» либо пусто. В идентификатор превращается при записи. */
   defaultQualification: string;
   /** Коды привязанных ТТХ. Привязка = обязательность значения у каждой категории типа. */
@@ -634,6 +645,8 @@ interface TypeState {
   categories: number;
   /** Линейность, заведённая сейчас: сравнением с ячейкой ловится попытка переключить её файлом. */
   isLinear: boolean;
+  /** Признак ТО, заведённый сейчас: по нему видно, что строка файла его снимает. */
+  maintenanceBasis: MaintenanceBasis;
 }
 
 interface TypesEnv {
@@ -719,6 +732,7 @@ const vehicleTypesDirectory = directory<VehicleTypeRow, TypeModel, TypesEnv>({
           code: vehicleTypes.code,
           kindId: vehicleTypes.kindId,
           isLinear: vehicleTypes.isLinear,
+          maintenanceBasis: vehicleTypes.maintenanceBasis,
         })
         .from(vehicleTypes),
       db
@@ -760,6 +774,7 @@ const vehicleTypesDirectory = directory<VehicleTypeRow, TypeModel, TypesEnv>({
             specCodes: specCodesByTypeId.get(t.id) ?? [],
             categories: counts.get(t.id) ?? 0,
             isLinear: t.isLinear,
+            maintenanceBasis: t.maintenanceBasis,
           },
         ]),
       ),
@@ -832,6 +847,19 @@ const vehicleTypesDirectory = directory<VehicleTypeRow, TypeModel, TypesEnv>({
       },
     },
     {
+      // Рядом с линейностью: оба — признаки самого типа, а не ссылки на соседние справочники.
+      // Без колонки тип, приехавший выгрузкой-загрузкой, оставался бы неразмеченным, и портал молча
+      // не считал бы обслуживание его машинам — ровно та тишина, ради которой признак и заводили.
+      header: 'ТО по пробегу',
+      width: 16,
+      hint: `«да» ставят типу, у машин которого ведут обслуживание по пробегу. ${MAINTENANCE_BASIS_HINT}. По умолчанию «нет»: в старых выгрузках колонки нет вовсе, и пустая ячейка оставляет тип неразмеченным, а не отменяет строку.`,
+      get: (m) => boolCell(isOdometerMaintenance(m.maintenanceBasis)),
+      set: (m, text, ctx) => {
+        const v = parseBool(text, ctx, 'ТО по пробегу');
+        if (v !== undefined) m.maintenanceBasis = maintenanceBasisOf(v);
+      },
+    },
+    {
       header: 'Категория прав по умолчанию',
       width: 26,
       hint: 'Пара «код вида документа: код категории» («driver_license: c»); одного кода категории достаточно, пока он заведён у одного вида документа. Подставляется при заведении машины и отбор не сужает.',
@@ -889,6 +917,7 @@ const vehicleTypesDirectory = directory<VehicleTypeRow, TypeModel, TypesEnv>({
     description: row.description,
     waybillFormCode: row.waybillFormCode,
     isLinear: row.isLinear,
+    maintenanceBasis: row.maintenanceBasis,
     defaultQualification: qualificationCell(row.defaultQualificationCategoryId, env.qualifications),
     specCodes: env.specCodesByTypeId.get(row.id) ?? [],
     sortOrder: row.sortOrder,
@@ -902,6 +931,9 @@ const vehicleTypesDirectory = directory<VehicleTypeRow, TypeModel, TypesEnv>({
     description: '',
     waybillFormCode: '4p',
     isLinear: false,
+    // Умолчание повторяет умолчание колонки базы: тип, о котором файл ничего не сказал, приезжает
+    // неразмеченным и ТО ни с кого не требует.
+    maintenanceBasis: 'none',
     defaultQualification: '',
     specCodes: [],
     sortOrder: 100,
@@ -948,6 +980,18 @@ const vehicleTypesDirectory = directory<VehicleTypeRow, TypeModel, TypesEnv>({
         'Признак «Линейная техника» файлом не переключают: его меняют в карточке типа, где портал называет заявки, которые останутся на прежнем режиме',
       );
     }
+    // А вот «ТО по пробегу» файлом переключается: у заявок в работе признак ничего не переписывает
+    // — он включает и выключает расчёт, который читается на лету. Замечанием сопровождается только
+    // снятие: включение видно по подсветкам сразу, а снятое обслуживание исчезает молча, и человек,
+    // не нашедший ТО в карточке машины, должен узнать причину из отчёта загрузки.
+    if (
+      isOdometerMaintenance(saved.maintenanceBasis) &&
+      !isOdometerMaintenance(m.maintenanceBasis)
+    ) {
+      ctx.warn(
+        'признак «ТО по пробегу» снимается: срок обслуживания у машин этого типа портал считать и подсвечивать перестанет, а записи ТО останутся на месте',
+      );
+    }
 
     if (saved.categories === 0) return;
     // Состав ТТХ и категории типа — один инвариант (ADR 0016). Новый ТТХ мгновенно сделал бы все
@@ -978,6 +1022,7 @@ const vehicleTypesDirectory = directory<VehicleTypeRow, TypeModel, TypesEnv>({
         description: m.description,
         waybillFormCode: m.waybillFormCode,
         isLinear: m.isLinear,
+        maintenanceBasis: m.maintenanceBasis,
         defaultQualificationCategoryId: idOf(
           findQualification(m.defaultQualification, env.qualifications),
         ),
@@ -999,6 +1044,7 @@ const vehicleTypesDirectory = directory<VehicleTypeRow, TypeModel, TypesEnv>({
         description: m.description,
         waybillFormCode: m.waybillFormCode,
         isLinear: m.isLinear,
+        maintenanceBasis: m.maintenanceBasis,
         defaultQualificationCategoryId: idOf(
           findQualification(m.defaultQualification, env.qualifications),
         ),

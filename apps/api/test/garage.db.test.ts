@@ -1,4 +1,4 @@
-import { generateKeyPairSync } from 'node:crypto';
+import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -37,6 +37,26 @@ const DRIVER_SNILS = '22222222290';
 const ADMIN_EMAIL = 'garage-db-test@example.invalid';
 const ADMIN_PASSWORD = 'garage-db-test-password-123';
 
+/** Метка прогона: в общей базе рядом живут данные соседних db-тестов и прошлых запусков. */
+const RUN = randomUUID().slice(0, 8);
+
+/**
+ * Гаражный номер машин этого прогона — он же ключ отбора «только свои» (`?search=`).
+ *
+ * Собственные машины, а не первые попавшиеся свободные из парка, — и это не удобство фикстуры.
+ * Срез гаража отвечает про **весь** парк, поэтому проверять по нему глобальные суммы нельзя: db-
+ * тесты идут по одной базе, соседние заводят свою технику, и «в отборе столько же строк, сколько в
+ * сводке» ломалось от чужой машины, появившейся между двумя запросами. Своя метка сужает обе
+ * ручки до трёх машин теста — и сумма состояний, и согласие фильтра со сводкой считаются тогда по
+ * тому, что тест сам и завёл.
+ *
+ * Гаражным номером, а не моделью: поиск перечня смотрит и в него (`vehicleWhere`), а лишней строки
+ * в справочнике моделей ради метки заводить незачем.
+ */
+const MARK = `гараж-${RUN}`;
+/** Отбор «только машины этого прогона» — приставка к адресам обеих ручек техники. */
+const ONLY_MINE = `&search=${encodeURIComponent(MARK)}`;
+
 interface Ctx {
   app: Awaited<ReturnType<typeof buildApp>>;
   db: typeof AppDb;
@@ -55,8 +75,8 @@ interface Ctx {
 
 let ctx: Ctx;
 
-/** Что тест завёл в общей базе — уборка в `afterAll` держится за эти два идентификатора. */
-const created: { requestId?: string; routeId?: string } = {};
+/** Что тест завёл в общей базе — за это и держится уборка в `afterAll`. */
+const created: { requestId?: string; routeId?: string; vehicleIds: string[] } = { vehicleIds: [] };
 
 function prepareEnv(databaseUrl: string): void {
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
@@ -182,11 +202,17 @@ async function seed(): Promise<{ personId: string }> {
   });
 }
 
-/** Строка гаража по машине: срез спрашивается страницей побольше — парк невелик. */
+/**
+ * Строка гаража по машине — из отбора «только свои» (`ONLY_MINE`).
+ *
+ * Отбор здесь не для скорости: без него страница отвечала бы по всему парку, и строка теста
+ * зависела бы от того, сколько машин завели соседние db-тесты, — а на парке крупнее страницы её и
+ * вовсе не оказалось бы в ответе.
+ */
 async function vehicleRow(vehicleId: string, query = ''): Promise<GarageVehicleDto | undefined> {
   const res = await ctx.app.inject({
     method: 'GET',
-    url: `/api/v1/garage/vehicles?on=${ctx.today}&pageSize=500${query}`,
+    url: `/api/v1/garage/vehicles?on=${ctx.today}&pageSize=500${ONLY_MINE}${query}`,
     headers: ctx.auth,
   });
   expect(res.statusCode, res.body).toBe(200);
@@ -237,55 +263,63 @@ describe.skipIf(!DB_URL)('гараж: срез дня на живой схеме
     const today = moscowDateKeyOf(new Date());
 
     /**
-     * Машины, у которых на этот день нет ничего: ни рейса, ни заказа, ни недельного листа.
+     * Позиции классификатора под три машины прогона.
      *
-     * База у db-тестов общая и живёт между прогонами — «первая попавшаяся своя машина» к третьему
-     * запуску оказывается занятой чужой заявкой, и тест начинает проверять не то, что написано.
-     * Условия здесь те же три, что складывают состояние в `vehicleStateSql`; уборку за собой тест
-     * всё равно делает (`afterAll`), а это — защита от чужих данных.
+     * Спецтехника берётся с категорией и **нелинейная**: заказ такого типа ведётся сроком и
+     * выписывает недельный лист ЭСМ-2 сам (ADR 0060), а линейный ведётся по дням и бумагу заводит
+     * только по требованию (ADR 0100) — сценарий заказа проверяет как раз первое. Сами позиции
+     * приходят миграциями и общие у всех: заводить свои значило бы проверять срез на классификаторе,
+     * которого в портале нет.
      */
-    const freeVehicles = sql`
-      v.ownership = 'own' AND v.status = 'active' AND v.deleted_at IS NULL
-      AND NOT EXISTS (
-        SELECT 1 FROM vehicle_routes r WHERE r.vehicle_id = v.id AND r.route_date = ${today}::date
-      )
-      AND NOT EXISTS (
-        SELECT 1 FROM vehicle_request_assignments a
-        JOIN vehicle_requests vr ON vr.id = a.request_id
-        JOIN special_equipment_request_details d ON d.request_id = vr.id
-        WHERE a.vehicle_id = v.id AND vr.status = 'confirmed' AND vr.deleted_at IS NULL
-          AND d.date_from <= ${today}::date
-          AND coalesce(d.date_to, d.date_from) >= ${today}::date
-      )
-      AND NOT EXISTS (
-        SELECT 1 FROM waybills w
-        WHERE w.vehicle_id = v.id AND w.form_code = 'esm2' AND w.status <> 'cancelled'
-          AND w.period_from <= ${today}::date AND w.period_to >= ${today}::date
-      )`;
-
-    const special = await db.execute<{ id: string; type_id: string; category_id: string | null }>(
-      sql`SELECT v.id, v.vehicle_type_id AS type_id, v.vehicle_category_id AS category_id
-          FROM vehicles v
-          JOIN vehicle_types vt ON vt.id = v.vehicle_type_id
+    const special = await db.execute<{ type_id: string; category_id: string }>(
+      sql`SELECT vt.id AS type_id, vc.id AS category_id
+          FROM vehicle_types vt
           JOIN vehicle_kinds vk ON vk.id = vt.kind_id
-          WHERE ${freeVehicles}
-            AND vk.code = 'special_equipment' AND v.vehicle_category_id IS NOT NULL
+          JOIN vehicle_categories vc ON vc.vehicle_type_id = vt.id AND vc.is_active
+          WHERE vk.code = 'special_equipment' AND NOT vt.is_linear
+          ORDER BY vt.code, vc.sort_order, vc.name
           LIMIT 1`,
     );
-    const specialVehicle = special.rows[0];
-    if (!specialVehicle) {
-      throw new Error('Нет свободной на сегодня спецтехники: срез не на чем проверить');
-    }
+    const specialType = special.rows[0];
+    if (!specialType) throw new Error('В классификаторе нет спецтехники с категорией');
 
-    // Две другие машины: одна поедет рейсом, вторая останется свободной и уйдёт в ремонт.
-    const others = await db.execute<{ id: string }>(
-      sql`SELECT v.id FROM vehicles v
-          WHERE ${freeVehicles} AND v.id <> ${specialVehicle.id}
-          ORDER BY v.id LIMIT 2`,
+    const freight = await db.execute<{ id: string }>(
+      sql`SELECT vt.id FROM vehicle_types vt
+          JOIN vehicle_kinds vk ON vk.id = vt.kind_id
+          WHERE vk.code = 'freight_transport' AND NOT vt.is_linear
+          ORDER BY vt.code LIMIT 1`,
     );
-    if (others.rows.length < 2) {
-      throw new Error('Свободных на сегодня своих машин меньше трёх: срез не собрать');
-    }
+    const freightType = freight.rows[0];
+    if (!freightType) throw new Error('В классификаторе нет грузового типа техники');
+
+    /**
+     * Своя машина прогона: собственная, активная и помеченная гаражным номером `MARK`.
+     *
+     * Заводится, а не выбирается из парка. Выбранная свободная машина держалась на трёх условиях
+     * «на сегодня ничего не назначено», и всё равно оставалась чужой: параллельный db-тест мог
+     * занять её между отбором и проверкой, а на большом парке она просто не попадала на страницу
+     * ответа. Заведённая машина принадлежит тесту целиком — и уборка в `afterAll` знает, что за
+     * собой убирать.
+     */
+    const makeVehicle = async (typeId: string, categoryId: string | null): Promise<string> => {
+      const rows = await db.execute<{ id: string }>(
+        sql`INSERT INTO vehicles (ownership, status, vehicle_type_id, vehicle_category_id,
+                                  registration_number, garage_number)
+            VALUES ('own', 'active', ${typeId}::uuid, ${categoryId}::uuid,
+                    ${`Т${randomUUID().slice(0, 3).toUpperCase()}${created.vehicleIds.length}ГР777`},
+                    ${MARK})
+            RETURNING id`,
+      );
+      const id = rows.rows[0]!.id;
+      created.vehicleIds.push(id);
+      return id;
+    };
+
+    // Три машины: заказ на объект, рейс и свободная, которая уйдёт в ремонт. Разные машины
+    // намеренно — состояние у машины ровно одно, и на общей они наложились бы друг на друга.
+    const specialVehicleId = await makeVehicle(specialType.type_id, specialType.category_id);
+    const routeVehicleId = await makeVehicle(freightType.id, null);
+    const spareVehicleId = await makeVehicle(freightType.id, null);
 
     const objects = await db.execute<{ id: string }>(
       sql`SELECT id FROM construction_objects WHERE is_active LIMIT 1`,
@@ -299,12 +333,12 @@ describe.skipIf(!DB_URL)('гараж: срез дня на живой схеме
       closeDb,
       auth: { authorization: `Bearer ${login.json().accessToken}` },
       special: {
-        id: specialVehicle.id,
-        typeId: specialVehicle.type_id,
-        categoryId: specialVehicle.category_id,
+        id: specialVehicleId,
+        typeId: specialType.type_id,
+        categoryId: specialType.category_id,
       },
-      routeVehicle: { id: others.rows[0]!.id },
-      spare: { id: others.rows[1]!.id },
+      routeVehicle: { id: routeVehicleId },
+      spare: { id: spareVehicleId },
       objectId: object.id,
       personId,
       // День среза — сегодня по Москве: заявку задним числом сервер не принимает.
@@ -313,13 +347,17 @@ describe.skipIf(!DB_URL)('гараж: срез дня на живой схеме
   }, 120_000);
 
   /**
-   * Уборка за собой: заведённые рейс и заявка иначе остаются в общей базе и занимают машины
-   * следующему прогону — тот отбирает свободные на сегодня.
+   * Уборка за собой: рейс, заявка и три машины прогона.
    *
-   * Рейс удаляется (пустой, без листа — можно), заявка **откатывается в «Новую»**, и этого
-   * довольно: занятой машину делает только заявка «В работе», а откат заодно аннулирует её
-   * недельные листы (ADR 0060). Удалять её насовсем нечем и не нужно — номер побывавшего бланка
-   * держит её строкой в `waybill_requests`, и это правильное поведение журнала учёта.
+   * Рейс удаляется (пустой, без листа — можно), заявка **откатывается в «Новую»**: занятой машину
+   * делает только заявка «В работе», а откат заодно аннулирует её недельные листы (ADR 0060).
+   * Удалять её насовсем нечем и не нужно — номер побывавшего бланка держит её строкой в
+   * `waybill_requests`, и это правильное поведение журнала учёта.
+   *
+   * Машины **помечаются удалёнными**, а не сносятся из таблицы: на них ссылаются назначение заявки
+   * и аннулированный бланк, и внешние ключи такое удаление не пропустят. Порталу этого довольно —
+   * гараж отбирает живые записи (`deleted_at IS NULL`), — а прогону следующей недели не достанется
+   * парк из сотни машин с одинаковым гаражным номером.
    *
    * Ошибки уборки прогон не роняют: тест уже отработал.
    */
@@ -349,6 +387,12 @@ describe.skipIf(!DB_URL)('гараж: срез дня на живой схеме
           },
         });
       }
+    }
+    if (ctx && created.vehicleIds.length > 0) {
+      await ctx.db.execute(
+        sql`UPDATE vehicles SET deleted_at = now()
+            WHERE garage_number = ${MARK} AND deleted_at IS NULL`,
+      );
     }
     await ctx?.app.close();
     await ctx?.closeDb();
@@ -523,39 +567,89 @@ describe.skipIf(!DB_URL)('гараж: срез дня на живой схеме
     }
   });
 
+  /**
+   * Сводка и фильтр состояния считают одно и то же — и спрашиваются оба **по машинам прогона**
+   * (`ONLY_MINE`), а не по всему парку.
+   *
+   * Глобальные суммы здесь были бы проверкой не среза, а базы: db-тесты идут по одной, соседние
+   * заводят свою технику, и «в отборе столько же строк, сколько в сводке» — два разных запроса,
+   * между которыми чужая машина успевает появиться. Сузив обе ручки одним и тем же отбором, тест
+   * спрашивает ровно то, ради чего эта проверка написана: сводка и фильтр отвечают про один день и
+   * одним выражением состояния.
+   */
   it('фильтр состояния и сводка считают один и тот же день', async () => {
     const summary = await ctx.app.inject({
       method: 'GET',
-      url: `/api/v1/garage/vehicles/summary?on=${ctx.today}`,
+      url: `/api/v1/garage/vehicles/summary?on=${ctx.today}${ONLY_MINE}`,
       headers: ctx.auth,
     });
     expect(summary.statusCode, summary.body).toBe(200);
     const totals = summary.json();
     expect(totals.onDate).toBe(ctx.today);
+    // Три машины прогона, каждая в своём состоянии: заказ, рейс и свободная.
+    expect(totals.total).toBe(3);
     // Состояние у машины ровно одно, поэтому четыре цифры складываются в парк без остатка.
     expect(totals.free + totals.onRoute + totals.onSite + totals.unavailable).toBe(totals.total);
-    expect(totals.onSite).toBeGreaterThan(0);
-    expect(totals.onRoute).toBeGreaterThan(0);
+    expect(totals.onSite).toBe(1);
+    expect(totals.onRoute).toBe(1);
+    expect(totals.free).toBe(1);
 
     // Фильтр отбирает по тому же выражению, что считает колонку: занятые в него не попадают.
     const freeOnly = await ctx.app.inject({
       method: 'GET',
-      url: `/api/v1/garage/vehicles?on=${ctx.today}&state=free&pageSize=500`,
+      url: `/api/v1/garage/vehicles?on=${ctx.today}&state=free&pageSize=500${ONLY_MINE}`,
       headers: ctx.auth,
     });
     expect(freeOnly.statusCode, freeOnly.body).toBe(200);
     const rows = freeOnly.json().items as GarageVehicleDto[];
     expect(rows.every((row) => row.state === 'free')).toBe(true);
-    expect(rows.map((row) => row.id)).not.toContain(ctx.special.id);
-    expect(rows.map((row) => row.id)).not.toContain(ctx.routeVehicle.id);
+    expect(rows.map((row) => row.id)).toEqual([ctx.spare.id]);
+    // Счётчик отбора отвечает про тот же отбор, что и список, — и про ту же цифру, что сводка.
     expect(freeOnly.json().total).toBe(totals.free);
+  });
+
+  /**
+   * Показания и рейс без листа (план «Показания техники», Р26б, §14 п. 4).
+   *
+   * Рейс этого теста заведён **без путевого листа** — так его и создаёт предыдущий сценарий, и это
+   * ровно тот случай, ради которого гараж приводили к общему правилу. Раньше колонка красила такую
+   * машину расхождением («источник дня в отчёт не вошёл»), а кабинет водителя рейса без бумаги не
+   * показывал вовсе: спросить показание было не с кого, а день горел. Теперь оба места спрашивают
+   * ожидаемую смену одним правилом — рейс без действующего листа ею не является.
+   *
+   * Сигнал «рейс есть, лист не выписали» при этом не потерян: его показывает журнал маршрутов
+   * фильтром «Без листа», а в самой строке гаража — отсутствие номера бланка у занятости рейса.
+   */
+  it('рейс без листа гараж показаниями не красит и в «не сданы» не отбирает', async () => {
+    const row = (await vehicleRow(ctx.routeVehicle.id)) as
+      (GarageVehicleDto & { readingState: string }) | undefined;
+    // Занятость рейсом на месте, бланка у неё нет — это и есть «рейс есть, бумаги нет».
+    expect(busyKinds(row!.busy)).toEqual(['route']);
+    expect((row!.busy[0] as { waybill: unknown }).waybill).toBeNull();
+    // А показаний по такому рейсу не ждут: колонка молчит.
+    expect(row?.readingState).toBe('none');
+
+    const pending = await ctx.app.inject({
+      method: 'GET',
+      url: `/api/v1/garage/vehicles?on=${ctx.today}&pageSize=500&readings=pending${ONLY_MINE}`,
+      headers: ctx.auth,
+    });
+    expect(pending.statusCode, pending.body).toBe(200);
+    const ids = (pending.json().items as GarageVehicleDto[]).map((item) => item.id);
+    expect(ids).not.toContain(ctx.routeVehicle.id);
+    // Фильтр отбирает до страницы, а не после: счётчик отвечает про тот же отбор, что и список.
+    expect(pending.json().total).toBe(ids.length);
+    // И отобранные строки согласованы с колонкой: «сданы» в отборе «не сданы» не бывает.
+    for (const item of pending.json().items as Array<{ readingState: string }>) {
+      expect(item.readingState).not.toBe('reported');
+    }
   });
 
   it('вчерашний день ничего этого не знает: занятость считается по дате, а не «вообще»', async () => {
     const yesterday = moscowDateKeyOf(new Date(Date.now() - 24 * 60 * 60 * 1000));
     const res = await ctx.app.inject({
       method: 'GET',
-      url: `/api/v1/garage/vehicles?on=${yesterday}&pageSize=500`,
+      url: `/api/v1/garage/vehicles?on=${yesterday}&pageSize=500${ONLY_MINE}`,
       headers: ctx.auth,
     });
     expect(res.statusCode, res.body).toBe(200);

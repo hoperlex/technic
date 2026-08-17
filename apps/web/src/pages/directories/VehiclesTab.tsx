@@ -53,14 +53,11 @@ import {
   withSavedClassification,
 } from '../../hooks/useVehicleClassifications';
 import { garageKeys } from '@entities/garage';
-import { AutoSelect } from '@shared/ui';
-import { DataTable, type CardConfig } from '@shared/ui';
-import { FormModal } from '@shared/ui';
-import { PageTableLayout } from '@shared/ui';
-import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
-import { actionsColumn, badgeColumn, textColumn } from '@shared/ui';
-import { useIsMobile } from '@shared/lib';
-import { useListParams } from '@shared/lib';
+import { useVehicleMaintenanceAction } from '@features/vehicle-maintenance';
+import { AutoSelect, DataTable, FormModal, PageTableLayout } from '@shared/ui';
+import { actionsColumn, badgeColumn, sortOptionsFrom, textColumn } from '@shared/ui';
+import type { CardConfig, FilterDefinition } from '@shared/ui';
+import { useIsMobile, useListParams } from '@shared/lib';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
 import { usePurgeAction } from '../../hooks/usePurgeAction';
@@ -102,6 +99,8 @@ export function VehiclesTab() {
   // (ADR 0021) — кнопка следует за правом, иначе она ведёт в 403.
   const { can } = useAuth();
   const canRestore = can('archive.restore');
+  // Обслуживание (Р14в, Р15): своё право, своё окно и та же форма, что в карточке машины.
+  const maintenance = useVehicleMaintenanceAction();
 
   const { params, setParams, setSort, onTableChange } = useListParams<{
     ownership?: VehicleOwnership;
@@ -460,6 +459,7 @@ export function VehiclesTab() {
         </Space>
       ) : (
         <Space>
+          {maintenance.button({ id: r.id, label: vehicleTitle(r) })}
           <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)} />
           <Button size="small" danger icon={<DeleteOutlined />} onClick={() => confirmDelete(r)} />
         </Space>
@@ -641,13 +641,9 @@ export function VehiclesTab() {
               : []),
           ]
         : [
+            ...maintenance.items({ id: r.id, label: vehicleTitle(r) }),
             { key: 'edit', label: 'Редактировать', onClick: () => openEdit(r) },
-            {
-              key: 'delete',
-              label: 'В архив',
-              danger: true,
-              onClick: () => confirmDelete(r),
-            },
+            { key: 'delete', label: 'В архив', danger: true, onClick: () => confirmDelete(r) },
           ],
   };
 
@@ -848,6 +844,7 @@ export function VehiclesTab() {
           </Form.Item>
         </Form>
       </FormModal>
+      {maintenance.modal}
     </PageTableLayout>
   );
 }

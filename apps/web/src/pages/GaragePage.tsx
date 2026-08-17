@@ -6,7 +6,8 @@ import { useIsMobile } from '@shared/lib';
 import { PageTabs } from '../components/PageTabs';
 import { GarageVehiclesTab } from './garage/GarageVehiclesTab';
 import { GarageDriversTab } from './garage/GarageDriversTab';
-import { ReadingsStatsTab } from './garage/ReadingsStatsTab';
+import { ReadingsTab } from './garage/ReadingsTab';
+import { readingsSub } from './garage/readingsAddress';
 import { useAuth } from '../auth/AuthContext';
 
 /**
@@ -42,16 +43,30 @@ export function GaragePage() {
   const parsed = dayjs(rawDate, DATE, true);
   const day = parsed.isValid() ? parsed : dayjs();
 
-  const go = (patch: { tab?: string; date?: dayjs.Dayjs }) =>
-    setSp(
-      {
-        tab: patch.tab ?? tab,
-        date: (patch.date ?? day).format(DATE),
-      },
-      // Перебор дней — не история переходов: «назад» должно возвращать на предыдущий экран, а не
-      // отматывать по одному дню всё, что пролистали.
-      { replace: true },
-    );
+  /**
+   * Подвкладка «Показаний» (Р1). Страница читает её только затем, чтобы не потерять при шаге по
+   * дням: саму полосу подвкладок и переключение рисует вкладка «Показания» — там же, где живут
+   * остальные ключи предмета (период, открытая карточка машины, открытый отчёт).
+   */
+  const sub = readingsSub(sp);
+
+  const go = (patch: { tab?: string; date?: dayjs.Dayjs }) => {
+    // Параметры переписываются поверх текущих, а не задаются списком: у показаний в адресе живут
+    // свои ключи (`sub`, `from`, `to`, `vehicle`), и полная замена стирала бы период при каждом
+    // шаге по дням — то есть при возврате на вкладку показывала бы уже не тот отрезок.
+    const next = new URLSearchParams(sp);
+    const nextTab = patch.tab ?? tab;
+    next.set('tab', nextTab);
+    next.set('date', (patch.date ?? day).format(DATE));
+    // Подвкладка называется в адресе только там, где она есть: на «Технике» ключ `sub` отвечал бы
+    // на вопрос, которого вкладке не задают.
+    if (nextTab === 'readings') next.set('sub', sub);
+    else next.delete('sub');
+
+    // Перебор дней — не история переходов: «назад» должно возвращать на предыдущий экран, а не
+    // отматывать по одному дню всё, что пролистали.
+    setSp(next, { replace: true });
+  };
 
   /**
    * Управление днём: стрелки на соседние сутки и «Сегодня». Смотрят чаще всего завтра и сегодня,
@@ -98,14 +113,14 @@ export function GaragePage() {
       label: 'Водители',
       children: <GarageDriversTab date={day.format(DATE)} dayControls={dayControls} />,
     },
-    // Своего дня у сводки нет — у неё период (ADR 0103, Р27), поэтому органы управления днём сюда
-    // не едут: он остаётся у двух вкладок, которые отвечают именно про день.
+    // Своего дня у показаний нет — у обеих подвкладок период (ADR 0103, Р27, Р29), поэтому органы
+    // управления днём сюда не едут: он остаётся у двух вкладок, которые отвечают именно про день.
     ...(canReadReadings
       ? [
           {
             key: 'readings',
             label: 'Показания',
-            children: <ReadingsStatsTab date={day.format(DATE)} />,
+            children: <ReadingsTab date={day.format(DATE)} />,
           },
         ]
       : []),

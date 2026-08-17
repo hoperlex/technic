@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { Select, Space, Tag, Typography, type TableColumnType } from 'antd';
+import { useNavigate } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
 import {
   GARAGE_VEHICLE_STATES,
@@ -23,6 +24,10 @@ import { useListParams } from '@shared/lib';
 import { TabsExtra } from '../../components/PageTabs';
 import { useVehicleClassificationFilter } from '../../hooks/useVehicleClassificationFilter';
 import { useAuth } from '../../auth/AuthContext';
+import { useJournalAddress } from './journalAddress';
+import { useMaintenanceColumn } from './maintenanceColumn';
+import { vehicleCardHref } from './readingsAddress';
+import { odometerCardLine, odometerColumn } from './odometerColumn';
 import { BusyCell, busyLine } from './shared';
 import { VehicleReadingsJournal } from './VehicleReadingsJournal';
 
@@ -72,18 +77,13 @@ function stateCell(r: GarageVehicleDto) {
 }
 
 /**
- * Адрес журнала: текущий отбор плюс машина. Собирается целиком, а не одним параметром, потому что
- * ссылку присылают коллеге — и открыться она должна на том же дне и том же отборе, что видел
- * отправитель.
+ * Подпись машины в заголовке журнала. Обычно берётся из строки, по которой нажали; присланная
+ * ссылка может назвать машину с другой страницы отбора — тогда журнал всё равно открывается и
+ * грузит себя по идентификатору из адреса, а имени у окна до ответа нет (так же ведёт себя сводка
+ * ТО, `maintenanceColumn.tsx`).
  */
-function journalQuery(params: Record<string, unknown>, vehicleId: string): string {
-  const query = new URLSearchParams();
-  for (const [key, value] of Object.entries(params)) {
-    if (value === undefined || value === null || value === '') continue;
-    query.set(key, String(value));
-  }
-  query.set('journal', vehicleId);
-  return query.toString();
+function openedVehicle(id: string, rows: readonly VehicleRow[]) {
+  return { id, label: rows.find((r) => r.id === id)?.label ?? 'машина' };
 }
 
 export function GarageVehiclesTab({
@@ -95,20 +95,10 @@ export function GarageVehiclesTab({
   dayControls: ReactNode;
 }) {
   const { can } = useAuth();
-  // Журнал открывают из строки — окно помнит машину, а не список: вернувшись, диспетчер остаётся
-  // на том же дне и том же фильтре.
+  const navigate = useNavigate();
   const { params, setParams, setSort, onTableChange } = useListParams<{
     state?: GarageVehicleState;
     readings?: 'pending';
-    /**
-     * Открытый журнал машины живёт в адресе, а не в состоянии компонента, и это не мелочь: в
-     * гараже журнал — единственное, что хочется прислать коллеге («посмотри, что с этой машиной»),
-     * а состояние, которое нельзя переслать и нельзя обновить страницей, теряется первым.
-     *
-     * Заодно снимается противоречие с ADR 0076: в строках среза действий нет — есть переходы, и
-     * журнал стал таким же переходом, как номер заявки или рейса рядом.
-     */
-    journal?: string;
     vehicleTypeId?: string;
     vehicleCategoryId?: string;
     sortBy?: string;
@@ -122,6 +112,14 @@ export function GarageVehiclesTab({
 
   const applyFilter = (patch: Partial<typeof params>) =>
     setParams((p) => ({ ...p, ...patch, page: 1 }));
+
+  // Журнал показаний назван в адресе (а не в состоянии таблицы) и открывается только под правом на
+  // сами показания: у среза дня своё право, у цифр приборов — своё.
+  const canReadReadings = can('vehicleReadings.read');
+  const journal = useJournalAddress(canReadReadings);
+  // Третий путь строки (§7): карточка машины на вкладке «Показания» — статистика за месяц по день
+  // среза. Период считает разбор адреса показаний, а не эта вкладка (`vehicleCardHref`).
+  const cardHref = (id: string) => vehicleCardHref(id, date);
 
   const classificationFilter = useVehicleClassificationFilter({
     vehicleTypeId: params.vehicleTypeId,
@@ -139,9 +137,11 @@ export function GarageVehiclesTab({
   // Строка среза шире контракта на одно поле: состояние показаний сервер отдаёт, а `GarageVehicleDto`
   // о нём ещё не знает. Приведение — ровно до переезда поля в контракт, вместе с типом `VehicleRow`.
   const items = (data?.items ?? []) as VehicleRow[];
-  // Машина открытого журнала — из уже загруженной страницы: журнал показывают по строке, которую
-  // видят, и отдельного запроса за подписью машины ради заголовка окна не нужно.
-  const journalRow = params.journal ? (items.find((r) => r.id === params.journal) ?? null) : null;
+  const journalVehicle = journal.id ? openedVehicle(journal.id, items) : null;
+
+  // Обслуживание (Р14в, Р16): состояние приходит пакетом на видимую страницу, окно сводки названо
+  // в адресе — механику строка гаража единственный вход в журнал ТО.
+  const maintenance = useMaintenanceColumn<VehicleRow>({ date, rows: items });
 
   // Сводка считается по тем же фильтрам, что и таблица, — кроме состояния и показаний: обоими она
   // свелась бы к одной своей цифре.
@@ -210,22 +210,38 @@ export function GarageVehiclesTab({
       width: 140,
       /**
        * Состояние дня по показаниям — одно значение из пяти, старшинством сверху вниз (Р27).
-       * Журнал открывается той же кнопкой и только у тех, кому положены сами показания: у среза
-       * своё право (`garage.read`), а цифры и подписи водителей — данные модуля показаний.
+       * Оба входа в модуль показаний стоят под ним и только у тех, кому положены сами показания: у
+       * среза своё право (`garage.read`), а цифры и подписи водителей — данные модуля показаний.
+       * Журнал отвечает «что было по сменам», карточка — «сколько вышло за период» (§7).
        */
       render: (_v, r) => (
         <Space direction="vertical" size={2} align="start">
           <Tag color={vehicleReadingDayStateColors[r.readingState]} style={{ marginInlineEnd: 0 }}>
             {vehicleReadingDayStateLabels[r.readingState]}
           </Tag>
-          {can('vehicleReadings.read') && (
-            <EntityLink to={`?${journalQuery(params, r.id)}`} title="Открыть журнал показаний">
-              журнал
-            </EntityLink>
+          {canReadReadings && (
+            <Space size={8} wrap>
+              <EntityLink to={journal.href(r.id)} title="Открыть журнал показаний">
+                журнал
+              </EntityLink>
+              <EntityLink to={cardHref(r.id)} title="Открыть статистику машины за период">
+                статистика
+              </EntityLink>
+            </Space>
           )}
         </Space>
       ),
     },
+    /*
+     * Одометр — колонка модуля показаний, а не гаража (Р16): у среза своё право (`garage.read`),
+     * а цифры приборов открывает `vehicleReadings.read`. Проверка здесь не украшение к серверной:
+     * без права сервер поля не присылает вовсе, и колонка без этого условия стояла бы у механика
+     * пустым столбцом прочерков — то есть врала бы, что показаний нет.
+     */
+    ...(can('vehicleReadings.read') ? [odometerColumn<VehicleRow>()] : []),
+    // Колонка ТО — под своим правом (Р14) и своим ответом: у механика она стоит там, где у
+    // диспетчера одометр, и наоборот.
+    ...maintenance.columns,
     {
       key: 'drivers',
       title: 'Водители',
@@ -305,12 +321,23 @@ export function GarageVehiclesTab({
       // Состояние показаний — строкой, а не вторым бейджем: в шапке карточки уже стоит состояние
       // дня, и два тега рядом читались бы как одно противоречивое.
       (r) => `показания: ${vehicleReadingDayStateLabels[r.readingState]}`,
+      // Одометр приходит только с правом на показания, и своего условия строке не нужно: без права
+      // поля в ответе нет, и строка молчит сама (`odometerCardLine`).
+      (r) => odometerCardLine(r),
+      // ТО — тем же порядком: без права на обслуживание состояния нет, и строка молчит сама.
+      maintenance.cardLine,
+    ],
+    // Сводка ТО и карточка машины на телефоне открываются пунктами действий: касание по карточке
+    // занято журналом, а третьего смысла у касания быть не может.
+    actions: (r) => [
+      ...(canReadReadings
+        ? [{ key: 'stats', label: 'Статистика за период', onClick: () => navigate(cardHref(r.id)) }]
+        : []),
+      ...maintenance.cardActions(r),
     ],
     // На телефоне карточка открывает тот же журнал — и тем же путём, через адрес: ссылку,
     // присланную с телефона, коллега открывает на десктопе и видит ровно тот же день.
-    onOpen: can('vehicleReadings.read')
-      ? (r: VehicleRow) => setParams((prev) => ({ ...prev, journal: r.id }))
-      : undefined,
+    onOpen: canReadReadings ? (r: VehicleRow) => journal.open(r.id) : undefined,
   };
 
   return (
@@ -350,15 +377,17 @@ export function GarageVehiclesTab({
         onChange={onTableChange}
       />
 
-      {journalRow && (
+      {journalVehicle && (
         <VehicleReadingsJournal
-          vehicleId={journalRow.id}
-          vehicleLabel={journalRow.label}
+          vehicleId={journalVehicle.id}
+          vehicleLabel={journalVehicle.label}
           day={date}
           open
-          onClose={() => setParams((prev) => ({ ...prev, journal: undefined }))}
+          onClose={journal.close}
         />
       )}
+
+      {maintenance.modal}
     </PageTableLayout>
   );
 }

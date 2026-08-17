@@ -206,6 +206,7 @@ const typesEnv = {
         specCodes: ['lift_capacity', 'boom_length'],
         categories: 2,
         isLinear: false,
+        maintenanceBasis: 'odometer',
       },
     ],
   ]),
@@ -221,6 +222,9 @@ const typeRow = {
   description: 'Краны на автомобильном шасси',
   waybillFormCode: '4p',
   isLinear: false,
+  // Размеченный тип: круговой разбор снимается с «да», а не с умолчания, — иначе колонка,
+  // печатающая «нет» при любом значении, прошла бы проверку.
+  maintenanceBasis: 'odometer',
   defaultQualificationCategoryId: QUALIFICATION,
   sortOrder: 10,
   isActive: true,
@@ -510,6 +514,42 @@ describe('типы ТС', () => {
     // Та же строка без смены признака проходит: запрет держит поле, а не всю запись.
     const rename = editRow(def, typesEnv, typeRow, { Наименование: 'Автокраны и краны' });
     expect(rename.problems).toEqual([]);
+  });
+
+  /*
+   * Признак «ТО по пробегу» (Р13) ездит файлом по той же причине, что и линейность: без колонки
+   * тип, перенесённый выгрузкой-загрузкой, приезжал бы неразмеченным, и обслуживание его машин
+   * портал молча не считал бы.
+   */
+  it('«ТО по пробегу» ставится «да» и читается обратно', () => {
+    const { model, problems } = parseRow(def, typesEnv, { ...filled, 'ТО по пробегу': 'да' });
+    expect(problems).toEqual([]);
+    expect(cellsOf(def, typesEnv, model)['ТО по пробегу']).toBe('да');
+  });
+
+  it('файл без колонки заводит тип неразмеченным, а не отменяет строку', () => {
+    // Ровно старая выгрузка: колонки в ней не было вовсе, и `set` не позовётся ни разу.
+    const { model, problems } = parseRow(def, typesEnv, filled);
+    expect(problems).toEqual([]);
+    expect(cellsOf(def, typesEnv, model)['ТО по пробегу']).toBe('нет');
+  });
+
+  it('пустая ячейка не снимает признак у заведённого типа', () => {
+    const { model, problems } = editRow(def, typesEnv, typeRow, { 'ТО по пробегу': '' });
+    expect(problems).toEqual([]);
+    expect(cellsOf(def, typesEnv, model)['ТО по пробегу']).toBe('да');
+  });
+
+  it('снятие признака файлом проходит, но говорит о себе вслух', () => {
+    // В отличие от линейности, признак ТО переключается файлом: у заявок в работе он ничего не
+    // переписывает. Молча исчезнуть расчёт при этом не вправе — отсюда замечание в отчёте.
+    const { model, problems, warnings } = editRow(def, typesEnv, typeRow, {
+      'ТО по пробегу': 'нет',
+    });
+    expect(problems).toEqual([]);
+    expect(cellsOf(def, typesEnv, model)['ТО по пробегу']).toBe('нет');
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('«ТО по пробегу» снимается');
   });
 });
 

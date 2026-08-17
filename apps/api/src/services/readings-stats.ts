@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, ne, sql, type SQL } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, ne, sql, type SQL } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import {
   type DiscrepancyKind,
@@ -6,16 +6,17 @@ import {
   formatVehicleRouteNumber,
   type ReadingAnomaly,
   type ReadingAnomalyDto,
-  type ReadingKind,
-  type ReadingSourceKind,
   vehicleLabel,
   vehicleReadingDayState,
   type VehicleReadingDayState,
   type VehicleReadingDto,
+  type VehicleReadingJournalDto,
+  type VehicleReadingJournalRow,
   type VehicleReadingStatsRow,
   waybillDisplayNumber,
 } from '@technic/contracts';
 import { db } from '../db/client';
+import { pageParams } from '../lib/pagination';
 import {
   driverDailyReportItems,
   driverDailyReports,
@@ -34,10 +35,11 @@ import {
   waybills,
   waybillSeries,
 } from '../db/schema';
+import { EXPECTED_ESM2_FILTER, EXPECTED_ROUTE_FILTER } from './readings-aggregate';
 
 /**
- * Показания глазами гаража и сводки (ADR 0103, Р27/Р28): состояние дня машины, её журнал и итог по
- * парку за период.
+ * Показания глазами гаража (ADR 0103, Р27/Р28): состояние дня машины, её журнал и лист выгрузки для
+ * сводки по парку.
  *
  * Файл читающий целиком — ни одной записи. Своих таблиц у гаража нет (ADR 0076), и таблицы модуля
  * показаний он **показывает**, как показывает рейсы, листы и заявки. Отсюда три правила, из которых
@@ -47,16 +49,19 @@ import {
  *    только так колонка отвечает однозначно и при двух сменах, и после правки задания. Само
  *    состояние собирает функция контракта `vehicleReadingDayState` — она одна на портал и сервер,
  *    и второй формулы в SQL здесь нет намеренно.
- * 2. **Пробег и наработка — суммы разностей соседних снимков одного счётчика** по готовой цепочке
- *    (`previous_odometer_id` / `previous_engine_hours_id`). Цепочку строит модуль показаний при
- *    записи; пересчитывать её на чтении значило бы завести второй ответ на вопрос «кто чей
- *    предшественник».
+ * 2. **Приросты журнала берутся по готовой цепочке** (`previous_odometer_id` /
+ *    `previous_engine_hours_id`). Цепочку строит модуль показаний при записи; пересчитывать её на
+ *    чтении значило бы завести второй ответ на вопрос «кто чей предшественник».
  * 3. **Портал считает заправленное топливо, и только его** (Р28). Ни расхода, ни производных
  *    «на сто километров»: цифра, поделённая на пробег, читается как расход независимо от подписи
- *    в колонке, а фактический расход требует остатков в баке, которых портал не хранит. Пробег и
- *    наработка при этом складываются из разностей соседних звеньев цепочки: сброс счётчика свою
- *    пару из суммы убирает, а период, где не осталось ни одной пары, даёт прочерк, а не ноль —
- *    догадываться о пробеге портал не берётся. Сколько раз ряд рвался, говорит своя колонка.
+ *    в колонке, а фактический расход требует остатков в баке, которых портал не хранит. Поэтому
+ *    колонок в листе выгрузки ровно столько же, сколько на экране.
+ *
+ * Итогов по парку здесь больше нет: пробег, наработку и разрывы считает агрегат
+ * `services/readings-aggregate.ts` (план «Показания техники», §5). Он считает их по ожидаемым
+ * сменам, а не по строкам отчёта (Р26в), и держать рядом вторую формулу значило бы иметь два ответа
+ * на вопрос «сколько проехала машина». `readingStatsSheet` при этом остался здесь: он рисует
+ * готовые строки, а не считает их.
  */
 
 // ── Состояние дня машины ──
@@ -134,26 +139,79 @@ const ITEM_NEEDS_ATTENTION = sql`(
   OR (coalesce(${DISCREPANCY_SIGNS.source_state}, false) AND NOT ${resolvedSql('source_state')}))`;
 
 /**
+ * Показание источника уже передано: у него есть строка ожидания в неаннулированном отчёте, и на
+ * этой строке стоит показание любого вида — включая `no_data` («счётчик не работает» это ответ, а
+ * не пропуск). Отбор по состоянию отчёта тот же, что у колонки дня: показание аннулированного
+ * отчёта уехало вместе со строками в другой день и закрывает смену там.
+ *
+ * Соединение однозначно ключом самого источника — `report_items_route_key` у рейса,
+ * `report_items_waybill_key` у недельного листа, — поэтому «сдано ли» здесь считается наличием, а
+ * не счётчиком.
+ */
+function sourceClosedSql(match: SQL): SQL {
+  return sql`EXISTS (
+    SELECT 1 FROM ${driverDailyReportItems} pr_i
+    JOIN ${driverDailyReports} pr_rep ON pr_rep.id = pr_i.report_id AND pr_rep.state <> 'voided'
+    JOIN ${vehicleReadings} pr_r ON pr_r.item_id = pr_i.id
+    WHERE ${match}
+  )`;
+}
+
+/**
  * Фильтр «не сданы» — главный вопрос к экрану следующего утра (Р27).
  *
- * Считается по числу ожидающих строк (`pending_count > 0`), теми же строками ожидания, что и сама
- * колонка: два разных ответа на «сдано ли» разъехались бы при первом изменении правила. Машина без
- * задания в отбор не попадает — ждать с неё нечего.
+ * Считается **от ожидаемых смен дня, а не от строк ожидания** (Р26б). Строка ожидания появляется
+ * только после `openReport`, поэтому день, который никто не открывал, прежний фильтр не видел
+ * вовсе: у водителя без учётки показаний нет и не ждут — хотя рейс с выписанным листом есть, и
+ * ввести за него показания диспетчер обязан. Ровно ради таких дней фильтр и открывают.
+ *
+ * Что считается ожидаемой сменой, решают общие фрагменты `EXPECTED_ROUTE_FILTER` и
+ * `EXPECTED_ESM2_FILTER` (`readings-aggregate.ts`) — те же самые, которыми считает статистика и
+ * которые повторяют кабинет водителя (Р26а). Копии здесь нет намеренно: разойдись правило, гараж
+ * требовал бы показаний по сменам, которых водитель у себя в задании не видит. Дневные границы к
+ * фрагментам не относятся и стоят рядом с ними: у рейса это его день, у недельного листа — каждый
+ * календарный день действия (Р34).
+ *
+ * Машина без ожидаемой смены в отбор не попадает — ждать с неё нечего; машина, у которой все
+ * ожидаемые смены закрыты, — тоже.
  *
  * Тег в отобранной строке иногда говорит «расхождение», а не «частично», и это не противоречие:
  * фильтр отвечает «по этой машине ещё ждут показания», а тег называет главное — то, с чем надо
- * что-то делать в первую очередь.
+ * что-то делать в первую очередь. Обратное тоже бывает: у рейса, переназначенного без перевыписки
+ * листа, тег красный, а ждать показание не с кого (§14 п. 5 плана) — такой день разбирают, а не
+ * досдают.
+ *
+ * Отбор идёт до страницы (`routes/garage.ts`): посчитанный по загруженной странице, он врал бы и в
+ * счётчике, и в листании. Поэтому он обязан оставаться **коррелированным по машине** — и половины
+ * сложены одним `EXISTS` над `UNION ALL`, а не двумя `EXISTS` через `OR`. Разница не косметическая:
+ * два отдельных `EXISTS` планировщик расцепляет в `hashed SubPlan` и считает ответ сразу по всему
+ * году — один раз, но целиком: полный проход по составу рейсов и по всем листам с
+ * `period_from <= день`. Замер на годовом объёме (200 машин × 365 дней, 146 тыс. строк ожидания):
+ * расцепленная форма 45 мс, `UNION ALL` — 5 мс, потому что обе ветки остаются на ключах своей
+ * машины и дня (`vehicle_routes_vehicle_date_idx`, `waybills_vehicle_issued_idx`) и упираются в
+ * `report_items_route_key` / `report_items_waybill_key`. Сверху к обеим формам PostgreSQL
+ * добавляет ~22 мс компиляции JIT — оценка плана перекрывает `jit_above_cost`, как и у агрегата
+ * (`readings-aggregate.ts`); там её снимают `SET LOCAL jit = off`, здесь снимать нечем: фильтр
+ * приходит условием чужого запроса, а не своей транзакцией.
+ *
+ * По строкам ожидания здесь не ищут вовсе: их индекс по `(report_date, vehicle_id)` этому запросу
+ * больше не нужен — в строку он приходит от найденного источника, а не наоборот.
  */
 export function pendingReadingsSql(on: string): SQL {
   return sql`EXISTS (
-    SELECT 1 FROM ${driverDailyReportItems} pr_i
-    JOIN ${driverDailyReports} pr_rep ON pr_rep.id = pr_i.report_id
-    WHERE pr_i.vehicle_id = ${vehicles.id}
-      AND pr_i.report_date = ${on}::date
-      AND pr_rep.state <> 'voided'
-      AND NOT EXISTS (
-        SELECT 1 FROM ${vehicleReadings} pr_r WHERE pr_r.item_id = pr_i.id
-      )
+    SELECT 1 FROM (
+      SELECT 1 FROM ${vehicleRoutes} vr
+      WHERE vr.vehicle_id = ${vehicles.id}
+        AND vr.route_date = ${on}::date
+        AND ${EXPECTED_ROUTE_FILTER}
+        AND NOT ${sourceClosedSql(sql`pr_i.route_id = vr.id`)}
+      UNION ALL
+      SELECT 1 FROM ${waybills} w
+      WHERE w.vehicle_id = ${vehicles.id}
+        AND ${EXPECTED_ESM2_FILTER}
+        AND w.period_from <= ${on}::date AND w.period_to >= ${on}::date
+        AND NOT ${sourceClosedSql(sql`pr_i.waybill_id = w.id AND pr_i.report_date = ${on}::date`)}
+    ) pending_shift
   )`;
 }
 
@@ -167,8 +225,23 @@ export function pendingReadingsSql(on: string): SQL {
  *
  * Машина берётся у самого источника, а не у отчёта: несданным остался конкретный выезд, и красным
  * обязана быть строка той машины, которая в этот день ездила.
+ *
+ * Источник спрашивается **ожидаемый** — теми же фрагментами, что и фильтр «не сданы» (Р26а, Р26б).
+ * Раньше ветка рейсов действующего листа не требовала вовсе, и гараж красил рейс, которого водитель
+ * у себя в кабинете не видел: спросить показание было не с кого, а день горел. Побочный эффект
+ * приведения назван в плане (§14 п. 4): сигнала «рейс есть, лист не выписали» в гараже больше нет —
+ * его показывает журнал маршрутов фильтром «Без листа».
  */
 const SUBMITTED_STATES: DriverReportState[] = ['submitted', 'accepted', 'needs_reacceptance'];
+
+/**
+ * Алиасы источников под общие фрагменты ожидаемой смены: `EXPECTED_ROUTE_FILTER` ждёт строку рейса
+ * под именем `vr`, `EXPECTED_ESM2_FILTER` — строку листа под именем `w`. Имена заданы фрагментом, а
+ * не выбраны здесь: он один на три читателя, и подстраиваться под него — цена того, что правило
+ * «с кого спрашивают показание» записано ровно один раз.
+ */
+const expectedRoute = alias(vehicleRoutes, 'vr');
+const expectedEsm2 = alias(waybills, 'w');
 
 function missingSourceResolvedSql(source: 'route' | 'waybill', sourceId: SQL): SQL {
   const column = source === 'route' ? sql`ms_d.route_id` : sql`ms_d.waybill_id`;
@@ -185,48 +258,48 @@ function missingSourceResolvedSql(source: 'route' | 'waybill', sourceId: SQL): S
 async function loadMissingSourceVehicles(on: string, vehicleIds: string[]): Promise<Set<string>> {
   const [routes, sheets] = await Promise.all([
     db
-      .select({ vehicleId: vehicleRoutes.vehicleId })
-      .from(vehicleRoutes)
+      .select({ vehicleId: expectedRoute.vehicleId })
+      .from(expectedRoute)
       .innerJoin(
         driverDailyReports,
         and(
-          eq(driverDailyReports.personId, vehicleRoutes.driverPersonId),
-          eq(driverDailyReports.reportDate, vehicleRoutes.routeDate),
+          eq(driverDailyReports.personId, expectedRoute.driverPersonId),
+          eq(driverDailyReports.reportDate, expectedRoute.routeDate),
         ),
       )
       .where(
         and(
-          inArray(vehicleRoutes.vehicleId, vehicleIds),
-          eq(vehicleRoutes.routeDate, on),
+          inArray(expectedRoute.vehicleId, vehicleIds),
+          eq(expectedRoute.routeDate, on),
+          sql`(${EXPECTED_ROUTE_FILTER})`,
           inArray(driverDailyReports.state, SUBMITTED_STATES),
           sql`NOT EXISTS (
-            SELECT 1 FROM ${driverDailyReportItems} ms_i WHERE ms_i.route_id = ${vehicleRoutes.id}
+            SELECT 1 FROM ${driverDailyReportItems} ms_i WHERE ms_i.route_id = ${expectedRoute.id}
           )`,
-          sql`NOT ${missingSourceResolvedSql('route', sql`${vehicleRoutes.id}`)}`,
+          sql`NOT ${missingSourceResolvedSql('route', sql`${expectedRoute.id}`)}`,
         ),
       ),
     db
-      .select({ vehicleId: waybills.vehicleId })
-      .from(waybills)
+      .select({ vehicleId: expectedEsm2.vehicleId })
+      .from(expectedEsm2)
       .innerJoin(
         driverDailyReports,
         and(
-          eq(driverDailyReports.personId, waybills.driverPersonId),
+          eq(driverDailyReports.personId, expectedEsm2.driverPersonId),
           eq(driverDailyReports.reportDate, on),
         ),
       )
       .where(
         and(
-          inArray(waybills.vehicleId, vehicleIds),
-          eq(waybills.formCode, 'esm2'),
-          ne(waybills.status, 'cancelled'),
-          sql`${waybills.periodFrom} <= ${on}::date AND ${waybills.periodTo} >= ${on}::date`,
+          inArray(expectedEsm2.vehicleId, vehicleIds),
+          sql`(${EXPECTED_ESM2_FILTER})`,
+          sql`${expectedEsm2.periodFrom} <= ${on}::date AND ${expectedEsm2.periodTo} >= ${on}::date`,
           inArray(driverDailyReports.state, SUBMITTED_STATES),
           sql`NOT EXISTS (
             SELECT 1 FROM ${driverDailyReportItems} ms_i
-            WHERE ms_i.waybill_id = ${waybills.id} AND ms_i.report_date = ${on}::date
+            WHERE ms_i.waybill_id = ${expectedEsm2.id} AND ms_i.report_date = ${on}::date
           )`,
-          sql`NOT ${missingSourceResolvedSql('waybill', sql`${waybills.id}`)}`,
+          sql`NOT ${missingSourceResolvedSql('waybill', sql`${expectedEsm2.id}`)}`,
         ),
       ),
   ]);
@@ -298,44 +371,6 @@ export async function loadVehicleReadingStates(
 // ── Журнал машины ──
 
 /**
- * Строка журнала: чей день, какая смена и что с показанием. Тип живёт здесь, а не в контрактах:
- * этап трогать `packages/contracts` не должен, а показание внутри — уже готовый `VehicleReadingDto`.
- */
-export interface VehicleReadingJournalRow {
-  itemId: string;
-  reportId: string;
-  reportDate: string;
-  shiftOrder: number;
-  reportState: DriverReportState;
-  sourceKind: ReadingSourceKind;
-  sourceId: string;
-  /** «Р-142» либо номер бланка ЭСМ-2 — тем же правилом, каким источник зовут везде. */
-  sourceLabel: string;
-  personId: string;
-  personName: string;
-  reading: VehicleReadingDto | null;
-  /**
-   * Файлы показания с именами. Одних идентификаторов (`reading.fileIds`) журналу мало: фотографию
-   * приборной панели открывают прямо из строки, а список без имён и типов показать нечем.
-   */
-  files: { id: string; filename: string; contentType: string; size: number }[];
-  /** История правок показания: кто, когда и с какой причиной трогал чужие числа (Р19). */
-  edits: { event: string; changedAt: string; changedByName: string; reason: string }[];
-}
-
-export interface VehicleReadingJournalDto {
-  vehicleId: string;
-  vehicleLabel: string;
-  from: string;
-  to: string;
-  items: VehicleReadingJournalRow[];
-  /** Хвост периода обрезан пределом: журнал открывают на месяц, а не на всю жизнь машины. */
-  truncated: boolean;
-}
-
-const JOURNAL_LIMIT = 500;
-
-/**
  * Предшественник каждого счётчика — своим алиасом той же таблицы: у одометра и моточасов цепочки
  * разные, и строка с одними моточасами ряда одометра не разрывает (Р20).
  */
@@ -345,6 +380,12 @@ const previousEngineHours = alias(vehicleReadings, 'prev_engine_hours');
 /** Число из `numeric`: драйвер отдаёт его строкой, и `null` обязан остаться `null`, а не нулём. */
 function num(value: string | null): number | null {
   return value === null ? null : Number(value);
+}
+
+/** Моточасы в журнале — с десятой долей: разность двух `numeric` даёт хвост двоичного округления. */
+function round(value: number, digits: number): number {
+  const factor = 10 ** digits;
+  return Math.round(value * factor) / factor;
 }
 
 /** Аномалия счётчика вместе с тем, с чем сравнивали: без предшественника её не прочитать. */
@@ -366,12 +407,16 @@ function anomalyOf(
  * `previous_*_id`, и его значение достаётся своим алиасом той же таблицы. Считать «ближайшую
  * предыдущую строку» здесь заново значило бы завести второй ответ на вопрос, на который модуль
  * показаний уже ответил при записи.
+ *
+ * Страницы обычные, серверные (Р25): строка страницы и общее число строк периода. Прежнего предела
+ * в 500 строк с флагом «хвост обрезан» здесь нет — он отвечал на вопрос «сколько сервер согласен
+ * отдать», а спрашивают у журнала другое.
  */
 export async function loadVehicleReadingJournal(
   vehicleId: string,
-  from: string,
-  to: string,
+  query: { from: string; to: string; page: number; pageSize: number },
 ): Promise<VehicleReadingJournalDto | null> {
+  const { from, to } = query;
   const [vehicle] = await db
     .select({
       id: vehicles.id,
@@ -389,65 +434,82 @@ export async function loadVehicleReadingJournal(
     .where(eq(vehicles.id, vehicleId));
   if (!vehicle) return null;
 
-  const rows = await db
-    .select({
-      itemId: driverDailyReportItems.id,
-      reportId: driverDailyReportItems.reportId,
-      reportDate: driverDailyReportItems.reportDate,
-      shiftOrder: driverDailyReportItems.shiftOrder,
-      reportState: driverDailyReports.state,
-      sourceKind: driverDailyReportItems.sourceKind,
-      routeId: driverDailyReportItems.routeId,
-      routeNum: vehicleRoutes.num,
-      waybillId: driverDailyReportItems.waybillId,
-      waybillNumber: waybills.number,
-      waybillPrefix: waybillSeries.prefix,
-      waybillNumberWidth: waybillSeries.numberWidth,
-      personId: driverDailyReports.personId,
-      personName: persons.fullName,
-      readingId: vehicleReadings.id,
-      kind: vehicleReadings.kind,
-      odometerKm: vehicleReadings.odometerKm,
-      engineHours: vehicleReadings.engineHours,
-      fuelFilledLiters: vehicleReadings.fuelFilledLiters,
-      noDataReason: vehicleReadings.noDataReason,
-      comment: vehicleReadings.comment,
-      source: vehicleReadings.source,
-      recordedAt: vehicleReadings.recordedAt,
-      odometerAnomaly: vehicleReadings.odometerAnomaly,
-      odometerAnomalyConfirmedAt: vehicleReadings.odometerAnomalyConfirmedAt,
-      engineHoursAnomaly: vehicleReadings.engineHoursAnomaly,
-      engineHoursAnomalyConfirmedAt: vehicleReadings.engineHoursAnomalyConfirmedAt,
-      previousOdometerKm: previousOdometer.odometerKm,
-      previousOdometerDate: previousOdometer.reportDate,
-      previousEngineHours: previousEngineHours.engineHours,
-      previousEngineHoursDate: previousEngineHours.reportDate,
-    })
-    .from(driverDailyReportItems)
-    .innerJoin(driverDailyReports, eq(driverDailyReports.id, driverDailyReportItems.reportId))
-    .innerJoin(persons, eq(persons.id, driverDailyReports.personId))
-    .leftJoin(vehicleRoutes, eq(vehicleRoutes.id, driverDailyReportItems.routeId))
-    .leftJoin(waybills, eq(waybills.id, driverDailyReportItems.waybillId))
-    .leftJoin(waybillSeries, eq(waybillSeries.id, waybills.seriesId))
-    .leftJoin(vehicleReadings, eq(vehicleReadings.itemId, driverDailyReportItems.id))
-    .leftJoin(previousOdometer, eq(previousOdometer.id, vehicleReadings.previousOdometerId))
-    .leftJoin(
-      previousEngineHours,
-      eq(previousEngineHours.id, vehicleReadings.previousEngineHoursId),
-    )
-    .where(
-      and(
-        eq(driverDailyReportItems.vehicleId, vehicleId),
-        sql`${driverDailyReportItems.reportDate} BETWEEN ${from}::date AND ${to}::date`,
-        ne(driverDailyReports.state, 'voided'),
-      ),
-    )
-    // Свежее сверху: журнал открывают вопросом «что сдали вчера», а не «с чего всё началось».
-    .orderBy(desc(driverDailyReportItems.reportDate), desc(driverDailyReportItems.shiftOrder))
-    .limit(JOURNAL_LIMIT + 1);
+  /**
+   * Отбор один на страницу и на счётчик: два разных условия отвечали бы на «сколько всего строк» и
+   * «какие строки показать» по-разному, и листание разъехалось бы с итогом на первом же отличии.
+   */
+  const where = and(
+    eq(driverDailyReportItems.vehicleId, vehicleId),
+    sql`${driverDailyReportItems.reportDate} BETWEEN ${from}::date AND ${to}::date`,
+    ne(driverDailyReports.state, 'voided'),
+  );
+  const pg = pageParams(query);
 
-  const page = rows.slice(0, JOURNAL_LIMIT);
-  const readingIds = page.map((row) => row.readingId).filter((id): id is string => id !== null);
+  const [rows, totalRows] = await Promise.all([
+    db
+      .select({
+        itemId: driverDailyReportItems.id,
+        reportId: driverDailyReportItems.reportId,
+        reportDate: driverDailyReportItems.reportDate,
+        shiftOrder: driverDailyReportItems.shiftOrder,
+        reportState: driverDailyReports.state,
+        sourceKind: driverDailyReportItems.sourceKind,
+        routeId: driverDailyReportItems.routeId,
+        routeNum: vehicleRoutes.num,
+        waybillId: driverDailyReportItems.waybillId,
+        waybillNumber: waybills.number,
+        waybillPrefix: waybillSeries.prefix,
+        waybillNumberWidth: waybillSeries.numberWidth,
+        personId: driverDailyReports.personId,
+        personName: persons.fullName,
+        readingId: vehicleReadings.id,
+        kind: vehicleReadings.kind,
+        odometerKm: vehicleReadings.odometerKm,
+        engineHours: vehicleReadings.engineHours,
+        fuelFilledLiters: vehicleReadings.fuelFilledLiters,
+        noDataReason: vehicleReadings.noDataReason,
+        comment: vehicleReadings.comment,
+        source: vehicleReadings.source,
+        recordedAt: vehicleReadings.recordedAt,
+        odometerAnomaly: vehicleReadings.odometerAnomaly,
+        odometerAnomalyConfirmedAt: vehicleReadings.odometerAnomalyConfirmedAt,
+        engineHoursAnomaly: vehicleReadings.engineHoursAnomaly,
+        engineHoursAnomalyConfirmedAt: vehicleReadings.engineHoursAnomalyConfirmedAt,
+        previousOdometerKm: previousOdometer.odometerKm,
+        previousOdometerDate: previousOdometer.reportDate,
+        previousEngineHours: previousEngineHours.engineHours,
+        previousEngineHoursDate: previousEngineHours.reportDate,
+      })
+      .from(driverDailyReportItems)
+      .innerJoin(driverDailyReports, eq(driverDailyReports.id, driverDailyReportItems.reportId))
+      .innerJoin(persons, eq(persons.id, driverDailyReports.personId))
+      .leftJoin(vehicleRoutes, eq(vehicleRoutes.id, driverDailyReportItems.routeId))
+      .leftJoin(waybills, eq(waybills.id, driverDailyReportItems.waybillId))
+      .leftJoin(waybillSeries, eq(waybillSeries.id, waybills.seriesId))
+      .leftJoin(vehicleReadings, eq(vehicleReadings.itemId, driverDailyReportItems.id))
+      .leftJoin(previousOdometer, eq(previousOdometer.id, vehicleReadings.previousOdometerId))
+      .leftJoin(
+        previousEngineHours,
+        eq(previousEngineHours.id, vehicleReadings.previousEngineHoursId),
+      )
+      .where(where)
+      /*
+       * Свежее сверху: журнал открывают вопросом «что сдали вчера», а не «с чего всё началось».
+       * Третьего ключа сортировки нет и не нужно: пара «день + позиция смены» у одной машины
+       * уникальна (`report_items_chain_key`), то есть порядок уже полный, и страницы между
+       * запросами не разъезжаются.
+       */
+      .orderBy(desc(driverDailyReportItems.reportDate), desc(driverDailyReportItems.shiftOrder))
+      .limit(pg.limit)
+      .offset(pg.offset),
+    db
+      .select({ total: count() })
+      .from(driverDailyReportItems)
+      .innerJoin(driverDailyReports, eq(driverDailyReports.id, driverDailyReportItems.reportId))
+      .where(where),
+  ]);
+
+  const readingIds = rows.map((row) => row.readingId).filter((id): id is string => id !== null);
   const [readingFiles, edits] = await Promise.all([
     loadReadingFiles(readingIds),
     loadReadingEdits(readingIds),
@@ -458,7 +520,7 @@ export async function loadVehicleReadingJournal(
    * показания приходит `leftJoin`'ом целиком пустой, и подставлять умолчания её полям значило бы
    * показать в журнале несданную смену как сданную неизвестно кем.
    */
-  const readingOf = (row: (typeof page)[number]): VehicleReadingDto | null => {
+  const readingOf = (row: (typeof rows)[number]): VehicleReadingDto | null => {
     if (row.readingId === null || row.kind === null || row.source === null) return null;
     if (row.recordedAt === null) return null;
 
@@ -505,8 +567,10 @@ export async function loadVehicleReadingJournal(
     vehicleLabel: vehicleLabel(vehicle),
     from,
     to,
-    truncated: rows.length > JOURNAL_LIMIT,
-    items: page.map((row) => ({
+    total: Number(totalRows[0]?.total ?? 0),
+    page: pg.page,
+    pageSize: pg.pageSize,
+    items: rows.map((row) => ({
       itemId: row.itemId,
       reportId: row.reportId,
       reportDate: row.reportDate,
@@ -601,174 +665,7 @@ async function loadReadingEdits(
   return map;
 }
 
-// ── Сводка по парку ──
-
-function round(value: number, digits: number): number {
-  const factor = 10 ** digits;
-  return Math.round(value * factor) / factor;
-}
-
-/** Точка ряда: строка ожидания вместе со своим показанием — та же пара, что и в журнале. */
-interface ChainPoint {
-  readingId: string | null;
-  kind: ReadingKind | null;
-  odometerKm: number | null;
-  engineHours: number | null;
-  fuelFilledLiters: number | null;
-  previousOdometerId: string | null;
-  previousEngineHoursId: string | null;
-  odometerAnomaly: ReadingAnomaly | null;
-  engineHoursAnomaly: ReadingAnomaly | null;
-}
-
-/**
- * Итог одного счётчика: сумма разностей соседних звеньев цепочки.
- *
- * Разность берётся у пары, **обе точки которой лежат в периоде**: у первого снимка периода
- * предшественник остался за его границей, и его разность отвечала бы за работу, сделанную до
- * начала периода. Строка со сбросом счётчика (`counter_reset`) в расчёт не идёт вовсе — ряд на ней
- * рвётся (Р20), и её пара сказала бы про пробег заведомую неправду.
- *
- * Пропущенная смена (`no_data`, несданная строка) пару не рвёт, и это осознанно: предшественником
- * такой строки цепочка назначает последний снимок с числом, поэтому разность накрывает пропуск
- * целиком. Машина эти километры проехала, и потерять их значило бы занизить пробег периода; чего
- * по ним не известно — так это распределения по дням, и об этом говорит счётчик разрывов рядом.
- *
- * Литры к разностям не приплетаются вовсе: портал считает заправленное топливо, и производных
- * показателей у него нет (Р28). Цифра, поделённая на пробег, читалась бы как расход независимо от
- * подписи в колонке, а фактический расход требует остатков в баке, которых портал не хранит.
- */
-function counterTotal(
-  points: ChainPoint[],
-  pick: (point: ChainPoint) => {
-    value: number | null;
-    previousId: string | null;
-    anomaly: ReadingAnomaly | null;
-  },
-): number | null {
-  const byId = new Map<string, ChainPoint>();
-  for (const point of points) if (point.readingId !== null) byId.set(point.readingId, point);
-
-  let total: number | null = null;
-  for (const point of points) {
-    const current = pick(point);
-    const previous = current.previousId === null ? undefined : byId.get(current.previousId);
-    const previousValue = previous === undefined ? null : pick(previous).value;
-
-    if (current.value !== null && previousValue !== null && current.anomaly !== 'counter_reset') {
-      total = (total ?? 0) + (current.value - previousValue);
-    }
-  }
-  return total;
-}
-
-/**
- * Разрыв ряда: строка ожидания, на которой ряд прервался, — без числового показания (несдана либо
- * `no_data`) или со сброшенным счётчиком. Число это в строке сводки стоит рядом с прочерком и
- * объясняет его: пустой пробег у работавшей машины — не ошибка отчёта, а разорванный ряд.
- */
-function gapsOf(points: ChainPoint[]): number {
-  return points.filter(
-    (point) =>
-      point.kind !== 'values' ||
-      point.odometerAnomaly === 'counter_reset' ||
-      point.engineHoursAnomaly === 'counter_reset',
-  ).length;
-}
-
-/**
- * Сводка по парку за период (Р27): пробег, наработка и заправленное топливо по каждой
- * машине, работавшей в периоде.
- *
- * В списке стоят машины, у которых в периоде есть хотя бы одна строка ожидания: сводка отвечает про
- * работавшую технику, и полный парк с прочерками в каждой строке отвечал бы на другой вопрос.
- */
-export async function loadFleetReadingStats(
-  from: string,
-  to: string,
-): Promise<VehicleReadingStatsRow[]> {
-  const rows = await db
-    .select({
-      vehicleId: driverDailyReportItems.vehicleId,
-      ownership: vehicles.ownership,
-      description: vehicles.description,
-      registrationNumber: vehicles.registrationNumber,
-      categoryName: vehicleCategories.name,
-      typeName: vehicleTypes.name,
-      modelName: vehicleModels.name,
-      readingId: vehicleReadings.id,
-      kind: vehicleReadings.kind,
-      odometerKm: vehicleReadings.odometerKm,
-      engineHours: vehicleReadings.engineHours,
-      fuelFilledLiters: vehicleReadings.fuelFilledLiters,
-      previousOdometerId: vehicleReadings.previousOdometerId,
-      previousEngineHoursId: vehicleReadings.previousEngineHoursId,
-      odometerAnomaly: vehicleReadings.odometerAnomaly,
-      engineHoursAnomaly: vehicleReadings.engineHoursAnomaly,
-    })
-    .from(driverDailyReportItems)
-    .innerJoin(driverDailyReports, eq(driverDailyReports.id, driverDailyReportItems.reportId))
-    .innerJoin(vehicles, eq(vehicles.id, driverDailyReportItems.vehicleId))
-    .innerJoin(vehicleTypes, eq(vehicleTypes.id, vehicles.vehicleTypeId))
-    .leftJoin(vehicleCategories, eq(vehicleCategories.id, vehicles.vehicleCategoryId))
-    .leftJoin(vehicleModels, eq(vehicleModels.id, vehicles.vehicleModelId))
-    .leftJoin(vehicleReadings, eq(vehicleReadings.itemId, driverDailyReportItems.id))
-    .where(
-      and(
-        sql`${driverDailyReportItems.reportDate} BETWEEN ${from}::date AND ${to}::date`,
-        ne(driverDailyReports.state, 'voided'),
-      ),
-    )
-    // Порядок ряда — тот же, что у цепочки (Р15): день, затем позиция смены. Госномер третьим
-    // ключом собирает строки одной машины подряд и задаёт порядок самой сводки.
-    .orderBy(
-      asc(vehicles.registrationNumberNormalized),
-      asc(driverDailyReportItems.vehicleId),
-      asc(driverDailyReportItems.reportDate),
-      asc(driverDailyReportItems.shiftOrder),
-    );
-
-  const byVehicle = new Map<string, { label: string; points: ChainPoint[] }>();
-  for (const row of rows) {
-    const entry = byVehicle.get(row.vehicleId) ?? { label: vehicleLabel(row), points: [] };
-    entry.points.push({
-      readingId: row.readingId,
-      kind: row.kind,
-      odometerKm: row.odometerKm,
-      engineHours: num(row.engineHours),
-      fuelFilledLiters: num(row.fuelFilledLiters),
-      previousOdometerId: row.previousOdometerId,
-      previousEngineHoursId: row.previousEngineHoursId,
-      odometerAnomaly: row.odometerAnomaly,
-      engineHoursAnomaly: row.engineHoursAnomaly,
-    });
-    byVehicle.set(row.vehicleId, entry);
-  }
-
-  return [...byVehicle].map(([vehicleId, entry]) => {
-    const odometer = counterTotal(entry.points, (point) => ({
-      value: point.odometerKm,
-      previousId: point.previousOdometerId,
-      anomaly: point.odometerAnomaly,
-    }));
-    const engine = counterTotal(entry.points, (point) => ({
-      value: point.engineHours,
-      previousId: point.previousEngineHoursId,
-      anomaly: point.engineHoursAnomaly,
-    }));
-    const fuel = entry.points.reduce((sum, point) => sum + (point.fuelFilledLiters ?? 0), 0);
-
-    return {
-      vehicleId,
-      vehicleLabel: entry.label,
-      distanceKm: odometer === null ? null : Math.round(odometer),
-      engineHours: engine === null ? null : round(engine, 1),
-      // Заправлено за период — сумма литров смен, и рядом с ней ничего не делится на пробег (Р28).
-      fuelFilledLiters: round(fuel, 1),
-      gaps: gapsOf(entry.points),
-    };
-  });
-}
+// ── Лист сводки по парку ──
 
 /** Прочерк в выгрузке — тот же, что на экране: неизвестное значение не притворяется нулём. */
 function cell(value: number | null, digits: number): string {

@@ -73,6 +73,7 @@ interface Ctx {
     waybillId: string;
     serviceRequestId: string;
     readingId: string;
+    maintenanceId: string;
   };
   /** Работник и машина для отчёта, который сдаётся настоящим сервисом (проверка `pending`). */
   submit: { personId: string; vehicleId: string; date: string };
@@ -127,8 +128,11 @@ async function cleanup(db: typeof AppDb): Promise<void> {
   await db.execute(sql`DELETE FROM service_requests WHERE created_by IN ${admin}`);
   await db.execute(sql`DELETE FROM waste_requests WHERE created_by IN ${admin}`);
   await db.execute(sql`DELETE FROM vehicle_requests WHERE created_by IN ${admin}`);
-  // Строки связей уходят каскадом вместе с файлом (`ON DELETE CASCADE` у всех пяти таблиц).
+  // Строки связей уходят каскадом вместе с файлом (`ON DELETE CASCADE` у всех шести таблиц).
   await db.execute(sql`DELETE FROM files WHERE object_key LIKE ${`${KEY_PREFIX}%`}`);
+  // Записи ТО — раньше машин по той же причине, что и отчёты дня: акт обслуживания держит машину
+  // `RESTRICT`'ом намеренно (миграция 0147), он переживает вывод единицы из парка.
+  await db.execute(sql`DELETE FROM vehicle_maintenance WHERE vehicle_id IN ${marked}`);
   // Отчёты дня сносятся раньше машин и людей — и это не порядок ради порядка: показания держат
   // машину и работника `RESTRICT`'ом намеренно (ADR 0103), учётный факт не должен исчезать вместе
   // со справочной строкой. Уборка теста обязана разбирать свои следы в том же порядке, в каком их
@@ -338,9 +342,18 @@ async function newReading(vehicleId: string, personId: string, waybillId: string
   return reading!.id;
 }
 
+/** Запись ТО (миграция 0147): к ней подшивают скан акта выполненных работ. */
+async function newMaintenance(vehicleId: string, day: string): Promise<string> {
+  const [record] = await ctx.db
+    .insert(ctx.schema.vehicleMaintenance)
+    .values({ vehicleId, performedOn: day, documentNumber: 'АКТ-1', createdBy: ctx.adminId })
+    .returning({ id: ctx.schema.vehicleMaintenance.id });
+  return record!.id;
+}
+
 /**
  * Таблицы связи и способ завести в каждой строку. Список повторяет тело `file_is_linked` — но
- * повторяет намеренно и с другой стороны: функция утверждает «эти пять таблиц я вижу», а тест
+ * повторяет намеренно и с другой стороны: функция утверждает «эти шесть таблиц я вижу», а тест
  * заводит настоящую строку и спрашивает функцию заново. Расходятся такие списки ровно тогда, когда
  * ветку в функцию дописали неверно — а не тогда, когда её забыли (это ловит соседний тест).
  */
@@ -383,6 +396,14 @@ const LINK_CASES: { table: string; link: (fileId: string) => Promise<void> }[] =
       await ctx.db
         .insert(ctx.schema.vehicleReadingFiles)
         .values({ readingId: ctx.parents.readingId, fileId });
+    },
+  },
+  {
+    table: 'vehicle_maintenance_files',
+    link: async (fileId) => {
+      await ctx.db
+        .insert(ctx.schema.vehicleMaintenanceFiles)
+        .values({ maintenanceId: ctx.parents.maintenanceId, fileId });
     },
   },
 ];
@@ -485,6 +506,7 @@ describe.skipIf(!DB_URL)('жизненный цикл файла: связи и 
         waybillId: '',
         serviceRequestId: '',
         readingId: '',
+        maintenanceId: '',
       },
       submit: { personId: '', vehicleId: '', date: moscowDateKeyOf(new Date()) },
     };
@@ -522,6 +544,7 @@ describe.skipIf(!DB_URL)('жизненный цикл файла: связи и 
       waybillId,
       serviceRequestId: service!.id,
       readingId: await newReading(docsVehicle, docsPerson, waybillId, day),
+      maintenanceId: await newMaintenance(docsVehicle, day),
     };
 
     // Отдельные работник и машина для отчёта, который сдаётся сервисом: строка ожидания занимает

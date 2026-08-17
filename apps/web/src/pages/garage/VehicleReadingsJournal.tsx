@@ -1,5 +1,4 @@
-import { useState } from 'react';
-import { Alert, DatePicker, Popover, Space, Table, Tag, Tooltip, Typography } from 'antd';
+import { DatePicker, Popover, Space, Tag, Tooltip, Typography } from 'antd';
 import type { TableColumnType } from 'antd';
 import dayjs from 'dayjs';
 import { useQuery } from '@tanstack/react-query';
@@ -7,10 +6,12 @@ import {
   driverReportStateLabels,
   type ReadingAnomalyDto,
   readingAnomalyLabels,
+  type VehicleReadingJournalRow,
 } from '@technic/contracts';
-import { ViewModal } from '@shared/ui';
+import { vehicleReadingKeys, vehicleReadingsApi } from '@entities/vehicle-reading';
+import { DataTable, ViewModal } from '@shared/ui';
+import { useIsMobile, useListParams } from '@shared/lib';
 import { FilesCell } from '../../components/FileLinks';
-import { readingsApi, readingsKeys, type VehicleReadingJournalRow } from './readingsApi';
 
 /**
  * Журнал показаний машины (ADR 0103, Р27): день, смена, кто передал, три числа, разности по
@@ -21,6 +22,10 @@ import { readingsApi, readingsKeys, type VehicleReadingJournalRow } from './read
  *
  * Строка без показания из журнала не выпадает: «смена была, цифр нет» — это ответ, за которым сюда
  * и приходят, а список одних сданных смен отвечал бы на другой вопрос.
+ *
+ * Страницы серверные, как у любого списка портала (Р25): окно спрашивает страницу и показывает
+ * общее число строк. Прежнее предупреждение «хвост периода не поместился» из окна ушло вместе с
+ * пределом сервера — оно предлагало сузить период там, где спрашивают следующую страницу.
  */
 
 const DATE = 'YYYY-MM-DD';
@@ -28,6 +33,13 @@ const SHOWN_DATE = 'DD.MM.YYYY';
 
 /** Месяц назад от выбранного дня: журнал открывают вопросом «что было в этом месяце». */
 const DEFAULT_DAYS = 30;
+
+/**
+ * Высота таблицы в окне. Задаётся явно, потому что у окна её нет: тело модального окна растёт по
+ * содержимому, а `DataTable` считает от неё свою прокрутку — без числа таблица схлопнулась бы до
+ * своего минимума. Доля экрана, а не пиксели: на ноутбуке окно и так упирается в высоту экрана.
+ */
+const TABLE_HEIGHT = 'min(60vh, 620px)';
 
 /** События истории показания (`vehicle_reading_history`): свои слова каждому. */
 const EVENT_LABELS: Record<string, string> = {
@@ -238,29 +250,65 @@ export function VehicleReadingsJournal({
   vehicleId,
   vehicleLabel,
   day,
+  from,
   open,
   onClose,
 }: {
   vehicleId: string;
   /** Подпись машины из строки списка: окно открывают из неё и закрывают, не уходя со среза. */
   vehicleLabel: string;
-  /** День среза: от него отсчитывается период по умолчанию — назад, а не вокруг. */
+  /** Конец периода: у гаража это день среза, у карточки — конец её отрезка. */
   day: string;
+  /**
+   * Начало периода, если у зовущего оно своё. Гараж его не задаёт — там журнал открывают вопросом
+   * «что было у этой машины в последнее время», и месяц назад от дня среза отвечает на него лучше
+   * любого умолчания. Карточка задаёт: она живёт периодом, и журнал внутри неё, отсчитывающий свои
+   * тридцать дней от `to`, показывал бы хвост квартала вместо квартала.
+   */
+  from?: string;
   open: boolean;
   onClose: () => void;
 }) {
-  const [period, setPeriod] = useState<[string, string]>([
-    dayjs(day).subtract(DEFAULT_DAYS, 'day').format(DATE),
-    day,
-  ]);
+  const isMobile = useIsMobile();
+  /**
+   * Период живёт в тех же параметрах, что и страница: они меняются вместе — другой отрезок
+   * начинается с первой страницы, — и держать их в двух состояниях значило бы иметь два ответа на
+   * вопрос «что сейчас показано».
+   */
+  const { params, setParams, onTableChange } = useListParams<{ from: string; to: string }>(
+    { from: from ?? dayjs(day).subtract(DEFAULT_DAYS, 'day').format(DATE), to: day },
+    { searchKeys: [] },
+  );
 
-  const query = { from: period[0], to: period[1] };
+  /*
+   * Серверу уходит ровно период со страницей: сортировки и поиска у журнала нет — порядок строк
+   * задан (свежее сверху), — и лишний параметр запроса обещал бы отбор, которого не происходит.
+   */
+  const query = { from: params.from, to: params.to, page: params.page, pageSize: params.pageSize };
   const { data, isFetching } = useQuery({
-    queryKey: readingsKeys.journal(vehicleId, query),
-    queryFn: () => readingsApi.journal(vehicleId, query),
+    queryKey: vehicleReadingKeys.journal(vehicleId, query),
+    queryFn: () => vehicleReadingsApi.journal(vehicleId, query),
     // Окно открывают из строки списка: до открытия спрашивать журнал незачем.
     enabled: open,
   });
+
+  /** Другой период — другие строки: третья страница прежнего отрезка означала бы уже не те смены. */
+  const changePeriod = (from: string, to: string) => {
+    setParams((prev) => ({ ...prev, from, to, page: 1 }));
+  };
+
+  const table = (
+    <DataTable<VehicleReadingJournalRow>
+      rowKey="itemId"
+      columns={columns}
+      data={data?.items ?? []}
+      total={data?.total ?? 0}
+      loading={isFetching}
+      page={params.page}
+      pageSize={params.pageSize}
+      onChange={onTableChange}
+    />
+  );
 
   return (
     <ViewModal
@@ -274,29 +322,14 @@ export function VehicleReadingsJournal({
         <DatePicker.RangePicker
           format={SHOWN_DATE}
           allowClear={false}
-          value={[dayjs(period[0]), dayjs(period[1])]}
+          value={[dayjs(params.from), dayjs(params.to)]}
           onChange={(v) => {
-            if (v?.[0] && v[1]) setPeriod([v[0].format(DATE), v[1].format(DATE)]);
+            if (v?.[0] && v[1]) changePeriod(v[0].format(DATE), v[1].format(DATE));
           }}
         />
 
-        {data?.truncated && (
-          <Alert
-            type="warning"
-            showIcon
-            message="Показаны последние строки периода — остальные не поместились. Выберите период покороче."
-          />
-        )}
-
-        <Table<VehicleReadingJournalRow>
-          rowKey="itemId"
-          size="small"
-          columns={columns}
-          dataSource={data?.items ?? []}
-          loading={isFetching}
-          pagination={false}
-          scroll={{ x: 'max-content' }}
-        />
+        {/* На телефоне список живёт своей раскладкой (`DataTable`), и чужая высота ему помешала бы. */}
+        {isMobile ? table : <div style={{ height: TABLE_HEIGHT }}>{table}</div>}
       </Space>
     </ViewModal>
   );

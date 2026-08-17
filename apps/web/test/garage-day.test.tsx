@@ -222,6 +222,11 @@ function renderPage(options: { viewport?: Viewport } = {}) {
     'GET /garage/drivers/summary': () => json(driverSummary),
     // Классификатор наполняет фильтр вкладки техники; отбор строк ведёт сервер.
     'GET /vehicle-classifications': () => json(emptyList()),
+    // Колонка «ТО» спрашивает состояние пакетом на видимую страницу (Р16): к срезу дня она
+    // отношения не имеет, но у администратора право на обслуживание есть, и без ответа колонка
+    // молча осталась бы без данных. Проверяют её свои тесты (`garage-maintenance`).
+    'GET /vehicle-maintenance/snapshot': ({ query }) =>
+      json({ on: query.get('on') ?? '', items: [] }),
   });
   const rendered = renderWithUser(<GaragePage />, {
     user: admin,

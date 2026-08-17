@@ -444,6 +444,18 @@ describe.skipIf(!DB_URL)('приведение снимка к источник�
       .update(ctx.schema.vehicleRoutes)
       .set({ driverPersonId: to })
       .where(eq(ctx.schema.vehicleRoutes.id, moved));
+
+    // Цель переноса приходит в самом расхождении: работник и день — из живого источника, а отчёта
+    // у цели нет вовсе, и версии от портала в этом случае не бывает по построению.
+    const seen = await ctx.readings.loadReportById(report.id);
+    expect(seen.discrepancies.find((d) => d.kind === 'driver')?.target).toEqual({
+      personId: to,
+      personName: expect.stringContaining('Принимаев'),
+      date: ctx.today,
+      reportId: null,
+      reportVersion: null,
+    });
+
     const target = await rebase(itemOf(report, moved).id, { [report.id]: report.version });
 
     // Закрытая строка молча в черновик не прячется: показание уже сдано.
@@ -779,6 +791,67 @@ describe.skipIf(!DB_URL)('приведение снимка к источник�
     expect(denied.message).toContain('Отчёт изменился');
     // Откат уносит и только что созданный целевой отчёт: пустой шапки после отказа не остаётся.
     expect(await ctx.readings.loadReport(to, ctx.today)).toBeNull();
+  });
+
+  it('день цели уже открыт: перенос проходит с версией цели, взятой из расхождения', async () => {
+    const from = await makeDriver('Отправляй');
+    const to = await makeDriver('Работаев');
+    const moved = await makeRoute({
+      vehicleId: await makeVehicle(),
+      personId: from,
+      date: ctx.today,
+    });
+    const stays = await makeRoute({
+      vehicleId: await makeVehicle(),
+      personId: from,
+      date: ctx.today,
+    });
+    // День получателя не пуст и уже отправлен: ровно тот случай, ради которого перенос придуман, —
+    // сервер не заведёт цели сам, и без её версии операция упиралась бы в 409 навсегда.
+    const own = await makeRoute({ vehicleId: await makeVehicle(), personId: to, date: ctx.today });
+    const source = await submitDay(from, ctx.today, [
+      { routeId: moved, odometer: 13_000 },
+      { routeId: stays, odometer: 13_500 },
+    ]);
+    const opened = await submitDay(to, ctx.today, [{ routeId: own, odometer: 14_000 }]);
+
+    await ctx.db
+      .update(ctx.schema.vehicleRoutes)
+      .set({ driverPersonId: to })
+      .where(eq(ctx.schema.vehicleRoutes.id, moved));
+
+    // Расхождение называет цель целиком: и человека с днём, и уже заведённый отчёт с его версией.
+    const seen = await ctx.readings.loadReportById(source.id);
+    const discrepancy = seen.discrepancies.find((d) => d.kind === 'driver');
+    expect(discrepancy?.target).toEqual({
+      personId: to,
+      personName: expect.stringContaining('Работаев'),
+      date: ctx.today,
+      reportId: opened.id,
+      reportVersion: opened.version,
+    });
+
+    // Портал шлёт ровно то, что ему сказали: версии обоих отчётов, вторую — из цели.
+    const after = await rebase(itemOf(seen, moved).id, {
+      [seen.id]: seen.version,
+      [discrepancy!.target!.reportId!]: discrepancy!.target!.reportVersion!,
+    });
+
+    expect(after.id).toBe(opened.id);
+    expect(after.personId).toBe(to);
+    expect([...after.items.map((i) => i.sourceId)].sort()).toEqual([moved, own].sort());
+    // Показание уехало вместе со строкой, а не осталось у прежнего работника.
+    expect(after.items.find((i) => i.sourceId === moved)?.reading?.odometerKm).toBe(13_000);
+    expect(after.contentVersion).toBe(opened.contentVersion + 1);
+    expect(after.version).toBeGreaterThan(opened.version);
+    expect(after.discrepancies).toHaveLength(0);
+
+    const left = await ctx.readings.loadReportById(source.id);
+    expect(left.items.map((i) => i.sourceId)).toEqual([stays]);
+    expect(left.state).toBe('submitted');
+    expect(left.contentVersion).toBe(seen.contentVersion + 1);
+    expect(left.version).toBeGreaterThan(seen.version);
+    expect(left.discrepancies).toHaveLength(0);
   });
 
   it('устаревшая версия целевого отчёта — отказ', async () => {

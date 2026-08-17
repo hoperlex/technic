@@ -5,12 +5,17 @@ import {
   dateOnlySchema,
   discrepancyResolveSchema,
   readingRebaseSchema,
+  REPORT_ACCEPT_BLOCKED_CODE,
+  reportAcceptBatchSchema,
   reportAcceptSchema,
   reportItemOrderSchema,
   reportSubmitSchema,
   uuidSchema,
+  type ReportAcceptBatchDto,
+  type ReportAcceptFailureCode,
+  type ReportAcceptFailureDto,
 } from '@technic/contracts';
-import { err } from '../lib/errors';
+import { AppError, err } from '../lib/errors';
 import { requirePrincipal } from '../auth/plugin';
 import {
   acceptReport,
@@ -38,6 +43,24 @@ import {
 
 const idParams = z.object({ id: uuidSchema });
 const personDateParams = z.object({ personId: uuidSchema, date: dateOnlySchema });
+
+/**
+ * Отказ приёма — грубым кодом строки пакета (Р9).
+ *
+ * Разошедшаяся версия и невыполненное к моменту приёма условие приходят одним 409, но исходы у них
+ * разные: первое лечится перечитыванием реестра, второе требует разбора отчёта. Различает их
+ * `REPORT_ACCEPT_BLOCKED_CODE` — код, который ставит сам приём, а не приставка его сообщения:
+ * своего набора правил приёма ручке заводить нельзя (Р9), а разбор по началу фразы ломался бы от
+ * правки формулировки молча — `blocked` превращался бы в `version` без единой красной проверки.
+ *
+ * Текст причины при этом идёт в ответ целиком и от кода не зависит: код говорит, что делать,
+ * сообщение — что случилось.
+ */
+function failureCodeOf(error: AppError): ReportAcceptFailureCode {
+  if (error.statusCode === 404) return 'gone';
+  if (error.statusCode !== 409) return 'error';
+  return error.code === REPORT_ACCEPT_BLOCKED_CODE ? 'blocked' : 'version';
+}
 
 export default async function vehicleReadingsRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
@@ -102,6 +125,54 @@ export default async function vehicleReadingsRoutes(app: FastifyInstance): Promi
     async (req) => {
       const p = requirePrincipal(req);
       return acceptReport(req.params.id, req.body.version, p.id);
+    },
+  );
+
+  /**
+   * Пакетный приём дня (Р8, Р9): те отчёты, где зелены **все** строки, принимаются одной кнопкой.
+   *
+   * Три свойства, и каждое — решение, а не деталь исполнения.
+   *
+   * 1. **Внутри — тот же `acceptReport`, своей проверки ручка не заводит.** Он перепроверяет все
+   *    условия уже под блокировками, и второй набор правил рядом с ним разъехался бы с первым:
+   *    пакет принимал бы то, что одиночная кнопка отвергает, — или наоборот.
+   * 2. **Каждый отчёт в своей транзакции** (её открывает сам `acceptReport`). Приём девяти не
+   *    должен падать целиком из-за десятого, который успели поправить в соседней вкладке: отказ
+   *    попадает в свою строку ответа, соседи принимаются.
+   * 3. **Порядок — тот, в каком отчёты пришли.** Ответ читают рядом с реестром, и переставленные
+   *    строки пришлось бы сопоставлять глазами.
+   *
+   * Ответ всегда 200, даже если не принято ни одного: пакет — это N независимых исходов, и общий
+   * код ответа сказал бы про них либо неправду, либо ничего. Пустой список — законный запрос с
+   * пустым итогом; до приёма дело не доходит вовсе.
+   */
+  r.post(
+    '/reports/accept-batch',
+    { ...write, schema: { body: reportAcceptBatchSchema } },
+    async (req): Promise<ReportAcceptBatchDto> => {
+      const p = requirePrincipal(req);
+      const accepted: string[] = [];
+      const failed: ReportAcceptFailureDto[] = [];
+      for (const { id, version } of req.body.reports) {
+        try {
+          await acceptReport(id, version, p.id);
+          accepted.push(id);
+        } catch (error) {
+          if (error instanceof AppError) {
+            // Текст приёма уходит в ответ как есть: «отчёт уже принят», «не разобрано расхождений:
+            // 1» и «отчёт изменился» человек различает сам, а пересказ их своими словами был бы
+            // тем же вторым набором правил, только в родительном падеже.
+            failed.push({ id, code: failureCodeOf(error), reason: error.message });
+            continue;
+          }
+          // Непредвиденный сбой не роняет пакет — иначе принятые до него отчёты остались бы
+          // принятыми, а ответом на всё был бы 500, из которого не видно ни одного исхода. Но и
+          // молчать о нём нельзя: подробности уходят в лог, пользователю — что приём не состоялся.
+          req.log.error({ err: error, reportId: id }, 'пакетный приём показаний: отчёт не принят');
+          failed.push({ id, code: 'error', reason: 'Отчёт не принят: внутренняя ошибка сервера' });
+        }
+      }
+      return { accepted, failed };
     },
   );
 

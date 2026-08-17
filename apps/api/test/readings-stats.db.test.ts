@@ -1,6 +1,6 @@
 import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import pg from 'pg';
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   moscowDateKeyOf,
@@ -15,7 +15,9 @@ import { applyMigrations } from '../src/db/migration-journal';
 // окружение, — конфиг проверяет его при импорте и без него падает.
 import type { db as AppDb } from '../src/db/client';
 import type * as SchemaNs from '../src/db/schema';
+import type * as AssignmentNs from '../src/services/driver-assignment';
 import type * as ReadingsNs from '../src/services/readings';
+import type * as AggregateNs from '../src/services/readings-aggregate';
 import type * as StatsNs from '../src/services/readings-stats';
 
 /**
@@ -75,7 +77,9 @@ interface Ctx {
   db: typeof AppDb;
   schema: typeof SchemaNs;
   service: typeof ReadingsNs;
+  assignment: typeof AssignmentNs;
   stats: typeof StatsNs;
+  aggregate: typeof AggregateNs;
   closeDb: () => Promise<void>;
   adminId: string;
   objectId: string;
@@ -238,8 +242,16 @@ async function issueWaybillFor(
 /**
  * Рейс-перегон с выписанным по нему листом: он виден в задании всегда, тогда как грузовой пропадает,
  * оставшись без живых заявок состава, — а тесту нужен источник, а не проверка отбора заданий.
+ *
+ * `waybill: false` оставляет рейс без бумаги — это не «неполная фикстура», а самостоятельный
+ * сценарий: такой рейс заданием не является (Р5), и ни кабинет, ни гараж показаний по нему не ждут.
  */
-async function newRoute(vehicleId: string, date: string, personId: string): Promise<string> {
+async function newRoute(
+  vehicleId: string,
+  date: string,
+  personId: string,
+  options: { waybill?: boolean } = {},
+): Promise<string> {
   const [route] = await ctx.db
     .insert(ctx.schema.vehicleRoutes)
     .values({
@@ -253,7 +265,7 @@ async function newRoute(vehicleId: string, date: string, personId: string): Prom
       createdBy: ctx.adminId,
     })
     .returning({ id: ctx.schema.vehicleRoutes.id });
-  await issueWaybillFor(route!.id, vehicleId, personId, date);
+  if (options.waybill !== false) await issueWaybillFor(route!.id, vehicleId, personId, date);
   return route!.id;
 }
 
@@ -339,10 +351,56 @@ async function stateOf(date: string, vehicleId: string): Promise<VehicleReadingD
   return states.get(vehicleId) ?? null;
 }
 
-/** Строка сводки своей машины: сводка отвечает про весь парк, и чужие строки в ней законны. */
+/**
+ * Машины, которые фильтр «Показания не сданы» оставил бы на странице гаража, — тем же выражением и
+ * на том же месте, где его применяет `routes/garage.ts`: условием перечня машин, до страницы.
+ *
+ * Список сужается своими машинами намеренно: база у db-тестов общая, и «сколько всего машин ждут»
+ * ответило бы про весь парк вместе с чужими прогонами.
+ */
+async function pendingOf(date: string, vehicleIds: string[]): Promise<Set<string>> {
+  const rows = await ctx.db
+    .select({ id: ctx.schema.vehicles.id })
+    .from(ctx.schema.vehicles)
+    .where(and(inArray(ctx.schema.vehicles.id, vehicleIds), ctx.stats.pendingReadingsSql(date)));
+  return new Set(rows.map((row) => row.id));
+}
+
+/** Ждёт ли гараж показание по этой машине в этот день. */
+async function isPending(date: string, vehicleId: string): Promise<boolean> {
+  return (await pendingOf(date, [vehicleId])).has(vehicleId);
+}
+
+/** Источники, которые видит у себя водитель, — тем же вызовом, каким их читает кабинет. */
+async function cabinetSourceIds(personId: string, date: string): Promise<string[]> {
+  const entries = await ctx.assignment.loadDayEntries(personId, date);
+  return entries.map((entry) => entry.sourceId);
+}
+
+/**
+ * Строка сводки своей машины: сводка отвечает про весь парк, и чужие строки в ней законны.
+ *
+ * Считает сводку агрегат (`readings-aggregate.ts`, §5) — с тех пор как он заменил прежнюю
+ * `loadFleetReadingStats`. Проверки ниже переехали на него вместе с ней и остались здесь
+ * намеренно: они про то, что гараж видит рядом с колонкой дня, — а совпадение старой и новой
+ * формул на общих данных сверял `readings-aggregate-parity.db.test.ts`.
+ */
 async function statsOf(vehicleId: string, from: string, to: string) {
-  const rows = await ctx.stats.loadFleetReadingStats(from, to);
+  const rows = await ctx.aggregate.loadFleetStats(from, to);
   return rows.find((row) => row.vehicleId === vehicleId) ?? null;
+}
+
+/**
+ * Журнал машины за период. Страница по умолчанию — первая и большая: сценариям, которые про
+ * содержимое строк, а не про листание, размер страницы безразличен.
+ */
+async function journalOf(
+  vehicleId: string,
+  from: string,
+  to: string,
+  page: { page: number; pageSize: number } = { page: 1, pageSize: 100 },
+) {
+  return ctx.stats.loadVehicleReadingJournal(vehicleId, { from, to, ...page });
 }
 
 describe.skipIf(!DB_URL)('показания: состояние дня, журнал и сводка', () => {
@@ -353,7 +411,9 @@ describe.skipIf(!DB_URL)('показания: состояние дня, жур�
     const { db, closeDb } = await import('../src/db/client');
     const schema = await import('../src/db/schema');
     const service = await import('../src/services/readings');
+    const assignment = await import('../src/services/driver-assignment');
     const stats = await import('../src/services/readings-stats');
+    const aggregate = await import('../src/services/readings-aggregate');
     await purgeStale(db);
 
     const adminId = await seedAdmin(db, schema);
@@ -379,7 +439,9 @@ describe.skipIf(!DB_URL)('показания: состояние дня, жур�
       db,
       schema,
       service,
+      assignment,
       stats,
+      aggregate,
       closeDb,
       adminId,
       objectId: objects.rows[0].id,
@@ -553,7 +615,7 @@ describe.skipIf(!DB_URL)('показания: состояние дня, жур�
       expect(await stateOf(second, vehicle)).toBe('discrepancy');
     });
 
-    it('аннулированный отчёт не считается ни колонкой, ни сводкой', async () => {
+    it('аннулированный отчёт не считается: колонка гаснет, числа сводки уходят', async () => {
       const person = await newPerson('Аннулиров');
       const vehicle = await newVehicle();
       const date = day(6);
@@ -577,7 +639,119 @@ describe.skipIf(!DB_URL)('показания: состояние дня, жур�
         .where(eq(ctx.schema.driverDailyReports.id, opened.id));
 
       expect(await stateOf(date, vehicle)).toBeNull();
-      expect(await statsOf(vehicle, date, date)).toBeNull();
+      // Из сводки при этом исчезают числа, а не строка машины: смену этого дня по-прежнему ждут —
+      // рейс с выписанным листом жив (Р26в), — и показать её пустой честнее, чем не показать вовсе.
+      expect(await statsOf(vehicle, date, date)).toMatchObject({
+        distanceKm: null,
+        fuelFilledLiters: 0,
+      });
+      // И тем же ответом отвечает фильтр: смену ждут по-прежнему, а показание, уехавшее в
+      // аннулированный отчёт, её не закрывает.
+      expect(await isPending(date, vehicle)).toBe(true);
+    });
+  });
+
+  /**
+   * Фильтр «Показания не сданы» и колонка дня (Р26б). Оба отвечают на один вопрос — «ждём ли
+   * показание», — и оба обязаны спрашивать его у **ожидаемой смены**, а не у строки ожидания:
+   * строка появляется только после `openReport`, и день, который никто не открывал, прежний фильтр
+   * не видел вовсе. Правило ожидаемой смены здесь не своё: это те же фрагменты, которыми считают
+   * статистика и кабинет водителя (Р26а).
+   */
+  describe('фильтр «не сданы» и колонка дня', () => {
+    it('день, который никто не открывал, в отбор попадает: рейс с листом есть, показания нет', async () => {
+      const person = await newPerson('Неоткрытый');
+      const vehicle = await newVehicle();
+      const idle = await newVehicle();
+      const date = day(19);
+      await newRoute(vehicle, date, person);
+
+      // Отчёта нет вовсе — ни строки ожидания, ни показания. Ровно ради такого дня фильтр и
+      // открывают: у водителя может не быть учётки, и показания за него вводит диспетчер.
+      const pending = await pendingOf(date, [vehicle, idle]);
+      expect(pending.has(vehicle)).toBe(true);
+      // Машина без единой ожидаемой смены не ждёт ничего — «нечего ждать» и «не сдано» не одно и
+      // то же.
+      expect(pending.has(idle)).toBe(false);
+      // Колонка при этом молчит («нет»): состояний, кроме пяти, у неё нет, и «нет» она показывает
+      // и у открытого дня без чисел. Важно другое — «сданы» она не говорит.
+      expect(await stateOf(date, vehicle)).toBeNull();
+    });
+
+    it('рейс без действующего листа не ждут ни кабинет, ни гараж', async () => {
+      const person = await newPerson('Бесбумажный');
+      const documented = await newVehicle();
+      const bare = await newVehicle();
+      const date = day(20);
+      const withPaper = await newRoute(documented, date, person);
+      await newRoute(bare, date, person, { waybill: false });
+
+      // Кабинет строго документален (Р5): рейса без бумаги водитель у себя не видит.
+      expect(await cabinetSourceIds(person, date)).toEqual([withPaper]);
+
+      const opened = await report(person, date);
+      expect(opened.items).toHaveLength(1);
+      await submit(person, date, [line(opened.items[0]!.id, values({ odometerKm: 400 }))]);
+
+      // Машина оформленного рейса закрыта: и колонкой, и фильтром.
+      expect(await stateOf(date, documented)).toBe('reported');
+      expect(await isPending(date, documented)).toBe(false);
+
+      // А по рейсу без листа спрашивать показание не с кого — и гараж больше не спрашивает
+      // (§14 п. 4 плана). Отчёт при этом отправлен, то есть состав дня заморожен: прежний
+      // `missing_source` красил бы эту машину расхождением, хотя в кабинете рейса нет.
+      expect(await isPending(date, bare)).toBe(false);
+      expect(await stateOf(date, bare)).toBeNull();
+    });
+
+    it('недельный лист ждут каждый день действия — и ни днём раньше, ни днём позже', async () => {
+      const person = await newPerson('Недельный');
+      const vehicle = await newVehicle();
+      const from = weekStartKey(day(5));
+      await newEsm2(vehicle, person, day(5));
+
+      // Смены считаются днями действия документа, а не выездами (Р34): в неделю с простоями
+      // ожидаемых смен всё равно семь.
+      for (let i = 0; i < 7; i += 1) {
+        expect(await isPending(shiftDateKey(from, i), vehicle), `день ${i} недели`).toBe(true);
+      }
+      // Границы строгие с обеих сторон: до листа и после него ждать нечего.
+      expect(await isPending(shiftDateKey(from, -1), vehicle)).toBe(false);
+      expect(await isPending(shiftDateKey(from, 7), vehicle)).toBe(false);
+
+      // Сданный день закрывается сам по себе, а не вся неделя: ключ у смены — лист и день
+      // (`report_items_waybill_key`).
+      const closed = shiftDateKey(from, 2);
+      const opened = await report(person, closed);
+      expect(opened.items).toHaveLength(1);
+      await submit(person, closed, [line(opened.items[0]!.id, values({ engineHours: 12.5 }))]);
+      expect(await isPending(closed, vehicle)).toBe(false);
+      expect(await isPending(shiftDateKey(from, 3), vehicle)).toBe(true);
+    });
+
+    it('фильтр и колонка считают один день: две смены гаснут по одной', async () => {
+      const person = await newPerson('Двойной');
+      const vehicle = await newVehicle();
+      const date = day(19);
+      await newEsm2(vehicle, person, date);
+      await newRoute(vehicle, date, person);
+
+      const opened = await report(person, date);
+      expect(opened.items).toHaveLength(2);
+      const [first, second] = opened.items;
+      // День открыт, но пуст: колонка говорит «нет», фильтр — «ждут». Это один ответ, а не два:
+      // «нет» у колонки означает «ничего не сдано», а не «нечего ждать».
+      expect(await stateOf(date, vehicle)).toBe('none');
+      expect(await isPending(date, vehicle)).toBe(true);
+
+      await submit(person, date, [line(first!.id, values({ odometerKm: 900 }))]);
+      expect(await stateOf(date, vehicle)).toBe('partial');
+      expect(await isPending(date, vehicle)).toBe(true);
+
+      // Закрыта вторая смена — и оба ответа гаснут вместе.
+      await submit(person, date, [line(second!.id, values({ engineHours: 3 }))]);
+      expect(await stateOf(date, vehicle)).toBe('reported');
+      expect(await isPending(date, vehicle)).toBe(false);
     });
   });
 
@@ -740,12 +914,8 @@ describe.skipIf(!DB_URL)('показания: состояние дня, жур�
     });
 
     it('журнал показывает каждую смену: разности по своей цепочке и строку без чисел', async () => {
-      const journal = await ctx.stats.loadVehicleReadingJournal(
-        chain.vehicle,
-        chain.days[0]!,
-        chain.days[2]!,
-      );
-      expect(journal!.truncated).toBe(false);
+      const journal = await journalOf(chain.vehicle, chain.days[0]!, chain.days[2]!);
+      expect(journal!.total).toBe(3);
       // Свежее сверху: журнал открывают вопросом «что сдали вчера», а не «с чего всё началось».
       expect(journal!.items.map((i) => i.reportDate)).toEqual([...chain.days].reverse());
       expect(journal!.items.every((i) => i.sourceKind === 'route')).toBe(true);
@@ -767,11 +937,47 @@ describe.skipIf(!DB_URL)('показания: состояние дня, жур�
       await newRoute(vehicle, date, person);
       await report(person, date);
 
-      const empty = await ctx.stats.loadVehicleReadingJournal(vehicle, date, date);
+      const empty = await journalOf(vehicle, date, date);
+      expect(empty!.total).toBe(1);
       expect(empty!.items).toHaveLength(1);
       expect(empty!.items[0]!.reading).toBeNull();
       expect(empty!.items[0]!.files).toEqual([]);
       expect(empty!.items[0]!.edits).toEqual([]);
+    });
+
+    /**
+     * Страницы журнала (Р25). Проверяется то, ради чего пагинация и заводится: страница отвечает
+     * своими строками, общее число считается по всему периоду, а порядок строк сквозной — «свежее
+     * сверху» держится через границу страниц, иначе вторая страница показывала бы уже другой
+     * журнал.
+     *
+     * Размер страницы взят мелкий, чтобы отрезок из трёх смен резался на две: сам сервис размера не
+     * проверяет — allowlist (50, 100, 200, 500) стоит в схеме ручки, где страницу и просят.
+     */
+    it('журнал режется страницами: своя страница, общее число и сквозной порядок', async () => {
+      const [from, to] = [chain.days[0]!, chain.days[2]!];
+      const first = await journalOf(chain.vehicle, from, to, { page: 1, pageSize: 2 });
+      const second = await journalOf(chain.vehicle, from, to, { page: 2, pageSize: 2 });
+
+      expect(first).toMatchObject({ total: 3, page: 1, pageSize: 2 });
+      expect(second).toMatchObject({ total: 3, page: 2, pageSize: 2 });
+      // Общее число — по всему периоду, а не по загруженной странице: им подписывают список, и
+      // счётчик, считающий страницу, врал бы и в подписи, и в самом листании.
+      expect(first!.items.map((i) => i.reportDate)).toEqual([chain.days[2], chain.days[1]]);
+      expect(second!.items.map((i) => i.reportDate)).toEqual([chain.days[0]]);
+
+      // Страницы не пересекаются и вместе дают тот же журнал, что и одним куском: у одной машины
+      // пара «день + позиция смены» уникальна, и порядок между запросами не разъезжается.
+      const whole = await journalOf(chain.vehicle, from, to);
+      expect([...first!.items, ...second!.items].map((i) => i.itemId)).toEqual(
+        whole!.items.map((i) => i.itemId),
+      );
+
+      // Страница за концом списка — законный пустой ответ, а не отказ: так листание переживает
+      // строки, исчезнувшие между двумя запросами.
+      const beyond = await journalOf(chain.vehicle, from, to, { page: 3, pageSize: 2 });
+      expect(beyond!.items).toEqual([]);
+      expect(beyond!.total).toBe(3);
     });
   });
 });

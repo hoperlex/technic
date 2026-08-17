@@ -3,6 +3,7 @@ import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { and, count, eq, ilike, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import {
+  can,
   driverDocumentGaps,
   type GarageDriverListDto,
   garageDriverQuerySchema,
@@ -20,6 +21,7 @@ import {
   type VehicleReadingDayState,
   waybillDocumentOf,
 } from '@technic/contracts';
+import { requirePrincipal } from '../auth/plugin';
 import { db } from '../db/client';
 import {
   personEmployments,
@@ -43,6 +45,7 @@ import {
   loadVehicleBusy,
   vehicleStateSql,
 } from '../services/garage';
+import { loadLastOdometers } from '../services/readings-aggregate';
 import { loadVehicleReadingStates, pendingReadingsSql } from '../services/readings-stats';
 
 /**
@@ -254,6 +257,12 @@ export default async function garageRoutes(app: FastifyInstance): Promise<void> 
         q.state ? sql`${state} = ${q.state}` : undefined,
         // Отбор идёт до страницы, а не после: «не сданы» — это фильтр списка, и посчитанный по
         // загруженной странице он врал бы и в счётчике, и в листании.
+        //
+        // Спрашивает он **ожидаемую смену дня** (Р26б), а не строку ожидания, поэтому в отбор
+        // попадает и день, который никто не открывал: у водителя без учётки строк нет вовсе, а
+        // показания за него вводит диспетчер. Колонка такой день подписывает «нет» — состояний,
+        // кроме пяти, у неё не прибавилось, — и это не разнобой: «нет» она показывает и у
+        // открытого дня, по которому не сдано ничего.
         q.readings === 'pending' ? pendingReadingsSql(on) : undefined,
       )!;
 
@@ -278,12 +287,22 @@ export default async function garageRoutes(app: FastifyInstance): Promise<void> 
         vehicleTotalsQuery(state).where(where),
       ]);
 
-      // Занятости и состояние показаний добираются по найденной странице — одним приёмом и одним
-      // заходом: оба ответа относятся к тем же машинам, и второй круг ожидания здесь ни к чему.
+      /**
+       * Одометр — данные модуля показаний, а не гаража: `garage.read` открывает срез дня, а цифры
+       * приборов открывает `vehicleReadings.read` (план «Показания техники», Р16). Без него запрос
+       * не уходит вовсе и поля в ответе нет — `null` означал бы «показаний не было», то есть
+       * отвечал бы неправду про парк вместо молчания про доступ.
+       */
+      const showOdometer = can(requirePrincipal(req), 'vehicleReadings.read');
+
+      // Занятости, состояние показаний и последний одометр добираются по найденной странице —
+      // одним приёмом и одним заходом: все три ответа относятся к тем же машинам, и второй круг
+      // ожидания здесь ни к чему. Каждый из трёх — одна выборка на страницу, а не на строку.
       const vehicleIds = rows.map((row) => row.id);
-      const [busy, readings] = await Promise.all([
+      const [busy, readings, odometers] = await Promise.all([
         loadVehicleBusy(on, vehicleIds),
         loadVehicleReadingStates(on, vehicleIds),
+        showOdometer ? loadLastOdometers(vehicleIds, on) : null,
       ]);
 
       return {
@@ -306,6 +325,9 @@ export default async function garageRoutes(app: FastifyInstance): Promise<void> 
             categoryName: row.categoryName,
             busy: entries,
             drivers: driversOfBusy(entries),
+            // Показания на этот день у машины есть не всегда, и `null` здесь — законный ответ:
+            // машину могли завести вчера, а её счётчик снять некому.
+            ...(odometers === null ? {} : { lastOdometer: odometers.get(row.id) ?? null }),
           };
         }),
         total: Number(totalRows[0]!.total),

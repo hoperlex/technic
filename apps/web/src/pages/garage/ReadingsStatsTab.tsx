@@ -1,14 +1,17 @@
 import { useState } from 'react';
-import { App, Button, DatePicker, Space, Tooltip, Typography, type TableColumnType } from 'antd';
+import { Button, DatePicker, Space, Tooltip, Typography, type TableColumnType } from 'antd';
 import { DownloadOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { useQuery } from '@tanstack/react-query';
 import type { VehicleReadingStatsRow } from '@technic/contracts';
+import { vehicleReadingKeys, vehicleReadingsApi } from '@entities/vehicle-reading';
 import { DataTable, PageTableLayout, SummaryBar } from '@shared/ui';
 import { useListParams } from '@shared/lib';
 import { TabsExtra, useActiveTabKey } from '../../components/PageTabs';
-import { errorMessage } from '../../utils/format';
-import { readingsApi, readingsKeys } from './readingsApi';
+import { useReadingsAddress } from './readingsAddress';
+import { decimal } from './readingNumbers';
+import { ReadingsExportModal } from './ReadingsExportModal';
+import { VehicleReadingCard } from './VehicleReadingCard';
 
 /**
  * Гараж → «Сводка»: пробег, наработка и заправленное топливо по каждой машине за период
@@ -28,11 +31,6 @@ import { readingsApi, readingsKeys } from './readingsApi';
 const DATE = 'YYYY-MM-DD';
 const SHOWN_DATE = 'DD.MM.YYYY';
 
-/** Прочерк вместо числа: неизвестное значение не притворяется нулём. */
-function decimal(value: number | null, digits = 1): string {
-  return value === null ? '—' : value.toFixed(digits).replace('.', ',');
-}
-
 /** Итог по парку: суммы известного. Прочерки в сумму не идут — они не нули. */
 function totalOf(
   rows: readonly VehicleReadingStatsRow[],
@@ -42,26 +40,30 @@ function totalOf(
 }
 
 export function ReadingsStatsTab({ date }: { date: string }) {
-  const { message } = App.useApp();
   const active = useActiveTabKey() === 'readings';
 
   /**
    * Период — свой у вкладки, а не день среза: сводку читают за месяц, и день, которым живут
    * «Техника» и «Водители», отвечал бы здесь на другой вопрос. Умолчание отсчитывается от него же —
    * от начала того месяца, который открыт на соседних вкладках.
+   *
+   * Живёт он в адресе, а не в состоянии вкладки (Р29): «пробег за июль» отправляют ссылкой, а
+   * состояние пересылке не подлежит — оно теряется и от перезагрузки, и от «назад».
    */
-  const [period, setPeriod] = useState<[string, string]>([
-    dayjs(date).startOf('month').format(DATE),
-    date,
-  ]);
-  const [exporting, setExporting] = useState(false);
+  const { period, setPeriod, vehicleId, openVehicle } = useReadingsAddress(date);
+  /**
+   * Окно выбора выгрузки (§8, Р18). Состояние, а не адрес: выбор книги — не предмет, который
+   * пересылают ссылкой, и «назад» из него возвращать некуда. Предмет ссылки — период и машина, и
+   * они в адресе уже есть.
+   */
+  const [exportOpen, setExportOpen] = useState(false);
 
   const { params, onTableChange } = useListParams<Record<string, never>>({}, { searchKeys: [] });
 
   const query = { from: period[0], to: period[1] };
   const { data, isFetching } = useQuery({
-    queryKey: readingsKeys.stats(query),
-    queryFn: () => readingsApi.stats(query),
+    queryKey: vehicleReadingKeys.stats(query),
+    queryFn: () => vehicleReadingsApi.stats(query),
     /*
      * Только на своей вкладке. Скрытая вкладка не размонтируется (`PageTabs`), и без этого условия
      * сводка за месяц пересчитывалась бы на сервере всякий раз, когда открывают срез дня; с ним же
@@ -132,17 +134,6 @@ export function ReadingsStatsTab({ date }: { date: string }) {
     },
   ];
 
-  const download = async () => {
-    setExporting(true);
-    try {
-      await readingsApi.exportStats(query);
-    } catch (e: unknown) {
-      message.error(errorMessage(e));
-    } finally {
-      setExporting(false);
-    }
-  };
-
   return (
     <PageTableLayout>
       <TabsExtra tabKey="readings">
@@ -152,10 +143,12 @@ export function ReadingsStatsTab({ date }: { date: string }) {
             allowClear={false}
             value={[dayjs(period[0]), dayjs(period[1])]}
             onChange={(v) => {
-              if (v?.[0] && v[1]) setPeriod([v[0].format(DATE), v[1].format(DATE)]);
+              if (v?.[0] && v[1]) setPeriod(v[0].format(DATE), v[1].format(DATE));
             }}
           />
-          <Button icon={<DownloadOutlined />} loading={exporting} onClick={() => void download()}>
+          {/* Книг шесть, и различаются они вопросом, а не оформлением: кнопка спрашивает, какую
+              собрать, а не собирает молча одну (Р18). */}
+          <Button icon={<DownloadOutlined />} onClick={() => setExportOpen(true)}>
             Выгрузить
           </Button>
           <SummaryBar title="Период" items={summaryItems} />
@@ -170,8 +163,42 @@ export function ReadingsStatsTab({ date }: { date: string }) {
         loading={isFetching}
         page={params.page}
         pageSize={params.pageSize}
+        // Строка сводки — вход в машину (Р2): вопрос «а из чего эти 4 200 км» задают ровно ей.
+        onRowClick={(r) => openVehicle(r.vehicleId)}
         onChange={onTableChange}
       />
+
+      {/*
+       * Машины окну выгрузки достаются из уже загруженной сводки: это ровно тот перечень, который
+       * человек видит в таблице, и своего запроса ради него окно не делает.
+       */}
+      {active && exportOpen && (
+        <ReadingsExportModal
+          from={period[0]}
+          to={period[1]}
+          vehicles={rows.map((r) => ({ id: r.vehicleId, label: r.vehicleLabel }))}
+          vehicleId={vehicleId}
+          onClose={() => setExportOpen(false)}
+        />
+      )}
+
+      {/*
+       * Карточка живёт в адресе, а окно рисуется в портале поверх всей страницы — поэтому её
+       * показывает только своя вкладка: без проверки `active` уход на «Технику» оставлял бы
+       * открытое окно висеть над чужим списком, ведь скрытая вкладка не размонтируется.
+       *
+       * Подпись машины берётся из уже загруженной сводки, а не запрашивается: по ссылке из чужого
+       * сообщения строки может не быть — тогда окно подпишется ответом карточки.
+       */}
+      {active && vehicleId && (
+        <VehicleReadingCard
+          vehicleId={vehicleId}
+          vehicleLabel={rows.find((r) => r.vehicleId === vehicleId)?.vehicleLabel}
+          from={period[0]}
+          to={period[1]}
+          onClose={() => openVehicle(null)}
+        />
+      )}
     </PageTableLayout>
   );
 }

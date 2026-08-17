@@ -4924,6 +4924,13 @@ export const driverDailyReportItems = pgTable(
       name: 'report_items_report_date_fk',
     }).onUpdate('cascade'),
     reportIdx: index('report_items_report_idx').on(t.reportId),
+    /**
+     * День всего парка (миграция 0148, Р22): «кто и что сдал 14 августа» — запрос, из которого
+     * растёт реестр приёма. Ведущая колонка у `report_items_chain_key` другая (машина), и на этот
+     * вопрос он не ложится. Заведён по замеру и вместе со своим потребителем: статистике он не
+     * нужен вовсе (годовому запросу 0 %, месячному 3 %), а запросу одного дня даёт 20,5 → 7,3 мс.
+     */
+    dateIdx: index('report_items_date_idx').on(t.reportDate, t.vehicleId),
     sourceShape: check(
       'report_items_source_check',
       sql`(${t.sourceKind} = 'route') = (${t.routeId} IS NOT NULL)
