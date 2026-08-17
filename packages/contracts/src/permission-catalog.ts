@@ -2,6 +2,7 @@ import {
   isCounterpartyScopedRole,
   isDepartmentScopedRole,
   isObjectScopedRole,
+  isPersonScopedRole,
   type Role,
 } from './enums';
 import { can, PERMISSIONS, type AccessSubject, type Permission } from './permissions';
@@ -37,6 +38,12 @@ export const PERMISSION_MODULES = [
   'garage',
   'driverCabinet',
   'vehicleReadings',
+  /**
+   * Техобслуживание — свой модуль витрины, а не пара прав внутри «Показаний техники» (Р14). Модуль
+   * закрывается своим чтением, и лежи эти права в чужом, витрина рассказывала бы, что журнал ТО
+   * открывается доступом к показаниям, — то есть ровно то смешение, которого решение избегает.
+   */
+  'vehicleMaintenance',
   'records',
   'files',
   'admin',
@@ -55,6 +62,7 @@ export const permissionModuleLabels: Record<PermissionModule, string> = {
   garage: 'Гараж',
   driverCabinet: 'Кабинет водителя',
   vehicleReadings: 'Показания техники',
+  vehicleMaintenance: 'Техобслуживание',
   records: 'Архив и откаты',
   files: 'Файлы',
   admin: 'Администрирование',
@@ -264,6 +272,16 @@ export const PERMISSION_CATALOG: Record<Permission, PermissionCatalogEntry> = {
     action: 'manage',
     label: 'Правит показания и принимает день',
   },
+  'vehicleMaintenance.read': {
+    module: 'vehicleMaintenance',
+    action: 'read',
+    label: 'Смотрит журнал ТО техники',
+  },
+  'vehicleMaintenance.write': {
+    module: 'vehicleMaintenance',
+    action: 'update',
+    label: 'Ведёт журнал ТО техники',
+  },
 
   'archive.read': { module: 'records', action: 'read', label: 'Видит удалённые записи' },
   'archive.restore': { module: 'records', action: 'manage', label: 'Возвращает запись из архива' },
@@ -309,6 +327,7 @@ export const MODULE_ENTRY_PERMISSION: Record<PermissionModule, Permission> = {
   garage: 'garage.read',
   driverCabinet: 'driverCabinet.read',
   vehicleReadings: 'vehicleReadings.read',
+  vehicleMaintenance: 'vehicleMaintenance.read',
   records: 'archive.read',
   files: 'files.manageAny',
   admin: 'users.manage',
@@ -330,7 +349,7 @@ export function moduleAccess(
 }
 
 /**
- * Ограничения области субъекта — словами (ADR 0021 §5, ADR 0039, 0040, 0062, 0070).
+ * Ограничения области субъекта — словами (ADR 0021 §5, ADR 0039, 0040, 0062, 0070, 0102).
  *
  * Это витрина второго слоя доступа, который живёт в `apps/api/src/lib/access.ts`, и повторять его
  * механику здесь нечем: правило — текст, а не предикат по строке. Чтобы витрина не разошлась с
@@ -372,6 +391,16 @@ const SCOPE_RULES: readonly AccessScopeRule[] = [
     applies: (s) => isCounterpartyScopedRole(s.role) && s.counterpartyType === 'service',
     text: 'Видит только заявки на обслуживание, назначенные его компании',
   },
+  /**
+   * Четвёртая ось — работник справочника (ADR 0102 §5), и она самая узкая из четырёх. Правило здесь
+   * такое же текстовое, как соседние, хотя предиката в `lib/access.ts` у оси нет: область держится
+   * тем, что кабинет не принимает `personId` вовсе. Витрине от этого не легче — не скажи она про
+   * область ничего, водитель показался бы видящим всё, что открывают его права.
+   */
+  {
+    applies: (s) => isPersonScopedRole(s.role),
+    text: 'Видит только своё задание и свои показания: другого работника кабинет не спрашивает',
+  },
   {
     applies: (s) => !!s.role && !can(s, 'archive.read'),
     text: 'Удалённые записи недоступны: по прямой ссылке — «не найдено»',
@@ -387,12 +416,18 @@ export function describeAccessScope(subject: AccessSubject | null | undefined): 
   return rules.length > 0 ? rules : [UNSCOPED_TEXT];
 }
 
-/** Роли, у которых область задаётся набором в учётке, — им витрина показывает сам набор. */
+/**
+ * Роли, у которых область задаётся набором в учётке, — им витрина показывает сам набор. Осей
+ * четыре, ровно по спискам ролей из `enums.ts`: объекты, отделы, контрагент и работник справочника
+ * (ADR 0102). `null` означает «своей оси у роли нет», и пропущенная здесь ось превращается в это
+ * же `null` — то есть в витрину, которая печатает учётке «Все записи» вместо её области.
+ */
 export function scopeAxisOf(
   role: Role | null | undefined,
-): 'object' | 'department' | 'counterparty' | null {
+): 'object' | 'department' | 'counterparty' | 'person' | null {
   if (isObjectScopedRole(role)) return 'object';
   if (isDepartmentScopedRole(role)) return 'department';
   if (isCounterpartyScopedRole(role)) return 'counterparty';
+  if (isPersonScopedRole(role)) return 'person';
   return null;
 }

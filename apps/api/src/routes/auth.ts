@@ -7,11 +7,14 @@ import {
   changePasswordSchema,
   type CounterpartyType,
   EMAIL_VERIFICATION_ENABLED,
+  isPermission,
   isPersonScopedRole,
   loginSchema,
   NEUTRAL_MAIL_RESPONSE,
   passwordResetConfirmSchema,
   passwordResetRequestSchema,
+  type Permission,
+  permissionsFor,
   registerSchema,
   resendVerificationSchema,
   type Role,
@@ -39,7 +42,9 @@ import {
   constructionObjectIdsExpr,
   departmentIdsExpr,
   departmentObjectIdsExpr,
-  roleAddonsExpr,
+  grantCodesExpr,
+  grantPermissionsExpr,
+  systemAddonsOf,
 } from '../services/user-scopes';
 import { assertEmailFree, asEmailConflict } from '../services/user-email';
 import { assertMailEnabled, queueMail } from '../services/mail';
@@ -78,10 +83,29 @@ interface AuthUserSource {
   departmentObjectIds: string[];
   /** Тип контрагента учётки (ADR 0038): вместе с ролью задаёт права — портал считает их сам. */
   counterpartyType: CounterpartyType | null;
-  /** Надстройки роли (ADR 0086): третий источник прав, и порталу он нужен по той же причине. */
+  /**
+   * Надстройки роли (ADR 0086): третий источник прав, и порталу он нужен по той же причине. С шага
+   * 1c приходит производной от кодов наборов (`systemAddonsOf`), а не отдельным запросом в
+   * `user_role_addons`; форма ответа при этом прежняя — портал считает по ней права и рисует пометку.
+   */
   addons: RoleAddon[];
+  /**
+   * Права назначенных наборов (ADR 0106) — четвёртый источник субъекта доступа, и без него субъект
+   * здесь был бы **обрезанным**: набор, собранный администратором, роль и пометки о себе не
+   * рассказывают вовсе, и посчитанные права разошлись бы с теми, по которым сервер отвечает на
+   * следующий запрос (`loadPrincipal`).
+   *
+   * Уже отфильтрованные `isPermission`: право-сироту (снятое из словаря выкатом) отсеивает читатель
+   * на границе «база → код», тем же приёмом и в том же месте, что принципал.
+   */
+  grantPermissions: Permission[];
 }
 
+/**
+ * Единственный сборщик пользователя в ответах сессии: его зовут вход, `refresh`, `/auth/me` и смена
+ * пароля. Один на четыре ответа намеренно — план (§10.1) требует список прав во всех четырёх, и
+ * четыре сборки разошлись бы в первую же правку модели доступа.
+ */
 function makeAuthUser(u: AuthUserSource): AuthUser {
   return {
     id: u.id,
@@ -99,6 +123,24 @@ function makeAuthUser(u: AuthUserSource): AuthUser {
     departmentObjectIds: u.departmentObjectIds,
     counterpartyType: u.counterpartyType,
     addons: u.addons,
+    /*
+     * Эффективные права учётки (ADR 0106, решение 5): считает их сервер, потому что портал больше не
+     * может — состав набора лежит в базе, а не в матрице. Субъект передаётся целиком (`u` — это и
+     * есть `AccessSubject`: роль, тип контрагента, надстройки, права наборов), и обрезать его здесь
+     * нельзя: недостающий источник выглядел бы не ошибкой, а просто меньшим списком прав.
+     *
+     * **Порядок — словарный (`PERMISSIONS`), и это часть контракта, а не побочный эффект.** Его
+     * задаёт сам `permissionsFor` — `PERMISSIONS.filter(…)`, — и здесь список не переупорядочивается
+     * ни алфавитом, ни ответом базы. Причина: клиенту предстоит сравнивать списки (обновить меню
+     * после `refresh`, заметить смену доступа), а сравнение массивов при нестабильном порядке даёт
+     * ложное «права изменились» на неизменившемся составе — то есть перерисовку интерфейса на ровном
+     * месте либо, наоборот, доверие к сравнению, которого оно не заслуживает. Алфавит же развалил бы
+     * группировку словаря по модулям, из-за которой список читаем глазами в диагностике.
+     *
+     * Копия, а не `readonly` из контрактов: `AuthUser` — тело ответа, и хранить в нём ссылку на
+     * массив, который вернула матрица, незачем.
+     */
+    permissions: [...permissionsFor(u)],
   };
 }
 
@@ -119,7 +161,15 @@ function userWithCounterpartyType() {
       constructionObjectIds: constructionObjectIdsExpr,
       departmentIds: departmentIdsExpr,
       departmentObjectIds: departmentObjectIdsExpr,
-      addons: roleAddonsExpr,
+      // Наборы вместо надстроек (ADR 0106, шаг 1c) — тем же выражением, что у принципала: вход
+      // обязан отвечать то же, что ответит `loadPrincipal` следующему запросу.
+      grantCodes: grantCodesExpr,
+      // Права наборов — тем же выражением и по той же причине, что коды. Спрашиваются с шага
+      // «сервер отдаёт эффективные права» (§10.1 плана): пометки рядом с ролью отвечают только за
+      // два системных набора, а собранный администратором набор виден **исключительно** здесь —
+      // без этого столбца вход и смена пароля посчитали бы права по обрезанному субъекту и ответили
+      // бы не то, что ответит `/auth/me` следующим запросом.
+      grantPermissions: grantPermissionsExpr,
     })
     .from(users)
     .leftJoin(counterparties, eq(users.counterpartyId, counterparties.id))
@@ -525,7 +575,12 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
           constructionObjectIds: row.constructionObjectIds,
           departmentIds: row.departmentIds,
           departmentObjectIds: row.departmentObjectIds,
-          addons: row.addons,
+          // Пометки рядом с ролью — производная от кодов наборов, как и у принципала: собранный
+          // администратором набор в это поле не попадает (`systemAddonsOf`).
+          addons: systemAddonsOf(row.grantCodes),
+          // Граница «база → код» — здесь же, где у принципала: право-сироту дальше не пускает
+          // `isPermission`, и в субъект уходит уже отфильтрованный список.
+          grantPermissions: row.grantPermissions.filter(isPermission),
         }
       : undefined;
     if (!u) throw err.invalidCredentials();
@@ -610,7 +665,8 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
         constructionObjectIds: row.constructionObjectIds,
         departmentIds: row.departmentIds,
         departmentObjectIds: row.departmentObjectIds,
-        addons: row.addons,
+        addons: systemAddonsOf(row.grantCodes),
+        grantPermissions: row.grantPermissions.filter(isPermission),
       };
       const ok = await verifyPassword(u.passwordHash, currentPassword);
       if (!ok)

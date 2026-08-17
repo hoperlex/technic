@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { ACCESS_PROFILES, type AccessSubject } from '@technic/contracts';
+import { ACCESS_PROFILES, ROLE_ADDON_PERMISSIONS, type AccessSubject } from '@technic/contracts';
 
 /**
  * Сквозная проверка прав: настоящие запросы к собранному приложению под каждым субъектом
@@ -11,6 +11,15 @@ import { ACCESS_PROFILES, type AccessSubject } from '@technic/contracts';
  * (`route-authorization.test.ts`) — «объявлена ли проверка». Здесь проверяется третье:
  * что маршрут отдаёт 403 именно тем, кому должен, — то есть что к маршруту привязано
  * правильное право, а не просто какое-нибудь.
+ *
+ * Перебор по **условию** (`access-conditions.test.ts`, план §14) отвечает на четвёртый вопрос:
+ * обязательно ли каждое право объявленного условия. Он ходит по всем маршрутам манифеста синтетическим
+ * субъектом («роль без нужных прав плюс ровно эти права») и потому видит то, чего профилями не
+ * увидеть: у конъюнкции — каждый её член по отдельности, у условного права — сценарий с полем и без.
+ * Этот файл ему не дублирует и остаётся: перечни здесь — вторая, независимая от манифеста запись
+ * ожидания, написанная должностями, и перепутанное на маршруте право видно именно в ней. Плюс здесь
+ * живёт то, чего в манифесте нет по построению: коридоры сторон, маршруты «по самой записи» и
+ * полнота самих субъектов (проверки под перечнем кейсов).
  *
  * До обработчиков дело не доходит: у запрещённых ролей отказ приходит из preHandler, а
  * разрешённым мы проверяем только «не 403» — БД подменена заглушкой, любой запрос в неё
@@ -50,29 +59,50 @@ vi.mock('../src/auth/tokens', () => ({
 }));
 
 vi.mock('../src/auth/principal', () => ({
-  loadPrincipal: async () => ({
-    id: 'user-1',
-    email: 'user@test.local',
-    lastName: 'Пользователь',
-    firstName: 'Тестовый',
-    middleName: '',
-    fullName: 'Пользователь Тестовый',
-    role: currentSubject.role,
-    isActive: true,
-    mustChangePassword: false,
-    constructionObjectIds: [OBJECT_ID],
-    // Карточка работника (ADR 0102) — четвёртая ось области. В принципале она есть у всех:
-    // матрица проверяет права, а не то, кому её выдали, — иначе кабинет отвечал бы «учётка не
-    // связана с работником» и запрет по праву остался бы непроверенным.
-    personId: PERSON_ID,
-    counterpartyId: COUNTERPARTY_ID,
-    counterpartyType: currentSubject.counterpartyType ?? null,
-    // Надстройки (ADR 0086) приходят на сервер тем же принципалом, что роль и тип контрагента:
-    // без них профиль с надстройкой проверялся бы здесь как голая роль и молча проходил бы весь
-    // перебор — «отказано» у него совпало бы с «отказано» у базовой роли.
-    addons: currentSubject.addons ?? [],
-    authVersion: 1,
-  }),
+  loadPrincipal: async () => {
+    /*
+     * Назначенные полномочия (ADR 0106, шаг 1c) приходят на сервер тем же принципалом, что роль и
+     * тип контрагента: без них профиль с набором проверялся бы здесь как голая роль и молча проходил
+     * бы весь перебор — «отказано» у него совпало бы с «отказано» у базовой роли.
+     *
+     * Коды берутся из надстроек профиля, потому что код системного набора и код надстройки совпадают
+     * (`SYSTEM_GRANT_CODES ... satisfies readonly RoleAddon[]`), а состав — из `ROLE_ADDON_PERMISSIONS`:
+     * тем же списком его завела в `grant_permissions` миграция 0145, и совпадение сверяет
+     * `grants-catalog.db.test.ts`. Гейта совместимости с ролью здесь нет намеренно — его держит SQL
+     * (`grantPermissionsExpr`), а `ACCESS_PROFILES` несовместимых пар не собирает вовсе.
+     */
+    const grantCodes = currentSubject.addons ?? [];
+    return {
+      id: 'user-1',
+      email: 'user@test.local',
+      lastName: 'Пользователь',
+      firstName: 'Тестовый',
+      middleName: '',
+      fullName: 'Пользователь Тестовый',
+      role: currentSubject.role,
+      isActive: true,
+      mustChangePassword: false,
+      constructionObjectIds: [OBJECT_ID],
+      // Карточка работника (ADR 0102) — четвёртая ось области. В принципале она есть у всех:
+      // матрица проверяет права, а не то, кому её выдали, — иначе кабинет отвечал бы «учётка не
+      // связана с работником» и запрет по праву остался бы непроверенным.
+      personId: PERSON_ID,
+      counterpartyId: COUNTERPARTY_ID,
+      counterpartyType: currentSubject.counterpartyType ?? null,
+      grantCodes: [...grantCodes],
+      grantPermissions: grantCodes.flatMap((code) => [...ROLE_ADDON_PERMISSIONS[code]]),
+      /*
+       * Пустые надстройки — не забытое поле, а условие проверки. Живой принципал на этом шаге
+       * выводит их из тех же кодов (`systemAddonsOf`), и оба источника отвечают на право одинаково:
+       * оставь мы `addons` заполненными — перебор проходил бы на старом источнике, и сломанные права
+       * набора остались бы незамеченными. Такой принципал к тому же не выдумка: набор, собранный
+       * администратором, даёт ровно эту форму уже сегодня — коды есть, пометок нет, — а после шага 1e
+       * её примут все наборы.
+       */
+      addons: [],
+      authVersion: 1,
+    };
+  },
 }));
 
 // Валидные UUID: схемы проверяются до preHandler, и на кривом id тест увидел бы 400 вместо 403.
@@ -114,6 +144,10 @@ const DECLARED_PROFILE_KEYS = [
   'shtab',
   'rukstroy',
   'commandant',
+  // Площадка (ADR 0112) — целевая объектная роль реформы, заведённая до перевода учёток. В перечнях
+  // ниже она стоит там же, где штаб, **кроме** заказа техники и недели: эти два модуля приезжают ей
+  // полномочием, и до выдачи набора она обязана получать на них 403 наравне с комендантом.
+  'site',
   'department',
   'department_head',
   'operator/operator',
@@ -206,6 +240,8 @@ const SERVICE_REQUEST_CUSTOMERS: ProfileKey[] = [
   'admin',
   'shtab',
   'rukstroy',
+  // Площадка — тот же заказчик: оргтехника входит в `site` целиком (ADR 0112, решение №1).
+  'site',
   'department',
   'department_head',
 ];
@@ -510,6 +546,7 @@ const CASES: Case[] = [
       'shtab',
       'rukstroy',
       'commandant',
+      'site',
       'department',
       'department_head',
       'operator/operator',
@@ -530,6 +567,7 @@ const CASES: Case[] = [
       'shtab',
       'rukstroy',
       'commandant',
+      'site',
       'department',
       'department_head',
       'operator/operator',
@@ -552,6 +590,7 @@ const CASES: Case[] = [
       'shtab',
       'rukstroy',
       'commandant',
+      'site',
       'department',
       'department_head',
       'operator/operator',
@@ -638,6 +677,7 @@ const CASES: Case[] = [
       'shtab',
       'rukstroy',
       'commandant',
+      'site',
       'department',
       'department_head',
       'operator/operator',
@@ -693,6 +733,7 @@ const CASES: Case[] = [
       'dispatcher',
       'shtab',
       'rukstroy',
+      'site',
       'department',
       'department_head',
       'observer',
@@ -708,6 +749,7 @@ const CASES: Case[] = [
       'dispatcher',
       'shtab',
       'rukstroy',
+      'site',
       'department',
       'department_head',
       'observer',
@@ -764,6 +806,7 @@ const CASES: Case[] = [
       'dispatcher',
       'shtab',
       'rukstroy',
+      'site',
       'department',
       'department_head',
       'observer',
@@ -1025,6 +1068,7 @@ const CASES: Case[] = [
       'shtab',
       'rukstroy',
       'commandant',
+      'site',
       'department',
       'department_head',
       'operator/operator',
@@ -1042,6 +1086,7 @@ const CASES: Case[] = [
       'shtab',
       'rukstroy',
       'commandant',
+      'site',
       'department',
       'department_head',
     ],
@@ -1357,7 +1402,7 @@ const CASES: Case[] = [
       responsibleName: 'Петров П. П.',
       responsiblePhone: '+7 926 000-00-01',
     },
-    allowed: ['admin', 'manager', 'dispatcher', 'shtab', 'rukstroy', 'commandant'],
+    allowed: ['admin', 'manager', 'dispatcher', 'shtab', 'rukstroy', 'commandant', 'site'],
   },
 
   // ── Архив справочника: смотрит тот, кто его ведёт; возвращает из архива администратор ──
@@ -1380,6 +1425,7 @@ const CASES: Case[] = [
       'shtab',
       'rukstroy',
       'commandant',
+      'site',
       'department',
       'department_head',
       'operator/operator',
@@ -1413,6 +1459,95 @@ const CASES: Case[] = [
     method: 'GET',
     url: `/api/v1/vehicle-readings/journal/${RECORD_ID}?from=2026-08-01&to=2026-08-12`,
     allowed: ['admin', 'manager', 'dispatcher'],
+  },
+  {
+    // Реестр приёма (план «Показания техники», Р26) — тем же правом, что журнал и карточка: это
+    // те же данные модуля показаний, только разрезом «с кого сегодня ждут». Службе главного
+    // механика он закрыт по той же причине, что и остальной модуль (Р14).
+    title: 'показания парка — реестр приёма',
+    method: 'GET',
+    url: '/api/v1/vehicle-readings/intake?from=2026-08-01&to=2026-08-12',
+    allowed: ['admin', 'manager', 'dispatcher'],
+  },
+  {
+    // Пакетный приём (план «Показания техники», Р8, Р9) — правом правки, а не чтения: реестр
+    // показывают все трое, но принимать день значит подписаться под чужими цифрами.
+    //
+    // Тело непустое намеренно: с пустым списком обработчик отвечает, ни разу не спросив БД, и
+    // разрешённые роли проходили бы этот кейс, даже если бы маршрут не доходил до приёма вовсе.
+    title: 'показания парка — пакетный приём отчётов',
+    method: 'POST',
+    url: '/api/v1/vehicle-readings/reports/accept-batch',
+    payload: { reports: [{ id: RECORD_ID, version: 0 }] },
+    allowed: ['admin', 'manager', 'dispatcher'],
+  },
+  {
+    // Карточка машины (план «Показания техники», Р14а) — тем же правом, что журнал: в ответе
+    // только статистика показаний. Службе главного механика она закрыта, и это не недосмотр:
+    // сводка обслуживания приходит ей своей ручкой под `vehicleMaintenance.read`, а `vehicleReadings.read`
+    // открыло бы заодно приёмку, журналы и фотографии приборных панелей (Р14).
+    title: 'показания парка — карточка машины',
+    method: 'GET',
+    url: `/api/v1/vehicle-readings/vehicles/${RECORD_ID}/card?from=2026-08-01&to=2026-08-12`,
+    allowed: ['admin', 'manager', 'dispatcher'],
+  },
+  {
+    /**
+     * Выгрузки (план «Показания техники», Р18) — тем же правом, что сводка и журнал: выгружают
+     * ровно то, что видят на экране. Колонки ТО в варианте «Срез на дату» приходят под своим
+     * правом (Р14а) уже внутри обработчика, и службе главного механика эта ручка закрыта целиком:
+     * `vehicleMaintenance.read` не открывает ни журналов, ни выгрузок.
+     */
+    title: 'показания парка — выгрузка',
+    method: 'GET',
+    url: '/api/v1/vehicle-readings/export?kind=fleetSummary&from=2026-08-01&to=2026-08-12',
+    allowed: ['admin', 'manager', 'dispatcher'],
+  },
+
+  // ── Техобслуживание по пробегу (план «Показания техники», Р14) ──
+  // Зеркало предыдущей пары кейсов, и в этом весь смысл перечня: службе главного механика открыты
+  // все шесть ручек ТО и закрыты все ручки показаний, а `vehicleReadings.read` ни одной из этих
+  // ручек не открывает. Разъедься эти два перечня — и «независимое право» осталось бы независимым
+  // только на бумаге.
+  {
+    title: 'ТО — сводка по машине',
+    method: 'GET',
+    url: `/api/v1/vehicle-maintenance/vehicles/${RECORD_ID}/summary?on=2026-08-12`,
+    allowed: ['admin', 'manager', 'dispatcher', ...MECHANICS],
+  },
+  {
+    title: 'ТО — состояние пакетом для колонки гаража',
+    method: 'GET',
+    url: `/api/v1/vehicle-maintenance/snapshot?on=2026-08-12&ids=${RECORD_ID}`,
+    allowed: ['admin', 'manager', 'dispatcher', ...MECHANICS],
+  },
+  {
+    title: 'ТО — история записей машины',
+    method: 'GET',
+    url: `/api/v1/vehicle-maintenance/vehicles/${RECORD_ID}/history`,
+    allowed: ['admin', 'manager', 'dispatcher', ...MECHANICS],
+  },
+  {
+    title: 'ТО — завести запись',
+    method: 'POST',
+    url: `/api/v1/vehicle-maintenance/vehicles/${RECORD_ID}`,
+    payload: { performedOn: '2026-08-12', odometerKm: 128_400, documentNumber: 'АКТ-17' },
+    allowed: ['admin', 'manager', 'dispatcher', ...MECHANICS],
+  },
+  {
+    title: 'ТО — правка записи',
+    method: 'PATCH',
+    url: `/api/v1/vehicle-maintenance/${RECORD_ID}`,
+    payload: { performedOn: '2026-08-12', odometerKm: 128_400, version: 0 },
+    allowed: ['admin', 'manager', 'dispatcher', ...MECHANICS],
+  },
+  {
+    title: 'ТО — удаление записи',
+    method: 'DELETE',
+    // Версия в адресе, а не в теле: у DELETE тела нет, и без неё схема ответила бы 400 раньше, чем
+    // страж — 403 (Р30).
+    url: `/api/v1/vehicle-maintenance/${RECORD_ID}?version=0`,
+    allowed: ['admin', 'manager', 'dispatcher', ...MECHANICS],
   },
 
   // ── Администрирование ──

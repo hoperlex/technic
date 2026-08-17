@@ -155,7 +155,8 @@ describe.skipIf(!DB_URL)('журнал изменений учёток (жива
     const objects = await db.execute<{ id: string }>(
       sql`SELECT id FROM construction_objects WHERE is_active ORDER BY name LIMIT 2`,
     );
-    if (objects.rows.length < 2) throw new Error('В базе меньше двух объектов: нужны миграции наполнения');
+    if (objects.rows.length < 2)
+      throw new Error('В базе меньше двух объектов: нужны миграции наполнения');
 
     ctx = {
       app,
@@ -240,9 +241,9 @@ describe.skipIf(!DB_URL)('журнал изменений учёток (жива
     expect(await audit({ entityType: 'user', entityId: id, targetRole: 'driver' })).toHaveLength(0);
 
     // Действующая учётка: «только из архива» её не показывает, «только действующие» — показывает.
-    expect(
-      await audit({ entityType: 'user', entityId: id, targetArchive: 'only' }),
-    ).toHaveLength(0);
+    expect(await audit({ entityType: 'user', entityId: id, targetArchive: 'only' })).toHaveLength(
+      0,
+    );
     expect(
       await audit({ entityType: 'user', entityId: id, targetArchive: 'exclude' }),
     ).not.toHaveLength(0);

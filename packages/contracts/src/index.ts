@@ -1,6 +1,7 @@
 export * from './enums';
 export * from './permissions';
 export * from './permission-catalog';
+export * from './grant-scope';
 export * from './common';
 export * from './links';
 export * from './address';
@@ -18,6 +19,19 @@ export * from './departments';
 export * from './counterparties';
 export * from './role-addons';
 export * from './grants';
+/*
+ * Пока идёт переход надстроек в назначаемые полномочия (ADR 0106, шаги 1a–1e), предикат сквозной
+ * области живёт в двух файлах: старый спрашивает надстройки учётки (`role-addons.ts`), новый — коды
+ * её наборов (`grants.ts`). Одноимённые, они делают `export *` неоднозначным (TS2308), поэтому
+ * источник назван явно — и с шага 1c назван **новый**.
+ *
+ * Это и есть «читателей переключили»: `lib/access.ts` спрашивает предикат по имени, и вместе с этой
+ * строкой там сменился аргумент — `p.grantCodes` вместо `p.addons`. Одного изменения строки мало и
+ * сделать его молча нельзя: типы подмены не заметят (`RoleAddon[]` присваивается в
+ * `readonly string[]`), поэтому каждое место вызова пересмотрено глазами. На шаге 1e строка уходит
+ * целиком вслед за `role-addons.ts`, и предикат остаётся один.
+ */
+export { hasModuleWideScope } from './grants';
 export * from './warehouses';
 export * from './warranty';
 export * from './office-equipment';
@@ -52,5 +66,6 @@ export * from './waybills';
 export * from './garage';
 export * from './driver-cabinet';
 export * from './vehicle-readings';
+export * from './vehicle-maintenance';
 export * from './releases';
 export * from './audit';

@@ -31,6 +31,7 @@ import {
   isDepartmentScopedRole,
   isObjectScopedRole,
   isPersonScopedRole,
+  permissionsFor,
   rejectUserSchema,
   roleAddonIssue,
   roleLabels,
@@ -38,6 +39,7 @@ import {
   updateUserSchema,
   userListQuerySchema,
   type MailOutcome,
+  type Permission,
   type RoleAddon,
   type UserDto,
   type UserAccountDto,
@@ -74,15 +76,17 @@ import { hashPassword, verifyPassword } from '../auth/password';
 import { revokeAllForUser } from '../auth/sessions';
 import { orderByFrom, pageParams, phoneSearchCondition, searchCondition } from '../lib/pagination';
 import {
-  addonsByUserIds,
   addonsOfUser,
   departmentIdsOfUser,
   departmentsByUserIds,
+  grantCodesByUserIds,
+  grantPermissionsByUserIds,
   objectIdsOfUser,
   objectsByUserIds,
   replaceUserAddons,
   replaceUserDepartments,
   replaceUserObjects,
+  systemAddonsOf,
 } from '../services/user-scopes';
 import { assertEmailFree, asEmailConflict } from '../services/user-email';
 import { userAuditChanges } from '../services/user-audit-diff';
@@ -261,12 +265,29 @@ function personRefOf(r: UserRowJoined): UserPersonRefDto | null {
   };
 }
 
+/**
+ * Карточка учётки из прочитанного: строка плюс наборы, посчитанные пачкой.
+ *
+ * Наборы приходят сюда **кодами и правами**, а не готовыми полями ответа, потому что все три поля
+ * доступа выводятся из них одним и тем же способом и обязаны быть согласованы между собой: пометки
+ * рядом с ролью — пересечение кодов с системными (`systemAddonsOf`), колонка «наборы» — сами коды,
+ * список прав — `permissionsFor` от субъекта. Собери их врозь у карточки и у списка — и два ответа
+ * на один вопрос разошлись бы в первую же правку.
+ *
+ * **Субъект собирается здесь целиком, и обрезать его нельзя** (ADR 0106, решение 5): роль, тип
+ * контрагента, надстройки, права наборов. Недостающий источник выглядел бы не ошибкой, а просто
+ * более коротким списком прав — то есть витрина показывала бы «этого он не может» там, где сервер
+ * разрешает. Тип контрагента здесь особенно легко потерять: у роли внешнего исполнителя весь его
+ * модуль приходит именно от типа (ADR 0038), а роль без типа отвечает за одно `directories.read`.
+ */
 function toDto(
   r: UserRowJoined,
   objects: UserDto['constructionObjects'],
   departments: UserDto['departments'],
-  addons: UserDto['addons'],
+  grantCodes: string[],
+  grantPermissions: Permission[],
 ): UserAccountDto {
+  const addons = systemAddonsOf(grantCodes);
   return {
     id: r.id,
     email: r.email,
@@ -286,6 +307,27 @@ function toDto(
     constructionObjects: objects,
     departments,
     addons,
+    grantCodes,
+    /*
+     * Эффективные права учётки (план реструктуризации §12, этап 2б): считает их сервер, потому что
+     * витрина больше не может — состав набора лежит в базе, а не в матрице.
+     *
+     * **Порядок словарный (`PERMISSIONS`), и это часть контракта, а не побочный эффект.** Его задаёт
+     * сам `permissionsFor` — `PERMISSIONS.filter(…)`, — и здесь список не переупорядочивается ни
+     * алфавитом, ни ответом базы: витрина сравнивает наборы прав между учётками, и нестабильный
+     * порядок давал бы разный ответ на одинаковый состав.
+     *
+     * Копия, а не `readonly` из контрактов: это тело ответа, и держать в нём ссылку на массив,
+     * который вернула матрица, незачем.
+     */
+    permissions: [
+      ...permissionsFor({
+        role: r.role,
+        counterpartyType: r.counterpartyType,
+        addons,
+        grantPermissions,
+      }),
+    ],
     counterpartyId: r.counterpartyId,
     counterpartyName: r.counterpartyName,
     counterpartyType: r.counterpartyType,
@@ -340,16 +382,34 @@ function usersQuery() {
   );
 }
 
-/** Карточка учётки всегда идёт с областью: клиент правит набор, а не отдельные привязки. */
+/**
+ * Карточка учётки всегда идёт с областью: клиент правит набор, а не отдельные привязки.
+ *
+ * Пометки рядом с ролью, коды наборов и список прав читаются из назначенных полномочий (ADR 0106,
+ * шаг 1c) — тем же источником, которым считается доступ. Второй ответ на «что учётке выдано»
+ * разошёлся бы с первым в тот же момент, когда таблицы перехода разъедутся, и карточка показывала бы
+ * не то, чем человек работает.
+ *
+ * Читается всё **пачкой на одну учётку** — теми же функциями, что и список: карточка и строка списка
+ * обязаны отвечать одинаково, а два разных чтения одного и того же расходятся ровно тогда, когда
+ * правят одно из них.
+ */
 async function fetchUserDto(id: string): Promise<UserAccountDto | null> {
   const [row] = await usersQuery().where(eq(users.id, id));
   if (!row) return null;
-  const [objects, departments, addons] = await Promise.all([
+  const [objects, departments, grantCodes, grantPermissions] = await Promise.all([
     objectsByUserIds([id]),
     departmentsByUserIds([id]),
-    addonsByUserIds([id]),
+    grantCodesByUserIds(db, [id]),
+    grantPermissionsByUserIds(db, [id]),
   ]);
-  return toDto(row, objects.get(id) ?? [], departments.get(id) ?? [], addons.get(id) ?? []);
+  return toDto(
+    row,
+    objects.get(id) ?? [],
+    departments.get(id) ?? [],
+    grantCodes.get(id) ?? [],
+    grantPermissions.get(id) ?? [],
+  );
 }
 
 /**
@@ -718,10 +778,18 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
       db.select({ c: count() }).from(users).where(where),
     ]);
     const ids = rows.map((row) => row.id);
-    const [objects, departments, addons] = await Promise.all([
+    // Пометки, коды наборов и права — из назначенных полномочий, как и в карточке: списком и по одной
+    // учётке ответ обязан быть одним и тем же.
+    //
+    // Четыре запроса на страницу, а не на строку, и права здесь ничего к этому счёту не добавляют
+    // сверх пятого: витрина «Права» перебирает живые учётки целиком — по ним считаются держатели
+    // права, группировка по фактическому набору и пометка «только у администратора», — и запрос на
+    // учётку превратил бы такой перебор в сотню обращений к базе.
+    const [objects, departments, grantCodes, grantPermissions] = await Promise.all([
       objectsByUserIds(ids),
       departmentsByUserIds(ids),
-      addonsByUserIds(ids),
+      grantCodesByUserIds(db, ids),
+      grantPermissionsByUserIds(db, ids),
     ]);
     return {
       items: rows.map((row) =>
@@ -729,7 +797,8 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
           row,
           objects.get(row.id) ?? [],
           departments.get(row.id) ?? [],
-          addons.get(row.id) ?? [],
+          grantCodes.get(row.id) ?? [],
+          grantPermissions.get(row.id) ?? [],
         ),
       ),
       total: Number(totalRows[0]!.c),

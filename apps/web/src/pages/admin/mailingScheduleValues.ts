@@ -1,6 +1,5 @@
 import dayjs, { type Dayjs } from 'dayjs';
 import {
-  ROLES,
   type CreateMailingScheduleBody,
   type DigestRequestScope,
   type MailingScheduleDto,
@@ -121,7 +120,7 @@ export function scheduleBody(r: MailingScheduleDto): CreateMailingScheduleBody {
     excludedRunDates: r.excludedRunDates,
     excludedRouteDates: r.excludedRouteDates,
     excludedPersonIds: r.excludedPersonIds,
-    roles: r.roles,
+    permissions: r.permissions,
     requestScope: r.requestScope,
     showTrips: r.showTrips,
     showOnsite: r.showOnsite,
@@ -148,9 +147,9 @@ export function formToBody(v: ScheduleFormValues): CreateMailingScheduleBody {
     // водители и даты рейсов у сводки не значат ничего — она собирается не из рейсов.
     excludedRouteDates: digest ? [] : toDateKeys(v.excludedRouteDates),
     excludedPersonIds: digest ? [] : (v.excludedPersonIds ?? []),
-    // Аудитория — принадлежность сводки: получателей задания водителям задаёт не роль, а наличие
+    // Аудитория — принадлежность сводки: получателей задания водителям задаёт не право, а наличие
     // рейса в окне, и сервер такую пару отвергает.
-    roles: digest ? v.roles : [],
+    permissions: digest ? v.permissions : [],
     requestScope: v.requestScope,
     showTrips: v.showTrips,
     showOnsite: v.showOnsite,
@@ -178,8 +177,10 @@ export function valuesOf(r: MailingScheduleDto | null): ScheduleFormValues {
       excludedRunDates: [],
       excludedRouteDates: [],
       excludedPersonIds: [],
-      // Роли отмечены все: сводку заводят, чтобы она куда-то уходила, а сужают набор потом.
-      roles: [...ROLES],
+      // Право модуля, про который сводка и написана: её получает тот, кто ведёт заказы техники.
+      // Прежде здесь стояли все роли разом — набор, который заведомо не отвечал ни на один вопрос
+      // о работе и сужался вручную при первой же правке.
+      permissions: ['vehicleRequests.read'],
       requestScope: 'scope',
       showTrips: true,
       showOnsite: true,
@@ -198,7 +199,7 @@ export function valuesOf(r: MailingScheduleDto | null): ScheduleFormValues {
     excludedRunDates: toDayjsList(r.excludedRunDates),
     excludedRouteDates: toDayjsList(r.excludedRouteDates),
     excludedPersonIds: r.excludedPersonIds,
-    roles: r.roles,
+    permissions: r.permissions,
     requestScope: r.requestScope,
     showTrips: r.showTrips,
     showOnsite: r.showOnsite,

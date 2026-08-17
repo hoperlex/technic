@@ -10,6 +10,8 @@ import {
   type MailingRunDto,
   mailingRunListQuerySchema,
   type MailingScheduleDto,
+  type Permission,
+  PERMISSIONS,
   type Role,
   updateMailingScheduleSchema,
 } from '@technic/contracts';
@@ -20,8 +22,8 @@ import {
   mailingRuns,
   mailingScheduleExcludedDates,
   mailingScheduleExcludedPersons,
+  mailingSchedulePermissions,
   mailingScheduleRecipients,
-  mailingScheduleRoles,
   mailingSchedules,
   mailingScheduleScopes,
   persons,
@@ -36,7 +38,7 @@ import { requirePrincipal } from '../auth/plugin';
 import { orderByFrom, pageParams } from '../lib/pagination';
 import { nextRunAt } from '../services/mailings/schedule';
 import { createRun, performRun } from '../services/mailings/run';
-import { recipientScopeWhere } from '../services/mailings/role-digest';
+import { permissionAudienceWhere, recipientScopeWhere } from '../services/mailings/role-digest';
 
 /**
  * Расписания рассылок и их история (ADR 0075).
@@ -62,7 +64,7 @@ interface ScheduleSettings {
   excludedRunDates: string[];
   excludedRouteDates: string[];
   excludedPersonIds: string[];
-  roles: Role[];
+  permissions: Permission[];
   recipientUserIds: string[];
   objectIds: string[];
   departmentIds: string[];
@@ -88,7 +90,7 @@ async function settingsByScheduleId(ids: string[]): Promise<Map<string, Schedule
       excludedRunDates: [],
       excludedRouteDates: [],
       excludedPersonIds: [],
-      roles: [],
+      permissions: [],
       recipientUserIds: [],
       objectIds: [],
       departmentIds: [],
@@ -122,15 +124,23 @@ async function settingsByScheduleId(ids: string[]): Promise<Map<string, Schedule
     .orderBy(asc(mailingScheduleExcludedPersons.personId));
   for (const row of people) of(row.scheduleId).excludedPersonIds.push(row.personId);
 
-  // Роли — в порядке самого типа `role`: сортировка по enum-колонке идёт по объявлению значений, а
-  // объявлены они от администратора к наблюдателю, то есть тем же порядком, каким их показывает
-  // портал. Алфавит по коду роли такого порядка не дал бы.
-  const roles = await db
-    .select({ scheduleId: mailingScheduleRoles.scheduleId, role: mailingScheduleRoles.role })
-    .from(mailingScheduleRoles)
-    .where(inArray(mailingScheduleRoles.scheduleId, ids))
-    .orderBy(asc(mailingScheduleRoles.role));
-  for (const row of roles) of(row.scheduleId).roles.push(row.role);
+  // Права — в порядке словаря (`PERMISSIONS`), а не по алфавиту кода: тем же порядком их
+  // показывает конструктор наборов, и набор в двух местах портала не должен выглядеть по-разному.
+  // Сирота — право, снятое из словаря выкатом, — до формы не доходит: показывать её нечем (подписи
+  // у неё нет), а вернувшись из формы, она была бы отвергнута схемой.
+  const permissions = await db
+    .select({
+      scheduleId: mailingSchedulePermissions.scheduleId,
+      permission: mailingSchedulePermissions.permission,
+    })
+    .from(mailingSchedulePermissions)
+    .where(inArray(mailingSchedulePermissions.scheduleId, ids));
+  for (const scheduleId of new Set(permissions.map((row) => row.scheduleId))) {
+    const own = new Set(
+      permissions.filter((row) => row.scheduleId === scheduleId).map((row) => row.permission),
+    );
+    of(scheduleId).permissions.push(...PERMISSIONS.filter((p) => own.has(p)));
+  }
 
   const recipients = await db
     .select({
@@ -181,7 +191,7 @@ function toDto(row: ScheduleRow, settings: ScheduleSettings | undefined): Mailin
     excludedRunDates: settings?.excludedRunDates ?? [],
     excludedRouteDates: settings?.excludedRouteDates ?? [],
     excludedPersonIds: settings?.excludedPersonIds ?? [],
-    roles: settings?.roles ?? [],
+    permissions: settings?.permissions ?? [],
     requestScope: row.requestScope,
     showTrips: row.showTrips,
     showOnsite: row.showOnsite,
@@ -311,8 +321,12 @@ function nextRunFor(v: {
 /**
  * Наборы настроек заменяются целиком: они приходят списками, и складывать разницу по строкам
  * незачем. Замена идёт той же транзакцией, что и само расписание, — иначе между удалением старых
- * строк и вставкой новых расписание успело бы сработать с половиной настроек: без части ролей, с
+ * строк и вставкой новых расписание успело бы сработать с половиной настроек: без части прав, с
  * половиной разделов или уже без исключённой площадки.
+ *
+ * `mailing_schedule_roles` здесь больше нет ни в удалении, ни во вставке (ADR 0111): прежняя
+ * адресация не читается и не пишется, а строки её оставлены до миграции удаления — по ним сверка
+ * аудитории отвечает, кому расписание слало письма до переезда.
  */
 async function replaceSettings(
   tx: Tx,
@@ -322,7 +336,7 @@ async function replaceSettings(
     | 'excludedRunDates'
     | 'excludedRouteDates'
     | 'excludedPersonIds'
-    | 'roles'
+    | 'permissions'
     | 'recipientUserIds'
     | 'objectIds'
     | 'departmentIds'
@@ -334,7 +348,9 @@ async function replaceSettings(
   await tx
     .delete(mailingScheduleExcludedPersons)
     .where(eq(mailingScheduleExcludedPersons.scheduleId, scheduleId));
-  await tx.delete(mailingScheduleRoles).where(eq(mailingScheduleRoles.scheduleId, scheduleId));
+  await tx
+    .delete(mailingSchedulePermissions)
+    .where(eq(mailingSchedulePermissions.scheduleId, scheduleId));
   await tx
     .delete(mailingScheduleRecipients)
     .where(eq(mailingScheduleRecipients.scheduleId, scheduleId));
@@ -357,8 +373,8 @@ async function replaceSettings(
   const people = unique(v.excludedPersonIds).map((personId) => ({ scheduleId, personId }));
   if (people.length > 0) await tx.insert(mailingScheduleExcludedPersons).values(people);
 
-  const roles = unique(v.roles).map((role) => ({ scheduleId, role }));
-  if (roles.length > 0) await tx.insert(mailingScheduleRoles).values(roles);
+  const permissions = unique(v.permissions).map((permission) => ({ scheduleId, permission }));
+  if (permissions.length > 0) await tx.insert(mailingSchedulePermissions).values(permissions);
 
   const recipients = unique(v.recipientUserIds).map((userId) => ({ scheduleId, userId }));
   if (recipients.length > 0) await tx.insert(mailingScheduleRecipients).values(recipients);
@@ -445,12 +461,14 @@ export default async function adminMailingsRoutes(app: FastifyInstance): Promise
   });
 
   /**
-   * Кого зацепит расписание при таком наборе ролей и областей.
+   * Кого зацепит расписание при таком наборе прав и областей.
    *
-   * Своим маршрутом, а не фильтрами `GET /users`, по двум причинам. Правило «нет площадко-отдельной
+   * Своим маршрутом, а не фильтрами `GET /users`, по трём причинам. Правило «нет площадко-отдельной
    * оси — фильтр по площадкам не применяется» в общий список учёток не встроить, не сломав его для
-   * прочих экранов. И цифра под формой обязана совпадать с тем, кого возьмёт планировщик, —
-   * совпадение двух похожих запросов гарантировать нечем, а расходятся они молча.
+   * прочих экранов. Цифра под формой обязана совпадать с тем, кого возьмёт планировщик, —
+   * совпадение двух похожих запросов гарантировать нечем, а расходятся они молча. И, с переездом на
+   * права (ADR 0111), эффективное право учётки складывается из роли, набора и типа контрагента: по
+   * выгруженному справочнику учёток его не сосчитать вовсе.
    *
    * Подтверждённый адрес отдаётся признаком, а не фильтром: человека, которому письмо не уйдёт,
    * администратор должен увидеть в форме и завести ему адрес, а не гадать, почему список короче
@@ -471,7 +489,7 @@ export default async function adminMailingsRoutes(app: FastifyInstance): Promise
         .from(users)
         .where(
           and(
-            inArray(users.role, q.roles),
+            permissionAudienceWhere(q.permissions),
             eq(users.isActive, true),
             isNull(users.deletedAt),
             recipientScopeWhere({

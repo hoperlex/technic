@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
+  GRANT_AUDIT_ACTIONS,
   USER_AUDIT_ACTIONS,
   USER_AUDIT_FIELDS,
   auditChangesOf,
   auditQuerySchema,
   describeAuditEntry,
+  grantAuditActionLabels,
   userAuditActionLabels,
   userAuditFieldLabels,
   type AuditEntryDto,
@@ -58,6 +60,17 @@ describe('фильтры журнала аудита', () => {
     // Входов в реестре нет намеренно: их тысячи, и они утопили бы административные действия.
     expect(USER_AUDIT_ACTIONS).not.toContain('auth.login');
     expect(() => auditQuerySchema.parse({ actions: 'auth.login' })).toThrow();
+  });
+
+  it('принимает действия каталога полномочий: журнал в портале один', () => {
+    // Отбор по действию обязан знать оба перечня — иначе события каталога нельзя было бы найти
+    // фильтром, хотя лежат они в том же журнале (ADR 0106, §12: новой сущности аудита не заводится).
+    expect(auditQuerySchema.parse({ actions: 'grant.update,grant.assign' }).actions).toEqual([
+      'grant.update',
+      'grant.assign',
+    ]);
+    // Реестр при этом остался закрытым: опечатка в коде действия каталога видна отказом.
+    expect(() => auditQuerySchema.parse({ actions: 'grant.updated' })).toThrow();
   });
 
   it('разбирает цель, актора и период', () => {
@@ -135,6 +148,69 @@ describe('описатель строки журнала', () => {
   });
 });
 
+/*
+ * ── События каталога полномочий (ADR 0106, этап 3) ──
+ *
+ * Журнал в портале один, и подвкладка показывает ленту целиком, без фильтра по действию. Значит
+ * строка правки набора попадает читателю на глаза наравне со строкой правки учётки — и если
+ * описатель её не знает, в таблице окажется код `grant.update`. Проверяется поэтому то же, что у
+ * действий учётки: подпись есть у каждого, заголовок собирает перечисление, а разбор изменений
+ * учётки на metadata набора не срабатывает вовсе.
+ */
+describe('описатель событий каталога полномочий', () => {
+  it('даёт осмысленную строку каждому действию каталога', () => {
+    for (const action of GRANT_AUDIT_ACTIONS) {
+      const text = describeAuditEntry(entry(action));
+      expect(text).not.toBe(action);
+      expect(text).toBe(grantAuditActionLabels[action]);
+    }
+  });
+
+  it('называет набор в заголовке: без имени «Полномочие выдано» ни о чём не говорит', () => {
+    expect(
+      describeAuditEntry(
+        entry('grant.assign', { grantCode: 'audit_reader', grantName: 'Аудитор' }),
+      ),
+    ).toBe('Полномочие выдано: «Аудитор»');
+    // Названия нет, а код есть — так выглядят записи, сделанные до появления поля: показываем код.
+    expect(describeAuditEntry(entry('grant.revoke', { grantCode: 'audit_reader' }))).toBe(
+      'Полномочие отозвано: «audit_reader»',
+    );
+  });
+
+  it('перечисляет в заголовке правки, что менялось, с числами состава', () => {
+    const text = describeAuditEntry(
+      entry('grant.update', {
+        grantCode: 'fuel_intake',
+        grantName: 'Приёмка топлива',
+        name: { from: 'Приёмка', to: 'Приёмка топлива' },
+        descriptionChanged: true,
+        permissionsAdded: ['vehicleReadings.read', 'vehicleReadings.write'],
+        permissionsRemoved: ['garage.read'],
+        rolesAdded: ['dispatcher'],
+        rolesRemoved: [],
+      }),
+    );
+    expect(text).toBe(
+      'Полномочие изменено: «Приёмка топлива» — название, описание, состав прав (+2, −1), совместимые роли (+1)',
+    );
+    // Правка одного описания групп с числами не даёт, и заголовок остаётся заголовком.
+    expect(
+      describeAuditEntry(entry('grant.update', { grantName: 'Аудитор', descriptionChanged: true })),
+    ).toBe('Полномочие изменено: «Аудитор» — описание');
+  });
+
+  it('перечень изменений учётки на событии набора не собирается', () => {
+    // `auditChangesOf` разбирает metadata **учётки**, и поля набора туда не попадают: подписи полей
+    // в подвкладке про учётку, и код чужого поля она напечатала бы как есть.
+    expect(
+      auditChangesOf(
+        entry('grant.update', { grantName: 'Аудитор', permissionsAdded: ['audit.read'] }),
+      ),
+    ).toEqual([]);
+  });
+});
+
 describe('изменения события журнала', () => {
   it('у каждого поля есть подпись — иначе в строке окажется код колонки', () => {
     for (const field of USER_AUDIT_FIELDS) {
@@ -160,8 +236,9 @@ describe('изменения события журнала', () => {
   it('восстанавливает пары из записей, сделанных до перечня', () => {
     // Смена роли и активность писались готовыми парами (ADR 0088) — читателю разница в том, каким
     // годом сделана запись, видна быть не должна.
-    expect(auditChangesOf(entry('user.update', { role: { from: 'dispatcher', to: 'manager' } })))
-      .toEqual([{ field: 'role', from: 'Диспетчер', to: 'Менеджер' }]);
+    expect(
+      auditChangesOf(entry('user.update', { role: { from: 'dispatcher', to: 'manager' } })),
+    ).toEqual([{ field: 'role', from: 'Диспетчер', to: 'Менеджер' }]);
     expect(auditChangesOf(entry('user.update', { isActive: { from: true, to: false } }))).toEqual([
       { field: 'isActive', from: 'открыт', to: 'закрыт' },
     ]);
@@ -180,9 +257,9 @@ describe('изменения события журнала', () => {
   it('о правке без значений говорит прямо, а не додумывает её', () => {
     // Область видимости писалась одним признаком «менялось». Придумать за него состав объектов
     // нельзя, а промолчать — значит потерять правку из истории вовсе.
-    expect(auditChangesOf(entry('user.update', { scopeChanged: true, roleChanged: false }))).toEqual(
-      [{ field: 'scope', from: null, to: null }],
-    );
+    expect(
+      auditChangesOf(entry('user.update', { scopeChanged: true, roleChanged: false })),
+    ).toEqual([{ field: 'scope', from: null, to: null }]);
     expect(auditChangesOf(entry('user.update'))).toEqual([]);
     expect(describeAuditEntry(entry('user.update'))).toBe('Учётная запись изменена');
   });

@@ -110,6 +110,10 @@ function principal(
     counterpartyId: null,
     personId,
     counterpartyType,
+    // Назначенных полномочий (ADR 0106) у файловых фикстур нет ни у кого: доступ к файлу выводится
+    // из связанной записи, а не из выданного набора, — и пустые поля здесь это утверждают.
+    grantCodes: [],
+    grantPermissions: [],
     addons: [],
     authVersion: 1,
   };
@@ -123,12 +127,15 @@ const serviceExecutor = (id = 'other') => principal('operator', id, 'service');
 /** Водитель (ADR 0102): роль второго контура, её область — сам человек, а не объект. */
 const driver = (id = 'driver-user', personId: string | null = PERSON) =>
   principal('driver', id, null, personId);
+/** Служба главного механика (Р14): её единственный модуль — журнал ТО. */
+const mechanic = (id = 'mechanic-user') => principal('mechanic', id);
 
 const NOWHERE = {
   visibleWaste: false,
   visibleVehicle: false,
   visibleService: false,
   visibleWaybill: false,
+  visibleMaintenance: false,
   visibleReading: false,
   ownDriverReading: false,
   linkedAnywhere: false,
@@ -138,6 +145,8 @@ const IN_VEHICLE = { ...NOWHERE, visibleVehicle: true, linkedAnywhere: true };
 const IN_SERVICE = { ...NOWHERE, visibleService: true, linkedAnywhere: true };
 /** Скан, подшитый к путевому листу (миграция 0087): у журнала листов своей области нет. */
 const IN_WAYBILL = { ...NOWHERE, visibleWaybill: true, linkedAnywhere: true };
+/** Скан акта, подшитый к записи ТО (миграция 0147): у журнала ТО своей области нет. */
+const IN_MAINTENANCE = { ...NOWHERE, visibleMaintenance: true, linkedAnywhere: true };
 /** Фотография показания: связь нашлась, и это показание парка, а не отчёт самого принципала. */
 const IN_READING = { ...NOWHERE, visibleReading: true, linkedAnywhere: true };
 /** Фотография показания из отчёта самого принципала (Р34): четвёртая ось области сошлась. */
@@ -286,6 +295,66 @@ describe('фотография показаний техники (Р34)', () => 
     // Обратная сторона того же: право на заявки и листы к фотографиям парка не ведёт.
     expect(decideFileAccess(principal('shtab', 'other'), UPLOADER, IN_READING)).toBe(false);
     expect(decideFileAccess(wasteOperator(), UPLOADER, IN_READING)).toBe(false);
+  });
+});
+
+/**
+ * Скан акта техобслуживания (план «Показания техники», Р14, §9).
+ *
+ * Ветка своя, а не «показания парка», и держится на ней вот что: механику `vehicleReadings.read`
+ * не дают намеренно — вместе с формой ТО оно открыло бы приёмку, журналы, выгрузки и фотографии
+ * приборных панелей. Значит, единственное право на скан акта у службы — `vehicleMaintenance.read`,
+ * и без собственной строки в решении подшитый акт не открывался бы **никому**: связь есть (функция
+ * `file_is_linked` знает про `vehicle_maintenance_files` с миграции 0147), а раз есть связь —
+ * выключена и ветка авторства, последняя, которая могла бы отдать файл загрузившему.
+ *
+ * Обратная сторона той же границы (таблица §9): право на ТО ведёт к акту и никуда больше.
+ */
+describe('скан акта техобслуживания (Р14)', () => {
+  it('открыт службе механика и диспетчерской — по праву на журнал ТО', () => {
+    for (const role of ['mechanic', 'chief_mechanic', 'manager', 'dispatcher', 'admin'] as Role[]) {
+      expect(decideFileAccess(principal(role, 'other'), UPLOADER, IN_MAINTENANCE), role).toBe(true);
+    }
+  });
+
+  it('роль без права на ТО скана не получает', () => {
+    // Соседи по порталу: у штаба и коменданта своего парка нет вовсе, у наблюдателя сквозной
+    // просмотр заявок, у отдела — оргтехника. Ни журнал листов, ни заявки к акту не ведут.
+    for (const role of ['shtab', 'rukstroy', 'commandant', 'observer', 'department'] as Role[]) {
+      expect(decideFileAccess(principal(role, 'other'), UPLOADER, IN_MAINTENANCE), role).toBe(
+        false,
+      );
+    }
+    expect(decideFileAccess(driver(), UPLOADER, IN_MAINTENANCE)).toBe(false);
+    expect(decideFileAccess(wasteOperator(), UPLOADER, IN_MAINTENANCE)).toBe(false);
+    expect(decideFileAccess(vehicleLessor(), UPLOADER, IN_MAINTENANCE)).toBe(false);
+    expect(decideFileAccess(serviceExecutor(), UPLOADER, IN_MAINTENANCE)).toBe(false);
+  });
+
+  it('и не получает его, даже если сам же скан и загрузил', () => {
+    // Тот же человек и тот же файл: до подшивки скан открыт как свежая загрузка, после — живёт по
+    // правилам журнала ТО, которого у этой роли нет. Авторство доступа не переживает.
+    expect(decideFileAccess(principal('shtab'), UPLOADER, NOWHERE)).toBe(true);
+    expect(decideFileAccess(principal('shtab'), UPLOADER, IN_MAINTENANCE)).toBe(false);
+    // И роль, потерянная после загрузки, — то же самое: ключом остаётся право, а не подпись.
+    expect(decideFileAccess(principal(null), UPLOADER, IN_MAINTENANCE)).toBe(false);
+  });
+
+  it('механик открывает свой акт и после подшивки — уже по праву, а не по авторству', () => {
+    const m = mechanic(UPLOADER);
+    expect(decideFileAccess(m, UPLOADER, NOWHERE)).toBe(true);
+    expect(decideFileAccess(m, UPLOADER, IN_MAINTENANCE)).toBe(true);
+    // А вложение чужой заявки не открывается ему ни авторством, ни правом на ТО.
+    expect(decideFileAccess(m, UPLOADER, IN_INVISIBLE_REQUEST)).toBe(false);
+  });
+
+  it('право на ТО не открывает ни фотографий показаний, ни вложений заявок (§9)', () => {
+    for (const linkage of [IN_READING, IN_OWN_READING, IN_WASTE, IN_VEHICLE, IN_SERVICE]) {
+      expect(decideFileAccess(mechanic(), UPLOADER, linkage)).toBe(false);
+    }
+    // Путевые листы — исключение и не про ТО: `waybills.read` у службы механика своё (ADR 0037),
+    // и открывает скан листа именно оно.
+    expect(decideFileAccess(mechanic(), UPLOADER, IN_WAYBILL)).toBe(true);
   });
 });
 

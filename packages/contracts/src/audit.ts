@@ -104,6 +104,63 @@ export const userAuditActionLabels: Record<UserAuditAction, string> = {
   'auth.password_change': 'Пароль изменён владельцем учётной записи',
 };
 
+// ── Действия по назначаемым полномочиям (ADR 0106, этап 3) ──
+//
+// Отдельным реестром от действий учётки, а не пятью строками в нём. Причина не в стиле: у событий
+// разная цель. `USER_AUDIT_ACTIONS` перечисляет то, что случилось **с учёткой**, и подвкладка
+// «Пользователи → Аудит» строит по нему свои галочки фильтра; каталог наборов живёт на вкладке
+// «Права», и его события отвечают на другой вопрос — «кто менял состав полномочия». Слитые в один
+// перечень, они добавили бы в фильтр учёток пять галочек, к учёткам не относящихся.
+//
+// Читаются же оба реестра одинаково: журнал в портале один (ADR 0088), новой сущности аудита
+// реформа не заводит (§12), и отбор по действию, описатель строки и будущий экспорт обязаны знать
+// оба перечня — за это отвечает `AUDIT_ACTIONS` ниже.
+//
+// **Цель события у трёх первых действий — набор, у двух последних — учётка.** Правка каталога
+// пишется с `entityType: 'grant'` и `entityId` набора: у неё нет одного пострадавшего, их столько,
+// сколько держателей. Выдача и отзыв, наоборот, пишутся на учётку — так их находит разбор «что
+// меняли у этого человека», — а набор называют в metadata. Оба действия заведены **этой** волной
+// намеренно, хотя писать их будет следующая: код действия, придуманный в момент, когда его уже надо
+// писать, обычно оказывается вторым именем для того же события (`grant.add` рядом с `grant.assign`),
+// и разобрать журнал по двум именам одного события потом нечем.
+export const GRANT_AUDIT_ACTIONS = [
+  'grant.create',
+  'grant.update',
+  'grant.delete',
+  'grant.assign',
+  'grant.revoke',
+] as const;
+export type GrantAuditAction = (typeof GRANT_AUDIT_ACTIONS)[number];
+
+/**
+ * Подписи действий каталога. «Полномочие», а не «набор прав», — тем же словом набор называется в
+ * ADR, в плане и в карточке учётки; журнал не должен вводить третье название одной сущности.
+ */
+export const grantAuditActionLabels: Record<GrantAuditAction, string> = {
+  'grant.create': 'Полномочие создано',
+  'grant.update': 'Полномочие изменено',
+  'grant.delete': 'Полномочие удалено',
+  'grant.assign': 'Полномочие выдано',
+  'grant.revoke': 'Полномочие отозвано',
+};
+
+/** Весь закрытый реестр журнала: события учёток и события каталога полномочий. */
+export const AUDIT_ACTIONS = [...USER_AUDIT_ACTIONS, ...GRANT_AUDIT_ACTIONS] as const;
+export type AuditAction = (typeof AUDIT_ACTIONS)[number];
+
+/** Подписи всех действий реестра — одна карта на фильтр, описатель и экспорт. */
+export const auditActionLabels: Record<AuditAction, string> = {
+  ...userAuditActionLabels,
+  ...grantAuditActionLabels,
+};
+
+const GRANT_ACTION_SET: ReadonlySet<string> = new Set(GRANT_AUDIT_ACTIONS);
+
+/** Событие каталога полномочий, а не учётки: у них разный разбор metadata. */
+export function isGrantAuditAction(action: string): action is GrantAuditAction {
+  return GRANT_ACTION_SET.has(action);
+}
+
 // ── Изменённые поля учётки ──
 
 /**
@@ -224,14 +281,16 @@ export const auditActionsSchema = z
   .string()
   // Длина от самого реестра: даже весь перечень целиком короче этого предела, а произвольно
   // длинная строка сюда попадать не должна вовсе.
-  .max(USER_AUDIT_ACTIONS.join(',').length + 20)
+  .max(AUDIT_ACTIONS.join(',').length + 20)
   .transform((v) =>
     v
       .split(',')
       .map((s) => s.trim())
       .filter((s) => s !== ''),
   )
-  .pipe(z.array(z.enum(USER_AUDIT_ACTIONS)).max(USER_AUDIT_ACTIONS.length));
+  // Оба перечня: журнал в портале один, и события каталога полномочий отбираются тем же фильтром,
+  // что события учёток. Реестр при этом остаётся закрытым — опечатка в коде действия видна отказом.
+  .pipe(z.array(z.enum(AUDIT_ACTIONS)).max(AUDIT_ACTIONS.length));
 
 export const AUDIT_SORT_FIELDS = ['createdAt', 'action'] as const;
 
@@ -397,8 +456,76 @@ export function auditChangesOf(entry: AuditEntryDto): AuditChangeDto[] {
   return legacyChanges(entry.action, metadata);
 }
 
+// ── Описатель событий каталога полномочий ──
+//
+// Собирается из metadata, а не из `metadata.changes`, и это осознанный отказ от общего механизма.
+// Перечень изменений показывает подвкладка учёток, подписывая поля по `userAuditFieldLabels`; поля
+// набора (состав прав, совместимые роли) там взяться не могут — это поля другой сущности, и
+// незнакомый код поля вёрстка печатает как есть. Поэтому событие каталога отвечает за себя целиком
+// одной строкой заголовка: «Полномочие изменено: «Приёмка топлива» — состав прав (+2, −1)».
+
+/** Названия наборов и кодов в metadata — строкой либо ничем: журнал читают и по старым записям. */
+function textOf(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() !== '' ? value : null;
+}
+
+/** Длина списка из metadata; не список — «изменений в этой группе не записано». */
+function countOf(value: unknown): number {
+  return Array.isArray(value) ? value.length : 0;
+}
+
+/** Группа правки с числами: «состав прав (+2, −1)». Без чисел группа не называется вовсе. */
+function group(title: string, added: number, removed: number): string | null {
+  if (added === 0 && removed === 0) return null;
+  const parts = [added > 0 ? `+${added}` : '', removed > 0 ? `−${removed}` : ''].filter(Boolean);
+  return `${title} (${parts.join(', ')})`;
+}
+
 /**
- * Заголовок события: что произошло с учёткой, без значений — их показывает `auditChangesOf`.
+ * Что правка сделала с набором — группами, как заголовок правки учётки перечисляет группы полей.
+ * Пустой перечень законен: правка одного описания групп не даёт, и заголовок остаётся заголовком.
+ */
+function grantUpdateGroups(metadata: Record<string, unknown>): string[] {
+  const out: string[] = [];
+  // Пара «было → стало», как у роли и активности учётки: правка названия — единственная правка
+  // набора, у которой обе стороны короткие и читаются целиком.
+  if (changePair(metadata.name)) out.push('название');
+  if (metadata.descriptionChanged === true) out.push('описание');
+  const permissions = group(
+    'состав прав',
+    countOf(metadata.permissionsAdded),
+    countOf(metadata.permissionsRemoved),
+  );
+  if (permissions) out.push(permissions);
+  const roles = group(
+    'совместимые роли',
+    countOf(metadata.rolesAdded),
+    countOf(metadata.rolesRemoved),
+  );
+  if (roles) out.push(roles);
+  return out;
+}
+
+/**
+ * Строка события каталога. Название набора идёт в заголовок всегда, когда оно записано: у выдачи и
+ * отзыва цель события — учётка, её ФИО таблица показывает своей колонкой, и без названия набора
+ * строка «Полномочие выдано» не отвечала бы на главный вопрос — какое.
+ */
+function describeGrantEntry(
+  action: GrantAuditAction,
+  label: string,
+  metadata: Record<string, unknown>,
+): string {
+  const name = textOf(metadata.grantName) ?? textOf(metadata.grantCode);
+  const head = name === null ? label : `${label}: «${name}»`;
+  if (action !== 'grant.update') return head;
+  const groups = grantUpdateGroups(metadata);
+  return groups.length > 0 ? `${head} — ${groups.join(', ')}` : head;
+}
+
+/**
+ * Заголовок события: что произошло с учёткой или с полномочием, без значений — их показывает
+ * `auditChangesOf`.
  *
  * У правки заголовок перечисляет затронутое («изменена: роль, объекты»), потому что правок в один
  * приём бывает по пять-шесть: без перечня строка журнала говорила бы «изменена» обо всём подряд, а
@@ -409,10 +536,13 @@ export function auditChangesOf(entry: AuditEntryDto): AuditChangeDto[] {
  * показывает, но описатель не должен молчать.
  */
 export function describeAuditEntry(entry: AuditEntryDto): string {
-  const action = entry.action as UserAuditAction;
-  const label = userAuditActionLabels[action];
+  const label = auditActionLabels[entry.action as AuditAction];
   if (label === undefined) return entry.action;
   const metadata = entry.metadata ?? {};
+  if (isGrantAuditAction(entry.action)) {
+    return describeGrantEntry(entry.action, label, metadata);
+  }
+  const action = entry.action as UserAuditAction;
 
   if (action === 'user.register') {
     const requested = metadata.requestedRole;

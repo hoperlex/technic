@@ -15,16 +15,17 @@ import type {
   DriverSelectionDto,
   MergePointsBody,
   PointOrderBody,
+  PointRoleOrderBody,
   RoutePointBody,
   SplitPointBody,
   VehicleRouteDto,
-  VehicleRoutePointDto,
   WaybillDto,
   WaybillFormCode,
   DriverLicenseBody,
   RevokeDriverLicenseInput,
   UpdateDriverInput,
   VerifyDriverLicenseBody,
+  AssignGrantInput,
   AssignVehicleBody,
   AttachVehicleTypeSpecInput,
   AuditEntryDto,
@@ -40,6 +41,7 @@ import type {
   VehicleRequestDaysDto,
   CounterpartyDto,
   CreateCounterpartyInput,
+  CreateGrantInput,
   CreateUserBody,
   CreateVehicleCategoryInput,
   CreateVehicleInput,
@@ -53,6 +55,12 @@ import type {
   DownloadUrlDto,
   FileDisposition,
   FileDto,
+  GrantAssignmentPreviewInput,
+  GrantAssignmentResultDto,
+  GrantCardDto,
+  GrantDto,
+  GrantImpactDto,
+  GrantUpdatePreviewInput,
   ListResult,
   RejectUserBody,
   RejectUserResult,
@@ -65,6 +73,7 @@ import type {
   RouteTripFields,
   SaveVehicleRequestShiftBody,
   UpdateCounterpartyInput,
+  UpdateGrantInput,
   UpdateUserBody,
   UpdateVehicleCategoryInput,
   UpdateVehicleInput,
@@ -109,7 +118,7 @@ import type {
   WeeklySuggestionDto,
   WeeklyVehicleRequestDto,
 } from '@technic/contracts';
-import { apiDownload, apiFetch, apiFetchBlob } from '@shared/api';
+import { apiDownload, apiFetch, apiFetchBlob, createQueryKeys } from '@shared/api';
 
 type Query = Record<string, unknown>;
 
@@ -219,6 +228,63 @@ export const auditApi = {
   list: (q: Query) => apiFetch<ListResult<AuditEntryDto>>('/audit', { query: q }),
 };
 
+/**
+ * Ключи каталога полномочий. Карточка отдельным семейством от списка: реестр выдач перечитывается
+ * после каждой выдачи и отзыва, а каталог — только когда меняется состав или число держателей, и
+ * гасить его целиком ради одной строки реестра незачем. Корень при этом накрывает и то, и другое:
+ * правка набора меняет обе выборки сразу.
+ */
+export const grantKeys = createQueryKeys('grants', {
+  list: (params: Query) => ['list', params],
+  card: (id: string) => ['card', id],
+});
+
+/**
+ * Каталог назначаемых полномочий (ADR 0106, этап 3; план §12) — именованные наборы прав, которые
+ * выдаются учётке поверх её роли.
+ *
+ * Предпросмотр стоит рядом с правкой, а не спрятан в неё: он отвечает на «кого это затронет и что у
+ * них изменится» до нажатия и выдаёт `expectedImpactHash` — отпечаток того, из чего расчёт посчитан.
+ * Правка без отпечатка невозможна по схеме сервера, и это не формальность: между показом
+ * предпросмотра и сохранением набор могли выдать ещё одному человеку либо сменить роль держателю, и
+ * тогда применится не то, что подтверждали (решение 7).
+ */
+export const grantsApi = {
+  list: (q: Query) => apiFetch<ListResult<GrantDto>>('/grants', { query: q }),
+  /** Карточка вместе с реестром выдач: кому выдано, кем, когда и на чём. */
+  get: (id: string) => apiFetch<GrantCardDto>(`/grants/${id}`),
+  create: (body: CreateGrantInput) => apiFetch<GrantCardDto>('/grants', { method: 'POST', body }),
+  /**
+   * Что даст правка: дельта по каждому держателю, нарушения барьеров **в теле** и отпечаток.
+   * Нарушения приходят ответом, а не отказом, — иначе экран потерял бы разом и дельту, и причину.
+   */
+  preview: (id: string, body: GrantUpdatePreviewInput) =>
+    apiFetch<GrantImpactDto>(`/grants/${id}/preview`, { method: 'POST', body }),
+  update: (id: string, body: UpdateGrantInput) =>
+    apiFetch<GrantCardDto>(`/grants/${id}`, { method: 'PATCH', body }),
+  /** Мягкое удаление: выданный набор сервер не отдаёт (409) — сначала отзыв выдач. */
+  remove: (id: string) =>
+    apiFetch<{ id: string; deleted: boolean }>(`/grants/${id}`, { method: 'DELETE' }),
+};
+
+/**
+ * Выдача и отзыв набора учётке. Адрес — учётки, а не каталога: цель операции она, ей поднимается
+ * `authVersion`, на неё пишется журнал. Отпечаток предъявляют обе операции, и у отзыва он уходит
+ * строкой запроса: тело у `DELETE` доходит не через каждый прокси, а подтверждение обязано доходить
+ * всегда.
+ */
+export const userGrantsApi = {
+  preview: (userId: string, body: GrantAssignmentPreviewInput) =>
+    apiFetch<GrantImpactDto>(`/users/${userId}/grants/preview`, { method: 'POST', body }),
+  assign: (userId: string, body: AssignGrantInput) =>
+    apiFetch<GrantAssignmentResultDto>(`/users/${userId}/grants`, { method: 'POST', body }),
+  revoke: (userId: string, grantId: string, expectedImpactHash: string) =>
+    apiFetch<GrantAssignmentResultDto>(`/users/${userId}/grants/${grantId}`, {
+      method: 'DELETE',
+      query: { expectedImpactHash },
+    }),
+};
+
 /** Получатель отладочного письма: действующий администратор и его адрес. */
 export interface MailTestRecipient {
   id: string;
@@ -290,10 +356,11 @@ export const mailingsApi = {
   deleteSchedule: (id: string) =>
     apiFetch<void>(`/admin/mail/schedules/${id}`, { method: 'DELETE' }),
   /**
-   * Кого зацепит сводка при таком наборе ролей и областей. Считает сервер тем же отбором, каким
+   * Кого зацепит сводка при таком наборе прав и областей. Считает сервер тем же отбором, каким
    * рассылка выбирает адресатов: правило «нет площадко-отдельной оси — фильтр по площадкам не
-   * применяется» в общий список учёток не встроить, а цифра под формой обязана совпадать с тем,
-   * кого возьмёт планировщик.
+   * применяется» в общий список учёток не встроить, эффективное право учётки по справочнику
+   * вообще не сосчитать (ADR 0111), а цифра под формой обязана совпадать с тем, кого возьмёт
+   * планировщик.
    */
   recipientCandidates: (q: Query) =>
     apiFetch<MailingRecipientCandidateDto[]>('/admin/mail/recipient-candidates', { query: q }),
@@ -413,22 +480,10 @@ export const waybillsApi = {
  * Версия рейса уходит в каждое изменение состава и в выписку: рейс правят несколько диспетчеров
  * сразу, и «кто последний, тот и прав» означало бы лист не на тот состав.
  */
-/**
- * Рейс вместе с порядком объезда: то, чем отвечают все двери, которые рейс правят (§7 плана
- * `docs/route-trips-plan.md`).
- *
- * Пересечением, а не полем в `VehicleRouteDto`: точки — это отдельный запрос сервера
- * (`loadRoutePoints`), их спрашивает карточка рейса, а список рейсов и карточка заявки — нет.
- * Контракт их пока не несёт (`apps/api/src/routes/vehicle-routes.ts`, `VehicleRouteWithPoints`
- * собран там тем же способом), и заводить копию типа в контрактах ради одного поля значило бы
- * решать это за этап 9. Здесь тип объявлен ровно затем, чтобы карточка перестала звать точки
- * через `as`.
- */
-export type VehicleRouteWithPoints = VehicleRouteDto & { points: VehicleRoutePointDto[] };
 
 export const vehicleRoutesApi = {
   list: (q: Query) => apiFetch<ListResult<VehicleRouteDto>>('/vehicle-routes', { query: q }),
-  get: (id: string) => apiFetch<VehicleRouteWithPoints>(`/vehicle-routes/${id}`),
+  get: (id: string) => apiFetch<VehicleRouteDto>(`/vehicle-routes/${id}`),
   /**
    * Что у этой машины на этот день: её рейсы и графы шапки от прошлого рейса. Форма перевода в
    * работу наследует ими реквизиты выезда — прицеп, гаражный номер, вид сообщения и перевозки:
@@ -450,7 +505,7 @@ export const vehicleRoutesApi = {
      * когда `routeDate` уже прошла, — решает это `backdateGuard`, который знает права субъекта.
      */
     reason?: string;
-  }) => apiFetch<VehicleRouteWithPoints>('/vehicle-routes', { method: 'POST', body }),
+  }) => apiFetch<VehicleRouteDto>('/vehicle-routes', { method: 'POST', body }),
   update: (
     id: string,
     body: {
@@ -464,15 +519,15 @@ export const vehicleRoutesApi = {
       moveFrom?: string;
       moveTo?: string;
     },
-  ) => apiFetch<VehicleRouteWithPoints>(`/vehicle-routes/${id}`, { method: 'PATCH', body }),
+  ) => apiFetch<VehicleRouteDto>(`/vehicle-routes/${id}`, { method: 'PATCH', body }),
   remove: (id: string) => apiFetch<{ ok: boolean }>(`/vehicle-routes/${id}`, { method: 'DELETE' }),
   /** Положить заявку в рейс или перенести её из другого — тогда `source` обязателен. */
   attach: (
     id: string,
     body: { requestId: string; version: number; source?: { routeId: string; version: number } },
-  ) => apiFetch<VehicleRouteWithPoints>(`/vehicle-routes/${id}/requests`, { method: 'POST', body }),
+  ) => apiFetch<VehicleRouteDto>(`/vehicle-routes/${id}/requests`, { method: 'POST', body }),
   detach: (id: string, requestId: string, version: number) =>
-    apiFetch<VehicleRouteWithPoints>(`/vehicle-routes/${id}/requests/${requestId}`, {
+    apiFetch<VehicleRouteDto>(`/vehicle-routes/${id}/requests/${requestId}`, {
       method: 'DELETE',
       query: { version: String(version) },
     }),
@@ -485,7 +540,7 @@ export const vehicleRoutesApi = {
    * пока карточка на точки не переведена. Портал этой дверью порядок больше не двигает.
    */
   order: (id: string, body: { requestIds: string[]; version: number }) =>
-    apiFetch<VehicleRouteWithPoints>(`/vehicle-routes/${id}/order`, { method: 'PUT', body }),
+    apiFetch<VehicleRouteDto>(`/vehicle-routes/${id}/order`, { method: 'PUT', body }),
   /**
    * Порядок объезда: точки маршрута (§7 плана `docs/route-trips-plan.md`).
    *
@@ -503,25 +558,36 @@ export const vehicleRoutesApi = {
   points: {
     /** Адрес, время, комментарий и состав ролей **целиком** (роли идут прежними, если их не меняют). */
     update: (id: string, pointId: string, body: RoutePointBody) =>
-      apiFetch<VehicleRouteWithPoints>(`/vehicle-routes/${id}/points/${pointId}`, {
+      apiFetch<VehicleRouteDto>(`/vehicle-routes/${id}/points/${pointId}`, {
         method: 'PATCH',
         body,
       }),
     /** Новый порядок объезда полным списком точек (Р14): сервер переписывает позиции целиком. */
     order: (id: string, body: PointOrderBody) =>
-      apiFetch<VehicleRouteWithPoints>(`/vehicle-routes/${id}/points/order`, {
+      apiFetch<VehicleRouteDto>(`/vehicle-routes/${id}/points/order`, {
+        method: 'PUT',
+        body,
+      }),
+    /**
+     * Новый порядок работ внутри одной точки — полным списком её ролей.
+     *
+     * Им переставляются строки задания, которые порядок объезда не различает: две строки, стоящие
+     * на одной и той же паре точек (Р8 переиспользует точку), — «какую из ездок грузим первой».
+     */
+    rolesOrder: (id: string, pointId: string, body: PointRoleOrderBody) =>
+      apiFetch<VehicleRouteDto>(`/vehicle-routes/${id}/points/${pointId}/roles/order`, {
         method: 'PUT',
         body,
       }),
     /** Совместить точки одного адреса: роли переезжают в первую по позиции (Р9а). */
     merge: (id: string, body: MergePointsBody) =>
-      apiFetch<VehicleRouteWithPoints>(`/vehicle-routes/${id}/points/merge`, {
+      apiFetch<VehicleRouteDto>(`/vehicle-routes/${id}/points/merge`, {
         method: 'POST',
         body,
       }),
     /** Разнести точку надвое: названные роли уходят в новую точку сразу за исходной (Р9а). */
     split: (id: string, pointId: string, body: SplitPointBody) =>
-      apiFetch<VehicleRouteWithPoints>(`/vehicle-routes/${id}/points/${pointId}/split`, {
+      apiFetch<VehicleRouteDto>(`/vehicle-routes/${id}/points/${pointId}/split`, {
         method: 'POST',
         body,
       }),
@@ -545,7 +611,7 @@ export const vehicleRoutesApi = {
        */
       acknowledge?: { fingerprint: string };
     },
-  ) => apiFetch<VehicleRouteWithPoints>(`/vehicle-routes/${id}/waybill`, { method: 'POST', body }),
+  ) => apiFetch<VehicleRouteDto>(`/vehicle-routes/${id}/waybill`, { method: 'POST', body }),
   /**
    * Что будет, если рейс исправить (ADR 0101, Р36): цена операции и её блокировки — до нажатия.
    *
@@ -595,8 +661,7 @@ export const vehicleRoutesApi = {
       requestOrder?: string[];
       reason: string;
     },
-  ) =>
-    apiFetch<VehicleRouteWithPoints>(`/vehicle-routes/${id}/correction`, { method: 'POST', body }),
+  ) => apiFetch<VehicleRouteDto>(`/vehicle-routes/${id}/correction`, { method: 'POST', body }),
   /**
    * Перенести заявку между рейсами прошедших дней (ADR 0101, Р30): `id` — рейс-**приёмник**,
    * `source` — источник со своей версией.
@@ -617,7 +682,7 @@ export const vehicleRoutesApi = {
       reason: string;
     },
   ) =>
-    apiFetch<{ target: VehicleRouteWithPoints; source: VehicleRouteWithPoints }>(
+    apiFetch<{ target: VehicleRouteDto; source: VehicleRouteDto }>(
       `/vehicle-routes/${id}/correction/transfer`,
       { method: 'POST', body },
     ),

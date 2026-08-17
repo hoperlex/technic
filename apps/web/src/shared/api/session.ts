@@ -22,10 +22,29 @@ export type RefreshOutcome =
   /** Ответ пришёл уже к другой сессии: ни применять его, ни объявлять о нём нельзя. */
   | { status: 'stale' };
 
+/**
+ * Ответ обновления токена. Учётка приходит в нём вместе с токеном (ADR 0106, этап 2): сервер
+ * пересчитывает эффективные права на каждом обновлении, и после `authVersion + 1` они уже другие.
+ *
+ * Тип пользователя — `unknown`, и это не небрежность: `shared` не знает правил портала (в нём нет
+ * `@technic/contracts`), а транспорту разбирать учётку и не нужно — он передаёт тело нетронутым
+ * тому, кто знает его форму. Так же устроен и `apiFetch<T>`: тип называет вызывающий.
+ *
+ * `expiresIn` описан ради полноты контракта ручки и не читается: вкладка не обновляет токен по
+ * расписанию, а идёт за ним на первом же 401 — иначе понадобился бы таймер, живущий дольше
+ * запроса, который его завёл.
+ */
+interface RefreshResponse {
+  accessToken: string;
+  expiresIn?: number;
+  user?: unknown;
+}
+
 let accessToken: string | null = null;
 let generation = 0;
 let refreshing: Promise<RefreshOutcome> | null = null;
 let expiredHandlers: (() => void)[] = [];
+let refreshedUserHandlers: ((user: unknown) => void)[] = [];
 
 export function getToken(): string | null {
   return accessToken;
@@ -86,6 +105,24 @@ export function onExpired(handler: () => void): () => void {
 }
 
 /**
+ * Подписка на учётку, пришедшую с новым токеном; возвращает функцию отписки.
+ *
+ * Подписка, а не поле в `RefreshOutcome`, — по тому же устройству, по которому здесь живёт
+ * `onExpired`. Обновление дёргает слой HTTP на 401, посреди работы человека, и результат ему нужен
+ * ровно один: удалось или нет. Вернуть учётку значением означало бы протаскивать её через каждого,
+ * кто зовёт `refresh` (транспорт, bootstrap), и каждый обязан был бы не забыть её передать дальше —
+ * а забывший тихо оставлял бы интерфейс с прежними правами. Подписка вдобавок бесплатно получает
+ * сверку сессии: уведомление уходит только из своего поколения, и ответ, вернувшийся уже к другому
+ * пользователю, до подписчиков не доходит.
+ */
+export function onRefreshedUser(handler: (user: unknown) => void): () => void {
+  refreshedUserHandlers = [...refreshedUserHandlers, handler];
+  return () => {
+    refreshedUserHandlers = refreshedUserHandlers.filter((h) => h !== handler);
+  };
+}
+
+/**
  * Обмен refresh-cookie на новый access-токен. Одна попытка на несколько параллельных 401: второй
  * запрос дожидается того же обещания, иначе сервер увидел бы повторное использование refresh и
  * отозвал бы сессию целиком.
@@ -104,9 +141,20 @@ export async function refresh(): Promise<RefreshOutcome> {
         accessToken = null;
         return { status: 'expired', generation: startedAt };
       }
-      const data = (await res.json()) as { accessToken: string };
+      const data = (await res.json()) as RefreshResponse;
       if (stale()) return { status: 'stale' };
       accessToken = data.accessToken;
+      /*
+       * Учётка из ответа применяется, а не выбрасывается. Права считает сервер, и обновление —
+       * единственное место, где он сообщает их посреди работы: после `authVersion + 1` он проверяет
+       * запросы уже по новому набору, а меню и кнопки остались бы прежними до перезагрузки
+       * страницы. Проверка здесь — минимум, доступный транспорту без знания домена: тело либо
+       * объект, либо ручка учётку не прислала (так отвечают старые сборки API и тесты, которым
+       * пользователь в ответе не нужен).
+       */
+      if (typeof data.user === 'object' && data.user !== null) {
+        for (const handler of refreshedUserHandlers) handler(data.user);
+      }
       return { status: 'refreshed' };
     })
     .catch((): RefreshOutcome => {
@@ -128,4 +176,5 @@ export function __resetSessionForTests(): void {
   generation = 0;
   refreshing = null;
   expiredHandlers = [];
+  refreshedUserHandlers = [];
 }

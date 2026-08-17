@@ -70,6 +70,7 @@ import {
   restoreNeedsPerson,
 } from './DriverPersonField';
 import { RejectRegistrationModal } from './RejectRegistrationModal';
+import { UserDepartmentsField } from './UserDepartmentsField';
 import { UsersAuditTab } from './UsersAuditTab';
 import { UserAuditPathDrawer, type AuditTarget } from './UserAuditPathDrawer';
 import { userAuditKeys } from '@entities/user-audit';
@@ -82,7 +83,7 @@ import { usePurgeAction } from '../../hooks/usePurgeAction';
 import { UserAvatar } from '../../components/UserAvatar';
 import { errorMessage } from '../../utils/format';
 import { objectsApi, objectKeys } from '@entities/object';
-import { departmentOptionsQuery } from '@entities/department';
+import { departmentKeys, departmentOptionsQuery } from '@entities/department';
 
 interface UserFormValues {
   email: string;
@@ -430,6 +431,11 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
     onSuccess: ({ notified }) => {
       message.success(withMailOutcome('Сохранено', notified, 'пользователю отправлено письмо'));
       void qc.invalidateQueries({ queryKey: ['users'] });
+      // Отделы — та же привязка, что держит признак руководителя (миграция 0149): отдел, убранный
+      // из набора, уносит и руководство им. Справочник об этом не спрашивали, но показывает он то
+      // же самое — и в карточке отдела, и подсказкой в этой форме. Ответное гашение стоит в
+      // карточке отдела, здесь — обратное.
+      void qc.invalidateQueries({ queryKey: departmentKeys.root });
       setOpen(false);
     },
     onError: (e) => {
@@ -1190,6 +1196,20 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
             // Звёздочка обязательности — по тому же правилу: у заявки роль ждёт решения, а не
             // заполнения, и помеченной обязательной она обещала бы, что без неё не сохранить.
             required={!pendingRecord}
+            /*
+             * Пояснение ровно для «Площадки» (ADR 0112), и оно не украшение. Роль доступна
+             * администратору с этапа 4б — раньше, чем на неё переведут штаб, руководителя
+             * строительства и коменданта, — и выбранная сегодня даёт вывоз мусора с оргтехникой, но
+             * **не** заказ техники: он приезжает полномочием. Без подписи это выглядит как
+             * «урезанный штаб» и объясняется отказом на первой же заявке. У остальных ролей
+             * подписи нет намеренно: их состав прав никуда не переезжал, и подсказка там означала
+             * бы, что переезжал.
+             */
+            extra={
+              watchRole === 'site'
+                ? 'Заказ техники и виза приезжают полномочиями — «Заказ техники» и «Виза объекта». Ролью открыты вывоз мусора и оргтехника'
+                : undefined
+            }
             dependencies={pendingRecord ? ['isActive'] : undefined}
             rules={[
               {
@@ -1233,29 +1253,18 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
             </Form.Item>
           ) : null}
           {/* Отделы — вторая ось области (ADR 0040): офисное подразделение вместо площадки.
-              Показывается вместо поля объектов, а не рядом: учётка работает на одной оси. */}
+              Показывается вместо поля объектов, а не рядом: учётка работает на одной оси. Своим
+              файлом — вместе с ответом на «руководит ли он ими» (§11.1 плана реструктуризации
+              прав): признак руководителя переехал из роли в привязку, ставится из карточки отдела,
+              и молчать о нём здесь значило бы оставить администратора без объяснения. */}
           {isDepartmentScopedRole(watchRole) ? (
-            <Form.Item
-              name="departmentIds"
-              label={`Отделы (для роли «${roleLabels[watchRole!]}»)`}
-              rules={[
-                {
-                  validator: (_rule, value: string[] | undefined) =>
-                    value && value.length > 0
-                      ? Promise.resolve()
-                      : Promise.reject(new Error('Выберите хотя бы один отдел')),
-                },
-              ]}
-            >
-              <Select
-                mode="multiple"
-                options={departmentOptions ?? []}
-                loading={departmentsLoading}
-                showSearch
-                optionFilterProp="label"
-                placeholder="Выберите отделы"
-              />
-            </Form.Item>
+            <UserDepartmentsField
+              roleLabel={roleLabels[watchRole!]}
+              departments={record?.departments ?? []}
+              isNew={!record}
+              options={departmentOptions ?? []}
+              loading={departmentsLoading}
+            />
           ) : null}
           {isCounterpartyScopedRole(watchRole) ? (
             <Form.Item

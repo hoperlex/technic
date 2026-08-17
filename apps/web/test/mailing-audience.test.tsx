@@ -3,7 +3,7 @@ import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import type {
   MailingRecipientCandidateDto,
   MailingScheduleDto,
-  Role,
+  Permission,
   UpdateMailingScheduleBody,
 } from '@technic/contracts';
 import { json, mockHttp, type HttpMock } from './http';
@@ -13,13 +13,13 @@ import { list } from './factories/common';
 import { MailingSchedulesBlock } from '../src/pages/admin/MailingSchedulesBlock';
 
 /**
- * Аудитория сводки по ролям: три окна выбора и каскад между ними.
+ * Аудитория сводки: три окна выбора и каскад между ними (адресация правом — ADR 0111).
  *
  * Проверяется то, из-за чего письмо уходит не тем: список получателей обязан пересобираться при
- * смене ролей (иначе в расписании остаётся человек, которого отбор уже не берёт), «отмечено всё»
+ * смене прав (иначе в расписании остаётся человек, которого отбор уже не берёт), «отмечено всё»
  * обязано сохраняться режимом, а не перечнем (иначе заведённая завтра учётка молча выпадает из
  * рассылки), а отмеченный вручную и выпавший из отбора получатель обязан быть назван — снимать
- * его молча нельзя, вернуть роль означает вернуть и его.
+ * его молча нельзя, вернуть право означает вернуть и его.
  */
 
 const SCHEDULE_ID = '11111111-1111-1111-1111-111111111111';
@@ -31,11 +31,11 @@ const NORTH_ID = '66666666-6666-6666-6666-666666666666';
 const SOUTH_ID = '77777777-7777-7777-7777-777777777777';
 const SUPPLY_ID = '88888888-8888-8888-8888-888888888888';
 
-/** Кандидаты, которых сервер вернёт на роль. Отбор считает он же — портал только показывает. */
-const BY_ROLE: Partial<Record<Role, MailingRecipientCandidateDto>> = {
+/** Кандидаты, которых сервер вернёт на право. Отбор считает он же — портал только показывает. */
+const BY_PERMISSION: Partial<Record<Permission, MailingRecipientCandidateDto>> = {
   // Диспетчер площадко-отдельной оси не имеет вовсе (Р8): выбор площадок его не отсекает, и в
   // счётчик ни одной площадки он не попадает.
-  dispatcher: {
+  'waybills.read': {
     userId: DISPATCHER_ID,
     fullName: 'Диспетчеров Дмитрий',
     role: 'dispatcher',
@@ -44,7 +44,7 @@ const BY_ROLE: Partial<Record<Role, MailingRecipientCandidateDto>> = {
     departmentIds: [],
     emailVerified: true,
   },
-  shtab: {
+  'vehicleRequests.read': {
     userId: SHTAB_ID,
     fullName: 'Штабов Сергей',
     role: 'shtab',
@@ -72,7 +72,7 @@ function schedule(over: Partial<MailingScheduleDto> = {}): MailingScheduleDto {
     excludedRunDates: [],
     excludedRouteDates: [],
     excludedPersonIds: [],
-    roles: ['dispatcher', 'shtab'],
+    permissions: ['waybills.read', 'vehicleRequests.read'],
     requestScope: 'scope',
     showTrips: true,
     showOnsite: true,
@@ -92,7 +92,7 @@ function renderBlock(over: Partial<MailingScheduleDto> = {}): HttpMock {
   const record = schedule(over);
   const http = mockHttp({
     'GET /admin/mail/schedules': () => json([record]),
-    // Справочники областей рассылки приходят целиком: ролями они не сужаются (Р7) — площадка без
+    // Справочники областей рассылки приходят целиком: правами они не сужаются (Р7) — площадка без
     // единого получателя из списка не пропадает, у неё лишь нулевой счётчик.
     'GET /objects': () =>
       json(
@@ -105,10 +105,10 @@ function renderBlock(over: Partial<MailingScheduleDto> = {}): HttpMock {
       json(list([{ id: SUPPLY_ID, code: 'ОС', name: 'Снабжение', isActive: true }])),
     [CANDIDATES]: ({ query }) =>
       json(
-        (query.get('roles') ?? '')
+        (query.get('permissions') ?? '')
           .split(',')
-          .filter((r) => r !== '')
-          .map((r) => BY_ROLE[r as Role])
+          .filter((p) => p !== '')
+          .map((p) => BY_PERMISSION[p as Permission])
           .filter((c) => !!c),
       ),
     [PATCH]: () => json(record),
@@ -146,20 +146,24 @@ async function openPicker(field: string, title: string): Promise<HTMLElement> {
 }
 
 describe('каскад окон аудитории', () => {
-  it('снятие роли пересобирает список получателей', async () => {
+  it('снятие права пересобирает список получателей', async () => {
     const http = renderBlock();
     await openForm();
 
     await waitFor(() => expect(http.countOf(CANDIDATES)).toBe(1));
-    expect(http.lastCall(CANDIDATES)?.query.get('roles')).toBe('dispatcher,shtab');
+    expect(http.lastCall(CANDIDATES)?.query.get('permissions')).toBe(
+      'waybills.read,vehicleRequests.read',
+    );
 
-    const roles = await openPicker('Роли', 'Роли-получатели');
-    fireEvent.click(within(roles).getByLabelText('Штаб'));
-    fireEvent.click(within(roles).getByRole('button', { name: 'Готово' }));
+    const permissions = await openPicker('Права-адресаты', 'Права-адресаты');
+    fireEvent.click(within(permissions).getByLabelText('Видит заказы техники'));
+    fireEvent.click(within(permissions).getByRole('button', { name: 'Готово' }));
 
-    // Список людей считает сервер тем же отбором, каким рассылка выбирает адресатов: снятая роль
-    // обязана уехать в запрос, иначе в окне остались бы те, кому письмо уже не уйдёт.
-    await waitFor(() => expect(http.lastCall(CANDIDATES)?.query.get('roles')).toBe('dispatcher'));
+    // Список людей считает сервер тем же отбором, каким рассылка выбирает адресатов: снятое право
+    // обязано уехать в запрос, иначе в окне остались бы те, кому письмо уже не уйдёт.
+    await waitFor(() =>
+      expect(http.lastCall(CANDIDATES)?.query.get('permissions')).toBe('waybills.read'),
+    );
 
     const people = await openPicker('Получатели', 'Получатели');
     await within(people).findByLabelText(/Диспетчеров Дмитрий/);
@@ -167,7 +171,7 @@ describe('каскад окон аудитории', () => {
   });
 
   it('у строк справочника стоит счётчик получателей, а вид сворачивается до непустых', async () => {
-    // Список площадок ролями не сужается, поэтому без счётчика по нему не видно, кого именно
+    // Список площадок правами не сужается, поэтому без счётчика по нему не видно, кого именно
     // задевает отметка: площадка без единого получателя выглядит так же, как площадка со штабом.
     const http = renderBlock();
     await openForm();

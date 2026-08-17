@@ -17,6 +17,7 @@ import {
   PERMISSIONS_BY_MODULE,
   permissionSource,
   permissionsFor,
+  PERSON_SCOPED_ROLES,
   ROLE_PERMISSIONS,
   ROLES,
   scopeAxisOf,
@@ -193,6 +194,9 @@ describe('область доступа словами', () => {
       ...OBJECT_SCOPED_ROLES,
       ...DEPARTMENT_SCOPED_ROLES,
       ...COUNTERPARTY_SCOPED_ROLES,
+      // Четвёртая ось (ADR 0102) наравне с прочими: предиката в слое доступа у неё нет, но витрина
+      // обязана сказать про область водителя то же, что говорят про область штаба.
+      ...PERSON_SCOPED_ROLES,
     ];
     for (const role of scoped) {
       const rules = describeAccessScope(of(role));
@@ -247,20 +251,34 @@ describe('область доступа словами', () => {
   });
 
   /**
-   * Ось области решает, какой набор показать в учётке: объекты, отделы или контрагента. Считается
-   * она теми же предикатами, что и сам слой доступа, — тест закрепляет, что третьего ответа
-   * (роль есть в списке осей, а витрина её оси не знает) не бывает.
+   * Ось области решает, какой набор показать в учётке: объекты, отделы, контрагента или работника
+   * справочника. Считается она теми же предикатами, что и сам слой доступа, — тест закрепляет, что
+   * лишнего ответа (роль есть в списке осей, а витрина её оси не знает) не бывает.
+   *
+   * Таблицей «ось → её список ролей», а не повторением ветвей `scopeAxisOf`: копия ветвей молчит
+   * ровно про забытую ось — оба ответа выходят `null`, и тест проходит на витрине, которая печатает
+   * такой учётке «Все записи». Именно так четвёртая ось (ADR 0102) и осталась незамеченной.
+   * `Record` по союзу осей закрывает обратную сторону: ось, добавленная в `scopeAxisOf` без своего
+   * списка ролей, не соберётся здесь.
    */
   it('ось области совпадает со списками ролей из модели', () => {
+    const axisRoles: Record<NonNullable<ReturnType<typeof scopeAxisOf>>, readonly Role[]> = {
+      object: OBJECT_SCOPED_ROLES,
+      department: DEPARTMENT_SCOPED_ROLES,
+      counterparty: COUNTERPARTY_SCOPED_ROLES,
+      person: PERSON_SCOPED_ROLES,
+    };
+    const axisOfRole = new Map<Role, string>();
+    for (const [axis, roles] of Object.entries(axisRoles)) {
+      for (const role of roles) {
+        // Роль на двух осях — не витринная опечатка, а противоречие в модели: набор в учётке у неё
+        // требовали бы двумя разными полями.
+        expect(axisOfRole.get(role), role).toBeUndefined();
+        axisOfRole.set(role, axis);
+      }
+    }
     for (const role of ROLES) {
-      const expected = (OBJECT_SCOPED_ROLES as readonly string[]).includes(role)
-        ? 'object'
-        : (DEPARTMENT_SCOPED_ROLES as readonly string[]).includes(role)
-          ? 'department'
-          : (COUNTERPARTY_SCOPED_ROLES as readonly string[]).includes(role)
-            ? 'counterparty'
-            : null;
-      expect(scopeAxisOf(role), role).toBe(expected);
+      expect(scopeAxisOf(role), role).toBe(axisOfRole.get(role) ?? null);
     }
     expect(scopeAxisOf(null)).toBeNull();
   });

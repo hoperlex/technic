@@ -39,6 +39,13 @@ function user(over: Partial<UserDto> = {}): UserDto {
     constructionObjects: [],
     departments: [],
     addons: [],
+    /*
+     * Права и наборы карточки (ADR 0106, этап 2б) — то, что посчитал сервер. В фикстуре пусто:
+     * сценарии этих тестов про почту, журнал и адрес, а не про доступ; срез витрины, которому
+     * права нужны, задаёт их сам.
+     */
+    grantCodes: [],
+    permissions: [],
     counterpartyId: null,
     counterpartyName: null,
     counterpartyType: null,

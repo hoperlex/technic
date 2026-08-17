@@ -30,7 +30,7 @@ const digest = {
   sendAt: '18:00',
   windowFromDays: 1,
   windowDays: 1,
-  roles: ['shtab' as const],
+  permissions: ['vehicleRequests.read' as const],
 };
 
 /** Задание водителям: аудитории и содержания у него не бывает — получателей задаёт наличие рейса. */
@@ -68,9 +68,9 @@ describe('createMailingScheduleSchema: умолчания', () => {
     expect(parsed.isEnabled).toBe(false);
   });
 
-  it('задание водителям проходит без ролей и аудитории вовсе', () => {
+  it('задание водителям проходит без прав-адресатов и аудитории вовсе', () => {
     const parsed = createMailingScheduleSchema.parse(driverRoutes);
-    expect(parsed.roles).toEqual([]);
+    expect(parsed.permissions).toEqual([]);
     expect(parsed.recipientUserIds).toEqual([]);
   });
 });
@@ -154,16 +154,27 @@ describe('createMailingScheduleSchema: окно данных', () => {
 });
 
 describe('createMailingScheduleSchema: содержание сводки', () => {
-  it('сводка без ролей отвергается: получателей ей взять неоткуда', () => {
-    // Роль — единственный источник адресатов сводки. Без неё рассылка каждое утро отработает
-    // вхолостую, и в истории запусков это будет выглядеть как успешный запуск.
-    expect(badFields(createMailingScheduleSchema, { ...digest, roles: [] })).toEqual(['roles']);
+  it('сводка без прав-адресатов отвергается: получателей ей взять неоткуда', () => {
+    // Право — единственный источник адресатов сводки (ADR 0111). Без него рассылка каждое утро
+    // отработает вхолостую, и в истории запусков это будет выглядеть как успешный запуск.
+    expect(badFields(createMailingScheduleSchema, { ...digest, permissions: [] })).toEqual([
+      'permissions',
+    ]);
   });
 
-  it('роль, указанная дважды, отвергается', () => {
+  it('право, указанное дважды, отвергается', () => {
     expect(
-      badFields(createMailingScheduleSchema, { ...digest, roles: ['shtab', 'shtab'] }),
-    ).toEqual(['roles']);
+      badFields(createMailingScheduleSchema, {
+        ...digest,
+        permissions: ['vehicleRequests.read', 'vehicleRequests.read'],
+      }),
+    ).toEqual(['permissions']);
+  });
+
+  it('право вне словаря отвергается: адресация по нему не сработала бы молча', () => {
+    expect(
+      badFields(createMailingScheduleSchema, { ...digest, permissions: ['vehicle.read'] }),
+    ).toEqual(['permissions.0']);
   });
 
   it('сводка без единой таблицы отвергается', () => {
@@ -227,12 +238,15 @@ describe('createMailingScheduleSchema: аудитория сводки', () => {
 });
 
 describe('createMailingScheduleSchema: чужие поля у задания водителям', () => {
-  it('роли-получатели заданию водителям запрещены', () => {
-    // Кому уходит задание, решает наличие рейса в окне, а не роль. Сохранённая роль означала бы,
+  it('права-адресаты заданию водителям запрещены', () => {
+    // Кому уходит задание, решает наличие рейса в окне, а не право. Сохранённое право означало бы,
     // что настройка есть, а не работает.
-    expect(badFields(createMailingScheduleSchema, { ...driverRoutes, roles: ['shtab'] })).toEqual([
-      'roles',
-    ]);
+    expect(
+      badFields(createMailingScheduleSchema, {
+        ...driverRoutes,
+        permissions: ['vehicleRequests.read'],
+      }),
+    ).toEqual(['permissions']);
   });
 
   it('аудитория заданию водителям запрещена целиком', () => {
@@ -264,9 +278,9 @@ describe('updateMailingScheduleSchema', () => {
     expect(
       badFields(updateMailingScheduleSchema, { ...digest, version: 3, runWeekdays: [] }),
     ).toEqual(['runWeekdays']);
-    expect(badFields(updateMailingScheduleSchema, { ...digest, version: 3, roles: [] })).toEqual([
-      'roles',
-    ]);
+    expect(
+      badFields(updateMailingScheduleSchema, { ...digest, version: 3, permissions: [] }),
+    ).toEqual(['permissions']);
   });
 
   it('версия обязательна: правка расписания идёт с проверкой на одновременность', () => {

@@ -7,7 +7,6 @@ import {
   mailingRunStatusColors,
   mailingRunStatusLabels,
   mailingTypeLabels,
-  roleLabels,
   type MailingRunDto,
   type MailingScheduleDto,
 } from '@technic/contracts';
@@ -18,6 +17,7 @@ import { useAuth } from '../../auth/AuthContext';
 import { errorMessage, formatDateTime } from '../../utils/format';
 import { formatDateOnly } from '../../utils/date';
 import { MailingScheduleForm } from './MailingScheduleForm';
+import { permissionLabel } from './grantModel';
 import {
   ALL_WEEKDAYS,
   saveErrorMessage,
@@ -70,26 +70,30 @@ function audienceText(mode: string, count: number): string {
 /**
  * Краткая настройка расписания для списка. Окно печатается одинаково у обоих типов: это одна и та
  * же настройка — за какие дни собираются данные. У сводки к нему добавляется объём аудитории:
- * сколько ролей она задевает и заданы ли области с получателями перечнем.
+ * сколько прав она задевает и заданы ли области с получателями перечнем.
  */
 function setupText(r: MailingScheduleDto): string {
   const window = windowText(r.windowFromDays, r.windowDays);
   if (r.type !== 'role_digest') return window;
   return (
-    `${window} · ролей: ${r.roles.length} · площадки: ` +
+    `${window} · прав: ${r.permissions.length} · площадки: ` +
     `${audienceText(r.scopeMode, r.objectIds.length + r.departmentIds.length)} · получатели: ` +
     `${audienceText(r.recipientMode, r.recipientUserIds.length)}`
   );
 }
 
-/** Расшифровка настройки под курсором: названия ролей и охват заявок в колонку не влезают. */
+/** Расшифровка настройки под курсором: подписи прав и охват заявок в колонку не влезают. */
 function setupHint(r: MailingScheduleDto): string {
   const lines = [`Данные ${windowText(r.windowFromDays, r.windowDays)}`];
   if (r.type !== 'role_digest') return lines.join('\n');
   const tables = [r.showTrips ? 'перевозки' : '', r.showOnsite ? 'техника на объектах' : '']
     .filter((s) => !!s)
     .join(', ');
-  lines.push(`Роли: ${r.roles.map((role) => roleLabels[role]).join(', ') || '—'}`);
+  // Пусто — это не «настройка по умолчанию», а расписание, которое не уходит никому: так выглядит
+  // расписание, которому переезд на права (ADR 0111) не нашёл эквивалента, и решать его человеку.
+  lines.push(
+    `Права-адресаты: ${r.permissions.map(permissionLabel).join(', ') || '— (письма не уходят)'}`,
+  );
   lines.push(
     `Площадки и отделы: ${audienceText(r.scopeMode, r.objectIds.length + r.departmentIds.length)}`,
   );

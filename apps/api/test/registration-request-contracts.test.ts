@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  defaultRoleForRequest,
   expectsCorporateEmail,
   INTERNAL_EMAIL_DOMAINS,
   isExternalRegistrationEmail,
@@ -8,7 +9,6 @@ import {
   registerSchema,
   registrationRequestDetail,
   registrationRoleRequestLabels,
-  registrationRoleRequestRole,
   ROLES,
 } from '@technic/contracts';
 
@@ -29,35 +29,56 @@ const BASE = {
 };
 
 describe('перечень пожеланий', () => {
-  it('у каждого варианта есть подпись, требование уточнения и решение по роли', () => {
+  it('у каждого варианта есть подпись, требование уточнения и решение по умолчанию', () => {
     for (const request of REGISTRATION_ROLE_REQUESTS) {
       expect(registrationRoleRequestLabels[request]).toBeTruthy();
       expect(registrationRequestDetail[request]).toBeTruthy();
-      const role = registrationRoleRequestRole[request];
-      // null — соответствия в портале нет; иначе роль обязана существовать в матрице прав.
+      // Таблица умолчаний обязана отвечать на каждое пожелание — молчания в ней нет: `null` это
+      // тоже ответ («умолчания нет, выбирает администратор»), а `undefined` означал бы забытую
+      // строку, и форма рассмотрения открылась бы пустой, не сообщив об этом.
+      expect(defaultRoleForRequest(request)).not.toBeUndefined();
+    }
+  });
+
+  /**
+   * Главная проверка этой таблицы после развязывания имени роли и связи (§11.1 плана
+   * реструктуризации прав): роли сливаются и упраздняются, а умолчание — единственное место, где
+   * имя роли записано текстом рядом с пожеланием. Умолчание, указывающее на упразднённую роль, не
+   * падает нигде: форма подставит несуществующее, портал покажет пустой выбор заполненным, а
+   * сервер откажет схемой уже при сохранении.
+   */
+  it('ни одно умолчание не указывает на несуществующую роль', () => {
+    for (const request of REGISTRATION_ROLE_REQUESTS) {
+      const role = defaultRoleForRequest(request);
       expect(role === null || (ROLES as readonly string[]).includes(role)).toBe(true);
     }
   });
 
   it('«Сотрудник объекта» — это роль «Штаб», названная понятнее', () => {
-    expect(registrationRoleRequestRole.site_staff).toBe('shtab');
+    expect(defaultRoleForRequest('site_staff')).toBe('shtab');
     expect(registrationRoleRequestLabels.site_staff).toBe('Сотрудник объекта');
   });
 
   it('комендант назван своей должностью — она и есть роль в портале', () => {
-    expect(registrationRoleRequestRole.commandant).toBe('commandant');
+    expect(defaultRoleForRequest('commandant')).toBe('commandant');
     // Отдельный вариант, а не «сотрудник объекта»: роли разные — коменданту техника закрыта, и
-    // администратор видит по пожеланию, какую из двух назначать.
-    expect(registrationRoleRequestRole.commandant).not.toBe(registrationRoleRequestRole.site_staff);
+    // администратор видит по пожеланию, какую из двух подставит форма.
+    expect(defaultRoleForRequest('commandant')).not.toBe(defaultRoleForRequest('site_staff'));
   });
 
   it('оба исполнителя ведут к роли исполнителя — различает их контрагент (ADR 0038)', () => {
-    expect(registrationRoleRequestRole.waste_operator).toBe('operator');
-    expect(registrationRoleRequestRole.vehicle_lessor).toBe('operator');
+    expect(defaultRoleForRequest('waste_operator')).toBe('operator');
+    expect(defaultRoleForRequest('vehicle_lessor')).toBe('operator');
   });
 
-  it('«другому» роль не соответствует — пожелание требует разбора', () => {
-    expect(registrationRoleRequestRole.other).toBeNull();
+  it('«другому» роль не подставляется — пожелание требует разбора', () => {
+    expect(defaultRoleForRequest('other')).toBeNull();
+  });
+
+  it('заявки без пожелания вовсе тоже отвечают — учётку завёл администратор', () => {
+    // Отдельного случая у вызывающего быть не должно: форма открывается пустым выбором и там, где
+    // пожелания нет в помине.
+    expect(defaultRoleForRequest(null)).toBeNull();
   });
 });
 

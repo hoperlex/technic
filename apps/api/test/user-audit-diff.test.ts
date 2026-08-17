@@ -25,6 +25,11 @@ function account(over: Partial<UserAccountDto> = {}): UserAccountDto {
     constructionObjects: [{ id: 'o-1', code: 'СУ-10', name: 'СУ-10' }],
     departments: [],
     addons: [],
+    // Наборы и права в журнал не идут: дифф перечисляет поля карточки явно, а эффективные права —
+    // производное от роли и наборов, и «право появилось» без причины его появления ничего не
+    // объясняет. Поля заполнены пустыми, потому что карточка обязана быть настоящей.
+    grantCodes: [],
+    permissions: [],
     counterpartyId: null,
     counterpartyName: null,
     counterpartyType: null,
@@ -78,14 +83,42 @@ describe('изменения учётной записи для журнала',
     ]);
   });
 
+  it('у снятого отдела называет и руководство им', () => {
+    // Отдел, убранный из набора, удаляет привязку целиком — вместе с признаком руководителя
+    // (миграция 0149). Тем же следствием обнуляет набор смена роли на объектную. Строка «ПТО» и
+    // строка «ПТО (руководитель)» — разные события: во втором отдел остался без руководителя, и
+    // узнавать об этом из справочника через неделю поздно.
+    const changes = userAuditChanges(
+      account({
+        departments: [
+          { id: 'd-1', code: 'ПТО', name: 'ПТО', isHead: true },
+          { id: 'd-2', code: 'АХО', name: 'АХО', isHead: false },
+        ],
+      }),
+      account({ departments: [{ id: 'd-2', code: 'АХО', name: 'АХО', isHead: false }] }),
+    );
+    expect(changes).toEqual([
+      { field: 'departmentsRemoved', from: null, to: 'ПТО (руководитель)' },
+    ]);
+  });
+
+  it('добавленный отдел руководством не называет: из карточки учётки его не назначают', () => {
+    // Признак ставят только в справочнике «Отделы», и новая привязка заводится участием
+    // (`replaceUserDepartments`). Появись здесь пометка — журнал приписывал бы правке карточки
+    // назначение, которого она сделать не может.
+    const changes = userAuditChanges(
+      account({ departments: [] }),
+      account({ departments: [{ id: 'd-1', code: 'ПТО', name: 'ПТО', isHead: false }] }),
+    );
+    expect(changes).toEqual([{ field: 'departmentsAdded', from: null, to: 'ПТО' }]);
+  });
+
   it('называет снятую надстройку: следа от неё в учётке не остаётся', () => {
     const changes = userAuditChanges(
       account({ addons: ['office_equipment_operator'] }),
       account({ addons: [] }),
     );
-    expect(changes).toEqual([
-      { field: 'addonsRevoked', from: null, to: 'Оператор (оргтехника)' },
-    ]);
+    expect(changes).toEqual([{ field: 'addonsRevoked', from: null, to: 'Оператор (оргтехника)' }]);
   });
 
   it('у заведённой учётки записывает состав, а не пары', () => {
@@ -114,7 +147,10 @@ describe('изменения учётной записи для журнала',
       email: '',
       deletedAt: null,
     };
-    const changes = userAuditChanges(account({ role: 'driver' }), account({ role: 'driver', person }));
+    const changes = userAuditChanges(
+      account({ role: 'driver' }),
+      account({ role: 'driver', person }),
+    );
     expect(changes).toEqual([{ field: 'person', from: '—', to: 'Петров Пётр Петрович' }]);
   });
 });

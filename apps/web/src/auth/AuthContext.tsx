@@ -1,14 +1,8 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import {
-  can as roleCan,
-  canUse as scopedCanUse,
-  type AuthUser,
-  type Permission,
-  type Role,
-} from '@technic/contracts';
+import { canUse as scopedCanUse, type AuthUser, type Permission } from '@technic/contracts';
 import { authApi } from '../api/auth';
-import { clear as clearSession, onExpired, refresh } from '@shared/api';
+import { clear as clearSession, onExpired, onRefreshedUser, refresh } from '@shared/api';
 
 type Status = 'loading' | 'authenticated' | 'unauthenticated';
 
@@ -19,12 +13,19 @@ interface AuthContextValue {
   logout: () => Promise<void>;
   setUser: (u: AuthUser) => void;
   refreshUser: () => Promise<void>;
-  hasRole: (...roles: Role[]) => boolean;
   /**
-   * Право текущего пользователя по общей матрице (ADR 0021) — той же, по которой API
-   * проверяет доступ. Спрашивается у самого пользователя, а не у его роли: у внешнего
-   * исполнителя модуль задаёт тип контрагента (ADR 0038). Интерфейс скрывает недоступное, но
-   * решение всё равно за сервером: здесь это удобство, а не защита.
+   * Есть ли у текущего пользователя право — по списку, который посчитал и отдал сервер
+   * (`AuthUser.permissions`, ADR 0106).
+   *
+   * Раньше здесь стояла общая матрица (ADR 0021): пока набор прав задавала роль, портал выводил
+   * права сам, и оба ответа — свой и серверный — совпадали по построению. Со свободной сборкой
+   * полномочий это перестало быть верным: состав набора живёт в базе (`grant_permissions`) и
+   * заводится в проде, матрица его не знает и знать не должна — иначе она перестала бы быть данными
+   * и начала зависеть от таблиц. Вывести права из роли клиент больше **не может**, поэтому он их
+   * спрашивает: список приходит во всех четырёх ответах сессии.
+   *
+   * Интерфейс по-прежнему только скрывает недоступное: решение по запросу принимает сервер, на своём
+   * субъекте. Список управляет ровно тем, что человек видит.
    */
   can: (permission: Permission) => boolean;
   /**
@@ -33,6 +34,32 @@ interface AuthContextValue {
    * раздела спрашивают `can`, потому что пустой область к тому моменту уже не бывает.
    */
   canUse: (permission: Permission) => boolean;
+}
+
+/**
+ * Проверки прав текущего пользователя. Отдельной функцией, а не двумя строками в провайдере: тем же
+ * правилом собирает контекст тестовая оболочка рендера (`test/render.tsx`), и вторая копия правила
+ * «право из списка, область по роли» разъехалась бы с этой при первой правке модели доступа.
+ */
+export function permissionChecks(user: AuthUser | null): Pick<AuthContextValue, 'can' | 'canUse'> {
+  // Множеством, а не поиском по массиву: `can` зовут больше сотни мест, и пересобирается набор
+  // только при смене пользователя.
+  const granted = new Set(user?.permissions ?? []);
+  return {
+    can: (permission) => granted.has(permission),
+    /*
+     * Право — из списка сервера, область — по-прежнему по роли: отдельным полем сервер её не отдаёт,
+     * и единственный её знаток — `MODULE_SCOPE` в контрактах, а он приватен. Поэтому право
+     * подставляется матрице назначенным (`grantPermissions`, четвёртый источник субъекта): `canUse`
+     * спрашивает и право, и область, право у портала уже спрошено — у сервера, — и ответом матрицы
+     * остаётся ровно область. Пересчитывать право матрицей нельзя по причине из `can` выше, а
+     * повторить правило области здесь значило бы завести ему вторую копию вне контрактов.
+     */
+    canUse: (permission) =>
+      granted.has(permission) &&
+      !!user &&
+      scopedCanUse({ ...user, grantPermissions: [permission] }, permission),
+  };
 }
 
 /**
@@ -123,6 +150,40 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
+  /*
+   * Обновление токена принесло учётку — применяем её целиком. Права считает сервер, и обновление
+   * (после `authVersion + 1`) — тот самый момент, когда набор меняется посреди работы: без этого
+   * сервер разрешает уже по-новому, а меню и кнопки остаются прежними до перезагрузки страницы.
+   * Человек при этом либо видит раздел, в который его больше не пускают, либо не видит того, что
+   * ему только что открыли, — и то и другое читается как поломка портала, а не как смена доступа.
+   */
+  useEffect(() => {
+    return onRefreshedUser((raw) => {
+      /*
+       * Только сессии, которая уже на экране. Обновление её продлевает, а не начинает: начинают вход
+       * и bootstrap, и оба ставят пользователя вместе со статусом. Подставленный во время bootstrap
+       * пользователь разошёлся бы с ним ответами — упавший следом `/auth/me` объявил бы вкладку
+       * невошедшей, оставив на руках учётку. Свою права он и так принесёт: сервер считает их для
+       * `/auth/me` тем же способом.
+       */
+      if (!user) return;
+      // Тело транспорт передаёт нетронутым: `shared` не знает правил портала, поэтому форму
+      // называет тот, кто её знает. Ручка `POST /auth/refresh` отдаёт ровно `AuthUser`.
+      const next = raw as AuthUser;
+      // Bootstrap вкладки помнит свой ответ; без этой строки повторное монтирование провайдера
+      // вернуло бы права, действовавшие до обновления.
+      bootstrapPromise = Promise.resolve(next);
+      /*
+       * Кэш запросов не выбрасывается: обновление продлевает ту же сессию, «вошёл другой» им не
+       * бывает — ответ, вернувшийся уже к другому пользователю, до подписки не доходит вовсе
+       * (сверку поколения делает сама сессия).
+       */
+      setUser(next);
+    });
+    // Зависимость от `user` — ради проверки выше: подписка обязана видеть текущее состояние
+    // сессии, а не то, каким оно было на первом рендере.
+  }, [user]);
+
   const value = useMemo<AuthContextValue>(
     () => ({
       user,
@@ -153,9 +214,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         adoptSession(me);
         setUser(me);
       },
-      hasRole: (...roles) => !!user?.role && roles.includes(user.role),
-      can: (permission) => roleCan(user, permission),
-      canUse: (permission) => scopedCanUse(user, permission),
+      ...permissionChecks(user),
     }),
     [user, status],
   );

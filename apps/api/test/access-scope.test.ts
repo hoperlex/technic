@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import type { CounterpartyType, Role } from '@technic/contracts';
+import { can, ROLES, type CounterpartyType, type Permission, type Role } from '@technic/contracts';
 import {
   approvesOwnRequestOnCreate,
+  approvesOwnWeeklyRequest,
   assertArchiveVisible,
   assertCan,
   assertLessorScope,
@@ -12,7 +13,12 @@ import {
   assertTransitionAllowed,
   assertRequestScope,
   assertVehicleRequestTypeAllowed,
+  assertWeeklyRequestScope,
   canApproveRequest,
+  canApproveWeeklyRequest,
+  seesWholeWeeklyRequest,
+  weeklyRequestReadScope,
+  type WeeklyRequestReadScope,
   vehicleRequestVisibilityWhere,
   lessorVisibilityWhere,
   officeEquipmentScopeWhere,
@@ -65,6 +71,12 @@ function principal(role: Role | null, extra: Partial<Principal> = {}): Principal
     departmentObjectIds: [],
     counterpartyId: null,
     counterpartyType: null,
+    // Назначенные полномочия (ADR 0106, шаг 1c): по кодам наборов читается сквозная область модуля,
+    // по правам — доступ. Пустые у всех, кроме фикстур визы ИТ ниже: область прочих ролей задают
+    // объекты и отделы.
+    grantCodes: [],
+    grantPermissions: [],
+    addons: [],
     authVersion: 1,
     ...extra,
   };
@@ -588,23 +600,36 @@ describe('переход статуса', () => {
 });
 
 /**
- * Сквозная область модуля у надстройки «Согласование ИТ» (план модернизации, Р54).
+ * Сквозная область модуля у полномочия «Согласование ИТ» (план модернизации, Р54).
  *
- * Это единственное место в портале, где надстройка меняет **область**, а не набор действий, — и
+ * Это единственное место в портале, где выданный набор меняет **область**, а не набор действий, — и
  * потому проверяется двусторонне. Положительная половина: без неё виза бессмысленна — согласующий,
  * видящий только свой отдел, не сможет подписать ничего. Отрицательная важнее: расширение обязано
  * кончаться на границе модуля, иначе учётка ИТ тихо получает все заявки на вывоз мусора и все
  * заказы техники компании — ровно то, из-за чего ADR 0086 запрещал надстройкам трогать область.
+ *
+ * Фикстуры называют **коды наборов**, а не надстройки: с шага 1c область читается из назначенных
+ * полномочий (ADR 0106), и `addons` у них поэтому пуст. Проверяет это не только текст — принципал с
+ * одной надстройкой и без набора здесь обязан остаться суженным своим отделом.
  */
 describe('сквозная область модуля оргтехники у согласующего от ИТ (Р54)', () => {
   const itApprover = principal('department', {
     departmentIds: [DEPARTMENT_A],
-    addons: ['office_equipment_it_approver'],
+    grantCodes: ['office_equipment_it_approver'],
   });
-  /** Та же роль и тот же отдел, но с обычной надстройкой: область у неё прежняя. */
+  /** Та же роль и тот же отдел, но с обычным набором: область у него прежняя. */
   const operator = principal('department', {
     departmentIds: [DEPARTMENT_A],
-    addons: ['office_equipment_operator'],
+    grantCodes: ['office_equipment_operator'],
+  });
+  /**
+   * Держатель одной надстройки без назначения — так выглядит учётка, до которой двойная запись не
+   * дошла (расхождение таблиц перехода). Область ей не расширяется: источник у неё теперь один, и
+   * этот случай отделяет переключение от «оба поля читаются как раньше».
+   */
+  const addonOnly = principal('department', {
+    departmentIds: [DEPARTMENT_A],
+    addons: ['office_equipment_it_approver'],
   });
 
   it('заявки модуля и справочник не сужаются вовсе', () => {
@@ -651,7 +676,7 @@ describe('сквозная область модуля оргтехники у �
     expect(paramsOf(vehicle)).toContain(DEPARTMENT_A);
   });
 
-  it('вторая надстройка область не трогает — решение 2 ADR 0086 в силе', () => {
+  it('второй набор область не трогает — решение 2 ADR 0086 в силе', () => {
     expect(
       serviceRequestScopeWhere(
         operator,
@@ -670,5 +695,353 @@ describe('сквозная область модуля оргтехники у �
         }),
       ),
     ).toBe(403);
+  });
+
+  it('область читается из наборов: одной надстройки без назначения для неё мало', () => {
+    expect(
+      serviceRequestScopeWhere(
+        addonOnly,
+        serviceRequests.equipmentObjectId,
+        serviceRequests.customerDepartmentId,
+        serviceRequests.equipmentDepartmentId,
+      ),
+      'без назначения область прежняя — свой отдел',
+    ).toBeDefined();
+    expect(
+      officeEquipmentScopeWhere(
+        addonOnly,
+        officeEquipment.objectId,
+        officeEquipment.ownerDepartmentId,
+      ),
+    ).toBeDefined();
+    expect(
+      statusOf(() =>
+        assertServiceRequestScope(addonOnly, {
+          objectId: OBJECT_B,
+          customerDepartmentId: DEPARTMENT_B,
+          equipmentDepartmentId: DEPARTMENT_B,
+        }),
+      ),
+    ).toBe(403);
+  });
+});
+
+/**
+ * Недельная заявка: область считается парой «право + ось» (план реструктуризации доступа §11,
+ * этап 6) — недели своей площадки ведёт тот, у кого есть право и объектная ось; все недели — тот, у
+ * кого право есть, а своей оси нет. Раньше здесь стояло перечисление ролей по именам, и слияние
+ * ролей (§15, этапы 7–9) сменило бы ему смысл молча: имя исчезает, условие остаётся.
+ *
+ * Таблица ниже — обе половины пары разом: слева права роли, справа её площадки. Читается она как
+ * ответ на вопрос «почему этот субъект не ведёт неделю»: у коменданта, наблюдателя и службы
+ * главного механика ответ даёт **левая** колонка (прав нет), у отдела, арендодателя и водителя —
+ * **правая** (площадки нет). Обе колонки — литеральные ожидания, а не вычисления теми же
+ * предикатами: посчитай мы ожидание проверяемым кодом, тест остался бы зелёным на сломанной паре.
+ *
+ * Полнота по `ROLES` обязательна и проверяется отдельно. Ветка «своей оси нет — все площадки»
+ * безопасна ровно до тех пор, пока каждая роль в этой таблице названа: роль, забытая в списках осей
+ * `enums.ts`, попадёт в неё молча — и получит недели всех площадок компании.
+ */
+describe('недельная заявка: область по роли (план §11)', () => {
+  /** Третья площадка: ни объект учётки, ни площадка её отдела — заведомо чужая любой оси. */
+  const OBJECT_C = '77777777-7777-7777-7777-777777777777';
+
+  /** Короткие имена прав модуля — таблица читается ими, а не полными строками словаря. */
+  type WeeklyPermission = 'read' | 'create' | 'update' | 'approve';
+  const permissionOf = (short: WeeklyPermission): Permission => `weeklyRequests.${short}`;
+
+  interface WeeklyRoleCase {
+    /** Права модуля у роли по матрице (`ROLE_PERMISSIONS`) — левая половина пары. */
+    permissions: readonly WeeklyPermission[];
+    /** Что роль видит на чтении (`weeklyRequestReadScope`). */
+    read: WeeklyRequestReadScope;
+    /**
+     * Проходит ли **область ведения** (`assertWeeklyRequestScope`) по своей площадке и по чужой.
+     * Это ответ одной правой половины пары: право на маршруте спрашивает страж, и «да» здесь у
+     * роли без прав модуля означает не доступ, а «областью не ограничена» — до обработчика она не
+     * доходит. Пара сводится воедино в проверке «кто ведёт неделю на самом деле» ниже.
+     */
+    manages: { own: boolean; foreign: boolean };
+    /** Виза своей и чужой площадки (`canApproveWeeklyRequest`) — здесь право уже учтено. */
+    approves: { own: boolean; foreign: boolean };
+    /** Применяется ли своя подача сразу, без отдельной визы (`approvesOwnWeeklyRequest`). */
+    selfApplies: boolean;
+  }
+
+  const BY_ROLE: Record<Role, WeeklyRoleCase> = {
+    // Офис ведёт неделю на любой площадке: своей оси у него нет, и сужать ему нечего.
+    admin: {
+      permissions: ['read', 'create', 'update', 'approve'],
+      read: { kind: 'all' },
+      manages: { own: true, foreign: true },
+      approves: { own: true, foreign: true },
+      // Виза у администратора есть, но подписью площадки она не становится: он действует не за
+      // объект (ADR 0032), и его заявка ждёт визы наравне с остальными.
+      selfApplies: false,
+    },
+    manager: {
+      permissions: ['read', 'create', 'update'],
+      read: { kind: 'all' },
+      manages: { own: true, foreign: true },
+      approves: { own: false, foreign: false },
+      selfApplies: false,
+    },
+    dispatcher: {
+      permissions: ['read', 'create', 'update'],
+      read: { kind: 'all' },
+      manages: { own: true, foreign: true },
+      approves: { own: false, foreign: false },
+      selfApplies: false,
+    },
+    // Площадка: свои объекты и только они — на чтении, на ведении и на визе.
+    shtab: {
+      permissions: ['read', 'create', 'update'],
+      read: { kind: 'objects', objectIds: [OBJECT_A] },
+      manages: { own: true, foreign: false },
+      approves: { own: false, foreign: false },
+      selfApplies: false,
+    },
+    rukstroy: {
+      permissions: ['read', 'create', 'update', 'approve'],
+      read: { kind: 'objects', objectIds: [OBJECT_A] },
+      manages: { own: true, foreign: false },
+      approves: { own: true, foreign: false },
+      // Единственная роль, у которой подача применяет заявку: подпись за площадку ставит тот, кто
+      // за площадку отвечает (план Р8).
+      selfApplies: true,
+    },
+    /*
+     * Комендант — та самая роль, на которой пара «право + ось» проверяется на честность. Объектная
+     * ось у него есть, и область его недельными заявками не ограничивает; закрыт модуль **правом**
+     * — недельных прав у роли нет ни одного, и ни один маршрут его внутрь не пускает. Ось здесь
+     * оставлена работать намеренно: запрет по имени роли пережил бы саму роль, а выданное однажды
+     * право с ним не заработало бы вовсе — набор оказался бы выдан и мёртв.
+     */
+    commandant: {
+      permissions: [],
+      read: { kind: 'none' },
+      manages: { own: true, foreign: false },
+      approves: { own: false, foreign: false },
+      selfApplies: false,
+    },
+    /*
+     * Площадка (ADR 0112) — новая объектная роль, и в этой таблице она **копия коменданта**: ось
+     * своя, объектная, а недельных прав нет ни одного. Так и задумано: недели приезжают ей
+     * полномочием «Заказ техники», а виза — «Визой объекта», и до выдачи набора строка обязана
+     * читаться как «модуль закрыт правом».
+     *
+     * Строка эта — доказательство, что пара «право + ось» переписана не зря. Ни `weeklyRequestReadScope`,
+     * ни `managesWeeklyRequestObject` про роль `site` не знают вовсе: они спрашивают ось
+     * (`roleScopeAxis`), а имени роли в них нет. Единственное, что понадобилось от реформы, — строка
+     * в `OBJECT_SCOPED_ROLES`; всё остальное сошлось само.
+     */
+    site: {
+      permissions: [],
+      read: { kind: 'none' },
+      manages: { own: true, foreign: false },
+      approves: { own: false, foreign: false },
+      selfApplies: false,
+    },
+    // Отдел читает неделю площадки **своего отдела** (ADR 0062) — производной областью, не своими
+    // объектами. Ведения и визы у него нет с обеих сторон пары: и права, и площадки.
+    department: {
+      permissions: ['read'],
+      read: { kind: 'objects', objectIds: [OBJECT_B] },
+      manages: { own: false, foreign: false },
+      approves: { own: false, foreign: false },
+      selfApplies: false,
+    },
+    department_head: {
+      permissions: ['read'],
+      read: { kind: 'objects', objectIds: [OBJECT_B] },
+      manages: { own: false, foreign: false },
+      approves: { own: false, foreign: false },
+      selfApplies: false,
+    },
+    // Арендодатель (учётка заведена парой «роль + тип контрагента»): недели ему открывает его же
+    // техника в составе, площадка ему не принадлежит ни в каком смысле.
+    operator: {
+      permissions: ['read'],
+      read: { kind: 'lessor', counterpartyId: COUNTERPARTY_A },
+      manages: { own: false, foreign: false },
+      approves: { own: false, foreign: false },
+      selfApplies: false,
+    },
+    // Наблюдатель (ADR 0033): читает все недели и не ведёт ни одной — ровно потому, что права у
+    // него одно, на чтение. Область его не ограничивает, и это не послабление: без права ведения
+    // до неё он не доходит.
+    observer: {
+      permissions: ['read'],
+      read: { kind: 'all' },
+      manages: { own: true, foreign: true },
+      approves: { own: false, foreign: false },
+      selfApplies: false,
+    },
+    // Водитель: своя, четвёртая ось (ADR 0102). Неделя принадлежит площадке, а не работнику, и
+    // ветка оси отвечает «ни одной» — чтобы право, попавшее в кабинет, открыло пустоту.
+    driver: {
+      permissions: [],
+      read: { kind: 'none' },
+      manages: { own: false, foreign: false },
+      approves: { own: false, foreign: false },
+      selfApplies: false,
+    },
+    // Служба главного механика: своей оси нет по должности, недельных прав нет тоже — модуль
+    // закрыт левой колонкой, как у коменданта.
+    mechanic: {
+      permissions: [],
+      read: { kind: 'none' },
+      manages: { own: true, foreign: true },
+      approves: { own: false, foreign: false },
+      selfApplies: false,
+    },
+    chief_mechanic: {
+      permissions: [],
+      read: { kind: 'none' },
+      manages: { own: true, foreign: true },
+      approves: { own: false, foreign: false },
+      selfApplies: false,
+    },
+  };
+
+  /**
+   * Учётка роли со **всеми** заполненными областями: свои объекты, отделы, площадка отдела и
+   * контрагент. Заполнены все четыре нарочно — предикат обязан выбирать ось сам, а не по тому, что
+   * осталось непустым. Площадка отдела намеренно другая (`OBJECT_B`): перепутай предикат две
+   * объектные области местами, и таблица это увидит.
+   *
+   * Исполнитель заводится арендодателем: из трёх типов контрагента с учётками недельную заявку
+   * открывает только он — у оператора вывоза и сервисной компании нет и права.
+   */
+  function subjectOf(role: Role): Principal {
+    return principal(role, {
+      constructionObjectIds: [OBJECT_A],
+      departmentIds: [DEPARTMENT_A],
+      departmentObjectIds: [OBJECT_B],
+      counterpartyId: COUNTERPARTY_A,
+      counterpartyType: role === 'operator' ? 'vehicle_lessor' : null,
+    });
+  }
+
+  it('в таблице перечислены все роли словаря', () => {
+    // `Record<Role, …>` держит полноту на компиляции, но прогон её не проверяет: новая роль,
+    // добавленная в словарь, обязана получить строку здесь, а не молча уехать в ветку «оси нет».
+    expect([...Object.keys(BY_ROLE)].sort()).toEqual([...ROLES].sort());
+  });
+
+  it('права модуля у роли — по таблице', () => {
+    for (const role of ROLES) {
+      const p = subjectOf(role);
+      const all: WeeklyPermission[] = ['read', 'create', 'update', 'approve'];
+      expect(
+        all.filter((short) => can(p, permissionOf(short))),
+        role,
+      ).toEqual(BY_ROLE[role].permissions);
+    }
+  });
+
+  it('область чтения — по таблице', () => {
+    for (const role of ROLES) {
+      expect(weeklyRequestReadScope(subjectOf(role)), role).toEqual(BY_ROLE[role].read);
+    }
+  });
+
+  it('область ведения — по таблице, на своей площадке и на чужой', () => {
+    for (const role of ROLES) {
+      const p = subjectOf(role);
+      const expected = BY_ROLE[role].manages;
+      expect(
+        statusOf(() => assertWeeklyRequestScope(p, OBJECT_A)),
+        `${role} — своя`,
+      ).toBe(expected.own ? 200 : 403);
+      expect(
+        statusOf(() => assertWeeklyRequestScope(p, OBJECT_C)),
+        `${role} — чужая`,
+      ).toBe(expected.foreign ? 200 : 403);
+    }
+  });
+
+  it('виза — по таблице, на своей площадке и на чужой', () => {
+    for (const role of ROLES) {
+      const p = subjectOf(role);
+      expect(canApproveWeeklyRequest(p, OBJECT_A), `${role} — своя`).toBe(
+        BY_ROLE[role].approves.own,
+      );
+      expect(canApproveWeeklyRequest(p, OBJECT_C), `${role} — чужая`).toBe(
+        BY_ROLE[role].approves.foreign,
+      );
+      expect(approvesOwnWeeklyRequest(p, OBJECT_A), `${role} — подача применяет`).toBe(
+        BY_ROLE[role].selfApplies,
+      );
+    }
+  });
+
+  /**
+   * Сведение обеих половин пары в живой ответ модуля — и второе, независимое от таблицы, ожидание:
+   * перечни ролей написаны должностями, как их знает заказчик. Ошибись таблица клеткой — разойтись
+   * ей придётся сразу с двумя записями, а не с собственным продолжением.
+   */
+  it('живой ответ: неделю ведут пятеро, визирует руководитель строительства своей площадки', () => {
+    const leads = ROLES.filter(
+      (role) => BY_ROLE[role].permissions.includes('update') && BY_ROLE[role].manages.own,
+    );
+    expect(leads).toEqual(['admin', 'manager', 'dispatcher', 'shtab', 'rukstroy']);
+
+    const approves = ROLES.filter((role) => BY_ROLE[role].approves.own);
+    expect(approves).toEqual(['admin', 'rukstroy']);
+
+    const reads = ROLES.filter((role) => BY_ROLE[role].read.kind !== 'none');
+    expect(reads).toEqual([
+      'admin',
+      'manager',
+      'dispatcher',
+      'shtab',
+      'rukstroy',
+      'department',
+      'department_head',
+      'operator',
+      'observer',
+    ]);
+  });
+
+  it('весь состав документа скрыт только от арендодателя', () => {
+    const hidden = ROLES.filter((role) => !seesWholeWeeklyRequest(subjectOf(role)));
+    expect(hidden).toEqual(['operator']);
+  });
+
+  // Тип контрагента решает не только модуль, но и саму видимость: недельная заявка открывается
+  // арендодателю и никому больше из исполнителей — у остальных нет и права.
+  it('исполнитель другого предмета не видит ни одной недели', () => {
+    for (const type of ['operator', 'service'] as CounterpartyType[]) {
+      expect(weeklyRequestReadScope(executor(type, COUNTERPARTY_A)), type).toEqual({
+        kind: 'none',
+      });
+    }
+  });
+
+  // «Контрагент не назван» — это не «ограничений нет»: без него неизвестно, чья техника в составе.
+  it('арендодатель без контрагента не видит ни одной недели', () => {
+    expect(weeklyRequestReadScope(executor('vehicle_lessor', null))).toEqual({ kind: 'none' });
+  });
+
+  // Пустая область — «не видит ничего», а не «видит всё»: у площадки это состояние, которого API не
+  // допускает, у отдела без площадки — рабочее (ПТО, АХО).
+  it('пустая область не открывает ни одной недели ни на одной оси', () => {
+    const shtab = principal('shtab');
+    expect(weeklyRequestReadScope(shtab)).toEqual({ kind: 'objects', objectIds: [] });
+    expect(statusOf(() => assertWeeklyRequestScope(shtab, OBJECT_A))).toBe(403);
+    expect(weeklyRequestReadScope(principal('department'))).toEqual({
+      kind: 'objects',
+      objectIds: [],
+    });
+  });
+
+  // Учётка без роли: прав у неё нет ни одного, и «своей оси нет» для неё означает «ни одной
+  // площадки», а не «все». До предикатов она доходит, только если проверка права не удержалась.
+  it('учётка без роли не видит и не ведёт ничего', () => {
+    const none = principal(null);
+    expect(weeklyRequestReadScope(none)).toEqual({ kind: 'none' });
+    expect(canApproveWeeklyRequest(none, OBJECT_A)).toBe(false);
+    expect(statusOf(() => assertWeeklyRequestScope(none, OBJECT_A))).toBe(403);
   });
 });

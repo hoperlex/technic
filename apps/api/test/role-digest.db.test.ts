@@ -98,9 +98,11 @@ interface Ctx {
   waybillId: string;
   authorId: string;
   /** Расписание с одной ролью в наборе, широкое расписание и расписание без ролей вовсе. */
-  scheduleShtabId: string;
+  scheduleNarrowId: string;
   scheduleWideId: string;
-  scheduleNoRolesId: string;
+  scheduleNoAddressId: string;
+  /** Набор, выдавший коменданту право узкого расписания: чужой источник того же права. */
+  grantId: string;
   /** Заявка своей площадки, чужой площадки и отдела — три ответа на «чьё это». */
   requestA: TestRequest;
   requestB: TestRequest;
@@ -403,7 +405,7 @@ describe.skipIf(!DB_URL)('ролевая сводка: получатели и �
       .returning({ id: schema.waybills.id });
 
     /** Расписание сводки: окно «на завтра», аудитория задаётся отдельными таблицами. */
-    async function makeSchedule(name: string, roles: ('shtab' | 'department' | 'dispatcher')[]) {
+    async function makeSchedule(name: string, permissions: string[]) {
       const [row] = await db
         .insert(schema.mailingSchedules)
         .values({
@@ -418,21 +420,49 @@ describe.skipIf(!DB_URL)('ролевая сводка: получатели и �
         })
         .returning({ id: schema.mailingSchedules.id });
       createdScheduleIds.push(row!.id);
-      if (roles.length > 0) {
+      if (permissions.length > 0) {
         await db
-          .insert(schema.mailingScheduleRoles)
-          .values(roles.map((role) => ({ scheduleId: row!.id, role })));
+          .insert(schema.mailingSchedulePermissions)
+          .values(permissions.map((permission) => ({ scheduleId: row!.id, permission })));
       }
       return row!.id;
     }
 
-    const scheduleShtabId = await makeSchedule('Сводка штабу', ['shtab']);
-    const scheduleWideId = await makeSchedule('Сводка широкая', [
-      'shtab',
-      'department',
-      'dispatcher',
+    // Узкое расписание адресовано праву заявок на обслуживание: его держат «Штаб» и «Отдел», но не
+    // «Диспетчер». Права, отбирающего ровно «Штаб», в словаре нет вовсе — и это не пробел теста, а
+    // свойство модели (ADR 0111): право отвечает на вопрос о работе, а не о названии должности, и
+    // должность целиком им не выражается.
+    const scheduleNarrowId = await makeSchedule('Сводка заказчикам обслуживания', [
+      'serviceRequests.create',
     ]);
-    const scheduleNoRolesId = await makeSchedule('Сводка без ролей', []);
+    const scheduleWideId = await makeSchedule('Сводка широкая', ['vehicleRequests.create']);
+    const scheduleNoAddressId = await makeSchedule('Сводка без адресации', []);
+
+    // Назначенный набор (ADR 0106) с тем же правом, что у узкого расписания, — коменданту, у
+    // которого этого права по должности нет. Второй источник того же права и есть то, ради чего
+    // адресация обязана считать эффективные права, а не разворачивать матрицу ролей.
+    const [grant] = await db
+      .insert(schema.grants)
+      .values({
+        code: `db-digest-grant-${suffix}`,
+        name: `Тестовый набор (сводка) ${suffix}`,
+        createdBy: author.id,
+      })
+      .returning({ id: schema.grants.id });
+    const grantId = grant!.id;
+    await db
+      .insert(schema.grantRoles)
+      .values({ grantId, role: 'commandant' })
+      .onConflictDoNothing();
+    await db
+      .insert(schema.grantPermissions)
+      .values({ grantId, permission: 'serviceRequests.create' })
+      .onConflictDoNothing();
+    await db.insert(schema.userGrants).values({
+      userId: commandant.id,
+      grantId,
+      grantedBy: author.id,
+    });
     // Отмеченная площадка и отмеченный получатель: отбор, а не исключение (ADR 0093 п. 5).
     await db
       .insert(schema.mailingScheduleScopes)
@@ -467,9 +497,10 @@ describe.skipIf(!DB_URL)('ролевая сводка: получатели и �
       routeId: route!.id,
       waybillId: waybill!.id,
       authorId: author.id,
-      scheduleShtabId,
+      scheduleNarrowId,
       scheduleWideId,
-      scheduleNoRolesId,
+      scheduleNoAddressId,
+      grantId,
       requestA,
       requestB,
       requestDept,
@@ -486,6 +517,11 @@ describe.skipIf(!DB_URL)('ролевая сводка: получатели и �
         .delete(schema.mailingSchedules)
         .where(inArray(schema.mailingSchedules.id, createdScheduleIds));
     }
+    // Назначение держит набор RESTRICT'ом: сперва снимается выдача, потом сам набор. Учётку
+    // коменданта убирает общий проход по `createdUserIds` ниже — назначение уйдёт за ней каскадом,
+    // но набор без явного удаления остался бы в каталоге и портил соседние прогоны.
+    await db.delete(schema.userGrants).where(eq(schema.userGrants.grantId, ctx.grantId));
+    await db.delete(schema.grants).where(eq(schema.grants.id, ctx.grantId));
     await db.delete(schema.waybills).where(eq(schema.waybills.id, ctx.waybillId));
     await db.delete(schema.waybillSeries).where(eq(schema.waybillSeries.id, ctx.seriesId));
     await db.delete(schema.vehicleRoutes).where(eq(schema.vehicleRoutes.id, ctx.routeId));
@@ -509,20 +545,44 @@ describe.skipIf(!DB_URL)('ролевая сводка: получатели и �
   });
 
   describe('кому уходит сводка', () => {
-    it('роль отбирает получателей: кто не в наборе, письма не получает', async () => {
-      const narrow = await recipientIds(ctx.scheduleShtabId, ALL_AUDIENCE);
+    it('право отбирает получателей: у кого его нет, письма не получает', async () => {
+      const narrow = await recipientIds(ctx.scheduleNarrowId, ALL_AUDIENCE);
       expect(narrow).toContain(ctx.shtabA.id);
       expect(narrow).toContain(ctx.shtabB.id);
-      // Область у него пустая, но получателем он всё равно становится: «кому слать» решает роль,
+      // Область у него пустая, но получателем он всё равно становится: «кому слать» решает право,
       // а «что показать» — область, и пустое письмо отсекается уже сборкой.
       expect(narrow).toContain(ctx.shtabNoScope.id);
+      // Диспетчер заявок на обслуживание не заводит — права нет, письма нет.
       expect(narrow).not.toContain(ctx.dispatcher.id);
-      expect(narrow).not.toContain(ctx.dept.id);
+      // А сотрудник отдела заводит их наравне со штабом, и адресация правом это видит. Прежняя
+      // адресация ролью различала бы их только потому, что должности называются по-разному.
+      expect(narrow).toContain(ctx.dept.id);
 
       // Без этой половины первая проходила бы и на выборке, не отдающей никого вообще.
       const wide = await recipientIds(ctx.scheduleWideId, ALL_AUDIENCE);
       expect(wide).toContain(ctx.dispatcher.id);
       expect(wide).toContain(ctx.dept.id);
+    });
+
+    it('право, пришедшее назначенным набором, адресует письмо наравне с правом должности', async () => {
+      // Главное свойство переезда (ADR 0111): адресация считает ЭФФЕКТИВНОЕ право. У коменданта
+      // права заводить заявки на обслуживание нет по должности — оно выдано ему набором, и письмо
+      // обязано уйти ему тоже. Забудь отбор про наборы — держатель полномочия не получал бы сводку,
+      // адресованную ровно его работе, и узнал бы об этом ненаступившим письмом.
+      expect(await recipientIds(ctx.scheduleNarrowId, ALL_AUDIENCE)).toContain(ctx.commandant.id);
+
+      // Мягко удалённый набор не действует ни у кого — тем же правилом, что у принципала.
+      await ctx.db
+        .update(ctx.schema.grants)
+        .set({ deletedAt: new Date() })
+        .where(eq(ctx.schema.grants.id, ctx.grantId));
+      expect(await recipientIds(ctx.scheduleNarrowId, ALL_AUDIENCE)).not.toContain(
+        ctx.commandant.id,
+      );
+      await ctx.db
+        .update(ctx.schema.grants)
+        .set({ deletedAt: null })
+        .where(eq(ctx.schema.grants.id, ctx.grantId));
     });
 
     it('отмеченные площадки отсекают штаб чужой площадки, но не диспетчера', async () => {
@@ -573,7 +633,7 @@ describe.skipIf(!DB_URL)('ролевая сводка: получатели и �
     });
 
     it('неподтверждённый адрес, выключенная и удалённая учётки получателями не становятся', async () => {
-      const ids = await recipientIds(ctx.scheduleShtabId, ALL_AUDIENCE);
+      const ids = await recipientIds(ctx.scheduleNarrowId, ALL_AUDIENCE);
 
       // Адрес без подтверждения (ADR 0072) означает, что за ним может не быть человека, а сводка
       // — рабочие данные компании: отправить их «куда-то» нельзя.
@@ -583,11 +643,12 @@ describe.skipIf(!DB_URL)('ролевая сводка: получатели и �
       expect(ids).not.toContain(ctx.archived.id);
     });
 
-    it('расписание без единой роли не находит никого', async () => {
-      // Пустой набор ролей — не «все роли»: понятый так, он разослал бы рабочую сводку всему
+    it('расписание без единого права не находит никого', async () => {
+      // Пустой набор прав — не «все права»: понятый так, он разослал бы рабочую сводку всему
       // справочнику учёток разом. Контракт такого расписания не пропускает, но отбор не вправе
-      // зависеть от того, удержалась ли та проверка.
-      expect(await recipientIds(ctx.scheduleNoRolesId, ALL_AUDIENCE)).toEqual([]);
+      // зависеть от того, удержалась ли та проверка. Так же выглядит расписание, которому переезд
+      // на права не нашёл эквивалента: оно молчит, пока его не настроит человек.
+      expect(await recipientIds(ctx.scheduleNoAddressId, ALL_AUDIENCE)).toEqual([]);
     });
   });
 

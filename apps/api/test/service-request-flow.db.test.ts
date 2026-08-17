@@ -472,10 +472,19 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
     // Надстройка роли (ADR 0086): тот же штаб, но со стороной оператора оргтехники. Роль у него
     // остаётся `shtab` — именно это и проверяет коридор: право статуса у надстройки есть, а шаги
     // исполнителя ей всё равно не положены.
-    await db.execute(sql`
-      INSERT INTO user_role_addons (user_id, addon)
-      VALUES (${operator.id}, 'office_equipment_operator'::role_addon),
-             (${itApprover.id}, 'office_equipment_it_approver'::role_addon)`);
+    //
+    // Заводится она **сервисом**, а не прямым SQL, — единственное исключение среди декораций этого
+    // блока, и вот почему. С шага 1a перехода на назначаемые полномочия (ADR 0106, решение 9)
+    // выдача надстройки пишет две таблицы одной транзакцией: `user_role_addons` и `user_grants`.
+    // Прямая вставка в старую таблицу оставила бы половину — на шаге 1c, когда права читаются уже
+    // из назначений, оператор и виза ИТ молча лишились бы своих прав, и сценарий упал бы шагов на
+    // двадцать ниже, в проверке чужого правила. Заодно такая фикстура — расхождение для сверки шага
+    // 1b (`backfill:grants`), которая идёт по всей базе и о чужих тестах ничего не знает.
+    const { replaceUserAddons } = await import('../src/services/user-scopes');
+    await db.transaction(async (tx) => {
+      await replaceUserAddons(tx, operator.id, ['office_equipment_operator'], admin.id);
+      await replaceUserAddons(tx, itApprover.id, ['office_equipment_it_approver'], admin.id);
+    });
 
     const app = await buildApp();
 

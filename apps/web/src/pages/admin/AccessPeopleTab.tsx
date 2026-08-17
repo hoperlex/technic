@@ -1,7 +1,6 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import { Alert, Checkbox, Input, Select, Space, Tag, Typography, type TableColumnType } from 'antd';
 import {
-  can,
   counterpartyTypeLabels,
   describeAccessScope,
   moduleAccess,
@@ -9,7 +8,7 @@ import {
   PERMISSION_MODULES,
   PERMISSIONS_BY_MODULE,
   permissionModuleLabels,
-  permissionSource,
+  permissionSources,
   roleAddonColors,
   roleAddonLabels,
   roleColors,
@@ -18,16 +17,19 @@ import {
   type AccessSubject,
   type Permission,
   type Role,
-  type UserDto,
+  type UserAccountDto,
 } from '@technic/contracts';
 import { DataTable, PageTableLayout, textColumn, ViewModal, type CardConfig } from '@shared/ui';
 import { useListParams } from '@shared/lib';
 import {
   activeUsers,
-  grantedPermissions,
+  effectiveSubject,
+  grantCodeLabel,
   scopeAnomaly,
+  scopeAxisTitles,
   scopeTargets,
-  subjectOf,
+  scopeText,
+  sourceSubject,
   useAccessUsers,
 } from './accessOverview';
 
@@ -36,22 +38,21 @@ import {
  *
  * Экран отвечает на два вопроса, ради которых сегодня читают `permissions.ts` и ходят в базу: что
  * человек может и **почему** он это может. Второй важнее: право приходит из роли, из типа
- * контрагента или из надстройки (ADR 0038, 0086), и при пересмотре ролей решает именно это
- * различие, а не сам факт доступа. Поэтому источник подписан у каждого права в карточке.
+ * контрагента, из надстройки или из назначенного полномочия (ADR 0038, 0086, 0106), и при
+ * пересмотре ролей решает именно это различие, а не сам факт доступа. Поэтому источники подписаны у
+ * каждого права в карточке — все, а не первый найденный: право, которое даёт и должность, и набор,
+ * подписанное одной должностью, отвечало бы на «что уйдёт при отзыве набора» прямо наоборот.
+ *
+ * **Что человек может — говорит сервер** (`permissions` учётки), а матрица объясняет, чем это
+ * вызвано (`permissionSources`, `moduleAccess`, `describeAccessScope`). Со свободной сборкой
+ * полномочий второе из первого не выводится: состав набора лежит в базе, матрица его не знает.
+ * Отсюда и граница обязанностей — экран не считает доступ и не заводит своего представления о
+ * правах: список «что может штаб», написанный на портале, разошёлся бы с моделью ровно в тот
+ * момент, когда по нему принимают решение.
  *
  * Ни одного действия здесь нет: выдача и отзыв прав — предмет отдельной панели, и смешивать её с
- * анализом нельзя, пока роли не пересмотрены. Своего представления о правах экран тоже не заводит
- * — всё считают `can`, `moduleAccess`, `permissionSource` и `describeAccessScope` из контрактов:
- * список «что может штаб», написанный на портале, разошёлся бы с матрицей ровно в тот момент,
- * когда по нему принимают решение.
+ * анализом нельзя, пока роли не пересмотрены.
  */
-
-/** Подпись оси области — те же слова, что в карточке учётки. */
-const scopeAxisTitles = {
-  object: 'Объекты',
-  department: 'Отделы',
-  counterparty: 'Контрагент',
-} as const;
 
 /**
  * Роль и надстройки одной ячейкой (ADR 0086) — теми же пометками, что в списке учёток: строку
@@ -59,7 +60,7 @@ const scopeAxisTitles = {
  * контрактов; повторена здесь только вёрстка — в «Учётных записях» она внутренняя функция экрана,
  * и вытаскивать её наружу ради витрины значило бы править соседний файл.
  */
-function roleTags(user: UserDto) {
+function roleTags(user: UserAccountDto) {
   if (!user.role) return '—';
   return (
     <Space size={4} wrap>
@@ -73,7 +74,7 @@ function roleTags(user: UserDto) {
   );
 }
 
-function personCell(user: UserDto) {
+function personCell(user: UserAccountDto) {
   return (
     <Space direction="vertical" size={0}>
       <span>{user.fullName}</span>
@@ -82,19 +83,7 @@ function personCell(user: UserDto) {
   );
 }
 
-/**
- * Область одной строкой: перечень объектов, отделов или имя контрагента. У роли без своей оси —
- * «Все записи», и это не пустое место, а самая широкая область из возможных. Пустая ось молчит:
- * почему набор пуст, говорит `scopeAnomaly` рядом.
- */
-function scopeText(user: UserDto): string {
-  const { axis, items } = scopeTargets(user);
-  if (items.length > 0) return items.join(', ');
-  if (!user.role) return '—';
-  return axis ? '—' : 'Все записи';
-}
-
-function scopeCell(user: UserDto) {
+function scopeCell(user: UserAccountDto) {
   const anomaly = scopeAnomaly(user);
   return (
     <Space direction="vertical" size={2}>
@@ -107,10 +96,15 @@ function scopeCell(user: UserDto) {
 }
 
 /**
- * Модули, открытые субъекту. Цветом отмечены те, где он действует, серым — те, где только
- * смотрит: «видит» и «работает» — разные ответы, и в витрине их путать нельзя.
+ * Модули, открытые учётке. Цветом отмечены те, где она действует, серым — те, где только смотрит:
+ * «видит» и «работает» — разные ответы, и в витрине их путать нельзя.
+ *
+ * Считается по серверному списку прав (`effectiveSubject`), а не по роли: модуль, открытый набором,
+ * до этого показывался закрытым — то есть витрина отвечала «раздела у него нет» про человека,
+ * которому раздел открыт.
  */
-function moduleTags(subject: AccessSubject) {
+function moduleTags(user: UserAccountDto) {
+  const subject = effectiveSubject(user);
   const open = PERMISSION_MODULES.map((module) => ({
     module,
     access: moduleAccess(subject, module),
@@ -127,19 +121,44 @@ function moduleTags(subject: AccessSubject) {
   );
 }
 
-/** Откуда у субъекта право — словами, с именем самой роли или надстройки: «почему» без имени неполно. */
+/** Наборы учётки: у системных — подпись, у собранного администратором — код (имён витрина не знает). */
+function grantTags(user: UserAccountDto) {
+  if (user.grantCodes.length === 0) return '—';
+  return (
+    <Space size={4} wrap>
+      {user.grantCodes.map((code) => (
+        <Tag key={code}>{grantCodeLabel(code)}</Tag>
+      ))}
+    </Space>
+  );
+}
+
+/**
+ * Откуда у субъекта право — **всеми** источниками сразу, с именем роли или надстройки: «почему» без
+ * имени неполно, а «почему» одним источником из четырёх — неверно.
+ *
+ * Набор подписан без имени: сервер отдаёт объединение прав всех наборов учётки, а не разбивку
+ * «какое право из какого» (`PermissionOrigin.grantCode` не заполнен ни у кого), и придумать её
+ * витрине нечем — состав набора лежит в базе. Какие наборы у человека есть, говорит соседняя
+ * колонка и строка «Наборы» в карточке.
+ */
 function sourceText(subject: AccessSubject, permission: Permission): string {
-  const origin = permissionSource(subject, permission);
-  if (!origin) return '';
-  if (origin.kind === 'addon') {
-    return origin.addon ? `надстройка «${roleAddonLabels[origin.addon]}»` : 'надстройка';
-  }
-  if (origin.kind === 'counterparty') {
-    return subject.counterpartyType
-      ? `контрагент: ${counterpartyTypeLabels[subject.counterpartyType]}`
-      : 'контрагент';
-  }
-  return subject.role ? `роль «${roleLabels[subject.role]}»` : 'роль';
+  return permissionSources(subject, permission)
+    .map((origin) => {
+      if (origin.kind === 'addon') {
+        return origin.addon ? `надстройка «${roleAddonLabels[origin.addon]}»` : 'надстройка';
+      }
+      if (origin.kind === 'grant') {
+        return origin.grantCode ? `набор «${grantCodeLabel(origin.grantCode)}»` : 'набор';
+      }
+      if (origin.kind === 'counterparty') {
+        return subject.counterpartyType
+          ? `контрагент: ${counterpartyTypeLabels[subject.counterpartyType]}`
+          : 'контрагент';
+      }
+      return subject.role ? `роль «${roleLabels[subject.role]}»` : 'роль';
+    })
+    .join(' · ');
 }
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
@@ -155,7 +174,7 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 
 interface CardProps {
   /** `null` — карточка закрыта; поля берутся из строки списка, отдельный запрос за ними не нужен. */
-  user: UserDto | null;
+  user: UserAccountDto | null;
   onClose: () => void;
 }
 
@@ -165,12 +184,22 @@ interface CardProps {
  * четыре десятка строк, и в раскрытой строке таблицы он выдавил бы с экрана сам список.
  */
 function AccessCard({ user, onClose }: CardProps) {
-  const subject = user ? subjectOf(user) : null;
+  /*
+   * Два субъекта на одну карточку, и это не дублирование. Первый отвечает по правам сервера — им
+   * считаются открытые модули и область; второй объясняет источники, и в нём наборам отданы только
+   * те права, которых матрица объяснить не может. Подставь список сервера в источники — и «набор»
+   * стал бы подписью у каждого права, включая ролевые.
+   */
+  const subject = user ? effectiveSubject(user) : null;
+  const origins = user ? sourceSubject(user) : null;
+  // Права — из ответа сервера, а не из матрицы: строка карточки обязана перечислять то, что человек
+  // действительно может, а объяснение к ней стоит рядом и может быть неполным.
+  const held = new Set<Permission>(user?.permissions ?? []);
   const modules = subject
     ? PERMISSION_MODULES.map((module) => ({
         module,
         access: moduleAccess(subject, module),
-        granted: PERMISSIONS_BY_MODULE[module].filter((p) => can(subject, p)),
+        granted: PERMISSIONS_BY_MODULE[module].filter((p) => held.has(p)),
       }))
     : [];
   const closed = modules.filter((m) => m.access === 'none');
@@ -188,12 +217,34 @@ function AccessCard({ user, onClose }: CardProps) {
       destroyOnHidden
       footer={null}
     >
-      {user && subject && (
+      {user && subject && origins && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           <Space direction="vertical" size={4}>
             <Typography.Text type="secondary">{user.email}</Typography.Text>
             {roleTags(user)}
           </Space>
+
+          {/* Наборы (ADR 0106) — рядом с ролью, а не в конце: с ними человек может больше, чем его
+              должность, и читать список прав, не зная о них, значит приписывать всё роли. */}
+          <Section title="Наборы">
+            {user.grantCodes.length === 0 ? (
+              <Typography.Text type="secondary">
+                Наборов нет: всё, что человек может, идёт от должности.
+              </Typography.Text>
+            ) : (
+              <Space direction="vertical" size={4}>
+                {grantTags(user)}
+                {/* Ограничение названо прямо: витрина знает, какие наборы выданы, но не знает их
+                    состава — сервер отдаёт объединение прав, а не разбивку по наборам. Догадка «это
+                    право, наверное, из этого набора» была бы хуже честного молчания: по ней решают,
+                    что отзывать. */}
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  Какое право пришло каким набором, витрина не знает: набор подписан у тех прав,
+                  которых должность не даёт.
+                </Typography.Text>
+              </Space>
+            )}
+          </Section>
 
           <Section title="Область">
             <ul style={{ margin: 0, paddingLeft: 20 }}>
@@ -232,7 +283,7 @@ function AccessCard({ user, onClose }: CardProps) {
                         {/* Источник права — мелким вторичным текстом: спрашивают его не в каждой
                             строке, но ответ должен стоять именно у той строки, о которой спросили. */}
                         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                          {sourceText(subject, permission)}
+                          {sourceText(origins, permission)}
                         </Typography.Text>
                       </div>
                     ))}
@@ -276,7 +327,7 @@ const permissionOptions = PERMISSION_MODULES.map((module) => ({
 
 export function AccessPeopleTab() {
   const { users, total, truncated, isFetching } = useAccessUsers();
-  const [opened, setOpened] = useState<UserDto | null>(null);
+  const [opened, setOpened] = useState<UserAccountDto | null>(null);
 
   /**
    * Параметры списка тем же хуком, что у серверных таблиц: он держит страницу и её размер
@@ -287,8 +338,9 @@ export function AccessPeopleTab() {
     role?: Role;
     permission?: Permission;
     onlyActive: boolean;
-    withAddons: boolean;
-  }>({ onlyActive: true, withAddons: false }, { searchKeys: [] });
+    /** Только держатели наборов — любых, а не одних системных (см. отбор ниже). */
+    withGrants: boolean;
+  }>({ onlyActive: true, withGrants: false }, { searchKeys: [] });
 
   /** Правка любого отбора возвращает на первую страницу: та же страница при другом наборе — уже другие строки. */
   const applyFilter = (patch: Partial<typeof params>) =>
@@ -299,21 +351,27 @@ export function AccessPeopleTab() {
     return (params.onlyActive ? activeUsers(users) : users).filter((user) => {
       if (needle && !`${user.fullName} ${user.email}`.toLowerCase().includes(needle)) return false;
       if (params.role && user.role !== params.role) return false;
-      if (params.withAddons && user.addons.length === 0) return false;
-      // «У кого есть право» спрашивается у матрицы, а не у списка ролей: право приходит и от типа
-      // контрагента, и от надстройки, и отбор по роли этих учёток не нашёл бы.
-      if (params.permission && !can(subjectOf(user), params.permission)) return false;
+      /*
+       * «С наборами» спрашивает коды наборов, а не пометки надстроек: пометка отвечает только за два
+       * системных набора, и собранный администратором в неё не попадает вовсе. Отбор по пометкам
+       * прятал бы ровно тех держателей, ради которых его открывают.
+       */
+      if (params.withGrants && user.grantCodes.length === 0) return false;
+      // «У кого есть право» спрашивается у серверного списка прав, а не у роли и не у матрицы: право
+      // приходит и от типа контрагента, и от надстройки, и от набора, собранного в проде, — и
+      // держателей от набора матрица не нашла бы вовсе.
+      if (params.permission && !user.permissions.includes(params.permission)) return false;
       return true;
     });
-  }, [users, params.search, params.role, params.onlyActive, params.withAddons, params.permission]);
+  }, [users, params.search, params.role, params.onlyActive, params.withGrants, params.permission]);
 
   /** Страницу режем сами: на телефоне список показывается карточками, и там таблица его не порежет. */
   const pageRows = rows.slice((params.page - 1) * params.pageSize, params.page * params.pageSize);
 
   // Сортировки в колонках нет: список приходит упорядоченным по ФИО, а свой порядок пришлось бы
   // считать на клиенте — колонка-обманка, которая на нажатие не отвечает, хуже её отсутствия.
-  const columns: TableColumnType<UserDto>[] = [
-    textColumn<UserDto>({
+  const columns: TableColumnType<UserAccountDto>[] = [
+    textColumn<UserAccountDto>({
       key: 'fullName',
       title: 'Сотрудник',
       dataIndex: 'fullName',
@@ -322,7 +380,7 @@ export function AccessPeopleTab() {
       width: 260,
       render: (_v, r) => personCell(r),
     }),
-    textColumn<UserDto>({
+    textColumn<UserAccountDto>({
       key: 'role',
       title: 'Роль',
       dataIndex: 'role',
@@ -331,7 +389,16 @@ export function AccessPeopleTab() {
       width: 220,
       render: (_v, r) => roleTags(r),
     }),
-    textColumn<UserDto>({
+    // Наборы (ADR 0106) отдельной колонкой, хотя пометки системных стоят и в колонке роли: там они
+    // повторяют список учёток, а здесь стоит полный ответ на «что человеку выдано» — вместе с
+    // наборами, собранными администратором, которых в пометках нет и быть не может.
+    {
+      key: 'grants',
+      title: 'Наборы',
+      width: 200,
+      render: (_v: unknown, r: UserAccountDto) => grantTags(r),
+    },
+    textColumn<UserAccountDto>({
       key: 'scope',
       title: 'Область',
       dataIndex: 'constructionObjects',
@@ -340,19 +407,20 @@ export function AccessPeopleTab() {
       width: 260,
       render: (_v, r) => scopeCell(r),
     }),
-    // Модули и число прав считает матрица — поля записи, из которого их взять, нет вовсе, поэтому
-    // и `dataIndex` у этих колонок нет.
+    // Модули складываются из прав учётки, а поля с ними в записи нет — отсюда колонка без
+    // `dataIndex`. Число прав берётся из самого списка: считать его матрицей значило бы показать
+    // другое число, чем то, по которому сервер разрешает запросы.
     {
       key: 'modules',
       title: 'Модули',
-      render: (_v: unknown, r: UserDto) => moduleTags(subjectOf(r)),
+      render: (_v: unknown, r: UserAccountDto) => moduleTags(r),
     },
     {
       key: 'permissions',
       title: 'Прав',
       width: 90,
       align: 'right',
-      render: (_v: unknown, r: UserDto) => grantedPermissions(subjectOf(r)).length,
+      render: (_v: unknown, r: UserAccountDto) => r.permissions.length,
     },
   ];
 
@@ -391,24 +459,28 @@ export function AccessPeopleTab() {
         Только активные
       </Checkbox>
       <Checkbox
-        checked={params.withAddons}
-        onChange={(e) => applyFilter({ withAddons: e.target.checked })}
+        checked={params.withGrants}
+        onChange={(e) => applyFilter({ withGrants: e.target.checked })}
       >
-        С надстройками
+        С наборами
       </Checkbox>
     </Space>
   );
 
   /** Строка карточкой на телефоне (ADR 0042): роль — бейджем, остальное строками под ФИО. */
-  const card: CardConfig<UserDto> = {
+  const card: CardConfig<UserAccountDto> = {
     title: (r) => r.fullName,
     badge: (r) => roleTags(r),
     primary: (r) => r.email,
     lines: [
       (r) => `Область: ${scopeText(r)}`,
       (r) => scopeAnomaly(r),
-      (r) => moduleTags(subjectOf(r)),
-      (r) => `Прав: ${grantedPermissions(subjectOf(r)).length}`,
+      // Наборы строкой, а не молча: на телефоне колонок нет, и без этой строки доступ, пришедший
+      // набором, выглядел бы прибавкой к роли неизвестно откуда.
+      (r) =>
+        r.grantCodes.length > 0 ? `Наборы: ${r.grantCodes.map(grantCodeLabel).join(', ')}` : null,
+      (r) => moduleTags(r),
+      (r) => `Прав: ${r.permissions.length}`,
     ],
     onOpen: (r) => setOpened(r),
   };
@@ -426,7 +498,7 @@ export function AccessPeopleTab() {
         ) : null
       }
     >
-      <DataTable<UserDto>
+      <DataTable<UserAccountDto>
         columns={columns}
         card={card}
         data={pageRows}

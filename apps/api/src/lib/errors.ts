@@ -37,8 +37,13 @@ export const err = {
    */
   conflict: (m = 'Конфликт версий — обновите данные и повторите', options?: ConflictOptions) =>
     new AppError(409, options?.code ?? 'version_conflict', m, undefined, options?.details),
-  badRequest: (m = 'Некорректный запрос', fields?: Record<string, string>) =>
-    new AppError(400, 'bad_request', m, fields),
+  /**
+   * 400. `details` — тот же разбор машиной, что у 409 и 422: список нарушений выдачи полномочия
+   * (`GrantValidationDetailsDto`) в `fields` не кладётся — там `Record<string, string>` под пометки
+   * полей формы, а нарушений бывает несколько и у каждого свои виновники.
+   */
+  badRequest: (m = 'Некорректный запрос', fields?: Record<string, string>, details?: unknown) =>
+    new AppError(400, 'bad_request', m, fields, details),
   unprocessable: (
     m = 'Некорректная структура запроса',
     fields?: Record<string, string>,

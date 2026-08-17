@@ -1,23 +1,31 @@
 import { useState } from 'react';
-import { Button, Form, Typography } from 'antd';
+import { Button, Form, Modal, Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
-import { ROLES, roleLabels, type AudienceMode, type Role } from '@technic/contracts';
+import { roleLabels, type AudienceMode, type Permission } from '@technic/contracts';
 import { CheckboxPicker, type CheckboxPickerItem, type CheckboxPickerValue } from '@shared/ui';
 import { departmentOptionsQuery } from '@entities/department';
 import { objectOptionsQuery } from '@entities/object';
 import { mailingsApi } from '../../api/resources';
+import { GrantPermissionPicker } from './GrantPermissionPicker';
+import { PERMISSION_MODULE_GROUPS, permissionLabel } from './grantModel';
 
 /**
  * Аудитория сводки: три оси отбора и каскад между ними (план `docs/role-mailings-refactor-plan.md`,
- * решения Р5–Р8).
+ * решения Р5–Р8; адресация правом — ADR 0111).
  *
  * Оси именно выбираются, а не исключаются: исключение молча ломается на каждой новой записи —
  * заведённая завтра площадка в рассылку не попадёт, и узнается это ненаступившим письмом. Поэтому у
- * площадок и получателей есть режим «все и будущие», а у ролей его нет: реестр ролей закрытый и
- * меняется миграцией.
+ * площадок и получателей есть режим «все и будущие», а у прав его нет: словарь прав закрытый и
+ * меняется выкатом, а «все права» означало бы «вообще всем» — то есть отсутствие адреса.
  *
- * Каскад односторонний: роли и области сужают список людей, но не сужают справочник площадок —
+ * Каскад односторонний: права и области сужают список людей, но не сужают справочник площадок —
  * область рассылки задаётся независимо от того, есть ли на площадке получатели.
+ *
+ * Права выбираются тем же компонентом, что и в конструкторе наборов (`GrantPermissionPicker`):
+ * группировка по модулям и поиск по подписи и коду. Плоский список чекбоксов по полусотне прав
+ * непригоден одинаково в обеих задачах, и решать это второй раз незачем. Список при этом свой —
+ * весь словарь, а не выдаваемая его часть: расписание право не выдаёт, а спрашивает, у кого оно уже
+ * есть.
  */
 
 /** Отмеченные области рассылки: две оси в одном окне, потому что выбирают их вместе. */
@@ -38,7 +46,7 @@ export interface AudienceRecipientsValue {
  * экземпляр — так блок нельзя случайно повесить рядом с формой, а не внутри неё.
  */
 export interface AudienceFormValues {
-  roles: Role[];
+  permissions: Permission[];
   scope: AudienceScopeValue;
   recipients: AudienceRecipientsValue;
 }
@@ -88,13 +96,65 @@ function PickerField({ id, title, summary, value, onChange, ...picker }: PickerF
   );
 }
 
-/** Подпись набора ролей: первые две по имени, остальные числом — в строку кнопки больше не влезает. */
-function rolesSummary(roles: Role[]): string {
-  if (roles.length === 0) return 'Роли не выбраны';
-  if (roles.length === ROLES.length) return `Все роли — ${ROLES.length}`;
-  const named = roles.slice(0, 2).map((r) => roleLabels[r]);
-  const rest = roles.length - named.length;
-  return `${named.join(', ')}${rest > 0 ? ` и ещё ${rest}` : ''} — ${roles.length} из ${ROLES.length}`;
+/** Подпись набора прав: первые два по имени, остальные числом — в строку кнопки больше не влезает. */
+function permissionsSummary(permissions: Permission[]): string {
+  if (permissions.length === 0) return 'Права не выбраны';
+  const named = permissions.slice(0, 2).map(permissionLabel);
+  const rest = permissions.length - named.length;
+  return `${named.join('; ')}${rest > 0 ? ` и ещё ${rest}` : ''}`;
+}
+
+/**
+ * Окно выбора прав-адресатов. Своё, а не `CheckboxPicker`, потому что плоским списком полсотни прав
+ * не выбрать: нужны группировка по модулям и поиск — то самое, что уже умеет конструктор наборов.
+ */
+function PermissionPickerField({
+  id,
+  value,
+  onChange,
+}: {
+  /** Приходит от `Form.Item`: им подпись поля связана с кнопкой, открывающей окно. */
+  id?: string;
+  value?: Permission[];
+  onChange?: (next: Permission[]) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  // Черновик: правка внутри окна применяется по «Готово», как и в остальных окнах формы, — иначе
+  // «Отмена» не отменяла бы ничего.
+  const [draft, setDraft] = useState<Permission[]>([]);
+  const current = value ?? [];
+  return (
+    <>
+      <Button
+        id={id}
+        block
+        style={{ textAlign: 'left' }}
+        onClick={() => {
+          setDraft(current);
+          setOpen(true);
+        }}
+      >
+        {permissionsSummary(current)}
+      </Button>
+      <Modal
+        title="Права-адресаты"
+        open={open}
+        okText="Готово"
+        cancelText="Отмена"
+        onCancel={() => setOpen(false)}
+        onOk={() => {
+          onChange?.(draft);
+          setOpen(false);
+        }}
+      >
+        <GrantPermissionPicker
+          groups={PERMISSION_MODULE_GROUPS}
+          value={draft}
+          onChange={(next) => setDraft(next)}
+        />
+      </Modal>
+    </>
+  );
 }
 
 interface Props {
@@ -107,7 +167,7 @@ interface Props {
 
 export function MailingAudienceFields({ active }: Props) {
   const form = Form.useFormInstance<AudienceFormValues>();
-  const roles = Form.useWatch<Role[] | undefined>('roles') ?? [];
+  const permissions = Form.useWatch<Permission[] | undefined>('permissions') ?? [];
   const scope = Form.useWatch<AudienceScopeValue | undefined>('scope');
   const recipients = Form.useWatch<AudienceRecipientsValue | undefined>('recipients');
 
@@ -116,7 +176,7 @@ export function MailingAudienceFields({ active }: Props) {
   const departmentIds = scope?.departmentIds ?? [];
 
   // Справочники площадок и отделов — общие запросы: ключ у них общий с прочими экранами, и
-  // открытая форма чаще всего берёт их из кэша. Ролями они не сужаются (Р7): справочник отвечает
+  // открытая форма чаще всего берёт их из кэша. Правами они не сужаются (Р7): справочник отвечает
   // за область рассылки, а не за то, кто в неё попал.
   const objectsQuery = useQuery({ ...objectOptionsQuery(), enabled: active });
   const departmentsQuery = useQuery({ ...departmentOptionsQuery(), enabled: active });
@@ -129,16 +189,16 @@ export function MailingAudienceFields({ active }: Props) {
    * (Р8) в справочник учёток не встроить, а цифра под формой обязана совпасть с планировщиком.
    */
   const candidatesQuery = useQuery({
-    queryKey: [...CANDIDATES_KEY, roles, scopeMode, objectIds, departmentIds],
+    queryKey: [...CANDIDATES_KEY, permissions, scopeMode, objectIds, departmentIds],
     queryFn: () =>
       mailingsApi.recipientCandidates({
-        roles: roles.join(','),
+        permissions: permissions.join(','),
         scopeMode,
         ...(objectIds.length > 0 ? { objectIds: objectIds.join(',') } : {}),
         ...(departmentIds.length > 0 ? { departmentIds: departmentIds.join(',') } : {}),
       }),
-    // Без ролей отбор пуст, и спрашивать нечего: сервер такой запрос всё равно отвергает.
-    enabled: active && roles.length > 0,
+    // Без прав отбор пуст, и спрашивать нечего: сервер такой запрос всё равно отвергает.
+    enabled: active && permissions.length > 0,
   });
   const candidates = candidatesQuery.data ?? [];
 
@@ -154,9 +214,16 @@ export function MailingAudienceFields({ active }: Props) {
    * совпадают с основным запросом, и оба потребителя берут один ответ из кэша.
    */
   const scopeCountsQuery = useQuery({
-    queryKey: [...CANDIDATES_KEY, roles, 'all' as AudienceMode, [] as string[], [] as string[]],
-    queryFn: () => mailingsApi.recipientCandidates({ roles: roles.join(','), scopeMode: 'all' }),
-    enabled: active && roles.length > 0,
+    queryKey: [
+      ...CANDIDATES_KEY,
+      permissions,
+      'all' as AudienceMode,
+      [] as string[],
+      [] as string[],
+    ],
+    queryFn: () =>
+      mailingsApi.recipientCandidates({ permissions: permissions.join(','), scopeMode: 'all' }),
+    enabled: active && permissions.length > 0,
   });
 
   /** Сколько кандидатов задевает каждая площадка и каждый отдел; человек с двумя — в обоих. */
@@ -169,8 +236,8 @@ export function MailingAudienceFields({ active }: Props) {
   const scopeCount = (id: string): number => scopeCounts.get(id) ?? 0;
 
   /**
-   * Отмеченные вручную, но выпавшие из отбора: сняли роль — и человек, выбранный по ней, остался в
-   * наборе. Молча выкинуть его нельзя (вернуть роль — значит вернуть и его), а промолчать —
+   * Отмеченные вручную, но выпавшие из отбора: сняли право — и человек, выбранный по нему, остался
+   * в наборе. Молча выкинуть его нельзя (вернуть право — значит вернуть и его), а промолчать —
    * значит оставить в расписании получателя, которому письмо уже не уйдёт.
    */
   const stale =
@@ -179,7 +246,7 @@ export function MailingAudienceFields({ active }: Props) {
       : [];
 
   /**
-   * Счётчик в подсказке строки: справочник площадок ролями не сужается (Р7), и без него не видно,
+   * Счётчик в подсказке строки: справочник площадок правами не сужается (Р7), и без него не видно,
    * кого именно отметка задевает. Пока ответа с идентификаторами нет, подсказки нет тоже — ноль,
    * напечатанный до загрузки, читался бы как «получателей здесь не бывает».
    */
@@ -231,32 +298,19 @@ export function MailingAudienceFields({ active }: Props) {
   return (
     <>
       <Form.Item
-        name="roles"
-        label="Роли"
-        extra="Письмо уйдёт учётным записям этих ролей. Что человек в нём увидит, решает его собственная область видимости — роль отвечает только на вопрос «кому отправлять»"
-        // Окно возвращает пару «режим и перечень», а храним мы перечень ролей: режима «все и
-        // будущие» у закрытого реестра нет, и переводится значение прямо здесь, без своего поля.
-        getValueProps={(v: Role[] | undefined) => ({
-          value: { mode: 'selected' as const, ids: v ?? [] },
-        })}
-        normalize={(v: CheckboxPickerValue) => v.ids as Role[]}
-        // Проверяется хранимое значение, а не то, что вернуло окно: `normalize` уже перевёл одно
-        // в другое, и правило обязано читать то же, что уедет в запрос.
+        name="permissions"
+        label="Права-адресаты"
+        extra="Письмо уйдёт тем, у кого есть хотя бы одно из этих прав — неважно, дала его должность или назначенный набор. Что человек в нём увидит, решает его собственная область видимости"
         rules={[
           {
-            validator: (_rule, v: Role[] | undefined) =>
+            validator: (_rule, v: Permission[] | undefined) =>
               v && v.length > 0
                 ? Promise.resolve()
-                : Promise.reject(new Error('Выберите хотя бы одну роль-получателя')),
+                : Promise.reject(new Error('Выберите хотя бы одно право-адресат')),
           },
         ]}
       >
-        <PickerField
-          title="Роли-получатели"
-          allowAll={false}
-          items={ROLES.map((r) => ({ value: r, label: roleLabels[r] }))}
-          summary={rolesSummary(roles)}
-        />
+        <PermissionPickerField />
       </Form.Item>
 
       <Form.Item
@@ -322,7 +376,7 @@ export function MailingAudienceFields({ active }: Props) {
               </Button>
             </span>
           ) : (
-            'Учётные записи, прошедшие отбор по ролям и областям. Адрес без подтверждения письма не получает (ADR 0072)'
+            'Учётные записи, прошедшие отбор по правам и областям. Адрес без подтверждения письма не получает (ADR 0072)'
           )
         }
         rules={[

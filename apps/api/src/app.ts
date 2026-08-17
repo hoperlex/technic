@@ -15,6 +15,8 @@ import authPlugin from './auth/plugin';
 import healthRoutes from './routes/health';
 import authRoutes from './routes/auth';
 import usersRoutes from './routes/users';
+import userGrantsRoutes from './routes/user-grants';
+import grantsRoutes from './routes/grants';
 import objectsRoutes from './routes/objects';
 import departmentsRoutes from './routes/departments';
 import counterpartiesRoutes from './routes/counterparties';
@@ -39,6 +41,7 @@ import garageRoutes from './routes/garage';
 import driverRoutes from './routes/driver';
 import vehicleReadingsRoutes from './routes/vehicle-readings';
 import vehicleReadingsStatsRoutes from './routes/vehicle-readings-stats';
+import vehicleMaintenanceRoutes from './routes/vehicle-maintenance';
 import wasteRequestsRoutes from './routes/waste-requests';
 import wasteTypesRoutes from './routes/waste-types';
 import wasteTariffsRoutes from './routes/waste-tariffs';
@@ -92,6 +95,15 @@ export async function buildApp(options: BuildAppOptions = {}) {
   await app.register(healthRoutes);
   await app.register(authRoutes, { prefix: '/api/v1/auth' });
   await app.register(usersRoutes, { prefix: '/api/v1/users' });
+  // Выдача и отзыв полномочия — тот же префикс учёток, свой файл: цель операции — человек (журнал и
+  // `authVersion` пишутся ему), а порядок блокировок у неё обратный порядку правки учётки — сначала
+  // строка набора, потом строка учётки (ADR 0106, решение 7). Тем же приёмом на один префикс
+  // зарегистрированы три файла почтового контура.
+  await app.register(userGrantsRoutes, { prefix: '/api/v1/users' });
+  // Каталог назначаемых полномочий (ADR 0106, этап 3) — свой префикс, а не ветка `/users`: учётками
+  // ведают одни ручки, составом наборов другие, и права у них хоть и совпадают (`users.manage`
+  // невыдаваемое), но предмет разный — здесь правят каталог, а не человека.
+  await app.register(grantsRoutes, { prefix: '/api/v1/grants' });
   await app.register(objectsRoutes, { prefix: '/api/v1/objects' });
   await app.register(departmentsRoutes, { prefix: '/api/v1/departments' });
   await app.register(counterpartiesRoutes, { prefix: '/api/v1/counterparties' });
@@ -132,6 +144,10 @@ export async function buildApp(options: BuildAppOptions = {}) {
   // общее право `vehicleReadings.read`, но разные пути и разная цена запроса (сводка считает
   // разности по всему парку за период). Тот же приём, что у двух плагинов `admin/mail`.
   await app.register(vehicleReadingsStatsRoutes, { prefix: '/api/v1/vehicle-readings' });
+  // Техобслуживание по пробегу (план «Показания техники», Р14) — свой префикс, а не ветка
+  // показаний: права у него свои (`vehicleMaintenance.*`), и держит их порознь ровно то, что
+  // служба главного механика ведёт ТО, не открывая приёмку, журналы и фотографии показаний.
+  await app.register(vehicleMaintenanceRoutes, { prefix: '/api/v1/vehicle-maintenance' });
   await app.register(waybillsRoutes, { prefix: '/api/v1/waybills' });
   await app.register(wasteRequestsRoutes, { prefix: '/api/v1/waste-requests' });
   await app.register(wasteTypesRoutes, { prefix: '/api/v1/waste-types' });

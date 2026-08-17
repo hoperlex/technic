@@ -3,7 +3,6 @@ import { App, Button, Form, Input, Select, Space, Switch, Tag, Typography } from
 import { DeleteFilled, DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { CreateDepartmentInput, DepartmentDto } from '@technic/contracts';
-import { usersApi } from '../../api/resources';
 import { DataTable, type CardConfig } from '@shared/ui';
 import { FormModal } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
@@ -14,14 +13,18 @@ import { errorMessage } from '../../utils/format';
 import { usePurgeAction } from '../../hooks/usePurgeAction';
 import { departmentsApi, departmentKeys } from '@entities/department';
 import { objectOptionsQuery } from '@entities/object';
+import { useDepartmentHeadOptions } from './departmentHeadOptions';
 
 /**
  * Справочник отделов (ADR 0040) — офисные подразделения. Устроен как справочник объектов: тот же
  * набор действий, то же удаление деактивацией.
  *
- * Руководители отдела не хранятся в карточке, а выводятся из учёток с ролью «Руководитель
- * отдела»: это привязка учётки к отделу, показанная со стороны справочника. Правится с обеих
- * сторон — здесь и в карточке учётки, — поэтому после сохранения список учёток тоже устаревает.
+ * Руководители отдела не хранятся в карточке, а лежат признаком на привязке учётки к отделу
+ * (`user_departments.is_head`, миграция 0149) — той же самой, что задаёт область видимости, только
+ * показанной со стороны справочника. Роль «Руководитель отдела» руководителем больше не делает и
+ * не требуется (§11.1 плана реструктуризации прав): признак ставится **только отсюда**, а карточка
+ * учётки задаёт участие в отделе. Привязка общая, поэтому после сохранения список учёток тоже
+ * устаревает.
  */
 export function DepartmentsTab() {
   const { message, modal } = App.useApp();
@@ -38,21 +41,6 @@ export function DepartmentsTab() {
     queryFn: () => departmentsApi.list(params),
   });
 
-  // Кандидаты в руководители — только учётки с этой ролью: привязать сюда сотрудника отдела или
-  // штаб сервер всё равно не даст, и предлагать их значило бы обещать несуществующий выбор.
-  const { data: headsData, isFetching: headsLoading } = useQuery({
-    queryKey: ['users', 'department-heads'],
-    queryFn: () =>
-      usersApi.list({
-        page: 1,
-        pageSize: 500,
-        role: 'department_head',
-        sortBy: 'fullName',
-        sortOrder: 'asc',
-      }),
-  });
-  const headOptions = (headsData?.items ?? []).map((u) => ({ value: u.id, label: u.fullName }));
-
   // Площадка отдела (ADR 0062). Неактивные объекты в списке есть: привязка описывает зону
   // ответственности, а не готовность принимать заявки — закрытую площадку отдел ещё доубирает.
   const { data: objectOptions = [], isFetching: objectsLoading } = useQuery(
@@ -62,6 +50,12 @@ export function DepartmentsTab() {
   const [open, setOpen] = useState(false);
   const [record, setRecord] = useState<DepartmentDto | null>(null);
   const [form] = Form.useForm<CreateDepartmentInput>();
+
+  // Кандидаты в руководители — учётки на отдельской оси, а не учётки одной роли: чем именно
+  // сузился список и почему не «все живые», разобрано в `useDepartmentHeadOptions`.
+  const { options: headOptions, loading: headsLoading } = useDepartmentHeadOptions(
+    record?.heads ?? [],
+  );
 
   const openCreate = () => {
     setRecord(null);
@@ -314,8 +308,8 @@ export function DepartmentsTab() {
           <Form.Item
             name="headUserIds"
             label="Руководители"
-            tooltip="Учётки с ролью «Руководитель отдела»: они визируют заявки отдела"
-            extra="Смена набора закрывает открытые сессии этих учёток — у них меняется область"
+            tooltip="Кто здесь главный: они визируют заявки отдела. Признак ставится этим полем и только им — роль «Руководитель отдела» сама по себе руководителем не делает"
+            extra="Назначенный войдёт в отдел, снятый — выйдет из него. Смена набора закрывает открытые сессии этих учёток: у них меняется область"
           >
             <Select
               mode="multiple"

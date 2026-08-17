@@ -17,6 +17,7 @@ import {
   type RequestStatus,
   requestStatusLabels,
   roleLabels,
+  roleScopeAxis,
   type ServiceRequestStatus,
   type VehicleRequestType,
   vehicleRequestTypeLabels,
@@ -390,7 +391,12 @@ export function officeEquipmentScopeWhere(
   // Сквозная область модуля (план модернизации, Р54): согласующий от ИТ решает по всему парку
   // компании, и сузить ему справочник до своей площадки значило бы дать право, которым нельзя
   // воспользоваться. Расширение модульное — в вывозе мусора и заказе ТС он остаётся собой.
-  if (hasModuleWideScope(p.addons, 'officeEquipment')) return undefined;
+  //
+  // Спрашивается по кодам наборов (ADR 0106, шаг 1c), а не по надстройкам: источник области тот же,
+  // что источник прав, и расходиться им нельзя. Расширение по-прежнему кодовое свойство конкретного
+  // системного набора — собрать «видеть чужой объект» в конструкторе нечем (`GRANT_MODULE_WIDE_SCOPE`
+  // типизирован системными кодами).
+  if (hasModuleWideScope(p.grantCodes, 'officeEquipment')) return undefined;
   if (isObjectScopedRole(p.role)) {
     const ids = p.constructionObjectIds;
     return ids.length > 0 ? inArray(objectIdColumn, ids) : eq(objectIdColumn, NEVER_MATCH);
@@ -412,7 +418,9 @@ export function officeEquipmentScopeWhere(
  * чужой объект это тот же выход за область, только в другую сторону (Р7).
  */
 export function assertOfficeEquipmentScope(p: Principal, place: OfficeEquipmentPlace): void {
-  if (hasModuleWideScope(p.addons, 'officeEquipment')) return;
+  // Тем же источником, что в `officeEquipmentScopeWhere`: список и карточка обязаны отвечать
+  // одинаково, иначе единица либо прячется от того, кому открыта, либо открывается по прямой ссылке.
+  if (hasModuleWideScope(p.grantCodes, 'officeEquipment')) return;
   if (isObjectScopedRole(p.role)) {
     if (!p.constructionObjectIds.includes(place.objectId)) {
       throw err.forbidden(`${roleLabels[p.role!]} работает только со своими объектами`);
@@ -447,8 +455,9 @@ export function serviceRequestScopeWhere(
   equipmentDepartmentIdColumn: AnyColumn,
 ): SQL | undefined {
   // Согласующий от ИТ видит заявки всей компании (Р54): виза решает, звать ли внешний сервис, и
-  // принимается она по всем площадкам разом. В соседних модулях его область прежняя.
-  if (hasModuleWideScope(p.addons, 'serviceRequests')) return undefined;
+  // принимается она по всем площадкам разом. В соседних модулях его область прежняя. Источник —
+  // коды наборов (ADR 0106, шаг 1c), как и у справочника выше.
+  if (hasModuleWideScope(p.grantCodes, 'serviceRequests')) return undefined;
   if (isObjectScopedRole(p.role)) {
     const ids = p.constructionObjectIds;
     return ids.length > 0 ? inArray(objectIdColumn, ids) : eq(objectIdColumn, NEVER_MATCH);
@@ -486,7 +495,8 @@ export interface ServiceRequestPlace {
  * без этой проверки отдали бы её любому, кто знает id.
  */
 export function assertServiceRequestScope(p: Principal, place: ServiceRequestPlace): void {
-  if (hasModuleWideScope(p.addons, 'serviceRequests')) return;
+  // Тем же источником, что в `serviceRequestScopeWhere`, и по той же причине.
+  if (hasModuleWideScope(p.grantCodes, 'serviceRequests')) return;
   if (isObjectScopedRole(p.role)) {
     if (!p.constructionObjectIds.includes(place.objectId)) {
       throw err.forbidden(`${roleLabels[p.role!]} работает только со своими объектами`);
@@ -526,35 +536,33 @@ export function assertServiceRequestEditable(
 
 // ── Недельная заявка на технику (ADR 0085) ──
 //
-// Правило пишется **поимённо по ролям**, а не выводится из «есть ли у роли объекты». Вывод здесь
-// ошибочен в обе стороны: у диспетчера и менеджера объектов нет, и «нет объектов → ничего не
-// видит» закрыло бы им список, который они ведут; у коменданта объекты есть, а недельных заявок он
-// не ведёт вовсе. Отсюда явный разбор с последней веткой «не видит ничего» — той самой, ради
-// которой область считается отдельно от `vehicleRequestVisibilityWhere`, где неизвестная роль
-// получает «видит всё».
-
-/** Роли, ведущие недельные заявки по всем площадкам: своей объектной оси у них нет. */
-function isWeeklyOfficeRole(role: Principal['role']): boolean {
-  return role === 'admin' || role === 'manager' || role === 'dispatcher';
-}
-
-/** Роли, ведущие недельные заявки своих площадок. Комендант сюда не входит — модуль не его. */
-function isWeeklySiteRole(role: Principal['role']): boolean {
-  return role === 'shtab' || role === 'rukstroy';
-}
+// Область пишется парой «право + ось» (план реформы §11), а не перечислением ролей по именам.
+// Причина не в красоте: имя роли переживает саму роль. Слияние площадочных ролей в одну (§15,
+// этапы 7–9) оставит условие `role === 'shtab' || role === 'rukstroy'` синтаксически целым, а по
+// смыслу пустым — и модуль молча закроется перед теми, кто его ведёт.
+//
+// Пара читается так: право отвечает «положено ли вообще» — у коменданта недельных прав нет, и
+// объектная ось модуля ему не открывает; ось отвечает «над какими площадками». Ось у роли одна
+// (`roleScopeAxis`), и спрашивается она тем же классификатором, что барьер выдачи наборов
+// (`GRANT_SCOPE_MATRIX`) и витрина: второй разбор ролей по спискам разошёлся бы с первым — и
+// разошёлся бы в сторону «оси не нашли, значит ограничений нет».
+//
+// Ветка «оси нет — все площадки» безопасна ровно потому, что право спрошено первым: у диспетчера и
+// менеджера площадок нет, и неделю они ведут везде; водитель и внешний исполнитель до этой ветки не
+// доходят — у них своя ось, и по ней ответ «ни одной». Последняя ветка модуля — «не видит ничего»,
+// а не «видит всё»: ради неё область и считается отдельно от `vehicleRequestVisibilityWhere`.
 
 /**
  * Область **чтения** недельной заявки — описанием, а не готовым SQL, и вот почему: у одной из
  * ветвей условие выражается не колонкой заявки, а её составом (арендодатель), то есть требует
- * таблиц и подзапроса. Здесь живёт ролевое решение, в `services/weekly-request-access.ts` — его
+ * таблиц и подзапроса. Здесь живёт решение о доступе, в `services/weekly-request-access.ts` — его
  * перевод в SQL; один и тот же перевод обслуживает и ленту списка, и проверку доступа к карточке,
  * поэтому разойтись им нечем.
  *
  * Чтение шире ведения (`WEEKLY_REQUEST_PERMISSIONS`): документ переехал в общий список «Заказ
- * автотехники» и объясняет продления заказов, которые эти субъекты и так видят. Правило одно —
- * «неделю видит тот, кто видит заказы этой площадки», — но выражается оно у каждой оси доступа
- * по-своему, поэтому разбор остаётся **поимённым**. Выведенное правило «роль без объектов —
- * значит без ограничений» отдало бы арендодателю недельные планы всех площадок компании.
+ * автотехники» и объясняет продления заказов, которые эти субъекты и так видят. Поэтому правом в
+ * паре стоит `weeklyRequests.read`, а не право ведения: у наблюдателя, обеих ролей отдела и
+ * арендодателя есть только оно, а видеть неделю они должны.
  */
 export type WeeklyRequestReadScope =
   /** Все площадки: офис ведёт неделю везде, наблюдатель (ADR 0033) её везде читает. */
@@ -563,25 +571,38 @@ export type WeeklyRequestReadScope =
   | { kind: 'objects'; objectIds: readonly string[] }
   /** Заявки, в составе которых стоит техника этого арендодателя (ADR 0038). */
   | { kind: 'lessor'; counterpartyId: string }
-  /** Ни одной: у субъекта нет ни оси, ни техники — модуль ему закрыт. */
+  /** Ни одной: права нет либо ось им не выражается — модуль субъекту закрыт. */
   | { kind: 'none' };
 
 export function weeklyRequestReadScope(p: Principal): WeeklyRequestReadScope {
-  if (isWeeklyOfficeRole(p.role)) return { kind: 'all' };
-  // Наблюдатель — сквозной просмотр по компании без единого действия: недели он читает все, как
-  // и заказы, из которых они складываются.
-  if (p.role === 'observer') return { kind: 'all' };
-  if (isWeeklySiteRole(p.role)) return { kind: 'objects', objectIds: p.constructionObjectIds };
-  // У отдела своей объектной оси нет, а площадка есть — производной областью из справочника
-  // (`departmentObjectIds`, ADR 0062). Считать её здесь подзапросом по `departments` незачем:
-  // принципал приносит её готовой на каждом запросе, тем же способом, каким её читает вывоз мусора.
-  if (isDepartmentScopedRole(p.role)) return { kind: 'objects', objectIds: p.departmentObjectIds };
-  // Единственный фактор видимости арендодателя — его техника в составе; площадка ему не
-  // принадлежит ни в каком смысле, и по объекту его область не выражается вовсе.
-  if (actsForCounterparty(p, 'vehicle_lessor') && p.counterpartyId) {
-    return { kind: 'lessor', counterpartyId: p.counterpartyId };
+  // Право спрашивается здесь, а не только на маршруте: недельные строки живут в общем списке
+  // «Заказ автотехники», и у того, кому недели не положены, они обязаны исчезнуть из выдачи — а не
+  // закрыть ему весь список. Учётка без роли отсекается тем же вопросом: прав у неё нет ни одного.
+  if (!can(p, 'weeklyRequests.read')) return { kind: 'none' };
+  switch (roleScopeAxis(p.role)) {
+    case 'object':
+      return { kind: 'objects', objectIds: p.constructionObjectIds };
+    // У отдела своей объектной оси нет, а площадка есть — производной областью из справочника
+    // (`departmentObjectIds`, ADR 0062). Считать её здесь подзапросом по `departments` незачем:
+    // принципал приносит её готовой на каждом запросе, тем же способом, каким её читает вывоз мусора.
+    case 'department':
+      return { kind: 'objects', objectIds: p.departmentObjectIds };
+    // Единственный фактор видимости арендодателя — его техника в составе; площадка ему не
+    // принадлежит ни в каком смысле, и по объекту его область не выражается вовсе. Исполнитель
+    // другого предмета и арендодатель без контрагента не видят ни одной недели: «контрагент не
+    // назван» — это не «ограничений нет».
+    case 'counterparty':
+      return actsForCounterparty(p, 'vehicle_lessor') && p.counterpartyId
+        ? { kind: 'lessor', counterpartyId: p.counterpartyId }
+        : { kind: 'none' };
+    // Ось человека (ADR 0102) недельным документом не выражается: неделя принадлежит площадке, а не
+    // работнику. Ветка стоит затем, чтобы право, попавшее к водителю, открыло ему пустоту, а не
+    // недели всей компании.
+    case 'person':
+      return { kind: 'none' };
+    case 'none':
+      return { kind: 'all' };
   }
-  return { kind: 'none' };
 }
 
 /**
@@ -595,45 +616,69 @@ export function seesWholeWeeklyRequest(p: Principal): boolean {
 }
 
 /**
- * Может ли учётка визировать недельную заявку этой площадки: право визы плюс область. Предикат, а
- * не проверка с отказом: им же решается, применяется ли заявка сразу при подаче.
+ * Ведёт ли учётка неделю этой площадки **по области** — вторая половина пары. Право спрашивается
+ * рядом и у каждого действия своё: ведение — стражем маршрута, виза — `canApproveWeeklyRequest`.
  *
- * Роли вне двух перечисленных ветвей не визируют ничего, даже получив право: у отдела и
- * контрагента объектной области нет вовсе, и «ограничений нет» означало бы визу чужой площадке.
+ * Оси, кроме объектной, недельным документом не выражаются, и ответ у них «ни одной», а не «без
+ * ограничений»: неделю собирает площадка, а у отдела своей площадки в этом модуле нет (ADR 0062 п. 3
+ * — заказчиком там выступает сам отдел), у арендодателя и водителя её нет вовсе. Этим модуль и
+ * отличается от `assertRequestScope`, где роль без площадочной оси не ограничена ничем.
+ */
+function managesWeeklyRequestObject(p: Principal, objectId: string): boolean {
+  // Учётка без роли прав не имеет вовсе, и «своей оси нет» у неё означает не «все площадки», а «ни
+  // одной»: досюда она доходит, только если проверка права на маршруте не удержалась.
+  if (!p.role) return false;
+  switch (roleScopeAxis(p.role)) {
+    case 'object':
+      return p.constructionObjectIds.includes(objectId);
+    case 'none':
+      return true;
+    case 'department':
+    case 'counterparty':
+    case 'person':
+      return false;
+  }
+}
+
+/**
+ * Может ли учётка визировать недельную заявку этой площадки: право визы плюс область — то же
+ * правило, что у заявок ТС (`canApproveRequest`). Предикат, а не проверка с отказом: им же
+ * решается, применяется ли заявка сразу при подаче.
  */
 export function canApproveWeeklyRequest(p: Principal, objectId: string): boolean {
-  if (!can(p, 'weeklyRequests.approve')) return false;
-  if (isWeeklyOfficeRole(p.role)) return true;
-  if (isWeeklySiteRole(p.role)) return p.constructionObjectIds.includes(objectId);
-  return false;
+  return can(p, 'weeklyRequests.approve') && managesWeeklyRequestObject(p, objectId);
 }
 
 /**
  * Применяется ли заявка сразу, самой подачей (план Р8) — как `approvesOwnRequestOnCreate` у
  * заявок ТС (ADR 0032).
  *
- * Администратор под правило не подпадает, хотя право визы у него есть: он действует не за
- * площадку, и «кто согласовал неделю» отвечалось бы именем того, кто решения не принимал. Виза
- * недельной заявки к тому же необратима — она той же транзакцией двигает сроки.
+ * Условие — объектная ось, а не право визы: подписью площадки виза становится только у того, кто за
+ * площадку отвечает. Администратор право визы сохраняет, но действует не за объект, и «кто
+ * согласовал неделю» отвечалось бы именем того, кто решения не принимал. Виза недельной заявки к
+ * тому же необратима — она той же транзакцией двигает сроки.
  */
 export function approvesOwnWeeklyRequest(p: Principal, objectId: string): boolean {
-  return isWeeklySiteRole(p.role) && canApproveWeeklyRequest(p, objectId);
+  return isObjectScopedRole(p.role) && canApproveWeeklyRequest(p, objectId);
 }
 
 /**
- * Недельная заявка принадлежит области учётки (план §10): объектная роль работает только со
- * своими площадками, офисная — с любой, остальные — ни с одной.
+ * Недельная заявка принадлежит области учётки (план §10). Право проверено маршрутом — у каждого
+ * действия своё (`create`, `update`, `approve`), — поэтому здесь остаётся ровно область.
  *
  * Отдельно от `assertRequestScope`: там роль без объектной и отдельской оси не ограничена вовсе, и
- * применить его здесь значило бы открыть модуль тому, у кого области нет, — стоит появиться праву.
+ * применить его здесь значило бы открыть модуль тому, у кого площадки нет, — стоит появиться праву.
  */
 export function assertWeeklyRequestScope(p: Principal, objectId: string): void {
-  if (isWeeklyOfficeRole(p.role)) return;
-  if (isWeeklySiteRole(p.role) && p.constructionObjectIds.includes(objectId)) return;
-  if (isWeeklySiteRole(p.role)) {
+  if (managesWeeklyRequestObject(p, objectId)) return;
+  if (isObjectScopedRole(p.role)) {
     throw err.forbidden(`${roleLabels[p.role!]} работает только со своими объектами`);
   }
-  throw err.forbidden('Недельные заявки ведут площадка, диспетчер и менеджер');
+  // Отказ называет роль, а не перечисляет тех, кому модуль открыт: перечень пришлось бы править
+  // при каждом слиянии ролей, а «эта учётка неделю не ведёт» верно при любом их составе.
+  throw err.forbidden(
+    p.role ? `${roleLabels[p.role]} не ведёт недельные заявки` : 'Недельные заявки ведёт площадка',
+  );
 }
 
 /**

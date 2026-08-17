@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import { baseListQuery, dateOnlySchema, uuidSchema } from './common';
 import { DEFAULT_MAIL_ACCOUNT, MAIL_ACCOUNTS } from './mail-accounts';
-import { type Role, roleSchema } from './enums';
+import type { Role } from './enums';
+import { type Permission, PERMISSIONS } from './permissions';
 import { TIME_FORMAT_MESSAGE, TIME_PATTERN } from './time';
 
 /**
@@ -295,11 +296,17 @@ export interface MailingScheduleDto {
   /** Водители (`persons`), которым эта рассылка не адресуется. */
   excludedPersonIds: string[];
   /**
-   * Роли-получатели сводки (ADR 0078). Это фильтр получателей, а не выдача прав: что человек
-   * увидит в письме, решает его собственная область видимости, а роль отвечает лишь на вопрос
-   * «кому вообще отправлять».
+   * Права-адресаты сводки (ADR 0111, прежде — роли, ADR 0078).
+   *
+   * Это фильтр получателей, а не выдача прав: письмо уходит тем, у кого право **уже есть**, а что
+   * человек в нём увидит, решает его собственная область видимости. Несколько прав означают «любое
+   * из» — тем же объединением, каким работал набор ролей: аудитории складываются, а не пересекаются.
+   *
+   * Право, а не роль, потому что «кому нужна эта сводка» — вопрос о работе, а не о названии
+   * должности (решение заказчика №3 от 17.08.2026, §11.1 плана реструктуризации прав). Считается
+   * право эффективным: роль его даёт или назначенный набор (ADR 0106) — для адресации разницы нет.
    */
-  roles: Role[];
+  permissions: Permission[];
   /** Чьи заявки показывать. */
   requestScope: DigestRequestScope;
   /** Печатать ли таблицу перевозок (листы 4-П и формы № 3). */
@@ -356,7 +363,7 @@ const mailingScheduleObject = z
     excludedPersonIds: z.array(uuidSchema).optional().default([]),
     // Настройки сводки. Умолчание — пустой набор и «все»: у задания водителям их не бывает вовсе,
     // и требовать от формы присылать пустые массивы ради чужого типа рассылки незачем.
-    roles: z.array(roleSchema).optional().default([]),
+    permissions: z.array(z.enum(PERMISSIONS)).optional().default([]),
     requestScope: z.enum(DIGEST_REQUEST_SCOPES).optional().default('scope'),
     showTrips: z.boolean().optional().default(true),
     showOnsite: z.boolean().optional().default(true),
@@ -391,14 +398,14 @@ function checkMailingSchedule(v: MailingScheduleFields, ctx: z.RefinementCtx): v
   // Аудитория и содержание — принадлежность сводки: получателей задания водителям задаёт не роль,
   // а наличие рейса в окне, и показывать ему нечего, кроме его же рейсов.
   if (v.type === 'role_digest') {
-    // Расписание без ролей не найдёт ни одного получателя, а без единой таблицы соберёт пустое
+    // Расписание без прав не найдёт ни одного получателя, а без единой таблицы соберёт пустое
     // письмо, которое всё равно не отправится. И то и другое — рассылка, каждое утро работающая
     // вхолостую: выключить её флагом честнее, чем оставить включённой и ничего не делающей.
-    if (v.roles.length === 0) {
+    if (v.permissions.length === 0) {
       ctx.addIssue({
         code: 'custom',
-        path: ['roles'],
-        message: 'Выберите хотя бы одну роль-получателя',
+        path: ['permissions'],
+        message: 'Выберите хотя бы одно право-адресат',
       });
     }
     if (!v.showTrips && !v.showOnsite) {
@@ -426,11 +433,11 @@ function checkMailingSchedule(v: MailingScheduleFields, ctx: z.RefinementCtx): v
       });
     }
   } else {
-    if (v.roles.length > 0) {
+    if (v.permissions.length > 0) {
       ctx.addIssue({
         code: 'custom',
-        path: ['roles'],
-        message: 'Роли-получатели бывают только у сводки по ролям',
+        path: ['permissions'],
+        message: 'Права-адресаты бывают только у сводки по ролям',
       });
     }
     if (v.recipientUserIds.length > 0 || v.objectIds.length > 0 || v.departmentIds.length > 0) {
@@ -460,8 +467,8 @@ function checkMailingSchedule(v: MailingScheduleFields, ctx: z.RefinementCtx): v
   // Повтор в выборе из закрытого списка — сбой формы, а не «то же самое дважды», и отвергается
   // так же, как повтор дня недели. Молча схлопываются только наборы дат и карточек, где повтор
   // ничего не решает.
-  if (new Set(v.roles).size !== v.roles.length) {
-    ctx.addIssue({ code: 'custom', path: ['roles'], message: 'Роль указана дважды' });
+  if (new Set(v.permissions).size !== v.permissions.length) {
+    ctx.addIssue({ code: 'custom', path: ['permissions'], message: 'Право указано дважды' });
   }
 }
 
@@ -481,16 +488,19 @@ export type UpdateMailingScheduleInput = z.infer<typeof updateMailingScheduleSch
 export type UpdateMailingScheduleBody = z.input<typeof updateMailingScheduleSchema>;
 
 /**
- * Кандидат в получатели сводки: кого зацепит расписание при таком наборе ролей и областей.
+ * Кандидат в получатели сводки: кого зацепит расписание при таком наборе прав и областей.
  *
  * Считает сервер тем же отбором, каким рассылка выбирает адресатов, а не портал по выгруженному
  * справочнику учёток. Причина не в экономии запроса: правило «нет площадко-отдельной оси — фильтр
  * по площадкам не применяется» в общий список учёток не встроить, не сломав его для прочих
- * экранов, а цифра под формой обязана совпадать с тем, кого возьмёт планировщик.
+ * экранов, а цифра под формой обязана совпадать с тем, кого возьмёт планировщик. С переездом на
+ * права (ADR 0111) причина стала ещё весомее: эффективное право учётки складывается из роли и
+ * назначенных наборов, и по `UserDto` его не сосчитать вовсе.
  */
 export interface MailingRecipientCandidateDto {
   userId: string;
   fullName: string;
+  /** Роль учётки — подписью в строке: по ней видно, за что человек попал в отбор по праву. */
   role: Role;
   /** Площадки и отделы учётки одной строкой: по ней видно, за что человек попал в отбор. */
   scopeLabel: string;
@@ -519,17 +529,17 @@ const idListSchema = z
 
 export const mailingRecipientCandidatesQuerySchema = z
   .object({
-    /** Роли-получатели: без них отбор пуст, и спрашивать нечего. */
-    roles: z
+    /** Права-адресаты: без них отбор пуст, и спрашивать нечего. */
+    permissions: z
       .string()
-      .max(500)
+      .max(4000)
       .transform((v) =>
         v
           .split(',')
           .map((s) => s.trim())
           .filter((s) => s !== ''),
       )
-      .pipe(z.array(roleSchema).min(1).max(20)),
+      .pipe(z.array(z.enum(PERMISSIONS)).min(1).max(PERMISSIONS.length)),
     /** Отмеченные области; пусто — «все», и тогда ось в отборе не участвует. */
     objectIds: idListSchema.optional(),
     departmentIds: idListSchema.optional(),

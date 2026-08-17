@@ -27,10 +27,25 @@ function roleTitle(role: Role | null): string {
 }
 
 /** Область видимости в журнале — по названиям: коды справочников читателю ничего не говорят. */
-function scopeTitles(
-  items: readonly (UserObjectRefDto | UserDepartmentRefDto)[],
-): Map<string, string> {
+function scopeTitles(items: readonly UserObjectRefDto[]): Map<string, string> {
   return new Map(items.map((i) => [i.id, i.name]));
+}
+
+/**
+ * Отдел в журнале — с ответом «руководил ли он им» (`user_departments.is_head`, миграция 0149).
+ *
+ * Признак идёт подписью отдела, а не отдельной парой «было → стало», потому что из карточки учётки
+ * он меняется ровно одним способом: уходит вместе с отделом, убранным из набора
+ * (`replaceUserDepartments`) — в том числе когда набор обнуляет смена роли на объектную. «ПТО» и
+ * «ПТО (руководитель)» в снятых — разные события: во втором отдел остался без руководителя, и
+ * узнавать об этом из справочника через неделю поздно.
+ *
+ * Смены признака у отдела, который в наборе остался, здесь не бывает: ставят и снимают его только
+ * из карточки справочника, и она пишет своё событие (`department.update`). Поэтому сравнения
+ * «признак был → стал» тут нет — оно молчало бы всегда.
+ */
+function departmentTitles(items: readonly UserDepartmentRefDto[]): Map<string, string> {
+  return new Map(items.map((d) => [d.id, d.isHead ? `${d.name} (руководитель)` : d.name]));
 }
 
 /** Что в наборе появилось и что из него ушло: вопрос к журналу всегда про разницу, а не про состав. */
@@ -100,8 +115,8 @@ export function userAuditChanges(
   set.listed('objectsRemoved', objects.removed);
 
   const departments = setDelta(
-    before === null ? nothing : scopeTitles(before.departments),
-    scopeTitles(after.departments),
+    before === null ? nothing : departmentTitles(before.departments),
+    departmentTitles(after.departments),
   );
   set.listed('departmentsAdded', departments.added);
   set.listed('departmentsRemoved', departments.removed);
