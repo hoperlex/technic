@@ -266,6 +266,9 @@ CUTOVER_PHASE="" CUTOVER_CANDIDATE="" CUTOVER_MIGRATION="" CUTOVER_DUMP="" CUTOV
 # Обычные миграции, уехавшие в одном окне с необратимой (§6). Пусто — окно узкое, откат teardown'ом
 # возможен; непусто — единственный откат окна это дамп, и `--cutover-revert` обязан отказать.
 CUTOVER_EXTRAS=""
+# Ставится гейтом, когда разрушительный режим пропущен как откат широкого окна: по нему в конце
+# снимается состояние выката, иначе площадка осталась бы с записью о выкате, которого больше нет.
+CUTOVER_WIDE_ROLLBACK=0
 
 # Читает активное состояние выката. Коды: 0 — прочитано, 1 — активного состояния нет (штатная
 # жизнь площадки: файл существует только между началом cutover и его архивированием), 2 — файл
@@ -426,7 +429,7 @@ cutover_status_line() {
          "$CUTOVER_PHASE" "$CUTOVER_CANDIDATE" "${CUTOVER_MIGRATION:-?}"
        # Широкое окно меняет способ отката, и узнать об этом надо из статуса, а не из отказа
        # `--cutover-revert` в ту минуту, когда откатывать уже понадобилось.
-       [ -z "$CUTOVER_EXTRAS" ] || printf '; ОКНО ШИРОКОЕ (+%s) — откат только --restore-db дампом %s' \
+       [ -z "$CUTOVER_EXTRAS" ] || printf '; ОКНО ШИРОКОЕ (+%s) — откат только --previous --restore-db дампом %s' \
          "$CUTOVER_EXTRAS" "${CUTOVER_DUMP:-?}" ;;
     1) printf 'нет активного выката' ;;
     *) printf 'ПОВРЕЖДЁН %s' "$CUTOVER_STATE" ;;
@@ -956,6 +959,19 @@ cutover_guard_destructive() {
   cutover_phase_or_fail
   case "$CUTOVER_PHASE" in
     migrating|migrated)
+      # Широкое окно (§6) — единственное исключение, и оно не поблажка, а необходимость: teardown
+      # там неприменим, `--cutover-revert` отказывает, и запрет разрушительных режимов оставил бы
+      # окно совсем без выхода. Дверь ровно одна: восстановление закреплённого дампа этого же окна.
+      # Откат одного лишь кода запрещён и здесь — он посадил бы старый образ на новую схему.
+      if [ -n "$CUTOVER_EXTRAS" ]; then
+        [ "$DO_RESTORE_DB" -eq 1 ] || {
+          REASON="идёт необратимый выкат $CUTOVER_CANDIDATE (фаза $CUTOVER_PHASE), окно широкое (+$CUTOVER_EXTRAS): откатить его можно только вместе с базой — deploy-auto --previous --restore-db. Откат одного кода посадил бы старый образ на новую схему"
+          fail "$REASON"; }
+        CUTOVER_WIDE_ROLLBACK=1
+        warn "откат широкого окна $CUTOVER_CANDIDATE: база возвращается дампом, teardown не применяется."
+        warn "закреплённый дамп окна: ${CUTOVER_DUMP:-<не записан>}"
+        return 0
+      fi
       REASON="идёт необратимый выкат $CUTOVER_CANDIDATE (фаза $CUTOVER_PHASE): продолжите его — deploy-auto --cutover, либо откатите — deploy-auto --cutover-revert"
       fail "$REASON" ;;
   esac
@@ -1161,7 +1177,7 @@ EOF
     log "бандл: $CUTOVER_MIGRATION (кандидат $COMMIT_SHA)"
     if [ -n "$CUTOVER_EXTRAS" ]; then
       warn "в том же окне едут обычные миграции: $CUTOVER_EXTRAS"
-      warn "откат этого окна — ТОЛЬКО восстановлением дампа (--restore-db): teardown снимет"
+      warn "откат этого окна — ТОЛЬКО deploy-auto --previous --restore-db: teardown снимет"
       warn "$CUTOVER_MIGRATION, а перечисленные останутся в журнале без файлов, и старый образ не стартует."
       warn "--cutover-revert для такого окна откажет намеренно (протокол §6)."
     fi
@@ -1341,7 +1357,7 @@ if [ "$DO_CUTOVER_REVERT" -eq 1 ]; then
   # файлов нет, и он не стартует (`missing`). Единственный откат такого окна — дамп, снятый в его
   # начале и закреплённый от ротации. Отказ здесь дороже отказа: он до остановки чего-либо.
   [ -z "$CUTOVER_EXTRAS" ] || {
-    REASON="окно было широким — вместе с $CUTOVER_MIGRATION уехали обычные миграции ($CUTOVER_EXTRAS). Teardown снимет только необратимую, остальные останутся в журнале без файлов старого образа. Откат этого окна — deploy-auto --restore-db закреплённым дампом ${CUTOVER_DUMP:-<не записан>} (протокол §5)"
+    REASON="окно было широким — вместе с $CUTOVER_MIGRATION уехали обычные миграции ($CUTOVER_EXTRAS). Teardown снимет только необратимую, остальные останутся в журнале без файлов старого образа. Откат этого окна — deploy-auto --previous --restore-db закреплённым дампом ${CUTOVER_DUMP:-<не записан>} (протокол §5)"
     fail "$REASON"; }
 
   if list_has "$CUTOVER_MIGRATION" "$JOURNAL_APPLIED"; then
@@ -1481,6 +1497,17 @@ if [ "$ROLLBACK_MODE" -eq 1 ]; then
     for repo in "${IMAGES[@]}"; do docker tag "$repo:$TARGET_TAG" "$repo:latest" 2>/dev/null || true; done
   else
     warn "health не подтверждён — :latest не переставлен"
+  fi
+
+  # Откат широкого окна завершён — активного выката больше нет. Состояние снимается тем же
+  # порядком, что и в --cutover-revert: иначе следующий --cutover встретил бы чужую фазу, а
+  # разрушительные режимы остались бы запертыми выкатом, которого уже нет.
+  if [ "$CUTOVER_WIDE_ROLLBACK" -eq 1 ]; then
+    rm -f "$CUTOVER_STATE" "$BACKUP_DIR/${CUTOVER_DUMP%.dump}.pin"
+    fsync_path "$STATE_DIR"
+    CUTOVER_PHASE="" CUTOVER_ACTIVE=0
+    rotate_dumps
+    log "состояние выката $CUTOVER_CANDIDATE снято: окно откачено дампом, закрепление снято"
   fi
 
   RESULT="ok"; write_report; trap - EXIT
