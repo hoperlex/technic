@@ -4,7 +4,12 @@ import { Route, Routes } from 'react-router';
 import { EMAIL_VERIFICATION_ENABLED } from '@technic/contracts';
 import { AppLayout } from './components/AppLayout';
 import { AppUpdateBanner } from './components/AppUpdateBanner';
-import { HomeRedirect, ProtectedRoute, RequirePermission } from './auth/ProtectedRoute';
+import {
+  HomeRedirect,
+  ProtectedRoute,
+  RequireDriverCabinet,
+  RequirePermission,
+} from './auth/ProtectedRoute';
 import { WaybillsPage } from './pages/WaybillsPage';
 import { LoginPage } from './pages/LoginPage';
 import { RegisterPage } from './pages/RegisterPage';
@@ -51,8 +56,12 @@ export default function App() {
         <Route element={<ProtectedRoute />}>
           <Route path="/change-password" element={<ChangePasswordPage />} />
           {/* Кабинет водителя — ВНЕ `AppLayout`: у него нет ни боковой панели, ни разделов, ни
-              нижней навигации. Это второй контур портала, а не ещё одна его страница. */}
-          <Route element={<RequirePermission permission="driverCabinet.read" />}>
+              нижней навигации. Это второй контур портала, а не ещё одна его страница.
+              Отсюда и гейт своим компонентом (`RequireDriverCabinet`, роль вместе с правом): у
+              администратора `driverCabinet.read` есть по построению — права у него все, — и по
+              одному праву он попадал сюда стартовой страницей, а выйти обратно в портал из контура
+              без навигации ему было нечем. */}
+          <Route element={<RequireDriverCabinet />}>
             <Route
               path="/driver"
               element={
