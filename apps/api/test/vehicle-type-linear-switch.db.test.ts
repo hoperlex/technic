@@ -34,6 +34,8 @@ const ADMIN_EMAIL = 'db-linear-switch-admin@example.invalid';
 const PASSWORD = 'db-test-password-123';
 /** Код заведённых здесь типов: по нему же идёт уборка, поэтому префикс свой, не общий с соседями. */
 const CODE_PREFIX = 'linear_switch_test_';
+/** Метка заведённого водителя — ею он и убирается: база у db-тестов общая. */
+const PERSON_MARK = 'linear-switch-test';
 
 interface Ctx {
   app: Awaited<ReturnType<typeof buildApp>>;
@@ -201,7 +203,7 @@ async function seedDriver(): Promise<string> {
   const [existing] = await db
     .select({ id: schema.persons.id })
     .from(schema.persons)
-    .where(sql`${schema.persons.comment} = ${'linear-switch-test'}`);
+    .where(sql`${schema.persons.comment} = ${PERSON_MARK}`);
   if (existing) return existing.id;
 
   const [specialization] = await db
@@ -216,7 +218,14 @@ async function seedDriver(): Promise<string> {
       lastName: 'Переключаев',
       firstName: 'Тест',
       middleName: 'Линейный',
-      comment: 'linear-switch-test',
+      comment: PERSON_MARK,
+      /*
+       * СНИЛС обязателен не этому тесту, а соседнему: круговой обмен справочника водителей
+       * выгружает всех людей и загружает выгруженное обратно, и человек без ключевой колонки
+       * роняет его чужой строкой. Заведённый тестом водитель обязан быть таким же полноценным,
+       * как настоящий, — иначе он ломает не себя, а того, кто окажется рядом в прогоне.
+       */
+      snils: '11223344595',
     })
     .returning({ id: schema.persons.id });
   await db.insert(schema.personSpecializations).values({
@@ -463,6 +472,10 @@ describe.skipIf(!DB_URL)('переключение признака линейн
           AND created_by = ${ctx.adminId}`);
       await ctx.db.execute(sql`DELETE FROM vehicle_requests WHERE id IN (${mine})`);
       await ctx.db.execute(sql`DELETE FROM vehicle_types WHERE code LIKE ${CODE_PREFIX + '%'}`);
+      // Водитель уходит последним: на него ссылались назначения и листы удалённых заявок. Оставить
+      // его в справочнике нельзя — соседний тест выгружает водителей и загружает выгруженное
+      // обратно, и лишний человек ломает круговой обмен чужой строкой.
+      await ctx.db.execute(sql`DELETE FROM persons WHERE comment = ${PERSON_MARK}`);
     }
     await ctx?.app.close();
     await ctx?.closeDb();
