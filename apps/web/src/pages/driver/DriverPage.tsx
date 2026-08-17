@@ -57,10 +57,11 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
  * тот же слой, что и письмо (`driver-assignment.ts`), и своих слов у кабинета здесь нет: водитель
  * читает оба канала, и «Грузим» в одном против «Погрузка» в другом он прочтёт как разное задание.
  *
- * Количество груза в кабинете печатается, в отличие от прежней карточки заявки, где его прятали:
- * тогда строка была одна на заявку и «20 т» повторяли цифру из листа, а теперь строк на остановке
- * несколько, и количество — то, чем они друг от друга отличаются («грузим 12 м³ этой ездки, а не
- * все 60 заявки»).
+ * Количества груза здесь нет, и переход на точки этого не изменил: «20 т» водитель сверяет на
+ * весах, а не в телефоне, а груз ему описывает комментарий заявки, который стоит рядом строкой
+ * «Примечание». Строки одной остановки различает не цифра, а номер ездки: «ТС-101/1» и «ТС-101/2»
+ * названы прямо у роли. В письме-задании количество остаётся (`mailings/driver-routes.ts`) — там
+ * строка одна, и лишним оно никого не теснит.
  */
 function ActionRow({ action }: { action: DriverAssignmentAction }) {
   return (
@@ -68,7 +69,6 @@ function ActionRow({ action }: { action: DriverAssignmentAction }) {
       <Space size={6} wrap>
         <Typography.Text strong>{action.roleLabel}</Typography.Text>
         <Typography.Text>{action.displayNumber}</Typography.Text>
-        {action.cargoLabel && <Tag>{action.cargoLabel}</Tag>}
         {action.customerName && (
           <Typography.Text type="secondary" style={secondary}>
             {action.customerName}
