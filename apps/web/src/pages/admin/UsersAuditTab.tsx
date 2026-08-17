@@ -12,7 +12,7 @@ import { auditApi } from '../../api/resources';
 import { formatDateTime } from '../../utils/format';
 import { AuditEventCell } from './UserAuditChanges';
 import { useUserAuditFilters, type AuditFilterParams } from './UserAuditFilters';
-import { UserAuditPathDrawer } from './UserAuditPathDrawer';
+import { UserAuditPathDrawer, type AuditTarget } from './UserAuditPathDrawer';
 
 /**
  * Журнал изменений учётных записей (ADR 0088, ADR 0109): что стало с учёткой, кто это сделал и
@@ -28,16 +28,6 @@ import { UserAuditPathDrawer } from './UserAuditPathDrawer';
  * разъехались бы при первом же новом поле учётки. И карточки события нет: строка сама себе
  * карточка, а связный рассказ показывает путь учётки — панель, которая открывается по строке.
  */
-
-/**
- * Учётка, чей путь показывают: идентификатор для запроса, имя — для заголовка панели, пока
- * карточка не загрузилась. Тип общий с вкладкой учёток — путь открывают и оттуда, из строки
- * списка.
- */
-export interface AuditTarget {
-  id: string;
-  name: string;
-}
 
 /**
  * Границы периода — моментами, а не сутками: записи ложатся с точностью до секунды, и «за 10
@@ -219,11 +209,7 @@ export function UsersAuditTab() {
         onRowClick={openPath}
         onChange={onTableChange}
       />
-      <UserAuditPathDrawer
-        userId={path?.id ?? null}
-        fallbackName={path?.name}
-        onClose={() => setPath(null)}
-      />
+      <UserAuditPathDrawer target={path} onClose={() => setPath(null)} />
     </PageTableLayout>
   );
 }

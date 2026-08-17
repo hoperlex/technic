@@ -106,16 +106,28 @@ function pathItem(entry: AuditEntryDto) {
   };
 }
 
+/**
+ * Учётка, чей путь показывают: идентификатор для запросов, имя — для заголовка, пока карточка не
+ * загрузилась. Панель открывают из строки, где имя уже есть, и показывать вместо него пустоту
+ * незачем.
+ *
+ * Объявлен здесь, а не на подвкладке: чей путь смотрят — вопрос самой панели, а открывают её из
+ * двух мест сразу (журнал и список учёток).
+ */
+export interface AuditTarget {
+  id: string;
+  name: string;
+}
+
 interface Props {
   /** Чей путь показан; `null` — панель закрыта. */
-  userId: string | null;
-  /** Имя для заголовка, пока карточка не загрузилась: панель открывают из строки, где оно уже есть. */
-  fallbackName?: string | null;
+  target: AuditTarget | null;
   onClose: () => void;
 }
 
-export function UserAuditPathDrawer({ userId, fallbackName, onClose }: Props) {
+export function UserAuditPathDrawer({ target, onClose }: Props) {
   const isMobile = useIsMobile();
+  const userId = target?.id ?? null;
   const open = userId !== null;
 
   const { data: card, isFetching: cardLoading } = useQuery({
@@ -148,7 +160,7 @@ export function UserAuditPathDrawer({ userId, fallbackName, onClose }: Props) {
       // Во весь экран на телефоне и широкой полосой на десктопе: в событии по три-четыре строки
       // значений, и в узкой панели каждая переносилась бы по слогам.
       width={isMobile ? '100%' : 520}
-      title={user?.fullName ?? fallbackName ?? 'Путь учётной записи'}
+      title={user?.fullName ?? target?.name ?? 'Путь учётной записи'}
       destroyOnHidden
     >
       {cardLoading && !user ? (

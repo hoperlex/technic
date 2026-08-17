@@ -70,8 +70,8 @@ import {
   restoreNeedsPerson,
 } from './DriverPersonField';
 import { RejectRegistrationModal } from './RejectRegistrationModal';
-import { UsersAuditTab, type AuditTarget } from './UsersAuditTab';
-import { UserAuditPathDrawer } from './UserAuditPathDrawer';
+import { UsersAuditTab } from './UsersAuditTab';
+import { UserAuditPathDrawer, type AuditTarget } from './UserAuditPathDrawer';
 import { userAuditKeys } from '@entities/user-audit';
 import { isApiError } from '@shared/api';
 import { actionsColumn, boolBadgeColumn, textColumn } from '@shared/ui';
@@ -1394,11 +1394,9 @@ export function UsersTab() {
   const canReadAudit = can('audit.read');
 
   const [tab, setTab] = useState('accounts');
-  /**
-   * Чей путь открыт панелью. Историю спрашивают прямо из строки списка, не уходя с него (ADR
-   * 0109): раньше пункт «История» переключал на соседнюю подвкладку, и человек, разбиравший
-   * учётку, терял и её строку, и отбор, которым он до неё добрался.
-   */
+  // Чей путь открыт панелью. Историю спрашивают прямо из строки списка, не уходя с него (ADR 0109):
+  // раньше пункт «История» переключал на соседнюю подвкладку, и разбирающий учётку человек терял и
+  // её строку, и отбор, которым он до неё добрался.
   const [pathUser, setPathUser] = useState<AuditTarget | null>(null);
 
   const qc = useQueryClient();
@@ -1413,9 +1411,7 @@ export function UsersTab() {
     setTab(key);
   };
 
-  const showHistory = (user: UserAccountDto) => {
-    setPathUser({ id: user.id, name: user.fullName });
-  };
+  const showHistory = (user: UserAccountDto) => setPathUser({ id: user.id, name: user.fullName });
 
   const items = [
     {
@@ -1436,11 +1432,7 @@ export function UsersTab() {
 
   return (
     <div style={{ height: '100%' }}>
-      <UserAuditPathDrawer
-        userId={pathUser?.id ?? null}
-        fallbackName={pathUser?.name}
-        onClose={() => setPathUser(null)}
-      />
+      <UserAuditPathDrawer target={pathUser} onClose={() => setPathUser(null)} />
       <Tabs
         className="full-height-tabs"
         size="small"
