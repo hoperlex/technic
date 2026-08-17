@@ -20,6 +20,7 @@
     "seed:drivers-test": "tsx src/seed-drivers-test.ts",
     "backfill:grants": "tsx src/backfill-grants.ts",
     "check:mailing-audience": "tsx src/check-mailing-audience.ts",
+    "check:role-migration": "tsx src/check-role-migration.ts",
     "backfill:routes": "tsx src/backfill-routes.ts",
     "backfill:trips": "tsx scripts/backfill-trips.ts",
     "template:waybill": "tsx scripts/mark-waybill-templates.ts"

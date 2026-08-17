@@ -662,18 +662,21 @@ describe.skipIf(!DB_URL)('письма по решениям об учётных
 
     it('два одобрения разными ролью и областью: второй получает 409 и ничего не переписывает', async () => {
       const { id, email } = await pendingRegistration();
+      // Роли назначаемые: площадочная тройка с шага prepare этапа 8 (ADR 0113) отклоняется 400, и
+      // гонка двух решений проверялась бы на двух отказах. Различаются решения объектом и ролью —
+      // этого хватает, чтобы увидеть, чьё именно применилось.
       const bodies = [
         {
           approveRegistration: true,
-          role: 'shtab',
+          role: 'site',
           isActive: true,
           constructionObjectIds: [ctx.objectIds[0]],
         },
         {
           approveRegistration: true,
-          role: 'rukstroy',
+          role: 'observer',
           isActive: true,
-          constructionObjectIds: [ctx.objectIds[1]],
+          constructionObjectIds: [],
         },
       ];
 

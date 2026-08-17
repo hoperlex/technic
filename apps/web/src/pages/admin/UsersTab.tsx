@@ -36,6 +36,7 @@ import {
   isExternalRegistrationEmail,
   isObjectScopedRole,
   isPersonScopedRole,
+  isRetiringRole,
   REGISTRATION_ROLE_REQUESTS,
   registrationRequestDetail,
   registrationRoleRequestLabels,
@@ -45,6 +46,7 @@ import {
   ROLES,
   roleColors,
   roleLabels,
+  roleMigrationOf,
   type MailOutcome,
   type RejectUserBody,
   type RoleAddon,
@@ -167,6 +169,31 @@ function withMailOutcome(done: string, notified: MailOutcome, sent: string): str
  */
 const HALF_APPROVAL =
   'Заявку рассматривают целиком: назначьте роль и включите „Активен“ — или оставьте заявку в очереди';
+
+/**
+ * Подпись под выбором роли — ровно у двух ролей реформы, и обе не украшение.
+ *
+ * «Площадка» (ADR 0112) доступна администратору с этапа 4б — раньше, чем на неё переведут штаб,
+ * руководителя строительства и коменданта, — и выбранная сегодня даёт вывоз мусора с оргтехникой,
+ * но **не** заказ техники: он приезжает полномочием. Без подписи это выглядит как «урезанный штаб»
+ * и объясняется отказом на первой же заявке.
+ *
+ * Упраздняемая роль (ADR 0113) остаётся в списке только у той учётки, которая на ней стоит, и
+ * подпись объясняет, почему её не предлагают остальным: перевод поедет отдельным выкатом, а до
+ * него роль работает как работала.
+ *
+ * У остальных ролей подписи нет намеренно: их состав прав никуда не переезжает, и подсказка там
+ * означала бы, что переезжает.
+ */
+function roleNote(role: UserFormValues['role'] | undefined): string | undefined {
+  if (role === 'site') {
+    return 'Заказ техники и виза приезжают полномочиями — «Заказ техники» и «Виза объекта». Ролью открыты вывоз мусора и оргтехника';
+  }
+  const migration = roleMigrationOf(role);
+  if (!migration) return undefined;
+  const grants = migration.grants.length > 0 ? ' и выданными полномочиями' : '';
+  return `Роль упраздняется: новым учёткам она не назначается. Действующие переведёт на «${roleLabels[migration.to]}»${grants} отдельный выкат — до него роль работает как прежде`;
+}
 
 /**
  * Роль и надстройки одной ячейкой (ADR 0086). Надстройка дополняет роль, а не заменяет её,
@@ -313,6 +340,21 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
 
   const [open, setOpen] = useState(false);
   const [record, setRecord] = useState<UserAccountDto | null>(null);
+  /**
+   * Роли, доступные **выбору** в карточке, — без упраздняемых (план §13.2, ADR 0113).
+   *
+   * Отдельно от `roleOptions`, которым строятся фильтры списка, и это не дубль: фильтр обязан
+   * искать по старым ролям, пока на них кто-то есть, а форма обязана их не предлагать — сервер
+   * такую смену отклоняет (`retiringRoleIssue`). Роль редактируемой учётки остаётся в списке даже
+   * упразднённой: иначе её карточка открывалась бы с пустым выбором, а любое сохранение требовало
+   * бы перевода, которого этот релиз ещё не делает.
+   */
+  const formRoleOptions = ROLES.filter((r) => !isRetiringRole(r) || r === record?.role).map(
+    (r) => ({
+      value: r,
+      label: isRetiringRole(r) ? `${roleLabels[r]} (упраздняется)` : roleLabels[r],
+    }),
+  );
   const [form] = Form.useForm<UserFormValues>();
   const watchRole = Form.useWatch('role', form);
   // Роль и активность читаются из формы вживую, а не из записи: чекбокс письма и намерение
@@ -1196,20 +1238,7 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
             // Звёздочка обязательности — по тому же правилу: у заявки роль ждёт решения, а не
             // заполнения, и помеченной обязательной она обещала бы, что без неё не сохранить.
             required={!pendingRecord}
-            /*
-             * Пояснение ровно для «Площадки» (ADR 0112), и оно не украшение. Роль доступна
-             * администратору с этапа 4б — раньше, чем на неё переведут штаб, руководителя
-             * строительства и коменданта, — и выбранная сегодня даёт вывоз мусора с оргтехникой, но
-             * **не** заказ техники: он приезжает полномочием. Без подписи это выглядит как
-             * «урезанный штаб» и объясняется отказом на первой же заявке. У остальных ролей
-             * подписи нет намеренно: их состав прав никуда не переезжал, и подсказка там означала
-             * бы, что переезжал.
-             */
-            extra={
-              watchRole === 'site'
-                ? 'Заказ техники и виза приезжают полномочиями — «Заказ техники» и «Виза объекта». Ролью открыты вывоз мусора и оргтехника'
-                : undefined
-            }
+            extra={roleNote(watchRole)}
             dependencies={pendingRecord ? ['isActive'] : undefined}
             rules={[
               {
@@ -1223,7 +1252,7 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
               },
             ]}
           >
-            <AutoSelect options={roleOptions} />
+            <AutoSelect options={formRoleOptions} />
           </Form.Item>
           {/* Объектные роли («Штаб», «Руководитель строительства») работают в пределах своих
               объектов — без них учётку не активировать (ADR 0025, ADR 0039). Список, а не один

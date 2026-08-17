@@ -33,6 +33,7 @@ import {
   isPersonScopedRole,
   permissionsFor,
   rejectUserSchema,
+  retiringRoleIssue,
   roleAddonIssue,
   roleLabels,
   setUserPasswordSchema,
@@ -500,6 +501,24 @@ function resolveDepartmentIds(role: UserDto['role'], departmentIds: string[]): s
  * 400, а не тихое снятие: снять доступ молча значило бы отобрать его так, что этого никто не
  * заметит, и администратор снимает надстройку явно.
  */
+/**
+ * Упраздняемая роль больше не назначается — закрытый вход шага prepare (план §13.2, ADR 0113).
+ *
+ * Проверка стоит здесь, а не в схеме запроса, ровно потому, что решает не значение, а **переход**:
+ * `shtab` в теле правки означает «оставить как было» у действующего штаба и «завести нового» у
+ * всех остальных, и запретить надо только второе. Схема различить их не может — она не видит
+ * прежней строки.
+ *
+ * Зачем это в релизе, который никого не переводит: между выдачей замещающих наборов (миграции 0155
+ * и 0156) и самим переводом проходит релиз, и всё это время работающая версия старую роль знает.
+ * Заведи она нового «штаба» — перевод, который идёт по снимку, о нём не узнает, а `UPDATE` молча
+ * отберёт у человека заказ техники.
+ */
+function assertRoleAssignable(next: UserDto['role'], current: UserDto['role']): void {
+  const issue = retiringRoleIssue(next, current);
+  if (issue) throw err.badRequest(issue, { role: issue });
+}
+
 function resolveAddons(role: UserDto['role'], addons: RoleAddon[]): RoleAddon[] {
   // Дубль убирается здесь, а не только при записи: этот же набор уходит в журнал, и «выдано
   // дважды» рассказывало бы о клиенте, а не о правах учётки.
@@ -935,6 +954,9 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
     const actor = requirePrincipal(req);
     const body = req.body;
     const passwordHash = await hashPassword(body.password);
+    // Новой учётке сравнивать не с чем: любая упраздняемая роль здесь — заведение нового человека
+    // на роль, которой через релиз не станет.
+    assertRoleAssignable(body.role, null);
     const counterpartyId = await resolveCounterpartyId(body.role, body.counterpartyId);
     const objectIds = resolveObjectIds(body.role, body.constructionObjectIds);
     const departmentIds = resolveDepartmentIds(body.role, body.departmentIds);
@@ -1089,6 +1111,9 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
         }
 
         const nextRole = body.role ?? existing.role;
+        // Прежняя роль сохраняется: отказ ловит смену роли на упраздняемую, а не саму упраздняемую
+        // роль в теле — иначе действующего штаба нельзя было бы даже переименовать.
+        assertRoleAssignable(nextRole, existing.role);
         const nextIsActive = body.isActive ?? existing.isActive;
         // Активная учётка без роли не попадает ни под одно ограничение доступа: проверки
         // сформулированы от конкретных ролей («штаб — свой объект», «оператор — свой контрагент»),

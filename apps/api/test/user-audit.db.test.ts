@@ -67,7 +67,13 @@ function freshEmail(): string {
   return `db-audit-${randomUUID().slice(0, 8)}@example.invalid`;
 }
 
-/** Учётка «Штаба» на одном объекте: у объектной роли область обязательна (ADR 0039). */
+/*
+ * Учётка «Площадки» на одном объекте: у объектной роли область обязательна (ADR 0039).
+ *
+ * Роль перевода, а не «Штаб»: шаг prepare этапа 8 (ADR 0113) закрыл вход в упраздняемые роли, и
+ * заведение штаба маршрутом отвечает 400. Журналу от этого безразлично — он пишет ту роль, которую
+ * поставили, — а фикстура заодно перестала опираться на роль, которой скоро не будет.
+ */
 async function createAccount(email: string, objectId: string): Promise<string> {
   const res = await ctx.app.inject({
     method: 'POST',
@@ -80,7 +86,7 @@ async function createAccount(email: string, objectId: string): Promise<string> {
       middleName: 'Игоревич',
       phone: '9000000000',
       password: USER_PASSWORD,
-      role: 'shtab',
+      role: 'site',
       isActive: true,
       constructionObjectIds: [objectId],
       notifyUser: false,
@@ -184,7 +190,7 @@ describe.skipIf(!DB_URL)('журнал изменений учёток (жива
 
     const items = await audit({ entityType: 'user', entityId: id, pageSize: '50' });
     const changes = auditChangesOf(eventOf(items, 'user.update'));
-    expect(changes).toContainEqual({ field: 'role', from: 'Штаб', to: 'Механик' });
+    expect(changes).toContainEqual({ field: 'role', from: 'Площадка', to: 'Механик' });
     expect(changes).toContainEqual({ field: 'isActive', from: 'открыт', to: 'закрыт' });
     expect(changes).toContainEqual({
       field: 'phone',
@@ -197,14 +203,14 @@ describe.skipIf(!DB_URL)('журнал изменений учёток (жива
 
     // Заведение учётки записано составом: слева показывать нечего, учётки до этого не было.
     const created = auditChangesOf(eventOf(items, 'user.create'));
-    expect(created).toContainEqual({ field: 'role', from: null, to: 'Штаб' });
+    expect(created).toContainEqual({ field: 'role', from: null, to: 'Площадка' });
     expect(created).toContainEqual({ field: 'isActive', from: null, to: 'открыт' });
   });
 
   it('строка журнала называет учётку так же, как список: роль и признак архива', async () => {
     const id = await createAccount(freshEmail(), ctx.objectIds[0]!);
     const [before] = await audit({ entityType: 'user', entityId: id });
-    expect(before!.targetRole).toBe('shtab');
+    expect(before!.targetRole).toBe('site');
     expect(before!.targetIsActive).toBe(true);
     expect(before!.targetDeletedAt).toBeNull();
 
@@ -235,7 +241,7 @@ describe.skipIf(!DB_URL)('журнал изменений учёток (жива
       await audit({ entityType: 'user', entityId: id, targetObjectId: ctx.objectIds[1]! }),
     ).toHaveLength(0);
 
-    expect(await audit({ entityType: 'user', entityId: id, targetRole: 'shtab' })).not.toHaveLength(
+    expect(await audit({ entityType: 'user', entityId: id, targetRole: 'site' })).not.toHaveLength(
       0,
     );
     expect(await audit({ entityType: 'user', entityId: id, targetRole: 'driver' })).toHaveLength(0);

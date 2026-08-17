@@ -219,13 +219,19 @@ describe('права ролей', () => {
     // область и права это разные слои, и полномочие расширяет только первый.
     expect(addonProfilesWith('officeEquipment.write').map(accessProfileLabel)).toEqual([
       'Штаб + Оператор (оргтехника)',
+      // Площадка стоит рядом со штабом с шага prepare этапа 8 (ADR 0113): после перевода учёток
+      // штаба в базовых ролях надстройки не останется, и дописана роль заранее — иначе перевод
+      // отобрал бы надстройку у переведённого оператора молча.
+      'Площадка + Оператор (оргтехника)',
       'Отдел + Оператор (оргтехника)',
     ]);
     // Чтение надстройки не расширяют: его базовые роли и так имеют, а больше его никому не дают.
     expect(addonProfilesWith('officeEquipment.read').map(accessProfileLabel)).toEqual([
       'Штаб + Оператор (оргтехника)',
+      'Площадка + Оператор (оргтехника)',
       'Отдел + Оператор (оргтехника)',
       'Штаб + Согласование ИТ',
+      'Площадка + Согласование ИТ',
       'Отдел + Согласование ИТ',
     ]);
     // Комендант закрыт целиком, как и в «Заказе ТС»: оргтехнику на площадке заказывает штаб, а
@@ -820,8 +826,13 @@ describe('права внешнего исполнителя зависят от
   it('профили доступа перечисляют пары «базовая роль × надстройка» (ADR 0086)', () => {
     expect(ACCESS_PROFILES.filter((s) => !isPlainProfile(s))).toEqual([
       { role: 'shtab', addons: ['office_equipment_operator'] },
+      // Площадка — третья базовая роль обеих надстроек с шага prepare этапа 8 (ADR 0113). Пар от
+      // этого шесть, и все шесть обязаны перебираться тестами доступа: после перевода учёток
+      // именно эти два субъекта останутся вместо площадочных.
+      { role: 'site', addons: ['office_equipment_operator'] },
       { role: 'department', addons: ['office_equipment_operator'] },
       { role: 'shtab', addons: ['office_equipment_it_approver'] },
+      { role: 'site', addons: ['office_equipment_it_approver'] },
       { role: 'department', addons: ['office_equipment_it_approver'] },
     ]);
     expect(accessProfileLabel({ role: 'shtab', addons: ['office_equipment_operator'] })).toBe(
@@ -903,6 +914,7 @@ describe('заявки на обслуживание оргтехники (ADR 0
       expect(rolesWith(permission), permission).toEqual(['admin']);
       expect(addonProfilesWith(permission).map(accessProfileLabel), permission).toEqual([
         'Штаб + Оператор (оргтехника)',
+        'Площадка + Оператор (оргтехника)',
         'Отдел + Оператор (оргтехника)',
       ]);
     }

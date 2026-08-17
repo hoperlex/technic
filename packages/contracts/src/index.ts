@@ -32,6 +32,7 @@ export * from './grants';
  * целиком вслед за `role-addons.ts`, и предикат остаётся один.
  */
 export { hasModuleWideScope } from './grants';
+export * from './role-migration';
 export * from './warehouses';
 export * from './warranty';
 export * from './office-equipment';

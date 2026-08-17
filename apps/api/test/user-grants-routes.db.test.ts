@@ -82,7 +82,7 @@ interface Ctx {
   /** Двое, чтобы автора уцелевшего назначения было с кем спутать. */
   admin: Admin;
   otherAdmin: Admin;
-  /** Площадка: у объектной роли область обязательна (ADR 0039), а надстройки — у роли `shtab`. */
+  /** Площадка: у объектной роли область обязательна (ADR 0039), а надстройки — у роли `site`. */
   objectId: string;
 }
 
@@ -163,7 +163,13 @@ function freshEmail(): string {
   return `${EMAIL_PREFIX}-${RUN}-${userSeq}@example.invalid`;
 }
 
-/** Тело заведения учётки: роль `shtab` на своей площадке — та, которой надстройки и положены. */
+/*
+ * Тело заведения учётки: роль `site` на своей площадке — та, которой надстройки и положены.
+ *
+ * Не `shtab`, хотя надстройки заводились под него: шаг prepare этапа 8 (ADR 0113) закрыл вход в
+ * упраздняемые роли, и заведение штаба маршрутом отвечает теперь 400. Роль перевода на этом месте
+ * честнее прежней — именно с ней надстройка и будет жить после перевода.
+ */
 function accountPayload(
   email: string,
   over: Record<string, unknown> = {},
@@ -175,7 +181,7 @@ function accountPayload(
     middleName: '',
     phone: '',
     password: USER_PASSWORD,
-    role: 'shtab',
+    role: 'site',
     isActive: true,
     constructionObjectIds: [ctx.objectId],
     addons: [],
@@ -600,7 +606,7 @@ describe.skipIf(!DB_URL)('назначения на путях учётки: м�
 
     const res = await patchUser(ctx.otherAdmin, id, {
       approveRegistration: true,
-      role: 'shtab',
+      role: 'site',
       isActive: true,
       constructionObjectIds: [ctx.objectId],
       addons: [OPERATOR],
@@ -618,7 +624,7 @@ describe.skipIf(!DB_URL)('назначения на путях учётки: м�
     expect(granted[0]!.origin).toBe('manual');
     expect(granted[0]!.grantedAt.getTime()).toBe(addons[0]!.grantedAt.getTime());
     // Учётка стала действующей той же транзакцией — назначение не опередило роль и не отстало.
-    expect(await userRow(id)).toMatchObject({ role: 'shtab' });
+    expect(await userRow(id)).toMatchObject({ role: 'site' });
   });
 
   /*

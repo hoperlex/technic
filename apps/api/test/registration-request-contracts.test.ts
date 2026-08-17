@@ -5,6 +5,7 @@ import {
   INTERNAL_EMAIL_DOMAINS,
   isExternalRegistrationEmail,
   isInternalEmail,
+  isRetiringRole,
   REGISTRATION_ROLE_REQUESTS,
   registerSchema,
   registrationRequestDetail,
@@ -54,16 +55,31 @@ describe('перечень пожеланий', () => {
     }
   });
 
-  it('«Сотрудник объекта» — это роль «Штаб», названная понятнее', () => {
-    expect(defaultRoleForRequest('site_staff')).toBe('shtab');
+  /**
+   * Три площадочных пожелания ведут к одной роли — и это ровно то решение, которое таблица
+   * умолчаний обязана была принять при упразднении ролей (см. её же docstring): «перенацелить
+   * умолчание на роль, в которую слили прежнюю». Перенацелены они шагом prepare этапа 8
+   * (ADR 0113) — тем самым, который закрыл вход в упраздняемые роли: оставь мы прежние умолчания,
+   * форма рассмотрения открывалась бы с ролью, которую сервер отвергает.
+   *
+   * Различие между тремя должностями от этого не пропадает: пожелание видно администратору
+   * строкой «При регистрации указал: …», и по нему он решает, выдать «Заказ техники» или ещё и
+   * визу. Подставить наборы форме пока нечем — таблица «пожелание → роль плюс наборы» приезжает
+   * §11.1, — и подпись под выбором роли об этом прямо говорит.
+   */
+  it('площадочные пожелания ведут к роли «Площадка» — три должности, одна роль', () => {
+    expect(defaultRoleForRequest('site_staff')).toBe('site');
+    expect(defaultRoleForRequest('rukstroy')).toBe('site');
+    expect(defaultRoleForRequest('commandant')).toBe('site');
     expect(registrationRoleRequestLabels.site_staff).toBe('Сотрудник объекта');
   });
 
-  it('комендант назван своей должностью — она и есть роль в портале', () => {
-    expect(defaultRoleForRequest('commandant')).toBe('commandant');
-    // Отдельный вариант, а не «сотрудник объекта»: роли разные — коменданту техника закрыта, и
-    // администратор видит по пожеланию, какую из двух подставит форма.
-    expect(defaultRoleForRequest('commandant')).not.toBe(defaultRoleForRequest('site_staff'));
+  it('ни одно умолчание не указывает на упраздняемую роль', () => {
+    // Иначе форма подставила бы роль, которую сервер отклоняет (`retiringRoleIssue`), и заявку
+    // нельзя было бы рассмотреть, не разобравшись сперва в реформе.
+    for (const request of REGISTRATION_ROLE_REQUESTS) {
+      expect(isRetiringRole(defaultRoleForRequest(request)), request).toBe(false);
+    }
   });
 
   it('оба исполнителя ведут к роли исполнителя — различает их контрагент (ADR 0038)', () => {

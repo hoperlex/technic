@@ -5,10 +5,12 @@ import {
   PERMISSIONS_BY_MODULE,
   permissionModuleLabels,
   roleLabels,
+  roleMigrationOf,
   ROLES,
   validateGrantAssignment,
   type GrantImpactDto,
   type GrantImpactUserDto,
+  type GrantOrigin,
   type GrantValidationDetailsDto,
   type Permission,
   type PermissionModule,
@@ -173,11 +175,33 @@ export function impactSummaryText(impact: GrantImpactDto): string {
 export const ROLE_MISMATCH_TAG = 'роль не в списке';
 
 /**
+ * Та же пометка у взведённого заранее назначения (шаг prepare, ADR 0113) — своими словами.
+ *
+ * Несоответствие роли здесь не поломка, а состояние по построению: набор выдан держателю
+ * упраздняемой роли за релиз до перевода и до него прав не даёт — их и так даёт роль. Показывать
+ * такую строку тем же оранжевым «роль не в списке» нельзя: администратор увидел бы сотни
+ * предупреждений и «прибрал» бы ровно те выдачи, на которых держится перевод.
+ */
+export const ROLE_MIGRATION_PENDING_TAG = 'ждёт перевода роли';
+
+/** Взведено ли назначение переводом ролей: выдано переводом и держатель ещё на старой роли. */
+export function isPendingRoleMigration(role: Role | null, origin: GrantOrigin): boolean {
+  return origin === 'migration' && roleMigrationOf(role) !== null;
+}
+
+/**
  * То же самое словами, и без них обойтись нельзя: тег сообщает о несоответствии, а администратору
  * нужен его смысл — выдача жива, но прав по ней у человека нет вовсе (§13.1). Молчаливый массовый
  * отзыв опаснее несоответствия, поэтому назначение остаётся, и объяснить это обязан экран.
+ *
+ * У взведённой заранее выдачи смысл противоположный, и потому текст свой: прав она не даёт по
+ * замыслу, а отзыв — единственное, чем перевод можно испортить.
  */
-export function roleMismatchText(role: Role | null): string {
+export function roleMismatchText(role: Role | null, origin: GrantOrigin = 'manual'): string {
+  const migration = roleMigrationOf(role);
+  if (origin === 'migration' && migration) {
+    return `Набор выдан заранее: он заменит права роли «${roleLabels[migration.from]}», когда учётку переведут на «${roleLabels[migration.to]}». До перевода прав он не даёт — их даёт роль. Отзыв означает, что при переводе человек эти права потеряет.`;
+  }
   const whose = role ? `Роль «${roleLabels[role]}»` : 'Роль не назначена, и она';
   return `${whose} не входит в список совместимых: выдача жива, но доступ по набору у этой учётки погашен — прав он ей не даёт.`;
 }

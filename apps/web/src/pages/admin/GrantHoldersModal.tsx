@@ -8,7 +8,13 @@ import { ViewModal } from '@shared/ui';
 import { grantKeys, grantsApi, userGrantsApi, usersApi } from '../../api/resources';
 import { errorMessage, formatDateTime } from '../../utils/format';
 import { GrantImpactConfirm } from './GrantImpactConfirm';
-import { ROLE_MISMATCH_TAG, roleListText, roleMismatchText } from './grantModel';
+import {
+  isPendingRoleMigration,
+  ROLE_MIGRATION_PENDING_TAG,
+  ROLE_MISMATCH_TAG,
+  roleListText,
+  roleMismatchText,
+} from './grantModel';
 
 /**
  * Реестр выдач набора (план §12): у кого полномочие есть, кто его выдал и когда, — и обе операции
@@ -37,6 +43,10 @@ interface Operation {
 
 /** Строка реестра: кому, чем и когда — плюс пометки, объясняющие странности. */
 function HolderRow({ holder, onRevoke }: { holder: GrantHolderDto; onRevoke: () => void }) {
+  // Взведённая заранее выдача (шаг prepare, ADR 0113) читается иначе, чем отобранная роль: там
+  // права погасли, здесь они ещё не зажглись и зажгутся переводом. Тег и фраза поэтому свои, а
+  // цвет — синий: оранжевым администратор ищет то, что надо чинить.
+  const pending = isPendingRoleMigration(holder.role, holder.origin);
   return (
     <div style={{ borderTop: '1px solid #f0f0f0', padding: '8px 0' }}>
       <Space style={{ width: '100%', justifyContent: 'space-between' }} align="start" wrap>
@@ -46,7 +56,11 @@ function HolderRow({ holder, onRevoke }: { holder: GrantHolderDto; onRevoke: () 
             <Typography.Text type="secondary">
               {holder.role ? roleLabels[holder.role] : 'роль не назначена'}
             </Typography.Text>
-            {holder.roleMismatch && <Tag color="orange">{ROLE_MISMATCH_TAG}</Tag>}
+            {holder.roleMismatch && (
+              <Tag color={pending ? 'blue' : 'orange'}>
+                {pending ? ROLE_MIGRATION_PENDING_TAG : ROLE_MISMATCH_TAG}
+              </Tag>
+            )}
             {!holder.isActive && <Tag>доступ выключен</Tag>}
             {holder.isArchived && <Tag>в архиве</Tag>}
             {/* Происхождение: выданное переводом ролей снимается откатом перевода, выданное
@@ -55,15 +69,23 @@ function HolderRow({ holder, onRevoke }: { holder: GrantHolderDto; onRevoke: () 
           </Space>
           <div>
             <Typography.Text type="secondary">
-              {holder.email} · выдал {holder.grantedByName ?? 'неизвестно кто'},{' '}
-              {formatDateTime(holder.grantedAt)}
+              {/* У выдачи перевода автора нет и быть не может: её сделала миграция, а не человек.
+                  «Выдал неизвестно кто» на этой строке означало бы утерянную учётку автора — то
+                  есть другую историю, чем та, что случилась. */}
+              {holder.email} ·{' '}
+              {holder.origin === 'migration' && !holder.grantedByName
+                ? 'выдано переводом ролей'
+                : `выдал ${holder.grantedByName ?? 'неизвестно кто'}`}
+              , {formatDateTime(holder.grantedAt)}
             </Typography.Text>
           </div>
           {/* Тег говорит о несоответствии, а фраза — о его последствии: прав по набору у человека
               нет вовсе, хотя выдача жива. Без неё строка читается как мелкое замечание. */}
           {holder.roleMismatch && (
             <div>
-              <Typography.Text type="warning">{roleMismatchText(holder.role)}</Typography.Text>
+              <Typography.Text type={pending ? 'secondary' : 'warning'}>
+                {roleMismatchText(holder.role, holder.origin)}
+              </Typography.Text>
             </div>
           )}
         </div>

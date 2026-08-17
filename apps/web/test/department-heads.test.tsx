@@ -270,8 +270,30 @@ describe('карточка учётки: признак руководителя
   it('у новой учётки отсылает в справочник отделов, а не молчит', async () => {
     renderUsers(HEAD_ROLE, [department()]);
     clickButton('Добавить');
-    await selectOption('Роль', roleLabels.department_head);
+    // Роль «Отдел», а не «Руководитель отдела»: та упраздняется и новым учёткам больше не
+    // предлагается (ADR 0113). Подсказку это не трогает — она и заводилась затем, чтобы признак
+    // руководства не искали в роли: любая отдельская роль отсылает в справочник одинаково.
+    await selectOption('Роль', roleLabels.department);
 
     expect(await screen.findByText(/Руководителем отдела учётка становится не здесь/)).toBeTruthy();
+  });
+
+  /**
+   * Обратная сторона того же решения: упраздняемая роль не исчезает из карточки того, кто на ней
+   * стоит. Иначе форма открывалась бы с пустым выбором и любое сохранение требовало бы перевода,
+   * которого этот релиз ещё не делает.
+   */
+  it('у действующего руководителя отдела его роль в списке остаётся', async () => {
+    renderUsers(HEAD_ROLE, [department()]);
+    await openUserCard(HEAD_ROLE.email);
+
+    const options = await openSelectOptions('Роль');
+    expect(options.map((o) => o.textContent)).toContain(
+      `${roleLabels.department_head} (упраздняется)`,
+    );
+    // А у новой учётки её нет вовсе — предлагать роль, которую сервер отклонит, нельзя.
+    clickButton('Добавить');
+    const fresh = await openSelectOptions('Роль');
+    expect(fresh.map((o) => o.textContent).join('|')).not.toContain(roleLabels.department_head);
   });
 });

@@ -1105,6 +1105,41 @@ export const grantRoles = pgTable(
   }),
 );
 
+/**
+ * Снимок перевода ролей (план §13, §13.2; ADR 0113, миграция 0154) — «кем человек был, что ему
+ * выдали вместо этого и что вернуть при откате».
+ *
+ * Объявлена **до** `user_grants`, хотя по смыслу идёт после: на неё ссылается `migration_id`, и
+ * прямой порядок избавляет от ссылки вперёд ради одной колонки.
+ *
+ * Пишется шагом prepare — тем же, что создаёт назначения: снимок без них отвечал бы только на
+ * половину вопросов, а назначение без снимка не прошло бы CHECK происхождения. Перевод дописывает
+ * `migrated_at`, откат сравнивает роль учётки с `role_after` и возвращает `role_before` — но только
+ * той, у которой роль с тех пор не меняли руками.
+ */
+export const userRoleMigration = pgTable(
+  'user_role_migration',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    /** Номер этапа плана: 8 — три роли площадки, 9 — руководитель отдела. */
+    stage: smallint('stage').notNull(),
+    roleBefore: roleEnum('role_before').notNull(),
+    roleAfter: roleEnum('role_after').notNull(),
+    /** Когда выданы замещающие наборы. Между этим моментом и переводом проходит целый релиз. */
+    preparedAt: timestamp('prepared_at', { withTimezone: true }).notNull().defaultNow(),
+    /** Когда учётка переведена; `null` — наборы выданы, роль ещё прежняя. */
+    migratedAt: timestamp('migrated_at', { withTimezone: true }),
+  },
+  (t) => ({
+    // Один снимок на учётку и этап: повторный накат prepare безвреден, а второго снимка того же
+    // перевода, по которому непонятно, какую роль возвращать, не бывает.
+    userStageUnique: unique('user_role_migration_user_stage_unique').on(t.userId, t.stage),
+  }),
+);
+
 export const userGrants = pgTable(
   'user_grants',
   {
@@ -1127,11 +1162,10 @@ export const userGrants = pgTable(
     // Происхождение назначения: выдал администратор или создал перевод роли. Неизменяемо — на нём
     // держится откат перевода, который выданное вручную не трогает никогда.
     origin: text('origin').notNull().default('manual').$type<'manual' | 'migration'>(),
-    // Каким переводом ролей выдано — без внешнего ключа и это решение, а не упущение (ADR 0106,
-    // решение 3): таблицы `user_role_migration` ещё нет, она придёт миграцией этапа перевода ролей
-    // вместе с FK и CHECK согласованности (`origin = 'migration'` ⇔ `migration_id IS NOT NULL`).
-    // Пустая таблица, заведённая сейчас, пережила бы три релиза без единого писателя.
-    migrationId: uuid('migration_id'),
+    // Каким переводом ролей выдано. Ключ и CHECK согласованности пришли шагом prepare этапа 8
+    // (миграция 0154, ADR 0113) — в 1a колонка стояла без них, потому что таблицы, на которую они
+    // указывают, ещё не существовало (ADR 0106, решение 3).
+    migrationId: uuid('migration_id').references(() => userRoleMigration.id),
   },
   (t) => ({
     // Одно живое назначение на пару. Без него переносу назначений не на что опереть свой
@@ -1143,6 +1177,13 @@ export const userGrants = pgTable(
     grantIdx: index('user_grants_grant_idx').on(t.grantId),
     // Перечень закрыт поведением, а не реестром, — здесь CHECK уместен, в отличие от списка прав.
     originCheck: check('user_grants_origin_check', sql`${t.origin} in ('manual', 'migration')`),
+    // «Выдано переводом» и «известно, каким переводом» — одно утверждение (миграция 0154):
+    // `origin = 'migration'` без ссылки откат не найдёт и не снимет, а ссылка при `manual` означала
+    // бы, что откат снимет выданное администратором своей рукой.
+    migrationOriginCheck: check(
+      'user_grants_migration_origin_check',
+      sql`(${t.origin} = 'migration') = (${t.migrationId} IS NOT NULL)`,
+    ),
   }),
 );
 
@@ -4738,6 +4779,7 @@ export type GrantRow = typeof grants.$inferSelect;
 export type GrantPermissionRow = typeof grantPermissions.$inferSelect;
 export type GrantRoleRow = typeof grantRoles.$inferSelect;
 export type UserGrantRow = typeof userGrants.$inferSelect;
+export type UserRoleMigrationRow = typeof userRoleMigration.$inferSelect;
 export type WasteRequestRow = typeof wasteRequests.$inferSelect;
 export type FileRow = typeof files.$inferSelect;
 export type ObjectRow = typeof constructionObjects.$inferSelect;

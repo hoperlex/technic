@@ -159,8 +159,12 @@ const DECLARED_PROFILE_KEYS = [
   'mechanic',
   'chief_mechanic',
   'shtab+office_equipment_operator',
+  // Площадка — третья базовая роль обеих надстроек с шага prepare этапа 8 (ADR 0113): после
+  // перевода учёток штаба в этой паре не останется, и субъект обязан проверяться заранее.
+  'site+office_equipment_operator',
   'department+office_equipment_operator',
   'shtab+office_equipment_it_approver',
+  'site+office_equipment_it_approver',
   'department+office_equipment_it_approver',
 ] as const;
 
@@ -228,6 +232,7 @@ const OFFICE_EQUIPMENT_KEEPERS: ProfileKey[] = [
   'manager',
   'dispatcher',
   'shtab+office_equipment_operator',
+  'site+office_equipment_operator',
   'department+office_equipment_operator',
 ];
 
@@ -254,6 +259,7 @@ const SERVICE_REQUEST_CUSTOMERS: ProfileKey[] = [
 const SERVICE_REQUEST_OPERATORS: ProfileKey[] = [
   'admin',
   'shtab+office_equipment_operator',
+  'site+office_equipment_operator',
   'department+office_equipment_operator',
 ];
 
@@ -265,6 +271,7 @@ const SERVICE_REQUEST_OPERATORS: ProfileKey[] = [
 const SERVICE_REQUEST_IT_APPROVERS: ProfileKey[] = [
   'admin',
   'shtab+office_equipment_it_approver',
+  'site+office_equipment_it_approver',
   'department+office_equipment_it_approver',
 ];
 
