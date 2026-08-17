@@ -7,6 +7,7 @@ export * from './dayjs';
 export * from './errors';
 export * from './selectOptions';
 export * from './table';
+export * from './useAddressParam';
 export * from './useElementSize';
 export * from './useIsMobile';
 export * from './useListParams';

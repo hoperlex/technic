@@ -10,12 +10,12 @@ import {
   type ReportItemDto,
   type ReportItemSubmit,
 } from '@technic/contracts';
+import { parseReadingNumber, readingWarnings } from '@entities/vehicle-reading';
 import { isApiError } from '@shared/api';
 import { FILE_MAX_COUNT, FILE_MAX_SIZE } from '@shared/config';
 import { errorMessage } from '@shared/lib';
 import { filesApi } from '../../api/resources';
 import { ReadingBlock } from './DriverReadingBlock';
-import { parseReadingNumber, readingWarnings } from './readingLimits';
 import {
   clearDraft,
   driverCabinetApi,

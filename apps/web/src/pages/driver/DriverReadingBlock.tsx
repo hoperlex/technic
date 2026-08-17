@@ -7,14 +7,14 @@ import {
   type DriverPreviousReading,
   type ReportItemDto,
 } from '@technic/contracts';
-import { FileLinkList } from '../../components/FileLinks';
-import type { DraftItem } from './api';
 import {
   parseReadingNumber,
   previousHintText,
   readingWarnings,
   type ReadingField,
-} from './readingLimits';
+} from '@entities/vehicle-reading';
+import { FileLinkList } from '../../components/FileLinks';
+import type { DraftItem } from './api';
 
 /**
  * Блок передачи показаний по одной строке ожидания (ADR 0103, Р14).
