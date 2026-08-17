@@ -67,16 +67,47 @@ const routeEntry: DriverAssignmentEntry = {
   trailerLabel: 'НЕФАЗ 8332 · АВ123477',
   itemId: null,
   shiftOrder: null,
-  requests: [
+  /*
+   * Задание водителю — **порядок объезда**, а не список заявок (§8 плана). Ездка занимает две
+   * остановки: где грузим и где выгружаем; водитель читает их подряд, в том порядке, в котором
+   * поедет. Комментарий строки стоит рядом с её ролью — в бланке он отбрасывается первым при
+   * нехватке места (Р11а), и не покажи его кабинет, «заезд через южные ворота» не доехало бы
+   * до водителя нигде.
+   */
+  points: [
     {
-      displayNumber: 'ТС-101',
-      customerName: 'Альфа-объект',
-      loadingLocation: 'Карьер «Северный»',
-      unloadingLocation: 'ЖК «Восход», корпус 3',
-      time: '08:30',
-      cargoLabel: 'Песок, 20 т',
-      comment: 'Заезд через южные ворота',
-      contacts: [{ label: 'Приёмка', name: 'Иванов Иван', phone: '+79990000001' }],
+      position: 1,
+      location: 'Карьер «Северный»',
+      arrivalTime: '08:30',
+      actions: [
+        {
+          role: 'load' as const,
+          roleLabel: 'Грузим',
+          displayNumber: 'ТС-101/1',
+          customerName: 'Альфа-объект',
+          cargoLabel: '20 т',
+          comment: 'Заезд через южные ворота',
+        },
+      ],
+      contacts: [{ name: 'Иванов Иван', phone: '+79990000001' }],
+      comment: '',
+    },
+    {
+      position: 2,
+      location: 'ЖК «Восход», корпус 3',
+      arrivalTime: '',
+      actions: [
+        {
+          role: 'unload' as const,
+          roleLabel: 'Выгружаем',
+          displayNumber: 'ТС-101/1',
+          customerName: 'Альфа-объект',
+          cargoLabel: '20 т',
+          comment: '',
+        },
+      ],
+      contacts: [{ name: 'Петров Пётр', phone: '+79990000002' }],
+      comment: '',
     },
   ],
   moveFrom: '',
@@ -96,7 +127,8 @@ const esm2Entry: DriverAssignmentEntry = {
   trailerLabel: '',
   itemId: null,
   shiftOrder: null,
-  requests: [],
+  // У недельного листа точек нет: он накрывает неделю работы на одной площадке, а не день объезда.
+  points: [],
   moveFrom: '',
   moveTo: '',
   comment: '',
@@ -169,9 +201,13 @@ describe('кабинет водителя: задание на дату', () => 
     expect(screen.getByText('НЕФАЗ 8332 · АВ123477')).toBeDefined();
 
     // Состав рейса: заявка со временем, заказчиком, адресами и комментарием заявителя.
-    expect(screen.getByText('ТС-101')).toBeDefined();
+    // Подпись строки несёт номер ездки (Р1): у заявки их может быть несколько, и водителю
+    // важно, какую именно он грузит на этой остановке.
+    expect(screen.getAllByText('ТС-101/1').length).toBeGreaterThan(0);
     expect(screen.getByText('08:30')).toBeDefined();
-    expect(screen.getByText('Альфа-объект')).toBeDefined();
+    // Заказчик назван у **каждой** роли: на погрузке и на разгрузке водитель видит, чью работу
+    // он делает, не листая обратно к началу задания.
+    expect(screen.getAllByText('Альфа-объект')).toHaveLength(2);
     expect(screen.getByText('Карьер «Северный»')).toBeDefined();
     expect(screen.getByText('ЖК «Восход», корпус 3')).toBeDefined();
     expect(screen.getByText('Заезд через южные ворота')).toBeDefined();
@@ -182,7 +218,12 @@ describe('кабинет водителя: задание на дату', () => 
     expect(screen.queryByText('Песок, 20 т')).toBeNull();
 
     // Контакт — ссылкой набора: кабинет открывают с того же телефона, с которого звонят.
-    expect(screen.getByText('Приёмка')).toBeDefined();
+    // Подписи «Погрузка/Разгрузка» у контакта больше нет: он принадлежит **остановке**, а на ней
+    // могут сойтись и погрузка, и разгрузка, и работа линейного дня (Р9, Р11а). Кто встречает —
+    // назван именем, а что здесь делают, сказано ролями выше.
+    // Имя и телефон стоят одним узлом через разделитель, поэтому ищем по вхождению.
+    expect(screen.getAllByText(/Иванов Иван/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Встречает').length).toBe(2);
     expect(screen.getByText('+79990000001').getAttribute('href')).toBe('tel:+79990000001');
 
     // Недельный лист даёт свою карточку рядом с рейсом: за день бывает и то, и другое.
@@ -232,7 +273,9 @@ describe('кабинет водителя: задание на дату', () => 
     renderCabinet({ route: `/driver?date=${beforeSubmitWindow}` });
 
     expect(await screen.findByText('Рейс Р-142')).toBeDefined();
-    expect(screen.getByText('ТС-101')).toBeDefined();
+    // Подпись строки несёт номер ездки (Р1): у заявки их может быть несколько, и водителю
+    // важно, какую именно он грузит на этой остановке.
+    expect(screen.getAllByText('ТС-101/1').length).toBeGreaterThan(0);
 
     const submit = screen.getByText('Передать показания').closest('button');
     expect(submit?.disabled).toBe(true);

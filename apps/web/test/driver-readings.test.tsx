@@ -171,7 +171,8 @@ function assignmentOf(
       trailerLabel: '',
       itemId: item.id,
       shiftOrder: item.shiftOrder,
-      requests: [],
+      // Показания к порядку объезда не привязаны: сценарий проверяет счётчики, а не задание.
+      points: [],
       moveFrom: '',
       moveTo: '',
       comment: '',
