@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, screen, waitFor } from '@testing-library/react';
 import type { VehicleDto } from '@technic/contracts';
 import { json, mockHttp } from './http';
@@ -221,6 +221,25 @@ function renderEsm2() {
 }
 
 describe('выписка ЭСМ-2 по требованию', () => {
+  /**
+   * День прогона зафиксирован, и без этого набор ломается сам собой: «текущая» неделя в сценариях
+   * названа числами (10–16.08.2026), а форма сравнивает её с сегодняшним днём — 17 августа неделя
+   * стала прошлым, окно потребовало причину заднего числа, и первый сценарий покраснел, не
+   * изменившись ни строкой. Соседний сценарий про прошедшую неделю с этим уже считался — его
+   * комментарий объясняет, почему там взято начало срока заявки; здесь то же самое сделано
+   * прямо: середина недели 10–16.08 остаётся серединой при любом дне прогона.
+   *
+   * `shouldAdvanceTime` обязателен: без него `waitFor` из testing-library ждёт по остановленным
+   * часам и падает по своему тайм-ауту, ничего не дождавшись.
+   */
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, now: new Date('2026-08-13T09:00:00') });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('спрашивает неделю, машину и машиниста и уходит на сервер выбранным', async () => {
     const http = renderEsm2();
     await screen.findByText('Неделя');
@@ -316,4 +335,3 @@ describe('выписка ЭСМ-2 по требованию', () => {
     expect(http.countOf('POST /vehicle-requests/:id/esm2')).toBe(0);
   });
 });
-
