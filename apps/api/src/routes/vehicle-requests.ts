@@ -7133,18 +7133,36 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       schema: { params: idParams },
     },
     async (req) => {
+      const p = requirePrincipal(req);
+      // Строка берётся без условия по `deleted_at` намеренно: восстанавливают как раз удалённую, и
+      // фильтр «только живые» отвечал бы 404 на единственную заявку, ради которой ручка заведена.
       const [existing] = await db
         .select()
         .from(vehicleRequests)
         .where(eq(vehicleRequests.id, req.params.id));
       if (!existing) throw err.notFound('Заявка не найдена');
+      // Область — до разбора состояния, а не внутри ветки возврата: на живой заявке ручка отдаёт
+      // её карточку целиком, и без проверки здесь `archive.restore` читал бы чужие заявки в обход
+      // `vehicleRequests.read`. Обе оси те же, что у карточки (`GET /:id`): заказчик заявки и
+      // арендодатель назначенной машины.
+      assertRequestScope(p, existing);
+      // Арендодатель спрашивается отдельным запросом: своей колонки у заявки нет — он приходит с
+      // назначенной машины (ADR 0038). Ни назначение, ни машина по `deleted_at` не отсеиваются:
+      // «чья это заявка» от ухода техники в архив не меняется, а строка назначения у заявки одна
+      // (`request_id` — первичный ключ).
+      const [assigned] = await db
+        .select({ lessorId: vehicles.lessorId })
+        .from(vehicleRequestAssignments)
+        .innerJoin(vehicles, eq(vehicleRequestAssignments.vehicleId, vehicles.id))
+        .where(eq(vehicleRequestAssignments.requestId, existing.id));
+      assertLessorScope(p, assigned?.lessorId ?? null);
       if (existing.deletedAt) {
         await db
           .update(vehicleRequests)
           .set({ deletedAt: null, deletedBy: null, updatedAt: new Date() })
           .where(eq(vehicleRequests.id, existing.id));
         await writeAudit({
-          actorUserId: requirePrincipal(req).id,
+          actorUserId: p.id,
           action: 'vehicle_request.restore',
           entityType: 'vehicle_request',
           entityId: existing.id,

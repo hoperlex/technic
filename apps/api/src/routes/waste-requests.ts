@@ -1460,18 +1460,27 @@ export default async function wasteRequestsRoutes(app: FastifyInstance): Promise
       schema: { params: idParams },
     },
     async (req) => {
+      const p = requirePrincipal(req);
+      // Строка берётся без условия по `deleted_at` намеренно: восстанавливают как раз удалённую, и
+      // фильтр «только живые» отвечал бы 404 на единственную заявку, ради которой ручка заведена.
       const [existing] = await db
         .select()
         .from(wasteRequests)
         .where(eq(wasteRequests.id, req.params.id));
       if (!existing) throw err.notFound('Заявка не найдена');
+      // Область — до разбора состояния, а не внутри ветки возврата: на живой заявке ручка отдаёт
+      // её карточку целиком, и без проверки здесь `archive.restore` читал бы чужие заявки в обход
+      // `wasteRequests.read`. Проверки те же, что у карточки (`GET /:id`), и обе работают по
+      // реквизитам строки — удалённость на них не влияет.
+      assertWasteObjectScope(p, existing.objectId);
+      assertOperatorScope(p, existing.operatorCounterpartyId);
       if (existing.deletedAt) {
         await db
           .update(wasteRequests)
           .set({ deletedAt: null, deletedBy: null, updatedAt: new Date() })
           .where(eq(wasteRequests.id, existing.id));
         await writeAudit({
-          actorUserId: requirePrincipal(req).id,
+          actorUserId: p.id,
           action: 'waste_request.restore',
           entityType: 'waste_request',
           entityId: existing.id,

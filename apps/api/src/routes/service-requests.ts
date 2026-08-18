@@ -2671,8 +2671,11 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           .from(serviceRequests)
           .where(eq(serviceRequests.id, req.params.id));
         if (!row) throw err.notFound(NOT_FOUND);
-        if (!row.deletedAt) return false;
+        // Область — до разбора состояния: живая заявка отдаётся отсюда карточкой целиком (повтор
+        // запроса — обычное дело), и проверка после `if (!row.deletedAt)` не мешала бы читать чужую
+        // заявку в обход `serviceRequests.read`.
         assertScope(p, row);
+        if (!row.deletedAt) return false;
         if (!isServiceRequestClosed(row.status)) {
           await assertNoOpenRequest(tx, row.officeEquipmentId, row.id);
         }

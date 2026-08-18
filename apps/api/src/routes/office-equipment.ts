@@ -955,13 +955,17 @@ export default async function officeEquipmentRoutes(app: FastifyInstance): Promi
       const restored = await db.transaction(async (tx) => {
         const [ex] = await tx.select().from(officeEquipment).where(eq(officeEquipment.id, id));
         if (!ex) throw err.notFound('Единица оргтехники не найдена');
-        if (!ex.deletedAt) return false;
         // Область у восстановления та же, что у остальных действий: право `archive.restore` сейчас
         // есть только у администратора, но право и область выдаются по отдельности.
+        //
+        // До разбора состояния, а не внутри ветки возврата: живая карточка отдаётся отсюда целиком
+        // (повтор запроса — обычное дело), и проверка после `if (!ex.deletedAt)` не мешала бы читать
+        // чужую единицу в обход `officeEquipment.read`.
         assertOfficeEquipmentScope(p, {
           objectId: ex.objectId,
           ownerDepartmentId: ex.ownerDepartmentId,
         });
+        if (!ex.deletedAt) return false;
         // Пока карточка лежала в архиве, её номера могли уйти новой технике: уникальность считается
         // только среди живых, и вернуть единицу молча означало бы завести второй «инв. 0012345».
         await assertNumbersFree(

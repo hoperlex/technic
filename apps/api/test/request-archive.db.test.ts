@@ -352,4 +352,31 @@ describe.skipIf(!DB_URL)('архив заявок (живая схема)', () =
     expect((await list('waste-requests', 'archive=only')).map((r) => r.id)).not.toContain(id);
     expect((await list('waste-requests', '')).map((r) => r.id)).toContain(id);
   });
+
+  it('восстановление возвращает заказ техники — в том числе с назначенной машиной', async () => {
+    const id = await vehicleRequest();
+    // Машина назначена намеренно: область возврата спрашивает и арендодателя, а он у заказа ТС
+    // берётся с назначенной техники — без назначения та половина проверки не выполнялась бы вовсе.
+    await ctx.db.execute(sql`
+      INSERT INTO vehicle_request_assignments (request_id, vehicle_id, vehicle_type_id, assigned_by)
+      VALUES (
+        ${id},
+        ${ctx.vehicleId},
+        (SELECT vehicle_type_id FROM vehicles WHERE id = ${ctx.vehicleId}),
+        ${ctx.adminId})`);
+    await archive('vehicle-requests', id);
+
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/v1/vehicle-requests/${id}/restore`,
+      headers: ctx.auth,
+    });
+
+    // Своей оси у администратора нет, и обе проверки области он проходит насквозь: возврат
+    // отвечает тем же 200, что и до появления проверок.
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json()).toMatchObject({ deletedAt: null });
+    expect((await list('vehicle-requests', 'archive=only')).map((r) => r.id)).not.toContain(id);
+    expect((await list('vehicle-requests', '')).map((r) => r.id)).toContain(id);
+  });
 });
