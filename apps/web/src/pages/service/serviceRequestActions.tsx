@@ -21,7 +21,6 @@ import {
   allowedServiceStatusTransitions,
   can as hasPermission,
   isServiceRequestEditable,
-  moduleMailOutcomeLabels,
   serviceMailRepeatable,
   type ModuleMailOutcome,
   type ServiceRequestDto,
@@ -39,6 +38,7 @@ import { ServiceUrgencyModal } from '@features/service-urgency';
 import type { ActionSheetItem } from '@shared/ui';
 import { useAuth } from '../../auth/AuthContext';
 import { serviceReasonPrompts, type ReasonPrompt } from './serviceRequestPrompts';
+import { reportServiceMail } from './serviceMailNotice';
 import { ReasonModal } from '../../components/CancelReasonModal';
 import { errorMessage } from '../../utils/format';
 
@@ -87,8 +87,7 @@ export function useServiceRequestActions(): {
       message.success(task.success);
       // Отмена шлёт письмо службе: «не выезжайте». Если письма не будет, человек узнаёт об этом
       // здесь же — служба читает почту, а не портал.
-      const outcome = (result as { mail?: ModuleMailOutcome } | null)?.mail;
-      if (outcome && outcome !== 'queued') message.warning(moduleMailOutcomeLabels[outcome]);
+      reportServiceMail(message, (result as { mail?: ModuleMailOutcome } | null)?.mail);
       void qc.invalidateQueries({ queryKey: serviceRequestKeys.root });
       void qc.invalidateQueries({ queryKey: officeEquipmentKeys.root });
       setPrompt(null);
@@ -106,10 +105,13 @@ export function useServiceRequestActions(): {
       serviceRequestsApi.notify(request.id, { idempotencyKey: notifyKey }),
     onSuccess: (res) => {
       setNotifyKey(crypto.randomUUID());
+      // Успех называет адресатов: повтор шлют, когда сомневаются в настройке, — и ответ на это
+      // сомнение не «отправлено», а «отправлено вот сюда». Неудача повтора — тем же
+      // предупреждением, что и у прочих действий: письма снова нет.
       if (res.mail === 'queued') {
         message.success(`Письмо службе поставлено в очередь: ${res.recipients.join(', ')}`);
       } else {
-        message.warning(moduleMailOutcomeLabels[res.mail]);
+        reportServiceMail(message, res.mail);
       }
     },
     onError: (e) => message.error(errorMessage(e)),

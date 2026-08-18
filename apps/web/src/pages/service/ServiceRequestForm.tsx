@@ -1,4 +1,3 @@
-import { moduleMailOutcomeLabels } from '@technic/contracts';
 import { useEffect, useState } from 'react';
 import { App, Checkbox, DatePicker, Form, Input, Select, Space } from 'antd';
 import dayjs, { type Dayjs } from 'dayjs';
@@ -18,6 +17,7 @@ import { AutoSelect, FormModal, useFormBlockers } from '@shared/ui';
 import { ServiceRequestAttachments, type UploadedFile } from './ServiceRequestAttachments';
 import { ServiceRequestWarrantyClaim } from './ServiceRequestWarrantyClaim';
 import { ServiceRequestSubject } from './ServiceRequestSubject';
+import { reportServiceMail } from './serviceMailNotice';
 import { filesApi } from '../../api/resources';
 import { ResponsibleFields } from '../../components/ResponsibleFields';
 import { useAuth } from '../../auth/AuthContext';
@@ -224,7 +224,7 @@ export function ServiceRequestForm({
       message.success(request ? 'Заявка сохранена' : 'Заявка заведена');
       // Заявка заведена, но письмо службе не ушло — про это надо сказать сразу: служба читает
       // почту, а не портал, и молча оставить её неоповещённой значит потерять день.
-      if (res.mail && res.mail !== 'queued') message.warning(moduleMailOutcomeLabels[res.mail]);
+      reportServiceMail(message, res.mail);
       void qc.invalidateQueries({ queryKey: serviceRequestKeys.root });
       void qc.invalidateQueries({ queryKey: officeEquipmentKeys.root });
       onClose();
