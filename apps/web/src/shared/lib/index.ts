@@ -6,6 +6,7 @@ export * from './avatar';
 export * from './dayjs';
 export * from './errors';
 export * from './selectOptions';
+export * from './siderCollapsed';
 export * from './table';
 export * from './useAddressParam';
 export * from './useElementSize';

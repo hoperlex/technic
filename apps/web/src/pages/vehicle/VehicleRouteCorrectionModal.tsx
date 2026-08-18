@@ -11,13 +11,12 @@ import {
   type VehicleDto,
   type VehicleRouteDto,
   vehicleStatusLabels,
-  WAYBILL_CORRECTION_CONFIRM,
 } from '@technic/contracts';
 import { driversApi, vehicleRoutesApi, vehiclesApi, waybillsApi } from '../../api/resources';
 import { garageKeys } from '@entities/garage';
 import { AutoSelect, FormGrid, FormModal } from '@shared/ui';
-import { errorMessage, formatDateTime } from '../../utils/format';
-import { formatDateOnly } from './shared';
+import { errorMessage } from '../../utils/format';
+import { RouteCorrectionConsequences } from './RouteCorrectionConsequences';
 
 /**
  * Исправление исполнения рейса задним числом (ADR 0101, Р2).
@@ -225,12 +224,6 @@ export function VehicleRouteCorrectionModal({ route, onClose, onSaved }: Props) 
     correct.mutate(v);
   };
 
-  /** Заявки, у которых коррекция перепишет назначение: линейные дни в их число не входят. */
-  const reassigned = (preview?.requests ?? []).filter(
-    (r) => r.workDate === null && r.assignedVehicleId !== vehicleId,
-  );
-  const linearDays = (preview?.requests ?? []).filter((r) => r.workDate !== null);
-
   return (
     <FormModal
       title={route ? `Маршрут ${route.displayNumber} · исправить исполнение` : 'Коррекция рейса'}
@@ -265,55 +258,11 @@ export function VehicleRouteCorrectionModal({ route, onClose, onSaved }: Props) 
           )}
 
           <FormGrid.Full>
-            <Alert
-              type="warning"
-              showIcon
-              message={`Что произойдёт с рейсом за ${route ? formatDateOnly(route.routeDate) : ''}`}
-              description={
-                <ul style={{ margin: 0, paddingInlineStart: 20 }}>
-                  <li>
-                    {preview?.waybill
-                      ? `Номер ${preview.waybill.number} будет аннулирован, взамен выпишется следующий по серии.`
-                      : 'Действующего листа у рейса нет — коррекция выпишет новый номер.'}
-                  </li>
-                  {reassigned.length > 0 && (
-                    <li>
-                      Машину сменят заявки: {reassigned.map((r) => r.displayNumber).join(', ')} —
-                      рейс источник истины о том, чем едут; ставки при этом не трогаются.
-                    </li>
-                  )}
-                  {/* Линейный день (ADR 0100 п. 4): машина дня это машина рейса, а назначение
-                    заказа отвечает за весь его срок и остаётся прежним. Сказать это нужно там же,
-                    где перечислены сменившие машину, — иначе список прочтётся и про дни. */}
-                  {linearDays.length > 0 && (
-                    <li>
-                      Дни линейных заказов ({linearDays.map((r) => r.displayNumber).join(', ')})
-                      поедут машиной рейса. Назначение самих заказов не меняется — его правят в
-                      карточке заявки.
-                    </li>
-                  )}
-                  {(preview?.shifts ?? []).map((s) => (
-                    <li key={`${s.requestId}@${s.date}`}>
-                      Снимется подпись смены {s.displayNumber} за {formatDateOnly(s.date)}
-                      {s.approvedByName ? ` (принял ${s.approvedByName})` : ''} — часы останутся,
-                      подтвердить их придётся заново.
-                    </li>
-                  ))}
-                  {sheet?.printedAt && (
-                    <li>Лист уже печатали {formatDateTime(sheet.printedAt)}.</li>
-                  )}
-                  {sheet?.exportedAt && (
-                    <li>Лист уже выгружали файлом {formatDateTime(sheet.exportedAt)}.</li>
-                  )}
-                  {(sheet?.files.length ?? 0) > 0 && (
-                    <li>
-                      К старому листу подшито файлов: {sheet!.files.length} — на новый номер они не
-                      переедут, переподшейте вручную.
-                    </li>
-                  )}
-                  <li>{WAYBILL_CORRECTION_CONFIRM}</li>
-                </ul>
-              }
+            <RouteCorrectionConsequences
+              route={route}
+              preview={preview}
+              sheet={sheet}
+              vehicleId={vehicleId}
             />
           </FormGrid.Full>
 

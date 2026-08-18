@@ -22,7 +22,7 @@ import { usersApi } from '../api/resources';
 import { useAuth } from '../auth/AuthContext';
 import { useServiceWaitingCount } from '@features/service-waiting-badge';
 import { useReleases } from '@entities/release';
-import { useIsMobile } from '@shared/lib';
+import { readSiderCollapsed, useIsMobile, writeSiderCollapsed } from '@shared/lib';
 import { MobileAppBar } from './MobileAppBar';
 import { MobileNav, type MobileNavItem } from './MobileNav';
 import { PortalLogo } from './PortalLogo';
@@ -34,31 +34,13 @@ const { Sider, Content } = Layout;
 
 const SIDER_WIDTH = 230;
 const SIDER_COLLAPSED_WIDTH = 64;
-const COLLAPSED_STORAGE_KEY = 'technic:sider-collapsed';
-
-// localStorage недоступен в приватном режиме части браузеров — состояние меню не критично, молча игнорируем.
-function readCollapsed(): boolean {
-  try {
-    return localStorage.getItem(COLLAPSED_STORAGE_KEY) === '1';
-  } catch {
-    return false;
-  }
-}
-
-function writeCollapsed(value: boolean): void {
-  try {
-    localStorage.setItem(COLLAPSED_STORAGE_KEY, value ? '1' : '0');
-  } catch {
-    /* состояние просто не переживёт перезагрузку */
-  }
-}
 
 export function AppLayout() {
   const { user, logout, can, canUse } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const isMobile = useIsMobile();
-  const [collapsed, setCollapsed] = useState(readCollapsed);
+  const [collapsed, setCollapsed] = useState(readSiderCollapsed);
   const [supportOpen, setSupportOpen] = useState(false);
   const [changelogOpen, setChangelogOpen] = useState(false);
 
@@ -83,7 +65,7 @@ export function AppLayout() {
 
   const toggleCollapsed = () =>
     setCollapsed((v) => {
-      writeCollapsed(!v);
+      writeSiderCollapsed(!v);
       return !v;
     });
 
