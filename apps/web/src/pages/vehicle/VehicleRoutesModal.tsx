@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { App, Button, DatePicker, Form, Input, Select, Space, Tag, Typography } from 'antd';
 import { EditOutlined, EyeOutlined, PlusOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import {
   DRIVER_CATEGORY_MISMATCH_HINT,
   DRIVER_WORKED_ON_VEHICLE_HINT,
@@ -21,36 +21,43 @@ import {
   waybillStatusLabels,
 } from '@technic/contracts';
 import { driversApi, vehicleRoutesApi, vehiclesApi } from '../../api/resources';
-import { garageKeys } from '@entities/garage';
 import { AutoSelect } from '@shared/ui';
 import { DataTable, type CardConfig } from '@shared/ui';
 import { EntityLink } from '@shared/ui';
 import { FormModal } from '@shared/ui';
 import { FormGrid } from '@shared/ui';
-import { PageTableLayout } from '@shared/ui';
+import { ListToolbar } from '@shared/ui';
+import { ViewModal } from '@shared/ui';
 import { actionsColumn, RowActionButton, textColumn } from '@shared/ui';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
 import { useIsMobile } from '@shared/lib';
 import { useListParams } from '@shared/lib';
-import { useOpenedRecord } from '@shared/lib';
-import { useActiveTabKey } from '../../components/PageTabs';
 import { errorMessage } from '../../utils/format';
-import { vehicleRequestLink, waybillLink } from '../../utils/links';
+import { vehicleRequestViewLink, waybillLink } from '../../utils/links';
 import { useAuth } from '../../auth/AuthContext';
-import { VehicleRouteModal } from './VehicleRouteModal';
-import { VehicleRouteEditModal } from './VehicleRouteEditModal';
+import { useRouteModal } from './routeModal';
 import { formatDateOnly, useDriverOptions, useOwnVehicleOptions } from './shared';
 
 /**
- * Рейсы: что и с кем едет в конкретный день (план `docs/vehicle-routes-plan.md`).
+ * Список рейсов — окном поверх той страницы, где о рейсах спросили
+ * (план `docs/vehicle-routes-modal-plan.md`; сами рейсы — `docs/vehicle-routes-plan.md`, ADR 0050).
  *
- * Первая вкладка отвечает на «что заказали и что с этим делают», эта — на вопрос дня диспетчера:
- * чем занята машина, кто за рулём и выписан ли бланк. Заявки попадают сюда переводом в работу,
- * но собирают рейс здесь: порядок заявок, водитель и реквизиты выезда — свойства рейса, а не
- * заявки.
+ * Почему окно, а не вкладка, какой список был раньше. Рейс — не раздел портала, а сопровождающая
+ * запись: вопрос «чем занята машина» задают, стоя в заявке, в гараже и в журнале путевых листов.
+ * Вкладка отвечала на него уходом с экрана — с потерей фильтров той страницы, откуда спросили, и
+ * поиском обратной дороги. Список при этом нужен одному человеку — диспетчеру, собирающему день, —
+ * и ради него раздел держал вкладку, мимо которой ходили все остальные.
  *
- * Открывается день сегодняшний: рейс планируют накануне и правят утром, а история рейсов
- * читается журналом путевых листов.
+ * Отвечает окно на вопрос дня диспетчера: чем занята машина, кто за рулём и выписан ли бланк.
+ * Заявки попадают сюда переводом в работу, но собирают рейс здесь: порядок заявок, водитель и
+ * реквизиты выезда — свойства рейса, а не заявки.
+ *
+ * Открывается день сегодняшний: рейс планируют накануне и правят утром, а история рейсов читается
+ * журналом путевых листов. Просьба показать другой день приходит извне — `focusDate`/`focusToken`.
+ *
+ * Чего в окне нет. Адреса оно не знает вовсе: `?routes=1`, `?route=…` и `?request=…` разбирает
+ * провайдер окон (`routeModal.tsx`), он же держит карточку рейса и окно правки — список их только
+ * просит открыться (`openRoute`, `editRoute`). Собственное действие у него одно — завести рейс.
  */
 
 const DATE = 'YYYY-MM-DD';
@@ -70,39 +77,42 @@ interface CreateValues {
   reason?: string;
 }
 
-export function VehicleRoutesTab() {
+interface Props {
+  open: boolean;
+  onClose: () => void;
+  /** День, на который встаёт период списка; 'YYYY-MM-DD'. */
+  focusDate?: string;
+  /** Счётчик просьб сфокусироваться: растёт на каждый вызов openRoutesList. */
+  focusToken: number;
+  /** Списки портала устарели после правки рейса — инвалидацию делает провайдер. */
+  onChanged: () => void;
+}
+
+export function VehicleRoutesModal({ open, onClose, focusDate, focusToken, onChanged }: Props) {
   const { message } = App.useApp();
   const isMobile = useIsMobile();
-  const qc = useQueryClient();
   const { can } = useAuth();
+  /** Карточка рейса и карточка заявки — окна провайдера: список только просит их открыть. */
+  const { openRoute, openRequest, editRoute } = useRouteModal();
   const [range, setRange] = useState<[dayjs.Dayjs, dayjs.Dayjs]>([dayjs(), dayjs()]);
-  const [openId, setOpenId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
-  /** Рейс, открытый на правку: день, водитель и реквизиты выезда. */
-  const [editing, setEditing] = useState<VehicleRouteDto | null>(null);
 
   /**
-   * Рейс, названный в адресе: сюда приходят по ссылке из строки заявки («Маршрут Р-12»). Ключ
-   * запроса тот же, которым карточка грузит рейс, — рейс спрашивается один раз на двоих.
+   * Просьба показать конкретный день (`openRoutesList({ focusDate })`): её шлют карточка рейса
+   * кнопкой «Все маршруты» и правка рейса — новым днём, на который его переставили. Иначе список
+   * открывался бы сегодняшним числом, а рейс, ради которого его открыли, лежал бы в позавчера — и
+   * человек решал бы, что рейс пропал.
+   *
+   * Зависимость — счётчик, а не сама дата, и это главное в эффекте. Повторная просьба про тот же
+   * день обязана вернуть период на место, если его руками увели в другой месяц; по значению даты
+   * второй такой эффект не сработал бы вовсе — дата ведь не изменилась.
    */
-  const opened = useOpenedRecord<VehicleRouteDto>({
-    active: useActiveTabKey() === 'routes',
-    queryKey: (id) => ['vehicle-routes', id],
-    fetch: (id) => vehicleRoutesApi.get(id),
-  });
-
-  /**
-   * Период списка встаёт на день открытого рейса. Иначе за карточкой оставался бы сегодняшний
-   * день — а пришли по ссылке на позавчерашний, и, закрыв карточку, человек оказывался бы в
-   * списке, где этого рейса нет вовсе. Зависимость — сама дата: перебирать период руками при
-   * открытой карточке это не мешает.
-   */
-  const openedRouteDate = opened.record?.routeDate;
   useEffect(() => {
-    if (!openedRouteDate) return;
-    const day = dayjs(openedRouteDate);
+    if (!focusDate) return;
+    const day = dayjs(focusDate);
     setRange([day, day]);
-  }, [openedRouteDate]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusToken]);
 
   /**
    * Фильтры живут полосой над таблицей, а не выпадашками столбцов: в заголовке их не видно, а
@@ -133,17 +143,6 @@ export function VehicleRoutesTab() {
   const { options: vehicleOptions, loading: vehiclesLoading } = useOwnVehicleOptions();
   const { options: driverOptions, loading: driversLoading } = useDriverOptions();
 
-  const refresh = () => {
-    void qc.invalidateQueries({ queryKey: ['vehicle-routes'] });
-    // Список заявок показывает номер рейса и предупреждение «без маршрута» — он тоже устарел.
-    void qc.invalidateQueries({ queryKey: ['vehicle-requests'] });
-    // Тем же обновлением заканчивается выдача листа: он рождается ручкой рейса, а печатают его из
-    // журнала — и диспетчер идёт туда сразу. Правка состава и даты рейса переписывает уже
-    // выписанный лист, поэтому гасится журнал на любое изменение, а не только на выдачу.
-    void qc.invalidateQueries({ queryKey: ['waybills'] });
-    void qc.invalidateQueries({ queryKey: garageKeys.root });
-  };
-
   const columns = [
     textColumn<VehicleRouteDto>({
       key: 'num',
@@ -158,7 +157,7 @@ export function VehicleRoutesTab() {
           <Space size={6}>
             <span>{r.displayNumber}</span>
             {/* Перегон техники стоит в том же списке, что и грузовые рейсы: это тот же рейс той
-              же машины на тот же день, и искать его в отдельной вкладке было бы негде. Отличает
+              же машины на тот же день, и искать его в отдельном окне было бы негде. Отличает
               его пометка — и другое содержимое колонки «Заявки». */}
             {isRelocationPurpose(r.purpose) && (
               <Tag color={r.purpose === 'delivery' ? 'blue' : 'gold'}>
@@ -207,20 +206,21 @@ export function VehicleRoutesTab() {
       sortable: false,
       searchable: false,
       width: 280,
-      render: (_v, r) =>
+      render: (_v, r) => {
+        // Заявка перегона достаётся из строки заранее: внутри `onActivate` сужение типа уже не
+        // живёт — обработчик зовут потом, и TS о непустоте поля больше ничего не знает.
+        const source = r.sourceRequest;
         // У перегона состава нет: он едет по одной заявке, а «откуда — куда» и есть его задание.
-        isRelocationPurpose(r.purpose) ? (
+        return isRelocationPurpose(r.purpose) ? (
           <Space direction="vertical" size={0}>
             <span>
-              {r.sourceRequest ? (
+              {source ? (
                 <EntityLink
-                  to={vehicleRequestLink(can, {
-                    id: r.sourceRequest.requestId,
-                    status: r.sourceRequest.status,
-                  })}
+                  to={vehicleRequestViewLink(can, source.requestId)}
                   title="Открыть заявку"
+                  onActivate={() => openRequest(source.requestId)}
                 >
-                  {r.sourceRequest.displayNumber}
+                  {source.displayNumber}
                 </EntityLink>
               ) : (
                 '—'
@@ -234,14 +234,18 @@ export function VehicleRoutesTab() {
           <Typography.Text type="secondary">рейс пуст</Typography.Text>
         ) : (
           <Space direction="vertical" size={0}>
-            {/* Номер заявки — ссылка в её список: состав рейса читают вопросом «а что там за
-                заявка», и до сих пор на него отвечали переключением вкладки и поиском номера. */}
+            {/* Номер заявки открывает её карточку окном поверх списка: состав рейса читают
+                вопросом «а что там за заявка», и до сих пор на него отвечали переключением вкладки
+                и поиском номера. Ссылка при этом остаётся настоящей — её открывают Ctrl'ом
+                соседней вкладкой, — а без права на заявки `vehicleRequestViewLink` вернёт `null`,
+                и номер останется текстом (см. `EntityLink`). */}
             {r.requests.map((item) => (
               <span key={item.requestId}>
                 {item.position}.{' '}
                 <EntityLink
-                  to={vehicleRequestLink(can, { id: item.requestId, status: item.status })}
+                  to={vehicleRequestViewLink(can, item.requestId)}
                   title="Открыть заявку"
+                  onActivate={() => openRequest(item.requestId)}
                 >
                   {item.displayNumber}
                 </EntityLink>{' '}
@@ -252,7 +256,8 @@ export function VehicleRoutesTab() {
               {r.requests.length} из {routeRequestCapacity(r.formCode)} заявок
             </Typography.Text>
           </Space>
-        ),
+        );
+      },
     }),
     textColumn<VehicleRouteDto>({
       key: 'waybill',
@@ -282,7 +287,9 @@ export function VehicleRoutesTab() {
     actionsColumn<VehicleRouteDto>(
       // Состав рейса и выписка листа — в карточке; отсюда рейс открывают и правят его реквизиты:
       // «переставить день» и «сменить водителя» это утренние действия, ради которых открывать
-      // карточку незачем.
+      // карточку незачем. Оба окна держит провайдер: карточку — потому что её зовут из гаража и
+      // журнала листов, где списка нет вовсе, правку — потому что она обязана умереть вместе с
+      // тем окном, из которого её позвали.
       (r) => {
         const frozen = !isRouteEditable(r.waybill?.status ?? null);
         return (
@@ -290,7 +297,7 @@ export function VehicleRoutesTab() {
             <RowActionButton
               title="Открыть маршрут"
               icon={<EyeOutlined />}
-              onClick={() => setOpenId(r.id)}
+              onClick={() => openRoute(r.id)}
             />
             {/* Выключенная кнопка объясняется обёрткой: подсказку antd на ней не показывает. */}
             <span title={frozen ? ROUTE_FROZEN_MESSAGE : undefined}>
@@ -298,7 +305,7 @@ export function VehicleRoutesTab() {
                 title="Редактировать маршрут"
                 icon={<EditOutlined />}
                 disabled={frozen}
-                onClick={() => setEditing(r)}
+                onClick={() => editRoute(r)}
               />
             </span>
           </Space>
@@ -330,7 +337,7 @@ export function VehicleRoutesTab() {
               .map((item) => item.displayNumber)
               .join(', ')}`,
     ],
-    onOpen: (r) => setOpenId(r.id),
+    onOpen: (r) => openRoute(r.id),
   };
 
   /** Полоса фильтров над таблицей: поиск, техника, водитель, состояние листа и период рейсов. */
@@ -437,32 +444,63 @@ export function VehicleRoutesTab() {
   ];
 
   return (
-    <>
-      <PageTableLayout
-        filters={filters}
-        extra={
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreating(true)}>
-            Новый маршрут
-          </Button>
-        }
-        mobile={{
-          search: {
+    <ViewModal
+      title="Маршруты"
+      open={open}
+      onClose={onClose}
+      width={1080}
+      // Список переоткрывают на другом дне и из другого места портала: пересобрать его дешевле,
+      // чем тащить за собой фильтры прошлого захода.
+      destroyOnHidden
+      // Создание — единственное собственное действие списка, и на телефоне ему место в футере
+      // окна, а не круглой кнопкой: `Fab` живёт у нижней навигации страницы, которой под окном
+      // нет вовсе. Одна кнопка работает в обоих видах — окном на десктопе и шитом на телефоне.
+      footer={
+        <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreating(true)}>
+          Новый маршрут
+        </Button>
+      }
+      // Тело обязано иметь высоту: `DataTable` меряет свой контейнер (`useElementSize`) и считает
+      // по нему `scroll.y`, а в теле, растущем по содержимому, он намерил бы ноль и схлопнулся.
+      // На телефоне окно и так во весь экран — там высота своя, а не доля от неё.
+      bodyStyle={{
+        ...(isMobile ? { height: '100%' } : { height: '70vh' }),
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 12,
+        overflow: 'hidden',
+      }}
+    >
+      {/* Полосу фильтров десктопа и панель телефона рисуем сами: `PageTableLayout` остался
+          страницам, а в окне у списка своя оболочка. Шесть выпадашек фиксированной ширины на
+          360 px заняли бы экран целиком (ADR 0030), поэтому на телефоне — `ListToolbar` с шитами.
+          Главного действия ему не передаём: «Новый маршрут» стоит в футере окна. */}
+      {isMobile ? (
+        <ListToolbar
+          search={{
             value: params.search,
             placeholder: 'Р-12, госномер или водитель',
             onChange: (v) => applyFilter({ search: v }),
-          },
-          filters: mobileFilters,
-          sort: {
+          }}
+          filters={mobileFilters}
+          sort={{
             options: sortOptionsFrom(columns, { num: 'Маршрут' }),
             sortBy: params.sortBy,
             sortOrder: params.sortOrder,
             onChange: setSort,
-          },
-          primaryAction: {
-            label: 'Новый маршрут',
-            icon: <PlusOutlined />,
-            onClick: () => setCreating(true),
-          },
+          }}
+        />
+      ) : (
+        <div style={{ flex: '0 0 auto' }}>{filters}</div>
+      )}
+
+      {/* Прокрутку на телефоне держит эта обёртка: карточки списка растут по содержимому, и без
+          неё они уехали бы за нижний край окна. На десктопе прокручивается сама таблица. */}
+      <div
+        style={{
+          flex: '1 1 auto',
+          minHeight: 0,
+          overflowY: isMobile ? 'auto' : undefined,
         }}
       >
         <DataTable<VehicleRouteDto>
@@ -477,42 +515,27 @@ export function VehicleRoutesTab() {
           sortOrder={params.sortOrder}
           onChange={onTableChange}
         />
-      </PageTableLayout>
+      </div>
 
-      <VehicleRouteModal
-        routeId={openId ?? opened.id}
-        onClose={() => {
-          setOpenId(null);
-          opened.clear();
-        }}
-        onChanged={refresh}
-        onEdit={setEditing}
-      />
-
-      <VehicleRouteEditModal
-        route={editing}
-        onClose={() => setEditing(null)}
-        onSaved={(updated) => {
-          setEditing(null);
-          refresh();
-          // Список стоит на дне: рейс, уехавший на другую дату, из текущего периода пропадает —
-          // и человек должен увидеть его там, куда перенёс, а не гадать, куда он делся.
-          const day = dayjs(updated.routeDate);
-          setRange([day, day]);
-        }}
-      />
-
+      {/* Окно создания стоит внутри окна списка намеренно: antd поднимает z-index вложенных
+          окон над родительским по контексту, а соседнее — на телефоне оказалось бы под шторкой
+          списка. В адресе оно не отражается: это шаг внутри списка, а не место портала. */}
       <CreateRouteModal
         open={creating}
         onCancel={() => setCreating(false)}
-        onCreated={(id) => {
+        onCreated={(route) => {
           setCreating(false);
-          refresh();
+          onChanged();
           message.success('Маршрут заведён');
-          setOpenId(id);
+          // Период встаёт на день заведённого рейса: рейс заводят и на завтра, и на послезавтра, а
+          // список остался бы на сегодняшнем дне — и, закрыв карточку, человек не нашёл бы в нём
+          // только что созданного рейса.
+          const day = dayjs(route.routeDate);
+          setRange([day, day]);
+          openRoute(route.id);
         }}
       />
-    </>
+    </ViewModal>
   );
 }
 
@@ -533,7 +556,8 @@ function CreateRouteModal({
 }: {
   open: boolean;
   onCancel: () => void;
-  onCreated: (id: string) => void;
+  /** Отдаём заведённый рейс целиком: список ставит период на его день и открывает карточку. */
+  onCreated: (route: VehicleRouteDto) => void;
 }) {
   const { message } = App.useApp();
   const isMobile = useIsMobile();
@@ -583,7 +607,7 @@ function CreateRouteModal({
       }),
     onSuccess: (route) => {
       form.resetFields();
-      onCreated(route.id);
+      onCreated(route);
     },
     onError: (e) => message.error(errorMessage(e)),
   });

@@ -34,7 +34,11 @@ export interface CardConfig<T> {
   lines?: ((record: T) => ReactNode)[];
   /** Действия строки списком с подписями: подсказка на иконке по касанию не открывается. */
   actions?: (record: T) => ActionSheetItem[];
-  /** Касание по карточке — обычно открыть карточку записи. */
+  /**
+   * Касание по карточке — обычно открыть карточку записи. Касание по активному содержимому
+   * (ссылка на связанную запись, кнопка, поле) карточку не открывает: карточка спрашивает тот же
+   * `opensRow`, что и строка таблицы на десктопе.
+   */
   onOpen?: (record: T) => void;
 }
 
@@ -80,7 +84,8 @@ interface DataTableProps<T> {
   /**
    * Клик по строке таблицы — обычно открыть карточку записи. Ячейки с активным содержимым его
    * не отдают (см. `opensRow`): нажатие на визу, статус или действие делает своё дело, а не
-   * открывает карточку заодно. На телефоне то же самое делает `card.onOpen`.
+   * открывает карточку заодно. На телефоне то же самое и по тому же правилу делает `card.onOpen`:
+   * список для человека один, и открываться он должен одинаково с любого экрана.
    */
   onRowClick?: (record: T) => void;
   onChange: (change: TableChange) => void;
@@ -191,6 +196,11 @@ function withSelectionColumn<T extends object>(
  * — клик по управляющему элементу (кнопка, ссылка, поле) и по ячейке, помеченной `NO_ROW_CLICK`:
  *   колонка действий целиком отдана нажатиям, и промах мимо кнопки открытием карточки не считают;
  * — клик, которым кончилось выделение текста: адрес или комментарий копировали, а не открывали.
+ *
+ * Правило одно на оба представления списка: строка таблицы спрашивает его в `onRow`, карточка
+ * телефона — в `ListCard`. Разъехавшись, они дали бы одному и тому же списку разное поведение:
+ * ссылка внутри карточки уводила бы на связанную запись и открывала бы заодно саму карточку,
+ * а та же ссылка в строке таблицы — нет.
  */
 function opensRow(e: MouseEvent<HTMLElement>): boolean {
   const target = e.target as HTMLElement | null;
@@ -212,7 +222,13 @@ function ListCard<T>({ record, card }: { record: T; card: CardConfig<T> }) {
       className={`list-card${openable ? ' list-card--openable' : ''}`}
       role={openable ? 'button' : undefined}
       tabIndex={openable ? 0 : undefined}
-      onClick={openable ? () => card.onOpen?.(record) : undefined}
+      onClick={
+        openable
+          ? (e) => {
+              if (opensRow(e)) card.onOpen?.(record);
+            }
+          : undefined
+      }
       onKeyDown={
         openable
           ? (e) => {

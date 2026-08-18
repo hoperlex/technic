@@ -18,6 +18,7 @@ import {
   EditOutlined,
   EyeOutlined,
   FieldTimeOutlined,
+  NodeIndexOutlined,
   PlusOutlined,
   ReloadOutlined,
   SwapOutlined,
@@ -99,7 +100,7 @@ import {
 } from '../../hooks/useVehicleClassifications';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage, formatDate, formatDateTime } from '../../utils/format';
-import { vehicleRouteLink } from '../../utils/links';
+import { canOpenRoute, vehicleRouteLink } from '../../utils/links';
 import { withSavedOption } from '@shared/lib';
 import { calendarDaysLabel, vehicleRequestDateRules } from '../../utils/date';
 
@@ -113,6 +114,7 @@ import { VehicleRelocationModal } from './VehicleRelocationModal';
 import { RequestRelocationsField } from './RequestRelocationsField';
 import { VehicleBackdateFields } from './VehicleBackdateFields';
 import { VehicleRouteTransferModal } from './VehicleRouteTransferModal';
+import { useRouteModal } from './routeModal';
 import { useObjectScope } from '../../hooks/useObjectScope';
 import { useDepartmentScope } from '../../hooks/useDepartmentScope';
 import { MOSCOW_TZ } from '@shared/config';
@@ -254,8 +256,12 @@ export function VehicleRequestsTab() {
   const { user, can } = useAuth();
   const qc = useQueryClient();
   const isMobile = useIsMobile();
-  // Переход на вкладку маршрутов: им кончается предупреждение о расхождении дат — чинят его там.
+  // Настоящий переход остался один — недельная заявка: у неё своя страница с адресом, потому что
+  // состав в неё правят построчно, и в окно такая работа не помещается (`openWeekly`).
   const navigate = useNavigate();
+  // Рейс и список рейсов — окнами поверх этого списка (ADR 0120). Вкладки «Маршруты» больше нет, и
+  // вопрос «а где эта заявка едет» перестал стоить ухода с экрана вместе с фильтрами и страницей.
+  const { openRoute, openRoutesList } = useRouteModal();
   // Объектные роли — область видимости (свои объекты, заявка до «В работе»); действия — по
   // правам (ADR 0021). Виза — право руководителя строительства (ADR 0025).
   const { isObjectRole, soleObjectId, objectFieldDisabled, limitObjectOptions, ownObjectIds } =
@@ -281,6 +287,14 @@ export function VehicleRequestsTab() {
    * арендодатель), и кнопка, выключенная у половины списка, объясняла бы им несуществующий запрет.
    */
   const canCreateWeekly = can('weeklyRequests.create');
+  /**
+   * «Маршруты» — одна из трёх дверей в список рейсов (план «маршрут и заявка окнами»): здесь, в
+   * карточке заявки и в карточке самого рейса. В тулбаре она потому, что день собирают отсюда:
+   * заявки подтверждают в этом списке, а раскладывают их по рейсам — в том, и прежде это была
+   * соседняя вкладка. Право то же, каким открывается сам рейс: в списке видны чужие машины и ФИО
+   * водителей собственного парка.
+   */
+  const showRoutes = canOpenRoute(can);
   const weeklyCreate = useWeeklyRequestCreate();
 
   // С одним объектом он зафиксирован и в фильтре списка, и в форме заявки; с несколькими —
@@ -916,10 +930,13 @@ export function VehicleRequestsTab() {
    */
   const warnRouteDateMismatch = (saved: VehicleRequestDto) => {
     if (saved.requestType !== 'freight_transport' || !saved.route) return;
-    const routeLink = vehicleRouteLink(can, saved.route.id);
+    // Рейс — в локальную константу: дальше он спрашивается из замыкания кнопки, где сужение по
+    // `saved.route` уже не действует.
+    const route = saved.route;
+    const routeLink = vehicleRouteLink(can, route.id);
     const mismatch = routeDateMismatch(
       { tripDate: moscowDateKeyOf(new Date(saved.scheduledAt)) },
-      { displayNumber: saved.route.displayNumber, routeDate: saved.route.routeDate },
+      { displayNumber: route.displayNumber, routeDate: route.routeDate },
     );
     if (!mismatch) return;
     modal.warning({
@@ -927,12 +944,15 @@ export function VehicleRequestsTab() {
       content: mismatch,
       okText: 'Понятно',
       // Кнопка перехода — там же, где объяснение: иначе человек закроет окно и пойдёт искать
-      // маршрут руками, а половина расхождений так и останется незамеченной.
+      // маршрут руками, а половина расхождений так и останется незамеченной. Рейс открывается
+      // окном поверх списка (ADR 0120): расхождение находят сразу после правки заявки, и увести
+      // человека со списка значило бы отобрать у него ту самую заявку, которую он только что
+      // правил, — вместе с фильтрами и страницей, на которой она нашлась.
       ...(routeLink
         ? {
-            cancelText: `Открыть маршрут ${saved.route.displayNumber}`,
+            cancelText: `Открыть маршрут ${route.displayNumber}`,
             okCancel: true,
-            onCancel: () => navigate(routeLink),
+            onCancel: () => openRoute(route.id),
           }
         : {}),
     });
@@ -1398,19 +1418,26 @@ export function VehicleRequestsTab() {
         // или породила, и каждый виден в своей строке ленты.
         if (row.kind === 'weekly') return dash;
         const r = row.order;
-        if (r.route) {
+        const route = r.route;
+        if (route) {
           return (
             <div style={{ lineHeight: 1.35 }}>
-              {/* Номер рейса ведёт на вкладку маршрутов и открывает его карточку: до сих пор
-                  «где эта заявка едет» спрашивали переключением вкладки и поиском по дню. */}
+              {/* Номер рейса открывает его карточку окном поверх списка (ADR 0120): «где эта
+                  заявка едет» спрашивают, стоя в этой самой строке, и ответ не должен стоить
+                  ухода с экрана вместе с фильтрами и страницей. Ссылка при этом настоящая —
+                  Ctrl-кликом её по-прежнему открывают соседней вкладкой браузера. */}
               <div>
-                <EntityLink to={vehicleRouteLink(can, r.route.id)} title="Открыть маршрут">
-                  {r.route.displayNumber}
+                <EntityLink
+                  to={vehicleRouteLink(can, route.id)}
+                  title="Открыть маршрут"
+                  onActivate={() => openRoute(route.id)}
+                >
+                  {route.displayNumber}
                 </EntityLink>
               </div>
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                строка {r.route.position}
-                {r.route.hasWaybill ? ' · лист выписан' : ''}
+                строка {route.position}
+                {route.hasWaybill ? ' · лист выписан' : ''}
               </Typography.Text>
             </div>
           );
@@ -1846,15 +1873,33 @@ export function VehicleRequestsTab() {
       r.assignment
         ? `${assignmentTitle(r.assignment)} · ${assignmentRateLabel(r.assignment) || r.assignment.lessorName || 'без ставки'}`
         : null,
-    // Рейс и та же потерянная заявка, что помечена в таблице колонкой «Маршрут».
-    (r) =>
-      r.route ? (
-        `Маршрут ${r.route.displayNumber} · строка ${r.route.position}`
-      ) : r.status === 'confirmed' &&
+    // Рейс и та же потерянная заявка, что помечена в таблице колонкой «Маршрут». Номер здесь
+    // ссылка, а не текст: карточка отдаёт касание себе только там, где под пальцем не оказалось
+    // ссылки (`opensRow`), и одно движение больше не значит двух разных вещей. Тот же рейс
+    // продублирован пунктом шита действий — пальцем по пункту попадают вернее, чем по номеру
+    // внутри строки, а ссылка остаётся ради Ctrl-клика и соседней вкладки браузера.
+    (r) => {
+      const route = r.route;
+      if (route)
+        return (
+          <>
+            Маршрут{' '}
+            <EntityLink
+              to={vehicleRouteLink(can, route.id)}
+              title="Открыть маршрут"
+              onActivate={() => openRoute(route.id)}
+            >
+              {route.displayNumber}
+            </EntityLink>{' '}
+            · строка {route.position}
+          </>
+        );
+      return r.status === 'confirmed' &&
         r.requestType === 'freight_transport' &&
         r.assignment?.ownership === 'own' ? (
         <Tag color="orange">Без маршрута</Tag>
-      ) : null,
+      ) : null;
+    },
     (r) => (r.cancelReason ? `Причина отмены: ${r.cancelReason}` : null),
     (r) => r.comment || null,
     (r) => (
@@ -1939,10 +1984,33 @@ export function VehicleRequestsTab() {
         icon: <EyeOutlined />,
         onClick: () => setViewRecord(r),
       };
+      /*
+       * Рейс — пунктом шита, а не только ссылкой в строке карточки: по пункту во весь экран
+       * пальцем попадают вернее, чем по номеру внутри текста. Номер стоит в подписи не для
+       * красоты — по нему видно, тот ли это рейс, о котором думаешь, ещё до нажатия.
+       *
+       * Право спрашивается адресом ссылки, а не отдельным условием: где номер остался текстом,
+       * там и пункта быть не должно, иначе окно открывалось бы там, где ссылки не показывают.
+       * Пункт живёт во всех ветках, включая архивную: у заявки, уехавшей в архив, рейс никуда не
+       * делся, и вопрос «в чём она ехала» задают о ней чаще, чем о живой.
+       */
+      const route = r.route;
+      const routeActions =
+        route && vehicleRouteLink(can, route.id)
+          ? [
+              {
+                key: 'route',
+                label: `Открыть маршрут ${route.displayNumber}`,
+                icon: <NodeIndexOutlined />,
+                onClick: () => openRoute(route.id),
+              },
+            ]
+          : [];
       if (r.deletedAt) {
         return canRestore
           ? [
               view,
+              ...routeActions,
               {
                 key: 'restore',
                 label: 'Восстановить',
@@ -1950,7 +2018,7 @@ export function VehicleRequestsTab() {
                 onClick: () => restoreMut.mutate(r.id),
               },
             ]
-          : [view];
+          : [view, ...routeActions];
       }
       /** Смена техники (ADR 0048) — на своём праве, поэтому и в короткой ветке арендодателя. */
       const reassign = reassignAllowed(r)
@@ -1963,10 +2031,11 @@ export function VehicleRequestsTab() {
             },
           ]
         : [];
-      if (!canEdit && !canDelete) return [view, ...reassign];
+      if (!canEdit && !canDelete) return [view, ...routeActions, ...reassign];
       const allowed = canModify(r);
       return [
         view,
+        ...routeActions,
         ...reassign,
         ...(decidableEarlyEnd(r)
           ? [
@@ -2020,9 +2089,18 @@ export function VehicleRequestsTab() {
         /* Два входа рядом: обычный заказ и заявка на неделю. Недельная — не «ещё один тип
            заявки», а документ-основание над заказами (ADR 0085), и вести её из того же списка,
            где эти заказы видны, — единственное место, где оба вопроса решают вместе. Право на
-           неё своё: видеть документ теперь могут и те, кто его не заводит. */
-        canCreate || canCreateWeekly ? (
+           неё своё: видеть документ теперь могут и те, кто его не заводит.
+
+           Третья кнопка не заводит ничего, а открывает список рейсов окном (ADR 0120) — там же,
+           где прежде стояла его вкладка. Она первая слева и без выделения: главное действие
+           списка — заказ, а маршруты приходят к нему довеском. */
+        canCreate || canCreateWeekly || showRoutes ? (
           <Space size={8} wrap>
+            {showRoutes && (
+              <Button icon={<NodeIndexOutlined />} onClick={() => openRoutesList()}>
+                Маршруты
+              </Button>
+            )}
             {canCreateWeekly && (
               <Button icon={<PlusOutlined />} onClick={weeklyCreate.open}>
                 Заявка на неделю
@@ -2048,6 +2126,12 @@ export function VehicleRequestsTab() {
         // состав в неё правят построчно, и на экране телефона такой работы не делают.
         primaryAction: canCreate
           ? { label: 'Создать заявку', icon: <PlusOutlined />, onClick: openCreate }
+          : undefined,
+        // «Маршруты» на телефоне стоят рядом с «Фильтрами»: десктопный слот `extra` там не
+        // рисуется вовсе, а круглая кнопка занята заказом — и вторая такая же читалась бы как
+        // ещё одно «создать», а не как переход в чужой список.
+        secondaryActions: showRoutes
+          ? [{ label: 'Маршруты', icon: <NodeIndexOutlined />, onClick: () => openRoutesList() }]
           : undefined,
       }}
     >

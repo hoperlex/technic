@@ -46,6 +46,8 @@ const ISSUED: WaybillDto = {
   correctionReason: '',
   correctsNumber: null,
   correctedByNumber: null,
+  routeId: 'route-1',
+  routeNumber: 'Р-12',
   requests: [],
   files: [],
 };

@@ -3,20 +3,38 @@ import dayjs from 'dayjs';
 import {
   type GarageBusyEntry,
   type GarageBusyRequest,
+  type GarageRouteBusy,
   isRelocationPurpose,
   routePurposeShortLabels,
 } from '@technic/contracts';
-import { EntityLink } from '@shared/ui';
-import { vehicleRequestLink, vehicleRouteLink, waybillLink } from '../../utils/links';
+import { EntityLink, type ActionSheetItem } from '@shared/ui';
+import {
+  canOpenRoute,
+  vehicleRequestViewLink,
+  vehicleRouteLink,
+  waybillLink,
+} from '../../utils/links';
 import { useAuth } from '../../auth/AuthContext';
+import { useRouteModal } from '../vehicle/routeModal';
 
 /**
- * Общее двух вкладок гаража: чем занят день — строками со ссылками в те модули, где эту работу
- * ведут.
+ * Общее двух вкладок гаража: чем занят день — строками со ссылками на записи, которыми эта работа
+ * заведена.
  *
- * Своих адресов у гаража нет: номер заявки, рейса и бланка ведут туда же, куда ведут из списка
- * маршрутов и журнала листов (`utils/links`). Эти функции сами возвращают `null` там, где роли
- * целевая вкладка не положена, — тогда номер остаётся текстом, а не ссылкой в пустой экран.
+ * Своих адресов у гаража нет: номер заявки, рейса и бланка спрашиваются у общих обёрток
+ * (`utils/links`), и те возвращают `null` там, где роли цель не положена, — тогда номер остаётся
+ * текстом, а не ссылкой в пустой экран. Это не отвлечённая осторожность: механику и главному
+ * механику гараж открыт (`garage.read`), а заявок у них нет вовсе, и номера заявок в занятости
+ * обязаны остаться для них обычным текстом.
+ *
+ * Рейс и заявка при этом никуда больше не уводят: обычный клик открывает их окном **поверх среза
+ * дня** (ADR 0120, план `docs/vehicle-routes-modal-plan.md`). Ради этого план и затевался: вопрос
+ * «а что там за маршрут» задают, стоя в гаражном дне с выбранной датой и фильтрами, и до сих пор
+ * ответ на него стоил ухода в другой раздел и обратной дороги руками. Ссылки остаются настоящими
+ * — Ctrl'ом их по-прежнему открывают соседней вкладкой (см. `EntityLink`).
+ *
+ * Номер бланка — исключение намеренное: журнал путевых листов остаётся отдельным экраном, окна у
+ * него нет, и по нему уходят туда же, куда уходили.
  */
 
 const DATE = 'DD.MM';
@@ -26,14 +44,31 @@ function shortDate(value: string): string {
   return dayjs(value).format(DATE);
 }
 
-/** Номер заявки ссылкой — с заказчиком рядом: по нему в срезе и узнают, куда машина едет. */
-function RequestLink({ request }: { request: GarageBusyRequest }) {
+/**
+ * Номер заявки ссылкой — с заказчиком рядом: по нему в срезе и узнают, куда машина едет.
+ *
+ * Открывается окном на чтение, а не переходом на вкладку заявок: из среза дня спрашивают одно —
+ * что это за заявка, — и уходить ради ответа со своего дня незачем. Отсюда `vehicleRequestViewLink`
+ * вместо `vehicleRequestLink`: вкладку выбирали по статусу заявки, а у окна адрес один на любое её
+ * состояние (ADR 0120), и статус ему не нужен вовсе.
+ *
+ * Поэтому от строки и требуется ровно то, что она показывает: номер, заказчик и по чему открывать.
+ * Полного `GarageBusyRequest` она больше не спрашивает — иначе заказ спецтехники, своей строки
+ * состава не имеющий, по-прежнему собирал бы фиктивный DTO ради одного лишь статуса.
+ */
+function RequestLink({
+  request,
+}: {
+  request: Pick<GarageBusyRequest, 'requestId' | 'displayNumber' | 'customerName'>;
+}) {
   const { can } = useAuth();
+  const { openRequest } = useRouteModal();
   return (
     <>
       <EntityLink
-        to={vehicleRequestLink(can, { id: request.requestId, status: request.status })}
+        to={vehicleRequestViewLink(can, request.requestId)}
         title="Открыть заявку"
+        onActivate={() => openRequest(request.requestId)}
       >
         {request.displayNumber}
       </EntityLink>
@@ -48,13 +83,21 @@ function RequestLink({ request }: { request: GarageBusyRequest }) {
  */
 function BusyEntry({ entry, showVehicle }: { entry: GarageBusyEntry; showVehicle: boolean }) {
   const { can } = useAuth();
+  const { openRoute } = useRouteModal();
   const secondary = { fontSize: 12 } as const;
 
   if (entry.kind === 'route') {
     return (
       <Space direction="vertical" size={0}>
         <Space size={6} wrap>
-          <EntityLink to={vehicleRouteLink(can, entry.routeId)} title="Открыть маршрут">
+          {/* Главный выигрыш среза: рейс открывается окном поверх дня, а не уносит в раздел
+              заказа техники. Диспетчер разбирает день сверху вниз — открыл рейс, закрыл, пошёл
+              дальше по списку, — и день, фильтр и место в списке остаются нетронутыми. */}
+          <EntityLink
+            to={vehicleRouteLink(can, entry.routeId)}
+            title="Открыть маршрут"
+            onActivate={() => openRoute(entry.routeId)}
+          >
             {entry.displayNumber}
           </EntityLink>
           {isRelocationPurpose(entry.purpose) && (
@@ -102,15 +145,14 @@ function BusyEntry({ entry, showVehicle }: { entry: GarageBusyEntry; showVehicle
     return (
       <Space direction="vertical" size={0}>
         <Space size={6} wrap>
+          {/* Заказ, накрывающий день целиком, строкой состава не является: линейного заказа здесь
+              не бывает вовсе — его занятость говорит рейс дня (ADR 0100 §12). Номеру и заказчику
+              этого различия не видно, и ссылка у него та же самая. */}
           <RequestLink
             request={{
               requestId: entry.requestId,
               displayNumber: entry.displayNumber,
-              status: entry.status,
               customerName: entry.customerName,
-              // Заказ, накрывающий день целиком, дня не несёт: линейного заказа здесь не бывает
-              // вовсе — его занятость говорит рейс дня (ADR 0100 §12).
-              workDate: null,
             }}
           />
           {/* Запрошенный досрочный отъезд (ADR 0044): до визы срок прежний, и без пометки
@@ -196,7 +238,15 @@ export function busyKey(entry: GarageBusyEntry): string {
   }
 }
 
-/** Та же занятость одной строкой — для карточки телефона, где места на список нет (ADR 0030). */
+/**
+ * Та же занятость одной строкой — для карточки телефона, где места на список нет (ADR 0030).
+ *
+ * Остаётся текстом намеренно. Строка одна на весь день и набита впритык — номер рейса стоит в ней
+ * вперемешку с составом или со стрелкой перегона, — и ссылка внутри неё была бы целью в несколько
+ * миллиметров между двумя другими словами. Поэтому открывают рейс не отсюда, а пунктом шита
+ * действий (`useBusyRouteActions`) — тем же приёмом, каким на телефон уже вынесены «Статистика за
+ * период» и «Обслуживание».
+ */
 export function busyLine(entry: GarageBusyEntry): string {
   switch (entry.kind) {
     case 'route':
@@ -212,4 +262,38 @@ export function busyLine(entry: GarageBusyEntry): string {
     default:
       return `${entry.number} · ЭСМ-2 ${shortDate(entry.periodFrom)}–${shortDate(entry.periodTo)}`;
   }
+}
+
+/**
+ * Рейсы дня пунктами действий карточки телефона: с телефона рейс иначе не открыть вовсе.
+ *
+ * Пункт на **каждый** рейс дня, а не один «главный»: машина за день ходит несколькими рейсами, у
+ * водителя их бывает столько же, и единственный пункт молча прятал бы остальные — притом именно
+ * те, о которых чаще и спрашивают (последний рейс, а не первый). Подпись — номером рейса, тем
+ * самым, которым его называют по телефону (`Р-12`).
+ *
+ * Право спрашивается тем же `canOpenRoute`, что и ссылка на десктопе и сам параметр адреса у
+ * провайдера окон: шит действий не должен становиться второй дверью мимо права. Роли без него
+ * (механик) достаётся пустой список — карточка тогда не рисует и кнопки действий.
+ *
+ * Хук, а не чистая функция, потому что обе половины ответа — право и способ открыть окно —
+ * приходят из контекстов; обеим вкладкам гаража остаётся позвать его один раз и раскрыть
+ * результат в `card.actions`.
+ */
+export function useBusyRouteActions(): (entries: readonly GarageBusyEntry[]) => ActionSheetItem[] {
+  const { can } = useAuth();
+  const { openRoute } = useRouteModal();
+  const allowed = canOpenRoute(can);
+  return (entries) =>
+    allowed
+      ? entries
+          .filter((entry): entry is GarageRouteBusy => entry.kind === 'route')
+          .map((entry) => ({
+            // Ключ тот же, каким занятость названа в списке строк: рейс в дне один раз, и второго
+            // способа его назвать заводить незачем.
+            key: busyKey(entry),
+            label: `Открыть маршрут ${entry.displayNumber}`,
+            onClick: () => openRoute(entry.routeId),
+          }))
+      : [];
 }

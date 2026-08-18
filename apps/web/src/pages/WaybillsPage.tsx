@@ -26,6 +26,7 @@ import { EntityLink } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
 import { actionsColumn, badgeColumn, textColumn } from '@shared/ui';
 import { sortOptionsFrom } from '@shared/ui';
+import { useRouteModal } from './vehicle/routeModal';
 import { useDriverOptions, useOwnVehicleOptions } from './vehicle/shared';
 import { waybillFiltersBar, waybillMobileFilters, type WaybillDateRange } from './waybills/filters';
 import {
@@ -37,14 +38,19 @@ import {
 import { useListParams } from '@shared/lib';
 import { useAuth } from '../auth/AuthContext';
 import { errorMessage } from '../utils/format';
-import { vehicleRequestLink } from '../utils/links';
+import { vehicleRequestViewLink, vehicleRouteLink } from '../utils/links';
 
 /**
  * Журнал учёта путевых листов (ADR 0037).
  *
- * Выписки здесь нет: лист выписывают с маршрута (ADR 0050), а журнал только отвечает, какие номера
- * выданы, на какие машины и что с ними стало. Аннулированные из списка не исчезают — пропуск в
- * нумерации означает утраченный бланк, а не отменённый рейс.
+ * Выписки здесь нет: лист выписывают из карточки маршрута (ADR 0050), а журнал только отвечает,
+ * какие номера выданы, на какие машины и что с ними стало. Аннулированные из списка не исчезают —
+ * пропуск в нумерации означает утраченный бланк, а не отменённый рейс.
+ *
+ * С уходом вкладки «Маршруты» (ADR 0120) журнал перестал быть тупиком: рейс он теперь называет
+ * своей колонкой и открывает окном поверх себя — отобранный за месяц список при этом остаётся на
+ * экране. Точкой входа в список рейсов журнал намеренно не стал: у механика и главного механика,
+ * которые его и читают, прав на рейсы нет вовсе.
  */
 
 const DATE = 'YYYY-MM-DD';
@@ -53,6 +59,8 @@ const today = () => dayjs().format(DATE);
 export function WaybillsPage() {
   const { message, modal } = App.useApp();
   const { can } = useAuth();
+  /** Рейс и заявка — окнами поверх журнала (ADR 0120): см. колонку «Маршрут» и талоны заказчиков. */
+  const { openRoute, openRequest } = useRouteModal();
   const canCancel = can('waybills.cancel');
   const canAttach = can('waybills.files');
   /**
@@ -295,6 +303,54 @@ export function WaybillsPage() {
       searchable: false,
       width: 220,
     }),
+    /**
+     * Рейс, по которому выдан бланк (ADR 0120).
+     *
+     * Место выбрано порядком чтения строки: «номер → бланк → дата → техника → водитель» отвечает,
+     * какая бумага на кого выдана, и рейс замыкает эту связку — он и есть та поездка, ради которой
+     * машину с человеком свели вместе. Дальше идут талоны заказчиков: чьи работы в этот рейс
+     * попали.
+     *
+     * Номер открывает карточку рейса окном поверх журнала, а не уводит на его экран: вопрос «что
+     * это была за поездка» задают, стоя в отобранном за месяц списке, и ответ на него не должен
+     * стоить ни фильтров, ни обратной дороги. Ссылкой, а не кнопкой — Ctrl и средний щелчок
+     * обязаны по-прежнему открывать рейс соседней вкладкой браузера (`EntityLink`).
+     *
+     * Пусто в этой графе — законное состояние, а не потеря данных, и потому показывается тем же
+     * прочерком, что и журнал без талонов: у недельного ЭСМ-2 рейса нет по устройству бланка (он
+     * держит неделю работы на площадке, а не поездку), и у листов, выданных до появления
+     * маршрутов, его тоже нет.
+     *
+     * У механика и главного механика номер останется обычным текстом: журнал листов им положен, а
+     * рейсы — нет (`vehicleRequests.status`), и `vehicleRouteLink` вернёт `null`. Это и есть
+     * правильный ответ — назвать рейс и пустить в него не одно и то же.
+     */
+    textColumn<WaybillDto>({
+      key: 'routeNumber',
+      title: 'Маршрут',
+      dataIndex: 'routeNumber',
+      // Как у бланка и статуса: сортировки по рейсу сервер не знает (`WAYBILL_SORT_FIELDS`), а
+      // поиск в журнале один — по номеру листа, полем в панели фильтров.
+      sortable: false,
+      searchable: false,
+      width: 150,
+      render: (_v, r) => {
+        // Читают номер, а ведёт `routeId`: подпись рейса сервер собирает сам, а окно открывается
+        // по идентификатору. Порознь эти два поля не приходят — но и рисовать ссылку в никуда,
+        // случись это, нечем.
+        const { routeId, routeNumber } = r;
+        if (!routeId || !routeNumber) return <Typography.Text type="secondary">—</Typography.Text>;
+        return (
+          <EntityLink
+            to={vehicleRouteLink(can, routeId)}
+            title="Открыть маршрут"
+            onActivate={() => openRoute(routeId)}
+          >
+            {routeNumber}
+          </EntityLink>
+        );
+      },
+    }),
     textColumn<WaybillDto>({
       key: 'requests',
       title: 'Талоны заказчиков',
@@ -308,13 +364,21 @@ export function WaybillsPage() {
         ) : (
           <Space direction="vertical" size={0}>
             {/* Номер талона ведёт к самой заявке: журнал отвечает, что за бланк выдан, а «что в
-                нём за работа» спрашивают у заявки — и до сих пор искали её номер руками. */}
+                нём за работа» спрашивают у заявки — и до сих пор искали её номер руками.
+
+                Заявка открывается читалкой поверх журнала (ADR 0120), а не уводит на свою вкладку:
+                уход стоил бы отбора, ради которого журнал и открыли, а делать из журнала ничего не
+                нужно — работу по заявке ведут там, где её взяли. Адрес поэтому статус-независимый
+                (`vehicleRequestViewLink`): вкладку выбирать не для чего, а `status` талона отвечает
+                на другой вопрос. У механика обёртка вернёт `null` — `vehicleRequests.read` у него
+                нет, и номер останется текстом, каким и был. */}
             {r.requests.map((link) => (
               <span key={link.requestId}>
                 {link.slot}.{' '}
                 <EntityLink
-                  to={vehicleRequestLink(can, { id: link.requestId, status: link.status })}
+                  to={vehicleRequestViewLink(can, link.requestId)}
                   title="Открыть заявку"
+                  onActivate={() => openRequest(link.requestId)}
                 >
                   {link.displayNumber}
                 </EntityLink>{' '}
@@ -505,11 +569,14 @@ export function WaybillsPage() {
       {/* Пачка печатается тем же окном, что и один лист: сервер собирает бланки в один PDF, и
         диалог печати браузера остаётся один. */}
       <WaybillPrintModal target={printing} onClose={() => setPrinting(null)} />
+      {/* Откуда берутся номера, которых в журнале не выписывают. Кнопки «Маршруты» здесь нет
+        намеренно: список рейсов вызывают оттуда, где их ведут, а журнал читают механик и главный
+        механик, у которых прав на рейсы нет вовсе, — кнопка обещала бы им запертую дверь. */}
       <Typography.Paragraph type="secondary" style={{ marginTop: 8 }}>
-        Листы на рейс ({waybillFormLabels['4p']}, {waybillFormLabels.leg3}) выписываются с маршрута
-        — во вкладке «Маршруты» раздела «Заказ ТС», когда состав рейса собран.{' '}
-        {waybillFormLabels.esm2} портал выписывает сам: заявку на технику берут в работу, и лист
-        рождается на каждую неделю её срока.
+        Листы на рейс ({waybillFormLabels['4p']}, {waybillFormLabels.leg3}) здесь не выписывают: их
+        выдаёт карточка маршрута, когда состав рейса собран, — она открывается окном поверх того
+        экрана, с которого о рейсе спросили. {waybillFormLabels.esm2} портал выписывает сам: заявку
+        на технику берут в работу, и лист рождается на каждую неделю её срока.
       </Typography.Paragraph>
     </PageTableLayout>
   );

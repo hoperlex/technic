@@ -26,6 +26,7 @@ import {
   printWaybillsBatchSchema,
   WAYBILL_CANCELLED_PRINT_MESSAGE,
   formatVehicleRequestNumber,
+  formatVehicleRouteNumber,
   moscowDateKeyOf,
   requestCustomerName,
   snapshotForPrint,
@@ -48,6 +49,7 @@ import {
   users,
   vehicleModels,
   vehicleRequests,
+  vehicleRoutes,
   vehicles,
   waybillFiles,
   waybillRequests,
@@ -216,6 +218,10 @@ const waybillSelect = {
   modelName: vehicleModels.name,
   driverPersonId: waybills.driverPersonId,
   driverName: persons.fullName,
+  // Рейс листа: журналу он ссылка на поездку. Номер берётся из самого рейса, а не хранится у
+  // листа, — у номера один владелец, и переименовать его дважды нельзя.
+  routeId: waybills.routeId,
+  routeNum: vehicleRoutes.num,
   withTrailer: waybills.withTrailer,
   trailer1Model: waybills.trailer1Model,
   trailer1RegNumber: waybills.trailer1RegNumber,
@@ -268,6 +274,10 @@ async function loadRows(
     .leftJoin(vehicleModels, eq(vehicleModels.id, vehicles.vehicleModelId))
     .innerJoin(persons, eq(persons.id, waybills.driverPersonId))
     .innerJoin(issuers, eq(issuers.id, waybills.issuedBy))
+    // Рейс — только левым join'ом: у листов ЭСМ-2 рейса нет по устройству бланка
+    // (`waybill-esm2.ts` пишет `routeId: null`), и внутренний вырезал бы из журнала строгой
+    // отчётности все недельные листы разом — то есть потерял бы выданные номера.
+    .leftJoin(vehicleRoutes, eq(vehicleRoutes.id, waybills.routeId))
     // Обе стороны связи коррекции — левыми join'ами: у подавляющего большинства строк их нет
     // вовсе, а у цепочки A → B → C средний лист держит сразу обе.
     .leftJoin(corrected, eq(corrected.id, waybills.correctsWaybillId))
@@ -429,6 +439,10 @@ function toDto(
     correctionReason: row.correctionReason,
     correctsNumber: row.correctsNumber,
     correctedByNumber: row.correctedByNumber,
+    routeId: row.routeId,
+    // Проверка на null отдельная, а не внутри форматирования: «Р-» без номера читалось бы как
+    // рейс, которого нет, — у ЭСМ-2 и у перенесённой истории места рейса пусто вовсе.
+    routeNumber: row.routeNum === null ? null : formatVehicleRouteNumber(row.routeNum),
     requests: links,
     files,
   };

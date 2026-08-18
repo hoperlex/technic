@@ -5,15 +5,21 @@ import { json, mockHttp } from './http';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { list } from './factories/common';
-import { VehicleRoutesTab } from '../src/pages/vehicle/VehicleRoutesTab';
+import { VehicleRoutesModal } from '../src/pages/vehicle/VehicleRoutesModal';
 
 /**
- * Фильтры вкладки маршрутов: полоса полей над таблицей, а не выпадашки в заголовках столбцов.
+ * Фильтры списка маршрутов: полоса полей над таблицей, а не выпадашки в заголовках столбцов.
  *
  * Проверяется главное свойство такого отбора — он серверный: рейсов за день десятки, и «найти
  * машину» глазами по загруженной странице не то же самое, что спросить её у сервера. Отдельно —
  * что смена фильтра возвращает список на первую страницу: та же страница при другом отборе
  * означала бы уже другие рейсы.
+ *
+ * Список с тех пор переехал из вкладки в окно поверх текущего экрана (ADR 0120), но отбор от этого
+ * не изменился ни на поле: окно рисует ту же таблицу с той же полосой фильтров над ней. Рисуется
+ * оно сразу открытым — адрес разбирает провайдер, и окну о нём знать нечего; карточку рейса и
+ * правку держит тот же провайдер, и приходят они контекстом, который в общем рендере стоит
+ * заглушкой.
  */
 
 const VEHICLE: VehicleDto = {
@@ -64,13 +70,18 @@ const ROUTE: VehicleRouteDto = {
   version: 1,
 };
 
-function renderTab() {
+function renderList() {
   const http = mockHttp({
     'GET /vehicle-routes': () => json(list([ROUTE])),
     'GET /vehicles': () => json(list([VEHICLE])),
     'GET /drivers': () => json(list([{ id: 'p-1', fullName: 'Иванов Иван Иванович' } as never])),
   });
-  renderWithUser(<VehicleRoutesTab />, { user: authUser({ role: 'admin' }) });
+  renderWithUser(
+    // `focusToken` — счётчик просьб встать на конкретный день; здесь его не шлют, и список
+    // открывается сегодняшним, как при обычном нажатии «Маршруты».
+    <VehicleRoutesModal open onClose={() => {}} focusToken={0} onChanged={() => {}} />,
+    { user: authUser({ role: 'admin' }) },
+  );
   return http;
 }
 
@@ -98,13 +109,13 @@ async function pickFilter(placeholder: string, option: string | RegExp) {
 
 describe('маршруты: фильтры панелью над таблицей', () => {
   it('в заголовках столбцов фильтров не осталось', async () => {
-    renderTab();
+    renderList();
     await screen.findByText('Р-12');
     expect(document.querySelectorAll('.ant-table-filter-trigger').length).toBe(0);
   });
 
   it('техника отбирается сервером, а не загруженной страницей', async () => {
-    const http = renderTab();
+    const http = renderList();
     await waitFor(() => expect(http.countOf('GET /vehicle-routes')).toBe(1));
     expect(http.lastCall('GET /vehicle-routes')!.query.get('vehicleId')).toBeNull();
 
@@ -118,7 +129,7 @@ describe('маршруты: фильтры панелью над таблице�
   });
 
   it('состояние листа уходит своим параметром', async () => {
-    const http = renderTab();
+    const http = renderList();
     await waitFor(() => expect(http.countOf('GET /vehicle-routes')).toBe(1));
 
     await pickFilter('Лист: любой', 'Без листа');
@@ -129,7 +140,7 @@ describe('маршруты: фильтры панелью над таблице�
   });
 
   it('поиск ищет рейс по номеру, госномеру и водителю одним полем', async () => {
-    const http = renderTab();
+    const http = renderList();
     await waitFor(() => expect(http.countOf('GET /vehicle-routes')).toBe(1));
 
     const input = screen.getByPlaceholderText('Р-12, госномер или водитель');
@@ -142,7 +153,7 @@ describe('маршруты: фильтры панелью над таблице�
   });
 
   it('смена фильтра возвращает список на первую страницу', async () => {
-    const http = renderTab();
+    const http = renderList();
     await waitFor(() => expect(http.countOf('GET /vehicle-routes')).toBe(1));
 
     await pickFilter('Лист: любой', 'Лист выписан');

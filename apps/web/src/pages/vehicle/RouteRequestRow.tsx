@@ -5,6 +5,10 @@ import {
   requestStatusLabels,
   type VehicleRouteRequestDto,
 } from '@technic/contracts';
+import { EntityLink } from '@shared/ui';
+import { useAuth } from '../../auth/AuthContext';
+import { vehicleRequestViewLink } from '../../utils/links';
+import { useRouteModal } from './routeModal';
 import { formatDateOnly } from './shared';
 
 /**
@@ -19,6 +23,14 @@ import { formatDateOnly } from './shared';
  *
  * Отменённая или закрытая заявка остаётся в рейсе историей (лист по ней уже выписан) — её помечает
  * тег, и она же не даёт выписать новый лист, пока её не убрали.
+ *
+ * Номер заявки — ссылка (ADR 0120, план `docs/vehicle-routes-modal-plan.md` §1). Текстом он был
+ * потому, что заявка жила соседней вкладкой: переход стоил бы ухода из рейса, который как раз
+ * собирают, — и номер вместо этого искали руками в списке. Теперь заявка открывается окном поверх
+ * карточки, и вопрос «а что там за работа» закрывается, не разбирая рейс. Ради этого строка и
+ * перестала быть чистой: `can` и `openRequest` спрашиваются здесь, а не приходят пропами, — состав
+ * рисуется в одном месте, и протаскивать через него два поля ради одного номера значило бы
+ * повторить их в карточке рейса, ничего ими там не решая.
  */
 export function RouteRequestRow({
   item,
@@ -38,6 +50,9 @@ export function RouteRequestRow({
    */
   onTransfer: { disabledReason: string | null; onClick: () => void } | null;
 }) {
+  const { can } = useAuth();
+  const { openRequest } = useRouteModal();
+
   return (
     <div
       style={{
@@ -52,7 +67,16 @@ export function RouteRequestRow({
       <Tag style={{ marginTop: 2 }}>{item.position}</Tag>
       <div style={{ flex: 1, minWidth: 0 }}>
         <Space size={8} wrap>
-          <strong>{item.displayNumber}</strong>
+          {/* Начертание остаётся жирным: номер — якорь строки, по нему её и находят глазами в
+            составе из семи. Без права на заявки `vehicleRequestViewLink` вернёт `null`, и номер
+            останется прежним текстом, а окно не откроется вовсе (см. `EntityLink`). */}
+          <EntityLink
+            to={vehicleRequestViewLink(can, item.requestId)}
+            title="Открыть заявку"
+            onActivate={() => openRequest(item.requestId)}
+          >
+            <strong>{item.displayNumber}</strong>
+          </EntityLink>
           <span>{item.customerName}</span>
           {/* День линейного заказа (ADR 0100 §2): строка стоит в рейсе ради одного дня срока, и
             читаться она обязана днём заказа, а не безымянной строкой задания. Дата совпадает с

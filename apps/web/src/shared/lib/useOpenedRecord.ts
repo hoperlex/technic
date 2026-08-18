@@ -12,6 +12,19 @@ interface Options<T> {
    * и без этого признака соседние списки открыли бы карточку по чужому идентификатору.
    */
   active: boolean;
+  /**
+   * Имя параметра адреса. По умолчанию `open` — им названа карточка внутри вкладки. Окнам поверх
+   * экрана нужны собственные имена (`route`, `request`): они живут вне вкладок и делили бы `open`
+   * с той, что открыта под ними.
+   */
+  param?: string;
+  /**
+   * Что сказать, когда запись не загрузилась. По умолчанию безымянное «Запись не найдена» —
+   * вкладка уже названа разделом. Окно же открывается где угодно, и ему нужно назвать сущность
+   * («Маршрут не найден»), а заявке — ещё и допустить недоступность: сервер отвечает одним 404 и
+   * на чужую область видимости, а «не найдена» на существующей заявке читается как потеря данных.
+   */
+  notFoundMessage?: string;
   /** Ключ запроса записи. Тот же, которым её грузят остальные — тогда запрос будет один. */
   queryKey: (id: string) => readonly unknown[];
   fetch: (id: string) => Promise<T>;
@@ -27,7 +40,13 @@ interface Options<T> {
  * через раз. Не нашлась на сервере — адрес чистится, иначе он открывал бы пустоту при каждом
  * возвращении.
  */
-export function useOpenedRecord<T>({ active, queryKey, fetch }: Options<T>): {
+export function useOpenedRecord<T>({
+  active,
+  param = OPEN_PARAM,
+  notFoundMessage = 'Запись не найдена',
+  queryKey,
+  fetch,
+}: Options<T>): {
   /**
    * Идентификатор из адреса — он известен раньше самой записи. Им открывают окна, умеющие
    * грузить себя сами (карточка рейса): ждать ответа, чтобы показать окно, которое всё равно
@@ -39,7 +58,7 @@ export function useOpenedRecord<T>({ active, queryKey, fetch }: Options<T>): {
 } {
   const [searchParams, setSearchParams] = useSearchParams();
   const { message } = App.useApp();
-  const id = active ? searchParams.get(OPEN_PARAM) : null;
+  const id = active ? searchParams.get(param) : null;
 
   /**
    * Закрытие карточки убирает параметр заменой записи в истории, а не новым переходом: «назад»
@@ -49,12 +68,12 @@ export function useOpenedRecord<T>({ active, queryKey, fetch }: Options<T>): {
     setSearchParams(
       (prev) => {
         const next = new URLSearchParams(prev);
-        next.delete(OPEN_PARAM);
+        next.delete(param);
         return next;
       },
       { replace: true },
     );
-  }, [setSearchParams]);
+  }, [param, setSearchParams]);
 
   const { data, error } = useQuery({
     queryKey: queryKey(id ?? ''),
@@ -64,9 +83,9 @@ export function useOpenedRecord<T>({ active, queryKey, fetch }: Options<T>): {
 
   useEffect(() => {
     if (!error) return;
-    message.error('Запись не найдена');
+    message.error(notFoundMessage);
     clear();
-  }, [error, message, clear]);
+  }, [error, message, notFoundMessage, clear]);
 
   return { id, record: id ? (data ?? null) : null, clear };
 }

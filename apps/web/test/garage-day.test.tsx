@@ -266,13 +266,14 @@ describe('гараж: срез дня', () => {
     renderPage();
 
     expect(await screen.findByText('Р-12')).toBeDefined();
-    // Рейс — на вкладку маршрутов с открытой карточкой; заявка — в свой список; лист — в журнал.
-    expect(screen.getByText('Р-12').getAttribute('href')).toBe(
-      '/vehicle-requests?tab=routes&open=route-1',
-    );
-    expect(screen.getByText('ТС-101').getAttribute('href')).toBe(
-      '/vehicle-requests?tab=requests&open=req-1',
-    );
+    /*
+     * Рейс и заявка — окнами поверх среза (ADR 0120), лист — переходом в журнал. Разница
+     * существенная: занятость машины читают, стоя в своём дне, и уход на чужую вкладку ради
+     * вопроса «что это за рейс» стоил бы возврата к тому же дню и тем же фильтрам. Ссылки при
+     * этом настоящие — Ctrl'ом их по-прежнему открывают соседней вкладкой.
+     */
+    expect(screen.getByText('Р-12').getAttribute('href')).toBe('/vehicle-requests?route=route-1');
+    expect(screen.getByText('ТС-101').getAttribute('href')).toBe('/vehicle-requests?request=req-1');
     expect(screen.getByText('260604-646-00000004897').getAttribute('href')).toBe(
       `/waybills?number=${encodeURIComponent('260604-646-00000004897')}`,
     );

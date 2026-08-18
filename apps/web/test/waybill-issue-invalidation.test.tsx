@@ -1,23 +1,31 @@
 import { describe, expect, it } from 'vitest';
 import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { Route, Routes } from 'react-router';
 import { moscowDateKeyOf, type VehicleRouteDto } from '@technic/contracts';
 import { json, mockHttp } from './http';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
-import { emptyList, list } from './factories/common';
-import { VehicleRoutesTab } from '../src/pages/vehicle/VehicleRoutesTab';
+import { emptyList } from './factories/common';
+import { RouteModalProvider } from '../src/pages/vehicle/routeModal';
 
 /**
  * Журнал путевых листов после выдачи листа из карточки рейса.
  *
  * Лист рождается ручкой рейса (`POST /vehicle-routes/:id/waybill`), а печатают его из журнала — и
- * диспетчер идёт туда сразу же, следом за выдачей. Вкладка гасила в кэше рейсы и заявки, но не
- * журнал, поэтому лист, только что выписанный, там не появлялся: `staleTime` в приложении десять
- * секунд, и это ровно то время, за которое переходят на соседний экран.
+ * диспетчер идёт туда сразу же, следом за выдачей. Гасились в кэше рейсы и заявки, но не журнал,
+ * поэтому лист, только что выписанный, там не появлялся: `staleTime` в приложении десять секунд,
+ * и это ровно то время, за которое переходят на соседний экран.
  *
  * Как и у смены статуса заказа, проверяется пометка кэша, а не перерисовка журнала: у тестового
  * `QueryClient` `staleTime` равен нулю, поэтому журнал перезапросился бы при открытии сам — и
  * сценарий «перешли и увидели свежее» проходил бы даже с невыполненной инвалидацией.
+ *
+ * Карточку открывает провайдер окон (ADR 0120), и поднимается он здесь целиком — вместе с разбором
+ * адреса. Раньше сцену держала вкладка «Маршруты», которой больше нет, а сама карточка о журнале
+ * не знает и знать не должна: она сообщает о перемене (`onChanged`), а гасит ключи тот, кто эти
+ * окна держит. Подставь тесту свой `onChanged` — он проверял бы собственную заглушку, и настоящая
+ * инвалидация могла бы пропасть незамеченной. Отсюда и адрес: рейс назван в нём (`?route=`), как
+ * его называет ссылка из строки заявки, из гаража и из журнала листов.
  */
 
 /**
@@ -79,22 +87,28 @@ const WAYBILLS_KEY = ['waybills', {}];
 
 const ISSUE_ROUTE = 'POST /vehicle-routes/:id/waybill';
 
-function renderTab() {
+/**
+ * Провайдер — элемент маршрутизации: он рисует `<Outlet/>`, а окна кладёт поверх. Под ним поэтому
+ * стоит пустая страница: сценарию важно не то, что под окном, а то, что рейс, названный в адресе,
+ * открылся карточкой на любой странице портала.
+ */
+function renderRouteCard() {
   const http = mockHttp({
-    'GET /vehicle-routes': () => json(list([ROUTE])),
     'GET /vehicle-routes/:id': () => json(ROUTE),
-    'GET /vehicles': () => json(emptyList()),
-    'GET /drivers': () => json(list([{ id: 'p-1', fullName: 'Иванов Иван Иванович' } as never])),
     // Карточка предлагает заявки в состав рейса — сценарию они не нужны, но экран их спросит.
     'GET /vehicle-requests': () => json(emptyList()),
-    'GET /vehicle-requests/feed': () => json(emptyList()),
     [ISSUE_ROUTE]: () =>
       json({ ...ROUTE, waybill: { id: 'wb-1', number: '000123', status: 'issued' }, version: 2 }),
   });
 
-  const { queryClient } = renderWithUser(<VehicleRoutesTab />, {
-    user: authUser({ role: 'admin' }),
-  });
+  const { queryClient } = renderWithUser(
+    <Routes>
+      <Route element={<RouteModalProvider />}>
+        <Route path="/vehicle-requests" element={<div />} />
+      </Route>
+    </Routes>,
+    { user: authUser({ role: 'admin' }), route: '/vehicle-requests?route=route-1' },
+  );
   return { http, queryClient };
 }
 
@@ -107,20 +121,14 @@ function clickButton(label: string) {
 
 describe('журнал путевых листов после выдачи листа', () => {
   it('выдача листа из карточки рейса помечает журнал устаревшим', async () => {
-    const { http, queryClient } = renderTab();
+    const { http, queryClient } = renderRouteCard();
 
     // Журнал открыт до выдачи и лежит в кэше свежим — так его застаёт диспетчер, идущий печатать.
     queryClient.setQueryData(WAYBILLS_KEY, { items: [], total: 0 });
     expect(queryClient.getQueryState(WAYBILLS_KEY)?.isInvalidated).toBe(false);
 
-    // Карточку открывает кнопка действия строки, а не сам номер. Подпись у неё в `Tooltip`, в
-    // разметку не попадает — поэтому кнопка опознаётся по своей иконке.
-    const open = await waitFor(() => {
-      const found = document.querySelector('.anticon-eye')?.closest('button');
-      expect(found, 'кнопка «Открыть маршрут»').toBeTruthy();
-      return found!;
-    });
-    fireEvent.click(open);
+    // Карточка открыта самим адресом: `?route=route-1` — тот самый адрес, который печатает ссылка
+    // на рейс и который приходит письмом.
     expect(await screen.findByText(/Маршрут Р-12/)).toBeDefined();
 
     clickButton('Выписать лист');

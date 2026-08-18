@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router';
 import { Alert, App, Button, Select, Space, Spin, Table, Tag, Typography } from 'antd';
 import type { TableColumnType } from 'antd';
 import { LeftOutlined, RightOutlined } from '@ant-design/icons';
@@ -24,6 +25,7 @@ import { UserAvatar } from '../../components/UserAvatar';
 import { errorMessage } from '../../utils/format';
 import { vehicleRouteLink, waybillLink } from '../../utils/links';
 import { formatDateOnly } from './shared';
+import { useRouteModal } from './routeModal';
 import { VehicleDayRouteModal } from './VehicleDayRouteModal';
 
 /**
@@ -59,14 +61,38 @@ const ROUTES_KEY = ['vehicle-routes'];
 interface Props {
   /** Заявка карточки. Дни ведут только у линейного заказа — прочим блок не показывают вовсе. */
   request: SpecialEquipmentRequestDto;
+  /**
+   * Читалка: заявку открыли окном поверх чужого экрана — из состава рейса, журнала листов или
+   * гаража (план «маршрут и заявка окнами», §3.5). Таблица остаётся полной, а планирование уходит:
+   * колонки действий нет, окна `VehicleDayRouteModal` нет.
+   *
+   * Флагом, а не отсутствием пропа-действия, как это сделано у самой карточки: планирование дней
+   * живёт внутри этого файла своими мутациями, и «не передать действие» здесь нечего. Условие их
+   * доступности (`canPlan` ниже) — ровно то же `vehicleRequests.status && waybills.read`, которым
+   * открывается рейс, так что диспетчер, заглянувший в заявку из рейса, получил бы рабочий
+   * планировщик там, где просил только посмотреть.
+   *
+   * Прятать вкладку целиком было бы проще, но читалка стала бы беднее той же карточки в списке:
+   * «каким рейсом едет какой день» — тот самый вопрос, ради которого заявку из рейса и открывают.
+   */
+  readOnly?: boolean;
 }
 
 const dash = <Typography.Text type="secondary">—</Typography.Text>;
 
-export function VehicleRequestDays({ request }: Props) {
+export function VehicleRequestDays({ request, readOnly }: Props) {
   const { can } = useAuth();
   const { message } = App.useApp();
   const qc = useQueryClient();
+  const { openRoute } = useRouteModal();
+  /**
+   * Рейс, открытый под нами: заявку читают поверх карточки его же рейса (`?route=X&request=Y`), и
+   * день, стоящий именно в X, ссылкой быть не должен — она открывала бы то, что уже под окном
+   * (план §3.1, инвариант 3). Признак берётся из адреса, потому что адрес и есть состояние окон:
+   * своей копии в React у провайдера нет намеренно.
+   */
+  const [params] = useSearchParams();
+  const openedRouteId = readOnly ? params.get('route') : null;
   /** День, который ставят в рейс; `null` — окно планирования закрыто. */
   const [planning, setPlanning] = useState<string | null>(null);
   /** Неделя, выбранная руками; `null` — показывается неделя дня среза. */
@@ -157,6 +183,54 @@ export function VehicleRequestDays({ request }: Props) {
 
   const busy = unplan.isPending;
 
+  /**
+   * Колонка действий: снять день с рейса и поставить его в рейс. В таблицу попадает только в
+   * рабочем режиме — в читалке её нет вовсе (см. `readOnly`), и не выключенными кнопками, а
+   * отсутствием колонки: выключенная кнопка объясняет себя нехваткой права, а здесь права как
+   * раз хватает — планировать нельзя потому, что заявку открыли посмотреть.
+   */
+  const actions: TableColumnType<VehicleRequestDayDto> = {
+    key: 'actions',
+    title: '',
+    width: 110,
+    render: (_v, day) => {
+      if (day.route) {
+        // Замороженный выписанным листом рейс день не отдаёт: бланк уже у водителя, и исчезнуть
+        // из него день не может — сначала лист аннулируют.
+        const frozen = !isRouteEditable(day.route.waybill?.status ?? null);
+        return (
+          <span
+            title={!canPlan ? noRight : frozen ? LINEAR_DAY_FROZEN_MESSAGE : 'Снять день с рейса'}
+          >
+            <Button
+              size="small"
+              danger
+              disabled={!canPlan || frozen || busy}
+              onClick={() => unplan.mutate(day.date)}
+            >
+              Снять
+            </Button>
+          </span>
+        );
+      }
+      // Причина недоступности — та же строка, которой откажет сервер: правило одно на портал и
+      // API, и «день вне срока заявки» портал обязан объяснять теми же словами.
+      const blocker = planDayBlocker(subject, day.date, plannedDays);
+      return (
+        <span title={!canPlan ? noRight : (blocker ?? 'Поставить день в рейс')}>
+          <Button
+            size="small"
+            type="primary"
+            disabled={!canPlan || !!blocker || busy}
+            onClick={() => setPlanning(day.date)}
+          >
+            В рейс
+          </Button>
+        </span>
+      );
+    },
+  };
+
   const columns: TableColumnType<VehicleRequestDayDto>[] = [
     {
       key: 'date',
@@ -183,9 +257,22 @@ export function VehicleRequestDays({ request }: Props) {
       render: (_v, day) =>
         day.route ? (
           <div style={{ lineHeight: 1.35 }}>
-            <EntityLink to={vehicleRouteLink(can, day.route.id)} title="Открыть маршрут">
-              {day.route.displayNumber}
-            </EntityLink>
+            {/* Рейс открывается окном поверх той страницы, где о нём спросили: дни планируют,
+              стоя в заявке, и уход на другую вкладку стоил бы выбранной недели и обратной
+              дороги. Ссылкой, а не кнопкой: Ctrl и средний щелчок обязаны по-прежнему открывать
+              рейс соседней вкладкой браузера — этим пользуются постоянно (`EntityLink`).
+              Рейс, уже открытый под окном заявки, остаётся текстом (см. `openedRouteId`). */}
+            {day.route.id === openedRouteId ? (
+              day.route.displayNumber
+            ) : (
+              <EntityLink
+                to={vehicleRouteLink(can, day.route.id)}
+                title="Открыть маршрут"
+                onActivate={() => openRoute(day.route!.id)}
+              >
+                {day.route.displayNumber}
+              </EntityLink>
+            )}
             <div>
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                 строка {day.route.position}
@@ -284,47 +371,8 @@ export function VehicleRequestDays({ request }: Props) {
           <Typography.Text type="secondary">нет</Typography.Text>
         ),
     },
-    {
-      key: 'actions',
-      title: '',
-      width: 110,
-      render: (_v, day) => {
-        if (day.route) {
-          // Замороженный выписанным листом рейс день не отдаёт: бланк уже у водителя, и исчезнуть
-          // из него день не может — сначала лист аннулируют.
-          const frozen = !isRouteEditable(day.route.waybill?.status ?? null);
-          return (
-            <span
-              title={!canPlan ? noRight : frozen ? LINEAR_DAY_FROZEN_MESSAGE : 'Снять день с рейса'}
-            >
-              <Button
-                size="small"
-                danger
-                disabled={!canPlan || frozen || busy}
-                onClick={() => unplan.mutate(day.date)}
-              >
-                Снять
-              </Button>
-            </span>
-          );
-        }
-        // Причина недоступности — та же строка, которой откажет сервер: правило одно на портал и
-        // API, и «день вне срока заявки» портал обязан объяснять теми же словами.
-        const blocker = planDayBlocker(subject, day.date, plannedDays);
-        return (
-          <span title={!canPlan ? noRight : (blocker ?? 'Поставить день в рейс')}>
-            <Button
-              size="small"
-              type="primary"
-              disabled={!canPlan || !!blocker || busy}
-              onClick={() => setPlanning(day.date)}
-            >
-              В рейс
-            </Button>
-          </span>
-        );
-      },
-    },
+    // Действия — последней колонкой и только в рабочем режиме (см. `actions`).
+    ...(readOnly ? [] : [actions]),
   ];
 
   if (isPending) return <Spin size="small" />;
@@ -384,19 +432,24 @@ export function VehicleRequestDays({ request }: Props) {
         дня подтверждают на вкладке «На объекте», а печатается день строкой задания в листе рейса.
       </Typography.Text>
 
-      {/* Форма планирования: день и объект известны, спрашиваются машина и водитель. */}
-      <VehicleDayRouteModal
-        // День среза отдаётся окну: им оно решает, прошедший ли это день, а значит — спрашивать ли
-        // причину заднего числа (ADR 0101 п. 4). Считает его сервер (`onDate`) — тем же поясом,
-        // которым считает границу `backdateGuard`; часы браузера бывают сбиты, и разойтись форме с
-        // ручкой здесь нельзя.
-        target={planning ? { request, date: planning, onDate: data?.onDate ?? planning } : null}
-        onClose={() => setPlanning(null)}
-        onDone={(days) => {
-          setPlanning(null);
-          applyDays(days);
-        }}
-      />
+      {/* Форма планирования: день и объект известны, спрашиваются машина и водитель.
+        Условно, а не спрятанной флагом: в читалке планировщика нет вовсе — ни на экране, ни
+        взведённым в памяти. Единственная дверь к нему — колонка действий, которой там тоже нет,
+        так что `planning` в этом режиме остаётся `null` навсегда. */}
+      {!readOnly && (
+        <VehicleDayRouteModal
+          // День среза отдаётся окну: им оно решает, прошедший ли это день, а значит — спрашивать
+          // ли причину заднего числа (ADR 0101 п. 4). Считает его сервер (`onDate`) — тем же
+          // поясом, которым считает границу `backdateGuard`; часы браузера бывают сбиты, и
+          // разойтись форме с ручкой здесь нельзя.
+          target={planning ? { request, date: planning, onDate: data?.onDate ?? planning } : null}
+          onClose={() => setPlanning(null)}
+          onDone={(days) => {
+            setPlanning(null);
+            applyDays(days);
+          }}
+        />
+      )}
     </div>
   );
 }

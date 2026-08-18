@@ -1,6 +1,7 @@
 import { Button, Space, Spin, Table, Tabs, Tag, Typography } from 'antd';
 import { CheckCircleOutlined, ClockCircleOutlined } from '@ant-design/icons';
 import { type ReactNode, useMemo } from 'react';
+import { Link, useSearchParams } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
 import {
   assignmentRateLabel,
@@ -40,14 +41,16 @@ import { FileLinkList } from '../../components/FileLinks';
 import { type HistoryRow, RequestHistoryTable } from '../../components/RequestHistory';
 import { ResponsibleValue } from '../../components/ResponsibleFields';
 import { UserAvatar } from '../../components/UserAvatar';
+import { useIsMobile } from '@shared/lib';
 import { EntityLink } from '@shared/ui';
 import { ViewFields, ViewModal } from '@shared/ui';
-import { vehicleRouteLink, waybillLink } from '../../utils/links';
+import { canOpenRoute, vehicleRequestLink, vehicleRouteLink, waybillLink } from '../../utils/links';
 import { PrintWaybillButton } from '../../components/WaybillPrint';
 import { PhoneLink } from '../../components/PhoneField';
 import { calendarDaysLabel } from '../../utils/date';
 import { formatDate, formatDateTime, formatDateTimeMaybe, formatMoney } from '../../utils/format';
 import { formatDateOnly, tripsCountLabel } from './shared';
+import { useRouteModal } from './routeModal';
 import { VehicleRequestDays } from './VehicleRequestDays';
 import { VehicleShiftsView } from './VehicleShiftsView';
 import { weeklyRequestPath } from './weeklyShared';
@@ -97,6 +100,26 @@ interface Props {
    * карточка показывает запрос на чтение, как и всё остальное в ней.
    */
   earlyEndActions?: (r: VehicleRequestDto) => ReactNode;
+  /**
+   * Читалка: карточку открыли окном поверх чужого экрана — из состава рейса, задания листа,
+   * журнала листов или гаража (план «маршрут и заявка окнами», §3.5). Действия за этим окном не
+   * ведут: каждое тянет своё окно вкладки заявок (`VehicleAssignModal` и ещё пять), и провайдер,
+   * взявший их на себя, стал бы половиной вкладки. За ними ведёт кнопка футера «Открыть в списке
+   * заявок».
+   *
+   * Отдельный флаг, а не одно лишь «не передавать действия»: пропами закрыто не всё. Вкладка «Дни
+   * работ» монтируется карточкой безусловно, а планирование дня и снятие его с рейса живут внутри
+   * `VehicleRequestDays` своими мутациями — и открыты ровно тем же правом, каким открывается рейс
+   * (`vehicleRequests.status && waybills.read`). Диспетчер, заглянувший в заявку из рейса, получил
+   * бы там рабочий планировщик, ничего для этого не сделав.
+   *
+   * Что режим НЕ прячет — решено планом явно, чтобы не решать по ходу кода:
+   * — вкладка «Дни работ» остаётся (беднее списочной карточки читалке быть незачем: «каким рейсом
+   *   едет какой день» и есть вопрос, ради которого заявку из рейса открывают);
+   * — печать путевого листа остаётся: печать бумаги — чтение, а `waybills.read` у открывшего рейс
+   *   заведомо есть.
+   */
+  readOnly?: boolean;
 }
 
 /**
@@ -295,8 +318,24 @@ export function VehicleRequestViewModal({
   onRelocate,
   onIssueEsm2,
   earlyEndActions,
+  readOnly,
 }: Props) {
   const { can } = useAuth();
+  const isMobile = useIsMobile();
+  const { openRoute, openRoutesList } = useRouteModal();
+  /**
+   * Рейс, открытый под нами: заявку читают поверх карточки её же рейса (`?route=X&request=Y`),
+   * и тогда номер этого рейса в карточке рисуется текстом — ссылка открывала бы то, что уже лежит
+   * под окном (план §3.1, инвариант 3, и §3.5). Во всех прочих случаях переход к рейсу заявку
+   * вытесняет, и это забота провайдера, а не карточки.
+   *
+   * Признак берётся из адреса, а не из React-состояния, потому что адрес и есть состояние окон:
+   * второй копии у провайдера нет намеренно — иначе «назад» и экран разошлись бы на первом же
+   * переходе. Спрашивается только в читалке: в списочной карточке `route` в адресе — чужой рейс,
+   * открытый под самим списком, и заявка к нему отношения не имеет.
+   */
+  const [params] = useSearchParams();
+  const openedRouteId = readOnly ? params.get('route') : null;
 
   /**
    * Перенос требует обоих прав сразу, как и все операции с рейсами: `vehicleRequests.status` есть
@@ -304,6 +343,34 @@ export function VehicleRequestViewModal({
    * собственного парка.
    */
   const canTransfer = !!onTransfer && can('waybills.read') && can('vehicleRequests.status');
+
+  /**
+   * «Все маршруты» — одна из трёх дверей в список рейсов (план «маршрут и заявка окнами»): рядом
+   * со строкой «Маршрут», в тулбаре раздела и в карточке самого рейса. Здесь она стоит потому, что
+   * отсюда в список и ходят: посмотреть, чем занята машина в этот день, и найти рейс, в который
+   * заявку положить.
+   *
+   * Право спрашивается то же, каким открывается сам рейс: список — это те же чужие машины и ФИО
+   * водителей собственного парка. В читалке кнопки нет вовсе — окно, открытое поверх окна поверх
+   * окна, читатель уже не разберёт, а список рейсов у него под рукой и так (`openRoutesList`
+   * зовут оттуда, откуда он заявку открыл).
+   */
+  const showAllRoutes = !readOnly && canOpenRoute(can);
+
+  /**
+   * Куда ведёт «Открыть в списке заявок» — вкладка раздела с открытой карточкой этой же заявки.
+   * Считается по уже загруженному DTO, а не по одному статусу: вкладку выбирает и `deletedAt` —
+   * удалённая заявка живёт в архиве, — а сам архив закрыт правом `archive.read`. Роли без него
+   * функция вернёт `null`, и кнопки в футере не будет вовсе (см. футер).
+   */
+  const requestListHref =
+    request && readOnly
+      ? vehicleRequestLink(can, {
+          id: request.id,
+          status: request.status,
+          deleted: !!request.deletedAt,
+        })
+      : null;
   const { data: history, isPending } = useQuery({
     queryKey: ['vehicle-requests', request?.id, 'history'],
     queryFn: () => vehicleRequestsApi.history(request!.id),
@@ -740,11 +807,17 @@ export function VehicleRequestViewModal({
             </Typography.Text>
           ),
         },
-        // Рейс, которым заявка едет (ADR 0050). Строка появляется у заявки, стоящей в маршруте:
-        // «Маршрут: —» у новой заявки читалось бы как забытый рейс, а у грузоперевозки в работе
-        // без маршрута об этом говорит тег в списке. Перенос — рядом со значением, как и смена
-        // техники: меняют одно поле, а не заявку целиком (ADR 0052).
-        ...(request.route
+        // Рейс, которым заявка едет (ADR 0050), и дверь в список рейсов. Строка со значением
+        // появляется у заявки, стоящей в маршруте: «Маршрут: —» у новой заявки читалось бы как
+        // забытый рейс, а у грузоперевозки в работе без маршрута об этом говорит тег в списке.
+        // Перенос — рядом со значением, как и смена техники: меняют одно поле, а не заявку целиком
+        // (ADR 0052).
+        //
+        // У заявки без рейса строка всё же появляется — но только ради «Всех маршрутов» и только
+        // тому, кому список положен: искать рейс, в который заявку положить, ходят как раз отсюда.
+        // Прочерка в ней нет — вместо него сказано словами, иначе вернулся бы тот самый «забытый
+        // рейс», ради которого строку и прятали.
+        ...(request.route || showAllRoutes
           ? [
               {
                 key: 'route',
@@ -752,25 +825,47 @@ export function VehicleRequestViewModal({
                 full: true,
                 children: (
                   <Space size={8} wrap>
-                    <span>
-                      <EntityLink
-                        to={vehicleRouteLink(can, request.route.id)}
-                        title="Открыть маршрут"
-                      >
-                        {request.route.displayNumber}
-                      </EntityLink>{' '}
-                      · строка {request.route.position}
-                    </span>
-                    {request.route.hasWaybill ? (
-                      <Typography.Text type="secondary">
-                        лист выписан — состав рейса заморожен
-                      </Typography.Text>
+                    {request.route ? (
+                      <>
+                        <span>
+                          {/* Рейс открывается окном поверх карточки, а не уводит на свою вкладку:
+                            вопрос «что там за маршрут» задают, стоя в заявке, и ответ не должен
+                            стоить экрана, с которого спросили. Ссылкой, а не кнопкой: Ctrl и
+                            средний щелчок обязаны по-прежнему открывать рейс соседней вкладкой
+                            браузера (`EntityLink`). Рейс, под которым эта карточка и открыта,
+                            остаётся текстом — см. `openedRouteId`. */}
+                          {request.route.id === openedRouteId ? (
+                            request.route.displayNumber
+                          ) : (
+                            <EntityLink
+                              to={vehicleRouteLink(can, request.route.id)}
+                              title="Открыть маршрут"
+                              onActivate={() => openRoute(request.route!.id)}
+                            >
+                              {request.route.displayNumber}
+                            </EntityLink>
+                          )}{' '}
+                          · строка {request.route.position}
+                        </span>
+                        {request.route.hasWaybill ? (
+                          <Typography.Text type="secondary">
+                            лист выписан — состав рейса заморожен
+                          </Typography.Text>
+                        ) : (
+                          canTransfer && (
+                            <Button size="small" onClick={() => onTransfer?.(request)}>
+                              Перенести в другой рейс
+                            </Button>
+                          )
+                        )}
+                      </>
                     ) : (
-                      canTransfer && (
-                        <Button size="small" onClick={() => onTransfer?.(request)}>
-                          Перенести в другой рейс
-                        </Button>
-                      )
+                      <Typography.Text type="secondary">Не поставлена в рейс</Typography.Text>
+                    )}
+                    {showAllRoutes && (
+                      <Button size="small" onClick={() => openRoutesList()}>
+                        Все маршруты
+                      </Button>
                     )}
                   </Space>
                 ),
@@ -867,7 +962,23 @@ export function VehicleRequestViewModal({
                         <Tag color={route.purpose === 'delivery' ? 'blue' : 'gold'}>
                           {routePurposeShortLabels[route.purpose]}
                         </Tag>
-                        <span>{route.displayNumber}</span>
+                        {/* Перегон — такой же рейс, как и рабочий, и открывается тем же окном
+                          поверх карточки: лист по нему выписывают из карточки маршрута, а
+                          подсказка ниже как раз туда и посылает. Номером текстом он оставался
+                          только потому, что переход стоил бы ухода на вкладку. */}
+                        <span>
+                          {route.id === openedRouteId ? (
+                            route.displayNumber
+                          ) : (
+                            <EntityLink
+                              to={vehicleRouteLink(can, route.id)}
+                              title="Открыть маршрут"
+                              onActivate={() => openRoute(route.id)}
+                            >
+                              {route.displayNumber}
+                            </EntityLink>
+                          )}
+                        </span>
                         <Typography.Text type="secondary">
                           {formatDateOnly(route.routeDate)} · {route.moveFrom} → {route.moveTo}
                         </Typography.Text>
@@ -1022,6 +1133,29 @@ export function VehicleRequestViewModal({
               </Button>,
             ]
           : []),
+        // Читалку действия не ведут — вместо них дверь туда, где ведут: в список заявок с
+        // открытой карточкой этой же заявки (план §3.5). Адрес считается по уже загруженному
+        // DTO, потому что одного статуса мало: удалённая заявка живёт в архиве, и выбирает его
+        // `deletedAt`. Он же закрыт своим правом — без `archive.read` адреса не будет вовсе
+        // (`vehicleRequestLink` вернёт `null`), и кнопки тогда нет: ссылка, кончающаяся отказом,
+        // хуже её отсутствия.
+        //
+        // Настоящей ссылкой, а не `navigate` по нажатию: список заявок открывают соседней
+        // вкладкой, оставив рейс на экране, — тем же приёмом, что и `EntityLink`. Переход при
+        // этом уносит из адреса `request` и `route`, и окна закрываются сами: состояние окон
+        // живёт только в адресе (§3.1).
+        ...(requestListHref
+          ? [
+              <Link key="list" to={requestListHref}>
+                {/* На телефоне кнопки футера делят ширину поровну (`.sheet-footer`), и делит её
+                  ссылка, а не кнопка внутри неё: без `block` кнопка осталась бы по тексту, а
+                  соседняя «Закрыть» — во всю свою долю. */}
+                <Button type="primary" block={isMobile}>
+                  Открыть в списке заявок
+                </Button>
+              </Link>,
+            ]
+          : []),
         <Button key="close" onClick={onClose}>
           Закрыть
         </Button>,
@@ -1046,7 +1180,12 @@ export function VehicleRequestViewModal({
                       {
                         key: 'days',
                         label: 'Дни работ',
-                        children: <VehicleRequestDays request={request} />,
+                        // Читалка не планирует дни: право на это (`vehicleRequests.status` +
+                        // `waybills.read`) совпадает с тем, каким открывается рейс, и без флага
+                        // диспетчер, заглянувший в заявку из рейса, получил бы рабочий
+                        // планировщик. Сама вкладка остаётся — она и отвечает на «каким рейсом
+                        // едет какой день» (план §3.5).
+                        children: <VehicleRequestDays request={request} readOnly={readOnly} />,
                       },
                     ]
                   : []),

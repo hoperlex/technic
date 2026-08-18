@@ -19,7 +19,7 @@ import { textColumn } from '@shared/ui';
 import { useListParams } from '@shared/lib';
 import { TabsExtra } from '../../components/PageTabs';
 import { formatDateOnly } from '../../utils/date';
-import { BusyCell, busyLine } from './shared';
+import { BusyCell, busyLine, useBusyRouteActions } from './shared';
 
 /**
  * Гараж → «Водители»: кто из действующих водителей занят в выбранный день, а кто свободен
@@ -66,6 +66,8 @@ export function GarageDriversTab({
   date: string;
   dayControls: ReactNode;
 }) {
+  // Рейсы человека пунктами действий телефона: занятость на карточке — текст (см. `busyLine`).
+  const routeActions = useBusyRouteActions();
   const { params, setParams, setSort, onTableChange } = useListParams<{
     state?: GarageDriverState;
     documents?: 'complete' | 'incomplete';
@@ -217,6 +219,17 @@ export function GarageDriversTab({
           ? null
           : r.gaps.map((gap) => driverDocumentGapLabel(gap, r.credentialTypeCode)).join('; '),
     ],
+    /*
+     * Единственные действия карточки водителя — его рейсы этого дня, и заведены они здесь ровно
+     * поэтому: своей карточки человек в гараже не открывает (`onOpen` у списка нет), занятость
+     * показана строкой текста, и до сих пор с телефона нельзя было попасть в рейс никак —
+     * оставалось искать его номер на десктопе.
+     *
+     * Пункты те же, что у техники (`useBusyRouteActions`): вопрос «что за рейс Р-12» один, а
+     * пришли к нему с разных сторон — от машины или от человека за рулём. Машину каждого рейса
+     * при этом называет строка карточки, так что номера в подписях не двоятся.
+     */
+    actions: (r) => routeActions(r.busy),
   };
 
   return (

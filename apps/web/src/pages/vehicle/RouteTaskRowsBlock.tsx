@@ -11,7 +11,11 @@ import {
   type VehicleRouteDto,
 } from '@technic/contracts';
 import { vehicleRoutesApi } from '../../api/resources';
+import { EntityLink } from '@shared/ui';
+import { useAuth } from '../../auth/AuthContext';
+import { vehicleRequestViewLink } from '../../utils/links';
 import { blockerMessage, reorderedPointRoles, type RouteAssembly } from './routeAssembly';
+import { useRouteModal } from './routeModal';
 
 /**
  * «Задание листа» — то же самое, но глазами бумаги (§4.3, Р11 плана `docs/route-trips-plan.md`).
@@ -33,6 +37,14 @@ import { blockerMessage, reorderedPointRoles, type RouteAssembly } from './route
  * им стрелки и показываются, а переставляют они порядок работ на общей точке: «эту ездку на карьере
  * грузим первой». У остальных строк стрелок нет намеренно — их переставляют точками в списке
  * объезда, и предлагать два способа сделать одно значит запутать.
+ *
+ * Номер строки — ссылка на заявку окном (ADR 0120, план `docs/vehicle-routes-modal-plan.md` §1):
+ * сюда заглядывают, когда спорят, чей талон подпишет заказчик, и ответ на «что это за работа»
+ * лежит в заявке, а не в бланке. Статуса заявки у строки задания нет **структурно** — `TaskRef`
+ * несёт один `requestId` (`packages/contracts/src/route-points.ts`), — и доставать его из состава
+ * рейса ради выбора вкладки было бы починкой не того: ссылка ведёт не во вкладку, а в окно, и
+ * статус ей не нужен вовсе. Ровно для этого случая в контрактах и появился статус-независимый
+ * `vehicleRequestViewPath`, обёрнутый здесь `vehicleRequestViewLink` (§3.5 плана).
  */
 
 interface Props {
@@ -77,6 +89,8 @@ export function RouteTaskRowsBlock({
   onChanged,
   onFail,
 }: Props) {
+  const { can } = useAuth();
+  const { openRequest } = useRouteModal();
   const { rows, composition, capacity } = assembly;
   /** Строки состава, до которых порядок объезда ещё не дошёл: их печатать нечем (`rows_unplaced`). */
   const unplaced = composition.length - rows.length;
@@ -166,7 +180,16 @@ export function RouteTaskRowsBlock({
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <Space size={8} wrap>
                         <Tag>{row.slot}</Tag>
-                        <strong>{row.displayNumber}</strong>
+                        {/* Номер строки — это номер заявки с её ездкой («ТС-40/2»), и жирным он
+                          остаётся по той же причине, что и в составе: строк семь, и глазами по
+                          ним ходят номерами. Без права на заявки останется прежним текстом. */}
+                        <EntityLink
+                          to={vehicleRequestViewLink(can, row.ref.requestId)}
+                          title="Открыть заявку"
+                          onActivate={() => openRequest(row.ref.requestId)}
+                        >
+                          <strong>{row.displayNumber}</strong>
+                        </EntityLink>
                         {slotTag(formCode, row.slot)}
                       </Space>
                       <div>

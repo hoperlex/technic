@@ -108,7 +108,7 @@ describe('таблица в письме', () => {
         head: ['Рейс', 'Заявка', 'Машина', 'Примечание'],
         rows: [
           [
-            { text: 'Р-48', href: 'https://portal.test/vehicle-requests?tab=routes&open=48' },
+            { text: 'Р-48', href: 'https://portal.test/vehicle-requests?route=48' },
             { text: 'ТС-461', href: ROW_HREF, sub: 'объект «Северный»' },
             { text: 'КамАЗ 65201', sub: 'Е646СК799' },
             { text: '' },

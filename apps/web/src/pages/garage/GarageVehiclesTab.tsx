@@ -28,7 +28,7 @@ import { useJournalAddress } from './journalAddress';
 import { useMaintenanceColumn } from './maintenanceColumn';
 import { vehicleCardHref } from './readingsAddress';
 import { odometerCardLine, odometerColumn } from './odometerColumn';
-import { BusyCell, busyLine } from './shared';
+import { BusyCell, busyLine, useBusyRouteActions } from './shared';
 import { VehicleReadingsJournal } from './VehicleReadingsJournal';
 
 /**
@@ -39,7 +39,9 @@ import { VehicleReadingsJournal } from './VehicleReadingsJournal';
  * только в списке, где стоят все. Поэтому фильтра «показывать занятых» здесь нет, есть фильтр
  * состояния — он сужает список до одного ответа, а не определяет его.
  *
- * Действий нет: заявки, рейсы и бланки ведут в своих модулях, а номера в строке — ссылки туда.
+ * Своих действий над записями у среза нет: он отвечает на вопрос, а не правит день. Заявку, рейс
+ * и бланк ведут в своих модулях, а номера в строке — вход туда: рейс и заявка открываются окном
+ * поверх среза (ADR 0120), бланк уводит в журнал листов.
  */
 
 const STATE_OPTIONS = GARAGE_VEHICLE_STATES.map((state) => ({
@@ -96,6 +98,9 @@ export function GarageVehiclesTab({
 }) {
   const { can } = useAuth();
   const navigate = useNavigate();
+  // Рейсы дня пунктами действий телефона: на карточке занятость — текст, и ссылки в ней нет
+  // (см. `busyLine`). Право хук спрашивает сам.
+  const routeActions = useBusyRouteActions();
   const { params, setParams, setSort, onTableChange } = useListParams<{
     state?: GarageVehicleState;
     readings?: 'pending';
@@ -327,9 +332,16 @@ export function GarageVehiclesTab({
       // ТО — тем же порядком: без права на обслуживание состояния нет, и строка молчит сама.
       maintenance.cardLine,
     ],
-    // Сводка ТО и карточка машины на телефоне открываются пунктами действий: касание по карточке
-    // занято журналом, а третьего смысла у касания быть не может.
+    /*
+     * Действия карточки. Рейсы дня стоят первыми: карточка отвечает про **этот день**, и «что там
+     * за Р-12» спрашивают у неё чаще, чем месячную статистику машины; остальные пункты — про саму
+     * машину и от выбранного дня почти не зависят.
+     *
+     * Пунктами, а не ссылками в строках, всё это по одной причине: касание по карточке уже занято
+     * журналом показаний, а третьего смысла у касания быть не может.
+     */
     actions: (r) => [
+      ...routeActions(r.busy),
       ...(canReadReadings
         ? [{ key: 'stats', label: 'Статистика за период', onClick: () => navigate(cardHref(r.id)) }]
         : []),

@@ -44,6 +44,8 @@ const TRIP: WaybillDto = {
   correctionReason: '',
   correctsNumber: null,
   correctedByNumber: null,
+  routeId: 'route-1',
+  routeNumber: 'Р-12',
   requests: [],
   files: [],
 };
@@ -59,6 +61,9 @@ const WEEK: WaybillDto = {
   periodTo: '2026-09-06',
   vehicleLabel: 'JCB 3CX · У777УУ177',
   driverName: 'Семёнов Семён Семёнович',
+  // Рейса у недели работы на площадке нет вовсе — журнал показывает такую строку без маршрута.
+  routeId: null,
+  routeNumber: null,
   files: [
     {
       id: 'f-1',

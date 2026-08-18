@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Alert, App, Button, Descriptions, Space, Tag, Typography } from 'antd';
-import { EditOutlined, PlusOutlined } from '@ant-design/icons';
+import { EditOutlined, PlusOutlined, UnorderedListOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   BLANK_WAYBILL_CONFIRM,
@@ -27,11 +27,14 @@ import { vehicleRequestsApi, vehicleRoutesApi, waybillsApi } from '../../api/res
 import { garageKeys } from '@entities/garage';
 import { isApiError } from '@shared/api';
 import { AutoSelect } from '@shared/ui';
+import { EntityLink } from '@shared/ui';
 import { ViewModal } from '@shared/ui';
 import { PrintWaybillButton } from '../../components/WaybillPrint';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
+import { canOpenRoute, vehicleRequestViewLink } from '../../utils/links';
 import { assembleRoute, blockerMessage } from './routeAssembly';
+import { useRouteModal } from './routeModal';
 import { RoutePointsBlock } from './RoutePointsBlock';
 import { RouteRequestRow } from './RouteRequestRow';
 import { RouteTaskRowsBlock } from './RouteTaskRowsBlock';
@@ -72,6 +75,7 @@ interface Props {
 export function VehicleRouteModal({ routeId, onClose, onChanged, onEdit }: Props) {
   const { message, modal } = App.useApp();
   const { can } = useAuth();
+  const { openRequest, openRoutesList } = useRouteModal();
   const qc = useQueryClient();
   const [adding, setAdding] = useState<string | undefined>();
   /** Окно коррекции живёт здесь, а не во вкладке: открывают его из карточки и только из неё. */
@@ -384,6 +388,12 @@ export function VehicleRouteModal({ routeId, onClose, onChanged, onEdit }: Props
   const relocation = !!route && isRelocationPurpose(route.purpose);
 
   /**
+   * Заявка перегона — отдельной переменной, потому что внутри `onActivate` сужение типа уже не
+   * живёт: обработчик зовут потом, и о непустоте поля TS к тому времени ничего не знает.
+   */
+  const sourceRequest = route?.sourceRequest ?? null;
+
+  /**
    * Собранный день: строки задания, блокеры выписки и подсказки совмещения — из одного чтения точек
    * (§4.3, Р11а). Считается тем же кодом контрактов, каким ответит сервер: два расчёта одного
    * правила разошлись бы на первой правке, и карточка обещала бы не то, что уйдёт в бумагу.
@@ -452,6 +462,28 @@ export function VehicleRouteModal({ routeId, onClose, onChanged, onEdit }: Props
       footer={
         route && (
           <Space wrap>
+            {/* Дверь в список рейсов: вкладки, которой в него ходили, больше нет (ADR 0120), и
+              карточка — одна из трёх её замен (§3.3 плана `docs/vehicle-routes-modal-plan.md`).
+              День рейса передаётся обязательно: пришли из позавчерашнего рейса, и список,
+              оставшийся на своём периоде, не показал бы ни его, ни соседей по дню — а именно за
+              соседями из карточки и уходят («чем ещё занята эта машина»).
+
+              Слева, а не рядом с «Выписать лист»: тот расходует номер бланка, и переход, стоящий
+              с ним плечом к плечу, спорил бы за нажатие с необратимым действием.
+
+              Право спрашивается своим вызовом, хотя карточку без него не открыть вовсе (держатель
+              адреса гасит параметр `?route=`). Кнопка ведёт в **список**, закрытый тем же
+              `canOpenRoute`, и выводить «раз карточка открыта — значит и список можно» значило бы
+              завести правило, верное лишь до первой правки условий доступа. */}
+            {canOpenRoute(can) && (
+              <Button
+                icon={<UnorderedListOutlined />}
+                title="Список рейсов на день этого маршрута"
+                onClick={() => openRoutesList({ focusDate: route.routeDate })}
+              >
+                Все маршруты
+              </Button>
+            )}
             {/* Правка рейса — тем же правом, что и всё остальное в карточке: день переставляют и
               водителя меняют утром того же дня, ради этого карточку чаще всего и открывают. */}
             {onEdit && (
@@ -538,7 +570,22 @@ export function VehicleRouteModal({ routeId, onClose, onChanged, onEdit }: Props
             {relocation && (
               <Descriptions.Item label={routePurposeLabels[route.purpose]}>
                 {route.moveFrom} → {route.moveTo}
-                {route.sourceRequest && ` · по заявке ${route.sourceRequest.displayNumber}`}
+                {/* Заявка перегона — тот же переход, что и у состава грузового рейса: у перегона
+                  состава нет вовсе, и эта строка — единственное, чем из него попадают в заявку,
+                  ради которой технику и везут. Текстом номер держался по прежней причине —
+                  заявка жила соседней вкладкой. */}
+                {sourceRequest && (
+                  <>
+                    {' · по заявке '}
+                    <EntityLink
+                      to={vehicleRequestViewLink(can, sourceRequest.requestId)}
+                      title="Открыть заявку"
+                      onActivate={() => openRequest(sourceRequest.requestId)}
+                    >
+                      {sourceRequest.displayNumber}
+                    </EntityLink>
+                  </>
+                )}
               </Descriptions.Item>
             )}
             <Descriptions.Item label="Путевой лист">
@@ -648,6 +695,13 @@ export function VehicleRouteModal({ routeId, onClose, onChanged, onEdit }: Props
                   onChange={(v) => setAdding(v as string)}
                   // Заявка чужого рейса подписана этим рейсом и строкой задания: диспетчер должен
                   // видеть, что забирает её у Р-7, а не берёт со свободных.
+                  //
+                  // Номера здесь остаются текстом, и это не пропущенное место: `label` опции —
+                  // строка, по ней же идёт поиск (`optionFilterProp="label"`), и разметке внутри
+                  // неё взяться неоткуда; да и клик по опции принадлежит выбору — ссылка внутри
+                  // отняла бы у списка его единственное действие. То же и у предупреждения ниже:
+                  // оно говорит о заявке, которую сейчас кладут в рейс, а не о записи состава,
+                  // куда ходят смотреть.
                   options={free.map((r) => ({
                     value: r.id,
                     label: [

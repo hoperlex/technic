@@ -2,16 +2,15 @@ import { Navigate, useSearchParams } from 'react-router';
 import { canOrderVehicleRequestType } from '@technic/contracts';
 import { PageTabs } from '../components/PageTabs';
 import { useAuth } from '../auth/AuthContext';
-import { canSeeArchiveTab, canSeeRoutesTab } from '../utils/links';
+import { canSeeArchiveTab } from '../utils/links';
 import { VehicleRequestsTab } from './vehicle/VehicleRequestsTab';
 import { VehicleRequestsOnSiteTab } from './vehicle/VehicleRequestsOnSiteTab';
-import { VehicleRoutesTab } from './vehicle/VehicleRoutesTab';
 import { VehicleRequestsHistoryTab } from './vehicle/VehicleRequestsHistoryTab';
 import { VehicleRequestsArchiveTab } from './vehicle/VehicleRequestsArchiveTab';
 
 // Спецтехника, грузоперевозки и недельные заявки живут в одном списке («Заказ автотехники»): вид
 // документа — колонка и фильтр, а не отдельная вкладка. Старые ключи вкладок ведут на общий список.
-const TABS = ['requests', 'on-site', 'routes', 'history', 'archive'] as const;
+const TABS = ['requests', 'on-site', 'history', 'archive'] as const;
 
 export function VehicleRequestsPage() {
   const { user, can } = useAuth();
@@ -34,6 +33,30 @@ export function VehicleRequestsPage() {
   }
 
   /**
+   * Прежняя вкладка «Маршруты» (ADR 0120): рейс стал окном поверх любой страницы портала, и её
+   * адрес переехал в параметры `route` и `routes`. Старый ведёт туда же — тем же переходом на
+   * отрисовке и той же заменой записи в истории, что и «Недельные заявки» выше.
+   *
+   * Редирект обязателен, а не «пусть откроется список»: ссылки со старым адресом уже разосланы
+   * письмами и лежат в почтовых ящиках — сводка листов зовёт в маршруты, а уведомления по заявке
+   * называют рейс поимённо (`?tab=routes&open=<id>`). Сбрось мы их на общий список, письмо
+   * недельной давности открывало бы заявки вместо названного в нём рейса.
+   */
+  if (sp.get('tab') === 'routes') {
+    const openedRoute = sp.get('open');
+    return (
+      <Navigate
+        to={
+          openedRoute
+            ? `/vehicle-requests?tab=requests&route=${openedRoute}`
+            : '/vehicle-requests?tab=requests&routes=1'
+        }
+        replace
+      />
+    );
+  }
+
+  /**
    * «На объекте» — срез спецтехники на площадках (ADR 0036). Роли, которой спецтехника не
    * положена, вкладка показывала бы пустой список всегда: заявок этого типа у неё не бывает
    * (ADR 0040). Спрашивается коридор типов из матрицы, а не имя роли, — иначе список ролей
@@ -42,12 +65,10 @@ export function VehicleRequestsPage() {
   const showOnSite = canOrderVehicleRequestType(user, 'special_equipment');
 
   /**
-   * «Маршруты» и «Архив» — вкладки, на которые ведут ссылки из соседних списков (номер рейса в
-   * строке заявки, номер заявки в составе рейса). Условие их показа спрашивается там же, где его
-   * спрашивает ссылка (`utils/links`): разойдись эти два места, ссылка вела бы на вкладку,
-   * которой у роли нет, — то есть в пустой экран.
+   * «Архив» — вкладка, на которую ведут ссылки из соседних списков (номер удалённой заявки).
+   * Условие её показа спрашивается там же, где его спрашивает ссылка (`utils/links`): разойдись
+   * эти два места, ссылка вела бы на вкладку, которой у роли нет, — то есть в пустой экран.
    */
-  const showRoutes = canSeeRoutesTab(can);
   const showArchive = canSeeArchiveTab(can);
 
   const items = [
@@ -55,7 +76,6 @@ export function VehicleRequestsPage() {
     ...(showOnSite
       ? [{ key: 'on-site', label: 'На объекте', children: <VehicleRequestsOnSiteTab /> }]
       : []),
-    ...(showRoutes ? [{ key: 'routes', label: 'Маршруты', children: <VehicleRoutesTab /> }] : []),
     { key: 'history', label: 'История', children: <VehicleRequestsHistoryTab /> },
     ...(showArchive
       ? [{ key: 'archive', label: 'Архив', children: <VehicleRequestsArchiveTab /> }]

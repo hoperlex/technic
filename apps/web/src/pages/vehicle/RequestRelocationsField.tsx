@@ -11,7 +11,11 @@ import {
 } from '@technic/contracts';
 import { vehicleRequestsApi, vehicleRoutesApi } from '../../api/resources';
 import { garageKeys } from '@entities/garage';
+import { EntityLink } from '@shared/ui';
+import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
+import { vehicleRouteLink } from '../../utils/links';
+import { useRouteModal } from './routeModal';
 import { formatDateOnly } from './shared';
 import { VehicleRelocationModal } from './VehicleRelocationModal';
 
@@ -29,6 +33,12 @@ import { VehicleRelocationModal } from './VehicleRelocationModal';
  *
  * Действия применяются сразу, а не по «Сохранить»: перегон — это отдельный рейс, а не поле заявки.
  * Форма об этом и говорит: иначе человек ждал бы, что закрытие окна без сохранения его отменит.
+ *
+ * Номер перегона — ссылка на карточку рейса окном (ADR 0120, план `docs/vehicle-routes-modal-plan.md`
+ * §1, этап 3). Текстом он оставался ровно потому, о чём говорит абзац выше: попасть в перегон
+ * можно было только через вкладку маршрутов, зная номер, — то есть уйдя из формы, которую сейчас
+ * правят. Вкладки больше нет, рейс открывается поверх формы, и лист по перегону выписывают там же,
+ * не разбирая правку заявки.
  */
 
 const PURPOSES = ['delivery', 'pickup'] as const;
@@ -40,6 +50,8 @@ interface Props {
 
 export function RequestRelocationsField({ request }: Props) {
   const { message, modal } = App.useApp();
+  const { can } = useAuth();
+  const { openRoute } = useRouteModal();
   const qc = useQueryClient();
   const [adding, setAdding] = useState<(typeof PURPOSES)[number] | null>(null);
 
@@ -101,7 +113,17 @@ export function RequestRelocationsField({ request }: Props) {
             <Tag color={route.purpose === 'delivery' ? 'blue' : 'gold'}>
               {routePurposeShortLabels[route.purpose]}
             </Tag>
-            <span>{route.displayNumber}</span>
+            {/* Ссылка и кнопка удаления — соседи по строке, а не вложены друг в друга: `EntityLink`
+              гасит только собственный переход (`preventDefault` на левом клике без модификаторов),
+              всплытие оставляет как есть, и до `confirmRemove` его клик не доходит — как и клик по
+              кнопке до ссылки. Без права на рейсы номер останется прежним текстом. */}
+            <EntityLink
+              to={vehicleRouteLink(can, route.id)}
+              title="Открыть маршрут"
+              onActivate={() => openRoute(route.id)}
+            >
+              {route.displayNumber}
+            </EntityLink>
             <Typography.Text type="secondary">
               {formatDateOnly(route.routeDate)} · {route.moveFrom} → {route.moveTo}
               {route.driverName ? ` · ${route.driverName}` : ' · водитель не назначен'}

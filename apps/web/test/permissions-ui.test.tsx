@@ -19,6 +19,7 @@ import { authUser } from './factories/auth';
 import { MOBILE_VIEWPORT, type Viewport } from './viewport';
 import { AppLayout } from '../src/components/AppLayout';
 import { RequirePermission } from '../src/auth/ProtectedRoute';
+import { canOpenRoute } from '../src/utils/links';
 
 /**
  * Портал скрывает недоступное по той же матрице, по которой API запрещает (ADR 0021).
@@ -146,19 +147,27 @@ describe('пункты меню следуют из прав', () => {
     }
   });
 
-  it('вкладка «Маршруты» — только тем, у кого есть и листы, и ход заявок', () => {
-    // Условие вкладки то же, что на самих ручках рейсов: в рейсе виден водитель (персональные
-    // данные, ADR 0037 п. 13), поэтому одного права на статусы мало. Оно есть у внешнего
-    // арендодателя (ADR 0038) — а рейсы собственного парка не его дело.
-    const showsRoutes = (subject: AccessSubject) =>
-      can(subject, 'waybills.read') && can(subject, 'vehicleRequests.status');
+  it('рейс открывают только те, у кого есть и листы, и ход заявок', () => {
+    /*
+     * Вкладки «Маршруты» больше нет — рейс открывается окном поверх той страницы, где о нём
+     * спросили (ADR 0120), — но правило доступа переехало под новым именем целиком: `canOpenRoute`
+     * держит и ссылку на рейс в чужом списке, и параметр адреса `?route=`, которым окно открывают
+     * прямой ссылкой. Спрашивается тут именно она, а не переписанное здесь условие: своя копия
+     * правила разошлась бы с порталом при первой же правке и молча разрешила бы лишнее.
+     *
+     * Условие то же, что на самих ручках рейсов: в рейсе виден водитель (персональные данные,
+     * ADR 0037 п. 13), поэтому одного права на статусы мало. Оно есть у внешнего арендодателя
+     * (ADR 0038) — а рейсы собственного парка не его дело.
+     */
+    const opensRoute = (subject: AccessSubject) =>
+      canOpenRoute((permission) => can(subject, permission));
 
     for (const role of ['admin', 'manager', 'dispatcher'] as Role[]) {
-      expect(showsRoutes({ role }), role).toBe(true);
+      expect(opensRoute({ role }), role).toBe(true);
     }
-    expect(showsRoutes(executor('vehicle_lessor'))).toBe(false);
+    expect(opensRoute(executor('vehicle_lessor'))).toBe(false);
     for (const role of ['shtab', 'rukstroy', 'department', 'observer'] as Role[]) {
-      expect(showsRoutes({ role }), role).toBe(false);
+      expect(opensRoute({ role }), role).toBe(false);
     }
   });
 

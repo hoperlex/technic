@@ -17,18 +17,23 @@ const SEARCH_DEBOUNCE_MS = 300;
  * Счётчик на кнопке отвечает на «а не фильтром ли я себе список сузил»: сами значения скрыты в
  * шите, и без числа пустой список выглядел бы поломкой.
  */
-export function ListToolbar({ search, filters, sort }: MobileListControls) {
+export function ListToolbar({ search, filters, sort, secondaryActions }: MobileListControls) {
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [sortOpen, setSortOpen] = useState(false);
   const count = activeFilterCount(filters);
+  const actions = secondaryActions ?? [];
 
-  if (!search && !filters?.length && !sort) return null;
+  // Список без поиска, фильтров и сортировки, но со своей кнопкой, — тоже повод нарисовать панель:
+  // иначе единственное второстепенное действие исчезло бы вместе с ней.
+  if (!search && !filters?.length && !sort && !actions.length) return null;
 
   return (
     <div className="list-toolbar">
       {search && <SearchField {...search} />}
-      {(!!filters?.length || sort) && (
-        <Space size={8}>
+      {(!!filters?.length || sort || !!actions.length) && (
+        // Кнопок в ряду бывает больше двух, а ширина телефона фиксирована: без переноса последняя
+        // уехала бы за край экрана.
+        <Space size={8} wrap>
           {!!filters?.length && (
             <Badge count={count} size="small" offset={[-4, 2]}>
               <Button icon={<FilterOutlined />} onClick={() => setFiltersOpen(true)}>
@@ -41,6 +46,11 @@ export function ListToolbar({ search, filters, sort }: MobileListControls) {
               Сортировка
             </Button>
           )}
+          {actions.map((action) => (
+            <Button key={action.label} icon={action.icon} onClick={action.onClick}>
+              {action.label}
+            </Button>
+          ))}
         </Space>
       )}
 

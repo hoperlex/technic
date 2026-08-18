@@ -8,23 +8,32 @@ import { authUser } from './factories/auth';
 import { emptyList, list } from './factories/common';
 import { vehicleFeed, vehicleRequest, vehicleSummary } from './factories/vehicle';
 import { wasteRequest } from './factories/waste';
-import { VehicleRoutesTab } from '../src/pages/vehicle/VehicleRoutesTab';
+import { VehicleRoutesModal } from '../src/pages/vehicle/VehicleRoutesModal';
 import { VehicleRequestsTab } from '../src/pages/vehicle/VehicleRequestsTab';
 import { VehicleRequestsPage } from '../src/pages/VehicleRequestsPage';
 import { WaybillsPage } from '../src/pages/WaybillsPage';
 import { OnSiteTab } from '../src/pages/waste/OnSiteTab';
 
 /**
- * Переход по номеру чужой записи: ссылка ведёт на вкладку, где запись показывают, и просит
- * открыть её карточку (`?tab=…&open=…`).
+ * Переход по номеру чужой записи: куда ведёт номер, названный не на своём экране.
  *
- * Проверяется не «клик открывает окно», а два правила, которые ломаются молча и обнаруживаются
+ * Адреса тут двух пород, и различие не косметическое. Заявку на технику показывает **вкладка**
+ * своего раздела (`?tab=…&open=…`), а рейс и читалка заявки — **окна** поверх той страницы, где о
+ * них спросили (`?route=…`, `?request=…`, ADR 0120): рейс перестал быть местом, куда уходят.
+ *
+ * Проверяется не «клик открывает окно», а три правила, которые ломаются молча и обнаруживаются
  * людьми:
  *
  * — вкладка выбирается по состоянию записи. Лист выписывают на рейс, а читают журнал позже, когда
  *   заявка уже закрыта: ссылка на список заявок привела бы в список, где её нет;
- * — ссылки нет там, где вкладка роли не положена. Ведущая в закрытый раздел ссылка кончается
- *   пустым экраном — это хуже, чем номер обычным текстом, каким он и был.
+ * — у окна адрес, наоборот, один на любое состояние записи: статуса в строке состава рейса и в
+ *   талоне журнала нет вовсе, а вкладку без него не выбрать;
+ * — ссылки нет там, где раздел роли не положен. Ведущая в закрытый раздел ссылка кончается пустым
+ *   экраном или сообщением «не найдена» — это хуже, чем номер обычным текстом, каким он и был.
+ *
+ * Ссылки при этом остаются настоящими `<a href>` даже там, где клик открывает окно: их открывают
+ * Ctrl'ом соседней вкладкой и шлют письмами (см. `EntityLink`), и адрес — то единственное, что
+ * проверяемо снаружи.
  */
 
 const admin = authUser({ id: 'user-admin', role: 'admin' });
@@ -125,6 +134,8 @@ const WAYBILL: WaybillDto = {
   correctionReason: '',
   correctsNumber: null,
   correctedByNumber: null,
+  routeId: 'route-1',
+  routeNumber: 'Р-12',
   requests: [
     {
       requestId: 'r-done',
@@ -159,24 +170,35 @@ function routesRoutes(over: RouteMap = {}): RouteMap {
   };
 }
 
-describe('переход по номеру записи между вкладками', () => {
-  it('состав рейса ведёт к заявке, а вкладку выбирает её состояние', async () => {
+/**
+ * Список рейсов — окно, а не вкладка: адрес (`?routes=1`) разбирает провайдер, а окну довольно
+ * `open`. Карточку рейса и правку держит тот же провайдер — здесь его заменяет заглушка контекста
+ * из общего рендера: проверяются адреса ссылок, а не то, что за ними открывается.
+ */
+const routesList = (
+  <VehicleRoutesModal open onClose={() => {}} focusToken={0} onChanged={() => {}} />
+);
+
+describe('переход по номеру чужой записи', () => {
+  it('состав рейса ведёт к заявке одним адресом — открытой и уже закрытой', async () => {
     mockHttp(routesRoutes());
-    renderWithUser(<VehicleRoutesTab />, { user: admin });
+    renderWithUser(routesList, { user: admin });
 
     await screen.findByText('Р-12');
-    // Заявка в работе живёт в списке, закрытая — в журнале закрытых (ADR 0029).
-    expect(linkFor('ТС-501')!.getAttribute('href')).toBe(
-      '/vehicle-requests?tab=requests&open=r-open',
-    );
-    expect(linkFor('ТС-502')!.getAttribute('href')).toBe(
-      '/vehicle-requests?tab=history&open=r-done',
-    );
+    /*
+     * Обе заявки — одним адресом, хотя живут они на разных вкладках раздела (ADR 0029): талон в
+     * работе в списке, закрытый в журнале. Состав рейса читают вопросом «а что там за заявка», и
+     * отвечает на него читалка поверх рейса, которой вкладка не нужна вовсе. Заодно это
+     * единственный способ ответить: у строки состава статуса может не быть — задание путевого
+     * листа несёт один идентификатор.
+     */
+    expect(linkFor('ТС-501')!.getAttribute('href')).toBe('/vehicle-requests?request=r-open');
+    expect(linkFor('ТС-502')!.getAttribute('href')).toBe('/vehicle-requests?request=r-done');
   });
 
   it('номер листа в рейсе ведёт в журнал с этим же номером в поиске', async () => {
     mockHttp(routesRoutes());
-    renderWithUser(<VehicleRoutesTab />, { user: admin });
+    renderWithUser(routesList, { user: admin });
 
     await screen.findByText('Р-12');
     expect(linkFor('260604-646-00000004897')!.getAttribute('href')).toBe(
@@ -184,7 +206,7 @@ describe('переход по номеру записи между вкладк�
     );
   });
 
-  it('номер рейса в строке заявки ведёт на вкладку маршрутов', async () => {
+  it('номер рейса в строке заявки открывает рейс поверх списка', async () => {
     const inRoute = vehicleRequest({
       id: 'vr-1',
       status: 'confirmed',
@@ -209,7 +231,9 @@ describe('переход по номеру записи между вкладк�
     renderWithUser(<VehicleRequestsTab />, { user: admin });
 
     await screen.findByText('Т-42');
-    expect(linkFor('Р-12')!.getAttribute('href')).toBe('/vehicle-requests?tab=routes&open=route-1');
+    // Свой параметр, а не общий `open`: окно ложится поверх страницы, у которой `open` уже занят
+    // её собственной карточкой, — и адрес обязан пережить оба.
+    expect(linkFor('Р-12')!.getAttribute('href')).toBe('/vehicle-requests?route=route-1');
   });
 
   it('без права на маршруты номер рейса остаётся текстом', async () => {
@@ -246,9 +270,9 @@ describe('переход по номеру записи между вкладк�
     renderWithUser(<WaybillsPage />, { user: admin });
 
     await screen.findByText('260604-646-00000004897');
-    expect(linkFor('ТС-502')!.getAttribute('href')).toBe(
-      '/vehicle-requests?tab=history&open=r-done',
-    );
+    // Читалкой поверх журнала: статуса у талона листа нет — есть номер и идентификатор, а уходить
+    // из журнала ради ответа «что это была за заявка» незачем.
+    expect(linkFor('ТС-502')!.getAttribute('href')).toBe('/vehicle-requests?request=r-done');
   });
 
   it('журнал листов открывается по номеру из адреса', async () => {
