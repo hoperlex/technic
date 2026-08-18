@@ -1,7 +1,7 @@
 import {
   formatPhone,
   roleAddonLabels,
-  roleLabels,
+  roleTitle,
   userAuditActiveTitles,
   type AuditChangeDto,
   type Role,
@@ -21,9 +21,16 @@ import { changeSet, EMPTY } from './request-diff';
 // же приёмом устроены диффы заявок (`request-diff.ts`), и общая механика пары «было → стало»
 // берётся оттуда же.
 
-/** Роль словами; учётка без роли — это заявка, и «—» вместо неё скрыло бы, чем она была. */
-function roleTitle(role: Role | null): string {
-  return role === null ? 'без роли' : roleLabels[role];
+/**
+ * Роль словами; учётка без роли — это заявка, и «—» вместо неё скрыло бы, чем она была.
+ *
+ * Подпись берётся резолвером контрактов (`roleTitle`), а не прямым `roleLabels[role]`: журнал
+ * append-only, и запись о роли, которую реформа упразднит (план §13.2), обязана читаться и после
+ * упразднения. Сегодня оба пути дают одно и то же — `ARCHIVED_ROLE_LABELS` пуст, — и разойдутся
+ * они ровно на шаге cleanup, когда четыре подписи туда переедут.
+ */
+function roleWords(role: Role | null): string {
+  return role === null ? 'без роли' : roleTitle(role);
 }
 
 /** Область видимости в журнале — по названиям: коды справочников читателю ничего не говорят. */
@@ -90,7 +97,7 @@ export function userAuditChanges(
       before.phone ? formatPhone(before.phone) : EMPTY,
       after.phone ? formatPhone(after.phone) : EMPTY,
     );
-    set.changed('role', roleTitle(before.role), roleTitle(after.role));
+    set.changed('role', roleWords(before.role), roleWords(after.role));
     set.changed(
       'isActive',
       before.isActive ? userAuditActiveTitles.on : userAuditActiveTitles.off,
@@ -99,7 +106,7 @@ export function userAuditChanges(
     set.changed('counterparty', before.counterpartyName ?? EMPTY, after.counterpartyName ?? EMPTY);
     set.changed('person', before.person?.fullName ?? EMPTY, after.person?.fullName ?? EMPTY);
   } else {
-    set.listed('role', [roleTitle(after.role)]);
+    set.listed('role', [roleWords(after.role)]);
     // Заведённая сразу активной учётка и заготовка «на потом» — разные события, и по одной роли
     // они неразличимы: доступ записывается всегда, даже когда он закрыт.
     set.listed('isActive', [after.isActive ? userAuditActiveTitles.on : userAuditActiveTitles.off]);
