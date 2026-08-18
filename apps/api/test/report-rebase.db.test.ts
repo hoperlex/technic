@@ -411,6 +411,16 @@ describe.skipIf(!DB_URL)('приведение снимка к источник�
     if (created.personIds.length > 0) {
       await db.delete(schema.persons).where(inArray(schema.persons.id, created.personIds));
     }
+    // Плюс те, кого список не помнит: он живёт в памяти прогона, и упавший прогон уносит его
+    // вместе с собой, а работники остаются в общей базе навсегда — по семь штук за раз.
+    // Отбираются по метке и только те, кого уже никто не держит: рейс или отчёт соседа означает,
+    // что это его работа в ходу, а не наш след.
+    await db.execute(sql`
+      DELETE FROM persons p
+       WHERE p.comment = ${PERSON_MARK}
+         AND NOT EXISTS (SELECT 1 FROM vehicle_routes r WHERE r.driver_person_id = p.id)
+         AND NOT EXISTS (SELECT 1 FROM driver_daily_reports d WHERE d.person_id = p.id)
+         AND NOT EXISTS (SELECT 1 FROM users u WHERE u.person_id = p.id)`);
     await db
       .delete(schema.constructionObjects)
       .where(eq(schema.constructionObjects.id, ctx.objectId));
