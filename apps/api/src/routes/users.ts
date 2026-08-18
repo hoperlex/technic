@@ -9,6 +9,7 @@ import {
   eq,
   exists,
   gte,
+  inArray,
   isNotNull,
   isNull,
   lte,
@@ -39,9 +40,15 @@ import {
   setUserPasswordSchema,
   updateUserSchema,
   userListQuerySchema,
+  type AuditChangeDto,
+  type GrantStatement,
+  type GrantViolation,
   type MailOutcome,
   type Permission,
+  type PermissionDelta,
+  type Role,
   type RoleAddon,
+  type GrantValidationDetailsDto,
   type UserDto,
   type UserAccountDto,
   type UserPersonRefDto,
@@ -49,9 +56,11 @@ import {
 import { db } from '../db/client';
 import {
   counterparties,
+  type GrantRow,
   personEmployments,
   persons,
   userConstructionObjects,
+  userGrants,
   users,
 } from '../db/schema';
 import { config } from '../config';
@@ -71,7 +80,7 @@ import {
 import { revokeEmailTokens } from '../services/email-tokens';
 import { err } from '../lib/errors';
 import { pgErrorOf } from '../lib/pg-error';
-import { writeAudit } from '../lib/audit';
+import { writeAudit, writeAuditTx } from '../lib/audit';
 import { requirePrincipal } from '../auth/plugin';
 import { hashPassword, verifyPassword } from '../auth/password';
 import { revokeAllForUser } from '../auth/sessions';
@@ -82,6 +91,7 @@ import {
   departmentsByUserIds,
   grantCodesByUserIds,
   grantPermissionsByUserIds,
+  grantRefsByUserIds,
   objectIdsOfUser,
   objectsByUserIds,
   replaceUserAddons,
@@ -89,8 +99,22 @@ import {
   replaceUserObjects,
   systemAddonsOf,
 } from '../services/user-scopes';
+import {
+  assertGrantVersions,
+  assignmentsOfUser,
+  attributeGrantDelta,
+  compositionByGrantIds,
+  grantOperationOutcome,
+  lockGrants,
+  planGrantStatements,
+  type AssignedGrant,
+  type GrantStatementIssue,
+  type GrantStatementPlan,
+  type PlannedGrant,
+} from '../services/grant-catalog';
 import { assertEmailFree, asEmailConflict } from '../services/user-email';
 import { userAuditChanges } from '../services/user-audit-diff';
+import { changeSet } from '../services/request-diff';
 import { registerPurgeRoute } from '../services/directory-purge';
 
 const idParams = z.object({ id: z.string().uuid() });
@@ -147,6 +171,14 @@ const PERSON_CANDIDATE_LIMIT = 10;
 
 /** Транзакция drizzle: письмо о доступе ставится вместе с решением, ради которого отправляется. */
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * Соединение, которым читается карточка учётки. Вне правки это глобальное `db` — карточку
+ * спрашивают и списком, и ответом ручки; внутри правки это её транзакция: карточка «после», снятая
+ * мимо транзакции, показала бы состояние «до», а по паре карточек собирается перечень изменений
+ * для журнала (ADR 0109).
+ */
+type Reader = Tx | typeof db;
 
 /**
  * Поставить письмо о решении по учётной записи и назвать исход отправки.
@@ -287,6 +319,13 @@ function toDto(
   departments: UserDto['departments'],
   grantCodes: string[],
   grantPermissions: Permission[],
+  /**
+   * Назначения учётки целиком — то, чем форма рисует чекбоксы и собирает высказывание (план
+   * «полномочия назначаются в окне учётки», §4). Рядом с кодами, а не вместо них: коды отвечают
+   * витрине «Права», а форме нужны `id`, имя и версия — и у назначения, несовместимого с выбранной
+   * ролью, взять их больше неоткуда.
+   */
+  grants: UserAccountDto['grants'],
 ): UserAccountDto {
   const addons = systemAddonsOf(grantCodes);
   return {
@@ -309,6 +348,7 @@ function toDto(
     departments,
     addons,
     grantCodes,
+    grants,
     /*
      * Эффективные права учётки (план реструктуризации §12, этап 2б): считает их сервер, потому что
      * витрина больше не может — состав набора лежит в базе, а не в матрице.
@@ -371,9 +411,9 @@ const selectCols = {
   updatedAt: users.updatedAt,
 };
 
-function usersQuery() {
+function usersQuery(reader: Reader = db) {
   return (
-    db
+    reader
       .select(selectCols)
       .from(users)
       .leftJoin(counterparties, eq(users.counterpartyId, counterparties.id))
@@ -391,18 +431,24 @@ function usersQuery() {
  * разошёлся бы с первым в тот же момент, когда таблицы перехода разъедутся, и карточка показывала бы
  * не то, чем человек работает.
  *
- * Читается всё **пачкой на одну учётку** — теми же функциями, что и список: карточка и строка списка
- * обязаны отвечать одинаково, а два разных чтения одного и того же расходятся ровно тогда, когда
- * правят одно из них.
+ * Состав полей и порядок чтения — те же, что у списка, и собирает ответ один `toDto`: карточка и
+ * строка списка обязаны отвечать одинаково, а два разных ответа на один вопрос расходятся ровно
+ * тогда, когда правят один из них.
+ *
+ * **Соединение приходит параметром.** По умолчанию глобальное `db` — карточку спрашивают и вне
+ * всякой правки. Внутри транзакции правки передаётся её `tx`, и иначе нельзя: событие доступа
+ * пишется той же транзакцией (§5.1 плана «полномочия в окне учётки»), а его перечень изменений
+ * считается по карточке «после» — снятая мимо транзакции, она описывала бы состояние «до».
  */
-async function fetchUserDto(id: string): Promise<UserAccountDto | null> {
-  const [row] = await usersQuery().where(eq(users.id, id));
+async function fetchUserDto(id: string, reader: Reader = db): Promise<UserAccountDto | null> {
+  const [row] = await usersQuery(reader).where(eq(users.id, id));
   if (!row) return null;
-  const [objects, departments, grantCodes, grantPermissions] = await Promise.all([
-    objectsByUserIds([id]),
-    departmentsByUserIds([id]),
-    grantCodesByUserIds(db, [id]),
-    grantPermissionsByUserIds(db, [id]),
+  const [objects, departments, grantCodes, grantPermissions, grants] = await Promise.all([
+    objectsByUserIds([id], reader),
+    departmentsByUserIds([id], reader),
+    grantCodesByUserIds(reader, [id]),
+    grantPermissionsByUserIds(reader, [id]),
+    grantRefsByUserIds(reader, [id]),
   ]);
   return toDto(
     row,
@@ -410,6 +456,7 @@ async function fetchUserDto(id: string): Promise<UserAccountDto | null> {
     departments.get(id) ?? [],
     grantCodes.get(id) ?? [],
     grantPermissions.get(id) ?? [],
+    grants.get(id) ?? [],
   );
 }
 
@@ -452,6 +499,26 @@ async function resolveCounterpartyId(
   }
   if (!cp.isActive) throw err.badRequest('Контрагент неактивен');
   return counterpartyId;
+}
+
+/**
+ * Тип контрагента — вторая ось субъекта доступа (ADR 0038), и барьеры итога считаются вместе с ней.
+ *
+ * Отдельным чтением, а не полем `resolveCounterpartyId`: тот отвечает на «годится ли контрагент» и
+ * зовётся не всегда — у роли вне контрагентской оси он возвращает `null`, не читая ничего. А тип
+ * нужен обеим сторонам расчёта: у роли внешнего исполнителя весь модуль приходит именно от типа, и
+ * субъект, собранный без него, отвечал бы на барьеры более коротким списком прав, чем сервер выдаёт.
+ */
+async function counterpartyTypeOf(
+  reader: Reader,
+  counterpartyId: string | null,
+): Promise<CounterpartyType | null> {
+  if (counterpartyId === null) return null;
+  const [row] = await reader
+    .select({ type: counterparties.type })
+    .from(counterparties)
+    .where(eq(counterparties.id, counterpartyId));
+  return row?.type ?? null;
 }
 
 /**
@@ -733,6 +800,273 @@ function bindingMetadata(binding: PersonBinding): Record<string, unknown> {
   };
 }
 
+/*
+ * ── Полномочия в форме учётки (план «полномочия назначаются в окне учётки», §5) ──────────────────
+ *
+ * Здесь только порядок шагов операции и выбор ответа на отказ: сама разница, барьеры, сверка версий
+ * и раскладка дельты живут в `services/grant-catalog.ts`. Двух реализаций одного барьера в проекте
+ * быть не должно — они разъедутся на первой же правке каталога, и путь выдачи из реестра
+ * (`routes/user-grants.ts`) считает то же самое теми же функциями.
+ */
+
+/**
+ * Сигнал повтора транзакции: под блокировкой строки учётки нашлось назначение, чей набор в
+ * захваченное множество не попал (Р6).
+ *
+ * Исключением, а не возвращаемым значением, потому что откатить нужно всю транзакцию: множество
+ * наборов известно не полностью — кандидаты читаются **до** блокировки строки учётки, — и между
+ * чтением и захватом параллельная выдача успевает добавить назначение. Взять недостающую блокировку
+ * после строки учётки нельзя: это встречный порядок захвата, то есть ровно тот дедлок, ради
+ * предотвращения которого правило «наборы, потом учётки» и объявлено. Повтор дешевле — транзакция к
+ * этому моменту ничего не записала.
+ */
+class GrantLockMissed extends Error {
+  constructor(readonly grantIds: readonly string[]) {
+    super('grant lock missed');
+    this.name = 'GrantLockMissed';
+  }
+}
+
+/**
+ * Сколько раз правка повторяется, не добрав блокировку. Три, а не «пока не сойдётся»: каждый повтор
+ * расширяет захваченное множество, и три подряд неудачи означают не гонку, а поток выдач по этой
+ * учётке — тогда честнее отказать, чем крутиться под чужой нагрузкой.
+ */
+const GRANT_LOCK_ATTEMPTS = 3;
+
+/** Правка учётки с повтором при недобранной блокировке набора (Р6). */
+async function withGrantLocks<T>(run: (extra: readonly string[]) => Promise<T>): Promise<T> {
+  const extra = new Set<string>();
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await run([...extra]);
+    } catch (e) {
+      if (!(e instanceof GrantLockMissed)) throw e;
+      if (attempt >= GRANT_LOCK_ATTEMPTS) {
+        throw err.conflict(
+          'Полномочия этой учётной записи меняли одновременно с вами — откройте карточку заново и повторите.',
+        );
+      }
+      for (const grantId of e.grantIds) extra.add(grantId);
+    }
+  }
+}
+
+/**
+ * Наборы под блокировками, разобранные для планировщика: состав, версия и совместимые роли.
+ *
+ * Мягко удалённые в каталог не попадают: они не действуют ни у кого, форма их не показывает, и
+ * названный в теле удалённый набор обязан прийти отказом «его больше нет» (409), а не выдаться.
+ */
+async function plannedGrantsOf(
+  tx: Tx,
+  locked: ReadonlyMap<string, GrantRow>,
+): Promise<Map<string, PlannedGrant>> {
+  const alive = [...locked.values()].filter((row) => row.deletedAt === null);
+  const composition = await compositionByGrantIds(
+    tx,
+    alive.map((row) => row.id),
+  );
+  return new Map(
+    alive.map((row) => [
+      row.id,
+      {
+        id: row.id,
+        code: row.code,
+        name: row.name,
+        version: row.version,
+        permissions: composition.get(row.id)?.permissions ?? [],
+        roles: composition.get(row.id)?.roles ?? [],
+      },
+    ]),
+  );
+}
+
+/**
+ * Отказ по высказыванию — и ответ у него зависит от кода (Р8).
+ *
+ * 409 у гонки идёт первым: набор удалили или подменили, пока карточка была открыта, и исход тут
+ * другой, чем у остальных, — перечитать, а не поправить галочку. Всё прочее — 400, и путь поля
+ * `grants` ставится всем, кроме молчания: поля `grants` в таком запросе нет вовсе, подсвечивать
+ * нечего, и виновата не галочка, а устаревший экран.
+ *
+ * Тексты сходятся в один: нарушений бывает несколько сразу (не названо одно назначение, а другое
+ * просят снять вопреки переводу ролей), и показать первое, спрятав второе, значило бы отправить
+ * администратора чинить форму по одному отказу за заход.
+ */
+function refuseGrantStatements(violations: readonly GrantStatementIssue[]): never {
+  const race = violations.find((issue) => issue.code === 'unknown');
+  if (race) throw err.conflict(race.message);
+  const text = violations.map((issue) => issue.message).join(' ');
+  const silence = violations.every((issue) => issue.code === 'silence_forbidden');
+  throw err.badRequest(text, silence ? undefined : { grants: text });
+}
+
+/**
+ * Отказ по барьерам итога — то же тело, что у реестра выдач (`GrantValidationDetailsDto`): экран
+ * раскладывает нарушения по форме, не разбирая текст обратно.
+ *
+ * Все нарушения кладутся в `violations`, а `holders` остаётся пустым, и это не потеря половины:
+ * держатель у этой операции ровно один — учётка, которую сейчас правят, — и называть её по имени в
+ * её же карточке было бы шумом. Путь поля ставится, только когда поле `grants` в запросе есть:
+ * барьер могла нарушить и одна смена роли, и подсветить галочку, которой не присылали, нечем.
+ */
+function refuseGrantBarriers(violations: readonly GrantViolation[], onField: boolean): never {
+  const details: GrantValidationDetailsDto = { violations: [...violations], holders: [] };
+  const message = violations[0]?.message ?? 'Полномочия нельзя оставить у этой учётной записи';
+  throw err.badRequest(message, onField ? { grants: message } : undefined, details);
+}
+
+/**
+ * Гонка двух выдач одного набора одной учётке доходит до уникального ограничения. Дойти она может
+ * только в обход порядка блокировок — обе транзакции держат строку набора, — но 500 на месте
+ * понятного «повторите» здесь тот же худший исход, что и у остальных разборов `23505` в файле.
+ */
+function asAssignmentConflict(e: unknown): unknown {
+  const pg = pgErrorOf(e);
+  if (pg?.code === '23505' && pg.constraint === 'user_grants_user_grant_unique') {
+    return err.conflict('Полномочие выдавали этой учётке одновременно с вами — повторите попытку');
+  }
+  return e;
+}
+
+/**
+ * Запись разницы назначений (§5, шаг 8): выдача — строка `origin: 'manual'`, отзыв — удаление.
+ *
+ * `origin` у выдачи из формы всегда ручной: `migration` зарезервирован за переводом ролей, и на
+ * этом различии держится его откат — он снимает ровно свои строки и выданного вручную не трогает.
+ *
+ * Возвращает идентификаторы заведённых назначений: их называет журнал, а вторым чтением после
+ * вставки они уже не находятся однозначно — строку могли пересоздать.
+ */
+async function applyGrantPlan(
+  tx: Tx,
+  userId: string,
+  plan: GrantStatementPlan,
+  actorId: string,
+): Promise<Map<string, string>> {
+  const assignmentIds = new Map<string, string>();
+  if (plan.toRevoke.length > 0) {
+    await tx.delete(userGrants).where(
+      and(
+        eq(userGrants.userId, userId),
+        inArray(
+          userGrants.grantId,
+          plan.toRevoke.map((assignment) => assignment.id),
+        ),
+      ),
+    );
+  }
+  if (plan.toAssign.length === 0) return assignmentIds;
+  let created: { id: string; grantId: string }[];
+  try {
+    created = await tx
+      .insert(userGrants)
+      .values(
+        plan.toAssign.map((grant) => ({
+          userId,
+          grantId: grant.id,
+          grantedBy: actorId,
+          origin: 'manual' as const,
+        })),
+      )
+      .returning({ id: userGrants.id, grantId: userGrants.grantId });
+  } catch (e) {
+    throw asAssignmentConflict(e);
+  }
+  for (const row of created) assignmentIds.set(row.grantId, row.id);
+  return assignmentIds;
+}
+
+/**
+ * События выдачи и отзыва — **те же**, что пишет реестр выдач, и с тем же составом `metadata`
+ * (Р11). Иначе срез журнала (ADR 0117) и вопрос «кто выдал Аудитора» отвечали бы половиной правды:
+ * выдачи, сделанные при приёме заявки, в нём бы не появились.
+ *
+ * Дельта в событии — доля **итоговой** дельты операции (§5.2), а не пересчёт по шагам: снимают
+ * набор A и выдают B, оба дают одно право — пошаговый пересчёт написал бы «право снято», а следом
+ * «право добавлено», хотя транзакционно доступ не прерывался ни на мгновение. Порядок событий
+ * задаёт `attributeGrantDelta` и он объявлен: сначала отзывы, затем выдачи, внутри — по `grant_id`.
+ */
+async function writeGrantEvents(
+  tx: Tx,
+  params: {
+    actorId: string;
+    userId: string;
+    /** Роль **после** правки: под ней выданный набор и действует. */
+    role: Role | null;
+    plan: GrantStatementPlan;
+    delta: PermissionDelta;
+    /** Идентификаторы заведённых назначений — от `applyGrantPlan`. */
+    assignmentIds: ReadonlyMap<string, string>;
+  },
+): Promise<void> {
+  const revoked = new Map(params.plan.toRevoke.map((assignment) => [assignment.id, assignment]));
+  const assigned = new Map(params.plan.toAssign.map((grant) => [grant.id, grant]));
+  const events = attributeGrantDelta({
+    delta: params.delta,
+    revoked: params.plan.toRevoke,
+    assigned: params.plan.toAssign,
+  });
+  for (const event of events) {
+    const gone = revoked.get(event.grantId);
+    const grant: AssignedGrant | PlannedGrant | undefined = gone ?? assigned.get(event.grantId);
+    if (!grant) continue;
+    await writeAuditTx(tx, {
+      actorUserId: params.actorId,
+      action: event.operation === 'assign' ? 'grant.assign' : 'grant.revoke',
+      // Цель события — учётка: так его находит разбор «что меняли у этого человека». Набор назван в
+      // metadata, тем же составом полей, что у реестра выдач.
+      entityType: 'user',
+      entityId: params.userId,
+      metadata: {
+        grantId: grant.id,
+        grantCode: grant.code,
+        grantName: grant.name,
+        assignmentId: gone ? gone.assignmentId : params.assignmentIds.get(event.grantId),
+        // Происхождение снятой строки: «снято выданное вручную» и «снято выданное переводом ролей»
+        // — разные события, и после удаления строки различить их будет уже нечем.
+        origin: gone ? gone.origin : 'manual',
+        role: params.role,
+        permissions: grant.permissions,
+        permissionsAdded: event.added,
+        permissionsRemoved: event.removed,
+      },
+    });
+  }
+}
+
+/**
+ * Строки перечня изменений про полномочия (Р11) — рядом с надстройками и по их правилу: разницей, а
+ * не составом. Панель пути учётки читает состав правки целиком, и «полномочия выданы» обязано стоять
+ * там рядом с ролью, иначе выдача из окна учётки видна только отдельным событием.
+ */
+function grantChanges(plan: GrantStatementPlan): AuditChangeDto[] {
+  const set = changeSet();
+  set.listed(
+    'grantsGranted',
+    plan.toAssign.map((grant) => grant.name),
+  );
+  set.listed(
+    'grantsRevoked',
+    plan.toRevoke.map((assignment) => assignment.name),
+  );
+  return set.changes;
+}
+
+/** Идентификаторы наборов, которые операция обязана заблокировать: названные в теле плюс выданные. */
+function grantLockCandidates(
+  statements: readonly GrantStatement[] | undefined,
+  assignments: readonly AssignedGrant[],
+  extra: readonly string[],
+): string[] {
+  return [
+    ...extra,
+    ...(statements ?? []).map((statement) => statement.id),
+    ...assignments.map((assignment) => assignment.id),
+  ];
+}
+
 export default async function usersRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
   const guards = { preHandler: [app.authenticate, app.requirePermission('users.manage')] };
@@ -804,11 +1138,12 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
     // сверх пятого: витрина «Права» перебирает живые учётки целиком — по ним считаются держатели
     // права, группировка по фактическому набору и пометка «только у администратора», — и запрос на
     // учётку превратил бы такой перебор в сотню обращений к базе.
-    const [objects, departments, grantCodes, grantPermissions] = await Promise.all([
+    const [objects, departments, grantCodes, grantPermissions, grants] = await Promise.all([
       objectsByUserIds(ids),
       departmentsByUserIds(ids),
       grantCodesByUserIds(db, ids),
       grantPermissionsByUserIds(db, ids),
+      grantRefsByUserIds(db, ids),
     ]);
     return {
       items: rows.map((row) =>
@@ -818,6 +1153,7 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
           departments.get(row.id) ?? [],
           grantCodes.get(row.id) ?? [],
           grantPermissions.get(row.id) ?? [],
+          grants.get(row.id) ?? [],
         ),
       ),
       total: Number(totalRows[0]!.c),
@@ -973,6 +1309,18 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
       created = await db.transaction(async (tx) => {
         // Архив адрес не занимает (ADR 0063) — та же проверка, что у саморегистрации.
         await assertEmailFree(tx, body.email);
+        /*
+         * Строки наборов — **до** строки учётки (Р6), даже когда учётки ещё нет: порядок захвата
+         * один у всех операций, меняющих доступ, и заведение с полномочиями от него не освобождено.
+         *
+         * Перечитывания и повтора здесь нет, и не по недосмотру: назначений у ненаписанной строки не
+         * бывает, ссылаться на неё параллельная выдача не может — идентификатор ещё никому не
+         * известен, — и множество наборов операции задано телом целиком.
+         */
+        const locked = await lockGrants(
+          tx,
+          (body.grants ?? []).map((statement) => statement.id),
+        );
         // Работник — до вставки и той же транзакцией: живая учётка водителя без него нарушает
         // CHECK, и порядок «сначала завести, потом привязать» оставлял бы её невозможной.
         binding = await resolvePersonBinding(tx, {
@@ -1014,6 +1362,39 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
         await replaceUserObjects(tx, row!.id, objectIds, actor.id);
         await replaceUserDepartments(tx, row!.id, departmentIds, actor.id);
         await replaceUserAddons(tx, row!.id, addons, actor.id);
+
+        /*
+         * Полномочия заведённой учётки (§5, шаги 3–8). Назначений у новой строки нет, поэтому
+         * снимать нечего, а «роль до» — `null`: переключать сменой роли тут тоже нечего.
+         *
+         * Отсутствие поля означает «пусто» (§4.1): новой учётке нечего сохранять, и молчание здесь
+         * законно всегда — в отличие от правки, где оно упирается в границы (§4.2).
+         */
+        const plan = planGrantStatements({
+          assignments: [],
+          roleBefore: null,
+          roleAfter: body.role,
+          statements: body.grants,
+          catalog: await plannedGrantsOf(tx, locked),
+        });
+        if (plan.violations.length > 0) refuseGrantStatements(plan.violations);
+        assertGrantVersions(plan.versionsToCheck);
+        // Барьеры — по итоговому субъекту (Р5): роль, тип контрагента и наборы разом. У новой
+        // учётки левая сторона пуста, и вся дельта операции — это то, что человек получил.
+        const outcome = grantOperationOutcome({
+          before: { role: null, counterpartyType: null, grants: [] },
+          after: {
+            role: body.role,
+            counterpartyType: await counterpartyTypeOf(tx, counterpartyId),
+            grants: plan.grantsAfter,
+          },
+          assigned: plan.toAssign,
+        });
+        if (outcome.violations.length > 0) {
+          refuseGrantBarriers(outcome.violations, body.grants !== undefined);
+        }
+        const assignmentIds = await applyGrantPlan(tx, row!.id, plan, actor.id);
+
         // Письмо только активной учётке: звать человека в портал, который его не пустит, хуже
         // молчания. Ключ без времени — учётку заводят один раз, различать в нём нечего.
         notified = await queueAccessMail(tx, {
@@ -1025,34 +1406,56 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
           content: () => accountCreatedContent(body.role),
           userId: row!.id,
         });
-        return row!;
+        /*
+         * Карточка заведённой учётки и событие журнала — той же транзакцией, тем же соединением.
+         *
+         * Заведение учётки — событие доступа (§5.1): человек получил роль, область и, вместе с
+         * надстройками, полномочия. Учётка, заведённая без строки в журнале, отвечает на вопрос
+         * «кто её завёл» пустотой — а спрашивают об этом ровно тогда, когда доступ оказался
+         * лишним. Поэтому запись строгая: её сбой откатывает и саму учётку.
+         *
+         * Карточка снимается тут же и отсюда же уходит в ответ: вне транзакции она ещё не видна,
+         * а второе чтение после коммита показывало бы уже чужие правки.
+         */
+        const dto = (await fetchUserDto(row!.id, tx))!;
+        await writeAuditTx(tx, {
+          actorUserId: actor.id,
+          action: 'user.create',
+          entityType: 'user',
+          entityId: row!.id,
+          // Надстройка — выданный доступ (ADR 0086), и в журнале она стоит рядом с ролью: вопрос «кто
+          // сделал человека оператором оргтехники» задают так же, как «кто выдал ему роль».
+          // Активность записывается тут же: заведённая сразу активной учётка и заготовка «на потом» —
+          // разные события, а по одной лишь роли они неразличимы.
+          metadata: {
+            role: body.role,
+            addons,
+            isActive: body.isActive,
+            notified,
+            ...bindingMetadata(binding),
+            // Состав заведённой учётки словами (ADR 0109): роль, доступ, объекты, отделы,
+            // надстройки, работник. Признаки выше остаются рядом — их читают записи, сделанные до
+            // этого перечня. Полномочия идут той же строкой перечня, а событием выдачи — ниже.
+            changes: [...userAuditChanges(null, dto), ...grantChanges(plan)],
+          },
+        });
+        // События выдачи — после `user.create` и той же транзакцией: до неё entity, на которую они
+        // ссылаются, ещё не существует, а мимо неё выдача осталась бы без строки в реестре.
+        await writeGrantEvents(tx, {
+          actorId: actor.id,
+          userId: row!.id,
+          role: body.role,
+          plan,
+          delta: outcome.delta,
+          assignmentIds,
+        });
+        return dto;
       });
     } catch (e) {
       throw asPersonConflict(asEmailConflict(e));
     }
-    const createdDto = (await fetchUserDto(created.id))!;
-    await writeAudit({
-      actorUserId: actor.id,
-      action: 'user.create',
-      entityType: 'user',
-      entityId: created.id,
-      // Надстройка — выданный доступ (ADR 0086), и в журнале она стоит рядом с ролью: вопрос «кто
-      // сделал человека оператором оргтехники» задают так же, как «кто выдал ему роль».
-      // Активность записывается тут же: заведённая сразу активной учётка и заготовка «на потом» —
-      // разные события, а по одной лишь роли они неразличимы.
-      metadata: {
-        role: body.role,
-        addons,
-        isActive: body.isActive,
-        notified,
-        ...bindingMetadata(binding),
-        // Состав заведённой учётки словами (ADR 0109): роль, доступ, объекты, отделы, надстройки,
-        // работник. Признаки выше остаются рядом — их читают записи, сделанные до этого перечня.
-        changes: userAuditChanges(null, createdDto),
-      },
-    });
     reply.code(201);
-    return { user: createdDto, notified };
+    return { user: created, notified };
   });
 
   r.patch(
@@ -1063,317 +1466,439 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
       const { id } = req.params;
       const body = req.body;
 
-      /**
-       * Карточка «до» — для журнала изменений (ADR 0109): пары «было → стало» собираются по
-       * названиям объектов, отделов и работника, а не по идентификаторам, и взять их можно только
-       * из собранного DTO.
-       *
-       * Снимок берётся до транзакции, а не внутри неё: выборка карточки идёт своими запросами, и
-       * тащить в неё `tx` пришлось бы через половину модуля. Плата за это — гонка двух
-       * администраторов: если чужая правка легла между снимком и блокировкой строки, в нашей
-       * записи журнала она попадёт в левую часть пары. Обе правки при этом остаются в журнале
-       * своими событиями, и порядок их виден по времени.
-       */
-      const before = await fetchUserDto(id);
-
       const {
         scopeChanged,
         addonsChanged,
-        addons,
         roleChanged,
         counterpartyChanged,
         personChanged,
-        personBefore,
-        binding,
         deactivated,
-        approving,
+        grantsChanged,
         notified,
-        roleBefore,
-        roleAfter,
-        activeBefore,
-        activeAfter,
-        activeChanged,
-      } = await db.transaction(async (tx) => {
-        // Строка учётки читается под блокировкой и внутри транзакции, а не перед ней: решение по
-        // заявке считается по её состоянию, и снимок, взятый до транзакции, устаревает ровно в тот
-        // момент, когда двое рассматривают одну заявку одновременно. Тот же приём — у номера
-        // путевого листа и у состава рейса.
-        const [existing] = await tx.select().from(users).where(eq(users.id, id)).for('update');
-        if (!existing || existing.deletedAt) throw err.notFound('Пользователь не найден');
-
-        // защита от самоблокировки
-        if (actor.id === id) {
-          if (body.isActive === false)
-            throw err.badRequest('Нельзя деактивировать собственный аккаунт');
-          if (body.role && body.role !== existing.role) {
-            throw err.badRequest('Нельзя менять собственную роль');
+        after,
+      } = await withGrantLocks((extra) =>
+        db.transaction(async (tx) => {
+          /*
+           * Шаг 1 порядка (Р6): назначения читаются **без блокировки** — множество наборов операции
+           * известно только вместе с ними, а взять их под блокировкой значило бы держать строку
+           * учётки раньше строк наборов, то есть встречным порядком захвата.
+           */
+          const seen = await assignmentsOfUser(tx, id);
+          // Шаг 2: строки наборов — циклом и по возрастанию `id`, тем же вызовом, что берёт их
+          // каталог. Кандидаты — названные в теле, уже выданные и добранные прошлой попыткой.
+          const locked = await lockGrants(tx, grantLockCandidates(body.grants, seen, extra));
+          // Шаг 3: строка учётки. Читается под блокировкой и внутри транзакции, а не перед ней:
+          // решение по заявке считается по её состоянию, и снимок, взятый до транзакции, устаревает
+          // ровно в тот момент, когда двое рассматривают одну заявку одновременно. Тот же приём — у
+          // номера путевого листа и у состава рейса.
+          const [existing] = await tx.select().from(users).where(eq(users.id, id)).for('update');
+          if (!existing || existing.deletedAt) throw err.notFound('Пользователь не найден');
+          /*
+           * Шаг 4: назначения перечитываются под блокировкой. Появившийся между шагами 1 и 3 набор
+           * лечится повтором транзакции с расширенным множеством, а не второй блокировкой после
+           * строки учётки: та была бы встречным порядком захвата. Транзакция к этому моменту ничего
+           * не записала, и повтор ей ничего не стоит.
+           */
+          const assignments = await assignmentsOfUser(tx, id);
+          const missed = assignments.filter((assignment) => !locked.has(assignment.id));
+          if (missed.length > 0) {
+            throw new GrantLockMissed(missed.map((assignment) => assignment.id));
           }
-        }
 
-        const nextRole = body.role ?? existing.role;
-        // Прежняя роль сохраняется: отказ ловит смену роли на упраздняемую, а не саму упраздняемую
-        // роль в теле — иначе действующего штаба нельзя было бы даже переименовать.
-        assertRoleAssignable(nextRole, existing.role);
-        const nextIsActive = body.isActive ?? existing.isActive;
-        // Активная учётка без роли не попадает ни под одно ограничение доступа: проверки
-        // сформулированы от конкретных ролей («штаб — свой объект», «оператор — свой контрагент»),
-        // и учётка без роли видит все заявки вывоза. Роль назначается вместе с активацией.
-        if (nextIsActive && !nextRole) {
-          throw err.badRequest('Нельзя активировать учётку без роли', { role: 'Выберите роль' });
-        }
-        // Доступ выдаётся тому, кто доказал, что ящик его (ADR 0072). Иначе заявку мог подать кто
-        // угодно на чужой адрес, и портал выдал бы права по одному лишь совпадению ФИО с ожидаемым.
-        // Учётки, заведённые администратором, подтверждены по факту создания и сюда не упираются.
-        // Пока подтверждение выключено (EMAIL_VERIFICATION_ENABLED), проверка снята — иначе заявки,
-        // поданные до отключения, остались бы неактивируемыми.
-        const activating = body.isActive === true && !existing.isActive;
-        if (EMAIL_VERIFICATION_ENABLED && activating && !existing.emailVerifiedAt) {
-          throw err.badRequest(
-            'Адрес не подтверждён — активировать учётку нельзя. Попросите пользователя перейти по ссылке из письма.',
-          );
-        }
+          /**
+           * Карточка «до» — для журнала изменений (ADR 0109): пары «было → стало» собираются по
+           * названиям объектов, отделов и работника, а не по идентификаторам, и взять их можно
+           * только из собранного DTO.
+           *
+           * Снимается уже **под блокировкой строки и тем же соединением**, что и сама правка: событие
+           * пишется этой же транзакцией (§5.1), и левая часть пары обязана описывать то состояние, из
+           * которого правка исходила. Снимок, взятый до транзакции, показывал бы чужую правку,
+           * успевшую лечь между ним и блокировкой, — то есть врал бы про «было» у двух
+           * администраторов, рассматривающих одну заявку.
+           */
+          const before = await fetchUserDto(id, tx);
 
-        // Рассмотрение заявки — объявленное намерение, а не догадка по телу запроса (ADR 0087).
-        //
-        // Одной блокировки мало: `PATCH` здесь маршрут общей правки, и второй администратор,
-        // дождавшись первого, спокойно переписал бы его решение о роли и области, оставив в
-        // журнале вторую запись. Поэтому намерение сверяется с состоянием строки и с итогом
-        // правки, а не с одним лишь состоянием.
-        const wasRegistration = !existing.isActive && existing.role === null;
-        const approvingNow = wasRegistration && nextIsActive && nextRole !== null;
-        // Назначить заявке роль, не активируя её, нельзя вместе с тем же запретом на активацию:
-        // иначе запись перестала бы быть заявкой, а следующая правка активировала бы её уже как
-        // обычную учётку — мимо журнала одобрения и мимо письма.
-        const decidesRegistration =
-          wasRegistration && (body.role !== undefined || body.isActive === true);
-        if (body.approveRegistration) {
-          if (!wasRegistration) {
-            throw err.conflict('Заявку уже рассмотрел другой администратор — обновите список');
+          // защита от самоблокировки
+          if (actor.id === id) {
+            if (body.isActive === false)
+              throw err.badRequest('Нельзя деактивировать собственный аккаунт');
+            if (body.role && body.role !== existing.role) {
+              throw err.badRequest('Нельзя менять собственную роль');
+            }
+            // Полномочия себе не правятся (инвариант 6 ADR 0106, Р9) — рядом с двумя запретами
+            // выше и по той же причине: администратор не набирает себе доступ сам, даже вычитанием.
+            if (body.grants !== undefined) {
+              const issue = 'Нельзя менять полномочия собственной учётной записи';
+              throw err.badRequest(issue, { grants: issue });
+            }
           }
-          if (!approvingNow) {
+
+          const nextRole = body.role ?? existing.role;
+          // Прежняя роль сохраняется: отказ ловит смену роли на упраздняемую, а не саму упраздняемую
+          // роль в теле — иначе действующего штаба нельзя было бы даже переименовать.
+          assertRoleAssignable(nextRole, existing.role);
+          const nextIsActive = body.isActive ?? existing.isActive;
+          // Активная учётка без роли не попадает ни под одно ограничение доступа: проверки
+          // сформулированы от конкретных ролей («штаб — свой объект», «оператор — свой контрагент»),
+          // и учётка без роли видит все заявки вывоза. Роль назначается вместе с активацией.
+          if (nextIsActive && !nextRole) {
+            throw err.badRequest('Нельзя активировать учётку без роли', { role: 'Выберите роль' });
+          }
+          // Доступ выдаётся тому, кто доказал, что ящик его (ADR 0072). Иначе заявку мог подать кто
+          // угодно на чужой адрес, и портал выдал бы права по одному лишь совпадению ФИО с ожидаемым.
+          // Учётки, заведённые администратором, подтверждены по факту создания и сюда не упираются.
+          // Пока подтверждение выключено (EMAIL_VERIFICATION_ENABLED), проверка снята — иначе заявки,
+          // поданные до отключения, остались бы неактивируемыми.
+          const activating = body.isActive === true && !existing.isActive;
+          if (EMAIL_VERIFICATION_ENABLED && activating && !existing.emailVerifiedAt) {
             throw err.badRequest(
-              'Заявку рассматривают целиком: назначьте роль и включите «Активен» — или оставьте заявку в очереди',
+              'Адрес не подтверждён — активировать учётку нельзя. Попросите пользователя перейти по ссылке из письма.',
             );
           }
-        } else if (decidesRegistration) {
-          throw err.badRequest(
-            'Роль и активность заявки меняются только её рассмотрением: откройте карточку заявки и рассмотрите её целиком',
+
+          // Рассмотрение заявки — объявленное намерение, а не догадка по телу запроса (ADR 0087).
+          //
+          // Одной блокировки мало: `PATCH` здесь маршрут общей правки, и второй администратор,
+          // дождавшись первого, спокойно переписал бы его решение о роли и области, оставив в
+          // журнале вторую запись. Поэтому намерение сверяется с состоянием строки и с итогом
+          // правки, а не с одним лишь состоянием.
+          const wasRegistration = !existing.isActive && existing.role === null;
+          const approvingNow = wasRegistration && nextIsActive && nextRole !== null;
+          // Назначить заявке роль, не активируя её, нельзя вместе с тем же запретом на активацию:
+          // иначе запись перестала бы быть заявкой, а следующая правка активировала бы её уже как
+          // обычную учётку — мимо журнала одобрения и мимо письма.
+          const decidesRegistration =
+            wasRegistration && (body.role !== undefined || body.isActive === true);
+          if (body.approveRegistration) {
+            if (!wasRegistration) {
+              throw err.conflict('Заявку уже рассмотрел другой администратор — обновите список');
+            }
+            if (!approvingNow) {
+              throw err.badRequest(
+                'Заявку рассматривают целиком: назначьте роль и включите «Активен» — или оставьте заявку в очереди',
+              );
+            }
+          } else if (decidesRegistration) {
+            throw err.badRequest(
+              'Роль и активность заявки меняются только её рассмотрением: откройте карточку заявки и рассмотрите её целиком',
+            );
+          }
+
+          // Чтение справочника контрагентов идёт своим соединением и блокировок не ждёт: строка
+          // `users` заблокирована нами, а `counterparties` эта операция не трогает вовсе.
+          const nextCounterpartyId = await resolveCounterpartyId(
+            nextRole,
+            body.counterpartyId !== undefined ? body.counterpartyId : existing.counterpartyId,
           );
-        }
 
-        // Чтение справочника контрагентов идёт своим соединением и блокировок не ждёт: строка
-        // `users` заблокирована нами, а `counterparties` эта операция не трогает вовсе.
-        const nextCounterpartyId = await resolveCounterpartyId(
-          nextRole,
-          body.counterpartyId !== undefined ? body.counterpartyId : existing.counterpartyId,
-        );
+          const roleWasChanged = body.role !== undefined && body.role !== existing.role;
+          const wasDeactivated = body.isActive === false && existing.isActive;
+          // Смена контрагента у исполнителя — это смена и модуля, и области видимости (ADR 0038):
+          // права учётки после неё другие, поэтому выданные токены гасятся так же, как при смене роли.
+          const counterpartyWasChanged = nextCounterpartyId !== existing.counterpartyId;
 
-        const roleWasChanged = body.role !== undefined && body.role !== existing.role;
-        const wasDeactivated = body.isActive === false && existing.isActive;
-        // Смена контрагента у исполнителя — это смена и модуля, и области видимости (ADR 0038):
-        // права учётки после неё другие, поэтому выданные токены гасятся так же, как при смене роли.
-        const counterpartyWasChanged = nextCounterpartyId !== existing.counterpartyId;
-
-        // Отсутствие поля — «не трогать привязки»; при этом смена роли на объектную или
-        // отдельскую требует области и без поля: набор, оставшийся от прежней роли, проверяется
-        // наравне с присланным. Смена оси при этом обнуляет чужой набор сама — `resolve*`
-        // возвращают пустой список всем, кроме своей роли.
-        const [currentObjects, currentDepartments, currentAddons] = await Promise.all([
-          objectIdsOfUser(tx, id),
-          departmentIdsOfUser(tx, id),
-          addonsOfUser(tx, id),
-        ]);
-        const nextObjectIds = resolveObjectIds(
-          nextRole,
-          body.constructionObjectIds ?? currentObjects,
-        );
-        const nextDepartmentIds = resolveDepartmentIds(
-          nextRole,
-          body.departmentIds ?? currentDepartments,
-        );
-        // Тем же правилом, но с другим исходом: выданная надстройка от смены роли не отваливается,
-        // а запрещает саму смену — 400 из `resolveAddons`. Транзакция при этом откатывается, и
-        // учётка остаётся ровно такой, какой была.
-        const nextAddons = resolveAddons(nextRole, body.addons ?? currentAddons);
-        // Работник — четвёртая ось области (ADR 0102), и живёт она по своим правилам: набор
-        // чужой оси `resolve*` обнуляют молча, а человека у водителя обнулить нельзя вовсе (Р6).
-        // Сверяется он с учёткой **после** правки — иначе исправленная в том же запросе опечатка
-        // в фамилии выглядела бы расхождением с карточкой.
-        const nextBinding = await resolvePersonBinding(tx, {
-          role: nextRole,
-          currentPersonId: existing.personId,
-          personId: body.personId,
-          account: {
-            id,
-            lastName: body.lastName ?? existing.lastName,
-            firstName: body.firstName ?? existing.firstName,
-            middleName: body.middleName ?? existing.middleName,
-            phone: body.phone ?? existing.phone,
-            email: existing.email,
-          },
-          confirmNameMismatch: body.confirmNameMismatch,
-          actorId: actor.id,
-        });
-        const personWasChanged = nextBinding.personId !== existing.personId;
-        const objectsChanged = await replaceUserObjects(tx, id, nextObjectIds, actor.id);
-        const departmentsChanged = await replaceUserDepartments(
-          tx,
-          id,
-          nextDepartmentIds,
-          actor.id,
-        );
-        const changed = objectsChanged || departmentsChanged;
-        const addonsSetChanged = await replaceUserAddons(tx, id, nextAddons, actor.id);
-        try {
-          await tx
-            .update(users)
-            .set({
+          // Отсутствие поля — «не трогать привязки»; при этом смена роли на объектную или
+          // отдельскую требует области и без поля: набор, оставшийся от прежней роли, проверяется
+          // наравне с присланным. Смена оси при этом обнуляет чужой набор сама — `resolve*`
+          // возвращают пустой список всем, кроме своей роли.
+          const [currentObjects, currentDepartments, currentAddons] = await Promise.all([
+            objectIdsOfUser(tx, id),
+            departmentIdsOfUser(tx, id),
+            addonsOfUser(tx, id),
+          ]);
+          const nextObjectIds = resolveObjectIds(
+            nextRole,
+            body.constructionObjectIds ?? currentObjects,
+          );
+          const nextDepartmentIds = resolveDepartmentIds(
+            nextRole,
+            body.departmentIds ?? currentDepartments,
+          );
+          /*
+           * Тем же правилом, но с другим исходом: выданная надстройка от смены роли не отваливается,
+           * а запрещает саму смену — 400 из `resolveAddons`. Транзакция при этом откатывается, и
+           * учётка остаётся ровно такой, какой была.
+           *
+           * **Путь надстроек выключается целиком, когда в теле есть `grants`** (`null` вместо
+           * набора). Оба поля правят одно множество назначений, и схема их вместе не пускает (§4.1);
+           * оставь мы здесь `resolveAddons(nextRole, currentAddons)` — смена роли держателю
+           * системного набора упиралась бы в `roleAddonIssue` до того, как высказывание успело бы
+           * сказать о наборе хоть что-то, а у наборов исход другой: назначение остаётся, права по
+           * нему гаснут (Р4). Чем учётка кончила, `replaceUserAddons` в этом случае не решает —
+           * решает план высказывания, и надстройки после него считаются из его же итога.
+           */
+          const nextAddons =
+            body.grants === undefined
+              ? resolveAddons(nextRole, body.addons ?? currentAddons)
+              : null;
+          // Работник — четвёртая ось области (ADR 0102), и живёт она по своим правилам: набор
+          // чужой оси `resolve*` обнуляют молча, а человека у водителя обнулить нельзя вовсе (Р6).
+          // Сверяется он с учёткой **после** правки — иначе исправленная в том же запросе опечатка
+          // в фамилии выглядела бы расхождением с карточкой.
+          const nextBinding = await resolvePersonBinding(tx, {
+            role: nextRole,
+            currentPersonId: existing.personId,
+            personId: body.personId,
+            account: {
+              id,
               lastName: body.lastName ?? existing.lastName,
               firstName: body.firstName ?? existing.firstName,
-              // Отчество и телефон — с оглядкой на карточку: пустое поле заполняется из неё
-              // молча (Р31), заполненное остаётся тем, что прислали.
-              middleName:
-                nextBinding.userFields.middleName ?? body.middleName ?? existing.middleName,
-              // Телефон правится как ФИО: поле не прислали — не трогаем, прислали пустым — стёрли.
-              phone: nextBinding.userFields.phone ?? body.phone ?? existing.phone,
+              middleName: body.middleName ?? existing.middleName,
+              phone: body.phone ?? existing.phone,
+              email: existing.email,
+            },
+            confirmNameMismatch: body.confirmNameMismatch,
+            actorId: actor.id,
+          });
+          const personWasChanged = nextBinding.personId !== existing.personId;
+          const objectsChanged = await replaceUserObjects(tx, id, nextObjectIds, actor.id);
+          const departmentsChanged = await replaceUserDepartments(
+            tx,
+            id,
+            nextDepartmentIds,
+            actor.id,
+          );
+          const changed = objectsChanged || departmentsChanged;
+          const addonsSetChanged =
+            nextAddons === null ? false : await replaceUserAddons(tx, id, nextAddons, actor.id);
+
+          /*
+           * Полномочия (§5, шаги 3–8) — после существующих проверок роли, области и работника и до
+           * записи строки учётки: их итог входит в `authVersion` тем же условием, что область.
+           *
+           * Записью назначений распоряжается ровно один путь: либо надстройки (`replaceUserAddons`
+           * выше, поля `grants` в теле нет), либо высказывание — планировщик при `statements ===
+           * undefined` не выдаёт и не снимает ничего. Пересечься они не могут, и порядок «сначала
+           * надстройки» оставлен затем, чтобы это оставалось верным и в случае, когда пересечение
+           * кто-нибудь заведёт: разница надстроек считается от назначений, и посчитанная после
+           * выдачи она вернула бы только что снятое.
+           */
+          const plan = planGrantStatements({
+            assignments,
+            roleBefore: existing.role,
+            roleAfter: nextRole,
+            statements: body.grants,
+            catalog: await plannedGrantsOf(tx, locked),
+          });
+          if (plan.violations.length > 0) refuseGrantStatements(plan.violations);
+          // Версии участвующих наборов — под блокировками и до записи (Р7): состав, который
+          // администратор подписывает, мог измениться, пока карточка была открыта.
+          assertGrantVersions(plan.versionsToCheck);
+          /*
+           * Барьеры по **итоговому** субъекту (Р5): роль после правки, тип контрагента после правки
+           * и наборы после правки, причём права наборов — с гейтом совместимости.
+           *
+           * Считаются и тогда, когда поля `grants` в теле нет: пара, собранная суммой роли и набора,
+           * сегодня не ловится никем, и смена роли держателю набора — ровно тот случай, ради
+           * которого барьеры перенесены на итог.
+           */
+          const outcome = grantOperationOutcome({
+            before: {
+              role: existing.role,
+              counterpartyType: before?.counterpartyType ?? null,
+              grants: assignments,
+            },
+            after: {
               role: nextRole,
-              isActive: nextIsActive,
-              counterpartyId: nextCounterpartyId,
-              personId: nextBinding.personId,
-              authVersion:
-                roleWasChanged ||
-                counterpartyWasChanged ||
-                wasDeactivated ||
-                changed ||
-                addonsSetChanged ||
-                // Смена работника меняет всё, что учётка видит в кабинете: это другой человек с
-                // другими рейсами. Токены гасятся так же, как при смене роли и контрагента.
-                personWasChanged
-                  ? existing.authVersion + 1
-                  : existing.authVersion,
-              updatedAt: new Date(),
-            })
-            .where(eq(users.id, id));
-        } catch (e) {
-          // Гонка двух привязок доходит до индекса: между выбором работника и этой записью его
-          // мог занять параллельный запрос, и разобрать `23505` больше негде.
-          throw asPersonConflict(e);
-        }
+              counterpartyType: await counterpartyTypeOf(tx, nextCounterpartyId),
+              grants: plan.grantsAfter,
+            },
+            assigned: plan.toAssign,
+          });
+          if (outcome.violations.length > 0) {
+            refuseGrantBarriers(outcome.violations, body.grants !== undefined);
+          }
+          const assignmentIds = await applyGrantPlan(tx, id, plan, actor.id);
+          const grantsWereChanged = plan.toAssign.length > 0 || plan.toRevoke.length > 0;
 
-        // Письмо об открытом доступе — той же транзакцией, что и само одобрение: заявка,
-        // рассмотренная без письма, и письмо по нерассмотренной заявке одинаково недопустимы.
-        // Ключ дедупликации без времени: одобрение по построению однократно (после него роль уже
-        // назначена), и постоянный ключ вдобавок ловит повтор, если строка успела измениться дважды.
-        const mailed = await queueAccessMail(tx, {
-          requested: approvingNow && body.notifyUser,
-          kind: 'registration_approved',
-          dedupeKey: `registration-approved:${id}`,
-          to: existing.email,
-          subject: REGISTRATION_APPROVED_SUBJECT,
-          content: () => registrationApprovedContent(nextRole!),
-          userId: id,
-        });
+          try {
+            await tx
+              .update(users)
+              .set({
+                lastName: body.lastName ?? existing.lastName,
+                firstName: body.firstName ?? existing.firstName,
+                // Отчество и телефон — с оглядкой на карточку: пустое поле заполняется из неё
+                // молча (Р31), заполненное остаётся тем, что прислали.
+                middleName:
+                  nextBinding.userFields.middleName ?? body.middleName ?? existing.middleName,
+                // Телефон правится как ФИО: поле не прислали — не трогаем, прислали пустым — стёрли.
+                phone: nextBinding.userFields.phone ?? body.phone ?? existing.phone,
+                role: nextRole,
+                isActive: nextIsActive,
+                counterpartyId: nextCounterpartyId,
+                personId: nextBinding.personId,
+                authVersion:
+                  roleWasChanged ||
+                  counterpartyWasChanged ||
+                  wasDeactivated ||
+                  changed ||
+                  addonsSetChanged ||
+                  // Изменившееся множество назначений гасит токены по тому же правилу, что и
+                  // надстройки (Р10): права после правки другие, а access-токен сверяется с
+                  // `authVersion` на каждом запросе одинаково в обоих случаях.
+                  grantsWereChanged ||
+                  // Смена работника меняет всё, что учётка видит в кабинете: это другой человек с
+                  // другими рейсами. Токены гасятся так же, как при смене роли и контрагента.
+                  personWasChanged
+                    ? existing.authVersion + 1
+                    : existing.authVersion,
+                updatedAt: new Date(),
+              })
+              .where(eq(users.id, id));
+          } catch (e) {
+            // Гонка двух привязок доходит до индекса: между выбором работника и этой записью его
+            // мог занять параллельный запрос, и разобрать `23505` больше негде.
+            throw asPersonConflict(e);
+          }
 
-        return {
-          scopeChanged: changed,
-          addonsChanged: addonsSetChanged,
-          addons: nextAddons,
-          roleChanged: roleWasChanged,
-          counterpartyChanged: counterpartyWasChanged,
-          personChanged: personWasChanged,
-          personBefore: existing.personId,
-          binding: nextBinding,
-          deactivated: wasDeactivated,
-          approving: approvingNow,
-          notified: mailed,
-          roleBefore: existing.role,
-          roleAfter: nextRole,
-          activeBefore: existing.isActive,
-          activeAfter: nextIsActive,
-          activeChanged: nextIsActive !== existing.isActive,
-        };
-      });
+          // Письмо об открытом доступе — той же транзакцией, что и само одобрение: заявка,
+          // рассмотренная без письма, и письмо по нерассмотренной заявке одинаково недопустимы.
+          // Ключ дедупликации без времени: одобрение по построению однократно (после него роль уже
+          // назначена), и постоянный ключ вдобавок ловит повтор, если строка успела измениться дважды.
+          const mailed = await queueAccessMail(tx, {
+            requested: approvingNow && body.notifyUser,
+            kind: 'registration_approved',
+            dedupeKey: `registration-approved:${id}`,
+            to: existing.email,
+            subject: REGISTRATION_APPROVED_SUBJECT,
+            content: () => registrationApprovedContent(nextRole!),
+            userId: id,
+          });
+
+          // Карточка «после» — тем же соединением: правка ещё не закоммичена, и глобальному `db` она
+          // не видна. Отсюда же она уходит в ответ ручки.
+          const after = (await fetchUserDto(id, tx))!;
+
+          /*
+           * События правки — той же транзакцией и без глушителя ошибки (§5.1 плана «полномочия в
+           * окне учётки»; ADR 0106, решение 7).
+           *
+           * Правка учётки — событие доступа: этим запросом назначают роль, открывают и закрывают
+           * вход, меняют область и надстройки. Учётка, у которой доступ изменился, а строки в журнале
+           * нет, — это в точности то состояние, ради разбора которого журнал и заведён: «кто сделал
+           * человека диспетчером» останется без ответа именно там, где вопрос и задают. Остальной
+           * журнал портала при этом остаётся мягким — перевод всего портала на строгую запись сюда
+           * не входит.
+           */
+          // Перепривязка — своё событие журнала со старым и новым человеком (Р6). Внутри общей правки
+          // от неё остался бы один флаг «что-то поменяли»: разбор «кому ушли задания Иванова» задают
+          // именно парой «был — стал», а искать её потом по соседним записям нечем.
+          if (personWasChanged && existing.personId && nextBinding.personId) {
+            await writeAuditTx(tx, {
+              actorUserId: actor.id,
+              action: 'user.driver_person_relinked',
+              entityType: 'user',
+              entityId: id,
+              metadata: {
+                person: { from: existing.personId, to: nextBinding.personId },
+                ...bindingMetadata(nextBinding),
+                // Идентификаторы рядом с именами, а не вместо них (ADR 0109): «кому ушли задания
+                // Иванова» спрашивают про человека, а `8f0c…` на этот вопрос не отвечает.
+                changes: [
+                  {
+                    field: 'person',
+                    from: before?.person?.fullName ?? null,
+                    to: after.person?.fullName ?? null,
+                  },
+                ],
+              },
+            });
+          }
+          // У рассмотрения заявки своё действие журнала, а не признак внутри общей правки: одобрение и
+          // отказ — два исхода одного решения, и в журнале они обязаны стоять рядом и одинаково
+          // фильтроваться. Заодно «одобрение было ровно одно» становится проверяемым в один запрос.
+          await writeAuditTx(tx, {
+            actorUserId: actor.id,
+            action: approvingNow ? 'user.approve_registration' : 'user.update',
+            entityType: 'user',
+            entityId: id,
+            metadata: approvingNow
+              ? {
+                  role: nextRole,
+                  // Надстройки берутся из карточки «после», а не из присланного набора: их у
+                  // рассмотрения заявки может не быть вовсе — форма теперь высказывается наборами,
+                  // и пометки рядом с ролью считаются из его итога (`systemAddonsOf`).
+                  addons: after.addons,
+                  notified: mailed,
+                  ...bindingMetadata(nextBinding),
+                  // Одобрение — та же правка учётки, только с назначением роли: заявка была без роли
+                  // и без доступа, и пары «было → стало» показывают ровно это. Полномочия, выданные
+                  // тем же решением, стоят в перечне рядом с ролью (Р11).
+                  changes: [...userAuditChanges(before, after), ...grantChanges(plan)],
+                }
+              : {
+                  roleChanged: roleWasChanged,
+                  counterpartyChanged: counterpartyWasChanged,
+                  deactivated: wasDeactivated,
+                  scopeChanged: changed,
+                  addonsChanged: addonsSetChanged,
+                  // Привязка водителя (Р30) стоит рядом с остальными признаками правки, а
+                  // перепривязка вдобавок пишется своим событием: первая учётку открывает, вторая
+                  // переносит её к другому человеку, и в разборе это разные вопросы.
+                  ...(personWasChanged ? bindingMetadata(nextBinding) : {}),
+                  // Не только «роль менялась», но и чем она была и стала: подвкладка аудита обязана
+                  // отвечать «кто сделал человека диспетчером», а по одному булеву флагу это вопрос
+                  // без ответа. Тем же правилом — активность: раньше в журнале была видна только
+                  // деактивация, и включение доступа не оставляло следа вовсе.
+                  ...(roleWasChanged ? { role: { from: existing.role, to: nextRole } } : {}),
+                  ...(nextIsActive !== existing.isActive
+                    ? { isActive: { from: existing.isActive, to: nextIsActive } }
+                    : {}),
+                  // Что именно осталось у учётки — только когда набор менялся: снятие надстройки
+                  // уносит из `user_role_addons` и строку с `granted_by`, и без этой записи в журнале
+                  // не осталось бы следа, чем доступ был до правки.
+                  ...(addonsSetChanged && nextAddons !== null ? { addons: nextAddons } : {}),
+                  // Множество назначений менялось: признак стоит рядом с `addonsChanged` и по той же
+                  // причине — по нему видно, что правка трогала доступ, а не только карточку.
+                  ...(grantsWereChanged ? { grantsChanged: true } : {}),
+                  // Полный перечень изменённого (ADR 0109). Признаки выше остаются рядом: по ним
+                  // читаются записи, сделанные до перечня, и ломать их разбор незачем.
+                  changes: [...userAuditChanges(before, after), ...grantChanges(plan)],
+                },
+          });
+          // События выдачи и отзыва — после события правки и той же транзакцией: реестр выдач
+          // обязан отвечать «кто выдал» одинаково, из какого бы окна выдачу ни сделали (Р11).
+          await writeGrantEvents(tx, {
+            actorId: actor.id,
+            userId: id,
+            role: nextRole,
+            plan,
+            delta: outcome.delta,
+            assignmentIds,
+          });
+
+          return {
+            scopeChanged: changed,
+            addonsChanged: addonsSetChanged,
+            roleChanged: roleWasChanged,
+            counterpartyChanged: counterpartyWasChanged,
+            personChanged: personWasChanged,
+            deactivated: wasDeactivated,
+            grantsChanged: grantsWereChanged,
+            notified: mailed,
+            after,
+          };
+        }),
+      );
 
       // Сменившаяся область гасит токены наравне со сменой роли и контрагента: учётке стали
       // видны другие заявки. Сменившийся набор надстроек (ADR 0086) — то же самое с другой
       // стороны: заявки те же, но действий над ними стало больше или меньше. Сменившийся работник
       // (Р6) — самое сильное из этого: кабинет начинает показывать чужие рейсы.
+      //
+      // Refresh-сессии гасятся уже после коммита, в отличие от журнала: они живут своей таблицей, и
+      // откатывать их вместе с правкой нечем.
       const bumpAuth =
         roleChanged ||
         counterpartyChanged ||
         deactivated ||
         scopeChanged ||
         addonsChanged ||
+        // Изменившееся множество назначений — то же самое третьей осью (Р10): выданный набор обязан
+        // начать действовать тогда, когда его выдали, а не когда истечёт последний выданный токен.
+        grantsChanged ||
         personChanged;
       if (bumpAuth) await revokeAllForUser(id);
-      const after = (await fetchUserDto(id))!;
-      // Перепривязка — своё событие журнала со старым и новым человеком (Р6). Внутри общей правки
-      // от неё остался бы один флаг «что-то поменяли»: разбор «кому ушли задания Иванова» задают
-      // именно парой «был — стал», а искать её потом по соседним записям нечем.
-      if (personChanged && personBefore && binding.personId) {
-        await writeAudit({
-          actorUserId: actor.id,
-          action: 'user.driver_person_relinked',
-          entityType: 'user',
-          entityId: id,
-          metadata: {
-            person: { from: personBefore, to: binding.personId },
-            ...bindingMetadata(binding),
-            // Идентификаторы рядом с именами, а не вместо них (ADR 0109): «кому ушли задания
-            // Иванова» спрашивают про человека, а `8f0c…` на этот вопрос не отвечает.
-            changes: [
-              {
-                field: 'person',
-                from: before?.person?.fullName ?? null,
-                to: after.person?.fullName ?? null,
-              },
-            ],
-          },
-        });
-      }
-      // У рассмотрения заявки своё действие журнала, а не признак внутри общей правки: одобрение и
-      // отказ — два исхода одного решения, и в журнале они обязаны стоять рядом и одинаково
-      // фильтроваться. Заодно «одобрение было ровно одно» становится проверяемым в один запрос.
-      await writeAudit({
-        actorUserId: actor.id,
-        action: approving ? 'user.approve_registration' : 'user.update',
-        entityType: 'user',
-        entityId: id,
-        metadata: approving
-          ? {
-              role: roleAfter,
-              addons,
-              notified,
-              ...bindingMetadata(binding),
-              // Одобрение — та же правка учётки, только с назначением роли: заявка была без роли и
-              // без доступа, и пары «было → стало» показывают ровно это.
-              changes: userAuditChanges(before, after),
-            }
-          : {
-              roleChanged,
-              counterpartyChanged,
-              deactivated,
-              scopeChanged,
-              addonsChanged,
-              // Привязка водителя (Р30) стоит рядом с остальными признаками правки, а
-              // перепривязка вдобавок пишется своим событием: первая учётку открывает, вторая
-              // переносит её к другому человеку, и в разборе это разные вопросы.
-              ...(personChanged ? bindingMetadata(binding) : {}),
-              // Не только «роль менялась», но и чем она была и стала: подвкладка аудита обязана
-              // отвечать «кто сделал человека диспетчером», а по одному булеву флагу это вопрос
-              // без ответа. Тем же правилом — активность: раньше в журнале была видна только
-              // деактивация, и включение доступа не оставляло следа вовсе.
-              ...(roleChanged ? { role: { from: roleBefore, to: roleAfter } } : {}),
-              ...(activeChanged ? { isActive: { from: activeBefore, to: activeAfter } } : {}),
-              // Что именно осталось у учётки — только когда набор менялся: снятие надстройки уносит
-              // из `user_role_addons` и строку с `granted_by`, и без этой записи в журнале не
-              // осталось бы следа, чем доступ был до правки.
-              ...(addonsChanged ? { addons } : {}),
-              // Полный перечень изменённого (ADR 0109). Признаки выше остаются рядом: по ним
-              // читаются записи, сделанные до перечня, и ломать их разбор незачем.
-              changes: userAuditChanges(before, after),
-            },
-      });
       return { user: after, notified };
     },
   );

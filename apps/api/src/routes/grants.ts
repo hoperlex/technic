@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
-import { and, count, eq, isNull } from 'drizzle-orm';
+import { and, count, eq, exists, isNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import {
   createGrantSchema,
@@ -321,6 +321,22 @@ export default async function grantsRoutes(app: FastifyInstance): Promise<void> 
       // назначения, а не каталог.
       isNull(grants.deletedAt),
       q.kind === 'all' ? undefined : eq(grants.isSystem, q.kind === 'system'),
+      /*
+       * Отбор совместимостью с ролью (`grant_roles`) — им окно учётки собирает чекбоксы: показывать
+       * там наборы, которые выбранной роли выдать нельзя, значило бы предлагать галочку под будущий
+       * отказ (план «полномочия назначаются в окне учётки», Р2).
+       *
+       * `EXISTS`, а не соединение: у набора несколько совместимых ролей, и join размножил бы строку
+       * каталога по их числу — `total` считал бы пары «набор × роль» вместо наборов.
+       */
+      q.role === undefined
+        ? undefined
+        : exists(
+            db
+              .select({ one: sql`1` })
+              .from(grantRoles)
+              .where(and(eq(grantRoles.grantId, grants.id), eq(grantRoles.role, q.role))),
+          ),
       searchCondition(q.search, [grants.code, grants.name]),
     );
     const p = pageParams(q);

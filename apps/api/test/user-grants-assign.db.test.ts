@@ -382,6 +382,32 @@ async function auditOfUser(userId: string): Promise<AuditRow[]> {
     .orderBy(asc(ctx.schema.auditLog.createdAt)) as Promise<AuditRow[]>;
 }
 
+/**
+ * Сломанная запись журнала: триггер на `audit_log`, наведённый на **одну** учётку.
+ *
+ * Точечно, а не глухим отказом всей таблице, по единственной причине: база у db-тестов общая, и
+ * запрет на вставку сорвал бы соседние файлы, идущие тем же прогоном. Идентификатор подставляется
+ * литералом — в `CREATE TRIGGER` параметров не бывает, условие `WHEN` разбирается при создании
+ * триггера, — и берётся он из строки, которую только что завёл этот же тест.
+ */
+async function withBrokenAudit(entityId: string, body: () => Promise<void>): Promise<void> {
+  const name = `db_grant_assign_boom_${RUN}`;
+  await ctx.db.execute(
+    sql.raw(`CREATE OR REPLACE FUNCTION ${name}() RETURNS trigger LANGUAGE plpgsql AS $fn$
+      BEGIN RAISE EXCEPTION 'db-тест: запись журнала не удалась'; END $fn$`),
+  );
+  await ctx.db.execute(
+    sql.raw(`CREATE TRIGGER ${name} BEFORE INSERT ON audit_log
+      FOR EACH ROW WHEN (NEW.entity_id = '${entityId}') EXECUTE FUNCTION ${name}()`),
+  );
+  try {
+    await body();
+  } finally {
+    await ctx.db.execute(sql.raw(`DROP TRIGGER IF EXISTS ${name} ON audit_log`));
+    await ctx.db.execute(sql.raw(`DROP FUNCTION IF EXISTS ${name}()`));
+  }
+}
+
 function holderViolations(body: string): GrantValidationDetailsDto['holders'] {
   const details = JSON.parse(body).details as GrantValidationDetailsDto | undefined;
   return details?.holders ?? [];
@@ -675,6 +701,57 @@ describe.skipIf(!DB_URL)('выдача и отзыв полномочия: ма�
     expect(res.statusCode, res.body).toBe(404);
     expect(await authVersionOf(holder.id)).toBe(versionBefore);
     expect(await auditOfUser(holder.id)).toEqual([]);
+  });
+
+  /**
+   * **Событие доступа пишется той же транзакцией, и его сбой роняет операцию** (§5.1 плана
+   * «полномочия в окне учётки»; ADR 0106, решение 7 — «запись, `authVersion + 1` и журнал в той же
+   * транзакции»).
+   *
+   * Для остального портала `writeAudit` намеренно мягок: потеря записи не должна ронять выписанный
+   * путевой лист. У доступа наоборот — выданное полномочие без строки в журнале не отвечает на
+   * вопрос «кто это выдал», ради которого реестр выдач и заведён, и молчаливая потеря случается
+   * ровно в тех редких случаях, когда его читают.
+   *
+   * Проверяется исход, а не механика: назначения нет, токены не гасли, журнал пуст — то есть
+   * операция откатилась целиком, а не «прошла молча».
+   */
+  it('сбой записи журнала откатывает выдачу целиком', async () => {
+    const holder = await newHolder();
+    const grant = await createGrant({ permissions: ['vehicleReadings.read'], roles: ['mechanic'] });
+    const versionBefore = await authVersionOf(holder.id);
+
+    await withBrokenAudit(holder.id, async () => {
+      const res = await assign(holder.id, grant.id);
+      expect(res.statusCode, res.body).toBe(500);
+    });
+
+    expect(await assignmentsOf(holder.id)).toEqual([]);
+    expect(await authVersionOf(holder.id)).toBe(versionBefore);
+    expect(await auditOfUser(holder.id)).toEqual([]);
+
+    // Со снятым триггером та же выдача проходит: отказ дала именно запись журнала, а не что-то,
+    // что тест сломал заодно.
+    await assignOk(holder.id, grant.id);
+  });
+
+  /** То же у отзыва: строка назначения удаляется насовсем, и потерять событие о ней нельзя. */
+  it('сбой записи журнала откатывает отзыв', async () => {
+    const holder = await newHolder();
+    const grant = await createGrant({ permissions: ['vehicleReadings.read'], roles: ['mechanic'] });
+    const assigned = await assignOk(holder.id, grant.id);
+    const versionAfterAssign = await authVersionOf(holder.id);
+
+    await withBrokenAudit(holder.id, async () => {
+      const res = await revoke(holder.id, grant.id);
+      expect(res.statusCode, res.body).toBe(500);
+    });
+
+    // Назначение на месте — с прежним `id`: откат вернул именно ту строку, а не завёл новую.
+    const rows = await assignmentsOf(holder.id);
+    expect(rows.map((row) => row.id)).toEqual([assigned.assignmentId]);
+    expect(await authVersionOf(holder.id)).toBe(versionAfterAssign);
+    expect((await auditOfUser(holder.id)).map((row) => row.action)).toEqual(['grant.assign']);
   });
 
   // ── Барьеры выдачи: по одному тесту на каждый ──

@@ -118,6 +118,43 @@ async function audit(query: Record<string, string>): Promise<AuditEntryDto[]> {
   return res.json().items as AuditEntryDto[];
 }
 
+/** Карточка учётки, как её отдаёт ручка: по ней и видно, откатилась правка или прошла. */
+async function accountCard(id: string): Promise<Record<string, unknown>> {
+  const res = await ctx.app.inject({
+    method: 'GET',
+    url: `/api/v1/users/${id}`,
+    headers: ctx.auth,
+  });
+  expect(res.statusCode, res.body).toBe(200);
+  return res.json().user as Record<string, unknown>;
+}
+
+/**
+ * Сломанная запись журнала: триггер на `audit_log`, наведённый на **одну** учётку.
+ *
+ * Точечно, а не глухим отказом всей таблице: база у db-тестов общая, и запрет на вставку сорвал бы
+ * соседние файлы того же прогона. Идентификатор подставляется литералом — в `CREATE TRIGGER`
+ * параметров не бывает, условие `WHEN` разбирается при создании триггера, — и берётся он из
+ * учётки, которую только что завёл этот же тест.
+ */
+async function withBrokenAudit(entityId: string, body: () => Promise<void>): Promise<void> {
+  const name = `db_audit_boom_${entityId.replace(/-/gu, '')}`;
+  await ctx.db.execute(
+    sql.raw(`CREATE OR REPLACE FUNCTION ${name}() RETURNS trigger LANGUAGE plpgsql AS $fn$
+      BEGIN RAISE EXCEPTION 'db-тест: запись журнала не удалась'; END $fn$`),
+  );
+  await ctx.db.execute(
+    sql.raw(`CREATE TRIGGER ${name} BEFORE INSERT ON audit_log
+      FOR EACH ROW WHEN (NEW.entity_id = '${entityId}') EXECUTE FUNCTION ${name}()`),
+  );
+  try {
+    await body();
+  } finally {
+    await ctx.db.execute(sql.raw(`DROP TRIGGER IF EXISTS ${name} ON audit_log`));
+    await ctx.db.execute(sql.raw(`DROP FUNCTION IF EXISTS ${name}()`));
+  }
+}
+
 function eventOf(items: AuditEntryDto[], action: string): AuditEntryDto {
   const found = items.find((i) => i.action === action);
   expect(found, `событие «${action}» в журнале`).toBeTruthy();
@@ -229,6 +266,47 @@ describe.skipIf(!DB_URL)('журнал изменений учёток (жива
     const created = auditChangesOf(eventOf(items, 'user.create'));
     expect(created).toContainEqual({ field: 'role', from: null, to: 'Площадка' });
     expect(created).toContainEqual({ field: 'isActive', from: null, to: 'открыт' });
+  });
+
+  /**
+   * **Событие правки учётки пишется той же транзакцией, и его сбой откатывает саму правку** (§5.1
+   * плана «полномочия в окне учётки»; ADR 0106, решение 7).
+   *
+   * Правка учётки — событие доступа: этим запросом назначают роль, открывают и закрывают вход,
+   * меняют область. Для остального портала `writeAudit` намеренно мягок — потеря записи не должна
+   * ронять выписанный путевой лист, — но учётка, у которой доступ изменился без строки в журнале,
+   * оставляет вопрос «кто сделал человека диспетчером» без ответа именно там, где его и задают.
+   *
+   * Правка здесь заведомо безобидная (телефон): проверяется не «опасное не прошло», а то, что при
+   * сбое журнала **не проходит ничего** — событие `user.update` пишется всегда.
+   */
+  it('сбой записи журнала откатывает правку учётки', async () => {
+    const id = await createAccount(freshEmail(), ctx.objectIds[0]!);
+    const before = await accountCard(id);
+
+    await withBrokenAudit(id, async () => {
+      const res = await ctx.app.inject({
+        method: 'PATCH',
+        url: `/api/v1/users/${id}`,
+        headers: ctx.auth,
+        payload: { phone: '9022222222' },
+      });
+      expect(res.statusCode, res.body).toBe(500);
+    });
+
+    // Телефон прежний, и в журнале нет ни строки о правке: транзакция откатилась целиком.
+    expect((await accountCard(id)).phone).toBe(before.phone);
+    const items = await audit({ entityType: 'user', entityId: id, pageSize: '50' });
+    expect(items.map((i) => i.action)).not.toContain('user.update');
+    // Заведение учётки при этом на месте — сломана была запись только под триггером.
+    expect(items.map((i) => i.action)).toContain('user.create');
+
+    // Со снятым триггером та же правка проходит и пишется.
+    await patchAccount(id, { phone: '9022222222' });
+    expect((await accountCard(id)).phone).toBe('9022222222');
+    expect(
+      (await audit({ entityType: 'user', entityId: id, pageSize: '50' })).map((i) => i.action),
+    ).toContain('user.update');
   });
 
   it('строка журнала называет учётку так же, как список: роль и признак архива', async () => {

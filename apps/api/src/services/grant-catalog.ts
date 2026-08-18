@@ -8,9 +8,12 @@ import {
   permissionsFor,
   PERMISSIONS,
   ROLES,
+  validateGrantAssignment,
   type AccessSubject,
   type CounterpartyType,
   GRANT_CONFLICT_CODES,
+  MAX_ASSIGNED_GRANTS,
+  roleLabels,
   type GrantAssignmentOperation,
   type GrantCardDto,
   type GrantDto,
@@ -20,6 +23,7 @@ import {
   type GrantImpactInput,
   type GrantImpactUserDto,
   type GrantOrigin,
+  type GrantStatement,
   type GrantViolation,
   type Permission,
   type PermissionDelta,
@@ -576,11 +580,27 @@ export async function userGrantStateOf(
   };
 }
 
-/** Субъект `can` по набору вкладов: то же построение, что у принципала, но с подставленным составом. */
-function subjectOf(state: UserGrantState, parts: readonly GrantContribution[]): AccessSubject {
+/**
+ * Субъект `can` по набору вкладов: то же построение, что у принципала, но с подставленным составом.
+ *
+ * Роль приходит отдельным аргументом, а не берётся из состояния учётки, и это не обобщение впрок:
+ * правка учётки считает итог по **будущей** роли (Р5 плана «полномочия в окне учётки»), которой в
+ * состоянии нет вовсе. Собери мы субъекта из состояния — барьеры считались бы по роли «до», то есть
+ * ровно по той дыре, которую фича и закрывает.
+ *
+ * Пометки рядом с ролью (`addons`) собираются из **всех** кодов, а права — только из совместимых
+ * вкладов: гейт совместимости стоит в выражении прав (`grantPermissionsExpr`), а коды наборов
+ * читаются без него (`grantCodesExpr`), и внутри `can` надстройку ещё раз сверяет с ролью
+ * `canAttachAddon`. Второй гейт здесь означал бы третий ответ на один вопрос.
+ */
+function accessSubjectOf(
+  role: Role | null,
+  counterpartyType: CounterpartyType | null,
+  parts: readonly GrantContribution[],
+): AccessSubject {
   return {
-    role: state.role,
-    counterpartyType: state.counterpartyType,
+    role,
+    counterpartyType,
     // Пометки рядом с ролью — производное от кодов наборов (шаг 1c): выдача системного набора меняет
     // и их, и права, которые надстройка даёт внутри `can`.
     addons: systemAddonsOf(parts.map((part) => part.code)),
@@ -590,6 +610,11 @@ function subjectOf(state: UserGrantState, parts: readonly GrantContribution[]): 
       ),
     ],
   };
+}
+
+/** Субъект учётки в её нынешней роли — вход выдачи и отзыва одного набора. */
+function subjectOf(state: UserGrantState, parts: readonly GrantContribution[]): AccessSubject {
+  return accessSubjectOf(state.role, state.counterpartyType, parts);
 }
 
 /** Последствия выдачи или отзыва у одной учётки. */
@@ -692,4 +717,620 @@ export async function grantCardOf(reader: Reader, grantId: string): Promise<Gran
     ...grantDtoOf(row, composition, holders.length),
     holders: holders.map(holderDtoOf),
   };
+}
+
+// ── Полномочия в теле учётки: высказывание, разница, барьеры итога и раскладка дельты ──
+//
+// Окно учётки задаёт полномочия одной операцией вместе с ролью, областью и активацией (план
+// «полномочия назначаются в окне учётки», §5), и всё, что этой операции нужно посчитать, лежит
+// здесь по той же причине, по которой здесь лежит порядок блокировок: те же разницу, барьеры и
+// раскладку дельты обязана считать точечная выдача (`routes/user-grants.ts`). Две реализации одного
+// барьера разъедутся на первой же правке каталога — и тогда один и тот же запрос будет проходить
+// формой и отклоняться реестром.
+//
+// Маршруту остаётся порядок шагов: блокировки, повтор транзакции при появлении нового набора,
+// запись и журнал. Считать он ничего не считает.
+
+/**
+ * Набор глазами операции над учёткой: состав, версия и роли, которым он действует.
+ *
+ * Отличается от `GrantContribution` тем, что несёт **роли**, а не готовый признак совместимости, и
+ * это не дубль: признак считается против роли, которая у учётки будет **после** правки, а её в
+ * момент чтения набора ещё никто не знает. Посчитай мы совместимость при чтении — переход
+ * `shtab → site` считался бы по роли «до», то есть по состоянию, которого операция как раз и не
+ * оставляет.
+ */
+export interface PlannedGrant {
+  id: string;
+  code: string;
+  name: string;
+  /** Версия состава: с ней сверяется версия, показанная формой (Р7). */
+  version: number;
+  permissions: readonly Permission[];
+  /** `grant_roles` набора. Пустой список законен — такой набор не действует ни у кого. */
+  roles: readonly Role[];
+}
+
+/** Живое назначение учётки — набор плюс то, чем опознаётся сама выдача. */
+export interface AssignedGrant extends PlannedGrant {
+  assignmentId: string;
+  /**
+   * Кем выдано. Взведённое переводом ролей (`origin = 'migration'`, ADR 0113) из формы не снимается
+   * вовсе: часть подготовленного перевода снимают в реестре выдач, где видно, что именно снимается.
+   */
+  origin: GrantOrigin;
+}
+
+/**
+ * Строки наборов под `FOR UPDATE` — **первый** шаг операции над полномочиями учётки (ADR 0106,
+ * решение 7; Р6 плана).
+ *
+ * **По одной строке в цикле и по возрастанию `id`, а не одним запросом с `ORDER BY … FOR UPDATE`.**
+ * Обоснование то же, что записано у `lockUsers`, и оно не про стиль: план запроса вправе брать
+ * строки в своём порядке, обещания `ORDER BY` на порядок блокировок не распространяются, — а две
+ * встречные операции с пересекающимися наборами получили бы ровно тот дедлок, ради предотвращения
+ * которого порядок и объявлен. Порядок захвата обязан объявляться одним местом, поэтому обе функции
+ * живут рядом и написаны одинаково.
+ *
+ * Множество наборов операции известно не полностью: кандидаты — присланные в теле плюс уже выданные
+ * учётке, а вторые читаются до блокировки строки учётки. Появившийся между чтением и захватом набор
+ * ловится **перечитыванием под блокировкой** и лечится повтором транзакции с расширенным множеством
+ * (Р6), а не второй блокировкой после строки учётки: это встречный порядок захвата.
+ *
+ * Возвращаются найденные строки: набор мог быть удалён между чтением тела и захватом, и отвечать за
+ * это — маршруту (409 «полномочие удалили, откройте карточку заново»), а не блокировке.
+ */
+export async function lockGrants(
+  tx: Tx,
+  grantIds: readonly string[],
+): Promise<Map<string, GrantRow>> {
+  const locked = new Map<string, GrantRow>();
+  for (const grantId of [...new Set(grantIds)].sort()) {
+    const row = await lockGrant(tx, grantId);
+    if (row) locked.set(grantId, row);
+  }
+  return locked;
+}
+
+/**
+ * Живые назначения учётки с составом, версией и совместимыми ролями — вход планировщика (§5, шаги
+ * 1 и 5).
+ *
+ * Отдельно от `userGrantStateOf` не по недосмотру: тот отдаёт вклад набора **готовым**, с
+ * посчитанным признаком совместимости, — это ровно то, что нужно выдаче одного набора, где роль
+ * держателя операция не меняет. Правка учётки меняет роль тем же запросом, и признак, посчитанный
+ * при чтении, описывал бы состояние «до»; поэтому здесь отдаются роли набора, а гейт применяется
+ * позже — по роли итоговой.
+ *
+ * Порядок — по возрастанию `grant_id`: тем же порядком берутся блокировки (Р6) и пишутся события
+ * журнала (§5.2), и три порядка обязаны быть одним.
+ *
+ * Мягко удалённые наборы отсеиваются тем же правилом, что в `grantCodesExpr`: они не действуют ни у
+ * кого, и высказываться о них форме нечем — она их не показывает.
+ */
+export async function assignmentsOfUser(reader: Reader, userId: string): Promise<AssignedGrant[]> {
+  const rows = await reader
+    .select({
+      assignmentId: userGrants.id,
+      id: grants.id,
+      code: grants.code,
+      name: grants.name,
+      version: grants.version,
+      origin: userGrants.origin,
+    })
+    .from(userGrants)
+    .innerJoin(grants, eq(grants.id, userGrants.grantId))
+    .where(and(eq(userGrants.userId, userId), isNull(grants.deletedAt)))
+    .orderBy(asc(userGrants.grantId));
+  const composition = await compositionByGrantIds(
+    reader,
+    rows.map((row) => row.id),
+  );
+  return rows.map((row) => {
+    const parts = composition.get(row.id) ?? emptyComposition();
+    return {
+      assignmentId: row.assignmentId,
+      id: row.id,
+      code: row.code,
+      name: row.name,
+      version: row.version,
+      origin: row.origin as GrantOrigin,
+      permissions: parts.permissions,
+      roles: parts.roles,
+    };
+  });
+}
+
+/** Набор действует этой роли: гейт совместимости (`grant_roles`) одним выражением на весь файл. */
+function actsForRole(grant: Pick<PlannedGrant, 'roles'>, role: Role | null): boolean {
+  return role !== null && grant.roles.includes(role);
+}
+
+/**
+ * Почему высказывание отклонено. Код — для маршрута (он выбирает по нему ответ), текст — для
+ * администратора.
+ *
+ * **Ответ у кодов разный, и выбирает его маршрут** (Р8): `incompatible`, `migration_locked`,
+ * `incomplete`, `role_required` и `limit_exceeded` — это 400 с путём поля `grants`, потому что
+ * виновата галочка или устаревший экран, и человеку нужно увидеть какая; `silence_forbidden` — 400
+ * общей ошибкой формы, подсвечивать в ней нечего (поля `grants` в запросе нет вовсе); `unknown` —
+ * 409, набор удалили или подменили между показом формы и сохранением, и исход у этого другой:
+ * перечитать и открыть карточку заново.
+ */
+export type GrantStatementIssueCode =
+  /** Полномочия названы, а роли нет: они выдаются поверх должности (§4.1). */
+  | 'role_required'
+  /** Отмечен набор, несовместимый с итоговой ролью: список формы устарел (Р8). */
+  | 'incompatible'
+  /** Названного набора нет вовсе — удалён или подменён (гонка, 409). */
+  | 'unknown'
+  /** Просят снять управляемое назначение, взведённое переводом ролей (Р4, §4.3). */
+  | 'migration_locked'
+  /** Не названо назначение, о котором операция что-то решает: полнота высказывания (§4.2). */
+  | 'incomplete'
+  /** Поля нет, а смена роли переключает действие назначений: границы молчания (§4.2). */
+  | 'silence_forbidden'
+  /** Назначений после операции больше `MAX_ASSIGNED_GRANTS` (§4.2). */
+  | 'limit_exceeded';
+
+/** Набор-виновник в отказе: `name` пуст только у `unknown` — имени у ненайденного набора нет. */
+export interface GrantIssueRef {
+  id: string;
+  name: string | null;
+}
+
+/** Отказ по высказыванию: код для маршрута, текст для человека, виновники по отдельному полю. */
+export interface GrantStatementIssue {
+  code: GrantStatementIssueCode;
+  message: string;
+  grants: GrantIssueRef[];
+}
+
+/**
+ * Версия набора, которую операция обязана сверить (Р7): показанная формой против той, что лежит под
+ * блокировкой.
+ */
+export interface GrantVersionCheck {
+  grantId: string;
+  name: string;
+  /** Версия, показанная формой, — из строки высказывания. */
+  expected: number;
+  /** Версия под блокировкой — состав, который применится. */
+  actual: number;
+}
+
+/** Что операция сделает с полномочиями учётки. */
+export interface GrantStatementPlan {
+  /** Выдаваемые наборы по возрастанию `id` — тем же порядком пишутся события (§5.2). */
+  toAssign: PlannedGrant[];
+  /** Снимаемые назначения по возрастанию `id`. */
+  toRevoke: AssignedGrant[];
+  /** Итоговое множество назначений учётки — вход пересчёта прав и предела (Р5, §4.2). */
+  grantsAfter: PlannedGrant[];
+  /** Наборы, чьи версии сверяются под блокировками (Р7). */
+  versionsToCheck: GrantVersionCheck[];
+  /**
+   * Непустой список означает отказ, и действий в плане тогда нет вовсе: `toAssign`, `toRevoke` и
+   * `versionsToCheck` пусты, а `grantsAfter` равен нынешнему состоянию. Так сделано затем, что
+   * применить план, не посмотрев в `violations`, не должно быть способом тихо сделать не то, о чём
+   * просили, — Р4 требует отказа **до** расчёта разницы, а не вычитания из неё.
+   */
+  violations: GrantStatementIssue[];
+}
+
+function issueRefs(list: readonly PlannedGrant[]): GrantIssueRef[] {
+  return list.map((grant) => ({ id: grant.id, name: grant.name }));
+}
+
+function grantNames(list: readonly GrantIssueRef[]): string {
+  return list.map((grant) => `«${grant.name}»`).join(', ');
+}
+
+/**
+ * Предел назначений по **итогу** операции — общая проверка обоих путей выдачи (§4.2).
+ *
+ * Общая, а не по копии в каждом маршруте, и это требование плана, а не вкус: точечная выдача,
+ * считающая свой предел, набьёт учётке больше назначений, чем форма способна высказать, — правило
+ * полноты станет невыполнимым, и карточка такого человека перестанет сохраняться вовсе, включая
+ * правку телефона.
+ *
+ * Возвращает текст, а не бросает: форме он нужен нарушением на поле `grants` рядом с остальными
+ * (одним отказом, а не по одному за раз), а точечной выдаче — исключением. Решает вызывающий.
+ */
+export function assignedGrantLimitIssue(assignedAfter: number): string | null {
+  if (assignedAfter <= MAX_ASSIGNED_GRANTS) return null;
+  return `У одной учётной записи не больше ${MAX_ASSIGNED_GRANTS} полномочий, а после сохранения их стало бы ${assignedAfter}. Снимите лишние в реестре выдач.`;
+}
+
+/**
+ * Что операция делает с полномочиями учётки — чистой функцией по состоянию и телу (Р4, §4.2, §4.3).
+ *
+ * Чистой намеренно: правил здесь шесть, они переплетены, и каждое из них — отказ, который иначе
+ * выясняется только в бою. Всё, что требует базы, вызывающий читает **под блокировками** и приносит
+ * сюда готовым; здесь не читается ничего.
+ *
+ * **Диапазон разницы (Р4).** Управляемые назначения — это выданные ∩ совместимые с **итоговой**
+ * ролью, и снятие считается только из них. За диапазоном остаются назначения, которых форма не
+ * показывает чекбоксами: их не трогает никто, и это защищает назначения с несоответствием роли
+ * (роль убрали из `grant_roles` уже после выдачи — по §13.1 они живут дальше и снимаются в реестре).
+ *
+ * **Отказ на снятие `origin = 'migration'` стоит до расчёта разницы, а не вычитается из неё**, и
+ * порядок здесь — само решение. Вычесть неснимаемое из «снять» значило бы принять запрос, который
+ * просит снять взведённое переводом назначение, и тихо сделать не то, о чём просили; §4.1 обещает
+ * на это отказ, и обещание выполняется проверкой до, а не после.
+ *
+ * **Полнота высказывания (§4.2).** Строка обязана быть у каждого управляемого назначения и у
+ * каждого, чьё действие переключает смена роли. Иначе «администратор снял галочку» неотличимо от
+ * «экран этого набора не показал»: любая причина неполноты — каталог не поместился на страницу,
+ * запрос оборвался, старая версия портала — превращалась бы в тихий отзыв полномочий, которых никто
+ * не касался.
+ *
+ * **Границы молчания (§4.2).** Тела нет вовсе (`statements === undefined`) — законный ход, «наборов
+ * не касаемся», но только пока роль не меняет их действия. Смена роли переключает гейт
+ * совместимости: `shtab → site` зажигает состав, которого администратор не отмечал и не видел, а
+ * обратный переход его гасит. Правило симметрично: зажигание — тихое расширение доступа, гашение —
+ * тихая его потеря, и увидеть до сохранения нужно и то, и другое.
+ *
+ * **Два смысла `selected: false` (§4.3).** У управляемого назначения это команда снять, у
+ * назначения вне диапазона итоговой роли — подтверждение того, что оно перестаёт действовать: права
+ * гаснут, строка остаётся жить. Формула диапазона такое поведение даёт сама — снятие считается
+ * только из управляемых, — и различие названо здесь потому, что одинаковый флаг с двумя исходами
+ * обязан быть объяснён, а не выведен читателем из кода.
+ *
+ * **Множество версий (Р7).** Сверяются три вида наборов: выдаваемые (человек подписывает состав,
+ * который ему показали), снимаемые (правка, добавившая в набор право, меняет то, чего человек
+ * лишается) и переключаемые сменой роли — **в обе стороны**, и зажигаемые, и гасимые: прав по ним
+ * не было (или было), а переход меняет состав, которого в форме не отмечали.
+ */
+export function planGrantStatements(params: {
+  /** Живые назначения учётки, прочитанные под блокировками (`assignmentsOfUser`). */
+  assignments: readonly AssignedGrant[];
+  /** Роль учётки до правки. */
+  roleBefore: Role | null;
+  /** Роль после правки: по ней считается диапазон, гейт совместимости и барьеры итога. */
+  roleAfter: Role | null;
+  /** Высказывание из тела; `undefined` — поля `grants` в запросе нет вовсе (молчание, §4.2). */
+  statements: readonly GrantStatement[] | undefined;
+  /**
+   * Наборы, названные в теле, — прочитанные под блокировками. Назначения искать здесь не нужно: их
+   * сведения берутся из `assignments`, и набор, лежащий в обоих, читается оттуда.
+   */
+  catalog: ReadonlyMap<string, PlannedGrant>;
+}): GrantStatementPlan {
+  const { assignments, roleBefore, roleAfter, statements, catalog } = params;
+  const violations: GrantStatementIssue[] = [];
+  const unchanged = (): GrantStatementPlan => ({
+    toAssign: [],
+    toRevoke: [],
+    grantsAfter: [...assignments],
+    versionsToCheck: [],
+    violations,
+  });
+
+  // Назначения, чьё действие переключает смена роли, — обе стороны перехода сразу (Р7, §4.2).
+  const toggled = assignments.filter(
+    (assignment) => actsForRole(assignment, roleBefore) !== actsForRole(assignment, roleAfter),
+  );
+
+  if (statements === undefined) {
+    if (toggled.length > 0) {
+      const refs = issueRefs(toggled);
+      violations.push({
+        code: 'silence_forbidden',
+        grants: refs,
+        message: `Смена роли меняет действие уже выданных полномочий (${grantNames(refs)}), а в запросе о них не сказано ничего. Откройте карточку заново и сохраните её вместе с полномочиями.`,
+      });
+    }
+    return unchanged();
+  }
+
+  if (roleAfter === null && statements.length > 0) {
+    violations.push({
+      code: 'role_required',
+      grants: [],
+      message:
+        'Полномочия выдаются поверх должности: сначала назначьте роль, потом отмечайте полномочия.',
+    });
+    return unchanged();
+  }
+
+  const said = new Map<string, GrantStatement>();
+  const selected = new Set<string>();
+  for (const statement of statements) {
+    // Уникальность `id` внутри высказывания обещана схемой (`grantStatementListSchema`, §4.3):
+    // два противоречащих слова об одном наборе — 400 контракта, а не «побеждает последнее» здесь.
+    said.set(statement.id, statement);
+    if (statement.selected) selected.add(statement.id);
+  }
+  const assigned = new Map(assignments.map((assignment) => [assignment.id, assignment]));
+  const known = (id: string): PlannedGrant | undefined => assigned.get(id) ?? catalog.get(id);
+
+  // Управляемые — выданные ∩ совместимые с итоговой ролью. Только из них считается снятие (Р4).
+  const managed = assignments.filter((assignment) => actsForRole(assignment, roleAfter));
+
+  // Отказ на снятие взведённого переводом — **до** разницы, а не вычитанием из неё (Р4).
+  const locked = managed.filter(
+    (assignment) => assignment.origin === 'migration' && !selected.has(assignment.id),
+  );
+  if (locked.length > 0) {
+    const refs = issueRefs(locked);
+    violations.push({
+      code: 'migration_locked',
+      grants: refs,
+      message: `Полномочия ${grantNames(refs)} взведены переводом ролей: снять их можно только в реестре выдач, где видно, что снимается часть подготовленного перевода.`,
+    });
+  }
+
+  // Полнота: строка обязана быть у каждого управляемого и у каждого переключаемого назначения.
+  const required = new Map<string, AssignedGrant>();
+  for (const assignment of [...managed, ...toggled]) required.set(assignment.id, assignment);
+  const silent = [...required.values()].filter((assignment) => !said.has(assignment.id));
+  if (silent.length > 0) {
+    const refs = issueRefs(silent);
+    violations.push({
+      code: 'incomplete',
+      grants: refs,
+      message: `Форма показала не все полномочия учётной записи (${grantNames(refs)}) — откройте карточку заново.`,
+    });
+  }
+
+  // Отмеченный набор обязан быть совместим с итоговой ролью: список формы отфильтрован по ней, и
+  // несовместимая галочка означает устаревший экран (Р8). Назначение это или новая выдача — неважно.
+  const incompatible: GrantIssueRef[] = [];
+  const missing: GrantIssueRef[] = [];
+  for (const id of selected) {
+    const grant = known(id);
+    if (!grant) {
+      missing.push({ id, name: null });
+      continue;
+    }
+    if (!actsForRole(grant, roleAfter)) incompatible.push({ id, name: grant.name });
+  }
+  if (incompatible.length > 0) {
+    violations.push({
+      code: 'incompatible',
+      grants: incompatible,
+      message: `Полномочия ${grantNames(incompatible)} роли «${roleAfter === null ? '—' : roleLabels[roleAfter]}» не выдаются: список полномочий устарел, откройте карточку заново.`,
+    });
+  }
+  if (missing.length > 0) {
+    violations.push({
+      code: 'unknown',
+      grants: missing,
+      message:
+        'Отмеченного полномочия больше нет — его удалили, пока карточка была открыта. Откройте её заново.',
+    });
+  }
+
+  const byId = (first: PlannedGrant, second: PlannedGrant): number =>
+    first.id < second.id ? -1 : first.id > second.id ? 1 : 0;
+  const toRevoke = managed.filter((assignment) => !selected.has(assignment.id)).sort(byId);
+  const toAssign = [...selected]
+    .filter((id) => !assigned.has(id))
+    .map((id) => catalog.get(id))
+    .filter((grant): grant is PlannedGrant => grant !== undefined && actsForRole(grant, roleAfter))
+    .sort(byId);
+  const revoked = new Set(toRevoke.map((assignment) => assignment.id));
+  const grantsAfter = [
+    ...assignments.filter((assignment) => !revoked.has(assignment.id)),
+    ...toAssign,
+  ].sort(byId);
+
+  const limit = assignedGrantLimitIssue(grantsAfter.length);
+  if (limit !== null) {
+    violations.push({ code: 'limit_exceeded', grants: issueRefs(toAssign), message: limit });
+  }
+
+  // Версии сверяются у выдаваемых, снимаемых и переключаемых сменой роли — в обе стороны (Р7).
+  // Строка высказывания у каждого из них есть по правилу полноты: без неё выше стоит отказ.
+  const checked = new Map<string, PlannedGrant>();
+  for (const grant of [...toAssign, ...toRevoke, ...toggled]) checked.set(grant.id, grant);
+  const versionsToCheck = [...checked.values()].sort(byId).flatMap((grant) => {
+    const statement = said.get(grant.id);
+    return statement === undefined
+      ? []
+      : [
+          {
+            grantId: grant.id,
+            name: grant.name,
+            expected: statement.version,
+            actual: grant.version,
+          },
+        ];
+  });
+
+  if (violations.length > 0) return unchanged();
+  return { toAssign, toRevoke, grantsAfter, versionsToCheck, violations };
+}
+
+/**
+ * Сверка версий участвующих наборов — **под блокировками** и до записи (Р7).
+ *
+ * 409 со своим кодом, а не 400 на поле: галочка не виновата, состав набора изменили между открытием
+ * формы и сохранением, и человек получил бы (или потерял) права, которых в подсказке не видел.
+ * Исход у этого другой, чем у отказа по полю: перечитать карточку, а не поправить галочку.
+ *
+ * Отпечатка последствий (`expectedImpactHash`) у этого пути нет вовсе, и версий достаточно: вход
+ * операции — итог, названный явно, а не чужое состояние, которое подтверждают (Р7). Смену роли или
+ * второго набора у **той же** учётки ловят барьеры по итогу, считающиеся уже под блокировками.
+ */
+export function assertGrantVersions(checks: readonly GrantVersionCheck[]): void {
+  const stale = checks.find((check) => check.expected !== check.actual);
+  if (!stale) return;
+  throw err.conflict(
+    `Состав полномочия «${stale.name}» изменили, пока карточка была открыта. Откройте её заново — состав, который вы подписываете, уже другой.`,
+    { code: GRANT_CONFLICT_CODES.impactChanged },
+  );
+}
+
+/** Субъект операции: роль, тип контрагента и **все** живые назначения — гейт применяется внутри. */
+export interface GrantSubjectState {
+  role: Role | null;
+  counterpartyType: CounterpartyType | null;
+  /**
+   * Все назначения, включая несовместимые с ролью: отбирать их заранее нельзя, потому что коды
+   * наборов (пометки рядом с ролью) читаются без гейта, а права — с ним.
+   */
+  grants: readonly PlannedGrant[];
+}
+
+/**
+ * Субъект `can` по состоянию учётки — с **гейтом совместимости** (Р5).
+ *
+ * Гейт здесь тот же, по которому права гаснут при смене роли (`grantPermissionsExpr`): набор, чьи
+ * `grant_roles` не содержат роль субъекта, прав не даёт. Итог обязан считаться по нему, а не по
+ * составу набора, — иначе барьеры проверяли бы доступ, которого сервер не выдаёт, и правка
+ * отклонялась бы конфликтом, которого в жизни учётки нет.
+ */
+export function grantSubjectOf(state: GrantSubjectState): AccessSubject {
+  return accessSubjectOf(
+    state.role,
+    state.counterpartyType,
+    state.grants.map((grant) => ({
+      code: grant.code,
+      compatible: actsForRole(grant, state.role),
+      permissions: grant.permissions,
+    })),
+  );
+}
+
+/** Итог операции над учёткой: права после, дельта и нарушения барьеров. */
+export interface GrantOperationOutcome {
+  /** Эффективные права после операции по всем источникам — вход барьеров итога. */
+  permissionsAfter: Permission[];
+  /** Что реально появится и реально уйдёт: `effectiveDelta` по двум субъектам целиком. */
+  delta: PermissionDelta;
+  /** Пустой список — операция законна. */
+  violations: GrantViolation[];
+}
+
+/**
+ * Барьеры и дельта по **итоговому** субъекту: роль после правки, тип контрагента после правки и
+ * наборы после правки (Р5).
+ *
+ * **Это чинит существующую дыру, а не только обслуживает форму.** Сегодня смена роли держателю
+ * набора проверяется лишь двумя надстройками, а пара, собранная суммой роли и набора, не ловится
+ * никем: держателю набора со «Сметой» назначают роль, дающую `serviceRequests.approveEstimate`, — и
+ * один человек считает смету и утверждает её. Тем же способом ловится `requirement_missing`: набор
+ * даёт ведение рассылок, а чтение их давала прежняя роль.
+ *
+ * **Барьеры набора (1–3) считаются только по выдаваемым наборам, и каждый — своим вызовом.** Вызов
+ * на набор нужен ради текста отказа: `grantLabel` называет виновника, а слитый состав трёх наборов
+ * назвал бы «набор с этими правами», которого администратор в форме не видел. Барьеры итога (4–5)
+ * считаются один раз и **без** `grantLabel`: половину конфликтующей пары даёт роль или второй набор,
+ * и приписывать конфликт одному из них значило бы соврать о причине.
+ *
+ * У наборов, которые операция не выдаёт (остающиеся, гасимые, зажигаемые сменой роли), барьеры
+ * набора не считаются вовсе: `module_forbidden_for_axis` в исправном каталоге до сюда не доходит —
+ * набор, чья роль запрещает модуль по оси, в `grant_roles` этой роли не попадает, — и превратился
+ * бы в отказ на правку телефона у человека, которому набор выдали до правки каталога.
+ */
+export function grantOperationOutcome(params: {
+  /** Состояние до правки — левая сторона дельты. */
+  before: GrantSubjectState;
+  /** Состояние после правки: роль, контрагент и наборы уже итоговые. */
+  after: GrantSubjectState;
+  /** Наборы, которые операция выдаёт: барьеры набора (1–3) считаются только по ним. */
+  assigned: readonly PlannedGrant[];
+}): GrantOperationOutcome {
+  const beforeSubject = grantSubjectOf(params.before);
+  const afterSubject = grantSubjectOf(params.after);
+  const permissionsAfter = [...permissionsFor(afterSubject)];
+  const violations: GrantViolation[] = [];
+  for (const grant of params.assigned) {
+    violations.push(
+      ...validateGrantAssignment({
+        // Роль **держателя**, а не список ролей набора: проверяется выдача конкретному человеку, и
+        // матрица осей обязана сработать на его оси. Отсюда же отказ роли `driver`.
+        roles: params.after.role === null ? [] : [params.after.role],
+        permissions: grant.permissions,
+        // Итог считается ниже одним вызовом: посчитай мы его здесь, держатель трёх наборов получил
+        // бы три копии одного конфликта, приписанные трём разным виновникам.
+        subjectPermissionsAfter: null,
+        subjectRole: params.after.role,
+        grantLabel: grant.name,
+      }),
+    );
+  }
+  violations.push(
+    ...validateGrantAssignment({
+      roles: [],
+      permissions: [],
+      subjectPermissionsAfter: permissionsAfter,
+      subjectRole: params.after.role,
+    }),
+  );
+  return {
+    permissionsAfter,
+    delta: effectiveDelta(beforeSubject, afterSubject),
+    violations,
+  };
+}
+
+/** Набор глазами раскладки дельты: чем выдали — то есть состав. */
+export interface GrantDeltaSource {
+  id: string;
+  permissions: readonly Permission[];
+}
+
+/** Что приписано одному событию журнала. */
+export interface GrantEventDelta {
+  operation: GrantAssignmentOperation;
+  grantId: string;
+  added: Permission[];
+  removed: Permission[];
+}
+
+/**
+ * Раскладка **итоговой** дельты операции по событиям журнала (§5.2).
+ *
+ * **Итоговой, а не пошаговой, и отвергнут пошаговый пересчёт именно на замене.** Снимают набор A и
+ * выдают B, оба дают одно право — пошаговый пересчёт написал бы «право снято», а следом «право
+ * добавлено», хотя транзакционно доступ не прерывался ни на мгновение. Событие журнала отвечает на
+ * «что человек получил и потерял», и промежуточных состояний внутри одной транзакции у этого
+ * вопроса нет.
+ *
+ * Порядок объявлен и обязателен: сначала отзывы, затем выдачи, внутри каждой группы — по возрастанию
+ * `grant_id`. По нему же приписывается право, которое дают два выдаваемых набора: оно попадает в
+ * событие первого, второе показывает пустую добавку — «сверх уже имеющегося не дал». Сумма событий
+ * равна итоговой дельте без взаимных погашений.
+ *
+ * Отзыв ничего не добавляет, а выдача ничего не отнимает — и обратные половины у событий пусты не
+ * от лени: право, которое учётка получила, не может быть следствием снятия набора, и приписать его
+ * отзыву значило бы соврать о причине. Право, ушедшее не из-за набора (его отобрала смена роли),
+ * не приписывается никому — его показывает строка `changes` события правки учётки.
+ */
+export function attributeGrantDelta(params: {
+  /** Итоговая дельта операции — `effectiveDelta` по двум субъектам целиком. */
+  delta: PermissionDelta;
+  revoked: readonly GrantDeltaSource[];
+  assigned: readonly GrantDeltaSource[];
+}): GrantEventDelta[] {
+  const added = new Set<Permission>(params.delta.added);
+  const removed = new Set<Permission>(params.delta.removed);
+  const byId = (first: GrantDeltaSource, second: GrantDeltaSource): number =>
+    first.id < second.id ? -1 : first.id > second.id ? 1 : 0;
+  // Перебором словаря, а не пересечением множеств: порядок прав в событии обязан быть тем же, в
+  // каком их перечисляет дельта (`effectiveDelta`), иначе один и тот же журнал читался бы по-разному.
+  const take = (pool: Set<Permission>, grant: GrantDeltaSource): Permission[] => {
+    const mine = PERMISSIONS.filter(
+      (permission) => pool.has(permission) && grant.permissions.includes(permission),
+    );
+    for (const permission of mine) pool.delete(permission);
+    return mine;
+  };
+  return [
+    ...[...params.revoked].sort(byId).map((grant) => ({
+      operation: 'revoke' as GrantAssignmentOperation,
+      grantId: grant.id,
+      added: [],
+      removed: take(removed, grant),
+    })),
+    ...[...params.assigned].sort(byId).map((grant) => ({
+      operation: 'assign' as GrantAssignmentOperation,
+      grantId: grant.id,
+      added: take(added, grant),
+      removed: [],
+    })),
+  ];
 }

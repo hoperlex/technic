@@ -12,6 +12,7 @@ import {
   userAuditActionLabels,
   userAuditFieldLabels,
   type AuditEntryDto,
+  type UserAuditField,
 } from '@technic/contracts';
 
 // Контракт подвкладки «Аудит»: разбор фильтров и строка события для человека. Описатель живёт в
@@ -244,6 +245,53 @@ describe('изменения события журнала', () => {
     for (const field of USER_AUDIT_FIELDS) {
       expect(userAuditFieldLabels[field]?.length).toBeGreaterThan(0);
     }
+  });
+
+  it('каждое поле перечня попадает в заголовок группой', () => {
+    // Подпись строки и название группы — две разные карты, и забыть вторую легче: строку без
+    // подписи видно сразу, а заголовок молча промолчит о правке, которая в событии была.
+    for (const field of USER_AUDIT_FIELDS) {
+      const text = describeAuditEntry(
+        entry('user.update', { changes: [{ field, from: null, to: 'значение' }] }),
+      );
+      expect(text, field).not.toBe(userAuditActionLabels['user.update']);
+    }
+  });
+
+  it('полномочия из окна учётки читаются подписями и одной группой в заголовке', () => {
+    // Выдача из формы пишется своими событиями каталога (Р11 плана «полномочия назначаются в окне
+    // учётки»), но состав правки читают целиком в панели пути — там полномочия обязаны стоять
+    // рядом с ролью, как стоят надстройки, а не голым кодом поля.
+    const changes = [
+      { field: 'grantsGranted', from: null, to: 'Аудитор' },
+      { field: 'grantsRevoked', from: null, to: 'Приёмка топлива' },
+    ];
+    expect(describeAuditEntry(entry('user.update', { changes }))).toBe(
+      'Учётная запись изменена: полномочия',
+    );
+    expect(changes.map((c) => userAuditFieldLabels[c.field as UserAuditField])).toEqual([
+      'Полномочия выданы',
+      'Полномочия отозваны',
+    ]);
+  });
+
+  it('переходное состояние: системный набор пишется и надстройкой, и полномочием', () => {
+    // Пока живо поле `addons` (до шага 1e плана), одна выдача системного набора даёт в событии две
+    // строки: надстройка называется своей подписью, набор — названием из каталога. Проверяется
+    // здесь не арифметика, а то, что обе строки читаемы и заголовок не выдаёт их за две правки
+    // разных сущностей — группы в нём перечисляются каждая по разу.
+    const event = entry('user.update', {
+      changes: [
+        { field: 'addonsGranted', from: null, to: 'Оператор (оргтехника)' },
+        { field: 'grantsGranted', from: null, to: 'Оператор оргтехники' },
+      ],
+    });
+    expect(
+      auditChangesOf(event).map((c) => userAuditFieldLabels[c.field as UserAuditField]),
+    ).toEqual(['Надстройки выданы', 'Полномочия выданы']);
+    expect(describeAuditEntry(event)).toBe(
+      'Учётная запись изменена: надстройки доступа, полномочия',
+    );
   });
 
   it('отдаёт записанный перечень как есть', () => {

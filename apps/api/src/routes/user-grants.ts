@@ -23,11 +23,12 @@ import { requirePrincipal } from '../auth/plugin';
 import { revokeAllForUser } from '../auth/sessions';
 import { db } from '../db/client';
 import { grants, userGrants, type GrantRow } from '../db/schema';
-import { writeAudit } from '../lib/audit';
+import { writeAuditTx } from '../lib/audit';
 import { err } from '../lib/errors';
 import { pgErrorOf } from '../lib/pg-error';
 import {
   assertImpactUnchanged,
+  assignedGrantLimitIssue,
   assignmentImpactOf,
   bumpAuthVersions,
   compositionOfGrant,
@@ -60,6 +61,11 @@ import {
  * 3. пересчёт эффективных прав под блокировками;
  * 4. сверка отпечатка последствий, затем барьеры выдачи по итогу;
  * 5. запись, `authVersion + 1`, журнал — одной транзакцией.
+ *
+ * Пятый шаг исполняется буквально: событие пишется `writeAuditTx` — тем же соединением и без
+ * `catch`, — и сбой записи откатывает выдачу целиком (план «полномочия в окне учётки», §5.1).
+ * Выданное полномочие, о котором в журнале нет строки, не отвечает на вопрос «кто это выдал», ради
+ * которого реестр выдач и заведён.
  *
  * Порядок не переставляется даже там, где кажется естественнее наоборот («операция-то над учёткой»):
  * каталог берёт набор первым, и встречная выдача, начавшая с учётки, получила бы дедлок на первом же
@@ -357,13 +363,21 @@ export default async function userGrantsRoutes(app: FastifyInstance): Promise<vo
         assertRoleAllowed(state, grant, composition.roles);
 
         if (impact.held) {
-          return {
-            assignmentId: impact.held.assignmentId,
-            changed: false,
-            delta: impact.delta,
-            audit: null,
-          };
+          return { assignmentId: impact.held.assignmentId, changed: false, delta: impact.delta };
         }
+
+        /*
+         * Предел назначений по итогу — **общий с формой учётки** и потому считается той же функцией
+         * (план §4.2). Своей проверки здесь быть не должно: точечная выдача, не знающая границы
+         * формы, набьёт учётке больше назначений, чем та способна высказать, — правило полноты
+         * станет невыполнимым, и карточка такого человека перестанет сохраняться вовсе, включая
+         * правку телефона.
+         *
+         * Считается после `impact.held`: повторная выдача уже выданного набора ничего не добавляет,
+         * и отказывать держателю предела там, где операция и так ничего не делает, незачем.
+         */
+        const limit = assignedGrantLimitIssue(state.assignments.length + 1);
+        if (limit !== null) throw err.badRequest(limit, { grantId: limit });
 
         let created: { id: string } | undefined;
         try {
@@ -382,11 +396,16 @@ export default async function userGrantsRoutes(app: FastifyInstance): Promise<vo
         // Шаг 5: токены держателя гаснут той же транзакцией. Иначе выданный набор начал бы
         // действовать не тогда, когда его выдали, а когда истёк последний выданный токен.
         await bumpAuthVersions(tx, [id]);
-        return {
-          assignmentId: created!.id,
-          changed: true,
-          delta: impact.delta,
-          audit: {
+        // Шаг 5 (окончание): событие — той же транзакцией и без глушителя ошибки. Выдача, которая
+        // прошла бы мимо журнала, оставила бы реестр без ответа «кто и когда это выдал» — §5.1.
+        await writeAuditTx(tx, {
+          actorUserId: actor.id,
+          action: 'grant.assign',
+          // Цель события — учётка: так его находит разбор «что меняли у этого человека». Набор назван
+          // в metadata (ADR 0106, реестр действий журнала).
+          entityType: 'user',
+          entityId: id,
+          metadata: {
             grantId,
             grantCode: grant.code,
             grantName: grant.name,
@@ -400,22 +419,15 @@ export default async function userGrantsRoutes(app: FastifyInstance): Promise<vo
             permissionsAdded: impact.delta.added,
             permissionsRemoved: impact.delta.removed,
           },
-        };
+        });
+        return { assignmentId: created!.id, changed: true, delta: impact.delta };
       });
 
       if (result.changed) {
         // Refresh-токены гасятся вне транзакции: сессии живут своей таблицей, и откатывать их вместе
-        // с назначением нечем (тем же порядком правится состав набора).
+        // с назначением нечем (тем же порядком правится состав набора). Журнал, в отличие от них,
+        // лежит в этой же базе — и потому пишется внутри, до коммита.
         await revokeAllForUser(id);
-        await writeAudit({
-          actorUserId: actor.id,
-          action: 'grant.assign',
-          // Цель события — учётка: так его находит разбор «что меняли у этого человека». Набор назван
-          // в metadata (ADR 0106, реестр действий журнала).
-          entityType: 'user',
-          entityId: id,
-          metadata: result.audit!,
-        });
         reply.code(201);
       }
       const body: GrantAssignmentResultDto = {
@@ -493,10 +505,14 @@ export default async function userGrantsRoutes(app: FastifyInstance): Promise<vo
           .delete(userGrants)
           .where(and(eq(userGrants.userId, id), eq(userGrants.grantId, grantId)));
         await bumpAuthVersions(tx, [id]);
-        return {
-          assignmentId: held.assignmentId,
-          delta: impact.delta,
-          audit: {
+        // Событие — той же транзакцией: строка назначения удаляется насовсем, и после коммита
+        // восстановить по базе, что именно сняли, будет уже нечем (§5.1).
+        await writeAuditTx(tx, {
+          actorUserId: actor.id,
+          action: 'grant.revoke',
+          entityType: 'user',
+          entityId: id,
+          metadata: {
             grantId,
             grantCode: grant.code,
             grantName: grant.name,
@@ -509,17 +525,12 @@ export default async function userGrantsRoutes(app: FastifyInstance): Promise<vo
             permissionsAdded: impact.delta.added,
             permissionsRemoved: impact.delta.removed,
           },
-        };
+        });
+        return { assignmentId: held.assignmentId, delta: impact.delta };
       });
 
+      // Сессии — после коммита и по той же причине, что у выдачи: своя таблица, откатывать её нечем.
       await revokeAllForUser(id);
-      await writeAudit({
-        actorUserId: actor.id,
-        action: 'grant.revoke',
-        entityType: 'user',
-        entityId: id,
-        metadata: result.audit,
-      });
       const body: GrantAssignmentResultDto = {
         assignmentId: result.assignmentId,
         userId: id,
