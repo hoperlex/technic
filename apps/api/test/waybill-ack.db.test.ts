@@ -28,9 +28,10 @@ import type { db as AppDb } from '../src/db/client';
  *
  * - выписка с предупреждениями отвечает **409** `waybill_ack_required` — своим кодом, а не
  *   `version_conflict`: у портала на них два разных исхода;
- * - на отказе **номер бланка не расходуется**: ни листа по рейсу, ни сдвига счётчика серии. Это
+ * - на отказе **номер бланка не расходуется**: ни листа по рейсу, ни сгоревшего номера серии. Это
  *   главное утверждение файла — цена ошибки здесь не «кнопка не сработала», а дыра в нумерации
- *   бланков строгой отчётности, которую через полгода никто не объяснит;
+ *   бланков строгой отчётности, которую через полгода никто не объяснит. Сгоревший номер считается
+ *   разницей, а не сдвигом счётчика: серия у db-тестов общая (см. `burnedSince`);
  * - подложный отпечаток отвергается тем же 409: подтверждают положение дел, а не факт нажатия;
  * - принятый отпечаток попадает в `waybills.issue_warnings` конвертом `acknowledged` — вместе со
  *   списком, по которому через полгода и будут разбираться;
@@ -274,6 +275,26 @@ async function issue(routeId: string, payload: Record<string, unknown>) {
   });
 }
 
+/**
+ * Тот же запрос, но со счётом номеров: отметка серии снимается вплотную до него, расход — вплотную
+ * после. Окно нарочно короткое, в один запрос: чем оно шире, тем больше в нём чужой жизни (см.
+ * `burnedSince`).
+ */
+async function issueCountingNumbers(
+  routeId: string,
+  payload: Record<string, unknown>,
+): Promise<{
+  res: Awaited<ReturnType<typeof issue>>;
+  /** Номер, с которого серия стояла перед запросом: свой лист обязан занумероваться не ниже. */
+  mark: number;
+  /** Сколько номеров запрос сжёг: выдал и не превратил в документ. */
+  burned: number;
+}> {
+  const mark = await seriesMark();
+  const res = await issue(routeId, payload);
+  return { res, mark, burned: await burnedSince(mark) };
+}
+
 /** Отказ рукопожатия, разобранный: своим кодом, а не текстом сообщения. */
 function ackOf(res: { statusCode: number; body: string; json: () => unknown }): {
   fingerprint: string;
@@ -290,25 +311,52 @@ function ackOf(res: { statusCode: number; body: string; json: () => unknown }): 
 }
 
 /** Листы рейса: их отсутствие и есть «номер не расходуется». */
-async function waybillsOf(routeId: string): Promise<{ id: string; issue_warnings: unknown }[]> {
-  const rows = await ctx.db.execute<{ id: string; issue_warnings: unknown }>(
-    sql`SELECT id, issue_warnings FROM waybills WHERE route_id = ${routeId}`,
+async function waybillsOf(
+  routeId: string,
+): Promise<{ id: string; number: string; issue_warnings: unknown }[]> {
+  const rows = await ctx.db.execute<{ id: string; number: string; issue_warnings: unknown }>(
+    sql`SELECT id, number::text AS number, issue_warnings FROM waybills WHERE route_id = ${routeId}`,
   );
   return rows.rows;
 }
 
+/** Отметка основной серии: 4-П нумеруется ею (`SERIES_BY_FORM`). С неё и считается расход. */
+async function seriesMark(): Promise<number> {
+  const rows = await ctx.db.execute<{ next_number: string }>(
+    sql`SELECT next_number FROM waybill_series WHERE code = 'main'`,
+  );
+  return Number(rows.rows[0]!.next_number);
+}
+
 /**
- * Счётчик основной серии: 4-П нумеруется ею (`SERIES_BY_FORM`).
+ * Сколько номеров серии сгорело с отметки: счётчик ушёл вперёд на столько-то, а листов с номерами
+ * из этого промежутка — столько-то. Разница и есть дыра в журнале строгой отчётности: номер выдан
+ * и документом не стал. Ровно её и стережёт Р21.
+ *
+ * Считается разницей, а не сравнением счётчика с запомненным числом. Абсолютное «счётчик не
+ * сдвинулся» было утверждением не о нашем запросе: база у db-тестов общая, соседние файлы
+ * выписывают листы той же серией параллельно, и одна такая выписка давала «номер расходуется ровно
+ * один раз: ожидалось 1467, получено 1468» на ровном месте. Чужой лист разницы не создаёт — он
+ * двигает обе половины разом, — а сгоревший номер по-прежнему виден единицей.
+ *
+ * Отсюда и требование к окну: **один запрос, не больше**. Соседи не только выписывают листы, но и
+ * убирают их за собой (`DELETE FROM waybills` в их `afterAll`), а удалённый лист свой номер уже не
+ * подтверждает — из последней полусотни номеров этой серии в общей базе листами заняты девять.
+ * На окне в один запрос совпасть должны выписка соседа и его же уборка, а между ними у него лежит
+ * целый тест.
  *
  * Проверяется отдельно от списка листов, потому что это разные утверждения. «Листа нет» сказало бы
  * только, что вставка откатилась; сгоревший номер выглядел бы точно так же — счётчик серии берётся
  * `UPDATE ... RETURNING`, и молча съеденное число видно лишь здесь.
  */
-async function nextNumber(): Promise<number> {
-  const rows = await ctx.db.execute<{ next_number: string }>(
-    sql`SELECT next_number FROM waybill_series WHERE code = 'main'`,
-  );
-  return Number(rows.rows[0]!.next_number);
+async function burnedSince(mark: number): Promise<number> {
+  const rows = await ctx.db.execute<{ burned: string }>(sql`
+    SELECT (s.next_number - ${mark}
+            - (SELECT count(*) FROM waybills w
+                WHERE w.series_id = s.id AND w.number >= ${mark}))::text AS burned
+      FROM waybill_series s
+     WHERE s.code = 'main'`);
+  return Number(rows.rows[0]!.burned);
 }
 
 describe.skipIf(!DB_URL)(
@@ -367,10 +415,9 @@ describe.skipIf(!DB_URL)(
 
     it('предупреждения останавливают выписку: 409 со списком, и номер бланка цел', async () => {
       const route = await emptyRoute(ctx.barePersonId);
-      const before = await nextNumber();
 
-      const refused = await issue(route.id, { version: route.version });
-      const details = ackOf(refused);
+      const refused = await issueCountingNumbers(route.id, { version: route.version });
+      const details = ackOf(refused.res);
 
       /*
        * Список — тот, что показывают человеку: пустой маршрут (ADR 0071 п. 4) и пробелы в документах
@@ -387,30 +434,27 @@ describe.skipIf(!DB_URL)(
 
       // Главное утверждение файла: отказ не стоил ни листа, ни номера.
       expect(await waybillsOf(route.id)).toHaveLength(0);
-      expect(await nextNumber(), 'на отказе номер серии не сдвигается').toBe(before);
+      expect(refused.burned, 'на отказе номер серии не сгорает').toBe(0);
 
       /*
        * Подложный отпечаток — тот же 409 и тот же свежий отпечаток в ответе. Иначе рукопожатие было
        * бы формальностью: «пришли что угодно в поле `acknowledge`» ничем не отличается от «не
        * спрашивать вовсе», а именно этого Р21 и не допускает.
        */
-      const forged = await issue(route.id, {
+      const forged = await issueCountingNumbers(route.id, {
         version: route.version,
         acknowledge: { fingerprint: 'f'.repeat(64) },
       });
-      expect(ackOf(forged).fingerprint).toBe(details.fingerprint);
+      expect(ackOf(forged.res).fingerprint).toBe(details.fingerprint);
       expect(await waybillsOf(route.id)).toHaveLength(0);
-      expect(await nextNumber()).toBe(before);
+      expect(forged.burned).toBe(0);
 
       // И только с настоящим отпечатком лист выписывается — вторым запросом, как это делает окно.
-      const issued = await issue(route.id, {
+      const issued = await issueCountingNumbers(route.id, {
         version: route.version,
         acknowledge: { fingerprint: details.fingerprint },
       });
-      expect(issued.statusCode, issued.body).toBe(200);
-      expect(await nextNumber(), 'номер расходуется ровно один раз — на выданный лист').toBe(
-        before + 1,
-      );
+      expect(issued.res.statusCode, issued.res.body).toBe(200);
 
       /*
        * Под какими предупреждениями выдан лист — в самом листе, той же вставкой, что и документ
@@ -418,6 +462,17 @@ describe.skipIf(!DB_URL)(
        */
       const sheets = await waybillsOf(route.id);
       expect(sheets).toHaveLength(1);
+      /*
+       * «Номер расходуется ровно один раз — на выданный лист» — двумя половинами: лист у рейса
+       * один и номер он взял из этого запроса, а сгоревших номеров запрос не оставил. Порознь ни
+       * одна из них этого не говорит: лист мог достаться второй попытке, а нулевой расход — рейсу
+       * без листа.
+       */
+      expect(
+        Number(sheets[0]!.number),
+        'лист занумерован этой выпиской, а не подобран из прежних',
+      ).toBeGreaterThanOrEqual(issued.mark);
+      expect(issued.burned, 'выписка стоила ровно одного номера — своего').toBe(0);
       const record = sheets[0]!.issue_warnings as {
         schemaVersion: number;
         status: string;
@@ -436,7 +491,6 @@ describe.skipIf(!DB_URL)(
     it('подтверждают положение дел, а не нажатие: сменился водитель — сменился отпечаток', async () => {
       const route = await emptyRoute(ctx.barePersonId);
       const stale = ackOf(await issue(route.id, { version: route.version })).fingerprint;
-      const before = await nextNumber();
 
       /*
        * Ровно тот случай, ради которого рукопожатие сделано отпечатком: окно открыли, пока водителем
@@ -452,15 +506,18 @@ describe.skipIf(!DB_URL)(
       expect(moved.statusCode, moved.body).toBe(200);
       const version = moved.json().version as number;
 
-      const refused = await issue(route.id, { version, acknowledge: { fingerprint: stale } });
-      const details = ackOf(refused);
+      const refused = await issueCountingNumbers(route.id, {
+        version,
+        acknowledge: { fingerprint: stale },
+      });
+      const details = ackOf(refused.res);
       expect(details.fingerprint, 'набор изменился — прежнее подтверждение силы не имеет').not.toBe(
         stale,
       );
       // Пробел в документах закрылся вместе со сменой водителя, пустое задание осталось.
       expect(details.warnings.map((w) => w.facts.code)).toEqual(['blank_task']);
       expect(await waybillsOf(route.id)).toHaveLength(0);
-      expect(await nextNumber()).toBe(before);
+      expect(refused.burned, 'на отказе номер серии не сгорает').toBe(0);
 
       const issued = await issue(route.id, {
         version,

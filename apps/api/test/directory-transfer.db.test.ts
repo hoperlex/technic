@@ -2,11 +2,19 @@ import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { DIRECTORY_DATA_SHEET, DIRECTORY_KEYS, directoryTitles } from '@technic/contracts';
+import {
+  DIRECTORY_DATA_SHEET,
+  DIRECTORY_KEYS,
+  type DirectoryKey,
+  directoryTitles,
+  isValidInn,
+  isValidSnils,
+} from '@technic/contracts';
 import { applyMigrations } from '../src/db/migration-journal';
 // Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
 // окружение, — конфиг проверяет его при импорте и без него падает.
 import type { db as AppDb } from '../src/db/client';
+import type { AnyDirectory } from '../src/services/directory-transfer/types';
 
 /**
  * Обмен справочниками (ADR 0073) на живой схеме и настоящих данных.
@@ -21,6 +29,16 @@ import type { db as AppDb } from '../src/db/client';
  * Справочники здесь настоящие — те, что наполнили миграции: типы ТС, ТТХ, категории, парк,
  * прайс. Заводить их руками бессмысленно: проверяется как раз согласие описаний с тем, что
  * реально лежит в проде.
+ *
+ * **Чего файл не проверяет.** База у db-тестов общая и живёт между прогонами, а соседние файлы
+ * заводят своих людей и контрагентов прямым SQL — минуя и форму, и загрузку справочника. Так в
+ * ней накопились водители без СНИЛС и контрагенты с ИНН, не сходящимся по контрольной сумме:
+ * порталом такую строку не завести (`createDriverSchema`, `routes/counterparties.ts`), а прямая
+ * вставка её пропускает — CHECK таблицы смотрит только на длину. Обмен о них говорит верно: строка
+ * негодна, файл не принят. Но сказано это о чужом мусоре, а не о согласии описаний с базой, и
+ * поэтому такие строки из файла убираются до загрузки (`unfitIds`). Убираются поимённо — тем же
+ * `isValidInn`/`isValidSnils`, которым проверяет их загрузка, — а не «замечания разрешены»: сломай
+ * кто-нибудь печать ИНН, замечание придёт на каждую годную строку, и файл упадёт, как и должен.
  *
  * Запуск (база пустая или уже промигрированная — тест накатывает миграции сам):
  *
@@ -83,6 +101,51 @@ beforeAll(async () => {
 
 const suite = DB_URL ? describe : describe.skip;
 
+/**
+ * Идентификаторы строк, негодных ещё в базе, — тех, что положены туда мимо портала.
+ *
+ * Проверка ровно та же, какой их встретит загрузка: у контрагента ключ — ИНН (`parseInn`), у
+ * водителя — СНИЛС (`check()` описания). Второго мнения о том, какой номер верен, здесь нет и быть
+ * не должно: разойдись эта выборка с загрузкой хоть на одну строку — файл либо унесёт негодную,
+ * либо потеряет годную, и обе беды тест обязан показать, а не спрятать.
+ *
+ * Справочники, где такого мусора не встречалось, отдают пустой набор: появится — придёт замечание
+ * загрузки с номером строки, и разбираться будут по нему, а не гадать, что тест молча выкинул.
+ */
+async function unfitIds(key: DirectoryKey): Promise<ReadonlySet<string>> {
+  if (key === 'counterparties') {
+    const rows = await ctx.db.execute<{ id: string; inn: string }>(
+      sql`SELECT id, inn FROM counterparties WHERE deleted_at IS NULL`,
+    );
+    return new Set(rows.rows.filter((r) => !isValidInn(r.inn)).map((r) => r.id));
+  }
+  if (key === 'drivers') {
+    // Строка водителя — это человек: `id(row)` у описания возвращает `persons.id`.
+    const rows = await ctx.db.execute<{ id: string; snils: string }>(
+      sql`SELECT id, coalesce(snils, '') AS snils FROM persons WHERE deleted_at IS NULL`,
+    );
+    return new Set(rows.rows.filter((r) => !isValidSnils(r.snils)).map((r) => r.id));
+  }
+  return new Set();
+}
+
+/** Лист «Данные» выгрузки без строк, негодных ещё в базе, и сколько их выкинуто. */
+async function exportFit(
+  def: AnyDirectory,
+): Promise<{ rows: string[][]; kept: number; dropped: number }> {
+  const { bytes } = await ctx.engine.exportDirectory(def);
+  const sheet = ctx.xlsx.readWorkbook(bytes).find((s) => s.name === DIRECTORY_DATA_SHEET)!;
+  const unfit = await unfitIds(def.key);
+  // Служебная колонка идентификатора у выгрузки всегда первая (`engine.exportDirectory`).
+  const rows = sheet.rows.filter((row, index) => index === 0 || !unfit.has((row[0] ?? '').trim()));
+  return { rows, kept: rows.length - 1, dropped: sheet.rows.length - rows.length };
+}
+
+/** Книга из одного листа данных: загрузка читает только его, «Справку» она и не открывает. */
+function bookOf(rows: string[][]): Uint8Array {
+  return ctx.xlsx.writeWorkbook([{ name: DIRECTORY_DATA_SHEET, rows }]);
+}
+
 suite('обмен справочниками на живой схеме', () => {
   it('обменом охвачены все справочники, объявленные порталу', () => {
     expect(ctx.directories.map((d) => d.key)).toEqual([...DIRECTORY_KEYS]);
@@ -102,23 +165,27 @@ suite('обмен справочниками на живой схеме', () => 
       const def = ctx.directories.find((d) => d.key === key);
       expect(def, `нет описания справочника ${key}`).toBeDefined();
 
-      const { bytes, rows } = await ctx.engine.exportDirectory(def!);
-      const report = await ctx.engine.importDirectory(def!, bytes, {
+      const { rows, kept, dropped } = await exportFit(def!);
+      const report = await ctx.engine.importDirectory(def!, bookOf(rows), {
         dryRun: true,
         actorUserId: '00000000-0000-0000-0000-000000000000',
       });
 
       // Отчёт печатается в сообщение теста целиком: «изменим 12 строк» без перечня правок
-      // заставило бы искать расхождение руками по всему справочнику.
-      const detail = JSON.stringify(
-        { created: report.created, updated: report.updated, problems: report.problems },
-        null,
-        2,
-      );
+      // заставило бы искать расхождение руками по всему справочнику. Рядом — сколько строк
+      // выкинуто негодными: без этого числа «сверено 40 строк из 58» выглядело бы как сверка всего.
+      const detail = [
+        `строк в файле: ${kept}, выкинуто негодными в базе: ${dropped}`,
+        JSON.stringify(
+          { created: report.created, updated: report.updated, problems: report.problems },
+          null,
+          2,
+        ),
+      ].join('\n');
       expect(report.problems, detail).toEqual([]);
       expect(report.created, detail).toEqual([]);
       expect(report.updated, detail).toEqual([]);
-      expect(report.unchanged).toBe(rows);
+      expect(report.unchanged, detail).toBe(kept);
     },
   );
 
@@ -127,21 +194,20 @@ suite('обмен справочниками на живой схеме', () => 
     { timeout: 30_000 },
     async () => {
       const def = ctx.directories.find((d) => d.key === 'objects')!;
-      const { bytes } = await ctx.engine.exportDirectory(def);
-      const sheet = ctx.xlsx.readWorkbook(bytes).find((s) => s.name === DIRECTORY_DATA_SHEET)!;
+      const { rows } = await exportFit(def);
 
-      const nameAt = sheet.rows[0]!.indexOf('Наименование');
+      const nameAt = rows[0]!.indexOf('Наименование');
       const idAt = 0;
-      const target = sheet.rows[1];
+      const target = rows[1];
       expect(target, 'в справочнике объектов нет ни одной записи — проверять нечего').toBeDefined();
       const objectId = target![idAt]!;
       const before = target![nameAt]!;
       const after = `${before} (сверка обмена)`;
 
-      const edited = sheet.rows.map((row, index) =>
+      const edited = rows.map((row, index) =>
         index === 1 ? row.map((cell, at) => (at === nameAt ? after : cell)) : row,
       );
-      const editedBytes = ctx.xlsx.writeWorkbook([{ name: DIRECTORY_DATA_SHEET, rows: edited }]);
+      const editedBytes = bookOf(edited);
 
       const preview = await ctx.engine.importDirectory(def, editedBytes, {
         dryRun: true,
@@ -176,18 +242,15 @@ suite('обмен справочниками на живой схеме', () => 
     { timeout: 30_000 },
     async () => {
       const def = ctx.directories.find((d) => d.key === 'objects')!;
-      const { bytes } = await ctx.engine.exportDirectory(def);
-      const sheet = ctx.xlsx.readWorkbook(bytes).find((s) => s.name === DIRECTORY_DATA_SHEET)!;
-      const nameAt = sheet.rows[0]!.indexOf('Наименование');
+      const { rows: fit } = await exportFit(def);
+      const nameAt = fit[0]!.indexOf('Наименование');
 
       // Первая строка меняется законно, вторая — с пустым обязательным наименованием у новой записи.
-      const rows = sheet.rows.map((row, index) =>
+      const rows = fit.map((row, index) =>
         index === 1 ? row.map((cell, at) => (at === nameAt ? `${cell} (сверка)` : cell)) : row,
       );
-      rows.push(
-        ['', ...sheet.rows[0]!.slice(1).map(() => '')].map((c, at) => (at === 1 ? 'zz_new' : c)),
-      );
-      const broken = ctx.xlsx.writeWorkbook([{ name: DIRECTORY_DATA_SHEET, rows }]);
+      rows.push(['', ...fit[0]!.slice(1).map(() => '')].map((c, at) => (at === 1 ? 'zz_new' : c)));
+      const broken = bookOf(rows);
 
       await expect(
         ctx.engine.importDirectory(def, broken, {
@@ -220,9 +283,10 @@ suite('обмен справочниками на живой схеме', () => 
       const number = '112233';
 
       const def = ctx.directories.find((d) => d.key === 'drivers')!;
-      const { bytes } = await ctx.engine.exportDirectory(def);
-      const sheet = ctx.xlsx.readWorkbook(bytes).find((s) => s.name === DIRECTORY_DATA_SHEET)!;
-      const header = sheet.rows[0]!;
+      // Загрузка здесь настоящая, и негодная строка отменила бы весь файл — включая ту, ради
+      // которой тест и написан: справочник берётся без строк, испорченных в базе мимо портала.
+      const { rows } = await exportFit(def);
+      const header = rows[0]!;
       const at = (column: string): number => {
         const index = header.indexOf(column);
         expect(index, `в выгрузке водителей нет колонки «${column}»`).toBeGreaterThan(0);
@@ -240,9 +304,7 @@ suite('обмен справочниками на живой схеме', () => 
       added[at('Выдано УТМ')] = '05.04.2023';
       // «Категории УТМ» остаются пустыми: ровно эту строку файл прежде и терял — документ по ней
       // не заводился вовсе, и загруженные реквизиты удостоверения молча пропадали.
-      const editedBytes = ctx.xlsx.writeWorkbook([
-        { name: DIRECTORY_DATA_SHEET, rows: [...sheet.rows, added] },
-      ]);
+      const editedBytes = bookOf([...rows, added]);
 
       // Автор записи проставляется и человеку, и документу, а `persons.created_by` смотрит в
       // `users`: вымышленный ноль-UUID соседних тестов внешний ключ не пропустит. Учётка заводится
