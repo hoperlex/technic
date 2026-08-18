@@ -18,6 +18,17 @@ export interface ApiError {
   code: string;
   message: string;
   fields?: Record<string, string>;
+  /**
+   * Разбор отказа машиной, а не человеком. Заведено ради рукопожатия выписки (Р21 плана
+   * `docs/route-trips-plan.md`): 409 `waybill_ack_required` несёт список предупреждений и свежий
+   * отпечаток, и без этого поля до окна подтверждения не доехало бы ни то, ни другое — сообщение
+   * читает человек, а отпечаток возвращается серверу нетронутым.
+   *
+   * Тип широкий намеренно: транспорт не знает ручек, а форму своего `details` описывает контракт
+   * каждой из них (`WaybillAckRequiredDetails`). Разбирает его вызывающий — там же, где знает, чего
+   * ждал.
+   */
+  details?: unknown;
   requestId?: string;
   status: number;
 }
@@ -96,6 +107,7 @@ async function request(path: string, options: RequestOptions): Promise<Response>
       code: body.code ?? 'error',
       message: body.message ?? 'Ошибка запроса',
       fields: body.fields,
+      details: body.details,
       requestId: body.requestId,
       status: res.status,
     } as ApiError;

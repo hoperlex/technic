@@ -63,6 +63,8 @@ const SOURCE: VehicleRouteDto = {
   transportationKind: 'коммерческая',
   comment: '',
   requests: [{ ...REQUEST, requestId: 'r-stay', displayNumber: 'ТС-500', position: 1 }, REQUEST],
+  // Порядок объезда сценарию не нужен: он проверяет не сборку дня, а рейс целиком.
+  points: [],
   waybill: {
     id: 'w-source',
     number: '260604-646-00000004897',
@@ -83,6 +85,8 @@ const TARGET: VehicleRouteDto = {
   vehicleId: 'v-other',
   vehicleLabel: 'МАЗ 5516 · А777АА797',
   requests: [{ ...REQUEST, requestId: 'r-other', displayNumber: 'ТС-499', position: 1 }],
+  // Порядок объезда сценарию не нужен: он проверяет не сборку дня, а рейс целиком.
+  points: [],
   waybill: {
     id: 'w-target',
     number: '260604-646-00000004890',
@@ -196,6 +200,8 @@ describe('перенос между рейсами задним числом: о
       blocking: {
         reason: 'Лист печатает задание по всему составу, поэтому рейс исправляется только целиком.',
         requests: ['ТС-499'],
+        // Порядок объезда сценарию не нужен: он проверяет не сборку дня, а рейс целиком.
+        points: [],
       },
     });
     await screen.findByText('Куда ехала на самом деле');

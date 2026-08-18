@@ -209,6 +209,8 @@ const EXISTING_ROUTE: VehicleRouteDto = {
   transportationKind: 'коммерческая',
   comment: '',
   requests: [],
+  // Порядок объезда сценарию не нужен: он проверяет рейс целиком, а не сборку дня.
+  points: [],
   waybill: null,
   createdByName: 'Диспетчер',
   createdAt: '2026-08-09T09:00:00.000Z',

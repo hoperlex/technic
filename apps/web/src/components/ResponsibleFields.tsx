@@ -3,21 +3,55 @@ import { contactIssue } from '@technic/contracts';
 import { PhoneLink } from './PhoneField';
 import { PhoneInput } from './PhoneInput';
 
+/**
+ * Имя поля формы: строка либо путь. Путь нужен спискам — контакты ездок лежат в
+ * `trips.3.fromResponsibleName` (план `docs/route-trips-plan.md`, §4.1), и адресовать их одной
+ * строкой нечем.
+ */
+type FieldName = string | (string | number)[];
+
 interface Props {
   /** Имя поля ФИО в форме; телефон лежит в `phoneName`. */
-  nameField: string;
-  phoneField: string;
+  nameField: FieldName;
+  phoneField: FieldName;
   nameLabel: string;
   phoneLabel: string;
   disabled?: boolean;
+  /**
+   * Прежние значения, которые правку **не блокируют**, пока их не меняют (Р2а плана
+   * `docs/route-trips-plan.md`).
+   *
+   * Зачем понадобилось послабление. Контакт обязателен, и правило поля это держит — но в базе
+   * лежит то, что жёсткая модель сегодня уже не пропустила бы: пустой контакт у записей старше
+   * миграции `0062` и номер, не сводимый к десяти цифрам, у записей старше ADR 0066 п. 7. Правится
+   * такая запись **полным** составом (у списка нет понятия «поле не прислали»), и без послабления
+   * заявку, которую вчера спокойно редактировали, завтра нельзя было бы сохранить, пока кто-нибудь
+   * не выдумает за прошлое ответственного. Ровно это принимает и сервер
+   * (`storedContactNameSchema`, `storedContactPhoneSchema`), а требование верификации возвращает
+   * на **изменившееся** значение.
+   *
+   * Поэтому послабление узкое: пропускается только значение, **совпадающее** с сохранённым.
+   * Тронули поле — правило вернулось целиком. Не задано (`undefined`) — контакт заводится заново,
+   * и послаблять нечего: так работают все прочие места, где стоит этот компонент.
+   */
+  kept?: { name: string; phone: string };
 }
 
-/** Те же правила, что у сервера: проверяет функция из контрактов, а не копия схемы на фронте. */
-function rule(kind: 'name' | 'phone') {
+/**
+ * Те же правила, что у сервера: проверяет функция из контрактов, а не копия схемы на фронте.
+ *
+ * `kept` — прежнее значение поля; совпадающее с ним принимается как есть (Р2а). Сравнение строгое
+ * и по строке: нормализация телефона (ADR 0066) значения не меняет, пока его не трогали, — поле
+ * отдаёт форме ровно то, что в него положили.
+ */
+function rule(kind: 'name' | 'phone', kept?: string) {
   return () => ({
     validator: (_: unknown, value: unknown) => {
-      const issue = contactIssue(typeof value === 'string' ? value : '', kind);
-      return issue ? Promise.reject(new Error(issue)) : Promise.resolve();
+      const text = typeof value === 'string' ? value : '';
+      const issue = contactIssue(text, kind);
+      if (!issue) return Promise.resolve();
+      if (kept !== undefined && text === kept) return Promise.resolve();
+      return Promise.reject(new Error(issue));
     },
   });
 }
@@ -36,12 +70,16 @@ export function ResponsibleFields({
   nameLabel,
   phoneLabel,
   disabled,
+  kept,
 }: Props) {
   return (
     // На десктопе ФИО и телефон встают в строку, на телефоне Row переносит их сам (ADR 0030).
     <Row gutter={12}>
       <Col xs={24} sm={14}>
-        <Form.Item name={nameField} label={nameLabel} required rules={[rule('name')]}>
+        {/* Звёздочка остаётся и при послаблении: контакт обязателен по существу — без него рейс
+            заканчивается простоем у закрытых ворот, — а `kept` лишь не заставляет вписывать его
+            задним числом в чужую старую запись. */}
+        <Form.Item name={nameField} label={nameLabel} required rules={[rule('name', kept?.name)]}>
           <Input placeholder="Фамилия и имя" disabled={disabled} maxLength={200} />
         </Form.Item>
       </Col>
@@ -53,7 +91,7 @@ export function ResponsibleFields({
           label={phoneLabel}
           required
           validateTrigger="onBlur"
-          rules={[rule('phone')]}
+          rules={[rule('phone', kept?.phone)]}
         >
           <PhoneInput disabled={disabled} />
         </Form.Item>

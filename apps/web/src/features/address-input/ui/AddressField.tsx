@@ -11,9 +11,17 @@ import { buildDirectoryGroups } from '../model/suggestions';
 import { useDirectoryOptions, type DirectoryOption } from '../model/useDirectoryOptions';
 import { DirectorySelect } from './DirectorySelect';
 
+/**
+ * Имя поля формы: строка либо путь. Путь нужен спискам — адреса ездок заявки лежат в
+ * `trips.3.fromLocation` (план `docs/route-trips-plan.md`, §4.1), и одной строкой их не назвать.
+ * Компонент зовёт форму напрямую (`getFieldValue`, `setFieldValue`, `useWatch`), поэтому путь ему
+ * нужен целиком — относительные имена `Form.List` сюда не доехали бы.
+ */
+type FieldName = string | (string | number)[];
+
 interface Props {
   /** Поле формы со строкой адреса — значение поля остаётся строкой в любом режиме. */
-  name: string;
+  name: FieldName;
   label: ReactNode;
   required?: boolean;
   /** Чего именно не хватает: «Укажите место погрузки» точнее общего «Укажите адрес». */
@@ -27,7 +35,7 @@ interface Props {
    * Скрытое поле формы с метаданными адреса. Не задано — метаданные не сохраняются: компонент
    * собирает их всегда, а хранить их есть куда не везде (у маршрутов колонок пока нет).
    */
-  metaField?: string;
+  metaField?: FieldName;
   /** Чекбокс «Из справочника». Выключен там, где справочник сам и есть источник списка. */
   directory?: boolean;
   /**

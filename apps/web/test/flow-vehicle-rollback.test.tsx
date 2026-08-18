@@ -119,6 +119,8 @@ const DELIVERY: VehicleRouteDto = {
   comment: '',
   // Состава у перегона нет: вместо талонов заказчиков он держит заявку, ради которой едет.
   requests: [],
+  // Порядок объезда сценарию не нужен: он проверяет не сборку дня, а рейс целиком.
+  points: [],
   sourceRequest: {
     requestId: 'vr-1',
     displayNumber: 'Т-42',

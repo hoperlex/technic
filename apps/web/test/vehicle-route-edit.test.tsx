@@ -84,6 +84,8 @@ const ROUTE: VehicleRouteDto = {
       cargoLabel: '12 м³',
     },
   ],
+  // Порядок объезда сценарию не нужен: он проверяет рейс целиком, а не сборку дня.
+  points: [],
   waybill: null,
   createdByName: 'Диспетчер',
   createdAt: '2026-08-06T09:00:00.000Z',

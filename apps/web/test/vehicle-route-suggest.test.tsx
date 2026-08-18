@@ -46,6 +46,8 @@ const BASE_ROUTE: VehicleRouteDto = {
   transportationKind: '',
   comment: '',
   requests: [],
+  // Порядок объезда сценарию не нужен: он проверяет рейс целиком, а не сборку дня.
+  points: [],
   waybill: null,
   createdByName: 'Диспетчер',
   createdAt: '2026-08-01T09:00:00.000Z',
