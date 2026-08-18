@@ -46,6 +46,15 @@ export const PERMISSION_MODULES = [
   'vehicleMaintenance',
   'records',
   'files',
+  /**
+   * Руководства — свой модуль витрины, а не место в «Администрировании» (`docs/manuals-plan.md`
+   * §3.1). Витрина считает недостающее «чтение модуля» по `MODULE_ENTRY_PERMISSION`, а у модуля
+   * `admin` входное право — `users.manage`, то есть право из `NON_GRANTABLE_PERMISSIONS`. Лежи
+   * `manuals.manage` там, конструктор полномочий на каждом наборе с ним показывал бы
+   * предупреждение «чтения модуля в наборе нет», закрыть которое нечем: невыдаваемое право в
+   * набор не положить. Прецедент модуля из одного права — `files`.
+   */
+  'manuals',
   'admin',
 ] as const;
 export type PermissionModule = (typeof PERMISSION_MODULES)[number];
@@ -65,6 +74,7 @@ export const permissionModuleLabels: Record<PermissionModule, string> = {
   vehicleMaintenance: 'Техобслуживание',
   records: 'Архив и откаты',
   files: 'Файлы',
+  manuals: 'Руководства',
   admin: 'Администрирование',
 };
 
@@ -298,6 +308,8 @@ export const PERMISSION_CATALOG: Record<Permission, PermissionCatalogEntry> = {
   'audit.read': { module: 'admin', action: 'read', label: 'Читает журнал действий' },
   'mailings.read': { module: 'admin', action: 'read', label: 'Смотрит рассылки' },
   'mailings.manage': { module: 'admin', action: 'manage', label: 'Настраивает рассылки' },
+
+  'manuals.manage': { module: 'manuals', action: 'manage', label: 'Ведёт список руководств' },
 };
 
 /** Права модуля в порядке объявления — строки сетки собираются по нему, а не по алфавиту. */
@@ -330,8 +342,37 @@ export const MODULE_ENTRY_PERMISSION: Record<PermissionModule, Permission> = {
   vehicleMaintenance: 'vehicleMaintenance.read',
   records: 'archive.read',
   files: 'files.manageAny',
+  // У «Руководств», как и у «Файлов», своего чтения нет: список читают все вошедшие, а модуль
+  // состоит из одного права ведения — открывающим считается оно (`docs/manuals-plan.md` §3.1).
+  manuals: 'manuals.manage',
   admin: 'users.manage',
 };
+
+/**
+ * Права, каждое из которых открывает хотя бы одну вкладку «Администрирования»
+ * (`docs/manuals-plan.md` §3.6).
+ *
+ * Список один, потому что мест, спрашивающих «пускать ли на `/admin`», четыре — маршрут, набор
+ * вкладок, пункт меню и стартовый редирект, — и сегодня они знают разное. Расхождение уже стоит
+ * двух дыр, обе из каталога полномочий (ADR 0106): держатель набора «Рассылки» проходит маршрут,
+ * но пункта меню не видит и редиректом на страницу не попадает, а держатель «Обмена
+ * справочниками» не попадает вовсе — вкладка для него в коде есть, а маршрут его разворачивает.
+ * Четвёртая поимённая строка про `manuals.manage` в трёх местах завела бы третью дыру того же
+ * рода.
+ *
+ * Список отвечает только на вопрос «пускать ли на страницу». Сами вкладки остаются поимёнными: у
+ * каждой своё право, и «что показать» — другой вопрос, чем «пустить ли». Что список и вкладки не
+ * разъедутся, следит тест равенством множеств.
+ *
+ * Права здесь, а не модули: `MODULE_ENTRY_PERMISSION.admin` — это `users.manage`, то есть ровно
+ * то право, мимо которого держатели двух наборов и не проходят.
+ */
+export const ADMIN_PAGE_PERMISSIONS = [
+  'users.manage',
+  'mailings.read',
+  'directories.export',
+  'manuals.manage',
+] as const satisfies readonly Permission[];
 
 /**
  * Что субъект делает в модуле: не видит вовсе, только смотрит или ещё и действует. Три состояния,

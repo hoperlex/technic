@@ -69,4 +69,5 @@ export * from './driver-cabinet';
 export * from './vehicle-readings';
 export * from './vehicle-maintenance';
 export * from './releases';
+export * from './manuals';
 export * from './audit';

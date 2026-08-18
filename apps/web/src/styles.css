@@ -407,6 +407,9 @@ body,
 .support-contact__title,
 .support-contact__hint {
   display: block;
+  /* Тем же видом показываются руководства, а их название и пояснение вводит администратор: адрес
+     или «СОГЛАСОВАНИЕ_ЗАЯВОК_v3» без единого пробела иначе распирал бы окно по своей длине. */
+  overflow-wrap: anywhere;
 }
 .support-contact__hint {
   font-size: 12px;

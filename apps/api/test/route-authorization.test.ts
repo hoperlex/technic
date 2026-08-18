@@ -17,7 +17,11 @@ import type { RouteOptions } from 'fastify';
 
 /**
  * Маршруты, которые обязаны работать без входа: проверки живости для nginx и сам вход.
- * Сравниваем по пути, а не по паре «метод + путь»: Fastify заводит HEAD к каждому GET сам.
+ *
+ * Сравниваются по пути, а не по паре «метод + путь», и это про смысл списка, а не про удобство:
+ * разрешение здесь означает «маршрут открыт целиком». Записи в трёх списках ниже — `PUBLIC_ROUTES`,
+ * `SELF_SERVICE_ROUTES`, `INTERNAL_ROUTES` — читаются так же; методами сужен только
+ * `COMMON_ROUTES`, где на одном пути живут ручки с разным условием.
  */
 const PUBLIC_ROUTES = new Set([
   '/health/live',
@@ -51,21 +55,40 @@ const INTERNAL_ROUTES = new Set(['/internal/mail/schedules/due', '/internal/mail
 const SELF_SERVICE_ROUTES = new Set(['/api/v1/auth/me', '/api/v1/auth/change-password']);
 
 /**
- * Маршруты «про сам портал»: тоже без права, но по другой причине. Журнал обновлений (ADR 0077)
- * не содержит персональных данных, а право, закрывающее «что нового в портале», пришлось бы выдать
- * всем — то есть оно не различало бы никого.
+ * Маршруты «про сам портал»: тоже без права, но по другой причине. Журнал обновлений (ADR 0077) и
+ * список руководств (`docs/manuals-plan.md` §3.2) персональных данных не содержат, а право,
+ * закрывающее «что нового в портале» и «как порталом пользоваться», пришлось бы выдать всем — то
+ * есть оно не различало бы никого.
  *
  * Строкой в списке, а не молчаливым исключением: каждое «права нет» должно быть видно в ревью
  * рядом с остальными.
+ *
+ * **Единственный из четырёх списков, который сравнивается по паре «метод + путь».** У руководств по
+ * корневому пути живут и чтение, и заведение: строка `/api/v1/manuals` разрешила бы заодно `POST`,
+ * и забытый на нём `manuals.manage` перестал бы ловиться — ровно та тихая дыра, ради которой страж
+ * и написан. `PATCH` с `DELETE` стоят на `/manuals/:id` и под исключение корневого пути не попали
+ * бы, но полагаться на это нельзя: любая следующая ручка по корню — массовая правка порядка,
+ * импорт списком — вернула бы дыру молча.
  */
-const COMMON_ROUTES = new Set(['/api/v1/releases']);
+const COMMON_ROUTES = new Set(['GET /api/v1/releases', 'GET /api/v1/manuals']);
 
 interface RouteInfo {
   key: string;
+  /** Метод в том виде, в каком его показало приложение: `HEAD` приводится к `GET` ниже. */
+  method: string;
   url: string;
   /** Пометки стражей: право из матрицы либо `handler:<причина>` (см. auth/plugin.ts). */
   authz: string[];
   requiresLogin: boolean;
+}
+
+/**
+ * Ключ строки `COMMON_ROUTES`. `HEAD` приводится к `GET`: Fastify заводит его к каждому `GET` сам,
+ * и перечислять оба написания значило бы удваивать список ради того, чего никто не регистрировал
+ * руками.
+ */
+function commonKey(r: RouteInfo): string {
+  return `${r.method === 'HEAD' ? 'GET' : r.method} ${r.url}`;
 }
 
 const routes: RouteInfo[] = [];
@@ -108,6 +131,7 @@ beforeAll(async () => {
       for (const method of methods) {
         routes.push({
           key: `${method} ${route.url}`,
+          method,
           url: pathOf(route.url),
           authz: handlers.flatMap((h) => (h.authz ? [String(h.authz)] : [])),
           // Вход проверяет `authenticate` — единственный страж без пометки authz.
@@ -130,7 +154,7 @@ describe('авторизация маршрутов', () => {
         (r) =>
           !PUBLIC_ROUTES.has(r.url) &&
           !SELF_SERVICE_ROUTES.has(r.url) &&
-          !COMMON_ROUTES.has(r.url) &&
+          !COMMON_ROUTES.has(commonKey(r)) &&
           !INTERNAL_ROUTES.has(r.url),
       )
       .filter((r) => r.authz.length === 0)
@@ -144,6 +168,23 @@ describe('авторизация маршрутов', () => {
       .filter((r) => !r.requiresLogin)
       .map((r) => r.key);
     expect(anonymous).toEqual([]);
+  });
+
+  /**
+   * Проверка самого сужения списка методами: чтение руководств стоит без права намеренно, а запись
+   * по тому же пути обязана остаться под `manuals.manage`. До перехода на пары «метод + путь» одна
+   * строка `/api/v1/manuals` покрывала бы оба маршрута сразу.
+   */
+  it('список без права сужен методом: запись по тому же пути осталась в проверке', () => {
+    const manuals = routes.filter((r) => r.url.startsWith('/api/v1/manuals'));
+    expect(manuals.length).toBeGreaterThan(0);
+    for (const route of manuals) {
+      const openByList = COMMON_ROUTES.has(commonKey(route));
+      // `GET` (и заведённый к нему Fastify `HEAD`) — в списке и без пометки права; всё остальное —
+      // наоборот. Ни один маршрут не может оказаться сразу в списке и под правом.
+      expect(openByList, route.key).toBe(route.method === 'GET' || route.method === 'HEAD');
+      expect(route.authz, route.key).toEqual(openByList ? [] : ['manuals.manage']);
+    }
   });
 
   it('доступ «по самой записи, а не по роли» оставлен только файлам', () => {

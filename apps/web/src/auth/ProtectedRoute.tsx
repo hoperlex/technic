@@ -1,6 +1,11 @@
 import { Navigate, Outlet, useLocation } from 'react-router';
 import { Spin } from 'antd';
-import { isPersonScopedRole, type AuthUser, type Permission } from '@technic/contracts';
+import {
+  ADMIN_PAGE_PERMISSIONS,
+  isPersonScopedRole,
+  type AuthUser,
+  type Permission,
+} from '@technic/contracts';
 import { useAuth } from './AuthContext';
 
 function FullScreenSpin() {
@@ -73,7 +78,12 @@ function homePath(user: AuthUser | null, canUse: (permission: Permission) => boo
   if (canUse('garage.read')) return '/garage';
   if (canUse('waybills.read')) return '/waybills';
   if (canUse('directories.write')) return '/directories';
-  if (canUse('users.manage')) return '/admin';
+  // Администрирование — последним и по всему списку прав его вкладок (`ADMIN_PAGE_PERMISSIONS`,
+  // `docs/manuals-plan.md` §3.6): держателю одних «Руководств» или одних «Рассылок» это
+  // единственный доступный раздел, и без списка он попадал бы на смену пароля. Порядок при этом
+  // не меняется — у менеджера с `directories.export` стартовой остаётся его рабочая страница,
+  // потому что `homePath` отдаёт первый доступный раздел, а не самый широкий.
+  if (ADMIN_PAGE_PERMISSIONS.some((permission) => canUse(permission))) return '/admin';
   // Роли без единого раздела быть не должно; смена пароля доступна любому вошедшему.
   return '/change-password';
 }

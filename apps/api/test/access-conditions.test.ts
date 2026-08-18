@@ -323,6 +323,14 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
     payload: { kind: 'driver_routes', toUserId: RECORD_ID, date: FUTURE_DATE },
   },
 
+  // ── Руководства пользователя (`docs/manuals-plan.md`) ──
+  // Тело обязано быть годным: схема проверяется до `preHandler`, и без названия со ссылкой
+  // негативные случаи получали бы 400 от разбора вместо 403 от стража — то есть не проверяли бы
+  // ничего. Ссылка по `https`: `CHECK` базы того же требует, но здесь отказал бы zod.
+  'POST /api/v1/manuals': {
+    payload: { title: 'Краткая инструкция', url: 'https://disk.360.yandex.ru/i/example' },
+  },
+
   // ── Справочники ──
   'POST /api/v1/objects': { payload: { code: 'OBJ-1', name: 'Объект', address: 'Москва' } },
   'POST /api/v1/departments': { payload: { code: 'DEP-1', name: 'Отдел' } },

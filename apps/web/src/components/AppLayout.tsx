@@ -1,33 +1,29 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Badge, Dropdown, Layout, Menu, type MenuProps, Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import {
   CarOutlined,
-  CustomerServiceOutlined,
   ProfileOutlined,
   DatabaseOutlined,
   FileTextOutlined,
   KeyOutlined,
   LeftOutlined,
   LogoutOutlined,
-  NotificationOutlined,
   PrinterOutlined,
   RightOutlined,
   ScheduleOutlined,
   TeamOutlined,
 } from '@ant-design/icons';
 import { Outlet, useLocation, useNavigate } from 'react-router';
-import { formatShortName, roleLabels } from '@technic/contracts';
+import { ADMIN_PAGE_PERMISSIONS, formatShortName, roleLabels } from '@technic/contracts';
 import { usersApi } from '../api/resources';
 import { useAuth } from '../auth/AuthContext';
+import { UtilityMenu, useUtilityMenu } from '@widgets/utility-menu';
 import { useServiceWaitingCount } from '@features/service-waiting-badge';
-import { useReleases } from '@entities/release';
 import { readSiderCollapsed, useIsMobile, writeSiderCollapsed } from '@shared/lib';
 import { MobileAppBar } from './MobileAppBar';
 import { MobileNav, type MobileNavItem } from './MobileNav';
 import { PortalLogo } from './PortalLogo';
-import { ReleaseNotesModal } from './ReleaseNotesModal';
-import { SupportContactsModal } from './SupportContactsModal';
 import { UserAvatar } from './UserAvatar';
 
 const { Sider, Content } = Layout;
@@ -41,27 +37,12 @@ export function AppLayout() {
   const location = useLocation();
   const isMobile = useIsMobile();
   const [collapsed, setCollapsed] = useState(readSiderCollapsed);
-  const [supportOpen, setSupportOpen] = useState(false);
-  const [changelogOpen, setChangelogOpen] = useState(false);
 
   /**
-   * Журнал обновлений (ADR 0077). Список спрашивается каркасом, а не самим окном: он нужен раньше
-   * окна — точке в меню, которая и сообщает, что открывать журнал есть зачем.
+   * Помощь и новости портала (ADR 0077) — не разделы, и каркас про них знает ровно две вещи: где
+   * стоят их пункты и куда положить окна. Что это за пункты и что они открывают, решает виджет.
    */
-  const { hasNews, markSeen } = useReleases();
-
-  /*
-   * Отметка ставится при открытии окна, а не при закрытии: закрывают и по Esc, и мимо кнопки, — а
-   * выпуск к этому моменту уже увидели (ADR 0077).
-   *
-   * Эффектом, а не строкой в обработчике нажатия: в момент нажатия список мог ещё не доехать, и
-   * отмечать было бы нечего — отметка встаёт, как только есть что отмечать, окно при этом уже
-   * открыто. Живёт здесь, а не в окне, потому что здесь же считается точка в меню: две копии
-   * состояния гасили бы её каждая у себя.
-   */
-  useEffect(() => {
-    if (changelogOpen) markSeen();
-  }, [changelogOpen, markSeen]);
+  const utility = useUtilityMenu();
 
   const toggleCollapsed = () =>
     setCollapsed((v) => {
@@ -178,7 +159,13 @@ export function AppLayout() {
           },
         ]
       : []),
-    ...(can('users.manage')
+    /*
+     * Администрирование открывает любое право его вкладок, а не одно `users.manage`
+     * (`ADMIN_PAGE_PERMISSIONS`, `docs/manuals-plan.md` §3.6): держатель набора «Рассылки»
+     * маршрут проходил, а пункта меню не видел — раздел был доступен только по прямой ссылке.
+     * Список общий с маршрутом и стартовым редиректом: поимённые копии в трёх местах и разошлись.
+     */
+    ...(ADMIN_PAGE_PERMISSIONS.some((permission) => can(permission))
       ? [
           {
             key: '/admin',
@@ -197,79 +184,22 @@ export function AppLayout() {
   // Подсвечен тот пункт, на страницу которого зашли; если такого пункта у роли нет — никакой.
   const selectedKey = navItems.find((it) => location.pathname.startsWith(it.key))?.key ?? '';
 
-  /**
-   * Служебные пункты: они не разделы портала и не зависят от прав — писать в поддержку и читать
-   * журнал обновлений вправе любой вошедший (ADR 0077: право, закрывающее «что нового в портале»,
-   * пришлось бы выдать всем). Страницы за ними нет, поэтому подсветка выключена, а нажатие
-   * открывает окно.
-   */
-  const utilityItems = [
-    {
-      key: 'support',
-      icon: <CustomerServiceOutlined />,
-      label: 'Техподдержка',
-      // Свёрнутой панели остаётся одна иконка, и `title` — единственное, чем пункт назван.
-      title: 'Техподдержка',
-      disabled: false,
-    },
-    {
-      key: 'changelog',
-      /*
-       * Точка, а не число непрочитанных выпусков: в той же панели уже висит счётчик заявок на
-       * регистрацию, и два числа рядом начинают спорить за внимание — выигрывает то, которое
-       * больше, а не то, которое важнее. «Сколько» здесь ничего и не решает: журнал открывают
-       * узнать «что», и одного непрочитанного выпуска для этого достаточно (ADR 0077).
-       */
-      icon: (
-        <Badge dot={hasNews} offset={[4, -2]}>
-          <NotificationOutlined />
-        </Badge>
-      ),
-      label: 'Обновления',
-      title: 'Обновления',
-      disabled: false,
-    },
-  ];
-
-  /**
-   * Служебные пункты открываются из трёх мест — меню учётной записи, подвал развёрнутой панели и
-   * свёрнутая панель, — и разбор ключа здесь один на всех. Раньше свёрнутая панель звала поддержку
-   * на любой пункт: пока «Обновления» стояли выключенными, ошибка была невидимой.
-   */
-  const openUtility = (key: string) => {
-    if (key === 'support') setSupportOpen(true);
-    if (key === 'changelog') setChangelogOpen(true);
-  };
-
-  /** Пункт меню antd получает те же поля, что и раньше: `title` нужен только свёрнутой панели. */
-  const utilityMenuItems: MenuProps['items'] = utilityItems.map(
-    ({ key, icon, label, disabled }) => ({ key, icon, label, disabled }),
-  );
-
   const userMenu: MenuProps = {
     items: [
       { key: 'change-password', icon: <KeyOutlined />, label: 'Сменить пароль' },
       // На телефоне нижняя навигация занята разделами целиком (ADR 0030), и служебным пунктам
       // место только здесь. На десктопе они стоят в подвале боковой панели — и здесь не
       // дублируются: два входа в одно окно превращают меню учётки в свалку.
-      ...(isMobile ? [{ type: 'divider' as const }, ...utilityMenuItems] : []),
+      ...(isMobile ? [{ type: 'divider' as const }, ...utility.menuItems] : []),
       { type: 'divider' },
       { key: 'logout', icon: <LogoutOutlined />, label: 'Выйти', danger: true },
     ],
     onClick: ({ key }) => {
       if (key === 'logout') void logout().then(() => navigate('/login'));
       if (key === 'change-password') navigate('/change-password');
-      openUtility(key);
+      utility.openUtility(key);
     },
   };
-
-  /** Оба окна служебные и живут в каркасе: открывают их из меню, а не переходом на страницу. */
-  const utilityModals = (
-    <>
-      <SupportContactsModal open={supportOpen} onClose={() => setSupportOpen(false)} />
-      <ReleaseNotesModal open={changelogOpen} onClose={() => setChangelogOpen(false)} />
-    </>
-  );
 
   /**
    * Мобильная раскладка (ADR 0030): разделы — нижней навигацией, учётная запись — в верхней
@@ -286,13 +216,13 @@ export function AppLayout() {
           title={title}
           userName={user ? formatShortName(user) : undefined}
           menu={userMenu}
-          hasNews={hasNews}
+          hasNews={utility.hasNews}
         />
         <main className="mobile-content">
           <Outlet />
         </main>
         <MobileNav items={navItems} selectedKey={selectedKey} onSelect={(key) => navigate(key)} />
-        {utilityModals}
+        {utility.modals}
       </div>
     );
   }
@@ -364,35 +294,7 @@ export function AppLayout() {
               />
             )}
           </div>
-          {/* Служебные пункты — над учётной записью и отдельно от разделов: это не места, куда
-              переходят работать, а помощь и новости о самом портале. */}
-          <div className="sider-utility">
-            {collapsed ? (
-              <div className="sider-mini-nav">
-                {utilityItems.map((it) => (
-                  <button
-                    key={it.key}
-                    type="button"
-                    className="sider-mini-item"
-                    disabled={it.disabled}
-                    onClick={() => openUtility(it.key)}
-                    title={it.title}
-                    aria-label={it.title}
-                  >
-                    {it.icon}
-                  </button>
-                ))}
-              </div>
-            ) : (
-              <Menu
-                mode="inline"
-                selectable={false}
-                items={utilityMenuItems}
-                onClick={({ key }) => openUtility(key)}
-                style={{ borderInlineEnd: 'none' }}
-              />
-            )}
-          </div>
+          <UtilityMenu menu={utility} collapsed={collapsed} />
           <div style={{ borderTop: '1px solid rgba(0,0,0,0.06)', padding: 8 }}>
             <Dropdown menu={userMenu} trigger={['click']} placement="topLeft">
               <div className={`sider-account${collapsed ? ' sider-account--collapsed' : ''}`}>
@@ -436,7 +338,7 @@ export function AppLayout() {
           <Outlet />
         </Content>
       </Layout>
-      {utilityModals}
+      {utility.modals}
     </Layout>
   );
 }

@@ -6,7 +6,7 @@
   `apps/web/src/shared/lib/useVersionCheck.ts` и `apps/web/src/components/AppUpdateBanner.tsx`
   (баннер новой сборки — соседняя, но другая история),
   `packages/contracts/src/releases.ts`, `apps/api/src/routes/releases.ts`,
-  `apps/web/src/entities/release/`, `apps/web/src/components/ReleaseNotesModal.tsx`
+  `apps/web/src/entities/release/`, `apps/web/src/widgets/utility-menu/`
 - Миграция: `0101_app_releases.sql` (таблица и первые семь выпусков)
 
 ## Контекст

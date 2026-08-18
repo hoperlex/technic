@@ -60,11 +60,11 @@ const LEGACY = {
     // Маска телефона — часть поля `PhoneField`, и переедет вместе с ним.
     'PhoneInput.tsx',
     'PortalLogo.tsx',
-    // Окна каркаса: журнал обновлений (ADR 0077) и контакты поддержки — их открывает `AppLayout`,
-    // и уедут они вместе с ним, когда каркас станет виджетом.
-    'ReleaseNotesModal.tsx',
     'RequestHistory.tsx',
     'ResponsibleFields.tsx',
+    // Контакты поддержки открывает не только служебное меню каркаса (оно уже виджет), но и
+    // `features/quick-create-equipment`, а импорт из фичи в виджет запрещён матрицей границ:
+    // окно ждёт переезда второго потребителя, а не первого.
     'SupportContactsModal.tsx',
     'TimeInput.tsx',
     'UserAvatar.tsx',

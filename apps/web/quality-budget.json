@@ -2,15 +2,14 @@
   "legacyFiles": {
     "hooks": 6,
     "utils": 3,
-    "components": 22
+    "components": 21
   },
   "rawKeyFiles": 43,
   "maxLines": {
     "src/api/resources.ts": 1121,
-    "src/components/AppLayout.tsx": 443,
     "src/pages/WasteRequestsPage.tsx": 2005,
     "src/pages/WaybillsPage.tsx": 517,
-    "src/pages/admin/UsersTab.tsx": 1360,
+    "src/pages/admin/UsersTab.tsx": 1358,
     "src/pages/directories/CounterpartiesTab.tsx": 524,
     "src/pages/directories/DriversTab.tsx": 946,
     "src/pages/directories/VehicleSpecsTab.tsx": 481,
@@ -26,12 +25,12 @@
     "src/pages/vehicle/VehicleRequestsOnSiteTab.tsx": 578,
     "src/pages/vehicle/VehicleRequestsTab.tsx": 2539,
     "src/pages/vehicle/VehicleRouteModal.tsx": 742,
-    "src/pages/vehicle/VehicleRoutesTab.tsx": 697,
+    "src/pages/vehicle/VehicleRoutesModal.tsx": 721,
     "src/pages/vehicle/WeeklyRequestPage.tsx": 431,
     "src/pages/vehicle/shared.tsx": 655,
     "src/pages/vehicle/weeklyComposition.ts": 411,
     "src/pages/waste/WasteDoneModal.tsx": 448,
     "src/pages/waste/WasteRequestViewModal.tsx": 514,
-    "src/shared/ui/DataTable.tsx": 408
+    "src/shared/ui/DataTable.tsx": 424
   }
 }

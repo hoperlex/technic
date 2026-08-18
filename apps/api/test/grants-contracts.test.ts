@@ -9,15 +9,20 @@ import {
   can,
   conflictingPermissions,
   COUNTERPARTY_SCOPED_ROLES,
+  createUserSchema,
   DEPARTMENT_SCOPED_ROLES,
   effectiveDelta,
   GRANT_CONFLICTS,
   GRANT_MODULE_WIDE_SCOPE,
   GRANT_SCOPE_MATRIX,
   grantCodeSchema,
+  grantListQuerySchema,
   grantScopeRule,
+  grantStatementListSchema,
   isGrantable,
   isPermission,
+  MAX_ASSIGNED_GRANTS,
+  MAX_GRANT_STATEMENTS,
   NON_GRANTABLE_PERMISSIONS,
   OBJECT_SCOPED_ROLES,
   PERMISSION_CATALOG,
@@ -39,6 +44,7 @@ import {
   roleScopeAxis,
   ROLES,
   SYSTEM_GRANT_CODES,
+  updateUserSchema,
   validateGrantAssignment,
   type AccessSubject,
   type GrantScopeRule,
@@ -55,10 +61,10 @@ import {
  * Границы назначаемых полномочий (ADR 0106, шаг 1a) — `packages/contracts/src/grants.ts`.
  *
  * Файл держит ровно то, что ADR объявил критерием готовности шага, и держит числами: «пять
- * невыдаваемых прав», «назначаемых 52 из 57» (в ADR было 50 из 55 — словарь пополнила пара прав
- * техобслуживания), «две пары разделения обязанностей». В самом `grants.ts` эти числа живут только
- * в тексте комментария, а текст ничего не роняет: следующее право, добавленное в словарь, молча
- * станет назначаемым, а строка, убранная из
+ * невыдаваемых прав», «назначаемых 53 из 58» (в ADR было 50 из 55 — словарь пополнили пара прав
+ * техобслуживания и ведение руководств), «две пары разделения обязанностей». В самом `grants.ts`
+ * эти числа живут только в тексте комментария, а текст ничего не роняет: следующее право,
+ * добавленное в словарь, молча станет назначаемым, а строка, убранная из
  * `NON_GRANTABLE_PERMISSIONS`, откроет кабинет водителя — то есть чужие персональные данные —
  * пакетом, собранным в конструкторе.
  *
@@ -131,19 +137,22 @@ describe('невыдаваемые права: пять, и именно эти'
   });
 });
 
-describe('назначаемые права: 52 из 57', () => {
+describe('назначаемые права: 53 из 58', () => {
   /**
    * То самое число из ADR. Считается вычитанием, а не записано «50»: право, добавленное в словарь,
    * обязано пополнить назначаемые — и одновременно оба слагаемых закреплены явно, иначе тест
    * согласился бы с любой парой чисел, включая «5 из 5».
    */
   it('назначаемых ровно столько, сколько прав минус запрет', () => {
-    // Пятьдесят пять — число ADR 0106; пара прав техобслуживания (план «Показания техники», Р14)
-    // пополнила словарь и назначаемые сразу, как того и требует правило ниже.
-    expect(PERMISSIONS).toHaveLength(57);
+    // Пятьдесят пять — число ADR 0106; сверх него словарь пополнили пара прав техобслуживания
+    // (план «Показания техники», Р14) и ведение руководств (`docs/manuals-plan.md`) — все три
+    // пополнили и назначаемые сразу, как того и требует правило ниже. Пятьдесят восемь и
+    // пятьдесят три расходятся ровно на длину запрета, и это третье равенство здесь не лишнее:
+    // без него тест согласился бы с правом, добавленным в словарь и тихо попавшим в запрет.
+    expect(PERMISSIONS).toHaveLength(58);
     const grantable = PERMISSIONS.filter(isGrantable);
     expect(grantable).toHaveLength(PERMISSIONS.length - NON_GRANTABLE_PERMISSIONS.length);
-    expect(grantable).toHaveLength(52);
+    expect(grantable).toHaveLength(53);
   });
 
   /**
@@ -202,7 +211,14 @@ describe('требования прав друг к другу', () => {
    * перестанет отличать решение от молчания, а `Partial` в типе останется без объяснения.
    */
   it('входное право объявлено самоссылкой, а не отсутствием строки', () => {
-    for (const entry of ['audit.read', 'mailings.read', 'users.manage'] as const) {
+    // `manuals.manage` — четвёртое входное право: модуль «Руководства» состоит из него одного, и
+    // самоссылка здесь объявляет, что за правом не стоит ничего (`docs/manuals-plan.md` §3.1).
+    for (const entry of [
+      'audit.read',
+      'mailings.read',
+      'users.manage',
+      'manuals.manage',
+    ] as const) {
       expect(PERMISSION_REQUIRES[entry], entry).toEqual([entry]);
     }
     // Отсутствие строки — не «право самодостаточно»: читают таблицу через `?? []`, и вот эти права
@@ -966,6 +982,8 @@ const SCOPED_AXES_BY_MODULE: Partial<Record<PermissionModule, readonly RoleScope
  * `routes/drivers.ts`, `routes/waybills.ts`, `routes/audit.ts`, `routes/admin-mailings.ts` спрашивают
  * только `requirePermission`; у архива слепа ручка возврата (`/:id/restore` у заявок вывоза и заказов
  * ТС поднимает строку по id без проверки области), у файлов `files.manageAny` означает обход владения.
+ * У руководств предиката нет и быть не по чему: в `app_manuals` нет колонки, по которой список
+ * можно сузить, — он один на компанию (`docs/manuals-plan.md` §3.1).
  */
 const UNSCOPED_MODULES: readonly PermissionModule[] = [
   'directories',
@@ -977,6 +995,7 @@ const UNSCOPED_MODULES: readonly PermissionModule[] = [
   'vehicleMaintenance',
   'records',
   'files',
+  'manuals',
   'admin',
 ];
 
@@ -1524,5 +1543,200 @@ describe('единая проверка выдачи', () => {
         'duty_conflict',
       ]),
     );
+  });
+});
+
+/**
+ * Полномочия в теле учётки (план «полномочия назначаются в окне учётки», §4) — граница
+ * высказывания, уникальность строки и взаимное исключение с надстройками.
+ *
+ * Проверяется здесь то, что схема **обязана** ловить одна на сервер и на портал. Правил, которые
+ * без базы не проверить, — полнота высказывания, границы молчания при смене роли, отказ на снятие
+ * взведённого переводом назначения, `MAX_ASSIGNED_GRANTS` по итогу — в этом файле нет намеренно:
+ * они живут в db-тестах, и искать их отсутствие здесь не надо.
+ */
+const uuid = (n: number): string => `${String(n).padStart(8, '0')}-0000-4000-8000-000000000000`;
+
+/** Учётка, у которой правильно всё, кроме проверяемого: остальные поля к полномочиям не относятся. */
+const newUser = {
+  email: 'grants@test.local',
+  lastName: 'Пользователь',
+  firstName: 'Тестовый',
+  middleName: '',
+  password: 'Fx7#kq2Lm9tz',
+  role: 'dispatcher',
+} as const;
+
+describe('границы высказывания о полномочиях', () => {
+  it('граница тела вдвое больше границы итога — иначе полная замена не выражается', () => {
+    // При полной замене в теле сходятся обе стороны разницы: строки снимаемых назначений и строки
+    // выдаваемых наборов. Связь границ выражена умножением в самой константе, и тест сторожит
+    // именно её: разъехавшись, они запретили бы законный запрос молча (§4.2).
+    expect(MAX_GRANT_STATEMENTS).toBe(2 * MAX_ASSIGNED_GRANTS);
+  });
+
+  it('граница итога стоит с запасом над поставочным каталогом', () => {
+    // Константа ниже факта запрещает сохранить карточку человека, которому ничего не добавляли:
+    // правка телефона упёрлась бы в предел полномочий. Каталог поставки — девять системных наборов,
+    // и предел обязан быть заведомо выше их всех вместе, а не «примерно столько же» (§4.2, §7.1).
+    expect(MAX_ASSIGNED_GRANTS).toBeGreaterThan(ALL_SYSTEM_GRANT_CODES.length);
+  });
+
+  it('строк не больше границы тела, а ровно граница — законна', () => {
+    const rows = (count: number) =>
+      Array.from({ length: count }, (_, i) => ({ id: uuid(i + 1), version: 1, selected: true }));
+    expect(grantStatementListSchema.safeParse(rows(MAX_GRANT_STATEMENTS)).success).toBe(true);
+    expect(grantStatementListSchema.safeParse(rows(MAX_GRANT_STATEMENTS + 1)).success).toBe(false);
+  });
+
+  it('строка — это набор, показанный состав и галочка', () => {
+    const ok = { id: uuid(1), version: 3, selected: false };
+    expect(grantStatementListSchema.safeParse([ok]).success).toBe(true);
+    // Код вместо идентификатора: высказывание говорит `id`, потому что код правится, а `id` — нет.
+    expect(grantStatementListSchema.safeParse([{ ...ok, id: 'auditor' }]).success).toBe(false);
+    // Версия — номер состава: нумерация с единицы, дробей и нуля у неё не бывает.
+    expect(grantStatementListSchema.safeParse([{ ...ok, version: 0 }]).success).toBe(false);
+    expect(grantStatementListSchema.safeParse([{ ...ok, version: 1.5 }]).success).toBe(false);
+    // Галочка обязательна: строка без неё не высказывание, а упоминание набора.
+    expect(grantStatementListSchema.safeParse([{ id: uuid(1), version: 3 }]).success).toBe(false);
+  });
+});
+
+describe('один набор — ровно одна строка (§4.3)', () => {
+  it('противоречащие строки об одном наборе отклоняются схемой', () => {
+    // «Побеждает последнее» означало бы, что за администратора решил порядок сериализации формы, а
+    // «побеждает снятие» — что за него решили мы. Оба правила отвергнуты: тело противоречиво, и
+    // отвечать на него нужно отказом, а не догадкой.
+    const parsed = grantStatementListSchema.safeParse([
+      { id: uuid(1), version: 2, selected: true },
+      { id: uuid(1), version: 2, selected: false },
+    ]);
+    expect(parsed.success).toBe(false);
+  });
+
+  it('дубль с одинаковой галочкой — та же ошибка, в том числе при разных версиях', () => {
+    // Разные версии у одного набора — вопрос «какой состав ему показывали», а подписывают именно
+    // состав (Р7). Полностью одинаковая пара строк тоже отклоняется: одна строка на набор — это
+    // правило формата тела, а не способ обойти противоречие.
+    expect(
+      grantStatementListSchema.safeParse([
+        { id: uuid(1), version: 2, selected: true },
+        { id: uuid(1), version: 5, selected: true },
+      ]).success,
+    ).toBe(false);
+    expect(
+      grantStatementListSchema.safeParse([
+        { id: uuid(1), version: 2, selected: true },
+        { id: uuid(1), version: 2, selected: true },
+      ]).success,
+    ).toBe(false);
+    // Разные наборы с одинаковой версией — обычное тело: сторожится повтор `id`, а не совпадение
+    // номеров состава.
+    expect(
+      grantStatementListSchema.safeParse([
+        { id: uuid(1), version: 2, selected: true },
+        { id: uuid(2), version: 2, selected: false },
+      ]).success,
+    ).toBe(true);
+  });
+
+  it('отказ указывает на виноватую строку, а не на всё поле', () => {
+    const parsed = grantStatementListSchema.safeParse([
+      { id: uuid(1), version: 1, selected: true },
+      { id: uuid(2), version: 1, selected: true },
+      { id: uuid(1), version: 1, selected: false },
+    ]);
+    expect(parsed.success).toBe(false);
+    // Путь ведёт ко второй строке про тот же набор: форма подсвечивает её, а не первое упоминание —
+    // первое законно, лишнее именно повторное.
+    expect(parsed.success ? [] : parsed.error.issues.map((i) => i.path)).toContainEqual([2, 'id']);
+  });
+});
+
+describe('полномочия в теле учётки', () => {
+  it('поле необязательно, и молчание отличается от пустого высказывания', () => {
+    // Отсутствие поля — «назначений не касаемся», пустой массив — «решать не о чем». У схемы
+    // различие держится тем, что умолчания `[]` нет: достроив его, контракт превратил бы правку
+    // телефона в высказывание о полномочиях.
+    expect(updateUserSchema.parse({}).grants).toBeUndefined();
+    expect(updateUserSchema.parse({ grants: [] }).grants).toEqual([]);
+    expect(createUserSchema.parse({ ...newUser }).grants).toBeUndefined();
+  });
+
+  it('высказывание принимается обеими операциями', () => {
+    const grants = [
+      { id: uuid(1), version: 4, selected: true },
+      { id: uuid(2), version: 1, selected: false },
+    ];
+    expect(createUserSchema.parse({ ...newUser, grants }).grants).toEqual(grants);
+    expect(updateUserSchema.parse({ grants }).grants).toEqual(grants);
+  });
+
+  it('границы и уникальность действуют внутри тела учётки, а не только отдельной схемой', () => {
+    expect(
+      updateUserSchema.safeParse({
+        grants: [
+          { id: uuid(1), version: 1, selected: true },
+          { id: uuid(1), version: 1, selected: false },
+        ],
+      }).success,
+    ).toBe(false);
+    expect(
+      updateUserSchema.safeParse({
+        grants: Array.from({ length: MAX_GRANT_STATEMENTS + 1 }, (_, i) => ({
+          id: uuid(i + 1),
+          version: 1,
+          selected: true,
+        })),
+      }).success,
+    ).toBe(false);
+  });
+
+  it('полномочия и надстройки в одном теле — отказ: оба правят одно множество', () => {
+    // Надстройка на шагах 1a–1e ADR 0106 — тот же набор, выданный через `user_grants`. Тело,
+    // назвавшее оба поля, задаёт два итога сразу, и вопрос «какой главный» ответа не имеет (§4.1).
+    const grants = [{ id: uuid(1), version: 1, selected: true }];
+    expect(
+      updateUserSchema.safeParse({ grants, addons: ['office_equipment_operator'] }).success,
+    ).toBe(false);
+    // Пустой список надстроек у правки — это «снять все», то есть тоже высказывание о наборах.
+    expect(updateUserSchema.safeParse({ grants, addons: [] }).success).toBe(false);
+    // Порознь оба поля законны: путь надстроек доживает до шага 1e.
+    expect(updateUserSchema.safeParse({ grants }).success).toBe(true);
+    expect(updateUserSchema.safeParse({ addons: ['office_equipment_operator'] }).success).toBe(
+      true,
+    );
+  });
+
+  it('у создания конфликтом считается непустой список надстроек', () => {
+    // Здесь `addons` достраивается умолчанием до `[]`, и отличить присланный пустой список от
+    // отсутствия поля невозможно; пустой же о наборах ничего не утверждает — у новой учётки
+    // «надстроек нет» и «надстройки не трогаем» дают один итог.
+    const grants = [{ id: uuid(1), version: 1, selected: true }];
+    expect(
+      createUserSchema.safeParse({
+        ...newUser,
+        grants,
+        addons: ['office_equipment_operator'],
+      }).success,
+    ).toBe(false);
+    expect(createUserSchema.safeParse({ ...newUser, grants, addons: [] }).success).toBe(true);
+    expect(createUserSchema.safeParse({ ...newUser, grants }).success).toBe(true);
+  });
+});
+
+describe('каталог наборов отбирается ролью', () => {
+  it('роль в запросе необязательна и принимается значением словаря', () => {
+    // Форма учётки показывает только совместимые с выбранной ролью наборы (Р2), и отбор делает
+    // сервер по `grant_roles`: иначе правило совместимости было бы написано второй раз — в портале.
+    expect(grantListQuerySchema.parse({}).role).toBeUndefined();
+    expect(grantListQuerySchema.parse({ role: 'shtab' }).role).toBe('shtab');
+    expect(grantListQuerySchema.safeParse({ role: 'кладовщик' }).success).toBe(false);
+  });
+
+  it('роль `driver` схемой не отсеивается: спрашивают каталог, а не выдачу', () => {
+    // Наборов она не принимает вовсе (барьер 2), но ответ «список пуст» здесь честнее отказа 400 —
+    // отказывать нужно на выдаче, где решение и принимается.
+    expect(grantListQuerySchema.safeParse({ role: 'driver' }).success).toBe(true);
   });
 });

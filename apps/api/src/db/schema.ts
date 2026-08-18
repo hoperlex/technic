@@ -1020,9 +1020,10 @@ export const userRoleAddons = pgTable(
  * enum. Свободная сборка означает, что набор заводится в проде, а значение `role_addon` нельзя ни
  * создать из интерфейса, ни удалить вовсе.
  *
- * Шаг 1a перехода expand/contract: таблицы стоят рядом с `user_role_addons`, чтение идёт из старой,
- * запись — в обе. Пустой на этом шаге остаётся только `user_grants`: сами наборы заводит миграция,
- * потому что назначению нужно на что ссылаться.
+ * Шаг 1d перехода expand/contract: `user_role_addons` не пишется и не читается больше нигде — и
+ * права (шаг 1c), и разница правки карточки считаются отсюда. Старая таблица стоит рядом мёртвой до
+ * шага 1e, который снимет её вместе с полем `addons`; вернуть чтение к ней уже нельзя — выданное
+ * после прекращения записи в ней не выражается вовсе, и такой откат был бы тихим снятием доступа.
  *
  * Совместимость набора с ролью и состав прав держит сервер, а не CHECK: оба условия кросс-табличные
  * — тот же случай, из-за которого миграция 0063 сняла `users_rukstroy_object_check`.
@@ -4472,6 +4473,43 @@ export const appReleases = pgTable(
   }),
 );
 
+/**
+ * Руководства пользователя (`docs/manuals-plan.md`, миграция 0158) — список ссылок на документы во
+ * внешнем хранилище. Соседняя таблица тому же служебному углу меню, что и `app_releases`, но ведут
+ * её иначе: журнал выпусков заводит миграция, а руководства — держатель `manuals.manage` на своей
+ * вкладке, без правки кода и выката.
+ *
+ * Файла у портала нет и не будет: он хранит строку, а документ живёт в Яндекс.Диске. Поэтому
+ * единственная проверка адреса — `https://`, и она про то, что документ откроется у всех, а не про
+ * безопасность ссылки: правило «`/i/` — просмотр, `/edit/` — правка» принадлежит Яндексу и,
+ * зашитое в CHECK, сломалось бы на первой же смене их адресов.
+ *
+ * `is_active` и `sort_order` разводят «что показывать» и «в каком порядке»: снятое с публикации
+ * руководство видит только держатель права, а порядок задаётся числом, чтобы переставить строку
+ * можно было, не трогая соседей. Отбора по ролям нет намеренно (§6 плана) — схема к нему готова,
+ * но сегодня список у всех вошедших один.
+ */
+export const appManuals = pgTable(
+  'app_manuals',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    title: text('title').notNull(),
+    /** Вторая строка пункта в окне. Пусто, а не NULL: «без пояснения» — одно состояние, не два. */
+    description: text('description').notNull().default(''),
+    url: text('url').notNull(),
+    sortOrder: integer('sort_order').notNull().default(100),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => ({
+    titleNotBlank: check('app_manuals_title_not_blank', sql`btrim(${t.title}) <> ''`),
+    urlHttps: check('app_manuals_url_https', sql`${t.url} ~ '^https://'`),
+    // Тот же порядок, каким список отдаёт ручка: сперва отбор по публикации, затем порядок показа.
+    listIdx: index('app_manuals_list_idx').on(t.isActive, t.sortOrder, t.title),
+  }),
+);
+
 // ── Недельная заявка на технику (план docs/weekly-vehicle-request-plan.md, миграция 0107) ──
 // Документ-основание над заказами ТС, а не третий их тип: заявка ТС физически одномашинная
 // (`vehicle_request_assignments` — одна строка на заявку), ЭСМ-2 привязан к паре «заявка + неделя»
@@ -4822,6 +4860,7 @@ export type PersonCredentialRow = typeof personCredentials.$inferSelect;
 export type PersonCredentialCategoryRow = typeof personCredentialCategories.$inferSelect;
 export type JobRow = typeof jobs.$inferSelect;
 export type AppReleaseRow = typeof appReleases.$inferSelect;
+export type ManualRow = typeof appManuals.$inferSelect;
 export type WeeklyVehicleRequestRow = typeof weeklyVehicleRequests.$inferSelect;
 export type WeeklyVehicleRequestItemRow = typeof weeklyVehicleRequestItems.$inferSelect;
 export type WeeklyVehicleRequestHistoryRow = typeof weeklyVehicleRequestHistory.$inferSelect;

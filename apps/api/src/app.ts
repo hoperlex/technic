@@ -53,6 +53,7 @@ import moduleMailRoutes from './routes/module-mail';
 import internalMailRoutes from './routes/internal-mail';
 import auditRoutes from './routes/audit';
 import releasesRoutes from './routes/releases';
+import manualsRoutes from './routes/manuals';
 
 function parseTrustProxy(v: string | undefined): boolean | string | string[] {
   if (!v || v === 'true') return true;
@@ -166,6 +167,9 @@ export async function buildApp(options: BuildAppOptions = {}) {
   await app.register(auditRoutes, { prefix: '/api/v1/audit' });
   // Журнал обновлений (ADR 0077) — служебное окно, а не раздел: читает любой вошедший, права нет.
   await app.register(releasesRoutes, { prefix: '/api/v1/releases' });
+  // Руководства (`docs/manuals-plan.md`) — соседнее служебное окно: список читает любой вошедший,
+  // а ведёт его держатель `manuals.manage`, и обе роли живут на одном префиксе.
+  await app.register(manualsRoutes, { prefix: '/api/v1/manuals' });
 
   return app;
 }

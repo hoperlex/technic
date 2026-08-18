@@ -189,6 +189,20 @@ export const ACCESS_MANIFEST = {
     why: 'журнал выпусков портала (ADR 0077): ПДн не содержит, а право пришлось бы выдать всем',
   },
 
+  // ── Руководства пользователя (`docs/manuals-plan.md`) ──
+  // Единственный префикс портала, где чтение и запись расходятся по условию: список читает любой
+  // вошедший, а ведёт его держатель `manuals.manage`. Строки здесь и разделены по методам — на
+  // одном пути `GET` без права и `POST` под правом.
+  'GET /api/v1/manuals': {
+    kind: 'authenticated',
+    why: 'список руководств: право, закрывающее «как пользоваться порталом», выдали бы всем',
+  },
+  'POST /api/v1/manuals': { kind: 'permissions', allOf: ['manuals.manage'] },
+  'PATCH /api/v1/manuals/:id': { kind: 'permissions', allOf: ['manuals.manage'] },
+  // Удаление насовсем, но не `records.purge` (план §3.4): ссылок на строку нет и восстанавливать
+  // нечего — ошибочно вставленную ссылку убирает тот же, кто её вставил.
+  'DELETE /api/v1/manuals/:id': { kind: 'permissions', allOf: ['manuals.manage'] },
+
   // ── Учётные записи ──
   // `users.manage` невыдаваемое (ADR 0106): учётками распоряжается только администратор.
   'GET /api/v1/users': { kind: 'permissions', allOf: ['users.manage'] },

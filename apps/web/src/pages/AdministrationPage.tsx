@@ -6,6 +6,7 @@ import { UsersTab } from './admin/UsersTab';
 import { AccessTab } from './admin/AccessTab';
 import { MailingsTab } from './admin/MailingsTab';
 import { DirectoryTransferTab } from './admin/DirectoryTransferTab';
+import { ManualsTab } from './admin/ManualsTab';
 
 export function AdministrationPage() {
   // Компактная полоса вкладок на телефоне — как в справочниках: на 360 px обычная съедает
@@ -43,6 +44,12 @@ export function AdministrationPage() {
             children: <DirectoryTransferTab />,
           },
         ]
+      : []),
+    // Руководства пользователя (`docs/manuals-plan.md`) ведёт тот, кто их пишет, и это не
+    // обязательно администратор: право `manuals.manage` назначаемое и само по себе открывает
+    // страницу — оно входит в `ADMIN_PAGE_PERMISSIONS`, по которому живут все три гейта (§3.6).
+    ...(can('manuals.manage')
+      ? [{ key: 'manuals', label: 'Руководства', children: <ManualsTab /> }]
       : []),
   ];
   return (

@@ -1,7 +1,7 @@
 import { lazy, Suspense } from 'react';
 import { Spin } from 'antd';
 import { Route, Routes } from 'react-router';
-import { EMAIL_VERIFICATION_ENABLED } from '@technic/contracts';
+import { ADMIN_PAGE_PERMISSIONS, EMAIL_VERIFICATION_ENABLED } from '@technic/contracts';
 import { AppLayout } from './components/AppLayout';
 import { AppUpdateBanner } from './components/AppUpdateBanner';
 import {
@@ -126,8 +126,11 @@ export default function App() {
               <Route path="/directories" element={<DirectoriesPage />} />
             </Route>
             {/* Администрирование — страница из вкладок под разными правами: учётки ведёт один
-                человек, рассылки может настраивать другой. */}
-            <Route element={<RequirePermission permission={['users.manage', 'mailings.read']} />}>
+                человек, рассылки настраивает другой, руководства пишет третий. Список прав общий
+                на все гейты (`ADMIN_PAGE_PERMISSIONS`, `docs/manuals-plan.md` §3.6): поимённые
+                перечисления в четырёх местах уже разъехались и стоили двух живых дыр — держателя
+                «Рассылок» не пускало меню, держателя «Обмена справочниками» — маршрут. */}
+            <Route element={<RequirePermission permission={[...ADMIN_PAGE_PERMISSIONS]} />}>
               <Route path="/admin" element={<AdministrationPage />} />
             </Route>
           </Route>
