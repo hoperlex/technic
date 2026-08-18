@@ -1,13 +1,6 @@
 import type {
   CancelWaybillInput,
   CreateDriverBody,
-  CreateMailingScheduleBody,
-  MailingRecipientCandidateDto,
-  MailingRunDto,
-  MailAccountStatusDto,
-  MailingScheduleDto,
-  MailTestBody,
-  UpdateMailingScheduleBody,
   CreateRequestRelocationBody,
   CredentialTypeCode,
   DriverDto,
@@ -25,12 +18,8 @@ import type {
   RevokeDriverLicenseInput,
   UpdateDriverInput,
   VerifyDriverLicenseBody,
-  AssignGrantInput,
   AssignVehicleBody,
   AttachVehicleTypeSpecInput,
-  AuditEntryDto,
-  ChangeEmailResult,
-  ChangeUserEmailBody,
   ChangeVehicleAssignmentBody,
   ChangeVehicleRequestTypeBody,
   CompleteVehicleRequestInput,
@@ -41,8 +30,6 @@ import type {
   VehicleRequestDaysDto,
   CounterpartyDto,
   CreateCounterpartyInput,
-  CreateGrantInput,
-  CreateUserBody,
   CreateVehicleCategoryInput,
   CreateVehicleInput,
   CreateVehicleRequestInput,
@@ -55,26 +42,15 @@ import type {
   DownloadUrlDto,
   FileDisposition,
   FileDto,
-  GrantAssignmentPreviewInput,
-  GrantAssignmentResultDto,
-  GrantCardDto,
-  GrantDto,
-  GrantImpactDto,
-  GrantUpdatePreviewInput,
   ListResult,
-  RejectUserBody,
-  RejectUserResult,
   RequestHistoryEntryDto,
   RequestStatus,
   RequestVehicleEarlyEndInput,
   RequestType,
-  Role,
   RequestWaybillDto,
   RouteTripFields,
   SaveVehicleRequestShiftBody,
   UpdateCounterpartyInput,
-  UpdateGrantInput,
-  UpdateUserBody,
   UpdateVehicleCategoryInput,
   UpdateVehicleInput,
   UpdateVehicleRequestInput,
@@ -82,9 +58,6 @@ import type {
   UpdateVehicleTypeInput,
   UpdateVehicleTypeSpecInput,
   UploadSessionDto,
-  UserAccountDto,
-  UserPersonRefDto,
-  UserMutationResult,
   VehicleCategoryDto,
   VehicleClassificationDto,
   VehicleDto,
@@ -118,261 +91,38 @@ import type {
   WeeklySuggestionDto,
   WeeklyVehicleRequestDto,
 } from '@technic/contracts';
-import { apiDownload, apiFetch, apiFetchBlob, createQueryKeys } from '@shared/api';
+import { apiDownload, apiFetch, apiFetchBlob } from '@shared/api';
 
 type Query = Record<string, unknown>;
 
 /**
- * Карточка учётки и ссылка на её работника живут в контрактах (ADR 0102): их отдаёт сервер, и
- * второе описание тех же полей на портале разошлось бы с ним при первой же правке. Реэкспорт —
- * чтобы страницы брали тип оттуда же, откуда берут сам запрос.
- */
-export type { UserAccountDto, UserPersonRefDto };
-
-/** Чем кандидат совпал с заявкой (Р30): точный номер и адрес надёжнее похожего ФИО. */
-export type PersonCandidateMatch = 'phone' | 'email' | 'name';
-
-/**
- * Кандидат на привязку. Должность — не украшение: однофамильцев в справочнике различают по ней и
- * по телефону, а идентификатора администратор не знает.
- */
-export interface PersonCandidateDto extends Omit<UserPersonRefDto, 'deletedAt'> {
-  jobTitle: string;
-  matchedBy: PersonCandidateMatch[];
-}
-
-/**
- * Работник в теле запроса. `null` снимает связь, отсутствие поля её не трогает — различать
- * обязательно: отвязки живой учётки водителя не бывает (Р6), и «поле не прислали» не должно
- * читаться как «отвяжите».
- */
-export interface DriverPersonBody {
-  personId?: string | null;
-  /** Подтверждение расхождения ФИО (Р30): «это один человек», факт уходит в аудит. */
-  confirmNameMismatch?: boolean;
-}
-
-/** Восстановление из архива (Р8): у водителя без работника оно требует выбрать человека. */
-export interface RestoreUserBody {
-  personId?: string;
-  confirmNameMismatch?: boolean;
-}
-
-/** Исход мутации учётки вместе с карточкой: письмо о доступе уходит не всякий раз. */
-export interface UserAccountMutationResult extends Omit<UserMutationResult, 'user'> {
-  user: UserAccountDto;
-}
-
-export const usersApi = {
-  list: (q: Query) => apiFetch<ListResult<UserAccountDto>>('/users', { query: q }),
-  /**
-   * Карточка одной учётки — для панели пути в журнале изменений (ADR 0109): она показывает, чем
-   * учётка стала к сегодняшнему дню. Списком её не заменить: путь спрашивают и у архивной учётки,
-   * которой в списке по умолчанию нет.
-   */
-  get: (id: string) => apiFetch<{ user: UserAccountDto }>(`/users/${id}`),
-  /**
-   * Заведение и правка учётки отвечают не голой карточкой, а карточкой с исходом письма о выданном
-   * доступе: письмо уходит не всякий раз, и портал обязан сказать, ушло ли оно.
-   */
-  create: (body: CreateUserBody & DriverPersonBody) =>
-    apiFetch<UserAccountMutationResult>('/users', { method: 'POST', body }),
-  update: (id: string, body: UpdateUserBody & DriverPersonBody) =>
-    apiFetch<UserAccountMutationResult>(`/users/${id}`, { method: 'PATCH', body }),
-  setPassword: (id: string, newPassword: string) =>
-    apiFetch<{ ok: boolean }>(`/users/${id}/password`, { method: 'POST', body: { newPassword } }),
-  /**
-   * Смена адреса — он же логин (ADR 0092). Ответ говорит про оба письма отдельно: сообщить
-   * человеку новый адрес и предупредить прежний ящик — разные новости, и одна из них может не
-   * уйти. `shadowsArchived` предупреждает, что адрес принадлежал архивной учётке и восстановить
-   * её теперь нельзя.
-   */
-  changeEmail: (id: string, body: ChangeUserEmailBody) =>
-    apiFetch<ChangeEmailResult>(`/users/${id}/email`, { method: 'POST', body }),
-  remove: (id: string) => apiFetch<{ ok: boolean }>(`/users/${id}`, { method: 'DELETE' }),
-  /**
-   * Отказ по нерассмотренной заявке на регистрацию. Причин две, и они не дублируют друг друга:
-   * `reason` уходит в аудит и заявителю не показывается, `applicantMessage` — это и есть письмо,
-   * которое он прочитает. Уйдёт ли оно, говорит `notified`: почта бывает выключена, а отметку об
-   * отправке — снята.
-   */
-  reject: (id: string, body: RejectUserBody) =>
-    apiFetch<RejectUserResult>(`/users/${id}/reject`, { method: 'POST', body }),
-  /**
-   * Возврат из архива (ADR 0063): учётка остаётся неактивной, отказ снова становится заявкой.
-   *
-   * Тело — только у водителя без работника (Р8): архивная учётка `person_id` иметь не обязана, а
-   * живая обязана, и человек ставится той же транзакцией, что и снятие признака архива.
-   */
-  restore: (id: string, body?: RestoreUserBody) =>
-    apiFetch<UserAccountDto>(`/users/${id}/restore`, { method: 'POST', body: body ?? {} }),
-  /**
-   * Кандидаты на привязку к учётке водителя (Р30). Без `query` подсказка идёт по приметам самой
-   * заявки — телефону, адресу и ФИО; занятые работники в неё не попадают.
-   */
-  personCandidates: (q: { query?: string; userId?: string }) =>
-    apiFetch<{ items: PersonCandidateDto[] }>('/users/person-candidates', { query: q }),
-  /** Удаление насовсем (ADR 0063) — только из архива и только администратором. */
-  purge: (id: string) => apiFetch<{ ok: boolean }>(`/users/${id}/purge`, { method: 'DELETE' }),
-  pendingCount: () => apiFetch<{ count: number }>('/users/pending-count'),
-};
-
-/**
- * Журнал действий с учётными записями (ADR 0088) — подвкладка «Аудит» во вкладке «Пользователи».
+ * Учётки и журнал действий с ними, назначаемые полномочия и почтовый контур переехали в соседние
+ * файлы: каждый из этих доменов описывает не столько ручки, сколько правила обращения с ними
+ * (отпечаток последствий у полномочий, тела запроса у учёток, портальные типы ответов у рассылок),
+ * и объяснять их посреди справочников техники — значит прятать объяснение.
  *
- * Одна ручка и без карточки: строка журнала и есть карточка события, а всё, чем её сужают, —
- * фильтры списка. Набор действий уходит одним параметром через запятую (`actions`): реестр
- * закрытый и лежит в контрактах, поэтому портал не собирает его сам, а перечисляет отмеченное.
+ * Реэкспорт, а не переезд импортов: адрес `api/resources` знают три десятка экранов, и менять их
+ * все ради разреза реестра — правка, которую невозможно проверить глазами. Новые ручки этих
+ * доменов добавляются в свой файл, а не сюда.
  */
-export const auditApi = {
-  list: (q: Query) => apiFetch<ListResult<AuditEntryDto>>('/audit', { query: q }),
-};
-
-/**
- * Ключи каталога полномочий. Карточка отдельным семейством от списка: реестр выдач перечитывается
- * после каждой выдачи и отзыва, а каталог — только когда меняется состав или число держателей, и
- * гасить его целиком ради одной строки реестра незачем. Корень при этом накрывает и то, и другое:
- * правка набора меняет обе выборки сразу.
- */
-export const grantKeys = createQueryKeys('grants', {
-  list: (params: Query) => ['list', params],
-  card: (id: string) => ['card', id],
-});
-
-/**
- * Каталог назначаемых полномочий (ADR 0106, этап 3; план §12) — именованные наборы прав, которые
- * выдаются учётке поверх её роли.
- *
- * Предпросмотр стоит рядом с правкой, а не спрятан в неё: он отвечает на «кого это затронет и что у
- * них изменится» до нажатия и выдаёт `expectedImpactHash` — отпечаток того, из чего расчёт посчитан.
- * Правка без отпечатка невозможна по схеме сервера, и это не формальность: между показом
- * предпросмотра и сохранением набор могли выдать ещё одному человеку либо сменить роль держателю, и
- * тогда применится не то, что подтверждали (решение 7).
- */
-export const grantsApi = {
-  list: (q: Query) => apiFetch<ListResult<GrantDto>>('/grants', { query: q }),
-  /** Карточка вместе с реестром выдач: кому выдано, кем, когда и на чём. */
-  get: (id: string) => apiFetch<GrantCardDto>(`/grants/${id}`),
-  create: (body: CreateGrantInput) => apiFetch<GrantCardDto>('/grants', { method: 'POST', body }),
-  /**
-   * Что даст правка: дельта по каждому держателю, нарушения барьеров **в теле** и отпечаток.
-   * Нарушения приходят ответом, а не отказом, — иначе экран потерял бы разом и дельту, и причину.
-   */
-  preview: (id: string, body: GrantUpdatePreviewInput) =>
-    apiFetch<GrantImpactDto>(`/grants/${id}/preview`, { method: 'POST', body }),
-  update: (id: string, body: UpdateGrantInput) =>
-    apiFetch<GrantCardDto>(`/grants/${id}`, { method: 'PATCH', body }),
-  /** Мягкое удаление: выданный набор сервер не отдаёт (409) — сначала отзыв выдач. */
-  remove: (id: string) =>
-    apiFetch<{ id: string; deleted: boolean }>(`/grants/${id}`, { method: 'DELETE' }),
-};
-
-/**
- * Выдача и отзыв набора учётке. Адрес — учётки, а не каталога: цель операции она, ей поднимается
- * `authVersion`, на неё пишется журнал. Отпечаток предъявляют обе операции, и у отзыва он уходит
- * строкой запроса: тело у `DELETE` доходит не через каждый прокси, а подтверждение обязано доходить
- * всегда.
- */
-export const userGrantsApi = {
-  preview: (userId: string, body: GrantAssignmentPreviewInput) =>
-    apiFetch<GrantImpactDto>(`/users/${userId}/grants/preview`, { method: 'POST', body }),
-  assign: (userId: string, body: AssignGrantInput) =>
-    apiFetch<GrantAssignmentResultDto>(`/users/${userId}/grants`, { method: 'POST', body }),
-  revoke: (userId: string, grantId: string, expectedImpactHash: string) =>
-    apiFetch<GrantAssignmentResultDto>(`/users/${userId}/grants/${grantId}`, {
-      method: 'DELETE',
-      query: { expectedImpactHash },
-    }),
-};
-
-/** Получатель отладочного письма: действующий администратор и его адрес. */
-export interface MailTestRecipient {
-  id: string;
-  fullName: string;
-  email: string;
-}
-
-/** Водитель-образец для отладочного письма: чьё задание собрать. */
-export interface MailTestDriver {
-  personId: string;
-  fullName: string;
-  email: string;
-}
-
-/**
- * Учётка-образец для отладочной сводки: чьими глазами её собрать. Роль показывается рядом с именем
- * не для красоты — по ней и выбирают, чью сводку смотреть: проверяют обычно не человека, а то, что
- * видит роль.
- */
-export interface MailDigestSampleUser {
-  id: string;
-  fullName: string;
-  email: string;
-  role: Role;
-}
-
-/**
- * Итоги запуска рассылки. Письмо составляется не каждому: у водителя может не быть адреса, он
- * может стоять в исключениях расписания, а рейсов в окне может не оказаться вовсе — и все три
- * случая считаются отдельно, потому что чинят их по-разному.
- */
-export interface MailingRunStats {
-  sent: number;
-  withoutEmail: number;
-  excluded: number;
-  empty: number;
-}
-
-/**
- * Рассылки: расписания, их история и отладочная отправка (ADR 0075). Отладка стоит рядом с
- * расписаниями, но отвечает на другой вопрос — «как письмо выглядит в почтовом клиенте», тогда
- * как расписание отвечает «кому и когда оно уходит само».
- */
-export const mailingsApi = {
-  testRecipients: () => apiFetch<MailTestRecipient[]>('/admin/mail/test-recipients'),
-  /** Водители с рейсами на дату: список зависит от даты, поэтому запрашивается вместе с ней. */
-  driversWithRoutes: (date: string) =>
-    apiFetch<MailTestDriver[]>('/admin/mail/drivers-with-routes', { query: { date } }),
-  /**
-   * Кем можно «посмотреть» сводку. Даты в запросе нет намеренно: сводка собирается под любым
-   * действующим человеком, и пустота за выбранный день — это уже её ответ, а не повод прятать его
-   * из списка.
-   */
-  digestSampleUsers: () => apiFetch<MailDigestSampleUser[]>('/admin/mail/digest-sample-users'),
-  /** Какие каналы отправки настроены на сервере: список известен контрактами, признак — только ему. */
-  accounts: () => apiFetch<MailAccountStatusDto[]>('/admin/mail/accounts'),
-  sendTest: (body: MailTestBody) =>
-    apiFetch<{ ok: boolean; message: string }>('/admin/mail/test', { method: 'POST', body }),
-  /** Расписания приходят целиком и вместе с исключениями: их в портале единицы, листать нечего. */
-  schedules: () => apiFetch<MailingScheduleDto[]>('/admin/mail/schedules'),
-  createSchedule: (body: CreateMailingScheduleBody) =>
-    apiFetch<MailingScheduleDto>('/admin/mail/schedules', { method: 'POST', body }),
-  /**
-   * Правка уходит целиком, вместе с `version`: применимость каждого поля решает соседнее, а
-   * несовпавшая версия означает, что расписание успели изменить в другом окне (409).
-   */
-  updateSchedule: (id: string, body: UpdateMailingScheduleBody) =>
-    apiFetch<MailingScheduleDto>(`/admin/mail/schedules/${id}`, { method: 'PATCH', body }),
-  deleteSchedule: (id: string) =>
-    apiFetch<void>(`/admin/mail/schedules/${id}`, { method: 'DELETE' }),
-  /**
-   * Кого зацепит сводка при таком наборе прав и областей. Считает сервер тем же отбором, каким
-   * рассылка выбирает адресатов: правило «нет площадко-отдельной оси — фильтр по площадкам не
-   * применяется» в общий список учёток не встроить, эффективное право учётки по справочнику
-   * вообще не сосчитать (ADR 0111), а цифра под формой обязана совпадать с тем, кого возьмёт
-   * планировщик.
-   */
-  recipientCandidates: (q: Query) =>
-    apiFetch<MailingRecipientCandidateDto[]>('/admin/mail/recipient-candidates', { query: q }),
-  /** История запусков — с пагинацией, в отличие от расписаний: она прирастает каждый день. */
-  runs: (q: Query) => apiFetch<ListResult<MailingRunDto>>('/admin/mail/runs', { query: q }),
-  /** Запуск «сейчас»: письма уходят настоящим получателям, поэтому кнопка спрашивает подтверждение. */
-  runNow: (id: string) =>
-    apiFetch<{ ok: boolean; runId: string; stats: MailingRunStats }>(
-      `/admin/mail/schedules/${id}/run`,
-      { method: 'POST' },
-    ),
-};
+export { auditApi, usersApi } from './users';
+export type {
+  DriverPersonBody,
+  PersonCandidateDto,
+  PersonCandidateMatch,
+  RestoreUserBody,
+  UserAccountDto,
+  UserAccountMutationResult,
+  UserPersonRefDto,
+} from './users';
+export { grantKeys, grantsApi, userGrantsApi } from './grants';
+export { mailingsApi } from './mailings';
+export type {
+  MailDigestSampleUser,
+  MailingRunStats,
+  MailTestDriver,
+  MailTestRecipient,
+} from './mailings';
 
 /**
  * Отделы переехали в `@entities/department`. Реэкспорт держится до конца этапа 2 на тех же

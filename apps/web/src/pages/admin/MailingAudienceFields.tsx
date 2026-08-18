@@ -1,13 +1,11 @@
-import { useState } from 'react';
-import { Button, Form, Modal, Typography } from 'antd';
+import { Button, Form, Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import { roleLabels, type AudienceMode, type Permission } from '@technic/contracts';
-import { CheckboxPicker, type CheckboxPickerItem, type CheckboxPickerValue } from '@shared/ui';
+import { type CheckboxPickerItem, type CheckboxPickerValue } from '@shared/ui';
 import { departmentOptionsQuery } from '@entities/department';
 import { objectOptionsQuery } from '@entities/object';
 import { mailingsApi } from '../../api/resources';
-import { GrantPermissionPicker } from './GrantPermissionPicker';
-import { PERMISSION_MODULE_GROUPS, permissionLabel } from './grantModel';
+import { PermissionPickerField, PickerField } from './MailingAudiencePickers';
 
 /**
  * Аудитория сводки: три оси отбора и каскад между ними (план `docs/role-mailings-refactor-plan.md`,
@@ -53,109 +51,6 @@ export interface AudienceFormValues {
 
 /** Ключ списка кандидатов; хвост ключа — сам отбор, из-за которого список пересобирается. */
 const CANDIDATES_KEY = ['mailing-recipient-candidates'];
-
-interface PickerFieldProps {
-  /** Приходит от `Form.Item`: им подпись поля связана с кнопкой, открывающей окно. */
-  id?: string;
-  title: string;
-  items: CheckboxPickerItem[];
-  loading?: boolean;
-  allowAll?: boolean;
-  missingLabel?: string;
-  emptyText?: string;
-  filterToggle?: { label: string; predicate: (item: CheckboxPickerItem) => boolean };
-  /** Что написано на кнопке: объём набора словами. Читается вместо перечня — перечень в окне. */
-  summary: string;
-  value?: CheckboxPickerValue;
-  onChange?: (value: CheckboxPickerValue) => void;
-}
-
-/**
- * Поле-кнопка: показывает объём набора и открывает окно выбора. Кнопка, а не `Select`, потому что
- * набор бывает и «все, включая будущих» — состояние, которого лентой отмеченных тегов не выразить.
- */
-function PickerField({ id, title, summary, value, onChange, ...picker }: PickerFieldProps) {
-  const [open, setOpen] = useState(false);
-  return (
-    <>
-      <Button id={id} block style={{ textAlign: 'left' }} onClick={() => setOpen(true)}>
-        {summary}
-      </Button>
-      <CheckboxPicker
-        {...picker}
-        title={title}
-        open={open}
-        value={value ?? { mode: 'all', ids: [] }}
-        onCancel={() => setOpen(false)}
-        onSubmit={(next) => {
-          onChange?.(next);
-          setOpen(false);
-        }}
-      />
-    </>
-  );
-}
-
-/** Подпись набора прав: первые два по имени, остальные числом — в строку кнопки больше не влезает. */
-function permissionsSummary(permissions: Permission[]): string {
-  if (permissions.length === 0) return 'Права не выбраны';
-  const named = permissions.slice(0, 2).map(permissionLabel);
-  const rest = permissions.length - named.length;
-  return `${named.join('; ')}${rest > 0 ? ` и ещё ${rest}` : ''}`;
-}
-
-/**
- * Окно выбора прав-адресатов. Своё, а не `CheckboxPicker`, потому что плоским списком полсотни прав
- * не выбрать: нужны группировка по модулям и поиск — то самое, что уже умеет конструктор наборов.
- */
-function PermissionPickerField({
-  id,
-  value,
-  onChange,
-}: {
-  /** Приходит от `Form.Item`: им подпись поля связана с кнопкой, открывающей окно. */
-  id?: string;
-  value?: Permission[];
-  onChange?: (next: Permission[]) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  // Черновик: правка внутри окна применяется по «Готово», как и в остальных окнах формы, — иначе
-  // «Отмена» не отменяла бы ничего.
-  const [draft, setDraft] = useState<Permission[]>([]);
-  const current = value ?? [];
-  return (
-    <>
-      <Button
-        id={id}
-        block
-        style={{ textAlign: 'left' }}
-        onClick={() => {
-          setDraft(current);
-          setOpen(true);
-        }}
-      >
-        {permissionsSummary(current)}
-      </Button>
-      <Modal
-        title="Права-адресаты"
-        open={open}
-        okText="Готово"
-        cancelText="Отмена"
-        onCancel={() => setOpen(false)}
-        onOk={() => {
-          onChange?.(draft);
-          setOpen(false);
-        }}
-      >
-        <GrantPermissionPicker
-          groups={PERMISSION_MODULE_GROUPS}
-          value={draft}
-          onChange={(next) => setDraft(next)}
-        />
-      </Modal>
-    </>
-  );
-}
 
 interface Props {
   /**

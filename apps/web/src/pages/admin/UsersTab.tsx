@@ -33,21 +33,15 @@ import {
   EMAIL_VERIFICATION_ENABLED,
   isCounterpartyScopedRole,
   isDepartmentScopedRole,
-  isExternalRegistrationEmail,
   isObjectScopedRole,
   isPersonScopedRole,
   isRetiringRole,
   REGISTRATION_ROLE_REQUESTS,
-  registrationRequestDetail,
   registrationRoleRequestLabels,
   ROLE_ADDONS,
-  roleAddonColors,
   roleAddonLabels,
   ROLES,
-  roleColors,
   roleLabels,
-  roleMigrationOf,
-  type MailOutcome,
   type RejectUserBody,
   type RoleAddon,
 } from '@technic/contracts';
@@ -75,6 +69,15 @@ import { RejectRegistrationModal } from './RejectRegistrationModal';
 import { UserDepartmentsField } from './UserDepartmentsField';
 import { UsersAuditTab } from './UsersAuditTab';
 import { UserAuditPathDrawer, type AuditTarget } from './UserAuditPathDrawer';
+import {
+  approvesRegistration,
+  asksAboutMail,
+  HALF_APPROVAL,
+  hasExternalEmail,
+  isPendingRegistration,
+  withMailOutcome,
+} from './registrationApproval';
+import { emailCell, requestedDetailText, roleNote, roleTags } from './userAccountLabels';
 import { userAuditKeys } from '@entities/user-audit';
 import { isApiError } from '@shared/api';
 import { actionsColumn, boolBadgeColumn, textColumn } from '@shared/ui';
@@ -120,133 +123,6 @@ interface UserFormValues {
   isActive: boolean;
   /** Сообщить ли человеку о выданном доступе. Спрашивается не всегда — см. `asksAboutMail`. */
   notifyUser: boolean;
-}
-
-/** Заявка на регистрацию: человек зарегистрировался сам, роли ему ещё не назначили. */
-const isPendingRegistration = (u: UserAccountDto) => !u.isActive && !u.role;
-
-/**
- * Эта правка выводит заявку из очереди: у нерассмотренной заявки появляются роль и активность
- * разом. Условие одно на две вещи — на объявленное серверу намерение `approveRegistration` и на
- * чекбокс письма, — и разойтись им нельзя: тот же предикат сервер считает по строке под
- * блокировкой и отвечает 400, если портал решил иначе.
- *
- * Выполнимо оно ровно однажды: после рассмотрения роль у учётки уже есть, и заявкой она быть
- * перестаёт.
- */
-const approvesRegistration = (
-  record: UserAccountDto | null,
-  role: UserFormValues['role'] | undefined,
-  isActive: boolean | undefined,
-) => !!record && isPendingRegistration(record) && !!role && !!isActive;
-
-/**
- * Спрашивать ли в форме про письмо о выданном доступе. У новой учётки повод — сама активность:
- * звать человека в портал, который его не пустит, хуже молчания. У существующей повод один —
- * рассмотрение заявки: у повторной активации и смены роли заявку рассмотрели однажды и давно, и
- * «вам открыт доступ» действующему сотруднику было бы ложью.
- */
-const asksAboutMail = (
-  record: UserAccountDto | null,
-  role: UserFormValues['role'] | undefined,
-  isActive: boolean | undefined,
-) => (record ? approvesRegistration(record, role, isActive) : !!isActive);
-
-/**
- * Сообщение об успехе вместе с судьбой письма. Молча проглотить неотправку нельзя: администратор
- * уходит уверенным, что человека предупредили, — а выключенная почта означает ровно обратное.
- */
-function withMailOutcome(done: string, notified: MailOutcome, sent: string): string {
-  if (notified === 'queued') return `${done}, ${sent}`;
-  if (notified === 'mail_disabled') return `${done}. Письмо не отправлено — почта выключена`;
-  return done;
-}
-
-/**
- * Заявку рассматривают целиком: роль назначается вместе с активацией. Половинчатое состояние
- * («роль есть, доступа нет») не значит ничего, кроме недоделанной работы, и сервер такую правку
- * отвергает 400 — форма лишь не доводит до впустую нажатой кнопки.
- */
-const HALF_APPROVAL =
-  'Заявку рассматривают целиком: назначьте роль и включите „Активен“ — или оставьте заявку в очереди';
-
-/**
- * Подпись под выбором роли — ровно у двух ролей реформы, и обе не украшение.
- *
- * «Площадка» (ADR 0112) доступна администратору с этапа 4б — раньше, чем на неё переведут штаб,
- * руководителя строительства и коменданта, — и выбранная сегодня даёт вывоз мусора с оргтехникой,
- * но **не** заказ техники: он приезжает полномочием. Без подписи это выглядит как «урезанный штаб»
- * и объясняется отказом на первой же заявке.
- *
- * Упраздняемая роль (ADR 0113) остаётся в списке только у той учётки, которая на ней стоит, и
- * подпись объясняет, почему её не предлагают остальным: перевод поедет отдельным выкатом, а до
- * него роль работает как работала.
- *
- * У остальных ролей подписи нет намеренно: их состав прав никуда не переезжает, и подсказка там
- * означала бы, что переезжает.
- */
-function roleNote(role: UserFormValues['role'] | undefined): string | undefined {
-  if (role === 'site') {
-    return 'Заказ техники и виза приезжают полномочиями — «Заказ техники» и «Виза объекта». Ролью открыты вывоз мусора и оргтехника';
-  }
-  const migration = roleMigrationOf(role);
-  if (!migration) return undefined;
-  const grants = migration.grants.length > 0 ? ' и выданными полномочиями' : '';
-  return `Роль упраздняется: новым учёткам она не назначается. Действующие переведёт на «${roleLabels[migration.to]}»${grants} отдельный выкат — до него роль работает как прежде`;
-}
-
-/**
- * Роль и надстройки одной ячейкой (ADR 0086). Надстройка дополняет роль, а не заменяет её,
- * поэтому стоит рядом с тегом роли, а не вместо него: «Штаб» с оргтехникой и «Штаб» без неё
- * различаются только этим тегом. Отдельная колонка не годится — она стояла бы пустой почти у всех,
- * а читают надстройку всегда вместе с ролью.
- */
-function roleTags(u: UserAccountDto) {
-  if (!u.role) return '—';
-  return (
-    <Space size={4} wrap>
-      <Tag color={roleColors[u.role]}>{roleLabels[u.role]}</Tag>
-      {u.addons.map((addon) => (
-        <Tag key={addon} color={roleAddonColors[addon]}>
-          {roleAddonLabels[addon]}
-        </Tag>
-      ))}
-    </Space>
-  );
-}
-
-/**
- * Уточнение из заявки — свободный текст, а не ссылка на справочник: список объектов
- * неаутентифицированному не отдаётся (ADR 0034), сопоставляет его администратор.
- */
-function requestedDetailText(u: UserAccountDto): string | undefined {
-  if (!u.requestedRole) return undefined;
-  const detail = registrationRequestDetail[u.requestedRole];
-  if (detail === 'object' && u.requestedObject) return `Объект: ${u.requestedObject}`;
-  if (detail === 'company' && u.requestedCompany) return `Компания: ${u.requestedCompany}`;
-  // У «Другого» это единственное, по чему заявку вообще можно рассмотреть. Пусто — заявка подана
-  // до того, как комментарий стал обязательным (миграция 0139): дозаполнить её нечем.
-  if (detail === 'comment' && u.requestedComment) return `Комментарий: ${u.requestedComment}`;
-  return undefined;
-}
-
-/**
- * Заявка, поданная с адреса вне домена компании (ADR 0090). Только у нерассмотренных: у активной
- * учётки адрес уже принят решением администратора, и пометка на ней осталась бы висеть навсегда,
- * ничего не решая, — а у операторов чужой адрес и вовсе в порядке вещей и признаком не считается.
- */
-const hasExternalEmail = (u: UserAccountDto) =>
-  isPendingRegistration(u) && isExternalRegistrationEmail(u);
-
-/** Адрес заявки вместе с пометкой о чужом домене — одинаково в списке и в карточке на телефоне. */
-function emailCell(u: UserAccountDto) {
-  if (!hasExternalEmail(u)) return u.email;
-  return (
-    <Space size={4} wrap>
-      <span>{u.email}</span>
-      <Tag color="orange">Внешняя почта</Tag>
-    </Space>
-  );
 }
 
 interface AccountsProps {

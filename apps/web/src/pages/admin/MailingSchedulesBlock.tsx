@@ -1,11 +1,9 @@
 import { useState } from 'react';
-import { App, Button, Card, Space, Switch, Tag, Typography, type TableColumnsType } from 'antd';
+import { App, Button, Card, Space, Switch, Typography, type TableColumnsType } from 'antd';
 import { DeleteOutlined, EditOutlined, PlusOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   digestRequestScopeLabels,
-  mailingRunStatusColors,
-  mailingRunStatusLabels,
   mailingTypeLabels,
   type MailingRunDto,
   type MailingScheduleDto,
@@ -15,8 +13,8 @@ import { actionsColumn, DataTable, RowActionButton, textColumn } from '@shared/u
 import { mailingsApi } from '../../api/resources';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage, formatDateTime } from '../../utils/format';
-import { formatDateOnly } from '../../utils/date';
 import { MailingScheduleForm } from './MailingScheduleForm';
+import { mailingRunColumns } from './mailingRunColumns';
 import { permissionLabel } from './grantModel';
 import {
   ALL_WEEKDAYS,
@@ -37,30 +35,6 @@ import {
  * Сама форма расписания живёт отдельным файлом: список отвечает на вопрос «что и когда уходит»,
  * форма — «как это настроено», и вместе они не помещались в один экран чтения.
  */
-
-/**
- * Подписи итогов запуска. Письмо составляется не каждому, и три вида пропуска чинятся по-разному:
- * адрес заводят в справочнике, исключение снимают в расписании, а «нет рейсов» — не проблема вовсе.
- */
-const STAT_LABELS: Record<string, string> = {
-  sent: 'отправлено',
-  withoutEmail: 'без адреса',
-  excluded: 'исключены',
-  empty: 'нет рейсов',
-  reason: 'причина',
-};
-
-/**
- * Итоги приходят из `jsonb` нетипизированными: у выполненного запуска это счётчики, у пропущенного
- * — причина текстом. Известные поля печатаются подписями, незнакомые — ключом: промолчать о
- * непонятном итоге хуже, чем показать его как есть.
- */
-function statsText(stats: Record<string, unknown>): string {
-  const parts = Object.entries(stats).map(
-    ([key, value]) => `${STAT_LABELS[key] ?? key}: ${String(value)}`,
-  );
-  return parts.length > 0 ? parts.join(' · ') : '—';
-}
 
 /** Сколько отмечено на оси аудитории; режим «все» показывается словами, а не числом. */
 function audienceText(mode: string, count: number): string {
@@ -329,79 +303,6 @@ export function MailingSchedulesBlock() {
       : []),
   ];
 
-  const runColumns: TableColumnsType<MailingRunDto> = [
-    textColumn<MailingRunDto>({
-      key: 'plannedAt',
-      title: 'Запуск',
-      dataIndex: 'plannedAt',
-      sortable: false,
-      searchable: false,
-      width: 180,
-      render: (_v, r) => (
-        <Space size={4}>
-          <span>{formatDateTime(r.plannedAt)}</span>
-          {/* Ручной запуск в истории отличается от расписанного: по нему разбирают «почему письмо
-              пришло дважды» и «кто отправил задание в воскресенье». */}
-          {r.isManual ? <Tag>вручную</Tag> : null}
-        </Space>
-      ),
-    }),
-    textColumn<MailingRunDto>({
-      key: 'status',
-      title: 'Статус',
-      dataIndex: 'status',
-      sortable: false,
-      searchable: false,
-      width: 130,
-      render: (_v, r) => (
-        <Tag color={mailingRunStatusColors[r.status]}>{mailingRunStatusLabels[r.status]}</Tag>
-      ),
-    }),
-    textColumn<MailingRunDto>({
-      key: 'finishedAt',
-      title: 'Завершён',
-      dataIndex: 'finishedAt',
-      sortable: false,
-      searchable: false,
-      width: 160,
-      render: (_v, r) => (r.finishedAt ? formatDateTime(r.finishedAt) : '—'),
-    }),
-    textColumn<MailingRunDto>({
-      key: 'period',
-      title: 'Данные за',
-      dataIndex: 'periodStart',
-      sortable: false,
-      searchable: false,
-      width: 190,
-      // Границы окна фиксируются в запуске: повтор упавшей вечерней рассылки обязан взять те же
-      // дни, а не пересчитать окно от утра следующего.
-      render: (_v, r) =>
-        r.periodStart && r.periodEnd
-          ? `${formatDateOnly(r.periodStart)} — ${formatDateOnly(r.periodEnd)}`
-          : '—',
-    }),
-    textColumn<MailingRunDto>({
-      key: 'stats',
-      title: 'Итоги',
-      dataIndex: 'stats',
-      sortable: false,
-      searchable: false,
-      width: 320,
-      render: (_v, r) => statsText(r.stats),
-    }),
-    textColumn<MailingRunDto>({
-      key: 'error',
-      title: 'Ошибка',
-      dataIndex: 'error',
-      sortable: false,
-      searchable: false,
-      width: 240,
-      ellipsis: true,
-      // Текст ошибки бывает длинным (ответ SMTP целиком) — целиком он остаётся подсказкой.
-      render: (_v, r) => (r.error ? <span title={r.error}>{r.error}</span> : '—'),
-    }),
-  ];
-
   return (
     <div style={{ padding: 16 }}>
       <Space
@@ -455,7 +356,7 @@ export function MailingSchedulesBlock() {
         {selected ? (
           <div style={{ height: 300 }}>
             <DataTable<MailingRunDto>
-              columns={runColumns}
+              columns={mailingRunColumns}
               data={runsQuery.data?.items ?? []}
               total={runsQuery.data?.total ?? 0}
               loading={runsQuery.isFetching}

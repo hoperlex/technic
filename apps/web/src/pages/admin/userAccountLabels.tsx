@@ -1,0 +1,94 @@
+import { Space, Tag } from 'antd';
+import {
+  registrationRequestDetail,
+  roleAddonColors,
+  roleAddonLabels,
+  roleColors,
+  roleLabels,
+  roleMigrationOf,
+  type Role,
+} from '@technic/contracts';
+import type { UserAccountDto } from '../../api/resources';
+import { hasExternalEmail } from './registrationApproval';
+
+/**
+ * Как учётка называется на экране: роль с надстройками, адрес с пометкой, уточнение из заявки и
+ * подпись под выбором роли.
+ *
+ * Отдельным файлом, потому что каждую из этих подписей читают в двух местах сразу — в колонке
+ * таблицы и в карточке строки на телефоне, в списке и в карточке заявки. Разъедься они, одна и та
+ * же учётка называлась бы на телефоне иначе, чем на десктопе, и различие читалось бы как разница в
+ * данных. Своего представления о ролях здесь нет: цвета, подписи и переезды ролей берутся из
+ * контрактов.
+ */
+
+/**
+ * Подпись под выбором роли — ровно у двух ролей реформы, и обе не украшение.
+ *
+ * «Площадка» (ADR 0112) доступна администратору с этапа 4б — раньше, чем на неё переведут штаб,
+ * руководителя строительства и коменданта, — и выбранная сегодня даёт вывоз мусора с оргтехникой,
+ * но **не** заказ техники: он приезжает полномочием. Без подписи это выглядит как «урезанный штаб»
+ * и объясняется отказом на первой же заявке.
+ *
+ * Упраздняемая роль (ADR 0113) остаётся в списке только у той учётки, которая на ней стоит, и
+ * подпись объясняет, почему её не предлагают остальным: перевод поедет отдельным выкатом, а до
+ * него роль работает как работала.
+ *
+ * У остальных ролей подписи нет намеренно: их состав прав никуда не переезжает, и подсказка там
+ * означала бы, что переезжает.
+ */
+export function roleNote(role: Role | undefined): string | undefined {
+  if (role === 'site') {
+    return 'Заказ техники и виза приезжают полномочиями — «Заказ техники» и «Виза объекта». Ролью открыты вывоз мусора и оргтехника';
+  }
+  const migration = roleMigrationOf(role);
+  if (!migration) return undefined;
+  const grants = migration.grants.length > 0 ? ' и выданными полномочиями' : '';
+  return `Роль упраздняется: новым учёткам она не назначается. Действующие переведёт на «${roleLabels[migration.to]}»${grants} отдельный выкат — до него роль работает как прежде`;
+}
+
+/**
+ * Роль и надстройки одной ячейкой (ADR 0086). Надстройка дополняет роль, а не заменяет её,
+ * поэтому стоит рядом с тегом роли, а не вместо него: «Штаб» с оргтехникой и «Штаб» без неё
+ * различаются только этим тегом. Отдельная колонка не годится — она стояла бы пустой почти у всех,
+ * а читают надстройку всегда вместе с ролью.
+ */
+export function roleTags(u: UserAccountDto) {
+  if (!u.role) return '—';
+  return (
+    <Space size={4} wrap>
+      <Tag color={roleColors[u.role]}>{roleLabels[u.role]}</Tag>
+      {u.addons.map((addon) => (
+        <Tag key={addon} color={roleAddonColors[addon]}>
+          {roleAddonLabels[addon]}
+        </Tag>
+      ))}
+    </Space>
+  );
+}
+
+/**
+ * Уточнение из заявки — свободный текст, а не ссылка на справочник: список объектов
+ * неаутентифицированному не отдаётся (ADR 0034), сопоставляет его администратор.
+ */
+export function requestedDetailText(u: UserAccountDto): string | undefined {
+  if (!u.requestedRole) return undefined;
+  const detail = registrationRequestDetail[u.requestedRole];
+  if (detail === 'object' && u.requestedObject) return `Объект: ${u.requestedObject}`;
+  if (detail === 'company' && u.requestedCompany) return `Компания: ${u.requestedCompany}`;
+  // У «Другого» это единственное, по чему заявку вообще можно рассмотреть. Пусто — заявка подана
+  // до того, как комментарий стал обязательным (миграция 0139): дозаполнить её нечем.
+  if (detail === 'comment' && u.requestedComment) return `Комментарий: ${u.requestedComment}`;
+  return undefined;
+}
+
+/** Адрес заявки вместе с пометкой о чужом домене — одинаково в списке и в карточке на телефоне. */
+export function emailCell(u: UserAccountDto) {
+  if (!hasExternalEmail(u)) return u.email;
+  return (
+    <Space size={4} wrap>
+      <span>{u.email}</span>
+      <Tag color="orange">Внешняя почта</Tag>
+    </Space>
+  );
+}
