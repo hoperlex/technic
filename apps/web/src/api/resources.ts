@@ -116,7 +116,7 @@ export type {
   UserAccountMutationResult,
   UserPersonRefDto,
 } from './users';
-export { grantKeys, grantsApi, userGrantsApi } from './grants';
+export { grantFormApi, grantKeys, grantsApi, userGrantsApi, type GrantCatalog } from './grants';
 export { mailingsApi } from './mailings';
 export type {
   MailDigestSampleUser,

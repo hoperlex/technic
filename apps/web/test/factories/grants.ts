@@ -4,6 +4,7 @@ import type {
   GrantHolderDto,
   GrantImpactDto,
   UserAccountDto,
+  UserGrantRefDto,
 } from '@technic/contracts';
 
 /**
@@ -25,6 +26,7 @@ export const SYSTEM_ID = '22222222-2222-2222-2222-222222222222';
 export const SHTAB_ID = '33333333-3333-3333-3333-333333333333';
 export const MANAGER_ID = '44444444-4444-4444-4444-444444444444';
 export const DRIVER_ID = '55555555-5555-5555-5555-555555555555';
+export const ORDERING_ID = '66666666-6666-6666-6666-666666666666';
 
 /** Пользовательский набор: собран администратором в проде, правится и выдаётся. */
 export const CUSTOM: GrantDto = {
@@ -54,6 +56,28 @@ export const SYSTEM: GrantDto = {
   permissions: ['serviceRequests.approveIt', 'officeEquipment.read'],
   roles: ['shtab', 'manager'],
   holderCount: 0,
+};
+
+/**
+ * Набор, чью совместимость переключает сама смена роли, — «Заказ техники» (ADR 0112, ADR 0113).
+ *
+ * Ради него заведён диапазон разницы: у «Штаба» он несовместим и в списке формы не показан вовсе, у
+ * «Площадки» — совместим, и переход в любую сторону меняет действие назначения без единой галочки
+ * (план «полномочия назначаются в окне учётки», Р4 и §4.3). Проверять переход на «Аудиторе» нельзя:
+ * тот совместим ровно с одной ролью и второй стороны перехода не имеет.
+ */
+export const ORDERING: GrantDto = {
+  ...CUSTOM,
+  id: ORDERING_ID,
+  code: 'vehicle_ordering',
+  name: 'Заказ техники',
+  description: 'Заказывает технику на объект',
+  version: 4,
+  // Права, которых у роли «Площадка» нет: строка «Добавится» обязана показать именно их, а не
+  // права самой должности.
+  permissions: ['vehicleRequests.read', 'vehicleRequests.create'],
+  roles: ['site'],
+  holderCount: 1,
 };
 
 export function holder(over: Partial<GrantHolderDto> = {}): GrantHolderDto {
@@ -123,7 +147,61 @@ export function grantImpact(over: Partial<GrantImpactDto> = {}): GrantImpactDto 
   };
 }
 
-function account(over: Partial<UserAccountDto> = {}): UserAccountDto {
+/**
+ * Назначение учётке (`UserAccountDto.grants`) — то, чем окно учётки гидратирует галочку и берёт
+ * версию для высказывания (план «полномочия назначаются в окне учётки», Р7).
+ *
+ * По умолчанию — пользовательский набор из этого же файла: назначение и каталожная строка обязаны
+ * говорить об одном наборе, иначе форма получит галочку, которой нет в списке. Отдельные случаи
+ * задаются надстройкой: `grantRef({ roleMismatch: true })` — назначение, чью роль вывели из списка
+ * совместимых (в отфильтрованном каталоге его нет вовсе), `grantRef({ origin: 'migration' })` —
+ * взведённое переводом ролей, которое в форме не снимается (Р4).
+ */
+export function grantRef(over: Partial<UserGrantRefDto> = {}): UserGrantRefDto {
+  return {
+    id: CUSTOM_ID,
+    code: CUSTOM.code,
+    name: CUSTOM.name,
+    version: CUSTOM.version,
+    roleMismatch: false,
+    origin: 'manual',
+    ...over,
+  };
+}
+
+/**
+ * Версия, которую помнит **назначение** «Заказа техники», — намеренно не каталожная.
+ *
+ * Тело правки подписывает версию того состава, который форме показали: у зажигаемого набора она
+ * приходит из каталога, а у гасимого её взять оттуда неоткуда — отфильтрованный ролью каталог его
+ * не содержит, и версия берётся из `UserAccountDto.grants` (Р7). Совпади оба числа, тест не отличил
+ * бы один источник от другого.
+ */
+export const ORDERING_ASSIGNED_VERSION = ORDERING.version - 1;
+
+/** Назначение «Заказа техники» учётке — та же строка, что и `grantRef`, но про этот набор. */
+export function orderingRef(over: Partial<UserGrantRefDto> = {}): UserGrantRefDto {
+  return grantRef({
+    id: ORDERING_ID,
+    code: ORDERING.code,
+    name: ORDERING.name,
+    version: ORDERING_ASSIGNED_VERSION,
+    ...over,
+  });
+}
+
+/**
+ * Учётка целиком — вход и списка выдачи, и будущей формы полномочий.
+ *
+ * Экспортируется, а не остаётся местной, ровно ради второго: тесту формы нужна учётка **с**
+ * назначениями (`account({ grants: [grantRef()] })`), а собранная у себя копия из двух десятков
+ * полей разошлась бы с этой на первом же новом поле `UserAccountDto` — как уже разошлась бы на
+ * `grants`.
+ *
+ * Умолчание — пустой список: назначения проверяет тот тест, который их задаёт, а сценарии выдачи
+ * читают учётку как кандидата, и подложенный им набор менял бы условие задачи молча.
+ */
+export function account(over: Partial<UserAccountDto> = {}): UserAccountDto {
   return {
     id: SHTAB_ID,
     email: 'shtab@example.test',
@@ -144,6 +222,7 @@ function account(over: Partial<UserAccountDto> = {}): UserAccountDto {
     departments: [],
     addons: [],
     grantCodes: [],
+    grants: [],
     permissions: [],
     counterpartyId: null,
     counterpartyName: null,

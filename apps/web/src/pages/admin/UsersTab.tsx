@@ -26,7 +26,6 @@ import {
 import dayjs from 'dayjs';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  canAttachAddon,
   COUNTERPARTY_TYPES_WITH_ACCOUNTS,
   counterpartyTypeHasAccounts,
   counterpartyTypeLabels,
@@ -38,12 +37,9 @@ import {
   isRetiringRole,
   REGISTRATION_ROLE_REQUESTS,
   registrationRoleRequestLabels,
-  ROLE_ADDONS,
-  roleAddonLabels,
   ROLES,
   roleLabels,
   type RejectUserBody,
-  type RoleAddon,
 } from '@technic/contracts';
 import {
   counterpartiesApi,
@@ -67,6 +63,7 @@ import {
 } from './DriverPersonField';
 import { RejectRegistrationModal } from './RejectRegistrationModal';
 import { UserDepartmentsField } from './UserDepartmentsField';
+import { useUserGrantsField } from './UserGrantsField';
 import { UsersAuditTab } from './UsersAuditTab';
 import { UserAuditPathDrawer, type AuditTarget } from './UserAuditPathDrawer';
 import {
@@ -108,11 +105,6 @@ interface UserFormValues {
    * в котором учётка работает, — вывоз мусора или заказ ТС (ADR 0038).
    */
   counterpartyId?: string | null;
-  /**
-   * Надстройки роли (ADR 0086): набор прав поверх роли, а не вторая роль. Область учётки они не
-   * трогают — человек остаётся на своих объектах и в своём отделе.
-   */
-  addons?: RoleAddon[];
   /**
    * Работник справочника (ADR 0102): четвёртая ось области и обязательное условие активации
    * водителя. Объектов, отделов и контрагента у этой роли нет — она работает от карточки человека.
@@ -242,14 +234,23 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
   const notifyShown = asksAboutMail(record, watchRole, watchIsActive);
 
   /**
-   * Надстройки, доступные выбранной в форме роли (ADR 0086). Пустой список означает, что роли
-   * надстройки не положены вовсе, — и поля в форме тогда нет: недоступное портал не показывает
-   * даже выключенным (ADR 0033 §6), иначе выключенный чекбокс обещал бы доступ, которого не
-   * бывает.
+   * Полномочия учётки (ADR 0106; план «полномочия назначаются в окне учётки») — на месте прежних
+   * надстроек и вместо них (Р1): две системные надстройки и есть наборы, и два выключателя одного
+   * доступа не имели бы старшего. Тип контрагента читается из формы вживую: строка «Добавится»
+   * считается по итоговому субъекту правки, а запись описывает прежнего (§6).
    */
-  const addonOptions = ROLE_ADDONS.filter((addon) => canAttachAddon(watchRole, addon)).map(
-    (addon) => ({ value: addon, label: roleAddonLabels[addon] }),
-  );
+  const watchCounterpartyId = Form.useWatch('counterpartyId', form);
+  const watchCounterpartyType = isCounterpartyScopedRole(watchRole)
+    ? (executors?.items.find((c) => c.id === watchCounterpartyId)?.type ?? null)
+    : null;
+  const grants = useUserGrantsField({
+    open,
+    isSelf: !!record && record.id === currentUser?.id,
+    role: watchRole ?? null,
+    counterpartyType: watchCounterpartyType,
+    record,
+    onReload: () => void qc.invalidateQueries({ queryKey: ['users'] }),
+  });
 
   const [pwUser, setPwUser] = useState<UserAccountDto | null>(null);
   const [pwForm] = Form.useForm<{ newPassword: string }>();
@@ -261,7 +262,6 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
       isActive: true,
       constructionObjectIds: [],
       departmentIds: [],
-      addons: [],
       // Умолчание — «сообщить»: учётку заводят, чтобы человек ею пользовался, и узнать об этом он
       // должен не со слов администратора.
       notifyUser: true,
@@ -283,7 +283,6 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
       constructionObjectIds: r.constructionObjects.map((o) => o.id),
       departmentIds: r.departments.map((d) => d.id),
       counterpartyId: r.counterpartyId,
-      addons: [...r.addons],
       // Работник (ADR 0102): у водителя связь уже стоит, и поле открывается с ней — сверка ФИО
       // повторяется только при выборе другого человека.
       personId: r.person?.id,
@@ -303,6 +302,7 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
       // и показанный чекбокс обязаны говорить об одном и том же решении.
       const approving = approvesRegistration(record, values.role, values.isActive);
       const notifying = asksAboutMail(record, values.role, values.isActive);
+      const grantStatements = grants.statements();
       const payload = {
         ...fields,
         // Пустое поле уходит пустой строкой, а не `undefined`: у правки это разные вещи —
@@ -318,11 +318,16 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
         counterpartyId: isCounterpartyScopedRole(values.role)
           ? (values.counterpartyId ?? null)
           : null,
-        // Надстройки той же меркой (ADR 0086): роли, которой они не положены, уходит пустой набор.
-        // Форма их снимает уже при смене роли, но поле формы переживает своё скрытие (antd хранит
-        // значения размонтированных полей), и отправлять сюда несовместимую пару нельзя — сервер
-        // ответит на неё 400.
-        addons: (values.addons ?? []).filter((addon) => canAttachAddon(values.role, addon)),
+        /*
+         * Полномочия — высказыванием о каждом показанном наборе (Р3), а не списком оставшихся:
+         * снимаемого в таком списке нет по построению, и ни версии его состава, ни факта показа
+         * передать было бы нечем. Собирает его отдельный шаг, а не значение группы чекбоксов:
+         * строку про гасимый сменой роли набор из группы не получить — он там не показан (§6).
+         * `undefined` — поля в теле нет вовсе (§4.1); молчание при этом законно, пока роль не
+         * переключает действие назначений, и поле роли тогда заперто (§4.2). `addons` не уходит
+         * никогда: оба поля правят одно множество, и тело с обоими — 400.
+         */
+        ...(grantStatements ? { grants: grantStatements } : {}),
         // Работник уходит только у своей роли (ADR 0102). Отправить его вместе с другой ролью
         // нельзя даже пустым: `null` означает «отвяжите», а отвязка живой водительской учётки
         // запрещена (Р6) — у прочих ролей связь справочная и правится не здесь.
@@ -343,6 +348,9 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
       }
       return usersApi.create({
         ...(payload as Required<Omit<UserFormValues, 'notifyUser'>>),
+        // Высказывание приведения не переживает: `UserFormValues` о нём не знает — полномочия
+        // собираются вне формы (§6), и без повтора поле ушло бы из типа тела.
+        ...(grantStatements ? { grants: grantStatements } : {}),
         ...(notifying ? { notifyUser } : {}),
       });
     },
@@ -357,6 +365,13 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
       setOpen(false);
     },
     onError: (e) => {
+      /*
+       * Отказ по полномочиям разбирает само поле (Р8): 400 с деталями ложится на «Полномочия» —
+       * там видно, какая галочка виновата, — а 409 по версии набора уводит перечитывать карточку.
+       * Общие сообщения ниже отвечают за всё остальное: отказ по молчанию виноват не галочкой, а
+       * устаревшим экраном, и подсвечивать в нём нечего.
+       */
+      if (grants.handleError(e)) return;
       // 409 приходит на одно: заявку успел рассмотреть другой администратор, и сервер не дал
       // переписать его решение. Повторять своё не по чему — сначала нужно увидеть чужое, поэтому
       // список перезапрашивается тут же.
@@ -1043,35 +1058,17 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
         // рассмотрения заявки читают целиком, а не листают.
         width={560}
       >
+        {/*
+         * Смена роли молча ничего не снимает — и сказать об этом должна форма, а не отсутствие
+         * сообщения: несовместимый набор остаётся выданным, но прав по нему нет (Р4). Сообщение
+         * поэтому живёт в самом поле полномочий: пока не пришёл каталог новой роли, какие именно
+         * наборы перестают действовать, неизвестно — совместимость считает сервер, а не экран.
+         */}
         <Form
           form={form}
           layout="vertical"
           className="form-dense"
           onFinish={(v) => saveMut.mutate(v)}
-          /*
-           * Роль сменили на ту, которой надстройка не положена (ADR 0086), — снимаем её и говорим
-           * об этом. Ошибка поля тут не годится: поле к этому моменту уже скрыто (недоступного
-           * портал не показывает), и показать ошибку было бы негде — форма молча не сохранялась
-           * бы. Молча снять тоже нельзя: человек только что выдал права, и их исчезновение он
-           * должен увидеть, а не обнаружить потом в списке. Сервер такую пару отвергает с 400 —
-           * до него доводить нечего.
-           */
-          onValuesChange={(changed: Partial<UserFormValues>) => {
-            if (!changed.role) return;
-            const selected = (form.getFieldValue('addons') as RoleAddon[] | undefined) ?? [];
-            const dropped = selected.filter((addon) => !canAttachAddon(changed.role, addon));
-            if (dropped.length === 0) return;
-            form.setFieldValue(
-              'addons',
-              selected.filter((addon) => canAttachAddon(changed.role, addon)),
-            );
-            const names = dropped.map((addon) => `«${roleAddonLabels[addon]}»`).join(', ');
-            message.info(
-              dropped.length === 1
-                ? `Надстройка ${names} снята: роли «${roleLabels[changed.role]}» она не положена`
-                : `Надстройки ${names} сняты: роли «${roleLabels[changed.role]}» они не положены`,
-            );
-          }}
         >
           <Form.Item
             name="email"
@@ -1114,7 +1111,16 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
             // Звёздочка обязательности — по тому же правилу: у заявки роль ждёт решения, а не
             // заполнения, и помеченной обязательной она обещала бы, что без неё не сохранить.
             required={!pendingRecord}
-            extra={roleNote(watchRole)}
+            /*
+             * Неполный каталог полномочий запирает и роль (§6): смена роли переключает действие
+             * назначений, а высказаться о них форма в этом состоянии не может — сервер ответил бы
+             * отказом, причину которого создал бы сам экран.
+             */
+            extra={
+              grants.blocked
+                ? 'Роль не меняется, пока не загрузился список полномочий: смена роли переключает их действие'
+                : roleNote(watchRole)
+            }
             dependencies={pendingRecord ? ['isActive'] : undefined}
             rules={[
               {
@@ -1128,7 +1134,7 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
               },
             ]}
           >
-            <AutoSelect options={formRoleOptions} />
+            <AutoSelect options={formRoleOptions} disabled={grants.blocked} />
           </Form.Item>
           {/* Объектные роли («Штаб», «Руководитель строительства») работают в пределах своих
               объектов — без них учётку не активировать (ADR 0025, ADR 0039). Список, а не один
@@ -1197,19 +1203,11 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
           {isPersonScopedRole(watchRole) ? (
             <DriverPersonField form={form} account={personFactsOf(record)} />
           ) : null}
-          {/* Надстройка роли (ADR 0086): что человек умеет сверх своей роли. Стоит после области —
-              сначала «кто и где», потом «что ещё». Чекбоксами, а не выпадающим списком: надстроек
-              наперечёт, и список из одной строки под кликом прятал бы то, что помещается в строку
-              формы. Поля нет вовсе у ролей, которым надстройки не положены (ADR 0033 §6). */}
-          {addonOptions.length > 0 ? (
-            <Form.Item
-              name="addons"
-              label="Надстройки"
-              tooltip="Дополнительные права поверх роли. Область не меняют: человек остаётся на своих объектах и в своём отделе"
-            >
-              <Checkbox.Group options={addonOptions} />
-            </Form.Item>
-          ) : null}
+          {/* Полномочия (ADR 0106) — что человек умеет сверх своей должности. Место прежних
+              надстроек и вместо них (Р1): после блока области, до пароля и активности — сначала
+              «кто и где», потом «что ещё». Поля нет у роли без полномочий, у водителя и у своей
+              учётки; своим файлом — вместе с гидратацией галочек и сборкой высказывания. */}
+          {grants.field}
           {!record ? (
             <PasswordField name="password" identityFields={['email', 'lastName', 'firstName']} />
           ) : null}

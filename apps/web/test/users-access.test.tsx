@@ -9,6 +9,7 @@ import {
   type AccessSubject,
   type Permission,
   type UserAccountDto,
+  type UserGrantRefDto,
 } from '@technic/contracts';
 import { json, mockHttp } from './http';
 import { renderWithUser } from './render';
@@ -42,6 +43,16 @@ const effective = (subject: AccessSubject, ...fromGrants: Permission[]): Permiss
   ...permissionsFor({ ...subject, grantPermissions: fromGrants }),
 ];
 
+/** Строка назначения к коду набора: витрина её не читает, но контракт учётки без неё неполон. */
+const grant = (id: string, code: string, name: string): UserGrantRefDto => ({
+  id,
+  code,
+  name,
+  version: 1,
+  roleMismatch: false,
+  origin: 'manual',
+});
+
 function user(over: Partial<UserAccountDto> = {}): UserAccountDto {
   const base: UserAccountDto = {
     id: 'u-1',
@@ -64,6 +75,12 @@ function user(over: Partial<UserAccountDto> = {}): UserAccountDto {
     addons: [],
     /** Наборы (ADR 0106): у учётки без выдач их нет, и сценарий назначает их сам. */
     grantCodes: [],
+    /**
+     * Те же наборы, но подробностями (`UserGrantRefDto`): витрине «Права» хватает кодов — она
+     * считает по ним срезы, — а поле окна учётки берёт отсюда `id` и `version`. Списки идут парой:
+     * учётка с кодом набора и без его строки противоречила бы сама себе.
+     */
+    grants: [],
     permissions: [],
     counterpartyId: null,
     counterpartyName: null,
@@ -94,6 +111,7 @@ const EQUIPMENT_OPERATOR = user({
   fullName: 'Оргтехников Олег Олегович',
   addons: ['office_equipment_operator'],
   grantCodes: ['office_equipment_operator'],
+  grants: [grant('g-op', 'office_equipment_operator', roleAddonLabels.office_equipment_operator)],
 });
 
 /**
@@ -112,6 +130,7 @@ const AUDITOR = user({
   firstName: 'Артём',
   fullName: 'Аудиторов Артём Артёмович',
   grantCodes: ['auditor'],
+  grants: [grant('g-auditor', 'auditor', 'Аудитор')],
   permissions: effective({ role: 'shtab' }, 'audit.read'),
 });
 

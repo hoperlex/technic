@@ -65,6 +65,8 @@ function account(over: Partial<UserAccountDto> = {}): UserAccountDto {
     departments: [{ id: 'dep-1', code: 'PTO', name: 'ПТО', isHead: false }],
     addons: [],
     grantCodes: [],
+    /** Полномочий у кандидата нет: руководителей отбирают по оси области, а не по наборам. */
+    grants: [],
     permissions: [],
     counterpartyId: null,
     counterpartyName: null,
@@ -192,6 +194,13 @@ function renderUsers(
     'GET /objects': () => json(emptyList()),
     'GET /departments': () => json(list(departments)),
     'GET /counterparties': () => json(emptyList()),
+    /*
+     * Каталог полномочий (план «полномочия назначаются в окне учётки», §6): открытая карточка с
+     * ролью спрашивает его наравне со справочниками области. Пустой — наборов у руководителя тестам
+     * не нужно, а `total: 0` означает полный список: с неполным форма заперла бы поле роли, которое
+     * здесь как раз проверяется.
+     */
+    'GET /grants': () => json(emptyList()),
     ...over,
   });
   renderWithUser(<UsersTab />, { user: authUser({ role: 'admin' }) });

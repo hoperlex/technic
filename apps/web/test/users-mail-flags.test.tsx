@@ -84,6 +84,13 @@ function renderTab(users: UserDto[] = [PENDING], over: RouteMap = {}): HttpMock 
     'GET /objects': () => json(emptyList()),
     'GET /departments': () => json(emptyList()),
     'GET /counterparties': () => json(emptyList()),
+    /*
+     * Каталог полномочий (план «полномочия назначаются в окне учётки», §6): форма спрашивает его
+     * при каждом открытии с выбранной ролью. Пустой — и это не отговорка: сценарии здесь про почту,
+     * а неполный каталог запер бы и поле роли, то есть подменил бы условие задачи. `total` при этом
+     * равен нулю, значит список полон, и высказывание формы законно.
+     */
+    'GET /grants': () => json(emptyList()),
     [REJECT]: () => json({ ok: true, notified: 'queued' }),
     [PATCH]: () => json({ user: EMPLOYEE, notified: 'queued' }),
     ...over,
