@@ -1,5 +1,6 @@
 import { and, asc, eq, inArray } from 'drizzle-orm';
 import {
+  type BackdateAccess,
   extendBlocker,
   formatVehicleRequestNumber,
   formatWeeklyRequestNumber,
@@ -7,6 +8,7 @@ import {
   newItemBlocker,
   orderEffectiveDateTo,
   sourceItemBlocker,
+  WEEKLY_SELECTABLE_WEEKS,
   weeklyWeekBlocker,
   weeklyWeekBounds,
   weeklyWeekLabel,
@@ -23,6 +25,7 @@ import {
   vehicleRequestAssignments,
   vehicleRequestEarlyEndings,
   vehicleRequests,
+  vehicleRequestStatusHistory,
   vehicleRoutes,
   vehicleTypes,
   weeklyVehicleRequestHistory,
@@ -33,7 +36,7 @@ import { err } from '../lib/errors';
 import { extendSpecialEquipmentPeriod } from './vehicle-request-period';
 import { createSpecialEquipmentRequest } from './vehicle-request-create';
 import { loadLeftBy } from './weekly-request-blockers';
-import type { Esm2SyncResult } from './waybill-esm2';
+import { esm2SheetsOfRequests, type Esm2SyncResult } from './waybill-esm2';
 
 /**
  * Применение недельной заявки (ADR 0085, план §8): виза той же транзакцией двигает сроки и
@@ -55,6 +58,78 @@ import type { Esm2SyncResult } from './waybill-esm2';
  */
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * Контекст проверенной операции коррекции (ADR 0101): им и только им применение соглашается
+ * тронуть прошедшую неделю.
+ *
+ * Устроен как у сверки ЭСМ-2 (`syncEsm2Waybills`, параметр `correction`) и по той же причине:
+ * признак приходит **от сервера**, который право `waybills.correct`, причину и границу глубины уже
+ * спросил, а не из тела запроса — тело перечисляет намерение, а не разрешение. Собрать его внутри
+ * сервиса нечем: субъекта здесь нет, и знать о нём применение не должно.
+ */
+export interface WeeklyApplyCorrection {
+  /** Строка `waybill_corrections` этой операции: на неё сошлются оба листа каждого заказа. */
+  id: string;
+  /**
+   * Что субъекту позволено задним числом — та же пара прав, которую читает `backdateGuard`.
+   *
+   * Передаётся целиком, а не сведёнными к «прошлое можно»: пятая точка проверки недели (§8 плана)
+   * прогоняет тот же `weeklyWeekBlocker`, что и остальные четыре, и глубина обязана считаться под
+   * блокировкой теми же флагами, какими её посчитал вердикт операции. Свести их к булеву значению
+   * значило бы пропустить под блокировкой неделю, на которую вердикт ответил «слишком давно».
+   */
+  access: BackdateAccess;
+  /**
+   * Причина операции, как её написал человек. Уходит в аннулированные и выписанные листы (Р35
+   * ADR 0101) и в историю порождённых заказов: разрыв нумерации бланков за прошедшую неделю и
+   * заказ, заведённый задним числом, через месяцы не объясняются больше ничем.
+   */
+  reason: string;
+  /**
+   * Листы ЭСМ-2 отработанных недель, названные к перевыписке. Плоским списком на всю заявку —
+   * разложить его по заказам умеет только тот, кто держит состав, то есть это применение.
+   */
+  unlockWaybillIds: readonly string[];
+}
+
+/**
+ * Разложить названные листы по заказам состава и отказать на чужом.
+ *
+ * Принадлежность проверяет сервер, а не клиент (Р11 ADR 0101): список из тела — перечень
+ * намерения, и лист чужой заявки в нём означал бы, что коррекция недели жжёт номер, к этой неделе
+ * отношения не имеющий. Проверка стоит **до первой правки** и под теми же блокировками, что и
+ * весь разбор состава.
+ *
+ * Названный лист заказа, чья строка потом окажется непригодной, отказом не считается: неделя из-за
+ * одной выбывшей строки не падает (§8 плана), а причина выбывания и так показывается на самой
+ * строке. Такой лист просто останется нетронутым — как если бы его не называли.
+ */
+async function splitUnlockedSheets(
+  tx: Tx,
+  sourceIds: string[],
+  unlockWaybillIds: readonly string[],
+): Promise<Map<string, string[]>> {
+  const byRequest = new Map<string, string[]>();
+  if (unlockWaybillIds.length === 0) return byRequest;
+
+  const sheets = await esm2SheetsOfRequests(tx, sourceIds);
+  const owner = new Map(sheets.map((s) => [s.id, s.requestId]));
+  const unknown = unlockWaybillIds.filter((id) => !owner.has(id));
+  if (unknown.length > 0) {
+    throw err.unprocessable(
+      unknown.length === 1
+        ? 'Названный лист не найден среди действующих ЭСМ-2 заказов этой недели — обновите карточку: его успели аннулировать либо он принадлежит другому заказу'
+        : `Названные листы (${unknown.length}) не найдены среди действующих ЭСМ-2 заказов этой недели — обновите карточку: их успели аннулировать либо они принадлежат другим заказам`,
+      { unlockWaybillIds: 'Лист не найден' },
+    );
+  }
+  for (const id of unlockWaybillIds) {
+    const requestId = owner.get(id)!;
+    byRequest.set(requestId, [...(byRequest.get(requestId) ?? []), id]);
+  }
+  return byRequest;
+}
 
 /** Итог применения плюс то, что нужно позвать после транзакции: аудит бумаги по каждому заказу. */
 export interface WeeklyApplyOutcome {
@@ -271,7 +346,16 @@ async function decide(
 
 export async function applyWeeklyRequest(
   tx: Tx,
-  params: { weeklyRequestId: string; expectedVersion: number; actor: { id: string } },
+  params: {
+    weeklyRequestId: string;
+    expectedVersion: number;
+    actor: { id: string };
+    /**
+     * Проверенная операция коррекции; не передана — прошлое закрыто, и просроченная неделя сюда не
+     * доходит вовсе (пятая точка проверки ниже).
+     */
+    correction?: WeeklyApplyCorrection;
+  },
 ): Promise<WeeklyApplyOutcome> {
   const [header] = await tx
     .select({
@@ -299,8 +383,18 @@ export async function applyWeeklyRequest(
   // Пятая точка проверки недели (план §8): черновик, заведённый в четверг на следующую неделю,
   // спокойно доживает до её понедельника, и без проверки здесь виза продлила бы сроки задним
   // числом относительно собственного правила портала.
+  //
+  // Прошлое пропускается только с контекстом операции и ровно на его глубину: тем же правилом и
+  // теми же флагами, какими вердикт операции разрешил её вообще. Без контекста правило прежнее —
+  // просроченная неделя останавливается здесь, под блокировкой шапки, даже если четыре проверки до
+  // неё кто-то обошёл.
   const today = moscowDateKeyOf(new Date());
-  const weekBlocker = weeklyWeekBlocker(header.weekStart, today);
+  const weekBlocker = weeklyWeekBlocker(
+    header.weekStart,
+    today,
+    WEEKLY_SELECTABLE_WEEKS,
+    params.correction?.access,
+  );
   if (weekBlocker) throw err.unprocessable(weekBlocker);
 
   const [object] = await tx
@@ -324,6 +418,13 @@ export async function applyWeeklyRequest(
 
   const sourceIds = [...new Set(items.map((i) => i.sourceRequestId).filter((v) => v !== null))];
   const orders = await lockOrders(tx, sourceIds, header.id);
+  // Названные листы раскладываются по заказам до первой правки: чужой номер обязан отбиться
+  // отказом, а не сгореть где-то в середине проведения.
+  const unlockByRequest = await splitUnlockedSheets(
+    tx,
+    sourceIds,
+    params.correction?.unlockWaybillIds ?? [],
+  );
 
   // Предвалидация **всех** строк до первой записи: бизнес-негодная строка не должна ронять неделю,
   // но и узнавать о ней после половины изменений нельзя.
@@ -380,12 +481,28 @@ export async function applyWeeklyRequest(
         expectedVersion: order!.version,
         newDateTo: item.dateTo!,
         actor: params.actor,
-        reason: `${reason}: срок продлён`,
+        // Причина операции дописывается к причине продления, а не заменяет её (Р35 ADR 0101): у
+        // сгоревшего номера обязаны читаться оба ответа — каким документом двинулся срок и почему
+        // это сделано задним числом. Одна из двух половин по отдельности объясняет ровно половину.
+        reason: params.correction
+          ? `${reason}: срок продлён задним числом — ${params.correction.reason}`
+          : `${reason}: срок продлён`,
         // Чужой запрос на досрочный отъезд неделя не снимает никогда: единица с нерешённым
         // запросом в состав не идёт вовсе (`sourceItemBlocker`), и второго — молчаливого — способа
         // отменить чужое решение у модуля быть не должно. Умолчания у параметра нет намеренно
         // (`vehicle-request-period.ts`): ответ на этот вопрос даёт вызывающий, а не забывчивость.
         dropPendingEarlyEnd: false,
+        // Контекст операции — иначе продление в прошедшую неделю оставило бы заказ с новым сроком
+        // и без бумаги за отработанные дни: сверка кончившуюся неделю сама не выписывает (Р21
+        // ADR 0101). Названные листы идут сюда уже разложенными по заказам.
+        ...(params.correction
+          ? {
+              correction: {
+                id: params.correction.id,
+                unlockWaybillIds: unlockByRequest.get(order!.id) ?? [],
+              },
+            }
+          : {}),
       });
       await tx
         .update(weeklyVehicleRequestItems)
@@ -462,6 +579,24 @@ export async function applyWeeklyRequest(
       approvedBy: params.actor.id,
       approvedAt: appliedAt,
     });
+    /*
+     * Заказ с датой начала в прошлом — законный исход проведения просроченной недели: техника на
+     * площадке в те дни и правда стояла, а документа-основания у неё не было. Ни один предикат
+     * такую дату не отбивает (`newItemBlocker` держит её внутри недели заявки, а сама неделя уже
+     * проверена глубиной права), и это осознанно.
+     *
+     * Но прочесть по карточке «заказ на прошлую неделю, заведён сегодня» будет нечем: в истории
+     * стоит один переход «— → Новая» без объяснения. Поэтому причина операции дописывается в его
+     * комментарий — той же транзакцией, а не аудитом: `writeAudit` пишет отдельным соединением и
+     * гасит ошибку, а объяснение задним числом обязано пережить сбой вместе с самим заказом
+     * (ADR 0101 п. 8). У обычной недели комментарий не трогается: объяснять там нечего.
+     */
+    if (params.correction) {
+      await tx
+        .update(vehicleRequestStatusHistory)
+        .set({ comment: `${reason}: заказ заведён задним числом — ${params.correction.reason}` })
+        .where(eq(vehicleRequestStatusHistory.vehicleRequestId, createdId));
+    }
     const [created] = await tx
       .select({ num: vehicleRequests.num })
       .from(vehicleRequests)

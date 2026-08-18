@@ -882,17 +882,24 @@ export interface WeeklyRequestDocumentsDto;   // чек-лист (§5 шаг 6)
 
 **Маршруты** — `src/routes/weekly-vehicle-requests.ts`:
 
-| Метод и путь                                 | Что делает                           | Право                    |
-| -------------------------------------------- | ------------------------------------ | ------------------------ |
-| `GET /weekly-vehicle-requests`               | список, счётчик «ждут визы»          | `weeklyRequests.read`    |
-| `GET /weekly-vehicle-requests/suggestion`    | предложение состава (Р4, Р15)        | `weeklyRequests.create`  |
-| `POST /weekly-vehicle-requests`              | завести черновик с составом          | `weeklyRequests.create`  |
-| `GET /weekly-vehicle-requests/:id`           | карточка                             | `weeklyRequests.read`    |
-| `PATCH /weekly-vehicle-requests/:id`         | правка состава (`draft`/`pending`)   | `weeklyRequests.update`  |
-| `POST /weekly-vehicle-requests/:id/status`   | подать / снять с причиной            | `weeklyRequests.update`  |
-| `POST /weekly-vehicle-requests/:id/approval` | виза либо отказ; виза применяет (Р6) | `weeklyRequests.approve` |
-| `GET /weekly-vehicle-requests/:id/documents` | чек-лист документов (§5 шаг 6)       | `weeklyRequests.read`    |
-| `GET /weekly-vehicle-requests/:id/history`   | история статусов и правок            | `weeklyRequests.read`    |
+| Метод и путь                                  | Что делает                            | Право                      |
+| --------------------------------------------- | ------------------------------------- | -------------------------- |
+| `GET /weekly-vehicle-requests`                | список, счётчик «ждут визы»           | `weeklyRequests.read`      |
+| `GET /weekly-vehicle-requests/suggestion`     | предложение состава (Р4, Р15)         | `weeklyRequests.create`    |
+| `POST /weekly-vehicle-requests`               | завести черновик с составом           | `weeklyRequests.create`    |
+| `GET /weekly-vehicle-requests/:id`            | карточка                              | `weeklyRequests.read`      |
+| `PATCH /weekly-vehicle-requests/:id`          | правка состава (`draft`/`pending`)    | `weeklyRequests.update`    |
+| `POST /weekly-vehicle-requests/:id/status`    | подать / снять с причиной             | `weeklyRequests.update`    |
+| `POST /weekly-vehicle-requests/:id/approval`  | виза либо отказ; виза применяет (Р6)  | `weeklyRequests.approve` ¹ |
+| `GET /weekly-vehicle-requests/:id/correction` | цена проведения просроченной недели ¹ | `weeklyRequests.read`      |
+| `GET /weekly-vehicle-requests/:id/documents`  | чек-лист документов (§5 шаг 6)        | `weeklyRequests.read`      |
+| `GET /weekly-vehicle-requests/:id/history`    | история статусов и правок             | `weeklyRequests.read`      |
+
+¹ Уточнено [ADR 0116](adr/0116-weekly-request-backdated.md): у **просроченной** недели право визы
+заменяется правом прошлого `waybills.correct`, поэтому на страже маршрута осталось
+`weeklyRequests.read`, а выбор права делает обработчик (`weeklyApprovalPermission`). Отказ
+(`approved: false`) идёт по прежнему праву и недели не знает. Предпросмотр `/correction` —
+читающая половина той же визы.
 
 **Применение** — `src/services/weekly-request-apply.ts`:
 
@@ -931,8 +938,23 @@ export async function applyWeeklyRequest(tx, params: {
 неделю, продлив сроки задним числом относительно собственного правила Р2. Ответ — 422, заявка
 остаётся там же, где была.
 
+> **Уточнено [ADR 0116](adr/0116-weekly-request-backdated.md) (18.08.2026).** Пять точек остались на
+> месте, но 422 на просроченную неделю получает теперь **не всякий**: каждая точка спрашивает
+> `weeklyWeekBlocker` вместе с тем, что субъекту позволено задним числом (`BackdateAccess`), и право
+> `waybills.correct` снимает ровно два запрета — «уже прошла» и «уже началась». Взамен появляется
+> нижняя граница: глубина права (`WAYBILL_CORRECTION_DAYS` от **воскресенья** недели, снимается
+> `waybills.correctBeyondLimit`). Формат, понедельник и верхняя граница будущего не меняются.
+>
+> Поэтому утверждения «подать и завизировать просроченную заявку нельзя» больше нет ни у подачи, ни
+> у визы. Под правом прошлого заявку на такую неделю **заводят, правят и подают** — причины и ключа
+> операции у этих шагов не спрашивается, они ничего не двигают. Всё о прошлом спрашивается на визе:
+> обязательный блок `correction` (ключ идемпотентности, причина, названные к перевыписке листы
+> ЭСМ-2), вердикт `backdateGuard` и строка в журнале коррекций с видом `weekly` (миграция `0157`).
+> Автовизы при подаче у просроченной недели нет ни у кого (Р8 к ней не применяется).
+
 Отмена просроченной заявки при этом **не блокируется**: снять с рассмотрения нужно уметь всегда, и
-проверка недели к отмене не применяется.
+проверка недели к отмене не применяется. (Сервер это правило соблюдал с самого начала, а на экране
+кнопка «Снять заявку» пряталась общим условием «неделя закрыта» — исправлено вместе с ADR 0116.)
 
 **Две недели на один заказ.** Один заказ может стоять в заявках на две разные будущие недели —
 запрета нет: планировать через неделю нормально. Порядок применения при этом свободный, а
@@ -999,6 +1021,14 @@ export async function applyWeeklyRequest(tx, params: {
 | `weeklyRequests.update`  | admin, manager, dispatcher, shtab, rukstroy |
 | `weeklyRequests.approve` | admin, rukstroy                             |
 
+Таблица не менялась и с [ADR 0116](adr/0116-weekly-request-backdated.md): новых прав у модуля не
+появилось. Изменилось другое — **какое** право спрашивается у визы. У будущей недели это
+`weeklyRequests.approve`, как и было; у уже начавшейся или прошедшей вместо него спрашивается право
+прошлого `waybills.correct` (плюс `waybills.correctBeyondLimit` за пределом глубины), то есть
+проводит такую неделю диспетчер или администратор, а не руководитель площадки. Отказ и снятие
+остаются за прежними правами: они ничего в прошлом не двигают. Выбор делает одна функция контрактов
+`weeklyApprovalPermission` — им же портал решает, какую кнопку показать.
+
 Почему не переиспользуются права заказов (Р12): `vehicleRequests.read` есть у наблюдателя
 (`permissions.ts:313`), у оператора вывоза и у арендодателя через тип контрагента, а
 `vehicleRequestVisibilityWhere` (`access.ts:170`) для ролей без объектной и отдельской оси
@@ -1027,6 +1057,13 @@ export function canApproveWeeklyRequest(p: Principal, objectId: string): boolean
 /** Автовиза при подаче — только объектной роли, как approvesOwnRequestOnCreate (ADR 0032). */
 export function approvesOwnWeeklyRequest(p: Principal, objectId: string): boolean;
 ```
+
+Уточнено [ADR 0116](adr/0116-weekly-request-backdated.md): у обоих предикатов появился
+необязательный третий аргумент — неделя заявки (`{ weekStart, today }`). С ней
+`canApproveWeeklyRequest` спрашивает право по `weeklyApprovalPermission`, а
+`approvesOwnWeeklyRequest` отвечает `false` на просроченной неделе кому угодно: подача её не
+применяет, потому что причины и ключа операции в теле подачи нет. Без недели оба отвечают прежним
+правилом будущей — вопрос «ведёт ли эта учётка визу вообще» задают и без конкретного документа.
 
 Заведение заявки на объект проверяется `assertRequestScope`-подобной проверкой по объектной оси:
 штаб не заводит неделю чужой площадке.

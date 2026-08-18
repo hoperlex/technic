@@ -541,7 +541,8 @@ export const ACCESS_MANIFEST = {
 
   // ── Недельная заявка на технику ──
   // Своего права на статус у модуля нет: смену состояния ведёт `weeklyRequests.update`, визу —
-  // `weeklyRequests.approve`.
+  // `weeklyRequests.approve` у будущей недели и `waybills.correct` у просроченной (см. строку
+  // `/approval` ниже: право выбирается по неделе, и потому спрашивается в обработчике).
   'POST /api/v1/weekly-vehicle-requests': { kind: 'permissions', allOf: ['weeklyRequests.create'] },
   'GET /api/v1/weekly-vehicle-requests/:id': {
     kind: 'permissions',
@@ -551,9 +552,32 @@ export const ACCESS_MANIFEST = {
     kind: 'permissions',
     allOf: ['weeklyRequests.update'],
   },
+  /*
+   * Решение по заявке закрыто чтением модуля, а само право визы спрашивает обработчик, и это
+   * единственное место манифеста, где так сделано намеренно.
+   *
+   * Прав у визы два, и какое требуется, решает **неделя заявки** (ADR 0101,
+   * `weeklyApprovalPermission`): у будущей — `weeklyRequests.approve`, у уже начавшейся или
+   * прошедшей — право прошлого `waybills.correct`. Конъюнкцией это не пишется: жёсткое
+   * `weeklyRequests.approve` на страже закрыло бы просроченную неделю ровно тому, кто её проводит
+   * (диспетчеру), а жёсткое `waybills.correct` отняло бы обычную визу у руководителя строительства.
+   * Условным правом (`conditionalPermissions`) — тоже: там право **добавляется** по полю тела, а
+   * здесь оно **заменяется**, и решает это не тело, а неделя из шапки заявки.
+   *
+   * Что остаётся проверенным: без `weeklyRequests.read` маршрут не начинает работу вовсе, а оба
+   * права визы вместе с областью площадки спрашивает `canApproveWeeklyRequest` первым делом в
+   * обработчике. Доказывается это сценариями db-теста визы, а не перебором прав.
+   */
   'POST /api/v1/weekly-vehicle-requests/:id/approval': {
     kind: 'permissions',
-    allOf: ['weeklyRequests.approve'],
+    allOf: ['weeklyRequests.read'],
+  },
+  // Предпросмотр проведения просроченной недели — под чтением карточки: понять, почему кнопка
+  // недоступна, должен и тот, кто провести неделю не вправе. Отказ маршрута объяснил бы
+  // отсутствие права, но не то, что делать дальше, — это отвечают поля ответа.
+  'GET /api/v1/weekly-vehicle-requests/:id/correction': {
+    kind: 'permissions',
+    allOf: ['weeklyRequests.read'],
   },
   'GET /api/v1/weekly-vehicle-requests/:id/documents': {
     kind: 'permissions',

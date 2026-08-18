@@ -5,13 +5,17 @@ import { and, asc, count, desc, eq, gte, inArray, isNull, lt, ne, sql } from 'dr
 import { alias } from 'drizzle-orm/pg-core';
 import {
   approveWeeklyRequestSchema,
+  BACKDATE_PERMISSION_MESSAGE,
+  canCancelWaybill,
   createWeeklyRequestSchema,
   dateOnlySchema,
   extendBlocker,
   formatVehicleRequestNumber,
   formatWeeklyRequestNumber,
   isWeeklyRequestEditable,
+  isWeeklyWeekOverdue,
   itemWarnings,
+  minRequestDateKey,
   moscowDateKeyOf,
   newItemBlocker,
   orderEffectiveDateTo,
@@ -21,12 +25,18 @@ import {
   vehicleLabel,
   waybillDisplayNumber,
   weekStartKey,
+  WEEKLY_CORRECTION_REQUIRED_MESSAGE,
+  WEEKLY_SELECTABLE_WEEKS,
   weeklyItemKindLabels,
   weeklyRequestStatusSchema,
   weeklyWeekBlocker,
   weeklyWeekBounds,
+  weeklyWeekEffectiveDate,
   weeklyWeekLabel,
   type WeeklyApplyResultDto,
+  type WeeklyCorrectionPreviewDto,
+  type WeeklyCorrectionSheetDto,
+  type WeeklyCorrectionWeekDto,
   type WeeklyDocumentCellDto,
   type WeeklyDocumentRowDto,
   type WeeklyItemCounts,
@@ -79,7 +89,18 @@ import {
   weeklyItemsReadWhere,
 } from '../services/weekly-request-access';
 import { loadLeftBy } from '../services/weekly-request-blockers';
-import { auditEsm2Sync } from '../services/waybill-esm2';
+import { auditEsm2Sync, esm2CorrectionScope } from '../services/waybill-esm2';
+// Механика заднего числа — общая для всех входов (ADR 0101): вердикт, запись операции,
+// идемпотентность по ключу и связь операции с заявками живут в одном месте, а не переписываются
+// каждым входом по-своему.
+import {
+  backdateAccessOf,
+  backdateOrThrow,
+  checkBackdate,
+  findCorrection,
+  linkCorrectionRequests,
+  runCorrection,
+} from '../services/waybill-correction';
 
 /**
  * Недельная заявка на технику (ADR 0085): площадка заказывает не по одной машине, а неделями.
@@ -894,9 +915,21 @@ async function replaceItems(
   if (rows.length > 0) await tx.insert(weeklyVehicleRequestItems).values(rows);
 }
 
-/** Неделя, на которую заявку заводить нельзя, — 422 с объяснением, а не молчаливое выравнивание. */
-function assertWeekAllowed(weekStart: string): void {
-  const blocker = weeklyWeekBlocker(weekStart, moscowDateKeyOf(new Date()));
+/**
+ * Неделя, на которую заявку заводить нельзя, — 422 с объяснением, а не молчаливое выравнивание.
+ *
+ * Субъект спрашивается ради режима прошлого (ADR 0101): просроченную неделю открывает право
+ * `waybills.correct`, и в пределах его глубины заявку на неё заводят, правят и подают наравне с
+ * будущей. Причины и записи в журнал здесь не спрашивается — заведение и подача ничего не двигают,
+ * и объяснение у них было бы объяснением намерения. Всё, что о прошлом, спрашивается на визе.
+ */
+function assertWeekAllowed(weekStart: string, p: Principal): void {
+  const blocker = weeklyWeekBlocker(
+    weekStart,
+    moscowDateKeyOf(new Date()),
+    WEEKLY_SELECTABLE_WEEKS,
+    backdateAccessOf(p),
+  );
   if (blocker) throw err.unprocessable(blocker, { weekStart: blocker });
 }
 
@@ -1047,12 +1080,25 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
   const canUpdate = {
     preHandler: [app.authenticate, app.requirePermission('weeklyRequests.update')],
   };
-  const canApprove = {
+  /*
+   * Решение по заявке — виза либо отказ. Страж пропускает всякого, кому виден модуль, а само право
+   * спрашивает обработчик, и это не послабление, а единственный способ выразить правило.
+   *
+   * Прав у визы два, и какое из них требуется, решает **неделя заявки**: у будущей —
+   * `weeklyRequests.approve` (руководитель строительства, как и было), у просроченной — право
+   * прошлого `waybills.correct` (ADR 0101; фактически диспетчер и администратор). Страж маршрута
+   * умеет только конъюнкцию, а «одно или другое, смотря какая неделя» ею не пишется: жёсткое
+   * `weeklyRequests.approve` закрыло бы просроченную неделю ровно тому, кто её и проводит, а
+   * жёсткое `waybills.correct` отняло бы обычную визу у площадки. Выбор живёт в контрактах
+   * (`weeklyApprovalPermission`) и спрашивается предикатом `canApproveWeeklyRequest` — вместе с
+   * областью, которую страж всё равно не проверяет.
+   */
+  const canDecide = {
     preHandler: [
       app.authenticate,
       app.requirePermission(
-        'weeklyRequests.approve',
-        'Визировать недельные заявки может руководитель строительства',
+        'weeklyRequests.read',
+        'Недельные заявки этой учётке не видны — визировать нечего',
       ),
     ],
   };
@@ -1078,7 +1124,7 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
       const p = requirePrincipal(req);
       const { objectId, weekStart } = req.query;
       assertWeeklyRequestScope(p, objectId);
-      assertWeekAllowed(weekStart);
+      assertWeekAllowed(weekStart, p);
 
       const scope = scopeOf({ objectId, weekStart }, moscowDateKeyOf(new Date()));
       const [existing] = await db
@@ -1206,7 +1252,7 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
     const p = requirePrincipal(req);
     const body = req.body;
     assertWeeklyRequestScope(p, body.objectId);
-    assertWeekAllowed(body.weekStart);
+    assertWeekAllowed(body.weekStart, p);
 
     const [existing] = await db
       .select({ id: weeklyVehicleRequests.id, num: weeklyVehicleRequests.num })
@@ -1293,7 +1339,7 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
         throw err.unprocessable('Применённая заявка не правится — она уже стала историей');
       }
       // Третья точка проверки недели: черновик, заведённый в четверг, доживает до понедельника.
-      assertWeekAllowed(header.weekStart);
+      assertWeekAllowed(header.weekStart, p);
 
       await db.transaction(async (tx) => {
         await replaceItems(tx, header, body.items);
@@ -1364,13 +1410,21 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
         .from(weeklyVehicleRequestItems)
         .where(eq(weeklyVehicleRequestItems.weeklyRequestId, header.id));
       if (body.status === 'pending') {
-        assertWeekAllowed(header.weekStart);
+        assertWeekAllowed(header.weekStart, p);
         if (Number(itemCount!.c) === 0) {
           throw err.unprocessable('Решение не принято ни по одной единице — состав пуст');
         }
       }
 
-      const selfApplies = body.status === 'pending' && approvesOwnWeeklyRequest(p, header.objectId);
+      // Просроченная неделя подачей не применяется никогда (см. `approvesOwnWeeklyRequest`): её
+      // проведение требует причины и ключа операции, а в теле подачи их нет и быть не должно.
+      // Такая заявка спокойно доходит до визы, где всё это спрашивается явно.
+      const selfApplies =
+        body.status === 'pending' &&
+        approvesOwnWeeklyRequest(p, header.objectId, {
+          weekStart: header.weekStart,
+          today: moscowDateKeyOf(new Date()),
+        });
       const outcome: ApplyOutcomeHolder = { apply: null, esm2: [] };
 
       await db.transaction(async (tx) => {
@@ -1425,19 +1479,78 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
   );
 
   // ── Виза либо отказ; виза применяет (план Р6) ──
+  /**
+   * Виза применяет заявку той же транзакцией — и этим же маршрутом идёт проведение **просроченной**
+   * недели задним числом (ADR 0101).
+   *
+   * Второго маршрута под просроченную неделю нет намеренно: действие человека одно — «завизировать
+   * и провести», — и разведя его по двум ручкам, портал получил бы две кнопки на одно решение, а
+   * отказ «не та ручка» вместо отказа по существу. Различие целиком в том, что просроченная неделя
+   * добавляет: другое право (`weeklyApprovalPermission`), обязательный блок `correction`, вердикт
+   * `backdateGuard` по воскресенью недели и запись операции. Обычной неделе не достаётся ни одного
+   * лишнего запроса.
+   */
   r.post(
     '/:id/approval',
-    { ...canApprove, schema: { params: idParams, body: approveWeeklyRequestSchema } },
+    { ...canDecide, schema: { params: idParams, body: approveWeeklyRequestSchema } },
     async (req) => {
       const p = requirePrincipal(req);
       const body = req.body;
       const header = await requireHeader(req.params.id);
       assertWeeklyRequestScope(p, header.objectId);
-      // Право на маршруте общее, а решает руководитель этой площадки — как у заявок ТС.
-      if (!canApproveWeeklyRequest(p, header.objectId)) {
-        throw err.forbidden('Недельную заявку визирует руководитель этой площадки');
+      const today = moscowDateKeyOf(new Date());
+      const week = { weekStart: header.weekStart, today };
+      const overdue = isWeeklyWeekOverdue(header.weekStart, today);
+      /*
+       * Право на маршруте общее (`weeklyRequests.read`), а решает предикат: у будущей недели —
+       * руководитель этой площадки, у просроченной — тот, у кого есть право прошлого. Замена права
+       * живёт в контрактах (`weeklyApprovalPermission`), и тем же выбором портал решает, показывать
+       * ли кнопку: страж маршрута выразить «одно право или другое, смотря какая неделя» не может, а
+       * жёсткое `weeklyRequests.approve` на нём закрыло бы просроченную неделю тому единственному,
+       * кто её и проводит.
+       *
+       * Замена права касается **визы**, а не решения вообще. Отказ ничего в прошлом не двигает: он
+       * возвращает заявку в черновик, чтобы площадка правила состав, — и спрашивать за него право
+       * коррекции значило бы отдать отказ по просроченной неделе диспетчеру, то есть тому, кто про
+       * нужность техники на объекте как раз и не решает. Поэтому у отказа правило прежнее и
+       * недели не знает: руководитель строительства этой площадки отклоняет любую свою заявку,
+       * хотя провести просроченную уже не вправе.
+       */
+      const decidesWeek = body.approved ? week : undefined;
+      if (!canApproveWeeklyRequest(p, header.objectId, decidesWeek)) {
+        throw err.forbidden(
+          overdue && body.approved
+            ? `Неделя ${weeklyWeekLabel(header.weekStart)} уже ${header.weekStart < weekStartKey(today) ? 'прошла' : 'началась'}: проводит её тот, у кого есть право коррекции задним числом, — обратитесь к диспетчеру или администратору`
+            : 'Недельную заявку визирует руководитель этой площадки',
+        );
       }
-      if (header.status !== 'pending') {
+      // Блок коррекции и просроченность обязаны совпасть в обе стороны. Нет блока у просроченной —
+      // операция прошла бы без причины и без следа; есть блок у будущей — в журнале коррекций
+      // появилась бы строка про обычную работу, и фильтр журнала (Р28 ADR 0101) наполнился бы ею.
+      const correction = body.approved ? body.correction : undefined;
+      if (body.approved && overdue && !correction) {
+        throw err.unprocessable(WEEKLY_CORRECTION_REQUIRED_MESSAGE, {
+          correction: 'Нужна причина и ключ операции',
+        });
+      }
+      if (correction && !overdue) {
+        throw err.unprocessable(
+          `Неделя ${weeklyWeekLabel(header.weekStart)} ещё не наступила — корректировать в ней нечего, визируйте без блока коррекции`,
+          { correction: 'Неделя не просрочена' },
+        );
+      }
+
+      /*
+       * Повтор уже выполненной операции узнаётся **до** проверки состояния, и здесь это не
+       * оптимизация, а условие идемпотентности вообще (Р31 ADR 0101). Виза переводит заявку
+       * `pending → applied`, то есть первая же попытка делает состояние непригодным для второй:
+       * ретрай после обрыва связи упёрся бы в «недельная заявка уже применена» — отказ на работу,
+       * которая на самом деле сделана его же собственным запросом. Найденный ключ снимает эту
+       * проверку и только её: автора с отпечатком сверит `runCorrection`, а `perform` не позовётся
+       * вовсе.
+       */
+      const prior = correction ? await findCorrection(db, correction.operationId) : undefined;
+      if (!prior && header.status !== 'pending') {
         throw err.unprocessable(
           header.status === 'applied'
             ? 'Недельная заявка уже применена'
@@ -1446,45 +1559,152 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
       }
 
       const outcome: ApplyOutcomeHolder = { apply: null, esm2: [] };
-
-      await db.transaction(async (tx) => {
-        if (body.approved) {
-          const applied = await applyWeeklyRequest(tx, {
-            weeklyRequestId: header.id,
-            expectedVersion: body.version,
-            actor: { id: p.id },
-          });
-          outcome.apply = applied.result;
-          outcome.esm2 = applied.esm2;
-          return;
+      /** Что субъекту позволено задним числом: пятая точка проверки недели считает глубину им. */
+      const access = backdateAccessOf(p);
+      /**
+       * Эффективная дата операции — воскресенье недели заявки. Той же границей `canCancelWaybill`
+       * считает лист ЭСМ-2 отработанным, и второй расчёт «когда неделя кончилась» разошёлся бы с
+       * первым на шесть дней.
+       *
+       * Плана до неё, в отличие от коррекции назначения, не нужно вовсе: там эффективную дату
+       * задавал самый ранний из задетых листов, и на повторе её было уже не пересчитать, — а здесь
+       * она известна из шапки и одинакова на любой попытке.
+       */
+      const effectiveDate = weeklyWeekEffectiveDate(header.weekStart);
+      /**
+       * Проверка доступа функцией, а не разово: `runCorrection` зовёт её сам на каждой попытке,
+       * включая повтор, — там это единственная проверка доступа, какая вообще случится (Р31
+       * ADR 0101). Возвращает `backdated` — задним ли числом идёт операция.
+       */
+      const authorize = (): boolean => {
+        if (!canApproveWeeklyRequest(p, header.objectId, week)) {
+          throw err.forbidden(BACKDATE_PERMISSION_MESSAGE);
         }
-        // Отклонённая возвращается в черновик, а причина показывается сверху в самой заявке: тому,
-        // кто открыл её править, надо видеть, что именно не устроило.
-        const [updated] = await tx
-          .update(weeklyVehicleRequests)
-          .set({
-            status: 'draft',
-            updatedBy: p.id,
-            updatedAt: new Date(),
-            version: header.version + 1,
-          })
-          .where(
-            and(
-              eq(weeklyVehicleRequests.id, header.id),
-              eq(weeklyVehicleRequests.version, body.version),
-            ),
-          )
-          .returning({ id: weeklyVehicleRequests.id });
-        if (!updated) throw err.conflict();
-        await tx.insert(weeklyVehicleRequestHistory).values({
-          weeklyRequestId: header.id,
-          event: 'status',
-          fromStatus: 'pending',
-          toStatus: 'draft',
-          changedBy: p.id,
-          comment: body.comment,
+        /*
+         * На повторе спрашивается только право — и спрашивается всегда: молча отдать прежний
+         * результат тому, у кого `waybills.correct` успели отобрать между попытками, — та же
+         * утечка, что провести неделю без права. Предел дней при этом остаётся проверенным первой
+         * попыткой: второй раз он ничего нового не разрешает, потому что и работы второй раз не
+         * происходит, — а пересчитанный назавтра он отказал бы в результате, который уже получен.
+         */
+        if (prior) return false;
+        return backdateOrThrow(
+          checkBackdate({
+            effectiveDate,
+            today,
+            subject: p,
+            hasReason: (correction?.reason ?? '').trim() !== '',
+          }),
+        );
+      };
+      /** Задним ли числом идёт операция: у начавшейся, но не кончившейся недели — нет. */
+      let backdated = false;
+      /** true — эту же команду уже выполнил этот же запрос: сроки второй раз не двигались. */
+      let repeated = false;
+
+      if (correction) {
+        backdated = authorize();
+        const done = await runCorrection(
+          {
+            operationId: correction.operationId,
+            kind: 'weekly',
+            // Целью служит сама недельная заявка: тело визы одинаково у двух разных недель одной
+            // площадки, и без идентификатора один ключ покрыл бы две разные команды.
+            target: header.id,
+            body: req.body,
+            reason: correction.reason,
+            actorUserId: p.id,
+          },
+          {
+            authorize,
+            perform: async (tx, record) => {
+              const applied = await applyWeeklyRequest(tx, {
+                weeklyRequestId: header.id,
+                expectedVersion: body.version,
+                actor: { id: p.id },
+                correction: {
+                  id: record.id,
+                  access,
+                  reason: correction.reason,
+                  unlockWaybillIds: correction.unlockWaybillIds,
+                },
+              });
+              outcome.apply = applied.result;
+              outcome.esm2 = applied.esm2;
+              // «Что делали с этим заказом задним числом» спрашивают со стороны заказа, и связь
+              // операции с ним — единственный ответ (Р16 ADR 0101). Порождённые строкой `new`
+              // заказы связываются наравне с продлёнными: их дата начала тоже в прошлом.
+              await linkCorrectionRequests(
+                tx,
+                record.id,
+                applied.result.items.flatMap((i) => (i.requestId ? [i.requestId] : [])),
+              );
+              /*
+               * Снимок «было → стало» (Р16 ADR 0101). Строки итога уходят сюда целиком: в самой
+               * заявке остаются только результаты, а «какой срок был у ТС-341 до проведения» и
+               * «какие номера сгорели» спрашивают через месяцы — и ответить на это будет нечем.
+               */
+              return {
+                weeklyRequest: { id: header.id, num: header.num },
+                week: { start: header.weekStart, end: weeklyWeekBounds(header.weekStart).to },
+                applied: applied.result.applied,
+                skipped: applied.result.skipped,
+                items: applied.result.items,
+                esm2: applied.result.esm2,
+                unlockWaybillIds: correction.unlockWaybillIds,
+              };
+            },
+          },
+        );
+        repeated = done.repeated;
+      } else {
+        await db.transaction(async (tx) => {
+          if (body.approved) {
+            const applied = await applyWeeklyRequest(tx, {
+              weeklyRequestId: header.id,
+              expectedVersion: body.version,
+              actor: { id: p.id },
+            });
+            outcome.apply = applied.result;
+            outcome.esm2 = applied.esm2;
+            return;
+          }
+          // Отклонённая возвращается в черновик, а причина показывается сверху в самой заявке: тому,
+          // кто открыл её править, надо видеть, что именно не устроило.
+          const [updated] = await tx
+            .update(weeklyVehicleRequests)
+            .set({
+              status: 'draft',
+              updatedBy: p.id,
+              updatedAt: new Date(),
+              version: header.version + 1,
+            })
+            .where(
+              and(
+                eq(weeklyVehicleRequests.id, header.id),
+                eq(weeklyVehicleRequests.version, body.version),
+              ),
+            )
+            .returning({ id: weeklyVehicleRequests.id });
+          if (!updated) throw err.conflict();
+          await tx.insert(weeklyVehicleRequestHistory).values({
+            weeklyRequestId: header.id,
+            event: 'status',
+            fromStatus: 'pending',
+            toStatus: 'draft',
+            changedBy: p.id,
+            comment: body.comment,
+          });
         });
-      });
+      }
+
+      /*
+       * Повтор не порождает ни второго события в ленте, ни второй записи истории заказов: работа
+       * сделана первой попыткой, а итог применения лежит в самих строках состава — карточка
+       * покажет его тем же DTO. `apply` в ответе при этом пуст, и это честно: пересказывать
+       * прошлый итог по нынешнему состоянию значило бы выдумать его заново.
+       */
+      if (repeated) return { request: (await getDto(header.id))!, apply: null };
 
       await writeAudit({
         actorUserId: p.id,
@@ -1492,12 +1712,160 @@ export default async function weeklyVehicleRequestsRoutes(app: FastifyInstance):
         entityType: 'weekly_vehicle_request',
         entityId: header.id,
         metadata: body.approved
-          ? { applied: outcome.apply?.applied ?? 0, skipped: outcome.apply?.skipped ?? 0 }
+          ? {
+              applied: outcome.apply?.applied ?? 0,
+              skipped: outcome.apply?.skipped ?? 0,
+              // Признаки заднего числа — только там, где оно было: у обычной визы пустые поля в
+              // ленте читались бы как «коррекция без причины». `backdated` при этом не равен
+              // «неделя просрочена»: у начавшейся недели воскресенье ещё впереди, операция идёт
+              // сегодняшним днём, а причина и ключ у неё всё равно спрошены.
+              ...(correction
+                ? {
+                    overdueWeek: true,
+                    backdated,
+                    reason: correction.reason,
+                    operationId: correction.operationId,
+                    unlockWaybillIds: correction.unlockWaybillIds,
+                  }
+                : {}),
+            }
           : { comment: body.comment },
       });
       await auditWeeklyEsm2(p.id, outcome.esm2);
       await auditWeeklyOrderEvents(p.id, header.num, outcome.apply);
       return { request: (await getDto(header.id))!, apply: outcome.apply };
+    },
+  );
+
+  // ── Что проведение этой недели тронет в прошлом (предпросмотр) ──
+  /**
+   * Читающая половина визы просроченной недели: те же правила теми же функциями, но без единой
+   * правки. Окно показывает ею цену операции — какие номера ЭСМ-2 можно назвать к перевыписке, за
+   * какие прошедшие недели появится бумага, какая у операции эффективная дата и докуда достаёт
+   * глубина субъекта, — и её запреты, если провести неделю нельзя.
+   *
+   * Расхождение предпросмотра и исполнения здесь недопустимо: диалог обещает человеку сгоревшие
+   * номера, и обещание верно ровно до тех пор, пока считает его та же работа. Поэтому ни одного
+   * своего расчёта тут нет — `weeklyWeekBlocker`, `weeklyWeekEffectiveDate`, `checkBackdate`,
+   * `esm2CorrectionScope` и `canCancelWaybill` те же, что на визе и в сверке.
+   *
+   * Доступ — по чтению карточки: понять, почему кнопка недоступна, должен и тот, кто провести
+   * неделю не вправе. Ответ на этот вопрос лежит в полях `allowed` и `blockedReason`, а не в
+   * отказе маршрута: 403 объяснил бы отсутствие права, но не то, что делать дальше.
+   */
+  r.get(
+    '/:id/correction',
+    { ...auth, schema: { params: idParams } },
+    async (req): Promise<WeeklyCorrectionPreviewDto> => {
+      const p = requirePrincipal(req);
+      await assertWeeklyRequestReadable(p, req.params.id);
+      const header = await requireHeader(req.params.id);
+      // Момент времени берётся один раз на весь ответ: полночь между двумя `new Date()` дала бы
+      // окну сегодняшний день от одной границы и вчерашний от другой.
+      const now = new Date();
+      const today = moscowDateKeyOf(now);
+      const week = { weekStart: header.weekStart, today };
+      const access = backdateAccessOf(p);
+      const bounds = weeklyWeekBounds(header.weekStart);
+      const effectiveDate = weeklyWeekEffectiveDate(header.weekStart);
+
+      /*
+       * Почему провести нельзя — по одной причине и в том же порядке, в каком откажет виза: сперва
+       * право (его не исправить ничем, что человек допишет в форму), потом сама неделя (глубина и
+       * границы), потом состояние документа. Обратный порядок предложил бы площадке искать
+       * причину в неделе там, где верный ответ — «это не ваше действие».
+       */
+      const allowed = canApproveWeeklyRequest(p, header.objectId, week);
+      const weekBlocker = weeklyWeekBlocker(
+        header.weekStart,
+        today,
+        WEEKLY_SELECTABLE_WEEKS,
+        access,
+      );
+      const blockedReason = !allowed
+        ? isWeeklyWeekOverdue(header.weekStart, today)
+          ? 'Просроченную неделю проводит тот, у кого есть право коррекции задним числом'
+          : 'Недельную заявку визирует руководитель этой площадки'
+        : (weekBlocker ??
+          (header.status === 'pending'
+            ? null
+            : header.status === 'applied'
+              ? 'Недельная заявка уже применена'
+              : 'Визируется только заявка, поданная на визу'));
+
+      // Строки состава — тем же сужением, что и карточка: чек-лист и предпросмотр рассказывают об
+      // одних и тех же заказах, и второй отбор открыл бы арендодателю чужие листы площадки.
+      const rows = await itemsQuery()
+        .where(
+          and(eq(weeklyVehicleRequestItems.weeklyRequestId, header.id), weeklyItemsReadWhere(p)),
+        )
+        .orderBy(asc(weeklyVehicleRequestItems.position));
+
+      const unlockable: WeeklyCorrectionSheetDto[] = [];
+      const pastWeeks: WeeklyCorrectionWeekDto[] = [];
+      for (const row of rows) {
+        // Бумагу двигает только продление: «уезжает» с заказом не делает ничего, а порождённый
+        // строкой `new` заказ рождается без назначения — листов у него нет и быть не может.
+        if (row.kind !== 'extend' || !row.sourceRequestId || !row.dateTo) continue;
+        const displayNumber = row.sourceRequestNum
+          ? formatVehicleRequestNumber(row.sourceRequestNum)
+          : '';
+        const scope = await esm2CorrectionScope(db, {
+          requestId: row.sourceRequestId,
+          today,
+          // Срок, каким он станет: продление и добавляет заказу те прошедшие недели, о которых
+          // окно рассказывает. По нынешнему `date_to` их не видно вовсе.
+          dateTo: row.dateTo,
+        });
+        for (const sheet of scope.sheets) {
+          // Назвать можно ровно отработанный лист: действующий лист незакончившейся недели сверка
+          // переоформит сама, и разрешения на это не спрашивают. Граница — `canCancelWaybill`, та
+          // же, которой `esm2SyncPlan` запирает неделю.
+          const worked = !canCancelWaybill(
+            { issuedForDate: sheet.periodFrom, periodTo: sheet.periodTo },
+            today,
+          );
+          if (!worked) continue;
+          unlockable.push({
+            waybillId: sheet.id,
+            requestId: row.sourceRequestId,
+            displayNumber,
+            number: sheet.number,
+            periodFrom: sheet.periodFrom,
+            periodTo: sheet.periodTo,
+          });
+        }
+        for (const period of scope.pastWeeks) {
+          pastWeeks.push({
+            requestId: row.sourceRequestId,
+            displayNumber,
+            from: period.from,
+            to: period.to,
+          });
+        }
+      }
+
+      const verdict = checkBackdate({ effectiveDate, today, subject: p, hasReason: true });
+      return {
+        weeklyRequestId: header.id,
+        weekStart: header.weekStart,
+        weekEnd: bounds.to,
+        weekLabel: weeklyWeekLabel(header.weekStart),
+        today,
+        overdue: isWeeklyWeekOverdue(header.weekStart, today),
+        effectiveDate,
+        // Причина в вердикте подставлена заведомо непустой: спрашивается здесь не «хватает ли
+        // объяснения» (его человек ещё не написал), а «пройдёт ли операция задним числом».
+        backdated: verdict.ok && verdict.backdated,
+        // Граница считается тем же правилом, что и нижний предел дейтпикера в форме заявки
+        // (`minRequestDateKey`): у права без предела она `null`, и выдуманный «очень давний год»
+        // здесь запирал бы то, что сервер примет.
+        correctionFloor: minRequestDateKey(now, access),
+        allowed,
+        blockedReason,
+        unlockable,
+        pastWeeks,
+      };
     },
   );
 

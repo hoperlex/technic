@@ -1,4 +1,4 @@
-import { and, desc, eq, isNotNull, ne } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, ne } from 'drizzle-orm';
 import {
   driverDocumentGaps,
   driverDocumentGapsWarning,
@@ -1044,10 +1044,24 @@ export async function esm2CorrectionScope(
   reader: Reader,
   params: {
     requestId: string;
-    /** Принадлежность машины, которую назначают этой же операцией. */
-    ownership: VehicleOwnership;
+    /**
+     * Принадлежность машины, которую назначают этой же операцией. Не передана — нынешняя: у
+     * входов, которые технику не трогают (продление срока недельной заявкой), «будущей» машины
+     * не существует вовсе, и требовать её значило бы заставить их читать назначение ради ответа,
+     * который и так лежит в заявке.
+     */
+    ownership?: VehicleOwnership;
     /** Сегодня по МСК: им отделяются отработанные недели от предстоящих. */
     today: string;
+    /**
+     * Конец срока, каким он станет **после** операции. Не передан — нынешний.
+     *
+     * Нужен ровно тем входам, которые срок и двигают: продление недельной заявкой добавляет заказу
+     * недели, которых у него сейчас нет, и часть их уже прошла. Посчитав `pastWeeks` по нынешнему
+     * `date_to`, предпросмотр умолчал бы ровно о той бумаге, которую операция и выпишет, — а
+     * исполнение сверяет уже записанный срок и выписало бы её всё равно.
+     */
+    dateTo?: string | null;
   },
 ): Promise<Esm2CorrectionScope> {
   const request = await loadRequest(reader, params.requestId);
@@ -1067,20 +1081,74 @@ export async function esm2CorrectionScope(
   const mode = esm2Mode({
     requestType: request.requestType,
     status: request.status,
-    ownership: params.ownership,
+    ownership: params.ownership ?? request.ownership,
     deletedAt: request.deletedAt ? request.deletedAt.toISOString() : null,
     isLinear: request.isLinear,
   });
   // Своих недель `on_demand` не заводит (ADR 0100 §5): у линейного заказа бумагу называет человек,
   // и «недели без листа» у него не бывает по определению — есть недели, о которых не просили.
   const covered = new Set(sheets.map((s) => weekStartKey(s.periodFrom)));
+  const dateTo = params.dateTo === undefined ? request.dateTo : params.dateTo;
   const pastWeeks =
     mode === 'auto' && request.dateFrom
-      ? esm2Periods(request.dateFrom, request.dateTo).filter(
+      ? esm2Periods(request.dateFrom, dateTo).filter(
           (p) => p.to < params.today && !covered.has(weekStartKey(p.from)),
         )
       : [];
   return { sheets, pastWeeks };
+}
+
+/**
+ * Действующие листы ЭСМ-2 сразу нескольких заказов — одним запросом.
+ *
+ * Заведено ради состава недельной заявки: проведение просроченной недели обязано проверить, что
+ * каждый названный к перевыписке лист и правда принадлежит заказу **этой** недели, а заказов в
+ * составе бывает два десятка. Спрашивать `esm2CorrectionScope` по одному на заказ значило бы
+ * положить сорок чтений в транзакцию визы ради одного `IN`.
+ *
+ * Отбор тот же, что у `activeSheets`: лист заказа, не аннулированный, с заполненным периодом.
+ * Второго определения «действующий лист заявки» в портале быть не должно — иначе проверка
+ * принадлежности разошлась бы с тем, что сверка потом и правда тронет.
+ */
+export async function esm2SheetsOfRequests(
+  reader: Reader,
+  requestIds: readonly string[],
+): Promise<(Esm2SheetRef & { requestId: string })[]> {
+  if (requestIds.length === 0) return [];
+  const rows = await reader
+    .select({
+      id: waybills.id,
+      requestId: waybills.sourceRequestId,
+      periodFrom: waybills.periodFrom,
+      periodTo: waybills.periodTo,
+      vehicleId: waybills.vehicleId,
+      number: waybills.number,
+      prefix: waybillSeries.prefix,
+      numberWidth: waybillSeries.numberWidth,
+    })
+    .from(waybills)
+    .innerJoin(waybillSeries, eq(waybillSeries.id, waybills.seriesId))
+    // Условие — дословно то же, что у `activeSheets`, и вида бланка среди него нет намеренно:
+    // `source_request_id` заполняется только у ЭСМ-2 (миграция 0087), у листа на рейс основанием
+    // служит сам рейс. Лишнее условие здесь означало бы второе определение того же отбора.
+    .where(
+      and(inArray(waybills.sourceRequestId, [...requestIds]), ne(waybills.status, 'cancelled')),
+    )
+    .orderBy(waybills.periodFrom, waybills.id);
+  return rows.flatMap((s) =>
+    s.requestId && s.periodFrom && s.periodTo
+      ? [
+          {
+            id: s.id,
+            requestId: s.requestId,
+            number: waybillDisplayNumber(s.prefix, s.number, s.numberWidth),
+            periodFrom: s.periodFrom,
+            periodTo: s.periodTo,
+            vehicleId: s.vehicleId,
+          },
+        ]
+      : [],
+  );
 }
 
 // ── Выписка по требованию: линейный заказ (ADR 0100 §6) ──

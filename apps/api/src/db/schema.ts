@@ -3565,7 +3565,7 @@ export const waybillCorrections = pgTable(
      */
     kind: text('kind')
       .notNull()
-      .$type<'route' | 'transfer' | 'esm2' | 'cancel' | 'issue' | 'request_date'>(),
+      .$type<'route' | 'transfer' | 'esm2' | 'cancel' | 'issue' | 'request_date' | 'weekly'>(),
     reason: text('reason').notNull(),
     /**
      * RESTRICT: учётку автора коррекции не удалить, пока за ней числятся правки бланков. Право у
@@ -3587,9 +3587,13 @@ export const waybillCorrections = pgTable(
     payload: jsonb('payload').notNull().default({}),
   },
   (t) => ({
+    // `weekly` (миграция 0157) — проведение недельной заявки на просроченную неделю. Свой вид, а не
+    // `esm2`: у той операции предмет — бумага одной заявки, а здесь одним решением двигаются сроки
+    // целого состава, и в журнале эти две команды обязаны различаться — иначе «что делали задним
+    // числом» отвечается одним словом на два разных события.
     kindCheck: check(
       'waybill_corrections_kind_check',
-      sql`${t.kind} IN ('route', 'transfer', 'esm2', 'cancel', 'issue', 'request_date')`,
+      sql`${t.kind} IN ('route', 'transfer', 'esm2', 'cancel', 'issue', 'request_date', 'weekly')`,
     ),
     // Причина обязательна и непуста — ради неё таблица и заведена. Пустая строка означала бы
     // «номер сгорел, объяснения нет», то есть ровно то состояние, которое фича закрывает.

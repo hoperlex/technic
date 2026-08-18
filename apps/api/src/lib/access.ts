@@ -13,6 +13,7 @@ import {
   isObjectScopedRole,
   isPlaceScopedRole,
   isServiceRequestEditable,
+  isWeeklyWeekOverdue,
   type Permission,
   type RequestStatus,
   requestStatusLabels,
@@ -22,6 +23,7 @@ import {
   type VehicleRequestType,
   vehicleRequestTypeLabels,
   wasteObjectScopeIds,
+  weeklyApprovalPermission,
 } from '@technic/contracts';
 import type { Principal } from '../auth/principal';
 import { err } from './errors';
@@ -641,12 +643,40 @@ function managesWeeklyRequestObject(p: Principal, objectId: string): boolean {
 }
 
 /**
+ * Неделя заявки глазами проверок доступа: ею решается, каким правом эта неделя визируется
+ * (`weeklyApprovalPermission`). Пара, а не одна дата: «просрочена» — это отношение недели к
+ * сегодняшнему дню, и второй источник «сегодня» внутри предиката разошёлся бы с тем, по которому
+ * маршрут уже посчитал всё остальное.
+ */
+export interface WeeklyRequestWeek {
+  weekStart: string;
+  /** Сегодня по МСК (`moscowDateKeyOf`) — тем же поясом границы считает портал. */
+  today: string;
+}
+
+/**
  * Может ли учётка визировать недельную заявку этой площадки: право визы плюс область — то же
  * правило, что у заявок ТС (`canApproveRequest`). Предикат, а не проверка с отказом: им же
  * решается, применяется ли заявка сразу при подаче.
+ *
+ * Право зависит от самой недели, и это единственное, чем виза просроченной отличается от обычной:
+ * у будущей спрашивается `weeklyRequests.approve`, у начавшейся или прошедшей — право прошлого
+ * (`weeklyApprovalPermission`, ADR 0101). Выбор живёт в контрактах, потому что тем же выбором
+ * портал решает, показывать ли кнопку.
+ *
+ * Неделя необязательна намеренно: вопрос «ведёт ли эта учётка визу недельных заявок вообще»
+ * задают и без конкретного документа (витрина доступа, сверка области), и ответом на него остаётся
+ * прежнее правило будущей недели.
  */
-export function canApproveWeeklyRequest(p: Principal, objectId: string): boolean {
-  return can(p, 'weeklyRequests.approve') && managesWeeklyRequestObject(p, objectId);
+export function canApproveWeeklyRequest(
+  p: Principal,
+  objectId: string,
+  week?: WeeklyRequestWeek,
+): boolean {
+  const permission = week
+    ? weeklyApprovalPermission(week.weekStart, week.today)
+    : 'weeklyRequests.approve';
+  return can(p, permission) && managesWeeklyRequestObject(p, objectId);
 }
 
 /**
@@ -657,9 +687,19 @@ export function canApproveWeeklyRequest(p: Principal, objectId: string): boolean
  * площадку отвечает. Администратор право визы сохраняет, но действует не за объект, и «кто
  * согласовал неделю» отвечалось бы именем того, кто решения не принимал. Виза недельной заявки к
  * тому же необратима — она той же транзакцией двигает сроки.
+ *
+ * Просроченная неделя подачей не применяется никогда, кому бы ни принадлежала. Проведение такой
+ * недели требует причины, ключа операции и записи в журнал коррекций (ADR 0101), а тело подачи их
+ * не несёт и нести не должно: заведение и подача о прошлом ничего не утверждают. Ответ здесь
+ * `false` — и заявка спокойно доходит до визы, где всё это спрашивается явно.
  */
-export function approvesOwnWeeklyRequest(p: Principal, objectId: string): boolean {
-  return isObjectScopedRole(p.role) && canApproveWeeklyRequest(p, objectId);
+export function approvesOwnWeeklyRequest(
+  p: Principal,
+  objectId: string,
+  week?: WeeklyRequestWeek,
+): boolean {
+  if (week && isWeeklyWeekOverdue(week.weekStart, week.today)) return false;
+  return isObjectScopedRole(p.role) && canApproveWeeklyRequest(p, objectId, week);
 }
 
 /**

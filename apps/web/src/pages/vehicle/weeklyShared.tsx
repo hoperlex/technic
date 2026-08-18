@@ -1,11 +1,14 @@
 import { useState, type ReactNode } from 'react';
-import { App, Form, Select, Tag, Typography } from 'antd';
+import { App, Form, Select, type SelectProps, Tag, Typography } from 'antd';
 import { useMutation } from '@tanstack/react-query';
 import { useNavigate } from 'react-router';
 import {
+  type BackdateAccess,
   formatWeeklyRequestNumber,
   moscowDateKeyOf,
+  pastSelectableWeeks,
   selectableWeeks,
+  weekStartKey,
   type WeeklyItemCounts,
   type WeeklyItemWarning,
   type WeeklyPreviousWeekDto,
@@ -18,6 +21,7 @@ import {
 import { weeklyRequestsApi } from '../../api/resources';
 import { FormModal } from '@shared/ui';
 import { isApiError } from '@shared/api';
+import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
 import { useObjectScope } from '../../hooks/useObjectScope';
 import { useObjectOptions } from './shared';
@@ -28,8 +32,9 @@ import { useObjectOptions } from './shared';
  * (§5 шаг 1), — и разъедься они по двум файлам, разошлись бы и поведением: в одном месте открывали
  * бы существующий черновик, в другом получали бы отказ `UNIQUE (object_id, week_start)`.
  *
- * Понятие недели берётся только из контрактов (`selectableWeeks`, `weeklyWeekLabel`): второй
- * реализации на клиенте быть не должно — иначе портал обещал бы не те листы, которые появятся.
+ * Понятие недели берётся только из контрактов (`selectableWeeks`, `pastSelectableWeeks`,
+ * `weeklyWeekLabel`): второй реализации на клиенте быть не должно — иначе портал обещал бы не те
+ * листы, которые появятся.
  */
 
 /** Ключ запросов раздела: им же перерисовывается список после действий на странице. */
@@ -48,6 +53,52 @@ export const weeklyToday = (): string => moscowDateKeyOf(new Date());
 /** Недели, на которые заводят заявку, — подписанные по-человечески («10–16 августа 2026»). */
 export function weekSelectOptions(today = weeklyToday()) {
   return selectableWeeks(today).map((week) => ({ value: week, label: weeklyWeekLabel(week) }));
+}
+
+/**
+ * Что учётке позволено задним числом (ADR 0101): право прошлого и его глубина — той же парой, какой
+ * их спрашивает сервер (`backdateAccessOf`).
+ *
+ * Собирается хуком на весь модуль недели, а не двумя `can` по месту: спрашивают эту пару теперь
+ * трое — селект недель, страница заявки и окно проведения, — и три одинаковых объекта разошлись бы
+ * при первой же правке правил.
+ */
+export function useWeeklyBackdateAccess(): BackdateAccess {
+  const { can } = useAuth();
+  return { correct: can('waybills.correct'), beyondLimit: can('waybills.correctBeyondLimit') };
+}
+
+/**
+ * Прошедшие недели, доступные праву прошлого, — второй половиной того же выбора (ADR 0101).
+ *
+ * Подписаны иначе, чем будущие, и это не украшение: заявка на прошедшую неделю проводится задним
+ * числом — с причиной, записью операции и сгоревшими номерами бланков, — и человек не должен
+ * попасть туда, промахнувшись мимо соседней строки. Права нет — список пуст, и группы в селекте не
+ * появляется вовсе: недоступный вариант обещал бы то, чем ручка отвечает отказом.
+ *
+ * Сами недели и их глубину считает контракт (`pastSelectableWeeks`): своё выражение здесь
+ * предлагало бы неделю, на которой виза скажет «слишком давно».
+ */
+export function pastWeekSelectOptions(access: BackdateAccess, today = weeklyToday()) {
+  const current = weekStartKey(today);
+  return pastSelectableWeeks(today, access).map((week) => ({
+    value: week,
+    // Текущая неделя названа текущей, а не прошедшей: она ещё идёт, и «прошедшая» про неё —
+    // неправда. Правило же у них одно, поэтому и группа одна.
+    label: `${weeklyWeekLabel(week)} — ${week === current ? 'текущая, уже началась' : 'прошедшая'}`,
+  }));
+}
+
+/**
+ * «прошла» или «началась» — тем же сравнением, каким их различает отказ сервера
+ * (`weeklyWeekBlocker`): неделя, чей понедельник раньше текущего, прошла целиком, остальные
+ * просроченные — начались.
+ *
+ * Различие только в слове: право, глубина и цена у них одни. Но сказать площадке «уже началась» о
+ * неделе, кончившейся месяц назад, значит соврать в самом первом предложении баннера.
+ */
+export function weeklyOverdueWord(weekStart: string, today = weeklyToday()): string {
+  return weekStart < weekStartKey(today) ? 'прошла' : 'началась';
 }
 
 /** Русское склонение счётного слова: 1 продление, 2 продления, 5 продлений. */
@@ -196,6 +247,21 @@ export function useWeeklyRequestCreate(): {
   const { options: allObjectOptions, loading: objectsLoading } = useObjectOptions();
   const objectOptions = limitObjectOptions(allObjectOptions);
   const weeks = weekSelectOptions();
+  const backdate = useWeeklyBackdateAccess();
+  const pastWeeks = pastWeekSelectOptions(backdate);
+  /**
+   * Прошлое стоит **над** будущим и отдельной группой с говорящим заголовком: список читают сверху
+   * вниз как календарь, и прошедшая неделя обязана быть видна как другой род действия, а не как
+   * соседняя строка. Группы нет вовсе, когда прошлого нет: пустой заголовок «Прошедшие» рассказывал
+   * бы площадке о праве, которого у неё не будет.
+   */
+  const weekOptions: SelectProps['options'] =
+    pastWeeks.length === 0
+      ? weeks
+      : [
+          { label: 'Прошедшие — заявку придётся проводить задним числом', options: pastWeeks },
+          { label: 'Будущие', options: weeks },
+        ];
 
   const mut = useMutation({
     mutationFn: async (v: { objectId: string; weekStart: string }) => {
@@ -248,14 +314,22 @@ export function useWeeklyRequestCreate(): {
             options={objectOptions}
           />
         </Form.Item>
-        {/* Недели — только будущие: то, что нужно на этой неделе, заказывают обычной заявкой (Р2). */}
+        {/* Недели — будущие (Р2), а прошедшие только тому, у кого есть право прошлого (ADR 0101):
+            техника отработала неделю, а документа-основания у продления нет, и починить это должен
+            тот же диспетчер, который правит задним числом бумагу. Умолчанием прошлое не стоит
+            никогда — портал не подставляет за человека решение, которое стоит сгоревшего бланка
+            (ADR 0083). */}
         <Form.Item
           name="weekStart"
           label="Неделя"
-          tooltip="Заявку заводят на будущую неделю: продление задним числом означало бы согласовать уже отработанные дни"
+          tooltip={
+            backdate.correct
+              ? 'Будущую неделю визирует руководитель строительства. Прошедшую проводят задним числом: виза по ней спросит причину и уйдёт в журнал коррекций'
+              : 'Заявку заводят на будущую неделю: продление задним числом означало бы согласовать уже отработанные дни'
+          }
           rules={[{ required: true, message: 'Выберите неделю' }]}
         >
-          <Select options={weeks} placeholder="Выберите неделю" />
+          <Select options={weekOptions} placeholder="Выберите неделю" />
         </Form.Item>
       </Form>
     </FormModal>

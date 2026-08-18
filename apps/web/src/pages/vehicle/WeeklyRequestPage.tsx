@@ -1,13 +1,11 @@
 import { useEffect, useState } from 'react';
-import { App, Button, Card, Input, Result, Skeleton, Space, Typography } from 'antd';
-import { ArrowLeftOutlined } from '@ant-design/icons';
+import { App, Card, Input, Skeleton } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useParams } from 'react-router';
 import {
-  isObjectScopedRole,
   isWeeklyRequestEditable,
-  selectableWeeks,
-  weeklyWeekBlocker,
+  type WeeklyCorrectionBody,
+  weeklyWeekEffectiveDate,
 } from '@technic/contracts';
 import { weeklyRequestsApi } from '../../api/resources';
 import { garageKeys } from '@entities/garage';
@@ -18,7 +16,9 @@ import { errorMessage } from '../../utils/format';
 import { useWeeklyComposition } from './weeklyComposition';
 import { WeeklyRequestActions } from './WeeklyRequestActions';
 import { WeeklyRequestBanners } from './WeeklyRequestBanners';
+import { WeeklyRequestConductModal } from './WeeklyRequestConductModal';
 import { WeeklyRequestComposition, WeeklyRequestLeaving } from './WeeklyRequestComposition';
+import { WeeklyRequestHeader, WeeklyRequestNotOpened } from './WeeklyRequestFrame';
 import { WeeklyRequestNewItems } from './WeeklyRequestNewItems';
 import {
   WeeklyRequestAgreed,
@@ -26,12 +26,18 @@ import {
   WeeklyRequestHistory,
 } from './WeeklyRequestChecklist';
 import {
+  decisionMessage,
+  lastRejectionComment,
+  WEEKLY_LEAVE_CONFIRM,
+  weeklyPageWeekState,
+  weeklyReasonText,
+} from './weeklyRequestPageState';
+import {
   hasStatus,
   skipReasonsFromError,
+  useWeeklyBackdateAccess,
   useWeeklyRequestCreate,
   WEEKLY_QUERY_KEY,
-  WeeklyStatusTag,
-  weeklyToday,
 } from './weeklyShared';
 
 /**
@@ -40,20 +46,30 @@ import {
  * Отдельной страницей с адресом, а не модальным окном: три блока состава, история и документы в
  * модалку не помещаются, а ссылку на неделю нужно уметь послать. Панель действий закреплена внизу
  * — состав длинный, и кнопка «Подать» не должна уезжать за конец списка.
+ *
+ * У просроченной недели экран показывает **три разных** состояния, и все три считаются
+ * контрактами, а не выражениями страницы (ADR 0101): будущая неделя — как была; просроченная у
+ * того, кто вправе провести прошлое, — открыта, с ценой операции в баннере и окном проведения;
+ * просроченная у того, кто не вправе, — закрыта, но не тупиком: баннер называет, кого позвать.
+ * Второй перечень этих правил на клиенте предлагал бы кнопку, которой ручка отвечает отказом, либо
+ * запирал то, что она принимает.
  */
-
 export function WeeklyRequestPage() {
   const { id = '' } = useParams();
   const navigate = useNavigate();
   const qc = useQueryClient();
   const { message, modal } = App.useApp();
   const { user, can } = useAuth();
+  /** Что учётке позволено задним числом: этой парой неделя открывается или остаётся закрытой. */
+  const backdate = useWeeklyBackdateAccess();
   const create = useWeeklyRequestCreate();
   /** Причины отказа применения по строкам (§9): держатся до следующей попытки. */
   const [skipReasons, setSkipReasons] = useState<Map<string, string>>(new Map());
   /** Отказ применения целиком: «ни одна строка не применима» с перечнем причин (Р9). */
   const [applyError, setApplyError] = useState<string | null>(null);
   const [reasonMode, setReasonMode] = useState<'cancel' | 'reject' | null>(null);
+  /** Открыто окно проведения просроченной недели задним числом (ADR 0101). */
+  const [conducting, setConducting] = useState(false);
 
   const requestQuery = useQuery({
     queryKey: ['weekly-vehicle-requests', id],
@@ -191,25 +207,31 @@ export function WeeklyRequestPage() {
     onError,
   });
 
+  /**
+   * Виза, отказ и проведение просроченной недели — одна мутация, потому что и ручка одна
+   * (ADR 0101): проведение это та же виза, к которой приложен блок коррекции. Разведя их по двум
+   * мутациям, страница получила бы два разбора 409 и 422 на одно и то же действие.
+   */
   const approveMut = useMutation({
-    mutationFn: async (v: { approved: boolean; comment: string }) => {
+    mutationFn: async (v: {
+      approved: boolean;
+      comment: string;
+      /** Блок коррекции — только у визы просроченной недели; у обычной ручка его не примет. */
+      correction?: WeeklyCorrectionBody;
+    }) => {
       const saved = v.approved ? await saveComposition() : request!;
       return weeklyRequestsApi.approval(saved.id, {
         approved: v.approved,
         comment: v.comment,
         version: saved.version,
+        ...(v.correction ? { correction: v.correction } : {}),
       });
     },
     onSuccess: (res, v) => {
       setReasonMode(null);
+      setConducting(false);
       clearApplyError();
-      message.success(
-        !v.approved
-          ? 'Заявка отклонена и возвращена в черновик'
-          : res.apply
-            ? `Неделя применена: строк ${res.apply.applied}, пропущено ${res.apply.skipped}`
-            : 'Неделя согласована и применена',
-      );
+      message.success(decisionMessage(res, v.approved, !!v.correction));
       invalidate();
     },
     onError,
@@ -236,80 +258,45 @@ export function WeeklyRequestPage() {
   const leave = () => void navigate('/vehicle-requests?tab=requests&kind=weekly');
   const goBack = () => {
     if (!composition.dirty) return leave();
-    modal.confirm({
-      title: 'Уйти, не сохранив состав?',
-      content: 'Решения по строкам и добавленная техника не сохранятся.',
-      okText: 'Уйти',
-      okButtonProps: { danger: true },
-      cancelText: 'Остаться',
-      onOk: leave,
-    });
+    modal.confirm({ ...WEEKLY_LEAVE_CONFIRM, onOk: leave });
   };
 
   if (requestQuery.isError) {
-    const gone = hasStatus(requestQuery.error, 404);
-    return (
-      <Result
-        status={gone ? '404' : 'error'}
-        title={gone ? 'Заявка удалена вместе с площадкой' : 'Заявка не открылась'}
-        subTitle={
-          gone
-            ? 'Неприменённые недельные заявки погашенной площадки удаляются вместе с ней: документа больше нет.'
-            : errorMessage(requestQuery.error)
-        }
-        extra={
-          <Button type="primary" onClick={leave}>
-            К списку недельных заявок
-          </Button>
-        }
-      />
-    );
+    return <WeeklyRequestNotOpened error={requestQuery.error} onLeave={leave} />;
   }
 
   if (!request) return <Skeleton active paragraph={{ rows: 8 }} />;
 
-  // Неделя, до которой черновик дожил, закрыта: подать и завизировать её нельзя, а отменить —
-  // можно всегда (§8). Одного 422 от API здесь мало: он объясняет отказ, но не выход из положения.
-  const weekBlocker = composable ? weeklyWeekBlocker(request.weekStart, weeklyToday()) : null;
-  const nextWeek = selectableWeeks(weeklyToday())[0];
-  /** Автовиза при подаче — только объектной роли (Р12): администратор под неё не подпадает. */
-  const approvesOwn = isObjectScopedRole(user?.role) && can('weeklyRequests.approve');
-  const canApprove = can('weeklyRequests.approve') && status === 'pending';
+  /** Что с этой неделей уже нельзя, а что ещё можно (ADR 0101) — одним расчётом по контрактам. */
+  const { weekBlocker, nextWeek, overdue, approvesOwn, canApproveWeek, canReject } =
+    weeklyPageWeekState({
+      weekStart: request.weekStart,
+      composable,
+      isPending: status === 'pending',
+      backdate,
+      role: user?.role,
+      can,
+    });
   const empty = composition.items.length === 0;
   const blockedByWeek = !!weekBlocker;
-  /** Причина отклонения показывается сверху в самой заявке, а не только в истории (§5 шаг 5). */
-  const rejection = (historyQuery.data ?? [])
-    .filter((e) => e.event === 'status' && e.toStatus === 'draft' && e.comment)
-    .at(-1);
+  const rejection = lastRejectionComment(historyQuery.data);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', gap: 12 }}>
-      <div style={{ flex: '0 0 auto', display: 'flex', alignItems: 'center', gap: 12 }}>
-        <Button icon={<ArrowLeftOutlined />} onClick={goBack} aria-label="К списку" />
-        <div style={{ lineHeight: 1.3 }}>
-          <Space size={8} wrap>
-            <Typography.Title level={5} style={{ margin: 0 }}>
-              {request.displayNumber} · {request.weekLabel}
-            </Typography.Title>
-            <WeeklyStatusTag status={request.status} />
-          </Space>
-          <div>
-            <Typography.Text type="secondary">
-              {request.objectName}
-              {request.objectCode ? ` · ${request.objectCode}` : ''} · автор {request.createdByName}
-            </Typography.Text>
-          </div>
-        </div>
-      </div>
+      <WeeklyRequestHeader request={request} onBack={goBack} />
 
       <div style={{ flex: '1 1 auto', minHeight: 0, overflowY: 'auto', paddingRight: 4 }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           <WeeklyRequestBanners
             request={request}
-            rejection={rejection?.comment ?? null}
+            rejection={rejection}
             weekBlocker={weekBlocker}
+            overdue={overdue}
+            canPast={backdate.correct}
+            effectiveDate={weeklyWeekEffectiveDate(request.weekStart)}
             editable={editable}
             composable={composable}
+            isPending={status === 'pending'}
             applyError={applyError}
             counts={composition.counts}
             undecided={composition.undecided}
@@ -397,7 +384,9 @@ export function WeeklyRequestPage() {
         editable={editable}
         isDraft={status === 'draft'}
         approvesOwn={approvesOwn}
-        canApprove={canApprove}
+        canApproveWeek={canApproveWeek}
+        canReject={canReject}
+        overdue={overdue}
         empty={empty}
         blockedByWeek={blockedByWeek}
         hasIssues={composition.issues.size > 0}
@@ -408,21 +397,25 @@ export function WeeklyRequestPage() {
         onSave={() => saveMut.mutate()}
         onSubmit={() => submitMut.mutate()}
         onApprove={() => approveMut.mutate({ approved: true, comment: '' })}
+        onConduct={() => setConducting(true)}
         onReject={() => setReasonMode('reject')}
         onCancel={() => setReasonMode('cancel')}
       />
 
+      {/* Окно проведения задним числом: цену операции спрашивают у сервера тем же кодом, которым
+          он её исполнит, а причину и листы к перевыписке — у человека (ADR 0101). Мутация осталась
+          на странице: проведение — это та же виза, и разбор её отказов должен быть один. */}
+      <WeeklyRequestConductModal
+        request={conducting ? request : null}
+        onClose={() => setConducting(false)}
+        onConduct={(correction) => approveMut.mutate({ approved: true, comment: '', correction })}
+        pending={approveMut.isPending}
+      />
+
       <ReasonModal
         open={reasonMode !== null}
-        title={reasonMode === 'reject' ? 'Отклонить недельную заявку' : 'Снять недельную заявку'}
-        label="Причина"
-        okText={reasonMode === 'reject' ? 'Отклонить' : 'Снять'}
+        {...weeklyReasonText(reasonMode === 'reject')}
         danger
-        placeholderHint={
-          reasonMode === 'reject'
-            ? 'Причина покажется составителю сверху в самой заявке'
-            : 'Причина останется в истории заявки'
-        }
         confirmLoading={approveMut.isPending || cancelMut.isPending}
         onCancel={() => setReasonMode(null)}
         onSubmit={(reason) =>

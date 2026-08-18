@@ -6,7 +6,7 @@
   },
   "rawKeyFiles": 43,
   "maxLines": {
-    "src/api/resources.ts": 1095,
+    "src/api/resources.ts": 1121,
     "src/components/AppLayout.tsx": 458,
     "src/pages/WasteRequestsPage.tsx": 2005,
     "src/pages/WaybillsPage.tsx": 517,
