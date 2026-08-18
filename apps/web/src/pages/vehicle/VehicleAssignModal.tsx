@@ -20,10 +20,6 @@ import {
   assignmentRateLabel,
   assignmentTitle,
   type ConfirmScheduleBody,
-  DRIVER_CATEGORY_MISMATCH_HINT,
-  driverCategoryMismatchWarning,
-  DRIVER_WORKED_ON_VEHICLE_HINT,
-  driverWorkedOnVehicle,
   formatMoscowDateTime,
   formatWeeklyRequestNumber,
   isRouteEditable,
@@ -34,26 +30,19 @@ import {
   vehicleClassificationLabel,
   type VehicleDto,
   type VehicleOwnership,
-  vehicleLabel,
   vehicleOwnershipLabels,
   type VehicleRequestDto,
   type VehicleRequestStatusPreviewDto,
-  type VehicleSubstitution,
   vehicleSubstitutionGroup,
   vehicleSubstitutionGroupLabels,
-  vehicleSubstitutionHint,
   vehicleSubstitutionOf,
-  esm2Periods,
   canCorrectWaybill,
   weekStartKey,
   moscowDateKeyOf,
   WAYBILL_CORRECTION_CONFIRM,
   vehicleSubstitutionRank,
   vehicleSubstitutionWarning,
-  driverDocumentGapsHint,
-  driverDocumentGapsWarning,
   waybillFormLabels,
-  waybillFormShortLabels,
   waybillRequirement,
 } from '@technic/contracts';
 import type { CorrectAssignmentBody } from '@technic/contracts';
@@ -69,6 +58,20 @@ import { AddressField } from '@features/address-input';
 
 import { errorMessage, formatMoney } from '../../utils/format';
 import { formatDateOnly } from './shared';
+import {
+  currentMachinistName,
+  driverCategoryNote,
+  driverGapsNote,
+  driverOption,
+  joinedRouteDriverExtra,
+  joinedRouteDriverNote,
+  machinistFieldExtra,
+  machinistFieldMode,
+  machinistOption,
+  plannedEsm2Weeks,
+} from './assignDriverHints';
+import { emptyVehicleListText, vehicleOptionLabel } from './assignVehicleHints';
+import { RollbackPreview } from './RollbackPreview';
 import { MOSCOW_TZ } from '@shared/config';
 
 /**
@@ -105,6 +108,19 @@ import { MOSCOW_TZ } from '@shared/config';
  * в обоих случаях, и второе окно с тем же содержимым разошлось бы с первым при первой же правке.
  * Отличается блок фактического срока — при смене техники его не спрашивают: срок уже согласован,
  * меняется только чем заявку выполняют.
+ *
+ * Машиниста ЭСМ-2 при смене техники спрашивают тем же полем: за другой единицей приходит и другой
+ * человек, а перевыписывать из-за этого листы руками — работа на ровном месте, которую сверка
+ * умеет сама (миграция 0087). Прежнее имя в поле не подставляется (ADR 0083): оно стоит текстом
+ * под полем, а пустое значение означает «оставить прежнего» — портал подсказывает, но не решает.
+ *
+ * Тем же правилом устроен и водитель готового рейса (ADR 0048). Раньше окно спрашивало его только
+ * у нового маршрута, и сменить человека на собранном рейсе было нечем: оставалось второе окно
+ * правки (ADR 0082) либо лишний рейс «с нужным водителем» — его заводили не ради рейса, и в плане
+ * дня оставалась пустая запись, которую потом убирали руками. Поле у готового рейса
+ * необязательное и открывается пустым, нынешний водитель назван под ним текстом. Снятия водителя
+ * окно не предлагает: рейс общий, и остаться без водителя вместе с чужими заявками — отдельное
+ * решение, которое принимают правкой маршрута, где виден весь состав.
  */
 interface Props {
   /** null — окно закрыто; заявка берётся из строки списка. */
@@ -150,8 +166,13 @@ interface FormValues {
   pricePerHour?: number | null;
   pricePerShift?: number | null;
   shiftHours?: number | null;
-  // ── Маршрут: готовый рейс либо новый вместе с водителем и реквизитами выезда ──
+  // ── Маршрут: готовый рейс (в нём меняют разве что водителя) либо новый целиком ──
   routeId?: string;
+  /**
+   * За рулём рейса. У нового рейса обязателен — рейса без человека не бывает; у готового поле
+   * отвечает на другой вопрос, «менять ли того, кто уже за рулём», и пустое значение там
+   * законный ответ «не менять» (ADR 0048).
+   */
   driverPersonId?: string;
   withTrailer?: boolean;
   trailer1Model?: string;
@@ -178,86 +199,6 @@ interface FormValues {
   deliveryDriverId?: string;
   deliveryFrom?: string;
   deliveryTo?: string;
-}
-
-/**
- * Строка выбора: подпись машины плюс то, чем одна единица отличается от другой. Тип и категория —
- * первое, чем они различаются в списке вида, поэтому у собственной машины позиция классификатора
- * стоит рядом с моделью, а не вместо неё. Расхождение с заказанным проговаривается прямо в строке
- * и с направлением («крупнее», «меньше заказанного»): подходит ли эта машина, решает человек — по
- * названию модели и по тому, что он о ней знает.
- */
-function vehicleOptionLabel(v: VehicleDto, substitution: VehicleSubstitution): string {
-  const title = vehicleLabel(v);
-  const extra = [
-    v.ownership === 'own' ? v.modelName : null,
-    // Наименование категории уже содержит тип (ADR 0016 §11); без категории тип называется сам.
-    v.categoryName ?? v.typeName,
-    vehicleSubstitutionHint(substitution),
-    assignmentRateLabel(v) || null,
-  ].filter((s): s is string => !!s && s !== title);
-  return extra.length > 0 ? `${title} — ${extra.join(' · ')}` : title;
-}
-
-/**
- * Второй шаг окна на откате «Выполнена» → «В работе»: что случится после возврата. Всё посчитано
- * сервером той же сверкой, которая потом отработает (§5.4 плана), — «недель срока минус
- * выписанные» обещало бы листы за прошедшие недели, которых сверка не выпишет.
- *
- * О прошлом здесь не сказано ни слова, и это не забывчивость: снимок режима снимается закрытием, а
- * линейный заказ могли закрыть, не распланировав ни одного дня, — тогда угадать, как он вёлся,
- * нечем. Портал говорит только то, что знает точно: чем заказ пойдёт дальше, что сделает сверка
- * ЭСМ-2 и как будет считаться занятость машины.
- */
-function RollbackPreview({ preview }: { preview: VehicleRequestStatusPreviewDto }) {
-  const { issue, cancel } = preview.esm2;
-  return (
-    <Space direction="vertical" size={12} style={{ display: 'flex' }}>
-      <Alert
-        type="info"
-        showIcon
-        message={preview.mode === 'daily' ? 'Заказ пойдёт по дням' : 'Заказ пойдёт по неделям'}
-        description={
-          preview.mode === 'daily'
-            ? 'Работа планируется днями: на каждый день заводится рейс и печатается 4-П, а недельные листы ЭСМ-2 портал сам не выписывает — их просят по требованию.'
-            : 'Работа ведётся неделями: на каждую неделю срока портал выписывает свой ЭСМ-2, дни заявке не планируются.'
-        }
-      />
-      <div>
-        <Typography.Text strong>Путевые листы ЭСМ-2</Typography.Text>
-        {issue.length === 0 && cancel.length === 0 ? (
-          <div>
-            <Typography.Text type="secondary">
-              Останутся как есть: выписывать и аннулировать нечего.
-            </Typography.Text>
-          </div>
-        ) : (
-          <ul style={{ margin: '4px 0 0', paddingInlineStart: 20 }}>
-            {issue.map((p) => (
-              <li key={`issue-${p.from}`}>
-                Выпишется лист за {formatDateOnly(p.from)} — {formatDateOnly(p.to)}
-              </li>
-            ))}
-            {cancel.map((w) => (
-              <li key={w.id}>
-                Аннулируется {w.number} ({formatDateOnly(w.from)} — {formatDateOnly(w.to)})
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-      <div>
-        <Typography.Text strong>Занятость машины</Typography.Text>
-        <div>
-          <Typography.Text type="secondary">
-            {preview.busy === 'term'
-              ? 'Машина будет занята весь срок заявки — в гараже она встанет занятой с первого дня по последний.'
-              : 'Машина будет занята только в распланированные дни — в остальные её можно поставить на другой заказ.'}
-          </Typography.Text>
-        </div>
-      </div>
-    </Space>
-  );
 }
 
 export function VehicleAssignModal({
@@ -379,6 +320,14 @@ export function VehicleAssignModal({
       pricePerHour: assignment?.pricePerHour ?? null,
       pricePerShift: assignment?.pricePerShift ?? null,
       shiftHours: assignment?.shiftHours ?? null,
+      // Машинист не подставляется ничем — ни назначением заявки, ни прошлым открытием окна
+      // (ADR 0083). Пустое поле здесь значимо: при смене техники оно означает «оставить
+      // прежнего», и оставшееся от соседней заявки имя молча уехало бы в бланк ЭСМ-2.
+      machinistId: undefined,
+      // Водитель — по той же причине и с тех пор, как его спрашивают у готового рейса (ADR 0048):
+      // пустое поле означает «не трогать», а имя, оставшееся от прошлой заявки, пересадило бы за
+      // руль чужого рейса человека, которого для него никто не выбирал.
+      driverPersonId: undefined,
     });
     // Зависимость — идентификатор заявки: перерисовка той же заявки (инвалидация списка после
     // соседнего действия) приходит новым объектом и стёрла бы уже выбранное.
@@ -453,16 +402,26 @@ export function VehicleAssignModal({
   const correctionEnabled = (Form.useWatch('correctionEnabled', form) ?? false) && canCorrect;
 
   /**
+   * Смена техники у заказа техники на объект: тот же случай, в котором окно предлагает сменить и
+   * машиниста, — по нему спрашиваются листы заявки. Принадлежность выбранной машины сюда не
+   * входит намеренно: она меняется переключателем внутри окна, и запрос перезапускался бы на
+   * каждое движение по веткам, тогда как ответ на «кто стоит в листах» от неё не зависит.
+   */
+  const reassignsMachinist = reassign && request?.requestType === 'special_equipment';
+
+  /**
    * Листы ЭСМ-2 этой заявки — тем же запросом и ключом, каким их показывает карточка заявки:
    * открытая перед этим карточка отдаёт ответ из кэша.
    *
-   * Спрашиваются только под коррекцией: обычной смене техники они не нужны, а лишний запрос на
-   * каждое открытие окна подбора — плата ни за что.
+   * Спрашиваются под коррекцией и при смене техники у заказа на объект: во втором случае —
+   * чтобы назвать под полем нынешнего машиниста, иначе «оставьте пустым» не о ком. Переводу в
+   * работу они не нужны вовсе: листов у заявки ещё нет, и лишний запрос на каждое открытие окна
+   * подбора был бы платой ни за что.
    */
   const { data: requestWaybills } = useQuery({
     queryKey: ['vehicle-requests', targetId, 'waybills'],
     queryFn: () => vehicleRequestsApi.waybills(targetId!),
-    enabled: !!targetId && correctionEnabled,
+    enabled: !!targetId && (correctionEnabled || reassignsMachinist),
   });
 
   /**
@@ -503,6 +462,9 @@ export function VehicleAssignModal({
     }
     return byWeek;
   }, [requestWaybills]);
+
+  /** Кто стоит в действующих листах заявки: им подписана пустота поля машиниста (ADR 0083). */
+  const currentMachinist = useMemo(() => currentMachinistName(requestWaybills), [requestWaybills]);
 
   const lessorId = Form.useWatch('lessorId', form);
   const vehicleId = Form.useWatch('vehicleId', form);
@@ -766,7 +728,11 @@ export function VehicleAssignModal({
       r.requests.length < routeRequestCapacity(r.formCode) &&
       isRouteEditable(r.waybill?.status ?? null),
   );
-  /** Выбран готовый рейс: водитель и реквизиты выезда в нём уже свои, спрашивать их незачем. */
+  /**
+   * Выбран готовый рейс: реквизиты выезда в нём уже свои, и переспрашивать их незачем — а вот
+   * водителя окно спрашивает и здесь (ADR 0048). Поле там необязательное: рейс уже едет, и
+   * молчание означает «за рулём остаётся тот же».
+   */
   const joiningRoute = !!routeId && routeId !== NEW_ROUTE;
   const joinedRoute = routeOptions.find((r) => r.id === routeId) ?? null;
 
@@ -779,124 +745,74 @@ export function VehicleAssignModal({
 
   // Список водителей — весь справочник (ADR 0064): ни категория, ни полнота документов из него
   // никого не убирают, обе помечают строку и объясняются предупреждением под полем.
-  // Дата, на которую считается годность: у рейса — день подачи, у перегона — день, когда технику
-  // повезут. Даты разные, и водитель, годный сегодня, завтра может быть с истёкшим удостоверением.
+  /**
+   * Дата, на которую считается годность документов: у рейса — его день, у перегона — день, когда
+   * технику повезут. Даты разные, и водитель, годный сегодня, завтра может быть с истёкшим
+   * удостоверением.
+   *
+   * У готового рейса день берётся из него самого, а не из `tripDate`: подсказка приходит на день
+   * заявки, а человек садится в конкретный рейс — сверять удостоверение надо с тем днём, который
+   * напечатается в его листе. Совпадают они почти всегда (рейсы подсказываются на эту же дату),
+   * но «почти» здесь стоило бы просроченного документа в бланке.
+   */
   const driverDate = needsRoute
-    ? tripDate
+    ? (joinedRoute?.routeDate ?? tripDate)
     : wantsDelivery
       ? deliveryDate?.format('YYYY-MM-DD')
       : undefined;
-  const driversNeeded = (needsRoute && !joiningRoute) || wantsDelivery;
+  /**
+   * Прицеп, которым меряется требуемая категория. У нового рейса его называют здесь же галочкой, у
+   * готового он свой: спросить список по галочке формы значило бы мерить чужой рейс графой,
+   * которой в нём нет, — и водитель без «E» выглядел бы годным для сцепки.
+   */
+  const driverTrailer = joinedRoute ? joinedRoute.withTrailer : withTrailer;
+  /**
+   * Водителя спрашивают обе ветки маршрута (ADR 0048) — и новая, и готовая, — плюс перегон.
+   * Раньше готовая была исключена, и список не грузился вовсе: менять там было нечего.
+   */
+  const driversNeeded = needsRoute || wantsDelivery;
   const { data: selection, isFetching: driversLoading } = useQuery({
-    queryKey: ['drivers', 'available', vehicleId, driverDate, withTrailer],
-    queryFn: () => driversApi.available({ vehicleId: vehicleId!, on: driverDate!, withTrailer }),
+    queryKey: ['drivers', 'available', vehicleId, driverDate, driverTrailer],
+    queryFn: () =>
+      driversApi.available({ vehicleId: vehicleId!, on: driverDate!, withTrailer: driverTrailer }),
     enabled: driversNeeded && !!vehicleId && !!driverDate,
   });
-  // Порядок задал сервер: пригодные первыми — сперва комплект документов, затем категория
-  // (ADR 0064, ADR 0055), внутри них работавшие на этой машине (ADR 0056). Пометки в строке
-  // объясняют, почему человек там, — без них список выглядел бы сбитым алфавитом.
-  const driverOptions = (selection?.drivers ?? []).map((d) => ({
-    value: d.personId,
-    label: [
-      d.fullName,
-      d.categories.join(', '),
-      d.personnelNo && `таб. ${d.personnelNo}`,
-      // Пробелы подписаны тем документом, которым человек допущен по должности (ADR 0095):
-      // «без номера ВУ» и «без номера УТМ» — разные бумаги и разные люди.
-      driverDocumentGapsHint(d.gaps, d.credentialTypeCode),
-      d.matchesRequiredCategory ? null : DRIVER_CATEGORY_MISMATCH_HINT,
-      driverWorkedOnVehicle(d) ? DRIVER_WORKED_ON_VEHICLE_HINT : null,
-      d.verificationStatus === 'unverified' ? 'документ не проверен' : null,
-    ]
-      .filter(Boolean)
-      .join(' · '),
-  }));
+  const driverOptions = (selection?.drivers ?? []).map(driverOption);
 
-  /**
-   * Машинисты для листов ЭСМ-2 (миграция 0087) — весь справочник водителей, без единого отбора.
-   *
-   * Это не тот же список, что выше, и намеренно. `drivers/available` требует непустой СНИЛС,
-   * годное на дату удостоверение и смотрит на категорию под машину — всё это графы 4-П, без
-   * которых тот лист недействителен. В бланке ЭСМ-2 их нет вовсе: граф под удостоверение и СНИЛС
-   * Госкомстат в нём не разметил, и портал их туда не печатает (ADR 0095, решение В1) — хотя
-   * удостоверение тракториста-машиниста он с тех пор ведёт. Поэтому годится любой действующий
-   * водитель, и ни машина, ни дата на список не влияют.
-   */
-  const needsMachinist = !reassign && request?.requestType === 'special_equipment' && !isRental;
-  /**
-   * Обязателен ли машинист. У обычного заказа — да: перевод в работу тем же движением выписывает
-   * недельные ЭСМ-2 на весь срок, и лист без человека недействителен. У линейного — нет: листов в
-   * этот момент не рождается ни одного (ADR 0100 решение 5), и требовать имя не за что. Поле
-   * остаётся: назначение хранит машиниста по умолчанию — того, кто обычно выходит на этой машине.
-   */
-  const machinistRequired = needsMachinist && !isLinear;
+  /** Спрашивается ли машинист ЭСМ-2 и обязателен ли он — обе ветки в `assignDriverHints`. */
+  const { needsMachinist, machinistRequired } = machinistFieldMode({
+    requestType: request?.requestType,
+    isRental,
+    reassign,
+    isLinear,
+  });
   const { data: machinists, isFetching: machinistsLoading } = useQuery({
     queryKey: ['drivers', 'machinists'],
     queryFn: () => driversApi.list({ pageSize: 200, sortBy: 'fullName', sortDir: 'asc' }),
     enabled: needsMachinist,
   });
-  const machinistOptions = (machinists?.items ?? []).map((d) => ({
-    value: d.id,
-    label: [d.fullName, d.personnelNo && `таб. ${d.personnelNo}`].filter(Boolean).join(' · '),
-  }));
+  const machinistOptions = (machinists?.items ?? []).map(machinistOption);
 
-  /**
-   * Сколько бланков израсходует перевод в работу и на какие недели: лист ЭСМ-2 выписывается на
-   * каждую неделю срока (миграция 0087), и человек должен видеть это до нажатия, а не узнавать
-   * из журнала. Считается тем же `esm2Periods`, которым выписывает сервер.
-   *
-   * У линейной заявки перечня нет, потому что нет и расхода: ни одного бланка перевод в работу по
-   * ней не тратит (ADR 0100 решение 5). Обещать недели, которых не будет, здесь хуже молчания.
-   */
-  const esm2Weeks = useMemo(() => {
-    if (!needsMachinist || isLinear) return [];
-    const from = dateFrom?.format('YYYY-MM-DD');
-    if (!from) return [];
-    return esm2Periods(from, dateTo?.format('YYYY-MM-DD') ?? null);
-  }, [needsMachinist, isLinear, dateFrom, dateTo]);
+  /** Недели, на которые перевод в работу выпишет листы: ими подписано поле машиниста. */
+  const esm2Weeks = useMemo(
+    () => plannedEsm2Weeks({ needsMachinist, reassign, isLinear, dateFrom, dateTo }),
+    [needsMachinist, reassign, isLinear, dateFrom, dateTo],
+  );
+  const machinistExtra = machinistFieldExtra({ reassign, isLinear, currentMachinist, esm2Weeks });
 
-  /**
-   * Что не так с выбранным водителем: нет категории, которой требует машина, и/или не внесены
-   * документы, которые печатает бланк. Пометки в строке списка мало — её читают при выборе и
-   * забывают, — а решение садить человека остаётся за диспетчером (ADR 0055, ADR 0064): портал
-   * ничего не запрещает, но обе стороны расхождения обязан назвать.
-   *
-   * Пробелы документов названы вместе с бланком: пустая графа в 4-П и пустая графа в форме № 3 —
-   * разные графы, и «касается ли это меня» человек должен понять не выходя из окна.
-   */
+  // Что не так с выбранным водителем — двумя отдельными предупреждениями (ADR 0055, ADR 0064).
   const selectedDriver = selection?.drivers.find((d) => d.personId === driverPersonId);
-  // У обеих сторон расхождения назван вид документа (ADR 0095): требование машины ссылается на
-  // категорию любого вида, и «нужна C, а открыта C» без него читалось бы как ошибка портала.
-  const driverCategoryMismatch =
-    selection?.requiredCategory &&
-    selection.requiredCategoryType &&
-    selectedDriver &&
-    !selectedDriver.matchesRequiredCategory
-      ? driverCategoryMismatchWarning(
-          selection.requiredCategory,
-          selection.requiredCategoryType,
-          selectedDriver.categories,
-          selectedDriver.credentialTypeCode,
-        )
-      : null;
-  const driverGaps = selectedDriver
-    ? driverDocumentGapsWarning(
-        selectedDriver.gaps,
-        selectedDriver.credentialTypeCode,
-        requirement.formCode ? waybillFormShortLabels[requirement.formCode] : null,
-      )
-    : null;
+  const driverCategoryMismatch = driverCategoryNote(selection, selectedDriver);
+  const driverGaps = driverGapsNote(selectedDriver, requirement.formCode);
   /** Тот же вопрос про водителя перегона: лист по нему — всегда 4-П (миграция 0082). */
   const deliveryDriverId = Form.useWatch('deliveryDriverId', form);
   const deliveryDriver = selection?.drivers.find((d) => d.personId === deliveryDriverId);
-  const deliveryDriverGaps =
-    wantsDelivery && deliveryDriver
-      ? driverDocumentGapsWarning(
-          deliveryDriver.gaps,
-          deliveryDriver.credentialTypeCode,
-          waybillFormShortLabels['4p'],
-        )
-      : null;
+  const deliveryDriverGaps = wantsDelivery ? driverGapsNote(deliveryDriver, '4p') : null;
+
+  /** Пустота поля водителя у готового рейса объясняется словами: молчание значит «не менять». */
+  const joinedDriverExtra = joinedRouteDriverExtra(joinedRoute);
+  /** Состав рейса поимённо: смена водителя коснётся и чужих заявок задания. */
+  const joinedRouteNote = joinedRouteDriverNote(joinedRoute, driverPersonId);
 
   /**
    * Рейс подставляется сам только под уже известную машину: у назначенной единицы (повторный
@@ -925,6 +841,31 @@ export function VehicleAssignModal({
     const own = vehicleId ? routeOptions.find((r) => r.vehicleId === vehicleId) : null;
     form.setFieldsValue({ routeId: own?.id ?? NEW_ROUTE });
   }, [needsRoute, vehicleId, prefill?.routes]);
+
+  /**
+   * Смена рейса очищает водителя: в двух ветках поле спрашивает разное — у нового рейса «кто
+   * поедет», у готового «кем заменить того, кто уже за рулём». Переехавшее между ними имя
+   * означало бы, что портал сам пересадил за руль чужого рейса человека, выбранного совсем для
+   * другого, — ровно то, чего ADR 0083 не позволяет ни подстановкой, ни по недосмотру.
+   *
+   * Сравнением с прошлым значением, а не сбросом в самих обработчиках: рейс меняет и рука
+   * (`changeRoute`), и выбор машины (`changeVehicle`), и подстановка после ответа сервера, и
+   * пропажа рейса из подсказки — перечислять эти места по одному значит однажды забыть одно.
+   * Сбрасывать же на каждый прогон эффекта нельзя: подсказка рейсов перечитывается сама по себе,
+   * и уже выбранный водитель нового рейса исчезал бы у человека из-под руки.
+   *
+   * Вместе со значением снимается и пометка отказа: «Выберите водителя» ставит либо правило поля,
+   * либо блокер (ADR 0094), а обязательным оно было в прошлой ветке — у готового рейса красное
+   * поле требовало бы того, чего окно уже не спрашивает. Сама пометка не снялась бы: правил у
+   * необязательного поля нет, а блокеры чистятся по `onValuesChange`, которого `setFieldsValue`
+   * не поднимает.
+   */
+  const driverRoute = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (driverRoute.current === routeId) return;
+    driverRoute.current = routeId;
+    form.setFields([{ name: 'driverPersonId', value: undefined, errors: [] }]);
+  }, [routeId]);
 
   /** Графы шапки наследуются от прошлого рейса этой машины — их правят раз в сезон, а не в рейс. */
   useEffect(() => {
@@ -1077,13 +1018,27 @@ export function VehicleAssignModal({
         // срока. У грузоперевозки поля нет — там водитель принадлежит рейсу. У линейной заявки
         // поле уходит пустым, если его не заполнили: назначение без машиниста законно, листы по
         // ней выписывают отдельно и своим человеком (ADR 0100 решение 6).
+        //
+        // Незаполненное поле уезжает не пустой строкой и не `null`, а отсутствием ключа:
+        // `undefined` теряется при сериализации тела, и сервер получает ровно то, что описано
+        // контрактом, — «машиниста не называли». При смене техники (ADR 0048) это и есть
+        // «оставить прежнего»: сверка ЭСМ-2 возьмёт человека с прежнего листа заявки.
         ...(needsMachinist ? { driverPersonId: v.machinistId } : {}),
-        // Рейс: готовый — одним идентификатором, новый — вместе с водителем и реквизитами выезда.
+        // Рейс: готовый — идентификатором и, если человека выбрали, новым водителем; новый —
+        // вместе с водителем и реквизитами выезда.
         ...(needsRoute
           ? {
               route:
                 v.routeId && v.routeId !== NEW_ROUTE
-                  ? { routeId: v.routeId }
+                  ? {
+                      routeId: v.routeId,
+                      // Ключ уходит только с выбранным именем. Отсутствие ключа контракт читает
+                      // как «водителя не трогать» (ADR 0048), и это единственное, чем окно может
+                      // выразить пустое поле: `null` там означает «снять», а рейс общий — снятие
+                      // оставило бы без водителя и чужие заявки. Такое решение принимают правкой
+                      // маршрута, где виден весь состав (ADR 0082), — здесь его не предлагают.
+                      ...(v.driverPersonId ? { driverPersonId: v.driverPersonId } : {}),
+                    }
                   : {
                       newRoute: {
                         driverPersonId: v.driverPersonId,
@@ -1135,15 +1090,7 @@ export function VehicleAssignModal({
     onSubmit(payload);
   };
 
-  // Пусто — значит пусто в парке целиком: список не сужен ни типом, ни видом (ADR 0064), и
-  // обещать, что техника найдётся где-то ещё, нечем.
-  const emptyText = isFetching
-    ? 'Загружаем технику…'
-    : ownership === 'own'
-      ? 'Собственной техники в работе нет — возьмите её в аренду'
-      : lessorId
-        ? 'У этого арендодателя нет активных предложений'
-        : 'Активных предложений аренды нет';
+  const emptyText = emptyVehicleListText({ isFetching, ownership, lessorId });
 
   /** Заголовок шага: на втором окно говорит уже не про подбор, а про последствия возврата. */
   const stepTitle = step ? 'Последствия возврата' : reassign ? 'Смена техники' : 'В работу';
@@ -1298,42 +1245,6 @@ export function VehicleAssignModal({
                       inputReadOnly={isMobile}
                     />
                   </Form.Item>
-                  {/* Машинист: на него выписываются недельные листы ЭСМ-2, и без него бланк
-                  недействителен. Список — весь справочник водителей: граф СНИЛС и удостоверения
-                  в этом бланке нет, и отбирать по ним некого (ADR 0055). */}
-                  {needsMachinist && (
-                    <Form.Item
-                      name="machinistId"
-                      label="Машинист"
-                      rules={
-                        machinistRequired ? [{ required: true, message: 'Выберите машиниста' }] : []
-                      }
-                      extra={
-                        isLinear
-                          ? 'Необязательно: листов ЭСМ-2 перевод в работу не выписывает'
-                          : esm2Weeks.length > 0
-                            ? `Будет выписано листов ЭСМ-2: ${esm2Weeks.length} — ${esm2Weeks
-                                .map(
-                                  (w) =>
-                                    `${formatDateOnly(w.from).slice(0, 5)}–${formatDateOnly(w.to).slice(0, 5)}`,
-                                )
-                                .join(', ')}`
-                            : 'На каждую неделю срока работ выписывается свой путевой лист'
-                      }
-                    >
-                      {/* Человека за технику портал не назначает сам: даже когда в справочнике один
-                      водитель, за руль его сажает диспетчер. Подсказки в строках списка остаются —
-                      они помогают выбрать, а не выбирают. */}
-                      <AutoSelect
-                        autoSelectSole={false}
-                        options={machinistOptions}
-                        loading={machinistsLoading}
-                        placeholder="Кто сядет за технику"
-                        notFoundContent="В справочнике нет действующих водителей"
-                      />
-                    </Form.Item>
-                  )}
-
                   {/* Линейная техника (ADR 0100): вместо перечня недель и блока доставки — прямая
                   речь о том, чего в этой заявке не будет. Молчание было бы хуже: диспетчер,
                   привыкший видеть здесь список недель и галочку перегона, прочитал бы их
@@ -1375,6 +1286,40 @@ export function VehicleAssignModal({
                     <TimeInput />
                   </Form.Item>
                 </>
+              )}
+
+              {/* Машинист: на него выписываются недельные листы ЭСМ-2, и без него бланк
+              недействителен. Список — весь справочник водителей: граф СНИЛС и удостоверения
+              в этом бланке нет, и отбирать по ним некого (ADR 0055).
+
+              Поле стоит вне ветки фактического срока, потому что спрашивается в обоих режимах:
+              машину меняют вместе с человеком (ADR 0048). Место у него при этом одно на оба
+              случая — там же, где его ищут глазами при переводе в работу; срок, перечень недель
+              и доставка остались в ветке выше, они про перевод в работу и ни о чём при смене
+              машины. */}
+              {needsMachinist && (
+                <Form.Item
+                  name="machinistId"
+                  label="Машинист"
+                  rules={
+                    machinistRequired ? [{ required: true, message: 'Выберите машиниста' }] : []
+                  }
+                  extra={machinistExtra}
+                >
+                  {/* Человека за технику портал не назначает сам: даже когда в справочнике один
+                  водитель, за руль его сажает диспетчер. Подсказки в строках списка остаются —
+                  они помогают выбрать, а не выбирают. По той же причине при смене техники сюда не
+                  подставлен прежний машинист (ADR 0083): пустое поле — это «человека не меняли», и
+                  очистка возвращает его же, поэтому крестик у поля есть только там. */}
+                  <AutoSelect
+                    autoSelectSole={false}
+                    options={machinistOptions}
+                    loading={machinistsLoading}
+                    allowClear={reassign}
+                    placeholder={reassign ? 'Оставить прежнего' : 'Кто сядет за технику'}
+                    notFoundContent="В справочнике нет действующих водителей"
+                  />
+                </Form.Item>
               )}
 
               {/* Шаг 1: каким рейсом заявка поедет. Вопрос стоит до техники, потому что так и
@@ -1706,14 +1651,14 @@ export function VehicleAssignModal({
                   {joiningRoute && (
                     <FormGrid.Full>
                       <Typography.Text type="secondary">
-                        Заявка встанет строкой задания в рейс {joinedRoute?.displayNumber}: водитель
-                        и реквизиты выезда там уже свои, и правят их в карточке маршрута.
+                        Заявка встанет строкой задания в рейс {joinedRoute?.displayNumber}:
+                        реквизиты выезда там уже свои, и правят их в карточке маршрута.
                       </Typography.Text>
                     </FormGrid.Full>
                   )}
 
-                  {/* Новый рейс спрашивает то, чего у готового уже спрашивать не надо: кто за рулём
-                  и чем заполнены графы шапки бланка. Заголовок здесь, а не наверху у выбора
+                  {/* Новый рейс спрашивает то, чего у готового уже спрашивать не надо: чем
+                  заполнены графы шапки бланка. Заголовок здесь, а не наверху у выбора
                   рейса: наверху решают, куда заявка едет, а тут заводят сам рейс. */}
                   {!joiningRoute && (
                     <FormGrid.Full>
@@ -1723,38 +1668,62 @@ export function VehicleAssignModal({
                     </FormGrid.Full>
                   )}
 
-                  {!joiningRoute && (
-                    <Form.Item
-                      name="driverPersonId"
-                      label="Водитель"
-                      rules={[{ required: true, message: 'Выберите водителя' }]}
-                      extra={
-                        driverOptions.length === 0 && !driversLoading
+                  {/* Водитель — общий вопрос обеих веток (ADR 0048), но разной обязательности: у
+                  нового рейса без него не выписать листа, у готового пустое поле значит «за рулём
+                  тот же». Одно поле на оба случая, а не два: графа бланка одна, и второе поле
+                  разошлось бы с первым списком, пометками и предупреждениями ниже. */}
+                  <Form.Item
+                    name="driverPersonId"
+                    label="Водитель"
+                    rules={joiningRoute ? [] : [{ required: true, message: 'Выберите водителя' }]}
+                    extra={
+                      joiningRoute
+                        ? joinedDriverExtra
+                        : driverOptions.length === 0 && !driversLoading
                           ? 'В справочнике нет действующих водителей: заведите карточку или ' +
                             'откройте специализацию «водитель» у существующей.'
                           : undefined
-                      }
-                    >
-                      {/* Водитель не подставляется никогда — ни единственным в справочнике, ни
-                      вчерашним на этой машине. За руль человека сажает диспетчер, и подставленная
-                      фамилия читается как уже принятое решение: её пролистывают, а в бланк она
-                      попадает настоящей. Список остаётся подсказывающим — пригодные первыми, с
-                      пометками о категории и документах (ADR 0055, ADR 0064). */}
-                      <AutoSelect
-                        autoSelectSole={false}
-                        options={driverOptions}
-                        showSearch
-                        optionFilterProp="label"
-                        loading={driversLoading}
-                        placeholder="Выберите водителя"
+                    }
+                  >
+                    {/* Водитель не подставляется никогда — ни единственным в справочнике, ни
+                    вчерашним на этой машине, ни нынешним водителем готового рейса (ADR 0083). За
+                    руль человека сажает диспетчер, и подставленная фамилия читается как уже
+                    принятое решение: её пролистывают, а в бланк она попадает настоящей. Список
+                    остаётся подсказывающим — пригодные первыми, с пометками о категории и
+                    документах (ADR 0055, ADR 0064).
+
+                    Крестик только у готового рейса: там очистка возвращает осмысленное «водителя
+                    не трогать», а у нового возвращать не во что — поле обязательное. */}
+                    <AutoSelect
+                      autoSelectSole={false}
+                      options={driverOptions}
+                      showSearch
+                      allowClear={joiningRoute}
+                      optionFilterProp="label"
+                      loading={driversLoading}
+                      placeholder={joiningRoute ? 'Оставить водителя рейса' : 'Выберите водителя'}
+                    />
+                  </Form.Item>
+
+                  {/* Рейс общий: одно задание на всех, и водитель в нём один — смена касается
+                  каждой заявки состава, а не только этой. Читается это до нажатия и под тем же
+                  полем: в списке рейсов видно «3 из 7 заявок», а чьи они — уже нет. */}
+                  {joiningRoute && joinedRouteNote && (
+                    <FormGrid.Full>
+                      <Alert
+                        type={joinedRouteNote.type}
+                        showIcon
+                        message={joinedRouteNote.message}
+                        description={joinedRouteNote.description}
                       />
-                    </Form.Item>
+                    </FormGrid.Full>
                   )}
 
                   {/* Два предупреждения, а не одно: пустая графа бланка и чужая категория — разные
                   вещи, и первое проверяют по справочнику водителей, а второе по документу в
-                  руках. Оба ничего не запрещают (ADR 0055, ADR 0064). */}
-                  {!joiningRoute && driverGaps && (
+                  руках. Оба ничего не запрещают (ADR 0055, ADR 0064). Про водителя готового рейса
+                  они говорят то же самое: бланк у рейса тот же, и графы в нём те же. */}
+                  {driverGaps && (
                     <FormGrid.Full>
                       <Alert
                         type="warning"
@@ -1765,7 +1734,7 @@ export function VehicleAssignModal({
                     </FormGrid.Full>
                   )}
 
-                  {!joiningRoute && driverCategoryMismatch && (
+                  {driverCategoryMismatch && (
                     <FormGrid.Full>
                       <Alert
                         type="warning"
@@ -1777,7 +1746,9 @@ export function VehicleAssignModal({
                   )}
 
                   {/* Реквизиты выезда — свойства рейса: у готового они уже свои, и переспрашивать их
-                  здесь значило бы молча переписать чужой рейс. Прицеп поднимает требуемую
+                  здесь значило бы молча переписать чужой рейс. Водитель из этого правила выведен
+                  нарочно (ADR 0048): за руль садится человек, а не заполняется графа шапки, и
+                  меняют его тем же движением, каким меняют машину. Прицеп поднимает требуемую
                   категорию водителя, поэтому список выше пересобирается при его включении. */}
                   {!joiningRoute && (
                     <>

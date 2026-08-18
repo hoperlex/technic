@@ -277,6 +277,7 @@ import { loadVehicleRequestHistory } from '../services/vehicle-request-history';
 import { categorySpecsSql } from '../services/vehicle-categories';
 import {
   activeWaybillOfRequest,
+  assertRouteDriver,
   attachRequest,
   bumpRouteVersion,
   createRelocationRoute,
@@ -293,10 +294,13 @@ import {
   lockRoutesOfRequest,
   plannedDaysOfRequest,
   relocationRoutesOfRequest,
+  type RouteDriverChange,
   routeOfRequestDay,
   routeQuery,
   routeRequestCount,
+  type RouteRow,
   routeWaybill,
+  setRouteDriver,
 } from '../services/vehicle-routes';
 // Точки маршрута (план `docs/route-trips-plan.md`, этап 3): раскладка ездок и дня по остановкам.
 // Заявка зовёт её там, где меняет работу рейса, — при укладке в рейс, правке ездок и постановке
@@ -2063,6 +2067,12 @@ function namedRouteIds(route: AssignRouteInput | undefined): string[] {
  * Маршрут обязателен ровно там, где выписывается лист (грузоперевозка на собственной машине с
  * бланком за типом): у аренды рейс ведёт арендодатель, а у заказа техники на объект рейса нет
  * вовсе — там период стояния машины на площадке (ADR 0041).
+ *
+ * Вместе с готовым рейсом принимается и водитель (`route.driverPersonId`, ADR 0048): смена
+ * назначенной техники переставляет заявку в рейс новой машины, и человек за рулём меняется вместе
+ * с ней. Возвращается сделанная правка — событие о ней пишет ручка после коммита, тем же
+ * `vehicle_route.update`, каким его пишет обычная правка рейса (ADR 0082): вопрос «кто повёл этот
+ * рейс» один, и второго вида записи о нём в журнале быть не должно.
  */
 async function attachToRoute(
   tx: Tx,
@@ -2080,7 +2090,7 @@ async function attachToRoute(
     route: AssignRouteInput | undefined;
     actor: { id: string };
   },
-): Promise<void> {
+): Promise<RouteDriverChange | null> {
   const requirement = await waybillRequirementFor(tx, {
     requestType: params.request.requestType,
     vehicleId: params.assignment.vehicleId,
@@ -2100,7 +2110,7 @@ async function attachToRoute(
         { route: 'Маршрут не ведётся' },
       );
     }
-    return;
+    return null;
   }
 
   const routeDate = await tripDate(tx, params.request.id);
@@ -2109,10 +2119,38 @@ async function attachToRoute(
   // ответом стал бы первый попавшийся день.
   const current = await routeOfRequestDay(tx, params.request.id, null);
 
-  // Повторный перевод в работу после отката: заявка уже стоит в рейсе, и трогать его незачем —
-  // ровно так же прежняя выдача не поднимала второй талон для той же заявки.
+  // Повторный перевод в работу после отката: заявка уже стоит в названном рейсе, и переставлять
+  // её незачем — ровно так же прежняя выдача не поднимала второй талон для той же заявки.
   const requestedId = params.route && 'routeId' in params.route ? params.route.routeId : null;
-  if (current && (!requestedId || requestedId === current.routeId)) return;
+  /**
+   * Водитель, названный вместе с готовым рейсом (ADR 0048). Три состояния различаются здесь так
+   * же, как в контракте: `undefined` — не трогать, `null` — снять, идентификатор — поставить. У
+   * новой ветки поля нет вовсе: там водитель едет прямо в `INSERT` рейса.
+   */
+  const requestedDriver =
+    params.route && 'routeId' in params.route ? params.route.driverPersonId : undefined;
+  if (current && (!requestedId || requestedId === current.routeId)) {
+    /*
+     * Переезда нет — но водитель мог приехать и без переезда: смена ставок или повторный перевод
+     * в работу оставляют заявку в том же рейсе, а человека за рулём меняют. Отдельной ручкой это
+     * было бы вторым окном ровно там, где задача просила одно.
+     *
+     * Рейс уже под `FOR UPDATE`: его взял общий проход вызывающего (`lockRequestRoutes` вместе с
+     * `namedRouteIds`), поэтому `lockRoute` здесь — перечитывание строки, а не второй захват, и
+     * канонический порядок Р17 им не нарушается. Заморозка спрашивается своим отказом: молча
+     * пройти мимо выписанного листа смена водителя не вправе — в бланке напечатан прежний
+     * человек (ADR 0037, ADR 0041).
+     */
+    if (!requestedId || requestedDriver === undefined) return null;
+    const route = await lockRoute(tx, requestedId);
+    const waybill = await routeWaybill(tx, route.id);
+    if (!isRouteEditable(waybill?.status ?? null)) throw err.conflict(ROUTE_FROZEN_MESSAGE);
+    const changed = await setRouteDriver(tx, route, requestedDriver);
+    // Версию поднимает эта ветка сама: общего шага в конце, который делает это за укладку заявки,
+    // здесь не будет — состав рейса не менялся, изменилась только его шапка.
+    if (changed) await bumpRouteVersion(tx, route.id, params.actor.id);
+    return changed;
+  }
 
   if (current) {
     /*
@@ -2129,8 +2167,11 @@ async function attachToRoute(
   }
 
   let targetId = requestedId;
+  /** Названный рейс под блокировкой: им меняется водитель, когда заявка уже приехала в состав. */
+  let named: RouteRow | null = null;
   if (targetId) {
     const route = await lockRoute(tx, targetId);
+    named = route;
     if (route.vehicleId !== params.assignment.vehicleId) {
       throw err.unprocessable('Маршрут заведён на другую машину', { route: 'Другая машина' });
     }
@@ -2170,6 +2211,10 @@ async function attachToRoute(
     const newRoute = 'newRoute' in params.route ? params.route.newRoute : null;
     const driverPersonId = newRoute?.driverPersonId ?? null;
     const trip = newRoute?.trip;
+    // Человек проверяется одинаково у обеих веток: иначе «в новый рейс» и «в готовый» отвечали бы
+    // на одного и того же уволенного водителя по-разному — внешний ключ его пропускает (мягкое
+    // удаление), и в плане дня оказался бы человек, которого в справочнике уже нет.
+    if (driverPersonId) await assertRouteDriver(tx, driverPersonId);
     const [created] = await tx
       .insert(vehicleRoutes)
       .values({
@@ -2208,7 +2253,22 @@ async function attachToRoute(
    */
   await placeRequestTrips(tx, targetId!, params.request.id);
   await assertRoutePlacement(tx, { routeId: targetId!, formCode: requirement.formCode });
+  /*
+   * Водитель названного рейса — последним шагом, когда заявка уже в составе: в след правки должен
+   * попасть тот состав, которого смена водителя касается, вместе с только что приехавшей заявкой.
+   * Заморозку рейс уже отверг выше — до этого места замороженный не доходит вовсе.
+   *
+   * У нового рейса ветки нет: водитель уехал в его `INSERT`, менять там нечего и события о смене
+   * быть не может — рейс родился этой же транзакцией.
+   */
+  const driverChange =
+    named && requestedDriver !== undefined
+      ? await setRouteDriver(tx, named, requestedDriver)
+      : null;
+  // Версия поднимается один раз на всю правку рейса: состав, точки и шапка изменились одним
+  // действием, и две прибавки подряд читались бы как две разные правки в карточке маршрута.
   await bumpRouteVersion(tx, targetId!, params.actor.id);
+  return driverChange;
 }
 
 /**
@@ -2314,18 +2374,24 @@ async function detachOnStatus(
  * Замороженный выписанным листом рейс не отдаёт заявку: бланк уже у водителя, и исчезнуть из него
  * задним числом она не может — сначала лист аннулируют (`waybills.cancel`). Тем же правилом рейс
  * держит заявку при смене статуса (`detachOnStatus`).
+ *
+ * Водитель приезжает вместе с рейсом (`route.driverPersonId`) и правится там же, где заявка
+ * встаёт в состав, — ответ отдаётся наверх, ручке, которая пишет о нём событие рейса.
  */
 async function moveToRouteOfVehicle(
   tx: Tx,
   params: Parameters<typeof attachToRoute>[1],
-): Promise<void> {
+): Promise<RouteDriverChange | null> {
   /*
    * У линейного заказа переезжать нечему: назначение — машина по умолчанию, а фактическая машина
    * каждого дня своя и живёт в своём рейсе (ADR 0100 §4). Сменили машину заявки — сменилась та,
    * что выйдет в следующий незапланированный день; уже распланированные дни остаются как есть,
    * иначе смена техники утащила бы за собой один случайный день из тридцати.
+   *
+   * Названный рейс — а с ним и водитель — сюда не доходит по той же причине: дни линейного заказа
+   * ставят в рейсы своей дверью (`POST /:id/days/:date/route`), и её же окном меняют человека.
    */
-  if (params.request.isLinear) return;
+  if (params.request.isLinear) return null;
   // Лист, выписанный до маршрутов, держит заявку так же, как замороженный рейс: в бланке стоят
   // прежние машина и водитель, а рейса, который можно было бы проверить, у него нет. Спрашивается
   // до всего остального — новой машине бланк может быть и не нужен, но выданный уже на руках.
@@ -2363,7 +2429,37 @@ async function moveToRouteOfVehicle(
   // Прежнего рейса у заявки уже нет — `attachToRoute` заводит новый либо кладёт в существующий
   // маршрут новой машины. Ему же остаётся решить, нужен ли рейс вообще: у аренды и у типов без
   // бланка его не бывает, и тогда заявка просто остаётся без маршрута.
-  await attachToRoute(tx, params);
+  return attachToRoute(tx, params);
+}
+
+/**
+ * След смены водителя рейса — тем же событием, каким его пишет обычная правка маршрута
+ * (`PATCH /vehicle-routes/:id`, ADR 0082), и с тем же ключом `driverPersonId`: вопрос «кто повёл
+ * этот рейс» один, и двух видов записи о нём в журнале быть не должно. Заводить своё событие
+ * «водитель сменился при смене техники» значило бы разложить один ответ по двум лентам.
+ *
+ * Пишется на рейс, а не на заявку, и это осознанно: рейс общий — в нём стоят заявки нескольких
+ * объектов, и смена водителя касается их всех. Поэтому рядом называются и состав рейса, и заявка,
+ * из карточки которой пришли: по строке «сменили водителя» потом не понять, чью ещё работу это
+ * задело, а состав к моменту вопроса будет уже другим.
+ */
+async function auditRouteDriverChange(
+  actorUserId: string,
+  requestId: string,
+  change: RouteDriverChange,
+): Promise<void> {
+  await writeAudit({
+    actorUserId,
+    action: 'vehicle_route.update',
+    entityType: 'vehicle_route',
+    entityId: change.routeId,
+    metadata: {
+      driverPersonId: change.after,
+      previousDriverPersonId: change.before,
+      requestId,
+      routeRequestIds: change.requestIds,
+    },
+  });
 }
 
 /**
@@ -5684,6 +5780,11 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         before.status === 'done' &&
         status === 'confirmed';
 
+      /**
+       * Водитель, названный вместе с готовым рейсом перевода в работу (ADR 0048). Своё событие
+       * пишется после коммита и на рейс — тем же порядком, каким его пишет смена техники.
+       */
+      let routeDriver: RouteDriverChange | null = null;
       // Назначение, факт и уточнённый срок проверяются и пишутся в той же транзакции, что и статус:
       // заявка не должна побыть «в работе» ни на чём, «выполненной» без факта или взятой на одно
       // время с листом на другое — даже мгновение.
@@ -5783,7 +5884,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
             // рейса, когда состав собран. На заказ техники на объект, на аренду и на типы без
             // бланка рейс не ведётся вовсе, и это нормальный ход, а не ошибка.
             if (transitionRequiresAssignment(status)) {
-              await attachToRoute(tx, {
+              routeDriver = await attachToRoute(tx, {
                 // Режим — перечитанный под блокировкой (Р5), а не `before.isLinear`: у линейного
                 // заказа рейс не один, а по одному на день, и решать это по устаревшему значению
                 // значило бы положить заявку не в тот план.
@@ -5972,6 +6073,9 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
           },
         });
       }
+      // Водитель готового рейса, если его назвали переводом в работу (ADR 0048): событие рейса, а
+      // не заявки — правку читают в журнале маршрута, и общий он для всех своих заявок.
+      if (routeDriver) await auditRouteDriverChange(p.id, before.id, routeDriver);
       // Факт выполнения — тоже своё событие: «Выполнена» отвечает «что с заявкой», закрытие —
       // «сколько отработали и сколько это стоило». Повторное закрытие после отката видно
       // составом изменений: та же работа, но другое время и другая сумма, — а снятый возвратом
@@ -6161,6 +6265,12 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
 
       let esm2: Esm2SyncResult = { cancelled: [], issued: [] };
       let days: LinearDaysSyncResult = { detached: [], frozen: [] };
+      /**
+       * Смена водителя рейса, если её просили вместе с машиной (ADR 0048). Своё событие она
+       * пишет после коммита — рядом с событием назначения, но на другую сущность: правка рейса
+       * читается в журнале маршрута, а не заявки.
+       */
+      let routeDriver: RouteDriverChange | null = null;
       /** Назначение, каким оно записано; `null` на повторе операции — `perform` там не звался. */
       let assigned: Awaited<ReturnType<typeof resolveAssignment>> | null = null;
 
@@ -6191,7 +6301,7 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         assertLessorScope(p, saved.lessorId);
         // Рейс и назначение переезжают одной транзакцией: заявка не должна побыть назначенной на
         // одну машину, а стоящей в рейсе другой — по такой паре не выписать ни лист, ни счёт.
-        await moveToRouteOfVehicle(tx, {
+        routeDriver = await moveToRouteOfVehicle(tx, {
           request: { ...before, isLinear: isLinearRequest(before) },
           assignment: saved,
           route,
@@ -6355,6 +6465,9 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
             : {}),
         },
       });
+      // Смена водителя — событие рейса, а не заявки: сменить его просили тем же запросом, но
+      // отвечает он на другой вопрос и читается в журнале маршрута (ADR 0082).
+      if (routeDriver) await auditRouteDriverChange(p.id, before.id, routeDriver);
       return (await getDto(before.id))!;
     },
   );

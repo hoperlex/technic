@@ -238,6 +238,78 @@ export async function bumpRouteVersion(tx: Tx, id: string, actorId: string): Pro
   return updated?.version ?? 0;
 }
 
+// ── Водитель рейса ──
+
+/**
+ * Водитель существует и не уволен. Допуск к этой машине на эту дату здесь не спрашивается
+ * намеренно: его спрашивает отбор при выписке листа (ADR 0037 п. 6) — рейс планируют заранее, а
+ * удостоверение может лежать в работе у кадровика. Тем же условием проверяют человека заведение
+ * рейса (`POST /vehicle-routes`) и постановка дня линейного заказа (`openDayRoute`).
+ */
+export async function assertRouteDriver(tx: Tx, driverPersonId: string): Promise<void> {
+  const [row] = await tx
+    .select({ deletedAt: persons.deletedAt })
+    .from(persons)
+    .where(eq(persons.id, driverPersonId));
+  if (!row || row.deletedAt) throw err.badRequest('Водитель не найден');
+}
+
+/**
+ * Смена водителя рейса, какой её показывает журнал: «было → стало» и состав, которого она
+ * коснулась.
+ */
+export interface RouteDriverChange {
+  routeId: string;
+  before: string | null;
+  after: string | null;
+  /**
+   * Заявки, стоявшие в рейсе в момент правки. Водитель у рейса один, и меняется он сразу всем —
+   * а по одному идентификатору рейса этого потом не восстановить: состав к моменту вопроса будет
+   * уже другим.
+   */
+  requestIds: string[];
+}
+
+/**
+ * Поставить за руль рейса названного человека (или снять водителя вовсе).
+ *
+ * Живёт здесь, а не в ручке заявки, потому что предмет правки — рейс: «сменить водителя» обязано
+ * значить одно и то же, откуда бы ни пришли — из правки маршрута (ADR 0082) или из смены
+ * назначенной техники (ADR 0048), — вместе со следом, который правка оставляет.
+ *
+ * Заморозки и прав внутри нет намеренно: их место у вызывающего. Рейс он к этому моменту уже взял
+ * `FOR UPDATE` (Р17) и лист его уже спросил (`isRouteEditable`), а второй `routeWaybill` ответил
+ * бы ровно то же самое — и разошёлся бы с первым только тем, что кто-то забыл его позвать.
+ *
+ * Версию рейса функция не поднимает по той же причине: у укладки заявки в рейс она двигается один
+ * раз в конце, и вторая прибавка за ту же транзакцию сбила бы счёт правок, по которому карточка
+ * решает, не пересобрал ли рейс сосед. Поднимает версию тот, кто зовёт.
+ *
+ * Совпал водитель — правки нет вовсе (`null` в ответе): «поставили того же» не событие, и запись
+ * о нём в журнале рейса была бы неправдой.
+ */
+export async function setRouteDriver(
+  tx: Tx,
+  route: RouteRow,
+  driverPersonId: string | null,
+): Promise<RouteDriverChange | null> {
+  // Сверка раньше проверки человека: уволенный водитель, уже стоящий в рейсе, — это не правка, и
+  // отказывать за него тому, кто прислал прежнее значение, значило бы запирать соседние поля.
+  if (route.driverPersonId === driverPersonId) return null;
+  if (driverPersonId) await assertRouteDriver(tx, driverPersonId);
+  await tx.update(vehicleRoutes).set({ driverPersonId }).where(eq(vehicleRoutes.id, route.id));
+  const rows = await tx
+    .select({ requestId: vehicleRouteRequests.requestId })
+    .from(vehicleRouteRequests)
+    .where(eq(vehicleRouteRequests.routeId, route.id));
+  return {
+    routeId: route.id,
+    before: route.driverPersonId,
+    after: driverPersonId,
+    requestIds: rows.map((row) => row.requestId),
+  };
+}
+
 // ── Путевой лист рейса ──
 
 /**

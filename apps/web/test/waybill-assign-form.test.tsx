@@ -385,7 +385,7 @@ describe('маршрут в форме перевода в работу', () => 
     // на которое сервер ответил бы отказом.
     await waitFor(() => expect(screen.getByText(/Машину задал рейс Р-12/)).toBeDefined());
     expect(document.querySelector('#vehicleId')!.getAttribute('disabled')).not.toBeNull();
-    expect(screen.getByText(/водитель и реквизиты выезда там уже свои/)).toBeDefined();
+    expect(screen.getByText(/реквизиты выезда там уже свои/)).toBeDefined();
   });
 
   it('на собственную машину предлагает готовый рейс этого дня', async () => {
@@ -394,9 +394,10 @@ describe('маршрут в форме перевода в работу', () => 
 
     // Рейс подставлен сам: диспетчер собирает день машины, а не заводит второй рейс на ту же дату.
     expect(await screen.findByTitle(/Р-12/)).toBeDefined();
-    // Водитель и реквизиты выезда — свойства рейса: у готового их не переспрашивают.
+    // Реквизиты выезда — свойства рейса: у готового их не переспрашивают. Водителя с недавних пор
+    // спрашивают и здесь (ADR 0048): рейс тот же, а за рулём может ехать другой человек.
     expect(screen.queryByText('Рейс с прицепом')).toBeNull();
-    expect(screen.getByText(/водитель и реквизиты выезда там уже свои/)).toBeDefined();
+    expect(screen.getByText(/реквизиты выезда там уже свои/)).toBeDefined();
   });
 
   it('когда рейса на этот день нет, спрашивает водителя и реквизиты нового', async () => {
@@ -663,5 +664,86 @@ describe('машинист и недельные листы ЭСМ-2', () => {
     await waitFor(() => expect(onSubmit).toHaveBeenCalled());
     const body = onSubmit.mock.calls[0]![0] as { assignment: { driverPersonId?: string } };
     expect(body.assignment.driverPersonId).toBe(MACHINIST.id);
+  });
+});
+
+/**
+ * Водитель готового рейса (ADR 0048): его спрашивают там же, где кладут заявку в уже собранный
+ * рейс, — иначе сменить человека можно было только заведением лишнего маршрута «с нужным
+ * водителем», и тот оставался пустой записью в плане дня.
+ *
+ * Правило поля то же, что у всех прочих полей человека в портале (ADR 0083): пустое, ничего не
+ * подставлено, и пустота значима — «водителя не трогать». Снятие водителя здесь не предлагается
+ * вовсе: его снимают правкой маршрута (ADR 0082).
+ */
+describe('водитель готового рейса', () => {
+  /** Рейс с составом: смена водителя касается всех заявок рейса, и человек должен это прочесть. */
+  const SHARED_ROUTE: VehicleRouteDto = {
+    ...EXISTING_ROUTE,
+    requests: [
+      {
+        requestId: 'r-99',
+        displayNumber: 'ТС-499',
+        position: 1,
+        status: 'confirmed',
+        customerName: 'Объект Мытищи',
+        loadingLocation: 'Карьер',
+        unloadingLocation: 'Мытищи, ул. Летняя, 3',
+        scheduledAt: '2026-08-10T09:00:00.000Z',
+        scheduledTimeUnspecified: false,
+        cargoLabel: '12 м³',
+      },
+    ],
+  };
+
+  /** Окно на уже назначенной машине: единственный готовый рейс её дня подставляется сам. */
+  function renderWithRoute(route: VehicleRouteDto, onSubmit?: (v: unknown) => void) {
+    renderModal({ vehicle: OWN_VEHICLE, routes: [route], onSubmit });
+    return screen.findByText(/Заявка встанет строкой задания в рейс Р-12/);
+  }
+
+  /** Тело назначения, каким окно отдало его наружу. */
+  function routeOf(onSubmit: ReturnType<typeof vi.fn>): Record<string, unknown> {
+    const payload = onSubmit.mock.calls[0]![0] as {
+      assignment: { route: Record<string, unknown> };
+    };
+    return payload.assignment.route;
+  }
+
+  it('поле показано, пусто, а нынешний водитель назван подсказкой', async () => {
+    await renderWithRoute(EXISTING_ROUTE);
+
+    // Имя стоит текстом — в поле его нет: подставленная фамилия читается как принятое решение.
+    await screen.findByText(/Сейчас за рулём Сидоров Сидор Сидорович/);
+    expect(screen.queryByTitle('Сидоров Сидор Сидорович')).toBeNull();
+  });
+
+  it('пустое поле в тело не попадает: рейс общий, и молчание значит «не менять»', async () => {
+    const onSubmit = vi.fn();
+    await renderWithRoute(EXISTING_ROUTE, onSubmit);
+
+    fireEvent.click(screen.getByText('Взять в работу'));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+
+    expect(routeOf(onSubmit)).toEqual({ routeId: 'route-1' });
+    expect('driverPersonId' in routeOf(onSubmit)).toBe(false);
+  });
+
+  it('выбранный водитель уходит вместе с рейсом одним телом', async () => {
+    const onSubmit = vi.fn();
+    await renderWithRoute(EXISTING_ROUTE, onSubmit);
+
+    await selectOption('Водитель', /Тестовый Водитель Первый/);
+    fireEvent.click(screen.getByText('Взять в работу'));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+
+    expect(routeOf(onSubmit)).toEqual({ routeId: 'route-1', driverPersonId: 'p-1' });
+  });
+
+  it('о составе рейса предупреждают до нажатия: водитель у рейса один на всех', async () => {
+    await renderWithRoute(SHARED_ROUTE);
+
+    await screen.findByText(/Водитель у рейса один на все заявки/);
+    expect(screen.getByText(/ТС-499/)).toBeDefined();
   });
 });
