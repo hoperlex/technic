@@ -1,6 +1,6 @@
 import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import pg from 'pg';
-import { asc, eq, sql } from 'drizzle-orm';
+import { and, asc, eq, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { RoleAddon } from '@technic/contracts';
 import { applyMigrations } from '../src/db/migration-journal';
@@ -11,12 +11,12 @@ import type { db as AppDb } from '../src/db/client';
 import type * as SchemaNs from '../src/db/schema';
 
 /**
- * Двойная запись назначений на настоящих путях учётки (ADR 0106, решение 9, шаг 1a) — через HTTP,
- * на живой схеме.
+ * Запись назначений на настоящих путях учётки (ADR 0106, решение 9, шаги 1a–1d) — через HTTP, на
+ * живой схеме.
  *
- * **Чем этот файл отличается от `user-grants-dual-write.db.test.ts`.** Тот зовёт
+ * **Чем этот файл отличается от `user-grants-single-write.db.test.ts`.** Тот зовёт
  * `replaceUserAddons` напрямую, своей транзакцией, и проверяет свойства строк. Заявление шага 1a
- * шире: «во всех путях вызова обе записи идут одной транзакцией», — а путей у сервиса три, и все
+ * шире: «во всех путях вызова запись идёт транзакцией самой правки», — а путей у сервиса три, и все
  * три живут в `routes/users.ts`: заведение учётки (`POST /users`), правка (`PATCH /users/:id`) и
  * рассмотрение заявки на регистрацию (тот же `PATCH` с объявленным намерением). До этого файла
  * заявление держалось чтением кода: ни один тест не входил в маршрут учёток вовсе.
@@ -24,17 +24,24 @@ import type * as SchemaNs from '../src/db/schema';
  * **Что ловится только отсюда.** Транзакцию открывает маршрут, а не сервис — `tx` приходит
  * снаружи, — и правку учётки составляют ещё пять действий рядом: область, работник, строка
  * `users`, `authVersion`, письмо. Порядок и границы этой транзакции сервису не видны: вынеси
- * зеркалирование в свой `db.transaction`, забудь дождаться его `await`, поставь его после
+ * запись назначений в свой `db.transaction`, забудь дождаться его `await`, поставь его после
  * коммита — тест сервиса пройдёт целиком. Здесь же проверяется то, чего у сервиса нет вовсе:
  * `granted_by` берётся из принципала запроса (а не из первого попавшегося администратора),
  * несовместимость возвращает 400 и **не оставляет строк**, а сменившийся набор поднимает
- * `authVersion` — то есть гасит выданные токены. Последнее и связывает двойную запись с
- * безопасностью: назначение, записанное без отзыва токенов, начинает действовать не тогда, когда
- * его выдали.
+ * `authVersion` — то есть гасит выданные токены. Последнее и связывает выдачу с безопасностью:
+ * назначение, записанное без отзыва токенов, начинает действовать не тогда, когда его выдали.
+ *
+ * **Что изменил шаг 1d.** Единственным писателем назначений стал `applyAddonGrants`, а
+ * `user_role_addons` не пишется вовсе — и утверждений о её строках здесь не осталось: доказывали бы
+ * они теперь не запись, а её отсутствие, и предмет этот чужой (`user-grants-single-write`). Заодно
+ * лишились второй половины две сверки времени: «одна транзакция — одно время» сравнивало отметки
+ * двух таблиц, а сравнивать стало не с чем. Обе переформулированы на соседнюю строку, которую та же
+ * транзакция датирует своим `now()`, — саму учётку при заведении и запись журнала о рассмотрении
+ * заявки.
  *
  * **Что добавилось на шаге 1c.** Витрина учёток (карточка и список) читает пометки рядом с ролью из
- * назначенных полномочий, а не из `user_role_addons`, — и проверяется это здесь же, потому что
- * источник у неё тот же самый маршрут. Прав по новой схеме файл по-прежнему не касается: `can`
+ * назначенных полномочий — и проверяется это здесь же, потому что источник у неё тот же самый
+ * маршрут. Прав по новой схеме файл по-прежнему не касается: `can`
  * проверяют `access-matrix` и `access-scope`, состав системных наборов — `grants-catalog.db.test.ts`,
  * перенос — `backfill-grants.db.test.ts`, сами выражения чтения — `user-grants-read.db.test.ts`.
  *
@@ -242,25 +249,6 @@ async function newRegistration(): Promise<string> {
   return created!.id;
 }
 
-interface AddonRow {
-  addon: RoleAddon;
-  grantedBy: string | null;
-  grantedAt: Date;
-}
-
-/** Старая таблица — источник чтения прав на шаге 1a. */
-async function addonRows(userId: string): Promise<AddonRow[]> {
-  return ctx.db
-    .select({
-      addon: ctx.schema.userRoleAddons.addon,
-      grantedBy: ctx.schema.userRoleAddons.grantedBy,
-      grantedAt: ctx.schema.userRoleAddons.grantedAt,
-    })
-    .from(ctx.schema.userRoleAddons)
-    .where(eq(ctx.schema.userRoleAddons.userId, userId))
-    .orderBy(asc(ctx.schema.userRoleAddons.addon));
-}
-
 interface GrantRow {
   id: string;
   code: string;
@@ -271,8 +259,8 @@ interface GrantRow {
 }
 
 /**
- * Новая схема, прочитанная по коду набора: назначение ссылается на `grants.id`, а сопоставляется с
- * надстройкой именно код — тот самый, который двойная запись и ищет.
+ * Реестр выдач, прочитанный по коду набора: назначение ссылается на `grants.id`, а сопоставляется с
+ * надстройкой именно код — тот самый, который ищет и выдача (`applyAddonGrants`).
  */
 async function grantRows(userId: string): Promise<GrantRow[]> {
   return ctx.db
@@ -342,6 +330,39 @@ async function assembleGrantFor(userId: string, admin: Admin): Promise<string> {
   return code;
 }
 
+/**
+ * Время строки учётки. Ставит его умолчание базы (`created_at ... defaultNow()`), то есть `now()`
+ * транзакции, — и потому оно годится в свидетели той самой транзакции, которой заведена учётка.
+ * До шага 1d ту же роль играла отметка второй таблицы, но писателей у назначений теперь один.
+ */
+async function userCreatedAt(userId: string): Promise<Date> {
+  const [row] = await ctx.db
+    .select({ createdAt: ctx.schema.users.createdAt })
+    .from(ctx.schema.users)
+    .where(eq(ctx.schema.users.id, userId));
+  return row!.createdAt;
+}
+
+/**
+ * Время записи журнала об этом решении — свидетель транзакции там, где учётка заведена раньше и её
+ * `created_at` ни о чём не говорит. `audit_log.created_at` — то же умолчание базы, а пишется запись
+ * тем же `writeAuditTx` внутри транзакции маршрута.
+ */
+async function auditCreatedAt(userId: string, action: string): Promise<Date> {
+  const [row] = await ctx.db
+    .select({ createdAt: ctx.schema.auditLog.createdAt })
+    .from(ctx.schema.auditLog)
+    .where(
+      and(
+        eq(ctx.schema.auditLog.entityType, 'user'),
+        eq(ctx.schema.auditLog.entityId, userId),
+        eq(ctx.schema.auditLog.action, action),
+      ),
+    );
+  expect(row, `запись журнала «${action}» об учётке ${userId}`).toBeDefined();
+  return row!.createdAt;
+}
+
 /** Роль и версия прав учётки: по второй сверяется гашение выданных токенов. */
 async function userRow(userId: string): Promise<{ role: string | null; authVersion: number }> {
   const [row] = await ctx.db
@@ -356,16 +377,14 @@ async function userRow(userId: string): Promise<{ role: string | null; authVersi
  * идентификатору: у отклонённого заведения идентификатора нет вовсе, и «строк нет» приходится
  * спрашивать той стороной, которая у нас есть.
  */
-async function rowsFor(email: string): Promise<{ users: number; addons: number; grants: number }> {
-  const res = await ctx.db.execute<{ users: string; addons: string; grants: string }>(sql`
+async function rowsFor(email: string): Promise<{ users: number; grants: number }> {
+  const res = await ctx.db.execute<{ users: string; grants: string }>(sql`
     SELECT
       (SELECT count(*) FROM users WHERE email = ${email})::text AS users,
-      (SELECT count(*) FROM user_role_addons ura JOIN users u ON u.id = ura.user_id
-        WHERE u.email = ${email})::text AS addons,
       (SELECT count(*) FROM user_grants ug JOIN users u ON u.id = ug.user_id
         WHERE u.email = ${email})::text AS grants`);
   const row = res.rows[0]!;
-  return { users: Number(row.users), addons: Number(row.addons), grants: Number(row.grants) };
+  return { users: Number(row.users), grants: Number(row.grants) };
 }
 
 describe.skipIf(!DB_URL)('назначения на путях учётки: маршруты, а не сервис (живая схема)', () => {
@@ -402,7 +421,7 @@ describe.skipIf(!DB_URL)('назначения на путях учётки: м�
     ctx.admin = await newAdmin('one');
     ctx.otherAdmin = await newAdmin('two');
 
-    // Системные наборы завела миграция 0145, и без них двойной записи некуда вставлять назначение.
+    // Системные наборы завела миграция 0145, и без них выдаче некуда вставлять назначение.
     // Если их нет — сломан не тест, а накат: пусть это будет видно здесь, а не в чужом ожидании.
     const present = new Set(
       (await db.select({ code: schema.grants.code }).from(schema.grants)).map((row) => row.code),
@@ -420,20 +439,17 @@ describe.skipIf(!DB_URL)('назначения на путях учётки: м�
   });
 
   /**
-   * Первый путь вызова. Без этой проверки заведение учётки с надстройкой могло бы писать только
-   * старую таблицу: до шага 1c права считаются по ней, портал вёл бы себя правильно, а расхождение
-   * всплыло бы сверкой шага 1b — то есть релизом позже и без объяснения, откуда оно.
+   * Первый путь вызова. Без этой проверки заведение учётки с надстройкой могло бы не завести
+   * назначения вовсе: с шага 1d другого следа у выданной надстройки нет — карточка сохранилась бы с
+   * пометкой в форме, а прав человеку не досталось бы, и объяснить это администратору было бы
+   * нечем.
    *
    * `granted_by` сверяется с администратором, от чьего имени шёл запрос: сервис берёт автора
    * параметром, и подставить туда, например, владельца правимой учётки маршрут может незаметно —
    * тест сервиса передаёт этот параметр сам и такую подмену не увидит.
    */
-  it('заведение учётки с надстройкой пишет и надстройку, и назначение', async () => {
+  it('заведение учётки с надстройкой заводит назначение', async () => {
     const { id } = await createAccount(ctx.admin, { addons: [OPERATOR] });
-
-    const addons = await addonRows(id);
-    expect(addons.map((row) => row.addon)).toEqual([OPERATOR]);
-    expect(addons[0]!.grantedBy).toBe(ctx.admin.id);
 
     const granted = await grantRows(id);
     expect(granted).toHaveLength(1);
@@ -443,10 +459,11 @@ describe.skipIf(!DB_URL)('назначения на путях учётки: м�
     // перевода на этом шаге обязана оставаться пустой: писателя у неё ещё нет вовсе.
     expect(granted[0]!.origin).toBe('manual');
     expect(granted[0]!.migrationId).toBeNull();
-    // Одна транзакция — одно время: `now()` в Postgres это момент её начала, а не строки. Разойдись
-    // время у двух записей — значит записи легли разными транзакциями, и между ними был миг, когда
-    // право существовало только в одной схеме.
-    expect(granted[0]!.grantedAt.getTime()).toBe(addons[0]!.grantedAt.getTime());
+    // Одна транзакция — одно время: `now()` в Postgres это момент её начала, а не строки, и обе
+    // отметки ставит умолчание базы. Разойдись они — значит назначение легло не той транзакцией,
+    // которой заведена учётка, и между ними был миг, когда учётка уже жила, а выданного набора у
+    // неё ещё не было.
+    expect(granted[0]!.grantedAt.getTime()).toBe((await userCreatedAt(id)).getTime());
   });
 
   /**
@@ -461,7 +478,6 @@ describe.skipIf(!DB_URL)('назначения на путях учётки: м�
   it('правка, добавляющая вторую надстройку, не пересоздаёт назначение первой', async () => {
     const { id } = await createAccount(ctx.admin, { addons: [OPERATOR] });
     const [before] = await grantRows(id);
-    const [beforeAddon] = await addonRows(id);
 
     const res = await patchUser(ctx.otherAdmin, id, { addons: [OPERATOR, IT_APPROVER] });
     expect(res.statusCode, res.body).toBe(200);
@@ -478,12 +494,6 @@ describe.skipIf(!DB_URL)('назначения на путях учётки: м�
     expect(approver.id).not.toBe(before!.id);
     expect(approver.grantedBy).toBe(ctx.otherAdmin.id);
     expect(approver.grantedAt.getTime()).toBeGreaterThan(before!.grantedAt.getTime());
-
-    // Старая таблица идёт разницей по той же причине: перенос шага 1b копирует `granted_by` и
-    // `granted_at` именно из неё, и пересоздание увезло бы в новую схему переписанную историю.
-    const operatorAddon = (await addonRows(id)).find((row) => row.addon === OPERATOR)!;
-    expect(operatorAddon.grantedBy).toBe(ctx.admin.id);
-    expect(operatorAddon.grantedAt.getTime()).toBe(beforeAddon!.grantedAt.getTime());
   });
 
   /**
@@ -491,14 +501,13 @@ describe.skipIf(!DB_URL)('назначения на путях учётки: м�
    * вставкой остатка» дало бы тот же итог по составу и при этом переписало бы уцелевшую строку —
    * и обнаружилось бы это лишь тогда, когда откат перевода ролей не нашёл своих идентификаторов.
    */
-  it('снятие надстройки правкой удаляет ровно её строку из обеих таблиц', async () => {
+  it('снятие надстройки правкой удаляет ровно её назначение', async () => {
     const { id } = await createAccount(ctx.admin, { addons: [OPERATOR, IT_APPROVER] });
     const kept = (await grantRows(id)).find((row) => row.code === IT_APPROVER)!;
 
     const res = await patchUser(ctx.otherAdmin, id, { addons: [IT_APPROVER] });
     expect(res.statusCode, res.body).toBe(200);
 
-    expect((await addonRows(id)).map((row) => row.addon)).toEqual([IT_APPROVER]);
     const after = await grantRows(id);
     expect(after.map((row) => row.code)).toEqual([IT_APPROVER]);
     // Уцелевшее назначение — то же самое, а не выданное заново вместо снятого соседа.
@@ -510,8 +519,8 @@ describe.skipIf(!DB_URL)('назначения на путях учётки: м�
   /**
    * Отказ по несовместимости при заведении (`ROLE_ADDON_BASE_ROLES`): надстройка оргтехники не
    * прикрепляется к «Диспетчеру». Проверяется не только код ответа: отказ обязан не оставить
-   * **ничего** — ни учётки, ни надстройки, ни назначения. Учётка, заведённая без набора, была бы
-   * молчаливым исполнением половины просьбы, а назначение без учётки — сиротой в реестре выдач.
+   * **ничего** — ни учётки, ни назначения. Учётка, заведённая без набора, была бы молчаливым
+   * исполнением половины просьбы, а назначение без учётки — сиротой в реестре выдач.
    */
   it('несовместимая надстройка при заведении не оставляет ни учётки, ни строк', async () => {
     const email = freshEmail();
@@ -531,22 +540,23 @@ describe.skipIf(!DB_URL)('назначения на путях учётки: м�
     expect(res.json<{ fields?: { addons?: string } }>().fields?.addons).toMatch(
       /не прикрепляется/u,
     );
-    expect(await rowsFor(email)).toEqual({ users: 0, addons: 0, grants: 0 });
+    expect(await rowsFor(email)).toEqual({ users: 0, grants: 0 });
   });
 
   /**
    * Тот же запрет с другой стороны — и это уже проверка границ транзакции, а не валидации тела.
    * Роль меняется на несовместимую, а набор в запросе не участвует вовсе: сверяется **итоговое**
    * состояние учётки, поэтому отказ приходит из маршрута (по прочитанному в транзакции набору), а
-   * не от схемы. Правка обязана откатиться целиком: и роль, и обе таблицы, и версия прав.
+   * не от схемы. Правка обязана откатиться целиком: и роль, и назначения, и версия прав.
    *
-   * Без этой проверки прошёл бы худший из возможных исходов — снятие надстройки «за компанию» со
-   * сменой роли: доступ отобран молча, в журнале ничего, а таблицы могли бы разойтись между собой.
+   * Отсюда же и главное свидетельство того, что назначения пишутся транзакцией самой правки: откат
+   * маршрута обязан уносить и их. Без этой проверки прошёл бы худший из возможных исходов — снятие
+   * надстройки «за компанию» со сменой роли: доступ отобран молча, в журнале ничего, а учётка
+   * осталась той же самой.
    */
   it('смена роли на несовместимую откатывает правку целиком', async () => {
     const { id } = await createAccount(ctx.admin, { addons: [OPERATOR] });
     const [before] = await grantRows(id);
-    const [beforeAddon] = await addonRows(id);
     const stateBefore = await userRow(id);
 
     const res = await patchUser(ctx.otherAdmin, id, { role: 'dispatcher' });
@@ -557,9 +567,6 @@ describe.skipIf(!DB_URL)('назначения на путях учётки: м�
     );
     // Роль не сменилась, и версия прав не выросла: токены гасить не за что — ничего не произошло.
     expect(await userRow(id)).toEqual(stateBefore);
-    const afterAddons = await addonRows(id);
-    expect(afterAddons.map((row) => row.addon)).toEqual([OPERATOR]);
-    expect(afterAddons[0]!.grantedAt.getTime()).toBe(beforeAddon!.grantedAt.getTime());
     const after = await grantRows(id);
     expect(after.map((row) => row.code)).toEqual([OPERATOR]);
     // То же назначение, а не снятое и выданное заново внутри упавшей правки.
@@ -568,7 +575,7 @@ describe.skipIf(!DB_URL)('назначения на путях учётки: м�
   });
 
   /**
-   * Чем двойная запись связана с безопасностью. Access-токен сверяется с `authVersion` на каждом
+   * Чем выдача связана с безопасностью. Access-токен сверяется с `authVersion` на каждом
    * запросе, и записанное назначение без поднятой версии начало бы действовать не тогда, когда его
    * выдали, а когда истёк последний выданный токен: снятая надстройка ещё несколько минут даёт
    * права, а выданная — не даёт.
@@ -598,10 +605,10 @@ describe.skipIf(!DB_URL)('назначения на путях учётки: м�
   /**
    * Третий путь вызова — рассмотрение заявки на регистрацию (ADR 0087). Тот же `PATCH`, но другая
    * ветка: роль назначается вместе с активацией, и надстройку выдают там же, в одном решении. Путь
-   * этот отдельный ровно настолько, чтобы двойная запись могла из него выпасть незаметно: в журнале
-   * у него своё действие, а состав правки собирается иначе, чем при обычном сохранении карточки.
+   * этот отдельный ровно настолько, чтобы выдача могла из него выпасть незаметно: в журнале у него
+   * своё действие, а состав правки собирается иначе, чем при обычном сохранении карточки.
    */
-  it('рассмотрение заявки с надстройкой пишет обе таблицы одной транзакцией', async () => {
+  it('рассмотрение заявки с надстройкой заводит назначение одной транзакцией с решением', async () => {
     const id = await newRegistration();
 
     const res = await patchUser(ctx.otherAdmin, id, {
@@ -614,15 +621,19 @@ describe.skipIf(!DB_URL)('назначения на путях учётки: м�
     });
     expect(res.statusCode, res.body).toBe(200);
 
-    const addons = await addonRows(id);
-    expect(addons.map((row) => row.addon)).toEqual([OPERATOR]);
     const granted = await grantRows(id);
     expect(granted.map((row) => row.code)).toEqual([OPERATOR]);
     // Автор — рассмотревший заявку администратор, происхождение — ручная выдача: заявку одобрил
     // человек, и `migration` здесь означал бы перевод ролей, которого не было.
     expect(granted[0]!.grantedBy).toBe(ctx.otherAdmin.id);
     expect(granted[0]!.origin).toBe('manual');
-    expect(granted[0]!.grantedAt.getTime()).toBe(addons[0]!.grantedAt.getTime());
+    // Свидетель транзакции здесь — запись журнала о самом решении: учётку завёл тест, и её
+    // `created_at` относится к другой транзакции вовсе. Разойдись отметки — значит назначение
+    // писалось отдельно от одобрения, и заявка могла бы оказаться рассмотренной без выданного
+    // набора.
+    expect(granted[0]!.grantedAt.getTime()).toBe(
+      (await auditCreatedAt(id, 'user.approve_registration')).getTime(),
+    );
     // Учётка стала действующей той же транзакцией — назначение не опередило роль и не отстало.
     expect(await userRow(id)).toMatchObject({ role: 'site' });
   });
@@ -631,19 +642,21 @@ describe.skipIf(!DB_URL)('назначения на путях учётки: м�
    * ── Витрина учёток читает назначения (шаг 1c) ──────────────────────────────────────────────────
    *
    * Пометки рядом с ролью — единственное, что портал видит о выданном, и форма правки присылает их
-   * обратно. Переключение источника проверяется расхождением таблиц: пока запись двойная, обе они
-   * отвечают одинаково, и «читает новую» от «читает старую» отличимо только тогда, когда содержимое
-   * у них разное. Собрать такое расхождение через маршрут нельзя — оно и заводится прямым SQL.
+   * обратно. На шаге 1c переключение источника проверялось расхождением таблиц: обе писались, и
+   * «читает новую» от «читает старую» отличимо было только там, где содержимое у них разное.
    *
-   * Расхождение живёт на учётках своего префикса и уносится общей уборкой (до прогона и после), так
-   * что двусторонняя сверка шага 1b (`backfill:grants --check`), идущая по всей базе, его не увидит.
+   * С шага 1d такого расхождения не завести вовсе — писатель у назначений один, и старая таблица
+   * пуста. Заводить его легаси-строкой (прямая вставка в `user_role_addons`) нельзя по другой
+   * причине: `backfill:grants` идёт по всей базе, соседний файл гоняет его настоящим переносом, и
+   * подложенная надстройка уехала бы в назначения посреди проверки — вернув пометку, которой тест
+   * ждёт пустой. Что легаси-строка ничего не значит, проверяется отдельно и с другой стороны — в
+   * `user-grants-single-write.db.test.ts`, на разнице, а не на витрине.
+   *
+   * Отсюда и остаток предмета: пометка равна **системным** назначениям, показывается в порядке
+   * словаря, и снятое мимо формы назначение её убирает (следующий тест).
    */
-  it('карточка и список берут пометку из назначений, а не из надстроек', async () => {
+  it('карточка и список берут пометку из назначений', async () => {
     const { id, email } = await createAccount(ctx.admin, { addons: [OPERATOR, IT_APPROVER] });
-
-    // Строки старой таблицы снимаются руками: если бы витрина читала её, пометки исчезли бы.
-    await ctx.db.delete(ctx.schema.userRoleAddons).where(eq(ctx.schema.userRoleAddons.userId, id));
-    expect(await addonRows(id)).toHaveLength(0);
 
     /*
      * Порядок значим, и держателя обоих наборов он проверяет заодно с источником. Старое выражение
@@ -658,14 +671,14 @@ describe.skipIf(!DB_URL)('назначения на путях учётки: м�
     expect((await grantRows(id)).map((row) => row.code)).toEqual([IT_APPROVER, OPERATOR]);
   });
 
-  it('снятое назначение убирает пометку, даже когда надстройка осталась', async () => {
+  it('снятое мимо формы назначение убирает пометку', async () => {
     const { id, email } = await createAccount(ctx.admin, { addons: [OPERATOR] });
 
-    // Обратное расхождение: назначения нет, надстройка есть. Так выглядела бы учётка, до которой
-    // двойная запись не дошла, — и витрина обязана показать её без пометки, потому что права ей
-    // теперь тоже не даёт ничто.
+    // Так набор снимает реестр выдач (`routes/user-grants.ts`): он пишет только `user_grants` и о
+    // форме учётки не знает вовсе. Витрина обязана показать учётку без пометки — прав ей теперь
+    // тоже не даёт ничто, и пометка, пережившая снятие, обещала бы администратору доступ, которого
+    // у человека нет.
     await ctx.db.delete(ctx.schema.userGrants).where(eq(ctx.schema.userGrants.userId, id));
-    expect((await addonRows(id)).map((row) => row.addon)).toEqual([OPERATOR]);
 
     expect(await cardAddons(ctx.admin, id)).toEqual([]);
     expect(await listAddons(ctx.admin, id, email)).toEqual([]);
