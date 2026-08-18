@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
+  AUDIT_ACTIONS,
   GRANT_AUDIT_ACTIONS,
   USER_AUDIT_ACTIONS,
   USER_AUDIT_FIELDS,
   auditChangesOf,
   auditQuerySchema,
+  auditScopeActions,
   describeAuditEntry,
   grantAuditActionLabels,
   userAuditActionLabels,
@@ -105,6 +107,32 @@ describe('фильтры журнала аудита', () => {
     expect(q.targetObjectId).toBe(TARGET_ID);
     expect(q.targetCounterpartyId).toBe(ACTOR_ID);
     expect(() => auditQuerySchema.parse({ targetRole: 'кладовщик' })).toThrow();
+  });
+
+  it('без параметра отдаётся срез учёток, а не весь журнал портала', () => {
+    // Граница ручки живёт в умолчании схемы: запрос без параметров — это «журнал учёток», а не
+    // «весь `audit_log`». Пока умолчания не было, пустой фильтр отдавал заявки, технику и входы.
+    expect(auditQuerySchema.parse({}).scope).toBe('user');
+    expect(auditQuerySchema.parse({ scope: 'grant' }).scope).toBe('grant');
+    expect(() => auditQuerySchema.parse({ scope: 'users' })).toThrow();
+  });
+
+  it('срез учёток — события учётки и выдача полномочий, но не правка каталога и не входы', () => {
+    const user = auditScopeActions('user');
+    // Выдача и отзыв пишутся на учётку (ADR 0106) и отвечают на вопрос «что меняли у человека».
+    expect(user).toContain('grant.assign');
+    expect(user).toContain('grant.revoke');
+    // Правка каталога — событие набора, а не учётки: у неё столько пострадавших, сколько держателей.
+    expect(user).not.toContain('grant.create');
+    expect(user).not.toContain('grant.update');
+    // Входы за границей подвкладки (ADR 0088, Р2), а события заявок и техники — за границей ручки:
+    // ни один срез журнала учёток их не отдаёт, читают их истории своих карточек.
+    expect(user).not.toContain('auth.login');
+    expect(auditScopeActions('all')).not.toContain('auth.login');
+    expect(auditScopeActions('all')).not.toContain('vehicle_request.create');
+    for (const action of USER_AUDIT_ACTIONS) expect(user).toContain(action);
+    expect(auditScopeActions('grant')).toEqual([...GRANT_AUDIT_ACTIONS]);
+    expect(auditScopeActions('all')).toEqual([...AUDIT_ACTIONS]);
   });
 
   it('по умолчанию показывает и архивные учётки: журнал рассказывает о прошлом', () => {

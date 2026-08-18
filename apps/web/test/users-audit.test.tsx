@@ -155,11 +155,16 @@ const FILTER = {
  * (вкладки antd не размонтируются), и её фильтры лежат в той же разметке — поэтому поиск идёт
  * внутри панели самого журнала, а не по всему документу.
  */
-async function pickFilterOption(index: number, optionText: string): Promise<void> {
+async function pickFilterOption(index: number, optionText: string, search?: string): Promise<void> {
   const pane = document.querySelector('[id$="-panel-audit"]');
   expect(pane, 'подвкладка «Аудит»').toBeTruthy();
   const field = pane!.querySelectorAll('.ant-select')[index]!;
   fireEvent.mouseDown(field.querySelector('.ant-select-selector') ?? field);
+  // Список длинный и виртуализованный: до дальних пунктов в разметке не добраться, пока их не
+  // сузит поиск — тем же способом, каким до них добирается человек.
+  if (search !== undefined) {
+    fireEvent.change(field.querySelector('input')!, { target: { value: search } });
+  }
   await waitFor(() => {
     const option = [...document.querySelectorAll('.ant-select-item-option')].find(
       (o) => o.textContent?.trim() === optionText,
@@ -297,5 +302,17 @@ describe('журнал изменений учётных записей', () => 
     expect(http.lastCall(AUDIT)!.query.get('actions')).toBe('user.delete,user.restore');
     // Отбор сменился — журнал возвращается на первую страницу.
     expect(http.lastCall(AUDIT)!.query.get('page')).toBe('1');
+  });
+
+  it('выдача полномочия отбирается тем же полем: она видна в ленте', async () => {
+    // Выдача и отзыв пишутся на учётку (ADR 0106) и приезжают в её ленту вместе с остальными
+    // событиями. Фильтр, который короче ленты, заставлял бы искать такое событие глазами.
+    const http = renderTab();
+    openTab('Аудит');
+    await waitFor(() => expect(http.countOf(AUDIT)).toBe(1));
+
+    await pickFilterOption(FILTER.actions, 'Полномочие выдано', 'Полномочие выдано');
+
+    await waitFor(() => expect(http.lastCall(AUDIT)!.query.get('actions')).toBe('grant.assign'));
   });
 });

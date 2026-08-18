@@ -2,7 +2,7 @@ import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { auditChangesOf, type AuditEntryDto } from '@technic/contracts';
+import { USER_TARGET_AUDIT_ACTIONS, auditChangesOf, type AuditEntryDto } from '@technic/contracts';
 import { applyMigrations } from '../src/db/migration-journal';
 // Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
 // окружение, — конфиг проверяет его при импорте и без него падает.
@@ -301,5 +301,52 @@ describe.skipIf(!DB_URL)('журнал изменений учёток (жива
     });
     expect(res.statusCode, res.body).toBe(200);
     expect(res.json().user.deletedAt).not.toBeNull();
+  });
+
+  it('лента отдаёт только действия с учётками: чужие события журнала за её границей', async () => {
+    const id = await createAccount(freshEmail(), ctx.objectIds[0]!);
+    const schema = await import('../src/db/schema');
+    /*
+     * Соседи по журналу — записями прямо в таблицу, а не настоящими операциями: проверяется
+     * граница выборки, а не то, как портал заводит заявку, и поднимать ради этого технику с
+     * маршрутами значило бы проверять чужой модуль.
+     */
+    const strangers = await ctx.db
+      .insert(schema.auditLog)
+      .values([
+        // Вход: цель — учётка, но за границей подвкладки (ADR 0088, Р2). Их тысячи в неделю.
+        { action: 'auth.login', entityType: 'user', entityId: id },
+        // Событие чужой сущности: у него свой читатель — история карточки заявки.
+        { action: 'vehicle_request.create', entityType: 'vehicle_request', entityId: randomUUID() },
+        // Правка каталога полномочий: цель — набор, а не учётка (ADR 0106).
+        { action: 'grant.create', entityType: 'grant', entityId: randomUUID() },
+      ])
+      .returning({ id: schema.auditLog.id });
+
+    try {
+      // Лента без фильтров — то, что видит подвкладка при первом открытии. Записи только что
+      // легли, порядок ленты — свежие сначала: не будь границы, все три стояли бы наверху.
+      const feed = await audit({ pageSize: '100' });
+      expect(feed.length).toBeGreaterThan(0);
+      for (const item of feed) expect(USER_TARGET_AUDIT_ACTIONS).toContain(item.action);
+      const shown = new Set(feed.map((i) => i.id));
+      for (const stranger of strangers) expect(shown.has(stranger.id)).toBe(false);
+
+      // Путь учётки — та же ручка: вход не должен утопить её события и здесь.
+      const path = await audit({ entityType: 'user', entityId: id, pageSize: '50' });
+      expect(path.map((i) => i.action)).not.toContain('auth.login');
+      expect(eventOf(path, 'user.create').targetEmail).toBeTruthy();
+
+      // Каталог полномочий читается тем же журналом — своим срезом, а не общей лентой.
+      const catalog = await audit({ scope: 'grant', pageSize: '100' });
+      expect(catalog.map((i) => i.id)).toContain(strangers[2]!.id);
+      expect(catalog.map((i) => i.action)).not.toContain('user.create');
+    } finally {
+      // Убирается кейс за собой сам: `afterAll` сносит записи об учётках этого файла, а события
+      // чужих сущностей ему не принадлежат — по метке их не найти.
+      for (const stranger of strangers) {
+        await ctx.db.execute(sql`DELETE FROM audit_log WHERE id = ${stranger.id}`);
+      }
+    }
   });
 });

@@ -2,12 +2,12 @@ import { DatePicker, Input, Select, Space } from 'antd';
 import dayjs from 'dayjs';
 import { useQuery } from '@tanstack/react-query';
 import {
+  auditActionLabels,
   COUNTERPARTY_TYPES_WITH_ACCOUNTS,
   counterpartyTypeLabels,
   ROLES,
   roleLabels,
-  USER_AUDIT_ACTIONS,
-  userAuditActionLabels,
+  USER_TARGET_AUDIT_ACTIONS,
 } from '@technic/contracts';
 import { DICTIONARY_PAGE_SIZE } from '@shared/config';
 import type { FilterDefinition } from '@shared/ui';
@@ -56,9 +56,14 @@ export interface AuditFilterParams {
 
 const DATE = 'YYYY-MM-DD';
 
-const actionOptions = USER_AUDIT_ACTIONS.map((action) => ({
+/**
+ * Галочки отбора — по действиям, цель которых учётная запись: те же, что отдаёт срез журнала на
+ * сервере. Выдача и отзыв полномочия (ADR 0106) в ленте видны, и отобрать их читателю нужно тем же
+ * полем — фильтр, который короче ленты, заставляет искать событие глазами.
+ */
+const actionOptions = USER_TARGET_AUDIT_ACTIONS.map((action) => ({
   value: action,
-  label: userAuditActionLabels[action],
+  label: auditActionLabels[action],
 }));
 const roleOptions = ROLES.map((r) => ({ value: r, label: roleLabels[r] }));
 const accessOptions = [
@@ -156,6 +161,11 @@ export function useUserAuditFilters({ params, apply, target, onTargetChange }: A
         // Отмеченное сворачивается в «+N», когда не помещается: набор бывает и в десяток
         // действий, и растянутое поле выдавило бы остальные фильтры на другую строку.
         maxTagCount="responsive"
+        // Поиск по подписи: действий в списке под два десятка, и нужное — «пароль сброшен»,
+        // «полномочие выдано» — иначе ищется прокруткой. По подписи, а не по коду действия:
+        // кода читатель не видит нигде, он и в строке журнала не показывается.
+        showSearch
+        optionFilterProp="label"
         placeholder="Все действия"
         style={{ width: 260 }}
         options={actionOptions}

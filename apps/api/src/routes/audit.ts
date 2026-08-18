@@ -2,7 +2,12 @@ import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { and, count, eq, exists, gte, inArray, isNotNull, isNull, lte, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
-import { auditQuerySchema, type AuditEntryDto, type ArchiveFilter } from '@technic/contracts';
+import {
+  auditQuerySchema,
+  auditScopeActions,
+  type AuditEntryDto,
+  type ArchiveFilter,
+} from '@technic/contracts';
 import { db } from '../db/client';
 import { auditLog, userConstructionObjects, userDepartments, users } from '../db/schema';
 import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
@@ -80,9 +85,15 @@ export default async function auditRoutes(app: FastifyInstance): Promise<void> {
   r.get('/', { ...guards, schema: { querystring: auditQuerySchema } }, async (req) => {
     const q = req.query;
     const where = and(
+      // Срез — граница ручки, и снять его запросом нельзя. Журнал в портале один: в него пишет
+      // каждая операция — заявка, рейс, путевой лист, справочник, вход, — а подвкладка «Аудит»
+      // спрашивает у него одно, что происходило с учётными записями. Пока границы здесь не было,
+      // ответом на пустой фильтр шёл весь `audit_log`, и десяток административных событий тонул
+      // в тысячах чужих. Умолчание среза — учётки (контракты), поэтому забыть его клиент не может.
+      inArray(auditLog.action, [...auditScopeActions(q.scope)]),
       // Набор действий, а не одно: подвкладка «Аудит» показывает перечень действий по учёткам
       // целиком, и фильтр по одному значению заставлял бы читать журнал по разу на действие.
-      // Пустой набор — «фильтра нет»: снятые галочки не должны отбирать пустоту.
+      // Пустой набор — «фильтра нет», то есть весь срез: снятые галочки не отбирают пустоту.
       q.actions && q.actions.length > 0 ? inArray(auditLog.action, q.actions) : undefined,
       q.entityType ? eq(auditLog.entityType, q.entityType) : undefined,
       q.entityId ? eq(auditLog.entityId, q.entityId) : undefined,
