@@ -347,56 +347,47 @@ describe.skipIf(!DB_URL)('гараж: срез дня на живой схеме
   }, 120_000);
 
   /**
-   * Уборка за собой: рейс, заявка и три машины прогона.
+   * Уборка за собой: бумага, рейс, заявка и три машины прогона.
    *
-   * Рейс удаляется (пустой, без листа — можно), заявка **откатывается в «Новую»**: занятой машину
-   * делает только заявка «В работе», а откат заодно аннулирует её недельные листы (ADR 0060).
-   * Удалять её насовсем нечем и не нужно — номер побывавшего бланка держит её строкой в
-   * `waybill_requests`, и это правильное поведение журнала учёта.
+   * Раньше машины лишь **помечались удалёнными**: на них ссылались назначение заявки и
+   * аннулированный бланк, а заявку было «нечем и незачем» сносить — номер побывавшего бланка
+   * держит её строкой в `waybill_requests`. Портал накопленного и правда не видит (гараж отбирает
+   * `deleted_at IS NULL`), но база у db-тестов общая и живёт месяцами: за прогон в ней оседало по
+   * три машины, заказ и лист, и через полгода парк насчитывал их сотнями. Правильный ответ —
+   * снести всю цепочку целиком, в порядке, обратном ссылкам: лист, состав рейса, рейс, заявка и
+   * только потом машины.
    *
-   * Машины **помечаются удалёнными**, а не сносятся из таблицы: на них ссылаются назначение заявки
-   * и аннулированный бланк, и внешние ключи такое удаление не пропустят. Порталу этого довольно —
-   * гараж отбирает живые записи (`deleted_at IS NULL`), — а прогону следующей недели не достанется
-   * парк из сотни машин с одинаковым гаражным номером.
+   * Опознаётся заведённое по меткам — гаражному номеру и собственной учётке файла, — а не по
+   * спискам: прибирать надо и за упавшим прогоном, который до записи в список мог не дойти. Метка
+   * машин взята шире одного прогона (`гараж-%`), чтобы уборка добрала и хвосты прежних падений.
    *
    * Ошибки уборки прогон не роняют: тест уже отработал.
    */
   afterAll(async () => {
-    if (created.routeId) {
-      await ctx?.app.inject({
-        method: 'DELETE',
-        url: `/api/v1/vehicle-routes/${created.routeId}`,
-        headers: ctx.auth,
-      });
-    }
-    if (created.requestId) {
-      const current = await ctx?.app.inject({
-        method: 'GET',
-        url: `/api/v1/vehicle-requests/${created.requestId}`,
-        headers: ctx.auth,
-      });
-      if (current?.statusCode === 200) {
-        await ctx.app.inject({
-          method: 'PATCH',
-          url: `/api/v1/vehicle-requests/${created.requestId}/status`,
-          headers: ctx.auth,
-          payload: {
-            status: 'new',
-            comment: 'уборка после теста',
-            version: current.json().version,
-          },
-        });
-      }
-    }
-    if (ctx && created.vehicleIds.length > 0) {
-      await ctx.db.execute(
-        sql`UPDATE vehicles SET deleted_at = now()
-            WHERE garage_number = ${MARK} AND deleted_at IS NULL`,
-      );
+    if (ctx?.db) {
+      const ourUsers = sql`SELECT id FROM users WHERE email = ${ADMIN_EMAIL}`;
+      const ourVehicles = sql`SELECT id FROM vehicles WHERE garage_number LIKE 'гараж-%'`;
+      const ourRequests = sql`SELECT id FROM vehicle_requests WHERE created_by IN (${ourUsers})`;
+      await ctx.db.execute(sql`
+        DELETE FROM waybills
+        WHERE vehicle_id IN (${ourVehicles})
+           OR source_request_id IN (${ourRequests})
+           OR id IN (SELECT waybill_id FROM waybill_requests WHERE request_id IN (${ourRequests}))
+           OR route_id IN (SELECT id FROM vehicle_routes
+                            WHERE source_request_id IN (${ourRequests}))`);
+      await ctx.db.execute(sql`
+        DELETE FROM vehicle_route_requests WHERE request_id IN (${ourRequests})`);
+      await ctx.db.execute(sql`
+        DELETE FROM vehicle_routes
+        WHERE vehicle_id IN (${ourVehicles}) OR source_request_id IN (${ourRequests})`);
+      await ctx.db.execute(sql`DELETE FROM vehicle_requests WHERE id IN (${ourRequests})`);
+      await ctx.db.execute(sql`DELETE FROM vehicles WHERE id IN (${ourVehicles})`);
+      // Журнал — по автору: писала в него только здешняя учётка, а видов записей у неё несколько.
+      await ctx.db.execute(sql`DELETE FROM audit_log WHERE actor_user_id IN (${ourUsers})`);
     }
     await ctx?.app.close();
     await ctx?.closeDb();
-  });
+  }, 60_000);
 
   it('заказ спецтехники на сегодня делает машину «на объекте» и приводит заявку с недельным листом', async () => {
     const createdRequest = await ctx.app.inject({

@@ -281,6 +281,48 @@ describe.skipIf(!DB_URL)('лента «Заказ автотехники» (жи
   }, 180_000);
 
   afterAll(async () => {
+    if (ctx?.db) {
+      /*
+       * Убирается файл за собой сам: база у db-тестов общая и живёт между прогонами, а лента
+       * проверяется на своих строках — за прогон в базе оседало по десятку площадок, полтора
+       * десятка заказов и столько же недельных заявок. Ленту это же и портит: соседние файлы
+       * отбирают «первую страницу», и накопленные здесь строки будущей неделей занимали её.
+       *
+       * Метка — префиксы, а не список заведённого: прибирать надо и за упавшим прогоном. Взяты они
+       * шире одного прогона (`FEED-%`, а не `FEED-%-<RUN>`), чтобы уборка добирала хвосты прежних
+       * падений; префиксы этого файла в тестах больше никто не занимает.
+       *
+       * Порядок обратен ссылкам: заказы и недельные заявки держат площадку и учётку, назначения
+       * держат машину. Назначения, состав и детали заказа уходят каскадом вместе с заказом,
+       * привязки учёток к площадкам — вместе с любой из сторон.
+       */
+      const ourObjects = sql`SELECT id FROM construction_objects WHERE code LIKE 'FEED-%'`;
+      await ctx.db.execute(sql`DELETE FROM vehicle_requests WHERE object_id IN (${ourObjects})`);
+      await ctx.db.execute(
+        sql`DELETE FROM weekly_vehicle_requests WHERE object_id IN (${ourObjects})`,
+      );
+      /*
+       * Машина сносится, только если её никто не держит. Сам файл бумаги не выписывает — оговорка
+       * нужна из-за прошлого: машины прежних прогонов оставались в справочнике живыми и своими, а
+       * соседние db-тесты берут «первую попавшуюся свою активную» — на них успели выписать листы,
+       * и один из них уже исправлен другим (`waybills.corrects_waybill_id`). Сносить чужую бумагу
+       * ради своей машины уборка не вправе, поэтому такую машину она обходит.
+       */
+      await ctx.db.execute(sql`
+        DELETE FROM vehicles
+         WHERE registration_number LIKE 'FEED%'
+           AND id NOT IN (SELECT vehicle_id FROM waybills)
+           AND id NOT IN (SELECT vehicle_id FROM vehicle_routes)
+           AND id NOT IN (SELECT vehicle_id FROM vehicle_request_assignments)`);
+      await ctx.db.execute(sql`DELETE FROM construction_objects WHERE code LIKE 'FEED-%'`);
+      /*
+       * Журнал — по автору и раньше сноса учёток: `actor_user_id` при удалении обнуляется, а не
+       * удаляется, — и записи о входе оставались бы висеть без хозяина.
+       */
+      const ourUsers = sql`SELECT id FROM users WHERE email LIKE 'db-feed-%@example.invalid'`;
+      await ctx.db.execute(sql`DELETE FROM audit_log WHERE actor_user_id IN (${ourUsers})`);
+      await ctx.db.execute(sql`DELETE FROM users WHERE id IN (${ourUsers})`);
+    }
     await ctx?.app.close();
     await ctx?.closeDb();
   });

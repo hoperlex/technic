@@ -430,9 +430,46 @@ describe.skipIf(!DB_URL)('коррекция задним числом: спис
 
   afterAll(async () => {
     duringRender = null;
+    if (ctx?.db) {
+      /*
+       * Убирается файл за собой сам: база у db-тестов общая и живёт между прогонами, а здесь почти
+       * каждый случай начинается с выписки листа — за прогон в ней оседало по девять заказов со
+       * всей их бумагой и по три следа операций.
+       *
+       * Метка — собственные учётки файла: всё, что тут заводится, заводят они, а чужого под ними не
+       * бывает. Списком заведённого уборка не пользуется намеренно — прибирать надо и за упавшим
+       * прогоном, который до записи в список мог не дойти. Сами учётки уборка не трогает: их
+       * `beforeAll` ищет по адресам и заводит один раз на все прогоны.
+       *
+       * Порядок обратен ссылкам: лист держит и заказ, и рейс ключами `restrict`, состав рейса —
+       * заказ, а след операции — автора. Талоны листа, детали и история заказа уходят каскадом со
+       * своей головной строкой.
+       *
+       * Человек и его документы остаются: он ищется по СНИЛС и заводится один раз на все прогоны —
+       * то есть не накапливается.
+       */
+      const ourUsers = sql`
+        SELECT id FROM users WHERE email IN (${ADMIN_EMAIL}, ${DISPATCHER_EMAIL}, ${MANAGER_EMAIL})`;
+      const ourRequests = sql`SELECT id FROM vehicle_requests WHERE created_by IN (${ourUsers})`;
+      await ctx.db.execute(sql`
+        DELETE FROM waybills
+        WHERE source_request_id IN (${ourRequests})
+           OR id IN (SELECT waybill_id FROM waybill_requests WHERE request_id IN (${ourRequests}))
+           OR route_id IN (SELECT id FROM vehicle_routes
+                            WHERE source_request_id IN (${ourRequests}))`);
+      await ctx.db.execute(sql`
+        DELETE FROM vehicle_route_requests WHERE request_id IN (${ourRequests})`);
+      await ctx.db.execute(sql`
+        DELETE FROM vehicle_routes WHERE source_request_id IN (${ourRequests})`);
+      await ctx.db.execute(sql`DELETE FROM vehicle_requests WHERE id IN (${ourRequests})`);
+      await ctx.db.execute(sql`
+        DELETE FROM waybill_corrections WHERE actor_user_id IN (${ourUsers})`);
+      // Журнал — по автору: писали в него только здешние учётки, а видов записей у них несколько.
+      await ctx.db.execute(sql`DELETE FROM audit_log WHERE actor_user_id IN (${ourUsers})`);
+    }
     await ctx?.app.close();
     await ctx?.closeDb();
-  });
+  }, 60_000);
 
   it('без права прошедший день закрыт, а сегодняшний лист тот же человек списывает', async () => {
     const past = await issueWaybill();

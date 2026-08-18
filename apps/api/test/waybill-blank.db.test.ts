@@ -258,9 +258,30 @@ describe.skipIf(!DB_URL)('пустой путевой лист по рейсу �
   }, 120_000);
 
   afterAll(async () => {
+    if (ctx?.db) {
+      /*
+       * Убирается файл за собой сам: база у db-тестов общая и живёт между прогонами, а здесь каждый
+       * случай заводит пустой рейс — за прогон в ней оседало по три рейса и по листу.
+       *
+       * Метка — собственные учётки файла: рейсы заводят они, а чужого под ними не бывает. Списком
+       * заведённого уборка не пользуется намеренно — прибирать надо и за упавшим прогоном, который
+       * до записи в список мог не дойти. Сами учётки уборка не трогает: их `beforeAll` ищет по
+       * адресам и заводит один раз на все прогоны.
+       *
+       * Порядок обратен ссылкам: лист держит рейс ключом `restrict`. Счёт номеров это не ломает —
+       * он считается разницей, а не сдвигом счётчика (см. `burnedSince` в `waybill-ack`).
+       */
+      const ourUsers = sql`
+        SELECT id FROM users WHERE email IN (${ADMIN_EMAIL}, ${DISPATCHER_EMAIL})`;
+      const ourRoutes = sql`SELECT id FROM vehicle_routes WHERE created_by IN (${ourUsers})`;
+      await ctx.db.execute(sql`DELETE FROM waybills WHERE route_id IN (${ourRoutes})`);
+      await ctx.db.execute(sql`DELETE FROM vehicle_routes WHERE id IN (${ourRoutes})`);
+      // Журнал — по автору: писали в него только здешние учётки, а видов записей у них несколько.
+      await ctx.db.execute(sql`DELETE FROM audit_log WHERE actor_user_id IN (${ourUsers})`);
+    }
     await ctx?.app.close();
     await ctx?.closeDb();
-  });
+  }, 60_000);
 
   it('администратор выписывает лист по пустому рейсу — без единого талона', async () => {
     const route = await emptyRoute();

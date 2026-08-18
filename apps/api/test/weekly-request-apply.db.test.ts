@@ -7,6 +7,7 @@ import {
   moscowDateKeyOf,
   shiftDateKey,
   weekStartKey,
+  WEEKLY_CORRECTION_REQUIRED_MESSAGE,
 } from '@technic/contracts';
 import { runSeed, snilsOf } from './db-identity';
 import { applyMigrations } from '../src/db/migration-journal';
@@ -167,6 +168,16 @@ interface Ctx {
 }
 
 let ctx: Ctx;
+
+/**
+ * Машины справочника, которым сценарий арендодателя подменил контрагента, и прежние их владельцы.
+ *
+ * Единственное, что этот файл правит в чужих строках, а не заводит своё: аренда без арендодателя
+ * схемой запрещена (`vehicles_rental_fields_check`), поэтому обнулить подмену нельзя — только
+ * вернуть прежнего. Уборка это и делает, иначе тестовый контрагент остаётся в базе навсегда:
+ * машина держит его ключом `restrict`.
+ */
+const stampedLessors: { vehicleId: string; lessorId: string }[] = [];
 
 /** Конфиг читается при импорте, поэтому окружение выставляется до первого `import('../src/...')`. */
 function prepareEnv(databaseUrl: string): void {
@@ -806,9 +817,98 @@ describe.skipIf(!DB_URL)('недельная заявка: применение 
   }, 180_000);
 
   afterAll(async () => {
+    if (ctx?.db) {
+      /*
+       * Убирается файл за собой сам: база у db-тестов общая и живёт между прогонами, а этот файл —
+       * самый плодовитый из всех. За один прогон он оставлял в ней полтысячи строк: пять десятков
+       * недельных заявок, три десятка заказов, четыре десятка площадок и одиннадцать учёток.
+       * Накопленное мешает не только объёмом: обмен справочниками спотыкался как раз о брошенных
+       * тестовых контрагентов, а лента отбирает «первую страницу», и её занимали здешние строки
+       * будущих недель.
+       *
+       * Опознаётся заведённое по меткам, а не по спискам: прибирать надо и за упавшим прогоном,
+       * который до записи в список мог не дойти. Метки взяты шире одного прогона (`WK-%`, а не
+       * `WK-%-<RUN>`), чтобы уборка добирала хвосты прежних падений; в тестах эти префиксы больше
+       * никто не занимает.
+       *
+       * Порядок обратен ссылкам, и почти каждый шаг здесь обязателен, а не для порядка:
+       * состав недельной заявки держит заказ, тип и категорию ссылками `restrict`, заказ держит
+       * площадку, отдел и тип, отдел держит площадку, учётка держит контрагента. Мелочь —
+       * состав, история, привязки к площадкам и отделам, детали заказов — уходит каскадом вместе
+       * со своей головной строкой.
+       *
+       * Человек и его документы не трогаются намеренно: он один на все прогоны и ищется по СНИЛС
+       * (см. `beforeAll`) — то есть не накапливается, а снос заставлял бы каждый прогон заводить
+       * его заново.
+       */
+      const ourUsers = sql`SELECT id FROM users WHERE email LIKE 'db-weekly-%@example.invalid'`;
+      const ourObjects = sql`SELECT id FROM construction_objects WHERE code LIKE 'WK-%'`;
+      /*
+       * Тип сносится, только если его никто не держит. Накопленная за месяцы база хранит машины
+       * на типах прежних прогонов, и безусловный снос падал бы на внешнем ключе — то есть уборка
+       * похоронила бы причину падения под своей. Заказы в этой же оговорке потому, что часть их
+       * могла остаться от сорвавшегося прогона.
+       */
+      const ourTypes = sql`
+        SELECT id FROM vehicle_types
+         WHERE code LIKE 'wk\\_%'
+           AND id NOT IN (SELECT vehicle_type_id FROM vehicles)
+           AND id NOT IN (SELECT vehicle_type_id FROM vehicle_requests)`;
+      const ourRequests = sql`
+        SELECT id FROM vehicle_requests
+        WHERE object_id IN (${ourObjects}) OR created_by IN (${ourUsers})`;
+
+      await ctx.db.execute(sql`
+        DELETE FROM waybills
+        WHERE source_request_id IN (${ourRequests})
+           OR id IN (SELECT waybill_id FROM waybill_requests WHERE request_id IN (${ourRequests}))
+           OR route_id IN (SELECT id FROM vehicle_routes
+                            WHERE source_request_id IN (${ourRequests}))`);
+      await ctx.db.execute(sql`
+        DELETE FROM vehicle_route_requests WHERE request_id IN (${ourRequests})`);
+      await ctx.db.execute(sql`
+        DELETE FROM vehicle_routes WHERE source_request_id IN (${ourRequests})`);
+      await ctx.db.execute(sql`
+        DELETE FROM weekly_vehicle_requests
+        WHERE object_id IN (${ourObjects}) OR created_by IN (${ourUsers})`);
+      await ctx.db.execute(sql`DELETE FROM vehicle_requests WHERE id IN (${ourRequests})`);
+      // След операции живёт дольше заказа намеренно (ADR 0101) и держит автора ключом `restrict` —
+      // без этого шага уборка спотыкалась бы о собственные учётки.
+      await ctx.db.execute(sql`
+        DELETE FROM waybill_corrections WHERE actor_user_id IN (${ourUsers})`);
+      await ctx.db.execute(sql`DELETE FROM departments WHERE code LIKE 'WK-DEP-%'`);
+      await ctx.db.execute(sql`DELETE FROM construction_objects WHERE id IN (${ourObjects})`);
+      await ctx.db.execute(sql`
+        DELETE FROM vehicle_categories WHERE vehicle_type_id IN (${ourTypes})`);
+      await ctx.db.execute(sql`
+        DELETE FROM vehicle_type_specs WHERE vehicle_type_id IN (${ourTypes})`);
+      await ctx.db.execute(sql`DELETE FROM vehicle_types WHERE id IN (${ourTypes})`);
+      /*
+       * Журнал — по автору, а не по видам сущностей: писали в него только здешние учётки, и в
+       * `audit_log` за прогон оседало больше трёхсот строк — треть всего, что db-тесты в него
+       * наливают. Отбор по автору заодно не зависит от того, какие виды записей ручки заведут
+       * завтра. Идёт он раньше сноса учёток: `actor_user_id` при удалении обнуляется, и после
+       * него строки было бы уже не найти.
+       */
+      await ctx.db.execute(sql`DELETE FROM audit_log WHERE actor_user_id IN (${ourUsers})`);
+      await ctx.db.execute(sql`DELETE FROM users WHERE id IN (${ourUsers})`);
+      for (const { vehicleId, lessorId } of stampedLessors) {
+        await ctx.db.execute(sql`
+          UPDATE vehicles SET lessor_id = ${lessorId} WHERE id = ${vehicleId}`);
+      }
+      /*
+       * Контрагент сносится, только если его никто не держит: сорвавшийся посреди сценария прогон
+       * оставляет подмену на машине, и безусловный снос упал бы на внешнем ключе — то есть уборка
+       * похоронила бы причину падения под своей.
+       */
+      await ctx.db.execute(sql`
+        DELETE FROM counterparties
+        WHERE name LIKE 'Тестовый контрагент %'
+          AND id NOT IN (SELECT lessor_id FROM vehicles WHERE lessor_id IS NOT NULL)`);
+    }
     await ctx?.app.close();
     await ctx?.closeDb();
-  });
+  }, 60_000);
 
   // ── Продление: срок, версия, снимок ──
 
@@ -1502,6 +1602,9 @@ describe.skipIf(!DB_URL)('недельная заявка: применение 
 
     it('недопустимая неделя в теле запроса — 422 от API, а не только от формы', async () => {
       const objectId = await freshObject();
+      // Субъект здесь — штаб: у него нет права прошлого, и правило недели для него прежнее целиком.
+      // Администратором эти же случаи проверять больше нельзя — прошлое ему открыто (ADR 0101),
+      // и «прошедшая неделя» у него законна; про это отдельная проверка ниже.
       const cases: [string, string][] = [
         [shiftDateKey(CUR_MON, -7), 'прошедшая неделя'],
         [CUR_MON, 'текущая неделя'],
@@ -1509,7 +1612,7 @@ describe.skipIf(!DB_URL)('недельная заявка: применение 
         [shiftDateKey(W1, 1), 'вторник вместо понедельника'],
       ];
       for (const [weekStart, what] of cases) {
-        const res = await inject('POST', '/api/v1/weekly-vehicle-requests', ctx.admin.auth, {
+        const res = await inject('POST', '/api/v1/weekly-vehicle-requests', ctx.shtab.auth, {
           objectId,
           weekStart,
           items: [],
@@ -1517,20 +1620,57 @@ describe.skipIf(!DB_URL)('недельная заявка: применение 
         expect(res.statusCode, `${what}: ${res.body}`).toBe(422);
       }
       // Четвёртая будущая — последняя допустимая: граница проверяется с обеих сторон.
-      const ok = await makeWeekly(ctx.admin.auth, { objectId, weekStart: W4 });
+      const ok = await makeWeekly(ctx.shtab.auth, { objectId, weekStart: W4 });
       expect(ok.status).toBe('draft');
     }, 60_000);
 
-    it('черновик дожил до своей недели: подача и виза — 422, отмена проходит', async () => {
-      // Заявку на текущую неделю API не заводит вовсе, поэтому состояние «черновик пролежал до
-      // понедельника» воспроизводится вставкой — ради него и существует проверка на подаче.
+    it('право прошлого открывает заведение заявки на уже прошедшую неделю', async () => {
+      // Верхняя граница будущего остаётся общей: заднее число снимает запрет прошлого, а не все
+      // границы разом. Проверяются обе стороны одним субъектом — администратором, у которого
+      // предела глубины нет вовсе (`waybills.correctBeyondLimit`).
+      const past = await makeWeekly(ctx.admin.auth, {
+        objectId: await freshObject(),
+        weekStart: shiftDateKey(CUR_MON, -7),
+      });
+      expect(past.status).toBe('draft');
+
+      const current = await makeWeekly(ctx.admin.auth, {
+        objectId: await freshObject(),
+        weekStart: CUR_MON,
+      });
+      expect(current.status).toBe('draft');
+
+      const tooFar = await inject('POST', '/api/v1/weekly-vehicle-requests', ctx.admin.auth, {
+        objectId: await freshObject(),
+        weekStart: W5,
+        items: [],
+      });
+      expect(tooFar.statusCode, tooFar.body).toBe(422);
+    }, 60_000);
+
+    it('черновик дожил до своей недели: подача проходит, виза без причины — 422, отмена проходит', async () => {
+      // Заявку на текущую неделю заводит только право прошлого, поэтому состояние «черновик
+      // пролежал до понедельника» по-прежнему воспроизводится вставкой — так оно и появляется в
+      // жизни у роли, которая задним числом ничего не может.
       const stale = await insertWeekly('draft');
+      /*
+       * Подача просроченной недели идёт под тем же правом прошлого, что и её заведение
+       * (`assertWeekAllowed`), — у администратора оно есть, и проверка недели её пропускает.
+       * Не спрашивается у подачи другое: причина, ключ операции и строка в журнале коррекций —
+       * их спрашивает виза, потому что двигает сроки именно она.
+       *
+       * Видно это по причине отказа: он про пустой состав, а не про наступившую неделю. Полная
+       * подача просроченной заявки с составом проверяется ниже, в блоке «проведение просроченной
+       * недели задним числом»; вставленная сюда заявка нарочно пуста — ею же проверяется, что
+       * порядок проверок не разошёлся.
+       */
       const submitted = await submitWeekly(ctx.admin.auth, stale.id, stale.version);
       expect(submitted.statusCode, submitted.body).toBe(422);
+      expect(submitted.json().message).toContain('состав пуст');
       expect((await weeklyRow(stale.id))!.status).toBe('draft');
 
-      // Та же заявка, доживи она до недели уже поданной: виза обязана отказать под блокировкой,
-      // иначе портал продлил бы сроки задним числом относительно собственного правила.
+      // Та же заявка, доживи она до недели уже поданной: виза без блока коррекции обязана
+      // отказать под блокировкой — иначе портал продлил бы сроки задним числом молча.
       const pending = await insertWeekly('pending');
       const approval = await approveWeekly(ctx.admin.auth, pending.id, pending.version);
       expect(approval.statusCode, approval.body).toBe(422);
@@ -1744,7 +1884,14 @@ describe.skipIf(!DB_URL)('недельная заявка: применение 
       const mineOrder = await makeOrder({ objectId, ownership: 'rental' });
       const foreignOrder = await makeOrder({ objectId, ownership: 'rental' });
       // Машина заказа помечается его контрагентом: роль арендодателя появляется в заявке вместе
-      // с назначением (ADR 0027, 0038), своего поля исполнителя у заявки ТС нет.
+      // с назначением (ADR 0027, 0038), своего поля исполнителя у заявки ТС нет. Машина —
+      // справочная, поэтому прежний владелец запоминается: возвращает его уборка (`afterAll`).
+      const previous = await ctx.db.execute<{ lessor_id: string }>(sql`
+          SELECT lessor_id FROM vehicles WHERE id = ${mineOrder.vehicleId}`);
+      stampedLessors.push({
+        vehicleId: mineOrder.vehicleId,
+        lessorId: previous.rows[0]!.lessor_id,
+      });
       await ctx.db.execute(sql`
           UPDATE vehicles SET lessor_id = ${ctx.lessorCounterpartyId}
           WHERE id = ${mineOrder.vehicleId}`);
@@ -1925,6 +2072,234 @@ describe.skipIf(!DB_URL)('недельная заявка: применение 
   });
 
   // ── Уборка следов при удалении насовсем (Р15) ──
+
+  /**
+   * Проведение просроченной недели задним числом (ADR 0101, решение заказчика от 18.08.2026).
+   *
+   * Черновик, доживший до своей недели, до сих пор был тупиком: подать нельзя, завизировать
+   * нельзя, а техника на площадке всё это время работала. Теперь такую неделю проводят — но не
+   * все и не молча: право прошлого (`waybills.correct`) вместо права визы, причина, глубина и
+   * строка в журнале коррекций, у которой свой вид `weekly`.
+   *
+   * Проверяется здесь именно сцепка с чужой механикой: замена права, обязательность блока в обе
+   * стороны, идемпотентность по ключу операции и бумага — та, которую без контекста коррекции
+   * сверка за прошедшую неделю не выписала бы вовсе.
+   */
+  describe('проведение просроченной недели задним числом', () => {
+    /** Заявка на текущую (уже начавшуюся) неделю с одной строкой продления — предмет проведения. */
+    async function overdueWeekly(): Promise<{ weekly: WeeklyDto; order: Order; objectId: string }> {
+      const objectId = await freshObject();
+      // Срок кончается сегодня: продление до воскресенья текущей недели удлиняет его на явные дни
+      // и потому проходит `extendBlocker` (продление обязано быть строго длиннее нынешнего срока).
+      const order = await makeOrder({ objectId, dateTo: TODAY });
+      const weekly = await makeWeekly(ctx.admin.auth, {
+        objectId,
+        weekStart: CUR_MON,
+        items: [extendItem(order, CUR_SUN)],
+      });
+      const submitted = await submitWeekly(ctx.admin.auth, weekly.id, weekly.version);
+      expect(submitted.statusCode, submitted.body).toBe(200);
+      return { weekly: submitted.json().request as WeeklyDto, order, objectId };
+    }
+
+    function approveBackdated(
+      auth: Auth,
+      id: string,
+      version: number,
+      correction: { operationId: string; reason: string; unlockWaybillIds?: string[] },
+    ) {
+      return inject('POST', `/api/v1/weekly-vehicle-requests/${id}/approval`, auth, {
+        approved: true,
+        comment: '',
+        version,
+        correction,
+      });
+    }
+
+    async function correctionRow(operationId: string) {
+      const res = await ctx.db.execute<{ kind: string; reason: string }>(
+        sql`SELECT kind::text, reason FROM waybill_corrections WHERE operation_id = ${operationId}`,
+      );
+      return res.rows[0];
+    }
+
+    it.skipIf(RUNS_ON_SUNDAY)(
+      'без блока коррекции виза просроченной недели не проходит',
+      async () => {
+        const { weekly, order } = await overdueWeekly();
+
+        const res = await approveWeekly(ctx.dispatcher.auth, weekly.id, weekly.version);
+        expect(res.statusCode, res.body).toBe(422);
+        expect(res.json().message).toBe(WEEKLY_CORRECTION_REQUIRED_MESSAGE);
+        // Отказ целиком: ни статуса, ни срока заказа он не двигает.
+        expect((await weeklyRow(weekly.id))!.status).toBe('pending');
+        expect((await orderRow(order.id)).date_to).toBe(TODAY);
+      },
+      60_000,
+    );
+
+    it.skipIf(RUNS_ON_SUNDAY)(
+      'право визы у просроченной недели заменяется правом прошлого',
+      async () => {
+        const { weekly } = await overdueWeekly();
+
+        // У руководителя строительства есть `weeklyRequests.approve`, но нет права прошлого: неделю,
+        // которая уже идёт, он не проводит — это работа диспетчера.
+        const denied = await approveBackdated(ctx.rukstroy.auth, weekly.id, weekly.version, {
+          operationId: randomUUID(),
+          reason: 'Техника отработала неделю, заявку провели с опозданием',
+        });
+        expect(denied.statusCode, denied.body).toBe(403);
+        expect(denied.json().message).toContain('право коррекции задним числом');
+
+        // Отклонить ту же заявку он по-прежнему может: отказ прошлого не двигает, он возвращает
+        // состав в черновик — и спрашивать за него право коррекции было бы подменой предмета.
+        const rejected = await approveWeekly(
+          ctx.rukstroy.auth,
+          weekly.id,
+          weekly.version,
+          false,
+          'Не нужно',
+        );
+        expect(rejected.statusCode, rejected.body).toBe(200);
+        expect((await weeklyRow(weekly.id))!.status).toBe('draft');
+      },
+      60_000,
+    );
+
+    it.skipIf(RUNS_ON_SUNDAY)(
+      'диспетчер проводит неделю: срок сдвинут, в журнале коррекций свой вид',
+      async () => {
+        const { weekly, order } = await overdueWeekly();
+        const operationId = randomUUID();
+        const reason = 'Заявку подали в пятницу, а провели в понедельник — техника уже работала';
+
+        const res = await approveBackdated(ctx.dispatcher.auth, weekly.id, weekly.version, {
+          operationId,
+          reason,
+        });
+        expect(res.statusCode, res.body).toBe(200);
+
+        expect((await weeklyRow(weekly.id))!.status).toBe('applied');
+        expect((await orderRow(order.id)).date_to).toBe(CUR_SUN);
+        // Вид операции свой: в журнале бланков строгой отчётности «неделю провели задним числом» не
+        // должно быть неотличимо от «сменили машину» (ADR 0101, реестр видов).
+        const correction = await correctionRow(operationId);
+        expect(correction?.kind).toBe('weekly');
+        expect(correction?.reason).toBe(reason);
+      },
+      60_000,
+    );
+
+    it.skipIf(RUNS_ON_SUNDAY)(
+      'повтор по ключу операции второй раз ничего не делает',
+      async () => {
+        const { weekly, order } = await overdueWeekly();
+        const operationId = randomUUID();
+        const correction = { operationId, reason: 'Обрыв связи на визе, повторяем тот же запрос' };
+
+        const first = await approveBackdated(
+          ctx.dispatcher.auth,
+          weekly.id,
+          weekly.version,
+          correction,
+        );
+        expect(first.statusCode, first.body).toBe(200);
+        const sheetsAfterFirst = await sheetsOf(order.id);
+
+        // Тот же ключ и то же тело: заявка уже применена, и обычная проверка состояния ответила бы
+        // отказом на работу, которая сделана этим же запросом (Р31 ADR 0101).
+        const repeat = await approveBackdated(
+          ctx.dispatcher.auth,
+          weekly.id,
+          weekly.version,
+          correction,
+        );
+        expect(repeat.statusCode, repeat.body).toBe(200);
+        expect(repeat.json().apply).toBeNull();
+        expect((await orderRow(order.id)).date_to).toBe(CUR_SUN);
+        // Ни одного лишнего номера бланка: повтор не жжёт бумагу.
+        expect(await sheetsOf(order.id)).toHaveLength(sheetsAfterFirst.length);
+      },
+      60_000,
+    );
+
+    it('блок коррекции у будущей недели — отказ: в ней нечего исправлять', async () => {
+      const objectId = await freshObject();
+      const order = await makeOrder({ objectId });
+      const weekly = await makeWeekly(ctx.admin.auth, {
+        objectId,
+        weekStart: W1,
+        items: [extendItem(order, W1_END)],
+      });
+      const submitted = await submitWeekly(ctx.admin.auth, weekly.id, weekly.version);
+      expect(submitted.statusCode, submitted.body).toBe(200);
+      const pending = submitted.json().request as WeeklyDto;
+
+      // Визирует администратор: у диспетчера права визы будущей недели нет вовсе, и отказ пришёл
+      // бы про право, а проверяется здесь несовпадение блока с неделей.
+      const res = await approveBackdated(ctx.admin.auth, weekly.id, pending.version, {
+        operationId: randomUUID(),
+        reason: 'Причина, которой здесь неоткуда взяться',
+      });
+      expect(res.statusCode, res.body).toBe(422);
+      expect((await weeklyRow(weekly.id))!.status).toBe('pending');
+    }, 60_000);
+
+    it.skipIf(RUNS_ON_SUNDAY)(
+      'прошедшая неделя получает лист ЭСМ-2, которого сверка сама не выписала бы',
+      async () => {
+        const objectId = await freshObject();
+        const order = await makeOrder({ objectId, dateTo: TODAY });
+        const [sheet] = await sheetsOf(order.id);
+        expect(sheet).toBeDefined();
+
+        /*
+         * Заказ, отработавший позапрошлую неделю: через API его не завести (`isAllowedRequestDate`),
+         * поэтому срок и выданный лист переклеиваются в прошлое — то же состояние, в котором заказ
+         * встречает опоздавшую недельную заявку. Продлевается он до конца ПРОШЛОЙ недели, у которой
+         * листа нет вовсе: без контекста коррекции сверка такую неделю не выписывает (`esm2SyncPlan`
+         * отбирает недели условием `p.to >= today`), и проверяется здесь ровно то, что контекст до
+         * неё доезжает.
+         */
+        const prevMon = shiftDateKey(CUR_MON, -7);
+        const prevSun = shiftDateKey(CUR_MON, -1);
+        const prevPrevMon = shiftDateKey(CUR_MON, -14);
+        const prevPrevSat = shiftDateKey(CUR_MON, -9);
+        await ctx.db.execute(sql`
+        UPDATE special_equipment_request_details
+        SET date_from = ${prevPrevMon}::date, date_to = ${prevPrevSat}::date
+        WHERE request_id = ${order.id}`);
+        await ctx.db.execute(sql`
+        UPDATE waybills
+        SET period_from = ${prevPrevMon}::date, period_to = ${shiftDateKey(CUR_MON, -8)}::date,
+            issued_for_date = ${prevPrevMon}::date
+        WHERE id = ${sheet!.id}`);
+
+        const weekly = await makeWeekly(ctx.dispatcher.auth, {
+          objectId,
+          weekStart: prevMon,
+          items: [extendItem(order, prevSun)],
+        });
+        const submitted = await submitWeekly(ctx.dispatcher.auth, weekly.id, weekly.version);
+        expect(submitted.statusCode, submitted.body).toBe(200);
+        const pending = submitted.json().request as WeeklyDto;
+
+        const res = await approveBackdated(ctx.dispatcher.auth, weekly.id, pending.version, {
+          operationId: randomUUID(),
+          reason: 'Неделю согласовали устно, в портал внесли задним числом',
+        });
+        expect(res.statusCode, res.body).toBe(200);
+
+        // Лист прошедшей недели выписан — именно на неё, а не на текущую.
+        const periods = (await sheetsOf(order.id))
+          .filter((row) => row.status !== 'cancelled')
+          .map((row) => `${row.period_from}..${row.period_to}`);
+        expect(periods).toContain(`${prevMon}..${prevSun}`);
+      },
+      60_000,
+    );
+  });
 
   describe('purge: намерение уступает, факт держит', () => {
     it('purge заказа снимает строки неприменённой заявки, поднимает версию и пишет item_dropped', async () => {

@@ -193,6 +193,33 @@ describe.skipIf(!DB_URL)('учётка после архива (живая сх�
   }, 120_000);
 
   afterAll(async () => {
+    if (ctx?.db) {
+      /*
+       * Убирается файл за собой сам: база у db-тестов общая и живёт между прогонами, а здесь
+       * каждый сценарий регистрируется заново — да ещё и по нескольку строк на адрес, потому что
+       * архивная и действующая учётки различаются только `deleted_at`. За прогон в базе оставался
+       * десяток отказанных заявок на регистрацию, и они же попадали в отбор аудитории рассылок.
+       *
+       * Метка — адрес: `db-archive-<8 знаков>`, его же и выдаёт `freshEmail`. Списком заведённого
+       * уборка не пользуется намеренно — прибирать надо и за упавшим прогоном, который до записи
+       * в список мог не дойти. Администратор из-под метки выведен: его заводит `beforeAll` один
+       * раз на все прогоны и ищет по адресу.
+       *
+       * Порядок обратен ссылкам: сначала заявка на вывоз (`waste_requests.created_by` — RESTRICT,
+       * именно этим и держится сценарий отказа в `purge`), затем журнал, затем учётки. Журнал
+       * подчищается ещё и по адресу в реквизитах: у purge-сценария учётки уже нет, а строка о ней
+       * осталась — по ней тест и проверяет, что адрес в журнале сохранился.
+       */
+      const ours = sql`email LIKE 'db-archive-%' AND email <> ${ADMIN_EMAIL}`;
+      await ctx.db.execute(sql`
+        DELETE FROM waste_requests WHERE created_by IN (SELECT id FROM users WHERE ${ours})`);
+      await ctx.db.execute(sql`
+        DELETE FROM audit_log
+        WHERE entity_type = 'user'
+          AND (entity_id IN (SELECT id::text FROM users WHERE ${ours})
+               OR metadata->>'email' LIKE 'db-archive-%')`);
+      await ctx.db.execute(sql`DELETE FROM users WHERE ${ours}`);
+    }
     await ctx?.app.close();
     await ctx?.closeDb();
   });

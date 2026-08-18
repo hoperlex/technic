@@ -7,6 +7,7 @@ import { applyMigrations } from '../src/db/migration-journal';
 // Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
 // окружение, — конфиг проверяет его при импорте и без него падает.
 import type { buildApp } from '../src/app';
+import type { db as AppDb } from '../src/db/client';
 
 /**
  * Адрес ездки, выбранный из справочника (ADR 0069), — на живой схеме, через настоящий HTTP-путь.
@@ -30,7 +31,12 @@ import type { buildApp } from '../src/app';
 
 const DB_URL = process.env.TEST_DATABASE_URL;
 
-const ADMIN_EMAIL = 'db-test@example.invalid';
+/*
+ * Адрес свой у файла, а не общий `db-test@`: под тем же адресом заводили администратора ещё два
+ * db-теста, а уборка опознаёт заведённое как раз по автору — общая учётка означала бы, что файл
+ * сносит чужие, ещё живые заказы (та же беда, что и с общим СНИЛС, см. `db-identity`).
+ */
+const ADMIN_EMAIL = 'db-request-address@example.invalid';
 const ADMIN_PASSWORD = 'db-test-password-123';
 
 /** Фикстуры справочников заводятся один раз и переиспользуются: код и ИНН — их опознание. */
@@ -41,6 +47,7 @@ const WAREHOUSE_ADDRESS = 'г Москва, ул Складская, д 7';
 
 interface Ctx {
   app: Awaited<ReturnType<typeof buildApp>>;
+  db: typeof AppDb;
   closeDb: () => Promise<void>;
   auth: { authorization: string };
   vehicleTypeId: string;
@@ -185,6 +192,7 @@ describe.skipIf(!DB_URL)('адрес заявки из справочника (�
 
     ctx = {
       app,
+      db,
       closeDb,
       auth,
       vehicleTypeId: type.type_id,
@@ -197,9 +205,27 @@ describe.skipIf(!DB_URL)('адрес заявки из справочника (�
   }, 120_000);
 
   afterAll(async () => {
+    if (ctx?.db) {
+      /*
+       * Убирается файл за собой сам: база у db-тестов общая и живёт между прогонами, а здесь каждый
+       * случай заводит грузоперевозку — за прогон в ней оседало по три заказа с их ездками и
+       * историей.
+       *
+       * Метка — собственная учётка файла: всё, что тут заводится, заводит она. Списком заведённого
+       * уборка не пользуется намеренно — прибирать надо и за упавшим прогоном, который до записи в
+       * список мог не дойти. Саму учётку и фикстуры справочников (площадка, поставщик, склад)
+       * уборка не трогает: их `beforeAll` ищет по коду и заводит один раз на все прогоны.
+       *
+       * Детали, ездки и история заказа уходят каскадом вместе с ним.
+       */
+      const ourUsers = sql`SELECT id FROM users WHERE email = ${ADMIN_EMAIL}`;
+      await ctx.db.execute(sql`DELETE FROM vehicle_requests WHERE created_by IN (${ourUsers})`);
+      // Журнал — по автору: писала в него только здешняя учётка, а видов записей у неё несколько.
+      await ctx.db.execute(sql`DELETE FROM audit_log WHERE actor_user_id IN (${ourUsers})`);
+    }
     await ctx?.app.close();
     await ctx?.closeDb();
-  });
+  }, 60_000);
 
   it('принимает адрес объекта из справочника — без ФИАС, по ссылке на запись', async () => {
     const res = await createFreight({

@@ -1,7 +1,7 @@
 import { generateKeyPairSync } from 'node:crypto';
 import pg from 'pg';
 import { sql } from 'drizzle-orm';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   moscowDateKeyOf,
   shiftDateKey,
@@ -314,6 +314,47 @@ describe.skipIf(!DB_URL)('даты заявок задним числом (жи�
       today: moscowDateKeyOf(new Date()),
     };
   }, 120_000);
+
+  afterAll(async () => {
+    if (!ctx?.db) return;
+    /*
+     * Убирается файл за собой сам: база у db-тестов общая и живёт между прогонами, а здесь каждый
+     * случай заводит заказ — за прогон в ней оседало по десятку заказов и по десятку следов
+     * операций.
+     *
+     * Метка — собственные учётки файла: всё, что тут заводится, заводят они, а чужого под ними не
+     * бывает. Списком заведённого уборка не пользуется намеренно — прибирать надо и за упавшим
+     * прогоном, который до записи в список мог не дойти. Сами учётки уборка не трогает: их
+     * `beforeAll` ищет по адресам и заводит один раз на все прогоны — он же возвращает на место
+     * роль той, у которой право отбирали.
+     *
+     * Порядок обратен ссылкам: лист держит заказ и рейс ключами `restrict`, состав рейса — заказ,
+     * след операции — автора. Связь следа с заказом, детали и история заказа уходят каскадом со
+     * своей головной строкой.
+     *
+     * Человек и его документы остаются: он ищется по СНИЛС и заводится один раз на все прогоны —
+     * то есть не накапливается.
+     */
+    const ourUsers = sql`
+      SELECT id FROM users
+      WHERE email IN (${ADMIN_EMAIL}, ${DISPATCHER_EMAIL}, ${MANAGER_EMAIL}, ${REVOKED_EMAIL})`;
+    const ourRequests = sql`SELECT id FROM vehicle_requests WHERE created_by IN (${ourUsers})`;
+    await ctx.db.execute(sql`
+      DELETE FROM waybills
+      WHERE source_request_id IN (${ourRequests})
+         OR id IN (SELECT waybill_id FROM waybill_requests WHERE request_id IN (${ourRequests}))
+         OR route_id IN (SELECT id FROM vehicle_routes
+                          WHERE source_request_id IN (${ourRequests}))`);
+    await ctx.db.execute(sql`
+      DELETE FROM vehicle_route_requests WHERE request_id IN (${ourRequests})`);
+    await ctx.db.execute(sql`
+      DELETE FROM vehicle_routes WHERE source_request_id IN (${ourRequests})`);
+    await ctx.db.execute(sql`DELETE FROM vehicle_requests WHERE id IN (${ourRequests})`);
+    await ctx.db.execute(sql`
+      DELETE FROM waybill_corrections WHERE actor_user_id IN (${ourUsers})`);
+    // Журнал — по автору: писали в него только здешние учётки, а видов записей у них несколько.
+    await ctx.db.execute(sql`DELETE FROM audit_log WHERE actor_user_id IN (${ourUsers})`);
+  }, 60_000);
 
   describe('заведение задним числом (Р15)', () => {
     it('без права прошлое закрыто, даже с объяснением', async () => {

@@ -61,6 +61,8 @@ const DB_URL = process.env.TEST_DATABASE_URL;
 /** Метки своих строк: уборка идёт по ним, а не «по последним записям». */
 const EMAIL_PREFIX = 'db-grant-assign';
 const GRANT_PREFIX = 'db_grant_assign';
+/** Метка работников файла: по ней их и убирают за собой — база у db-тестов общая. */
+const PERSON_MARK = 'ТЕСТОВЫЕ ДАННЫЕ: выдача полномочий';
 /** Уникальный хвост прогона: код набора и адрес учётки уникальны в базе. */
 const RUN = `${Date.now().toString(36)}${randomUUID().slice(0, 4)}`.replace(/[^a-z0-9]/gu, '');
 
@@ -120,6 +122,11 @@ async function migrate(databaseUrl: string): Promise<void> {
  * Уборка. Порядок обязателен: записи журнала уходят первыми (`entity_id` там текстовый и каскадом не
  * убирается), затем учётки — они уносят назначения каскадом по `user_id`, — и только потом сами
  * наборы: `user_grants.grant_id` стоит под RESTRICT, и выданный набор не удаляется вовсе.
+ *
+ * Работник идёт последним и отдельной строкой: `users.person_id` при сносе учётки **обнуляется**, а
+ * не удаляется, — и карточка водителя, заведённая ради `users_driver_person_check`, оставалась в
+ * общей базе по штуке за прогон. Работник без документов потом мешал соседям: обмен справочниками
+ * спотыкается как раз о людей без СНИЛС.
  */
 async function cleanup(db: typeof AppDb): Promise<void> {
   await db.execute(sql`DELETE FROM audit_log WHERE entity_type = 'grant' AND entity_id IN (
@@ -128,6 +135,7 @@ async function cleanup(db: typeof AppDb): Promise<void> {
     SELECT id::text FROM users WHERE email LIKE ${`${EMAIL_PREFIX}%`})`);
   await db.execute(sql`DELETE FROM users WHERE email LIKE ${`${EMAIL_PREFIX}%`}`);
   await db.execute(sql`DELETE FROM grants WHERE code LIKE ${`${GRANT_PREFIX}%`}`);
+  await db.execute(sql`DELETE FROM persons WHERE comment = ${PERSON_MARK}`);
 }
 
 async function newUser(role: Role | null, suffix: string): Promise<{ id: string; email: string }> {
@@ -166,7 +174,7 @@ async function newPerson(suffix: string): Promise<string> {
       lastName: `Водителев${suffix}`,
       firstName: 'Виктор',
       middleName: 'Викторович',
-      comment: 'ТЕСТОВЫЕ ДАННЫЕ: выдача полномочий',
+      comment: PERSON_MARK,
     })
     .returning({ id: ctx.schema.persons.id });
   return person!.id;

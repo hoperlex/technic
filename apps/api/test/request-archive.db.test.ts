@@ -198,6 +198,31 @@ describe.skipIf(!DB_URL)('архив заявок (живая схема)', () =
   }, 120_000);
 
   afterAll(async () => {
+    if (ctx?.db) {
+      /*
+       * Убирается файл за собой сам: база у db-тестов общая и живёт между прогонами, а здесь каждый
+       * случай заводит заявку — за прогон в ней оседало по полдесятка заказов техники и столько же
+       * заявок на вывоз, и все в архиве, то есть невидимые в обычных списках.
+       *
+       * Метка — собственная учётка файла: всё, что тут заводится, заводит она. Списком заведённого
+       * уборка не пользуется намеренно — прибирать надо и за упавшим прогоном, который до записи в
+       * список мог не дойти. Саму учётку уборка не трогает: её `beforeAll` ищет по адресу и заводит
+       * один раз на все прогоны.
+       *
+       * Порядок обратен ссылкам: рейс держит заказ ключом `restrict`. Детали, история и файлы
+       * заявок уходят каскадом вместе с ними.
+       */
+      const ourUsers = sql`SELECT id FROM users WHERE email = ${ADMIN_EMAIL}`;
+      const ourRequests = sql`SELECT id FROM vehicle_requests WHERE created_by IN (${ourUsers})`;
+      await ctx.db.execute(sql`
+        DELETE FROM vehicle_route_requests WHERE request_id IN (${ourRequests})`);
+      await ctx.db.execute(sql`
+        DELETE FROM vehicle_routes WHERE source_request_id IN (${ourRequests})`);
+      await ctx.db.execute(sql`DELETE FROM vehicle_requests WHERE id IN (${ourRequests})`);
+      await ctx.db.execute(sql`DELETE FROM waste_requests WHERE created_by IN (${ourUsers})`);
+      // Журнал — по автору: писала в него только здешняя учётка, а видов записей у неё несколько.
+      await ctx.db.execute(sql`DELETE FROM audit_log WHERE actor_user_id IN (${ourUsers})`);
+    }
     await ctx?.app.close();
     await ctx?.closeDb();
   });

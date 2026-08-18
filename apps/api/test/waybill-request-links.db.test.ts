@@ -324,9 +324,41 @@ describe.skipIf(!DB_URL)('талоны заказчиков в журнале л
   }, 120_000);
 
   afterAll(async () => {
+    if (ctx?.db) {
+      /*
+       * Убирается файл за собой сам: база у db-тестов общая и живёт между прогонами, а здесь каждый
+       * случай берёт заказ в работу и выписывает по нему лист — за прогон в ней оседало по три
+       * заказа с их бумагой.
+       *
+       * Метка — собственная учётка файла: всё, что тут заводится, заводит она. Списком заведённого
+       * уборка не пользуется намеренно — прибирать надо и за упавшим прогоном, который до записи в
+       * список мог не дойти. Саму учётку уборка не трогает: её `beforeAll` ищет по адресу и заводит
+       * один раз на все прогоны.
+       *
+       * Порядок обратен ссылкам: лист держит и заказ, и рейс ключами `restrict`, состав рейса —
+       * заказ. Талоны листа, детали и история заказа уходят каскадом со своей головной строкой.
+       *
+       * Человек и его документы остаются: он ищется по СНИЛС и заводится один раз на все прогоны.
+       */
+      const ourUsers = sql`SELECT id FROM users WHERE email = ${ADMIN_EMAIL}`;
+      const ourRequests = sql`SELECT id FROM vehicle_requests WHERE created_by IN (${ourUsers})`;
+      await ctx.db.execute(sql`
+        DELETE FROM waybills
+        WHERE source_request_id IN (${ourRequests})
+           OR id IN (SELECT waybill_id FROM waybill_requests WHERE request_id IN (${ourRequests}))
+           OR route_id IN (SELECT id FROM vehicle_routes
+                            WHERE source_request_id IN (${ourRequests}))`);
+      await ctx.db.execute(sql`
+        DELETE FROM vehicle_route_requests WHERE request_id IN (${ourRequests})`);
+      await ctx.db.execute(sql`
+        DELETE FROM vehicle_routes WHERE source_request_id IN (${ourRequests})`);
+      await ctx.db.execute(sql`DELETE FROM vehicle_requests WHERE id IN (${ourRequests})`);
+      // Журнал — по автору: писала в него только здешняя учётка, а видов записей у неё несколько.
+      await ctx.db.execute(sql`DELETE FROM audit_log WHERE actor_user_id IN (${ourUsers})`);
+    }
     await ctx?.app.close();
     await ctx?.closeDb();
-  });
+  }, 60_000);
 
   it('талон несёт номер заявки и её состояние на сейчас', async () => {
     const request = await requestInWork();

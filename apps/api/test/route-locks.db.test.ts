@@ -535,6 +535,14 @@ describe.skipIf(!DB_URL)('встречные блокировки: канон «
           AND id NOT IN (
             SELECT driver_person_id FROM vehicle_routes WHERE driver_person_id IS NOT NULL)`);
     }
+    /*
+     * Журнал уборка сносит по автору: писали в него только здешние учётки, а видов записей у них
+     * несколько — отбор по одному виду сущности оставлял бы остальные. `audit_log` — самая большая
+     * таблица общей базы db-тестов, и набирается она как раз такими остатками.
+     */
+    await ctx?.db.execute(sql`
+      DELETE FROM audit_log
+       WHERE actor_user_id IN (SELECT id FROM users WHERE email = ${ADMIN_EMAIL})`);
     await ctx?.app.close();
     await ctx?.closeDb();
   });

@@ -204,6 +204,14 @@ describe.skipIf(!DB_URL)('разметка ТО у типа техники (жи
         sql`DELETE FROM vehicle_types WHERE code LIKE ${`${TYPE_CODE_PREFIX}%`}`,
       );
     }
+    /*
+     * Журнал уборка сносит по автору: писали в него только здешние учётки, а видов записей у них
+     * несколько — отбор по одному виду сущности оставлял бы остальные. `audit_log` — самая большая
+     * таблица общей базы db-тестов, и набирается она как раз такими остатками.
+     */
+    await ctx?.db.execute(sql`
+      DELETE FROM audit_log
+       WHERE actor_user_id IN (SELECT id FROM users WHERE email = ${ADMIN_EMAIL})`);
     await ctx?.app.close();
     await ctx?.closeDb();
   });

@@ -49,7 +49,12 @@ const DB_URL = process.env.TEST_DATABASE_URL;
 // и файлы делили его так же, как делили СНИЛС. Тот же хвост прогона разводит и его.
 const PERSONNEL_RUN = Date.now().toString(36).slice(-5);
 const DRIVER_SNILS = snilsOf(runSeed('vehicle-request-delivery'));
-const ADMIN_EMAIL = 'db-test@example.invalid';
+/*
+ * Адрес свой у файла, а не общий `db-test@`: под тем же адресом заводили администратора ещё два
+ * db-теста, а уборка опознаёт заведённое как раз по автору — общая учётка означала бы, что файл
+ * сносит чужие, ещё живые заказы (та же беда, что и с общим СНИЛС, см. `db-identity`).
+ */
+const ADMIN_EMAIL = 'db-request-delivery@example.invalid';
 const ADMIN_PASSWORD = 'db-test-password-123';
 
 interface Ctx {
@@ -315,9 +320,41 @@ describe.skipIf(!DB_URL)('перевод заказа спецтехники в 
   }, 120_000);
 
   afterAll(async () => {
+    if (ctx?.db) {
+      /*
+       * Убирается файл за собой сам: база у db-тестов общая и живёт между прогонами, а здесь каждый
+       * случай заводит заказ и выписывает по нему бумагу — за прогон в ней оседало по три заказа,
+       * три листа и два рейса.
+       *
+       * Метка — собственная учётка файла: всё, что тут заводится, заводит она. Списком заведённого
+       * уборка не пользуется намеренно — прибирать надо и за упавшим прогоном, который до записи в
+       * список мог не дойти. Саму учётку уборка не трогает: её `beforeAll` ищет по адресу и заводит
+       * один раз на все прогоны.
+       *
+       * Порядок обратен ссылкам: лист держит и заказ, и рейс ключами `restrict`, состав рейса —
+       * заказ. Талоны листа, детали и история заказа уходят каскадом со своей головной строкой.
+       *
+       * Человек и его документы остаются: он ищется по СНИЛС и заводится один раз на все прогоны.
+       */
+      const ourUsers = sql`SELECT id FROM users WHERE email = ${ADMIN_EMAIL}`;
+      const ourRequests = sql`SELECT id FROM vehicle_requests WHERE created_by IN (${ourUsers})`;
+      await ctx.db.execute(sql`
+        DELETE FROM waybills
+        WHERE source_request_id IN (${ourRequests})
+           OR id IN (SELECT waybill_id FROM waybill_requests WHERE request_id IN (${ourRequests}))
+           OR route_id IN (SELECT id FROM vehicle_routes
+                            WHERE source_request_id IN (${ourRequests}))`);
+      await ctx.db.execute(sql`
+        DELETE FROM vehicle_route_requests WHERE request_id IN (${ourRequests})`);
+      await ctx.db.execute(sql`
+        DELETE FROM vehicle_routes WHERE source_request_id IN (${ourRequests})`);
+      await ctx.db.execute(sql`DELETE FROM vehicle_requests WHERE id IN (${ourRequests})`);
+      // Журнал — по автору: писала в него только здешняя учётка, а видов записей у неё несколько.
+      await ctx.db.execute(sql`DELETE FROM audit_log WHERE actor_user_id IN (${ourUsers})`);
+    }
     await ctx?.app.close();
     await ctx?.closeDb();
-  });
+  }, 60_000);
 
   it('заводит перегон и выписывает листы ЭСМ-2 тем же запросом, что и статус', async () => {
     const request = await approvedRequest();
