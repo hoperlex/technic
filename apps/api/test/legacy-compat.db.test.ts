@@ -35,6 +35,9 @@ import { applyMigrations, readMigration } from '../src/db/migration-journal';
  * `legacy-trip-edit.db.test.ts`, Р2а) и обратимость teardown как таковая (репетиция выката,
  * протокол §9).
  *
+ * Копия — не «база как есть», а база «как была бы на выкате»: см. `dropSkeletonRequests`, где с
+ * неё снимается то, чего в проде в этот момент существовать не может.
+ *
  * Запуск (нужны `pg_dump` и `psql` в PATH — копия снимается ими, а не `CREATE DATABASE …
  * TEMPLATE`: шаблон требует, чтобы к источнику не было ни одного подключения, а соседние db-тесты
  * идут параллельно и держат его открытым):
@@ -129,6 +132,8 @@ interface Ctx {
   waybillRequestsBefore: { request_id: string; slot: number }[];
   /** Отказ миграции на заявке без деталей — вместе с состоянием базы после отказа. */
   orphan: { message: string; applied: boolean; tripsTable: string | null; trace: string };
+  /** Заявки-скелеты, снятые с копии перед откатом (`dropSkeletonRequests`): обычно ни одной. */
+  skeletons: string[];
   /** Что накатилось на втором заходе. */
   applied: string[];
   /** Состояние «после»: ездки, точки с ролями, связь «лист ↔ ездка», печать. */
@@ -210,6 +215,83 @@ async function copyDatabase(source: string, target: string): Promise<void> {
   if (codes.some((code) => code !== 0)) {
     throw new Error(`Копия базы не снялась (коды ${codes.join('/')}): ${errors}`);
   }
+}
+
+/** Сколько ждать, пока сосед доведёт свою заявку до ездок или уберёт её (см. ниже). */
+const SKELETON_WAIT_MS = 30_000;
+
+/**
+ * Снять с копии заявки-скелеты: строка деталей есть, а ездок нет НИ ОДНОЙ.
+ *
+ * Откуда они берутся. В проде такой заявки не бывает: форма требует хотя бы одну ездку
+ * (`requestTripsSchema`), заводятся детали и ездки одной транзакцией, а удаляются ездки только
+ * мягко — на них ссылается выданный лист. База же у db-тестов общая, и соседние файлы кладут
+ * заявки прямым SQL: `vehicle-type-linear-switch` заводит грузовую заявку без ездок (ездки ему
+ * незачем — он проверяет заморозку режима) и держит её пару секунд до своего `afterAll`. Попади
+ * `pg_dump` в это окно — и копия унесёт строку, которой в прод-базе на выкате быть не могло.
+ *
+ * Почему это ломает тест целиком. Откат за границу `0136` возвращает адреса заявке ИЗ ПЕРВОЙ
+ * ездки, и teardown первым делом пересчитывает такие строки: «Строк деталей без единой ездки: 1
+ * шт.» — отказ до всякой записи, потому что иначе `SET NOT NULL` упал бы кодом 23502, ничего не
+ * объяснив. Отказ верный, и трогать его нельзя: он и стережёт то, ради чего файл написан.
+ *
+ * Почему снимать честно. Проверка не ослабляется, а фиксация обязана быть доказанной, и она
+ * доказывается по ИСТОЧНИКУ: снимок мог застать соседа посередине, но сам сосед на месте не
+ * стоит — он либо доведёт заявку до ездок, либо уберёт её. Дождались, что в источнике скелета
+ * больше нет, — значит копия поймала промежуточное состояние, и его место в фикстуре пусто.
+ * Остался скелет в источнике насовсем — это уже не гонка, а накопленный мусор либо дефект, и файл
+ * падает с перечнем заявок, а не молча выкидывает их.
+ *
+ * Снимается заявка целиком, а не одна строка деталей: половинка испортила бы фикстуру не хуже
+ * скелета. Всё, что за заявку держится, уходит каскадом; держись за неё бумага (`RESTRICT`) —
+ * удаление откажет, и это опять же отказ, а не тишина.
+ */
+async function dropSkeletonRequests(copy: pg.Client, sourceUrl: string): Promise<string[]> {
+  const skeletons = async (client: pg.Client, only: string[] | null): Promise<string[]> => {
+    const { rows } = await client.query<{ id: string }>(
+      `SELECT d.request_id::text AS id
+         FROM freight_transport_request_details d
+        WHERE ($1::uuid[] IS NULL OR d.request_id = ANY($1::uuid[]))
+          AND NOT EXISTS (SELECT 1 FROM vehicle_request_trips t WHERE t.request_id = d.request_id)`,
+      [only],
+    );
+    return rows.map((r) => r.id);
+  };
+
+  const ids = await skeletons(copy, null);
+  if (ids.length === 0) return [];
+
+  const source = new pg.Client({ connectionString: sourceUrl });
+  await source.connect();
+  let stuck = ids;
+  try {
+    const deadline = Date.now() + SKELETON_WAIT_MS;
+    for (;;) {
+      stuck = await skeletons(source, stuck);
+      if (stuck.length === 0 || Date.now() >= deadline) break;
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+  } finally {
+    await source.end();
+  }
+  if (stuck.length > 0) {
+    throw new Error(
+      `Заявок на грузоперевозку без единой ездки в базе-источнике: ${stuck.length} шт., и за ` +
+        `${SKELETON_WAIT_MS / 1000} с они никуда не делись — это не гонка со снимком, а лежащий ` +
+        `в базе мусор: ${stuck.join(', ')}. Откат за границу ${CUTOVER} на таких заявках ` +
+        `невозможен по смыслу (адреса брать неоткуда), и разбирать их надо в источнике.`,
+    );
+  }
+
+  const removed = await copy.query(`DELETE FROM vehicle_requests WHERE id = ANY($1::uuid[])`, [
+    ids,
+  ]);
+  if (removed.rowCount !== ids.length) {
+    throw new Error(
+      `С копии снято заявок ${removed.rowCount ?? 0}, а найдено скелетов ${ids.length}`,
+    );
+  }
+  return ids;
 }
 
 /** Строка выпуска, которую вставляет нынешний файл миграции: её же ищет teardown. */
@@ -301,7 +383,9 @@ async function seedLegacy(db: pg.Client): Promise<Scenario> {
   const person = await one<{ id: string }>(
     `SELECT id FROM persons WHERE deleted_at IS NULL ORDER BY id LIMIT 1`,
   );
-  const organization = await one<{ id: string }>(`SELECT id FROM organizations ORDER BY id LIMIT 1`);
+  const organization = await one<{ id: string }>(
+    `SELECT id FROM organizations ORDER BY id LIMIT 1`,
+  );
   const series = await one<{ id: string }>(
     `SELECT id FROM waybill_series WHERE is_active ORDER BY code LIMIT 1`,
   );
@@ -553,6 +637,9 @@ beforeAll(async () => {
 
   const db = new pg.Client({ connectionString: copyUrl });
   await db.connect();
+  // До отката: скелеты соседей откат и роняют, а после него их уже не распознать — колонок ездок
+  // в откаченной схеме нет.
+  const skeletons = await dropSkeletonRequests(db, DB_URL);
   await rollbackBeforeCutover(db, copyUrl);
 
   const scenario = await seedLegacy(db);
@@ -617,7 +704,12 @@ beforeAll(async () => {
     tripsAfter.set(trip.request_id, list);
   }
 
-  const counts = await db.query<{ trips: string; details: string; links: string; freight: string }>(`
+  const counts = await db.query<{
+    trips: string;
+    details: string;
+    links: string;
+    freight: string;
+  }>(`
     SELECT (SELECT count(*) FROM vehicle_request_trips)::text AS trips,
            (SELECT count(*) FROM freight_transport_request_details)::text AS details,
            (SELECT count(*) FROM waybill_trips)::text AS links,
@@ -657,6 +749,7 @@ beforeAll(async () => {
     printedTaskBefore,
     waybillRequestsBefore,
     orphan,
+    skeletons,
     applied,
     tripsAfter,
     tripCount: Number(counts.rows[0]!.trips),
@@ -764,10 +857,14 @@ describe.skipIf(!DB_URL)('заявки переживают миграцию', (
    * ездки завелись не тем заявкам.
    */
   it('у каждой грузовой заявки ровно одна ездка', () => {
-    expect(ctx.tripCount).toBe(ctx.detailCount);
+    // Снятые скелеты — в сообщении: разойдись числа, первым делом спросят, что убрали с копии.
+    const note = `скелетов снято с копии: ${ctx.skeletons.length}${
+      ctx.skeletons.length > 0 ? ` (${ctx.skeletons.join(', ')})` : ''
+    }`;
+    expect(ctx.tripCount, note).toBe(ctx.detailCount);
     const wrong = [...ctx.tripsAfter].filter(([, trips]) => trips.length !== 1).map(([id]) => id);
     expect(wrong, 'заявки, у которых ездок не одна').toEqual([]);
-    expect(ctx.tripsAfter.size).toBe(ctx.detailCount);
+    expect(ctx.tripsAfter.size, note).toBe(ctx.detailCount);
   });
 
   /**
@@ -857,9 +954,7 @@ describe.skipIf(!DB_URL)('собранный до релиза маршрут', 
    * заявки в другом порядке, то есть талоны достались бы не тем заказчикам (Р12, ADR 0068 п. 2).
    */
   it('две роли на грузовую строку, одна на линейный день, порядок прежний', () => {
-    expect(
-      ctx.pointsAfter.map((p) => `${p.position}:${p.location}[${p.role}]`),
-    ).toEqual([
+    expect(ctx.pointsAfter.map((p) => `${p.position}:${p.location}[${p.role}]`)).toEqual([
       `1:Карьер Сычёво[load]`,
       `2:${ctx.scenario.objectLocation}[unload]`,
       `3:Бетонный узел[load]`,
@@ -897,9 +992,7 @@ describe.skipIf(!DB_URL)('выданные листы', () => {
    */
   it('у старого листа появились строки waybill_trips с прежним slot', () => {
     expect(ctx.waybillRequestsBefore.map((r) => r.slot)).toEqual([1, 2]);
-    expect(ctx.waybillTripsAfter).toEqual([
-      { slot: 1, request_id: ctx.scenario.papered, num: 1 },
-    ]);
+    expect(ctx.waybillTripsAfter).toEqual([{ slot: 1, request_id: ctx.scenario.papered, num: 1 }]);
   });
 
   /** Тот же счёт по всей базе: строка на каждый талон грузовой заявки — и ни одной сверх. */

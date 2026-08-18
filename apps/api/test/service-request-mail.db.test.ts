@@ -86,7 +86,30 @@ function inject(method: 'GET' | 'POST' | 'PATCH', url: string, auth: Auth, paylo
   return ctx.app.inject({ method, url, headers: auth, ...(payload ? { payload } : {}) });
 }
 
-/** Письма по заявке — те, что журнал записал на её сущность. */
+/**
+ * Адресаты, за которых отвечает этот файл: ящик самого канала (`channel`) и та копия, которую он
+ * заводит сам, — её ключом служит идентификатор строки адресата (см. `planServiceMail`).
+ *
+ * Набор пополняется по ходу: строка копии появляется в своём сценарии, и до него её ключа не
+ * существует.
+ */
+const ownRecipients = new Set<string>(['channel']);
+
+/**
+ * Письма по заявке — те, что журнал записал на её сущность **по подпискам этого файла**.
+ *
+ * Отбор по ключу адресата, а не по всей сущности. База у db-тестов общая, а список копий
+ * (`module_mail_recipients`) — один на весь портал: соседний файл (`module-mail-recipients`)
+ * заводит своих адресатов на те же события и держит их до конца своего прогона. Портал в это время
+ * рассылает верно — каждой включённой строке по письму, — но к нашей заявке добавляются чужие
+ * копии, и «письмо на событие одно» превращалось в «пять вместо трёх» на ровном месте.
+ *
+ * Ключ дедупликации собран как `событие:строка истории:адресат[:ключ повтора]`, и третье поле
+ * говорит, КАКОЙ подпиской письмо вызвано, — а не куда оно ушло. Поэтому проверки не ослабли:
+ * адрес письма по-прежнему сверяется целиком (уйди письмо канала не на тот ящик, оно останется в
+ * выборке и уронит сверку), счёт по-прежнему точный, а спрятать пропавшее письмо отбор не может —
+ * своих подписок он не выкидывает.
+ */
 async function mailsOf(requestId: string) {
   const res = await ctx.db.execute<{
     kind: string;
@@ -97,6 +120,7 @@ async function mailsOf(requestId: string) {
     dedupe_key: string;
   }>(sql`SELECT kind, to_email, reply_to, account, subject, dedupe_key FROM mail_messages
           WHERE entity_type = 'serviceRequest' AND entity_id = ${requestId}
+            AND split_part(dedupe_key, ':', 3) = ANY(${sql.param([...ownRecipients])}::text[])
           ORDER BY created_at`);
   return res.rows;
 }
@@ -282,6 +306,9 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
       replyToMode: 'portal',
     });
     expect(added.statusCode, added.body).toBe(201);
+    const copyRecipientId = (added.json() as { id: string }).id;
+    // С этой минуты копия — наша подписка, и её письма входят в выборку наравне с письмами канала.
+    ownRecipients.add(copyRecipientId);
 
     const { request } = await createRequest(
       await ctx.newEquipment('copy'),
@@ -297,10 +324,12 @@ describe.skipIf(!DB_URL)('письма службе по заявке (жива�
     // письмо на событие» неотличимым от «двух».
     const removed = await ctx.app.inject({
       method: 'DELETE',
-      url: `/api/v1/admin/mail/recipients/${(added.json() as { id: string }).id}`,
+      url: `/api/v1/admin/mail/recipients/${copyRecipientId}`,
       headers: ctx.admin,
     });
     expect(removed.statusCode).toBe(204);
+    // Ключ снятой копии из выборки не убирается намеренно: письма по ней уже составлены, и после
+    // её удаления счёт следующих сценариев обязан сойтись сам — новых писем она не даёт.
   });
 
   it('повтор кнопкой: тот же ключ — одно письмо, новый — второе', async () => {
