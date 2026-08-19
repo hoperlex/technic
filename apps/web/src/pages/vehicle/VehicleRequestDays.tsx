@@ -113,8 +113,6 @@ export function VehicleRequestDays({ request, readOnly }: Props) {
    * ручке: кнопка не должна обещать того, чего сервер не сделает.
    */
   const canPlan = can('vehicleRequests.status') && can('waybills.read');
-  /** Выключенная кнопка объясняет себя: иначе она читается как поломка. */
-  const noRight = 'Дни планирует тот, кто ведёт ход заявки и её рейсы';
 
   /**
    * Заявка глазами правил дней. Собирается здесь, а не берётся из ответа: причину недоступности
@@ -184,10 +182,11 @@ export function VehicleRequestDays({ request, readOnly }: Props) {
   const busy = unplan.isPending;
 
   /**
-   * Колонка действий: снять день с рейса и поставить его в рейс. В таблицу попадает только в
-   * рабочем режиме — в читалке её нет вовсе (см. `readOnly`), и не выключенными кнопками, а
-   * отсутствием колонки: выключенная кнопка объясняет себя нехваткой права, а здесь права как
-   * раз хватает — планировать нельзя потому, что заявку открыли посмотреть.
+   * Колонка действий: снять день с рейса и поставить его в рейс. В таблицу попадает только у
+   * того, кто дни планирует, и только в рабочем режиме (см. `readOnly`) — оба раза отсутствием
+   * колонки, а не выключенными кнопками. В читалке права как раз хватает, и выключенная кнопка
+   * соврала бы про причину; заказчику, читающему свой план с ADR 0122, права не будет никогда, а
+   * две мёртвые кнопки в каждой строке — шум, которым портал нигде не отвечает на «не положено».
    */
   const actions: TableColumnType<VehicleRequestDayDto> = {
     key: 'actions',
@@ -199,13 +198,11 @@ export function VehicleRequestDays({ request, readOnly }: Props) {
         // из него день не может — сначала лист аннулируют.
         const frozen = !isRouteEditable(day.route.waybill?.status ?? null);
         return (
-          <span
-            title={!canPlan ? noRight : frozen ? LINEAR_DAY_FROZEN_MESSAGE : 'Снять день с рейса'}
-          >
+          <span title={frozen ? LINEAR_DAY_FROZEN_MESSAGE : 'Снять день с рейса'}>
             <Button
               size="small"
               danger
-              disabled={!canPlan || frozen || busy}
+              disabled={frozen || busy}
               onClick={() => unplan.mutate(day.date)}
             >
               Снять
@@ -217,11 +214,11 @@ export function VehicleRequestDays({ request, readOnly }: Props) {
       // API, и «день вне срока заявки» портал обязан объяснять теми же словами.
       const blocker = planDayBlocker(subject, day.date, plannedDays);
       return (
-        <span title={!canPlan ? noRight : (blocker ?? 'Поставить день в рейс')}>
+        <span title={blocker ?? 'Поставить день в рейс'}>
           <Button
             size="small"
             type="primary"
-            disabled={!canPlan || !!blocker || busy}
+            disabled={!!blocker || busy}
             onClick={() => setPlanning(day.date)}
           >
             В рейс
@@ -371,8 +368,9 @@ export function VehicleRequestDays({ request, readOnly }: Props) {
           <Typography.Text type="secondary">нет</Typography.Text>
         ),
     },
-    // Действия — последней колонкой и только в рабочем режиме (см. `actions`).
-    ...(readOnly ? [] : [actions]),
+    // Действия — последней колонкой, и только тому, кто в рабочем режиме дни планирует
+    // (см. `actions`).
+    ...(readOnly || !canPlan ? [] : [actions]),
   ];
 
   if (isPending) return <Spin size="small" />;
@@ -433,10 +431,10 @@ export function VehicleRequestDays({ request, readOnly }: Props) {
       </Typography.Text>
 
       {/* Форма планирования: день и объект известны, спрашиваются машина и водитель.
-        Условно, а не спрятанной флагом: в читалке планировщика нет вовсе — ни на экране, ни
-        взведённым в памяти. Единственная дверь к нему — колонка действий, которой там тоже нет,
-        так что `planning` в этом режиме остаётся `null` навсегда. */}
-      {!readOnly && (
+        Условно, а не спрятанной флагом: ни в читалке, ни у заказчика планировщика нет вовсе — ни
+        на экране, ни взведённым в памяти. Единственная дверь к нему — колонка действий, которой
+        там тоже нет, так что `planning` в этих режимах остаётся `null` навсегда. */}
+      {!readOnly && canPlan && (
         <VehicleDayRouteModal
           // День среза отдаётся окну: им оно решает, прошедший ли это день, а значит — спрашивать
           // ли причину заднего числа (ADR 0101 п. 4). Считает его сервер (`onDate`) — тем же

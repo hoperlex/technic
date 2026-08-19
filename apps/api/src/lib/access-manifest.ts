@@ -630,7 +630,10 @@ export const ACCESS_MANIFEST = {
     kind: 'permissions',
     allOf: ['vehicleRequests.status'],
   },
-  'GET /api/v1/vehicle-requests/:id/days': { kind: 'permissions', allOf: ['waybills.read'] },
+  'GET /api/v1/vehicle-requests/:id/days': {
+    kind: 'permissions',
+    allOf: ['vehicleRequests.read'],
+  },
   'POST /api/v1/vehicle-requests/:id/days/:date/route': {
     kind: 'permissions',
     allOf: ['waybills.read', 'vehicleRequests.status'],
@@ -639,7 +642,10 @@ export const ACCESS_MANIFEST = {
     kind: 'permissions',
     allOf: ['waybills.read', 'vehicleRequests.status'],
   },
-  'GET /api/v1/vehicle-requests/:id/driver': { kind: 'permissions', allOf: ['waybills.read'] },
+  'GET /api/v1/vehicle-requests/:id/driver': {
+    kind: 'permissions',
+    allOf: ['vehicleRequests.read'],
+  },
   'POST /api/v1/vehicle-requests/:id/early-end': {
     kind: 'permissions',
     allOf: ['vehicleRequests.update'],

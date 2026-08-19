@@ -200,6 +200,32 @@ describe('дни линейного заказа в читалке заявки'
   });
 });
 
+/**
+ * Вкладка дней у заказчика (ADR 0122). Файл про читалку, но проверять это место больше негде:
+ * монтирует вкладку сама карточка, и до ADR она появлялась только с правом на путевые листы —
+ * то есть у всех, кроме того, к кому машина и приезжает.
+ */
+describe('дни линейного заказа заказчику', () => {
+  it('вкладку открывает и без права на путевые листы, а планирования в ней не даёт', async () => {
+    const rukstroy = authUser({ role: 'rukstroy' });
+    expect(rukstroy.permissions).not.toContain('waybills.read');
+
+    renderCard(LINEAR, { user: rukstroy });
+    await openDaysTab();
+
+    const planned = dayRow('10.08.2026');
+    expect(within(planned).getByText('ВС-22-01 · А111АА77')).toBeDefined();
+    expect(within(planned).getByText('Тестовый Водитель Первый')).toBeDefined();
+    // Номер рейса заказчику остаётся текстом: рейсы ему не открывают (`canOpenRoute`), и ссылка
+    // кончилась бы отказом.
+    expect(within(planned).getByText('Р-12')).toBeDefined();
+    expect(screen.queryByRole('link', { name: 'Р-12' })).toBeNull();
+    // Планируют дни те же двое, что и раньше: колонки действий у заказчика нет вовсе.
+    expect(within(planned).queryByText('Снять')).toBeNull();
+    expect(within(dayRow('12.08.2026')).queryByText('В рейс')).toBeNull();
+  });
+});
+
 describe('дверь читалки в список заявок', () => {
   it('закрытую заявку ведёт в журнал, а удалённую — в архив', async () => {
     const closed = vehicleRequest({ id: 'vr-7', displayNumber: 'ТС-7', status: 'done' });

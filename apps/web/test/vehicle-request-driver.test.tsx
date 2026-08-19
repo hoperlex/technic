@@ -78,12 +78,20 @@ describe('водитель в строке техники карточки за�
     expect(await screen.findByText('не назначен')).toBeDefined();
   });
 
-  it('не запрашивает и не показывает контакт роли без права на путевые листы', async () => {
-    const { http } = renderCard(DRIVER, authUser({ role: 'rukstroy' }));
-    await screen.findByText(/2.*500.*₽\/час/);
+  /**
+   * Заказчик — первый, кому контакт и нужен: машину на площадке встречает он (ADR 0122). Права на
+   * путевые листы у руководителя строительства нет и не появится, поэтому проверяется именно он:
+   * пока строка спрашивала `waybills.read`, номер водителя приходилось узнавать у диспетчера.
+   */
+  it('показывает контакт заказчику, у которого нет права на путевые листы', async () => {
+    const rukstroy = authUser({ role: 'rukstroy' });
+    expect(rukstroy.permissions).not.toContain('waybills.read');
 
-    await waitFor(() => expect(http.countOf('GET /vehicle-requests/r1/driver')).toBe(0));
-    expect(screen.queryByText('Водитель:')).toBeNull();
-    expect(screen.queryByText(DRIVER.fullName)).toBeNull();
+    const { http } = renderCard(DRIVER, rukstroy);
+
+    expect(await screen.findByText(DRIVER.fullName)).toBeDefined();
+    expect(screen.getByText('Водитель:')).toBeDefined();
+    expect(screen.getByRole('link', { name: '+7 (900) 123 45 67' })).toBeDefined();
+    await waitFor(() => expect(http.countOf('GET /vehicle-requests/r1/driver')).toBe(1));
   });
 });
