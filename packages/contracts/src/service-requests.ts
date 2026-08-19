@@ -18,6 +18,10 @@ export const SERVICE_REQUEST_STATUSES = [
   'diagnostics',
   'estimate_review',
   'in_work',
+  // Заморозка стоит среди рабочих статусов, а не последней: список сортируется порядком значений
+  // enum в БД (миграция добавляет значение `AFTER 'in_work'`), и порядок этого массива обязан ему
+  // совпадать — иначе сортировка по статусу в портале и на сервере разъедутся.
+  'on_hold',
   'done',
   'accepted',
   'cancelled',
@@ -34,6 +38,9 @@ export const serviceRequestStatusLabels: Record<ServiceRequestStatus, string> = 
   diagnostics: 'Диагностика',
   estimate_review: 'Смета на согласовании',
   in_work: 'В работе',
+  // Заморозка — состояние, а не флаг рядом со статусом (Р103): «Диагностика, но не диагностика»
+  // пришлось бы читать вместе с каждым коридором.
+  on_hold: 'Отложена',
   // Не «Выполнена»: в списке этот статус стоит рядом с «Принята», и терминальным выглядеть не
   // должен — работа предъявлена, но её ещё не приняли.
   done: 'Ожидает приёмки',
@@ -48,12 +55,39 @@ export const serviceRequestStatusColors: Record<ServiceRequestStatus, string> = 
   diagnostics: 'geekblue',
   estimate_review: 'gold',
   in_work: 'orange',
+  // Серый: заявка не движется, и в списке она не должна спорить цветом с теми, за которые взялись.
+  on_hold: 'default',
   done: 'lime',
   accepted: 'green',
   cancelled: 'red',
 };
 
-/** Закрытая заявка: ни ход, ни правка ей больше не положены. */
+/**
+ * Что за шаг ждут в этом статусе (Р101). Строка нижним регистром и без лица: портал приписывает
+ * лицо сам — «Вам: согласовать смету» тому, за кем ход, и «ждёт оператора» остальным. Словарь один
+ * на все стороны, потому что два («что делать сервису» и «кого ждут») разъезжаются на первом же
+ * новом статусе: так и вышло с заморозкой — прежний `serviceTodoLabel` знал три статуса из девяти.
+ *
+ * У статусов без хода — отложенной, принятой и отменённой — подписи нет: ждать в них нечего.
+ */
+export const serviceStepLabels: Record<ServiceRequestStatus, string> = {
+  new: 'согласовать необходимость ремонта',
+  it_approved: 'назначить сервис',
+  assigned: 'принять в работу',
+  diagnostics: 'собрать и предъявить смету',
+  estimate_review: 'согласовать смету',
+  in_work: 'выполнить и закрыть работы',
+  on_hold: '',
+  done: 'принять работу',
+  accepted: '',
+  cancelled: '',
+};
+
+/**
+ * Закрытая заявка: ни ход, ни правка ей больше не положены. Отложенная закрытой не считается
+ * (Р109): движение остановлено, но заявка жива — техника ждёт этого же ремонта, и вторую на ту же
+ * единицу заводить нельзя.
+ */
 export function isServiceRequestClosed(status: ServiceRequestStatus): boolean {
   return status === 'accepted' || status === 'cancelled';
 }
@@ -74,6 +108,9 @@ export const SERVICE_EXECUTOR_TRANSITIONS: Record<ServiceRequestStatus, ServiceR
   diagnostics: ['estimate_review'], // предъявить смету
   estimate_review: [],
   in_work: ['done', 'diagnostics'], // закрыть · переоткрыть смету (причина)
+  // Заморозку исполнитель не двигает (Р105): о задержке он сообщает примечанием, а откладывает и
+  // возобновляет оператор — иначе «ждём запчасть» становилось бы решением подрядчика.
+  on_hold: [],
   done: [],
   accepted: [],
   cancelled: [],
@@ -91,24 +128,34 @@ export const SERVICE_IT_TRANSITIONS: Record<ServiceRequestStatus, ServiceRequest
   diagnostics: [],
   estimate_review: [],
   in_work: [],
+  // Виза отвечает на один вопрос — нужен ли ремонт; заморозку она не двигает (Р105).
+  on_hold: [],
   done: [],
   accepted: [],
   cancelled: [],
 };
 
-/** Оператор оргтехники: назначение, согласование сметы, приёмка, отмена. */
+/**
+ * Оператор оргтехники: назначение, согласование сметы, приёмка, отмена.
+ *
+ * Отложить можно из любого рабочего статуса (Р106) — и «Новую» (ждём решения заказчика), и
+ * «Согласована ИТ» (нет денег до квартала), и «Ожидает приёмки» (ждём акт от сервиса). Из самой
+ * заморозки обычная дуга одна — отмена: возврат ведёт в `held_from_status`, цель у него
+ * динамическая и таблицей `Record<status, status[]>` не выражается (`serviceResumeTarget`).
+ */
 export const SERVICE_OPERATOR_TRANSITIONS: Record<ServiceRequestStatus, ServiceRequestStatus[]> = {
   // Назначить сервис из «Новой» больше нельзя: сначала виза ИТ (Р51). Отменить — можно: заявку,
   // которую отзывает сам заказчик, незачем гонять через согласование.
-  new: ['cancelled'],
-  it_approved: ['assigned', 'cancelled'],
+  new: ['cancelled', 'on_hold'],
+  it_approved: ['assigned', 'cancelled', 'on_hold'],
   // Переназначение — тот же статус, другой исполнитель: заявка не откатывается назад, но её
   // возраст в статусе обнуляется, иначе новый сервис наследовал бы чужое ожидание.
-  assigned: ['assigned', 'cancelled'],
-  diagnostics: ['assigned', 'cancelled'],
-  estimate_review: ['in_work', 'diagnostics', 'cancelled'], // согласовать · отклонить
-  in_work: ['cancelled'],
-  done: ['accepted', 'in_work'], // принять · вернуть на доработку
+  assigned: ['assigned', 'cancelled', 'on_hold'],
+  diagnostics: ['assigned', 'cancelled', 'on_hold'],
+  estimate_review: ['in_work', 'diagnostics', 'cancelled', 'on_hold'], // согласовать · отклонить
+  in_work: ['cancelled', 'on_hold'],
+  on_hold: ['cancelled'],
+  done: ['accepted', 'in_work', 'on_hold'], // принять · вернуть на доработку
   accepted: [],
   cancelled: [],
 };
@@ -128,6 +175,11 @@ export const SERVICE_ADMIN_ROLLBACKS: Record<ServiceRequestStatus, ServiceReques
   diagnostics: ['assigned'],
   estimate_review: ['diagnostics'],
   in_work: [],
+  // Из заморозки не откатывают (Р110): цель пришлось бы считать от `held_from_status` вторым путём
+  // рядом с возвратом, и два способа выйти в тот же статус разошлись бы на первой же правке. И
+  // откатов **в** `on_hold` нет ни у одного статуса: заморозка — решение оператора, а не ошибка
+  // хода, которую администратор отматывает.
+  on_hold: [],
   done: ['in_work'],
   accepted: ['done'],
   cancelled: ['new'],
@@ -174,6 +226,32 @@ export function canTransitionServiceStatus(
 }
 
 /**
+ * Вправе ли субъект вернуть отложенную заявку в работу. Отдельным предикатом, а не строкой в
+ * коридоре: цель возврата динамическая (`held_from_status`), и таблицей `Record<status, status[]>`
+ * она не выражается — а спрашивают это и портал (показать пункт меню), и сервер (ручка `/resume`).
+ *
+ * Условие то же, что у заморозки (Р105): право хода вне контрагента-сервиса. Исполнитель о
+ * задержке сообщает, а держит и отпускает заявку тот, кто её ведёт, — оператор или администратор.
+ */
+export function canResumeService(subject: AccessSubject | null | undefined): boolean {
+  if (!subject) return false;
+  if (actsForCounterparty(subject, 'service')) return false;
+  return can(subject, 'serviceRequests.status');
+}
+
+/**
+ * Куда вернётся отложенная заявка; `null` — она не отложена, и возвращать нечего. Дуга назад одна
+ * (Р104): разреши мы выбирать целевой статус, «Отложена» стала бы вторым входом в цикл — в обход
+ * виз, сметы и назначения.
+ */
+export function serviceResumeTarget(row: {
+  status: ServiceRequestStatus;
+  heldFromStatus: ServiceRequestStatus | null;
+}): ServiceRequestStatus | null {
+  return row.status === 'on_hold' ? row.heldFromStatus : null;
+}
+
+/**
  * Переход, отменяющий чужую работу, требует объяснения: без него в истории останется пара строк, по
  * которой не понять, ошиблись сервисом, отказался исполнитель или смета оказалась вдвое дороже.
  */
@@ -182,6 +260,9 @@ export function serviceStatusChangeRequiresReason(
   to: ServiceRequestStatus,
 ): boolean {
   if (to === 'cancelled') return true;
+  // Заморозка (Р107): даты «отложена до» у неё нет, и когда ждать — говорит только причина. Без
+  // неё в списке стоит «Отложена · 12 дней», по которым не понять, ждут запчасть или решение.
+  if (to === 'on_hold') return true;
   if (from === 'assigned' && to === 'it_approved') return true; // отказ исполнителя и откат назначения
   if (from === 'it_approved' && to === 'new') return true; // откат визы ИТ
   if (from === 'estimate_review' && to === 'diagnostics') return true; // отклонение сметы
@@ -214,6 +295,13 @@ export interface ServiceTransitionReset {
   completion: boolean;
   /** Стереть снимок приёмки. */
   acceptance: boolean;
+  /**
+   * Очистить поля заморозки: `held_from_status` и `hold_reason` (Р118). Поднимается на **любом**
+   * выходе из `on_hold` — и при возобновлении, и при отмене отложенной, и на пути, заведённом
+   * позже. Иначе `service_requests_hold_check` поймает отмену отложенной ошибкой БД: остальные
+   * поля этой структуры про исполнителя и согласование, про заморозку они не знают.
+   */
+  hold: boolean;
 }
 
 const NO_RESET: ServiceTransitionReset = {
@@ -223,9 +311,34 @@ const NO_RESET: ServiceTransitionReset = {
   approval: false,
   completion: false,
   acceptance: false,
+  hold: false,
 };
 
+/**
+ * Р118. Флаг заморозки **дополняет** обычный сброс, а не подменяет его: напрашивающаяся ветка
+ * `if (from === 'on_hold') return { ...NO_RESET, hold: true }` в цепочке ниже была бы ошибкой —
+ * отмена отложенной заявки обязана снять исполнителя и снимок согласования ровно так же, как
+ * отмена из любого другого статуса, иначе у отменённой останутся и сервис, и согласие со сметой.
+ * Поэтому базовый сброс считается по паре `(from → to)` отдельной функцией, а `hold` приписывается
+ * сверху, каким бы этот сброс ни оказался.
+ *
+ * Вход в заморозку не сбрасывает ничего: она ничего не отменяет — ни одна ветка `to` про `on_hold`
+ * не знает, и это верно.
+ */
 export function serviceResetOnTransition(
+  from: ServiceRequestStatus,
+  to: ServiceRequestStatus,
+): ServiceTransitionReset {
+  return { ...baseServiceReset(from, to), hold: from === 'on_hold' };
+}
+
+/**
+ * Сброс по паре статусов, без заморозки. Возврат из `on_hold` в «Диагностику» попадает в общую
+ * ветку `to === 'diagnostics'` и снимает снимок согласования — в этом статусе его и не бывает
+ * (любой путь в диагностику его уже снял), так что исключения для возврата здесь нет: два правила
+ * на один переход разошлись бы на первой же правке.
+ */
+function baseServiceReset(
   from: ServiceRequestStatus,
   to: ServiceRequestStatus,
 ): ServiceTransitionReset {
@@ -258,13 +371,16 @@ export function serviceResetOnTransition(
  * заказчика (например, подтверждение стоимости площадкой) — появится и значение вместе с веткой
  * предиката.
  */
-export const SERVICE_WAITING_ON = ['it', 'operator', 'service', 'nobody'] as const;
+export const SERVICE_WAITING_ON = ['it', 'operator', 'service', 'hold', 'nobody'] as const;
 export type ServiceWaitingOn = (typeof SERVICE_WAITING_ON)[number];
 
 export const serviceWaitingOnLabels: Record<ServiceWaitingOn, string> = {
   it: 'Ждёт ИТ',
   operator: 'Ждёт оператора',
   service: 'Ждёт сервис',
+  // Не «Никого»: отложенную заявку ждёт решение оператора, но не шаг цикла — очередь и бейдж её не
+  // считают (Р111), а человеку в списке нужна причина остановки, а не пустая клетка.
+  hold: 'Отложена',
   nobody: 'Закрыта',
 };
 
@@ -281,6 +397,10 @@ export function serviceWaitingOn(status: ServiceRequestStatus): ServiceWaitingOn
     case 'diagnostics':
     case 'in_work':
       return 'service';
+    // Заморозка снимает заявку со всех очередей: ход не за исполнителем и не за оператором — она
+    // просто стоит (Р111).
+    case 'on_hold':
+      return 'hold';
     case 'accepted':
     case 'cancelled':
       return 'nobody';
@@ -296,7 +416,9 @@ export function isWaitingOn(
   subject: AccessSubject | null | undefined,
   waiting: ServiceWaitingOn,
 ): boolean {
-  if (!subject || waiting === 'nobody') return false;
+  // Отложенная не в очереди «Ждут меня» и не в бейдже раздела (Р111): оператор вернётся к ней
+  // сам, когда решится причина, а до тех пор она стояла бы первой строкой у всех, кого «ждёт».
+  if (!subject || waiting === 'nobody' || waiting === 'hold') return false;
   if (waiting === 'service') return actsForCounterparty(subject, 'service');
   if (waiting === 'it') return can(subject, 'serviceRequests.approveIt');
   return can(subject, 'serviceRequests.assign');
@@ -401,7 +523,6 @@ export const SERVICE_REQUEST_SORT_FIELDS = [
   'equipment',
   'object',
   'service',
-  'dueDate',
   'statusChangedAt',
   'createdAt',
 ] as const;
@@ -425,12 +546,7 @@ export const serviceRequestListQuerySchema = baseListQuery(SERVICE_REQUEST_SORT_
     .enum(['true', 'false'])
     .optional()
     .transform((v) => v === 'true'),
-  /** Срок вышел, а заявка не закрыта. */
-  overdue: z
-    .enum(['true', 'false'])
-    .optional()
-    .transform((v) => v === 'true'),
-  /** Закрыта, но акта или счёта нет — из-за них и заведён вид файла (Р16). */
+  /** Предъявлена или принята, а закрывающих документов нет — планка приёмки (Р112, Р114). */
   awaitingDocuments: z
     .enum(['true', 'false'])
     .optional()
@@ -482,7 +598,6 @@ export const createServiceRequestSchema = withUrgency(
   z.object({
     officeEquipmentId: uuidSchema,
     description: descriptionSchema,
-    dueDate: dateOnlySchema.nullish(),
     /**
      * Отдел, от имени которого заявка (ADR 0085 §8). Подсказывается владельцем техники либо
      * единственным отделом автора, но выбирается человеком: сотрудник соседнего отдела чинит «чужой»
@@ -519,7 +634,6 @@ export type CreateServiceRequestInput = z.infer<typeof createServiceRequestSchem
  */
 export const updateServiceRequestSchema = z.object({
   description: descriptionSchema.optional(),
-  dueDate: dateOnlySchema.nullish(),
   /**
    * Смысл значений тот же, что при заведении, но сервер сверяет присланное **со строкой заявки**:
    * форма шлёт заказчика всегда, и «поле пришло» не означает «человек его менял» (Р12б).
@@ -658,6 +772,24 @@ export const reworkServiceRequestSchema = z.object({
   version: z.number().int().nonnegative(),
 });
 
+/**
+ * Заморозка. Причина обязательна (Р107) — тем же `reasonSchema`, что у отмены и отказа: даты
+ * «отложена до» у заморозки нет, и на вопрос «когда ждать» отвечает только она. Куда вернуть,
+ * клиент не присылает: исходный статус сервер берёт из самой заявки (Р104).
+ */
+export const serviceHoldSchema = z.object({
+  reason: reasonSchema,
+  version: z.number().int().nonnegative(),
+});
+export type ServiceHoldInput = z.infer<typeof serviceHoldSchema>;
+
+/** Возврат в работу: цель берётся из `held_from_status`, от человека нужно лишь слово вдогонку. */
+export const serviceResumeSchema = z.object({
+  comment: z.string().trim().max(1000).optional().default(''),
+  version: z.number().int().nonnegative(),
+});
+export type ServiceResumeInput = z.infer<typeof serviceResumeSchema>;
+
 /** Отмена и административные откаты: причина — единственное содержание такого перехода. */
 export const serviceStatusChangeSchema = z.object({
   status: serviceRequestStatusSchema,
@@ -703,6 +835,18 @@ export const SERVICE_CLOSING_DOCUMENT_KINDS: readonly ServiceFileKind[] = [
 
 export function isServiceClosingDocument(kind: ServiceFileKind): boolean {
   return SERVICE_CLOSING_DOCUMENT_KINDS.includes(kind);
+}
+
+/**
+ * Планка приёмки (Р112): хватает **любого** закрывающего документа — акта, счёта или гарантийного
+ * талона. Ответ булев, а не перечень недостающих видов: перечисление читалось бы как «нужны все
+ * три», хотя запирает приёмку отсутствие всех сразу.
+ *
+ * Функция живёт в контрактах, потому что спрашивают её оба: сервер — отказом в приёмке, портал —
+ * неактивной кнопкой. Разойдись они, кнопка вела бы в 422.
+ */
+export function hasServiceClosingDocument(request: Pick<ServiceRequestDto, 'files'>): boolean {
+  return request.files.some((file) => isServiceClosingDocument(file.kind));
 }
 
 export const attachServiceFilesSchema = z.object({
@@ -809,13 +953,20 @@ export interface ServiceRequestDto {
   status: ServiceRequestStatus;
   statusChangedAt: string;
   waitingOn: ServiceWaitingOn;
+  /**
+   * Заморозка: куда заявка вернётся и почему её остановили (Р104, Р107). Поля ходят парой — при
+   * `on_hold` они непусты, в остальных статусах пусты оба (CHECK в БД). По `heldFromStatus`
+   * считается и эффективный статус: виды файлов отложенной «Диагностики» — те же, что у неё
+   * (Р110).
+   */
+  heldFromStatus: ServiceRequestStatus | null;
+  holdReason: string;
   equipment: ServiceRequestEquipmentDto;
   object: ServiceRequestObjectDto;
   /** Отдел-заказчик и отдел-владелец: по ним считается область роли отдела. */
   customerDepartment: ServiceRequestDepartmentDto | null;
   equipmentDepartment: ServiceRequestDepartmentDto | null;
   description: string;
-  dueDate: string | null;
   /** Заявитель: кто обратился и по какому номеру с ним связываться (Р49). */
   responsibleName: string;
   responsiblePhone: string;
@@ -893,6 +1044,9 @@ export function serviceMailRepeatable(status: ServiceRequestStatus): boolean {
  * ею значило бы заводить новую заявку из-за опечатки в описании. Виза отвечает на «нужен ли
  * внешний ремонт», а не на «как он описан»; деньги стережёт вторая подпись — согласие оператора
  * со сметой.
+ *
+ * `on_hold` в список не входит (Р110): заморозка останавливает ход заявки, и правка её предмета
+ * была бы ходом мимо остановки. Отложенную из «Новой» правят, вернув в работу.
  */
 export function isServiceRequestEditable(status: ServiceRequestStatus): boolean {
   return status === 'new' || status === 'it_approved';
@@ -919,6 +1073,9 @@ export const SERVICE_REQUEST_PERMISSIONS: readonly Permission[] = [
  */
 export const serviceRequestChangeLabels: Record<string, string> = {
   description: 'Неисправность',
+  // Поле убрано отовсюду (Р115), а подпись осталась (Р121): история строится из событий аудита, и
+  // записи прошлых месяцев несут ключ `dueDate`. Без строки словаря `RequestHistory` показывает
+  // `labels[field] ?? field` — то есть сырое имя поля в строке, которую читает человек.
   dueDate: 'Желаемый срок',
   customerDepartment: 'Отдел-заказчик',
   responsibleName: 'Заявитель',

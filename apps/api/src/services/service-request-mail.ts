@@ -161,7 +161,6 @@ export interface ServiceLetterData {
   isUrgent: boolean;
   urgencyReason: string;
   description: string;
-  dueDate: string | null;
   responsibleName: string;
   responsiblePhone: string;
   equipmentName: string;
@@ -211,7 +210,6 @@ export async function loadServiceLetterData(tx: Tx, requestId: string): Promise<
     isUrgent: row.r.isUrgent,
     urgencyReason: row.r.urgencyReason,
     description: row.r.description,
-    dueDate: row.r.dueDate,
     responsibleName: row.r.responsibleName,
     responsiblePhone: row.r.responsiblePhone,
     equipmentName: row.r.equipmentName,
@@ -255,7 +253,6 @@ export function renderServiceLetter(
       data.equipmentLocation ? `, ${data.equipmentLocation}` : ''
     }`,
     ...(data.departmentName ? [`Отдел: ${data.departmentName}`] : []),
-    ...(data.dueDate ? [`Желаемый срок: ${data.dueDate}`] : []),
     ...(data.responsibleName || data.responsiblePhone
       ? [`Контакт: ${[data.responsibleName, data.responsiblePhone].filter(Boolean).join(', ')}`]
       : []),

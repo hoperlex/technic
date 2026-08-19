@@ -8,6 +8,7 @@ import {
   createServiceRequestSchema,
   declineServiceRequestSchema,
   formatServiceRequestNumber,
+  hasServiceClosingDocument,
   isServiceClosingDocument,
   isServiceRequestClosed,
   isServiceRequestEditable,
@@ -16,11 +17,16 @@ import {
   reopenServiceEstimateSchema,
   reworkServiceRequestSchema,
   SERVICE_FILE_KINDS,
+  SERVICE_REQUEST_SORT_FIELDS,
   SERVICE_REQUEST_STATUSES,
   serviceCommentSchema,
   serviceEstimateItemSchema,
   type ServiceFileKind,
+  serviceHoldSchema,
+  serviceRequestChangeLabels,
+  type ServiceRequestFileDto,
   serviceRequestListQuerySchema,
+  serviceResumeSchema,
   serviceStatusChangeSchema,
   setServiceUrgencySchema,
   startServiceRequestSchema,
@@ -70,6 +76,8 @@ const MUTATIONS: [
   ],
   ['PATCH /:id/accept — приёмка', acceptServiceRequestSchema, {}],
   ['PATCH /:id/rework — возврат', reworkServiceRequestSchema, { reason: 'подача не работает' }],
+  ['PATCH /:id/hold — заморозка', serviceHoldSchema, { reason: 'ждём запчасть с завода' }],
+  ['PATCH /:id/resume — возобновление', serviceResumeSchema, {}],
   ['PATCH /:id/status — отмена и откаты', serviceStatusChangeSchema, { status: 'cancelled' }],
   [
     'PATCH /:id/service-comment — примечание',
@@ -226,6 +234,12 @@ describe('заведение и правка заявки', () => {
     // не на «как он описан», и запирать ею правку значило бы заводить новую заявку из-за опечатки.
     expect(isServiceRequestEditable('new')).toBe(true);
     expect(isServiceRequestEditable('it_approved')).toBe(true);
+    // Отложенную не правят (Р110): заморозка останавливает ход заявки, и правка её предмета была
+    // бы ходом мимо остановки — даже если отложили как раз «Новую». Такую возвращают и правят.
+    expect(isServiceRequestEditable('on_hold')).toBe(false);
+    // И закрытой она при этом не считается (Р109): техника ждёт этого же ремонта, и вторую заявку
+    // на ту же единицу завести нельзя.
+    expect(isServiceRequestClosed('on_hold')).toBe(false);
     for (const status of SERVICE_REQUEST_STATUSES.filter(
       (s) => s !== 'new' && s !== 'it_approved',
     )) {
@@ -242,12 +256,35 @@ describe('заведение и правка заявки', () => {
   });
 
   it('правка приходит частями: менять одно поле, не пересылая остальные', () => {
-    const parsed = updateServiceRequestSchema.parse({ dueDate: null, version: 3 });
-    expect(parsed.dueDate).toBe(null);
+    const parsed = updateServiceRequestSchema.parse({ comment: 'звонить с 9 до 12', version: 3 });
+    expect(parsed.comment).toBe('звонить с 9 до 12');
     expect(parsed.description).toBeUndefined();
-    expect(
-      updateServiceRequestSchema.safeParse({ dueDate: '2026-02-31', version: 1 }).success,
-    ).toBe(false);
+    expect(parsed.responsibleName).toBeUndefined();
+    expect(updateServiceRequestSchema.safeParse({ description: 'ааа', version: 1 }).success).toBe(
+      false,
+    );
+  });
+
+  /**
+   * «Желаемый срок» убран отовсюду (Р115): срок, который ничего не запирает и никого не будит,
+   * через месяц стоит просроченным у половины заявок и перестаёт что-либо значить — давность
+   * читается возрастом в статусе. Проверяется тем, что поле **не доезжает** до сервера: схема
+   * молча выбрасывает его, а не сохраняет в объект, который дальше уходит в `UPDATE`.
+   */
+  it('желаемого срока в теле больше нет: старый клиент его пришлёт, а сервер не примет', () => {
+    const created = createServiceRequestSchema.parse({
+      officeEquipmentId: UUID,
+      description: 'не захватывает бумагу',
+      responsibleName: 'Иванов И. И.',
+      responsiblePhone: '9000000000',
+      dueDate: '2026-09-01',
+    });
+    expect(created).not.toHaveProperty('dueDate');
+    const updated = updateServiceRequestSchema.parse({ dueDate: '2026-09-01', version: 3 });
+    expect(updated).not.toHaveProperty('dueDate');
+    // Подпись `dueDate` в истории при этом осталась (Р121): записи прошлых месяцев несут этот ключ,
+    // и без строки словаря человек читал бы в истории сырое имя поля.
+    expect(serviceRequestChangeLabels.dueDate).toBe('Желаемый срок');
   });
 });
 
@@ -397,6 +434,51 @@ describe('согласование сметы', () => {
 });
 
 /**
+ * Заморозка и возврат (Р103–Р107). Две ручки на одну пару дуг: своя дуга — своя схема, иначе
+ * проверка условия перехода разъехалась бы с проверкой данных этого перехода.
+ *
+ * Причина у заморозки обязательна, потому что даты «отложена до» у неё нет вовсе (Р107): «Отложена
+ * · 12 дней» без объяснения не отвечает, ждут запчасть, деньги до квартала или решение заказчика, —
+ * и через месяц такой статус читается как «про эту заявку забыли».
+ */
+describe('заморозка и возврат', () => {
+  it('заморозка без причины не проходит, отписка из двух букв — тоже', () => {
+    expect(serviceHoldSchema.safeParse({ version: 1 }).success).toBe(false);
+    expect(serviceHoldSchema.safeParse({ reason: '', version: 1 }).success).toBe(false);
+    expect(serviceHoldSchema.safeParse({ reason: '   ', version: 1 }).success).toBe(false);
+    expect(serviceHoldSchema.safeParse({ reason: 'жд', version: 1 }).success).toBe(false);
+    // Причина приводится к виду хранения самой схемой: в списке её читают как есть.
+    expect(serviceHoldSchema.parse({ reason: '  ждём запчасть  ', version: 1 }).reason).toBe(
+      'ждём запчасть',
+    );
+  });
+
+  /**
+   * Куда вернуть, клиент не присылает: исходный статус сервер берёт из самой заявки (Р104).
+   * Разреши мы выбирать цель телом — «Отложена» стала бы вторым входом в цикл, в обход виз, сметы и
+   * назначения, а старая копия портала отправила бы заявку в статус из прошлого.
+   */
+  it('возврат принимает пустой комментарий, а цель — не принимает вовсе', () => {
+    expect(serviceResumeSchema.parse({ version: 2 }).comment).toBe('');
+    expect(serviceResumeSchema.parse({ comment: '  запчасть пришла  ', version: 2 }).comment).toBe(
+      'запчасть пришла',
+    );
+    const parsed = serviceResumeSchema.parse({
+      status: 'in_work',
+      heldFromStatus: 'diagnostics',
+      version: 2,
+    });
+    expect(parsed).not.toHaveProperty('status');
+    expect(parsed).not.toHaveProperty('heldFromStatus');
+    // Причина у возврата не требуется: её сказали, когда откладывали.
+    expect(serviceResumeSchema.safeParse({ version: 2 }).success).toBe(true);
+    expect(serviceResumeSchema.safeParse({ comment: 'а'.repeat(1001), version: 2 }).success).toBe(
+      false,
+    );
+  });
+});
+
+/**
  * Гарантийное обращение (Р26): не флаг «гарантийная», а ответ на вопрос, по чьей гарантии
  * обращаются. У источника `item` обязательна ссылка на строку прошлого ремонта, у `equipment` её
  * быть не должно — гарантия поставщика висит на самой единице, и «позиция ремонта» у неё
@@ -480,9 +562,9 @@ describe('список заявок', () => {
     // `undefined` в предикате области означал бы фильтр, применённый наполовину.
     expect(parsed.waitingOnMe).toBe(false);
     expect(parsed.mine).toBe(false);
-    expect(parsed.overdue).toBe(false);
     expect(parsed.awaitingDocuments).toBe(false);
     expect(parsed.warrantyClaim).toBe(false);
+    expect(parsed.urgent).toBe(false);
     expect(parsed.status).toBeUndefined();
   });
 
@@ -490,11 +572,11 @@ describe('список заявок', () => {
     const on = serviceRequestListQuerySchema.parse({
       waitingOnMe: 'true',
       mine: 'true',
-      overdue: 'true',
       awaitingDocuments: 'true',
       warrantyClaim: 'true',
+      urgent: 'true',
     });
-    expect([on.waitingOnMe, on.mine, on.overdue, on.awaitingDocuments, on.warrantyClaim]).toEqual([
+    expect([on.waitingOnMe, on.mine, on.awaitingDocuments, on.warrantyClaim, on.urgent]).toEqual([
       true,
       true,
       true,
@@ -519,6 +601,26 @@ describe('список заявок', () => {
     );
     expect(serviceRequestListQuerySchema.safeParse({ status: 'закрыта' }).success).toBe(false);
     expect(serviceRequestListQuerySchema.safeParse({ objectId: '12' }).success).toBe(false);
+    // Отложенная — обычное значение фильтра статуса: заявка открыта (Р109), и отобрать «что у нас
+    // стоит» человек должен уметь тем же способом, что и остальное.
+    expect(serviceRequestListQuerySchema.parse({ status: 'on_hold' }).status).toBe('on_hold');
+  });
+
+  /**
+   * Просрочка ушла вместе с полем «Желаемый срок» (Р115): фильтр «Просроченные» и сортировка по
+   * сроку отбирали по дате, которую никто не выдерживал, — давность заявки читается возрастом в
+   * статусе (`statusChangedAt`). Проверяется отказом, а не тишиной: сортировка по несуществующему
+   * полю иначе показала бы человеку список в произвольном порядке.
+   */
+  it('ни фильтра «просроченные», ни сортировки по сроку больше нет', () => {
+    expect(serviceRequestListQuerySchema.safeParse({ sortBy: 'dueDate' }).success).toBe(false);
+    expect([...SERVICE_REQUEST_SORT_FIELDS]).not.toContain('dueDate');
+    // Флаг из старой ссылки в закладке сервер молча выбрасывает, а не отбирает по нему: поля, по
+    // которому считалась просрочка, в заявке уже нет.
+    const parsed = serviceRequestListQuerySchema.parse({ overdue: 'true' });
+    expect(parsed).not.toHaveProperty('overdue');
+    // Возраст в статусе остался и сортируется — это и есть замена сроку.
+    expect([...SERVICE_REQUEST_SORT_FIELDS]).toContain('statusChangedAt');
   });
 });
 
@@ -532,6 +634,36 @@ describe('документы заявки', () => {
       isServiceClosingDocument(kind),
     );
     expect([...closing]).toEqual(['act', 'invoice', 'warranty_card']);
+  });
+
+  /**
+   * Планка приёмки (Р112): хватает **любого** закрывающего документа — акта, счёта или гарантийного
+   * талона. Ответ булев, а не перечень недостающих видов: три тега «нет: акт / нет: счёт / нет:
+   * талон» читались бы как «нужны все три», а запирает приёмку отсутствие всех сразу. Одна функция
+   * на сервер и портал: разойдись они — кнопка приёмки вела бы в 422.
+   */
+  it('приёмку открывает любой закрывающий документ, а вложение и смета — ни один', () => {
+    const file = (kind: ServiceFileKind): ServiceRequestFileDto => ({
+      id: UUID,
+      filename: `${kind}.pdf`,
+      contentType: 'application/pdf',
+      size: 1024,
+      kind,
+      attachedAt: '2026-08-19T09:00:00.000Z',
+    });
+    for (const kind of ['act', 'invoice', 'warranty_card'] as const) {
+      expect(hasServiceClosingDocument({ files: [file(kind)] }), kind).toBe(true);
+    }
+    // Фотография принтера и смета работу не закрывают: по ним не платят и их не подшивают к акту.
+    expect(hasServiceClosingDocument({ files: [file('attachment')] })).toBe(false);
+    expect(hasServiceClosingDocument({ files: [file('estimate')] })).toBe(false);
+    expect(hasServiceClosingDocument({ files: [file('attachment'), file('estimate')] })).toBe(
+      false,
+    );
+    // Заявка без единого файла — тот самый случай, ради которого планку и заводили.
+    expect(hasServiceClosingDocument({ files: [] })).toBe(false);
+    // Комплекта не требуется (§8): счёта достаточно, даже когда акта нет.
+    expect(hasServiceClosingDocument({ files: [file('attachment'), file('invoice')] })).toBe(true);
   });
 
   it('подшивается пачка файлов с видом, по умолчанию — вложение', () => {

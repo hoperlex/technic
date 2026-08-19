@@ -29,6 +29,7 @@ import {
   assignServiceSchema,
   attachServiceFilesSchema,
   can,
+  canResumeService,
   canTransitionServiceStatus,
   completeServiceRequestSchema,
   createServiceRequestSchema,
@@ -47,13 +48,17 @@ import {
   reworkServiceRequestSchema,
   roleLabels,
   SERVICE_ADMIN_ROLLBACKS,
+  isServiceClosingDocument,
   SERVICE_CLOSING_DOCUMENT_KINDS,
   SERVICE_REQUEST_STATUSES,
   serviceCommentSchema,
   serviceFileKindLabels,
+  serviceHoldSchema,
   serviceRequestListQuerySchema,
   serviceRequestStatusLabels,
   serviceResetOnTransition,
+  serviceResumeSchema,
+  serviceResumeTarget,
   serviceStatusChangeRequiresReason,
   notifyServiceRequestSchema,
   type ServiceRequestNotifyResultDto,
@@ -321,6 +326,11 @@ function toDto(
     statusChangedAt: r.statusChangedAt.toISOString(),
     // Кого ждут — считает сервер: правило одно на список, карточку и бейдж раздела (Р35).
     waitingOn: serviceWaitingOn(r.status),
+    // Заморозка ходит парой (Р104, Р107): при `on_hold` оба поля непусты, в остальных статусах
+    // пусты оба — этого требует CHECK в базе. По `heldFromStatus` считается и «эффективный»
+    // статус: виды документов отложенной «Диагностики» — те же, что у неё (Р110).
+    heldFromStatus: r.heldFromStatus,
+    holdReason: r.holdReason,
     equipment: {
       id: r.officeEquipmentId,
       name: r.equipmentName,
@@ -345,7 +355,6 @@ function toDto(
         }
       : null,
     description: r.description,
-    dueDate: r.dueDate,
     responsibleName: r.responsibleName,
     responsiblePhone: r.responsiblePhone,
     isUrgent: r.isUrgent,
@@ -460,6 +469,26 @@ async function requireEditable(p: Principal, id: string): Promise<RequestRow> {
   const row = await loadRow(id);
   if (row.deletedAt) throw err.notFound(NOT_FOUND);
   assertScope(p, row);
+  return row;
+}
+
+/**
+ * Строка заявки под `FOR UPDATE` — первым шагом транзакции, которая решает по её состоянию (Р112).
+ * Приём тот же, что у недельной заявки и модуля ТО (`weekly-request-apply.ts`,
+ * `vehicle-maintenance.ts`): приёмка и снятие закрывающего документа встречаются на одной строке
+ * заявки, и без блокировки `EXISTS` по файлам ничего не гарантирует — между ним и `COMMIT` документ
+ * успевают снять.
+ *
+ * Возвращает строку, перечитанную **после** блокировки: проверки, стоящие за ней, обязаны решать по
+ * актуальному состоянию, а не по тому, что вернул `requireEditable` до транзакции.
+ */
+async function lockRequest(tx: Tx, id: string): Promise<RequestRow> {
+  const [row] = await tx
+    .select()
+    .from(serviceRequests)
+    .where(eq(serviceRequests.id, id))
+    .for('update');
+  if (!row) throw err.notFound(NOT_FOUND);
   return row;
 }
 
@@ -755,6 +784,14 @@ async function applyTransition(
     set.acceptedBy = null;
     set.acceptedAt = null;
   }
+  if (reset.hold) {
+    // Выход из заморозки чистит её поля — при возобновлении, при отмене отложенной и на любом
+    // пути, заведённом позже (Р118). Ветка стоит здесь, а не в двух ручках: иначе отмену
+    // отложенной заявки поймал бы `service_requests_hold_check` ошибкой БД — статус уже не
+    // `on_hold`, а `held_from_status` ещё стоит.
+    set.heldFromStatus = null;
+    set.holdReason = '';
+  }
 
   const patch = { ...set, ...(params.patch ?? {}) };
   const statusChanged = to !== row.status;
@@ -892,6 +929,21 @@ const FILE_KIND_STATUSES: Record<ServiceFileKind, ServiceRequestStatus[]> = {
   warranty_card: ['done', 'accepted', 'cancelled'],
 };
 
+/**
+ * «Эффективный» статус заявки (Р110): у отложенной — тот, из которого её отложили. Заморозка
+ * останавливает ход заявки, а не жизнь вокруг неё: вложение к отложенной «Диагностике» — то же
+ * вложение, и виды документов ему разрешаются те же. Тот же расчёт делает портал (`attachableKinds`
+ * в `ServiceRequestDocuments.tsx`) — разойдись они, портал предлагал бы вид, на котором придёт
+ * отказ.
+ */
+function effectiveStatus(row: {
+  status: ServiceRequestStatus;
+  heldFromStatus: ServiceRequestStatus | null;
+}): ServiceRequestStatus {
+  return row.heldFromStatus ?? row.status;
+}
+
+/** Статус здесь — «эффективный» (Р110): заморозка видов документов не меняет. */
 function assertFileKindAllowed(status: ServiceRequestStatus, kind: ServiceFileKind): void {
   if (isServiceRequestClosed(status) && !SERVICE_CLOSING_DOCUMENT_KINDS.includes(kind)) {
     const closing = SERVICE_CLOSING_DOCUMENT_KINDS.map((k) => serviceFileKindLabels[k]).join(', ');
@@ -980,8 +1032,10 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
     const p = requirePrincipal(req);
     const q = req.query;
     const mine = waitingStatuses(p);
-    // «Закрыта, но акта и счёта нет» — очередь «Ожидаются документы» (Р16). Отменённая заявка сюда
-    // не попадает: работ не было, и ждать по ней нечего.
+    // «Предъявлена или принята, а закрывающих документов нет ни одного» — очередь «Ожидаются
+    // документы» (Р114). Планка та же, что у приёмки (Р112): её снимает любой из трёх видов, и
+    // прежняя пара «акт и счёт» заставляла бы портал требовать бумагу, которая ничего не запирает.
+    // Отменённая заявка сюда не попадает: работ не было, и ждать по ней нечего.
     const hasClosingDocument = exists(
       db
         .select({ x: sql`1` })
@@ -989,7 +1043,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         .where(
           and(
             eq(serviceRequestFiles.requestId, serviceRequests.id),
-            inArray(serviceRequestFiles.kind, ['act', 'invoice']),
+            inArray(serviceRequestFiles.kind, [...SERVICE_CLOSING_DOCUMENT_KINDS]),
           ),
         ),
     );
@@ -1019,18 +1073,25 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
             sql`false`
         : undefined,
       q.mine ? eq(serviceRequests.createdBy, p.id) : undefined,
-      q.overdue
-        ? and(
-            isNotNull(serviceRequests.dueDate),
-            sql`${serviceRequests.dueDate} < CURRENT_DATE`,
-            notInArray(serviceRequests.status, ['accepted', 'cancelled']),
-          )
-        : undefined,
       q.awaitingDocuments
         ? and(inArray(serviceRequests.status, ['done', 'accepted']), not(hasClosingDocument))
         : undefined,
       q.warrantyClaim ? isNotNull(serviceRequests.warrantyClaimSource) : undefined,
-      q.urgent ? eq(serviceRequests.isUrgent, true) : undefined,
+      // Заморозка признак срочности не гасит (Р119) — заявка не перестала быть срочной оттого, что
+      // её остановили, — но из отбора выпадает: пока она ждёт решения, браться не за что.
+      // Условие у́же, чем у частичного индекса `service_requests_urgent_idx` (он исключает ещё и
+      // закрытые), и это осознанно: индексом живёт очередь — сортировка `urgentFirst`, — а фильтр
+      // отвечает на «покажи все срочные за период», и прошлое у него не отнимают.
+      q.urgent
+        ? and(
+            eq(serviceRequests.isUrgent, true),
+            // Из отбора уходит только заморозка (Р119): срочная отложенная ждёт решения, а не рук.
+            // Закрытые срочные остаются видимыми, как и были: фильтр — это отбор («покажи все
+            // срочные за период»), а не очередь, и отнимать у него прошлое Р119 не просил —
+            // наверх их не поднимает сортировка `urgentFirst`, и этого достаточно.
+            notInArray(serviceRequests.status, ['on_hold']),
+          )
+        : undefined,
       q.createdFrom
         ? gte(serviceRequests.createdAt, new Date(`${q.createdFrom}T00:00:00Z`))
         : undefined,
@@ -1054,7 +1115,6 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       equipment: serviceRequests.equipmentName,
       object: constructionObjects.name,
       service: counterparties.name,
-      dueDate: serviceRequests.dueDate,
       statusChangedAt: serviceRequests.statusChangedAt,
       createdAt: serviceRequests.createdAt,
     };
@@ -1063,9 +1123,10 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
      * Срочные — первыми, каким бы ни была остальная сортировка (Р56). Признак стоит **перед**
      * выбранной колонкой, а не вместо неё: внутри срочных порядок остаётся тем, который человек
      * выбрал сам. Закрытые заявки из этого правила выпадают — срочность у них уже ничего не
-     * значит, и красная строка в архиве только мешала бы читать список.
+     * значит, и красная строка в архиве только мешала бы читать список. Отложенная выпадает вместе
+     * с ними (Р119): первой строкой стоит то, за что берутся, а заморозка ждёт решения, а не рук.
      */
-    const urgentFirst = sql`(${serviceRequests.isUrgent} AND ${serviceRequests.status} NOT IN ('accepted','cancelled')) DESC`;
+    const urgentFirst = sql`(${serviceRequests.isUrgent} AND ${serviceRequests.status} NOT IN ('accepted','cancelled','on_hold')) DESC`;
     const [rows, totalRows] = await Promise.all([
       requestQuery()
         .where(where)
@@ -1428,7 +1489,6 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
             // могла переехать (Р57).
             equipmentLocation: equipment.location,
             description: body.description,
-            dueDate: body.dueDate ?? null,
             responsibleName: body.responsibleName,
             responsiblePhone: body.responsiblePhone,
             isUrgent: body.isUrgent,
@@ -1584,6 +1644,14 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           `Заявка в статусе «${serviceRequestStatusLabels[row.status]}» не правится`,
         );
       }
+      // Отложенную не правит и администратор (Р110): `assertServiceRequestEditable` держит только
+      // площадочные роли, и без этой ветки заморозка останавливала бы заявку для одних и не
+      // останавливала для других. Отказ такой же, как у срочности: сначала возобновите.
+      if (row.status === 'on_hold') {
+        throw err.unprocessable('Отложенную заявку не правят — сначала возобновите её', {
+          status: 'Заявка отложена',
+        });
+      }
       const before = (await getDto(row.id))!;
 
       /**
@@ -1610,7 +1678,6 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           version: row.version + 1,
         };
         if (body.description !== undefined) patch.description = body.description;
-        if (body.dueDate !== undefined) patch.dueDate = body.dueDate ?? null;
         if (customerChanged) patch.customerDepartmentId = customerDepartmentId;
         if (body.responsibleName !== undefined) patch.responsibleName = body.responsibleName;
         if (body.responsiblePhone !== undefined) patch.responsiblePhone = body.responsiblePhone;
@@ -1684,6 +1751,14 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         throw err.unprocessable(
           `Заявка в статусе «${serviceRequestStatusLabels[row.status]}» уже закрыта — срочность ей ничего не меняет`,
         );
+      }
+      // Отложенной срочность не меняют (Р119): признак заморозка не гасит, но и разбирать его
+      // поверх остановки незачем — очередь срочных отложенную не показывает, и «поставили красным»
+      // не сдвинуло бы её ни на строку.
+      if (row.status === 'on_hold') {
+        throw err.unprocessable('Отложенной заявке срочность не меняют — сначала возобновите её', {
+          status: 'Заявка отложена',
+        });
       }
       if (!can(p, 'serviceRequests.assign')) {
         assertServiceRequestEditable(p, row.status, 'менять срочность');
@@ -1929,6 +2004,106 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
           version: req.body.version,
           actor: p,
         });
+      });
+      return (await getDto(row.id))!;
+    },
+  );
+
+  // ── Заморозка (Р103) ──
+  /**
+   * Своя дуга — своя ручка (Р18). Цель у заморозки одна, а исходных статусов много (Р106):
+   * откладывают и «Новую» (ждём решения заказчика), и «Согласована ИТ» (нет денег до квартала), и
+   * «Ожидает приёмки» (ждём акт от сервиса), — поэтому `assertSideAllowed` спрашивается без
+   * перечня исходных, а настоящий коридор проверяет `assertTransition` уже по строке.
+   *
+   * Куда вернуть, клиент не присылает: исходный статус сервер берёт из самой заявки (Р104) — иначе
+   * «Отложена» стала бы вторым входом в цикл, в обход виз, сметы и назначения. Причина обязательна
+   * (Р107): даты «отложена до» у заморозки нет, и на вопрос «когда ждать» отвечает только она —
+   * она же уходит комментарием в историю статусов.
+   *
+   * Письма службе заморозка не шлёт (Р111): это внутреннее решение оператора, а не событие для
+   * исполнителя — о задержке сервис узнаёт звонком и может продолжать чинить.
+   */
+  r.patch(
+    '/:id/hold',
+    { ...canChangeStatus, schema: { params: idParams, body: serviceHoldSchema } },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const body = req.body;
+      assertSideAllowed(p, 'on_hold');
+      const row = await requireEditable(p, req.params.id);
+      assertTransition(p, row.status, 'on_hold');
+      await db.transaction(async (tx) => {
+        await applyTransition(tx, {
+          row,
+          to: 'on_hold',
+          version: body.version,
+          actor: p,
+          comment: body.reason,
+          // Пара «откуда и почему» пишется целиком: порознь их не примет CHECK в базе, а чистит
+          // обе выход из заморозки (Р118). Возраст в статусе обнуляет сам переход (Р108).
+          patch: { heldFromStatus: row.status, holdReason: body.reason },
+        });
+      });
+      await writeAudit({
+        actorUserId: p.id,
+        action: 'serviceRequest.hold',
+        entityType: 'serviceRequest',
+        entityId: row.id,
+        // Откуда отложили — в metadata: после возврата заявка этого уже не помнит, поля чистятся.
+        metadata: { from: row.status, reason: body.reason },
+      });
+      return (await getDto(row.id))!;
+    },
+  );
+
+  // ── Возврат в работу ──
+  /**
+   * Таблицей коридора возврат не выражается: цель у него динамическая — тот статус, из которого
+   * заявку отложили (`serviceResumeTarget`). Поэтому право спрашивается предикатом
+   * `canResumeService`, а не `assertSideAllowed` (§6), и условие у него то же, что у заморозки
+   * (Р105): держит и отпускает заявку тот, кто её ведёт, а исполнитель о задержке только сообщает.
+   *
+   * Поля заморозки обнуляет `applyTransition` по флагу `hold` из матрицы сбросов (Р118) — здесь их
+   * трогать нечем и не нужно. Возраст в статусе обнуляется самим переходом (Р108): вернувшийся
+   * исполнитель не наследует время, которое заявка простояла.
+   */
+  r.patch(
+    '/:id/resume',
+    { ...canChangeStatus, schema: { params: idParams, body: serviceResumeSchema } },
+    async (req) => {
+      const p = requirePrincipal(req);
+      const body = req.body;
+      if (!canResumeService(p)) {
+        const who = p.role ? roleLabels[p.role] : 'Учётная запись';
+        throw err.forbidden(
+          `${who} не возвращает отложенную заявку в работу — это шаг того, кто её ведёт`,
+        );
+      }
+      const row = await requireEditable(p, req.params.id);
+      const target = serviceResumeTarget(row);
+      if (!target) {
+        throw err.unprocessable(
+          `Заявка не отложена — она в статусе «${serviceRequestStatusLabels[row.status]}»`,
+          { status: 'Заявка не отложена' },
+        );
+      }
+      await db.transaction(async (tx) => {
+        await applyTransition(tx, {
+          row,
+          to: target,
+          version: body.version,
+          actor: p,
+          comment: body.comment,
+        });
+      });
+      await writeAudit({
+        actorUserId: p.id,
+        action: 'serviceRequest.resume',
+        entityType: 'serviceRequest',
+        entityId: row.id,
+        // Куда вернули: в самой заявке после возврата от заморозки не остаётся ничего.
+        metadata: { to: target },
       });
       return (await getDto(row.id))!;
     },
@@ -2330,6 +2505,16 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
   );
 
   // ── Приёмка ──
+  /**
+   * Принимают работу с закрывающим документом — актом, счётом **или** гарантийным талоном (Р112,
+   * отменяет Р16). Комплекта планка не требует: любой из трёх подтверждает, что работа состоялась,
+   * а перечисление недостающих читалось бы как «нужны все три».
+   *
+   * Проверка стоит внутри транзакции и **после блокировки строки заявки**, а не по DTO,
+   * прочитанному до неё: между чтением и `COMMIT` документ успевают снять. Снятие ходит той же
+   * блокировкой (`DELETE /:id/files/:fileId`), поэтому два запроса выстраиваются в очередь — либо
+   * документ снимут до приёмки, и откажет она, либо приёмка пройдёт первой, и откажет снятие.
+   */
   r.patch(
     '/:id/accept',
     { ...canChangeStatus, schema: { params: idParams, body: acceptServiceRequestSchema } },
@@ -2340,8 +2525,26 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       const row = await requireEditable(p, req.params.id);
       assertTransition(p, row.status, 'accepted');
       await db.transaction(async (tx) => {
+        const locked = await lockRequest(tx, row.id);
+        const [closing] = await tx
+          .select({ fileId: serviceRequestFiles.fileId })
+          .from(serviceRequestFiles)
+          .where(
+            and(
+              eq(serviceRequestFiles.requestId, locked.id),
+              inArray(serviceRequestFiles.kind, [...SERVICE_CLOSING_DOCUMENT_KINDS]),
+            ),
+          )
+          .limit(1);
+        if (!closing) {
+          throw err.unprocessable('Нужен один из документов: акт, счёт или гарантийный талон', {
+            files: 'Нет закрывающего документа',
+          });
+        }
         await applyTransition(tx, {
-          row,
+          // Переход считается по строке, перечитанной под блокировкой: расхождение с прочитанной
+          // до транзакции упрётся в сверку версии и вернёт 409, а не молча пройдёт по старой.
+          row: locked,
           to: 'accepted',
           version: body.version,
           actor: p,
@@ -2598,7 +2801,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       const p = requirePrincipal(req);
       const { fileIds, kind } = req.body;
       const row = await requireEditable(p, req.params.id);
-      assertFileKindAllowed(row.status, kind);
+      assertFileKindAllowed(effectiveStatus(row), kind);
 
       await db.transaction(async (tx) => {
         const existing = await tx
@@ -2629,47 +2832,88 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
    * лишь тот, кто распоряжается чужими файлами (`files.manageAny`). Предъявленная смета не
    * снимается вовсе — её возвращают в диагностику, а не вынимают из карточки. В остальном вложение
    * снимает тот, кто его приложил.
+   *
+   * Все проверки стоят **внутри транзакции, после `FOR UPDATE` по строке заявки** (Р112), и читают
+   * статус, перечитанный под блокировкой. Прежде они решали по строке из `requireEditable` — то
+   * есть по состоянию, которое к моменту удаления уже могло стать «Принята», а приёмка требует
+   * закрывающего документа: заявка осталась бы принятой без единственной бумаги.
    */
   r.delete('/:id/files/:fileId', { ...canFiles, schema: { params: fileParams } }, async (req) => {
     const p = requirePrincipal(req);
     const { fileId } = req.params;
     const row = await requireEditable(p, req.params.id);
-
-    const [link] = await db
-      .select({
-        kind: serviceRequestFiles.kind,
-        attachedBy: serviceRequestFiles.attachedBy,
-        id: files.id,
-        objectKey: files.objectKey,
-      })
-      .from(serviceRequestFiles)
-      .innerJoin(files, eq(serviceRequestFiles.fileId, files.id))
-      .where(
-        and(eq(serviceRequestFiles.requestId, row.id), eq(serviceRequestFiles.fileId, fileId)),
-      );
-    if (!link) throw err.notFound('Файл не прикреплён к этой заявке');
-
     const manageAny = can(p, 'files.manageAny');
-    if (isServiceRequestClosed(row.status) && !manageAny) {
-      throw err.forbidden('Из закрытой заявки документы не снимают');
-    }
-    if (link.kind === 'estimate' && row.status !== 'diagnostics' && !manageAny) {
-      throw err.unprocessable('Предъявленная смета не снимается — верните заявку в диагностику', {
-        kind: 'Смета предъявлена',
-      });
-    }
-    if (link.attachedBy !== p.id && !manageAny) {
-      throw err.forbidden('Снять вложение может тот, кто его приложил');
-    }
 
-    await db.transaction(async (tx) => {
+    const detached = await db.transaction(async (tx) => {
+      const locked = await lockRequest(tx, row.id);
+      const [link] = await tx
+        .select({
+          kind: serviceRequestFiles.kind,
+          attachedBy: serviceRequestFiles.attachedBy,
+          id: files.id,
+          objectKey: files.objectKey,
+        })
+        .from(serviceRequestFiles)
+        .innerJoin(files, eq(serviceRequestFiles.fileId, files.id))
+        .where(
+          and(eq(serviceRequestFiles.requestId, locked.id), eq(serviceRequestFiles.fileId, fileId)),
+        );
+      if (!link) throw err.notFound('Файл не прикреплён к этой заявке');
+
+      // Статус — «эффективный» (Р110), тем же правилом, что и виды документов при подшивке:
+      // заморозка бумаги не запирает, и смета отложенной «Диагностики» снимается так же, как
+      // смета незамороженной.
+      const status = effectiveStatus(locked);
+      if (isServiceRequestClosed(status) && !manageAny) {
+        throw err.forbidden('Из закрытой заявки документы не снимают');
+      }
+      if (link.kind === 'estimate' && status !== 'diagnostics' && !manageAny) {
+        throw err.unprocessable('Предъявленная смета не снимается — верните заявку в диагностику', {
+          kind: 'Смета предъявлена',
+        });
+      }
+      if (link.attachedBy !== p.id && !manageAny) {
+        throw err.forbidden('Снять вложение может тот, кто его приложил');
+      }
+      /*
+       * Последний закрывающий документ у принятой заявки не снимает никто — включая
+       * `files.manageAny` (ADR 0125). Планка Р112 иначе держалась бы **только** в момент приёмки:
+       * принять без бумаги нельзя, а через минуту снять её — можно, и принятая заявка оставалась бы
+       * без подтверждения работы, ничем не отбираясь ни очередью, ни отчётом. Ошибочный акт
+       * меняется в обратном порядке: сначала подшить верный, потом снять неверный.
+       *
+       * Считается здесь же, под блокировкой строки: параллельная приёмка и параллельное снятие
+       * второго документа выстроены в ту же очередь, и «последний» не устареет между проверкой и
+       * удалением.
+       */
+      if (status === 'accepted' && isServiceClosingDocument(link.kind)) {
+        const [other] = await tx
+          .select({ fileId: serviceRequestFiles.fileId })
+          .from(serviceRequestFiles)
+          .where(
+            and(
+              eq(serviceRequestFiles.requestId, locked.id),
+              inArray(serviceRequestFiles.kind, [...SERVICE_CLOSING_DOCUMENT_KINDS]),
+              ne(serviceRequestFiles.fileId, fileId),
+            ),
+          )
+          .limit(1);
+        if (!other) {
+          throw err.unprocessable(
+            'Это единственный документ, по которому заявку приняли — подшейте другой и снимите этот',
+            { kind: 'Последний закрывающий документ' },
+          );
+        }
+      }
+
       await tx
         .delete(serviceRequestFiles)
         .where(
-          and(eq(serviceRequestFiles.requestId, row.id), eq(serviceRequestFiles.fileId, fileId)),
+          and(eq(serviceRequestFiles.requestId, locked.id), eq(serviceRequestFiles.fileId, fileId)),
         );
       // Из хранилища объект уходит отложенно: ошибочно откреплённый файл успевают вернуть.
       await scheduleFilesDeletion(tx, [{ id: link.id, objectKey: link.objectKey }], false);
+      return link;
     });
 
     await writeAudit({
@@ -2677,7 +2921,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       action: 'serviceRequest.files_detach',
       entityType: 'serviceRequest',
       entityId: row.id,
-      metadata: { kind: link.kind, fileIds: [fileId] },
+      metadata: { kind: detached.kind, fileIds: [fileId] },
     });
     return (await getDto(row.id))!;
   });

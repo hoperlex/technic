@@ -6,6 +6,8 @@ import {
   CloseCircleOutlined,
   FileTextOutlined,
   MailOutlined,
+  MessageOutlined,
+  PauseCircleOutlined,
   PlayCircleOutlined,
   RollbackOutlined,
   SafetyCertificateOutlined,
@@ -20,6 +22,7 @@ import {
   actsForCounterparty,
   allowedServiceStatusTransitions,
   can as hasPermission,
+  canResumeService,
   isServiceRequestEditable,
   serviceMailRepeatable,
   type ModuleMailOutcome,
@@ -30,8 +33,10 @@ import { officeEquipmentKeys } from '@entities/office-equipment';
 import { AssignServiceModal } from '@features/assign-service';
 import { EstimateEditorModal } from '@features/estimate-editor';
 import { EstimateApprovalModal } from '@features/estimate-approval';
+import { ServiceCommentModal } from '@features/service-comment';
 import { ServiceCompleteModal } from '@features/service-complete';
 import { ServiceAcceptModal, type AcceptMode } from '@features/service-accept';
+import { ServiceHoldModal, type HoldMode } from '@features/service-hold';
 import { EquipmentMoveFromRequest } from '@features/equipment-move';
 import { ItApprovalModal } from '@features/it-approval';
 import { ServiceUrgencyModal } from '@features/service-urgency';
@@ -72,7 +77,12 @@ export function useServiceRequestActions(): {
     request: ServiceRequestDto;
     mode: AcceptMode;
   } | null>(null);
+  const [holdTarget, setHoldTarget] = useState<{
+    request: ServiceRequestDto;
+    mode: HoldMode;
+  } | null>(null);
   const [urgencyTarget, setUrgencyTarget] = useState<ServiceRequestDto | null>(null);
+  const [commentTarget, setCommentTarget] = useState<ServiceRequestDto | null>(null);
   const [itTarget, setItTarget] = useState<ServiceRequestDto | null>(null);
   const [moveTarget, setMoveTarget] = useState<ServiceRequestDto | null>(null);
   const [prompt, setPrompt] = useState<ReasonPrompt | null>(null);
@@ -129,6 +139,13 @@ export function useServiceRequestActions(): {
     onError: (e) => message.error(errorMessage(e)),
   });
 
+  /*
+   * Признак `primary` — главный шаг текущего статуса (Р117): к нему ведёт подпись «Вам: …» в
+   * столбце состояния. Он живёт прямо здесь, у пункта меню, а не второй картой «статус → окно»:
+   * карта разошлась бы с коридором на первом же новом статусе — строка звала бы к действию,
+   * которого в меню уже нет. Поэтому у каждого пункта он выставлен ровно в том статусе, где этот
+   * пункт и есть главный ход (§4 плана), а не там, где та же дуга встречается вторым смыслом.
+   */
   const actionsFor = (request: ServiceRequestDto): ActionSheetItem[] => {
     // Архивной заявке ход не положен: её либо восстанавливают, либо сносят — это действия архива.
     if (request.deletedAt) return [];
@@ -147,11 +164,14 @@ export function useServiceRequestActions(): {
      * отказ: решение одно, и разводить его двумя кнопками в меню значило бы предлагать отказ
      * наравне с согласием там, где чаще нужно второе.
      */
-    if (has('it_approved')) {
+    // Спрашивается статус, а не дуга: `it_approved` даёт и отказ исполнителя из «Назначен сервис»,
+    // и по одной дуге пункт всплывал бы у сервиса — окно открылось бы, сервер ответил бы 403.
+    if (request.status === 'new' && has('it_approved')) {
       items.push({
         key: 'it-approval',
         label: 'Согласование ИТ',
         icon: <SafetyCertificateOutlined />,
+        primary: true, // главный шаг «Новой»: до визы сервис не назначают
         onClick: () => setItTarget(request),
       });
     }
@@ -162,6 +182,9 @@ export function useServiceRequestActions(): {
         key: 'assign',
         label: reassign ? 'Переназначить сервис' : 'Назначить сервис',
         icon: <UserSwitchOutlined />,
+        // Назначение — главный шаг только сразу после визы: переназначение в «Диагностике» — это
+        // разбор ошибки, а не шаг, которого ждут.
+        primary: !reassign,
         onClick: () => setAssignTarget(request),
       });
     }
@@ -171,6 +194,7 @@ export function useServiceRequestActions(): {
         key: 'start',
         label: 'Взять в диагностику',
         icon: <PlayCircleOutlined />,
+        primary: true,
         onClick: () => startMutation.mutate(request),
       });
     }
@@ -190,6 +214,7 @@ export function useServiceRequestActions(): {
         key: 'estimate',
         label: 'Смета',
         icon: <FileTextOutlined />,
+        primary: true,
         onClick: () => setEstimateTarget(request),
       });
     }
@@ -200,6 +225,7 @@ export function useServiceRequestActions(): {
           key: 'approval',
           label: 'Согласование сметы',
           icon: <AuditOutlined />,
+          primary: true,
           onClick: () => setApprovalTarget(request),
         });
       } else if (has('diagnostics')) {
@@ -218,6 +244,7 @@ export function useServiceRequestActions(): {
           key: 'complete',
           label: 'Закрыть работы',
           icon: <CheckCircleOutlined />,
+          primary: true,
           onClick: () => setCompleteTarget(request),
         });
       }
@@ -237,6 +264,9 @@ export function useServiceRequestActions(): {
           key: 'accept',
           label: 'Принять работу',
           icon: <CheckCircleOutlined />,
+          // Сюда же ведёт подпись «Вам: нужен закрывающий документ» (Р120): бумагу подшивают в
+          // том же окне, и второго адреса у этого шага нет.
+          primary: true,
           onClick: () => setAcceptTarget({ request, mode: 'accept' }),
         });
       }
@@ -271,14 +301,42 @@ export function useServiceRequestActions(): {
     }
 
     /*
+     * Заморозка и выход из неё (Р103) — одним пунктом: это два конца одной остановки, и в каждом
+     * статусе доступен ровно один из них. Дугу в `on_hold` выдаёт коридор — исполнителю её там нет
+     * (Р105), и спрашивать роль здесь незачем; возврат коридором не выражается вовсе: цель у него
+     * динамическая — статус, из которого заявку отложили (Р104), — поэтому право спрашивается тем
+     * же предикатом, что и на сервере.
+     */
+    const held = request.status === 'on_hold';
+    const holdMode: HoldMode | null = held
+      ? canResumeService(user)
+        ? 'resume'
+        : null
+      : has('on_hold')
+        ? 'hold'
+        : null;
+    if (holdMode) {
+      items.push({
+        key: holdMode,
+        label: holdMode === 'resume' ? 'Возобновить' : 'Отложить',
+        icon: holdMode === 'resume' ? <PlayCircleOutlined /> : <PauseCircleOutlined />,
+        onClick: () => setHoldTarget({ request, mode: holdMode }),
+      });
+    }
+
+    /*
      * Срочность (Р56) — не переход, поэтому она не в коридоре: её ставят и снимают до самого
      * закрытия. Кто вправе, решает право, а не роль: оператор оргтехники — тот же «Штаб» или
      * «Отдел», и правило «правит только Новую» отобрало бы у него признак вместе с заказчиком.
+     *
+     * Отложенной срочность не меняют (Р119): сервер отвечает 422 — заявка стоит, и очередь срочных
+     * её не показывает. Признак при этом не гасится, он ждёт возобновления.
      */
     const closed = request.status === 'accepted' || request.status === 'cancelled';
     const mayUrgency =
       !executor &&
       !closed &&
+      !held &&
       hasPermission(user, 'serviceRequests.update') &&
       (hasPermission(user, 'serviceRequests.assign') || isServiceRequestEditable(request.status));
     if (mayUrgency) {
@@ -287,6 +345,26 @@ export function useServiceRequestActions(): {
         label: request.isUrgent ? 'Снять срочность' : 'Отметить срочной',
         icon: <ThunderboltOutlined />,
         onClick: () => setUrgencyTarget(request),
+      });
+    }
+
+    /*
+     * Примечание исполнителя (приём ADR 0053) — не переход и не правка заявки: исполнитель пишет
+     * своё слово в чужую заявку, а сама заявка правится заказчиком и только в двух статусах.
+     * Поэтому спрашивается право работы исполнителя, а не коридор: одной ручкой пользуются и
+     * сервис, и администратор, и у обоих она открыта до самого закрытия.
+     *
+     * Отложенной примечание пишут наравне с прочими (Р110): «запчасть будет 3-го» — это ответ
+     * ровно на тот вопрос, из-за которого заявку и остановили, и убрать пункт в `on_hold` значило
+     * бы закрыть поле в единственный момент, когда оно и нужно. Не показывается он только у
+     * закрытой заявки: там сервер отвечает отказом.
+     */
+    if (!closed && hasPermission(user, 'serviceRequests.estimate')) {
+      items.push({
+        key: 'service-comment',
+        label: 'Примечание исполнителя',
+        icon: <MessageOutlined />,
+        onClick: () => setCommentTarget(request),
       });
     }
 
@@ -347,7 +425,13 @@ export function useServiceRequestActions(): {
         mode={acceptTarget?.mode ?? 'accept'}
         onClose={() => setAcceptTarget(null)}
       />
+      <ServiceHoldModal
+        request={holdTarget?.request ?? null}
+        mode={holdTarget?.mode ?? 'hold'}
+        onClose={() => setHoldTarget(null)}
+      />
       <ServiceUrgencyModal request={urgencyTarget} onClose={() => setUrgencyTarget(null)} />
+      <ServiceCommentModal request={commentTarget} onClose={() => setCommentTarget(null)} />
       <ItApprovalModal request={itTarget} onClose={() => setItTarget(null)} />
       {moveTarget && (
         <EquipmentMoveFromRequest

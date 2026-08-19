@@ -2,7 +2,11 @@ import { useMemo, useState } from 'react';
 import { App, Button, Segmented, Space } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { isServiceRequestEditable, isWaitingOn, type ServiceRequestDto } from '@technic/contracts';
+import {
+  isPlaceScopedRole,
+  isServiceRequestEditable,
+  type ServiceRequestDto,
+} from '@technic/contracts';
 import { serviceRequestKeys, serviceRequestsApi } from '@entities/service-request';
 import { officeEquipmentKeys, officeEquipmentOptionsQuery } from '@entities/office-equipment';
 import { DataTable, PageTableLayout, sortOptionsFrom, type ActionSheetItem } from '@shared/ui';
@@ -116,6 +120,18 @@ export function RequestsTab() {
   };
 
   /**
+   * Кому и когда позволено снести заявку в архив — тем же условием, что проверяет сервер
+   * (`assertServiceRequestEditable`): площадочной роли снос открыт только пока заявку правят, то
+   * есть в «Новой» и «Согласована ИТ», а администратору — в любом статусе. Прежде пункт строился
+   * по одному лишь праву `serviceRequests.delete` и предлагался там, где сервер отвечает 403 (Р110)
+   * — в том числе отложенной заявке, у которой в меню остаются только возобновление, отмена и
+   * перемещение техники.
+   */
+  const mayDelete = (request: ServiceRequestDto) =>
+    can('serviceRequests.delete') &&
+    (!isPlaceScopedRole(user?.role) || isServiceRequestEditable(request.status));
+
+  /**
    * Действия строки: сначала ход заявки (его строит коридор переходов), затем правка и удаление —
    * они не переходы, а распоряжение самой записью, и потому стоят ниже.
    */
@@ -130,7 +146,7 @@ export function RequestsTab() {
           },
         ]
       : []),
-    ...(can('serviceRequests.delete')
+    ...(mayDelete(request)
       ? [
           {
             key: 'delete',
@@ -153,7 +169,16 @@ export function RequestsTab() {
   const grid = {
     view,
     warrantyOf,
-    isMine: (request: ServiceRequestDto) => isWaitingOn(user, request.waitingOn),
+    // Учётка уходит в сетку целиком: подпись состояния и её лицо считает `serviceStatusLine`
+    // (Р101), а прежний признак «ждут меня» был бы вторым источником того же факта.
+    user,
+    /*
+     * Подпись «Вам: …» ведёт в то же окно, что и пункт меню строки (Р117): главный шаг помечен
+     * признаком `primary` там же, где строится сам пункт, — второй карты «статус → окно» здесь нет
+     * и быть не должно. Нет доступного пункта — подпись остаётся текстом.
+     */
+    primaryAction: (r: ServiceRequestDto) =>
+      actions.actionsFor(r).find((item) => item.primary)?.onClick ?? null,
     actions: rowActions,
     onOpen: (request: ServiceRequestDto) => setViewRecord(request),
   };

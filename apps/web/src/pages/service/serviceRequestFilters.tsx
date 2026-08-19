@@ -30,7 +30,6 @@ export interface ServiceListFilters {
   /** Признаки-очереди: сервер ждёт строку `'true'`, отсутствие значит «не спрашивали». */
   waitingOnMe?: string;
   mine?: string;
-  overdue?: string;
   awaitingDocuments?: string;
   warrantyClaim?: string;
   urgent?: string;
@@ -38,6 +37,10 @@ export interface ServiceListFilters {
   createdTo?: string;
 }
 
+/**
+ * Отбор по статусу перечисляет коридор целиком, а не избранные значения: заведённая в контрактах
+ * «Отложена» (Р103) появилась здесь сама, и следующий статус появится так же.
+ */
 const statusOptions = SERVICE_REQUEST_STATUSES.map((value) => ({
   value,
   label: serviceRequestStatusLabels[value],
@@ -140,13 +143,6 @@ export function useServiceRequestFilters({
       label: 'Мои заявки',
       value: params.mine === 'true',
       onChange: (v) => apply({ mine: flag(v) }),
-    },
-    {
-      kind: 'toggle',
-      key: 'overdue',
-      label: 'Просроченные',
-      value: params.overdue === 'true',
-      onChange: (v) => apply({ overdue: flag(v) }),
     },
     {
       kind: 'toggle',

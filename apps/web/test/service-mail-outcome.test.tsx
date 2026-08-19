@@ -6,12 +6,12 @@ import type {
   OfficeEquipmentDto,
   OfficeEquipmentTypeDto,
   ServiceRequestDto,
-  ServiceRequestStatus,
 } from '@technic/contracts';
 import { json, mockHttp, type HttpMock, type RouteMap } from './http';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { emptyList, list } from './factories/common';
+import { serviceRequest } from './factories/service';
 import { objectDto } from './factories/waste';
 import { ServiceRequestForm } from '../src/pages/service/ServiceRequestForm';
 import { RequestsTab } from '../src/pages/service/RequestsTab';
@@ -60,15 +60,12 @@ const EQUIPMENT: OfficeEquipmentDto = {
   deletedAt: null,
 };
 
-function serviceRequest(overrides: Partial<ServiceRequestDto> = {}): ServiceRequestDto {
-  const status: ServiceRequestStatus = overrides.status ?? 'new';
-  return {
-    id: 'sr-1',
-    num: 14,
-    displayNumber: 'СО-14',
-    status,
-    statusChangedAt: '2026-08-05T09:00:00.000Z',
-    waitingOn: 'operator',
+/**
+ * Заявка этого сценария стоит на той самой единице, что лежит в справочнике: письмо службе
+ * называет технику, и расхождение фикстур пряталось бы в тексте письма.
+ */
+function request(overrides: Partial<ServiceRequestDto> = {}): ServiceRequestDto {
+  return serviceRequest({
     equipment: {
       id: EQUIPMENT.id,
       name: EQUIPMENT.name,
@@ -77,36 +74,10 @@ function serviceRequest(overrides: Partial<ServiceRequestDto> = {}): ServiceRequ
       typeName: TYPE.name,
       location: EQUIPMENT.location,
     },
-    object: { id: 'obj-1', code: 'ОБ-1', name: 'ЖК Северный' },
-    customerDepartment: null,
-    equipmentDepartment: null,
-    description: 'Не захватывает бумагу',
-    dueDate: null,
     responsibleName: 'Штабов С. И.',
     responsiblePhone: '9001234567',
-    isUrgent: false,
-    urgencyReason: '',
-    service: null,
-    itApproval: null,
-    warrantyClaim: null,
-    estimateRevision: 0,
-    estimateSubmittedAt: null,
-    estimatedTotalAmount: null,
-    approval: null,
-    items: [],
-    completion: null,
-    acceptedByName: '',
-    acceptedAt: null,
-    comment: '',
-    serviceComment: '',
-    files: [],
-    createdByName: 'Штабов С. И.',
-    createdAt: '2026-08-05T09:00:00.000Z',
-    updatedAt: '2026-08-05T09:00:00.000Z',
-    deletedAt: null,
-    version: 3,
     ...overrides,
-  };
+  });
 }
 
 /** Оператор оргтехники: штаб своего объекта плюс надстройка — заявки заводит и ведёт он. */
@@ -130,7 +101,7 @@ function renderForm(mail: ModuleMailOutcome): HttpMock {
     'GET /office-equipment-types': () => json(list([TYPE])),
     'GET /objects': () => json(list([objectDto()])),
     'GET /departments': () => json(emptyList()),
-    'POST /service-requests': () => json({ request: serviceRequest(), mail }, 201),
+    'POST /service-requests': () => json({ request: request(), mail }, 201),
   });
   renderWithUser(<ServiceRequestForm open request={null} onClose={() => {}} />, { user: OPERATOR });
   return http;
@@ -190,9 +161,9 @@ describe('заведение заявки: письмо службе', () => {
 
 describe('отмена заявки: письмо «не выезжайте»', () => {
   it('ненастроенный канал виден там же, где отмена, а не в логе сервера', async () => {
-    renderTab([serviceRequest()], {
+    renderTab([request()], {
       'PATCH /service-requests/:id/status': () =>
-        json({ request: serviceRequest({ status: 'cancelled' }), mail: 'channel_missing' }),
+        json({ request: request({ status: 'cancelled' }), mail: 'channel_missing' }),
     });
     await openRowActions();
     fireEvent.click(await screen.findByText('Отменить заявку'));
@@ -211,7 +182,7 @@ describe('отмена заявки: письмо «не выезжайте»', 
 
 describe('повторная отправка письма службе', () => {
   it('удавшийся повтор называет адресатов: за ними и шли', async () => {
-    renderTab([serviceRequest()], {
+    renderTab([request()], {
       'POST /service-requests/:id/notify': () =>
         json({ mail: 'queued', recipients: ['service@example.test'] }),
     });
@@ -224,7 +195,7 @@ describe('повторная отправка письма службе', () => 
   });
 
   it('несобравшееся письмо отправляет к администратору, а не оставляет молчание', async () => {
-    renderTab([serviceRequest()], {
+    renderTab([request()], {
       'POST /service-requests/:id/notify': () => json({ mail: 'mail_failed', recipients: [] }),
     });
     await openRowActions();

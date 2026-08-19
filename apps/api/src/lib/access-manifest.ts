@@ -462,6 +462,10 @@ export const ACCESS_MANIFEST = {
     kind: 'permissions',
     allOf: ['serviceRequests.read'],
   },
+  'PATCH /api/v1/service-requests/:id/hold': {
+    kind: 'permissions',
+    allOf: ['serviceRequests.status'],
+  },
   'PATCH /api/v1/service-requests/:id/it-approval': {
     kind: 'permissions',
     allOf: ['serviceRequests.approveIt'],
@@ -471,6 +475,10 @@ export const ACCESS_MANIFEST = {
     allOf: ['serviceRequests.status'],
   },
   'DELETE /api/v1/service-requests/:id/purge': { kind: 'permissions', allOf: ['records.purge'] },
+  'PATCH /api/v1/service-requests/:id/resume': {
+    kind: 'permissions',
+    allOf: ['serviceRequests.status'],
+  },
   'POST /api/v1/service-requests/:id/restore': { kind: 'permissions', allOf: ['archive.restore'] },
   'PATCH /api/v1/service-requests/:id/rework': {
     kind: 'permissions',

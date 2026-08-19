@@ -17,13 +17,6 @@ import { changeSet, EMPTY, short } from './request-diff';
 // Смета сравнивается отдельно от полей заявки и по составу, а не по итогу: «было 7 100, стало
 // 6 900» скрывает, что вместо термоузла поставили ролик. Спорят с сервисом именно о составе.
 
-/** Дата без времени (`YYYY-MM-DD`) в человеческом виде; через JS Date она бы поехала на день. */
-function dateOnly(value: string | null): string {
-  if (!value) return EMPTY;
-  const [y, m, d] = value.split('-');
-  return y && m && d ? `${d}.${m}.${y}` : value;
-}
-
 function money(value: number | null): string {
   return value == null ? EMPTY : `${value.toFixed(2)} ₽`;
 }
@@ -64,7 +57,6 @@ export function diffServiceRequests(
 ): RequestChangeDto[] {
   const diff = changeSet();
   diff.changed('description', short(before.description), short(after.description));
-  diff.changed('dueDate', dateOnly(before.dueDate), dateOnly(after.dueDate));
   diff.changed(
     'customerDepartment',
     before.customerDepartment?.name ?? EMPTY,

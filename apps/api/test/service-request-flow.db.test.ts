@@ -9,6 +9,7 @@ import {
   type OfficeEquipmentServiceEntryDto,
   type ServiceRequestDto,
   type ServiceRequestItemDto,
+  type ServiceRequestStatus,
   type ServiceWarrantyRowDto,
 } from '@technic/contracts';
 import { applyMigrations } from '../src/db/migration-journal';
@@ -149,6 +150,8 @@ const state: {
   expiredItemId: string;
   /** Счёт, подшитый в закрытую заявку: его же снимает распорядитель чужих файлов (§8.3). */
   attachedInvoiceId: string;
+  /** Акт главной заявки: подшит **до** приёмки (Р112) — без него её бы не приняли. */
+  attachedActId: string;
   /** Заявка со срочностью: на своей единице — по единице разрешена одна открытая заявка (Р21). */
   urgent: { id: string; num: number; equipmentId: string };
 } = {
@@ -162,6 +165,7 @@ const state: {
   notPerformedItemId: '',
   expiredItemId: '',
   attachedInvoiceId: '',
+  attachedActId: '',
   urgent: { id: '', num: 0, equipmentId: '' },
 };
 
@@ -245,7 +249,17 @@ function inject(
   auth: Auth,
   payload?: unknown,
 ) {
-  return ctx.app.inject({ method, url, headers: auth, ...(payload ? { payload } : {}) });
+  return ctx.app.inject({
+    method,
+    url,
+    headers: auth,
+    // Свой адрес на каждый запрос — по той же причине, что и у входа: общий ограничитель считает
+    // 300 обращений в минуту с адреса (`app.ts`), а один этот файл проходит цикл заявки полтора
+    // десятка раз. С общего адреса он упирался бы в 429 на середине — и падение выглядело бы как
+    // дефект модуля, хотя ограничитель отработал ровно так, как задуман.
+    remoteAddress: nextAddress(),
+    ...(payload ? { payload } : {}),
+  });
 }
 
 /** Карточка заявки; по умолчанию глазами оператора — он видит все заявки своей площадки. */
@@ -372,6 +386,166 @@ async function toDiagnostics(id: string): Promise<void> {
   });
   expect(started.statusCode, started.body).toBe(200);
 }
+
+// ── Помощники заморозки и приёмки (план `office-equipment-cycle-changes-plan.md`) ──
+
+/** Рабочие статусы, из которых заявку откладывают (Р106): всё, кроме «Принята» и «Отменена». */
+const WORKING_STATUSES = [
+  'new',
+  'it_approved',
+  'assigned',
+  'diagnostics',
+  'estimate_review',
+  'in_work',
+  'done',
+] as const satisfies readonly ServiceRequestStatus[];
+
+/**
+ * Заявка, доведённая до нужного рабочего статуса своими ручками.
+ *
+ * Помощником, а не семью выписанными цепочками: заморозка проверяется из **каждого** статуса
+ * (Р106), и повторить ради этого назначение, диагностику, смету и закрытие семь раз значило бы
+ * семь раз переписать сам цикл — а расходиться эти семь копий начали бы с первой же правки.
+ */
+async function driveTo(id: string, target: ServiceRequestStatus): Promise<void> {
+  if (target === 'new') return;
+  await approveByIt(id);
+  if (target === 'it_approved') return;
+
+  const assigned = await inject(
+    'PATCH',
+    `/api/v1/service-requests/${id}/service`,
+    ctx.operator.auth,
+    { serviceCounterpartyId: ctx.serviceCounterpartyId, version: await version(id) },
+  );
+  expect(assigned.statusCode, assigned.body).toBe(200);
+  if (target === 'assigned') return;
+
+  const started = await inject('PATCH', `/api/v1/service-requests/${id}/start`, ctx.service.auth, {
+    version: assigned.json().version,
+  });
+  expect(started.statusCode, started.body).toBe(200);
+  if (target === 'diagnostics') return;
+
+  const put = await inject('PUT', `/api/v1/service-requests/${id}/estimate`, ctx.service.auth, {
+    items: [
+      {
+        kind: 'service',
+        name: 'Чистка узла подачи',
+        quantity: 1,
+        unitPrice: 1000,
+        warrantyMonths: 3,
+      },
+    ],
+    version: started.json().version,
+  });
+  expect(put.statusCode, put.body).toBe(200);
+  const submitted = await inject(
+    'PATCH',
+    `/api/v1/service-requests/${id}/estimate/submit`,
+    ctx.service.auth,
+    { version: put.json().version },
+  );
+  expect(submitted.statusCode, submitted.body).toBe(200);
+  if (target === 'estimate_review') return;
+
+  const approved = await inject(
+    'PATCH',
+    `/api/v1/service-requests/${id}/estimate/approval`,
+    ctx.operator.auth,
+    { approved: true, version: submitted.json().version },
+  );
+  expect(approved.statusCode, approved.body).toBe(200);
+  if (target === 'in_work') return;
+
+  const before = approved.json() as ServiceRequestDto;
+  const completed = await inject(
+    'PATCH',
+    `/api/v1/service-requests/${id}/complete`,
+    ctx.service.auth,
+    {
+      completedOn: TODAY,
+      items: before.items.map((item) => ({ id: item.id, performed: true })),
+      version: before.version,
+    },
+  );
+  expect(completed.statusCode, completed.body).toBe(200);
+  if (target === 'done') return;
+
+  throw new Error(`Статус «${target}» этим помощником не собирается`);
+}
+
+/** Своя единица под каждую заявку помощника: по технике разрешена одна открытая заявка (Р21). */
+let extraUnitNo = 0;
+async function freshUnit(): Promise<string> {
+  extraUnitNo += 1;
+  return makeEquipment({
+    typeId: ctx.typeId,
+    name: 'Kyocera FS-1040',
+    // Суффикс прогона тот же, что у остальной техники файла: уборка ищет по нему (`afterAll`).
+    inventoryNumber: `ОЕ-${RUN}-h${extraUnitNo}`,
+    objectId: ctx.objectId,
+  });
+}
+
+/** Заявка на своей единице, доведённая до нужного статуса. */
+async function requestIn(
+  status: ServiceRequestStatus,
+  description: string,
+): Promise<ServiceRequestDto> {
+  const dto = await createRequest(ctx.customer.auth, await freshUnit(), description);
+  await driveTo(dto.id, status);
+  return card(dto.id);
+}
+
+/** Заморозка: причина обязательна (Р107), а куда вернуть — сервер берёт из самой заявки (Р104). */
+function hold(id: string, reason: string, auth: Auth = ctx.operator.auth) {
+  return version(id).then((v) =>
+    inject('PATCH', `/api/v1/service-requests/${id}/hold`, auth, { reason, version: v }),
+  );
+}
+
+/** Возврат из заморозки: цель клиент не присылает — она в `held_from_status`. */
+function resume(id: string, auth: Auth = ctx.operator.auth, comment = '') {
+  return version(id).then((v) =>
+    inject('PATCH', `/api/v1/service-requests/${id}/resume`, auth, { comment, version: v }),
+  );
+}
+
+/** Приёмка глазами оператора: версию спрашивает каждая изменяющая ручка (Р30). */
+function acceptWork(id: string) {
+  return version(id).then((v) =>
+    inject('PATCH', `/api/v1/service-requests/${id}/accept`, ctx.operator.auth, { version: v }),
+  );
+}
+
+/** Подшитый документ вместе с id самого файла: снимать его будут по нему же. */
+async function attach(
+  id: string,
+  kind: string,
+  filename: string,
+  auth: Auth = ctx.service.auth,
+  userId: string = ctx.service.id,
+) {
+  const fileId = await uploadedFile(userId, filename);
+  const res = await inject('POST', `/api/v1/service-requests/${id}/files`, auth, {
+    fileIds: [fileId],
+    kind,
+  });
+  return { fileId, res };
+}
+
+/** Число для бейджа раздела: та же очередь «ждут меня», но своей ручкой (Р35). */
+async function waitingCount(auth: Auth): Promise<number> {
+  const res = await inject('GET', '/api/v1/service-requests/waiting-count', auth);
+  expect(res.statusCode, res.body).toBe(200);
+  return res.json().count as number;
+}
+
+const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Ответ ручки: тот же тип, что отдаёт `inject`, — нужен помощнику гонки под именем. */
+type Injected = Awaited<ReturnType<typeof inject>>;
 
 describe.skipIf(!DB_URL)('обслуживание оргтехники: сквозной цикл на живой схеме', () => {
   beforeAll(async () => {
@@ -647,11 +821,12 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
   // ── Шаг 1. Заявка заведена ──
 
   it('заказчик заводит заявку: снимок предмета, статус «Новая», ждут ИТ', async () => {
+    // «Желаемого срока» у заявки больше нет (Р115): давность читается возрастом в статусе, и он
+    // точнее отвечает на вопрос «кто тянет».
     const dto = await createRequest(
       ctx.customer.auth,
       ctx.mfp.id,
       'Не захватывает бумагу из нижнего лотка',
-      { dueDate: plusMonths(TODAY, 1) },
     );
     state.main = { id: dto.id, num: dto.num };
 
@@ -1327,7 +1502,38 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
 
   // ── Шаг 8. Приёмка ──
 
-  it('оператор принимает работу — заявка становится терминальной', async () => {
+  it('без закрывающего документа приёмка не проходит — 422 (Р112)', async () => {
+    // Отменяет Р16 исходного плана: «акт пришлю завтра» больше не рабочее состояние. Иначе
+    // принятая заявка означала бы оплаченный ремонт, у которого нет ни одной бумаги, — и спорить с
+    // сервисом через полгода было бы нечем.
+    const res = await inject(
+      'PATCH',
+      `/api/v1/service-requests/${state.main.id}/accept`,
+      ctx.operator.auth,
+      { version: await version(state.main.id) },
+    );
+    expect(res.statusCode, res.body).toBe(422);
+    expect(res.json().message).toBe('Нужен один из документов: акт, счёт или гарантийный талон');
+    // Отказ ничего не сдвинул: заявка по-прежнему ждёт приёмки.
+    expect((await card(state.main.id)).status).toBe('done');
+  });
+
+  it('оператор принимает работу с актом — заявка становится терминальной', async () => {
+    // Акт подшивает исполнитель ещё в «Ожидает приёмки»: планка стоит на приёмке, а не на закрытии
+    // работ (Р113), и до самой приёмки бумага успевает дойти.
+    const actFile = await uploadedFile(ctx.service.id, 'akt.pdf');
+    const act = await inject(
+      'POST',
+      `/api/v1/service-requests/${state.main.id}/files`,
+      ctx.service.auth,
+      { fileIds: [actFile], kind: 'act' },
+    );
+    expect(act.statusCode, act.body).toBe(200);
+    expect((act.json() as ServiceRequestDto).files).toEqual([
+      expect.objectContaining({ id: actFile, kind: 'act' }),
+    ]);
+    state.attachedActId = actFile;
+
     const res = await inject(
       'PATCH',
       `/api/v1/service-requests/${state.main.id}/accept`,
@@ -1344,21 +1550,7 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
 
   // ── Шаг 9. Документы после приёмки (§8.3) ──
 
-  it('акт подшивается и после приёмки, вложение — нет, а снять документ уже нельзя', async () => {
-    // «Акт пришлю завтра» иначе означало бы потерянную бумагу (Р16, Р29): закрытая заявка бумаги
-    // принимает и ничего не отдаёт.
-    const actFile = await uploadedFile(ctx.service.id, 'akt.pdf');
-    const act = await inject(
-      'POST',
-      `/api/v1/service-requests/${state.main.id}/files`,
-      ctx.service.auth,
-      { fileIds: [actFile], kind: 'act' },
-    );
-    expect(act.statusCode, act.body).toBe(200);
-    expect((act.json() as ServiceRequestDto).files).toEqual([
-      expect.objectContaining({ id: actFile, kind: 'act' }),
-    ]);
-
+  it('после приёмки вложение не принимают, а снять акт исполнитель уже не может', async () => {
     // Вложение — вид «обычной жизни» заявки, и после терминального статуса его не принимают:
     // правило одной строкой — закрытая заявка принимает только документы (акт, счёт, талон).
     const attachment = await uploadedFile(ctx.service.id, 'foto.pdf');
@@ -1371,10 +1563,11 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
     expect(plain.statusCode, plain.body).toBe(422);
 
     // Снимает документ из закрытой заявки только тот, кто распоряжается чужими файлами; у
-    // исполнителя такого права нет, даже если акт подшил он сам.
+    // исполнителя такого права нет, даже если акт подшил он сам. С планкой приёмки (Р112) у этого
+    // правила появился второй смысл: снятый акт оставил бы принятую заявку вовсе без бумаги.
     const detach = await inject(
       'DELETE',
-      `/api/v1/service-requests/${state.main.id}/files/${actFile}`,
+      `/api/v1/service-requests/${state.main.id}/files/${state.attachedActId}`,
       ctx.service.auth,
     );
     expect(detach.statusCode, detach.body).toBe(403);
@@ -2315,5 +2508,572 @@ describe.skipIf(!DB_URL)('обслуживание оргтехники: скв�
       expect(page.serviceVisible).toBe(false);
       expect(page.items.some((event) => event.kind === 'service_request')).toBe(false);
     });
+  });
+
+  // ── Шаг 20. Заморозка заявки (план `office-equipment-cycle-changes-plan.md`, Р103–Р111, Р118, Р119) ──
+  //
+  // Заморозка — статус, а не флаг рядом со статусом (Р103): из неё нет обычных ходов, и ровно это
+  // проверяется здесь. Живой схемой, а не контрактами: пара «откуда и почему» связана в базе тремя
+  // CHECK'ами (`service_requests_hold_check`, `service_requests_held_from_check`, переписанный
+  // `service_requests_executor_check`), и разъехаться с ними код может только на настоящем
+  // PostgreSQL — на моках все три условия просто не существуют.
+
+  describe('заморозка и возврат', () => {
+    it('заявку откладывают из каждого рабочего статуса и возвращают ровно в него (Р104, Р106, Р108)', async () => {
+      for (const status of WORKING_STATUSES) {
+        const before = await requestIn(status, `Заморозка из статуса «${status}»`);
+        expect(before.status, 'подготовка статуса').toBe(status);
+
+        const frozenRes = await hold(before.id, 'Ждём запчасть с завода');
+        expect(frozenRes.statusCode, frozenRes.body).toBe(200);
+        const frozen = frozenRes.json() as ServiceRequestDto;
+        expect(frozen.status).toBe('on_hold');
+        // Куда вернуть, помнит сама заявка (Р104). Выбирай цель человек — «Отложена» стала бы
+        // вторым входом в цикл, в обход визы ИТ, назначения и согласования сметы.
+        expect(frozen.heldFromStatus).toBe(status);
+        expect(frozen.holdReason).toBe('Ждём запчасть с завода');
+        // Заморозку не ждёт никто (Р111): она стоит по решению оператора, а не в чьей-то очереди.
+        expect(frozen.waitingOn).toBe('hold');
+        // Возраст в статусе обнуляется заморозкой (Р108): «Отложена · 12 дней» — тот самый сигнал,
+        // ради которого статус и заводили, и наследовать чужое время он не должен.
+        expect(new Date(frozen.statusChangedAt).getTime()).toBeGreaterThan(
+          new Date(before.statusChangedAt).getTime(),
+        );
+
+        const backRes = await resume(before.id);
+        expect(backRes.statusCode, backRes.body).toBe(200);
+        const back = backRes.json() as ServiceRequestDto;
+        expect(back.status).toBe(status);
+        // Поля заморозки чистит матрица сбросов (Р118), а не ручка: иначе возврат упёрся бы в
+        // `service_requests_hold_check` ошибкой БД — статус уже не `on_hold`, а исходный ещё стоит.
+        expect(back.heldFromStatus).toBeNull();
+        expect(back.holdReason).toBe('');
+        expect(back.waitingOn).not.toBe('hold');
+        // И второй раз — при возврате (Р108): вернувшийся исполнитель не наследует время простоя.
+        expect(new Date(back.statusChangedAt).getTime()).toBeGreaterThan(
+          new Date(frozen.statusChangedAt).getTime(),
+        );
+
+        // Заморозка ничего не отменяет: согласование сметы и факт закрытия переживают её целиком —
+        // иначе «остановили на неделю» означало бы заново собранную смету и заново предъявленные
+        // работы.
+        if (status === 'in_work' || status === 'done') {
+          expect(back.approval?.revision, `согласование после возврата в «${status}»`).toBe(1);
+        }
+        if (status === 'done') expect(back.completion?.totalAmount).toBe(1000);
+      }
+    }, 120_000);
+
+    it('заморозка без причины не проходит: ни пустой, ни из пробелов (Р107)', async () => {
+      const dto = await requestIn('assigned', 'Причина заморозки обязательна');
+      for (const reason of ['', '   ']) {
+        const res = await inject(
+          'PATCH',
+          `/api/v1/service-requests/${dto.id}/hold`,
+          ctx.operator.auth,
+          {
+            reason,
+            version: dto.version,
+          },
+        );
+        // Даты «отложена до» у заморозки нет вовсе (Р107): на вопрос «когда ждать» отвечает только
+        // причина, и «Отложена · 12 дней» без неё не читается никак.
+        expect(res.statusCode, res.body).toBe(400);
+      }
+      expect((await card(dto.id)).status).toBe('assigned');
+    });
+
+    it('исполнитель заявку не откладывает и не возвращает — заморозку ставит тот, кто её ведёт (Р105)', async () => {
+      const dto = await requestIn('diagnostics', 'Заморозку ставит оператор, а не сервис');
+
+      const byService = await inject(
+        'PATCH',
+        `/api/v1/service-requests/${dto.id}/hold`,
+        ctx.service.auth,
+        { reason: 'Ждём запчасть — пусть повисит', version: dto.version },
+      );
+      // Право статуса у исполнителя есть, и закрывает заморозку именно коридор: дуги в `on_hold` у
+      // него нет вовсе. О задержке сервис сообщает примечанием, а останавливает заявку оператор —
+      // иначе «ждём запчасть» становилось бы решением подрядчика.
+      expect(byService.statusCode, byService.body).toBe(403);
+      expect(byService.json().message).toContain('шаг другой стороны');
+
+      // У заказчика отказ приходит раньше — от самого права хода: заявку он завёл, но не ведёт.
+      const byCustomer = await inject(
+        'PATCH',
+        `/api/v1/service-requests/${dto.id}/hold`,
+        ctx.customer.auth,
+        { reason: 'Подождём до следующего месяца', version: dto.version },
+      );
+      expect(byCustomer.statusCode, byCustomer.body).toBe(403);
+
+      const frozen = await hold(dto.id, 'Ждём запчасть с завода');
+      expect(frozen.statusCode, frozen.body).toBe(200);
+
+      const backByService = await resume(dto.id, ctx.service.auth);
+      expect(backByService.statusCode, backByService.body).toBe(403);
+      // Отказ говорит про сторону, а не про конкретную учётку: сверяется право, и та же фраза
+      // обязана оставаться верной для администратора, снимающего чужую заморозку (ниже).
+      expect(backByService.json().message).toContain('это шаг того, кто её ведёт');
+
+      // Отпускает заявку ведущая сторона, а не тот же человек: администратор снимает заморозку
+      // оператора — иначе отложенная заявка ушедшего в отпуск оператора осталась бы стоять.
+      const byAdmin = await resume(dto.id, ctx.admin.auth);
+      expect(byAdmin.statusCode, byAdmin.body).toBe(200);
+      expect(byAdmin.json().status).toBe('diagnostics');
+    });
+
+    it('отложенную не правят, срочность ей не меняют и обычных ходов у неё нет (Р110, Р119)', async () => {
+      const dto = await requestIn('assigned', 'Матрица действий отложенной заявки');
+      const urgent = await inject(
+        'PATCH',
+        `/api/v1/service-requests/${dto.id}/urgency`,
+        ctx.operator.auth,
+        {
+          isUrgent: true,
+          urgencyReason: 'Единственный принтер на площадке',
+          version: dto.version,
+        },
+      );
+      expect(urgent.statusCode, urgent.body).toBe(200);
+
+      const frozen = await hold(dto.id, 'Нет денег до начала квартала');
+      expect(frozen.statusCode, frozen.body).toBe(200);
+
+      // Правка предмета — ход мимо остановки: правка открыта в «Новой» и «Согласована ИТ», и
+      // `on_hold` в этот список не входит. Отложенную из «Новой» правят, вернув её в работу.
+      const edited = await inject(
+        'PATCH',
+        `/api/v1/service-requests/${dto.id}`,
+        ctx.operator.auth,
+        { description: 'Переписали неисправность', version: await version(dto.id) },
+      );
+      expect(edited.statusCode, edited.body).toBe(403);
+
+      // Срочность (Р119) — 422, а не 403: право у оператора есть, отказ даёт состояние заявки.
+      // Разбирать красную метку поверх остановки незачем — очередь срочных отложенную не
+      // показывает, и «поставили срочность» не сдвинуло бы её ни на строку.
+      const urgency = await inject(
+        'PATCH',
+        `/api/v1/service-requests/${dto.id}/urgency`,
+        ctx.operator.auth,
+        { isUrgent: false, urgencyReason: '', version: await version(dto.id) },
+      );
+      expect(urgency.statusCode, urgency.body).toBe(422);
+      expect(urgency.json().message).toContain('Отложенной заявке срочность не меняют');
+
+      // Обычный ход: взять отложенную в диагностику нельзя — коридоры `on_hold` пусты у всех
+      // четырёх сторон, и заморозка перестала бы что-либо останавливать.
+      const start = await inject(
+        'PATCH',
+        `/api/v1/service-requests/${dto.id}/start`,
+        ctx.service.auth,
+        { version: await version(dto.id) },
+      );
+      expect(start.statusCode, start.body).toBe(403);
+
+      // Административный откат — тоже (Р110): выходов из заморозки два, возврат и отмена, и
+      // третий пришлось бы считать от `held_from_status` вторым путём.
+      const rollback = await inject(
+        'PATCH',
+        `/api/v1/service-requests/${dto.id}/status`,
+        ctx.admin.auth,
+        {
+          status: 'it_approved',
+          reason: 'Откатить назначение',
+          version: await version(dto.id, ctx.admin.auth),
+        },
+      );
+      expect(rollback.statusCode, rollback.body).toBe(422);
+
+      // Ни одна отклонённая попытка заявку не сдвинула.
+      const after = await card(dto.id);
+      expect(after.status).toBe('on_hold');
+      expect(after.heldFromStatus).toBe('assigned');
+      expect(after.description).toBe('Матрица действий отложенной заявки');
+    });
+
+    it('отложенная принимает документы исходного статуса и примечание исполнителя (Р110)', async () => {
+      const dto = await requestIn('diagnostics', 'Отложенная живёт обычной жизнью');
+      const frozen = await hold(dto.id, 'Ждём решения заказчика по деньгам');
+      expect(frozen.statusCode, frozen.body).toBe(200);
+
+      // Вид документа решает «эффективный» статус (Р110) — тот, из которого отложили: смета
+      // принадлежит «Диагностике», и заморозка её вида не меняет. Тот же расчёт делает портал, и
+      // разойдись они — портал предлагал бы вид, на котором придёт отказ.
+      const estimate = await attach(dto.id, 'estimate', 'kp-otlozhennoy.pdf');
+      expect(estimate.res.statusCode, estimate.res.body).toBe(200);
+
+      // А вид, которого исходный статус не знает, по-прежнему не принимают: заморозка правила
+      // видов не отменяет — она их не меняет.
+      const warranty = await attach(dto.id, 'warranty_card', 'talon-ranshe-vremeni.pdf');
+      expect(warranty.res.statusCode, warranty.res.body).toBe(422);
+
+      // «Запчасть будет 3-го» пишут именно тогда, когда заявка стоит: запрети мы примечание,
+      // единственный способ сообщить о сроке исчез бы вместе с ходом заявки.
+      const comment = await inject(
+        'PATCH',
+        `/api/v1/service-requests/${dto.id}/service-comment`,
+        ctx.service.auth,
+        { serviceComment: 'Запчасть будет 3-го', version: await version(dto.id) },
+      );
+      expect(comment.statusCode, comment.body).toBe(200);
+      expect((comment.json() as ServiceRequestDto).serviceComment).toBe('Запчасть будет 3-го');
+      expect((comment.json() as ServiceRequestDto).status).toBe('on_hold');
+    });
+
+    it('пока заявка отложена, вторую на ту же единицу не завести (Р109)', async () => {
+      const equipmentId = await freshUnit();
+      const dto = await createRequest(
+        ctx.customer.auth,
+        equipmentId,
+        'Отложенная занимает единицу',
+      );
+      const frozen = await hold(dto.id, 'Ждём решения заказчика');
+      expect(frozen.statusCode, frozen.body).toBe(200);
+
+      const second = await inject('POST', '/api/v1/service-requests', ctx.customer.auth, {
+        officeEquipmentId: equipmentId,
+        description: 'Тот же аппарат, второй заход',
+        responsibleName: 'Иванов Иван Иванович',
+        responsiblePhone: '+79990000000',
+      });
+      // Отложенная — открытая (Р109): техника ждёт этого же ремонта, и вторая заявка означала бы
+      // два сервиса и два акта на одну работу. Держит это частичный уникальный индекс
+      // `service_requests_open_per_equipment_unique`, чьё условие `on_hold` и не знает.
+      expect(second.statusCode, second.body).toBe(409);
+      expect(second.json().message).toContain(formatServiceRequestNumber(dto.num));
+    });
+
+    it('отложенная выпадает из очереди «ждут меня» и из счётчика раздела (Р111)', async () => {
+      const dto = await requestIn('it_approved', 'Отложенная не ждёт оператора');
+      const before = await waitingCount(ctx.operator.auth);
+      expect(await listIds(ctx.operator.auth, '&waitingOnMe=true')).toContain(dto.id);
+
+      const frozen = await hold(dto.id, 'Нет денег до начала квартала');
+      expect(frozen.statusCode, frozen.body).toBe(200);
+
+      // `serviceWaitingOn('on_hold')` — своё значение `hold`, и `isWaitingOn` для него ложно ни у
+      // кого: заморозка не «ждёт оператора» — она не ждёт вовсе, и в очереди «Требуют решения» ей
+      // делать нечего.
+      expect(await listIds(ctx.operator.auth, '&waitingOnMe=true')).not.toContain(dto.id);
+      expect(await listIds(ctx.itApprover.auth, '&waitingOnMe=true')).not.toContain(dto.id);
+      // Бейдж раздела считает ту же очередь своей ручкой: разойдись они, число вело бы в пустой
+      // список.
+      expect(await waitingCount(ctx.operator.auth)).toBe(before - 1);
+
+      const back = await resume(dto.id);
+      expect(back.statusCode, back.body).toBe(200);
+      expect(await listIds(ctx.operator.auth, '&waitingOnMe=true')).toContain(dto.id);
+      expect(await waitingCount(ctx.operator.auth)).toBe(before);
+    });
+
+    it('срочная отложенная не всплывает первой строкой и не входит в фильтр срочных (Р119)', async () => {
+      // Обычная заявка заводится **первой**: список берётся по номеру по возрастанию, и без
+      // правила «срочные вперёд» она стоит выше. Всплывёт срочная — значит правило сработало, и
+      // проверка отличает «отложенную не подняли» от «сортировки нет вовсе».
+      const ordinary = await requestIn('assigned', 'Обычная заявка для сравнения порядка');
+      const urgent = await createRequest(
+        ctx.customer.auth,
+        await freshUnit(),
+        'Срочная, но отложенная',
+        { isUrgent: true, urgencyReason: 'Единственный принтер на площадке' },
+      );
+
+      const frozenRes = await hold(urgent.id, 'Ждём поставку картриджа');
+      expect(frozenRes.statusCode, frozenRes.body).toBe(200);
+      const frozen = frozenRes.json() as ServiceRequestDto;
+      // Признак заморозка не гасит (Р119): заявка не перестала быть срочной оттого, что её
+      // остановили, и после возобновления красная метка должна работать без второго объяснения.
+      expect(frozen.isUrgent).toBe(true);
+      expect(frozen.urgencyReason).toBe('Единственный принтер на площадке');
+
+      const byNum = () => listIds(ctx.operator.auth, '&sortBy=num&sortOrder=asc');
+      const held = await byNum();
+      expect(held).toContain(urgent.id);
+      // Первой строкой списка стоит то, за что берутся сейчас, а отложенная ждёт решения, а не рук.
+      expect(held[0]).not.toBe(urgent.id);
+      expect(held.indexOf(urgent.id)).toBeGreaterThan(held.indexOf(ordinary.id));
+      // Фильтр срочных — та же очередь: показывай он отложенные, оператор начинал бы день со
+      // списка, половина которого не двигается.
+      expect(await listIds(ctx.operator.auth, '&urgent=true')).not.toContain(urgent.id);
+
+      const back = await resume(urgent.id);
+      expect(back.statusCode, back.body).toBe(200);
+      const resumed = await byNum();
+      // Возобновлённая срочная встаёт наверх сама — сортировка на месте, и наверх её не пускала
+      // именно заморозка.
+      expect(resumed.indexOf(urgent.id)).toBeLessThan(resumed.indexOf(ordinary.id));
+      expect(await listIds(ctx.operator.auth, '&urgent=true')).toContain(urgent.id);
+    });
+
+    it('отмена отложенной заявки проходит и чистит всё сразу: заморозку, исполнителя и согласование (Р118)', async () => {
+      const dto = await requestIn('in_work', 'Отмена отложенной со сметой и исполнителем');
+      expect(dto.service?.id).toBe(ctx.serviceCounterpartyId);
+      expect(dto.approval?.revision).toBe(1);
+
+      const frozen = await hold(dto.id, 'Ждём решения заказчика: аппарат, возможно, меняют');
+      expect(frozen.statusCode, frozen.body).toBe(200);
+      expect((frozen.json() as ServiceRequestDto).heldFromStatus).toBe('in_work');
+
+      const cancelled = await inject(
+        'PATCH',
+        `/api/v1/service-requests/${dto.id}/status`,
+        ctx.operator.auth,
+        {
+          status: 'cancelled',
+          reason: 'Аппарат решили менять целиком',
+          version: await version(dto.id),
+        },
+      );
+      // 200, а не 500 (Р118): флаг `hold` в матрице сбросов поднимается на **любом** выходе из
+      // заморозки, и без него отмену отложенной поймал бы `service_requests_hold_check` ошибкой
+      // БД — статус уже `cancelled`, а `held_from_status` ещё стоит.
+      expect(cancelled.statusCode, cancelled.body).toBe(200);
+      const after = (cancelled.json() as { request: ServiceRequestDto }).request;
+      expect(after.status).toBe('cancelled');
+      expect(after.heldFromStatus).toBeNull();
+      expect(after.holdReason).toBe('');
+      // Второй факт той же проверки: флаг заморозки **дополняет** обычный сброс, а не подменяет
+      // его. Отмена отложенной обязана снять исполнителя и снимок согласования ровно так же, как
+      // отмена из любого другого статуса, — иначе у отменённой остались бы и сервис, и согласие со
+      // сметой, которую никто не выполнит.
+      expect(after.service).toBeNull();
+      expect(after.approval).toBeNull();
+
+      // Колонками, а не только DTO: снимок согласования собирается из трёх полей, и `approval`
+      // показал бы `null`, будь пустым хоть одно из них.
+      const row = await ctx.db.execute<{
+        service_counterparty_id: string | null;
+        estimate_approved_by: string | null;
+        estimate_approved_at: Date | null;
+        approved_estimate_revision: number | null;
+        held_from_status: string | null;
+        hold_reason: string;
+      }>(sql`
+        SELECT service_counterparty_id, estimate_approved_by, estimate_approved_at,
+               approved_estimate_revision, held_from_status, hold_reason
+        FROM service_requests WHERE id = ${dto.id}`);
+      expect(row.rows[0]).toEqual({
+        service_counterparty_id: null,
+        estimate_approved_by: null,
+        estimate_approved_at: null,
+        approved_estimate_revision: null,
+        held_from_status: null,
+        hold_reason: '',
+      });
+    });
+  });
+
+  // ── Шаг 21. Планка приёмки и снятие закрывающего документа (Р112) ──
+
+  describe('приёмка требует закрывающий документ', () => {
+    it('без документа приёмка не проходит, и вложение закрывающим не считается', async () => {
+      const dto = await requestIn('done', 'Приёмка требует бумаги');
+      const empty = await acceptWork(dto.id);
+      expect(empty.statusCode, empty.body).toBe(422);
+      expect(empty.json().message).toBe(
+        'Нужен один из документов: акт, счёт или гарантийный талон',
+      );
+
+      // Вложение — «обычная жизнь» заявки, а не документ: фотография принтера ничего не закрывает,
+      // и планка, которую снимает любой приложенный файл, не планка вовсе.
+      const photo = await attach(dto.id, 'attachment', 'foto-printera.pdf');
+      expect(photo.res.statusCode, photo.res.body).toBe(200);
+      const withPhoto = await acceptWork(dto.id);
+      expect(withPhoto.statusCode, withPhoto.body).toBe(422);
+      expect((await card(dto.id)).status).toBe('done');
+    });
+
+    it('любого из трёх документов по отдельности хватает: акт, счёт, гарантийный талон', async () => {
+      // Комплекта планка не требует (ответ заказчика от 19.08.2026): любой из трёх подтверждает,
+      // что работа состоялась. Нужен контроль комплекта — это отчёт, а не запрет на приёмку.
+      for (const kind of ['act', 'invoice', 'warranty_card']) {
+        const dto = await requestIn('done', `Приёмка по одному документу вида «${kind}»`);
+        const doc = await attach(dto.id, kind, `${kind}.pdf`);
+        expect(doc.res.statusCode, doc.res.body).toBe(200);
+
+        const accepted = await acceptWork(dto.id);
+        expect(accepted.statusCode, accepted.body).toBe(200);
+        expect((accepted.json() as ServiceRequestDto).status).toBe('accepted');
+      }
+    }, 60_000);
+
+    it('у принятой заявки единственный акт уже не снять', async () => {
+      const dto = await requestIn('done', 'Снятие акта после приёмки');
+      const act = await attach(dto.id, 'act', 'akt-prinyatoy.pdf');
+      expect(act.res.statusCode, act.res.body).toBe(200);
+      const accepted = await acceptWork(dto.id);
+      expect(accepted.statusCode, accepted.body).toBe(200);
+
+      // Проверки снятия стоят внутри транзакции и читают статус, перечитанный под блокировкой
+      // (Р112). Прежде они решали по строке, прочитанной до транзакции, — то есть по состоянию,
+      // которое к моменту удаления уже могло стать «Принята».
+      const detached = await inject(
+        'DELETE',
+        `/api/v1/service-requests/${dto.id}/files/${act.fileId}`,
+        ctx.service.auth,
+      );
+      expect(detached.statusCode, detached.body).toBe(403);
+      expect((await card(dto.id)).files.map((f) => f.kind)).toEqual(['act']);
+    });
+
+    it('последний закрывающий документ не снимает и администратор, а предпоследний — снимает', async () => {
+      const dto = await requestIn('done', 'Замена акта у принятой заявки');
+      const act = await attach(dto.id, 'act', 'akt-oshibochnyy.pdf');
+      expect(act.res.statusCode, act.res.body).toBe(200);
+      expect((await acceptWork(dto.id)).statusCode).toBe(200);
+
+      /*
+       * `files.manageAny` снимает чужие файлы и работает в закрытой заявке — но не тогда, когда
+       * этот файл единственный оставшийся закрывающий (ADR 0125, ответ заказчика от 19.08.2026).
+       * Иначе планка приёмки держалась бы только в момент нажатия кнопки: принять без бумаги
+       * нельзя, а снять её через минуту — можно, и принятая заявка осталась бы без подтверждения
+       * работы, не отбираясь ни очередью, ни отчётом.
+       */
+      const last = await inject(
+        'DELETE',
+        `/api/v1/service-requests/${dto.id}/files/${act.fileId}`,
+        ctx.admin.auth,
+      );
+      expect(last.statusCode, last.body).toBe(422);
+      expect(last.json().message).toContain('единственный документ, по которому заявку приняли');
+
+      // Ошибочный акт меняется в обратном порядке: сначала подшить верный, потом снять неверный.
+      const fixed = await attach(
+        dto.id,
+        'act',
+        'akt-vernyy.pdf',
+        ctx.operator.auth,
+        ctx.operator.id,
+      );
+      expect(fixed.res.statusCode, fixed.res.body).toBe(200);
+
+      const detached = await inject(
+        'DELETE',
+        `/api/v1/service-requests/${dto.id}/files/${act.fileId}`,
+        ctx.admin.auth,
+      );
+      expect(detached.statusCode, detached.body).toBe(200);
+      const after = await card(dto.id);
+      expect(after.status).toBe('accepted');
+      expect(after.files.map((f) => f.filename)).toEqual(['akt-vernyy.pdf']);
+    });
+
+    /**
+     * Очередь на строке заявки (Р112) — обеими сторонами.
+     *
+     * Стенд один на оба порядка: строку заявки держит **третье** соединение, а обе ручки уходят в
+     * приложение при уже занятой строке и выстраиваются за ней. Так проверяется сериализация, а не
+     * удача планировщика: кто из двух запросов доберётся до базы первым, иначе решал бы цикл
+     * событий, и тест был бы зелёным при любом поведении сервера.
+     *
+     * Порядок ожидания задаёт сам PostgreSQL: освободившуюся строку он отдаёт ожидающим в порядке
+     * очереди, поэтому первым проходит тот, кто встал раньше, а второй решает уже по его
+     * результату — ради этого `lockRequest` и перечитывает строку под блокировкой.
+     */
+    async function underRowLock(
+      requestId: string,
+      first: () => Promise<Injected>,
+      second: () => Promise<Injected>,
+    ): Promise<[Injected, Injected]> {
+      const blocker = new pg.Client({ connectionString: DB_URL });
+      await blocker.connect();
+      const settled = { first: false, second: false };
+      try {
+        await blocker.query('BEGIN');
+        await blocker.query('SELECT id FROM service_requests WHERE id = $1 FOR UPDATE', [
+          requestId,
+        ]);
+
+        const firstP = first().then((res) => {
+          settled.first = true;
+          return res;
+        });
+        // Пауза задаёт порядок очереди: запрос, ушедший раньше, раньше и встаёт на блокировку.
+        await pause(250);
+        const secondP = second().then((res) => {
+          settled.second = true;
+          return res;
+        });
+        await pause(250);
+
+        // Обе ручки стоят на занятой строке: ответь любая сейчас — значит, она решает по
+        // состоянию, прочитанному до транзакции, и «сериализованы» осталось бы словом в
+        // комментарии.
+        expect(settled.first, 'первый запрос ждёт освобождения строки заявки').toBe(false);
+        expect(settled.second, 'второй запрос ждёт освобождения строки заявки').toBe(false);
+
+        await blocker.query('COMMIT');
+        return await Promise.all([firstP, secondP]);
+      } finally {
+        await blocker.query('ROLLBACK').catch(() => undefined);
+        await blocker.end();
+      }
+    }
+
+    it('приёмка успела первой — снятие документа видит «Принята» и отказывает (Р112)', async () => {
+      const dto = await requestIn('done', 'Гонка: приёмка впереди снятия');
+      const act = await attach(dto.id, 'act', 'akt-gonka-priyomka.pdf');
+      expect(act.res.statusCode, act.res.body).toBe(200);
+      const at = await version(dto.id);
+
+      const [accepted, detached] = await underRowLock(
+        dto.id,
+        () =>
+          inject('PATCH', `/api/v1/service-requests/${dto.id}/accept`, ctx.operator.auth, {
+            version: at,
+          }),
+        () =>
+          inject(
+            'DELETE',
+            `/api/v1/service-requests/${dto.id}/files/${act.fileId}`,
+            ctx.service.auth,
+          ),
+      );
+      expect(accepted.statusCode, accepted.body).toBe(200);
+      // Снятие решает по статусу, перечитанному под блокировкой, а не по строке из
+      // `requireEditable`: та говорила «Ожидает приёмки», и по ней акт сняли бы у уже принятой
+      // заявки — та осталась бы без единственной бумаги.
+      expect(detached.statusCode, detached.body).toBe(403);
+
+      const after = await card(dto.id);
+      expect(after.status).toBe('accepted');
+      expect(after.files.map((f) => f.kind)).toEqual(['act']);
+    }, 30_000);
+
+    it('снятие успело первым — приёмка видит заявку без бумаги и отказывает (Р112)', async () => {
+      const dto = await requestIn('done', 'Гонка: снятие впереди приёмки');
+      const act = await attach(dto.id, 'act', 'akt-gonka-snyatie.pdf');
+      expect(act.res.statusCode, act.res.body).toBe(200);
+      const at = await version(dto.id);
+
+      const [detached, accepted] = await underRowLock(
+        dto.id,
+        () =>
+          inject(
+            'DELETE',
+            `/api/v1/service-requests/${dto.id}/files/${act.fileId}`,
+            ctx.service.auth,
+          ),
+        () =>
+          inject('PATCH', `/api/v1/service-requests/${dto.id}/accept`, ctx.operator.auth, {
+            version: at,
+          }),
+      );
+      // Заявка ещё не закрыта, акт подшивал сам исполнитель — снятие законно.
+      expect(detached.statusCode, detached.body).toBe(200);
+      // А приёмка спрашивает документ **внутри** транзакции и после блокировки: спроси она по DTO,
+      // прочитанному до неё, — заявка стала бы принятой без единого закрывающего документа, то
+      // есть ровно то, что запрещает Р112.
+      expect(accepted.statusCode, accepted.body).toBe(422);
+      expect(accepted.json().message).toBe(
+        'Нужен один из документов: акт, счёт или гарантийный талон',
+      );
+
+      const after = await card(dto.id);
+      expect(after.status).toBe('done');
+      expect(after.files).toEqual([]);
+    }, 30_000);
   });
 });

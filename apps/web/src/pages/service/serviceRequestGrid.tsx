@@ -1,4 +1,4 @@
-import { Button, Dropdown, Space, Tag, Tooltip, Typography, type TableColumnsType } from 'antd';
+import { Button, Dropdown, Space, Tooltip, Typography, type TableColumnsType } from 'antd';
 import { EyeOutlined, MoreOutlined } from '@ant-design/icons';
 import {
   actsForCounterparty,
@@ -7,27 +7,27 @@ import {
   type ServiceRequestDto,
 } from '@technic/contracts';
 import {
-  isServiceRequestOverdue,
   ServiceStatusTag,
-  serviceTodoLabel,
+  serviceStatusLine,
   statusAgeLabel,
   UrgentTag,
-  WaitingOnTag,
 } from '@entities/service-request';
 import { actionsColumn, type ActionSheetItem, type CardConfig, ExpandableCell } from '@shared/ui';
 import { DocumentsCell, EquipmentCell } from './serviceRequestCells';
 import { textColumn } from '@shared/ui';
 import { PhoneLink } from '../../components/PhoneField';
-import { formatDateOnly } from '../../utils/date';
 import { formatMoney } from '../../utils/format';
 
 /**
  * Список заявок на обслуживание: ядро колонок одно, а вопросы у ролей разные (§9.2).
  *
- * Заказчик спрашивает «что с моим принтером»: неисправность, срок, во сколько встало. Оператор —
- * «что требует решения»: кто исполнитель, ждут ли его, на какую сумму и подшиты ли бумаги. Сервис —
- * «что мне делать»: где стоит техника, кому звонить и какой за ним шаг. Показать всем всё нельзя:
- * колонок набирается полтора десятка, и список перестаёт читаться на любом экране.
+ * Заказчик спрашивает «что с моим принтером»: неисправность и во сколько это встало. Оператор —
+ * «что требует решения»: кто исполнитель, на какую сумму и подшиты ли бумаги. Сервис — «что мне
+ * делать»: где стоит техника и кому звонить. Показать всем всё нельзя: колонок набирается полтора
+ * десятка, и список перестаёт читаться на любом экране.
+ *
+ * Вопрос «кто тянет и что требуется от меня» набора не имеет вовсе: на него отвечает общий столбец
+ * состояния (Р100) — он в ядре и подписан для каждой стороны по-своему.
  *
  * Набор выбирается **правами**, а не именем роли: оператор оргтехники — это надстройка над штабом
  * или отделом (ADR 0086), а сервис — тип контрагента (ADR 0038), и списком ролей их не описать.
@@ -64,8 +64,19 @@ export interface ServiceGridOptions {
    * единицы без срока, а справочник виден не всякому — сервису он закрыт вовсе (Р7).
    */
   warrantyOf: (equipmentId: string) => string | null | undefined;
-  /** Ждут ли смотрящего: считает `isWaitingOn` по правам, здесь — только показ. */
-  isMine: (request: ServiceRequestDto) => boolean;
+  /**
+   * Чью очередь считать своей. Учётка целиком, а не прежний признак `isMine`: подпись состояния и
+   * её лицо считаются одной функцией (`serviceStatusLine`, Р101), и второй вход для того же факта
+   * рано или поздно разошёлся бы с текстом — заметная строка «Ждёт оператора» у того, кого и ждут.
+   */
+  user: AuthUser | null;
+  /**
+   * Главный шаг статуса — то самое действие, к которому зовёт подпись «Вам: …» (Р117). Строит его
+   * коридор переходов (признак `primary` у пункта меню), а не вторая карта «статус → окно»: та
+   * разошлась бы с коридором на первом же новом статусе. Вернуло `null` либо не передано вовсе —
+   * подпись остаётся текстом: пункта в меню нет, и звать некуда.
+   */
+  primaryAction?: (request: ServiceRequestDto) => (() => void) | null;
   actions: (request: ServiceRequestDto) => ActionSheetItem[];
   onOpen: (request: ServiceRequestDto) => void;
 }
@@ -106,15 +117,45 @@ export function serviceRequestColumns(
         </div>
       ),
     },
+    // Один столбец на все три вопроса — «где заявка», «кто тянет», «что требуется от меня»
+    // (Р100). Прежние соседние «Ждёт» и «От вас требуется» говорили об одном и том же, а
+    // читались как три разных факта.
     {
       key: 'status',
       title: 'Статус',
       dataIndex: 'status',
-      width: 190,
+      width: 230,
       sorter: true,
-      render: (_v: unknown, r: ServiceRequestDto) => (
-        <ServiceStatusTag status={r.status} statusChangedAt={r.statusChangedAt} />
-      ),
+      render: (_v: unknown, r: ServiceRequestDto) => {
+        const line = serviceStatusLine(r, opts.user);
+        const act = line?.mine ? (opts.primaryAction?.(r) ?? null) : null;
+        return (
+          <div style={{ lineHeight: 1.35 }}>
+            <ServiceStatusTag status={r.status} statusChangedAt={r.statusChangedAt} />
+            {line && (
+              <div style={{ fontSize: 12 }}>
+                {act ? (
+                  <Typography.Link
+                    // Мишень — сам текст, а не ячейка (Р117): строку списка задевают мышью чаще,
+                    // чем нажимают, а клик по ней открывает карточку — всплыви он, окно действия
+                    // открылось бы под карточкой.
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      act();
+                    }}
+                  >
+                    {line.text}
+                  </Typography.Link>
+                ) : line.mine ? (
+                  line.text
+                ) : (
+                  <Typography.Text type="secondary">{line.text}</Typography.Text>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      },
     },
     // Поиск живёт лупой этого столбца: сервер ищет и по модели, и по обоим номерам, и по номеру
     // самой заявки («СО-14») — то есть ровно по тому, чем заявку и опознают.
@@ -160,22 +201,6 @@ export function serviceRequestColumns(
               <ExpandableCell>{r.description}</ExpandableCell>
             ),
           },
-          {
-            key: 'dueDate',
-            title: 'Срок',
-            dataIndex: 'dueDate',
-            width: 120,
-            sorter: true,
-            render: (_v: unknown, r: ServiceRequestDto) =>
-              r.dueDate ? (
-                <Space direction="vertical" size={0}>
-                  <span>{formatDateOnly(r.dueDate)}</span>
-                  {isServiceRequestOverdue(r) && <Tag color="red">просрочена</Tag>}
-                </Space>
-              ) : (
-                <Typography.Text type="secondary">—</Typography.Text>
-              ),
-          },
         ]
       : []),
     ...(view.operator
@@ -188,15 +213,6 @@ export function serviceRequestColumns(
             sorter: true,
             render: (_v: unknown, r: ServiceRequestDto) =>
               r.service?.name ?? <Typography.Text type="secondary">не назначен</Typography.Text>,
-          },
-          {
-            key: 'waitingOn',
-            title: 'Ждёт',
-            dataIndex: 'waitingOn',
-            width: 130,
-            render: (_v: unknown, r: ServiceRequestDto) => (
-              <WaitingOnTag waiting={r.waitingOn} mine={opts.isMine(r)} />
-            ),
           },
         ]
       : []),
@@ -249,16 +265,6 @@ export function serviceRequestColumns(
                 {r.responsiblePhone && <PhoneLink phone={r.responsiblePhone} />}
               </div>
             ),
-          },
-          {
-            key: 'todo',
-            title: 'От вас требуется',
-            dataIndex: 'status',
-            width: 190,
-            render: (_v: unknown, r: ServiceRequestDto) =>
-              serviceTodoLabel(r.status) || (
-                <Typography.Text type="secondary">ход не за вами</Typography.Text>
-              ),
           },
         ]
       : []),
@@ -333,9 +339,10 @@ export function serviceRequestCard(opts: ServiceGridOptions): CardConfig<Service
         return value === '—' ? null : `${value} ${hint}`;
       },
       (r) => `В статусе: ${statusAgeLabel(r.statusChangedAt)}`,
-      // Подсказок на телефоне нет, поэтому просрочка и «ждут вас» выносятся строками.
-      (r) => (isServiceRequestOverdue(r) ? `Просрочена: срок ${formatDateOnly(r.dueDate!)}` : null),
-      (r) => (opts.isMine(r) ? 'Ждёт вашего решения' : null),
+      // Подсказок на телефоне нет, поэтому состояние выносится строкой — той же, что во второй
+      // строке столбца на десктопе. Текстом, а не ссылкой (Р117): тап по карточке открывает
+      // карточку, и второй смысл у того же жеста спорил бы с первым — действия здесь в шите.
+      (r) => serviceStatusLine(r, opts.user)?.text ?? null,
     ],
     onOpen: opts.onOpen,
     actions: (r) => [

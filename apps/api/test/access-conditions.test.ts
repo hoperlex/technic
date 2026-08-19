@@ -456,6 +456,16 @@ const FIXTURES: Partial<Record<ManifestRouteKey, RouteFixture>> = {
     selfRefusal: CORRIDOR_REFUSAL,
   },
   'POST /api/v1/service-requests/:id/files': { payload: { fileIds: [RECORD_ID], kind: 'act' } },
+  // Заморозка и возврат — шаг ведущей стороны (ADR 0125): право то же, что у прочих ходов
+  // оператора, а сервисной компании обе ручки отказывают своим сообщением.
+  'PATCH /api/v1/service-requests/:id/hold': {
+    payload: { reason: 'ждём запчасть с завода', version: 1 },
+    selfRefusal: CORRIDOR_REFUSAL,
+  },
+  'PATCH /api/v1/service-requests/:id/resume': {
+    payload: { version: 1 },
+    selfRefusal: 'это шаг того, кто её ведёт',
+  },
   'PATCH /api/v1/service-requests/:id/it-approval': { payload: { approved: true, version: 1 } },
   'POST /api/v1/service-requests/:id/notify': { payload: { idempotencyKey: RECORD_ID } },
   'PATCH /api/v1/service-requests/:id/rework': {

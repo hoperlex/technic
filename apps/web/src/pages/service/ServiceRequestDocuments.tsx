@@ -1,6 +1,4 @@
-import { useState } from 'react';
-import { Alert, App, Button, Select, Space, Typography, Upload } from 'antd';
-import { UploadOutlined } from '@ant-design/icons';
+import { Alert, App, Space, Typography } from 'antd';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   isServiceRequestClosed,
@@ -11,7 +9,9 @@ import {
   type ServiceRequestStatus,
 } from '@technic/contracts';
 import {
-  missingClosingDocuments,
+  isAwaitingDocuments,
+  SERVICE_CLOSING_DOCUMENT_HINT,
+  ServiceDocumentUpload,
   serviceRequestKeys,
   serviceRequestsApi,
 } from '@entities/service-request';
@@ -48,7 +48,7 @@ function attachableKinds(status: ServiceRequestStatus): ServiceFileKind[] {
 
 /**
  * Документы заявки по видам (§9.4). Общей кучей их держать нельзя: вопрос к этой вкладке — не
- * «что приложено», а «есть ли акт», и в списке из восьми файлов ответ на него теряется.
+ * «что приложено», а «есть ли чем закрыть», и в списке из восьми файлов ответ на него теряется.
  *
  * Чего не хватает — сказано прямо: «закрыто, но акта нет» — рабочее состояние, из-за которого и
  * заведена очередь «Ожидаются документы».
@@ -57,9 +57,14 @@ export function ServiceRequestDocuments({ request }: { request: ServiceRequestDt
   const { message } = App.useApp();
   const { can } = useAuth();
   const qc = useQueryClient();
-  const kinds = attachableKinds(request.status);
-  const [kind, setKind] = useState<ServiceFileKind>(kinds[0] ?? 'attachment');
-  const [uploading, setUploading] = useState(false);
+  /*
+   * Статус — «эффективный» (Р110): у отложенной заявки виды документов считаются по тому статусу,
+   * из которого её отложили. Заморозка останавливает ход заявки, а не жизнь вокруг неё — вложение
+   * к отложенной «Диагностике» то же самое, — и тем же правилом решает сервер
+   * (`assertFileKindAllowed`). Считай портал по `on_hold`, он предлагал бы вид, на котором придёт
+   * отказ, а нужный не предложил бы вовсе.
+   */
+  const kinds = attachableKinds(request.heldFromStatus ?? request.status);
 
   // Снятие документа после приёмки — только у распорядителя файлов: заявка закрыта, и подшитая
   // бумага из неё не исчезает по решению стороны (Р29).
@@ -74,19 +79,6 @@ export function ServiceRequestDocuments({ request }: { request: ServiceRequestDt
     void qc.invalidateQueries({ queryKey: officeEquipmentKeys.root });
   };
 
-  const attach = useMutation({
-    mutationFn: async (file: File) => {
-      const uploaded = await filesApi.upload(file);
-      return serviceRequestsApi.attachFiles(request.id, [uploaded.id], kind);
-    },
-    onSuccess: () => {
-      message.success('Документ подшит');
-      refresh();
-    },
-    onError: (e) => message.error(errorMessage(e)),
-    onSettled: () => setUploading(false),
-  });
-
   const detach = useMutation({
     mutationFn: (fileId: string) => serviceRequestsApi.detachFile(request.id, fileId),
     onSuccess: () => {
@@ -96,16 +88,16 @@ export function ServiceRequestDocuments({ request }: { request: ServiceRequestDt
     onError: (e) => message.error(errorMessage(e)),
   });
 
-  const missing = missingClosingDocuments(request);
-
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
-      {missing.length > 0 && (
+      {/* Планка одна и та же везде (Р112): перечисление недостающих видов читалось бы как
+          «нужны все три», а приёмку снимает любой один. */}
+      {isAwaitingDocuments(request) && (
         <Alert
           type="warning"
           showIcon
-          message={`Не хватает: ${missing.map((k) => serviceFileKindLabels[k].toLowerCase()).join(', ')}`}
-          description="Заявка стоит в очереди «Ожидаются документы», пока их не подошьют."
+          message={SERVICE_CLOSING_DOCUMENT_HINT}
+          description="Пока нет ни одного, заявка стоит в очереди «Ожидаются документы»: принять работу без закрывающего документа сервер не даст."
         />
       )}
 
@@ -129,28 +121,14 @@ export function ServiceRequestDocuments({ request }: { request: ServiceRequestDt
       )}
 
       {canAttach && (
-        <Space wrap>
-          {/* Вид выбирается до загрузки: он же определяет, кто и когда сможет документ снять. */}
-          <Select
-            style={{ width: 220 }}
-            value={kind}
-            options={kinds.map((value) => ({ value, label: serviceFileKindLabels[value] }))}
-            onChange={setKind}
-          />
-          <Upload
-            multiple
-            showUploadList={false}
-            beforeUpload={(file) => {
-              setUploading(true);
-              attach.mutate(file);
-              return false;
-            }}
-          >
-            <Button icon={<UploadOutlined />} loading={uploading}>
-              Подшить документ
-            </Button>
-          </Upload>
-        </Space>
+        <ServiceDocumentUpload
+          requestId={request.id}
+          kinds={kinds}
+          upload={filesApi.upload}
+          // Свежая заявка из ответа вкладке не нужна — её перерисует список: карточка живёт
+          // запросом, и гасить кэш здесь честнее, чем держать второй источник той же заявки.
+          onUploaded={refresh}
+        />
       )}
     </Space>
   );

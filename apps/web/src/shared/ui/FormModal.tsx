@@ -20,6 +20,12 @@ interface Props {
    */
   okDanger?: boolean;
   /**
+   * Основное действие запрещено самим состоянием записи, а не заполнением полей: приёмка работ без
+   * закрывающего документа (Р112) — сервер откажет тем же условием. Причина в таком случае стоит в
+   * теле окна: неактивная кнопка без объяснения читается как поломка.
+   */
+  okDisabled?: boolean;
+  /**
    * Необязательное действие в подвале, слева от «Отмена»: удаление записи насовсем там, где
    * строки действий нет вовсе (сетка прайса, ADR 0060). Не «ещё одна кнопка ОК» — то, что уводит
    * от сохранения, и потому стоит по другую сторону от основного действия.
@@ -47,6 +53,7 @@ export function FormModal({
   okText = 'Сохранить',
   cancelText = 'Отмена',
   okDanger,
+  okDisabled,
   footerExtra,
   children,
 }: Props) {
@@ -83,6 +90,7 @@ export function FormModal({
               block
               type="primary"
               danger={okDanger}
+              disabled={okDisabled}
               loading={confirmLoading}
               onClick={onSubmit}
             >
@@ -103,7 +111,7 @@ export function FormModal({
       onCancel={onCancel}
       onOk={onSubmit}
       okText={okText}
-      okButtonProps={{ danger: okDanger }}
+      okButtonProps={{ danger: okDanger, disabled: okDisabled }}
       cancelText={cancelText}
       confirmLoading={confirmLoading}
       width={width}

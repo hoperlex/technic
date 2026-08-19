@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react';
-import { App, Checkbox, DatePicker, Form, Input, Space } from 'antd';
-import dayjs, { type Dayjs } from 'dayjs';
+import { App, Checkbox, Form, Input } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   isWarrantyActive,
@@ -24,12 +23,9 @@ import { useAuth } from '../../auth/AuthContext';
 import { useObjectScope } from '../../hooks/useObjectScope';
 import { errorMessage } from '../../utils/format';
 
-const DATE = 'YYYY-MM-DD';
-
 interface Values {
   officeEquipmentId: string;
   description: string;
-  dueDate?: Dayjs;
   /** Заказчик ключом `CostTargetKey` (Р2): площадка выбранной единицы либо отдел. */
   customer?: string;
   responsibleName: string;
@@ -55,8 +51,7 @@ export interface WarrantyClaimPreset {
 }
 
 /**
- * Форма заявки на обслуживание (§9.3): что сломалось, у какой единицы, к какому сроку и с кем
- * связываться.
+ * Форма заявки на обслуживание (§9.3): что сломалось, у какой единицы и с кем связываться.
  *
  * Единица выбирается первой, и под полем сразу видно состояние её гарантии: пока это неизвестно,
  * заказчик не может ответить на главный вопрос — платный это ремонт или гарантийный. Обращение
@@ -142,7 +137,6 @@ export function ServiceRequestForm({
       form.setFieldsValue({
         officeEquipmentId: request.equipment.id,
         description: request.description,
-        dueDate: request.dueDate ? dayjs(request.dueDate) : undefined,
         // Заказчик правки — ключом от подбора (К7): он собран по снимкам самой заявки, а не по
         // действующему справочнику, и держится в списке, даже выпав из состава поля.
         customer: savedKey ?? undefined,
@@ -208,7 +202,6 @@ export function ServiceRequestForm({
       const isUrgent = !!values.isUrgent;
       const common = {
         description: values.description.trim(),
-        dueDate: values.dueDate ? values.dueDate.format(DATE) : null,
         // Заказчик уходит всегда и осознанно (Р12а): отдел — идентификатором, площадка — явным
         // `null`. Пропуск сервер прочёл бы подсказкой и подставил отдел за человека.
         customerDepartmentId: customer.customerPairOf(values.customer).departmentId,
@@ -323,27 +316,20 @@ export function ServiceRequestForm({
           <Input.TextArea rows={3} maxLength={4000} showCount placeholder="Что случилось" />
         </Form.Item>
 
-        <Space size={12} wrap align="start" style={{ width: '100%' }}>
-          <Form.Item name="dueDate" label="Желаемый срок">
-            <DatePicker
-              format="DD.MM.YYYY"
-              style={{ width: 200 }}
-              // Срок в прошлом смысла не имеет: заявку заводят на будущее.
-              disabledDate={(d) => d.isBefore(dayjs().startOf('day'))}
-            />
-          </Form.Item>
-          <Form.Item
-            name="customer"
-            label="Заказчик"
-            // Пустого состояния у поля нет (Р12а): «от площадки» — такой же выбор, как отдел, а не
-            // незаполненное поле, и уходит он явным `null`.
-            rules={[{ required: true, message: 'Выберите заказчика заявки' }]}
-          >
-            {/* Площадку поле пересобирает само на смене единицы (Р11а, К10): значение — про то,
-                где аппарат стоит **сейчас**, и правило это живёт у поля, а не у формы. */}
-            <ServiceRequestCustomerField customer={customer} open={open} />
-          </Form.Item>
-        </Space>
+        {/* «Желаемый срок» из заявки убран целиком (Р115): срок, который ничего не запирает,
+            через месяц стоит просроченным у половины заявок. Давность читается возрастом в
+            статусе — он и сортируется, и точнее отвечает на вопрос «кто тянет». */}
+        <Form.Item
+          name="customer"
+          label="Заказчик"
+          // Пустого состояния у поля нет (Р12а): «от площадки» — такой же выбор, как отдел, а не
+          // незаполненное поле, и уходит он явным `null`.
+          rules={[{ required: true, message: 'Выберите заказчика заявки' }]}
+        >
+          {/* Площадку поле пересобирает само на смене единицы (Р11а, К10): значение — про то,
+              где аппарат стоит **сейчас**, и правило это живёт у поля, а не у формы. */}
+          <ServiceRequestCustomerField customer={customer} open={open} />
+        </Form.Item>
 
         {/* Заявитель, а не «ответственный»: это тот, к кому мастер придёт и кому позвонят, если
             аппарата не окажется на месте. Оба поля обязательны и на сервере тоже (Р49). */}

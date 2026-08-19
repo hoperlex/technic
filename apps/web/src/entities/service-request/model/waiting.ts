@@ -1,15 +1,18 @@
 import {
+  type AccessSubject,
+  hasServiceClosingDocument,
   isServiceRequestClosed,
+  isWaitingOn,
   type ServiceRequestDto,
-  type ServiceRequestStatus,
-  warrantyToday,
+  serviceStepLabels,
+  serviceWaitingOnLabels,
 } from '@technic/contracts';
 
 /**
- * Возраст ожидания и просрочка — то, чем список заявок на обслуживание отличается от соседних
- * модулей (Р36). Заявка здесь не «висит вообще», а висит **в текущем статусе**: три стороны
- * передают её друг другу, и вопрос «кто тянет» — это вопрос «сколько дней заявка стоит там, где
- * стоит», а не «сколько прошло с заведения».
+ * Возраст ожидания и подпись состояния — то, чем список заявок на обслуживание отличается от
+ * соседних модулей (Р36). Заявка здесь не «висит вообще», а висит **в текущем статусе**: три
+ * стороны передают её друг другу, и вопрос «кто тянет» — это вопрос «сколько дней заявка стоит
+ * там, где стоит», а не «сколько прошло с заведения».
  *
  * Считается по `statusChangedAt`, который сервер обновляет и при переназначении исполнителя без
  * смены статуса: новый сервис не наследует чужое ожидание.
@@ -44,38 +47,53 @@ export function statusAgeLabel(statusChangedAt: string, now: Date = new Date()):
   return `${days} ${form}`;
 }
 
-/**
- * Просрочена ли заявка: желаемый срок прошёл, а работы не закрыты. Закрытая (принятая либо
- * отменённая) просроченной не считается — срок к ней больше не относится, и красная строка в
- * списке говорила бы о работе, которой уже нет.
- *
- * «Сегодня» берётся по Москве той же функцией, что и подсветка гарантий: у пользователя из
- * другого региона своя граница суток, и просрочка разошлась бы с ответом сервера.
- */
-export function isServiceRequestOverdue(
-  request: Pick<ServiceRequestDto, 'dueDate' | 'status'>,
-  today: string = warrantyToday(),
-): boolean {
-  if (!request.dueDate || isServiceRequestClosed(request.status)) return false;
-  return request.dueDate < today;
+/** Вторая строка столбца состояния: что написать и чьим это выглядит — своим или чужим. */
+export interface ServiceStatusLine {
+  text: string;
+  /** Ход за смотрящим: строка заметная и, где есть куда вести, кликабельная (Р117). */
+  mine: boolean;
 }
 
 /**
- * Что сейчас требуется от исполнителя — короткой строкой для его набора колонок (§9.2).
+ * Подпись состояния заявки — вторая строка объединённого столбца «Статус» (Р100, §4 плана).
  *
- * Своя подпись, а не статус второй раз: сервис открывает список вопросом «что мне делать», и
- * «Диагностика» на этот вопрос не отвечает. Пусто — ход не за ним: заявка ждёт решения
- * оператора либо закрыта.
+ * Одна функция на три прежних вопроса («где заявка», «кого ждут», «что требуется от меня»):
+ * лицо здесь меняет подписи только префикс, а сам шаг берётся из `serviceStepLabels` — единого
+ * словаря контрактов (Р101). Двумя словарями это и разъезжалось: прежний `serviceTodoLabel` знал
+ * три статуса из девяти и про заморозку не узнал бы вовсе.
+ *
+ * Учётка приходит параметром, а не берётся из портала: слой сущностей не знает ни `useAuth`, ни
+ * правил доступа — сторону считает `isWaitingOn` контрактов, одинаково на портале и на сервере.
+ *
+ * `null` — в столбце прочерк: у принятой и отменённой заявки хода нет и ждать в них нечего.
  */
-export function serviceTodoLabel(status: ServiceRequestStatus): string {
-  switch (status) {
-    case 'assigned':
-      return 'Принять в работу';
-    case 'diagnostics':
-      return 'Собрать и предъявить смету';
-    case 'in_work':
-      return 'Выполнить и закрыть работы';
-    default:
-      return '';
+export function serviceStatusLine(
+  request: Pick<ServiceRequestDto, 'status' | 'waitingOn' | 'holdReason' | 'files'>,
+  subject: AccessSubject | null | undefined,
+): ServiceStatusLine | null {
+  if (isServiceRequestClosed(request.status)) return null;
+
+  // Заморозку не ждёт никто (Р111): подпись у неё одна на всех и объясняет остановку причиной —
+  // «Отложена» без неё сообщала бы факт, не отвечая, чего ждать и сколько (Р107).
+  if (request.status === 'on_hold') {
+    return {
+      text: request.holdReason ? `Отложена: ${request.holdReason}` : 'Отложена',
+      mine: false,
+    };
   }
+
+  const mine = isWaitingOn(subject, request.waitingOn);
+
+  // Предъявленная работа без единой закрывающей бумаги — это и есть очередь «Ожидаются
+  // документы», видимая прямо в столбце (Р112, Р114): принять такую заявку нельзя, и звать
+  // «принять работу» значило бы звать в отказ сервера.
+  if (request.status === 'done' && !hasServiceClosingDocument(request)) {
+    return mine
+      ? { text: 'Вам: нужен закрывающий документ', mine: true }
+      : { text: 'Ждёт документов', mine: false };
+  }
+
+  return mine
+    ? { text: `Вам: ${serviceStepLabels[request.status]}`, mine: true }
+    : { text: serviceWaitingOnLabels[request.waitingOn], mine: false };
 }

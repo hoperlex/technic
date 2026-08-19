@@ -1,16 +1,24 @@
 import { describe, expect, it } from 'vitest';
-import { fireEvent, screen } from '@testing-library/react';
-import type { AuthUser, ServiceRequestDto, ServiceRequestStatus } from '@technic/contracts';
+import { fireEvent, screen, waitFor } from '@testing-library/react';
+import type { AuthUser, ServiceRequestDto } from '@technic/contracts';
 import { json, mockHttp, type HttpMock, type RouteMap } from './http';
 import { renderWithUser } from './render';
-import { authUser } from './factories/auth';
 import { emptyList, list } from './factories/common';
+import {
+  heldServiceRequest,
+  serviceCustomer,
+  serviceExecutor,
+  serviceItApprover,
+  serviceOperator,
+  serviceRequest,
+  serviceRequestFile,
+} from './factories/service';
 import { objectDto } from './factories/waste';
 import { RequestsTab } from '../src/pages/service/RequestsTab';
 
 /**
- * Список заявок на обслуживание оргтехники (ADR 0085): ролевые наборы колонок и действия,
- * построенные из коридора переходов.
+ * Список заявок на обслуживание оргтехники (ADR 0085): ролевые наборы колонок, объединённый
+ * столбец состояния и действия, построенные из коридора переходов.
  *
  * Проверяется именно связка «субъект → коридор → кнопка». Ошибка здесь тестом не падает: у
  * оператора появляется действие исполнителя (кнопка, ведущая в 403), а у исполнителя пропадает
@@ -19,71 +27,11 @@ import { RequestsTab } from '../src/pages/service/RequestsTab';
  * тип контрагента (ADR 0038).
  */
 
-function serviceRequest(overrides: Partial<ServiceRequestDto> = {}): ServiceRequestDto {
-  const status: ServiceRequestStatus = overrides.status ?? 'new';
-  return {
-    id: 'sr-1',
-    num: 14,
-    displayNumber: 'СО-14',
-    status,
-    statusChangedAt: '2026-08-05T09:00:00.000Z',
-    waitingOn: 'operator',
-    equipment: {
-      id: 'oe-1',
-      name: 'Kyocera M3145',
-      serialNumber: 'SN-1',
-      inventoryNumber: '0012345',
-      typeName: 'МФУ',
-      location: 'Корпус 3, каб. 214',
-    },
-    object: { id: 'obj-1', code: 'ОБ-1', name: 'ЖК Северный' },
-    customerDepartment: null,
-    equipmentDepartment: null,
-    description: 'Не захватывает бумагу',
-    dueDate: '2026-08-12',
-    responsibleName: 'Иванов И. И.',
-    responsiblePhone: '9000000000',
-    isUrgent: false,
-    urgencyReason: '',
-    service: null,
-    itApproval: null,
-    warrantyClaim: null,
-    estimateRevision: 0,
-    estimateSubmittedAt: null,
-    estimatedTotalAmount: null,
-    approval: null,
-    items: [],
-    completion: null,
-    acceptedByName: '',
-    acceptedAt: null,
-    comment: '',
-    serviceComment: '',
-    files: [],
-    createdByName: 'Штабов С. И.',
-    createdAt: '2026-08-05T09:00:00.000Z',
-    updatedAt: '2026-08-05T09:00:00.000Z',
-    deletedAt: null,
-    version: 3,
-    ...overrides,
-  };
-}
-
-/** Оператор оргтехники: штаб своего объекта плюс надстройка — она и даёт решения по заявкам. */
-const OPERATOR: AuthUser = authUser({
-  role: 'shtab',
-  constructionObjectIds: ['obj-1'],
-  addons: ['office_equipment_operator'],
-});
-
-/** Согласующий от ИТ (Р51): та же базовая роль, но своя надстройка — она даёт визу. */
-const IT_APPROVER: AuthUser = authUser({
-  role: 'shtab',
-  constructionObjectIds: ['obj-1'],
-  addons: ['office_equipment_it_approver'],
-});
-
-/** Исполнитель: роль «оператор» плюс контрагент типа `service` — второго коридора без него нет. */
-const EXECUTOR: AuthUser = authUser({ role: 'operator', counterpartyType: 'service' });
+const OPERATOR: AuthUser = serviceOperator();
+const IT_APPROVER: AuthUser = serviceItApprover();
+const EXECUTOR: AuthUser = serviceExecutor();
+/** Заказчик: тот же штаб, но без надстройки — шага в цикле у него нет вовсе (Р102). */
+const CUSTOMER: AuthUser = serviceCustomer();
 
 function renderTab(user: AuthUser, items: ServiceRequestDto[], over: RouteMap = {}): HttpMock {
   const http = mockHttp({
@@ -106,6 +54,19 @@ async function openRowActions(): Promise<void> {
   fireEvent.click(await screen.findByRole('button', { name: 'Действия' }));
 }
 
+/** Подписи пунктов меню строки — по ним и видно, что заявке разрешено (Р110). */
+async function rowActionLabels(): Promise<string[]> {
+  await openRowActions();
+  const menu = await waitFor(() => {
+    const found = document.querySelector('.ant-dropdown-menu');
+    if (!found) throw new Error('меню действий не открылось');
+    return found;
+  });
+  return [...menu.querySelectorAll('.ant-dropdown-menu-title-content')].map(
+    (el) => el.textContent ?? '',
+  );
+}
+
 /**
  * Есть ли на экране такой текст. Именно «есть», а не «ровно один»: закреплённую шапку таблицы
  * antd рисует дважды — видимой строкой и скрытой мерной, — и точный поиск падал бы на любом
@@ -113,25 +74,201 @@ async function openRowActions(): Promise<void> {
  */
 const shown = (text: string) => screen.queryAllByText(text).length > 0;
 
+/** Заголовки открытых окон: по ним и проверяется, куда привела подпись состояния (Р117). */
+function openModalTitles(): string[] {
+  return [...document.querySelectorAll<HTMLElement>('.ant-modal-wrap')]
+    .filter((wrap) => wrap.style.display !== 'none')
+    .map((wrap) => wrap.querySelector('.ant-modal-title')?.textContent ?? '');
+}
+
+/** Ссылка ли подпись состояния: `Typography.Link` рисует `<a>`, обычный текст — `<span>`. */
+const statusLink = (text: string): HTMLElement | null =>
+  screen.getByText(text).closest('a') as HTMLElement | null;
+
 describe('список заявок на обслуживание: колонки по ролям', () => {
-  it('оператор видит исполнителя, очередь ожидания и документы', async () => {
+  it('оператор видит исполнителя, документы и один столбец состояния', async () => {
     renderTab(OPERATOR, [serviceRequest()]);
     expect(await screen.findByText('СО-14')).toBeDefined();
     expect(shown('Сервис')).toBe(true);
-    expect(shown('Ждёт')).toBe(true);
     expect(shown('Документы')).toBe(true);
-    // Колонка исполнителя «что от вас требуется» оператору не показывается: шаги в ней чужие.
+    expect(shown('Статус')).toBe(true);
+    /*
+     * Три колонки про одно и то же сведены в одну (Р100): «Ждёт» и «От вас требуется» отвечали на
+     * тот же вопрос, что и статус, а читались как три разных факта. «Срок» ушёл вместе с самим
+     * полем (Р115) — давность заявки читается возрастом в статусе.
+     */
+    expect(shown('Ждёт')).toBe(false);
     expect(shown('От вас требуется')).toBe(false);
+    expect(shown('Срок')).toBe(false);
   });
 
-  it('исполнитель видит объект, контакт и свой следующий шаг', async () => {
-    renderTab(EXECUTOR, [serviceRequest({ status: 'assigned', waitingOn: 'service' })]);
+  it('исполнитель видит объект, контакт и свой следующий шаг подписью статуса', async () => {
+    renderTab(EXECUTOR, [serviceRequest({ status: 'assigned' })]);
     expect(await screen.findByText('СО-14')).toBeDefined();
     expect(shown('Объект')).toBe(true);
     expect(shown('Контакт')).toBe(true);
-    expect(shown('Принять в работу')).toBe(true);
+    // Шаг живёт второй строкой столбца состояния, а не своей колонкой: подпись одна на все стороны
+    // и лицо ей меняет только префикс (Р101).
+    expect(shown('Вам: принять в работу')).toBe(true);
     // Сумма и документы — вопросы заказчика и оператора, исполнителю в списке они не нужны.
     expect(shown('Документы')).toBe(false);
+  });
+});
+
+/**
+ * Столбец состояния по строкам (§4 плана, Р100–Р102).
+ *
+ * Одна и та же заявка подписана трижды по-разному, и это главное в столбце: лицо меняет подпись,
+ * а сам шаг остаётся тем, что задан статусом. Ошибка здесь молчалива — заметная строка «Вам: …» у
+ * того, кто ждёт чужого хода, читается как требование к нему.
+ */
+describe('столбец состояния подписан лицом смотрящего', () => {
+  const inDiagnostics = () => serviceRequest({ status: 'diagnostics' });
+
+  it('исполнителю в «Диагностике» — его собственный шаг', async () => {
+    renderTab(EXECUTOR, [inDiagnostics()]);
+    await screen.findByText('СО-14');
+    expect(shown('Вам: собрать и предъявить смету')).toBe(true);
+  });
+
+  it('оператору та же заявка говорит, что ход не за ним', async () => {
+    renderTab(OPERATOR, [inDiagnostics()]);
+    await screen.findByText('СО-14');
+    expect(shown('Ждёт сервис')).toBe(true);
+    expect(shown('Вам: собрать и предъявить смету')).toBe(false);
+  });
+
+  it('заказчику подпись всегда чужая: шага в цикле у него нет', async () => {
+    // Ход за оператором, а не за сервисом: даже там, где решение принимает «своя» сторона
+    // заказчика, `SERVICE_WAITING_ON` его не знает — строка остаётся серой (Р102).
+    renderTab(CUSTOMER, [serviceRequest({ status: 'it_approved' })]);
+    await screen.findByText('СО-14');
+    expect(shown('Ждёт оператора')).toBe(true);
+    expect(statusLink('Ждёт оператора')).toBeNull();
+    expect(screen.queryByText(/^Вам: /)).toBeNull();
+  });
+
+  it('у принятой заявки подписи нет вовсе: ждать в ней нечего', async () => {
+    renderTab(OPERATOR, [serviceRequest({ status: 'accepted' })]);
+    await screen.findByText('СО-14');
+    expect(screen.queryByText(/^Вам: /)).toBeNull();
+    expect(shown('Закрыта')).toBe(false);
+  });
+
+  /**
+   * Отложенная подписана одинаково всем: заморозку не ждёт никто (Р111), а «Отложена» без причины
+   * сообщала бы факт, не отвечая, чего ждать и сколько (Р107). Три отдельных сценария, а не цикл
+   * внутри одного: упавший расскажет, у какой именно стороны подпись разошлась.
+   */
+  const expectHeldLine = async (user: AuthUser) => {
+    renderTab(user, [heldServiceRequest('diagnostics')]);
+    await screen.findByText('СО-14');
+    expect(shown('Отложена: ждём запчасть от поставщика')).toBe(true);
+    // Ход не за смотрящим ни у кого: подпись заморозки — обычный текст (Р117).
+    expect(statusLink('Отложена: ждём запчасть от поставщика')).toBeNull();
+  };
+
+  it('отложенная подписана причиной у оператора', async () => {
+    await expectHeldLine(OPERATOR);
+  });
+
+  it('та же подпись у исполнителя', async () => {
+    await expectHeldLine(EXECUTOR);
+  });
+
+  it('та же подпись у заказчика', async () => {
+    await expectHeldLine(CUSTOMER);
+  });
+});
+
+/**
+ * Р117: подпись «Вам: …» ведёт туда же, куда одноимённый пункт меню.
+ *
+ * Проверяется не наличие ссылки, а то, что за ней открывается: действие берётся признаком
+ * `primary` у пункта меню, а не второй картой «статус → окно», и разойтись с коридором оно не
+ * может. Второй картой это и разошлось бы — строка звала бы к действию, которого в меню нет.
+ */
+describe('подпись состояния ведёт в действие (Р117)', () => {
+  it('«Вам: назначить сервис» открывает окно назначения — то же, что и пункт меню', async () => {
+    renderTab(OPERATOR, [serviceRequest({ status: 'it_approved' })]);
+    await screen.findByText('СО-14');
+    // Тот же ход есть и в меню строки: подпись обещает ровно его.
+    expect(await rowActionLabels()).toContain('Назначить сервис');
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+
+    const link = statusLink('Вам: назначить сервис');
+    expect(link).not.toBeNull();
+    fireEvent.click(link!);
+
+    // Ровно одно окно: клик по ссылке не всплывает до строки, иначе окно действия открылось бы
+    // под карточкой заявки (Р117).
+    await waitFor(() => expect(openModalTitles()).toEqual(['Назначить сервис']));
+  });
+
+  it('«Вам: нужен закрывающий документ» ведёт в окно приёмки, где бумагу и подшивают (Р120)', async () => {
+    renderTab(OPERATOR, [serviceRequest({ status: 'done' })]);
+    await screen.findByText('СО-14');
+
+    const link = statusLink('Вам: нужен закрывающий документ');
+    expect(link).not.toBeNull();
+    fireEvent.click(link!);
+
+    // Второго адреса у этого шага нет: подпись ведёт туда же, куда «Принять работу».
+    await waitFor(() => expect(openModalTitles()).toEqual(['Принять работу СО-14']));
+  });
+
+  it('шаг без окна уходит на сервер сразу — как и одноимённый пункт меню', async () => {
+    const http = renderTab(EXECUTOR, [serviceRequest({ status: 'assigned' })], {
+      'PATCH /service-requests/:id/start': () => json(serviceRequest({ status: 'diagnostics' })),
+    });
+    await screen.findByText('СО-14');
+
+    fireEvent.click(statusLink('Вам: принять в работу')!);
+
+    // «Взять в диагностику» — единственное действие без содержания: подтверждать нечего, и второе
+    // поведение у той же дуги было бы расхождением подписи с меню (§8 плана).
+    await waitFor(() => expect(http.countOf('PATCH /service-requests/:id/start')).toBe(1));
+  });
+
+  it('чужой ход подписан текстом, а не ссылкой', async () => {
+    renderTab(OPERATOR, [serviceRequest({ status: 'diagnostics' })]);
+    await screen.findByText('СО-14');
+    // Ход за исполнителем: у оператора пункта меню для него нет — и звать некуда.
+    expect(statusLink('Ждёт сервис')).toBeNull();
+  });
+});
+
+/**
+ * Ячейка документов (Р112): чем работа закрыта и чего не хватает.
+ *
+ * Планка одна на всё — хватает любого закрывающего документа, — поэтому перечня недостающих видов
+ * у портала больше нет: три тега «нет: акт / нет: счёт / нет: талон» читались бы как «нужны все
+ * три», хотя приёмку запирает отсутствие сразу всех.
+ */
+describe('ячейка документов', () => {
+  it('подшитые виды показаны тегами, красного среди них нет', async () => {
+    renderTab(OPERATOR, [
+      serviceRequest({
+        status: 'done',
+        files: [serviceRequestFile('act'), serviceRequestFile('invoice')],
+      }),
+    ]);
+    await screen.findByText('СО-14');
+
+    expect(shown('Акт')).toBe(true);
+    expect(shown('Счёт')).toBe(true);
+    expect(shown('нет закрывающих')).toBe(false);
+  });
+
+  it('отсутствие всех трёх — один красный тег, а не три «нет: …»', async () => {
+    renderTab(OPERATOR, [serviceRequest({ status: 'done', files: [] })]);
+    await screen.findByText('СО-14');
+
+    expect(screen.getAllByText('нет закрывающих')).toHaveLength(1);
+    expect(screen.queryByText(/^нет: /)).toBeNull();
+    expect(shown('Акт')).toBe(false);
+    expect(shown('Счёт')).toBe(false);
+    expect(shown('Гарантийный талон')).toBe(false);
   });
 });
 
@@ -149,7 +286,7 @@ describe('действия строятся из коридора переход
   });
 
   it('согласованную ИТ заявку оператор назначает', async () => {
-    renderTab(OPERATOR, [serviceRequest({ status: 'it_approved', waitingOn: 'operator' })]);
+    renderTab(OPERATOR, [serviceRequest({ status: 'it_approved' })]);
     await openRowActions();
     expect(await screen.findByText('Назначить сервис')).toBeDefined();
   });
@@ -163,7 +300,7 @@ describe('действия строятся из коридора переход
   });
 
   it('исполнителю назначенная заявка предлагает диагностику и отказ, но не назначение', async () => {
-    renderTab(EXECUTOR, [serviceRequest({ status: 'assigned', waitingOn: 'service' })]);
+    renderTab(EXECUTOR, [serviceRequest({ status: 'assigned' })]);
     await openRowActions();
     expect(await screen.findByText('Взять в диагностику')).toBeDefined();
     expect(screen.getByText('Отказаться от заявки')).toBeDefined();
@@ -197,14 +334,14 @@ describe('объект и срочность в списке', () => {
   });
 
   it('оператор ставит и снимает срочность, исполнитель — не трогает вовсе', async () => {
-    renderTab(OPERATOR, [serviceRequest({ status: 'assigned', waitingOn: 'service' })]);
+    renderTab(OPERATOR, [serviceRequest({ status: 'assigned' })]);
     await openRowActions();
     // Срочность — не переход: она доступна оператору и после назначения сервиса.
     expect(await screen.findByText('Отметить срочной')).toBeDefined();
   });
 
   it('исполнителю срочности не предлагают: признак заказывающей стороны', async () => {
-    renderTab(EXECUTOR, [serviceRequest({ status: 'assigned', waitingOn: 'service' })]);
+    renderTab(EXECUTOR, [serviceRequest({ status: 'assigned' })]);
     await openRowActions();
     await screen.findByText('Взять в диагностику');
     expect(screen.queryByText('Отметить срочной')).toBeNull();
@@ -224,17 +361,45 @@ describe('объект и срочность в списке', () => {
     await screen.findByText('СО-14');
     expect(http.lastCall('GET /service-requests')?.query.get('urgent')).toBe('true');
   });
+
+  it('фильтра «Просроченные» в шите больше нет: он ушёл вместе с полем срока (Р115)', async () => {
+    renderTab(OPERATOR, [serviceRequest()]);
+    await screen.findByText('СО-14');
+    expect(screen.queryByLabelText('Просроченные')).toBeNull();
+    // Отбор по статусу при этом перечисляет коридор целиком — «Отложена» появилась в нём сама.
+    expect(shown('Только срочные')).toBe(true);
+  });
 });
 
 describe('очереди-пресеты', () => {
+  /**
+   * Пресет — переключатель над таблицей, а не одноимённый флажок в шите фильтров: у «Ожидаются
+   * документы» есть и то и другое, и поиск по тексту брал бы то из них, что попадётся первым.
+   */
+  const openQueue = (label: string) => {
+    const item = document.querySelector<HTMLElement>(`.ant-segmented-item-label[title="${label}"]`);
+    if (!item) throw new Error(`пресета «${label}» над таблицей нет`);
+    fireEvent.click(item);
+  };
+
   it('«Требуют решения» спрашивает у сервера только ждущие меня заявки', async () => {
     const http = renderTab(OPERATOR, [serviceRequest()]);
-    fireEvent.click(await screen.findByText('Требуют решения'));
+    await screen.findByText('СО-14');
+    openQueue('Требуют решения');
     await screen.findByText('СО-14');
     const last = http.lastCall('GET /service-requests');
     expect(last?.query.get('waitingOnMe')).toBe('true');
     // Порядок по умолчанию — возраст в статусе: список открывают вопросом «что стоит дольше всех».
     expect(last?.query.get('sortBy')).toBe('statusChangedAt');
     expect(last?.query.get('sortOrder')).toBe('asc');
+  });
+
+  it('«Ожидаются документы» спрашивает ровно то, что нельзя принять (Р114)', async () => {
+    const http = renderTab(OPERATOR, [serviceRequest({ status: 'done' })]);
+    await screen.findByText('СО-14');
+    openQueue('Ожидаются документы');
+    expect(http.lastCall('GET /service-requests')?.query.get('awaitingDocuments')).toBe('true');
+    // Прежний признак «просрочена» на сервер больше не уходит ни при каком наборе фильтров.
+    expect(http.lastCall('GET /service-requests')?.query.get('overdue')).toBeNull();
   });
 });

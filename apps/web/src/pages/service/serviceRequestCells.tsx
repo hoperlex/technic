@@ -4,7 +4,7 @@ import {
   type ServiceRequestDto,
   warrantyClaimSourceLabels,
 } from '@technic/contracts';
-import { missingClosingDocuments, serviceDocumentCounts } from '@entities/service-request';
+import { isAwaitingDocuments, serviceDocumentCounts } from '@entities/service-request';
 import { WarrantyTag } from '@entities/office-equipment';
 
 /**
@@ -66,11 +66,11 @@ export function EquipmentCell({
   );
 }
 
-/** Что подшито и чего не хватает (Р16): по этой ячейке и собирают очередь «Ожидаются документы». */
+/** Что подшито и хватает ли этого (Р16): по этой ячейке и собирают очередь «Ожидаются документы». */
 export function DocumentsCell({ request }: { request: ServiceRequestDto }) {
   const counts = serviceDocumentCounts(request.files);
-  const missing = missingClosingDocuments(request);
-  if (request.files.length === 0 && missing.length === 0) {
+  const awaiting = isAwaitingDocuments(request);
+  if (request.files.length === 0 && !awaiting) {
     return <Typography.Text type="secondary">—</Typography.Text>;
   }
   return (
@@ -82,11 +82,14 @@ export function DocumentsCell({ request }: { request: ServiceRequestDto }) {
             {serviceFileKindLabels[kind]}
           </Tag>
         ))}
-      {missing.map((kind) => (
-        <Tag key={kind} color="red" style={{ marginInlineEnd: 0 }}>
-          нет: {serviceFileKindLabels[kind].toLowerCase()}
+      {/* Один тег вместо трёх «нет: акт / нет: счёт / нет: талон» (Р112): перечень недостающих
+          видов читался бы как «нужны все три», хотя приёмку запирает отсутствие сразу всех — и
+          снимает её любой один. */}
+      {awaiting && (
+        <Tag color="red" style={{ marginInlineEnd: 0 }}>
+          нет закрывающих
         </Tag>
-      ))}
+      )}
     </Space>
   );
 }

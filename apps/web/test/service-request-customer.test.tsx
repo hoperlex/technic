@@ -10,6 +10,7 @@ import { json, mockHttp, type HttpMock, type RouteMap } from './http';
 import { renderWithUser } from './render';
 import { authUser, departmentUser } from './factories/auth';
 import { emptyList, list } from './factories/common';
+import { serviceRequest } from './factories/service';
 import { openSelectOptions, selectOption } from './antd';
 import { ServiceRequestForm } from '../src/pages/service/ServiceRequestForm';
 
@@ -94,14 +95,12 @@ const UNITS = [
   equipment({ id: 'oe-2', name: 'Brother HL-1110R', inventoryNumber: '0000778', object: STORE }),
 ];
 
-function serviceRequest(over: Partial<ServiceRequestDto> = {}): ServiceRequestDto {
-  return {
-    id: 'sr-1',
-    num: 14,
-    displayNumber: 'СО-14',
-    status: 'new',
-    statusChangedAt: '2026-08-05T09:00:00.000Z',
-    waitingOn: 'operator',
+/**
+ * Заявка на технику `oe-1`, стоящую на «ЖК Северном»: правка читает снимки самой заявки, и
+ * различать их с действующим справочником — половина проверяемого (Р11а).
+ */
+function request(over: Partial<ServiceRequestDto> = {}): ServiceRequestDto {
+  return serviceRequest({
     equipment: {
       id: 'oe-1',
       name: 'Kyocera M3145',
@@ -111,35 +110,10 @@ function serviceRequest(over: Partial<ServiceRequestDto> = {}): ServiceRequestDt
       location: 'Корпус 3, каб. 214',
     },
     object: NORTH,
-    customerDepartment: null,
-    equipmentDepartment: null,
-    description: 'Не захватывает бумагу',
-    dueDate: null,
     responsibleName: 'Штабов С. И.',
     responsiblePhone: '9001234567',
-    isUrgent: false,
-    urgencyReason: '',
-    service: null,
-    itApproval: null,
-    warrantyClaim: null,
-    estimateRevision: 0,
-    estimateSubmittedAt: null,
-    estimatedTotalAmount: null,
-    approval: null,
-    items: [],
-    completion: null,
-    acceptedByName: '',
-    acceptedAt: null,
-    comment: '',
-    serviceComment: '',
-    files: [],
-    createdByName: 'Штабов С. И.',
-    createdAt: '2026-08-05T09:00:00.000Z',
-    updatedAt: '2026-08-05T09:00:00.000Z',
-    deletedAt: null,
-    version: 3,
     ...over,
-  };
+  });
 }
 
 /**
@@ -268,7 +242,7 @@ describe('умолчание поля', () => {
 describe('правка читает снимок заявки (Р11а)', () => {
   it('заказчик-отдел показан отделом, а не объектом заявки', async () => {
     renderForm(OPERATOR, {
-      request: serviceRequest({
+      request: request({
         customerDepartment: { id: 'dep-1', code: 'ПТО', name: 'Производственно-технический' },
       }),
     });
@@ -321,13 +295,13 @@ describe('площадка роли отдела ограничена прина
 });
 
 describe('правка без касания поля шлёт прежнего заказчика (Р12а, Р12б, К7)', () => {
-  const patch = { 'PATCH /service-requests/:id': () => json(serviceRequest()) };
+  const patch = { 'PATCH /service-requests/:id': () => json(request()) };
 
   it('чужой отдел держится в поле и уходит прежним идентификатором', async () => {
     // Так выглядит заявка, видимая по сквозной области «Согласования ИТ»: её заказчик в состав
     // поля этой учётки не входит вовсе (Р11б).
     const http = renderForm(DEP_USER, {
-      request: serviceRequest({ customerDepartment: IT_DEPARTMENT }),
+      request: request({ customerDepartment: IT_DEPARTMENT }),
       routes: patch,
     });
     await waitFor(() => expect(shownCustomer()).toBe(IT_LABEL));
@@ -344,7 +318,7 @@ describe('правка без касания поля шлёт прежнего 
 
   it('заявка от площадки по чужой технике сохраняется явным `null`', async () => {
     const http = renderForm(DEP_USER, {
-      request: serviceRequest({
+      request: request({
         customerDepartment: null,
         equipmentDepartment: IT_DEPARTMENT,
       }),
@@ -365,7 +339,7 @@ describe('правка без касания поля шлёт прежнего 
 
 describe('заведение шлёт осознанное значение (Р12а)', () => {
   const create = {
-    'POST /service-requests': () => json({ request: serviceRequest(), mail: 'queued' }, 201),
+    'POST /service-requests': () => json({ request: request(), mail: 'queued' }, 201),
   };
 
   it('заявка от площадки уходит явным `null`', async () => {

@@ -1548,6 +1548,11 @@ export const serviceRequestStatusEnum = pgEnum('service_request_status', [
   'diagnostics',
   'estimate_review',
   'in_work',
+  // Заморозка (миграция 0161 добавила значение `AFTER 'in_work'`, Р103): состояние, из которого
+  // нет обычных ходов — только возврат в `held_from_status` или отмена. Место в перечислении по
+  // той же причине, что и у визы ИТ: сортировка по статусу идёт порядком объявления, и заморозка
+  // должна читаться среди рабочих статусов, а не после «Отменена».
+  'on_hold',
   'done',
   'accepted',
   'cancelled',
@@ -1596,6 +1601,14 @@ export const serviceRequests = pgTable(
     isUrgent: boolean('is_urgent').notNull().default(false),
     urgencyReason: text('urgency_reason').notNull().default(''),
     status: serviceRequestStatusEnum('status').notNull().default('new'),
+    // Заморозка (миграция 0162): куда вернуть заявку и почему её остановили. Возврат — одна дуга
+    // назад, в записанный статус (Р104): разреши мы выбирать цель, «Отложена» стала бы вторым
+    // входом в цикл — в обход виз, сметы и назначения. NULL означает «не отложена».
+    heldFromStatus: serviceRequestStatusEnum('held_from_status'),
+    // Причина обязательна, как у отмены и отказа (Р107): даты «отложена до» нет вовсе, и «когда
+    // ждать» отвечает эта строка, а «сколько ждут уже» — возраст в статусе. На выходе из
+    // заморозки поле чистится вместе с `held_from_status` (Р118).
+    holdReason: text('hold_reason').notNull().default(''),
     // Виза отдела ИТ (миграция 0119): решение о том, звать ли внешний сервис. Снимок из двух
     // полей, как виза заказа ТС (ADR 0025); третий флаг отличает автоматическую — заявку завёл
     // сам обладатель права, и подписывать её вторым действием было бы ритуалом.
@@ -1660,11 +1673,32 @@ export const serviceRequests = pgTable(
       sql`(${t.estimatedTotalAmount} IS NULL OR ${t.estimatedTotalAmount} >= 0)
           AND (${t.finalTotalAmount} IS NULL OR ${t.finalTotalAmount} >= 0)`,
     ),
+    // Заморозка — неразрывная тройка «статус + откуда + причина». Статус без исходного некуда
+    // вернуть, исходный без статуса означал бы заморозку, которой нет, а причина обязана исчезать
+    // вместе с ней: выход из `on_hold` чистит оба поля централизованно (Р118), и этот CHECK —
+    // то, что заставляет чистить их и при возобновлении, и при отмене отложенной.
+    hold: check(
+      'service_requests_hold_check',
+      sql`(${t.status} = 'on_hold') = (${t.heldFromStatus} IS NOT NULL)
+          AND (${t.status} <> 'on_hold' OR btrim(${t.holdReason}) <> '')
+          AND (${t.status} = 'on_hold' OR btrim(${t.holdReason}) = '')`,
+    ),
+    // Заморозка не вкладывается в себя и не ведёт назад в закрытые статусы: возврат в `on_hold`
+    // означал бы заморозку без выхода, а в «Принята» или «Отменена» — воскрешение закрытой
+    // заявки возобновлением.
+    heldFrom: check(
+      'service_requests_held_from_check',
+      sql`${t.heldFromStatus} IS NULL
+          OR ${t.heldFromStatus} NOT IN ('on_hold','accepted','cancelled')`,
+    ),
     // Без исполнителя заявку никто не ведёт; исключение — три статуса до его назначения:
-    // «Новая», «Согласована ИТ» (виза есть, сервис ещё не выбран) и «Отменена».
+    // «Новая», «Согласована ИТ» (виза есть, сервис ещё не выбран) и «Отменена». Проверяется
+    // «эффективный» статус (миграция 0162): отложенная из «Новой» исполнителя не имеет и иметь не
+    // должна, а по одному `status` заморозка такой заявки упиралась бы в отказ базы.
     executor: check(
       'service_requests_executor_check',
-      sql`${t.status} IN ('new','it_approved','cancelled') OR ${t.serviceCounterpartyId} IS NOT NULL`,
+      sql`COALESCE(${t.heldFromStatus}, ${t.status}) IN ('new','it_approved','cancelled')
+          OR ${t.serviceCounterpartyId} IS NOT NULL`,
     ),
     // Согласование — снимок из трёх полей: кто, когда и что именно. Любое поле по отдельности на
     // вопрос «что согласовали» не отвечает.
@@ -1716,6 +1750,8 @@ export const serviceRequests = pgTable(
     // Одна открытая заявка на единицу: две параллельные означали бы два сервиса, два акта и две
     // гарантии на одну работу. Индекс сторожит и заведение, и восстановление из архива — сервер
     // обязан отвечать на оба случая понятным 409 со ссылкой на открытую заявку, а не ошибкой БД.
+    // Отложенная заявка считается открытой (Р109) и потому из условия не исключается: техника
+    // ждёт этого же ремонта, и второй заявке на неё взяться неоткуда.
     openPerEquipmentUnique: uniqueIndex('service_requests_open_per_equipment_unique')
       .on(t.officeEquipmentId)
       .where(sql`${t.deletedAt} IS NULL AND ${t.status} NOT IN ('accepted','cancelled')`),
@@ -1733,12 +1769,17 @@ export const serviceRequests = pgTable(
     serviceIdx: index('service_requests_service_idx')
       .on(t.serviceCounterpartyId)
       .where(sql`${t.serviceCounterpartyId} IS NOT NULL`),
-    // Очередь «что срочное ждёт дольше всех»: закрытые и удалённые заявки в ней не участвуют,
-    // поэтому индекс частичный — он остаётся размером с очередь, а не с таблицей.
+    // Очередь «что срочное ждёт дольше всех»: закрытые, удалённые и отложенные заявки в ней не
+    // участвуют, поэтому индекс частичный — он остаётся размером с очередь, а не с таблицей.
+    // Отложенные ушли из условия вместе с фильтром срочных и сортировкой `urgentFirst`
+    // (миграция 0162, Р119): флаг срочности заморозка не гасит, но первой строкой списка стоит
+    // то, за что берутся сейчас, а отложенная ждёт решения, а не рук. Условие обязано совпадать с
+    // самой очередью — иначе индекс перестаёт её покрывать.
     urgentIdx: index('service_requests_urgent_idx')
       .on(t.statusChangedAt)
       .where(
-        sql`${t.isUrgent} AND ${t.deletedAt} IS NULL AND ${t.status} NOT IN ('accepted','cancelled')`,
+        sql`${t.isUrgent} AND ${t.deletedAt} IS NULL
+            AND ${t.status} NOT IN ('accepted','cancelled','on_hold')`,
       ),
     createdAtIdx: index('service_requests_created_at_idx').on(t.createdAt),
   }),
@@ -1853,10 +1894,13 @@ export const serviceRequestFiles = pgTable(
       sql`${t.kind} IN ('attachment','estimate','act','invoice','warranty_card')`,
     ),
     fileIdx: index('service_request_files_file_idx').on(t.fileId),
-    // «У каких закрытых заявок нет акта» — вопрос очереди «Ожидаются документы».
+    // «У каких предъявленных заявок нет ни одной закрывающей бумаги» — вопрос очереди «Ожидаются
+    // документы» и условие приёмки (Р112, Р114, миграция 0162). Виды перечислены все три: частичный
+    // индекс покрывает лишь запрос не шире собственного условия, и пара `act`/`invoice` оставила бы
+    // очередь читать таблицу целиком.
     docIdx: index('service_request_files_doc_idx')
       .on(t.requestId)
-      .where(sql`${t.kind} IN ('act','invoice')`),
+      .where(sql`${t.kind} IN ('act','invoice','warranty_card')`),
   }),
 );
 

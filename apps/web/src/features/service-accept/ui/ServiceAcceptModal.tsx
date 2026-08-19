@@ -1,9 +1,14 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { Alert, App, Form, Input, Space } from 'antd';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { serviceFileKindLabels, type ServiceRequestDto } from '@technic/contracts';
 import {
-  missingClosingDocuments,
+  hasServiceClosingDocument,
+  SERVICE_CLOSING_DOCUMENT_KINDS,
+  type ServiceRequestDto,
+} from '@technic/contracts';
+import {
+  SERVICE_CLOSING_DOCUMENT_HINT,
+  ServiceDocumentUpload,
   ServiceRequestContext,
   serviceRequestKeys,
   serviceRequestsApi,
@@ -11,6 +16,8 @@ import {
 import { officeEquipmentKeys } from '@entities/office-equipment';
 import { FormModal, useFormBlockers } from '@shared/ui';
 import { errorMessage } from '@shared/lib';
+import { filesApi } from '../../../api/resources';
+import { useAuth } from '../../../auth/AuthContext';
 
 export type AcceptMode = 'accept' | 'rework';
 
@@ -25,9 +32,12 @@ function money(value: number | null): string {
  * решения. У возврата она высокая — стираются отметки выполнения, итог и посчитанные гарантии, —
  * поэтому там обязательна причина и красная кнопка.
  *
- * Нехватка акта приёмке не мешает (Р16): «акт пришлю завтра» — рабочее состояние, и держать из-за
- * него работу непринятой значило бы копить неразобранные заявки. Портал о нехватке предупреждает,
- * а заявка остаётся в очереди «Ожидаются документы», пока бумагу не подошьют.
+ * Принять работу без закрывающего документа нельзя (Р112, отменяет Р16): пока к заявке не подшит
+ * ни акт, ни счёт, ни гарантийный талон, кнопка неактивна — сервер откажет тем же условием, и
+ * кнопка, ведущая в 422, была бы обещанием, которого он не даёт. Бумагу подшивают здесь же (Р120):
+ * иначе подпись списка «Вам: нужен закрывающий документ» звала бы в заблокированное окно, а
+ * человек шёл бы искать вкладку документов сам. Возврата на доработку планка не касается — там
+ * принимать нечего.
  */
 export function ServiceAcceptModal({
   request,
@@ -40,25 +50,38 @@ export function ServiceAcceptModal({
   onClose: () => void;
 }) {
   const { message } = App.useApp();
+  const { can } = useAuth();
   const qc = useQueryClient();
   const [form] = Form.useForm<{ text?: string }>();
   const blockers = useFormBlockers(form);
   const rework = mode === 'rework';
 
+  /**
+   * Своя копия заявки (Р120). Проп приходит из состояния, поднятого при открытии окна, и
+   * `invalidateQueries` его не трогает: подшив акт, человек смотрел бы на ту же заблокированную
+   * кнопку и закрывал окно, чтобы открыть заново. Ручка `POST /:id/files` отвечает свежим DTO —
+   * его и держим до закрытия.
+   */
+  const [fresh, setFresh] = useState<ServiceRequestDto | null>(null);
+  const shown = fresh && request && fresh.id === request.id ? fresh : request;
+
   useEffect(() => {
+    // Открылось окно другой заявки — своя копия начинается заново, иначе планка считалась бы по
+    // предыдущей.
+    setFresh(request);
     if (request) form.resetFields();
   }, [request, mode]);
 
   const mutation = useMutation({
     mutationFn: () =>
       rework
-        ? serviceRequestsApi.rework(request!.id, {
+        ? serviceRequestsApi.rework(shown!.id, {
             reason: text().trim(),
-            version: request!.version,
+            version: shown!.version,
           })
-        : serviceRequestsApi.accept(request!.id, {
+        : serviceRequestsApi.accept(shown!.id, {
             comment: text().trim(),
-            version: request!.version,
+            version: shown!.version,
           }),
     onSuccess: () => {
       message.success(rework ? 'Заявка возвращена в работу' : 'Работы приняты');
@@ -78,14 +101,16 @@ export function ServiceAcceptModal({
     mutation.mutate();
   };
 
-  const missing = request ? missingClosingDocuments(request) : [];
+  /** Планка приёмки (Р112). Считается по своей копии заявки — той, что знает о свежей загрузке. */
+  const needsDocument = !rework && !!shown && !hasServiceClosingDocument(shown);
+  const canAttach = can('serviceRequests.files');
 
   return (
     <FormModal
       title={
         rework
-          ? `Вернуть на доработку ${request?.displayNumber ?? ''}`
-          : `Принять работу ${request?.displayNumber ?? ''}`
+          ? `Вернуть на доработку ${shown?.displayNumber ?? ''}`
+          : `Принять работу ${shown?.displayNumber ?? ''}`
       }
       open={!!request}
       onCancel={onClose}
@@ -93,33 +118,57 @@ export function ServiceAcceptModal({
       confirmLoading={mutation.isPending}
       okText={rework ? 'Вернуть на доработку' : 'Принять'}
       okDanger={rework}
+      okDisabled={needsDocument}
       width={520}
     >
-      {request && (
+      {shown && (
         <Space direction="vertical" size={12} style={{ width: '100%' }}>
-          <ServiceRequestContext request={request} />
+          <ServiceRequestContext request={shown} />
           <Alert
             type={rework ? 'warning' : 'info'}
             showIcon
             message={
               rework
                 ? 'Факт закрытия будет стёрт'
-                : `Предъявлено ${money(request.completion?.totalAmount ?? null)}`
+                : `Предъявлено ${money(shown.completion?.totalAmount ?? null)}`
             }
             description={
               rework
                 ? 'Отметки выполнения, итог и посчитанные гарантии снимутся: исполнитель закроет работы заново. Смета и документы останутся на месте.'
-                : `Исполнитель: ${request.service?.name ?? '—'}. После приёмки заявка закрыта: документы подшить к ней можно и потом.`
+                : `Исполнитель: ${shown.service?.name ?? '—'}. После приёмки заявка закрыта: документы подшить к ней можно и потом.`
             }
           />
 
-          {!rework && missing.length > 0 && (
-            <Alert
-              type="warning"
-              showIcon
-              message={`Не подшиты документы: ${missing.map((kind) => serviceFileKindLabels[kind].toLowerCase()).join(', ')}`}
-              description="Принять можно и так — заявка останется в очереди «Ожидаются документы»."
-            />
+          {!rework && (
+            <>
+              {needsDocument && (
+                <Alert
+                  type="warning"
+                  showIcon
+                  message={SERVICE_CLOSING_DOCUMENT_HINT}
+                  description="Пока его нет, принять работу нельзя — подшейте бумагу прямо здесь, окно останется открытым."
+                />
+              )}
+              {/* Виды — только закрывающие: остальное подшивают на вкладке документов, а здесь
+                  решают ровно один вопрос — чем закрыта работа. Право спрашивается то же, что и
+                  там: правило «кто подшивает бумаги» записано один раз, иначе первая же новая
+                  базовая роль под надстройкой оператора получила бы загрузчик, на который сервер
+                  ответит 403. */}
+              {canAttach && (
+                <ServiceDocumentUpload
+                  requestId={shown.id}
+                  kinds={SERVICE_CLOSING_DOCUMENT_KINDS}
+                  upload={filesApi.upload}
+                  onUploaded={(updated) => {
+                    // Свежая заявка — в своё состояние, и заодно гасим списки: столбец документов
+                    // и очередь «Ожидаются документы» изменились у всех, кто смотрит тот же
+                    // список.
+                    setFresh(updated);
+                    void qc.invalidateQueries({ queryKey: serviceRequestKeys.root });
+                  }}
+                />
+              )}
+            </>
           )}
 
           <Form form={form} layout="vertical" onFinish={submit} {...blockers.formProps}>

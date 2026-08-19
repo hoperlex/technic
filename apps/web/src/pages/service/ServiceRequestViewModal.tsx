@@ -2,7 +2,6 @@ import { useMemo, useState } from 'react';
 import { Button, Dropdown, Space, Spin, Tabs, Tag, Tooltip, Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import {
-  isWaitingOn,
   type RequestHistoryEntryDto,
   type ServiceRequestDto,
   serviceRequestChangeLabels,
@@ -14,9 +13,9 @@ import {
   serviceRequestKeys,
   serviceRequestsApi,
   ServiceStatusTag,
+  serviceStatusLine,
   statusAgeLabel,
   UrgentTag,
-  WaitingOnTag,
 } from '@entities/service-request';
 import { WarrantyTag } from '@entities/office-equipment';
 import {
@@ -31,7 +30,6 @@ import { useAuth } from '../../auth/AuthContext';
 import { type HistoryRow, RequestHistoryTable } from '../../components/RequestHistory';
 import { ResponsibleValue } from '../../components/ResponsibleFields';
 import { formatDateTime } from '../../utils/format';
-import { formatDateOnly } from '../../utils/date';
 import { ServiceRequestDocuments } from './ServiceRequestDocuments';
 import { ServiceRequestEstimate } from './ServiceRequestEstimate';
 
@@ -116,6 +114,10 @@ export function ServiceRequestViewModal({
   });
   const rows = useMemo(() => toRows(history), [history]);
 
+  // Подпись — та же, что во второй строке столбца (Р100); у отложенной её разбирает строка ниже.
+  const statusLine =
+    request && request.status !== 'on_hold' ? serviceStatusLine(request, user) : null;
+
   const fields: ViewField[] = request
     ? [
         {
@@ -124,10 +126,12 @@ export function ServiceRequestViewModal({
           children: (
             <Space size={8} wrap>
               <ServiceStatusTag status={request.status} />
-              <WaitingOnTag
-                waiting={request.waitingOn}
-                mine={isWaitingOn(user, request.waitingOn)}
-              />
+              {statusLine &&
+                (statusLine.mine ? (
+                  <span>{statusLine.text}</span>
+                ) : (
+                  <Typography.Text type="secondary">{statusLine.text}</Typography.Text>
+                ))}
               <Typography.Text type="secondary">
                 в статусе {statusAgeLabel(request.statusChangedAt)}
               </Typography.Text>
@@ -135,6 +139,25 @@ export function ServiceRequestViewModal({
           ),
           full: true,
         },
+        // Заморозка объясняется строкой, а не одной подписью в шапке: причина отвечает на «чего
+        // ждём» (Р107), а статус возврата — на «куда заявка пойдёт дальше» (Р104: дуга одна, и
+        // выбора пути у заморозки нет).
+        ...(request.status === 'on_hold'
+          ? [
+              {
+                key: 'hold',
+                label: 'Отложена',
+                full: true,
+                children: [
+                  request.holdReason || '—',
+                  request.heldFromStatus &&
+                    `вернётся в «${serviceRequestStatusLabels[request.heldFromStatus]}»`,
+                ]
+                  .filter(Boolean)
+                  .join(' · '),
+              },
+            ]
+          : []),
         {
           key: 'equipment',
           label: 'Техника',
@@ -212,11 +235,6 @@ export function ServiceRequestViewModal({
           children: request.description,
         },
         {
-          key: 'dueDate',
-          label: 'Желаемый срок',
-          children: request.dueDate ? formatDateOnly(request.dueDate) : '—',
-        },
-        {
           key: 'responsible',
           label: 'Заявитель',
           children: (
@@ -263,7 +281,7 @@ export function ServiceRequestViewModal({
           ? [
               {
                 key: 'serviceComment',
-                label: 'Примечание сервиса',
+                label: 'Примечание исполнителя',
                 full: true,
                 children: request.serviceComment,
               },

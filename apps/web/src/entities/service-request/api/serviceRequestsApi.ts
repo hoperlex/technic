@@ -104,6 +104,14 @@ export const serviceRequestsApi = {
     patch<ServiceRequestDto>(id, '/decline', body),
   /** Взятие в диагностику — единственный переход исполнителя без содержания. */
   start: (id: string, body: VersionOnly) => patch<ServiceRequestDto>(id, '/start', body),
+  /**
+   * Заморозка (Р103): своя дуга — своя ручка. Причина обязательна (Р107) — даты «отложена до» у
+   * заморозки нет, и на вопрос «когда ждать» отвечает только она. Куда вернуть, портал не
+   * присылает: исходный статус сервер берёт из самой заявки (Р104).
+   */
+  hold: (id: string, body: ReasonInput) => patch<ServiceRequestDto>(id, '/hold', body),
+  /** Возврат в работу: цель — `held_from_status`, от человека нужно лишь слово вдогонку. */
+  resume: (id: string, body: CommentInput) => patch<ServiceRequestDto>(id, '/resume', body),
 
   /**
    * Состав сметы целиком: смета — документ, и «добавить строку» без остальных строк не имеет

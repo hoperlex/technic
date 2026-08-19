@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, screen, waitFor } from '@testing-library/react';
-import type { ServiceRequestDto } from '@technic/contracts';
 import { json, mockHttp } from './http';
 import { renderWithUser } from './render';
+import { serviceRequest } from './factories/service';
 import { vehicleRequest } from './factories/vehicle';
 import { VehicleCompleteModal } from '../src/pages/vehicle/VehicleCompleteModal';
 import { ServiceAcceptModal } from '../src/features/service-accept/ui/ServiceAcceptModal';
@@ -34,54 +34,16 @@ function fieldError(labelText: string): string | null {
   return item?.querySelector('.ant-form-item-explain-error')?.textContent ?? null;
 }
 
-function serviceRequest(overrides: Partial<ServiceRequestDto> = {}): ServiceRequestDto {
-  return {
-    id: 'sr-1',
-    num: 14,
-    displayNumber: 'СО-14',
-    // «Ожидает приёмки»: работы предъявлены — из этого статуса их принимают или возвращают.
-    status: 'done',
-    statusChangedAt: '2026-08-05T09:00:00.000Z',
-    waitingOn: 'operator',
-    equipment: {
-      id: 'oe-1',
-      name: 'Kyocera M3145',
-      serialNumber: 'SN-1',
-      inventoryNumber: '0012345',
-      typeName: 'МФУ',
-      location: 'Корпус 3, каб. 214',
-    },
-    object: { id: 'obj-1', code: 'ОБ-1', name: 'ЖК Северный' },
-    customerDepartment: null,
-    equipmentDepartment: null,
-    description: 'Не захватывает бумагу',
-    dueDate: '2026-08-12',
-    responsibleName: 'Иванов И. И.',
-    responsiblePhone: '9000000000',
-    isUrgent: false,
-    urgencyReason: '',
-    service: null,
-    warrantyClaim: null,
-    estimateRevision: 1,
-    estimateSubmittedAt: null,
-    estimatedTotalAmount: 1000,
-    approval: null,
-    itApproval: null,
-    items: [],
-    completion: null,
-    acceptedByName: '',
-    acceptedAt: null,
-    comment: '',
-    serviceComment: '',
-    files: [],
-    createdByName: 'Штабов С. И.',
-    createdAt: '2026-08-05T09:00:00.000Z',
-    updatedAt: '2026-08-05T09:00:00.000Z',
-    deletedAt: null,
-    version: 3,
-    ...overrides,
-  };
-}
+/**
+ * Заявка «Ожидает приёмки»: работы предъявлены — из этого статуса их принимают или возвращают.
+ * Планка закрывающего документа возврату не помеха (Р112): там принимать нечего, и кнопку
+ * блокирует только пустая причина.
+ */
+const PRESENTED = serviceRequest({
+  status: 'done',
+  estimateRevision: 1,
+  estimatedTotalAmount: 1000,
+});
 
 describe('отказ на кнопке называет поле', () => {
   it('закрытие заявки ТС без отработанного помечает поле, а не показывает тост', async () => {
@@ -114,12 +76,10 @@ describe('отказ на кнопке называет поле', () => {
     mockHttp({
       'PATCH /service-requests/sr-1/rework': ({ body }) => {
         sent(body);
-        return json(serviceRequest());
+        return json(PRESENTED);
       },
     });
-    renderWithUser(
-      <ServiceAcceptModal request={serviceRequest()} mode="rework" onClose={() => {}} />,
-    );
+    renderWithUser(<ServiceAcceptModal request={PRESENTED} mode="rework" onClose={() => {}} />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Вернуть на доработку' }));
 
@@ -133,12 +93,10 @@ describe('отказ на кнопке называет поле', () => {
     mockHttp({
       'PATCH /service-requests/sr-1/rework': ({ body }) => {
         sent(body);
-        return json(serviceRequest({ status: 'assigned' }));
+        return json(serviceRequest({ status: 'in_work' }));
       },
     });
-    renderWithUser(
-      <ServiceAcceptModal request={serviceRequest()} mode="rework" onClose={() => {}} />,
-    );
+    renderWithUser(<ServiceAcceptModal request={PRESENTED} mode="rework" onClose={() => {}} />);
 
     fireEvent.change(screen.getByLabelText('Что доделать'), {
       target: { value: 'не собран корпус' },

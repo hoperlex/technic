@@ -12,18 +12,18 @@ export { serviceRequestsApi } from './api/serviceRequestsApi';
 export { serviceCompanyKeys, serviceRequestKeys } from './api/keys';
 export { serviceCompanyOptionsQuery } from './api/queries';
 export {
-  isServiceRequestOverdue,
-  serviceTodoLabel,
+  serviceStatusLine,
+  type ServiceStatusLine,
   statusAgeDays,
   statusAgeLabel,
 } from './model/waiting';
 export {
   isAwaitingDocuments,
-  missingClosingDocuments,
+  SERVICE_CLOSING_DOCUMENT_HINT,
   serviceDocumentCounts,
 } from './model/documents';
+export { ServiceDocumentUpload } from './ui/ServiceDocumentUpload';
 export { ServiceEstimateTable } from './ui/ServiceEstimateTable';
 export { ServiceRequestContext } from './ui/ServiceRequestContext';
 export { ServiceStatusTag } from './ui/ServiceStatusTag';
 export { UrgentTag } from './ui/UrgentTag';
-export { WaitingOnTag } from './ui/WaitingOnTag';
