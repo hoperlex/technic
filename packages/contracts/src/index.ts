@@ -4,6 +4,9 @@ export * from './permission-catalog';
 export * from './grant-scope';
 export * from './common';
 export * from './links';
+/* Разделы портала (`portal-sections.ts`) — рядом с адресами по той же причине: их спрашивают меню,
+ * маршруты и стартовая страница, и ответ обязан быть один. */
+export * from './portal-sections';
 export * from './address';
 export * from './time';
 export * from './person-name';
