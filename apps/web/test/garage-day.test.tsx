@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import type {
   GarageDriverDto,
   GarageDriverListDto,
@@ -156,7 +156,43 @@ const drivers: GarageDriverDto[] = [
         moveFrom: '',
         moveTo: '',
         sourceRequest: null,
-        requests: [],
+        requests: [
+          {
+            requestId: 'req-1',
+            displayNumber: 'ТС-101',
+            status: 'confirmed',
+            customerName: 'Альфа-объект',
+            workDate: null,
+          },
+        ],
+        waybill: null,
+      },
+      /*
+       * Вторая работа того же дня — на другой машине: водитель за день пересаживается, и это
+       * обычный его день, а не редкость. Ради неё занятость и считается пометкой «ещё N» — в трёх
+       * графах строки стоит только первая работа.
+       */
+      {
+        kind: 'route',
+        routeId: 'route-2',
+        displayNumber: 'Р-13',
+        purpose: 'freight',
+        vehicleId: 'v5',
+        vehicleLabel: 'Т555ТТ799',
+        driverPersonId: 'p1',
+        driverName: 'Петров Пётр Петрович',
+        moveFrom: '',
+        moveTo: '',
+        sourceRequest: null,
+        requests: [
+          {
+            requestId: 'req-3',
+            displayNumber: 'ТС-303',
+            status: 'confirmed',
+            customerName: 'Гамма-объект',
+            workDate: null,
+          },
+        ],
         waybill: null,
       },
     ],
@@ -234,6 +270,41 @@ function renderPage(options: { viewport?: Viewport } = {}) {
     route: `/garage?tab=vehicles&date=${ON_DATE}`,
   });
   return { ...rendered, http };
+}
+
+/**
+ * Таблица вкладки «Водители» — по своей графе, а не по всему экрану.
+ *
+ * Вкладка «Техника» после переключения остаётся смонтированной со своим списком (`PageTabs`),
+ * поэтому один и тот же госномер и одно и то же ФИО стоят в документе дважды: глобальный
+ * `getByText` то падал бы на двух совпадениях, то отвечал чужой строкой.
+ */
+function driversTable(): HTMLElement {
+  // Заголовком графы, а не её текстом: то же название antd держит ещё и в скрытом блоке замера
+  // ширины, и по тексту таких совпадений выходит два.
+  return screen
+    .getByRole('columnheader', { name: 'Рейс/путевой лист' })
+    .closest('.ant-table') as HTMLElement;
+}
+
+/** Строка водителя целиком: ФИО — единственное, чем строку зовут. */
+function driverRow(fullName: string): HTMLElement {
+  return within(driversTable()).getByText(fullName).closest('tr') as HTMLElement;
+}
+
+/** Та же строка, но с ожиданием ответа сервера: таблица монтируется сразу, строки приходят позже. */
+function findDriverRow(fullName: string): Promise<HTMLElement> {
+  return waitFor(() => driverRow(fullName));
+}
+
+/**
+ * Ячейка строки водителя под названной графой. Колонка ищется по заголовку, а не по номеру: тремя
+ * графами день человека и читается, и ответ, уехавший в соседнюю, — это поломка, а не мелочь.
+ */
+function driverCell(fullName: string, column: string): HTMLElement {
+  const header = within(driversTable()).getByRole('columnheader', { name: column });
+  const index = [...(header.parentElement?.children ?? [])].indexOf(header);
+  return driverRow(fullName).querySelectorAll('td')[index] as HTMLElement;
 }
 
 describe('гараж: срез дня', () => {
@@ -321,17 +392,71 @@ describe('гараж: срез дня', () => {
     renderPage();
     fireEvent.click(screen.getByRole('tab', { name: 'Водители' }));
 
-    expect(await screen.findByText('Петров Пётр Петрович')).toBeDefined();
-    expect(screen.getByText('B, C')).toBeDefined();
-    expect(screen.getByText(/00 00 000100/u)).toBeDefined();
-    expect(screen.getByText('назначен')).toBeDefined();
-    // Рейс назван машиной: колонки техники на этой вкладке нет. Совпадений несколько — соседняя
-    // вкладка остаётся смонтированной со своим списком, и это её строка, а не вторая наша.
-    expect(screen.getAllByText('Е646СК799').length).toBeGreaterThan(0);
+    const petrov = 'Петров Пётр Петрович';
+    await findDriverRow(petrov);
+    expect(within(driverRow(petrov)).getByText('B, C')).toBeDefined();
+    expect(within(driverRow(petrov)).getByText(/00 00 000100/u)).toBeDefined();
+    expect(within(driverRow(petrov)).getByText('назначен')).toBeDefined();
+
+    /*
+     * День человека — три отдельные графы одной строки, а не сплошная колонка занятости: о
+     * водителе спрашивают не «что за работа», а «на чём он сегодня и по какому заказу». Поэтому и
+     * читаются они порознь: ответ, съехавший в соседнюю графу, здесь и есть поломка.
+     */
+    expect(within(driverCell(petrov, 'Рейс/путевой лист')).getByText('Р-12')).toBeDefined();
+    expect(within(driverCell(petrov, 'Техника')).getByText('Е646СК799')).toBeDefined();
+    expect(within(driverCell(petrov, 'Заказ/адрес')).getByText('ТС-101')).toBeDefined();
+
+    // Свободный день — прочерк в каждой из трёх граф: пустая ячейка читается как «не загрузилось»,
+    // прочерк — как «в этот день за человеком ничего не числится».
+    const sidorov = 'Сидоров Сидор Сидорович';
+    for (const column of ['Рейс/путевой лист', 'Техника', 'Заказ/адрес'])
+      expect(driverCell(sidorov, column).textContent, column).toBe('—');
 
     // Пробелы комплекта помечают строку, но состояние остаётся «свободен» (ADR 0064).
-    expect(screen.getByText('свободен')).toBeDefined();
-    expect(screen.getByText('документы: 2')).toBeDefined();
+    expect(within(driverRow(sidorov)).getByText('свободен')).toBeDefined();
+    expect(within(driverRow(sidorov)).getByText('документы: 2')).toBeDefined();
+  });
+
+  it('вторая работа дня свёрнута пометкой «ещё N», а в графах стоит первая', async () => {
+    renderPage();
+    fireEvent.click(screen.getByRole('tab', { name: 'Водители' }));
+
+    const petrov = 'Петров Пётр Петрович';
+    await findDriverRow(petrov);
+
+    /*
+     * Ячейки одной строки обязаны стоять вровень — блоки разной высоты разъезжаются и рвут чтение
+     * поперёк, ради которого три графы и заведены. Плата за это ровно одна: в графах стоит первая
+     * работа дня, а остальные считает пометка «ещё N» (полный список у неё в подсказке).
+     */
+    const route = driverCell(petrov, 'Рейс/путевой лист');
+    expect(within(route).getByText('Р-12')).toBeDefined();
+    expect(within(route).getByText('ещё 1')).toBeDefined();
+
+    // Второго рейса в графах нет вовсе — ни его номера, ни его машины, ни его заказа.
+    expect(within(route).queryByText('Р-13')).toBeNull();
+    expect(within(driverCell(petrov, 'Техника')).queryByText('Т555ТТ799')).toBeNull();
+    expect(within(driverCell(petrov, 'Заказ/адрес')).queryByText('ТС-303')).toBeNull();
+    // При этом первая работа показана целиком: пометка считает остаток, а не подменяет ответ.
+    expect(within(driverCell(petrov, 'Техника')).getByText('Е646СК799')).toBeDefined();
+
+    // Пометка одна на строку и стоит в первой графе: занятость у трёх ячеек общая, и трижды
+    // повторённое число ничего бы не добавило.
+    expect(within(driverCell(petrov, 'Техника')).queryByText(/ещё/u)).toBeNull();
+    expect(within(driverCell(petrov, 'Заказ/адрес')).queryByText(/ещё/u)).toBeNull();
+
+    // У свободного дня считать нечего — пометки нет.
+    expect(within(driverRow('Сидоров Сидор Сидорович')).queryByText(/ещё/u)).toBeNull();
+
+    /*
+     * Свёрнутое не потеряно, и машину подсказка называет первой (`driverBusyLine`). Госномер в ней
+     * не украшение: графа «Техника» показывает машину только первой работы, и без него спрятанный
+     * рейс молчал бы ровно про то, ради чего графа заведена, — на чём человек в этот день ездил.
+     * Теми же словами день читают с телефона: строка карточки собирается той же функцией.
+     */
+    fireEvent.mouseEnter(within(route).getByText('ещё 1'));
+    expect(await screen.findByText('Т555ТТ799 · Р-13 · ТС-303')).toBeDefined();
   });
 
   it('раздел ничего не ведёт: действий в строках нет', async () => {

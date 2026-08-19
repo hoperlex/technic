@@ -21,7 +21,7 @@ import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
 import { SummaryBar } from '@shared/ui';
 import { textColumn } from '@shared/ui';
 import { useListParams } from '@shared/lib';
-import { TabsExtra } from '../../components/PageTabs';
+import { TabsExtra, useActiveTabKey } from '../../components/PageTabs';
 import { useVehicleClassificationFilter } from '../../hooks/useVehicleClassificationFilter';
 import { useAuth } from '../../auth/AuthContext';
 import { useJournalAddress } from './journalAddress';
@@ -119,9 +119,11 @@ export function GarageVehiclesTab({
     setParams((p) => ({ ...p, ...patch, page: 1 }));
 
   // Журнал показаний назван в адресе (а не в состоянии таблицы) и открывается только под правом на
-  // сами показания: у среза дня своё право, у цифр приборов — своё.
+  // сами показания: у среза дня своё право, у цифр приборов — своё. Вкладку спрашиваем не ради
+  // права, а ради единственности окна: ключ `?journal=` общий у вкладок гаража, а скрытая вкладка
+  // остаётся смонтированной (`PageTabs`) — без этой проверки один адрес открыл бы два журнала разом.
   const canReadReadings = can('vehicleReadings.read');
-  const journal = useJournalAddress(canReadReadings);
+  const journal = useJournalAddress(useActiveTabKey() === 'vehicles' && canReadReadings);
   // Третий путь строки (§7): карточка машины на вкладке «Показания» — статистика за месяц по день
   // среза. Период считает разбор адреса показаний, а не эта вкладка (`vehicleCardHref`).
   const cardHref = (id: string) => vehicleCardHref(id, date);

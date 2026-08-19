@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { useLocation, useNavigate } from 'react-router';
 import type {
+  GarageDriverDto,
+  GarageDriverListDto,
+  GarageDriversSummaryDto,
   GarageVehicleDto,
   GarageVehicleListDto,
   GarageVehiclesSummaryDto,
@@ -15,7 +18,8 @@ import { MOBILE_VIEWPORT, type Viewport } from './viewport';
 import { GaragePage } from '../src/pages/GaragePage';
 
 /**
- * Гараж → «Техника»: вход в журнал показаний машины (ADR 0103, Р25, Р27).
+ * Гараж: вход в журнал показаний машины (ADR 0103, Р25, Р27) — со строки техники и со строки
+ * водителя.
  *
  * Проверяется здесь адрес, а не содержимое журнала: строки и страницы окна спрашивает свой тест
  * (`readings-journal`), а сюда журнал приходит переходом — и переход этот был сломан. Ссылка
@@ -23,10 +27,16 @@ import { GaragePage } from '../src/pages/GaragePage';
  * это `useState`), а не из адреса: на десктопе нажатие меняло адрес и не открывало ничего, на
  * телефоне то же окно открывалось обработчиком карточки и работало.
  *
- * Отсюда четыре утверждения: окно открывается нажатием, открывается прямо из присланного адреса,
- * закрывается шагом назад и не открывается вовсе тому, кому показания не положены. Пятое —
- * телефон: карточка и ссылка обязаны вести в одно и то же место, иначе ссылка, присланная с
- * телефона, откроет у коллеги не то.
+ * Отсюда четыре утверждения про вкладку техники: окно открывается нажатием, открывается прямо из
+ * присланного адреса, закрывается шагом назад и не открывается вовсе тому, кому показания не
+ * положены. Пятое — телефон: карточка и ссылка обязаны вести в одно и то же место, иначе ссылка,
+ * присланная с телефона, откроет у коллеги не то.
+ *
+ * Со вкладки «Водители» вход тот же: номер машины в её колонке «Техника» ведёт в журнал той самой
+ * машины, под человеком которой она в этот день ходит. Ключ адреса у обеих вкладок общий
+ * (`?journal=`), а скрытая вкладка остаётся смонтированной (`PageTabs`) — поэтому у водительских
+ * утверждений своё главное: окно обязано открыться **ровно одно**. Без вопроса «а какая вкладка
+ * сейчас открыта» один адрес открыл бы два журнала разом, здесь и на соседней вкладке.
  */
 
 const JOURNAL = 'GET /vehicle-readings/journal/:vehicleId';
@@ -56,6 +66,57 @@ function vehicle(overrides: Partial<Row> & Pick<Row, 'id' | 'label'>): Row {
 
 const FIRST = vehicle({ id: 'v1', label: 'Е646СК799' });
 const SECOND = vehicle({ id: 'v2', label: 'В010ОР799' });
+
+/**
+ * Водитель того же дня: его строка называет машину, на которой он едет, и номер её — та же дверь
+ * в журнал показаний. Машина здесь вторая (`v2`) намеренно: так видно, что журнал открылся по
+ * машине из строки водителя, а не по первой строке соседней вкладки.
+ */
+const DRIVER: GarageDriverDto = {
+  personId: 'p1',
+  state: 'assigned',
+  fullName: 'Петров Пётр Петрович',
+  personnelNo: 'Т-100',
+  phone: '',
+  credentialTypeCode: 'driver_license',
+  licenseNumber: '',
+  licenseExpiresOn: null,
+  categories: ['C'],
+  gaps: [],
+  busy: [
+    {
+      kind: 'route',
+      routeId: 'route-1',
+      displayNumber: 'Р-12',
+      purpose: 'freight',
+      vehicleId: SECOND.id,
+      vehicleLabel: SECOND.label,
+      driverPersonId: 'p1',
+      driverName: 'Петров Пётр Петрович',
+      moveFrom: '',
+      moveTo: '',
+      sourceRequest: null,
+      requests: [],
+      waybill: null,
+    },
+  ],
+};
+
+const DRIVER_LIST: GarageDriverListDto = {
+  items: [DRIVER],
+  total: 1,
+  page: 1,
+  pageSize: 50,
+  onDate: ON_DATE,
+};
+
+const DRIVER_SUMMARY: GarageDriversSummaryDto = {
+  total: 1,
+  free: 0,
+  assigned: 1,
+  documentsIncomplete: 0,
+  onDate: ON_DATE,
+};
 
 const GARAGE_SUMMARY: GarageVehiclesSummaryDto = {
   total: 2,
@@ -98,9 +159,8 @@ function renderPage(options: {
   const http = mockHttp({
     'GET /garage/vehicles': () => json(list),
     'GET /garage/vehicles/summary': () => json(GARAGE_SUMMARY),
-    'GET /garage/drivers': () => json(emptyList()),
-    'GET /garage/drivers/summary': () =>
-      json({ ...GARAGE_SUMMARY, assigned: 0, documentsIncomplete: 0 }),
+    'GET /garage/drivers': () => json(DRIVER_LIST),
+    'GET /garage/drivers/summary': () => json(DRIVER_SUMMARY),
     'GET /vehicle-classifications': () => json(emptyList()),
     // Соседняя колонка «ТО» спрашивает своё состояние пакетом (Р16); спрашивают с неё свои тесты.
     'GET /vehicle-maintenance/snapshot': ({ query }) =>
@@ -138,6 +198,28 @@ const address = () => screen.getByTestId('address').textContent ?? '';
 /** Строка таблицы по госномеру: из неё и открывают журнал. */
 function row(label: string): HTMLElement {
   return screen.getByText(label).closest('tr') as HTMLElement;
+}
+
+/** Переход на соседнюю вкладку: день и открытое окно у обеих вкладок общие. */
+function openDrivers(): void {
+  fireEvent.click(screen.getByRole('tab', { name: 'Водители' }));
+}
+
+/**
+ * Строка водителя — внутри таблицы своей вкладки и с ожиданием ответа сервера.
+ *
+ * Ищется она не по всему экрану намеренно: вкладка «Техника» остаётся смонтированной со своим
+ * списком, и тот же госномер стоит в документе дважды — глобальный `getByText` отвечал бы чужой
+ * строкой. Сама таблица опознана заголовком графы, которой на соседней вкладке нет (тот же текст
+ * antd держит ещё и в скрытом блоке замера ширины, поэтому спрашивается заголовок, а не текст).
+ */
+function driverRow(fullName: string): Promise<HTMLElement> {
+  return waitFor(() => {
+    const table = screen
+      .getByRole('columnheader', { name: 'Рейс/путевой лист' })
+      .closest('.ant-table') as HTMLElement;
+    return within(table).getByText(fullName).closest('tr') as HTMLElement;
+  });
 }
 
 describe('гараж: вход в журнал показаний', () => {
@@ -194,6 +276,64 @@ describe('гараж: вход в журнал показаний', () => {
     expect(await screen.findByText('Е646СК799')).toBeDefined();
     expect(screen.queryByText('журнал')).toBeNull();
     expect(screen.queryByText('Показания — Е646СК799')).toBeNull();
+    expect(http.countOf(JOURNAL)).toBe(0);
+  });
+
+  it('номер машины в строке водителя открывает журнал этой машины', async () => {
+    const http = renderPage({});
+    expect(await screen.findByText('Е646СК799')).toBeDefined();
+    openDrivers();
+
+    /*
+     * Из гаражного дня о машине под человеком спрашивают ровно одно — сданы ли за неё цифры
+     * приборов, — и ссылка ведёт туда же, куда со вкладки техники. Адрес при этом называет свою
+     * вкладку: открывшись у коллеги, ссылка покажет тот же срез, а не соседний.
+     */
+    const link = within(await driverRow(DRIVER.fullName)).getByText(SECOND.label);
+    expect(link.getAttribute('href')).toBe(`/garage?tab=drivers&date=${ON_DATE}&journal=v2`);
+
+    fireEvent.click(link);
+
+    expect(await screen.findByText('Показания — В010ОР799')).toBeDefined();
+    expect(address()).toBe(`/garage?tab=drivers&date=${ON_DATE}&journal=v2`);
+    // Спрошен журнал машины из строки водителя, а не первой строки соседней вкладки.
+    await waitFor(() => expect(http.countOf(JOURNAL)).toBe(1));
+    expect(http.lastCall(JOURNAL)!.path).toBe('/vehicle-readings/journal/v2');
+  });
+
+  it('со вкладки водителей журнал открывается ровно одним окном', async () => {
+    renderPage({});
+
+    /*
+     * Главный регресс этой двери. Вкладку «Технику» уже смотрели, и она остаётся смонтированной
+     * со своим списком и тем же ключом адреса `?journal=`. Не спроси вкладки, какая из них сейчас
+     * открыта, — один адрес открыл бы два одинаковых журнала разом, один поверх другого.
+     */
+    expect(await screen.findByText('Е646СК799')).toBeDefined();
+    openDrivers();
+    fireEvent.click(within(await driverRow(DRIVER.fullName)).getByText(SECOND.label));
+
+    expect(await screen.findByText('Показания — В010ОР799')).toBeDefined();
+    // Соседняя вкладка и правда осталась в документе со своим списком — без этого проверка ниже
+    // была бы пустой: два окна открыть просто некому.
+    expect(screen.getByText(FIRST.label)).toBeDefined();
+    expect(screen.getAllByRole('dialog')).toHaveLength(1);
+    expect(screen.getAllByText('Показания — В010ОР799')).toHaveLength(1);
+  });
+
+  it('без права на показания номер машины в строке водителя остаётся текстом', async () => {
+    // Механику гараж положен (`garage.read`), показания — нет (Р14). Номер машины из строки
+    // водителя ему нужен по-прежнему — он говорит, на чём человек сегодня, — но остаётся текстом:
+    // ссылка вела бы в окно, которому нечего показать.
+    const http = renderPage({
+      user: authUser({ role: 'mechanic' }),
+      route: `/garage?tab=drivers&date=${ON_DATE}&journal=v2`,
+    });
+
+    const number = within(await driverRow(DRIVER.fullName)).getByText(SECOND.label);
+    expect(number.closest('a')).toBeNull();
+    // И присланный адрес журнала не открывает ничего: право спрашивается до чтения ключа.
+    expect(screen.queryByText('Показания — В010ОР799')).toBeNull();
     expect(http.countOf(JOURNAL)).toBe(0);
   });
 
