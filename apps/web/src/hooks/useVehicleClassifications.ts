@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import {
+  classificationFilterKey,
   classificationPriceHint,
   vehicleClassificationKey,
   type VehicleClassificationDto,
@@ -68,7 +69,18 @@ export function classificationGroups(
  * Заказывают всегда конечную позицию (ADR 0028) — «просто автокран» не заказывают. У списка же
  * спрашивают оба уровня: «сколько заказывали автокранов» — вопрос не реже, чем «сколько на 130 т»,
  * а заявка, заведённая до появления категорий, конечной позиции не имеет вовсе и находится только
- * по типу. Значение варианта — тот же ключ позиции: `тип:` целиком, `тип:категория` — категория.
+ * по типу.
+ *
+ * Значение варианта — **ключ фильтра** (`t<тип>` / `c<категория>`), а не ключ позиции
+ * `тип:категория` из формы заявки. Ключа два, потому что вопроса два: форма выбирает одну конечную
+ * позицию и обязана назвать оба уровня, а фильтр набирает несколько позиций сразу и объединяет их
+ * по ИЛИ — пара на его месте позволяла бы прислать несуществующее сочетание `типA:категорияB` и
+ * получить молча переосмысленный ответ вместо отказа.
+ *
+ * Ключ при этом один на все три места сразу: значение `Select`, черновик мобильного шита и
+ * параметр запроса. Разойдись они — выбранное значение нечем было бы показать, пока справочник
+ * грузится: подпись берётся из загруженных вариантов, и до ответа сервера поле стояло бы пустым
+ * при заданном отборе.
  */
 export function classificationFilterGroups(
   items: VehicleClassificationDto[],
@@ -81,11 +93,14 @@ export function classificationFilterGroups(
     if (c.vehicleCategoryId && !wholeTypeAdded.has(c.vehicleTypeId)) {
       wholeTypeAdded.add(c.vehicleTypeId);
       group.options.push({
-        value: vehicleClassificationKey(c.vehicleTypeId, null),
+        value: classificationFilterKey(c.vehicleTypeId, null),
         label: `${c.typeName} — все категории`,
       });
     }
-    group.options.push({ value: c.key, label: c.label });
+    group.options.push({
+      value: classificationFilterKey(c.vehicleTypeId, c.vehicleCategoryId),
+      label: c.label,
+    });
   }
   return groups;
 }
@@ -116,7 +131,7 @@ export function useVehicleClassifications() {
     items,
     byKey,
     groups: classificationGroups(items),
-    /** Те же позиции для фильтра списка — с вариантом «весь тип» (classificationFilterGroups). */
+    /** Те же позиции для фильтра списка: вариант «весь тип» и свой ключ фильтра. */
     filterGroups: classificationFilterGroups(items),
     loading: isFetching,
   };

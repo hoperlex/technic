@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { type CostTargetSource, costTargetKey, costTargetOf } from '@technic/contracts';
+import {
+  type CostTargetRef,
+  type CostTargetSource,
+  costTargetKey,
+  costTargetKeyOf,
+  costTargetOf,
+  parseCostTargetKey,
+} from '@technic/contracts';
 
 /**
  * Объект затрат заявки (план `docs/route-trips-plan.md`, Р25).
@@ -107,5 +114,82 @@ describe('ключ объекта затрат', () => {
     const after = costTargetOf({ ...empty, objectId: UUID_OBJECT, objectName: 'ЖК «Северный»' })!;
 
     expect(costTargetKey(before)).toBe(costTargetKey(after));
+  });
+});
+
+/**
+ * Ключ из DTO (план `docs/department-requests-plan.md`, §7).
+ *
+ * У формы правки на руках только заявка: шесть плоских полей, а не готовый объект затрат. Ключ
+ * собирается тем же правилом, что и подпись, — вторым разбором пары он разошёлся бы с `costTargetOf`
+ * ровно там, где правило поправят.
+ */
+describe('ключ объекта затрат из полей заявки', () => {
+  it('собирается прямо из DTO — и по объекту, и по отделу', () => {
+    expect(
+      costTargetKeyOf({
+        ...empty,
+        objectId: UUID_OBJECT,
+        objectCode: 'СЕВ',
+        objectName: 'ЖК Северный',
+      }),
+    ).toBe(`object:${UUID_OBJECT}`);
+
+    expect(
+      costTargetKeyOf({
+        ...empty,
+        departmentId: UUID_DEPARTMENT,
+        departmentCode: 'ПТО',
+        departmentName: 'Производственно-технический отдел',
+      }),
+    ).toBe(`department:${UUID_DEPARTMENT}`);
+  });
+
+  /** Заказчика в строке не видно — поле правки остаётся пустым, а не показывает выдуманный выбор. */
+  it('без заказчика ключа нет', () => {
+    expect(costTargetKeyOf(empty)).toBeNull();
+  });
+});
+
+/**
+ * Разбор ключа (план `docs/department-requests-plan.md`, Р2).
+ *
+ * Это единственное место, где значение поля превращается в пару `{ objectId, departmentId }` тела
+ * запроса, поэтому проверяются **обе** половины: род и идентификатор. Одного префикса мало —
+ * `object:` с мусором после двоеточия поле показало бы принятым, а сервер вернул бы на нём 400,
+ * когда человек уже ушёл со своего действия.
+ */
+describe('разбор ключа объекта затрат', () => {
+  it.each([
+    { kind: 'object', id: UUID_OBJECT },
+    { kind: 'department', id: UUID_DEPARTMENT },
+  ] satisfies CostTargetRef[])('ключ $kind разбирается обратно в исходную ссылку', (ref) => {
+    expect(parseCostTargetKey(costTargetKey(ref))).toEqual(ref);
+  });
+
+  /**
+   * Полный объект затрат ключу подходит структурно — на нём круг тоже замыкается, но подпись и код
+   * из ключа не возвращаются: их там нет намеренно.
+   */
+  it('круг от полного объекта затрат возвращает ссылку без подписи', () => {
+    const target = costTargetOf({
+      ...empty,
+      objectId: UUID_OBJECT,
+      objectCode: 'СЕВ',
+      objectName: 'ЖК Северный',
+    })!;
+
+    expect(parseCostTargetKey(costTargetKey(target))).toEqual({ kind: 'object', id: UUID_OBJECT });
+  });
+
+  it.each([
+    ['неизвестный род', `site:${UUID_OBJECT}`],
+    ['пустой идентификатор', 'object:'],
+    ['идентификатор не UUID', 'object:123'],
+    ['лишний разделитель', `object:${UUID_OBJECT}:extra`],
+    ['ключ без разделителя', 'object'],
+    ['пустая строка', ''],
+  ])('%s ключом не считается: %j', (_case, key) => {
+    expect(parseCostTargetKey(key)).toBeNull();
   });
 });

@@ -486,7 +486,12 @@ export const createServiceRequestSchema = withUrgency(
     /**
      * Отдел, от имени которого заявка (ADR 0085 §8). Подсказывается владельцем техники либо
      * единственным отделом автора, но выбирается человеком: сотрудник соседнего отдела чинит «чужой»
-     * принтер чаще, чем кажется. `null` — заявка объектная, от площадки.
+     * принтер чаще, чем кажется.
+     *
+     * `null` и «поля нет» — разные ответы, и разница здесь важнее самого поля: `null` означает
+     * **заявка от площадки, подсказку не применять** — так отвечает форма, где заказчик обязателен
+     * и пустого состояния у него нет; `undefined` означает «клиент про поле не знает», и только
+     * тогда сервер подставляет подсказку (Р12, Р12а).
      */
     customerDepartmentId: uuidSchema.nullish(),
     /**
@@ -515,6 +520,10 @@ export type CreateServiceRequestInput = z.infer<typeof createServiceRequestSchem
 export const updateServiceRequestSchema = z.object({
   description: descriptionSchema.optional(),
   dueDate: dateOnlySchema.nullish(),
+  /**
+   * Смысл значений тот же, что при заведении, но сервер сверяет присланное **со строкой заявки**:
+   * форма шлёт заказчика всегда, и «поле пришло» не означает «человек его менял» (Р12б).
+   */
   customerDepartmentId: uuidSchema.nullish(),
   responsibleName: contactNameSchema.optional(),
   responsiblePhone: contactPhoneSchema.optional(),

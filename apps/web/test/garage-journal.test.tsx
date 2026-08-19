@@ -13,7 +13,8 @@ import type {
 import { json, mockHttp, type HttpMock } from './http';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
-import { emptyList } from './factories/common';
+import { list as listOf } from './factories/common';
+import { classification } from './factories/vehicle';
 import { MOBILE_VIEWPORT, type Viewport } from './viewport';
 import { GaragePage } from '../src/pages/GaragePage';
 
@@ -142,6 +143,16 @@ function journalOf(vehicleId: string): VehicleReadingJournalDto {
   };
 }
 
+/** Позиция классификатора для фильтра техники: строки среза она не меняет — отбирает сервер. */
+const CRANE = classification({
+  key: 'vt-1:vc-1',
+  vehicleTypeId: 'vt-1',
+  vehicleCategoryId: 'vc-1',
+  typeName: 'Автокраны',
+  kindName: 'Спецтехника',
+  label: 'Автокраны, г/п 25 т',
+});
+
 function renderPage(options: {
   rows?: Row[];
   user?: ReturnType<typeof authUser>;
@@ -161,7 +172,7 @@ function renderPage(options: {
     'GET /garage/vehicles/summary': () => json(GARAGE_SUMMARY),
     'GET /garage/drivers': () => json(DRIVER_LIST),
     'GET /garage/drivers/summary': () => json(DRIVER_SUMMARY),
-    'GET /vehicle-classifications': () => json(emptyList()),
+    'GET /vehicle-classifications': () => json(listOf([CRANE])),
     // Соседняя колонка «ТО» спрашивает своё состояние пакетом (Р16); спрашивают с неё свои тесты.
     'GET /vehicle-maintenance/snapshot': ({ query }) =>
       json({ on: query.get('on') ?? '', items: [] }),
@@ -346,5 +357,39 @@ describe('гараж: вход в журнал показаний', () => {
     // Тот же ключ адреса, что у ссылки на десктопе: присланная с телефона ссылка открывает у
     // коллеги ровно тот же журнал.
     expect(address()).toContain('journal=v1');
+  });
+});
+
+/**
+ * Фильтр техники на срезе дня — тот же контрол, что в заказе ТС: вопрос «какая это техника» у
+ * гаража и у заявок один, и ответ на него уезжает набором позиций одним параметром.
+ */
+describe('гараж: фильтр техники на срезе дня', () => {
+  it('выбранная позиция уходит параметром classifications', async () => {
+    const http = renderPage({});
+    await screen.findByText('Е646СК799');
+
+    // Поле опознаётся подсказкой: подписи у фильтров панели нет, её место занимает placeholder.
+    const field = [...document.querySelectorAll<HTMLElement>('.ant-select')].find(
+      (el) => el.textContent?.trim() === 'Любой тип ТС',
+    );
+    expect(field, 'фильтр «Любой тип ТС»').toBeTruthy();
+    fireEvent.mouseDown(field!.querySelector('.ant-select-selector') ?? field!);
+    await waitFor(() => {
+      const option = [...document.querySelectorAll<HTMLElement>('.ant-select-item-option')].find(
+        (o) => o.textContent?.includes('Автокраны, г/п 25 т'),
+      );
+      expect(option, 'вариант категории').toBeTruthy();
+      fireEvent.click(option!);
+    });
+
+    await waitFor(() => {
+      const call = http.lastCall('GET /garage/vehicles')!;
+      // Одна позиция — тоже набор; старой пары полей в запросе среза больше нет.
+      expect(call.query.get('classifications')).toBe('cvc-1');
+      expect(call.query.get('vehicleTypeId')).toBeNull();
+      // День среза при смене фильтра остаётся прежним: он живёт в адресе, а не в параметрах.
+      expect(call.query.get('on')).toBe(ON_DATE);
+    });
   });
 });

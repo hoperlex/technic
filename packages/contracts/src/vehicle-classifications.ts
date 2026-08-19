@@ -133,3 +133,152 @@ export function classificationPriceHint(v: {
   if (v.avgPricePerShift != null) return `~ ${money(v.avgPricePerShift)} ₽/смена`;
   return null;
 }
+
+// ── Ключ фильтра: набор позиций одной строкой запроса ──
+//
+// Фильтр списка спрашивает не то же, что форма заявки: заказывают одну позицию, а показать просят
+// несколько сразу («автокраны и самосвалы» одним списком). Отсюда второй ключ, самодостаточный:
+// `t<uuid>` — тип целиком со всеми категориями, `c<uuid>` — одна категория. Пара `тип:категория`
+// на провод не выходит намеренно: категория принадлежит своему типу по составному ключу, а пара
+// позволяла бы прислать несуществующее сочетание `типA:категорияB` и получить молча переосмысленный
+// ответ вместо отказа.
+
+/**
+ * Потолок набора. Посчитан от строки запроса: ключ занимает 37 байт плюс закодированный
+ * разделитель, 60 позиций ≈ 2,4 КБ, и весь адрес списка с остальными фильтрами укладывается в
+ * дефолтные 8 КБ nginx с запасом. Второй довод тот же, что у любого списочного фильтра: «выбрано
+ * всё» и «фильтр не задан» — один и тот же вопрос к списку.
+ *
+ * Константа одна на схему, портал и подпись фильтра: разойдись они, человек упирался бы в 400 там,
+ * где интерфейс ещё разрешает выбирать.
+ */
+export const CLASSIFICATION_FILTER_MAX = 60;
+
+/** Префикс плюс UUID — длина ключа фиксирована, и от неё считается предел длины всей строки. */
+const CLASSIFICATION_FILTER_KEY_LENGTH = 37;
+
+/** Ключ фильтра: категория задана — отбирают по ней, нет — по типу целиком. */
+export function classificationFilterKey(
+  vehicleTypeId: string,
+  vehicleCategoryId: string | null | undefined,
+): string {
+  return vehicleCategoryId ? `c${vehicleCategoryId}` : `t${vehicleTypeId}`;
+}
+
+/**
+ * Разбор ключа фильтра. UUID проверяется здесь, а не только в схеме: ключ приходит из строки
+ * запроса, и «разобрался» обязано означать «этим можно отбирать», иначе мусор доехал бы до SQL.
+ */
+export function parseClassificationFilterKey(
+  key: string | null | undefined,
+): { kind: 'type' | 'category'; id: string } | null {
+  if (!key) return null;
+  const kind = key[0] === 't' ? 'type' : key[0] === 'c' ? 'category' : null;
+  if (kind === null) return null;
+  const id = key.slice(1);
+  return uuidSchema.safeParse(id).success ? { kind, id } : null;
+}
+
+/**
+ * Канонический вид набора для строки запроса: дедупликация, сортировка по самому ключу, запятая.
+ *
+ * Сортировка именно по ключу, а не по порядку вариантов в списке: справочника в памяти может ещё
+ * не быть, и один и тот же выбор давал бы две разные строки — два ключа кэша и два запроса там,
+ * где вопрос один. Пустой набор даёт `undefined`, чтобы параметр не уезжал вовсе: пустая строка и
+ * отсутствие параметра означают одно, а лишний параметр — третий ключ кэша.
+ */
+export function serializeClassificationFilter(keys: string[]): string | undefined {
+  const unique = [...new Set(keys)].sort();
+  return unique.length === 0 ? undefined : unique.join(',');
+}
+
+/** Разобранный набор: две ветки отбора — «весь тип» и «одна категория», объединяемые по ИЛИ. */
+export interface ClassificationFilter {
+  typeIds: string[];
+  categoryIds: string[];
+}
+
+/**
+ * Набор в query-строке — через запятую, тем же приёмом, что действия аудита (`auditActionsSchema`):
+ * повторённый параметр `classifications=a&classifications=b` Fastify разбирает в массив только
+ * пока значений больше одного, и на единственной выбранной позиции схема получила бы строку — тип
+ * фильтра зависел бы от того, сколько галочек поставил человек.
+ *
+ * Пустая строка означает «фильтра нет», а не ошибку: снятые галочки — обычное состояние формы, и
+ * отвечать на них 400-й значило бы заставлять портал вычищать параметр. Мусорный ключ, наоборот,
+ * отвергается: набор собирается из справочника, и опечатка в ключе должна быть видна отказом, а не
+ * молча суженным списком.
+ */
+export const classificationFilterSchema = z
+  .string()
+  // Предел длины — от потолка набора: 60 ключей с разделителями плюс запас. Строка длиннее этого
+  // не бывает у портала вовсе, и разбирать её по запятым уже незачем.
+  .max(CLASSIFICATION_FILTER_MAX * (CLASSIFICATION_FILTER_KEY_LENGTH + 1) + 20)
+  .transform((v) =>
+    v
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => s !== ''),
+  )
+  .pipe(
+    z
+      .array(z.string())
+      .max(CLASSIFICATION_FILTER_MAX, `Не больше ${CLASSIFICATION_FILTER_MAX} позиций в фильтре`),
+  )
+  .transform((keys, ctx): ClassificationFilter => {
+    const typeIds: string[] = [];
+    const categoryIds: string[] = [];
+    for (const key of keys) {
+      const parsed = parseClassificationFilterKey(key);
+      if (parsed === null) {
+        ctx.addIssue({ code: 'custom', message: `Неизвестный ключ фильтра: ${key}` });
+        continue;
+      }
+      if (parsed.kind === 'type') typeIds.push(parsed.id);
+      else categoryIds.push(parsed.id);
+    }
+    return { typeIds, categoryIds };
+  });
+
+/** Пустой набор — это «фильтра нет»: в условие выборки он не превращается вовсе. */
+export function isClassificationFilterEmpty(f: ClassificationFilter | undefined): boolean {
+  return f === undefined || (f.typeIds.length === 0 && f.categoryIds.length === 0);
+}
+
+/** Что нужно проверке «две формы сразу»; остальные поля списочного запроса ей безразличны. */
+interface ClassificationFormQuery {
+  classifications?: ClassificationFilter | undefined;
+  vehicleTypeId?: string | undefined;
+  vehicleCategoryId?: string | null | undefined;
+}
+
+/**
+ * Запрет задавать технику двумя формами сразу — набором и старой парой `vehicleTypeId` /
+ * `vehicleCategoryId`. Обе формы приняты одновременно означали бы выбор приоритета за клиента, а
+ * молча выигравшая форма — это ровно тот дефект, ради которого набор и заводился.
+ *
+ * Вешается на **итоговые** схемы, уже после всех `.extend()`: zod переносит проверки в
+ * расширенную схему, и наследованная от списочной проверка сработала бы у ленты и журнала вторым
+ * разом. Поэтому производные схемы расширяют базу без проверки, а проверку ставят себе сами.
+ */
+export function withSingleClassificationForm<T extends z.ZodType<ClassificationFormQuery>>(
+  schema: T,
+): T {
+  return schema.superRefine((q, ctx) => {
+    const filter = q.classifications;
+    // Проверки объекта zod выполняет и тогда, когда само поле не разобралось: на месте набора в
+    // этот момент лежит промежуточное значение, а отказ по нему уже собран — второй жалобы на ту
+    // же строку человеку не нужно.
+    if (filter === undefined || !Array.isArray(filter.typeIds)) return;
+    if (isClassificationFilterEmpty(filter)) return;
+    // Старая пара задана любой своей половиной: и «только тип», и «только категория» — это уже
+    // ответ на тот же вопрос, что и набор.
+    const legacyPair = q.vehicleTypeId ?? q.vehicleCategoryId ?? undefined;
+    if (legacyPair === undefined) return;
+    ctx.addIssue({
+      code: 'custom',
+      path: ['classifications'],
+      message: 'Фильтр по технике задан дважды',
+    });
+  });
+}

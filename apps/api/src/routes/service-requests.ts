@@ -1512,12 +1512,35 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
    * соседнего отдела чинит «чужой» принтер чаще, чем кажется, и присланное значение всегда
    * побеждает подсказку. Чужой отдел роли отдела недоступен — 403; несколько отделов без подсказки
    * из техники означают, что выбрать должен человек, — 422.
+   *
+   * `null` и `undefined` — **разные** ответы, а не одно «пусто» (Р12). `null` присылает форма:
+   * человек выбрал «заявка от площадки», и подставлять ему отдел вместо явного выбора значит
+   * молча отменить решение. `undefined` — поля в теле нет вовсе: так приходят старые клиенты и
+   * интеграции, и для них подсказка остаётся единственным способом заполнить заказчика.
    */
   async function resolveCustomerDepartment(
     p: Principal,
     body: { customerDepartmentId?: string | null },
     equipment: { ownerDepartmentId: string | null },
   ): Promise<string | null> {
+    if (body.customerDepartmentId === null) {
+      /**
+       * Заявка от площадки. Роли отдела она доступна только по технике своего отдела: без
+       * отдела-заказчика такая заявка держится в её области одним `equipment_department_id`
+       * (`serviceRequestScopeWhere`), и по чужой единице учётка завела бы заявку, которой сама
+       * потом не увидит. Ролей без отдельской оси граница не касается вовсе: их область
+       * считается объектом техники либо не считается ничем.
+       */
+      if (
+        isDepartmentScopedRole(p.role) &&
+        !(equipment.ownerDepartmentId && p.departmentIds.includes(equipment.ownerDepartmentId))
+      ) {
+        throw err.forbidden(
+          `${roleLabels[p.role!]} заводит заявку от площадки только по технике своего отдела — по чужой технике заявка заводится от отдела`,
+        );
+      }
+      return null;
+    }
     if (body.customerDepartmentId) {
       if (isDepartmentScopedRole(p.role) && !p.departmentIds.includes(body.customerDepartmentId)) {
         throw err.forbidden(`${roleLabels[p.role!]} заводит заявки только от своих отделов`);
@@ -1563,12 +1586,22 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
       }
       const before = (await getDto(row.id))!;
 
-      const customerDepartmentId =
-        body.customerDepartmentId !== undefined
-          ? await resolveCustomerDepartment(p, body, {
-              ownerDepartmentId: row.equipmentDepartmentId,
-            })
-          : row.customerDepartmentId;
+      /**
+       * «Поле пришло» и «значение изменилось» — разные события (Р12б). Форма присылает заказчика
+       * всегда, поэтому сравнение идёт со строкой заявки, а не с телом запроса: прогоняй мы
+       * неизменившееся значение через ограничения заново, согласующий от ИТ, который видит чужую
+       * заявку сквозной областью, получал бы 403 на правку телефона — состав поля заказчика эта
+       * область ему не расширяет (Р11б). Заодно отсюда следует, что прежний площадочный заказчик
+       * правкой не сбрасывается: «не менял» никогда не означает «сбросил».
+       */
+      const customerChanged =
+        body.customerDepartmentId !== undefined &&
+        (body.customerDepartmentId ?? null) !== row.customerDepartmentId;
+      const customerDepartmentId = customerChanged
+        ? await resolveCustomerDepartment(p, body, {
+            ownerDepartmentId: row.equipmentDepartmentId,
+          })
+        : row.customerDepartmentId;
 
       await db.transaction(async (tx) => {
         const patch: RequestPatch = {
@@ -1578,9 +1611,7 @@ export default async function serviceRequestsRoutes(app: FastifyInstance): Promi
         };
         if (body.description !== undefined) patch.description = body.description;
         if (body.dueDate !== undefined) patch.dueDate = body.dueDate ?? null;
-        if (body.customerDepartmentId !== undefined) {
-          patch.customerDepartmentId = customerDepartmentId;
-        }
+        if (customerChanged) patch.customerDepartmentId = customerDepartmentId;
         if (body.responsibleName !== undefined) patch.responsibleName = body.responsibleName;
         if (body.responsiblePhone !== undefined) patch.responsiblePhone = body.responsiblePhone;
         if (body.comment !== undefined) patch.comment = body.comment;

@@ -4,7 +4,7 @@ import { DataTable, type CardConfig, type TableChange } from '../src/shared/ui';
 import { FilterSheet } from '../src/shared/ui';
 import { ListToolbar } from '../src/shared/ui';
 import type { FilterDefinition } from '../src/shared/ui';
-import { sortOptionsFrom } from '../src/shared/ui';
+import { activeFilterCount, sortOptionsFrom } from '../src/shared/ui';
 import { ApprovalCell } from '../src/pages/vehicle/requestRowCells';
 import { DESKTOP_VIEWPORT, MOBILE_VIEWPORT, setViewport } from './viewport';
 
@@ -228,6 +228,71 @@ describe('шит фильтров', () => {
     // Объект у штаба остаётся выбранным, а пустой статус и был пустым — менять нечего.
     expect(onObject).not.toHaveBeenCalled();
     expect(onStatus).not.toHaveBeenCalled();
+  });
+
+  /** Набор значений в шите: несколько позиций одного справочника одной выдачей. */
+  const classifications = (onChange: (value: string[]) => void, value: string[] = []) =>
+    [
+      {
+        kind: 'multiSelect',
+        key: 'classifications',
+        label: 'Тип ТС',
+        value,
+        placeholder: 'Любой тип ТС',
+        options: [
+          { value: 't-crane', label: 'Автокраны' },
+          { value: 't-dump', label: 'Самосвалы' },
+        ],
+        onChange,
+      },
+    ] satisfies FilterDefinition[];
+
+  /** Отметить вариант набора. Ищем строго в выпадающем списке: он остаётся открытым, а подпись
+      отмеченного появляется ещё и тегом — по тексту нашлись бы оба. */
+  function pickOption(label: string) {
+    fireEvent.click(document.querySelector(`.ant-select-item-option[title="${label}"]`)!);
+  }
+
+  it('набор копится в черновике и уходит в список одним вызовом', () => {
+    const onTypes = vi.fn();
+    openSheet(classifications(onTypes));
+
+    fireEvent.mouseDown(document.querySelector('.ant-select-content')!);
+    pickOption('Автокраны');
+    pickOption('Самосвалы');
+    expect(onTypes).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByText('Применить'));
+    // Один вызов на весь набор, а не по вызову на позицию: иначе список перезапрашивался бы
+    // столько раз, сколько галок поставили.
+    expect(onTypes).toHaveBeenCalledTimes(1);
+    expect(onTypes).toHaveBeenCalledWith(['t-crane', 't-dump']);
+  });
+
+  it('«Применить» не трогает набор, который не меняли', () => {
+    const onTypes = vi.fn();
+    const { rerender } = openSheet(classifications(onTypes, ['t-crane']));
+    // Страница перерисовалась при открытом шите и пересобрала описания: состав набора тот же,
+    // а массив уже другой. Сравнение по ссылке здесь дёрнуло бы список и сбросило его на первую
+    // страницу, хотя человек ничего не выбирал.
+    rerender(
+      <FilterSheet open onClose={vi.fn()} filters={classifications(onTypes, ['t-crane'])} />,
+    );
+    fireEvent.click(screen.getByText('Применить'));
+    expect(onTypes).not.toHaveBeenCalled();
+  });
+
+  it('«Сбросить» чистит набор', () => {
+    const onTypes = vi.fn();
+    openSheet(classifications(onTypes, ['t-crane', 't-dump']));
+    fireEvent.click(screen.getByText('Сбросить'));
+    fireEvent.click(screen.getByText('Применить'));
+    expect(onTypes).toHaveBeenCalledWith([]);
+  });
+
+  it('счётчик фильтров считает непустой набор один раз, а пустой не считает', () => {
+    expect(activeFilterCount(classifications(vi.fn()))).toBe(0);
+    expect(activeFilterCount(classifications(vi.fn(), ['t-crane', 't-dump']))).toBe(1);
   });
 });
 

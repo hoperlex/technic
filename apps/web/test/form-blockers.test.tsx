@@ -81,7 +81,9 @@ function submit(): void {
 describe('отказ формы', () => {
   it('правило показывает причину под своим полем и просит прокрутку к нему', async () => {
     const scroll = vi.fn();
-    renderWithUser(<Harness formRef={(form) => vi.spyOn(form, 'scrollToField').mockImplementation(scroll)} />);
+    renderWithUser(
+      <Harness formRef={(form) => vi.spyOn(form, 'scrollToField').mockImplementation(scroll)} />,
+    );
 
     submit();
 

@@ -1,0 +1,130 @@
+import { costTargetKey, type CostTargetKey, type ServiceRequestDto } from '@technic/contracts';
+import { useDepartmentScope } from '../../../hooks/useDepartmentScope';
+import {
+  useRequestCustomerOptions,
+  type RequestCustomerOptions,
+  type RequestCustomerSaved,
+} from './useRequestCustomerOptions';
+
+/**
+ * Состав поля «Заказчик» заявки на обслуживание оргтехники (план
+ * `docs/department-requests-plan.md`, Р11, Р11а, Р11б, Р12).
+ *
+ * Ось заказчика здесь **своя** и оси видимости не равна: объект приходит снимком из карточки
+ * техники и отвечает «где стоит», а отдел — «от чьего имени просят» (ADR 0085 §8). Поэтому отделы
+ * спрашиваются как `'requester'`: объектная роль видит все действующие, отдельская — свои, и
+ * сквозная область «Согласования ИТ» состав не меняет (Р11б).
+ *
+ * Площадку в этом поле не выбирают — её задаёт выбранная сейчас единица, и пунктов в группе ровно
+ * один. Роли отдела он положен только по технике её отдела (Р12): на чужую и на неразмеченную
+ * сервер отвечает 403, а предлагать в поле отвергаемое нельзя.
+ *
+ * Хук считает состав, а значение поля ставит `ServiceRequestCustomerField` — и оба ключа, которыми
+ * форма открывает окно (сохранённый заказчик правки и единственный отдел учётки), она берёт
+ * отсюда: `CostTargetKey` собирается в одном месте, а не в трёх подряд.
+ */
+
+/** Единица оргтехники в том виде, в каком её знает подбор: где стоит и чья она. */
+export interface ServiceRequestCustomerEquipment {
+  /** Объект единицы — он и станет площадкой заявки (Р11а). */
+  objectId: string;
+  objectLabel: string;
+  /** Отдел, за которым закреплена единица; `null` — неразмеченная (Р12). */
+  departmentId: string | null;
+}
+
+/**
+ * Снимки правимой заявки: площадка и владелец техники. Именно снимки, а не действующий
+ * справочник, — карточку с тех пор могли перевезти и перезакрепить, а заявку заводили по тому,
+ * что было тогда (Р11а). `ServiceRequestDto` подходит под этот тип целиком.
+ */
+export type ServiceRequestCustomerSnapshot = Pick<
+  ServiceRequestDto,
+  'object' | 'customerDepartment' | 'equipmentDepartment'
+>;
+
+export interface ServiceRequestCustomerInput {
+  /** Правка заявки — источник обоих снимков; `null` — заведение новой. */
+  request: ServiceRequestCustomerSnapshot | null;
+  /** Единица, выбранная в справочнике сейчас; у правки её не выбирают вовсе. */
+  equipment?: ServiceRequestCustomerEquipment | null;
+}
+
+export interface ServiceRequestCustomer extends RequestCustomerOptions {
+  /**
+   * Площадка выбранной сейчас единицы ключом; `null` — единицы ещё нет либо площадка этой учётке
+   * не положена (Р12). Ключ пересобирается на каждой смене техники — этим и живёт К10.
+   */
+  siteKey: CostTargetKey | null;
+  /** Заказчик правимой заявки ключом: им форма открывает окно правки (К7). */
+  savedKey: CostTargetKey | null;
+  /**
+   * Единственный отдел учётки ключом — умолчание новой заявки (ADR 0085 §8). Не площадка: заявка
+   * сотрудника отдела о своём же принтере молча стала бы заявкой от площадки.
+   */
+  soleDepartmentKey: CostTargetKey | null;
+}
+
+/** Подпись подразделения и объекта собирается одинаково — «код — наименование». */
+function labelOf(at: { code: string; name: string }): string {
+  return `${at.code} — ${at.name}`;
+}
+
+/**
+ * Заказчик заведённой заявки — из её собственных снимков (Р11а, К7).
+ *
+ * Ветвлением по отделу, а не `costTargetKeyOf`: тот читает объект раньше отдела, а у сервисной
+ * заявки объект и отдел заполнены **одновременно** — заказчик-отдел молча стал бы «объектом», и
+ * сохранение перенесло бы заявку на площадку.
+ */
+function savedCustomerOf({
+  customerDepartment: dep,
+  object,
+}: ServiceRequestCustomerSnapshot): RequestCustomerSaved {
+  return {
+    target: dep ? { kind: 'department', id: dep.id } : { kind: 'object', id: object.id },
+    label: labelOf(dep ?? object),
+  };
+}
+
+export function useServiceRequestCustomer({
+  request,
+  equipment,
+}: ServiceRequestCustomerInput): ServiceRequestCustomer {
+  const scope = useDepartmentScope();
+
+  /*
+   * Оба снимка единицы — где стоит и чья она: при заведении их даёт справочник, при правке сама
+   * заявка (Р11а).
+   *
+   * Роли отдела площадка положена только по технике своего отдела (Р12): на неразмеченную единицу
+   * сервер отвечает 403 — без отдела-заказчика такую заявку не держит ни одна отдельская колонка,
+   * и автор перестал бы видеть то, что сам завёл. Прочих ролей граница не касается: их область
+   * считается объектом техники либо не считается ничем.
+   */
+  const owner = (request ? request.equipmentDepartment?.id : equipment?.departmentId) ?? null;
+  const stands = request
+    ? { id: request.object.id, label: labelOf(request.object) }
+    : equipment && { id: equipment.objectId, label: equipment.objectLabel };
+  const ownTech = !!owner && scope.ownDepartmentIds.includes(owner);
+  const site = stands && (!scope.isDepartmentRole || ownTech) ? stands : null;
+
+  // Заказчик видимой по сквозной области заявки бывает вне состава поля (К7, Р11б): без
+  // сохранённой опции правка начиналась бы с пустого обязательного поля, а сохранение отправило бы
+  // изменение, которого человек не делал.
+  const saved = request ? savedCustomerOf(request) : null;
+  const base = useRequestCustomerOptions({ objects: site, departments: 'requester', saved });
+
+  return {
+    ...base,
+    // До выбора единицы поле заперто (Р11): площадки без неё нет вовсе, а заказчик заявки на
+    // обслуживание начинается с техники. Дальше запертость считает подбор — по числу вариантов
+    // обеих групп сразу, а не по одной оси.
+    disabled: base.disabled || (!request && !equipment),
+    siteKey: site ? costTargetKey({ kind: 'object', id: site.id }) : null,
+    savedKey: saved ? costTargetKey(saved.target) : null,
+    soleDepartmentKey: scope.soleDepartmentId
+      ? costTargetKey({ kind: 'department', id: scope.soleDepartmentId })
+      : null,
+  };
+}

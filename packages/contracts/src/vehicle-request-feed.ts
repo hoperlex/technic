@@ -2,9 +2,13 @@ import { z } from 'zod';
 import { dateOnlySchema } from './common';
 import {
   parseVehicleRequestNumberSearch,
-  vehicleRequestListQuerySchema,
+  vehicleRequestListQueryBase,
   type VehicleRequestDto,
 } from './vehicle-requests';
+import {
+  isClassificationFilterEmpty,
+  withSingleClassificationForm,
+} from './vehicle-classifications';
 import {
   parseWeeklyRequestNumberSearch,
   type WeeklyVehicleRequestDto,
@@ -65,10 +69,12 @@ export interface VehicleFeedListDto {
  * `weekStart` спрашивают только у недельных: у заказа недели нет, и заданный фильтр отсекает их
  * целиком — как и любой другой фильтр, которому у второй сущности нет соответствия.
  */
-export const vehicleFeedQuerySchema = vehicleRequestListQuerySchema.extend({
-  kind: feedKindSchema.optional(),
-  weekStart: dateOnlySchema.optional(),
-});
+export const vehicleFeedQuerySchema = withSingleClassificationForm(
+  vehicleRequestListQueryBase.extend({
+    kind: feedKindSchema.optional(),
+    weekStart: dateOnlySchema.optional(),
+  }),
+);
 export type VehicleFeedQuery = z.infer<typeof vehicleFeedQuerySchema>;
 
 /**
@@ -115,6 +121,9 @@ export function weeklyRowsExcludedBy(q: VehicleFeedQuery): boolean {
     q.requestType !== undefined ||
     q.status !== undefined ||
     q.departmentId !== undefined ||
+    // Позиции классификатора у недельного документа нет вовсе (ADR 0085) — ни набором, ни старой
+    // парой: спрошенная техника исключает его строки, сколько бы позиций в вопросе ни стояло.
+    !isClassificationFilterEmpty(q.classifications) ||
     q.vehicleTypeId !== undefined ||
     q.vehicleCategoryId !== undefined ||
     // Назначенной машины у недельного документа не бывает вовсе: технику ставят на заказы,

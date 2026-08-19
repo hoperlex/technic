@@ -68,6 +68,12 @@ export const officeEquipmentOptionsQuery = () =>
         typeName: item.type.name,
         objectLabel: `${item.object.code} — ${item.object.name}`,
         departmentName: item.department?.name ?? '',
+        // Идентификаторы рядом с подписями — для поля заказчика (план `department-requests-plan.md`,
+        // §9 п. 5): из объекта собирается ключ площадки (Р11а), а по отделу-владельцу считается
+        // граница «площадка роли отдела только по технике своего отдела» (Р12). Неразмеченная
+        // единица приходит с `null` — и площадку по ней сервер отвергает.
+        objectId: item.object.id,
+        departmentId: item.department?.id ?? null,
         location: item.location,
       })),
   });

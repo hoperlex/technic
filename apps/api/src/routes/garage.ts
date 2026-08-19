@@ -4,6 +4,7 @@ import { and, count, eq, ilike, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 import {
   can,
+  type ClassificationFilter,
   driverDocumentGaps,
   type GarageDriverListDto,
   garageDriverQuerySchema,
@@ -32,6 +33,7 @@ import {
   vehicles,
   vehicleTypes,
 } from '../db/schema';
+import { queryClassificationWhere } from '../lib/classification-filter';
 import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
 import {
   documentsCompleteCondition,
@@ -97,14 +99,15 @@ interface GarageVehicleListWithReadingsDto extends GarageVehicleListDto {
 }
 
 /**
- * Условия перечня техники: собственный парк, живые записи, фильтры позиции классификатора и
- * поиск. Общие у страницы и сводки — иначе сводка отвечала бы не про тот список, который человек
- * видит перед собой.
+ * Условия перечня техники: собственный парк, живые записи, набор позиций классификатора и поиск.
+ * Общие у страницы и сводки — иначе сводка отвечала бы не про тот список, который человек видит
+ * перед собой.
  *
  * Только `ownership='own'` (ADR 0076): гараж — свой парк. Предложение аренды машиной не является
  * вовсе — это строка прайса арендодателя, у неё нет ни госномера, ни рейса, ни листа.
  */
 function vehicleWhere(q: {
+  classifications?: ClassificationFilter;
   vehicleTypeId?: string;
   vehicleCategoryId?: string;
   search?: string;
@@ -112,8 +115,10 @@ function vehicleWhere(q: {
   return and(
     eq(vehicles.ownership, 'own'),
     isNull(vehicles.deletedAt),
-    q.vehicleTypeId ? eq(vehicles.vehicleTypeId, q.vehicleTypeId) : undefined,
-    q.vehicleCategoryId ? eq(vehicles.vehicleCategoryId, q.vehicleCategoryId) : undefined,
+    // Позиции классификатора (ADR 0028) набором: типы целиком и отдельные категории сразу — тот
+    // же фильтр, что в заявках. Прежнюю пару полей принимает тот же вызов, пока её шлют вкладки
+    // со старым JS.
+    queryClassificationWhere(vehicles.vehicleTypeId, vehicles.vehicleCategoryId, q),
     // Ищут по тому, что видят на борту и в путевом листе: госномер (гомоглифы сводит
     // `vehicle_reg_normalize`, как и в справочнике), марка, гаражный номер.
     q.search

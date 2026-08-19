@@ -112,6 +112,7 @@ import {
   vehicleRequestLeadTimeBlocker,
   onlyWeeklyRows,
   rateForWorkUnit,
+  REQUEST_CUSTOMER_LOCKED_MESSAGE,
   REQUEST_STATUSES,
   type RequestStatus,
   requestTypeChangeBlocker,
@@ -234,6 +235,7 @@ import {
   vehicleRequestVisibilityWhere,
   lessorVisibilityWhere,
 } from '../lib/access';
+import { queryClassificationWhere } from '../lib/classification-filter';
 import { orderByFrom, pageParams, searchCondition } from '../lib/pagination';
 import { nextRequestContact } from '../lib/request-contact';
 import {
@@ -2767,7 +2769,17 @@ function editChangesSubstance(
   body: z.infer<typeof updateVehicleRequestSchema>,
 ): boolean {
   const changed = (next: unknown, prev: unknown): boolean => next !== undefined && next !== prev;
+  // Заказчик — **обе** половины пары (ADR 0040, Р6): визу ставит тот, кто отвечает за
+  // подразделение заказчика, и перенос заявки с объекта на отдел значит для неё ровно то же, что
+  // перенос с объекта на объект. Спрашивать один `objectId` значило бы оставить визу руководителя
+  // строительства на заявке отдела, о котором он ничего не решал.
+  //
+  // Отдел читается только у грузоперевозки — тем же осторожным приёмом, что и в `customerAfterEdit`:
+  // у спецтехники его в схеме нет вовсе (заказ выходит на площадку), и читать оттуда `departmentId`
+  // было бы неправдой о том, что клиент может прислать.
+  const departmentId = body.requestType === 'freight_transport' ? body.departmentId : undefined;
   if (changed(body.objectId, before.objectId)) return true;
+  if (changed(departmentId, before.departmentId)) return true;
   if (changed(body.vehicleTypeId, before.vehicleTypeId)) return true;
   // Категория — часть заказанного (ADR 0028): «автокран 25 т» вместо «130 т» согласовывают
   // заново. Не переданная категория — не «сняли», а «не трогали»: иначе форма, которая её не
@@ -3182,7 +3194,12 @@ function firstTripColumn(column: 'from_location' | 'to_location'): SQL {
 const sortColumns = {
   num: vehicleRequests.num,
   requestType: vehicleRequests.requestType,
-  objectName: constructionObjects.name,
+  // Столбец называется «Заказчик», и сортируется он по обеим осям пары (ADR 0040, Р10): у заявки
+  // отдела объекта нет вовсе, и порядок по одной колонке уводил бы такие строки в конец списка
+  // с `NULL` — не «в конец алфавита», а мимо него. Ключ поля при этом прежний (`objectName`): имя
+  // — часть контракта списка (`VEHICLE_REQUEST_SORT_FIELDS`), и переименование потянуло бы
+  // сохранённые параметры вкладок.
+  objectName: sql`coalesce(${constructionObjects.name}, ${departments.name})`,
   createdByName: users.fullName,
   // Сортируют по тому, что видно в столбце: у заявки с категорией это её наименование
   // (ADR 0028) — оно уже начинается с типа, поэтому порядок остаётся типовым.
@@ -3285,8 +3302,10 @@ function historyWhere(p: Principal, q: z.infer<typeof vehicleRequestHistoryQuery
     q.requestType ? eq(vehicleRequests.requestType, q.requestType) : undefined,
     q.objectId ? eq(vehicleRequests.objectId, q.objectId) : undefined,
     q.departmentId ? eq(vehicleRequests.departmentId, q.departmentId) : undefined,
-    q.vehicleTypeId ? eq(vehicleRequests.vehicleTypeId, q.vehicleTypeId) : undefined,
-    q.vehicleCategoryId ? eq(vehicleRequests.vehicleCategoryId, q.vehicleCategoryId) : undefined,
+    // Заказанная техника (ADR 0028) — тот же набор позиций, что и в списке: типы целиком и
+    // отдельные категории вперемешку. Журнал спрашивают теми же словами, что и работающие
+    // заявки, и отбор в этих двух местах обязан значить одно.
+    queryClassificationWhere(vehicleRequests.vehicleTypeId, vehicleRequests.vehicleCategoryId, q),
     // Машина (ADR 0027, ADR 0098, ADR 0100 §12): тот же общий отбор, что и в списке, — журнал
     // спрашивают ровно про неё («чем закрывали заказы этой машины» и «где она ходила»).
     requestVehicleWhere(q.vehicleId),
@@ -3296,10 +3315,15 @@ function historyWhere(p: Principal, q: z.infer<typeof vehicleRequestHistoryQuery
     q.lessorId ? eq(vehicles.lessorId, q.lessorId) : undefined,
     approvedFilter(q.approved),
     ...dateFilters(q.requestType, q.dateFrom, q.dateTo),
+    // Обе оси заказчика (Р10а), тем же перечнем, что и в списке: журнал ищут теми же словами,
+    // что и работающие заявки, — разойдись эти два места, одна и та же строка находилась бы
+    // до закрытия и терялась после.
     searchCondition(q.search, [
       vehicleRequests.comment,
       constructionObjects.name,
       constructionObjects.code,
+      departments.name,
+      departments.code,
     ]),
   )!;
 }
@@ -3389,10 +3413,15 @@ function onSiteWhere(p: Principal, q: VehicleRequestOnSiteQuery, onDate: string)
     q.objectId ? eq(vehicleRequests.objectId, q.objectId) : undefined,
     // Фильтра по отделу здесь нет намеренно: срез — про спецтехнику на площадке, а её отдел не
     // заказывает вовсе (CHECK `vehicle_requests_department_freight_check`).
-    q.vehicleTypeId ? eq(vehicleRequests.vehicleTypeId, q.vehicleTypeId) : undefined,
-    q.vehicleCategoryId ? eq(vehicleRequests.vehicleCategoryId, q.vehicleCategoryId) : undefined,
+    //
+    // Заказанная техника (ADR 0028): набор позиций, а не одна, — контрол на четырёх вкладках
+    // общий, и срез отвечает тем же отбором, что список рядом с ним.
+    queryClassificationWhere(vehicleRequests.vehicleTypeId, vehicleRequests.vehicleCategoryId, q),
     q.num ? eq(vehicleRequests.num, q.num) : undefined,
     or(and(...specialDateConds(onDate, onDate)), hasUnapprovedPastShiftsSql(onDate)),
+    // Отдела нет и в поиске (Р10а): срез отобран спецтехникой, а её отдел не заказывает
+    // (CHECK `vehicle_requests_department_freight_check`), — колонка справочника искала бы здесь
+    // среди строк, где заказчик всегда площадка. Сводка среза отдел и не присоединяет.
     searchCondition(q.search, [
       vehicleRequests.comment,
       constructionObjects.name,
@@ -3467,6 +3496,9 @@ function weeklyFeedWhere(p: Principal, q: VehicleFeedQuery): SQL | undefined {
         ? isNotNull(weeklyVehicleRequests.approvedAt)
         : isNull(weeklyVehicleRequests.approvedAt),
     ...weeklyDateConds(q.dateFrom, q.dateTo),
+    // Отдел сюда не добавляется (Р10а): у недельной заявки заказчик — всегда площадка, своей
+    // колонки под отдел у неё нет вовсе. Заказы отдела лента находит другой своей стороной —
+    // `listWhere`, где отдел в поиске есть.
     searchCondition(q.search, [
       weeklyVehicleRequests.comment,
       constructionObjects.name,
@@ -3495,8 +3527,12 @@ function feedSortExprs(sortBy: string | undefined): { order: SQL; weekly: SQL } 
       order: sql`${vehicleRequests.createdAt}`,
       weekly: sql`${weeklyVehicleRequests.createdAt}`,
     },
+    // Заказчик заказа — по обеим осям пары (Р10), тем же выражением, что и в списке: лента и
+    // вкладка обязаны отвечать одним порядком, а два разных выражения разъезжаются молча.
+    // У недельного документа заказчик всегда площадка (ось у недели одна), поэтому `coalesce`
+    // здесь не нужен — обе стороны остаются текстовыми и сравнимыми в общем столбце ленты.
     objectName: {
-      order: sql`${constructionObjects.name}`,
+      order: sql`coalesce(${constructionObjects.name}, ${departments.name})`,
       weekly: sql`${constructionObjects.name}`,
     },
     term: {
@@ -3566,8 +3602,10 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       q.status ? eq(vehicleRequests.status, q.status) : undefined,
       q.objectId ? eq(vehicleRequests.objectId, q.objectId) : undefined,
       q.departmentId ? eq(vehicleRequests.departmentId, q.departmentId) : undefined,
-      q.vehicleTypeId ? eq(vehicleRequests.vehicleTypeId, q.vehicleTypeId) : undefined,
-      q.vehicleCategoryId ? eq(vehicleRequests.vehicleCategoryId, q.vehicleCategoryId) : undefined,
+      // Заказанная техника (ADR 0028): набор позиций классификатора — типы целиком и отдельные
+      // категории, объединяемые по ИЛИ. Прежнюю пару полей принимает тот же вызов, пока по ней
+      // ходят открытые вкладки со старым JS.
+      queryClassificationWhere(vehicleRequests.vehicleTypeId, vehicleRequests.vehicleCategoryId, q),
       // Машина (ADR 0027, ADR 0098) — единица парка, а не позиция классификатора выше: «где ходил
       // ТС-341» спрашивают госномером. С ADR 0100 §12 ответ считает не только назначение, но и дни
       // линейного заказа, отработанные этой машиной, — одним общим выражением на все пять выдач.
@@ -3575,10 +3613,15 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       q.num ? eq(vehicleRequests.num, q.num) : undefined,
       approvedFilter(q.approved),
       ...dateFilters(q.requestType, q.dateFrom, q.dateTo),
+      // Поиск идёт по обеим осям заказчика (ADR 0040, Р10а) — по той же причине, что и порядок:
+      // у заявки отдела объекта нет вовсе, и набранное название подразделения не находило бы
+      // ничего. Ненаходимость читается как поломка поиска, а не как его граница.
       searchCondition(q.search, [
         vehicleRequests.comment,
         constructionObjects.name,
         constructionObjects.code,
+        departments.name,
+        departments.code,
       ]),
     );
 
@@ -3992,15 +4035,20 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
         vehicleRequestVisibilityWhere(p, vehicleRequests.objectId, vehicleRequests.departmentId),
         assignedLessorWhere(p),
         req.query.objectId ? eq(vehicleRequests.objectId, req.query.objectId) : undefined,
+        // Вторая половина заказчика (ADR 0040, Р9а) — тем же приёмом, что и объект: подбор
+        // «Объект/отдел» пишет в один из двух параметров, и цифры над таблицей обязаны считаться
+        // по тому же сужению, по которому выбраны строки под ней.
+        req.query.departmentId
+          ? eq(vehicleRequests.departmentId, req.query.departmentId)
+          : undefined,
         req.query.requestType ? eq(vehicleRequests.requestType, req.query.requestType) : undefined,
-        // Заказанная техника (ADR 0028): один тип целиком либо одна его категория — те же
-        // условия, что и в списке.
-        req.query.vehicleTypeId
-          ? eq(vehicleRequests.vehicleTypeId, req.query.vehicleTypeId)
-          : undefined,
-        req.query.vehicleCategoryId
-          ? eq(vehicleRequests.vehicleCategoryId, req.query.vehicleCategoryId)
-          : undefined,
+        // Заказанная техника (ADR 0028): тот же набор позиций, что и в списке под сводкой, —
+        // иначе цифры отвечали бы не про те строки, которые человек видит.
+        queryClassificationWhere(
+          vehicleRequests.vehicleTypeId,
+          vehicleRequests.vehicleCategoryId,
+          req.query,
+        ),
         // Машина (ADR 0098, ADR 0100 §12): сводка считается по тому же общему выражению, что и
         // список под ней, — иначе цифры над таблицей отвечали бы не про её строки.
         requestVehicleWhere(req.query.vehicleId),
@@ -4320,6 +4368,28 @@ export default async function vehicleRequestsRoutes(app: FastifyInstance): Promi
       // Заказчик после правки: переданный заменяет прежнего целиком — объект снимает отдел и
       // наоборот (ADR 0040). Не переданный оставляет всё как было.
       const customer: RequestCustomer = customerAfterEdit(before, body);
+      /*
+       * Заказчика меняют только у «Новой» (Р7). Правило «правит только Новую» есть и сегодня, но
+       * оно площадочное (`assertObjectRoleEditable`), а офис правит и работающую заявку — то есть
+       * этот инвариант держался случайно.
+       *
+       * Держать его надо: объект затрат уже ушёл снимком в строки задания путевого листа, а виза у
+       * заявки в работе правкой не снимается намеренно (ADR 0044, `isApprovalChangeable`). Перенос
+       * заказчика в этот момент дал бы заявку отдела с визой чужого объекта и лист, в котором
+       * затраты отнесены на площадку.
+       *
+       * Сравнение — с самой заявкой, а не с фактом «поле пришло»: форма присылает заказчика на
+       * каждой правке целиком, и «не менял» никогда не означает «сменил» — иначе уточнение
+       * телефона в работающей заявке перестало бы сохраняться.
+       */
+      if (
+        before.status !== 'new' &&
+        (customer.objectId !== before.objectId || customer.departmentId !== before.departmentId)
+      ) {
+        throw err.unprocessable(REQUEST_CUSTOMER_LOCKED_MESSAGE, {
+          [customer.departmentId ? 'departmentId' : 'objectId']: 'Заказчика не меняют',
+        });
+      }
       const nextTypeId = body.vehicleTypeId ?? before.vehicleTypeId;
       // Тип и категория меняются одной позицией классификатора (ADR 0028). Сменили тип, а
       // категорию не прислали — прежняя относится к прежнему типу, и оставлять её нельзя:

@@ -35,6 +35,9 @@ function renderTab() {
     'GET /vehicle-requests/history/summary': () =>
       json({ total: 0, done: 0, cancelled: 0, totalCost: 0, withoutCost: 0 }),
     'GET /objects': () => json(list([objectDto()])),
+    // Справочник отделов — вторая половина подбора «Объект/отдел» (план
+    // `docs/department-requests-plan.md`, Р9): у учётки без своей оси в фильтре обе группы.
+    'GET /departments': () => json(emptyList()),
     'GET /vehicle-classifications': () =>
       json(
         list([
@@ -54,7 +57,7 @@ function renderTab() {
 }
 
 /** Поле панели опознаётся своей подсказкой: подписи у фильтров нет, её место занимает placeholder. */
-async function pickFilter(placeholder: string, option: string) {
+async function openFilter(placeholder: string) {
   const field = await waitFor(() => {
     const found = [...document.querySelectorAll<HTMLElement>('.ant-select')].find(
       (el) => el.textContent?.trim() === placeholder,
@@ -63,6 +66,13 @@ async function pickFilter(placeholder: string, option: string) {
     return found;
   });
   fireEvent.mouseDown(field.querySelector('.ant-select-selector') ?? field);
+}
+
+/**
+ * Отметить вариант в уже открытом списке. Отдельно от открытия: у набора выпадашка после выбора
+ * не закрывается, а поле перестаёт показывать подсказку — искать его по ней во второй раз нечем.
+ */
+async function toggleOption(option: string) {
   await waitFor(() => {
     const match = [...document.querySelectorAll<HTMLElement>('.ant-select-item-option')].find((o) =>
       o.textContent?.includes(option),
@@ -70,6 +80,11 @@ async function pickFilter(placeholder: string, option: string) {
     expect(match, `вариант «${option}»`).toBeTruthy();
     fireEvent.click(match!);
   });
+}
+
+async function pickFilter(placeholder: string, option: string) {
+  await openFilter(placeholder);
+  await toggleOption(option);
 }
 
 describe('журнал закрытых заказов: отбор по технике', () => {
@@ -93,7 +108,7 @@ describe('журнал закрытых заказов: отбор по техн
     );
   });
 
-  it('фильтр классификатора остаётся своим вопросом и своей подсказкой', async () => {
+  it('фильтр классификатора остаётся своим вопросом и уезжает набором позиций', async () => {
     const http = renderTab();
     await waitFor(() => expect(http.countOf('GET /vehicle-requests/history')).toBe(1));
 
@@ -101,12 +116,24 @@ describe('журнал закрытых заказов: отбор по техн
     expect(screen.getByText('Любой тип ТС')).toBeDefined();
     expect(screen.getByText('Вся техника')).toBeDefined();
 
-    await pickFilter('Любой тип ТС', 'Автокраны — все категории');
+    await openFilter('Любой тип ТС');
+    await toggleOption('Автокраны — все категории');
+    await toggleOption('Автокраны, г/п 25 т');
 
     await waitFor(() => {
       const call = http.lastCall('GET /vehicle-requests/history')!;
-      expect(call.query.get('vehicleTypeId')).toBe('vt-1');
+      // Тип целиком и одна его категория — два самостоятельных ключа одной строки. Свести их в
+      // один портал не берётся: объединяет набор сервер, и «весь тип» поглотит категорию сам.
+      expect(call.query.get('classifications')).toBe('cvc-1,tvt-1');
+      // Старой пары полей в запросе нет вовсе: технику задаёт один параметр.
+      expect(call.query.get('vehicleTypeId')).toBeNull();
       expect(call.query.get('vehicleId')).toBeNull();
     });
+    // Итог за период считается по тому же набору, что и таблица.
+    await waitFor(() =>
+      expect(
+        http.lastCall('GET /vehicle-requests/history/summary')!.query.get('classifications'),
+      ).toBe('cvc-1,tvt-1'),
+    );
   });
 });

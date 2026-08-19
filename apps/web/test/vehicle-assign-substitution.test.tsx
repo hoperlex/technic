@@ -231,10 +231,7 @@ describe('подбор техники ничем не сужен, расхожд
     // отбора, а чтобы заказанное не обрезалось страницей (ADR 0064).
     const asked = http.calls.filter((c) => c.path === '/vehicles');
     expect(asked).toHaveLength(2);
-    expect(asked.map((c) => c.query.get('vehicleKindId')).sort()).toEqual([
-      'kind-special',
-      null,
-    ]);
+    expect(asked.map((c) => c.query.get('vehicleKindId')).sort()).toEqual(['kind-special', null]);
     for (const call of asked) {
       expect(call.query.get('vehicleTypeId')).toBeNull();
       expect(call.query.get('vehicleCategoryId')).toBeNull();

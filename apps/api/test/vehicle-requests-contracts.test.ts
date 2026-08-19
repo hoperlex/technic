@@ -8,6 +8,8 @@ import {
   canReassignVehicle,
   canRequestEarlyEnd,
   canShortenWorkPeriodByEdit,
+  CLASSIFICATION_FILTER_MAX,
+  classificationFilterKey,
   changeVehicleAssignmentSchema,
   changeVehicleRequestStatusSchema,
   changeVehicleRequestTypeSchema,
@@ -23,13 +25,16 @@ import {
   isAddressVerified,
   isAllowedEarlyEndDate,
   isApprovalChangeable,
+  isClassificationFilterEmpty,
   isClosedRequestStatus,
   isCargoAmountRequired,
   isVehicleKindAllowedForRequest,
   onSiteDayLabel,
   onSitePresence,
+  parseClassificationFilterKey,
   parseVehicleRequestNumberSearch,
   rateForWorkUnit,
+  serializeClassificationFilter,
   requestTypeChangeBlocker,
   requestVehicleEarlyEndSchema,
   setVehicleRequestApprovalSchema,
@@ -40,6 +45,7 @@ import {
   updateVehicleRequestSchema,
   VEHICLE_EARLY_END_STATUSES,
   VEHICLE_REQUEST_SORT_FIELDS,
+  vehicleClassificationKey,
   vehicleEarlyEndStatusColors,
   vehicleEarlyEndStatusLabels,
   vehicleOnSitePresenceColors,
@@ -1282,12 +1288,146 @@ describe('vehicle-requests: список и номер', () => {
     expect(() => vehicleRequestSummaryQuerySchema.parse({ vehicleTypeId: 'нет' })).toThrow();
   });
 
+  it('сводка сужается тем же набором позиций, что и список', () => {
+    const q = vehicleRequestSummaryQuerySchema.parse({
+      classifications: `t${TYPE}`,
+      objectId: OBJ,
+    });
+    expect(q.classifications).toEqual({ typeIds: [TYPE], categoryIds: [] });
+  });
+
   it('формат и разбор номера', () => {
     expect(formatVehicleRequestNumber(123)).toBe('ТС-123');
     expect(parseVehicleRequestNumberSearch('123')).toBe(123);
     expect(parseVehicleRequestNumberSearch('ТС-123')).toBe(123);
     expect(parseVehicleRequestNumberSearch('ТС-000123')).toBe(123);
     expect(parseVehicleRequestNumberSearch('  ')).toBeUndefined();
+  });
+});
+
+/**
+ * Набор позиций классификатора в фильтре «Тип ТС»: одна строка `classifications` вместо пары
+ * полей. Ключ здесь самодостаточный — `t<uuid>` (тип целиком) либо `c<uuid>` (категория), — и
+ * проверяется ровно то, что разъедется молча: мусорный ключ обязан отвечать отказом, а не пустым
+ * списком; строка обязана быть одинаковой при любом порядке кликов (иначе один выбор даёт два
+ * ключа кэша); и техника не задаётся двумя формами сразу, пока старая пара остаётся принимаемой.
+ */
+describe('vehicle-requests: набор позиций классификатора в фильтре', () => {
+  const CATEGORY = '44444444-4444-4444-8444-444444444444';
+  const TYPE_KEY = classificationFilterKey(TYPE, null);
+  const CATEGORY_KEY = classificationFilterKey(TYPE, CATEGORY);
+
+  /** Набор из n позиций-типов: длину строки задаёт потолок, а не выдумка теста. */
+  const typeKeys = (n: number): string =>
+    Array.from({ length: n }, () => classificationFilterKey(crypto.randomUUID(), null)).join(',');
+
+  it('ключ фильтра самодостаточен: категория заслоняет свой тип', () => {
+    expect(TYPE_KEY).toBe(`t${TYPE}`);
+    expect(CATEGORY_KEY).toBe(`c${CATEGORY}`);
+    expect(parseClassificationFilterKey(TYPE_KEY)).toEqual({ kind: 'type', id: TYPE });
+    expect(parseClassificationFilterKey(CATEGORY_KEY)).toEqual({ kind: 'category', id: CATEGORY });
+  });
+
+  it('один ключ — тоже набор, и разбирается в свою ветку отбора', () => {
+    expect(
+      vehicleRequestListQuerySchema.parse({ classifications: CATEGORY_KEY }).classifications,
+    ).toEqual({ typeIds: [], categoryIds: [CATEGORY] });
+    expect(
+      vehicleRequestListQuerySchema.parse({ classifications: `${TYPE_KEY},${CATEGORY_KEY}` })
+        .classifications,
+    ).toEqual({ typeIds: [TYPE], categoryIds: [CATEGORY] });
+  });
+
+  it('пустая строка — «фильтра нет», а не отказ', () => {
+    const q = vehicleRequestListQuerySchema.parse({ classifications: '' });
+    expect(isClassificationFilterEmpty(q.classifications)).toBe(true);
+    // Пустые куски и пробелы — тоже не позиции: портал вправе прислать строку с хвостовой запятой.
+    expect(
+      vehicleRequestListQuerySchema.parse({ classifications: ` ${TYPE_KEY} , ` }).classifications,
+    ).toEqual({ typeIds: [TYPE], categoryIds: [] });
+    expect(isClassificationFilterEmpty(undefined)).toBe(true);
+    expect(isClassificationFilterEmpty({ typeIds: [], categoryIds: [CATEGORY] })).toBe(false);
+  });
+
+  it('мусорный ключ отвергается: опечатка видна отказом, а не пустым списком', () => {
+    // Неизвестный префикс.
+    expect(vehicleRequestListQuerySchema.safeParse({ classifications: `x${TYPE}` }).success).toBe(
+      false,
+    );
+    // Не-UUID за префиксом.
+    expect(vehicleRequestListQuerySchema.safeParse({ classifications: 'tсамосвал' }).success).toBe(
+      false,
+    );
+    // Ключ позиции формы (`тип:категория`) в фильтр не годится: он допускает несуществующее
+    // сочетание «тип A с категорией типа B», от которого набор и уводили.
+    expect(
+      vehicleRequestListQuerySchema.safeParse({
+        classifications: vehicleClassificationKey(TYPE, CATEGORY),
+      }).success,
+    ).toBe(false);
+  });
+
+  it('потолок набора — 60 позиций: 61 отвергается', () => {
+    const full = vehicleRequestListQuerySchema.parse({
+      classifications: typeKeys(CLASSIFICATION_FILTER_MAX),
+    });
+    expect(full.classifications?.typeIds).toHaveLength(CLASSIFICATION_FILTER_MAX);
+    expect(
+      vehicleRequestListQuerySchema.safeParse({
+        classifications: typeKeys(CLASSIFICATION_FILTER_MAX + 1),
+      }).success,
+    ).toBe(false);
+  });
+
+  it('строка канонична: порядок кликов её не меняет, повтор схлопывается', () => {
+    expect(serializeClassificationFilter([TYPE_KEY, CATEGORY_KEY])).toBe(
+      serializeClassificationFilter([CATEGORY_KEY, TYPE_KEY]),
+    );
+    expect(serializeClassificationFilter([TYPE_KEY, TYPE_KEY])).toBe(TYPE_KEY);
+    // Пустой набор параметром не уезжает вовсе: «фильтра нет» и пустая строка — один вопрос,
+    // но два разных адреса, то есть два ключа кэша.
+    expect(serializeClassificationFilter([])).toBeUndefined();
+  });
+
+  /**
+   * Обе формы фильтра сразу — отказ, а не выбор приоритета за клиента: молча выигравшая форма и
+   * есть тот дефект, ради которого набор заводился. Проверяются все итоговые схемы: журнал и
+   * лента получают поле расширением, и проверка обязана доехать до каждой.
+   */
+  it('набор вместе со старой парой — отказ, каждая форма по отдельности принимается', () => {
+    const schemas = {
+      список: vehicleRequestListQuerySchema,
+      журнал: vehicleRequestHistoryQuerySchema,
+      'на объекте': vehicleRequestOnSiteQuerySchema,
+      сводка: vehicleRequestSummaryQuerySchema,
+    };
+    for (const [name, schema] of Object.entries(schemas)) {
+      expect(
+        schema.safeParse({ classifications: TYPE_KEY, vehicleTypeId: TYPE }).success,
+        name,
+      ).toBe(false);
+      expect(
+        schema.safeParse({ classifications: TYPE_KEY, vehicleCategoryId: CATEGORY }).success,
+        name,
+      ).toBe(false);
+      expect(schema.safeParse({ classifications: TYPE_KEY }).success, name).toBe(true);
+      // Старая пара сама по себе принимается: по ней ходят вкладки со старым JS.
+      expect(
+        schema.safeParse({ vehicleTypeId: TYPE, vehicleCategoryId: CATEGORY }).success,
+        name,
+      ).toBe(true);
+    }
+
+    const both = vehicleRequestListQuerySchema.safeParse({
+      classifications: TYPE_KEY,
+      vehicleTypeId: TYPE,
+    });
+    expect(both.error?.issues[0]?.message).toBe('Фильтр по технике задан дважды');
+
+    // Пустой набор старую пару не задваивает: параметр пришёл, а фильтра в нём нет.
+    expect(
+      vehicleRequestListQuerySchema.safeParse({ classifications: '', vehicleTypeId: TYPE }).success,
+    ).toBe(true);
   });
 });
 

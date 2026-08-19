@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import {
   can,
   GARAGE_DRIVER_STATES,
@@ -46,6 +47,42 @@ describe('запрос среза дня', () => {
       expect(garageDriverQuerySchema.parse({ state }).state).toBe(state);
     }
     expect(garageDriverQuerySchema.safeParse({ state: 'on_route' }).success).toBe(false);
+  });
+
+  /**
+   * Фильтр техники в гараже — тот же контрол, что в списке заявок: набор позиций одной строкой.
+   * Старая пара остаётся принимаемой (по ней ходят вкладки со старым JS), но вместе с набором в
+   * одном запросе — отказ: выбирать за клиента, какая из двух форм победила, сервер не берётся.
+   */
+  it('техника отбирается набором позиций; две формы фильтра сразу — отказ', () => {
+    const TYPE = '33333333-3333-4333-8333-333333333333';
+    const CATEGORY = '44444444-4444-4444-8444-444444444444';
+
+    expect(
+      garageVehicleQuerySchema.parse({ classifications: `t${TYPE},c${CATEGORY}` }).classifications,
+    ).toEqual({ typeIds: [TYPE], categoryIds: [CATEGORY] });
+    // Пустая строка означает «фильтра нет» — снятые галочки 400-й не отвечают.
+    expect(garageVehicleQuerySchema.parse({ classifications: '' }).classifications).toEqual({
+      typeIds: [],
+      categoryIds: [],
+    });
+    expect(garageVehicleQuerySchema.safeParse({ classifications: `x${TYPE}` }).success).toBe(false);
+
+    expect(garageVehicleQuerySchema.safeParse({ vehicleTypeId: TYPE }).success).toBe(true);
+    expect(
+      garageVehicleQuerySchema.safeParse({ classifications: `t${TYPE}`, vehicleTypeId: TYPE })
+        .success,
+    ).toBe(false);
+
+    // Маршрут гаража расширяет эту схему своим фильтром показаний — запрет обязан доехать и туда,
+    // иначе он держался бы на том, что расширения не появится.
+    const extended = garageVehicleQuerySchema.extend({ readings: z.enum(['pending']).optional() });
+    expect(
+      extended.safeParse({ classifications: `t${TYPE}`, vehicleCategoryId: CATEGORY }).success,
+    ).toBe(false);
+    expect(extended.safeParse({ classifications: `t${TYPE}`, readings: 'pending' }).success).toBe(
+      true,
+    );
   });
 
   it('сортировка сужена полями, которые сервер умеет считать', () => {

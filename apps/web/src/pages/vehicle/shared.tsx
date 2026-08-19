@@ -35,7 +35,6 @@ import { errorMessage } from '../../utils/format';
 import { formatDateOnly } from '../../utils/date';
 import { garageKeys } from '@entities/garage';
 import { objectsApi, objectKeys } from '@entities/object';
-import { departmentOptionsQuery } from '@entities/department';
 
 export const FILE_MAX_COUNT = 20;
 export const FILE_MAX_SIZE = 52_428_800; // 50 МБ
@@ -72,15 +71,6 @@ export function useObjectOptions() {
     options: (data?.items ?? []).map((o) => ({ value: o.id, label: `${o.code} — ${o.name}` })),
     loading: isFetching,
   };
-}
-
-/**
- * Отделы для выбора (ADR 0040) — второй заказчик рядом с объектами. Неактивные не показываются:
- * заявку заводят на действующее подразделение, а у заведённых наименование приходит с заявкой.
- */
-export function useDepartmentOptions() {
-  const { data, isFetching } = useQuery(departmentOptionsQuery());
-  return { options: data ?? [], loading: isFetching };
 }
 
 /**

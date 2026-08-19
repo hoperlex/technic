@@ -57,6 +57,10 @@ import {
   shiftDateKey,
 } from './time';
 import type { VehicleRequestShiftsSummaryDto } from './vehicle-request-shifts';
+import {
+  classificationFilterSchema,
+  withSingleClassificationForm,
+} from './vehicle-classifications';
 
 /** Код вида ТС (`vehicle_kinds.code`), которым выполняют грузоперевозки. */
 export const FREIGHT_VEHICLE_KIND_CODE = 'freight_transport';
@@ -663,6 +667,20 @@ export const updateVehicleRequestSchema = z
     }
   });
 export type UpdateVehicleRequestInput = z.infer<typeof updateVehicleRequestSchema>;
+
+/**
+ * Отказ на смену заказчика у заявки, вышедшей из «Новой» (Р7).
+ *
+ * Почему запрет вообще есть: объект затрат ушёл снимком в строки задания путевого листа, а виза у
+ * заявки в работе правкой не снимается намеренно (ADR 0044). Перенос заказчика в этот момент дал
+ * бы заявку отдела с визой чужого объекта и лист, в котором затраты отнесены на площадку.
+ *
+ * Одно сообщение на форму и сервер: портал запирает поле у такой заявки той же причиной, какой
+ * ответит ручка, — иначе человек читал бы два разных объяснения одного запрета. И называет оно
+ * выход, а не только запрет (тем же приёмом, что `ASSIGNMENT_CORRECTION_CLOSED_MESSAGE`): заказ
+ * другому заказчику оформляют заявкой заново, а эту отменяют.
+ */
+export const REQUEST_CUSTOMER_LOCKED_MESSAGE = `Заказчика меняют, пока заявка в статусе «${requestStatusLabels.new}»: у взятой в работу объект затрат уже ушёл в задание путевого листа. Оформите заказ нужному заказчику новой заявкой, а эту отмените`;
 
 // ── Календарь заявки и задний ход правки (ADR 0101, Р29) ──
 
@@ -1668,7 +1686,12 @@ export const VEHICLE_REQUEST_SORT_FIELDS = [
   'completedAt',
 ] as const;
 
-export const vehicleRequestListQuerySchema = baseListQuery(VEHICLE_REQUEST_SORT_FIELDS).extend({
+/**
+ * Списочные фильтры **без** проверки «две формы сразу»: её вешают итоговые схемы
+ * (`withSingleClassificationForm`), а производные — журнал и лента — расширяют именно эту базу.
+ * Расширяй они проверенную схему, проверка приехала бы вместе с ней и сработала бы вторым разом.
+ */
+export const vehicleRequestListQueryBase = baseListQuery(VEHICLE_REQUEST_SORT_FIELDS).extend({
   // Необязателен: раздел «Заказ автотехники» — единый список обоих типов.
   // Задан — список сужается до одного типа (фильтр в интерфейсе, вкладка «На объекте»).
   requestType: vehicleRequestTypeSchema.optional(),
@@ -1676,6 +1699,14 @@ export const vehicleRequestListQuerySchema = baseListQuery(VEHICLE_REQUEST_SORT_
   objectId: uuidSchema.optional(),
   /** Заказчик со стороны офиса (ADR 0040): фильтр «заявки этого отдела». */
   departmentId: uuidSchema.optional(),
+  /**
+   * Набор заказанных позиций классификатора (`t<uuid>` — тип целиком, `c<uuid>` — категория),
+   * объединяемых по ИЛИ: «покажи автокраны и самосвалы» — один список, а не два захода.
+   */
+  classifications: classificationFilterSchema.optional(),
+  // Прежняя форма того же фильтра — одна позиция парой полей. Остаётся принимаемой, пока по ней
+  // ходят открытые вкладки со старым JS: сервер расширяется раньше портала, и обе формы живут
+  // рядом до тех пор, пока не появится принудительный гейт версии сборки.
   vehicleTypeId: uuidSchema.optional(),
   // Категория задаётся вместе с типом (позиция классификатора выбирается целиком, ADR 0028):
   // одна категория принадлежит одному типу, и фильтр по ней сужает список до неё.
@@ -1706,6 +1737,10 @@ export const vehicleRequestListQuerySchema = baseListQuery(VEHICLE_REQUEST_SORT_
   /** Архив (ADR 0070): `only` — вкладка «Архив», остальное сервер отдаёт только праву `archive.read`. */
   archive: archiveFilterSchema,
 });
+
+export const vehicleRequestListQuerySchema = withSingleClassificationForm(
+  vehicleRequestListQueryBase,
+);
 /** Разобранный запрос списка: им же типизируется общее условие выборки, одно на список и ленту. */
 export type VehicleRequestListQuery = z.infer<typeof vehicleRequestListQuerySchema>;
 
@@ -1717,9 +1752,11 @@ export type VehicleRequestListQuery = z.infer<typeof vehicleRequestListQuerySche
  * `status` наследуется от общей схемы и сужает журнал до одного из двух закрытых статусов;
  * остальные сервер отклоняет — открытая заявка историей ещё не стала.
  */
-export const vehicleRequestHistoryQuerySchema = vehicleRequestListQuerySchema.extend({
-  lessorId: uuidSchema.optional(),
-});
+export const vehicleRequestHistoryQuerySchema = withSingleClassificationForm(
+  vehicleRequestListQueryBase.extend({
+    lessorId: uuidSchema.optional(),
+  }),
+);
 export type VehicleRequestHistoryQuery = z.infer<typeof vehicleRequestHistoryQuerySchema>;
 
 /** Статусы, попадающие в журнал: заявка, по которой уже нечего решать. */
@@ -1771,12 +1808,16 @@ export const VEHICLE_ON_SITE_SORT_FIELDS = [
  * списочной, именно поэтому: от `dateFrom` в общей схеме клиент вправе ждать, что тот сработает,
  * — здесь он не сработает никогда.
  */
-export const vehicleRequestOnSiteQuerySchema = baseListQuery(VEHICLE_ON_SITE_SORT_FIELDS).extend({
-  objectId: uuidSchema.optional(),
-  vehicleTypeId: uuidSchema.optional(),
-  vehicleCategoryId: uuidSchema.optional(),
-  num: z.coerce.number().int().positive().optional(),
-});
+export const vehicleRequestOnSiteQuerySchema = withSingleClassificationForm(
+  baseListQuery(VEHICLE_ON_SITE_SORT_FIELDS).extend({
+    objectId: uuidSchema.optional(),
+    /** Набор позиций — тот же контрол, что в списке заявок: фильтр один на четыре вкладки. */
+    classifications: classificationFilterSchema.optional(),
+    vehicleTypeId: uuidSchema.optional(),
+    vehicleCategoryId: uuidSchema.optional(),
+    num: z.coerce.number().int().positive().optional(),
+  }),
+);
 export type VehicleRequestOnSiteQuery = z.infer<typeof vehicleRequestOnSiteQuerySchema>;
 
 /**
@@ -1916,18 +1957,30 @@ function dayNumberInPeriod(dateFrom: string, onDate: string): number | null {
 
 /**
  * Сводка по статусам для виджета над списком. Из фильтров таблицы учитываются сужающие область —
- * объект, тип заявки, заказанная позиция классификатора и назначенная машина: цифры относятся к
+ * заказчик, тип заявки, заказанная позиция классификатора и назначенная машина: цифры относятся к
  * тому же списку, что человек видит перед собой. Фильтр по статусу свёл бы сводку к самой себе,
  * а по номеру — к одной заявке.
  */
-export const vehicleRequestSummaryQuerySchema = z.object({
-  objectId: uuidSchema.optional(),
-  requestType: vehicleRequestTypeSchema.optional(),
-  vehicleTypeId: uuidSchema.optional(),
-  vehicleCategoryId: uuidSchema.optional(),
-  /** Назначенная машина (ADR 0098): та же единица парка, что и в фильтре списка. */
-  vehicleId: uuidSchema.optional(),
-});
+export const vehicleRequestSummaryQuerySchema = withSingleClassificationForm(
+  z.object({
+    objectId: uuidSchema.optional(),
+    /**
+     * Отдел-заказчик (ADR 0040, Р9а) — вторая половина той же пары, что и объект: подбор
+     * «Объект/отдел» пишет в один из двух параметров, и сводка обязана сужаться тем же, чем
+     * сужается список. Без него фильтр по отделу оставил бы «Не обработанных» и «Ждут визы»
+     * посчитанными по всем отделам сразу — цифры над таблицей перестали бы относиться к строкам
+     * под ней.
+     */
+    departmentId: uuidSchema.optional(),
+    requestType: vehicleRequestTypeSchema.optional(),
+    /** Тот же набор, что у списка: сводка считается по тем строкам, что человек видит. */
+    classifications: classificationFilterSchema.optional(),
+    vehicleTypeId: uuidSchema.optional(),
+    vehicleCategoryId: uuidSchema.optional(),
+    /** Назначенная машина (ADR 0098): та же единица парка, что и в фильтре списка. */
+    vehicleId: uuidSchema.optional(),
+  }),
+);
 export type VehicleRequestSummaryQuery = z.infer<typeof vehicleRequestSummaryQuerySchema>;
 
 /**

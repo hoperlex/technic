@@ -40,6 +40,23 @@ export type FilterDefinition =
       onChange: (value: string | undefined) => void;
     })
   | (FilterBase & {
+      /**
+       * Набор позиций одного справочника, объединяемых по ИЛИ («покажи автокраны и самосвалы»
+       * одной выдачей). Отдельного «не выбрано» у него нет: пустой набор и есть незаданный
+       * фильтр, иначе каждому списку пришлось бы различать «сбросили» и «не выбирали».
+       */
+      kind: 'multiSelect';
+      value: string[];
+      options: (FilterOption | FilterOptionGroup)[];
+      placeholder?: string;
+      loading?: boolean;
+      /** Сколько тегов видно до «+N». */
+      maxTagCount?: number;
+      /** Потолок набора: строка запроса конечна, и упереться в предел лучше в поле, чем в 400. */
+      maxCount?: number;
+      onChange: (value: string[]) => void;
+    })
+  | (FilterBase & {
       kind: 'text';
       value: string | undefined;
       placeholder?: string;
@@ -60,7 +77,12 @@ export type FilterDefinition =
     });
 
 /** Значение фильтра в черновике шита: до нажатия «Применить» в параметры списка оно не уходит. */
-export type FilterDraftValue = string | boolean | undefined | { from?: string; to?: string };
+export type FilterDraftValue =
+  | string
+  | string[]
+  | boolean
+  | undefined
+  | { from?: string; to?: string };
 
 export interface SortOption {
   /** Ключ колонки — он же поле сортировки на сервере. */
@@ -111,6 +133,9 @@ export function isFilterActive(filter: FilterDefinition): boolean {
   if (filter.kind === 'dateRange') return !!filter.from || !!filter.to;
   // Выключенный переключатель — это состояние по умолчанию, а не заданный фильтр.
   if (filter.kind === 'toggle') return filter.value;
+  // Пустой набор — тоже «не задан»: сам массив непустое значение, и без этой ветки счётчик на
+  // кнопке «Фильтры» считал бы мультиселект заданным всегда.
+  if (filter.kind === 'multiSelect') return filter.value.length > 0;
   return filter.value != null && filter.value !== '';
 }
 

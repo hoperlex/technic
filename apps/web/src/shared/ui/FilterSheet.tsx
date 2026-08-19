@@ -11,6 +11,13 @@ interface Props {
 
 const DATE_FORMAT = 'DD.MM.YYYY';
 
+/**
+ * Сколько тегов набора видно до «+N», когда описание не задало своего числа. Фиксированное
+ * число, а не `responsive` десктопной полосы: в шите поле растянуто во всю ширину, и десяток
+ * тегов вырос бы на пол-экрана, оттеснив остальные фильтры за нижний край.
+ */
+const SHEET_MAX_TAGS = 4;
+
 function draftOf(filters: FilterDefinition[]): Record<string, FilterDraftValue> {
   const draft: Record<string, FilterDraftValue> = {};
   for (const filter of filters) {
@@ -24,7 +31,20 @@ function draftOf(filters: FilterDefinition[]): Record<string, FilterDraftValue> 
 function emptyValue(filter: FilterDefinition): FilterDraftValue {
   if (filter.kind === 'dateRange') return {};
   if (filter.kind === 'toggle') return false;
+  if (filter.kind === 'multiSelect') return [];
   return undefined;
+}
+
+/**
+ * Совпадает ли состав наборов. Сравниваем состав, а не ссылку: описания пересобираются на каждом
+ * рендере страницы, и по ссылке «Применить» дёргал бы список после каждого открытия шита. Порядок
+ * тоже не в счёт — снятая и заново отмеченная позиция встаёт в конец, а отбор от порядка не
+ * зависит, и «изменилось» тут означало бы перезапрос ради того же самого.
+ */
+function sameSelection(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  const other = new Set(b);
+  return a.every((value) => other.has(value));
 }
 
 /**
@@ -64,6 +84,11 @@ export function FilterSheet({ open, onClose, filters }: Props) {
       if (filter.kind === 'toggle') {
         const value = next === true;
         if (value !== filter.value) filter.onChange(value);
+        continue;
+      }
+      if (filter.kind === 'multiSelect') {
+        const value = (next as string[] | undefined) ?? [];
+        if (!sameSelection(value, filter.value)) filter.onChange(value);
         continue;
       }
       const value = (next as string | undefined) || undefined;
@@ -124,6 +149,23 @@ export function FilterSheet({ open, onClose, filters }: Props) {
                 disabled={filter.disabled}
                 value={(draft[filter.key] as string | undefined) || undefined}
                 onChange={(value: string | undefined) => set(filter.key, value)}
+              />
+            )}
+            {filter.kind === 'multiSelect' && (
+              <Select
+                mode="multiple"
+                style={{ width: '100%' }}
+                allowClear
+                showSearch
+                optionFilterProp="label"
+                maxTagCount={filter.maxTagCount ?? SHEET_MAX_TAGS}
+                maxCount={filter.maxCount}
+                placeholder={filter.placeholder}
+                options={filter.options}
+                loading={filter.loading}
+                disabled={filter.disabled}
+                value={(draft[filter.key] as string[] | undefined) ?? []}
+                onChange={(value: string[]) => set(filter.key, value)}
               />
             )}
             {filter.kind === 'text' && (

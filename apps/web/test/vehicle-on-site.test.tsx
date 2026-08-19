@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { screen } from '@testing-library/react';
+import { fireEvent, screen, waitFor } from '@testing-library/react';
 import type {
   SpecialEquipmentRequestDto,
   VehicleOnSiteListDto,
   VehicleOnSiteSummaryDto,
 } from '@technic/contracts';
-import { json, mockHttp } from './http';
+import { json, mockHttp, type HttpMock } from './http';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
-import { emptyList } from './factories/common';
-import { vehicleRequest } from './factories/vehicle';
+import { emptyList, list as listOf } from './factories/common';
+import { classification, vehicleRequest } from './factories/vehicle';
 import { MOBILE_VIEWPORT, type Viewport } from './viewport';
 import { VehicleRequestsOnSiteTab } from '../src/pages/vehicle/VehicleRequestsOnSiteTab';
 
@@ -116,16 +116,27 @@ const summary: VehicleOnSiteSummaryDto = {
  */
 const admin = authUser({ role: 'admin' });
 
-function renderTab(viewport?: Viewport) {
-  mockHttp({
+/** Позиция классификатора для фильтра техники: сам срез она не меняет — отбирает сервер. */
+const CRANE = classification({
+  key: 'vt-1:vc-1',
+  vehicleTypeId: 'vt-1',
+  vehicleCategoryId: 'vc-1',
+  typeName: 'Автокраны',
+  kindName: 'Спецтехника',
+  label: 'Автокраны, г/п 25 т',
+});
+
+function renderTab(viewport?: Viewport): HttpMock {
+  const http = mockHttp({
     'GET /vehicle-requests/on-site': () => json(list),
     'GET /vehicle-requests/on-site/summary': () => json(summary),
-    // Справочники наполняют фильтры вкладки; отбор строк ведёт сервер, и на проверяемое они не
-    // влияют — поэтому пусты.
+    // Справочник объектов наполняет фильтр вкладки; отбор строк ведёт сервер, и на проверяемое он
+    // не влияет — поэтому пуст.
     'GET /objects': () => json(emptyList()),
-    'GET /vehicle-classifications': () => json(emptyList()),
+    'GET /vehicle-classifications': () => json(listOf([CRANE])),
   });
-  return renderWithUser(<VehicleRequestsOnSiteTab />, { user: admin, viewport });
+  renderWithUser(<VehicleRequestsOnSiteTab />, { user: admin, viewport });
+  return http;
 }
 
 describe('вкладка «На объекте»', () => {
@@ -183,5 +194,31 @@ describe('вкладка «На объекте»', () => {
     expect(screen.getByLabelText('Согласовать досрочное завершение')).toBeDefined();
     expect(screen.getByLabelText('Отклонить досрочное завершение')).toBeDefined();
     expect(screen.getByText('досрочно до 25.07.2026 · ждёт визы')).toBeDefined();
+  });
+
+  it('фильтр техники уезжает набором позиций одним параметром classifications', async () => {
+    const http = renderTab();
+    await screen.findByText('ООО «Арендатех»');
+
+    // Поле опознаётся подсказкой: подписи у фильтров панели нет, её место занимает placeholder.
+    const field = [...document.querySelectorAll<HTMLElement>('.ant-select')].find(
+      (el) => el.textContent?.trim() === 'Любой тип ТС',
+    );
+    expect(field, 'фильтр «Любой тип ТС»').toBeTruthy();
+    fireEvent.mouseDown(field!.querySelector('.ant-select-selector') ?? field!);
+    await waitFor(() => {
+      const option = [...document.querySelectorAll<HTMLElement>('.ant-select-item-option')].find(
+        (o) => o.textContent?.includes('Автокраны, г/п 25 т'),
+      );
+      expect(option, 'вариант категории').toBeTruthy();
+      fireEvent.click(option!);
+    });
+
+    await waitFor(() => {
+      const call = http.lastCall('GET /vehicle-requests/on-site')!;
+      // Одна позиция — тоже набор: старой пары полей в запросе среза больше нет.
+      expect(call.query.get('classifications')).toBe('cvc-1');
+      expect(call.query.get('vehicleTypeId')).toBeNull();
+    });
   });
 });

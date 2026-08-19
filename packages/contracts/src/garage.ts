@@ -1,5 +1,9 @@
 import { z } from 'zod';
 import { baseListQuery, dateOnlySchema, uuidSchema } from './common';
+import {
+  classificationFilterSchema,
+  withSingleClassificationForm,
+} from './vehicle-classifications';
 import type { RequestStatus } from './enums';
 import type { CredentialTypeCode, DriverDocumentGap } from './persons';
 import type { RoutePurpose } from './vehicle-routes';
@@ -286,14 +290,18 @@ export const GARAGE_DRIVER_SORT_FIELDS = ['state', 'fullName'] as const;
  */
 const garageDayQuery = { on: dateOnlySchema.optional() };
 
-export const garageVehicleQuerySchema = baseListQuery(GARAGE_VEHICLE_SORT_FIELDS).extend({
-  ...garageDayQuery,
-  state: garageVehicleStateSchema.optional(),
-  // Позиция классификатора (ADR 0028): тип целиком либо одна его категория — те же два фильтра,
-  // что в справочнике техники и в заявке.
-  vehicleTypeId: uuidSchema.optional(),
-  vehicleCategoryId: uuidSchema.optional(),
-});
+export const garageVehicleQuerySchema = withSingleClassificationForm(
+  baseListQuery(GARAGE_VEHICLE_SORT_FIELDS).extend({
+    ...garageDayQuery,
+    state: garageVehicleStateSchema.optional(),
+    // Набор позиций классификатора (ADR 0028): тип целиком либо его категория, несколько сразу —
+    // тот же фильтр, что в списке заявок и на «На объекте».
+    classifications: classificationFilterSchema.optional(),
+    // Прежняя форма того же фильтра — одна позиция парой полей: её шлют вкладки со старым JS.
+    vehicleTypeId: uuidSchema.optional(),
+    vehicleCategoryId: uuidSchema.optional(),
+  }),
+);
 export type GarageVehicleQuery = z.infer<typeof garageVehicleQuerySchema>;
 
 export const garageDriverQuerySchema = baseListQuery(GARAGE_DRIVER_SORT_FIELDS).extend({

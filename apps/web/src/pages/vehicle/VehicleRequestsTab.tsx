@@ -36,6 +36,9 @@ import {
   canRequestEarlyEnd,
   canShortenWorkPeriodByEdit,
   type CompleteVehicleRequestInput,
+  // Ключ заказчика собирают контракты (план Р2): своего представления о формате в портале нет.
+  costTargetKeyOf,
+  costTargetOf,
   type FeedKind,
   feedKindLabels,
   minRequestDateKey,
@@ -50,6 +53,7 @@ import {
   normalizeTimeInput,
   parseFeedNumberSearch,
   parseVehicleClassificationKey,
+  REQUEST_CUSTOMER_LOCKED_MESSAGE,
   REQUEST_STATUSES,
   type RequestStatus,
   requestCustomerLabel,
@@ -89,6 +93,13 @@ import { TimeInput, optionalWorkTimeRule } from '../../components/TimeInput';
 import { UserAvatar } from '../../components/UserAvatar';
 import { ObjectCell, OBJECT_COLUMN_WIDTH } from '../../components/ObjectCell';
 import { departmentPlatformQuery } from '@entities/department';
+// Подбор «Объект/отдел» — общий модуль (план `docs/department-requests-plan.md`, §9 п. 1): то же
+// поле спрашивает и заявка на обслуживание оргтехники.
+import {
+  RequestCustomerSelect,
+  useRequestCustomerFilter,
+  useRequestCustomerOptions,
+} from '@features/request-customer';
 import { garageKeys } from '@entities/garage';
 import { useIsMobile } from '@shared/lib';
 import { useListParams } from '@shared/lib';
@@ -136,9 +147,7 @@ import {
   RequestContactsCell,
   useEarlyEnd,
   VehicleClassificationSelect,
-  useDepartmentOptions,
   useFileEditor,
-  useObjectOptions,
   useVehicleClassificationFilter,
   useVehicleFilter,
   type EditorFile,
@@ -165,9 +174,11 @@ import {
  */
 interface FormValues {
   requestType: VehicleRequestType;
-  /** Заказчик (ADR 0040): у роли отдела заполняется `departmentId`, у остальных — `objectId`. */
-  objectId?: string;
-  departmentId?: string;
+  /**
+   * Заказчик (ADR 0040) одним ключом `object:<id>` | `department:<id>` (план Р2): пара колонок для
+   * тела запроса собирается из выбранной опции (`customerPairOf`), а не разбором строки.
+   */
+  customerKey?: string;
   /** Ключ позиции классификатора «тип:категория» (ADR 0028); в API уходит парой полей. */
   classificationKey: string;
   // Техника на объект: период работы (date-only) и контакт встречающего.
@@ -237,20 +248,6 @@ const feedRowId = (row: VehicleFeedRow): string =>
 /** Прочерк колонки, у которой в недельной строке значения нет по существу документа. */
 const dash = <Typography.Text type="secondary">—</Typography.Text>;
 
-/**
- * Какой осью заказчика спрашивает форма (ADR 0040) — по выбранному в ней типу заявки, а не только
- * по самой заявке. Заказ техники на объект бывает лишь у площадки, отдела в нём нет вовсе: заявку
- * отдела, переоформляемую в такой заказ (ADR 0091), форма обязана спросить об объекте.
- */
-function departmentCustomerFor(
-  requestType: VehicleRequestType | undefined,
-  record: VehicleRequestDto | null,
-  isDepartmentRole: boolean,
-): boolean {
-  if (requestType === 'special_equipment') return false;
-  return record ? !!record.departmentId : isDepartmentRole;
-}
-
 export function VehicleRequestsTab() {
   const { message, modal } = App.useApp();
   const { user, can } = useAuth();
@@ -264,11 +261,11 @@ export function VehicleRequestsTab() {
   const { openRoute, openRoutesList } = useRouteModal();
   // Объектные роли — область видимости (свои объекты, заявка до «В работе»); действия — по
   // правам (ADR 0021). Виза — право руководителя строительства (ADR 0025).
-  const { isObjectRole, soleObjectId, objectFieldDisabled, limitObjectOptions, ownObjectIds } =
-    useObjectScope();
-  // Вторая ось заказчика (ADR 0040): отдел вместо объекта — у роли она ровно одна.
-  const { isDepartmentRole, soleDepartmentId, departmentFieldDisabled, limitDepartmentOptions } =
-    useDepartmentScope();
+  const { isObjectRole, soleObjectId, ownObjectIds } = useObjectScope();
+  // Вторая ось заказчика (ADR 0040): отдел вместо объекта — у роли она ровно одна. Состав подбора
+  // по обеим осям считает `useRequestCustomerOptions`, здесь от них остались только умолчания
+  // фильтра: единственный объект и единственный отдел учётки.
+  const { soleDepartmentId } = useDepartmentScope();
   // Отдел заказывает только грузоперевозки: перечень берётся из матрицы, а не из имени роли.
   const requestTypeOptions = allowedVehicleRequestTypes(user).map((t) => ({
     value: t,
@@ -319,9 +316,8 @@ export function VehicleRequestsTab() {
     status?: string;
     objectId?: string;
     departmentId?: string;
-    /** Заказанная техника (ADR 0028): тип целиком либо одна его категория. */
-    vehicleTypeId?: string;
-    vehicleCategoryId?: string;
+    /** Заказанная техника (ADR 0028) набором: `t<uuid>` — весь тип, `c<uuid>` — его категория. */
+    classifications?: string;
     /** Назначенная машина (ADR 0098): единица парка, а не позиция классификатора. */
     vehicleId?: string;
     num?: number;
@@ -349,8 +345,7 @@ export function VehicleRequestsTab() {
     setParams((p) => ({ ...p, ...patch, page: 1 }));
 
   const classificationFilter = useVehicleClassificationFilter({
-    vehicleTypeId: params.vehicleTypeId,
-    vehicleCategoryId: params.vehicleCategoryId,
+    classifications: params.classifications,
     onChange: applyFilter,
   });
   // Отбор по назначенной машине (ADR 0098) — второй вопрос о технике рядом с первым: «какую
@@ -371,14 +366,15 @@ export function VehicleRequestsTab() {
 
   // Сводка в шапке: сколько заявок ждёт обработки и сколько в работе. Ключ начинается с
   // 'vehicle-requests' — значит счётчики обновляются теми же инвалидациями, что и список.
-  // Сужающие фильтры (объект, тип заявки, тип ТС и сама машина) в сводку идут: цифры относятся к
+  // Сужающие фильтры (заказчик, тип заявки, тип ТС и сама машина) в сводку идут: цифры относятся к
   // тому же списку, что человек видит перед собой. Статус и номер — нет, они свели бы её к самой
   // себе.
   const summaryQuery = {
     objectId: params.objectId,
+    // Отдел сужает и цифры (Р9а): иначе таблица сузится, а счётчики над ней останутся по всем.
+    departmentId: params.departmentId,
     requestType: params.requestType,
-    vehicleTypeId: params.vehicleTypeId,
-    vehicleCategoryId: params.vehicleCategoryId,
+    classifications: params.classifications,
     vehicleId: params.vehicleId,
   };
   const { data: summary } = useQuery({
@@ -396,10 +392,6 @@ export function VehicleRequestsTab() {
     { label: 'Недельных ждут визы', value: data?.weeklyPendingCount ?? 0 },
   ];
 
-  const { options: allObjectOptions, loading: objectsLoading } = useObjectOptions();
-  const objectOptions = limitObjectOptions(allObjectOptions);
-  const { options: allDepartmentOptions, loading: departmentsLoading } = useDepartmentOptions();
-  const departmentOptions = limitDepartmentOptions(allDepartmentOptions);
   const { byKey: classificationByKey, groups, loading: typesLoading } = useVehicleClassifications();
 
   const [open, setOpen] = useState(false);
@@ -430,52 +422,61 @@ export function VehicleRequestsTab() {
   const [form] = Form.useForm<FormValues>();
   const editor = useFileEditor();
 
-  /**
-   * Какой осью заказчика спрашивает форма (ADR 0040). У новой заявки её задаёт роль — отдел
-   * заказывает от отдела, остальные от объекта; у заведённой — сама заявка.
-   *
-   * Именно `record`, а не одна лишь роль: у заявки заказчик уже выбран, и спрашивать вместо него
-   * ось редактора значит показывать чужое пустое поле. Диспетчер, открыв правку грузоперевозки
-   * отдела, видел бы обязательный пустой «Объект» — отдела в форме нет вовсе, — и сохранение
-   * молча переносило бы заявку с отдела на площадку.
-   */
-  // Тип заявки выбирают в форме первым — от него зависят и поля, и список типов ТС, и ось
-  // заказчика: переоформленная в заказ на объект грузоперевозка отдела спрашивает площадку.
+  // Тип заявки выбирают в форме первым — от него зависят и поля, и список типов ТС, и состав
+  // подбора заказчика: спецтехника выходит на площадку, и отделов в ней нет вовсе (Р4).
   const watchRequestType = Form.useWatch('requestType', form);
-  const departmentCustomer = departmentCustomerFor(watchRequestType, record, isDepartmentRole);
+  const isSpecial = watchRequestType === 'special_equipment';
+
+  /**
+   * Заказчик правимой заявки (К7): ссылка и подпись — из самой записи, а не из действующего
+   * справочника. Объект закрыли, отдел расформировали, а заявка на них заведена; поле
+   * обязательное, и без сохранённого варианта правка начиналась бы с пустого заказчика. Разбирать
+   * пару колонок нечем и незачем: заполнена ровно одна её половина (CHECK), и готовый объект
+   * затрат приходит в DTO — тем же `costTargetOf`, каким его считает сервер.
+   *
+   * Только при открытом окне: закрытое держит запись прошлой правки, и её вариант, добавленный к
+   * списку, сбил бы счёт «вариант один», по которому заведение подставляет заказчика (Р3а).
+   * Отменённый типом род (отдел у спецтехники, ADR 0091) отсеивает сам подбор — правило про состав
+   * поля живёт там же, где состав, и форме его не повторять (Р4, К8).
+   */
+  const savedTarget = open && record ? costTargetOf(record) : null;
+  const savedCustomer = savedTarget
+    ? { target: savedTarget, label: `${savedTarget.code} — ${savedTarget.name}` }
+    : null;
+  /**
+   * Заказчик формы: группы, запертость, единственный вариант и сохранённое значение — одним
+   * ответом (план Р3). Разложенные по местам, они разъезжались бы: запертость считается по обеим
+   * группам сразу, а сохранённое значение обязано попадать в свою.
+   */
+  const customer = useRequestCustomerOptions({
+    // Спецтехника отделов не знает (Р4): группы «Отделы» при ней нет вовсе, а стоящее в поле
+    // подразделение убирает сама форма — модуль лишь перестаёт его предлагать (К8).
+    departments: isSpecial ? 'none' : 'scope',
+    saved: savedCustomer,
+  });
+  // Заказчика меняют только у «Новой» (Р7): у взятой в работу объект затрат уже ушёл снимком в
+  // строки задания путевого листа, и перенос заявки разошёлся бы с выписанной бумагой.
+  // Ограничение серверное (422), поле лишь показывает его заранее и говорит почему.
+  const customerLocked = !!record && record.status !== 'new';
 
   /**
    * Что предложить первой строкой в списке мест (ADR 0069): площадку заявки, затем площадки
-   * учётки. Заказчика меняют, не закрывая форму, поэтому объект берётся из самой формы, а не из
+   * учётки. Заказчика меняют, не закрывая форму, поэтому пара берётся из самой формы, а не из
    * заявки; у заказчика-отдела своей площадки в форме нет — её даёт карта отделов (ADR 0062).
    *
    * Список короткий и без записей без адреса: чего в справочнике мест нет, того и предлагать
    * нечем — этим занимается сам компонент поля.
    */
-  const formObjectId = Form.useWatch('objectId', form);
-  const formDepartmentId = Form.useWatch('departmentId', form);
+  const formCustomer = customer.customerPairOf(Form.useWatch('customerKey', form));
   const { data: departmentPlatforms } = useQuery(departmentPlatformQuery());
   const suggestObjectIds = useMemo(() => {
-    const departmentObjectId = formDepartmentId
-      ? departmentPlatforms?.get(formDepartmentId)
+    const departmentObjectId = formCustomer.departmentId
+      ? departmentPlatforms?.get(formCustomer.departmentId)
       : undefined;
-    const ids = [formObjectId, departmentObjectId, ...ownObjectIds];
+    const ids = [formCustomer.objectId, departmentObjectId, ...ownObjectIds];
     return [...new Set(ids.filter((id): id is string => !!id))];
-  }, [formObjectId, formDepartmentId, departmentPlatforms, ownObjectIds]);
+  }, [formCustomer.objectId, formCustomer.departmentId, departmentPlatforms, ownObjectIds]);
 
-  /**
-   * Списки формы держат то, что выбрано у правимой заявки, даже если из действующего справочника
-   * оно выпало: объект закрыли, отдел расформировали, а заявка на них заведена. Поле обязательное,
-   * и без этого правка начиналась бы с пустого заказчика.
-   */
-  const formObjectOptions = withSavedOption(objectOptions, {
-    id: record?.objectId,
-    name: record ? `${record.objectCode} — ${record.objectName}` : null,
-  });
-  const formDepartmentOptions = withSavedOption(departmentOptions, {
-    id: record?.departmentId,
-    name: record ? `${record.departmentCode} — ${record.departmentName}` : null,
-  });
   /**
    * Тип правимой заявки остаётся в списке, даже если роли он недоступен (ADR 0040): подписать
    * значение вне списка `AutoSelect` нечем — показался бы код.
@@ -533,7 +534,6 @@ export function VehicleRequestsTab() {
    */
   const [tripsExpanded, setTripsExpanded] = useState(false);
 
-  const isSpecial = watchRequestType === 'special_equipment';
   const isFreight = watchRequestType === 'freight_transport';
   const commentHint = watchRequestType ? COMMENT_HINTS[watchRequestType] : null;
 
@@ -657,6 +657,12 @@ export function VehicleRequestsTab() {
     // заявку переоформят в технику на объект, — у остальных ездок свои концы и свои люди.
     const trips: TripFormValue[] | undefined = form.getFieldValue('trips');
     if (next === 'special_equipment') {
+      // Спецтехника выходит на площадку, и отдела в такой заявке нет вовсе (Р4): стоящее в поле
+      // подразделение убирает форма, а не подбор (К8) — иначе поле показывало бы пустоту, а
+      // заявка ушла бы с прежним заказчиком.
+      if (customer.customerPairOf(form.getFieldValue('customerKey')).departmentId) {
+        form.resetFields(['customerKey']);
+      }
       const scheduledDate: Dayjs | undefined = form.getFieldValue('scheduledDate');
       const name = trips?.[0]?.toResponsibleName;
       const phone = trips?.[0]?.toResponsiblePhone;
@@ -709,12 +715,11 @@ export function VehicleRequestsTab() {
     setRecord(null);
     form.resetFields();
     setOperationId(crypto.randomUUID());
-    // Штаб заводит заявку только на свой объект — подставляем его сразу, поле заперто.
-    // Объект подставляется, только когда он у роли один: с несколькими выбирает человек.
-    // Заказчик подставляется, только когда он у роли один: с несколькими выбирает человек.
-    if (soleObjectId) form.setFieldsValue({ objectId: soleObjectId } as Partial<FormValues>);
-    if (soleDepartmentId) {
-      form.setFieldsValue({ departmentId: soleDepartmentId } as Partial<FormValues>);
+    // Штаб заводит заявку только на свой объект, сотрудник отдела — только от своего отдела:
+    // заказчик подставляется, когда вариант у учётки один, и поле при этом заперто. Ставит его
+    // форма, а не поле: заблокированное `AutoSelect` не заполняет намеренно (Р3а, К6).
+    if (customer.soleCustomerKey) {
+      form.setFieldsValue({ customerKey: customer.soleCustomerKey } as Partial<FormValues>);
     }
     // Отделу доступен один тип заявки — подставляем его, чтобы поле не спрашивало о выборе,
     // которого нет.
@@ -744,7 +749,9 @@ export function VehicleRequestsTab() {
     if (r.requestType === 'special_equipment') {
       form.setFieldsValue({
         requestType: r.requestType,
-        objectId: r.objectId ?? undefined,
+        // Заказчик — ключом из самой заявки (Р2): пара колонок под CHECK заполнена ровно
+        // наполовину, и род берётся из неё, а не из оси того, кто правит.
+        customerKey: costTargetKeyOf(r) ?? undefined,
         classificationKey: classificationKeyOf(r),
         dateFrom: dayjs(r.dateFrom),
         dateTo: r.dateTo ? dayjs(r.dateTo) : null,
@@ -771,8 +778,7 @@ export function VehicleRequestsTab() {
        */
       form.setFieldsValue({
         requestType: r.requestType,
-        objectId: r.objectId ?? undefined,
-        departmentId: r.departmentId ?? undefined,
+        customerKey: costTargetKeyOf(r) ?? undefined,
         classificationKey: classificationKeyOf(r),
         scheduledDate: at,
         // Время не задано — поле остаётся пустым (в scheduledAt лежит полночь МСК).
@@ -804,6 +810,14 @@ export function VehicleRequestsTab() {
        * на обычную дневную работу, и журнал правок бланков наполнился бы заявками на завтра.
        */
       const backdate = backdated ? { backdateReason: v.backdateReason?.trim(), operationId } : {};
+      /*
+       * Заказчик — парой колонок из выбранной опции (Р2, Р2а): род и идентификатор лежат в ней
+       * данными, и разбирать строку на каждом сохранении незачем.
+       *
+       * Значение, которого поле не предлагает, отдаётся пустой парой (К8) — это защита, а не
+       * потеря: так наружу не уходит отдел, оставшийся в форме от переоформления в спецтехнику.
+       */
+      const pair = customer.customerPairOf(v.customerKey);
       const common = {
         vehicleTypeId: picked.vehicleTypeId,
         vehicleCategoryId: picked.vehicleCategoryId,
@@ -826,7 +840,7 @@ export function VehicleRequestsTab() {
         // нет вовсе (ADR 0040) — роль отдела до этой ветки не доходит, ей закрыт сам тип.
         const base = {
           requestType: 'special_equipment' as const,
-          objectId: v.objectId!,
+          objectId: pair.objectId!,
           ...common,
           dateFrom: v.dateFrom!.format('YYYY-MM-DD'),
           dateTo: v.dateTo ? v.dateTo.format('YYYY-MM-DD') : null,
@@ -841,11 +855,10 @@ export function VehicleRequestsTab() {
       }
 
       // Заказчик грузоперевозки — объект либо отдел, ровно один (ADR 0040): присылать обе оси
-      // сервер не даст. Ось берётся та же, которую спрашивала форма (`departmentCustomer`), — у
-      // заведённой заявки это её собственный заказчик, а не ось того, кто правит.
-      const customer = departmentCustomer
-        ? { departmentId: v.departmentId! }
-        : { objectId: v.objectId! };
+      // сервер не даст, и половина пары выбирается по роду выбранного, а не по оси того, кто правит.
+      const customerBody = pair.departmentId
+        ? { departmentId: pair.departmentId }
+        : { objectId: pair.objectId! };
 
       // Время не задано → полночь МСК + признак: заявка «на дату», без конкретного часа.
       const time = normalizeTimeInput(v.scheduledTime ?? '');
@@ -854,7 +867,7 @@ export function VehicleRequestsTab() {
         .format('YYYY-MM-DDTHH:mm:ssZ');
       const base = {
         requestType: 'freight_transport' as const,
-        ...customer,
+        ...customerBody,
         ...common,
         scheduledAt,
         scheduledTimeUnspecified: time === undefined,
@@ -1694,6 +1707,18 @@ export function VehicleRequestsTab() {
     });
   };
 
+  /**
+   * Заказчик в фильтре ленты (Р9) — общим фильтром модуля: тот же подбор, что в форме, и тем же
+   * составом групп — своя ось у заявителя, обе у офиса и у тех, кто заявки только читает.
+   * Сохранённого значения у фильтра нет: он спрашивает справочник, а не запись. Умолчания (свой
+   * объект, свой отдел) остаются параметрами списка выше.
+   */
+  const customerFilter = useRequestCustomerFilter({
+    objectId: params.objectId,
+    departmentId: params.departmentId,
+    onChange: applyFilter,
+  });
+
   const filters = (
     <Space size={[12, 8]} wrap>
       <Select
@@ -1735,33 +1760,9 @@ export function VehicleRequestsTab() {
         value={params.approved}
         onChange={(v: string | undefined) => applyFilter({ approved: v })}
       />
-      {/* Фильтр заказчика: роль отдела ищет по отделам, остальные — по объектам (ADR 0040).
-          Обоих сразу не бывает — у заявки заказчик один, и второй фильтр всегда давал бы пусто. */}
-      {isDepartmentRole ? (
-        <Select
-          allowClear
-          showSearch
-          optionFilterProp="label"
-          placeholder="Все отделы"
-          style={{ width: 240 }}
-          options={departmentOptions}
-          disabled={departmentFieldDisabled}
-          value={params.departmentId}
-          onChange={(v: string | undefined) => applyFilter({ departmentId: v })}
-        />
-      ) : (
-        <Select
-          allowClear
-          showSearch
-          optionFilterProp="label"
-          placeholder="Все объекты"
-          style={{ width: 240 }}
-          options={objectOptions}
-          disabled={objectFieldDisabled}
-          value={params.objectId}
-          onChange={(v: string | undefined) => applyFilter({ objectId: v })}
-        />
-      )}
+      {/* Заказчик — тот же подбор, что в форме (Р9): площадки и подразделения одним полем. Двух
+          фильтров рядом не бывает — у заявки заказчик один, и второй всегда давал бы пусто. */}
+      {customerFilter.controls}
       {/* Заказанная техника: тип целиком либо одна его категория (ADR 0028). */}
       {classificationFilter.controls}
       {/* Назначенная машина (ADR 0098): заявки, которые закрыли этой единицей парка. */}
@@ -1822,29 +1823,9 @@ export function VehicleRequestsTab() {
       placeholder: 'Любое согласование',
       onChange: (v) => applyFilter({ approved: v }),
     },
-    // Тот же фильтр заказчика, что в панели над таблицей: отдел либо объект (ADR 0040).
-    isDepartmentRole
-      ? ({
-          kind: 'select',
-          key: 'departmentId',
-          label: 'Отдел',
-          value: params.departmentId,
-          options: departmentOptions,
-          placeholder: 'Все отделы',
-          disabled: departmentFieldDisabled,
-          onChange: (v) => applyFilter({ departmentId: v }),
-        } as const)
-      : ({
-          kind: 'select',
-          key: 'objectId',
-          label: 'Объект',
-          value: params.objectId,
-          options: objectOptions,
-          // С одним объектом он зафиксирован; с несколькими выбор сужен до своих.
-          placeholder: 'Все объекты',
-          disabled: objectFieldDisabled,
-          onChange: (v) => applyFilter({ objectId: v }),
-        } as const),
+    // Тот же подбор заказчика, что в панели над таблицей (Р9): площадки и подразделения одним
+    // полем, и выбор так же чистит вторую половину пары.
+    customerFilter.mobileFilter,
     classificationFilter.mobileFilter,
     vehicleFilter.mobileFilter,
     {
@@ -2173,40 +2154,24 @@ export function VehicleRequestsTab() {
             полей прячет под прокрутку. На телефоне колонка одна, порядок полей тот же. */}
         <Form form={form} layout="vertical" onFinish={onFinish}>
           <FormGrid>
-            {/* Заказчик заявки (ADR 0040): у новой ось задаёт роль — отдел заказывает от отдела,
-              остальные от объекта, — у заведённой сама заявка (`departmentCustomer`). Два поля
-              рядом не показываются никогда: заказчик у заявки один. */}
-            {departmentCustomer ? (
-              <Form.Item
-                name="departmentId"
-                label="Отдел"
-                rules={[{ required: true, message: 'Выберите отдел' }]}
-              >
-                <AutoSelect
-                  options={formDepartmentOptions}
-                  loading={departmentsLoading}
-                  showSearch
-                  optionFilterProp="label"
-                  placeholder="Отдел"
-                  disabled={departmentFieldDisabled}
-                />
-              </Form.Item>
-            ) : (
-              <Form.Item
-                name="objectId"
-                label="Объект"
-                rules={[{ required: true, message: 'Выберите объект' }]}
-              >
-                <AutoSelect
-                  options={formObjectOptions}
-                  loading={objectsLoading}
-                  showSearch
-                  optionFilterProp="label"
-                  placeholder="Объект"
-                  disabled={objectFieldDisabled}
-                />
-              </Form.Item>
-            )}
+            {/* Заказчик заявки (ADR 0040, план Р2): площадки и подразделения одним подбором — по
+              видимости учётки, а не по её оси в отдельности. Два поля рядом означали бы, что одно
+              из них пустое и непонятно почему; заказчик у заявки ровно один. */}
+            <Form.Item
+              name="customerKey"
+              label="Объект/отдел"
+              // Заказчика меняют только у «Новой» (Р7): у взятой в работу объект затрат уже ушёл
+              // снимком в задание путевого листа, и сервер отвечает на такую правку 422. Текст —
+              // его же, чтобы поле и отказ говорили одно.
+              extra={customerLocked ? REQUEST_CUSTOMER_LOCKED_MESSAGE : undefined}
+              rules={[{ required: true, message: 'Выберите объект или отдел' }]}
+            >
+              <RequestCustomerSelect
+                options={customer.options}
+                loading={customer.loading}
+                disabled={customerLocked || customer.disabled}
+              />
+            </Form.Item>
             {/* Тип заведённой заявки меняется переоформлением (ADR 0091) — там, где заказанная
               позиция годится обоим типам. Где не годится, поле заперто и говорит почему. */}
             <Form.Item

@@ -13,6 +13,7 @@ import {
   vehicleRequestTypeLabels,
 } from '@technic/contracts';
 import { vehicleRequestsApi } from '../../api/resources';
+import { useRequestCustomerFilter } from '@features/request-customer';
 import { DataTable, type CardConfig } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
@@ -53,15 +54,32 @@ export function VehicleRequestsArchiveTab() {
     fetch: (id) => vehicleRequestsApi.get(id),
   });
 
-  const { params, setParams, setSort, onTableChange } = useListParams<{ num?: number }>(
-    {},
-    { searchKeys: ['comment'] },
-  );
+  const { params, setParams, setSort, onTableChange } = useListParams<{
+    num?: number;
+    /** Заказчик заявки (ADR 0040): подбор «Объект/отдел» заполняет ровно один из двух. */
+    objectId?: string;
+    departmentId?: string;
+  }>({}, { searchKeys: ['comment'] });
   const [numInput, setNumInput] = useState('');
   const applyNumFilter = (raw: string) => {
     setNumInput(raw);
     setParams((p) => ({ ...p, num: parseVehicleRequestNumberSearch(raw), page: 1 }));
   };
+
+  // Подбор «Объект/отдел» (план `docs/department-requests-plan.md`, Р9) — общим фильтром модуля:
+  // пара параметров одним полем, и вторая половина чистится той же правкой. Фильтра по заказчику в
+  // архиве не было вовсе, а удалённые заявки отдела лежат в нём наравне с объектными — по номеру
+  // их не найти, если номера и не помнят. Умолчания здесь нет намеренно: архив открыт праву
+  // `archive.read`, а у такой учётки своей оси не бывает — подставлять нечего.
+  const customerFilter = useRequestCustomerFilter({
+    objectId: params.objectId,
+    departmentId: params.departmentId,
+    onChange: (patch) => setParams((p) => ({ ...p, ...patch, page: 1 })),
+    // Подпись длиннее общей: в архиве фильтр стоит один на панели, и «Заказчик» рядом с номером
+    // заявки не сказал бы, чем именно её искать.
+    label: 'Объект/отдел',
+    placeholder: 'Все объекты и отделы',
+  });
 
   const { data, isFetching } = useQuery({
     queryKey: ['vehicle-requests', 'archive', params],
@@ -258,6 +276,7 @@ export function VehicleRequestsArchiveTab() {
   };
 
   const mobileFilters: FilterDefinition[] = [
+    customerFilter.mobileFilter,
     {
       kind: 'text',
       key: 'num',
@@ -272,6 +291,7 @@ export function VehicleRequestsArchiveTab() {
     <PageTableLayout
       filters={
         <Space wrap>
+          {customerFilter.controls}
           <Input
             allowClear
             style={{ width: 180 }}

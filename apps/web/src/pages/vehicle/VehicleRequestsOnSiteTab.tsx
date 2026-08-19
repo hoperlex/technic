@@ -143,9 +143,8 @@ export function VehicleRequestsOnSiteTab() {
 
   const { params, setParams, setSort, onTableChange } = useListParams<{
     objectId?: string;
-    /** Заказанная техника (ADR 0028): тип целиком либо одна его категория. */
-    vehicleTypeId?: string;
-    vehicleCategoryId?: string;
+    /** Заказанная техника (ADR 0028) набором: `t<uuid>` — весь тип, `c<uuid>` — его категория. */
+    classifications?: string;
     num?: number;
     /**
      * Порядок задан явно, а не оставлен на сервер: срез читают площадкой, и по объекту он идёт
@@ -163,8 +162,7 @@ export function VehicleRequestsOnSiteTab() {
     setParams((p) => ({ ...p, ...patch, page: 1 }));
 
   const classificationFilter = useVehicleClassificationFilter({
-    vehicleTypeId: params.vehicleTypeId,
-    vehicleCategoryId: params.vehicleCategoryId,
+    classifications: params.classifications,
     onChange: applyFilter,
   });
 

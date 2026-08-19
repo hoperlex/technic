@@ -104,8 +104,8 @@ export function GarageVehiclesTab({
   const { params, setParams, setSort, onTableChange } = useListParams<{
     state?: GarageVehicleState;
     readings?: 'pending';
-    vehicleTypeId?: string;
-    vehicleCategoryId?: string;
+    /** Техника классификатора набором: `t<uuid>` — весь тип, `c<uuid>` — одна его категория. */
+    classifications?: string;
     sortBy?: string;
     sortOrder?: 'asc' | 'desc';
   }>(
@@ -129,8 +129,7 @@ export function GarageVehiclesTab({
   const cardHref = (id: string) => vehicleCardHref(id, date);
 
   const classificationFilter = useVehicleClassificationFilter({
-    vehicleTypeId: params.vehicleTypeId,
-    vehicleCategoryId: params.vehicleCategoryId,
+    classifications: params.classifications,
     onChange: applyFilter,
   });
 

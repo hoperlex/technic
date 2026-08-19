@@ -64,6 +64,35 @@ const RENTAL_VEHICLE = {
   lessorName: 'ООО «Ромашка»',
 } as VehicleDto;
 
+/**
+ * Две позиции классификатора для набора: категория одного типа и тип без категорий вовсе. Взяты
+ * разные уровни намеренно — набор объединяет их по ИЛИ, и обе ветки отбора обязаны уехать одной
+ * строкой.
+ */
+const CRANE = classification({
+  key: 'vt-1:vc-1',
+  vehicleTypeId: 'vt-1',
+  vehicleCategoryId: 'vc-1',
+  typeName: 'Автокраны',
+  kindCode: 'special',
+  kindName: 'Спецтехника',
+  label: 'Автокраны, г/п 25 т',
+});
+const TIPPER = classification({
+  key: 'vt-2:',
+  vehicleTypeId: 'vt-2',
+  vehicleCategoryId: null,
+  typeName: 'Самосвалы',
+  kindCode: 'freight',
+  kindName: 'Грузовая техника',
+  label: 'Самосвалы',
+});
+
+/** Справочник для тестов набора: по умолчанию лента отвечает одной безымянной позицией. */
+const CLASSIFICATIONS: RouteMap = {
+  'GET /vehicle-classifications': () => json(list([CRANE, TIPPER])),
+};
+
 /** Адрес после перехода: недельная строка обязана уводить со списка на страницу недели. */
 function LocationProbe() {
   const location = useLocation();
@@ -122,6 +151,21 @@ async function openFilter(placeholder: string) {
 
 async function pickFilter(placeholder: string, option: string) {
   await openFilter(placeholder);
+  await waitFor(() => {
+    const match = [...document.querySelectorAll<HTMLElement>('.ant-select-item-option')].find((o) =>
+      o.textContent?.includes(option),
+    );
+    expect(match, `вариант «${option}»`).toBeTruthy();
+    fireEvent.click(match!);
+  });
+}
+
+/**
+ * Отметить или снять вариант набора в уже открытом списке. В режиме `multiple` выпадашка после
+ * выбора не закрывается, а поле перестаёт показывать подсказку — искать его по ней во второй раз
+ * уже нечем; и снимают отметку тем же кликом по варианту, каким её ставили.
+ */
+async function toggleOption(option: string) {
   await waitFor(() => {
     const match = [...document.querySelectorAll<HTMLElement>('.ant-select-item-option')].find((o) =>
       o.textContent?.includes(option),
@@ -260,7 +304,9 @@ describe('лента «Заказ автотехники»: недельная �
 
     // Пустой ввод снимает только номер: «не ищу конкретный документ» — не «покажи всё подряд».
     search('');
-    await waitFor(() => expect(http.lastCall('GET /vehicle-requests/feed')!.query.get('num')).toBeNull());
+    await waitFor(() =>
+      expect(http.lastCall('GET /vehicle-requests/feed')!.query.get('num')).toBeNull(),
+    );
   });
 
   it('старый адрес вкладки недельных открывает список уже суженным до них', async () => {
@@ -369,5 +415,89 @@ describe('лента «Заказ автотехники»: недельная �
     renderTab({}, authUser({ role: 'observer' }));
     expect(await screen.findByText('НЗ-12')).toBeDefined();
     expect(screen.queryByRole('button', { name: /Заявка на неделю/ })).toBeNull();
+  });
+});
+
+/**
+ * Набор позиций в фильтре техники (план `docs/vehicle-type-multi-filter-plan.md`).
+ *
+ * Проверяется не «поле стало множественным», а то, чем набор отличается от прежнего одиночного
+ * выбора на проводе: несколько позиций уезжают одним параметром и одной канонической строкой,
+ * снятая позиция не уносит с собой соседнюю, пустой набор не оставляет параметра вовсе, а сводка
+ * над лентой считает по тому же набору, что показывает таблица. Разойдись любое из этого —
+ * человек видит цифры про один список над строками другого либо получает два запроса за один
+ * и тот же вопрос.
+ */
+describe('лента «Заказ автотехники»: набор позиций в фильтре техники', () => {
+  it('две выбранные позиции уезжают одним параметром — и в ленту, и в сводку', async () => {
+    const http = renderTab(CLASSIFICATIONS);
+    await screen.findByText('Т-42');
+    expect(http.lastCall('GET /vehicle-requests/feed')!.query.get('classifications')).toBeNull();
+
+    await openFilter('Любой тип ТС');
+    await toggleOption('Автокраны, г/п 25 т');
+    await toggleOption('Самосвалы');
+
+    await waitFor(() => {
+      const call = http.lastCall('GET /vehicle-requests/feed')!;
+      // Ключи самодостаточны: `c` — категория, `t` — тип целиком; обе ветки в одной строке.
+      expect(call.query.get('classifications')).toBe('cvc-1,tvt-2');
+      // Старая пара полей на провод не выходит: технику задаёт один параметр, а не два способа.
+      expect(call.query.get('vehicleTypeId')).toBeNull();
+      expect(call.query.get('vehicleCategoryId')).toBeNull();
+      // Другой отбор — другие заявки: список возвращается на первую страницу.
+      expect(call.query.get('page')).toBe('1');
+    });
+    // Сводка считается по той же выборке, что видно в таблице.
+    await waitFor(() =>
+      expect(http.lastCall('GET /vehicle-requests/summary')!.query.get('classifications')).toBe(
+        'cvc-1,tvt-2',
+      ),
+    );
+  });
+
+  it('снятая позиция оставляет вторую, а снятые обе убирают параметр из запроса', async () => {
+    const http = renderTab(CLASSIFICATIONS);
+    await screen.findByText('Т-42');
+
+    await openFilter('Любой тип ТС');
+    await toggleOption('Автокраны, г/п 25 т');
+    await toggleOption('Самосвалы');
+    await waitFor(() =>
+      expect(http.lastCall('GET /vehicle-requests/feed')!.query.get('classifications')).toBe(
+        'cvc-1,tvt-2',
+      ),
+    );
+
+    await toggleOption('Самосвалы');
+    await waitFor(() =>
+      expect(http.lastCall('GET /vehicle-requests/feed')!.query.get('classifications')).toBe(
+        'cvc-1',
+      ),
+    );
+
+    await toggleOption('Автокраны, г/п 25 т');
+    // Пустой набор — это «фильтра нет»: пустая строка означала бы то же самое, но уехала бы
+    // третьим ключом кэша за тем же списком.
+    await waitFor(() =>
+      expect(http.lastCall('GET /vehicle-requests/feed')!.query.get('classifications')).toBeNull(),
+    );
+  });
+
+  it('порядок кликов не меняет строку запроса', async () => {
+    const http = renderTab(CLASSIFICATIONS);
+    await screen.findByText('Т-42');
+
+    await openFilter('Любой тип ТС');
+    await toggleOption('Самосвалы');
+    await toggleOption('Автокраны, г/п 25 т');
+
+    // Та же строка, что и при обратном порядке выше: сортируется сам ключ, а не порядок кликов и
+    // не порядок вариантов справочника, — иначе один вопрос давал бы два ключа кэша и два запроса.
+    await waitFor(() =>
+      expect(http.lastCall('GET /vehicle-requests/feed')!.query.get('classifications')).toBe(
+        'cvc-1,tvt-2',
+      ),
+    );
   });
 });

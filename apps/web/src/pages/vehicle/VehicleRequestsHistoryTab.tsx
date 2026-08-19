@@ -30,6 +30,7 @@ import {
   workedAmountLabel,
 } from '@technic/contracts';
 import { vehicleRequestsApi } from '../../api/resources';
+import { useRequestCustomerFilter } from '@features/request-customer';
 import { DataTable, type CardConfig } from '@shared/ui';
 import { PageTableLayout } from '@shared/ui';
 import { sortOptionsFrom, type FilterDefinition } from '@shared/ui';
@@ -48,11 +49,11 @@ import {
   formatDateOnly,
   RequestAssignmentCell,
   useLessorOptions,
-  useObjectOptions,
   useVehicleClassificationFilter,
   useVehicleFilter,
 } from './shared';
 import { useObjectScope } from '../../hooks/useObjectScope';
+import { useDepartmentScope } from '../../hooks/useDepartmentScope';
 
 /**
  * Журнал закрытых заказов техники (ADR 0029). Первая вкладка отвечает на «что сейчас в работе»,
@@ -91,35 +92,39 @@ const dash = <Typography.Text type="secondary">—</Typography.Text>;
 
 export function VehicleRequestsHistoryTab() {
   const { user } = useAuth();
-  const { soleObjectId, objectFieldDisabled, limitObjectOptions } = useObjectScope();
+  const { soleObjectId } = useObjectScope();
+  const { soleDepartmentId } = useDepartmentScope();
   // Сам арендодатель видит только свои заявки (ADR 0038) — фильтр «у кого брали» повторял бы ему
   // единственный вариант, а список остальных арендодателей к его работе отношения не имеет.
   const isLessor = actsForCounterparty(user, 'vehicle_lessor');
-  // Штабу с одним объектом фильтр зафиксирован на нём — как и в списке заявок; с несколькими
-  // выбор сужен до своих (ADR 0039). Сервер всё равно отдаёт только свои (requestVisibilityWhere).
-  const ownObjectId = soleObjectId ?? '';
 
   const { params, setParams, setSort, onTableChange } = useListParams<{
     requestType?: string;
     status?: string;
+    /** Заказчик заявки (ADR 0040): подбор «Объект/отдел» заполняет ровно один из двух. */
     objectId?: string;
-    /** Заказанная техника (ADR 0028): тип целиком либо одна его категория. */
-    vehicleTypeId?: string;
-    vehicleCategoryId?: string;
+    departmentId?: string;
+    /** Заказанная техника (ADR 0028) набором: `t<uuid>` — весь тип, `c<uuid>` — его категория. */
+    classifications?: string;
     /** Машина, которой заявку закрыли (ADR 0098) — рядом с «у кого брали». */
     vehicleId?: string;
     lessorId?: string;
     num?: number;
     dateFrom?: string;
     dateTo?: string;
-  }>({ objectId: ownObjectId || undefined }, { searchKeys: ['comment'] });
+  }>(
+    // Умолчание — единственный заказчик учётки: объект объектной роли (ADR 0039) либо отдел
+    // отдельской (ADR 0040). Сервер и без фильтра отдаёт только своё, а журнал не заставляет
+    // выбирать предрешённое.
+    { objectId: soleObjectId ?? undefined, departmentId: soleDepartmentId ?? undefined },
+    { searchKeys: ['comment'] },
+  );
 
   const applyFilter = (patch: Partial<typeof params>) =>
     setParams((p) => ({ ...p, ...patch, page: 1 }));
 
   const classificationFilter = useVehicleClassificationFilter({
-    vehicleTypeId: params.vehicleTypeId,
-    vehicleCategoryId: params.vehicleCategoryId,
+    classifications: params.classifications,
     onChange: applyFilter,
   });
   // «Какой машиной» — вопрос, отдельный от «у кого брали» (фильтр арендодателя ниже): одну и ту же
@@ -138,8 +143,20 @@ export function VehicleRequestsHistoryTab() {
     queryFn: () => vehicleRequestsApi.historySummary(params),
   });
 
-  const { options: allObjectOptions } = useObjectOptions();
-  const objectOptions = limitObjectOptions(allObjectOptions);
+  // Подбор «Объект/отдел» на месте прежнего фильтра по объекту (план
+  // `docs/department-requests-plan.md`, Р9) — общим фильтром модуля: закрытые заявки отдела лежат в
+  // журнале наравне с объектными, а второй оси у него не было вовсе. Состав считает тот же хук, что
+  // и у формы, по оси учётки; читателю без своей оси (наблюдатель, арендодатель) видны обе группы —
+  // и это не расширение доступа: выдачу сужает сервер, а не фильтр.
+  const customerFilter = useRequestCustomerFilter({
+    objectId: params.objectId,
+    departmentId: params.departmentId,
+    onChange: applyFilter,
+    // Подпись длиннее общей: в журнале рядом стоят фильтры по типу заявки и по технике, и короткое
+    // «Заказчик» терялось бы среди них.
+    label: 'Объект/отдел',
+    placeholder: 'Все объекты и отделы',
+  });
 
   const { options: lessorOptions } = useLessorOptions();
 
@@ -392,17 +409,9 @@ export function VehicleRequestsHistoryTab() {
         value={params.status as RequestStatus | undefined}
         onChange={(v: RequestStatus | undefined) => applyFilter({ status: v })}
       />
-      <Select
-        allowClear
-        showSearch
-        optionFilterProp="label"
-        placeholder="Все объекты"
-        style={{ width: 240 }}
-        options={objectOptions}
-        disabled={objectFieldDisabled}
-        value={params.objectId}
-        onChange={(v: string | undefined) => applyFilter({ objectId: v })}
-      />
+      {/* Пустое значение фильтра означает «все», поэтому единственный вариант поле само не
+          подставляет: за умолчание отвечает пара выше. */}
+      {customerFilter.controls}
       {/* Заказанная техника: тип целиком либо одна его категория (ADR 0028). */}
       {classificationFilter.controls}
       {/* Машина, которой заявку закрыли (ADR 0098). */}
@@ -468,16 +477,7 @@ export function VehicleRequestsHistoryTab() {
       placeholder: 'Выполненные и отменённые',
       onChange: (v) => applyFilter({ status: v }),
     },
-    {
-      kind: 'select',
-      key: 'objectId',
-      label: 'Объект',
-      value: params.objectId,
-      options: objectOptions,
-      placeholder: 'Все объекты',
-      disabled: objectFieldDisabled,
-      onChange: (v) => applyFilter({ objectId: v }),
-    },
+    customerFilter.mobileFilter,
     classificationFilter.mobileFilter,
     vehicleFilter.mobileFilter,
     ...(isLessor

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { App, Checkbox, DatePicker, Form, Input, Select, Space } from 'antd';
+import { App, Checkbox, DatePicker, Form, Input, Space } from 'antd';
 import dayjs, { type Dayjs } from 'dayjs';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -9,10 +9,10 @@ import {
   type WarrantyClaimSource,
 } from '@technic/contracts';
 import { officeEquipmentKeys, officeEquipmentOptionsQuery } from '@entities/office-equipment';
-import { departmentOptionsQuery } from '@entities/department';
 import { objectOptionsQuery } from '@entities/object';
 import { serviceRequestKeys, serviceRequestsApi } from '@entities/service-request';
 import { EquipmentNotFoundLink } from '@features/quick-create-equipment';
+import { ServiceRequestCustomerField, useServiceRequestCustomer } from '@features/request-customer';
 import { AutoSelect, FormModal, useFormBlockers } from '@shared/ui';
 import { ServiceRequestAttachments, type UploadedFile } from './ServiceRequestAttachments';
 import { ServiceRequestWarrantyClaim } from './ServiceRequestWarrantyClaim';
@@ -21,7 +21,6 @@ import { reportServiceMail } from './serviceMailNotice';
 import { filesApi } from '../../api/resources';
 import { ResponsibleFields } from '../../components/ResponsibleFields';
 import { useAuth } from '../../auth/AuthContext';
-import { useDepartmentScope } from '../../hooks/useDepartmentScope';
 import { useObjectScope } from '../../hooks/useObjectScope';
 import { errorMessage } from '../../utils/format';
 
@@ -31,7 +30,8 @@ interface Values {
   officeEquipmentId: string;
   description: string;
   dueDate?: Dayjs;
-  customerDepartmentId?: string;
+  /** Заказчик ключом `CostTargetKey` (Р2): площадка выбранной единицы либо отдел. */
+  customer?: string;
   responsibleName: string;
   responsiblePhone: string;
   comment?: string;
@@ -92,14 +92,12 @@ export function ServiceRequestForm({
   const equipmentId = Form.useWatch('officeEquipmentId', form);
   const warrantySource = Form.useWatch('warrantySource', form);
   const isUrgent = Form.useWatch('isUrgent', form);
-  const scope = useDepartmentScope();
   const objectScope = useObjectScope();
 
   const { data: equipmentOptions = [], isFetching: equipmentLoading } = useQuery({
     ...officeEquipmentOptionsQuery(),
     enabled: open && can('officeEquipment.read'),
   });
-  const { data: departmentOptions = [] } = useQuery(departmentOptionsQuery());
 
   /**
    * Ссылка «Не нашли технику?» — только там, где технику вообще выбирают: при правке и в обращении
@@ -123,6 +121,18 @@ export function ServiceRequestForm({
   const selected = equipmentOptions.find((option) => option.value === equipmentId);
   const warrantyActive = isWarrantyActive(selected?.warrantyUntil);
 
+  /**
+   * Заказчик заявки (Р11, Р11а, Р11б, Р12): площадка выбранной сейчас единицы либо отдел, от чьего
+   * имени просят. Состав групп, границу площадки роли отдела, сохранённого заказчика правки и
+   * запертость до выбора техники считает подбор — форме остаётся сказать, какую единицу выбрали
+   * (опция справочника подходит под его тип целиком) и какую заявку правят: при правке единицу не
+   * выбирают вовсе, и оба её снимка берутся из самой заявки.
+   */
+  const customer = useServiceRequestCustomer({ request, equipment: selected });
+  // Оба ключа — скалярами: зависеть от подбора целиком значило бы сбрасывать форму на каждой
+  // перерисовке.
+  const { savedKey, soleDepartmentKey } = customer;
+
   useEffect(() => {
     if (!open) return;
     form.resetFields();
@@ -133,7 +143,9 @@ export function ServiceRequestForm({
         officeEquipmentId: request.equipment.id,
         description: request.description,
         dueDate: request.dueDate ? dayjs(request.dueDate) : undefined,
-        customerDepartmentId: request.customerDepartment?.id,
+        // Заказчик правки — ключом от подбора (К7): он собран по снимкам самой заявки, а не по
+        // действующему справочнику, и держится в списке, даже выпав из состава поля.
+        customer: savedKey ?? undefined,
         responsibleName: request.responsibleName,
         responsiblePhone: request.responsiblePhone,
         comment: request.comment,
@@ -143,9 +155,11 @@ export function ServiceRequestForm({
       });
       return;
     }
-    // Единственный отдел учётки подставляется сам: выбор из одного варианта — лишний шаг.
     form.setFieldsValue({
-      customerDepartmentId: scope.soleDepartmentId ?? undefined,
+      // Единственный отдел учётки подставляется сам — как и до подбора (ADR 0085 §8). Иначе поле
+      // заполнилось бы площадкой выбранной единицы, и заявка сотрудника отдела о своём же принтере
+      // молча стала бы заявкой от площадки.
+      customer: soleDepartmentKey ?? undefined,
       // Заявитель — тот, кто заводит заявку: ФИО и телефон подставляются из его же учётки и
       // правятся. Поля обязательны (Р49), и заставлять человека набирать собственный номер, зная
       // его, значило бы разводить прочерки вместо контактов.
@@ -155,7 +169,7 @@ export function ServiceRequestForm({
       // смог бы — позиция прошлого ремонта опознаётся идентификатором, которого он не видит.
       ...(claim ? { officeEquipmentId: claim.equipmentId, warrantySource: claim.source } : {}),
     } as Values);
-  }, [open, request, claim, form, scope.soleDepartmentId, user?.fullName, user?.phone]);
+  }, [open, request, claim, form, savedKey, soleDepartmentKey, user?.fullName, user?.phone]);
 
   const upload = async (file: File) => {
     setUploading(true);
@@ -195,7 +209,9 @@ export function ServiceRequestForm({
       const common = {
         description: values.description.trim(),
         dueDate: values.dueDate ? values.dueDate.format(DATE) : null,
-        customerDepartmentId: values.customerDepartmentId ?? null,
+        // Заказчик уходит всегда и осознанно (Р12а): отдел — идентификатором, площадка — явным
+        // `null`. Пропуск сервер прочёл бы подсказкой и подставил отдел за человека.
+        customerDepartmentId: customer.customerPairOf(values.customer).departmentId,
         responsibleName: values.responsibleName?.trim() ?? '',
         responsiblePhone: values.responsiblePhone?.trim() ?? '',
         comment: values.comment?.trim() ?? '',
@@ -317,25 +333,15 @@ export function ServiceRequestForm({
             />
           </Form.Item>
           <Form.Item
-            name="customerDepartmentId"
-            label="Отдел-заказчик"
-            // Отдел обязателен только тому, у кого их несколько: у остальных заявка объектная
-            // либо отдел единственный и подставлен сам (ADR 0085 §8).
-            rules={[
-              {
-                required: scope.isDepartmentRole && !scope.soleDepartmentId,
-                message: 'Выберите отдел, от имени которого заявка',
-              },
-            ]}
+            name="customer"
+            label="Заказчик"
+            // Пустого состояния у поля нет (Р12а): «от площадки» — такой же выбор, как отдел, а не
+            // незаполненное поле, и уходит он явным `null`.
+            rules={[{ required: true, message: 'Выберите заказчика заявки' }]}
           >
-            <Select
-              allowClear
-              showSearch
-              optionFilterProp="label"
-              style={{ width: 260 }}
-              placeholder="Заявка от площадки"
-              options={scope.limitDepartmentOptions(departmentOptions)}
-            />
+            {/* Площадку поле пересобирает само на смене единицы (Р11а, К10): значение — про то,
+                где аппарат стоит **сейчас**, и правило это живёт у поля, а не у формы. */}
+            <ServiceRequestCustomerField customer={customer} open={open} />
           </Form.Item>
         </Space>
 

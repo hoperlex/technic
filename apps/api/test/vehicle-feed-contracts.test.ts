@@ -49,6 +49,18 @@ describe('лента заказов и недельных заявок', () => {
       expect(weeklyRowsExcludedBy(query({ requestType: 'special_equipment' }))).toBe(true);
       expect(weeklyRowsExcludedBy(query({ vehicleTypeId: crypto.randomUUID() }))).toBe(true);
       expect(weeklyRowsExcludedBy(query({ vehicleCategoryId: crypto.randomUUID() }))).toBe(true);
+      // Набор позиций спрашивает о том же, чего у недельного документа нет вовсе: сколько бы
+      // позиций в вопросе ни стояло, его строки уходят из выдачи целиком.
+      expect(
+        weeklyRowsExcludedBy(
+          query({ classifications: { typeIds: [crypto.randomUUID()], categoryIds: [] } }),
+        ),
+      ).toBe(true);
+      expect(
+        weeklyRowsExcludedBy(
+          query({ classifications: { typeIds: [], categoryIds: [crypto.randomUUID()] } }),
+        ),
+      ).toBe(true);
       // Назначенная машина (ADR 0098): технику ставят на заказы, созданные из состава недели, а
       // сам документ остаётся планом — назначения у него не бывает вовсе.
       expect(weeklyRowsExcludedBy(query({ vehicleId: crypto.randomUUID() }))).toBe(true);
@@ -61,6 +73,10 @@ describe('лента заказов и недельных заявок', () => {
 
     it('фильтры, у которых соответствие есть, недельные строки оставляют', () => {
       expect(weeklyRowsExcludedBy(query())).toBe(false);
+      // Пустой набор — это «фильтра нет»: снятые галочки недельные строки не выгоняют.
+      expect(
+        weeklyRowsExcludedBy(query({ classifications: { typeIds: [], categoryIds: [] } })),
+      ).toBe(false);
       expect(weeklyRowsExcludedBy(query({ objectId: crypto.randomUUID() }))).toBe(false);
       expect(weeklyRowsExcludedBy(query({ search: 'экскаватор' }))).toBe(false);
       expect(weeklyRowsExcludedBy(query({ approved: true }))).toBe(false);
@@ -86,6 +102,24 @@ describe('лента заказов и недельных заявок', () => {
         weekStart: '2026-08-17',
       },
     );
+  });
+
+  /**
+   * Набор позиций лента получает расширением списочной схемы — и вместе с ним обязана получить
+   * запрет задавать технику двумя формами сразу. Разъедься это, лента осталась бы единственным
+   * списком, где старая пара и набор молча уживаются в одном запросе.
+   */
+  it('лента принимает набор позиций и отвергает его вместе со старой парой', () => {
+    const TYPE = '33333333-3333-4333-8333-333333333333';
+    const CATEGORY = '44444444-4444-4444-8444-444444444444';
+    expect(
+      vehicleFeedQuerySchema.parse({ classifications: `t${TYPE},c${CATEGORY}` }),
+    ).toMatchObject({ classifications: { typeIds: [TYPE], categoryIds: [CATEGORY] } });
+    expect(
+      vehicleFeedQuerySchema.safeParse({ classifications: `t${TYPE}`, vehicleTypeId: TYPE })
+        .success,
+    ).toBe(false);
+    expect(vehicleFeedQuerySchema.safeParse({ vehicleTypeId: TYPE }).success).toBe(true);
   });
 
   it('подписи видов документа заданы обеим строкам ленты', () => {

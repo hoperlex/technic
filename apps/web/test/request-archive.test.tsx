@@ -69,6 +69,14 @@ function wastePageRoutes() {
   };
 }
 
+/** Справочники подбора «Объект/отдел»: их спрашивает фильтр заказчика на вкладке архива. */
+function customerRoutes() {
+  return {
+    'GET /objects': () => json(emptyList()),
+    'GET /departments': () => json(emptyList()),
+  };
+}
+
 /** Кнопка строки таблицы по подписи: у `RowActionButton` она живёт в `aria-label`. */
 function rowButton(label: string): HTMLElement | undefined {
   return [...document.querySelectorAll('tbody button')].find(
@@ -106,7 +114,12 @@ describe('вкладка «Архив» в разделах заявок', () =>
   });
 
   it('список просит только архив и показывает, кто и когда удалил заявку', async () => {
-    const http = mockHttp({ 'GET /vehicle-requests': () => json(list([archivedVehicle])) });
+    const http = mockHttp({
+      'GET /vehicle-requests': () => json(list([archivedVehicle])),
+      // Оба справочника — фильтр «Объект/отдел» архива (план `docs/department-requests-plan.md`,
+      // Р9): удалённые заявки отдела лежат здесь наравне с объектными.
+      ...customerRoutes(),
+    });
     renderWithUser(<VehicleRequestsArchiveTab />, { user: admin });
 
     await screen.findByText('ТС-9');
@@ -135,6 +148,7 @@ describe('вкладка «Архив» в разделах заявок', () =>
     const http = mockHttp({
       'GET /vehicle-requests': () => json(list([archivedVehicle])),
       'DELETE /vehicle-requests/:id/purge': () => json({ ok: true }),
+      ...customerRoutes(),
     });
     renderWithUser(<VehicleRequestsArchiveTab />, { user: admin });
 
