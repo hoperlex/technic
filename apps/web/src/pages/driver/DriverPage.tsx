@@ -29,6 +29,14 @@ import { useDriverDate } from './DriverLayout';
 const secondary: CSSProperties = { fontSize: '0.85em' };
 
 /**
+ * Значение строки, которую читают не по списку, а через стекло на ходу: адрес точки и тот, кто
+ * там встречает. Эти две строки водитель ищет глазами первыми — с ними он доезжает и попадает
+ * внутрь, — поэтому они крупнее соседних на пятую часть. Доля, а не пиксели, — по той же причине,
+ * что и у мелкой подписи (Р1): масштаб кабинета живёт одной переменной на каркасе.
+ */
+const emphasizedValue: CSSProperties = { fontSize: '1.22em' };
+
+/**
  * Порядок карточек — по позиции смены (П5), а не по порядку ответа: первая смена дня сверху.
  * Сейчас сервер отдаёт их в том же порядке, но порядок на экране — свойство экрана: он читается
  * сверху вниз так же, как идёт рабочий день, и зависеть от порядка выборки не должен.
@@ -40,14 +48,24 @@ function byShiftOrder(a: DriverAssignmentEntry, b: DriverAssignmentEntry): numbe
 }
 
 /** Строка «подпись — значение». Пустые значения не выводятся: прочерк в каждой строке — это шум. */
-function Field({ label, children }: { label: string; children: ReactNode }) {
+function Field({
+  label,
+  emphasis,
+  children,
+}: {
+  label: string;
+  emphasis?: boolean;
+  children: ReactNode;
+}) {
   if (children === null || children === undefined || children === '') return null;
   return (
     <div style={{ display: 'flex', gap: 8, alignItems: 'baseline' }}>
       <Typography.Text type="secondary" style={{ ...secondary, flex: '0 0 auto' }}>
         {label}
       </Typography.Text>
-      <div style={{ flex: '1 1 auto', minWidth: 0 }}>{children}</div>
+      <div style={{ flex: '1 1 auto', minWidth: 0, ...(emphasis ? emphasizedValue : null) }}>
+        {children}
+      </div>
     </div>
   );
 }
@@ -110,12 +128,14 @@ function PointBlock({ point }: { point: DriverAssignmentPoint }) {
         <Typography.Text strong>Точка {point.position}</Typography.Text>
         {point.arrivalTime && <Tag color="blue">{point.arrivalTime}</Tag>}
       </Space>
-      <Field label="Адрес">{point.location}</Field>
+      <Field label="Адрес" emphasis>
+        {point.location}
+      </Field>
       {point.actions.map((action, index) => (
         <ActionRow key={`${action.role}-${action.displayNumber}-${index}`} action={action} />
       ))}
       {point.contacts.map((contact, index) => (
-        <Field key={`${contact.phone}-${index}`} label="Встречает">
+        <Field key={`${contact.phone}-${index}`} label="Встречает" emphasis>
           {contact.name}
           {contact.phone && (
             <>
