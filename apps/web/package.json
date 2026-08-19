@@ -8,14 +8,15 @@
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "pretest": "node scripts/quality.mjs check && node scripts/check-stage1-layout.mjs && node scripts/check-stage2-layout.mjs && node scripts/check-form-blockers.mjs",
+    "pretest": "node scripts/quality.mjs check && node scripts/check-stage1-layout.mjs && node scripts/check-stage2-layout.mjs && node scripts/check-form-blockers.mjs && node scripts/check-portal-routes.mjs",
     "test": "vitest run",
     "quality:check": "node scripts/quality.mjs check",
     "quality:update": "node scripts/quality.mjs update",
     "bundle:size": "node scripts/bundle-size.mjs",
     "check:stage1-layout": "node scripts/check-stage1-layout.mjs",
     "check:stage2-layout": "node scripts/check-stage2-layout.mjs",
-    "check:form-blockers": "node scripts/check-form-blockers.mjs"
+    "check:form-blockers": "node scripts/check-form-blockers.mjs",
+    "check:portal-routes": "node scripts/check-portal-routes.mjs"
   },
   "dependencies": {
     "@ant-design/icons": "6.3.2",

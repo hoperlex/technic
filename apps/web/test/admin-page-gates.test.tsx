@@ -13,7 +13,7 @@ import { authUser } from './factories/auth';
 import { emptyList } from './factories/common';
 import { AppLayout } from '../src/components/AppLayout';
 import { AdministrationPage } from '../src/pages/AdministrationPage';
-import { RequirePermission } from '../src/auth/ProtectedRoute';
+import { HomeRedirect, RequireSection } from '../src/auth/ProtectedRoute';
 
 /**
  * Гейты администрирования (`docs/manuals-plan.md` §3.6).
@@ -60,19 +60,30 @@ function tabsFor(permission: Permission): number {
   return count;
 }
 
-/** Каркас с меню и маршрутом администрирования: оба гейта живут одним списком прав. */
+/**
+ * Каркас с меню и маршрутом администрирования: оба гейта живут одним списком прав.
+ *
+ * Обвязка повторяет устройство портала: гейт маршрута — общий `RequireSection` по строке реестра
+ * разделов, а её права — те же `ADMIN_PAGE_PERMISSIONS`, которыми меню собирает свой пункт и
+ * страница — свои вкладки. Список от этого не перестал быть одним: сменилось только место, где его
+ * спрашивает маршрут.
+ *
+ * Отказ гейта ведёт на корень, и там стоит стартовая страница — тем же index-маршрутом внутри
+ * каркаса, что и в `App`. Учётке без разделов она отвечает экраном «разделов нет»; прежняя
+ * обвязка держала на этом месте заглушку `/change-password`, потому что туда её и уводил старый
+ * перебор разделов.
+ */
 function renderPortal(permission: Permission) {
   mockHttp(TAB_ROUTES);
   return renderWithUser(
     <Routes>
       <Route element={<AppLayout />}>
-        <Route element={<RequirePermission permission={[...ADMIN_PAGE_PERMISSIONS]} />}>
+        <Route index element={<HomeRedirect />} />
+        <Route element={<RequireSection id="admin" />}>
           {/* Заглушка вместо самой страницы: проверяется дверь, а не то, что за ней. */}
           <Route path="/admin" element={<div>Страница администрирования</div>} />
         </Route>
       </Route>
-      {/* Куда уводит `homePath` учётку, которой раздел закрыт: разделов у неё нет вовсе. */}
-      <Route path="/change-password" element={<div>Смена пароля</div>} />
     </Routes>,
     { user: holder(permission), route: '/admin' },
   );
@@ -97,11 +108,20 @@ describe('держатель каждого права из списка дох�
   }
 
   it('право не из списка на страницу не пускает и пункта меню не даёт', () => {
-    // `drivers.read` открывает справочник водителей, а не администрирование: без него маршрут
-    // разворачивает учётку в первый доступный ей раздел, а его у неё нет.
+    /*
+     * `drivers.read` открывает справочник водителей, а не администрирование: без него маршрут
+     * разворачивает учётку на корень, а разделов у неё нет ни одного — и стартовая страница
+     * отвечает пустым главным экраном.
+     *
+     * Раньше здесь ожидалась «Смена пароля», и это ожидание закрепляло промах как норму
+     * (`docs/portal-sections-plan.md` §2): «доступ не настроен» приезжало к человеку служебной
+     * формой, неотличимой от просроченного пароля. Форма теперь остаётся за единственным своим
+     * поводом — `mustChangePassword`.
+     */
     renderPortal('drivers.read');
     expect(screen.queryByText('Администрирование')).toBeNull();
     expect(screen.queryByText('Страница администрирования')).toBeNull();
-    expect(screen.getByText('Смена пароля')).toBeDefined();
+    expect(screen.getByText('Разделы портала вам пока не назначены')).toBeDefined();
+    expect(screen.queryByText('Смена пароля')).toBeNull();
   });
 });

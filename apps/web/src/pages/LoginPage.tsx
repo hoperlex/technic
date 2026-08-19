@@ -16,7 +16,10 @@ export function LoginPage() {
     try {
       await login(values.email, values.password);
       const from = (location.state as { from?: { pathname?: string } } | null)?.from?.pathname;
-      navigate(from ?? '/waste', { replace: true });
+      // На корень, а не на жёстко зашитый раздел: какой из них открыт этой учётке, решает
+      // стартовая страница по реестру. `/waste` закрыт половине ролей (ADR 0025), и вход
+      // приводил их на гейт, а оттуда — на смену пароля.
+      navigate(from ?? '/', { replace: true });
     } catch (e) {
       message.error(errorMessage(e));
     } finally {

@@ -1,14 +1,18 @@
-import { lazy, Suspense } from 'react';
+import { lazy, Suspense, type ReactNode } from 'react';
 import { Spin } from 'antd';
-import { Route, Routes } from 'react-router';
-import { ADMIN_PAGE_PERMISSIONS, EMAIL_VERIFICATION_ENABLED } from '@technic/contracts';
+import { Navigate, Route, Routes } from 'react-router';
+import {
+  EMAIL_VERIFICATION_ENABLED,
+  SHELL_SECTIONS,
+  type PortalShellSectionId,
+} from '@technic/contracts';
 import { AppLayout } from './components/AppLayout';
 import { AppUpdateBanner } from './components/AppUpdateBanner';
 import {
   HomeRedirect,
   ProtectedRoute,
-  RequireDriverCabinet,
   RequirePermission,
+  RequireSection,
 } from './auth/ProtectedRoute';
 import { WaybillsPage } from './pages/WaybillsPage';
 import { LoginPage } from './pages/LoginPage';
@@ -39,6 +43,25 @@ const DriverPage = lazy(() =>
   import('./pages/driver/DriverPage').then((m) => ({ default: m.DriverPage })),
 );
 
+/**
+ * Чем открывается каждый раздел каркаса — и всё, что маршруты знают о разделах сами. Адреса, права
+ * и порядок держит реестр (`SHELL_SECTIONS`), здесь остаётся страница.
+ *
+ * `Record` по `PortalShellSectionId` — не оформление, а сама гарантия: раздел, заведённый в реестре
+ * без страницы, не собирается. Раньше состав разделов жил тремя независимыми списками, и новый
+ * заводили в двух копиях из трёх.
+ */
+const SECTION_PAGES: Record<PortalShellSectionId, ReactNode> = {
+  waste: <WasteRequestsPage />,
+  'vehicle-requests': <VehicleRequestsPage />,
+  waybills: <WaybillsPage />,
+  garage: <GaragePage />,
+  // «Орг.техника» (ADR 0085) открывается заявками на обслуживание; парк техники — вкладка внутри.
+  'office-equipment': <ServiceRequestsPage />,
+  directories: <DirectoriesPage />,
+  admin: <AdministrationPage />,
+};
+
 export default function App() {
   return (
     <>
@@ -57,12 +80,11 @@ export default function App() {
         <Route element={<ProtectedRoute />}>
           <Route path="/change-password" element={<ChangePasswordPage />} />
           {/* Кабинет водителя — ВНЕ `AppLayout`: у него нет ни боковой панели, ни разделов, ни
-              нижней навигации. Это второй контур портала, а не ещё одна его страница.
-              Отсюда и гейт своим компонентом (`RequireDriverCabinet`, роль вместе с правом): у
-              администратора `driverCabinet.read` есть по построению — права у него все, — и по
-              одному праву он попадал сюда стартовой страницей, а выйти обратно в портал из контура
-              без навигации ему было нечем. */}
-          <Route element={<RequireDriverCabinet />}>
+              нижней навигации. Это второй контур портала, а не ещё одна его страница, поэтому
+              ветку ему собирают руками — свой каркас и своя index-страница. Общее с разделами
+              каркаса у него ровно одно, условие входа, и потому гейт тот же `RequireSection`:
+              роль вместе с правом описана строкой реестра, а не отдельным компонентом. */}
+          <Route element={<RequireSection id="driver-cabinet" />}>
             <Route
               path="/driver"
               element={
@@ -82,71 +104,34 @@ export default function App() {
               попадает в кабинет водителя: у того свой контур, вне этой ветки. */}
           <Route element={<RouteModalProvider />}>
             <Route element={<AppLayout />}>
+              {/* Стартовая страница гейтом НЕ накрывается, и это условие устройства, а не
+                  случайность: отказ любого гейта ведёт сюда, и страж на самом `/` отбивал бы
+                  входящего в себя же — React Router отдал бы пустой экран без единого следа
+                  причины. */}
               <Route index element={<HomeRedirect />} />
-              {/* Руководителю строительства «Вывоз мусора» недоступен (ADR 0025), оператору
-                  вывоза — наоборот, «Заказ ТС» (ADR 0010). */}
-              <Route element={<RequirePermission permission="wasteRequests.read" />}>
-                <Route path="/waste" element={<WasteRequestsPage />} />
-              </Route>
-              <Route element={<RequirePermission permission="vehicleRequests.read" />}>
-                <Route path="/vehicle-requests" element={<VehicleRequestsPage />} />
-              </Route>
+              {/* Разделы каркаса — циклом по реестру: кому какой открыт, знает `RequireSection`,
+                  и тот же ответ получают меню и стартовая страница. Поимённых маршрутов здесь
+                  больше нет — они и были третьей копией состава разделов. */}
+              {SHELL_SECTIONS.map((section) => (
+                <Route key={section.id} element={<RequireSection id={section.id} />}>
+                  <Route path={section.path} element={SECTION_PAGES[section.id]} />
+                </Route>
+              ))}
               {/* Недельная заявка (ADR 0085) — своя страница с адресом, а не окно поверх списка:
                   три блока состава, история и документы в модалку не помещаются, а ссылку на
-                  неделю нужно уметь послать. Право своё: `vehicleRequests.read` есть у
-                  наблюдателя и арендодателя, которым планы площадок не показывают (Р12). */}
+                  неделю нужно уметь послать. Разделом она не является — отсюда `RequirePermission`
+                  и своё право: `vehicleRequests.read` есть у наблюдателя и арендодателя, которым
+                  планы площадок не показывают (Р12). */}
               <Route element={<RequirePermission permission="weeklyRequests.read" />}>
                 <Route path="/vehicle-requests/weekly/:id" element={<WeeklyRequestPage />} />
-              </Route>
-              {/* Орг.техника (ADR 0085) — третий модуль заявок: обслуживание оргтехники ведут
-                  три стороны (заказчик, оператор оргтехники, сервисная компания). Раздел
-                  открывают два права: заявки — `serviceRequests.read`, парк техники —
-                  `officeEquipment.read` (Р72). Второе есть у менеджера и диспетчера, у которых
-                  модуля заявок нет вовсе, и до вкладки «Техника» они иначе не дошли бы. Что
-                  доступно внутри, решают коридор переходов и право самой вкладки. */}
-              <Route
-                element={
-                  <RequirePermission
-                    permission={['serviceRequests.read', 'officeEquipment.read']}
-                  />
-                }
-              >
-                <Route path="/office-equipment" element={<ServiceRequestsPage />} />
-              </Route>
-              {/* Справочники открыты тем, кто их ведёт: смотреть их отдельной страницей
-                  остальным незачем — значения и так видны в карточках заявок. */}
-              <Route element={<RequirePermission permission="waybills.read" />}>
-                <Route path="/waybills" element={<WaybillsPage />} />
-              </Route>
-              {/* Гараж (ADR 0076) — срез дня по парку и водителям: своё право, потому что в нём
-                  видно, кто за рулём, — те же персональные данные, что в карточке водителя. */}
-              <Route element={<RequirePermission permission="garage.read" />}>
-                <Route path="/garage" element={<GaragePage />} />
-              </Route>
-              {/* Справочники — тоже страница из вкладок под разными правами (Р7): весь набор
-                  ведёт `directories.write`, одну вкладку «Оргтехника» — `officeEquipment.write`
-                  (ADR 0085). Требовать оба значило бы закрыть раздел ответственному за
-                  оргтехнику, а выдать ему `directories.write` — отдать заодно объекты,
-                  контрагентов и прайс вывоза. */}
-              <Route
-                element={
-                  <RequirePermission permission={['directories.write', 'officeEquipment.write']} />
-                }
-              >
-                <Route path="/directories" element={<DirectoriesPage />} />
-              </Route>
-              {/* Администрирование — страница из вкладок под разными правами: учётки ведёт один
-                  человек, рассылки настраивает другой, руководства пишет третий. Список прав общий
-                  на все гейты (`ADMIN_PAGE_PERMISSIONS`, `docs/manuals-plan.md` §3.6): поимённые
-                  перечисления в четырёх местах уже разъехались и стоили двух живых дыр — держателя
-                  «Рассылок» не пускало меню, держателя «Обмена справочниками» — маршрут. */}
-              <Route element={<RequirePermission permission={[...ADMIN_PAGE_PERMISSIONS]} />}>
-                <Route path="/admin" element={<AdministrationPage />} />
               </Route>
             </Route>
           </Route>
         </Route>
-        <Route path="*" element={<HomeRedirect />} />
+        {/* Неизвестный адрес — на корень, а не сразу стартовой страницей: та умеет отвечать
+            экраном «разделов нет», и вне ветки каркаса он отрисовался бы голым — без меню учётной
+            записи и без выхода. */}
+        <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </>
   );

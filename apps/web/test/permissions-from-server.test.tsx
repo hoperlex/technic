@@ -54,16 +54,20 @@ function renderMenu(user: AuthUser) {
   );
 }
 
-/** Страница, закрытая правом: отказ уводит на стартовый раздел учётки, а не показывает пустоту. */
+/**
+ * Страница, закрытая правом: отказ уводит на корень, где учётку встречает стартовая страница, а не
+ * показывает пустоту. Сама закрытая страница стоит по своему адресу — на корне она отбивала бы
+ * входящего в собственный гейт.
+ */
 function renderGuarded(user: AuthUser, permission: Permission) {
   return renderWithUser(
     <Routes>
       <Route element={<RequirePermission permission={permission} />}>
-        <Route path="/" element={<div>Страница справочников</div>} />
+        <Route path="/directories" element={<div>Страница справочников</div>} />
       </Route>
-      <Route path="/waste" element={<div>Список заявок</div>} />
+      <Route path="/" element={<div>Стартовая страница</div>} />
     </Routes>,
-    { user },
+    { user, route: '/directories' },
   );
 }
 
@@ -124,9 +128,9 @@ describe('прямая ссылка проверяется тем же спис�
     expect(screen.getByText('Страница справочников')).toBeDefined();
   });
 
-  it('уводит на стартовый раздел, если право из списка сняли', () => {
+  it('уводит на стартовую страницу, если право из списка сняли', () => {
     renderGuarded(withRevoked(authUser(), 'directories.write'), 'directories.write');
     expect(screen.queryByText('Страница справочников')).toBeNull();
-    expect(screen.getByText('Список заявок')).toBeDefined();
+    expect(screen.getByText('Стартовая страница')).toBeDefined();
   });
 });

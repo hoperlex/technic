@@ -92,16 +92,21 @@ function renderMenu(subject: ScopedSubject | Role | null, viewport?: Viewport) {
   );
 }
 
+/**
+ * Страница, закрытая правом. Отказ гейта ведёт на корень, поэтому корень занят стартовой
+ * страницей, а закрытая страница живёт по своему адресу: оставь её на «/», и дверь отбивала бы
+ * входящего в саму себя. Какой именно это адрес, к предмету проверки отношения не имеет —
+ * закрывает страницу право, а не путь.
+ */
 function renderGuarded(role: Role | null, permission: Permission) {
   return renderWithUser(
     <Routes>
-      {/* Адрес защищённой страницы значения не имеет: закрывает её право, а не путь. */}
       <Route element={<RequirePermission permission={permission} />}>
-        <Route path="/" element={<div>Страница справочников</div>} />
+        <Route path="/directories" element={<div>Страница справочников</div>} />
       </Route>
-      <Route path="/waste" element={<div>Список заявок</div>} />
+      <Route path="/" element={<div>Стартовая страница</div>} />
     </Routes>,
-    { user: userFor({ role }) },
+    { user: userFor({ role }), route: '/directories' },
   );
 }
 
@@ -386,10 +391,12 @@ describe('раздел закрывается правом, а не списко
     expect(screen.getByText('Страница справочников')).toBeDefined();
   });
 
-  it('роль без права уводит на список заявок, а не показывает пустую страницу', () => {
+  it('роль без права уводит на стартовую страницу, а не показывает пустую', () => {
+    // Отказ ведёт на «/» — единственный адрес отказа во всём портале: какой раздел открыть этой
+    // учётке, знает стартовая страница, а гейту знать её ответ незачем.
     renderGuarded('shtab', 'directories.write');
     expect(screen.queryByText('Страница справочников')).toBeNull();
-    expect(screen.getByText('Список заявок')).toBeDefined();
+    expect(screen.getByText('Стартовая страница')).toBeDefined();
   });
 
   it('учётку без роли не пускает никуда', () => {

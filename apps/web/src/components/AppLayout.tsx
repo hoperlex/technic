@@ -15,7 +15,12 @@ import {
   TeamOutlined,
 } from '@ant-design/icons';
 import { Outlet, useLocation, useNavigate } from 'react-router';
-import { ADMIN_PAGE_PERMISSIONS, formatShortName, roleLabels } from '@technic/contracts';
+import {
+  formatShortName,
+  openShellSections,
+  roleLabels,
+  type PortalShellSectionId,
+} from '@technic/contracts';
 import { usersApi } from '../api/resources';
 import { useAuth } from '../auth/AuthContext';
 import { UtilityMenu, useUtilityMenu } from '@widgets/utility-menu';
@@ -30,6 +35,21 @@ const { Sider, Content } = Layout;
 
 const SIDER_WIDTH = 230;
 const SIDER_COLLAPSED_WIDTH = 64;
+
+/**
+ * Иконки разделов — здесь, а не в реестре: контракты про React не знают, и рисование — дело
+ * каркаса. `Record` по `PortalShellSectionId`, а не по всем разделам портала: раздел каркаса без
+ * иконки не соберётся, а кабинету водителя (ADR 0102) иконка не нужна — пункта меню у него нет.
+ */
+const SECTION_ICONS: Record<PortalShellSectionId, ReactNode> = {
+  waste: <FileTextOutlined />,
+  'vehicle-requests': <CarOutlined />,
+  waybills: <ProfileOutlined />,
+  garage: <ScheduleOutlined />,
+  'office-equipment': <PrinterOutlined />,
+  directories: <DatabaseOutlined />,
+  admin: <TeamOutlined />,
+};
 
 export function AppLayout() {
   const { user, logout, can, canUse } = useAuth();
@@ -79,107 +99,49 @@ export function AppLayout() {
         }}
       >
         <Badge count={waitingServiceCount} size="small" offset={[4, -2]} color="gold">
-          <PrinterOutlined />
+          {SECTION_ICONS['office-equipment']}
         </Badge>
       </span>
     ) : (
-      <PrinterOutlined />
+      SECTION_ICONS['office-equipment']
     );
 
-  // `short` — подпись для нижней навигации мобильного режима: на 360 px пункту достаётся
-  // четверть экрана, и полное название раздела туда не помещается (ADR 0030).
-  const navItems: (MobileNavItem & { icon: ReactNode })[] = [
-    // Руководитель строительства отвечает за технику на объекте, вывоз мусора ведёт штаб (ADR 0025).
-    // `canUse`, а не `can`: у отдела без площадки право на вывоз есть, но работать им не над чем,
-    // и раздел закрывает пустая область (ADR 0062).
-    ...(canUse('wasteRequests.read')
-      ? [{ key: '/waste', icon: <FileTextOutlined />, label: 'Вывоз мусора', short: 'Вывоз' }]
-      : []),
-    // Оператор вывоза — внешний перевозчик: заказ ТС к его работе отношения не имеет (ADR 0010).
-    ...(canUse('vehicleRequests.read')
-      ? [
-          {
-            key: '/vehicle-requests',
-            icon: <CarOutlined />,
-            label: 'Заказ ТС',
-            short: 'Заказ ТС',
-          },
-        ]
-      : []),
-    // Журнал путевых листов (ADR 0037): его ведут те же, кто выписывает листы переводом заявок
-    // в работу. В листе персональные данные водителя — потому и право своё.
-    ...(can('waybills.read')
-      ? [
-          {
-            key: '/waybills',
-            icon: <ProfileOutlined />,
-            label: 'Путевые листы',
-            short: 'Листы',
-          },
-        ]
-      : []),
-    // Гараж (ADR 0076) — срез дня: чем заняты свои машины и водители. Стоит после листов, рядом
-    // с тем, из чего собран: рейсы, заказы и бланки ведут в соседних разделах.
-    ...(can('garage.read')
-      ? [
-          {
-            key: '/garage',
-            icon: <ScheduleOutlined />,
-            label: 'Гараж',
-            short: 'Гараж',
-          },
-        ]
-      : []),
-    // Орг.техника (ADR 0085) — заявки на обслуживание и парк техники. Заявки видят заказчик
-    // (штаб и отдел), оператор оргтехники и сервисная компания; парк — все, кому открыт
-    // справочник оргтехники, в том числе менеджер и диспетчер, у которых модуля заявок нет
-    // (Р72). Пункт меню обязан открываться по любому из двух прав, иначе вкладка «Техника»
-    // остаётся за закрытой дверью. `can`, а не `canUse`: область раздела — объекты и отделы
-    // учётки, и пустой она у видящей роли не бывает.
-    ...(can('serviceRequests.read') || can('officeEquipment.read')
-      ? [
-          {
-            key: '/office-equipment',
-            icon: serviceMenuIcon,
-            label: 'Орг.техника',
-            short: 'Оргтех.',
-          },
-        ]
-      : []),
-    // Раздел открывают два права (ADR 0085, Р7): весь набор справочников ведёт
-    // `directories.write`, одну вкладку «Оргтехника» — `officeEquipment.write`. Второе право
-    // заведено как раз затем, чтобы ответственному за оргтехнику не выдавать первое.
-    ...(can('directories.write') || can('officeEquipment.write')
-      ? [
-          {
-            key: '/directories',
-            icon: <DatabaseOutlined />,
-            label: 'Справочники',
-            short: 'Справ.',
-          },
-        ]
-      : []),
-    /*
-     * Администрирование открывает любое право его вкладок, а не одно `users.manage`
-     * (`ADMIN_PAGE_PERMISSIONS`, `docs/manuals-plan.md` §3.6): держатель набора «Рассылки»
-     * маршрут проходил, а пункта меню не видел — раздел был доступен только по прямой ссылке.
-     * Список общий с маршрутом и стартовым редиректом: поимённые копии в трёх местах и разошлись.
-     */
-    ...(ADMIN_PAGE_PERMISSIONS.some((permission) => can(permission))
-      ? [
-          {
-            key: '/admin',
-            icon: (
-              <Badge count={pendingUsers?.count ?? 0} size="small" offset={[4, -2]} color="gold">
-                <TeamOutlined />
-              </Badge>
-            ),
-            label: 'Администрирование',
-            short: 'Админ.',
-          },
-        ]
-      : []),
-  ];
+  /**
+   * Бейджи — украшение иконки, а не отдельный пункт: состав меню задаёт реестр, число надевает
+   * каркас. Оба счётчика приходят из живых запросов и потому пересобираются каждым рендером.
+   */
+  const sectionIcons: Record<PortalShellSectionId, ReactNode> = {
+    ...SECTION_ICONS,
+    'office-equipment': serviceMenuIcon,
+    admin: (
+      <Badge count={pendingUsers?.count ?? 0} size="small" offset={[4, -2]} color="gold">
+        {SECTION_ICONS.admin}
+      </Badge>
+    ),
+  };
+
+  /**
+   * Пункты меню и нижней навигации собираются из реестра разделов (`portal-sections.ts`): состав,
+   * порядок и подписи — его, каркасу остаются иконка и переход. Почему раздел открыт такой-то роли
+   * (ADR 0010, 0025, 0037, 0062, 0076, 0085), написано там же, в строках разделов: копия
+   * объяснений здесь разъехалась бы с копией состава — с этого болезнь и начиналась.
+   *
+   * Реестр спрашивает всюду `canUse`, хотя до него часть пунктов спрашивала `can`. Состав меню от
+   * этого не меняется ни у одной роли: область сужает единственный `MODULE_SCOPE` — вывоз мусора у
+   * отдела без площадки (ADR 0062), — а для остальных прав `canUse` совпадает с `can`.
+   *
+   * `short` — подпись для нижней навигации мобильного режима: на 360 px пункту достаётся четверть
+   * экрана, и полное название раздела туда не помещается (ADR 0030).
+   */
+  const navItems: (MobileNavItem & { icon: ReactNode })[] = openShellSections({
+    role: user?.role ?? null,
+    canUse,
+  }).map((section) => ({
+    key: section.path,
+    icon: sectionIcons[section.id],
+    label: section.label,
+    short: section.short,
+  }));
 
   // Подсвечен тот пункт, на страницу которого зашли; если такого пункта у роли нет — никакой.
   const selectedKey = navItems.find((it) => location.pathname.startsWith(it.key))?.key ?? '';

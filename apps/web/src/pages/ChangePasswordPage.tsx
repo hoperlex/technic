@@ -18,7 +18,9 @@ export function ChangePasswordPage() {
       const res = await authApi.changePassword(values);
       setUser(res.user);
       message.success('Пароль изменён');
-      navigate('/waste', { replace: true });
+      // Туда же, куда после входа: раздел учётке выбирает стартовая страница, а прежний
+      // `/waste` для роли без вывоза заканчивался этой же формой — круг замыкался.
+      navigate('/', { replace: true });
     } catch (e) {
       message.error(errorMessage(e));
     } finally {
@@ -84,6 +86,16 @@ export function ChangePasswordPage() {
           </Button>
         </Form>
         <div style={{ textAlign: 'center', marginTop: 16 }}>
+          {/* Возврат — только когда смену затеяли добровольно: форму открывают пунктом меню
+              учётной записи и из кабинета водителя, а обратной дороги с неё не было ни у кого —
+              передумал, значит либо меняй пароль, либо выходи из портала. При обязательной смене
+              кнопки нет: она обходила бы требование, ради которого в `ProtectedRoute` стоит
+              проверка `mustChangePassword`. */}
+          {user?.mustChangePassword === false ? (
+            <Button type="link" onClick={() => navigate('/')}>
+              Вернуться в портал
+            </Button>
+          ) : null}
           <Button type="link" onClick={() => void logout().then(() => navigate('/login'))}>
             Выйти
           </Button>
