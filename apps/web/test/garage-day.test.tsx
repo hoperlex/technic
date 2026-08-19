@@ -418,7 +418,7 @@ describe('гараж: срез дня', () => {
     expect(within(driverRow(sidorov)).getByText('документы: 2')).toBeDefined();
   });
 
-  it('вторая работа дня свёрнута пометкой «ещё N», а в графах стоит первая', async () => {
+  it('вторая работа дня свёрнута пометкой «ещё N», а нажатие раскрывает её во всех трёх графах', async () => {
     renderPage();
     fireEvent.click(screen.getByRole('tab', { name: 'Водители' }));
 
@@ -427,12 +427,11 @@ describe('гараж: срез дня', () => {
 
     /*
      * Ячейки одной строки обязаны стоять вровень — блоки разной высоты разъезжаются и рвут чтение
-     * поперёк, ради которого три графы и заведены. Плата за это ровно одна: в графах стоит первая
-     * работа дня, а остальные считает пометка «ещё N» (полный список у неё в подсказке).
+     * поперёк, ради которого три графы и заведены. Плата за это ровно одна: в свёрнутых графах
+     * стоит первая работа дня, а остальные считает пометка «ещё N».
      */
     const route = driverCell(petrov, 'Рейс/путевой лист');
     expect(within(route).getByText('Р-12')).toBeDefined();
-    expect(within(route).getByText('ещё 1')).toBeDefined();
 
     // Второго рейса в графах нет вовсе — ни его номера, ни его машины, ни его заказа.
     expect(within(route).queryByText('Р-13')).toBeNull();
@@ -442,7 +441,7 @@ describe('гараж: срез дня', () => {
     expect(within(driverCell(petrov, 'Техника')).getByText('Е646СК799')).toBeDefined();
 
     // Пометка одна на строку и стоит в первой графе: занятость у трёх ячеек общая, и трижды
-    // повторённое число ничего бы не добавило.
+    // повторённый переключатель ничего бы не добавил.
     expect(within(driverCell(petrov, 'Техника')).queryByText(/ещё/u)).toBeNull();
     expect(within(driverCell(petrov, 'Заказ/адрес')).queryByText(/ещё/u)).toBeNull();
 
@@ -450,13 +449,26 @@ describe('гараж: срез дня', () => {
     expect(within(driverRow('Сидоров Сидор Сидорович')).queryByText(/ещё/u)).toBeNull();
 
     /*
-     * Свёрнутое не потеряно, и машину подсказка называет первой (`driverBusyLine`). Госномер в ней
-     * не украшение: графа «Техника» показывает машину только первой работы, и без него спрятанный
-     * рейс молчал бы ровно про то, ради чего графа заведена, — на чём человек в этот день ездил.
-     * Теми же словами день читают с телефона: строка карточки собирается той же функцией.
+     * Нажатие раскрывает день целиком — и все три графы разом, а не одну первую: спрятанный рейс
+     * обязан ответить и «на чём», и «по какому заказу», иначе раскрытие отбирает ровно то, ради
+     * чего графы «Техника» и «Заказ/адрес» заведены.
      */
-    fireEvent.mouseEnter(within(route).getByText('ещё 1'));
-    expect(await screen.findByText('Т555ТТ799 · Р-13 · ТС-303')).toBeDefined();
+    fireEvent.click(within(route).getByRole('button', { name: 'ещё 1' }));
+    expect(within(driverCell(petrov, 'Рейс/путевой лист')).getByText('Р-13')).toBeDefined();
+    expect(within(driverCell(petrov, 'Техника')).getByText('Т555ТТ799')).toBeDefined();
+    expect(within(driverCell(petrov, 'Заказ/адрес')).getByText('ТС-303')).toBeDefined();
+    // Первая работа при этом на месте: раскрытие дописывает, а не листает.
+    expect(within(driverCell(petrov, 'Техника')).getByText('Е646СК799')).toBeDefined();
+
+    // Соседняя строка своего дня не раскрывала — раскрытие у каждой строки своё.
+    expect(within(driverRow('Сидоров Сидор Сидорович')).queryByText('Р-13')).toBeNull();
+
+    // Обратный ход тем же переключателем: строка возвращается к прежней высоте.
+    fireEvent.click(
+      within(driverCell(petrov, 'Рейс/путевой лист')).getByRole('button', { name: 'свернуть' }),
+    );
+    expect(within(driverCell(petrov, 'Рейс/путевой лист')).queryByText('Р-13')).toBeNull();
+    expect(within(driverCell(petrov, 'Техника')).queryByText('Т555ТТ799')).toBeNull();
   });
 
   it('раздел ничего не ведёт: действий в строках нет', async () => {
