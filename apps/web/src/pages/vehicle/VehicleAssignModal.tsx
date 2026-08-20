@@ -9,6 +9,7 @@ import {
   Input,
   InputNumber,
   Segmented,
+  Select,
   Space,
   Tag,
   Typography,
@@ -19,7 +20,9 @@ import {
   type AssignVehicleBody,
   assignmentRateLabel,
   assignmentTitle,
+  communicationKindOptions,
   type ConfirmScheduleBody,
+  DEFAULT_COMMUNICATION_KIND,
   formatMoscowDateTime,
   formatWeeklyRequestNumber,
   isRouteEditable,
@@ -37,6 +40,7 @@ import {
   vehicleSubstitutionGroupLabels,
   vehicleSubstitutionOf,
   canCorrectWaybill,
+  RELOCATION_COMMUNICATION_KIND,
   weekStartKey,
   moscowDateKeyOf,
   WAYBILL_CORRECTION_CONFIRM,
@@ -328,6 +332,12 @@ export function VehicleAssignModal({
       // пустое поле означает «не трогать», а имя, оставшееся от прошлой заявки, пересадило бы за
       // руль чужого рейса человека, которого для него никто не выбирал.
       driverPersonId: undefined,
+      // Вид сообщения нового рейса — умолчанием набора: поле стало обязательным, и пустым оно
+      // останавливало бы форму на самом частом пути. Ставится здесь, а не только наследованием от
+      // прошлого рейса: у машины, выезжающей впервые, наследовать не от чего, а окно
+      // переиспользуется под соседнюю заявку — оставшееся от прошлой цели значение уехало бы в
+      // новый рейс молча.
+      communicationKind: DEFAULT_COMMUNICATION_KIND,
     });
     // Зависимость — идентификатор заявки: перерисовка той же заявки (инвалидация списка после
     // соседнего действия) приходит новым объектом и стёрла бы уже выбранное.
@@ -576,6 +586,7 @@ export function VehicleAssignModal({
   // на площадке, и объяснять отсутствие блока нечем — документа в этом процессе не существует.
   const withTrailer = Form.useWatch('withTrailer', form) ?? false;
   const routeId = Form.useWatch('routeId', form);
+  const communicationKind = Form.useWatch('communicationKind', form);
 
   /**
    * Доставка техники на объект (миграция 0082). Спецтехника доезжает до площадки по городу своим
@@ -876,7 +887,10 @@ export function VehicleAssignModal({
       trailer1Model: trip.trailer1Model,
       trailer1RegNumber: trip.trailer1RegNumber,
       garageNumber: trip.garageNumber,
-      communicationKind: trip.communicationKind,
+      // У прошлого рейса графа могла быть пустой — все рейсы до появления списка такие.
+      // Наследовать пустоту в поле, которого без выбора не сохранить, значит наследовать заминку:
+      // подставляется умолчание набора, а не то, чего в бланке всё равно быть не должно.
+      communicationKind: trip.communicationKind || DEFAULT_COMMUNICATION_KIND,
       transportationKind: trip.transportationKind,
     });
   }, [suggestion?.trip]);
@@ -1063,7 +1077,9 @@ export function VehicleAssignModal({
                 driverPersonId: v.deliveryDriverId,
                 moveFrom: v.deliveryFrom!.trim(),
                 moveTo: v.deliveryTo!.trim(),
-                trip: { communicationKind: 'городское' },
+                // Вид сообщения перегона портал ставит сам — окно про него не спрашивает
+                // (`RELOCATION_COMMUNICATION_KIND`): технику везут с базы на площадку по городу.
+                trip: { communicationKind: RELOCATION_COMMUNICATION_KIND },
               },
             }
           : {}),
@@ -1769,8 +1785,17 @@ export function VehicleAssignModal({
                       <Form.Item name="garageNumber" label="Гаражный номер">
                         <Input placeholder="00000389" />
                       </Form.Item>
-                      <Form.Item name="communicationKind" label="Вид сообщения">
-                        <Input placeholder="пригородное" />
+                      {/* Список, а не строка: значение печатается в графе бланка 4-П и формы № 3,
+                      и одно слово, написанное тремя способами, делает пачку листов несверяемой.
+                      Ни крестика, ни пункта «не выбрано» — обязательность просили на уровне UI, и
+                      пустой графа из окна больше не уходит. Значение, унаследованное от прошлого
+                      рейса мимо набора, остаётся своим пунктом (`communicationKindOptions`). */}
+                      <Form.Item
+                        name="communicationKind"
+                        label="Вид сообщения"
+                        rules={[{ required: true, message: 'Выберите вид сообщения' }]}
+                      >
+                        <Select options={communicationKindOptions(communicationKind)} />
                       </Form.Item>
                       <Form.Item name="transportationKind" label="Вид перевозки">
                         <Input placeholder="коммерческая" />

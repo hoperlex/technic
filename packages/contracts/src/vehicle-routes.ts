@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { formatNameWithInitials } from './person-name';
 import type { VehicleRoutePointDto } from './route-points';
 import { baseListQuery, dateOnlySchema, formatPhone, uuidSchema } from './common';
 import type { RequestStatus, VehicleRequestType } from './enums';
@@ -121,6 +122,52 @@ export function parseVehicleRouteNumberSearch(input: string): number | undefined
 // `waybillFieldsSchema` (ADR 0037) — там же осталось устаревшее имя, пока его читает старое тело
 // запроса на перевод в работу.
 
+/**
+ * Вид сообщения — дальность выезда тремя словами заказчика.
+ *
+ * Набор живёт в контрактах, а не в окне рейса: значение печатается в графе «Вид сообщения»
+ * бланков 4-П и формы № 3, то есть уходит из портала бумагой наружу, а заводят и правят рейс три
+ * разных окна — назначение заявки, правка маршрута и коррекция. Свой список у каждого означал бы
+ * «междугороднее» в одном листе и «междугородное» в соседнем, и пачку за месяц было бы не
+ * сверить. Написание здесь ровно то, которым называет графу заказчик, и правится оно одним местом.
+ */
+export const COMMUNICATION_KINDS = ['городское', 'пригородное', 'междугороднее'] as const;
+export type CommunicationKind = (typeof COMMUNICATION_KINDS)[number];
+
+/**
+ * Что стоит в поле, когда рейс только заводят: возят в основном за город, но в пределах области.
+ * Подставленное значение здесь безопасно — оно из набора, и печатается им то же, что печаталось
+ * бы выбранным рукой.
+ */
+export const DEFAULT_COMMUNICATION_KIND: CommunicationKind = 'пригородное';
+
+/**
+ * Вид сообщения перегона: технику возят с базы на площадку и обратно, и графа у такого рейса от
+ * раза к разу одна. Портал подставляет её сам — окно перегона про вид сообщения не спрашивает, —
+ * поэтому значение названо здесь: литерал в окне разошёлся бы с набором молча, а увидели бы это
+ * уже на напечатанном листе.
+ */
+export const RELOCATION_COMMUNICATION_KIND: CommunicationKind = 'городское';
+
+/**
+ * Опции поля «вид сообщения» для окна: набор плюс собственное значение рейса, если оно из набора
+ * выпало. Выпавшие есть и будут: до появления списка графа была свободной строкой, и в рейсах
+ * прошлых месяцев стоит что угодно — от пустой до «междугородное» с одной «н». Списка без такого
+ * значения хватило бы, чтобы правка соседнего поля молча унесла графу, которая на выданном листе
+ * уже напечатана: портал разошёлся бы с бумагой у водителя в руках.
+ *
+ * Пустое значение опцией не становится: очистить графу через окно нельзя (обязательность просили
+ * на уровне UI), и пункт «не выбрано» предлагал бы ровно то, чего окно больше не позволяет.
+ */
+export function communicationKindOptions(
+  current?: string | null,
+): { value: string; label: string }[] {
+  const kinds: string[] = [...COMMUNICATION_KINDS];
+  const own = (current ?? '').trim();
+  if (own && !kinds.includes(own)) kinds.push(own);
+  return kinds.map((kind) => ({ value: kind, label: kind }));
+}
+
 export const routeTripFieldsSchema = z
   .object({
     /**
@@ -134,7 +181,16 @@ export const routeTripFieldsSchema = z
     trailer2RegNumber: z.string().trim().max(20).optional().default(''),
     /** Гаражный номер машины: если пуст, берётся из справочника техники. */
     garageNumber: z.string().trim().max(50).optional().default(''),
-    /** Вид сообщения: «городское», «пригородное», «междугородное». */
+    /**
+     * Вид сообщения: одно из `COMMUNICATION_KINDS` — окна спрашивают его списком и пустым в
+     * портал не пускают.
+     *
+     * Схема при этом остаётся свободной строкой намеренно, и ужесточать её до `z.enum` нельзя: у
+     * рейсов, заведённых до списка, графа пуста или написана по-своему, а тело правки уходит
+     * целиком — enum отбил бы такому рейсу и смену водителя, и перенос дня, пока кто-то не
+     * перепишет графу. Обязательность заказчик просил на уровне UI: список отвечает за то, что
+     * портал печатает впредь, а не за то, что уже напечатано.
+     */
     communicationKind: z.string().trim().max(50).optional().default(''),
     /** Вид перевозки: в образцах бланка — «коммерческая». */
     transportationKind: z.string().trim().max(50).optional().default(''),
@@ -849,20 +905,11 @@ export function routeCargoWithNote(cargo: string, comment: string): string {
  * «Кузнецова Анна Владимировна, +7 914 123-45-67» переносится на вторую строку и вытесняет с
  * бумаги контакт разгрузки.
  *
- * Сокращается только запись ровно из трёх слов, каждое из которых начинается буквой и точек в
- * себе не несёт. Всё прочее — одно имя, должность рядом с фамилией, уже сокращённые инициалы —
- * печатается как есть: разобрать, где здесь отчество, а где примечание, портал не берётся.
+ * Само сокращение живёт в `person-name.ts` (`formatNameWithInitials`): тем же видом печатается
+ * расшифровка подписи водителя в 4-П и форме № 3, и два написания одного правила разошлись бы на
+ * первой же правке — например, на записи из четырёх слов.
  */
-function contactNameLabel(name: string): string {
-  const trimmed = name.trim();
-  const parts = trimmed.split(/\s+/u);
-  if (parts.length !== 3) return trimmed;
-  const [family, first, patronymic] = parts as [string, string, string];
-  if ([family, first, patronymic].some((part) => part.includes('.') || !/^\p{L}/u.test(part))) {
-    return trimmed;
-  }
-  return `${family} ${first[0]!.toUpperCase()}.${patronymic[0]!.toUpperCase()}.`;
-}
+const contactNameLabel = formatNameWithInitials;
 
 /**
  * Контакты задания в том виде, в каком их печатает графа «заказчик, телефон» бланка 4-П: строка

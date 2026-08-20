@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { unzipSync } from 'fflate';
 import { TASK_ROW_GEOMETRY, TASK_ROW_LINES, WAYBILL_SNAPSHOT_KEYS } from '@technic/contracts';
 import { inspectTemplate, renderOfficeTemplate } from '../src/services/office-template';
+import { BOX, LINE, mergeCells, unborderCells } from '../scripts/mark-waybill-templates';
 
 /**
  * Согласованность бланка и сборщика значений (ADR 0037 п. 10).
@@ -60,15 +61,36 @@ function xfOf(files: Record<string, Uint8Array>, address: string): string {
   return xfs[Number(/\ss="(\d+)"/.exec(cell![1]!)?.[1] ?? 0)]!;
 }
 
-/** Есть ли у ячейки линия графы: в стиле записан номер рамки, и только в рамке — чем она обведена. */
-function bottomBorderOf(files: Record<string, Uint8Array>, address: string): boolean {
+/** Рамка графы целиком: в стиле записан её номер, а чем обведена ячейка — только в самой рамке. */
+function borderOf(files: Record<string, Uint8Array>, address: string): string {
   const styles = decoder.decode(files['xl/styles.xml']!);
   const borders =
     /<borders count="\d+">([\s\S]*?)<\/borders>/
       .exec(styles)![1]!
       .match(/<border\b[^>]*\/>|<border\b[^>]*>[\s\S]*?<\/border>/g) ?? [];
   const borderId = Number(/borderId="(\d+)"/.exec(xfOf(files, address))?.[1] ?? 0);
-  return /<bottom style=/.test(borders[borderId]!);
+  return borders[borderId]!;
+}
+
+/** Есть ли у ячейки линия графы: в стиле записан номер рамки, и только в рамке — чем она обведена. */
+function bottomBorderOf(files: Record<string, Uint8Array>, address: string): boolean {
+  return /<bottom style=/.test(borderOf(files, address));
+}
+
+/** Стороны рамки, которыми обведена ячейка: у графы без обводки список пуст. */
+const BORDER_SIDES = ['left', 'right', 'top', 'bottom'] as const;
+function sidesOf(files: Record<string, Uint8Array>, address: string): string[] {
+  const border = borderOf(files, address);
+  return BORDER_SIDES.filter((side) => new RegExp(`<${side} style=`).test(border));
+}
+
+/**
+ * Содержимое ячейки листа: у пустой его нет вовсе (`<c r="A1" s="7" />`). Атрибуты читаются
+ * нежадно — жадный кусок съедает косую черту самозакрытия, и пустая ячейка прикидывается
+ * открывающим тегом, а поиск уезжает на содержимое следующей.
+ */
+function bodyOf(sheet: string, address: string): string {
+  return new RegExp(`<c r="${address}"[^>]*?(?:/>|>([\\s\\S]*?)</c>)`).exec(sheet)?.[1] ?? '';
 }
 
 /** Шрифт графы: в стиле записан его номер, а кегль с начертанием — в самой записи шрифта. */
@@ -214,6 +236,76 @@ describe('разметка бланков', () => {
   });
 
   /**
+   * Блок «Количество отработанных часов» убран из шапки 4-П целиком: часы работы машины считает и
+   * заверяет подписью заказчик на месте, портал их не знает. Стоит блок среди реквизитов, которые
+   * портал печатает, и на бумаге читался его же незаполненной графой.
+   *
+   * Проверяются все три половины, потому что каждая остаётся на бумаге сама по себе: текст графы,
+   * рамка поля (обведено со всех четырёх сторон — снятого низа тут мало, от поля осталась бы
+   * распахнутая скоба) и линии подписи с расшифровкой правее.
+   */
+  it('в 4-П убран блок отработанных часов — вместе с рамкой поля и линиями подписи', () => {
+    const files = unzipSync(template('4p'));
+    const sheet = decoder.decode(files['xl/worksheets/sheet1.xml']!);
+    const dictionary = dictionaryOf(decoder.decode(files['xl/sharedStrings.xml']!));
+
+    // Подпись графы: строка остаётся в словаре книги, но на неё не смотрит ни одна ячейка листа.
+    const caption = dictionary.flatMap((text, index) =>
+      text.trim() === 'Количество отработанных часов' ? [index] : [],
+    );
+    expect(caption.length, 'подпись блока пропала из словаря книги').toBeGreaterThan(0);
+    for (const index of caption) expect(cellsWithString(sheet, index)).toEqual([]);
+
+    // Подписи линий («(подпись)», «(расшифровка подписи)») по словарю не проверить: теми же
+    // строками подписаны графы механика и водителя ниже. Сверяются сами ячейки блока.
+    for (const address of ['CR16', 'EM17', 'EW17']) {
+      expect(bodyOf(sheet, address), `${address} — ячейка убранного блока`).toBe('');
+    }
+
+    // Поле в рамке: снимается вся обводка, а не только линия графы.
+    for (const address of ['DX16', 'EA16', 'EJ16']) {
+      expect(sidesOf(files, address), `${address} — поле отработанных часов`).toEqual([]);
+    }
+    // Линии подписи и её расшифровки правее поля.
+    for (const address of ['EM16', 'ET16', 'EW16', 'FJ16']) {
+      expect(bottomBorderOf(files, address), address).toBe(false);
+    }
+    // Соседнее поле в рамке — табельный номер водителя — цело: стиль правится по ячейкам, и
+    // снятая рамка не имеет права утащить за собой поля, которые бланк оставил под запись.
+    expect(sidesOf(files, 'CD14'), 'рамка табельного номера').toEqual([
+      'left',
+      'right',
+      'top',
+      'bottom',
+    ]);
+  });
+
+  /**
+   * Расшифровка подписи водителя в обоих его блоках 4-П — «Автомобиль принял. Водитель» (DY32) и
+   * «Сдал водитель» (DN37). Расшифровка — это фамилия подписавшего, водитель у листа один, и
+   * портал её знает: от руки остаётся сама подпись.
+   *
+   * Идёт короткое имя, а не полное ФИО шапки: графа «Сдал водитель» — 14 клеток, и полное ФИО
+   * переносится в ней второй строкой поверх подписи «(расшифровка подписи)» под линией.
+   *
+   * Графы механика рядом (EK37, ET37) проверяются пустыми: их подписывает человек, и напечатанная
+   * порталом фамилия читалась бы там подписью, которой нет.
+   */
+  it('в 4-П расшифровки водителя размечены коротким именем, а графы механика пусты', () => {
+    const sheet = decoder.decode(unzipSync(template('4p'))['xl/worksheets/sheet1.xml']!);
+
+    for (const [address, what] of [
+      ['DY32', 'автомобиль принял'],
+      ['DN37', 'сдал водитель'],
+    ] as const) {
+      expect(bodyOf(sheet, address), `${what} (${address})`).toContain('{{driver_short_name}}');
+    }
+    for (const address of ['EK37', 'ET37']) {
+      expect(bodyOf(sheet, address), `${address} — графа механика`).not.toContain('{{');
+    }
+  });
+
+  /**
    * Тем же решением, что и графа диспетчера: в исходнике ЭСМ-2 над линией «(расшифровка подписи)»
    * впечатана фамилия начальника отдела автотехники. Напечатанная рядом с пустой линией, она
    * читается как подпись, которой нет, — и вдобавок это персональные данные живого человека в
@@ -291,11 +383,12 @@ describe('разметка бланков', () => {
       'period_to_day',
       'period_month',
       'period_year',
-      // Семь строк недели: числа месяца и объект — по каждому дню.
+      // Семь строк недели: по каждому дню печатается число месяца — и только оно.
       'day1_date',
       'day7_date',
-      'day1_object',
-      'day7_object',
+      // Объект — один на лист, в шапке графы работ: лист выписан на неделю работы одной машины на
+      // одной площадке (см. проверку ниже).
+      'object_line',
     ]) {
       expect(inTemplate.has(key), key).toBe(true);
     }
@@ -318,6 +411,75 @@ describe('разметка бланков', () => {
     ]) {
       expect(inTemplate.has(key), key).toBe(false);
     }
+  });
+
+  /**
+   * Объект печатается один раз — в шапке графы работ, на обеих сторонах бланка (D13 на лицевой,
+   * I102 на обороте), а не в каждом из семи дней недели. Лист выписывается на неделю работы одной
+   * машины на одной площадке, и прежняя разметка повторяла один и тот же адрес семь раз подряд,
+   * вытесняя из графы ту самую «выполняемую работу», ради которой заказчик её и заполняет.
+   *
+   * Проверяются обе стороны и обе половины: подпись бланка вокруг вставки цела (иначе графа
+   * останется без имени), а строки дней разметки не несут вовсе — вернувшийся туда `{{...}}`
+   * означал бы возврат к семи повторам.
+   */
+  it('в ЭСМ-2 объект стоит в шапках граф обеих сторон, а в днях его нет', () => {
+    const sheet = decoder.decode(unzipSync(template('esm2'))['xl/worksheets/sheet1.xml']!);
+
+    for (const [address, side] of [
+      ['D13', 'лицевая'],
+      ['I102', 'оборот'],
+    ] as const) {
+      const body = bodyOf(sheet, address);
+      expect(body, `шапка графы объекта, ${side} (${address})`).toContain('{{object_line}}');
+      // Подпись самого бланка вокруг вставки — на месте: объект вписан отдельной строкой под ней,
+      // а не вместо неё.
+      expect(body, `подпись графы, ${side}`).toContain('Наименование и адрес объекта');
+      expect(body, `подпись графы, ${side}`).toContain('Выполняемая работа');
+    }
+
+    // Семь строк недели: число месяца в графе «Числа месяца» осталось, графа объекта рядом пуста.
+    for (const [date, object] of [
+      ['C19', 'D19'],
+      ['C23', 'D23'],
+      ['C27', 'D27'],
+      ['C31', 'D31'],
+      ['C35', 'D35'],
+      ['C39', 'D39'],
+      ['C43', 'D43'],
+    ] as const) {
+      expect(bodyOf(sheet, date), `${date} — число месяца дня`).toContain('{{');
+      expect(bodyOf(sheet, object), `${object} — графа объекта дня`).not.toContain('{{');
+    }
+  });
+
+  /**
+   * Блок «коды объектов» — шпаргалка бухгалтерии, дописанная поверх типовой формы: подпись графы
+   * набок (AL143) и три строки сокращений площадок. Код объекта портал печатает в шапке листа
+   * (`object_code`), а таблица расшифровок на бумаге читается графой, которую забыли заполнить.
+   *
+   * Проверяется и словарь книги, и сами ячейки: строки остаются в `sharedStrings.xml` — вырезать
+   * их значит сбить индексы всех прочих подписей бланка, — но смотреть на них не должна ни одна
+   * ячейка листа.
+   */
+  it('в ЭСМ-2 нет блока кодов объектов: код листа стоит в шапке', () => {
+    const files = unzipSync(template('esm2'));
+    const sheet = decoder.decode(files['xl/worksheets/sheet1.xml']!);
+    const dictionary = dictionaryOf(decoder.decode(files['xl/sharedStrings.xml']!));
+
+    for (const caption of ['коды объектов', 'БОТСАД', 'КНОЗ', 'ХОДЫН', 'СКЛАД']) {
+      const indexes = dictionary.flatMap((text, index) => (text.trim() === caption ? [index] : []));
+      expect(indexes.length, `подпись «${caption}» пропала из словаря книги`).toBeGreaterThan(0);
+      for (const index of indexes) expect(cellsWithString(sheet, index), caption).toEqual([]);
+    }
+
+    // Три строки списка целиком — по ячейкам: словарь ловит только те коды, что перечислены выше.
+    for (const row of [144, 145, 146]) {
+      for (const column of ['AP', 'AT', 'AW', 'AZ', 'BD', 'BG']) {
+        expect(bodyOf(sheet, `${column}${row}`), `${column}${row} — код объекта`).toBe('');
+      }
+    }
+    expect(bodyOf(sheet, 'AL143'), 'подпись блока кодов').toBe('');
   });
 
   it('в 4-П размечено задание водителю: по нему лист и выписывают', () => {
@@ -443,6 +605,81 @@ describe('разметка бланков', () => {
     expect(inTemplate.has('customer_address'), 'адрес подачи из заявки').toBe(false);
   });
 
+  /**
+   * Блок «Водительское удостоверение проверил» — это графа диспетчера формы № 3, и убран он тем же
+   * решением, что графа диспетчера в 4-П: портал удостоверений не проверяет и документ не
+   * подписывает.
+   *
+   * На освободившееся место поднят блок «Водитель по состоянию здоровья к управлению допущен,
+   * алкотест пройден» (строки 42–43 → 37–38): своей подписи у него в бланке нет, и оставь его на
+   * месте — от убранной графы посреди лицевой стороны осталась бы дыра в пять пустых строк.
+   *
+   * Проверяются три вещи, и каждая ловит свою ошибку: подпись убранной графы не стоит ни в одной
+   * ячейке; текст допуска стоит ровно в строках 37–38 (промахнувшийся `move` разложил бы его по
+   * чужим строкам, а не потерял); линий под ним нет — иначе прямо под «допущен» осталась бы пара
+   * пустых черт, которые читаются приглашением расписаться.
+   */
+  it('в форме № 3 блок допуска поднят на место графы удостоверения, и линий под ним нет', () => {
+    const files = unzipSync(template('leg3'));
+    const sheet = decoder.decode(files['xl/worksheets/sheet1.xml']!);
+    const dictionary = dictionaryOf(decoder.decode(files['xl/sharedStrings.xml']!));
+
+    const indexOf = (caption: string): number[] => {
+      const found = dictionary.flatMap((text, index) => (text.trim() === caption ? [index] : []));
+      expect(found.length, `подпись «${caption}» пропала из словаря книги`).toBeGreaterThan(0);
+      return found;
+    };
+
+    // Подпись убранной графы: строка остаётся в словаре, ячейки на неё не смотрят.
+    for (const index of indexOf('Водительское удостоверение проверил')) {
+      expect(cellsWithString(sheet, index)).toEqual([]);
+    }
+
+    // Текст допуска — ровно в двух строках на месте убранной графы; строки 42–43 пусты.
+    expect(
+      indexOf('Водитель по состоянию здоровья к управления допущен,').flatMap((index) =>
+        cellsWithString(sheet, index),
+      ),
+    ).toEqual(['A37']);
+    expect(indexOf('алкотест пройден').flatMap((index) => cellsWithString(sheet, index))).toEqual([
+      'A38',
+    ]);
+
+    // Объединение убранной графы снято: поднятый текст набран в более широком A42:AX42 и по
+    // границе A37:AU37 обрезался бы, теряя хвост «…допущен,».
+    expect(mergesOf(sheet).map((m) => `${m.from}:${m.to}`)).not.toContain('A37:AU37');
+
+    // Линии графы диспетчера — под подпись (Q39:Y39) и под её расшифровку (AA39:AR39).
+    for (const address of ['Q39', 'Y39', 'AA39', 'AR39']) {
+      expect(bottomBorderOf(files, address), address).toBe(false);
+    }
+    // Линии самого водителя ниже целы: их он заполняет от руки.
+    for (const address of ['Q48', 'AA48', 'Q55', 'AA55']) {
+      expect(bottomBorderOf(files, address), `${address} — линия водителя`).toBe(true);
+    }
+  });
+
+  /**
+   * Расшифровка подписи водителя в обоих его блоках формы № 3 — «Автомобиль принял / водитель»
+   * (AA48) и «Автомобиль сдал / водитель» (AA55). Решение то же, что в 4-П: расшифровка — это
+   * фамилия подписавшего, водитель у листа один, и портал её знает.
+   *
+   * Графы механика (BK56, BU56) проверяются пустыми: их подписывает человек.
+   */
+  it('в форме № 3 расшифровки водителя размечены коротким именем, а графы механика пусты', () => {
+    const sheet = decoder.decode(unzipSync(template('leg3'))['xl/worksheets/sheet1.xml']!);
+
+    for (const [address, what] of [
+      ['AA48', 'автомобиль принял'],
+      ['AA55', 'автомобиль сдал'],
+    ] as const) {
+      expect(bodyOf(sheet, address), `${what} (${address})`).toContain('{{driver_short_name}}');
+    }
+    for (const address of ['BK56', 'BU56']) {
+      expect(bodyOf(sheet, address), `${address} — графа механика`).not.toContain('{{');
+    }
+  });
+
   it.each(FORMS)('заполненный бланк %s не содержит незакрытых плейсхолдеров', (form) => {
     const values = Object.fromEntries(WAYBILL_SNAPSHOT_KEYS.map((k) => [k, `знач-${k}`]));
     const rendered = renderOfficeTemplate(template(form), values);
@@ -539,37 +776,112 @@ describe('разметка бланков', () => {
   });
 
   /**
-   * Номер листа, его дата и ФИО машиниста идут в линию заполнения, а не в клетку бланка: ячеек под
-   * них в исходнике нет, и портал заводит их сам. Своего стиля у такой ячейки нет — она получает
-   * шрифт книги по умолчанию (Arial 8 при наборе бланка Times 11), и номер документа печатался
-   * мельче любой своей подписи. Кегль сверяется с госномером — соседней графой той же шапки.
+   * ФИО машиниста идёт в линию заполнения, а не в клетку бланка: ячейки под него в исходнике нет,
+   * и портал заводит её сам. Своего стиля у такой ячейки нет — она получает шрифт книги по
+   * умолчанию (Arial 8 при наборе бланка Times 11), и ФИО выходило вдвое мельче марки машины
+   * строкой выше. Кегль сверяется с госномером — соседней графой той же шапки.
+   *
+   * Номер листа и его дата стоят на одной линии с заголовком бланка, и эталон у них другой — сам
+   * заголовок: см. проверку ниже.
    */
-  it('в ЭСМ-2 номер, дата и машинист набраны кеглем госномера, а не мельче бланка', () => {
+  it('в ЭСМ-2 ФИО машиниста набрано кеглем госномера, а не мельче бланка', () => {
     const files = unzipSync(template('esm2'));
     const sample = fontOf(files, 'AO9');
     expect(sample, 'у госномера — эталона кегля — нет своего шрифта').toContain('<sz val="11"/>');
+    expect(fontOf(files, 'H11'), 'ФИО машиниста набрано не кеглем госномера').toBe(sample);
+  });
 
-    for (const [address, what] of [
-      ['AM3', 'номер листа'],
-      ['BH2', 'дата листа'],
-      ['H11', 'ФИО машиниста'],
+  /**
+   * Номер листа и его дата — единым видом с заголовком «ПУТЕВОЙ ЛИСТ» и на одной с ним линии.
+   * Заголовок набран объединением в две строки листа (T2:AL3, Tahoma 18 pt, прижат к низу), а
+   * номер с датой стояли в одной строке кеглем 11 pt и на разных строках: шапка «плясала» —
+   * номер ниже даты, оба мельче заголовка.
+   *
+   * Проверяются обе половины: объединение в те же две строки и шрифт заголовка. Одного шрифта
+   * мало — 18 pt в одну строку шапки не встаёт и садится не на линию заголовка; одного
+   * объединения мало — без шрифта величина остаётся припиской к нему.
+   */
+  it('в ЭСМ-2 номер и дата стоят в высоту заголовка и его кеглем', () => {
+    const files = unzipSync(template('esm2'));
+    const sheet = decoder.decode(files['xl/worksheets/sheet1.xml']!);
+    const merges = mergesOf(sheet).map((m) => `${m.from}:${m.to}`);
+    const title = fontOf(files, 'T2');
+    expect(title, 'у заголовка бланка нет своего шрифта').toContain('<sz val="18"/>');
+
+    for (const [address, merge, what, key] of [
+      ['AM2', 'AM2:BE3', 'номер листа', '{{waybill_number}}'],
+      ['BH2', 'BH2:BO3', 'дата листа', '{{waybill_date}}'],
     ] as const) {
-      expect(fontOf(files, address), `${what} (${address}) набран не кеглем госномера`).toBe(
-        sample,
-      );
+      expect(merges, `${what}: объединения ${merge} в бланке нет`).toContain(merge);
+      expect(fontOf(files, address), `${what} набран не кеглем заголовка`).toBe(title);
+      expect(bodyOf(sheet, address), `${what} стоит не в ${address}`).toContain(key);
+    }
+
+    // Заголовок и подпись «от» между новыми объединениями целы: наехавшие друг на друга
+    // объединения Excel чинит молча сам, выбрасывая их, — и шапка расходится уже у бухгалтера.
+    for (const merge of ['T2:AL3', 'BF2:BG3']) {
+      expect(merges, `объединение бланка ${merge}`).toContain(merge);
+    }
+  });
+
+  /**
+   * Подписи правой колонки шапки ЭСМ-2 («Форма по ОКУД», «Дата составления») прижаты вправо и
+   * печатаются переполнением: своей клетки им мало, и текст растекается по пустым соседям слева.
+   *
+   * Объединение такой текст режет по своей границе — тем же ходом, каким «строительная машина»
+   * печаталась как «нс» (см. `unmerge` в разметке). Объединение под дату листа, дотянутое до BT3,
+   * заняло всю полосу переполнения, и от «Формы по ОКУД» на бумаге оставалась «КУД»: набор
+   * плейсхолдеров при этом сходился, а подпись бланка исчезала молча.
+   *
+   * Поэтому проверяются обе стороны: подпись не заперта в чужом объединении и полоса слева от неё
+   * свободна — ни объединения, ни содержимого. Адрес подписи берётся из словаря книги, а не
+   * вписан числом: уедет она на клетку — тест скажет об этом, а не проверит пустоту.
+   */
+  it('в ЭСМ-2 подписям шапки есть куда переполниться: полоса слева от них свободна', () => {
+    const files = unzipSync(template('esm2'));
+    const sheet = decoder.decode(files['xl/worksheets/sheet1.xml']!);
+    const dictionary = dictionaryOf(decoder.decode(files['xl/sharedStrings.xml']!));
+    const merges = mergesOf(sheet);
+    const coveringOf = (ref: string): string[] =>
+      merges.filter((m) => covers(m, ref)).map((m) => `${m.from}:${m.to}`);
+
+    // Полоса переполнения — пять клеток бланка между кодовой таблицей и объединениями портала.
+    for (const [caption, address, run] of [
+      ['Форма по ОКУД', 'BU3', ['BP3', 'BQ3', 'BR3', 'BS3', 'BT3']],
+      ['Дата составления', 'BU4', ['BP4', 'BQ4', 'BR4', 'BS4', 'BT4']],
+    ] as const) {
+      const indexes = dictionary.flatMap((text, index) => (text.trim() === caption ? [index] : []));
+      expect(indexes.length, `подпись «${caption}» пропала из словаря книги`).toBeGreaterThan(0);
+      expect(
+        indexes.flatMap((index) => cellsWithString(sheet, index)),
+        `подпись «${caption}» стоит не в ${address}`,
+      ).toEqual([address]);
+      expect(coveringOf(address), `подпись «${caption}» заперта в объединении`).toEqual([]);
+
+      for (const free of run) {
+        expect(coveringOf(free), `${free}: клетка переполнения «${caption}» объединена`).toEqual(
+          [],
+        );
+        expect(bodyOf(sheet, free), `${free}: клетка переполнения «${caption}» занята`).toBe('');
+      }
     }
   });
 
   /**
    * Высота строки в бланке задана жёстко, и шрифт крупнее прежнего она не раздвигает: LibreOffice
    * при печати такую строку не режет, а Excel режет — и в скачанном файле у номера с датой пропала
-   * бы верхушка букв. Строкам шапки высота поднята под кегль 11 pt.
+   * бы верхушка букв. Обе строки шапки подняты до 14 pt: объединения номера и даты занимают их
+   * обе, и кеглю 18 pt заголовка достаётся 28 pt.
    */
-  it('в ЭСМ-2 строки номера и даты вмещают их кегль: иначе Excel срежет верхушки', () => {
+  it('в ЭСМ-2 строки номера и даты вмещают кегль заголовка: иначе Excel срежет верхушки', () => {
     const files = unzipSync(template('esm2'));
     for (const row of [2, 3]) {
-      expect(rowHeightOf(files, row), `строка ${row} ниже кегля 11 pt`).toBeGreaterThanOrEqual(14);
+      expect(rowHeightOf(files, row), `строка ${row} ниже 14 pt`).toBeGreaterThanOrEqual(14);
     }
+    expect(
+      rowHeightOf(files, 2) + rowHeightOf(files, 3),
+      'две строки шапки не вмещают кегль 18 pt',
+    ).toBeGreaterThanOrEqual(28);
   });
 
   /**
@@ -714,5 +1026,135 @@ describe('геометрия граф задания 4-П', () => {
     }
     // Не «две по определению», а две по расчёту: высота строки при кегле 6 pt — 11.45/8 × 6.
     expect(TASK_ROW_LINES).toBe(2);
+  });
+});
+
+/**
+ * Операции разметки на исходных бланках (`scripts/mark-waybill-templates.ts`).
+ *
+ * Проверки выше читают готовый шаблон и потому видят только те операции, которыми пользуется хоть
+ * один бланк. Операция, заведённая под будущую правку формы, до первого своего применения не
+ * проверена ничем — а применять её будут к присланному бухгалтерией файлу, где и рамка, и
+ * объединение записаны не так, как в примере из головы: ЭСМ-2 прошёл через LibreOffice и пишет
+ * стороны рамки пустым тегом, 4-П — тегом с цветом внутри. Поэтому операции прогоняются здесь на
+ * самих исходниках, из которых собираются шаблоны.
+ */
+describe('операции разметки', () => {
+  const encoder = new TextEncoder();
+
+  interface Book {
+    sheet: string;
+    styles: string;
+  }
+
+  /** Исходник бланка, каким его прислала бухгалтерия: шаблон собирается из него. */
+  function source(file: string): Book {
+    const files = unzipSync(new Uint8Array(readFileSync(join(templatesDir, 'source', file))));
+    return {
+      sheet: decoder.decode(files['xl/worksheets/sheet1.xml']!),
+      styles: decoder.decode(files['xl/styles.xml']!),
+    };
+  }
+
+  /** Рамка графы целиком: в стиле записан её номер, а чем обведена ячейка — только в самой рамке. */
+  function borderOf(book: Book, address: string): string {
+    // `xfOf` читает книгу частями, а операции правят её строками — собираем части обратно.
+    const xf = xfOf(
+      {
+        'xl/worksheets/sheet1.xml': encoder.encode(book.sheet),
+        'xl/styles.xml': encoder.encode(book.styles),
+      },
+      address,
+    );
+    const borders =
+      /<borders count="\d+">([\s\S]*?)<\/borders>/
+        .exec(book.styles)![1]!
+        .match(/<border\b[^>]*\/>|<border\b[^>]*>[\s\S]*?<\/border>/g) ?? [];
+    return borders[Number(/borderId="(\d+)"/.exec(xf)?.[1] ?? 0)]!;
+  }
+
+  /** Число записей в таблице книги — то, что стоит в её заголовке; Excel сверяет его со списком. */
+  function countOf(styles: string, table: 'cellXfs' | 'borders'): number {
+    return Number(new RegExp(`<${table} count="(\\d+)"`).exec(styles)![1]);
+  }
+
+  /** Сколько объединений записано в заголовке списка. */
+  function mergeCount(sheet: string): number {
+    return Number(/<mergeCells count="(\d+)">/.exec(sheet)![1]);
+  }
+
+  const SIDES = ['left', 'right', 'top', 'bottom'] as const;
+  /** «Количество отработанных часов» 4-П: поле обведено со всех четырёх сторон (рамка 3). */
+  const BOXED = 'DX16:EJ16';
+
+  it('unbox снимает у поля в рамке все четыре стороны', () => {
+    const before = source('4П.xlsx');
+    for (const side of SIDES) {
+      expect(borderOf(before, 'DX16'), side).toMatch(new RegExp(`<${side} style=`));
+    }
+
+    const after = unborderCells(before.sheet, before.styles, [BOXED], BOX);
+
+    // Рамку снимает каждая ячейка графы своей: обведён весь блок, а не одна его клетка.
+    for (const address of ['DX16', 'EA16', 'EJ16']) {
+      for (const side of SIDES) {
+        expect(borderOf(after, address), `${address} ${side}`).not.toMatch(
+          new RegExp(`<${side} style=`),
+        );
+      }
+    }
+  });
+
+  it('unline у того же поля снимает только линию, оставляя бока и верх', () => {
+    const before = source('4П.xlsx');
+    const after = unborderCells(before.sheet, before.styles, [BOXED], LINE);
+
+    expect(borderOf(after, 'DX16')).not.toMatch(/<bottom style=/);
+    for (const side of ['left', 'right', 'top']) {
+      expect(borderOf(after, 'DX16'), side).toMatch(new RegExp(`<${side} style=`));
+    }
+  });
+
+  it('на всю графу заводится одна запись стиля, а не по одной на клетку', () => {
+    const before = source('4П.xlsx');
+    const after = unborderCells(before.sheet, before.styles, [BOXED], BOX);
+
+    // Тринадцать клеток графы носят один стиль — копий и рамки, и записи обязано быть по одной.
+    expect(countOf(after.styles, 'cellXfs')).toBe(countOf(before.styles, 'cellXfs') + 1);
+    expect(countOf(after.styles, 'borders')).toBe(countOf(before.styles, 'borders') + 1);
+    // Заголовок таблицы обязан сойтись со списком: разошёлся — книга для Excel повреждена.
+    expect((after.styles.match(/<border\b/g) ?? []).length).toBe(countOf(after.styles, 'borders'));
+  });
+
+  it('merge дописывает объединение и правит его счётчик', () => {
+    const { sheet } = source('СДМ.xlsx');
+    const merged = mergeCells(sheet, 'AM2:AM3');
+
+    expect(merged).toContain('<mergeCell ref="AM2:AM3" />');
+    expect(mergeCount(merged)).toBe(mergeCount(sheet) + 1);
+    expect((merged.match(/<mergeCell /g) ?? []).length).toBe(mergeCount(merged));
+    // Ячеек AM2 и AM3 в бланке нет вовсе — пустых клеток он не хранит, и лист остаётся как был.
+    const withoutMerges = (xml: string): string =>
+      xml.replace(/<mergeCells[\s\S]*?<\/mergeCells>/, '');
+    expect(withoutMerges(merged)).toBe(withoutMerges(sheet));
+  });
+
+  it('merge оставляет содержимое только левому верхнему углу', () => {
+    // BU3 «Форма по ОКУД» и BU4 «Дата составления» — две подписи ЭСМ-2 одна под другой.
+    const { sheet } = source('СДМ.xlsx');
+    const merged = mergeCells(sheet, 'BU3:BU4');
+
+    expect(/<c r="BU3"[\s\S]*?<\/c>/.exec(merged)![0]).toContain('<v>');
+    // Спрятанный текст на бумаге не печатается, а в файле остаётся мусором. Стиль сохраняется —
+    // он несёт линии, которыми нарисован сам бланк.
+    expect(/<c r="BU4"[\s\S]*?(?:\/>|<\/c>)/.exec(merged)![0]).toBe('<c r="BU4" s="7" />');
+  });
+
+  it('merge не заводит объединение поверх чужого', () => {
+    const { sheet } = source('СДМ.xlsx');
+
+    // Заголовок «ПУТЕВОЙ ЛИСТ» — объединение T2:AL3; книгу с наездом Excel чинит молча сам.
+    expect(() => mergeCells(sheet, 'AL2:AM3')).toThrow(/наезжает на T2:AL3/);
+    expect(() => mergeCells(sheet, 'T2:AL3')).toThrow(/уже есть/);
   });
 });

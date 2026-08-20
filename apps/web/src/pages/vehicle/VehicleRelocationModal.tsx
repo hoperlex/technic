@@ -4,6 +4,7 @@ import type { Dayjs } from 'dayjs';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   moscowDateKeyOf,
+  RELOCATION_COMMUNICATION_KIND,
   routePurposeLabels,
   type VehicleRequestDto,
   type VehicleRouteDto,
@@ -118,8 +119,10 @@ export function VehicleRelocationModal({ request, purpose, onClose, onDone }: Pr
         driverPersonId: v.driverPersonId,
         moveFrom: v.moveFrom!.trim(),
         moveTo: v.moveTo!.trim(),
-        // Перегон по городу: вид сообщения печатается в шапке бланка, и от рейса к рейсу он тот же.
-        trip: { communicationKind: 'городское' },
+        // Перегон по городу: вид сообщения печатается в шапке бланка, и от рейса к рейсу он тот
+        // же. Значением из общего набора, а не своим литералом: окно про графу не спрашивает
+        // вовсе, и разойдись подстановка со списком трёх слов — узнали бы об этом с бумаги.
+        trip: { communicationKind: RELOCATION_COMMUNICATION_KIND },
         // Причина уходит только у прошедшей даты: у сегодняшней и завтрашней сервер её не спросит,
         // а поле «причина» у обычного перегона читалось бы как обязательное.
         ...(past ? { reason: v.reason } : {}),

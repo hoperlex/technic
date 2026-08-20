@@ -176,6 +176,41 @@ describe('правка рейса', () => {
     expect(body.routeDate).toBe(TOMORROW);
   });
 
+  /**
+   * Вид сообщения печатается в графе бланка, поэтому окно спрашивает его списком из трёх слов и
+   * пустым не выпускает. Два случая, которых список сам по себе не покрывает, и проверяются здесь:
+   * рейс со своим написанием и рейс с пустой графой — оба заведены до появления списка, и обоих в
+   * портале большинство.
+   */
+  it('чужое написание вида сообщения остаётся выбранным и уходит на сервер прежним', async () => {
+    const http = renderModal({ ...ROUTE, communicationKind: 'междугородное' });
+    await screen.findByText('Дата рейса');
+
+    // Значение вне набора стоит пунктом списка: правка водителя не должна молча переписывать
+    // графу, которая на выданном по этому рейсу листе уже напечатана.
+    expect(screen.getByTitle('междугородное')).toBeDefined();
+
+    await selectOption('Водитель', /Тестовый Водитель Первый/);
+    fireEvent.click(screen.getByText('Сохранить'));
+
+    await waitFor(() => expect(http.countOf('PATCH /vehicle-routes/:id')).toBe(1));
+    const trip = patchBody(http).trip as Record<string, unknown>;
+    expect(trip.communicationKind).toBe('междугородное');
+  });
+
+  it('пустая графа вида сообщения открывается умолчанием, а не запирает сохранение', async () => {
+    const http = renderModal({ ...ROUTE, communicationKind: '' });
+    await screen.findByText('Дата рейса');
+
+    expect(screen.getByTitle('пригородное')).toBeDefined();
+
+    fireEvent.click(screen.getByText('Сохранить'));
+
+    await waitFor(() => expect(http.countOf('PATCH /vehicle-routes/:id')).toBe(1));
+    const trip = patchBody(http).trip as Record<string, unknown>;
+    expect(trip.communicationKind).toBe('пригородное');
+  });
+
   it('перенос дня спрашивают отдельно и называют переезжающие заявки', async () => {
     const http = renderModal();
     await screen.findByText('Дата рейса');

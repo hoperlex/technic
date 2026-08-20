@@ -113,3 +113,25 @@ export function formatShortName(parts: PersonNameParts): string {
     .join(' ');
   return normalizeNamePart(`${parts.lastName} ${initials}`);
 }
+
+/**
+ * «Дегтярь И.В.» — фамилия с инициалами без пробела между ними, тем видом, каким имя пишут в
+ * графах бланков: расшифровка подписи водителя, контакт задания 4-П.
+ *
+ * Сокращается только запись ровно из трёх слов, каждое из которых начинается буквой и точек в себе
+ * не несёт. Всё прочее — одно имя, должность рядом с фамилией, уже сокращённые инициалы —
+ * возвращается как есть: разобрать, где здесь отчество, а где примечание, портал не берётся.
+ *
+ * Отличается от `formatShortName` не капризом, а местом: та собирает «Иванов И. И.» из разобранных
+ * частей для таблиц портала, а здесь на входе одна строка из снимка листа, и вид задан бланком.
+ */
+export function formatNameWithInitials(name: string): string {
+  const trimmed = name.trim();
+  const parts = trimmed.split(/\s+/u);
+  if (parts.length !== 3) return trimmed;
+  const [family, first, patronymic] = parts as [string, string, string];
+  if ([family, first, patronymic].some((part) => part.includes('.') || !/^\p{L}/u.test(part))) {
+    return trimmed;
+  }
+  return `${family} ${first[0]!.toUpperCase()}.${patronymic[0]!.toUpperCase()}.`;
+}

@@ -1,8 +1,10 @@
 import { useEffect } from 'react';
-import { App, Checkbox, DatePicker, Form, Input, Typography } from 'antd';
+import { App, Checkbox, DatePicker, Form, Input, Select, Typography } from 'antd';
 import dayjs from 'dayjs';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
+  communicationKindOptions,
+  DEFAULT_COMMUNICATION_KIND,
   DRIVER_CATEGORY_MISMATCH_HINT,
   DRIVER_WORKED_ON_VEHICLE_HINT,
   driverDocumentGapsHint,
@@ -92,7 +94,11 @@ export function VehicleRouteEditModal({ route, onClose, onSaved }: Props) {
       trailer1Model: route.trailer1Model,
       trailer1RegNumber: route.trailer1RegNumber,
       garageNumber: route.garageNumber,
-      communicationKind: route.communicationKind,
+      // Пустая графа рейса открывается умолчанием: поле стало обязательным, и рейс, заведённый до
+      // списка, иначе не дал бы сохранить ни смену водителя, ни перенос дня, пока кто-то не
+      // выберет вид сообщения руками. Подставлять здесь нечем рисковать: листа у правимого рейса
+      // нет вовсе (`isRouteEditable`), бумаги с пустой графой на руках тоже — переписать нечего.
+      communicationKind: route.communicationKind || DEFAULT_COMMUNICATION_KIND,
       transportationKind: route.transportationKind,
       comment: route.comment,
       moveFrom: route.moveFrom,
@@ -104,6 +110,7 @@ export function VehicleRouteEditModal({ route, onClose, onSaved }: Props) {
 
   const routeDate = Form.useWatch('routeDate', form);
   const withTrailer = Form.useWatch('withTrailer', form) ?? false;
+  const communicationKind = Form.useWatch('communicationKind', form);
   const on = (routeDate ?? (route ? dayjs(route.routeDate) : null))?.format(DATE);
 
   const today = moscowDateKeyOf(new Date());
@@ -350,8 +357,17 @@ export function VehicleRouteEditModal({ route, onClose, onSaved }: Props) {
           <Form.Item name="garageNumber" label="Гаражный номер">
             <Input placeholder="Из справочника техники, если пусто" />
           </Form.Item>
-          <Form.Item name="communicationKind" label="Вид сообщения">
-            <Input placeholder="городское" />
+          {/* Список, а не строка: значение печатается в графе бланка 4-П и формы № 3, и три
+            написания одного слова превращают журнал листов в несверяемый. Ни крестика, ни пункта
+            «не выбрано»: обязательность просили на уровне UI, и очистить графу окном нельзя.
+            Значение старого рейса, в набор не попавшее, остаётся в списке своим пунктом
+            (`communicationKindOptions`) — правка дня рейса не должна уносить чужую графу. */}
+          <Form.Item
+            name="communicationKind"
+            label="Вид сообщения"
+            rules={[{ required: true, message: 'Выберите вид сообщения' }]}
+          >
+            <Select options={communicationKindOptions(communicationKind)} />
           </Form.Item>
           <Form.Item name="transportationKind" label="Вид перевозки">
             <Input placeholder="коммерческая" />

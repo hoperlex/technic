@@ -5,7 +5,9 @@ import {
   type CostTarget,
   costTargetOf,
   type DriverDocumentGap,
+  formatNameWithInitials,
   formatPhone,
+  formatWaybillDate,
   type IssueBlocker,
   licenseNumberLabel,
   routeCargoWithNote,
@@ -47,6 +49,7 @@ import {
   vehicleRequestTrips,
   vehicles,
   vehicleTypes,
+  waybillCustomer,
   waybillRequests,
   waybills,
   waybillTrips,
@@ -206,6 +209,41 @@ async function resolveOrganization(tx: Tx, vehicleId: string): Promise<string> {
     );
   }
   return primary.id;
+}
+
+/** Реквизиты заказчика, как их просит бланк: наименование, адрес офиса и телефон. */
+export interface WaybillCustomer {
+  name: string;
+  address: string;
+  phone: string;
+}
+
+/**
+ * В чьё распоряжение выписан лист — настройка портала (миграция 0164), одна на все бланки.
+ *
+ * Графа «В чьё распоряжение (наименование и адрес заказчика)» у 4-П и графа «Заказчик» у ЭСМ-2
+ * печатали прежде объект заявки: наименование стройки, её адрес и телефон встречающего. Это не
+ * заказчик, а площадка, куда машину послали; заказчик у всех листов один — генподрядчик, в чьё
+ * распоряжение техника и поступает. На какой объект выписан лист, помнит `object_line`.
+ *
+ * Функция живёт здесь и зовётся обоими сборщиками — второе её написание в ЭСМ-2 разошлось бы с
+ * первым на первой же правке, и два бланка одного дня назвали бы разных заказчиков.
+ *
+ * Пустой настройки не бывает — её заводит сид миграции, — но отсутствие строки выписку не
+ * останавливает: графа печатается пустой, как и всякий незаполненный реквизит (ADR 0064). Отказать
+ * в листе из-за ненакатанной миграции значило бы остановить рейсы ради графы, которую дописывают
+ * от руки. Телефон возвращается как записан: печатают его оба сборщика через `formatPhone`
+ * (ADR 0066) — тем же ходом, что и телефон организации в шапке.
+ */
+export async function loadWaybillCustomer(tx: Reader): Promise<WaybillCustomer> {
+  const [row] = await tx
+    .select({
+      name: waybillCustomer.name,
+      address: waybillCustomer.address,
+      phone: waybillCustomer.phone,
+    })
+    .from(waybillCustomer);
+  return row ?? { name: '', address: '', phone: '' };
 }
 
 // ── Задание бланка: строки, а не заявки ──
@@ -429,6 +467,11 @@ export interface WaybillIssueContext {
     okpo: string;
     ogrn: string;
   } | null;
+  /**
+   * В чьё распоряжение выписан лист (миграция 0164). Читается в контекст наравне с организацией и
+   * по той же причине (Р22): снимок собирается из уже прочитанного, а не ходит в базу сам.
+   */
+  customer: WaybillCustomer;
   vehicle: {
     registrationNumber: string | null;
     garageNumber: string | null;
@@ -661,6 +704,8 @@ export async function loadWaybillIssueContext(
     .from(organizations)
     .where(eq(organizations.id, organizationId));
 
+  const customer = await loadWaybillCustomer(tx);
+
   const [vehicle] = await tx
     .select({
       registrationNumber: vehicles.registrationNumber,
@@ -712,6 +757,7 @@ export async function loadWaybillIssueContext(
     formCode: requirement.formCode,
     organizationId,
     organization: organization ?? null,
+    customer,
     vehicle: vehicle ?? null,
     driver: {
       personId: found.personId,
@@ -1006,7 +1052,10 @@ function collectSnapshot(
 
     waybill_series: number.prefix,
     waybill_number: number.display,
-    waybill_date: route.routeDate,
+    // Дата дню выезда, а не хранению: «23.08.2026» вместо ключа «2026-08-23». Перекладывается
+    // здесь, при выписке, а не при печати — снимок печатается как выдан (ADR 0037 п. 10), и листы,
+    // выписанные до этой работы, выходят из принтера с той датой, которая в них напечатана.
+    waybill_date: formatWaybillDate(route.routeDate),
 
     // В графу «Автомобиль (марка)» идёт марка/модель из справочника (ADR 0007) — без изготовителя.
     // Завод-изготовитель числится за машиной как реквизит, маркой её не называет никто, а длина
@@ -1026,19 +1075,39 @@ function collectSnapshot(
     // Не внесённая графа остаётся пустой строкой (ADR 0064): бланк печатается с пустым местом, а не
     // с выдумкой, и предупреждали о ней до печати.
     driver_fio: context.driver.fio,
+    // Расшифровка подписи водителя: графа узкая, и её пишут «Дегтярь И.В.» (`formatNameWithInitials`).
+    driver_short_name: formatNameWithInitials(context.driver.fio),
     driver_snils: context.driver.snils,
     driver_personnel_no: context.driver.personnelNo,
     driver_license_number: context.driver.license,
-    driver_license_issued_on: context.driver.licenseIssuedOn,
+    driver_license_issued_on: formatWaybillDate(context.driver.licenseIssuedOn),
 
     communication_kind: fields.communicationKind,
     transportation_kind: fields.transportationKind,
 
-    customer_name: header?.customerName ?? '',
-    customer_address: header?.customerAddress ?? '',
-    // Телефон ответственного — графа ЭСМ-2: там машина стоит на объекте неделю, и звонят туда. У
-    // рейса контакты свои на каждой точке, и в эту графу они не печатаются.
-    customer_phone: '',
+    /*
+     * «В чьё распоряжение (наименование и адрес заказчика)» — заказчик портала (миграция 0164), а
+     * не заявка шапки. Прежде сюда шёл объект: наименование стройки и её адрес, — то есть графа
+     * отвечала «куда поехали», хотя спрашивает «от чьего имени распоряжаются машиной». Кому машина
+     * поехала, водитель читает в задании (`task_from`/`task_to`), а не в шапке.
+     *
+     * Телефон — единым видом (ADR 0066), тем же ходом, что и телефон организации выше. У 4-П графы
+     * под него нет вовсе, но снимок его хранит: разметку правят отдельно от выписки, а выданный
+     * лист не переписывается.
+     */
+    customer_name: context.customer.name,
+    customer_address: context.customer.address,
+    customer_phone: formatPhone(context.customer.phone),
+    /*
+     * Объект, ради которого выписан лист, — одной строкой «Наименование, адрес» (той же склейкой,
+     * какой его собирают точки маршрута). В 4-П он на бумагу не идёт: объект живёт в задании
+     * водителю, — но снимок обязан помнить, на какой объект лист выписан, иначе после смены смысла
+     * граф заказчика об этом не помнил бы никто. Печатает `object_line` только ЭСМ-2.
+     *
+     * У заявки отдела строка пуста, и это правда о ней: площадки у отдела нет (ADR 0040), а
+     * называть объектом сам отдел значило бы записать в графу объекта то, чем он не является.
+     */
+    object_line: header?.objectLocation ?? '',
     task_from: first.from,
     task_to: first.to,
     task_cargo: first.cargo,
@@ -1088,13 +1157,6 @@ function collectSnapshot(
     day5_date: '',
     day6_date: '',
     day7_date: '',
-    day1_object: '',
-    day2_object: '',
-    day3_object: '',
-    day4_object: '',
-    day5_object: '',
-    day6_object: '',
-    day7_object: '',
   };
 }
 

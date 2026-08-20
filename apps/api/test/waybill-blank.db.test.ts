@@ -328,14 +328,29 @@ describe.skipIf(!DB_URL)('пустой путевой лист по рейсу �
      */
     const licenses = await ctx.db.execute<{ requisites: string; issued_on: string }>(sql`
       SELECT btrim(c.series || ' ' || c.number) AS requisites,
-             to_char(c.issued_on, 'YYYY-MM-DD') AS issued_on
+             -- Дата в снимке — та, что уйдёт на бумагу: «дд.мм.гггг», а не календарный ключ.
+             to_char(c.issued_on, 'DD.MM.YYYY') AS issued_on
       FROM person_credentials c
       JOIN credential_types t ON t.id = c.credential_type_id
       WHERE c.person_id = ${ctx.personId} AND c.deleted_at IS NULL AND t.code = 'driver_license'`);
     const license = licenses.rows[0]!;
     expect(row.data.driver_license_number).toBe(license.requisites);
     expect(row.data.driver_license_issued_on).toBe(license.issued_on);
-    expect(row.data.customer_name).toBe('');
+    /*
+     * Графа «В чьё распоряжение» у пустого бланка заполнена — и это не противоречие пустому
+     * заданию: заказчик берётся из настройки портала (миграция 0164), а не из заявки, которой у
+     * этого рейса нет вовсе. Сверяется с живой настройкой, как и удостоверение: база db-тестов
+     * общая, и реквизиты в ней мог поправить соседний файл.
+     */
+    const customers = await ctx.db.execute<{ name: string; address: string }>(
+      sql`SELECT name, address FROM waybill_customer`,
+    );
+    const customer = customers.rows[0]!;
+    expect(customer.name).not.toBe('');
+    expect(row.data.customer_name).toBe(customer.name);
+    expect(row.data.customer_address).toBe(customer.address);
+    // А объект пуст: заявки у рейса нет, и объекта, ради которого выписан лист, не существует.
+    expect(row.data.object_line).toBe('');
     expect(row.data.task_from).toBe('');
     expect(row.data.task_cargo).toBe('');
     expect(row.data.task5_line).toBe('');

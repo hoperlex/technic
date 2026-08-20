@@ -9,7 +9,9 @@ import {
   esm2RequestedPeriods,
   esm2SyncPlan,
   esm2WeekDays,
+  formatNameWithInitials,
   formatPhone,
+  formatWaybillDate,
   licenseNumberLabel,
   moscowDateKeyOf,
   requiredCredentialType,
@@ -43,7 +45,9 @@ import { findMachinist, type MachinistOption } from './drivers';
 // Рукопожатие выписки (Р21а) — общее с листом по рейсу: набор предупреждений у двух бланков разный,
 // а решение «пускать, спрашивать или записать подтверждённое» одно, и второе его написание
 // разошлось бы с первым на первой же правке.
-import { acknowledgeOrThrow, type IssueWarningsRecord } from './waybill-issue';
+// Заказчик путевых листов (миграция 0164) читается общей функцией: настройка одна на все бланки, и
+// второе её чтение здесь разошлось бы с первым — два листа одного дня назвали бы разных заказчиков.
+import { acknowledgeOrThrow, type IssueWarningsRecord, loadWaybillCustomer } from './waybill-issue';
 // Что операция коррекции делает с листом (ADR 0101): списание ссылкой на операцию и пометка
 // рождённого ею номера. Своего кода на это у сверки нет намеренно — правило «лист помнит, какой
 // операцией он рождён и какой списан» одно на все входы, и второе его написание разошлось бы.
@@ -252,37 +256,45 @@ async function collectSnapshot(
     .leftJoin(vehicleModels, eq(vehicleModels.id, vehicles.vehicleModelId))
     .where(eq(vehicles.id, params.vehicleId));
 
-  // Заказчик здесь всегда объект: заказать технику на площадку отдел не может (ADR 0040), и
-  // телефон в графе — ответственного за встречу машины, а не организации.
+  /*
+   * Объект заявки: наименование, адрес и код затрат. Заказчиком он больше не печатается — графа
+   * «Заказчик» просит генподрядчика, и его даёт настройка портала, — а печатается шапкой графы
+   * работ (`object_line`) на обеих сторонах бланка.
+   *
+   * Телефон ответственного за встречу машины отсюда ушёл вовсе: по решению заказчика (§4 плана) в
+   * графе «Заказчик» стоит телефон заказчика, а не площадки. Контакт при этом никуда не делся —
+   * он остаётся в заявке и в кабинете водителя (ADR 0122), где его и смотрят перед выездом; с
+   * бумаги ушла только запись, которую всё равно читал не тот, кто звонит.
+   *
+   * Заказчик заявки здесь всегда объект: заказать технику на площадку отдел не может (ADR 0040).
+   */
   const [request] = await tx
     .select({
       objectCode: constructionObjects.code,
       objectName: constructionObjects.name,
       objectAddress: constructionObjects.address,
-      responsiblePhone: specialEquipmentRequestDetails.responsiblePhone,
     })
     .from(vehicleRequests)
     .leftJoin(constructionObjects, eq(constructionObjects.id, vehicleRequests.objectId))
-    .leftJoin(
-      specialEquipmentRequestDetails,
-      eq(specialEquipmentRequestDetails.requestId, vehicleRequests.id),
-    )
     .where(eq(vehicleRequests.id, params.requestId));
+
+  const customer = await loadWaybillCustomer(tx);
 
   // Машинист — снимком, как и всё остальное: человека переведут, а лист остаётся с тем, кто
   // работал. Документ выбран по должности и на начало недели: она и есть дата листа, а годность
   // проверяется на неё же — лист выписывается вперёд, и «годен сегодня» тут ничего не значит.
   const { machinist } = params;
 
+  // «Наименование и адрес объекта» одной строкой — той же склейкой, какой её собирает лист на рейс.
   const objectLine = [request?.objectName, request?.objectAddress].filter(Boolean).join(', ');
-  // Семь строк недели: числа месяца — все, объект — только в дни срока заявки. Пустая графа
-  // означает «портал не знает, работала ли машина в этот день», и утверждать этого он не станет.
+  /*
+   * Семь строк недели — одни числа месяца. Объект из них ушёл: он повторял один и тот же адрес
+   * семь раз, а теперь печатается один раз в шапке графы (`object_line`). Числа остаются — ими
+   * лист и ведут: заказчик проставляет напротив дня отработанные часы и расписывается.
+   */
   const days = esm2WeekDays(params.period);
   const dayValues = Object.fromEntries(
-    days.flatMap((day, index) => [
-      [`day${index + 1}_date`, dayOf(day.date)],
-      [`day${index + 1}_object`, day.inPeriod ? objectLine : ''],
-    ]),
+    days.map((day, index) => [`day${index + 1}_date`, dayOf(day.date)]),
   ) as Record<string, string>;
 
   const [yyyy, mm, dd] = params.period.from.split('-') as [string, string, string];
@@ -298,8 +310,10 @@ async function collectSnapshot(
 
     waybill_series: params.seriesPrefix,
     waybill_number: params.number,
-    // Дата составления — первый рабочий день недели: с него лист и начинают вести.
-    waybill_date: `${dd}.${mm}.${yyyy}`,
+    // Дата составления — первый рабочий день недели: с него лист и начинают вести. Вид у неё
+    // общий с 4-П (`formatWaybillDate`): второй расчёт того же «дд.мм.гггг» разошёлся бы с первым.
+    // Три клетки бланка рядом — та же дата, разобранная по графам «дата составления».
+    waybill_date: formatWaybillDate(params.period.from),
     waybill_date_dd: dd,
     waybill_date_mm: mm,
     waybill_date_yyyy: yyyy,
@@ -320,6 +334,12 @@ async function collectSnapshot(
     trailer2_reg_number: '',
 
     driver_fio: machinist?.fullName ?? '',
+    /*
+     * Расшифровка подписи машиниста в бланке ЭСМ-2 не размечена — её графы заполняет заказчик от
+     * руки. Ключ всё равно собирается: набор ключей один на все бланки, а снимок обязан помнить
+     * имя тем же видом, каким его печатают два соседних листа.
+     */
+    driver_short_name: formatNameWithInitials(machinist?.fullName ?? ''),
     driver_personnel_no: machinist?.personnelNo ?? '',
     // СНИЛС здесь пуст: графы под него в бланке ЭСМ-2 нет, и реквизит этот — 4-П (приказ Минтранса
     // № 390), а не недельного листа работы машины. `findMachinist` его и не читает.
@@ -337,15 +357,24 @@ async function collectSnapshot(
      * правят отдельно от выписки, а выданный лист не переписывается.
      */
     driver_license_number: machinist?.license ? licenseNumberLabel(machinist.license) : '',
-    driver_license_issued_on: machinist?.license?.issuedOn ?? '',
+    driver_license_issued_on: formatWaybillDate(machinist?.license?.issuedOn ?? ''),
 
     // Вид сообщения и вид перевозки — графы рейса; у недели стояния на площадке их нет.
     communication_kind: '',
     transportation_kind: '',
 
-    customer_name: request?.objectName ?? '',
-    customer_address: request?.objectAddress ?? '',
-    customer_phone: formatPhone(request?.responsiblePhone ?? ''),
+    /*
+     * Графа «Заказчик» — генподрядчик из настройки портала (миграция 0164), а не объект заявки.
+     * Прежде сюда шли наименование стройки, её адрес и телефон ответственного за встречу машины:
+     * графа отвечала «где стоит машина», хотя спрашивает «в чьё распоряжение она поступила». Где
+     * машина стоит, лист говорит шапкой графы работ (`object_line`) и «Периодом работы».
+     *
+     * Телефон — единым видом (ADR 0066), тем же ходом, что и телефон организации в шапке.
+     */
+    customer_name: customer.name,
+    customer_address: customer.address,
+    customer_phone: formatPhone(customer.phone),
+    object_line: objectLine,
     object_code: request?.objectCode ?? '',
 
     period_from_day: dayOf(params.period.from),
@@ -353,13 +382,14 @@ async function collectSnapshot(
     period_month: monthOf(params.period),
     period_year: params.period.from.slice(0, 4),
 
-    // Задание, груз и время выезда — графы листа на рейс. В ЭСМ-2 задание выражено иначе: строкой
-    // «Наименование и адрес объекта» в каждом дне недели.
+    // Задание, груз и время выезда — графы листа на рейс. В ЭСМ-2 задание выражено иначе: объектом
+    // в шапке графы работ (`object_line`) и характером работ, который вписывает заказчик.
     task_from: '',
     task_to: '',
     task_cargo: '',
-    // Контакты концов маршрута — графа рейса: у недели на площадке конец один, и его человек
-    // печатается графой «Заказчик» вместе с адресом объекта (`customer_phone` выше).
+    // Контакты концов маршрута — графа рейса: у недели на площадке конца два не бывает. Человека
+    // площадки бланк теперь не печатает вовсе — его смотрят в заявке и в кабинете водителя
+    // (ADR 0122), а графа «Заказчик» занята телефоном самого заказчика.
     task_contacts: '',
     task_departure_time: '',
     task2_from: '',

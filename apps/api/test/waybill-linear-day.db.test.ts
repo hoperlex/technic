@@ -605,9 +605,21 @@ describe.skipIf(!DB_URL)('задание 4-П для дня линейного �
     expect(sheet.data.task_cargo).toBe(WORK_A);
     // Время выезда назначает диспетчер утром: в заказе на объект его нет вовсе.
     expect(sheet.data.task_departure_time).toBe('');
-    // Шапка «в чьё распоряжение» — заказчик первого талона.
-    expect(sheet.data.customer_name).toBe(ctx.objectA.name);
-    expect(sheet.data.customer_address).toBe(ctx.objectA.address);
+    /*
+     * Шапка «в чьё распоряжение» называет заказчика портала (миграция 0164), а не объект первого
+     * талона: в распоряжение генподрядчика машина и поступает, а куда она поехала, водитель читает
+     * в задании. Сверяется с живой настройкой, а не с константой: база db-тестов общая.
+     */
+    const customers = await ctx.db.execute<{ name: string; address: string }>(
+      sql`SELECT name, address FROM waybill_customer`,
+    );
+    const customer = customers.rows[0]!;
+    expect(customer.name).not.toBe('');
+    expect(sheet.data.customer_name).toBe(customer.name);
+    expect(sheet.data.customer_address).toBe(customer.address);
+    // Объект первой строки снимок всё равно помнит — строкой `object_line`: 4-П её не печатает,
+    // но на какой объект выписан лист, документ обязан знать и после смены смысла граф заказчика.
+    expect(sheet.data.object_line).toBe(`${ctx.objectA.name}, ${ctx.objectA.address}`);
 
     // Тот же день, стоящий в рейсе вторым: строки 2–7 собираются отдельным запросом, и
     // разъехаться с первой им негде — линейный день бывает в рейсе и первым, и пятым.

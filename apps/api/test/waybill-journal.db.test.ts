@@ -68,6 +68,12 @@ const MACHINIST_JOB_TITLE = 'Машинист экскаватора';
 const TRACTOR_LICENSE_SERIES = '00 01';
 const TRACTOR_LICENSE_NUMBER = '000104';
 const TRACTOR_LICENSE_ISSUED_ON = '2022-05-16';
+/**
+ * Та же дата, какой её печатает бланк. Снимок хранит вид бумаги, а не календарный ключ
+ * (`formatWaybillDate`), и держать её здесь второй записью надёжнее, чем считать той же функцией,
+ * которую проверяем: переложенная дважды дата сравнялась бы сама с собой.
+ */
+const TRACTOR_LICENSE_ON_PAPER = '16.05.2022';
 const ADMIN_EMAIL = 'db-journal-admin@example.invalid';
 const PASSWORD = 'db-test-password-123';
 
@@ -708,7 +714,8 @@ describe.skipIf(!DB_URL)('журнал путевых листов: поиск, 
      */
     const licenses = await ctx.db.execute<{ requisites: string; issued_on: string }>(sql`
       SELECT btrim(c.series || ' ' || c.number) AS requisites,
-             to_char(c.issued_on, 'YYYY-MM-DD') AS issued_on
+             -- Дата в снимке — та, что уйдёт на бумагу: «дд.мм.гггг», а не календарный ключ.
+             to_char(c.issued_on, 'DD.MM.YYYY') AS issued_on
       FROM person_credentials c
       JOIN credential_types t ON t.id = c.credential_type_id
       WHERE c.person_id = ${ctx.personId} AND c.deleted_at IS NULL AND t.code = 'driver_license'`);
@@ -718,7 +725,7 @@ describe.skipIf(!DB_URL)('журнал путевых листов: поиск, 
     expect(machinist.driver_license_number).toBe(
       `${TRACTOR_LICENSE_SERIES} ${TRACTOR_LICENSE_NUMBER}`,
     );
-    expect(machinist.driver_license_issued_on).toBe(TRACTOR_LICENSE_ISSUED_ON);
+    expect(machinist.driver_license_issued_on).toBe(TRACTOR_LICENSE_ON_PAPER);
     // Водительского у этого человека нет вовсе, и чужой документ в графу не подставляется.
     expect(machinist.driver_license_number).not.toBe(license.requisites);
 

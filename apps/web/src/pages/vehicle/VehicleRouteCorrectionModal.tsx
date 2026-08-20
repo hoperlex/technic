@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Alert, App, Checkbox, Form, Input, Typography } from 'antd';
+import { Alert, App, Checkbox, Form, Input, Select, Typography } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
+  communicationKindOptions,
   DRIVER_CATEGORY_MISMATCH_HINT,
   DRIVER_WORKED_ON_VEHICLE_HINT,
   driverDocumentGapsHint,
@@ -80,6 +81,11 @@ export function VehicleRouteCorrectionModal({ route, onClose, onSaved }: Props) 
       trailer1Model: route.trailer1Model,
       trailer1RegNumber: route.trailer1RegNumber,
       garageNumber: route.garageNumber,
+      // Умолчанием пустая графа здесь, в отличие от окна правки, не заполняется: подставленное
+      // значение само по себе отличало бы форму от рейса, и проверка «коррекция должна что-то
+      // менять» (Р31) пропускала бы нажатие, которым человек не менял ничего, — номер бланка
+      // сгорал бы ради слова, дописанного порталом. Поле обязательное, и вид сообщения у старого
+      // рейса выбирается рукой: это осознанное решение, а не подстановка.
       communicationKind: route.communicationKind,
       transportationKind: route.transportationKind,
       reason: '',
@@ -93,6 +99,7 @@ export function VehicleRouteCorrectionModal({ route, onClose, onSaved }: Props) 
   const vehicleId = Form.useWatch('vehicleId', form) ?? route?.vehicleId;
   const driverPersonId = Form.useWatch('driverPersonId', form);
   const withTrailer = Form.useWatch('withTrailer', form) ?? false;
+  const communicationKind = Form.useWatch('communicationKind', form);
 
   /** Последствия и блокировки — сервером, теми же правилами, которыми он их и исполнит. */
   const { data: preview, isFetching: previewLoading } = useQuery({
@@ -324,8 +331,20 @@ export function VehicleRouteCorrectionModal({ route, onClose, onSaved }: Props) 
           <Form.Item name="garageNumber" label="Гаражный номер">
             <Input placeholder="Из справочника техники, если пусто" />
           </Form.Item>
-          <Form.Item name="communicationKind" label="Вид сообщения">
-            <Input placeholder="городское" />
+          {/* Список, а не строка: значение уходит в графу нового бланка, и написание у всех
+            листов обязано быть одним. Крестика и пункта «не выбрано» нет — очистить графу окном
+            нельзя. Значение, пришедшее от старого рейса мимо набора, показывается выбранным и
+            остаётся пунктом списка (`communicationKindOptions`): оно уже напечатано на выданном
+            листе, и коррекция машины не должна попутно переписывать графу, которой не касалась. */}
+          <Form.Item
+            name="communicationKind"
+            label="Вид сообщения"
+            rules={[{ required: true, message: 'Выберите вид сообщения' }]}
+          >
+            <Select
+              options={communicationKindOptions(communicationKind)}
+              placeholder="Выберите вид сообщения"
+            />
           </Form.Item>
           <Form.Item name="transportationKind" label="Вид перевозки">
             <Input placeholder="коммерческая" />

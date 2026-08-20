@@ -20,7 +20,7 @@
     "src/pages/driver/DriverLayout.tsx": 414,
     "src/pages/garage/GarageVehiclesTab.tsx": 407,
     "src/pages/service/serviceRequestActions.tsx": 462,
-    "src/pages/vehicle/VehicleAssignModal.tsx": 1789,
+    "src/pages/vehicle/VehicleAssignModal.tsx": 1814,
     "src/pages/vehicle/VehicleRequestDays.tsx": 454,
     "src/pages/vehicle/VehicleRequestViewModal.tsx": 1210,
     "src/pages/vehicle/VehicleRequestsHistoryTab.tsx": 609,
