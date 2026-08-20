@@ -3,7 +3,7 @@ import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { and, eq, isNull } from 'drizzle-orm';
 import {
   type AuthUser,
-  type CaptchaChallenge,
+  type CaptchaConfig,
   changePasswordSchema,
   type CounterpartyType,
   EMAIL_VERIFICATION_ENABLED,
@@ -28,7 +28,7 @@ import { err } from '../lib/errors';
 import { writeAudit } from '../lib/audit';
 import { clearRefreshCookie, readRefreshCookie, setRefreshCookie } from '../lib/cookies';
 import { hashPassword, verifyPassword } from '../auth/password';
-import { issueCaptcha, verifyCaptcha } from '../auth/captcha';
+import { verifyCaptcha } from '../auth/captcha';
 import { signAccessToken } from '../auth/tokens';
 import {
   createRefreshSession,
@@ -189,12 +189,22 @@ const authRateLimit = { rateLimit: { max: 10, timeWindow: '1 minute' } };
 
 /**
  * Регистрация ограничена жёстче входа: она создаёт запись и работу администратору, а живой
- * человек заводит учётку один раз. Пять попыток за десять минут с адреса делают перебор кода
- * капчи (1 к 32 768 за попытку) бессмысленным.
+ * человек заводит учётку один раз. Пять попыток за десять минут с адреса — это про цену самой
+ * операции, а не про перебор чего-либо: перебирать в капче больше нечего, челлендж целиком у
+ * Яндекса.
+ *
+ * Второй смысл лимита — страховка на то время, когда SmartCaptcha недоступна. Серверная проверка
+ * тогда идёт fail-open (план `docs/smart-captcha-plan.md`, §7): пропускает всех, потому что без
+ * ответа сервиса бот от жертвы сбоя не отличается. В этом окне лимит остаётся единственным, что
+ * стоит между роботом и очередью заявок администратора.
  */
 const registerRateLimit = { rateLimit: { max: 5, timeWindow: '10 minutes' } };
 
-/** Выдача картинок щедрее: «обновить» нажимают несколько раз подряд, и это нормально. */
+/**
+ * Ручку настройки спрашивают один раз на открытие формы — обновлять там больше нечего. 20/мин
+ * оставлены с запасом: за сессию человек проходит через несколько форм (вход, регистрация,
+ * «забыли пароль»), а кеш ответа портал сбрасывает на каждом сбое и спрашивает заново (§7).
+ */
 const captchaRateLimit = { rateLimit: { max: 20, timeWindow: '1 minute' } };
 
 /**
@@ -222,9 +232,22 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
     userAgent: req.headers['user-agent'],
   });
 
-  r.get('/captcha', { config: captchaRateLimit }, async (): Promise<CaptchaChallenge> => {
-    const { token, image, expiresIn } = issueCaptcha();
-    return { token, image, expiresIn };
+  /**
+   * Клиентский ключ виджета SmartCaptcha. Своего челленджа портал больше не выдаёт: картинку,
+   * подпись и одноразовость заменил внешний сервис, и с нашей стороны от ручки остался один ключ.
+   *
+   * Ключ отдаётся рантайм-ручкой, а не вшивается в бандл веба (план §3) по двум причинам. Первая:
+   * смена ключа не требует пересборки фронта — обе переменные серверные и живут в `prod.env`.
+   * Вторая, важнее: «включена ли капча» становится ОДНИМ решением сервера, общим и для формы, и
+   * для проверки. Со вшитым в сборку ключом эти два решения разъезжаются молча — веб рисует
+   * виджет, которого сервер не проверяет, или отправляет пустой токен туда, где его требуют.
+   *
+   * Пустая строка из конфигурации превращается здесь в `null`: в контракте (`CaptchaConfig`)
+   * `null` — единственный признак «капча выключена», и отличать его от «поля в ответе нет» портал
+   * обязан.
+   */
+  r.get('/captcha', { config: captchaRateLimit }, async (): Promise<CaptchaConfig> => {
+    return { clientKey: config.captcha.clientKey || null };
   });
 
   r.post(
@@ -243,11 +266,12 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
         requestedCompany,
         requestedComment,
         captchaToken,
-        captchaAnswer,
       } = req.body;
       // Капча проверяется до всего остального — иначе `/register` работал бы справочником
-      // «есть ли такой адрес в портале»: 409 на занятый email отличим от успеха.
-      verifyCaptcha(captchaToken, captchaAnswer);
+      // «есть ли такой адрес в портале»: 409 на занятый email отличим от успеха. Порядок — часть
+      // решения (ADR 0034, п. 10), и переход на SmartCaptcha его не отменяет: проверка стала
+      // сетевой, но осталась первой.
+      await verifyCaptcha(captchaToken, req.ip);
       // Регистрация без письма бессмысленна: подтвердить адрес будет нечем, а активировать
       // неподтверждённую заявку портал не даст. Отказ до записи, а не после — чтобы не заводить
       // учётку, которой не выбраться из состояния «ждёт подтверждения». С выключенным
@@ -375,8 +399,11 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
     '/verify-email/resend',
     { schema: { body: resendVerificationSchema }, config: mailRequestRateLimit },
     async (req, reply) => {
-      const { email, captchaToken, captchaAnswer } = req.body;
-      verifyCaptcha(captchaToken, captchaAnswer);
+      const { email, captchaToken } = req.body;
+      // Капча — первой, до базы и до письма (ADR 0034, п. 10): без неё один запрос отправлял бы
+      // письмо на любой названный адрес, а нейтральный ответ всё равно выдавал бы задержкой, есть
+      // такая заявка или нет.
+      await verifyCaptcha(captchaToken, req.ip);
       // Подтверждение выключено (EMAIL_VERIFICATION_ENABLED): слать нечего. Ответ прежний
       // нейтральный — ручка и так не различает «адреса нет» и «письмо ушло», и портал, где кнопки
       // уже не осталось, ничего нового по нему не узнает.
@@ -434,8 +461,10 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
     '/password-reset/request',
     { schema: { body: passwordResetRequestSchema }, config: mailRequestRateLimit },
     async (req, reply) => {
-      const { email, captchaToken, captchaAnswer } = req.body;
-      verifyCaptcha(captchaToken, captchaAnswer);
+      const { email, captchaToken } = req.body;
+      // И здесь капча первая, по той же причине: до неё портал названный адрес не ищет и письмо в
+      // очередь не ставит.
+      await verifyCaptcha(captchaToken, req.ip);
       assertMailEnabled();
 
       const [user] = await db

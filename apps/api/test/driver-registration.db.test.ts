@@ -1,7 +1,7 @@
 import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { sql } from 'drizzle-orm';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { isExternalRegistrationEmail, registrationRequestDetail } from '@technic/contracts';
 import { applyMigrations } from '../src/db/migration-journal';
 // Только типы: значения этих модулей берутся через `await import` уже после того, как выставлено
@@ -62,7 +62,6 @@ interface Ctx {
   db: typeof AppDb;
   closeDb: () => Promise<void>;
   admin: Auth;
-  issueCaptcha: (issuedAt?: number) => { token: string; code: string };
 }
 
 let ctx: Ctx;
@@ -163,26 +162,38 @@ async function accountRow(id: string): Promise<AccountRow> {
   return res.rows[0]!;
 }
 
-/** Саморегистрация с настоящей капчей: момент выдачи сдвинут в прошлое, чтобы не ждать. */
+/**
+ * Тело заявки. Вынесено отдельно, потому что тем же телом ходит сценарий с включённой капчей: там
+ * приложение своё, а форма шлёт то же самое.
+ *
+ * `captchaToken` в теле остаётся, хотя поле необязательное: так выглядит запрос настоящей формы.
+ * Ключей SmartCaptcha в тестовом окружении нет, значит капча выключена — присланный токен сервер
+ * игнорирует и в сеть за проверкой не идёт (план `docs/smart-captcha-plan.md`, §5). Тот же токен
+ * при включённой капче приводит к отказу, и разница видна ровно в состоянии сервера, а не в теле
+ * запроса.
+ */
+function registerPayload(seed: RegistrationSeed): Record<string, unknown> {
+  return {
+    email: emailOf(seed.tag),
+    lastName: seed.lastName ?? 'Заявкин',
+    firstName: seed.firstName ?? 'Пётр',
+    middleName: seed.middleName ?? 'Сергеевич',
+    phone: seed.phone ?? '',
+    password: PASSWORD,
+    requestedRole: seed.requestedRole ?? 'driver',
+    requestedObject: seed.requestedObject ?? '',
+    requestedCompany: seed.requestedCompany ?? '',
+    captchaToken: 'test-token',
+  };
+}
+
+/** Саморегистрация: то же тело, тот же путь, что и у формы. */
 async function register(seed: RegistrationSeed): Promise<{ statusCode: number; body: string }> {
-  const captcha = ctx.issueCaptcha(Date.now() - 5_000);
   const res = await ctx.app.inject({
     method: 'POST',
     url: '/api/v1/auth/register',
     remoteAddress: nextAddress(),
-    payload: {
-      email: emailOf(seed.tag),
-      lastName: seed.lastName ?? 'Заявкин',
-      firstName: seed.firstName ?? 'Пётр',
-      middleName: seed.middleName ?? 'Сергеевич',
-      phone: seed.phone ?? '',
-      password: PASSWORD,
-      requestedRole: seed.requestedRole ?? 'driver',
-      requestedObject: seed.requestedObject ?? '',
-      requestedCompany: seed.requestedCompany ?? '',
-      captchaToken: captcha.token,
-      captchaAnswer: captcha.code,
-    },
+    payload: registerPayload(seed),
   });
   return { statusCode: res.statusCode, body: res.body };
 }
@@ -282,7 +293,6 @@ describe.skipIf(!DB_URL)('водитель: заявка на регистрац
 
     const { db, closeDb } = await import('../src/db/client');
     const { hashPassword } = await import('../src/auth/password');
-    const { issueCaptcha } = await import('../src/auth/captcha');
     const { buildApp } = await import('../src/app');
     await cleanup(db, '1 hour');
 
@@ -299,7 +309,6 @@ describe.skipIf(!DB_URL)('водитель: заявка на регистрац
       db,
       closeDb,
       admin: { authorization: '' },
-      issueCaptcha,
     };
     ctx.admin = { authorization: `Bearer ${await login(emailOf('admin'))}` };
   }, 120_000);
@@ -502,6 +511,89 @@ describe.skipIf(!DB_URL)('водитель: заявка на регистрац
       // Смена фамилии — дело обычное: после подтверждения владельцем ФИО становится справочник
       // (Р31), и учётка не переписывает его обратно.
       expect((await personRow(personId)).full_name).toBe('Однофамильцев Пётр Сергеевич');
+    });
+  });
+
+  /**
+   * Капча перед регистрацией (ADR 0034, п. 10). Проверка стала сетевой — токен виджета сверяет
+   * SmartCaptcha, — но осталась первой, и здесь проверяется именно это: при ответе `failed` заявка
+   * до базы не доходит вовсе, а занятый адрес отвечает тем же отказом, что и свободный.
+   *
+   * Приложение своё: `config` читается при импорте модуля, и включить капчу у уже собранного
+   * приложения нечем. `vi.resetModules()` даёт свежий граф — свой `config` с подставленными
+   * ключами, свой `captcha.ts`, свой пул к той же базе, — и закрывается он тут же. Наружу тест не
+   * ходит: `fetch` подменён, ответ сервиса задаётся здесь.
+   */
+  describe('включённая капча', () => {
+    it('ответ `failed` отклоняет заявку до всего остального: учётка не заводится', async () => {
+      const email = emailOf('captcha-failed');
+      // Ключи задаются парой: конфигурация сверяет у них 20 символов после префикса и ключи от
+      // разных капч не пропускает (план §8).
+      const secret = 'testcaptchakey000001';
+      vi.stubEnv('SMARTCAPTCHA_CLIENT_KEY', `ysc1_${secret}`);
+      vi.stubEnv('SMARTCAPTCHA_SERVER_KEY', `ysc2_${secret}`);
+      // Так выглядит ответ сервиса на токен, проверку не прошедший. Ошибку сети сюда класть
+      // нельзя: у неё исход обратный — fail-open (план §7).
+      const validate = vi.fn(
+        async (_url: unknown, _init?: unknown) =>
+          new Response(JSON.stringify({ status: 'failed' }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+      );
+      vi.stubGlobal('fetch', validate);
+      vi.resetModules();
+
+      try {
+        const fresh = await import('../src/db/client');
+        const { buildApp } = await import('../src/app');
+        const app = await buildApp();
+        try {
+          const refused = await app.inject({
+            method: 'POST',
+            url: '/api/v1/auth/register',
+            remoteAddress: nextAddress(),
+            payload: registerPayload({ tag: 'captcha-failed' }),
+          });
+          expect(refused.statusCode, refused.body).toBe(400);
+          // Отказ помечает поле капчи: форме есть что показать рядом с виджетом.
+          expect(refused.json().fields).toHaveProperty('captchaToken');
+
+          // Занятый адрес отвечает тем же отказом, что и свободный. Без этого `/register`
+          // работал бы справочником «есть ли такой человек в портале»: 409 на занятый email
+          // отличим от успеха, и капча, стоящая после проверки занятости, от этого не спасает.
+          const taken = await app.inject({
+            method: 'POST',
+            url: '/api/v1/auth/register',
+            remoteAddress: nextAddress(),
+            payload: registerPayload({ tag: 'admin' }),
+          });
+          expect(taken.statusCode, taken.body).toBe(400);
+
+          // Обе попытки ушли в SmartCaptcha и никуда больше: сеть в тесте подменена целиком, и
+          // проверить, что ходили именно туда, больше негде.
+          expect(validate.mock.calls.map(([url]) => String(url))).toEqual([
+            'https://smartcaptcha.cloud.yandex.ru/validate',
+            'https://smartcaptcha.cloud.yandex.ru/validate',
+          ]);
+        } finally {
+          await app.close();
+          await fresh.closeDb();
+        }
+      } finally {
+        vi.unstubAllGlobals();
+        vi.unstubAllEnvs();
+        // Граф с включённой капчей больше никому не нужен: следующий импорт в этом файле должен
+        // получить обычное окружение.
+        vi.resetModules();
+      }
+
+      // Учётки нет: отказ случился до вставки, и повторно подать заявку с этого адреса человек
+      // сможет. Проверяется своим подключением — то, что осталось от свежего графа, уже закрыто.
+      const rows = await ctx.db.execute<{ id: string }>(
+        sql`SELECT id FROM users WHERE email = ${email}`,
+      );
+      expect(rows.rows).toHaveLength(0);
     });
   });
 });

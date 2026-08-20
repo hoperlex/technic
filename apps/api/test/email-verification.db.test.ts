@@ -42,7 +42,6 @@ interface Ctx {
   db: typeof AppDb;
   closeDb: () => Promise<void>;
   auth: { authorization: string };
-  issueCaptcha: (issuedAt?: number) => { token: string; code: string };
 }
 
 let ctx: Ctx;
@@ -89,8 +88,15 @@ function freshEmail(): string {
   return email;
 }
 
+/**
+ * Заявка на регистрацию. Поля капчи в теле нет вовсе: ключей SmartCaptcha в тестовом окружении не
+ * задано, значит капча выключена, а транспорт объявил `captchaToken` необязательным — пустой токен
+ * при выключенной капче проходит, и в сеть при этом никто не ходит (план
+ * `docs/smart-captcha-plan.md`, §5). Предмет файла — письма и подтверждение адреса, и капча здесь
+ * только помеха; её собственные сценарии живут в `smart-captcha.test.ts` и
+ * `driver-registration.db.test.ts`.
+ */
 async function register(email: string): Promise<number> {
-  const captcha = ctx.issueCaptcha(Date.now() - 5_000);
   const res = await ctx.app.inject({
     method: 'POST',
     url: '/api/v1/auth/register',
@@ -107,8 +113,6 @@ async function register(email: string): Promise<number> {
       requestedCompany: '',
       // «Другое» без объяснения словами схема не пропускает: рассматривать такую заявку не по чему.
       requestedComment: 'Сметчик, нужен просмотр заявок',
-      captchaToken: captcha.token,
-      captchaAnswer: captcha.code,
     },
   });
   return res.statusCode;
@@ -184,7 +188,6 @@ describe.skipIf(!DB_URL)('подтверждение адреса и сброс 
 
     const { db, closeDb } = await import('../src/db/client');
     const { hashPassword } = await import('../src/auth/password');
-    const { issueCaptcha } = await import('../src/auth/captcha');
     const schema = await import('../src/db/schema');
 
     const [admin] = await db
@@ -221,10 +224,6 @@ describe.skipIf(!DB_URL)('подтверждение адреса и сброс 
       db,
       closeDb,
       auth: { authorization: `Bearer ${token}` },
-      issueCaptcha: (issuedAt) => {
-        const challenge = issueCaptcha(issuedAt);
-        return { token: challenge.token, code: challenge.code };
-      },
     };
   });
 
@@ -308,12 +307,13 @@ describe.skipIf(!DB_URL)('подтверждение адреса и сброс 
       const email = freshEmail();
       await register(email);
 
-      const captcha = ctx.issueCaptcha(Date.now() - 5_000);
+      // Тело — ровно один адрес: `passwordResetRequestSchema` объявлена `.strict()`, и лишнее
+      // поле она отвергла бы раньше, чем дело дошло бы до проверки капчи.
       const res = await ctx.app.inject({
         method: 'POST',
         url: '/api/v1/auth/password-reset/request',
         remoteAddress: nextAddress(),
-        payload: { email, captchaToken: captcha.token, captchaAnswer: captcha.code },
+        payload: { email },
       });
 
       expect(res.statusCode).toBe(202);
@@ -346,12 +346,11 @@ describe.skipIf(!DB_URL)('подтверждение адреса и сброс 
       const email = freshEmail();
       await register(email);
 
-      const captcha = ctx.issueCaptcha(Date.now() - 5_000);
       const res = await ctx.app.inject({
         method: 'POST',
         url: '/api/v1/auth/verify-email/resend',
         remoteAddress: nextAddress(),
-        payload: { email, captchaToken: captcha.token, captchaAnswer: captcha.code },
+        payload: { email },
       });
 
       expect(res.statusCode).toBe(202);
@@ -361,13 +360,12 @@ describe.skipIf(!DB_URL)('подтверждение адреса и сброс 
 
   it('запрос сброса не рассказывает, есть ли такой адрес', async () => {
     const unknown = `db-verify-unknown-${randomUUID().slice(0, 8)}@example.invalid`;
-    const captcha = ctx.issueCaptcha(Date.now() - 5_000);
 
     const res = await ctx.app.inject({
       method: 'POST',
       url: '/api/v1/auth/password-reset/request',
       remoteAddress: nextAddress(),
-      payload: { email: unknown, captchaToken: captcha.token, captchaAnswer: captcha.code },
+      payload: { email: unknown },
     });
 
     // Тот же 202 и тот же текст, что и для существующей учётки, — но письма нет.
@@ -382,12 +380,11 @@ describe.skipIf(!DB_URL)('подтверждение адреса и сброс 
     await activate((await userRow(email))!.id);
     const before = await userRow(email);
 
-    const captcha = ctx.issueCaptcha(Date.now() - 5_000);
     const request = await ctx.app.inject({
       method: 'POST',
       url: '/api/v1/auth/password-reset/request',
       remoteAddress: nextAddress(),
-      payload: { email, captchaToken: captcha.token, captchaAnswer: captcha.code },
+      payload: { email },
     });
     expect(request.statusCode).toBe(202);
 

@@ -1,6 +1,6 @@
 import type {
   AuthUser,
-  CaptchaChallenge,
+  CaptchaConfig,
   ChangePasswordInput,
   LoginInput,
   LoginResult,
@@ -13,8 +13,13 @@ import type {
 import { apiFetch, clear as clearSession, renewToken, startSession } from '@shared/api';
 
 export const authApi = {
-  /** Новая картинка капчи; челлендж одноразовый, поэтому запрашивается перед каждой отправкой. */
-  captcha(): Promise<CaptchaChallenge> {
+  /**
+   * Рантайм-настройка виджета капчи, а не челлендж: сам челлендж теперь целиком у Яндекса, порталу
+   * от сервера нужен только клиентский ключ. Ключ приходит запросом, а не вшит в бандл, поэтому его
+   * смена не требует пересборки веба, а «включена ли капча» остаётся одним решением сервера — общим
+   * и для формы, и для проверки. Без обновления токена: ручку зовёт тот, кто ещё не вошёл.
+   */
+  captcha(): Promise<CaptchaConfig> {
     return apiFetch('/auth/captcha', { noRefresh: true });
   },
 

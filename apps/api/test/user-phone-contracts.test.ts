@@ -24,7 +24,6 @@ const REGISTER = {
   password: 'Sn3-verkhoyansk-77',
   requestedRole: 'dispatcher',
   captchaToken: 'token',
-  captchaAnswer: '24680',
 };
 
 const USER = {

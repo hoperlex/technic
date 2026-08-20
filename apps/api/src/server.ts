@@ -1,4 +1,5 @@
 import { buildApp } from './app';
+import { startCaptchaCanary, stopCaptchaCanary } from './auth/captcha';
 import { assertSigningKey, config } from './config';
 import { closeDb, pingDb } from './db/client';
 import { assertMigrationsApplied } from './db/migration-check';
@@ -35,8 +36,16 @@ async function main(): Promise<void> {
   await app.listen({ host: config.host, port: config.port });
   logger.info(`API слушает на ${config.host}:${config.port} (${config.env})`);
 
+  // Canary SmartCaptcha (`docs/smart-captcha-plan.md` §7–§8): сразу после старта и дальше раз в
+  // час. Шлёт заведомо мусорный токен и ждёт отказа — в ограниченном режиме (неактивный платёжный
+  // аккаунт) сервис отвечает `ok` на всё, и портал остался бы без защиты при здоровых на вид
+  // метриках. Без `await`: открытый порт не должен зависеть от доступности чужого сервиса, а
+  // таймер внутри `unref()` и процесс не держит.
+  startCaptchaCanary();
+
   const shutdown = async (signal: string): Promise<void> => {
     logger.info({ signal }, 'Плавная остановка');
+    stopCaptchaCanary();
     try {
       await app.close();
       await closeDb();

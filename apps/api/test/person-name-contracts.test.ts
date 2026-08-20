@@ -16,7 +16,7 @@ import {
  * форму, принимающую то, что API отвергнет, — поэтому правила живут в контрактах, а не в UI.
  */
 
-const CAPTCHA = { captchaToken: 'token', captchaAnswer: '24680' };
+const CAPTCHA = { captchaToken: 'token' };
 const VALID_REGISTRATION = {
   email: 'ivanov@example.com',
   lastName: 'Иванов',

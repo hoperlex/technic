@@ -1,13 +1,24 @@
 import { useState } from 'react';
 import { App, Button, Card, Form, Input, Result, Typography } from 'antd';
-import { Link, useNavigate, useSearchParams } from 'react-router';
+import { useSearchParams } from 'react-router';
 import { authApi } from '../api/auth';
-import { CaptchaField, type CaptchaValue } from '../components/CaptchaField';
+import { CaptchaField } from '../components/CaptchaField';
+import { useCaptcha } from '../components/useCaptcha';
 import { errorFields, errorMessage } from '../utils/format';
+import {
+  captchaBlocksSubmit,
+  CaptchaSubmitNote,
+  goToLogin,
+  useLeaveCaptchaPageIfAuthenticated,
+} from './captchaPage';
 
 interface ResendValues {
   email: string;
-  captcha?: CaptchaValue;
+  /**
+   * Одноразовый токен виджета SmartCaptcha. Необязателен: при выключенной капче поля на форме нет
+   * вовсе, и запрос уходит с пустым токеном (план §5).
+   */
+  captchaToken?: string;
 }
 
 /**
@@ -21,14 +32,18 @@ interface ResendValues {
  */
 export function VerifyEmailPage() {
   const { message } = App.useApp();
-  const navigate = useNavigate();
   const [params] = useSearchParams();
   const token = params.get('token') ?? '';
   const [form] = Form.useForm<ResendValues>();
   const [loading, setLoading] = useState(false);
   const [state, setState] = useState<'idle' | 'done' | 'failed'>('idle');
   const [resent, setResent] = useState<string | null>(null);
+  // Токен капчи одноразовый и живёт минуты: после обработанной попытки он потрачен, и виджет надо
+  // сбросить — счётчик меняется, `CaptchaField` по нему перерисовывает чекбокс.
   const [captchaNonce, setCaptchaNonce] = useState(0);
+  const captcha = useCaptcha();
+  // Вошедшая вкладка форму с капчей не рендерит и уходит в портал полной навигацией (§12).
+  const leavingAuthenticated = useLeaveCaptchaPageIfAuthenticated();
 
   const confirm = async () => {
     setLoading(true);
@@ -48,23 +63,35 @@ export function VerifyEmailPage() {
     try {
       const res = await authApi.resendVerification({
         email: values.email,
-        captchaToken: values.captcha?.token ?? '',
-        captchaAnswer: values.captcha?.answer ?? '',
+        captchaToken: values.captchaToken ?? '',
       });
       setResent(res.message);
     } catch (e) {
+      /*
+       * Отказ проверки сервер возвращает на поле `captchaToken`. Условие про `enabled` — не
+       * перестраховка: если поля на форме нет (вкладка успела прочитать «капча выключена», а на
+       * сервере уже завели ключи), ошибка у невидимого поля не показалась бы нигде.
+       */
+      /*
+       * Причина отказа показывается сообщением, а не подписью у поля. Подпись здесь не живёт:
+       * следом растёт `captchaNonce`, поле капчи сбрасывает виджет и отдаёт форме пустой токен, а
+       * antd на этом `onChange` перевалидирует поле и заменяет серверный текст своим «Подтвердите,
+       * что вы не робот». Человек в итоге видел бы правило формы вместо причины («Проверка не
+       * пройдена», «Слишком много попыток») — то есть не узнал бы её никогда. Сообщение живёт
+       * независимо от поля и переживает сброс виджета.
+       */
       const fields = errorFields(e);
-      if (fields?.captchaAnswer) {
-        form.setFields([{ name: 'captcha', errors: [fields.captchaAnswer] }]);
-      } else {
-        message.error(errorMessage(e));
-      }
+      message.error(fields?.captchaToken ?? errorMessage(e));
       setCaptchaNonce((n) => n + 1);
-      form.setFieldValue('captcha', undefined);
+      form.setFieldValue('captchaToken', '');
     } finally {
       setLoading(false);
     }
   };
+
+  // Ранний выход строго после всех хуков: порядок вызовов React менять нельзя. Ничего не рисуем —
+  // документ через мгновение заменит полная навигация в портал.
+  if (leavingAuthenticated) return null;
 
   const resendForm = (
     <Form form={form} layout="vertical" onFinish={resend} requiredMark={false}>
@@ -75,21 +102,39 @@ export function VerifyEmailPage() {
       >
         <Input autoComplete="username" size="large" />
       </Form.Item>
-      <Form.Item
-        name="captcha"
-        label="Проверка"
-        rules={[
-          {
-            validator: (_, value?: CaptchaValue) =>
-              value?.answer ? Promise.resolve() : Promise.reject(new Error('Введите код')),
-          },
-        ]}
+      {/* Капча — только когда сервер сказал, что она включена. При `disabled` прячем весь
+          `Form.Item`: само поле в этом состоянии возвращает `null`, и осталась бы висеть подпись
+          «Проверка» над пустым местом. Правило `required` ставится ровно при `enabled`: при
+          `loading`/`error` требовать токен не за что, отправку в этих состояниях запрещает
+          кнопка (план §5). */}
+      {captcha.status === 'disabled' ? null : (
+        <Form.Item
+          name="captchaToken"
+          label="Проверка"
+          required={captcha.status === 'enabled'}
+          rules={
+            captcha.status === 'enabled'
+              ? [{ required: true, message: 'Подтвердите, что вы не робот' }]
+              : []
+          }
+        >
+          <CaptchaField resetToken={captchaNonce} />
+        </Form.Item>
+      )}
+      {/* Пока портал не знает, требуется ли токен (`loading`), и когда не смог узнать (`error`),
+          отправка заблокирована: угадывать здесь нельзя (§5). Кнопку «Подтвердить адрес» это не
+          трогает — подтверждение идёт по токену из письма и капчи не требует. */}
+      <Button
+        type="primary"
+        htmlType="submit"
+        size="large"
+        block
+        loading={loading}
+        disabled={captchaBlocksSubmit(captcha)}
       >
-        <CaptchaField resetToken={captchaNonce} />
-      </Form.Item>
-      <Button type="primary" htmlType="submit" size="large" block loading={loading}>
         Прислать письмо заново
       </Button>
+      <CaptchaSubmitNote captcha={captcha} />
     </Form>
   );
 
@@ -110,7 +155,9 @@ export function VerifyEmailPage() {
             title="Адрес подтверждён"
             subTitle="Заявка ушла администратору. Войти можно будет, когда он выдаст доступ."
             extra={
-              <Button type="primary" onClick={() => navigate('/login', { replace: true })}>
+              /* Полная навигация вместо `navigate('/login')`: документ со сторонним `captcha.js`
+                 обязан умереть до того, как человек введёт логин и пароль (§12). */
+              <Button type="primary" onClick={goToLogin}>
                 Ко входу
               </Button>
             }
@@ -141,8 +188,10 @@ export function VerifyEmailPage() {
                 {resendForm}
               </>
             )}
+            {/* Обычная ссылка, а не `Link`: переход ко входу должен быть полной навигацией, чтобы
+                документ со сторонним `captcha.js` умер до ввода учётных данных (§12). */}
             <div style={{ textAlign: 'center', marginTop: 16 }}>
-              <Link to="/login">Вернуться ко входу</Link>
+              <a href="/login">Вернуться ко входу</a>
             </div>
           </>
         )}

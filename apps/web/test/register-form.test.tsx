@@ -1,34 +1,63 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { act, fireEvent, screen, waitFor } from '@testing-library/react';
-import type { CaptchaChallenge, RegisterInput } from '@technic/contracts';
-import { json, mockHttp, type HttpMock } from './http';
-import { renderWithUser } from './render';
+import type { RegisterInput } from '@technic/contracts';
+import { apiError, json, mockHttp, type HttpMock, type RouteHandler } from './http';
+import { renderWithSession, renderWithUser } from './render';
 import { selectOption } from './antd';
+import { authUser, loginResponse } from './factories/auth';
+import {
+  captchaConfig,
+  captchaConfigUnreachable,
+  captchaConfigWithoutKey,
+  captchaScriptTags,
+  clickLeavesDocument,
+  heldResponse,
+  smartCaptchaService,
+  trackNavigation,
+  type NavigationLog,
+  type SmartCaptchaService,
+} from './captcha';
 import { RegisterPage } from '../src/pages/RegisterPage';
 
 /**
- * Форма регистрации (ADR 0034). Проверяется то, ради чего её переделывали: ФИО уходит тремя
- * полями, отчество можно не заполнять, а без кода с картинки заявка не отправляется. Сама
- * капча здесь заглушка — её свойства проверяет `apps/api/test/captcha.test.ts`.
+ * Форма регистрации (ADR 0034, капча по ADR 0130). Проверяется то, ради чего её переделывали: ФИО
+ * уходит тремя полями, отчество можно не заполнять, а без пройденной проверки заявка не
+ * отправляется. Сама проверка теперь у Яндекса — здесь подделана его служба (`test/captcha.ts`),
+ * а разгадывание не имитируется вовсе: портал в токен не пишет и его не читает.
+ *
+ * Отдельный разбор — четыре состояния капчи (план `docs/smart-captcha-plan.md` §5). Форма ведёт
+ * себя по-разному не потому, что «удобно», а потому, что в трёх из них портал не знает, требуется
+ * ли токен, и угадывать нельзя.
  *
  * Обе ручки подменяются сетью, а не модулем `api/auth`: «заявка не ушла» — утверждение о том, что
  * запроса не было, и проверять его подменённым модулем значит держаться за нынешнюю раскладку
  * файлов портала вместо HTTP-контракта регистрации.
  */
 
-const CHALLENGE: CaptchaChallenge = {
-  token: 'challenge-token',
-  image: 'data:image/png;base64,AA',
-  expiresIn: 180,
-};
+/** Клиентский ключ виджета: портал берёт его у собственной ручки, а не из сборки. */
+const CLIENT_KEY = 'ysc1_test_key';
+/** Одноразовый токен, который отдаёт виджет прошедшему проверку. */
+const TOKEN = 'smart-captcha-token';
+
+/** Поддельная служба Яндекса и журнал полных переходов — свои на каждый тест (см. ./captcha). */
+let captcha: SmartCaptchaService;
+let navigation: NavigationLog;
+
+beforeEach(() => {
+  captcha = smartCaptchaService();
+  navigation = trackNavigation();
+});
 
 /**
  * Страница вместе с двумя своими ручками. Пользователя в дереве нет намеренно: регистрацию
  * открывает тот, у кого учётной записи ещё не существует.
+ *
+ * Ответ ручки конфига задаётся сценарием: включённая капча, выключенная, чужой формат ответа и
+ * молчание сети — четыре разных формы, а не четыре настроения одной.
  */
-function renderPage(): HttpMock {
+function renderPage(captchaRoute: RouteHandler = () => captchaConfig(CLIENT_KEY)): HttpMock {
   const http = mockHttp({
-    'GET /auth/captcha': () => json(CHALLENGE),
+    'GET /auth/captcha': captchaRoute,
     'POST /auth/register': () => json({ ok: true, message: 'ок' }),
   });
   renderWithUser(<RegisterPage />, { user: null });
@@ -36,10 +65,14 @@ function renderPage(): HttpMock {
 }
 
 /**
- * Картинка на экране — значит челлендж приехал и его токен уже лежит в форме. Отправлять до
- * этого бессмысленно: заявка уехала бы с пустым токеном, и тест ловил бы гонку, а не поведение.
+ * Чекбокс на экране — значит ключ приехал, скрипт «загрузился» и виджет нарисован. Отправлять до
+ * этого бессмысленно: кнопка ещё заблокирована, и тест ловил бы гонку, а не поведение.
  */
-const captchaShown = () => screen.findByAltText('Проверочный код на картинке');
+const captchaShown = () => captcha.appear();
+
+/** Кнопка отправки: её состояние — половина всего, что проверяется про капчу. */
+const submitButton = () =>
+  screen.getByRole('button', { name: 'Зарегистрироваться' }) as HTMLButtonElement;
 
 /** Сколько заявок на доступ ушло на сервер. */
 const registrations = (http: HttpMock) => http.countOf('POST /auth/register');
@@ -61,15 +94,21 @@ function submit() {
   fireEvent.click(screen.getByRole('button', { name: 'Зарегистрироваться' }));
 }
 
-/** Обязательный минимум, кроме пожелания по роли: его тесты задают сами. */
-function fillCommonFields() {
+/** Всё обязательное, кроме проверки и пожелания по роли: их сценарии задают сами. */
+function fillFieldsWithoutCaptcha() {
   fill('Фамилия', 'Иванов');
   fill('Имя', 'Иван');
   fill('Email', 'ivanov@example.com');
   // Телефон обязателен (ADR 0066): без него заявку рассматривать нечем — портал не пишет писем.
   fill('Телефон', '9261234567');
   fill('Пароль', 'Sn3-verkhoyansk-77');
-  fill('Проверка', '47293');
+}
+
+/** Обязательный минимум, кроме пожелания по роли: его тесты задают сами. */
+async function fillCommonFields() {
+  fillFieldsWithoutCaptcha();
+  // Проверку проходит виджет, а не форма: человек ставит галочку, и в поле оказывается токен.
+  await captcha.check(TOKEN);
 }
 
 describe('форма регистрации', () => {
@@ -82,11 +121,11 @@ describe('форма регистрации', () => {
     expect(screen.queryByLabelText('ФИО')).toBeNull();
   });
 
-  it('отправляет части ФИО и ответ на капчу, отчество можно не заполнять', async () => {
+  it('отправляет части ФИО и токен проверки, отчество можно не заполнять', async () => {
     const http = renderPage();
     await captchaShown();
 
-    fillCommonFields();
+    await fillCommonFields();
     await selectRoleRequest('Диспетчер');
     await act(async () => submit());
 
@@ -97,12 +136,13 @@ describe('форма регистрации', () => {
       firstName: 'Иван',
       middleName: '',
       requestedRole: 'dispatcher',
-      captchaToken: 'challenge-token',
-      captchaAnswer: '47293',
+      // Уезжает ровно то, что отдал виджет: решение «пройдена ли проверка» принимает сервер, и
+      // портал этот токен не разбирает и не подписывает.
+      captchaToken: TOKEN,
     });
   });
 
-  it('без кода с картинки заявка не уходит', async () => {
+  it('без пройденной проверки заявка не уходит', async () => {
     const http = renderPage();
     await captchaShown();
 
@@ -114,14 +154,14 @@ describe('форма регистрации', () => {
     await act(async () => submit());
 
     expect(registrations(http)).toBe(0);
-    expect(await screen.findByText('Введите код с картинки')).toBeDefined();
+    expect(await screen.findByText('Подтвердите, что вы не робот')).toBeDefined();
   });
 
   it('после отправки показывает экран ожидания, а не исчезающее сообщение', async () => {
     renderPage();
     await captchaShown();
 
-    fillCommonFields();
+    await fillCommonFields();
     await selectRoleRequest('Диспетчер');
     await act(async () => submit());
 
@@ -139,7 +179,7 @@ describe('форма регистрации', () => {
     fill('Имя', 'Иван');
     fill('Email', 'ivanov@example.com');
     fill('Пароль', 'Sn3-verkhoyansk-77');
-    fill('Проверка', '47293');
+    await captcha.check(TOKEN);
     await selectRoleRequest('Диспетчер');
     await act(async () => submit());
 
@@ -153,7 +193,7 @@ describe('форма регистрации', () => {
     const http = renderPage();
     await captchaShown();
 
-    fillCommonFields();
+    await fillCommonFields();
     fill('Телефон', '8 926 123-45-67');
     await selectRoleRequest('Диспетчер');
     await act(async () => submit());
@@ -166,7 +206,7 @@ describe('форма регистрации', () => {
     const http = renderPage();
     await captchaShown();
 
-    fillCommonFields();
+    await fillCommonFields();
     fill('Телефон', 'нет');
     await selectRoleRequest('Диспетчер');
     await act(async () => submit());
@@ -181,7 +221,7 @@ describe('форма регистрации', () => {
     const http = renderPage();
     await captchaShown();
 
-    fillCommonFields();
+    await fillCommonFields();
     fill('Телефон', '926 123');
     await selectRoleRequest('Диспетчер');
     await act(async () => submit());
@@ -194,7 +234,7 @@ describe('форма регистрации', () => {
     const http = renderPage();
     await captchaShown();
 
-    fillCommonFields();
+    await fillCommonFields();
     await selectRoleRequest('Диспетчер');
     fill('Пароль', '1234567890');
     await act(async () => submit());
@@ -216,7 +256,7 @@ describe('предупреждение о внешней почте', () => {
     const http = renderPage();
     await captchaShown();
 
-    fillCommonFields();
+    await fillCommonFields();
     fill('Email', 'ivanov@mail.ru');
     await selectRoleRequest('Диспетчер');
     expect(await screen.findByText(WARNING)).toBeDefined();
@@ -266,7 +306,7 @@ describe('пожелание по роли', () => {
     const http = renderPage();
     await captchaShown();
 
-    fillCommonFields();
+    await fillCommonFields();
     await act(async () => submit());
 
     expect(registrations(http)).toBe(0);
@@ -277,7 +317,7 @@ describe('пожелание по роли', () => {
     const http = renderPage();
     await captchaShown();
 
-    fillCommonFields();
+    await fillCommonFields();
     expect(screen.queryByLabelText('Объект')).toBeNull();
     await selectRoleRequest('Сотрудник объекта');
     expect(await screen.findByLabelText('Объект')).toBeDefined();
@@ -299,7 +339,7 @@ describe('пожелание по роли', () => {
     const http = renderPage();
     await captchaShown();
 
-    fillCommonFields();
+    await fillCommonFields();
     await selectRoleRequest('Оператор по вывозу мусора');
     expect(await screen.findByLabelText('Компания')).toBeDefined();
     expect(screen.queryByLabelText('Объект')).toBeNull();
@@ -318,7 +358,7 @@ describe('пожелание по роли', () => {
     const http = renderPage();
     await captchaShown();
 
-    fillCommonFields();
+    await fillCommonFields();
     await selectRoleRequest('Другое');
     expect(await screen.findByLabelText('Комментарий')).toBeDefined();
     expect(screen.queryByLabelText('Объект')).toBeNull();
@@ -345,12 +385,308 @@ describe('пожелание по роли', () => {
     const http = renderPage();
     await captchaShown();
 
-    fillCommonFields();
+    await fillCommonFields();
     await selectRoleRequest('Диспетчер');
     expect(screen.queryByLabelText('Комментарий')).toBeNull();
     await act(async () => submit());
 
     await waitFor(() => expect(registrations(http)).toBe(1));
     expect(sent(http)).toMatchObject({ requestedRole: 'dispatcher', requestedComment: '' });
+  });
+});
+
+/**
+ * Четыре состояния капчи (план `docs/smart-captcha-plan.md` §5). Разница между ними — не оттенки
+ * одного и того же: при «выключено» заявка уходит с пустым токеном, а при «портал не смог узнать»
+ * не уходит вовсе. Свести их к двум («ключ есть» / «ключа нет») значит однажды отправить форму без
+ * проверки, которую сервер требует, — и не заметить этого.
+ */
+describe('капча выключена', () => {
+  it('поля нет вовсе, заявка уходит с пустым токеном и без стороннего скрипта', async () => {
+    // `clientKey: null` — единственный признак выключенной капчи, общий у формы и у серверной
+    // проверки: рассинхрон «портал рисует виджет, сервер не проверяет» так стать не может.
+    const http = renderPage(() => captchaConfig(null));
+    await waitFor(() => expect(http.countOf('GET /auth/captcha')).toBe(1));
+    await waitFor(() => expect(submitButton().disabled).toBe(false));
+
+    // Прячется весь `Form.Item`, а не одно поле: подпись «Проверка» над пустым местом объясняла бы
+    // человеку то, чего на форме нет.
+    expect(screen.queryByLabelText('Проверка')).toBeNull();
+    expect(screen.queryByText('Проверка')).toBeNull();
+
+    fillFieldsWithoutCaptcha();
+    await selectRoleRequest('Диспетчер');
+    await act(async () => submit());
+
+    await waitFor(() => expect(registrations(http)).toBe(1));
+    expect(sent(http)).toMatchObject({ email: 'ivanov@example.com', captchaToken: '' });
+    // Сторонний код в документ не попадает вовсе: грузить его без нужды — тот самый риск, ради
+    // которого §12 выносился заказчику.
+    expect(captchaScriptTags()).toHaveLength(0);
+  });
+});
+
+describe('портал не смог узнать, нужна ли проверка', () => {
+  it('ответ без поля clientKey — это ошибка, а не «капча выключена»', async () => {
+    // Ключевой случай протокола (§5): старый API во время выката, чужой прокси, обрезанный JSON.
+    // Сочти портал такой ответ выключенной капчей — он молча отправлял бы заявки без токена, и
+    // незакрытая регистрация выглядела бы исправной.
+    const http = renderPage(captchaConfigWithoutKey);
+
+    expect(await screen.findByText('Проверка не загрузилась.')).toBeDefined();
+    expect(screen.getByRole('button', { name: /Повторить/ })).toBeDefined();
+    expect(submitButton().disabled).toBe(true);
+
+    fillFieldsWithoutCaptcha();
+    await selectRoleRequest('Диспетчер');
+    await act(async () => submit());
+
+    expect(registrations(http)).toBe(0);
+    expect(captchaScriptTags()).toHaveLength(0);
+  });
+
+  it('молчание сети читается так же: отправка заблокирована', async () => {
+    const http = renderPage(captchaConfigUnreachable);
+
+    expect(await screen.findByText('Проверка не загрузилась.')).toBeDefined();
+    expect(submitButton().disabled).toBe(true);
+
+    fillFieldsWithoutCaptcha();
+    await selectRoleRequest('Диспетчер');
+    await act(async () => submit());
+
+    expect(registrations(http)).toBe(0);
+  });
+
+  it('«Повторить» поднимает из ошибки всю форму, а не одно поле', async () => {
+    /*
+     * Два свойства одной кнопки, и второе важнее.
+     *
+     * Первое: кеш ключа на вкладку — один промис на три формы, и «Повторить» обязана сбросить его.
+     * Не сбрось — кнопка ходила бы в тот же неудачный разбор, и вкладка сидела бы в ошибке до
+     * перезагрузки страницы.
+     *
+     * Второе: состояние капчи спрашивают ДВА места одной страницы — сама форма (ставить ли правило
+     * и пускать ли отправку) и поле капчи (рисовать ли виджет). Будь оно у каждого своё, кнопка
+     * «Повторить», живущая в поле, поднимала бы из `error` только поле: виджет появлялся бы, а
+     * отправка оставалась заблокированной навсегда — форма выглядела бы исправной и не работала.
+     * Поэтому проверяется не «виджет вернулся», а «заявка уходит».
+     */
+    let answers = 0;
+    const http = renderPage(() => {
+      answers += 1;
+      return answers === 1 ? captchaConfigWithoutKey() : captchaConfig(CLIENT_KEY);
+    });
+    await screen.findByText('Проверка не загрузилась.');
+    expect(submitButton().disabled).toBe(true);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Повторить/ }));
+    });
+    await captchaShown();
+
+    // Второй запрос — не второе чтение первого ответа: ключ приехал заново, и виджет нарисован им.
+    expect(http.countOf('GET /auth/captcha')).toBe(2);
+    expect(captcha.sitekeys).toEqual([CLIENT_KEY]);
+    // Форма вышла из `error` вместе с полем: кнопка снова доступна.
+    await waitFor(() => expect(submitButton().disabled).toBe(false));
+
+    await fillCommonFields();
+    await selectRoleRequest('Диспетчер');
+    await act(async () => submit());
+
+    await waitFor(() => expect(registrations(http)).toBe(1));
+    expect(sent(http)).toMatchObject({ captchaToken: TOKEN });
+  });
+});
+
+describe('пока ответа о капче нет', () => {
+  it('отправка заблокирована, и портал объясняет, чего ждёт', async () => {
+    // Ответ ручки придержим: это состояние живёт доли секунды, но именно в нём форма отправилась бы
+    // без токена, будь кнопка доступна.
+    const config = heldResponse(() => captchaConfig(CLIENT_KEY));
+    const http = renderPage(config.handler);
+
+    expect(await screen.findByText(/Портал выясняет, нужна ли проверка/)).toBeDefined();
+    expect(submitButton().disabled).toBe(true);
+    expect(captchaScriptTags()).toHaveLength(0);
+
+    fillFieldsWithoutCaptcha();
+    await selectRoleRequest('Диспетчер');
+    await act(async () => submit());
+    expect(registrations(http)).toBe(0);
+
+    await config.release();
+    await captchaShown();
+    expect(submitButton().disabled).toBe(false);
+  });
+});
+
+describe('капча включена', () => {
+  it('виджет рисуется ключом от сервера, а не вшитым в сборку', async () => {
+    renderPage();
+    await captchaShown();
+
+    expect(captcha.sitekeys).toEqual([CLIENT_KEY]);
+    expect(captchaScriptTags()).toHaveLength(1);
+    expect(screen.getByTestId('smartcaptcha')).toBeDefined();
+  });
+
+  it('причина отказа доходит до человека, виджет сброшен, потраченный токен не уходит второй раз', async () => {
+    /*
+     * Отказ сервер возвращает на поле `captchaToken`, а показывается он сообщением — и это не
+     * вкусовщина. Подпись у поля здесь не живёт в принципе: следом за отказом растёт
+     * `captchaNonce`, поле сбрасывает виджет и отдаёт форме пустой токен, antd на этом `onChange`
+     * перевалидирует поле и заменяет серверный текст своим «Подтвердите, что вы не робот».
+     * Человек видел бы правило формы вместо причины — «Проверка не пройдена», «Слишком много
+     * попыток» — и не узнал бы её никогда. Сообщение сброс виджета переживает.
+     *
+     * Токен при этом одноразовый и живёт минуты: после обработанной попытки он потрачен. Не сбрось
+     * его форма — второе нажатие отправило бы заведомо отклонённую проверку, и человек получил бы
+     * отказ на ровном месте.
+     */
+    const REFUSAL = 'Проверка не пройдена — попробуйте ещё раз';
+    const http = renderPage();
+    http.use({
+      'POST /auth/register': () =>
+        apiError(400, {
+          code: 'captcha_failed',
+          message: 'Проверка не пройдена',
+          fields: { captchaToken: REFUSAL },
+        }),
+    });
+    await captchaShown();
+
+    await fillCommonFields();
+    await selectRoleRequest('Диспетчер');
+    await act(async () => submit());
+    await waitFor(() => expect(registrations(http)).toBe(1));
+
+    // Именно серверная формулировка, а не общее «Ошибка запроса»: по ней человек понимает, что
+    // делать дальше — пройти проверку заново, а не звонить в поддержку.
+    expect(await screen.findByText(REFUSAL)).toBeDefined();
+    await waitFor(() => expect(captcha.reset).toHaveBeenCalled());
+
+    // Второе нажатие тем же токеном не уезжает: значение поля обнулено вместе с виджетом.
+    await act(async () => submit());
+    expect(registrations(http)).toBe(1);
+    expect(await screen.findByText('Подтвердите, что вы не робот')).toBeDefined();
+  });
+
+  it('поломка виджета проверку пройденной не делает', async () => {
+    // Документация SmartCaptcha требует этого прямо: обратное («скрипт сломался — пропустим»)
+    // превратило бы капчу в такую, которую отключает любой клиент, а защиту регистрации — в
+    // декорацию.
+    const http = renderPage();
+    await captchaShown();
+
+    await fillCommonFields();
+    await selectRoleRequest('Диспетчер');
+    await captcha.emit('javascript-error');
+
+    expect(await screen.findByText('Проверка сломалась.')).toBeDefined();
+    await act(async () => submit());
+
+    expect(registrations(http)).toBe(0);
+    expect(await screen.findByText('Подтвердите, что вы не робот')).toBeDefined();
+  });
+});
+
+/**
+ * Изоляция стороннего скрипта (§12). `captcha.js` исполняется в origin портала и, однажды
+ * загруженный, остаётся в документе и после ухода со страницы: `destroy()` снимает виджет, но не
+ * скрипт. Поэтому документ со скриптом и документ, в котором набирают логин и пароль, не должны
+ * пересекаться никогда — а это свойство переходов, и проверяется оно здесь.
+ */
+describe('изоляция стороннего скрипта', () => {
+  it('«Войти» уводит полной навигацией, а не SPA-переходом', async () => {
+    renderPage();
+    await captchaShown();
+
+    const link = screen.getByRole('link', { name: 'Войти' });
+    expect(link.getAttribute('href')).toBe('/login');
+    // `Link` react-router погасил бы событие и оставил документ жить — вместе со скриптом.
+    expect(clickLeavesDocument(link)).toBe(true);
+  });
+
+  it('«Перейти ко входу» с экрана принятой заявки уводит вкладку целиком', async () => {
+    const http = renderPage();
+    await captchaShown();
+
+    await fillCommonFields();
+    await selectRoleRequest('Диспетчер');
+    await act(async () => submit());
+    await waitFor(() => expect(registrations(http)).toBe(1));
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Перейти ко входу' }));
+    expect(navigation.to).toEqual(['/login']);
+  });
+
+  it('вошедшая вкладка форму не рисует и уходит в портал', async () => {
+    // Сегодня этот маршрут вошедшего не отсекает вовсе, и сторонний код втягивался бы прямо в
+    // авторизованный документ.
+    const http = mockHttp({
+      'GET /auth/captcha': () => captchaConfig(CLIENT_KEY),
+      'POST /auth/register': () => json({ ok: true, message: 'ок' }),
+    });
+    renderWithUser(<RegisterPage />, { user: authUser() });
+
+    await waitFor(() => expect(navigation.to).toEqual(['/']));
+    expect(screen.queryByRole('button', { name: 'Зарегистрироваться' })).toBeNull();
+    expect(http.countOf('GET /auth/captcha')).toBe(0);
+    expect(captchaScriptTags()).toHaveLength(0);
+  });
+
+  it('пока статус сессии неизвестен, портал не ходит за ключом и не вставляет скрипт', async () => {
+    /*
+     * Гонка, ради которой заведено правило: `AuthProvider` узнаёт про вкладку асинхронно, а
+     * публичный маршрут монтируется сразу. Поэтому bootstrap здесь ЗАДЕРЖИВАЕТСЯ управляемым
+     * промисом, а не подставляется готовым состоянием: подставь его — и гонки в тесте не станет,
+     * а вместе с ней и проверки. Без правила скрипт успевал бы загрузиться в документ, который
+     * через мгновение окажется авторизованным, и правило «вошедшая вкладка виджет не грузит»
+     * опоздало бы ровно так же, как опаздывала перезагрузка после входа.
+     */
+    const user = authUser();
+    const bootstrap = heldResponse(() => json(loginResponse(user)));
+    const http = mockHttp({
+      'POST /auth/refresh': bootstrap.handler,
+      'GET /auth/me': () => json(user),
+      'GET /auth/captcha': () => captchaConfig(CLIENT_KEY),
+      'POST /auth/register': () => json({ ok: true, message: 'ок' }),
+    });
+    renderWithSession(<RegisterPage />, { route: '/register' });
+
+    expect(await screen.findByText(/Портал выясняет, нужна ли проверка/)).toBeDefined();
+    expect(submitButton().disabled).toBe(true);
+    expect(http.countOf('GET /auth/captcha')).toBe(0);
+    expect(captchaScriptTags()).toHaveLength(0);
+    // И уводить некуда: по неизвестному статусу выбросили бы с формы незалогиненного посетителя.
+    expect(navigation.to).toEqual([]);
+
+    await bootstrap.release();
+
+    // Сессия оказалась вошедшей — уходим в портал полной навигацией, так и не тронув скрипт.
+    await waitFor(() => expect(navigation.to).toEqual(['/']));
+    expect(http.countOf('GET /auth/captcha')).toBe(0);
+    expect(captchaScriptTags()).toHaveLength(0);
+  });
+
+  it('а не оказалось сессии — начинается обычный путь', async () => {
+    const bootstrap = heldResponse(() =>
+      apiError(401, { code: 'unauthorized', message: 'Сессия истекла' }),
+    );
+    const http = mockHttp({
+      'POST /auth/refresh': bootstrap.handler,
+      'GET /auth/captcha': () => captchaConfig(CLIENT_KEY),
+      'POST /auth/register': () => json({ ok: true, message: 'ок' }),
+    });
+    renderWithSession(<RegisterPage />, { route: '/register' });
+
+    expect(http.countOf('GET /auth/captcha')).toBe(0);
+    await bootstrap.release();
+
+    await captchaShown();
+    expect(http.countOf('GET /auth/captcha')).toBe(1);
+    expect(navigation.to).toEqual([]);
   });
 });

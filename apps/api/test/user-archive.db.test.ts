@@ -37,7 +37,6 @@ interface Ctx {
   db: typeof AppDb;
   closeDb: () => Promise<void>;
   auth: { authorization: string };
-  issueCaptcha: (issuedAt?: number) => { token: string; code: string };
   objectId: string;
 }
 
@@ -85,9 +84,13 @@ function freshEmail(): string {
   return `db-archive-${randomUUID().slice(0, 8)}@example.invalid`;
 }
 
-/** Саморегистрация с настоящей капчей: момент выдачи сдвинут в прошлое, чтобы не ждать. */
+/**
+ * Саморегистрация. Капча в тестовом окружении выключена — ключей SmartCaptcha в `env` нет, — и
+ * поле `captchaToken` не шлётся вовсе: транспорт объявил его необязательным, а сервер при
+ * выключенной капче пустой токен пропускает и в сеть не ходит (план `docs/smart-captcha-plan.md`,
+ * §5). Проверка самой капчи живёт в `smart-captcha.test.ts` и в `driver-registration.db.test.ts`.
+ */
 async function register(email: string): Promise<number> {
-  const captcha = ctx.issueCaptcha(Date.now() - 5_000);
   const res = await ctx.app.inject({
     method: 'POST',
     url: '/api/v1/auth/register',
@@ -104,8 +107,6 @@ async function register(email: string): Promise<number> {
       requestedCompany: '',
       // «Другое» без объяснения словами схема не пропускает: рассматривать такую заявку не по чему.
       requestedComment: 'Сметчик, нужен просмотр заявок',
-      captchaToken: captcha.token,
-      captchaAnswer: captcha.code,
     },
   });
   return res.statusCode;
@@ -147,7 +148,6 @@ describe.skipIf(!DB_URL)('учётка после архива (живая сх�
 
     const { db, closeDb } = await import('../src/db/client');
     const { hashPassword } = await import('../src/auth/password');
-    const { issueCaptcha } = await import('../src/auth/captcha');
     const schema = await import('../src/db/schema');
 
     const [admin] = await db
@@ -187,7 +187,6 @@ describe.skipIf(!DB_URL)('учётка после архива (живая сх�
       db,
       closeDb,
       auth: { authorization: `Bearer ${login.json().accessToken}` },
-      issueCaptcha,
       objectId: object.id,
     };
   }, 120_000);
