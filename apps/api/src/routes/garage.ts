@@ -49,6 +49,7 @@ import {
   driverStateSql,
   loadDriverBusy,
   loadVehicleBusy,
+  routeHasWork,
   vehicleObjectFilterSql,
   vehicleStateSql,
 } from '../services/garage';
@@ -385,6 +386,10 @@ export default async function garageRoutes(app: FastifyInstance): Promise<void> 
       // Рейсы без водителя считаются по самим рейсам, а не по машинам: у одной машины бывает два
       // рейса за день, и «машин с рейсом без водителя» ответило бы на другой вопрос — сколько
       // бланков сегодня не выписать, видно только по рейсам.
+      //
+      // Собственный запрос — единственное применение правила работы дня (ADR 0131) вне выражений
+      // состояния, и потому самое лёгкое к пропуску: без `routeHasWork` сводка звала бы искать
+      // водителя рейсу, которого в срезе не видно, рядом с машиной, показанной свободной.
       const [routes] = await db
         .select({ c: count() })
         .from(vehicleRoutes)
@@ -392,7 +397,14 @@ export default async function garageRoutes(app: FastifyInstance): Promise<void> 
         .innerJoin(vehicleTypes, eq(vehicleTypes.id, vehicles.vehicleTypeId))
         .leftJoin(vehicleCategories, eq(vehicleCategories.id, vehicles.vehicleCategoryId))
         .leftJoin(vehicleModels, eq(vehicleModels.id, vehicles.vehicleModelId))
-        .where(and(eq(vehicleRoutes.routeDate, on), isNull(vehicleRoutes.driverPersonId), where));
+        .where(
+          and(
+            eq(vehicleRoutes.routeDate, on),
+            isNull(vehicleRoutes.driverPersonId),
+            routeHasWork('vehicle_routes'),
+            where,
+          ),
+        );
 
       return {
         total: Number(totals!.total),

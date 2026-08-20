@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import type { QueryClient } from '@tanstack/react-query';
 import {
   LINEAR_DAY_DOOR_MESSAGE,
   LINEAR_DAY_FROZEN_MESSAGE,
@@ -8,6 +9,7 @@ import {
   type VehicleRequestDaysDto,
   type VehicleRouteDto,
 } from '@technic/contracts';
+import { garageKeys } from '@entities/garage';
 import { json, mockHttp } from './http';
 import { renderWithUser } from './render';
 import { selectOption } from './antd';
@@ -297,8 +299,10 @@ function renderDays(days: VehicleRequestDaysDto = DAYS, routes: VehicleRouteDto[
     'POST /vehicle-requests/:id/days/:date/route': () => json(days),
     'DELETE /vehicle-requests/:id/days/:date/route': () => json(days),
   });
-  renderWithUser(<VehicleRequestDays request={REQUEST} />);
-  return http;
+  // Клиент запросов отдаётся наружу: им сценарии среза гаража читают, помечен ли его кэш
+  // устаревшим после правки дня (см. describe «срез гаража после правки дня»).
+  const { queryClient } = renderWithUser(<VehicleRequestDays request={REQUEST} />);
+  return { http, queryClient };
 }
 
 describe('таблица дней линейного заказа', () => {
@@ -349,7 +353,7 @@ describe('таблица дней линейного заказа', () => {
   });
 
   it('«снять» убирает день с рейса, а замороженный листом день не отдаёт', async () => {
-    const http = renderDays();
+    const { http } = renderDays();
     await screen.findByText('11.08.2026');
 
     const frozen = dayRow('10.08.2026');
@@ -386,7 +390,7 @@ describe('день в рейс', () => {
   }
 
   it('спрашивает машину и водителя и уносит на сервер выбранное', async () => {
-    const http = renderDays();
+    const { http } = renderDays();
     await openPlanning();
 
     // Машина подставлена назначенной: ею закрывают большинство дней срока.
@@ -418,7 +422,7 @@ describe('день в рейс', () => {
    * же поясом границу считает `backdateGuard`, и разъехаться им нельзя.
    */
   it('у прошедшего дня спрашивает причину и уносит её на сервер', async () => {
-    const http = renderDays({
+    const { http } = renderDays({
       ...DAYS,
       items: DAYS.items.map((day) => (day.date === '2026-08-11' ? free('2026-08-11') : day)),
     });
@@ -446,7 +450,7 @@ describe('день в рейс', () => {
   });
 
   it('день среза причины не требует: сегодняшний выезд не задним числом', async () => {
-    const http = renderDays();
+    const { http } = renderDays();
     await openPlanning();
 
     expect(screen.queryByLabelText('Причина заднего числа')).toBeNull();
@@ -460,7 +464,7 @@ describe('день в рейс', () => {
   });
 
   it('готовый рейс машины на этот день предлагается первым', async () => {
-    const http = renderDays(DAYS, [ROUTE_16]);
+    const { http } = renderDays(DAYS, [ROUTE_16]);
     await openPlanning();
 
     // Второй объект того же дня обязан попасть в тот же лист, пока в нём есть строки задания.
@@ -498,5 +502,62 @@ describe('линейный день в составе рейса', () => {
     // Снять день со стороны рейса можно, добавить — нельзя, и дверь названа словами.
     expect(screen.getByTitle('Снять день с рейса')).toBeDefined();
     expect(screen.getByText(LINEAR_DAY_DOOR_MESSAGE)).toBeDefined();
+  });
+});
+
+/**
+ * Срез гаража после правки дня линейного заказа (ADR 0131).
+ *
+ * Заготовка — рейс без состава и без выписанного листа — из среза дня ушла: занятость машины и
+ * назначенность водителя следуют теперь не из факта существования рейса, а из того, есть ли по
+ * нему куда ехать. Значит состав рейса решает, видна ли работа в срезе, — а планирование дней
+ * состав как раз и меняет: поставленный день наполняет рейс, снятый опустошает, и опустевший рейс
+ * без листа пропадает из среза целиком. Обе двери обязаны погасить кэш гаража: своих таблиц у него
+ * нет, чужие корни (`['vehicle-requests']`, `['vehicle-routes']`) до `['garage']` не достают.
+ *
+ * Проверяется пометка кэша, а не перерисовка среза, — по той же причине, что в
+ * `garage-invalidation`: у тестового `QueryClient` `staleTime` равен нулю, поэтому гараж
+ * перезапросился бы при открытии сам, и сценарий «перешли и увидели свежее» прошёл бы даже с
+ * невыполненной инвалидацией.
+ */
+describe('срез гаража после правки дня', () => {
+  /** Вкладка «Техника» гаража на день среза: день и фильтры приходят внутри параметров. */
+  const GARAGE_KEY = garageKeys.vehicles({ on: '2026-08-12' });
+
+  /**
+   * Гараж, открытый до правки и лежащий в кэше свежим, — ровно так его застаёт диспетчер,
+   * вернувшийся к срезу сразу после планирования.
+   */
+  function fillGarage(queryClient: QueryClient) {
+    queryClient.setQueryData(GARAGE_KEY, { items: [], total: 0, onDate: '2026-08-12' });
+    expect(queryClient.getQueryState(GARAGE_KEY)?.isInvalidated).toBe(false);
+  }
+
+  it('день, поставленный в рейс, помечает срез дня устаревшим', async () => {
+    const { http, queryClient } = renderDays();
+    await screen.findByText('12.08.2026');
+    fillGarage(queryClient);
+
+    fireEvent.click(within(dayRow('12.08.2026')).getByText('В рейс'));
+    await screen.findByText('День 12.08.2026 в рейс');
+    fireEvent.click(screen.getByText('Поставить в рейс'));
+
+    await waitFor(() =>
+      expect(http.countOf('POST /vehicle-requests/:id/days/:date/route')).toBe(1),
+    );
+    await waitFor(() => expect(queryClient.getQueryState(GARAGE_KEY)?.isInvalidated).toBe(true));
+  });
+
+  it('день, снятый с рейса, помечает срез дня устаревшим', async () => {
+    const { http, queryClient } = renderDays();
+    await screen.findByText('11.08.2026');
+    fillGarage(queryClient);
+
+    fireEvent.click(within(dayRow('11.08.2026')).getByText('Снять'));
+
+    await waitFor(() =>
+      expect(http.countOf('DELETE /vehicle-requests/:id/days/:date/route')).toBe(1),
+    );
+    await waitFor(() => expect(queryClient.getQueryState(GARAGE_KEY)?.isInvalidated).toBe(true));
   });
 });

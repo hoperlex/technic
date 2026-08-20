@@ -48,6 +48,9 @@ const DATES = {
   twoRoutes: '2099-03-07',
   recipients: '2099-03-08',
   emptyRoute: '2099-03-09',
+  blankRecipients: '2099-03-10',
+  relocationRecipients: '2099-03-11',
+  waybillRecipients: '2099-03-12',
 };
 
 /** Марка и госномер своей машины: их водитель ищет в письме глазами, их же ищет проверка. */
@@ -87,13 +90,17 @@ interface Ctx {
   driverEmail: string;
   /** Водитель без единого рейса: им проверяется и пустое письмо, и отбор получателей. */
   idleDriverId: string;
+  /** Своя серия и организация бланка: ими выписывается лист на заготовку (ADR 0071). */
+  seriesId: string;
+  organizationId: string;
 }
 
 let ctx: Ctx;
 
-/** Что за собой убирать: заявки и рейсы копятся по ходу сценариев. */
+/** Что за собой убирать: заявки, рейсы и листы копятся по ходу сценариев. */
 const createdRequestIds: string[] = [];
 const createdRouteIds: string[] = [];
+const createdWaybillIds: string[] = [];
 
 function prepareEnv(databaseUrl: string): void {
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
@@ -181,6 +188,12 @@ async function makeRoute(opts: {
   date: string;
   requestIds: string[];
   comment?: string;
+  /** Перегон (ADR 0082): состава у него нет по устройству, задание — пара «откуда — куда». */
+  purpose?: 'freight' | 'delivery' | 'pickup';
+  moveFrom?: string;
+  moveTo?: string;
+  /** Заявка-основание перегона: без неё запись не пройдёт `vehicle_routes_source_request_check`. */
+  sourceRequestId?: string;
 }): Promise<{ id: string; displayNumber: string }> {
   const { schema } = ctx;
   const [route] = await ctx.db
@@ -188,7 +201,10 @@ async function makeRoute(opts: {
     .values({
       vehicleId: ctx.vehicleId,
       routeDate: opts.date,
-      purpose: 'freight',
+      purpose: opts.purpose ?? 'freight',
+      ...(opts.sourceRequestId ? { sourceRequestId: opts.sourceRequestId } : {}),
+      moveFrom: opts.moveFrom ?? '',
+      moveTo: opts.moveTo ?? '',
       driverPersonId: ctx.driverId,
       comment: opts.comment ?? '',
       createdBy: ctx.userId,
@@ -215,6 +231,51 @@ async function makeRoute(opts: {
     }
   }
   return { id: route!.id, displayNumber: formatVehicleRouteNumber(route!.num) };
+}
+
+/**
+ * Заявка-основание перегона: спецтехнику везут на объект не сами по себе, а под заказ. Деталей и
+ * ездок ей не нужно — перегон берёт у неё только основание, задание же несут «откуда — куда».
+ */
+async function makeSourceRequest(): Promise<string> {
+  const [request] = await ctx.db
+    .insert(ctx.schema.vehicleRequests)
+    .values({
+      requestType: 'special_equipment',
+      objectId: ctx.objectId,
+      vehicleTypeId: ctx.vehicleTypeId,
+      status: 'confirmed',
+      createdBy: ctx.userId,
+    })
+    .returning({ id: ctx.schema.vehicleRequests.id });
+  createdRequestIds.push(request!.id);
+  return request!.id;
+}
+
+/**
+ * Действующий лист на рейс: пустой бланк выписывается осознанно и под подтверждение (ADR 0071) —
+ * номер израсходован, бумага именная и лежит у водителя в кабине. Для отбора получателей это
+ * работа дня наравне с составом.
+ */
+let nextWaybillNumber = 1;
+async function issueWaybill(routeId: string, date: string): Promise<void> {
+  const { schema } = ctx;
+  const [waybill] = await ctx.db
+    .insert(schema.waybills)
+    .values({
+      seriesId: ctx.seriesId,
+      number: nextWaybillNumber,
+      formCode: '4p',
+      organizationId: ctx.organizationId,
+      vehicleId: ctx.vehicleId,
+      driverPersonId: ctx.driverId,
+      issuedForDate: date,
+      routeId,
+      issuedBy: ctx.userId,
+    })
+    .returning({ id: schema.waybills.id });
+  nextWaybillNumber += 1;
+  createdWaybillIds.push(waybill!.id);
 }
 
 /** Тип ТС берётся из наполнения: своя машина обязана быть типа, который умеет возить груз. */
@@ -324,6 +385,19 @@ describe.skipIf(!DB_URL)('письмо-задание водителю (жива
       })
       .returning({ id: schema.persons.id });
 
+    // Организация берётся из наполнения — она у портала одна и своей заводить нельзя, а серия
+    // своя: чужие номера расходовать тест не вправе.
+    const organization = await db.execute<{ id: string }>(
+      sql`SELECT id FROM organizations ORDER BY created_at LIMIT 1`,
+    );
+    const organizationId = organization.rows[0]?.id;
+    if (!organizationId)
+      throw new Error('В базе нет организации: миграции наполнения не применены');
+    const [series] = await db
+      .insert(schema.waybillSeries)
+      .values({ code: `drm${suffix}`, name: `Тестовая серия (задание) ${suffix}`, nextNumber: 1 })
+      .returning({ id: schema.waybillSeries.id });
+
     ctx = {
       db,
       closeDb,
@@ -339,6 +413,8 @@ describe.skipIf(!DB_URL)('письмо-задание водителю (жива
       driverName: driver!.fullName,
       driverEmail,
       idleDriverId: idleDriver!.id,
+      seriesId: series!.id,
+      organizationId,
     };
   }, 120_000);
 
@@ -346,7 +422,11 @@ describe.skipIf(!DB_URL)('письмо-задание водителю (жива
     if (!ctx) return;
     const { schema } = ctx;
     // Убирается только своё и в порядке ссылок: состав уходит каскадом за рейсом, но заявку
-    // держит RESTRICT — пока рейс жив, удалить её нельзя.
+    // держит RESTRICT — пока рейс жив, удалить её нельзя. Лист держит RESTRICT'ом и рейс, и
+    // машину, и водителя, поэтому уходит первым.
+    if (createdWaybillIds.length > 0) {
+      await ctx.db.delete(schema.waybills).where(inArray(schema.waybills.id, createdWaybillIds));
+    }
     if (createdRouteIds.length > 0) {
       await ctx.db
         .delete(schema.vehicleRoutes)
@@ -357,6 +437,9 @@ describe.skipIf(!DB_URL)('письмо-задание водителю (жива
         .delete(schema.vehicleRequests)
         .where(inArray(schema.vehicleRequests.id, createdRequestIds));
     }
+    await ctx.db
+      .delete(schema.waybillSeries)
+      .where(inArray(schema.waybillSeries.id, [ctx.seriesId]));
     await ctx.db.delete(schema.vehicles).where(inArray(schema.vehicles.id, [ctx.vehicleId]));
     await ctx.db
       .delete(schema.vehicleModels)
@@ -554,5 +637,48 @@ describe.skipIf(!DB_URL)('письмо-задание водителю (жива
     expect(mine!.fullName).toBe(ctx.driverName);
     // Тот, у кого рейсов нет, получателем не становится: иначе ему ушло бы пустое письмо.
     expect(drivers.some((d) => d.personId === ctx.idleDriverId)).toBe(false);
+  });
+
+  it('заготовка получателя не делает: рейс без состава и без листа — не работа дня', async () => {
+    // Грузовой рейс, заведённый впрок: машина и день названы, ехать некуда (ADR 0131).
+    await makeRoute({ date: DATES.blankRecipients, requestIds: [] });
+
+    const drivers = await ctx.driversWithRoutes(DATES.blankRecipients, DATES.blankRecipients);
+
+    // Отбор получателей обязан считать работу тем же правилом, что и срез дня: письмо такому
+    // водителю и так не соберётся (`buildDriverRoutesMail` вернёт `null`), но в отчёте о запуске
+    // он лёг бы в «без адреса» или в «пусто», и администратор пошёл бы заводить адрес человеку,
+    // которому слать было нечего.
+    expect(drivers.some((d) => d.personId === ctx.driverId)).toBe(false);
+    expect(await mailFor(DATES.blankRecipients)).toBeNull();
+  });
+
+  it('перегон получателем делает: состава у него нет по устройству, а ехать есть куда', async () => {
+    await makeRoute({
+      date: DATES.relocationRecipients,
+      requestIds: [],
+      purpose: 'delivery',
+      sourceRequestId: await makeSourceRequest(),
+      moveFrom: 'г Москва, ул Базовая, д 21',
+      moveTo: 'г Москва, ул Объектная, д 22',
+    });
+
+    const drivers = await ctx.driversWithRoutes(
+      DATES.relocationRecipients,
+      DATES.relocationRecipients,
+    );
+
+    expect(drivers.some((d) => d.personId === ctx.driverId)).toBe(true);
+  });
+
+  it('рейс под выписанным листом получателем делает, хотя состава в нём нет', async () => {
+    const route = await makeRoute({ date: DATES.waybillRecipients, requestIds: [] });
+    await issueWaybill(route.id, DATES.waybillRecipients);
+
+    const drivers = await ctx.driversWithRoutes(DATES.waybillRecipients, DATES.waybillRecipients);
+
+    // Бумага именная и уже у водителя в кабине: день у него рабочий, и из получателей его убирать
+    // нельзя — тем, что состав пуст, задание не отменяется.
+    expect(drivers.some((d) => d.personId === ctx.driverId)).toBe(true);
   });
 });

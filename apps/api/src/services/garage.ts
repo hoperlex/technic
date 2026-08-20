@@ -133,6 +133,49 @@ function esm2CoversDay(waybill: string, on: string): SQL {
 }
 
 /**
+ * Рейс, по которому есть куда ехать (ADR 0131), — одним куском на все пять мест, где о нём
+ * спрашивают: занятость машины, занятость водителя, набор занятостей страницы, бланк работы дня и
+ * счёт рейсов без водителя в сводке. Разложи эти пять строк по пяти запросам, и заготовка однажды
+ * займёт машину в одном из них.
+ *
+ * Работа у рейса это одно из трёх:
+ *
+ * - **перегон** — состава у него нет по устройству (ADR 0082), а задание даёт пара «откуда — куда»;
+ * - **непустой состав живыми заявками** — линейный день попадает сюда сам собой, он материализован
+ *   строкой состава с `work_date` (ADR 0100 §12). Живыми, потому что мягкое удаление заявки строку
+ *   состава не трогает вовсе (`DELETE /vehicle-requests/:id` пишет только `deleted_at` и не зовёт
+ *   `detachRequest` ни при каком статусе): без этого условия архивная заявка держала бы машину и
+ *   человека вечно. Статус при этом не спрашивается — отменённая заявка уходит из рейса сама
+ *   (`detachOnStatus`), а где не уходит, там рейс заморожен листом и виден третьей веткой;
+ * - **действующий лист** — пустой бланк выписывается осознанно и под подтверждение (ADR 0071):
+ *   номер израсходован, бумага именная и лежит у водителя в кабине. Аннулировали единственный лист
+ *   — рейс снова становится заготовкой и уходит из среза, и это то же правило, а не особый случай.
+ *
+ * Что остаётся за правилом — грузовой рейс без состава и без листа: запись заведена, ехать по ней
+ * некуда. В срезе дня её нет вовсе.
+ *
+ * Рейс с составом, но неразложенным по точкам заданием, работу имеет: заявки и адреса в нём
+ * названы, а собрана ли бумага — другой вопрос, и отвечают на него блокеры выписки.
+ *
+ * Алиас строкой, как у `esm2CoversDay`: в условиях `EXISTS` это `ga_rt`, в двух запросах-билдерах
+ * — `vehicle_routes`, у которых своего алиаса нет. Подзапросы взяли собственные имена (`ga_rw`,
+ * `ga_rq2`, `ga_rq3`) — ради чтения, а не корректности: области видимости соседних `EXISTS`
+ * независимы, но два разных `ga_rr` в одном запросе разбирались бы глазами при каждой правке
+ * площадки.
+ */
+export function routeHasWork(route: string): SQL {
+  const rt = sql.raw(route);
+  return sql`(
+    ${rt}.purpose <> 'freight'
+    OR EXISTS (SELECT 1 FROM ${vehicleRouteRequests} ga_rq2
+                 JOIN ${vehicleRequests} ga_rq3 ON ga_rq3.id = ga_rq2.request_id
+                WHERE ga_rq2.route_id = ${rt}.id AND ga_rq3.deleted_at IS NULL)
+    OR EXISTS (SELECT 1 FROM ${waybills} ga_rw
+                WHERE ga_rw.route_id = ${rt}.id AND ga_rw.status <> 'cancelled')
+  )`;
+}
+
+/**
  * Заказ спецтехники, накрывающий день: машина стоит на площадке, пока идёт срок заявки.
  *
  * Условия те же, что у вкладки «На объекте» (ADR 0036): взятая в работу живая заявка, чей период
@@ -182,12 +225,16 @@ function esm2BusyExists(on: string, objects?: ObjectFilter): SQL {
   )`;
 }
 
-/** Рейс этой машины в этот день — любой, включая перегон: техника всё равно в пути. */
+/**
+ * Рейс этой машины в этот день — включая перегон: техника всё равно в пути. Заготовка не считается
+ * (ADR 0131): запись без состава и без листа никуда не едет, и «в рейсе» о ней было бы неправдой.
+ */
 function routeBusyExists(on: string, objects?: ObjectFilter): SQL {
   return sql`EXISTS (
     SELECT 1 FROM ${vehicleRoutes} ga_rt
     WHERE ga_rt.vehicle_id = ${vehicles.id}
-      AND ga_rt.route_date = ${on}::date${routeObjectCondition('ga_rt', objects)}
+      AND ga_rt.route_date = ${on}::date
+      AND ${routeHasWork('ga_rt')}${routeObjectCondition('ga_rt', objects)}
   )`;
 }
 
@@ -213,12 +260,17 @@ export function vehicleStateSql(on: string) {
   END`;
 }
 
-/** Рейс, в котором человек стоит водителем на этот день. */
+/**
+ * Рейс, в котором человек стоит водителем на этот день, — и по которому есть куда ехать (ADR 0131).
+ * Заготовка человека не занимает: ставить тег «назначен» тому, кому ехать некуда, значит прятать за
+ * ним настоящую работу дня.
+ */
 function driverRouteExists(on: string, objects?: ObjectFilter): SQL {
   return sql`EXISTS (
     SELECT 1 FROM ${vehicleRoutes} ga_rt
     WHERE ga_rt.driver_person_id = ${persons.id}
-      AND ga_rt.route_date = ${on}::date${routeObjectCondition('ga_rt', objects)}
+      AND ga_rt.route_date = ${on}::date
+      AND ${routeHasWork('ga_rt')}${routeObjectCondition('ga_rt', objects)}
   )`;
 }
 
@@ -319,6 +371,7 @@ export function driverDayFormsSql(on: string): SQL {
      WHERE ga_rt.driver_person_id = ${persons.id}
        AND ga_rt.route_date = ${on}::date
        AND ga_v.ownership = 'own'
+       AND ${routeHasWork('ga_rt')}
     UNION ALL
     SELECT 'esm2'
       FROM ${waybills} ga_w
@@ -490,7 +543,9 @@ async function loadRoutes(on: string, scope: BusyScope): Promise<GarageRouteBusy
     .leftJoin(vehicleRequests, eq(vehicleRequests.id, vehicleRoutes.sourceRequestId))
     .leftJoin(constructionObjects, eq(constructionObjects.id, vehicleRequests.objectId))
     .leftJoin(departments, eq(departments.id, vehicleRequests.departmentId))
-    .where(and(eq(vehicleRoutes.routeDate, on), where))
+    // Заготовки в срез не едут (ADR 0131) — тем же куском, каким их не считают состояния дня:
+    // отбери их здесь, но забудь там, и колонка занятости разошлась бы с тегом состояния строки.
+    .where(and(eq(vehicleRoutes.routeDate, on), routeHasWork('vehicle_routes'), where))
     .orderBy(vehicleRoutes.num);
 
   const routeIds = rows.map((r) => r.id);

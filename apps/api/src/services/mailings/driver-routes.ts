@@ -8,6 +8,7 @@ import {
 import { db } from '../../db/client';
 import { persons, vehicleRoutes } from '../../db/schema';
 import { type DriverRouteEntry, loadRouteEntries } from '../driver-assignment';
+import { routeHasWork } from '../garage';
 import type { MailBlock, MailContent } from '../mail-templates';
 
 /**
@@ -207,7 +208,21 @@ function plural(count: number): string {
   return 'рейсов';
 }
 
-/** Водители с рейсами в окне: по ним рассылка выбирает получателей, а отладка — образец. */
+/**
+ * Водители с рейсами в окне: по ним рассылка выбирает получателей, а отладка — образец.
+ *
+ * Работа рейса спрашивается тем же правилом, что и срез дня (`routeHasWork`, ADR 0131), а не
+ * фактом существования строки в `vehicle_routes`: заготовка — грузовой рейс без живого состава и
+ * без действующего листа — ехать никуда не велит, и человек с одними заготовками в окне получателем
+ * задания не является. Разойдись эти два места, гараж говорил бы «свободен» про того, кого рассылка
+ * держит за адресата.
+ *
+ * Само письмо правило не меняет: `buildDriverRoutesMail` по заготовке и так вернёт `null` —
+ * источники задания требуют перегон либо живой состав. Меняются **счётчики запуска**
+ * (`services/mailings/run.ts`): без этого условия такой водитель попадал в `withoutEmail` («кому
+ * задание не уходит, заведите адрес») или в `empty`, и администратор шёл заводить адрес человеку,
+ * которому и слать было нечего.
+ */
 export async function driversWithRoutes(
   dateFrom: string,
   dateTo: string,
@@ -225,6 +240,8 @@ export async function driversWithRoutes(
         gte(vehicleRoutes.routeDate, dateFrom),
         lte(vehicleRoutes.routeDate, dateTo),
         isNull(persons.deletedAt),
+        // Своего алиаса у таблицы в этом запросе нет — правило получает её имя как есть.
+        routeHasWork('vehicle_routes'),
       ),
     )
     .orderBy(asc(persons.fullName));

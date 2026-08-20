@@ -7,6 +7,7 @@ import {
   type DriverOptionDto,
   type GarageBusyEntry,
   type GarageDriverDto,
+  type GarageRouteBusy,
   type GarageVehicleDto,
   moscowDateKeyOf,
   type WaybillFormCode,
@@ -65,10 +66,17 @@ interface Ctx {
   db: typeof AppDb;
   closeDb: () => Promise<void>;
   auth: { authorization: string };
+  /** Учётка файла значением: ею подписаны заявки и рейсы, заведённые прямой вставкой. */
+  adminId: string;
   /** Спецтехника с категорией: на неё заводится заказ на объект. */
   special: { id: string; typeId: string; categoryId: string | null };
-  /** Своя активная машина под рейс — заведомо другая, иначе состояния наложились бы. */
-  routeVehicle: { id: string };
+  /**
+   * Своя активная машина под рейс — заведомо другая, иначе состояния наложились бы.
+   *
+   * Тип нужен значением: заявка в составе рейса называет заказанный тип, а состав теперь заводится
+   * и в сценариях занятости — рейс без него был бы заготовкой (ADR 0131).
+   */
+  routeVehicle: { id: string; typeId: string };
   /** Третья машина: ею проверяются «свободна» и «недоступна». */
   spare: { id: string };
   objectId: string;
@@ -235,6 +243,64 @@ async function addVehicle(
 }
 
 /**
+ * Заявка сценария: заказчиком либо площадка, либо отдел (ADR 0040) — ровно одно из двух.
+ *
+ * Прямой вставкой, а не ручкой портала: заявка нужна фикстурам как **повод** для работы рейса, и
+ * проводить её формами значило бы проверять формы. Убирает её общий `afterAll` — по автору.
+ */
+async function addRequest(input: {
+  requestType: 'freight_transport' | 'special_equipment';
+  vehicleTypeId: string;
+  objectId?: string;
+  departmentId?: string;
+}): Promise<string> {
+  const rows = await ctx.db.execute<{ id: string }>(
+    sql`INSERT INTO vehicle_requests (request_type, object_id, department_id,
+                                      vehicle_type_id, status, created_by)
+        VALUES (${input.requestType}::vehicle_request_type, ${input.objectId ?? null}::uuid,
+                ${input.departmentId ?? null}::uuid, ${input.vehicleTypeId}::uuid,
+                'confirmed', ${ctx.adminId}::uuid)
+        RETURNING id`,
+  );
+  return rows.rows[0]!.id;
+}
+
+/**
+ * Заявка в составе рейса — она же его работа: грузовой рейс без состава и без действующего листа
+ * гараж считает заготовкой и в срез дня не берёт вовсе (ADR 0131).
+ *
+ * Поэтому состав заводится не только там, где сценарий спрашивает про площадку работы, но и там,
+ * где он спрашивает про занятость: без строки состава машине с рейсом было бы некуда ехать, и
+ * «в рейсе» о ней сказать было бы неправдой.
+ */
+async function addRouteRequest(routeId: string, requestId: string, position = 1): Promise<void> {
+  await ctx.db.execute(
+    sql`INSERT INTO vehicle_route_requests (route_id, request_id, position)
+        VALUES (${routeId}::uuid, ${requestId}::uuid, ${position})`,
+  );
+}
+
+/**
+ * Мягкое удаление заявки — ручкой портала, а не `UPDATE`'ом: правило работы рейса (ADR 0131)
+ * держится ровно на том, что делает продукт, и проверять его на самодельном удалении значило бы
+ * проверять фикстуру.
+ *
+ * Ручка сама выбирает вид удаления по статусу: «Новую» она сносит целиком, и строка состава ушла
+ * бы каскадом — рейс остался бы пустым, то есть заготовкой по совсем другой ветке правила. Поэтому
+ * ответ проверяется значением: заявки фикстур заводятся сразу «Подтверждена», и удаление обязано
+ * быть мягким — только `deleted_at`, а заявка остаётся стоять в рейсе.
+ */
+async function softDeleteRequest(requestId: string): Promise<void> {
+  const res = await ctx.app.inject({
+    method: 'DELETE',
+    url: `/api/v1/vehicle-requests/${requestId}`,
+    headers: ctx.auth,
+  });
+  expect(res.statusCode, res.body).toBe(200);
+  expect(res.json().mode).toBe('soft');
+}
+
+/**
  * Строка гаража по машине — из отбора «только свои» (`ONLY_MINE`).
  *
  * Отбор здесь не для скорости: без него страница отвечала бы по всему парку, и строка теста
@@ -324,6 +390,260 @@ async function setLicenseExpiry(expiresOn: string): Promise<void> {
   );
 }
 
+/**
+ * Матрица заготовок (ADR 0131): свой день на каждый случай правила «есть куда ехать».
+ *
+ * Заводится лениво и ровно один раз, а не хуком своего блока: два из этих дней спрашивает и тест
+ * паритета соседнего блока, объявленный раньше, — привяжи фикстуру к порядку хуков, и добавленный
+ * день оказался бы то заведён, то нет, смотря откуда запустили прогон. Запоминается обещание, а не
+ * результат: второй спросивший подхватывает первый, не дожидаясь его конца.
+ *
+ * Дни свои и далёкие (с 38-го), а машины — те же три: на дне среза и на днях отбора держатся
+ * сценарии, ничего не знающие про заготовки, и чужой рейс в их дне менял бы им ответ, а лишняя
+ * машина сдвинула бы сводку парка, которую они считают по метке прогона.
+ */
+interface DraftCtx {
+  /** Грузовой рейс с водителем, без состава и без листа, — заготовка в чистом виде. */
+  draftDay: string;
+  /** Два рейса без водителя в один день: заготовка и рейс с составом. */
+  summaryDay: string;
+  /** Пустой рейс, по которому выписан лист: работу ему даёт бумага. */
+  paperDay: string;
+  /** Тот самый лист: его тест и аннулирует, возвращая рейс в заготовки. */
+  paperWaybillId: string;
+  /** Рейс, единственная заявка состава которого отменена. */
+  cancelledRequestDay: string;
+  /** Два рейса, у обоих единственная заявка состава мягко удалена: с водителем и без него. */
+  deletedRequestDay: string;
+  /** Рейс с двумя заявками в составе, одна из которых мягко удалена. */
+  mixedRequestsDay: string;
+  /** Та самая удалённая заявка: строку в составе рейса она переживает. */
+  mixedDeletedRequestId: string;
+  /** Перегон без состава: работа у него в паре «откуда — куда». */
+  relocationDay: string;
+  /** День линейного заказа: строка состава со своим днём (ADR 0100 §12). */
+  linearDay: string;
+}
+
+let draftsPromise: Promise<DraftCtx> | undefined;
+
+/** Фикстуры матрицы — по требованию и один раз на файл, кто бы ни спросил первым. */
+function drafts(): Promise<DraftCtx> {
+  draftsPromise ??= createDrafts();
+  return draftsPromise;
+}
+
+/**
+ * Рейс прямой вставкой — с водителем и без него.
+ *
+ * Свой помощник, а не тот, что у блока отбора: там водитель есть у каждого рейса, а половина
+ * матрицы спрашивает как раз про рейс, которому водителя ещё не назначили (сводка считает именно
+ * такие).
+ */
+async function addDayRoute(input: {
+  vehicleId: string;
+  on: string;
+  purpose?: 'freight' | 'delivery' | 'pickup';
+  driverPersonId?: string;
+  sourceRequestId?: string;
+}): Promise<string> {
+  const purpose = input.purpose ?? 'freight';
+  const relocation = purpose !== 'freight';
+  const rows = await ctx.db.execute<{ id: string }>(
+    sql`INSERT INTO vehicle_routes (vehicle_id, route_date, purpose, source_request_id,
+                                    move_from, move_to, driver_person_id, created_by)
+        VALUES (${input.vehicleId}::uuid, ${input.on}::date, ${purpose},
+                ${input.sourceRequestId ?? null}::uuid,
+                ${relocation ? 'База' : ''}, ${relocation ? 'Объект' : ''},
+                ${input.driverPersonId ?? null}::uuid, ${ctx.adminId}::uuid)
+        RETURNING id`,
+  );
+  return rows.rows[0]!.id;
+}
+
+/**
+ * Лист 4-П по рейсу — прямой вставкой, как и недельный лист блока отбора: пустой бланк ручка
+ * выписки отдаёт под подтверждение (ADR 0071), а фикстуре нужен результат, а не разговор с формой.
+ *
+ * Серия у 4-П основная (`main`, миграция 0061), номер — из заведомо свободной полосы: серия общая,
+ * и в неё пишут соседние db-тесты.
+ */
+async function issueRouteWaybill(routeId: string, vehicleId: string, on: string): Promise<string> {
+  const series = await ctx.db.execute<{ id: string }>(
+    sql`SELECT id FROM waybill_series WHERE code = 'main'`,
+  );
+  const organizations = await ctx.db.execute<{ id: string }>(
+    sql`SELECT id FROM organizations WHERE is_active ORDER BY name LIMIT 1`,
+  );
+  const rows = await ctx.db.execute<{ id: string }>(
+    sql`INSERT INTO waybills (series_id, number, form_code, status, organization_id, vehicle_id,
+                              driver_person_id, issued_for_date, route_id, issued_by)
+        VALUES (${series.rows[0]!.id}::uuid,
+                ${960_000_000 + Math.floor(Math.random() * 900_000)},
+                '4p', 'issued', ${organizations.rows[0]!.id}::uuid, ${vehicleId}::uuid,
+                ${ctx.personId}::uuid, ${on}::date, ${routeId}::uuid, ${ctx.adminId}::uuid)
+        RETURNING id`,
+  );
+  return rows.rows[0]!.id;
+}
+
+/** Заведение матрицы: по дню на случай, каждый — своим поводом работы либо его отсутствием. */
+async function createDrafts(): Promise<DraftCtx> {
+  const draftDay = dayAfter(38);
+  const summaryDay = dayAfter(39);
+  const paperDay = dayAfter(40);
+  const cancelledRequestDay = dayAfter(41);
+  const relocationDay = dayAfter(42);
+  const linearDay = dayAfter(43);
+
+  // Заготовка с водителем: рейс заведён, состава нет, бумаги нет — ехать некуда.
+  await addDayRoute({ vehicleId: ctx.routeVehicle.id, on: draftDay, driverPersonId: ctx.personId });
+
+  // Один день, два рейса без водителя, разные машины: у одного состав есть, у другого нет.
+  await addRouteRequest(
+    await addDayRoute({ vehicleId: ctx.routeVehicle.id, on: summaryDay }),
+    await addRequest({
+      requestType: 'freight_transport',
+      vehicleTypeId: ctx.routeVehicle.typeId,
+      objectId: ctx.objectId,
+    }),
+  );
+  await addDayRoute({ vehicleId: ctx.spare.id, on: summaryDay });
+
+  // Пустой рейс с выписанным листом: состава нет, а бланк именной и уже у водителя.
+  const paperRoute = await addDayRoute({
+    vehicleId: ctx.routeVehicle.id,
+    on: paperDay,
+    driverPersonId: ctx.personId,
+  });
+  const paperWaybillId = await issueRouteWaybill(paperRoute, ctx.routeVehicle.id, paperDay);
+
+  // Состав из отменённой заявки: строка в рейсе осталась, а заявка закрыта.
+  const cancelledRequest = await addRequest({
+    requestType: 'freight_transport',
+    vehicleTypeId: ctx.routeVehicle.typeId,
+    objectId: ctx.objectId,
+  });
+  await ctx.db.execute(
+    sql`UPDATE vehicle_requests SET status = 'cancelled' WHERE id = ${cancelledRequest}::uuid`,
+  );
+  await addRouteRequest(
+    await addDayRoute({
+      vehicleId: ctx.routeVehicle.id,
+      on: cancelledRequestDay,
+      driverPersonId: ctx.personId,
+    }),
+    cancelledRequest,
+  );
+
+  // Мягко удалённая заявка: строку состава удаление не трогает вовсе — `DELETE
+  // /vehicle-requests/:id` вне статуса «Новая» пишет только `deleted_at` и с рейса заявку не
+  // снимает ни при каком статусе. Рейса в дне два, с водителем и без: второй нужен сводке, которая
+  // считает рейсы без водителя своим запросом мимо выражений состояния.
+  const deletedRequestDay = dayAfter(44);
+  const deletedRequest = await addRequest({
+    requestType: 'freight_transport',
+    vehicleTypeId: ctx.routeVehicle.typeId,
+    objectId: ctx.objectId,
+  });
+  await addRouteRequest(
+    await addDayRoute({
+      vehicleId: ctx.routeVehicle.id,
+      on: deletedRequestDay,
+      driverPersonId: ctx.personId,
+    }),
+    deletedRequest,
+  );
+  // Тип заказан грузовой, как и у соседней заявки: машину под заявку тест не подбирает, а вторая
+  // машина дня — та же свободная из парка прогона.
+  const deletedRequestNoDriver = await addRequest({
+    requestType: 'freight_transport',
+    vehicleTypeId: ctx.routeVehicle.typeId,
+    objectId: ctx.objectId,
+  });
+  await addRouteRequest(
+    await addDayRoute({ vehicleId: ctx.spare.id, on: deletedRequestDay }),
+    deletedRequestNoDriver,
+  );
+  // Удаление — после того, как заявки поставлены в рейсы: этим же порядком это происходит и в
+  // жизни, а строка состава удаление переживает.
+  await softDeleteRequest(deletedRequest);
+  await softDeleteRequest(deletedRequestNoDriver);
+
+  // Две заявки в составе, живая и удалённая: правило спрашивает, есть ли в рейсе хоть одна живая.
+  const mixedRequestsDay = dayAfter(45);
+  const mixedRoute = await addDayRoute({
+    vehicleId: ctx.routeVehicle.id,
+    on: mixedRequestsDay,
+    driverPersonId: ctx.personId,
+  });
+  await addRouteRequest(
+    mixedRoute,
+    await addRequest({
+      requestType: 'freight_transport',
+      vehicleTypeId: ctx.routeVehicle.typeId,
+      objectId: ctx.objectId,
+    }),
+  );
+  const mixedDeletedRequestId = await addRequest({
+    requestType: 'freight_transport',
+    vehicleTypeId: ctx.routeVehicle.typeId,
+    objectId: ctx.objectId,
+  });
+  await addRouteRequest(mixedRoute, mixedDeletedRequestId, 2);
+  await softDeleteRequest(mixedDeletedRequestId);
+
+  // Перегон: состава у него нет по устройству (ADR 0082), задание — пара «откуда — куда».
+  await addDayRoute({
+    vehicleId: ctx.routeVehicle.id,
+    on: relocationDay,
+    purpose: 'delivery',
+    driverPersonId: ctx.personId,
+    sourceRequestId: await addRequest({
+      requestType: 'special_equipment',
+      vehicleTypeId: ctx.special.typeId,
+      objectId: ctx.objectId,
+    }),
+  });
+
+  // День линейного заказа: он материализован строкой состава со своим `work_date` (ADR 0100 §12).
+  // Режим взят снимком (миграция 0137), а не линейным типом справочника: линейной позиции в
+  // классификаторе может не быть вовсе, а заявка со снимком ведётся по дням независимо от него.
+  // Сроков заказа фикстуре не нужно: занятости площадки линейная заявка не даёт (ADR 0100 §12),
+  // день её машины говорит рейс — ровно то, что тест и спрашивает.
+  const linearRequest = await addRequest({
+    requestType: 'special_equipment',
+    vehicleTypeId: ctx.special.typeId,
+    objectId: ctx.objectId,
+  });
+  await ctx.db.execute(
+    sql`UPDATE vehicle_requests SET is_linear_frozen = true, linear_frozen_at = now()
+        WHERE id = ${linearRequest}::uuid`,
+  );
+  const linearRoute = await addDayRoute({
+    vehicleId: ctx.special.id,
+    on: linearDay,
+    driverPersonId: ctx.personId,
+  });
+  await ctx.db.execute(
+    sql`INSERT INTO vehicle_route_requests (route_id, request_id, position, work_date)
+        VALUES (${linearRoute}::uuid, ${linearRequest}::uuid, 1, ${linearDay}::date)`,
+  );
+
+  return {
+    draftDay,
+    summaryDay,
+    paperDay,
+    paperWaybillId,
+    cancelledRequestDay,
+    deletedRequestDay,
+    mixedRequestsDay,
+    mixedDeletedRequestId,
+    relocationDay,
+    linearDay,
+  };
+}
+
 describe.skipIf(!DB_URL)('гараж: срез дня на живой схеме', () => {
   beforeAll(async () => {
     prepareEnv(DB_URL!);
@@ -388,17 +708,24 @@ describe.skipIf(!DB_URL)('гараж: срез дня на живой схеме
     const object = objects.rows[0];
     if (!object) throw new Error('В базе нет активного объекта');
 
+    // Учётка файла нужна и значением, а не только заголовком: прямые вставки фикстур подписываются
+    // автором, и по нему же уборка узнаёт заведённое.
+    const admin = await db.execute<{ id: string }>(
+      sql`SELECT id FROM users WHERE email = ${ADMIN_EMAIL}`,
+    );
+
     ctx = {
       app,
       db,
       closeDb,
       auth: { authorization: `Bearer ${login.json().accessToken}` },
+      adminId: admin.rows[0]!.id,
       special: {
         id: specialVehicleId,
         typeId: specialType.type_id,
         categoryId: specialType.category_id,
       },
-      routeVehicle: { id: routeVehicleId },
+      routeVehicle: { id: routeVehicleId, typeId: freightType.id },
       spare: { id: spareVehicleId },
       objectId: object.id,
       personId,
@@ -535,6 +862,18 @@ describe.skipIf(!DB_URL)('гараж: срез дня на живой схеме
     });
     expect(route.statusCode, route.body).toBe(201);
     created.routeId = route.json().id;
+
+    // Составом рейсу дано, куда ехать: пустой грузовой рейс без листа — заготовка, и в срезе дня
+    // её нет вовсе (ADR 0131). Работой выбрана заявка, а не выписанный лист, — иначе занятость
+    // держалась бы бумагой, а следующие сценарии проверяют как раз рейс **без** бланка.
+    await addRouteRequest(
+      created.routeId!,
+      await addRequest({
+        requestType: 'freight_transport',
+        vehicleTypeId: ctx.routeVehicle.typeId,
+        objectId: ctx.objectId,
+      }),
+    );
 
     const row = await vehicleRow(ctx.routeVehicle.id);
     expect(row?.state).toBe('on_route');
@@ -709,8 +1048,9 @@ describe.skipIf(!DB_URL)('гараж: срез дня на живой схеме
   /**
    * Показания и рейс без листа (план «Показания техники», Р26б, §14 п. 4).
    *
-   * Рейс этого теста заведён **без путевого листа** — так его и создаёт предыдущий сценарий, и это
-   * ровно тот случай, ради которого гараж приводили к общему правилу. Раньше колонка красила такую
+   * Рейс этого теста заведён **без путевого листа** — так его и создаёт первый сценарий, и это
+   * ровно тот случай, ради которого гараж приводили к общему правилу. Работу ему даёт состав
+   * (ADR 0131): ехать по рейсу есть куда, а бумаги на это нет. Раньше колонка красила такую
    * машину расхождением («источник дня в отчёт не вошёл»), а кабинет водителя рейса без бумаги не
    * показывал вовсе: спросить показание было не с кого, а день горел. Теперь оба места спрашивают
    * ожидаемую смену одним правилом — рейс без действующего листа ею не является.
@@ -793,10 +1133,9 @@ describe.skipIf(!DB_URL)('гараж: срез дня на живой схеме
     let f: FilterCtx;
 
     beforeAll(async () => {
-      const admin = await ctx.db.execute<{ id: string }>(
-        sql`SELECT id FROM users WHERE email = ${ADMIN_EMAIL}`,
-      );
-      const adminId = admin.rows[0]!.id;
+      // Автор прямых вставок — та же учётка файла, что подписывает заявки составов: уборка ищет
+      // заведённое по ней, и второго автора у фикстур быть не должно.
+      const adminId = ctx.adminId;
 
       // Четыре площадки помимо той, на которой стоит заказ первого сценария: у каждой ветки отбора
       // своя, иначе «нашлось» не отвечало бы, какой именно веткой.
@@ -836,24 +1175,6 @@ describe.skipIf(!DB_URL)('гараж: срез дня на живой схеме
       const specialVehicleId = await addVehicle(ctx.db, ctx.special.typeId, ctx.special.categoryId);
       const esm2VehicleId = await addVehicle(ctx.db, ctx.special.typeId, ctx.special.categoryId);
 
-      /** Заявка сценария: заказчиком либо площадка, либо отдел (ADR 0040) — ровно одно из двух. */
-      const addRequest = async (input: {
-        requestType: 'freight_transport' | 'special_equipment';
-        vehicleTypeId: string;
-        objectId?: string;
-        departmentId?: string;
-      }): Promise<string> => {
-        const rows = await ctx.db.execute<{ id: string }>(
-          sql`INSERT INTO vehicle_requests (request_type, object_id, department_id,
-                                            vehicle_type_id, status, created_by)
-              VALUES (${input.requestType}::vehicle_request_type, ${input.objectId ?? null}::uuid,
-                      ${input.departmentId ?? null}::uuid, ${input.vehicleTypeId}::uuid,
-                      'confirmed', ${adminId}::uuid)
-              RETURNING id`,
-        );
-        return rows.rows[0]!.id;
-      };
-
       const addRoute = async (input: {
         vehicleId: string;
         on: string;
@@ -871,13 +1192,6 @@ describe.skipIf(!DB_URL)('гараж: срез дня на живой схеме
               RETURNING id`,
         );
         return rows.rows[0]!.id;
-      };
-
-      const addRouteRequest = async (routeId: string, requestId: string): Promise<void> => {
-        await ctx.db.execute(
-          sql`INSERT INTO vehicle_route_requests (route_id, request_id, position)
-              VALUES (${routeId}::uuid, ${requestId}::uuid, 1)`,
-        );
       };
 
       const compositionDay = dayAfter(31);
@@ -912,8 +1226,18 @@ describe.skipIf(!DB_URL)('гараж: срез дня на живой схеме
         sourceRequestId: relocationRequest,
       });
 
-      // Грузовой рейс той же легковой машиной: здесь бланк типа и решает — форма № 3.
-      await addRoute({ vehicleId: passengerVehicleId, on: passengerDay, purpose: 'freight' });
+      // Грузовой рейс той же легковой машиной: здесь бланк типа и решает — форма № 3. Состав ему
+      // нужен, чтобы рейс не остался заготовкой (ADR 0131), а заказчиком взят отдел: про площадку
+      // этот день не спрашивают, и своя добавила бы ему отбор, которого сценарий не проверяет.
+      const passengerRequest = await addRequest({
+        requestType: 'freight_transport',
+        vehicleTypeId: passengerType,
+        departmentId,
+      });
+      await addRouteRequest(
+        await addRoute({ vehicleId: passengerVehicleId, on: passengerDay, purpose: 'freight' }),
+        passengerRequest,
+      );
 
       // Заявка отдела в составе рейса: работа в этот день есть, площадки у неё нет вовсе (Р10).
       const departmentRequest = await addRequest({
@@ -1033,7 +1357,7 @@ describe.skipIf(!DB_URL)('гараж: срез дня на живой схеме
     });
 
     it('день с двумя работами разных бланков попадает в оба отбора и стоит в выдаче один раз', async () => {
-      // День среза: рейс без состава (4-П) и недельный лист заказа (ЭСМ-2) — две работы сразу.
+      // День среза: рейс с составом (4-П) и недельный лист заказа (ЭСМ-2) — две работы сразу.
       const row = await driverRow();
       expect([...busyKinds(row!.busy)].sort()).toEqual(['esm2', 'route']);
 
@@ -1152,6 +1476,10 @@ describe.skipIf(!DB_URL)('гараж: срез дня на живой схеме
     it('паритет: набор бланков дня одинаков у правила контрактов и у выражения отбора', async () => {
       const { driverDayFormsSql } = await import('../src/services/garage');
       const { persons } = await import('../src/db/schema');
+      // Два дня матрицы заготовок (ADR 0131) в общем наборе: именно на них две записи правила и
+      // разъезжаются, если работу рейса забыть в выражении отбора. У голой заготовки набор обязан
+      // быть пуст с обеих сторон, у пустого рейса с выписанным листом — непуст.
+      const drafted = await drafts();
 
       const answers = new Map<string, string[]>();
       for (const day of [
@@ -1162,6 +1490,8 @@ describe.skipIf(!DB_URL)('гараж: срез дня на живой схеме
         f.departmentDay,
         f.idleDay,
         f.esm2Day,
+        drafted.draftDay,
+        drafted.paperDay,
       ]) {
         const row = await driverRow('', day);
         expect(row, `водитель обязан стоять в срезе за ${day}`).toBeDefined();
@@ -1184,6 +1514,212 @@ describe.skipIf(!DB_URL)('гараж: срез дня на живой схеме
       // день без работы вовсе.
       expect(answers.get(ctx.today)).toHaveLength(2);
       expect(answers.get(f.idleDay)).toHaveLength(0);
+      // И работу рейса обе стороны считают одинаково: заготовка бланка дня не даёт, а пустой рейс
+      // с листом даёт бланк своей машины.
+      expect(answers.get(drafted.draftDay)).toHaveLength(0);
+      expect(answers.get(drafted.paperDay)).toEqual(['4p']);
+    });
+  });
+
+  /**
+   * Заготовки рейсов (ADR 0131): рейс попадает в срез дня, только если по нему есть куда ехать.
+   *
+   * Матрицей, а не одним случаем, и это не педантизм: правило записано одним куском
+   * (`routeHasWork`), но применено в пяти местах — занятость машины, занятость водителя, набор
+   * занятостей страницы, бланк работы дня и счёт рейсов без водителя в сводке. Забытое в любом из
+   * них, оно расходится молча: строка называет машину свободной, а сводка рядом зовёт искать
+   * водителя рейсу, которого в срезе не видно.
+   *
+   * Половина случаев здесь — про то, что правило **не** задело соседей: перегон и день линейного
+   * заказа работой были и остались. Написано это правило узко, и сузить его дальше легче всего
+   * случайно.
+   */
+  describe('заготовки рейсов', () => {
+    let d: DraftCtx;
+
+    beforeAll(async () => {
+      d = await drafts();
+    }, 120_000);
+
+    it('заготовка не занимает никого: ни машину, ни поставленного на неё водителя', async () => {
+      const vehicle = await vehicleRow(ctx.routeVehicle.id, '', d.draftDay);
+      // Машина свободна — и это именно «свободна», а не «строки нет»: в срезе она стоит, работы в
+      // ней нет.
+      expect(vehicle?.state).toBe('free');
+      expect(vehicle?.busy).toEqual([]);
+
+      const driver = await driverRow('', d.draftDay);
+      // Водитель в рейсе назван, но ехать ему некуда: тег «назначен» прятал бы за собой настоящую
+      // работу дня — которой у человека в этот день нет.
+      expect(driver?.state).toBe('free');
+      expect(driver?.busy).toEqual([]);
+    });
+
+    /**
+     * Сводка зовёт искать водителя тем рейсам, которым есть куда ехать. Цифра считается по самим
+     * рейсам, отдельным запросом мимо выражений состояния, — это единственное применение правила
+     * вне их, и потому самое лёгкое к пропуску: без него сводка звала бы искать человека рейсу,
+     * которого в срезе не видно, рядом с машиной, показанной свободной.
+     */
+    it('в рейсах без водителя сводка считает работу, а не запись', async () => {
+      const res = await ctx.app.inject({
+        method: 'GET',
+        url: `/api/v1/garage/vehicles/summary?on=${d.summaryDay}${ONLY_MINE}`,
+        headers: ctx.auth,
+      });
+      expect(res.statusCode, res.body).toBe(200);
+      // Рейсов без водителя в этот день два, работа есть у одного — цифра называет один.
+      expect(res.json().routesWithoutDriver).toBe(1);
+
+      // Какой из двух посчитан, видно по машинам: сводка и состояния отвечают про один день.
+      expect((await vehicleRow(ctx.routeVehicle.id, '', d.summaryDay))?.state).toBe('on_route');
+      expect((await vehicleRow(ctx.spare.id, '', d.summaryDay))?.state).toBe('free');
+    });
+
+    it('пустой рейс с выданным листом — работа: бланк израсходован и лежит у водителя', async () => {
+      const vehicle = await vehicleRow(ctx.routeVehicle.id, '', d.paperDay);
+      expect(vehicle?.state).toBe('on_route');
+      expect(busyKinds(vehicle!.busy)).toEqual(['route']);
+      // Работу рейсу даёт именно бумага: состава у него нет вовсе.
+      const route = vehicle!.busy[0] as GarageRouteBusy;
+      expect(route.requests).toEqual([]);
+      expect(route.waybill?.waybillId).toBe(d.paperWaybillId);
+
+      const driver = await driverRow('', d.paperDay);
+      expect(driver?.state).toBe('assigned');
+      expect(busyKinds(driver!.busy)).toEqual(['route']);
+
+      // И бланк работы дня у водителя есть — 4-П по типу машины рейса: отбор по бланку спрашивает
+      // ту же работу, что показывает строка.
+      expect(await driverRow(formsQuery(['4p']), d.paperDay)).toBeDefined();
+      expect(await driverRow(formsQuery(['leg3', 'esm2']), d.paperDay)).toBeUndefined();
+    });
+
+    /**
+     * Аннулированный лист для дня машины — то же самое, что лист не выписывали: номер списан, и
+     * работы у пустого рейса не остаётся вовсе.
+     *
+     * Лист возвращается на место в `finally`: этот же день спрашивает тест паритета, и порядок, в
+     * котором vitest дойдёт до них двоих, тесту не принадлежит.
+     */
+    it('аннулировали единственный лист — рейс снова заготовка', async () => {
+      await ctx.db.execute(
+        sql`UPDATE waybills SET status = 'cancelled', cancelled_at = now(),
+                                cancelled_by = ${ctx.adminId}::uuid,
+                                cancel_reason = 'ТЕСТОВЫЕ ДАННЫЕ: срез гаража'
+            WHERE id = ${d.paperWaybillId}::uuid`,
+      );
+      try {
+        const vehicle = await vehicleRow(ctx.routeVehicle.id, '', d.paperDay);
+        expect(vehicle?.state).toBe('free');
+        expect(vehicle?.busy).toEqual([]);
+
+        const driver = await driverRow('', d.paperDay);
+        expect(driver?.state).toBe('free');
+        expect(driver?.busy).toEqual([]);
+        expect(await driverRow(formsQuery(['4p']), d.paperDay)).toBeUndefined();
+      } finally {
+        await ctx.db.execute(
+          sql`UPDATE waybills SET status = 'issued', cancelled_at = NULL, cancelled_by = NULL,
+                                  cancel_reason = ''
+              WHERE id = ${d.paperWaybillId}::uuid`,
+        );
+      }
+
+      expect((await vehicleRow(ctx.routeVehicle.id, '', d.paperDay))?.state).toBe('on_route');
+    });
+
+    /**
+     * Граница правила, а не желаемое поведение: работой считается сама строка состава, и отменённая
+     * заявка в ней рейс из среза не уводит.
+     *
+     * В жизни такое сочетание почти недостижимо — отмена заявки сама снимает её из рейса
+     * (`detachOnStatus`), и строка переживает отмену только там, где состав заморожен выписанным
+     * листом, то есть у рейса, у которого работа есть и без неё. Спрашивать же у гаража статусы
+     * заявок состава значило бы завести второе правило «что такое работа» рядом с тем, которое
+     * держат маршруты: день машины стал бы зависеть от того, чем кончилась чужая заявка, и
+     * разошёлся бы с составом, который рисует сам рейс. Тест закрепляет выбор, чтобы следующая
+     * правка делала его осознанно.
+     */
+    it('отменённая заявка состава рейс из среза не уводит', async () => {
+      const vehicle = await vehicleRow(ctx.routeVehicle.id, '', d.cancelledRequestDay);
+      expect(vehicle?.state).toBe('on_route');
+      const route = vehicle!.busy[0] as GarageRouteBusy;
+      expect(route.requests.map((request) => request.status)).toEqual(['cancelled']);
+      expect((await driverRow('', d.cancelledRequestDay))?.state).toBe('assigned');
+    });
+
+    /**
+     * Вторая половина той же ветки: строка состава работой считается, пока её заявка **жива**.
+     *
+     * Удаление заявки строку состава не трогает вовсе — `DELETE /vehicle-requests/:id` вне статуса
+     * «Новая» пишет только `deleted_at` и не снимает заявку с рейса ни при каком статусе. Без
+     * условия «живой заявки» такой рейс держал бы машину «в рейсе», а её водителя «назначенным»
+     * вечно — тогда как кабинет водителя, письмо с заданием и статистика показаний этот рейс уже
+     * не видят: срез гаража один остался бы показывать работу, которой нет.
+     */
+    it('единственная заявка состава удалена — рейс уходит из среза', async () => {
+      const vehicle = await vehicleRow(ctx.routeVehicle.id, '', d.deletedRequestDay);
+      expect(vehicle?.state).toBe('free');
+      expect(vehicle?.busy).toEqual([]);
+
+      const driver = await driverRow('', d.deletedRequestDay);
+      expect(driver?.state).toBe('free');
+      expect(driver?.busy).toEqual([]);
+      // Бланка дня у водителя тоже нет: отбор по бланку спрашивает ту же работу, что и строка.
+      expect(await driverRow(formsQuery(['4p']), d.deletedRequestDay)).toBeUndefined();
+
+      // И сводка не зовёт искать водителя второму рейсу дня, у которого состав из такой же
+      // архивной заявки: цифра считается своим запросом мимо выражений состояния.
+      const res = await ctx.app.inject({
+        method: 'GET',
+        url: `/api/v1/garage/vehicles/summary?on=${d.deletedRequestDay}${ONLY_MINE}`,
+        headers: ctx.auth,
+      });
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json().routesWithoutDriver).toBe(0);
+      expect((await vehicleRow(ctx.spare.id, '', d.deletedRequestDay))?.state).toBe('free');
+    });
+
+    /**
+     * Живая заявка рядом с удалённой рейс держит: правило спрашивает, есть ли в составе хоть одна
+     * живая, а не все ли живы, — иначе одно удаление из семи строк задания уводило бы из среза
+     * машину, которой ехать по остальным шести.
+     *
+     * Состав при этом приезжает целиком, вместе с удалённой строкой: добор (`loadRouteRequests`)
+     * ни статуса, ни удаления не фильтрует. Записано ожиданием, а не обойдено, — занятость
+     * показывает то же задание, которое диспетчер видит в самом рейсе, и решение показывать иначе
+     * должно быть отдельным и заметным.
+     */
+    it('живая заявка рядом с удалённой держит рейс в срезе', async () => {
+      const vehicle = await vehicleRow(ctx.routeVehicle.id, '', d.mixedRequestsDay);
+      expect(vehicle?.state).toBe('on_route');
+      expect(busyKinds(vehicle!.busy)).toEqual(['route']);
+      const route = vehicle!.busy[0] as GarageRouteBusy;
+      expect(route.requests.map((request) => request.requestId)).toContain(d.mixedDeletedRequestId);
+      expect(route.requests).toHaveLength(2);
+      expect((await driverRow('', d.mixedRequestsDay))?.state).toBe('assigned');
+    });
+
+    it('перегон работой был и остался: состава у него нет по устройству', async () => {
+      const vehicle = await vehicleRow(ctx.routeVehicle.id, '', d.relocationDay);
+      expect(vehicle?.state).toBe('on_route');
+      const route = vehicle!.busy[0] as GarageRouteBusy;
+      // Ни состава, ни бумаги — и всё же работа: задание перегону даёт пара «откуда — куда».
+      expect(route.requests).toEqual([]);
+      expect(route.waybill).toBeNull();
+      expect(route.moveFrom).not.toBe('');
+      expect((await driverRow('', d.relocationDay))?.state).toBe('assigned');
+    });
+
+    it('день линейного заказа работой был и остался: он и есть строка состава', async () => {
+      const vehicle = await vehicleRow(ctx.special.id, '', d.linearDay);
+      // «В рейсе», а не «на объекте»: занятости площадки линейный заказ не даёт вовсе, и день его
+      // машины говорит рейс (ADR 0100 §12) — тот самый, который правило обязано пропустить.
+      expect(vehicle?.state).toBe('on_route');
+      const route = vehicle!.busy[0] as GarageRouteBusy;
+      expect(route.requests.map((request) => request.workDate)).toEqual([d.linearDay]);
+      expect((await driverRow('', d.linearDay))?.state).toBe('assigned');
     });
   });
 });

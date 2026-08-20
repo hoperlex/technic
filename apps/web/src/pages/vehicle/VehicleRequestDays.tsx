@@ -24,6 +24,7 @@ import { EntityLink } from '@shared/ui';
 import { UserAvatar } from '../../components/UserAvatar';
 import { errorMessage } from '../../utils/format';
 import { vehicleRouteLink, waybillLink } from '../../utils/links';
+import { garageKeys } from '@entities/garage';
 import { formatDateOnly } from './shared';
 import { useRouteModal } from './routeModal';
 import { VehicleDayRouteModal } from './VehicleDayRouteModal';
@@ -137,6 +138,11 @@ export function VehicleRequestDays({ request, readOnly }: Props) {
     qc.setQueryData(daysKey(request.id), days);
     void qc.invalidateQueries({ queryKey: REQUESTS_KEY });
     void qc.invalidateQueries({ queryKey: ROUTES_KEY });
+    // Срез гаража: своих таблиц у него нет — день собирается сервером (ADR 0076), — а видно ли в
+    // нём работу, решает состав рейса (ADR 0131). Поставленный день состав наполняет, снятый
+    // опустошает: опустевший рейс без листа из среза исчезает вовсе, а машина и её водитель
+    // возвращаются в свободные. Без гашения диспетчер читает занятость, которой уже нет.
+    void qc.invalidateQueries({ queryKey: garageKeys.root });
   };
 
   const unplan = useMutation({
