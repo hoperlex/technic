@@ -19,6 +19,7 @@
     "seed:admin": "tsx src/seed-admin.ts",
     "seed:drivers-test": "tsx src/seed-drivers-test.ts",
     "backfill:grants": "tsx src/backfill-grants.ts",
+    "check:captcha": "tsx scripts/check-captcha.ts",
     "check:grants-preflight": "tsx src/check-grants-preflight.ts",
     "check:mailing-audience": "tsx src/check-mailing-audience.ts",
     "check:role-migration": "tsx src/check-role-migration.ts",
