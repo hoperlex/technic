@@ -5,10 +5,12 @@ import {
   withSingleClassificationForm,
 } from './vehicle-classifications';
 import type { RequestStatus } from './enums';
-import type { CredentialTypeCode, DriverDocumentGap } from './persons';
+import type { CredentialTypeCode, DriverDocumentGap, LicenseDefect } from './persons';
 import type { RoutePurpose } from './vehicle-routes';
-import type { VehicleStatus } from './vehicles';
-import type { WaybillStatus } from './waybills';
+import { routeWaybillForm } from './vehicle-routes';
+import type { VehicleOwnership, VehicleStatus } from './vehicles';
+import type { WaybillFormCode, WaybillStatus } from './waybills';
+import { WAYBILL_FORM_CODES, waybillFormCodeSchema } from './waybills';
 
 /**
  * Гараж: чем заняты собственная техника и водители в конкретный день.
@@ -88,6 +90,25 @@ export interface GarageBusyVehicle {
   vehicleId: string;
   /** «Е646СК799» либо марка/тип — тем же правилом, что и везде (`vehicleLabel`). */
   vehicleLabel: string;
+  /**
+   * Марка и модель — вторая половина подписи, второй строкой графы; `null` — модель не заведена.
+   *
+   * Полем, а не склейкой на портале: правило «чем машина подписана» уже живёт на сервере
+   * (`vehicleLabel`), и второй его половине место там же. Собранной строкой «подпись · модель»
+   * она сюда не едет тоже: из такой строки две строки графы обратно не разобрать, не угадывая
+   * разделитель.
+   */
+  vehicleModelName: string | null;
+  /** Принадлежность машины: на арендную лист выписывает арендодатель, и бланка у работы нет. */
+  vehicleOwnership: VehicleOwnership;
+  /**
+   * Бланк, закреплённый за типом машины (4-П или форма № 3); ЭСМ-2 у типа не бывает (ADR 0065).
+   *
+   * Тип здесь широкий намеренно и временно: сужение до `TypeWaybillFormCode` приедет вместе со
+   * сквозной правкой всех проекций бланка типа — она гейтится preflight'ом по проду, который ещё
+   * не проведён.
+   */
+  vehicleWaybillFormCode: WaybillFormCode;
 }
 
 /** Человек занятости: им строка техники называет, кто за рулём. */
@@ -195,6 +216,53 @@ export interface GarageEsm2Busy extends GarageBusyVehicle, GarageBusyDriver {
  */
 export type GarageBusyEntry = GarageRouteBusy | GarageSpecialBusy | GarageEsm2Busy;
 
+/**
+ * Каким бланком закрывается эта работа; `null` — не закрывается ничем.
+ *
+ * Вопрос не про то, какой лист уже выписан, а про то, каким его выпишут: диспетчер отбирает день
+ * по бумаге, которую ему предстоит вести, и незаполненный бланк — та же работа, что и заполненный.
+ * Поэтому заказ спецтехники отвечает `esm2`, даже когда листа на эту неделю ещё нет: нелинейный
+ * заказ ведётся недельными листами (`esm2Mode = 'auto'`), и другого бланка у него не будет.
+ *
+ * Рейс отвечает общим правилом рейса (`routeWaybillForm`), а не своей копией: перегон идёт по 4-П
+ * независимо от типа машины, грузовой — по бланку типа, и второе описание этого правила разошлось
+ * бы с первым на первой же правке.
+ *
+ * Аренда бланка не имеет ни в одном из видов: лист на такую машину выписывает арендодатель.
+ */
+export function busyWaybillForm(entry: GarageBusyEntry): WaybillFormCode | null {
+  if (entry.kind === 'route') {
+    return routeWaybillForm({
+      purpose: entry.purpose,
+      ownership: entry.vehicleOwnership,
+      formCode: entry.vehicleWaybillFormCode,
+    }).formCode;
+  }
+  return entry.vehicleOwnership === 'own' ? 'esm2' : null;
+}
+
+/**
+ * Бланки всего дня — набором без повторов, в порядке `WAYBILL_FORM_CODES`.
+ *
+ * Набор, а не одно значение: у дня бывает две работы разных бланков сразу — линейный заказ ведёт
+ * рейс дня (4-П) и лист ЭСМ-2 по требованию (ADR 0100, `esm2Mode = 'on_demand'`). Один ответ соврал
+ * бы дважды: спрятал бы такую машину от отбора «ЭСМ-2» и показал бы её же в отборе «4-П» как
+ * единственную правду.
+ *
+ * Пустой ответ — тоже ответ: у свободного дня и у арендной машины бланка нет, и в отбор по бланку
+ * такая строка не проходит вовсе.
+ */
+export function busyWaybillForms(entries: readonly GarageBusyEntry[]): WaybillFormCode[] {
+  const forms = new Set<WaybillFormCode>();
+  for (const entry of entries) {
+    const form = busyWaybillForm(entry);
+    if (form) forms.add(form);
+  }
+  // Порядок задаёт справочник, а не то, в каком часу дня работа попала в корзину: иначе одна и та
+  // же пара бланков читалась бы в строках по-разному.
+  return WAYBILL_FORM_CODES.filter((code) => forms.has(code));
+}
+
 // ── Строки ──
 
 /** Строка вкладки «Техника»: краткая карточка машины и её день. */
@@ -261,6 +329,18 @@ export interface GarageDriverDto {
   /** «7712 345678» — серия с номером удостоверения, которым выпишется лист на этот день. */
   licenseNumber: string;
   licenseExpiresOn: string | null;
+  /**
+   * Почему показанный документ не годится для листа на день среза; `null` — годится.
+   *
+   * Поле заведено ради показа, а не ради правила: строка среза называет **запасной** документ,
+   * когда годного нет вовсе (`displayDocumentOf`), — иначе просроченный срок в ней не появился бы
+   * никогда и подсвечивать было бы нечего. Правило выписки при этом прежнее: лист выписывается по
+   * годному документу (`waybillDocumentOf`), и пробелы (`gaps`) считаются по нему же.
+   *
+   * Состояние «истекает» портал считает сам, от дня среза (`licenseDisplayState`): порог живёт в
+   * одном месте, и смена порога не заставляет сервер пересчитывать строку.
+   */
+  licenseDefect: LicenseDefect | null;
   /** Категории того же удостоверения: «B», «C», «CE». */
   categories: string[];
   /**
@@ -290,6 +370,68 @@ export const GARAGE_DRIVER_SORT_FIELDS = ['state', 'fullName'] as const;
  */
 const garageDayQuery = { on: dateOnlySchema.optional() };
 
+/**
+ * Потолок набора площадок. Считан от строки запроса: UUID занимает 36 байт плюс разделитель, и
+ * тридцать площадок с остальными фильтрами укладываются в дефолтные 8 КБ адреса с большим запасом.
+ * Второй довод тот же, что у любого списочного фильтра: площадок в работе десятки, и «выбраны
+ * все» — это тот же вопрос к списку, что «фильтр не задан».
+ */
+export const GARAGE_OBJECT_FILTER_MAX = 30;
+
+/** Длина ключа набора — голый UUID; от неё и считается предел длины всей строки. */
+const OBJECT_FILTER_KEY_LENGTH = 36;
+
+/**
+ * Набор площадок в строке запроса — через запятую, приёмом `classificationFilterSchema`.
+ *
+ * CSV, а не повторённый параметр `objects=a&objects=b`: повтор Fastify разбирает в массив только
+ * пока значений больше одного, и на единственной выбранной площадке схема получила бы строку —
+ * тип фильтра зависел бы от того, сколько галочек поставил человек.
+ *
+ * Пустая строка означает «фильтра нет», а не ошибку: снятые галочки — обычное состояние формы, и
+ * 400 на них заставлял бы портал вычищать параметр. Мусорный ключ, наоборот, отвергается: набор
+ * собирается из справочника площадок, и опечатка обязана быть видна отказом, а не молча суженным
+ * списком — молчаливое сужение здесь неотличимо от честного ответа «в этот день никто там не
+ * работал».
+ */
+export const garageObjectFilterSchema = z
+  .string()
+  // Предел длины — от потолка набора, с запасом ровно на один лишний ключ: строка длиннее этого не
+  // бывает у портала вовсе, а перебравший набор обязан упереться в **счётный** отказ («не больше
+  // 30 площадок»), а не в отказ по числу символов, из которого человеку ничего не понятно.
+  .max((GARAGE_OBJECT_FILTER_MAX + 1) * (OBJECT_FILTER_KEY_LENGTH + 1) + 20)
+  .transform((v) =>
+    v
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => s !== ''),
+  )
+  .pipe(
+    z
+      .array(uuidSchema)
+      .max(GARAGE_OBJECT_FILTER_MAX, `Не больше ${GARAGE_OBJECT_FILTER_MAX} площадок в фильтре`),
+  );
+
+/**
+ * Набор бланков работы дня — тем же приёмом и тем же справочником, каким бланк считается
+ * (`WAYBILL_FORM_CODES`).
+ *
+ * Своего перечня у фильтра нет намеренно: спрашивают им ровно тот ответ, который даёт
+ * `busyWaybillForms` о строке, и заведись здесь второй список значений — фильтр однажды предложил
+ * бы бланк, которым не закрывается ни одна работа. Потолок набора — сам справочник: выбрать больше,
+ * чем в нём есть, нельзя, а «выбраны все» равно «фильтр не задан».
+ */
+export const garageFormFilterSchema = z
+  .string()
+  .max(WAYBILL_FORM_CODES.join(',').length + 20)
+  .transform((v) =>
+    v
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => s !== ''),
+  )
+  .pipe(z.array(waybillFormCodeSchema).max(WAYBILL_FORM_CODES.length));
+
 export const garageVehicleQuerySchema = withSingleClassificationForm(
   baseListQuery(GARAGE_VEHICLE_SORT_FIELDS).extend({
     ...garageDayQuery,
@@ -300,6 +442,23 @@ export const garageVehicleQuerySchema = withSingleClassificationForm(
     // Прежняя форма того же фильтра — одна позиция парой полей: её шлют вкладки со старым JS.
     vehicleTypeId: uuidSchema.optional(),
     vehicleCategoryId: uuidSchema.optional(),
+    /**
+     * Площадки работы дня набором (Р8): машина проходит, если хотя бы одна её работа в этот день
+     * идёт по заявке одной из отобранных площадок. Свободная машина фильтром выпадает — это отбор,
+     * а не подсветка: у дня без работы площадки нет, и показывать такую строку в ответе «покажи
+     * всех на площадке N» значило бы отвечать не на вопрос.
+     */
+    objects: garageObjectFilterSchema.optional(),
+    /**
+     * Отбор по бланку ведёт вкладка водителей (Р20). Здесь ключ **запрещён**, а не забыт:
+     * незаявленный zod отбросил бы молча, и запрос вернул бы полный список под видом отобранного —
+     * худший из исходов, потому что экран уверенно показал бы «отбор применён».
+     *
+     * Точечным полем, а не `.strict()` на всю схему: строгость превратила бы в 400 и все прочие
+     * неизвестные ключи, которые ручка сегодня отбрасывает, — правка поведения ручки целиком ради
+     * одного ключа.
+     */
+    forms: z.never({ error: 'Отбор по бланку на вкладке техники не ведётся' }).optional(),
   }),
 );
 export type GarageVehicleQuery = z.infer<typeof garageVehicleQuerySchema>;
@@ -309,6 +468,23 @@ export const garageDriverQuerySchema = baseListQuery(GARAGE_DRIVER_SORT_FIELDS).
   state: garageDriverStateSchema.optional(),
   /** Комплект документов на день среза — тот же фильтр, что в справочнике водителей. */
   documents: z.enum(['complete', 'incomplete']).optional(),
+  /**
+   * Площадки работы дня набором (Р8–Р9): человек проходит, если в этот день он ведёт рейс по
+   * заявке одной из отобранных площадок либо стоит машинистом в недельном листе по такой заявке.
+   *
+   * Заказа спецтехники в этих ветках нет и быть не может: заявка называет машину, а не человека
+   * (водитель переехал в рейс миграцией 0074). Отдела в фильтре нет тоже (Р10) — у рейса по заявке
+   * отдела площадки нет вовсе, и набором площадок он не находится.
+   */
+  objects: garageObjectFilterSchema.optional(),
+  /**
+   * Бланк работы дня набором (Р6): строка проходит, если пересечение её набора бланков с набором
+   * фильтра непусто. Набор с обеих сторон, потому что у дня бывает две работы разных бланков сразу
+   * — линейный заказ ведёт рейс дня (4-П) и лист ЭСМ-2 по требованию, — и одно значение соврало бы
+   * дважды: спрятало бы такого человека от отбора «ЭСМ-2» и показало бы его же в отборе «4-П» как
+   * единственную правду.
+   */
+  forms: garageFormFilterSchema.optional(),
 });
 export type GarageDriverQuery = z.infer<typeof garageDriverQuerySchema>;
 

@@ -72,6 +72,8 @@ interface Ctx {
   /** Тип линейный и тип обычный — оба грузового вида: на объект вызывают технику любого вида. */
   linearTypeId: string;
   plainTypeId: string;
+  /** Наименование обычного типа: им общее правило подписывает машину без госномера и марки. */
+  plainTypeName: string;
   today: string;
   /** Срок заказов: сегодня плюс три дня — сегодняшний день срез и спрашивает. */
   dateTo: string;
@@ -80,6 +82,8 @@ interface Ctx {
 interface Vehicle {
   id: string;
   registrationNumber: string;
+  /** Марка: срез отдаёт её отдельным полем — второй строкой колонки техники (Р16). */
+  modelName: string;
 }
 
 let ctx: Ctx;
@@ -87,6 +91,8 @@ let ctx: Ctx;
 /** Что завёл этот файл: по этим спискам он за собой и убирает. */
 const createdRequests: string[] = [];
 const createdRoutes: string[] = [];
+/** Своя машина без госномера: в справочнике таких нет, а подпись обязана уметь и такую. */
+const createdVehicles: string[] = [];
 
 /** Конфиг читается при импорте, поэтому окружение выставляется до первого `import('../src/...')`. */
 function prepareEnv(databaseUrl: string): void {
@@ -183,6 +189,7 @@ async function createObject(): Promise<string> {
  * тем же видом заведены машины, которыми заказы берут в работу.
  */
 async function createType(app: Ctx['app'], auth: Ctx['auth'], kindId: string, isLinear: boolean) {
+  const name = `${TYPE_NAME_PREFIX}, ${isLinear ? 'линейный' : 'обычный'} ${RUN})`;
   const res = await app.inject({
     method: 'POST',
     url: '/api/v1/vehicle-types',
@@ -190,12 +197,14 @@ async function createType(app: Ctx['app'], auth: Ctx['auth'], kindId: string, is
     payload: {
       kindId,
       code: `${TYPE_PREFIX}_${isLinear ? 'lin' : 'plain'}`,
-      name: `${TYPE_NAME_PREFIX}, ${isLinear ? 'линейный' : 'обычный'} ${RUN})`,
+      name,
       isLinear,
     },
   });
   expect(res.statusCode, res.body).toBe(201);
-  return res.json().id as string;
+  // Наименование возвращается вместе с идентификатором: им подписана машина, у которой нет ни
+  // госномера, ни марки, ни категории (`vehicleLabel`).
+  return { id: res.json().id as string, name };
 }
 
 /** Виза руководителя: без неё заявку в работу не берут. */
@@ -353,6 +362,7 @@ interface OnSiteRow {
     routeDisplayNumber: string;
     vehicleId: string;
     vehicleLabel: string;
+    vehicleModelName: string | null;
     driverPersonId: string | null;
     driverName: string;
   } | null;
@@ -437,12 +447,16 @@ describe.skipIf(!DB_URL)('срезы и отборы линейного зака
     const vehicles = await db.execute<{
       id: string;
       registration_number: string;
+      model_name: string;
       kind_id: string;
     }>(sql`
-      SELECT v.id, v.registration_number, vt.kind_id
+      SELECT v.id, v.registration_number, vm.name AS model_name, vt.kind_id
       FROM vehicles v
       JOIN vehicle_types vt ON vt.id = v.vehicle_type_id
       JOIN vehicle_kinds vk ON vk.id = vt.kind_id
+      -- Марка обязательна: ею проверяется вторая половина подписи машины дня, и машина без марки
+      -- сделала бы проверку пустой.
+      JOIN vehicle_models vm ON vm.id = v.vehicle_model_id
       WHERE v.ownership = 'own' AND v.status = 'active' AND v.deleted_at IS NULL
         AND v.registration_number IS NOT NULL
         AND vt.waybill_form_code = '4p' AND vk.code = 'freight_transport'
@@ -469,10 +483,18 @@ describe.skipIf(!DB_URL)('срезы и отборы линейного зака
     if (!assigned || !day || !plain) {
       throw new Error('свободных на сегодня своих грузовых машин с бланком 4-П меньше трёх');
     }
-    const vehicleOf = (row: { id: string; registration_number: string }): Vehicle => ({
+    const vehicleOf = (row: {
+      id: string;
+      registration_number: string;
+      model_name: string;
+    }): Vehicle => ({
       id: row.id,
       registrationNumber: row.registration_number,
+      modelName: row.model_name,
     });
+
+    const linearType = await createType(app, auth, assigned.kind_id, true);
+    const plainType = await createType(app, auth, assigned.kind_id, false);
 
     ctx = {
       app,
@@ -484,8 +506,9 @@ describe.skipIf(!DB_URL)('срезы и отборы линейного зака
       dayVehicle: vehicleOf(day),
       plainVehicle: vehicleOf(plain),
       driverId: await seedDriver(),
-      linearTypeId: await createType(app, auth, assigned.kind_id, true),
-      plainTypeId: await createType(app, auth, assigned.kind_id, false),
+      linearTypeId: linearType.id,
+      plainTypeId: plainType.id,
+      plainTypeName: plainType.name,
       today,
       dateTo: shiftDateKey(today, 3),
     };
@@ -507,6 +530,11 @@ describe.skipIf(!DB_URL)('срезы и отборы линейного зака
         WHERE route_id = ANY(${routes}::uuid[]) OR source_request_id = ANY(${requests}::uuid[])`);
       await ctx.db.execute(sql`DELETE FROM vehicle_routes WHERE id = ANY(${routes}::uuid[])`);
       await ctx.db.execute(sql`DELETE FROM vehicle_requests WHERE id = ANY(${requests}::uuid[])`);
+      // Заведённые здесь машины — после рейсов и заявок, которые на них ссылались, и до типов:
+      // тип, на который смотрит машина, уборка типов не тронет.
+      await ctx.db.execute(
+        sql`DELETE FROM vehicles WHERE id = ANY(${sql.param(createdVehicles)}::uuid[])`,
+      );
       await ctx.db.execute(sql`
         DELETE FROM construction_objects
         WHERE code = ${OBJECT_CODE}
@@ -580,8 +608,42 @@ describe.skipIf(!DB_URL)('срезы и отборы линейного зака
     // А машина строки — дневная, из рейса этого дня.
     expect(row.dayVehicle?.vehicleId).toBe(ctx.dayVehicle.id);
     expect(row.dayVehicle?.routeDisplayNumber).toMatch(/^Р-\d+$/);
-    expect(row.dayVehicle?.vehicleLabel).toContain(ctx.dayVehicle.registrationNumber);
+    // Подпись — общим правилом портала (`vehicleLabel`, Р16): у машины с госномером это он один,
+    // без склейки с маркой. Марка приезжает рядом отдельным полем — из неё колонка строит вторую
+    // строку, а из склейки её пришлось бы разбирать обратно по разделителю.
+    expect(row.dayVehicle?.vehicleLabel).toBe(ctx.dayVehicle.registrationNumber);
+    expect(row.dayVehicle?.vehicleModelName).toBe(ctx.dayVehicle.modelName);
     expect(row.dayVehicle?.driverPersonId).toBe(ctx.driverId);
+  });
+
+  /**
+   * Вторая половина того же исправления (Р16): подпись машины дня считается **общим** правилом
+   * портала, а не склейкой «модель · госномер», которая стояла здесь раньше. У склейки запасных
+   * ветвей нет вовсе, и машина без госномера подписалась бы одной маркой, а без марки — пустой
+   * строкой; общее правило спускается по всем четырём приметам сразу.
+   */
+  it('машина дня без госномера названа общим правилом: марка, категория, тип', async () => {
+    // Машины без госномера в справочнике нет ни одной, и портить чужую запись ради проверки
+    // нельзя — заводим свою: тип теста, ни госномера, ни марки, ни категории.
+    const created = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/v1/vehicles',
+      headers: ctx.auth,
+      payload: { ownership: 'own', vehicleTypeId: ctx.plainTypeId },
+    });
+    expect(created.statusCode, created.body).toBe(201);
+    const vehicleId = created.json().id as string;
+    createdVehicles.push(vehicleId);
+
+    const request = await linearInProgress();
+    await planDay(request.id, ctx.today, vehicleId);
+
+    const row = await onSiteRow(request);
+    expect(row.dayVehicle?.vehicleId).toBe(vehicleId);
+    // Госномера нет, марки нет, категории нет — остаётся тип: ровно тот порядок, каким машину
+    // называют в справочнике и в гараже.
+    expect(row.dayVehicle?.vehicleLabel).toBe(ctx.plainTypeName);
+    expect(row.dayVehicle?.vehicleModelName).toBeNull();
   });
 
   it('нераспланированный день среза машину не выдумывает, а обычный заказ вопроса не получает', async () => {

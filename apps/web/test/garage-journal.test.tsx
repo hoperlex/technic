@@ -82,6 +82,7 @@ const DRIVER: GarageDriverDto = {
   credentialTypeCode: 'driver_license',
   licenseNumber: '',
   licenseExpiresOn: null,
+  licenseDefect: null,
   categories: ['C'],
   gaps: [],
   busy: [
@@ -92,6 +93,9 @@ const DRIVER: GarageDriverDto = {
       purpose: 'freight',
       vehicleId: SECOND.id,
       vehicleLabel: SECOND.label,
+      vehicleModelName: SECOND.modelName,
+      vehicleOwnership: 'own',
+      vehicleWaybillFormCode: '4p',
       driverPersonId: 'p1',
       driverName: 'Петров Пётр Петрович',
       moveFrom: '',
@@ -173,6 +177,8 @@ function renderPage(options: {
     'GET /garage/drivers': () => json(DRIVER_LIST),
     'GET /garage/drivers/summary': () => json(DRIVER_SUMMARY),
     'GET /vehicle-classifications': () => json(listOf([CRANE])),
+    // Справочник площадок наполняет фильтр отбора по объекту — своих строк среза он не даёт.
+    'GET /objects': () => json(listOf([])),
     // Соседняя колонка «ТО» спрашивает своё состояние пакетом (Р16); спрашивают с неё свои тесты.
     'GET /vehicle-maintenance/snapshot': ({ query }) =>
       json({ on: query.get('on') ?? '', items: [] }),

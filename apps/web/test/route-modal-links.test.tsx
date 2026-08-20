@@ -234,6 +234,9 @@ const GARAGE_VEHICLE: GarageVehicleDto = {
       purpose: 'freight',
       vehicleId: 'v-1',
       vehicleLabel: 'Е646СК799',
+      vehicleModelName: 'КамАЗ 65201',
+      vehicleOwnership: 'own',
+      vehicleWaybillFormCode: '4p',
       driverPersonId: 'p-1',
       driverName: 'Иванов Иван Иванович',
       moveFrom: '',
@@ -273,6 +276,8 @@ const GARAGE_ROUTES: RouteMap = {
       onDate: ON_DATE,
     } satisfies GarageVehiclesSummaryDto),
   'GET /vehicle-classifications': () => json([]),
+  // Справочник площадок наполняет фильтр отбора по объекту — своих строк среза он не даёт.
+  'GET /objects': () => json(emptyList()),
   // Колонка «ТО» спрашивает состояние пакетом на видимую страницу: право на обслуживание у
   // механика есть, и без ответа она молча осталась бы без данных.
   'GET /vehicle-maintenance/snapshot': ({ query }) =>

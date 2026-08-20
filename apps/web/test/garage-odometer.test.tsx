@@ -87,6 +87,8 @@ function renderPage(options: {
     'GET /garage/drivers': () => json(emptyList()),
     'GET /garage/drivers/summary': () => json({ ...summary, assigned: 0, documentsIncomplete: 0 }),
     'GET /vehicle-classifications': () => json(emptyList()),
+    // Справочник площадок наполняет фильтр отбора по объекту — своих строк среза он не даёт.
+    'GET /objects': () => json(emptyList()),
     // Соседняя колонка «ТО» спрашивает своё состояние пакетом (Р16) — и у диспетчера, и у
     // механика: право на обслуживание есть у обоих. Здесь она молчит пустым ответом, а спрашивают
     // с неё свои тесты (`garage-maintenance`).

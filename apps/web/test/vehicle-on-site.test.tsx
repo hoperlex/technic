@@ -4,6 +4,7 @@ import type {
   SpecialEquipmentRequestDto,
   VehicleOnSiteListDto,
   VehicleOnSiteSummaryDto,
+  VehicleRequestAssignmentDto,
 } from '@technic/contracts';
 import { json, mockHttp, type HttpMock } from './http';
 import { renderWithUser } from './render';
@@ -30,6 +31,35 @@ const ON_DATE = '2026-07-24';
 /** Строка среза: спецтехника в работе — только такую отбирает вкладка и только её сокращают. */
 const onSite = (over: Partial<SpecialEquipmentRequestDto>): SpecialEquipmentRequestDto =>
   vehicleRequest({ status: 'confirmed', objectName: 'Альфа-объект', ...over });
+
+/**
+ * Своя машина в назначении: подпись строки — госномер, а марка идёт второй строкой рядом со
+ * «Своей техникой» — по ней машину и держат в голове, номер не говорит, самосвал это или автокран.
+ */
+const ownAssignment = (
+  registrationNumber: string,
+  modelName: string,
+): VehicleRequestAssignmentDto => ({
+  vehicleId: `v-${registrationNumber}`,
+  ownership: 'own',
+  vehicleKindId: 'vk-special',
+  vehicleTypeId: 'vt-1',
+  typeName: 'Автокраны',
+  vehicleCategoryId: 'vc-130',
+  categoryName: 'Автокран, г/п 130 т',
+  categorySpecs: { lift_capacity: 130 },
+  modelName,
+  registrationNumber,
+  description: '',
+  lessorId: null,
+  lessorName: null,
+  pricePerHour: null,
+  pricePerShift: null,
+  shiftHours: null,
+  assignedBy: 'user-2',
+  assignedByName: 'Петров П. П.',
+  assignedAt: '2026-07-23T09:00:00.000Z',
+});
 
 const items: SpecialEquipmentRequestDto[] = [
   onSite({
@@ -83,7 +113,14 @@ const items: SpecialEquipmentRequestDto[] = [
       decisionComment: '',
     },
   }),
-  onSite({ id: 'r3', num: 103, displayNumber: 'ТС-103', dateFrom: '2026-07-20', dateTo: ON_DATE }),
+  onSite({
+    id: 'r3',
+    num: 103,
+    displayNumber: 'ТС-103',
+    dateFrom: '2026-07-20',
+    dateTo: ON_DATE,
+    assignment: ownAssignment('Е646СК799', 'КамАЗ 65115'),
+  }),
   // Срок прошёл, а работа не принята: такую заявку срез не отпускает — закрыть её всё равно
   // нельзя, и без строки о ней вспомнили бы через месяц.
   onSite({
@@ -109,6 +146,50 @@ const summary: VehicleOnSiteSummaryDto = {
 };
 
 /**
+ * Линейный заказ (ADR 0100 §12): назначение у него — машина по умолчанию, а на объект в
+ * конкретный день выходит машина рейса **этого дня**, и срез обязан называть её. Своим срезом, а
+ * не строками в общем списке: у линейных строк свой счёт карточек и свои подписи присутствия, и
+ * подмешивание их в общий набор переписало бы соседние проверки, ничего к ним не добавив.
+ */
+const linearSlice: VehicleOnSiteListDto = {
+  items: [
+    onSite({
+      id: 'r5',
+      num: 105,
+      displayNumber: 'ТС-105',
+      isLinear: true,
+      dateFrom: '2026-07-22',
+      dateTo: '2026-07-28',
+      assignment: ownAssignment('Х001АА777', 'КамАЗ 6520'),
+      dayVehicle: {
+        routeId: 'rt-1',
+        routeDisplayNumber: 'Р-12',
+        vehicleId: 'v-day',
+        vehicleLabel: 'В321ВВ777',
+        vehicleModelName: 'МАЗ 6501',
+        driverPersonId: 'p-1',
+        driverName: 'Иванов И. И.',
+      },
+    }),
+    // День не распланирован: рейса на сегодня нет, и назначение показывать вместо факта нельзя.
+    onSite({
+      id: 'r6',
+      num: 106,
+      displayNumber: 'ТС-106',
+      isLinear: true,
+      dateFrom: '2026-07-22',
+      dateTo: '2026-07-28',
+      assignment: ownAssignment('У777УУ777', 'МАЗ 5440'),
+      dayVehicle: null,
+    }),
+  ],
+  total: 2,
+  page: 1,
+  pageSize: 50,
+  onDate: ON_DATE,
+};
+
+/**
  * Смотрит администратор: у него сходятся оба права на сокращение срока — запрос
  * (`vehicleRequests.update`, право заказчика и диспетчера) и виза на него
  * (`vehicleRequests.approve`, право руководителя строительства, ADR 0025). Тест разбирает обе
@@ -126,9 +207,10 @@ const CRANE = classification({
   label: 'Автокраны, г/п 25 т',
 });
 
-function renderTab(viewport?: Viewport): HttpMock {
+/** Срез задаётся аргументом: линейные строки проверяются своим набором, остальные — общим. */
+function renderTab(viewport?: Viewport, slice: VehicleOnSiteListDto = list): HttpMock {
   const http = mockHttp({
-    'GET /vehicle-requests/on-site': () => json(list),
+    'GET /vehicle-requests/on-site': () => json(slice),
     'GET /vehicle-requests/on-site/summary': () => json(summary),
     // Справочник объектов наполняет фильтр вкладки; отбор строк ведёт сервер, и на проверяемое он
     // не влияет — поэтому пуст.
@@ -194,6 +276,72 @@ describe('вкладка «На объекте»', () => {
     expect(screen.getByLabelText('Согласовать досрочное завершение')).toBeDefined();
     expect(screen.getByLabelText('Отклонить досрочное завершение')).toBeDefined();
     expect(screen.getByText('досрочно до 25.07.2026 · ждёт визы')).toBeDefined();
+  });
+
+  it('в графе техники марка стоит второй строкой рядом с арендодателем', async () => {
+    renderTab();
+
+    // Подпись первой строкой — госномер; марка и «Своя техника» одной строкой под ней: две
+    // отдельные строки растили бы строку таблицы втрое против соседних (Р15).
+    expect(await screen.findByText('Е646СК799')).toBeDefined();
+    expect(screen.getByText('КамАЗ 65115 · Своя техника')).toBeDefined();
+  });
+
+  it('на телефоне марка стоит перед арендодателем, а не он один', async () => {
+    renderTab(MOBILE_VIEWPORT);
+
+    // Ровно то, на что жаловались: раньше в карточке был виден только арендодатель, и какая это
+    // машина, на ходу узнать было негде.
+    expect(await screen.findByText('Е646СК799')).toBeDefined();
+    expect(screen.getByText('КамАЗ 65115 · Своя техника')).toBeDefined();
+  });
+
+  it('у линейного заказа в графе стоит машина дня, а не назначенная', async () => {
+    renderTab(undefined, linearSlice);
+
+    // Машина рейса этого дня — с рейсом и человеком в кабине рядом с маркой (ADR 0100 §12).
+    expect(await screen.findByText('В321ВВ777')).toBeDefined();
+    expect(screen.getByText('МАЗ 6501 · Р-12 · Иванов И. И.')).toBeDefined();
+    // Назначенной машины в строке нет вовсе: у линейного заказа она лишь машина по умолчанию.
+    expect(screen.queryByText('Х001АА777')).toBeNull();
+    expect(screen.queryByText('КамАЗ 6520 · Своя техника')).toBeNull();
+  });
+
+  it('линейный день без рейса объявляет об этом словами, а не машиной по умолчанию', async () => {
+    renderTab(undefined, linearSlice);
+
+    expect(await screen.findByText('на этот день машина не назначена')).toBeDefined();
+    // Назначение вместо факта не подставляется: выдать его за вышедшую сегодня машину значило бы
+    // ответить на вопрос «что на объекте» догадкой.
+    expect(screen.queryByText('У777УУ777')).toBeNull();
+  });
+
+  it('выбранный бланк уходит и в список, и в сводку', async () => {
+    const http = renderTab();
+    await screen.findByText('ООО «Арендатех»');
+
+    // Поле опознаётся подсказкой — подписи у фильтров полосы нет, её место занимает placeholder.
+    const field = [...document.querySelectorAll<HTMLElement>('.ant-select')].find(
+      (el) => el.textContent?.trim() === 'Все бланки',
+    );
+    expect(field, 'фильтр «Все бланки»').toBeTruthy();
+    fireEvent.mouseDown(field!.querySelector('.ant-select-selector') ?? field!);
+    await waitFor(() => {
+      const option = [...document.querySelectorAll<HTMLElement>('.ant-select-item-option')].find(
+        (o) => o.textContent?.trim() === 'ЭСМ-2',
+      );
+      expect(option, 'вариант «ЭСМ-2»').toBeTruthy();
+      fireEvent.click(option!);
+    });
+
+    await waitFor(() => {
+      expect(http.lastCall('GET /vehicle-requests/on-site')!.query.get('forms')).toBe('esm2');
+      // Сводка сужается тем же ключом: цифры, посчитанные не по видимым строкам, вводили бы в
+      // заблуждение вернее, чем их отсутствие.
+      expect(http.lastCall('GET /vehicle-requests/on-site/summary')!.query.get('forms')).toBe(
+        'esm2',
+      );
+    });
   });
 
   it('фильтр техники уезжает набором позиций одним параметром classifications', async () => {

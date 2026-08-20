@@ -194,6 +194,10 @@ function statsRow(over: Partial<VehicleReadingStatsRow> = {}): VehicleReadingSta
     vehicleLabel: 'А123БВ777',
     distanceKm: 1200,
     engineHours: 310.5,
+    // Снимки счётчиков в строке сводки есть, а в книгах их нет (Р18): листы собираются из сумм и
+    // из своего среза на `to`, и появление полей в строке ни одну колонку книги не меняет.
+    lastOdometer: null,
+    lastEngineHours: null,
     fuelFilledLiters: 4200,
     gaps: 2,
     ...over,

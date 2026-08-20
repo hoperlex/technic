@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNotNull, lte, ne, sql, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNotNull, lte, ne, sql, type SQL } from 'drizzle-orm';
 import {
   type ReadingMonthRow,
   type ReadingTotals,
@@ -599,16 +599,31 @@ export async function loadFleetMonths(
  * В списке стоят машины, у которых в периоде есть ожидаемая смена **или** собранное показание:
  * машина с ожидаемым источником попадает в сводку, даже если отчёта у неё никто не открывал
  * (Р26в), — иначе экран уверял бы, что данных нет, там, где их не сдали.
+ *
+ * Рядом с суммами идут два снимка счётчиков за тот же отрезок (Р17) — тем же `loadLastReadings`,
+ * которым отвечают гараж и карточка, но с нижней границей: сводка за июль не смеет показывать
+ * июньское число под подписью «Одометр». Выборок на них ровно две — по одной на счётчик на весь
+ * список; запрос на строку означал бы полсотни запросов на сводку парка.
  */
 export async function loadFleetStats(from: string, to: string): Promise<VehicleReadingStatsRow[]> {
   const rows = await loadMonthRows(from, to, null);
-  return groupByVehicle(rows).map((entry) => {
+  const entries = groupByVehicle(rows);
+  const ids = entries.map((entry) => entry.vehicleId);
+  const [odometers, engineHours] = await Promise.all([
+    loadLastReadings(ids, to, 'odometer', from),
+    loadLastReadings(ids, to, 'engineHours', from),
+  ]);
+  return entries.map((entry) => {
     const total = sumMonths(entry.months);
     return {
       vehicleId: entry.vehicleId,
       vehicleLabel: entry.vehicleLabel,
       distanceKm: total.distanceKm,
       engineHours: total.engineHours,
+      // Машины без снимка в ответе просто нет — прочерк на экране значит «числового показания в
+      // периоде не было», и подставлять сюда ноль значило бы объявить счётчик обнулённым.
+      lastOdometer: odometers.get(entry.vehicleId) ?? null,
+      lastEngineHours: engineHours.get(entry.vehicleId) ?? null,
       fuelFilledLiters: total.fuelFilledLiters,
       gaps: entry.gaps,
     };
@@ -620,9 +635,13 @@ export async function loadFleetStats(from: string, to: string): Promise<VehicleR
  *
  * Граница верхняя и она существенна: карточка марта не должна показывать майский снимок, а гараж
  * отвечает про день, который у него выбран. После коррекции задним числом (ADR 0101) «последнее
- * вообще» и «последнее на этот день» — разные числа, и спрашивать надо именно второе. Нижней
- * границы нет намеренно: «последнее известное» тем и ценно, что могло быть снято хоть месяц назад,
- * — потому дата снятия и возвращается рядом с числом.
+ * вообще» и «последнее на этот день» — разные числа, и спрашивать надо именно второе.
+ *
+ * Нижняя граница (`from`) необязательна, и по умолчанию её нет: «последнее известное» тем и ценно,
+ * что могло быть снято хоть месяц назад, — потому дата снятия и возвращается рядом с числом. Так
+ * спрашивают гараж, карточка ТО и книги выгрузки, и ответ им обязан остаться прежним. Названная же
+ * граница превращает вопрос в другой — «что показывал счётчик в этом отрезке» (Р17): сводке за
+ * период снимок из-за его начала не годится, там прочерк честнее чужого числа.
  *
  * Порядок — `(report_date, shift_order)`, тот же, каким идёт учётная цепочка: день без позиции
  * смены не различает две смены одной машины. Аннулированные отчёты пропускаются (Р27).
@@ -645,6 +664,7 @@ export async function loadLastReadings(
   vehicleIds: readonly string[],
   on: string,
   counter: 'odometer' | 'engineHours',
+  from?: string,
 ): Promise<Map<string, { value: number; measuredOn: string }>> {
   const found = new Map<string, { value: number; measuredOn: string }>();
   if (vehicleIds.length === 0) return found;
@@ -662,6 +682,10 @@ export async function loadLastReadings(
       and(
         inArray(vehicleReadings.vehicleId, [...vehicleIds]),
         lte(vehicleReadings.reportDate, on),
+        // Нижняя граница — условие того же запроса, а не своя выборка для сводки: отбор
+        // аннулированных и порядок цепочки обязаны остаться общими, иначе снимок в сводке и
+        // снимок в гараже разойдутся при первой же правке одного из них.
+        ...(from === undefined ? [] : [gte(vehicleReadings.reportDate, from)]),
         eq(vehicleReadings.kind, 'values'),
         // Показание своего счётчика: смена с одними моточасами про одометр не говорит ничего, и
         // считать её последним снимком пробега значило бы прятать за ней предыдущее число.

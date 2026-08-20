@@ -6,6 +6,7 @@ import {
   formatVehicleRouteNumber,
   type GarageBusyEntry,
   type GarageBusyRequest,
+  type GarageBusyVehicle,
   type GarageDriverState,
   type GarageEsm2Busy,
   type GarageRouteBusy,
@@ -14,7 +15,9 @@ import {
   requestCustomerName,
   type RequestStatus,
   vehicleLabel,
+  type VehicleOwnership,
   waybillDisplayNumber,
+  type WaybillFormCode,
 } from '@technic/contracts';
 import { db } from '../db/client';
 import {
@@ -59,6 +62,77 @@ const orderedTypes = alias(vehicleTypes, 'ordered_types');
 // ── Условия занятости ──
 
 /**
+ * Отбор по площадке (план «Гараж: правки интерфейса», Р8–Р9): набор площадок приезжает в **те же**
+ * условия занятости, из которых собран день, а не в отдельный запрос рядом.
+ *
+ * Отдельным запросом фильтр однажды показал бы строку, в занятости которой этой площадки нет:
+ * условия срока и статуса пришлось бы переписать вторым разом, и разойтись им негде, кроме как на
+ * первой же правке. Поэтому у каждого условия занятости появился необязательный набор площадок:
+ * не задан — условие прежнее до буквы, задан — то же условие плюс площадка его заявки.
+ */
+type ObjectFilter = readonly string[] | undefined;
+
+/** Список идентификаторов для сырого `IN (...)`: приведение к uuid обязательно — колонка uuid. */
+function idList(ids: readonly string[]): SQL {
+  return sql.join(
+    ids.map((id) => sql`${id}::uuid`),
+    sql`, `,
+  );
+}
+
+/** Набор задан и непуст: пустой фильтром не является — «выбраны все» и «не выбрано» один вопрос. */
+function hasObjects(objects: ObjectFilter): objects is readonly string[] {
+  return objects !== undefined && objects.length > 0;
+}
+
+/**
+ * Площадка рейса: заявка **состава** (`vehicle_route_requests`) либо заявка-основание перегона
+ * (`vehicle_routes.source_request_id`) — по ИЛИ, потому что рейс отвечает про свою работу и той и
+ * другой.
+ *
+ * Заявка отдела сюда не попадает сама собой (Р10): площадки у неё нет вовсе, и `object_id IN (…)`
+ * ложен на NULL — второго условия под это не нужно.
+ */
+function routeObjectCondition(route: string, objects: ObjectFilter): SQL {
+  if (!hasObjects(objects)) return sql.empty();
+  const rt = sql.raw(route);
+  const list = idList(objects);
+  return sql` AND (
+        EXISTS (SELECT 1 FROM ${vehicleRouteRequests} ga_rr
+                  JOIN ${vehicleRequests} ga_rq ON ga_rq.id = ga_rr.request_id
+                 WHERE ga_rr.route_id = ${rt}.id AND ga_rq.object_id IN (${list}))
+        OR EXISTS (SELECT 1 FROM ${vehicleRequests} ga_sq
+                    WHERE ga_sq.id = ${rt}.source_request_id AND ga_sq.object_id IN (${list}))
+      )`;
+}
+
+/**
+ * Площадка недельного листа — у его заявки-основания. Листа без заявки это касается ровно так, как
+ * должно: заявку могли удалить, а бланк остался, и площадки у такой занятости больше нет — в отбор
+ * она не проходит.
+ */
+function esm2ObjectCondition(waybill: string, objects: ObjectFilter): SQL {
+  if (!hasObjects(objects)) return sql.empty();
+  return sql` AND EXISTS (SELECT 1 FROM ${vehicleRequests} ga_wq
+        WHERE ga_wq.id = ${sql.raw(waybill)}.source_request_id
+          AND ga_wq.object_id IN (${idList(objects)}))`;
+}
+
+/**
+ * Действующий недельный лист, накрывающий день, — одним куском на все места, где о нём
+ * спрашивают: занятость машины, назначенность человека, отбор по площадке и бланк работы дня.
+ * Разложи эти четыре строки по четырём запросам, и аннулированный лист однажды займёт машину в
+ * одном из них.
+ */
+function esm2CoversDay(waybill: string, on: string): SQL {
+  const w = sql.raw(waybill);
+  return sql`${w}.form_code = 'esm2'
+      AND ${w}.status <> 'cancelled'
+      AND ${w}.period_from <= ${on}::date
+      AND ${w}.period_to >= ${on}::date`;
+}
+
+/**
  * Заказ спецтехники, накрывающий день: машина стоит на площадке, пока идёт срок заявки.
  *
  * Условия те же, что у вкладки «На объекте» (ADR 0036): взятая в работу живая заявка, чей период
@@ -77,7 +151,7 @@ const orderedTypes = alias(vehicleTypes, 'ordered_types');
  * переключение (миграция 0137), и живой признак вернул бы её на новый режим — то есть снял бы с
  * машины занятость, которой заказ держит площадку, и пустил бы на те же дни второй заказ.
  */
-function specialBusyExists(on: string): SQL {
+function specialBusyExists(on: string, objects?: ObjectFilter): SQL {
   return sql`EXISTS (
     SELECT 1 FROM ${vehicleRequestAssignments} ga_a
     JOIN ${vehicleRequests} ga_r ON ga_r.id = ga_a.request_id
@@ -88,7 +162,9 @@ function specialBusyExists(on: string): SQL {
       AND ga_r.deleted_at IS NULL
       AND NOT ${requestIsLinearRawSql('ga_r', 'ga_vt')}
       AND ga_d.date_from <= ${on}::date
-      AND coalesce(ga_d.date_to, ga_d.date_from) >= ${on}::date
+      AND coalesce(ga_d.date_to, ga_d.date_from) >= ${on}::date${
+        hasObjects(objects) ? sql` AND ga_r.object_id IN (${idList(objects)})` : sql.empty()
+      }
   )`;
 }
 
@@ -98,22 +174,20 @@ function specialBusyExists(on: string): SQL {
  * Считается наравне с заказом, а не как приписка к нему: заявку могли закрыть или откатить, а
  * бланк недели остаётся у машиниста — по документу машина занята, и портал обязан это показывать.
  */
-function esm2BusyExists(on: string): SQL {
+function esm2BusyExists(on: string, objects?: ObjectFilter): SQL {
   return sql`EXISTS (
     SELECT 1 FROM ${waybills} ga_w
     WHERE ga_w.vehicle_id = ${vehicles.id}
-      AND ga_w.form_code = 'esm2'
-      AND ga_w.status <> 'cancelled'
-      AND ga_w.period_from <= ${on}::date
-      AND ga_w.period_to >= ${on}::date
+      AND ${esm2CoversDay('ga_w', on)}${esm2ObjectCondition('ga_w', objects)}
   )`;
 }
 
 /** Рейс этой машины в этот день — любой, включая перегон: техника всё равно в пути. */
-function routeBusyExists(on: string): SQL {
+function routeBusyExists(on: string, objects?: ObjectFilter): SQL {
   return sql`EXISTS (
     SELECT 1 FROM ${vehicleRoutes} ga_rt
-    WHERE ga_rt.vehicle_id = ${vehicles.id} AND ga_rt.route_date = ${on}::date
+    WHERE ga_rt.vehicle_id = ${vehicles.id}
+      AND ga_rt.route_date = ${on}::date${routeObjectCondition('ga_rt', objects)}
   )`;
 }
 
@@ -140,10 +214,11 @@ export function vehicleStateSql(on: string) {
 }
 
 /** Рейс, в котором человек стоит водителем на этот день. */
-function driverRouteExists(on: string): SQL {
+function driverRouteExists(on: string, objects?: ObjectFilter): SQL {
   return sql`EXISTS (
     SELECT 1 FROM ${vehicleRoutes} ga_rt
-    WHERE ga_rt.driver_person_id = ${persons.id} AND ga_rt.route_date = ${on}::date
+    WHERE ga_rt.driver_person_id = ${persons.id}
+      AND ga_rt.route_date = ${on}::date${routeObjectCondition('ga_rt', objects)}
   )`;
 }
 
@@ -155,15 +230,30 @@ function driverRouteExists(on: string): SQL {
  * (миграция 0087), и без этого условия машинист на недельном листе числился бы свободным.
  */
 function driverWaybillExists(on: string): SQL {
+  return sql`(${driverEsm2Exists(on)} OR ${driverDayWaybillExists(on)})`;
+}
+
+/**
+ * Недельный лист, выписанный на этого человека и накрывающий день, — тем же куском условий, каким
+ * он спрашивается у машины (`esm2CoversDay`). Отдельной функцией, потому что о нём спрашивают
+ * трижды: состояние дня, отбор по площадке и бланк работы.
+ */
+function driverEsm2Exists(on: string, objects?: ObjectFilter): SQL {
+  return sql`EXISTS (
+    SELECT 1 FROM ${waybills} ga_w
+    WHERE ga_w.driver_person_id = ${persons.id}
+      AND ${esm2CoversDay('ga_w', on)}${esm2ObjectCondition('ga_w', objects)}
+  )`;
+}
+
+/** Лист дня — 4-П или форма № 3: у них день листа один, `issued_for_date`. */
+function driverDayWaybillExists(on: string): SQL {
   return sql`EXISTS (
     SELECT 1 FROM ${waybills} ga_w
     WHERE ga_w.driver_person_id = ${persons.id}
       AND ga_w.status <> 'cancelled'
-      AND (
-        (ga_w.form_code = 'esm2'
-          AND ga_w.period_from <= ${on}::date AND ga_w.period_to >= ${on}::date)
-        OR (ga_w.form_code <> 'esm2' AND ga_w.issued_for_date = ${on}::date)
-      )
+      AND ga_w.form_code <> 'esm2'
+      AND ga_w.issued_for_date = ${on}::date
   )`;
 }
 
@@ -174,11 +264,97 @@ export function driverStateSql(on: string) {
   END`;
 }
 
+// ── Отбор по площадке и по бланку ──
+
+/**
+ * Площадка работы дня машины — три источника по ИЛИ (Р9): рейс дня, заказ спецтехники, накрывающий
+ * день, и недельный лист, накрывающий его же.
+ *
+ * Каждая ветка — то самое условие занятости, которым собран день, плюс площадка её заявки: строка
+ * проходит фильтр ровно тогда, когда в её `busy` стоит работа на отобранной площадке. Свободная
+ * машина не проходит ни одной ветки, и это верно — у дня без работы площадки нет (Р7).
+ */
+export function vehicleObjectFilterSql(on: string, objects: readonly string[]): SQL {
+  return sql`(${specialBusyExists(on, objects)}
+    OR ${esm2BusyExists(on, objects)}
+    OR ${routeBusyExists(on, objects)})`;
+}
+
+/**
+ * Площадка работы дня водителя — две ветки: рейс дня и недельный лист на этого человека.
+ *
+ * Заказа спецтехники здесь нет намеренно, и это не пропуск третьей ветки: заявка называет машину,
+ * а не человека (водитель переехал в рейс миграцией 0074), и занятости такого вида у водителя не
+ * бывает вовсе — приписать ему площадку заказа было бы нечем.
+ */
+export function driverObjectFilterSql(on: string, objects: readonly string[]): SQL {
+  return sql`(${driverRouteExists(on, objects)} OR ${driverEsm2Exists(on, objects)})`;
+}
+
+/**
+ * Бланки работ дня водителя — по строке на работу, тем же правилом, что и чистая функция
+ * `busyWaybillForms` в контрактах.
+ *
+ * Две записи одного правила — плата за отбор до страницы: посчитанный по загруженной странице
+ * фильтр врал бы и в счётчике, и в листании. Сверка у них одна и настоящая — тест паритета
+ * (`garage.db.test.ts`) спрашивает обе на общем наборе занятостей.
+ *
+ * Ветки повторяют `busyWaybillForm` буква в букву:
+ *
+ * - рейс дня — `routeWaybillForm`: перегон (`purpose <> 'freight'`) идёт по 4-П независимо от типа
+ *   машины, грузовой — по бланку её типа;
+ * - недельный лист на человека — `esm2`;
+ * - арендная машина не даёт строки ни в одной ветке: лист на неё выписывает арендодатель, и бланка
+ *   у работы нет вовсе.
+ *
+ * Возвращается **тело** подзапроса со столбцом `form`, а не готовое условие: им пользуются оба
+ * читателя — отбор (`driverFormFilterSql`) и сверка, собирающая из него набор строки.
+ */
+export function driverDayFormsSql(on: string): SQL {
+  return sql`
+    SELECT CASE WHEN ga_rt.purpose <> 'freight' THEN '4p' ELSE ga_vt.waybill_form_code END AS form
+      FROM ${vehicleRoutes} ga_rt
+      JOIN ${vehicles} ga_v ON ga_v.id = ga_rt.vehicle_id
+      JOIN ${vehicleTypes} ga_vt ON ga_vt.id = ga_v.vehicle_type_id
+     WHERE ga_rt.driver_person_id = ${persons.id}
+       AND ga_rt.route_date = ${on}::date
+       AND ga_v.ownership = 'own'
+    UNION ALL
+    SELECT 'esm2'
+      FROM ${waybills} ga_w
+      JOIN ${vehicles} ga_wv ON ga_wv.id = ga_w.vehicle_id
+     WHERE ga_w.driver_person_id = ${persons.id}
+       AND ga_wv.ownership = 'own'
+       AND ${esm2CoversDay('ga_w', on)}`;
+}
+
+/**
+ * Отбор по бланку: строка проходит, если пересечение её набора бланков с набором фильтра непусто
+ * (Р6).
+ *
+ * Условием `EXISTS`, а не join'ом к работам дня: у человека бывает две работы разных бланков сразу,
+ * и join показал бы его в выдаче дважды. Пустой набор строки не проходит никакой фильтр — у
+ * свободного дня и у арендной машины бланка нет.
+ */
+export function driverFormFilterSql(on: string, forms: readonly WaybillFormCode[]): SQL {
+  const list = sql.join(
+    forms.map((code) => sql`${code}`),
+    sql`, `,
+  );
+  return sql`EXISTS (
+    SELECT 1 FROM (${driverDayFormsSql(on)}) ga_f WHERE ga_f.form IN (${list})
+  )`;
+}
+
 // ── Добор занятостей ──
 
 /**
- * Реквизиты, из которых складывается подпись машины (`vehicleLabel`): правило одно на портал и
- * сервер, и каждый запрос занятости выбирает их одним и тем же набором колонок.
+ * Реквизиты машины, которыми занятость отвечает о ней сама: подпись (`vehicleLabel`), марка второй
+ * строкой и то, чем эта работа закрывается (`busyWaybillForm`). Правило одно на портал и сервер, и
+ * каждый запрос занятости выбирает их одним и тем же набором колонок.
+ *
+ * Бланк типа и принадлежность едут здесь же, а не добираются отдельно: все три запроса занятости
+ * уже соединяют `vehicles` с `vehicle_types`, и join'ов от этого не прибавляется.
  */
 const vehicleLabelColumns = {
   ownership: vehicles.ownership,
@@ -187,7 +363,30 @@ const vehicleLabelColumns = {
   typeName: vehicleTypes.name,
   registrationNumber: vehicles.registrationNumber,
   modelName: vehicleModels.name,
+  waybillFormCode: vehicleTypes.waybillFormCode,
 };
+
+/**
+ * Как занятость называет свою машину: подпись, марка и то, чем работа дня закрывается. Одной
+ * сборкой на все три вида занятости — разложи её по трём мапперам, и рейс однажды ответит про
+ * бланк не то же, что заказ на той же машине.
+ */
+function busyVehicleOf(r: {
+  ownership: VehicleOwnership;
+  description: string;
+  categoryName: string | null;
+  typeName: string;
+  registrationNumber: string | null;
+  modelName: string | null;
+  waybillFormCode: WaybillFormCode;
+}): Omit<GarageBusyVehicle, 'vehicleId'> {
+  return {
+    vehicleLabel: vehicleLabel(r),
+    vehicleModelName: r.modelName,
+    vehicleOwnership: r.ownership,
+    vehicleWaybillFormCode: r.waybillFormCode,
+  };
+}
 
 /**
  * Заявка глазами гаража: номер, состояние и заказчик — по ним отсюда и переходят в заявку.
@@ -306,7 +505,7 @@ async function loadRoutes(on: string, scope: BusyScope): Promise<GarageRouteBusy
     displayNumber: formatVehicleRouteNumber(r.num),
     purpose: r.purpose,
     vehicleId: r.vehicleId,
-    vehicleLabel: vehicleLabel(r),
+    ...busyVehicleOf(r),
     driverPersonId: r.driverPersonId,
     driverName: r.driverName ?? '',
     requests: requests.get(r.id) ?? [],
@@ -478,7 +677,7 @@ async function loadSpecials(on: string, vehicleIds: string[]): Promise<GarageSpe
     dateFrom: r.dateFrom,
     dateTo: r.dateTo,
     vehicleId: r.vehicleId,
-    vehicleLabel: vehicleLabel(r),
+    ...busyVehicleOf(r),
     shift: r.shiftFilled ? { filled: true, approved: r.shiftApproved } : null,
     earlyEndPending: r.earlyEndPending,
   }));
@@ -547,7 +746,7 @@ async function loadEsm2(on: string, scope: BusyScope): Promise<GarageEsm2Busy[]>
     periodFrom: r.periodFrom ?? '',
     periodTo: r.periodTo ?? '',
     vehicleId: r.vehicleId,
-    vehicleLabel: vehicleLabel(r),
+    ...busyVehicleOf(r),
     driverPersonId: r.driverPersonId,
     driverName: r.driverName ?? '',
     sourceRequest: sourceRequestOf(r),

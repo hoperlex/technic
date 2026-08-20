@@ -9,7 +9,7 @@ import { DataTable, PageTableLayout, SummaryBar } from '@shared/ui';
 import { useListParams } from '@shared/lib';
 import { TabsExtra, useActiveTabKey } from '../../components/PageTabs';
 import { useReadingsAddress } from './readingsAddress';
-import { decimal } from './readingNumbers';
+import { decimal, kmText } from './readingNumbers';
 import { ReadingsExportModal } from './ReadingsExportModal';
 import { VehicleReadingCard } from './VehicleReadingCard';
 
@@ -26,10 +26,37 @@ import { VehicleReadingCard } from './VehicleReadingCard';
  * Прочерк в строке — не ноль и не ошибка: ряд снимков разорвался (сброшенный счётчик, несданная
  * смена), и считать по «первой и последней» строке значило бы догадываться. Сколько раз ряд
  * рвался, стоит отдельной колонкой — она и объясняет прочерк рядом.
+ *
+ * Снимок счётчика и сумма за период стоят парами: «Одометр» рядом с «Пробегом», «Моточасы» рядом с
+ * «Наработкой» (Р17). Это разные величины, и путать их нельзя: снимок — что показывал прибор в
+ * последний день периода, когда его вообще снимали, а сумма — сколько за период наработано.
  */
 
 const DATE = 'YYYY-MM-DD';
 const SHOWN_DATE = 'DD.MM.YYYY';
+
+/**
+ * Снимок счётчика за период: число и день, за который его сняли (Р17). Считает его сервер, портал
+ * только печатает пришедшее — своего выбора «последнего» у него нет и быть не должно.
+ *
+ * Прочерк — не ноль на приборе: числового показания в периоде не сдавали вовсе. Дата второй
+ * строкой обязательна по той же причине, что и в колонке гаража: снимок без даты читается как
+ * сегодняшний и врёт тем сильнее, чем дольше машина стояла.
+ */
+function snapshotCell(
+  last: { value: number; measuredOn: string } | null,
+  text: (value: number) => string,
+) {
+  if (!last) return <Typography.Text type="secondary">—</Typography.Text>;
+  return (
+    <Space direction="vertical" size={0}>
+      <span>{text(last.value)}</span>
+      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+        снято {dayjs(last.measuredOn).format(SHOWN_DATE)}
+      </Typography.Text>
+    </Space>
+  );
+}
 
 /** Итог по парку: суммы известного. Прочерки в сумму не идут — они не нули. */
 function totalOf(
@@ -97,12 +124,27 @@ export function ReadingsStatsTab({ date }: { date: string }) {
       dataIndex: 'vehicleLabel',
       width: 260,
     },
+    // Подписи снимков короткие («Одометр», «Моточасы») — так их называют и в гараже, и в
+    // карточке; выравнивания по правому краю у них нет, как и у колонки гаража: под числом стоит
+    // дата, и прижатая к краю пара читается хуже, чем сумма в соседнем столбце.
+    {
+      key: 'lastOdometer',
+      title: 'Одометр',
+      width: 150,
+      render: (_v, r) => snapshotCell(r.lastOdometer, kmText),
+    },
     {
       key: 'distanceKm',
       title: 'Пробег, км',
       width: 130,
       align: 'right',
       render: (_v, r) => decimal(r.distanceKm, 0),
+    },
+    {
+      key: 'lastEngineHours',
+      title: 'Моточасы',
+      width: 150,
+      render: (_v, r) => snapshotCell(r.lastEngineHours, (value) => `${decimal(value)} м/ч`),
     },
     {
       key: 'engineHours',

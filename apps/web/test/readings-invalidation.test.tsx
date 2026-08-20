@@ -43,6 +43,8 @@ const ROW: VehicleReadingStatsRow = {
   vehicleLabel: 'КамАЗ 65115 · А123ВС799',
   distanceKm: 1240.5,
   engineHours: 38,
+  lastOdometer: { value: 128_400, measuredOn: '2026-07-20' },
+  lastEngineHours: { value: 5120.5, measuredOn: '2026-07-20' },
   fuelFilledLiters: 620,
   gaps: 0,
 };

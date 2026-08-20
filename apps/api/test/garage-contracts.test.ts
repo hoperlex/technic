@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import {
   can,
+  type CredentialTypeCode,
+  type CredentialVerificationStatus,
+  displayDocumentOf,
   GARAGE_DRIVER_STATES,
   GARAGE_VEHICLE_STATES,
   garageDriverQuerySchema,
@@ -10,7 +13,9 @@ import {
   garageVehicleQuerySchema,
   garageVehicleStateColors,
   garageVehicleStateLabels,
+  licenseDisplayState,
   profilesWith,
+  waybillDocumentOf,
 } from '@technic/contracts';
 
 /**
@@ -118,6 +123,155 @@ describe('словарь состояний', () => {
     // колонку.
     expect([...GARAGE_VEHICLE_STATES]).toEqual(['unavailable', 'on_site', 'on_route', 'free']);
     expect([...GARAGE_DRIVER_STATES]).toEqual(['assigned', 'free']);
+  });
+});
+
+/**
+ * Удостоверение в строке среза (Р11–Р13): чем строка подсвечена и какой документ она называет.
+ *
+ * Обе функции живут в контрактах, а спрашивают их сервер и портал: сервер кладёт в строку дефект
+ * показанного документа, портал считает по нему подсветку. Разъедься ответы — и одно и то же
+ * удостоверение оказалось бы в списке красным, а в карточке жёлтым.
+ */
+
+const DAY = '2026-08-20';
+
+/** Документ в объёме, который спрашивает показ: годность, графы бланка и идентификатор ничьей. */
+function license(
+  over: Partial<{
+    id: string;
+    credentialTypeCode: CredentialTypeCode;
+    series: string;
+    number: string;
+    issuedOn: string | null;
+    expiresOn: string | null;
+    revokedAt: string | null;
+    verificationStatus: CredentialVerificationStatus;
+  }> = {},
+) {
+  return {
+    id: 'a0000000-0000-4000-8000-000000000000',
+    credentialTypeCode: 'driver_license' as CredentialTypeCode,
+    series: '99 39',
+    number: '482645',
+    issuedOn: '2021-03-12',
+    expiresOn: '2031-03-12',
+    revokedAt: null,
+    verificationStatus: 'verified' as CredentialVerificationStatus,
+    ...over,
+  };
+}
+
+describe('подсветка удостоверения', () => {
+  it('порог считается календарными сутками: 31 день — ещё годен, 30 и 29 — истекает', () => {
+    // Границы взяты от дня среза, а не от «сегодня»: заявку берут в работу заранее, и права,
+    // истекающие через месяц, для рейса следующей недели уже жёлтые.
+    expect(licenseDisplayState({ expiresOn: '2026-09-20', defect: null }, DAY)).toBe('valid');
+    expect(licenseDisplayState({ expiresOn: '2026-09-19', defect: null }, DAY)).toBe('expiring');
+    expect(licenseDisplayState({ expiresOn: '2026-09-18', defect: null }, DAY)).toBe('expiring');
+    // День окончания входит в срок: сегодня документ ещё действует.
+    expect(licenseDisplayState({ expiresOn: DAY, defect: null }, DAY)).toBe('expiring');
+  });
+
+  it('бессрочный документ подсветки не заслуживает', () => {
+    expect(licenseDisplayState({ expiresOn: null, defect: null }, DAY)).toBe('none');
+  });
+
+  it('дефект старше срока: отклонённый с будущим сроком подписан отклонением, а не просрочкой', () => {
+    // Ради этой строки состояние и считается поверх дефекта: срок у документа впереди, и счёт по
+    // одному сроку назвал бы его годным — неправду о том, почему им нельзя выписывать лист.
+    expect(licenseDisplayState({ expiresOn: '2031-03-12', defect: 'rejected' }, DAY)).toBe(
+      'rejected',
+    );
+    // Аннулированный бессрочный: пустой срок дефект не отменяет.
+    expect(licenseDisplayState({ expiresOn: null, defect: 'revoked' }, DAY)).toBe('revoked');
+    expect(licenseDisplayState({ expiresOn: '2026-08-19', defect: 'expired' }, DAY)).toBe(
+      'expired',
+    );
+  });
+});
+
+describe('какой документ показывает строка', () => {
+  it('годный есть — показывается ровно тот, которым выпишется лист', () => {
+    const valid = license({ id: 'b0000000-0000-4000-8000-000000000001' });
+    const revoked = license({
+      id: 'b0000000-0000-4000-8000-000000000002',
+      expiresOn: null,
+      revokedAt: '2026-01-10T00:00:00.000Z',
+    });
+    const licenses = [revoked, valid];
+    expect(displayDocumentOf(licenses, 'Водитель', DAY)).toBe(valid);
+    // Совпадение с правилом выписки — не совпадение случая: показ отличается от него только
+    // хвостом «годного нет».
+    expect(displayDocumentOf(licenses, 'Водитель', DAY)).toBe(
+      waybillDocumentOf(licenses, 'Водитель', DAY),
+    );
+  });
+
+  it('годного нет — впереди бессрочный аннулированный, и вид документа всё равно свой', () => {
+    const revoked = license({
+      id: 'c0000000-0000-4000-8000-000000000001',
+      expiresOn: null,
+      revokedAt: '2026-01-10T00:00:00.000Z',
+    });
+    const expired = license({
+      id: 'c0000000-0000-4000-8000-000000000002',
+      expiresOn: '2026-08-19',
+    });
+    // Тракторное лежит рядом и по ключам порядка обошло бы оба — но у водителя лист выписывается
+    // по водительскому, и чужой номер в строке выглядел бы допуском, которого нет (ADR 0095).
+    const tractor = license({
+      id: 'c0000000-0000-4000-8000-000000000003',
+      credentialTypeCode: 'tractor_license',
+      expiresOn: null,
+      revokedAt: '2026-02-10T00:00:00.000Z',
+    });
+    const licenses = [expired, tractor, revoked];
+    expect(displayDocumentOf(licenses, 'Водитель', DAY)).toBe(revoked);
+    expect(displayDocumentOf([...licenses].reverse(), 'Водитель', DAY)).toBe(revoked);
+    expect(waybillDocumentOf(licenses, 'Водитель', DAY)).toBeNull();
+  });
+
+  it('ничья разводится датой выдачи, затем пробелами, затем идентификатором', () => {
+    const older = license({
+      id: 'd0000000-0000-4000-8000-000000000001',
+      expiresOn: '2026-08-19',
+      issuedOn: '2016-03-12',
+    });
+    const newer = license({
+      id: 'd0000000-0000-4000-8000-000000000002',
+      expiresOn: '2026-08-19',
+      issuedOn: '2021-03-12',
+    });
+    expect(displayDocumentOf([older, newer], 'Водитель', DAY)).toBe(newer);
+    expect(displayDocumentOf([newer, older], 'Водитель', DAY)).toBe(newer);
+
+    // Те же сроки и та же выдача — впереди заполненный: пустые серия с номером в строке среза
+    // ничего не сказали бы о том, чей это документ.
+    const noRequisites = license({
+      id: 'd0000000-0000-4000-8000-000000000000',
+      expiresOn: '2026-08-19',
+      issuedOn: '2021-03-12',
+      series: '',
+      number: '',
+    });
+    expect(displayDocumentOf([noRequisites, newer], 'Водитель', DAY)).toBe(newer);
+    expect(displayDocumentOf([newer, noRequisites], 'Водитель', DAY)).toBe(newer);
+
+    // Совпало всё — побеждает меньший `id`: иначе строку выбирал бы порядок запроса, и правка
+    // сортировки в `loadDriverLicenses` молча меняла бы показанный документ.
+    const twin = license({
+      id: 'd0000000-0000-4000-8000-000000000003',
+      expiresOn: '2026-08-19',
+      issuedOn: '2021-03-12',
+    });
+    expect(displayDocumentOf([twin, newer], 'Водитель', DAY)).toBe(newer);
+    expect(displayDocumentOf([newer, twin], 'Водитель', DAY)).toBe(newer);
+  });
+
+  it('своего вида нет вовсе — показывать нечего', () => {
+    const tractor = license({ credentialTypeCode: 'tractor_license', expiresOn: '2026-08-19' });
+    expect(displayDocumentOf([tractor], 'Водитель', DAY)).toBeNull();
   });
 });
 

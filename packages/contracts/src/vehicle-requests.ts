@@ -26,6 +26,9 @@ import {
 } from './address';
 import { type CostTarget, costTargetOf, type CostTargetSource } from './cost-target';
 import type { FileDto } from './files';
+// Разбор ключа `forms` — общий со срезом гаража: бланк работы дня спрашивают на двух вкладках, и
+// перечень значений у обеих один — справочник бланков (`WAYBILL_FORM_CODES`).
+import { garageFormFilterSchema } from './garage';
 import {
   shiftHoursSchema,
   vehicleLabel,
@@ -1803,10 +1806,13 @@ export const VEHICLE_ON_SITE_SORT_FIELDS = [
 ] as const satisfies readonly (typeof VEHICLE_REQUEST_SORT_FIELDS)[number][];
 
 /**
- * Фильтры вкладки — объект и заказанная позиция классификатора (ADR 0028). Ни статуса, ни типа
- * заявки, ни дат здесь нет: они этот список не сужают, а определяют. Схема своя, а не `pick` от
- * списочной, именно поэтому: от `dateFrom` в общей схеме клиент вправе ждать, что тот сработает,
- * — здесь он не сработает никогда.
+ * Фильтры вкладки — объект, заказанная позиция классификатора (ADR 0028) и бланк работы дня. Ни
+ * статуса, ни типа заявки, ни дат здесь нет: они этот список не сужают, а определяют. Схема своя,
+ * а не `pick` от списочной, именно поэтому: от `dateFrom` в общей схеме клиент вправе ждать, что
+ * тот сработает, — здесь он не сработает никогда.
+ *
+ * Набором площадок одиночный `objectId` при этом не становится (Р20): расширять фильтр, о котором
+ * не просили, — это менять чужой экран заодно.
  */
 export const vehicleRequestOnSiteQuerySchema = withSingleClassificationForm(
   baseListQuery(VEHICLE_ON_SITE_SORT_FIELDS).extend({
@@ -1816,6 +1822,18 @@ export const vehicleRequestOnSiteQuerySchema = withSingleClassificationForm(
     vehicleTypeId: uuidSchema.optional(),
     vehicleCategoryId: uuidSchema.optional(),
     num: z.coerce.number().int().positive().optional(),
+    /**
+     * Бланк работы дня набором (Р6, Р21): строка проходит, если пересечение её набора бланков с
+     * набором фильтра непусто. Набор с обеих сторон, потому что у дня бывает две работы разных
+     * бланков сразу — линейный заказ ведёт рейс дня (4-П) и лист ЭСМ-2 по требованию, — и одно
+     * значение соврало бы дважды: спрятало бы такую строку от отбора «ЭСМ-2» и показало бы её же
+     * в отборе «4-П» как единственную правду.
+     *
+     * Схема — та же, что у среза гаража (`garageFormFilterSchema`), а не вторая её копия: ключ
+     * `forms=4p,esm2` обязан читаться на обеих вкладках одинаково, и второй разбор той же строки
+     * разошёлся бы с первым на первой же правке справочника бланков.
+     */
+    forms: garageFormFilterSchema.optional(),
   }),
 );
 export type VehicleRequestOnSiteQuery = z.infer<typeof vehicleRequestOnSiteQuerySchema>;
@@ -1847,8 +1865,14 @@ export interface VehicleOnSiteDayVehicleDto {
   /** «Р-12» — по нему о рейсе говорят по телефону. */
   routeDisplayNumber: string;
   vehicleId: string;
-  /** «КамАЗ 65201 · Е646СК799» — той же парой день подписан в таблице дней заказа. */
+  /**
+   * Как машина названа везде — общим правилом `vehicleLabel`: госномер, а без него модель,
+   * категория, тип (Р16). Склейки «модель · госномер» здесь больше нет: из неё вторую строку
+   * колонки не построить, не разбирая строку обратно по разделителю.
+   */
   vehicleLabel: string;
+  /** Марка второй строкой колонки — полем, а не сборкой на портале (Р14): пусто, если не заведена. */
+  vehicleModelName: string | null;
   /** Пусто — водителя ещё не поставили: рейс собирают заранее, человека ставят утром. */
   driverPersonId: string | null;
   driverName: string;

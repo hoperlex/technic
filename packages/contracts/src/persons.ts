@@ -232,6 +232,49 @@ export function licenseDefect(
   return null;
 }
 
+/** За сколько дней до конца срока документ считается истекающим. */
+export const LICENSE_EXPIRING_DAYS = 30;
+
+/** Как документ выглядит в строке: негодность тремя её причинами, годность — сроком до конца. */
+export type LicenseDisplayState =
+  'valid' | 'expiring' | 'expired' | 'revoked' | 'rejected' | 'none';
+
+/**
+ * Дни между календарными сутками (`YYYY-MM-DD`) — тем же приёмом, что у гарантии
+ * (`warranty.ts`): срок действия документа кончается «по такое-то число», и `Date` сдвигал бы его
+ * на сутки в чужом часовом поясе. Строка, которой не бывает датой, — `null`.
+ */
+function licenseDaysBetween(fromIso: string, toIso: string): number | null {
+  const from = Date.parse(`${fromIso}T00:00:00Z`);
+  const to = Date.parse(`${toIso}T00:00:00Z`);
+  if (Number.isNaN(from) || Number.isNaN(to)) return null;
+  return Math.round((to - from) / 86_400_000);
+}
+
+/**
+ * Как показать документ на день среза: дефект старше срока, срок старше «годен».
+ *
+ * Вход — ровно то, что есть в строке среза: срок и уже посчитанный дефект. Полного документа у
+ * портала нет и не будет — ни `revokedAt`, ни `verificationStatus` в срез дня не едут: это данные
+ * карточки водителя. Первая редакция считала подсветку по одному сроку, и отклонённый документ с
+ * будущим сроком получал подпись «просрочено» — неправду о том, почему им нельзя выписывать лист.
+ *
+ * Второго счёта срока здесь нет намеренно: вышедший срок приезжает дефектом `expired`
+ * (`licenseDefect` считает его на тот же день), и сверять дату повторно значило бы завести вторую
+ * правду о годности. Пустой срок без дефекта — бессрочный документ: подсветки он не заслуживает,
+ * а «графа пуста» и «срок вышел» — разные вещи, и дефект их уже различил.
+ */
+export function licenseDisplayState(
+  license: { expiresOn: string | null; defect: LicenseDefect | null },
+  on: string,
+): LicenseDisplayState {
+  if (license.defect !== null) return license.defect;
+  if (license.expiresOn === null) return 'none';
+  const left = licenseDaysBetween(on, license.expiresOn);
+  if (left === null) return 'none';
+  return left <= LICENSE_EXPIRING_DAYS ? 'expiring' : 'valid';
+}
+
 /**
  * Открыта ли категория этим документом на дату: собственные сроки категории сужают срок документа.
  *
@@ -395,6 +438,68 @@ export function waybillDocumentOf<T extends WaybillLicense>(
     licenses.filter((l) => l.credentialTypeCode === type),
     on,
   );
+}
+
+/**
+ * Порядок негодных документов для показа: свежий впереди. Сравнение полное — четырьмя ключами,
+ * последний из которых разрешает любую ничью.
+ *
+ * `expiresOn` пустой считается самым поздним: бессрочный документ с дефектом (аннулированный,
+ * отклонённый) — самый свежий из негодных, а не самый старый. У `issuedOn` пустота значит обратное
+ * — дата выдачи пустой не бывает у заполненного документа, и такой строке место в хвосте.
+ *
+ * Четвёртый ключ, `id`, не педантизм: без него побеждал бы первый элемент входного массива, а его
+ * порядок задаёт запрос (`loadDriverLicenses` сортирует по `issuedOn` и `createdAt`), — и строка
+ * среза меняла бы документ от правки, к ней отношения не имеющей.
+ */
+function compareDisplayLicenses(
+  a: WaybillLicense & { id: string },
+  b: WaybillLicense & { id: string },
+): number {
+  if (a.expiresOn !== b.expiresOn) {
+    if (a.expiresOn === null) return -1;
+    if (b.expiresOn === null) return 1;
+    return a.expiresOn > b.expiresOn ? -1 : 1;
+  }
+  if (a.issuedOn !== b.issuedOn) {
+    if (a.issuedOn === null) return 1;
+    if (b.issuedOn === null) return -1;
+    return a.issuedOn > b.issuedOn ? -1 : 1;
+  }
+  const gaps = licenseGaps(a).length - licenseGaps(b).length;
+  if (gaps !== 0) return gaps;
+  return a.id < b.id ? -1 : 1;
+}
+
+/**
+ * Документ, который срез **показывает**: годный на день, а если годного нет — самый свежий из
+ * негодных того же вида. От `waybillDocumentOf` отличается только этим хвостом: тот отвечает на
+ * «чем выписывать лист» и негодного не возвращает никогда.
+ *
+ * Разница нужна показу, а не правилу: без запасного документа просроченный срок в строке не
+ * появился бы никогда — она молчала бы о человеке ровно там, где обязана предупредить. Правило
+ * выписки при этом не двигается ни на строку: пробелы (`driverDocumentGaps`) и снимок бланка
+ * по-прежнему считаются по годному документу.
+ *
+ * Живёт рядом с `waybillDocumentOf`, а не в маршруте гаража: третий ключ порядка — `licenseGaps`,
+ * функция приватная, и копия сравнения в маршруте разошлась бы с оригиналом на первой же правке
+ * пробелов.
+ */
+export function displayDocumentOf<T extends WaybillLicense & { id: string }>(
+  licenses: readonly T[],
+  jobTitle: string,
+  on: string,
+): T | null {
+  const valid = waybillDocumentOf(licenses, jobTitle, on);
+  if (valid) return valid;
+
+  // Вид документа задаёт должность (ADR 0095), и запасной берётся только своего вида: чужой номер
+  // в строке выглядел бы допуском, которого у человека нет, — ровно то, от чего отказывается
+  // `waybillDocumentOf`.
+  const type = requiredCredentialType(jobTitle);
+  const own = licenses.filter((l) => l.credentialTypeCode === type);
+  if (own.length === 0) return null;
+  return own.reduce((best, l) => (compareDisplayLicenses(l, best) < 0 ? l : best));
 }
 
 /** Кого спрашивают о пробелах: человек с должностью, СНИЛСом и своими документами. */

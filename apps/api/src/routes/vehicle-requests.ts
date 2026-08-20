@@ -144,6 +144,8 @@ import {
   type VehicleFeedQuery,
   type VehicleFeedRow,
   vehicleFeedQuerySchema,
+  // Как машина называется в колонках среза (Р16): госномер, а без него модель, категория, тип.
+  vehicleLabel,
   type VehicleOnSiteDayVehicleDto,
   type VehicleOnSiteListDto,
   type VehicleOnSiteSummaryDto,
@@ -160,6 +162,7 @@ import {
   type VehicleRequestType,
   type VehicleRequestWeeklyExtensionDto,
   type VehicleRequestWeeklyOriginDto,
+  type WaybillFormCode,
   vehicleRequestHistoryQuerySchema,
   vehicleRequestListQuerySchema,
   type VehicleRequestListQuery,
@@ -177,7 +180,7 @@ import {
 import { db } from '../db/client';
 // Режим заявки — днями или неделями — читается ровно одним выражением на весь портал: у заявки,
 // застигнутой переключением признака у типа, лежит снимок, и живой справочник ей больше не указ.
-import { requestIsLinear, requestIsLinearSql } from '../db/linear-mode';
+import { requestIsLinear, requestIsLinearRawSql, requestIsLinearSql } from '../db/linear-mode';
 import {
   constructionObjects,
   counterparties,
@@ -727,10 +730,16 @@ async function matchedDaysByRequestIds(
  * этот день. Заказ без такого дня в карту не попадает вовсе: «день не распланирован» — законный
  * ответ среза, и подменять его назначением нельзя.
  *
- * Подпись машины собирается той же парой «модель · госномер», какой день подписан в таблице дней
- * заказа (`loadRequestDays`): одна и та же машина одного и того же дня не должна называться на двух
- * экранах по-разному. Рейс дня всегда на собственной технике (`assertDayRouteVehicle`), поэтому
- * ветки аренды у подписи нет.
+ * Машина называется общим правилом портала (`vehicleLabel`, Р16), а не своей склейкой: колонка
+ * среза показывает подпись первой строкой и марку второй, и из пары «модель · госномер» вторую
+ * строку не построить, не разбирая её обратно по разделителю. Ради запасных ветвей правила
+ * (госномера нет → модель → категория → тип) запрос берёт ещё два справочника — тип и категорию.
+ *
+ * Ветки аренды у правила здесь нет и быть не может: `assertDayRouteVehicle` пускает в день только
+ * собственную машину — лист на арендную выписывает арендодатель.
+ *
+ * Пара «модель · госномер» осталась у дней заказа (`loadRequestDays`), и это не расхождение: там
+ * она подпись строки дня, а не колонки, — общего кода у этих двух мест нет.
  */
 async function dayVehiclesByRequestIds(
   ids: string[],
@@ -744,8 +753,12 @@ async function dayVehiclesByRequestIds(
       routeId: dayRoutes.id,
       routeNum: dayRoutes.num,
       vehicleId: dayRoutes.vehicleId,
+      ownership: vehicles.ownership,
+      description: vehicles.description,
       registrationNumber: vehicles.registrationNumber,
       modelName: vehicleModels.name,
+      categoryName: vehicleCategories.name,
+      typeName: vehicleTypes.name,
       driverPersonId: dayRoutes.driverPersonId,
       driverName: persons.fullName,
     })
@@ -753,6 +766,11 @@ async function dayVehiclesByRequestIds(
     .innerJoin(dayRoutes, eq(dayRoutes.id, dayRouteRequests.routeId))
     .innerJoin(vehicles, eq(vehicles.id, dayRoutes.vehicleId))
     .leftJoin(vehicleModels, eq(vehicleModels.id, vehicles.vehicleModelId))
+    // Тип и категория — под запасные ветви подписи: у машины без госномера её называют маркой, а
+    // без марки — категорией и типом. Тип у машины NOT NULL, но join левый: правило читает обе
+    // ветви одинаково, и второй вид join'а здесь ничего не менял бы, кроме чтения.
+    .leftJoin(vehicleTypes, eq(vehicleTypes.id, vehicles.vehicleTypeId))
+    .leftJoin(vehicleCategories, eq(vehicleCategories.id, vehicles.vehicleCategoryId))
     .leftJoin(persons, eq(persons.id, dayRoutes.driverPersonId))
     .where(and(inArray(dayRouteRequests.requestId, ids), eq(dayRouteRequests.workDate, onDate)));
   for (const row of rows) {
@@ -760,7 +778,8 @@ async function dayVehiclesByRequestIds(
       routeId: row.routeId,
       routeDisplayNumber: formatVehicleRouteNumber(row.routeNum),
       vehicleId: row.vehicleId,
-      vehicleLabel: [row.modelName, row.registrationNumber].filter(Boolean).join(' · '),
+      vehicleLabel: vehicleLabel({ ...row, typeName: row.typeName ?? '' }),
+      vehicleModelName: row.modelName,
       driverPersonId: row.driverPersonId,
       driverName: row.driverName ?? '',
     });
@@ -3385,6 +3404,91 @@ function listCountQuery() {
 }
 
 /**
+ * Бланки работы дня у строки среза — по строке на работу (Р21), тем же правилом, каким бланк
+ * считают гараж (`driverDayFormsSql`) и контракты (`busyWaybillForms`): бланк работы — это тот,
+ * которым она **закрывается**, а не тот, что уже выписан.
+ *
+ * Три ветки на три вида работы, и каждая спрашивает принадлежность машины отдельно: на арендную
+ * лист выписывает арендодатель, и бланка у такой работы нет вовсе — строка арендного заказа не
+ * проходит никакой отбор по бланку.
+ *
+ * 1. **Нелинейный заказ на своей машине**, чей срок накрывает день, — `esm2`: он ведётся
+ *    недельными листами (`esm2Mode = 'auto'`), даже если лист на эту неделю ещё не выписан.
+ *    Срок спрашивается своим join'ом деталей, а не выражением отбора: в срез попадает и заявка,
+ *    чей срок кончился, а смены не подписаны (`hasUnapprovedPastShiftsSql`), — работы **в день
+ *    среза** у неё нет, и притворяться, будто по ней сегодня выписывается ЭСМ-2, нельзя.
+ *    Линейность читается режимом заявки у **заказанного** типа (ADR 0100 §1): каким заказ ведут,
+ *    решает заказ, а не то, какую единицу под него нашли, и заявку могло застать переключение.
+ * 2. **День линейного заказа, поставленный в рейс**, — бланк рейса по машине **рейса**, а не
+ *    назначения: тем же ответом колонка называет машину дня (Р16), и отбор с колонкой обязаны
+ *    говорить об одной машине. Перегон идёт по 4-П независимо от типа, грузовой рейс — по бланку
+ *    типа своей машины. Режима заявки эта ветка не спрашивает: день у строки состава бывает
+ *    только у линейного заказа (миграция 0127).
+ * 3. **Лист ЭСМ-2 по требованию на распланированный день** (ADR 0100 §5) — второй бланк той же
+ *    работы: неделю линейного заказа называет человек, и день закрывается сразу двумя бумагами.
+ *    Нераспланированного дня это не касается: работы в такой день нет, строка среза говорит о нём
+ *    «машина не назначена», и отбор обязан отвечать то же самое.
+ *
+ * Возвращается тело подзапроса со столбцом `form`: набор строки из него собирает `EXISTS`
+ * отбора — join'ом к работам дня строка стояла бы в выдаче дважды.
+ */
+function onSiteDayFormsSql(onDate: string): SQL {
+  return sql`
+    SELECT 'esm2' AS form
+      FROM ${vehicleRequestAssignments} os_a
+      JOIN ${vehicles} os_v ON os_v.id = os_a.vehicle_id
+      JOIN ${vehicleTypes} os_ot ON os_ot.id = ${vehicleRequests.vehicleTypeId}
+      JOIN ${specialEquipmentRequestDetails} os_d ON os_d.request_id = ${vehicleRequests.id}
+     WHERE os_a.request_id = ${vehicleRequests.id}
+       AND os_v.ownership = 'own'
+       AND NOT ${requestIsLinearRawSql('vehicle_requests', 'os_ot')}
+       AND os_d.date_from <= ${onDate}::date
+       AND coalesce(os_d.date_to, os_d.date_from) >= ${onDate}::date
+    UNION ALL
+    SELECT CASE WHEN os_rt.purpose <> 'freight' THEN '4p' ELSE os_rvt.waybill_form_code END
+      FROM ${vehicleRouteRequests} os_rr
+      JOIN ${vehicleRoutes} os_rt ON os_rt.id = os_rr.route_id
+      JOIN ${vehicles} os_rv ON os_rv.id = os_rt.vehicle_id
+      JOIN ${vehicleTypes} os_rvt ON os_rvt.id = os_rv.vehicle_type_id
+     WHERE os_rr.request_id = ${vehicleRequests.id}
+       AND os_rr.work_date = ${onDate}::date
+       AND os_rv.ownership = 'own'
+    UNION ALL
+    SELECT 'esm2'
+      FROM ${waybills} os_w
+      JOIN ${vehicles} os_wv ON os_wv.id = os_w.vehicle_id
+     WHERE os_w.source_request_id = ${vehicleRequests.id}
+       AND os_wv.ownership = 'own'
+       AND os_w.form_code = 'esm2'
+       AND os_w.status <> 'cancelled'
+       AND os_w.period_from <= ${onDate}::date
+       AND os_w.period_to >= ${onDate}::date
+       AND EXISTS (
+         SELECT 1 FROM ${vehicleRouteRequests} os_dr
+          WHERE os_dr.request_id = ${vehicleRequests.id} AND os_dr.work_date = ${onDate}::date
+       )`;
+}
+
+/**
+ * Отбор по бланку: строка проходит, если пересечение её набора бланков с набором фильтра непусто
+ * (Р6).
+ *
+ * Условием `EXISTS`, а не join'ом к работам дня: у линейного дня бывает две работы разных бланков
+ * сразу — рейс и лист по требованию, — и join показал бы такую заявку в выдаче дважды. Пустой
+ * набор строки не проходит никакой фильтр: у арендного заказа, у нераспланированного дня и у
+ * долговой строки бланка дня нет вовсе (Р21).
+ */
+function onSiteFormFilterSql(onDate: string, forms: readonly WaybillFormCode[]): SQL {
+  const list = sql.join(
+    forms.map((code) => sql`${code}`),
+    sql`, `,
+  );
+  return sql`EXISTS (
+    SELECT 1 FROM (${onSiteDayFormsSql(onDate)}) os_f WHERE os_f.form IN (${list})
+  )`;
+}
+
+/**
  * Условия вкладки «На объекте» (ADR 0036): заказ спецтехники, взятый в работу, чей срок накрывает
  * день `onDate`. Пересечение периодов считает тот же `specialDateConds`, что и фильтр списка, —
  * пустая дата окончания там и здесь означает одно и то же: `coalesce(date_to, date_from)`.
@@ -3392,7 +3496,8 @@ function listCountQuery() {
  * Второе условие — заявка, у которой срок уже прошёл, а дни работы не подтверждены: работа по ней
  * не принята, закрыть её нельзя, и исчезать из единственного экрана, куда смотрят каждое утро,
  * она не должна — иначе всплывёт через месяц, при попытке закрытия. В таблице такая строка
- * помечается тегом присутствия `awaiting`.
+ * помечается тегом присутствия `awaiting`. Отбор по бланку её выбрасывает, и это не потеря
+ * (Р21): работы в день среза у такой заявки нет, а долг виден без фильтра и в сводке.
  *
  * Ни статуса, ни типа заявки, ни дат в фильтрах вкладки нет — они этот список определяют, а не
  * сужают. Границы видимости общие со списком: штаб и руководитель строительства видят свой объект,
@@ -3418,6 +3523,9 @@ function onSiteWhere(p: Principal, q: VehicleRequestOnSiteQuery, onDate: string)
     // общий, и срез отвечает тем же отбором, что список рядом с ним.
     queryClassificationWhere(vehicleRequests.vehicleTypeId, vehicleRequests.vehicleCategoryId, q),
     q.num ? eq(vehicleRequests.num, q.num) : undefined,
+    // Бланк работы дня набором (Р21): условие то же и в счётчике, и в сводке — ключ `forms`
+    // определяет список, а не одну из его цифр.
+    q.forms?.length ? onSiteFormFilterSql(onDate, q.forms) : undefined,
     or(and(...specialDateConds(onDate, onDate)), hasUnapprovedPastShiftsSql(onDate)),
     // Отдела нет и в поиске (Р10а): срез отобран спецтехникой, а её отдел не заказывает
     // (CHECK `vehicle_requests_department_freight_check`), — колонка справочника искала бы здесь

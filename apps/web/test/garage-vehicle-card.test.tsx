@@ -92,6 +92,8 @@ const STATS_ROW: VehicleReadingStatsRow = {
   vehicleLabel: LABEL,
   distanceKm: 1240,
   engineHours: 38.5,
+  lastOdometer: { value: 128_400, measuredOn: '2026-07-20' },
+  lastEngineHours: { value: 5120.5, measuredOn: '2026-07-20' },
   fuelFilledLiters: 620,
   gaps: 0,
 };
@@ -131,6 +133,8 @@ function renderPage(options: { user?: ReturnType<typeof authUser>; viewport?: Vi
     'GET /garage/drivers/summary': () =>
       json({ ...GARAGE_SUMMARY, assigned: 0, documentsIncomplete: 0 }),
     'GET /vehicle-classifications': () => json(emptyList()),
+    // Справочник площадок наполняет фильтр отбора по объекту — своих строк среза он не даёт.
+    'GET /objects': () => json(emptyList()),
     // Соседняя колонка «ТО» спрашивает своё состояние пакетом (Р16): спрашивают с неё свои тесты.
     [SNAPSHOT]: ({ query }) => json({ on: query.get('on') ?? '', items: [] }),
     [STATS]: ({ query }) =>

@@ -108,6 +108,8 @@ function renderPage(options: {
     'GET /garage/drivers/summary': () =>
       json({ ...GARAGE_SUMMARY, assigned: 0, documentsIncomplete: 0 }),
     'GET /vehicle-classifications': () => json(emptyList()),
+    // Справочник площадок наполняет фильтр отбора по объекту — своих строк среза он не даёт.
+    'GET /objects': () => json(emptyList()),
     // День в ответе — тот, который спросили: по нему видно, что колонка отвечает про срез (Р16).
     [SNAPSHOT]: ({ query }) =>
       json({

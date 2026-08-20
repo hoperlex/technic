@@ -306,15 +306,15 @@ async function report(personId: string, date: string) {
   return ctx.service.openReport(personId, date, ctx.adminId, STAFF);
 }
 
-async function submit(personId: string, date: string, items: ReportItemSubmit[]) {
+async function submit(personId: string, date: string, items: ReportItemSubmit[], reason = '') {
   const current = await ctx.service.loadReport(personId, date);
   return ctx.service.submitReport(
     personId,
     date,
-    { version: current!.version, items, reason: '' },
+    { version: current!.version, items, reason },
     ctx.adminId,
     null,
-    { ...STAFF, reason: '' },
+    { ...STAFF, reason },
   );
 }
 
@@ -323,6 +323,21 @@ async function reportDay(personId: string, date: string, reading: ReadingInput):
   const opened = await report(personId, date);
   expect(opened.items).toHaveLength(1);
   await submit(personId, date, [line(opened.items[0]!.id, reading)]);
+}
+
+/**
+ * Правка уже сданного числа задним числом (ADR 0101). Причина обязательна не для красоты: персоналу
+ * без неё сервис переписать сданное показание не даёт, и правка «молча» в портале невозможна.
+ */
+async function correctDay(
+  personId: string,
+  date: string,
+  reading: ReadingInput,
+  reason: string,
+): Promise<void> {
+  const current = await ctx.service.loadReport(personId, date);
+  expect(current!.items).toHaveLength(1);
+  await submit(personId, date, [line(current!.items[0]!.id, reading)], reason);
 }
 
 // ── Чтение агрегата ──
@@ -344,6 +359,17 @@ async function monthsOf(
 async function fleetRowOf(vehicleId: string, from: string, to: string) {
   const rows = await ctx.aggregate.loadFleetStats(from, to);
   return rows.find((row) => row.vehicleId === vehicleId) ?? null;
+}
+
+/**
+ * Снимки счётчиков строки сводки — ровно та пара, которую печатают колонки «Одометр» и «Моточасы»
+ * (Р17). Спрашиваются вместе, потому что вместе и читаются: у машины бывает свежий снимок одного
+ * счётчика при отсутствующем снимке другого, и утверждение про один без второго это пропускает.
+ */
+async function snapshotsOf(vehicleId: string, from: string, to: string) {
+  const row = await fleetRowOf(vehicleId, from, to);
+  expect(row, 'строка сводки').not.toBeNull();
+  return { odometer: row!.lastOdometer, engineHours: row!.lastEngineHours };
 }
 
 /** Числовые поля `ReadingTotals` целиком: свойство Р4 проверяется по каждому, а не по трём знакомым. */
@@ -691,5 +717,139 @@ describe.skipIf(!DB_URL)('агрегат показаний: месяцы, ит�
     // он сам водителю не показывает.
     expect((await cardOf(vehicle, date, date))?.total.shifts ?? 0).toBe(0);
     expect(await fleetRowOf(vehicle, date, date)).toBeNull();
+  });
+
+  // ── Снимки счётчиков в сводке за период (Р17) ──
+
+  it('снимок берётся внутри периода: снятое до его начала в сводку не идёт', async () => {
+    const person = await newPerson('Снимочный');
+    const ridden = await newVehicle();
+    const [before, first, last] = [ago(20), ago(18), ago(17)];
+
+    for (const [date, odometerKm, engineHours] of [
+      [before, 1000, 10],
+      [first, 1200, 14],
+      [last, 1500, 20],
+    ] as const) {
+      await newRoute(ridden, date, person);
+      await reportDay(person, date, values({ odometerKm, engineHours }));
+    }
+
+    // Снимок периода — последний внутри него, а не последний вообще: в колонке стоит число того
+    // дня, которым период кончился, если в этот день его снимали.
+    expect(await snapshotsOf(ridden, first, last)).toEqual({
+      odometer: { value: 1500, measuredOn: last },
+      engineHours: { value: 20, measuredOn: last },
+    });
+    // Верхняя граница держится и внутри отрезка: сводка за один день отвечает про этот день.
+    expect(await snapshotsOf(ridden, first, first)).toEqual({
+      odometer: { value: 1200, measuredOn: first },
+      engineHours: { value: 14, measuredOn: first },
+    });
+
+    // Вторая машина: единственное её число снято до начала периода, а смену внутри периода ждут —
+    // строка в сводке есть, и снимка в ней быть не должно. Прочерк здесь честнее старого числа:
+    // «одометр 900 км» под подписью периода читается как снятое в периоде.
+    //
+    // Водитель у неё свой: отчёт дня один на человека, и вторая машина в тех же днях попадала бы
+    // строкой в уже сданный отчёт первого — сценарий стал бы про правку чужого показания.
+    const idleDriver = await newPerson('Простойный');
+    const idle = await newVehicle();
+    await newRoute(idle, before, idleDriver);
+    await reportDay(idleDriver, before, values({ odometerKm: 900, engineHours: 8 }));
+    await newRoute(idle, last, idleDriver);
+
+    expect(await snapshotsOf(idle, first, last)).toEqual({ odometer: null, engineHours: null });
+    // И то же число, спрошенное периодом, в который оно попадает, на месте: пропало не показание,
+    // а его право отвечать за чужой отрезок.
+    expect(await snapshotsOf(idle, before, last)).toEqual({
+      odometer: { value: 900, measuredOn: before },
+      engineHours: { value: 8, measuredOn: before },
+    });
+  });
+
+  it('коррекция задним числом меняет снимок, а очередь держит день, а не время ввода', async () => {
+    const person = await newPerson('Корректиров');
+    const vehicle = await newVehicle();
+    const [first, middle, last] = [ago(19), ago(16), ago(15)];
+    for (const date of [first, middle, last]) await newRoute(vehicle, date, person);
+
+    // Порядок ввода нарочно перепутан: сначала сдали последний день, потом — задним числом — два
+    // предыдущих. Снимком обязан остаться `last`: цепочка идёт по дню и позиции смены, а «по
+    // времени ввода» вывела бы в колонку то, что набрали позже всех.
+    await reportDay(person, last, values({ odometerKm: 1400, engineHours: 30 }));
+    await reportDay(person, middle, values({ odometerKm: 1200, engineHours: 24 }));
+    await reportDay(person, first, values({ odometerKm: 1000, engineHours: 20 }));
+    expect(await snapshotsOf(vehicle, first, last)).toEqual({
+      odometer: { value: 1400, measuredOn: last },
+      engineHours: { value: 30, measuredOn: last },
+    });
+
+    // Правка сданного дня (ADR 0101): в колонке обязано оказаться исправленное число — сводка
+    // отвечает по журналу, а не по своему снимку получасовой давности.
+    await correctDay(person, last, values({ odometerKm: 1450, engineHours: 31 }), 'описка в акте');
+    expect(await snapshotsOf(vehicle, first, last)).toEqual({
+      odometer: { value: 1450, measuredOn: last },
+      engineHours: { value: 31, measuredOn: last },
+    });
+  });
+
+  it('аннулированный отчёт снимка не даёт', async () => {
+    const person = await newPerson('Аннулснимок');
+    const vehicle = await newVehicle();
+    const [first, last] = [ago(19), ago(18)];
+
+    const reports = new Map<string, string>();
+    for (const [date, odometerKm] of [
+      [first, 1000],
+      [last, 1300],
+    ] as const) {
+      await newRoute(vehicle, date, person);
+      const opened = await report(person, date);
+      reports.set(date, opened.id);
+      await submit(person, date, [line(opened.items[0]!.id, values({ odometerKm }))]);
+    }
+    expect((await snapshotsOf(vehicle, first, last)).odometer).toEqual({
+      value: 1300,
+      measuredOn: last,
+    });
+
+    // Отчёт последнего дня аннулирован (Р27): его числа не считаются нигде — ни в суммах, ни в
+    // снимке. Иначе колонка показывала бы показание из документа, которого больше нет.
+    await ctx.db
+      .update(ctx.schema.driverDailyReports)
+      .set({ state: 'voided' })
+      .where(eq(ctx.schema.driverDailyReports.id, reports.get(last)!));
+    expect((await snapshotsOf(vehicle, first, last)).odometer).toEqual({
+      value: 1000,
+      measuredOn: first,
+    });
+
+    // Аннулированы оба — снимка нет вовсе, хотя строка в сводке осталась: смены-то ждали. Это и
+    // есть прочерк колонки, и он не ноль.
+    await ctx.db
+      .update(ctx.schema.driverDailyReports)
+      .set({ state: 'voided' })
+      .where(eq(ctx.schema.driverDailyReports.id, reports.get(first)!));
+    expect(await snapshotsOf(vehicle, first, last)).toEqual({ odometer: null, engineHours: null });
+  });
+
+  it('смена с одними моточасами за снимок одометра себя не выдаёт', async () => {
+    const person = await newPerson('Моточасовый');
+    const vehicle = await newVehicle();
+    const [first, last] = [ago(21), ago(20)];
+
+    await newRoute(vehicle, first, person);
+    await reportDay(person, first, values({ odometerKm: 1000, engineHours: 10 }));
+    await newRoute(vehicle, last, person);
+    await reportDay(person, last, values({ engineHours: 15 }));
+
+    // Счётчики независимы (Р28): смена, на которой записали одни моточасы, про одометр не говорит
+    // ничего. Считать её снимком пробега значило бы спрятать за ней последнее известное число —
+    // колонка показала бы пустоту там, где показание есть.
+    expect(await snapshotsOf(vehicle, first, last)).toEqual({
+      odometer: { value: 1000, measuredOn: first },
+      engineHours: { value: 15, measuredOn: last },
+    });
   });
 });

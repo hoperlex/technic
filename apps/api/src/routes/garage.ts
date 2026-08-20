@@ -5,6 +5,7 @@ import { z } from 'zod';
 import {
   can,
   type ClassificationFilter,
+  displayDocumentOf,
   driverDocumentGaps,
   type GarageDriverListDto,
   garageDriverQuerySchema,
@@ -15,12 +16,13 @@ import {
   garageVehicleQuerySchema,
   type GarageVehiclesSummaryDto,
   type GarageVehicleState,
+  licenseDefect,
   licenseNumberLabel,
   moscowDateKeyOf,
   requiredCredentialType,
   vehicleLabel,
   type VehicleReadingDayState,
-  waybillDocumentOf,
+  type WaybillFormCode,
 } from '@technic/contracts';
 import { requirePrincipal } from '../auth/plugin';
 import { db } from '../db/client';
@@ -41,10 +43,13 @@ import {
   loadDriverLicenses,
 } from '../services/drivers';
 import {
+  driverFormFilterSql,
+  driverObjectFilterSql,
   driversOfBusy,
   driverStateSql,
   loadDriverBusy,
   loadVehicleBusy,
+  vehicleObjectFilterSql,
   vehicleStateSql,
 } from '../services/garage';
 import { loadLastOdometers } from '../services/readings-aggregate';
@@ -106,12 +111,16 @@ interface GarageVehicleListWithReadingsDto extends GarageVehicleListDto {
  * Только `ownership='own'` (ADR 0076): гараж — свой парк. Предложение аренды машиной не является
  * вовсе — это строка прайса арендодателя, у неё нет ни госномера, ни рейса, ни листа.
  */
-function vehicleWhere(q: {
-  classifications?: ClassificationFilter;
-  vehicleTypeId?: string;
-  vehicleCategoryId?: string;
-  search?: string;
-}): SQL {
+function vehicleWhere(
+  q: {
+    classifications?: ClassificationFilter;
+    vehicleTypeId?: string;
+    vehicleCategoryId?: string;
+    objects?: string[];
+    search?: string;
+  },
+  on: string,
+): SQL {
   return and(
     eq(vehicles.ownership, 'own'),
     isNull(vehicles.deletedAt),
@@ -119,6 +128,10 @@ function vehicleWhere(q: {
     // же фильтр, что в заявках. Прежнюю пару полей принимает тот же вызов, пока её шлют вкладки
     // со старым JS.
     queryClassificationWhere(vehicles.vehicleTypeId, vehicles.vehicleCategoryId, q),
+    // Площадка работы дня набором (Р8): рейс дня, заказ спецтехники либо недельный лист — теми же
+    // условиями занятости, которыми собран день. Без работы в этот день машина фильтром выпадает:
+    // это отбор, а не подсветка, и площадки у пустого дня нет (Р7).
+    q.objects?.length ? vehicleObjectFilterSql(on, q.objects) : undefined,
     // Ищут по тому, что видят на борту и в путевом листе: госномер (гомоглифы сводит
     // `vehicle_reg_normalize`, как и в справочнике), марка, гаражный номер.
     q.search
@@ -185,7 +198,12 @@ function vehicleTotalsQuery(state: SQL<GarageVehicleState>) {
  * просрочен на завтрашний.
  */
 function driverWhere(
-  q: { documents?: 'complete' | 'incomplete'; search?: string },
+  q: {
+    documents?: 'complete' | 'incomplete';
+    objects?: string[];
+    forms?: WaybillFormCode[];
+    search?: string;
+  },
   on: string,
 ): SQL {
   const complete = documentsCompleteCondition(on);
@@ -197,6 +215,13 @@ function driverWhere(
       : q.documents === 'complete'
         ? complete
         : sql`NOT (${complete})`,
+    // Площадка работы дня: рейс по заявке отобранной площадки либо недельный лист по такой же
+    // заявке (Р9). Заказа спецтехники у человека не бывает — заявка называет машину.
+    q.objects?.length ? driverObjectFilterSql(on, q.objects) : undefined,
+    // Бланк работы дня набором (Р6): пересечение набора строки с набором фильтра непусто. Оба
+    // фильтра отбирают до страницы — посчитанные по загруженной странице, они врали бы и в
+    // счётчике, и в листании.
+    q.forms?.length ? driverFormFilterSql(on, q.forms) : undefined,
     // Ищут по ФИО и табельному — тем же двум полям, которыми водителя зовут в наряде.
     q.search
       ? or(
@@ -258,7 +283,7 @@ export default async function garageRoutes(app: FastifyInstance): Promise<void> 
       const on = dayOf(q.on);
       const state = vehicleStateSql(on);
       const where = and(
-        vehicleWhere(q),
+        vehicleWhere(q, on),
         q.state ? sql`${state} = ${q.state}` : undefined,
         // Отбор идёт до страницы, а не после: «не сданы» — это фильтр списка, и посчитанный по
         // загруженной странице он врал бы и в счётчике, и в листании.
@@ -353,7 +378,7 @@ export default async function garageRoutes(app: FastifyInstance): Promise<void> 
     async (req): Promise<GarageVehiclesSummaryDto> => {
       const on = dayOf(req.query.on);
       const state = vehicleStateSql(on);
-      const where = vehicleWhere(req.query);
+      const where = vehicleWhere(req.query, on);
 
       const [totals] = await vehicleTotalsQuery(state).where(where);
 
@@ -415,11 +440,16 @@ export default async function garageRoutes(app: FastifyInstance): Promise<void> 
         items: rows.map((row) => {
           const own = licenses.get(row.personId) ?? [];
           const jobTitle = row.jobTitle ?? '';
-          // Документ, которым лист выпишется на этот день, и пробелы комплекта — теми же двумя
-          // функциями, что показывают карточку водителя и форму выписки (ADR 0064). Вид документа
-          // задаёт должность (ADR 0095): у машиниста погрузчика лист выпишется по тракторному, и
-          // водительское, лежащее рядом, ни граф не заполнит, ни пробел не закроет.
-          const license = waybillDocumentOf(own, jobTitle, on);
+          // Документ, который строка показывает: годный на этот день, а если годного нет — самый
+          // свежий негодный того же вида (`displayDocumentOf`). Иначе просроченное удостоверение
+          // выглядело бы в срезе пустой графой, ровно как у человека без документа вовсе, и
+          // предупредить о вышедшем сроке было бы нечем.
+          //
+          // Правило выписки от этого не двигается: пробелы ниже считает `driverDocumentGaps` по
+          // годному документу (`waybillDocumentOf`, ADR 0064), и вид его задаёт должность
+          // (ADR 0095) — у машиниста погрузчика лист выпишется по тракторному, а водительское,
+          // лежащее рядом, ни граф не заполнит, ни пробела не закроет.
+          const license = displayDocumentOf(own, jobTitle, on);
           return {
             personId: row.personId,
             state: row.state,
@@ -429,6 +459,10 @@ export default async function garageRoutes(app: FastifyInstance): Promise<void> 
             credentialTypeCode: requiredCredentialType(jobTitle),
             licenseNumber: license ? licenseNumberLabel(license) : '',
             licenseExpiresOn: license?.expiresOn ?? null,
+            // Почему показанный документ не годится; у годного — `null`. Дефектом, а не флагом:
+            // подсветка обязана назвать причину, а «аннулировано» и «просрочено» — разные слова.
+            // Состояние «истекает» портал считает сам (`licenseDisplayState`).
+            licenseDefect: license ? licenseDefect(license, on) : null,
             categories: license?.categories.map((c) => c.name) ?? [],
             gaps: driverDocumentGaps({ snils: row.snils, jobTitle, licenses: own }, on),
             busy: busy.get(row.personId) ?? [],
@@ -450,7 +484,14 @@ export default async function garageRoutes(app: FastifyInstance): Promise<void> 
       const state = driverStateSql(on);
       // Фильтр комплекта сводку не сужает по той же причине, что и состояние: «сколько с
       // пробелами» — одна из её цифр.
-      const where = driverWhere({ search: req.query.search }, on);
+      //
+      // Площадка и бланк, наоборот, приезжают сюда как есть (Р7): они **определяют список**, а не
+      // являются одной из его цифр, — суженная таблица с несуженной сводкой отвечали бы про разные
+      // перечни людей.
+      const where = driverWhere(
+        { search: req.query.search, objects: req.query.objects, forms: req.query.forms },
+        on,
+      );
       const complete = documentsCompleteCondition(on);
 
       const [totals] = await driverTotalsQuery(state, complete).where(where);

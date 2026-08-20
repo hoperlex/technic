@@ -51,6 +51,9 @@ const vehicles: GarageVehicleDto[] = [
         purpose: 'freight',
         vehicleId: 'v1',
         vehicleLabel: 'Е646СК799',
+        vehicleModelName: 'КамАЗ 65201',
+        vehicleOwnership: 'own',
+        vehicleWaybillFormCode: '4p',
         driverPersonId: 'p1',
         driverName: 'Петров Пётр Петрович',
         moveFrom: '',
@@ -94,6 +97,9 @@ const vehicles: GarageVehicleDto[] = [
         dateTo: '2026-07-28',
         vehicleId: 'v2',
         vehicleLabel: 'В010ОР799',
+        vehicleModelName: 'Экскаватор',
+        vehicleOwnership: 'own',
+        vehicleWaybillFormCode: '4p',
         shift: { filled: true, approved: false },
         earlyEndPending: true,
       },
@@ -141,6 +147,7 @@ const drivers: GarageDriverDto[] = [
     credentialTypeCode: 'driver_license',
     licenseNumber: '00 00 000100',
     licenseExpiresOn: '2099-03-12',
+    licenseDefect: null,
     categories: ['B', 'C'],
     gaps: [],
     busy: [
@@ -151,6 +158,9 @@ const drivers: GarageDriverDto[] = [
         purpose: 'freight',
         vehicleId: 'v1',
         vehicleLabel: 'Е646СК799',
+        vehicleModelName: 'КамАЗ 65201',
+        vehicleOwnership: 'own',
+        vehicleWaybillFormCode: '4p',
         driverPersonId: 'p1',
         driverName: 'Петров Пётр Петрович',
         moveFrom: '',
@@ -179,6 +189,9 @@ const drivers: GarageDriverDto[] = [
         purpose: 'freight',
         vehicleId: 'v5',
         vehicleLabel: 'Т555ТТ799',
+        vehicleModelName: 'ГАЗ 3302',
+        vehicleOwnership: 'own',
+        vehicleWaybillFormCode: '4p',
         driverPersonId: 'p1',
         driverName: 'Петров Пётр Петрович',
         moveFrom: '',
@@ -197,6 +210,25 @@ const drivers: GarageDriverDto[] = [
       },
     ],
   },
+  /*
+   * Годного документа у человека нет вовсе, и строка показывает запасной — просроченный
+   * (`displayDocumentOf` на сервере). Ради него в срезе и заведена подсветка: срок в графе теперь
+   * бывает вышедшим, и молча показанная дата читалась бы как «до такого-то годен».
+   */
+  {
+    personId: 'p3',
+    state: 'free',
+    fullName: 'Кузнецов Кузьма Кузьмич',
+    personnelNo: 'Т-102',
+    phone: '',
+    credentialTypeCode: 'driver_license',
+    licenseNumber: '00 00 000300',
+    licenseExpiresOn: '2026-07-01',
+    licenseDefect: 'expired',
+    categories: ['C'],
+    gaps: ['license'],
+    busy: [],
+  },
   {
     personId: 'p2',
     state: 'free',
@@ -206,6 +238,7 @@ const drivers: GarageDriverDto[] = [
     credentialTypeCode: 'driver_license',
     licenseNumber: '',
     licenseExpiresOn: null,
+    licenseDefect: null,
     // Пробелы комплекта не убирают человека из списка и не делают его занятым (ADR 0064).
     categories: [],
     gaps: ['snils', 'license'],
@@ -233,17 +266,17 @@ const vehicleSummary: GarageVehiclesSummaryDto = {
 
 const driverList: GarageDriverListDto = {
   items: drivers,
-  total: 2,
+  total: 3,
   page: 1,
   pageSize: 50,
   onDate: ON_DATE,
 };
 
 const driverSummary: GarageDriversSummaryDto = {
-  total: 2,
-  free: 1,
+  total: 3,
+  free: 2,
   assigned: 1,
-  documentsIncomplete: 1,
+  documentsIncomplete: 2,
   onDate: ON_DATE,
 };
 
@@ -258,6 +291,8 @@ function renderPage(options: { viewport?: Viewport } = {}) {
     'GET /garage/drivers/summary': () => json(driverSummary),
     // Классификатор наполняет фильтр вкладки техники; отбор строк ведёт сервер.
     'GET /vehicle-classifications': () => json(emptyList()),
+    // Справочник площадок наполняет фильтр отбора по объекту — своих строк среза он не даёт.
+    'GET /objects': () => json(emptyList()),
     // Колонка «ТО» спрашивает состояние пакетом на видимую страницу (Р16): к срезу дня она
     // отношения не имеет, но у администратора право на обслуживание есть, и без ответа колонка
     // молча осталась бы без данных. Проверяют её свои тесты (`garage-maintenance`).
@@ -394,9 +429,25 @@ describe('гараж: срез дня', () => {
 
     const petrov = 'Петров Пётр Петрович';
     await findDriverRow(petrov);
-    expect(within(driverRow(petrov)).getByText('B, C')).toBeDefined();
-    expect(within(driverRow(petrov)).getByText(/00 00 000100/u)).toBeDefined();
     expect(within(driverRow(petrov)).getByText('назначен')).toBeDefined();
+
+    /*
+     * Удостоверение — номер и срок, и ничего кроме: категорий в срезе нет ни строкой в ячейке, ни
+     * своей графой. Ими задают другой вопрос («кто у нас с CE»), и отвечает на него карточка
+     * водителя в справочнике — здесь они занимали первую строку, отвечая не на то, с чем гараж
+     * открывают. Годному документу при этом сказать о себе больше нечего: слово о негодности
+     * стоит только там, где негодность есть.
+     */
+    expect(driverCell(petrov, 'Удостоверение').textContent).toBe('00 00 000100до 12.03.2099');
+    expect(within(driversTable()).queryByRole('columnheader', { name: /Категории/u })).toBeNull();
+
+    /*
+     * Запасной документ назван своей причиной, а не одним вышедшим сроком: зачем его вообще
+     * показывать, если не сказать, почему им нельзя выписывать лист. Причина считается на день
+     * среза, а подпись у неё та же, что в справочнике (`licenseDefectLabels`).
+     */
+    const license = driverCell('Кузнецов Кузьма Кузьмич', 'Удостоверение');
+    expect(within(license).getByText(/Срок действия истёк/u)).toBeDefined();
 
     /*
      * День человека — три отдельные графы одной строки, а не сплошная колонка занятости: о
@@ -406,6 +457,15 @@ describe('гараж: срез дня', () => {
     expect(within(driverCell(petrov, 'Рейс/путевой лист')).getByText('Р-12')).toBeDefined();
     expect(within(driverCell(petrov, 'Техника')).getByText('Е646СК799')).toBeDefined();
     expect(within(driverCell(petrov, 'Заказ/адрес')).getByText('ТС-101')).toBeDefined();
+
+    /*
+     * Машина названа двумя строками: подписью и маркой под ней. Одного госномера для «на чём он
+     * сегодня» мало — самосвал это или автовышка, номер не говорит, — и марка идёт своей строкой, а
+     * не приклеена к подписи: приклеенная, она резалась бы вместе с ней по ширине графы.
+     */
+    const vehicle = driverCell(petrov, 'Техника');
+    expect(within(vehicle).getByText('КамАЗ 65201')).toBeDefined();
+    expect(vehicle.textContent).toBe('Е646СК799КамАЗ 65201');
 
     // Свободный день — прочерк в каждой из трёх граф: пустая ячейка читается как «не загрузилось»,
     // прочерк — как «в этот день за человеком ничего не числится».
