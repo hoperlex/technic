@@ -13,8 +13,31 @@ const EMAIL_MAX = 255;
 
 export const EMAIL_FORMAT_MESSAGE = 'Некорректный email';
 
+/**
+ * Приведение введённого адреса к тому, что человек имел в виду: снимаются **все** пробельные
+ * символы, а не только крайние.
+ *
+ * Внутренние — не педантизм: адрес попадает в поле копипастой из письма, из таблицы и из
+ * мессенджера, и переносом строки в них разрывается что угодно — `davidovsergej777@gmail. com`
+ * человек читает как свой адрес, а отказ по пробелу перед `com` читает как «портал не принимает
+ * gmail». Пробела в адресе не бывает (кавычечную форму `"ivan ivanov"@…` портал не принимает и
+ * так), поэтому убрать его — единственное толкование, которое не отвергает верный адрес.
+ *
+ * Вместе с пробелами снимаются символы нулевой ширины: `\s` покрывает неразрывный пробел и BOM,
+ * `\u200b–\u200d` — остальные. Их не видно ни в поле, ни в сообщении об ошибке, и адрес с ними
+ * выглядит правильным до последнего.
+ *
+ * Регистр по-прежнему не трогаем — см. заголовок файла.
+ */
+export function normalizeEmail(value: string): string {
+  return value.replace(/[\s\u200b-\u200d]/g, '');
+}
+
+/** Правило формата — общее для обязательного и необязательного адреса. */
+const emailFormat = z.string().max(EMAIL_MAX).pipe(z.email(EMAIL_FORMAT_MESSAGE));
+
 /** Адрес там, где он обязателен: вход, регистрация, заведение учётки администратором. */
-export const emailSchema = z.string().trim().max(EMAIL_MAX).pipe(z.email(EMAIL_FORMAT_MESSAGE));
+export const emailSchema = z.string().transform(normalizeEmail).pipe(emailFormat);
 
 /**
  * Тот же адрес там, где его вправе не оставить: пустая строка — «не указан» (email водителя).
@@ -23,9 +46,13 @@ export const emailSchema = z.string().trim().max(EMAIL_MAX).pipe(z.email(EMAIL_F
  */
 export const optionalEmailSchema = z
   .string()
-  .trim()
-  .max(EMAIL_MAX)
-  .refine((v) => v === '' || z.email().safeParse(v).success, EMAIL_FORMAT_MESSAGE);
+  .transform(normalizeEmail)
+  .pipe(
+    z
+      .string()
+      .max(EMAIL_MAX)
+      .refine((v) => v === '' || z.email().safeParse(v).success, EMAIL_FORMAT_MESSAGE),
+  );
 
 // ── Свой домен и чужой (ADR 0090) ──
 

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { App, Button, Card, Form, Input, Result, Typography } from 'antd';
 import { Link } from 'react-router';
+import { normalizeEmail } from '@technic/contracts';
 import { authApi } from '../api/auth';
 import { CaptchaField, type CaptchaValue } from '../components/CaptchaField';
 import { errorFields, errorMessage } from '../utils/format';
@@ -79,6 +80,7 @@ export function ForgotPasswordPage() {
               <Form.Item
                 name="email"
                 label="Email"
+                normalize={normalizeEmail}
                 rules={[{ required: true, type: 'email', message: 'Введите корректный email' }]}
               >
                 <Input autoComplete="username" size="large" />

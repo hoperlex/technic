@@ -105,7 +105,9 @@ export function roleAddonIssue(
 
 export const createUserSchema = z
   .object({
-    email: z.string().email().max(255),
+    // Правило адреса общее с регистрацией и входом (`email.ts`): учётка, заведённая здесь, входит
+    // по тому же логину, и разойдись проверки — адрес удалось бы завести, но не удалось бы ввести.
+    email: emailSchema,
     ...personNameFields,
     /** Телефон учётки (ADR 0043): необязателен и здесь — контакт сотрудника, а не реквизит входа. */
     phone: optionalPhoneSchema.optional().default(''),

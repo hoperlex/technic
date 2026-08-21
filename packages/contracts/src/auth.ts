@@ -27,7 +27,9 @@ export const CAPTCHA_ANSWER_LENGTH = 5;
 
 export const registerSchema = z
   .object({
-    email: z.string().email().max(255),
+    // Общая схема адреса, а не своя проверка: правило на портал одно (`email.ts`), и заявка,
+    // отклонённая на пробеле из копипасты, выглядела бы отказом по самому адресу.
+    email: emailSchema,
     ...personNameFields,
     /**
      * Телефон — по желанию (ADR 0043): почтовых уведомлений у портала нет, и звонок — единственный
@@ -64,7 +66,9 @@ export const registerSchema = z
 export type RegisterInput = z.infer<typeof registerSchema>;
 
 export const loginSchema = z.object({
-  email: z.string().email().max(255),
+  // Тот же адрес и то же приведение, что при регистрации: логин набирают и вставляют из письма, и
+  // пробел в нём должен давать «неверный логин или пароль», а не «ошибка валидации».
+  email: emailSchema,
   password: z.string().min(1).max(200),
 });
 export type LoginInput = z.infer<typeof loginSchema>;

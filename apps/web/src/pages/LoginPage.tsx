@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { App, Button, Card, Form, Input, Typography } from 'antd';
 import { Link, useLocation, useNavigate } from 'react-router';
+import { normalizeEmail } from '@technic/contracts';
 import { useAuth } from '../auth/AuthContext';
 import { errorMessage } from '../utils/format';
 
@@ -43,9 +44,11 @@ export function LoginPage() {
           Вход в портал
         </Typography.Title>
         <Form layout="vertical" onFinish={onFinish} requiredMark={false}>
+          {/* Логин вставляют из письма — вместе с пробелом на конце (`normalizeEmail`). */}
           <Form.Item
             name="email"
             label="Email"
+            normalize={normalizeEmail}
             rules={[{ required: true, type: 'email', message: 'Введите корректный email' }]}
           >
             <Input autoComplete="username" size="large" />

@@ -2,7 +2,12 @@ import { useEffect, useState } from 'react';
 import { Alert, App, Form, Input, Typography } from 'antd';
 import { useMutation } from '@tanstack/react-query';
 import { FormModal } from '@shared/ui';
-import { isInternalEmail, type ChangeUserEmailBody, type UserDto } from '@technic/contracts';
+import {
+  isInternalEmail,
+  normalizeEmail,
+  type ChangeUserEmailBody,
+  type UserDto,
+} from '@technic/contracts';
 import { usersApi } from '../../api/resources';
 import { useAuth } from '../../auth/AuthContext';
 import { errorMessage } from '../../utils/format';
@@ -95,6 +100,7 @@ export function ChangeEmailModal({ open, user, self, onCancel, onSubmit, confirm
         <Form.Item
           name="newEmail"
           label="Новый адрес"
+          normalize={normalizeEmail}
           rules={[
             { required: true, message: 'Введите новый адрес' },
             { type: 'email', message: 'Некорректный email' },
@@ -105,9 +111,12 @@ export function ChangeEmailModal({ open, user, self, onCancel, onSubmit, confirm
         {/* Второе поле сверяется с первым, а не наоборот: человек правит опечатку там, где её
             заметил, и обе стороны сравнения должны быть равноправны — antd пересчитывает правило
             при изменении зависимости. */}
+        {/* Приведение и здесь: иначе повтор расходился бы с первым полем невидимым пробелом,
+            и человек искал бы опечатку там, где её нет. */}
         <Form.Item
           name="newEmailRepeat"
           label="Повторите новый адрес"
+          normalize={normalizeEmail}
           dependencies={['newEmail']}
           extra="Опечатку в адресе портал не отличит от верного адреса — письма уйдут постороннему, а вход потеряется."
           rules={[

@@ -35,6 +35,7 @@ import {
   isObjectScopedRole,
   isPersonScopedRole,
   isRetiringRole,
+  normalizeEmail,
   REGISTRATION_ROLE_REQUESTS,
   registrationRoleRequestLabels,
   ROLES,
@@ -1073,14 +1074,17 @@ function UsersAccountsTab({ onShowHistory }: AccountsProps) {
           <Form.Item
             name="email"
             label="Email"
+            normalize={normalizeEmail}
             rules={[{ required: true, type: 'email', message: 'Введите email' }]}
           >
             <Input disabled={!!record} />
           </Form.Item>
           <PersonNameFields />
           {/* Контакт сотрудника (ADR 0043): необязателен и здесь — заведённые администратором
-              учётки живут без него, а дозаполняется он той же формой. */}
-          <PhoneField extra="Не обязательно. Портал писем не шлёт — связываются звонком" />
+              учётки живут без него, а дозаполняется он той же формой. Подписи про «портал писем не
+              шлёт» здесь больше нет: почтовый контур работает (ADR 0093), и обещание тишины было
+              бы неправдой. */}
+          <PhoneField />
           {/* Пожелание заявителя (ADR 0034) — справка, а не подстановка: роль остаётся выбором
               администратора, иначе «Сохранить» не глядя выдавало бы права по чужому заявлению. */}
           {record?.requestedRole ? (

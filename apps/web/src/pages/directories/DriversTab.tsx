@@ -34,6 +34,7 @@ import {
   formatSnils,
   isValidSnils,
   licenseNumberLabel,
+  normalizeEmail,
   normalizeSnils,
   optionalEmailSchema,
   requiredCredentialType,
@@ -810,6 +811,7 @@ export function DriversTab() {
           <Form.Item
             name="email"
             label="Email"
+            normalize={normalizeEmail}
             // Проверка по уходу из поля, как у телефона: по мере набора адрес невалиден почти
             // всегда, и красное поле во время ввода ничего не сообщает.
             validateTrigger="onBlur"

@@ -6,6 +6,7 @@ import {
   expectsCorporateEmail,
   INTERNAL_EMAIL_DOMAINS,
   isInternalEmail,
+  normalizeEmail,
   REGISTRATION_ROLE_REQUESTS,
   registrationRequestDetail,
   registrationRoleRequestLabels,
@@ -140,9 +141,12 @@ export function RegisterPage() {
         </Typography.Paragraph>
         <Form form={form} layout="vertical" onFinish={onFinish} requiredMark={false}>
           <PersonNameFields size="large" autoFocus />
+          {/* Пробелы снимаются на вводе, а не при отправке: иначе форма ругалась бы «введите
+              корректный email» на адрес, который человек видит верным (`normalizeEmail`). */}
           <Form.Item
             name="email"
             label="Email"
+            normalize={normalizeEmail}
             rules={[{ required: true, type: 'email', message: 'Введите корректный email' }]}
           >
             <Input autoComplete="username" size="large" />
