@@ -5,6 +5,9 @@ import {
   dateOnlySchema,
   DRIVER_ASSIGNMENT_FUTURE_DAYS,
   DRIVER_ASSIGNMENT_PAST_DAYS,
+  DRIVER_CLIENT_OUTDATED_CODE,
+  DRIVER_DRAFT_FORMAT,
+  DRIVER_DRAFT_FORMAT_HEADER,
   DRIVER_SUBMIT_PAST_DAYS,
   moscowDateKeyOf,
   reportSubmitSchema,
@@ -84,6 +87,39 @@ function idempotencyKeyOf(req: FastifyRequest): string | null {
   return parsed.data;
 }
 
+/**
+ * Текст отказа устаревшей сборке. Самодостаточен намеренно: читать его будет портал, загруженный
+ * до этого выпуска, — кода `client_outdated` он не знает и покажет сообщение как обычную ошибку.
+ * Поэтому здесь названо действие целиком, и ни на какую кнопку текст не ссылается: кнопки у той
+ * сборки нет и появиться ей неоткуда — её код уже загружен.
+ */
+const CLIENT_OUTDATED_TEXT = 'Приложение обновилось: закройте вкладку и откройте кабинет заново';
+
+/**
+ * Граница, после которой старый формат черновика больше не рождается (ADR 0129, решение 8; план
+ * `docs/driver-readings-first-plan.md`, Р13).
+ *
+ * Черновик кабинета адресуется идентификаторами строк ожидания, а те приходят только из открытия
+ * отчёта: без него у формы нет ни одного блока и записывать нечего. Значит запрет ставится ровно
+ * здесь — на открытии, а не на чтении задания и не на отправке. Читать старому клиенту по-прежнему
+ * можно: показания, уже переданные с него, никуда не деваются, и отбирать у водителя вид на свой
+ * день из-за версии сборки было бы наказанием не по делу.
+ *
+ * Гарантии сохранности запрет не даёт и дать не может: форма, открытая до выката, пишет черновик
+ * локально и без сети — снаружи это не остановить ничем. Он лишь прекращает поток **новых** записей
+ * старого формата и делает устаревание громким; сохранность держит показ несопоставленной записи на
+ * стороне портала.
+ */
+function assertDraftFormat(req: FastifyRequest): void {
+  const raw = req.headers[DRIVER_DRAFT_FORMAT_HEADER];
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  // Сравнение точное: отсутствие заголовка и незнакомое значение — один и тот же случай «клиент не
+  // договаривался с этим сервером о формате», и разных исходов у них нет.
+  if (value !== DRIVER_DRAFT_FORMAT) {
+    throw err.conflict(CLIENT_OUTDATED_TEXT, { code: DRIVER_CLIENT_OUTDATED_CODE });
+  }
+}
+
 export default async function driverRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
   const read = { preHandler: [app.authenticate, app.requirePermission('driverCabinet.read')] };
@@ -108,9 +144,15 @@ export default async function driverRoutes(app: FastifyInstance): Promise<void> 
    * Отдельным действием, а не побочным эффектом чтения задания: до открытия писать некуда, а
    * открытие заводит строки — то есть занимает источники глобально (ADR 0103). Чтение задания
    * такого права не имеет и остаётся безобидным.
+   *
+   * Единственная ручка кабинета, требующая объявленного формата черновика (`assertDraftFormat`):
+   * здесь рождаются идентификаторы, которыми черновик адресуется.
    */
   r.post('/reports/:date/open', { ...submit, schema: { params: dateParams } }, async (req) => {
     const p = requirePrincipal(req);
+    // Формат черновика спрашивается первым: отказ устаревшей сборке не зависит ни от даты, ни от
+    // состава дня, и «обновите приложение» полезнее, чем «за этот день уже не передать».
+    assertDraftFormat(req);
     const today = todayKey();
     const { date } = req.params;
     if (!canSubmitOn(date, today)) throw err.badRequest('За этот день показания уже не передать');

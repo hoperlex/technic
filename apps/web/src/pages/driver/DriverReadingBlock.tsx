@@ -29,6 +29,11 @@ import type { DraftItem } from './api';
  * Переключателя «нет возможности снять показания» здесь нет намеренно (план кабинета, Р4): такую
  * строку закрывает персонал видом `no_data` и с причиной, а у водителя поля, которым можно
  * отписаться от ввода, больше нет.
+ *
+ * Читающий режим — свойство блока, а не одного подвала (план кабинета, Р10): принятый, повторно
+ * принимаемый и аннулированный день правит диспетчер, а день старше семи суток не принимают вовсе.
+ * Выключается в нём всё, чем можно ввести; а какие значения показать — серверные или локальные —
+ * решает страница: читающих режима два, и с черновиком они обращаются по-разному.
  */
 
 const hintStyle = { fontSize: '0.85em' } as const;
@@ -106,6 +111,7 @@ function NumberField({
   error,
   integer,
   suffix,
+  disabled,
   onChange,
 }: {
   label: string;
@@ -115,6 +121,7 @@ function NumberField({
   error?: string;
   integer: boolean;
   suffix: string;
+  disabled: boolean;
   onChange: (next: string) => void;
 }) {
   return (
@@ -129,6 +136,7 @@ function NumberField({
         size="large"
         value={value}
         suffix={suffix}
+        disabled={disabled}
         status={error ? 'error' : undefined}
         onFocus={keepVisible}
         onChange={(e) => onChange(normalizeDecimal(e.target.value, integer))}
@@ -155,6 +163,15 @@ export interface ReadingBlockProps {
   /** Ошибки по именам полей схемы: их же именами их и подсвечивает форма. */
   errors: Record<string, string>;
   uploading: boolean;
+  /**
+   * Читающий режим (Р10): выключено всё, чем можно ввести, — три числа, комментарий, подтверждение
+   * аномалии, «Прикрепить фото» и удаление файла. Иначе водитель правит принятый день, а отказ
+   * приходит с сервера — после того, как он всё набрал.
+   *
+   * Показанное режим не выбирает: чьи значения лежат в `value` — серверные или локальные — решает
+   * страница, и решает по-разному (Р10). Блок знает только, что ввод закрыт.
+   */
+  readOnly?: boolean;
   onChange: (patch: Partial<DraftItem>) => void;
   onUpload: (file: File) => void;
   onRemoveFile: (fileId: string) => void;
@@ -166,11 +183,21 @@ export function ReadingBlock({
   previous,
   errors,
   uploading,
+  readOnly = false,
   onChange,
   onUpload,
   onRemoveFile,
 }: ReadingBlockProps) {
   const attached = item.reading?.fileIds.length ?? 0;
+
+  /*
+   * Ввод уходит наружу одной дверью, и в читающем режиме она заперта. Это не перестраховка поверх
+   * `disabled`: атрибут разметки — обещание браузеру, а событие `change` до обработчика доходит и
+   * помимо человека (автозаполнение, восстановление формы). Запрет обязан быть свойством блока.
+   */
+  const edit = (patch: Partial<DraftItem>) => {
+    if (!readOnly) onChange(patch);
+  };
 
   /*
    * Предупреждения считаются на каждом наборе символа и той же чистой проверкой, которой лист не
@@ -241,7 +268,8 @@ export function ReadingBlock({
               ))}
               <Checkbox
                 checked={value.confirmAnomaly}
-                onChange={(e) => onChange({ confirmAnomaly: e.target.checked })}
+                disabled={readOnly}
+                onChange={(e) => edit({ confirmAnomaly: e.target.checked })}
                 style={{ marginTop: 8 }}
               >
                 Всё верно, подтверждаю
@@ -260,7 +288,8 @@ export function ReadingBlock({
         value={value.odometerKm}
         hint={previousHintText(previous, 'odometerKm')}
         error={errors.odometerKm ?? hardOf('odometerKm')}
-        onChange={(next) => onChange({ odometerKm: next })}
+        disabled={readOnly}
+        onChange={(next) => edit({ odometerKm: next })}
       />
       <NumberField
         label="Моточасы на конец смены"
@@ -269,7 +298,8 @@ export function ReadingBlock({
         value={value.engineHours}
         hint={previousHintText(previous, 'engineHours')}
         error={errors.engineHours ?? hardOf('engineHours')}
-        onChange={(next) => onChange({ engineHours: next })}
+        disabled={readOnly}
+        onChange={(next) => edit({ engineHours: next })}
       />
       {/* Заправлено ЗА СМЕНУ, а не остаток в баке: остатков портал не хранит и расхода не
           считает (Р28) — подпись обязана называть то, что спрашивают. Предыдущего снимка у
@@ -280,7 +310,8 @@ export function ReadingBlock({
         integer={false}
         value={value.fuelFilledLiters}
         error={errors.fuelFilledLiters ?? hardOf('fuelFilledLiters')}
-        onChange={(next) => onChange({ fuelFilledLiters: next })}
+        disabled={readOnly}
+        onChange={(next) => edit({ fuelFilledLiters: next })}
       />
 
       <label style={{ display: 'block' }}>
@@ -291,8 +322,9 @@ export function ReadingBlock({
           value={value.comment}
           autoSize={{ minRows: 1 }}
           maxLength={500}
+          disabled={readOnly}
           onFocus={keepVisible}
-          onChange={(e) => onChange({ comment: e.target.value })}
+          onChange={(e) => edit({ comment: e.target.value })}
         />
       </label>
 
@@ -303,13 +335,15 @@ export function ReadingBlock({
         <Upload
           multiple
           showUploadList={false}
+          disabled={readOnly}
           beforeUpload={(file) => {
-            onUpload(file);
+            // Той же запертой дверью, что и числа: выбор файла приходит и от системного диалога.
+            if (!readOnly) onUpload(file);
             // Загрузку ведёт портал (сессия в S3 своя): штатной отправке antd тут делать нечего.
             return false;
           }}
         >
-          <Button icon={<PaperClipOutlined />} loading={uploading}>
+          <Button icon={<PaperClipOutlined />} loading={uploading} disabled={readOnly}>
             Прикрепить фото
           </Button>
         </Upload>
@@ -320,8 +354,14 @@ export function ReadingBlock({
             уже приложено: {attached}
           </Typography.Text>
         )}
+        {/* Удаление снимают не запретом, а отсутствием: список без `onRemove` кнопки «Удалить» не
+            рисует вовсе — выключенная кнопка удаления там, где удалять нельзя ничем, только
+            обещала бы действие. Сами снимки остаются видимыми: они введены человеком. */}
         {value.files.length > 0 && (
-          <FileLinkList files={value.files} onRemove={(file) => onRemoveFile(file.id)} />
+          <FileLinkList
+            files={value.files}
+            onRemove={readOnly ? undefined : (file) => onRemoveFile(file.id)}
+          />
         )}
       </div>
     </div>

@@ -42,6 +42,9 @@ const DriverLayout = lazy(() =>
 const DriverPage = lazy(() =>
   import('./pages/driver/DriverPage').then((m) => ({ default: m.DriverPage })),
 );
+const DriverReadingsPage = lazy(() =>
+  import('./pages/driver/DriverReadingsPage').then((m) => ({ default: m.DriverReadingsPage })),
+);
 
 /**
  * Чем открывается каждый раздел каркаса — и всё, что маршруты знают о разделах сами. Адреса, права
@@ -93,7 +96,12 @@ export default function App() {
                 </Suspense>
               }
             >
-              <Route index element={<DriverPage />} />
+              {/* Кабинет открывается формой показаний, а не заданием (план driver-readings-first,
+                  Р1): показания — единственное, что водитель в портал вводит, и добираться до них
+                  нажатием поверх читающего экрана он больше не должен. Задание осталось целиком —
+                  страницей по ссылке из шапки, с той же датой в адресе. */}
+              <Route index element={<DriverReadingsPage />} />
+              <Route path="assignment" element={<DriverPage />} />
             </Route>
           </Route>
           {/* Окна рейса, списка рейсов и заявки (ADR 0120) — отдельным элементом маршрутизации над

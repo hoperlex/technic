@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { fireEvent, screen, waitFor } from '@testing-library/react';
+import type { ReactNode } from 'react';
 import { useLocation } from 'react-router';
 import dayjs from 'dayjs';
 import {
@@ -9,7 +10,8 @@ import {
   type DriverReportDto,
 } from '@technic/contracts';
 import { MOSCOW_TZ } from '@shared/config';
-import { json, mockHttp } from './http';
+import { QueryClient } from '@tanstack/react-query';
+import { json, mockHttp, type HttpMock } from './http';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { MOBILE_VIEWPORT, type Viewport } from './viewport';
@@ -32,6 +34,10 @@ const stylesCss = readFileSync(join(import.meta.dirname, '../src/styles.css'), '
 
 /**
  * Кабинет водителя (ADR 0102): каркас и задание на дату — этап 3 плана, решения Р9–Р13.
+ *
+ * Задание живёт на `/driver/assignment` (план docs/driver-readings-first-plan.md, Р1): index
+ * кабинета занят формой показаний. Экран от переезда не изменился — изменился адрес, по которому
+ * его открывают, и потому здесь же проверяется переход между двумя половинами дня (Р5).
  *
  * Проверяется то, ради чего кабинет заведён отдельным контуром. Первое: задание читается целиком с
  * готовых подписей — у роли `driver` нет права `directories.read`, и спросить справочник ей нечем
@@ -159,6 +165,13 @@ function renderCabinet(
     entriesFor?: (date: string) => DriverAssignmentEntry[];
     /** Отчёт дня: им проверяется строка долга — день без отчёта закрыт не был (П4). */
     reportFor?: (date: string) => DriverReportDto | null;
+    /**
+     * Что каркас показывает телом. По умолчанию — задание, ради которого сюда и ходят; `null`
+     * оставляет одну шапку: её ссылки от содержимого страницы не зависят вовсе (Р5).
+     */
+    body?: ReactNode;
+    /** Клиент запросов: сценариям про возврат в приложение нужен с настройками портала. */
+    queryClient?: QueryClient;
   } = {},
 ) {
   const entriesFor = options.entriesFor ?? (() => [routeEntry, esm2Entry]);
@@ -179,15 +192,38 @@ function renderCabinet(
   });
   const rendered = renderWithUser(
     <>
-      <DriverLayout>
-        <DriverPage />
-      </DriverLayout>
+      <DriverLayout>{options.body === undefined ? <DriverPage /> : options.body}</DriverLayout>
       <AddressProbe />
     </>,
-    { user: driver, viewport: options.viewport, route: options.route ?? '/driver' },
+    {
+      user: driver,
+      viewport: options.viewport,
+      route: options.route ?? '/driver/assignment',
+      queryClient: options.queryClient,
+    },
   );
   return { ...rendered, http };
 }
+
+/**
+ * Клиент запросов с настройками портала: глобально `refetchOnWindowFocus: false` и свой срок
+ * свежести ([main.tsx](../src/main.tsx)). Общий тестовый клиент их не повторяет — у него всё
+ * стухает сразу и обновляется по фокусу само, — и проверка «кабинет читает по возврату» прошла бы
+ * на любых настройках самого кабинета, ничего не проверив.
+ */
+const portalDefaults = (): QueryClient =>
+  new QueryClient({
+    defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false, staleTime: 10_000 } },
+  });
+
+/** Сколько раз спросили задание за конкретный день: календарь и строка долга ходят одной ручкой. */
+const assignmentCalls = (http: HttpMock, date: string): number =>
+  http.calls.filter((call) => call.path === '/driver/assignment' && call.query.get('date') === date)
+    .length;
+
+/** То же по отчёту: у него ключ свой на каждую дату, и путь называет её прямо. */
+const reportCalls = (http: HttpMock, date: string): number =>
+  http.calls.filter((call) => call.path === `/driver/reports/${date}`).length;
 
 describe('кабинет водителя: задание на дату', () => {
   it('задание читается готовыми подписями: машина, источник, состав рейса и контакты', async () => {
@@ -240,14 +276,18 @@ describe('кабинет водителя: задание на дату', () => 
     renderCabinet({ entriesFor: () => [] });
 
     expect(await screen.findByText('На этот день заданий нет')).toBeDefined();
-    // Кнопка, которая ничего не откроет, читается как поломка: передавать по такому дню нечего.
-    expect(screen.queryByText('Передать показания')).toBeNull();
+    // Экран задания читающий целиком: ни одного действия на нём нет и не появляется — ни у
+    // пустого дня, ни у полного (Р12 ADR 0102).
+    expect(screen.queryByRole('button', { name: /Передать/u })).toBeNull();
     expect(screen.queryByText('Черновик')).toBeNull();
   });
 
-  it('стрелки переносят день в адрес и в запрос, а сегодня живёт без параметра', async () => {
-    const { http } = renderCabinet();
-    expect(await screen.findByText('Рейс Р-142')).toBeDefined();
+  it('стрелки переносят день в адрес и в показанное, а сегодня живёт без параметра', async () => {
+    // Задание каждого дня подписано своей датой: по подписи и видно, за какой день читает страница.
+    const { http } = renderCabinet({
+      entriesFor: (date) => [{ ...routeEntry, sourceLabel: `Рейс ${date}` }],
+    });
+    expect(await screen.findByText(`Рейс ${today}`)).toBeDefined();
     // Первый запрос — на сегодня по Москве, а не на дату часов устройства. Именно первый: следом
     // шапка спрашивает прошедшие дни окна записи, проверяя долг (П4), и последним будет один из них.
     expect(http.calls.find((call) => call.path === '/driver/assignment')?.query.get('date')).toBe(
@@ -258,31 +298,112 @@ describe('кабинет водителя: задание на дату', () => 
 
     // Адрес — единственное место, где день хранится: его пересылают и по нему возвращаются.
     await waitFor(() =>
-      expect(screen.getByTestId('address').textContent).toBe(`/driver?date=${yesterday}`),
+      expect(screen.getByTestId('address').textContent).toBe(
+        `/driver/assignment?date=${yesterday}`,
+      ),
     );
-    await waitFor(() =>
-      expect(http.lastCall('GET /driver/assignment')?.query.get('date')).toBe(yesterday),
-    );
+    /*
+     * Проверяется показанное, а не последний запрос. Нового запроса за вчера может не быть вовсе:
+     * три прошедших дня минуту назад прочла строка долга в шапке, кэш у них с этой страницей общий
+     * (Р8), и пока ответ свеж (`cabinetRead`), второго чтения того же самого портал не делает.
+     * Прежняя проверка «последним ушёл запрос за вчера» держалась на том, что у тестового клиента
+     * своего срока свежести нет, — то есть проверяла настройку теста, а не поведение кабинета.
+     */
+    expect(await screen.findByText(`Рейс ${yesterday}`)).toBeDefined();
+    expect(
+      http.calls.some(
+        (call) => call.path === '/driver/assignment' && call.query.get('date') === yesterday,
+      ),
+    ).toBe(true);
 
     fireEvent.click(screen.getByLabelText('Следующий день'));
 
     // Возврат на сегодня убирает параметр: ссылка на кабинет не должна устаревать к утру.
-    await waitFor(() => expect(screen.getByTestId('address').textContent).toBe('/driver'));
-    expect(http.lastCall('GET /driver/assignment')?.query.get('date')).toBe(today);
+    await waitFor(() =>
+      expect(screen.getByTestId('address').textContent).toBe('/driver/assignment'),
+    );
+    expect(await screen.findByText(`Рейс ${today}`)).toBeDefined();
   });
 
-  it('за окном записи задание читается, а передавать показания нельзя', async () => {
+  it('возврат в приложение перечитывает задание показанного дня', async () => {
+    const { http } = renderCabinet({ queryClient: portalDefaults() });
+    expect(await screen.findByText('Рейс Р-142')).toBeDefined();
+    const before = assignmentCalls(http, today);
+
+    /*
+     * Возврат в приложение TanStack Query слышит как `visibilitychange` — им же он его и шлёт.
+     * Телефон водителя лежит в кармане со свёрнутым браузером: рейс, заведённый диспетчером в
+     * обед, обязан появиться сам, потому что сказать водителю «обнови страницу» здесь некому.
+     * Портальное `refetchOnWindowFocus: false` в кабинете означало бы вчерашнее задание на
+     * экране до перезагрузки, которой не будет (Р7).
+     */
+    fireEvent(window, new Event('visibilitychange'));
+
+    await waitFor(() => expect(assignmentCalls(http, today)).toBeGreaterThan(before));
+  });
+
+  it('строка долга обновляется по возврату — но не по тому дню, который открыт', async () => {
+    // Тело каркаса не нужно: проверяются запросы самой шапки (П4). Открыт вчерашний день —
+    // именно тот, по которому со страницы показаний уходят `open` и `submit`.
+    const { http } = renderCabinet({
+      route: `/driver?date=${yesterday}`,
+      body: null,
+      queryClient: portalDefaults(),
+    });
+    await waitFor(() => expect(reportCalls(http, dayBefore)).toBe(1));
+    const shownBefore = reportCalls(http, yesterday);
+
+    fireEvent(window, new Event('visibilitychange'));
+
+    /*
+     * Прошедшие дни строка перечитывает: долг мог закрыть диспетчер, пока телефон лежал в кармане.
+     * А показанный день — не трогает, и это не экономия запроса. Отчёт дня живёт одним кэшем (Р8),
+     * страница на время полёта `open` и `submit` свои чтения выключает — этим и держится Р7:
+     * единственный писатель кэша в полёте — сама мутация. Строка долга про гейт не знает ничего, и
+     * её фоновое чтение легло бы снимком «до» поверх ответа отправки — то есть отдало бы форме
+     * устаревшую версию отчёта и гарантированный 409 на следующей отправке.
+     */
+    await waitFor(() => expect(reportCalls(http, dayBefore)).toBe(2));
+    expect(reportCalls(http, yesterday)).toBe(shownBefore);
+  });
+
+  it('за окном записи задание читается по-прежнему, а кнопок передачи в шапке нет вовсе', async () => {
     // Окно чтения (−30) шире окна записи (8 дней, считая сегодняшний) — это и проверяется: день
-    // девятидневной давности открывается, но закрыть его водителю уже нечем (Р11).
-    renderCabinet({ route: `/driver?date=${beforeSubmitWindow}` });
+    // девятидневной давности открывается и читается целиком (Р11).
+    renderCabinet({ route: `/driver/assignment?date=${beforeSubmitWindow}` });
 
     expect(await screen.findByText('Рейс Р-142')).toBeDefined();
     // Подпись строки несёт номер ездки (Р1): у заявки их может быть несколько, и водителю
     // важно, какую именно он грузит на этой остановке.
     expect(screen.getAllByText('ТС-101/1').length).toBeGreaterThan(0);
 
-    const submit = screen.getByText('Передать показания').closest('button');
-    expect(submit?.disabled).toBe(true);
+    /*
+     * Кнопки передачи в шапке больше нет ни в каком дне (Р4): состояние дня называет строка над
+     * формой показаний, а окно записи закрывает саму кнопку «Передать» в подвале той страницы —
+     * это проверяет driver-readings.test.tsx. Здесь важно обратное: шапка задания её не рисует, и
+     * прежняя проверка «кнопка выключена» молча проходила бы на любой странице.
+     */
+    expect(screen.queryByText('Передать показания')).toBeNull();
+    expect(screen.queryByText('Передать')).toBeNull();
+  });
+
+  it('шапка ведёт с задания на показания того же дня, а логотип — на сегодня', async () => {
+    // Р5: две половины дня связаны ссылкой в шапке, и дата едет с переходом. Логотип по-прежнему
+    // ведёт на «сегодня» — то есть на сегодняшние показания, без параметра.
+    renderCabinet({ route: `/driver/assignment?date=${beforeSubmitWindow}`, body: null });
+
+    const back = await screen.findByText('Показания');
+    expect(back.getAttribute('href')).toBe(`/driver?date=${beforeSubmitWindow}`);
+    expect(screen.getByLabelText('Сегодня').getAttribute('href')).toBe('/driver');
+  });
+
+  it('со страницы показаний шапка ведёт на задание того же дня', async () => {
+    renderCabinet({ route: `/driver?date=${yesterday}`, body: null });
+
+    const forward = await screen.findByText('Задание');
+    expect(forward.getAttribute('href')).toBe(`/driver/assignment?date=${yesterday}`);
+    // Сегодняшний день параметра не получает и здесь: адрес «/driver/assignment» — адрес сегодня.
+    expect(screen.queryByText('Показания')).toBeNull();
   });
 
   it('в каркасе кабинета нет ни бокового меню, ни нижней навигации', async () => {
@@ -335,6 +456,7 @@ describe('кабинет водителя: задание на дату', () => 
      */
     renderCabinet({ entriesFor: (date) => (date === yesterday ? [] : [routeEntry]) });
 
+    // Ссылка ведёт на показания того дня, а не на его задание: закрывают долг формой (Р1).
     const link = await screen.findByText(/Не переданы показания/);
     expect(link.getAttribute('href')).toBe(`/driver?date=${dayBefore}`);
     expect(link.textContent).toContain(dayjs(dayBefore).format('D MMM'));

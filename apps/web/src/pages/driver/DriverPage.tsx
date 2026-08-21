@@ -7,11 +7,16 @@ import type {
   DriverAssignmentPoint,
 } from '@technic/contracts';
 import { errorMessage } from '@shared/lib';
-import { driverCabinetApi, driverKeys } from './api';
+import { cabinetRead, driverCabinetApi, driverKeys } from './api';
 import { useDriverDate } from './DriverLayout';
 
 /**
- * Тело кабинета: задание работника на выбранную дату (ADR 0102, Р12–Р13).
+ * Задание работника на выбранную дату (ADR 0102, Р12–Р13).
+ *
+ * Страница по ссылке, а не тело кабинета: кабинет открывается формой показаний, и задание живёт на
+ * `/driver/assignment` — той же датой в адресе, той же шапкой каркаса (план driver-readings-first,
+ * Р1, Р5). Само содержимое от переезда не изменилось: адреса точек, время, кто встречает и его
+ * телефон — всё, ради чего экран и заведён, читается здесь целиком.
  *
  * Экран читающий. Правки задания здесь нет вовсе — ни отказа ехать, ни замены машины, ни отметки
  * «выполнено»: кабинет по заданию читающий, и всё это ведётся в основном портале.
@@ -188,9 +193,16 @@ function EntryCard({ entry }: { entry: DriverAssignmentEntry }) {
 
 export function DriverPage() {
   const { date } = useDriverDate();
+  /*
+   * Настройки чтения — общие для кабинета (Р7), а не портальные: телефон водителя лежит в кармане
+   * со свёрнутым браузером, и рейс, заведённый диспетчером в обед, обязан появиться сам — сказать
+   * водителю «обнови страницу» здесь некому. Гейта мутаций у этой страницы нет и не нужно: ни
+   * `open`, ни `submit` отсюда не уходят, а задание — чтение, которому нечего затирать.
+   */
   const { data, isPending, error } = useQuery({
     queryKey: driverKeys.assignment(date),
     queryFn: () => driverCabinetApi.assignment(date),
+    ...cabinetRead,
   });
 
   if (isPending) return <Skeleton active paragraph={{ rows: 6 }} />;
@@ -217,7 +229,7 @@ export function DriverPage() {
   }
 
   // Копия перед сортировкой: `entries` лежит в кэше запроса, и сортировка на месте переставила бы
-  // строки всем, кто их читает, — включая оверлей передачи показаний.
+  // строки всем, кто их читает, — включая страницу показаний.
   return (
     <Space direction="vertical" size={12} style={{ display: 'flex' }}>
       {[...data.entries].sort(byShiftOrder).map((entry) => (

@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { screen } from '@testing-library/react';
-import { Navigate, Route, Routes } from 'react-router';
+import { Navigate, Outlet, Route, Routes } from 'react-router';
 import type { AuthUser } from '@technic/contracts';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { HomeRedirect, RequireSection } from '../src/auth/ProtectedRoute';
@@ -29,7 +31,21 @@ function renderRoutes(user: AuthUser, route: string) {
   return renderWithUser(
     <Routes>
       <Route element={<RequireSection id="driver-cabinet" />}>
-        <Route path="/driver" element={<div>Кабинет водителя</div>} />
+        {/* Ветка кабинета повторяет портальную формой, а не содержимым: каркас, index и вторая
+            страница задания (план driver-readings-first, Р1). Гейт стоит над всей веткой — это и
+            проверяется: подстраница задания не должна оказаться дверью в обход условия входа. */}
+        <Route
+          path="/driver"
+          element={
+            <div>
+              Кабинет водителя
+              <Outlet />
+            </div>
+          }
+        >
+          <Route index element={<div>Показания</div>} />
+          <Route path="assignment" element={<div>Задание</div>} />
+        </Route>
       </Route>
       <Route path="/waste" element={<div>Вывоз мусора</div>} />
       {/* Стартовая страница стоит на корне — там же, где в портале, и туда же уводит отказ гейта. */}
@@ -67,6 +83,29 @@ describe('кабинет водителя открыт только роли dri
     expect(screen.getByText('Кабинет водителя')).toBeDefined();
   });
 
+  it('index кабинета — показания, а не задание', () => {
+    // Р1: `/driver` открывается формой показаний. Задание никуда не делось — оно на подстранице,
+    // внутри того же каркаса и того же гейта, и дата у них общая, в адресе.
+    renderRoutes(driver(), '/driver');
+    expect(screen.getByText('Показания')).toBeDefined();
+    expect(screen.queryByText('Задание')).toBeNull();
+  });
+
+  it('задание открывается своим адресом внутри того же каркаса', () => {
+    renderRoutes(driver(), '/driver/assignment');
+    expect(screen.getByText('Кабинет водителя')).toBeDefined();
+    expect(screen.getByText('Задание')).toBeDefined();
+    expect(screen.queryByText('Показания')).toBeNull();
+  });
+
+  it('подстраница задания закрыта тем же гейтом, что и кабинет', () => {
+    // Гейт стоит над веткой, а не над index-маршрутом: заведи его этажом ниже — и вторая
+    // страница открылась бы всем, кто прошёл ProtectedRoute.
+    renderRoutes(admin(), '/driver/assignment');
+    expect(screen.getByText('Вывоз мусора')).toBeDefined();
+    expect(screen.queryByText('Задание')).toBeNull();
+  });
+
   it('водитель без права кабинета видит экран «разделов нет», а не форму смены пароля', () => {
     /*
      * Роль без права — состояние переходное (право сняли, учётку ещё не перевели), но именно на
@@ -84,5 +123,31 @@ describe('кабинет водителя открыт только роли dri
     expect(screen.getByText('Разделы портала вам пока не назначены')).toBeDefined();
     expect(screen.queryByText('Кабинет водителя')).toBeNull();
     expect(screen.queryByText('Смена пароля')).toBeNull();
+  });
+});
+
+/**
+ * Какая страница стоит на index кабинета — вопрос к `App.tsx`, а не к дереву маршрутов выше: там
+ * маршруты собирает сам тест, и подменить в них страницу он может любой. Поэтому источник читается
+ * с диска и проверяется буквально: разбирать `App` импортом значило бы поднять весь портал ради
+ * двух строк, а `check-portal-routes.mjs` сторожит адреса ветки, но не то, чем они открываются.
+ *
+ * Путь считается от файла теста, а не от рабочего каталога: прогон из корня репозитория его не
+ * сломает.
+ */
+const appSource = readFileSync(join(import.meta.dirname, '../src/App.tsx'), 'utf8');
+
+describe('кабинет открывается формой показаний', () => {
+  it('index кабинета — DriverReadingsPage, задание — подстраница', () => {
+    expect(appSource).toMatch(/<Route index element=\{<DriverReadingsPage \/>\} \/>/);
+    expect(appSource).toMatch(/<Route path="assignment" element=\{<DriverPage \/>\} \/>/);
+  });
+
+  it('страница показаний грузится отдельным чанком, как и весь кабинет', () => {
+    // Кабинет — второй контур: его код не должен попадать в первый бандл диспетчера, и наоборот.
+    // Проверяется соседство `lazy` и импорта, а не точная запись: переносы строк тут ставит
+    // prettier, и требовать от него постоянства значило бы ловить его правки как поломку.
+    const lazyImport = appSource.slice(0, appSource.indexOf('export default'));
+    expect(lazyImport).toMatch(/lazy\([\s\S]{0,80}pages\/driver\/DriverReadingsPage/);
   });
 });

@@ -1,8 +1,14 @@
-import type { DriverAssignmentDto, DriverReportDto, ReportSubmitBody } from '@technic/contracts';
+import {
+  DRIVER_DRAFT_FORMAT,
+  DRIVER_DRAFT_FORMAT_HEADER,
+  type DriverAssignmentDto,
+  type DriverReportDto,
+  type ReportSubmitBody,
+} from '@technic/contracts';
 import { apiFetch, createQueryKeys } from '@shared/api';
 
 /**
- * Запросы кабинета водителя и его локальный черновик (ADR 0102, ADR 0103).
+ * Запросы кабинета водителя (ADR 0102, ADR 0103).
  *
  * Кабинет — второй контур портала: у роли `driver` нет ни одного права основного портала, поэтому
  * своих справочников он не спрашивает вовсе — все подписи приходят готовыми в задании. Отсюда
@@ -17,9 +23,37 @@ import { apiFetch, createQueryKeys } from '@shared/api';
 export const driverKeys = createQueryKeys('driver-cabinet', {
   /** Задание на дату: ключ по дате — переключение стрелками не перезапрашивает уже показанный день. */
   assignment: (date: string) => ['assignment', date],
-  /** Отчёт дня: им шапка рисует состояние кнопки, поэтому он живёт отдельно от задания. */
+  /**
+   * Отчёт дня — **единственное место, где живёт `DriverReportDto`** (план driver-readings-first,
+   * Р8). Второго кэша под ответ `open` нет намеренно: два кэша одного отчёта разъезжаются, и
+   * первой это увидела бы строка долга в шапке — `usePendingDays` читает именно этот ключ.
+   */
   report: (date: string) => ['report', date],
 });
+
+/**
+ * Сколько ответ кабинета считается свежим. Ровно столько же, сколько у портала вообще
+ * ([main.tsx](../../main.tsx)), но своим числом: здесь оно держит не экономию запросов, а
+ * сохранность ответа мутации (см. `cabinetRead`).
+ */
+const CABINET_FRESH_MS = 10_000;
+
+/**
+ * Настройки читающих запросов кабинета — `assignment` и `report` (Р7). Оба дешёвые и читающие,
+ * и оба отступают от общих настроек портала, потому что кабинет живёт иначе.
+ *
+ * - **Обновление по возврату в приложение.** Глобально у портала `refetchOnWindowFocus: false`, а
+ *   телефон водителя весь день лежит в кармане со свёрнутым браузером: рейс, заведённый
+ *   диспетчером в обед, обязан появиться сам — перезагрузить страницу водителю никто не подскажет.
+ *   `'always'`, а не «если устарело»: снимок мог устареть и за секунду до возврата.
+ * - **Свой срок свежести.** Ответы `open` и `submit` ложатся в тот же кэш (Р8), а на время их
+ *   полёта читающие запросы выключены (Р7); без собственного срока первое же включение обратно
+ *   перечитало бы отчёт и вернуло страницу к снимку «до отправки».
+ */
+export const cabinetRead = {
+  refetchOnWindowFocus: 'always',
+  staleTime: CABINET_FRESH_MS,
+} as const;
 
 export const driverCabinetApi = {
   assignment: (date: string) =>
@@ -29,9 +63,17 @@ export const driverCabinetApi = {
   /**
    * Открытие отчёта: сервер заводит черновик и строки ожидания по источникам дня и возвращает их
    * с идентификаторами. До этого записывать некуда — `itemId` появляется только здесь.
+   *
+   * Формат черновика объявляется заголовком, и это единственная ручка, где он нужен (Р13): ключи
+   * записей черновика рождаются из `itemId`, а `itemId` приходит только отсюда. Сборке, не умеющей
+   * нынешний формат, сервер отвечает отказом `client_outdated` — так поток новых записей прежнего
+   * формата и прекращается.
    */
   open: (date: string) =>
-    apiFetch<DriverReportDto>(`/driver/reports/${date}/open`, { method: 'POST' }),
+    apiFetch<DriverReportDto>(`/driver/reports/${date}/open`, {
+      method: 'POST',
+      headers: { [DRIVER_DRAFT_FORMAT_HEADER]: DRIVER_DRAFT_FORMAT },
+    }),
   /**
    * Отправка. Ключ идемпотентности — заголовком: плохая связь не должна порождать ни дублей, ни
    * потерянных отправок, а повтор того же ключа с другим телом сервер обязан отличить от повтора
@@ -45,13 +87,14 @@ export const driverCabinetApi = {
     }),
 };
 
-// ── Черновик отправки ──
+// ── Что вводит человек ──
 
 /**
- * Черновик живёт здесь, рядом с отправкой, а не отдельным модулем: это и есть тело будущего
- * запроса вместе с его ключом идемпотентности — то же самое, что уедет на сервер, только ещё не
- * уехавшее. Разведи их по файлам — и «ключ живёт вместе с черновиком» (Р14) стало бы правилом,
- * которое держится памятью.
+ * Здесь остались только форма введённого и ключ идемпотентности — то, из чего собирается тело
+ * запроса. Хранилище черновика уехало в [draftStore.ts](draftStore.ts), и разведены они не по
+ * вкусу: у ячейки прежнего формата было два писателя — здешние `saveDraft`/`clearDraft` и вкладка
+ * соседней сборки, — и уцелевала последняя запись целиком (Р11б). У нынешнего формата писатель
+ * ровно один, и держится это тем, что писать отсюда больше нечем: обеих функций тут нет.
  */
 
 /** Файл, уже загруженный в хранилище и ещё ни к чему не привязанный. */
@@ -85,92 +128,14 @@ export interface DraftItem {
   confirmAnomaly: boolean;
 }
 
-export interface ReportDraft {
-  /** Генерируется на открытие оверлея и живёт вместе с черновиком (Р14, Р25). */
-  idempotencyKey: string;
-  /** Когда сохранён: по нему и уходит по TTL. */
-  savedAt: number;
-  /** Строка ожидания → введённое по ней. */
-  items: Record<string, DraftItem>;
-}
-
-/**
- * Ключ хранилища — «учётка + дата», именно учётка, а не человек: телефон в бригаде бывает общим, и
- * два водителя, входящие по очереди, не должны видеть черновики друг друга.
- */
-const PREFIX = 'technic:driver-draft:';
-const DRAFT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-
-function draftKey(userId: string, date: string): string {
-  return `${PREFIX}${userId}:${date}`;
-}
-
-/** Чтение с проверкой формы: чужая или испорченная запись читается как «черновика нет». */
-function parseDraft(raw: string | null): ReportDraft | null {
-  if (!raw) return null;
-  try {
-    const value: unknown = JSON.parse(raw);
-    if (typeof value !== 'object' || value === null) return null;
-    const draft = value as Partial<ReportDraft>;
-    if (typeof draft.idempotencyKey !== 'string' || typeof draft.savedAt !== 'number') return null;
-    if (typeof draft.items !== 'object' || draft.items === null) return null;
-    return { idempotencyKey: draft.idempotencyKey, savedAt: draft.savedAt, items: draft.items };
-  } catch {
-    return null;
-  }
-}
-
-export function loadDraft(userId: string, date: string): ReportDraft | null {
-  const draft = parseDraft(localStorage.getItem(draftKey(userId, date)));
-  if (!draft) return null;
-  // Просроченный черновик не показывается даже до уборки: неделю назад введённые показания уже
-  // относятся не к тому счётчику, что человек видит перед собой.
-  if (Date.now() - draft.savedAt > DRAFT_TTL_MS) {
-    localStorage.removeItem(draftKey(userId, date));
-    return null;
-  }
-  return draft;
-}
-
-export function saveDraft(userId: string, date: string, draft: ReportDraft): void {
-  try {
-    localStorage.setItem(draftKey(userId, date), JSON.stringify(draft));
-  } catch {
-    /* Хранилище переполнено или закрыто настройками — работать это не мешает, теряется только
-       восстановление после закрытия вкладки. Отказывать в вводе из-за этого нельзя. */
-  }
-}
-
-export function clearDraft(userId: string, date: string): void {
-  localStorage.removeItem(draftKey(userId, date));
-}
-
-/** Все черновики учётки — вычищаются при выходе: на общем телефоне они достались бы следующему. */
-export function clearUserDrafts(userId: string): void {
-  const prefix = `${PREFIX}${userId}:`;
-  for (const key of Object.keys(localStorage)) {
-    if (key.startsWith(prefix)) localStorage.removeItem(key);
-  }
-}
-
-/**
- * Уборка по TTL: черновики дней, до которых никто не вернулся. Зовётся при входе в кабинет — своего
- * фонового процесса у портала нет, а «когда-нибудь потом» для чужих показаний на общем телефоне
- * означает «никогда».
- */
-export function pruneDrafts(): void {
-  const now = Date.now();
-  for (const key of Object.keys(localStorage)) {
-    if (!key.startsWith(PREFIX)) continue;
-    const draft = parseDraft(localStorage.getItem(key));
-    if (!draft || now - draft.savedAt > DRAFT_TTL_MS) localStorage.removeItem(key);
-  }
-}
-
 /**
  * Ключ идемпотентности. `crypto.randomUUID` есть только в защищённом контексте, а кабинет открывают
  * и по адресу в локальной сети — запасной путь нужен не для красоты: без ключа отправка перестала
  * бы быть повторяемой ровно там, где связь и рвётся.
+ *
+ * Заводится он на попытку отправки, а не на день (Р12а): после слияния веток черновика ключей
+ * столько же, сколько веток, а повторить нужно ровно ту пару «ключ + версия», которая ушла на
+ * сервер, — держит её `draftStore`, а не эта функция.
  */
 export function newIdempotencyKey(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {

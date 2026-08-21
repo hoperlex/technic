@@ -1,38 +1,44 @@
-import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
-import { Link, Outlet, useNavigate, useSearchParams } from 'react-router';
-import { Button, DatePicker, Dropdown, Tooltip, type MenuProps } from 'antd';
+import { useEffect, useMemo, type CSSProperties, type ReactNode } from 'react';
+import { Link, Outlet, useLocation, useNavigate, useSearchParams } from 'react-router';
+import { Button, DatePicker, Dropdown, type MenuProps } from 'antd';
 import { KeyOutlined, LeftOutlined, LogoutOutlined, RightOutlined } from '@ant-design/icons';
-import { useQueries, useQuery } from '@tanstack/react-query';
+import { useQueries } from '@tanstack/react-query';
 import dayjs, { type Dayjs } from 'dayjs';
 import {
   DRIVER_ASSIGNMENT_FUTURE_DAYS,
   DRIVER_ASSIGNMENT_PAST_DAYS,
-  DRIVER_SUBMIT_PAST_DAYS,
   formatShortName,
-  type DriverReportDto,
 } from '@technic/contracts';
 import { MOSCOW_TZ } from '@shared/config';
 import { useAuth } from '../../auth/AuthContext';
 import { PortalLogo } from '../../components/PortalLogo';
 import { UserAvatar } from '../../components/UserAvatar';
-import { clearUserDrafts, driverCabinetApi, driverKeys, loadDraft, pruneDrafts } from './api';
-import { DriverReadingsSheet } from './DriverReadingsSheet';
+import { cabinetRead, driverCabinetApi, driverKeys } from './api';
+import { clearUserDrafts, pruneDrafts } from './draftStore';
 import { DRIVER_FONT_SCALE } from './readingLimits';
 
 /**
- * Каркас кабинета водителя (ADR 0102, Р9–Р11).
+ * Каркас кабинета водителя (ADR 0102, Р9–Р11; план driver-readings-first, Р4, Р5).
  *
  * Второй контур портала: ни боковой панели, ни нижней навигации, ни меню разделов — разделов у
  * роли `driver` нет вовсе. Всё, что кабинету нужно от каркаса, — три вещи из Р10: «где я во
- * времени» (выбор даты), «что я должен сделать» (кнопка передачи показаний) и «кто я» (меню
+ * времени» (выбор даты), «куда я могу перейти» (ссылка на вторую страницу дня) и «кто я» (меню
  * учётной записи). Обычный `AppLayout` пришлось бы обвешивать отрицаниями, а отрицания
  * разъезжаются с тем, что отрицают.
+ *
+ * Кнопки передачи показаний в шапке больше нет (Р4): кабинет открывается самой формой, и состояние
+ * дня теперь называет строка над ней. Каркас поэтому не спрашивает ни задания, ни отчёта — кроме
+ * прошедших дней, по которым считается долг (П4).
  */
 
 const DATE_FORMAT = 'YYYY-MM-DD';
 
-/** Ширина колонки на планшете и десктопе: кабинет верстается под телефон и растягиваться не должен. */
-const CONTENT_WIDTH = 720;
+/**
+ * Ширина колонки на планшете и десктопе: кабинет верстается под телефон и растягиваться не должен.
+ * Экспортируется ради закреплённого подвала страницы показаний: он лежит во всю ширину экрана, а
+ * кнопку держит в этой же колонке — второе число разъехалось бы с первой правкой.
+ */
+export const CONTENT_WIDTH = 720;
 
 /**
  * «Сегодня» — по Москве, а не по часам устройства: граница суток у водителя из другого региона
@@ -91,51 +97,6 @@ function dateLabel(value: Dayjs, today: string): string {
   return value.format('dd, D MMM YYYY');
 }
 
-/** Состояние кнопки шапки: подпись, доступность и объяснение, почему нажать нельзя. */
-interface SubmitButton {
-  label: string;
-  disabled: boolean;
-  hint: string;
-}
-
-/**
- * Кнопка называет состояние отчёта дня (Р10), а не действие: «Передать» и «Передано» — разные
- * новости, и человек, закрывший день, должен видеть это, не открывая оверлей.
- *
- * После приёмки водитель отчёт не правит (Р23): правки вносит персонал, и кнопка это говорит.
- */
-function submitButtonState(
-  report: DriverReportDto | null | undefined,
-  hasLocalDraft: boolean,
-  canSubmit: boolean,
-): SubmitButton {
-  if (report?.state === 'accepted')
-    return {
-      label: 'Принято',
-      disabled: true,
-      hint: 'Показания приняты — правки вносит диспетчер',
-    };
-  if (report?.state === 'needs_reacceptance')
-    return {
-      label: 'На повторном приёме',
-      disabled: true,
-      hint: 'День уже принимали — правки вносит диспетчер',
-    };
-  if (report?.state === 'voided')
-    return { label: 'Аннулирован', disabled: true, hint: 'Отчёт этого дня аннулирован' };
-  if (!canSubmit)
-    return {
-      label: 'Передать показания',
-      disabled: true,
-      hint: `Показания принимаются за сегодня и ${DRIVER_SUBMIT_PAST_DAYS} предыдущих дней`,
-    };
-  if (report?.state === 'submitted')
-    return { label: 'Передано', disabled: false, hint: 'Можно поправить, пока день не приняли' };
-  if (hasLocalDraft || report?.state === 'draft')
-    return { label: 'Черновик', disabled: false, hint: 'Заполнено, но не передано' };
-  return { label: 'Передать показания', disabled: false, hint: '' };
-}
-
 const headerStyle: CSSProperties = {
   position: 'sticky',
   top: 0,
@@ -188,7 +149,7 @@ const shellStyle = {
  * недельной давности ему уже сказал диспетчер.
  *
  * Сегодняшний день в проверку не входит намеренно: смена ещё идёт, показания снимают в конце, и
- * «не сдано за сегодня» над кнопкой «Передать показания» было бы упрёком за несделанное вовремя.
+ * «не сдано за сегодня» в шапке было бы упрёком за несделанное вовремя.
  */
 const PENDING_DAYS_CHECKED = 3;
 
@@ -197,12 +158,26 @@ const PENDING_DAYS_CHECKED = 3;
  * узнаёт о долге только от диспетчера — а закрыть его можно лишь пока день не вышел из окна записи.
  *
  * Задание спрашивается вместе с отчётом, и это не перестраховка: отчёта нет и у выходного — его
- * заводит открытие оверлея, а в выходной оверлей не открывали. Без задания портал не отличил бы
+ * заводит показ формы показаний, а в выходной её не открывали. Без задания портал не отличил бы
  * долг от дня отдыха и кричал бы «не сдано» каждый понедельник; ложная тревога учит не смотреть на
- * строку вовсе. Ключи запросов те же, что у экрана дня: уже открытый день второй раз не
- * запрашивается, а отправка показаний сбрасывает весь корень кабинета — строка обновится сама.
+ * строку вовсе.
+ *
+ * Ключи запросов те же, что у экрана дня, и это единственное, чем строка обновляется: отчёт живёт
+ * в `driverKeys.report(date)` одним кэшем (Р8), и успешная отправка кладёт свой ответ прямо туда.
+ * Прежде день переставал считаться незакрытым от корневой инвалидации — то есть от лишнего чтения
+ * того, что портал уже получил ответом; теперь строка пересчитывается по тому же снимку, который
+ * показывает форма, и разъехаться им нечем.
+ *
+ * `shown` — день, открытый в кабинете прямо сейчас; ему настройки чтения достаются урезанные, и
+ * причина в том же одном кэше. По показанному дню уходят `open` и `submit`, а страница на время их
+ * полёта выключает свои чтения — этим и держится Р7: единственный писатель кэша в полёте — сама
+ * мутация. Строка долга — **второй** наблюдатель того же ключа, и про гейт она не знает ничего:
+ * обновись она по возврату в приложение или по восстановленной связи (а рвётся связь ровно тогда,
+ * когда отправка в пути), снимок «до» лёг бы поверх свежего ответа — и следующая отправка получила
+ * бы 409 по устаревшей версии. Читать этот день строке и незачем: кэш общий, и держит его свежим
+ * страница, у которой гейт есть.
  */
-function usePendingDays(today: string): string[] {
+function usePendingDays(today: string, shown: string): string[] {
   const dates = useMemo(
     () =>
       Array.from({ length: PENDING_DAYS_CHECKED }, (_, index) =>
@@ -212,16 +187,23 @@ function usePendingDays(today: string): string[] {
       ),
     [today],
   );
+  /** Общие настройки чтения кабинета (Р7) — кроме показанного дня: его читает сама страница. */
+  const read = (date: string) =>
+    date === shown
+      ? { ...cabinetRead, refetchOnWindowFocus: false as const, refetchOnReconnect: false as const }
+      : cabinetRead;
   const reports = useQueries({
     queries: dates.map((date) => ({
       queryKey: driverKeys.report(date),
       queryFn: () => driverCabinetApi.report(date),
+      ...read(date),
     })),
   });
   const assignments = useQueries({
     queries: dates.map((date) => ({
       queryKey: driverKeys.assignment(date),
       queryFn: () => driverCabinetApi.assignment(date),
+      ...read(date),
     })),
   });
 
@@ -231,7 +213,7 @@ function usePendingDays(today: string): string[] {
     // Пока ответ не пришёл, дня в списке нет: строка, мигнувшая и пропавшая, читается как сбой.
     if (!assignment?.isSuccess || !report?.isSuccess) return false;
     if (assignment.data.entries.length === 0) return false;
-    // `null` — оверлей не открывали вовсе, `draft` — открыли и не отправили. Прочие состояния
+    // `null` — форму дня не открывали вовсе, `draft` — открыли и не отправили. Прочие состояния
     // водителя не ждут: принятый и повторно принимаемый ведёт персонал, аннулированный закрыт.
     return report.data === null || report.data.state === 'draft';
   });
@@ -250,28 +232,12 @@ export function DriverLayout({ children }: { children?: ReactNode }) {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const { date, today, min, max, setDate } = useDriverDate();
-  const [sheetOpen, setSheetOpen] = useState(false);
+  const { pathname } = useLocation();
 
   // Уборка по TTL — при входе в кабинет: фонового процесса у портала нет, а неделю пролежавшие
   // чужие показания на общем телефоне не должны дожидаться следующего открытия того же дня.
+  // Чистятся оба формата черновика: прежняя сборка про ключи нынешнего не знает вовсе (Р11б).
   useEffect(() => pruneDrafts(), []);
-
-  const assignment = useQuery({
-    queryKey: driverKeys.assignment(date),
-    queryFn: () => driverCabinetApi.assignment(date),
-  });
-  const report = useQuery({
-    queryKey: driverKeys.report(date),
-    queryFn: () => driverCabinetApi.report(date),
-  });
-
-  /**
-   * Черновик лежит в localStorage, и об его изменении React не извещает — поэтому он перечитывается
-   * на каждом рендере, а не запоминается. Своё состояние здесь пришлось бы держать в согласии с
-   * хранилищем, которое пишет оверлей: два источника одной правды разошлись бы на первой же
-   * отправке, и кнопка осталась бы «Черновиком» над уже переданным днём.
-   */
-  const hasLocalDraft = user ? loadDraft(user.id, date) !== null : false;
 
   const userMenu: MenuProps = {
     items: [
@@ -283,7 +249,8 @@ export function DriverLayout({ children }: { children?: ReactNode }) {
       if (key === 'change-password') navigate('/change-password');
       if (key === 'logout') {
         // Черновики принадлежат учётке: телефон в бригаде общий, и следующий вошедший не должен
-        // получить ни чужих показаний, ни ссылок на чужие файлы (Р14).
+        // получить ни чужих показаний, ни ссылок на чужие файлы (Р14) — и это одно из трёх мест,
+        // где черновик вообще удаляется: успешная отправка, TTL и выход (Р10).
         if (user) clearUserDrafts(user.id);
         void logout().then(() => navigate('/login'));
       }
@@ -291,10 +258,18 @@ export function DriverLayout({ children }: { children?: ReactNode }) {
   };
 
   const current = dayjs(date);
-  const entries = assignment.data?.entries ?? [];
-  const button = submitButtonState(report.data, hasLocalDraft, assignment.data?.canSubmit ?? false);
   const shift = (days: number) => setDate(current.add(days, 'day').format(DATE_FORMAT));
-  const pending = usePendingDays(today);
+  /*
+   * Вторая страница того же дня (Р5). Дата едет с переходом параметром — кроме сегодняшней:
+   * «/driver» и «/driver/assignment» без параметра означают сегодня, и такая ссылка не устареет к
+   * следующему утру. Признак страницы берётся из адреса, а не из свойства: каркас подключается и
+   * вложенным маршрутом, и обёрткой, и во втором случае про детей он не знает ничего.
+   */
+  const dateParam = date === today ? '' : `?date=${date}`;
+  const other = pathname.endsWith('/assignment')
+    ? { to: `/driver${dateParam}`, label: 'Показания' }
+    : { to: `/driver/assignment${dateParam}`, label: 'Задание' };
+  const pending = usePendingDays(today, date);
   const nearestPending = pending[0];
 
   return (
@@ -351,28 +326,14 @@ export function DriverLayout({ children }: { children?: ReactNode }) {
             </button>
           </Dropdown>
         </div>
-        {/* День без задания кнопки не заслуживает: передавать по нему нечего, а кнопка, которая
-            ничего не откроет, читается как поломка (Р10). */}
-        {entries.length > 0 && (
-          <div style={{ ...rowStyle, paddingTop: 0, paddingBottom: 8 }}>
-            <Tooltip title={button.hint}>
-              <div style={{ width: '100%' }}>
-                <Button
-                  type="primary"
-                  size="large"
-                  block
-                  // Пока состояние отчёта неизвестно, кнопка ждёт: открыть оверлей над днём,
-                  // который уже приняли, значило бы показать правку там, где её не примут.
-                  loading={report.isPending}
-                  disabled={button.disabled}
-                  onClick={() => setSheetOpen(true)}
-                >
-                  {button.label}
-                </Button>
-              </div>
-            </Tooltip>
-          </div>
-        )}
+        {/* Переход между двумя половинами дня (Р5): показания вводят, задание читают. Ссылка во
+            всю ширину и на обеих страницах — задание ушло с глаз, и незаметная ссылка прочиталась
+            бы как «адреса из кабинета пропали». */}
+        <div style={{ ...rowStyle, paddingTop: 0, paddingBottom: 8 }}>
+          <Link className="driver-nav" to={other.to}>
+            {other.label}
+          </Link>
+        </div>
         {/* Долг по прошлым дням — одной строкой и ссылкой на ближайший из них (П4): день,
             вышедший из окна записи, водитель уже не закроет сам. */}
         {nearestPending && (
@@ -399,15 +360,6 @@ export function DriverLayout({ children }: { children?: ReactNode }) {
             того, кто подключает маршрут, ломал бы кабинет. */}
         {children ?? <Outlet />}
       </main>
-
-      {user && (
-        <DriverReadingsSheet
-          open={sheetOpen}
-          date={date}
-          userId={user.id}
-          onClose={() => setSheetOpen(false)}
-        />
-      )}
     </div>
   );
 }
