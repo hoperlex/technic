@@ -1,6 +1,6 @@
 import { useEffect, useMemo, type CSSProperties, type ReactNode } from 'react';
 import { Link, Outlet, useLocation, useNavigate, useSearchParams } from 'react-router';
-import { Button, DatePicker, Dropdown, type MenuProps } from 'antd';
+import { App as AntApp, Button, ConfigProvider, DatePicker, Dropdown, type MenuProps } from 'antd';
 import { KeyOutlined, LeftOutlined, LogoutOutlined, RightOutlined } from '@ant-design/icons';
 import { useQueries } from '@tanstack/react-query';
 import dayjs, { type Dayjs } from 'dayjs';
@@ -15,7 +15,7 @@ import { PortalLogo } from '../../components/PortalLogo';
 import { UserAvatar } from '../../components/UserAvatar';
 import { cabinetRead, driverCabinetApi, driverKeys } from './api';
 import { clearUserDrafts, pruneDrafts } from './draftStore';
-import { DRIVER_FONT_SCALE } from './readingLimits';
+import { DRIVER_FONT_SCALE, DRIVER_NUMBER_SCALE, driverTheme } from './theme';
 
 /**
  * Каркас кабинета водителя (ADR 0102, Р9–Р11; план driver-readings-first, Р4, Р5).
@@ -88,13 +88,18 @@ export function useDriverDate() {
   return { date, today, min, max, setDate };
 }
 
-/** Подпись дня. «Сегодня» и «Вчера» стоят впереди даты: по ним и ориентируются, а не по числу. */
+/**
+ * Подпись дня. «Сегодня» и «Вчера» — словом и без числа: по ним и ориентируются, а число этого же
+ * дня стоит заголовком над формой, двумя строками ниже и крупным шрифтом. Года нет ни у одной
+ * подписи: окно чтения — считаные дни вокруг сегодняшнего, различать в нём нечего, а места год
+ * занимает больше всех — при крупном шрифте кабинета (план типографики, Р2) он вытеснял бы из
+ * шапки саму дату.
+ */
 function dateLabel(value: Dayjs, today: string): string {
   const iso = value.format(DATE_FORMAT);
-  if (iso === today) return `Сегодня, ${value.format('D MMM')}`;
-  if (iso === dayjs(today).subtract(1, 'day').format(DATE_FORMAT))
-    return `Вчера, ${value.format('D MMM')}`;
-  return value.format('dd, D MMM YYYY');
+  if (iso === today) return 'Сегодня';
+  if (iso === dayjs(today).subtract(1, 'day').format(DATE_FORMAT)) return 'Вчера';
+  return value.format('dd, D MMM');
 }
 
 const headerStyle: CSSProperties = {
@@ -140,7 +145,11 @@ const shellStyle = {
   display: 'flex',
   flexDirection: 'column',
   '--driver-scale': DRIVER_FONT_SCALE,
+  '--driver-number-scale': DRIVER_NUMBER_SCALE,
 } as CSSProperties;
+
+/** Стрелки дня: значок крупнее подписи, тач-цель 48 приходит `controlHeight` темы кабинета. */
+const arrowIconStyle: CSSProperties = { fontSize: '1.1em' };
 
 /**
  * Сколько прошедших дней окна записи проверяется на долг (П4). Три, а не все восемь: каждый день
@@ -272,94 +281,114 @@ export function DriverLayout({ children }: { children?: ReactNode }) {
   const pending = usePendingDays(today, date);
   const nearestPending = pending[0];
 
+  /*
+   * Тема кабинета (план типографики, Р1) — здесь, в каркасе, а не на странице показаний: у кабинета
+   * две страницы одного дня, и разъехаться им размером нельзя. Портальную тему она не заменяет, а
+   * дополняет: цвета, скругления и локаль приходят от корневого `ConfigProvider` сами.
+   *
+   * Вложенный `App` рядом с ней — ради сообщений: `App.useApp()` страницы показаний берёт ближайший
+   * контекст, и без него отказ хранилища и «Показания переданы» остались бы портальными 16 px
+   * посреди экрана, набранного двадцатым. `component={false}` — чтобы обёртка не завела лишний
+   * блок между `main` и высотой в 100dvh, на которой держится закреплённый подвал.
+   */
   return (
-    <div className="driver-shell" style={shellStyle}>
-      <header style={headerStyle}>
-        <div style={rowStyle}>
-          {/* Логотип — ссылка на «сегодня»: единственный способ вернуться из просмотра прошлой
+    <ConfigProvider theme={driverTheme}>
+      <AntApp component={false}>
+        <div className="driver-shell" style={shellStyle}>
+          <header style={headerStyle}>
+            <div style={rowStyle}>
+              {/* Логотип — ссылка на «сегодня»: единственный способ вернуться из просмотра прошлой
               недели одним нажатием, и он же привычен по основному порталу. */}
-          <Link to="/driver" aria-label="Сегодня" style={{ display: 'flex', padding: 8 }}>
-            <PortalLogo size={28} />
-          </Link>
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              flex: '1 1 auto',
-              justifyContent: 'center',
-            }}
-          >
-            <Button
-              type="text"
-              icon={<LeftOutlined />}
-              aria-label="Предыдущий день"
-              disabled={!current.isAfter(min, 'day')}
-              onClick={() => shift(-1)}
-            />
-            {/* Подпись дня — она же вход в календарь (Р10): отдельная кнопка «календарь» отняла бы
+              <Link to="/driver" aria-label="Сегодня" style={{ display: 'flex', padding: 8 }}>
+                <PortalLogo size={28} />
+              </Link>
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  flex: '1 1 auto',
+                  justifyContent: 'center',
+                }}
+              >
+                <Button
+                  type="text"
+                  icon={<LeftOutlined style={arrowIconStyle} />}
+                  aria-label="Предыдущий день"
+                  disabled={!current.isAfter(min, 'day')}
+                  onClick={() => shift(-1)}
+                />
+                {/* Подпись дня — она же вход в календарь (Р10): отдельная кнопка «календарь» отняла бы
                 у шапки место, а сама подпись — самая крупная цель в ней. Ввод с клавиатуры закрыт
                 (`inputReadOnly`): на телефоне она перекрыла бы половину экрана ради даты, которую
-                всё равно выбирают тычком. */}
-            <DatePicker
-              value={current}
-              onChange={(value) => value && setDate(value.format(DATE_FORMAT))}
-              format={(value) => dateLabel(value, today)}
-              allowClear={false}
-              inputReadOnly
-              suffixIcon={null}
-              variant="borderless"
-              minDate={min}
-              maxDate={max}
-              style={{ width: 168, textAlign: 'center' }}
-            />
-            <Button
-              type="text"
-              icon={<RightOutlined />}
-              aria-label="Следующий день"
-              disabled={!current.isBefore(max, 'day')}
-              onClick={() => shift(1)}
-            />
-          </div>
-          <Dropdown menu={userMenu} trigger={['click']} placement="bottomRight">
-            <button type="button" style={accountButtonStyle} aria-label="Учётная запись">
-              <UserAvatar name={user ? formatShortName(user) : undefined} size="small" />
-            </button>
-          </Dropdown>
-        </div>
-        {/* Переход между двумя половинами дня (Р5): показания вводят, задание читают. Ссылка во
+                всё равно выбирают тычком.
+
+                Размер и вес подписи — классом, а не стилем: `style` ложится на корень пикера, а
+                величину текста задаёт внутреннее поле ввода, и до него он не доходит. Ширина
+                гибкая: фиксированные 168 px при крупном шрифте (план типографики, Р2) обрезали бы
+                самую длинную из подписей — «вт, 19 авг». */}
+                <DatePicker
+                  className="driver-date"
+                  value={current}
+                  onChange={(value) => value && setDate(value.format(DATE_FORMAT))}
+                  format={(value) => dateLabel(value, today)}
+                  allowClear={false}
+                  inputReadOnly
+                  suffixIcon={null}
+                  variant="borderless"
+                  minDate={min}
+                  maxDate={max}
+                  style={{ flex: '1 1 auto', minWidth: 0 }}
+                />
+                <Button
+                  type="text"
+                  icon={<RightOutlined style={arrowIconStyle} />}
+                  aria-label="Следующий день"
+                  disabled={!current.isBefore(max, 'day')}
+                  onClick={() => shift(1)}
+                />
+              </div>
+              <Dropdown menu={userMenu} trigger={['click']} placement="bottomRight">
+                <button type="button" style={accountButtonStyle} aria-label="Учётная запись">
+                  <UserAvatar name={user ? formatShortName(user) : undefined} size="small" />
+                </button>
+              </Dropdown>
+            </div>
+            {/* Переход между двумя половинами дня (Р5): показания вводят, задание читают. Ссылка во
             всю ширину и на обеих страницах — задание ушло с глаз, и незаметная ссылка прочиталась
             бы как «адреса из кабинета пропали». */}
-        <div style={{ ...rowStyle, paddingTop: 0, paddingBottom: 8 }}>
-          <Link className="driver-nav" to={other.to}>
-            {other.label}
-          </Link>
-        </div>
-        {/* Долг по прошлым дням — одной строкой и ссылкой на ближайший из них (П4): день,
+            <div style={{ ...rowStyle, paddingTop: 0, paddingBottom: 8 }}>
+              <Link className="driver-nav" to={other.to}>
+                {other.label}
+              </Link>
+            </div>
+            {/* Долг по прошлым дням — одной строкой и ссылкой на ближайший из них (П4): день,
             вышедший из окна записи, водитель уже не закроет сам. */}
-        {nearestPending && (
-          <div style={{ ...rowStyle, paddingTop: 0, paddingBottom: 8 }}>
-            <Link className="driver-pending" to={`/driver?date=${nearestPending}`}>
-              {pendingLabel(nearestPending, pending.length)}
-            </Link>
-          </div>
-        )}
-      </header>
+            {nearestPending && (
+              <div style={{ ...rowStyle, paddingTop: 0, paddingBottom: 8 }}>
+                <Link className="driver-pending" to={`/driver?date=${nearestPending}`}>
+                  {pendingLabel(nearestPending, pending.length)}
+                </Link>
+              </div>
+            )}
+          </header>
 
-      <main
-        style={{
-          flex: '1 1 auto',
-          width: '100%',
-          maxWidth: CONTENT_WIDTH,
-          margin: '0 auto',
-          padding:
-            '12px calc(12px + var(--safe-right)) calc(16px + var(--safe-bottom)) calc(12px + var(--safe-left))',
-        }}
-      >
-        {/* Маршрут подключается снаружи, и подключить его можно двумя способами: вложенным
+          <main
+            style={{
+              flex: '1 1 auto',
+              width: '100%',
+              maxWidth: CONTENT_WIDTH,
+              margin: '0 auto',
+              padding:
+                '12px calc(12px + var(--safe-right)) calc(16px + var(--safe-bottom)) calc(12px + var(--safe-left))',
+            }}
+          >
+            {/* Маршрут подключается снаружи, и подключить его можно двумя способами: вложенным
             маршрутом (`Outlet`) и обёрткой вокруг страницы. Каркас поддерживает оба — иначе выбор
             того, кто подключает маршрут, ломал бы кабинет. */}
-        {children ?? <Outlet />}
-      </main>
-    </div>
+            {children ?? <Outlet />}
+          </main>
+        </div>
+      </AntApp>
+    </ConfigProvider>
   );
 }

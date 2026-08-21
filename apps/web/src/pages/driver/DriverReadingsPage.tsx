@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { App, Alert, Skeleton, Space, Typography } from 'antd';
 import { useQueryClient } from '@tanstack/react-query';
 import dayjs from 'dayjs';
@@ -35,6 +35,7 @@ import {
   type Orphan,
 } from './readingsDraft';
 import { buildSubmitBody, submitFailure } from './readingsSubmit';
+import { driverContentStyle } from './theme';
 
 /**
  * Показания дня — index-страница кабинета (ADR 0103, Р14; план driver-readings-first, Р1, Р4, Р9).
@@ -63,9 +64,6 @@ import { buildSubmitBody, submitFailure } from './readingsSubmit';
  *    единственное место, куда ложатся и ответ `open`, и ответ `submit`. Своя копия рядом
  *    разъехалась бы с ним на первом обновлении по возврату, а строка долга в шапке читает кэш.
  */
-
-/** Отступ под закреплённый подвал: без него кнопка «Передать» накрыла бы последний блок формы. */
-const contentStyle: CSSProperties = { display: 'flex', paddingBottom: 72 };
 
 /** До первого чтения хранилища — «черновика нет»; отдельным значением, чтобы не плодить объекты. */
 const NO_DRAFT: DraftView = { items: {}, savedAt: null, legacy: [], attempts: [] };
@@ -335,7 +333,7 @@ export function DriverReadingsPage() {
 
   return (
     <>
-      <Space direction="vertical" size={12} style={contentStyle}>
+      <Space direction="vertical" size={12} style={driverContentStyle}>
         <Typography.Title level={5} style={{ margin: 0 }}>
           {`Показания за ${dayjs(date).format('D MMMM')}`}
         </Typography.Title>

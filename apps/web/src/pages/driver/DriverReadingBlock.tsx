@@ -36,7 +36,25 @@ import type { DraftItem } from './api';
  * решает страница: читающих режима два, и с черновиком они обращаются по-разному.
  */
 
-const hintStyle = { fontSize: '0.85em' } as const;
+/**
+ * Подсказка под полем и текст отказа (план типографики, Р4). `0.9em`, а не прежние `0.85`: строку
+ * «предыдущее: 145 320 (10.08)» водитель СВЕРЯЕТ с набранным, стоя у машины, — она мельче
+ * набранного намеренно, но читаться обязана без прищура.
+ */
+const hintStyle = { fontSize: '0.9em' } as const;
+
+/**
+ * Подпись поля — заголовок поля, а не примечание к нему: базовым размером кабинета и обычным
+ * цветом (Р4). Серым и мельче основного текста, как было, она читалась как сноска к чужому полю —
+ * а это единственное, что называет вводимое число.
+ */
+const fieldLabelStyle = { display: 'inline-block', marginBottom: 2 } as const;
+
+/** Госномер — первым и крупным (Р3): им водитель узнаёт строку среди своих машин за день. */
+const vehicleStyle = { fontSize: '1.2em' } as const;
+
+/** Источник строки — вторым: им различают две смены одной машины за один день. */
+const sourceStyle = { fontSize: '0.9em' } as const;
 
 /**
  * Экранная клавиатура перекрывает поле, к которому её и вызвали. Браузер прокручивает к нему сам
@@ -126,10 +144,9 @@ function NumberField({
 }) {
   return (
     <label style={{ display: 'block' }}>
-      <Typography.Text type="secondary" style={hintStyle}>
-        {label}
-      </Typography.Text>
+      <Typography.Text style={fieldLabelStyle}>{label}</Typography.Text>
       <Input
+        className="driver-number"
         // `decimal`, а не `numeric`: моточасы и литры дробные, и клавиатура без разделителя
         // сделала бы их ввод невозможным.
         inputMode="decimal"
@@ -232,13 +249,22 @@ export function ReadingBlock({
         borderRadius: 8,
       }}
     >
+      {/* Госномер первым и крупным, источник — под ним (Р3): сначала опознание машины во дворе,
+          потом различение двух её смен за день. Подпись машины приходит с сервера общим правилом
+          `vehicleLabel` — у своей техники это госномер, у аренды описание (ADR 0018), и разбирать
+          её здесь на части нечем и незачем. Пустой она бывает у машины, удалённой из справочника:
+          тогда наверх встаёт источник — заголовок из пустой строки не назвал бы ничего. */}
       <div>
-        <Typography.Text strong>{item.sourceLabel}</Typography.Text>
-        <div>
-          <Typography.Text type="secondary" style={hintStyle}>
-            {item.vehicleLabel}
-          </Typography.Text>
-        </div>
+        <Typography.Text strong style={vehicleStyle}>
+          {item.vehicleLabel || item.sourceLabel}
+        </Typography.Text>
+        {item.vehicleLabel && (
+          <div>
+            <Typography.Text type="secondary" style={sourceStyle}>
+              {item.sourceLabel}
+            </Typography.Text>
+          </div>
+        )}
       </div>
 
       {/* Строку без показаний закрывает персонал (Р4). Водителю об этом говорят прямо: иначе он
@@ -315,9 +341,7 @@ export function ReadingBlock({
       />
 
       <label style={{ display: 'block' }}>
-        <Typography.Text type="secondary" style={hintStyle}>
-          Комментарий
-        </Typography.Text>
+        <Typography.Text style={fieldLabelStyle}>Комментарий</Typography.Text>
         <Input.TextArea
           value={value.comment}
           autoSize={{ minRows: 1 }}

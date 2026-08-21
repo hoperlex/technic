@@ -22,7 +22,13 @@ import { emptyItem, sourceKey } from './readingsDraft';
  * запроса, ни одной записи в хранилище — только слова состояния дня.
  */
 
-const hintStyle = { display: 'block', fontSize: '0.85em' } as const;
+const hintStyle = { display: 'block', fontSize: '0.9em' } as const;
+
+/**
+ * Состояние дня — крупнее основного текста (план типографики, Р6): это первое, что водитель читает,
+ * открыв кабинет, и от него зависит, будет ли он вообще набирать числа.
+ */
+const dayLabelStyle = { fontSize: '1.1em' } as const;
 
 /**
  * Состояние дня строкой над формой — теми же словами, что стояли на кнопке шапки (Р4): кнопка
@@ -34,7 +40,9 @@ const hintStyle = { display: 'block', fontSize: '0.85em' } as const;
 export function DayLine({ day }: { day: DayState }) {
   return (
     <div>
-      <Typography.Text strong>{day.label}</Typography.Text>
+      <Typography.Text strong style={dayLabelStyle}>
+        {day.label}
+      </Typography.Text>
       {day.hint && (
         <Typography.Text type="secondary" style={hintStyle}>
           {day.hint}

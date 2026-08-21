@@ -16,6 +16,8 @@ import { renderWithUser } from './render';
 import { authUser } from './factories/auth';
 import { MOBILE_VIEWPORT, type Viewport } from './viewport';
 import { DriverLayout } from '../src/pages/driver/DriverLayout';
+import { driverTheme } from '../src/pages/driver/theme';
+import { themeFor } from '../src/theme';
 import { DriverPage } from '../src/pages/driver/DriverPage';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -420,16 +422,57 @@ describe('кабинет водителя: задание на дату', () => 
     }
   });
 
-  it('каркас несёт класс кабинета и переменную масштаба шрифта', async () => {
+  it('каркас несёт класс кабинета и переменные масштаба шрифта', async () => {
     // Масштаб живёт одной переменной на каркасе (Р1): подобрать его на живом телефоне — работа
     // одного значения, а не поиска по компонентам. Значение приходит из TS-константы кабинета,
-    // поэтому проверяется не число, а то, что переменная вообще доехала до разметки.
+    // поэтому проверяется не число, а то, что переменные вообще доехали до разметки. Их две:
+    // общий масштаб кабинета и собственный множитель числовых полей (план типографики, Р4).
     renderCabinet({ viewport: MOBILE_VIEWPORT });
     expect(await screen.findByText('Рейс Р-142')).toBeDefined();
 
     const shell = document.querySelector<HTMLElement>('.driver-shell');
     expect(shell).not.toBeNull();
     expect(Number(shell?.style.getPropertyValue('--driver-scale'))).toBeGreaterThan(0);
+    expect(Number(shell?.style.getPropertyValue('--driver-number-scale'))).toBeGreaterThan(1);
+  });
+
+  it('кабинет крупнее портала не только текстом, но и тем, что рисует antd', async () => {
+    /*
+     * Переменная каркаса поднимает голый текст и подписи в `em`, а размер полей, кнопок и
+     * календаря живёт в ТОКЕНЕ темы — до него таблица стилей не дотягивается вовсе. Пока темы у
+     * кабинета не было, экран получался вывернутым: читаемое крупнее набираемого (план
+     * типографики, Р1). Проверяется отношение, а не числа: подбирают их на живом телефоне.
+     */
+    expect(driverTheme.token?.fontSize).toBeGreaterThan(themeFor(true).token?.fontSize ?? 0);
+    expect(driverTheme.token?.controlHeight).toBeGreaterThan(
+      themeFor(true).token?.controlHeight ?? 0,
+    );
+
+    // Правила, которыми крупными становятся дата в шапке и набираемые числа (Р2, Р4): размер того
+    // и другого задаёт внутреннее поле ввода antd, и инлайновым стилем до него не дотянуться.
+    expect(stylesCss).toMatch(/\.driver-date \.ant-picker-input > input\s*\{[^}]*font-size/);
+    expect(stylesCss).toMatch(/\.ant-input\.driver-number\s*\{[^}]*--driver-number-scale/);
+  });
+
+  it('подпись дня в шапке — словом у ближних дней и без года у прочих', async () => {
+    /*
+     * «Сегодня» и «Вчера» — то, чем водитель и ориентируется; число этого же дня стоит заголовком
+     * над формой показаний. Года нет ни у одной подписи: окно чтения — считаные дни вокруг
+     * сегодняшнего, различать в нём нечего, а при крупном шрифте (Р2) год вытеснял бы из шапки
+     * саму дату.
+     */
+    renderCabinet({ viewport: MOBILE_VIEWPORT });
+    expect(await screen.findByText('Рейс Р-142')).toBeDefined();
+    const dateValue = () => document.querySelector<HTMLInputElement>('.driver-date input')?.value;
+
+    expect(dateValue()).toBe('Сегодня');
+
+    fireEvent.click(screen.getByLabelText('Предыдущий день'));
+    await waitFor(() => expect(dateValue()).toBe('Вчера'));
+
+    fireEvent.click(screen.getByLabelText('Предыдущий день'));
+    await waitFor(() => expect(dateValue()).toBe(dayjs(dayBefore).format('dd, D MMM')));
+    expect(dateValue()).not.toContain(String(dayjs(dayBefore).year()));
   });
 
   it('на узком экране страница не разъезжается вбок', async () => {
