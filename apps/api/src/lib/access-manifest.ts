@@ -638,6 +638,54 @@ export const ACCESS_MANIFEST = {
     kind: 'permissions',
     allOf: ['vehicleRequests.status'],
   },
+  /*
+   * История назначения — команда машиниста (`docs/assignment-periods-plan.md` §8, этап 3).
+   *
+   * Чтение и предпросмотр закрыты парой «видит заявку + видит бланки»: состав по датам показывает
+   * фамилии парка и номера ЭСМ-2, и без `waybills.read` показывать его нечем. Боевая команда меняет
+   * второе право на `vehicleRequests.status`: смотреть состав вправе тот, кто видит заявку, а
+   * менять — тот, кто ведёт её состояние.
+   *
+   * Коррекционные права (`waybills.correct`, `waybills.correctBeyondLimit`) в манифест не попадают,
+   * и это то же решение, что у визы недельной заявки выше: право спрашивает **обработчик**, потому
+   * что нужно оно не всегда. Плановая смена машиниста с понедельника — обычная работа диспетчера, а
+   * та же команда мартовской датой переоформляет выданную бумагу; исход считается под блокировкой
+   * (Р32), из тела он не виден, и страж, потребовавший коррекционного права у всех, закрыл бы
+   * обычную работу тому, кому она и поручена. Условным правом это тоже не пишется: там право
+   * добавляется **по полю тела**, а здесь — по посчитанному исходу. Доказывается сценариями
+   * db-теста команды (`test/assignment-crew.db.test.ts`).
+   */
+  'GET /api/v1/vehicle-requests/:id/assignment-changes': {
+    kind: 'permissions',
+    allOf: ['vehicleRequests.read', 'waybills.read'],
+  },
+  'POST /api/v1/vehicle-requests/:id/assignment-changes': {
+    kind: 'permissions',
+    allOf: ['vehicleRequests.status', 'waybills.read'],
+  },
+  'POST /api/v1/vehicle-requests/:id/assignment-changes/preview': {
+    kind: 'permissions',
+    allOf: ['vehicleRequests.read', 'waybills.read'],
+  },
+  /*
+   * Дверь ремонта истории (Р29) — безусловная пара та же, а всё остальное её условный контракт, и
+   * ни одна его часть манифестом не выражается. `waybills.correct` и `correctBeyondLimit`
+   * спрашиваются по посчитанному под блокировкой исходу (Р32), а не по полю тела. `archive.restore`
+   * добавляется полем `restore`, но условным правом здесь тоже не пишется: манифест сверяется с
+   * `guard.authz`, а это право спрашивает шаг 9 канона вместе с проверкой «а заявка вообще в
+   * архиве». И, наконец, архивная заявка открывается **по идентификатору без `archive.read`**
+   * (Ц3) — отступление, у которого в манифесте нет строки по построению: манифест описывает то,
+   * что нужно, а не то, чего намеренно не спрашивают. Всё это доказывается сценариями
+   * `test/assignment-repair.db.test.ts`.
+   */
+  'POST /api/v1/vehicle-requests/:id/assignment-changes/repair': {
+    kind: 'permissions',
+    allOf: ['vehicleRequests.status', 'waybills.read'],
+  },
+  'POST /api/v1/vehicle-requests/:id/assignment-changes/repair/preview': {
+    kind: 'permissions',
+    allOf: ['vehicleRequests.status', 'waybills.read'],
+  },
   'GET /api/v1/vehicle-requests/:id/days': {
     kind: 'permissions',
     allOf: ['vehicleRequests.read'],

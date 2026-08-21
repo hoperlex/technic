@@ -93,6 +93,41 @@ services:
     profiles: [tools]
     networks: [internal]
 
+  # Административная смена режима модуля истории назначения (план assignment-periods, П6).
+  # Аварийный вход: заморозить запись, посмотреть режим и журнал переходов, когда портал недоступен
+  # или уже заморожен, — HTTP-двери у этого пути нет и не будет (решение Р3).
+  #
+  # Ходит СВОИМ доступом: `DATABASE_MAINTENANCE_URL`, а при его отсутствии `DATABASE_MIGRATION_URL`.
+  # Прикладной `DATABASE_URL` команда не берёт даже как запасной — иначе режим модуля менялся бы
+  # кредами приложения, которому `UPDATE` на управляющие таблицы не выдаётся вовсе.
+  #
+  # Секрет maintenance-роли можно держать отдельным файлом: `MAINTENANCE_ENV_FILE=/etc/technic-portal/
+  # maintenance.env` (root:docker 0640, как prod.env). По умолчанию — тот же prod.env: отдельный файл
+  # это ужесточение, а не условие работы, и требовать его до заведения ролей значило бы сломать
+  # аварийный вход ради ещё не существующей границы.
+  #
+  # `entrypoint` + `command`, а не один `command`: `docker compose run` заменяет команду целиком, и
+  # аргументы иначе пришлось бы писать вместе с `pnpm`. Умолчание — `status`: одиночный `run` без
+  # аргументов только читает.
+  #
+  #   docker compose -p technic --profile tools run --rm assignment-mode status
+  #   docker compose -p technic --profile tools run --rm assignment-mode set \
+  #     --write=all_frozen --actor=<email> --reason='<причина>' --build=<sha>
+  assignment-mode:
+    image: technic-api:${TAG:-latest}
+    env_file:
+      - ${ENV_FILE:-/etc/technic-portal/prod.env}
+      - ${MAINTENANCE_ENV_FILE:-${ENV_FILE:-/etc/technic-portal/prod.env}}
+    environment:
+      NODE_ENV: production
+    volumes:
+      - /etc/technic-portal/certs:/etc/technic-portal/certs:ro
+    entrypoint: ['pnpm', '--filter', '@technic/api', 'assignment:mode']
+    command: ['status']
+    restart: 'no'
+    profiles: [tools]
+    networks: [internal]
+
   # pg_dump/pg_restore для deploy-auto (бэкап БД перед миграциями, restore).
   # Запускается ТОЛЬКО через `run --rm` (deploy-auto подставляет команду); default-команда
   # безобидна, чтобы `up` с профилем tools ничего не поднимал вечно. postgres:17 = мажор
