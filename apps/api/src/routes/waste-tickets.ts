@@ -32,6 +32,7 @@ import {
   constructionObjects,
   counterparties,
   files,
+  requestFiles,
   jobs,
   users,
   wasteRequests,
@@ -276,8 +277,28 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
 
     // Вход сверки и всё, что нужно только этому экрану, читаются параллельно: первое — общим
     // загрузчиком (он же считает значки списка), остальное — здесь.
-    const [bundle, fileRows, attempts] = await Promise.all([
+    const [bundle, attachedRows, fileRows, attempts] = await Promise.all([
       collectCheckInputs(p, request.id),
+      // Приложенные талоны — ВСЕ, а не только те, у кого есть строка распознавания. Талон,
+      // приложенный при выключенном модуле, строки не имеет вовсе, и без этого запроса экран
+      // показывал бы пустоту там, где бумага лежит и ждёт человека (Р29).
+      db
+        .select({
+          fileId: requestFiles.fileId,
+          filename: files.filename,
+          // Связь `request_files` своей даты не имеет — берём дату файла: она и есть «когда талон
+          // приложили», потому что файл загружают тем же действием.
+          createdAt: files.createdAt,
+        })
+        .from(requestFiles)
+        .innerJoin(files, eq(files.id, requestFiles.fileId))
+        .where(
+          and(
+            eq(requestFiles.requestId, request.id),
+            eq(requestFiles.kind, 'ticket'),
+            sql`${files.deletedAt} IS NULL`,
+          ),
+        ),
       // Файловая строка отвечает на вопрос, которого у талонов нет: почему их нет вовсе (Р29).
       // Имя файла и живая задача — оттуда же: «попытка 3 из 5, следующая в 14:32» собирается из
       // очереди, и собирать её вторым запросом с экрана значило бы показывать вчерашнее число.
@@ -467,7 +488,10 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
         }),
       ),
       pages: pageDtos,
-      files: fileRows.map(
+      // Порядок: сперва то, что в разборе, затем приложенное и не поступившее. Второе — не
+      // «пустая строка», а состояние, требующее человека: талон лежит, машина его не видела.
+      files: [
+        ...fileRows.map(
         (f): WasteTicketFileDto => ({
           fileId: f.fileId,
           filename: f.filename ?? '',
@@ -494,7 +518,29 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
           createdAt: f.createdAt.toISOString(),
           updatedAt: f.updatedAt.toISOString(),
         }),
-      ),
+        ),
+        ...attachedRows
+          .filter((a) => !fileRows.some((f) => f.fileId === a.fileId))
+          .map(
+            (a): WasteTicketFileDto => ({
+              fileId: a.fileId,
+              filename: a.filename,
+              status: 'not_queued',
+              reason:
+                'Талон приложен, но в разбор не поступал: распознавание было выключено. ' +
+                'Прочитайте его сами кнопкой «Добавить талон вручную» или включите распознавание ' +
+                'и нажмите «Перераспознать».',
+              errorClass: null,
+              errorScope: null,
+              totalPages: 0,
+              processedPages: 0,
+              activeJob: null,
+              pages: [],
+              createdAt: a.createdAt.toISOString(),
+              updatedAt: a.createdAt.toISOString(),
+            }),
+          ),
+      ],
       checks: checks.checks,
       attempts: attempts.map(
         (a): WasteTicketAttemptDto => ({
@@ -1098,6 +1144,15 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
       if (request.status !== 'done') {
         throw err.badRequest('Талоны разбираются у выполненной заявки');
       }
+      // Выключенный модуль задачу не заведёт (`enqueueTicketRecognition` выходит сразу), и без
+      // этой проверки кнопка отвечала бы «отправлено на распознавание», не отправив ничего.
+      // Обещание, которого никто не исполнит, хуже отказа: человек ждёт результата и не заводит
+      // талон руками.
+      if (!config.ticketOcr.enabled) {
+        throw err.badRequest(
+          'Распознавание талонов выключено: включите модуль либо заведите талон вручную',
+        );
+      }
 
       await db.transaction(async (tx) => {
         // Связь проверяется здесь же: право говорит «разбирает талоны», но не «этот файл».
@@ -1413,6 +1468,21 @@ export default async function wasteTicketsRoutes(app: FastifyInstance): Promise<
    *   пятнадцати минут, значит воркер их не берёт — и это тоже недоступность.
    */
   r.get('/ticket-recognition/health', { ...canReview }, async () => {
+    // Выключенный модуль — отдельное состояние, а не «работает». Задач он не заводит и попыток не
+    // делает, поэтому доля отказов у него идеальная: ноль из нуля. Скажи мы «ok» — портал написал
+    // бы «расхождений нет» над бумагой, которую никто не читал (Р29). Проверка стоит до запросов:
+    // считать окно попыток, которых по построению нет, незачем.
+    if (!config.ticketOcr.enabled) {
+      return {
+        state: 'disabled' as const,
+        since: null,
+        code: '',
+        attempts: 0,
+        failed: 0,
+        waiting: 0,
+      };
+    }
+
     const windowSql = sql`now() - interval '1 hour'`;
 
     const stats = await db.execute<{

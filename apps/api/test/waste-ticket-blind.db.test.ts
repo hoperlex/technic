@@ -370,6 +370,80 @@ describe.skipIf(!DB_URL)('слепая перепроверка на живых 
     expect(res.statusCode, res.body).toBe(404);
   });
 
+  describe('портал не молчит о том, что бумагу никто не читал (Р29)', () => {
+    /**
+     * Самая дорогая ошибка модуля — не сбой, а тишина: заявка с приложенным, но не прочитанным
+     * талоном выглядит проверенной. Проверяется целиком через маршруты, потому что складывается
+     * она из трёх источников сразу: состояния подсистемы, состава файлов в ответе и того, что
+     * скажет кнопка «перераспознать».
+     */
+    async function attachTicketFile(requestId: string): Promise<string> {
+      const [file] = await ctx.db
+        .insert(ctx.schema.files)
+        .values({
+          bucket: 'test',
+          objectKey: `blind-${RUN}/${randomUUID()}.jpg`,
+          filename: 'talon.jpg',
+          contentType: 'image/jpeg',
+          size: 1024,
+          uploadedBy: ctx.owner.id,
+        })
+        .returning({ id: ctx.schema.files.id });
+      await ctx.db
+        .insert(ctx.schema.requestFiles)
+        .values({ requestId, fileId: file!.id, kind: 'ticket' });
+      return file!.id;
+    }
+
+    it('выключенный модуль называет себя выключенным, а не исправным', async () => {
+      // `TICKET_OCR_ENABLED` в этом прогоне не выставлен, то есть выключено. Скажи ручка «ok» —
+      // баннер не появился бы, и портал написал бы «расхождений нет» над нечитанной бумагой.
+      const res = await ctx.app.inject({
+        method: 'GET',
+        url: '/api/v1/waste-requests/ticket-recognition/health',
+        headers: ctx.owner.auth,
+      });
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json().state).toBe('disabled');
+    });
+
+    it('приложенный, но не разобранный талон виден в ответе карточки', async () => {
+      const { requestId } = await seedTicket(`W${RUN}`);
+      const fileId = await attachTicketFile(requestId);
+
+      const res = await ctx.app.inject({
+        method: 'GET',
+        url: `/api/v1/waste-requests/${requestId}/tickets`,
+        headers: ctx.owner.auth,
+      });
+      expect(res.statusCode, res.body).toBe(200);
+      const file = (res.json().files as { fileId: string; status: string; reason: string }[]).find(
+        (f) => f.fileId === fileId,
+      );
+      // Строки распознавания у него нет — она заводится вместе с задачей, а задач не было. Раньше
+      // такой талон не попадал в ответ вовсе, и экран показывал пустоту.
+      expect(file).toBeDefined();
+      expect(file!.status).toBe('not_queued');
+      expect(file!.reason).toContain('в разбор не поступал');
+    });
+
+    it('«перераспознать» при выключенном модуле отказывает, а не обещает', async () => {
+      const { requestId } = await seedTicket(`X${RUN}`);
+      const fileId = await attachTicketFile(requestId);
+
+      const res = await ctx.app.inject({
+        method: 'POST',
+        url: `/api/v1/waste-requests/${requestId}/ticket-files/${fileId}/recognize`,
+        headers: ctx.owner.auth,
+        payload: {},
+      });
+      // Постановка задачи при выключенном модуле молча ничего не делает — и без этой проверки
+      // кнопка отвечала бы «отправлено», не отправив ничего.
+      expect(res.statusCode, res.body).toBe(400);
+      expect(res.body).toContain('выключено');
+    });
+  });
+
   describe('предложение перераспознавания', () => {
     /** Предложение рядом с подтверждённым талоном — то, что кладёт воркер после нового прохода. */
     async function seedProposal(

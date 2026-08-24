@@ -21,6 +21,21 @@ export function TicketRecognitionBanner({ enabled }: { enabled: boolean }) {
 
   const since = data.since ? new Date(data.since).toLocaleString('ru-RU') : null;
 
+  // Выключенный модуль — не сбой, а порядок работы: талоны разбирает человек. Но сказать об этом
+  // обязательно, иначе пустая таблица и «расхождений нет» читаются как «машина проверила, всё
+  // сошлось» — то есть ровно наоборот.
+  if (data.state === 'disabled') {
+    return (
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 12 }}
+        message="Распознавание талонов выключено"
+        description="Талоны разбираются вручную: откройте скан и заведите строку кнопкой «Добавить талон вручную». Проверки объёма, даты и номера считаются по заведённым талонам."
+      />
+    );
+  }
+
   if (data.state === 'unconfigured') {
     return (
       <Alert

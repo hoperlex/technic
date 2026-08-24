@@ -10,6 +10,7 @@ import type {
   WasteTicketBlindCheckInput,
   WasteTicketBlindCheckTaskDto,
 } from '@technic/contracts';
+import type { TicketRecognitionState } from '@technic/contracts';
 import { apiFetch } from '@shared/api';
 
 /**
@@ -22,8 +23,11 @@ import { apiFetch } from '@shared/api';
  * ручка и заведена.
  */
 export interface TicketRecognitionHealth {
-  /** `ok` — работает; `degraded` — временно недоступно; `unconfigured` — нужен администратор. */
-  state: 'ok' | 'degraded' | 'unconfigured';
+  /**
+   * `disabled` — модуль выключен, талоны разбирает человек; `ok` — работает; `degraded` —
+   * временно недоступно; `unconfigured` — нужен администратор.
+   */
+  state: TicketRecognitionState;
   since: string | null;
   code: string;
   attempts: number;

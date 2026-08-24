@@ -151,7 +151,11 @@ export function WasteTicketsPanel({ requestId }: { requestId: string }) {
 
   return (
     <Space direction="vertical" size={12} style={{ width: '100%' }}>
-      <ChecksStrip checks={data.checks} preliminary={data.preliminary} />
+      <ChecksStrip
+        checks={data.checks}
+        preliminary={data.preliminary}
+        hasTickets={data.tickets.some((t) => t.status !== 'dismissed')}
+      />
 
       {/* Ручной ввод — равноправный путь, а не запасной: машина читает не всё, а два талона на
           кадре видит как один (Р15). Кнопка на виду всегда, в том числе когда талонов нет вовсе. */}
@@ -297,6 +301,11 @@ export function WasteTicketsPanel({ requestId }: { requestId: string }) {
         <Collapse
           size="small"
           ghost
+          // Развёрнут сразу, если есть что показать по существу: свёрнутый блок с ответом на
+          // вопрос «почему талонов нет» ничем не лучше отсутствующего.
+          defaultActiveKey={
+            data.files.some((f) => f.status !== 'done') ? ['files'] : undefined
+          }
           items={[
             {
               key: 'files',
@@ -502,6 +511,20 @@ function FileState({ file }: { file: WasteTicketFileDto }) {
     </Typography.Text>
   ) : null;
 
+  // Талон приложен, а строки распознавания у него нет: модуль был выключен, когда заявку
+  // закрывали. Это не сбой и не ожидание — это работа, которая ждёт человека.
+  if (file.status === 'not_queued') {
+    return (
+      <Space direction="vertical" size={0}>
+        <Typography.Text type="warning">
+          {file.filename || 'Талон'}: в разбор не поступал
+        </Typography.Text>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {file.reason}
+        </Typography.Text>
+      </Space>
+    );
+  }
   if (file.status === 'done') {
     return (
       <Space direction="vertical" size={0}>
@@ -551,10 +574,25 @@ function FileState({ file }: { file: WasteTicketFileDto }) {
 function ChecksStrip({
   checks,
   preliminary,
+  hasTickets,
 }: {
   checks: WasteTicketCheckDto[];
   preliminary: boolean;
+  /** Есть ли хоть один неотклонённый талон: без них сверять нечего, и зелёное было бы враньём. */
+  hasTickets: boolean;
 }) {
+  // «Расхождений нет» и «сверять нечего» — разные ответы, и путать их дороже всего именно здесь:
+  // заявка с приложенной, но не прочитанной бумагой выглядела бы проверенной (Р29).
+  if (!hasTickets) {
+    return (
+      <Alert
+        type="warning"
+        showIcon
+        message="Талоны не разобраны — сверять нечего"
+        description="Ни одного талона по этой заявке не заведено: ни машиной, ни человеком. Объём, дата и номер не проверены."
+      />
+    );
+  }
   if (checks.length === 0) {
     return (
       <Alert

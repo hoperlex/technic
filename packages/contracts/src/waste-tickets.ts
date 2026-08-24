@@ -110,6 +110,17 @@ export const wasteTicketFieldLabels: Record<WasteTicketField, string> = {
 export const WASTE_TICKET_FILE_STATUSES = ['pending', 'done', 'unsupported', 'failed'] as const;
 export type WasteTicketFileStatus = (typeof WASTE_TICKET_FILE_STATUSES)[number];
 
+/**
+ * Как файл выглядит НА ЭКРАНЕ. Шире, чем в базе, ровно на одно значение: `not_queued` — талон
+ * приложен, а строки распознавания у него нет вовсе.
+ *
+ * Такого статуса в таблице быть не может по построению: строка заводится вместе с задачей. Но
+ * состояние существует и встречается чаще прочих — так выглядит каждый талон, приложенный при
+ * выключенном модуле. Без этого значения экран показывал бы пустоту там, где бумага лежит и ждёт
+ * человека, а «сверять нечего» читалось бы как «всё сошлось» (Р29).
+ */
+export type WasteTicketFileViewStatus = WasteTicketFileStatus | 'not_queued';
+
 /** Распознавание страницы (Р10): у страницы `unsupported` не бывает — до неё файл уже прошёл. */
 export const WASTE_TICKET_PAGE_STATUSES = ['pending', 'done', 'failed'] as const;
 export type WasteTicketPageStatus = (typeof WASTE_TICKET_PAGE_STATUSES)[number];
@@ -309,7 +320,8 @@ export const wasteTicketCheckLabels: Record<WasteTicketCheckCode, string> = {
 export interface WasteTicketFileDto {
   fileId: string;
   filename: string;
-  status: WasteTicketFileStatus;
+  /** `not_queued` — талон приложен, но в разбор не поступал (модуль был выключен). */
+  status: WasteTicketFileViewStatus;
   /** Человеческая причина отказа: «это не изображение и не PDF», «файл больше допустимого». */
   reason: string;
   /**
@@ -412,6 +424,17 @@ export interface WasteTicketCandidateDto {
   /** Какая модель это прочитала (`model_reported` попытки, Р7). */
   model: string;
 }
+
+/**
+ * Состояние подсистемы распознавания для баннера (Р29).
+ *
+ * `disabled` стоит первым не по алфавиту: это самое частое состояние и самое опасное для молчания.
+ * Выключенный модуль не заводит ни задач, ни попыток — то есть выглядит В ТОЧНОСТИ как исправно
+ * работающий, у которого просто нет замечаний. Пока состояния не было, портал на такой заявке
+ * писал «Расхождений нет» над бумагой, которую никто не читал.
+ */
+export const TICKET_RECOGNITION_STATES = ['disabled', 'ok', 'degraded', 'unconfigured'] as const;
+export type TicketRecognitionState = (typeof TICKET_RECOGNITION_STATES)[number];
 
 /**
  * Клапан уникальности (Р17, Р28): «это разные бумаги». Ставится **только** на конфликтующую
