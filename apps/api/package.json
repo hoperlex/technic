@@ -4,15 +4,15 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/server.ts",
+    "dev": "tsx watch --env-file-if-exists=../../.env.dev src/server.ts",
     "start": "tsx src/server.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "build": "echo \"api: tsx runtime, no build\"",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "tsx src/db/migrate.ts",
-    "db:migrate:check": "tsx src/db/migrate.ts check",
-    "db:migrate:status": "tsx src/db/migrate.ts status",
+    "db:migrate": "tsx --env-file-if-exists=../../.env.dev src/db/migrate.ts",
+    "db:migrate:check": "tsx --env-file-if-exists=../../.env.dev src/db/migrate.ts check",
+    "db:migrate:status": "tsx --env-file-if-exists=../../.env.dev src/db/migrate.ts status",
     "db:migrate:files": "tsx scripts/migration-report.ts files",
     "db:migrate:journal": "tsx scripts/migration-report.ts journal",
     "db:cutover-down": "tsx scripts/cutover-down.ts",
@@ -21,7 +21,7 @@
     "assignment:report": "tsx scripts/assignment-report.ts",
     "assignment:rollback": "tsx scripts/assignment-rollback.ts",
     "assignment:shadow": "tsx scripts/assignment-shadow.ts",
-    "seed:admin": "tsx src/seed-admin.ts",
+    "seed:admin": "tsx --env-file-if-exists=../../.env.dev src/seed-admin.ts",
     "seed:drivers-test": "tsx src/seed-drivers-test.ts",
     "backfill:grants": "tsx src/backfill-grants.ts",
     "check:captcha": "tsx scripts/check-captcha.ts",
@@ -31,7 +31,8 @@
     "report:equipment-models": "tsx scripts/office-equipment-models-report.ts",
     "backfill:routes": "tsx src/backfill-routes.ts",
     "backfill:trips": "tsx scripts/backfill-trips.ts",
-    "template:waybill": "tsx scripts/mark-waybill-templates.ts"
+    "template:waybill": "tsx scripts/mark-waybill-templates.ts",
+    "dev:db": "tsx --env-file-if-exists=../../.env.dev scripts/dev-db-refresh.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "3.1091.0",

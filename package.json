@@ -10,7 +10,8 @@
   "type": "module",
   "scripts": {
     "build": "pnpm -r build",
-    "dev": "pnpm -r --parallel dev",
+    "dev": "pnpm dev:db && pnpm -r --parallel dev",
+    "dev:db": "pnpm --filter @technic/api dev:db",
     "typecheck": "pnpm -r typecheck",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
